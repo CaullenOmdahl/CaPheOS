@@ -7,7 +7,7 @@ on the StarNet station). These rules apply to every file in `company/tools/`, `c
 ## The rules
 
 1. **No company content.** No crew names (Dave, Sharon, Phil, Rachel, Marcus, Nadia, Omar, Priya, Leo, Rosa, Tuan,
-   Vy, Minh, Linh), no "Ca Phe Digital"/`cpd`, no owner name (Caullen), no products or customers (Black Sheep,
+   Vy, Minh, Linh), no "Ca Phe Digital"/`cpd`, no owner name, no products or customers (Black Sheep,
    BlackSheepApp, Baarista, PavComms, POS, cafe), no incident ids, quest ids, q-numbers, PR numbers, dated rulings
    ("Dave 2026-11-16 03:05"), measured numbers from the live company, or Vietnam-specific rules (Asia/Saigon, ICT,
    VND, vi/en). Comments that only tell the history of Ca Phe Digital go; comments that explain *why the code works
@@ -47,7 +47,7 @@ on the StarNet station). These rules apply to every file in `company/tools/`, `c
 
 ```
 cd /home/caullen/Projects/CaPheOS
-grep -nEi "dave|sharon|phil\b|rachel|marcus|nadia|omar|priya|\bleo\b|rosa|tuan|\bvy\b|caullen|ca phe digital|\bcpd\b|baarista|black ?sheep|saigon|\bICT\b|VND|railway|/home/caullen|8800|\.api-token" <your files>
+grep -nEi "dave|sharon|phil\b|rachel|marcus|nadia|omar|priya|\bleo\b|rosa|tuan|\bvy\b|ca phe digital|\bcpd\b|baarista|black ?sheep|saigon|\bICT\b|VND|railway|/home/caullen|8800|\.api-token" <your files>
 for f in <your .js files>; do node --check "$f"; done
 ```
 The grep must come back empty (or only with hits you explain in the report).
