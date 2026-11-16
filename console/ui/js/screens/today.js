@@ -41,6 +41,7 @@ export async function render(root, ctx) {
     catch (er) { askErr.textContent = 'Not sent: ' + er.message; }
   } }, h('label', { for: 'ask', class: 'sr-only' }, 'Message the Founder'), askInput, Button('Send', { variant: 'primary', type: 'submit' }), askErr);
 
+  const onboardEl = h('div');
   const liveDot = h('span', { class: 'live-dot' + (events.isLive() ? '' : ' off') }, events.isLive() ? 'Live' : 'Polling');
   const needsErr = h('div');
   const gatesEl = h('div', { class: 'gates', 'aria-live': 'polite', 'aria-relevant': 'additions removals' });
@@ -53,6 +54,7 @@ export async function render(root, ctx) {
       h('div', { class: 'stack-14', style: 'max-width:720px' }, Eyebrow([dateLabel, co.name]),
         h('h1', { class: 'h1' }, greet + (ownerName ? ', ' + String(ownerName).split(' ')[0] : '') + '.'), lede),
       askForm),
+    onboardEl,
     h('section', { 'aria-labelledby': 'needs', class: 'stack-16' },
       h('div', { class: 'between', style: 'gap:16px' },
         h('div', { class: 'row-8', style: 'align-items:center;gap:12px' }, h('h2', { id: 'needs', class: 'h3' }, 'Needs you'), liveDot),
@@ -63,6 +65,18 @@ export async function render(root, ctx) {
       h('div', { class: 'stack-16' }, h('div', { class: 'between' }, h('h2', { class: 'h3' }, 'AI usage today'), h('a', { href: '#/usage', class: 'body-s' }, 'Usage →')), usageEl)),
     panelsEl,
     h('section', { class: 'stack-16' }, h('div', { class: 'between' }, h('h2', { class: 'h3' }, 'Overnight'), h('a', { href: '#/work', class: 'body-s' }, 'All work →')), overnightEl));
+
+  // onboarding banner: shown until onboard.js --certify is green (provisioned is not certified)
+  async function loadOnboarding() {
+    let d; try { d = await api('/onboarding'); } catch (_) { fill(onboardEl); return; }
+    if (d.certified) return fill(onboardEl);
+    const failed = (d.checks || []).filter(c => c.status !== 'ok');
+    fill(onboardEl, h('section', { class: 'card p22', role: 'status', style: 'border-color:var(--status-warning);gap:8px' },
+      h('div', { class: 'between-c' }, h('h2', { class: 'h4' }, 'Not certified yet'), h('a', { href: '#/system', class: 'body-s' }, 'Provisioning →')),
+      h('p', { class: 'body-s' }, (d.provisioned ? 'Provisioned, ' : 'Not fully provisioned, ') + 'but the company has not proved it can run: ' +
+        (d.lastCertify ? failed.length + ' of 9 checks failing (' + failed.map(c => c.id).join(', ') + ').' : 'certification has never run.'))));
+  }
+  loadOnboarding();
 
   const onLive = e => { liveDot.textContent = e.detail ? 'Live' : 'Polling'; liveDot.classList.toggle('off', !e.detail); };
   document.addEventListener('capheos:live', onLive);

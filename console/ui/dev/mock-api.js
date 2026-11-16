@@ -127,6 +127,9 @@ async function apiRoute(req, res, p, q) {
     case 'POST /api/guardrails/set': { const g = S.guardrails.guards.find(x => x.name === B.name); if (!g || g.fixed) return J(res, 400, { ok: false, error: 'cannot change ' + B.name }); g.on = !!B.on; emit('guardrails'); return ok(); }
     case 'POST /api/guardrails/all': if (!B.on && B.confirm !== 'I understand there are no guardrails') return J(res, 400, { ok: false, error: 'confirm is required' }); S.guardrails.guards.forEach(g => { if (!g.fixed) g.on = !!B.on; }); emit('guardrails'); return ok();
     case 'POST /api/guardrails/sandbox': S.guardrails.sandbox = !!B.on; emit('guardrails'); return ok();
+    case 'GET /api/onboarding': return ok({ provisioned: true, certified: false, lastCertify: now(), steps: [{ id: 'founded', what: 'company.json written and defaults copied', status: 'ok' }, { id: 'candidate-default', what: 'hiring candidates default to a model the company can run', status: 'pending', note: 'metered model with a $0 cap' }],
+      checks: [{ id: 'station', what: 'station answers GET /api/cron', status: 'ok' }, { id: 'liveness', what: 'dead-man switch enabled and pinged', status: 'failed', missing: 'liveness module not enabled' }] });
+    case 'POST /api/onboarding/certify': return ok({ certified: false, results: {} });
     case 'GET /api/halt': return ok(S.halt);
     case 'POST /api/halt/soft': S.halt = { mode: 'soft', by: 'Sam Owner', at: now(), why: B.why || null, deadline: new Date(Date.now() + (B.deadlineMin || 30) * 60000).toISOString(), escalate: !!B.escalate,
       shutdowns: [{ seat: 'Founder', routine: 'Founder shutdown', maxMinutes: 15, status: 'fired', done: false }, { seat: 'Mira', routine: '—', status: 'missing' }], left: ['Tools loop (running)'] }; emit('halt'); return ok(S.halt);

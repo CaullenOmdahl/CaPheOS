@@ -115,6 +115,9 @@ if [[ "${1:-}" == "--start" ]]; then
   done
   if [[ $UP -eq 1 ]]; then
     node company/tools/onboard.js --record station-answers ok --note "GET /api/cron answered on port $PORT" >/dev/null 2>&1 || true
+    # the idempotent onboarding steps that need a live station (candidate default, ops registrations, first backup,
+    # the owner-gate batch, guardrails apply); non-fatal: onboard.js --check shows what is left
+    node company/tools/onboard.js --resume || echo "onboarding steps left: node company/tools/onboard.js --check"
     echo "station up on http://127.0.0.1:$PORT"
   else
     node company/tools/onboard.js --record station-answers failed --note "GET /api/cron did not answer within ${WAIT}s" >/dev/null 2>&1 || true

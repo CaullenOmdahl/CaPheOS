@@ -1,5 +1,5 @@
 // System (System.dc.html): halt band, company, health, panels needing attention (broken, hidden).
-import { h, fill, Button, errLine, screenHead, NOT_CONNECTED } from '../ui.js';
+import { h, fill, Button, Tag, errLine, screenHead, NOT_CONNECTED } from '../ui.js';
 import { api, post } from '../api.js';
 import * as events from '../events.js';
 
@@ -8,6 +8,7 @@ export async function render(root, ctx) {
   root.className = 'main gap-36';
   const groups = h('section', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px' });
   const panels = h('div');
+  const prov = h('div');
   const diag = {};
   fill(root,
     screenHead({ eyebrow: ['CaPheOS console', app.company && app.company.name], title: 'System.', actions: [Button('Copy diagnostics', { variant: 'secondary', onClick: async () => {
@@ -17,7 +18,7 @@ export async function render(root, ctx) {
       h('div', { class: 'stack-6', style: 'max-width:640px' }, h('h2', { id: 'halt', class: 'h4' }, 'Stop the company'),
         h('p', { class: 'body-s', style: 'color:var(--text-on-inverse-muted)' }, "Soft halt starts nothing new and lets running work finish through each seat's shutdown procedure. Hard halt cuts every run off now.")),
       h('div', { class: 'row-8' }, Button('Soft halt', { variant: 'inverse', href: '#/halt?mode=soft' }), h('a', { href: '#/halt?mode=hard', class: 'btn btn-danger btn-md' }, 'Hard halt'))),
-    groups, panels);
+    prov, groups, panels);
 
   async function load() {
     const co = app.company || {};
@@ -39,6 +40,20 @@ export async function render(root, ctx) {
       card('Spending limits', [r('Pacer and caps', 'see Usage', '#/usage')]),
       card('App and backup', [r('Export, recovery, updates', NOT_CONNECTED)]),
       card('Look, sound and alerts', [r('Theme', 'Light'), r('Notifications, voice, remote', NOT_CONNECTED)]));
+    // Provisioning / certification (company/tools/onboard.js): per step status and what is missing
+    try {
+      const d = await api('/onboarding');
+      const tag = st => Tag(st === 'ok' ? 'OK' : st === 'failed' ? 'Failed' : st === 'unchecked' ? 'Unchecked' : 'Pending', { variant: 'status', status: st === 'ok' ? 'online' : st === 'failed' ? 'danger' : 'warning' });
+      const row = (label, st, note) => h('li', { class: 'sys-row', style: 'align-items:flex-start' }, h('span', { class: 'stack-4' }, h('span', { class: 'strong' }, label), note ? h('span', { class: 'body-s muted' }, note) : null), tag(st));
+      const err = h('p', { class: 'err-line', role: 'status' });
+      fill(prov, h('section', { class: 'stack-14' },
+        h('div', { class: 'between-c' }, h('h2', { class: 'h3' }, 'Provisioning ' + (d.certified ? '· certified' : '· not certified')),
+          Button('Run certification', { variant: 'secondary', onClick: async () => { err.textContent = ''; try { const r = await post('/onboarding/certify'); app.toast(r.certified ? 'Certified.' : 'Not certified yet.'); load(); } catch (e) { err.textContent = e.message; } } })),
+        h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px' },
+          h('article', { class: 'card p22', style: 'gap:8px' }, h('h3', { class: 'h4' }, 'Provisioned (steps)'), h('ul', { class: 'plain' }, (d.steps || []).map(s => row(s.what, s.status, s.note)))),
+          h('article', { class: 'card p22', style: 'gap:8px' }, h('h3', { class: 'h4' }, 'Certified (checks)' + (d.lastCertify ? ' · ' + new Date(d.lastCertify).toLocaleString() : '')), h('ul', { class: 'plain' }, (d.checks || []).map(c => row(c.what, c.status, c.missing))))),
+        h('p', { class: 'caption muted' }, 'node company/tools/onboard.js --check | --resume | --certify'), err));
+    } catch (e) { fill(prov, errLine(e, 'Provisioning')); }
     // §11: broken panels with findings; unhide list
     try {
       const d = await api('/panels');
