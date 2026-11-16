@@ -113,7 +113,7 @@ const MANIFEST = [
   { p: 'company/work/external-actions.jsonl', cls: 'F', append: true, owner: 'risk', area: 'gate', why: 'the external-action log' },
   { p: 'company/work/external-idempotency.jsonl', cls: 'F', append: true, owner: 'risk', area: 'gate', why: 'the record of acts that already went out (a deleted row would let a payment or a send repeat)' },
   { p: 'company/work/merge-gate.log', cls: 'F', append: true, owner: 'risk', area: 'gate', why: 'the merge-gate log' },
-  { p: 'company/work/decisions.md', cls: 'F', append: true, owner: 'ceo', area: 'record', why: 'decisions (it carries the competence anchors)' },
+  { p: 'company/work/decisions.md', cls: 'F', append: true, growOnly: true, owner: 'ceo', area: 'record', why: 'decisions (it carries the competence anchors)' },
   { p: 'company/work/dispatch-log.md', cls: 'F', append: true, owner: 'tools', area: 'record', why: 'the dispatch log (a competence anchor copy)' },
   { p: 'company/state/locked/provenance.jsonl', cls: 'F', append: true, owner: 'tools', area: 'record', why: 'the tools\' write records this watcher trusts' },
   { p: '.starnet-data/workspaces/permissions.allow.json', cls: 'F', owner: 'risk', area: 'access', why: 'the station\'s folder grants' },
@@ -423,6 +423,16 @@ function decide(ctx, key, m, b, cur, prov, recorded, flagOnly) {
   }
   // F and K: reported, never undone automatically
   if (m.append && cur.exists && b.exists && cur.bytes >= b.bytes && sha(cur.buf.subarray(0, b.bytes)) === b.sha256 && cur.mode === b.mode) return { ok: true, why: 'appended' };
+  // a grow-only record (decisions.md is written newest first): new lines may land anywhere, but every earlier line must
+  // still be there, in order. Only removing or rewriting history is a finding.
+  if (m.growOnly && cur.exists && b && b.exists) {
+    const old = readLkg(ctx, key, b);
+    if (old && old !== 'tampered') {
+      const was = old.toString('utf8').split('\n'), now = cur.buf.toString('utf8').split('\n');
+      let i = 0; for (const l of now) { if (i < was.length && l === was[i]) i++; }
+      if (i === was.length && cur.mode === b.mode) return { ok: true, why: 'entries added (grow-only record)' };
+    }
+  }
   if (m.append && cur.exists && (!b || !b.exists)) return { ok: true, why: 'a new append-only log (accepted; appending is normal)' };   // created after the baseline: seed it, do not re-flag as it grows
   if (cur.exists && W.length && byWriter(rows, W).some(r => r.kind === 'write' && r.sha256 === cur.sha256)) return { ok: true, why: 'written by ' + W.join('/') };
   if (cur.exists && byWriter(rows, ['harness-change.js']).some(r => r.kind === 'write' && r.sha256 === cur.sha256) && recorded && recorded.applied.includes(cur.sha256)) return { ok: true, why: 'an applied harness change' };
