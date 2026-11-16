@@ -47,7 +47,7 @@ on the StarNet station). These rules apply to every file in `company/tools/`, `c
 
 ```
 cd <your framework checkout>
-grep -nEi "dave|sharon|phil\b|rachel|marcus|nadia|omar|priya|\bleo\b|rosa|tuan|\bvy\b|ca phe digital|\bcpd\b|baarista|black ?sheep|saigon|\bICT\b|VND|railway|/home/caullen|8800|\.api-token" <your files>
+grep -nEi "dave|sharon|phil\b|rachel|marcus|nadia|omar|priya|\bleo\b|rosa|tuan|\bvy\b|ca phe digital|\bcpd\b|baarista|black ?sheep|saigon|\bICT\b|VND|railway|/home/[a-z]+/|8800|\.api-token" <your files>
 for f in <your .js files>; do node --check "$f"; done
 ```
 The grep must come back empty (or only with hits you explain in the report).
