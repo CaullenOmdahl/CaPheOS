@@ -10,7 +10,8 @@
     "tools": "notify",
     "schedules": "notify",
     "external": "approve",
-    "dashboard": "notify"
+    "dashboard": "notify",
+    "packs": "approve"
   },
   "fixed": {
     "access": "approve",
@@ -27,12 +28,13 @@
     "tools": "shared changes to tools, house rules and policies (harness-change.js)",
     "schedules": "routine clocks, dispatcher tick and per-seat cadence",
     "external": "anything that leaves the company (external-gate.js categories message, publish, form, network)",
-    "dashboard": "agents adding or changing console panels"
+    "dashboard": "agents adding or changing console panels",
+    "packs": "approving a capability pack (a new line of business: tools, seats, limits, meters); installing one is always the owner's (pack.js install). Approve in every preset."
   },
   "presets": {
-    "approve-everything": { "label": "Approve everything", "categories": { "hiring": "approve", "release": "approve", "budget": "approve", "spend": "approve", "models": "approve", "tools": "approve", "schedules": "approve", "external": "approve", "dashboard": "approve" } },
-    "gate-money-people": { "label": "Gate money and people", "categories": { "hiring": "approve", "release": "approve", "budget": "approve", "spend": "approve", "models": "notify", "tools": "notify", "schedules": "notify", "external": "approve", "dashboard": "notify" } },
-    "gate-money": { "label": "Gate money", "categories": { "hiring": "notify", "release": "notify", "budget": "approve", "spend": "approve", "models": "auto", "tools": "auto", "schedules": "auto", "external": "notify", "dashboard": "auto" } },
-    "autonomous": { "label": "Autonomous", "categories": { "hiring": "auto", "release": "notify", "budget": "auto", "spend": "auto", "models": "auto", "tools": "auto", "schedules": "auto", "external": "auto", "dashboard": "auto" } }
+    "approve-everything": { "label": "Approve everything", "categories": { "hiring": "approve", "release": "approve", "budget": "approve", "spend": "approve", "models": "approve", "tools": "approve", "schedules": "approve", "external": "approve", "dashboard": "approve", "packs": "approve" } },
+    "gate-money-people": { "label": "Gate money and people", "categories": { "hiring": "approve", "release": "approve", "budget": "approve", "spend": "approve", "models": "notify", "tools": "notify", "schedules": "notify", "external": "approve", "dashboard": "notify", "packs": "approve" } },
+    "gate-money": { "label": "Gate money", "categories": { "hiring": "notify", "release": "notify", "budget": "approve", "spend": "approve", "models": "auto", "tools": "auto", "schedules": "auto", "external": "notify", "dashboard": "auto", "packs": "approve" } },
+    "autonomous": { "label": "Autonomous", "categories": { "hiring": "auto", "release": "notify", "budget": "auto", "spend": "auto", "models": "auto", "tools": "auto", "schedules": "auto", "external": "auto", "dashboard": "auto", "packs": "approve" } }
   }
 }

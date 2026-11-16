@@ -63,13 +63,16 @@ Categories and where they are enforced:
 | schedules | routine clocks, dispatcher tick, cadence | `harness-change.js apply` (kind schedule) |
 | external | anything that leaves the company | `external-gate.js`: auto = the CEO's clearance suffices; notify = the CEO's clearance and the owner is told; approve = the clearance row must name the owner |
 | dashboard | agents adding or changing console panels | the console panel tools (wired with the console) |
+| packs | approving a capability pack (a new line of business); install is always the owner's | `pack.js approve` (approve = owner only; notify/auto = the CEO seat may approve, notify tells the owner); `pack.js install` is owner-only at every level. `approve` in every preset (docs/PACKS-SPEC.md) |
 
 **Presets** (`node company/tools/governance.js preset <id> --by <owner>`):
 
 - **Approve everything** (`approve-everything`): every category is approve.
 - **Gate money and people** (`gate-money-people`, the default): hiring, release, budget, spend and external are approve; models, tools, schedules and dashboard are notify.
 - **Gate money** (`gate-money`): budget and spend are approve; hiring, release and external are notify; the rest auto.
-- **Autonomous** (`autonomous`): the company hires and budgets on its own; release is notify; everything else auto.
+- **Autonomous** (`autonomous`): the company hires and budgets on its own; release is notify; everything else auto except packs.
+
+Every preset keeps **packs** at approve: a new line of business is the owner's call.
 
 **Fixed gates.** Access, ownership, commitment, and spend beyond the cap are always approve. They are not categories,
 `governance.js` refuses to change them, and they stay approve while the `ownerGates` guardrail is on

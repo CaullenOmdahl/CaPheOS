@@ -10,8 +10,8 @@ const PRESET_WHAT = {
   'autonomous': 'The crew hires and budgets itself; gates still hold',
 };
 const CAT_NAMES = { hiring: 'Hiring', release: 'Releasing someone', budget: 'Budgeting', spend: 'Spend inside the cap', models: 'Model changes',
-  tools: 'Tool and policy changes', schedules: 'Schedules and ticks', external: 'Acting outside', dashboard: 'Console panels' };
-const CAT_SEAT = { hiring: 'People', release: 'People', budget: 'Finance', spend: 'Finance', models: 'People', tools: 'Tools', schedules: 'Tools', external: 'CEO', dashboard: 'Tools' };
+  tools: 'Tool and policy changes', schedules: 'Schedules and ticks', external: 'Acting outside', dashboard: 'Console panels', packs: 'Capability packs' };
+const CAT_SEAT = { hiring: 'People', release: 'People', budget: 'Finance', spend: 'Finance', models: 'People', tools: 'Tools', schedules: 'Tools', external: 'CEO', dashboard: 'Tools', packs: 'CEO' };
 const GUARD_NAMES = { ownerGates: 'Owner gates', spendCap: 'Spend cap', externalActions: 'External actions', harnessSelfEdit: 'Harness self-edit',
   defaultBranch: 'Default branch', secrets: 'Secrets', localComputer: 'Local computer', privilegedShell: 'Privileged shell', promptInjection: 'Injection tripwire', halt: 'Halt' };
 const CONFIRM = 'I understand there are no guardrails';

@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "capheos:pack",
+  "title": "CaPheOS capability pack (packs/<id>/pack.json)",
+  "description": "A pack adds one line of business. It ships docs (always readable), tools (absent until installed), limits (shipped closed), meters (locked on install) and a conformance test. Checked by company/tools/pack.js doctor, which fails closed. Spec: docs/PACKS-SPEC.md.",
+  "type": "object",
+  "required": ["version", "id", "title", "summary", "owner", "requires", "docs", "tools", "limits", "meters", "conformance"],
+  "additionalProperties": false,
+  "$defs": {
+    "fn": { "type": "string", "enum": ["ceo", "people", "tools", "risk", "floor", "finance"] },
+    "relFile": { "type": "string", "pattern": "^(?!/)(?!.*\\.\\.)[A-Za-z0-9_./-]+$", "maxLength": 200 },
+    "why": { "type": "string", "minLength": 3, "maxLength": 400 }
+  },
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": 1, "description": "pack.json format version" },
+    "id": { "type": "string", "pattern": "^_?[a-z][a-z0-9-]{1,39}$", "description": "Must equal the folder name. A leading underscore marks a template, never installable." },
+    "packVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "title": { "type": "string", "minLength": 2, "maxLength": 80 },
+    "summary": { "type": "string", "minLength": 3, "maxLength": 600 },
+    "template": { "type": "boolean", "description": "true = a scaffold: tools/ holds only README.md and the conformance test fails by design" },
+    "owner": { "$ref": "#/$defs/fn", "description": "the function answerable for the pack once installed" },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "packs": { "type": "array", "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,39}$" }, "description": "packs that must be installed AND conformant" },
+        "guardrails": { "type": "array", "items": { "type": "string" }, "description": "guardrails that must be ON (co.guard)" },
+        "secrets": { "type": "array", "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" }, "description": "secrets/<name> files that must exist and be non-empty (never read beyond that)" },
+        "governance": { "type": "array", "items": { "type": "string" }, "description": "governance categories that must exist in governance.json" },
+        "externalGates": { "type": "array", "items": { "type": "string", "enum": ["message", "publish", "account", "form", "spend", "network"] }, "description": "external-gate.js categories the pack's acts go through" },
+        "stationAbilities": { "type": "array", "items": { "type": "string" }, "description": "abilities listed in company/company.json station.abilities" }
+      }
+    },
+    "docs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/relFile" }, "description": "standards and docs; readable whether or not the pack is installed" },
+    "tools": {
+      "type": "array",
+      "items": { "type": "object", "required": ["file", "purpose"], "additionalProperties": false,
+        "properties": { "file": { "$ref": "#/$defs/relFile" }, "purpose": { "$ref": "#/$defs/why" } } },
+      "description": "files under tools/, copied to company/tools/packs/<id>/ on install; empty for a template"
+    },
+    "seats": {
+      "type": "array",
+      "items": { "type": "object", "required": ["name", "template", "why"], "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,39}$" },
+          "template": { "$ref": "#/$defs/relFile" },
+          "independentOf": { "type": "array", "items": { "type": "string" }, "description": "seat names in this pack that must never be held by the same agent" },
+          "why": { "$ref": "#/$defs/why" } } }
+    },
+    "routines": {
+      "type": "array",
+      "items": { "type": "object", "required": ["file", "why"], "additionalProperties": false,
+        "properties": { "file": { "$ref": "#/$defs/relFile" }, "seat": { "type": "string" }, "why": { "$ref": "#/$defs/why" } } }
+    },
+    "panels": { "type": "array", "items": { "$ref": "#/$defs/relFile" }, "description": "console panel folders (console-panel.js format), added by the owner on install" },
+    "limits": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "object", "required": ["file", "owner", "why"], "additionalProperties": false,
+        "properties": { "file": { "$ref": "#/$defs/relFile" }, "owner": { "$ref": "#/$defs/fn" }, "why": { "$ref": "#/$defs/why" } } },
+      "description": "JSON files that must ship CLOSED: every number 0, every array empty, no booleans"
+    },
+    "meters": {
+      "type": "array",
+      "items": { "type": "object", "required": ["p", "owner", "why"], "additionalProperties": false,
+        "properties": {
+          "p": { "type": "string", "pattern": "^company/work/packs/[a-z][a-z0-9-]{1,39}/[A-Za-z0-9_./*-]+$" },
+          "append": { "type": "boolean" },
+          "writers": { "type": "array", "items": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" } },
+          "owner": { "$ref": "#/$defs/fn" },
+          "why": { "$ref": "#/$defs/why" } } },
+      "description": "files that measure the pack (reconcile, P&L, competence-style); registered with locked-watch on install"
+    },
+    "allowlist": {
+      "type": "array",
+      "items": { "type": "object", "required": ["host", "why"], "additionalProperties": false,
+        "properties": { "host": { "type": "string", "pattern": "^(\\*\\.)?[a-z0-9.-]+\\.[a-z]{2,}$" }, "why": { "$ref": "#/$defs/why" } } },
+      "description": "external-gate network allowlist lines added on install, removed on uninstall"
+    },
+    "conformance": {
+      "type": "object", "required": ["test"], "additionalProperties": false,
+      "properties": { "test": { "$ref": "#/$defs/relFile" } }
+    }
+  }
+}

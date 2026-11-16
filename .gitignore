@@ -38,6 +38,9 @@ station.log
 !/company/state/.gitkeep
 /company/owner/*
 !/company/owner/.gitkeep
+# capability packs: what install places (tools, seat templates); sources live in packs/ (docs/PACKS-SPEC.md)
+/company/tools/packs/
+/company/roles/templates/*--*.md
 /company/hiring/*
 !/company/hiring/.gitkeep
 /company/repos/

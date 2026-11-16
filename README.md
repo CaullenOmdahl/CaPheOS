@@ -19,6 +19,7 @@ investment shop, a library or a studio all start from the same checkout.
 | `company/defaults/` | starting policy files copied into `company/work` and `company/state` at founding |
 | `company/patches/` | changes to StarNet's own code, applied by `scripts/setup-station.sh` |
 | `company/skills/` | skills installed on every agent |
+| `packs/` | capability packs (lines of business); `packs/_template/` is the scaffold, `company/tools/pack.js` checks and installs them (`docs/PACKS-SPEC.md`) |
 | `scripts/` | `found-company.sh`, `setup-station.sh` |
 | `systemd/` | unit templates for the station and the dispatcher timer |
 | `secrets/` | keys, one file each (gitignored) |
@@ -68,6 +69,23 @@ node console/server.js --selftest   # runs against a temp copy of company/ and a
 The owner token lives in `secrets/console-token` (created 0600 on first start). Every write acts as the owner
 (`company.json` owner name) through the same tools the owner runs in a shell; station calls go through
 `/api/station/*` with an allowlist, so the browser never sees the station token. Binds 127.0.0.1 by default.
+
+## Tests
+
+```bash
+scripts/test.sh                      # everything, offline; summary table; exit 1 on any failure
+TEST_TRACKED_ONLY=1 scripts/test.sh  # only tracked files, exactly what CI sees
+```
+
+It runs `tool-parse.js`, `tool-inventory-check.js`, every tool's selftest (`--selftest` or `selftest`, detected per
+tool), `company/tools/tests/*.test.js`, `console/server.js --selftest`, `py_compile` / `bash -n` / JSON parsing of
+every tracked file, and `scripts/e2e-first-light.sh` and `pack.js doctor --all` when present. Each step has a
+timeout (`TEST_TIMEOUT`, default 180 s). Everything runs against a temp copy of the repo (`CAPHEOS_ROOT`) with
+`STARNET_URL` on a closed port, so nothing reaches a station and the checkout stays clean. The `*.e2e.js` tests need a
+scratch StarNet checkout and are skipped. CI (`.github/workflows/ci.yml`) runs the same script on every push and PR.
+
+A new script in `company/tools/` fails the inventory check until it has a row in
+`company/runbooks/tool-management.md` (§5a, and §7b if it has `--selftest`) and in `company/tools/INVENTORY.md`.
 
 ## What git keeps
 

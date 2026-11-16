@@ -1,0 +1,7 @@
+{
+  "_doc": "The pack's caps. Shipped CLOSED: every number 0, every list empty. Not a switch: the owner opens a quantity after install (the installed copy lives in company/state/packs/installed/<id>/limits/ and is locked-watched).",
+  "dailyUnits": 0,
+  "dailySpend": 0,
+  "currency": "USD",
+  "allowedTargets": []
+}
