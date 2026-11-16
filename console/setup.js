@@ -238,7 +238,12 @@ module.exports = function setup(deps) {
     const b = budget();
     const runnable = unmeteredList(b).includes(id) || Number(b.dailyUsd) > 0;
     const gate = runnable ? await resolveGate('candidates default to ' + id + '/' + m) : [];
-    return { provider: id, model: m, runnable, gateAnswered: gate };
+    // the Founder's loop thinks with the provider the owner just picked (created here if onboarding has not yet)
+    let founderLoop = null;
+    try { const FL = tool('founder-loop.js'); const r = await FL.ensure({ provider: id, model: m }); founderLoop = { ok: r.ok, text: r.ok ? FL.summary(r) : r.error }; if (r.ok) await run('onboard.js', ['--record', 'founder-loop', 'ok', '--note', FL.summary(r)]); }
+    catch (e) { founderLoop = { ok: false, text: e.message }; }
+    if (founderLoop.ok) decision('moved the Founder loop to ' + id + '/' + m);
+    return { provider: id, model: m, runnable, gateAnswered: gate, founderLoop };
   }
 
   async function connect(b) {
@@ -295,7 +300,24 @@ module.exports = function setup(deps) {
     return { ok: true, dailyUsd: cur.dailyUsd, perAgentUsd: cur.perAgentUsd, gateAnswered: gate };
   }
 
+  // the charter as it stands, for Setup to show (rendered) and edit
+  function charterView() {
+    let text = ''; try { text = fs.readFileSync(F.charter, 'utf8'); } catch (_) {}
+    let at = null; try { at = fs.statSync(F.charter).mtime.toISOString(); } catch (_) {}
+    return { ok: true, text, at, placeholders: placeholders(text), fields: charterFields() };
+  }
+  // the owner edits the whole text: saved as written; blanks left are reported, and the step stays "needs" until none
+  function setCharterText(text) {
+    text = String(text || '').replace(/\r/g, '');
+    if (text.trim().length < 40) bad('the charter is nearly empty: write at least a mandate');
+    if (text.length > 100000) bad('the charter is too long (100000 characters at most)');
+    if (!/^## /m.test(text)) bad('keep the charter\'s ## headings');
+    writeFile(F.charter, text.endsWith('\n') ? text : text + '\n');
+    decision('edited the charter text (company/CHARTER.md)');
+    return Object.assign(charterView(), { ok: true, saved: true });
+  }
   function setCharter(b) {
+    if (typeof b.text === 'string') return setCharterText(b.text);
     const f = { mandate: clean(b.mandate), forWhom: clean(b.forWhom), outOfScope: clean(b.outOfScope), firstGoal: clean(b.firstGoal) };
     if (f.mandate.length < 10) bad('say in a sentence or two what the company does');
     if (!f.outOfScope) bad('say what the company will not do (write "Nothing yet" if you have no limits in mind)');
@@ -324,6 +346,7 @@ module.exports = function setup(deps) {
       ['POST', /^\/api\/setup\/provider\/validate$/, (m, q, b) => validate(b)],
       ['POST', /^\/api\/setup\/budget$/, (m, q, b) => setBudget(b)],
       ['POST', /^\/api\/setup\/charter$/, (m, q, b) => setCharter(b)],
+      ['GET', /^\/api\/setup\/charter$/, () => charterView()],
     ],
     onboardingQuestions, placeholders,
   };

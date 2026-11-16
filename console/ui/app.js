@@ -29,6 +29,14 @@ const NAV = [
   ['Station', [['floor', 'Floor'], ['abilities', 'Abilities'], ['system', 'System'], ['map', 'Feature map']]],
 ];
 
+// The route map (docs/CONSOLE-LINKS.md): every place an agent may link to with `console:#/…`. Aliases keep the
+// readable names working: #/controls/guardrails is the Guardrails tab, #/setup/ai the provider step, and so on.
+export const ALIASES = {
+  controls: { governance: 'gov', 'self-governance': 'gov', guardrails: 'guard', cadence: 'ticks', schedule: 'ticks' },
+  work: { quest: 'quests', handoff: 'handoffs', decision: 'decisions', project: 'projects' },
+  abilities: { connectors: 'connected', 'api-keys': 'keys' },
+};
+
 // shared app context handed to every screen
 export const app = { company: null, counts: {}, toast, confirmDialog, refreshSidebar: () => refreshSidebar() };
 window.capheos = app;
@@ -97,6 +105,8 @@ app.setCount = setCount;
 async function refreshSidebar() {
   api('/questions').then(d => setCount('needs', (d.questions || []).filter(q => !isSetupQuestion(q)).length)).catch(() => setCount('needs', '!'));
   api('/crew').then(d => setCount('crew', (d.seats || []).length)).catch(() => {});
+  // a pulse on Crew while anyone is running (who and what is on Today's "Now")
+  api('/now').then(d => { const l = navLinks.crew; if (!l) return; const n = (d.runs || []).length; l.a.classList.toggle('working', n > 0); l.a.title = n ? n + ' running now: ' + d.runs.map(r => r.name).join(', ') : ''; }).catch(() => {});
   api('/handoffs').then(d => setCount('work', (d.items || []).length)).catch(() => {});
   api('/hiring').then(d => setCount('hiring', (d.rounds || []).filter(r => !r.hired && r.status !== 'closed').length)).catch(() => {});
   const [halt, disp, health] = await Promise.allSettled([api('/halt'), api('/dispatch'), fetch('/api/station/health', { credentials: 'same-origin' })]);
@@ -153,7 +163,10 @@ function parseHash() {
   const raw = (location.hash && location.hash !== '#' && location.hash !== '#/' ? location.hash : app.company && app.company.onboarding && !setupDone() ? '#/setup' : '#/today').replace(/^#\/?/, '');
   const [p, qs] = raw.split('?');
   const parts = p.split('/').filter(Boolean).map(decodeURIComponent);
-  return { id: SCREENS[parts[0]] ? parts[0] : 'today', rest: parts.slice(1), query: new URLSearchParams(qs || '') };
+  const id = SCREENS[parts[0]] ? parts[0] : 'today';
+  const rest = parts.slice(1);
+  if (rest[0] && ALIASES[id] && ALIASES[id][rest[0].toLowerCase()]) rest[0] = ALIASES[id][rest[0].toLowerCase()];
+  return { id, rest, query: new URLSearchParams(qs || '') };
 }
 async function route() {
   const r = parseHash();
@@ -184,7 +197,7 @@ async function boot() {
   try { app.company = await api('/company'); coName.textContent = app.company.name || ''; app.refreshSetupNav(setupDone()); }
   catch (e) { coName.textContent = e.auth ? 'Not signed in' : ''; app.companyError = e; }
   events.start();
-  events.on(['questions', 'halt', 'crew', 'dispatch', 'handoffs'], () => refreshSidebar());
+  events.on(['questions', 'halt', 'crew', 'dispatch', 'handoffs', 'now'], () => refreshSidebar());
   events.on('panels', loadCompanyNav); loadCompanyNav();
   refreshSidebar();
   window.addEventListener('hashchange', route);

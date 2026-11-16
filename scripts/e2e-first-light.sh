@@ -35,7 +35,7 @@ wait_port() { for _ in $(seq 1 50); do (echo > "/dev/tcp/127.0.0.1/$1") 2>/dev/n
 
 # ---------- setup: a temp copy of the framework ----------
 mkdir -p "$T/co"
-tar -C "$SRC" --exclude=./.git --exclude=./starnet --exclude=./.starnet-data --exclude=./scratch \
+tar -C "$SRC" --exclude=./.git --exclude=./.framework-checkout --exclude=./starnet --exclude=./.starnet-data --exclude=./scratch \
   --exclude='./company/state/*' --exclude='./company/work/*' --exclude='./company/owner/*' --exclude='./secrets/*' -cf - . | tar -C "$T/co" -xf -
 R="$T/co"
 cp -r "$SRC/tests/fixtures/starnet-stub" "$R/starnet"
@@ -76,13 +76,25 @@ check "charter mandate written" bash -c '
     fs.writeFileSync(f,t);" &&
   grep -q "^First Light writes plain-language field guides" company/CHARTER.md && grep -q "\*\*First Light\*\* is an autonomous company" company/CHARTER.md'
 
-# ---------- 4. the Founder loop routine ----------
-PROMPT='You are the Founder of First Light. Work company/work/handoffs/to-founder.md, then your open quests: curl -s -H "x-starnet-token: $(cat secrets/station-token)" '"$STARNET_URL"'/api/quests'
-check "Founder loop routine created" bash -c '
-  body=$(node -e "console.log(JSON.stringify({name:\"Founder loop\",agentId:\"agent\",schedule:\"0 */2 * * *\",tz:\"UTC\",prompt:process.argv[1],workdir:process.argv[2],deliver:\"local\",enabled:true}))" "$0" "'"$R"'")
-  r=$(curl -s -H "x-starnet-token: '"$TOKEN"'" -H "Content-Type: application/json" -X POST '"$STARNET_URL"'/api/cron -d "$body")
-  echo "$r" | grep -q "\"ok\":true" && curl -s -H "x-starnet-token: '"$TOKEN"'" '"$STARNET_URL"'/api/cron | grep -q "Founder loop"' "$PROMPT"
-FOUNDER_JOB="$(st "$STARNET_URL/api/cron" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).jobs.find(j=>j.name==="Founder loop").id))')"
+# ---------- 4. onboarding creates the Founder loop (no hand-made routine) ----------
+# (station-seed runs with --resume in step 14: on this mock the save already exists, and seeding now would put the
+# Founder in "ask" mode under the default self-governance, which the dispatcher holds; step 5 needs the wake)
+check "onboarding step founder-loop" bash -c "node '$TOOLS/onboard.js' --step founder-loop --json > '$T/founder-loop.out' 2>&1 && grep -q '\"status\": \"ok\"' '$T/founder-loop.out'" || tail -5 "$T/founder-loop.out"
+check "the Founder loop runs in the company folder with the terminal grant, every 2 hours, on the candidate default" node -e '
+  const S=JSON.parse(require("child_process").execSync("curl -s -H \"x-starnet-token: "+process.argv[2]+"\" "+process.argv[3]+"/__state"));
+  const j=S.cron.jobs.filter(x=>x.name.startsWith("Founder loop"));
+  const ok=j.length===1&&j[0].agentId==="agent"&&j[0].workdir===process.argv[1]&&j[0].unattendedGrants.includes("workbench")&&j[0].schedule.minutes===120&&j[0].model&&j[0].provider&&/owner-inbox\.js new/.test(j[0].prompt)&&/CHARTER\.md/.test(j[0].prompt);
+  if(!ok){console.error(JSON.stringify(j));process.exit(1)}' "$R" "$TOKEN" "$STARNET_URL"
+check "onboarding blessed the company folder and armed the scheduler" node -e '
+  const S=JSON.parse(require("child_process").execSync("curl -s -H \"x-starnet-token: "+process.argv[2]+"\" "+process.argv[3]+"/__state"));
+  if(!S.projects.some(p=>p.root===process.argv[1]&&p.blessed)||S.cron.enabled!==true){console.error(JSON.stringify({p:S.projects,en:S.cron.enabled}));process.exit(1)}' "$R" "$TOKEN" "$STARNET_URL"
+node "$TOOLS/onboard.js" --step founder-loop --json > "$T/founder-loop-2.out" 2>&1
+check "founder-loop again: idempotent (one routine, nothing changed)" node -e '
+  const S=JSON.parse(require("child_process").execSync("curl -s -H \"x-starnet-token: "+process.argv[1]+"\" "+process.argv[2]+"/__state"));
+  const n=S.cron.jobs.filter(x=>x.name.startsWith("Founder loop")).length; const o=require("fs").readFileSync(process.argv[3],"utf8");
+  if(n!==1||!/already in place/.test(o)){console.error(n+" "+o);process.exit(1)}' "$TOKEN" "$STARNET_URL" "$T/founder-loop-2.out"
+check "founder-loop.js status: green" node "$TOOLS/founder-loop.js" status
+FOUNDER_JOB="$(st "$STARNET_URL/api/cron" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).jobs.find(j=>j.name.startsWith("Founder loop")).id))')"
 
 # ---------- 5. owner message -> dispatcher wakes the Founder ----------
 printf '%s\n' "{\"id\":\"in-first-1\",\"at\":\"$(date -u +%FT%TZ)\",\"from\":\"Pat\",\"text\":\"Welcome aboard. What do you need from me this week?\"}" >> company/owner/inbound.jsonl
@@ -225,13 +237,47 @@ check "first-light finding: metered candidate default with a \$0 cap becomes an 
   node -e 'const s=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).steps; if (s[\"candidate-default\"].status!==\"pending\") process.exit(1)' '$T/resume.out' &&
   curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/questions | grep -q 'Hiring candidates default to the metered model'"
 check "liveness ping" node "$TOOLS/liveness.js" ping
-node -e '
-  const fs=require("fs"); const f="company/CHARTER.md"; let t=fs.readFileSync(f,"utf8");
-  t=t.replace(/<!--[\s\S]*?-->/g,"").replace(/<(?!none yet>)[A-Za-z][^<>\n]{0,200}>/g,"Settled with the owner on first light.");
-  fs.writeFileSync(f,t);'
+
+# ---------- 15. Setup -> Draft it with the Founder: a live chat whose reply streams in ----------
+# a run in flight on the station (a routine of the Founder's), for the "Now" strip
+curl -s -X POST -H "x-station-test: 1" -H "x-starnet-token: $TOKEN" -H 'Content-Type: application/json' "$STARNET_URL/__live" -d '{"agentId":"agent","routine":"Founder loop","ageSec":95,"usd":0.0042,"steps":[["fs_read","company/CHARTER.md"]]}' > "$T/live.out"
+LIVE_RUN="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).run.runId)' "$T/live.out")"
+sleep 1
+printf '%s' '{"text":"hello"}' > "$T/hello.json"
+check "with a \$0 cap, a metered Founder's live chat is refused with the fix (budget hold)" bash -c "curl -s -N -X POST -H 'x-console-token: $CTOKEN' -H 'content-type: application/json' http://127.0.0.1:$CPORT/api/chat/agent/send -d @'$T/hello.json' | grep -q 'budget-hold'"
+curl -s -X POST -H "x-console-token: $CTOKEN" -H 'content-type: application/json' "http://127.0.0.1:$CPORT/api/setup/budget" -d '{"dailyUsd":2,"perAgentUsd":1}' > "$T/budget.out"
+if [[ "${E2E_NO_BROWSER:-0}" != "1" ]]; then
+  check "headless Chrome: every route, Setup -> draft with the Founder -> streamed reply, Now strip" node "$R/tests/console-walk.js" --url "http://127.0.0.1:$CPORT" --token "$CTOKEN" --shots "$T/shots"
+fi
+check "GET /api/chat/agent: the Founder's model comes from its loop routine" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/chat/agent | node -e 'let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const o=JSON.parse(d);if(!o.ok||!o.model||!/loop routine/.test(o.modelFrom)){console.error(d.slice(0,300));process.exit(1)}})'"
+curl -s -N -X POST -H "x-console-token: $CTOKEN" -H 'content-type: application/json' "http://127.0.0.1:$CPORT/api/chat/agent/send" -d '{"brief":"charter","notes":{"mandate":"Field guides for night-sky observers"}}' > "$T/chat.ndjson"
+check "the charter brief streams: console.run, a tool step, tokens, then the end" node -e '
+  const ev=require("fs").readFileSync(process.argv[1],"utf8").split("\n").filter(Boolean).map(JSON.parse); const n=ev.map(e=>e.name);
+  const toks=ev.filter(e=>e.name==="agent.token").length;
+  if(!(n[0]==="console.user"&&/CHARTER\.md/.test(ev[0].payload.text)&&n.includes("console.run")&&n.includes("agent.tool_call")&&toks>3&&n[n.length-1]==="agent.run.end")){console.error(n.join(","));process.exit(1)}' "$T/chat.ndjson"
+check "the station run carried the seat model, the console stream and the company folder as project root" node -e '
+  const rows=require("fs").readFileSync(process.argv[1],"utf8").split("\n").filter(Boolean).map(JSON.parse).filter(r=>r.path==="/api/run"&&r.body&&r.body.streamId==="console-agent");
+  const b=rows.length&&rows[rows.length-1].body;
+  if(!b||b.projectRoot!==process.argv[2]||!b.model||!b.provider||!b.rosterSystem||!b.placed.some(p=>p.objectType==="cabinet")){console.error(JSON.stringify(b).slice(0,400));process.exit(1)}' "$LOG" "$R"
+check "the Founder wrote company/CHARTER.md: no blanks left (GET /api/setup/charter)" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/setup/charter | grep -q '\"placeholders\":\[\]'"
+check "the conversation persists: GET /api/chat/agent has the turns" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/chat/agent | grep -q 'Three quick questions'"
+check "a station refusal is a console.error line, not silence" bash -c "curl -s -N -X POST -H 'x-console-token: $CTOKEN' -H 'content-type: application/json' http://127.0.0.1:$CPORT/api/chat/agent/send -d '{\"text\":\"please [fail] now\"}' | grep -q 'agent.run.error'"
+
+# ---------- 16. the crew's work, visible: Now, Watch, Stop, activity, owner-message state ----------
+check "GET /api/now: the run in flight with its step, elapsed time and cost" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/now | node -e 'let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const o=JSON.parse(d);const r=o.runs.find(x=>x.runId===\"$LIVE_RUN\");if(!r||r.name!==\"Founder\"||!/reading company\/CHARTER\.md/.test(r.step)||!(r.elapsedSec>=90)||!(r.usd>0)||!/Founder loop/.test(r.label)){console.error(d.slice(0,600));process.exit(1)}})'"
+check "GET /api/now/run/:id: the Watch view's events" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/now/run/$LIVE_RUN | grep -q 'reading company/CHARTER.md'"
+check "Stop via the station proxy ends the run" bash -c "curl -s -X POST -H 'x-console-token: $CTOKEN' -H 'content-type: application/json' http://127.0.0.1:$CPORT/api/station/cancel -d '{\"runId\":\"$LIVE_RUN\"}' >/dev/null; sleep 1; ! curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/now | grep -q '$LIVE_RUN'"
+check "GET /api/activity answers with linked items" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/activity | grep -q '\"links\"'"
+check "an owner message shows what it waits on (next check within N min)" bash -c "curl -s -X POST -H 'x-console-token: $CTOKEN' -H 'content-type: application/json' http://127.0.0.1:$CPORT/api/owner/messages -d '{\"text\":\"status please\"}' | grep -Eq 'next check within [0-9]+ min|\"status\":\"working\"'"
 node "$TOOLS/onboard.js" --certify --json > "$T/certify-2.out" 2>&1; CRC=$?
 check "certify green once every piece is in place" bash -c "[[ $CRC -eq 0 ]]" || node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).results; for (const k in r) if (!r[k].ok) console.log("  still failing: "+k+" — "+r[k].missing)' "$T/certify-2.out"
 check "GET /api/onboarding reports certified" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/onboarding | grep -q '\"certified\":true'"
+check "certification kicked off the Founder's first plan once (handoff + one loop run)" bash -c "
+  grep -q 'turn the charter into the first plan' company/work/handoffs/to-founder.md &&
+  node -e 'const s=require(\"$R/company/state/onboarding-state.json\"); if (s.steps.kickoff.status!==\"ok\") { console.error(JSON.stringify(s.steps.kickoff)); process.exit(1); }' &&
+  [[ \$(grep -c 'turn the charter into the first plan' company/work/handoffs/to-founder.md) -eq 1 ]]"
+node "$TOOLS/onboard.js" --certify --json > /dev/null 2>&1
+check "a second certify does not kick off again" bash -c "[[ \$(grep -c 'turn the charter into the first plan' company/work/handoffs/to-founder.md) -eq 1 ]]"
 
 # ---------- summary ----------
 UNKNOWN="$(mocklog 'r.status===404' | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const s=new Set(d.split("\n").filter(Boolean).map(l=>{const r=JSON.parse(l);return r.method+" "+r.path}));console.log([...s].join(", "))})')"

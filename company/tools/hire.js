@@ -576,8 +576,13 @@ async function hire(a) {
     staffLog('FUNCTIONS ' + moved.take.join(', ') + ' moved to ' + display + ' (' + agentId + ') from ' + fromTxt + ' by ' + by + ' (approved: ' + approved + ')');
   }
   const prompt = loopPrompt(agentId, crewRow, fileBase);
+  // A loop the station confines to the agent's own empty workspace can do nothing: the company folder must be a blessed
+  // project and the routine needs the terminal grant (founder-loop.js, the same rule for every seat's loop).
+  const FL = require('./founder-loop.js');
+  const blessed = await FL.blessRoot(async (m, p, b) => { const r = await C.call(m, p, b); let j = null; try { j = JSON.parse(r.body); } catch (_) {} return { status: r.status, json: j, text: String(r.body || '').slice(0, 200) }; });
+  if (!blessed.ok) staffLog('BLESS FAILED for the company folder while hiring ' + display + ': ' + blessed.error);
   const job = await C.call('POST', '/api/cron', { name: loopName, agentId, schedule: String(a.schedule || '0 */2 * * *'), tz: co.TZ, prompt,
-    workdir: ROOT, deliver: 'local', enabled: true, model: cand.model, provider: cand.provider });
+    workdir: ROOT, deliver: 'local', enabled: true, model: cand.model, provider: cand.provider, unattendedGrants: FL.LOOP_GRANTS });
   const jj = (() => { try { return JSON.parse(job.body); } catch (_) { return {}; } })();
   // everyone's prompt carries the crew line, so recompose them all
   const synced = [];

@@ -1,8 +1,13 @@
-// Today (Main.dc.html): Needs you (live), crew, AI usage, company panels, overnight, message the Founder.
+// Today (Main.dc.html): Now (who is running, the current step, Watch, Stop; each seat's next wake), Needs you (live),
+// crew, AI usage, company panels, recent activity, and the box that opens a live chat with the Founder.
 import { h, fill, Button, Tag, Eyebrow, errLine, empty, initial, rel, hhmm, statusOf, isSetupQuestion } from '../ui.js';
 import { api, post } from '../api.js';
 import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
+import { mdBlock } from '../md.js';
+
+const ss = { set: (k, v) => { try { sessionStorage.setItem(k, v); } catch (_) {} } };
+const dur = sec => sec == null ? '' : sec < 60 ? sec + ' s' : sec < 3600 ? Math.floor(sec / 60) + ' min' : Math.floor(sec / 3600) + ' h ' + Math.floor(sec % 3600 / 60) + ' min';
 
 const seen = new Set(); const freshIds = new Set(); let firstLoad = true; // question ids seen this page session, for "Just now"
 
@@ -26,20 +31,22 @@ export async function render(root, ctx) {
   root.className = 'main gap-48';
   const co = app.company || {};
   const ownerName = co.owner && (co.owner.name || co.owner.first || co.owner) || '';
-  const ceo = 'the Founder';
+  const ceoId = (co.ceo && co.ceo.id) || 'agent';
+  const ceoName = (co.ceo && co.ceo.name) || 'the Founder';
   const hr = new Date().getHours();
   const greet = hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
   let dateLabel = ''; try { dateLabel = new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: co.timezone || undefined }).format(new Date()); } catch (_) { dateLabel = new Date().toDateString(); }
 
   const lede = h('p', { class: 'lede' }, '');
-  const askInput = h('input', { id: 'ask', type: 'text', class: 'input', placeholder: 'Tell the Founder something…', autocomplete: 'off' });
+  // the box opens a LIVE chat with the Founder and sends the message there (js/chat.js): the reply streams in
+  const askInput = h('input', { id: 'ask', type: 'text', class: 'input', placeholder: 'Ask ' + ceoName + ' something…', autocomplete: 'off' });
   const askErr = h('p', { class: 'err-line', role: 'status' });
-  const askForm = h('form', { class: 'ask-form', 'aria-label': 'Message the Founder', onsubmit: async e => {
+  const askForm = h('form', { class: 'ask-form', 'aria-label': 'Message ' + ceoName, onsubmit: e => {
     e.preventDefault(); const text = askInput.value.trim(); if (!text) return;
-    askErr.textContent = '';
-    try { await post('/owner/messages', { text }); askInput.value = ''; app.toast('Sent to the company.'); }
-    catch (er) { askErr.textContent = 'Not sent: ' + er.message; }
-  } }, h('label', { for: 'ask', class: 'sr-only' }, 'Message the Founder'), askInput, Button('Send', { variant: 'primary', type: 'submit' }), askErr);
+    ss.set('capheos.chatSend', JSON.stringify({ agentId: ceoId, text }));
+    location.hash = '#/comms/agent:' + encodeURIComponent(ceoId);
+  } }, h('label', { for: 'ask', class: 'sr-only' }, 'Message ' + ceoName), askInput, Button('Send', { variant: 'primary', type: 'submit' }), askErr);
+  const nowEl = h('section', { class: 'stack-12', 'aria-labelledby': 'now-h', 'aria-live': 'polite' });
 
   const onboardEl = h('div');
   const liveDot = h('span', { class: 'live-dot' + (events.isLive() ? '' : ' off') }, events.isLive() ? 'Live' : 'Polling');
@@ -54,7 +61,7 @@ export async function render(root, ctx) {
       h('div', { class: 'stack-14', style: 'max-width:720px' }, Eyebrow([dateLabel, co.name]),
         h('h1', { class: 'h1' }, greet + (ownerName ? ', ' + String(ownerName).split(' ')[0] : '') + '.'), lede),
       askForm),
-    onboardEl,
+    onboardEl, nowEl,
     h('section', { 'aria-labelledby': 'needs', class: 'stack-16' },
       h('div', { class: 'between', style: 'gap:16px' },
         h('div', { class: 'row-8', style: 'align-items:center;gap:12px' }, h('h2', { id: 'needs', class: 'h3' }, 'Needs you'), liveDot),
@@ -64,7 +71,7 @@ export async function render(root, ctx) {
       h('div', { class: 'stack-16' }, h('div', { class: 'between' }, h('h2', { class: 'h3' }, 'Crew right now'), h('a', { href: '#/crew', class: 'body-s' }, 'All crew →')), crewEl),
       h('div', { class: 'stack-16' }, h('div', { class: 'between' }, h('h2', { class: 'h3' }, 'AI usage today'), h('a', { href: '#/usage', class: 'body-s' }, 'Usage →')), usageEl)),
     panelsEl,
-    h('section', { class: 'stack-16' }, h('div', { class: 'between' }, h('h2', { class: 'h3' }, 'Overnight'), h('a', { href: '#/work', class: 'body-s' }, 'All work →')), overnightEl));
+    h('section', { class: 'stack-16' }, h('div', { class: 'between' }, h('h2', { class: 'h3' }, 'Recent activity'), h('a', { href: '#/work', class: 'body-s' }, 'All work →')), overnightEl));
 
   // Setup banner: shown until onboard.js --certify is green, or while onboarding still asks something. Onboarding
   // questions are answered in Setup (#/setup), never as an Approve/Decline card here.
@@ -121,7 +128,7 @@ export async function render(root, ctx) {
         h('span', { class: 'row-8', style: 'align-items:center' }, Tag(p.cat, { variant: 'accent' }), fresh ? h('span', { class: 'just-now' }, 'Just now') : null),
         h('span', { class: 'mono muted' }, [q.from, q.id, rel(q.askedAt)].filter(Boolean).join(' · '))),
       h('h3', { id: 'g-' + q.id, class: 'h4' }, p.title),
-      p.why ? h('p', { class: 'body-s q-body' }, p.why) : null,
+      p.why ? mdBlock(p.why, 'body-s q-body') : null,
       (p.rec || p.dflt) ? h('div', { class: 'sunken' },
         h('span', { class: 'eyebrow-t' }, 'Recommendation'),
         h('span', { class: 'body-s strong' }, p.rec || '—'),
@@ -135,7 +142,7 @@ export async function render(root, ctx) {
           if (!ta.value.trim()) { errEl.textContent = 'Write an answer first.'; return; }
           answer('reply', ta.value.trim());
         } }),
-        Button('Discuss', { variant: 'ghost', size: 'sm', href: '#/comms/owner?draft=' + encodeURIComponent('About ' + q.id + ': ') })),
+        Button('Discuss', { variant: 'ghost', size: 'sm', href: '#/comms/agent:' + encodeURIComponent(ceoId) + '?draft=' + encodeURIComponent('About ' + q.id + ': ') })),
       errEl);
     return card;
   }
@@ -160,8 +167,9 @@ export async function render(root, ctx) {
       fill(crewEl, d.station === 'down' ? h('p', { class: 'err-line' }, 'Station not running: live status unavailable.') : null,
         h('ul', { class: 'plain hair-top' }, seats.map(s => {
           const st = s.station || {};
-          const state = st.status || st.state || (d.station === 'down' ? 'Unknown' : st.busy ? 'Working' : 'Idle');
-          const doing = st.doing || st.activity || st.task || (s.loop ? s.loop : '');
+          const run = nowData && nowData.runs.find(r => r.agentId === s.id);
+          const state = run ? 'Working' : st.status || st.state || (d.station === 'down' ? 'Unknown' : st.busy ? 'Working' : 'Idle');
+          const doing = run ? cap(run.step || run.label) : st.doing || st.activity || st.task || (s.loop ? s.loop : '');
           return h('li', { class: 'crew-row' }, h('span', { class: 'avatar', 'aria-hidden': 'true' }, initial(s.name)),
             h('div', { class: 'stack-4', style: 'gap:2px;min-width:0' },
               h('span', { class: 'label strong' }, s.name || s.id, ' ', h('span', { style: 'font-weight:400;color:var(--text-muted)' }, '· ' + (s.title || s.seat || ''))),
@@ -182,23 +190,97 @@ export async function render(root, ctx) {
     } catch (e) { fill(usageEl, errLine(e, 'Usage')); }
   }
 
-  /* ---- overnight ---- */
-  async function loadOvernight() {
-    try {
-      const d = await api('/dispatch');
-      const lines = (d.log || []).map(parseLogLine).filter(x => x.text).slice(-8).reverse();
-      fill(overnightEl, lines.length ? h('ol', { class: 'timeline' }, lines.map(e => h('li', null, h('span', { class: 'mono muted' }, e.at),
-        h('span', { class: 'body-s' }, e.who ? h('strong', { class: 'strong', style: 'font-weight:600' }, e.who + ' ') : null, e.text))))
-        : empty('Nothing in the dispatch log yet.'));
-    } catch (e) { fill(overnightEl, errLine(e, 'Dispatch log')); }
+  /* ---- now: who is running, what step, Watch / Stop; when each seat runs next ---- */
+  let nowData = null; const watching = new Map();   // runId -> { el, after, timer }
+  async function loadNow() {
+    let d, c = null;
+    try { [d, c] = await Promise.all([api('/now'), api('/company').catch(() => null)]); }
+    catch (e) { fill(nowEl, h('h2', { id: 'now-h', class: 'h3' }, 'Now'), errLine(e, 'Now')); return; }
+    nowData = d; drawNow(c);
+  }
+  let nowCo = null;
+  function drawNow(c) {
+    if (c !== undefined) nowCo = c; else c = nowCo;
+    const d = nowData; if (!d) return;
+    const kick = c && c.onboarding && c.onboarding.kickoff;
+    const ceoRun = d.runs.find(r => r.agentId === ceoId);
+    const kickEl = kick && kick.planOpen ? h('div', { class: 'card p18 now-kick', role: 'status' },
+      h('span', { class: 'row-8', style: 'align-items:center' }, ceoRun ? h('span', { class: 'pulse', 'aria-hidden': 'true' }) : null,
+        h('span', { class: 'label strong' }, ceoRun ? ceoName + ' is drafting the first plan…' : ceoName + ' has the first plan on its desk (' + (kick.status === 'ok' ? 'started ' + rel(kick.at) : 'waiting for its next run') + ').')),
+      h('span', { class: 'body-s muted' }, 'It turns the charter into goals (quests), the roles it will open, and the first tasks, then writes to you with links.')) : null;
+    const runs = d.runs.map(r => {
+      const w = watching.get(r.runId);
+      const row = h('li', { class: 'now-run', 'data-run': r.runId },
+        h('div', { class: 'between-c', style: 'gap:12px;flex-wrap:wrap' },
+          h('span', { class: 'row-8', style: 'align-items:center;min-width:0;flex:1' }, h('span', { class: 'pulse', 'aria-hidden': 'true' }),
+            h('span', { class: 'stack-4', style: 'gap:2px;min-width:0' },
+              h('span', { class: 'label strong' }, r.name, h('span', { style: 'font-weight:400;color:var(--text-muted)' }, ' · ', h('a', { href: r.href }, r.label))),
+              h('span', { class: 'body-s ellip' }, r.step ? cap(r.step) : r.watched ? 'thinking…' : 'working (started before the console was watching)'))),
+          h('span', { class: 'row-8', style: 'align-items:center' }, h('span', { class: 'mono-s muted' }, [dur(r.elapsedSec), r.usd != null ? '$' + Number(r.usd).toFixed(4) : null, r.steps ? r.steps + (r.steps === 1 ? ' step' : ' steps') : null].filter(Boolean).join(' · ')),
+            Button(w ? 'Hide' : 'Watch', { variant: 'secondary', size: 'sm', onClick: () => toggleWatch(r) }),
+            r.stoppable ? Button('Stop', { variant: 'ghost', size: 'sm', onClick: async () => { if (!await app.confirmDialog({ title: 'Stop ' + r.name + '\'s run?', body: 'The run stops at its next step. Work already saved stays.', confirm: 'Stop it', danger: true })) return; try { await post('/station/cancel', { runId: r.runId }); app.toast('Stop sent.'); } catch (e) { app.toast('Stop: ' + e.message, true); } } }) : null)),
+        w ? w.el : null);
+      return row;
+    });
+    const idle = d.seats.filter(s => !s.running).map(s => h('li', { class: 'body-s muted now-idle' }, s.name + ' is idle' +
+      (s.loop ? (s.enabled === false ? '; its loop "' + s.loop + '" is switched off' : s.schedulerOn === false ? '; the scheduler is off, so its loop does not run on schedule' : s.nextRunAt ? '; next run ' + hhmm(s.nextRunAt, co.timezone) + ' (' + rel(s.nextRunAt) + ')' : '') : '; it has no loop routine') +
+      (s.soonerBecause.length ? ', or sooner: ' + s.soonerBecause.join(', ') : s.wakesOnMessage ? ', or sooner if you message it' : '') + '.'));
+    fill(nowEl, h('div', { class: 'between-c' }, h('h2', { id: 'now-h', class: 'h3' }, 'Now'), d.station.up ? null : h('span', { class: 'err-line' }, 'Station not running: nobody can work.')),
+      kickEl, runs.length ? h('ul', { class: 'plain stack-8' }, runs) : null, idle.length ? h('ul', { class: 'plain stack-4' }, idle) : null);
+  }
+  function toggleWatch(r) {
+    const w = watching.get(r.runId);
+    if (w) { clearTimeout(w.timer); watching.delete(r.runId); drawNow(); return; }
+    const steps = h('ul', { class: 'chat-steps plain' }); const text = h('div', { class: 'md msg-them' }); const status = h('span', { class: 'caption muted' }, 'Connecting…');
+    const el = h('div', { class: 'now-watch sunken stack-8' }, steps, text, status);
+    const st = { el, after: 0, timer: null, raw: '' };
+    watching.set(r.runId, st);
+    const poll = async () => {
+      try {
+        const d = await api('/now/run/' + encodeURIComponent(r.runId) + '?after=' + st.after);
+        if (!d.known) status.textContent = 'This run started before the console was watching; new steps appear as they happen. The full transcript is in Comms once it ends.';
+        for (const e of d.events || []) {
+          st.after = Math.max(st.after, e.seq);
+          if (e.name === 'tool') steps.appendChild(h('li', { class: 'chat-step', 'data-call': e.callId || '' }, h('span', { class: 'step-dot', 'aria-hidden': 'true' }), h('span', { class: 'mono-s' }, e.text)));
+          else if (e.name === 'result') { const li = [...steps.children].find(x => x.dataset.call === String(e.callId || '')); if (li) li.classList.add(e.ok ? 'ok' : 'bad'); }
+          else if (e.name === 'token') st.raw += e.delta || '';
+          else if (e.name === 'error') steps.appendChild(h('li', { class: 'danger body-s' }, e.message));
+        }
+        fill(text, mdBlock(st.raw.slice(-4000)));
+        if (d.done) { status.textContent = 'Finished: ' + (d.outcome || 'done') + (d.usd ? ' · $' + Number(d.usd).toFixed(4) : '') + '.'; return; }
+        if (d.known) status.textContent = 'Live.';
+      } catch (e) { status.textContent = 'Watch: ' + e.message; }
+      if (watching.get(r.runId) === st) st.timer = setTimeout(poll, 1500);
+    };
+    poll(); drawNow();
   }
 
-  loadNeeds(); loadCrew(); loadUsage(); loadOvernight();
+  /* ---- recent activity: finished runs, hiring, replies, decisions ---- */
+  const OUT = { succeeded: ['Done', 'online'], failed: ['Failed', 'danger'], cancelled: ['Stopped', 'neutral'], stopped: ['Stopped', 'neutral'] };
+  async function loadOvernight() {
+    try {
+      const d = await api('/activity');
+      const items = (d.items || []).slice(0, 25);
+      fill(overnightEl, items.length ? h('ol', { class: 'timeline' }, items.map(e => {
+        const o = e.outcome ? OUT[e.outcome] || [cap(e.outcome), statusOf(e.outcome)] : null;
+        return h('li', null, h('span', { class: 'mono muted' }, hhmm(e.at, co.timezone)),
+          h('span', { class: 'stack-4', style: 'gap:2px' },
+            h('span', { class: 'body-s row-8', style: 'align-items:center;flex-wrap:wrap' }, h('strong', { class: 'strong', style: 'font-weight:600' }, e.title), o ? Tag(o[0], { variant: 'status', status: o[1] }) : null, e.usd ? h('span', { class: 'mono-s muted' }, '$' + Number(e.usd).toFixed(4)) : null),
+            e.text ? mdBlock(e.text, 'body-s muted') : null,
+            (e.links || []).length ? h('span', { class: 'row-8 caption' }, e.links.slice(0, 4).map(l => h('a', { href: l.href }, l.label + ' →'))) : null));
+      })) : empty('Nothing has happened yet. Runs, hires, replies and decisions show here as they happen.'));
+    } catch (e) { fill(overnightEl, errLine(e, 'Recent activity')); }
+  }
+
+  loadNeeds(); loadCrew(); loadUsage(); loadOvernight(); loadNow();
   const stopPanels = mountPanels(panelsEl, 'today', app);
-  const offs = [events.on('questions', () => { loadNeeds(); loadOnboarding(); }), events.on('crew', loadCrew), events.on('dispatch', loadOvernight),
+  const offs = [events.on('questions', () => { loadNeeds(); loadOnboarding(); }), events.on('crew', loadCrew), events.on(['dispatch', 'activity', 'owner'], loadOvernight),
+    events.on(['now', 'crew', 'dispatch'], () => { loadNow(); loadCrew(); }), events.on('handoffs', loadNow),
   ];
+  // elapsed time ticks while something runs; a slow poll keeps "Now" honest when SSE is down
+  const nowTimer = setInterval(() => { if (document.hidden) return; if (nowData && nowData.runs.length) loadNow(); }, 5000);
   const usageTimer = setInterval(() => { if (!document.hidden) loadUsage(); }, 60000);
-  return () => { offs.forEach(f => f()); stopPanels(); clearInterval(usageTimer); document.removeEventListener('capheos:live', onLive); };
+  return () => { offs.forEach(f => f()); stopPanels(); clearInterval(usageTimer); clearInterval(nowTimer); for (const w of watching.values()) clearTimeout(w.timer); document.removeEventListener('capheos:live', onLive); };
 }
 
 function cap(s) { s = String(s || ''); return s.charAt(0).toUpperCase() + s.slice(1); }

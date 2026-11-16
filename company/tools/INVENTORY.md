@@ -26,6 +26,7 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/dossier.js` | keep every agent's StarNet dossier (identity.md, purpose.md, context.md, operating-manual.md) complete | people | — | `check` `sync` | — |
 | `company/tools/escalate.js` | record a block and get the company's sanctioned next route. | ceo | — | `--agent` | — |
 | `company/tools/external-gate.js` | THE CHOKEPOINT for every action that leaves the company; keyed acts (`--idem`) never go out twice (company/work/external-idempotency.jsonl, exit 4 = duplicate). | risk | `--selftest` | `check` `guard` `clear` `close` `list` `session` `idem` `--selftest` | station-token |
+| `company/tools/founder-loop.js` | the Founder's loop routine on the station, and the two station grants every loop needs to work. | ceo | `--selftest` | `status` `ensure` `prompt` `--selftest` | station-token |
 | `company/tools/governance.js` | the owner's dial: how much the company decides alone, per category. | ceo | `selftest` / `--selftest` | `show` `check` `set` `preset` `selftest` | — |
 | `company/tools/guardrails.js` | the owner's switches for the company's hard blocks, one per block, including none at all. | risk | `selftest` | `show` `set` `off-all` `on-all` `sandbox` `apply` `selftest` | station-token |
 | `company/tools/halt.js` | stop the company, softly or hard, and start it again. | ceo | `selftest` / `--selftest` | `status` `soft` `hard` `resume` `tick` `selftest` | station-token |
@@ -47,7 +48,7 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/offpeak-hold.js` | the off-peak hold, as ONE predicate with two triggers. | finance | `--selftest` | `--selftest` `--status` `--parity` | — |
 | `company/tools/offpeak-proof.js` | proof that the off-peak hold works, as ONE command, read from the live records. | finance | `--selftest` | `--date` `--selftest` `--journal` | station-token |
 | `company/tools/openrouter-treasury.js` | read-only treasury check for the company's OpenRouter provisioning key. | finance | — | `--json` `--min` | openrouter-mgmt-key, openrouter-key |
-| `company/tools/onboard.js` | onboarding is certification, not provisioning: step ledger, the 9 certification checks, teardown. | ceo | `--selftest` | `--check` `--resume` `--certify` `--teardown` `--record` `--selftest` | station-token, console-token |
+| `company/tools/onboard.js` | onboarding is certification, not provisioning: step ledger, the 11 certification checks, teardown. | ceo | `--selftest` | `--check` `--resume` `--step` `--certify` `--teardown` `--record` `--selftest` | station-token, console-token |
 | `company/tools/owner-addressing.js` | decide WHO an owner message is for, by the name the owner writes first. | ceo | `--selftest` | `route` `dispatch` `--selftest` | — |
 | `company/tools/owner-inbox.js` | messages the owner sent the company, and whether the CEO has acted on them; and the one way the | ceo | `--selftest` | `new` `count` `ack` `send` `log` `--selftest` | — |
 | `company/tools/pack.js` | capability packs: list them, check them, propose, approve, install and uninstall them. | ceo | `selftest` / `--selftest` | `list` `status` `doctor` `propose` `approve` `reject` `install` `uninstall` `selftest` | — |

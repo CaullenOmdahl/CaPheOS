@@ -56,7 +56,12 @@ const S = {
     charter: CERTIFIED ? { mandate: 'We run an example business.', forWhom: 'Example customers', outOfScope: 'Nothing regulated.', firstGoal: 'First sale.' } : null,
     checks: CERTIFIED ? null : { station: [true], dispatcher: [true], guardrails: [true], secrets: [true], ops: [true], liveness: [false, 'liveness module not enabled: node company/tools/module.js enable liveness --by owner'], doctor: [true], charter: [false, 'placeholders left: <What the company exists to do…>'], console: [true] }, lastCertify: ago(30) },
 };
-S.company.onboarding = { certified: CERTIFIED };
+S.company.onboarding = { certified: CERTIFIED, kickoff: CERTIFIED ? { status: 'ok', at: ago(4), planOpen: true } : null };
+S.company.ceo = { id: 'agent', name: 'Founder' };
+// live chat transcripts (console-<id>) and the runs in flight (Now strip); one fake in-flight routine run
+S.chats = { agent: [{ role: 'user', content: 'What is on today?', at: ago(30) }, { role: 'assistant', content: 'Two quests and **one handoff** due at 17:00. See [the handoffs](console:#/work/handoffs).', at: ago(29) }] };
+S.live = STATION_DOWN ? [] : [{ runId: 'run-live-1', agentId: 'agent', name: 'Founder', startedAt: Date.now() - 4 * 60000, kind: 'routine', label: 'routine "Founder loop"', href: '#/automate', step: 'running hire.js open…', steps: 7, usd: 0.0123, stoppable: true, watched: true }];
+S.charterText = CERTIFIED ? '# Example Co — Company Charter\n\n## Mandate\n\nWe run an example business.\n\n**For whom:** Example customers\n\n## What is out of scope\n\nNothing regulated.\n\n## First goal\n\nFirst sale.\n' : '# Example Co — Company Charter\n\n## Mandate\n\n<What the company exists to do, for whom, and how it makes money.>\n\n## What is out of scope\n\n<Work the company will not take on.>\n';
 const PRESETS = { 'approve-everything': 'Approve everything', 'gate-money-people': 'Gate money and people', 'gate-money': 'Gate money', autonomous: 'Autonomous' };
 const CATS = { hiring: 'opening a role and picking the hire', release: 'releasing or replacing a crew member', budget: 'setting or changing the metered cap', spend: 'new spend inside the approved cap',
   models: 'changing which model a seat or routine runs', tools: 'shared changes to tools, house rules and policies', schedules: 'routine clocks, dispatcher tick and per-seat cadence',
@@ -154,8 +159,15 @@ async function apiRoute(req, res, p, q) {
     case 'GET /api/company': return J(res, 200, S.company);
     case 'GET /api/questions': return ok({ questions: S.questions });
     case 'GET /api/questions/answered': return ok({ answered: S.answered });
-    case 'GET /api/owner/messages': return ok({ messages: S.messages });
-    case 'POST /api/owner/messages': { if (!B.text) return J(res, 400, { ok: false, error: 'text is required' }); const m = { dir: 'in', id: 'in-' + Date.now(), at: now(), from: 'Sam Owner', text: (B.to ? B.to + ', ' : '') + B.text }; S.messages.push(m); emit('owner'); return ok({ message: m }); }
+    case 'GET /api/owner/messages': return ok(ownerView());
+    case 'POST /api/owner/messages': { if (!B.text) return J(res, 400, { ok: false, error: 'text is required' }); const m = { dir: 'in', id: 'in-' + Date.now(), at: now(), from: 'Sam Owner', text: (B.to ? B.to + ', ' : '') + B.text }; S.messages.push(m); emit('owner'); return ok({ message: ownerView().messages.find(x => x.id === m.id) }); }
+    case 'GET /api/now': return ok({ station: { up: !STATION_DOWN, feed: !STATION_DOWN }, runs: S.live.map(r => Object.assign({}, r, { elapsedSec: Math.round((Date.now() - r.startedAt) / 1000) })),
+      seats: S.seats.map(x => ({ id: x.id, name: x.name, title: x.title, running: S.live.filter(r => r.agentId === x.id).length, loop: x.loop || null, enabled: true, nextRunAt: new Date(Date.now() + 50 * 60000).toISOString(), soonerBecause: x.id === 'agent' ? ['1 open handoff'] : [], wakesOnMessage: x.id === 'agent', schedulerOn: true })) });
+    case 'GET /api/activity': return ok({ items: [
+      { at: ago(12), kind: 'run', who: 'Founder', title: 'Founder ran "Founder loop"', outcome: 'succeeded', usd: 0.0047, text: 'Wrote the first plan to company/work/plan.md and opened a People Manager round.', links: [{ label: 'Quests', href: '#/work/quests' }, { label: 'Hiring', href: '#/hiring' }] },
+      { at: ago(40), kind: 'hiring', who: 'Hiring', title: 'Hired: Mira (people1) as People Manager by Founder', text: 'Crew decides: done without asking you (hiring is set to "auto"; change it in Controls)', links: [{ label: 'Crew', href: '#/crew/people1' }, { label: 'Hiring level', href: '#/controls/gov' }] },
+      { at: ago(300), kind: 'message', who: 'Founder', title: 'Founder wrote to you', text: 'Morning report: two quests moved.', links: [{ label: 'Open', href: '#/comms/owner' }] }] });
+    case 'GET /api/setup/charter': { const ph = (S.charterText.match(/<[A-Za-z][^<>\n]{0,200}>/g) || []); return ok({ text: S.charterText, at: ago(60), placeholders: ph, fields: {} }); }
     case 'GET /api/crew': return ok({ seats: S.seats, station: STATION_DOWN ? 'down' : 'up' });
     case 'GET /api/handoffs': return ok({ items: S.handoffs });
     case 'GET /api/decisions': return ok({ entries: ['## 2026-11-14 Founder', '- Adopted conflicts-before-engagement.', '## 2026-11-15 People', '- Opened the analyst round.'].map(text => ({ text })) });
@@ -198,8 +210,10 @@ async function apiRoute(req, res, p, q) {
       return ok({ connected: true, provider: B.provider, model, runnable }); }
     case 'POST /api/setup/budget': { const d = Number(B.dailyUsd), p2 = Number(B.perAgentUsd || 0); if (!(d >= 0) || !(p2 >= 0)) return J(res, 400, { ok: false, error: 'dailyUsd must be a number from 0 to 10000' }); if (p2 > d && d > 0) return J(res, 400, { ok: false, error: 'the per-agent share cannot be more than the daily cap' });
       Object.assign(S.setup.budget, { dailyUsd: d, perAgentUsd: d > 0 ? p2 : 0, setBy: S.company.owner.name, setAt: now() }); return ok({ dailyUsd: d, perAgentUsd: p2 }); }
-    case 'POST /api/setup/charter': if (String(B.mandate || '').trim().length < 10) return J(res, 400, { ok: false, error: 'say in a sentence or two what the company does' }); if (!String(B.outOfScope || '').trim()) return J(res, 400, { ok: false, error: 'say what the company will not do (write "Nothing yet" if you have no limits in mind)' });
-      S.setup.charter = { mandate: B.mandate, forWhom: B.forWhom || '', outOfScope: B.outOfScope, firstGoal: B.firstGoal || '' }; if (S.setup.checks) S.setup.checks.charter = [true]; return ok({ placeholders: [] });
+    case 'POST /api/setup/charter': if (typeof B.text === 'string') { S.charterText = B.text; const ph = (B.text.match(/<[A-Za-z][^<>\n]{0,200}>/g) || []); if (!ph.length) S.setup.charter = { mandate: 'edited', forWhom: '', outOfScope: 'edited', firstGoal: '' }; emit('charter'); return ok({ text: B.text, placeholders: ph, saved: true }); }
+      if (String(B.mandate || '').trim().length < 10) return J(res, 400, { ok: false, error: 'say in a sentence or two what the company does' }); if (!String(B.outOfScope || '').trim()) return J(res, 400, { ok: false, error: 'say what the company will not do (write "Nothing yet" if you have no limits in mind)' });
+      S.setup.charter = { mandate: B.mandate, forWhom: B.forWhom || '', outOfScope: B.outOfScope, firstGoal: B.firstGoal || '' }; if (S.setup.checks) S.setup.checks.charter = [true];
+      S.charterText = '# ' + S.company.name + ' — Company Charter\n\n## Mandate\n\n' + B.mandate + '\n\n## What is out of scope\n\n' + B.outOfScope + '\n\n## First goal\n\n' + (B.firstGoal || 'The Founder proposes it.') + '\n'; emit('charter'); return ok({ placeholders: [] });
     case 'GET /api/halt': return ok(S.halt);
     case 'POST /api/halt/soft': S.halt = { mode: 'soft', by: 'Sam Owner', at: now(), why: B.why || null, deadline: new Date(Date.now() + (B.deadlineMin || 30) * 60000).toISOString(), escalate: !!B.escalate,
       shutdowns: [{ seat: 'Founder', routine: 'Founder shutdown', maxMinutes: 15, status: 'fired', done: false }, { seat: 'Mira', routine: '—', status: 'missing' }], left: ['Tools loop (running)'] }; emit('halt'); return ok(S.halt);
@@ -215,6 +229,17 @@ async function apiRoute(req, res, p, q) {
     case 'GET /api/today': return ok({ company: S.company, needsYou: { questions: S.questions, count: S.questions.length }, halt: S.halt });
   }
   let m;
+  if (M === 'GET' && (m = /^\/api\/chat\/([A-Za-z0-9_-]+)$/.exec(p))) {
+    const seat = S.seats.find(x => x.id === m[1]); if (!seat) return J(res, 404, { ok: false, error: 'no crew member ' + m[1] });
+    return ok({ agent: { id: seat.id, name: seat.name, title: seat.title }, model: 'example-model-large', provider: 'claude-cli', modelFrom: 'its loop routine "Founder loop"', streamId: 'console-' + seat.id, turns: S.chats[seat.id] || [],
+      problems: STATION_DOWN ? [{ code: 'station-down', message: 'The station is not answering, so ' + seat.name + ' cannot answer.', fix: 'Start it on the station machine.', link: '#/system' }] : [] });
+  }
+  if (M === 'POST' && (m = /^\/api\/chat\/([A-Za-z0-9_-]+)\/send$/.exec(p))) return chatSend(req, res, m[1], B);
+  if (M === 'GET' && (m = /^\/api\/now\/run\/([A-Za-z0-9_-]+)$/.exec(p))) {
+    const after = Number(q.get('after')) || 0;
+    const evs = [{ seq: 1, name: 'tool', tool: 'fs_read', text: 'reading company/CHARTER.md', callId: 'c1' }, { seq: 2, name: 'result', callId: 'c1', ok: true }, { seq: 3, name: 'tool', tool: 'code.run', text: 'running hire.js open…', callId: 'c2' }, { seq: 4, name: 'token', delta: 'Opening a **People Manager** round now.' }];
+    return ok({ known: true, runId: m[1], agentId: 'agent', name: 'Founder', events: evs.filter(e => e.seq > after), seq: 4, done: false });
+  }
   if (M === 'POST' && (m = /^\/api\/questions\/(q-\d+)\/answer$/.exec(p))) {
     const i = S.questions.findIndex(x => x.id === m[1]); if (i < 0) return J(res, 404, { ok: false, error: 'no open question ' + m[1] });
     if (!['yes', 'no', 'reply'].includes(B.verdict)) return J(res, 400, { ok: false, error: 'verdict must be yes, no or reply' });
@@ -232,6 +257,36 @@ async function apiRoute(req, res, p, q) {
     emit('panels'); return ok({ status: m[2] });
   }
   J(res, 404, { ok: false, error: 'mock: no route ' + M + ' ' + p });
+}
+
+function ownerView() {
+  const stuck = STATION_DOWN;
+  const ch = { ok: !stuck, problems: stuck ? [{ code: 'station-down', msg: 'the station does not answer', fix: 'Start it on the station machine.', link: '#/system' }] : [], ceo: { id: 'agent', name: 'Founder' }, nextCheckMin: 7, working: false };
+  const msgs = S.messages.map(m => m.dir !== 'in' ? m : Object.assign({}, m, { state: m.acked ? { status: 'read', text: 'read by Founder: approved the trial' }
+    : stuck ? { status: 'stuck', text: 'nobody will pick this up: the station does not answer', fix: 'Start it on the station machine.', link: '#/system' } : { status: 'waiting', text: 'waiting for the Founder — next check within 7 min', nextCheckMin: 7 } }));
+  return { messages: msgs, channel: ch };
+}
+// the live chat, streamed like console/chat.js: console.user, console.run, the run events, a tool step, then the end
+function chatSend(req, res, id, B) {
+  const seat = S.seats.find(x => x.id === id); if (!seat) return J(res, 404, { ok: false, error: 'no crew member ' + id });
+  const text = B.brief === 'charter' ? 'Let us write the company charter together, here in this chat. First ask me a few short questions…' : String(B.text || '').trim();
+  if (!text) return J(res, 400, { ok: false, error: 'text is required' });
+  res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+  const out = [{ name: 'console.user', payload: { text, brief: B.brief || null } }];
+  if (STATION_DOWN) { out.push({ name: 'console.error', payload: { code: 'station-down', message: 'The station is not answering, so ' + seat.name + ' cannot answer.', fix: 'Start it on the station machine.', link: '#/system' } }); for (const e of out) res.write(JSON.stringify(e) + '\n'); return res.end(); }
+  const reply = B.brief === 'charter' ? 'Happy to. Three quick questions:\n\n1. What does the company do?\n2. For whom?\n3. What will it never do?\n\nWhen I have your answers I will write `company/CHARTER.md`. [Review it in Setup](console:#/setup/charter)'
+    : /fail/i.test(text) ? null : 'Mock reply from ' + seat.name + ': I read your message and would start with **the overdue handoff**. See [Work](console:#/work/handoffs) and [the docs](https://example.org/docs). [bad](javascript:alert(1))';
+  out.push({ name: 'console.run', payload: { agentId: id, name: seat.name, model: 'example-model-large', provider: 'claude-cli' } }, { name: 'agent.run.start', payload: { runId: 'chat-' + Date.now(), agentId: id } });
+  const runId = out[out.length - 1].payload.runId;
+  out.push({ name: 'agent.tool_call', payload: { runId, callId: 't1', name: 'fs_read', argsSummary: 'company/CHARTER.md' } }, { name: 'agent.tool_result', payload: { runId, callId: 't1', ok: true, summary: '40 lines' } });
+  if (!reply) out.push({ name: 'agent.run.error', payload: { runId, message: 'provider error: HTTP 401 invalid key' } }, { name: 'agent.run.end', payload: { runId, reason: 'error', outcome: 'failed', usd: 0 } });
+  else { for (const w of reply.match(/\S+\s*/g)) out.push({ name: 'agent.token', payload: { runId, delta: w } }); out.push({ name: 'agent.run.end', payload: { runId, reason: 'done', outcome: 'succeeded', usd: 0.0021 } }); }
+  const t = (S.chats[id] = S.chats[id] || []);
+  let i = 0; const timer = setInterval(() => {
+    if (i < out.length) { res.write(JSON.stringify(out[i++]) + '\n'); return; }
+    clearInterval(timer); t.push({ role: 'user', content: text, at: now() }); if (reply) t.push({ role: 'assistant', content: reply, at: now() }); res.end();
+  }, 50);
+  req.on('close', () => clearInterval(timer));
 }
 
 const groups = [{ id: 'g1', title: 'Crew group', members: ['agent', 'people1', 'tools1'], updatedAt: ago(90), messages: [{ id: 'm1', seq: 1, author: 'agent', content: 'Weekly standup: intake tool next.', at: ago(90) }] }];
@@ -268,11 +323,13 @@ function station(req, res, p, q, B) {
     }, 60);
     req.on('close', () => clearInterval(t)); return;
   }
-  if (route === 'POST cancel' || route === 'POST run/steer') return J(res, 200, { ok: true });
+  if (route === 'POST cancel') { S.live = S.live.filter(r => r.runId !== B.runId); emit('now'); return J(res, 200, { ok: true }); }
+  if (route === 'POST run/steer') return J(res, 200, { ok: true });
   if (route === 'GET connectors') return J(res, 200, { connectors: [{ id: 'github', name: 'GitHub', status: 'connected', description: 'Read-only via MCP.' }, { id: 'drive', name: 'Google Drive', connected: false }] });
   if (route === 'GET skills') return J(res, 200, { skills: [{ id: 'chain-of-command', name: 'chain-of-command', enabled: true, description: 'Ask up one level.' }] });
   if (route === 'GET channels/status') return J(res, 200, { telegram: { paired: false, state: 'Not paired' }, slack: { state: 'Not connected' } });
-  if (route === 'GET state/snapshot') return J(res, 200, { ts: Date.now(), runs: [{ id: 'run-1' }], prompts: [], summons: [], queues: {} });
+  if (route === 'GET state/snapshot') return J(res, 200, { ts: Date.now(), runs: S.live.map(r => ({ runId: r.runId, agentId: r.agentId, startedAt: r.startedAt, source: 'cron' })), prompts: [], summons: [], queues: {} });
+  if (route === 'POST consent') return J(res, 200, { ok: true, decision: B.decision });
   if (route === 'GET autonomy') return J(res, 200, { posture: 'small' });
   if (route === 'GET providers') return J(res, 200, { providers: OFFER.map(o => ({ id: o.id, label: o.name.toUpperCase(), configured: S.setup.ready.includes(o.id), unattendedReady: S.setup.ready.includes(o.id), reason: S.setup.ready.includes(o.id) ? 'unverified' : 'credential missing' })) });
   if (route === 'GET auth/claude-cli/status') return J(res, 200, Object.assign({ signingIn: !!S.setup.login }, S.setup.claude));

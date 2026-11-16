@@ -18,10 +18,12 @@ export async function render(root, ctx) {
     h('section', { style: 'display:flex;flex-wrap:wrap;gap:32px' }, listHost, dossier), side);
   let data = null;
 
+  const offNow = events.on('now', () => load());
   async function load() {
     try { data = await api('/crew'); fill(errEl, data.station === 'down' ? h('p', { class: 'err-line' }, 'Station not running: live status and dossiers are unavailable.') : null); }
     catch (e) { fill(errEl, errLine(e, 'Crew')); data = { seats: [] }; }
     const seats = data.seats || [];
+    let now = null; try { now = await api('/now'); } catch (_) {}
     let templates = []; try { templates = (await api('/hiring')).templates || []; } catch (_) {}
     fill(head, screenHead({ eyebrow: [seats.length + (seats.length === 1 ? ' seat' : ' seats'), templates.length ? templates.length + ' templates' : null], title: 'Crew.',
       actions: [Button('Open a role', { variant: 'secondary', href: '#/hiring' }), Button('Recruit', { variant: 'primary', href: '#/hiring' })] }));
@@ -33,11 +35,13 @@ export async function render(root, ctx) {
     if (!seats.length) { fill(listHost, empty('No seats yet.')); fill(dossier, empty(NOT_CONNECTED)); return; }
     if (!selId || !seats.some(s => s.id === selId)) selId = seats[0].id;
     fill(listHost, seats.map(s => {
-      const st = s.station || {}; const state = st.status || st.state || (data.station === 'down' ? 'Unknown' : 'Idle');
+      const st = s.station || {}; const run = now && now.runs.find(r => r.agentId === s.id); const nx = now && now.seats.find(x => x.id === s.id);
+      const state = run ? 'Working' : st.status || st.state || (data.station === 'down' ? 'Unknown' : 'Idle');
       return h('button', { type: 'button', class: 'crew-item', 'aria-current': s.id === selId ? 'true' : 'false', onclick: () => { selId = s.id; history.replaceState(null, '', '#/crew/' + encodeURIComponent(s.id)); load(); } },
         h('span', { class: 'avatar lg', 'aria-hidden': 'true' }, initial(s.name)),
         h('span', { class: 'stack-4', style: 'gap:3px;min-width:0' }, h('span', { class: 'label strong' }, s.name || s.id),
-          h('span', { class: 'body-s muted' }, (s.title || '') + ' · reports to ' + (s.manager ? nameOf(seats, s.manager) : 'the owner'))),
+          h('span', { class: 'body-s muted' }, (s.title || '') + ' · reports to ' + (s.manager ? nameOf(seats, s.manager) : 'the owner')),
+          run ? h('span', { class: 'caption row-8', style: 'align-items:center' }, h('span', { class: 'pulse', 'aria-hidden': 'true' }), cap(run.step || run.label)) : nx && nx.nextRunAt ? h('span', { class: 'caption muted' }, 'next run ' + new Date(nx.nextRunAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + (nx.soonerBecause.length ? ', sooner: ' + nx.soonerBecause.join(', ') : '')) : null),
         Tag(cap(state), { variant: 'status', status: statusOf(state) }));
     }));
     drawDossier(seats.find(s => s.id === selId), seats);
@@ -79,7 +83,7 @@ export async function render(root, ctx) {
   load();
   const stopPanels = mountPanels(side, 'side:crew', app);
   const off = events.on('crew', load);
-  return () => { off(); stopPanels(); };
+  return () => { off(); offNow(); stopPanels(); };
 }
 function kv(k, v) { return h('div', { class: 'stack-8' }, h('span', { class: 'eyebrow-t' }, k), h('p', { class: 'body-s' }, v)); }
 function kpi(v, l) { return h('div', { class: 'kpi' }, h('span', { class: 'big-num ellip', style: 'font-size:' + (String(v).length > 6 ? '15px' : '28px') }, String(v)), h('span', { class: 'caption muted' }, l)); }

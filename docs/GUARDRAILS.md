@@ -76,6 +76,9 @@ When any switch is off and `sandbox` is not set, `show` prints a loud banner.
   - So OFF takes effect after `sudo bash company/tools/sudo-gate/install.sh`. ON takes effect at once.
   - A login shell (`sudo -i`/`-s`) is still refused by the shim.
 - **localComputer.**
+  - Note (ON or OFF): the company folder itself is a blessed project folder (onboarding, `founder-loop.js ensure`;
+    the console's live chat and `hire.js` bless it too, idempotently). That is inside this guardrail, which keeps work to
+    the agent workspace plus blessed project folders: without it no loop or chat could read the charter or the owner inbox.
   - `my-section.js --file` may read a file outside the company folder. The read is logged as `event: "unguarded"`.
   - `workspace-modes.sh --check` still lists permission drift but exits 0, and `--fix` tightens nothing.
   - Station side, see `apply`.

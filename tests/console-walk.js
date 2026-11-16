@@ -1,0 +1,71 @@
+#!/usr/bin/env node
+/* console-walk.js — drive the owner console in headless Chrome (DevTools protocol, no dependencies) and check what the
+ * owner sees. Used by scripts/e2e-first-light.sh against a console that talks to tests/mock-station.js.
+ *
+ *   node tests/console-walk.js --url http://127.0.0.1:<console port> --token <console token> [--shots <dir>]
+ *
+ * Walks: every route of the route map renders without an exception; Setup → Charter → "Draft it with the Founder" opens
+ * the live chat and the Founder's reply streams in (tool step, text, a console: link that stays in the app); Today's
+ * "Now" strip shows the run in flight (the test started one on the mock with POST /__live) with Watch and Stop.
+ * Prints one line per check and exits 1 on any failure; exits 0 with "SKIP" when no Chrome is installed.
+ */
+'use strict';
+const { spawn, spawnSync } = require('child_process');
+const fs = require('fs'); const os = require('os'); const path = require('path'); const http = require('http');
+const argv = process.argv.slice(2);
+const opt = k => { const i = argv.indexOf('--' + k); return i >= 0 ? argv[i + 1] : undefined; };
+const BASE = opt('url'), TOKEN = opt('token'), SHOTS = opt('shots');
+const bin = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'].find(b => spawnSync('which', [b]).status === 0);
+if (!bin) { console.log('SKIP console walk: no Chrome/Chromium installed'); process.exit(0); }
+if (typeof WebSocket === 'undefined') { console.log('SKIP console walk: this Node has no WebSocket'); process.exit(0); }
+const ROUTES = ['#/today', '#/setup', '#/setup/charter', '#/setup/provider', '#/comms/owner', '#/comms/agent', '#/crew', '#/crew/agent', '#/work/handoffs',
+  '#/work/quests', '#/hiring', '#/controls/guardrails', '#/controls/gov', '#/automate', '#/governance', '#/usage', '#/system', '#/map', '#/halt'];
+const udd = fs.mkdtempSync(path.join(os.tmpdir(), 'console-walk-'));
+const port = 9500 + Math.floor(Math.random() * 400);
+const chrome = spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--user-data-dir=' + udd, '--remote-debugging-port=' + port, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore' });
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const getJson = u => new Promise((res, rej) => http.get(u, r => { let d = ''; r.on('data', c => d += c); r.on('end', () => { try { res(JSON.parse(d)); } catch (e) { rej(e); } }); }).on('error', rej));
+let fails = 0;
+const check = (name, ok, info) => { if (!ok) fails++; console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok || info === undefined ? '' : ' — ' + JSON.stringify(info).slice(0, 400))); };
+async function until(fn, ms) { const end = Date.now() + ms; let v; while (Date.now() < end) { v = await fn(); if (v) return v; await sleep(200); } return v; }
+(async () => {
+  let targets; for (let i = 0; i < 60 && !targets; i++) { try { targets = await getJson('http://127.0.0.1:' + port + '/json'); } catch (_) { await sleep(200); } }
+  const ws = new WebSocket(targets.find(t => t.type === 'page').webSocketDebuggerUrl);
+  await new Promise(r => { ws.onopen = r; });
+  let id = 0; const pending = new Map(); const errors = [];
+  ws.onmessage = ev => { const m = JSON.parse(ev.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
+    else if (m.method === 'Runtime.exceptionThrown') errors.push(String((m.params.exceptionDetails.exception || {}).description || m.params.exceptionDetails.text).split('\n')[0]); };
+  const send = (method, params) => new Promise(r => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params: params || {} })); });
+  const js = async e => { const r = await send('Runtime.evaluate', { expression: e, returnByValue: true, awaitPromise: true }); return r.result && r.result.result ? r.result.result.value : undefined; };
+  const shot = async name => { if (!SHOTS) return; fs.mkdirSync(SHOTS, { recursive: true }); const s = await send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(SHOTS, name + '.png'), Buffer.from(s.result.data, 'base64')); };
+  await send('Runtime.enable'); await send('Page.enable');
+  await send('Page.navigate', { url: BASE + '/login?token=' + encodeURIComponent(TOKEN) }); await sleep(1500);
+  for (const r of ROUTES) {
+    errors.length = 0;
+    await js('location.hash = ' + JSON.stringify(r.slice(1)) + '; 1');
+    const ok = await until(() => js(`(() => { const t = (document.getElementById('main') || {}).innerText || ''; return t.trim().length > 40 && !/Loading…$/.test(t.trim()) && !/This screen failed/.test(t); })()`), 6000);
+    check('route ' + r + ' renders', ok && !errors.length, { errors, text: await js(`((document.getElementById('main')||{}).innerText||'').slice(0,200)`) });
+  }
+  // Setup -> Charter -> Draft it with the Founder -> the reply streams in
+  await js('location.hash = "/setup/charter"; 1');
+  const btn = await until(() => js(`!!document.querySelector('#step-charter') && [...document.querySelectorAll('#step-charter button')].some(b => /Draft it with the Founder/.test(b.textContent))`), 8000);
+  check('Setup #/setup/charter opens the charter step with "Draft it with the Founder"', btn && await js(`document.getElementById('step-charter').open`));
+  await js(`[...document.querySelectorAll('#step-charter button')].find(b => /Draft it with the Founder/.test(b.textContent)).click(); 1`);
+  const live = await until(() => js(`location.hash.startsWith('#/comms/agent:') && !!document.querySelector('.msg-them-wrap.live, .chat-who')`), 8000);
+  check('the draft opens the live chat and shows the Founder working', !!live, await js('location.hash'));
+  await shot('chat-streaming');
+  const reply = await until(() => js(`(() => { const w = [...document.querySelectorAll('.msg-them-wrap')].pop(); if (!w || w.classList.contains('live')) return null; return { text: w.innerText, steps: w.querySelectorAll('.chat-step').length, links: [...w.querySelectorAll('a')].map(a => a.getAttribute('href')) }; })()`), 15000);
+  check('the Founder\'s reply streamed in and rendered (tool step + text)', reply && /three quick questions/i.test(reply.text) && reply.steps >= 1, reply);
+  check('the brief\'s console: link renders as an in-app link', reply && reply.links.includes('#/setup/charter'), reply && reply.links);
+  const strip = await until(() => js(`(document.querySelector('.charter-strip.done')||{}).innerText`), 8000);
+  check('the charter strip flips to done once CHARTER.md has no blanks', !!strip, await js(`(document.querySelector('.charter-strip')||{}).innerText`));
+  await shot('chat-done');
+  // Today: the Now strip shows the run the test started on the mock
+  await js('location.hash = "/today"; 1');
+  const now = await until(() => js(`(() => { const r = document.querySelector('.now-run'); return r ? r.innerText : null; })()`), 8000);
+  check('Today\'s Now strip shows the run in flight with its step, Watch and Stop', now && /Founder/.test(now) && /reading company\/CHARTER\.md/i.test(now) && /Watch/.test(now) && /Stop/.test(now), now);
+  await shot('today-now');
+  console.log(fails ? 'CONSOLE WALK: FAIL (' + fails + ')' : 'CONSOLE WALK: PASS');
+  ws.close(); chrome.kill(); try { fs.rmSync(udd, { recursive: true, force: true }); } catch (_) {}
+  setTimeout(() => process.exit(fails ? 1 : 0), 200);
+})().catch(e => { console.error('console walk crashed: ' + e.stack); chrome.kill(); process.exit(1); });

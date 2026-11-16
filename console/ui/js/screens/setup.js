@@ -6,6 +6,10 @@ import { h, fill, Button, Tag, errLine, Eyebrow } from '../ui.js';
 import { api, post } from '../api.js';
 import * as events from '../events.js';
 import { PRESET_WHAT, GUARD_NAMES } from './controls.js';
+import { mdBlock } from '../md.js';
+
+const STEP_ALIAS = { ai: 'provider', providers: 'provider', model: 'provider', money: 'budget', gov: 'governance', guard: 'guardrails', check: 'certify', checks: 'certify' };
+const ss = { set: (k, v) => { try { sessionStorage.setItem(k, v); } catch (_) {} } };
 
 const STATUS = { done: ['Done', 'online'], needs: ['Needs you', 'warning'], optional: ['Optional', 'neutral'] };
 const BUDGETS = [
@@ -21,18 +25,22 @@ export async function render(root, ctx) {
   const pageErr = h('div');
   fill(root, head, pageErr, readyEl, stepsEl, extraEl);
   const open = new Set(); let first = true; let S = null;
+  let focusStep = ctx.rest[0] ? (STEP_ALIAS[ctx.rest[0]] || ctx.rest[0]) : null;   // #/setup/<step>: open it and scroll to it
+  let charter = null;          // GET /api/setup/charter: the text as it stands
+  let charterMode = 'view';    // view | edit | form
   let login = null;           // the Claude sign-in in progress: { id, url, timer }
   const keep = {};            // form drafts survive a reload of the data
 
   async function load() {
     let d;
-    try { d = await api('/setup'); fill(pageErr); }
+    try { [d, charter] = await Promise.all([api('/setup'), api('/setup/charter').catch(() => null)]); fill(pageErr); }
     catch (e) { fill(pageErr, errLine(e, 'Setup')); return; }
     S = d;
     if (app.company) app.company.onboarding = Object.assign({}, app.company.onboarding, { certified: d.certified });
     if (app.refreshSetupNav) app.refreshSetupNav(d.certified);
-    if (first) { for (const s of d.steps) if (s.status !== 'done') { open.add(s.id); break; } first = false; }
+    if (first) { if (focusStep && d.steps.some(s => s.id === focusStep)) open.add(focusStep); else for (const s of d.steps) if (s.status !== 'done') { open.add(s.id); break; } first = false; }
     draw();
+    if (focusStep) { const el = document.getElementById('step-' + focusStep); focusStep = null; if (el) { el.open = true; el.scrollIntoView({ block: 'start' }); const sm = el.querySelector('summary'); if (sm) sm.focus({ preventScroll: true }); } }
   }
   function draw() {
     const d = S;
@@ -46,7 +54,7 @@ export async function render(root, ctx) {
     fill(readyEl, d.certified ? h('section', { class: 'card p22', role: 'status', style: 'border-color:var(--status-online);gap:10px' },
       h('h2', { class: 'h3' }, 'Your company is ready.'),
       h('p', { class: 'body-s' }, 'All checks passed' + (d.lastCertify ? ' (' + new Date(d.lastCertify).toLocaleString() + ')' : '') + '. The crew can run on its own; questions that need you land on Today.'),
-      h('div', { class: 'row-8' }, Button('Go to Today', { variant: 'primary', href: '#/today' }), Button('Message the Founder', { variant: 'secondary', href: '#/comms/owner' }))) : null);
+      h('div', { class: 'row-8' }, Button('Go to Today', { variant: 'primary', href: '#/today' }), Button('Talk to the Founder', { variant: 'secondary', href: '#/comms/agent:' + ((app.company && app.company.ceo && app.company.ceo.id) || 'agent') }))) : null);
     const body = { company: stepCompany, provider: stepProvider, budget: stepBudget, governance: stepGovernance, charter: stepCharter, guardrails: stepGuardrails, certify: stepCertify };
     fill(stepsEl, d.steps.map((s, i) => {
       const [label, st] = STATUS[s.status] || STATUS.needs;
@@ -106,7 +114,7 @@ export async function render(root, ctx) {
     const err = errP(); const c = d.station.claude || {};
     const box = h('article', { class: 'card p18', style: 'gap:10px' + (p.isDefault ? ';border-color:var(--status-online)' : '') }, provHead(p), h('p', { class: 'body-s muted' }, p.blurb));
     const use = Button(p.isDefault && p.ready ? 'In use for new hires' : 'Use my Claude subscription', { variant: 'primary', disabled: p.isDefault && p.ready,
-      onClick: () => act(use, err, () => post('/setup/provider', { provider: 'claude-cli' }), 'New hires now run on your Claude subscription.') });
+      onClick: () => act(use, err, () => post('/setup/provider', { provider: 'claude-cli' }), r => 'New hires and the Founder now run on your Claude subscription.' + (r.founderLoop && !r.founderLoop.ok ? ' The Founder loop was not updated: ' + r.founderLoop.text : '')) });
     if (c.installed && c.loggedIn) {
       box.append(h('p', { class: 'body-s' }, 'Signed in' + (c.email ? ' as ' + c.email : '') + (c.subscription ? ' (' + c.subscription + ')' : '') + ' on the station machine.'), h('div', { class: 'row-8' }, use), err);
       return box;
@@ -169,7 +177,7 @@ export async function render(root, ctx) {
     const connect = Button(p.ready && !key.value ? (p.isDefault ? 'In use for new hires' : 'Use for new hires') : 'Connect', { variant: 'primary', size: 'sm', disabled: p.ready && p.isDefault, onClick: () => {
       if (!key.value.trim() && !p.ready) { err.textContent = 'Paste the API key first.'; return; }
       note.textContent = key.value ? 'Checking the key and saving it on the station…' : '';
-      act(connect, err, () => post('/setup/provider', { provider: p.id, key: key.value, subscription: sub ? sub.checked : undefined }), r => p.name + ' connected. New hires run on ' + r.model + '.' + (r.runnable ? '' : ' Set a daily budget in step 3 so they can run.'), () => { key.value = ''; note.textContent = ''; });
+      act(connect, err, () => post('/setup/provider', { provider: p.id, key: key.value, subscription: sub ? sub.checked : undefined }), r => p.name + ' connected. New hires and the Founder run on ' + r.model + '.' + (r.runnable ? '' : ' Set a daily budget in step 3 so they can run.') + (r.founderLoop && !r.founderLoop.ok ? ' The Founder loop was not updated: ' + r.founderLoop.text : ''), () => { key.value = ''; note.textContent = ''; });
     } });
     key.addEventListener('input', () => { if (p.ready && p.isDefault) connect.disabled = !key.value; connect.textContent = key.value ? 'Connect' : p.isDefault ? 'In use for new hires' : 'Use for new hires'; });
     return h('article', { class: 'card p18', style: 'gap:10px' + (p.isDefault && p.ready ? ';border-color:var(--status-online)' : '') }, provHead(p),
@@ -213,20 +221,43 @@ export async function render(root, ctx) {
   }
 
   /* ---- 5. charter ---- */
+  // The charter as it stands (rendered), with three ways to change it: edit the text, ask the Founder (live chat), or
+  // fill the four blanks in a short form. The step flips to Done by itself when no placeholder is left (SSE 'charter').
+  const ceoId = () => (app.company && app.company.ceo && app.company.ceo.id) || 'agent';
+  function draftWithFounder(notes) {
+    ss.set('capheos.briefNotes', JSON.stringify(notes || {}));
+    location.hash = '#/comms/agent:' + encodeURIComponent(ceoId()) + '?brief=charter';
+  }
   function stepCharter(d) {
-    const err = errP(); const c = d.charter;
+    const err = errP(); const c = d.charter; const cv = charter || { text: '', placeholders: c.placeholders || [] };
+    const blanks = (cv.placeholders || []).length;
+    const modes = h('div', { class: 'row-8', role: 'group', 'aria-label': 'Charter' },
+      Button('Draft it with the Founder', { variant: blanks ? 'primary' : 'secondary', onClick: () => draftWithFounder(keepNotes()) }),
+      blanks ? Button('Fill the blanks myself', { variant: 'secondary', onClick: () => { charterMode = 'form'; draw(); } }) : Button('Ask the Founder to change it', { variant: 'secondary', href: '#/comms/agent:' + encodeURIComponent(ceoId()) + '?brief=charter-change' }),
+      Button('Edit the text', { variant: 'ghost', onClick: () => { charterMode = 'edit'; draw(); } }));
+    const head = h('p', { class: 'body-s muted' }, 'The crew reads this before every decision; it is company/CHARTER.md. ' + (blanks ? blanks + ' blank' + (blanks > 1 ? 's' : '') + ' still to fill: ' + cv.placeholders.slice(0, 3).map(x => x.replace(/^<|>$/g, '').slice(0, 50)).join(' · ') + (blanks > 3 ? '…' : '') + '.' : 'No blanks left.') + (cv.at ? ' Last changed ' + new Date(cv.at).toLocaleString() + '.' : ''));
+    if (charterMode === 'edit') {
+      const t = h('textarea', { class: 'textarea mono-s', rows: '22', 'aria-label': 'company/CHARTER.md' }); t.value = keep.charterText !== undefined ? keep.charterText : cv.text;
+      t.addEventListener('input', () => { keep.charterText = t.value; });
+      const save = Button('Save', { variant: 'primary', onClick: () => act(save, err, () => post('/setup/charter', { text: t.value }), r => (r.placeholders || []).length ? 'Saved. ' + r.placeholders.length + ' blank(s) left.' : 'Charter saved.', () => { delete keep.charterText; charterMode = 'view'; }) });
+      return [head, t, h('div', { class: 'row-8' }, save, Button('Cancel', { variant: 'ghost', onClick: () => { delete keep.charterText; charterMode = 'view'; draw(); } })), err];
+    }
+    if (charterMode === 'form') return [head, charterForm(d, err), h('div', { class: 'row-8' }, Button('Back to the charter', { variant: 'ghost', onClick: () => { charterMode = 'view'; draw(); } }))];
+    return [head, modes, cv.text ? h('div', { class: 'sunken charter-view', style: 'padding:16px 18px;max-height:520px;overflow:auto' }, mdBlock(cv.text)) : h('p', { class: 'body-s' }, 'company/CHARTER.md is missing.'), err];
+  }
+  function keepNotes() { const c = (S && S.charter) || {}; const v = k => keep[k] !== undefined ? keep[k] : c[k] || ''; return { mandate: v('mandate'), forWhom: v('forWhom'), outOfScope: v('outOfScope'), firstGoal: v('firstGoal') }; }
+  function charterForm(d, err) {
+    const c = d.charter;
     const ta = (k, rows, ph) => { const t = h('textarea', { class: 'textarea', rows: String(rows), placeholder: ph }); t.value = keep[k] !== undefined ? keep[k] : c[k] || ''; t.addEventListener('input', () => { keep[k] = t.value; }); return t; };
     const mandate = ta('mandate', 3, 'We help independent bookshops run their online store: listings, orders and customer email.');
     const forWhom = ta('forWhom', 1, 'Independent bookshops in the UK');
     const out = ta('outOfScope', 2, 'No paid advertising, no handling of card payments, nothing that needs a licence.');
     const goal = ta('firstGoal', 2, 'A working stock and order tracker for one shop by the end of the month.');
-    const save = Button('Save charter', { variant: 'primary', onClick: () => act(save, err, () => post('/setup/charter', { mandate: mandate.value, forWhom: forWhom.value, outOfScope: out.value, firstGoal: goal.value }), 'Charter saved.', () => { for (const k of ['mandate', 'forWhom', 'outOfScope', 'firstGoal']) delete keep[k]; }) });
-    const draftMsg = () => 'Let us write the company charter together. Ask me what the company does, for whom, what it will not do and its first goal, then write company/CHARTER.md with every placeholder filled.' +
-      [['What it does', mandate.value], ['For whom', forWhom.value], ['Will not do', out.value], ['First goal', goal.value]].filter(x => x[1].trim()).map(x => '\n' + x[0] + ': ' + x[1].trim()).join('');
-    const draft = Button('Draft it with the Founder', { variant: 'secondary', onClick: () => { location.hash = '#/comms/owner?draft=' + encodeURIComponent(draftMsg()); } });
-    return [h('p', { class: 'body-s muted' }, 'A few sentences are enough. The crew reads this before every decision; it is company/CHARTER.md.' + (c.placeholders.length ? ' Still blank: ' + c.placeholders.length + '.' : '')),
+    const save = Button('Save charter', { variant: 'primary', onClick: () => act(save, err, () => post('/setup/charter', { mandate: mandate.value, forWhom: forWhom.value, outOfScope: out.value, firstGoal: goal.value }), 'Charter saved.', () => { for (const k of ['mandate', 'forWhom', 'outOfScope', 'firstGoal']) delete keep[k]; charterMode = 'view'; }) });
+    const draft = Button('Draft it with the Founder', { variant: 'secondary', onClick: () => draftWithFounder({ mandate: mandate.value, forWhom: forWhom.value, outOfScope: out.value, firstGoal: goal.value }) });
+    return h('div', { class: 'stack-14' }, h('p', { class: 'body-s muted' }, 'A few sentences are enough.'),
       field('What the company does', mandate, 'Two to four sentences: the work, and how it creates value.'), field('For whom', forWhom), field('What it will not do', out, 'Work it turns down even when asked.'), field('First goal', goal),
-      h('div', { class: 'row-8' }, save, draft), err];
+      h('div', { class: 'row-8' }, save, draft), err);
   }
 
   /* ---- 6. guardrails ---- */
@@ -261,7 +292,7 @@ export async function render(root, ctx) {
         !c.ok && FIX[c.id] ? h('a', { href: '#step-' + FIX[c.id], class: 'body-s', onclick: e => { e.preventDefault(); open.add(FIX[c.id]); draw(); document.getElementById('step-' + FIX[c.id]).scrollIntoView({ behavior: 'smooth' }); } }, 'Fix it in step ' + (d.steps.findIndex(s => s.id === FIX[c.id]) + 1) + ' →') : null,
         !c.ok && cmdOf(c.missing) ? copyable(cmdOf(c.missing)) : null),
       Tag(c.ok ? 'Passed' : 'Failed', { variant: 'status', status: c.ok ? 'online' : 'danger' })))) : h('p', { class: 'body-s muted' }, 'Not run yet.');
-    return [h('p', { class: 'body-s muted' }, 'Nine checks that prove the company can actually run: the station answers, the dispatcher ticks, guardrails are applied, secrets are in place, backups verify, the charter is filled, and so on.'),
+    return [h('p', { class: 'body-s muted' }, 'Eleven checks that prove the company can actually run: the station answers, the dispatcher ticks, guardrails are applied, secrets are in place, backups verify, the charter is filled, the Founder loop is in place, and so on.'),
       h('div', { class: 'row-8', style: 'align-items:center' }, runB, note), rows, err];
   }
 
@@ -281,6 +312,6 @@ export async function render(root, ctx) {
   }
 
   load();
-  const off = events.on(['questions', 'governance', 'guardrails'], () => { if (!login) load(); });
+  const off = events.on(['questions', 'governance', 'guardrails', 'charter'], () => { if (!login && charterMode !== 'edit') load(); });
   return () => { off(); stopLogin(); };
 }

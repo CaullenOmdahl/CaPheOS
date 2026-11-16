@@ -4,7 +4,7 @@
  *   node tests/mock-station.js --port 8899 --token <token> --log /tmp/x/requests.jsonl [--root <company root>]
  *
  * Covers the endpoints the tools in company/tools call (grep "'/api/" there): roster, agent/*, run (NDJSON events),
- * run/stream, cron (list, create, update, run, arm, remove, history), halt (+ status, resume), loops (+ control),
+ * run/stream, observe (SSE; POST /__live starts a fake in-flight run), transcript, consent, projects (+ bless), cron (list, create, update, run, arm, remove, history), halt (+ status, resume), loops (+ control),
  * quests (+ update, mint, confirm), state/snapshot, runs, connectors, servicekeys, groups, save, budget/status and a few
  * read-only odds and ends. Every request needs header x-starnet-token (401 otherwise, like the station).
  *
@@ -34,7 +34,10 @@ const SAVE_FILE = opt('save-file', process.env.MOCK_SAVE_FILE || '');
 
 /* ---------------- state ---------------- */
 const S = {
-  cron: { enabled: true, halted: false, jobs: [], nextId: 1, history: [] },
+  // a fresh station's scheduler starts disarmed (StarNet's arm gate); onboarding arms it (POST /api/cron/arm)
+  cron: { enabled: false, halted: false, jobs: [], nextId: 1, history: [] },
+  projects: [],          // blessed project roots (POST /api/projects/bless)
+  transcripts: {},       // streamId -> [{role, content, at}] (written by POST /api/run, read by GET /api/transcript)
   halt: { halted: false, at: null },
   loops: [],
   quests: [],
@@ -52,7 +55,23 @@ const S = {
   },
   runSeq: 1,
   dossierBlock: '', posture: null,
+  live: [],              // runs in flight (GET /api/state/snapshot); a test starts one with POST /__live
 };
+/* the observer feed (GET /api/observe): SSE frames `data: {name, payload}` for every run event, like sidecar/observer.js */
+const watchers = new Set();
+function observe(name, payload) { const f = 'data: ' + JSON.stringify({ name, payload }) + '\n\n'; for (const w of watchers) { try { w.write(f); } catch (_) {} } }
+// POST /__live {agentId, routine?, steps?: [[tool, args]], usd?, text?}: a fake in-flight run, announced on the observer feed
+function startLive(B) {
+  const runId = 'live-' + (S.runSeq++);
+  const job = S.cron.jobs.find(j => j.agentId === (B.agentId || 'agent') && (!B.routine || j.name === B.routine));
+  const r = { runId, agentId: B.agentId || 'agent', startedAt: Date.now() - (Number(B.ageSec) || 0) * 1000, source: 'cron', streamId: 'cron-' + runId };
+  S.live.push(r); if (job) { job.inFlight = true; job.lastRunId = runId; }
+  observe('agent.run.start', { runId, agentId: r.agentId, model: job ? job.model : '', trigger: 'cron', streamId: r.streamId });
+  (B.steps || [['fs_read', 'company/CHARTER.md']]).forEach(([n, a], i) => { observe('agent.tool_call', { runId, agentId: r.agentId, callId: 'c' + i, name: n, argsSummary: a }); observe('agent.tool_result', { runId, callId: 'c' + i, ok: true, summary: 'ok' }); });
+  if (B.usd) observe('agent.cost', { runId, usd: Number(B.usd) });
+  if (B.text) observe('agent.token', { runId, delta: String(B.text) });
+  return r;
+}
 if (FRESH) S.save = { revision: 0, doc: null };
 if (SAVE_FILE) { const j = JSON.parse(fs.readFileSync(SAVE_FILE, 'utf8')); const doc = j && j.save !== undefined ? j.save : j; S.save = { revision: Number((j && j.head && j.head.revision) || (doc && doc._saveRevision) || 1), doc }; }
 if (ROOT) { try { S.roster = JSON.parse(fs.readFileSync(path.join(ROOT, '.starnet-data', 'workspaces', 'agent.roster.json'), 'utf8')).agents || []; } catch (_) {} }
@@ -65,6 +84,8 @@ function writeRoster() {
 }
 const findJob = id => S.cron.jobs.find(j => j.id === String(id || ''));
 function parseSchedule(s, tz) {
+  const ev = /^every\s+(\d+)\s*(minute|min|hour|h)s?$/i.exec(String(s || '').trim());
+  if (ev) { const minutes = Number(ev[1]) * (/^h/i.test(ev[2]) ? 60 : 1); return { kind: 'interval', minutes, display: 'every ' + (minutes % 60 ? minutes + 'm' : minutes / 60 + 'h'), tz: tz || null }; }
   if (s && typeof s === 'object') return { kind: 'cron', expr: String(s.expr || ''), tz: s.tz || tz || null };
   return { kind: 'cron', expr: String(s || ''), tz: tz || null };
 }
@@ -138,18 +159,67 @@ function handle(method, p, q, body, res) {
   if (p === '/api/autonomy/posture' && method === 'GET') return send(res, 200, { ok: true, posture: S.posture });
   // --- runs ---
   if (p === '/api/run' && method === 'POST') {
+    if (!B.model) { res.writeHead(400); res.end('no model selected — pick a model first'); return 400; }
     const runId = 'run-' + (S.runSeq++);
-    S.runs.push({ runId, agentId: B.agentId, source: 'interactive', streamId: B.streamId || null, startedAt: Date.now(), endedAt: Date.now(), usd: 0, internal: true });
+    S.runs.push({ runId, agentId: B.agentId, source: 'interactive', streamId: B.streamId || null, startedAt: Date.now(), endedAt: Date.now(), usd: 0, internal: true, projectRoot: B.projectRoot || null, placed: B.placed || null });
+    const msgs = Array.isArray(B.messages) ? B.messages : [];
+    const last = msgs.length ? String(msgs[msgs.length - 1].content || '') : '';
+    // a console chat (streamId console-*): stream the reply in pieces with a tool step, keep the transcript; a charter
+    // brief also writes company/CHARTER.md under --root, as the Founder would with its file tools
+    if (B.streamId && /^console-/.test(B.streamId)) {
+      const reply = /\[fail\]/.test(last) ? null : /charter/i.test(last)
+        ? 'Happy to. Three quick questions: what does the company do, for whom, and what will it never do? I have drafted company/CHARTER.md from what you told me so far. [Review it in Setup](console:#/setup/charter)'
+        : 'Got it. ' + CANNED;
+      const t = S.transcripts[B.streamId] = S.transcripts[B.streamId] || [];
+      t.push({ role: 'user', content: last, at: nowIso() });
+      res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      const evs = [{ name: 'agent.run.start', payload: { runId, agentId: B.agentId } }];
+      if (!reply) evs.push({ name: 'agent.run.error', payload: { runId, message: 'provider error: HTTP 401 (mock)', failureCode: 'provider_auth' } }, { name: 'agent.run.end', payload: { runId, reason: 'error', outcome: 'failed', usd: 0 } });
+      else {
+        evs.push({ name: 'agent.tool_call', payload: { runId, callId: 'c1', name: 'fs_read', argsSummary: 'company/CHARTER.md' } }, { name: 'agent.tool_result', payload: { runId, callId: 'c1', ok: true, ms: 3, summary: 'read 40 lines' } });
+        for (const w of reply.match(/\S+\s*/g)) evs.push({ name: 'agent.token', payload: { runId, delta: w } });
+        evs.push({ name: 'agent.run.end', payload: { runId, reason: 'done', outcome: 'succeeded', usd: 0.0012 } });
+      }
+      let i = 0;
+      const tick = () => {
+        if (i >= evs.length) {
+          if (reply) {
+            t.push({ role: 'assistant', content: reply, at: nowIso() });
+            if (/charter/i.test(last) && ROOT && B.projectRoot) {
+              try { const f = path.join(ROOT, 'company', 'CHARTER.md'); fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace(/<!--[\s\S]*?-->/g, '').replace(/<(?!none yet>)[A-Za-z][^<>\n]{0,200}>/g, 'Drafted with the owner in the console.')); } catch (_) {}
+            }
+          }
+          return res.end();
+        }
+        res.write(JSON.stringify(evs[i++]) + '\n'); setTimeout(tick, 40);
+      };
+      tick();
+      return 200;
+    }
     return ndjson(res, [
       { name: 'agent.run.start', payload: { runId, agentId: B.agentId } },
       { name: 'agent.token', payload: { runId, delta: CANNED } },
       { name: 'agent.run.end', payload: { runId, reason: 'done', usd: 0 } },
     ]);
   }
+  if (p === '/api/transcript' && method === 'GET') {
+    const stream = q.get('stream') || 'global';
+    return send(res, 200, { stream, turns: (S.transcripts[stream] || []).slice(-(Number(q.get('limit')) || 200)) });
+  }
+  if (p === '/api/consent' && method === 'POST') return send(res, 200, { ok: true, decision: B.decision || 'deny' });
+  // --- projects (the blessed folders an agent may work in) ---
+  if (p === '/api/projects' && method === 'GET') return send(res, 200, { projects: S.projects });
+  if (p === '/api/projects/bless' && method === 'POST') {
+    if (!B.path || !path.isAbsolute(String(B.path))) return send(res, 400, { ok: false, reason: 'an absolute path is required' });
+    if (!S.projects.some(x => x.root === B.path)) S.projects.push({ root: String(B.path), displayPath: String(B.path), grantedAt: Date.now(), blessed: true });
+    return send(res, 200, { ok: true, root: String(B.path) });
+  }
   if (p === '/api/run/stream' && method === 'GET') return ndjson(res, [{ name: 'stream.hello', payload: {} }]);
-  if (p === '/api/run/steer' || p === '/api/cancel') return send(res, 200, { ok: true });
+  if (p === '/api/run/steer') return send(res, 200, { ok: true });
   if (p === '/api/runs' && method === 'GET') return send(res, 200, { ok: true, runs: S.runs.slice(-200) });
-  if (p === '/api/state/snapshot' && method === 'GET') return send(res, 200, { ok: true, runs: [], agents: S.roster.map(r => ({ agentId: r.agentId, name: r.name })) });
+  if (p === '/api/state/snapshot' && method === 'GET') return send(res, 200, { ok: true, runs: S.live.map(r => ({ runId: r.runId, agentId: r.agentId, startedAt: r.startedAt, source: r.source, streamId: r.streamId, stoppable: true })), agents: S.roster.map(r => ({ agentId: r.agentId, name: r.name })) });
+  if (p === '/api/cancel' && method === 'POST' && S.live.some(r => r.runId === B.runId)) { const r = S.live.find(x => x.runId === B.runId); S.live = S.live.filter(x => x !== r); observe('agent.run.end', { runId: r.runId, agentId: r.agentId, reason: 'cancelled', outcome: 'cancelled', usd: 0.001 }); return send(res, 200, { ok: true }); }
+  if (p === '/api/cancel') return send(res, 200, { ok: true });
   if (p === '/api/state' && method === 'GET') return send(res, 200, { ok: true, agents: S.roster });
   // --- routines ---
   if (p === '/api/cron' && method === 'GET') return send(res, 200, { ok: true, enabled: S.cron.enabled, halted: S.cron.halted, jobs: S.cron.jobs });
@@ -159,9 +229,11 @@ function handle(method, p, q, body, res) {
     if (dup) return send(res, 200, { ok: true, duplicate: true, job: dup });
     const job = { id: 'job-' + (S.cron.nextId++), name: String(B.name), agentId: String(B.agentId || 'agent'), schedule: parseSchedule(B.schedule, B.tz),
       prompt: String(B.prompt), workdir: B.workdir || null, deliver: B.deliver || 'local', enabled: B.enabled !== false, model: B.model || null,
-      provider: B.provider || null, createdAt: nowIso(), lastRunAt: null, lastStatus: null, inFlight: false };
+      provider: B.provider || null, unattendedGrants: Array.isArray(B.unattendedGrants) ? B.unattendedGrants.filter(g => ['workbench', 'connectors', 'studio'].includes(g)) : [],
+      createdAt: nowIso(), lastRunAt: null, lastStatus: null, inFlight: false };
     S.cron.jobs.push(job);
-    return send(res, 200, { ok: true, job });
+    if (B.arm === true && !S.cron.armSet) { S.cron.enabled = true; S.cron.armSet = true; }
+    return send(res, 200, { ok: true, job, scheduler: { armed: S.cron.enabled } });
   }
   if (p === '/api/cron/update' && method === 'POST') {
     const job = findJob(B.id); if (!job) return send(res, 404, { error: 'no such routine' });
@@ -185,7 +257,7 @@ function handle(method, p, q, body, res) {
   }
   if (p === '/api/cron/arm' && method === 'POST') {
     if (typeof B.enabled !== 'boolean') return send(res, 400, { error: 'enabled (boolean) is required' });
-    S.cron.enabled = B.enabled; S.cron.halted = false;
+    S.cron.enabled = B.enabled; S.cron.halted = false; S.cron.armSet = true;
     return send(res, 200, { ok: true, enabled: S.cron.enabled });
   }
   if (p === '/api/cron/remove' && method === 'POST') {
@@ -255,6 +327,12 @@ const server = http.createServer((req, res) => {
     const row = { at: nowIso(), method: req.method, path: u.pathname, query: u.search || '', body };
     if (req.headers['x-starnet-token'] !== TOKEN) { row.status = send(res, 401, { error: 'token required' }); return logReq(row); }
     if (u.pathname === '/__state') { row.status = send(res, 200, S); return logReq(row); }
+    if (u.pathname === '/__live' && req.method === 'POST') { row.status = send(res, 200, { ok: true, run: startLive(body || {}) }); return logReq(row); }
+    if (u.pathname === '/api/observe' && req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' }); res.write('retry: 3000\n\n');
+      watchers.add(res); res.on('close', () => watchers.delete(res));   // not req 'close': it fires once the request body is read
+      row.status = 200; return logReq(row);
+    }
     try { row.status = handle(req.method, u.pathname, u.searchParams, body, res); }
     catch (e) { row.status = send(res, 500, { error: 'mock: ' + e.message }); }
     // keep the log small: drop prompt/system bodies beyond 300 chars

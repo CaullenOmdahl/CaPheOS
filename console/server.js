@@ -88,7 +88,7 @@ function stationPost(p, body, timeoutMs) {
 }
 const POST_ALLOW = ['run', 'run/steer', 'run/stream', 'cancel', 'groups', 'groups/*', 'cron/run', 'cron/update', 'cron/arm', 'loops/control',
   'consent/answer', 'permissions/*', 'autonomy/*', 'connectors/*', 'servicekeys/*', 'skills/toggle', 'providers/*', 'halt', 'halt/resume',
-  'transcript/redact', 'session',
+  'transcript/redact', 'session', 'consent',
   'auth/claude-cli/start', 'auth/claude-cli/poll', 'auth/claude-cli/code', 'auth/claude-cli/cancel'];
 const postAllowed = p => POST_ALLOW.some(a => a.endsWith('/*') ? (p === a.slice(0, -2) || p.startsWith(a.slice(0, -1))) : p === a);
 function stationProxy(req, res, sub, search) {
@@ -183,6 +183,11 @@ function ownerMessages() {
   const rows = oi.messages().map(m => Object.assign({ dir: 'in', acked: !!ack[m.id] }, m)).concat(oi.sent().map(m => Object.assign({ dir: 'out' }, m)));
   return rows.sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')));
 }
+// the owner channel with what each message is waiting on (console/chat.js): never a message with no visible state
+async function ownerChannel() {
+  const ch = await CHAT.channelState();
+  return { ok: true, messages: CHAT.messageStates(ownerMessages(), ch), channel: ch };
+}
 function postOwnerMessage(body) {
   let text = String(body.text || '').trim(); if (!text) bad('text is required');
   if (text.length > 20000) bad('text too long');
@@ -198,7 +203,7 @@ function postOwnerMessage(body) {
   if (body.re) row.re = String(body.re);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.appendFileSync(file, JSON.stringify(row) + '\n');
-  return { ok: true, message: row };
+  return { ok: true, message: Object.assign({ dir: 'in' }, row) };
 }
 async function crewView() {
   const c = co.crew();
@@ -235,9 +240,13 @@ async function today() {
 function onboardingBrief() {
   const s = readJson(co.p('company', 'state', 'onboarding-state.json'), null) || {};
   const failed = s.checks && s.checks.results ? Object.keys(s.checks.results).filter(k => !s.checks.results[k].ok) : null;
-  return { certified: !!s.certified, certifiedAt: s.certifiedAt || null, lastCertify: (s.checks || {}).at || null, failed };
+  const k = (s.steps || {}).kickoff || null;
+  let planOpen = false;
+  if (k) { try { const c = co.crew()[co.ceo() || 'agent'] || {}; const t = fs.readFileSync(co.p('company', 'work', 'handoffs', c.inbox || 'to-founder.md'), 'utf8'); planOpen = t.split(/^(?=## )/m).some(b => /from onboard\.js — turn the charter into the first plan/.test(b) && /^\*\*Status:\*\*\s*OPEN\b/m.test(b)); } catch (_) {} }
+  return { certified: !!s.certified, certifiedAt: s.certifiedAt || null, lastCertify: (s.checks || {}).at || null, failed,
+    kickoff: k ? { status: k.status, at: k.at, note: k.note, planOpen } : null };
 }
-function companyInfo() { const c = co.config; return { name: c.name, shortName: c.shortName, owner: c.owner, timezone: process.env.CAPHEOS_TZ || c.timezone || co.TZ, station: { url: co.STATION_URL }, ownerChannel: c.ownerChannel, onboarding: onboardingBrief() }; }
+function companyInfo() { const c = co.config; const ceo = co.ceo() || 'agent'; return { name: c.name, shortName: c.shortName, owner: c.owner, ceo: { id: ceo, name: co.nameOf(ceo) }, timezone: process.env.CAPHEOS_TZ || c.timezone || co.TZ, station: { url: co.STATION_URL }, ownerChannel: c.ownerChannel, onboarding: onboardingBrief() }; }
 
 const PANEL_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 function panelDir(id) {
@@ -250,6 +259,8 @@ const onOff = v => (v === true || v === 'on') ? 'on' : (v === false || v === 'of
 const str = (v, name) => { if (v === undefined || v === null || v === '') return null; const s = String(v); if (s.startsWith('--')) bad(name + ' may not start with --'); return s; };
 const routes = [];
 const route = (method, re, fn) => routes.push({ method, re, fn });
+const CHAT = require(path.join(__dirname, 'chat.js'))({ co, stationGet, bad, HttpError, tool, owner: () => OWNER });
+const ACT = require(path.join(__dirname, 'activity.js'))({ co, stationGet, emit: t => emit(t), tool });
 
 route('GET', /^\/api\/company$/, () => Object.assign({ ok: true }, companyInfo()));
 route('GET', /^\/api\/today$/, today);
@@ -267,8 +278,14 @@ route('POST', /^\/api\/questions\/(q-\d+)\/answer$/, async (m, q, b) => {
   if (a.startsWith('--')) a = ' ' + a;
   return runApi('inbox.js', ['answer', '--id', id, '--a', a, '--by', OWNER]);
 });
-route('GET', /^\/api\/owner\/messages$/, () => ({ ok: true, messages: ownerMessages() }));
-route('POST', /^\/api\/owner\/messages$/, (m, q, b) => postOwnerMessage(b));
+route('GET', /^\/api\/owner\/messages$/, ownerChannel);
+route('POST', /^\/api\/owner\/messages$/, async (m, q, b) => { const r = postOwnerMessage(b); const ch = await CHAT.channelState(); r.message = CHAT.messageStates([r.message], ch)[0]; r.channel = ch; return r; });
+// live chat with a crew member (console/chat.js); POST /api/chat/<id>/send streams and is handled in makeServer
+route('GET', /^\/api\/chat\/([A-Za-z0-9_-]{1,64})$/, m => CHAT.info(m[1]));
+// the crew's work, visible (console/activity.js)
+route('GET', /^\/api\/now$/, () => ACT.now());
+route('GET', /^\/api\/now\/run\/([A-Za-z0-9_-]{1,80})$/, (m, q) => ACT.runEvents(m[1], q.get('after')));
+route('GET', /^\/api\/activity$/, () => ACT.recent());
 route('GET', /^\/api\/crew$/, crewView);
 route('GET', /^\/api\/handoffs$/, () => runApi('handoff-status.js', ['--due', '--json']));
 route('GET', /^\/api\/decisions$/, decisions);
@@ -336,7 +353,7 @@ route('GET', /^\/api\/decision-models$/, () => runApi('decide.js', ['list', '--j
 route('GET', /^\/api\/onboarding$/, () => runApi('onboard.js', ['--check', '--json']));
 route('POST', /^\/api\/onboarding\/certify$/, async () => { const r = await run('onboard.js', ['--certify', '--json'], { timeout: 300000 }); return Object.assign({}, r.data, { ok: true, certified: !!(r.data && r.data.certified) }); });
 // Setup (console/setup.js): the seven-step guided setup, every write as the owner
-const SETUP = require(path.join(__dirname, 'setup.js'))({ co, run, runApi, stationGet, stationPost, owner: () => OWNER, setOwner: n => { OWNER = n || OWNER; }, bad, HttpError, tool });
+const SETUP = require(path.join(__dirname, 'setup.js'))({ co, run, runApi, stationGet, stationPost, owner: () => OWNER, setOwner: n => { OWNER = n || OWNER; }, bad, HttpError, tool, emit: t => emit(t) });
 for (const [mth, re, fn] of SETUP.routes) route(mth, re, fn);
 route('GET', /^\/api\/locked$/, () => runApi('locked-watch.js', ['status']));
 route('GET', /^\/api\/external$/, () => runApi('external-gate.js', ['list']));
@@ -355,6 +372,9 @@ const WATCHES = [
   ['panels', ['company', 'console', 'panels'], () => true],
   ['dispatch', ['company', 'work'], f => f === 'dispatch-log.md' || f === 'dispatch-state.json'],
   ['crew', ['company', 'tools'], f => f === 'loops.json'],
+  ['charter', ['company'], f => f === 'CHARTER.md' || /^CHARTER\.md\.tmp/.test(f)],
+  ['activity', ['company', 'work'], f => f === 'decisions.md' || f === 'dispatch-log.md'],
+  ['activity', ['company', 'owner'], () => true],
 ];
 const timers = {};
 function emit(topic) {
@@ -441,6 +461,8 @@ function makeServer(token) {
         return res.end(fs.readFileSync(f));
       }
       if (req.method === 'POST' && !/json/i.test(String(req.headers['content-type'] || ''))) return sendJson(res, 415, { ok: false, error: 'POST bodies are JSON (content-type: application/json)' });
+      const cm = p.match(/^\/api\/chat\/([A-Za-z0-9_-]{1,64})\/send$/);
+      if (cm) { if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' }); return await CHAT.send(req, res, cm[1], await readBody(req)); }
       for (const r of routes) {
         const m = p.match(r.re); if (!m) continue;
         if (req.method !== r.method) continue;
@@ -469,6 +491,7 @@ function start(argv) {
   const server = makeServer(token);
   armWatches();
   setInterval(armWatches, 15000).unref();
+  ACT.start();
   setInterval(() => { for (const c of clients) c.write(': ping\n\n'); }, 25000).unref();
   server.listen(port, host, () => {
     const a = server.address();
@@ -583,7 +606,7 @@ async function selftest() {
     r = await call('GET', '/api/panels/nope/data');
     check('unknown panel data: 404', r.status === 404, r.json);
     r = await call('GET', '/api/onboarding');
-    check('GET /api/onboarding: steps and checks, not certified', r.status === 200 && r.json.ok && Array.isArray(r.json.steps) && r.json.checks.length === 9 && r.json.certified === false, r.json);
+    check('GET /api/onboarding: steps and checks, not certified', r.status === 200 && r.json.ok && Array.isArray(r.json.steps) && r.json.checks.length === 11 && r.json.certified === false, r.json);
     for (const ep of ['/api/handoffs', '/api/decisions', '/api/dispatch', '/api/hiring', '/api/crew', '/api/governance-log', '/api/usage']) {
       r = await call('GET', ep);
       check('GET ' + ep + ' answers JSON', r.status < 500 && r.json && typeof r.json === 'object', { status: r.status, body: r.text.slice(0, 300) });
@@ -634,6 +657,22 @@ async function selftest() {
       setTimeout(() => { req.destroy(); resolve(false); }, 5000);
     });
     check('SSE change event on owner message', sse);
+    // live chat, owner-message state and Now with the station down: every answer says why, none is silent
+    r = await call('GET', '/api/chat/agent');
+    check('GET /api/chat/agent: station down is a problem with its fix', r.status === 200 && r.json.ok && r.json.problems.some(p => p.code === 'station-down' && /systemctl/.test(p.fix)), r.json);
+    r = await call('POST', '/api/chat/agent/send', { text: 'hello' });
+    const lines = String(r.text || '').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (_) { return {}; } });
+    check('POST /api/chat/agent/send: station down streams console.user then console.error', r.status === 200 && lines[0].name === 'console.user' && lines.some(l => l.name === 'console.error' && l.payload.code === 'station-down'), r.text);
+    r = await call('GET', '/api/chat/nobody');
+    check('GET /api/chat/<unknown seat>: 404', r.status === 404, r.status);
+    r = await call('GET', '/api/owner/messages');
+    check('owner messages carry a state; with the station down they are stuck with a fix', r.json.ok && r.json.messages.filter(m => m.dir === 'in').every(m => m.state && (m.state.status === 'stuck' || m.state.status === 'read' || m.state.status === 'answered')) && r.json.channel.problems.length > 0, r.json.channel);
+    r = await call('GET', '/api/now');
+    check('GET /api/now answers with the station down', r.status === 200 && r.json.ok && r.json.station.up === false && Array.isArray(r.json.seats), r.json);
+    r = await call('GET', '/api/activity');
+    check('GET /api/activity answers', r.status === 200 && r.json.ok && Array.isArray(r.json.items), r.json);
+    r = await call('GET', '/api/setup/charter');
+    check('GET /api/setup/charter: the text and its blanks', r.status === 200 && typeof r.json.text === 'string' && Array.isArray(r.json.placeholders), r.json);
     // Setup (console/setup.js), station down
     r = await call('GET', '/api/setup');
     check('GET /api/setup: seven steps, provider needs the station, not certified', r.status === 200 && r.json.ok && r.json.steps.length === 7 && r.json.total === 7 &&

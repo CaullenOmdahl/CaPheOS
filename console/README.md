@@ -8,9 +8,11 @@
 
 ## UI conventions
 
-- Routes are `#/today`, `#/comms[/owner|agent:<id>|group:<id>]`, `#/crew[/<id>]`, `#/work/<tab>`, `#/hiring`,
+- Routes (the full map agents link to is `docs/CONSOLE-LINKS.md`) are `#/today`, `#/setup[/<step>]`, `#/comms[/owner|<id>|agent:<id>|group:<id>]`, `#/crew[/<id>]`, `#/work/<tab>`, `#/hiring`,
   `#/controls/<gov|guard|ticks|panels>`, `#/automate`, `#/governance`, `#/usage`, `#/floor`, `#/abilities/<tab>`,
   `#/system`, `#/map`, `#/halt[?mode=soft|hard]` and `#/p/<panel id>` (company screens).
+- Agent-written text is rendered by `js/md.js` (safe markdown, `console:#/…` links stay in the app). A crew member's
+  conversation is a live chat (`js/chat.js`); Today's Now strip and the Crew pulse come from `/api/now` (console/activity.js).
 - Every fetch shows an inline error line when it fails. A failing `/api/station/*` call shows "Station not running".
 - Where no endpoint exists yet, the screen keeps the designed layout and says "Not connected yet." It never shows
   invented data.

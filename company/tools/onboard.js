@@ -7,8 +7,10 @@
  *
  *   node company/tools/onboard.js --check [--json]        provisioning steps + the last certification, what is missing; writes nothing
  *   node company/tools/onboard.js --resume [--json]       do the idempotent steps that can be done now (candidate default,
- *                                                         ops registrations, a first backup, the owner-gate batch, guardrails apply)
- *   node company/tools/onboard.js --certify [--json]      the 9 checks; exit 0 only when all pass (then state.certified)
+ *                                                         ops registrations, a first backup, the owner-gate batch, guardrails apply,
+ *                                                         the Founder loop: routine + blessed company folder + armed scheduler)
+ *   node company/tools/onboard.js --step <name> [--json]  one resume step (station-seed, founder-loop, kickoff, candidate-default, ops-registered, guardrails-applied)
+ *   node company/tools/onboard.js --certify [--json]      the 11 checks; exit 0 only when all pass (then state.certified)
  *   node company/tools/onboard.js --teardown [--purge] --by owner   stop the units, archive (scripts/backup.sh + verify);
  *                                                         --purge then removes company/work|state|owner|hiring — never without a verified archive
  *   node company/tools/onboard.js --record <step> <ok|failed|pending> [--note ".."]   (found-company.sh / setup-station.sh)
@@ -50,6 +52,9 @@ const STEPS = [
   ['first-backup', 'one backup written and verified (scripts/backup.sh)'],
   ['owner-gates', 'the owner gates the enabled packs and modules need, asked once on Today'],
   ['guardrails-applied', 'guardrails.js apply: station-side switches pushed'],
+  ['station-seed', 'the headless station has its save and the Founder (save + roster, approval mode from self-governance): station-seed.js'],
+  ['founder-loop', 'the Founder loop routine exists (company root workdir, terminal grant), the company folder is a blessed project, the scheduler is armed (founder-loop.js)'],
+  ['kickoff', 'after certification: the Founder\'s first planning run (one OPEN handoff + one loop run), once'],
 ];
 const CHECKS = [
   ['station', 'station answers GET /api/cron with the token'],
@@ -61,6 +66,8 @@ const CHECKS = [
   ['doctor', 'pack.js doctor --all and module.js doctor --all green'],
   ['charter', 'the charter has no {{COMPANY}} / <...> placeholders'],
   ['console', 'the console answers /api/company with the owner token'],
+  ['station-seed', 'the station has its save and the Founder in save and roster with the approval mode self-governance gives (station-seed.js status)'],
+  ['founder-loop', 'the CEO seat has its loop routine (company root workdir, terminal grant), the company folder is blessed and the scheduler is on'],
 ];
 const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } };
 const writeJson = (f, v) => { fs.mkdirSync(path.dirname(f), { recursive: true }); const t = f + '.tmp-' + process.pid; fs.writeFileSync(t, JSON.stringify(v, null, 2) + '\n'); fs.renameSync(t, f); };
@@ -181,6 +188,31 @@ function applyGuardrails() {
   const j = jsonOf(r) || {};
   return r.status === 0 && j.ok !== false ? { status: 'ok', note: 'applied ' + (d.steps || []).length + ' station-side step(s)' } : { status: 'failed', note: 'guardrails apply: ' + (j.error || String(r.stderr).slice(0, 160)) };
 }
+// The Founder's loop routine on the station (founder-loop.js ensure): without it nothing ever wakes the Founder, and an
+// owner message waits forever. Idempotent: an existing routine (found by name prefix) is updated, never duplicated.
+async function founderLoop() {
+  const FL = require('./founder-loop.js');
+  const r = await FL.ensure();
+  if (r.ok) return { status: 'ok', note: FL.summary(r) };
+  return { status: /unreachable|GET \/api\/cron/.test(r.error || '') ? 'pending' : 'failed', note: r.error };
+}
+// A headless station has no save and no Founder until it is seeded (station-seed.js, StarNet's own WAKE step).
+async function stationSeed() {
+  const S = require('./station-seed.js');
+  try {
+    const r = await S.seed({ by: (co.config.owner && co.config.owner.name) || 'owner' });
+    const st = await S.status();
+    if (st.ok) return { status: 'ok', note: (r && r.changed && r.changed.length ? 'seeded: ' + r.changed.join('; ').slice(0, 200) : 'save and Founder already in place') + ' (approval ' + ((r && r.approval && r.approval.mode) || '?') + ')' };
+    return { status: 'failed', note: 'after seeding: ' + st.problems.map(p => p.code).join(', ') };
+  } catch (e) { return { status: /ECONNREFUSED|unreachable|timeout|station-down/i.test(e.message) ? 'pending' : 'failed', note: 'station-seed.js: ' + String(e.message).slice(0, 200) }; }
+}
+const ONE_STEP = { 'station-seed': stationSeed, kickoff: async () => { const r = await kickoff(); return { status: r.status, note: r.note }; }, 'founder-loop': founderLoop, 'candidate-default': resolveCandidateDefault, 'ops-registered': async () => registerOps(), 'guardrails-applied': async () => applyGuardrails() };
+async function step(name) {
+  if (!ONE_STEP[name]) return { ok: false, error: 'unknown step ' + name + ' (one of ' + Object.keys(ONE_STEP).join(', ') + ')' };
+  const r = await ONE_STEP[name]();
+  const st = setStep(name, r.status, r.note);
+  return { ok: st.status === 'ok', step: name, status: st.status, note: st.note };
+}
 async function resume() {
   const out = {};
   const s0 = state();
@@ -191,6 +223,8 @@ async function resume() {
   const fb = firstBackup(); out['first-backup'] = setStep('first-backup', fb.status, fb.note);
   const og = ownerGates(cd.gate ? [cd.gate] : []); out['owner-gates'] = setStep('owner-gates', og.status, og.note);
   const ga = applyGuardrails(); out['guardrails-applied'] = setStep('guardrails-applied', ga.status, ga.note);
+  const sd = await stationSeed(); out['station-seed'] = setStep('station-seed', sd.status, sd.note);
+  const fl = await founderLoop(); out['founder-loop'] = setStep('founder-loop', fl.status, fl.note);
   return { ok: Object.values(out).every(x => x.status === 'ok'), steps: out };
 }
 
@@ -241,6 +275,12 @@ async function certify() {
   const ct = co.secret('console-token');
   const cr = ct ? await get(consoleUrl() + '/api/company', { 'x-console-token': ct }) : { ok: false, error: 'no secrets/console-token (start the console once: scripts/console.sh)' };
   put('console', cr.ok && cr.json && cr.json.ok, cr.error ? 'console at ' + consoleUrl() + ': ' + cr.error : 'console answered HTTP ' + cr.status);
+  // 10
+  let ss = null; try { ss = await require('./station-seed.js').status(); } catch (e) { ss = { ok: false, problems: [{ code: e.message }] }; }
+  put('station-seed', ss.ok, (ss.problems || []).map(p => p.code + (p.fix ? ' (fix: ' + p.fix + ')' : '')).join('; '));
+  // 11
+  let fl = null; try { fl = await require('./founder-loop.js').status(); } catch (e) { fl = { ok: false, problems: [{ msg: e.message, fix: 'node company/tools/founder-loop.js status' }] }; }
+  put('founder-loop', fl.ok, (fl.problems || []).map(p => p.msg + ' (fix: ' + p.fix + ')').join('; '));
   const ok = Object.values(res).every(x => x.ok);
   const s = state();
   const was = s.certified;
@@ -248,8 +288,40 @@ async function certify() {
   s.certified = ok; if (ok && !was) s.certifiedAt = now();
   writeJson(F.state, s);
   ledger({ certify: ok, failed: Object.keys(res).filter(k => !res[k].ok) });
-  if (ok && !was) { try { require('./owner-inbox.js').send({ from: 'onboard.js', text: 'Onboarding: the company is CERTIFIED (all 9 checks green). It is operational.' }); } catch (_) {} }
-  return { ok, certified: ok, results: res };
+  if (ok && !was) { try { require('./owner-inbox.js').send({ from: 'onboard.js', text: 'Onboarding: the company is CERTIFIED (all ' + CHECKS.length + ' checks green). It is operational. The Founder is drafting the first plan now: [watch it on Today](console:#/today).' }); } catch (_) {} }
+  let kick = null;
+  if (ok) { try { kick = await kickoff(); } catch (e) { kick = { status: 'failed', note: e.message }; setStep('kickoff', 'failed', e.message); } }
+  return { ok, certified: ok, results: res, kickoff: kick };
+}
+
+/* ---------- kickoff: the Founder's first planning run, once ---------- */
+// When the company certifies, the Founder gets one OPEN handoff (turn the charter into a first plan) and its loop is
+// fired once (POST /api/cron/run, detached). Recorded as the step `kickoff`; never fired twice.
+const KICKOFF_TITLE = 'turn the charter into the first plan';
+async function kickoff() {
+  const s0 = state();
+  if ((s0.steps.kickoff || {}).status === 'ok') return { status: 'ok', note: 'already kicked off ' + s0.steps.kickoff.at, already: true };
+  const FL = require('./founder-loop.js');
+  const seat = FL.seat();
+  const inbox = co.p('company', 'work', 'handoffs', seat.inbox);
+  let txt = ''; try { txt = fs.readFileSync(inbox, 'utf8'); } catch (_) {}
+  if (!txt.includes(KICKOFF_TITLE)) {
+    const day = co.localParts().date;
+    const block = '\n## ' + day + ' from onboard.js — ' + KICKOFF_TITLE + '\n' +
+      '**Need:** read company/CHARTER.md and turn it into the company\'s first plan. (1) Goals: mint each as a station quest whose contract is a company/work/ file (see your loop prompt for the mint command and the domain list). ' +
+      '(2) Roles: the seats you will open first and why; open them with `node company/tools/hire.js open` — the hiring governance level (`node company/tools/governance.js check hiring`) decides whether the owner is asked first. ' +
+      '(3) First tasks: as quest steps or handoffs, each with an owner and a date. Write the plan to company/work/plan.md, then send the owner a short summary (owner-inbox.js send) with links: ' +
+      '[the plan\'s quests](console:#/work/quests), [hiring](console:#/hiring), [handoffs](console:#/work/handoffs). Close this handoff with the evidence.\n' +
+      '**Why:** the company just certified; until there is a plan nobody knows what to build first.\n**Deadline:** ' + day + '\n**Status:** OPEN\n**Evidence:** company/state/onboarding-state.json (certified)\n';
+    fs.mkdirSync(path.dirname(inbox), { recursive: true });
+    fs.appendFileSync(inbox, (txt ? '' : '# Handoffs to ' + seat.name + '\n') + block);
+  }
+  const cr = await FL.stationCall('GET', '/api/cron');
+  const job = cr.json && Array.isArray(cr.json.jobs) ? FL.findLoop(cr.json.jobs, seat) : null;
+  if (!job) { const st = setStep('kickoff', 'pending', 'handoff written; no "' + seat.loop + '" routine to fire (the dispatcher wakes the Founder once it exists)'); return st; }
+  const r = await FL.stationCall('POST', '/api/cron/run', { id: job.id, detach: true }, 20000);
+  const ok = r.status === 200;
+  return setStep('kickoff', ok ? 'ok' : 'pending', ok ? 'fired "' + job.name + '" for the first plan' + (r.json && r.json.runId ? ' (run ' + r.json.runId + ')' : '') : 'handoff written; firing "' + job.name + '" answered ' + (r.error || 'HTTP ' + r.status) + ' (the dispatcher wakes it for the open handoff)');
 }
 
 /* ---------- check (read only) ---------- */
@@ -342,7 +414,7 @@ async function selftest() {
   return fails ? 1 : 0;
 }
 
-module.exports = { check, certify, resume, state, setStep, STEPS, CHECKS };
+module.exports = { check, certify, resume, step, state, setStep, STEPS, CHECKS };
 if (require.main === module) {
   const a = process.argv.slice(2);
   const has = k => a.includes('--' + k);
@@ -355,11 +427,12 @@ if (require.main === module) {
       if (!step || !['ok', 'failed', 'pending'].includes(st)) { console.error('--record <step> <ok|failed|pending> [--note ..]'); process.exit(2); }
       show(setStep(step, st, opt('note'))); process.exit(0);
     }
+    if (has('step')) { const r = await step(opt('step')); show(r, x => console.log((x.status || 'failed') + ' ' + (x.step || '') + ' — ' + (x.note || x.error || ''))); process.exit(r.ok ? 0 : 1); }
     if (has('check')) { const r = check(); show(r, x => { console.log((x.certified ? 'CERTIFIED' : 'NOT CERTIFIED') + ' · ' + (x.provisioned ? 'provisioned' : 'not provisioned')); for (const s of x.steps) console.log('  step  ' + s.status.padEnd(9) + ' ' + s.id + (s.note ? ' — ' + s.note : '')); for (const c of x.checks) console.log('  check ' + c.status.padEnd(9) + ' ' + c.id + (c.missing ? ' — ' + c.missing : '')); }); process.exit(0); }
     if (has('resume')) { const r = await resume(); show(r, x => { for (const [k, v] of Object.entries(x.steps)) console.log('  ' + v.status.padEnd(8) + ' ' + k + (v.note ? ' — ' + v.note : '')); }); process.exit(r.ok ? 0 : 1); }
     if (has('certify')) { const r = await certify(); show(r, x => { console.log(x.ok ? 'CERTIFIED' : 'NOT CERTIFIED'); for (const [k, v] of Object.entries(x.results)) console.log('  ' + (v.ok ? 'ok  ' : 'FAIL') + ' ' + k + (v.missing ? ' — ' + v.missing : '')); }); process.exit(r.ok ? 0 : 1); }
     if (has('teardown')) { const r = teardown({ by: opt('by'), purge: has('purge') }); show(r); process.exit(r.ok ? 0 : 1); }
-    console.error('usage: onboard.js --check | --resume | --certify | --teardown [--purge] --by owner | --record <step> <status> | --selftest   [--json]');
+    console.error('usage: onboard.js --check | --resume | --step <name> | --certify | --teardown [--purge] --by owner | --record <step> <status> | --selftest   [--json]');
     process.exit(2);
   })().catch(e => { console.error(JSON.stringify({ ok: false, error: e.message })); process.exit(1); });
 }
