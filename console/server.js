@@ -213,7 +213,8 @@ async function crewView() {
   try {
     const SC = require(co.p('company', 'tools', 'station-crew.js'));
     const sv = await Promise.race([SC.getSave(), new Promise((_, rej) => setTimeout(() => rej(new Error('station did not answer')), 3000))]);
-    list = SC.rows(sv.doc).map(a => Object.assign({}, a, { approvalMode: a.approvalMode || a.approval || null }));
+    const rw = SC.rows(sv.doc); const arr = rw instanceof Map ? [...rw.values()] : Array.isArray(rw) ? rw : Object.values(rw || {});
+    list = arr.map(a => Object.assign({}, a, { approvalMode: a.approvalMode || a.approval || null }));
     r = { ok: true };
   } catch (e) { r = { ok: false, error: e.message }; }
   if (Array.isArray(list)) for (const s of seats) { const hit = list.find(x => x && (x.id === s.id || x.agentId === s.id)); if (hit) s.station = hit; }
