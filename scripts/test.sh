@@ -67,6 +67,13 @@ for f in "$COPY"/company/tools/*.js "$COPY"/company/tools/*.sh "$COPY"/company/t
   case "$f" in *.js) run=node ;; *.sh) run=bash ;; *.py) run="python3 -I" ;; esac
   step "$rel $arg" $run "$rel" "$arg"
 done
+# core modules: every module file that carries a selftest (tools/, watch.js, ...), run in place
+for f in "$COPY"/modules/*/*.js "$COPY"/modules/*/tools/*.js "$COPY"/modules/*/tools/*.sh; do
+  [ -f "$f" ] || continue
+  rel="${f#"$COPY"/}"; arg="$(selftest_arg "$f")"; [ -n "$arg" ] || continue
+  case "$f" in *.js) run=node ;; *.sh) run=bash ;; esac
+  step "$rel $arg" $run "$rel" "$arg"
+done
 [ -f "$COPY/company/tools/sudo-gate/selftest.py" ] && step "company/tools/sudo-gate/selftest.py" python3 -I company/tools/sudo-gate/selftest.py
 
 echo "== unit tests"
@@ -99,6 +106,8 @@ if [ -f "$COPY/scripts/e2e-first-light.sh" ]; then step "scripts/e2e-first-light
 else skip "scripts/e2e-first-light.sh" "not present"; fi
 if [ -f "$COPY/company/tools/pack.js" ]; then step "pack.js doctor --all" node company/tools/pack.js doctor --all
 else skip "company/tools/pack.js doctor --all" "not present"; fi
+if [ -f "$COPY/company/tools/module.js" ]; then step "module.js doctor --all" node company/tools/module.js doctor --all
+else skip "company/tools/module.js doctor --all" "not present"; fi
 
 echo
 printf '%-62s %-10s %s\n' "STEP" "RESULT" "TIME"

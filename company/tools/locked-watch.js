@@ -102,6 +102,10 @@ const MANIFEST = [
   { p: '~/.local/bin/git', cls: 'F', owner: 'risk', area: 'gate', why: 'the merge-gate wrapper around git (no push to a default branch)' },
   { p: 'company/memory/*/.git/hooks/pre-push', cls: 'F', owner: 'risk', area: 'gate', why: 'the merge gate\'s push hook in the memory clones' },
   { p: 'company/repos/*/.git/hooks/pre-push', cls: 'F', owner: 'risk', area: 'gate', why: 'the merge gate\'s push hook' },
+  // pack and module registrations: what pack.js / module.js lock on install/enable, and the registries themselves
+  { p: 'company/state/locked-extra.json', cls: 'F', writers: ['pack.js', 'module.js'], owner: 'risk', area: 'policy', why: 'extra locked-watch entries registered by pack.js and module.js (editing it would quietly unlock a meter)' },
+  { p: 'company/state/packs.json', cls: 'F', writers: ['pack.js'], owner: 'risk', area: 'policy', why: 'the installed and approved capability packs' },
+  { p: 'company/state/modules.json', cls: 'F', writers: ['module.js'], owner: 'risk', area: 'policy', why: 'the enabled core modules (their ticks run in the dispatcher, their routes in the console)' },
   { p: 'company/state/external-allowlist.txt', cls: 'F', owner: 'risk', area: 'gate', why: 'the external-action allowlist' },
   { p: 'company/state/owner-channel-policy.json', cls: 'F', owner: 'risk', area: 'gate', why: 'the owner channel pin: the one target, the senders and the expiry external-gate.js reads — ending the channel is an edit here with a diff, not a merge' },
   { p: 'company/state/external-clearances.jsonl', cls: 'F', append: true, owner: 'risk', area: 'gate', why: 'external-action clearances (the owner\'s and the CEO\'s rows)' },
@@ -136,6 +140,13 @@ const local = ms => {
   return o.year + '-' + o.month + '-' + o.day + 'T' + hh + ':' + o.minute + ':' + o.second + (off < 0 ? '-' : '+') + String(Math.floor(a / 60)).padStart(2, '0') + ':' + String(a % 60).padStart(2, '0');
 };
 const stamp = ms => local(ms).slice(0, 16).replace('T', ' ');
+// company/state/locked-extra.json .entries (written by pack.js and module.js): rows with a string p and cls A/F/R join
+// the MANIFEST. A path outside the root or a malformed row is skipped, never trusted.
+function extraEntries(P) {
+  const rows = ((readJson(P('company/state/locked-extra.json'), {}) || {}).entries) || [];
+  return (Array.isArray(rows) ? rows : []).filter(e => e && typeof e.p === 'string' && ['A', 'F', 'R'].includes(e.cls) && !e.p.startsWith('/') && !e.p.split('/').includes('..') && !e.p.startsWith('~'))
+    .map(e => Object.assign({}, e, { owner: ['ceo', 'people', 'tools', 'risk', 'floor', 'finance'].includes(e.owner) ? e.owner : 'risk', area: e.area || 'record', why: e.why || 'registered in locked-extra.json' }));
+}
 function context(opts) {
   opts = opts || {};
   const root = path.resolve(opts.root || process.env.LOCKED_WATCH_ROOT || LIVE_ROOT);
@@ -150,7 +161,7 @@ function context(opts) {
   const roles = { people: seat('people'), tools: seat('tools'), finance: seat('finance'), risk: seat('risk'), floor: seat('floor'), ceo: ceoRow };
   const dir = P('company/state/locked');
   return { root, home, P, now: Number.isFinite(opts.now) ? opts.now : Date.now(), agents, roles, dry: !!opts.dry, log: opts.log || console.log,
-    manifest: opts.manifest || MANIFEST, call: opts.call || null, jobs: opts.jobs || null, guards: opts.guards || null,
+    manifest: opts.manifest || MANIFEST.concat(extraEntries(P)), call: opts.call || null, jobs: opts.jobs || null, guards: opts.guards || null,
     paths: { dir, baseline: path.join(dir, 'baseline.json'), lkg: path.join(dir, 'lkg'), replaced: path.join(dir, 'replaced'), quarantine: path.join(dir, 'quarantine'),
       mirror: path.join(home, GUARD_DIR, 'locked-baseline.sha256'), report: P('company/work/security/locked-changes.jsonl'), reportMd: P('company/work/security/locked-changes.md'),
       handoffs: P('company/work/handoffs'), transcripts: P('.starnet-data/workspaces/transcript-history-v2'), runs: P('.starnet-data/workspaces/runs.jsonl'),

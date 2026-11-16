@@ -13,6 +13,7 @@
  * Env: DISPATCH_COOLDOWN_MIN=40 DISPATCH_MAX_PER_TICK=4 DISPATCH_STALL_AFTER=3 DISPATCH_DAILY_USD=2
  *   (cooldown and per-tick defaults come from company/work/ops/cadence.json when present; the env vars still win)
  * Halt: every tick first runs company/tools/halt.js tick; while co.halted() is 'soft' or 'hard' nobody is woken.
+ * Modules: then each enabled core module's tick.js (lib/modules.js runTicks; halted: only runWhenHalted ones).
  * Guardrail spendCap (co.guard): when the owner turns it off, the USD caps hold nothing (one line says what they would have held).
  *   node company/tools/dispatch.js --selftest # offline fixtures for the handoff reader
  */
@@ -526,7 +527,12 @@ function lastRunTail(job) {
   // Halt first (company/tools/halt.js, fail-safe): it watches a soft halt settle and escalates only if told to. Then,
   // halted or not, the halt file decides: a halted company wakes nobody.
   try { await require('./halt.js').tick({ dry: DRY, log }); } catch (e) { log('HALT TICK ERROR: ' + String(e.message).slice(0, 200)); }
-  if (co.halted()) { log(haltLine(co.haltState())); return; }
+  // Core modules (company/tools/lib/modules.js): ONE generic hook runs each enabled module's tick.js, fail-safe (a
+  // throw or a timeout is one log line). A halted company runs only modules that export runWhenHalted: true
+  // (liveness: the heartbeat must keep beating through a halt, or the dead-man's switch would page the owner).
+  const halted = co.halted();
+  try { await require('./lib/modules').runTicks({ log, dry: DRY, halted }); } catch (e) { log('MODULE TICKS ERROR: ' + String(e.message).slice(0, 200)); }
+  if (halted) { log(haltLine(co.haltState())); return; }
   const split = spendSplit();
   const spent = split.metered;
   // Say the numerator out loud when the two records disagree: the cap now reads the ledger, so a tick where it

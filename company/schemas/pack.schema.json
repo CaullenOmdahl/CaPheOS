@@ -25,6 +25,7 @@
       "additionalProperties": false,
       "properties": {
         "packs": { "type": "array", "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,39}$" }, "description": "packs that must be installed AND conformant" },
+        "modules": { "type": "array", "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,39}$" }, "description": "core modules (modules/<id>/) that must be enabled AND conformant (company/tools/module.js)" },
         "guardrails": { "type": "array", "items": { "type": "string" }, "description": "guardrails that must be ON (co.guard)" },
         "secrets": { "type": "array", "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" }, "description": "secrets/<name> files that must exist and be non-empty (never read beyond that)" },
         "governance": { "type": "array", "items": { "type": "string" }, "description": "governance categories that must exist in governance.json" },

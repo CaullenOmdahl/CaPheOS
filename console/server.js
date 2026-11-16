@@ -353,6 +353,39 @@ function events(req, res) {
   req.on('close', () => clients.delete(res));
 }
 
+/* ---------------- core modules: ONE generic mount (company/tools/lib/modules.js) ----------------
+ * Each enabled module's http.js routes: auth 'source' -> /hooks/<id>/<path> (no owner token: the module authenticates
+ * the caller, e.g. an HMAC over ctx.body), auth 'owner' -> /api/m/<id>/<path> (behind the owner token like every /api
+ * route). Bodies are read raw and capped at 256 KB (413 above). ctx = { id, params, query, body (Buffer), text, json(),
+ * owner, co, send(status, obj) }. A handler either answers on res itself or returns an object (sent as JSON 200). */
+const MODULE_BODY_CAP = 256 * 1024;
+const modulesLib = () => require(path.join(TOOLS, 'lib', 'modules.js'));
+function readRaw(req, cap) {
+  return new Promise((resolve, reject) => {
+    const parts = []; let n = 0;
+    // over the cap: stop keeping it, drain the rest, then answer 413 (destroying the socket would leave no answer)
+    req.on('data', c => { n += c.length; if (n <= cap) parts.push(c); else if (n > cap * 64) req.destroy(); });
+    req.on('end', () => n > cap ? reject(new HttpError(413, 'body too large (cap ' + cap + ' bytes)')) : resolve(Buffer.concat(parts)));
+    req.on('error', reject);
+  });
+}
+async function moduleRoute(req, res, url, auth, id, sub) {
+  if (!/^[a-z][a-z0-9-]{1,39}$/.test(id)) return sendJson(res, 404, { ok: false, error: 'no such module' });
+  let routes; try { routes = modulesLib().httpRoutes(); } catch (e) { return sendJson(res, 500, { ok: false, error: 'module routes: ' + e.message }); }
+  const mine = routes.filter(r => r.id === id && r.auth === auth);
+  if (!mine.length) return sendJson(res, 404, { ok: false, error: 'module ' + id + ' is not enabled or has no ' + auth + ' routes' });
+  const subPath = String(sub || '').replace(/^\/+|\/+$/g, '');
+  const hits = mine.filter(r => r.re.test(subPath));
+  const r = hits.find(x => x.method === req.method);
+  if (!r) return sendJson(res, hits.length ? 405 : 404, { ok: false, error: 'no such endpoint: ' + req.method + ' ' + url.pathname });
+  const body = (req.method === 'GET' || req.method === 'HEAD') ? Buffer.alloc(0) : await readRaw(req, MODULE_BODY_CAP);
+  const m = subPath.match(r.re); const params = {}; r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
+  const ctx = { id, params, query: url.searchParams, body, text: body.toString('utf8'), json: () => { try { return JSON.parse(body.toString('utf8') || '{}'); } catch (_) { throw new HttpError(400, 'body is not JSON'); } },
+    owner: auth === 'owner' ? OWNER : null, co, send: (status, obj) => sendJson(res, status, obj), headers: req.headers };
+  const out = await r.handler(req, res, ctx);
+  if (!res.headersSent && !res.writableEnded) sendJson(res, 200, out === undefined ? { ok: true } : out);
+}
+
 /* ---------------- server ---------------- */
 function makeServer(token) {
   return http.createServer(async (req, res) => {
@@ -364,10 +397,14 @@ function makeServer(token) {
         res.writeHead(302, { 'set-cookie': 'console_token=' + encodeURIComponent(token) + '; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000', location: '/' });
         return res.end();
       }
+      const hk = p.match(/^\/hooks\/([^/]+)(?:\/(.*))?$/);
+      if (hk) return await moduleRoute(req, res, url, 'source', hk[1], hk[2]);
       if (!p.startsWith('/api/') && p !== '/api') return serveStatic(req, res, p);
       if (!same(req.headers['x-console-token'] || cookies(req).console_token, token)) return sendJson(res, 401, { ok: false, error: 'owner token required (x-console-token header or console_token cookie; GET /login?token=...)' });
       if (p === '/api/events') return events(req, res);
       if (p.startsWith('/api/station/')) return stationProxy(req, res, p.slice('/api/station/'.length), url.search);
+      const am = p.match(/^\/api\/m\/([^/]+)(?:\/(.*))?$/);
+      if (am) return await moduleRoute(req, res, url, 'owner', am[1], am[2]);
       const vm = p.match(/^\/api\/panels\/([a-z0-9-]+)\/view$/);
       if (vm && req.method === 'GET') {
         const d = PANEL_ID.test(vm[1]) && panelDir(vm[1]);
@@ -424,6 +461,13 @@ async function selftest() {
   fs.cpSync(co.p('company'), path.join(tmp, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
   fs.mkdirSync(path.join(tmp, 'secrets'), { recursive: true });
   fs.writeFileSync(path.join(tmp, 'secrets', 'station-token'), 'selftest-fake-station-token\n', { mode: 0o600 });
+  // a demo core module with one owner route and one source route (the generic mount)
+  fs.mkdirSync(path.join(tmp, 'modules', 'demo'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'modules', 'demo', 'http.js'), "module.exports = { routes: [" +
+    "{ method: 'GET', path: 'echo/:what', auth: 'owner', handler: (req, res, ctx) => ({ ok: true, what: ctx.params.what, owner: ctx.owner }) }," +
+    "{ method: 'POST', path: 'in', auth: 'source', handler: (req, res, ctx) => ctx.headers['x-demo-secret'] === 's3' ? { ok: true, bytes: ctx.body.length } : ctx.send(401, { ok: false }) }] };\n");
+  fs.mkdirSync(path.join(tmp, 'company', 'state'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'company', 'state', 'modules.json'), JSON.stringify({ enabled: { demo: { at: 'x' } } }));
   // a dead station: a port we bound and released, so every station call is refused
   const dead = await new Promise(r => { const s = require('net').createServer(); s.listen(0, '127.0.0.1', () => { const pt = s.address().port; s.close(() => r(pt)); }); });
   const env = Object.assign({}, process.env, { CAPHEOS_ROOT: tmp, STARNET_URL: 'http://127.0.0.1:' + dead });
@@ -515,6 +559,19 @@ async function selftest() {
       r = await call('GET', ep);
       check('GET ' + ep + ' answers JSON', r.status < 500 && r.json && typeof r.json === 'object', { status: r.status, body: r.text.slice(0, 300) });
     }
+    // core module mount
+    r = await call('GET', '/api/m/demo/echo/hi');
+    check('module owner route under /api/m/<id>/', r.status === 200 && r.json.what === 'hi' && r.json.owner === OWNER, r.json);
+    r = await call('GET', '/api/m/demo/echo/hi', undefined, {});
+    check('module owner route needs the owner token', r.status === 401, r.status);
+    r = await call('POST', '/hooks/demo/in', { a: 1 }, { 'content-type': 'application/json', 'x-demo-secret': 's3' });
+    check('module source route under /hooks/<id>/ without the owner token', r.status === 200 && r.json.bytes === 7, r.json);
+    r = await call('POST', '/hooks/demo/in', { a: 1 }, { 'content-type': 'application/json' });
+    check('module source route: the module refuses an unauthenticated caller', r.status === 401, r.status);
+    r = await call('POST', '/hooks/demo/in', { big: 'x'.repeat(300 * 1024) }, { 'content-type': 'application/json', 'x-demo-secret': 's3' });
+    check('module body cap 256 KB: 413', r.status === 413, r.status);
+    r = await call('POST', '/hooks/nope/in', {}, { 'content-type': 'application/json' });
+    check('a module that is not enabled has no route: 404', r.status === 404, r.status);
     r = await call('POST', '/api/today', {});
     check('wrong method: 405', r.status === 405, r.status);
     r = await call('POST', '/api/owner/messages', undefined, { 'x-console-token': token, 'content-type': 'text/plain' });

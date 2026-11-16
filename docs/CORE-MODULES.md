@@ -32,6 +32,51 @@ category `packs`), listed in `company/state/modules.json`. A pack declares the m
 - **Commitment**: `{ id, key, party?, title, state, owner, createdAt, ackBy, dueAt, playbook?, history:[{at, from, to, by, note}], evidence:[ref], verify?: spec }`, stored one file per commitment under `company/work/commitments/` plus an append-only `commitments.jsonl` of transitions.
 - Every module ships `--selftest`, a conformance test, an INVENTORY.md row, and console panels (via the console-panel contract) where the owner would look at it.
 
+## The module mechanism
+
+Tool: `company/tools/module.js` (`list`, `status <id>`, `doctor [<id>|--all]`, `enable|disable <id> --by owner`,
+`gates`, `selftest`). Runtime hooks: `company/tools/lib/modules.js`. Registry: `company/state/modules.json` (only
+module.js writes it; locked-watch class F, owner risk). Log: `company/state/modules-log.jsonl`.
+
+```
+modules/<id>/
+  module.json        pack.json shape (company/schemas/pack.schema.json) + "layer" (sense|organize|act|verify|settle|
+                     guarantee) + "enableWhen" (one sentence); requires.modules = modules that must be enabled first;
+                     limits may be []; meters p anywhere under company/work/ or company/state/
+  README.md, docs/   always readable
+  tools/<file>       each listed in tools[], each with --selftest; copied FLAT to company/tools/<file> on enable
+                     (refused if that name is taken by a non-module tool), removed on disable
+  rows.md            optional: "## INVENTORY", "## 5a", "## 7b" sections of markdown table rows for the tools;
+                     generated from tools[] (purpose, owner, --selftest) when absent. enable appends them to
+                     company/tools/INVENTORY.md and the runbook, disable removes them (tool-inventory-check stays green)
+  tick.js            optional: module.exports = { tick: async ({ log, dry, co, id, halted }) => any,
+                     runWhenHalted?: true, timeoutMs?: 60000 }
+  http.js            optional: module.exports = { routes: [{ method, path, auth: 'owner'|'source', handler(req, res, ctx) }] }
+  panels/<panel>/    console panels, added on enable
+  conformance/test.js  exit 0 when the contract is met; env MODULE_DIR, MODULE_ROOT, MODULE_ENABLED (1|0),
+                     MODULE_TOOLS_DIR (also PACK_* for template compatibility)
+```
+
+- **Enable** (owner only, refused inside a station run; governance category `packs` recorded): static checks (schema,
+  listed files, closed limits, `--selftest` in every tool, tick.js/http.js parse), `requires` (incl. `modules`),
+  conformance test; then tools copied, empty meter files created, meters + tools + tick.js/http.js/module.json
+  registered in `company/state/locked-extra.json` (entries tagged `module: <id>`), rows added, allowlist hosts tagged
+  `# module:<id>`, panels added, owner told. Any failure rolls back. **Disable** is refused while an enabled module or an
+  installed pack requires it; meter records are kept.
+- **Doctor** fails an enabled module when a tool is missing or changed, a meter is unregistered, a row is missing, the
+  module folder changed since enable (disable + enable to take a change), a requirement broke, or its test fails.
+- **Ticks:** the dispatcher runs ONE hook after the halt tick: each enabled module's `tick.js` in id order,
+  fail-safe (throw/timeout = one `MODULE <id> TICK ERROR` log line). A halted company runs only `runWhenHalted` modules.
+- **Routes:** the console mounts each enabled module's `http.js`: `auth: 'source'` → `/hooks/<id>/<path>` (no owner
+  token; the module authenticates the caller, e.g. HMAC over the raw body), `auth: 'owner'` → `/api/m/<id>/<path>`.
+  `path` segments may be `:name`. Bodies are raw, capped at 256 KB (413). `ctx = { id, params, query, body (Buffer),
+  text, json(), headers, owner, co, send(status, obj) }`; return an object (sent as JSON 200) or answer on `res`.
+- **Requiring lib/company.js** from a module tool that runs both in `modules/<id>/tools/` and, once enabled, in
+  `company/tools/`: `const co = require(require('fs').existsSync(__dirname + '/lib/company.js') ? './lib/company' :
+  '../../../company/tools/lib/company');` (tick.js / http.js: `require('../../company/tools/lib/company')`).
+- A pack names the modules it builds on in `pack.json` `requires.modules`; pack.js refuses to install until they are
+  enabled and conformant.
+
 ## Onboarding is certification, not provisioning
 
 Two states, never conflated:

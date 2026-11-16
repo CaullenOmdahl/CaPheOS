@@ -39,6 +39,7 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/merge-gate.js` | the company's client-side merge gate, since GitHub branch protection needs GitHub Pro on a | risk | `selftest` | `status` `selftest` | — |
 | `company/tools/model-drift.js` | the same setting in three places, checked in one run. | people | `--selftest` | `--json` `--selftest` `--roster` | station-token |
 | `company/tools/model-stats.js` | our own "house benchmark": how each model actually performs on this company's work. | people | — | `[--days N] [--json]` | — |
+| `company/tools/module.js` | core modules: list them, check them, enable and disable them (docs/CORE-MODULES.md). | ceo | `selftest` / `--selftest` | `list` `status` `doctor` `enable` `disable` `gates` `selftest` | — |
 | `company/tools/my-section.js` | each person's own section of their routine prompts: notes they write to themselves, kept on every run. | people | `selftest` | `show` `check` `set` `append` `clear` `history` `revert` `selftest` | — |
 | `company/tools/offpeak-clocks.js` | does any routine own a clock inside a provider's peak-price blocks? | finance | `--selftest` | `--json` `--file` `--selftest` | station-token |
 | `company/tools/offpeak-hold.js` | the off-peak hold, as ONE predicate with two triggers. | finance | `--selftest` | `--selftest` `--status` `--parity` | — |
@@ -70,6 +71,7 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/lib/core-loop.js` | small time helpers shared by the core-loop tools (dispatch, handoff-status, handoff-archive). | tools | — | library (require) | — |
 | `company/tools/lib/governance.js` | how a tool asks "may the company do this alone?" and acts on the answer. | ceo | — | library (require) | — |
 | `company/tools/lib/guardrails.js` | helpers for the guardrail switches, shared by guardrails.js and the tools that enforce them. | risk | — | library (require) | — |
+| `company/tools/lib/modules.js` | the runtime side of core modules: enabled list, the dispatcher tick hook, the console HTTP mount. | tools | — | library (require) | — |
 | `company/tools/lib/models-money.js` | shared helpers for the "models and money" tools (pacer.js, offpeak-*.js, cap-numerator.js). | finance | — | library (require) | — |
 | `company/tools/sudo-gate/broker.py` | runs a fixed allowlist of root commands on behalf of the company's agents. | risk | via sudo-gate/selftest.py | socket-activated (stdin request); not run by hand | — |
 | `company/tools/sudo-gate/install.sh` | install (or --uninstall) the CaPheOS root-command broker for agents. Run as root (sudo). | risk | — | `sudo bash install.sh [--uninstall]` | — |

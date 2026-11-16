@@ -182,10 +182,10 @@ function openParts(v, at, out) {
 function checkStatic(dir, opts) {
   opts = opts || {};
   const f = [];
-  const raw = (() => { try { return fs.readFileSync(path.join(dir, 'pack.json'), 'utf8'); } catch (_) { return null; } })();
+  const raw = (() => { try { return fs.readFileSync(path.join(dir, opts.manifest || 'pack.json'), 'utf8'); } catch (_) { return null; } })();
   if (raw == null) return { pack: null, findings: ['pack.json: missing'] };
   let pack; try { pack = JSON.parse(raw); } catch (e) { return { pack: null, findings: ['pack.json: not JSON (' + e.message + ')'] }; }
-  const schema = readJson(P.schema, null);
+  const schema = opts.schema || readJson(P.schema, null);
   if (!schema) f.push('schema: cannot read ' + rel(P.schema) + ' (fail closed)');
   else schemaCheck(schema, pack, 'pack.json', f, schema);
   if (!pack || typeof pack !== 'object') return { pack: null, findings: f };
@@ -217,7 +217,7 @@ function checkStatic(dir, opts) {
     if (!opts.installed) { const open = openParts(v, l.file, []); if (open.length) f.push('limits: must ship CLOSED: ' + open.join('; ')); }
   }
   const pid = String(pack.id || '');
-  for (const m of pack.meters || []) if (!String(m.p).startsWith('company/work/packs/' + pid + '/')) f.push('meters: ' + m.p + ' must live under company/work/packs/' + pid + '/');
+  if (!opts.anyMeterPath) for (const m of pack.meters || []) if (!String(m.p).startsWith('company/work/packs/' + pid + '/')) f.push('meters: ' + m.p + ' must live under company/work/packs/' + pid + '/');
   if (!pack.conformance || !exists(pack.conformance.test)) f.push('conformance: test ' + ((pack.conformance || {}).test || '(none)') + ' missing (a pack is a contract plus a failing test, never a blank file)');
   return { pack, findings: f };
 }
@@ -228,6 +228,12 @@ function checkRequires(pack, seen) {
     if (seen.has(id)) { f.push('requires.packs: cycle through ' + id); continue; }
     const s = status(id, new Set([...seen, id]));
     if (s.status !== 'conformant') f.push('requires.packs: ' + id + ' is ' + s.status + ' (must be installed and conformant)');
+  }
+  // modules a pack (or a module) builds on: enabled in company/state/modules.json and module.js doctor-clean
+  for (const id of q.modules || []) {
+    if (seen.has('module:' + id)) { f.push('requires.modules: cycle through ' + id); continue; }
+    let st = null; try { st = require('./module.js').status(id, new Set([...seen, 'module:' + id])); } catch (e) { st = { status: 'unknown (' + e.message + ')' }; }
+    if (!st || st.status !== 'conformant') f.push('requires.modules: ' + id + ' is ' + (st ? st.status : 'unknown') + ' (must be enabled and conformant: node company/tools/module.js enable ' + id + ' --by owner)');
   }
   for (const g of q.guardrails || []) if (!co.guard(g)) f.push('requires.guardrails: ' + g + ' is OFF');
   for (const s of q.secrets || []) { let ok = false; try { ok = fs.statSync(path.join(co.SECRETS_DIR, s)).size > 0; } catch (_) {} if (!ok && !co.secret(s)) f.push('requires.secrets: secrets/' + s + ' missing or empty'); }
@@ -554,7 +560,8 @@ function selftest() {
   return fails ? 1 : 0;
 }
 
-module.exports = { status, doctor, list, checkStatic, openParts, digest };
+// shared with module.js (core modules use the same scaffold rules)
+module.exports = { status, doctor, list, checkStatic, checkRequires, openParts, digest, schemaCheck, walk, copyDir, sha, isOwner, findSeat, ownerOnly, underStation, tellOwner, askOwner, inside, EXT_CATS, FUNCTIONS, SCHEMA: P.schema };
 if (require.main !== module) return;
 
 function args(argv) {
