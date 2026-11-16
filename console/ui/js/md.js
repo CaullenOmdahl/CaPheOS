@@ -7,7 +7,7 @@ import { h } from './ui.js';
 
 export function safeHref(url) {
   const u = String(url || '').trim();
-  if (/^console:#\//i.test(u)) return { href: u.replace(/^console:/i, ''), inApp: true };
+  if (/^console:?#\//i.test(u)) return { href: u.replace(/^console:?/i, ''), inApp: true };   // agents also write console#/… (no colon)
   if (/^#\//.test(u)) return { href: u, inApp: true };
   if (/^https?:\/\/[^\s<>"]+$/i.test(u)) return { href: u, inApp: false };
   return null;
@@ -21,7 +21,7 @@ function link(text, url) {
 // inline: code spans first, then links, then bold / em, then bare URLs and bare console links
 function inline(text) {
   const out = [];
-  const re = /(`[^`\n]+`)|\[([^\]\n]{1,300})\]\(([^)\s]{1,2000})\)|(\*\*[^*\n]+\*\*)|(\*[^*\n]+\*|_[^_\n]+_)|(https?:\/\/[^\s<>()"]+[^\s<>()".,;:!?'])|(console:#\/[^\s<>()"]*[^\s<>()".,;:!?'])/g;
+  const re = /(`[^`\n]+`)|\[([^\]\n]{1,300})\]\(([^)\s]{1,2000})\)|(\*\*[^*\n]+\*\*)|(\*[^*\n]+\*|_[^_\n]+_)|(https?:\/\/[^\s<>()"]+[^\s<>()".,;:!?'])|(console:?#\/[^\s<>()"]*[^\s<>()".,;:!?'])/g;
   let last = 0, m;
   while ((m = re.exec(text))) {
     if (m.index > last) out.push(document.createTextNode(text.slice(last, m.index)));
@@ -30,7 +30,7 @@ function inline(text) {
     else if (m[4]) out.push(h('strong', null, inline(m[4].slice(2, -2))));
     else if (m[5]) out.push(h('em', null, inline(m[5].slice(1, -1))));
     else if (m[6]) out.push(link(m[6], m[6]));
-    else if (m[7]) out.push(link(m[7].replace(/^console:/, ''), m[7]));
+    else if (m[7]) out.push(link(m[7].replace(/^console:?/, ''), m[7]));
     last = re.lastIndex;
   }
   if (last < text.length) out.push(document.createTextNode(text.slice(last)));

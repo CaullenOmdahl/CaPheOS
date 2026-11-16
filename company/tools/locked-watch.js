@@ -610,7 +610,19 @@ function runTick(ctx) {
     }
   }
   // act
+  // a framework update (git pull in a company checkout) changes tracked framework files: when the file now matches the
+  // checked-out commit exactly, it is the framework, not a tamper — accept it silently and say so once in the log
+  const fromFramework = (key, st) => {
+    if (!st || !st.exists || !st.sha256 || /^(starnet|\.starnet-data|secrets)\//.test(key) || /^[~/]/.test(key)) return false;
+    try {
+      const cpx = require('child_process');
+      cpx.execFileSync('git', ['-C', ctx.root, 'ls-files', '--error-unmatch', key], { stdio: 'ignore' });
+      const head = cpx.execFileSync('git', ['-C', ctx.root, 'show', 'HEAD:' + key], { maxBuffer: 64 << 20 });
+      return require('crypto').createHash('sha256').update(head).digest('hex') === String(st.sha256).replace(/^sha256:/, '');
+    } catch (_) { return false; }
+  };
   for (const c of changed) {
+    if (fromFramework(c.key, c.s)) { if (!ctx.dry) accept(ctx, base, c.key, c.m, c.s); notes.push('framework update accepted: ' + c.key + ' matches the checked-out commit'); continue; }
     const d = decide(ctx, c.key, c.m, c.b, c.s, prov, rec[c.key], flagOnly);
     const direct = hits.filter(x => x.key === c.key && x.write && !seen.has(callId(x)));   // a call already reported (the 2-minute overlap) counts once
     if (d.ok === null) continue;
