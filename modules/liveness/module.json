@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "id": "liveness",
+  "title": "Liveness (dead-man's switch)",
+  "summary": "The dispatcher writes a heartbeat every tick, even while halted; a separate systemd timer checks its age and alerts the owner (owner channel + optional push URL through the external gate) when it is older than 3 ticks; the dispatcher checks the watcher's heartbeat back.",
+  "packVersion": "0.1.0",
+  "owner": "risk",
+  "layer": "guarantee",
+  "enableWhen": "you promise coverage or availability",
+  "requires": {},
+  "docs": ["README.md"],
+  "tools": [{ "file": "tools/liveness.js", "purpose": "the dead-man's switch from a shell: both heartbeats, a test ping, one watcher check" }],
+  "limits": [],
+  "meters": [],
+  "conformance": { "test": "conformance/test.js" }
+}

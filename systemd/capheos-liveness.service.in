@@ -1,0 +1,8 @@
+[Unit]
+Description=@NAME@ liveness watcher — alert the owner when the dispatcher stops beating
+
+[Service]
+Type=oneshot
+WorkingDirectory=@ROOT@
+ExecStart=/usr/bin/env node @ROOT@/modules/liveness/watch.js
+TimeoutStartSec=120

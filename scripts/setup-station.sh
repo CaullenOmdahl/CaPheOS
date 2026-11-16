@@ -2,7 +2,8 @@
 # setup-station.sh — install this company's own StarNet station next to any other on the machine.
 #
 #   scripts/setup-station.sh            # clone StarNet, apply company/patches, write env + systemd user units (not started)
-#   scripts/setup-station.sh --start    # ...and enable + start the station and the dispatcher timer
+#   scripts/setup-station.sh --start    # ...and enable + start the station, the dispatcher and liveness timers, then wait
+#                                       # (SETUP_WAIT_SEC, default 90) until GET /api/cron answers with the token
 #   scripts/setup-station.sh --check    # show what is installed, change nothing
 #
 # Everything is per company: the checkout is ./starnet, the data is ./.starnet-data, the port and the service name come
@@ -21,6 +22,7 @@ cfg() { node -e "const c=require('./company/company.json');const v=$1;process.st
 PORT="$(cfg 'c.station&&c.station.port')"; PORT="${PORT:-8801}"
 SVC="$(cfg 'c.station&&c.station.serviceName')"; SVC="${SVC:-capheos-station}"
 NAME="$(cfg 'c.name')"
+ZONE="$(cfg 'c.timezone')"; ZONE="${ZONE:-UTC}"
 # Dispatcher tick (minutes): company/work/ops/cadence.json, else company/defaults/work/ops/cadence.json, else 10.
 # company/tools/cadence.js apply rewrites the installed timer later; this only sets the first value.
 TICK="$(node -e "const fs=require('fs');for(const f of ['company/work/ops/cadence.json','company/defaults/work/ops/cadence.json']){try{const n=Number(JSON.parse(fs.readFileSync(f,'utf8')).dispatcherTickMin);if(Number.isInteger(n)&&n>0){process.stdout.write(String(n));process.exit(0)}}catch(_){}}process.stdout.write('10')")"
@@ -33,7 +35,7 @@ if [[ "${1:-}" == "--check" ]]; then
   echo "starnet:   $( [[ -d starnet/.git ]] && git -C starnet rev-parse --short HEAD || echo 'not cloned')"
   echo "env file:  $( [[ -f $ENVFILE ]] && echo "$ENVFILE" || echo missing)"
   echo "token:     $( [[ -s secrets/station-token ]] && echo present || echo missing)"
-  systemctl --user --no-pager status "$SVC.service" "$SVC-dispatch.timer" 2>/dev/null | grep -E '●|Active:' || echo "units:     not installed"
+  systemctl --user --no-pager status "$SVC.service" "$SVC-dispatch.timer" "$SVC-liveness.timer" 2>/dev/null | grep -E '●|Active:' || echo "units:     not installed"
   exit 0
 fi
 
@@ -87,13 +89,14 @@ XDG_DATA_HOME=$ROOT/.starnet-data
 PORT=$PORT
 STARNET_API_TOKEN=$(cat secrets/station-token)
 STARNET_HOST=127.0.0.1
+TZ=$ZONE
 EOF
 )
 
 # 4. systemd user units from systemd/*.in
 mkdir -p "$UNITDIR"
 for t in systemd/*.in; do
-  out="$UNITDIR/$(basename "$t" .in | sed "s/^capheos-station/$SVC/")"
+  out="$UNITDIR/$(basename "$t" .in | sed -e "s/^capheos-station/$SVC/" -e "s/^capheos-liveness/$SVC-liveness/")"
   sed -e "s|@ROOT@|$ROOT|g" -e "s|@SVC@|$SVC|g" -e "s|@NAME@|$NAME|g" -e "s|@ENVFILE@|$ENVFILE|g" -e "s|@TICK@|$TICK|g" "$t" > "$out"
   echo "wrote $out"
 done
@@ -102,7 +105,22 @@ systemctl --user daemon-reload
 if [[ "${1:-}" == "--start" ]]; then
   systemctl --user enable --now "$SVC.service"
   systemctl --user enable --now "$SVC-dispatch.timer"
-  echo "station up on http://127.0.0.1:$PORT"
+  # the liveness watcher (modules/liveness/watch.js) exits quietly until the liveness module is enabled
+  systemctl --user enable --now "$SVC-liveness.timer" || echo "liveness timer not started (non-fatal)"
+  # wait until the station answers GET /api/cron with the token (SETUP_WAIT_SEC, default 90), and record the step
+  WAIT="${SETUP_WAIT_SEC:-90}"; UP=0
+  for _ in $(seq 1 "$WAIT"); do
+    if curl -fsS -m 3 -H "x-starnet-token: $(cat secrets/station-token)" "http://127.0.0.1:$PORT/api/cron" >/dev/null 2>&1; then UP=1; break; fi
+    sleep 1
+  done
+  if [[ $UP -eq 1 ]]; then
+    node company/tools/onboard.js --record station-answers ok --note "GET /api/cron answered on port $PORT" >/dev/null 2>&1 || true
+    echo "station up on http://127.0.0.1:$PORT"
+  else
+    node company/tools/onboard.js --record station-answers failed --note "GET /api/cron did not answer within ${WAIT}s" >/dev/null 2>&1 || true
+    echo "station did NOT answer GET /api/cron within ${WAIT}s; see .starnet-data/station.log" >&2; exit 1
+  fi
 else
+  node company/tools/onboard.js --record station-installed ok >/dev/null 2>&1 || true
   echo "installed, not started. Start with: scripts/setup-station.sh --start"
 fi
