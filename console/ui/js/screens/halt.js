@@ -23,7 +23,7 @@ export async function render(root, ctx) {
     const eyebrow = m === 'soft' ? ['Soft halt', 'started ' + hhmm(st.at, tz) + (st.by ? ' by ' + st.by : '')] : m === 'hard' ? ['Hard halt', hhmm(st.at, tz) + (st.by ? ' by ' + st.by : '')] : [m === 'running' ? 'Running' : 'Status unknown'];
     fill(head, h('header', { class: 'stack-12', style: 'max-width:760px' }, Eyebrow(eyebrow), h('h1', { class: 'h1' }, title), h('p', { class: 'body-l muted' }, lede)));
     if (m !== 'running' && m !== 'unknown') lastMode = m;
-    if (m === 'soft') return fill(body, settling(st));
+    if (m === 'soft') { fill(body, settling(st), commitmentsEl); loadCommitments(); return; }
     if (m === 'hard') return fill(body, h('section', { class: 'inverse between', style: 'align-items:center;gap:16px;padding:28px' },
       h('div', { class: 'stack-6' }, h('h2', { class: 'h3' }, 'Everything is stopped.'),
         h('span', { class: 'body-s', style: 'color:var(--text-on-inverse-muted)' }, (st.why ? 'Why: ' + st.why + '. ' : '') + 'Transcripts are kept; nothing restarts until you resume.')),
@@ -76,6 +76,35 @@ export async function render(root, ctx) {
         h('button', { type: 'button', class: 'btn btn-danger btn-md', onclick: () => hardHalt('', err) }, 'Hard halt now'),
         h('button', { type: 'button', class: 'btn btn-secondary btn-md', onclick: resume }, st.settledAt ? 'Resume' : 'Cancel and resume')),
       err);
+  }
+
+  // continuity module (when enabled): open commitments by party and due; reassign or notify a party (gated)
+  const commitmentsEl = h('div');
+  async function loadCommitments() {
+    let d; try { d = await api('/m/continuity/open'); } catch (e) { fill(commitmentsEl); return; }   // module not enabled: nothing to show
+    const unowned = new Set(d.unowned || []);
+    const err = h('p', { class: 'err-line', role: 'status' });
+    const party = (p, cs) => {
+      const text = h('input', { type: 'text', class: 'input', placeholder: 'Tell ' + p + ' what happens to their work' });
+      return h('div', { class: 'stack-8 hair-top', style: 'padding-top:12px' },
+        h('div', { class: 'between-c' }, h('h3', { class: 'h4' }, p),
+          p !== '(no party)' ? h('span', { class: 'row-8' }, text, h('button', { type: 'button', class: 'btn btn-secondary btn-sm', onclick: async () => {
+            err.textContent = ''; try { await post('/m/continuity/notify', { party: p, text: text.value.trim() }); app.toast('Notice queued for ' + p + '.'); text.value = ''; } catch (e) { err.textContent = 'Not sent: ' + e.message; }
+          } }, 'Notify')) : null),
+        h('ul', { class: 'plain' }, cs.map(c => {
+          const to = h('input', { type: 'text', class: 'input', placeholder: 'seat id', style: 'max-width:140px' });
+          return h('li', { class: 'between-c', style: 'padding:8px 0;gap:12px' },
+            h('span', { class: 'stack-4' }, h('span', { class: 'label strong' }, c.title), h('span', { class: 'body-s muted' }, c.id + ' · ' + c.state + ' · due ' + (c.dueAt ? hhmm(c.dueAt, tz) + ' (' + rel(c.dueAt) + ')' : c.ackBy ? 'ack ' + rel(c.ackBy) : '—') + ' · owner ' + (c.owner || 'none'))),
+            h('span', { class: 'row-8' }, unowned.has(c.id) ? Tag('Unowned', { variant: 'status', status: 'danger' }) : null, to,
+              h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: async () => {
+                err.textContent = ''; try { await post('/m/continuity/reassign', { id: c.id, to: to.value.trim() }); app.toast('Reassigned.'); loadCommitments(); } catch (e) { err.textContent = 'Not reassigned: ' + e.message; }
+              } }, 'Reassign')));
+        })));
+    };
+    fill(commitmentsEl, h('section', { class: 'card p28', style: 'gap:12px' },
+      h('div', { class: 'between' }, h('h2', { class: 'h3' }, 'Open commitments'), h('span', { class: 'mono muted' }, d.count + ' open · ' + unowned.size + ' unowned')),
+      unowned.size ? h('p', { class: 'body-s' }, 'The soft halt will not report settled while a commitment with a due time has no owner.') : null,
+      d.count ? Object.entries(d.byParty || {}).map(([p, cs]) => party(p, cs)) : h('p', { class: 'body-s muted' }, 'No open commitments.'), err));
   }
 
   async function hardHalt(why, errEl2) {

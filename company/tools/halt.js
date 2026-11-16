@@ -30,6 +30,9 @@
  * RESUME lifts a hard halt (POST /api/halt/resume {confirm:true}), re-arms the scheduler to `cronWasEnabled`, sets
  * mode 'running' and tells the owner.
  *
+ * Continuity (core module, when enabled): soft lists open commitments by party/due in halt.json `commitments`; tick does
+ * not settle while a breach-able commitment is unowned (modules/continuity/lib.js).
+ *
  * Guardrail: co.guard('halt') is always ON; nothing here can be switched off.
  */
 'use strict';
@@ -145,6 +148,20 @@ async function hard({ by, why, auto } = {}) {
   return st;
 }
 
+/* Continuity (core module modules/continuity, when enabled): a soft halt lists the open commitments by party and due
+ * time, and does not report settled while a breach-able commitment is unowned. Not enabled = null (no effect). */
+function continuity() {
+  try {
+    const st = co.readJson(co.p('company', 'state', 'modules.json'), {}) || {};
+    if (!(st.enabled || {}).continuity) return null;
+    return require(co.p('modules', 'continuity', 'lib.js'));
+  } catch (_) { return null; }
+}
+function continuityView() {
+  const c = continuity(); if (!c) return null;
+  try { const o = c.open(); return { at: iso(S.now()), count: o.count, byParty: o.byParty, unowned: c.unowned().map(x => x.id) }; } catch (e) { return { error: e.message }; }
+}
+
 async function soft({ by, why, deadlineMin, escalate } = {}) {
   if (!by) throw new Error('--by <name> is required');
   const prev = read();
@@ -176,10 +193,13 @@ async function soft({ by, why, deadlineMin, escalate } = {}) {
     st.shutdowns.push(row);
   }
   await pauseQuietLoops(st);
+  const cv = continuityView();
+  if (cv) st.commitments = cv;
   write(st);
+  const cm = cv && cv.count ? ' Open commitments: ' + cv.count + (cv.unowned && cv.unowned.length ? ' (' + cv.unowned.length + ' unowned — reassign them before the halt can settle: node company/tools/continuity.js unowned)' : '') + '.' : '';
   const sd = st.shutdowns.length ? ' Shutdown routines: ' + st.shutdowns.map(x => x.seat + ' ' + x.status).join(', ') + '.' : '';
   tell('Soft halt by ' + by + (why ? ' (' + why + ')' : '') + ': nothing new starts; running work finishes by ' + st.deadline
-    + (st.escalate ? ' or the company goes to a hard halt' : '') + '.' + sd + (st.cronError ? ' Scheduler NOT disarmed: ' + st.cronError + '.' : '') + ' I will tell you when it is fully stopped.');
+    + (st.escalate ? ' or the company goes to a hard halt' : '') + '.' + sd + cm + (st.cronError ? ' Scheduler NOT disarmed: ' + st.cronError + '.' : '') + ' I will tell you when it is fully stopped.');
   return st;
 }
 
@@ -217,6 +237,8 @@ async function tick({ log, dry } = {}) {
   try { w = await inFlight(st); } catch (e) { say('HALT: soft halt waiting, station unreadable: ' + e.message); return { mode: 'soft', action: 'unreadable', error: e.message }; }
   if (!dry && st.loops) { await pauseQuietLoops(st); write(st); }
   const left = w.busy.concat(w.pending).concat(((st.loops || {}).waiting || []).map(id => 'goal loop ' + id));
+  const cv = continuityView();
+  if (cv) { st.commitments = cv; for (const id of cv.unowned || []) left.push('commitment ' + id + ' unowned (breach-able; reassign it)'); }
   if (dry) return { mode: 'soft', action: 'dry', left };
   if (!left.length) {
     st.settledAt = iso(S.now());
@@ -241,7 +263,7 @@ async function tick({ log, dry } = {}) {
     say('HALT: soft deadline passed, owner told, still waiting on ' + left.length);
     return { mode: 'soft', action: 'deadline', left };
   }
-  if (st.shutdowns && JSON.stringify(st.shutdowns) !== JSON.stringify(read().shutdowns)) write(st);
+  if ((st.shutdowns && JSON.stringify(st.shutdowns) !== JSON.stringify(read().shutdowns)) || (cv && JSON.stringify(cv.unowned) !== JSON.stringify((read().commitments || {}).unowned))) write(st);
   say('HALT: soft halt waiting on ' + left.length + ': ' + left.join(', ').slice(0, 300));
   return { mode: 'soft', action: 'waiting', left };
 }
@@ -272,7 +294,7 @@ async function resume({ by } = {}) {
   return Object.assign(out, { notes });
 }
 
-module.exports = { S, read, hard, soft, tick, resume, inFlight };
+module.exports = { S, read, hard, soft, tick, resume, inFlight, continuityView };
 
 /* ---------------- selftest: a fake station in memory, no network ---------------- */
 async function selftest() {
@@ -394,6 +416,7 @@ if (require.main === module) {
       if (opt('json')) return print(st);
       console.log('mode: ' + st.mode + (st.by ? ' (by ' + st.by + ' at ' + st.at + ')' : '') + (st.why ? ' — ' + st.why : ''));
       if (st.mode === 'soft') console.log(st.settledAt ? 'settled at ' + st.settledAt : 'waiting; deadline ' + st.deadline + (st.escalate ? ' (escalates to hard)' : ' (owner is told, no escalation)'));
+      if (st.commitments && st.commitments.count) { console.log('open commitments: ' + st.commitments.count + (st.commitments.unowned && st.commitments.unowned.length ? ', unowned: ' + st.commitments.unowned.join(', ') : '')); for (const [p, cs] of Object.entries(st.commitments.byParty || {})) console.log('  ' + p + ': ' + cs.map(c => c.id + ' due ' + (c.dueAt || c.ackBy || '-')).join(', ')); }
       for (const x of st.shutdowns || []) console.log('  shutdown ' + x.seat + ': ' + (x.done ? 'done' : x.status) + (x.overdue ? ' (overdue)' : ''));
       if (st.stationHalt) console.log('station: ' + JSON.stringify(st.stationHalt));
       return;

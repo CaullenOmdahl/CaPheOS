@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "id": "continuity",
+  "title": "Continuity (wind-down and handover)",
+  "summary": "Soft halt lists open commitments by party and due time; the owner reassigns them (commitments CLI) or notifies parties (external gate, category message); the soft halt does not report settled while a breach-able commitment is unowned.",
+  "packVersion": "0.1.0",
+  "owner": "ceo",
+  "layer": "guarantee",
+  "enableWhen": "there are live obligations to outside parties",
+  "requires": { "externalGates": ["message"] },
+  "docs": ["README.md"],
+  "tools": [{ "file": "tools/continuity.js", "purpose": "wind-down and handover: open commitments by party and due, unowned ones, reassign, notify a party (gated)" }],
+  "limits": [],
+  "meters": [{ "p": "company/work/continuity/notices.jsonl", "append": true, "owner": "ceo", "why": "notices to parties queued during a wind-down (each with its clearance)" }],
+  "conformance": { "test": "conformance/test.js" }
+}
