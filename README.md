@@ -54,6 +54,21 @@ Then write `company/CHARTER.md` with the Founder: the mandate is what makes this
 Each company is its own checkout with its own port, service name, station data and token, so several can run on one
 machine. They may share provider accounts; give each its share in `company/work/finance/pacing-policy.json`.
 
+## Console
+
+The owner console is a local web app: `console/server.js` (Node 22, no dependencies) serves the UI from `console/ui/`
+and a JSON API over the company's own tools (`docs/CONSOLE-API.md`).
+
+```bash
+scripts/console.sh                  # prints http://127.0.0.1:<port>/login?token=...  (port: station port + 100)
+scripts/console.sh --port 9000      # or company.json "console": { "host", "port" }
+node console/server.js --selftest   # runs against a temp copy of company/ and a dead station; touches nothing live
+```
+
+The owner token lives in `secrets/console-token` (created 0600 on first start). Every write acts as the owner
+(`company.json` owner name) through the same tools the owner runs in a shell; station calls go through
+`/api/station/*` with an allowlist, so the browser never sees the station token. Binds 127.0.0.1 by default.
+
 ## What git keeps
 
 This repo holds the framework only. A running company's secrets, station checkout and data, working files

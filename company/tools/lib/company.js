@@ -5,7 +5,7 @@
  * absolute path. Read them from here:
  *
  *   const co = require('./lib/company');        // from company/tools/*.js
- *   co.ROOT                  project root (the folder holding company/, secrets/, starnet/, .starnet-data/)
+ *   co.ROOT                  project root (the folder holding company/, secrets/, starnet/, .starnet-data/); env CAPHEOS_ROOT wins
  *   co.config                company/company.json (name, owner, timezone, station, ownerChannel)
  *   co.p('company','work')   path under ROOT
  *   co.secret('station-token')   contents of secrets/<name> (trimmed), or null; env CAPHEOS_SECRET_<NAME> wins
@@ -23,7 +23,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const ROOT = path.resolve(__dirname, '..', '..', '..');
+// env CAPHEOS_ROOT points every tool at another checkout's root (the console selftest runs against a temp copy).
+const ROOT = process.env.CAPHEOS_ROOT ? path.resolve(process.env.CAPHEOS_ROOT) : path.resolve(__dirname, '..', '..', '..');
 const p = (...parts) => path.join(ROOT, ...parts);
 
 function readJson(file, fallback) {

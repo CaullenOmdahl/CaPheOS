@@ -1,0 +1,569 @@
+#!/usr/bin/env node
+/* console/server.js — the owner console backend. Dependency-free (Node 22). Spec: docs/CONSOLE-API.md.
+ *
+ *   node console/server.js [--port N] [--host H]     serve the console (prints the login URL)
+ *   node console/server.js --selftest                start against a temp copy of company/ and exercise the API
+ *
+ * Every write acts as the owner (co.config.owner.name) through the same tools the owner would run in a shell.
+ * Root: company/tools/lib/company.js (env CAPHEOS_ROOT wins). Station: co.STATION_URL (env STARNET_URL wins).
+ */
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const http = require('http');
+const os = require('os');
+const crypto = require('crypto');
+const { execFile, spawn } = require('child_process');
+
+const co = require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'company.js'));
+const TOOLS = co.p('company', 'tools');
+const UI_DIR = path.join(__dirname, 'ui');
+const OWNER = (co.config.owner && co.config.owner.name) || 'Owner';
+const tool = name => require(path.join(TOOLS, name));
+
+/* ---------------- small helpers ---------------- */
+const readJson = (f, fb) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return fb; } };
+function readLines(file) {
+  let t = ''; try { t = fs.readFileSync(file, 'utf8'); } catch (_) { return []; }
+  const out = []; for (const l of t.split('\n')) { if (!l.trim()) continue; try { out.push(JSON.parse(l)); } catch (_) {} }
+  return out;
+}
+function tailLines(file, n) {
+  let t = ''; try { t = fs.readFileSync(file, 'utf8'); } catch (_) { return []; }
+  return t.split('\n').filter(l => l.trim()).slice(-n);
+}
+class HttpError extends Error { constructor(status, msg, extra) { super(msg); this.status = status; this.extra = extra; } }
+const bad = (msg, status) => { throw new HttpError(status || 400, msg); };
+
+/* Run a company tool as a child process; JSON stdout (or stderr) is parsed, anything else comes back as { text }. */
+function run(name, args, opts) {
+  opts = opts || {};
+  return new Promise(resolve => {
+    execFile(process.execPath, [path.join(TOOLS, name)].concat(args), { cwd: co.ROOT, timeout: opts.timeout || 30000,
+      maxBuffer: 8 * 1024 * 1024, env: process.env }, (err, stdout, stderr) => {
+      const code = err ? (typeof err.code === 'number' ? err.code : 1) : 0;
+      let data = null;
+      for (const s of [stdout, stderr]) { const t = String(s || '').trim(); if (!t) continue; try { data = JSON.parse(t); break; } catch (_) {} }
+      if (data === null) data = { ok: code === 0, text: String(stdout || '').trim() || undefined, error: code ? (String(stderr || '').trim() || (err && err.killed ? 'timed out' : 'exit ' + code)) : undefined };
+      resolve({ code, data, timedOut: !!(err && err.killed) });
+    });
+  });
+}
+/* run() as an HTTP answer: non-zero exit or ok:false → 4xx/5xx with the tool's own error. */
+async function runApi(name, args, opts) {
+  const r = await run(name, args, opts);
+  const d = r.data;
+  if (r.code === 0 && !(d && d.ok === false)) return Array.isArray(d) ? { ok: true, items: d } : (d && typeof d === 'object' && !('ok' in d) ? Object.assign({ ok: true }, d) : d);
+  const status = r.timedOut ? 504 : r.code === 3 ? 403 : r.code === 2 ? 400 : (d && d.ok === false && r.code === 1) ? 400 : 500;
+  throw new HttpError(status, (d && (d.error || d.text)) || 'tool failed', d);
+}
+
+/* ---------------- station ---------------- */
+function stationToken() { try { return co.stationToken(); } catch (_) { return null; } }
+function stationGet(p, timeoutMs) {
+  return new Promise(resolve => {
+    const token = stationToken(); if (!token) return resolve({ ok: false, error: 'no station token' });
+    let u; try { u = new URL(co.STATION_URL + '/api/' + p); } catch (e) { return resolve({ ok: false, error: e.message }); }
+    const req = http.request({ hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: 'GET', headers: { 'x-starnet-token': token } }, res => {
+      let d = ''; res.on('data', c => { d += c; }); res.on('end', () => { try { resolve({ ok: res.statusCode === 200, status: res.statusCode, data: JSON.parse(d) }); } catch (_) { resolve({ ok: false, status: res.statusCode, error: 'not JSON' }); } });
+    });
+    req.setTimeout(timeoutMs || 3000, () => req.destroy(new Error('station timeout')));
+    req.on('error', e => resolve({ ok: false, error: 'station unreachable: ' + e.message }));
+    req.end();
+  });
+}
+const POST_ALLOW = ['run', 'run/steer', 'run/stream', 'cancel', 'groups', 'groups/*', 'cron/run', 'cron/update', 'cron/arm', 'loops/control',
+  'consent/answer', 'permissions/*', 'autonomy/*', 'connectors/*', 'servicekeys/*', 'skills/toggle', 'providers/*', 'halt', 'halt/resume',
+  'transcript/redact', 'session'];
+const postAllowed = p => POST_ALLOW.some(a => a.endsWith('/*') ? (p === a.slice(0, -2) || p.startsWith(a.slice(0, -1))) : p === a);
+function stationProxy(req, res, sub, search) {
+  if (!/^[A-Za-z0-9._~\-\/]+$/.test(sub) || sub.split('/').some(s => s === '..' || s === '.' || s === '')) return sendJson(res, 400, { ok: false, error: 'bad station path' });
+  if (req.method === 'POST' && !postAllowed(sub)) return sendJson(res, 403, { ok: false, error: 'POST /api/' + sub + ' is not on the console allowlist' });
+  if (req.method !== 'GET' && req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'GET or POST only' });
+  const token = stationToken();
+  if (!token) return sendJson(res, 502, { ok: false, error: 'station unavailable: no station token (secrets/station-token)' });
+  let u; try { u = new URL(co.STATION_URL + '/api/' + sub + (search || '')); } catch (e) { return sendJson(res, 502, { ok: false, error: e.message }); }
+  const headers = { 'x-starnet-token': token, accept: req.headers.accept || '*/*' };
+  if (req.headers['content-type']) headers['content-type'] = req.headers['content-type'];
+  if (req.headers['content-length']) headers['content-length'] = req.headers['content-length'];
+  const up = http.request({ hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: req.method, headers }, ur => {
+    const h = {}; for (const k of ['content-type', 'cache-control', 'content-length']) if (ur.headers[k]) h[k] = ur.headers[k];
+    res.writeHead(ur.statusCode || 502, h);
+    ur.pipe(res);
+  });
+  up.setTimeout(30000, () => up.destroy(new Error('station timeout')));
+  up.on('error', e => { if (!res.headersSent) sendJson(res, 502, { ok: false, error: 'station unreachable: ' + e.message }); else res.end(); });
+  res.on('close', () => up.destroy());
+  if (req.method === 'POST') req.pipe(up); else up.end();
+}
+
+/* ---------------- auth ---------------- */
+const TOKEN_FILE = path.join(co.SECRETS_DIR, 'console-token');
+function consoleToken() {
+  try { const t = fs.readFileSync(TOKEN_FILE, 'utf8').trim(); if (t) return t; } catch (_) {}
+  fs.mkdirSync(co.SECRETS_DIR, { recursive: true });
+  const t = crypto.randomBytes(24).toString('hex');
+  fs.writeFileSync(TOKEN_FILE, t + '\n', { mode: 0o600 });
+  try { fs.chmodSync(TOKEN_FILE, 0o600); } catch (_) {}
+  return t;
+}
+function cookies(req) { const o = {}; for (const part of String(req.headers.cookie || '').split(';')) { const i = part.indexOf('='); if (i > 0) o[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim()); } return o; }
+function same(a, b) { const x = Buffer.from(String(a || '')), y = Buffer.from(String(b || '')); return x.length === y.length && crypto.timingSafeEqual(x, y); }
+
+/* ---------------- responses ---------------- */
+function sendJson(res, status, obj) {
+  const body = JSON.stringify(obj);
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'content-length': Buffer.byteLength(body) });
+  res.end(body);
+}
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let d = ''; req.on('data', c => { d += c; if (d.length > 1e6) { reject(new HttpError(413, 'body too large')); req.destroy(); } });
+    req.on('end', () => { if (!d.trim()) return resolve({}); try { const o = JSON.parse(d); resolve(o && typeof o === 'object' ? o : {}); } catch (_) { reject(new HttpError(400, 'body is not JSON')); } });
+    req.on('error', reject);
+  });
+}
+const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.webp': 'image/webp', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.otf': 'font/otf', '.txt': 'text/plain; charset=utf-8', '.map': 'application/json' };
+const FALLBACK_INDEX = '<!doctype html><meta charset="utf-8"><title>Console</title><body style="font-family:sans-serif;padding:2rem">' +
+  '<h1>Owner console</h1><p>The API is up (<code>/api/today</code>). The UI (console/ui/index.html) is not built yet.</p></body>';
+function serveStatic(req, res, pathname) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, 405, { ok: false, error: 'GET only' });
+  let rel; try { rel = decodeURIComponent(pathname); } catch (_) { return sendJson(res, 400, { ok: false, error: 'bad path' }); }
+  if (rel.includes('\0') || rel.split(/[\/\\]/).includes('..')) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+  if (rel === '/' || rel === '') rel = '/index.html';
+  const file = path.resolve(UI_DIR, '.' + rel);
+  if (file !== UI_DIR && !file.startsWith(UI_DIR + path.sep)) return sendJson(res, 403, { ok: false, error: 'forbidden' });
+  fs.stat(file, (err, st) => {
+    if (err || !st.isFile()) {
+      if (rel === '/index.html') { res.writeHead(200, { 'content-type': TYPES['.html'] }); return res.end(req.method === 'HEAD' ? '' : FALLBACK_INDEX); }
+      return sendJson(res, 404, { ok: false, error: 'not found' });
+    }
+    res.writeHead(200, { 'content-type': TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream', 'content-length': st.size,
+      'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' });
+    if (req.method === 'HEAD') return res.end();
+    fs.createReadStream(file).pipe(res);
+  });
+}
+
+/* ---------------- data ---------------- */
+function questions() {
+  const inbox = tool('inbox.js');
+  let gates = []; try { gates = require(path.join(TOOLS, 'lib', 'governance.js')).pendingGates(); } catch (_) {}
+  const byId = {}; for (const g of gates) byId[g.id] = g;
+  return inbox.openQuestions().map(q => Object.assign({}, q, byId[q.id] ? { gate: { category: byId[q.id].category, ref: byId[q.id].ref, by: byId[q.id].by, summary: byId[q.id].summary } } : {}));
+}
+function answered(since) {
+  const st = tool('inbox.js').state();
+  const today = co.localParts().date;
+  const sinceMs = since ? Date.parse(since) : NaN;
+  return Object.values(st).filter(x => x.type === 'answer' || (x.a && x.q)).filter(x => x.a)
+    .filter(x => Number.isFinite(sinceMs) ? Date.parse(x.at) >= sinceMs : co.localParts(new Date(x.at)).date === today)
+    .map(x => ({ id: x.id, from: x.from, about: x.about, q: x.q, answer: x.a, answeredAt: x.at }));
+}
+function ownerMessages() {
+  const oi = tool('owner-inbox.js');
+  const ack = (readJson(co.p('company', 'state', 'owner-inbox.json'), {}) || {}).acked || {};
+  const rows = oi.messages().map(m => Object.assign({ dir: 'in', acked: !!ack[m.id] }, m)).concat(oi.sent().map(m => Object.assign({ dir: 'out' }, m)));
+  return rows.sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')));
+}
+function postOwnerMessage(body) {
+  let text = String(body.text || '').trim(); if (!text) bad('text is required');
+  if (text.length > 20000) bad('text too long');
+  if (body.to) {
+    const names = Object.values(co.crew()).map(s => s && s.name).filter(Boolean);
+    const to = names.find(n => n.toLowerCase() === String(body.to).trim().toLowerCase());
+    if (!to) bad('no crew member named ' + body.to);
+    text = to + ', ' + text;
+  }
+  const oi = tool('owner-inbox.js');
+  const file = oi.INBOUND();
+  const row = { id: 'in-' + Date.now().toString(36) + '-' + crypto.randomBytes(2).toString('hex'), at: new Date().toISOString(), from: OWNER, text };
+  if (body.re) row.re = String(body.re);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, JSON.stringify(row) + '\n');
+  return { ok: true, message: row };
+}
+async function crewView() {
+  const c = co.crew();
+  const seats = Object.entries(c).map(([id, s]) => Object.assign({ id }, s));
+  const r = await stationGet('roster', 2500);
+  const roster = r.ok ? r.data : null;
+  const list = roster && (Array.isArray(roster) ? roster : roster.agents || roster.roster || []);
+  if (Array.isArray(list)) for (const s of seats) { const hit = list.find(x => x && (x.id === s.id || x.agentId === s.id)); if (hit) s.station = hit; }
+  return { ok: true, seats, station: r.ok ? 'up' : 'down', stationError: r.ok ? undefined : r.error };
+}
+function decisions() { return { ok: true, entries: tailLines(co.p('company', 'work', 'decisions.md'), 100).map(text => ({ text })) }; }
+function dispatchView() {
+  return { ok: true, state: readJson(co.p('company', 'work', 'dispatch-state.json'), null), log: tailLines(co.p('company', 'work', 'dispatch-log.md'), 60) };
+}
+function hiring() {
+  const dir = co.p('company', 'hiring'); const rounds = [];
+  try { for (const d of fs.readdirSync(dir)) { const r = readJson(path.join(dir, d, 'round.json'), null); if (r) rounds.push(Object.assign({ id: d }, r)); } } catch (_) {}
+  let templates = []; try { templates = fs.readdirSync(co.p('company', 'roles', 'templates')).filter(f => f.endsWith('.md')).map(f => f.replace(/\.md$/, '')); } catch (_) {}
+  return { ok: true, rounds, templates };
+}
+async function usage() { try { return await runApi('pacer.js', ['status', '--json'], { timeout: 15000 }); } catch (e) { return { ok: false, error: e.message }; } }
+function panelsList() { return tool('console-panel.js').listPanels(); }
+async function today() {
+  const since = Date.now() - 24 * 3600e3;
+  const qs = questions();
+  let unread = []; try { unread = tool('owner-inbox.js').unacked(); } catch (_) {}
+  const outbound = (() => { try { return tool('owner-inbox.js').sent().filter(m => Date.parse(m.at) >= since); } catch (_) { return []; } })();
+  const [crew, use] = await Promise.all([crewView(), usage()]);
+  let panels = []; try { panels = panelsList().filter(p => p.status === 'installed' && !p.hidden && /^today/.test(String(p.placement || ''))).map(p => p.id); } catch (_) {}
+  return { ok: true, company: companyInfo(), needsYou: { questions: qs, count: qs.length, blocking: qs.filter(q => q.blocking).length },
+    crew, usage: use, overnight: { fromCompany: outbound, unreadByCompany: unread.length, dispatch: tailLines(co.p('company', 'work', 'dispatch-log.md'), 20) },
+    halt: co.haltState(), panels };
+}
+function companyInfo() { const c = co.config; return { name: c.name, shortName: c.shortName, owner: c.owner, timezone: co.TZ, station: { url: co.STATION_URL }, ownerChannel: c.ownerChannel }; }
+
+const PANEL_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+function panelDir(id) {
+  for (const sub of ['panels', 'proposed']) { const d = co.p('company', 'console', sub, id); if (fs.existsSync(path.join(d, 'panel.json'))) return d; }
+  return null;
+}
+
+/* ---------------- router ---------------- */
+const onOff = v => (v === true || v === 'on') ? 'on' : (v === false || v === 'off') ? 'off' : bad('on must be true or false');
+const str = (v, name) => { if (v === undefined || v === null || v === '') return null; const s = String(v); if (s.startsWith('--')) bad(name + ' may not start with --'); return s; };
+const routes = [];
+const route = (method, re, fn) => routes.push({ method, re, fn });
+
+route('GET', /^\/api\/company$/, () => Object.assign({ ok: true }, companyInfo()));
+route('GET', /^\/api\/today$/, today);
+route('GET', /^\/api\/questions$/, () => ({ ok: true, questions: questions() }));
+route('GET', /^\/api\/questions\/answered$/, (m, q) => ({ ok: true, answered: answered(q.get('since')) }));
+route('POST', /^\/api\/questions\/(q-\d+)\/answer$/, async (m, q, b) => {
+  const id = m[1];
+  if (!questions().some(x => x.id === id)) bad('no open question ' + id, 404);
+  const extra = String(b.text || '').trim();
+  let a;
+  if (b.verdict === 'yes') a = 'yes' + (extra ? ': ' + extra : '');
+  else if (b.verdict === 'no') a = 'no' + (extra ? ': ' + extra : '');
+  else if (b.verdict === 'reply') { if (!extra) bad('text is required for a reply'); a = extra; }
+  else bad('verdict must be yes, no or reply');
+  if (a.startsWith('--')) a = ' ' + a;
+  return runApi('inbox.js', ['answer', '--id', id, '--a', a, '--by', OWNER]);
+});
+route('GET', /^\/api\/owner\/messages$/, () => ({ ok: true, messages: ownerMessages() }));
+route('POST', /^\/api\/owner\/messages$/, (m, q, b) => postOwnerMessage(b));
+route('GET', /^\/api\/crew$/, crewView);
+route('GET', /^\/api\/handoffs$/, () => runApi('handoff-status.js', ['--due', '--json']));
+route('GET', /^\/api\/decisions$/, decisions);
+route('GET', /^\/api\/dispatch$/, dispatchView);
+route('GET', /^\/api\/hiring$/, hiring);
+route('GET', /^\/api\/usage$/, usage);
+
+route('GET', /^\/api\/governance$/, () => runApi('governance.js', ['show', '--json']));
+route('POST', /^\/api\/governance\/preset$/, (m, q, b) => runApi('governance.js', ['preset', str(b.preset, 'preset') || bad('preset is required'), '--by', OWNER]));
+route('POST', /^\/api\/governance\/set$/, (m, q, b) => runApi('governance.js', ['set', str(b.category, 'category') || bad('category is required'), str(b.level, 'level') || bad('level is required'), '--by', OWNER]));
+route('GET', /^\/api\/guardrails$/, () => runApi('guardrails.js', ['show', '--json']));
+route('POST', /^\/api\/guardrails\/set$/, (m, q, b) => {
+  const args = ['set', str(b.name, 'name') || bad('name is required'), onOff(b.on), '--by', OWNER];
+  if (b.why) args.push('--why', str(b.why, 'why'));
+  return runApi('guardrails.js', args);
+});
+route('POST', /^\/api\/guardrails\/all$/, (m, q, b) => {
+  const on = onOff(b.on) === 'on';
+  const args = [on ? 'on-all' : 'off-all', '--by', OWNER];
+  if (!on) args.push('--confirm', str(b.confirm, 'confirm') || bad('confirm is required to switch every guardrail off'));
+  if (b.why) args.push('--why', str(b.why, 'why'));
+  return runApi('guardrails.js', args);
+});
+route('POST', /^\/api\/guardrails\/sandbox$/, (m, q, b) => runApi('guardrails.js', ['sandbox', onOff(b.on), '--by', OWNER]));
+route('GET', /^\/api\/halt$/, () => runApi('halt.js', ['status', '--json']));
+route('POST', /^\/api\/halt\/soft$/, (m, q, b) => {
+  const args = ['soft', '--by', OWNER];
+  if (b.why) args.push('--why', str(b.why, 'why'));
+  if (b.deadlineMin) { const n = Number(b.deadlineMin); if (!(n > 0)) bad('deadlineMin must be a positive number'); args.push('--deadline-min', String(n)); }
+  if (b.escalate) args.push('--escalate');
+  return runApi('halt.js', args, { timeout: 120000 });
+});
+route('POST', /^\/api\/halt\/hard$/, (m, q, b) => runApi('halt.js', ['hard', '--by', OWNER].concat(b.why ? ['--why', str(b.why, 'why')] : []), { timeout: 60000 }));
+route('POST', /^\/api\/halt\/resume$/, () => runApi('halt.js', ['resume', '--by', OWNER], { timeout: 60000 }));
+route('GET', /^\/api\/cadence$/, () => runApi('cadence.js', ['show', '--json']));
+route('POST', /^\/api\/cadence\/default$/, (m, q, b) => {
+  const n = Number(b.minutes); if (!(n > 0)) bad('minutes must be a positive number');
+  return runApi('cadence.js', ['set-default', String(n), '--by', OWNER]);
+});
+route('POST', /^\/api\/cadence\/seat$/, async (m, q, b) => {
+  const seat = str(b.seat, 'seat') || bad('seat is required');
+  const args = ['set', seat];
+  const add = (flag, v) => { if (v !== undefined && v !== null && v !== '') args.push(flag, typeof v === 'boolean' ? (v ? 'on' : 'off') : str(v, flag)); };
+  add('--loop-every', b.loopEvery); add('--cooldown', b.cooldown); add('--priority', b.priority); add('--wake-on-inbox', b.wakeOnInbox); add('--wake-on-owner', b.wakeOnOwner);
+  args.push('--by', OWNER);
+  const set = await runApi('cadence.js', args);
+  const apply = await run('cadence.js', ['apply', '--by', OWNER], { timeout: 60000 });
+  return { ok: true, set, apply: apply.data };
+});
+route('GET', /^\/api\/panels$/, () => ({ ok: true, panels: panelsList() }));
+route('GET', /^\/api\/panels\/([a-z0-9-]+)\/data$/, async m => {
+  if (!PANEL_ID.test(m[1])) bad('bad panel id');
+  const r = await tool('console-panel.js').render(m[1], { live: true });
+  if (!r.ok) throw new HttpError(/^no panel/.test(r.error || '') ? 404 : 400, r.error || 'render failed', r);
+  return r;
+});
+route('POST', /^\/api\/panels\/([a-z0-9-]+)\/(hide|unhide|approve|reject|remove)$/, (m, q, b) => {
+  if (!PANEL_ID.test(m[1])) bad('bad panel id');
+  const args = [m[2], m[1], '--by', OWNER]; if (m[2] === 'reject' && b.note) args.push('--note', str(b.note, 'note'));
+  return runApi('console-panel.js', args);
+});
+route('GET', /^\/api\/governance-log$/, () => ({ ok: true, entries: readLines(co.p('company', 'state', 'governance-log.jsonl')).slice(-200) }));
+route('GET', /^\/api\/locked$/, () => runApi('locked-watch.js', ['status']));
+route('GET', /^\/api\/external$/, () => runApi('external-gate.js', ['list']));
+
+/* ---------------- events (SSE) ---------------- */
+const clients = new Set();
+const WATCHES = [
+  ['questions', ['company'], f => f === 'pm-inbox.jsonl' || f === 'asks.jsonl'],
+  ['owner', ['company', 'owner'], () => true],
+  ['handoffs', ['company', 'work', 'handoffs'], () => true],
+  ['halt', ['company', 'state'], f => f === 'halt.json'],
+  ['governance', ['company', 'state'], f => f === 'governance.json' || f === 'governance-log.jsonl'],
+  ['guardrails', ['company', 'state'], f => f === 'guardrails.json'],
+  ['cadence', ['company', 'work', 'ops'], f => f === 'cadence.json'],
+  ['panels', ['company', 'console'], f => f === 'state.json' || f === 'changes.jsonl' || f === 'panels' || f === 'proposed'],
+  ['panels', ['company', 'console', 'panels'], () => true],
+  ['dispatch', ['company', 'work'], f => f === 'dispatch-log.md' || f === 'dispatch-state.json'],
+  ['crew', ['company', 'tools'], f => f === 'loops.json'],
+];
+const timers = {};
+function emit(topic) {
+  clearTimeout(timers[topic]);
+  timers[topic] = setTimeout(() => { const msg = 'event: change\ndata: ' + JSON.stringify({ topic }) + '\n\n'; for (const c of clients) c.write(msg); }, 250);
+}
+const armed = new Map();
+function armWatches() {
+  WATCHES.forEach(([topic, parts, match], i) => {
+    if (armed.has(i)) return;
+    const dir = co.p(...parts);
+    try {
+      const w = fs.watch(dir, (ev, f) => { if (!f || match(String(f).split(/[\/\\]/)[0])) emit(topic); });
+      w.on('error', () => { try { w.close(); } catch (_) {} armed.delete(i); });
+      armed.set(i, w);
+    } catch (_) { /* folder not there yet: retried */ }
+  });
+}
+function events(req, res) {
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
+  res.write('retry: 5000\n: hello\n\n');
+  clients.add(res);
+  req.on('close', () => clients.delete(res));
+}
+
+/* ---------------- server ---------------- */
+function makeServer(token) {
+  return http.createServer(async (req, res) => {
+    let url; try { url = new URL(req.url, 'http://x'); } catch (_) { return sendJson(res, 400, { ok: false, error: 'bad url' }); }
+    const p = url.pathname;
+    try {
+      if (p === '/login') {
+        if (!same(url.searchParams.get('token'), token)) return sendJson(res, 401, { ok: false, error: 'bad token' });
+        res.writeHead(302, { 'set-cookie': 'console_token=' + encodeURIComponent(token) + '; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000', location: '/' });
+        return res.end();
+      }
+      if (!p.startsWith('/api/') && p !== '/api') return serveStatic(req, res, p);
+      if (!same(req.headers['x-console-token'] || cookies(req).console_token, token)) return sendJson(res, 401, { ok: false, error: 'owner token required (x-console-token header or console_token cookie; GET /login?token=...)' });
+      if (p === '/api/events') return events(req, res);
+      if (p.startsWith('/api/station/')) return stationProxy(req, res, p.slice('/api/station/'.length), url.search);
+      const vm = p.match(/^\/api\/panels\/([a-z0-9-]+)\/view$/);
+      if (vm && req.method === 'GET') {
+        const d = PANEL_ID.test(vm[1]) && panelDir(vm[1]);
+        const f = d && path.join(d, 'view.html');
+        if (!f || !fs.existsSync(f)) return sendJson(res, 404, { ok: false, error: 'no custom view for ' + vm[1] });
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'", 'cache-control': 'no-store' });
+        return res.end(fs.readFileSync(f));
+      }
+      if (req.method === 'POST' && !/json/i.test(String(req.headers['content-type'] || ''))) return sendJson(res, 415, { ok: false, error: 'POST bodies are JSON (content-type: application/json)' });
+      for (const r of routes) {
+        const m = p.match(r.re); if (!m) continue;
+        if (req.method !== r.method) continue;
+        const body = req.method === 'POST' ? await readBody(req) : {};
+        const out = await r.fn(m, url.searchParams, body);
+        return sendJson(res, 200, out);
+      }
+      return sendJson(res, routes.some(r => r.re.test(p)) ? 405 : 404, { ok: false, error: 'no such endpoint: ' + req.method + ' ' + p });
+    } catch (e) {
+      if (res.headersSent) return res.end();
+      const status = e instanceof HttpError ? e.status : 500;
+      sendJson(res, status, Object.assign({ ok: false, error: e.message }, e.extra && typeof e.extra === 'object' ? { detail: e.extra } : {}));
+    }
+  });
+}
+function listenConfig(argv) {
+  const cc = co.config.console || {};
+  const flag = k => { const i = argv.indexOf('--' + k); return i >= 0 ? argv[i + 1] : undefined; };
+  let stationPort = 0; try { stationPort = Number(new URL(co.STATION_URL).port) || 0; } catch (_) {}
+  const port = flag('port') !== undefined ? Number(flag('port')) : process.env.CONSOLE_PORT ? Number(process.env.CONSOLE_PORT) : cc.port || (stationPort ? stationPort + 100 : 8901);
+  return { host: flag('host') || cc.host || '127.0.0.1', port };
+}
+function start(argv) {
+  const token = consoleToken();
+  const { host, port } = listenConfig(argv);
+  const server = makeServer(token);
+  armWatches();
+  setInterval(armWatches, 15000).unref();
+  setInterval(() => { for (const c of clients) c.write(': ping\n\n'); }, 25000).unref();
+  server.listen(port, host, () => {
+    const a = server.address();
+    const shown = host.includes(':') ? '[' + host + ']' : host;
+    if (argv.includes('--print-port')) console.log(JSON.stringify({ port: a.port }));
+    else console.log('console: http://' + shown + ':' + a.port + '/login?token=' + token + '\n(company root ' + co.ROOT + ', station ' + co.STATION_URL + ')');
+  });
+  return server;
+}
+
+/* ---------------- selftest ---------------- */
+async function selftest() {
+  const snap = () => ['state', 'owner', 'work'].map(d => { try { return d + ':' + fs.readdirSync(co.p('company', d)).map(f => f + '@' + fs.statSync(co.p('company', d, f)).mtimeMs).join(','); } catch (_) { return d + ':-'; } })
+    .concat([co.p('company', 'pm-inbox.jsonl')].map(f => { try { return fs.statSync(f).mtimeMs; } catch (_) { return '-'; } })).join('|');
+  const before = snap();
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'console-selftest-'));
+  fs.cpSync(co.p('company'), path.join(tmp, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
+  fs.mkdirSync(path.join(tmp, 'secrets'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'secrets', 'station-token'), 'selftest-fake-station-token\n', { mode: 0o600 });
+  // a dead station: a port we bound and released, so every station call is refused
+  const dead = await new Promise(r => { const s = require('net').createServer(); s.listen(0, '127.0.0.1', () => { const pt = s.address().port; s.close(() => r(pt)); }); });
+  const env = Object.assign({}, process.env, { CAPHEOS_ROOT: tmp, STARNET_URL: 'http://127.0.0.1:' + dead });
+  delete env.CONSOLE_PORT;
+  const child = spawn(process.execPath, [__filename, '--port', '0', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let errText = ''; child.stderr.on('data', d => { errText += d; });
+  const port = await new Promise((resolve, reject) => {
+    let buf = ''; child.stdout.on('data', d => { buf += d; const m = buf.match(/\{"port":(\d+)\}/); if (m) resolve(Number(m[1])); });
+    child.on('exit', c => reject(new Error('server exited ' + c + ': ' + errText)));
+    setTimeout(() => reject(new Error('server did not start: ' + errText)), 10000);
+  });
+  const token = fs.readFileSync(path.join(tmp, 'secrets', 'console-token'), 'utf8').trim();
+  const mode = fs.statSync(path.join(tmp, 'secrets', 'console-token')).mode & 0o777;
+  const call = (method, p, body, headers) => new Promise((resolve, reject) => {
+    const data = body === undefined ? null : JSON.stringify(body);
+    const h = Object.assign({}, data ? { 'content-type': 'application/json' } : {}, headers === undefined ? { 'x-console-token': token } : headers);
+    const req = http.request({ host: '127.0.0.1', port, path: p, method, headers: h }, res => {
+      let d = ''; res.on('data', c => { d += c; }); res.on('end', () => { let j = null; try { j = JSON.parse(d); } catch (_) {} resolve({ status: res.statusCode, headers: res.headers, json: j, text: d }); });
+    });
+    req.setTimeout(60000, () => req.destroy(new Error('timeout ' + p)));
+    req.on('error', reject); if (data) req.write(data); req.end();
+  });
+  const cases = []; const check = (n, c, info) => { cases.push({ n, ok: !!c }); console.log((c ? 'ok   ' : 'FAIL ') + n + (c || info === undefined ? '' : '  ' + JSON.stringify(info).slice(0, 400))); };
+  try {
+    check('console-token created 0600', mode === 0o600, mode.toString(8));
+    let r = await call('GET', '/api/today', undefined, {});
+    check('no token: 401', r.status === 401, r.status);
+    r = await call('GET', '/api/today', undefined, { 'x-console-token': 'wrong' });
+    check('wrong token: 401', r.status === 401, r.status);
+    r = await call('GET', '/login?token=' + token, undefined, {});
+    const cookie = String((r.headers['set-cookie'] || [''])[0]).split(';')[0];
+    check('login sets cookie and redirects', r.status === 302 && cookie === 'console_token=' + token, r.headers);
+    r = await call('GET', '/api/company', undefined, { cookie });
+    check('cookie auth works', r.status === 200 && r.json.ok && r.json.owner && r.json.owner.name === OWNER, r.json);
+    r = await call('GET', '/api/today');
+    check('today', r.status === 200 && r.json.ok && r.json.needsYou && Array.isArray(r.json.needsYou.questions) && r.json.halt && r.json.halt.mode === 'running', r.json);
+    // questions
+    const ask = await new Promise(res => execFile(process.execPath, [path.join(tmp, 'company', 'tools', 'inbox.js'), 'ask', '--from', 'Selftest', '--about', 'console', '--q', 'May we test the console?', '--blocking'], { env }, (e, so) => res(JSON.parse(so))));
+    r = await call('GET', '/api/questions');
+    check('question asked via inbox.js shows', r.json.ok && r.json.questions.some(q => q.id === ask.id && q.blocking), r.json);
+    r = await call('POST', '/api/questions/' + ask.id + '/answer', { verdict: 'maybe' });
+    check('bad verdict: 400', r.status === 400, r.json);
+    r = await call('POST', '/api/questions/' + ask.id + '/answer', { verdict: 'yes', text: 'go ahead' });
+    check('answer accepted', r.status === 200 && r.json.ok, r.json);
+    r = await call('GET', '/api/questions');
+    check('answered question gone', r.json.ok && !r.json.questions.some(q => q.id === ask.id), r.json);
+    r = await call('GET', '/api/questions/answered');
+    check('answered today lists it', r.json.ok && r.json.answered.some(q => q.id === ask.id && /^yes/.test(q.answer)), r.json);
+    r = await call('POST', '/api/questions/' + ask.id + '/answer', { verdict: 'yes' });
+    check('answering again: 404', r.status === 404, r.json);
+    // owner messages
+    r = await call('POST', '/api/owner/messages', { text: 'Hello company' });
+    check('owner message posted', r.status === 200 && r.json.ok && r.json.message.from === OWNER, r.json);
+    r = await call('POST', '/api/owner/messages', { text: 'x', to: 'Nobody-Here' });
+    check('message to unknown crew: 400', r.status === 400, r.json);
+    r = await call('GET', '/api/owner/messages');
+    check('owner messages list it', r.json.ok && r.json.messages.some(m => m.dir === 'in' && m.text === 'Hello company'), r.json);
+    // governance
+    r = await call('POST', '/api/governance/preset', { preset: 'autonomous' });
+    check('governance preset autonomous', r.status === 200 && r.json.ok, r.json);
+    r = await call('GET', '/api/governance');
+    check('governance shows the preset', r.json.ok && r.json.preset === 'autonomous', r.json && r.json.preset);
+    r = await call('POST', '/api/governance/preset', { preset: 'no-such' });
+    check('unknown preset refused', r.status >= 400 && r.json.ok === false, r.json);
+    // guardrails
+    r = await call('POST', '/api/guardrails/set', { name: 'externalActions', on: false, why: 'selftest' });
+    check('guardrail off', r.status === 200 && r.json.ok, r.json);
+    r = await call('GET', '/api/guardrails');
+    check('guardrail shows off', r.json.ok && r.json.guards.some(g => g.name === 'externalActions' && g.on === false), r.json && r.json.off);
+    r = await call('POST', '/api/guardrails/set', { name: 'externalActions', on: true });
+    check('guardrail back on', r.status === 200 && r.json.ok, r.json);
+    r = await call('POST', '/api/guardrails/set', { name: 'halt', on: false });
+    check('halt guardrail cannot be switched off', r.status >= 400, r.json);
+    // halt (station unreachable: state is still recorded)
+    r = await call('POST', '/api/halt/soft', { why: 'selftest', deadlineMin: 5 });
+    check('soft halt recorded', r.status === 200 && r.json.mode === 'soft', r.json);
+    r = await call('GET', '/api/halt');
+    check('halt status soft', r.json.mode === 'soft' && r.json.by === OWNER, r.json);
+    r = await call('POST', '/api/halt/resume', {});
+    check('resume', r.status === 200 && r.json.mode === 'running', r.json);
+    // cadence, panels, read-only reports
+    r = await call('GET', '/api/cadence');
+    check('cadence show', r.status === 200 && r.json.ok && r.json.dispatcherTickMin > 0, r.json);
+    r = await call('GET', '/api/panels');
+    check('panels list', r.status === 200 && r.json.ok && Array.isArray(r.json.panels), r.json);
+    r = await call('GET', '/api/panels/nope/data');
+    check('unknown panel data: 404', r.status === 404, r.json);
+    for (const ep of ['/api/handoffs', '/api/decisions', '/api/dispatch', '/api/hiring', '/api/crew', '/api/governance-log', '/api/usage']) {
+      r = await call('GET', ep);
+      check('GET ' + ep + ' answers JSON', r.status < 500 && r.json && typeof r.json === 'object', { status: r.status, body: r.text.slice(0, 300) });
+    }
+    r = await call('POST', '/api/today', {});
+    check('wrong method: 405', r.status === 405, r.status);
+    r = await call('POST', '/api/owner/messages', undefined, { 'x-console-token': token, 'content-type': 'text/plain' });
+    check('non-JSON POST: 415', r.status === 415, r.status);
+    // static
+    r = await call('GET', '/', undefined, {});
+    check('static index', r.status === 200 && /text\/html/.test(r.headers['content-type']), r.status);
+    r = await call('GET', '/ds/styles.css', undefined, {});
+    check('static css content type', r.status === 200 && /text\/css/.test(r.headers['content-type']), r.headers['content-type']);
+    for (const t of ['/../server.js', '/%2e%2e/server.js', '/ds/..%2f..%2fserver.js', '/..%5cserver.js']) {
+      r = await call('GET', t, undefined, {});
+      check('traversal refused ' + t, r.status === 403 || r.status === 404 || r.status === 400, r.status);
+      check('traversal leaks nothing ' + t, !/console\/server\.js — the owner console backend/.test(r.text));
+    }
+    // station proxy (station is down)
+    r = await call('GET', '/api/station/state/snapshot');
+    check('station proxy GET: 502 JSON', r.status === 502 && r.json && r.json.ok === false, r);
+    r = await call('POST', '/api/station/cron/run', { id: 'x' });
+    check('station proxy allowlisted POST: 502', r.status === 502 && r.json && r.json.ok === false, r.json);
+    r = await call('POST', '/api/station/agents/delete', { id: 'x' });
+    check('station proxy POST off the allowlist: 403', r.status === 403, r.json);
+    r = await call('GET', '/api/station/../secrets');
+    check('station proxy bad path refused', r.status === 400 || r.status === 404, r.status);
+    // SSE
+    const sse = await new Promise(resolve => {
+      const req = http.request({ host: '127.0.0.1', port, path: '/api/events', headers: { 'x-console-token': token } }, res => {
+        let d = ''; res.on('data', c => { d += c; if (/"topic":"owner"/.test(d)) { req.destroy(); resolve(true); } });
+        setTimeout(() => call('POST', '/api/owner/messages', { text: 'sse ping' }), 300);
+      });
+      req.on('error', () => {}); req.end();
+      setTimeout(() => { req.destroy(); resolve(false); }, 5000);
+    });
+    check('SSE change event on owner message', sse);
+    // the real company was not touched
+    check('real company untouched', snap() === before);
+  } catch (e) {
+    check('selftest ran to the end', false, e.stack);
+  } finally {
+    child.kill();
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
+  }
+  const failed = cases.filter(c => !c.ok).length;
+  console.log(failed ? 'CONSOLE SELFTEST FAILED: ' + failed + ' of ' + cases.length : 'CONSOLE SELFTEST PASSED: ' + cases.length + ' checks');
+  return failed ? 1 : 0;
+}
+
+if (require.main === module) {
+  const argv = process.argv.slice(2);
+  if (argv.includes('--selftest')) selftest().then(c => process.exit(c), e => { console.error(e); process.exit(1); });
+  else start(argv);
+}
+module.exports = { makeServer, start, postAllowed };
