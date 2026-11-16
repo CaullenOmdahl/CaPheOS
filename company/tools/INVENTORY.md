@@ -73,6 +73,7 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/lib/decision.js` | decision models: a deterministic function from observed state to a recommended action. No LLM, no code. | risk | via decide.js selftest | library (require) | — |
 | `company/tools/lib/governance.js` | how a tool asks "may the company do this alone?" and acts on the answer. | ceo | — | library (require) | — |
 | `company/tools/lib/guardrails.js` | helpers for the guardrail switches, shared by guardrails.js and the tools that enforce them. | risk | — | library (require) | — |
+| `company/tools/lib/modkit.js` | small helpers shared by the core-module tools (intake, observe, parties, commitments, playbooks): limits, jsonl, handoffs, selftest roots. | tools | — | library (require) | — |
 | `company/tools/lib/modules.js` | the runtime side of core modules: enabled list, the dispatcher tick hook, the console HTTP mount. | tools | — | library (require) | — |
 | `company/tools/lib/models-money.js` | shared helpers for the "models and money" tools (pacer.js, offpeak-*.js, cap-numerator.js). | finance | — | library (require) | — |
 | `company/tools/sudo-gate/broker.py` | runs a fixed allowlist of root commands on behalf of the company's agents. | risk | via sudo-gate/selftest.py | socket-activated (stdin request); not run by hand | — |

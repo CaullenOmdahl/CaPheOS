@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "id": "observe",
+  "packVersion": "0.1.0",
+  "title": "Observe: watched targets with history",
+  "summary": "Declarative probes (http status/latency, json path value, file digest, command exit) on a cadence; history per target in company/work/observe/<target>.jsonl; threshold, recovery and change events emitted into intake.",
+  "owner": "tools",
+  "layer": "sense",
+  "enableWhen": "something outside must be watched over time",
+  "requires": {
+    "packs": [],
+    "modules": [
+      "intake"
+    ],
+    "guardrails": [
+      "externalActions"
+    ],
+    "secrets": [],
+    "governance": [
+      "packs"
+    ],
+    "externalGates": [
+      "network"
+    ],
+    "stationAbilities": []
+  },
+  "docs": [
+    "README.md"
+  ],
+  "tools": [
+    {
+      "file": "tools/observe.js",
+      "purpose": "run the probes on their cadence, keep history, emit threshold and change events"
+    }
+  ],
+  "seats": [],
+  "routines": [],
+  "panels": [],
+  "limits": [
+    {
+      "file": "limits/limits.json",
+      "owner": "tools",
+      "why": "the module's own caps; shipped closed, opened only by the owner"
+    }
+  ],
+  "meters": [
+    {
+      "p": "company/work/observe/*.jsonl",
+      "append": true,
+      "owner": "tools",
+      "why": "probe history per target, append-only"
+    }
+  ],
+  "allowlist": [],
+  "conformance": {
+    "test": "conformance/test.js"
+  }
+}

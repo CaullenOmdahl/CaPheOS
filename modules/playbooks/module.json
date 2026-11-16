@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "id": "playbooks",
+  "packVersion": "0.1.0",
+  "title": "Playbooks: situation to procedure",
+  "summary": "Match rules over intake event fields (source, type, path predicates) choose a playbook (company/work/playbooks/<id>.json + .md); the chosen playbook creates a commitment with its owner function and clocks.",
+  "owner": "ceo",
+  "layer": "organize",
+  "enableWhen": "repeatable work where quality matters",
+  "requires": {
+    "packs": [],
+    "modules": [
+      "intake",
+      "commitments"
+    ],
+    "guardrails": [],
+    "secrets": [],
+    "governance": [
+      "packs"
+    ],
+    "externalGates": [],
+    "stationAbilities": []
+  },
+  "docs": [
+    "README.md"
+  ],
+  "tools": [
+    {
+      "file": "tools/playbooks.js",
+      "purpose": "load and check playbooks, match events, create commitments"
+    }
+  ],
+  "seats": [],
+  "routines": [],
+  "panels": [],
+  "limits": [
+    {
+      "file": "limits/limits.json",
+      "owner": "ceo",
+      "why": "the module's own caps; shipped closed, opened only by the owner"
+    }
+  ],
+  "meters": [
+    {
+      "p": "company/work/playbooks/matches.jsonl",
+      "append": true,
+      "owner": "ceo",
+      "why": "which event matched which playbook and made which commitment, append-only"
+    }
+  ],
+  "allowlist": [],
+  "conformance": {
+    "test": "conformance/test.js"
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "maxParties": 0,
+  "_doc": "maxParties: how many parties may be registered. 0 = none."
+}

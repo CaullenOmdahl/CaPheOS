@@ -1,0 +1,5 @@
+{
+  "eventsPerDayPerSource": 0,
+  "maxPollers": 0,
+  "_doc": "eventsPerDayPerSource: outside events (webhooks, pollers) accepted per source per UTC day; maxPollers: how many poller configs run. Both 0 = nothing comes in."
+}

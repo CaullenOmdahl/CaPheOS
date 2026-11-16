@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "id": "intake",
+  "packVersion": "0.1.0",
+  "title": "Intake: inbound signals",
+  "summary": "Takes events in: POST /hooks/intake/<source> on the console server (per-source secret as bearer token or HMAC-SHA256, 256 KB body cap, 300 s replay window, dedupe by key) and feed pollers, normalised into one Event shape in company/work/intake/events.jsonl.",
+  "owner": "tools",
+  "layer": "sense",
+  "enableWhen": "the world must push events in, with no polling equivalent",
+  "requires": {
+    "packs": [],
+    "modules": [],
+    "guardrails": [
+      "externalActions"
+    ],
+    "secrets": [],
+    "governance": [
+      "packs"
+    ],
+    "externalGates": [
+      "network"
+    ],
+    "stationAbilities": []
+  },
+  "docs": [
+    "README.md",
+    "docs/POLLERS.md"
+  ],
+  "tools": [
+    {
+      "file": "tools/intake.js",
+      "purpose": "webhook verification, normalisation, dedupe, the events log and the feed pollers"
+    }
+  ],
+  "seats": [],
+  "routines": [],
+  "panels": [
+    "panels/recent-intake"
+  ],
+  "limits": [
+    {
+      "file": "limits/limits.json",
+      "owner": "risk",
+      "why": "the module's own caps; shipped closed, opened only by the owner"
+    }
+  ],
+  "meters": [
+    {
+      "p": "company/work/intake/events.jsonl",
+      "append": true,
+      "owner": "tools",
+      "why": "every event the company took in, append-only"
+    },
+    {
+      "p": "company/work/intake/refused.jsonl",
+      "append": true,
+      "owner": "tools",
+      "why": "every refused webhook or over-limit event, append-only"
+    }
+  ],
+  "allowlist": [],
+  "conformance": {
+    "test": "conformance/test.js"
+  }
+}

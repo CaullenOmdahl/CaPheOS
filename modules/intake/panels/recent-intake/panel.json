@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "id": "recent-intake",
+  "title": "Recent intake events",
+  "description": "The latest events the company took in: webhooks, feed pollers and watched targets, newest first.",
+  "owner": "tools",
+  "why": "Inbound signals are where outside work starts; the owner sees what arrived, from which source, and when, without reading the event log.",
+  "placement": { "area": "side", "screen": "work", "order": 1 },
+  "refresh": 120,
+  "sources": {
+    "events": { "type": "file", "glob": "company/work/intake/events.jsonl" }
+  },
+  "view": {
+    "kind": "timeline",
+    "source": "events",
+    "at": "at",
+    "text": "type",
+    "who": "source",
+    "limit": 25,
+    "empty": "No events yet."
+  }
+}

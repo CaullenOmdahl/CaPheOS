@@ -1,0 +1,4 @@
+{
+  "maxTargets": 0,
+  "_doc": "maxTargets: how many targets in targets.json are probed. 0 = none."
+}

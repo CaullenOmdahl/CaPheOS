@@ -1,0 +1,4 @@
+{
+  "maxOpen": 0,
+  "_doc": "maxOpen: open commitments at once. 0 = none can be created (a suppressed key still records)."
+}

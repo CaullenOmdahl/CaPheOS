@@ -1,0 +1,4 @@
+{
+  "maxCommitmentsPerTick": 0,
+  "_doc": "maxCommitmentsPerTick: new commitments the playbooks may create per tick. 0 = none (events wait)."
+}

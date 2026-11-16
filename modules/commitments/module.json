@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "id": "commitments",
+  "packVersion": "0.1.0",
+  "title": "Commitments: nothing gets lost",
+  "summary": "A state machine for anything that can be lost (received, acknowledged, in_progress, done, verified, closed; plus suppressed, cancelled, breached) with dedupe key, owner seat, ack deadline and due clock; the tick wakes owners, re-escalates an unacknowledged commitment to the manager and then the CEO, and marks breaches.",
+  "owner": "ceo",
+  "layer": "organize",
+  "enableWhen": "a request, order, job or lead can be lost",
+  "requires": {
+    "packs": [],
+    "modules": [],
+    "guardrails": [],
+    "secrets": [],
+    "governance": [
+      "packs"
+    ],
+    "externalGates": [],
+    "stationAbilities": []
+  },
+  "docs": [
+    "README.md"
+  ],
+  "tools": [
+    {
+      "file": "tools/commitments.js",
+      "purpose": "create, transition, list and tick commitments"
+    }
+  ],
+  "seats": [],
+  "routines": [],
+  "panels": [
+    "panels/open-commitments"
+  ],
+  "limits": [
+    {
+      "file": "limits/limits.json",
+      "owner": "ceo",
+      "why": "the module's own caps; shipped closed, opened only by the owner"
+    }
+  ],
+  "meters": [
+    {
+      "p": "company/work/commitments/commitments.jsonl",
+      "append": true,
+      "owner": "ceo",
+      "why": "every commitment transition, append-only"
+    }
+  ],
+  "allowlist": [],
+  "conformance": {
+    "test": "conformance/test.js"
+  }
+}

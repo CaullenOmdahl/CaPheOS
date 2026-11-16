@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "id": "open-commitments",
+  "title": "Open commitments by due time",
+  "description": "Every open commitment (received to done, and breached), soonest due first; late or breached rows show the warn tone.",
+  "owner": "ceo",
+  "why": "A commitment to an outside party is what the company can lose; the owner sees what is due, who owns it and what is already late without asking.",
+  "placement": { "area": "today", "order": 2 },
+  "refresh": 120,
+  "sources": {
+    "open": { "type": "file", "glob": "company/work/commitments/open.json" }
+  },
+  "view": {
+    "kind": "table",
+    "source": "open",
+    "columns": [
+      { "key": "dueAt", "label": "Due", "format": "relative", "width": "narrow", "flag": "late" },
+      { "key": "title", "label": "Commitment", "width": "wide" },
+      { "key": "state", "label": "State" },
+      { "key": "owner", "label": "Owner" },
+      { "key": "party", "label": "Party" }
+    ],
+    "sort": { "key": "dueAt", "dir": "asc" },
+    "limit": 20,
+    "empty": "No open commitments."
+  },
+  "actions": [
+    {
+      "id": "ask-ceo",
+      "label": "Ask the CEO about this",
+      "kind": "ask-ceo",
+      "scope": "row",
+      "text": "Commitment \"{{row.title}}\" ({{row.id}}) is {{row.state}}, due {{row.dueAt}}, owned by {{row.owner}}. Is it on track?"
+    }
+  ]
+}
