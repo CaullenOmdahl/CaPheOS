@@ -480,7 +480,7 @@ function review(ctx, id, o, verdict) {
     const rec = loadRec(ctx, id); const p = needBy(ctx, o.by);
     if (rec.status !== 'proposed') throw E(id + ' is ' + rec.status + '; only a proposed change can be reviewed', 'state');
     if (p.id === rec.byId) throw E('nobody reviews their own proposal', 'who');
-    if (!rec.reviewers.some(r => r.id === p.id)) throw E(p.name + ' is not a reviewer of ' + id + ' (' + rec.reviewers.map(r => r.name).join(', ') + ')', 'who');
+    if (p.id !== 'owner' && !rec.reviewers.some(r => r.id === p.id)) throw E(p.name + ' is not a reviewer of ' + id + ' (' + rec.reviewers.map(r => r.name).join(', ') + ')', 'who');
     if (rec.approvals.some(a => a.id === p.id)) throw E(p.name + ' already approved ' + id, 'state');
     const note = o.note && o.note !== true ? flat(o.note).slice(0, 400) : '';
     if (verdict === 'reject' && note.length < 5) throw E('--note must say why it is rejected', 'input');
