@@ -131,6 +131,16 @@ function transition(id, to, by, note, evidence, now) {
   if (!STATES.includes(to)) throw new Error('unknown state: ' + to);
   if (!(NEXT[c.state] || []).includes(to)) throw new Error('refused: ' + c.state + ' -> ' + to + ' is not a transition (allowed: ' + ((NEXT[c.state] || []).join(', ') || 'none, it is final') + ')');
   if (c.state === 'done' && to === 'closed' && c.verify) throw new Error('refused: this commitment has a verify spec; it closes only after verified');
+  // Independent verification: nobody who did the work may mark it verified (the verify module's rule, enforced here
+  // too so the CLI is not a way around it). The doers are the owner seat and everyone who moved it to work or done.
+  if (to === 'verified') {
+    const b = String(by || '').trim().toLowerCase().replace(/^verify:/, '');
+    if (!b) throw new Error('refused: verified needs a named verifier (--by)');
+    const doers = new Set([String(c.owner || '').toLowerCase(), String(co.nameOf(c.owner) || '').toLowerCase()]);
+    for (const h of c.history || []) if (['acknowledged', 'in_progress', 'done'].includes(h.to)) doers.add(String(h.by || '').toLowerCase());
+    if (doers.has(b)) throw new Error('refused: ' + by + ' did the work on ' + c.id + ' and can never mark it verified');
+    if (c.verify && !/^verify(\.js)?$/.test(b) && !/^verify:/i.test(String(by || '').trim())) throw new Error('refused: ' + c.id + ' has a verify spec; only verify.js (run, or mark by a second seat) moves it to verified');
+  }
   const at = new Date(now || Date.now()).toISOString();
   const row = { at, from: c.state, to, by: by || 'unknown', note: note || '' };
   c.history.push(row); c.state = to;

@@ -136,7 +136,7 @@ function mark(o) {
   const done = lastDone(c);
   const row = { id: S.newId('vr'), at: new Date().toISOString(), commitment: c.id, party: c.party || null, doneAt: done ? done.at : null, doneBy: done ? done.by : null,
     outcome: o.outcome, by: String(o.by), human: true, note: String(o.note || '').slice(0, 400), checks: [] };
-  row.transition = S.transition(c.id, o.outcome === 'pass' ? 'verified' : 'in_progress', { by: String(o.by), note: 'verify (' + o.by + '): ' + (o.note || o.outcome) });
+  row.transition = S.transition(c.id, o.outcome === 'pass' ? 'verified' : 'in_progress', { by: 'verify:' + String(o.by), note: 'verify (' + o.by + '): ' + (o.note || o.outcome) });
   S.appendJsonl(RESULTS(), row);
   failures();
   return row;
