@@ -4,10 +4,21 @@
  * The owner sets one level per category in company/state/governance.json (company/tools/governance.js set|preset):
  *   auto     the accountable seat decides; nothing else happens
  *   notify   it decides, and the owner gets one plain sentence in company/owner/outbound.jsonl (owner-inbox.js send)
- *   triage   a decision model (company/decision-models/gate-triage, lib/decision.js) looks at the facts the caller passes
- *            (opts `facts`): proceed-notify behaves like notify (the owner sentence names the model, version and rule),
- *            escalate behaves like approve. A model in shadow mode always escalates and logs what it would have done.
- *            Never used for the fixed owner gates. Only decide() acts on triage; level() reports it only when asked.
+ *   triage   a decision model (company/decision-models/gate-triage, lib/decision.js) decides: proceed-notify behaves like
+ *            notify (the owner sentence names the model, version, rule and decisionId), escalate behaves like approve. A
+ *            model in shadow mode always escalates and logs what it would have done. Never used for the fixed owner gates.
+ *            Only decide() acts on triage; level() reports it only when asked.
+ *            FACT PROVENANCE: triageFacts() builds every safety fact from records, never from the acting seat:
+ *              reversible / recurring  the owner's per-category table (gate-triage params reversibleCategories,
+ *                                      oneOffCategories, set by decide.js set-param --by <owner>)
+ *              amountUsd               the request (o.amountUsd: the amount the tool is about to commit)
+ *              vendorKnown             o.vendor on the external-gate allowlist, a registered party, or paid in the ledger
+ *              externalRecipientKnown  o.recipient with a live external-gate clearance, on the allowlist, or a party
+ *              seatHistoryOk           o.by's competence record (company/work/people/competence.json): present, no
+ *                                      serious or waiting flaw
+ *            The caller's own `facts` pass only for non-safety fields; a safety claim is logged as a rejected claim. A
+ *            triage model with no safety inputs (gate-triage v1) takes facts on the actor's word, so it always escalates.
+ *            Before each triage the model's outcomes are joined and a live version over its bad-outcome limit is demoted.
  *   approve  it proposes and waits: an owner question goes into the owner inbox (company/pm-inbox.jsonl, the file
  *            company/tools/inbox.js reads), with a recommendation and what happens if nobody answers. The tool stops now
  *            and goes ahead on a later run, once the owner has answered yes to that question.
@@ -15,7 +26,7 @@
  *   const gov = require('./lib/governance');
  *   const d = gov.decide('hiring', { by: 'Sam', summary: 'open a Sales Lead round', recommendation: 'yes: ...',
  *                                    default: 'no round is opened', ref: 'hiring:open:sales-lead-1',
- *                                    facts: { reversible: true, recurring: false, seatHistoryOk: true } });   // facts: for triage
+ *                                    amountUsd?, vendor?, recipient?, facts? });   // triage: see FACT PROVENANCE
  *   d -> { level, allowed, questionId?, denied?, noted? }
  *   gov.approved(ref) -> true (the owner said yes) | false (said no) | null (no answer yet, or no question)
  *   gov.level(category)  gov.guard(name)  gov.notify(text)  gov.pendingGates()
@@ -23,6 +34,10 @@
  * `ref` names the decision, so a retry of the same act finds the same question instead of filing a second one. One owner
  * yes answers every later call with that ref. Unknown category, unreadable file => approve (fail closed); the four fixed
  * owner gates are approve while the ownerGates guardrail is on (co.gate).
+ *
+ * DELEGATION: while the owner has granted a delegation (company/tools/delegation.js) for a category, the delegate's answer
+ * to that category's approve/triage question (delegation.js answer) counts as the owner's, recorded as "delegate X for
+ * owner". Never for the fixed gates or packs; an owner answer always wins over a delegate's.
  *
  * Every function takes opts.root (a scratch company tree, for selftests); without it the live company is used and the
  * level comes from co.gate / co.guard. opts.level / opts.guards override the files (tests only).
@@ -92,7 +107,11 @@ function answerOf(id, opts) {
     const text = String(m.text != null ? m.text : (m.body || ''));
     if (String(m.re || '') === id || text.includes(id)) ans = { text: text.replace(/\[?\(?q-\d+\)?\]?/g, '').trim(), via: 'owner-channel' };
   }
-  return ans;
+  if (ans) return ans;
+  // a delegate's answer, while the owner's delegation for that category was in force (company/tools/delegation.js)
+  const q = gateAsks(opts).find(r => r.id === id);
+  if (q) { try { const d = require('../delegation.js').answerFor(q, Object.assign({}, opts, { root: rootOf(opts) })); if (d) return d; } catch (_) {} }
+  return null;
 }
 function closedOrReclassified(id, opts) { return readLines(files(opts).inbox).some(r => r.id === id && (r.type === 'close' || r.type === 'reclassify')); }
 function questionFor(ref, opts) { const asks = gateAsks(opts).filter(r => r.gate.ref === ref); return asks.length ? asks[asks.length - 1] : null; }
@@ -141,19 +160,86 @@ function notify(text, opts) {
   finally { if (!isLive(opts)) { if (prev === undefined) delete process.env.OWNER_DIR; else process.env.OWNER_DIR = prev; } }
 }
 
-/* triage(category, o, opts): run the gate-triage model on the caller's facts. Any failure => escalate (fail closed). */
+/* ---- triage facts from records (never the actor's word for a safety fact) ---- */
+const listHas = (csv, c) => String(csv || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean).includes(String(c).toLowerCase());
+const hostOf = t => String(t || '').trim().replace(/^[a-z]+:\/\//i, '').replace(/^[^@/]*@/, '').split(/[/?#:]/)[0].toLowerCase();
+function allowlisted(target, r) {
+  let lines = []; try { lines = fs.readFileSync(path.join(r, 'company', 'state', 'external-allowlist.txt'), 'utf8').split('\n').map(l => l.trim().toLowerCase()).filter(l => l && !l.startsWith('#')); } catch (_) {}
+  const h = hostOf(target); if (!h) return false;
+  return lines.some(e => (e.startsWith('*.') ? (h === e.slice(2) || h.endsWith(e.slice(1))) : (h === e || h.endsWith('.' + e))));
+}
+function cleared(target, r, now) {
+  const t = String(target || '').trim().toLowerCase(); if (!t) return null;
+  const rows = readLines(path.join(r, 'company', 'state', 'external-clearances.jsonl'));
+  const closed = new Set(rows.filter(x => x.closedAt && x.id).map(x => x.id));
+  const hit = rows.find(x => x && !x.closedAt && !(x.id && closed.has(x.id)) && x.clearedBy && x.until && Date.parse(x.until) > now
+    && String(x.target || '').trim().toLowerCase() === t);
+  return hit ? (hit.id || hit.at || 'row') : null;
+}
+function partyKnown(name, r) {
+  const id = String(name || '').trim().toLowerCase(); if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(id)) return false;
+  return fs.existsSync(path.join(r, 'company', 'work', 'parties', id));
+}
+function ledgerPaid(name, r) {
+  const n = String(name || '').trim().toLowerCase(); if (!n) return null;
+  const hit = readLines(path.join(r, 'company', 'work', 'ledger', 'ledger.jsonl')).find(x => ['payout', 'receipt', 'invoice'].includes(x.type) && [x.party, x.to].some(v => String(v || '').trim().toLowerCase() === n));
+  return hit ? String(hit.hash || hit.seq || hit.at || 'row') : null;
+}
+function seatRecord(by, r) {
+  const b = String(by || '').trim().toLowerCase(); if (!b) return null;
+  const comp = co.readJson(path.join(r, 'company', 'work', 'people', 'competence.json'), null);
+  if (!comp || !comp.people) return null;
+  const id = Object.keys(comp.people).find(k => k.toLowerCase() === b || String((comp.people[k] || {}).name || '').toLowerCase() === b);
+  if (!id) return null;
+  const flawed = [].concat(comp.serious || [], comp.waiting || []).some(f => f && String(f.agent || '').toLowerCase() === id.toLowerCase());
+  return { value: !flawed, ref: 'competence.json ' + id + (comp.computedAt ? ' @' + comp.computedAt : '') };
+}
+/* triageFacts(category, o, opts) -> { facts (envelopes), from } */
+function triageFacts(category, o, opts) {
+  const dm = require('./decision'); const r = rootOf(opts); const now = Date.now();
+  const L = dm.load(TRIAGE_MODEL, null, { root: r }); const inputs = (L.model && L.model.inputs) || {};
+  const P = dm.params(TRIAGE_MODEL, { root: r });
+  const facts = {}; const E = (value, source, ref) => ({ value, source, ref });
+  const actorFacts = (o && o.facts) || {};
+  if ('reversibleCategories' in P) facts.reversible = E(listHas(P.reversibleCategories, category), 'owner-table', 'decision-models params gate-triage.reversibleCategories');
+  if ('oneOffCategories' in P) facts.recurring = E(actorFacts.recurring === true || (actorFacts.recurring && actorFacts.recurring.value === true) ? true : !listHas(P.oneOffCategories, category), 'owner-table', 'decision-models params gate-triage.oneOffCategories');
+  if (o && typeof o.amountUsd === 'number' && Number.isFinite(o.amountUsd)) facts.amountUsd = E(o.amountUsd, 'request', o.ref || null);
+  if (o && o.vendor) {
+    const led = ledgerPaid(o.vendor, r);
+    facts.vendorKnown = allowlisted(o.vendor, r) ? E(true, 'external-gate-allowlist', hostOf(o.vendor)) : partyKnown(o.vendor, r) ? E(true, 'registry:parties', String(o.vendor)) : led ? E(true, 'ledger', led) : E(false, 'ledger', 'no payout, receipt or invoice for ' + String(o.vendor).slice(0, 80));
+  }
+  if (o && o.recipient) {
+    const c = cleared(o.recipient, r, now);
+    facts.externalRecipientKnown = c ? E(true, 'external-gate-clearances', c) : allowlisted(o.recipient, r) ? E(true, 'external-gate-allowlist', hostOf(o.recipient)) : partyKnown(o.recipient, r) ? E(true, 'registry:parties', String(o.recipient)) : E(false, 'external-gate-clearances', 'no live clearance for ' + String(o.recipient).slice(0, 80));
+  }
+  const sr = seatRecord(o && o.by, r); if (sr) facts.seatHistoryOk = E(sr.value, 'competence', sr.ref);
+  // the actor's own facts: kept for non-safety fields; a safety claim goes in as source "actor" (rejected and logged)
+  for (const [k, v] of Object.entries(actorFacts)) {
+    if (k === 'category' || facts[k] !== undefined) continue;
+    const val = v && typeof v === 'object' && !Array.isArray(v) && 'value' in v ? v.value : v;
+    facts[k] = { value: val, source: 'actor', ref: o && o.by ? String(o.by) : undefined };
+  }
+  const safety = Object.keys(inputs).filter(k => inputs[k] && inputs[k].safety);
+  return { facts, safety };
+}
+
+/* triage(category, o, opts): run the gate-triage model on facts built from records. Any failure => escalate (fail closed). */
 function triage(category, o, opts) {
-  let r;
+  let r; let safety = [];
   try {
     const dm = require('./decision');
-    const input = Object.assign({}, (o && o.facts) || {}, { category, summary: o && o.summary ? String(o.summary).slice(0, 300) : undefined });
-    r = dm.evaluate(TRIAGE_MODEL, input, { root: rootOf(opts), caller: 'governance:' + category + (o && o.ref ? ':' + o.ref : '') });
+    try { dm.health({ root: rootOf(opts), id: TRIAGE_MODEL, apply: true }); } catch (_) {}   // join outcomes; demote a live version over its limit
+    const tf = triageFacts(category, o || {}, opts); safety = tf.safety;
+    const input = Object.assign({}, tf.facts, { category: { value: category, source: 'governance' }, summary: o && o.summary ? String(o.summary).slice(0, 300) : undefined });
+    r = dm.evaluate(TRIAGE_MODEL, input, { root: rootOf(opts), actor: (o && o.by) || undefined, caller: 'governance:' + category + (o && o.ref ? ':' + o.ref : '') });
   } catch (e) { r = { action: null, error: e.message, model: { id: TRIAGE_MODEL } }; }
   const m = r.model || {};
   const tag = m.id + ' v' + (m.version || '?') + (m.sha ? ' (' + m.sha + ')' : '');
+  if (r.action != null && !safety.length) return { escalate: true, wouldBe: r.action, rule: r.rule, model: m, mode: r.mode, decisionId: r.decisionId, why: tag + ' marks no fact as safety (it would take the acting seat\'s word), so it waits for you; promote a version with fact provenance (gate-triage v2)' };
   if (r.action == null) return { escalate: true, wouldBe: null, model: m, mode: r.mode, why: 'the decision model could not run (' + (r.error || 'unknown') + '), so it waits for you' };
-  if (r.mode !== 'live') return { escalate: true, wouldBe: r.action, rule: r.rule, model: m, mode: r.mode, why: tag + ' is in shadow mode; it would have said ' + r.action + ' (' + r.reason + ')' };
-  return { escalate: r.action !== 'proceed-notify', wouldBe: r.action, rule: r.rule, model: m, mode: r.mode, reason: r.reason, why: tag + ' said ' + r.action + ' (' + r.reason + ')' };
+  const dist = r.distrusted && r.distrusted.length ? '; not taken on the actor\'s word: ' + r.distrusted.join(', ') : '';
+  if (r.mode !== 'live') return { escalate: true, wouldBe: r.action, rule: r.rule, model: m, mode: r.mode, decisionId: r.decisionId, distrusted: r.distrusted, why: tag + ' is in shadow mode; it would have said ' + r.action + ' (' + r.reason + dist + ')' };
+  return { escalate: r.action !== 'proceed-notify', wouldBe: r.action, rule: r.rule, model: m, mode: r.mode, reason: r.reason, decisionId: r.decisionId, distrusted: r.distrusted, why: tag + ' said ' + r.action + ' (' + r.reason + dist + ')' };
 }
 
 /* decide(category, {by, summary, recommendation, default, ref, facts?}, opts) -> {level, allowed, questionId?, denied?, noted?, triage?} */
@@ -168,7 +254,7 @@ function decide(category, o, opts) {
     if (!tri.escalate) {
       const who = o.by || 'The company';
       const m = tri.model;
-      const sentence = who + ' decided to ' + String(o.summary || 'act on ' + category).trim().replace(/\.$/, '') + '. (Self-governance: ' + category + ' is set to triage, and decision model ' + m.id + ' v' + m.version + ' let this through: ' + tri.reason + '. Reply if you want it undone.)';
+      const sentence = who + ' decided to ' + String(o.summary || 'act on ' + category).trim().replace(/\.$/, '') + '. (Self-governance: ' + category + ' is set to triage, and decision model ' + m.id + ' v' + m.version + ' let this through: ' + tri.reason + '. Decision ' + (tri.decisionId || '?') + '; reply "undo ' + (tri.decisionId || '') + '" if you want it undone.)';
       let noted = null; try { noted = notify(sentence, opts); } catch (_) {}
       return { level: lv, allowed: true, noted: !!noted, triage: tri };
     }
@@ -190,8 +276,8 @@ function approveFlow(category, o, ref, opts, tri) {
   if (q) {
     const a = answerOf(q.id, opts);
     const v = a ? verdict(a.text) : null;
-    if (v === true) return { level: lv, allowed: true, questionId: q.id, approvedBy: 'owner' };
-    if (v === false) return { level: lv, allowed: false, questionId: q.id, denied: true, reason: 'the owner said no to ' + q.id };
+    if (v === true) return { level: lv, allowed: true, questionId: q.id, approvedBy: a.via === 'delegate' ? 'delegate ' + a.by + ' for owner' : 'owner' };
+    if (v === false) return { level: lv, allowed: false, questionId: q.id, denied: true, reason: (a.via === 'delegate' ? 'delegate ' + a.by + ' for the owner' : 'the owner') + ' said no to ' + q.id };
     if (!a && !closedOrReclassified(q.id, opts)) return { level: lv, allowed: false, questionId: q.id, reason: 'waiting for the owner on ' + q.id };
     // answered with neither yes nor no, or closed: ask again
   }
@@ -205,4 +291,4 @@ function refusal(category, d) {
   return 'self-governance: ' + category + ' is at ' + lv + ', so this waits for the owner. Question ' + d.questionId + ' is in the owner inbox (company/pm-inbox.jsonl); run the same command again after the owner answers yes';
 }
 
-module.exports = { LEVELS, TRIAGE_MODEL, triage, level, guard, decide, approved, pendingGates, notify, refusal, isOwnerName, files, doc, questionFor, answerOf, verdict };
+module.exports = { LEVELS, TRIAGE_MODEL, triage, triageFacts, gateAsks, readLines, level, guard, decide, approved, pendingGates, notify, refusal, isOwnerName, files, doc, questionFor, answerOf, verdict };

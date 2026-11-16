@@ -48,7 +48,7 @@ decide alone. The owner sets one level per category in `company/state/governance
 |---|---|
 | **auto** | The accountable seat decides, as in the table above. |
 | **notify** | The seat decides and goes ahead; the owner gets one plain sentence on the owner channel (`company/owner/outbound.jsonl`). |
-| **triage** | A decision model decides between notify and approve: the tool passes the facts it has (amount, recurring, known vendor, reversible, the seat's record, known recipient), `company/decision-models/gate-triage` answers `proceed-notify` (goes ahead; the owner's sentence names the model, version and rule that let it through) or `escalate` (exactly as approve). In shadow mode, or if the model cannot run, it always escalates and records what it would have said. See `docs/DECISION-MODELS.md`. |
+| **triage** | A decision model decides between notify and approve: governance builds the facts from records, never from the acting seat (reversible and one-off from the owner's per-category table, the amount from the request, known vendor and recipient from the external-gate allowlist, clearances, parties and ledger, the seat's record from competence), `company/decision-models/gate-triage` answers `proceed-notify` (goes ahead; the owner's sentence names the model, version and rule that let it through) or `escalate` (exactly as approve). In shadow mode, or if the model cannot run, it always escalates and records what it would have said. See `docs/DECISION-MODELS.md`. |
 | **approve** | The seat proposes and waits. The tool files one owner question (recommendation, and what happens if nobody answers) and stops; the same command run again after the owner answers yes goes ahead. A no stops it. |
 
 Categories and where they are enforced:
@@ -75,9 +75,14 @@ Categories and where they are enforced:
 
 Every preset keeps **packs** at approve: a new line of business is the owner's call. No preset uses **triage**: the
 owner opts a category in (`governance.js set spend triage --by <owner>`), promotes the model to live
-(`decide.js promote gate-triage 1 --mode live --by <owner>`) and, for spend, sets the threshold, which ships at 0 so no
-spend passes (`decide.js set-param gate-triage maxSpendUsd 20 --by <owner>`). The model also escalates hiring, release,
-budget and packs whatever the facts. A tool that has not been taught triage reads a triage category as approve.
+(`decide.js promote gate-triage 2 --mode live --by <owner>`), declares which categories are reversible and one-off
+(`decide.js set-param gate-triage reversibleCategories tools,schedules --by <owner>`, likewise `oneOffCategories`;
+both ship empty, so nothing passes) and, for spend, sets the threshold, which ships at 0 so no spend passes
+(`decide.js set-param gate-triage maxSpendUsd 20 --by <owner>`). The model also escalates hiring, release, budget and
+packs whatever the facts. A tool that has not been taught triage reads a triage category as approve. A fact the acting
+seat asserts about itself never counts (docs/DECISION-MODELS.md, *Fact provenance*). Every proceed has a decisionId;
+the owner replying "undo d-…", a refund or credit note naming it, or a breached commitment naming it marks it bad, and
+one bad outcome sends the model back to shadow (`decide.js health`).
 
 **Fixed gates.** Access, ownership, commitment, and spend beyond the cap are always approve, never triage. They are not categories,
 `governance.js` refuses to change them, and they stay approve while the `ownerGates` guardrail is on
@@ -90,6 +95,24 @@ Each change is a line in `company/work/decisions.md` and a row in `company/state
 `locked-watch.js` reports any edit to `governance.json` that `governance.js` did not make.
 
 An unknown category, or a file that cannot be read, counts as approve: the dial fails closed.
+
+## Delegation while the owner is away
+
+The owner may name someone to answer their approve/triage questions for a while:
+
+```
+node company/tools/delegation.js grant --to Pat --categories spend,hiring --until 2026-11-30T18:00:00Z --by owner --why "away"
+node company/tools/delegation.js revoke dg-001 --by owner
+node company/tools/delegation.js list
+node company/tools/delegation.js answer q-123456 --by Pat --a "yes, go ahead"     (the delegate)
+```
+
+While it is active, `lib/governance` treats the delegate's answer to a question in those categories as the owner's,
+recorded as "delegate Pat for owner". Limits: only the owner grants or revokes, from their own shell; never to the
+owner; never for the four fixed owner gates, packs, guardrails or governance itself; at most 14 days and it expires
+hard; a delegate never answers a question they raised; an owner answer always wins. Every delegate answer is a row in
+`company/state/delegations-log.jsonl`, a line in `company/work/decisions.md`, and one sentence to the owner.
+`company/state/delegations.json` and its log are locked (`company/state/locked-extra.json`, source `delegation.js`).
 
 ## Decisions taken
 

@@ -23,11 +23,12 @@ with a person or an LLM, and let the model escalate to them.
 | `id`, `version` | must match the folder and file name (`1`, `2`, `1.1`) |
 | `mode` | `shadow` or `live` as declared; see *Effective mode* below |
 | `actions` | the closed list of actions the model may return |
-| `inputs` | `{ field: { type: string\|number\|boolean\|array, required?, sensitive?, doc } }`. Unknown fields are ignored (and reported); a wrong type counts as missing; a missing `required` field returns the default |
+| `inputs` | `{ field: { type: string\|number\|boolean\|array, required?, sensitive?, safety?, sources?, doc } }`. Unknown fields are ignored (and reported); a wrong type counts as missing; a missing `required` field returns the default. `safety: true` + `sources` (see *Fact provenance*) |
 | `params` | owner-set thresholds `{ name: { type, default } }`. Defaults are **closed** (e.g. 0 = nothing passes) |
 | `scoring` | optional `[{ id, when, weight }]`; the sum of weights whose predicate holds is `score`, also readable by rules as field `$score` |
 | `rules` | evaluated in order, first match wins: `{ id, when, action, why }` |
 | `default` | `{ action, why }` when no rule matches |
+| `outcomes` | optional `{ windowDays (30), maxBad (0), proceedActions }`: the rolling window and bad-outcome limit for *Outcomes and health*; proceedActions defaults to every action but the default's |
 
 Predicates: `{ field, op, value }` or `{ field, op, param }` with ops `eq ne lt lte gt gte in regex exists`;
 combinators `{ all: [...] }`, `{ any: [...] }`, `{ not: p }`. Any comparison on a missing field is false (so write
@@ -35,7 +36,41 @@ combinators `{ all: [...] }`, `{ any: [...] }`, `{ not: p }`. Any comparison on 
 op or key makes the model invalid, and an invalid or missing model returns `action: null`, which every caller treats
 as "do the safe thing".
 
-Output: `{ action, rule, reason, score?, mode, model: { id, version, sha } }`.
+Output: `{ action, rule, reason, score?, distrusted?, decisionId, mode, model: { id, version, sha } }`.
+
+## Fact provenance
+
+A rule that loosens the answer is only as good as the fact it tests. If the acting seat supplies `reversible: true`,
+triage is self-certification. So every input may carry where it came from: `evaluate(id, facts, { actor })` takes
+each fact plain or as `{ value, source, ref? }`. An input marked `safety: true` lists the `sources` allowed to vouch
+for it (`ledger`, `external-gate-allowlist`, `external-gate-clearances`, `competence`, `performance`,
+`registry:parties`, `owner-table`, `request`, `tool:<name>`, `owner`; a trailing `*` is a prefix). A safety fact
+counts only as an envelope whose source is on its list and is not the actor: a plain value, a missing source, `actor`,
+`agent`, `self`, `seat`, or the actor's own name (`sam`, `seat:sam`) is **treated as absent**, so the model takes its
+conservative path (escalate). The output lists such fields under `distrusted`. `validate` refuses a safety input
+whose sources include the actor. The log row keeps `provenance` per field (source, ref, or why it was rejected),
+the rejected `claimed` values and the `actor`; `replay` re-applies provenance, so a new version sees what the old one saw.
+
+## Outcomes and health
+
+Every logged evaluation has a `decisionId` (`d-` + 12 hex). How it turned out is a row in
+`company/work/decision-outcomes.jsonl`:
+
+```
+node company/tools/decide.js outcome d-1a2b3c4d5e6f --result bad --by owner --note "cost more than it said"
+node company/tools/decide.js join                     # outcomes later records already answer
+node company/tools/decide.js health [--id gate-triage] [--json]
+```
+
+- **By hand**: any seat or the owner; the actor of a decision cannot grade it good; an agent run cannot write as the owner.
+- **Joined automatically** (`join`, also run by `health` and before every triage): an owner message that names the
+  decisionId and undoes it ("undo d-…", "revert", "no"), a ledger `credit-note` or `refund` row that names it, a
+  commitment in state `breached` that names it. Each is recorded once as `bad`, with its source and ref.
+- **Health**: per model and version, the proceed decisions in the model's rolling window, how many were judged, good,
+  bad, and precision = good / judged. A **live** version whose bad outcomes exceed `outcomes.maxBad` (closed default
+  0: any bad outcome on a proceed demotes) is set back to **shadow** in `company/state/decision-models.json`
+  (by `decide.js (automatic)`, logged in `decision-models-log.jsonl` and `decisions.md`) and the owner gets one
+  sentence via `owner-inbox.js send`. The owner re-promotes when satisfied.
 
 ## Effective mode
 
@@ -70,13 +105,28 @@ locked-watch MANIFEST shape) so `locked-watch.js` reports or undoes an edit nobo
 
 ## First model: gate-triage
 
-`company/decision-models/gate-triage/1.json` serves the self-governance level **triage** (company/DECISION_RIGHTS.md).
-`lib/governance.decide(category, { ..., facts })` evaluates it with `{ category, ...facts }`; facts are
-`amountUsd, recurring, vendorKnown, seatHistoryOk, reversible, externalRecipientKnown`. `proceed-notify` behaves like
-notify (the owner sentence says the model let it through, with the rule and version), `escalate` like approve (the
-owner question says why it escalated). Shadow mode, a missing model or no facts all escalate. The model ships in shadow
-with `maxSpendUsd` 0; fixed owner gates never reach it, and hiring, release, budget and packs always escalate.
-Callers that want triage to be useful must pass facts; a caller that passes none simply gets approve.
+`company/decision-models/gate-triage/` serves the self-governance level **triage** (company/DECISION_RIGHTS.md).
+`proceed-notify` behaves like notify (the owner sentence names the model, version, rule and decisionId, and says
+"reply undo d-…"), `escalate` like approve (the owner question says why). Shadow mode, a missing model or missing
+facts all escalate. Fixed owner gates never reach it; hiring, release, budget and packs always escalate.
+
+- **v1** takes plain facts on the caller's word. It stays on disk, valid and replayable (its cases carry
+  `versions: ["1"]`), but `lib/governance` never lets it proceed: a triage model with no safety inputs escalates.
+- **v2** (the active version on disk; ships in shadow) has the same rules with every loosening fact a safety input.
+  `lib/governance.triageFacts` builds them from records, not from the actor:
+
+| Fact | Built from (source) |
+|---|---|
+| `reversible` | the owner's table: param `reversibleCategories` (comma list, default empty) — `owner-table` |
+| `recurring` | the owner's table: param `oneOffCategories` (default empty, so everything counts as recurring) — `owner-table` |
+| `amountUsd` | the request: `decide(category, { amountUsd })`, the amount the tool is about to commit — `request` |
+| `vendorKnown` | `decide(..., { vendor })` on `company/state/external-allowlist.txt`, a party folder, or a ledger payout/receipt/invoice — `external-gate-allowlist` / `registry:parties` / `ledger` |
+| `externalRecipientKnown` | `decide(..., { recipient })` with a live, unclosed row in `external-clearances.jsonl`, the allowlist, or a party — `external-gate-clearances` / … |
+| `seatHistoryOk` | `company/work/people/competence.json`: the seat has a record and no serious or waiting flaw — `competence` |
+
+  The caller's `facts` pass only for non-safety fields; a safety claim goes in as source `actor`, is rejected and is
+  logged under `claimed`. The owner sets the tables: `decide.js set-param gate-triage reversibleCategories
+  tools,schedules --by owner`. `outcomes`: 30 days, `maxBad` 0.
 
 ## How a pack ships models
 

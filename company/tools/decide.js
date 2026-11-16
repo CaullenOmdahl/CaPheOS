@@ -8,11 +8,17 @@
  *   node company/tools/decide.js test <id> [--version <v>|--all]        company/decision-models/<id>/cases.json; exit 1 on a miss
  *   node company/tools/decide.js promote <id> <version> [--mode shadow|live] --by <owner>   owner-only; cases must pass
  *   node company/tools/decide.js set-param <id> <name> <value> --by <owner>                  owner-only (closed defaults)
+ *   node company/tools/decide.js outcome <decisionId> --result good|bad --by <seat|owner> [--note "..."]   how a decision turned out
+ *   node company/tools/decide.js join                                   record outcomes later records already answer (owner undo,
+ *                                                                       ledger credit note/refund, breached commitment naming the decisionId)
+ *   node company/tools/decide.js health [--id <model>] [--json]         per model+version: proceed decisions, good/bad, precision over
+ *                                                                       the model's window; demotes a live version over its bad limit
  *   node company/tools/decide.js register                               write the locked-watch entries (company/state/locked-extra.json)
  *   node company/tools/decide.js selftest
  *
  * Library: company/tools/lib/decision.js. Models: company/decision-models/<id>/<version>.json (pure data, no code).
- * Log: company/work/decisions/<id>.jsonl. Promotions and params: company/state/decision-models.json (class A, writer
+ * Inputs may carry provenance ({ value, source, ref }); a `safety` input counts only from one of its `sources`, never the actor.
+ * Outcomes: company/work/decision-outcomes.jsonl. Log: company/work/decisions/<id>.jsonl. Promotions and params: company/state/decision-models.json (class A, writer
  * decide.js) + company/state/decision-models-log.jsonl + a line in company/work/decisions.md. Guide: docs/DECISION-MODELS.md.
  * Exit: 0 ok, 1 test miss / refused promotion, 2 usage or bad model, 3 not the owner.
  * Owner of this tool: the risk function; models' policy: the owner.
@@ -135,6 +141,62 @@ function selftest() {
     assert.ok(l.some(x => x.id === 'gate-triage'));
     assert.deepStrictEqual([toyRow.active, toyRow.mode, toyRow.params.limit], ['1', 'live', 5]); assert.ok(toyRow.evaluations >= 3);
   });
+  t('provenance: a safety input counts only from an allowed source that is not the actor; the log keeps provenance and rejected claims', () => {
+    const pdir = path.join(T, 'company', 'decision-models', 'prov'); fs.mkdirSync(pdir, { recursive: true });
+    fs.writeFileSync(path.join(pdir, '1.json'), JSON.stringify({ id: 'prov', version: '1', mode: 'live', actions: ['go', 'wait'],
+      inputs: { safe: { type: 'boolean', safety: true, sources: ['ledger', 'tool:*'] }, note: { type: 'string' } },
+      rules: [{ id: 'safe', when: { field: 'safe', op: 'eq', value: true }, action: 'go' }], default: { action: 'wait' } }));
+    const ev = (inp, actor) => dm.evaluate('prov', inp, Object.assign({ actor }, opts));
+    assert.strictEqual(ev({ safe: true }).action, 'wait');                                         // plain value: no provenance
+    assert.strictEqual(ev({ safe: { value: true, source: 'actor' } }).action, 'wait');
+    assert.strictEqual(ev({ safe: { value: true, source: 'self' } }).action, 'wait');
+    assert.strictEqual(ev({ safe: { value: true } }).action, 'wait');                              // missing source
+    assert.strictEqual(ev({ safe: { value: true, source: 'owner' } }).action, 'wait');             // not on this input's list
+    assert.strictEqual(ev({ safe: { value: true, source: 'sam' } }, 'Sam').action, 'wait');        // the actor by name
+    assert.strictEqual(ev({ safe: { value: true, source: 'tool:sam' } }, 'sam').action, 'go');    // a tool named like the actor is still a tool
+    const ok = ev({ safe: { value: true, source: 'ledger', ref: 'row-9' }, note: { value: 'hi', source: 'actor' } }, 'Sam');
+    assert.strictEqual(ok.action, 'go');
+    const rows = dm.logRows('prov', opts); const last = rows[rows.length - 1];
+    assert.deepStrictEqual(last.provenance.safe, { source: 'ledger', ref: 'row-9' }); assert.strictEqual(last.actor, 'Sam'); assert.ok(/^d-[0-9a-f]{12}$/.test(last.decisionId));
+    const rej = rows[1]; assert.strictEqual(rej.claimed.safe, true); assert.ok(/actor/.test(rej.provenance.safe.rejected));
+    const bad = { id: 'prov', version: '2', mode: 'live', actions: ['go'], inputs: { safe: { type: 'boolean', safety: true, sources: ['actor'] } }, rules: [], default: { action: 'go' } };
+    assert.ok(dm.validate(bad).some(e => /never the actor/.test(e)));
+    const r = dm.replay('prov', '1', opts); assert.strictEqual(r.disagree, 0, JSON.stringify(r.disagreements));   // replay re-applies provenance
+  });
+  t('gate-triage v2: an actor-supplied reversible:true cannot make triage proceed; v1 stays replayable and its cases pass', () => {
+    const vouched = { category: 'tools', recurring: { value: false, source: 'owner-table' }, seatHistoryOk: { value: true, source: 'competence' } };
+    const run = rev => dm.evaluate('gate-triage', Object.assign({}, vouched, { reversible: rev }), Object.assign({ version: '2', log: false, actor: 'Sam' }, opts)).action;
+    assert.strictEqual(run({ value: true, source: 'owner-table' }), 'proceed-notify');
+    for (const rev of [true, { value: true, source: 'actor' }, { value: true, source: 'Sam' }, { value: true, source: 'agent' }, { value: true }]) assert.strictEqual(run(rev), 'escalate', JSON.stringify(rev));
+    assert.ok(dm.test('gate-triage', Object.assign({ version: '1' }, opts)).ok); assert.ok(dm.test('gate-triage', Object.assign({ version: '2' }, opts)).ok);
+    assert.ok(dm.replay('gate-triage', '1', opts).ok);
+  });
+  t('outcomes: manual and joined; health reports precision; any bad proceed outcome demotes a live version and tells the owner', () => {
+    const odir = path.join(T, 'company', 'decision-models', 'outc'); fs.mkdirSync(odir, { recursive: true });
+    const om = { id: 'outc', version: '1', mode: 'live', actions: ['go', 'wait'], inputs: { n: { type: 'number' } }, outcomes: { windowDays: 30 },
+      rules: [{ id: 'small', when: { field: 'n', op: 'lt', value: 10 }, action: 'go' }], default: { action: 'wait' } };
+    fs.writeFileSync(path.join(odir, '1.json'), JSON.stringify(om)); fs.writeFileSync(path.join(odir, 'cases.json'), JSON.stringify({ cases: [{ input: { n: 1 }, expect: 'go' }] }));
+    assert.ok(dm.promote('outc', '1', { by: 'owner', mode: 'live' }, opts).ok);
+    const a = dm.evaluate('outc', { n: 1 }, Object.assign({ actor: 'Sam' }, opts)); const b = dm.evaluate('outc', { n: 2 }, Object.assign({ actor: 'Sam' }, opts));
+    dm.evaluate('outc', { n: 50 }, opts);
+    assert.strictEqual(dm.outcome(a.decisionId, { result: 'good', by: 'Sam' }, opts).code, 3);                 // no grading your own act good
+    assert.strictEqual(dm.outcome('d-000000000000', { result: 'good', by: 'Lee' }, opts).code, 2);
+    assert.strictEqual(dm.outcome(a.decisionId, { result: 'meh', by: 'Lee' }, opts).code, 2);
+    assert.ok(dm.outcome(a.decisionId, { result: 'good', by: 'Lee', note: 'fine' }, opts).ok);
+    let h = dm.health(Object.assign({ id: 'outc' }, opts)).models[0];
+    assert.deepStrictEqual([h.proceed, h.judged, h.good, h.bad, h.precision, h.live], [2, 1, 1, 0, 1, true]);
+    fs.mkdirSync(path.join(T, 'company', 'work', 'ledger'), { recursive: true });
+    fs.writeFileSync(path.join(T, 'company', 'work', 'ledger', 'ledger.jsonl'), JSON.stringify({ seq: 1, type: 'credit-note', invoice: 'inv-1', amount: 5, reason: 'refund for ' + b.decisionId, by: 'Pat', hash: 'h1' }) + '\n');
+    const H = dm.health(Object.assign({ id: 'outc', apply: true }, opts)); h = H.models[0];
+    assert.strictEqual(H.joined, 1); assert.deepStrictEqual([h.bad, h.precision, h.demoted], [1, 0.5, true]);
+    assert.strictEqual(dm.state(opts).models.outc.mode, 'shadow'); assert.strictEqual(dm.evaluate('outc', { n: 1 }, Object.assign({ log: false }, opts)).mode, 'shadow');
+    assert.ok(/outc v1 is back in shadow mode/.test(fs.readFileSync(path.join(T, 'company', 'owner', 'outbound.jsonl'), 'utf8')));
+    assert.ok(/demoted decision model outc v1 from live to shadow/.test(fs.readFileSync(path.join(T, 'company', 'work', 'decisions.md'), 'utf8')));
+    assert.strictEqual(dm.join(opts).recorded.length, 0);                                                     // idempotent
+    fs.mkdirSync(path.join(T, 'company', 'work', 'commitments'), { recursive: true });
+    fs.writeFileSync(path.join(T, 'company', 'work', 'commitments', 'c-1.json'), JSON.stringify({ id: 'c-1', state: 'breached', note: 'from ' + a.decisionId }));
+    assert.strictEqual(dm.join(opts).recorded[0].source, 'commitment-breached');
+  });
   if (prevProv === undefined) delete process.env.PROVENANCE_ROOT; else process.env.PROVENANCE_ROOT = prevProv;
   if (prevAgent !== undefined) process.env.DECIDE_ASSUME_AGENT = prevAgent;
   fs.rmSync(T, { recursive: true, force: true });
@@ -201,8 +263,21 @@ if (require.main === module) {
       done(dm.setParam(pos[0], pos[1], pos[2], { by: flag('by') }));
     }
     if (cmd === 'register') done(dm.register());
+    if (cmd === 'outcome') {
+      if (!pos[0]) done({ ok: false, error: 'outcome <decisionId> --result good|bad --by <seat|owner> [--note "..."]' });
+      done(dm.outcome(pos[0], { result: flag('result'), by: flag('by'), note: flag('note') }));
+    }
+    if (cmd === 'join') done(dm.join());
+    if (cmd === 'health') {
+      const h = dm.health({ id: flag('id') || undefined, apply: true });
+      if (json) done(h);
+      if (h.joined) console.log('joined ' + h.joined + ' outcome(s) from later records');
+      if (!h.models.length) console.log('No logged decisions with ids yet.');
+      for (const m of h.models) console.log(m.id.padEnd(16) + ' v' + String(m.version).padEnd(5) + ' ' + (m.live ? 'live  ' : 'shadow') + '  proceed ' + m.proceed + ' in ' + m.windowDays + 'd, judged ' + m.judged + ' (good ' + m.good + ', bad ' + m.bad + ')  precision ' + (m.precision == null ? '-' : m.precision) + '  bad limit ' + m.maxBad + (m.demoted ? '  DEMOTED to shadow' : m.overThreshold ? '  OVER LIMIT' : ''));
+      process.exit(0);
+    }
   } catch (e) { done({ ok: false, error: e.message }, 2); }
-  done({ ok: false, error: 'commands: list [--json], show <id>, eval <id> --input <file|json>, replay <id> --version <v> [--from <iso>], test <id>, promote <id> <version> --by <owner>, set-param <id> <name> <value> --by <owner>, register, selftest' });
+  done({ ok: false, error: 'commands: list [--json], show <id>, eval <id> --input <file|json>, replay <id> --version <v> [--from <iso>], test <id>, promote <id> <version> --by <owner>, set-param <id> <name> <value> --by <owner>, outcome <decisionId> --result good|bad --by <x>, join, health [--id <model>] [--json], register, selftest' });
 }
 
 module.exports = { selftest };

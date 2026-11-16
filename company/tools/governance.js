@@ -182,7 +182,10 @@ function selftest() {
   });
   // triage: a decision model picks notify or approve (lib/decision.js, company/decision-models/gate-triage)
   const dm = require('./lib/decision');
-  const facts = { reversible: true, recurring: false, seatHistoryOk: true };
+  const facts = { reversible: true, recurring: false, seatHistoryOk: true };   // what an acting seat would like to claim
+  // the records triage reads: the owner's per-category table (model params) and Sam's competence record
+  const comp = path.join(T, 'company', 'work', 'people', 'competence.json'); fs.mkdirSync(path.dirname(comp), { recursive: true });
+  fs.writeFileSync(comp, JSON.stringify({ computedAt: '2026-11-01T00:00:00Z', people: { sam: { name: 'Sam' }, lee: { name: 'Lee' } }, serious: [{ agent: 'lee', severity: 'S1' }], waiting: [] }));
   t('triage: set by the owner; callers that do not ask for triage read it as approve; fixed gates refuse it', () => {
     assert.ok(set('tools', 'triage', owner, opts).ok);
     assert.strictEqual(gov.level('tools', opts), 'approve'); assert.strictEqual(gov.level('tools', Object.assign({ triage: true }, opts)), 'triage');
@@ -190,26 +193,53 @@ function selftest() {
     assert.strictEqual(set('access', 'triage', owner, opts).code, 2);
     assert.ok(Object.values(load(opts).presets).every(p => !Object.values(p.categories).includes('triage')));
   });
-  t('triage in shadow mode (the shipped default): escalates like approve, says what it would have done, logs the evaluation', () => {
+  t('provenance: the actor\'s own reversible/recurring/seatHistoryOk claims are not taken; the owner table and competence are', () => {
+    let tf = gov.triageFacts('tools', { by: 'Sam', facts }, opts).facts;
+    assert.deepStrictEqual([tf.reversible.value, tf.reversible.source, tf.recurring.value, tf.seatHistoryOk.source], [false, 'owner-table', true, 'competence']);
+    assert.ok(dm.setParam('gate-triage', 'reversibleCategories', 'tools,schedules', { by: owner }, opts).ok);
+    assert.ok(dm.setParam('gate-triage', 'oneOffCategories', 'tools', { by: owner }, opts).ok);
+    tf = gov.triageFacts('tools', { by: 'Sam' }, opts).facts; assert.deepStrictEqual([tf.reversible.value, tf.recurring.value, tf.seatHistoryOk.value], [true, false, true]);
+    assert.strictEqual(gov.triageFacts('tools', { by: 'Lee' }, opts).facts.seatHistoryOk.value, false);   // an open S1
+    assert.strictEqual(gov.triageFacts('tools', { by: 'Nobody' }, opts).facts.seatHistoryOk, undefined);  // no record = absent
+  });
+  t('triage in shadow mode (the shipped default): escalates like approve, says what it would have done, logs the evaluation with provenance', () => {
     const d = gov.decide('tools', { by: 'Sam', summary: 'apply tool change c-1', ref: 'harness:c-1', facts }, opts);
     assert.strictEqual(d.allowed, false); assert.strictEqual(d.level, 'triage'); assert.strictEqual(d.triage.wouldBe, 'proceed-notify'); assert.strictEqual(d.triage.mode, 'shadow');
     assert.ok(/shadow mode; it would have said proceed-notify/.test(gov.pendingGates(opts).find(q => q.ref === 'harness:c-1').q));
-    assert.strictEqual(dm.logRows('gate-triage', opts).length, 1);
+    const rows = dm.logRows('gate-triage', opts); assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].version, '2'); assert.strictEqual(rows[0].provenance.reversible.source, 'owner-table'); assert.strictEqual(rows[0].actor, 'Sam');
   });
-  t('triage live: proceed-notify goes ahead and the owner sentence names the model, version and rule; escalate files a question', () => {
-    assert.ok(dm.promote('gate-triage', '1', { by: owner, mode: 'live' }, opts).ok);
+  t('an actor-supplied reversible:true cannot make a live triage proceed', () => {
+    assert.ok(dm.promote('gate-triage', '2', { by: owner, mode: 'live' }, opts).ok);
+    const d = gov.decide('models', { by: 'Sam', summary: 'switch a model', ref: 'models:1', facts }, Object.assign({ level: 'triage' }, opts));   // models is not on the owner's reversible list
+    assert.strictEqual(d.allowed, false); assert.strictEqual(d.triage.rule, 'not-reversible');
+    const n = gov.decide('tools', { by: 'Nobody', summary: 'apply tool change c-9', ref: 'harness:c-9', facts }, opts);   // no competence record: the claim is all there is
+    assert.strictEqual(n.allowed, false); assert.ok(n.triage.distrusted.includes('seatHistoryOk'), JSON.stringify(n.triage));
+    const last = dm.logRows('gate-triage', opts).pop(); assert.strictEqual(last.claimed.seatHistoryOk, true); assert.ok(/actor/.test(last.provenance.seatHistoryOk.rejected));
+  });
+  t('triage live: proceed-notify goes ahead and the owner sentence names the model, version, rule and decision; escalate files a question', () => {
     const d = gov.decide('tools', { by: 'Sam', summary: 'apply tool change c-2', ref: 'harness:c-2', facts }, opts);
     assert.ok(d.allowed && d.noted, JSON.stringify(d));
     const sent = fs.readFileSync(path.join(F.ownerDir, 'outbound.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-    assert.ok(/set to triage, and decision model gate-triage v1 let this through: routine-change/.test(sent[sent.length - 1].text), sent[sent.length - 1].text);
-    const e = gov.decide('tools', { by: 'Sam', summary: 'apply tool change c-3', ref: 'harness:c-3', facts: { reversible: false } }, opts);
+    assert.ok(/set to triage, and decision model gate-triage v2 let this through: routine-change.*Decision d-[0-9a-f]{12}/.test(sent[sent.length - 1].text), sent[sent.length - 1].text);
+    const e = gov.decide('tools', { by: 'Lee', summary: 'apply tool change c-3', ref: 'harness:c-3', facts }, opts);   // Lee has an open S1
     assert.strictEqual(e.allowed, false); assert.ok(e.questionId); assert.strictEqual(e.triage.wouldBe, 'escalate');
-    const n = gov.decide('tools', { by: 'Sam', summary: 'apply tool change c-4', ref: 'harness:c-4' }, opts);   // no facts
-    assert.strictEqual(n.allowed, false);
+  });
+  t('outcomes: the owner undoing a proceed-notify joins as bad and demotes the live version to shadow; the owner is told', () => {
+    const d = gov.decide('tools', { by: 'Sam', summary: 'apply tool change c-6', ref: 'harness:c-6' }, opts); assert.ok(d.allowed);
+    fs.appendFileSync(path.join(F.ownerDir, 'inbound.jsonl'), JSON.stringify({ id: 'm-undo', at: new Date().toISOString(), from: 'owner', text: 'undo ' + d.triage.decisionId }) + '\n');
+    const n = gov.decide('tools', { by: 'Sam', summary: 'apply tool change c-7', ref: 'harness:c-7' }, opts);
+    assert.strictEqual(n.allowed, false); assert.strictEqual(n.triage.mode, 'shadow');
+    assert.strictEqual(dm.state(opts).models['gate-triage'].mode, 'shadow');
+    assert.ok(/gate-triage v2 is back in shadow mode/.test(fs.readFileSync(path.join(F.ownerDir, 'outbound.jsonl'), 'utf8')));
+    assert.ok(dm.outcomes(opts).some(o => o.decisionId === d.triage.decisionId && o.result === 'bad' && o.source === 'owner-reversal'));
+  });
+  t('a promoted v1 (no safety inputs) never proceeds: it would take the actor\'s word', () => {
+    assert.ok(dm.promote('gate-triage', '1', { by: owner, mode: 'live' }, opts).ok);
+    const d = gov.decide('tools', { by: 'Sam', summary: 'apply tool change c-8', ref: 'harness:c-8', facts }, opts);
+    assert.strictEqual(d.allowed, false); assert.ok(/marks no fact as safety/.test(d.triage.why), d.triage.why);
   });
   t('triage fails closed when the model cannot run', () => {
-    const tri = gov.triage('tools', { facts }, Object.assign({}, opts));
-    assert.strictEqual(tri.escalate, false);
     const mdir = path.join(T, 'company', 'decision-models', 'gate-triage'); fs.mkdirSync(mdir, { recursive: true });
     fs.writeFileSync(path.join(mdir, '1.json'), '{ not json');
     const d = gov.decide('tools', { by: 'Sam', summary: 'apply tool change c-5', ref: 'harness:c-5', facts }, opts);

@@ -96,6 +96,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/corrections.js | people | `selftest` |
 | company/tools/decide.js | risk | `selftest` / `--selftest` |
 | company/tools/default-branch-watch.js | risk | `selftest` |
+| company/tools/delegation.js | ceo | `selftest` / `--selftest` |
 | company/tools/dispatch.js | tools | `--selftest` |
 | company/tools/dossier.js | people | none |
 | company/tools/escalate.js | ceo | none |
@@ -162,10 +163,12 @@ risk-reviewed action, and creating or reissuing a credential is an owner gate. A
 - **Core-module tools** (scopes, verify, evidence, reports, ledger; `modules/<id>/`): absent until
   `module.js enable <id> --by owner`, which copies them here and adds their §5a/§7b rows from `modules/<id>/rows.md`.
   Their shared library is `company/tools/lib/settle.js` (on top of `lib/modkit.js`). Every send they make (report,
-  invoice, payout, a verify http check) goes through `external-gate.js`; their limits ship closed (`ledger` sends no
+  invoice, payout, a verify http check) goes through `external-gate.js`, sends with an idempotency key derived from
+  what is sent (`--idem`; a retry is answered duplicate, exit 4, never sent twice); their limits ship closed (`ledger` sends no
   invoice until the owner sets `currency`). Separation of duties: `verify.js mark` refuses the seat that did the work,
   `ledger.js reconcile` refuses the seat that invoiced, `hire.js hire` refuses a hire that would hold a seat and
-  anything on its `independentOf` list.
+  anything on its `independentOf` list. Intake events are `trust: 'untrusted'` (only the owner marks a source internal);
+  a tool that puts event data in a handoff or prompt fences it with `lib/untrusted.js`, never in a routine prompt.
 
 ## 7. Checkers must be seen failing
 
@@ -187,6 +190,7 @@ in §5a instead.
 | `company/tools/cap-numerator.js` | finance | `node company/tools/cap-numerator.js --selftest` |
 | `company/tools/connector-scope.js` | risk | `node company/tools/connector-scope.js --selftest` |
 | `company/tools/decide.js` | risk | `node company/tools/decide.js selftest` |
+| `company/tools/delegation.js` | ceo | `node company/tools/delegation.js selftest` |
 | `company/tools/dispatch.js` | tools | `node company/tools/dispatch.js --selftest` |
 | `company/tools/external-gate.js` | risk | `node company/tools/external-gate.js --selftest` |
 | `company/tools/governance.js` | ceo | `node company/tools/governance.js selftest` |

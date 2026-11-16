@@ -17,6 +17,18 @@
  * Every evaluation (unless log:false) is one row in company/work/decisions/<id>.jsonl: input digest, the input (fields
  * marked sensitive are left out and listed under `redacted`), the params used, the output. Replay re-runs those rows.
  * Unusable model (missing, malformed, unknown op) => action null; callers fail closed.
+ *
+ * Fact provenance: an input may be marked `safety: true` with the `sources` allowed to vouch for it ('ledger',
+ * 'external-gate-allowlist', 'competence', 'registry:parties', 'owner-table', 'tool:<name>', 'owner'; a trailing * is a
+ * prefix). evaluate() takes each fact plain or as { value, source, ref? }. A safety fact counts only as an envelope whose
+ * source is on that list and is not the actor (opts.actor; 'actor', 'agent', 'self', a missing source): anything else is
+ * treated as absent, so the model takes its conservative path. The log row keeps the provenance and the rejected claims.
+ *
+ * Outcomes: every logged evaluation has a decisionId. outcome(decisionId, { result: good|bad, by, note }) records how it
+ * turned out (company/work/decision-outcomes.jsonl); join() finds outcomes in later records (an owner reply that undoes
+ * the decision, a credit note or refund in the ledger, a breached commitment, each naming the decisionId). health()
+ * reports per model and version the precision of proceed decisions over the model's rolling window and, with apply,
+ * demotes a live version to shadow when bad outcomes exceed model.outcomes.maxBad (closed default 0), telling the owner.
  */
 const fs = require('fs');
 const path = require('path');
@@ -26,6 +38,7 @@ const co = require('./company');
 const OPS = ['eq', 'ne', 'lt', 'lte', 'gt', 'gte', 'in', 'regex', 'exists'];
 const TYPES = ['string', 'number', 'boolean', 'array'];
 const MODES = ['shadow', 'live'];
+const ACTOR_SOURCES = ['actor', 'agent', 'self', 'caller', 'claimed', 'seat'];
 const ID_RE = /^[a-z][a-z0-9-]{1,39}$/;
 const VER_RE = /^[0-9]+(\.[0-9]+){0,2}$/;
 
@@ -36,7 +49,9 @@ function files(opts) {
   return { root: r, models: path.join(r, 'company', 'decision-models'), packs: path.join(r, 'company', 'state', 'packs', 'installed'),
     state: path.join(r, 'company', 'state', 'decision-models.json'), stateLog: path.join(r, 'company', 'state', 'decision-models-log.jsonl'),
     logDir: path.join(r, 'company', 'work', 'decisions'), lockedExtra: path.join(r, 'company', 'state', 'locked-extra.json'),
-    decisions: path.join(r, 'company', 'work', 'decisions.md') };
+    decisions: path.join(r, 'company', 'work', 'decisions.md'), outcomes: path.join(r, 'company', 'work', 'decision-outcomes.jsonl'),
+    ownerInbound: path.join(r, 'company', 'owner', 'inbound.jsonl'), ledger: path.join(r, 'company', 'work', 'ledger', 'ledger.jsonl'),
+    commitments: path.join(r, 'company', 'work', 'commitments') };
 }
 const readJson = (f, fb) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return fb; } };
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
@@ -118,6 +133,18 @@ function validate(m, want) {
   for (const [k, s] of Object.entries(m.inputs || {})) {
     if (k.startsWith('$')) out.push('input ' + k + ': names starting with $ are reserved');
     if (!s || !TYPES.includes(s.type)) out.push('input ' + k + ': type must be one of ' + TYPES.join('/'));
+    if (s && 'safety' in s && typeof s.safety !== 'boolean') out.push('input ' + k + ': safety is true or false');
+    if (s && s.safety && (!Array.isArray(s.sources) || !s.sources.length || !s.sources.every(x => typeof x === 'string' && x.trim() && !ACTOR_SOURCES.includes(x.trim().toLowerCase()))))
+      out.push('input ' + k + ': a safety input lists the sources allowed to vouch for it (never the actor)');
+  }
+  if (m.outcomes !== undefined) {
+    const o = m.outcomes;
+    if (!o || typeof o !== 'object') out.push('outcomes must be an object');
+    else {
+      if ('windowDays' in o && !(typeof o.windowDays === 'number' && o.windowDays > 0)) out.push('outcomes.windowDays must be a positive number');
+      if ('maxBad' in o && !(typeof o.maxBad === 'number' && o.maxBad >= 0)) out.push('outcomes.maxBad must be a number >= 0');
+      if ('proceedActions' in o && !(Array.isArray(o.proceedActions) && o.proceedActions.every(a => (m.actions || []).includes(a)))) out.push('outcomes.proceedActions must be actions of the model');
+    }
   }
   for (const [k, s] of Object.entries(m.params || {})) if (!s || !['number', 'string', 'boolean'].includes(s.type) || typeof s.default !== s.type) out.push('param ' + k + ': needs a type and a default of that type');
   if (!Array.isArray(m.actions) || !m.actions.length) out.push('actions: the list of possible actions is missing');
@@ -146,6 +173,31 @@ function sanitize(m, input) {
     values[k] = input[k];
   }
   return { values, ignored, invalid, missing };
+}
+/* Provenance: unwrap {value, source, ref} envelopes; drop a safety fact whose source is missing, the actor, or not allowed. */
+const isEnv = v => !!v && typeof v === 'object' && !Array.isArray(v) && Object.prototype.hasOwnProperty.call(v, 'value');
+function sourceRefusal(spec, src, actor) {
+  const s = String(src == null ? '' : src).trim().toLowerCase();
+  if (!s) return 'no source';
+  const a = String(actor == null ? '' : actor).trim().toLowerCase();
+  if (ACTOR_SOURCES.includes(s) || (a && [a, 'seat:' + a, 'agent:' + a, 'actor:' + a].includes(s))) return 'the source is the actor';
+  const ok = (spec.sources || []).some(x => { x = String(x).trim().toLowerCase(); return x.endsWith('*') ? s.startsWith(x.slice(0, -1)) : s === x; });
+  return ok ? null : 'source ' + s + ' is not one of ' + (spec.sources || []).join(', ');
+}
+function unwrap(m, input, actor) {
+  const flat = {}, provenance = {}, distrusted = [], claims = {};
+  input = input && typeof input === 'object' ? input : {};
+  for (const k of Object.keys(input)) {
+    const raw = input[k]; const spec = (m.inputs || {})[k]; const env = isEnv(raw);
+    const v = env ? raw.value : raw;
+    if (env) { provenance[k] = { source: raw.source == null ? null : String(raw.source) }; if (raw.ref != null) provenance[k].ref = String(raw.ref).slice(0, 300); }
+    if (spec && spec.safety) {
+      const why = env ? sourceRefusal(spec, raw.source, actor) : 'no provenance';
+      if (why) { distrusted.push(k); provenance[k] = Object.assign(provenance[k] || { source: null }, { rejected: why }); if (v !== undefined && v !== null) claims[k] = v; continue; }
+    }
+    flat[k] = v;
+  }
+  return { flat, provenance, distrusted, claims };
 }
 function test(p, vals, params) {
   if (p.all) return p.all.every(q => test(q, vals, params));
@@ -182,8 +234,9 @@ function modeFor(id, version, m, opts, fileSha) {
   return MODES.includes(pr.mode) ? pr.mode : m.mode;
 }
 /* The pure part: model + input + params -> output (no files). */
-function run(m, input, params) {
-  const s = sanitize(m, input);
+function run(m, input, params, actor) {
+  const u = unwrap(m, input, actor);
+  const s = sanitize(m, u.flat);
   const vals = Object.assign({}, s.values);
   let score;
   if ((m.scoring || []).length) { score = 0; for (const x of m.scoring) if (test(x.when, vals, params)) score += x.weight; vals.$score = score; }
@@ -197,21 +250,28 @@ function run(m, input, params) {
   if (score !== undefined) out.score = score;
   if (s.ignored.length) out.ignored = s.ignored;
   if (s.invalid.length) out.invalid = s.invalid;
-  return { out, values: s.values };
+  if (u.distrusted.length) out.distrusted = u.distrusted;
+  return { out, values: s.values, provenance: u.provenance, claims: u.claims };
 }
 function evaluate(id, input, opts) {
   opts = opts || {};
   const L = load(id, opts.version, opts);
   if (!L.model || L.error) return { action: null, error: L.error, mode: 'shadow', model: { id, version: L.version || null, sha: L.sha || null } };
   const params = paramsFor(L.model, opts);
-  const { out, values } = run(L.model, input, params);
+  const { out, values, provenance, claims } = run(L.model, input, params, opts.actor);
   const mode = modeFor(id, L.version, L.model, opts, L.sha);
   const res = Object.assign(out, { mode, model: { id, version: L.version, sha: L.sha } });
   if (opts.log !== false) {
-    const redacted = Object.keys(values).filter(k => L.model.inputs[k].sensitive);
+    const at = new Date().toISOString();
+    const isSens = k => !!((L.model.inputs[k] || {}).sensitive);
+    const redacted = Object.keys(values).filter(isSens);
     const kept = {}; for (const k of Object.keys(values)) if (!redacted.includes(k)) kept[k] = values[k];
-    const row = { at: new Date().toISOString(), id, version: L.version, sha: L.sha, mode, inputDigest: sha(canon(values)).slice(0, 16), input: kept,
-      redacted: redacted.length ? redacted : undefined, params, output: { action: res.action, rule: res.rule, score: res.score }, caller: opts.caller || undefined };
+    const claimed = {}; for (const k of Object.keys(claims)) if (!isSens(k)) claimed[k] = claims[k];
+    res.decisionId = 'd-' + sha(at + canon(values) + process.pid + Math.random()).slice(0, 12);
+    const row = { at, decisionId: res.decisionId, id, version: L.version, sha: L.sha, mode, inputDigest: sha(canon(values)).slice(0, 16), input: kept,
+      redacted: redacted.length ? redacted : undefined, provenance: Object.keys(provenance).length ? provenance : undefined,
+      claimed: Object.keys(claimed).length ? claimed : undefined, actor: opts.actor || undefined,
+      params, output: { action: res.action, rule: res.rule, score: res.score, distrusted: res.distrusted }, caller: opts.caller || undefined };
     try { append(path.join(files(opts).logDir, id + '.jsonl'), JSON.stringify(row) + '\n'); } catch (_) {}
   }
   return res;
@@ -223,6 +283,14 @@ function logRows(id, opts) {
   const out = []; for (const l of txt.split('\n')) { if (!l.trim()) continue; try { out.push(JSON.parse(l)); } catch (_) {} }
   return out;
 }
+// a logged row back into evaluate() input: values with their recorded provenance, rejected claims as they were made
+function replayInput(r) {
+  const inp = {}; const pv = r.provenance || {};
+  const put = (k, v) => { const p = pv[k]; inp[k] = p && !(p.rejected === 'no provenance') ? Object.assign({ value: v, source: p.source }, p.ref ? { ref: p.ref } : {}) : v; };
+  for (const [k, v] of Object.entries(r.input || {})) put(k, v);
+  for (const [k, v] of Object.entries(r.claimed || {})) put(k, v);
+  return inp;
+}
 function replay(id, version, opts) {
   opts = opts || {};
   const L = load(id, version, opts); if (L.error) return { ok: false, error: L.error };
@@ -230,7 +298,7 @@ function replay(id, version, opts) {
   const rows = logRows(id, opts).filter(r => r.id === id && (!from || Date.parse(r.at) >= from));
   const dis = []; let agree = 0, partial = 0;
   for (const r of rows) {
-    const { out } = run(L.model, r.input || {}, Object.assign(paramsFor(L.model, opts), r.params || {}));
+    const { out } = run(L.model, replayInput(r), Object.assign(paramsFor(L.model, opts), r.params || {}), r.actor);
     if (r.redacted && r.redacted.length) partial++;
     if (out.action === (r.output || {}).action) agree++;
     else dis.push({ at: r.at, inputDigest: r.inputDigest, was: { version: r.version, action: (r.output || {}).action, rule: (r.output || {}).rule }, now: { action: out.action, rule: out.rule }, partialInput: !!(r.redacted && r.redacted.length) });
@@ -241,9 +309,10 @@ function runCases(id, opts) {
   opts = opts || {};
   const c = cases(id, opts); if (!c || !Array.isArray(c.cases)) return { ok: false, error: 'no cases.json for ' + id };
   const L = load(id, opts.version, opts); if (L.error) return { ok: false, error: L.error };
-  const results = c.cases.map((k, i) => {
+  // a case may name the versions it is for (`versions: ["1"]`): the others skip it
+  const results = c.cases.filter(k => !Array.isArray(k.versions) || k.versions.map(String).includes(L.version)).map((k, i) => {
     const defaults = {}; for (const [n, s] of Object.entries(L.model.params || {})) defaults[n] = s.default;
-    const { out } = run(L.model, k.input, Object.assign(defaults, k.params || {}));   // cases see the closed defaults, not the owner's settings
+    const { out } = run(L.model, k.input, Object.assign(defaults, k.params || {}), k.actor);   // cases see the closed defaults, not the owner's settings
     return { name: k.name || 'case ' + (i + 1), expect: k.expect, got: out.action, rule: out.rule, pass: out.action === k.expect };
   });
   const miss = results.filter(r => !r.pass);
@@ -258,14 +327,14 @@ function ownerRefusal(by) {
   if (underStation()) return 'this runs inside an agent\'s station run: only the owner, from their own shell, does this';
   return null;
 }
-function recordOwner(opts, by, what, s) {
+function recordOwner(opts, by, what, s, auto) {
   const f = files(opts); const at = new Date().toISOString();
-  s._doc = 'Which version of each decision model is live, and the owner-set params. Written only by company/tools/decide.js promote|set-param --by <owner>; watched by locked-watch.js (company/state/locked-extra.json).';
+  s._doc = 'Which version of each decision model is live, and the owner-set params. Written only by company/tools/decide.js promote|set-param --by <owner>, and by its automatic demotion to shadow when a live version has too many bad outcomes; watched by locked-watch.js (company/state/locked-extra.json).';
   writeAtomic(f.state, JSON.stringify(s, null, 2) + '\n');
   append(f.stateLog, JSON.stringify(Object.assign({ at, by }, what)) + '\n');
   if (!fs.existsSync(f.decisions)) append(f.decisions, '# Decisions\n\n');
   const lp = co.localParts(new Date(at));
-  append(f.decisions, '- ' + lp.date + ' ' + lp.time + ' ' + by + ' (owner) ' + what.text + ' (company/tools/decide.js)\n');
+  append(f.decisions, '- ' + lp.date + ' ' + lp.time + ' ' + by + (auto ? ' ' : ' (owner) ') + what.text + ' (company/tools/decide.js)\n');
   register(opts);
 }
 function promote(id, version, o, opts) {
@@ -299,6 +368,7 @@ const LOCKED = [
   { p: 'company/state/decision-models.json', cls: 'A', writers: ['decide.js'], owner: 'risk', area: 'policy', why: 'which decision-model version is live, and the owner-set thresholds' },
   { p: 'company/state/decision-models-log.jsonl', cls: 'A', append: true, writers: ['decide.js'], owner: 'risk', area: 'record', why: 'owner promotions and param changes' },
   { p: 'company/work/decisions/*.jsonl', cls: 'F', append: true, owner: 'risk', area: 'record', why: 'every decision-model evaluation (replay input)' },
+  { p: 'company/work/decision-outcomes.jsonl', cls: 'A', append: true, writers: ['decide.js'], owner: 'risk', area: 'record', why: 'how each decision turned out (decide.js outcome, and the automatic join)' },
 ];
 function register(opts) {
   const f = files(opts); const cur = readJson(f.lockedExtra, null) || {};
@@ -326,4 +396,96 @@ function list(opts) {
   });
 }
 
-module.exports = { OPS, MODES, files, ids, versions, activeVersion, load, validate, evaluate, run, replay, test: runCases, cases, promote, setParam, register, list, logRows, state, LOCKED, canon };
+/* ---------- outcomes: decision -> how it turned out; precision; auto-demotion ---------- */
+const DID_RE = /\bd-[0-9a-f]{12}\b/g;
+const readRows = file => { let t = ''; try { t = fs.readFileSync(file, 'utf8'); } catch (_) { return []; } const o = []; for (const l of t.split('\n')) { if (!l.trim()) continue; try { o.push(JSON.parse(l)); } catch (_) {} } return o; };
+function findDecision(decisionId, opts) {
+  for (const id of ids(opts)) for (const r of logRows(id, opts)) if (r.decisionId === decisionId) return r;
+  return null;
+}
+function outcomes(opts) { return readRows(files(opts).outcomes); }
+const proceedActions = m => (m && m.outcomes && Array.isArray(m.outcomes.proceedActions)) ? m.outcomes.proceedActions : ((m && m.actions) || []).filter(a => a !== (m.default || {}).action);
+/* outcome(decisionId, { result, by, note, source?, ref? }): a person (or the join) says how a decision turned out. */
+function outcome(decisionId, o, opts) {
+  o = o || {};
+  if (!['good', 'bad'].includes(o.result)) return { ok: false, code: 2, error: '--result good|bad' };
+  const by = String(o.by || '').trim(); if (!by) return { ok: false, code: 2, error: '--by <seat|owner> is required' };
+  const d = findDecision(String(decisionId || ''), opts); if (!d) return { ok: false, code: 2, error: 'no logged decision ' + decisionId };
+  if (isOwnerName(by) && !o.source && underStation()) return { ok: false, code: 3, error: 'an agent run cannot record an outcome as the owner' };
+  if (o.result === 'good' && d.actor && String(d.actor).trim().toLowerCase() === by.toLowerCase()) return { ok: false, code: 3, error: 'the seat that acted on a decision does not grade it good' };
+  const row = { at: new Date().toISOString(), decisionId: d.decisionId, id: d.id, version: d.version, action: (d.output || {}).action, mode: d.mode,
+    result: o.result, by, note: o.note ? String(o.note).slice(0, 500) : undefined, source: o.source || 'manual', ref: o.ref || undefined };
+  append(files(opts).outcomes, JSON.stringify(row) + '\n');
+  const h = o.noHealth ? null : health(Object.assign({}, opts, { apply: true, id: d.id, noJoin: true }));
+  return { ok: true, outcome: row, demoted: h ? h.demoted : [] };
+}
+/* join(): outcomes that later records already answer. Each names the decisionId it answers. Idempotent. */
+function join(opts) {
+  const f = files(opts); const have = new Set(outcomes(opts).map(r => r.decisionId + '|' + r.source + '|' + (r.ref || '')));
+  const found = [];
+  const add = (did, source, ref, by, note) => { const k = did + '|' + source + '|' + (ref || ''); if (have.has(k)) return; have.add(k); found.push({ did, source, ref, by, note }); };
+  const UNDO = /\b(undo|undone|revert|reverse|roll ?back|cancel|not ok|no\b|stop)/i;
+  for (const m of readRows(f.ownerInbound)) {
+    const text = String(m.text != null ? m.text : (m.body || ''));
+    const dids = new Set((text.match(DID_RE) || []).concat(String(m.re || '').match(DID_RE) || []));
+    for (const did of dids) if (UNDO.test(text.replace(DID_RE, ''))) add(did, 'owner-reversal', m.id || m.at, 'owner', text.slice(0, 200));
+  }
+  for (const r of readRows(f.ledger)) {
+    if (!['credit-note', 'refund'].includes(r.type)) continue;
+    for (const did of new Set(JSON.stringify(r).match(DID_RE) || [])) add(did, 'ledger:' + r.type, r.hash || r.seq || r.at, r.by || 'ledger', r.reason || r.note);
+  }
+  let cs = []; try { cs = fs.readdirSync(f.commitments).filter(x => x.endsWith('.json')); } catch (_) {}
+  for (const x of cs) {
+    const c = readJson(path.join(f.commitments, x), null); if (!c || c.state !== 'breached') continue;
+    for (const did of new Set(JSON.stringify(c).match(DID_RE) || [])) add(did, 'commitment-breached', c.id || x, 'commitments', c.title);
+  }
+  const rec = [];
+  for (const j of found) { const r = outcome(j.did, { result: 'bad', by: j.by, note: j.note, source: j.source, ref: String(j.ref || ''), noHealth: true }, opts); if (r.ok) rec.push(r.outcome); }
+  return { ok: true, recorded: rec };
+}
+function demote(id, version, why, opts) {
+  const s = state(opts); const pr = s.models[id];
+  if (!pr || String(pr.version) !== String(version) || pr.mode !== 'live') return null;
+  const at = new Date().toISOString();
+  s.models[id] = Object.assign({}, pr, { mode: 'shadow', demoted: { at, why, from: 'live' } });
+  const text = 'demoted decision model ' + id + ' v' + version + ' from live to shadow: ' + why;
+  recordOwner(opts, 'decide.js (automatic)', { op: 'demote', id, version, why, text }, s, true);
+  try {
+    require('./governance').notify('Decision model ' + id + ' v' + version + ' is back in shadow mode: ' + why + '. Until you promote it again (node company/tools/decide.js promote ' + id + ' ' + version + ' --mode live --by owner), every ' + id + ' question comes to you.', { root: rootOf(opts) });
+  } catch (_) {}
+  return { id, version, why };
+}
+/* health({ id?, apply?, now? }): per model and version, proceed decisions in the window, judged good/bad, precision. */
+function health(opts) {
+  opts = opts || {};
+  const joined = opts.noJoin ? null : join(opts);
+  const now = opts.now ? Date.parse(opts.now) : Date.now();
+  const outs = {}; for (const o of outcomes(opts)) (outs[o.decisionId] = outs[o.decisionId] || []).push(o);
+  const models = []; const demoted = [];
+  for (const id of (opts.id ? [opts.id] : ids(opts))) {
+    const pr = state(opts).models[id] || null;
+    const byV = {};
+    for (const r of logRows(id, opts)) { if (!r.decisionId) continue; (byV[r.version] = byV[r.version] || []).push(r); }
+    for (const v of Object.keys(byV).sort(cmpVer)) {
+      const L = load(id, v, opts); const m = L.model || {};
+      const cfg = Object.assign({ windowDays: 30, maxBad: 0 }, m.outcomes || {});
+      const from = now - cfg.windowDays * 86400000;
+      const pro = proceedActions(m);
+      const rows = byV[v].filter(r => Date.parse(r.at) >= from && pro.includes((r.output || {}).action));
+      let good = 0, bad = 0; const badIds = [];
+      for (const r of rows) { const os = outs[r.decisionId] || []; if (!os.length) continue; if (os.some(o => o.result === 'bad')) { bad++; badIds.push(r.decisionId); } else good++; }
+      const live = !!(pr && String(pr.version) === v && pr.mode === 'live');
+      const row = { id, version: v, live, windowDays: cfg.windowDays, maxBad: cfg.maxBad, proceed: rows.length, judged: good + bad, good, bad,
+        precision: good + bad ? +(good / (good + bad)).toFixed(3) : null, badDecisions: badIds.slice(-10) };
+      if (live && bad > cfg.maxBad) {
+        row.overThreshold = true;
+        if (opts.apply) { const d = demote(id, v, bad + ' bad outcome(s) on proceed decisions in ' + cfg.windowDays + ' days (limit ' + cfg.maxBad + '; ' + badIds.slice(-3).join(', ') + ')', opts); if (d) { demoted.push(d); row.live = false; row.demoted = true; } }
+      }
+      models.push(row);
+    }
+  }
+  return { ok: true, at: new Date(now).toISOString(), joined: joined ? joined.recorded.length : 0, models, demoted };
+}
+function params(id, opts) { const L = load(id, null, opts); return L.model && !L.error ? paramsFor(L.model, opts) : {}; }
+
+module.exports = { outcome, outcomes, join, health, demote, findDecision, params, unwrap, ACTOR_SOURCES, OPS, MODES, files, ids, versions, activeVersion, load, validate, evaluate, run, replay, test: runCases, cases, promote, setParam, register, list, logRows, state, LOCKED, canon };
