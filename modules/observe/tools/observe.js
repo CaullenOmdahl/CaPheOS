@@ -9,6 +9,9 @@
  *   kind command  { argv: [..] }             value = exit code (no shell). OFF while the localComputer guardrail is on.
  * History: company/work/observe/<id>.jsonl  {at, ok, value, ms?, error?}. Events (intake, source "observe"):
  *   observe.threshold (ok -> failing), observe.recovered (failing -> ok), observe.change (value changed, onChange true).
+ * Silence: `expect.maxSilenceMin` (+ activeHours, days, tz) on a target = its value must change at least that often
+ *   inside the window; state.json keeps `changedAt` and intake's silence watch emits source "silence" events. Probe
+ *   values come from outside: every event is `trust: 'untrusted'` (intake sets it).
  * Every URL fetch is an external-gate `network` check; a loopback target still needs its host on the allowlist.
  * Limits (kit.limits: company/state/modules/<id>/limits/ once the owner opens them; shipped closed): maxTargets.
  *
@@ -113,7 +116,10 @@ async function run(o) {
       if (t.onChange && 'lastValue' in s && JSON.stringify(s.lastValue) !== JSON.stringify(r.value) && r.value !== null) events.push(['observe.change', { from: s.lastValue, to: r.value }]);
     }
     const emitted = events.map(([type, d]) => type + ':' + emit(type, t, d, at, o));
-    st[t.id] = { lastAt: at, lastOk: r.skipped ? s.lastOk : r.ok, lastValue: r.value === null && 'lastValue' in s ? s.lastValue : r.value };
+    const newValue = r.value === null && 'lastValue' in s ? s.lastValue : r.value;
+    const changed = !('lastValue' in s) || JSON.stringify(s.lastValue) !== JSON.stringify(newValue);
+    // changedAt: when the value last moved; intake's silence watch reads it for a target with expect.maxSilenceMin
+    st[t.id] = { lastAt: at, lastOk: r.skipped ? s.lastOk : r.ok, lastValue: newValue, changedAt: changed && !r.skipped ? at : (s.changedAt || at) };
     out.push({ id: t.id, ok: r.ok, value: r.value, error: r.error, events: emitted });
     if (emitted.length) log('OBSERVE ' + t.id + ': ' + emitted.join(', '));
   }
@@ -167,6 +173,8 @@ async function selftest(ok) {
   up = true;
   r = await run({ gate, now: t0 + 18 * 60000 });
   ok('recovered event', evs().some(e => e.type === 'observe.recovered' && e.data.target === 'site'));
+  const stx = co.readJson(STATE(), {});
+  ok('state keeps changedAt (when the value last moved) for the silence watch', stx.depth.changedAt === new Date(t0 + 6 * 60000).toISOString() && stx.site.changedAt === new Date(t0 + 18 * 60000).toISOString(), stx);
   r = await run({ gate: () => false, target: 'site' });
   ok('a gate refusal is a failed probe, not a fetch', /gate refused/.test(T(r, 'site').error || ''));
   srv.close();

@@ -10,6 +10,10 @@ Watches targets over time. Enable when something outside must be watched.
 - **History:** `company/work/observe/<id>.jsonl` (`{at, ok, value, ms?, error?}`), state in `state.json`.
 - **Events into intake** (source `observe`): `observe.threshold` when a target starts failing, `observe.recovered`
   when it passes again, `observe.change` when its value changes (`onChange: true`). Playbooks turn them into commitments.
+- **Silence:** a target may add `expect.maxSilenceMin` (and `activeHours: "08:00-20:00"`, `days`, `tz`): its value must
+  change at least that often inside the window. `state.json` keeps `changedAt`; intake's silence watch emits one
+  `silence` event per quiet episode and a `recovered` one when it moves again (see intake README). No expectation =
+  "unwatched" in the intake panel `source-watch`. Ships with none.
 - Every URL fetch is an external-gate `network` check.
 - `tick.js` probes the due targets each dispatcher tick (not while halted).
 

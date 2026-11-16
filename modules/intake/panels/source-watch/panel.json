@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "id": "source-watch",
+  "title": "Source cadence",
+  "description": "Every intake source and observe target: whether it declares an expected cadence (unwatched if not), and whether it is ok, quiet or off-hours.",
+  "owner": "tools",
+  "why": "A source that stops sending looks exactly like a quiet day; the owner sees which sources are watched for silence and which are not.",
+  "placement": { "area": "side", "screen": "work", "order": 2 },
+  "refresh": 300,
+  "sources": {
+    "watch": { "type": "file", "glob": "company/work/intake/watch.json" }
+  },
+  "view": {
+    "kind": "table",
+    "source": "watch",
+    "columns": [
+      { "key": "id", "label": "Source", "width": "wide" },
+      { "key": "kind", "label": "Kind" },
+      { "key": "status", "label": "Status" },
+      { "key": "lastAt", "label": "Last activity", "format": "relative" },
+      { "key": "maxSilenceMin", "label": "Max quiet (min)" }
+    ],
+    "limit": 50,
+    "empty": "No sources yet."
+  }
+}

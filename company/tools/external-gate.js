@@ -32,8 +32,14 @@
  * told of each allowed act on a CEO row; approve = only a row whose clearedBy is the owner clears. The externalActions
  * guardrail (company/state/guardrails.json) off = every act is logged as allowed-guardrail-off and allowed.
  *
- * Exit codes: 0 allowed, 3 refused (and logged), 2 bad usage.
- * Module use: require this file, then `gate.check({category,target,agent})` → {allow, reason, clearanceId, clearedBy}
+ *   node company/tools/external-gate.js check ... --idem <key> [--idem-ttl <seconds>|forever]
+ *                                              # idempotent act: a key that already went out is answered duplicate
+ *   node company/tools/external-gate.js idem list | sent --attempt <id> | release --category <c> --key <k> --by owner --why ".."
+ *
+ * Exit codes: 0 allowed, 3 refused (and logged), 4 duplicate (an idempotency key that already went out; NOT sent
+ * again — the answer names the prior attempt id), 2 bad usage.
+ * Module use: require this file, then `gate.check({category,target,agent,idem?})` → {allow, reason, clearanceId, clearedBy,
+ * attemptId?} or {allow:false, duplicate:true, priorAttempt, priorState}
  * and `gate.mustPass(...)` which throws a GateRefusal instead of acting.
  *
  * NOT behind this gate, stated plainly: a bare `gh` (or other CLI) command run straight from a shell, and anything
@@ -595,7 +601,7 @@ function listState(row, at, runs, liveRunId) {
   return { valid: false, state: 'invalid', reason: why };
 }
 
-function check(req, opts) {
+function checkInner(req, opts) {
   opts = opts || {};
   const at = Number.isFinite(opts.now) ? opts.now : nowMs();
   const ledger = opts.ledger || LEDGER;
@@ -681,6 +687,96 @@ function check(req, opts) {
     ? 'no message row for ' + r.target + ' — this recipient is not cleared; ' + CLEARER_WORDS + ' writes a row in company/state/external-clearances.jsonl with category:"message", target:"' + r.target + '", agent:"' + r.agent + '", until:"<date>"'
     : 'no clearance row';
   return deny(ask + (problems.length ? ' (candidates rejected — ' + problems.slice(0, 3).join('; ') + ')' : '') + ' — action refused');
+}
+
+/* ---- IDEMPOTENCY: the same side effect never goes out twice ----
+ * A gated act may carry an idempotency key (`--idem <key>` / req.idem), derived by the caller from WHAT it sends (an
+ * invoice id + recipient, a report digest + target). The gate keeps company/work/external-idempotency.jsonl: when it
+ * ALLOWS a keyed act it records the key as `allowed` (attempt id) BEFORE the caller sends, so a crash between "gate
+ * allowed" and "send recorded" leaves the key taken and a retry is answered `duplicate` (not sent again) with the prior
+ * attempt id. Exit code 4 (refusal is 3). The caller may mark `sent` (recordSent); the owner may `release` a key whose
+ * attempt is known not to have gone out. A refused attempt takes no key. Scope: category + key.
+ * TTL per category, closed default: forever for spend (payouts), publish, account, form, network; 24 h for message.
+ * A caller may ask for a LONGER ttl (req.idemTtlMs, or 'forever'), never a shorter one. */
+const IDEM = path.join(ROOT, 'company', 'work', 'external-idempotency.jsonl');
+const IDEM_TTL_MS = { message: 24 * 3600 * 1000 };   // every other category: forever (null)
+function idemTtl(category, asked) {
+  const base = Object.prototype.hasOwnProperty.call(IDEM_TTL_MS, category) ? IDEM_TTL_MS[category] : null;
+  if (base === null || asked === 'forever' || asked === null) return null;   // null = forever
+  const n = Number(asked);
+  return Number.isFinite(n) && n > base ? n : base;
+}
+function idemLock(file, fn) {
+  const lk = file + '.lock'; fs.mkdirSync(path.dirname(file), { recursive: true });
+  for (let i = 0; ; i++) {
+    try { fs.writeFileSync(lk, String(process.pid), { flag: 'wx' }); break; }
+    catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      try { if (Date.now() - fs.statSync(lk).mtimeMs > 30000) { fs.rmSync(lk, { force: true }); continue; } } catch (_) { continue; }
+      if (i > 400) throw new Error('external-gate: idempotency lock busy (fail closed)');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
+  try { return fn(); } finally { fs.rmSync(lk, { force: true }); }
+}
+/* The live entry for category+key at `at`: the last allowed row not released and not expired, else null. */
+function idemFind(file, category, key, at) {
+  let live = null;
+  for (const r of readJsonl(file)) {
+    if (r.category !== category || r.key !== key) continue;
+    if (r.state === 'allowed') live = Object.assign({}, r);
+    else if (r.state === 'sent' && live && r.attempt === live.attempt) { live.state = 'sent'; live.sentAt = r.at; }
+    else if (r.state === 'released' && live && (!r.attempt || r.attempt === live.attempt)) live = null;
+  }
+  if (live && live.ttlMs != null && at - Date.parse(live.at) >= live.ttlMs) live = null;
+  return live;
+}
+function check(req, opts) {
+  const key = req && req.idem != null && req.idem !== true ? String(req.idem).trim().slice(0, 300) : '';
+  if (!key) return checkInner(req, opts);
+  opts = opts || {};
+  const file = opts.idemFile || IDEM;
+  const at = Number.isFinite(opts.now) ? opts.now : nowMs();
+  const category = norm(req.category);
+  return idemLock(file, () => {
+    const prior = idemFind(file, category, key, at);
+    if (prior) {
+      const reason = 'duplicate: idempotency key "' + key + '" (' + category + ') already went out as attempt ' + prior.attempt + ' at ' + prior.at + ' (' + prior.state + ') — not sent again';
+      const logFile = opts.log === null ? null : (opts.log || LOG);
+      if (logFile) appendJsonl(logFile, { at: new Date(at).toISOString(), decision: 'duplicate', reason, agent: norm(req.agent || 'unknown') || 'unknown', category, target: String(req.target || ''), idem: key, priorAttempt: prior.attempt, note: req.note ? String(req.note).slice(0, 300) : '' });
+      return { allow: false, duplicate: true, reason, priorAttempt: prior.attempt, priorState: prior.state, priorAt: prior.at, clearanceId: null, clearedBy: null };
+    }
+    const d = checkInner(req, opts);
+    if (!d.allow) return d;
+    const attempt = 'att-' + new Date(at).toISOString().replace(/[-:T.Z]/g, '').slice(0, 14) + '-' + require('crypto').randomBytes(4).toString('hex');
+    const ttlMs = idemTtl(category, req.idemTtlMs);
+    appendJsonl(file, { at: new Date(at).toISOString(), state: 'allowed', category, key, attempt, ttlMs, target: String(req.target || ''), agent: norm(req.agent || 'unknown'), clearanceId: d.clearanceId || null });
+    return Object.assign({}, d, { idem: key, attemptId: attempt, idemTtlMs: ttlMs });
+  });
+}
+/* After the send is recorded: mark the attempt sent (optional; the allowed row already holds the key). */
+function recordSent(o, opts) {
+  opts = opts || {}; const file = opts.idemFile || IDEM;
+  return idemLock(file, () => {
+    const r = readJsonl(file).find(x => x.state === 'allowed' && x.attempt === String(o && o.attempt));
+    if (!r) return { ok: false, error: 'no allowed attempt ' + (o && o.attempt) };
+    appendJsonl(file, { at: new Date().toISOString(), state: 'sent', category: r.category, key: r.key, attempt: r.attempt, ref: o.ref ? String(o.ref).slice(0, 200) : null });
+    return { ok: true, attempt: r.attempt };
+  });
+}
+/* The owner frees a key whose attempt is known NOT to have gone out (checked at the far end). Owner only. */
+function releaseIdem(o, opts) {
+  opts = opts || {}; const file = opts.idemFile || IDEM;
+  const by = norm(o && o.by);
+  if (!['owner', norm(OWNER_NAME)].includes(by)) return { ok: false, error: 'only the owner (' + OWNER_NAME + ') releases an idempotency key' };
+  if (!o.key || !o.category) return { ok: false, error: 'release needs --category and --key' };
+  if (String(o.why || '').trim().length < CLOSE_WHY_MIN) return { ok: false, error: '--why must say how you know it did not go out (at least ' + CLOSE_WHY_MIN + ' characters)' };
+  return idemLock(file, () => {
+    const live = idemFind(file, norm(o.category), String(o.key), nowMs());
+    if (!live) return { ok: false, error: 'no live key ' + o.category + ':' + o.key };
+    appendJsonl(file, { at: new Date().toISOString(), state: 'released', category: live.category, key: live.key, attempt: live.attempt, by: o.by, why: String(o.why).slice(0, 400) });
+    return { ok: true, released: live.attempt };
+  });
 }
 
 class GateRefusal extends Error {
@@ -1266,6 +1362,32 @@ function selftest() {
     lines.push((ok ? 'ok    ' : 'FAIL  ') + label + ' → ' + (d.allow ? 'ALLOWED' : 'REFUSED') + ' (' + d.reason + ')');
   }
 
+  // 6. idempotency: the same side effect never goes out twice
+  {
+    const idemFile = path.join(dir, 'idem.jsonl');
+    const io = Object.assign({}, opts, { idemFile, guards: { externalActions: false } });   // guardrail off: allowed + logged, so only idem decides
+    const ic = (label, cond, d) => { if (!cond) failures++; lines.push((cond ? 'ok    ' : 'FAIL  ') + label + (d ? ' (' + (d.reason || JSON.stringify(d)).slice(0, 160) + ')' : '')); };
+    const req = { category: 'spend', target: 'stripe:payout-acme', agent: 'sam', idem: 'payout:inv-1' };
+    const d1 = check(req, io);
+    ic('I1 a keyed act is allowed once and gets an attempt id', d1.allow && /^att-/.test(d1.attemptId || ''), d1);
+    // crash between "gate allowed" and "send recorded": nothing marks it sent; the tool retries the whole send
+    const d2 = check(req, io);
+    ic('I2 a retry after a crash between allowed and send-recorded is a duplicate, not a second send', !d2.allow && d2.duplicate && d2.priorAttempt === d1.attemptId && d2.priorState === 'allowed', d2);
+    ic('I3 the duplicate is logged with the prior attempt id', readJsonl(log).some(r => r.decision === 'duplicate' && r.priorAttempt === d1.attemptId));
+    ic('I4 spend keys never expire (closed default: forever)', check(req, Object.assign({}, io, { now: at + 400 * 86400000 })).duplicate === true);
+    ic('I5 a different key is a different act', check(Object.assign({}, req, { idem: 'payout:inv-2' }), io).allow === true);
+    const m = { category: 'message', target: 'email:owner@example.com', agent: 'sam', idem: 'invoice:inv-1' };
+    const m1 = check(m, io); recordSent({ attempt: m1.attemptId }, { idemFile });
+    const m2 = check(m, Object.assign({}, io, { now: at + 3600000 }));
+    ic('I6 message key: duplicate inside 24 h (after it was marked sent)', m1.allow && m2.duplicate && m2.priorState === 'sent', m2);
+    ic('I7 message key: allowed again after 24 h', check(m, Object.assign({}, io, { now: at + 25 * 3600000 })).allow === true);
+    ic('I8 a caller cannot shorten the ttl', check(Object.assign({}, m, { idem: 'short', idemTtlMs: 1 }), io).idemTtlMs === 24 * 3600000);
+    const rq = { category: 'publish', target: 'github:example-org/public-gist#main', agent: 'alex', idem: 'pub-1' };
+    const r1 = check(rq, Object.assign({}, io, { guards: { externalActions: true } }));
+    ic('I9 a refused act takes no key: once cleared, the same key goes out', !r1.allow && !r1.duplicate && check(rq, io).allow === true, r1);
+    ic('I10 release: only the owner, with a reason', !releaseIdem({ category: 'spend', key: 'payout:inv-1', by: 'sam', why: 'x'.repeat(30) }, { idemFile }).ok && releaseIdem({ category: 'spend', key: 'payout:inv-1', by: 'owner', why: 'checked the processor: payout never arrived' }, { idemFile }).ok && check(req, io).allow === true);
+  }
+
   // every decision the selftest made is in the log, refusals with a reason
   const logged = readJsonl(log);
   const refusals = logged.filter(r => r.decision === 'refused');
@@ -1298,9 +1420,9 @@ function main() {
   if (cmd === 'check' || cmd === 'guard') {
     // `--act` used to be silently dropped here: check() supports acts and the CLI never passed one, so a person could
     // not ask the gate the question the acts field exists to answer ("is this PUSH covered by a row that says push?").
-    const d = check({ category: a.category, target: a.target, agent: a.agent || process.env.STARNET_AGENT_ID, act: a.act, note: a.note });
+    const d = check({ category: a.category, target: a.target, agent: a.agent || process.env.STARNET_AGENT_ID, act: a.act, note: a.note, idem: a.idem, idemTtlMs: a['idem-ttl'] === 'forever' ? 'forever' : (a['idem-ttl'] ? Number(a['idem-ttl']) * 1000 : undefined) });
     console.log(JSON.stringify(d));
-    process.exit(d.allow ? 0 : 3);
+    process.exit(d.allow ? 0 : d.duplicate ? 4 : 3);
   }
   if (cmd === 'claim') {
     const d = checkClaim({ claim: a.claim || (a['claim-file'] ? '' : ''), source: a.source, excerpt: a.excerpt, agent: a.agent || process.env.STARNET_AGENT_ID });
@@ -1349,6 +1471,14 @@ function main() {
     console.log(JSON.stringify(res, null, 1));
     process.exit(0);
   }
+  /* `idem list | sent --attempt <id> | release --category <c> --key <k> --by owner --why ".."` */
+  if (cmd === 'idem') {
+    const sub = a._[1] || 'list';
+    if (sub === 'list') { console.log(JSON.stringify(readJsonl(IDEM).slice(-200), null, 1)); process.exit(0); }
+    if (sub === 'sent') { const r = recordSent({ attempt: a.attempt, ref: a.ref }); console.log(JSON.stringify(r)); process.exit(r.ok ? 0 : 2); }
+    if (sub === 'release') { const r = releaseIdem({ category: a.category, key: a.key, by: a.by, why: a.why }); console.log(JSON.stringify(r)); process.exit(r.ok ? 0 : 2); }
+    console.log('usage: external-gate.js idem list|sent --attempt <id>|release --category <c> --key <k> --by owner --why ".."'); process.exit(2);
+  }
   if (cmd === 'categories') { console.log(Object.keys(CATEGORIES).join('\n')); process.exit(0); }
   /* `session` — one read-only line saying whether a clearing session is provable right now, and from which source.
      It exists so a person about to write a row (or a reviewer doubting one) can ask the gate instead of guessing.
@@ -1358,13 +1488,13 @@ function main() {
     console.log(JSON.stringify(s));
     process.exit(s.live ? 0 : 3);
   }
-  console.log('usage: external-gate.js check|guard|clear|close|list|session|categories|--selftest  (see the header of this file)');
+  console.log('usage: external-gate.js check|guard|clear|close|list|session|idem|categories|--selftest  (see the header of this file)');
   process.exit(2);
 }
 
 if (require.main === module) main();
 
-module.exports = { check, checkClaim, mustPass, addClearance, closeClearance, closedReason, selftest, CATEGORIES, CLEARERS, CLEARING_AGENT, OWNER_PIN_FILE, targetMatches, allowedHost, hostOf, validateRow, listState, liveClearingSession, liveJournalRun, _internals: { readJsonl, readRuns, appendJsonl, LEDGER, LOG, ALLOWLIST, JOURNAL_DIR,
+module.exports = { check, checkClaim, mustPass, recordSent, releaseIdem, IDEM, IDEM_TTL_MS, addClearance, closeClearance, closedReason, selftest, CATEGORIES, CLEARERS, CLEARING_AGENT, OWNER_PIN_FILE, targetMatches, allowedHost, hostOf, validateRow, listState, liveClearingSession, liveJournalRun, _internals: { readJsonl, readRuns, appendJsonl, LEDGER, LOG, ALLOWLIST, JOURNAL_DIR,
   // In-process only (no CLI surface): lets a probe point the journal reader at a copy of a real journal.
   setJournalDir: (d) => { JOURNAL_DIR_OVERRIDE = d || null; return JOURNAL_DIR_OVERRIDE || JOURNAL_DIR; },
   // In-process only (no CLI surface): lets a probe hold runs.jsonl at an earlier state, so "what did the list say

@@ -35,13 +35,19 @@
   "seats": [],
   "routines": [],
   "panels": [
-    "panels/recent-intake"
+    "panels/recent-intake",
+    "panels/source-watch"
   ],
   "limits": [
     {
       "file": "limits/limits.json",
       "owner": "risk",
       "why": "the module's own caps; shipped closed, opened only by the owner"
+    },
+    {
+      "file": "limits/sources.json",
+      "owner": "risk",
+      "why": "per-source trust (internal only by the owner) and expected cadence; shipped closed: none internal, none watched"
     }
   ],
   "meters": [

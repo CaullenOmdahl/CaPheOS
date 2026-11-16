@@ -16,6 +16,7 @@
     "columns": [
       { "key": "dueAt", "label": "Due", "format": "relative", "width": "narrow", "flag": "late" },
       { "key": "title", "label": "Commitment", "width": "wide" },
+      { "key": "subject", "label": "Subject (outside text)" },
       { "key": "state", "label": "State" },
       { "key": "owner", "label": "Owner" },
       { "key": "party", "label": "Party" }

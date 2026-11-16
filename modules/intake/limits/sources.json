@@ -1,0 +1,4 @@
+{
+  "_doc": "Per-source config, owner only (opened copy company/state/modules/intake/limits/sources.json, changed through harness-change.js kind policy). sources.<id>.trust: \"internal\" marks a source's events trusted (default and anything else: untrusted). sources.<id>.expect: { minPerHour?, maxSilenceMin, activeHours?: \"08:00-20:00\", days?: \"mon-fri\", tz? } is the expected cadence; quiet longer than maxSilenceMin inside the window emits one `silence` event per episode. sources.<id>.party: party id for those events. Shipped closed: no source is internal, none has an expectation (all show as unwatched).",
+  "sources": {}
+}

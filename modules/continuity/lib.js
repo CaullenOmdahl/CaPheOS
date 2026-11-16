@@ -54,7 +54,9 @@ function reassign(id, to, by) {
 function notify(party, text, by) {
   if (!party || !text) return { ok: false, error: 'party and text are required' };
   let gate; try { gate = require(co.p('company', 'tools', 'external-gate.js')); } catch (e) { return { ok: false, error: 'external-gate.js missing (fail closed)' }; }
-  let v; try { v = gate.check({ category: 'message', target: 'party:' + party, agent: by || 'owner' }); } catch (e) { v = { allow: false, reason: e.message }; }
+  const idem = 'notice:' + party + ':' + require('crypto').createHash('sha256').update(String(text)).digest('hex').slice(0, 32);   // the same notice never goes twice
+  let v; try { v = gate.check({ category: 'message', target: 'party:' + party, agent: by || 'owner', idem }); } catch (e) { v = { allow: false, reason: e.message }; }
+  if (v && v.duplicate) return { ok: false, duplicate: true, error: 'this notice already went to ' + party + ' (gate attempt ' + v.priorAttempt + ')' };
   if (!v || !v.allow) return { ok: false, gated: true, error: 'external gate refused: ' + ((v && v.reason) || 'no verdict') + ' — clear it first: node company/tools/external-gate.js clear --by <owner> --category message --target party:' + party + ' ...' };
   const row = { at: new Date().toISOString(), party, text: String(text).slice(0, 4000), by: by || 'owner', clearanceId: v.clearanceId || null, status: 'queued' };
   fs.mkdirSync(path.dirname(NOTICES()), { recursive: true });

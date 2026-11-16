@@ -13,7 +13,8 @@ Enable when there is a counterparty to report to.
 - Review: `reports.js review --party --file --by <seat>` ties a review to the draft's sha256; an edit after review
   needs a new one.
 - Send: `reports.js send --party --file --target <prefix:id> --by <agent> [--category message|publish]` requires a
-  review by a seat other than the sender, the `sendsPerDay` limit opened, and `external-gate.js check` to allow that
+  review by a seat other than the sender (the send carries the gate idempotency key `report:<party>:<digest>:<target>`,
+  so the same draft never goes to the same target twice), the `sendsPerDay` limit opened, and `external-gate.js check` to allow that
   recipient (the gate logs a refusal). Then the send is queued to `company/work/reports/outbox.jsonl` for the transport
   adapter and recorded in `<party>/sent.jsonl`.
 

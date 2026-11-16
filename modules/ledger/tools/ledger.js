@@ -90,10 +90,16 @@ function send(o) {
   const perDay = S.limit('ledger', 'sendsPerDay'); const today = new Date().toISOString().slice(0, 10);
   const n = S.readJsonl(OUTBOX()).filter(r => String(r.at).startsWith(today)).length; if (n >= perDay) throw new Error('refused: limits sendsPerDay is ' + perDay + ' and ' + n + ' went today');
   if (i.outstanding <= 0) throw new Error('refused: invoice ' + i.invoice + ' has nothing outstanding');
-  const g = S.gate().check({ category: 'message', target, agent: by, note: 'invoice ' + i.invoice + ' party:' + i.party + ' total ' + i.total + ' ' + i.currency }, GATE_OPTS || {});
+  // idempotency key = what is sent (this invoice, as it stands, to this recipient): a retry after a crash between the
+  // gate's allow and the outbox row is answered duplicate by the gate and nothing is queued twice
+  const idem = o.idem || ('invoice:' + i.invoice + ':' + i.total + ':' + target);
+  const g = S.gate().check({ category: 'message', target, agent: by, idem, note: 'invoice ' + i.invoice + ' party:' + i.party + ' total ' + i.total + ' ' + i.currency }, GATE_OPTS || {});
+  if (g.duplicate) throw new Error('duplicate: invoice ' + i.invoice + ' already went to ' + target + ' (gate attempt ' + g.priorAttempt + '); not sent again');
   if (!g.allow) throw new Error('refused by the external gate: ' + g.reason);
-  const r = append({ type: 'invoice-sent', invoice: i.invoice, party: i.party, target, by, clearanceId: g.clearanceId, clearedBy: g.clearedBy });
-  S.appendJsonl(OUTBOX(), { at: r.at, invoice: i.invoice, party: i.party, target, total: i.total, currency: i.currency, lines: i.lines, ledgerSeq: r.seq });
+  if (CRASH_AFTER_GATE) throw new Error('simulated crash after the gate allowed');   // selftest only
+  const r = append({ type: 'invoice-sent', invoice: i.invoice, party: i.party, target, by, clearanceId: g.clearanceId, clearedBy: g.clearedBy, attemptId: g.attemptId || null });
+  S.appendJsonl(OUTBOX(), { at: r.at, invoice: i.invoice, party: i.party, target, total: i.total, currency: i.currency, lines: i.lines, ledgerSeq: r.seq, attemptId: g.attemptId || null });
+  if (g.attemptId && S.gate().recordSent) S.gate().recordSent({ attempt: g.attemptId, ref: 'ledger seq ' + r.seq });
   return r;
 }
 function receipt(o) {
@@ -109,9 +115,15 @@ function credit(o) {
 function payout(o) {
   const to = need(o, 'to'); const amount = amountOf(o.amount); const by = need(o, 'by'); const reason = need(o, 'reason');
   if (!S.limits('ledger').currency) throw new Error('refused: the owner has not set the ledger currency');
-  const g = S.gate().check({ category: 'spend', target: to, agent: by, note: 'payout ' + amount + (o.party ? ' party:' + o.party : '') + ': ' + reason }, GATE_OPTS || {});
+  // idempotency key: --idem, else derived from what is paid (to, amount, currency, reason, party); spend keys never expire,
+  // so a genuinely repeated identical payout needs its own --idem
+  const idem = o.idem || ('payout:' + S.sha256([to, amount, S.limits('ledger').currency, reason, o.party || ''].join('|')).slice(0, 32));
+  const g = S.gate().check({ category: 'spend', target: to, agent: by, idem, note: 'payout ' + amount + (o.party ? ' party:' + o.party : '') + ': ' + reason }, GATE_OPTS || {});
+  if (g.duplicate) throw new Error('duplicate: this payout already went out (gate attempt ' + g.priorAttempt + '); pass a distinct --idem for a genuinely new one');
   if (!g.allow) throw new Error('refused by the external gate: ' + g.reason);
-  return append({ type: 'payout', party: o.party || null, to, amount, currency: S.limits('ledger').currency, reason, by, clearanceId: g.clearanceId });
+  const r = append({ type: 'payout', party: o.party || null, to, amount, currency: S.limits('ledger').currency, reason, by, clearanceId: g.clearanceId, attemptId: g.attemptId || null, idem });
+  if (g.attemptId && S.gate().recordSent) S.gate().recordSent({ attempt: g.attemptId, ref: 'ledger seq ' + r.seq });
+  return r;
 }
 function reconcile(o) {
   const by = need(o, 'by'); const party = o.party && o.party !== true ? String(o.party) : null;
@@ -138,6 +150,7 @@ function summary() {
   return out;
 }
 
+let CRASH_AFTER_GATE = false;
 function selftest() {
   return S.selftest(__filename, ok => {
     const throws = (fn, re) => { try { fn(); return 'no throw'; } catch (e) { return re.test(e.message) || e.message; } };
@@ -169,6 +182,14 @@ function selftest() {
     ok('summary: revenue = invoiced - credits; outstanding; payouts', sm.totals.invoiced === 301 && sm.totals.credited === 150.5 && sm.totals.revenue === 150.5 && sm.totals.received === 100 && sm.totals.outstanding === 50.5 && sm.totals.payouts === 20, sm.totals);
     ok('receivables.json lists the open invoice for the panel', S.readJson(RECV(), {}).receivables.length === 1 && S.readJson(RECV(), {}).receivables[0].outstanding === 50.5);
     ok('hash chain verifies', chain().ok && chain().rows === 7, chain());
+    // the same side effect twice: a re-send of the same invoice is a gate duplicate; a crash between the gate's allow
+    // and the outbox row, then a retry, sends nothing twice
+    ok('re-sending the same invoice to the same recipient is refused as a duplicate', throws(() => send({ invoice: inv2.invoice, target: 'email:ap@acme.example', by: 'sam' }), /duplicate/) === true && S.readJsonl(OUTBOX()).length === 1);
+    const c5 = mk(5, 'verified'); const inv3 = invoice({ party: 'acme', lines: c5 + '=10', by: 'sam' });
+    CRASH_AFTER_GATE = true; const crashed = throws(() => send({ invoice: inv3.invoice, target: 'email:ap@acme.example', by: 'sam' }), /simulated crash/); CRASH_AFTER_GATE = false;
+    ok('crash after the gate allowed, before the send was recorded: nothing queued', crashed === true && S.readJsonl(OUTBOX()).length === 1);
+    ok('the retry is answered duplicate (prior attempt id), still nothing sent twice', throws(() => send({ invoice: inv3.invoice, target: 'email:ap@acme.example', by: 'sam' }), /duplicate.*att-/) === true && S.readJsonl(OUTBOX()).length === 1);
+    ok('a retried payout is a duplicate', throws(() => payout({ to: 'bank:contractor-1', amount: 20, reason: 'subcontract', by: 'alex', party: 'acme' }), /duplicate/) === true && rows().filter(r => r.type === 'payout').length === 1);
     const txt = fs.readFileSync(LEDGER(), 'utf8').replace('"amount":100,', '"amount":10,'); fs.writeFileSync(LEDGER(), txt);
     ok('an edited row breaks the chain', !chain().ok && /hash does not match/.test(chain().problems.join(';')));
   });

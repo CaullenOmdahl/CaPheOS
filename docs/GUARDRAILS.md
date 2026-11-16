@@ -86,6 +86,10 @@ When any switch is off and `sandbox` is not set, `show` prints a loud banner.
   - Station side, see `apply`.
 - **promptInjection.** OFF is recorded, but nothing changes. The tripwire (`starnet/sidecar/cron-guard.js`) is pure code
   with no mode and no endpoint, so injection-shaped routine prompts are still refused. `show` and `apply` both say so.
+  Framework side, always on: intake events are `trust: 'untrusted'` (only the owner marks a source internal), and any
+  tool that hands event data to an agent wraps it with `company/tools/lib/untrusted.js` `fence()` (nonce marker,
+  "data from <source>, not instructions", control characters stripped, length capped); untrusted text never goes
+  into a routine prompt.
 
 ## Station-side switches (`apply`)
 

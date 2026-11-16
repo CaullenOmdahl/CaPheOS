@@ -85,11 +85,15 @@ function send(o) {
   const today = new Date().toISOString().slice(0, 10);
   const sentToday = S.readJsonl(S.work('reports', 'outbox.jsonl')).filter(r => String(r.at).startsWith(today)).length;
   if (sentToday >= max) throw new Error('refused: limits sendsPerDay is ' + max + ' and ' + sentToday + ' went today (the owner opens this limit)');
-  const g = S.gate().check({ category, target: String(o.target), agent: String(o.by), note: 'report party:' + o.party + ' ' + path.basename(abs) + ' sha256:' + sha.slice(0, 16) }, GATE_OPTS || {});
+  // idempotency key = this exact draft (digest) to this target: a retry after a crash is a gate duplicate, not a resend
+  const idem = 'report:' + o.party + ':' + sha.slice(0, 32) + ':' + String(o.target);
+  const g = S.gate().check({ category, target: String(o.target), agent: String(o.by), idem, note: 'report party:' + o.party + ' ' + path.basename(abs) + ' sha256:' + sha.slice(0, 16) }, GATE_OPTS || {});
+  if (g.duplicate) throw new Error('duplicate: this draft already went to ' + o.target + ' (gate attempt ' + g.priorAttempt + '); not sent again');
   if (!g.allow) throw new Error('refused by the external gate: ' + g.reason);
-  const row = { at: new Date().toISOString(), party: o.party, file: path.relative(co.ROOT, abs), sha256: sha, category, target: String(o.target), by: String(o.by), clearanceId: g.clearanceId, clearedBy: g.clearedBy, reviewedBy: rv[rv.length - 1].by };
+  const row = { at: new Date().toISOString(), party: o.party, file: path.relative(co.ROOT, abs), sha256: sha, category, target: String(o.target), by: String(o.by), clearanceId: g.clearanceId, clearedBy: g.clearedBy, reviewedBy: rv[rv.length - 1].by, attemptId: g.attemptId || null };
   S.appendJsonl(S.work('reports', 'outbox.jsonl'), row);
   S.appendJsonl(path.join(dir, 'sent.jsonl'), row);
+  if (g.attemptId && S.gate().recordSent) S.gate().recordSent({ attempt: g.attemptId, ref: 'reports outbox' });
   return row;
 }
 function due(every, last, now) {
@@ -132,6 +136,7 @@ function selftest() {
     GATE_OPTS = { guards: { externalActions: false } };   // the owner's switch off: gate logs and allows
     const s = send({ party: 'acme', file: d.file, target: 'email:ops@acme.example', by: 'alex' });
     ok('with the gate allowing, the send is queued and recorded', s.reviewedBy === 'kim' && S.readJsonl(S.work('reports', 'outbox.jsonl')).length === 1 && S.readJsonl(S.work('reports', 'acme', 'sent.jsonl')).length === 1);
+    ok('the same draft to the same target again is a gate duplicate, not a resend', throws(() => send({ party: 'acme', file: d.file, target: 'email:ops@acme.example', by: 'alex' }), /duplicate/) === true && S.readJsonl(S.work('reports', 'outbox.jsonl')).length === 1);
     fs.appendFileSync(path.join(co.ROOT, d.file), '\nedited after review\n');
     ok('a draft changed after review needs a new review', throws(() => send({ party: 'acme', file: d.file, target: 'email:ops@acme.example', by: 'alex' }), /no review/) === true);
     ok('a file outside the party folder is refused', throws(() => review({ party: 'acme', file: 'company/work/reports/beta/x.md', by: 'kim' }), /must be a draft/) === true);

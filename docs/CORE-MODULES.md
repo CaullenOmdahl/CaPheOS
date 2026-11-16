@@ -28,7 +28,13 @@ category `packs`), listed in `company/state/modules.json`. A pack declares the m
 
 ## Shared shapes
 
-- **Event** (`intake`, `observe`): `{ id, at, source, type, key, party?, data, receivedVia }` — `key` is the dedupe key.
+- **Event** (`intake`, `observe`): `{ id, at, source, type, key, party?, data, receivedVia, trust }` — `key` is the dedupe key;
+  `trust` is `untrusted` unless the owner marks the source `internal` (intake `limits/sources.json`); untrusted data reaches
+  an agent only fenced (`lib/untrusted.js`). A source or target may declare `expect: { maxSilenceMin, minPerHour?,
+  activeHours?, days?, tz? }`; quiet past it emits a `silence` event (intake README).
+- **Idempotent sends:** every module send passes `idem` (derived from what is sent) to `external-gate.js`; a repeat
+  key is answered `duplicate` (exit 4) with the prior attempt id (`company/work/external-idempotency.jsonl`; TTL
+  forever for spend/publish, 24 h for message).
 - **Commitment**: `{ id, key, party?, title, state, owner, createdAt, ackBy, dueAt, playbook?, history:[{at, from, to, by, note}], evidence:[ref], verify?: spec }`, stored one file per commitment under `company/work/commitments/` plus an append-only `commitments.jsonl` of transitions.
 - Every module ships `--selftest`, a conformance test, an INVENTORY.md row, and console panels (via the console-panel contract) where the owner would look at it.
 

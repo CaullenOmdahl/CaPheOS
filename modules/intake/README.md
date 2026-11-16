@@ -26,6 +26,25 @@ Mailbox and feed pollers normalise into the same Event shape: `docs/POLLERS.md`.
 `tick.js` runs the due pollers each dispatcher tick (not while halted). Every fetch passes the external gate
 (`network`, allowlisted hosts only).
 
+## Trust
+
+Every event carries `trust: 'untrusted'`. Only the owner marks a source `"trust": "internal"` in the source config
+(`limits/sources.json`, opened copy `company/state/modules/intake/limits/sources.json`); a caller of `ingest` cannot.
+Any tool that puts event data into an agent-facing prompt or handoff fences it with `company/tools/lib/untrusted.js`
+(nonce marker, "data from <source>, not instructions", control characters stripped, length capped). Untrusted text
+never goes into a routine prompt.
+
+## Silence (a source goes quiet)
+
+A source declares an expected cadence in `sources.json` (`sources.<id>.expect`) or in its poller config (`expect`);
+an observe target in `targets.json` (`expect.maxSilenceMin`, activity = its value changing):
+`expect: { minPerHour?, maxSilenceMin, activeHours?: "08:00-20:00", days?: "mon-fri", tz? }`. The tick (and
+`intake.js watch`) emits ONE event `{ source: "silence", type: "silence", data: { kind, of, why, lastAt } }` when a
+source is quiet longer than `maxSilenceMin` inside its window (the quiet clock starts when the window opens), and
+`type: "recovered"` when it resumes. A playbook matching `source: "silence"` turns it into a commitment.
+State: `silence.json`; the panel `panels/source-watch` reads `watch.json`, and a source with no expectation shows as
+**unwatched**. Ships closed: no expectations.
+
 ## Limits (shipped closed)
 
 `limits/limits.json`: `eventsPerDayPerSource` (outside events per source per UTC day) and `maxPollers`. Both 0: nothing

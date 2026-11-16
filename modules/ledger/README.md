@@ -9,7 +9,8 @@ lives here.
   row's hash) and `hash` = sha256(prev + row). `ledger.js check` verifies the chain; the tick reports a break.
 - Types: `invoice` (lines from delivered commitments: `verified` or `closed`, same party, each invoiced once unless
   credited in full), `invoice-sent`, `receipt` (no more than outstanding), `credit-note` (the only correction; nothing
-  is edited), `payout` (external gate category `spend`), `reconcile`.
+  is edited), `payout` (external gate category `spend`), `reconcile`. Sends carry a gate idempotency key (invoice id +
+  total + recipient; payout: `--idem` or a digest of to/amount/currency/reason/party): a retry is a duplicate, never sent twice.
 - Sending an invoice: refused until the owner sets `currency` and opens `maxInvoiceTotal` and `sendsPerDay`, and until
   `external-gate.js check` (category `message`) allows that recipient. An invoice issued before the currency was set
   is credited and issued again. A sent invoice is queued to `company/work/ledger/outbox.jsonl` for the transport
