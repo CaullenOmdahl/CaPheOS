@@ -42,6 +42,7 @@ const F = {
   modelPolicy: co.p('company', 'model-policy.json'),
   budget: co.p('company', 'work', 'finance', 'dispatch-budget.json'),
   cadence: co.p('company', 'work', 'ops', 'cadence.json'),
+  loopState: co.p('company', 'state', 'dispatcher-loop.json'),
 };
 const STEPS = [
   ['founded', 'company.json written and defaults copied (scripts/found-company.sh)'],
@@ -241,8 +242,14 @@ async function certify() {
   const st = await stationGet('/api/cron');
   put('station', st.ok && st.json && Array.isArray(st.json.jobs), st.error ? 'station unreachable at ' + co.STATION_URL + ' (' + st.error + ')' : 'GET /api/cron answered HTTP ' + st.status + ' (token wrong or station not ready)');
   // 2
-  let age = null; try { age = (Date.now() - fs.statSync(F.dispatchLog).mtimeMs) / 60000; } catch (_) {}
-  put('dispatcher', age !== null && age <= tickMin() + 1, age === null ? 'company/work/dispatch-log.md does not exist: the dispatcher has never ticked (systemctl --user start <station>-dispatch.timer)' : 'dispatch-log.md last written ' + Math.round(age) + ' min ago (tick is ' + tickMin() + ' min)');
+  // the self-paced loop's state (company/tools/dispatcher-loop.js): a tick running now, or the last one ended within one
+  // effective tick; an install without the loop yet falls back to dispatch-log.md's age
+  const lp = readJson(F.loopState, null);
+  const lpTick = lp && lp.tempo && Number(lp.tempo.tickMin) > 0 ? Number(lp.tempo.tickMin) : tickMin();
+  const lpAt = lp && (lp.status === 'ticking' ? Date.now() : Date.parse(lp.lastTickEndAt || lp.lastTickAt || ''));
+  let age = null; if (lpAt) age = (Date.now() - lpAt) / 60000; else { try { age = (Date.now() - fs.statSync(F.dispatchLog).mtimeMs) / 60000; } catch (_) {} }
+  const lim = Math.max(lpTick, tickMin());
+  put('dispatcher', age !== null && age <= lim + 1 && !(lp && lp.status === 'stopped'), age === null ? 'company/work/dispatch-log.md does not exist: the dispatcher has never ticked (systemctl --user start <station>-dispatch.service)' : lp && lp.status === 'stopped' ? 'the dispatcher loop is stopped (company/state/dispatcher-loop.json): systemctl --user start <station>-dispatch.service' : (lpAt ? 'the dispatcher loop last ticked ' : 'dispatch-log.md last written ') + Math.round(age) + ' min ago (tick is ' + lim + ' min)');
   // 3
   const gd = jsonOf(node([tool('guardrails.js'), 'apply', '--dry-run', '--json'], { timeout: 60000 }));
   const unreach = ((gd && gd.notes) || []).filter(n => /ECONNREFUSED|unreachable|timeout|no station token/i.test(n));
@@ -346,7 +353,7 @@ function teardown({ by, purge }) {
   try { if (require('./provenance.js').underStation()) return { ok: false, error: 'refused inside an agent\'s station run' }; } catch (_) {}
   const svc = co.config.station.serviceName || 'capheos-station';
   const stopped = [];
-  if (process.env.ONBOARD_NO_SYSTEMCTL !== '1') for (const u of [svc + '-liveness.timer', svc + '-dispatch.timer', svc + '.service']) { const r = spawnSync('systemctl', ['--user', 'disable', '--now', u], { encoding: 'utf8', timeout: 60000 }); stopped.push({ unit: u, code: r.status }); }
+  if (process.env.ONBOARD_NO_SYSTEMCTL !== '1') for (const u of [svc + '-liveness.timer', svc + '-dispatch.timer', svc + '-dispatch.service', svc + '.service']) { const r = spawnSync('systemctl', ['--user', 'disable', '--now', u], { encoding: 'utf8', timeout: 60000 }); stopped.push({ unit: u, code: r.status }); }
   const bk = backupScript([]);
   const v = backupScript(['verify']);
   const archived = bk.status === 0 && v.status === 0;

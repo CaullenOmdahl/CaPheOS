@@ -172,3 +172,13 @@ They answer different questions:
 
 The two meet at one point. While `ownerGates` is ON, the four fixed owner gates are `approve` whatever their level.
 With it OFF, those categories follow their level like any other.
+
+## Tempo: bounds, not a level
+
+How often the company wakes (the dispatcher tick, seat cooldowns, wakes per tick, loop clocks) sets how fast the day's
+spend is used, how often liveness sees a heartbeat and how quickly an owner message is answered. The `schedules`
+self-governance level alone would let the Founder remove its own throttle at `auto`, so tempo has owner-set **bounds**
+in `company/work/ops/cadence.json`: inside them the crew may make a *temporary* change (logged with a reason, expiring
+back to the owner's base, rate-limited) at the `schedules` level; outside them, and the bounds themselves, are the
+owner's or a reviewed change (finance, risk and people, never the proposer). The dispatcher also caps wakes per hour
+and per day and honours quiet hours. Details: [docs/TEMPO.md](TEMPO.md).

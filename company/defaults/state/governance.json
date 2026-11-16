@@ -26,7 +26,7 @@
     "spend": "new spend inside the approved cap, including a new paid tool",
     "models": "changing which model a seat or routine runs",
     "tools": "shared changes to tools, house rules and policies (harness-change.js)",
-    "schedules": "routine clocks, dispatcher tick and per-seat cadence",
+    "schedules": "routine clocks, dispatcher tick and per-seat cadence, inside the owner's tempo bounds (docs/TEMPO.md)",
     "external": "anything that leaves the company (external-gate.js categories message, publish, form, network)",
     "dashboard": "agents adding or changing console panels",
     "packs": "approving a capability pack (a new line of business: tools, seats, limits, meters); installing one is always the owner's (pack.js install). Approve in every preset."

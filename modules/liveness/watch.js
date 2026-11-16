@@ -36,9 +36,14 @@ const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8'))
 const writeJson = (f, v) => { fs.mkdirSync(path.dirname(f), { recursive: true }); const t = f + '.tmp-' + process.pid; fs.writeFileSync(t, JSON.stringify(v, null, 1) + '\n'); fs.renameSync(t, f); };
 
 function enabled() { return !!((readJson(F.modules(), {}) || {}).enabled || {}).liveness; }
+// the base tick, or the dispatcher loop's effective tick (company/state/dispatcher-loop.json) when that is longer: a
+// slow-down inside the owner's bounds must not read as an outage
 function tickMin() {
-  for (const f of [F.cadence(), F.cadenceDefault()]) { const n = Number((readJson(f, {}) || {}).dispatcherTickMin); if (Number.isFinite(n) && n > 0) return n; }
-  return 10;
+  let base = 10;
+  for (const f of [F.cadence(), F.cadenceDefault()]) { const n = Number((readJson(f, {}) || {}).dispatcherTickMin); if (Number.isFinite(n) && n > 0) { base = n; break; } }
+  const lp = readJson(co.p('company', 'state', 'dispatcher-loop.json'), null);
+  const eff = Number(lp && lp.tempo && lp.tempo.tickMin);
+  return Number.isFinite(eff) && eff > base ? eff : base;
 }
 function watchMin() { const n = Number(process.env.LIVENESS_WATCH_MIN); return Number.isFinite(n) && n > 0 ? n : 5; }
 const ageMs = rec => rec && rec.at && Date.parse(rec.at) ? now() - Date.parse(rec.at) : null;
@@ -78,7 +83,7 @@ async function judge({ rec, limitMs, label, st, kind }) {
   const out = { label, ageMin: age === null ? null : Math.round(age / 6000) / 10, limitMin: limitMs / 60000, stale };
   if (stale && !st.down) {
     st.down = true; st.since = iso(now());
-    const r = await alert(kind + '-down', 'Liveness: the ' + label + ' has not checked in ' + (age === null ? '(no heartbeat on record)' : 'for ' + out.ageMin + ' min') + ' (limit ' + out.limitMin + ' min). ' + (kind === 'dispatcher' ? 'Nothing is being woken. Check the dispatcher timer: systemctl --user status <station>-dispatch.timer' : 'The dead-man\'s switch is not watching. Check: systemctl --user status <station>-liveness.timer'));
+    const r = await alert(kind + '-down', 'Liveness: the ' + label + ' has not checked in ' + (age === null ? '(no heartbeat on record)' : 'for ' + out.ageMin + ' min') + ' (limit ' + out.limitMin + ' min). ' + (kind === 'dispatcher' ? 'Nothing is being woken. Check the dispatcher loop: systemctl --user status <station>-dispatch.service' : 'The dead-man\'s switch is not watching. Check: systemctl --user status <station>-liveness.timer'));
     st.alertedAt = iso(now()); out.alerted = r;
   } else if (!stale && st.down) {
     await alert(kind + '-up', 'Liveness: the ' + label + ' is checking in again (it was down since ' + st.since + ').');

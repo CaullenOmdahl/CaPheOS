@@ -21,7 +21,7 @@ investment shop, a library or a studio all start from the same checkout.
 | `company/skills/` | skills installed on every agent |
 | `packs/` | capability packs (lines of business); `packs/_template/` is the scaffold, `company/tools/pack.js` checks and installs them (`docs/PACKS-SPEC.md`) |
 | `scripts/` | `found-company.sh`, `setup-station.sh` |
-| `systemd/` | unit templates for the station and the dispatcher timer |
+| `systemd/` | unit templates for the station, the self-paced dispatcher loop and the liveness timer |
 | `secrets/` | keys, one file each (gitignored) |
 
 ## Functions and seats

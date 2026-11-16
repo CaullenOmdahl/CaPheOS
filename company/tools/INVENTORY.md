@@ -13,7 +13,7 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/agy-contract.js` | run a scoped job through the Antigravity (AGY) CLI and return schema-validated JSON. | tools | — | `--prompt` `--prompt-file` | — |
 | `company/tools/ask.js` | route a question to the right level, and refuse to route non-CEO questions to the CEO. | ceo | — | `--from` `list` `owners` | — |
 | `company/tools/build-inventory.js` | writes company/model-inventory.json + company/MODEL_INVENTORY.md | people | `--selftest` | see header | minimax-key, openrouter-key, openrouter-mgmt-key |
-| `company/tools/cadence.js` | how often the company wakes: the dispatcher tick, each seat's loop schedule, cooldown and priority. | tools | `selftest` / `--selftest` | `show` `set-default` `set` `apply` `selftest` | — |
+| `company/tools/cadence.js` | how often the company wakes (its tempo): the dispatcher tick, each seat's loop schedule, cooldown and priority, inside bounds only the owner sets; exports tempoAllows(seatId, now) for the dispatcher's wake caps. | tools | `selftest` / `--selftest` | `show` `set-default` `set` `bounds` `end-temporary` `apply` `selftest` | — |
 | `company/tools/cap-numerator.js` | the number a spend cap divides by has to be the number that gets billed. | finance | `--selftest` | `--status` `--json` `--selftest` | — |
 | `company/tools/competence.js` | the company's competence ledger, v1 (shadow mode). No LLM, costs $0. | people | `selftest` | `collect` `compute` `show` `scoreboard` `verify` `amend` `daily` `selftest` | station-token |
 | `company/tools/connector-scope.js` | is every StarNet connector still inside the scope the risk owner's inventory records for it? | risk | `--selftest` | `exit` `--json` `--selftest` | station-token |
@@ -23,6 +23,7 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/delegation.js` | while the owner is away, someone they name answers some of their approval questions for them. | ceo | `selftest` / `--selftest` | `grant` `revoke` `list` `answer` `register` `selftest` | — |
 | `company/tools/default-branch-watch.js` | the GitHub-side tripwire for the one rule about GitHub: nothing lands on a repository's default | risk | `selftest` | `tick` `status` `baseline` `selftest` | — |
 | `company/tools/dispatch.js` | wakes the agent who owns open work. | tools | `--selftest` | `--dry-run` `--selftest` | station-token |
+| `company/tools/dispatcher-loop.js` | the self-paced dispatcher: one dispatch tick, then sleep the current tempo, forever. | tools | `selftest` / `--selftest` | `--once` `status` `selftest` | — |
 | `company/tools/dossier.js` | keep every agent's StarNet dossier (identity.md, purpose.md, context.md, operating-manual.md) complete | people | — | `check` `sync` | — |
 | `company/tools/escalate.js` | record a block and get the company's sanctioned next route. | ceo | — | `--agent` | — |
 | `company/tools/external-gate.js` | THE CHOKEPOINT for every action that leaves the company; keyed acts (`--idem`) never go out twice (company/work/external-idempotency.jsonl, exit 4 = duplicate). | risk | `--selftest` | `check` `guard` `clear` `close` `list` `session` `idem` `--selftest` | station-token |

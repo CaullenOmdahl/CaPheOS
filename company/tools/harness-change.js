@@ -8,6 +8,7 @@
  *
  *   propose --kind schedule|tool|house-rule|model|policy --target <…> --why "…" --change <file or JSON> --by <Name> [--expect "…"]
  *       schedule    target = routine name or id;  change = "0 9 * * *" or {"expr":"…","tz":"<IANA zone>"} (default: the company timezone)
+ *                   target = cadence.json (the company tempo, docs/TEMPO.md);  change = {"/bounds/tickMin":[3,30], "/dispatcherTickMin":4, …}
  *       tool        target = a shared file (company/tools, company/skills, company/runbooks, company/standards);
  *                   change = a unified diff (diff -u / git diff) or the whole new file
  *       house-rule  target = (none);  change = {"add":"…"} | {"remove":"…"} | {"replace":{"from":"…","to":"…"}} (a rule line)
@@ -26,7 +27,8 @@
  * Reviewers are found by function in company/tools/loops.json (seat.functions; lib/company.js). Nobody reviews their own
  * proposal; when every eligible seat is the proposer (a one-seat company), the owner reviews from their own shell.
  *   schedule   the routine owner's manager; the people holder when that manager is the CEO; the CEO for the people
- *              holder's own; the people holder for the CEO's own
+ *              holder's own; the people holder for the CEO's own. cadence.json: the finance, risk AND people holders (the
+ *              CEO in for whichever of them proposes), applied by any of them
  *   tool       the tools holder; the risk holder when the tools holder proposes. Tools that measure, limit or protect are locked
  *   house-rule the tools holder AND the CEO (the risk holder in for whichever of them proposes)
  *   model      the people holder AND the CEO (the routing table is the people holder's); applied by the people holder
@@ -314,8 +316,27 @@ function runSelftest(ctx, target, text) {
   finally { try { fs.unlinkSync(tmp); } catch (_) {} }
 }
 
+// The company tempo (company/work/ops/cadence.json: base values outside the crew's bounds, the bounds and tempo blocks,
+// seat loop clocks and cooldowns): reviewed by finance (spend rate), risk (liveness, SLA) and people (workload), never the
+// proposer; applied by any reviewer. cadence.js proposal() checks the pointers and turns them into whole-section sets.
+const CADENCE_TARGET = /^(company\/work\/ops\/)?cadence(\.json)?$/;
+const CADENCE_REL = 'company/work/ops/cadence.json';
+function describeCadence(ctx, c, proposer) {
+  const file = ctx.P(CADENCE_REL);
+  const doc = readJson(file, null); if (!doc) throw E(CADENCE_REL + ' cannot be read (it is created at founding from company/defaults/work/ops/cadence.json)', 'tool');
+  const set = asJson(c.text.trim(), '--change');
+  let norm; try { norm = require('./cadence.js').proposal(doc, set, { agents: ctx.crew.agents, now: ctx.now }); } catch (e) { throw E(e.message, 'input'); }
+  const before = {}, absent = [];
+  for (const k of Object.keys(norm)) { const g = getPtr(doc, ptrParts(k)); if (g.exists) before[k] = g.value; else absent.push(k); }
+  if (Object.keys(norm).every(k => !absent.includes(k) && same(before[k], norm[k]))) throw E('those are already the values', 'input');
+  const C = ctx.crew;
+  const reviewers = seats(ctx, [C.finance, C.risk, C.people], proposer, [C.ceo, C.ceo, C.ceo]);
+  return { target: { type: 'json', file: CADENCE_REL }, change: { set: norm, asked: set }, before: { values: before, absent, sha256: fileSha(file) }, after: {}, reviewers, applier: null, payload: null };
+}
+
 async function describe(ctx, kind, target, changeArg, proposer) {
   const c = parseChangeArg(ctx, changeArg);
+  if (kind === 'schedule' && CADENCE_TARGET.test(String(target || '').trim())) return describeCadence(ctx, c, proposer);
   if (kind === 'schedule') {
     const jobs = await jobsNow(ctx); const job = routineByTarget(jobs, target);
     const owner = job.agentId && ctx.crew.agents[job.agentId] ? Object.assign({ id: job.agentId }, ctx.crew.agents[job.agentId]) : null;
@@ -424,7 +445,7 @@ function renderSummary(ctx) {
 }
 const targetLabel = r => r.target.type === 'routine' ? 'routine ' + r.target.jobName : r.target.type === 'json' ? r.target.file + (r.target.pointer ? ' ' + r.target.pointer : '') : r.target.file;
 function summaryLine(r) {
-  if (r.kind === 'schedule') return r.before.schedule.expr + (r.before.schedule.tz ? ' (' + r.before.schedule.tz + ')' : '') + ' -> ' + r.change.schedule.expr + (r.change.schedule.tz ? ' (' + r.change.schedule.tz + ')' : '') + (r.before.firesPerDay != null ? '; runs a day ' + r.before.firesPerDay + ' -> ' + r.after.firesPerDay : '');
+  if (r.kind === 'schedule' && r.target.type === 'routine') return r.before.schedule.expr + (r.before.schedule.tz ? ' (' + r.before.schedule.tz + ')' : '') + ' -> ' + r.change.schedule.expr + (r.change.schedule.tz ? ' (' + r.change.schedule.tz + ')' : '') + (r.before.firesPerDay != null ? '; runs a day ' + r.before.firesPerDay + ' -> ' + r.after.firesPerDay : '');
   if (r.kind === 'tool') return r.change.mode + ' of ' + r.target.file + (r.target.locked ? ' (a locked tool: two reviewers)' : '');
   if (r.kind === 'house-rule') { const o = r.change.rule; return o.add ? 'add: ' + o.add : o.remove ? 'remove: ' + o.remove : 'replace: ' + o.replace.from + ' -> ' + o.replace.to; }
   return Object.entries(r.change.set).map(([k, v]) => k + ': ' + JSON.stringify(r.before.values[k]) + ' -> ' + JSON.stringify(v)).join('; ');
@@ -531,7 +552,7 @@ async function applyChange(ctx, id, o) {
     recommendation: 'yes: reviewed and approved by ' + ((rec0.approvals || []).map(x => x.name).join(' and ') || 'its reviewers') + '; why: ' + rec0.why, default: 'the change stays approved but not applied' }, { root: ctx.root });
   if (!gd.allowed) throw E(gov.refusal(govCat, gd), 'refused');
   let result;
-  if (rec0.kind === 'schedule') {
+  if (rec0.kind === 'schedule' && rec0.target.type === 'routine') {
     const jobs = await jobsNow(ctx); const job = jobs.find(j => j.id === rec0.target.jobId);
     if (!job) throw E('routine ' + rec0.target.jobName + ' no longer exists', 'state');
     const cur = { expr: (job.schedule && job.schedule.expr) || null, tz: (job.schedule && job.schedule.tz) || null };
@@ -607,7 +628,7 @@ async function revertChange(ctx, id, o) {
   if (rec0.status !== 'applied' && rec0.status !== 'kept') throw E(id + ' is ' + rec0.status + '; only an applied change is reverted', 'state');
   if (p.id !== 'owner' && !(rec0.applier ? p.id === rec0.applier.id : rec0.reviewers.some(r => r.id === p.id))) throw E((rec0.applier ? rec0.applier.name : 'a reviewer (' + rec0.reviewers.map(r => r.name).join(', ') + ')') + ' reverts ' + id, 'who');
   let result;
-  if (rec0.kind === 'schedule') {
+  if (rec0.kind === 'schedule' && rec0.target.type === 'routine') {
     const jobs = await jobsNow(ctx); const job = jobs.find(j => j.id === rec0.target.jobId);
     if (!job) throw E('routine ' + rec0.target.jobName + ' no longer exists', 'state');
     const cur = (job.schedule && job.schedule.expr) || null;
@@ -869,6 +890,22 @@ async function selftest() {
     await assert.rejects(propose(C(), { kind: 'policy', target: 'model-policy.json', why: 'routing is not a policy number at all', change: '{"/routing/routines/Design loop/claude": "haiku"}', by: 'Jo' }), /only \/performance/);
     review(C(), r.id, { by: 'Pat' }, 'approve'); const a = await applyChange(C(), r.id, { by: 'Pat' });
     assert.strictEqual(JSON.parse(R('company/work/finance/pacing-policy.json')).marginPct, 3); assert.strictEqual(a.status, 'applied');
+  });
+  await t('schedule on cadence.json: finance, risk and people review (never the proposer); applied as whole sections; reverted', async () => {
+    W('company/work/ops/cadence.json', { dispatcherTickMin: 10, defaultCooldownMin: 40, maxPerTick: 4, bounds: { tickMin: [5, 30], cooldownMin: [10, 120], maxWakesPerHour: 12, maxWakesPerDay: 120, quietHours: null }, tempo: { mode: 'bounded-auto', autoExpireMin: 30, minChangeIntervalMin: 15 }, seats: {} });
+    const r = await propose(C(), { kind: 'schedule', target: 'cadence.json', why: 'launch week: let the crew tick every 3 minutes', change: '{"/bounds/tickMin":[3,30]}', by: 'Alex' });
+    assert.deepStrictEqual(r.reviewers.map(x => x.name), ['Pat', 'Riley', 'Kim']); assert.strictEqual(r.applier, null);
+    const own = await propose(C(), { kind: 'schedule', target: 'cadence.json', why: 'Pat widens the tick range for herself', change: '{"/dispatcherTickMin":3}', by: 'Pat' });
+    assert.deepStrictEqual(own.reviewers.map(x => x.name), ['Alex', 'Riley', 'Kim']); withdraw(C(), own.id, { by: 'Pat' });
+    await assert.rejects(propose(C(), { kind: 'schedule', target: 'cadence.json', why: 'rewrite the change log while at it', change: '{"/changes":[]}', by: 'Alex' }), /not a tempo number/);
+    review(C(), r.id, { by: 'Pat' }, 'approve'); review(C(), r.id, { by: 'Riley' }, 'approve');
+    assert.strictEqual(loadRec(C(), r.id).status, 'proposed');
+    review(C(), r.id, { by: 'Kim' }, 'approve');
+    const a = await applyChange(C(), r.id, { by: 'Riley' });
+    const doc = JSON.parse(R('company/work/ops/cadence.json'));
+    assert.deepStrictEqual(doc.bounds.tickMin, [3, 30]); assert.strictEqual(doc.bounds.maxWakesPerHour, 12); assert.strictEqual(a.status, 'applied');
+    await revertChange(C(), r.id, { by: 'Kim' });
+    assert.deepStrictEqual(JSON.parse(R('company/work/ops/cadence.json')).bounds.tickMin, [5, 30]);
   });
   await t('an apply refuses to record edits that ride in beyond the approved change', async () => {
     const r = await propose(C(), { kind: 'policy', target: 'pacing-policy.json', why: 'raise the margin a touch for the weekend rush', change: '{"/marginPct": 6}', by: 'Jo' });

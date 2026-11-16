@@ -72,7 +72,9 @@ scripts/console.sh                # same as the first line
 | POST | /api/halt/hard | `{ why? }` | `halt.js hard --by <owner>` |
 | POST | /api/halt/resume | — | `halt.js resume --by <owner>` |
 | GET | /api/cadence | — | `cadence.js show --json` |
-| POST | /api/cadence/default | `{ minutes }` | `cadence.js set-default` |
+| POST | /api/cadence/default | `{ minutes?, cooldown?, maxPerTick? }` | `cadence.js set-default --by <owner>`: the owner's base values |
+| POST | /api/cadence/bounds | `{ tickMin?: [lo,hi], cooldownMin?: [lo,hi], maxWakesPerHour?, maxWakesPerDay?, quietHours?: "HH:MM-HH:MM"\|null, mode?: "fixed"\|"bounded-auto", autoExpireMin?, minChangeIntervalMin? }` | `cadence.js bounds --by <owner>` (docs/TEMPO.md) |
+| POST | /api/cadence/end-temporary | — | `cadence.js end-temporary`: back to the base values now |
 | POST | /api/cadence/seat | `{ seat, loopEvery?, cooldown?, priority?, wakeOnInbox?, wakeOnOwner? }` | `cadence.js set` then `apply`; returns `{ set, apply }` (apply may refuse at the `schedules` approve level) |
 | GET | /api/panels | panels with placement and state | `console-panel.js list --json` |
 | GET | /api/panels/:id/data | resolved data for a panel | console-panel.js `render()` (required as a module) |

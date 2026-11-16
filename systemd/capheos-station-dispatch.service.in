@@ -1,9 +1,16 @@
 [Unit]
-Description=@NAME@ dispatcher — wake agents that own open work
+Description=@NAME@ dispatcher — self-paced loop that wakes agents who own open work (tick from cadence.json)
 After=@SVC@.service
 
 [Service]
-Type=oneshot
+Type=simple
 WorkingDirectory=@ROOT@
-ExecStart=/usr/bin/env node @ROOT@/company/tools/dispatch.js
-TimeoutStartSec=900
+ExecStart=/usr/bin/env node @ROOT@/company/tools/dispatcher-loop.js
+Restart=always
+RestartSec=30
+# SIGTERM to the loop only: it lets a running tick finish (60 s grace), then exits 0
+KillMode=mixed
+TimeoutStopSec=120
+
+[Install]
+WantedBy=default.target

@@ -109,6 +109,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/default-branch-watch.js | risk | `selftest` |
 | company/tools/delegation.js | ceo | `selftest` / `--selftest` |
 | company/tools/dispatch.js | tools | `--selftest` |
+| company/tools/dispatcher-loop.js | tools | `selftest` / `--selftest` |
 | company/tools/dossier.js | people | none |
 | company/tools/escalate.js | ceo | none |
 | company/tools/external-gate.js | risk | `--selftest` |
@@ -206,6 +207,7 @@ in §5a instead.
 | `company/tools/decide.js` | risk | `node company/tools/decide.js selftest` |
 | `company/tools/delegation.js` | ceo | `node company/tools/delegation.js selftest` |
 | `company/tools/dispatch.js` | tools | `node company/tools/dispatch.js --selftest` |
+| `company/tools/dispatcher-loop.js` | tools | `node company/tools/dispatcher-loop.js selftest` |
 | `company/tools/external-gate.js` | risk | `node company/tools/external-gate.js --selftest` |
 | `company/tools/founder-loop.js` | ceo | `node company/tools/founder-loop.js --selftest` |
 | `company/tools/governance.js` | ceo | `node company/tools/governance.js selftest` |

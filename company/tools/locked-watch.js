@@ -90,10 +90,11 @@ const MANIFEST = [
   { p: 'company/competence-policy.json', cls: 'F', owner: 'people', area: 'policy', why: 'how competence is scored' },
   { p: 'company/work/people/corrections-policy.json', cls: 'F', owner: 'people', area: 'policy', why: 'how corrections work' },
   { p: 'company/tools/loops.json', cls: 'F', writers: ['hire.js'], owner: 'people', area: 'access', why: 'the crew list: managers, HR and tool owner, who is woken' },
+  { p: 'company/work/ops/cadence.json', cls: 'F', writers: ['cadence.js', 'harness-change.js'], owner: 'risk', area: 'policy', why: 'the company tempo: the owner\'s base cadence, the bounds the crew moves inside and any temporary speed-up (only through cadence.js or a reviewed harness change)' },
   { p: 'company/state/governance.json', cls: 'F', writers: ['governance.js'], owner: 'risk', area: 'policy', why: 'self-governance: how much the company decides without the owner (only the owner changes it, through governance.js)' },
   // alwaysWatched: still reported while the harnessSelfEdit guardrail is off, because it is the switch itself
   { p: 'company/state/guardrails.json', cls: 'F', writers: ['guardrails.js'], owner: 'risk', area: 'policy', alwaysWatched: true, why: 'the guardrail switches (only the owner changes them, through guardrails.js)' },
-  ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'hire.js', 'station-crew.js', 'handoff-archive.js']
+  ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js']
     .map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'tools', area: 'tool', why: 'a tool that measures or limits the crew, or that these tools depend on' })),
   ...['merge-gate.js', 'premerge-check.js', 'external-gate.js', 'connector-scope.js', 'default-branch-watch.js'].map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'risk', area: 'tool', why: 'a gate or the evidence it reads' })),
   { p: 'company/work/engineering/evidence/*.json', cls: 'F', writers: ['test-substrate.sh'], owner: 'risk', area: 'gate', why: 'test-substrate verdicts (a hand-made pass opens the merge gate): flagged, never auto-removed, so a real evidence file never blocks a merge' },

@@ -2,7 +2,7 @@
 # setup-station.sh — install this company's own StarNet station next to any other on the machine.
 #
 #   scripts/setup-station.sh            # clone StarNet, apply company/patches, write env + systemd user units (not started)
-#   scripts/setup-station.sh --start    # ...and enable + start the station, the dispatcher and liveness timers, then wait
+#   scripts/setup-station.sh --start    # ...and enable + start the station, the dispatcher loop and the liveness timer, then wait
 #                                       # (SETUP_WAIT_SEC, default 90) until GET /api/cron answers with the token
 #   scripts/setup-station.sh --check    # show what is installed, change nothing
 #
@@ -23,8 +23,8 @@ PORT="$(cfg 'c.station&&c.station.port')"; PORT="${PORT:-8801}"
 SVC="$(cfg 'c.station&&c.station.serviceName')"; SVC="${SVC:-capheos-station}"
 NAME="$(cfg 'c.name')"
 ZONE="$(cfg 'c.timezone')"; ZONE="${ZONE:-UTC}"
-# Dispatcher tick (minutes): company/work/ops/cadence.json, else company/defaults/work/ops/cadence.json, else 10.
-# company/tools/cadence.js apply rewrites the installed timer later; this only sets the first value.
+# Dispatcher tick (minutes), shown by --check: company/work/ops/cadence.json, else its default, else 10. The dispatcher
+# is a self-paced loop (company/tools/dispatcher-loop.js) that re-reads the tick every iteration: no timer to rewrite.
 TICK="$(node -e "const fs=require('fs');for(const f of ['company/work/ops/cadence.json','company/defaults/work/ops/cadence.json']){try{const n=Number(JSON.parse(fs.readFileSync(f,'utf8')).dispatcherTickMin);if(Number.isInteger(n)&&n>0){process.stdout.write(String(n));process.exit(0)}}catch(_){}}process.stdout.write('10')")"
 ENVFILE="$HOME/.config/$SVC.env"
 UNITDIR="$HOME/.config/systemd/user"
@@ -35,7 +35,7 @@ if [[ "${1:-}" == "--check" ]]; then
   echo "starnet:   $( [[ -d starnet/.git ]] && git -C starnet rev-parse --short HEAD || echo 'not cloned')"
   echo "env file:  $( [[ -f $ENVFILE ]] && echo "$ENVFILE" || echo missing)"
   echo "token:     $( [[ -s secrets/station-token ]] && echo present || echo missing)"
-  systemctl --user --no-pager status "$SVC.service" "$SVC-dispatch.timer" "$SVC-liveness.timer" 2>/dev/null | grep -E '●|Active:' || echo "units:     not installed"
+  systemctl --user --no-pager status "$SVC.service" "$SVC-dispatch.service" "$SVC-liveness.timer" 2>/dev/null | grep -E '●|Active:' || echo "units:     not installed"
   exit 0
 fi
 
@@ -101,11 +101,24 @@ for t in systemd/*.in; do
   sed -e "s|@ROOT@|$ROOT|g" -e "s|@SVC@|$SVC|g" -e "s|@NAME@|$NAME|g" -e "s|@ENVFILE@|$ENVFILE|g" -e "s|@TICK@|$TICK|g" "$t" > "$out"
   echo "wrote $out"
 done
+# Migration: the dispatcher used to be a oneshot service fired by $SVC-dispatch.timer. It is now a long-lived loop
+# (Type=simple, Restart=always); retire the old timer so the two never run ticks side by side.
+DISPATCH_WAS_ON=0
+if [[ -f "$UNITDIR/$SVC-dispatch.timer" ]]; then
+  systemctl --user is-enabled --quiet "$SVC-dispatch.timer" 2>/dev/null && DISPATCH_WAS_ON=1
+  systemctl --user disable --now "$SVC-dispatch.timer" 2>/dev/null || true
+  rm -f "$UNITDIR/$SVC-dispatch.timer"
+  echo "retired $SVC-dispatch.timer (the dispatcher is now the self-paced $SVC-dispatch.service)"
+fi
 systemctl --user daemon-reload
+if [[ $DISPATCH_WAS_ON -eq 1 && "${1:-}" != "--start" ]]; then
+  systemctl --user enable "$SVC-dispatch.service" && systemctl --user restart "$SVC-dispatch.service" && echo "started the dispatcher loop in place of the old timer"
+fi
 
 if [[ "${1:-}" == "--start" ]]; then
   systemctl --user enable --now "$SVC.service"
-  systemctl --user enable --now "$SVC-dispatch.timer"
+  systemctl --user enable "$SVC-dispatch.service"
+  systemctl --user restart "$SVC-dispatch.service"   # restart: an older unit (oneshot) may still be loaded
   # the liveness watcher (modules/liveness/watch.js) exits quietly until the liveness module is enabled
   systemctl --user enable --now "$SVC-liveness.timer" || echo "liveness timer not started (non-fatal)"
   # wait until the station answers GET /api/cron with the token (SETUP_WAIT_SEC, default 90), and record the step

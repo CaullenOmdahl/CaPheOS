@@ -204,20 +204,25 @@ module.exports = function chat(deps) {
     if (!wakers.length) problems.push({ code: 'no-waker', msg: 'no crew member is woken by owner messages', fix: 'Switch "wake on owner message" on for ' + ceoName + ' in Controls, Ticks and cadence.', link: '#/controls/ticks' });
     for (const p of (st.problems || [])) if (p.code !== 'no-model') problems.push({ code: p.code, msg: p.msg, fix: p.fix === 'node company/tools/founder-loop.js ensure' ? 'Run onboarding again: node company/tools/onboard.js --step founder-loop (or pick the AI provider again in Setup).' : p.fix, link: p.code === 'scheduler-off' || p.code === 'disabled' ? '#/automate' : '#/setup/provider' });
     const cad = readJson(co.p('company', 'work', 'ops', 'cadence.json'), null) || readJson(co.p('company', 'defaults', 'work', 'ops', 'cadence.json'), {}) || {};
-    const tick = Number(cad.dispatcherTickMin) > 0 ? Number(cad.dispatcherTickMin) : 10;
-    let lastTick = null; try { lastTick = fs.statSync(co.p('company', 'work', 'dispatch-log.md')).mtimeMs; } catch (_) {}
+    // the self-paced dispatcher loop's own state (company/tools/dispatcher-loop.js): its effective tick and next tick
+    const lp = readJson(co.p('company', 'state', 'dispatcher-loop.json'), null);
+    const tick = lp && lp.tempo && Number(lp.tempo.tickMin) > 0 ? Number(lp.tempo.tickMin) : Number(cad.dispatcherTickMin) > 0 ? Number(cad.dispatcherTickMin) : 10;
+    let lastTick = lp && (lp.status === 'ticking' ? Date.now() : Date.parse(lp.lastTickEndAt || lp.lastTickAt || '')) || null;
+    if (!lastTick) { try { lastTick = fs.statSync(co.p('company', 'work', 'dispatch-log.md')).mtimeMs; } catch (_) {} }
     const age = lastTick ? (Date.now() - lastTick) / 60000 : null;
-    if (age === null || age > tick * 3 + 2) problems.push({ code: 'dispatcher', msg: age === null ? 'the dispatcher has never run, and it is what wakes ' + ceoName + ' for your messages' : 'the dispatcher last ran ' + Math.round(age) + ' min ago (it should every ' + tick + ' min)', fix: 'Start it: systemctl --user start ' + svc() + '-dispatch.timer', link: '#/system' });
+    const loopStopped = !!(lp && lp.status === 'stopped');
+    if (age === null || age > tick * 3 + 2 || loopStopped) problems.push({ code: 'dispatcher', msg: age === null ? 'the dispatcher has never run, and it is what wakes ' + ceoName + ' for your messages' : loopStopped ? 'the dispatcher loop is stopped, and it is what wakes ' + ceoName + ' for your messages' : 'the dispatcher last ran ' + Math.round(age) + ' min ago (it should every ' + tick + ' min)', fix: 'Start it: systemctl --user start ' + svc() + '-dispatch.service', link: '#/system' });
     const ds = readJson(co.p('company', 'work', 'dispatch-state.json'), {}) || {};
     if (ds.owner && ds.owner.flagged) problems.push({ code: 'stalled', msg: ceoName + ' was woken ' + (ds.owner.count || 3) + ' times for these messages without answering, so the fast wake stopped', fix: 'Talk to ' + ceoName + ' live instead.', link: '#/comms/agent:' + ceoId });
     if (ds.askHeld && st.job && String(ds.askHeld).includes(st.job.name)) problems.push({ code: 'ask-mode', msg: ceoName + '\'s approval mode is "ask", so an unattended run could not save anything and the dispatcher holds it', fix: 'Talk to ' + ceoName + ' live, or give the seat full access in Crew.', link: '#/crew/' + ceoId });
     const job = st.job;
     const cooldown = Number(process.env.DISPATCH_OWNER_COOLDOWN_MIN) > 0 ? Number(process.env.DISPATCH_OWNER_COOLDOWN_MIN) : 10;
-    const nextTick = age === null ? tick : Math.max(0, tick - age);
+    const nextAt = lp && lp.nextTickAt ? Date.parse(lp.nextTickAt) : null;
+    const nextTick = nextAt ? Math.max(0, (nextAt - Date.now()) / 60000) : age === null ? tick : Math.max(0, tick - age);
     const sinceRun = job && job.lastRunAt ? (Date.now() - Date.parse(job.lastRunAt)) / 60000 : Infinity;
     const cool = Math.max(0, cooldown - sinceRun);
     const nextCheckMin = Math.max(1, Math.ceil(cool > nextTick ? nextTick + Math.ceil((cool - nextTick) / tick) * tick : nextTick));
-    return { ok: !problems.length, problems, ceo: { id: ceoId, name: ceoName }, nextCheckMin, working: !!(job && job.inFlight), tickMin: tick, loop: job ? job.name : null };
+    return { ok: !problems.length, problems, ceo: { id: ceoId, name: ceoName }, nextCheckMin, working: !!(job && job.inFlight), tickMin: tick, nextTickAt: nextAt ? new Date(nextAt).toISOString() : null, tempo: lp && lp.tempo ? lp.tempo.source : null, loop: job ? job.name : null };
   }
   function messageStates(rows, ch) {
     const ack = ((readJson(co.p('company', 'state', 'owner-inbox.json'), {}) || {}).acked) || {};

@@ -360,9 +360,31 @@ route('POST', /^\/api\/halt\/hard$/, (m, q, b) => runApi('halt.js', ['hard', '--
 route('POST', /^\/api\/halt\/resume$/, () => runApi('halt.js', ['resume', '--by', OWNER], { timeout: 60000 }));
 route('GET', /^\/api\/cadence$/, () => runApi('cadence.js', ['show', '--json']));
 route('POST', /^\/api\/cadence\/default$/, (m, q, b) => {
-  const n = Number(b.minutes); if (!(n > 0)) bad('minutes must be a positive number');
-  return runApi('cadence.js', ['set-default', String(n), '--by', OWNER]);
+  const pos = (v, what) => { const n = Number(v); if (!(Number.isInteger(n) && n > 0)) bad(what + ' must be a whole number above 0'); return String(n); };
+  const args = ['set-default'];
+  if (b.minutes != null && b.minutes !== '') args.push(pos(b.minutes, 'minutes'));
+  if (b.cooldown != null && b.cooldown !== '') args.push('--cooldown', pos(b.cooldown, 'cooldown'));
+  if (b.maxPerTick != null && b.maxPerTick !== '') args.push('--max-per-tick', pos(b.maxPerTick, 'maxPerTick'));
+  if (args.length === 1) bad('minutes, cooldown or maxPerTick is required');
+  return runApi('cadence.js', args.concat(['--by', OWNER]));
 });
+// the owner's bounds and tempo (cadence.js bounds): what the crew may change on its own, and for how long
+route('POST', /^\/api\/cadence\/bounds$/, (m, q, b) => {
+  const args = ['bounds'];
+  const range = (v, what) => { const a = Array.isArray(v) ? v : String(v).split(/[-,]/); if (a.length !== 2 || !a.every(x => Number.isInteger(Number(x)) && Number(x) > 0)) bad(what + ' is [low, high] minutes'); return a.map(Number).join('-'); };
+  const pos = (v, what) => { const n = Number(v); if (!(Number.isInteger(n) && n > 0)) bad(what + ' must be a whole number above 0'); return String(n); };
+  if (b.tickMin != null) args.push('--tick-min', range(b.tickMin, 'tickMin'));
+  if (b.cooldownMin != null) args.push('--cooldown-min', range(b.cooldownMin, 'cooldownMin'));
+  if (b.maxWakesPerHour != null) args.push('--max-wakes-per-hour', pos(b.maxWakesPerHour, 'maxWakesPerHour'));
+  if (b.maxWakesPerDay != null) args.push('--max-wakes-per-day', pos(b.maxWakesPerDay, 'maxWakesPerDay'));
+  if (b.quietHours !== undefined) args.push('--quiet-hours', b.quietHours ? str(b.quietHours, 'quietHours') : 'off');
+  if (b.mode != null) { if (!['fixed', 'bounded-auto'].includes(b.mode)) bad('mode is fixed or bounded-auto'); args.push('--mode', b.mode); }
+  if (b.autoExpireMin != null) args.push('--auto-expire-min', pos(b.autoExpireMin, 'autoExpireMin'));
+  if (b.minChangeIntervalMin != null) args.push('--min-change-interval-min', pos(b.minChangeIntervalMin, 'minChangeIntervalMin'));
+  if (args.length === 1) bad('nothing to set');
+  return runApi('cadence.js', args.concat(['--by', OWNER]));
+});
+route('POST', /^\/api\/cadence\/end-temporary$/, () => runApi('cadence.js', ['end-temporary', '--by', OWNER, '--why', 'ended by the owner in the console']));
 route('POST', /^\/api\/cadence\/seat$/, async (m, q, b) => {
   const seat = str(b.seat, 'seat') || bad('seat is required');
   const args = ['set', seat];

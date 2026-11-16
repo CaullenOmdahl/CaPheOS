@@ -61,7 +61,7 @@ Categories and where they are enforced:
 | spend | new spend inside the approved cap, a new paid tool | the seat's own judgement today (no tool spends) |
 | models | which model a seat or routine runs | `hire.js remodel`, `harness-change.js apply` (kind model) |
 | tools | shared tools, house rules, other policy numbers | `harness-change.js apply` (kinds tool, house-rule, policy) |
-| schedules | routine clocks, dispatcher tick, cadence | `harness-change.js apply` (kind schedule) |
+| schedules | routine clocks, dispatcher tick, cadence — inside the owner's tempo bounds only (docs/TEMPO.md) | `harness-change.js apply` (kind schedule), `cadence.js set-default` / `set` |
 | external | anything that leaves the company | `external-gate.js`: auto = the CEO's clearance suffices; notify = the CEO's clearance and the owner is told; approve = the clearance row must name the owner |
 | dashboard | agents adding or changing console panels | the console panel tools (wired with the console) |
 | packs | approving a capability pack (a new line of business); install is always the owner's | `pack.js approve` (approve = owner only; notify/auto = the CEO seat may approve, notify tells the owner); `pack.js install` is owner-only at every level. `approve` in every preset (docs/PACKS-SPEC.md) |

@@ -135,28 +135,70 @@ export async function render(root, ctx) {
   }
 
   function drawTicks(d) {
+    // base values: the owner's tempo; the crew can only make a temporary change inside the bounds below
     const defaults = [
-      ['dispatcherTickMin', 'Dispatcher tick', 'minutes', 'How often the dispatcher looks for open work.'],
-      ['defaultCooldownMin', 'Default cooldown', 'minutes', 'Least time between two wakes of one seat.'],
-      ['maxPerTick', 'Wakes per tick', 'seats', 'Most seats started in one tick.'],
+      ['dispatcherTickMin', 'minutes', 'Dispatcher tick', 'minutes', 'How long the dispatcher loop sleeps between ticks.'],
+      ['defaultCooldownMin', 'cooldown', 'Default cooldown', 'minutes', 'Least time between two wakes of one seat.'],
+      ['maxPerTick', 'maxPerTick', 'Wakes per tick', 'seats', 'Most seats started in one tick.'],
     ];
     const err = h('p', { class: 'err-line', role: 'status' });
     const seatRows = Object.entries(d.seats || {});
     const v = x => x && typeof x === 'object' && 'value' in x ? x.value : x;
+    const b = d.bounds || {}, tp = d.tempo || {}, eff = d.effective || {}, w = d.wakes || {}, tmp = d.temporary, lp = d.loop;
+    const when = iso => { if (!iso) return '—'; const t = new Date(iso); return isNaN(t) ? iso : t.toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' }); };
     const onoff = (seat, field, val) => h('label', { class: 'check', style: 'min-height:44px' },
       h('input', { type: 'checkbox', checked: !!val, onchange: e => act('/cadence/seat', { seat, [field]: e.target.checked }) }), val ? 'On' : 'Off');
     const num = (seat, field, val, label) => h('input', { type: 'number', class: 'input', style: 'width:96px;font:var(--type-mono)', value: val == null ? '' : val, 'aria-label': label,
       onchange: e => act('/cadence/seat', { seat, [field]: e.target.value === '' ? null : Number(e.target.value) }) });
+    const numIn = (val, label, onchange, width) => { const i = h('input', { type: 'number', min: '1', class: 'input', style: 'width:' + (width || 80) + 'px;font:var(--type-mono)', value: val ?? '', 'aria-label': label }); i.addEventListener('change', () => { err.textContent = ''; onchange(i.value); }); return i; };
+    const range = (key, label) => {
+      const r = Array.isArray(b[key]) ? b[key] : ['', ''];
+      const lo = numIn(r[0], label + ' low', () => act('/cadence/bounds', { [key]: [Number(lo.value), Number(hi.value)] }, label + ': ' + lo.value + '–' + hi.value + ' min'));
+      const hi = numIn(r[1], label + ' high', () => act('/cadence/bounds', { [key]: [Number(lo.value), Number(hi.value)] }, label + ': ' + lo.value + '–' + hi.value + ' min'));
+      return h('span', { class: 'row-8', style: 'align-items:center' }, lo, h('span', { class: 'body-s muted' }, 'to'), hi, h('span', { class: 'body-s muted' }, 'min'));
+    };
+    const capLine = (n, cap) => h('span', { class: 'num' }, String(n ?? 0) + ' / ' + (cap ?? '—'));
+    const quiet = h('input', { type: 'text', class: 'input', style: 'width:140px;font:var(--type-mono)', value: b.quietHours || '', placeholder: 'off, or 22:00-07:00', 'aria-label': 'Quiet hours' });
+    quiet.addEventListener('change', () => act('/cadence/bounds', { quietHours: quiet.value.trim() || null }, quiet.value.trim() ? 'Quiet hours: ' + quiet.value.trim() : 'Quiet hours off'));
+    const mode = h('select', { class: 'input', 'aria-label': 'Crew tempo changes' },
+      [['bounded-auto', 'Crew may speed up inside the bounds'], ['fixed', 'Only you change the tempo']].map(([val, label]) => h('option', { value: val, selected: tp.mode === val }, label)));
+    mode.addEventListener('change', () => act('/cadence/bounds', { mode: mode.value }, 'Tempo mode: ' + mode.value));
+    const card = (title, ...kids) => h('div', { class: 'card p18', style: 'gap:8px' }, h('span', { class: 'label strong' }, title), ...kids);
     fill(body,
-      h('section', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px' },
-        defaults.map(([k, name, unit, note]) => {
-          const settable = k === 'dispatcherTickMin';
-          const inp = h('input', { type: 'number', min: '1', class: 'input', style: 'width:96px;font:var(--type-mono)', value: d[k] ?? '', disabled: !settable, 'aria-describedby': 'tk-' + k });
-          if (settable) inp.addEventListener('change', () => { err.textContent = ''; act('/cadence/default', { minutes: Number(inp.value) }, 'Dispatcher tick: ' + inp.value + ' min'); });
-          return h('label', { class: 'card p18', style: 'gap:8px' }, h('span', { class: 'label strong' }, name),
-            h('span', { class: 'row-8', style: 'align-items:center' }, inp, h('span', { class: 'body-s muted' }, unit)),
-            h('span', { class: 'caption muted', id: 'tk-' + k }, note + (settable ? '' : ' Read-only here: set it with cadence.js set-default.')));
-        })),
+      h('section', { class: 'stack-12' },
+        h('h2', { class: 'h3' }, 'Right now'),
+        h('section', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px' },
+          card('Effective tempo', h('span', { class: 'body-l num' }, 'tick ' + (eff.tickMin ?? '—') + ' min · cooldown ' + (eff.cooldownMin ?? '—') + ' min'),
+            Tag(eff.source === 'temporary' ? 'Temporary speed-up' : 'Your base values', { variant: 'status', status: eff.source === 'temporary' ? 'warning' : 'online' }),
+            eff.quiet ? h('span', { class: 'caption' }, 'Quiet hours: only your own messages wake anyone.') : null),
+          card('Dispatcher loop', h('span', { class: 'body-s' }, 'Last tick ' + when(lp && (lp.lastTickEndAt || lp.lastTickAt))), h('span', { class: 'body-s' }, 'Next tick ' + (lp && lp.status === 'ticking' ? 'running now' : when(lp && lp.nextTickAt))),
+            h('span', { class: 'caption muted' }, lp ? 'State: ' + (lp.status || '?') : 'The loop has not written its state yet (company/state/dispatcher-loop.json).')),
+          card('Wakes against the caps', h('span', { class: 'row-8', style: 'align-items:center' }, h('span', { class: 'body-s' }, 'Last hour'), capLine(w.hour, w.maxPerHour)),
+            h('span', { class: 'row-8', style: 'align-items:center' }, h('span', { class: 'body-s' }, 'Last 24 h'), capLine(w.day, w.maxPerDay)),
+            h('span', { class: 'caption muted' }, 'Your own messages are never held, but they count.'))),
+        tmp ? h('div', { class: 'card p18', style: 'gap:8px' },
+          h('span', { class: 'label strong' }, 'Temporary speed-up by ' + (tmp.by || '?')),
+          h('span', { class: 'body-s' }, Object.entries(tmp.set || {}).map(([k, x]) => k + ' ' + x).join(', ') + ' · until ' + when(tmp.expiresAt)),
+          h('span', { class: 'body-s muted' }, 'Why: ' + (tmp.why || '—')),
+          h('div', { class: 'row-8' }, Button('End it now', { variant: 'secondary', size: 'sm', onClick: () => act('/cadence/end-temporary', {}, 'Back to your base values.') }))) : null),
+      h('section', { class: 'stack-12' },
+        h('h2', { class: 'h3' }, 'Your base values'),
+        h('section', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px' },
+          defaults.map(([k, field, name, unit, note]) => h('label', { class: 'card p18', style: 'gap:8px' }, h('span', { class: 'label strong' }, name),
+            h('span', { class: 'row-8', style: 'align-items:center' }, numIn(d[k], name, val => act('/cadence/default', { [field]: Number(val) }, name + ': ' + val + ' ' + unit), 96), h('span', { class: 'body-s muted' }, unit)),
+            h('span', { class: 'caption muted' }, note))))),
+      h('section', { class: 'stack-12' },
+        h('h2', { class: 'h3' }, 'Bounds'),
+        h('p', { class: 'body-s muted', style: 'max-width:720px' }, 'The range the crew may move the tempo in on its own. Inside it, a change is temporary: it ends after ' + (tp.autoExpireMin ?? 30) + ' min and goes back to your base values, at most one per ' + (tp.minChangeIntervalMin ?? 15) + ' min. Anything outside, and these bounds themselves, is yours (or a change reviewed by finance, risk and people). The tempo sets how fast the day\'s spend is used, not only how much.'),
+        h('section', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px' },
+          card('Dispatcher tick', range('tickMin', 'Tick bounds')),
+          card('Seat cooldown', range('cooldownMin', 'Cooldown bounds')),
+          card('Wakes per hour', h('span', { class: 'row-8', style: 'align-items:center' }, numIn(b.maxWakesPerHour, 'Wakes per hour', val => act('/cadence/bounds', { maxWakesPerHour: Number(val) }, 'Wakes per hour: ' + val)), h('span', { class: 'body-s muted' }, 'wakes'))),
+          card('Wakes per day', h('span', { class: 'row-8', style: 'align-items:center' }, numIn(b.maxWakesPerDay, 'Wakes per day', val => act('/cadence/bounds', { maxWakesPerDay: Number(val) }, 'Wakes per day: ' + val)), h('span', { class: 'body-s muted' }, 'wakes in 24 h'))),
+          card('Quiet hours', quiet, h('span', { class: 'caption muted' }, 'Company time. Nobody is woken then except for your messages.')),
+          card('Crew changes', mode,
+            h('span', { class: 'row-8', style: 'align-items:center' }, h('span', { class: 'body-s muted' }, 'last'), numIn(tp.autoExpireMin, 'Speed-up length', val => act('/cadence/bounds', { autoExpireMin: Number(val) }, 'Speed-ups last ' + val + ' min')), h('span', { class: 'body-s muted' }, 'min')),
+            h('span', { class: 'row-8', style: 'align-items:center' }, h('span', { class: 'body-s muted' }, 'apart'), numIn(tp.minChangeIntervalMin, 'Least time between changes', val => act('/cadence/bounds', { minChangeIntervalMin: Number(val) }, 'Changes at least ' + val + ' min apart')), h('span', { class: 'body-s muted' }, 'min'))))),
       err,
       seatRows.length ? table(['Seat', 'Own loop', 'Cooldown (min)', 'Priority', 'Wake on handoff', 'Wake on your message'], seatRows.map(([id, s]) => h('tr', null,
         h('th', { scope: 'row', class: 'label strong' }, s.name || id),
@@ -166,7 +208,9 @@ export async function render(root, ctx) {
         h('td', null, onoff(id, 'wakeOnInbox', v(s.wakeOnInbox))),
         h('td', null, onoff(id, 'wakeOnOwner', v(s.wakeOnOwnerMessage))))), { minWidth: 860 }) : empty('No seats in cadence yet.'),
       (d.unknownSeats || []).length ? h('p', { class: 'caption danger' }, 'In cadence.json but not in loops.json: ' + d.unknownSeats.join(', ')) : null,
-      h('span', { class: 'caption muted' }, 'Changes are written to ' + (d.file || 'cadence.json') + ' and applied to loops.json. Schedules follow the self-governance level for “Schedules and ticks”.'));
+      (d.changes || []).length ? h('section', { class: 'stack-12' }, h('h2', { class: 'h3' }, 'Recent tempo changes'),
+        table(['When', 'Who', 'What', 'Why'], d.changes.map(c => h('tr', null, h('td', { class: 'num' }, when(c.at)), h('td', null, c.by || '—'), h('td', null, c.what || ''), h('td', { class: 'muted' }, c.why || '—'))), { minWidth: 640 })) : null,
+      h('span', { class: 'caption muted' }, 'Changes are written to ' + (d.file || 'cadence.json') + '; the dispatcher loop picks them up within a minute, and seat changes are applied to loops.json. Guide: docs/TEMPO.md.'));
   }
 
   function drawPanels(d) {

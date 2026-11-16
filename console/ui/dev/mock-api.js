@@ -48,7 +48,14 @@ const S = {
   governance: null, guardrails: null,
   cadence: { dispatcherTickMin: 10, defaultCooldownMin: 40, maxPerTick: 4, file: 'company/work/ops/cadence.json', unknownSeats: [],
     seats: { agent: { name: 'Founder', loop: 'Founder loop', cooldownMin: { value: 10, from: 'cadence' }, priority: { value: 100, from: 'loops' }, wakeOnInbox: { value: true }, wakeOnOwnerMessage: { value: true } },
-      people1: { name: 'Mira', loop: 'People loop', cooldownMin: { value: 40, from: 'default' }, priority: { value: 50 }, wakeOnInbox: { value: true }, wakeOnOwnerMessage: { value: false } } } },
+      people1: { name: 'Mira', loop: 'People loop', cooldownMin: { value: 40, from: 'default' }, priority: { value: 50 }, wakeOnInbox: { value: true }, wakeOnOwnerMessage: { value: false } } },
+    bounds: { tickMin: [5, 30], cooldownMin: [10, 120], maxWakesPerHour: 12, maxWakesPerDay: 120, quietHours: null },
+    tempo: { mode: 'bounded-auto', autoExpireMin: 30, minChangeIntervalMin: 15 },
+    effective: { tickMin: 5, cooldownMin: 40, maxPerTick: 4, source: 'temporary', quiet: false, reason: 'temporary (dispatcherTickMin=5) by Founder' },
+    temporary: { set: { dispatcherTickMin: 5 }, by: 'Founder', why: 'the owner is waiting on the launch checklist', at: new Date(Date.now() - 6e5).toISOString(), expiresAt: new Date(Date.now() + 12e5).toISOString() },
+    wakes: { hour: 3, day: 41, maxPerHour: 12, maxPerDay: 120 },
+    loop: { status: 'sleeping', lastTickAt: new Date(Date.now() - 2e5).toISOString(), lastTickEndAt: new Date(Date.now() - 18e4).toISOString(), nextTickAt: new Date(Date.now() + 12e4).toISOString(), tempo: { tickMin: 5, source: 'temporary' } },
+    changes: [{ at: new Date(Date.now() - 6e5).toISOString(), by: 'Founder', what: 'temporary until 30 min: dispatcherTickMin=5', why: 'the owner is waiting on the launch checklist' }] },
   hidden: {},
   // Setup (#/setup) fixtures: GET /api/setup is computed from these
   setup: { certified: CERTIFIED, govChosen: CERTIFIED, candidateDefault: CERTIFIED ? { provider: 'claude-cli', model: 'claude-haiku-4-5-20251001' } : { provider: 'deepseek', model: 'deepseek-flash' },
@@ -220,7 +227,9 @@ async function apiRoute(req, res, p, q) {
     case 'POST /api/halt/hard': S.halt = { mode: 'hard', by: 'Sam Owner', at: now(), why: B.why || null }; emit('halt'); return ok(S.halt);
     case 'POST /api/halt/resume': S.halt = { mode: 'running' }; emit('halt'); return ok(S.halt);
     case 'GET /api/cadence': return ok(S.cadence);
-    case 'POST /api/cadence/default': S.cadence.dispatcherTickMin = Number(B.minutes); emit('cadence'); return ok();
+    case 'POST /api/cadence/default': if (B.minutes != null) S.cadence.dispatcherTickMin = Number(B.minutes); if (B.cooldown != null) S.cadence.defaultCooldownMin = Number(B.cooldown); if (B.maxPerTick != null) S.cadence.maxPerTick = Number(B.maxPerTick); emit('cadence'); return ok();
+    case 'POST /api/cadence/bounds': { const b = S.cadence.bounds, t = S.cadence.tempo; for (const k of ['tickMin', 'cooldownMin', 'maxWakesPerHour', 'maxWakesPerDay', 'quietHours']) if (B[k] !== undefined) b[k] = B[k]; for (const k of ['mode', 'autoExpireMin', 'minChangeIntervalMin']) if (B[k] !== undefined) t[k] = B[k]; emit('cadence'); return ok(); }
+    case 'POST /api/cadence/end-temporary': S.cadence.temporary = null; S.cadence.effective = Object.assign({}, S.cadence.effective, { tickMin: S.cadence.dispatcherTickMin, source: 'base' }); emit('cadence'); return ok();
     case 'POST /api/cadence/seat': { const s = S.cadence.seats[B.seat]; if (!s) return J(res, 400, { ok: false, error: 'no seat ' + B.seat }); if (B.cooldown != null) s.cooldownMin = { value: Number(B.cooldown) }; if (B.priority != null) s.priority = { value: Number(B.priority) }; if (B.wakeOnInbox != null) s.wakeOnInbox = { value: B.wakeOnInbox }; if (B.wakeOnOwner != null) s.wakeOnOwnerMessage = { value: B.wakeOnOwner }; emit('cadence'); return ok(); }
     case 'GET /api/panels': return ok({ panels: panelList() });
     case 'GET /api/governance-log': return ok({ entries: [{ at: ago(600), by: 'Sam Owner', event: 'preset', preset: 'gate-money-people' }] });
