@@ -113,6 +113,10 @@ If the update changed one of the hidden files (for example the `company.json` te
 
 ## Console
 
+The console **is** the UI. StarNet runs underneath as a headless engine (patch 0010, `STARNET_HEADLESS=1`, written by
+`setup-station.sh`): its station page is not served, only its API, which the console drives. `setup-station.sh --start`
+installs the console as its own user unit (`<service>-console.service`) next to the station.
+
 The owner console is a local web app: `console/server.js` (Node 22, no dependencies) serves the UI from `console/ui/`
 and a JSON API over the company's own tools (`docs/CONSOLE-API.md`).
 

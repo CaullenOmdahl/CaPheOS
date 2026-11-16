@@ -89,6 +89,7 @@ XDG_DATA_HOME=$ROOT/.starnet-data
 PORT=$PORT
 STARNET_API_TOKEN=$(cat secrets/station-token)
 STARNET_HOST=127.0.0.1
+STARNET_HEADLESS=1
 TZ=$ZONE
 EOF
 )
@@ -118,7 +119,10 @@ if [[ "${1:-}" == "--start" ]]; then
     # the idempotent onboarding steps that need a live station (candidate default, ops registrations, first backup,
     # the owner-gate batch, guardrails apply); non-fatal: onboard.js --check shows what is left
     node company/tools/onboard.js --resume || echo "onboarding steps left: node company/tools/onboard.js --check"
-    echo "station up on http://127.0.0.1:$PORT"
+    # the console is the UI (the station runs headless): start it as its own unit and print where it is
+    systemctl --user enable --now "$SVC-console.service" || echo "console not started (non-fatal): scripts/console.sh"
+    echo "station up on http://127.0.0.1:$PORT (headless engine; the UI is the console)"
+    echo "console: http://127.0.0.1:$((PORT + 100))/login?token=\$(cat secrets/console-token)"
   else
     node company/tools/onboard.js --record station-answers failed --note "GET /api/cron did not answer within ${WAIT}s" >/dev/null 2>&1 || true
     echo "station did NOT answer GET /api/cron within ${WAIT}s; see .starnet-data/station.log" >&2; exit 1

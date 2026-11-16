@@ -1,0 +1,23 @@
+# 0010 — headless station: the CaPheOS console is the UI (CaPheOS).
+# Status: APPLIED by setup-station.sh (active only when STARNET_HEADLESS=1, which setup-station.sh writes)
+# Why: the station page is replaced by the console; an open stale page pushes its own crew roster and answers agent calls.
+# With STARNET_HEADLESS=1 serveStatic answers 410 for every non-API path; all /api routes are unchanged.
+# Apply: git -C starnet apply --3way ../company/patches/0010-headless-station.diff   Revert: same with -R
+--- a/sidecar/index.js
++++ b/sidecar/index.js
+@@ -31949,7 +31949,15 @@
+     ') — only a process of this OS user receives it. Set STARNET_TRUST_LOCAL_PEERS=1 only if your own browser is being refused.');
+ }
+ 
++// HEADLESS (CaPheOS patch 0010): the owner's UI is the CaPheOS console, which drives this engine through /api. With
++// STARNET_HEADLESS=1 the station page and its assets are not served at all, so no stale page can push its own crew or
++// answer agent calls; every /api route is unchanged.
++const HEADLESS = process.env.STARNET_HEADLESS === '1';
+ async function serveStatic(req, res) {
++  if (HEADLESS) {
++    res.writeHead(410, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
++    return res.end('This station runs headless. Use the CaPheOS console (scripts/console.sh); the engine API is unchanged.\n');
++  }
+   try {
+     const url = decodeURIComponent((req.url || '/').split('?')[0]);
+     const rel = (url === '/' ? 'index.html' : url.replace(/^\/+/, ''));
