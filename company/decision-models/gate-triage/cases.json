@@ -1,0 +1,22 @@
+{
+  "_doc": "Expected actions for gate-triage. node company/tools/decide.js test gate-triage (exit 1 on a miss). Cases see the closed param defaults (maxSpendUsd 0) unless they set params.",
+  "cases": [
+    { "name": "no facts escalates", "input": { "category": "tools" }, "expect": "escalate" },
+    { "name": "missing category escalates", "input": { "reversible": true }, "expect": "escalate" },
+    { "name": "fixed gate escalates even with good facts", "input": { "category": "access", "reversible": true, "recurring": false, "seatHistoryOk": true }, "expect": "escalate" },
+    { "name": "hiring always escalates", "input": { "category": "hiring", "reversible": true, "recurring": false, "seatHistoryOk": true }, "expect": "escalate" },
+    { "name": "spend at the closed default threshold escalates", "input": { "category": "spend", "amountUsd": 1, "recurring": false, "vendorKnown": true, "reversible": true }, "expect": "escalate" },
+    { "name": "small known spend under an owner threshold proceeds", "params": { "maxSpendUsd": 25 }, "input": { "category": "spend", "amountUsd": 12, "recurring": false, "vendorKnown": true, "reversible": true }, "expect": "proceed-notify" },
+    { "name": "spend at the threshold escalates", "params": { "maxSpendUsd": 25 }, "input": { "category": "spend", "amountUsd": 25, "recurring": false, "vendorKnown": true, "reversible": true }, "expect": "escalate" },
+    { "name": "recurring spend escalates", "params": { "maxSpendUsd": 25 }, "input": { "category": "spend", "amountUsd": 5, "recurring": true, "vendorKnown": true, "reversible": true }, "expect": "escalate" },
+    { "name": "unknown vendor escalates", "params": { "maxSpendUsd": 25 }, "input": { "category": "spend", "amountUsd": 5, "recurring": false, "vendorKnown": false, "reversible": true }, "expect": "escalate" },
+    { "name": "irreversible escalates", "params": { "maxSpendUsd": 25 }, "input": { "category": "spend", "amountUsd": 5, "recurring": false, "vendorKnown": true, "reversible": false }, "expect": "escalate" },
+    { "name": "a reversible tool change by a seat in good standing proceeds", "input": { "category": "tools", "reversible": true, "recurring": false, "seatHistoryOk": true }, "expect": "proceed-notify" },
+    { "name": "a tool change by a seat with open corrections escalates", "input": { "category": "tools", "reversible": true, "recurring": false, "seatHistoryOk": false }, "expect": "escalate" },
+    { "name": "a tool change that costs money above the threshold escalates", "input": { "category": "tools", "amountUsd": 3, "reversible": true, "recurring": false, "seatHistoryOk": true }, "expect": "escalate" },
+    { "name": "external to a known recipient proceeds", "input": { "category": "external", "externalRecipientKnown": true, "reversible": true, "recurring": false, "seatHistoryOk": true }, "expect": "proceed-notify" },
+    { "name": "external to a new recipient escalates", "input": { "category": "external", "externalRecipientKnown": false, "reversible": true, "recurring": false, "seatHistoryOk": true }, "expect": "escalate" },
+    { "name": "wrong-typed fact counts as missing", "input": { "category": "tools", "reversible": "yes", "recurring": false, "seatHistoryOk": true }, "expect": "escalate" },
+    { "name": "unknown category escalates", "input": { "category": "mystery", "reversible": true, "recurring": false, "seatHistoryOk": true }, "expect": "escalate" }
+  ]
+}

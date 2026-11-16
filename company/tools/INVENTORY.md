@@ -19,6 +19,7 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/connector-scope.js` | is every StarNet connector still inside the scope the risk owner's inventory records for it? | risk | `--selftest` | `exit` `--json` `--selftest` | station-token |
 | `company/tools/console-panel.js` | company-made panels for the owner console: check them, install them, and resolve their data. | tools | `selftest` | `list` `validate` `add` `approve` `reject` `remove` `hide` `unhide` `render` `selftest` | station-token |
 | `company/tools/corrections.js` | 1-on-1s: a short, written correction for a habit that keeps coming back, shown to that person on | people | `selftest` | `tick` `list` `show` `block` `add` `edit` `recur` `retire` `selftest` | — |
+| `company/tools/decide.js` | decision models: deterministic, versioned, logged, replayable rules that turn observed state into an action. | risk | `selftest` / `--selftest` | `list` `show` `eval` `replay` `test` `promote` `set-param` `register` `selftest` | — |
 | `company/tools/default-branch-watch.js` | the GitHub-side tripwire for the one rule about GitHub: nothing lands on a repository's default | risk | `selftest` | `tick` `status` `baseline` `selftest` | — |
 | `company/tools/dispatch.js` | wakes the agent who owns open work. | tools | `--selftest` | `--dry-run` `--selftest` | station-token |
 | `company/tools/dossier.js` | keep every agent's StarNet dossier (identity.md, purpose.md, context.md, operating-manual.md) complete | people | — | `check` `sync` | — |
@@ -69,6 +70,7 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/workspace-modes.sh` | the station's own files must not be readable by anyone but the user the station runs as. | risk | `--selftest` | `--check` `--fix` `--selftest` | — |
 | `company/tools/lib/company.js` | the one place every CaPheOS tool learns who the company is, where things live, and who holds a seat. | tools | — | library (require) | station-token |
 | `company/tools/lib/core-loop.js` | small time helpers shared by the core-loop tools (dispatch, handoff-status, handoff-archive). | tools | — | library (require) | — |
+| `company/tools/lib/decision.js` | decision models: a deterministic function from observed state to a recommended action. No LLM, no code. | risk | via decide.js selftest | library (require) | — |
 | `company/tools/lib/governance.js` | how a tool asks "may the company do this alone?" and acts on the answer. | ceo | — | library (require) | — |
 | `company/tools/lib/guardrails.js` | helpers for the guardrail switches, shared by guardrails.js and the tools that enforce them. | risk | — | library (require) | — |
 | `company/tools/lib/modules.js` | the runtime side of core modules: enabled list, the dispatcher tick hook, the console HTTP mount. | tools | — | library (require) | — |

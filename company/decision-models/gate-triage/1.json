@@ -1,0 +1,39 @@
+{
+  "id": "gate-triage",
+  "version": "1",
+  "title": "Owner-gate triage",
+  "_doc": "Used by lib/governance.decide() for a category the owner set to 'triage'. proceed-notify = the act goes ahead and the owner is told (like notify); escalate = it waits for the owner (like approve). Conservative: only small, reversible, non-recurring acts with known counterparts pass. Spend passes only under the owner-set maxSpendUsd, which ships at 0 (nothing passes). Fixed owner gates never reach this model. docs/DECISION-MODELS.md.",
+  "mode": "shadow",
+  "actions": ["proceed-notify", "escalate"],
+  "inputs": {
+    "category": { "type": "string", "required": true, "doc": "the self-governance category" },
+    "amountUsd": { "type": "number", "doc": "money this act commits, in USD" },
+    "recurring": { "type": "boolean", "doc": "the cost or act repeats on its own" },
+    "vendorKnown": { "type": "boolean", "doc": "the vendor is one the company already pays" },
+    "seatHistoryOk": { "type": "boolean", "doc": "the deciding seat has no open correction or recent revert in this area" },
+    "reversible": { "type": "boolean", "doc": "the act can be undone fully by the company" },
+    "externalRecipientKnown": { "type": "boolean", "doc": "an outbound act goes to a recipient already on the allowlist or in prior correspondence" },
+    "summary": { "type": "string", "sensitive": true, "doc": "the act in one line (not used by rules; kept out of the log)" }
+  },
+  "params": {
+    "maxSpendUsd": { "type": "number", "default": 0, "doc": "spend strictly below this may proceed-notify; 0 = no spend passes. Set by the owner: decide.js set-param gate-triage maxSpendUsd <n> --by <owner>" }
+  },
+  "scoring": [
+    { "id": "reversible", "when": { "field": "reversible", "op": "eq", "value": true }, "weight": 1 },
+    { "id": "one-off", "when": { "field": "recurring", "op": "eq", "value": false }, "weight": 1 },
+    { "id": "known-vendor", "when": { "field": "vendorKnown", "op": "eq", "value": true }, "weight": 1 },
+    { "id": "seat-ok", "when": { "field": "seatHistoryOk", "op": "eq", "value": true }, "weight": 1 }
+  ],
+  "rules": [
+    { "id": "fixed-gate", "when": { "field": "category", "op": "in", "value": ["access", "ownership", "commitment", "spendBeyondCap"] }, "action": "escalate", "why": "a fixed owner gate is always the owner's" },
+    { "id": "people-and-packs", "when": { "field": "category", "op": "in", "value": ["hiring", "release", "budget", "packs"] }, "action": "escalate", "why": "people, budget and new lines of business stay with the owner" },
+    { "id": "not-reversible", "when": { "not": { "field": "reversible", "op": "eq", "value": true } }, "action": "escalate", "why": "not known to be reversible" },
+    { "id": "recurring", "when": { "not": { "field": "recurring", "op": "eq", "value": false } }, "action": "escalate", "why": "recurring, or not known to be a one-off" },
+    { "id": "over-threshold", "when": { "field": "amountUsd", "op": "gte", "param": "maxSpendUsd" }, "action": "escalate", "why": "the amount is at or above the owner's triage threshold" },
+    { "id": "small-known-spend", "when": { "all": [ { "field": "category", "op": "eq", "value": "spend" }, { "field": "amountUsd", "op": "exists" }, { "field": "vendorKnown", "op": "eq", "value": true } ] }, "action": "proceed-notify", "why": "small one-off reversible spend to a known vendor, under the owner's threshold" },
+    { "id": "spend-other", "when": { "field": "category", "op": "eq", "value": "spend" }, "action": "escalate", "why": "spend without a known vendor or a stated amount" },
+    { "id": "external-known", "when": { "all": [ { "field": "category", "op": "eq", "value": "external" }, { "field": "externalRecipientKnown", "op": "eq", "value": true }, { "field": "seatHistoryOk", "op": "eq", "value": true } ] }, "action": "proceed-notify", "why": "reversible outbound act to a known recipient by a seat in good standing" },
+    { "id": "routine-change", "when": { "all": [ { "field": "category", "op": "in", "value": ["models", "tools", "schedules", "dashboard"] }, { "field": "seatHistoryOk", "op": "eq", "value": true } ] }, "action": "proceed-notify", "why": "reversible one-off change by a seat in good standing" }
+  ],
+  "default": { "action": "escalate", "why": "nothing shows this is safe to do alone" }
+}

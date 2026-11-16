@@ -94,6 +94,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/connector-scope.js | risk | `--selftest` |
 | company/tools/console-panel.js | tools | `selftest` |
 | company/tools/corrections.js | people | `selftest` |
+| company/tools/decide.js | risk | `selftest` / `--selftest` |
 | company/tools/default-branch-watch.js | risk | `selftest` |
 | company/tools/dispatch.js | tools | `--selftest` |
 | company/tools/dossier.js | people | none |
@@ -174,6 +175,7 @@ in §5a instead.
 | `company/tools/cadence.js` | tools | `node company/tools/cadence.js selftest` |
 | `company/tools/cap-numerator.js` | finance | `node company/tools/cap-numerator.js --selftest` |
 | `company/tools/connector-scope.js` | risk | `node company/tools/connector-scope.js --selftest` |
+| `company/tools/decide.js` | risk | `node company/tools/decide.js selftest` |
 | `company/tools/dispatch.js` | tools | `node company/tools/dispatch.js --selftest` |
 | `company/tools/external-gate.js` | risk | `node company/tools/external-gate.js --selftest` |
 | `company/tools/governance.js` | ceo | `node company/tools/governance.js selftest` |

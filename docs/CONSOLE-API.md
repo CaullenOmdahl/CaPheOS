@@ -52,7 +52,8 @@ scripts/console.sh                # same as the first line
 |---|---|---|---|
 | GET | /api/governance | — | `governance.js show --json` |
 | POST | /api/governance/preset | `{ preset }` | `governance.js preset <id> --by <owner>` |
-| POST | /api/governance/set | `{ category, level }` | `governance.js set …` |
+| POST | /api/governance/set | `{ category, level }` (level auto, notify, triage or approve) | `governance.js set …` |
+| GET | /api/decision-models | — | `decide.js list --json` → `{ ok, models: [{id, title, versions, active, mode, params, cases, evaluations, lastAt, valid}] }` (Controls › Self-governance; **not wired in console/server.js yet**: one `runApi('decide.js', ['list', '--json'])` route) |
 | GET | /api/guardrails | — | `guardrails.js show --json` |
 | POST | /api/guardrails/set | `{ name, on, why? }` | `guardrails.js set <name> on\|off --by <owner>` |
 | POST | /api/guardrails/all | `{ on, confirm? }` | `on-all` / `off-all --confirm` |

@@ -48,6 +48,7 @@ decide alone. The owner sets one level per category in `company/state/governance
 |---|---|
 | **auto** | The accountable seat decides, as in the table above. |
 | **notify** | The seat decides and goes ahead; the owner gets one plain sentence on the owner channel (`company/owner/outbound.jsonl`). |
+| **triage** | A decision model decides between notify and approve: the tool passes the facts it has (amount, recurring, known vendor, reversible, the seat's record, known recipient), `company/decision-models/gate-triage` answers `proceed-notify` (goes ahead; the owner's sentence names the model, version and rule that let it through) or `escalate` (exactly as approve). In shadow mode, or if the model cannot run, it always escalates and records what it would have said. See `docs/DECISION-MODELS.md`. |
 | **approve** | The seat proposes and waits. The tool files one owner question (recommendation, and what happens if nobody answers) and stops; the same command run again after the owner answers yes goes ahead. A no stops it. |
 
 Categories and where they are enforced:
@@ -72,14 +73,19 @@ Categories and where they are enforced:
 - **Gate money** (`gate-money`): budget and spend are approve; hiring, release and external are notify; the rest auto.
 - **Autonomous** (`autonomous`): the company hires and budgets on its own; release is notify; everything else auto except packs.
 
-Every preset keeps **packs** at approve: a new line of business is the owner's call.
+Every preset keeps **packs** at approve: a new line of business is the owner's call. No preset uses **triage**: the
+owner opts a category in (`governance.js set spend triage --by <owner>`), promotes the model to live
+(`decide.js promote gate-triage 1 --mode live --by <owner>`) and, for spend, sets the threshold, which ships at 0 so no
+spend passes (`decide.js set-param gate-triage maxSpendUsd 20 --by <owner>`). The model also escalates hiring, release,
+budget and packs whatever the facts. A tool that has not been taught triage reads a triage category as approve.
 
-**Fixed gates.** Access, ownership, commitment, and spend beyond the cap are always approve. They are not categories,
+**Fixed gates.** Access, ownership, commitment, and spend beyond the cap are always approve, never triage. They are not categories,
 `governance.js` refuses to change them, and they stay approve while the `ownerGates` guardrail is on
 (`company/state/guardrails.json`).
 
 **Who changes it.** Only the owner, from their own shell: `node company/tools/governance.js set <category>
-<auto|notify|approve> --by <owner>`. Agents can read the levels (`show`, `check <category>`) and never change them.
+<auto|notify|triage|approve> --by <owner>`. Promoting a decision model and setting its thresholds are the owner's too
+(`decide.js promote|set-param --by <owner>`). Agents can read the levels (`show`, `check <category>`) and never change them.
 Each change is a line in `company/work/decisions.md` and a row in `company/state/governance-log.jsonl`, and
 `locked-watch.js` reports any edit to `governance.json` that `governance.js` did not make.
 

@@ -4,13 +4,18 @@
  * The owner sets one level per category in company/state/governance.json (company/tools/governance.js set|preset):
  *   auto     the accountable seat decides; nothing else happens
  *   notify   it decides, and the owner gets one plain sentence in company/owner/outbound.jsonl (owner-inbox.js send)
+ *   triage   a decision model (company/decision-models/gate-triage, lib/decision.js) looks at the facts the caller passes
+ *            (opts `facts`): proceed-notify behaves like notify (the owner sentence names the model, version and rule),
+ *            escalate behaves like approve. A model in shadow mode always escalates and logs what it would have done.
+ *            Never used for the fixed owner gates. Only decide() acts on triage; level() reports it only when asked.
  *   approve  it proposes and waits: an owner question goes into the owner inbox (company/pm-inbox.jsonl, the file
  *            company/tools/inbox.js reads), with a recommendation and what happens if nobody answers. The tool stops now
  *            and goes ahead on a later run, once the owner has answered yes to that question.
  *
  *   const gov = require('./lib/governance');
  *   const d = gov.decide('hiring', { by: 'Sam', summary: 'open a Sales Lead round', recommendation: 'yes: ...',
- *                                    default: 'no round is opened', ref: 'hiring:open:sales-lead-1' });
+ *                                    default: 'no round is opened', ref: 'hiring:open:sales-lead-1',
+ *                                    facts: { reversible: true, recurring: false, seatHistoryOk: true } });   // facts: for triage
  *   d -> { level, allowed, questionId?, denied?, noted? }
  *   gov.approved(ref) -> true (the owner said yes) | false (said no) | null (no answer yet, or no question)
  *   gov.level(category)  gov.guard(name)  gov.notify(text)  gov.pendingGates()
@@ -26,7 +31,8 @@ const fs = require('fs');
 const path = require('path');
 const co = require('./company');
 
-const LEVELS = ['auto', 'notify', 'approve'];
+const LEVELS = ['auto', 'notify', 'triage', 'approve'];
+const TRIAGE_MODEL = 'gate-triage';
 const rootOf = opts => path.resolve((opts && opts.root) || process.env.GOVERNANCE_ROOT || co.ROOT);
 const isLive = opts => rootOf(opts) === path.resolve(co.ROOT);
 const files = opts => {
@@ -51,12 +57,17 @@ function guard(name, opts) {
   const g = (co.readJson(f.guards, null) || co.readJson(f.guardsDefault, null) || co.readJson(FRAMEWORK_GUARDS, {}) || {}).guards || {};
   return g[name] !== false;
 }
+/* level(category, opts): 'triage' only with opts.triage (decide() and governance.js show); otherwise triage reads as approve. */
 function level(category, opts) {
-  if (opts && LEVELS.includes(opts.level)) return opts.level;
-  if (isLive(opts)) return co.gate(category);
-  const g = doc(opts);
+  const tri = !!(opts && opts.triage);
+  const g0 = () => doc(opts);
+  const fixed = () => { const g = g0(); return !!(g.fixed && g.fixed[category]); };
+  if (opts && LEVELS.includes(opts.level)) return opts.level === 'triage' && (!tri || fixed()) ? 'approve' : opts.level;
+  if (isLive(opts)) return co.gate(category, { triage: tri });
+  const g = g0();
   if (g.fixed && g.fixed[category] && guard('ownerGates', opts)) return 'approve';
   const v = g.categories && g.categories[category];
+  if (v === 'triage') return tri && !(g.fixed && g.fixed[category]) ? 'triage' : 'approve';
   return LEVELS.includes(v) ? v : 'approve';
 }
 const isOwnerName = by => { const b = String(by || '').trim().toLowerCase(); return !!b && (b === 'owner' || b === String((co.config.owner && co.config.owner.name) || '').trim().toLowerCase()); };
@@ -110,7 +121,8 @@ function fileQuestion(category, o, opts) {
     'Approval needed (' + category + '): ' + String(o.summary || 'an act in ' + category).trim().replace(/\.$/, '') + '.',
     o.recommendation ? 'Recommendation from ' + (o.by || 'the company') + ': ' + String(o.recommendation).trim() : null,
     'If you do not answer: ' + String(o.default || 'nothing happens; the company waits for you').trim(),
-    'Reply yes or no and name ' + id + '. You set this through self-governance: ' + category + ' is at "approve" (company/tools/governance.js).',
+    o.triage ? 'The triage model escalated this: ' + o.triage + '.' : null,
+    'Reply yes or no and name ' + id + '. You set this through self-governance: ' + category + ' is at "' + (o.triage ? 'triage' : 'approve') + '" (company/tools/governance.js).',
   ].filter(Boolean);
   const row = { type: 'ask', id, at: new Date().toISOString(), from: co.nameOf(co.ceo()) || 'company', about: 'governance:' + category, q: lines.join('\n'), blocking: true,
     batch: 'gate', gate: { category, ref: o.ref, by: o.by || null, summary: o.summary || null, recommendation: o.recommendation || null, default: o.default || null } };
@@ -129,19 +141,51 @@ function notify(text, opts) {
   finally { if (!isLive(opts)) { if (prev === undefined) delete process.env.OWNER_DIR; else process.env.OWNER_DIR = prev; } }
 }
 
-/* decide(category, {by, summary, recommendation, default, ref}, opts) -> {level, allowed, questionId?, denied?, noted?} */
+/* triage(category, o, opts): run the gate-triage model on the caller's facts. Any failure => escalate (fail closed). */
+function triage(category, o, opts) {
+  let r;
+  try {
+    const dm = require('./decision');
+    const input = Object.assign({}, (o && o.facts) || {}, { category, summary: o && o.summary ? String(o.summary).slice(0, 300) : undefined });
+    r = dm.evaluate(TRIAGE_MODEL, input, { root: rootOf(opts), caller: 'governance:' + category + (o && o.ref ? ':' + o.ref : '') });
+  } catch (e) { r = { action: null, error: e.message, model: { id: TRIAGE_MODEL } }; }
+  const m = r.model || {};
+  const tag = m.id + ' v' + (m.version || '?') + (m.sha ? ' (' + m.sha + ')' : '');
+  if (r.action == null) return { escalate: true, wouldBe: null, model: m, mode: r.mode, why: 'the decision model could not run (' + (r.error || 'unknown') + '), so it waits for you' };
+  if (r.mode !== 'live') return { escalate: true, wouldBe: r.action, rule: r.rule, model: m, mode: r.mode, why: tag + ' is in shadow mode; it would have said ' + r.action + ' (' + r.reason + ')' };
+  return { escalate: r.action !== 'proceed-notify', wouldBe: r.action, rule: r.rule, model: m, mode: r.mode, reason: r.reason, why: tag + ' said ' + r.action + ' (' + r.reason + ')' };
+}
+
+/* decide(category, {by, summary, recommendation, default, ref, facts?}, opts) -> {level, allowed, questionId?, denied?, noted?, triage?} */
 function decide(category, o, opts) {
   o = o || {};
-  const lv = level(category, opts);
+  let lv = level(category, Object.assign({}, opts, { triage: true }));
   const ref = String(o.ref || (category + ':' + String(o.summary || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 80)));
   if (lv === 'auto') return { level: lv, allowed: true };
+  let tri = null;
+  if (lv === 'triage') {
+    tri = triage(category, o, opts);
+    if (!tri.escalate) {
+      const who = o.by || 'The company';
+      const m = tri.model;
+      const sentence = who + ' decided to ' + String(o.summary || 'act on ' + category).trim().replace(/\.$/, '') + '. (Self-governance: ' + category + ' is set to triage, and decision model ' + m.id + ' v' + m.version + ' let this through: ' + tri.reason + '. Reply if you want it undone.)';
+      let noted = null; try { noted = notify(sentence, opts); } catch (_) {}
+      return { level: lv, allowed: true, noted: !!noted, triage: tri };
+    }
+  }
   if (lv === 'notify') {
     const who = o.by || 'The company';
     const sentence = who + ' decided to ' + String(o.summary || 'act on ' + category).trim().replace(/\.$/, '') + '. (Self-governance: ' + category + ' is set to notify, so this is done without waiting for you; reply if you want it undone.)';
     let noted = null; try { noted = notify(sentence, opts); } catch (_) {}
     return { level: lv, allowed: true, noted: !!noted };
   }
-  // approve
+  // approve, or triage that escalated
+  const res = approveFlow(category, o, ref, opts, tri);
+  res.level = lv; if (tri) res.triage = tri;
+  return res;
+}
+function approveFlow(category, o, ref, opts, tri) {
+  const lv = 'approve';
   const q = questionFor(ref, Object.assign({}, opts));
   if (q) {
     const a = answerOf(q.id, opts);
@@ -151,13 +195,14 @@ function decide(category, o, opts) {
     if (!a && !closedOrReclassified(q.id, opts)) return { level: lv, allowed: false, questionId: q.id, reason: 'waiting for the owner on ' + q.id };
     // answered with neither yes nor no, or closed: ask again
   }
-  const row = fileQuestion(category, Object.assign({}, o, { ref }), opts);
+  const row = fileQuestion(category, Object.assign({}, o, { ref, triage: tri ? tri.why : null }), opts);
   return { level: lv, allowed: false, questionId: row.id, reason: 'asked the owner: ' + row.id };
 }
 /* The refusal text a tool prints when decide() says not now. */
 function refusal(category, d) {
-  if (d.denied) return 'self-governance: the owner said no (' + d.questionId + '); ' + category + ' is at approve, so this is not done';
-  return 'self-governance: ' + category + ' is at approve, so this waits for the owner. Question ' + d.questionId + ' is in the owner inbox (company/pm-inbox.jsonl); run the same command again after the owner answers yes';
+  const lv = d.level === 'triage' ? 'triage (escalated)' : 'approve';
+  if (d.denied) return 'self-governance: the owner said no (' + d.questionId + '); ' + category + ' is at ' + lv + ', so this is not done';
+  return 'self-governance: ' + category + ' is at ' + lv + ', so this waits for the owner. Question ' + d.questionId + ' is in the owner inbox (company/pm-inbox.jsonl); run the same command again after the owner answers yes';
 }
 
-module.exports = { LEVELS, level, guard, decide, approved, pendingGates, notify, refusal, isOwnerName, files, doc, questionFor, answerOf, verdict };
+module.exports = { LEVELS, TRIAGE_MODEL, triage, level, guard, decide, approved, pendingGates, notify, refusal, isOwnerName, files, doc, questionFor, answerOf, verdict };

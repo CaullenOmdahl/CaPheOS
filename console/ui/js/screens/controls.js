@@ -15,7 +15,9 @@ const CAT_SEAT = { hiring: 'People', release: 'People', budget: 'Finance', spend
 const GUARD_NAMES = { ownerGates: 'Owner gates', spendCap: 'Spend cap', externalActions: 'External actions', harnessSelfEdit: 'Harness self-edit',
   defaultBranch: 'Default branch', secrets: 'Secrets', localComputer: 'Local computer', privilegedShell: 'Privileged shell', promptInjection: 'Injection tripwire', halt: 'Halt' };
 const CONFIRM = 'I understand there are no guardrails';
-const LEVELS = [['auto', 'Crew decides'], ['notify', 'Decides, tells you'], ['approve', 'You approve']];
+const LEVELS = [['auto', 'Crew decides'], ['notify', 'Decides, tells you'], ['triage', 'Model triages'], ['approve', 'You approve']];
+// Triage is offered only for self-governed categories (never the fixed owner gates); the server's /governance/set passes
+// the level to governance.js, which accepts it. Decision models: GET /api/decision-models -> decide.js list --json.
 
 export async function render(root, ctx) {
   const { app } = ctx;
@@ -68,12 +70,33 @@ export async function render(root, ctx) {
         (d.categories || []).map(c => h('tr', null,
           h('th', { scope: 'row' }, h('span', { class: 'label strong', style: 'display:block' }, CAT_NAMES[c.category] || c.category), h('span', { class: 'caption muted' }, c.what || '')),
           h('td', { class: 'muted' }, CAT_SEAT[c.category] || '—'),
-          LEVELS.map(([l]) => h('td', null, h('button', { type: 'button', class: 'level-btn', 'aria-pressed': c.level === l ? 'true' : 'false', 'aria-label': (CAT_NAMES[c.category] || c.category) + ': ' + l,
+          LEVELS.map(([l]) => l === 'triage' && (d.fixed || []).some(f => f.category === c.category) ? h('td', { class: 'subtle' }, '—') : h('td', null, h('button', { type: 'button', class: 'level-btn', 'aria-pressed': c.level === l ? 'true' : 'false', 'aria-label': (CAT_NAMES[c.category] || c.category) + ': ' + l,
             onclick: () => c.level !== l && act('/governance/set', { category: c.category, level: l }, (CAT_NAMES[c.category] || c.category) + ': ' + l) }, c.level === l ? '●' : '○')))))
           .concat([h('tr', { style: 'background:var(--bg-sunken)' },
             h('th', { scope: 'row' }, h('span', { class: 'label strong', style: 'display:block' }, 'Access, ownership, commitments, spend beyond the cap'),
               h('span', { class: 'caption muted' }, 'The four owner gates. Loosened only by switching off the Owner gates guardrail' + (d.ownerGatesGuardrail ? ' (now ' + d.ownerGatesGuardrail + ')' : '') + '.')),
-            h('td', { class: 'muted' }, '—'), h('td', { class: 'subtle' }, '—'), h('td', { class: 'subtle' }, '—'), h('td', { class: 'label strong' }, 'Always'))])));
+            h('td', { class: 'muted' }, '—'), h('td', { class: 'subtle' }, '—'), h('td', { class: 'subtle' }, '—'), h('td', { class: 'subtle' }, '—'), h('td', { class: 'label strong' }, 'Always'))])),
+      modelsHost);
+    drawModels();
+  }
+
+  // Decision models: deterministic rules the company runs instead of an LLM (docs/DECISION-MODELS.md). Read-only here;
+  // the owner promotes a version or sets a threshold from their shell (decide.js promote|set-param --by owner).
+  const modelsHost = h('section', { 'aria-labelledby': 'dmodels', class: 'stack-14' });
+  async function drawModels() {
+    const head = [h('h2', { id: 'dmodels', class: 'h4' }, 'Decision models'),
+      h('p', { class: 'body-s muted', style: 'max-width:720px' }, 'Rules, not prompts: each one turns facts into an action, is versioned and tested, and logs every evaluation. A category at “Model triages” asks gate-triage; in shadow mode it always asks you and records what it would have done. Promote or set thresholds with decide.js promote|set-param --by owner.')];
+    let d;
+    try { d = await api('/decision-models'); }
+    catch (e) { return fill(modelsHost, head, h('p', { class: 'caption muted' }, e.status === 404 ? 'Not wired in this console yet (GET /api/decision-models runs decide.js list --json).' : 'Could not load decision models: ' + e.message)); }
+    const rows = d.models || [];
+    const params = p => Object.entries(p || {}).map(([k, v]) => k + ' ' + v).join(', ') || '—';
+    fill(modelsHost, head, rows.length ? table(['Model', 'Version', 'Mode', 'Thresholds', 'Cases', 'Evaluations', 'Last'], rows.map(m => h('tr', null,
+      h('th', { scope: 'row' }, h('span', { class: 'label strong', style: 'display:block' }, m.title || m.id), h('span', { class: 'mono-s subtle' }, m.id)),
+      h('td', { class: 'num' }, 'v' + (m.active || '?') + (m.versions && m.versions.length > 1 ? ' of ' + m.versions.join(', ') : '')),
+      h('td', null, m.valid === false ? Tag('Invalid', { variant: 'status', status: 'danger' }) : Tag(m.mode === 'live' ? 'Live' : 'Shadow', { variant: 'status', status: m.mode === 'live' ? 'online' : 'neutral' })),
+      h('td', { class: 'mono-s' }, params(m.params)), h('td', { class: 'num' }, String(m.cases || 0)), h('td', { class: 'num' }, String(m.evaluations || 0)),
+      h('td', { class: 'caption muted' }, m.lastAt ? String(m.lastAt).replace('T', ' ').slice(0, 16) : '—'))), { minWidth: 720 }) : empty('No decision models.'));
   }
 
   function drawGuards(d) {

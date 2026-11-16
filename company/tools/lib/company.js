@@ -82,16 +82,19 @@ function localParts(date) {
 }
 
 /* Self-governance: how much the company may decide alone, per category (company/state/governance.json, defaults in
- * company/defaults/state/governance.json). Returns 'auto' | 'notify' | 'approve'. Unknown category or unreadable file
- * => 'approve' (fail closed). The four owner gates are always 'approve'. */
+ * company/defaults/state/governance.json). Returns 'auto' | 'notify' | 'triage' | 'approve'. Unknown category or
+ * unreadable file => 'approve' (fail closed). The four owner gates are always 'approve' and never 'triage'.
+ * 'triage' (a decision model decides between notify and approve: lib/governance.js decide) is returned only to a caller
+ * that passes { triage: true }; every other caller sees 'approve' for it, so a tool that does not know triage stays closed. */
 const GOV_FILE = p('company', 'state', 'governance.json');
 const GOV_DEFAULT = p('company', 'defaults', 'state', 'governance.json');
-const LEVELS = ['auto', 'notify', 'approve'];
+const LEVELS = ['auto', 'notify', 'triage', 'approve'];
 function governance() { return readJson(GOV_FILE, null) || readJson(GOV_DEFAULT, {}) || {}; }
-function gate(category) {
+function gate(category, opts) {
   const g = governance();
   if (g.fixed && g.fixed[category] && guard('ownerGates')) return 'approve';
   const v = g.categories && g.categories[category];
+  if (v === 'triage') return opts && opts.triage && !(g.fixed && g.fixed[category]) ? 'triage' : 'approve';
   return LEVELS.includes(v) ? v : 'approve';
 }
 
@@ -114,5 +117,5 @@ function guard(name) {
 }
 
 module.exports = { ROOT, p, config, readJson, STATION_URL, TZ, SECRETS_DIR, secret, stationToken, LOOPS_FILE, crew,
-  holds, ceo, seatFor, nameOf, localParts, GOV_FILE, governance, gate, HALT_FILE, haltState, halted,
+  holds, ceo, seatFor, nameOf, localParts, GOV_FILE, LEVELS, governance, gate, HALT_FILE, haltState, halted,
   GUARD_FILE, guardrails, guard };

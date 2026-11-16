@@ -2,13 +2,14 @@
 /* governance.js — the owner's dial: how much the company decides alone, per category.
  *
  *   node company/tools/governance.js show [--json]                       every category, its level, the fixed owner gates
- *   node company/tools/governance.js check <category>                    prints auto | notify | approve (exit 0)
- *   node company/tools/governance.js set <category> <auto|notify|approve> --by <owner>
+ *   node company/tools/governance.js check <category>                    prints auto | notify | triage | approve (exit 0)
+ *   node company/tools/governance.js set <category> <auto|notify|triage|approve> --by <owner>
  *   node company/tools/governance.js preset <approve-everything|gate-money-people|gate-money|autonomous> --by <owner>
  *   node company/tools/governance.js selftest
  *
- * Levels: auto = the accountable seat decides; notify = it decides and the owner is told the same day; approve = it
- * proposes and waits for the owner (lib/governance.js decide()). The four fixed owner gates (access, ownership,
+ * Levels: auto = the accountable seat decides; notify = it decides and the owner is told the same day; triage = the
+ * gate-triage decision model (docs/DECISION-MODELS.md) picks notify or approve from the caller's facts; approve = it
+ * proposes and waits for the owner (lib/governance.js decide()). No preset uses triage: the owner opts a category in. The four fixed owner gates (access, ownership,
  * commitment, spend beyond the cap) are always approve and cannot be set here.
  *
  * Only the owner sets: --by must be the owner's name (company/company.json owner.name) or "owner", and the command must
@@ -95,7 +96,7 @@ function preset(id, by, opts) {
 }
 function show(opts) {
   const d = load(opts);
-  const cats = Object.keys(d.categories || {}).map(k => ({ category: k, level: gov.level(k, opts), what: (d._categories || {})[k] || '' }));
+  const cats = Object.keys(d.categories || {}).map(k => ({ category: k, level: gov.level(k, Object.assign({}, opts, { triage: true })), what: (d._categories || {})[k] || '' }));
   const ownerGates = gov.guard('ownerGates', opts);
   return { preset: d.preset || presetOf(d), presetLabel: ((d.presets || {})[d.preset] || {}).label || 'Custom', categories: cats,
     fixed: Object.keys(d.fixed || {}).map(k => ({ category: k, level: gov.level(k, opts) })), ownerGatesGuardrail: ownerGates ? 'on' : 'off',
@@ -179,6 +180,42 @@ function selftest() {
     fs.appendFileSync(path.join(F.ownerDir, 'inbound.jsonl'), JSON.stringify({ id: 'm1', at: 'x', from: 'owner', text: 'ok (' + d.questionId + ')', re: d.questionId }) + '\n');
     assert.strictEqual(gov.approved('budget:x', opts), true);
   });
+  // triage: a decision model picks notify or approve (lib/decision.js, company/decision-models/gate-triage)
+  const dm = require('./lib/decision');
+  const facts = { reversible: true, recurring: false, seatHistoryOk: true };
+  t('triage: set by the owner; callers that do not ask for triage read it as approve; fixed gates refuse it', () => {
+    assert.ok(set('tools', 'triage', owner, opts).ok);
+    assert.strictEqual(gov.level('tools', opts), 'approve'); assert.strictEqual(gov.level('tools', Object.assign({ triage: true }, opts)), 'triage');
+    assert.strictEqual(show(opts).categories.find(c => c.category === 'tools').level, 'triage');
+    assert.strictEqual(set('access', 'triage', owner, opts).code, 2);
+    assert.ok(Object.values(load(opts).presets).every(p => !Object.values(p.categories).includes('triage')));
+  });
+  t('triage in shadow mode (the shipped default): escalates like approve, says what it would have done, logs the evaluation', () => {
+    const d = gov.decide('tools', { by: 'Sam', summary: 'apply tool change c-1', ref: 'harness:c-1', facts }, opts);
+    assert.strictEqual(d.allowed, false); assert.strictEqual(d.level, 'triage'); assert.strictEqual(d.triage.wouldBe, 'proceed-notify'); assert.strictEqual(d.triage.mode, 'shadow');
+    assert.ok(/shadow mode; it would have said proceed-notify/.test(gov.pendingGates(opts).find(q => q.ref === 'harness:c-1').q));
+    assert.strictEqual(dm.logRows('gate-triage', opts).length, 1);
+  });
+  t('triage live: proceed-notify goes ahead and the owner sentence names the model, version and rule; escalate files a question', () => {
+    assert.ok(dm.promote('gate-triage', '1', { by: owner, mode: 'live' }, opts).ok);
+    const d = gov.decide('tools', { by: 'Sam', summary: 'apply tool change c-2', ref: 'harness:c-2', facts }, opts);
+    assert.ok(d.allowed && d.noted, JSON.stringify(d));
+    const sent = fs.readFileSync(path.join(F.ownerDir, 'outbound.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.ok(/set to triage, and decision model gate-triage v1 let this through: routine-change/.test(sent[sent.length - 1].text), sent[sent.length - 1].text);
+    const e = gov.decide('tools', { by: 'Sam', summary: 'apply tool change c-3', ref: 'harness:c-3', facts: { reversible: false } }, opts);
+    assert.strictEqual(e.allowed, false); assert.ok(e.questionId); assert.strictEqual(e.triage.wouldBe, 'escalate');
+    const n = gov.decide('tools', { by: 'Sam', summary: 'apply tool change c-4', ref: 'harness:c-4' }, opts);   // no facts
+    assert.strictEqual(n.allowed, false);
+  });
+  t('triage fails closed when the model cannot run', () => {
+    const tri = gov.triage('tools', { facts }, Object.assign({}, opts));
+    assert.strictEqual(tri.escalate, false);
+    const mdir = path.join(T, 'company', 'decision-models', 'gate-triage'); fs.mkdirSync(mdir, { recursive: true });
+    fs.writeFileSync(path.join(mdir, '1.json'), '{ not json');
+    const d = gov.decide('tools', { by: 'Sam', summary: 'apply tool change c-5', ref: 'harness:c-5', facts }, opts);
+    assert.strictEqual(d.allowed, false); assert.ok(/could not run/.test(d.triage.why));
+    fs.rmSync(mdir, { recursive: true, force: true });
+  });
   if (prevProv === undefined) delete process.env.PROVENANCE_ROOT; else process.env.PROVENANCE_ROOT = prevProv;
   if (prevAgent !== undefined) process.env.GOVERNANCE_ASSUME_AGENT = prevAgent;
   fs.rmSync(T, { recursive: true, force: true });
@@ -204,8 +241,8 @@ if (require.main === module) {
     console.log('Presets: ' + s.presets.map(p => p.id).join(', '));
     process.exit(0);
   }
-  if (cmd === 'check') { if (!pos[0]) done({ ok: false, error: 'check <category>' }); console.log(gov.level(pos[0])); process.exit(0); }
-  if (cmd === 'set') { if (pos.length !== 2) done({ ok: false, error: 'set <category> <auto|notify|approve> --by <owner>' }); done(set(pos[0], pos[1], flag('by'))); }
+  if (cmd === 'check') { if (!pos[0]) done({ ok: false, error: 'check <category>' }); console.log(gov.level(pos[0], { triage: true })); process.exit(0); }
+  if (cmd === 'set') { if (pos.length !== 2) done({ ok: false, error: 'set <category> <auto|notify|triage|approve> --by <owner>' }); done(set(pos[0], pos[1], flag('by'))); }
   if (cmd === 'preset') { if (pos.length !== 1) done({ ok: false, error: 'preset <id> --by <owner>' }); done(preset(pos[0], flag('by'))); }
   done({ ok: false, error: 'commands: show [--json], check <category>, set <category> <level> --by <owner>, preset <id> --by <owner>, selftest' });
 }
