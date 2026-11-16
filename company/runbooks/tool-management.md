@@ -174,7 +174,8 @@ risk-reviewed action, and creating or reissuing a credential is an owner gate. A
   `scopes.secret(party, name)`, which refuses a write-scope key to a caller asking for read; `scopes.js check` (daily
   from its tick) fixes modes and emits rotation-due events.
 - **Core-module tools** (scopes, verify, evidence, reports, ledger; `modules/<id>/`): absent until
-  `module.js enable <id> --by owner`, which copies them here and adds their §5a/§7b rows from `modules/<id>/rows.md`.
+  `module.js enable <id> --by owner`, which copies them here and writes their §5a/§7b rows from `modules/<id>/rows.md` to the instance-local
+  `company/state/inventory-local.md` (gitignored; tool-inventory-check.js reads it with this runbook).
   Their shared library is `company/tools/lib/settle.js` (on top of `lib/modkit.js`). Every send they make (report,
   invoice, payout, a verify http check) goes through `external-gate.js`, sends with an idempotency key derived from
   what is sent (`--idem`; a retry is answered duplicate, exit 4, never sent twice); their limits ship closed (`ledger` sends no

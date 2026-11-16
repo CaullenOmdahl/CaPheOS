@@ -8,9 +8,13 @@
 # framework is developed in a separate, unfounded checkout. In an instance this script:
 #   1. disables pushing: every remote's push URL becomes "no-push://capheos-instance" (fetch/pull still work);
 #   2. installs .git/hooks/pre-commit and pre-push that refuse in a founded checkout;
-#   3. hides the tracked files founding and module enables change (company.json, CHARTER.md, the inventory, ...)
-#      with `git update-index --skip-worktree`, so they never show as changes to commit;
-#   4. lists files a running company adds next to framework files (module tools copied into company/tools/)
+#   3. moves module rows an older module.js wrote into the tracked INVENTORY.md / tool-management.md into the
+#      instance-local company/state/inventory-local.md and restores those two files to HEAD (module.js migrate-rows),
+#      so a framework `git pull` stays clean;
+#   4. hides, up front, the tracked files a company owns (OWNED below: company.json, CHARTER.md, competence-policy.json,
+#      model-policy.json) and any other tracked file that has changed, with `git update-index --skip-worktree`, so they
+#      never show as changes to commit (console Setup reruns this after each write to a tracked file);
+#   5. lists files a running company adds next to framework files (module tools copied into company/tools/)
 #      in .git/info/exclude — local only, never committed.
 # Everything else a company creates (company/work, state, owner, hiring, roles, console panels, secrets, the station
 # and its data) is already in .gitignore. CI's clean-tree check (scripts/test.sh) is the last line: it fails if
@@ -45,12 +49,28 @@ for h in pre-commit pre-push; do
     if [[ $CHECK = 1 ]]; then echo "LEAK  no $h hook"; leaks=1; else mkdir -p "$GITDIR/hooks"; printf '%s\n' "$HOOK" > "$f"; chmod +x "$f"; echo "installed $h hook"; fi
   fi
 done
-# 3. tracked files the company changed → skip-worktree
+# 3. module rows in the tracked inventory/runbook → the instance-local file; tracked files back to HEAD
+if command -v node >/dev/null 2>&1 && [[ -f company/tools/module.js ]]; then
+  if [[ $CHECK = 1 ]]; then
+    node company/tools/module.js migrate-rows --check --json >/dev/null 2>&1 || { echo "LEAK  module rows in the tracked INVENTORY.md / tool-management.md (module.js migrate-rows moves them)"; leaks=1; }
+  else
+    mig="$(node company/tools/module.js migrate-rows --json 2>/dev/null || true)"
+    n="$(printf '%s' "$mig" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log(j.moved||0)}catch(_){console.log(0)}})')"
+    [[ "$n" != 0 ]] && echo "moved $n module row(s) to company/state/inventory-local.md; tracked inventory/runbook restored"
+  fi
+fi
+# 4. the tracked files a company owns, hidden up front, then any other tracked file the company changed → skip-worktree
+OWNED=(company/company.json company/CHARTER.md company/competence-policy.json company/model-policy.json)
+for f in "${OWNED[@]}"; do
+  [[ -n "$(git ls-files -- "$f")" ]] || continue
+  [[ "$(git ls-files -v -- "$f" | cut -c1)" == "S" ]] && continue
+  if [[ $CHECK = 1 ]]; then echo "LEAK  company-owned tracked file not hidden: $f"; leaks=1; else git update-index --skip-worktree -- "$f" && echo "hidden from git: $f"; fi
+done
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
   if [[ $CHECK = 1 ]]; then echo "LEAK  tracked file changed: $f"; leaks=1; else git update-index --skip-worktree -- "$f" && echo "hidden from git: $f"; fi
 done < <(git diff --name-only)
-# 4. untracked, not ignored → .git/info/exclude
+# 5. untracked, not ignored → .git/info/exclude
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
   if [[ $CHECK = 1 ]]; then echo "LEAK  untracked file not ignored: $f"; leaks=1; else echo "/$f" >> "$GITDIR/info/exclude"; echo "excluded locally: $f"; fi

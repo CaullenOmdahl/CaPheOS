@@ -5,7 +5,8 @@
  * Every write acts as the owner, through the same files and tools the owner would use from a shell:
  *   company/company.json (name, owner, timezone), company/model-policy.json candidateDefault (+ allowed when a new
  *   provider is connected), company/work/finance/dispatch-budget.json (dailyUsd, perAgentUsd, unmeteredProviders),
- *   company/CHARTER.md (filled from its template). Locked files record the write with provenance.js so
+ *   company/CHARTER.md (filled from its template). After a write to a tracked file in a founded checkout it reruns
+ *   scripts/instance-guard.sh so the change never shows in git status. Locked files record the write with provenance.js so
  *   locked-watch.js accepts it; each change gets one line in company/work/decisions.md.
  * The onboarding gate onboard.js filed ("hiring candidates default to a metered model with a $0 cap") is answered
  * here once the company can actually run a candidate, and the candidate-default step is recorded ok.
@@ -32,6 +33,19 @@ module.exports = function setup(deps) {
     fs.mkdirSync(path.dirname(f), { recursive: true });
     const t = f + '.tmp-' + process.pid; fs.writeFileSync(t, text); fs.renameSync(t, f);
     const p = prov(); if (p) p.wrote(f, text, 'console setup (owner)');
+    guardTracked(f);
+  }
+  // A tracked file the owner just changed (company.json, model-policy.json, CHARTER.md) must not show in git status of
+  // a founded checkout: rerun scripts/instance-guard.sh, which hides it with skip-worktree (README "What founding does").
+  function guardTracked(f) {
+    try {
+      const g = path.join(co.ROOT, 'scripts', 'instance-guard.sh');
+      if (!fs.existsSync(g) || !fs.existsSync(co.p('company', 'work', '.founded'))) return;
+      const cp = require('child_process');
+      const r = cp.spawnSync('git', ['ls-files', '--', path.relative(co.ROOT, f)], { cwd: co.ROOT, encoding: 'utf8', timeout: 10000 });
+      if (r.status !== 0 || !String(r.stdout).trim()) return;
+      cp.execFileSync('bash', [g], { cwd: co.ROOT, stdio: 'ignore', timeout: 30000 });
+    } catch (_) {}
   }
   const writeJson = (f, v) => writeFile(f, JSON.stringify(v, null, 2) + '\n');
   function decision(text) {

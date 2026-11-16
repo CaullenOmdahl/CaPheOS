@@ -16,6 +16,9 @@
  *   node company/tools/module.js limits <id> set <file> <key.path> <number> --by <owner>   # open (or close with 0) a limit:
  *                                                               # writes company/state/modules/<id>/<file> (locked-watch F)
  *   node company/tools/module.js gates [--json]                 # owner gates the enabled modules' requirements resolve to
+ *   node company/tools/module.js migrate-rows [--check] [--json] # move module rows an older module.js wrote into the
+ *                                                               # tracked INVENTORY.md / runbook into the local file and
+ *                                                               # restore those files to HEAD (instance-guard.sh runs it)
  *   node company/tools/module.js selftest | --selftest          # offline, temp root
  *
  * module.json = pack.json (company/schemas/pack.schema.json) plus:
@@ -28,8 +31,9 @@
  *
  * enable: copies each tools/<file> to company/tools/<file> (refuses to overwrite a file it did not place), creates empty
  * meter files, registers meters + tools + tick.js/http.js in company/state/locked-extra.json (entries tagged module:<id>),
- * appends the tools' rows to company/tools/INVENTORY.md and company/runbooks/tool-management.md §5a/§7b (so
- * tool-inventory-check.js stays green), adds allowlist hosts tagged "# module:<id>", adds panels, records the module in
+ * writes the tools' rows to company/state/inventory-local.md (instance-local, gitignored; sections INVENTORY / 5a / 7b,
+ * read next to company/tools/INVENTORY.md and company/runbooks/tool-management.md by tool-inventory-check.js and doctor,
+ * so the tracked files never change and a framework `git pull` stays clean), adds allowlist hosts tagged "# module:<id>", adds panels, records the module in
  * company/state/modules.json and tells the owner. Any failure rolls back. Log: company/state/modules-log.jsonl.
  * Status: absent | dormant (exists, not enabled, or enabled and doctor fails) | conformant (enabled, doctor clean).
  * Exit: 0 ok, 1 findings / refused, 2 usage.
@@ -54,6 +58,7 @@ const P = {
   allowlist: co.p('company', 'state', 'external-allowlist.txt'),
   inventory: co.p('company', 'tools', 'INVENTORY.md'),
   runbook: co.p('company', 'runbooks', 'tool-management.md'),
+  local: co.p('company', 'state', 'inventory-local.md'),
 };
 const LAYERS = ['sense', 'organize', 'act', 'verify', 'settle', 'guarantee'];
 const ID_RE = mods.ID_RE;
@@ -127,7 +132,7 @@ function checkEnabled(id, mod, reg) {
   }
   const extra = (readJson(P.lockedExtra, {}) || {}).entries || [];
   for (const m of mod.meters || []) if (!extra.some(e => e.module === id && e.p === m.p)) f.push('enabled: meter ' + m.p + ' not registered in ' + rel(P.lockedExtra));
-  const inv = (() => { try { return fs.readFileSync(P.inventory, 'utf8') + fs.readFileSync(P.runbook, 'utf8'); } catch (_) { return ''; } })();
+  const inv = [P.inventory, P.runbook, P.local].map(f => { try { return fs.readFileSync(f, 'utf8'); } catch (_) { return ''; } }).join('\n');
   for (const t of mod.tools || []) if (!inv.includes('company/tools/' + path.basename(t.file))) f.push('enabled: tool ' + path.basename(t.file) + ' has no INVENTORY/runbook row');
   if (reg.digest && pk.digest(srcDir(id)) !== reg.digest) f.push('enabled: modules/' + id + '/ changed since enable (disable and enable again to take the change)');
   return f;
@@ -170,44 +175,66 @@ function defaultRows(mod) {
 }
 function moduleRows(dir, mod) {
   const f = path.join(dir, 'rows.md');
-  if (!fs.existsSync(f)) return defaultRows(mod);
+  return fs.existsSync(f) ? parseRows(fs.readFileSync(f, 'utf8')) : defaultRows(mod);
+}
+function parseRows(text) {
   const rows = { INVENTORY: [], '5a': [], '7b': [] }; let cur = null;
-  for (const l of fs.readFileSync(f, 'utf8').split('\n')) {
+  for (const l of String(text || '').split('\n')) {
     const h = l.match(/^##\s+(INVENTORY|5a|7b)\b/i); if (h) { cur = h[1].toUpperCase() === 'INVENTORY' ? 'INVENTORY' : h[1].toLowerCase(); continue; }
     if (cur && /^\|/.test(l) && !/^\|\s*-/.test(l) && !/^\|\s*tool\s*\|/.test(l)) rows[cur].push(l.trimEnd());
   }
   return rows;
 }
-// insert rows at the end of the first table after the heading matched by headRe (or the first table of the file)
-function insertRows(text, headRe, rows, beforeRe) {
-  if (!rows.length) return text;
-  const lines = text.split('\n');
-  let i = headRe ? lines.findIndex(l => headRe.test(l)) : 0;
-  if (i < 0) throw new Error('heading ' + headRe + ' not found');
-  while (i < lines.length && !/^\|/.test(lines[i])) i++;
-  if (i >= lines.length) throw new Error('no table after ' + headRe);
-  let end = i; while (end < lines.length && /^\|/.test(lines[end])) end++;
-  let at = end;
-  if (beforeRe) { const b = lines.slice(i, end).findIndex(l => beforeRe.test(l)); if (b >= 0) at = i + b; }
-  const fresh = rows.filter(r => !lines.includes(r));
-  lines.splice(at, 0, ...fresh);
-  return lines.join('\n');
+// company/state/inventory-local.md: the instance's module rows, never tracked (company/state/ is gitignored)
+const LOCAL_HEAD = { INVENTORY: '| tool | purpose | owner | selftest | CLI | credentials |\n|---|---|---|---|---|---|', '5a': '| tool | owner | selftest |\n|---|---|---|', '7b': '| tool | owner | selftest |\n|---|---|---|' };
+function readLocal() { try { return parseRows(fs.readFileSync(P.local, 'utf8')); } catch (_) { return { INVENTORY: [], '5a': [], '7b': [] }; } }
+function writeLocal(rows) {
+  const out = ['# Instance-local tool inventory', '',
+    'Rows for the core-module tools this company enabled (written by company/tools/module.js enable/disable; read next to',
+    'company/tools/INVENTORY.md and company/runbooks/tool-management.md §5a/§7b by tool-inventory-check.js and module.js',
+    'doctor). Instance-local and gitignored, so the tracked framework files never change and `git pull` stays clean.', ''];
+  const title = { INVENTORY: '## INVENTORY (company/tools/INVENTORY.md)', '5a': '## 5a (tool-management.md §5a)', '7b': '## 7b (tool-management.md §7b selftest table)' };
+  for (const k of ['INVENTORY', '5a', '7b']) out.push(title[k], '', LOCAL_HEAD[k], ...rows[k], '');
+  fs.mkdirSync(path.dirname(P.local), { recursive: true });
+  const t = P.local + '.tmp-' + process.pid; fs.writeFileSync(t, out.join('\n')); fs.renameSync(t, P.local);
 }
-function removeRows(text, files) {
-  const pats = files.map(b => new RegExp('company/tools/' + b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(`| \\|)'));
-  return text.split('\n').filter(l => !(/^\|/.test(l) && pats.some(p => p.test(l)))).join('\n');
-}
+const rowPat = b => new RegExp('company/tools/' + b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(`| \\|)');
 function setRows(mod, dir, on) {
-  const files = (mod.tools || []).map(t => path.basename(t.file));
-  let inv = fs.readFileSync(P.inventory, 'utf8'), rb = fs.readFileSync(P.runbook, 'utf8');
-  inv = removeRows(inv, files); rb = removeRows(rb, files);
-  if (on) {
-    const rows = moduleRows(dir, mod);
-    inv = insertRows(inv, /^\| tool \| purpose/, rows.INVENTORY, /company\/tools\/lib\//);
-    rb = insertRows(rb, /^### 5a\b/, rows['5a']);
-    rb = insertRows(rb, /^### 7b\b/, rows['7b']);
+  const files = (mod.tools || []).map(t => path.basename(t.file)); const pats = files.map(rowPat);
+  const cur = readLocal(); const add = on ? moduleRows(dir, mod) : { INVENTORY: [], '5a': [], '7b': [] };
+  for (const k of Object.keys(cur)) { cur[k] = cur[k].filter(l => !pats.some(p => p.test(l))); for (const r of add[k]) if (!cur[k].includes(r)) cur[k].push(r); }
+  writeLocal(cur);
+}
+// migrate-rows: an older module.js appended module rows to the tracked INVENTORY.md / runbook, which then blocked
+// `git pull`. Move them into the local file and put the tracked files back to HEAD.
+function migrateRows(check) {
+  const git = (...a) => spawnSync('git', a, { cwd: R, encoding: 'utf8' });
+  const inGit = git('rev-parse', '--git-dir').status === 0;
+  const pats = Object.values(mods.state().enabled || {}).flatMap(x => Object.keys(x.tools || {}).map(f => rowPat(path.basename(f))));
+  const isModRow = l => /^\|/.test(l) && (/\(module [a-z0-9][a-z0-9-]*\)/.test(l) || pats.some(p => p.test(l)));
+  const local = readLocal(); const moved = [], restored = [], kept = [];
+  for (const f of [P.inventory, P.runbook]) {
+    if (!fs.existsSync(f)) continue;
+    const r = rel(f); const text = fs.readFileSync(f, 'utf8');
+    const head = inGit ? git('show', 'HEAD:' + r) : null;
+    const base = head && head.status === 0 ? new Set(head.stdout.split('\n')) : null;
+    let sec = f === P.inventory ? 'INVENTORY' : null; const out = []; let n = 0;
+    for (const l of text.split('\n')) {
+      if (f === P.runbook) { const h = l.match(/^###\s+(5a|7b)\b/); if (h) sec = h[1]; else if (/^##\s/.test(l)) sec = null; }
+      if (isModRow(l) && (!base || !base.has(l))) { n++; moved.push({ file: r, row: l }); if (sec && !local[sec].includes(l.trimEnd())) local[sec].push(l.trimEnd()); continue; }
+      out.push(l);
+    }
+    if (!n || check) continue;
+    const rest = out.join('\n');
+    if (head && head.status === 0 && rest === head.stdout) {
+      git('update-index', '--no-skip-worktree', '--', r);
+      const c = git('checkout', '--', r);
+      if (c.status !== 0) fs.writeFileSync(f, rest);
+      restored.push(r);
+    } else { fs.writeFileSync(f, rest); kept.push(r + ' (module rows removed; other local changes kept)'); }
   }
-  fs.writeFileSync(P.inventory, inv); fs.writeFileSync(P.runbook, rb);
+  if (moved.length && !check) writeLocal(local);
+  return { code: check && moved.length ? 1 : 0, out: { ok: !(check && moved.length), check: !!check, moved: moved.length, rows: moved, restored, kept, local: rel(P.local) } };
 }
 
 /* ---------- registrations ---------- */
@@ -262,7 +289,7 @@ function cmdEnable(id, by) {
   const owned = new Set(Object.values(st.enabled).flatMap(x => Object.keys(x.tools || {}).map(f => path.basename(f))));
   for (const t of mod.tools || []) { const to = path.join(P.tools, path.basename(t.file)); if (fs.existsSync(to) && !owned.has(path.basename(t.file))) return { code: 1, out: { ok: false, error: 'company/tools/' + path.basename(t.file) + ' already exists and is not a module tool; rename the module tool' } }; }
   const placed = [];
-  const backup = { inv: fs.readFileSync(P.inventory, 'utf8'), rb: fs.readFileSync(P.runbook, 'utf8') };
+  const backup = (() => { try { return fs.readFileSync(P.local, 'utf8'); } catch (_) { return null; } })();
   try {
     const tools = {};
     for (const t of mod.tools || []) { const to = path.join(P.tools, path.basename(t.file)); fs.copyFileSync(path.join(dir, t.file), to); fs.chmodSync(to, 0o755); placed.push(to); tools[t.file] = pk.sha(fs.readFileSync(to)); }
@@ -282,7 +309,7 @@ function cmdEnable(id, by) {
     writeJson(P.state, s2);
   } catch (err) {
     for (const f of placed) fs.rmSync(f, { force: true });
-    fs.writeFileSync(P.inventory, backup.inv); fs.writeFileSync(P.runbook, backup.rb);
+    if (backup === null) fs.rmSync(P.local, { force: true }); else fs.writeFileSync(P.local, backup);
     setAllowlist(id, []); setLockedExtra(id, []);
     return { code: 1, out: { ok: false, error: 'enable failed and was rolled back: ' + err.message } };
   }
@@ -381,6 +408,10 @@ function selftest() {
     fs.writeFileSync(path.join(md, 'tick.js'), "module.exports = { runWhenHalted: false, async tick({ log }) { require('fs').appendFileSync(require('path').join(__dirname, 'ticked'), 'x'); log('DEMO TICK'); return 1; } };\n");
     fs.writeFileSync(path.join(md, 'http.js'), "module.exports = { routes: [{ method: 'GET', path: 'ping/:who', auth: 'owner', handler: (req, res, ctx) => ({ ok: true, who: ctx.params.who }) }] };\n");
     const env = Object.assign({}, process.env, { CAPHEOS_ROOT: tmp });
+    // a git checkout, so the tracked framework files can be held to HEAD
+    const g = (...a) => spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { cwd: tmp, encoding: 'utf8' });
+    g('init', '-q'); fs.writeFileSync(path.join(tmp, '.gitignore'), '/company/state/*\n/company/owner/*\n/company/work/*\n'); g('add', '-A'); g('commit', '-qm', 'base');
+    const trackedClean = () => g('status', '--porcelain', '--', 'company/tools/INVENTORY.md', 'company/runbooks/tool-management.md').stdout.trim() === '' && !/^S /m.test(g('ls-files', '-v', 'company/tools/INVENTORY.md', 'company/runbooks/tool-management.md').stdout);
     const run = (...a) => { const r = spawnSync(process.execPath, [path.join(tmp, 'company', 'tools', 'module.js'), ...a, '--json'], { cwd: tmp, encoding: 'utf8', env, timeout: 120000 }); let j = null; try { j = JSON.parse(r.stdout); } catch (_) {} return { code: r.status, j, out: r.stdout + r.stderr }; };
     const js = code => spawnSync(process.execPath, ['-e', code], { cwd: tmp, encoding: 'utf8', env, timeout: 60000 });
 
@@ -411,9 +442,24 @@ function selftest() {
       const lw = require('./locked-watch.js'); const ctx = lw.context({ root: tmp, home: tmp, underStation: false, ownerShell: false });
       t('locked-watch reads locked-extra.json into its manifest, and watches the registries', ctx.manifest.some(e => e.p === 'company/work/demo/log.jsonl' && e.cls === 'A') && ['company/state/locked-extra.json', 'company/state/modules.json', 'company/state/packs.json'].every(p => ctx.manifest.some(e => e.p === p && e.cls === 'F')));
     } catch (e) { t('locked-watch context loads', false, e.message); }
-    const inv = fs.readFileSync(path.join(tmp, 'company', 'tools', 'INVENTORY.md'), 'utf8'), rb = fs.readFileSync(path.join(tmp, 'company', 'runbooks', 'tool-management.md'), 'utf8');
-    t('enable: INVENTORY row added inside the table', /\| `company\/tools\/demo-mod\.js` \|/.test(inv) && inv.indexOf('demo-mod.js') < inv.indexOf('company/tools/lib/company.js'));
-    t('enable: runbook §5a and §7b rows added', /\n\| company\/tools\/demo-mod\.js \| tools \|/.test(rb) && /\| `company\/tools\/demo-mod\.js` \| tools \| `node company\/tools\/demo-mod\.js --selftest` \|/.test(rb));
+    const loc = parseRows(fs.readFileSync(path.join(tmp, 'company', 'state', 'inventory-local.md'), 'utf8'));
+    t('enable: INVENTORY, §5a and §7b rows written to company/state/inventory-local.md', loc.INVENTORY.some(l => /\| `company\/tools\/demo-mod\.js` \| .*\(module demo\)/.test(l)) && loc['5a'].some(l => /^\| company\/tools\/demo-mod\.js \| tools \|/.test(l)) && loc['7b'].includes('| `company/tools/demo-mod.js` | tools | `node company/tools/demo-mod.js --selftest` |'), loc);
+    t('enable: tracked INVENTORY.md and runbook untouched (git status clean)', trackedClean() && !/demo-mod/.test(fs.readFileSync(path.join(tmp, 'company', 'tools', 'INVENTORY.md'), 'utf8') + fs.readFileSync(path.join(tmp, 'company', 'runbooks', 'tool-management.md'), 'utf8')));
+    // an instance enabled by an older module.js: rows in the tracked files, hidden with skip-worktree, none in the local file
+    {
+      const invF = path.join(tmp, 'company', 'tools', 'INVENTORY.md'), rbF = path.join(tmp, 'company', 'runbooks', 'tool-management.md'), locF = path.join(tmp, 'company', 'state', 'inventory-local.md');
+      const keep = fs.readFileSync(locF, 'utf8');
+      const ins = (f, re, row) => { const ls = fs.readFileSync(f, 'utf8').split('\n'); let i = ls.findIndex(l => re.test(l)); while (!/^\|/.test(ls[i])) i++; while (/^\|/.test(ls[i])) i++; ls.splice(i, 0, row); fs.writeFileSync(f, ls.join('\n')); };
+      ins(invF, /^\| tool \| purpose/, loc.INVENTORY[0]); ins(rbF, /^### 5a\b/, loc['5a'][0]); ins(rbF, /^### 7b\b/, loc['7b'][0]);
+      fs.rmSync(locF); g('update-index', '--skip-worktree', '--', 'company/tools/INVENTORY.md', 'company/runbooks/tool-management.md');
+      r = run('migrate-rows', '--check');
+      t('migrate-rows --check: legacy module rows in tracked files -> exit 1, nothing changed', r.code === 1 && r.j.moved === 3 && !fs.existsSync(locF), r.out);
+      r = run('migrate-rows');
+      const l2 = parseRows(fs.readFileSync(locF, 'utf8'));
+      t('migrate-rows: rows moved to the local file by section, tracked files back to HEAD and no longer skip-worktree', r.code === 0 && r.j.restored.length === 2 && trackedClean() && l2.INVENTORY.length === 1 && l2['5a'].length === 1 && l2['7b'].length === 1, r.out);
+      t('migrate-rows: a second run moves nothing', run('migrate-rows').j.moved === 0 && run('migrate-rows', '--check').code === 0);
+      fs.writeFileSync(locF, keep);
+    }
     t('enable: owner told', /Core module demo/.test(fs.readFileSync(path.join(tmp, 'company', 'owner', 'outbound.jsonl'), 'utf8')));
     const tk2 = js("require('./company/tools/lib/modules').runTicks({log:console.log}).then(r=>console.log(JSON.stringify(r)))");
     t('tick hook runs the enabled module', fs.existsSync(path.join(md, 'ticked')) && /DEMO TICK/.test(tk2.stdout), tk2.stdout + tk2.stderr);
@@ -448,10 +494,10 @@ function selftest() {
     r = run('disable', 'demo', '--by', 'owner');
     t('disable demo ok', r.code === 0, r.out);
     t('disable: tool, rows and registrations gone; meter kept', !fs.existsSync(path.join(tmp, 'company', 'tools', 'demo-mod.js'))
-      && !/demo-mod\.js/.test(fs.readFileSync(path.join(tmp, 'company', 'tools', 'INVENTORY.md'), 'utf8') + fs.readFileSync(path.join(tmp, 'company', 'runbooks', 'tool-management.md'), 'utf8'))
+      && !/demo-mod\.js/.test(fs.readFileSync(path.join(tmp, 'company', 'state', 'inventory-local.md'), 'utf8'))
       && !((readJson(path.join(tmp, 'company', 'state', 'locked-extra.json'), {}).entries || []).some(e => e.module === 'demo'))
       && fs.existsSync(path.join(tmp, 'company', 'work', 'demo', 'log.jsonl')));
-    t('rows restored byte-for-byte after enable+disable', fs.readFileSync(path.join(tmp, 'company', 'runbooks', 'tool-management.md'), 'utf8') === fs.readFileSync(path.join(here, 'company', 'runbooks', 'tool-management.md'), 'utf8'));
+    t('tracked runbook byte-for-byte unchanged after enable+disable', trackedClean() && fs.readFileSync(path.join(tmp, 'company', 'runbooks', 'tool-management.md'), 'utf8') === fs.readFileSync(path.join(here, 'company', 'runbooks', 'tool-management.md'), 'utf8'));
     t('enable dep refused while demo is disabled', /requires\.modules: demo/.test(run('enable', 'dep', '--by', 'owner').out));
     for (const id of (fs.existsSync(path.join(here, 'modules')) ? fs.readdirSync(path.join(here, 'modules')) : []).filter(x => ID_RE.test(x))) {
       const sc = checkStatic(path.join(here, 'modules', id));
@@ -480,6 +526,7 @@ if (cmd === 'doctor') emit(doctor(A.all ? true : A._[1] || true));
 if (cmd === 'enable') emit(cmdEnable(A._[1], A.by));
 if (cmd === 'disable') emit(cmdDisable(A._[1], A.by));
 if (cmd === 'limits') emit(cmdLimits(A._[1], A._[2], A._[3], A._[4], A._[5], A.by));
+if (cmd === 'migrate-rows') emit(migrateRows(!!A.check));
 if (cmd === 'gates') { const g = gates(); console.log(JSON.stringify(A.json ? g : { ok: true, gates: g }, null, 1)); process.exit(0); }
-console.error('usage: module.js list | status <id> | doctor [<id>|--all] | enable|disable <id> --by <owner> | limits <id> [set <file> <key> <n> --by owner] | gates | selftest   [--json]');
+console.error('usage: module.js list | status <id> | doctor [<id>|--all] | enable|disable <id> --by <owner> | limits <id> [set <file> <key> <n> --by owner] | gates | migrate-rows [--check] | selftest   [--json]');
 process.exit(2);

@@ -87,9 +87,10 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/sudo-gate/selftest.py` | offline policy test for broker.py | risk | is the selftest (no args) | `python3 -I selftest.py [broker.py]` | — |
 | `company/tools/sudo-gate/sudo-shim.py` | sudo shim for the company's agents: routes station-descendant sudo calls to the root broker, everyone else to the real sudo. | risk | — | installed as `~/.local/bin/sudo`; sudo options | — |
 
-## Core module tools (rows added on enable)
+## Core module tools (rows kept instance-local)
 
 A core module's tools are absent until the owner enables it (`node company/tools/module.js enable <id> --by owner`);
-enable copies them into `company/tools/` and appends their rows here and to the runbook from `modules/<id>/rows.md`.
+enable copies them into `company/tools/` and writes their rows from `modules/<id>/rows.md` to the gitignored
+`company/state/inventory-local.md` (never to this tracked file, so a framework `git pull` stays clean).
 Shipped by the Act/Verify/Settle modules: `scopes.js` (risk), `verify.js` (risk), `evidence.js` (risk), `reports.js`
 (ceo), `ledger.js` (finance); each runs `--selftest` offline, and each module's `conformance/test.js` runs it.

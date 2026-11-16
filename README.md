@@ -90,9 +90,15 @@ Founding turns the checkout into an instance (`scripts/instance-guard.sh`, run b
 
 - pushing is disabled for every remote; fetch and pull still work;
 - `pre-commit` and `pre-push` hooks refuse in a founded checkout;
-- tracked files that founding or a module enable changes (`company/company.json`, `company/CHARTER.md`,
-  `company/competence-policy.json`, the tool inventory and runbook) are hidden from git with `skip-worktree`, and
-  module tools copied into `company/tools/` are excluded locally (`.git/info/exclude`);
+- the four tracked files a company owns (`company/company.json`, `company/CHARTER.md`,
+  `company/competence-policy.json`, `company/model-policy.json`) are hidden from git with `skip-worktree` up front,
+  as is any other tracked file that has changed; console Setup reruns the guard after each write to a tracked file,
+  so an owner's change never shows in `git status`;
+- a module enable never edits tracked files: its tools' inventory and runbook rows go to the gitignored
+  `company/state/inventory-local.md` (read with the tracked inventory and runbook by `tool-inventory-check.js` and
+  `module.js doctor`). Rows an older `module.js` wrote into the tracked `INVENTORY.md` / `tool-management.md` are moved
+  there by the guard (`node company/tools/module.js migrate-rows`), which restores those files to HEAD;
+- module tools copied into `company/tools/` are excluded locally (`.git/info/exclude`);
 - everything else a company creates (`company/work`, `state`, `owner`, `hiring`, role charters, crew console panels,
   `secrets/`, `starnet/`, `.starnet-data/`, logs, media) is in `.gitignore`.
 
@@ -110,10 +116,18 @@ git pull                                      # takes the framework update
 node company/tools/halt.js resume --by Alex
 ```
 
-If the update changed one of the hidden files (for example the `company.json` template), `git pull` stops with
-"Your local changes would be overwritten" instead of replacing your company's copy. Merge that one file by hand:
-`git update-index --no-skip-worktree <file>`, `git stash`, `git pull`, `git stash pop`, fix any conflict, then
-`scripts/instance-guard.sh` to hide it again.
+Module enables no longer touch tracked files, so the only files that can stop a pull are the four the company owns.
+If the update changed one of them (for example the `company.json` template), `git pull` stops with "Your local changes
+would be overwritten" instead of replacing your company's copy. Merge them like this:
+
+```bash
+F="company/company.json company/CHARTER.md company/competence-policy.json company/model-policy.json"
+git update-index --no-skip-worktree $F
+git stash push -- $F                          # your company's copies
+git pull                                      # the framework update
+git stash pop                                 # your copies back on top; fix any conflict, then `git stash drop`
+scripts/instance-guard.sh                     # hide the four files again (also migrates old module rows)
+```
 
 ### Don't
 

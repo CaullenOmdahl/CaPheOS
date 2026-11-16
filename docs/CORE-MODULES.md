@@ -53,8 +53,9 @@ modules/<id>/
   tools/<file>       each listed in tools[], each with --selftest; copied FLAT to company/tools/<file> on enable
                      (refused if that name is taken by a non-module tool), removed on disable
   rows.md            optional: "## INVENTORY", "## 5a", "## 7b" sections of markdown table rows for the tools;
-                     generated from tools[] (purpose, owner, --selftest) when absent. enable appends them to
-                     company/tools/INVENTORY.md and the runbook, disable removes them (tool-inventory-check stays green)
+                     generated from tools[] (purpose, owner, --selftest) when absent. enable writes them to the
+                     gitignored company/state/inventory-local.md (never the tracked INVENTORY.md / runbook), disable
+                     removes them; tool-inventory-check.js and doctor read it with the tracked files
   tick.js            optional: module.exports = { tick: async ({ log, dry, co, id, halted }) => any,
                      runWhenHalted?: true, timeoutMs?: 60000 }
   http.js            optional: module.exports = { routes: [{ method, path, auth: 'owner'|'source', handler(req, res, ctx) }] }

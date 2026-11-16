@@ -16,6 +16,10 @@
  *   4. every script under `company/tools/` is documented in this runbook's §6/§7b. A tool nobody
  *      documented is a tool nobody can operate, and a row would have warned the author the name was taken.
  *
+ * WHERE THE ROWS LIVE: the tracked runbook and company/tools/INVENTORY.md (the framework's tools), plus the
+ * instance-local, gitignored company/state/inventory-local.md (the rows `module.js enable` writes for core-module
+ * tools, so a company's tracked files never change). All three are read as one text.
+ *
  * Check 4 SHIPS CLOSED, and the honest way to do that on a codebase with existing debt is a declared
  * baseline rather than a quiet exemption list:
  *   - `company/tools/inventory-baseline.json` (tracked, so a fresh checkout can answer) lists the tools that are
@@ -39,6 +43,10 @@ const fs = require('fs'), path = require('path');
 const co = require('./lib/company');
 const ROOT = co.ROOT;
 const RUNBOOK = process.env.INVENTORY_RUNBOOK || co.p('company', 'runbooks', 'tool-management.md');
+const EXTRA = process.env.INVENTORY_EXTRA !== undefined ? process.env.INVENTORY_EXTRA.split(':').filter(Boolean)
+  : [co.p('company', 'tools', 'INVENTORY.md'), co.p('company', 'state', 'inventory-local.md')];
+// INVENTORY.md documents a tool (check 4) but its table is not the §7b selftest claim (its selftest column says how)
+const NAMES_ONLY = f => path.basename(f) === 'INVENTORY.md';
 const TOOLS = process.env.INVENTORY_TOOLS || co.p('company', 'tools');
 const BASELINE_TRACKED = co.p('company', 'tools', 'inventory-baseline.json');
 const BASELINE_LEGACY = co.p('company', 'state', 'tool-inventory-baseline.json');
@@ -59,7 +67,11 @@ function readBaseline(p) {
 
 function scan(opts) {
   const runbookPath = opts.runbook, toolsDir = opts.tools;
-  const text = fs.readFileSync(runbookPath, 'utf8');
+  // the runbook plus INVENTORY.md and the instance-local module rows (a missing extra file is simply absent)
+  const files = [runbookPath].concat(opts.extra || []);
+  const read = (f, i) => { try { return fs.readFileSync(f, 'utf8'); } catch (e) { if (i === 0) throw e; return ''; } };
+  const text = files.map(read).join('\n');
+  const tableText = files.map((f, i) => (i && NAMES_ONLY(f) ? '' : read(f, i))).join('\n');
   const named = new Set();
   let m;
   while ((m = TOOL_RE.exec(text))) named.add(m[1]);
@@ -71,7 +83,7 @@ function scan(opts) {
     const p = path.join(toolsDir, name);
     if (!fs.existsSync(p)) { findings.push({ kind: 'missing', name, why: 'the runbook names it and it is not on disk' }); continue; }
     // Only the ones the §7b table lists are claiming a selftest; a tool mentioned in prose is not.
-    const inTable = new RegExp('^\\|[^\\n]*`company/tools/' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '`', 'm').test(text);
+    const inTable = new RegExp('^\\|[^\\n]*`company/tools/' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '`', 'm').test(tableText);
     if (!inTable) continue;
     let src = '';
     try { src = fs.readFileSync(p, 'utf8'); } catch (_) { findings.push({ kind: 'unreadable', name, why: 'cannot read the file the table describes' }); continue; }
@@ -132,12 +144,14 @@ function selftest() {
   // right failure from a wrong one.
   // Each case gets its own tools directory: check 4 reports every undocumented script on disk, so a fixture
   // shared between cases would leak into the next one's findings.
-  const case_ = (label, runbookText, wantKinds, baseline, files) => {
+  const case_ = (label, runbookText, wantKinds, baseline, files, opts) => {
     const tools = fs.mkdtempSync(path.join(tmp, 'tools-'));
     const rb = path.join(tools + '-runbook.md');
     for (const [name, body] of Object.entries(files || { good: '#!/bin/bash\n# --selftest\n', owed: '#!/bin/bash\n# --selftest\n', 'noself.sh': '#!/bin/bash\necho hi\n' })) fs.writeFileSync(path.join(tools, name), body);
     fs.writeFileSync(rb, runbookText);
-    const r = scan({ runbook: rb, tools, baseline: baseline === undefined ? [] : baseline });
+    const extra = [];
+    if (opts && opts.local) { const lf = tools + '-local.md'; fs.writeFileSync(lf, opts.local); extra.push(lf); }
+    const r = scan({ runbook: rb, tools, baseline: baseline === undefined ? [] : baseline, extra });
     const got = r.findings.map(f => f.kind).join(',');
     if (got === wantKinds) console.log('  ok   ' + label + (got ? ' [' + got + ']' : ' [clean]'));
     else { console.log('  FAIL ' + label + ' (want "' + wantKinds + '", got "' + got + '")'); fails++; }
@@ -156,6 +170,10 @@ function selftest() {
   case_('a baseline line naming a file that is gone BLOCKS', 'Run `company/tools/good.sh` by hand.\n', 'stale-baseline', ['deleted-long-ago.sh'], ONLY_GOOD);
   case_('a missing baseline is UNKNOWN, not "no debt"', 'Run `company/tools/good.sh` by hand.\n', 'no-baseline', null, ONLY_GOOD);
   case_('a folder or a unit file is not a script', 'Run `company/tools/good.sh` by hand.\n', '', [], { 'good.sh': '#!/bin/bash\n# --selftest\n', 'x.service': '[Unit]\n', 'x.timer': '[Timer]\n' });
+  // module rows live in the instance-local file, not the tracked runbook
+  case_('a module tool documented only in the local inventory file is documented', 'Run `company/tools/good.sh` by hand.\n', '', [], { 'good.sh': '#!/bin/bash\n# --selftest\n', 'mod.js': '// --selftest\n' }, { local: '## 7b\n| `company/tools/mod.js` | risk | `node company/tools/mod.js --selftest` |\n' });
+  case_('a local-file §7b row whose tool lost --selftest BLOCKS', 'Run `company/tools/good.sh` by hand.\n', 'no-selftest', [], { 'good.sh': '#!/bin/bash\n# --selftest\n', 'mod.js': '// none\n' }, { local: '## 7b\n| `company/tools/mod.js` | risk | `node company/tools/mod.js --selftest` |\n' });
+  case_('without the local file, the same module tool is undocumented', 'Run `company/tools/good.sh` by hand.\n', 'undocumented', [], { 'good.sh': '#!/bin/bash\n# --selftest\n', 'mod.js': '// --selftest\n' });
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(fails ? '\nSELFTEST FAILED (' + fails + ')' : '\nSELFTEST PASSED');
   return fails ? 1 : 0;
@@ -163,7 +181,7 @@ function selftest() {
 
 const argv = process.argv.slice(2);
 if (argv.includes('--selftest')) { process.exit(selftest()); }
-const r = scan({ runbook: RUNBOOK, tools: TOOLS });
+const r = scan({ runbook: RUNBOOK, tools: TOOLS, extra: EXTRA });
 const rc = report(r);
 if (argv.includes('--list-unlisted') && r.unlisted.length) {
   console.log('\nselftest tools with no row in this runbook (informational — some are documented in their own runbook):');

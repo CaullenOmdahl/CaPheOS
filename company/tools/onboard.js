@@ -114,9 +114,11 @@ function enabledModules() { return Object.keys(((readJson(co.p('company', 'state
 
 /* ---------- resume steps ---------- */
 // The first-light finding: candidates defaulted to a metered model while a new company's metered cap is $0, so a fresh
-// company could not interview. Resolve a default the company can run: a subscription provider (dispatch-budget
-// unmeteredProviders) that the station has configured and that model-policy allows; else keep the metered default if
-// the cap is above 0; else leave it and say so (the owner-gate batch asks the owner).
+// company could not interview. Rule: an owner's choice is never overwritten. A default the owner set (setBy is a person,
+// not a tool — console Setup writes the owner's name) is only checked: if it cannot run, that is a needs-you item
+// pointing at Setup. A default no owner set is kept while it can run (subscription, or metered with a cap above $0);
+// only when it cannot is it replaced by a subscription provider (dispatch-budget unmeteredProviders) that the station
+// has configured and model-policy allows; else it is left and the owner-gate batch asks the owner.
 async function resolveCandidateDefault() {
   const pol = readJson(F.modelPolicy, null);
   if (!pol || !pol.allowed) return { status: 'failed', note: 'company/model-policy.json missing or has no allowed models' };
@@ -124,6 +126,9 @@ async function resolveCandidateDefault() {
   const unmetered = (Array.isArray(budget.unmeteredProviders) && budget.unmeteredProviders.length ? budget.unmeteredProviders : ['claude-cli']).map(String);
   const cur = pol.candidateDefault || {};
   if (cur.provider && unmetered.includes(cur.provider)) return { status: 'ok', note: 'candidates default to subscription provider ' + cur.provider + '/' + cur.model };
+  if (cur.provider && Number(budget.dailyUsd) > 0) return { status: 'ok', note: 'metered default ' + cur.provider + '/' + cur.model + ' with a $' + budget.dailyUsd + ' daily cap' };
+  const ownerSet = !!(cur.provider && cur.setBy && !/\.(js|sh|py)$/.test(String(cur.setBy)));
+  if (ownerSet) return { status: 'pending', gate: { kind: 'candidateDefault', name: 'candidate model', text: 'Hiring candidates default to ' + cur.provider + '/' + cur.model + ' (your choice in console Setup, kept as set), which bills per token, but the metered daily cap is $0, so no candidate can run. Open console Setup and either set a daily cap (step Budget) or pick a subscription provider (step AI provider).' }, note: 'owner-set default ' + cur.provider + '/' + cur.model + ' cannot run (metered, $0 cap); kept as the owner set it — needs the owner in console Setup' };
   const pr = await stationGet('/api/providers');
   if (!pr.ok) return { status: 'pending', note: 'station unreachable for GET /api/providers (' + (pr.error || 'HTTP ' + pr.status) + ')' };
   const list = (pr.json && (pr.json.providers || pr.json.items)) || [];
@@ -136,7 +141,6 @@ async function resolveCandidateDefault() {
     writeJson(F.modelPolicy, pol);
     return { status: 'ok', note: 'candidates now default to subscription provider ' + sub + '/' + model };
   }
-  if (Number(budget.dailyUsd) > 0) return { status: 'ok', note: 'metered default ' + cur.provider + '/' + cur.model + ' with a $' + budget.dailyUsd + ' daily cap' };
   return { status: 'pending', gate: { kind: 'candidateDefault', name: 'candidate model', text: 'Hiring candidates default to the metered model ' + (cur.provider || '?') + '/' + (cur.model || '?') + ', but the metered daily cap is $0 and the station has no subscription provider (' + unmetered.join(', ') + ') ready. Either connect a subscription provider on the station, or set a metered cap in company/work/finance/dispatch-budget.json (dailyUsd).' }, note: 'no usable candidate default: metered model with a $0 cap and no subscription provider on the station' };
 }
 function registerOps() {
@@ -400,6 +404,21 @@ async function selftest() {
     r = await run('--resume');
     t('a second --resume asks nothing new (asked once)', r.j && /answers in the ledger/.test(r.j.steps['owner-gates'].note), r.j && r.j.steps['owner-gates']);
     srv.providers.push({ id: 'claude-cli', configured: true, unattendedReady: true });
+    {
+      // an owner's choice is never overwritten (the sandbox finding: Setup chose DeepSeek, --resume swapped in claude-cli)
+      const polF = path.join(tmp, 'company', 'model-policy.json'), budF = path.join(tmp, 'company', 'work', 'finance', 'dispatch-budget.json');
+      const pol0 = fs.readFileSync(polF, 'utf8'), bud0 = fs.readFileSync(budF, 'utf8');
+      const pol = JSON.parse(pol0); pol.candidateDefault = Object.assign({}, pol.candidateDefault, { provider: 'deepseek', model: 'deepseek-flash', setBy: 'Alex', setAt: '2026-11-16T00:00:00Z' }); fs.writeFileSync(polF, JSON.stringify(pol));
+      const bud = JSON.parse(bud0); bud.dailyUsd = 5; fs.writeFileSync(budF, JSON.stringify(bud));
+      r = await run('--step', 'candidate-default');
+      let cd = readJson(polF, {}).candidateDefault;
+      t('candidate-default: owner-set metered default with a $5 cap is kept, though a subscription is on the station', r.j && r.j.status === 'ok' && cd.provider === 'deepseek' && cd.setBy === 'Alex', { r: r.j, cd });
+      bud.dailyUsd = 0; fs.writeFileSync(budF, JSON.stringify(bud));
+      r = await run('--step', 'candidate-default');
+      cd = readJson(polF, {}).candidateDefault;
+      t('candidate-default: owner-set default that cannot run ($0 cap) is a needs-you item, never changed', r.j && r.j.status === 'pending' && /owner/.test(r.j.note) && cd.provider === 'deepseek' && cd.setBy === 'Alex', { r: r.j, cd });
+      fs.writeFileSync(polF, pol0); fs.writeFileSync(budF, bud0);
+    }
     r = await run('--resume');
     t('--resume: a subscription provider on the station becomes the candidate default', r.j && r.j.steps['candidate-default'].status === 'ok' && readJson(path.join(tmp, 'company', 'model-policy.json'), {}).candidateDefault.provider === 'claude-cli', r.j && r.j.steps['candidate-default']);
     r = await run('--record', 'station-installed', 'ok');
