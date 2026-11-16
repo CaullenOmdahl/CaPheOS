@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "id": "reports",
+  "packVersion": "0.1.0",
+  "title": "Reports: periodic outcome reports",
+  "summary": "Per-party periodic reports from a markdown template and the records (commitments, verify results, events), drafted to company/work/reports/<party>/, reviewed by a seat other than the sender, and sent only through the external gate (category message or publish) within the sendsPerDay limit.",
+  "owner": "ceo",
+  "layer": "settle",
+  "enableWhen": "there is a counterparty to report to",
+  "requires": {
+    "packs": [],
+    "modules": [],
+    "guardrails": [
+      "externalActions"
+    ],
+    "secrets": [],
+    "governance": [
+      "packs"
+    ],
+    "externalGates": [
+      "message",
+      "publish"
+    ],
+    "stationAbilities": []
+  },
+  "docs": [
+    "README.md"
+  ],
+  "tools": [
+    {
+      "file": "tools/reports.js",
+      "purpose": "draft per-party reports from a template, review them, send only through the external gate"
+    }
+  ],
+  "seats": [],
+  "routines": [],
+  "panels": [],
+  "limits": [
+    {
+      "file": "limits/limits.json",
+      "owner": "ceo",
+      "why": "the module's own caps; shipped closed, opened only by the owner"
+    }
+  ],
+  "meters": [
+    {
+      "p": "company/work/reports/outbox.jsonl",
+      "append": true,
+      "writers": [
+        "reports.js"
+      ],
+      "owner": "ceo",
+      "why": "every report that left, with its gate clearance and reviewer"
+    }
+  ],
+  "allowlist": [],
+  "conformance": {
+    "test": "conformance/test.js"
+  }
+}

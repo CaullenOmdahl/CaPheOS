@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "id": "verify",
+  "packVersion": "0.1.0",
+  "title": "Verify: independent outcome checks",
+  "summary": "Checks run from the dispatcher tick (a non-agent process) on commitments in done: http, json path, file digest and a second-model-family judge (pending-human / needs-station when no station is reachable). Pass moves the commitment to verified, fail back to in_progress with the failure; every result lands in company/work/verify/results.jsonl. The seat that did the work can never mark it verified.",
+  "owner": "risk",
+  "layer": "verify",
+  "enableWhen": "you are paid or blamed on claims",
+  "requires": {
+    "packs": [],
+    "modules": [
+      "commitments"
+    ],
+    "guardrails": [
+      "externalActions"
+    ],
+    "secrets": [],
+    "governance": [
+      "packs"
+    ],
+    "externalGates": [
+      "network"
+    ],
+    "stationAbilities": []
+  },
+  "docs": [
+    "README.md"
+  ],
+  "tools": [
+    {
+      "file": "tools/verify.js",
+      "purpose": "independent checks on done commitments: verified, or back to in_progress with the failure"
+    }
+  ],
+  "seats": [],
+  "routines": [],
+  "panels": [
+    "panels/verify-failures"
+  ],
+  "limits": [
+    {
+      "file": "limits/limits.json",
+      "owner": "risk",
+      "why": "the module's own caps; shipped closed, opened only by the owner"
+    }
+  ],
+  "meters": [
+    {
+      "p": "company/work/verify/results.jsonl",
+      "append": true,
+      "writers": [
+        "verify.js",
+        "dispatch.js"
+      ],
+      "owner": "risk",
+      "why": "every verification result; the record evidence exports"
+    }
+  ],
+  "allowlist": [],
+  "conformance": {
+    "test": "conformance/test.js"
+  }
+}

@@ -1,0 +1,3 @@
+{
+  "_doc": "verify has no quantity to open: its checks read, and every network check goes through the external gate (category network, allowlist)."
+}

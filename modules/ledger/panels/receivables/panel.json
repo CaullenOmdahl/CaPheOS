@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "id": "receivables",
+  "title": "Receivables",
+  "description": "Invoices with money still outstanding, oldest first; overdue rows show the warn tone.",
+  "owner": "finance",
+  "why": "Revenue the company has earned but not yet been paid is the number that decides whether it can keep going; the owner sees who owes what and since when.",
+  "placement": { "area": "today", "order": 4 },
+  "refresh": 600,
+  "sources": {
+    "recv": { "type": "file", "glob": "company/work/ledger/receivables.json", "select": "receivables" }
+  },
+  "view": {
+    "kind": "table",
+    "source": "recv",
+    "columns": [
+      { "key": "issued", "label": "Issued", "format": "date", "width": "narrow" },
+      { "key": "party", "label": "Party" },
+      { "key": "invoice", "label": "Invoice" },
+      { "key": "outstanding", "label": "Outstanding", "format": "number" },
+      { "key": "currency", "label": "Currency", "width": "narrow" },
+      { "key": "due", "label": "Due", "format": "date", "flag": "overdue" },
+      { "key": "sent", "label": "Sent", "format": "bool" }
+    ],
+    "sort": { "key": "issued", "dir": "asc" },
+    "limit": 25,
+    "empty": "Nothing outstanding."
+  }
+}

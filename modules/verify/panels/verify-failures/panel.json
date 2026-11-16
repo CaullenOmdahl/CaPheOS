@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "verify-failures",
+  "title": "Verify: failed and waiting checks",
+  "description": "Commitments a seat called done that an independent check failed, or that wait for a reviewer (a judge with no station).",
+  "owner": "risk",
+  "why": "A failed check is a claim the company would have made to a party and could not back; the owner sees which, why, and who did the work.",
+  "placement": { "area": "side", "screen": "work", "order": 3 },
+  "refresh": 300,
+  "sources": {
+    "fails": { "type": "file", "glob": "company/work/verify/failures.json" }
+  },
+  "view": {
+    "kind": "table",
+    "source": "fails",
+    "columns": [
+      { "key": "at", "label": "When", "format": "relative", "width": "narrow", "flag": "pending" },
+      { "key": "commitment", "label": "Commitment" },
+      { "key": "party", "label": "Party" },
+      { "key": "outcome", "label": "Result" },
+      { "key": "doneBy", "label": "Done by" },
+      { "key": "detail", "label": "Why", "width": "wide" }
+    ],
+    "sort": { "key": "at", "dir": "desc" },
+    "limit": 20,
+    "empty": "No failed or waiting checks."
+  }
+}

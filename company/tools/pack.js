@@ -207,7 +207,7 @@ function checkStatic(dir, opts) {
   const names = new Set((pack.seats || []).map(s => s.name));
   for (const s of pack.seats || []) {
     if (!exists(s.template)) f.push('seats: ' + s.name + ' template ' + s.template + ' missing');
-    for (const o of s.independentOf || []) if (!names.has(o)) f.push('seats: ' + s.name + ' independentOf names unknown seat ' + o);
+    for (const o of s.independentOf || []) if (!names.has(o) && !FUNCTIONS.includes(o)) f.push('seats: ' + s.name + ' independentOf names unknown seat ' + o + ' (a seat of this pack or a function)');
   }
   for (const r of pack.routines || []) if (!exists(r.file)) f.push('routines: ' + r.file + ' missing');
   for (const pn of pack.panels || []) if (!exists(path.posix.join(pn, 'panel.json'))) f.push('panels: ' + pn + '/panel.json missing');

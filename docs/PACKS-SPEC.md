@@ -65,7 +65,7 @@ a template: never proposable, never installable.
 | `requires.stationAbilities` | names that must appear in `company/company.json` `station.abilities` (an array; missing = nothing) |
 | `docs[]` | doc files; must exist |
 | `tools[]` | `{file, purpose}`; files directly under `tools/`; nothing unlisted may sit there |
-| `seats[]` | `{name, template, independentOf?, why}`: role templates (section 6) |
+| `seats[]` | `{name, template, independentOf?, why}`: role templates (section 6); `independentOf` names seats of this pack or functions |
 | `routines[]` | `{file, seat?, why}` |
 | `panels[]` | panel folders |
 | `limits[]` | `{file, owner, why}`; at least one; closed when shipped |
@@ -135,8 +135,9 @@ place, each meter is registered in `locked-extra.json`, each allowlist line is p
 `company/roles/templates/<id>--<seat>.md`, so `hire.js open ... --template <id>--<seat>` starts a charter from them.
 Install never hires: hiring stays under the `hiring` gate. `independentOf` declares separation of duties (the seat
 that reconciles is never the seat that trades); the pack's conformance test and `hire.js` should refuse one agent
-holding both. (hire.js does not read `independentOf` yet; until it does, the pack's conformance test checks
-`loops.json`.)
+holding both. `independentOf` lists seats of the same pack or functions (`finance`, ...). `hire.js hire` enforces it:
+a hire whose `--template <id>--<seat>` and `--functions` would hold a seat together with anything on its
+`independentOf` list is refused (rules read from installed packs and from `modules/*/module.json`).
 
 **Routines.** `routines[]` are definitions, not live clocks. After install the tools owner wires them through
 `harness-change.js` (kind `schedule`, gate `schedules`), so a pack never adds a clock by itself.

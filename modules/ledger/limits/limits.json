@@ -1,0 +1,6 @@
+{
+  "_doc": "currency: the one currency invoices are issued in (empty = no invoice may be sent). maxInvoiceTotal: largest invoice that may be sent. sendsPerDay: invoices that may be sent per day. All closed until the owner opens them.",
+  "currency": "",
+  "maxInvoiceTotal": 0,
+  "sendsPerDay": 0
+}

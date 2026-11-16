@@ -120,6 +120,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/offpeak-clocks.js | finance | `--selftest` |
 | company/tools/offpeak-hold.js | finance | `--selftest` |
 | company/tools/offpeak-proof.js | finance | `--selftest` |
+| company/tools/onboard.js | ceo | `--selftest` |
 | company/tools/openrouter-treasury.js | finance | none |
 | company/tools/owner-addressing.js | ceo | `--selftest` |
 | company/tools/owner-inbox.js | ceo | `--selftest` |
@@ -155,6 +156,16 @@ risk-reviewed action, and creating or reissuing a credential is an owner gate. A
 - **Finance triggers:** a new paid tool, plan upgrade, new provider, or a measurable usage increase.
 - **Secrets:** read them only through `co.secret(name)` / `co.stationToken()`. Never print, log, paste or copy them into
   docs, handoffs or chat. If a secret appears in output, treat it as exposed and rotate it.
+- **Party credentials** (module `scopes`): `secrets/parties/<party>/<name>`, 0600, read only through
+  `scopes.secret(party, name)`, which refuses a write-scope key to a caller asking for read; `scopes.js check` (daily
+  from its tick) fixes modes and emits rotation-due events.
+- **Core-module tools** (scopes, verify, evidence, reports, ledger; `modules/<id>/`): absent until
+  `module.js enable <id> --by owner`, which copies them here and adds their §5a/§7b rows from `modules/<id>/rows.md`.
+  Their shared library is `company/tools/lib/settle.js` (on top of `lib/modkit.js`). Every send they make (report,
+  invoice, payout, a verify http check) goes through `external-gate.js`; their limits ship closed (`ledger` sends no
+  invoice until the owner sets `currency`). Separation of duties: `verify.js mark` refuses the seat that did the work,
+  `ledger.js reconcile` refuses the seat that invoiced, `hire.js hire` refuses a hire that would hold a seat and
+  anything on its `independentOf` list.
 
 ## 7. Checkers must be seen failing
 
@@ -189,6 +200,7 @@ in §5a instead.
 | `company/tools/offpeak-clocks.js` | finance | `node company/tools/offpeak-clocks.js --selftest` |
 | `company/tools/offpeak-hold.js` | finance | `node company/tools/offpeak-hold.js --selftest` |
 | `company/tools/offpeak-proof.js` | finance | `node company/tools/offpeak-proof.js --selftest` |
+| `company/tools/onboard.js` | ceo | `node company/tools/onboard.js --selftest` |
 | `company/tools/owner-addressing.js` | ceo | `node company/tools/owner-addressing.js --selftest` |
 | `company/tools/owner-inbox.js` | ceo | `node company/tools/owner-inbox.js --selftest` |
 | `company/tools/pack.js` | ceo | `node company/tools/pack.js selftest` |

@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "id": "scopes",
+  "packVersion": "0.1.0",
+  "title": "Scopes: per-party credentials",
+  "summary": "Per-party secrets at secrets/parties/<id>/<name> (0600 enforced on write and read) with a scope record (read-only or write, rotate-by date, owner), resolved only through scopes.secret(party, name), which refuses a write-scope key to a caller asking for read; rotation-due events go to intake.",
+  "owner": "risk",
+  "layer": "act",
+  "enableWhen": "outside parties give you access",
+  "requires": {
+    "packs": [],
+    "modules": [],
+    "guardrails": [],
+    "secrets": [],
+    "governance": [
+      "packs"
+    ],
+    "externalGates": [],
+    "stationAbilities": []
+  },
+  "docs": [
+    "README.md"
+  ],
+  "tools": [
+    {
+      "file": "tools/scopes.js",
+      "purpose": "per-party credentials with scope records; secret() refuses a write key to a reader"
+    }
+  ],
+  "seats": [],
+  "routines": [],
+  "panels": [],
+  "limits": [
+    {
+      "file": "limits/limits.json",
+      "owner": "risk",
+      "why": "the module's own caps; shipped closed, opened only by the owner"
+    }
+  ],
+  "meters": [
+    {
+      "p": "company/work/scopes/log.jsonl",
+      "append": true,
+      "writers": [
+        "scopes.js"
+      ],
+      "owner": "risk",
+      "why": "every key added or rotated (never the value)"
+    }
+  ],
+  "allowlist": [],
+  "conformance": {
+    "test": "conformance/test.js"
+  }
+}

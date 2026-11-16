@@ -1,0 +1,4 @@
+{
+  "_doc": "maxWriteScopes: how many write-scope (can change things) party keys may be held. 0 = read-only keys only.",
+  "maxWriteScopes": 0
+}

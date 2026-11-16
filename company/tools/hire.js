@@ -437,6 +437,28 @@ function moveFunctions(loops, newId, list) {
   return { take, from };
 }
 
+/* Separation of duties. A pack's or module's seats[] may say `independentOf: [...]`: names of other seats in the same
+ * pack/module, or functions (ceo, people, tools, risk, floor, finance). One agent may never hold a seat and anything on
+ * its independentOf list (the seat that reconciles is never the seat that trades). Seats are keyed as hire.js
+ * --template sees them: <pack>--<seat>. Rules come from installed packs (company/state/packs/installed/<id>/pack.json)
+ * and modules (modules/<id>/module.json). */
+function independenceRules(root) {
+  const r = root || ROOT; const rules = {};
+  const add = (id, j) => { for (const s of (j && j.seats) || []) if (s && s.name && Array.isArray(s.independentOf) && s.independentOf.length)
+    rules[id + '--' + s.name] = s.independentOf.map(x => (FUNCTIONS.includes(x) || String(x).includes('--') ? String(x) : id + '--' + x)); };
+  const ls = d => { try { return fs.readdirSync(d); } catch (_) { return []; } };
+  for (const id of ls(path.join(r, 'company', 'state', 'packs', 'installed'))) add(id, readJson(path.join(r, 'company', 'state', 'packs', 'installed', id, 'pack.json'), null));
+  for (const id of ls(path.join(r, 'modules'))) add(id, readJson(path.join(r, 'modules', id, 'module.json'), null));
+  return rules;
+}
+// holdings = { seats: ['<pack>--<seat>'], functions: ['finance', ...] } -> list of conflicts (empty = fine)
+function independenceConflicts(holdings, rules) {
+  const held = new Set([].concat(holdings.seats || [], holdings.functions || []).map(String));
+  const out = [];
+  for (const seat of holdings.seats || []) for (const x of (rules[seat] || [])) if (held.has(x)) out.push(seat + ' must be independent of ' + x + ', and this hire would hold both');
+  return out;
+}
+
 async function hire(a) {
   const { dir, round } = loadRound(need(a, 'round'));
   const agentId = need(a, 'agent'), title = need(a, 'title'), by = need(a, 'by');
@@ -466,6 +488,9 @@ async function hire(a) {
     templateTxt = readIf(path.join(TEMPLATES, t + '.md'), 60000);
     if (!templateTxt.trim()) out(2, { ok: false, error: 'no seat template at ' + path.relative(ROOT, path.join(TEMPLATES, t + '.md')) });
   }
+  // separation of duties (pack/module seats[].independentOf): the hire may not hold a seat and something it must stay independent of
+  { const clash = independenceConflicts({ seats: a.template ? [String(a.template).replace(/\.md$/, '')] : [], functions: a.functions && a.functions !== true ? String(a.functions).split(/[\s,]+/).filter(Boolean) : [] }, independenceRules());
+    if (clash.length) out(2, { ok: false, error: 'separation of duties: ' + clash.join('; ') + ' (independentOf in the pack or module seats; hire someone else for one of them)' }); }
   const spec = readIf(path.join(dir, 'role-spec.md'), 6000);
   const AgentId = require(path.join(ROOT, 'starnet', 'frontend', 'app', 'agentid.js'));
   const officeName = a.name ? AgentId.normalizeName(String(a.name)) : cand.name;
@@ -766,6 +791,16 @@ function selftest() {
   t('spendCap guardrail on: the over-cap state is still detected (the refusal path)', () => {
     const st = budgetState({ budgetFile: bf, runsFile: rf }); assert.ok(st.total >= st.cap);
   });
+  t('separation of duties: a hire may not hold a seat and what it is independentOf', () => {
+    const pd = path.join(T, 'company', 'state', 'packs', 'installed', 'desk'); fs.mkdirSync(pd, { recursive: true });
+    writeJson(path.join(pd, 'pack.json'), { id: 'desk', seats: [{ name: 'trader', template: 'roles/trader.md' }, { name: 'reconciler', template: 'roles/reconciler.md', independentOf: ['trader', 'finance'] }] });
+    const rules = independenceRules(T);
+    assert.deepStrictEqual(rules['desk--reconciler'], ['desk--trader', 'finance']);
+    assert.ok(/independent of finance/.test(independenceConflicts({ seats: ['desk--reconciler'], functions: ['finance'] }, rules).join()));
+    assert.ok(/independent of desk--trader/.test(independenceConflicts({ seats: ['desk--reconciler', 'desk--trader'], functions: [] }, rules).join()));
+    assert.strictEqual(independenceConflicts({ seats: ['desk--reconciler'], functions: ['people'] }, rules).length, 0);
+    assert.strictEqual(independenceConflicts({ seats: ['desk--trader'], functions: ['finance'] }, rules).length, 0);
+  });
   fs.rmSync(T, { recursive: true, force: true });
   for (const l of out) console.log(l);
   console.log(bad ? 'HIRE SELFTEST FAILED: ' + bad : 'HIRE SELFTEST PASSED: ' + out.length + ' cases');
@@ -802,4 +837,4 @@ function selftest() {
   out(2, { ok: false, error: 'commands: open, candidate, interview, hire, release, remodel, fire, status, models, selftest' });
 })().catch(e => out(1, { ok: false, error: e.message }));
 
-module.exports = { selftest, governanceCheck, budgetState, assertBudget, candidateSkin, deskHandoff, writeJson, moveFunctions, setSection, deciders, approverOk, companyModel };   // test seam only; hire.js is run as a script everywhere else
+module.exports = { selftest, independenceRules, independenceConflicts, governanceCheck, budgetState, assertBudget, candidateSkin, deskHandoff, writeJson, moveFunctions, setSection, deciders, approverOk, companyModel };   // test seam only; hire.js is run as a script everywhere else

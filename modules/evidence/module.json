@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "id": "evidence",
+  "packVersion": "0.1.0",
+  "title": "Evidence: per-party exportable trail",
+  "summary": "evidence.js export --party --from --to writes a folder and a zip of the party's events, commitment histories, verify results, external-gate rows, provenance and ledger rows, with a sha256 manifest; evidence.js check re-hashes a folder.",
+  "owner": "risk",
+  "layer": "verify",
+  "enableWhen": "disputes are possible",
+  "requires": {
+    "packs": [],
+    "modules": [],
+    "guardrails": [],
+    "secrets": [],
+    "governance": [
+      "packs"
+    ],
+    "externalGates": [],
+    "stationAbilities": []
+  },
+  "docs": [
+    "README.md"
+  ],
+  "tools": [
+    {
+      "file": "tools/evidence.js",
+      "purpose": "export a per-party trail (events, commitments, verify, gate rows, provenance, ledger) with a digest manifest"
+    }
+  ],
+  "seats": [],
+  "routines": [],
+  "panels": [],
+  "limits": [
+    {
+      "file": "limits/limits.json",
+      "owner": "risk",
+      "why": "the module's own caps; shipped closed, opened only by the owner"
+    }
+  ],
+  "meters": [],
+  "allowlist": [],
+  "conformance": {
+    "test": "conformance/test.js"
+  }
+}

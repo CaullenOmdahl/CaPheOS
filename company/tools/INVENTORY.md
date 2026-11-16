@@ -74,9 +74,17 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/lib/governance.js` | how a tool asks "may the company do this alone?" and acts on the answer. | ceo | — | library (require) | — |
 | `company/tools/lib/guardrails.js` | helpers for the guardrail switches, shared by guardrails.js and the tools that enforce them. | risk | — | library (require) | — |
 | `company/tools/lib/modkit.js` | small helpers shared by the core-module tools (intake, observe, parties, commitments, playbooks): limits, jsonl, handoffs, selftest roots. | tools | — | library (require) | — |
+| `company/tools/lib/settle.js` | shared plumbing for the Act/Verify/Settle core modules (scopes, verify, evidence, reports, ledger): party paths, events, commitments, provenance-recorded writes, selftest roots. | tools | via the module tools' --selftest | library (require) | station-token (reachability only) |
 | `company/tools/lib/modules.js` | the runtime side of core modules: enabled list, the dispatcher tick hook, the console HTTP mount. | tools | — | library (require) | — |
 | `company/tools/lib/models-money.js` | shared helpers for the "models and money" tools (pacer.js, offpeak-*.js, cap-numerator.js). | finance | — | library (require) | — |
 | `company/tools/sudo-gate/broker.py` | runs a fixed allowlist of root commands on behalf of the company's agents. | risk | via sudo-gate/selftest.py | socket-activated (stdin request); not run by hand | — |
 | `company/tools/sudo-gate/install.sh` | install (or --uninstall) the CaPheOS root-command broker for agents. Run as root (sudo). | risk | — | `sudo bash install.sh [--uninstall]` | — |
 | `company/tools/sudo-gate/selftest.py` | offline policy test for broker.py | risk | is the selftest (no args) | `python3 -I selftest.py [broker.py]` | — |
 | `company/tools/sudo-gate/sudo-shim.py` | sudo shim for the company's agents: routes station-descendant sudo calls to the root broker, everyone else to the real sudo. | risk | — | installed as `~/.local/bin/sudo`; sudo options | — |
+
+## Core module tools (rows added on enable)
+
+A core module's tools are absent until the owner enables it (`node company/tools/module.js enable <id> --by owner`);
+enable copies them into `company/tools/` and appends their rows here and to the runbook from `modules/<id>/rows.md`.
+Shipped by the Act/Verify/Settle modules: `scopes.js` (risk), `verify.js` (risk), `evidence.js` (risk), `reports.js`
+(ceo), `ledger.js` (finance); each runs `--selftest` offline, and each module's `conformance/test.js` runs it.

@@ -1,0 +1,4 @@
+{
+  "_doc": "sendsPerDay: reports that may leave per day. 0 = drafts only, nothing is sent.",
+  "sendsPerDay": 0
+}

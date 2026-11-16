@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "id": "ledger",
+  "packVersion": "0.1.0",
+  "title": "Ledger: revenue, invoices and receipts",
+  "summary": "An append-only, hash-chained revenue ledger (company/work/ledger/ledger.jsonl), separate from AI spend: invoices from delivered commitments, receipts, payouts, credit notes instead of edits, reconcile by a seat other than the one that invoiced, and a revenue summary. Ships closed: no invoice is sent until the owner sets the currency and the external gate clears the recipient.",
+  "owner": "finance",
+  "layer": "settle",
+  "enableWhen": "there is a revenue relationship",
+  "requires": {
+    "packs": [],
+    "modules": [
+      "commitments"
+    ],
+    "guardrails": [
+      "externalActions"
+    ],
+    "secrets": [],
+    "governance": [
+      "packs"
+    ],
+    "externalGates": [
+      "message",
+      "spend"
+    ],
+    "stationAbilities": []
+  },
+  "docs": [
+    "README.md"
+  ],
+  "tools": [
+    {
+      "file": "tools/ledger.js",
+      "purpose": "append-only hash-chained revenue ledger: invoices, receipts, payouts, credit notes, reconcile, summary"
+    }
+  ],
+  "seats": [],
+  "routines": [],
+  "panels": [
+    "panels/receivables"
+  ],
+  "limits": [
+    {
+      "file": "limits/limits.json",
+      "owner": "finance",
+      "why": "the module's own caps; shipped closed, opened only by the owner"
+    }
+  ],
+  "meters": [
+    {
+      "p": "company/work/ledger/ledger.jsonl",
+      "append": true,
+      "writers": [
+        "ledger.js"
+      ],
+      "owner": "finance",
+      "why": "the revenue ledger: append-only, hash-chained; corrections are credit notes"
+    },
+    {
+      "p": "company/work/ledger/outbox.jsonl",
+      "append": true,
+      "writers": [
+        "ledger.js"
+      ],
+      "owner": "finance",
+      "why": "every invoice that left, with its gate clearance"
+    }
+  ],
+  "allowlist": [],
+  "conformance": {
+    "test": "conformance/test.js"
+  }
+}
