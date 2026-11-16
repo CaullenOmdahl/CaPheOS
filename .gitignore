@@ -102,3 +102,6 @@ Thumbs.db
 
 # marks the checkout the framework is developed in; found-company.sh refuses there
 /.framework-checkout
+
+# the station floor plan a running company writes (station-floor.js)
+/company/FLOOR_PLAN.md

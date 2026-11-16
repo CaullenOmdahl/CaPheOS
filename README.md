@@ -90,7 +90,7 @@ Founding turns the checkout into an instance (`scripts/instance-guard.sh`, run b
 
 - pushing is disabled for every remote; fetch and pull still work;
 - `pre-commit` and `pre-push` hooks refuse in a founded checkout;
-- the four tracked files a company owns (`company/company.json`, `company/CHARTER.md`,
+- the tracked files a company owns (`company/company.json`, `company/CHARTER.md`, `company/tools/loops.json`,
   `company/competence-policy.json`, `company/model-policy.json`) are hidden from git with `skip-worktree` up front,
   as is any other tracked file that has changed; console Setup reruns the guard after each write to a tracked file,
   so an owner's change never shows in `git status`;

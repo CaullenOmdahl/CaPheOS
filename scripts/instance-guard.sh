@@ -12,7 +12,7 @@
 #      instance-local company/state/inventory-local.md and restores those two files to HEAD (module.js migrate-rows),
 #      so a framework `git pull` stays clean;
 #   4. hides, up front, the tracked files a company owns (OWNED below: company.json, CHARTER.md, competence-policy.json,
-#      model-policy.json) and any other tracked file that has changed, with `git update-index --skip-worktree`, so they
+#      model-policy.json, tools/loops.json) and any other tracked file that has changed, with `git update-index --skip-worktree`, so they
 #      never show as changes to commit (console Setup reruns this after each write to a tracked file);
 #   5. lists files a running company adds next to framework files (module tools copied into company/tools/)
 #      in .git/info/exclude — local only, never committed.
@@ -60,7 +60,7 @@ if command -v node >/dev/null 2>&1 && [[ -f company/tools/module.js ]]; then
   fi
 fi
 # 4. the tracked files a company owns, hidden up front, then any other tracked file the company changed → skip-worktree
-OWNED=(company/company.json company/CHARTER.md company/competence-policy.json company/model-policy.json)
+OWNED=(company/company.json company/CHARTER.md company/competence-policy.json company/model-policy.json company/tools/loops.json)
 for f in "${OWNED[@]}"; do
   [[ -n "$(git ls-files -- "$f")" ]] || continue
   [[ "$(git ls-files -v -- "$f" | cut -c1)" == "S" ]] && continue

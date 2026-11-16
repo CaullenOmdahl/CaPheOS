@@ -15,6 +15,8 @@ node -e 'const c=JSON.parse(process.argv[1]); if (c.name!=="Unfounded Company"||
 show company/CHARTER.md | grep -q '{{COMPANY}}' || bad "company/CHARTER.md has no {{COMPANY}} placeholder (a founded charter was committed)"
 node -e 'const p=JSON.parse(process.argv[1]); if (!String(p.companyStart||"").startsWith("1970")) process.exit(1)' "$(show company/competence-policy.json)" \
   || bad "company/competence-policy.json carries a founding date"
+node -e 'const a=JSON.parse(process.argv[1]).agents||{}; const k=Object.keys(a); if (k.length!==1||k[0]!=="agent"||a.agent.name!=="Founder") process.exit(1)' "$(show company/tools/loops.json)" \
+  || bad "company/tools/loops.json lists more than the template Founder (a running company's crew was committed)"
 # 2. runtime folders hold nothing but .gitkeep
 for d in company/work company/state company/owner company/hiring; do
   extra="$(grep "^$d/" <<<"$tracked" | grep -v "/.gitkeep$" || true)"; [[ -z "$extra" ]] || bad "runtime files tracked under $d: $(echo $extra | head -c 200)"

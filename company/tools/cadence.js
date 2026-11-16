@@ -1,27 +1,39 @@
 #!/usr/bin/env node
-/* cadence.js — how often the company wakes: the dispatcher tick, each seat's loop schedule, cooldown and priority.
+/* cadence.js — how often the company wakes (its tempo): the dispatcher tick, each seat's loop schedule, cooldown and
+ * priority, inside bounds only the owner sets. Plain-words guide: docs/TEMPO.md.
  *
  *   node company/tools/cadence.js show [--json]
- *   node company/tools/cadence.js set-default <minutes> --by <name> [--cooldown <min>] [--max-per-tick N]
+ *   node company/tools/cadence.js set-default [<tick minutes>] [--cooldown <min>] [--max-per-tick N] --by <name> [--why "…"]
  *   node company/tools/cadence.js set <seatId> [--loop-every <cron-or-minutes>] [--cooldown <min>] [--priority N]
- *                                  [--wake-on-inbox on|off] [--wake-on-owner on|off] --by <name>
+ *                                  [--wake-on-inbox on|off] [--wake-on-owner on|off] [--peak-ok on|off] --by <name> [--why "…"]
+ *   node company/tools/cadence.js bounds [--tick-min 5-30] [--cooldown-min 10-120] [--max-wakes-per-hour N]
+ *                                  [--max-wakes-per-day N] [--quiet-hours 22:00-07:00|off] [--mode fixed|bounded-auto]
+ *                                  [--auto-expire-min N] [--min-change-interval-min N] --by owner
+ *   node company/tools/cadence.js end-temporary --by <name> [--why "…"]     end a temporary speed-up early
  *   node company/tools/cadence.js apply [--dry-run] [--approved-ref <questionId>] [--by <name>]
  *   node company/tools/cadence.js selftest
  *
- * Source of truth: company/work/ops/cadence.json (defaults: company/defaults/work/ops/cadence.json), merged with the
- * per-seat fields already in loops.json (cooldownMin, priority, wakeOnInbox, wakeOnOwnerMessage); a value set in
- * cadence.json wins. `set` and `set-default` only edit cadence.json. `apply` makes it true:
- *   - writes the per-seat fields into loops.json (dispatch.js reads them from there);
- *   - for a seat with loopEvery, updates its loop routine's schedule (POST /api/cron/update {id, patch:{schedule}}),
- *     only when the station's schedule differs;
- *   - rewrites OnUnitActiveSec in ~/.config/systemd/user/<serviceName>-dispatch.timer. It never runs systemctl: it
- *     prints the reload line for the caller.
- * dispatch.js reads defaultCooldownMin and maxPerTick from cadence.json directly (env vars still override), so those
- * two need no apply. Governance: category 'schedules' (co.gate). At 'approve', apply refuses without
- * --approved-ref <questionId> (ask the owner first with company/tools/inbox.js ask); at 'notify' it applies and tells
- * the owner.
- * loopEvery is minutes (30 => "every 30m"), "every Nm" / "every Nh", or a 5-field cron ("0 9 * * 1-5"), so the
- * station's stored schedule can be compared exactly.
+ * Source of truth: company/work/ops/cadence.json (defaults: company/defaults/work/ops/cadence.json).
+ *   base values   dispatcherTickMin, defaultCooldownMin, maxPerTick, seats.<id>.*: the owner's (or a reviewed change's)
+ *   bounds        tickMin [lo,hi], cooldownMin [lo,hi], maxWakesPerHour, maxWakesPerDay, quietHours "HH:MM-HH:MM"|null
+ *   tempo         mode fixed|bounded-auto, autoExpireMin, minChangeIntervalMin
+ *   temporary     {set, by, why, at, expiresAt}: an agent's speed-up (or slow-down), never a new baseline
+ * Who may change what (tempo controls spend RATE, liveness cadence and SLA response, so nobody edits their own throttle):
+ *   - the owner (--by owner or the owner's name, from outside an agent's run): anything, base values and bounds included;
+ *   - an agent, mode bounded-auto, every value inside bounds: set-default writes a TEMPORARY change (--why required) that
+ *     expires after tempo.autoExpireMin back to the base; set <seat> (cooldown inside bounds, loopEvery no shorter than
+ *     the cooldown floor) is persistent. Both follow the 'schedules' self-governance level (lib/governance.js decide), are
+ *     logged, and are rate-limited: no tempo change within tempo.minChangeIntervalMin of the previous change or of the
+ *     end of the previous speed-up (hysteresis: a speed-up cannot be chained back to back);
+ *   - anything outside bounds, maxPerTick, and bounds/tempo themselves: owner only, or a reviewed change —
+ *     `harness-change.js propose --kind schedule --target cadence.json --change '{"/bounds/tickMin":[3,30]}'`, reviewed
+ *     by the finance (rate), risk (liveness, SLA) and people (workload) holders, never the proposer.
+ *   - a loop routine clock (loopEvery cron) inside a provider's peak-price block (offpeak-clocks.js) is refused unless
+ *     the owner sets the seat's peakOk.
+ * The dispatcher (company/tools/dispatcher-loop.js) re-reads the effective tempo every iteration, so a change needs no
+ * reload; dispatch.js asks tempoAllows(seatId, now) before each wake (wakes-per-hour/day caps, quiet hours).
+ * `apply` writes per-seat fields into loops.json and updates loop routine schedules on the station (POST /api/cron/update).
+ * loopEvery is minutes (30 => "every 30m"), "every Nm" / "every Nh", or a 5-field cron ("0 9 * * 1-5").
  */
 'use strict';
 const fs = require('fs');
@@ -30,33 +42,54 @@ const os = require('os');
 const co = require('./lib/company');
 
 const BUILTIN = { dispatcherTickMin: 10, defaultCooldownMin: 40, maxPerTick: 4, seats: {} };
+const DEFAULT_BOUNDS = { tickMin: [5, 30], cooldownMin: [10, 120], maxWakesPerHour: 12, maxWakesPerDay: 120, quietHours: null };
+const DEFAULT_TEMPO = { mode: 'bounded-auto', autoExpireMin: 30, minChangeIntervalMin: 15 };
 const SEAT_FIELDS = ['cooldownMin', 'priority', 'wakeOnInbox', 'wakeOnOwnerMessage'];
 const S = {
   file: co.p('company', 'work', 'ops', 'cadence.json'),
   defaultFile: co.p('company', 'defaults', 'work', 'ops', 'cadence.json'),
+  wakesFile: co.p('company', 'state', 'tempo-wakes.json'),
+  loopStateFile: co.p('company', 'state', 'dispatcher-loop.json'),
   loopsFile: co.LOOPS_FILE,
   unitDir: process.env.CADENCE_UNIT_DIR || path.join(os.homedir(), '.config', 'systemd', 'user'),
   service: () => (co.config.station && co.config.station.serviceName) || 'capheos-station',
   call: (method, p, body) => require('./station-crew.js').call(method, p, body, 20000),
   gate: () => co.gate('schedules'),
   governance: () => { try { return require('./lib/governance'); } catch (_) { return null; } },
+  decide: (cat, o) => require('./lib/governance').decide(cat, o),
+  underStation: () => { try { return require('./provenance.js').underStation(); } catch (_) { return false; } },
+  ownerName: () => (co.config.owner && co.config.owner.name) || 'Owner',
+  peakCfg: () => require('./offpeak-hold.js').peakConfig(),
   notify: text => require('./owner-inbox.js').send({ from: co.nameOf(co.ceo()), text }),
   now: () => Date.now(),
 };
 
+const E = (msg, extra) => Object.assign(new Error(msg), { refused: true }, extra || {});
 function load() {
   const c = co.readJson(S.file, null) || co.readJson(S.defaultFile, null) || {};
-  return Object.assign({}, BUILTIN, c, { seats: Object.assign({}, (c && c.seats) || {}) });
+  const out = Object.assign({}, BUILTIN, c, { seats: Object.assign({}, (c && c.seats) || {}) });
+  out.bounds = Object.assign({}, DEFAULT_BOUNDS, (c && c.bounds) || {});
+  out.tempo = Object.assign({}, DEFAULT_TEMPO, (c && c.tempo) || {});
+  return out;
 }
 function save(c) {
   fs.mkdirSync(path.dirname(S.file), { recursive: true });
+  const text = JSON.stringify(c, null, 2) + '\n';
   const tmp = S.file + '.tmp-' + process.pid;
-  fs.writeFileSync(tmp, JSON.stringify(c, null, 2) + '\n');
+  fs.writeFileSync(tmp, text);
   fs.renameSync(tmp, S.file);
+  try { require('./provenance.js').wrote(S.file, text, 'cadence.js'); } catch (_) {}
 }
 function loops() { return co.readJson(S.loopsFile, {}) || {}; }
 const posInt = (v, what) => { const n = Number(v); if (!Number.isInteger(n) || n < 1) throw new Error(what + ' must be a whole number >= 1 (got ' + v + ')'); return n; };
-const onOff = (v, what) => { if (v === 'on' || v === true) return true; if (v === 'off') return false; throw new Error(what + ' must be on or off'); };
+const onOff = (v, what) => { if (v === 'on' || v === true) return true; if (v === 'off' || v === false) return false; throw new Error(what + ' must be on or off'); };
+const iso = ms => new Date(ms).toISOString();
+function isOwner(by) {
+  const b = String(by || '').trim().toLowerCase();
+  if (!b || S.underStation()) return false;   // an agent's run cannot claim to be the owner
+  return b === 'owner' || b === String(S.ownerName()).trim().toLowerCase();
+}
+const needWhy = why => { const w = typeof why === 'string' ? why.trim() : ''; if (!w) throw E('--why "<reason>" is required: every tempo change by the crew is logged with its reason'); return w.slice(0, 300); };
 
 /* loopEvery -> {kind:'interval', minutes, text} | {kind:'cron', expr, text}. Throws on anything else. */
 function parseEvery(v) {
@@ -74,9 +107,132 @@ function sameSchedule(want, cur) {
   return cur.kind === 'cron' && String(cur.expr || '').trim().split(/\s+/).join(' ') === want.expr;
 }
 
-/* The merged view: what each seat runs on, and where each value comes from. */
+/* ---------------- bounds, the effective tempo, the caps ---------------- */
+function parseRange(v, what) {
+  const a = Array.isArray(v) ? v : String(v).split(/[-,]/);
+  if (a.length !== 2) throw new Error(what + ' is "<lo>-<hi>" minutes (got ' + v + ')');
+  const lo = posInt(a[0], what + ' low'), hi = posInt(a[1], what + ' high');
+  if (lo > hi) throw new Error(what + ': low ' + lo + ' is above high ' + hi);
+  return [lo, hi];
+}
+function parseQuiet(v) {
+  if (v == null || v === 'off' || v === 'none' || v === '') return null;
+  const m = String(v).trim().match(/^([01]\d|2[0-3]):([0-5]\d)\s*-\s*([01]\d|2[0-3]):([0-5]\d)$/);
+  if (!m) throw new Error('quiet hours are "HH:MM-HH:MM" in the company timezone, or off (got ' + v + ')');
+  return m[1] + ':' + m[2] + '-' + m[3] + ':' + m[4];
+}
+const inRange = (n, r) => Array.isArray(r) && Number(n) >= r[0] && Number(n) <= r[1];
+function inQuiet(quiet, now) {
+  if (!quiet) return false;
+  const [a, b] = quiet.split('-').map(t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; });
+  const lp = co.localParts(new Date(now)); const x = lp.hour * 60 + lp.minute;
+  return a <= b ? (x >= a && x < b) : (x >= a || x < b);
+}
+// the temporary change, when one is set and not yet expired
+function activeTemporary(c, now) {
+  const t = c && c.temporary;
+  if (!t || !t.set || t.endedAt || !(Date.parse(t.expiresAt) > now)) return null;
+  return t;
+}
+/* effective({now}) -> what the dispatcher runs on right now: the base, or an active temporary change over it. */
+function effective(opts) {
+  const now = (opts && opts.now) || S.now();
+  const c = (opts && opts.cadence) || load();
+  const base = { tickMin: c.dispatcherTickMin, cooldownMin: c.defaultCooldownMin, maxPerTick: c.maxPerTick };
+  const t = activeTemporary(c, now);
+  const eff = Object.assign({}, base);
+  if (t) { if (t.set.dispatcherTickMin) eff.tickMin = t.set.dispatcherTickMin; if (t.set.defaultCooldownMin) eff.cooldownMin = t.set.defaultCooldownMin; }
+  const reason = t ? 'temporary (' + Object.entries(t.set).map(([k, v]) => k + '=' + v).join(', ') + ') by ' + t.by + ' until ' + t.expiresAt + ': ' + t.why
+    : 'base (owner-set)' + (c.temporary && c.temporary.set ? '; the last speed-up by ' + c.temporary.by + ' expired at ' + c.temporary.expiresAt : '');
+  return Object.assign(eff, { source: t ? 'temporary' : 'base', base, temporary: t, quiet: inQuiet(c.bounds.quietHours, now), reason });
+}
+// the time of the last tempo change, for the rate limit: a recorded change, or the end of the last speed-up
+function lastTempoChange(c, now) {
+  let at = Date.parse(c.tempoLastChangeAt || '') || 0;
+  const t = c.temporary;
+  if (t && t.set) { const end = Math.min(Date.parse(t.expiresAt) || 0, Date.parse(t.endedAt || '') || Infinity); if (end <= now && end > at) at = end; }
+  return at;
+}
+function rateLimit(c, now) {
+  const gap = Number(c.tempo.minChangeIntervalMin) * 60000;
+  const last = lastTempoChange(c, now);
+  if (last && now - last < gap) {
+    const wait = Math.ceil((gap - (now - last)) / 60000);
+    throw E('tempo changed less than ' + c.tempo.minChangeIntervalMin + ' min ago (' + iso(last) + '); try again in ' + wait + ' min. The limit (tempo.minChangeIntervalMin) is the owner\'s', { code: 'rate' });
+  }
+}
+const proposeHint = set => 'outside the owner\'s bounds: ask the owner, or propose it for review by finance, risk and people: node company/tools/harness-change.js propose --kind schedule --target cadence.json --change \'' + JSON.stringify(set) + '\' --why "…" --by <you>';
+
+/* wakes against the caps: company/state/tempo-wakes.json, the last 24 hours */
+function readWakes(now) {
+  const w = co.readJson(S.wakesFile, null) || {};
+  return (Array.isArray(w.wakes) ? w.wakes : []).filter(x => x && Number(x.at) > now - 86400e3);
+}
+function wakeCounts(now, list) {
+  const wakes = list || readWakes(now);
+  return { hour: wakes.filter(x => x.at > now - 3600e3).length, day: wakes.length };
+}
+/* tempoAllows(seatId, now, {record, ownerWake}) -> {ok, reason, hour, day, maxPerHour, maxPerDay}
+ * The dispatcher asks before each wake. Owner-message wakes are never held (the owner is waiting) but are counted.
+ * With record:true an allowed wake is written down (call it right before firing, and only for a real tick). */
+function tempoAllows(seatId, now, opts) {
+  opts = opts || {}; now = Number(now) || S.now();
+  let c; try { c = load(); } catch (_) { return { ok: true, reason: 'cadence unreadable: not held' }; }
+  const b = c.bounds; const wakes = readWakes(now); const n = wakeCounts(now, wakes);
+  const out = { hour: n.hour, day: n.day, maxPerHour: b.maxWakesPerHour, maxPerDay: b.maxWakesPerDay, ok: true, reason: null };
+  if (!opts.ownerWake) {
+    if (inQuiet(b.quietHours, now)) Object.assign(out, { ok: false, reason: 'quiet hours ' + b.quietHours + ' (' + co.TZ + ')' });
+    else if (Number(b.maxWakesPerHour) > 0 && n.hour >= b.maxWakesPerHour) Object.assign(out, { ok: false, reason: n.hour + ' wakes in the last hour, cap ' + b.maxWakesPerHour });
+    else if (Number(b.maxWakesPerDay) > 0 && n.day >= b.maxWakesPerDay) Object.assign(out, { ok: false, reason: n.day + ' wakes in the last 24 h, cap ' + b.maxWakesPerDay });
+  }
+  if (out.ok && opts.record) {
+    try {
+      wakes.push({ at: now, seat: String(seatId || '?'), owner: opts.ownerWake ? true : undefined });
+      fs.mkdirSync(path.dirname(S.wakesFile), { recursive: true });
+      const tmp = S.wakesFile + '.tmp-' + process.pid;
+      fs.writeFileSync(tmp, JSON.stringify({ _doc: 'wakes the dispatcher started, last 24 h (cadence.js tempoAllows); read against bounds.maxWakesPerHour/Day', wakes }) + '\n');
+      fs.renameSync(tmp, S.wakesFile);
+    } catch (_) {}
+    out.hour++; out.day++;
+  }
+  return out;
+}
+
+/* ---------------- peak-price clocks (offpeak-clocks.js) ---------------- */
+function cronDays(dow) {
+  if (dow === '*') return null;
+  const out = new Set();
+  for (const part of String(dow).split(',')) {
+    const m = part.match(/^(\d)(?:-(\d))?$/); if (!m) return null;
+    for (let d = Number(m[1]); d <= Number(m[2] != null ? m[2] : m[1]); d++) out.add(d % 7);
+  }
+  return out;
+}
+/* the peak findings for a seat's loopEvery (only a cron at one clock a day can land in a peak block) */
+function peakFindings(seatId, every, now) {
+  const want = typeof every === 'string' ? parseEvery(every) : every;
+  if (want.kind !== 'cron') return [];
+  const [mi, hr, , , dow] = want.expr.split(' ');
+  if (!/^\d+$/.test(mi) || !/^\d+$/.test(hr)) return [];
+  let OC, cfg; try { OC = require('./offpeak-clocks.js'); cfg = S.peakCfg(); } catch (_) { return []; }
+  const row = (loops().agents || {})[seatId] || {};
+  const job = { id: seatId, name: row.loop || seatId, enabled: true, schedule: { kind: 'cron', expr: want.expr, tz: co.TZ, fields: { hour: [Number(hr)], minute: [Number(mi)] } } };
+  const days = cronDays(dow); const WD = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const t0 = now || S.now();
+  for (let k = 0; k < 7; k++) {
+    const at = t0 + k * 86400e3;
+    if (days && !days.has(WD[co.localParts(new Date(at)).weekday])) continue;
+    const f = OC.audit([job], new Date(at), { cfg });
+    if (f.length) return f;
+  }
+  return [];
+}
+
+/* ---------------- the merged view ---------------- */
+function loopState() { return co.readJson(S.loopStateFile, null); }
 function view() {
   const c = load(); const L = loops(); const agents = L.agents || {};
+  const now = S.now();
   const seats = {};
   for (const [id, row] of Object.entries(agents)) {
     const set = c.seats[id] || {};
@@ -87,64 +243,182 @@ function view() {
       else if (f === 'cooldownMin') v[f] = { value: c.defaultCooldownMin, from: 'default' };
     }
     if (set.loopEvery !== undefined) v.loopEvery = set.loopEvery;
+    if (set.peakOk) v.peakOk = true;
     seats[id] = v;
   }
   const unknown = Object.keys(c.seats).filter(id => !agents[id]);
+  const eff = effective({ now, cadence: c });
+  const n = wakeCounts(now);
   return { dispatcherTickMin: c.dispatcherTickMin, defaultCooldownMin: c.defaultCooldownMin, maxPerTick: c.maxPerTick, seats, unknownSeats: unknown,
+    bounds: c.bounds, tempo: c.tempo,
+    effective: { tickMin: eff.tickMin, cooldownMin: eff.cooldownMin, maxPerTick: eff.maxPerTick, source: eff.source, quiet: eff.quiet, reason: eff.reason },
+    temporary: eff.temporary ? Object.assign({}, eff.temporary) : null,
+    wakes: { hour: n.hour, day: n.day, maxPerHour: c.bounds.maxWakesPerHour, maxPerDay: c.bounds.maxWakesPerDay },
+    loop: loopState(), changes: (c.changes || []).slice(-10).reverse(),
     file: path.relative(co.ROOT, fs.existsSync(S.file) ? S.file : S.defaultFile) };
 }
-function record(c, by, what) {
-  c.changes = (c.changes || []).concat([{ at: new Date(S.now()).toISOString(), by, what }]).slice(-50);
+function record(c, by, what, why) {
+  c.changes = (c.changes || []).concat([Object.assign({ at: iso(S.now()), by, what }, why ? { why } : {})]).slice(-50);
 }
-function setDefault(minutes, { by, cooldown, maxPerTick } = {}) {
+function gateOrThrow(by, summary, ref) {
+  const d = S.decide('schedules', { by, summary, ref, recommendation: 'yes: inside the bounds you set', default: 'the tempo stays as it is' });
+  if (!d || !d.allowed) { const gov = S.governance(); throw E(gov && d ? gov.refusal('schedules', d) : 'self-governance refused the change', { code: 'gate', questionId: d && d.questionId }); }
+  return d;
+}
+
+/* set-default: the owner sets the base; an agent sets a temporary change inside bounds */
+function setDefault(minutes, o = {}) {
+  const { by } = o;
   if (!by) throw new Error('--by <name> is required');
-  const c = load(); const what = [];
-  if (minutes != null) { c.dispatcherTickMin = posInt(minutes, 'dispatcher tick minutes'); what.push('dispatcherTickMin=' + c.dispatcherTickMin); }
-  if (cooldown != null) { c.defaultCooldownMin = posInt(cooldown, 'cooldown'); what.push('defaultCooldownMin=' + c.defaultCooldownMin); }
-  if (maxPerTick != null) { c.maxPerTick = posInt(maxPerTick, 'max-per-tick'); what.push('maxPerTick=' + c.maxPerTick); }
-  if (!what.length) throw new Error('nothing to set');
-  record(c, by, what.join(', ')); save(c);
-  return { ok: true, set: what, next: 'node company/tools/cadence.js apply' };
+  const c = load(); const now = S.now(); const set = {};
+  if (minutes != null) set.dispatcherTickMin = posInt(minutes, 'dispatcher tick minutes');
+  if (o.cooldown != null) set.defaultCooldownMin = posInt(o.cooldown, 'cooldown');
+  if (o.maxPerTick != null) set.maxPerTick = posInt(o.maxPerTick, 'max-per-tick');
+  if (!Object.keys(set).length) throw new Error('nothing to set');
+  const what = Object.entries(set).map(([k, v]) => k + '=' + v).join(', ');
+  if (isOwner(by)) {
+    Object.assign(c, set);
+    if (activeTemporary(c, now)) { c.temporary = Object.assign({}, c.temporary, { endedAt: iso(now), endedBy: by, endedWhy: 'the owner set new base values' }); }
+    record(c, by, 'base: ' + what, typeof o.why === 'string' ? o.why : null); save(c);
+    return { ok: true, base: true, set: Object.keys(set).map(k => k + '=' + set[k]) };
+  }
+  const why = needWhy(o.why);
+  const ptrs = {}; for (const [k, v] of Object.entries(set)) ptrs['/' + k] = v;
+  if (c.tempo.mode !== 'bounded-auto') throw E('tempo mode is "' + c.tempo.mode + '": the crew may not change the tempo on its own; ' + proposeHint(ptrs), { code: 'bounds' });
+  const out = [];
+  if (set.maxPerTick != null) out.push('maxPerTick (wakes per tick has no crew range; the wake caps bound it)');
+  if (set.dispatcherTickMin != null && !inRange(set.dispatcherTickMin, c.bounds.tickMin)) out.push('dispatcherTickMin ' + set.dispatcherTickMin + ' (bounds ' + c.bounds.tickMin.join('-') + ')');
+  if (set.defaultCooldownMin != null && !inRange(set.defaultCooldownMin, c.bounds.cooldownMin)) out.push('defaultCooldownMin ' + set.defaultCooldownMin + ' (bounds ' + c.bounds.cooldownMin.join('-') + ')');
+  if (out.length) throw E(out.join('; ') + ' is ' + proposeHint(ptrs), { code: 'bounds' });
+  rateLimit(c, now);
+  gateOrThrow(by, 'change the tempo for ' + c.tempo.autoExpireMin + ' min (' + what + '): ' + why, 'cadence:tempo:' + what);
+  const expiresAt = iso(now + Number(c.tempo.autoExpireMin) * 60000);
+  c.temporary = { set, by, why, at: iso(now), expiresAt };
+  c.tempoLastChangeAt = iso(now);
+  record(c, by, 'temporary until ' + expiresAt + ': ' + what, why); save(c);
+  return { ok: true, temporary: true, set: Object.keys(set).map(k => k + '=' + set[k]), expiresAt, note: 'back to the base (' + ['dispatcherTickMin', 'defaultCooldownMin'].filter(k => set[k] != null).map(k => k + '=' + c[k]).join(', ') + ') at ' + expiresAt + '; the dispatcher loop picks it up within a minute' };
+}
+function endTemporary(o = {}) {
+  if (!o.by) throw new Error('--by <name> is required');
+  const c = load(); const now = S.now();
+  if (!activeTemporary(c, now)) return { ok: true, note: 'no temporary change is active' };
+  c.temporary = Object.assign({}, c.temporary, { endedAt: iso(now), endedBy: o.by, endedWhy: typeof o.why === 'string' ? o.why.slice(0, 300) : null });
+  record(c, o.by, 'ended the temporary change early', typeof o.why === 'string' ? o.why : null); save(c);
+  return { ok: true, ended: true };
 }
 function setSeat(seatId, o = {}) {
   if (!o.by) throw new Error('--by <name> is required');
   if (!seatId || !(loops().agents || {})[seatId]) throw new Error('no seat "' + seatId + '" in loops.json');
-  const c = load(); const s = Object.assign({}, c.seats[seatId] || {}); const what = [];
-  if (o.loopEvery != null) { s.loopEvery = parseEvery(o.loopEvery).text; what.push('loopEvery=' + s.loopEvery); }
-  if (o.cooldown != null) { s.cooldownMin = posInt(o.cooldown, 'cooldown'); what.push('cooldownMin=' + s.cooldownMin); }
+  const c = load(); const now = S.now(); const owner = isOwner(o.by);
+  const s = Object.assign({}, c.seats[seatId] || {}); const what = [];
+  let tempoField = false; let every = null;
+  if (o.loopEvery != null) { every = parseEvery(o.loopEvery); s.loopEvery = every.text; what.push('loopEvery=' + s.loopEvery); tempoField = true; }
+  if (o.cooldown != null) { s.cooldownMin = posInt(o.cooldown, 'cooldown'); what.push('cooldownMin=' + s.cooldownMin); tempoField = true; }
   if (o.priority != null) { const n = Number(o.priority); if (!Number.isFinite(n)) throw new Error('priority must be a number'); s.priority = n; what.push('priority=' + n); }
   if (o.wakeOnInbox != null) { s.wakeOnInbox = onOff(o.wakeOnInbox, 'wake-on-inbox'); what.push('wakeOnInbox=' + s.wakeOnInbox); }
   if (o.wakeOnOwner != null) { s.wakeOnOwnerMessage = onOff(o.wakeOnOwner, 'wake-on-owner'); what.push('wakeOnOwnerMessage=' + s.wakeOnOwnerMessage); }
+  if (o.peakOk != null) {
+    if (!owner) throw E('only the owner lets a loop clock run inside a peak-price block (--peak-ok)', { code: 'owner' });
+    s.peakOk = onOff(o.peakOk, 'peak-ok'); if (!s.peakOk) delete s.peakOk; what.push('peakOk=' + !!s.peakOk);
+  }
   if (!what.length) throw new Error('nothing to set');
-  c.seats[seatId] = s; record(c, o.by, seatId + ': ' + what.join(', ')); save(c);
+  if (every && !s.peakOk) {
+    const f = peakFindings(seatId, every, now);
+    if (f.length) throw E('loop clock ' + every.text + ' lands in a peak-price block (' + f[0].block + '): ' + f[0].fix + '. Only the owner can allow it (set ' + seatId + ' --peak-ok on --by owner)', { code: 'peak' });
+  }
+  let why = null;
+  if (!owner) {
+    why = needWhy(o.why);
+    const ptrs = {}; if (o.loopEvery != null) ptrs['/seats/' + seatId + '/loopEvery'] = s.loopEvery; if (o.cooldown != null) ptrs['/seats/' + seatId + '/cooldownMin'] = s.cooldownMin;
+    if (tempoField) {
+      if (c.tempo.mode !== 'bounded-auto') throw E('tempo mode is "' + c.tempo.mode + '": the crew may not change the tempo on its own; ' + proposeHint(ptrs), { code: 'bounds' });
+      if (o.cooldown != null && !inRange(s.cooldownMin, c.bounds.cooldownMin)) throw E('cooldownMin ' + s.cooldownMin + ' (bounds ' + c.bounds.cooldownMin.join('-') + ') is ' + proposeHint(ptrs), { code: 'bounds' });
+      if (every && every.kind === 'interval' && every.minutes < c.bounds.cooldownMin[0]) throw E('a loop every ' + every.minutes + ' min runs more often than the cooldown floor (' + c.bounds.cooldownMin[0] + ' min): ' + proposeHint(ptrs), { code: 'bounds' });
+      rateLimit(c, now);
+    }
+    gateOrThrow(o.by, seatId + ': ' + what.join(', ') + ' (' + why + ')', 'cadence:seat:' + seatId + ':' + what.join(','));
+    if (tempoField) c.tempoLastChangeAt = iso(now);
+  }
+  c.seats[seatId] = s; record(c, o.by, seatId + ': ' + what.join(', '), why || (typeof o.why === 'string' ? o.why : null)); save(c);
   return { ok: true, seat: seatId, set: what, next: 'node company/tools/cadence.js apply' };
+}
+/* bounds and tempo: the owner's alone */
+function setBounds(o = {}) {
+  const set = {};
+  if (o.tickMin != null) set['/bounds/tickMin'] = parseRange(o.tickMin, 'tick-min');
+  if (o.cooldownMin != null) set['/bounds/cooldownMin'] = parseRange(o.cooldownMin, 'cooldown-min');
+  if (o.maxWakesPerHour != null) set['/bounds/maxWakesPerHour'] = posInt(o.maxWakesPerHour, 'max-wakes-per-hour');
+  if (o.maxWakesPerDay != null) set['/bounds/maxWakesPerDay'] = posInt(o.maxWakesPerDay, 'max-wakes-per-day');
+  if (o.quietHours != null) set['/bounds/quietHours'] = parseQuiet(o.quietHours);
+  if (o.mode != null) { if (!['fixed', 'bounded-auto'].includes(o.mode)) throw new Error('--mode is fixed or bounded-auto'); set['/tempo/mode'] = o.mode; }
+  if (o.autoExpireMin != null) set['/tempo/autoExpireMin'] = posInt(o.autoExpireMin, 'auto-expire-min');
+  if (o.minChangeIntervalMin != null) set['/tempo/minChangeIntervalMin'] = posInt(o.minChangeIntervalMin, 'min-change-interval-min');
+  if (!Object.keys(set).length) throw new Error('nothing to set');
+  if (!o.by) throw new Error('--by owner is required');
+  if (!isOwner(o.by)) throw E('bounds and tempo are the owner\'s: nobody changes their own limits. Ask the owner, or propose it: node company/tools/harness-change.js propose --kind schedule --target cadence.json --change \'' + JSON.stringify(set) + '\' --why "…" --by <you> (reviewed by finance, risk and people)', { code: 'owner' });
+  const c = load(); const raw = co.readJson(S.file, null) || co.readJson(S.defaultFile, null) || {};
+  const b = Object.assign({}, c.bounds), t = Object.assign({}, c.tempo);
+  for (const [k, v] of Object.entries(set)) { const [, sec, key] = k.split('/'); (sec === 'bounds' ? b : t)[key] = v; }
+  if (b.tickMin[0] < 1 || b.cooldownMin[0] < 1) throw new Error('bounds must stay >= 1');
+  const next = Object.assign({}, raw, { bounds: b, tempo: t });
+  for (const k of ['dispatcherTickMin', 'defaultCooldownMin', 'maxPerTick']) if (next[k] == null) next[k] = c[k];
+  if (!next.seats) next.seats = {};
+  record(next, o.by, 'bounds/tempo: ' + Object.entries(set).map(([k, v]) => k.slice(1) + '=' + JSON.stringify(v)).join(', '), typeof o.why === 'string' ? o.why : null);
+  save(next);
+  return { ok: true, set: Object.keys(set) };
+}
+
+/* For harness-change.js --kind schedule --target cadence.json: check a proposed {pointer: value} set and turn it into
+ * whole-section sets ("/bounds", "/tempo", "/seats/<id>", or a base number), so the reviewed apply writes exactly that. */
+const PROPOSABLE = /^\/(dispatcherTickMin|defaultCooldownMin|maxPerTick|bounds\/(tickMin|cooldownMin|maxWakesPerHour|maxWakesPerDay|quietHours)|tempo\/(mode|autoExpireMin|minChangeIntervalMin)|seats\/[A-Za-z0-9_-]+\/(loopEvery|cooldownMin))$/;
+function proposal(doc, set, opts) {
+  opts = opts || {};
+  if (!set || typeof set !== 'object' || Array.isArray(set) || !Object.keys(set).length) throw new Error('--change is {"/pointer": value, …} on cadence.json');
+  const d = JSON.parse(JSON.stringify(doc || {}));
+  const out = {};
+  for (const [p, v0] of Object.entries(set)) {
+    if (!PROPOSABLE.test(p)) throw new Error(p + ' is not a tempo number in cadence.json (allowed: /dispatcherTickMin, /defaultCooldownMin, /maxPerTick, /bounds/*, /tempo/*, /seats/<id>/loopEvery|cooldownMin)');
+    const parts = p.slice(1).split('/');
+    let v = v0;
+    if (parts[0] === 'bounds') {
+      v = /Min$/.test(parts[1]) && parts[1] !== 'quietHours' ? parseRange(v0, parts[1]) : parts[1] === 'quietHours' ? parseQuiet(v0) : posInt(v0, parts[1]);
+      d.bounds = Object.assign({}, DEFAULT_BOUNDS, d.bounds || {}, { [parts[1]]: v }); out['/bounds'] = d.bounds;
+    } else if (parts[0] === 'tempo') {
+      if (parts[1] === 'mode') { if (!['fixed', 'bounded-auto'].includes(v0)) throw new Error('/tempo/mode is fixed or bounded-auto'); } else v = posInt(v0, parts[1]);
+      d.tempo = Object.assign({}, DEFAULT_TEMPO, d.tempo || {}, { [parts[1]]: v }); out['/tempo'] = d.tempo;
+    } else if (parts[0] === 'seats') {
+      if (opts.agents && !opts.agents[parts[1]]) throw new Error('no seat "' + parts[1] + '" in loops.json');
+      if (parts[2] === 'loopEvery') {
+        const w = parseEvery(v0); v = w.text;
+        const seatRow = ((d.seats || {})[parts[1]]) || {};
+        if (!seatRow.peakOk && opts.peak !== false) { const f = peakFindings(parts[1], w, opts.now); if (f.length) throw new Error('loop clock ' + w.text + ' lands in a peak-price block (' + f[0].block + '); only the owner can allow that'); }
+      } else v = posInt(v0, parts[2]);
+      d.seats = Object.assign({}, d.seats || {}); d.seats[parts[1]] = Object.assign({}, d.seats[parts[1]] || {}, { [parts[2]]: v });
+      out['/seats'] = d.seats;
+    } else { v = posInt(v0, parts[0]); out[p] = v; }
+  }
+  return out;
 }
 
 function timerPath() { return path.join(S.unitDir, S.service() + '-dispatch.timer'); }
-function timerPlan(tickMin) {
-  const f = timerPath();
-  let txt; try { txt = fs.readFileSync(f, 'utf8'); } catch (_) { return { file: f, missing: true }; }
-  const next = txt.replace(/^OnUnitActiveSec=.*$/m, 'OnUnitActiveSec=' + tickMin + 'min')
-    .replace(/^(Description=.*?every )\d+ minutes?/m, '$1' + tickMin + ' minutes');
-  return { file: f, changed: next !== txt, text: next };
-}
 
 async function apply({ dry, approvedRef, by } = {}) {
-  const level = S.gate();
+  const owner = isOwner(by);
+  const level = owner ? 'owner' : S.gate();
   if (level === 'approve') {
     if (!approvedRef) {
       return { ok: false, refused: true, gate: 'approve',
         error: 'schedules are at governance level "approve": ask the owner first, e.g. `node company/tools/inbox.js ask --from <you> --about cadence --q "May we change the company cadence to <what>?"`, then rerun with --approved-ref <questionId> once answered yes' };
     }
     const gov = S.governance();
-    if (gov && typeof gov.verifyApproval === 'function') {
-      const v = await gov.verifyApproval('schedules', approvedRef);
-      if (!v || v.ok === false) return { ok: false, refused: true, gate: 'approve', error: 'approval ' + approvedRef + ' not accepted: ' + ((v && v.reason) || 'unknown') };
+    if (gov && typeof gov.answerOf === 'function' && typeof gov.verdict === 'function') {
+      const a = gov.answerOf(approvedRef);
+      if (!a || gov.verdict(a.text) !== true) return { ok: false, refused: true, gate: 'approve', error: 'approval ' + approvedRef + ' not accepted: ' + (a ? 'the answer was not yes' : 'no answer on record') };
     }
   }
-  const c = load();
+  const c = load(); const now = S.now();
   const L = loops(); const agents = L.agents || {};
-  const plan = { loops: [], routines: [], timer: null, errors: [] };
+  const plan = { loops: [], routines: [], errors: [], warnings: [] };
   for (const [id, s] of Object.entries(c.seats)) {
     const row = agents[id];
     if (!row) { plan.errors.push('cadence.json seat "' + id + '" is not in loops.json; skipped'); continue; }
@@ -159,12 +433,13 @@ async function apply({ dry, approvedRef, by } = {}) {
       const hits = prefix ? jobs.filter(x => x && x.name && (x.name === prefix || x.name.startsWith(prefix))) : [];
       if (hits.length !== 1) { plan.errors.push(id + ': ' + (hits.length ? 'loop "' + prefix + '" matches ' + hits.length + ' routines' : 'no routine matches loop "' + prefix + '"')); continue; }
       let want; try { want = parseEvery(s.loopEvery); } catch (e) { plan.errors.push(id + ': ' + e.message); continue; }
-      if (!sameSchedule(want, hits[0].schedule)) plan.routines.push({ seat: id, id: hits[0].id, name: hits[0].name, from: (hits[0].schedule && hits[0].schedule.display) || null, to: want.text });
+      if (sameSchedule(want, hits[0].schedule)) continue;
+      if (!s.peakOk) { const f = peakFindings(id, want, now); if (f.length) { plan.errors.push(id + ': loop clock ' + want.text + ' lands in a peak-price block (' + f[0].block + '); not applied. Only the owner can allow it: cadence.js set ' + id + ' --peak-ok on --by owner'); continue; } }
+      plan.routines.push({ seat: id, id: hits[0].id, name: hits[0].name, from: (hits[0].schedule && hits[0].schedule.display) || null, to: want.text });
     }
   }
-  plan.timer = timerPlan(c.dispatcherTickMin);
-  const reload = 'systemctl --user daemon-reload && systemctl --user restart ' + S.service() + '-dispatch.timer';
-  if (dry) return { ok: true, dry: true, gate: level, plan: Object.assign({}, plan, { timer: { file: plan.timer.file, missing: !!plan.timer.missing, changed: !!plan.timer.changed } }) };
+  if (fs.existsSync(timerPath())) plan.warnings.push('the old dispatch timer ' + timerPath() + ' is still installed: run scripts/setup-station.sh to replace it with the self-paced dispatcher loop (it reads the tick from cadence.json every iteration)');
+  if (dry) return { ok: true, dry: true, gate: level, plan };
   const done = [];
   if (plan.loops.length) {
     const fresh = loops();   // re-read right before writing: another tool may have changed it
@@ -181,30 +456,34 @@ async function apply({ dry, approvedRef, by } = {}) {
       else plan.errors.push('routine "' + r.name + '" update refused: HTTP ' + res.status + ' ' + String(res.body).slice(0, 160));
     } catch (e) { plan.errors.push('routine "' + r.name + '" update failed: ' + e.message); }
   }
-  let printReload = null;
-  if (plan.timer.missing) plan.errors.push('no timer at ' + plan.timer.file + ' (scripts/setup-station.sh installs it, templated from cadence.json)');
-  else if (plan.timer.changed) { fs.writeFileSync(plan.timer.file, plan.timer.text); done.push('timer: OnUnitActiveSec=' + c.dispatcherTickMin + 'min'); printReload = reload; }
   if (done.length) {
-    const cc = load(); cc.appliedAt = new Date(S.now()).toISOString(); if (by) cc.appliedBy = by; save(cc);
+    const cc = load(); cc.appliedAt = iso(S.now()); if (by) cc.appliedBy = by;
+    const raw = co.readJson(S.file, null); if (raw) { raw.appliedAt = cc.appliedAt; if (by) raw.appliedBy = by; save(raw); } else save(cc);
     if (level === 'notify') { try { S.notify('Cadence changed' + (by ? ' by ' + by : '') + ': ' + done.join('; ') + '.'); } catch (e) { plan.errors.push('owner notice failed: ' + e.message); } }
   }
-  return { ok: !plan.errors.length, gate: level, applied: done, errors: plan.errors, run: printReload };
+  return { ok: !plan.errors.length, gate: level, applied: done, errors: plan.errors, warnings: plan.warnings };
 }
 
-module.exports = { S, load, view, parseEvery, sameSchedule, setDefault, setSeat, apply };
+module.exports = { S, BUILTIN, DEFAULT_BOUNDS, DEFAULT_TEMPO, load, view, effective, tempoAllows, wakeCounts, inQuiet, peakFindings, proposal, parseEvery, sameSchedule, setDefault, setSeat, setBounds, endTemporary, apply, isOwner };
 
 async function selftest() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadence-selftest-'));
   const saved = Object.assign({}, S);
   const cases = [];
   const check = (name, cond, detail) => cases.push({ name, pass: !!cond, detail: detail || '' });
-  const calls = []; const told = [];
+  const throwsWith = (fn, re) => { try { fn(); return false; } catch (e) { return re.test(e.message) ? true : e.message; } };
+  const calls = []; const told = []; const decided = [];
   const jobs = [{ id: 'j1', name: 'Founder loop', schedule: { kind: 'interval', minutes: 120, display: 'every 2h' } },
     { id: 'j2', name: 'Desk loop', schedule: { kind: 'cron', expr: '0 9 * * *', display: 'cron 0 9 * * *' } }];
-  let level = 'auto';
+  let level = 'auto'; let decision = { allowed: true, level: 'auto' };
+  let now = Date.parse('2026-01-05T10:00:00Z');   // a Monday
+  const mm = require('./lib/models-money');
   Object.assign(S, {
     file: path.join(dir, 'work', 'cadence.json'), defaultFile: path.join(dir, 'defaults.json'), loopsFile: path.join(dir, 'loops.json'),
-    unitDir: dir, service: () => 'test-station', gate: () => level, governance: () => null, notify: t => told.push(t), now: () => Date.parse('2026-01-05T10:00:00Z'),
+    wakesFile: path.join(dir, 'state', 'tempo-wakes.json'), loopStateFile: path.join(dir, 'state', 'dispatcher-loop.json'),
+    unitDir: dir, service: () => 'test-station', gate: () => level, governance: () => null, notify: t => told.push(t), now: () => now,
+    decide: (cat, o) => { decided.push([cat, o.ref]); return decision; }, underStation: () => false, ownerName: () => 'Pat',
+    peakCfg: () => mm.normalisePeak('deepseek', { timezone: co.TZ, days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], blocks: [['09:00', '12:00']], marginMin: 10 }),
     call: async (method, p, body) => {
       calls.push([method, p, body]);
       if (method === 'GET' && p === '/api/cron') return { status: 200, body: JSON.stringify({ jobs }) };
@@ -212,9 +491,8 @@ async function selftest() {
       return { status: 404, body: '{}' };
     },
   });
-  fs.writeFileSync(S.defaultFile, JSON.stringify(BUILTIN));
+  fs.writeFileSync(S.defaultFile, JSON.stringify(Object.assign({}, BUILTIN, { bounds: DEFAULT_BOUNDS, tempo: DEFAULT_TEMPO })));
   fs.writeFileSync(S.loopsFile, JSON.stringify({ _doc: 'x', agents: { agent: { name: 'Alex', loop: 'Founder loop', priority: 100, wakeOnInbox: true, manager: null }, desk: { name: 'Sam', loop: 'Desk loop', cooldownMin: 30, manager: 'agent' } } }));
-  fs.writeFileSync(path.join(dir, 'test-station-dispatch.timer'), '[Unit]\nDescription=Run the X dispatcher every 10 minutes\n\n[Timer]\nOnBootSec=2min\nOnUnitActiveSec=10min\n');
   try {
     check('parseEvery minutes', parseEvery('30').text === 'every 30m' && parseEvery('every 2h').minutes === 120);
     check('parseEvery cron', parseEvery('0 9 * * 1-5').kind === 'cron');
@@ -222,36 +500,115 @@ async function selftest() {
     check('parseEvery refuses a phrase it cannot compare', bad);
     let v = view();
     check('view merges loops.json and defaults', v.seats.desk.cooldownMin.value === 30 && v.seats.desk.cooldownMin.from === 'loops' && v.seats.agent.cooldownMin.from === 'default' && v.dispatcherTickMin === 10);
-    setDefault(15, { by: 'Alex', maxPerTick: 3 });
-    setSeat('desk', { by: 'Alex', loopEvery: '45', cooldown: 20, wakeOnOwner: 'off' });
-    setSeat('agent', { by: 'Alex', loopEvery: 'every 2h', priority: 90 });
+    check('view shows bounds, tempo and the effective tempo', v.bounds.tickMin.join('-') === '5-30' && v.tempo.mode === 'bounded-auto' && v.effective.tickMin === 10 && v.effective.source === 'base');
+
+    // the owner sets the base, anything goes
+    setDefault(3, { by: 'owner', maxPerTick: 3 });
+    check('the owner sets base values, even outside bounds', load().dispatcherTickMin === 3 && load().maxPerTick === 3 && !load().temporary);
+    setDefault(10, { by: 'Pat' });
+    check('the owner by name counts as the owner', load().dispatcherTickMin === 10);
+    S.underStation = () => true;
+    check('"owner" from inside an agent\'s run is not the owner', throwsWith(() => setDefault(3, { by: 'owner', why: 'x' }), /outside the owner's bounds/) === true);
+    S.underStation = () => false;
+
+    // an agent, inside bounds: temporary, with a reason, gated, rate-limited, expiring
+    check('an agent needs --why', throwsWith(() => setDefault(5, { by: 'Alex' }), /--why/) === true);
+    check('an agent outside bounds is told to propose it (finance, risk, people)', throwsWith(() => setDefault(3, { by: 'Alex', why: 'busy' }), /harness-change\.js propose --kind schedule --target cadence\.json/) === true);
+    check('an agent may not change wakes per tick', throwsWith(() => setDefault(null, { by: 'Alex', why: 'busy', maxPerTick: 8 }), /maxPerTick/) === true);
+    const t1 = setDefault(5, { by: 'Alex', why: 'owner asked for a fast answer', cooldown: 15 });
+    let eff = effective();
+    check('an agent inside bounds gets a temporary change', t1.temporary && eff.tickMin === 5 && eff.cooldownMin === 15 && eff.source === 'temporary' && load().dispatcherTickMin === 10, JSON.stringify(eff));
+    check('the temporary change follows the schedules gate', decided.length === 1 && decided[0][0] === 'schedules');
+    check('the change is logged with who and why', /temporary until/.test(load().changes.slice(-1)[0].what) && load().changes.slice(-1)[0].why === 'owner asked for a fast answer');
+    now += 5 * 60000;
+    check('a second change inside the rate limit is refused', throwsWith(() => setDefault(6, { by: 'Alex', why: 'again' }), /less than 15 min ago/) === true);
+    now += 26 * 60000;   // 31 min after the change: expired
+    eff = effective();
+    check('the temporary change expires back to the base', eff.tickMin === 10 && eff.cooldownMin === 40 && eff.source === 'base' && /expired/.test(eff.reason), JSON.stringify(eff));
+    now += 5 * 60000;    // 5 min after the expiry
+    check('hysteresis: no new speed-up within the interval after one ends', throwsWith(() => setDefault(5, { by: 'Alex', why: 'again' }), /less than 15 min ago/) === true);
+    now += 11 * 60000;
+    decision = { allowed: false, level: 'approve', questionId: 'q-9' };
+    S.governance = () => ({ refusal: (cat, d) => 'self-governance: ' + cat + ' waits for the owner (' + d.questionId + ')' });
+    check('at approve the change waits for the owner', throwsWith(() => setDefault(5, { by: 'Alex', why: 'again' }), /waits for the owner \(q-9\)/) === true && !activeTemporary(load(), now));
+    decision = { allowed: true, level: 'auto' }; S.governance = () => null;
+    setDefault(6, { by: 'Alex', why: 'one more' });
+    const ended = endTemporary({ by: 'Alex', why: 'done' });
+    check('a temporary change can be ended early', ended.ended && effective().tickMin === 10);
+    now += 16 * 60000;
+    setDefault(8, { by: 'Alex', why: 'x' });
+    setDefault(12, { by: 'owner' });
+    check('a new owner base ends the temporary change', effective().tickMin === 12 && effective().source === 'base');
+
+    // bounds and tempo: owner only
+    check('an agent may not change bounds', throwsWith(() => setBounds({ by: 'Alex', tickMin: '1-30' }), /owner's/) === true);
+    setBounds({ by: 'owner', tickMin: '2-20', maxWakesPerHour: 2, quietHours: '22:00-07:00', mode: 'fixed' });
+    let c = load();
+    check('the owner sets bounds and tempo', c.bounds.tickMin.join('-') === '2-20' && c.bounds.maxWakesPerHour === 2 && c.bounds.quietHours === '22:00-07:00' && c.tempo.mode === 'fixed' && c.bounds.maxWakesPerDay === 120);
+    now += 16 * 60000;
+    check('tempo mode fixed: no crew changes at all', throwsWith(() => setDefault(5, { by: 'Alex', why: 'x' }), /mode is "fixed"/) === true);
+    setBounds({ by: 'owner', mode: 'bounded-auto' });
+
+    // seats
+    check('a seat cooldown outside bounds is refused for an agent', throwsWith(() => setSeat('desk', { by: 'Alex', why: 'x', cooldown: 5 }), /bounds 10-120/) === true);
+    check('a loop every 5 min is under the cooldown floor', throwsWith(() => setSeat('desk', { by: 'Alex', why: 'x', loopEvery: '5' }), /cooldown floor/) === true);
+    check('a loop clock inside a peak block is refused', throwsWith(() => setSeat('desk', { by: 'owner', loopEvery: '30 10 * * *' }), /peak-price block/) === true);
+    check('only the owner sets peakOk', throwsWith(() => setSeat('desk', { by: 'Alex', why: 'x', peakOk: 'on' }), /only the owner/) === true);
+    check('a weekend-only clock is not in a weekday peak block', peakFindings('desk', '30 10 * * 0,6', now).length === 0);
+    setSeat('desk', { by: 'Alex', why: 'review queue', loopEvery: '45', cooldown: 20, wakeOnOwner: 'off' });
+    setSeat('agent', { by: 'owner', loopEvery: 'every 2h', priority: 90 });
     v = view();
-    check('set writes cadence.json and wins in the view', v.seats.desk.cooldownMin.from === 'cadence' && v.seats.desk.cooldownMin.value === 20 && v.maxPerTick === 3 && fs.existsSync(S.file));
-    let threw = false; try { setSeat('nobody', { by: 'Alex', cooldown: 5 }); } catch (_) { threw = true; }
+    check('set writes cadence.json and wins in the view', v.seats.desk.cooldownMin.from === 'cadence' && v.seats.desk.cooldownMin.value === 20 && fs.existsSync(S.file));
+    let threw = false; try { setSeat('nobody', { by: 'owner', cooldown: 5 }); } catch (_) { threw = true; }
     check('set refuses an unknown seat', threw);
-    const dry = await apply({ dry: true });
-    check('dry-run plans without writing', dry.plan.loops.length === 3 && dry.plan.routines.length === 1 && dry.plan.timer.changed && JSON.parse(fs.readFileSync(S.loopsFile, 'utf8')).agents.desk.cooldownMin === 30, JSON.stringify(dry.plan));
+
+    // proposals for harness-change.js
+    const pr = proposal(load(), { '/bounds/tickMin': [3, 30], '/tempo/autoExpireMin': 45, '/seats/desk/cooldownMin': 25, '/maxPerTick': 6 }, { agents: loops().agents, now });
+    check('a proposal becomes whole-section sets', pr['/bounds'].tickMin.join('-') === '3-30' && pr['/bounds'].maxWakesPerHour === 2 && pr['/tempo'].autoExpireMin === 45 && pr['/seats'].desk.cooldownMin === 25 && pr['/seats'].desk.loopEvery === 'every 45m' && pr['/maxPerTick'] === 6, JSON.stringify(pr));
+    check('a proposal refuses a non-tempo pointer', throwsWith(() => proposal(load(), { '/changes': [] }), /not a tempo number/) === true);
+    check('a proposal refuses a peak clock', throwsWith(() => proposal(load(), { '/seats/desk/loopEvery': '0 10 * * 1' }, { now }), /peak-price/) === true);
+
+    // wake caps and quiet hours
+    now = Date.parse('2026-01-05T12:00:00Z');
+    const quietNow = (() => { for (let h = 0; h < 24; h++) { const t = now + h * 3600e3; if (inQuiet('22:00-07:00', t)) return t; } return null; })();
+    check('quiet hours hold a wake, not an owner wake', !tempoAllows('desk', quietNow).ok && /quiet hours/.test(tempoAllows('desk', quietNow).reason) && tempoAllows('agent', quietNow, { ownerWake: true }).ok);
+    const day = (() => { for (let h = 0; h < 24; h++) { const t = now + h * 3600e3; if (!inQuiet('22:00-07:00', t) && !inQuiet('22:00-07:00', t + 3 * 3600e3)) return t; } return now; })();
+    const a1 = tempoAllows('desk', day, { record: true }), a2 = tempoAllows('agent', day + 1000, { record: true }), a3 = tempoAllows('desk', day + 2000, { record: true });
+    check('wakes per hour are capped', a1.ok && a2.ok && !a3.ok && /cap 2/.test(a3.reason), JSON.stringify([a1, a2, a3]));
+    check('an owner wake is never held but is counted', tempoAllows('agent', day + 3000, { record: true, ownerWake: true }).ok && wakeCounts(day + 4000).hour === 3);
+    check('an hour later the hour cap has room again', tempoAllows('desk', day + 3601e3, { record: true }).ok);
+    setBounds({ by: 'owner', maxWakesPerHour: 100, maxWakesPerDay: 4 });
+    check('wakes per day are capped', !tempoAllows('desk', day + 2 * 3600e3).ok && /24 h, cap 4/.test(tempoAllows('desk', day + 2 * 3600e3).reason));
+    check('the view shows wake counts against the caps', view().wakes.maxPerDay === 4 && view().wakes.day >= 0);
+
+    // apply
+    now = Date.parse('2026-01-05T10:00:00Z');
+    const dry = await apply({ dry: true, by: 'Alex' });
+    check('dry-run plans without writing', dry.plan.loops.length === 3 && dry.plan.routines.length === 1 && JSON.parse(fs.readFileSync(S.loopsFile, 'utf8')).agents.desk.cooldownMin === 30, JSON.stringify(dry.plan));
     level = 'approve';
-    const refused = await apply({});
-    check('approve level refuses without --approved-ref and says how to ask', refused.refused && /inbox\.js ask/.test(refused.error));
+    const refused = await apply({ by: 'Alex' });
+    check('approve level refuses an agent without --approved-ref and says how to ask', refused.refused && /inbox\.js ask/.test(refused.error));
+    const ownerApply = await apply({ dry: true, by: 'owner' });
+    check('the owner applies without the gate', ownerApply.ok && ownerApply.gate === 'owner');
     level = 'notify';
+    fs.writeFileSync(path.join(dir, 'test-station-dispatch.timer'), '[Timer]\nOnUnitActiveSec=10min\n');
     const r = await apply({ by: 'Alex' });
     const L = JSON.parse(fs.readFileSync(S.loopsFile, 'utf8'));
     check('apply writes per-seat fields into loops.json', L.agents.desk.cooldownMin === 20 && L.agents.desk.wakeOnOwnerMessage === false && L.agents.agent.priority === 90 && L._doc === 'x', JSON.stringify(r));
-    const ups = calls.filter(c => c[1] === '/api/cron/update');
+    const ups = calls.filter(x => x[1] === '/api/cron/update');
     check('apply updates only the routine whose schedule changed', ups.length === 1 && ups[0][2].id === 'j2' && ups[0][2].patch.schedule === 'every 45m');
-    const t = fs.readFileSync(path.join(dir, 'test-station-dispatch.timer'), 'utf8');
-    check('apply rewrites the timer interval', /OnUnitActiveSec=15min/.test(t) && /every 15 minutes/.test(t));
-    check('apply prints the systemctl line, never runs it', /systemctl --user daemon-reload && systemctl --user restart test-station-dispatch\.timer/.test(r.run || ''));
+    check('apply never touches a timer; it says to migrate an old one', /setup-station\.sh/.test((r.warnings || []).join(' ')) && /OnUnitActiveSec=10min/.test(fs.readFileSync(path.join(dir, 'test-station-dispatch.timer'), 'utf8')));
     check('notify level tells the owner', told.length === 1 && /Cadence changed/.test(told[0]));
     const again = await apply({ by: 'Alex' });
-    check('a second apply changes nothing', again.applied.length === 0 && !again.run && calls.filter(c => c[1] === '/api/cron/update').length === 1, JSON.stringify(again));
+    check('a second apply changes nothing', again.applied.length === 0 && calls.filter(x => x[1] === '/api/cron/update').length === 1, JSON.stringify(again));
+    const raw = JSON.parse(fs.readFileSync(S.file, 'utf8'));
+    check('apply keeps the file as written (no builtin values folded in)', raw.bounds && raw.tempo && raw.appliedBy === 'Alex');
   } finally {
     Object.assign(S, saved);
     fs.rmSync(dir, { recursive: true, force: true });
   }
-  const badc = cases.filter(c => !c.pass);
-  for (const c of cases) console.log((c.pass ? 'ok   ' : 'FAIL ') + c.name + (c.pass ? '' : '  [' + c.detail + ']'));
+  const badc = cases.filter(x => !x.pass);
+  for (const x of cases) console.log((x.pass ? 'ok   ' : 'FAIL ') + x.name + (x.pass ? '' : '  [' + x.detail + ']'));
   console.log(badc.length ? 'CADENCE SELFTEST FAILED: ' + badc.length + ' of ' + cases.length : 'CADENCE SELFTEST PASSED: ' + cases.length + ' cases');
   return badc.length ? 1 : 0;
 }
@@ -259,13 +616,18 @@ async function selftest() {
 if (require.main === module) {
   const a = process.argv.slice(2); const cmd = a[0] || 'show';
   const opt = k => { const i = a.indexOf('--' + k); return i >= 0 ? (a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true) : null; };
+  const sopt = k => (typeof opt(k) === 'string' ? opt(k) : null);
   const out = o => console.log(JSON.stringify(o, null, 1));
   (async () => {
     if (cmd === 'selftest' || cmd === '--selftest') process.exit(await selftest());
     if (cmd === 'show') {
       const v = view();
-      if (opt('json')) return out(v);
-      console.log('dispatcher tick ' + v.dispatcherTickMin + ' min · default cooldown ' + v.defaultCooldownMin + ' min · max ' + v.maxPerTick + ' wakes/tick  (' + v.file + ')');
+      if (opt('json')) return out(Object.assign({ ok: true }, v));
+      const e = v.effective;
+      console.log('base: tick ' + v.dispatcherTickMin + ' min · cooldown ' + v.defaultCooldownMin + ' min · max ' + v.maxPerTick + ' wakes/tick  (' + v.file + ')');
+      console.log('now:  tick ' + e.tickMin + ' min · cooldown ' + e.cooldownMin + ' min — ' + e.reason + (e.quiet ? ' · QUIET HOURS' : ''));
+      console.log('bounds: tick ' + v.bounds.tickMin.join('-') + ' min · cooldown ' + v.bounds.cooldownMin.join('-') + ' min · wakes ' + v.wakes.hour + '/' + v.bounds.maxWakesPerHour + ' this hour, ' + v.wakes.day + '/' + v.bounds.maxWakesPerDay + ' in 24 h · quiet ' + (v.bounds.quietHours || 'off') + ' · mode ' + v.tempo.mode + ' (speed-ups last ' + v.tempo.autoExpireMin + ' min, ' + v.tempo.minChangeIntervalMin + ' min apart)');
+      if (v.loop) console.log('loop: last tick ' + (v.loop.lastTickAt || '-') + ', next ' + (v.loop.nextTickAt || '-') + ' (' + (v.loop.status || '?') + ')');
       for (const [id, s] of Object.entries(v.seats)) {
         const f = k => s[k] ? s[k].value + (s[k].from === 'cadence' ? '' : ' [' + s[k].from + ']') : '-';
         console.log('  ' + id + ' (' + s.name + '): loop "' + (s.loop || '-') + '"' + (s.loopEvery ? ' every=' + s.loopEvery : '') + ' cooldown=' + f('cooldownMin') + ' priority=' + f('priority') + ' wakeOnInbox=' + f('wakeOnInbox') + ' wakeOnOwner=' + f('wakeOnOwnerMessage'));
@@ -273,15 +635,17 @@ if (require.main === module) {
       if (v.unknownSeats.length) console.log('  not in loops.json: ' + v.unknownSeats.join(', '));
       return;
     }
-    const by = typeof opt('by') === 'string' ? opt('by') : null;
-    if (cmd === 'set-default') return out(setDefault(a[1] && !a[1].startsWith('--') ? a[1] : null, { by, cooldown: opt('cooldown'), maxPerTick: opt('max-per-tick') }));
-    if (cmd === 'set') return out(setSeat(a[1], { by, loopEvery: opt('loop-every'), cooldown: opt('cooldown'), priority: opt('priority'), wakeOnInbox: opt('wake-on-inbox'), wakeOnOwner: opt('wake-on-owner') }));
+    const by = sopt('by'); const why = sopt('why');
+    const run = fn => { try { return out(fn()); } catch (e) { console.error(JSON.stringify({ ok: false, refused: !!e.refused, code: e.code, error: e.message })); process.exit(e.refused ? 3 : 1); } };
+    if (cmd === 'set-default') return run(() => setDefault(a[1] && !a[1].startsWith('--') ? a[1] : null, { by, why, cooldown: sopt('cooldown'), maxPerTick: sopt('max-per-tick') }));
+    if (cmd === 'set') return run(() => setSeat(a[1], { by, why, loopEvery: sopt('loop-every'), cooldown: sopt('cooldown'), priority: sopt('priority'), wakeOnInbox: sopt('wake-on-inbox'), wakeOnOwner: sopt('wake-on-owner'), peakOk: sopt('peak-ok') }));
+    if (cmd === 'bounds') return run(() => setBounds({ by, why, tickMin: sopt('tick-min'), cooldownMin: sopt('cooldown-min'), maxWakesPerHour: sopt('max-wakes-per-hour'), maxWakesPerDay: sopt('max-wakes-per-day'), quietHours: sopt('quiet-hours'), mode: sopt('mode'), autoExpireMin: sopt('auto-expire-min'), minChangeIntervalMin: sopt('min-change-interval-min') }));
+    if (cmd === 'end-temporary') return run(() => endTemporary({ by, why }));
     if (cmd === 'apply') {
-      const r = await apply({ dry: !!opt('dry-run'), approvedRef: typeof opt('approved-ref') === 'string' ? opt('approved-ref') : null, by });
+      const r = await apply({ dry: !!opt('dry-run'), approvedRef: sopt('approved-ref'), by });
       out(r);
-      if (r.run) console.log('\nNow run: ' + r.run);
       process.exit(r.ok ? 0 : 1);
     }
-    throw new Error('commands: show, set-default, set, apply, selftest');
+    throw new Error('commands: show, set-default, set, bounds, end-temporary, apply, selftest');
   })().catch(e => { console.error(JSON.stringify({ ok: false, error: e.message })); process.exit(1); });
 }
