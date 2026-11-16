@@ -22,7 +22,7 @@ const http = require('http');
 
 /* What the console knows that the chat would not: this seat's own recent work (its routine runs are separate
    conversations), so "what are you working on?" gets a real answer. Marked as console context, not the owner's words. */
-function contextNote(id, s) {
+function contextNote(id, s, co) {
   const lines = [];
   try {
     const runs = fs.readFileSync(co.p('.starnet-data', 'workspaces', 'runs.jsonl'), 'utf8').trim().split('\n').slice(-400)
@@ -152,7 +152,7 @@ module.exports = function chat(deps) {
     const t = await transcript(id);
     const history = t.turns.slice(-40).map(x => ({ role: x.role, content: x.content }));
     const payload = { agentId: id, model: m.model, provider: m.provider, rosterSystem: true, isTask: false, streamId: STREAM(id),
-      messages: history.concat([{ role: 'user', content: contextNote(id, s) + text }]), projectRoot: co.ROOT, placed: PLACED };
+      messages: history.concat([{ role: 'user', content: contextNote(id, s, co) + text }]), projectRoot: co.ROOT, placed: PLACED };
     let token; try { token = co.stationToken(); } catch (_) { token = null; }
     if (!token) { line('console.error', { code: 'station-down', message: 'No station token (secrets/station-token).', fix: 'Run scripts/setup-station.sh', link: '#/system' }); return res.end(); }
     const u = new URL(co.STATION_URL.replace(/\/+$/, '') + '/api/run');
