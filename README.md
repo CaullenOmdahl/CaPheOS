@@ -54,7 +54,19 @@ moves the function to it. Domain roles start from `specialist.md`.
 | Can commit / push | yes | **no**: refused by hooks, push URL disabled |
 | Takes framework updates | it *is* the framework | `git pull` |
 
-### Founding a company
+### Starting a company (one command)
+
+```bash
+git clone https://github.com/<you>/CaPheOS.git && cd CaPheOS
+scripts/new-company.sh --name "Example Law" --owner "Alex"
+```
+
+That makes `~/Companies/example-law` (its own checkout), picks free ports, founds the company, starts the headless
+station, dispatcher, liveness watch and console, and opens the console. The console's **Setup** screen then walks you
+through the rest: connect an AI provider, set a budget, write the charter, choose how much the company decides alone,
+review guardrails, and certify. Options: `--dir`, `--tz`, `--port`, `--no-start`, `--no-open`.
+
+### Founding a company step by step (what new-company.sh does)
 
 ```bash
 git clone https://github.com/<you>/CaPheOS.git ~/Companies/example-law   # a NEW folder, never the framework checkout
