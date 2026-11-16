@@ -215,7 +215,12 @@ async function today() {
   let panels = []; try { panels = panelsList().filter(p => p.status === 'installed' && !p.hidden && /^today/.test(String(p.placement || ''))).map(p => p.id); } catch (_) {}
   return { ok: true, company: companyInfo(), needsYou: { questions: qs, count: qs.length, blocking: qs.filter(q => q.blocking).length },
     crew, usage: use, overnight: { fromCompany: outbound, unreadByCompany: unread.length, dispatch: tailLines(co.p('company', 'work', 'dispatch-log.md'), 20) },
-    halt: co.haltState(), panels };
+    halt: co.haltState(), panels, onboarding: onboardingBrief() };
+}
+function onboardingBrief() {
+  const s = readJson(co.p('company', 'state', 'onboarding-state.json'), null) || {};
+  const failed = s.checks && s.checks.results ? Object.keys(s.checks.results).filter(k => !s.checks.results[k].ok) : null;
+  return { certified: !!s.certified, certifiedAt: s.certifiedAt || null, lastCertify: (s.checks || {}).at || null, failed };
 }
 function companyInfo() { const c = co.config; return { name: c.name, shortName: c.shortName, owner: c.owner, timezone: co.TZ, station: { url: co.STATION_URL }, ownerChannel: c.ownerChannel }; }
 
@@ -311,6 +316,10 @@ route('POST', /^\/api\/panels\/([a-z0-9-]+)\/(hide|unhide|approve|reject|remove)
   return runApi('console-panel.js', args);
 });
 route('GET', /^\/api\/governance-log$/, () => ({ ok: true, entries: readLines(co.p('company', 'state', 'governance-log.jsonl')).slice(-200) }));
+route('GET', /^\/api\/decision-models$/, () => runApi('decide.js', ['list', '--json']));
+// onboarding (company/tools/onboard.js): provisioning steps + the last certification; POST certify re-runs the 9 checks
+route('GET', /^\/api\/onboarding$/, () => runApi('onboard.js', ['--check', '--json']));
+route('POST', /^\/api\/onboarding\/certify$/, async () => { const r = await run('onboard.js', ['--certify', '--json'], { timeout: 300000 }); return Object.assign({}, r.data, { ok: true, certified: !!(r.data && r.data.certified) }); });
 route('GET', /^\/api\/locked$/, () => runApi('locked-watch.js', ['status']));
 route('GET', /^\/api\/external$/, () => runApi('external-gate.js', ['list']));
 
@@ -555,6 +564,8 @@ async function selftest() {
     check('panels list', r.status === 200 && r.json.ok && Array.isArray(r.json.panels), r.json);
     r = await call('GET', '/api/panels/nope/data');
     check('unknown panel data: 404', r.status === 404, r.json);
+    r = await call('GET', '/api/onboarding');
+    check('GET /api/onboarding: steps and checks, not certified', r.status === 200 && r.json.ok && Array.isArray(r.json.steps) && r.json.checks.length === 9 && r.json.certified === false, r.json);
     for (const ep of ['/api/handoffs', '/api/decisions', '/api/dispatch', '/api/hiring', '/api/crew', '/api/governance-log', '/api/usage']) {
       r = await call('GET', ep);
       check('GET ' + ep + ' answers JSON', r.status < 500 && r.json && typeof r.json === 'object', { status: r.status, body: r.text.slice(0, 300) });

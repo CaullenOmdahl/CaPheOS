@@ -65,7 +65,12 @@ modules/<id>/
   installed pack requires it; meter records are kept.
 - **Doctor** fails an enabled module when a tool is missing or changed, a meter is unregistered, a row is missing, the
   module folder changed since enable (disable + enable to take a change), a requirement broke, or its test fails.
-- **Ticks:** the dispatcher runs ONE hook after the halt tick: each enabled module's `tick.js` in id order,
+- **Limits:** shipped closed in `modules/<id>/limits/`; the owner opens one with `module.js limits <id> set <file>
+  <key.path> <number> --by owner`, which writes `company/state/modules/<id>/<file>` (registered on enable as
+  `company/state/modules/<id>/limits/**`, class F, writer module.js). Tools read the opened copy first and fall back to
+  the shipped closed one (`lib/modules.js limitsFile(id, file)`); missing or unreadable = closed.
+- **Ticks:** the dispatcher runs ONE hook after the halt tick: each enabled module's `tick.js` by `module.json`
+  `order` (lower first, default 100; intake → playbooks → commitments → verify), then id,
   fail-safe (throw/timeout = one `MODULE <id> TICK ERROR` log line). A halted company runs only `runWhenHalted` modules.
 - **Routes:** the console mounts each enabled module's `http.js`: `auth: 'source'` → `/hooks/<id>/<path>` (no owner
   token; the module authenticates the caller, e.g. HMAC over the raw body), `auth: 'owner'` → `/api/m/<id>/<path>`.

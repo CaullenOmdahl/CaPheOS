@@ -53,7 +53,11 @@ scripts/console.sh                # same as the first line
 | GET | /api/governance | — | `governance.js show --json` |
 | POST | /api/governance/preset | `{ preset }` | `governance.js preset <id> --by <owner>` |
 | POST | /api/governance/set | `{ category, level }` (level auto, notify, triage or approve) | `governance.js set …` |
-| GET | /api/decision-models | — | `decide.js list --json` → `{ ok, models: [{id, title, versions, active, mode, params, cases, evaluations, lastAt, valid}] }` (Controls › Self-governance; **not wired in console/server.js yet**: one `runApi('decide.js', ['list', '--json'])` route) |
+| GET | /api/decision-models | — | `decide.js list --json` → `{ ok, models: [{id, title, versions, active, mode, params, cases, evaluations, lastAt, valid}] }` (Controls › Self-governance) |
+| GET | /api/onboarding | — | `onboard.js --check --json` → `{ ok, provisioned, certified, certifiedAt, lastCertify, steps: [{id, what, status, at, note}], checks: [{id, what, status: ok\|failed\|unchecked, missing}], missing: [..], gates }` (System › Provisioning; Today banner while not certified). `GET /api/today` carries `onboarding: {certified, failed}` |
+| POST | /api/onboarding/certify | {} | re-runs `onboard.js --certify --json` (the 9 checks) → `{ ok: true, certified, results: {<check>: {ok, missing}} }` |
+| any | /api/m/&lt;module&gt;/&lt;path&gt; | module-defined | an enabled core module's `http.js` route with `auth: 'owner'` (docs/CORE-MODULES.md "The module mechanism"); raw body capped at 256 KB |
+| any | /hooks/&lt;module&gt;/&lt;path&gt; | module-defined | an enabled module's `auth: 'source'` route: **no owner token**, the module authenticates the caller (HMAC/token); 404 when the module is not enabled; 413 over 256 KB |
 | GET | /api/guardrails | — | `guardrails.js show --json` |
 | POST | /api/guardrails/set | `{ name, on, why? }` | `guardrails.js set <name> on\|off --by <owner>` |
 | POST | /api/guardrails/all | `{ on, confirm? }` | `on-all` / `off-all --confirm` |

@@ -6,7 +6,7 @@
  *   mods.enabled()                 ids enabled in company/state/modules.json (written only by company/tools/module.js)
  *   mods.isEnabled(id)
  *   mods.dir(id)                   <ROOT>/modules/<id>
- *   await mods.runTicks({ log, dry, halted })   dispatcher hook: each enabled module's tick.js, fail-safe, in id order
+ *   await mods.runTicks({ log, dry, halted })   dispatcher hook: each enabled module's tick.js, fail-safe, by module.json order then id
  *   mods.httpRoutes()              console hook: [{ id, method, path, auth, re, keys, handler }] from each enabled http.js
  *
  * tick.js:  module.exports = { tick: async ({ log, dry, co, id, halted }) => any, runWhenHalted?: true, timeoutMs?: N }
@@ -40,10 +40,16 @@ function withTimeout(p, ms, what) {
   let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error(what + ' timed out after ' + ms + ' ms')), ms); if (t.unref) t.unref(); })]).finally(() => clearTimeout(t));
 }
 
+// tick order: module.json "order" (lower first, default 100), then id — so intake -> playbooks -> commitments -> verify
+// can hand work along within one tick
+function tickOrder() {
+  const ord = id => { const n = Number((co.readJson(path.join(dir(id), 'module.json'), {}) || {}).order); return Number.isFinite(n) ? n : 100; };
+  return enabled().map(id => [ord(id), id]).sort((a, b) => a[0] - b[0] || a[1].localeCompare(b[1])).map(x => x[1]);
+}
 async function runTicks({ log, dry, halted } = {}) {
   const say = log || (() => {});
   const out = [];
-  for (const id of enabled()) {
+  for (const id of tickOrder()) {
     let m;
     try { m = load(id, 'tick.js'); } catch (e) { say('MODULE ' + id + ' TICK ERROR: cannot load tick.js: ' + String(e.message).slice(0, 200)); out.push({ id, error: e.message }); continue; }
     if (!m || typeof m.tick !== 'function') continue;
@@ -78,4 +84,6 @@ function httpRoutes(opts) {
   return out;
 }
 
-module.exports = { MODULES_DIR, STATE_FILE, ID_RE, state, enabled, isEnabled, dir, load, runTicks, httpRoutes, pathRe };
+// opened limits: company/state/modules/<id>/<limit file> (owner-set through module.js limits), else the shipped closed copy
+function limitsFile(id, file) { const o = co.p('company', 'state', 'modules', id, file); return fs.existsSync(o) ? o : path.join(dir(id), file); }
+module.exports = { MODULES_DIR, STATE_FILE, ID_RE, state, enabled, isEnabled, dir, load, runTicks, tickOrder, httpRoutes, pathRe, limitsFile };

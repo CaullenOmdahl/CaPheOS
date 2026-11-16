@@ -12,6 +12,9 @@
  *   node company/tools/module.js doctor [<id>|--all] [--json]   # fail closed; exit 0 only when every ENABLED module is conformant
  *   node company/tools/module.js enable <id> --by <owner>       # owner only, governance category 'packs'
  *   node company/tools/module.js disable <id> --by <owner>      # tools, rows and registrations out; meter records kept
+ *   node company/tools/module.js limits <id> [show]             # shipped (closed) vs opened limits
+ *   node company/tools/module.js limits <id> set <file> <key.path> <number> --by <owner>   # open (or close with 0) a limit:
+ *                                                               # writes company/state/modules/<id>/<file> (locked-watch F)
  *   node company/tools/module.js gates [--json]                 # owner gates the enabled modules' requirements resolve to
  *   node company/tools/module.js selftest | --selftest          # offline, temp root
  *
@@ -68,6 +71,7 @@ function moduleSchema() {
   m.required = m.required.concat(['layer', 'enableWhen']);
   m.properties.layer = { type: 'string', enum: LAYERS };
   m.properties.enableWhen = { type: 'string', minLength: 3, maxLength: 400 };
+  m.properties.order = { type: 'integer' };
   m.properties.id = { type: 'string', pattern: '^[a-z][a-z0-9-]{1,39}$' };
   delete m.properties.limits.minItems;
   m.properties.meters.items.properties.p = { type: 'string', pattern: '^company/(work|state)/[A-Za-z0-9_./*-]+$' };
@@ -212,7 +216,8 @@ function lockedEntries(id, mod) {
   const rows = (mod.meters || []).map(m => Object.assign({ p: m.p, cls: (m.writers || []).length ? 'A' : 'F', append: !!m.append, writers: m.writers || [], owner: m.owner, area: 'record', why: 'module ' + id + ' meter: ' + m.why }, own));
   for (const t of mod.tools || []) rows.push(Object.assign({ p: 'company/tools/' + path.basename(t.file), cls: 'F', owner: 'tools', area: 'tool', why: 'module ' + id + ' tool (enabled by the owner)' }, own));
   for (const f of ['tick.js', 'http.js', 'module.json']) if (fs.existsSync(path.join(srcDir(id), f))) rows.push(Object.assign({ p: 'modules/' + id + '/' + f, cls: 'F', owner: f === 'http.js' ? 'risk' : 'tools', area: f === 'module.json' ? 'policy' : 'tool', why: 'module ' + id + ' ' + f + ' (runs inside the ' + (f === 'http.js' ? 'console' : 'dispatcher') + ')' }, own));
-  for (const l of mod.limits || []) rows.push(Object.assign({ p: 'modules/' + id + '/' + l.file, cls: 'F', owner: l.owner, area: 'policy', why: 'module ' + id + ' limit: ' + l.why }, own));
+  for (const l of mod.limits || []) rows.push(Object.assign({ p: 'modules/' + id + '/' + l.file, cls: 'F', owner: l.owner, area: 'policy', why: 'module ' + id + ' limit as shipped (closed): ' + l.why }, own));
+  if ((mod.limits || []).length) rows.push(Object.assign({ p: 'company/state/modules/' + id + '/limits/**', cls: 'F', writers: ['module.js'], owner: (mod.limits[0] || {}).owner || 'risk', area: 'policy', why: 'module ' + id + ' limits as OPENED by the owner (module.js limits ' + id + ' set ...)' }, own));
   return rows;
 }
 function setLockedExtra(id, rows) {
@@ -301,6 +306,31 @@ function cmdDisable(id, by) {
   return { code: 0, out: { ok: true, status: 'disabled', id, kept: (mod.meters || []).map(m => m.p), note: 'meter records are kept; they are no longer locked-watched', change: record({ op: 'disable', id, by: 'owner' }) } };
 }
 
+/* ---------- limits: shipped closed in modules/<id>/limits/, opened by the owner in company/state/modules/<id>/limits/ ----------
+ * Module tools read the opened copy first and fall back to the shipped closed one (lib/modules.js limitsFile). Only
+ * numbers are set (a limit is a quantity, never a switch); 0 closes it again. */
+function cmdLimits(id, sub, file, key, value, by) {
+  const mod = readModule(String(id || ''));
+  if (!mod) return { code: 1, out: { ok: false, error: 'no module ' + id } };
+  const show = () => (mod.limits || []).map(l => ({ file: l.file, owner: l.owner, opened: fs.existsSync(co.p('company', 'state', 'modules', id, l.file)), value: readJson(mods.limitsFile(id, l.file), null) }));
+  if (!sub || sub === 'show') return { code: 0, out: { ok: true, id, limits: show() } };
+  if (sub !== 'set') return { code: 2, out: { ok: false, error: 'limits <id> [show] | set <file> <key.path> <number> --by owner' } };
+  const e = pk.ownerOnly(by, 'opens a module limit'); if (e) return { code: 1, out: { ok: false, error: e } };
+  const l = (mod.limits || []).find(x => x.file === file || path.basename(x.file) === file);
+  if (!l) return { code: 1, out: { ok: false, error: 'module ' + id + ' ships no limit ' + file + ' (has: ' + (mod.limits || []).map(x => x.file).join(', ') + ')' } };
+  const n = Number(value);
+  if (!key || value === undefined || !Number.isFinite(n) || n < 0) return { code: 2, out: { ok: false, error: 'set <file> <key.path> <number ≥ 0>' } };
+  const dest = co.p('company', 'state', 'modules', id, l.file);
+  const cur = readJson(dest, null) || readJson(path.join(srcDir(id), l.file), {}) || {};
+  const parts = String(key).split('.'); let o = cur;
+  for (const k of parts.slice(0, -1)) { if (typeof o[k] !== 'object' || o[k] === null) return { code: 1, out: { ok: false, error: 'no key ' + key + ' in ' + l.file } }; o = o[k]; }
+  const last = parts[parts.length - 1];
+  if (!(last in o) || typeof o[last] !== 'number') return { code: 1, out: { ok: false, error: key + ' is not a number in ' + l.file + ' (only shipped numeric limits can be opened)' } };
+  const was = o[last]; o[last] = n;
+  writeJson(dest, cur);
+  return { code: 0, out: { ok: true, id, file: rel(dest), key, was, now: n, change: record({ op: 'limit', id, file: l.file, key, was, now: n, by: 'owner' }) } };
+}
+
 /* Owner gates the enabled modules' (and installed packs') requirements resolve to: secrets to provide, external-gate
  * categories that need a clearance policy, station abilities. onboard.js batches these into Today questions once. */
 function gates() {
@@ -339,10 +369,11 @@ function selftest() {
     // a demo module
     const md = mk('modules', 'demo'); mk('modules', 'demo', 'tools'); mk('modules', 'demo', 'docs'); mk('modules', 'demo', 'conformance');
     const mj = { version: 1, id: 'demo', title: 'Demo module', summary: 'A module for the selftest.', packVersion: '0.1.0', owner: 'tools', layer: 'guarantee', enableWhen: 'always, in the selftest',
-      requires: {}, docs: ['README.md'], tools: [{ file: 'tools/demo-mod.js', purpose: 'does the demo module work' }], limits: [],
+      requires: {}, docs: ['README.md'], tools: [{ file: 'tools/demo-mod.js', purpose: 'does the demo module work' }], limits: [{ file: 'limits/limits.json', owner: 'finance', why: 'how much the demo may do' }], order: 5,
       meters: [{ p: 'company/work/demo/log.jsonl', append: true, writers: ['demo-mod.js'], owner: 'tools', why: 'the demo record' }], conformance: { test: 'conformance/test.js' } };
     fs.writeFileSync(path.join(md, 'module.json'), JSON.stringify(mj, null, 2));
     fs.writeFileSync(path.join(md, 'README.md'), '# Demo\n');
+    mk('modules', 'demo', 'limits'); fs.writeFileSync(path.join(md, 'limits', 'limits.json'), JSON.stringify({ perDay: 0 }));
     fs.writeFileSync(path.join(md, 'tools', 'demo-mod.js'), "if (process.argv.includes('--selftest')) { console.log('ok'); process.exit(0); }\n");
     fs.writeFileSync(path.join(md, 'conformance', 'test.js'), "process.exit(require('fs').existsSync(process.env.MODULE_DIR + '/README.md') ? 0 : 1);\n");
     fs.writeFileSync(path.join(md, 'tick.js'), "module.exports = { runWhenHalted: false, async tick({ log }) { require('fs').appendFileSync(require('path').join(__dirname, 'ticked'), 'x'); log('DEMO TICK'); return 1; } };\n");
@@ -389,6 +420,13 @@ function selftest() {
     t('a halted company skips a module without runWhenHalted', !fs.existsSync(path.join(md, 'ticked')));
     const hr = js("const r=require('./company/tools/lib/modules').httpRoutes(); const m=r[0]; const x='ping/kim'.match(m.re); console.log(JSON.stringify({n:r.length,auth:m.auth,who:x&&x[1]}))");
     t('http routes: one owner route with a :param', /"n":1,"auth":"owner","who":"kim"/.test(hr.stdout), hr.stdout + hr.stderr);
+    t('enable: opened-limits folder registered (class F, writer module.js)', ((readJson(path.join(tmp, 'company', 'state', 'locked-extra.json'), {}).entries) || []).some(e => e.p === 'company/state/modules/demo/limits/**' && e.cls === 'F' && e.writers.includes('module.js')));
+    t('limits set refused for an agent', run('limits', 'demo', 'set', 'limits.json', 'perDay', '3', '--by', 'Sam').code === 1);
+    t('limits set refuses a key that is not a shipped number', run('limits', 'demo', 'set', 'limits.json', 'enabled', '1', '--by', 'owner').code === 1);
+    r = run('limits', 'demo', 'set', 'limits.json', 'perDay', '3', '--by', 'owner');
+    t('limits set by the owner writes the opened copy; the shipped copy stays closed', r.code === 0 && readJson(path.join(tmp, 'company', 'state', 'modules', 'demo', 'limits', 'limits.json'), {}).perDay === 3 && readJson(path.join(md, 'limits', 'limits.json'), {}).perDay === 0, r.out);
+    const lf = js("console.log(require('./company/tools/lib/modules').limitsFile('demo','limits/limits.json'))");
+    t('limitsFile resolves the opened copy first', /company\/state\/modules\/demo\/limits\/limits\.json/.test(lf.stdout), lf.stdout);
     r = run('doctor', '--all');
     t('doctor --all exit 0 with demo conformant', r.code === 0 && r.j.modules[0].status === 'conformant', r.out);
     fs.appendFileSync(path.join(tmp, 'company', 'tools', 'demo-mod.js'), '// tampered\n');
@@ -397,10 +435,12 @@ function selftest() {
     fs.writeFileSync(path.join(tmp, 'company', 'tools', 'demo-mod.js'), fs.readFileSync(path.join(md, 'tools', 'demo-mod.js')));
     // a module that requires demo; disable demo refused while it is enabled
     const m2 = mk('modules', 'dep'); mk('modules', 'dep', 'conformance');
-    fs.writeFileSync(path.join(m2, 'module.json'), JSON.stringify(Object.assign({}, mj, { id: 'dep', title: 'Dep', tools: [], meters: [], requires: { modules: ['demo'] } })));
+    fs.writeFileSync(path.join(m2, 'module.json'), JSON.stringify(Object.assign({}, mj, { id: 'dep', title: 'Dep', tools: [], meters: [], limits: [], order: 1, requires: { modules: ['demo'] } })));
     fs.writeFileSync(path.join(m2, 'README.md'), '# Dep\n');
     fs.copyFileSync(path.join(md, 'conformance', 'test.js'), path.join(m2, 'conformance', 'test.js'));
     t('enable dep (requires demo, enabled) ok', run('enable', 'dep', '--by', 'owner').code === 0);
+    const to = js("console.log(JSON.stringify(require('./company/tools/lib/modules').tickOrder()))");
+    t('ticks run by module.json order (dep order 1 before demo order 5)', to.stdout.trim() === '["dep","demo"]', to.stdout);
     t('disable demo refused while dep requires it', /required by module dep/.test(run('disable', 'demo', '--by', 'owner').out));
     t('disable dep ok', run('disable', 'dep', '--by', 'owner').code === 0);
     r = run('disable', 'demo', '--by', 'owner');
@@ -437,6 +477,7 @@ if (cmd === 'status') { if (!A._[1]) { console.error('status <id>'); process.exi
 if (cmd === 'doctor') emit(doctor(A.all ? true : A._[1] || true));
 if (cmd === 'enable') emit(cmdEnable(A._[1], A.by));
 if (cmd === 'disable') emit(cmdDisable(A._[1], A.by));
+if (cmd === 'limits') emit(cmdLimits(A._[1], A._[2], A._[3], A._[4], A._[5], A.by));
 if (cmd === 'gates') { const g = gates(); console.log(JSON.stringify(A.json ? g : { ok: true, gates: g }, null, 1)); process.exit(0); }
-console.error('usage: module.js list | status <id> | doctor [<id>|--all] | enable|disable <id> --by <owner> | gates | selftest   [--json]');
+console.error('usage: module.js list | status <id> | doctor [<id>|--all] | enable|disable <id> --by <owner> | limits <id> [set <file> <key> <n> --by owner] | gates | selftest   [--json]');
 process.exit(2);

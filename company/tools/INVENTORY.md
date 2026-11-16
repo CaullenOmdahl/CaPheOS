@@ -46,6 +46,7 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/offpeak-hold.js` | the off-peak hold, as ONE predicate with two triggers. | finance | `--selftest` | `--selftest` `--status` `--parity` | — |
 | `company/tools/offpeak-proof.js` | proof that the off-peak hold works, as ONE command, read from the live records. | finance | `--selftest` | `--date` `--selftest` `--journal` | station-token |
 | `company/tools/openrouter-treasury.js` | read-only treasury check for the company's OpenRouter provisioning key. | finance | — | `--json` `--min` | openrouter-mgmt-key, openrouter-key |
+| `company/tools/onboard.js` | onboarding is certification, not provisioning: step ledger, the 9 certification checks, teardown. | ceo | `--selftest` | `--check` `--resume` `--certify` `--teardown` `--record` `--selftest` | station-token, console-token |
 | `company/tools/owner-addressing.js` | decide WHO an owner message is for, by the name the owner writes first. | ceo | `--selftest` | `route` `dispatch` `--selftest` | — |
 | `company/tools/owner-inbox.js` | messages the owner sent the company, and whether the CEO has acted on them; and the one way the | ceo | `--selftest` | `new` `count` `ack` `send` `log` `--selftest` | — |
 | `company/tools/pack.js` | capability packs: list them, check them, propose, approve, install and uninstall them. | ceo | `selftest` / `--selftest` | `list` `status` `doctor` `propose` `approve` `reject` `install` `uninstall` `selftest` | — |
