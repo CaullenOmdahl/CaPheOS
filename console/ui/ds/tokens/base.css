@@ -1,0 +1,13 @@
+/* Opinionated base layer. Element selectors only — no utility classes. */
+html{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility}
+body{margin:0;background:var(--bg-page);color:var(--text-body);font:var(--type-body)}
+::selection{background:var(--selection-bg);color:var(--selection-fg)}
+h1,h2,h3,h4{color:var(--text-strong);margin:0;text-wrap:balance}
+p{margin:0;text-wrap:pretty}
+a{color:var(--text-accent);text-decoration:none;transition:color var(--dur-fast) var(--ease-out)}
+a:hover{color:var(--accent-hover)}
+img{display:block;max-width:100%}
+:focus-visible{outline:none;box-shadow:var(--focus-ring);border-radius:var(--radius-sm)}
+@keyframes cp-fade-in{from{opacity:0}to{opacity:1}}
+@keyframes cp-fade-up{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none}}
+@keyframes cp-blink{50%{opacity:0}}

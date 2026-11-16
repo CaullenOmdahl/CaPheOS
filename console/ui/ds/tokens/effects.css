@@ -1,0 +1,36 @@
+:root{
+/* Radii — 2026 tightens the 2019 site's rounded-2xl cards */
+--radius-xs:2px;
+--radius-sm:4px;
+--radius-md:6px;
+--radius-lg:10px;
+--radius-xl:16px;
+--radius-pill:999px;
+
+/* Shadows — warm (robusta-tinted), long and soft. Used on floating frames, not on flat cards. */
+--shadow-xs:0 1px 2px rgba(58,38,24,.08);
+--shadow-sm:0 1px 2px rgba(58,38,24,.06),0 4px 12px -4px rgba(58,38,24,.12);
+--shadow-md:0 2px 4px rgba(58,38,24,.06),0 16px 32px -12px rgba(58,38,24,.20);
+--shadow-frame:0 1px 2px rgba(23,22,20,.08),0 24px 48px -16px rgba(58,38,24,.28),0 64px 120px -48px rgba(58,38,24,.32);
+--shadow-inset:inset 0 0 0 1px rgba(23,22,20,.06);
+
+/* Borders */
+--border-w:1px;
+--rule-w:1px;
+--underline-offset:6px;
+--underline-w:1px;
+
+/* Motion */
+--ease-out:cubic-bezier(.2,.7,.2,1); /* @kind other */
+--ease-in-out:cubic-bezier(.65,0,.35,1); /* @kind other */
+--dur-fast:150ms; /* @kind other */
+--dur-base:250ms; /* @kind other */
+--dur-slow:450ms; /* @kind other */
+--dur-fade:700ms; /* @kind other */
+--lift-hover:-2px;
+--press-scale:.98; /* @kind other */
+
+/* Blur — only for overlays (lightbox, scrolled header) */
+--blur-overlay:12px;
+--scrim:rgba(23,22,20,.88);
+}

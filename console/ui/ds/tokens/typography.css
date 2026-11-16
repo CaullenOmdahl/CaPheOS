@@ -1,0 +1,42 @@
+:root{
+--font-wordmark:"Baron","Geist",system-ui,sans-serif;
+--font-display:"Geist","Helvetica Neue",Helvetica,Arial,sans-serif;
+--font-sans:"Geist","Helvetica Neue",Helvetica,Arial,sans-serif;
+--font-mono:"Geist Mono",ui-monospace,"SF Mono",Menlo,monospace;
+
+--weight-light:300;
+--weight-regular:400;
+--weight-medium:500;
+--weight-semibold:600;
+--weight-bold:700;
+--weight-heavy:800;
+
+/* Display — heavy, tight, short leading */
+--type-display-xl:800 128px/0.86 var(--font-display);
+--type-display-l:800 96px/0.88 var(--font-display);
+--type-display-m:800 72px/0.9 var(--font-display);
+--tracking-display:-0.055em;
+
+/* Headings */
+--type-h1:700 56px/1 var(--font-display);
+--type-h2:700 40px/1.05 var(--font-display);
+--type-h3:600 28px/1.15 var(--font-display);
+--type-h4:600 20px/1.25 var(--font-sans);
+--tracking-heading:-0.03em;
+--tracking-h4:-0.01em;
+
+/* Body */
+--type-lede:300 26px/1.35 var(--font-sans);
+--type-body-l:400 19px/1.55 var(--font-sans);
+--type-body:400 16px/1.6 var(--font-sans);
+--type-body-s:400 14px/1.55 var(--font-sans);
+--type-caption:400 13px/1.45 var(--font-sans);
+
+/* Labels */
+--type-eyebrow:500 12px/1.2 var(--font-sans);
+--tracking-eyebrow:0.24em;
+--type-label:500 14px/1.2 var(--font-sans);
+--type-mono:400 13px/1.5 var(--font-mono);
+--type-wordmark-sub:500 11px/1 var(--font-sans);
+--tracking-wordmark-sub:0.28em;
+}

@@ -1,0 +1,74 @@
+:root{
+/* ── Brand palette (2019 identity) ── */
+--espresso:#171614;
+--robusta:#3A2618;
+--clay:#754043;
+--brass:#AD8330;
+--jungle:#37423D;
+--linen:#D1D0CB;
+
+/* ── 2026 accent: fired rust ── */
+--rust-50:#F8ECE5;
+--rust-100:#F0D9CC;
+--rust-300:#C77B58;
+--rust-500:#A5441F;
+--rust-600:#8E3519;
+--rust-700:#722913;
+--rust-800:#561F0F;
+
+/* ── Paper (warm off-white grounds) ── */
+--paper-0:#FBF9F5;
+--paper-50:#F4F0E9;
+--paper-100:#ECE6DC;
+--paper-200:#E2DACD;
+
+/* ── Ink (warm neutral scale, espresso-based) ── */
+--ink-900:#171614;
+--ink-800:#2A2825;
+--ink-700:#3D3A36;
+--ink-600:#55514C;
+--ink-500:#6B6761;
+--ink-400:#8F8A83;
+--ink-300:#B7B1A8;
+--ink-200:#D6D0C6;
+--ink-100:#E6E1D8;
+
+/* ── Status ── */
+--status-online:#2F7A4F;
+--status-warning:#AD8330;
+--status-danger:#B42318;
+--status-online-tint:#E3EFE6;
+--status-danger-tint:#F7E1DD;
+
+/* ── Semantic aliases ── */
+--bg-page:var(--paper-50);
+--bg-sunken:var(--paper-100);
+--bg-inverse:var(--espresso);
+--surface-card:var(--paper-0);
+--surface-frame:#FFFFFF;
+--surface-inverse-raised:#22201D;
+
+--text-strong:var(--ink-900);
+--text-body:var(--ink-700);
+--text-muted:var(--ink-500);
+--text-subtle:var(--ink-400);
+--text-accent:var(--rust-600);
+--text-on-inverse:var(--paper-50);
+--text-on-inverse-muted:#A9A39A;
+--text-on-accent:#FFFFFF;
+
+--border-hairline:var(--ink-100);
+--border-default:var(--ink-200);
+--border-strong:var(--ink-300);
+--border-inverse:#3A3733;
+
+--accent:var(--rust-600);
+--accent-hover:var(--rust-700);
+--accent-pressed:var(--rust-800);
+--accent-tint:var(--rust-50);
+--accent-line:var(--rust-500);
+
+--focus-ring:0 0 0 3px rgba(142,53,25,.28);
+--selection-bg:var(--espresso);
+--selection-fg:var(--brass);
+}
