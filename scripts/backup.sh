@@ -6,6 +6,7 @@
 #   scripts/backup.sh verify [<snap>]     # check every file against its digest (default: newest)
 #   scripts/backup.sh restore <snap> [--force]   # put a snapshot back (refuses over live state without --force)
 #   scripts/backup.sh prune [N]           # keep the newest N (default 48)
+#   scripts/backup.sh drill [<snap>]      # disaster-recovery drill: restore into a temp copy, verify, time it (RTO), record it
 #
 # What is in a snapshot: company/work, company/state, company/owner, company/hiring, company/roles/*.md,
 # company/console (panels the crew added), company/*.jsonl, company/projects.json, company/mandates.json,
@@ -60,6 +61,22 @@ case "${1:-backup}" in
     # the snapshot is the whole truth for the folders it holds: replace them, don't merge into them
     for d in work state owner hiring console; do [[ -d "$tmpx/company/$d" ]] && rm -rf "company/$d"; done
     cp -a "$tmpx/." "$ROOT/" && rm -rf "$tmpx" && echo "restored $(basename "$tgz")" ;;
+  drill)
+    # A backup nobody has restored is a hope. Restore the snapshot into a throwaway copy of the repo, verify every
+    # digest, check the company's own tools still read the restored state, and record how long it took.
+    tgz="$(snap_of "${2:-$(newest)}")"; t0=$(date +%s.%N); tmp="$(mktemp -d)"; ok=1; notes=()
+    verify "$tgz" >/dev/null || { ok=0; notes+=("digest check failed"); }
+    tar -C "$ROOT" --exclude=.git --exclude=starnet --exclude=.starnet-data --exclude=secrets -cf - . | tar -C "$tmp" -xf -
+    for d in work state owner hiring console; do rm -rf "$tmp/company/$d"; done
+    tar -xzf "$tgz" -C "$tmp" || { ok=0; notes+=("extract failed"); }
+    ( cd "$tmp" && grep -v '  ARCHIVE$' "${tgz%.tar.gz}.sha256" | sha256sum --quiet -c - ) >/dev/null 2>&1 || { ok=0; notes+=("restored files do not match digests"); }
+    for c in "node company/tools/handoff-status.js --due" "node company/tools/governance.js show" "node company/tools/halt.js status"; do
+      ( cd "$tmp" && CAPHEOS_ROOT="$tmp" STARNET_URL=http://127.0.0.1:1 timeout 60 $c >/dev/null 2>&1 ) || { ok=0; notes+=("tool failed on restored state: $c"); }
+    done
+    rto=$(awk "BEGIN{printf \"%.1f\", $(date +%s.%N) - $t0}"); rm -rf "$tmp"
+    mkdir -p company/work/ops
+    printf '{"at":"%s","snapshot":"%s","ok":%s,"rtoSeconds":%s,"notes":"%s"}\n' "$(date -u +%FT%TZ)" "$(basename "$tgz")" "$([[ $ok = 1 ]] && echo true || echo false)" "$rto" "${notes[*]:-}" >> company/work/ops/dr-drills.jsonl
+    [[ $ok = 1 ]] && echo "DRILL PASS $(basename "$tgz") restored and verified in ${rto}s (recorded in company/work/ops/dr-drills.jsonl)" || { echo "DRILL FAIL $(basename "$tgz"): ${notes[*]}"; exit 1; } ;;
   prune) keep="${2:-48}"; ls -1 "$DIR"/*.tar.gz 2>/dev/null | sort | head -n -"$keep" | while read -r f; do rm -f "$f" "${f%.tar.gz}.sha256"; done; "$0" list | tail -3 ;;
   *) sed -n 2,14p "$0"; exit 2 ;;
 esac
