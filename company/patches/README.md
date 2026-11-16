@@ -16,6 +16,7 @@ any that are optional. After applying, restart the station.
 | `0005-package-allowscripts-node-pty.diff` | `allowScripts` lets node-pty run its install script (the terminal tool needs it) | yes |
 | `0007-minimax-reasoning-replay.diff` | replays MiniMax `reasoning_content` on a custom OpenAI-compatible endpoint (api.minimax.io / api.minimaxi.com only) | yes |
 | `0008-viewer-mode.diff` | `/?viewer=1` opens a read-only StarNet page (GET/HEAD only, no saves, not counted as an open page) | **no**, apply by hand when wanted |
+| `0009-runtime-time-and-zone.diff` | the per-run runtime line gives agents date, time, IANA zone and UTC offset at run start (not just the date), and says to run `date` for the time now; zone = station TZ from company.json | yes |
 
 Numbers 0003 and 0006 are missing on purpose: they were art overlays specific to the company CaPheOS was extracted
 from, and were not carried over. Keep the gaps; new records take the next free number.

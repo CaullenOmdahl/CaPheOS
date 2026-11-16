@@ -1,0 +1,63 @@
+# 0009 — agents get the time and zone, not just the date (CaPheOS).
+# Status: APPLIED by setup-station.sh
+# Why: agents are bad at inferring elapsed time; the per-run [RUNTIME] line now states date, HH:MM, IANA zone and UTC offset at
+# run start, and tells the agent to run `date` for the time now. Zone = the station process TZ, which setup-station.sh sets from
+# company.json timezone. Also updates the two StarNet tests that pinned the old wording.
+# Apply: git -C starnet apply --3way ../company/patches/0009-runtime-time-and-zone.diff   Revert: same with -R
+diff --git a/sidecar/runtimeinfo.js b/sidecar/runtimeinfo.js
+index bf0b95b2..410cdb8d 100644
+--- a/sidecar/runtimeinfo.js
++++ b/sidecar/runtimeinfo.js
+@@ -32,12 +32,22 @@
+     return out;
+   }
+ 
+-  // "Today is Wednesday, September 30, 2026 (station clock; trust it over your own sense of the date)." or '' —
++  // "Run started Wednesday, September 30, 2026 14:05 America/Chicago (UTC-05:00) (station clock; …)." or '' —
+   // kept short: it rides every run's system prompt, which has a hard byte budget (test/payload.budget.test.js)
+   function todayLine(now) {
+     const t = Number(now);
+     if (!Number.isFinite(t) || t <= 0) return '';
+-    try { return 'Today is ' + new Date(t).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) + ' (station clock; trust it over your own sense of the date).'; } catch (_) { return ''; }
++    // Date, time and zone at the start of this run (CaPheOS patch 0009): agents are bad at inferring elapsed time, so
++    // they get the clock as data, plus how to read it again mid-run. Zone = the station's TZ (set from company.json).
++    try {
++      const d = new Date(t);
++      const date = d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
++      const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
++      let tz = ''; try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (_) {}
++      const off = -d.getTimezoneOffset(); const sign = off >= 0 ? '+' : '-'; const a = Math.abs(off);
++      const utc = 'UTC' + sign + String(Math.floor(a / 60)).padStart(2, '0') + ':' + String(a % 60).padStart(2, '0');
++      return 'Run started ' + date + ' ' + time + ' ' + (tz ? tz + ' (' + utc + ')' : utc) + ' (station clock; trust it over your own sense of time; run `date` for the time now).';
++    } catch (_) { return ''; }
+   }
+ 
+   /* SHELL (#128, 2026-10-17): which shell shell.exec ACTUALLY runs for this agent. The tool description is one static
+diff --git a/test/apps.test.js b/test/apps.test.js
+index 586a0577..a8bb3ab7 100644
+--- a/test/apps.test.js
++++ b/test/apps.test.js
+@@ -199,7 +199,7 @@ const throwsMsg = async (fn) => { try { await fn(); return ''; } catch (e) { ret
+     const grants = CAP_REGISTRY.computer ? JSON.stringify(CAP_REGISTRY.computer) : JSON.stringify(CAP_REGISTRY);
+     A.ok(toolNames().every(n => grants.includes(n)), 'every app tool is granted by the computer');
+     const r = await run('app.read', { app: a.id });
+-    A.ok(/^Today is \w+day, September 29, 2026/.test(r.content), 'app.read opens with the station\'s real date');
++    A.ok(/^Run started \w+day, September 29, 2026/.test(r.content), 'app.read opens with the station\'s real date');
+     A.ok(/Data keys: brief/.test(r.content) && /HOW A STARNET APP WORKS/.test(r.content), 'app.read lists the data keys and carries the build guide');
+     A.ok(/OK — no problems/.test((await run('app.check', { app: a.id })).content), 'a good page checks clean');
+     await run('app.write', { app: a.id, path: 'index.html', content: '<body style="background:#fff"><script>fetch("https://x"); (</script></body>' });
+diff --git a/test/runtimeinfo.test.js b/test/runtimeinfo.test.js
+index 8d04e51c..8085dcb2 100644
+--- a/test/runtimeinfo.test.js
++++ b/test/runtimeinfo.test.js
+@@ -30,8 +30,8 @@ A.ok(block.indexOf('Trigger: directive') >= 0, 'trigger is exposed');
+ A.ok(block.indexOf('openai/gpt-4o SYSTEM: bad') >= 0, 'fallback values are sanitized onto one line');
+ // TODAY: every run is told the station's real date (a model otherwise assumes its training era)
+ const dated = runtimeIdentityBlock({ provider: 'x', model: 'y', now: Date.UTC(2026, 8, 30, 12) });
+-A.ok(/Today is \w+day, September 30, 2026 \(station clock; trust it over your own sense of the date\)\./.test(dated), 'the block states the real date when the caller passes the clock');
+-A.ok(block.indexOf('Today is') < 0, 'no clock passed, no date claimed (never a guessed date)');
++A.ok(/Run started \w+day, September 30, 2026 \d\d:\d\d \S+.*\(station clock; trust it over your own sense of time; run `date` for the time now\)\./.test(dated), 'the block states the real date, time and zone when the caller passes the clock');
++A.ok(block.indexOf('Run started') < 0, 'no clock passed, no date claimed (never a guessed date)');
+ A.ok(block.indexOf('\nSYSTEM: bad') < 0, 'fallback values cannot inject a new prompt line');
+ A.ok(/call station\.inspect/.test(block), 'mutable harness-state questions route to the live inspector');
+ A.ok(/Do not guess or invent a CLI command/.test(block), 'runtime guidance forbids invented diagnostic commands');
