@@ -279,6 +279,78 @@ check "certification kicked off the Founder's first plan once (handoff + one loo
 node "$TOOLS/onboard.js" --certify --json > /dev/null 2>&1
 check "a second certify does not kick off again" bash -c "[[ \$(grep -c 'turn the charter into the first plan' company/work/handoffs/to-founder.md) -eq 1 ]]"
 
+# ---------- 17. hiring advances on its own: opened -> hired within two dispatcher ticks ----------
+# Round qa-lead-1 has a scorecard rule (scores.json): no seat turn is needed. Round data-analyst-1 has none: when its
+# interviews are in, the pick goes to the people holder ($HNAME) as an OPEN handoff and the dispatcher wakes them past
+# their cooldown; their `hire.js pick` finishes the hire at once. Hiring is "notify" here (gate-money preset, step 9).
+export HIRE_NO_SCOPE=1   # interviews as plain detached children (no systemd scope) in the test
+for R2 in qa-lead-1 data-analyst-1; do
+  node "$TOOLS/hire.js" open --round "$R2" --role "$([[ $R2 == qa-lead-1 ]] && echo 'QA Lead' || echo 'Data Analyst')" --by "$HNAME" \
+    $([[ $R2 == qa-lead-1 ]] && echo '--pick-rule scores --min 3.5') > "$T/open-$R2.out" 2>&1
+  D="company/hiring/$R2"; mkdir -p "$D/profiles"
+  printf '# Role\n## Scope\nThe work of the role.\n## KPIs\nShipped on time.\n' > "$D/role-spec.md"
+  printf '# Interview\n\n## What do you do first?\n\n## How do you check your own work?\n' > "$D/interview.md"
+  printf '# Scorecard\n| Line | Weight |\n|---|---|\n| Checks own work | x3 |\n' > "$D/scorecard.md"
+  printf '# Candidate profile — Ada Stone\n\n## Personality\nCareful.\n\n## Persona preset\ncomposed\n' > "$D/profiles/ada-stone.md"
+  printf '# Candidate profile — Ben Ruiz\n\n## Personality\nQuick.\n\n## Persona preset\nblunt\n' > "$D/profiles/ben-ruiz.md"
+done
+printf '{"Ada Stone":{"total":4.4,"mustHaveAvg":4.2},"Ben Ruiz":{"total":3.6,"mustHaveAvg":3.1}}\n' > company/hiring/qa-lead-1/scores.json
+check "hire.js open records the scorecard rule (set by the people holder)" node -e '
+  const r=require(process.argv[1]+"/company/hiring/qa-lead-1/round.json"); if(!r.pickRule||r.pickRule.type!=="scores"||r.pickRule.setBy!==process.argv[2]){console.error(JSON.stringify(r));process.exit(1)}' "$R" "$HNAME"
+QJOB="$(st "$STARNET_URL/api/cron" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).jobs.find(j=>j.name.startsWith(process.argv[1]+" loop")).id))' "$HNAME")"
+# the people holder ran a minute ago: an ordinary wake would wait out its cooldown
+st -X POST "$STARNET_URL/api/cron/update" -d "{\"id\":\"$QJOB\",\"patch\":{\"lastRunAt\":\"$(date -u +%FT%TZ)\"}}" > /dev/null
+M=$(logmark)
+node "$TOOLS/dispatch.js" > "$T/dispatch-h1.out" 2>&1
+check "tick 1: candidates created from the profiles and interviews started, for both rounds" bash -c "
+  grep -q 'HIRING qa-lead-1: created candidate ADA STONE' company/work/dispatch-log.md && grep -q 'HIRING data-analyst-1: created candidate' company/work/dispatch-log.md &&
+  grep -q 'started interviews for ADA STONE, BEN RUIZ (2 at a time)' company/work/dispatch-log.md" || tail -8 company/work/dispatch-log.md
+check "GET /api/hiring: each round carries its live stage and timeline" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/hiring | node -e '
+  let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const o=JSON.parse(d);const r=o.rounds.find(x=>x.id===\"data-analyst-1\");
+  if(!r||!r.stage||!r.stage.label||!r.stage.timeline.some(x=>x.step===\"candidates created\"&&x.at)){console.error(d.slice(0,600));process.exit(1)}})'"
+# the interviews run in the background (in parallel) and move the round on when they finish
+for _ in $(seq 1 100); do
+  node -e 'const a=require(process.argv[1]+"/company/hiring/qa-lead-1/round.json"),b=require(process.argv[1]+"/company/hiring/data-analyst-1/round.json"); process.exit(a.hired&&b.pickRequest?0:1)' "$R" 2>/dev/null && break; sleep 0.2
+done
+check "both candidates were interviewed side by side (one background process, 2 at a time)" bash -c "grep -q 'INTERVIEWS started in the background (pid [0-9]*, 2 at a time)' company/hiring/data-analyst-1/log.md && [[ \$(grep -c '^Finished ' company/hiring/data-analyst-1/interviews/*.md | grep -c ':1') -eq 2 ]]"
+M2=$(logmark)
+node "$TOOLS/dispatch.js" > "$T/dispatch-h2.out" 2>&1
+check "rule round: opened -> hired within two ticks, no seat turn (pick by the scorecard rule, the other released)" node -e '
+  const r=require(process.argv[1]+"/company/hiring/qa-lead-1/round.json"); const L=require(process.argv[1]+"/company/tools/loops.json").agents;
+  const h=r.candidates.find(c=>c.status==="hired"); const rel=r.candidates.filter(c=>c.status==="released");
+  if(!r.hired||!h||h.name!=="ADA STONE"||r.pick.via!=="pickRule"||rel.length!==1||!L[r.hired]){console.error(JSON.stringify(r));process.exit(1)}' "$R"
+QA_ID="$(node -e 'console.log(require(process.argv[1]+"/company/hiring/qa-lead-1/round.json").hired)' "$R")"
+QA_JOB="$(st "$STARNET_URL/api/cron" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const j=JSON.parse(d).jobs.find(j=>j.agentId===process.argv[1]);console.log(j?j.id:"")})' "$QA_ID")"
+check "the hire has a desk, a loop in the company folder with the terminal grant, an inbox and a dossier" bash -c "
+  [[ -n '$QA_JOB' ]] && node -e '
+    const S=JSON.parse(require(\"child_process\").execSync(\"curl -s -H \\\"x-starnet-token: $TOKEN\\\" $STARNET_URL/__state\"));
+    const j=S.cron.jobs.find(x=>x.id===\"$QA_JOB\"); const a=S.save.doc.agents.find(x=>x.id===\"$QA_ID\");
+    if(!j||j.workdir!==\"$R\"||!j.unattendedGrants.includes(\"workbench\")||!/hiring rounds advance on their own/.test(j.prompt)||!S.projects.some(p=>p.root===\"$R\")||!a||!a.docs||!a.docs.identity||!S.save.doc.station.props.some(p=>p.agentId===\"$QA_ID\")){console.error(JSON.stringify({j,a:!!a}).slice(0,500));process.exit(1)}' &&
+  test -e company/hiring/qa-lead-1/hired.md && ls company/work/handoffs/ | grep -q '^to-ada-stone.md$'"
+check "tick 2: the new seat's first run started in the same tick as its hire was seen" bash -c "[[ -n \"\$(tail -n +$((M + 1)) '$LOG' | grep '\"path\":\"/api/cron/run\"' | grep '\"id\":\"$QA_JOB\"')\" ]]"
+check "seat-pick round: the pick is an OPEN handoff to $HNAME with scorecard inputs, transcripts and a recommendation slot" bash -c "
+  f=company/work/handoffs/\$(node -e 'console.log(require(\"$R/company/tools/loops.json\").agents[\"$CAND\"].inbox)');
+  grep -q 'pick the Data Analyst (data-analyst-1): every interview is in' \"\$f\" && grep -q 'scorecard-inputs.md' \"\$f\" && grep -q '^\*\*Recommendation:\*\*' \"\$f\" && test -e company/hiring/data-analyst-1/scorecard-inputs.md"
+check "tick 2: $HNAME woken for the pick past the cooldown, once" bash -c "
+  [[ \$(tail -n +$((M2 + 1)) '$LOG' | grep '\"path\":\"/api/cron/run\"' | grep -c '\"id\":\"$QJOB\"') -eq 1 ]] && grep -q 'pick waiting in hiring round data-analyst-1' company/work/dispatch-log.md &&
+  node -e 'if(!require(\"$R/company/work/dispatch-state.json\").hiringWake[\"data-analyst-1\"]) process.exit(1)'"
+check "Today's activity shows the round's live stage (waiting for pick by $HNAME)" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/activity | node -e '
+  let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const o=JSON.parse(d);const i=o.items.find(x=>x.kind===\"hiring-stage\"&&/Data Analyst: waiting for pick by/.test(x.title));if(!i||!/interviews complete/.test(i.text)){console.error(d.slice(0,800));process.exit(1)}})'"
+BEN="$(node -e 'console.log(require(process.argv[1]+"/company/hiring/data-analyst-1/round.json").candidates.find(c=>c.name==="BEN RUIZ").agentId)' "$R")"
+check "hire.js pick refuses a seat that does not decide the round" bash -c "! node '$TOOLS/hire.js' pick --round data-analyst-1 --agent '$BEN' --by Founder --why x >/dev/null 2>&1"
+node "$TOOLS/hire.js" pick --round data-analyst-1 --agent "$BEN" --by "$HNAME" --why "Ben 4.2 vs Ada 3.9: checks his own work" > "$T/pick.out" 2>&1
+check "$HNAME's pick: hired in the same call (notify: the owner is told), the pick handoff closed" bash -c "
+  node -e 'const o=JSON.parse(require(\"fs\").readFileSync(\"$T/pick.out\",\"utf8\")); const r=require(\"$R/company/hiring/data-analyst-1/round.json\"); if(!o.ok||!o.hired||r.hired!==\"$BEN\"||r.candidates.filter(c=>c.status===\"released\").length!==1){console.error(JSON.stringify(o).slice(0,400));process.exit(1)}' &&
+  grep -q 'decided to hire BEN RUIZ' company/owner/outbound.jsonl && grep -q 'picked \*\*BEN RUIZ\*\*' company/work/decisions.md &&
+  ! grep -A6 'pick the Data Analyst (data-analyst-1)' company/work/handoffs/*.md | grep -q '^.*Status:\*\* OPEN'" || tail -5 "$T/pick.out"
+check "Crew shows the new seats with their hire and first run" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/crew | node -e '
+  let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const o=JSON.parse(d);const a=o.seats.find(s=>s.id===\"$QA_ID\"),b=o.seats.find(s=>s.id===\"$BEN\");
+  if(!a||!a.hire||a.hire.round!==\"qa-lead-1\"||!a.firstRun||!b||!b.hire){console.error(JSON.stringify([a,b]).slice(0,600));process.exit(1)}})'"
+check "GET /api/hiring: both rounds hired, with the timeline from opened to hired" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/hiring | node -e '
+  let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const o=JSON.parse(d);for(const id of [\"qa-lead-1\",\"data-analyst-1\"]){const r=o.rounds.find(x=>x.id===id);const s=r&&r.stage;
+  if(!s||s.key!==\"hired\"||s.timeline[0].step!==\"opened\"||s.timeline[s.timeline.length-1].step!==\"hired\"){console.error(JSON.stringify(s));process.exit(1)}}})'"
+UNKNOWN="$(mocklog 'r.status===404' | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const s=new Set(d.split("\n").filter(Boolean).map(l=>{const r=JSON.parse(l);return r.method+" "+r.path}));console.log([...s].join(", "))})')"
+
 # ---------- summary ----------
 UNKNOWN="$(mocklog 'r.status===404' | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const s=new Set(d.split("\n").filter(Boolean).map(l=>{const r=JSON.parse(l);return r.method+" "+r.path}));console.log([...s].join(", "))})')"
 [[ -n "$UNKNOWN" ]] && echo "note: routes the mock answered 404: $UNKNOWN"

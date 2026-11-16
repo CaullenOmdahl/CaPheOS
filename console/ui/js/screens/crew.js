@@ -41,6 +41,7 @@ export async function render(root, ctx) {
         h('span', { class: 'avatar lg', 'aria-hidden': 'true' }, initial(s.name)),
         h('span', { class: 'stack-4', style: 'gap:3px;min-width:0' }, h('span', { class: 'label strong' }, s.name || s.id),
           h('span', { class: 'body-s muted' }, (s.title || '') + ' · reports to ' + (s.manager ? nameOf(seats, s.manager) : 'the owner')),
+          s.hire ? h('span', { class: 'caption muted' }, 'hired ' + whenOf(s.hire.at) + ' (' + s.hire.round + ')' + (s.firstRun ? ' · first run ' + whenOf(s.firstRun.at) + (s.firstRun.outcome ? ', ' + s.firstRun.outcome : '') : run ? ' · first run in progress' : ' · first run pending')) : null,
           run ? h('span', { class: 'caption row-8', style: 'align-items:center' }, h('span', { class: 'pulse', 'aria-hidden': 'true' }), cap(run.step || run.label)) : nx && nx.nextRunAt ? h('span', { class: 'caption muted' }, 'next run ' + new Date(nx.nextRunAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + (nx.soonerBecause.length ? ', sooner: ' + nx.soonerBecause.join(', ') : '')) : null),
         Tag(cap(state), { variant: 'status', status: statusOf(state) }));
     }));
@@ -87,5 +88,6 @@ export async function render(root, ctx) {
 }
 function kv(k, v) { return h('div', { class: 'stack-8' }, h('span', { class: 'eyebrow-t' }, k), h('p', { class: 'body-s' }, v)); }
 function kpi(v, l) { return h('div', { class: 'kpi' }, h('span', { class: 'big-num ellip', style: 'font-size:' + (String(v).length > 6 ? '15px' : '28px') }, String(v)), h('span', { class: 'caption muted' }, l)); }
+function whenOf(t) { const d = new Date(t); return isNaN(d) ? '' : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
 function nameOf(seats, id) { const s = seats.find(x => x.id === id); return s ? s.name || id : id; }
 function cap(s) { s = String(s || ''); return s.charAt(0).toUpperCase() + s.slice(1); }

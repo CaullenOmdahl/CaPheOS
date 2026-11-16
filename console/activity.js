@@ -218,6 +218,17 @@ module.exports = function activity(deps) {
           links: [{ label: 'Crew', href: '#/crew' }, { label: 'Hiring', href: '#/hiring' }].concat(lvl === 'auto' || lvl === 'notify' ? [{ label: 'Hiring level', href: '#/controls/gov' }] : []) });
       }
     }
+    // each open round's live stage (candidates created, interviewing 2/3, waiting for pick by X), one item per round
+    let H = null; try { H = tool('hire.js'); } catch (_) {}
+    for (const d of rounds) {
+      const rd = readJson(co.p('company', 'hiring', d, 'round.json'), null);
+      if (!rd || rd.hired || rd.closed || !H) continue;
+      let st = null; try { st = H.roundStage(co.p('company', 'hiring', d), rd); } catch (_) {}
+      if (!st) continue;
+      const tl = (st.timeline || []).filter(x => x.at).map(x => x.step + ' ' + String(x.at).slice(11, 16)).join(' · ');
+      items.push({ at: st.at || rd.openedAt || new Date().toISOString(), kind: 'hiring-stage', who: 'Hiring', live: true, stage: st.key,
+        title: (rd.role || d) + ': ' + st.label, text: tl, links: [{ label: 'Hiring', href: '#/hiring' }] });
+    }
     // replies on the owner channel
     try { for (const m of tool('owner-inbox.js').sent()) if (Date.parse(m.at) >= since) items.push({ at: m.at, kind: 'message', who: m.from || 'Company', title: (m.from || 'The company') + ' wrote to you', text: firstSentence(m.text), links: [{ label: 'Open', href: '#/comms/owner' }].concat(linksFor(m.text)) }); } catch (_) {}
     // decisions

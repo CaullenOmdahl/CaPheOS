@@ -21,7 +21,7 @@ export async function render(root, ctx) {
     let d, seats = [];
     try { d = await api('/hiring'); fill(errEl); } catch (e) { fill(errEl, errLine(e, 'Hiring')); d = { rounds: [], templates: [] }; }
     try { seats = (await api('/crew')).seats || []; } catch (_) {}
-    const open = (d.rounds || []).filter(r => !r.hired && r.status !== 'closed');
+    const open = (d.rounds || []).filter(r => !r.hired && r.status !== 'closed' && !r.closed);
     fill(head, screenHead({ eyebrow: [open.length + (open.length === 1 ? ' round open' : ' rounds open'), seats.length + ' seats filled'], title: 'Hiring.',
       lede: 'The CEO opens a role. People scopes it from real listings, interviews three, hires one. You see the pick; you decide only when it costs beyond the cap.', max: '640px' }));
     fill(rounds, (d.rounds || []).length ? d.rounds.slice().reverse().map(roundCard) : empty('No hiring rounds yet. A round appears here when the CEO runs hire.js open.'));
@@ -34,15 +34,26 @@ export async function render(root, ctx) {
         h('span', { class: 'body-s', style: 'margin-top:auto;color:var(--text-accent)' }, who ? who.name : 'company/roles/templates/' + t + '.md'));
     })) : empty('No seat templates in company/roles/templates.'));
   }
+  // the live stage from hire.js roundStage (GET /api/hiring rounds[].stage), else the old guess from the files
+  const STAGE_AT = { 'needs-files': 1, candidates: 3, interviewing: 3, 'interviews-failed': 3, 'waiting-pick': 4, picked: 5, 'waiting-owner': 5, declined: 4, hired: 6, closed: 6 };
+  const STAGE_TONE = { hired: 'online', 'waiting-pick': 'warning', 'waiting-owner': 'warning', declined: 'danger', 'interviews-failed': 'danger', 'needs-files': 'warning', closed: 'neutral' };
+  function stageLine(st) {
+    if (!st) return null;
+    const tl = (st.timeline || []).filter(x => x.at);
+    return h('div', { class: 'stack-6' },
+      h('div', { class: 'row-8', style: 'align-items:center;flex-wrap:wrap' }, Tag(st.label, { variant: 'status', status: STAGE_TONE[st.key] || 'info' }), st.at ? h('span', { class: 'caption muted' }, 'since ' + rel(st.at)) : null),
+      tl.length ? h('ol', { class: 'plain row-8 caption muted', style: 'flex-wrap:wrap;gap:4px 14px' }, tl.map(x => h('li', null, x.step + ' ' + new Date(x.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })))) : null);
+  }
   function roundCard(r) {
     const cands = r.candidates || [];
-    const at = r.hired ? 5 : cands.some(c => c.interviewedAt) ? 4 : cands.length ? 3 : r.spec || r.roleSpec ? 2 : 1;
+    const at = r.stage && STAGE_AT[r.stage.key] !== undefined ? STAGE_AT[r.stage.key] : r.hired ? 5 : cands.some(c => c.interviewedAt) ? 4 : cands.length ? 3 : r.spec || r.roleSpec ? 2 : 1;
     return h('section', { 'aria-labelledby': 'round-' + r.id, class: 'card p28', style: 'gap:20px' },
       h('div', { class: 'between', style: 'gap:16px' },
         h('div', { class: 'stack-6' }, h('span', { class: 'mono muted' }, r.id),
           h('h2', { id: 'round-' + r.id, class: 'h2' }, r.title || r.role || titleCase(r.id)),
           h('span', { class: 'body-s muted' }, [r.openedBy || r.by ? 'Opened by ' + (r.openedBy || r.by) : null, r.reportsTo ? 'reports to ' + r.reportsTo : null, r.template ? 'from template ' + r.template : null, r.openedAt || r.at ? rel(r.openedAt || r.at) : null].filter(Boolean).join(' · '))),
         h('ol', { class: 'plain row-8 steps', style: 'gap:6px;align-items:flex-start' }, STEPS.map((s, i) => h('li', { class: i < at ? 'done' : i === at ? 'now' : '' }, s)))),
+      stageLine(r.stage),
       cands.length ? table(['Candidate', 'Model', 'Status', 'Interviewed', 'Transcript'], cands.map(c => h('tr', null,
         h('td', { class: 'label strong' }, c.name || c.agentId), h('td', { class: 'num' }, [c.provider, c.model].filter(Boolean).join(' · ')),
         h('td', null, Tag(c.status || '?', { variant: 'status', status: c.status === 'hired' ? 'online' : c.status === 'released' ? 'neutral' : 'warning' })),
@@ -51,7 +62,9 @@ export async function render(root, ctx) {
   }
   load();
   const stopPanels = mountPanels(side, 'side:hiring', app);
-  const off = events.on('crew', load);
-  return () => { off(); stopPanels(); };
+  const off = events.on(['crew', 'dispatch', 'activity'], load);
+  // a round moves on its own (interviews finish in the background): refresh while one is open
+  const iv = setInterval(load, 20000);
+  return () => { off(); clearInterval(iv); stopPanels(); };
 }
 function titleCase(s) { return String(s).replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()); }

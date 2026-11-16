@@ -15,6 +15,8 @@
  * Halt: every tick first runs company/tools/halt.js tick; while co.halted() is 'soft' or 'hard' nobody is woken.
  * Modules: then each enabled core module's tick.js (lib/modules.js runTicks; halted: only runWhenHalted ones).
  * Guardrail spendCap (co.guard): when the owner turns it off, the USD caps hold nothing (one line says what they would have held).
+ * Hiring: each tick runs hire.js advance --all (the mechanical steps of every open round, within the cap) and wakes the
+ * seat that must pick once per round, past its cooldown; a seat hired this tick gets its first run in the same tick.
  *   node company/tools/dispatch.js --selftest # offline fixtures for the handoff reader
  */
 'use strict';
@@ -60,16 +62,20 @@ const ALLOW_ASK = process.env.DISPATCH_ALLOW_ASK === '1';
 // The crew list lives in company/tools/loops.json (hire.js adds and removes people there), read through lib/company.js;
 // the map below is only the fallback if that file is missing or unreadable: the founder's own loop.
 const FALLBACK_LOOP_OF = { agent: 'Founder loop' };
-const CREW = (() => { const c = co.crew(); return c && Object.keys(c).length ? c : null; })();
+// `let`: re-read after the hiring step, so a seat hired this tick is woken for its first run in the same tick
+let CREW = (() => { const c = co.crew(); return c && Object.keys(c).length ? c : null; })();
 const CEO_ID = co.ceo() || 'agent';
 const CEO_NAME = CREW ? co.nameOf(CEO_ID) : 'the CEO';
 const seatRow = fn => { const id = CREW ? co.seatFor(fn) : null; return id && CREW[id] ? [id, CREW[id]] : null; };
-const LOOP_OF = CREW ? Object.fromEntries(Object.entries(CREW).filter(([, c]) => c && c.loop).map(([id, c]) => [id, c.loop])) : FALLBACK_LOOP_OF;
+const loopMap = crew => crew ? Object.fromEntries(Object.entries(crew).filter(([, c]) => c && c.loop).map(([id, c]) => [id, c.loop])) : FALLBACK_LOOP_OF;
+let LOOP_OF = loopMap(CREW);
 // Revenue priority, set per person as "priority" in loops.json (higher fires first, absent = 0). Used to order the
 // due loops so that a cut by the per-tick limit, the USD cap or the per-agent share falls on discretionary work, not
 // on the work that makes money. Without it the cut falls on whichever quest /api/quests lists first, and a revenue loop
 // can sit held all afternoon while housekeeping loops keep firing.
-const PRIORITY_OF = CREW ? Object.fromEntries(Object.entries(CREW).map(([id, c]) => [id, Number(c && c.priority) || 0])) : {};
+const prioMap = crew => crew ? Object.fromEntries(Object.entries(crew).map(([id, c]) => [id, Number(c && c.priority) || 0])) : {};
+let PRIORITY_OF = prioMap(CREW);
+function refreshCrew() { const c = co.crew(); CREW = c && Object.keys(c).length ? c : null; LOOP_OF = loopMap(CREW); PRIORITY_OF = prioMap(CREW); }
 const prio = id => PRIORITY_OF[id] || 0;
 // Owner messages (company/owner/inbound.jsonl, via owner-inbox.js) wake the seats flagged wakeOnOwnerMessage (the CEO)
 // with a short cooldown.
@@ -150,6 +156,34 @@ function capDecision({ capOn, capped, metered, ownerWake, perAgentOver }) {
   if (perAgentOver) return capOn ? 'perAgentHeld' : 'wouldHold';
   return 'run';
 }
+/* ---- HIRING: rounds advance on their own ----
+ * Each tick runs `hire.js advance --all` (a child with a timeout, fail-safe): every open round is moved as far as it goes
+ * without a judgement: candidates from the written profiles, all interviews in parallel (in the background), the
+ * scorecard inputs, the pick handed to the seat that decides, a recorded pick finished into a hire. `--held` passes the
+ * metered cap down (interviews are metered model calls). The halt state is checked before this runs. */
+function runHiringAdvance(held) {
+  const argv = [path.join(__dirname, 'hire.js'), 'advance', '--all'].concat(held ? ['--held'] : []).concat(DRY ? ['--dry'] : []);
+  const out = require('child_process').execFileSync(process.execPath, argv, { cwd: ROOT, timeout: num('DISPATCH_HIRING_TIMEOUT_SEC', 240) * 1000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+  return JSON.parse(out);
+}
+// which seats to wake now for a pick (once per round, past their cooldown): rounds waiting on a pick whose wake has not
+// been spent. -> [{ seat, slug }]
+function hiringWakes(rounds, state) {
+  const w = (state && state.hiringWake) || {}; const outl = [];
+  for (const r of rounds || []) if (r && r.stage === 'waiting-pick' && r.pickRequestAt && !w[r.slug]) for (const seat of r.pickSeats || []) outl.push({ seat, slug: r.slug });
+  return outl;
+}
+// one log line per round when something happened or its stage changed
+function hiringLines(rounds, state) {
+  state.hiringStage = state.hiringStage || {}; const lines = [];
+  for (const r of rounds || []) {
+    if (!r || !r.slug) continue;
+    const changed = state.hiringStage[r.slug] !== r.label;
+    if ((r.did && r.did.length) || changed || r.error) lines.push('HIRING ' + r.slug + ': ' + (r.error ? 'error ' + r.error : [].concat(r.did || [], r.notes || []).join('; ') || 'no step') + ' — now ' + (r.label || r.stage || '?'));
+    if (r.label) state.hiringStage[r.slug] = r.label;
+  }
+  return lines;
+}
 /* `--selftest`: the reader's own fixtures. It exists because the defect above was in a reader, and a reader that is
  * only ever exercised on today's clean inboxes has not been tested. Runs before any state is read or written. */
 function selftestOpenHandoffs() {
@@ -183,6 +217,17 @@ function selftestOpenHandoffs() {
   check('spendCap off: nothing is held, it is noted', capDecision(Object.assign({ capOn: false }, base)) === 'wouldHold' && capDecision(Object.assign({ capOn: false }, base, { capped: false, perAgentOver: true })) === 'wouldHold');
   check('an owner message is never held', capDecision(Object.assign({ capOn: true }, base, { ownerWake: true })) === 'run');
   check('a subscription loop is never held by the USD cap', capDecision(Object.assign({ capOn: true }, base, { metered: false, perAgentOver: true })) === 'run');
+  {
+    const rounds = [{ slug: 'qa-1', stage: 'waiting-pick', label: 'waiting for pick by Sam', pickRequestAt: '2026-11-17T10:00:00Z', pickSeats: ['sam'], did: ['handed the pick to Sam'] },
+      { slug: 'ops-1', stage: 'interviewing', label: 'interviewing 1/3', pickSeats: ['sam'], did: [] }];
+    const st = {};
+    check('hiring: a round waiting on a pick wakes its pick seat', JSON.stringify(hiringWakes(rounds, st)) === '[{"seat":"sam","slug":"qa-1"}]');
+    check('hiring: the pick wake is spent once per round', hiringWakes(rounds, { hiringWake: { 'qa-1': '2026-11-17T10:01:00Z' } }).length === 0);
+    check('hiring: two deciders are both woken', hiringWakes([{ slug: 'x', stage: 'waiting-pick', pickRequestAt: 't', pickSeats: ['m', 'p'] }], {}).length === 2);
+    check('hiring: interviews in flight wake nobody', hiringWakes([rounds[1]], {}).length === 0);
+    const l1 = hiringLines(rounds, st), l2 = hiringLines(rounds, st);
+    check('hiring: a log line on each step or stage change, then quiet', l1.length === 2 && /^HIRING qa-1: handed the pick to Sam — now waiting for pick by Sam$/.test(l1[0]) && l2.length === 1 && /qa-1/.test(l2[0]), JSON.stringify([l1, l2]));
+  }
   const bad = cases.filter(c => !c.pass);
   for (const c of cases) console.log((c.pass ? 'ok   ' : 'FAIL ') + c.name + (c.pass ? '' : '  [' + c.detail + ']'));
   console.log(bad.length ? 'DISPATCH SELFTEST FAILED: ' + bad.length + ' of ' + cases.length : 'DISPATCH SELFTEST PASSED: ' + cases.length + ' cases');
@@ -553,8 +598,18 @@ function lastRunTail(job) {
   const wouldHold = [];
   const CAP_ON = co.guard('spendCap');
   const byAgent = spentByAgent();
-  const modes = approvalModes();
   const askHeld = [];
+  // Hiring first (fail-safe): mechanical steps of every open round, so a hire made now gets its first run in this tick
+  let hiringRounds = [];
+  try {
+    const hr = runHiringAdvance(capped && CAP_ON);
+    hiringRounds = (hr && hr.rounds) || [];
+    const st0 = readJson(STATE, { quests: {}, agents: {} });
+    for (const l of hiringLines(hiringRounds, st0)) log(l);
+    if (!DRY) fs.writeFileSync(STATE, JSON.stringify(st0, null, 1));
+    if (hiringRounds.some(r => r.hiredNow)) refreshCrew();
+  } catch (e) { log('HIRING ERROR: ' + String((e.stderr && String(e.stderr).trim().split('\n').pop()) || e.message).slice(0, 200)); }
+  const modes = approvalModes();
   const [qr, cr] = await Promise.all([call('GET', '/api/quests'), call('GET', '/api/cron')]);
   const quests = (JSON.parse(qr.body).quests || []);
   const jobs = (JSON.parse(cr.body).jobs || []);
@@ -668,10 +723,21 @@ function lastRunTail(job) {
     work[agentId] = work[agentId] || [];
     reason[agentId] = (reason[agentId] ? reason[agentId] + '; ' : '') + unread + ' owner message(s) unread';
   }
+  // Hiring wakes: when a round's interviews are all in, the seat that must pick is woken now, past its cooldown, once
+  // per round (state.hiringWake); a seat hired this tick has an OPEN first-session handoff and no last run, so the inbox
+  // wake above already starts its first run.
+  const hiringWake = new Map();   // agentId -> [round slugs]
+  state.hiringWake = state.hiringWake || {};
+  for (const { seat, slug } of hiringWakes(hiringRounds, state)) {
+    if (!LOOP_OF[seat]) continue;
+    hiringWake.set(seat, (hiringWake.get(seat) || []).concat([slug]));
+    work[seat] = work[seat] || [];
+    reason[seat] = (reason[seat] ? reason[seat] + '; ' : '') + 'pick waiting in hiring round ' + slug;
+  }
   // Owner messages first, then by revenue priority, then in the order found. The priority exists so that when only
   // MAX_PER_TICK loops can fire, the ones the revenue line depends on are the ones that fire.
   const order = Object.keys(work).sort((a, b) =>
-    ((ownerWake.has(b) ? 1 : 0) - (ownerWake.has(a) ? 1 : 0)) || (prio(b) - prio(a)));
+    ((ownerWake.has(b) ? 1 : 0) - (ownerWake.has(a) ? 1 : 0)) || ((hiringWake.has(b) ? 1 : 0) - (hiringWake.has(a) ? 1 : 0)) || (prio(b) - prio(a)));
   let fired = 0; try { const pace = await require('./pacer.js').dispatchHook({ dry: DRY, log, jobs, order, ownerWake, maxPerTick: MAX_PER_TICK }); fired = -Math.max(0, Math.min(2, Number(pace && pace.extra) || 0)); } catch (e) { fired = 0; log('PACER ERROR: ' + e.message); }   // pacer.js (fail-safe): may drop metered wakes held near the station rail from `order`, and lends extra per-tick slots by starting `fired` below 0
   const deferred = [];
   for (const agentId of order) {
@@ -684,7 +750,7 @@ function lastRunTail(job) {
     if (job.inFlight || job.state === 'running') continue;
     const last = job.lastRunAt ? Date.parse(job.lastRunAt) : 0;
     const ownCooldown = CREW && CREW[agentId] && Number(CREW[agentId].cooldownMin) > 0 ? Number(CREW[agentId].cooldownMin) * 60000 : COOLDOWN_MS;   // per-person rest, loops.json cooldownMin
-    if (Date.now() - last < (ownerWake.has(agentId) ? OWNER_COOLDOWN_MS : ownCooldown)) continue;
+    if (!hiringWake.has(agentId) && Date.now() - last < (ownerWake.has(agentId) ? OWNER_COOLDOWN_MS : ownCooldown)) continue;
     if (!ALLOW_ASK && modes[agentId] === 'ask') { askHeld.push(job.name + ' (' + agentId + ')'); continue; }   // due, but cannot save unattended
     // the global USD cap, then this agent's share (an owner message is never held; a subscription loop is not metered).
     // With the spendCap guardrail off nothing is held; the loop runs and is listed once in the log.
@@ -706,6 +772,7 @@ function lastRunTail(job) {
       for (const qid of (artifactWakes[agentId] || [])) state.artifactWait[qid].wakes++;   // a real start is a wake
       if (viaInbox) state.agents[agentId].count++;
       if (ownerWake.has(agentId)) state.owner.count++;
+      for (const slug of (hiringWake.get(agentId) || [])) state.hiringWake[slug] = new Date().toISOString();   // spent: once per round
       fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
     } else {
       log('  ' + job.name + ' refused: HTTP ' + r.status + ' ' + r.body.slice(0, 160) + ' (not counted toward stall)');

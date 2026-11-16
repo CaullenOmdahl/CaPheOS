@@ -31,6 +31,9 @@ const co = require('./lib/company');
 const ROOT = co.ROOT;
 const LOOP_GRANTS = ['workbench'];
 const SCHEDULE = 'every 2 hours';
+// how a loop treats hiring (hire.js advance runs the mechanical steps every dispatcher tick)
+const HIRING_LINE = 'HIRING: hiring rounds advance on their own; when a pick handoff arrives, pick from the scorecard and record it with hire.js (`node company/tools/hire.js pick --round <round> --agent <id> --by <you> --why "..."`); don\'t run interviews yourself. Your part of a round is its files (role-spec.md, interview.md, scorecard.md, profiles/) and the pick.';
+const hasHiringLine = p => /hiring rounds advance on their own/.test(String(p || ''));
 const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } };
 
 /* station call → { status, json, error } ; never throws */
@@ -92,6 +95,7 @@ function buildPrompt() {
     '4. Advance the mandate and do the duty of every function you still hold (company/roles/templates/<seat>.md). Record decisions in company/work/decisions.md and append a dated entry to company/work/' + s.log + '.\n' +
     'Only the owner gates (money beyond the cap, access, ownership, outside commitments) go to the owner as a question, one at a time, with a recommendation and a default: `node company/tools/inbox.js ask --from ' + s.name + ' --q "..."`.\n' +
     'LINK THE OWNER TO THE CONSOLE: when a message to the owner points at something they can see or change, link it with an ordinary markdown link in the console: scheme (skill console-links, docs/CONSOLE-LINKS.md), e.g. [the open question](console:#/today), [the hiring round](console:#/hiring), [your handoffs](console:#/work/handoffs).\n' +
+    HIRING_LINE + '\n' +
     'Finish with three short lines: done, handed off, blocked.';
 }
 
@@ -166,6 +170,7 @@ async function ensure(opts) {
     const grants = Array.isArray(job.unattendedGrants) ? job.unattendedGrants : [];
     if (!LOOP_GRANTS.every(g => grants.includes(g))) patch.unattendedGrants = [...new Set(grants.concat(LOOP_GRANTS))];
     if (!promptAnswersOwner(job.prompt)) patch.prompt = buildPrompt();
+    else if (!hasHiringLine(job.prompt)) patch.prompt = String(job.prompt).replace(/\s+$/, '') + '\n' + HIRING_LINE;   // an existing loop learns the hiring rule, its own text kept
     if (want && (job.model !== want.model || job.provider !== want.provider)) { patch.model = want.model; patch.provider = want.provider; }
     else if (!job.model || !job.provider) { const m = candidateDefault(); if (m.model && m.provider) { patch.model = m.model; patch.provider = m.provider; } }
     if (Object.keys(patch).length) {
@@ -221,6 +226,7 @@ async function selftest() {
   let r = await ensure({ call: S.call });
   t('ensure creates the loop with workdir, terminal grant, 2-hourly schedule in the company tz', r.ok && r.created && S.jobs.length === 1 && sameDir(S.jobs[0].workdir, ROOT) && S.jobs[0].unattendedGrants.includes('workbench') && S.jobs[0].schedule === SCHEDULE && S.jobs[0].tz === co.TZ, { r, jobs: S.jobs });
   t('the created prompt reads, answers and acks the owner inbox and puts the charter first', promptAnswersOwner(S.jobs[0].prompt) && /CHARTER\.md/.test(S.jobs[0].prompt) && /--re <message id>/.test(S.jobs[0].prompt));
+  t('the created prompt says rounds advance on their own: pick from the scorecard with hire.js, no interviews', hasHiringLine(S.jobs[0].prompt) && /pick from the scorecard and record it with hire\.js/.test(S.jobs[0].prompt) && /don't run interviews yourself/.test(S.jobs[0].prompt));
   t('ensure blessed the company root and armed the scheduler', S.projects.length === 1 && S.enabled === true && r.armed);
   st = await status({ call: S.call });
   t('status is green after ensure', st.ok, st.problems);
@@ -234,13 +240,13 @@ async function selftest() {
   const own = 'My own loop. node company/tools/owner-inbox.js new, then owner-inbox.js send, then owner-inbox.js ack.';
   S.jobs.push({ id: 'h1', name: 'Founder loop — run the company', agentId: co.ceo() || 'agent', prompt: own, workdir: null, unattendedGrants: [], model: 'deepseek-flash', provider: 'deepseek', enabled: true });
   r = await ensure({ call: S.call });
-  t('a hand-made loop is found by name prefix and updated in place (workdir + grant), its prompt and model kept', r.ok && !r.created && S.jobs.length === 1 && r.updated.sort().join() === 'unattendedGrants,workdir' && S.jobs[0].prompt === own && S.jobs[0].model === 'deepseek-flash', { r, j: S.jobs[0] });
+  t('a hand-made loop is found by name prefix and updated in place (workdir + grant + the hiring line), its own prompt text and model kept', r.ok && !r.created && S.jobs.length === 1 && r.updated.sort().join() === 'prompt,unattendedGrants,workdir' && S.jobs[0].prompt.startsWith(own) && hasHiringLine(S.jobs[0].prompt) && S.jobs[0].model === 'deepseek-flash', { r, j: S.jobs[0] });
   S.jobs[0].prompt = 'Do things.';
   r = await ensure({ call: S.call });
   t('a loop prompt that never answers the owner is replaced', r.updated.includes('prompt') && promptAnswersOwner(S.jobs[0].prompt), r);
   // already done by hand (the sandbox state): recognised as done
   S = fake(); S.enabled = true; S.projects.push({ root: ROOT, blessed: true });
-  S.jobs.push({ id: 'k1', name: 'Founder loop', agentId: co.ceo() || 'agent', prompt: own, workdir: ROOT, unattendedGrants: ['workbench'], model: 'm', provider: 'p', enabled: true });
+  S.jobs.push({ id: 'k1', name: 'Founder loop', agentId: co.ceo() || 'agent', prompt: own + '\n' + HIRING_LINE, workdir: ROOT, unattendedGrants: ['workbench'], model: 'm', provider: 'p', enabled: true });
   st = await status({ call: S.call });
   r = await ensure({ call: S.call });
   t('a loop already blessed, granted and armed by hand counts as done', st.ok && r.ok && !r.created && !r.updated.length && !S.calls.some(c => /^POST/.test(c)), { st: st.problems, calls: S.calls });
@@ -250,7 +256,7 @@ async function selftest() {
   return bad ? 1 : 0;
 }
 
-module.exports = { ensure, status, blessRoot, buildPrompt, findLoop, seat, promptAnswersOwner, stationCall, LOOP_GRANTS, SCHEDULE, summary };
+module.exports = { HIRING_LINE, hasHiringLine, ensure, status, blessRoot, buildPrompt, findLoop, seat, promptAnswersOwner, stationCall, LOOP_GRANTS, SCHEDULE, summary };
 
 if (require.main === module) {
   const a = process.argv.slice(2);

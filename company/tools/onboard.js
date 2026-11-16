@@ -313,7 +313,7 @@ async function kickoff() {
     const day = co.localParts().date;
     const block = '\n## ' + day + ' from onboard.js — ' + KICKOFF_TITLE + '\n' +
       '**Need:** read company/CHARTER.md and turn it into the company\'s first plan. (1) Goals: mint each as a station quest whose contract is a company/work/ file (see your loop prompt for the mint command and the domain list). ' +
-      '(2) Roles: the seats you will open first and why; open them with `node company/tools/hire.js open` — the hiring governance level (`node company/tools/governance.js check hiring`) decides whether the owner is asked first. ' +
+      '(2) Roles: the seats you will open first and why; open them with `node company/tools/hire.js open` — the hiring governance level (`node company/tools/governance.js check hiring`) decides whether the owner is asked first — and write each round\'s files (role-spec.md, interview.md, scorecard.md, profiles/<name>.md); the rounds then advance on their own (candidates, parallel interviews) and each pick comes back to you as a handoff. ' +
       '(3) First tasks: as quest steps or handoffs, each with an owner and a date. Write the plan to company/work/plan.md, then send the owner a short summary (owner-inbox.js send) with links: ' +
       '[the plan\'s quests](console:#/work/quests), [hiring](console:#/hiring), [handoffs](console:#/work/handoffs). Close this handoff with the evidence.\n' +
       '**Why:** the company just certified; until there is a plan nobody knows what to build first.\n**Deadline:** ' + day + '\n**Status:** OPEN\n**Evidence:** company/state/onboarding-state.json (certified)\n';

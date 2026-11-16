@@ -44,11 +44,11 @@ scripts/console.sh                # same as the first line
 | GET | /api/questions/answered?since=ISO | answered today | inbox.js state |
 | GET | /api/owner/messages | `{ messages, channel }`: the owner channel both ways, newest last; every owner message carries `state` (below), `channel` = `{ ok, problems: [{code, msg, fix, link}], ceo, nextCheckMin, working, tickMin, loop }` | owner-inbox.js, console/chat.js |
 | POST | /api/owner/messages | `{ text, to? }` owner writes to the company (appends company/owner/inbound.jsonl; `to` = a crew name prefixes the text so owner-addressing routes it); answers the row with its `state` | owner-inbox |
-| GET | /api/crew | `{ seats:[{id, ...seat, station?}], station:'up'\|'down' }`: loops.json seats merged with the station roster (`/api/roster`, 2.5 s timeout) | loops.json, station |
+| GET | /api/crew | `{ seats:[{id, ...seat, station?, hire?, firstRun?}], station:'up'\|'down' }`: loops.json seats merged with the station roster (`/api/roster`, 2.5 s timeout); a hired seat carries `hire {round, at, pickedBy}` and `firstRun {runId, at, outcome}` (its first run since the hire, from runs.jsonl; null while still to come) | loops.json, station, hiring/, runs.jsonl |
 | GET | /api/handoffs | open handoffs by deadline | `handoff-status.js --due --json` |
 | GET | /api/decisions | last 100 lines of company/work/decisions.md as `{ entries:[{text}] }` | file |
 | GET | /api/dispatch | last tick, recent log lines | work/dispatch-state.json, dispatch-log.md |
-| GET | /api/hiring | rounds under company/hiring/*/round.json + templates in company/roles/templates | files |
+| GET | /api/hiring | rounds under company/hiring/*/round.json + templates in company/roles/templates; each round carries `stage {key, label, at, waitingOn, counts, timeline[{step, at}]}` from hire.js roundStage. Keys: `needs-files`, `candidates`, `interviewing` (label "interviewing 2/3"), `interviews-failed`, `waiting-pick` ("waiting for pick by X"), `picked`, `waiting-owner`, `declined`, `hired`, `closed` | files |
 | GET | /api/usage | pacer status | `pacer.js status --json` (or `report`) |
 
 ## Controls
@@ -116,7 +116,7 @@ The crew's work, visible (console/activity.js). The console keeps one connection
 |---|---|---|
 | GET | /api/now | `{ station: {up, feed}, runs: [{runId, agentId, name, kind: routine\|chat\|…, label, href, step ("reading company/CHARTER.md", "running hire.js open…"), steps, elapsedSec, usd, stoppable, watched}], seats: [{id, name, running, loop, enabled, nextRunAt, schedule, soonerBecause: ["2 open handoffs", "1 unread message from you"], wakesOnMessage, schedulerOn}] }` |
 | GET | /api/now/run/:runId?after=N | the run's events after `N` (`start`, `tool {text}`, `result {ok}`, `token {delta}`, `error`, `end`) for the Watch view, `done`, `outcome`, `usd` |
-| GET | /api/activity | recent activity (48 h), newest first: finished runs from runs.jsonl (outcome, cost, the first sentence of the reply), hiring-round log lines with the hiring governance level ("Crew decides: done without asking you"), owner-channel replies and decisions, each with `links: [{label, href}]` into the console |
+| GET | /api/activity | recent activity (48 h), newest first: finished runs from runs.jsonl (outcome, cost, the first sentence of the reply), hiring-round log lines with the hiring governance level, one `kind:'hiring-stage'` item per open round with its live stage and timeline times ("Crew decides: done without asking you"), owner-channel replies and decisions, each with `links: [{label, href}]` into the console |
 
 Today shows "Now" (each run with Watch and Stop, then each idle seat's next run and why it would wake sooner),
 "Recent activity", and while the post-certification kickoff handoff is open, "Founder is drafting the first plan…".

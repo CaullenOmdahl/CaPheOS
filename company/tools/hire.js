@@ -15,8 +15,19 @@
  *        preset). The hired candidate's profile becomes part of their charter.
  *                                        [--skin <skin>] [--persona composed|warm|blunt|dry|upbeat]
  *        (no --skin: a free company candidate skin <slug>_candidate_*, else the station's default body DATA.DEFAULT_SKIN)
- *   node company/tools/hire.js interview --round <r> --questions company/hiring/<r>/interview.md [--agent <id>] [--background] [--redo]
- *                                        (skips candidates already interviewed or being interviewed; --redo writes <id>-2.md)
+ *   node company/tools/hire.js interview --round <r> --questions company/hiring/<r>/interview.md [--agent <id>] [--background] [--redo] [--parallel 3]
+ *                                        (all candidates at once, at most --parallel; skips candidates already interviewed or being
+ *                                        interviewed; --redo writes <id>-2.md). Normally run by `advance`, not by hand.
+ *   node company/tools/hire.js advance   <round> | --all [--held] [--dry] [--inline] [--parallel 3]
+ *        moves a round as far as it goes without a judgement: creates the candidates whose profiles/<name>.md are written
+ *        (optional "## Model" line provider/model), interviews them all in parallel in the background, writes
+ *        scorecard-inputs.md, and hands the pick to the deciding seat as an OPEN handoff (scorecard, transcripts, a
+ *        recommendation slot); a round's pickRule (open --pick-rule scores: scores.json totals) picks instead. A recorded
+ *        pick is finished into the hire. The dispatcher runs `advance --all` every tick (--held: the metered cap is reached).
+ *   node company/tools/hire.js pick      --round <r> --agent <id> --by <name> --why "<totals and why>" [--title ..] [--functions ..] [--template ..] [--access ask] [--name ..]
+ *        the deciding seat's pick, recorded (scorecard.md, decisions.md, round log; the pick handoff closed); the hire
+ *        (desk, loop, inbox, dossier, releases, the new seat's first-session handoff) follows at once under the hiring level
+ *   node company/tools/hire.js open ... [--functions a,b] [--template <seat>] [--title ".."] [--pick-rule scores [--min 3.5]]
  *   node company/tools/hire.js hire      --round <r> --agent <id> --title "Sales Lead" --by <name> --approved "<who decided>, <where and when>" [--access full|ask]
  *                                        [--schedule "<cron expression>"] [--name <office name>]   (default: every 2 hours)
  *                                        [--template <seat>]   start the charter from company/roles/templates/<seat>.md
@@ -180,13 +191,30 @@ function staffLog(line) { const f = path.join(HIRING, 'staff-log.md'); if (!fs.e
 function args() {
   const a = process.argv.slice(2); const o = { cmd: a[0] || 'status' };
   for (let i = 1; i < a.length; i++) {
-    if (!a[i].startsWith('--')) continue;
+    if (!a[i].startsWith('--')) { if (o._ === undefined) o._ = a[i]; continue; }
     const k = a[i].slice(2);
     o[k] = (a[i + 1] !== undefined && !a[i + 1].startsWith('--')) ? a[++i] : true;
   }
   return o;
 }
-const out = (code, obj) => { console.log(JSON.stringify(obj, null, 1)); process.exit(code); };
+// out() ends the process with a JSON line; inside soft() (advance, pick, the dispatcher's mechanical steps) it throws a
+// Stop instead, so one refused step is a note on that round, not the end of the run.
+let SOFT = 0;
+class Stop extends Error { constructor(code, obj) { super(String((obj && obj.error) || 'stopped')); this.code = code; this.obj = obj || {}; } }
+const out = (code, obj) => { if (SOFT) throw new Stop(code, obj); console.log(JSON.stringify(obj, null, 1)); process.exit(code); };
+async function soft(fn) {
+  SOFT++;
+  try { return { ok: true, value: await fn() }; }
+  catch (e) { return e instanceof Stop ? { ok: false, code: e.code, obj: e.obj, error: e.message } : { ok: false, code: 1, obj: {}, error: String(e && e.message || e) }; }
+  finally { SOFT--; }
+}
+// run fn over items with at most n in flight; results in input order
+async function pool(items, n, fn) {
+  const res = new Array(items.length); let next = 0;
+  const lane = async () => { while (next < items.length) { const k = next++; res[k] = await fn(items[k], k); } };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(Number(n) || 1, items.length)) }, lane));
+  return res;
+}
 const readJson = (p, fb) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return fb; } };
 // whole-file replace (write a temp file, rename it over): loops.json is read by the dispatcher and station-floor.js at any
 // moment, and an in-place write lets them read it half-written
@@ -339,29 +367,44 @@ async function interview(a) {
   const questions = parseQuestions(qfile);
   const budget = assertBudget(a.who || peopleId() || round.manager || ceoId(), !!a.force);
   logLine(dir, 'BUDGET ok before interviews: $' + budget.total.toFixed(2) + ' of $' + budget.cap.toFixed(2) + ' metered in the last 24h' + (a.force ? ' (--force)' : ''));
-  const isRunning = c => { try { const pid = Number(fs.readFileSync(path.join(dir, 'interviews', c.agentId + '.running'), 'utf8')); process.kill(pid, 0); return true; } catch (_) { return false; } };
+  const isRunning = c => interviewRunning(dir, c);
   const targets = (round.candidates || []).filter(c => c.status === 'candidate' && (!a.agent || c.agentId === a.agent)
     && (a.redo || !(c.interviewedAt || transcriptDone(dir, c.agentId))) && !isRunning(c));
+  const parallel = Math.max(1, Math.min(6, Number(a.parallel) || INTERVIEW_PARALLEL));
   if (!targets.length) out(2, { ok: false, error: 'nobody to interview: every active candidate is already interviewed or being interviewed (use --agent <id> --redo to repeat one)' });
   if (a.background) {
     const logf = path.join(dir, 'interview-run.log');
-    const argv = [__filename, 'interview', '--round', round.slug, '--questions', qfile].concat(a.agent ? ['--agent', String(a.agent)] : []).concat(a.redo ? ['--redo'] : []).concat(['--notify']);
-    // systemd-run --user --scope puts the process in its own scope, outside starnet.service, so a station restart
-    // (KillMode=mixed) does not kill an interview halfway. Falls back to a plain detached child.
-    const hasSystemdRun = (() => { try { require('child_process').execFileSync('systemd-run', ['--version'], { stdio: 'ignore' }); return true; } catch (_) { return false; } })();
+    const argv = [__filename, 'interview', '--round', round.slug, '--questions', qfile, '--parallel', String(parallel)].concat(a.agent ? ['--agent', String(a.agent)] : []).concat(a.redo ? ['--redo'] : []).concat(a.force ? ['--force'] : [])
+      .concat(a.advance ? ['--advance'] : ['--notify']);
+    mutateRound(dir, r => { for (const c of r.candidates || []) if (targets.some(t => t.agentId === c.agentId)) c.interviewStartedAt = new Date().toISOString(); });
+    // systemd-run --user --scope puts the process in its own scope, outside starnet.service (and the dispatcher's timer
+    // unit), so a station restart (KillMode=mixed) does not kill an interview halfway. Needs a user bus; falls back to a
+    // plain detached child (also with HIRE_NO_SCOPE=1, as the tests run).
+    const bus = process.env.XDG_RUNTIME_DIR && fs.existsSync(path.join(process.env.XDG_RUNTIME_DIR, 'bus'));
+    const hasSystemdRun = process.env.HIRE_NO_SCOPE !== '1' && bus && (() => { try { require('child_process').execFileSync('systemd-run', ['--version'], { stdio: 'ignore' }); return true; } catch (_) { return false; } })();
     const child = hasSystemdRun
       ? spawn('systemd-run', ['--user', '--scope', '--quiet', '--collect', '--unit', 'hire-interview-' + round.slug + '-' + Date.now(), process.execPath].concat(argv), { cwd: ROOT, detached: true, stdio: ['ignore', fs.openSync(logf, 'a'), fs.openSync(logf, 'a')] })
       : spawn(process.execPath, argv, { cwd: ROOT, detached: true, stdio: ['ignore', fs.openSync(logf, 'a'), fs.openSync(logf, 'a')] });
     child.unref();
-    logLine(dir, 'INTERVIEWS started in the background (pid ' + child.pid + ') for ' + targets.map(c => c.name).join(', '));
-    return { ok: true, background: true, pid: child.pid, candidates: targets.map(c => c.agentId), log: path.relative(ROOT, logf),
-      note: 'Each answer is written to interviews/<agentId>.md as it arrives. When every active candidate has been interviewed, a handoff lands in ' + fnInbox('people') + ' and the dispatcher wakes you.' };
+    logLine(dir, 'INTERVIEWS started in the background (pid ' + child.pid + ', ' + Math.min(parallel, targets.length) + ' at a time) for ' + targets.map(c => c.name).join(', '));
+    return { ok: true, background: true, pid: child.pid, parallel, candidates: targets.map(c => c.agentId), log: path.relative(ROOT, logf),
+      note: 'Each answer is written to interviews/<agentId>.md as it arrives. When every active candidate has been interviewed, the pick is handed to ' + pickSeats(round).map(co.nameOf).join(' and ') + ' (an OPEN handoff) and the dispatcher wakes them.' };
   }
-  const results = [];
-  for (const c of targets) {
+  // every candidate of the round at once (bounded by --parallel, default 3): an interview is a few minutes of waiting on
+  // one model, and the candidates do not depend on each other
+  mutateRound(dir, r => { for (const c of r.candidates || []) if (targets.some(t => t.agentId === c.agentId) && !c.interviewStartedAt) c.interviewStartedAt = new Date().toISOString(); });
+  const results = await pool(targets, parallel, async c => {
     const r = await interviewOne(dir, round, c, questions);
-    results.push(r);
-    if (r.ok) mutateRound(dir, fr => { const fc = (fr.candidates || []).find(x => x.agentId === c.agentId); if (fc) { fc.interviewedAt = c.interviewedAt; fc.transcript = c.transcript; } });
+    mutateRound(dir, fr => { const fc = (fr.candidates || []).find(x => x.agentId === c.agentId); if (!fc) return;
+      if (r.ok) { fc.interviewedAt = c.interviewedAt; fc.transcript = c.transcript; delete fc.interviewError; }
+      else { fc.interviewFailures = (Number(fc.interviewFailures) || 0) + 1; fc.interviewError = String(r.error || '').slice(0, 300); fc.interviewFailedAt = new Date().toISOString(); } });
+    return r;
+  });
+  if (a.advance) {
+    // the background run of hire.js advance: move the round on now (scorecard inputs, the pick handoff or the rule's pick,
+    // the hire), instead of waiting for the next dispatcher tick
+    const adv = await soft(() => advanceRound(round.slug, { noInterviews: true }));
+    return { ok: results.every(r => r.ok), parallel, results, advance: adv.ok ? adv.value : { error: adv.error } };
   }
   if (a.notify) {
     const now = readJson(path.join(dir, 'round.json'), round);
@@ -385,7 +428,337 @@ async function interview(a) {
     fs.mkdirSync(HANDOFFS, { recursive: true });
     fs.appendFileSync(path.join(HANDOFFS, fnInbox('people')), block);
   }
-  return { ok: results.every(r => r.ok), results };
+  return { ok: results.every(r => r.ok), parallel, results };
+}
+
+/* ---------------- advance: the round moves on its own ----------------
+ * Every step of a round that needs no judgement is done by `hire.js advance` (the dispatcher runs it each tick, within
+ * the halt state and the metered cap): create the candidates whose profiles are written, interview every candidate in
+ * parallel, write the scorecard inputs when the interviews are in, and hand the pick to the seat that decides (an OPEN
+ * handoff with the scorecard, the transcripts and a recommendation slot). The pick stays a judgement of that seat,
+ * recorded with `hire.js pick`, or follows the round's own scorecard rule (round.json pickRule). Once a pick is
+ * recorded the hire is finished at once, under the hiring governance level (auto: done; notify: done, the owner is
+ * told; approve: the owner is asked, and the next advance after their yes finishes it). */
+const INTERVIEW_PARALLEL = 3;
+const MAX_INTERVIEW_TRIES = 2;      // a candidate whose interview failed this often is left out of the pick, not retried forever
+const FINISH_LEASE_MS = 10 * 60e3;  // one hire.js finishes a pick at a time
+const relp = f => path.relative(ROOT, f);
+function interviewRunning(dir, c) { try { const pid = Number(fs.readFileSync(path.join(dir, 'interviews', c.agentId + '.running'), 'utf8')); if (!pid) return false; process.kill(pid, 0); return true; } catch (_) { return false; } }
+const isInterviewed = (dir, c) => !!(c.interviewedAt || transcriptDone(dir, c.agentId));
+function candState(dir, c) {
+  if (isInterviewed(dir, c)) return 'interviewed';
+  if (interviewRunning(dir, c)) return 'running';
+  // started and still queued in its interview process (or between the spawn and its first answer): not due again yet
+  const t = c.interviewStartedAt ? Date.parse(c.interviewStartedAt) : 0;
+  if (t && Date.now() - t < 45 * 60e3 && !(c.interviewFailedAt && Date.parse(c.interviewFailedAt) >= t)) return 'running';
+  if ((Number(c.interviewFailures) || 0) >= MAX_INTERVIEW_TRIES) return 'failed';
+  return 'pending';
+}
+// who picks: the people function holder (the CEO while it holds people), with the role's manager when that is someone else
+function pickSeats(round) {
+  const mgr = (round && round.manager) || ceoId(), ppl = peopleId();
+  return (!mgr || mgr === ceoId() || mgr === ppl) ? [ppl].filter(Boolean) : [...new Set([mgr, ppl].filter(Boolean))];
+}
+const lsMd = d => { try { return fs.readdirSync(d).filter(f => f.endsWith('.md')).sort(); } catch (_) { return []; } };
+function roundFiles(dir) {
+  return { spec: !!readIf(path.join(dir, 'role-spec.md')).trim(), questions: !!readIf(path.join(dir, 'interview.md')).trim(),
+    profiles: lsMd(path.join(dir, 'profiles')), scorecard: !!readIf(path.join(dir, 'scorecard.md')).trim() };
+}
+// "# Candidate profile — Nadia Farrell" -> Nadia Farrell; a heading that names no one -> the file name
+function profileName(file, txt) {
+  const head = ((String(txt || '').match(/^#\s+(.+)$/m) || [])[1] || '').trim();
+  let n = head.split(/\s+[—–-]\s+|:\s*/).pop().trim();
+  if (!n || /\b(profile|candidate)\b/i.test(n)) n = path.basename(file, '.md').replace(/[-_]+/g, ' ');
+  return n.replace(/[^A-Za-z' -]/g, '').replace(/\s+/g, ' ').trim().slice(0, 40);
+}
+// optional "## Model" section in a profile: provider/model [effort]
+function profileModel(txt) { const m = sec(txt, 'Model').match(/([a-z0-9-]+)\/([A-Za-z0-9._:-]+)(?:\s+(low|medium|high))?/); return m ? { provider: m[1], model: m[2], effort: m[3] || null } : null; }
+const lastAt = list => list.filter(Boolean).sort().pop() || null;
+
+/* the live stage of a round, for the console and the dispatcher: { key, label, at, waitingOn, counts, timeline } */
+function roundStage(dir, round) {
+  const cands = (round && round.candidates) || [];
+  const active = cands.filter(c => c.status === 'candidate');
+  const st = active.map(c => ({ c, s: candState(dir, c) }));
+  const n = k => st.filter(x => x.s === k).length;
+  const counts = { candidates: active.length, interviewed: n('interviewed'), running: n('running'), failed: n('failed'), pending: n('pending'), released: cands.filter(c => c.status === 'released').length };
+  const seats = pickSeats(round), seatNames = seats.map(co.nameOf).join(' and ');
+  const hiredC = round.hired ? cands.find(c => c.agentId === round.hired) : null;
+  const tl = [{ step: 'opened', at: round.openedAt || null, by: round.openedBy || null }];
+  if (cands.length) tl.push({ step: 'candidates created', at: lastAt(cands.map(c => c.createdAt)), n: cands.length });
+  const started = lastAt(cands.map(c => c.interviewStartedAt));
+  if (started) tl.push({ step: 'interviews started', at: cands.map(c => c.interviewStartedAt).filter(Boolean).sort()[0] });
+  const allIn = active.length && !counts.running && !counts.pending && counts.interviewed >= 1;
+  if (counts.interviewed || round.pick || round.hired) { const at = lastAt(cands.map(c => c.interviewedAt)); if (at) tl.push({ step: 'interviews ' + (allIn || round.pick || round.hired ? 'complete' : counts.interviewed + '/' + active.length), at }); }
+  if (round.pickRequest) tl.push({ step: 'pick handed to ' + (round.pickRequest.seats || seats).map(co.nameOf).join(' and '), at: round.pickRequest.at });
+  if (round.pick) tl.push({ step: 'picked ' + (round.pick.name || round.pick.agentId) + ' (' + round.pick.by + ')', at: round.pick.at });
+  if (hiredC) tl.push({ step: 'hired', at: hiredC.hiredAt || null });
+  const S = (key, label, at, waitingOn) => ({ key, label, at: at || null, waitingOn: waitingOn || null, counts, timeline: tl });
+  if (hiredC) return S('hired', 'hired ' + (hiredC.officeName || hiredC.name), hiredC.hiredAt);
+  if (round.hired) return S('hired', 'hired ' + round.hired, null);
+  if (round.closed) return S('closed', 'closed' + (round.closedWhy ? ': ' + round.closedWhy : ''), round.closedAt);
+  if (round.pick) {
+    const p = round.pick, who = p.name || p.agentId;
+    if (p.waitingOwner) return p.waitingOwner.denied || gov.approved('hiring:hire:' + round.slug + ':' + p.agentId) === false
+      ? S('declined', 'picked ' + who + '; you declined the hire', p.waitingOwner.at, seats.join(','))
+      : S('waiting-owner', 'picked ' + who + '; waiting for your approval', p.waitingOwner.at, 'owner');
+    return S('picked', 'picked ' + who + '; hiring' + (p.lastError ? ' (last try failed: ' + String(p.lastError).slice(0, 80) + ')' : ''), p.at, 'hire.js');
+  }
+  const files = roundFiles(dir);
+  if (allIn) return S('waiting-pick', 'waiting for pick by ' + seatNames, round.pickRequest ? round.pickRequest.at : lastAt(active.map(c => c.interviewedAt)), seats.join(','));
+  if (counts.running || counts.interviewed) return S('interviewing', 'interviewing ' + counts.interviewed + '/' + active.length + (counts.failed ? ' (' + counts.failed + ' failed)' : ''), started, 'interviews');
+  if (!active.length) {
+    if (!files.spec || !files.profiles.length) return S('needs-files', 'waiting for the round files (' + [!files.spec && 'role-spec.md', !files.questions && 'interview.md', !files.profiles.length && 'profiles/'].filter(Boolean).join(', ') + ') from ' + co.nameOf(peopleId()), round.filesRequest ? round.filesRequest.at : round.openedAt, peopleId());
+    return S('candidates', 'creating candidates', round.openedAt, 'hire.js');
+  }
+  if (!files.questions) return S('needs-files', active.length + ' candidates created; waiting for interview.md from ' + co.nameOf(peopleId()), lastAt(active.map(c => c.createdAt)), peopleId());
+  if (counts.failed && !counts.pending) return S('interviews-failed', 'every interview failed ' + MAX_INTERVIEW_TRIES + ' times; needs ' + co.nameOf(peopleId()), lastAt(active.map(c => c.createdAt)), peopleId());
+  return S('candidates', active.length + ' candidates created; interviews start now', lastAt(active.map(c => c.createdAt)), 'hire.js');
+}
+
+// what the pick seat reads: one row per candidate (transcript, answers, failures, length) and the rubric
+function writeScorecardInputs(dir, round) {
+  const active = (round.candidates || []).filter(c => c.status === 'candidate');
+  const rows = active.map(c => {
+    const tf = c.transcript ? path.resolve(ROOT, c.transcript) : path.join(dir, 'interviews', c.agentId + '.md');
+    const t = readIf(tf, 1e7);
+    const answers = (t.match(/^### Answer$/gm) || []).length, failed = (t.match(/^\*\*No answer:\*\*/gm) || []).length;
+    const words = t.split(/^### Answer$/m).slice(1).map(x => x.split(/\n(?=_run |## |Finished )/)[0]).join(' ').split(/\s+/).filter(Boolean).length;
+    return '| ' + c.name + ' | `' + c.agentId + '` | ' + c.provider + '/' + c.model + ' | ' + (t ? '`' + relp(tf) + '`' : 'no transcript' + (c.interviewError ? ' (' + c.interviewError.slice(0, 80) + ')' : '')) + ' | ' + answers + ' | ' + failed + ' | ' + words + ' |';
+  });
+  const card = readIf(path.join(dir, 'scorecard.md'), 20000).trim();
+  const f = path.join(dir, 'scorecard-inputs.md');
+  fs.writeFileSync(f, '# Scorecard inputs — ' + round.role + ' (' + round.slug + ')\n\nWritten by hire.js advance ' + stamp() + ' when every interview was in. The pick is a judgement by ' + pickSeats(round).map(co.nameOf).join(' and ') +
+    (round.pickRule ? ', or the round\'s scorecard rule (round.json pickRule)' : '') + '; record it with `node company/tools/hire.js pick`.\n\n' +
+    '| Candidate | Agent | Model | Transcript | Answers | No answer | Words |\n|---|---|---|---|---|---|---|\n' + rows.join('\n') + '\n\n' +
+    '## Rubric\n\n' + (card ? 'From `company/hiring/' + round.slug + '/scorecard.md`: score each transcript there, line by line.\n' : 'No scorecard.md yet: score against the role spec (`role-spec.md`) and write the totals in your pick (`--why`).\n') +
+    '\n## Recommendation\n\n_(the pick seat writes it: who, the totals per candidate, why)_\n');
+  return relp(f);
+}
+
+function appendInbox(inbox, block) { fs.mkdirSync(HANDOFFS, { recursive: true }); const f = path.join(HANDOFFS, inbox); if (!fs.existsSync(f)) fs.writeFileSync(f, '# Handoffs\n'); fs.appendFileSync(f, block); }
+function pickHandoff(round, seatId, inputs) {
+  const day = stamp().slice(0, 10), seats = pickSeats(round), other = seats.filter(x => x !== seatId).map(co.nameOf);
+  const level = (() => { try { return co.gate('hiring'); } catch (_) { return 'approve'; } })();
+  const active = (round.candidates || []).filter(c => c.status === 'candidate');
+  const follows = level === 'approve' ? 'the owner is then asked to approve it (hiring is "approve")' : 'the hire, desk, loop routine, inbox and the release of the others follow within seconds (hiring is "' + level + '"' + (level === 'notify' ? '; the owner is told' : '') + ')';
+  return '\n## ' + day + ' from hire.js — pick the ' + round.role + ' (' + round.slug + '): every interview is in\n' +
+    '**Need:** score the transcripts against `company/hiring/' + round.slug + '/scorecard.md`' + (other.length ? ' and agree the pick with ' + other.join(', ') : '') + ', then record it: `node company/tools/hire.js pick --round ' + round.slug + ' --agent <id> --by ' + co.nameOf(seatId) + ' --why "<totals and why>"`' +
+    ' (add `--functions <list>` / `--template <seat>` / `--title "..."` if the round needs them). ' + follows + '. Do not run interviews yourself. If nobody clears the bar, release them with hire.js release and say so in the round log.\n' +
+    '**Why:** the round is waiting only on this judgement.\n**Deadline:** ' + day + '\n**Status:** OPEN\n' +
+    '**Evidence:** `' + inputs + '`; transcripts ' + active.map(c => (c.transcript ? '`' + c.transcript + '`' : c.agentId + ' (none)')).join(', ') + '\n' +
+    '**Candidates:** ' + active.map(c => c.name + ' `' + c.agentId + '` on ' + c.provider + '/' + c.model).join('; ') + '\n' +
+    '**Recommendation:** _(yours: who, the totals, why)_\n';
+}
+// the pick handoffs of a round, closed when the pick is recorded (Status DONE plus a Resolved line, as HANDOFFS.md asks)
+function closePickHandoffs(round, note) {
+  for (const id of new Set(((round.pickRequest || {}).seats || []).concat(pickSeats(round)))) {
+    const f = path.join(HANDOFFS, inboxOf(id)); let t; try { t = fs.readFileSync(f, 'utf8'); } catch (_) { continue; }
+    const parts = t.split(/^(?=## )/m); let hit = false;
+    for (let i = 0; i < parts.length; i++) {
+      if (!/^## .* from hire\.js — pick the /.test(parts[i]) || !parts[i].includes('(' + round.slug + ')') || !/^\*\*Status:\*\*\s*OPEN\b/m.test(parts[i])) continue;
+      parts[i] = parts[i].replace(/^\*\*Status:\*\*\s*OPEN.*$/m, '**Status:** DONE\n**Resolved ' + stamp().slice(0, 10) + ' by hire.js:** ' + note); hit = true;
+    }
+    if (hit) fs.writeFileSync(f, parts.join(''));
+  }
+}
+
+// the round's own scorecard rule (round.json pickRule {type:"scores", file:"scores.json", min:3.5, setBy:"<decider>"}):
+// scores.json { "<agentId or candidate name>": { total, mustHaveAvg?, mustHaveMin? } } -> the highest total that clears the bar
+function rulePick(dir, round) {
+  const rule = round.pickRule;
+  if (!rule || rule.type !== 'scores') return null;
+  if (!approverOk(rule.setBy, deciders(round.manager))) return { none: true, why: 'pickRule was set by ' + (rule.setBy || 'nobody') + ', who does not decide this round (' + deciders(round.manager).join(' or ') + ')' };
+  const file = path.join(dir, String(rule.file || 'scores.json').replace(/[^A-Za-z0-9._-]/g, ''));
+  const sc = readJson(file, null);
+  if (!sc) return { none: true, why: 'no ' + relp(file) + ' yet', waiting: true };
+  const min = Number.isFinite(Number(rule.min)) ? Number(rule.min) : 3.5;
+  const table = sc.candidates || sc, byName = Object.fromEntries(Object.entries(table).map(([k, v]) => [String(k).toLowerCase(), v]));
+  const rows = (round.candidates || []).filter(c => c.status === 'candidate' && isInterviewed(dir, c)).map(c => ({ c, s: table[c.agentId] || byName[String(c.name || '').toLowerCase()] || null }))
+    .filter(x => x.s && Number.isFinite(Number(x.s.total)));
+  const ok = rows.filter(x => (x.s.mustHaveAvg === undefined || Number(x.s.mustHaveAvg) >= min) && (x.s.mustHaveMin === undefined || Number(x.s.mustHaveMin) > 2));
+  if (!ok.length) return { none: true, why: rows.length ? 'no candidate clears the rule (must-have average >= ' + min + ', no must-have at 2 or below)' : 'scores.json scores no interviewed candidate' };
+  ok.sort((a, b) => Number(b.s.total) - Number(a.s.total));
+  const w = ok[0];
+  return { agentId: w.c.agentId, by: String(rule.setBy).match(/^[A-Za-z]+/)[0], why: 'scorecard rule (round.json pickRule, set by ' + rule.setBy + '): highest total ' + w.s.total + (w.s.mustHaveAvg !== undefined ? ', must-have average ' + w.s.mustHaveAvg : '') + ' (' + rows.map(x => x.c.name + ' ' + x.s.total).join(', ') + ')' };
+}
+
+// record a pick (validated: an interviewed active candidate, a seat that decides this round); returns the pick
+function recordPick(dir, slug, p) {
+  const round = readJson(path.join(dir, 'round.json'), null);
+  if (!round) out(2, { ok: false, error: 'no round ' + slug });
+  if (round.hired) out(2, { ok: false, error: 'round ' + slug + ' already hired ' + round.hired });
+  if (round.pick && round.pick.agentId !== p.agentId && gov.approved('hiring:hire:' + slug + ':' + round.pick.agentId) !== false) out(2, { ok: false, error: 'round ' + slug + ' already has a pick (' + (round.pick.name || round.pick.agentId) + ' by ' + round.pick.by + ')' });
+  const allowed = deciders(round.manager);
+  if (!approverOk(p.by, allowed)) out(2, { ok: false, error: '--by must be who decides this round: ' + allowed.join(' or ') });
+  const cand = (round.candidates || []).find(c => c.agentId === p.agentId && c.status === 'candidate');
+  if (!cand) out(2, { ok: false, error: p.agentId + ' is not an active candidate in ' + slug + ' (one of: ' + (round.candidates || []).filter(c => c.status === 'candidate').map(c => c.agentId).join(', ') + ')' });
+  if (!isInterviewed(dir, cand)) out(2, { ok: false, error: cand.name + ' has not finished the interview' });
+  const at = new Date().toISOString();
+  const pick = { agentId: p.agentId, name: cand.name, by: p.by, why: String(p.why || '').slice(0, 1000), at, via: p.via || 'hire.js pick',
+    title: p.title || round.title || round.role, functions: p.functions || round.functions || null, template: p.template || round.template || null, access: p.access || null, officeName: p.name || null,
+    approved: p.by + ', ' + (p.via || 'hire.js pick') + ' ' + stamp() + ' (company/hiring/' + slug + '/scorecard.md)' };
+  mutateRound(dir, r => { r.pick = Object.assign({}, r.pick && r.pick.agentId === p.agentId ? r.pick : {}, pick); delete r.pick.waitingOwner; });
+  const card = path.join(dir, 'scorecard.md');
+  fs.appendFileSync(card, (fs.existsSync(card) ? '\n' : '# Scorecard — ' + round.role + '\n') + '\n## Pick ' + stamp() + '\n\n' + p.by + ' picked **' + cand.name + '** (`' + p.agentId + '`): ' + (pick.why || '(no reason given)') + '\n');
+  const dec = co.p('company', 'work', 'decisions.md');
+  try { if (!fs.existsSync(dec)) fs.writeFileSync(dec, '# Decisions\n\n'); fs.appendFileSync(dec, '- ' + stamp() + ' ' + p.by + ' picked **' + cand.name + '** as **' + pick.title + '** (round `' + slug + '`, ' + pick.via + '): ' + (pick.why || 'see the scorecard').replace(/\s+/g, ' ').slice(0, 400) + '\n'); } catch (_) {}
+  logLine(dir, 'PICK ' + cand.name + ' (' + p.agentId + ') by ' + p.by + ' via ' + pick.via + ': ' + (pick.why || '').replace(/\s+/g, ' ').slice(0, 200));
+  closePickHandoffs(round, p.by + ' picked ' + cand.name + ' (' + pick.via + ')');
+  return pick;
+}
+
+// finish a recorded pick: hire (desk, loop routine with the company folder blessed + workbench grant + workdir, inbox,
+// dossier, under the hiring governance level), release the others, give the new seat its first OPEN handoff so the
+// dispatcher's inbox wake starts its first run in the same tick
+async function finishHire(dir, slug) {
+  let claimed = false;
+  mutateRound(dir, r => { if (r.hired || !r.pick) return; const f = r.pick.finishingAt ? Date.parse(r.pick.finishingAt) : 0; if (Date.now() - f < FINISH_LEASE_MS) return; r.pick.finishingAt = new Date().toISOString(); claimed = true; });
+  if (!claimed) return { ok: false, skipped: true, error: 'already hired, no pick, or another hire.js is finishing it' };
+  const round = readJson(path.join(dir, 'round.json'), {}); const p = round.pick;
+  const args = { round: slug, agent: p.agentId, title: p.title || round.role, by: p.by, approved: p.approved };
+  if (p.functions) args.functions = String(p.functions);
+  if (p.template) args.template = String(p.template);
+  if (p.access) args.access = String(p.access);
+  if (p.officeName) args.name = String(p.officeName);
+  const r = await soft(() => hire(args));
+  if (!r.ok) {
+    const waiting = r.code === 3 && r.obj && r.obj.governance;
+    mutateRound(dir, x => { if (!x.pick) return; delete x.pick.finishingAt;
+      if (waiting) x.pick.waitingOwner = { at: (x.pick.waitingOwner && x.pick.waitingOwner.at) || new Date().toISOString(), questionId: r.obj.governance.questionId || null, denied: !!r.obj.governance.denied };
+      else x.pick.lastError = r.error.slice(0, 300); });
+    if (!waiting) logLine(dir, 'HIRE of ' + (p.name || p.agentId) + ' not finished: ' + r.error.slice(0, 200));
+    return { ok: false, waitingOwner: !!waiting, questionId: waiting ? r.obj.governance.questionId || null : null, error: r.error };
+  }
+  mutateRound(dir, x => { if (x.pick) { delete x.pick.finishingAt; delete x.pick.waitingOwner; delete x.pick.lastError; x.pick.hiredAt = new Date().toISOString(); } });
+  const h = r.value;
+  const released = [];
+  for (const c of (readJson(path.join(dir, 'round.json'), {}).candidates || []).filter(c => c.status === 'candidate' && c.agentId !== p.agentId)) {
+    const rr = await soft(() => release({ round: slug, agent: c.agentId, reason: 'not picked: ' + p.by + ' picked ' + (p.name || p.agentId) + (p.why ? ' (' + p.why.slice(0, 160) + ')' : ''), by: p.by }));
+    released.push(rr.ok ? c.agentId : c.agentId + ': ' + rr.error.slice(0, 120));
+  }
+  const row = co.crew()[p.agentId];
+  if (row && row.inbox) appendInbox(row.inbox, '\n## ' + stamp().slice(0, 10) + ' from hire.js — your first session as ' + h.title + '\n**Need:** read your charter (`' + h.role + '`), company/HANDOFFS.md and company/CHAIN_OF_COMMAND.md; write a short first-week plan in your log and tell ' + (co.nameOf(round.manager || ceoId())) + ' in a handoff what you will deliver first. Close this handoff with the plan\'s path.\n**Why:** you were hired ' + stamp() + ' in round ' + slug + '; your first run starts now.\n**Deadline:** ' + stamp().slice(0, 10) + '\n**Status:** OPEN\n**Evidence:** `company/hiring/' + slug + '/hired.md`\n');
+  return { ok: true, hired: h, released };
+}
+
+function openRounds() {
+  let ds = []; try { ds = fs.readdirSync(HIRING); } catch (_) {}
+  return ds.filter(d => ROUND_RE.test(d) && d !== 'former').map(d => ({ slug: d, round: readJson(path.join(HIRING, d, 'round.json'), null) }))
+    .filter(x => x.round && !x.round.hired && !x.round.closed).map(x => x.slug).sort();
+}
+
+/* one round as far as it goes mechanically. o: { held (the metered cap holds metered work), dry, noInterviews, inline, parallel } */
+async function advanceRound(slug, o) {
+  o = o || {};
+  const dir = path.join(HIRING, slug);
+  const load = () => readJson(path.join(dir, 'round.json'), null);
+  let round = load();
+  if (!round) return { slug, ok: false, error: 'no round' };
+  const did = [], notes = [];
+  const res = () => { const r = load() || round; const s = roundStage(dir, r); return { slug, role: r.role, stage: s.key, label: s.label, at: s.at, counts: s.counts, pickSeats: pickSeats(r), pickRequestAt: r.pickRequest ? r.pickRequest.at : null, hired: r.hired || null, hiredNow: did.some(x => /^hired /.test(x)) ? r.hired : null, did, notes }; };
+  if (round.hired || round.closed) return res();
+  if (co.halted()) { notes.push('the company is halted (' + co.halted() + '): nothing advances'); return res(); }
+  if (o.dry) { notes.push('dry run'); return res(); }
+  const by = round.openedBy || co.nameOf(peopleId());
+  // 1. a recorded pick: finish the hire
+  if (round.pick) {
+    const ans = round.pick.waitingOwner ? gov.approved('hiring:hire:' + slug + ':' + round.pick.agentId) : true;
+    if (ans === null) { notes.push('waiting for the owner\'s answer'); return res(); }
+    if (ans === false) { notes.push('the owner said no to this pick; the pick seat decides what next (release, or another pick)'); return res(); }
+    const f = await finishHire(dir, slug);
+    if (f.ok) did.push('hired ' + f.hired.name + ' as ' + f.hired.title + (f.released.length ? '; released ' + f.released.join(', ') : ''));
+    else if (f.waitingOwner) did.push('asked the owner to approve the pick (question ' + (f.questionId || '?') + ')');
+    else if (!f.skipped) notes.push('hire not finished: ' + f.error.slice(0, 200));
+    return res();
+  }
+  let files = roundFiles(dir);
+  let active = (round.candidates || []).filter(c => c.status === 'candidate');
+  const allInNow = () => { const r = load(); const a = (r.candidates || []).filter(c => c.status === 'candidate'); return a.length && a.every(c => ['interviewed', 'failed'].includes(candState(dir, c))) && a.some(c => isInterviewed(dir, c)); };
+  // 2. candidates from the profiles the people owner wrote (up to three active)
+  if (files.spec && active.length < 3 && !allInNow()) {
+    const used = new Set((round.candidates || []).map(c => c.profile && path.basename(c.profile)).filter(Boolean));
+    for (const f of files.profiles.filter(f => !used.has(f)).slice(0, 3 - active.length)) {
+      const rel = 'company/hiring/' + slug + '/profiles/' + f, txt = readIf(path.join(dir, 'profiles', f), 8000);
+      const name = profileName(f, txt), m = profileModel(txt) || {};
+      const r = await soft(() => createCandidate({ round: slug, name, profile: rel, by, provider: m.provider, model: m.model, effort: m.effort || undefined }));
+      if (r.ok) did.push('created candidate ' + r.value.name + ' (' + r.value.agentId + ')'); else notes.push('candidate from ' + f + ' not created: ' + r.error.slice(0, 160));
+    }
+    round = load(); active = (round.candidates || []).filter(c => c.status === 'candidate');
+  }
+  // 3. interviews: every candidate still to interview, in parallel, in the background
+  const pending = active.filter(c => candState(dir, c) === 'pending');
+  if (pending.length && files.questions && !o.noInterviews) {
+    if (o.held && !gov.guard('spendCap')) notes.push('the spendCap guardrail is off: interviews go ahead past the metered cap');
+    if (o.held && gov.guard('spendCap')) notes.push('interviews held: the 24h metered cap is reached');
+    else {
+      const r = await soft(() => interview({ round: slug, questions: 'company/hiring/' + slug + '/interview.md', background: !o.inline, advance: true, parallel: o.parallel || INTERVIEW_PARALLEL, who: peopleId() }));
+      if (r.ok) did.push((o.inline ? 'interviewed ' : 'started interviews for ') + pending.map(c => c.name).join(', ') + ' (' + Math.min(pending.length, Number(o.parallel) || INTERVIEW_PARALLEL) + ' at a time)');
+      else notes.push('interviews not started: ' + r.error.slice(0, 200));
+    }
+  }
+  round = load();
+  // 4. every interview in: scorecard inputs, then the round's rule or the pick seat
+  if (allInNow() && !round.pick) {
+    const inputs = writeScorecardInputs(dir, round);
+    const rule = rulePick(dir, round);
+    if (rule && rule.agentId) {
+      const r = await soft(() => recordPick(dir, slug, { agentId: rule.agentId, by: rule.by, why: rule.why, via: 'pickRule' }));
+      if (r.ok) {
+        did.push('picked ' + r.value.name + ' by the scorecard rule');
+        const f = await finishHire(dir, slug);
+        if (f.ok) did.push('hired ' + f.hired.name + ' as ' + f.hired.title + (f.released.length ? '; released ' + f.released.join(', ') : ''));
+        else if (f.waitingOwner) did.push('asked the owner to approve the pick (question ' + (f.questionId || '?') + ')');
+        else notes.push('hire not finished: ' + String(f.error).slice(0, 200));
+        return res();
+      }
+      notes.push('rule pick not recorded: ' + r.error.slice(0, 160));
+    } else if (rule && rule.none) notes.push('scorecard rule: ' + rule.why + (rule.waiting ? '' : '; the pick goes to the seat'));
+    let claim = false;
+    if (!(rule && rule.waiting)) mutateRound(dir, r => { if (!r.pickRequest && !r.pick) { r.pickRequest = { at: new Date().toISOString(), seats: pickSeats(r), inputs }; claim = true; } });
+    if (claim) {
+      round = load();
+      for (const id of round.pickRequest.seats) appendInbox(inboxOf(id), pickHandoff(round, id, inputs));
+      logLine(dir, 'PICK HANDED to ' + round.pickRequest.seats.map(co.nameOf).join(' and ') + ' (' + round.pickRequest.seats.map(inboxOf).join(', ') + '); scorecard inputs ' + inputs);
+      did.push('handed the pick to ' + round.pickRequest.seats.map(co.nameOf).join(' and '));
+    }
+  }
+  // 5. stuck on the people owner's files: tell them once
+  const s = roundStage(dir, round);
+  if (s.key === 'needs-files' && !round.filesRequest) {
+    let claim = false;
+    mutateRound(dir, r => { if (!r.filesRequest) { r.filesRequest = { at: new Date().toISOString(), seat: peopleId() }; claim = true; } });
+    if (claim) {
+      const day = stamp().slice(0, 10);
+      appendInbox(fnInbox('people'), '\n## ' + day + ' from hire.js — write the files for the ' + round.role + ' round (' + slug + ')\n' +
+        '**Need:** in company/hiring/' + slug + '/ write research.md, role-spec.md, model-fit.md, interview.md (one question per "## " heading), scorecard.md, and one profiles/<name>.md per candidate (up to three; the charter headings, optional "## Model" line `provider/model`). That is all: the round then advances on its own (candidates, parallel interviews, scorecard inputs) and the pick comes back to you as a handoff. Do not run interviews yourself.\n' +
+        '**Why:** ' + s.label + '.\n**Deadline:** ' + day + '\n**Status:** OPEN\n**Evidence:** `company/hiring/' + slug + '/round.json`\n');
+      did.push('asked ' + co.nameOf(peopleId()) + ' for the round files');
+    }
+  }
+  return res();
+}
+
+async function advance(a) {
+  const slugs = a.all || !(a._ || a.round) ? openRounds() : [String(a._ || a.round)];
+  for (const s of slugs) roundDir(s);
+  const rounds = [];
+  for (const s of slugs) {
+    const r = await soft(() => advanceRound(s, { held: !!a.held, dry: !!a.dry, inline: !!a.inline, parallel: Number(a.parallel) || INTERVIEW_PARALLEL }));
+    rounds.push(r.ok ? r.value : { slug: s, ok: false, error: r.error });
+  }
+  return { ok: true, rounds };
+}
+
+// hire.js pick: the deciding seat's judgement, recorded; the hire follows at once under the hiring governance level
+async function pickCmd(a) {
+  const slug = need(a, 'round'); const { dir } = loadRound(slug);
+  const pick = recordPick(dir, slug, { agentId: need(a, 'agent'), by: need(a, 'by'), why: need(a, 'why'), title: a.title && a.title !== true ? String(a.title) : null,
+    functions: a.functions && a.functions !== true ? String(a.functions) : null, template: a.template && a.template !== true ? String(a.template) : null,
+    access: a.access === 'ask' ? 'ask' : null, name: a.name && a.name !== true ? String(a.name) : null });
+  const f = co.halted() ? { ok: false, error: 'the company is halted; the hire finishes on the first tick after resume' } : await finishHire(dir, slug);
+  return { ok: true, picked: pick.agentId, name: pick.name, hired: f.ok ? f.hired : null, released: f.released || [], waitingOwner: !!f.waitingOwner, questionId: f.questionId || null,
+    note: f.ok ? 'hired; the new seat\'s first run starts on this dispatcher tick' : f.waitingOwner ? 'the pick is recorded; hiring is "approve", so the owner was asked; the hire finishes on the first tick after their yes' : 'the pick is recorded; ' + (f.error || 'the hire finishes on the next tick') };
 }
 
 function loopPrompt(id, c, roleFileBase) {
@@ -406,7 +779,8 @@ function loopPrompt(id, c, roleFileBase) {
     'QUESTS CLOSE ON EVIDENCE. When every step of a quest you own is ticked, attest it: ' + POST + '/api/quests/update -d \'{"id":"q:N","op":"attest","agentId":"' + id + '","evidence":"<cite every file path in backticks>"}\'. For new multi-step work, mint a quest whose contract is the deliverable file: ' + POST + '/api/quests/mint -d \'{"title":"<title> -> company/work/<path>","agentId":"' + id + '","kind":"work","domain":"<one of the eight below>","contract":{"type":"artifact","key":"company/work/<path>"},"steps":[{"key":"<k>","label":"<label>"}]}\'. EVERY mint needs a "domain" from StarNet\'s set (building, research, writing, growth, operations, creative, planning, support): a quest without one earns no mastery credit, and credit for a closed quest can never be added later. Pick the one the work is: code, tests or station infra = building; running the company (finance, people, security, facilities) = operations; a lead list or outreach = growth; a spec or a plan = planning; a design or a visual asset = creative; an investigation = research; a written explainer = writing; helping a person adopt a tool = support.\n' +
     'Stop when the queue is empty, when everything left is blocked, or after about six items. Finish with three short lines: done, handed off, blocked.\n' +
     'OWNER GATES (money beyond the cap, credentials or access, ownership, a public commitment) go up your chain of command (company/CHAIN_OF_COMMAND.md) as a handoff, ending with the CEO, ' + co.nameOf(ceo) + ', in company/work/handoffs/' + inboxOf(ceo) + '. Never message the owner yourself and never file company/inbox.js questions.\n' +
-    'READ RULE: never guess file paths; list a folder first.';
+    'READ RULE: never guess file paths; list a folder first.\n' +
+    require('./founder-loop.js').HIRING_LINE;
 }
 
 // Replace one "## <heading>" section of a charter with new body text (the heading line is kept), or append it.
@@ -764,7 +1138,7 @@ async function models() {
 }
 
 /* selftest: the self-governance levels and the spendCap guardrail, offline (a scratch company tree; no station). */
-function selftest() {
+async function selftest() {
   const os = require('os'); const assert = require('assert');
   const T = fs.mkdtempSync(path.join(os.tmpdir(), 'hire-selftest-'));
   const out = []; let bad = 0;
@@ -806,7 +1180,54 @@ function selftest() {
     assert.strictEqual(independenceConflicts({ seats: ['desk--reconciler'], functions: ['people'] }, rules).length, 0);
     assert.strictEqual(independenceConflicts({ seats: ['desk--trader'], functions: ['finance'] }, rules).length, 0);
   });
+  // the round's live stage, the pick seat, the scorecard rule and the profile reader (advance's mechanical steps)
+  const R = path.join(T, 'round-x'); fs.mkdirSync(path.join(R, 'interviews'), { recursive: true }); fs.mkdirSync(path.join(R, 'profiles'), { recursive: true });
+  const now = new Date().toISOString(), old = new Date(Date.now() - 3600e3).toISOString();
+  const cand = (id, x) => Object.assign({ agentId: id, name: id.toUpperCase(), provider: 'p', model: 'm', status: 'candidate', createdAt: old }, x || {});
+  const base = { slug: 'round-x', role: 'QA Lead', openedAt: old, openedBy: co.nameOf(ceoId()), candidates: [], hired: null };
+  const stage = r => roundStage(R, Object.assign({}, base, r));
+  t('stage: no files, no candidates -> needs-files (names role-spec.md and profiles/)', () => { const s = stage({}); assert.strictEqual(s.key, 'needs-files'); assert.ok(/role-spec\.md/.test(s.label) && /profiles\//.test(s.label)); });
+  fs.writeFileSync(path.join(R, 'role-spec.md'), '# QA Lead\n## Scope\nTests.\n'); fs.writeFileSync(path.join(R, 'profiles', 'lee-park.md'), '# Candidate profile — Lee Park\n\n## Personality\nExact.\n\n## Model\ndeepseek/deepseek-flash high\n');
+  t('stage: spec and profiles written -> candidates (mechanical: hire.js creates them)', () => assert.strictEqual(stage({}).key, 'candidates'));
+  t('profile reader: name from the heading, model from "## Model"; a heading naming no one falls back to the file name', () => {
+    assert.strictEqual(profileName('lee-park.md', readIf(path.join(R, 'profiles', 'lee-park.md'))), 'Lee Park');
+    assert.strictEqual(profileName('quinn.md', '# Profile\n'), 'quinn');
+    assert.deepStrictEqual(profileModel(readIf(path.join(R, 'profiles', 'lee-park.md'))), { provider: 'deepseek', model: 'deepseek-flash', effort: 'high' });
+  });
+  fs.writeFileSync(path.join(R, 'interview.md'), '# Q\n\n## One\n');
+  t('stage: candidates waiting for interviews', () => assert.strictEqual(stage({ candidates: [cand('a'), cand('b')] }).key, 'candidates'));
+  t('stage: a started interview is not started again (queued counts as running) -> interviewing 0/2', () => { const s = stage({ candidates: [cand('a', { interviewStartedAt: now }), cand('b', { interviewStartedAt: now })] }); assert.strictEqual(s.key, 'interviewing'); assert.strictEqual(s.label, 'interviewing 0/2'); });
+  fs.writeFileSync(path.join(R, 'interviews', 'a.md'), '# Interview\n\n## Question 1\n\nq\n\n### Answer\n\nI would test it.\n\nFinished now.\n');
+  t('stage: one transcript finished, one in flight -> interviewing 1/2', () => assert.strictEqual(stage({ candidates: [cand('a', { interviewStartedAt: old }), cand('b', { interviewStartedAt: now })] }).label, 'interviewing 1/2'));
+  t('stage: all in (a failed twice counts as out) -> waiting for pick by the people holder (the CEO while it holds people)', () => {
+    const s = stage({ candidates: [cand('a', { interviewedAt: now }), cand('b', { interviewFailures: 2, interviewStartedAt: old, interviewFailedAt: now })] });
+    assert.strictEqual(s.key, 'waiting-pick'); assert.ok(s.label.endsWith(co.nameOf(peopleId())), s.label);
+    assert.deepStrictEqual(pickSeats(base), [peopleId()]);
+  });
+  t('stage: a pick waiting on the owner, then hired, with the timeline in order', () => {
+    assert.strictEqual(stage({ candidates: [cand('a', { interviewedAt: now })], pick: { agentId: 'a', name: 'A', by: 'X', at: now, waitingOwner: { at: now } } }).key, 'waiting-owner');
+    const s = stage({ candidates: [cand('a', { interviewedAt: now, interviewStartedAt: old, status: 'hired', hiredAt: now, officeName: 'A' })], pick: { agentId: 'a', name: 'A', by: 'X', at: now }, hired: 'a' });
+    assert.strictEqual(s.key, 'hired'); assert.deepStrictEqual(s.timeline.map(x => x.step.split(' ')[0]), ['opened', 'candidates', 'interviews', 'interviews', 'picked', 'hired']);
+  });
+  t('pick seats: a manager who is not the CEO decides with the people holder', () => { const c = co.crew(); const other = Object.keys(c).find(id => id !== ceoId()) || 'mgr-x'; assert.deepStrictEqual(pickSeats({ manager: other }).sort(), [...new Set([other, peopleId()])].sort()); });
+  t('scorecard rule: highest total that clears the must-have bar; set by someone who does not decide = no pick', () => {
+    const r = Object.assign({}, base, { candidates: [cand('a', { interviewedAt: now }), cand('c', { interviewedAt: now }), cand('d', { interviewedAt: now })], pickRule: { type: 'scores', min: 3.5, setBy: co.nameOf(peopleId()) } });
+    assert.ok(rulePick(R, r).waiting, 'no scores.json yet: the rule waits');
+    writeJson(path.join(R, 'scores.json'), { a: { total: 4.1, mustHaveAvg: 4 }, c: { total: 4.6, mustHaveAvg: 3.2 }, d: { total: 3.9, mustHaveAvg: 3.9, mustHaveMin: 3 } });
+    const p = rulePick(R, r); assert.strictEqual(p.agentId, 'a'); assert.ok(/highest total 4\.1/.test(p.why));
+    assert.ok(rulePick(R, Object.assign({}, r, { pickRule: { type: 'scores', setBy: 'Nobody' } })).none);
+  });
+  t('scorecard inputs: one row per candidate with its transcript and answer count, and a recommendation slot', () => {
+    const f = writeScorecardInputs(R, Object.assign({}, base, { candidates: [cand('a', { interviewedAt: now, transcript: path.relative(ROOT, path.join(R, 'interviews', 'a.md')) })] }));
+    const txt = fs.readFileSync(path.resolve(ROOT, f), 'utf8'); assert.ok(/\| A \| `a` \| p\/m \| `.*a\.md` \| 1 \| 0 \| 4 \|/.test(txt), txt); assert.ok(/## Recommendation/.test(txt));
+  });
   fs.rmSync(T, { recursive: true, force: true });
+  // interviews run side by side: the pool keeps --parallel in flight and returns results in order
+  let inFlight = 0, peak = 0;
+  const res = await pool([1, 2, 3, 4, 5], 3, async x => { inFlight++; peak = Math.max(peak, inFlight); await new Promise(r => setTimeout(r, 20)); inFlight--; return x * 2; });
+  t('parallel interviews: at most 3 at once, all of them, in order', () => { assert.strictEqual(peak, 3); assert.deepStrictEqual(res, [2, 4, 6, 8, 10]); });
+  const sres = await soft(() => need({}, 'round'));
+  t('soft(): a refusal inside advance is a note, not the end of the process', () => { assert.strictEqual(sres.ok, false); assert.strictEqual(sres.code, 2); assert.strictEqual(sres.error, '--round is required'); });
   for (const l of out) console.log(l);
   console.log(bad ? 'HIRE SELFTEST FAILED: ' + bad : 'HIRE SELFTEST PASSED: ' + out.length + ' cases');
   return bad ? 1 : 0;
@@ -815,7 +1236,7 @@ function selftest() {
 (async () => {
   if (require.main !== module) return;   // required as a module (tests): export the helpers, run no command
   const a = args();
-  if (a.cmd === 'selftest' || a.cmd === '--selftest') process.exit(selftest());
+  if (a.cmd === 'selftest' || a.cmd === '--selftest') process.exit(await selftest());
   if (a.cmd === 'open') {
     const slug = need(a, 'round'); const dir = roundDir(slug);
     if (fs.existsSync(path.join(dir, 'round.json'))) out(2, { ok: false, error: 'round exists' });
@@ -826,20 +1247,25 @@ function selftest() {
       recommendation: 'open it' + (a.request && a.request !== true ? ' (' + String(a.request).slice(0, 120) + ')' : ''), default: 'no round is opened' });
     fs.mkdirSync(path.join(dir, 'interviews'), { recursive: true });
     const round = { slug, role: need(a, 'role'), manager, openedBy: need(a, 'by'), openedAt: new Date().toISOString(), request: a.request ? String(a.request).slice(0, 1000) : null, candidates: [], hired: null };
+    // what the hire takes (used when the pick is recorded) and an optional scorecard rule that picks without a turn
+    for (const k of ['functions', 'template', 'title']) if (a[k] && a[k] !== true) round[k] = String(a[k]);
+    if (a['pick-rule'] === 'scores') round.pickRule = { type: 'scores', file: 'scores.json', min: Number.isFinite(Number(a.min)) ? Number(a.min) : 3.5, setBy: round.openedBy };
     saveRound(dir, round);
     fs.writeFileSync(path.join(dir, 'log.md'), '# Hiring round ' + slug + ': ' + round.role + '\n\n');
     logLine(dir, 'OPENED by ' + round.openedBy + (round.request ? ': ' + round.request : ''));
-    out(0, { ok: true, round: slug, dir: path.relative(ROOT, dir), next: ['research.md', 'role-spec.md', 'model-fit.md', 'interview.md', 'then hire.js candidate x3'] });
+    out(0, { ok: true, round: slug, dir: path.relative(ROOT, dir), next: ['research.md', 'role-spec.md', 'model-fit.md', 'interview.md', 'scorecard.md', 'profiles/<name>.md for up to three candidates', 'then the round advances on its own (hire.js advance, run by the dispatcher each tick); the pick comes back to ' + pickSeats(round).map(co.nameOf).join(' and ') + ' as a handoff'] });
   }
   if (a.cmd === 'candidate') out(0, await createCandidate(a));
   if (a.cmd === 'interview') { const r = await interview(a); out(r.ok ? 0 : 1, r); }
   if (a.cmd === 'hire') out(0, await hire(a));
+  if (a.cmd === 'advance') out(0, await advance(a));
+  if (a.cmd === 'pick') out(0, await pickCmd(a));
   if (a.cmd === 'release') out(0, await release(a));
   if (a.cmd === 'remodel') out(0, await remodel(a));
   if (a.cmd === 'fire') out(0, await fire(a));
-  if (a.cmd === 'status') { const { round } = loadRound(need(a, 'round')); out(0, { ok: true, round }); }
+  if (a.cmd === 'status') { const { dir, round } = loadRound(String(a._ || need(a, 'round'))); out(0, { ok: true, stage: roundStage(dir, round), round }); }
   if (a.cmd === 'models') out(0, await models());
-  out(2, { ok: false, error: 'commands: open, candidate, interview, hire, release, remodel, fire, status, models, selftest' });
+  out(2, { ok: false, error: 'commands: open, candidate, interview, advance, pick, hire, release, remodel, fire, status, models, selftest' });
 })().catch(e => out(1, { ok: false, error: e.message }));
 
-module.exports = { selftest, independenceRules, independenceConflicts, governanceCheck, budgetState, assertBudget, candidateSkin, deskHandoff, writeJson, moveFunctions, setSection, deciders, approverOk, companyModel };   // test seam only; hire.js is run as a script everywhere else
+module.exports = { selftest, roundStage, pickSeats, advanceRound, rulePick, profileName, profileModel, pool, soft, openRounds, independenceRules, independenceConflicts, governanceCheck, budgetState, assertBudget, candidateSkin, deskHandoff, writeJson, moveFunctions, setSection, deciders, approverOk, companyModel };   // test seam only; hire.js is run as a script everywhere else

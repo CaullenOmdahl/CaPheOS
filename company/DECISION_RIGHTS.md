@@ -55,7 +55,7 @@ Categories and where they are enforced:
 
 | Category | Covers | Enforced in |
 |---|---|---|
-| hiring | opening a role, picking the hire | `hire.js open`, `hire.js hire` |
+| hiring | opening a role, picking the hire | `hire.js open`, `hire.js pick` (the hire follows at once), `hire.js hire` |
 | release | releasing or replacing a crew member (and a candidate from a round that hired nobody) | `hire.js fire`, `hire.js release` |
 | budget | the metered cap, per-agent shares, pacing numbers, a hand-started pacing emergency | `harness-change.js apply` (pacing-policy.json, dispatch-budget.json), `pacer.js emergency on` |
 | spend | new spend inside the approved cap, a new paid tool | the seat's own judgement today (no tool spends) |

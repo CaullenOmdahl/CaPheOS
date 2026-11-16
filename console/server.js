@@ -218,15 +218,47 @@ async function crewView() {
     r = { ok: true };
   } catch (e) { r = { ok: false, error: e.message }; }
   if (Array.isArray(list)) for (const s of seats) { const hit = list.find(x => x && (x.id === s.id || x.agentId === s.id)); if (hit) s.station = hit; }
+  // a hired seat: when and in which round, and its first run since (or that it is still to come): runs.jsonl, else its
+  // loop routine's last run (GET /api/cron) when that came after the hire
+  let jobs = null;
+  for (const s of seats) {
+    if (!s.hiredIn) continue;
+    const rd = readJson(co.p('company', 'hiring', String(s.hiredIn).replace(/[^a-z0-9-]/g, ''), 'round.json'), null);
+    const c = rd && (rd.candidates || []).find(x => x.agentId === s.id);
+    if (!c || !c.hiredAt) continue;
+    s.hire = { round: s.hiredIn, at: c.hiredAt, by: c.hiredBy || null, pickedBy: rd.pick ? rd.pick.by : null };
+    s.firstRun = firstRunSince(s.id, Date.parse(c.hiredAt) - 1000);
+    if (!s.firstRun) {
+      if (jobs === null) { try { const cr = await stationGet('cron', 2500); jobs = cr.ok && cr.data && Array.isArray(cr.data.jobs) ? cr.data.jobs : []; } catch (_) { jobs = []; } }
+      const j = jobs.find(x => x.agentId === s.id && x.lastRunAt && Date.parse(x.lastRunAt) >= Date.parse(c.hiredAt) - 1000);
+      if (j) s.firstRun = { runId: j.lastRunId || null, at: j.lastRunAt, outcome: j.lastStatus === 'ok' ? 'succeeded' : j.lastStatus || null, routine: j.name };
+    }
+  }
   return { ok: true, seats, station: r.ok ? 'up' : 'down', stationError: r.ok ? undefined : r.error };
 }
 function decisions() { return { ok: true, entries: tailLines(co.p('company', 'work', 'decisions.md'), 100).map(text => ({ text })) }; }
 function dispatchView() {
   return { ok: true, state: readJson(co.p('company', 'work', 'dispatch-state.json'), null), log: tailLines(co.p('company', 'work', 'dispatch-log.md'), 60) };
 }
-function hiring() {
+// every round with its live stage (hire.js roundStage: candidates created, interviewing 2/3, waiting for pick by X, hired)
+function hiringRounds() {
   const dir = co.p('company', 'hiring'); const rounds = [];
-  try { for (const d of fs.readdirSync(dir)) { const r = readJson(path.join(dir, d, 'round.json'), null); if (r) rounds.push(Object.assign({ id: d }, r)); } } catch (_) {}
+  let H = null; try { H = tool('hire.js'); } catch (_) {}
+  try { for (const d of fs.readdirSync(dir)) { const r = readJson(path.join(dir, d, 'round.json'), null); if (!r) continue;
+    let stage = null; try { stage = H ? H.roundStage(path.join(dir, d), r) : null; } catch (_) {}
+    rounds.push(Object.assign({ id: d }, r, { stage })); } } catch (_) {}
+  return rounds;
+}
+// a seat's first run since it was hired (runs.jsonl), for the Crew screen
+function firstRunSince(agentId, sinceMs) {
+  let lines = []; try { lines = fs.readFileSync(co.p('.starnet-data', 'workspaces', 'runs.jsonl'), 'utf8').split('\n'); } catch (_) {}
+  for (const l of lines) { let r; try { r = JSON.parse(l); } catch (_) { continue; }
+    const at = Number(r.startedAt || r.endedAt || r.ts) || 0;
+    if (r && r.agentId === agentId && at >= sinceMs && !r.internal) return { runId: r.runId, at: new Date(at).toISOString(), outcome: r.outcome || (r.reason === 'done' ? 'succeeded' : r.reason || null) }; }
+  return null;
+}
+function hiring() {
+  const rounds = hiringRounds();
   let templates = []; try { templates = fs.readdirSync(co.p('company', 'roles', 'templates')).filter(f => f.endsWith('.md')).map(f => f.replace(/\.md$/, '')); } catch (_) {}
   return { ok: true, rounds, templates };
 }
