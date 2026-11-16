@@ -64,6 +64,7 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/skills.js` | the skill propagation tool (owned by the tools function holder). | tools | `selftest` | `status` `verify` `install` `install-all` `selftest` | station-token |
 | `company/tools/station-crew.js` | change who works on the station, headlessly, the way the StarNet page itself would. | people | — | `list` `sync` | station-token |
 | `company/tools/station-floor.js` | the floor owner's tool: rooms, names, floor/wall/exterior paint, props, desks and seats, changed headlessly | floor | — | `show` `audit` `snapshot` `plan` `apply` `restore` `doc` | — |
+| `company/tools/station-seed.js` | give a station whose page never ran (StarNet headless, CaPheOS patch 0010) its save and its Founder. | ceo | `selftest` / `--selftest` | `status` `seed` `selftest` | station-token |
 | `company/tools/station-view.js` | let the crew SEE the real station (floor, top bar, crew rail, dock) without touching anything. | tools | `selftest` | `status` `shot` `look` `selftest` `clip` | station-token |
 | `company/tools/text-corruption.js` | find figures that a shell expanded before they reached the file. | finance | `--selftest` | `--scan` `--quiet` `--json` `--selftest` | — |
 | `company/tools/tool-inventory-check.js` | the runbook's tool table has to be true, not tidy. | tools | `--selftest` | `report` `--list-unlisted` `--selftest` | — |

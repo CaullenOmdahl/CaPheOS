@@ -59,6 +59,17 @@ The station runs as a service (for example a systemd user unit with `Restart=alw
   commands and write files. The bind and its host allowlist are a risk-reviewed setting. Revert by binding to
   `127.0.0.1` and restarting.
 - **StarNet patches:** every change to StarNet's own code is a record in `company/patches/` (see its README).
+- **Headless station (no save, no Founder):** a station started with `STARNET_HEADLESS=1` (patch `0010`) never serves
+  the page, so the page never creates the station save or pushes the roster: `GET /api/save` answers `{save:null}`,
+  the Founder is only the engine's implicit default agent (no dossier, no approval mode, unattended writes refused),
+  and `hire.js`, `station-crew.js` and `dossier.js` stop at "GET /api/save returned no save". Fix:
+  `node company/tools/station-seed.js status`, then `node company/tools/station-seed.js seed --by <owner>`. It runs
+  StarNet's own terminal WAKE (`starnet/bin/lib/awaken.js`, the app's modules via `app-modules.js`): the starter
+  station named after the company, the Founder (id `agent`) with its dossier from `company/roles/agent.md`, the
+  roster row with the composed prompt, and the approval mode self-governance gives (`full` when `tools` is auto or
+  notify and harnessSelfEdit is off or guarded by a locked-watch baseline; `ask` otherwise, with the reason). It
+  skips the awakening's lock-down resets (grants, posture, journey, memory): they would undo the company's setup.
+  Idempotent; back up `.starnet-data/workspaces` first on a live station.
 
 ## 5. Tool inventory
 
@@ -139,6 +150,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/skills.js | tools | `selftest` |
 | company/tools/station-crew.js | people | none |
 | company/tools/station-floor.js | floor | none |
+| company/tools/station-seed.js | ceo | `selftest` / `--selftest` |
 | company/tools/station-view.js | tools | `selftest` |
 | company/tools/text-corruption.js | finance | `--selftest` |
 | company/tools/tool-inventory-check.js | tools | `--selftest` |
@@ -211,6 +223,7 @@ in §5a instead.
 | `company/tools/quest-audit.js` | tools | `node company/tools/quest-audit.js --selftest` |
 | `company/tools/restart-station-idle.sh` | tools | `bash company/tools/restart-station-idle.sh --selftest` |
 | `company/tools/routine-rules.js` | tools | `node company/tools/routine-rules.js selftest` |
+| `company/tools/station-seed.js` | ceo | `node company/tools/station-seed.js --selftest` |
 | `company/tools/text-corruption.js` | finance | `node company/tools/text-corruption.js --selftest` |
 | `company/tools/tool-inventory-check.js` | tools | `node company/tools/tool-inventory-check.js --selftest` |
 | `company/tools/tool-parse.js` | tools | `node company/tools/tool-parse.js --selftest` |

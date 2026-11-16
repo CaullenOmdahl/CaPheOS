@@ -11,7 +11,11 @@
  * Every request is appended to --log as one JSON line {at, method, path, query, body, status}; a test asserts on it.
  * Unknown routes answer 404 {error:"mock: no route"} and are logged too, so a test can list what the mock lacks.
  * With --root, POST /api/roster also writes <root>/.starnet-data/workspaces/agent.roster.json, as the station does
- * (station-crew.js reads the roster from that file).
+ * (station-crew.js reads the roster from that file), and the mock starts from that file's roster when it exists.
+ * --fresh: a station whose page never ran (StarNet headless): GET /api/save answers {save:null} with a first-boot
+ * lineage, the roster is empty, and the agent routes answer 404 for an agent the roster does not have, as the station
+ * does. station-seed.js selftest drives it. --save-file <json>: start from that save instead (a GET /api/save reply
+ * {save, head} or a bare save doc), e.g. a copy of a live station's save for an offline hire.js run.
  * No dependencies. Never point a test at a live station.
  */
 'use strict';
@@ -25,6 +29,8 @@ const PORT = Number(opt('port', process.env.MOCK_PORT || 0));
 const TOKEN = String(opt('token', process.env.MOCK_TOKEN || 'mock-token'));
 const LOG = opt('log', process.env.MOCK_LOG || '');
 const ROOT = opt('root', process.env.MOCK_ROOT || '');
+const FRESH = argv.includes('--fresh') || process.env.MOCK_FRESH === '1';
+const SAVE_FILE = opt('save-file', process.env.MOCK_SAVE_FILE || '');
 
 /* ---------------- state ---------------- */
 const S = {
@@ -45,7 +51,11 @@ const S = {
     },
   },
   runSeq: 1,
+  dossierBlock: '', posture: null,
 };
+if (FRESH) S.save = { revision: 0, doc: null };
+if (SAVE_FILE) { const j = JSON.parse(fs.readFileSync(SAVE_FILE, 'utf8')); const doc = j && j.save !== undefined ? j.save : j; S.save = { revision: Number((j && j.head && j.head.revision) || (doc && doc._saveRevision) || 1), doc }; }
+if (ROOT) { try { S.roster = JSON.parse(fs.readFileSync(path.join(ROOT, '.starnet-data', 'workspaces', 'agent.roster.json'), 'utf8')).agents || []; } catch (_) {} }
 const nowIso = () => new Date().toISOString();
 function rosterFile() { return ROOT ? path.join(ROOT, '.starnet-data', 'workspaces', 'agent.roster.json') : null; }
 function writeRoster() {
@@ -85,16 +95,25 @@ function handle(method, p, q, body, res) {
   // --- crew ---
   if (p === '/api/roster' && method === 'GET') return send(res, 200, { ok: true, agents: S.roster });
   if (p === '/api/roster' && method === 'POST') {
-    if (!Array.isArray(B.agents)) return send(res, 400, { error: 'agents[] required' });
+    if (!Array.isArray(B.agents)) return send(res, 400, { error: 'agents must be an array' });
+    if (!B.agents.length) return send(res, 400, { error: 'agents must not be empty' });   // the station refuses the wipe
     S.roster = B.agents; writeRoster();
     return send(res, 200, { ok: true, count: S.roster.length });
   }
   if (p === '/api/agent/personality' && method === 'POST') {
     const r = S.roster.find(x => x.agentId === B.agentId);
-    if (r && typeof B.system === 'string') { r.system = B.system; writeRoster(); }
-    return send(res, 200, { ok: true, via: 'roster' });
+    if (!r) return send(res, 404, { error: 'no agent "' + B.agentId + '" on this station' });
+    if (typeof B.system !== 'string' || !B.system.trim()) return send(res, 409, { error: 'no StarNet page is open to compose the new prompt, and none was sent' });
+    r.system = B.system; writeRoster();
+    return send(res, 200, { ok: true, agentId: B.agentId, personality: B.personality, via: 'roster' });
   }
-  if (p === '/api/agent/approval' && method === 'POST') return send(res, 200, { ok: true, agentId: B.agentId, mode: B.mode });
+  if (p === '/api/agent/approval' && method === 'POST') {
+    const r = S.roster.find(x => x.agentId === B.agentId);
+    if (!r) return send(res, 404, { error: 'no agent "' + B.agentId + '" on this station' });
+    if (B.mode !== 'full' && B.mode !== 'ask') return send(res, 400, { error: 'approval is "ask" or "full"' });
+    r.approvalMode = B.mode; writeRoster();
+    return send(res, 200, { ok: true, agentId: B.agentId, mode: B.mode, via: 'roster' });
+  }
   if (p === '/api/agent/model' && method === 'POST') {
     const r = S.roster.find(x => x.agentId === B.agentId); if (r) { r.model = B.model; r.provider = B.provider; writeRoster(); }
     return send(res, 200, { ok: true, via: 'roster' });
@@ -103,13 +122,20 @@ function handle(method, p, q, body, res) {
     S.roster = S.roster.filter(x => x.agentId !== B.agentId); writeRoster();
     return send(res, 200, { ok: true, agentId: B.agentId });
   }
-  if (p === '/api/save' && method === 'GET') return send(res, 200, { ok: true, save: JSON.parse(JSON.stringify(S.save.doc)), head: { revision: S.save.revision } });
+  if (p === '/api/save' && method === 'GET') {
+    const lineage = { version: 1, onboardingAllowed: true, station: { state: S.save.doc ? 'current' : 'none' } };
+    if (!S.save.doc) return send(res, 200, { save: null, recovery: null, lineage });
+    return send(res, 200, { ok: true, save: JSON.parse(JSON.stringify(S.save.doc)), head: { revision: S.save.revision }, lineage });
+  }
   if (p === '/api/save' && method === 'POST') {
     if (B._saveRevision != null && Number(B._saveRevision) !== S.save.revision) return send(res, 200, { ok: false, conflict: true, revision: S.save.revision });
     const doc = Object.assign({}, B); delete doc._saveRevision;
-    S.save.doc = doc; S.save.revision++;
+    S.save.doc = doc; S.save.revision++; S.save.doc._saveRevision = S.save.revision;
     return send(res, 200, { ok: true, revision: S.save.revision });
   }
+  if (p === '/api/dossier' && method === 'POST') { S.dossierBlock = String(B.block || ''); return send(res, 200, { ok: true }); }
+  if (p === '/api/autonomy/posture' && method === 'POST') { S.posture = Object.assign({}, S.posture || {}, B); return send(res, 200, { ok: true }); }
+  if (p === '/api/autonomy/posture' && method === 'GET') return send(res, 200, { ok: true, posture: S.posture });
   // --- runs ---
   if (p === '/api/run' && method === 'POST') {
     const runId = 'run-' + (S.runSeq++);
