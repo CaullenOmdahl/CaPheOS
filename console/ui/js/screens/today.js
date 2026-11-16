@@ -1,5 +1,5 @@
 // Today (Main.dc.html): Needs you (live), crew, AI usage, company panels, overnight, message the Founder.
-import { h, fill, Button, Tag, Eyebrow, errLine, empty, initial, rel, hhmm, statusOf } from '../ui.js';
+import { h, fill, Button, Tag, Eyebrow, errLine, empty, initial, rel, hhmm, statusOf, isSetupQuestion } from '../ui.js';
 import { api, post } from '../api.js';
 import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
@@ -66,15 +66,19 @@ export async function render(root, ctx) {
     panelsEl,
     h('section', { class: 'stack-16' }, h('div', { class: 'between' }, h('h2', { class: 'h3' }, 'Overnight'), h('a', { href: '#/work', class: 'body-s' }, 'All work →')), overnightEl));
 
-  // onboarding banner: shown until onboard.js --certify is green (provisioned is not certified)
+  // Setup banner: shown until onboard.js --certify is green, or while onboarding still asks something. Onboarding
+  // questions are answered in Setup (#/setup), never as an Approve/Decline card here.
   async function loadOnboarding() {
-    let d; try { d = await api('/onboarding'); } catch (_) { fill(onboardEl); return; }
-    if (d.certified) return fill(onboardEl);
-    const failed = (d.checks || []).filter(c => c.status !== 'ok');
-    fill(onboardEl, h('section', { class: 'card p22', role: 'status', style: 'border-color:var(--status-warning);gap:8px' },
-      h('div', { class: 'between-c' }, h('h2', { class: 'h4' }, 'Not certified yet'), h('a', { href: '#/system', class: 'body-s' }, 'Provisioning →')),
-      h('p', { class: 'body-s' }, (d.provisioned ? 'Provisioned, ' : 'Not fully provisioned, ') + 'but the company has not proved it can run: ' +
-        (d.lastCertify ? failed.length + ' of 9 checks failing (' + failed.map(c => c.id).join(', ') + ').' : 'certification has never run.'))));
+    let d; try { d = await api('/setup'); } catch (_) { fill(onboardEl); return; }
+    const asks = (d.onboardingQuestions || []).length;
+    if (d.certified && !asks) return fill(onboardEl);
+    const next = (d.steps || []).find(s => s.status === 'needs');
+    fill(onboardEl, h('section', { class: 'card p22', role: 'status', style: 'border-color:var(--status-warning);gap:10px' },
+      h('div', { class: 'between-c', style: 'gap:12px;flex-wrap:wrap' },
+        h('div', { class: 'stack-4' }, h('h2', { class: 'h4' }, d.certified ? 'Onboarding asked you something' : 'Finish setup — ' + d.done + ' of ' + d.total + ' done'),
+          h('p', { class: 'body-s' }, d.certified ? 'Answer it in Setup.' : next ? 'Next: ' + next.title + '. ' + next.why : 'Run the final check to finish.')),
+        Button(d.certified ? 'Open Setup' : 'Continue setup', { variant: 'primary', href: '#/setup' })),
+      h('div', { class: 'meter', role: 'img', 'aria-label': d.done + ' of ' + d.total + ' setup steps done' }, h('div', { style: 'width:' + Math.round(d.done / d.total * 100) + '%' }))));
   }
   loadOnboarding();
 
@@ -88,7 +92,7 @@ export async function render(root, ctx) {
     let d;
     try { d = await api('/questions'); fill(needsErr); }
     catch (e) { fill(needsErr, errLine(e, 'Questions')); return; }
-    const qs = d.questions || [];
+    const qs = (d.questions || []).filter(q => !isSetupQuestion(q));
     lastQs = qs;
     app.setCount && app.setCount('needs', qs.length);
     const n = qs.length;
@@ -191,7 +195,7 @@ export async function render(root, ctx) {
 
   loadNeeds(); loadCrew(); loadUsage(); loadOvernight();
   const stopPanels = mountPanels(panelsEl, 'today', app);
-  const offs = [events.on('questions', loadNeeds), events.on('crew', loadCrew), events.on('dispatch', loadOvernight),
+  const offs = [events.on('questions', () => { loadNeeds(); loadOnboarding(); }), events.on('crew', loadCrew), events.on('dispatch', loadOvernight),
   ];
   const usageTimer = setInterval(() => { if (!document.hidden) loadUsage(); }, 60000);
   return () => { offs.forEach(f => f()); stopPanels(); clearInterval(usageTimer); document.removeEventListener('capheos:live', onLive); };

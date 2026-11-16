@@ -18,7 +18,7 @@ const { execFile, spawn } = require('child_process');
 const co = require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'company.js'));
 const TOOLS = co.p('company', 'tools');
 const UI_DIR = path.join(__dirname, 'ui');
-const OWNER = (co.config.owner && co.config.owner.name) || 'Owner';
+let OWNER = (co.config.owner && co.config.owner.name) || 'Owner';   // re-read after Setup renames the owner
 const tool = name => require(path.join(TOOLS, name));
 
 /* ---------------- small helpers ---------------- */
@@ -72,9 +72,24 @@ function stationGet(p, timeoutMs) {
     req.end();
   });
 }
+/* JSON POST to the station (the Setup screen's provider connect): { ok, status, data } — never throws */
+function stationPost(p, body, timeoutMs) {
+  return new Promise(resolve => {
+    const token = stationToken(); if (!token) return resolve({ ok: false, error: 'no station token' });
+    let u; try { u = new URL(co.STATION_URL + '/api/' + p); } catch (e) { return resolve({ ok: false, error: e.message }); }
+    const data = JSON.stringify(body || {});
+    const req = http.request({ hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: 'POST', headers: { 'x-starnet-token': token, 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } }, res => {
+      let d = ''; res.on('data', c => { d += c; }); res.on('end', () => { let j = null; try { j = JSON.parse(d); } catch (_) {} resolve({ ok: res.statusCode === 200, status: res.statusCode, data: j, error: j ? undefined : 'not JSON' }); });
+    });
+    req.setTimeout(timeoutMs || 15000, () => req.destroy(new Error('station timeout')));
+    req.on('error', e => resolve({ ok: false, error: 'station unreachable: ' + e.message }));
+    req.end(data);
+  });
+}
 const POST_ALLOW = ['run', 'run/steer', 'run/stream', 'cancel', 'groups', 'groups/*', 'cron/run', 'cron/update', 'cron/arm', 'loops/control',
   'consent/answer', 'permissions/*', 'autonomy/*', 'connectors/*', 'servicekeys/*', 'skills/toggle', 'providers/*', 'halt', 'halt/resume',
-  'transcript/redact', 'session'];
+  'transcript/redact', 'session',
+  'auth/claude-cli/start', 'auth/claude-cli/poll', 'auth/claude-cli/code', 'auth/claude-cli/cancel'];
 const postAllowed = p => POST_ALLOW.some(a => a.endsWith('/*') ? (p === a.slice(0, -2) || p.startsWith(a.slice(0, -1))) : p === a);
 function stationProxy(req, res, sub, search) {
   if (!/^[A-Za-z0-9._~\-\/]+$/.test(sub) || sub.split('/').some(s => s === '..' || s === '.' || s === '')) return sendJson(res, 400, { ok: false, error: 'bad station path' });
@@ -222,7 +237,7 @@ function onboardingBrief() {
   const failed = s.checks && s.checks.results ? Object.keys(s.checks.results).filter(k => !s.checks.results[k].ok) : null;
   return { certified: !!s.certified, certifiedAt: s.certifiedAt || null, lastCertify: (s.checks || {}).at || null, failed };
 }
-function companyInfo() { const c = co.config; return { name: c.name, shortName: c.shortName, owner: c.owner, timezone: co.TZ, station: { url: co.STATION_URL }, ownerChannel: c.ownerChannel }; }
+function companyInfo() { const c = co.config; return { name: c.name, shortName: c.shortName, owner: c.owner, timezone: process.env.CAPHEOS_TZ || c.timezone || co.TZ, station: { url: co.STATION_URL }, ownerChannel: c.ownerChannel, onboarding: onboardingBrief() }; }
 
 const PANEL_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 function panelDir(id) {
@@ -320,6 +335,9 @@ route('GET', /^\/api\/decision-models$/, () => runApi('decide.js', ['list', '--j
 // onboarding (company/tools/onboard.js): provisioning steps + the last certification; POST certify re-runs the 9 checks
 route('GET', /^\/api\/onboarding$/, () => runApi('onboard.js', ['--check', '--json']));
 route('POST', /^\/api\/onboarding\/certify$/, async () => { const r = await run('onboard.js', ['--certify', '--json'], { timeout: 300000 }); return Object.assign({}, r.data, { ok: true, certified: !!(r.data && r.data.certified) }); });
+// Setup (console/setup.js): the seven-step guided setup, every write as the owner
+const SETUP = require(path.join(__dirname, 'setup.js'))({ co, run, runApi, stationGet, stationPost, owner: () => OWNER, setOwner: n => { OWNER = n || OWNER; }, bad, HttpError, tool });
+for (const [mth, re, fn] of SETUP.routes) route(mth, re, fn);
 route('GET', /^\/api\/locked$/, () => runApi('locked-watch.js', ['status']));
 route('GET', /^\/api\/external$/, () => runApi('external-gate.js', ['list']));
 
@@ -616,6 +634,87 @@ async function selftest() {
       setTimeout(() => { req.destroy(); resolve(false); }, 5000);
     });
     check('SSE change event on owner message', sse);
+    // Setup (console/setup.js), station down
+    r = await call('GET', '/api/setup');
+    check('GET /api/setup: seven steps, provider needs the station, not certified', r.status === 200 && r.json.ok && r.json.steps.length === 7 && r.json.total === 7 &&
+      r.json.steps.find(x => x.id === 'provider').status === 'needs' && r.json.station.up === false && r.json.certified === false && r.json.providers.some(p => p.id === 'claude-cli'), r.json);
+    r = await call('GET', '/api/company');
+    check('GET /api/company carries the onboarding brief', r.json.onboarding && r.json.onboarding.certified === false, r.json);
+    r = await call('POST', '/api/setup/company', { timezone: 'Mars/Olympus_Mons' });
+    check('setup company: a bad timezone is refused (400)', r.status === 400, r.json);
+    r = await call('POST', '/api/setup/company', { name: 'Selftest Co', ownerName: 'Pat Owner', timezone: 'Europe/London' });
+    check('setup company: name, owner and timezone written', r.status === 200 && r.json.ok && readJson(path.join(tmp, 'company', 'company.json'), {}).owner.name === 'Pat Owner', r.json);
+    r = await call('GET', '/api/company');
+    check('GET /api/company shows the new name and timezone', r.json.name === 'Selftest Co' && r.json.timezone === 'Europe/London' && r.json.owner.name === 'Pat Owner', r.json);
+    r = await call('POST', '/api/governance/preset', { preset: 'gate-money' });
+    check('after the owner rename, owner writes still pass (--by the new name)', r.status === 200 && r.json.ok, r.json);
+    r = await call('POST', '/api/setup/budget', { dailyUsd: -1 });
+    check('setup budget: a negative cap is refused', r.status === 400, r.json);
+    r = await call('POST', '/api/setup/budget', { dailyUsd: 2, perAgentUsd: 5 });
+    check('setup budget: a share above the cap is refused', r.status === 400, r.json);
+    r = await call('POST', '/api/setup/budget', { dailyUsd: 2, perAgentUsd: 1 });
+    const bj = readJson(path.join(tmp, 'company', 'work', 'finance', 'dispatch-budget.json'), {});
+    check('setup budget: dispatch-budget.json written as the owner, notes kept', r.status === 200 && bj.dailyUsd === 2 && bj.perAgentUsd === 1 && bj.setBy === 'Pat Owner' && !!bj._dailyUsd, bj);
+    check('setup budget: the write is recorded for locked-watch (provenance)', fs.readFileSync(path.join(tmp, 'company', 'state', 'locked', 'provenance.jsonl'), 'utf8').includes('dispatch-budget.json'));
+    r = await call('POST', '/api/setup/charter', { mandate: 'x' });
+    check('setup charter: an empty mandate is refused', r.status === 400, r.json);
+    r = await call('POST', '/api/setup/charter', { mandate: 'We write <great> software for small shops.', forWhom: 'Independent retailers', outOfScope: 'No regulated financial advice.', firstGoal: 'Ship a stock tracker.' });
+    const chText = fs.readFileSync(path.join(tmp, 'company', 'CHARTER.md'), 'utf8');
+    check('setup charter: CHARTER.md filled, no placeholders left', r.status === 200 && r.json.ok && SETUP.placeholders(chText).length === 0 && /Selftest Co/.test(chText) && /Independent retailers/.test(chText) && /## First goal/.test(chText), chText.slice(0, 600));
+    r = await call('GET', '/api/setup');
+    check('GET /api/setup: company, budget and charter now done', ['company', 'charter'].every(id => r.json.steps.find(x => x.id === id).status === 'done') && r.json.charter.forWhom === 'Independent retailers', r.json.steps);
+    r = await call('POST', '/api/setup/provider', { provider: 'deepseek', key: 'k' });
+    check('setup provider with the station down: 502', r.status === 502, r.json);
+    r = await call('POST', '/api/setup/provider', { provider: 'nope' });
+    check('setup provider: unknown provider 400', r.status === 400, r.json);
+    r = await call('POST', '/api/station/auth/claude-cli/start', {});
+    check('station proxy: the Claude sign-in is on the allowlist', r.status === 502, r.status);
+    // Setup against a fake station: connect a key on a headless station, the onboarding gate is answered
+    const fake = { calls: [], ready: false };
+    const fsrv = http.createServer((req, res) => {
+      let d = ''; req.on('data', c => { d += c; }); req.on('end', () => {
+        const u = req.url.split('?')[0]; let b = {}; try { b = JSON.parse(d || '{}'); } catch (_) {}
+        fake.calls.push({ m: req.method, u, key: b.key });
+        const J = (c, o) => { res.writeHead(c, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
+        if (req.headers['x-starnet-token'] !== 'selftest-fake-station-token') return J(401, { error: 'token' });
+        if (u === '/api/providers') return J(200, { providers: [{ id: 'deepseek', configured: fake.ready, unattendedReady: fake.ready, credential: { present: fake.ready } }, { id: 'claude-cli', configured: false, unattendedReady: false }] });
+        if (u === '/api/auth/claude-cli/status') return J(200, { installed: true, loggedIn: false });
+        if (u === '/api/providers/validate') return J(200, { ok: b.key === 'good-key', credentialVerified: b.key === 'good-key', reachable: true, error: b.key === 'good-key' ? undefined : 'HTTP 401' });
+        if (u === '/api/providers/connect') return J(409, { ok: false, provider: b.provider, code: 'no-page' });
+        if (u === '/api/providers/engine-key') { fake.ready = true; return J(200, { ok: true, provider: b.provider, applied: true }); }
+        J(404, { error: 'fake: ' + u });
+      });
+    });
+    await new Promise(rs => fsrv.listen(0, '127.0.0.1', rs));
+    const child2 = spawn(process.execPath, [__filename, '--port', '0', '--print-port'], { env: Object.assign({}, env, { STARNET_URL: 'http://127.0.0.1:' + fsrv.address().port }), stdio: ['ignore', 'pipe', 'pipe'] });
+    try {
+      const port2 = await new Promise((resolve, reject) => { let buf = ''; child2.stdout.on('data', d => { buf += d; const m = buf.match(/\{"port":(\d+)\}/); if (m) resolve(Number(m[1])); }); setTimeout(() => reject(new Error('second server did not start')), 10000); });
+      const call2 = (method, p, body) => new Promise((resolve, reject) => {
+        const data = body === undefined ? null : JSON.stringify(body);
+        const req = http.request({ host: '127.0.0.1', port: port2, path: p, method, headers: Object.assign({ 'x-console-token': token }, data ? { 'content-type': 'application/json' } : {}) }, res => {
+          let d = ''; res.on('data', c => { d += c; }); res.on('end', () => { let j = null; try { j = JSON.parse(d); } catch (_) {} resolve({ status: res.statusCode, json: j }); });
+        });
+        req.setTimeout(60000, () => req.destroy(new Error('timeout ' + p))); req.on('error', reject); if (data) req.write(data); req.end();
+      });
+      const gq = await new Promise(res => execFile(process.execPath, [path.join(tmp, 'company', 'tools', 'inbox.js'), 'ask', '--from', 'onboard.js', '--about', 'onboarding', '--q',
+        'Onboarding: what the enabled packs and modules need from you (one batch, asked once):\n- Hiring candidates default to the metered model deepseek/deepseek-flash, but the metered daily cap is $0.\nRecommendation: answer each line.'], { env }, (e, so) => res(JSON.parse(so))));
+      r = await call2('GET', '/api/setup');
+      check('fake station: GET /api/setup lists the onboarding question and the provider still needs you', r.json.station.up && r.json.steps.find(x => x.id === 'provider').status === 'needs' && r.json.onboardingQuestions.some(q => q.id === gq.id), r.json);
+      r = await call2('POST', '/api/setup/provider/validate', { provider: 'deepseek', key: 'bad-key' });
+      check('setup validate: a rejected key says so (valid false)', r.status === 200 && r.json.valid === false, r.json);
+      r = await call2('POST', '/api/setup/provider', { provider: 'deepseek', key: 'bad-key' });
+      check('setup provider: a rejected key is not saved (400)', r.status === 400 && !fake.calls.some(c => c.u === '/api/providers/engine-key'), r.json);
+      r = await call2('POST', '/api/setup/provider', { provider: 'claude-cli' });
+      check('setup provider: Claude not signed in is refused (400)', r.status === 400 && /not signed in/.test(r.json.error), r.json);
+      r = await call2('POST', '/api/setup/provider', { provider: 'deepseek', key: ' good-\nkey ' });
+      const pol = readJson(path.join(tmp, 'company', 'model-policy.json'), {});
+      check('setup provider: a headless station gets the key through engine-key, candidate default set', r.status === 200 && r.json.connected && fake.calls.some(c => c.u === '/api/providers/engine-key' && c.key === 'good-key') && pol.candidateDefault.provider === 'deepseek' && pol.candidateDefault.setBy === 'Pat Owner', { r: r.json, cd: pol.candidateDefault });
+      check('setup provider: the key never comes back in the answer', !JSON.stringify(r.json).includes('good-key'));
+      r = await call2('GET', '/api/questions');
+      check('setup provider: the onboarding gate question is answered', r.json.ok && !r.json.questions.some(q => q.id === gq.id), r.json);
+      r = await call2('GET', '/api/setup');
+      check('fake station: provider and budget steps done', ['provider', 'budget'].every(id => r.json.steps.find(x => x.id === id).status === 'done'), r.json.steps);
+    } finally { child2.kill(); fsrv.close(); }
     // the real company was not touched
     check('real company untouched', snap() === before);
   } catch (e) {

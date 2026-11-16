@@ -3,7 +3,7 @@ import { h, fill, Button, Tag, errLine, empty, tabs, screenHead, table, statusOf
 import { api, post } from '../api.js';
 import * as events from '../events.js';
 
-const PRESET_WHAT = {
+export const PRESET_WHAT = {
   'approve-everything': 'Every decision waits for you',
   'gate-money-people': 'You approve hires and money; the rest is reported',
   'gate-money': 'You approve money; the crew hires and reports',
@@ -12,7 +12,7 @@ const PRESET_WHAT = {
 const CAT_NAMES = { hiring: 'Hiring', release: 'Releasing someone', budget: 'Budgeting', spend: 'Spend inside the cap', models: 'Model changes',
   tools: 'Tool and policy changes', schedules: 'Schedules and ticks', external: 'Acting outside', dashboard: 'Console panels', packs: 'Capability packs' };
 const CAT_SEAT = { hiring: 'People', release: 'People', budget: 'Finance', spend: 'Finance', models: 'People', tools: 'Tools', schedules: 'Tools', external: 'CEO', dashboard: 'Tools', packs: 'CEO' };
-const GUARD_NAMES = { ownerGates: 'Owner gates', spendCap: 'Spend cap', externalActions: 'External actions', harnessSelfEdit: 'Harness self-edit',
+export const GUARD_NAMES = { ownerGates: 'Owner gates', spendCap: 'Spend cap', externalActions: 'External actions', harnessSelfEdit: 'Harness self-edit',
   defaultBranch: 'Default branch', secrets: 'Secrets', localComputer: 'Local computer', privilegedShell: 'Privileged shell', promptInjection: 'Injection tripwire', halt: 'Halt' };
 const CONFIRM = 'I understand there are no guardrails';
 const LEVELS = [['auto', 'Crew decides'], ['notify', 'Decides, tells you'], ['triage', 'Model triages'], ['approve', 'You approve']];

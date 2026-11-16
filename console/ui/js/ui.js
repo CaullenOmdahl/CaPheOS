@@ -117,3 +117,6 @@ export function dig(o, p) {
   for (const k of String(p).split('.')) { if (o == null) return undefined; o = k === 'length' && Array.isArray(o) ? o.length : o[k]; }
   return o;
 }
+
+// onboarding questions (filed by company/tools/onboard.js, about 'onboarding') are answered in Setup, never as Approve/Decline
+export function isSetupQuestion(q) { return !!q && (q.from === 'onboard.js' || /^onboarding\b/i.test(String(q.about || ''))); }

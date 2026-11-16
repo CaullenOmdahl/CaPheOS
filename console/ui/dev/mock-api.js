@@ -3,6 +3,7 @@
  *
  *   node console/ui/dev/mock-api.js [port]          # default 8931; serves console/ui and answers /api/* with fixtures
  *   MOCK_STATION_DOWN=1 node console/ui/dev/mock-api.js   # /api/station/* answers 502, as when the station is not running
+ *   MOCK_CERTIFIED=1 node console/ui/dev/mock-api.js      # a company that finished Setup (Today is the landing page)
  *
  * Never contacts a real station. State lives in memory: answering a question removes it, halts change mode, and so on.
  * 8 s after the first SSE client connects a new owner question arrives (event: change {topic:'questions'}) to exercise
@@ -15,6 +16,7 @@ const REPO = path.resolve(UI, '..', '..');
 const PORT = Number(process.argv[2] || process.env.PORT || 8931);
 if (PORT === 8800) { console.error('refusing port 8800'); process.exit(2); }
 const STATION_DOWN = !!process.env.MOCK_STATION_DOWN;
+const CERTIFIED = !!process.env.MOCK_CERTIFIED;
 const now = () => new Date().toISOString();
 const ago = m => new Date(Date.now() - m * 60000).toISOString();
 
@@ -26,7 +28,8 @@ const S = {
       q: 'Approval needed (hiring): Hire Candidate A as Analyst.\nRecommendation from People: hire Candidate A; release B and C.\nIf you do not answer: the round waits; nobody is hired.\nReply yes or no and name q-000101.' },
     { id: 'q-000102', from: 'Founder', about: 'budget', blocking: false, askedAt: ago(130), batch: null,
       q: 'A research tool trial costs nothing for 14 days, then a monthly fee. Should we try it?\nRecommendation from Founder: approve the trial, decide on the paid plan after.\nIf you do not answer: no trial.' },
-  ],
+  ].concat(CERTIFIED ? [] : [{ id: 'q-000050', from: 'onboard.js', about: 'onboarding', blocking: false, askedAt: ago(600), batch: null,
+      q: 'Onboarding: what the enabled packs and modules need from you (one batch, asked once):\n- Hiring candidates default to the metered model deepseek/deepseek-flash, but the metered daily cap is $0 and the station has no subscription provider (claude-cli) ready. Either connect a subscription provider on the station, or set a metered cap in company/work/finance/dispatch-budget.json (dailyUsd).\n- provide secrets/example-key (0600) for example-module\nRecommendation: answer each line; secrets go in secrets/<name> with mode 0600, never in a message.\nIf you do not answer: those packs and modules stay uncertified.' }]),
   answered: [{ id: 'q-000090', from: 'Founder', about: 'access', q: 'Approval needed (access): read access to the shared drive.', answer: 'yes', answeredAt: ago(200) }],
   messages: [
     { dir: 'out', id: 'out-1', at: ago(300), from: 'Founder', text: 'Morning report: two quests moved, one handoff is due today.' },
@@ -47,7 +50,13 @@ const S = {
     seats: { agent: { name: 'Founder', loop: 'Founder loop', cooldownMin: { value: 10, from: 'cadence' }, priority: { value: 100, from: 'loops' }, wakeOnInbox: { value: true }, wakeOnOwnerMessage: { value: true } },
       people1: { name: 'Mira', loop: 'People loop', cooldownMin: { value: 40, from: 'default' }, priority: { value: 50 }, wakeOnInbox: { value: true }, wakeOnOwnerMessage: { value: false } } } },
   hidden: {},
+  // Setup (#/setup) fixtures: GET /api/setup is computed from these
+  setup: { certified: CERTIFIED, govChosen: CERTIFIED, candidateDefault: CERTIFIED ? { provider: 'claude-cli', model: 'claude-haiku-4-5-20251001' } : { provider: 'deepseek', model: 'deepseek-flash' },
+    budget: { dailyUsd: 0, perAgentUsd: 0, unmeteredProviders: ['claude-cli'], setBy: '', setAt: '' }, ready: CERTIFIED ? ['claude-cli'] : [], claude: { installed: true, loggedIn: CERTIFIED, authMethod: '' }, login: null,
+    charter: CERTIFIED ? { mandate: 'We run an example business.', forWhom: 'Example customers', outOfScope: 'Nothing regulated.', firstGoal: 'First sale.' } : null,
+    checks: CERTIFIED ? null : { station: [true], dispatcher: [true], guardrails: [true], secrets: [true], ops: [true], liveness: [false, 'liveness module not enabled: node company/tools/module.js enable liveness --by owner'], doctor: [true], charter: [false, 'placeholders left: <What the company exists to do…>'], console: [true] }, lastCertify: ago(30) },
 };
+S.company.onboarding = { certified: CERTIFIED };
 const PRESETS = { 'approve-everything': 'Approve everything', 'gate-money-people': 'Gate money and people', 'gate-money': 'Gate money', autonomous: 'Autonomous' };
 const CATS = { hiring: 'opening a role and picking the hire', release: 'releasing or replacing a crew member', budget: 'setting or changing the metered cap', spend: 'new spend inside the approved cap',
   models: 'changing which model a seat or routine runs', tools: 'shared changes to tools, house rules and policies', schedules: 'routine clocks, dispatcher tick and per-seat cadence',
@@ -82,6 +91,41 @@ const PANELS = {
   'proposed-one': { meta: { status: 'proposed', title: 'Billable hours', placement: 'screen', nav: 'Hours', owner: 'finance', view: 'chart', refresh: 300, valid: true, findings: 0 } },
 };
 const panelList = () => Object.entries(PANELS).map(([id, p]) => Object.assign({ id, hidden: !!S.hidden[id] }, p.meta));
+
+/* ---------- Setup ---------- */
+const OFFER = [
+  { id: 'claude-cli', name: 'Claude subscription', how: 'signin', unmetered: true, blurb: 'Your Claude Pro or Max plan, through Claude Code on this machine. Flat fee: nothing is billed per token.' },
+  { id: 'custom', name: 'MiniMax Coding Plan', how: 'key', unmetered: true, keyUrl: 'https://platform.minimax.io/', blurb: 'A MiniMax plan key. Flat fee, paced against the plan.' },
+  { id: 'deepseek', name: 'DeepSeek', how: 'key', unmetered: false, keyUrl: 'https://platform.deepseek.com/api_keys', blurb: 'Pay per token from a prepaid balance. Needs a daily cap in step 3.' },
+  { id: 'openrouter', name: 'OpenRouter', how: 'key', unmetered: false, keyUrl: 'https://openrouter.ai/keys', blurb: 'One key for many models, pay per token. Needs a daily cap in step 3.' },
+  { id: 'anthropic', name: 'Anthropic API', how: 'key', unmetered: false, keyUrl: 'https://console.anthropic.com/settings/keys', blurb: 'Claude by API key, pay per token. Needs a daily cap in step 3.' },
+];
+function setupView() {
+  const U = S.setup, cd = U.candidateDefault, b = U.budget, up = !STATION_DOWN;
+  const ready = up ? U.ready : [];
+  const steps = [];
+  const add = (id, title, status, why) => steps.push({ id, title, status, why });
+  add('company', 'Company', 'done', S.company.name + ', run by ' + S.company.owner.name + ', on ' + S.company.timezone + ' time.');
+  add('provider', 'AI provider', ready.includes(cd.provider) ? 'done' : 'needs', !up ? 'The station is not answering (connect ECONNREFUSED), so no AI provider can be checked or connected. Start it, then come back.' : ready.includes(cd.provider) ? 'New hires interview on ' + cd.provider + ' (' + cd.model + '), which the station has ready.' : 'Your crew needs an AI to think with. The station has no AI provider connected yet.');
+  const metered = !b.unmeteredProviders.includes(cd.provider);
+  add('budget', 'Budget', metered && b.dailyUsd <= 0 ? 'needs' : b.setBy ? 'done' : 'optional', metered && b.dailyUsd <= 0 ? 'New hires run on ' + cd.provider + ', which bills per token, and the daily cap is $0, so nothing they do can run.' : b.dailyUsd > 0 ? 'Up to $' + b.dailyUsd + ' a day on pay-per-token AI.' : 'Subscription only: $0 a day on pay-per-token AI. Fine while the crew runs on a subscription.');
+  add('governance', 'How much the company decides alone', U.govChosen ? 'done' : 'optional', (U.govChosen ? 'Set to ' : 'Starts at ') + S.governance.presetLabel + '. The four owner gates (money beyond the cap, access, ownership, outside commitments) always come to you.');
+  add('charter', 'Charter', U.charter ? 'done' : 'needs', U.charter ? 'The crew knows what the company does and what it will not do.' : 'The crew reads the charter to know what the company is for. It still has 3 blanks to fill.');
+  const off = S.guardrails.guards.filter(g => !g.on).map(g => g.name);
+  add('guardrails', 'Guardrails', off.length ? 'optional' : 'done', off.length ? off.length + ' switched off by you: ' + off.join(', ') + '.' : 'All ' + S.guardrails.guards.length + ' are on. You can switch some off later in Controls.');
+  const checks = U.checks ? Object.entries(U.checks).map(([id, v]) => ({ id, ok: v[0], missing: v[1] || null })) : [];
+  const failed = checks.filter(c => !c.ok).map(c => c.id);
+  add('certify', 'Certify', U.certified ? 'done' : 'needs', U.certified ? 'All checks passed. The company is operational.' : failed.length + ' of ' + checks.length + ' checks still failing: ' + failed.join(', ') + '.');
+  return { certified: U.certified, done: steps.filter(x => x.status === 'done').length, total: steps.length, steps,
+    company: { name: S.company.name, ownerName: S.company.owner.name, timezone: S.company.timezone },
+    station: { up, error: up ? null : 'connect ECONNREFUSED', url: S.company.station.url, claude: up ? U.claude : null },
+    providers: OFFER.map(o => Object.assign({}, o, { ready: ready.includes(o.id), present: ready.includes(o.id), isDefault: cd.provider === o.id, metered: !b.unmeteredProviders.includes(o.id) })),
+    candidateDefault: cd, budget: b,
+    governance: { preset: S.governance.preset, presetLabel: S.governance.presetLabel, presets: S.governance.presets, chosen: U.govChosen },
+    charter: Object.assign({ exists: true, placeholders: U.charter ? [] : ['<What the company exists to do…>', '<Work the company will not take on…>'], mandate: '', forWhom: '', outOfScope: '', firstGoal: '' }, U.charter || {}),
+    guardrails: { off, sandbox: S.guardrails.sandbox, guards: S.guardrails.guards.map(g => ({ name: g.name, on: g.on, fixed: g.fixed, blocks: g.blocks })) },
+    checks, lastCertify: U.lastCertify, onboardingQuestions: S.questions.filter(q => q.from === 'onboard.js' || /^onboarding/.test(q.about || '')) };
+}
 
 /* ---------- SSE ---------- */
 const clients = new Set(); let pushed = false;
@@ -121,7 +165,7 @@ async function apiRoute(req, res, p, q) {
       minimax: { key: 'minimax', label: 'MiniMax', known: true, open: true, usedPct: 24, usedToday: 22, line: 28, share: 50, why: 'near the line' }, deepseek: { label: 'DeepSeek', open: true, why: 'no credit failure seen', reading: null },
       rail: { known: true, pct: 12, perDay: 25, source: 'runs.jsonl' }, emergency: { active: false }, boost: { on: false, why: 'off' }, problems: [] });
     case 'GET /api/governance': return ok(S.governance);
-    case 'POST /api/governance/preset': if (!PRESETS[B.preset]) return J(res, 400, { ok: false, error: 'unknown preset' }); setPreset(B.preset); emit('governance'); return ok();
+    case 'POST /api/governance/preset': if (!PRESETS[B.preset]) return J(res, 400, { ok: false, error: 'unknown preset' }); setPreset(B.preset); S.setup.govChosen = true; emit('governance'); return ok();
     case 'POST /api/governance/set': { const c = S.governance.categories.find(x => x.category === B.category); if (!c) return J(res, 400, { ok: false, error: 'unknown category' }); c.level = B.level; S.governance.preset = 'custom'; S.governance.presetLabel = 'Custom'; emit('governance'); return ok(); }
     case 'GET /api/guardrails': return J(res, 200, guardView());
     case 'POST /api/guardrails/set': { const g = S.guardrails.guards.find(x => x.name === B.name); if (!g || g.fixed) return J(res, 400, { ok: false, error: 'cannot change ' + B.name }); g.on = !!B.on; emit('guardrails'); return ok(); }
@@ -129,7 +173,33 @@ async function apiRoute(req, res, p, q) {
     case 'POST /api/guardrails/sandbox': S.guardrails.sandbox = !!B.on; emit('guardrails'); return ok();
     case 'GET /api/onboarding': return ok({ provisioned: true, certified: false, lastCertify: now(), steps: [{ id: 'founded', what: 'company.json written and defaults copied', status: 'ok' }, { id: 'candidate-default', what: 'hiring candidates default to a model the company can run', status: 'pending', note: 'metered model with a $0 cap' }],
       checks: [{ id: 'station', what: 'station answers GET /api/cron', status: 'ok' }, { id: 'liveness', what: 'dead-man switch enabled and pinged', status: 'failed', missing: 'liveness module not enabled' }] });
-    case 'POST /api/onboarding/certify': return ok({ certified: false, results: {} });
+    case 'POST /api/onboarding/certify': { const U = S.setup; U.checks = U.checks || {}; U.checks.charter = U.charter ? [true] : [false, 'placeholders left: <What the company exists to do…>']; U.lastCertify = now();
+      const pending = setupView().steps.filter(x => x.id !== 'certify' && x.status === 'needs');
+      if (!pending.length) { for (const k of Object.keys(U.checks)) U.checks[k] = [true]; U.certified = true; S.company.onboarding.certified = true; }
+      return ok({ certified: U.certified, results: Object.fromEntries(Object.entries(U.checks).map(([k, v]) => [k, { ok: v[0], missing: v[1] || null }])) }); }
+    case 'GET /api/setup': return ok(setupView());
+    case 'GET /api/decision-models': return ok({ models: [{ id: 'gate-triage', title: 'Gate triage', versions: [1], active: 1, mode: 'shadow', params: { maxUsd: 50 }, cases: 12, evaluations: 3, lastAt: ago(90), valid: true }] });
+    case 'POST /api/setup/company': {
+      try { new Intl.DateTimeFormat('en', { timeZone: B.timezone }); } catch (_) { return J(res, 400, { ok: false, error: 'timezone must be an IANA zone such as Europe/London or America/New_York' }); }
+      if (!String(B.name || '').trim() || !String(B.ownerName || '').trim()) return J(res, 400, { ok: false, error: 'name and owner name are required' });
+      S.company.name = B.name.trim(); S.company.owner = { name: B.ownerName.trim() }; S.company.timezone = B.timezone; return ok({ changes: ['mock'] }); }
+    case 'POST /api/setup/provider/validate': return ok({ provider: B.provider, valid: /^sk-good/.test(B.key || ''), reachable: true, error: /^sk-good/.test(B.key || '') ? null : 'HTTP 401: invalid key (mock: keys starting sk-good pass)', modelCount: 12 });
+    case 'POST /api/setup/provider': {
+      const U = S.setup;
+      if (STATION_DOWN) return J(res, 502, { ok: false, error: 'station unreachable: connect ECONNREFUSED' });
+      if (B.provider === 'claude-cli') { if (!U.claude.loggedIn) return J(res, 400, { ok: false, error: 'Claude is not signed in on the station yet: finish the sign-in first' }); }
+      else if (!U.ready.includes(B.provider) && !/^sk-good/.test(B.key || '')) return J(res, 400, { ok: false, error: 'the provider did not accept that key: HTTP 401 (mock: keys starting sk-good pass)' });
+      if (!U.ready.includes(B.provider)) U.ready.push(B.provider);
+      if (B.provider === 'custom' && B.subscription !== false && !U.budget.unmeteredProviders.includes('custom')) U.budget.unmeteredProviders.push('custom');
+      const model = { 'claude-cli': 'claude-haiku-4-5-20251001', custom: 'MiniMax-M3.1-Pro', deepseek: 'deepseek-flash', openrouter: 'deepseek/deepseek-chat', anthropic: 'claude-haiku-4-5' }[B.provider];
+      U.candidateDefault = { provider: B.provider, model };
+      const runnable = U.budget.unmeteredProviders.includes(B.provider) || U.budget.dailyUsd > 0;
+      if (runnable) { const i = S.questions.findIndex(q => q.id === 'q-000050'); if (i >= 0) S.questions[i].q = S.questions[i].q.replace(/\n- Hiring candidates[^\n]*/, ''); emit('questions'); }
+      return ok({ connected: true, provider: B.provider, model, runnable }); }
+    case 'POST /api/setup/budget': { const d = Number(B.dailyUsd), p2 = Number(B.perAgentUsd || 0); if (!(d >= 0) || !(p2 >= 0)) return J(res, 400, { ok: false, error: 'dailyUsd must be a number from 0 to 10000' }); if (p2 > d && d > 0) return J(res, 400, { ok: false, error: 'the per-agent share cannot be more than the daily cap' });
+      Object.assign(S.setup.budget, { dailyUsd: d, perAgentUsd: d > 0 ? p2 : 0, setBy: S.company.owner.name, setAt: now() }); return ok({ dailyUsd: d, perAgentUsd: p2 }); }
+    case 'POST /api/setup/charter': if (String(B.mandate || '').trim().length < 10) return J(res, 400, { ok: false, error: 'say in a sentence or two what the company does' }); if (!String(B.outOfScope || '').trim()) return J(res, 400, { ok: false, error: 'say what the company will not do (write "Nothing yet" if you have no limits in mind)' });
+      S.setup.charter = { mandate: B.mandate, forWhom: B.forWhom || '', outOfScope: B.outOfScope, firstGoal: B.firstGoal || '' }; if (S.setup.checks) S.setup.checks.charter = [true]; return ok({ placeholders: [] });
     case 'GET /api/halt': return ok(S.halt);
     case 'POST /api/halt/soft': S.halt = { mode: 'soft', by: 'Sam Owner', at: now(), why: B.why || null, deadline: new Date(Date.now() + (B.deadlineMin || 30) * 60000).toISOString(), escalate: !!B.escalate,
       shutdowns: [{ seat: 'Founder', routine: 'Founder shutdown', maxMinutes: 15, status: 'fired', done: false }, { seat: 'Mira', routine: '—', status: 'missing' }], left: ['Tools loop (running)'] }; emit('halt'); return ok(S.halt);
@@ -204,6 +274,15 @@ function station(req, res, p, q, B) {
   if (route === 'GET channels/status') return J(res, 200, { telegram: { paired: false, state: 'Not paired' }, slack: { state: 'Not connected' } });
   if (route === 'GET state/snapshot') return J(res, 200, { ts: Date.now(), runs: [{ id: 'run-1' }], prompts: [], summons: [], queues: {} });
   if (route === 'GET autonomy') return J(res, 200, { posture: 'small' });
+  if (route === 'GET providers') return J(res, 200, { providers: OFFER.map(o => ({ id: o.id, label: o.name.toUpperCase(), configured: S.setup.ready.includes(o.id), unattendedReady: S.setup.ready.includes(o.id), reason: S.setup.ready.includes(o.id) ? 'unverified' : 'credential missing' })) });
+  if (route === 'GET auth/claude-cli/status') return J(res, 200, Object.assign({ signingIn: !!S.setup.login }, S.setup.claude));
+  if (route === 'POST auth/claude-cli/start') { S.setup.login = { id: 'login-' + Date.now(), at: Date.now() }; return J(res, 200, { status: 'pending', login_id: S.setup.login.id, url: 'https://claude.ai/oauth/authorize?mock=1' }); }
+  if (route === 'POST auth/claude-cli/code') { if (!S.setup.login || B.login_id !== S.setup.login.id) return J(res, 200, { ok: false, error: 'this sign-in is no longer running' }); S.setup.login.code = true; return J(res, 200, { ok: true }); }
+  if (route === 'POST auth/claude-cli/poll') {
+    const L = S.setup.login; if (!L || B.login_id !== L.id) return J(res, 200, { status: 'error', error: 'this sign-in is no longer running', code: 'login_not_found' });
+    if (L.code || Date.now() - L.at > 6000) { S.setup.login = null; S.setup.claude = { installed: true, loggedIn: true, authMethod: 'claude.ai', email: 'owner@example.com', subscription: 'max' }; S.setup.ready.push('claude-cli'); return J(res, 200, Object.assign({ status: 'connected' }, S.setup.claude)); }
+    return J(res, 200, { status: 'pending' }); }
+  if (route === 'POST auth/claude-cli/cancel') { S.setup.login = null; return J(res, 200, { ok: true }); }
   J(res, 404, { ok: false, error: 'mock station: no route ' + route });
 }
 

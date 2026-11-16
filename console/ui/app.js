@@ -1,10 +1,11 @@
 // CaPheOS owner console: shell, sidebar and hash router. No build step.
-import { h, fill, Logo, Tag, Button, rel } from './js/ui.js';
+import { h, fill, Logo, Tag, Button, rel, isSetupQuestion } from './js/ui.js';
 import { api } from './js/api.js';
 import * as events from './js/events.js';
 
 const SCREENS = {
   today: () => import('./js/screens/today.js'),
+  setup: () => import('./js/screens/setup.js'),
   comms: () => import('./js/screens/comms.js'),
   crew: () => import('./js/screens/crew.js'),
   work: () => import('./js/screens/work.js'),
@@ -20,10 +21,10 @@ const SCREENS = {
   halt: () => import('./js/screens/halt.js'),
   p: () => import('./js/screens/panel-screen.js'),
 };
-const TITLES = { today: 'Today', comms: 'Comms', crew: 'Crew', work: 'Work', hiring: 'Hiring', controls: 'Controls', automate: 'Automate',
+const TITLES = { today: 'Today', setup: 'Setup', comms: 'Comms', crew: 'Crew', work: 'Work', hiring: 'Hiring', controls: 'Controls', automate: 'Automate',
   governance: 'Governance', usage: 'Usage and models', floor: 'Floor', abilities: 'Abilities', system: 'System', map: 'Feature map', halt: 'Halt', p: 'Company' };
 const NAV = [
-  ['Company', [['today', 'Today'], ['comms', 'Comms'], ['crew', 'Crew'], ['work', 'Work'], ['hiring', 'Hiring']]],
+  ['Company', [['setup', 'Setup'], ['today', 'Today'], ['comms', 'Comms'], ['crew', 'Crew'], ['work', 'Work'], ['hiring', 'Hiring']]],
   ['Operations', [['controls', 'Controls'], ['automate', 'Automate'], ['governance', 'Governance'], ['usage', 'Usage and models']]],
   ['Station', [['floor', 'Floor'], ['abilities', 'Abilities'], ['system', 'System'], ['map', 'Feature map']]],
 ];
@@ -38,6 +39,9 @@ let current = { id: null, cleanup: null, token: 0 };
 
 /* ---------- sidebar ---------- */
 const counts = {};
+// the Setup nav item shows until the company is certified (System links to Setup afterwards)
+app.refreshSetupNav = certified => { const l = navLinks.setup; if (l) l.a.hidden = !!certified; };
+const setupDone = () => !!(app.company && app.company.onboarding && app.company.onboarding.certified);
 const navLinks = {};
 const needsN = h('span', { class: 'n', 'aria-live': 'polite' }, '');
 const stationTag = h('span', null, Tag('Checking', { variant: 'status', status: 'neutral' }));
@@ -91,7 +95,7 @@ function setCount(id, n) {
 app.setCount = setCount;
 
 async function refreshSidebar() {
-  api('/questions').then(d => setCount('needs', (d.questions || []).length)).catch(() => setCount('needs', '!'));
+  api('/questions').then(d => setCount('needs', (d.questions || []).filter(q => !isSetupQuestion(q)).length)).catch(() => setCount('needs', '!'));
   api('/crew').then(d => setCount('crew', (d.seats || []).length)).catch(() => {});
   api('/handoffs').then(d => setCount('work', (d.items || []).length)).catch(() => {});
   api('/hiring').then(d => setCount('hiring', (d.rounds || []).filter(r => !r.hired && r.status !== 'closed').length)).catch(() => {});
@@ -145,7 +149,8 @@ function confirmDialog(o) {
 
 /* ---------- router ---------- */
 function parseHash() {
-  const raw = (location.hash || '#/today').replace(/^#\/?/, '');
+  // the landing page is Setup until onboard.js --certify is green, then Today
+  const raw = (location.hash && location.hash !== '#' && location.hash !== '#/' ? location.hash : app.company && app.company.onboarding && !setupDone() ? '#/setup' : '#/today').replace(/^#\/?/, '');
   const [p, qs] = raw.split('?');
   const parts = p.split('/').filter(Boolean).map(decodeURIComponent);
   return { id: SCREENS[parts[0]] ? parts[0] : 'today', rest: parts.slice(1), query: new URLSearchParams(qs || '') };
@@ -176,7 +181,7 @@ async function route() {
 /* ---------- boot ---------- */
 async function boot() {
   buildSidebar();
-  try { app.company = await api('/company'); coName.textContent = app.company.name || ''; }
+  try { app.company = await api('/company'); coName.textContent = app.company.name || ''; app.refreshSetupNav(setupDone()); }
   catch (e) { coName.textContent = e.auth ? 'Not signed in' : ''; app.companyError = e; }
   events.start();
   events.on(['questions', 'halt', 'crew', 'dispatch', 'handoffs'], () => refreshSidebar());

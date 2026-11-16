@@ -36,6 +36,7 @@ export async function render(root, ctx) {
         r('Dispatcher log', disp.value ? (disp.value.log || []).length + ' recent lines' : 'unreadable', '#/automate'),
         r('Guardrails off', gr.value ? String((gr.value.off || []).length) : '?', '#/controls/guard'),
         r('Live updates', document.querySelector('.live-dot.off') ? 'polling' : 'SSE')]),
+      card('Setup', [r('Guided setup', 'company, AI, budget, charter, checks', '#/setup')]),
       card('You', [r('About you, aims, preferences', NOT_CONNECTED)]),
       card('Spending limits', [r('Pacer and caps', 'see Usage', '#/usage')]),
       card('App and backup', [r('Export, recovery, updates', NOT_CONNECTED)]),

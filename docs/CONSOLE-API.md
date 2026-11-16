@@ -75,11 +75,36 @@ scripts/console.sh                # same as the first line
 | POST | /api/panels/:id/hide \| unhide \| approve \| reject \| remove | — | console-panel.js |
 | GET | /api/governance-log, /api/locked, /api/external | read-only reports | governance-log.jsonl (last 200 rows as `{entries}`), `locked-watch.js status` (no JSON mode: `{ ok, text }`), `external-gate.js list` (JSON) |
 
+## Setup
+
+The guided Setup screen (`#/setup`, console/ui/js/screens/setup.js; server side console/setup.js). It is the landing
+page until `onboard.js --certify` is green (`GET /api/company` carries `onboarding: {certified, ...}`), then Today is;
+System links back to it. Seven steps, each `{ id, title, status: done|needs|optional, why }`, computed from the files and
+the station on every call. Onboarding questions (from `onboard.js` or about `onboarding`) never render as
+Approve/Decline on Today: Today shows "Finish setup — N of 7 done" and Setup lists any onboarding ask its steps do not
+cover, with a reply box. Every write acts as the owner; locked files are recorded with provenance.js and each change
+gets one line in company/work/decisions.md.
+
+| Method | Path | Body | Does |
+|---|---|---|---|
+| GET | /api/setup | — | `{ certified, done, total: 7, steps, company, station: {up, error, url, claude}, providers: [{id, name, how: signin\|key, unmetered, ready, present, isDefault, metered}], candidateDefault, budget, governance, charter: {placeholders, mandate, forWhom, outOfScope, firstGoal}, guardrails, checks, lastCertify, onboardingQuestions }` |
+| POST | /api/setup/company | `{ name?, ownerName?, timezone? }` | writes company/company.json; timezone must be a valid IANA zone (400 otherwise). Later owner writes use the new name |
+| POST | /api/setup/provider/validate | `{ provider, key, baseUrl? }` | station `providers/validate` → `{ valid, reachable, error, modelCount }`; the key is never echoed |
+| POST | /api/setup/provider | `{ provider: claude-cli\|custom\|deepseek\|openrouter\|anthropic, key?, baseUrl?, model?, subscription? }` | key providers: station `providers/validate`, then `providers/connect` (a headless station answers `no-page`: then `providers/engine-key`). claude-cli: requires the station's `auth/claude-cli/status` signed in. Then sets model-policy.json `candidateDefault` (adds the provider to `allowed` if new), marks `custom` (MiniMax plan) subscription-billed when `subscription` is not false, and, once a candidate can actually run, answers the onboard.js candidate-default question and records the `candidate-default` step ok. Station down: 502 |
+| POST | /api/setup/budget | `{ dailyUsd, perAgentUsd? }` | company/work/finance/dispatch-budget.json (0–10000; share ≤ cap), `setBy` = the owner (the owner's direct edit, recorded for locked-watch) |
+| POST | /api/setup/charter | `{ mandate, forWhom?, outOfScope, firstGoal? }` | fills company/CHARTER.md from its template (Mandate, What is out of scope, First goal); 400 if any `{{…}}`/`<…>` placeholder would remain |
+
+Governance, guardrails and certification use the endpoints above (`/api/governance/preset`, `/api/guardrails/*`,
+`/api/onboarding/certify`). The Claude subscription sign-in runs through the station proxy (`auth/claude-cli/start`,
+`poll`, `code`, `cancel` are on the POST allowlist): start returns a sign-in URL, the owner pastes the code the page
+shows, the UI polls until `connected`; the terminal alternative is `claude auth login` on the station machine.
+
 ## Station proxy
 
 `/api/station/<path>` → `<station url>/api/<path>` with the station token added. GET is passed through. POST is passed
 through only for an allowlist the owner UI needs (403 otherwise): `run`, `run/steer`, `run/stream`, `cancel`, `groups` (send, create, control incl.
 delete), `cron/run`, `cron/update`, `cron/arm`, `loops/control`, `consent/answer`, `permissions/*`, `autonomy/*`,
-`connectors/*`, `servicekeys/*`, `skills/toggle`, `providers/*`, `halt`, `halt/resume`, `transcript/redact`, `session`.
+`connectors/*`, `servicekeys/*`, `skills/toggle`, `providers/*`, `halt`, `halt/resume`, `transcript/redact`, `session`,
+`auth/claude-cli/start`, `auth/claude-cli/poll`, `auth/claude-cli/code`, `auth/claude-cli/cancel`.
 Streaming responses (`run/stream`, SSE) are piped through unchanged. Station down or no `secrets/station-token`: 502
 `{ ok:false, error }`. Paths with `..`, `.` or empty segments: 400.
