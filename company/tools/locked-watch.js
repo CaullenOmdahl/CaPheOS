@@ -551,7 +551,15 @@ function runTick(ctx) {
     rtChanged.push({ id: j.id, name: j.name, diff: d.join('; '), view: v });
   }
   const modes = rosterModes(ctx); const modeChanged = [];
-  if (base.roster) for (const [id, mode] of Object.entries(modes)) { const was = base.roster[id]; if (was !== undefined && was !== mode && (base.rosterFlagged || {})[id] !== mode) modeChanged.push({ id, was, mode }); }
+  // a candidate is interviewed on "ask" and hired onto "full" by hire.js: that one change, for an agent a hiring round
+  // records as hired (company/hiring/<round>/hired.md names its agent id), is the hire itself, not drift
+  const hiredIds = (() => { const out = new Set(); try { const hd = path.join(ctx.root, 'company', 'hiring'); for (const r of fs.readdirSync(hd)) { try { const t = fs.readFileSync(path.join(hd, r, 'hired.md'), 'utf8'); for (const m of t.matchAll(/Agent:\s*`?([A-Za-z0-9_-]+)`?/g)) out.add(m[1]); } catch (_) {} } } catch (_) {} return out; })();
+  if (base.roster) for (const [id, mode] of Object.entries(modes)) {
+    const was = base.roster[id];
+    if (was === undefined || was === mode || (base.rosterFlagged || {})[id] === mode) continue;
+    if (was === 'ask' && mode === 'full' && hiredIds.has(id)) { base.roster[id] = mode; notes.push('approval mode of ' + nameOf(ctx, id) + ' set to full by the hire (hiring round record)'); continue; }
+    modeChanged.push({ id, was, mode });
+  }
   // a routine's SCHEDULE is a tier-2 thing (a reviewed proposal), so a direct POST /api/cron/update that moves when a routine
   // runs is flagged unless an applied schedule harness-change set exactly this value in the last two days. (enabled flips
   // legitimately when the pacer pauses DeepSeek routines, so it is not watched here.)

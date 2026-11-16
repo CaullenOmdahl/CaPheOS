@@ -251,7 +251,7 @@ async function certify() {
   const lim = Math.max(lpTick, tickMin());
   put('dispatcher', age !== null && age <= lim + 1 && !(lp && lp.status === 'stopped'), age === null ? 'company/work/dispatch-log.md does not exist: the dispatcher has never ticked (systemctl --user start <station>-dispatch.service)' : lp && lp.status === 'stopped' ? 'the dispatcher loop is stopped (company/state/dispatcher-loop.json): systemctl --user start <station>-dispatch.service' : (lpAt ? 'the dispatcher loop last ticked ' : 'dispatch-log.md last written ') + Math.round(age) + ' min ago (tick is ' + lim + ' min)');
   // 3
-  const gd = jsonOf(node([tool('guardrails.js'), 'apply', '--dry-run', '--json'], { timeout: 60000 }));
+  const gd = jsonOf(node([tool('guardrails.js'), 'apply', '--dry-run', '--json'], { timeout: 30000 }));
   const unreach = ((gd && gd.notes) || []).filter(n => /ECONNREFUSED|unreachable|timeout|no station token/i.test(n));
   put('guardrails', gd && gd.ok !== false && !(gd.steps || []).length && !unreach.length, !gd ? 'guardrails.js apply --dry-run gave no answer' : unreach.length ? 'guardrails dry-run could not read the station: ' + unreach[0].slice(0, 120) : (gd.steps || []).length + ' station-side step(s) not applied: node company/tools/guardrails.js apply --by owner');
   // 4
@@ -271,11 +271,11 @@ async function certify() {
   let lv = null; try { lv = require(co.p('modules', 'liveness', 'watch.js')).status(); } catch (_) {}
   put('liveness', lv && lv.enabled && lv.heartbeat && lv.pingedAt, !lv || !lv.enabled ? 'liveness module not enabled: node company/tools/module.js enable liveness --by owner' : !lv.heartbeat ? 'no dispatcher heartbeat yet (company/state/heartbeat.json): wait one dispatcher tick' : 'never pinged: node company/tools/liveness.js ping');
   // 7
-  const pd = node([tool('pack.js'), 'doctor', '--all', '--json'], { timeout: 300000 });
-  const md = node([tool('module.js'), 'doctor', '--all', '--json'], { timeout: 300000 });
+  const pd = node([tool('pack.js'), 'doctor', '--all', '--json'], { timeout: 60000 });
+  const md = node([tool('module.js'), 'doctor', '--all', '--json'], { timeout: 60000 });
   const bad = [];
-  if (pd.status !== 0) bad.push('pack.js doctor --all: ' + (((jsonOf(pd) || {}).packs || []).filter(x => x.installed && x.status !== 'conformant').map(x => x.id).join(', ') || 'exit ' + pd.status));
-  if (md.status !== 0) bad.push('module.js doctor --all: ' + (((jsonOf(md) || {}).modules || []).filter(x => x.enabled && x.status !== 'conformant').map(x => x.id + ' (' + (x.findings || [])[0] + ')').join(', ') || 'exit ' + md.status));
+  if (pd.status !== 0) bad.push('pack.js doctor --all: ' + (((jsonOf(pd) || {}).packs || []).filter(x => x.installed && x.status !== 'conformant').map(x => x.id).join(', ') || (pd.signal ? 'timed out after 60 s (station busy? run --certify again)' : 'exit ' + pd.status)));
+  if (md.status !== 0) bad.push('module.js doctor --all: ' + (((jsonOf(md) || {}).modules || []).filter(x => x.enabled && x.status !== 'conformant').map(x => x.id + ' (' + (x.findings || [])[0] + ')').join(', ') || (md.signal ? 'timed out after 60 s (station busy? run --certify again)' : 'exit ' + md.status)));
   put('doctor', !bad.length, bad.join('; '));
   // 8
   let ch = ''; try { ch = fs.readFileSync(F.charter, 'utf8'); } catch (_) {}
