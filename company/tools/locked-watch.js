@@ -770,7 +770,8 @@ function report(ctx, events, opt) {
 /* ---------------- people's commands ---------------- */
 function needPerson(ctx, by, key, m, allowRisk) {
   const n = String(by || '').trim().toLowerCase();
-  if (n === 'owner') { if (!ctx.ownerShell) throw new Error('"owner" is accepted only from the owner\'s own interactive shell (not an agent run, and not a detached or env-stripped process)'); return { id: 'owner', name: 'owner' }; }
+  const ownerName = String(((co.config || {}).owner || {}).name || '').trim().toLowerCase();
+  if (n === 'owner' || (ownerName && n === ownerName && !Object.values(ctx.agents).some(c => String((c && c.name) || '').toLowerCase() === n))) { if (!ctx.ownerShell) throw new Error('"owner" is accepted only from the owner\'s own interactive shell (not an agent run, and not a detached or env-stripped process)'); return { id: 'owner', name: 'owner' }; }
   const e = Object.entries(ctx.agents).find(([, c]) => String((c && c.name) || '').toLowerCase() === n);
   if (!e) throw new Error('--by <Name> must be someone on the crew');
   const p = { id: e[0], name: e[1].name };
@@ -900,7 +901,7 @@ function tellRisk(ctx, verb, key, person, why) {
   try { fs.mkdirSync(ctx.paths.handoffs, { recursive: true }); fs.appendFileSync(path.join(ctx.paths.handoffs, sec.inbox), block); } catch (_) {}
 }
 function logEvent(ctx, e) { report(ctx, [e], { noHandoffs: true }); }   // people's own accept/revert/undo: in the log, no crew FYI (the risk owner is told separately)
-const isOwner = (ctx, o) => String(o.by).toLowerCase() === 'owner' && ctx.ownerShell;
+const isOwner = (ctx, o) => { const b = String(o.by || '').trim().toLowerCase(); const on = String(((co.config || {}).owner || {}).name || '').trim().toLowerCase(); return (b === 'owner' || (on && b === on)) && ctx.ownerShell; };
 function acceptCmd(ctx, key, o) {
   const base = loadBaseline(ctx); if (!base) throw new Error('no baseline yet (run tick)');
   if (base._tampered && !isOwner(ctx, o)) throw new Error('the baseline is not trustworthy right now; only the owner may accept (or rebuild it)');
