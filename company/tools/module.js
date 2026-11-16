@@ -123,7 +123,31 @@ function runConformance(dir, mod, installed) {
   const r = spawnSync(process.execPath, [test], { cwd: dir, env, encoding: 'utf8', timeout: 120000 });
   return { ok: r.status === 0, code: r.status, out: String((r.stdout || '') + (r.stderr || '')).trim() };
 }
+/* A framework update (git pull) changes modules/<id>/ under an enabled module. When the module's source matches the
+   checked-out commit exactly and every copied tool is still the copy enable placed (nobody edited it), take the update:
+   re-copy the tools and record the new digest. Anything else stays a finding (a local edit, a tampered copy). */
+function refreshFromFramework(id, mod, reg) {
+  if (!reg || !reg.digest || pk.digest(srcDir(id)) === reg.digest) return false;
+  try {
+    const cpx = require('child_process');
+    if (cpx.spawnSync('git', ['-C', R, 'diff', '--quiet', 'HEAD', '--', path.relative(R, srcDir(id))]).status !== 0) return false;   // local edits in the module source
+    if (cpx.spawnSync('git', ['-C', R, 'ls-files', '--others', '--exclude-standard', '--', path.relative(R, srcDir(id))], { encoding: 'utf8' }).stdout.trim()) return false;
+  } catch (_) { return false; }
+  for (const t of mod.tools || []) {
+    const d = path.join(P.tools, path.basename(t.file));
+    if (fs.existsSync(d) && reg.tools && reg.tools[t.file] && pk.sha(fs.readFileSync(d)) !== reg.tools[t.file]) return false;   // the copy was edited: report, never overwrite
+  }
+  const tools = {};
+  for (const t of mod.tools || []) { const to = path.join(P.tools, path.basename(t.file)); fs.copyFileSync(path.join(srcDir(id), t.file), to); fs.chmodSync(to, 0o755); tools[t.file] = pk.sha(fs.readFileSync(to)); try { require('./provenance.js').wrote(to, fs.readFileSync(to), 'module.js'); } catch (_) {} }
+  const st = readJson(P.state, {}) || {}; st.enabled = st.enabled || {};
+  st.enabled[id] = Object.assign({}, st.enabled[id] || reg, { digest: pk.digest(srcDir(id)), tools, refreshedAt: new Date().toISOString(), refreshedFrom: 'framework update' });
+  writeJson(P.state, st);
+  Object.assign(reg, st.enabled[id]);
+  record({ op: 'refresh', id, by: 'module.js (framework update)' });
+  return true;
+}
 function checkEnabled(id, mod, reg) {
+  try { refreshFromFramework(id, mod, reg); } catch (_) {}
   const f = [];
   for (const t of mod.tools || []) {
     const d = path.join(P.tools, path.basename(t.file));

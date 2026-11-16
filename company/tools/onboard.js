@@ -279,7 +279,7 @@ async function certify() {
   put('doctor', !bad.length, bad.join('; '));
   // 8
   let ch = ''; try { ch = fs.readFileSync(F.charter, 'utf8'); } catch (_) {}
-  const body = ch.replace(/<!--[\s\S]*?-->/g, '');
+  const body = ch.replace(/<!--[\s\S]*?-->/g, '').replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '')   /* code (paths like `roles/<name>.md`) is not a blank */;
   const ph = [...new Set((body.match(/\{\{[A-Z_]+\}\}|<(?!none yet>)[A-Za-z][^<>\n]{0,200}>/g) || []))];
   put('charter', ch && !ph.length, !ch ? 'company/CHARTER.md missing' : 'placeholders left: ' + ph.slice(0, 4).map(x => x.slice(0, 50)).join(' · ') + (ph.length > 4 ? ' (+' + (ph.length - 4) + ')' : ''));
   // 9

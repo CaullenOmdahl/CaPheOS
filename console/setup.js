@@ -91,7 +91,7 @@ module.exports = function setup(deps) {
 
   /* ---------- charter ---------- */
   const PH = /\{\{[A-Z_]+\}\}|<(?!none yet>)[A-Za-z][^<>\n]{0,200}>/g;   // the same test as onboard.js --certify
-  function placeholders(text) { const body = String(text || '').replace(/<!--[\s\S]*?-->/g, ''); return [...new Set(body.match(PH) || [])]; }
+  function placeholders(text) { const body = String(text || '').replace(/<!--[\s\S]*?-->/g, '').replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, ''); return [...new Set(body.match(PH) || [])]; }
   function section(md, heading) {
     const re = new RegExp('(^|\\n)## ' + heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[ \\t]*\\n([\\s\\S]*?)(?=\\n## |$)');
     const m = re.exec(md); return m ? m[2].trim() : null;
