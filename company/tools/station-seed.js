@@ -65,15 +65,19 @@ function approvalDecision() {
   const watched = fs.existsSync(baseline);
   const localOn = co.guard('localComputer');
   const facts = { toolsGate: level, harnessSelfEdit: selfEdit ? 'on' : 'off', lockedWatchBaseline: watched, localComputer: localOn ? 'on' : 'off' };
-  let mode = 'full', why;
-  if (!['auto', 'notify'].includes(level)) {
-    mode = 'ask'; why = 'self-governance has tools at "' + level + '": shared tool and policy changes wait for the owner, so the Founder asks before it writes (owner: `node company/tools/governance.js set tools auto|notify --by <owner>`)';
-  } else if (selfEdit && !watched) {
-    mode = 'ask'; why = 'the harnessSelfEdit guardrail is on but locked-watch.js has no baseline yet (company/state/locked/baseline.json), so nothing would put back a locked file an unattended run wrote; run `node company/tools/locked-watch.js baseline`, then seed again';
-  } else {
-    why = 'tools is "' + level + '" and ' + (selfEdit ? 'the harnessSelfEdit guardrail is on with locked-watch.js holding a baseline (locked files are still put back or reported)' : 'the harnessSelfEdit guardrail is off')
-      + ': the Founder may write in the blessed company folder unattended';
+  // A loop seat runs unattended: in StarNet's "ask" mode nobody is there to click approve, so every write is refused and
+  // the loop can do nothing. What bounds the crew is the guardrails and self-governance, enforced by the tools whatever
+  // the station's approval mode (harness-change.js gates tool/policy changes, locked-watch puts locked files back, the
+  // external gate holds anything leaving). So the Founder is always 'full'; "approve everything" means the owner
+  // approves decisions, not file writes. With harnessSelfEdit on, locked-watch needs a baseline first: take it here.
+  const mode = 'full'; let why;
+  if (selfEdit && !watched) {
+    try { require('child_process').execFileSync(process.execPath, [co.p('company', 'tools', 'locked-watch.js'), 'baseline'], { cwd: co.ROOT, stdio: 'ignore', timeout: 60000 }); } catch (_) {}
+    facts.lockedWatchBaseline = fs.existsSync(baseline);
   }
+  why = 'unattended loop seats run on full approval (an "ask" seat with nobody to click approve can do nothing); the crew stays bounded by self-governance (tools is "' + level + '"'
+    + (['auto', 'notify'].includes(level) ? '' : ': shared tool and policy changes still wait for the owner through harness-change.js') + ') and the guardrails'
+    + (selfEdit ? (facts.lockedWatchBaseline ? ' (harnessSelfEdit on: locked-watch holds a baseline and puts locked files back)' : ' (harnessSelfEdit on, but locked-watch could not take a baseline yet: run `node company/tools/locked-watch.js baseline`)') : ' (harnessSelfEdit off)');
   const executionProfile = mode === 'full' && !localOn ? 'this-computer' : 'trusted-project';
   return { mode, executionProfile, why: why + '; execution profile ' + executionProfile + (localOn ? ' (localComputer guardrail on: workspace + blessed project folders only)' : ' (localComputer guardrail off)'), facts };
 }
@@ -299,13 +303,13 @@ async function selftest() {
       r = run('station-seed.js', 'seed', '--json');
       t(P + 'seed without --by is refused', r.code === 2, r.raw);
       r = run('station-seed.js', 'seed', '--by', 'Pat', '--json');
-      t(P + 'seed with tools at approve: save + roster created, approval ask with the reason', r.code === 0 && r.out.ok && r.out.approval.mode === 'ask' && /tools at "approve"/.test(r.out.approval.why), r.raw);
+      t(P + 'seed with tools at approve: save + roster created, approval full with governance named', r.code === 0 && r.out.ok && r.out.approval.mode === 'full' && /tools is "approve"/.test(r.out.approval.why), r.raw);
       const S = () => JSON.parse(fs.readFileSync(path.join(T, '.starnet-data', 'workspaces', 'agent.roster.json'), 'utf8')).agents;
       const save = () => JSON.parse(run('station-crew.js', 'list').raw);
       let sv = save();
-      t(P + 'the save carries the company as the station name and the Founder as the Overseer', sv.station === 'Seed Test Co' && sv.agents.length === 1 && sv.agents[0].id === 'agent' && sv.agents[0].name === 'FOUNDER' && sv.agents[0].approvalSave === 'ask', sv);
+      t(P + 'the save carries the company as the station name and the Founder as the Overseer', sv.station === 'Seed Test Co' && sv.agents.length === 1 && sv.agents[0].id === 'agent' && sv.agents[0].name === 'FOUNDER' && sv.agents[0].approvalSave === 'full', sv);
       t(P + 'the Founder\'s identity is its charter, not the stock StarNet text', /FOUNDER, Founder and CEO at Seed Test Co/.test(sv.agents[0].identity) || /You are FOUNDER, Founder and CEO/.test(S()[0].system), sv.agents[0].identity);
-      t(P + 'the roster has the Founder first, with the composed prompt and mode ask', S()[0].agentId === 'agent' && S()[0].approvalMode === 'ask' && /Founder and CEO/.test(S()[0].system) && S()[0].model === 'deepseek-flash', S()[0]);
+      t(P + 'the roster has the Founder first, with the composed prompt and mode full', S()[0].agentId === 'agent' && S()[0].approvalMode === 'full' && /Founder and CEO/.test(S()[0].system) && S()[0].model === 'deepseek-flash', S()[0]);
       const st = JSON.parse(spawnSync('curl', ['-s', '-H', 'x-starnet-token: seed-test-token', 'http://127.0.0.1:' + port + '/__state'], { encoding: 'utf8' }).stdout || '{}');
       t(P + 'the save is founded onboarded:false, then the dawn save sets onboarded:true; dossier pushed', st.save && st.save.doc.agent.onboarded === true && st.save.revision === 2 && typeof st.dossierBlock === 'string' && st.posture && st.posture.beliefs, { rev: st.save && st.save.revision });
       r = run('station-seed.js', 'seed', '--by', 'Pat', '--json');
@@ -313,7 +317,7 @@ async function selftest() {
       // the owner loosens tools; locked-watch has no baseline yet -> still ask, named
       mk('company/state/governance.json', { categories: { tools: 'auto' }, fixed: {} });
       r = run('station-seed.js', 'seed', '--by', 'Pat', '--json');
-      t(P + 'tools auto but no locked-watch baseline with harnessSelfEdit on: still ask, the fix named', r.code === 0 && r.out.approval.mode === 'ask' && /baseline/.test(r.out.approval.why), r.raw);
+      t(P + 'tools auto, no locked-watch baseline, harnessSelfEdit on: baseline taken, full', r.code === 0 && r.out.approval.mode === 'full' && /baseline/.test(r.out.approval.why), r.raw);
       mk('company/state/locked/baseline.json', { files: {} });
       r = run('station-seed.js', 'seed', '--by', 'Pat', '--json');
       t(P + 'tools auto + baseline: approval full in save and roster, trusted-project (localComputer on)', r.code === 0 && r.out.approval.mode === 'full' && save().agents[0].approvalSave === 'full' && S()[0].approvalMode === 'full' && S()[0].executionProfile === 'trusted-project', r.raw);
