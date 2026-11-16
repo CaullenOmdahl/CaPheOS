@@ -111,6 +111,15 @@ if [[ -f "$UNITDIR/$SVC-dispatch.timer" ]]; then
   echo "retired $SVC-dispatch.timer (the dispatcher is now the self-paced $SVC-dispatch.service)"
 fi
 systemctl --user daemon-reload
+# these writes are the owner's own setup, not drift: record them with the change watcher so nobody is flagged
+if [[ -f company/tools/locked-watch.js && -e company/state/locked/baseline.json ]]; then
+  OWNER_NAME="$(cfg 'c.owner&&c.owner.name')"
+  for f in "$ENVFILE" "$UNITDIR/$SVC".service "$UNITDIR/$SVC"-*.service "$UNITDIR/$SVC"-*.timer company/work/ops/cadence.json; do
+    [[ -e "$f" ]] || continue
+    rel="${f/#$HOME/\~}"; [[ "$f" == "$ROOT"/* ]] && rel="${f#$ROOT/}"
+    node company/tools/locked-watch.js accept "$rel" --by "${OWNER_NAME:-owner}" --why "owner ran scripts/setup-station.sh" >/dev/null 2>&1 || true
+  done
+fi
 if [[ $DISPATCH_WAS_ON -eq 1 && "${1:-}" != "--start" ]]; then
   systemctl --user enable "$SVC-dispatch.service" && systemctl --user restart "$SVC-dispatch.service" && echo "started the dispatcher loop in place of the old timer"
 fi
