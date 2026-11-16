@@ -1030,7 +1030,7 @@ if (require.main === module) {
     }
     let r;
     if (cmd === 'propose') { r = await propose(ctx, o); console.log('proposed ' + r.id + ' (claimed by ' + r.by + '; --by is not cryptographically verified). Review handoff sent to ' + r.reviewers.map(p => p.name).join(' and ') + '.'); print(r); return; }
-    if (cmd === 'approve' || cmd === 'reject') { r = review(ctx, id, o, cmd); console.log(cmd + 'd ' + r.id + ' — now ' + r.status + (r.status === 'approved' ? '; apply handoff sent to ' + (r.applier ? r.applier.name : 'the reviewer') : '')); return; }
+    if (cmd === 'approve' || cmd === 'reject') { r = review(ctx, id, o, cmd); console.log((cmd === 'reject' ? 'rejected ' : 'approved ') + r.id + ' — now ' + r.status + (r.status === 'approved' ? '; apply handoff sent to ' + (r.applier ? r.applier.name : 'the reviewer') : '')); return; }
     if (cmd === 'withdraw') { r = withdraw(ctx, id, o); console.log('withdrew ' + r.id); return; }
     if (cmd === 'apply') { r = await applyChange(ctx, id, o); console.log('applied ' + r.id + (r.applied.how ? ' (' + r.applied.how + ')' : '') + '; results check due ' + r.judgeAfter.slice(0, 10)); return; }
     if (cmd === 'revert') { r = await revertChange(ctx, id, o); console.log('reverted ' + r.id); return; }
