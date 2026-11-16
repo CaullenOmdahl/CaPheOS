@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Governance</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/fonts.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/colors.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/typography.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/spacing.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/effects.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/base.css">
+<script src="ds/caphedesignsystem_e679e3/_ds_bundle.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+a{color:var(--text-accent)}a:hover{color:var(--accent-hover)}
+</style>
+</helmet>
+<div style="display: flex; flex-wrap: wrap; min-height: 100vh; background: var(--bg-page); font-family: var(--font-sans); color: var(--text-body);">
+  <div style="flex: 1 1 248px; max-width: 100%;">
+    <dc-import name="Sidebar" active="governance" hint-size="248px,1100px"></dc-import>
+  </div>
+
+  <main style="flex: 999 1 560px; min-width: 0; box-sizing: border-box; padding: 48px clamp(20px, 4vw, 56px) 64px; display: flex; flex-direction: column; gap: 40px;">
+    <header style="display: flex; flex-direction: column; gap: 12px; max-width: 760px;">
+      <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Eyebrow" items="{{eyebrow}}"></x-import>
+      <h1 style="font: var(--type-h1); letter-spacing: var(--tracking-heading);">Governance.</h1>
+      <p style="font: var(--type-body-l); color: var(--text-muted);">What may leave the company, what must not change, and how much the crew may do without asking.</p>
+    </header>
+
+    <section aria-labelledby="auto" style="display: flex; flex-direction: column; gap: 14px;">
+      <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 12px;">
+        <h2 id="auto" style="font: var(--type-h3); letter-spacing: var(--tracking-heading);">Station autonomy, per action</h2>
+        <a href="Controls.dc.html" style="font: var(--type-body-s);">Self-governance and guardrails →</a>
+      </div>
+      <div role="radiogroup" aria-label="Station autonomy" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px;">
+        <sc-for list="{{postures}}" as="p" hint-placeholder-count="4">
+          <button type="button" role="radio" aria-checked="{{p.on}}" onClick="{{p.pick}}" style="{{p.style}}">
+            <span style="font: var(--type-label);">{{p.name}}</span>
+            <span style="font: var(--type-caption); opacity: .85;">{{p.what}}</span>
+          </button>
+        </sc-for>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 20px; font: var(--type-body-s);">
+        <a href="Governance.dc.html">Per-agent grants</a><a href="Governance.dc.html">Access profiles</a><a href="Governance.dc.html">Execution: local, Docker, SSH</a><a href="System.dc.html">Halt everything</a>
+      </div>
+    </section>
+
+    <section style="display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 24px;">
+      <article aria-labelledby="gate" style="display: flex; flex-direction: column; gap: 14px; padding: 24px; border: 1px solid var(--border-hairline); border-radius: var(--radius-lg); background: var(--surface-card);">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 8px;">
+          <h2 id="gate" style="font: var(--type-h4); letter-spacing: var(--tracking-h4);">External-action gate</h2>
+          <span style="font: var(--type-mono); color: var(--text-muted);">default: no</span>
+        </div>
+        <p style="font: var(--type-body-s); color: var(--text-muted);">Every message, publication, account, form, payment or network call that leaves the company needs a clearance naming you or the CEO.</p>
+        <ul style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column;">
+          <sc-for list="{{clearances}}" as="c" hint-placeholder-count="3">
+            <li style="display: grid; grid-template-columns: 96px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--border-hairline); font: var(--type-body-s);">
+              <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Tag" variant="mono">{{c.cat}}</x-import>
+              <span style="color: var(--text-strong);">{{c.what}}</span>
+              <span style="font: var(--type-mono); color: var(--text-muted);">{{c.by}}</span>
+            </li>
+          </sc-for>
+        </ul>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Button" variant="secondary" size="sm">Add clearance</x-import>
+          <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Button" variant="ghost" size="sm">Attempt log (37)</x-import>
+        </div>
+      </article>
+
+      <article aria-labelledby="lock" style="display: flex; flex-direction: column; gap: 14px; padding: 24px; border: 1px solid var(--rust-300); border-radius: var(--radius-lg); background: var(--surface-card);">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 8px;">
+          <h2 id="lock" style="font: var(--type-h4); letter-spacing: var(--tracking-h4);">Locked files</h2>
+          <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Tag" variant="status" status="warning">2 drifted</x-import>
+        </div>
+        <p style="font: var(--type-body-s); color: var(--text-muted);">Policy, gates, keys and StarNet code are hashed every tick. A change nobody recorded is reported to its owner with a one-command undo.</p>
+        <sc-for list="{{drift}}" as="d" hint-placeholder-count="2">
+          <div style="display: flex; flex-direction: column; gap: 6px; padding: 14px; background: var(--bg-sunken); border-radius: var(--radius-md);">
+            <span style="font: var(--type-mono); color: var(--text-strong);">{{d.path}}</span>
+            <span style="font: var(--type-caption); color: var(--text-muted);">{{d.note}}</span>
+            <div style="display: flex; gap: 14px; font: var(--type-body-s);"><a href="Governance.dc.html">Accept</a><a href="Governance.dc.html">Revert</a><a href="Governance.dc.html">Diff</a></div>
+          </div>
+        </sc-for>
+      </article>
+
+      <article aria-labelledby="merge" style="display: flex; flex-direction: column; gap: 14px; padding: 24px; border: 1px solid var(--border-hairline); border-radius: var(--radius-lg); background: var(--surface-card);">
+        <h2 id="merge" style="font: var(--type-h4); letter-spacing: var(--tracking-h4);">Code: no push to a default branch</h2>
+        <p style="font: var(--type-body-s); color: var(--text-muted);">Agents keep full GitHub and Docker access. A merge needs a named reviewer and test evidence.</p>
+        <sc-for list="{{prs}}" as="p" hint-placeholder-count="2">
+          <div style="display: flex; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border-hairline); font: var(--type-body-s);">
+            <span style="color: var(--text-strong);">{{p.title}}</span>
+            <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Tag" variant="status" status="{{p.status}}">{{p.state}}</x-import>
+          </div>
+        </sc-for>
+        <span style="font: var(--type-caption); color: var(--text-muted);">Default-branch watch: 1 repo · last check 09:20 · clean</span>
+      </article>
+
+      <article aria-labelledby="changes" style="display: flex; flex-direction: column; gap: 14px; padding: 24px; border: 1px solid var(--border-hairline); border-radius: var(--radius-lg); background: var(--surface-card);">
+        <h2 id="changes" style="font: var(--type-h4); letter-spacing: var(--tracking-h4);">Shared changes and escalations</h2>
+        <p style="font: var(--type-body-s); color: var(--text-muted);">Proposals to change a schedule, tool, house rule, model or policy, reviewed by someone other than the proposer. Refusals and limits, by class.</p>
+        <ul style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; font: var(--type-body-s);">
+          <li style="display: flex; justify-content: space-between; gap: 12px;"><span style="color: var(--text-strong);">hc-0003 · tool · dispatcher cooldown</span><span style="font: var(--type-mono); color: var(--text-muted);">review: you (Risk)</span></li>
+          <li style="display: flex; justify-content: space-between; gap: 12px;"><span style="color: var(--text-strong);">BLOCKED T4 · Claude Max weekly line</span><span style="font: var(--type-mono); color: var(--text-muted);">rerouted to MiniMax</span></li>
+          <li style="display: flex; justify-content: space-between; gap: 12px;"><span style="color: var(--text-strong);">Mandate: conflicts-before-engagement</span><span style="font: var(--type-mono); color: var(--text-muted);">adopted</span></li>
+        </ul>
+      </article>
+    </section>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1100}}'>
+class Component extends DCLogic {
+  constructor(p) { super(p); this.state = { posture: 'small' }; }
+  renderVals() {
+    const cur = this.state.posture;
+    const defs = [
+      ['wait', 'Wait', 'Ask before every action'],
+      ['suggest', 'Suggest', 'Draft, then ask to apply'],
+      ['small', 'Small jobs', 'Do routine work, ask on writes outside work/'],
+      ['free', 'Free', 'Act, report after; gates still hold']
+    ];
+    return {
+      eyebrow: ['4 owner gates', 'Default is no'],
+      postures: defs.map(([id, name, what]) => ({ name, what, on: id === cur ? 'true' : 'false', pick: () => this.setState({ posture: id }),
+        style: 'display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-height: 72px; padding: 14px 16px; text-align: left; cursor: pointer; border-radius: var(--radius-lg); font-family: var(--font-sans); ' +
+          (id === cur ? 'border: 1px solid var(--accent); background: var(--accent); color: var(--text-on-accent);' : 'border: 1px solid var(--border-default); background: var(--surface-card); color: var(--text-strong);') })),
+      clearances: [
+        { cat: 'message', what: 'Owner channel (file adapter)', by: 'pinned' },
+        { cat: 'publish', what: 'Firm website blog post, 18 Nov', by: 'Alex' },
+        { cat: 'network', what: 'courtlistener.com API, read only', by: 'Founder' }
+      ],
+      drift: [
+        { path: 'company/model-policy.json', note: 'Changed 08:51 by Mira through hire.js; recorded. Waiting for Risk to accept.' },
+        { path: 'starnet/sidecar/index.js', note: 'Changed 03:10, no recording tool. Probably a station update.' }
+      ],
+      prs: [
+        { title: 'intake-tool #4 · parse engagement letters', status: 'online', state: 'Gate passed' },
+        { title: 'intake-tool #5 · conflict index', status: 'warning', state: 'No test evidence' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

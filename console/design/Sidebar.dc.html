@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CaPheOS sidebar</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/fonts.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/colors.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/typography.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/spacing.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/effects.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/base.css">
+<script src="ds/caphedesignsystem_e679e3/_ds_bundle.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+a{color:var(--text-body)}a:hover{color:var(--accent-hover)}
+</style>
+</helmet>
+<nav aria-label="Console" style="box-sizing: border-box; width: 100%; min-height: 100%; padding: 28px 20px 24px; display: flex; flex-direction: column; gap: 28px; background: var(--bg-page); border-right: 1px solid var(--border-hairline); font-family: var(--font-sans);">
+  <div style="display: flex; align-items: center; gap: 10px;">
+    <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Logo" variant="mark" size="28"></x-import>
+    <div style="display: flex; flex-direction: column; gap: 2px;">
+      <span style="font: 800 18px/1 var(--font-display); letter-spacing: -0.03em; color: var(--text-strong);">CaPheOS</span>
+      <span style="font: var(--type-caption); color: var(--text-muted);">Hollis &amp; Vane</span>
+    </div>
+  </div>
+
+  <a href="Main.dc.html" style="display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px; border-radius: var(--radius-md); background: var(--accent); color: var(--text-on-accent); font: var(--type-label);">
+    <span>Needs you</span>
+    <span style="font: 600 13px/1 var(--font-mono);">4</span>
+  </a>
+
+  <sc-for list="{{groups}}" as="g" hint-placeholder-count="3">
+    <div style="display: flex; flex-direction: column; gap: 2px;">
+      <span style="font: var(--type-eyebrow); letter-spacing: var(--tracking-eyebrow); text-transform: uppercase; color: var(--text-muted); padding: 0 14px 8px;">{{g.label}}</span>
+      <sc-for list="{{g.items}}" as="item" hint-placeholder-count="4">
+        <a href="{{item.href}}" aria-current="{{item.current}}" style="{{item.style}}">
+          <span>{{item.label}}</span>
+          <span style="font: 400 12px/1 var(--font-mono); color: var(--text-subtle);">{{item.count}}</span>
+        </a>
+      </sc-for>
+    </div>
+  </sc-for>
+
+  <div style="margin-top: auto; display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid var(--border-hairline); border-radius: var(--radius-lg); background: var(--surface-card);">
+    <div style="display: flex; align-items: center; justify-content: space-between;">
+      <span style="font: var(--type-label); color: var(--text-strong);">Station</span>
+      <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Tag" variant="status" status="online">Running</x-import>
+    </div>
+    <span style="font: var(--type-mono); color: var(--text-muted);">:8802 · dispatcher 4 min ago</span>
+    <div style="display: flex; gap: 6px;">
+      <a href="Halt.dc.html" style="flex: 1; text-align: center; padding: 10px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); font: var(--type-label); color: var(--text-strong);">Soft halt</a>
+      <a href="Halt.dc.html" style="flex: 1; text-align: center; padding: 10px 8px; border-radius: var(--radius-md); background: var(--status-danger); font: var(--type-label); color: #FFFFFF;">Hard halt</a>
+    </div>
+  </div>
+</nav>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"active":{"editor":"enum","options":["today","comms","crew","work","controls","halt","automate","hiring","governance","usage","floor","abilities","system","map"],"default":"today"},"$preview":{"width":248,"height":1100}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const active = this.props.active ?? 'today';
+    const base = 'display: flex; align-items: center; justify-content: space-between; padding: 9px 14px; border-radius: var(--radius-md); font: var(--type-label);';
+    const mk = (id, label, href, count) => ({
+      label, href, count: count || '',
+      current: id === active ? 'page' : 'false',
+      style: base + (id === active
+        ? ' background: var(--surface-card); color: var(--text-strong); box-shadow: var(--shadow-inset);'
+        : ' color: var(--text-body);')
+    });
+    return {
+      groups: [
+        { label: 'Company', items: [
+          mk('today', 'Today', 'Main.dc.html'),
+          mk('comms', 'Comms', 'Comms.dc.html', '2'),
+          mk('crew', 'Crew', 'Crew.dc.html', '4'),
+          mk('work', 'Work', 'Work.dc.html', '11'),
+          mk('hiring', 'Hiring', 'Hiring.dc.html', '1')
+        ]},
+        { label: 'Operations', items: [
+          mk('controls', 'Controls', 'Controls.dc.html'),
+          mk('automate', 'Automate', 'Automate.dc.html'),
+          mk('governance', 'Governance', 'Governance.dc.html', '2'),
+          mk('usage', 'Usage and models', 'Usage.dc.html')
+        ]},
+        { label: 'Station', items: [
+          mk('floor', 'Floor', 'Floor.dc.html'),
+          mk('abilities', 'Abilities', 'Abilities.dc.html'),
+          mk('system', 'System', 'System.dc.html'),
+          mk('map', 'Feature map', 'Map.dc.html')
+        ]}
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

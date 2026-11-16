@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Comms</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/fonts.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/colors.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/typography.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/spacing.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/effects.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/base.css">
+<script src="ds/caphedesignsystem_e679e3/_ds_bundle.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+a{color:var(--text-accent)}a:hover{color:var(--accent-hover)}
+</style>
+</helmet>
+<div style="display: flex; flex-wrap: wrap; min-height: 100vh; background: var(--bg-page); font-family: var(--font-sans); color: var(--text-body);">
+  <div style="flex: 1 1 248px; max-width: 100%;">
+    <dc-import name="Sidebar" active="comms" hint-size="248px,1100px"></dc-import>
+  </div>
+
+  <div style="flex: 999 1 560px; min-width: 0; display: flex; flex-wrap: wrap;">
+    <aside aria-label="Conversations" style="flex: 1 1 280px; box-sizing: border-box; padding: 32px 20px; display: flex; flex-direction: column; gap: 20px; border-right: 1px solid var(--border-hairline);">
+      <div style="display: flex; gap: 6px; padding: 4px; background: var(--bg-sunken); border-radius: var(--radius-md);">
+        <a href="Comms.dc.html" style="flex: 1; text-align: center; padding: 8px; border-radius: var(--radius-sm); background: var(--surface-card); color: var(--text-strong); font: var(--type-label);">Sessions</a>
+        <a href="Work.dc.html" style="flex: 1; text-align: center; padding: 8px; color: var(--text-muted); font: var(--type-label);">Projects</a>
+      </div>
+      <sc-for list="{{threads}}" as="t" hint-placeholder-count="6">
+        <a href="Comms.dc.html" style="{{t.style}}">
+          <span style="display: flex; justify-content: space-between; gap: 8px;">
+            <span style="font: var(--type-label); color: var(--text-strong);">{{t.with}}</span>
+            <span style="font: 400 12px/1 var(--font-mono); color: var(--text-muted);">{{t.at}}</span>
+          </span>
+          <span style="font: var(--type-body-s); color: var(--text-muted);">{{t.last}}</span>
+        </a>
+      </sc-for>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Button" variant="secondary" size="sm">New group chat</x-import>
+        <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Button" variant="ghost" size="sm">Archived (3)</x-import>
+      </div>
+    </aside>
+
+    <section aria-label="Chat with the Founder" style="flex: 999 1 480px; min-width: 0; box-sizing: border-box; display: flex; flex-direction: column;">
+      <header style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; padding: 24px 32px; border-bottom: 1px solid var(--border-hairline);">
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+          <h1 style="font: var(--type-h3); letter-spacing: var(--tracking-heading);">Founder</h1>
+          <span style="font: var(--type-caption); color: var(--text-muted);">Claude Opus 5.5 · effort high · context 41% used</span>
+        </div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Button" variant="secondary" size="sm">Steer</x-import>
+          <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Button" variant="secondary" size="sm">Stop run</x-import>
+          <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Button" variant="ghost" size="sm">Transcript</x-import>
+          <button type="button" onClick="{{askDelete}}" style="min-height: 36px; padding: 0 12px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: none; color: var(--status-danger); font: var(--type-label); cursor: pointer;">Delete chat</button>
+        </div>
+      </header>
+      <sc-if value="{{confirming}}" hint-placeholder-val="{{ false }}">
+        <div role="alertdialog" aria-labelledby="del-title" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; margin: 20px 32px 0; padding: 18px 20px; border: 1px solid var(--status-danger); border-radius: var(--radius-lg); background: var(--status-danger-tint); color: var(--ink-900);">
+          <div style="display: flex; flex-direction: column; gap: 4px; max-width: 520px;">
+            <span id="del-title" style="font: var(--type-label);">Delete this chat for everyone?</span>
+            <span style="font: var(--type-body-s);">Running turns stop and the messages go. Files and decisions it produced stay where they were saved. Archive keeps it out of the list instead.</span>
+          </div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button type="button" onClick="{{cancelDelete}}" style="min-height: 44px; padding: 0 16px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--paper-0); font: var(--type-label); cursor: pointer;">Keep</button>
+            <button type="button" onClick="{{cancelDelete}}" style="min-height: 44px; padding: 0 16px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--paper-0); font: var(--type-label); cursor: pointer;">Archive</button>
+            <button type="button" onClick="{{cancelDelete}}" style="min-height: 44px; padding: 0 16px; border: 0; border-radius: var(--radius-md); background: var(--status-danger); color: #FFFFFF; font: var(--type-label); cursor: pointer;">Delete</button>
+          </div>
+        </div>
+      </sc-if>
+
+      <div style="flex: 1; display: flex; flex-direction: column; gap: 20px; padding: 32px; max-width: 760px;">
+        <div style="align-self: flex-end; max-width: 520px; padding: 14px 18px; border-radius: var(--radius-lg); background: var(--bg-inverse); color: var(--text-on-inverse); font: var(--type-body);">Can we take the Marlow Foods matter without a conflict? They sued a supplier we advised last year.</div>
+
+        <div style="display: flex; flex-direction: column; gap: 10px; max-width: 600px;">
+          <p style="font: var(--type-body); color: var(--text-body);">I checked our matter list and the engagement archive. The supplier work was a one-off contract review in March, closed in April. There's no ongoing duty, but the subject matter overlaps.</p>
+          <div style="display: flex; flex-direction: column; gap: 8px; padding: 16px; border: 1px solid var(--border-hairline); border-radius: var(--radius-lg); background: var(--surface-card);">
+            <span style="font: var(--type-eyebrow); letter-spacing: var(--tracking-eyebrow); text-transform: uppercase; color: var(--text-muted);">Delegated · Risk check</span>
+            <span style="font: var(--type-body-s); color: var(--text-strong);">Conflict screen against 41 closed matters</span>
+            <span style="font: var(--type-mono); color: var(--text-muted);">read 41 files · 2 hits · 1m 12s</span>
+            <div style="display: flex; gap: 12px;"><a href="Work.dc.html" style="font: var(--type-body-s);">Open result →</a><a href="Comms.dc.html" style="font: var(--type-body-s);">Steer worker</a></div>
+          </div>
+          <p style="font: var(--type-body); color: var(--text-body);">My recommendation: take it, with a written waiver from the supplier. Taking a client is a commitment, so it goes to you as a gate question with that default.</p>
+        </div>
+
+        <div role="group" aria-label="Approval needed" style="display: flex; flex-direction: column; gap: 12px; max-width: 600px; padding: 18px; border: 1px solid var(--rust-300); border-radius: var(--radius-lg); background: var(--accent-tint);">
+          <span style="font: var(--type-label); color: var(--text-strong);">The Founder wants to write company/work/decisions.md</span>
+          <span style="font: var(--type-body-s); color: var(--text-body);">Records the conflict decision. Autonomy is set to Small jobs, so file writes outside the work folder ask first.</span>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Button" variant="primary" size="sm">Allow once</x-import>
+            <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Button" variant="secondary" size="sm">Always for this folder</x-import>
+            <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Button" variant="ghost" size="sm">Deny</x-import>
+          </div>
+        </div>
+      </div>
+
+      <form aria-label="Message" style="display: flex; flex-direction: column; gap: 10px; padding: 20px 32px 28px; border-top: 1px solid var(--border-hairline);">
+        <label for="msg" style="font: var(--type-caption); color: var(--text-muted);">Message, or / for commands (/routine, /quest, /hire, /ask)</label>
+        <textarea id="msg" rows="3" placeholder="Write to the Founder…" style="box-sizing: border-box; width: 100%; padding: 12px 14px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--surface-card); font: var(--type-body); color: var(--text-strong); resize: vertical;"></textarea>
+        <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px;">
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Button" variant="ghost" size="sm">Attach</x-import>
+            <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Button" variant="ghost" size="sm">Voice</x-import>
+            <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Button" variant="ghost" size="sm">Model: Opus 5.5</x-import>
+          </div>
+          <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Button" variant="primary" type="submit">Send</x-import>
+        </div>
+      </form>
+    </section>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1100}}'>
+class Component extends DCLogic {
+  constructor(p) { super(p); this.state = { confirming: false }; }
+  renderVals() {
+    const base = 'display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: var(--radius-md);';
+    const t = (w, at, last, on) => ({ with: w, at, last, style: base + (on ? ' background: var(--surface-card); box-shadow: var(--shadow-inset);' : '') });
+    return {
+      confirming: this.state.confirming,
+      askDelete: () => this.setState({ confirming: true }),
+      cancelDelete: () => this.setState({ confirming: false }),
+      threads: [
+        t('Founder', '09:12', 'Take it, with a written waiver…', true),
+        t('Owner channel', '07:30', 'You: approve the trial if under $100', false),
+        t('Mira · People', 'yesterday', 'Scorecard for paralegal round is ready', false),
+        t('Teo · Tools', 'yesterday', 'Dispatcher change waiting on Risk', false),
+        t('June · Research', 'Sat', 'Memo attached: non-compete, IL', false),
+        t('Crew group', 'Fri', 'Weekly standup notes', false)
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

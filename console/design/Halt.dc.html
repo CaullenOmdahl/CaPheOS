@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Halt</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/fonts.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/colors.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/typography.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/spacing.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/effects.css">
+<link rel="stylesheet" href="ds/caphedesignsystem_e679e3/tokens/base.css">
+<script src="ds/caphedesignsystem_e679e3/_ds_bundle.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+a{color:var(--text-accent)}a:hover{color:var(--accent-hover)}
+</style>
+</helmet>
+<div style="display: flex; flex-wrap: wrap; min-height: 100vh; background: var(--bg-page); font-family: var(--font-sans); color: var(--text-body);">
+  <div style="flex: 1 1 248px; max-width: 100%;">
+    <dc-import name="Sidebar" active="halt" hint-size="248px,1100px"></dc-import>
+  </div>
+
+  <main style="flex: 999 1 560px; min-width: 0; box-sizing: border-box; padding: 48px clamp(20px, 4vw, 56px) 64px; display: flex; flex-direction: column; gap: 32px;">
+    <header style="display: flex; flex-direction: column; gap: 12px; max-width: 760px;">
+      <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Eyebrow" items="{{eyebrow}}"></x-import>
+      <h1 style="font: var(--type-h1); letter-spacing: var(--tracking-heading);">{{title}}</h1>
+      <p style="font: var(--type-body-l); color: var(--text-muted);">{{lede}}</p>
+    </header>
+
+    <sc-if value="{{isRunning}}" hint-placeholder-val="{{ true }}">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px;">
+        <article style="display: flex; flex-direction: column; gap: 14px; padding: 28px; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface-card);">
+          <h2 style="font: var(--type-h3); letter-spacing: var(--tracking-heading);">Soft halt</h2>
+          <p style="font: var(--type-body-s); color: var(--text-body);">Nothing new starts. Work already running finishes. Each seat runs its own soft-shutdown procedure, for example a trading desk closing or hedging positions and cancelling resting orders.</p>
+          <label style="display: flex; flex-direction: column; gap: 6px; font: var(--type-body-s);">
+            <span style="font: var(--type-label); color: var(--text-strong);">Give it up to</span>
+            <select style="height: 44px; padding: 0 12px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--paper-0); font: var(--type-body);"><option>30 minutes</option><option>1 hour</option><option>4 hours</option><option>No limit</option></select>
+          </label>
+          <label style="display: flex; gap: 10px; align-items: center; font: var(--type-body-s);"><input type="checkbox" style="width: 20px; height: 20px;"> Hard halt if anything is still running at the deadline</label>
+          <label style="display: flex; flex-direction: column; gap: 6px; font: var(--type-body-s);">
+            <span style="font: var(--type-label); color: var(--text-strong);">Why (the crew sees this)</span>
+            <input type="text" placeholder="Pausing for the weekend" style="box-sizing: border-box; height: 44px; padding: 0 12px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--paper-0); font: var(--type-body);">
+          </label>
+          <button type="button" onClick="{{startSoft}}" style="min-height: 48px; border: 1px solid var(--ink-900); border-radius: var(--radius-md); background: var(--ink-900); color: var(--paper-50); font: var(--type-label); cursor: pointer;">Start soft halt</button>
+        </article>
+        <article style="display: flex; flex-direction: column; gap: 14px; padding: 28px; border: 1px solid var(--status-danger); border-radius: var(--radius-lg); background: var(--surface-card);">
+          <h2 style="font: var(--type-h3); letter-spacing: var(--tracking-heading); color: var(--status-danger);">Hard halt</h2>
+          <p style="font: var(--type-body-s); color: var(--text-body);">Every run stops now, mid-step. Schedules, lines and away work stop with it. Use it when something is going wrong faster than a soft halt can settle.</p>
+          <div style="display: flex; flex-direction: column; gap: 6px; padding: 14px; border-radius: var(--radius-md); background: var(--status-danger-tint); color: var(--ink-900);">
+            <span style="font: var(--type-label);">2 runs would be cut off</span>
+            <span style="font: var(--type-body-s);">Teo · writing the intake parser (file write in progress) · June · research run, step 6 of 9</span>
+          </div>
+          <button type="button" onClick="{{startHard}}" style="margin-top: auto; min-height: 48px; border: 0; border-radius: var(--radius-md); background: var(--status-danger); color: #FFFFFF; font: var(--type-label); cursor: pointer;">Hard halt now</button>
+        </article>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{isSoft}}" hint-placeholder-val="{{ false }}">
+      <section aria-labelledby="settle" style="display: flex; flex-direction: column; gap: 16px; padding: 28px; border: 1px solid var(--border-hairline); border-radius: var(--radius-lg); background: var(--surface-card);">
+        <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: baseline;">
+          <h2 id="settle" style="font: var(--type-h3); letter-spacing: var(--tracking-heading);">Settling</h2>
+          <span style="font: var(--type-mono); color: var(--text-muted);">deadline 10:15 · then tell you, no hard halt</span>
+        </div>
+        <ul style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column;">
+          <sc-for list="{{seats}}" as="s" hint-placeholder-count="4">
+            <li style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 14px 0; border-top: 1px solid var(--border-hairline);">
+              <span style="display: flex; flex-direction: column; gap: 3px;"><span style="font: var(--type-label); color: var(--text-strong);">{{s.name}}</span><span style="font: var(--type-body-s); color: var(--text-muted);">{{s.doing}}</span></span>
+              <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Tag" variant="status" status="{{s.status}}">{{s.state}}</x-import>
+            </li>
+          </sc-for>
+        </ul>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+          <button type="button" onClick="{{startHard}}" style="min-height: 44px; padding: 0 18px; border: 0; border-radius: var(--radius-md); background: var(--status-danger); color: #FFFFFF; font: var(--type-label); cursor: pointer;">Hard halt now</button>
+          <button type="button" onClick="{{resume}}" style="min-height: 44px; padding: 0 18px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: none; color: var(--text-strong); font: var(--type-label); cursor: pointer;">Cancel and resume</button>
+        </div>
+      </section>
+    </sc-if>
+
+    <sc-if value="{{isHard}}" hint-placeholder-val="{{ false }}">
+      <section style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px; padding: 28px; border-radius: var(--radius-lg); background: var(--bg-inverse); color: var(--text-on-inverse);">
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <h2 style="font: var(--type-h3); color: var(--text-on-inverse);">Everything is stopped.</h2>
+          <span style="font: var(--type-body-s); color: var(--text-on-inverse-muted);">2 runs were cut off. Their transcripts are kept; nothing restarts until you resume.</span>
+        </div>
+        <x-import component-from-global-scope="CaPheDesignSystem_e679e3.Button" variant="inverse" onClick="{{resume}}">Resume</x-import>
+      </section>
+    </sc-if>
+
+    <p style="font: var(--type-caption); color: var(--text-muted); max-width: 720px;">Each seat's soft-shutdown procedure is written in its charter (section “Soft shutdown”) and set per seat under Controls › Ticks and cadence. The halt guardrail can never be switched off.</p>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1100}}'>
+class Component extends DCLogic {
+  constructor(p) { super(p); this.state = { mode: 'running' }; }
+  renderVals() {
+    const m = this.state.mode;
+    const copy = {
+      running: ['Stop the company.', 'Choose how. A soft halt lets running work finish safely; a hard halt cuts it off now.'],
+      soft: ['Soft halt in progress.', 'Nothing new is starting. Seats are finishing and running their shutdown procedures.'],
+      hard: ['Hard halt.', 'Every run was stopped at once.']
+    };
+    return {
+      eyebrow: m === 'running' ? ['Running', '4 seats', '2 runs in flight'] : m === 'soft' ? ['Soft halt', 'started 09:45 by Alex'] : ['Hard halt', '09:52 by Alex'],
+      title: copy[m][0], lede: copy[m][1],
+      isRunning: m === 'running', isSoft: m === 'soft', isHard: m === 'hard',
+      startSoft: () => this.setState({ mode: 'soft' }), startHard: () => this.setState({ mode: 'hard' }), resume: () => this.setState({ mode: 'running' }),
+      seats: [
+        { name: 'Founder', doing: 'Parked the Q1 plan, wrote state to decisions.md', status: 'online', state: 'Settled' },
+        { name: 'Teo', doing: 'Finishing the intake parser write, then stopping', status: 'warning', state: 'Finishing' },
+        { name: 'June', doing: 'Saving the research draft (shutdown procedure)', status: 'warning', state: 'Shutting down' },
+        { name: 'Mira', doing: 'Was idle; nothing to finish', status: 'online', state: 'Settled' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>
