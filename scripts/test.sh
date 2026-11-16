@@ -53,6 +53,7 @@ echo "CaPheOS tests (copy: $COPY, station: $STARNET_URL, timeout ${TIMEOUT}s/ste
 echo "== parse and inventory"
 step "tool-parse.js" node company/tools/tool-parse.js
 step "tool-inventory-check.js" node company/tools/tool-inventory-check.js
+step "check-clean-tree.sh (no company data tracked)" bash scripts/check-clean-tree.sh
 
 echo "== tool selftests"
 # The tools differ: some take a `selftest` subcommand, some a `--selftest` flag (some both; the subcommand wins).

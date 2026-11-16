@@ -288,6 +288,8 @@ function cmdEnable(id, by) {
   }
   const s = status(id);
   const told = pk.tellOwner('Core module ' + id + ' (' + mod.title + ') enabled: ' + s.status + '.' + ((mod.requires || {}).secrets || []).map(x => ' Needs secrets/' + x + '.').join(''), 'module.js');
+  // a running company's copied tools and inventory rows must never reach the framework repo (scripts/instance-guard.sh)
+  try { const g = path.join(co.ROOT, 'scripts', 'instance-guard.sh'); if (fs.existsSync(g) && fs.existsSync(co.p('company', 'work', '.founded'))) require('child_process').execFileSync('bash', [g], { cwd: co.ROOT, stdio: 'ignore', timeout: 30000 }); } catch (_) {}
   return { code: s.status === 'conformant' ? 0 : 1, out: { ok: s.status === 'conformant', id, status: s.status, findings: s.findings, told, change: record({ op: 'enable', id, by: 'owner', gate, status: s.status }) } };
 }
 function cmdDisable(id, by) {

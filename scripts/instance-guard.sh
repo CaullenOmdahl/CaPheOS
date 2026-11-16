@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# instance-guard.sh — keep a running company's data out of the framework's git history.
+#
+#   scripts/instance-guard.sh            # apply (idempotent; found-company.sh and module.js enable run it for you)
+#   scripts/instance-guard.sh --check    # report, change nothing; exit 1 if this founded checkout could leak
+#
+# A checkout is an INSTANCE once it is founded (company/work/.founded). An instance is where a company runs; the
+# framework is developed in a separate, unfounded checkout. In an instance this script:
+#   1. disables pushing: every remote's push URL becomes "no-push://capheos-instance" (fetch/pull still work);
+#   2. installs .git/hooks/pre-commit and pre-push that refuse in a founded checkout;
+#   3. hides the tracked files founding and module enables change (company.json, CHARTER.md, the inventory, ...)
+#      with `git update-index --skip-worktree`, so they never show as changes to commit;
+#   4. lists files a running company adds next to framework files (module tools copied into company/tools/)
+#      in .git/info/exclude — local only, never committed.
+# Everything else a company creates (company/work, state, owner, hiring, roles, console panels, secrets, the station
+# and its data) is already in .gitignore. CI's clean-tree check (scripts/test.sh) is the last line: it fails if
+# instance data ever reaches the repository by any route.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+CHECK=0; [[ "${1:-}" == "--check" ]] && CHECK=1
+git rev-parse --git-dir >/dev/null 2>&1 || { echo "not a git checkout; nothing to guard"; exit 0; }
+GITDIR="$(git rev-parse --git-dir)"
+if [[ ! -e company/work/.founded ]]; then echo "framework checkout (not founded): no instance guard needed"; exit 0; fi
+
+leaks=0
+# 1. push disabled
+for r in $(git remote); do
+  cur="$(git remote get-url --push "$r" 2>/dev/null || true)"
+  if [[ "$cur" != "no-push://capheos-instance" ]]; then
+    if [[ $CHECK = 1 ]]; then echo "LEAK  remote '$r' can push ($cur)"; leaks=1; else git remote set-url --push "$r" no-push://capheos-instance; echo "push disabled for remote '$r'"; fi
+  fi
+done
+# 2. hooks
+HOOK='#!/bin/sh
+# installed by scripts/instance-guard.sh: this checkout runs a company; its data must not reach the framework repo
+if [ -e "$(git rev-parse --show-toplevel)/company/work/.founded" ]; then
+  echo "refused: this checkout is a running CaPheOS company (company/work/.founded)." >&2
+  echo "Develop the framework in a separate, unfounded checkout and pull it here." >&2
+  exit 1
+fi'
+for h in pre-commit pre-push; do
+  f="$GITDIR/hooks/$h"
+  if ! grep -q "instance-guard.sh" "$f" 2>/dev/null; then
+    if [[ $CHECK = 1 ]]; then echo "LEAK  no $h hook"; leaks=1; else mkdir -p "$GITDIR/hooks"; printf '%s\n' "$HOOK" > "$f"; chmod +x "$f"; echo "installed $h hook"; fi
+  fi
+done
+# 3. tracked files the company changed → skip-worktree
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  if [[ $CHECK = 1 ]]; then echo "LEAK  tracked file changed: $f"; leaks=1; else git update-index --skip-worktree -- "$f" && echo "hidden from git: $f"; fi
+done < <(git diff --name-only)
+# 4. untracked, not ignored → .git/info/exclude
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  if [[ $CHECK = 1 ]]; then echo "LEAK  untracked file not ignored: $f"; leaks=1; else echo "/$f" >> "$GITDIR/info/exclude"; echo "excluded locally: $f"; fi
+done < <(git ls-files --others --exclude-standard)
+
+if [[ $CHECK = 1 ]]; then
+  [[ $leaks = 0 ]] && echo "instance guard: clean (push disabled, hooks in place, nothing to commit)" || { echo "instance guard: run scripts/instance-guard.sh to fix"; exit 1; }
+fi

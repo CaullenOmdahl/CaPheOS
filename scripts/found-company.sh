@@ -98,6 +98,7 @@ touch company/owner/inbound.jsonl company/owner/outbound.jsonl company/escalatio
 [[ -e company/mandates.json ]] || printf '{ "mandates": [] }\n' > company/mandates.json
 [[ -e company/work/.founded ]] || date -Is > company/work/.founded   # kept for older tools; onboarding state is the record
 node company/tools/onboard.js --record founded ok --note "$NAME for $OWNER (tz $TZ_, port $PORT)" >/dev/null 2>&1 || echo "note: could not record the founding step (company/tools/onboard.js)" >&2
+"$ROOT/scripts/instance-guard.sh" >/dev/null 2>&1 || echo "warning: instance guard did not apply; run scripts/instance-guard.sh"
 echo "$NAME founded for $OWNER (tz $TZ_, station port $PORT)."
 echo "Next: write the charter with the Founder (company/CHARTER.md), then scripts/setup-station.sh --start,"
 echo "then node company/tools/onboard.js --certify (provisioned is not certified)."

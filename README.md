@@ -87,6 +87,21 @@ scratch StarNet checkout and are skipped. CI (`.github/workflows/ci.yml`) runs t
 A new script in `company/tools/` fails the inventory check until it has a row in
 `company/runbooks/tool-management.md` (§5a, and §7b if it has `--selftest`) and in `company/tools/INVENTORY.md`.
 
+## Running a company keeps it out of git
+
+Run each company in its own checkout (an **instance**), and develop the framework in a separate, unfounded one.
+Founding turns a checkout into an instance (`scripts/instance-guard.sh`, run by `found-company.sh` and every
+`module.js enable`):
+
+- pushing is disabled for every remote (fetch and pull still work, so the instance can take framework updates);
+- `pre-commit` and `pre-push` hooks refuse in a founded checkout;
+- tracked files founding or module enables change (company.json, CHARTER.md, the tool inventory) are hidden from git
+  with `skip-worktree`, and module tools copied into `company/tools/` are excluded locally;
+- `scripts/instance-guard.sh --check` reports any way the instance could still leak.
+
+Everything else a company creates is already ignored. CI runs `scripts/check-clean-tree.sh` on every push and fails if
+a company name, owner, charter, runtime file, secret, module copy or anything key-shaped is ever committed.
+
 ## What git keeps
 
 This repo holds the framework only. A running company's secrets, station checkout and data, working files
