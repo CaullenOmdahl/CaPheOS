@@ -26,7 +26,24 @@ module.exports = function activity(deps) {
   /* ---------- the current step, in words ---------- */
   const rel = p => String(p || '').replace(co.ROOT + path.sep, '').replace(/^\.\//, '');
   function stepText(name, args) {
-    const a = rel(String(args || '').replace(/\s+/g, ' ').trim()).slice(0, 120);
+    let raw = String(args || '').trim(), obj = null;
+    if (/^\{/.test(raw)) { try { obj = JSON.parse(raw); } catch (_) { const m = /"(cmd|command|path|file|query|url|q)"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(raw); if (m) obj = { [m[1]]: m[2].replace(/\\"/g, '"') }; } }
+    const host = u => { try { return new URL(u).host; } catch (_) { return String(u).slice(0, 60); } };
+    if (obj && typeof obj === 'object') {
+      const cmd = obj.cmd || obj.command;
+      if (cmd) {
+        const c = rel(String(cmd)).replace(/\s+/g, ' ');
+        const tool = /node\s+(?:\S*\/)?(company\/tools\/[\w.-]+\.js)(\s+[\w-]+)?/.exec(c);
+        if (tool) return 'running ' + tool[1].replace('company/tools/', '') + (tool[2] || '') + '…';
+        const url = /https?:\/\/[^\s"']+/.exec(c);
+        if (/^\s*(curl|wget)\b/.test(c) && url) return 'fetching ' + host(url[0]);
+        return 'running `' + c.slice(0, 70) + (c.length > 70 ? '…' : '') + '`';
+      }
+      if (obj.url) return 'reading ' + host(obj.url);
+      if (obj.query || obj.q) return 'searching for “' + String(obj.query || obj.q).slice(0, 60) + '”';
+      raw = obj.path || obj.file || obj.dir || '';
+    }
+    const a = rel(String(raw).replace(/\s+/g, ' ').trim()).slice(0, 120);
     const n = String(name || '');
     const m = /node\s+(company\/tools\/[\w.-]+\.js)(\s+[\w-]+)?/.exec(a);
     if (/^(code\.run|shell|shell_bg|terminal)/i.test(n) && m) return 'running ' + m[1].replace('company/tools/', '') + (m[2] || '') + '…';

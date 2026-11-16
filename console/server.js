@@ -208,9 +208,14 @@ function postOwnerMessage(body) {
 async function crewView() {
   const c = co.crew();
   const seats = Object.entries(c).map(([id, s]) => Object.assign({ id }, s));
-  const r = await stationGet('roster', 2500);
-  const roster = r.ok ? r.data : null;
-  const list = roster && (Array.isArray(roster) ? roster : roster.agents || roster.roster || []);
+  // the crew lives in the station save (GET /api/save; /api/roster is POST-only), read through station-crew.js
+  let r = { ok: false, error: 'station-crew.js unavailable' }, list = null;
+  try {
+    const SC = require(co.p('company', 'tools', 'station-crew.js'));
+    const sv = await Promise.race([SC.getSave(), new Promise((_, rej) => setTimeout(() => rej(new Error('station did not answer')), 3000))]);
+    list = SC.rows(sv.doc).map(a => Object.assign({}, a, { approvalMode: a.approvalMode || a.approval || null }));
+    r = { ok: true };
+  } catch (e) { r = { ok: false, error: e.message }; }
   if (Array.isArray(list)) for (const s of seats) { const hit = list.find(x => x && (x.id === s.id || x.agentId === s.id)); if (hit) s.station = hit; }
   return { ok: true, seats, station: r.ok ? 'up' : 'down', stationError: r.ok ? undefined : r.error };
 }

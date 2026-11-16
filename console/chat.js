@@ -19,6 +19,26 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
+
+/* What the console knows that the chat would not: this seat's own recent work (its routine runs are separate
+   conversations), so "what are you working on?" gets a real answer. Marked as console context, not the owner's words. */
+function contextNote(id, s) {
+  const lines = [];
+  try {
+    const runs = fs.readFileSync(co.p('.starnet-data', 'workspaces', 'runs.jsonl'), 'utf8').trim().split('\n').slice(-400)
+      .map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(r => r && r.agentId === id && !/^console-/.test(String(r.streamId || '')));
+    for (const r of runs.slice(-3)) {
+      const when = r.endedAt || r.at || r.ts; const t = when ? new Date(when).toISOString().slice(0, 16).replace('T', ' ') : '';
+      lines.push('- ' + (t ? t + ' UTC ' : '') + (String(r.streamId || '').startsWith('cron-') ? 'routine run' : 'run') + ': "' + String(r.title || '').replace(/\s+/g, ' ').slice(0, 70) + '" → ' + (r.reason || '?') + ', ' + (r.turns || 0) + ' steps');
+    }
+  } catch (_) {}
+  const notes = ['company/work/decisions.md', 'company/work/handoffs/to-' + String(s.inbox || '').replace(/^to-|\.md$/g, '') + '.md'].filter(f => fs.existsSync(co.p(f)));
+  return '[Console context, not from the owner: you are ' + (s.name || id) + '. The company folder is ' + co.ROOT + ' (your project root; company tools run as `node company/tools/<tool>.js`).'
+    + (lines.length ? ' Your own recent runs (separate conversations you can check):\n' + lines.join('\n') : ' No earlier runs of yours are recorded.')
+    + (notes.length ? '\nYour written record: ' + notes.join(', ') + '. Read them before claiming what you have done.' : '')
+    + '\nWhen you point the owner somewhere in the console, link it: [label](console:#/route).]\n\n';
+}
+
 module.exports = function chat(deps) {
   const { co, stationGet, bad, HttpError, tool, owner } = deps;
   const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } };
@@ -68,7 +88,7 @@ module.exports = function chat(deps) {
     const r = await stationGet('transcript?agent=' + encodeURIComponent(id) + '&stream=' + encodeURIComponent(STREAM(id)) + '&limit=200', 5000);
     if (!r.ok) return { ok: false, error: r.error || 'HTTP ' + r.status, turns: [] };
     const turns = ((r.data && r.data.turns) || []).filter(t => (t.role === 'user' || t.role === 'assistant') && typeof t.content === 'string' && t.content.trim())
-      .map(t => ({ role: t.role, content: t.content, at: t.at || t.ts || null }));
+      .map(t => ({ role: t.role, content: t.role === "user" ? String(t.content).replace(/^\[Console context, not from the owner:[\s\S]*?\]\n\n/, "") : t.content, at: t.at || t.ts || null }));
     return { ok: true, turns };
   }
 
@@ -132,7 +152,7 @@ module.exports = function chat(deps) {
     const t = await transcript(id);
     const history = t.turns.slice(-40).map(x => ({ role: x.role, content: x.content }));
     const payload = { agentId: id, model: m.model, provider: m.provider, rosterSystem: true, isTask: false, streamId: STREAM(id),
-      messages: history.concat([{ role: 'user', content: text }]), projectRoot: co.ROOT, placed: PLACED };
+      messages: history.concat([{ role: 'user', content: contextNote(id, s) + text }]), projectRoot: co.ROOT, placed: PLACED };
     let token; try { token = co.stationToken(); } catch (_) { token = null; }
     if (!token) { line('console.error', { code: 'station-down', message: 'No station token (secrets/station-token).', fix: 'Run scripts/setup-station.sh', link: '#/system' }); return res.end(); }
     const u = new URL(co.STATION_URL.replace(/\/+$/, '') + '/api/run');
