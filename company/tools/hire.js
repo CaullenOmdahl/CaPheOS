@@ -868,7 +868,7 @@ async function hire(a) {
   const spec = readIf(path.join(dir, 'role-spec.md'), 6000);
   const AgentId = require(path.join(ROOT, 'starnet', 'frontend', 'app', 'agentid.js'));
   const officeName = a.name ? AgentId.normalizeName(String(a.name)) : cand.name;
-  const display = officeName.charAt(0) + officeName.slice(1).toLowerCase();
+  const display = officeName.split(/(\s+|-)/).map(w => /^[A-Za-z]/.test(w) ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w).join('');   // NADIA FARRELL -> Nadia Farrell
   const fileBase = display.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   const inbox = 'to-' + fileBase + '.md';
   const loopName = display + ' loop';
