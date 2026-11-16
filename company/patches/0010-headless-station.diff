@@ -5,7 +5,7 @@
 # Apply: git -C starnet apply --3way ../company/patches/0010-headless-station.diff   Revert: same with -R
 --- a/sidecar/index.js
 +++ b/sidecar/index.js
-@@ -31949,7 +31949,15 @@
+@@ -31949,7 +31949,17 @@
      ') — only a process of this OS user receives it. Set STARNET_TRUST_LOCAL_PEERS=1 only if your own browser is being refused.');
  }
  
@@ -15,6 +15,8 @@
 +const HEADLESS = process.env.STARNET_HEADLESS === '1';
  async function serveStatic(req, res) {
 +  if (HEADLESS) {
++    // an /api path that reached here is simply not a route (wrong method or unknown): say that, not "headless"
++    if (/^\/api\//.test(String(req.url || ''))) { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'no such API route for ' + req.method + ' ' + String(req.url).split('?')[0] })); }
 +    res.writeHead(410, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
 +    return res.end('This station runs headless. Use the CaPheOS console (scripts/console.sh); the engine API is unchanged.\n');
 +  }
