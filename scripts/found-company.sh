@@ -53,6 +53,10 @@ if [[ $CHECK -eq 1 ]]; then
   [[ -f company/tools/onboard.js ]] && node company/tools/onboard.js --check 2>/dev/null | sed 's/^/  /' || true
   exit $PRE
 fi
+if [[ -e .framework-checkout ]]; then
+  echo "refused: this is a framework checkout (.framework-checkout). Clone the repository into a new folder for each" >&2
+  echo "company and found it there; see README, 'One rule'." >&2; exit 1
+fi
 [[ -n "$NAME" && -n "$OWNER" ]] || { echo "need --name and --owner" >&2; exit 2; }
 [[ $PRE -eq 0 ]] || { echo "preflight failed; nothing was written" >&2; exit 1; }
 [[ $FOUNDED -eq 1 ]] && echo "resuming: filling in whatever is missing (existing files are kept)"

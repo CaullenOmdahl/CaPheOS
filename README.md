@@ -40,20 +40,76 @@ Every tool finds people by the function they hold, so a company can hire in any 
 The Founder holds all six. `node company/tools/hire.js ... --template tool-builder --functions tools` hires a seat and
 moves the function to it. Domain roles start from `specialist.md`.
 
-## Founding a company
+## One rule: the framework checkout and a company checkout are never the same folder
+
+> **Never found a company in the checkout you develop CaPheOS in.** Clone the repository again for every company
+> you run. A company's names, charter, messages, decisions, ledger, secrets and station data must never reach GitHub,
+> and keeping them in a separate folder is what guarantees it.
+
+| | Framework checkout | Company checkout (an "instance") |
+|---|---|---|
+| Example path | `~/Projects/CaPheOS` | `~/Companies/example-law` |
+| Founded? | never | yes, once |
+| You do here | change tools, docs, console; commit; push | run the company: station, console, crew |
+| Can commit / push | yes | **no**: refused by hooks, push URL disabled |
+| Takes framework updates | it *is* the framework | `git pull` |
+
+### Founding a company
 
 ```bash
-git clone <this repo> my-company && cd my-company
+git clone https://github.com/<you>/CaPheOS.git ~/Companies/example-law   # a NEW folder, never the framework checkout
+cd ~/Companies/example-law
 scripts/found-company.sh --name "Example Law" --owner "Alex" --industry "legal services" --tz America/Chicago --port 8802
 # put shared provider keys in secrets/ (see secrets/README.md)
 scripts/setup-station.sh            # clone StarNet, apply patches, write env + units (not started)
 scripts/setup-station.sh --start    # start the station and the dispatcher
+scripts/console.sh                  # the owner console
+node company/tools/onboard.js --certify   # operational only once this is green
 ```
 
 Then write `company/CHARTER.md` with the Founder: the mandate is what makes this company a law firm or a library.
-
 Each company is its own checkout with its own port, service name, station data and token, so several can run on one
 machine. They may share provider accounts; give each its share in `company/work/finance/pacing-policy.json`.
+
+### What founding does to the checkout
+
+Founding turns the checkout into an instance (`scripts/instance-guard.sh`, run by `found-company.sh` and by every
+`module.js enable`):
+
+- pushing is disabled for every remote; fetch and pull still work;
+- `pre-commit` and `pre-push` hooks refuse in a founded checkout;
+- tracked files that founding or a module enable changes (`company/company.json`, `company/CHARTER.md`,
+  `company/competence-policy.json`, the tool inventory and runbook) are hidden from git with `skip-worktree`, and
+  module tools copied into `company/tools/` are excluded locally (`.git/info/exclude`);
+- everything else a company creates (`company/work`, `state`, `owner`, `hiring`, role charters, crew console panels,
+  `secrets/`, `starnet/`, `.starnet-data/`, logs, media) is in `.gitignore`.
+
+Check an instance any time: `scripts/instance-guard.sh --check` (exit 1 and a list if anything could leak). CI runs
+`scripts/check-clean-tree.sh` on every push to the framework and fails if a company name, owner, founded charter,
+runtime file, secret, module copy or anything key-shaped was ever committed.
+
+### Updating a company to a newer framework
+
+```bash
+cd ~/Companies/example-law
+node company/tools/halt.js soft --by Alex     # let running work finish
+scripts/backup.sh                             # snapshot the company's own state first
+git pull                                      # takes the framework update
+node company/tools/halt.js resume --by Alex
+```
+
+If the update changed one of the hidden files (for example the `company.json` template), `git pull` stops with
+"Your local changes would be overwritten" instead of replacing your company's copy. Merge that one file by hand:
+`git update-index --no-skip-worktree <file>`, `git stash`, `git pull`, `git stash pop`, fix any conflict, then
+`scripts/instance-guard.sh` to hide it again.
+
+### Don't
+
+- Don't run `found-company.sh` in `~/Projects/CaPheOS` (or whatever folder you develop the framework in). Mark that
+  folder with `touch .framework-checkout` (ignored by git) and `found-company.sh` refuses to run there.
+- Don't re-enable pushing in an instance, and don't bypass the hooks (`--no-verify`) there.
+- Don't copy a company's `company/work` or `secrets/` into the framework checkout to "test something" — use
+  `scripts/e2e-first-light.sh`, which builds a throwaway company in a temp folder.
 
 ## Console
 
@@ -86,21 +142,6 @@ scratch StarNet checkout and are skipped. CI (`.github/workflows/ci.yml`) runs t
 
 A new script in `company/tools/` fails the inventory check until it has a row in
 `company/runbooks/tool-management.md` (§5a, and §7b if it has `--selftest`) and in `company/tools/INVENTORY.md`.
-
-## Running a company keeps it out of git
-
-Run each company in its own checkout (an **instance**), and develop the framework in a separate, unfounded one.
-Founding turns a checkout into an instance (`scripts/instance-guard.sh`, run by `found-company.sh` and every
-`module.js enable`):
-
-- pushing is disabled for every remote (fetch and pull still work, so the instance can take framework updates);
-- `pre-commit` and `pre-push` hooks refuse in a founded checkout;
-- tracked files founding or module enables change (company.json, CHARTER.md, the tool inventory) are hidden from git
-  with `skip-worktree`, and module tools copied into `company/tools/` are excluded locally;
-- `scripts/instance-guard.sh --check` reports any way the instance could still leak.
-
-Everything else a company creates is already ignored. CI runs `scripts/check-clean-tree.sh` on every push and fails if
-a company name, owner, charter, runtime file, secret, module copy or anything key-shaped is ever committed.
 
 ## What git keeps
 

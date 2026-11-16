@@ -99,3 +99,6 @@ Thumbs.db
 /company/console/proposed/
 /company/console/changes.jsonl
 /company/console/state.json
+
+# marks the checkout the framework is developed in; found-company.sh refuses there
+/.framework-checkout
