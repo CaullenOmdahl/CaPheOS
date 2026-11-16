@@ -170,9 +170,16 @@ function deciders(managerId) {
   return (!managerId || managerId === ceoId()) ? [hrName] : [...new Set([nameOf(managerId), hrName].filter(Boolean))];
 }
 // --approved must START with the name of someone allowed to decide (e.g. "Sam, decisions.md 2026-01-02 10:00")
+// Names may be several words ("Marisol Vance"): the text must start with the full name, or with its first word followed
+// by a separator (so "Marisol, …" still counts) — never just a prefix of another name ("Mari" is not "Marisol Vance").
 function approverOk(text, allowed) {
-  const lead = (String(text || '').trim().match(/^([A-Za-z]+)/) || [])[1] || '';
-  return (allowed || []).some(n => n && n.toLowerCase() === lead.toLowerCase());
+  const t = String(text || '').trim().toLowerCase();
+  return (allowed || []).some(n => {
+    const full = String(n || '').trim().toLowerCase(); if (!full) return false;
+    const first = full.split(/\s+/)[0];
+    const startsWithWord = w => t.startsWith(w) && (t.length === w.length || /[^a-z0-9]/.test(t.charAt(w.length)));
+    return startsWithWord(full) || startsWithWord(first);
+  });
 }
 // Self-governance (company/state/governance.json via lib/governance.js): hiring for open/hire, release for fire and for
 // releasing a candidate from a round that hired nobody, models for remodel. At approve the act waits for the owner: the
