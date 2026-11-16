@@ -110,6 +110,7 @@ const MANIFEST = [
   { p: 'company/state/owner-channel-policy.json', cls: 'F', owner: 'risk', area: 'gate', why: 'the owner channel pin: the one target, the senders and the expiry external-gate.js reads — ending the channel is an edit here with a diff, not a merge' },
   { p: 'company/state/external-clearances.jsonl', cls: 'F', append: true, owner: 'risk', area: 'gate', why: 'external-action clearances (the owner\'s and the CEO\'s rows)' },
   { p: 'company/work/external-actions.jsonl', cls: 'F', append: true, owner: 'risk', area: 'gate', why: 'the external-action log' },
+  { p: 'company/work/external-idempotency.jsonl', cls: 'F', append: true, owner: 'risk', area: 'gate', why: 'the record of acts that already went out (a deleted row would let a payment or a send repeat)' },
   { p: 'company/work/merge-gate.log', cls: 'F', append: true, owner: 'risk', area: 'gate', why: 'the merge-gate log' },
   { p: 'company/work/decisions.md', cls: 'F', append: true, owner: 'ceo', area: 'record', why: 'decisions (it carries the competence anchors)' },
   { p: 'company/work/dispatch-log.md', cls: 'F', append: true, owner: 'tools', area: 'record', why: 'the dispatch log (a competence anchor copy)' },
