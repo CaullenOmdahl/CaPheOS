@@ -380,7 +380,7 @@ async function interview(a) {
     const block = '\n## ' + stamp().slice(0, 10) + ' from hire.js — ' + round.role + ' round (' + round.slug + '): ' + (allIn ? 'every interview is in' : done.map(c => c.name).join(', ') + ' interviewed; ' + (pending.map(c => c.name).join(', ') || 'none') + ' still to go') + '\n' +
       '**Need:** ' + (allIn ? 'score every transcript against the role-spec criteria in company/hiring/' + round.slug + '/scorecard.md, then ' + pickLine
         : 'nothing yet unless an interview failed; you are woken again when every active candidate has been interviewed.') + '\n' +
-      '**Why:** the round finishes with scoring, the pick, one hire and the release of the others.\n**Deadline:** ' + (allIn ? 'today' : 'none') + '\n' +
+      '**Why:** the round finishes with scoring, the pick, one hire and the release of the others.\n**Deadline:** ' + (allIn ? stamp().slice(0, 10) : 'none') + '\n' +
       '**Status:** ' + (allIn || failed.length ? 'OPEN' : 'DONE — progress note only') + '\n**Evidence:** ' + results.map(r => r.ok ? '`' + r.transcript + '`' : r.agentId + ' failed: ' + r.error).join('; ') + '\n';
     fs.mkdirSync(HANDOFFS, { recursive: true });
     fs.appendFileSync(path.join(HANDOFFS, fnInbox('people')), block);
@@ -587,7 +587,7 @@ function deskHandoff(check, h) {
   return '\n## ' + day + ' from hire.js — seat the new ' + h.title + ' ' + h.display + ' (' + codes + ')\n' +
     '**Need:** ' + probs.join(' ') + ' Fix it on the floor with `node company/tools/station-floor.js` (no page needed): ' + fix + '. Then run `node company/tools/station-floor.js doc` and write ' + h.display + '\'s Department and Justification in company/FLOOR_PLAN.md section 2. Done when `node company/tools/station-floor.js audit` passes A3, A4 and A8.\n' +
     '**Why:** hire.js seats every new hire with StarNet\'s ensureWorkstation, which uses the spawn room (HOME) and checks only that desk\'s own seat; where people sit is yours.\n' +
-    '**Deadline:** today\n**Status:** OPEN\n**Evidence:** ' + evidence + '; ' + where + '; checkDesk: ' + codes + '\n';
+    '**Deadline:** ' + day + '\n**Status:** OPEN\n**Evidence:** ' + evidence + '; ' + where + '; checkDesk: ' + codes + '\n';
 }
 
 // REMODEL: same person, same charter, a different allowed model (the people owner or the person's manager decides; company/MODEL_POLICY.md)

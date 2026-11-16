@@ -253,7 +253,8 @@ function inboxOf(agentId) { return CREW && CREW[agentId] && CREW[agentId].inbox 
 function today() { return co.localParts().date; }
 function appendHandoff(inbox, heading, fields) {
   const f = path.join(ROOT, 'company', 'work', 'handoffs', inbox);
-  const block = '\n## ' + today() + ' from Dispatcher — ' + heading + '\n' + Object.entries(fields).map(([k, v]) => '**' + k + ':** ' + v).join('\n') + '\n';
+  // a "today" deadline is written as the date: handoff-status.js (and the console's due list) leaves "today" undated on purpose
+  const block = '\n## ' + today() + ' from Dispatcher — ' + heading + '\n' + Object.entries(fields).map(([k, v]) => '**' + k + ':** ' + (k === 'Deadline' && v === 'today' ? today() : v)).join('\n') + '\n';
   if (!DRY) fs.appendFileSync(f, block);
 }
 // flip the Status line of the dispatcher's own handoff whose heading contains `needle` (never touches anyone else's block)
