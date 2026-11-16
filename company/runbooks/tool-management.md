@@ -121,6 +121,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/openrouter-treasury.js | finance | none |
 | company/tools/owner-addressing.js | ceo | `--selftest` |
 | company/tools/owner-inbox.js | ceo | `--selftest` |
+| company/tools/pack.js | ceo | `selftest` / `--selftest` |
 | company/tools/pacer.js | finance | none |
 | company/tools/performance.js | people | none |
 | company/tools/premerge-check.js | risk | `--selftest` |
@@ -186,6 +187,7 @@ in §5a instead.
 | `company/tools/offpeak-proof.js` | finance | `node company/tools/offpeak-proof.js --selftest` |
 | `company/tools/owner-addressing.js` | ceo | `node company/tools/owner-addressing.js --selftest` |
 | `company/tools/owner-inbox.js` | ceo | `node company/tools/owner-inbox.js --selftest` |
+| `company/tools/pack.js` | ceo | `node company/tools/pack.js selftest` |
 | `company/tools/quest-audit.js` | tools | `node company/tools/quest-audit.js --selftest` |
 | `company/tools/restart-station-idle.sh` | tools | `bash company/tools/restart-station-idle.sh --selftest` |
 | `company/tools/routine-rules.js` | tools | `node company/tools/routine-rules.js selftest` |

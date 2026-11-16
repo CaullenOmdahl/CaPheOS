@@ -46,6 +46,7 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/openrouter-treasury.js` | read-only treasury check for the company's OpenRouter provisioning key. | finance | — | `--json` `--min` | openrouter-mgmt-key, openrouter-key |
 | `company/tools/owner-addressing.js` | decide WHO an owner message is for, by the name the owner writes first. | ceo | `--selftest` | `route` `dispatch` `--selftest` | — |
 | `company/tools/owner-inbox.js` | messages the owner sent the company, and whether the CEO has acted on them; and the one way the | ceo | `--selftest` | `new` `count` `ack` `send` `log` `--selftest` | — |
+| `company/tools/pack.js` | capability packs: list them, check them, propose, approve, install and uninstall them. | ceo | `selftest` / `--selftest` | `list` `status` `doctor` `propose` `approve` `reject` `install` `uninstall` `selftest` | — |
 | `company/tools/pacer.js` | paces the company's AI use across the flat-fee subscriptions (Claude Max, MiniMax) and DeepSeek. | finance | — | `status` `plan` `report` `apply` `restore` `emergency` | — |
 | `company/tools/performance.js` | is each person doing their job? Read from the station's own records, no LLM. | people | — | `report` `flags` | station-token |
 | `company/tools/premerge-check.js` | the pre-merge gate the company runs because GitHub cannot enforce it here. | risk | `--selftest` | `--pr <n> [--repo o/n]` `--replay <base>:<head>` `--selftest` | — |
