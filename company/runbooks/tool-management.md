@@ -77,6 +77,70 @@ gone, when a checker has lost its `--selftest`, or when a script under `company/
 debt is declared in a baseline file that **only shrinks**: document a tool and delete its line. Never add a line to
 silence a finding.
 
+### 5a. Every script in company/tools/
+
+The check below reads this table: every script directly under `company/tools/` has a row. Paths here are written
+**without** backticks on purpose — a backticked path in a table row is a claim that the tool has a `--selftest`, and
+that claim belongs in the §7b table. Purpose, CLI and credentials per tool are in the inventory file.
+
+| tool | owner | selftest |
+|---|---|---|
+| company/tools/agy-contract.js | tools | none |
+| company/tools/ask.js | ceo | none |
+| company/tools/build-inventory.js | people | `--selftest` |
+| company/tools/cadence.js | tools | `selftest` / `--selftest` |
+| company/tools/cap-numerator.js | finance | `--selftest` |
+| company/tools/competence.js | people | `selftest` |
+| company/tools/connector-scope.js | risk | `--selftest` |
+| company/tools/console-panel.js | tools | `selftest` |
+| company/tools/corrections.js | people | `selftest` |
+| company/tools/default-branch-watch.js | risk | `selftest` |
+| company/tools/dispatch.js | tools | `--selftest` |
+| company/tools/dossier.js | people | none |
+| company/tools/escalate.js | ceo | none |
+| company/tools/external-gate.js | risk | `--selftest` |
+| company/tools/governance.js | ceo | `selftest` / `--selftest` |
+| company/tools/guardrails.js | risk | `selftest` |
+| company/tools/halt.js | ceo | `selftest` / `--selftest` |
+| company/tools/handoff-archive.js | tools | none |
+| company/tools/handoff-status.js | tools | `--selftest` |
+| company/tools/harness-change.js | tools | `selftest` |
+| company/tools/health-check.sh | tools | `--selftest` |
+| company/tools/hire.js | people | `selftest` / `--selftest` |
+| company/tools/inbox.js | ceo | none |
+| company/tools/incident-open.py | risk | none |
+| company/tools/locked-watch.js | risk | `selftest` / `--selftest` |
+| company/tools/mandate.js | ceo | none |
+| company/tools/merge-gate.js | risk | `selftest` |
+| company/tools/model-drift.js | people | `--selftest` |
+| company/tools/model-stats.js | people | none |
+| company/tools/my-section.js | people | `selftest` |
+| company/tools/offpeak-clocks.js | finance | `--selftest` |
+| company/tools/offpeak-hold.js | finance | `--selftest` |
+| company/tools/offpeak-proof.js | finance | `--selftest` |
+| company/tools/openrouter-treasury.js | finance | none |
+| company/tools/owner-addressing.js | ceo | `--selftest` |
+| company/tools/owner-inbox.js | ceo | `--selftest` |
+| company/tools/pacer.js | finance | none |
+| company/tools/performance.js | people | none |
+| company/tools/premerge-check.js | risk | `--selftest` |
+| company/tools/project.js | ceo | none |
+| company/tools/provenance.js | risk | `selftest` |
+| company/tools/quest-audit.js | tools | `--selftest` |
+| company/tools/restart-station-idle.sh | tools | `--selftest` |
+| company/tools/routine-length.js | people | none |
+| company/tools/routine-rules.js | tools | `selftest` / `--selftest` |
+| company/tools/skills-hr.js | people | `selftest` |
+| company/tools/skills.js | tools | `selftest` |
+| company/tools/station-crew.js | people | none |
+| company/tools/station-floor.js | floor | none |
+| company/tools/station-view.js | tools | `selftest` |
+| company/tools/text-corruption.js | finance | `--selftest` |
+| company/tools/tool-inventory-check.js | tools | `--selftest` |
+| company/tools/tool-parse.js | tools | `--selftest` |
+| company/tools/vision.js | tools | none |
+| company/tools/workspace-modes.sh | risk | `--selftest` |
+
 **Rotation:** every credential has a rotation date in the inventory. Tools prepares; the rotation itself is a
 risk-reviewed action, and creating or reissuing a credential is an owner gate. A credential rotated out of band
 (exposure, loss) restarts its clock and is reported to risk at once.
@@ -95,6 +159,40 @@ A checker is not finished until someone else can see it refuse. Every gate, lint
 `--selftest` that builds a fixture and **fails** when the guard is removed, not one that merely passes. Its inventory
 row names the command that passes and the mutant or fixture that shows it failing. Assert the *kind* of finding, not a
 count: a count cannot tell a right failure from a wrong one.
+
+### 7b. Selftest table
+
+Every tool listed here carries `--selftest` in its own source and passes the command shown, offline (`scripts/test.sh`
+runs them all against a temp copy with no station). A tool whose selftest is only a `selftest` subcommand is marked so
+in §5a instead.
+
+| tool | owner | passes |
+|---|---|---|
+| `company/tools/build-inventory.js` | people | `node company/tools/build-inventory.js --selftest` |
+| `company/tools/cadence.js` | tools | `node company/tools/cadence.js selftest` |
+| `company/tools/cap-numerator.js` | finance | `node company/tools/cap-numerator.js --selftest` |
+| `company/tools/connector-scope.js` | risk | `node company/tools/connector-scope.js --selftest` |
+| `company/tools/dispatch.js` | tools | `node company/tools/dispatch.js --selftest` |
+| `company/tools/external-gate.js` | risk | `node company/tools/external-gate.js --selftest` |
+| `company/tools/governance.js` | ceo | `node company/tools/governance.js selftest` |
+| `company/tools/halt.js` | ceo | `node company/tools/halt.js selftest` |
+| `company/tools/handoff-status.js` | tools | `node company/tools/handoff-status.js --selftest` |
+| `company/tools/health-check.sh` | tools | `bash company/tools/health-check.sh --selftest` |
+| `company/tools/hire.js` | people | `node company/tools/hire.js selftest` |
+| `company/tools/locked-watch.js` | risk | `node company/tools/locked-watch.js selftest` |
+| `company/tools/model-drift.js` | people | `node company/tools/model-drift.js --selftest` |
+| `company/tools/offpeak-clocks.js` | finance | `node company/tools/offpeak-clocks.js --selftest` |
+| `company/tools/offpeak-hold.js` | finance | `node company/tools/offpeak-hold.js --selftest` |
+| `company/tools/offpeak-proof.js` | finance | `node company/tools/offpeak-proof.js --selftest` |
+| `company/tools/owner-addressing.js` | ceo | `node company/tools/owner-addressing.js --selftest` |
+| `company/tools/owner-inbox.js` | ceo | `node company/tools/owner-inbox.js --selftest` |
+| `company/tools/quest-audit.js` | tools | `node company/tools/quest-audit.js --selftest` |
+| `company/tools/restart-station-idle.sh` | tools | `bash company/tools/restart-station-idle.sh --selftest` |
+| `company/tools/routine-rules.js` | tools | `node company/tools/routine-rules.js selftest` |
+| `company/tools/text-corruption.js` | finance | `node company/tools/text-corruption.js --selftest` |
+| `company/tools/tool-inventory-check.js` | tools | `node company/tools/tool-inventory-check.js --selftest` |
+| `company/tools/tool-parse.js` | tools | `node company/tools/tool-parse.js --selftest` |
+| `company/tools/workspace-modes.sh` | risk | `bash company/tools/workspace-modes.sh --selftest` |
 
 ## 8. The handoff queue in due order
 

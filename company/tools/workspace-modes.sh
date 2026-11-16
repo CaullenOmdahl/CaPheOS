@@ -47,7 +47,7 @@ offenders() {
 # on|off for the localComputer guardrail of a project root (default: this one)
 guard_state() {
   local root="${1:-$ROOT}" v
-  v="$(node -e 'try { process.stdout.write(require(process.argv[1]).guard("localComputer") ? "on" : "off"); } catch (e) { process.stdout.write("on"); }' \
+  v="$(CAPHEOS_ROOT="$root" node -e 'try { process.stdout.write(require(process.argv[1]).guard("localComputer") ? "on" : "off"); } catch (e) { process.stdout.write("on"); }' \
     "$root/company/tools/lib/company.js" 2>/dev/null)"
   if [ "$v" = off ]; then echo off; else echo on; fi
 }

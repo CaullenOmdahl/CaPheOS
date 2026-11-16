@@ -750,7 +750,7 @@ function selftest() {
     const GLOG = path.join(TMP, 'guard.log');
     const setGuard = on => fs.writeFileSync(path.join(GR, 'company', 'state', 'guardrails.json'), JSON.stringify({ guards: { defaultBranch: on } }));
     const pushMain = () => cp.spawnSync('node', [path.join(tools, 'merge-gate.js'), 'check-push', 'nowhere-' + process.pid, ''], { cwd: TMP, encoding: 'utf8',
-      input: 'refs/heads/main ' + '1'.repeat(40) + ' refs/heads/main ' + '0'.repeat(40) + '\n', env: Object.assign({}, process.env, CLEAN, { MERGE_GATE_ASSUME_AGENT: '1', MERGE_GATE_LOG: GLOG }) });
+      input: 'refs/heads/main ' + '1'.repeat(40) + ' refs/heads/main ' + '0'.repeat(40) + '\n', env: Object.assign({}, process.env, CLEAN, { MERGE_GATE_ASSUME_AGENT: '1', MERGE_GATE_LOG: GLOG, CAPHEOS_ROOT: GR }) });
     setGuard(true);
     const on = pushMain();
     ok('guardrail ON: an agent push to main is refused (exit 3, REFUSED logged)', on.status === REFUSE && /REFUSED/.test(fs.existsSync(GLOG) ? fs.readFileSync(GLOG, 'utf8') : ''));

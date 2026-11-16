@@ -18,8 +18,9 @@
  *
  * Check 4 SHIPS CLOSED, and the honest way to do that on a codebase with existing debt is a declared
  * baseline rather than a quiet exemption list:
- *   - `company/state/tool-inventory-baseline.json` lists the tools that are undocumented TODAY. A tool on
- *     that list is owed a row, not forgiven one;
+ *   - `company/tools/inventory-baseline.json` (tracked, so a fresh checkout can answer) lists the tools that are
+ *     undocumented TODAY — `[]` when there is no debt. A tool on that list is owed a row, not forgiven one. The old
+ *     runtime-state location `company/state/tool-inventory-baseline.json` is still read when the tracked file is absent;
  *   - a script that is neither documented nor in the baseline → **FAIL** (`undocumented`), so a new tool
  *     cannot arrive undocumented;
  *   - a baseline entry that has since been documented, or whose file no longer exists → **FAIL**
@@ -39,14 +40,21 @@ const co = require('./lib/company');
 const ROOT = co.ROOT;
 const RUNBOOK = process.env.INVENTORY_RUNBOOK || co.p('company', 'runbooks', 'tool-management.md');
 const TOOLS = process.env.INVENTORY_TOOLS || co.p('company', 'tools');
-const BASELINE = process.env.INVENTORY_BASELINE || co.p('company', 'state', 'tool-inventory-baseline.json');
+const BASELINE_TRACKED = co.p('company', 'tools', 'inventory-baseline.json');
+const BASELINE_LEGACY = co.p('company', 'state', 'tool-inventory-baseline.json');
+const BASELINE = process.env.INVENTORY_BASELINE || (fs.existsSync(BASELINE_TRACKED) || !fs.existsSync(BASELINE_LEGACY) ? BASELINE_TRACKED : BASELINE_LEGACY);
 const EXEMPT = /\.before\.(sh|js)$/;   // a pre-change copy named in a mutant comparison, never a tool
 const SCRIPT = /\.(js|sh|py|mjs)$/;    // an executable tool; a unit file, a folder or a doc is not one
 const TOOL_RE = /company\/tools\/([A-Za-z0-9_.-]+)/g;
 
 function readBaseline(p) {
-  try { const j = JSON.parse(fs.readFileSync(p, 'utf8')); return Array.isArray(j.baseline) ? j.baseline : []; }
-  catch (_) { return null; }   // null = the file is missing or unreadable, which is not "no debt"
+  // Either a bare array (`[]`) or the older `{ "baseline": [...] }` shape; anything else is unreadable, not "no debt".
+  try {
+    const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (Array.isArray(j)) return j;
+    if (j && Array.isArray(j.baseline)) return j.baseline;
+    return null;
+  } catch (_) { return null; }   // null = the file is missing or unreadable, which is not "no debt"
 }
 
 function scan(opts) {
@@ -87,7 +95,7 @@ function scan(opts) {
     onDisk.push(f);
     if (named.has(f)) continue;
     if (baseline === null) continue;            // already reported once; do not multiply it per file
-    if (!owed.has(f)) findings.push({ kind: 'undocumented', name: f, why: 'no row in this runbook and not in the baseline — document it, or add it to company/state/tool-inventory-baseline.json on purpose' });
+    if (!owed.has(f)) findings.push({ kind: 'undocumented', name: f, why: 'no row in this runbook and not in the baseline — document it, or add it to ' + path.relative(ROOT, BASELINE) + ' on purpose' });
   }
   for (const b of [...(baseline || [])].sort()) {
     if (!onDisk.includes(b)) { findings.push({ kind: 'stale-baseline', name: b, why: 'the baseline names it and it is not a script on disk — delete the line' }); continue; }
