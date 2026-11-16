@@ -1,0 +1,57 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- A custom panel view. The console loads this in a sandboxed frame (sandbox="allow-scripts", srcdoc) with a CSP of
+     default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:
+     It has no network and no same-origin access. Data arrives by postMessage; styling uses var(--cap-*) only. -->
+<style>
+  body { margin: 0; padding: var(--cap-space-3); background: var(--cap-surface); color: var(--cap-text); font-family: var(--cap-font); font-size: var(--cap-size-m); }
+  .head { display: flex; gap: var(--cap-space-4); margin-bottom: var(--cap-space-3); flex-wrap: wrap; }
+  .stat b { display: block; font-size: var(--cap-size-l); font-family: var(--cap-mono); }
+  .stat span { color: var(--cap-muted); font-size: var(--cap-size-s); }
+  table { width: 100%; border-collapse: collapse; font-family: var(--cap-mono); }
+  th, td { text-align: right; padding: var(--cap-space-1) var(--cap-space-2); border-bottom: 1px solid var(--cap-border); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--cap-muted); font-weight: normal; font-family: var(--cap-font); }
+  .up { color: var(--cap-good); } .down { color: var(--cap-bad); }
+  button { font: inherit; font-size: var(--cap-size-s); background: var(--cap-surface-2); color: var(--cap-text); border: 1px solid var(--cap-border); border-radius: var(--cap-radius); cursor: pointer; }
+  .muted { color: var(--cap-muted); }
+</style>
+<div class="head" id="head"></div>
+<table>
+  <thead><tr><th>Symbol</th><th>Qty</th><th>Avg</th><th>Last</th><th>P&amp;L</th><th></th></tr></thead>
+  <tbody id="rows"><tr><td colspan="6" class="muted">Waiting for data</td></tr></tbody>
+</table>
+<p class="muted" id="asof"></p>
+<script>
+  // The console posts { type: 'capheos:panel-data', id, data: { positions: {...} }, sources: {...} }.
+  // This view may post back only { type: 'capheos:panel-action', action: '<declared id>', row: {...} } and
+  // { type: 'capheos:panel-resize', height }. The console checks the action id against panel.json and asks the owner
+  // to confirm before it opens the door.
+  var fmt = function (n, d) { return typeof n === 'number' ? n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }) : '-'; };
+  var el = function (tag, text, cls) { var e = document.createElement(tag); if (text != null) e.textContent = String(text); if (cls) e.className = cls; return e; };
+  function draw(p) {
+    var head = document.getElementById('head'); head.replaceChildren();
+    [['Day P&L', fmt(p.dayPnl, 2), p.dayPnl >= 0 ? 'up' : 'down'], ['Gross exposure', fmt(p.grossExposure, 0), ''], ['Positions', (p.positions || []).length, '']].forEach(function (s) {
+      var d = el('div', null, 'stat'); var b = el('b', s[1], s[2]); d.appendChild(b); d.appendChild(el('span', s[0] + (s[0] !== 'Positions' && p.currency ? ' (' + p.currency + ')' : ''))); head.appendChild(d);
+    });
+    var body = document.getElementById('rows'); body.replaceChildren();
+    (p.positions || []).forEach(function (r) {
+      var tr = el('tr');
+      tr.appendChild(el('td', r.symbol)); tr.appendChild(el('td', fmt(r.qty, 0))); tr.appendChild(el('td', fmt(r.avg, 2)));
+      tr.appendChild(el('td', fmt(r.last, 2))); tr.appendChild(el('td', fmt(r.pnl, 2), r.pnl >= 0 ? 'up' : 'down'));
+      var td = el('td'); var btn = el('button', 'Ask');
+      btn.addEventListener('click', function () { parent.postMessage({ type: 'capheos:panel-action', action: 'ask-desk', row: r }, '*'); });
+      td.appendChild(btn); tr.appendChild(td); body.appendChild(tr);
+    });
+    document.getElementById('asof').textContent = p.asOf ? 'As of ' + p.asOf : '';
+    parent.postMessage({ type: 'capheos:panel-resize', height: document.documentElement.scrollHeight }, '*');
+  }
+  window.addEventListener('message', function (ev) {
+    if (ev.source !== parent) return;                       // only the console may talk to this view
+    var m = ev.data || {};
+    if (m.type !== 'capheos:panel-data' || !m.data) return;
+    if (!m.data.positions) { document.getElementById('rows').replaceChildren(el('tr')); document.getElementById('asof').textContent = 'No positions file yet.'; return; }
+    draw(m.data.positions);
+  });
+  parent.postMessage({ type: 'capheos:panel-ready' }, '*');
+</script>

@@ -1,0 +1,79 @@
+{
+  "_doc": "The allowlists a console panel may draw from, and the limits every panel lives inside. Read by company/tools/console-panel.js (validate, add, render) and by the console backend. A panel names a source by its id here; it can never name a command, a URL or a path outside these lists. This file is a shared policy: changing it is a 'tools' change through harness-change.js, owned by the tools function and reviewed by risk. console-panel.js never writes it.",
+  "version": 1,
+
+  "file": {
+    "_doc": "Read-only file sources. A panel gives a glob relative to the project root. It must start with one of the roots, end in one of the extensions, contain no '..', no absolute path, no backslash, no dot-segment and no 'secrets' segment, and match none of the deny globs. Symlinks are never followed.",
+    "roots": ["company/work/", "company/state/"],
+    "extensions": [".json", ".jsonl", ".md", ".csv"],
+    "deny": ["**/secrets/**", "**/.*", "**/*token*", "**/*secret*", "**/*.key", "**/*credential*", "company/state/owner-inbox.json"],
+    "maxBytes": 2097152,
+    "maxFiles": 50
+  },
+
+  "tool": {
+    "_doc": "Read-only company tool commands, run as `node company/tools/<argv[0]> <argv[1..]>` with no shell, a timeout and the panel's own data cap. Every entry must print JSON on stdout and change nothing.",
+    "handoffs-due": {
+      "argv": ["handoff-status.js", "--due", "--json"],
+      "description": "Open handoffs across all inboxes, sorted by deadline: [{due, raw, file, line, heading, overdue}]",
+      "timeoutMs": 15000
+    },
+    "owner-messages-new": {
+      "argv": ["owner-inbox.js", "new"],
+      "description": "Owner messages nobody has acknowledged yet: [{id, at, from, text, answersQuestion}]",
+      "timeoutMs": 10000
+    },
+    "owner-questions": {
+      "argv": ["inbox.js", "list", "--open"],
+      "description": "Open owner questions with their recommendation and default",
+      "timeoutMs": 10000
+    },
+    "ask-owners": {
+      "argv": ["ask.js", "owners"],
+      "description": "Who holds which function now",
+      "timeoutMs": 10000
+    }
+  },
+
+  "station": {
+    "_doc": "GET-only station endpoints, called by the console backend with the station token. Offline render (console-panel.js render without --live) reports them as not resolved.",
+    "health": { "path": "/api/health", "method": "GET", "description": "Station health" },
+    "roster": { "path": "/api/roster", "method": "GET", "description": "Crew roster as the station sees it" },
+    "usage-providers": { "path": "/api/usage/providers", "method": "GET", "description": "Per-provider usage and remaining" },
+    "cron": { "path": "/api/cron", "method": "GET", "description": "Schedules" }
+  },
+
+  "limits": {
+    "_doc": "The 'within reason' numbers. perPlacement counts installed panels (hidden ones included) per placement: today = the Today screen; side = per screen's side column; screen = company screens under the Company nav group.",
+    "perPlacement": { "today": 6, "side": 3, "screen": 8 },
+    "minRefreshSeconds": 30,
+    "maxRefreshSeconds": 86400,
+    "defaultRefreshSeconds": 300,
+    "maxSourcesPerPanel": 4,
+    "maxActionsPerPanel": 4,
+    "maxRows": 500,
+    "maxViewHtmlBytes": 262144,
+    "customHeight": { "min": 120, "max": 1200 }
+  },
+
+  "screens": {
+    "_doc": "Console screens. sideAllowed = screens whose side column may hold company panels. protected = screens no panel may touch. builtinLabels = nav labels a company screen may not reuse.",
+    "sideAllowed": ["today", "comms", "crew", "work", "hiring", "automate", "usage", "floor", "abilities"],
+    "protected": ["governance", "system", "feature-map"],
+    "builtinLabels": ["Today", "Comms", "Crew", "Work", "Hiring", "Automate", "Governance", "Usage and models", "Usage", "Models", "Floor", "Abilities", "System", "Feature map", "Needs you", "Company"]
+  },
+
+  "reservedIds": ["needs-you", "halt", "governance", "system", "feature-map", "today", "comms", "crew", "work", "hiring", "automate", "usage", "floor", "abilities", "company", "console", "settings"],
+
+  "actions": {
+    "_doc": "The only doors a panel action may open. Each ends in an existing channel and asks the owner to confirm first. None writes company data directly, moves money or leaves the company.",
+    "handoff": "append a handoff block (HANDOFFS.md format, Status OPEN, from the owner via the console) to the inbox of the seat holding `to`",
+    "ask-ceo": "append an owner message to company/owner/inbound.jsonl; the CEO reads and acknowledges it (owner-inbox.js)",
+    "owner-question-draft": "prefill the owner's Comms composer with the text; nothing is sent until the owner presses send"
+  },
+
+  "styleTokens": {
+    "_doc": "The CSS custom properties the console injects into every custom view. A custom view styles itself with var(--cap-*) from this list only.",
+    "tokens": ["--cap-bg", "--cap-surface", "--cap-surface-2", "--cap-text", "--cap-muted", "--cap-border", "--cap-accent", "--cap-accent-text", "--cap-good", "--cap-warn", "--cap-bad", "--cap-font", "--cap-mono", "--cap-size-s", "--cap-size-m", "--cap-size-l", "--cap-radius", "--cap-space-1", "--cap-space-2", "--cap-space-3", "--cap-space-4"]
+  }
+}

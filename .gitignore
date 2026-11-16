@@ -1,0 +1,98 @@
+# CaPheOS — the framework is tracked; a running company's secrets, station and working state are not.
+# Rule of thumb: if a running company wrote it, or it holds a key, it does not belong in this repo.
+
+# ── Secrets (shared keys live here, never in git) ───────────────────────────────
+secrets/*
+!secrets/README.md
+!secrets/*.example
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+*-key
+*-token
+.api-token
+.*-key
+.*-token
+*.secret
+*.credentials.json
+service-account*.json
+
+# ── The station (StarNet checkout and its data) ─────────────────────────────────
+/starnet/
+/.starnet-data/
+/.npm-cache/
+/.node-gyp/
+station.log
+
+# ── A running company's working state ───────────────────────────────────────────
+# Framework defaults for these live in company/defaults/ and are copied in by scripts/found-company.sh.
+/company/work/*
+!/company/work/.gitkeep
+/company/state/*
+!/company/state/.gitkeep
+/company/owner/*
+!/company/owner/.gitkeep
+/company/hiring/*
+!/company/hiring/.gitkeep
+/company/repos/
+/company/floor_snapshots/
+/company/memory/
+/company/brand/
+/company/roles/*.md
+!/company/roles/templates/
+/company/*.jsonl
+/company/projects.json
+/company/mandates.json
+/company/patches/*.applied
+/company/patches/*.pre-*
+/company/tools/loops.json.bak*
+/scratch/
+
+# ── Build, runtime and editor noise ─────────────────────────────────────────────
+node_modules/
+.deps/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.lock
+!package-lock.json
+
+# ── Media, captures and large artefacts (screenshots, recordings, dumps) ────────
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.mp4
+*.webm
+*.pdf
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+*.jsonl
+!company/tools/tests/fixtures/**/*.jsonl
+
+# ── Console panels a running company's crew added (examples and the contract stay tracked) ──
+/company/console/panels/
+/company/console/proposed/
+/company/console/changes.jsonl
+/company/console/state.json

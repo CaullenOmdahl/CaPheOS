@@ -1,0 +1,8 @@
+{
+  "_doc": "Fixture crew for console-panel.js selftest. Invented names only.",
+  "agents": {
+    "sam": { "name": "Sam", "functions": ["ceo", "tools", "people", "risk", "floor"], "inbox": "to-sam.md", "manager": null },
+    "alex": { "name": "Alex", "functions": ["finance"], "inbox": "to-alex.md", "manager": "sam" },
+    "kim": { "name": "Kim", "functions": [], "inbox": "to-kim.md", "manager": "sam" }
+  }
+}

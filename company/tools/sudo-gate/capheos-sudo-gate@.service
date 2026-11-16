@@ -1,0 +1,25 @@
+[Unit]
+Description=CaPheOS root-command broker for agents (connection %i)
+Requires=capheos-sudo-gate.socket
+After=capheos-sudo-gate.socket docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I -S /usr/local/lib/capheos-sudo-gate/broker.py
+User=root
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=capheos-sudo-gate
+# The broker IS the trust boundary: it is root (to run docker and to drop to nobody), so it stays small and
+# fail-closed rather than sandboxed. These limits cost it nothing and shrink the blast radius of a broker bug.
+TimeoutStartSec=0
+RuntimeMaxSec=2100
+NoNewPrivileges=no
+ProtectHome=no
+ProtectSystem=no
+PrivateTmp=no
+RestrictSUIDSGID=no
+LockPersonality=yes
+RestrictRealtime=yes
+MemoryDenyWriteExecute=no

@@ -1,0 +1,14 @@
+[Unit]
+Description=CaPheOS root-command broker socket (agent sudo gate)
+
+[Socket]
+ListenStream=/run/capheos-sudo-gate.sock
+# @OWNER_USER@ / @OWNER_GROUP@ are filled in by install.sh (the Unix user the company and its agents run as)
+SocketUser=@OWNER_USER@
+SocketGroup=@OWNER_GROUP@
+SocketMode=0600
+Accept=yes
+MaxConnectionsPerSource=0
+
+[Install]
+WantedBy=sockets.target

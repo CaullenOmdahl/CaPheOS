@@ -1,0 +1,109 @@
+{
+ "_doc": "AI usage pacing numbers. Owned by the finance seat (co.seatFor('finance')); read by company/tools/pacer.js on every dispatcher tick. Copied to company/work/finance/pacing-policy.json at founding. The rule: lean into the flat-fee subscriptions, but each subscription with a weekly limit may use at most dailyFraction of that limit per day, counted from the start of its own weekly window, with unused share carried forward within the week: on day k the week's used % may not pass k x 100 x dailyFraction x shareOfAccount - marginPct ('today's line'). Routines get a subscription only while its meter is under today's line; once closed, it reopens only reopenBandPct under the line, so a meter hovering at the line does not flip routines back and forth. The routing table (which routine may use which model) is in company/model-policy.json 'routing', kept by the people seat.",
+ "mode": "shadow",
+ "_mode": "shadow = measure, plan, log and report (company/work/finance/ai-usage.md), change nothing on the station (the one exception: it lifts a rail pause it made itself while live). live = also switch routine models (POST /api/cron/update), pause and resume scheduled DeepSeek routines near the station rail, hold DeepSeek wake-ups near the rail, and let the dispatcher fire a third loop a tick when that loop runs on a subscription with room. Switching back to shadow stops further changes, but routines keep the model the pacer last gave them: `node company/tools/pacer.js restore` puts every routine the pacer moved back on its earlier model. Before live: set a per-run token ceiling for unpriced providers on the station (runtime.knobs.json maxUnpricedTokens; 0 = none), and get a CEO ruling on routing.refireWithinMin.",
+ "dailyFraction": "1/7",
+ "marginPct": 1,
+ "reopenBandPct": 1,
+ "shareOfAccount": 1.0,
+ "_shareOfAccount": "The share of each subscription account this company may use, 0 < share <= 1. It scales the daily line (k x 100 x dailyFraction x share). The meters read the WHOLE account, so when the same Claude or MiniMax account serves another company (or the owner's own use), give each company its share here (for example 0.5 each); every company then stops at its own line of the account total. A per-subscription claude.shareOfAccount / minimax.shareOfAccount overrides this one. The hard stops (weekCloseAtUsedPct) are account stops and are not scaled.",
+ "claude": {
+  "feedFile": "",
+  "_feedFile": "Optional second Claude meter: a JSON file { at, seven_day: { used_percentage, resets_at }, five_hour: {...} } written by a Claude Code status line on this machine ('~' allowed). The pacer uses the HIGHEST of the fresh readings for the current week from it and the station's own reading (.starnet-data/workspaces/.usage/subscriptions.json), never the newest: a status line can rewrite its file every minute with a new time while an idle session's numbers are frozen. The weekly meter only rises, so the pacer also never reads lower than it saw itself within staleAfterMin. Empty = the station's reading only.",
+  "staleAfterMin": 90,
+  "fiveHourCloseAtUsedPct": 95,
+  "_close": "Claude also closes to routines when its 5-hour window (if reported) is fiveHourCloseAtUsedPct used, when the account answers 'rejected', and after a usage-limit error until the window that ran out resets (5 hours when the meters do not say which).",
+  "weekCloseAtUsedPct": 95,
+  "_weekCloseAtUsedPct": "The account's hard stop for the week: no daily line, emergency or CEO reserve goes past it. The subscription belongs to the owner; changing a stop is the owner's decision, relayed by the CEO.",
+  "dailyLineFrom": "",
+  "_dailyLineFrom": "Optional ISO time (with offset). Before it, the daily line does not apply to Claude and routines may use it up to weekCloseAtUsedPct (useful while a company is being set up before a weekly reset). Empty = the daily line always applies."
+ },
+ "minimax": {
+  "url": "https://www.minimax.io/v1/token_plan/remains",
+  "pollEveryMin": 10,
+  "staleAfterMin": 45,
+  "fiveHourCloseBelowLeftPct": 0,
+  "modelName": "general",
+  "_poll": "GET url at most every pollEveryMin (never below 10); the reading is cached in company/state/pacer-state.json and counts as unknown (closed) after staleAfterMin. The key is secrets/minimax-key (or the station's provider-key store). MiniMax may bill credits once the plan's quota runs out.",
+  "paceBy": "fiveHour",
+  "weekCloseAtUsedPct": 100,
+  "_paceBy": "fiveHour = MiniMax is paced by its own two limits only: it closes when its 5-hour window has under fiveHourCloseBelowLeftPct left, or the week passes weekCloseAtUsedPct. week = the daily-line pacing used for Claude."
+ },
+ "emergency": {
+  "ceilingPct": 90,
+  "maxHours": 12,
+  "allowedBy": [
+   "ceo",
+   "risk"
+  ],
+  "autoOnSerious": true,
+  "autoHours": 6,
+  "_doc": "An emergency lifts today's line to ceilingPct of each weekly limit (never past weekCloseAtUsedPct) until it expires (at most maxHours). Started by `node company/tools/pacer.js emergency on --why \"...\" --by <name> --hours N`. allowedBy lists who may start one: a function name (ceo, people, tools, risk, floor, finance: whoever holds it in company/tools/loops.json, by name or station id) or a literal name. Also started automatically (live mode) for autoHours on a new confirmed S0/S1 serious flag from the last 24 hours in company/work/people/competence.json, once per flag. company/state/emergency.json is checked on every read: one started by anybody else, longer than maxHours, starting in the future, or automatic without a confirmed S0/S1 flag is ignored and logged. --by is taken on trust: StarNet gives a command no agent identity."
+ },
+ "routing": {
+  "switchAtMostEveryMin": 60,
+  "maxOntoSubscriptionPerHour": 2,
+  "refusalBlockHours": 24,
+  "refireWithinMin": 0,
+  "blockOutcomes": [
+   "refused"
+  ],
+  "blockFailureCodes": [
+   "content_policy_blocked"
+  ],
+  "_doc": "A routine never changes model while it runs. It moves onto a subscription at most once every switchAtMostEveryMin, and at most maxOntoSubscriptionPerHour routines move onto a subscription in any hour, in the routing table's order (0 = no limit), so going live or a subscription reopening never moves every routine at once. It moves off a subscription that has closed at once. A routine run that ended with one of blockOutcomes/blockFailureCodes blocks that provider for that routine for refusalBlockHours. refireWithinMin 0 = a refused run is not re-fired: a policy refusal stops that request and the company does not shop for a permissive model. Set it (for example 120) only on a CEO ruling; the pacer then re-fires a refusal younger than that once on the routine's new model, never a paused routine."
+ },
+ "deepseekRail": {
+  "holdAtPct": 85,
+  "pauseScheduledAtPct": 90,
+  "resumeBelowPct": 80,
+  "projectFromHours": 3,
+  "overflowToMiniMax": true,
+  "_doc": "The station's own soft rail is GET /api/budget/status caps.perDay over a rolling 24 hours; tripping it needs a manual RESUME, so routines must never trip it. From holdAtPct the dispatcher holds DeepSeek wake-ups that have no OPEN handoff due today, and with overflowToMiniMax a DeepSeek-bound routine moves to MiniMax while MiniMax is open (except routines marked railOverflow false). StarNet fires scheduled routines without the dispatcher, so from pauseScheduledAtPct the pacer also pauses scheduled routines that would still run on DeepSeek, except a running one, an owner-wake loop and anyone with an OPEN handoff due today; it resumes the ones it paused under resumeBelowPct. Status and the report say when the rail would reach holdAtPct and trip at the last projectFromHours' pace, in percentages only."
+ },
+ "deepseek": {
+  "balanceUrl": "https://api.deepseek.com/user/balance",
+  "pollEveryMin": 10,
+  "staleAfterMin": 30,
+  "creditFailureHoldMin": 120,
+  "_doc": "DeepSeek is prepaid: when the balance runs out every call answers 402 'Insufficient Balance'. The pacer asks the balance endpoint whether calls are possible (is_available only: no amount reaches state, a log or a report) and also reads the routines' own errors. The key is secrets/deepseek-key (or the station's provider-key store)."
+ },
+ "offpeakHold": {
+  "enabled": true,
+  "mustNotMove": [],
+  "proofClocks": [],
+  "_doc": "enabled false is the kill switch for the peak-price trigger of the DeepSeek hold (a policy key, not a code edit). mustNotMove: routine-name prefixes (case-insensitive) that the peak trigger never defers and company/tools/offpeak-clocks.js never flags (for example the CEO's heartbeat loop or a daily standup). Empty = no routine is exempt. The rail hold ignores this list: it is a money-safety control. proofClocks (optional, [{name, at: 'HH:MM'}]): routines whose clocks company/tools/offpeak-proof.js must show off-peak; empty = every movable DeepSeek clock."
+ },
+ "peakPricing": {
+  "_doc": "Peak-price hours per provider, a pricing fact of that provider, stated in the provider's own timezone (IANA name). Outside these blocks the provider bills its off-peak price. company/tools/offpeak-hold.js (the DeepSeek peak hold), offpeak-clocks.js (routine clocks inside peak) and offpeak-proof.js read it. marginMin is added at both edges because a provider may not say whether a request that crosses a boundary bills at its start or its end. A provider with no entry has no peak hours. Check the numbers against the provider's current pricing page before relying on them.",
+  "deepseek": {
+   "timezone": "Asia/Shanghai",
+   "_timezone": "DeepSeek states its pricing hours in UTC+8 (Beijing time).",
+   "days": [
+    "Mon",
+    "Tue",
+    "Wed",
+    "Thu",
+    "Fri"
+   ],
+   "blocks": [
+    [
+     "09:00",
+     "12:00"
+    ],
+    [
+     "14:00",
+     "18:00"
+    ]
+   ],
+   "marginMin": 10
+  }
+ },
+ "throughput": {
+  "boostedMaxPerTick": 3,
+  "boostWhenShareLeftAbove": 0.5,
+  "_doc": "The dispatcher fires up to boostedMaxPerTick loops a tick (instead of its own default) while Claude or MiniMax is open with more than boostWhenShareLeftAbove days' share left under today's line and DeepSeek is not near the rail, and only when the extra loop it would wake runs on that subscription (never an extra DeepSeek run)."
+ },
+ "setBy": "",
+ "setAt": ""
+}

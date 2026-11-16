@@ -1,0 +1,9 @@
+[Unit]
+Description=@NAME@ dispatcher — wake agents that own open work
+After=@SVC@.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=@ROOT@
+ExecStart=/usr/bin/env node @ROOT@/company/tools/dispatch.js
+TimeoutStartSec=900

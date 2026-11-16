@@ -1,0 +1,47 @@
+diff --git a/frontend/app/world.js b/frontend/app/world.js
+index 2e9570f1..d361ec89 100644
+--- a/frontend/app/world.js
++++ b/frontend/app/world.js
+@@ -11262,6 +11262,24 @@ const World = (() => {
+     }
+     return footOf(t.x, t.y);
+   }
++  /* DEPARTMENT HOME (Ca Phe Digital floor plan): a summoned agent whose desk sits in another room should stand
++     in THAT room, not ring the spawn room. The spawn room stays the fallback when no desk/room resolves. */
++  function roomFoot(roomId) {
++    if (!geo || !roomId) return null;
++    let z = null; try { z = geo.zones[roomId]; } catch (_) { z = null; }
++    const r = z;                                          // zone rects are flat: x1,y1,x2,y2
++    if (!r || r.x1 == null) return null;
++    const cx = Math.floor((r.x1 + r.x2) / 2), cy = Math.floor((r.y1 + r.y2) / 2);
++    const seen = new Set();
++    for (const b of crew) if (b && b.summoned && !b.unplaced) { const t = tileOf(b.px, b.py); seen.add(t.x + ',' + t.y); }
++    if (agent && !agent.unplaced) { const ht = tileOf(bodyPosX(agent), bodyPosY(agent)); seen.add(ht.x + ',' + ht.y); }
++    const ring = [[0, 0], [2, 0], [-2, 0], [0, 2], [0, -2], [3, 1], [-3, 1], [1, 3], [-1, -3], [3, -2], [-3, -2], [2, 2], [-2, -2]];
++    for (let i = 0; i < ring.length; i++) {
++      const tx = cx + ring[i][0], ty = cy + ring[i][1];
++      if (geo.walkable(tx, ty, blocked) && !seen.has(tx + ',' + ty)) return footOf(tx, ty);
++    }
++    return null;
++  }
+   // give a summoned agent a real floor body (idempotent). Static like crew, but flagged `summoned` so the
+   // floor-reset paths (loadStation / syncCrewFromPlan) preserve it, and lit by setActivityFor on a real run.
+   function spawnAgent(a) {
+@@ -11284,7 +11302,16 @@ const World = (() => {
+       if (a.skin && typeof DATA !== 'undefined' && DATA.SKINS && DATA.SKINS[a.skin]) ex.skin = a.skin;
+       return;
+     }
+-    const f = geo ? workerFoot() : { x: 0, y: 0 };                        // pre-geo: parked at origin, re-footed on first syncCrewFromPlan
++    // home to the DESK's department room when one resolves; fall back to the spawn-room ring.
++    // (station.agentRoomId needs a BAY, so it is null for a desk-only specialist — resolve the desk instead.)
++    let roomId = null;
++    try {
++      if (typeof station !== 'undefined' && station.props && station.roomAt) {
++        const desk = station.props().find(p => p && p.t === 'desk' && p.agentId === a.id);
++        if (desk) roomId = station.roomAt(desk.x, desk.y);
++      }
++    } catch (_) { roomId = null; }
++    const f = geo ? (roomFoot(roomId) || workerFoot()) : { x: 0, y: 0 }; // pre-geo: parked at origin, re-footed on first syncCrewFromPlan
+     const b = makeCrewBody(a.id, a.name || a.id, a.color || crewColor(a.id), f.x, f.y, a.skin);
+     b.summoned = true; b.wakeAt = (typeof performance !== 'undefined') ? performance.now() : fnow;   // a small materialize ripple (the wall clock: a spawn lands between frames)
+     b.idleUntil = fnow + U.irnd(1400, 3200);                              // hold a beat after materializing, then it strolls

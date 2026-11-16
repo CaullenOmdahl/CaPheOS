@@ -1,0 +1,38 @@
+{
+  "_doc": "How much the company may decide without the owner. Read by every tool through co.gate(category) (company/tools/lib/company.js); changed only by the owner (node company/tools/governance.js set|preset --by <owner>), watched by locked-watch.js. Levels: auto = the accountable seat decides; notify = it decides and the owner is told the same day (company/owner/outbound.jsonl); approve = it proposes and waits for the owner (an owner question with a recommendation and a default). The four owner gates (access, ownership, commitment, spend beyond the cap) are always approve and cannot be loosened.",
+  "preset": "gate-money-people",
+  "categories": {
+    "hiring": "approve",
+    "release": "approve",
+    "budget": "approve",
+    "spend": "approve",
+    "models": "notify",
+    "tools": "notify",
+    "schedules": "notify",
+    "external": "approve",
+    "dashboard": "notify"
+  },
+  "fixed": {
+    "access": "approve",
+    "ownership": "approve",
+    "commitment": "approve",
+    "spendBeyondCap": "approve"
+  },
+  "_categories": {
+    "hiring": "opening a role and picking the hire",
+    "release": "releasing or replacing a crew member",
+    "budget": "setting or changing the metered cap, per-agent shares and pacing numbers (auto = auto budgeting)",
+    "spend": "new spend inside the approved cap, including a new paid tool",
+    "models": "changing which model a seat or routine runs",
+    "tools": "shared changes to tools, house rules and policies (harness-change.js)",
+    "schedules": "routine clocks, dispatcher tick and per-seat cadence",
+    "external": "anything that leaves the company (external-gate.js categories message, publish, form, network)",
+    "dashboard": "agents adding or changing console panels"
+  },
+  "presets": {
+    "approve-everything": { "label": "Approve everything", "categories": { "hiring": "approve", "release": "approve", "budget": "approve", "spend": "approve", "models": "approve", "tools": "approve", "schedules": "approve", "external": "approve", "dashboard": "approve" } },
+    "gate-money-people": { "label": "Gate money and people", "categories": { "hiring": "approve", "release": "approve", "budget": "approve", "spend": "approve", "models": "notify", "tools": "notify", "schedules": "notify", "external": "approve", "dashboard": "notify" } },
+    "gate-money": { "label": "Gate money", "categories": { "hiring": "notify", "release": "notify", "budget": "approve", "spend": "approve", "models": "auto", "tools": "auto", "schedules": "auto", "external": "notify", "dashboard": "auto" } },
+    "autonomous": { "label": "Autonomous", "categories": { "hiring": "auto", "release": "notify", "budget": "auto", "spend": "auto", "models": "auto", "tools": "auto", "schedules": "auto", "external": "auto", "dashboard": "auto" } }
+  }
+}

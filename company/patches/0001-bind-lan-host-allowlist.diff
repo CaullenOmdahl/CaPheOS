@@ -1,0 +1,56 @@
+diff --git a/sidecar/apiauth.js b/sidecar/apiauth.js
+index 80bf1c1a..3fb0e6f6 100644
+--- a/sidecar/apiauth.js
++++ b/sidecar/apiauth.js
+@@ -48,13 +48,19 @@ function isSameLoopbackOrigin(origin, host) {
+   if (u.origin !== String(origin)) return false;       // a bare serialized origin only (no path/userinfo tricks)
+   return u.host === String(host).toLowerCase().trim();
+ }
++// Extra Hosts the owner explicitly admitted (STARNET_ALLOWED_HOSTS, comma list). Empty by default, so the
++// loopback-only reflection pin is unchanged unless the owner opts in for a LAN address.
++function envAllowedHosts() {
++  const raw = String((typeof process !== 'undefined' && (process.env.STARNET_ALLOWED_HOSTS || process.env.SKYNET_ALLOWED_HOSTS)) || '');
++  return raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
++}
+ // Host must be loopback — this is the DNS-rebinding defense (a rebinding attacker's forged Host fails here).
+ function isAllowedHost(host) {
+   let h = String(host || '').toLowerCase().trim();
+   const br = h.match(/^\[([^\]]+)\](?::\d+)?$/);                              // [ipv6] or [ipv6]:port
+   if (br) h = br[1];
+   else if ((h.match(/:/g) || []).length === 1) h = h.replace(/:\d+$/, '');   // host:port (single colon = ipv4/name)
+-  return h === '127.0.0.1' || h === 'localhost' || h === '::1';
++  return h === '127.0.0.1' || h === 'localhost' || h === '::1' || envAllowedHosts().indexOf(h) >= 0;
+ }
+ 
+ // the path portion of a request url, query stripped (so '/api/x?y=z' matches '/api/x').
+diff --git a/sidecar/index.js b/sidecar/index.js
+index 0f21215b..32ba72bb 100644
+--- a/sidecar/index.js
++++ b/sidecar/index.js
+@@ -546,6 +546,8 @@ const SPECIALIST_CLASSES = (sharedSpecialties.BUILTINS || []).map(s => ({ id: s.
+ function ENV(suffix) { const k = 'STARNET_' + suffix; return (k in process.env) ? process.env[k] : process.env['SKYNET_' + suffix]; }
+ 
+ const PORT = Number(ENV('PORT') || process.env.PORT) || 8787;
++// Bind address: loopback by default; STARNET_HOST=0.0.0.0 opts into a LAN bind (pair it with STARNET_ALLOWED_HOSTS).
++const HOST = String(ENV('HOST') || '127.0.0.1').trim() || '127.0.0.1';
+ const API_TOKEN = String(ENV('API_TOKEN') || crypto.randomBytes(32).toString('hex'));
+ // DEV fast-path (the `npm run dev:seed` launcher sets this): when on, the served index.html carries a small
+ // boot payload (window.__STARNET_DEV__ = {model, prov}) so a fresh browser origin auto-resumes the server-
+@@ -785,7 +787,7 @@ if (!workspaceOwnerClaim.ok) {
+     console.error('✗ degraded holding listener could not bind :' + PORT + ' (' + String(e && e.code || e) + ') — exiting 73');
+     process.exit(73);
+   });
+-  holding.listen(PORT, '127.0.0.1', () => {
++  holding.listen(PORT, HOST, () => {
+     console.error('  degraded holding listener on http://127.0.0.1:' + PORT + ' — /api/health answers 503 with the reason; no store is open');
+   });
+   process.on('SIGTERM', () => process.exit(0));
+@@ -13806,7 +13808,7 @@ server.on('error', (e) => {
+   else console.error('✗ sidecar listen error:', e);
+   process.exit(1);
+ });
+-server.listen(PORT, '127.0.0.1', async () => {
++server.listen(PORT, HOST, async () => {
+   verdictReview.resumeHeld(launchVerdictReview);
+   const url = 'http://127.0.0.1:' + PORT;
+   const bar = '═'.repeat(58);

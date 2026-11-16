@@ -1,0 +1,295 @@
+{
+ "version": "v1.1",
+ "_doc": "Rules for company/tools/competence.js (shadow mode). Plain-words version: company/work/people/COMPETENCE.md. The people seat (co.seatFor('people')) owns this file; a change bumps version. In shadow mode every event is re-scored under the current version each day; before any score is used for anything, a change must say how it treats events written before it. Day boundaries use the company timezone (company/company.json, co.TZ).",
+ "collectorVersion": 2,
+ "_collectorVersion": "Bump when the collector changes how it reads a source: the next collect re-reads every source under new ids and compute scores only the newest collector's rows (older rows stay in the chain as history; rulings follow them by srcKey).",
+ "companyStart": "1970-01-01T00:00:00Z",
+ "shadowUntil": "1970-01-01",
+ "gateAuditFrom": "1970-01-01T00:00:00Z",
+ "settleHours": 2,
+ "buckets": {
+  "build": {
+   "label": "Build",
+   "covers": "product code, company tools, tests"
+  },
+  "ops": {
+   "label": "Ops",
+   "covers": "deploy and infrastructure config, CI and test gates, merge-gate discipline, money and people records"
+  },
+  "review": {
+   "label": "Review",
+   "covers": "reviews of other people's work, QA and security findings"
+  },
+  "planning": {
+   "label": "Planning",
+   "covers": "plans, specs, design and docs, research, factual claims in the company record"
+  },
+  "customer": {
+   "label": "Customer",
+   "covers": "sales and support outcomes",
+   "noCollector": "v1 has no customer or sales signal, so this column always says no data; it is never filled from a proxy"
+  }
+ },
+ "pathBuckets": [
+  {
+   "bucket": "ops",
+   "match": [
+    ".github/**",
+    "**/Dockerfile",
+    "**/docker-compose*.yml",
+    "docker-compose*.yml",
+    "company/tools/test-substrate.sh",
+    "company/tools/ci-local.sh",
+    "company/work/finance/**",
+    "company/hiring/**",
+    "company/roles/**",
+    "company/work/security/**",
+    "company/work/engineering/deployment-map*",
+    "company/work/engineering/test-substrate*"
+   ]
+  },
+  {
+   "bucket": "review",
+   "match": [
+    "company/work/engineering/defects/**",
+    "**/*verdict*.md"
+   ]
+  },
+  {
+   "bucket": "planning",
+   "match": [
+    "docs/**",
+    "**/*.md",
+    "company/work/**"
+   ]
+  },
+  {
+   "bucket": "build",
+   "match": [
+    "**"
+   ]
+  }
+ ],
+ "majorityShare": 0.6,
+ "_size": "Points are linear in verified size: changed lines x perLine for the file's class. Lockfiles, generated files, vendored code and fixtures count 0. Docs count a quarter of code (review A3).",
+ "sizeClasses": {
+  "excluded": {
+   "perLine": 0,
+   "match": [
+    "**/package-lock.json",
+    "**/*.lock",
+    "**/pnpm-lock.yaml",
+    "**/generated/**",
+    "**/*.g.dart",
+    "**/*.freezed.dart",
+    "**/vendor/**",
+    "**/node_modules/**",
+    "**/fixtures/**",
+    "**/*.min.js",
+    "**/*.snap"
+   ]
+  },
+  "docs": {
+   "perLine": 0.05,
+   "match": [
+    "docs/**",
+    "**/*.md",
+    "**/*.txt",
+    "company/work/**"
+   ]
+  },
+  "code": {
+   "perLine": 0.2,
+   "match": [
+    "**"
+   ]
+  }
+ },
+ "caps": {
+  "xpPerUnit": 50,
+  "xpPerAgentPerDay": 200,
+  "finderPerDay": 30,
+  "demeritPerEvent": 150
+ },
+ "rollup": {
+  "windowDays": 7,
+  "_doc": "Work by the same person within 7 days that touches overlapping files, comes from the same branch or names the same issue is one unit, sized together (review A2). Splitting one feature across unrelated files, branches and issues is NOT caught by this; the per-person daily cap bounds it."
+ },
+ "severity": {
+  "N": {
+   "points": 0,
+   "means": "a nit or style preference; never charged"
+  },
+  "S3": {
+   "points": 4,
+   "means": "cosmetic, docs or minor: correct outcome, something reads or looks wrong"
+  },
+  "S2": {
+   "points": 12,
+   "means": "degraded but a workaround exists, or a wrong fact others had to redo work for"
+  },
+  "S1": {
+   "points": 30,
+   "means": "a core flow broken with no workaround, a gate that cannot fail, or a claim that would have caused outside harm"
+  },
+  "S0": {
+   "points": 60,
+   "means": "production down, data lost or exposed, a leaked secret, money lost or misdirected"
+  }
+ },
+ "reach": {
+  "R1": {
+   "factor": 1.0,
+   "means": "one person or one artifact"
+  },
+  "R2": {
+   "factor": 1.5,
+   "means": "a team, a process, a shared tool or gate"
+  },
+  "R3": {
+   "factor": 2.0,
+   "means": "the company record or the owner"
+  },
+  "R4": {
+   "factor": 3.0,
+   "means": "customers, production, money, public"
+  }
+ },
+ "caught": {
+  "self": {
+   "factor": 0,
+   "means": "the author caught it before anyone else saw it"
+  },
+  "review": {
+   "factor": 0.25,
+   "means": "caught in review, before acceptance (merge or approval)"
+  },
+  "self-reported": {
+   "factor": 0.5,
+   "means": "after acceptance, but the author reported it before anyone else found it"
+  },
+  "after": {
+   "factor": 1.0,
+   "means": "found by someone else after acceptance"
+  },
+  "owner": {
+   "factor": 1.5,
+   "means": "the owner found it"
+  },
+  "external": {
+   "factor": 2.0,
+   "means": "a customer, production or the public found it"
+  }
+ },
+ "seriousSeverities": [
+  "S0",
+  "S1"
+ ],
+ "minorCap": {
+  "_doc": "Experience only. Flaws charged to one piece of work never take more than S3share (cosmetic) or S2S3share (everything) of its points, and that cap shrinks with the share of the work the fix touched: clamp(fixShareFactor x fixLines / workLines, fixShareMin, 1). fixLines adds up every merged fix PR for the flaw (a PR must touch a cited file to count as a fix); for a flaw caught in review it is what the author changed after the finding (unknown = fixShareMin), so a catch in review never costs more than the same flaw found after the merge. A 10-line fix on 5,000 lines costs at most 5%. Competence uses the full demerit, uncapped (review B1, C1).",
+  "S3share": 0.25,
+  "S2S3share": 0.5,
+  "fixShareFactor": 10,
+  "fixShareMin": 0.1,
+  "settleWithoutFixDays": 30
+ },
+ "verification": {
+  "approvalPlusIndependentHard": 1.0,
+  "approvalOnly": 0.8,
+  "approvalPlusSelfAuthoredHard": 0.8,
+  "independentHardOnly": 0.7,
+  "minToCount": 0.6,
+  "uncorroboratedReviewer": 0.5,
+  "slackMinutes": 10,
+  "testRecordRunHours": 2,
+  "runsSeenKeepDays": 120,
+  "_doc": "A named author counts only when the station's run records (GET /api/runs) show that person's run making that commit: a git commit/push/cherry-pick or gh pr create whose command names the commit's subject, a file it changed or the PR's branch. A reviewer counts only when their run posted that verdict on that PR (review A7). A test record counts as a hard signal only if it was written before the merge and the file has not changed since, says PASS, ran on a clean tree, has more than 0 cases in every required lane, and an agent run ran its test command at that time (up to testRecordRunHours later, for a background run). A run that appears in /api/runs only after an earlier collect had already covered its end time is not used; run ids are remembered for runsSeenKeepDays."
+ },
+ "hardSignalAuthors": {},
+ "review": {
+  "approvalShare": 0.3,
+  "escrowDays": 14,
+  "cosmeticPay": 1,
+  "cosmeticMaxPerReview": 3,
+  "_doc": "An approval earns approvalShare x the reviewed work's points capped at caps.xpPerUnit (so approving big work never pays more than writing it) x the share of its changed paths inside the declared scope; half at acceptance, half after escrowDays if nothing in scope was found wrong afterwards. One approval per reviewer per piece of work within rollup.windowDays. The approval's competence sample is scored by that outcome. In-review findings: cosmetic (S3) pays cosmeticPay each, at most cosmeticMaxPerReview; S2 and worse pay exactly what the author lost for it (review A6, A9)."
+ },
+ "findings": {
+  "oldCodeFlat": {
+   "S3": 2,
+   "S2": 6,
+   "S1": 10,
+   "S0": 15
+  },
+  "_doc": "A finder is paid exactly what the author lost: the demerit charged after the cap, times the work's verification multiplier, once the fix merges (or after minorCap.settleWithoutFixDays with no fix). A planted flaw therefore never pays the pair. A finding in code written before the company started, or in work that was later reverted, pays a flat amount, and only once a fix merges (review A5). Finders have their own daily cap."
+ },
+ "competence": {
+  "halfLifeDays": 30,
+  "prior": 0.5,
+  "k": 3,
+  "calibrateMinWeight": 3,
+  "calibrateMinSamples": 3,
+  "standaloneWeightDivisor": 20,
+  "standaloneWeightMax": 8,
+  "approvalWeightShare": 0.5,
+  "findingWeightDivisor": 20,
+  "findingWeightMax": 1.5,
+  "sizeWeight": {
+   "base": 0.5,
+   "perPoint": 0.025,
+   "max": 1.5
+  },
+  "_doc": "competence = 100 x (sum d*w*q + k*prior) / (sum d*w + k), d = 0.5^(age/halfLife). A work sample's quality is 1 - demerits/points with no floor; S0/S1 flaws are separate samples of quality 0."
+ },
+ "soft": {
+  "applyAfterHours": 72,
+  "ownerCorrection": {
+   "severity": "S2",
+   "reach": "R3",
+   "caught": "owner",
+   "bucket": "planning"
+  },
+  "ownError": {
+   "severity": "S2",
+   "reach": "R3",
+   "caught": "after",
+   "ownUpMultiplier": 0.8,
+   "bucket": "planning",
+   "linkOwnerCorrectionHours": 24,
+   "writerSlackMinutes": 30
+  },
+  "ackCorrectionPattern": "\\bcorrection\\b",
+  "replyAdmissionPattern": "\\b(corrects? something I told you|I had it (?:filed )?wrong|it was my call|I was wrong|my (?:mistake|error)|that was wrong)\\b",
+  "replyLinkHours": 2,
+  "_doc": "Only two soft signals in v1. Owner corrections: an ack note in company/state/owner-inbox.json that says correction (counted only when the acker's own run ran owner-inbox.js ack for that message), or an agent reply in company/owner/outbound.jsonl that admits the error (counted only when that person's own run sent it; admitting it counts as owned up). '(own error)' in the Owner column of company/work/decisions.md, counted only when the named person's run wrote decisions.md within writerSlackMinutes of the row's time. Each applies at its default after applyAfterHours unless the people seat amends it. Owning an error costs ownUpMultiplier of the charge (review A10). The owner changing direction charges nobody (review B4)."
+ },
+ "revert": {
+  "defaultSeverity": "S2",
+  "removesShare": 0.5
+ },
+ "fixForward": {
+  "defaultSeverity": "S3"
+ },
+ "gateAudit": {
+  "severity": "S2",
+  "reach": "R2",
+  "caught": "after",
+  "bucket": "ops",
+  "_doc": "A merge after gateAuditFrom with no premerge-check PASS for its head at or before the merge (company/work/evidence/premerge-<repo>-<sha>.json: the current verdict or one kept in its history; a later re-run that records FAIL does not erase it) is a process demerit for whoever ran gh pr merge."
+ },
+ "defaultReach": {
+  "product": "R4",
+  "tools": "R2"
+ },
+ "pending": {
+  "expireDays": 30
+ },
+ "amend": {
+  "minReasonChars": 10,
+  "hrSelfReviewers": [],
+  "_doc": "Only the people seat (functions: people in company/tools/loops.json) amends; the people seat's own events are amended by the risk or finance seat holder (or hrSelfReviewers, station ids, if set). An amendment counts once the station's run records show the amender's own run ran `competence.js amend <id>` with the same changes."
+ },
+ "_companyStart": "When the company was founded (ISO). scripts/found-company.sh sets it; work before it is old code (findings.oldCodeFlat).",
+ "_shadowUntil": "The date competence scores stop being shadow-only; set by the people seat at founding (for example a month after companyStart).",
+ "_gateAuditFrom": "Merges from this time on need a premerge-check PASS record; set at founding to companyStart or the day the merge gate was installed.",
+ "_hardSignalAuthors": "{ script path: station id } for test scripts whose author's own PASS counts as self-authored (approvalPlusSelfAuthoredHard)."
+}

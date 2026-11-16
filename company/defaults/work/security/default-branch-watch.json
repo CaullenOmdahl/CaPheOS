@@ -1,0 +1,6 @@
+{
+  "_doc": "The watch list for company/tools/default-branch-watch.js, copied to company/work/security/default-branch-watch.json at founding (the tool reads this defaults copy when the live one is missing). repos: GitHub repositories as \"owner/name\" whose default branch must only change through a merged pull request with a pre-merge PASS; every listed repo is watched. discover: true also watches every repository the gh login can push to and the github.com remotes of local clones. watchStart: ISO instant from which a repo seen for the first time is judged (empty = the first tick). Taking a repo off the list is reported to the risk owner; this file should be a locked file (locked-watch.js).",
+  "repos": [],
+  "discover": false,
+  "watchStart": ""
+}

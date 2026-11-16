@@ -1,0 +1,63 @@
+{
+ "_doc": "Settings for company/tools/corrections.js (1-on-1s: standing corrections for habits). Plain-words process: company/work/people/ONE-ON-ONES.md. The holder of the people function owns this file; the holder of the tools function owns the tool. Times are company time (company.json timezone) unless utcOffsetMinutes pins an offset. A class's 'since' is when its rule took effect: nothing before it ever counts. null means liveSince.",
+ "version": 1,
+ "liveSince": null,
+ "_liveSince": "when this feature went live; the start for classes whose since is null. null = from the beginning (founding may set it to the founding time)",
+ "utcOffsetMinutes": null,
+ "_utcOffsetMinutes": "null = use the company timezone from company/company.json (daylight saving included); a number pins a fixed offset east of UTC",
+ "companyRoot": null,
+ "_companyRoot": "the absolute path that the absolute-path-write detector looks for; null = the folder this tool lives in (the company root)",
+ "windowDays": 14,
+ "_windowDays": "a habit is a pattern within this many days",
+ "retireAfterCleanDays": 14,
+ "_retireAfterCleanDays": "a correction ends by itself after this many days with no new occurrence of its class for that person",
+ "escalateAfterRecurrences": 2,
+ "_escalateAfterRecurrences": "this many recurrences while the correction is shown => once, an OPEN gate request to the tools owner and a DONE FYI to the people owner",
+ "escalationDeadlineDays": 3,
+ "maxActivePerPerson": 5,
+ "maxBlockChars": 1200,
+ "_maxBlockChars": "the block's size limit. Each correction line gets an equal share (with 5 per person, about 215 characters), so every active correction is always shown; a hand-written line over its share is refused",
+ "exemptAgents": [],
+ "classes": {
+  "long-wait": {
+   "enabled": true,
+   "since": null,
+   "threshold": 2,
+   "routineOnly": true,
+   "maxWaitMs": 240000,
+   "toleranceMs": 5000,
+   "_doc": "a routine run that asked shell_bg_wait for a timeoutMs above maxWaitMs (the house rule's own words, read from the transcript arguments) and really waited that long (house rules v1). A wait that runs out measures a few ms over its request (240000 -> 240003), so a legal 240000 wait never counts. Only when the arguments cannot be found does the measured time decide, and then it must exceed maxWaitMs + toleranceMs. One run = one occurrence."
+  },
+  "absolute-path-write": {
+   "enabled": true,
+   "since": null,
+   "threshold": 2,
+   "routineOnly": true,
+   "rootOnly": true,
+   "_doc": "a routine run that gave fs_write/fs_edit/fs_append/fs_patch a path under the company root's absolute path (house rules v1); fs_patch headers are read like StarNet's own parser (any spacing, Move to, Move File). rootOnly: the correction is shown only in routines that work in the company root, where a relative path is right, and only runs of those routines count."
+  },
+  "quest-without-domain": {
+   "enabled": true,
+   "since": null,
+   "threshold": 2,
+   "routineOnly": true,
+   "_doc": "a quest minted with no domain after liveSince. Charged to the run whose /api/quests/mint call names the quest (createdBy defaults to the quest's owner, so it counts only when it names someone else). A quest minted in a chat with the owner does not count."
+  },
+  "repeat-performance-flag": {
+   "enabled": true,
+   "since": null,
+   "threshold": 2,
+   "excludeTypes": [
+    "refusal",
+    "limit"
+   ],
+   "_doc": "the same performance flag type twice for one person, read from the dispatcher's PERFORMANCE FLAG lines in company/work/dispatch-log.md. refusal and limit are model or limit problems, not habits."
+  },
+  "competence-flaw": {
+   "enabled": false,
+   "notBefore": null,
+   "threshold": 2,
+   "_doc": "hook: confirmed flaws in the same competence bucket. While the competence system is in shadow mode (company/competence-policy.json shadowUntil) nothing may use it: this stays off until BOTH the shadow period (and notBefore, if set) has passed AND the people owner sets enabled to true after the shadow review decides it may be used. The later of notBefore and shadowUntil wins."
+  }
+ }
+}

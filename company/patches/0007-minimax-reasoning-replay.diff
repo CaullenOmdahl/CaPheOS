@@ -1,0 +1,78 @@
+# 0007 — MiniMax thinking replay on a custom endpoint
+# Why: MiniMax M3.x models must receive each turn's reasoning_content back on every later request of a tool loop
+# (https://platform.minimax.io/docs/guides/text-m3-function-call.md). StarNet replays it only for the DeepSeek profile,
+# so a MiniMax connection configured as a CUSTOM endpoint lost its reasoning between steps (an agent would re-read the
+# same pages again and again). This turns the existing replay on for custom endpoints on api.minimax.io /
+# api.minimaxi.com only; every other custom endpoint is unchanged (test/minimax-reasoning-replay.test.js).
+# Apply:  git -C starnet apply --3way company/patches/0007-minimax-reasoning-replay.diff ; then restart the station.
+# Revert: git -C starnet apply -R company/patches/0007-minimax-reasoning-replay.diff ; then restart the station.
+diff --git a/sidecar/providers/factory.js b/sidecar/providers/factory.js
+index 7a15c8e4..16b0eddd 100644
+--- a/sidecar/providers/factory.js
++++ b/sidecar/providers/factory.js
+@@ -184,6 +184,7 @@
+          prompt to its tail, so a local Qwen lead never even saw team.dispatch (2026-10-11 user report). Such an
+          endpoint borrows the Ollama profile's WIRE (native /api/chat + sized window, output ceiling, model-load
+          timeout); the native path still drops back to /v1 by itself when the server has no /api/chat. */
++      const isMiniMaxEndpoint = u => { try { return /(^|\.)minimaxi?\.(io|com)$/i.test(new URL(String(u || '')).hostname); } catch (_) { return false; } };   // CA PHE DIGITAL (0007)
+       const wire = (id === 'custom' && looksLikeOllama(opts.baseUrl || profile.baseUrl) && registry.getProviderProfile('ollama')) || profile;
+       const mergedHeaders = (profile.extraHeaders || opts.headers)
+         ? Object.assign({}, profile.extraHeaders || {}, opts.headers || {})
+@@ -210,7 +211,10 @@
+         // endpoint documents outside its declared lists (deepseek 'none'), and DeepSeek's reasoning_content replay
+         reasoningModels: profile.reasoningModels,
+         reasoningOffEffort: profile.reasoningOffEffort,
+-        replayReasoningContent: profile.replayReasoningContent === true,
++        // CA PHE DIGITAL (company/patches/0007): MiniMax M3.x must get its reasoning_content back on every later request of
++        // a tool loop ("essential for achieving the model's best performance", platform.minimax.io Tool Use & Interleaved
++        // Thinking guide), so a CUSTOM endpoint on MiniMax's API gets the same replay the DeepSeek profile has.
++        replayReasoningContent: profile.replayReasoningContent === true || (id === 'custom' && isMiniMaxEndpoint(opts.baseUrl || profile.baseUrl)),
+         supportsTools: typeof profile.supportsTools === 'boolean' ? profile.supportsTools : null,
+         // wireStreamOptions:false = endpoint rejects/lacks stream_options (usage streams by default there)
+         includeUsage: profile.wireStreamOptions === false ? false : opts.includeUsage,
+diff --git a/test/minimax-reasoning-replay.test.js b/test/minimax-reasoning-replay.test.js
+new file mode 100644
+index 00000000..1d4fa227
+--- /dev/null
++++ b/test/minimax-reasoning-replay.test.js
+@@ -0,0 +1,40 @@
++/* node test/minimax-reasoning-replay.test.js — CA PHE DIGITAL (company/patches/0007): a custom endpoint on MiniMax's API
++   hands each turn's reasoning_content back on the next request of a tool loop; other custom endpoints never do. */
++'use strict';
++const factory = require('../sidecar/providers/factory.js');
++let fails = 0; const ok = (c, m) => { if (!c) { fails++; console.log('FAIL ' + m); } else console.log('ok   ' + m); };
++const SSE = chunks => new Response(chunks.map(c => 'data: ' + JSON.stringify(c) + '\n\n').join('') + 'data: [DONE]\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } });
++const TOOLS = [{ type: 'function', function: { name: 'fs_read', description: 'read', parameters: { type: 'object', properties: { path: { type: 'string' } } } } }];
++function endpoint() {
++  const posts = [];
++  const fetch = async (url, init) => {
++    if (init && init.method === 'POST') {
++      posts.push(JSON.parse(init.body));
++      if (posts.length === 1) return SSE([
++        { choices: [{ delta: { reasoning_content: 'I should read ' } }] },
++        { choices: [{ delta: { reasoning_content: 'the file first.' } }] },
++        { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'fs_read', arguments: '{"path":"a.txt"}' } }] }, finish_reason: 'tool_calls' }] }]);
++      return SSE([{ choices: [{ delta: { content: 'done' }, finish_reason: 'stop' }] }]);
++    }
++    return new Response(JSON.stringify({ data: [{ id: 'MiniMax-M3.1-Flash', object: 'model' }] }), { status: 200 });
++  };
++  return { fetch, posts };
++}
++async function collect(p, req) { const out = []; for await (const e of p.stream(req)) out.push(e); return out; }
++(async () => {
++  for (const [base, expect] of [['https://api.minimax.io/v1', true], ['https://api.minimaxi.com/v1', true], ['http://127.0.0.1:1234/v1', false]]) {
++    const ep = endpoint();
++    const p = factory.selectProvider({ provider: 'custom', fetch: ep.fetch, key: 'fixture-key', baseUrl: base });
++    const history = [{ role: 'user', content: 'read a.txt' }];
++    const ev1 = await collect(p, { model: 'MiniMax-M3.1-Flash', messages: history, tools: TOOLS });
++    const block = ev1.find(e => e.type === 'reasoning' && e.block);
++    ok(!!block === expect, base + ': reasoning ' + (expect ? 'is' : 'is not') + ' parked on the turn');
++    const turn = { role: 'assistant', content: '', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'fs_read', arguments: '{"path":"a.txt"}' } }], reasoning: block ? [block.block] : undefined };
++    await collect(p, { model: 'MiniMax-M3.1-Flash', messages: history.concat([turn, { role: 'tool', tool_call_id: 'call_1', content: 'hello' }]), tools: TOOLS });
++    const sent = ep.posts[1].messages.find(x => x.tool_calls);
++    if (expect) ok(sent.reasoning_content === 'I should read the file first.', base + ': reasoning_content rides back on its own turn');
++    else ok(sent.reasoning_content === undefined, base + ': a non-MiniMax custom endpoint gets no reasoning_content');
++    ok(sent.reasoning === undefined, base + ': the parking field never reaches the wire');
++  }
++  console.log(fails ? fails + ' FAILED' : 'all passed'); process.exit(fails ? 1 : 0);
++})();

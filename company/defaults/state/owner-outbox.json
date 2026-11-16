@@ -1,0 +1,5 @@
+{
+  "_doc": "Delivery state for open owner questions (read and written by company/tools/dispatch.js). enabled = deliver the CEO's open questions to the owner channel (company/owner/outbound.jsonl), once each; sent = { <question id>: { at } | { pendingAt } }, filled in by the dispatcher. Starts empty.",
+  "enabled": true,
+  "sent": {}
+}

@@ -1,0 +1,32 @@
+# 0005 — npm install drift, not a code change: package.json allowScripts lets node-pty run its install script
+# (needed for the terminal tool), and package-lock.json gains the matching bin entry. Recorded so it is reapplied
+# after a StarNet update.
+# Apply:  git -C starnet apply --3way company/patches/0005-package-allowscripts-node-pty.diff
+# Revert: git -C starnet apply -R company/patches/0005-package-allowscripts-node-pty.diff
+diff --git a/package-lock.json b/package-lock.json
+index f4270ec8..1f6f1f2c 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -16,6 +16,9 @@
+         "ogg-opus-decoder": "^1.7.3",
+         "undici": "^6.28.1"
+       },
++      "bin": {
++        "starnet": "bin/starnet.js"
++      },
+       "devDependencies": {
+         "@napi-rs/canvas": "0.1.100",
+         "@tauri-apps/cli": "^2"
+diff --git a/package.json b/package.json
+index ef606af2..5b4e43c3 100644
+--- a/package.json
++++ b/package.json
+@@ -178,5 +178,8 @@
+   "overrides": {
+     "adm-zip": "0.6.1",
+     "sharp": "0.35.4"
++  },
++  "allowScripts": {
++    "node-pty@1.1.0": true
+   }
+ }

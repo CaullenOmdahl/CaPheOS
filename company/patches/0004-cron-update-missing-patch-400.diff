@@ -1,0 +1,37 @@
+# 0004 — POST /api/cron/update answers 400 when the body carries no patch
+# Why: the endpoint used to answer ok:true to {id} with no patch, so a routine edit could silently do nothing.
+# Overlaps 0001 in sidecar/index.js (0001 adds 2 lines nearby); apply in order, after 0001.
+# Apply:  git -C starnet apply --3way company/patches/0004-cron-update-missing-patch-400.diff
+# Revert: git -C starnet apply -R company/patches/0004-cron-update-missing-patch-400.diff
+diff --git a/sidecar/index.js b/sidecar/index.js
+index 0f21215b..93d48d13 100644
+--- a/sidecar/index.js
++++ b/sidecar/index.js
+@@ -18221,7 +18221,11 @@ function handleCronUpdate(req, res) {
+     let body; try { body = JSON.parse(raw) || {}; } catch (e) { return json(400, { error: 'bad json' }); }
+     const id = String(body.id || '');
+     if (!cronStore.getJob(cronJobs, id)) return json(404, { error: 'no such routine' });
+-    const patch = Object.assign({}, body.patch || {});
++    // A wrong-shaped edit must not read as success: a missing/empty `patch` changes nothing while answering
++    // ok:true (bug-sweep, Dave loop 4). `patch:{}` stays valid ONLY for addGrants (the ▣ ALLOW IMAGES row).
++    const hasAddGrants = Array.isArray(body.addGrants) && body.addGrants.some(g => g != null && String(g).trim());
++    const patch = (body.patch && typeof body.patch === 'object' && !Array.isArray(body.patch)) ? Object.assign({}, body.patch) : {};
++    if (!Object.keys(patch).length && !hasAddGrants) return json(400, { error: 'missing patch' });
+     // INJECTION TRIPWIRE — an EDIT is the same surface as a create; without this, a routine could be created
+     // clean and then patched into a payload.
+     if (Object.prototype.hasOwnProperty.call(patch, 'prompt')) {
+diff --git a/test/cron.api.test.js b/test/cron.api.test.js
+index fd6164a5..a9bb5c57 100644
+--- a/test/cron.api.test.js
++++ b/test/cron.api.test.js
+@@ -211,6 +211,10 @@ function boot(port, workspaces, attemptsLeft) {
+     A.ok(res.body.job.nextRunAt, 're-armed nextRunAt on resume');
+     const updMissing = await j('POST', '/api/cron/update', { id: 'nope', patch: { name: 'z' } });
+     A.eq(updMissing.status, 404, 'update of an unknown id -> 404');
++    const updNoPatch = await j('POST', '/api/cron/update', { id });
++    A.eq(updNoPatch.status, 400, 'update with a missing patch -> 400 (a wrong-shaped edit is not ok:true)');
++    const updEmptyPatch = await j('POST', '/api/cron/update', { id, patch: {} });
++    A.eq(updEmptyPatch.status, 400, 'update with an empty patch -> 400');
+     const updBadAgent = await j('POST', '/api/cron/update', { id, patch: { agentId: 'bad agent!' } });
+     A.eq(updBadAgent.status, 400, 'update rejects a malformed agentId');
+     const updBadProvider = await j('POST', '/api/cron/update', { id, patch: { provider: 'bad-provider' } });

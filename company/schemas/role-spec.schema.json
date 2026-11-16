@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "required": ["title", "mission", "responsibilities", "required_skills", "success_metrics", "suggested_model_family"],
+  "properties": {
+    "title": { "type": "string" },
+    "mission": { "type": "string" },
+    "responsibilities": { "type": "array", "items": { "type": "string" } },
+    "required_skills": { "type": "array", "items": { "type": "string" } },
+    "success_metrics": { "type": "array", "items": { "type": "string" } },
+    "suggested_model_family": { "type": "string" }
+  }
+}

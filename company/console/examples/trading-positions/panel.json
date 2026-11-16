@@ -1,0 +1,25 @@
+{
+  "$schema": "../../../schemas/console-panel.schema.json",
+  "version": 1,
+  "id": "trading-positions",
+  "title": "Positions and P&L",
+  "description": "Example for a trading firm: the desk's positions file, drawn by a sandboxed custom view.",
+  "owner": "finance",
+  "why": "A trading owner checks exposure and the day's P&L many times a day; the desk already writes it to company/work/desk/positions.json.",
+  "placement": { "area": "screen", "nav": "Positions", "order": 1 },
+  "refresh": 60,
+  "sources": {
+    "positions": { "type": "file", "glob": "company/work/desk/positions.json" }
+  },
+  "view": { "kind": "custom", "html": "view.html", "height": 420, "sources": ["positions"] },
+  "actions": [
+    {
+      "id": "ask-desk",
+      "label": "Ask finance about a position",
+      "kind": "handoff",
+      "to": "finance",
+      "scope": "row",
+      "text": "Owner question on {{row.symbol}}: the position is {{row.qty}} at {{row.avg}}, P&L {{row.pnl}}. What is the plan for it?"
+    }
+  ]
+}

@@ -1,0 +1,266 @@
+# 0008 — VIEWER MODE: /?viewer=1 opens a StarNet page that can only LOOK (e.g. for a public stream of the station)
+# Status: NOT APPLIED (optional; scripts/setup-station.sh skips it by default)
+# Owners: tools (the patch), risk (security review). Why: StarNet has no read-only mode: any second page pushes its
+# roster and save on load, takes the away briefing, stamps presence, acks bridge verbs and is counted as an open page.
+# What it changes (all inert unless the page URL carries viewer=1; the flag only ever REMOVES):
+#   frontend/app/viewer.js (new) — read once from the URL, frozen; fetch/XHR allow only GET/HEAD (local 403
+#     X-StarNet-Code: viewer_readonly), sendBeacon sends nothing, localStorage/sessionStorage writes stay in memory, no
+#     BroadcastChannel traffic or page lock, the feed is marked viewer=1, private surfaces and the camera frame's activity
+#     ticker are not drawn, badge.
+#   frontend/index.html — loads it right after bootguard.js, ahead of every script that fetches, stores or broadcasts.
+#   frontend/app/stationcommands.js — a viewer runs no bridge verb (one early return); website/app/app/stationcommands.js
+#     gets the same line (test/orchestration.test.js keeps that mirror byte-identical).
+#   sidecar/index.js — a viewer=1 feed is never counted as an open page (ssePages), and its reply says X-StarNet-Viewer: 1.
+# Tests: node company/tools/tests/viewer-mode.e2e.js --starnet <tree with this applied> (zero non-GET requests,
+#   workspace and save unchanged, feed marked); the control page without the flag writes.
+# Apply (after 0001-0007, from the project root), then restart the station when no loop is running:
+#     git -C starnet apply --3way ../company/patches/0008-viewer-mode.diff && sed -i "2s/^# Status: NOT APPLIED.*/# Status: APPLIED $(date +%F)/" company/patches/0008-viewer-mode.diff
+#   If the locked-file watcher flags the StarNet change, accept each changed file from the owner's shell:
+#     node company/tools/locked-watch.js accept starnet/<file> --by owner --why "patch 0008 applied"
+# Revert: git -C starnet apply -R ../company/patches/0008-viewer-mode.diff && sed -i "2s/^# Status: APPLIED.*/# Status: NOT APPLIED/" company/patches/0008-viewer-mode.diff
+#   then the same restart.
+diff --git a/frontend/app/stationcommands.js b/frontend/app/stationcommands.js
+index bb89b81c..8a581376 100644
+--- a/frontend/app/stationcommands.js
++++ b/frontend/app/stationcommands.js
+@@ -1438,6 +1438,7 @@ const StationCommands = (() => {
+ 
+   function init() {
+     if (typeof U === 'undefined' || !U.bus || !U.bus.on) return;
++    if (typeof window !== 'undefined' && window.__STARNET_VIEWER__ === true) return;   // a read-only viewer (app/viewer.js) runs no bridge verb
+     U.bus.on('station.command', msg => {
+       if (!msg || !msg.id || !msg.verb) return;
+       run(String(msg.id), String(msg.verb), msg.args);
+diff --git a/frontend/app/viewer.js b/frontend/app/viewer.js
+new file mode 100644
+index 00000000..c51ca88e
+--- /dev/null
++++ b/frontend/app/viewer.js
+@@ -0,0 +1,173 @@
++/* viewer.js — VIEWER MODE: a StarNet page that only LOOKS (Ca Phe Digital company patch 0008, company/patches/).
++
++   Open the station as http://127.0.0.1:<port>/?viewer=1 and this page shows the live floor exactly as the Commander's
++   page does, but it cannot change anything:
++     · fetch: only GET and HEAD leave the page; every other method gets a local 403 (X-StarNet-Code: viewer_readonly),
++       so the save, the roster push, settings, agent changes, runs, acks and presence stamps never reach the station;
++     · XMLHttpRequest: the same rule; navigator.sendBeacon (the unload save) sends nothing;
++     · localStorage / sessionStorage: writes land in a copy held in memory, so another StarNet tab in the same browser
++       never sees this page's journals, settings or caches (reads see that copy over the real store);
++     · BroadcastChannel and the page lock: this page neither answers nor joins the other tabs' "who else is open?";
++     · the live feed (EventSource) is marked viewer=1, so the station never counts this page as an open StarNet page
++       (sidecar/index.js handleChannelEvents), and stationcommands.js never runs a bridge verb here;
++     · private surfaces (COMMS, the session rail, notifications, windows, widget rails, the camera frame's activity
++       ticker) are not drawn, and a badge says VIEWER · READ-ONLY.
++   THE FLAG ONLY REMOVES. It is read once, from this page's own URL, before any other script, and frozen
++   (non-writable, non-configurable): nothing in a save, a setting, storage or the server can switch it on or off later.
++   Every branch on window.__STARNET_VIEWER__ elsewhere must be an early return or a refusal; a branch that adds a route,
++   a token, a control or a capability fails review. Limits: a same-origin frame (an app, a plugin window) is its own
++   page and is not covered; company/tools/station-view.js adds a network-level GET-only guard for its captures.
++   MUST be the first script in index.html. */
++(function () {
++  'use strict';
++  var root = (typeof window !== 'undefined') ? window : null;
++  if (!root) return;
++  var on = false;
++  try { on = new URLSearchParams(String(root.location && root.location.search || '')).get('viewer') === '1'; } catch (_) { on = false; }
++  try { Object.defineProperty(root, '__STARNET_VIEWER__', { value: on, writable: false, configurable: false, enumerable: false }); } catch (_) { /* already fixed by an earlier copy: it cannot change now either way */ }
++  if (root.__STARNET_VIEWER__ !== true) return;
++
++  var CODE = 'viewer_readonly';
++  var guards = [];
++  var refused = [];   // what this page tried to send (method + path), newest last, for the capture tool's report
++  var refusedCount = 0;
++  var refusedBy = {};   // "kind METHOD path" -> count, every kind ever refused (a busy boot cannot push one out)
++  var refusedKeys = 0, refusedOverflow = 0;
++  function note(kind, method, url) {
++    refusedCount++;
++    var p = '';
++    try { var u = new URL(String((url && url.url) || url || ''), root.location.href); p = (u.origin === root.location.origin ? '' : u.origin) + u.pathname; } catch (_) { p = String(url || '').slice(0, 80); }
++    var k = kind + ' ' + String(method || '').toUpperCase() + ' ' + p;
++    refused.push(k);
++    if (refused.length > 80) refused.shift();
++    if (Object.prototype.hasOwnProperty.call(refusedBy, k)) refusedBy[k]++;
++    else if (refusedKeys < 1000) { refusedBy[k] = 1; refusedKeys++; }
++    else refusedOverflow++;
++  }
++  function readOnly(m) { m = String(m || 'GET').toUpperCase(); return m === 'GET' || m === 'HEAD'; }
++  function refusal() {
++    return new Response(JSON.stringify({ ok: false, error: 'this page is a read-only viewer', code: CODE }),
++      { status: 403, headers: { 'Content-Type': 'application/json', 'X-StarNet-Code': CODE } });
++  }
++
++  // 1. fetch — harness.js wraps this guarded fetch with the token logic, so every /api call passes through it
++  try {
++    if (typeof root.fetch === 'function') {
++      var rawFetch = root.fetch.bind(root);
++      root.fetch = function (input, init) {
++        var method = (init && init.method) || (input && typeof input === 'object' && input.method) || 'GET';
++        if (!readOnly(method)) { note('fetch', method, input); return Promise.resolve(refusal()); }
++        return rawFetch(input, init);
++      };
++      guards.push('fetch');
++    }
++  } catch (_) {}
++  // 2. XMLHttpRequest (the page uses none today; a future caller is held to the same rule)
++  try {
++    var XP = root.XMLHttpRequest && root.XMLHttpRequest.prototype;
++    if (XP) {
++      var xOpen = XP.open, xSend = XP.send;
++      XP.open = function (method, url) { this.__viewerMethod = String(method || 'GET'); this.__viewerUrl = url; return xOpen.apply(this, arguments); };
++      XP.send = function () {
++        if (!readOnly(this.__viewerMethod)) {
++          note('xhr', this.__viewerMethod, this.__viewerUrl);
++          var x = this; setTimeout(function () { try { x.abort(); } catch (_) {} }, 0);
++          return;
++        }
++        return xSend.apply(this, arguments);
++      };
++      guards.push('xhr');
++    }
++  } catch (_) {}
++  // 3. sendBeacon — the unload save; false = "not queued", which is the truth
++  try {
++    var nav = root.navigator;
++    if (nav && typeof nav.sendBeacon === 'function') {
++      nav.sendBeacon = function (url) { note('beacon', 'POST', url); return false; };
++      guards.push('beacon');
++    }
++  } catch (_) {}
++  // 4. storage — writes go to a copy in memory (per store); reads and key listings see that copy over the real store
++  try {
++    var SP = root.Storage && root.Storage.prototype;
++    if (SP) {
++      var real = { get: SP.getItem, key: SP.key, len: Object.getOwnPropertyDescriptor(SP, 'length').get };
++      var copies = new WeakMap();
++      var copyOf = function (s) { var c = copies.get(s); if (!c) { c = new Map(); copies.set(s, c); } return c; };   // key -> string, or null = removed
++      var keysOf = function (s) {
++        var c = copyOf(s), out = [], seen = new Set(), n = real.len.call(s);
++        for (var i = 0; i < n; i++) { var k = real.key.call(s, i); if (k == null || seen.has(k)) continue; seen.add(k); if (!c.has(k) || c.get(k) !== null) out.push(k); }
++        c.forEach(function (v, k) { if (v !== null && !seen.has(k)) out.push(k); });
++        return out;
++      };
++      SP.getItem = function (k) { var c = copyOf(this); k = String(k); return c.has(k) ? c.get(k) : real.get.call(this, k); };
++      SP.setItem = function (k, v) { copyOf(this).set(String(k), String(v)); };
++      SP.removeItem = function (k) { copyOf(this).set(String(k), null); };
++      SP.clear = function () { var c = copyOf(this), ks = keysOf(this); for (var i = 0; i < ks.length; i++) c.set(ks[i], null); };
++      SP.key = function (i) { var ks = keysOf(this); return (i >= 0 && i < ks.length) ? ks[i] : null; };
++      Object.defineProperty(SP, 'length', { configurable: true, enumerable: true, get: function () { return keysOf(this).length; } });
++      guards.push('storage');
++    }
++  } catch (_) {}
++  // 5. the other tabs: no BroadcastChannel traffic, no page lock (cloudsave.js reads both as "nobody else is here")
++  try {
++    var Quiet = function (name) { this.name = String(name); this.onmessage = null; this.onmessageerror = null; };
++    Quiet.prototype.postMessage = function () {};
++    Quiet.prototype.close = function () {};
++    Quiet.prototype.addEventListener = function () {};
++    Quiet.prototype.removeEventListener = function () {};
++    Quiet.prototype.dispatchEvent = function () { return true; };
++    root.BroadcastChannel = Quiet;
++    guards.push('channel');
++  } catch (_) {}
++  try { if (root.navigator && 'locks' in root.navigator) { Object.defineProperty(root.navigator, 'locks', { value: undefined, configurable: false }); guards.push('locks'); } } catch (_) {}
++  // 6. the live feed: marked viewer=1, so the station does not count this page as an open StarNet page
++  try {
++    var ES = root.EventSource;
++    if (typeof ES === 'function') {
++      var Feed = function (url, cfg) {
++        var u = String(url || '');
++        try { var x = new URL(u, root.location.href); if (x.pathname === '/api/channels/events') { x.searchParams.set('viewer', '1'); u = x.href; } } catch (_) {}
++        return new ES(u, cfg);
++      };
++      Feed.prototype = ES.prototype; Feed.CONNECTING = ES.CONNECTING; Feed.OPEN = ES.OPEN; Feed.CLOSED = ES.CLOSED;
++      root.EventSource = Feed;
++      guards.push('feed');
++    }
++  } catch (_) {}
++
++  // 7. what the page shows: the floor, the top bar, the crew rail and the dock. Everything else is not drawn
++  //    (display:none, which no child rule can undo). An allowlist, so a new surface is hidden until it is reviewed.
++  var CSS = [
++    'body.sn-viewer > :not(#screen-game):not(#logo):not(#viewer-badge):not(script):not(style):not(link) { display: none !important; }',
++    'body.sn-viewer #screen-game > :not(#topbar):not(#left):not(#stage-wrap):not(#crew-resizer):not(#chat-panel):not(#bottombar) { display: none !important; }',
++    'body.sn-viewer #wr-top, body.sn-viewer #wr-bot, body.sn-viewer #ws-wrap, body.sn-viewer #crew-vresizer, body.sn-viewer #crew-search-wrap,',
++    'body.sn-viewer #bottombar .bb-menu, body.sn-viewer #chat-panel > :not(.viewer-note), body.sn-viewer #stage-wrap > :not(#stage):not(.cam-hud) { display: none !important; }',
++    // the camera frame keeps only its corners and its two fixed chips; the activity ticker (who ran what, the cost, raw
++    // error text), the feed and rec readouts and anything added to it later are not drawn; nor are the dock's minimized-
++    // window chips (session titles), and the topbar's hidden focused-agent/model fields stay hidden whatever comes later
++    'body.sn-viewer #stage-wrap .cam-hud > :not(.cam-c):not(.cam-cine):not(.cam-mode), body.sn-viewer #term-strip, body.sn-viewer #gt-agent, body.sn-viewer #gt-model { display: none !important; }',
++    'body.sn-viewer #crew { max-height: none !important; flex: 1 1 auto !important; }',
++    'body.sn-viewer .viewer-note { display: flex; align-items: center; justify-content: center; flex: 1 1 auto; min-height: 48px; padding: 10px; letter-spacing: .22em; opacity: .5; }',
++    '#viewer-badge { position: fixed; z-index: 2147483647; top: 6px; left: 50%; transform: translateX(-50%); padding: 2px 10px; font: 14px/1.4 VT323, monospace; letter-spacing: .18em; color: #111; background: #ffb000; border-radius: 3px; pointer-events: none; opacity: .9; }'
++  ].join('\n');
++  function dress() {
++    try {
++      if (!document.body || document.getElementById('viewer-badge')) return;
++      document.body.classList.add('sn-viewer');
++      var st = document.createElement('style'); st.id = 'viewer-style'; st.textContent = CSS; document.head.appendChild(st);
++      var b = document.createElement('div'); b.id = 'viewer-badge'; b.textContent = 'VIEWER · READ-ONLY'; b.setAttribute('aria-hidden', 'true');
++      document.body.appendChild(b);
++      var note = function (host, text) { if (!host || host.querySelector('.viewer-note')) return; var d = document.createElement('div'); d.className = 'viewer-note'; d.textContent = text; host.appendChild(d); };
++      note(document.getElementById('chat-panel'), 'COMMS \u00B7 PRIVATE');
++    } catch (_) {}
++  }
++  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', dress); else dress();
++  guards.push('surfaces');
++
++  // read-only report for company/tools/station-view.js (never a switch: there is nothing here to turn back on)
++  try {
++    Object.defineProperty(root, '__STARNET_VIEWER_STATE__', { configurable: false, enumerable: false, writable: false,
++      value: Object.freeze({ version: 1, guards: Object.freeze(guards.slice()), refused: function () { var by = {}; for (var k in refusedBy) if (Object.prototype.hasOwnProperty.call(refusedBy, k)) by[k] = refusedBy[k]; return { count: refusedCount, last: refused.slice(), byPath: by, overflow: refusedOverflow }; } }) });
++  } catch (_) {}
++})();
+diff --git a/frontend/index.html b/frontend/index.html
+index 97318f87..780f0d3d 100644
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@ -822,6 +822,7 @@
+ </section>
+ 
+ <script src="app/bootguard.js"></script><!-- BOOT GUARD: installs the window error/unhandledrejection listeners before anything else can fail silently, then verifies the critical module globals after DOMContentLoaded (fatal banner names the file). Reads no state — the ONE script allowed ahead of legacymigrate -->
++<script src="app/viewer.js"></script><!-- VIEWER MODE (company patch 0008): /?viewer=1 makes this page read-only (GET/HEAD only, storage kept in memory, no tab channel, private surfaces not drawn); MUST stay right after bootguard.js, ahead of every script that fetches, stores or broadcasts -->
+ <script src="app/legacymigrate.js"></script>
+ <script src="app/glass-boot.js"></script><!-- FIRST store-touching script: migrate starnet.* localStorage keys -> starnet.* before any store reads -->
+ <script src="js/util.js"></script>
+diff --git a/sidecar/index.js b/sidecar/index.js
+index 93d48d13..b675d182 100644
+--- a/sidecar/index.js
++++ b/sidecar/index.js
+@@ -14144,18 +14144,22 @@ if (require.main === module) {
+ function handleChannelEvents(req, res) {
+   // Auth is the central /api gate (rejectBadApiToken): the header (Node/MCP clients) or a single-use SSE ticket
+   // (EventSource can't set a header). The master token in ?token= is refused there like on every other route.
+-  res.writeHead(200, {
++  // VIEWER MODE (company patch 0008): a read-only viewer page (/?viewer=1, frontend/app/viewer.js) marks its feed viewer=1.
++  // It hears every event but is never counted as an open StarNet page (ssePages): it answers no bridge verb, so nothing
++  // may wait on it. The marker can only take a listener OUT of ssePages, never add one; X-StarNet-Viewer says it was heard.
++  const viewer = new URL(req.url, 'http://localhost').searchParams.get('viewer') === '1';
++  res.writeHead(200, Object.assign({
+     'Content-Type': 'text/event-stream; charset=utf-8',
+     'Cache-Control': 'no-store',
+     'Connection': 'keep-alive',
+     'X-Accel-Buffering': 'no'
+-  });
++  }, viewer ? { 'X-StarNet-Viewer': '1' } : {}));
+   try { res.write('retry: 3000\n\n'); } catch (_) {}        // EventSource auto-reconnects after 3s if dropped
+   // the header token passed the gate → a Node client; otherwise the gate passed on an SSE ticket → a page (ssePages)
+   const isPage = !apiauth.apiTokenOk(req, API_TOKEN);
+   sse.add(res);
+   if (!sse.resume(res, req.headers['last-event-id'] || new URL(req.url, 'http://localhost').searchParams.get('cursor'))) return;
+-  if (isPage) ssePages.add(res);
++  if (isPage && !viewer) ssePages.add(res);
+   const done = () => { clearInterval(ka); sse.remove(res); ssePages.delete(res); };   // evict on disconnect — mirrors /api/run cleanup; idempotent
+   // DATA (not an SSE comment): EventSource hides comments from JS, so the old `: ka` kept TCP open
+   // while world.js truthfully aged the unobservable link to LINK DOWN. The hub emits an empty JSON
+diff --git a/website/app/app/stationcommands.js b/website/app/app/stationcommands.js
+index bb89b81c..8a581376 100644
+--- a/website/app/app/stationcommands.js
++++ b/website/app/app/stationcommands.js
+@@ -1438,6 +1438,7 @@ const StationCommands = (() => {
+ 
+   function init() {
+     if (typeof U === 'undefined' || !U.bus || !U.bus.on) return;
++    if (typeof window !== 'undefined' && window.__STARNET_VIEWER__ === true) return;   // a read-only viewer (app/viewer.js) runs no bridge verb
+     U.bus.on('station.command', msg => {
+       if (!msg || !msg.id || !msg.verb) return;
+       run(String(msg.id), String(msg.verb), msg.args);

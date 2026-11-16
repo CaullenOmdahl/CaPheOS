@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the @NAME@ dispatcher every @TICK@ minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=@TICK@min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

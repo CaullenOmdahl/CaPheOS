@@ -1,0 +1,27 @@
+{
+  "_doc": "Who this company is. Every tool reads its names, clock and station address from here (company/tools/lib/company.js), so founding a new company is an edit to this file plus the charter, never a code change. scripts/found-company.sh fills it in.",
+  "name": "Unfounded Company",
+  "shortName": "company",
+  "slug": "company",
+  "industry": "",
+  "mission": "",
+  "owner": {
+    "name": "Owner",
+    "title": "Owner",
+    "addressAs": "the owner"
+  },
+  "timezone": "UTC",
+  "locale": "en",
+  "currency": "USD",
+  "station": {
+    "url": "http://127.0.0.1:8801",
+    "port": 8801,
+    "serviceName": "capheos-station"
+  },
+  "ownerChannel": {
+    "_doc": "How the owner and the company talk. 'console' (default) = the owner console: every open question shows on Today the moment it is asked and is answered there; messages travel through company/owner/inbound.jsonl (owner -> company) and company/owner/outbound.jsonl (company -> owner), read and written by company/tools/owner-inbox.js and the dispatcher. 'file' = the same files with no console. A push adapter (a chat app, email) plugs in by delivering outbound.jsonl and appending to inbound.jsonl; set dailyLimit (questions per day) so it does not buzz all day.",
+    "adapter": "console",
+    "dailyLimit": null,
+    "target": ""
+  }
+}

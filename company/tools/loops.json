@@ -1,0 +1,19 @@
+{
+  "_doc": "Who works here and how each person is woken. dispatch.js, hire.js and every tool read this through company/tools/lib/company.js; hire.js adds a row for every hire and removes it on exit. Key = the station agent id. loop = the station routine name (prefix match); inbox = file under company/work/handoffs/; log = file under company/work/; manager = the station id this seat reports to (null for the CEO). functions = the utility functions this seat holds (ceo, people, tools, risk, floor, finance); tools route by function, never by name. The founder holds every function until a seat template in company/roles/templates/ is filled and the function moves to the hire. Optional per seat: cooldownMin, priority, wakeOnInbox, wakeOnOwnerMessage (written by company/tools/cadence.js apply from company/work/ops/cadence.json; edit them there). shutdown = what a soft halt (company/tools/halt.js soft) fires for this seat: { routine: the station routine name (prefix match) to run once, maxMinutes: how long it may take before the halt reports it overdue, procedure: the charter section it follows, e.g. company/roles/<file>.md#soft-shutdown }. Only seats that leave something live while they sleep (open positions, resting orders, live campaigns) need one; a soft halt starts nothing else.",
+  "agents": {
+    "agent": {
+      "name": "Founder",
+      "title": "Founder and CEO",
+      "seat": "founder",
+      "role": "agent.md",
+      "functions": ["ceo", "people", "tools", "risk", "floor", "finance"],
+      "loop": "Founder loop",
+      "priority": 100,
+      "inbox": "to-founder.md",
+      "log": "founder-log.md",
+      "wakeOnInbox": true,
+      "wakeOnOwnerMessage": true,
+      "manager": null
+    }
+  }
+}

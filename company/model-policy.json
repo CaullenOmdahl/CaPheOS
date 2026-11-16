@@ -1,0 +1,152 @@
+{
+ "_doc": "Which models the company may run agents on. company/tools/hire.js refuses anything not listed under allowed (candidates, hires and model changes). routing says which model each routine runs on; company/tools/pacer.js applies it within the pacing rule (company/work/finance/pacing-policy.json). The people seat (co.seatFor('people')) keeps this file; the CEO approves changes. Human version: company/MODEL_POLICY.md.",
+ "allowed": {
+  "deepseek": {
+   "models": [
+    "deepseek-flash"
+   ],
+   "note": "DeepSeek V4.1 Flash only: frontier quality at a low cost, pay-per-use and prepaid. The fallback when the subscriptions are closed to a routine; kept under the station's daily rail. deepseek-v4-pro is not on the list (more expensive for no gain on this work)."
+  },
+  "custom": {
+   "models": [
+    "MiniMax-M3.1-Pro",
+    "MiniMax-M3.1-Flash"
+   ],
+   "preferred": "MiniMax-M3.1-Pro",
+   "note": "MiniMax Coding Plan: a flat-fee subscription with a 5-hour window and a weekly limit, used as much as the pacing rule allows. preferred is the model to move to once the plan serves it on the company's key; until then the routing table uses the Flash model."
+  },
+  "claude-cli": {
+   "models": [
+    "claude-haiku-4-5-20251001",
+    "haiku",
+    "claude-sonnet-5-5",
+    "sonnet",
+    "claude-opus-5-5",
+    "opus",
+    "claude-fable-5-2[1m]"
+   ],
+   "tiers": {
+    "haiku": "light",
+    "claude-haiku-4-5-20251001": "light",
+    "sonnet": "standard",
+    "claude-sonnet-5-5": "standard",
+    "opus": "heavy",
+    "claude-opus-5-5": "heavy",
+    "claude-fable-5-2[1m]": "top"
+   },
+   "note": "Runs on a Claude Max subscription (flat monthly fee). The meter is the whole account, so any other use of the same account (the owner's own Claude Code, another company) counts against it; pacing-policy.json shareOfAccount gives this company its share. Routines use Haiku or Sonnet only; Opus and Fable never run routines. A Claude seat still takes the smallest tier that does the job."
+  }
+ },
+ "candidateDefault": {
+  "provider": "deepseek",
+  "model": "deepseek-flash",
+  "effort": "high",
+  "_doc": "The model a hiring candidate is interviewed on when hire.js is given none (the hire keeps the interviewed model). Must be on the allowed lists above."
+ },
+ "needsCeoApproval": [
+  "claude-opus-5-5",
+  "opus",
+  "claude-fable-5-2[1m]"
+ ],
+ "_needsCeoApproval": "Model ids a hire or model change may move someone to only with the CEO named in hire.js --approved (the heavy and top Claude tiers).",
+ "routing": {
+  "_doc": "Which model each routine runs on. Every routine names a scope: an ordered chain of one to three model families (claude, minimax, deepseek). company/tools/pacer.js runs it on the FIRST link of that chain that is open right now, and moves it down the chain when a link closes (Claude or MiniMax over today's pacing line or out of its window, DeepSeek out of credit or near the station rail, a provider that refused the routine). Moving off a closed link happens at once; moving back up waits for the hourly limit and the ramp (pacing-policy.json routing). 'claude' in a chain means the routine's Claude tier (its 'claude' key: haiku or sonnet, never opus or fable). 'minimax' true = MiniMax may run this routine (model-drift.js reads it); set it false for a routine whose chain has no MiniMax link. railOverflow false = the DeepSeek link is still used near the station rail. A routine is matched by exact name or name prefix; one not listed is never touched. Every model here must be on the allowed lists above. The people seat keeps the scopes and who is in each; the CEO approves changes; the pacing numbers are the finance seat's.",
+  "models": {
+   "haiku": {
+    "provider": "claude-cli",
+    "model": "haiku"
+   },
+   "sonnet": {
+    "provider": "claude-cli",
+    "model": "claude-sonnet-5-5"
+   },
+   "minimax": {
+    "provider": "custom",
+    "model": "MiniMax-M3.1-Flash"
+   },
+   "deepseek": {
+    "provider": "deepseek",
+    "model": "deepseek-flash"
+   }
+  },
+  "routines": {
+   "Founder loop": {
+    "claude": "sonnet",
+    "minimax": true,
+    "scope": "ceo"
+   }
+  },
+  "scopes": {
+   "_doc": "Ordered chains (links: claude, minimax, deepseek; one to three). These are starting defaults: Claude and MiniMax are flat-rate subscriptions, every DeepSeek call costs money, so flat-rate links come first unless the work needs DeepSeek's lane. Code and screens stay off MiniMax by default. The people seat keeps this table, puts each new hire's routine under a scope (routines above) and records who is in each scope in 'who' by seat or function; the CEO approves changes.",
+   "ceo": {
+    "chain": [
+     "claude",
+     "minimax",
+     "deepseek"
+    ],
+    "claudeReserve": true,
+    "who": "the CEO seat (Founder loop)",
+    "why": "the CEO must not go dark: claudeReserve keeps Claude past the daily line (up to the week's hard stop); its writing may fall to MiniMax, then DeepSeek, never to nothing"
+   },
+   "writing": {
+    "chain": [
+     "claude",
+     "minimax",
+     "deepseek"
+    ],
+    "who": "",
+    "why": "documents and digests, no code; flat-rate Claude, then flat-rate MiniMax"
+   },
+   "review": {
+    "chain": [
+     "claude",
+     "deepseek",
+     "minimax"
+    ],
+    "who": "",
+    "why": "judgement (security, finance, hiring) on Claude; DeepSeek where Claude's limits bite"
+   },
+   "code": {
+    "chain": [
+     "claude",
+     "deepseek"
+    ],
+    "who": "",
+    "why": "code is written by Claude by default, DeepSeek as the fallback; no MiniMax"
+   },
+   "actions": {
+    "chain": [
+     "deepseek",
+     "claude"
+    ],
+    "who": "",
+    "why": "tool-heavy action work (operations, deploys, devices) where DeepSeek has fewer limits; it also writes code, so no MiniMax"
+   },
+   "design": {
+    "chain": [
+     "claude",
+     "deepseek"
+    ],
+    "who": "",
+    "why": "Claude leads on UI/UX; screens are code, so no MiniMax"
+   },
+   "research": {
+    "chain": [
+     "minimax",
+     "claude",
+     "deepseek"
+    ],
+    "who": "",
+    "why": "research reads and summarises; flat-rate first, DeepSeek last because it costs per call"
+   }
+  }
+ },
+ "performance": {
+  "consecutiveFailures": 3,
+  "failureRate": 0.5,
+  "minRunsForRate": 6,
+  "windowHours": 72,
+  "overdueDays": 2,
+  "flagCooldownHours": 24
+ }
+}

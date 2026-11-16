@@ -1,0 +1,18 @@
+[Unit]
+Description=StarNet station — @NAME@
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=@ROOT@/starnet
+EnvironmentFile=@ENVFILE@
+ExecStart=/usr/bin/env node sidecar/index.js
+Restart=always
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=20
+StandardOutput=append:@ROOT@/.starnet-data/station.log
+StandardError=append:@ROOT@/.starnet-data/station.log
+
+[Install]
+WantedBy=default.target

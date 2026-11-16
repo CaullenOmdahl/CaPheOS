@@ -1,0 +1,14 @@
+{
+  "_what": "The owner channel's PIN: the one target the company may message without a clearance row, the sender identities allowed to use it, and when the pin ends. Read by company/tools/external-gate.js on every `message` check; watched by company/tools/locked-watch.js, so ending or widening the channel is an edit to this file with a recorded diff, not a code change.",
+  "_shape": {
+    "category": "one category, message",
+    "target": "exact string equality after trimming — never a prefix, stem or wildcard. owner:file = the file adapter (company/owner/outbound.jsonl).",
+    "senders": "gate identities as external-gate.js receives them. The token \"ceo\" means the CEO seat's station id (loops.json), resolved at runtime; a literal station id also works. \"dispatcher\" is the batching process.",
+    "until": "ISO instant after which the pin matches nothing, or null for no expiry. A past instant ends the channel."
+  },
+  "category": "message",
+  "target": "owner:file",
+  "senders": ["ceo", "dispatcher"],
+  "until": null,
+  "note": "Ending this channel = set until to a past instant or empty the senders, then let locked-watch record the diff. A third sender or a second target is a finding for the risk seat, not a config change."
+}

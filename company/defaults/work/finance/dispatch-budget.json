@@ -1,0 +1,16 @@
+{
+  "_doc": "The metered (pay-per-token) spending budget the dispatcher enforces. Owned by the finance seat (co.seatFor('finance')); read by company/tools/dispatch.js on every tick, where this file wins over its env vars and built-in defaults. Copied to company/work/finance/dispatch-budget.json at founding. Only providers billed per token count against it; subscriptions are paced by company/tools/pacer.js (company/work/finance/pacing-policy.json) instead.",
+  "baseCurrency": "USD",
+  "_baseCurrency": "The currency every figure in this file is in.",
+  "dailyUsd": 0,
+  "_dailyUsd": "Company metered spend allowed per rolling 24 hours, summed over runs on providers NOT in unmeteredProviders. A metered loop is held once the 24h metered total reaches this number. 0 = nothing metered may run until the finance owner sets a number here.",
+  "perAgentUsd": 0,
+  "_perAgentUsd": "Per-agent metered share of dailyUsd per rolling 24 hours: a metered loop is held once its own agent's 24h metered spend reaches it, even while the daily total still has room, so one loop cannot drain the day. 0 = no per-agent share (only dailyUsd applies).",
+  "unmeteredProviders": [
+    "claude-cli"
+  ],
+  "_unmeteredProviders": "Station provider ids billed by flat subscription, not per token: their runs do not count toward dailyUsd or perAgentUsd and their loops are never held by this file. Add a provider (for example 'custom' for a MiniMax plan) only when the finance owner has confirmed it is subscription-billed; an unpriced provider not listed here is treated as metered.",
+  "setBy": "",
+  "setAt": "",
+  "why": ""
+}

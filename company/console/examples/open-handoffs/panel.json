@@ -1,0 +1,34 @@
+{
+  "$schema": "../../../schemas/console-panel.schema.json",
+  "version": 1,
+  "id": "open-handoffs",
+  "title": "Open handoffs by deadline",
+  "description": "Every OPEN handoff in every inbox, soonest deadline first; overdue rows show the warn tone.",
+  "owner": "ceo",
+  "why": "Work stuck between two seats is the first thing to slip; the owner sees what is due and overdue without opening the inboxes.",
+  "placement": { "area": "today", "order": 1 },
+  "refresh": 300,
+  "sources": {
+    "due": { "type": "tool", "id": "handoffs-due" }
+  },
+  "view": {
+    "kind": "table",
+    "source": "due",
+    "columns": [
+      { "key": "due", "label": "Due", "format": "relative", "width": "narrow", "flag": "overdue" },
+      { "key": "heading", "label": "Handoff", "width": "wide" },
+      { "key": "file", "label": "Inbox" }
+    ],
+    "limit": 10,
+    "empty": "No open handoffs."
+  },
+  "actions": [
+    {
+      "id": "nudge-ceo",
+      "label": "Ask the CEO about this",
+      "kind": "ask-ceo",
+      "scope": "row",
+      "text": "This handoff is due {{row.raw}}: \"{{row.heading}}\" ({{row.file}}). Is it on track, and who is unblocking it?"
+    }
+  ]
+}
