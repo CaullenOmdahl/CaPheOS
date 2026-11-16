@@ -316,6 +316,12 @@ async function kickoff() {
   const seat = FL.seat();
   const inbox = co.p('company', 'work', 'handoffs', seat.inbox);
   let txt = ''; try { txt = fs.readFileSync(inbox, 'utf8'); } catch (_) {}
+  // the kickoff has happened once its handoff exists anywhere — live, or already archived by handoff-archive.js — or the
+  // plan it asks for is written; never write it a second time (a 409 from a busy loop used to leave the step pending, and
+  // every later --resume re-emitted the handoff once the first was archived)
+  let archived = ''; try { archived = fs.readFileSync(co.p('company', 'work', 'handoffs', 'archive', seat.inbox), 'utf8'); } catch (_) {}
+  const planned = fs.existsSync(co.p('company', 'work', 'plan.md'));
+  if (planned || (archived.includes(KICKOFF_TITLE) && !txt.includes(KICKOFF_TITLE))) return setStep('kickoff', 'ok', planned ? 'the first plan exists (company/work/plan.md)' : 'the kickoff handoff was answered and archived');
   if (!txt.includes(KICKOFF_TITLE)) {
     const day = co.localParts().date;
     const block = '\n## ' + day + ' from onboard.js — ' + KICKOFF_TITLE + '\n' +
@@ -331,7 +337,7 @@ async function kickoff() {
   const job = cr.json && Array.isArray(cr.json.jobs) ? FL.findLoop(cr.json.jobs, seat) : null;
   if (!job) { const st = setStep('kickoff', 'pending', 'handoff written; no "' + seat.loop + '" routine to fire (the dispatcher wakes the Founder once it exists)'); return st; }
   const r = await FL.stationCall('POST', '/api/cron/run', { id: job.id, detach: true }, 20000);
-  const ok = r.status === 200;
+  const ok = r.status === 200 || r.status === 409;   // 409: the loop is already running and reads its inbox this session
   return setStep('kickoff', ok ? 'ok' : 'pending', ok ? 'fired "' + job.name + '" for the first plan' + (r.json && r.json.runId ? ' (run ' + r.json.runId + ')' : '') : 'handoff written; firing "' + job.name + '" answered ' + (r.error || 'HTTP ' + r.status) + ' (the dispatcher wakes it for the open handoff)');
 }
 

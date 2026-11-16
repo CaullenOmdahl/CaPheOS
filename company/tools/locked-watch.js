@@ -610,7 +610,7 @@ function runTick(ctx) {
   for (const c of changed) { needles.push({ key: c.key, text: c.key.replace(/^~\//, '') }); }
   for (const x of snChanged) needles.push({ key: 'starnet/' + x.rel, text: x.rel });
   for (const x of csChanged) needles.push({ key: x.key, text: x.key.startsWith('servicekey:') ? 'api/servicekeys' : 'api/connectors' });
-  claims.forEach((c, i) => { const tool = c.tool === 'my-section' ? 'my-section.js' : 'harness-change.js'; const must = [c.tool === 'my-section' ? c.agentId : (c.id || '--kind')].filter(Boolean); needles.push({ key: 'claim:' + i, text: tool, tool, must, tag: i }); });
+  claims.forEach((c, i) => { const tool = c.tool === 'my-section' ? 'my-section.js' : 'harness-change.js'; const must = [c.tool === 'my-section' ? c.agentId : (c.event === 'proposed' || !c.id ? 'propose' : c.id)].filter(Boolean); needles.push({ key: 'claim:' + i, text: tool, tool, must, tag: i }); });
   // an agent writing to the tools' own write-record log (never legitimate — only the tools append to it through provenance.js)
   needles.push({ key: 'company/state/locked/provenance.jsonl', text: 'provenance.jsonl' });
   let hits = []; try { hits = scanCalls(ctx, Math.min(fromMs, ...claims.map(c => Date.parse(c.at) - 30 * 60000).filter(Number.isFinite)), needles); } catch (e) { notes.push('transcripts unreadable: ' + e.message); }
