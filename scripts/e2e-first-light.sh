@@ -51,6 +51,11 @@ check "found-company" bash -c '
   scripts/found-company.sh --name "First Light" --owner "Pat" --tz UTC --port '"$SPORT"' >/dev/null &&
   node -e "const c=require(\"./company/company.json\"); if (c.name!==\"First Light\"||c.owner.name!==\"Pat\"||c.station.port!=='"$SPORT"') process.exit(1)" &&
   test -e company/work/.founded && test -e company/owner/inbound.jsonl && test -e company/roles/agent.md'
+check "founding recorded in onboarding state (not certified)" node -e '
+  const s=require("./company/state/onboarding-state.json"); if (s.steps.founded.status!=="ok"||s.certified) process.exit(1)'
+check "found-company.sh --check passes preflight on a founded company" bash -c 'scripts/found-company.sh --check >/dev/null'
+check "re-running found-company.sh with the same name resumes (idempotent)" bash -c 'scripts/found-company.sh --name "First Light" --owner "Pat" --tz UTC --port '"$SPORT"' >/dev/null'
+check "found-company.sh refuses a different name without --force" bash -c '! scripts/found-company.sh --name "Other Co" --owner "Pat" >/dev/null 2>&1'
 
 # ---------- 2. the mock station ----------
 TOKEN="$(node -e 'console.log(require("crypto").randomBytes(16).toString("hex"))')"
@@ -194,6 +199,39 @@ check "console-panel add open-handoffs" bash -c "node '$TOOLS/console-panel.js' 
 check "panel renders via the console API" bash -c "r=\$(curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/panels/open-handoffs/data); echo \"\$r\" | grep -q '\"ok\":true' && echo \"\$r\" | grep -qi 'handoff'"
 
 check "tool-written handoffs carry a dated deadline (console due list)" bash -c "r=\$(curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/handoffs); node -e 'const o=JSON.parse(process.argv[1]); const h=o.items.find(x=>/from hire.js/.test(x.heading)); if(!h||!h.due) { console.error(JSON.stringify(h)); process.exit(1); }' \"\$r\""
+
+# ---------- 13. core module: liveness -> tick -> heartbeat ----------
+check "module.js enable liveness" bash -c "node '$TOOLS/module.js' enable liveness --by owner --json > '$T/liveness-enable.out' 2>&1 && grep -q '\"status\": \"conformant\"' '$T/liveness-enable.out'" || tail -5 "$T/liveness-enable.out"
+check "liveness tool documented on enable (inventory check green)" node "$TOOLS/tool-inventory-check.js"
+node "$TOOLS/dispatch.js" > "$T/dispatch-3.out" 2>&1
+check "dispatch tick writes the heartbeat (liveness tick hook)" bash -c "node -e 'const h=require(\"$R/company/state/heartbeat.json\"); if (!h.at||!(h.ticks>=1)) process.exit(1)' && ! grep -q 'TICK ERROR' '$T/dispatch-3.out'"
+check "liveness watcher sees a fresh heartbeat" node "$R/modules/liveness/watch.js"
+
+# ---------- 14. certification against the mock station ----------
+export CAPHEOS_BACKUP_DIR="$T/backups" CONSOLE_URL="http://127.0.0.1:$CPORT"
+node "$TOOLS/onboard.js" --certify --json > "$T/certify-1.out" 2>&1; CRC=$?
+check "certify fails before onboarding is finished" test "$CRC" -eq 1
+check "certify names the missing pieces (ops, liveness ping, charter) and passes station/console/dispatcher" node -e '
+  const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).results;
+  const bad=Object.keys(r).filter(k=>!r[k].ok);
+  for (const k of ["ops","liveness","charter"]) if (!bad.includes(k)) { console.error("expected "+k+" to fail: "+JSON.stringify(r)); process.exit(1); }
+  for (const k of ["station","console","dispatcher","secrets"]) if (bad.includes(k)) { console.error(k+" failed: "+JSON.stringify(r[k])); process.exit(1); }
+  if (!/never pinged/.test(r.liveness.missing)||!/backup/.test(r.ops.missing)) { console.error(JSON.stringify(r)); process.exit(1); }' "$T/certify-1.out"
+node "$TOOLS/onboard.js" --resume --json > "$T/resume.out" 2>&1
+check "onboard --resume: ops registered, first backup verified" node -e '
+  const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).steps;
+  if (s["ops-registered"].status!=="ok"||s["first-backup"].status!=="ok") { console.error(JSON.stringify(s)); process.exit(1); }' "$T/resume.out"
+check "first-light finding: metered candidate default with a \$0 cap becomes an owner gate on Today" bash -c "
+  node -e 'const s=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).steps; if (s[\"candidate-default\"].status!==\"pending\") process.exit(1)' '$T/resume.out' &&
+  curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/questions | grep -q 'Hiring candidates default to the metered model'"
+check "liveness ping" node "$TOOLS/liveness.js" ping
+node -e '
+  const fs=require("fs"); const f="company/CHARTER.md"; let t=fs.readFileSync(f,"utf8");
+  t=t.replace(/<!--[\s\S]*?-->/g,"").replace(/<(?!none yet>)[A-Za-z][^<>\n]{0,200}>/g,"Settled with the owner on first light.");
+  fs.writeFileSync(f,t);'
+node "$TOOLS/onboard.js" --certify --json > "$T/certify-2.out" 2>&1; CRC=$?
+check "certify green once every piece is in place" bash -c "[[ $CRC -eq 0 ]]" || node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).results; for (const k in r) if (!r[k].ok) console.log("  still failing: "+k+" — "+r[k].missing)' "$T/certify-2.out"
+check "GET /api/onboarding reports certified" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/onboarding | grep -q '\"certified\":true'"
 
 # ---------- summary ----------
 UNKNOWN="$(mocklog 'r.status===404' | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const s=new Set(d.split("\n").filter(Boolean).map(l=>{const r=JSON.parse(l);return r.method+" "+r.path}));console.log([...s].join(", "))})')"
