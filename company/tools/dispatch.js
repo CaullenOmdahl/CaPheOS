@@ -758,6 +758,7 @@ function lastRunTail(job) {
     if (cap === 'held') { held.push(job.name); continue; }
     if (cap === 'perAgentHeld') { perAgentHeld.push(job.name); continue; }
     if (cap === 'wouldHold') wouldHold.push(job.name);
+    { const tempo = require('./cadence.js').tempoAllows(agentId, Date.now(), { record: !DRY, ownerWake: ownerWake.has(agentId) }); if (!tempo.ok) { log('TEMPO HOLD ' + job.name + ' for ' + agentId + ': ' + tempo.reason); continue; } }   // wake caps (cadence.json bounds): an owner message is never held but still counts
     const names = reason[agentId];
     const viaInbox = names.includes(' OPEN in ');
     if (DRY) { log('WOULD run ' + job.name + ' for ' + agentId + ' (' + names + ')'); fired++; continue; }
