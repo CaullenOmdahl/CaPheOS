@@ -188,7 +188,7 @@ function ownerOf(ctx, role) { const r = ctx.roles[role]; return r ? { id: r.id, 
 function globRe(p) { return new RegExp('^' + p.split('/').map(seg => seg === '**' ? '.*' : seg.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*')).join('/').replace(/\.\*\//g, '(?:.*/)?') + '$'); }
 function walkAll(dir, rel, depth, out) {
   let ents = []; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
-  for (const e of ents) { if (out.length > 5000) return; const f = path.join(dir, e.name), r = rel + '/' + e.name; if (e.isDirectory()) { if (depth > 0) walkAll(f, r, depth - 1, out); } else if (e.isFile()) out.push(r); }
+  for (const e of ents) { if (out.length > 5000) return; const f = path.join(dir, e.name), r = rel + '/' + e.name; if (e.isDirectory()) { if (depth > 0) walkAll(f, r, depth - 1, out); } else if (e.isFile() || (e.isSymbolicLink() && linkToFile(f))) out.push(r); }
 }
 // follow the pattern one path segment at a time, so a '*' in the middle never walks a whole tree (repos, node_modules)
 function globKeys(ctx, segs, i, relSoFar, out) {
@@ -198,8 +198,10 @@ function globKeys(ctx, segs, i, relSoFar, out) {
   if (!seg.includes('*')) { const next = relSoFar + '/' + seg; if (i === segs.length - 1) { try { if (fs.statSync(abs(ctx, next)).isFile()) out.push(next); } catch (_) {} } else globKeys(ctx, segs, i + 1, next, out); return; }
   const re = new RegExp('^' + seg.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
   let ents = []; try { ents = fs.readdirSync(dirAbs, { withFileTypes: true }); } catch (_) { return; }
-  for (const e of ents) { if (!re.test(e.name)) continue; const next = relSoFar + '/' + e.name; if (i === segs.length - 1) { if (e.isFile()) out.push(next); } else if (e.isDirectory()) globKeys(ctx, segs, i + 1, next, out); }
+  for (const e of ents) { if (!re.test(e.name)) continue; const next = relSoFar + '/' + e.name; if (i === segs.length - 1) { if (e.isFile() || (e.isSymbolicLink() && linkToFile(abs(ctx, next)))) out.push(next); } else if (e.isDirectory()) globKeys(ctx, segs, i + 1, next, out); }
 }
+// a symlink inside a watched glob is watched too (a Dirent says isFile() false for a link, which used to drop it silently)
+function linkToFile(f) { try { return fs.statSync(f).isFile(); } catch (_) { return false; } }
 function expand(ctx) {
   const items = new Map();
   for (const m of ctx.manifest) {
@@ -241,11 +243,14 @@ function stateOf(ctx, key) {
   const f = abs(ctx, key);
   let st; try { st = fs.statSync(f); } catch (_) { return { exists: false }; }
   if (!st.isFile()) return { exists: false, notFile: true };
-  if (isBig(ctx, key)) return liteState(f, st);
+  // a symlink also carries its target, so retargeting it is a change even when the content is the same
+  let link; try { if (fs.lstatSync(f).isSymbolicLink()) link = fs.readlinkSync(f); } catch (_) {}
+  const L = link !== undefined ? { link } : {};
+  if (isBig(ctx, key)) return Object.assign(liteState(f, st), L);
   const buf = fs.readFileSync(f);
-  return { exists: true, sha256: sha(buf), bytes: buf.length, mode: st.mode & 0o7777, mtimeMs: st.mtimeMs, buf };
+  return Object.assign({ exists: true, sha256: sha(buf), bytes: buf.length, mode: st.mode & 0o7777, mtimeMs: st.mtimeMs, buf }, L);
 }
-const plain = s => (s && s.exists ? Object.assign({ exists: true, sha256: s.sha256, bytes: s.bytes, mode: s.mode }, s.lite ? { lite: true, headSha: s.headSha, tailSha: s.tailSha } : {}) : { exists: false });
+const plain = s => (s && s.exists ? Object.assign({ exists: true, sha256: s.sha256, bytes: s.bytes, mode: s.mode }, s.link !== undefined ? { link: s.link } : {}, s.lite ? { lite: true, headSha: s.headSha, tailSha: s.tailSha } : {}) : { exists: false });
 // the file now starts with the bytes it had at the last check (b): only appended to since. For a bigAppend file the
 // check is incremental: the first 64 KB and the 64 KB before the old end must be unchanged (a baseline from before
 // that format is checked once in full, then kept in the new one).
@@ -258,7 +263,7 @@ function grewFrom(ctx, key, cur, b) {
     return sha(readRange(f, 0, b.bytes)) === b.sha256;
   } catch (_) { return false; }
 }
-const sameState = (a, b) => !!a && !!b && a.exists === b.exists && (!a.exists || (a.sha256 === b.sha256 && a.mode === b.mode));
+const sameState = (a, b) => !!a && !!b && a.exists === b.exists && (!a.exists || (a.sha256 === b.sha256 && a.mode === b.mode && (a.link || null) === (b.link || null)));
 function writeAtomic(file, data, mode) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = file + '.tmp-' + process.pid;
@@ -309,7 +314,7 @@ const ROUTINE_FIELDS = ['agentId', 'workdir', 'unattendedGrants', 'skills', 'scr
 function routineView(job) { const v = {}; for (const k of ROUTINE_FIELDS) v[k] = k === 'script' ? (job.script ? sha(String(job.script)).slice(0, 23) : null) : (job[k] === undefined ? null : job[k]); return v; }
 function rosterModes(ctx) { const out = {}; for (const a of ((readJson(ctx.paths.roster, {}) || {}).agents || [])) if (a && a.agentId) out[a.agentId] = String(a.approvalMode || ''); return out; }
 function buildBaseline(ctx, items, extra) {
-  const b = { v: 1, files: {}, provOffset: 0, harnessOffset: 0 };
+  const b = { v: 1, files: {}, provOffset: 0, harnessOffset: 0, seededLinks: true };
   for (const [key, m] of items) { const s = stateOf(ctx, key); b.files[key] = Object.assign(plain(s), { cls: m.cls }); if (s.exists) b.files[key].lkgSha = saveLkg(ctx, key, m, s.buf); }
   const sn = starnetState(ctx); if (sn) { b.starnet = sn; b.patches = patchState(ctx); b.starnetHead = starnetHead(ctx); for (const rel of Object.keys(sn)) { const s = stateOf(ctx, 'starnet/' + rel); if (s.exists) saveLkg(ctx, 'starnet/' + rel, { cls: 'F' }, s.buf); } }
   try { b.provOffset = fs.statSync(path.join(ctx.paths.dir, 'provenance.jsonl')).size; } catch (_) {}
@@ -572,6 +577,12 @@ function runTick(ctx) {
     for (const [key, m] of items) if (!base.files[key]) { const s = stateOf(ctx, key); const e = Object.assign(plain(s), { cls: m.cls }); if (s.exists && !ctx.dry) e.lkgSha = saveLkg(ctx, key, m, s.buf); base.files[key] = e; }
     if (base.starnetHead === undefined) { const h = starnetHead(ctx); if (h) base.starnetHead = h; }
     base.seededV2 = true;
+  }
+  // one-time migration for symlink targets: a baseline written before links were recorded learns each unchanged link's
+  // target instead of reporting every watched symlink as retargeted on the first tick after the update
+  if (!base.seededLinks) {
+    for (const [key, b] of Object.entries(base.files)) { if (!b || !b.exists || b.link !== undefined) continue; const s = stateOf(ctx, key); if (s.link !== undefined && s.sha256 === b.sha256 && s.mode === b.mode) b.link = s.link; }
+    base.seededLinks = true;
   }
   // hash first, read the records after: a write we see has always been recorded by then (the tools record right after the rename)
   const cur = new Map(); for (const key of new Set([...items.keys(), ...Object.keys(base.files)])) cur.set(key, stateOf(ctx, key));
@@ -1165,6 +1176,7 @@ async function selftest() {
   W('company/state/pacer-log.jsonl', '{"a":1}\n');
   W('company/work/finance/pacing-policy.json', JSON.stringify({ marginPct: 5, subs: { claude: 1 } }, null, 1));
   fs.chmodSync(W('secrets/station-token', 'secret-token-value-1234567890'), 0o600);
+  fs.symlinkSync('station-token', path.join(T, 'secrets/alias-key'));
   W('company/work/evidence/premerge-App-aaaa.json', '{"verdict":"FAIL"}');
   W('company/work/decisions.md', '# Decisions\n| a |\n');
   W('~/.local/bin/gh', '#!/bin/bash\nexec /usr/bin/gh "$@"\n');
@@ -1254,6 +1266,22 @@ async function selftest() {
     now += 60000; fs.appendFileSync(path.join(T, 'company/work/decisions.md'), '| appended by an agent |\n');
     fs.appendFileSync(path.join(T, seg), row('agent', 'fs_append', { path: 'company/work/decisions.md', content: '| appended by an agent |\n' }, now - 20000) + '\n');
     const r = await tick(C({ now })); assert.ok(!r.events.some(x => x.key === 'company/work/decisions.md'), JSON.stringify(r.events));
+  });
+  await t('a symlink under secrets/ is in the baseline, and retargeting it is flagged even when the content is the same', async () => {
+    const b0 = JSON.parse(R('company/state/locked/baseline.json'));
+    assert.ok(b0.files['secrets/alias-key'] && b0.files['secrets/alias-key'].link === 'station-token', JSON.stringify(b0.files['secrets/alias-key']));
+    now += 60000; W('secrets/other-key', 'secret-token-value-1234567890'); fs.chmodSync(path.join(T, 'secrets/other-key'), 0o600);
+    fs.unlinkSync(path.join(T, 'secrets/alias-key')); fs.symlinkSync('other-key', path.join(T, 'secrets/alias-key'));
+    const r = await tick(C({ now })); assert.ok(r.events.some(x => x.key === 'secrets/alias-key'), JSON.stringify(r.events));
+    assert.ok(!inbox('jordan').includes('secret-token-value'));
+  });
+  await t('a baseline from before links were recorded learns an unchanged link\'s target once, without a report', async () => {
+    const old = JSON.parse(R('company/state/locked/baseline.json')); delete old.seededLinks; delete old.files['secrets/alias-key'].link;
+    saveBaseline(context(C({ now })), old);
+    now += 60000; const r = await tick(C({ now }));
+    assert.ok(!r.events.some(x => x.key === 'secrets/alias-key'), JSON.stringify(r.events));
+    const b1 = JSON.parse(R('company/state/locked/baseline.json'));
+    assert.ok(b1.seededLinks && b1.files['secrets/alias-key'].link === 'other-key', JSON.stringify(b1.files['secrets/alias-key']));
   });
   await t('a key\'s mode change is reported with the chmod that undoes it, and never shows the key', async () => {
     now += 60000; fs.chmodSync(path.join(T, 'secrets/station-token'), 0o644);
