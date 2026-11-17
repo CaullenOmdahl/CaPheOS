@@ -235,6 +235,12 @@ function migrateRows(check) {
   const git = (...a) => spawnSync('git', a, { cwd: R, encoding: 'utf8' });
   const inGit = git('rev-parse', '--git-dir').status === 0;
   const pats = Object.values(mods.state().enabled || {}).flatMap(x => Object.keys(x.tools || {}).map(f => rowPat(path.basename(f))));
+  // also the company's own tools: a row naming company/tools/<file> where <file> is not part of the framework (not tracked
+  // in git) belongs to this company, not to the framework's inventory
+  if (inGit) {
+    const tracked = new Set(git('ls-files', '--', 'company/tools').stdout.split('\n').filter(Boolean).map(x => path.basename(x)));
+    try { for (const f of fs.readdirSync(P.tools)) if (/\.(js|sh|py)$/.test(f) && !tracked.has(f)) pats.push(rowPat(f)); } catch (_) {}
+  }
   const isModRow = l => /^\|/.test(l) && (/\(module [a-z0-9][a-z0-9-]*\)/.test(l) || pats.some(p => p.test(l)));
   const local = readLocal(); const moved = [], restored = [], kept = [];
   for (const f of [P.inventory, P.runbook]) {

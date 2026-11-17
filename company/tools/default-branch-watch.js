@@ -1498,7 +1498,7 @@ function selftest() {
 if (require.main === module) {
   const [cmd, ...rest] = process.argv.slice(2);
   try {
-    if (cmd === 'tick') { const i = rest.indexOf('--preview'); const r = tick(context({ dry: rest.includes('--dry-run'), preview: i >= 0 ? Number(rest[i + 1]) || 10 : 0 })); if (r && r.refused) process.exit(2); }
+    if (cmd === 'tick') { const i = rest.indexOf('--preview'); const r = tick(context({ dry: rest.includes('--dry-run'), preview: i >= 0 ? Number(rest[i + 1]) || 10 : 0 })); if (r && r.refused) { console.log('tick refused by design (a real check never runs from an agent run): ' + (r.reason || r.refused)); process.exit(0); } }
     else if (cmd === 'status') console.log(status(context()));
     else if (cmd === 'baseline') baseline(context());
     else if (cmd === 'selftest') process.exit(selftest());
