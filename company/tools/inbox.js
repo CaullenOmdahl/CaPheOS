@@ -292,12 +292,22 @@ function expandKind(kind, spec) {
   }
 }
 
+/* asksForCredential(text): true only when a sentence ASKS for a credential, not when it mentions one. A sentence counts
+ * when it holds a credential noun AND either a request verb (paste, send, provide, give, store, share, supply, enter,
+ * upload, put) or the old ask shape "<lead-in>: a ... API key" (a colon, then an article, then the noun phrase).
+ * Why: a bare \bkey\b anywhere offered a store-key box on an approve question, and a pasted value closed it as done. */
+const CRED_NOUN = /\b(api[- ]?key|api[- ]?token|access token|credentials?|secret key|private key|password|key)\b/i;
+const CRED_VERB = /\b(paste|pasted|pasting|send|provide|give|store|share|supply|enter|upload|put|need|needs)\b/i;
+const CRED_ASKSHAPE = /:\s*(?:an?|the|your)\s+[^.:]{0,50}?\b(?:api[- ]?key|api[- ]?token|access token|secret key|private key)\b/i;
+function asksForCredential(text) {
+  return String(text || '').split(/(?<=[.!?])\s+|\n+/).some(sn => CRED_NOUN.test(sn) && (CRED_VERB.test(sn) || CRED_ASKSHAPE.test(sn)));
+}
 /* secretHint(row) — an old question that asks for a key, token or credential (and has no secret field) gets a secure
  * field as an extra option, with a suggested file name. null when the text does not ask for one. */
 function secretHint(q) {
   if (!q || (q.form && (q.form.fields || []).some(f => f.type === 'secret'))) return null;
   const t = String(q.q || '') + ' ' + String(q.message || '');
-  if (!/\b(api[- ]?key|api[- ]?token|access token|credential|secret key|private key|password|key)\b/i.test(t)) return null;
+  if (!asksForCredential(t)) return null;
   const skip = new Set(['a', 'an', 'the', 'free', 'read', 'only', 'read-only', 'new', 'second', 'first', 'our', 'your', 'own', 'one', 'paid', 'live', 'gate', 'api', 'no', 'its', 'their']);
   const W = '((?:[A-Za-z][\\w.-]*\\s+){1,3})';
   const m = t.match(new RegExp(W + '(?:api[- ]?key|api[- ]?token|access token)\\b', 'i')) || t.match(new RegExp(W + '(?:private key|secret key|token|key)\\b', 'i'));
@@ -494,7 +504,7 @@ function snooze(o) {
 }
 function out(code, obj) { console.log(JSON.stringify(obj, null, 1)); process.exit(code); }
 
-module.exports = { openQuestions, state, readAll, ask, answer, snooze, normalizeForm, expandKind, formOf, checkAnswer, plainAnswer, secretHint, sliderWords,
+module.exports = { asksForCredential, openQuestions, state, readAll, ask, answer, snooze, normalizeForm, expandKind, formOf, checkAnswer, plainAnswer, secretHint, sliderWords,
   messageParts, styleWarnings, safeSecretName, KINDS, FIELD_TYPES, VERDICTS, FILE };
 
 /* ---- selftest: a scratch inbox, owner dir and governance root ---- */
@@ -584,6 +594,11 @@ function selftest() {
     const kq = ask({ from: 'Founder', q: 'Access gate (gate 2), no payment: a read-only Kalshi API key, from an account you create in your own name.' });
     t('legacy key question: secretHint kalshi-api-key and a store-key action', (open(kq.row.id).secretHint || {}).name === 'kalshi-api-key' && open(kq.row.id).form.actions.some(a => a.id === 'store-key'));
     t('legacy: "a free Pyth API key" -> pyth-api-key', (secretHint({ q: 'Access gate (gate 2), no payment, second key: a free Pyth API key.' }) || {}).name === 'pyth-api-key');
+    // a question that MENTIONS a credential is not a question that ASKS for one
+    const mq = ask({ from: 'Founder', q: 'Four one-file patches need your shell. Two close blind spots, and the provider key is a symlink the watcher cannot see. Do you approve them?' });
+    t('approve that only mentions a key: no hint, Approve/Decline only', !open(mq.row.id).secretHint && open(mq.row.id).form.actions.map(a => a.id).join() === 'approve,decline', JSON.stringify(open(mq.row.id).form.actions.map(a => a.id)));
+    t('a plain approve row refuses store-key (no store-key action on it)', throws(() => answer({ id: mq.row.id, by, answer: { action: 'store-key', values: { key: { stored: 'secrets/x', chars: 5 } } } })) !== null);
+    t('asksForCredential: asks vs mentions', asksForCredential('Could you create an account and paste its API key?') && asksForCredential('Gate 2: a free Pyth API key.') && !asksForCredential('The key is a symlink the watcher cannot see.') && !asksForCredential('Reads the password policy and approves.') && asksForCredential('We need a read-only exchange API key.'));
     t('store-key needs the key', /paste the key/.test(throws(() => answer({ id: kq.row.id, by, answer: { action: 'store-key' } }))));
     r = answer({ id: kq.row.id, by, answer: { action: 'store-key', values: { key: { stored: 'secrets/kalshi-api-key', chars: 40 } } } });
     t('legacy key question takes a stored secret (validated: not checked)', /stored at secrets\/kalshi-api-key \(40 chars, validated: not checked\)/.test(r.a), r.a);
