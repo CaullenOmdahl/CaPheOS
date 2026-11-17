@@ -549,7 +549,9 @@ function frameworkRequest(ctx, rec, p) {
   if (cpx.spawnSync('git', ['-C', ctx.root, 'ls-files', '--error-unmatch', '--', file], { stdio: 'ignore' }).status !== 0) return null;   // a company-only file
   const dir = path.join(ctx.root, 'company', 'work', 'framework-requests'); fs.mkdirSync(dir, { recursive: true });
   const out = path.join(dir, rec.id + '.md');
-  const payload = (() => { try { return fs.readFileSync(path.join(ctx.paths.dir, rec.id, rec.payload ? rec.payload.name : ''), 'utf8'); } catch (_) { return ''; } })();
+  // the proposal's diff/body is stored at rec.change.payload (relative to the root); the request carries it in full
+  const payload = (() => { try { return rec.change && rec.change.payload ? fs.readFileSync(ctx.P(rec.change.payload), 'utf8') : ''; } catch (_) { return ''; } })();
+  if (!payload.trim()) throw E(rec.id + ': no change text to send to the framework (the proposal has no payload); propose it again with the diff', 'state');
   fs.writeFileSync(out, '# Framework change request ' + rec.id + '\n\n- File: `' + file + '`\n- Proposed by: ' + rec.by + '; reviewed by: ' + ((rec.approvals || []).map(a => a.name).join(', ') || '-') + '\n- Why: ' + rec.why + '\n\nThis file belongs to the CaPheOS framework, so the change was not applied in this company. Forward it to the framework (it reaches this company with the next update).\n\n```diff\n' + payload.slice(0, 60000) + '\n```\n');
   rec.status = 'upstream'; rec.upstreamAt = new Date(ctx.now).toISOString(); saveRec(ctx, rec);
   appendLog(ctx, { event: 'upstream', id: rec.id, by: p.name, file, request: path.relative(ctx.root, out) });
