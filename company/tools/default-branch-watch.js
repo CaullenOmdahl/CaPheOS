@@ -1048,6 +1048,9 @@ function status(ctx) {
   const li = lockInfo(ctx); if (li) L.push('Lock: ' + (li.held ? 'held by ' + li.held : 'stale (' + li.stale + '); the next tick removes it'));
   const sk = readJson(ctx.paths.skips, null); if (sk && sk.count) L.push('WARNING: skipped ' + sk.count + ' time(s) in a row because the lock was held (' + one(sk.held) + ')');
   const keys = Object.keys(st.repos).sort((a, b) => a.toLowerCase() < b.toLowerCase() ? -1 : 1), watched = keys.filter(k => !st.repos[k].skipped);
+  // Zero watched repos is not a clean bill of health: this check is protecting nothing, and a bare 'Watched repos (0):'
+  // under a status header reads as an all-clear to anyone quoting it.
+  if (!watched.length) L.push('WARNING: 0 watched - nothing is protected: no repository this check can see is being watched (' + CONFIG_REL + ' lists ' + keys.length + '), so nothing guards a default branch. See ' + relTo(ctx, ctx.paths.md) + '.');
   L.push('Watched repos (' + watched.length + (keys.length > watched.length ? ', plus ' + (keys.length - watched.length) + ' listed that nobody can push to' : '') + '):');
   for (const k of watched) {
     const r = st.repos[k];
@@ -1390,6 +1393,9 @@ function selftest() {
     const st2 = S.state(); st2.lastRun = S.now + 30 * DAY; fs.writeFileSync(stf, JSON.stringify(st2)); fs.unlinkSync(path.join(S.T, 'company/state/locked/provenance.jsonl'));   // no record to compare with
     ok(/in the future/.test(loadState(S.C()).tamper || ''), 'a last-check time in the future counts as a changed state (it would stop the checks)');
     ok(/WARNING/.test(status(S.C())) && /acme\/app/.test(status(S.C())), 'status lists the watched repos and warns about a changed state');
+    { const S0 = setup(); S0.W(CONFIG_REL, JSON.stringify({ repos: [], discover: false, watchStart: START }));
+      const text0 = status(S0.C());
+      ok(/0 watched - nothing is protected/.test(text0) && /Watched repos \(0\)/.test(text0), 'an empty watch list says 0 watched - nothing is protected, instead of reading as a clean status'); }
     const a = S.tick({ underStation: true });
     ok(a.refused && /refused/.test(a.line), 'a real tick from an agent\'s run is refused (a dry run is not)');
     let threw = null; try { baseline(S.C({ ownerShell: true, tty: false })); } catch (e) { threw = e.message; }
