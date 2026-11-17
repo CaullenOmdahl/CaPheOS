@@ -137,6 +137,8 @@ S.company.onboarding = { certified: CERTIFIED, kickoff: CERTIFIED ? { status: 'o
 S.company.ceo = { id: 'agent', name: 'Founder' };
 // live chat transcripts (console-<id>) and the runs in flight (Now strip); one fake in-flight routine run
 S.chats = { agent: [{ role: 'user', content: 'What is on today?', at: ago(30) }, { role: 'assistant', content: 'Two quests and **one handoff** due at 17:00. See [the handoffs](console:#/work/handoffs).', at: ago(29) }] };
+// MOCK_CHAT_TURNS=N: a long conversation with the Founder (the chat's rolling window and backscroll)
+if (Number(process.env.MOCK_CHAT_TURNS) > 0) for (let k = Number(process.env.MOCK_CHAT_TURNS); k > 0; k--) S.chats.agent.unshift({ role: k % 2 ? 'assistant' : 'user', content: 'Message ' + k + ' of the earlier conversation.', at: ago(30 + k) });
 S.live = STATION_DOWN ? [] : [{ runId: 'run-live-1', agentId: 'agent', name: 'Founder', startedAt: Date.now() - 4 * 60000, kind: 'routine', label: 'routine "Founder loop"', href: '#/settings/tempo/routines', step: 'hiring…', steps: 7, usd: 0.0123, stoppable: true, watched: true }];
 S.charterText = CERTIFIED ? '# Example Co — Company Charter\n\n## Mandate\n\nWe run an example business.\n\n**For whom:** Example customers\n\n## What is out of scope\n\nNothing regulated.\n\n## First goal\n\nFirst sale.\n' : '# Example Co — Company Charter\n\n## Mandate\n\n<What the company exists to do, for whom, and how it makes money.>\n\n## What is out of scope\n\n<Work the company will not take on.>\n';
 const PRESETS = { 'approve-everything': 'Approve everything', 'gate-money-people': 'Gate money and people', 'gate-money': 'Gate money', autonomous: 'Autonomous' };

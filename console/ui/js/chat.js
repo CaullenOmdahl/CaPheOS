@@ -25,7 +25,26 @@ export function liveChat(host, opts) {
   const tz = opts.tz;
   let info = null, runId = null, ctrl = null, busy = false;
   const banner = h('div', { class: 'chat-banner' });
-  const body = h('div', { class: 'chat-body', 'aria-live': 'polite' });
+  const body = h('div', { class: 'chat-body', 'aria-live': 'polite', tabindex: '0', 'aria-label': 'Messages' });
+  // a rolling window: the message list scrolls on its own, the composer stays put. It follows new messages while you are
+  // at the bottom; scroll up to read back and it stays where you are, with a button back to the latest.
+  let pinned = true;
+  const jump = h('button', { type: 'button', class: 'btn btn-secondary btn-sm chat-jump', hidden: true, onclick: () => { pinned = true; toBottom(); } }, 'Jump to latest ↓');
+  const atBottom = () => body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+  function toBottom() { body.scrollTop = body.scrollHeight; jump.hidden = true; }
+  body.addEventListener('scroll', () => { pinned = atBottom(); if (pinned) jump.hidden = true; if (body.scrollTop < 120) showEarlier(); });
+  const PAGE = 40; let older = [];   // turns not rendered yet, oldest first
+  const earlierBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-sm chat-earlier', onclick: () => showEarlier() }, 'Show earlier messages');
+  function turnEl(t) { return t.role === 'user' ? mine(t.content) : theirs(t.content, t.at ? name() + ' · ' + hhmm(t.at, tz) : name()); }
+  function showEarlier() {
+    if (!older.length) return;
+    const chunk = older.splice(Math.max(0, older.length - PAGE));
+    const before = body.scrollHeight, top = body.scrollTop;
+    const anchor = earlierBtn.isConnected ? earlierBtn.nextSibling : body.firstChild;
+    for (const t of chunk) body.insertBefore(turnEl(t), anchor);
+    if (!older.length) earlierBtn.remove();
+    body.scrollTop = top + (body.scrollHeight - before);   // keep the reader's place
+  }
   const ta = h('textarea', { id: 'msg', rows: '3', class: 'textarea', placeholder: 'Write…' });
   const sendErr = h('p', { class: 'err-line', role: 'status' });
   const stateEl = h('span', { class: 'chat-state caption muted', role: 'status', 'aria-live': 'polite' }, '');
@@ -36,7 +55,8 @@ export function liveChat(host, opts) {
     h('label', { for: 'msg', class: 'caption muted' }, 'Live chat: the reply streams in here'),
     ta, h('div', { class: 'between-c', style: 'flex-wrap:wrap;gap:8px' }, h('span', { class: 'row-8', style: 'align-items:center' }, stateEl, sendErr), h('span', { class: 'row-8' }, stopBtn, sendBtn)));
   ta.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(ta.value); } });
-  fill(host, banner, body, form);
+  const bodyWrap = h('div', { class: 'chat-scroll' }, body, jump);
+  fill(host, banner, bodyWrap, form);
 
   const name = () => (info && info.agent && info.agent.name) || agentId;
   // a brief a console button sent (the charter) shows as its first line, the full text one click away
@@ -51,7 +71,7 @@ export function liveChat(host, opts) {
     return h('div', { class: 'stack-4', style: 'align-self:flex-end;align-items:flex-end' }, h('div', { class: 'msg-me' }, t));
   }
   function theirs(text, meta) { return h('div', { class: 'stack-4 msg-them-wrap' }, mdBlock(text, 'msg-them'), meta ? h('span', { class: 'msg-meta' }, meta) : null); }
-  function scrollEnd() { const last = body.lastElementChild; if (last && last.scrollIntoView) last.scrollIntoView({ block: 'nearest' }); }
+  function scrollEnd() { if (pinned) toBottom(); else jump.hidden = false; }
   function problemCard(p, kind) {
     return h('div', { class: 'alertbox chat-problem', role: kind === 'error' ? 'alert' : 'status' },
       h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, p.message || p.msg || 'Something went wrong.'),
@@ -65,8 +85,11 @@ export function liveChat(host, opts) {
     ta.placeholder = 'Write to ' + name() + '…';
     fill(banner, (info.problems || []).map(p => problemCard(p)));
     const turns = info.turns || [];
-    fill(body, turns.length ? turns.map(t => t.role === 'user' ? mine(t.content) : theirs(t.content, t.at ? name() + ' · ' + hhmm(t.at, tz) : name()))
+    older = turns.slice(0, Math.max(0, turns.length - PAGE));
+    const recent = turns.slice(-PAGE);
+    fill(body, turns.length ? [older.length ? earlierBtn : null].concat(recent.map(turnEl)).filter(Boolean)
       : empty('No messages yet. Write below; ' + name() + ' answers here, live.'));
+    pinned = true;
     if (info.transcriptError) body.prepend(h('p', { class: 'caption muted' }, 'Earlier messages could not be loaded (' + info.transcriptError + ').'));
     scrollEnd();
     if (opts.onUpdate) opts.onUpdate(info);
@@ -79,6 +102,7 @@ export function liveChat(host, opts) {
     if (busy) { app.toast(name() + ' is still answering. Press Stop first to send something else.', true); return; }
     busy = true; sendErr.textContent = ''; sendBtn.disabled = true; stopBtn.hidden = false; stopBtn.disabled = false;
     const emptyEl = body.querySelector('.empty'); if (emptyEl) emptyEl.remove();
+    pinned = true;
     const meBox = shownText ? mine(shownText) : null; if (meBox) body.appendChild(meBox);
     const steps = h('ul', { class: 'chat-steps plain' });
     const reply = h('div', { class: 'md msg-them' });

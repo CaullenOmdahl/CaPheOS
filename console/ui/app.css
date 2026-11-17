@@ -214,6 +214,20 @@ dialog.modal::backdrop { background: var(--scrim); }
 .chat { flex: 999 1 480px; min-width: 0; display: flex; flex-direction: column; }
 .chat-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; padding: 24px 32px; border-bottom: 1px solid var(--border-hairline); }
 .chat-body { flex: 1; display: flex; flex-direction: column; gap: 20px; padding: 32px; max-width: 760px; }
+/* Chat is a rolling window: on desktop the screen is the window's height, the messages scroll inside it, the composer stays at the bottom */
+.chat-scroll { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.chat-scroll > .chat-body { overflow-y: auto; overscroll-behavior: contain; min-height: 0; max-width: none; }
+.chat-scroll > .chat-body > * { max-width: 760px; }
+.chat-scroll > .chat-body > .msg-me, .chat-scroll > .chat-body > [style*="align-self:flex-end"] { margin-left: auto; }
+.chat-jump { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); box-shadow: var(--shadow-card, 0 2px 8px rgba(0,0,0,.15)); }
+.chat-earlier { align-self: center; }
+@media (min-width: 861px) {
+  .comms { height: 100vh; overflow: hidden; flex-wrap: nowrap; }
+  .comms > .conv-list { flex: 0 0 280px; }
+  .comms .conv-list { overflow-y: auto; }
+  .comms .chat, .comms .chat-live { min-height: 0; }
+}
+@media (max-width: 860px) { .chat-scroll > .chat-body { max-height: 65vh; max-height: 65dvh; } }
 .msg-me { align-self: flex-end; max-width: 520px; padding: 14px 18px; border-radius: var(--radius-lg); background: var(--bg-inverse); color: var(--text-on-inverse); font: var(--type-body); white-space: pre-wrap; }
 .msg-them { max-width: 600px; font: var(--type-body); color: var(--text-body); white-space: pre-wrap; }
 .msg-meta { font: var(--type-caption); color: var(--text-muted); }
