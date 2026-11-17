@@ -12,6 +12,11 @@ git. Tools read them through `company/tools/lib/company.js` (`co.secret(name)`);
 | `openrouter-key` | OpenRouter key (reserve) | you |
 | `openrouter-mgmt-key` | OpenRouter management key (spend gate) | you |
 
+This README is the only file here that is not a key: it is tracked by the framework and updated with it. Do not add
+other notes to this folder (every file here is watched as a key). This company's own keys beyond the table (a data
+feed's key, a second account) are listed in `company/work/security/secrets.md`: file name, what it is for, who asked
+for it and when it was stored, never a value.
+
 Provider keys may be the same ones another company on this machine uses. Two companies can share an account; set
 each company's share in `company/work/finance/pacing-policy.json` so their combined use stays inside the plan.
 

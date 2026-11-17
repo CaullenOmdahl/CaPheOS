@@ -747,7 +747,8 @@ function runTick(ctx) {
   // a framework update (git pull in a company checkout) changes tracked framework files: when the file now matches the
   // checked-out commit exactly, it is the framework, not a tamper — accept it silently and say so once in the log
   const fromFramework = (key, st) => {
-    if (!st || !st.exists || !st.sha256 || /^(starnet|\.starnet-data|secrets)\//.test(key) || /^[~/]/.test(key)) return false;
+    // secrets/ holds keys, which are never taken as a framework update; its README.md is the one tracked framework file there
+    if (!st || !st.exists || !st.sha256 || (/^(starnet|\.starnet-data|secrets)\//.test(key) && key !== 'secrets/README.md') || /^[~/]/.test(key)) return false;
     try {
       const cpx = require('child_process');
       const want = String(st.sha256).replace(/^sha256:/, '');
@@ -1300,6 +1301,19 @@ async function selftest() {
     let r = await tick(C({ now })); assert.ok(!r.events.some(x => x.key === ks), JSON.stringify(r.events));
     now += 60000; W(ks, '{"providers":{"custom":{"baseUrl":"https://hand.example/v1"}}}');
     r = await tick(C({ now })); assert.ok(r.events.some(x => x.key === ks && x.kind === 'flagged'), JSON.stringify(r.events));
+  });
+  await t('secrets/README.md changed by a framework update (equal to HEAD) is accepted; a key file never is, and an uncommitted README edit is flagged', async () => {
+    const g = (...a) => require('child_process').spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-C', T, ...a], { encoding: 'utf8' });
+    W('secrets/README.md', '# secrets\n'); g('init', '-q'); g('add', 'secrets/README.md'); g('commit', '-qm', 'base');
+    now += 60000; await tick(C({ now }));
+    now += 60000; W('secrets/README.md', '# secrets\nupdated by the framework\n'); g('commit', '-qam', 'framework update');
+    let r = await tick(C({ now })); assert.ok(!r.events.some(x => x.key === 'secrets/README.md'), JSON.stringify(r.events));
+    now += 60000; W('secrets/README.md', '# secrets\nedited in place\n');
+    r = await tick(C({ now })); assert.ok(r.events.some(x => x.key === 'secrets/README.md' && x.kind === 'flagged'), JSON.stringify(r.events));
+    now += 60000; fs.writeFileSync(path.join(T, 'secrets/committed-key'), 'a-key-someone-committed-0987654321', { mode: 0o600 }); g('add', '-f', 'secrets/committed-key'); g('commit', '-qm', 'a key committed');
+    r = await tick(C({ now })); assert.ok(r.events.some(x => x.key === 'secrets/committed-key'), 'a committed key is still a key: ' + JSON.stringify(r.events));
+    fs.rmSync(path.join(T, 'secrets/committed-key'));
+    fs.rmSync(path.join(T, '.git'), { recursive: true, force: true });
   });
   await t('a symlink under secrets/ is in the baseline, and retargeting it is flagged even when the content is the same', async () => {
     const b0 = JSON.parse(R('company/state/locked/baseline.json'));
