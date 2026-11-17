@@ -4,7 +4,7 @@ description: How to ask the owner something through company/tools/inbox.js so it
 license: MIT
 metadata:
   owner: company
-  version: "1.0"
+  version: "1.1"
 ---
 
 # Owner questions
@@ -44,10 +44,17 @@ node company/tools/inbox.js ask --from <YOU> --q "Access gate (gate 2), no payme
 | one of a few options | `--kind choice --options "free:Free tier,pro:Pro" --recommended free [--allow-other] [--multi]` |
 | an open answer | `--kind text [--min N] [--max N] [--placeholder]` |
 | a figure / a day | `--kind number --unit USD [--min] [--max]` / `--kind date [--min YYYY-MM-DD]` |
+| a level on a scale (a cap, a share, a cutoff) | `--kind slider --min 70 --max 100 [--step 1] --value 95 --unit % --say "Let routines use up to {value}% of this week's Claude" [--min-label] [--max-label]` |
 | yes or no | nothing (the default, Approve / Decline) |
-| something else | `--form '{"fields":[...],"actions":[...]}'` — any mix of info, text, secret, choice, link, number, date, checkbox, and your own actions (`{"label":"Not now","verdict":"no"}`; verdicts yes, no, submit, done, couldnt, declined) |
+| something else | `--form '{"fields":[...],"actions":[...]}'` — any mix of info, text, secret, choice, link, number, date, checkbox, slider, and your own actions (`{"label":"Not now","verdict":"no"}`; verdicts yes, no, submit, done, couldnt, declined) |
 
 An unsafe form (a secret asked in a text field, a non-http link, a bad secret file name) is refused with the reason.
+
+A **slider** is `{id, type: "slider", label, min, max, step?, value, unit?, marks?: [{value, label}], minLabel?, maxLabel?,
+say?, sayAt?}`: `value` is your suggestion (it must sit on a step), `say` is one sentence with `{value}` that the card
+shows live as the owner drags it (`sayAt` gives whole sentences for particular values, e.g. the two ends), and the answer says it back in those words ("Let routines use up to 80% of this week's Claude.").
+The owner can move it with the keyboard. An answer off the range or between steps is refused on the server. Use it
+when the owner picks a level, not when they pick between named options (that is a choice).
 
 ## 3. Keys never travel in words
 

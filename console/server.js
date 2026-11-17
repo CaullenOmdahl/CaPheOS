@@ -413,6 +413,17 @@ route('GET', /^\/api\/decisions$/, (m, q) => decisions(q));
 route('GET', /^\/api\/dispatch$/, (m, q) => dispatchView(q));
 route('GET', /^\/api\/hiring$/, hiring);
 route('GET', /^\/api\/usage$/, usage);
+// the subscription cutoffs (Usage and models > Subscription cutoffs): read, and set through the recorded pacer.js limit
+route('GET', /^\/api\/pacer\/limits$/, () => runApi('pacer.js', ['limits', '--json'], { timeout: 15000 }));
+route('POST', /^\/api\/pacer\/limit$/, (m, q, b) => {
+  const key = String(b.provider || ''); if (!['claude', 'minimax'].includes(key)) bad('provider is claude or minimax');
+  const pct = (v, what) => { const n = Number(v); if (!(Number.isFinite(n) && n >= 0 && n <= 100)) bad(what + ' must be a number from 0 to 100'); return String(n); };
+  const args = ['limit', key];
+  if (b.weekStop != null && b.weekStop !== '') args.push('--week-stop', pct(b.weekStop, 'weekStop'));
+  if (b.useNow != null && b.useNow !== '') args.push('--use-now', pct(b.useNow, 'useNow'));
+  if (args.length === 2) bad('weekStop or useNow is required');
+  return runApi('pacer.js', args.concat(['--by', OWNER, '--why', 'set by the owner in the console (Usage and models)']));
+});
 
 route('GET', /^\/api\/governance$/, () => runApi('governance.js', ['show', '--json']));
 route('POST', /^\/api\/governance\/preset$/, (m, q, b) => runApi('governance.js', ['preset', str(b.preset, 'preset') || bad('preset is required'), '--by', OWNER]));
@@ -729,6 +740,7 @@ async function selftest() {
     kq.account = await askCli(['--message', 'Make a healthchecks.io account.', '--kind', 'account', '--url', 'https://healthchecks.io/', '--action', 'Sign up', '--fields', 'email:Sign-in email']);
     kq.number = await askCli(['--message', 'What monthly cap?', '--kind', 'number', '--unit', 'USD', '--min', '0', '--max', '100']);
     kq.date = await askCli(['--message', 'When do we launch?', '--kind', 'date', '--min', '2026-01-01']);
+    kq.slider = await askCli(['--message', 'How much of this week may routines use?', '--kind', 'slider', '--min', '70', '--max', '100', '--step', '5', '--value', '95', '--unit', '%', '--say', 'Let routines use up to {value}% of this week']);
     kq.form = await askCli(['--message', 'Two quick things.', '--form', JSON.stringify({ fields: [{ id: 'ok', type: 'checkbox', label: 'Emails may go to you', required: true }, { id: 'pk', type: 'secret', label: 'Ping key', name: 'ping-key', required: false }], actions: [{ id: 'go', label: 'Here you go', verdict: 'done' }, { id: 'later', label: 'Not now', verdict: 'no' }] })]);
     kq.legacy = await askCli(['--q', 'Access gate (gate 2), no payment: a free Acme API key from an account in your name. It unlocks the reference series.']);
     kq.unsafe = await askCli(['--message', 'x', '--kind', 'link', '--url', 'javascript:alert(1)', '--action', 'click']);
@@ -754,6 +766,12 @@ async function selftest() {
     check('number above max: 400', r.status === 400, r.json);
     r = await call('POST', '/api/questions/' + kq.number.id + '/answer', { action: 'send', values: { value: 40 } });
     check('number answered with its unit', r.status === 200 && /40 USD/.test(r.json.a), r.json);
+    r = await call('POST', '/api/questions/' + kq.slider.id + '/answer', { action: 'set', values: { value: 105 } });
+    check('slider above max: 400 (checked on the server, not only in the browser)', r.status === 400 && /outside/.test(r.json.error), r.json);
+    r = await call('POST', '/api/questions/' + kq.slider.id + '/answer', { action: 'set', values: { value: 82 } });
+    check('slider off its step: 400', r.status === 400 && /between steps/.test(r.json.error), r.json);
+    r = await call('POST', '/api/questions/' + kq.slider.id + '/answer', { action: 'set', values: { value: 80 } });
+    check('slider answered in its plain words', r.status === 200 && /Let routines use up to 80% of this week/.test(r.json.a), r.json);
     r = await call('POST', '/api/questions/' + kq.date.id + '/answer', { action: 'send', values: { value: 'soon' } });
     check('date not a date: 400', r.status === 400, r.json);
     r = await call('POST', '/api/questions/' + kq.date.id + '/answer', { action: 'send', values: { value: '2026-12-01' } });

@@ -41,6 +41,12 @@
  *   node company/tools/pacer.js restore             put every routine the pacer moved back on its earlier model and lift its pauses
  *   node company/tools/pacer.js emergency on --why "..." --by <name> --hours 4     (emergency.allowedBy; at most maxHours)
  *   node company/tools/pacer.js emergency off --by <name> [--why "..."]
+ *   node company/tools/pacer.js limits [--json]     per subscription: usage, reset, weekly stop, use-now, affected seats
+ *   node company/tools/pacer.js limit claude|minimax [--week-stop N] [--use-now N] --by <name> --why "..."
+ *        the recorded way to set a subscription cutoff (provenance, changes[], dispatch log): the owner always; the CEO or
+ *        finance seat only while self-governance gives budget to the company. When a cutoff holds seats or moves them
+ *        off a subscription and the owner has not set it this week, the live pacer asks the owner once on Today (two
+ *        sliders; lib/pacing-ask.js); at auto/notify that is an FYI and it does not wait.
  *
  * The spendCap guardrail off (company/state/guardrails.json): no pacing line or weekly stop closes a subscription (a
  * provider's own refusal still does); each such state is logged once as SPENDCAP OFF. A hand-started emergency is a budget
@@ -185,6 +191,8 @@ function loadPolicy(root, override) {
   p.minimax.paceBy = p.minimax.paceBy === 'fiveHour' ? 'fiveHour' : 'week';
   p.minimax.weekCloseAtUsedPct = numOr(p.minimax.weekCloseAtUsedPct, 100, 1, 100);   // the account's hard weekly stop
   p.claude.weekCloseAtUsedPct = numOr(p.claude.weekCloseAtUsedPct, 95, 1, 100);       // the account's hard weekly stop
+  // the owner's cutoffs (lib/pacing-ask.js, `pacer.js limit`): 0 = spread evenly, 100 = today's line is the weekly stop
+  for (const k of ['claude', 'minimax']) p[k].useNowPct = numOr(p[k].useNowPct, 0, 0, 100);
   p.claude.dailyLineFromMs = p.claude.dailyLineFrom ? (Date.parse(p.claude.dailyLineFrom) || null) : null;   // optional: no daily line before this time
   p.emergency.ceilingPct = numOr(p.emergency.ceilingPct, 90, 0, 100);
   p.emergency.maxHours = numOr(p.emergency.maxHours, 12, 0, 12);   // never more than 12 hours
@@ -724,6 +732,9 @@ function makePacer(o) {
     // the account's hard stop for each subscription (weekCloseAtUsedPct): no line, emergency or reserve goes past it
     g.weekCap = key === 'claude' ? policy.claude.weekCloseAtUsedPct : policy.minimax.weekCloseAtUsedPct;
     g.line = Math.min(g.line, g.weekCap); g.normalLine = Math.min(g.normalLine, g.weekCap);
+    // the owner's "spread evenly vs use it now" (useNowPct): today's line moves that far from the even line to the stop
+    g.useNowPct = policy[key].useNowPct;
+    if (g.useNowPct > 0) { g.normalLine += (g.weekCap - g.normalLine) * g.useNowPct / 100; g.line = Math.max(g.line, g.normalLine); }
     // Optional claude.dailyLineFrom: before it the daily line does not apply and Claude runs to its stop (a company in
     // setup before a weekly reset).
     if (key === 'claude' && isNum(policy.claude.dailyLineFromMs) && t < policy.claude.dailyLineFromMs) {
@@ -1352,12 +1363,14 @@ function makePacer(o) {
       if (holds.some(h => h.id === id)) continue;
       const job = loopJob(jobs, crew, id);
       const row = job && noneRows.get(job.id);
-      if (row) noneHolds.push({ id, name: (crew[id] && crew[id].name) || id, loop: job.name, why: row.why });
+      if (row) noneHolds.push({ id, name: (crew[id] && crew[id].name) || id, loop: job.name, why: row.why, provider: row.to && row.to.provider });
     }
     const noneKey = noneHolds.map(h => h.id).sort().join(',');
     if (noneHolds.length) onChange(st, 'holdNone', noneKey, (live ? 'HOLD' : 'SHADOW would hold') + ' (nothing in their 1-2-3 chain is open): ' + noneHolds.map(h => h.loop + ' (' + h.name + ')').join(', ') + ' — ' + noneHolds[0].why);
     else if (st.keys && st.keys.holdNone) onChange(st, 'holdNone', '', (live ? 'HOLD' : 'SHADOW hold') + ' lifted: every waiting person has an open link in their chain again');
     if (live) for (const h of noneHolds) { const i = order.indexOf(h.id); if (i >= 0) order.splice(i, 1); }
+    // a cutoff that holds seats or moves them off a subscription is the owner's decision: ask once (lib/pacing-ask.js)
+    try { require('./lib/pacing-ask.js').tick({ root, m, pl, holds: noneHolds, st, live, dry, log: note, govOpts }); } catch (e) { note('PACING ASK ERROR: ' + String(e && e.message || e).slice(0, 200)); }
     const holdKey = holds.map(h => h.id + ':' + h.trigger).sort().join(',');
     const triggerLine = () => (m.rail.pressure && peak.peak)
       ? 'station rail ' + Math.round(m.rail.pct) + '%, holds from ' + m.rail.holdAtPct + '%, and the peak block ' + peak.block + ' until ' + when(OH.nextWindow(m.at, undefined, pk))
@@ -1624,7 +1637,7 @@ async function cli(argv, o) {
   const a = parseArgs(argv.slice(1));
   // status, plan and report only look: they keep no log lines, use up no event and move no clock (readOnly); the
   // MiniMax reading they may fetch is saved so the 10-minute call limit holds. apply and restore act, under the lock.
-  const looking = cmd === 'status' || cmd === 'plan' || cmd === 'report';
+  const looking = cmd === 'status' || cmd === 'plan' || cmd === 'report' || cmd === 'limits';
   const pz = makePacer(Object.assign({}, o, { dry: false, readOnly: looking }));
   const readJobs = async () => { try { return await pz.getJobs(); } catch (e) { print('(could not read routines from the station: ' + e.message + ')'); return []; } };
   if (looking) {
@@ -1637,6 +1650,7 @@ async function cli(argv, o) {
     const { st, m } = r.value;
     const pl = pz.plan(m, st, jobs);
     if (cmd === 'report') pz.writeReport(m, pl, st, {});
+    if (cmd === 'limits') { const v = require('./lib/pacing-ask.js').view(m, pl, jobs, o.root || DEFAULT_ROOT); print(a.json ? JSON.stringify(v, null, 1) : Object.entries(v).filter(([k]) => k !== 'level').map(([, x]) => x.name + ': ' + (x.usedPct == null ? '?' : Math.round(x.usedPct * 10) / 10) + '% used, weekly stop ' + x.weekStop + '%, use-now ' + x.useNow + '%, affected: ' + (x.affected.join(', ') || 'none')).join('\n')); return 0; }
     if (a.json) { print(JSON.stringify(cmd === 'status' ? m : { measure: m, plan: pl }, null, 1)); return 0; }
     if (cmd === 'status') print(pz.statusText(m));
     else if (cmd === 'plan') print(pz.planText(m, pl));
@@ -1698,7 +1712,21 @@ async function cli(argv, o) {
     try { const lf = path.join(root, 'company', 'work', 'dispatch-log.md'); fs.appendFileSync(lf, '- ' + (lp => lp.date + ' ' + lp.time)(co.localParts()) + ' PACER MODE ' + was + ' -> ' + want + ' by ' + by + ': ' + why + '\n'); } catch (_) {}
     print('pacer mode ' + was + ' -> ' + want + ' (recorded)'); return 0;
   }
-  print('commands: status [--json], plan [--json], report, apply, restore, emergency on|off, mode live|shadow --by --why');
+  if (cmd === 'limit') {
+    // limit claude|minimax [--week-stop N] [--use-now N] --by <Name> --why "...": the recorded way to set a subscription
+    // cutoff (lib/pacing-ask.js setLimit: provenance, changes[], dispatch log); the owner's answers on Today use it too
+    const PA = require('./lib/pacing-ask.js'); const root = o.root || DEFAULT_ROOT;
+    const key = String(a._[0] || '').toLowerCase(); const by = a.by === true ? '' : (a.by || ''); const why = a.why === true ? '' : (a.why || '');
+    if (!PA.SUBS[key] || !by || !why) { print('usage: pacer.js limit claude|minimax [--week-stop N] [--use-now N] --by <Name> --why "..."'); return 2; }
+    const no = PA.authorize(root, by, o.govOpts ? Object.assign({ root }, o.govOpts) : undefined);
+    if (no) { print(JSON.stringify({ ok: false, error: no.error }, null, 1)); return no.code; }
+    const r = PA.setLimit(root, key, { weekStop: a['week-stop'], useNow: a['use-now'], by, why, via: a.via && a.via !== true ? a.via : 'pacer.js limit' });
+    if (r.ok && !/^(owner|commander)$/i.test(by) && by.toLowerCase() !== String((require('./lib/company').config.owner || {}).name || '').toLowerCase()) {
+      try { if (gov.level('budget', Object.assign({ root }, o.govOpts || {})) === 'notify') gov.notify(by + ' set the ' + PA.SUBS[key].name + ' cutoffs: ' + r.what + ' (' + why + ').', { root }); } catch (_) {}
+    }
+    print(JSON.stringify(r, null, 1)); return r.ok ? 0 : (r.code || 2);
+  }
+  print('commands: status [--json], plan [--json], report, limits [--json], apply, restore, emergency on|off, mode live|shadow --by --why, limit claude|minimax --week-stop N --use-now N --by --why');
   return 2;
 }
 

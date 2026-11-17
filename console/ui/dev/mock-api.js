@@ -45,11 +45,20 @@ function typedFixtures() {
         { id: 'email', type: 'text', label: 'Sign-in email', required: true }, { id: 'ping', type: 'secret', label: 'Ping key', name: 'example-ping-key' },
         { id: 'ok', type: 'checkbox', label: 'Alert emails may go to that address', required: true }],
         actions: [{ id: 'go', label: 'Here you go', verdict: 'done' }, { id: 'other', label: 'Use another free service instead', verdict: 'no' }] } }),
+    // the pacer's cutoff question (company/tools/lib/pacing-ask.js): two sliders and three buttons
+    mk('q-000119', 15, { from: 'Pacer', about: 'pacing:claude', message: 'Claude is 70% used this week and resets Thursday 18:00. The company\'s routines are paused on Claude for today. How much of this week\'s Claude may routines use?',
+      details: 'Today\'s line is 41.9% (spread evenly over the week). Held: Ingrid Halvorsen, Marisol Vance, Halima Cisse.',
+      form: { fields: [{ id: 'weekstop', type: 'slider', label: 'Weekly stop', min: 70, max: 100, step: 1, value: 95, unit: '%', say: 'Let routines use up to {value}% of this week\'s Claude', minLabel: 'What is used now (70%)', maxLabel: 'All of it (100%)', marks: [{ value: 95, label: 'now 95%' }] },
+        { id: 'usenow', type: 'slider', label: 'Spread evenly or use it now', min: 0, max: 100, step: 10, value: 0, unit: '%', say: '{value}% of the way from an even share each day to using it all now', sayAt: { 0: 'Spread evenly: an even share of the week each day', 100: 'Use it now: routines may go up to the weekly stop today' }, minLabel: 'Spread evenly', maxLabel: 'Use it now', required: false }],
+        actions: [{ id: 'set', label: 'Set', verdict: 'submit', primary: true }, { id: 'keep', label: 'Keep paused', verdict: 'no', needs: 'none' }, { id: 'other', label: 'Use another model meanwhile', verdict: 'done', needs: 'none' }] } }),
     legacy,
   ];
 }
 
 const S = {
+  limits: { level: 'approve',
+    claude: { name: 'Claude', known: true, open: false, why: 'week 70% used is over today\'s line of 41.9%', usedPct: 70, line: 41.9, normalLine: 41.9, resetsAt: Date.now() + 2 * 86400e3, weekStop: 95, useNow: 0, paceBy: 'week', affected: ['Ingrid Halvorsen', 'Marisol Vance', 'Halima Cisse'], ownerSet: null },
+    minimax: { name: 'MiniMax', known: true, open: true, why: 'paced by its own limits', usedPct: 24, line: 100, normalLine: 100, resetsAt: Date.now() + 4 * 86400e3, weekStop: 100, useNow: 0, paceBy: 'fiveHour', affected: [], ownerSet: null } },
   company: { ok: true, name: 'Example Co', shortName: 'example', owner: { name: 'Sam Owner' }, timezone: 'America/Chicago', station: { url: 'http://127.0.0.1:8802' }, ownerChannel: { adapter: 'file' } },
   questions: [
     { id: 'q-000101', from: 'Founder', about: 'governance:hiring', blocking: true, askedAt: ago(40), batch: 'gate',
@@ -214,6 +223,10 @@ async function apiRoute(req, res, p, q) {
     case 'GET /api/usage': return ok({ mode: 'shadow', live: false, claude: { key: 'claude', label: 'Claude Max', known: true, open: true, usedPct: 31, usedToday: 9, line: 14, share: 50, why: 'under today\'s line' },
       minimax: { key: 'minimax', label: 'MiniMax', known: true, open: true, usedPct: 24, usedToday: 22, line: 28, share: 50, why: 'near the line' }, deepseek: { label: 'DeepSeek', open: true, why: 'no credit failure seen', reading: null },
       rail: { known: true, pct: 12, perDay: 25, source: 'runs.jsonl' }, emergency: { active: false }, boost: { on: false, why: 'off' }, problems: [] });
+    case 'GET /api/pacer/limits': return ok(S.limits);
+    case 'POST /api/pacer/limit': { const l = S.limits[B.provider]; if (!l) return J(res, 400, { ok: false, error: 'provider is claude or minimax' });
+      for (const [k, f] of [['weekStop', 'weekStop'], ['useNow', 'useNow']]) if (B[k] != null) { const n = Number(B[k]); if (!(n >= 0 && n <= 100)) return J(res, 400, { ok: false, error: k + ' must be a number from 0 to 100' }); l[f] = n; }
+      l.ownerSet = { at: now(), by: S.company.owner.name, choice: 'set', via: 'console' }; return ok({ key: B.provider, now: { weekStop: l.weekStop, useNow: l.useNow } }); }
     case 'GET /api/governance': return ok(S.governance);
     case 'POST /api/governance/preset': if (!PRESETS[B.preset]) return J(res, 400, { ok: false, error: 'unknown preset' }); setPreset(B.preset); S.setup.govChosen = true; emit('governance'); return ok();
     case 'POST /api/governance/set': { const c = S.governance.categories.find(x => x.category === B.category); if (!c) return J(res, 400, { ok: false, error: 'unknown category' }); c.level = B.level; S.governance.preset = 'custom'; S.governance.presetLabel = 'Custom'; emit('governance'); return ok(); }

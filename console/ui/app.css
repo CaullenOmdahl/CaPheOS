@@ -281,3 +281,9 @@ dl.kv dt { color: var(--text-muted); } dl.kv dd { margin: 0; color: var(--text-s
 .gate .check.attn { color: var(--status-danger); font-weight: 600; }
 .gate .snooze-menu[hidden] { display: none; }
 .gate .q-secret-hint > summary { min-height: 36px; display: flex; align-items: center; }
+.q-slider { max-width: 520px; }
+.q-slider .q-range { width: 100%; min-height: 36px; accent-color: var(--accent); }
+.q-slider .q-range:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-md); }
+.q-slider .q-say { color: var(--text-strong); }
+.q-slider .q-range-marks { position: relative; height: 16px; }
+.q-slider .q-range-marks > span { position: absolute; transform: translateX(-50%); white-space: nowrap; }

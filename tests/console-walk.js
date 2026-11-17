@@ -64,6 +64,8 @@ async function until(fn, ms) { const end = Date.now() + ms; let v; while (Date.n
   await js('location.hash = "/usage"; 1');
   const ct = await until(() => js(`(() => { const s = document.querySelector('[aria-labelledby=chains]'); return s && s.querySelector('table') ? s.innerText.slice(0, 300) : null; })()`), 8000);
   check('Usage shows every seat\'s chain in one table', !!ct && /running now/i.test(ct), ct);
+  const cut = await until(() => js(`(() => { const s = document.querySelector('[aria-labelledby=cutoffs]'); const c = s && s.querySelector('[data-sub=claude]'); return c ? { ranges: c.querySelectorAll('input[type=range]').length, say: (c.querySelector('output.q-say') || {}).textContent, save: [...c.querySelectorAll('button')].some(b => b.textContent === 'Save'), text: c.innerText.slice(0, 400) } : null; })()`), 8000);
+  check('Usage > Subscription cutoffs: Claude\'s weekly stop and daily pacing sliders, in plain words, with Save', !!cut && cut.ranges === 2 && /Let routines use up to \d+% of this week's Claude/.test(cut.say || '') && cut.save && /Resets/.test(cut.text) && /Affects/.test(cut.text), cut);
   // Setup -> Charter -> Draft it with the Founder -> the reply streams in
   await js('location.hash = "/setup/charter"; 1');
   const btn = await until(() => js(`!!document.querySelector('#step-charter') && [...document.querySelectorAll('#step-charter button')].some(b => /Draft it with the Founder/.test(b.textContent))`), 8000);

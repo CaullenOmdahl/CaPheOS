@@ -415,6 +415,7 @@ function fieldControl(q, f) {
     const el = h('input', { id: uid, type: 'date', class: 'input', min: f.min || null, max: f.max || null, style: 'max-width:220px' });
     return { f, el: h('div', { class: 'stack-6' }, lab(f.label, uid), help, el), get: () => el.value || undefined };
   }
+  if (f.type === 'slider') { const c = sliderControl(f, uid); return { f, el: h('div', { class: 'stack-6' }, help ? [lab(f.label, uid), help] : lab(f.label, uid), c.el), get: c.get }; }
   if (f.type === 'checkbox') {
     const el = h('input', { type: 'checkbox', id: uid });
     return { f, el: h('div', { class: 'stack-4' }, h('label', { class: 'check', for: uid }, el, f.label), help), get: () => el.checked ? true : undefined };
@@ -422,6 +423,25 @@ function fieldControl(q, f) {
   return { f, el: h('p', { class: 'caption muted' }, 'This console cannot show a "' + f.type + '" field; use Reply.') };
 }
 
+/* a slider (inbox.js type "slider"): a native range input, so arrows, Page Up/Down and Home/End work; the live value in
+ * plain words (f.say with {value}) is shown beside it and read out (aria-valuetext, aria-live). Also used by Usage. */
+export function sliderWords(f, v) {
+  const val = String(Math.round(Number(v) * 1e6) / 1e6);
+  if (f.sayAt && f.sayAt[val]) return f.sayAt[val];
+  if (f.say) return f.say.split('{value}').join(val);
+  return (f.label || f.id) + ': ' + val + (f.unit ? (/^[%°]/.test(f.unit) ? '' : ' ') + f.unit : '');
+}
+export function sliderControl(f, uid, onInput) {
+  const listId = f.marks && f.marks.length ? uid + '-marks' : null;
+  const el = h('input', { id: uid, type: 'range', class: 'q-range', min: String(f.min), max: String(f.max), step: String(f.step || 1), value: String(f.value != null ? f.value : f.min), list: listId, 'aria-describedby': uid + '-say' });
+  const say = h('output', { id: uid + '-say', for: uid, class: 'body-s strong q-say', 'aria-live': 'polite' });
+  const upd = () => { const w = sliderWords(f, el.value); say.textContent = w; el.setAttribute('aria-valuetext', w); if (onInput) onInput(Number(el.value)); };
+  el.addEventListener('input', upd); upd();
+  const ends = (f.minLabel || f.maxLabel) ? h('div', { class: 'between caption muted q-range-ends' }, h('span', null, f.minLabel || ''), h('span', null, f.maxLabel || '')) : null;
+  const marks = listId ? h('datalist', { id: listId }, f.marks.map(m => h('option', { value: String(m.value), label: m.label }))) : null;
+  const markRow = listId ? h('div', { class: 'caption muted q-range-marks' }, f.marks.map(m => h('span', { style: 'left:' + ((m.value - f.min) / (f.max - f.min) * 100) + '%' }, m.label))) : null;
+  return { el: h('div', { class: 'stack-4 q-slider' }, say, el, marks, markRow, ends), get: () => Number(el.value), input: el, set: v => { el.value = String(v); upd(); } };
+}
 function cap(s) { s = String(s || ''); return s.charAt(0).toUpperCase() + s.slice(1); }
 
 export function parseLogLine(line) {

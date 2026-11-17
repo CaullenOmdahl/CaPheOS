@@ -27,6 +27,11 @@
  *   choice    {options: [{id, label, recommended?}], multi?, allowOther?}
  *   link      {url (http/https), action: what to do there}   the owner marks it done / couldn't
  *   number    {unit?, min?, max?}     date {min?, max? YYYY-MM-DD}     checkbox {}  (a yes/no tick)
+ *   slider    {min, max, step?, value (the suggested value), unit?, marks?: [{value, label}], minLabel?, maxLabel?,
+ *             say?: "Let routines use up to {value}% of this week's Claude", sayAt?: {"0": "a whole sentence for 0"}}
+ *             a range the owner drags (keyboard: arrows,
+ *             Page Up/Down, Home/End); the card shows `say` with the live value in plain words. The answer must be in
+ *             [min, max] and on a step from min; it is checked here, server-side, not only in the browser.
  * Every field has {id, type, label, help?, required?}. `actions` are the buttons, each {id, label, verdict, primary?,
  * needs?}: verdict is one of yes, no, submit, done, couldnt, declined (yes/no is what lib/governance approved() reads);
  * needs is "fields" (the required fields must be filled; default for yes/submit/done), "none", or a list of field ids.
@@ -36,7 +41,8 @@
  * SHORTCUTS (--kind) expand to a form: approve (default: Approve / Decline + reason), choice (--options "id:Label,..."
  * [--recommended id] [--allow-other] [--multi]), text ([--min N] [--max N] [--placeholder]), secret (--name <file>
  * [--label] [--provider "where to get it"] [--validate <provider id>]), link (--url --action), account (--url --action
- * --fields "id:Label,..."; non-secret fields only), number ([--unit] [--min] [--max]), date ([--min] [--max]).
+ * --fields "id:Label,..."; non-secret fields only), number ([--unit] [--min] [--max]), date ([--min] [--max]),
+ * slider (--min --max [--step] [--value] [--unit] [--say "... {value} ..."] [--min-label] [--max-label]).
  * `--spec '<json>'` gives the shortcut's fields as JSON.
  *
  * ANSWERS are stored as { type:'answer', id, a: <plain words>, answer: {verdict, action, values, note?}, by } and,
@@ -59,8 +65,8 @@ const co = require('./lib/company');
 const FILE = () => process.env.PM_INBOX_FILE || co.p('company', 'pm-inbox.jsonl');
 const isOwner = by => { const b = String(by || '').trim().toLowerCase(); return !!b && (b === 'commander' || b === 'owner' || b === String(co.config.owner.name || '').trim().toLowerCase()); };
 
-const KINDS = ['approve', 'choice', 'text', 'secret', 'link', 'account', 'number', 'date'];
-const FIELD_TYPES = ['info', 'text', 'secret', 'choice', 'link', 'number', 'date', 'checkbox'];
+const KINDS = ['approve', 'choice', 'text', 'secret', 'link', 'account', 'number', 'date', 'slider'];
+const FIELD_TYPES = ['info', 'text', 'secret', 'choice', 'link', 'number', 'date', 'checkbox', 'slider'];
 const VERDICTS = ['yes', 'no', 'submit', 'done', 'couldnt', 'declined'];
 const LIMITS = { fields: 20, actions: 6, options: 30, label: 200, help: 1000, info: 4000, message: 2000, details: 20000, value: 20000 };
 const MESSAGE_SOFT = 400;
@@ -196,6 +202,7 @@ function normalizeForm(form) {
       for (const k of ['min', 'max']) if (o[k] !== undefined && !Number.isFinite(o[k])) throw new Error('field ' + id + ': ' + k + ' must be a number');
       if (o.min !== undefined && o.max !== undefined && o.min > o.max) throw new Error('field ' + id + ': min is above max');
     }
+    if (type === 'slider') Object.assign(o, normalizeSlider(x, id));
     if (type === 'date') {
       o.min = str(x.min, 10, 'min'); o.max = str(x.max, 10, 'max');
       for (const k of ['min', 'max']) if (o[k] && !ISO_DATE.test(o[k])) throw new Error('field ' + id + ': ' + k + ' must be YYYY-MM-DD');
@@ -223,6 +230,41 @@ function normalizeForm(form) {
   if (!outA.some(a => a.primary)) outA[0].primary = true;
   return { fields: outF, actions: outA };
 }
+/* a slider's checked settings: finite min < max, step > 0 (at most 1000 steps), value and marks in range and on a step */
+const onStep = (n, f) => { const k = (n - f.min) / f.step; return Math.abs(k - Math.round(k)) < 1e-6; };
+function normalizeSlider(x, id) {
+  const o = { min: num(x.min), max: num(x.max), step: num(x.step) === undefined ? 1 : num(x.step) };
+  for (const k of ['min', 'max', 'step']) if (!Number.isFinite(o[k])) throw new Error('slider ' + id + ': ' + k + ' must be a number');
+  if (!(o.min < o.max)) throw new Error('slider ' + id + ': min must be below max');
+  if (!(o.step > 0)) throw new Error('slider ' + id + ': step must be above 0');
+  if ((o.max - o.min) / o.step > 1000) throw new Error('slider ' + id + ': at most 1000 steps from min to max');
+  o.value = num(x.value) === undefined ? o.min : num(x.value);
+  if (!Number.isFinite(o.value) || o.value < o.min || o.value > o.max) throw new Error('slider ' + id + ': value (the suggestion) must be from ' + o.min + ' to ' + o.max);
+  if (!onStep(o.value, o)) throw new Error('slider ' + id + ': value ' + o.value + ' is not on a step of ' + o.step + ' from ' + o.min);
+  o.unit = str(x.unit, 20, 'unit'); o.minLabel = str(x.minLabel, 80, 'minLabel'); o.maxLabel = str(x.maxLabel, 80, 'maxLabel');
+  o.say = str(x.say, 300, 'field ' + id + ' say');
+  if (o.say && !o.say.includes('{value}')) throw new Error('slider ' + id + ': say must contain {value} (the live value in plain words)');
+  if (x.sayAt !== undefined) {   // whole sentences for particular values (the ends, usually), e.g. {"0": "Spread evenly"}
+    if (!x.sayAt || typeof x.sayAt !== 'object' || Array.isArray(x.sayAt) || Object.keys(x.sayAt).length > 12) throw new Error('slider ' + id + ': sayAt is an object of at most 12 {value: sentence}');
+    o.sayAt = {};
+    for (const [k, t] of Object.entries(x.sayAt)) { const v = Number(k); if (!Number.isFinite(v) || v < o.min || v > o.max) throw new Error('slider ' + id + ': sayAt ' + k + ' is outside ' + o.min + '-' + o.max); o.sayAt[String(v)] = str(t, 300, 'sayAt'); }
+  }
+  if (x.marks !== undefined) {
+    if (!Array.isArray(x.marks) || x.marks.length > 12) throw new Error('slider ' + id + ': marks is a list of at most 12 {value, label}');
+    o.marks = x.marks.map(m => {
+      const v = num(m && m.value); if (!Number.isFinite(v) || v < o.min || v > o.max) throw new Error('slider ' + id + ': a mark is outside ' + o.min + '-' + o.max);
+      return { value: v, label: str(m.label, 40, 'mark label') || String(v) };
+    });
+  }
+  return o;
+}
+// the live value in plain words: the asker's `say` sentence, else "Label: 80 %"
+function sliderWords(f, v) {
+  const val = String(Math.round(Number(v) * 1e6) / 1e6);
+  if (f.sayAt && f.sayAt[val]) return f.sayAt[val];
+  if (f.say) return f.say.split('{value}').join(val);
+  return (f.label || f.id) + ': ' + val + (f.unit ? (/^[%°]/.test(f.unit) ? '' : ' ') + f.unit : '');
+}
 /* expandKind(kind, spec) -> {fields, actions}: the shortcuts. */
 function expandKind(kind, spec) {
   const k = kind ? String(kind).trim().toLowerCase() : 'approve';
@@ -245,6 +287,8 @@ function expandKind(kind, spec) {
       actions: [{ id: 'done', label: 'Done', verdict: 'done', primary: true }, { id: 'couldnt', label: 'Couldn\'t do it', verdict: 'couldnt' }] };
     case 'number': return { fields: [{ id: 'value', type: 'number', label: s.label || 'Your answer', unit: s.unit, min: s.min, max: s.max, required: true }], actions: [{ id: 'send', label: 'Send', verdict: 'submit', primary: true }] };
     case 'date': return { fields: [{ id: 'value', type: 'date', label: s.label || 'The date', min: s.min, max: s.max, required: true }], actions: [{ id: 'send', label: 'Send', verdict: 'submit', primary: true }] };
+    case 'slider': return { fields: [{ id: 'value', type: 'slider', label: s.label || 'Your answer', min: s.min, max: s.max, step: s.step, value: s.value, unit: s.unit, marks: s.marks, minLabel: s.minLabel, maxLabel: s.maxLabel, say: s.say, sayAt: s.sayAt, required: true }, note],
+      actions: [{ id: 'set', label: 'Set', verdict: 'submit', primary: true }] };
   }
 }
 
@@ -332,7 +376,7 @@ function checkAnswer(row, raw) {
     if (f.type === 'info') continue;
     let v = vals[f.id];
     const empty = v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length) || (f.type === 'checkbox' && v === false && need.has(f.id));
-    if (empty) { if (need.has(f.id)) throw new Error((f.label || f.id) + ': ' + (f.type === 'checkbox' ? 'tick it' : f.type === 'secret' ? 'paste the key' : 'fill it in')); continue; }
+    if (empty) { if (need.has(f.id)) throw new Error((f.label || f.id) + ': ' + (f.type === 'checkbox' ? 'tick it' : f.type === 'secret' ? 'paste the key' : f.type === 'slider' ? 'set the slider' : 'fill it in')); continue; }
     if (act.needs === 'none' && !Array.isArray(act.needs) && f.type === 'secret') continue;   // declining never stores a key
     if (f.type === 'text') {
       const t = String(v).trim(); if (f.minLength && t.length < f.minLength) throw new Error((f.label || f.id) + ': at least ' + f.minLength + ' characters, please (' + t.length + ' written)');
@@ -359,6 +403,13 @@ function checkAnswer(row, raw) {
       if (f.min && d < f.min) throw new Error((f.label || f.id) + ': on or after ' + f.min); if (f.max && d > f.max) throw new Error((f.label || f.id) + ': on or before ' + f.max);
       out.values[f.id] = d;
     } else if (f.type === 'checkbox') out.values[f.id] = v === true || v === 'true' || v === 'on';
+    else if (f.type === 'slider') {
+      const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN;
+      if (!Number.isFinite(n)) throw new Error((f.label || f.id) + ': a number from ' + f.min + ' to ' + f.max + ', please');
+      if (n < f.min || n > f.max) throw new Error((f.label || f.id) + ': from ' + f.min + ' to ' + f.max + ' (' + n + ' is outside)');
+      if (!onStep(n, f)) throw new Error((f.label || f.id) + ': in steps of ' + f.step + ' from ' + f.min + ' (' + n + ' is between steps)');
+      out.values[f.id] = Math.round(n * 1e6) / 1e6;
+    }
   }
   for (const k of Object.keys(vals)) if (!form.fields.some(f => f.id === k)) throw new Error('no field "' + k + '" on this question');
   // a single yes/no choice answers a governance question like Approve/Decline
@@ -386,6 +437,7 @@ function plainAnswer(row, ans) {
     else if (f.type === 'link') parts.push(L + ' (' + f.url + '): ' + (v === 'done' ? 'done' : 'could not do it') + '.');
     else if (f.type === 'number') parts.push(L + ': ' + v + (f.unit ? ' ' + f.unit : '') + '.');
     else if (f.type === 'checkbox') parts.push(L + ': ' + (v ? 'yes' : 'no') + '.');
+    else if (f.type === 'slider') parts.push(sliderWords(f, v).replace(/[.!?]?$/, '.'));
     else if (f.type === 'text' && f.multiline && /^(reason|note|answer)$/.test(f.id)) parts.push(v);
     else parts.push(L + ': ' + v + (/[.!?]$/.test(v) ? '' : '.'));
   }
@@ -442,7 +494,7 @@ function snooze(o) {
 }
 function out(code, obj) { console.log(JSON.stringify(obj, null, 1)); process.exit(code); }
 
-module.exports = { openQuestions, state, readAll, ask, answer, snooze, normalizeForm, expandKind, formOf, checkAnswer, plainAnswer, secretHint,
+module.exports = { openQuestions, state, readAll, ask, answer, snooze, normalizeForm, expandKind, formOf, checkAnswer, plainAnswer, secretHint, sliderWords,
   messageParts, styleWarnings, safeSecretName, KINDS, FIELD_TYPES, VERDICTS, FILE };
 
 /* ---- selftest: a scratch inbox, owner dir and governance root ---- */
@@ -507,6 +559,22 @@ function selftest() {
     t('text: too short refused', /at least 10/.test(throws(() => answer({ id: txt.row.id, by, answer: { action: 'send', values: { answer: 'short' } } }))));
     const nm = ask({ from: 'Founder', message: 'Monthly cap?', kind: 'number', spec: { unit: 'USD', min: 0, max: 500 } });
     t('number out of range refused', /at most 500/.test(throws(() => answer({ id: nm.row.id, by, answer: { action: 'send', values: { value: 900 } } }))));
+    // slider: composed safely, checked server-side (range, step), answered in the asker's plain words
+    t('slider: min above max, zero step, suggestion off a step, say without {value} refused',
+      /min must be below max/.test(throws(() => ask({ message: 'x', kind: 'slider', spec: { min: 9, max: 1 } })))
+      && /step must be above 0/.test(throws(() => ask({ message: 'x', kind: 'slider', spec: { min: 0, max: 10, step: 0 } })))
+      && /not on a step/.test(throws(() => ask({ message: 'x', kind: 'slider', spec: { min: 0, max: 100, step: 5, value: 42 } })))
+      && /must be from/.test(throws(() => ask({ message: 'x', kind: 'slider', spec: { min: 0, max: 100, value: 120 } })))
+      && /must contain \{value\}/.test(throws(() => ask({ message: 'x', kind: 'slider', spec: { min: 0, max: 100, say: 'no number' } })))
+      && /sayAt 120 is outside/.test(throws(() => ask({ message: 'x', kind: 'slider', spec: { min: 0, max: 100, say: '{value}', sayAt: { 120: 'too far' } } })))
+      && /a mark is outside/.test(throws(() => ask({ message: 'x', form: { fields: [{ id: 's', type: 'slider', label: 'S', min: 0, max: 10, marks: [{ value: 11, label: 'x' }] }] } }))));
+    const sl = ask({ from: 'Pacer', message: 'How much of this week\'s Claude may routines use?', kind: 'slider', spec: { label: 'Weekly stop', min: 70, max: 100, step: 1, value: 95, unit: '%', say: 'Let routines use up to {value}% of this week\'s Claude', minLabel: 'Now (70%)', maxLabel: 'All of it' } });
+    const slf = open(sl.row.id).form.fields[0];
+    t('slider: kept with its suggestion, unit, labels and say', slf.type === 'slider' && slf.value === 95 && slf.unit === '%' && slf.minLabel === 'Now (70%)' && /\{value\}/.test(slf.say), slf);
+    t('slider answer: out of range refused', /from 70 to 100 \(120 is outside\)/.test(throws(() => answer({ id: sl.row.id, by, answer: { action: 'set', values: { value: 120 } } }))) && /outside/.test(throws(() => answer({ id: sl.row.id, by, answer: { action: 'set', values: { value: 69 } } }))));
+    t('slider answer: off a step refused; not a number refused', /between steps/.test(throws(() => answer({ id: sl.row.id, by, answer: { action: 'set', values: { value: 80.5 } } }))) && /a number from/.test(throws(() => answer({ id: sl.row.id, by, answer: { action: 'set', values: { value: 'lots' } } }))));
+    r = answer({ id: sl.row.id, by, answer: { action: 'set', values: { value: '80' } }, quiet: true });
+    t('slider answer: a number, said in the asker\'s plain words', r.answer.values.value === 80 && /Let routines use up to 80% of this week's Claude\./.test(r.a), r.a);
     const sec = ask({ from: 'Founder', message: 'The Kalshi key, please.', kind: 'secret', spec: { name: 'kalshi-api-key' } });
     r = answer({ id: sec.row.id, by, answer: { action: 'decline', note: 'not this week' } });
     t('secret: declining needs no key', r.answer.verdict === 'declined' && /will not provide/.test(r.a));
@@ -551,7 +619,8 @@ if (a.cmd === 'ask') {
   let form = null;
   if (a.form && a.form !== true) { try { form = JSON.parse(a.form); } catch (e) { out(2, { ok: false, error: '--form is not JSON: ' + e.message }); } }
   const flag = { options: 'options', recommended: 'recommended', 'allow-other': 'allowOther', multi: 'multi', min: 'min', max: 'max', placeholder: 'placeholder', name: 'name', label: 'label',
-    provider: 'provider', validate: 'validate', url: 'url', action: 'action', fields: 'fields', unit: 'unit', multiline: 'multiline' };
+    provider: 'provider', validate: 'validate', url: 'url', action: 'action', fields: 'fields', unit: 'unit', multiline: 'multiline',
+    step: 'step', value: 'value', say: 'say', 'min-label': 'minLabel', 'max-label': 'maxLabel' };
   for (const [f, k] of Object.entries(flag)) if (a[f] !== undefined) spec[k] = a[f];
   try {
     const { row, warnings } = ask({ from: a.from, about: a.about, message: a.message, details: a.details, q: a.q, blocking: a.blocking, kind: a.kind || spec.kind, spec, form });

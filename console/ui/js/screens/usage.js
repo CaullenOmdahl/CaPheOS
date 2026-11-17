@@ -1,16 +1,19 @@
 // Usage and models (Usage.dc.html): pacer plans, routing, tiles.
-import { h, fill, Tag, errLine, empty, screenHead, table, NOT_CONNECTED } from '../ui.js';
-import { api } from '../api.js';
+import { h, fill, Tag, Button, errLine, empty, screenHead, table, NOT_CONNECTED } from '../ui.js';
+import { api, post } from '../api.js';
 import { mountPanels } from '../panels.js';
-import { usagePlans } from './today.js';
+import { usagePlans, sliderControl } from './today.js';
 import { chainsTable } from './crew-model.js';
 
 export async function render(root, ctx) {
   const { app } = ctx;
   root.className = 'main';
-  const head = h('div'), plans = h('div'), chains = h('div'), routing = h('div'), tiles = h('div'), side = h('div', { class: 'stack-16' });
+  const head = h('div'), plans = h('div'), cutoffs = h('div'), chains = h('div'), routing = h('div'), tiles = h('div'), side = h('div', { class: 'stack-16' });
   fill(root, head,
     h('section', { 'aria-labelledby': 'plans', class: 'stack-16' }, h('h2', { id: 'plans', class: 'h3' }, 'Plans this week'), plans),
+    h('section', { 'aria-labelledby': 'cutoffs', id: 'subscriptions', class: 'stack-14' },
+      h('div', { class: 'between' }, h('h2', { id: 'cutoffs', class: 'h3' }, 'Subscription cutoffs'), h('span', { class: 'caption muted' }, 'Yours to set. The pacer asks on Today when a cutoff holds seats.')),
+      cutoffs),
     h('section', { 'aria-labelledby': 'chains', class: 'stack-14' },
       h('div', { class: 'between' }, h('h2', { id: 'chains', class: 'h3' }, 'Seat model chains'), h('span', { class: 'caption muted' }, 'Primary and fallbacks per seat; change one in Crew › seat › Model.')),
       chains),
@@ -19,6 +22,7 @@ export async function render(root, ctx) {
       routing),
     tiles, side);
   chainsTable(chains);
+  drawCutoffs(cutoffs, app);
   let d = {};
   try { d = await api('/usage'); } catch (e) { fill(plans, errLine(e, 'Pacer')); }
   fill(head, screenHead({ eyebrow: [d.mode ? 'Pacer ' + d.mode : null, d.live ? 'live' : d.mode ? 'not live' : null, d.emergency && d.emergency.active ? 'Emergency on' : null],
@@ -49,3 +53,35 @@ export async function render(root, ctx) {
 }
 function dd(k, v) { return h('div', null, h('dt', { class: 'caption muted' }, k), h('dd', { class: 'mono strong', style: 'margin:0' }, v)); }
 function tile(l, v, n) { return h('div', { class: 'card p18', style: 'gap:6px' }, h('span', { class: 'eyebrow-t' }, l), h('span', { class: 'big-num' }, v), h('span', { class: 'caption muted' }, n)); }
+
+/* Subscription cutoffs (pacer.js limits / limit): per subscription the usage, the reset, the weekly stop and the
+ * spread-evenly-or-use-it-now line as sliders, and the seats they affect. Save goes through the recorded pacer.js limit. */
+async function drawCutoffs(el, app) {
+  let d;
+  try { d = await api('/pacer/limits'); } catch (e) { fill(el, errLine(e, 'Subscription cutoffs')); return; }
+  const tz = app && app.company && app.company.timezone;
+  const when = ms => { try { return new Intl.DateTimeFormat('en-GB', { weekday: 'long', hour: '2-digit', minute: '2-digit', timeZone: tz || undefined }).format(new Date(ms)); } catch (_) { return new Date(ms).toLocaleString(); } };
+  const cards = ['claude', 'minimax'].filter(k => d[k]).map(k => {
+    const x = d[k]; const fmt = v => v == null ? '—' : (Math.round(v * 10) / 10) + '%';
+    const err = h('p', { class: 'err-line', role: 'status' });
+    const stop = sliderControl({ id: k + '-stop', label: 'Weekly stop', min: 1, max: 100, step: 1, value: Math.round(x.weekStop), unit: '%', say: 'Let routines use up to {value}% of this week\'s ' + x.name, minLabel: '1%', maxLabel: 'All of it (100%)',
+      marks: x.usedPct != null ? [{ value: Math.max(1, Math.min(100, Math.round(x.usedPct))), label: 'used ' + Math.round(x.usedPct) + '%' }] : undefined }, 'cut-' + k + '-stop');
+    const spread = x.paceBy === 'fiveHour' ? null : sliderControl({ id: k + '-usenow', label: 'Daily pacing', min: 0, max: 100, step: 10, value: Math.round((x.useNow || 0) / 10) * 10, unit: '%', say: '{value}% of the way from an even share each day to using it all now', sayAt: { 0: 'Spread evenly: an even share of the week each day', 100: 'Use it now: routines may go up to the weekly stop today' }, minLabel: 'Spread evenly', maxLabel: 'Use it now' }, 'cut-' + k + '-usenow');
+    const save = Button('Save', { variant: 'primary', size: 'sm', onClick: async () => {
+      err.textContent = '';
+      try { await post('/pacer/limit', Object.assign({ provider: k, weekStop: stop.get() }, spread ? { useNow: spread.get() } : {})); app.toast(x.name + ' cutoffs saved. They apply on the next dispatcher tick.'); drawCutoffs(el, app); }
+      catch (e) { err.textContent = 'Not saved: ' + e.message; }
+    } });
+    const set = x.ownerSet ? 'Last set by ' + x.ownerSet.by + (x.ownerSet.at ? ' on ' + when(Date.parse(x.ownerSet.at)) : '') + '.' : x.companySet ? 'Last set by ' + x.companySet.by + ' (the company decides pacing).' : 'Not set by you yet: the company default applies.';
+    return h('article', { class: 'card p22 stack-12', 'data-sub': k },
+      h('div', { class: 'between-c' }, h('h3', { class: 'h4' }, x.name), Tag(x.open ? 'Open to routines' : 'Paused for routines', { variant: 'status', status: x.open ? 'online' : 'warning' })),
+      h('dl', { style: 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0' },
+        dd('Used this week', fmt(x.usedPct)), dd("Today's line", fmt(x.line)), dd('Resets', x.resetsAt ? when(x.resetsAt) : '—')),
+      h('label', { class: 'label strong', for: 'cut-' + k + '-stop' }, 'Weekly stop'), stop.el,
+      spread ? h('label', { class: 'label strong', for: 'cut-' + k + '-usenow' }, 'Daily pacing') : h('span', { class: 'caption muted' }, x.name + ' is paced by its own 5-hour window; only the weekly stop applies.'),
+      spread ? spread.el : null,
+      h('span', { class: 'caption muted' }, 'Affects: ' + ((x.affected || []).join(', ') || 'no seat right now') + '. ' + set),
+      h('div', { class: 'row-8' }, save), err);
+  });
+  fill(el, cards.length ? h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px' }, cards) : empty('No subscription is paced.'));
+}

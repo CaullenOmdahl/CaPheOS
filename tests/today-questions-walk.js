@@ -83,6 +83,18 @@ const SECRET = 'mock-secret-value-never-echoed-0123456789';
     await js(`(() => { [...${card('q-000118')}.querySelectorAll('button')].find(x => x.textContent === 'Here you go').click(); return 1; })()`);
     const ferr = await until(() => js(`${card('q-000118')}.querySelector('.err-line').textContent`), 4000);
     check('a form with a required field left empty says which one', /Not recorded: .*(Sign up|Sign-in email|tick it|fill it in)/.test(ferr || ''), ferr);
+    // slider (the pacer's cutoff question): a range input with the live value in plain words, moved by the keyboard
+    const sl0 = await js(`(() => { const g = ${card('q-000119')}; const r = [...g.querySelectorAll('input[type=range]')]; const o = g.querySelector('output.q-say'); return { n: r.length, v: r[0] && r[0].value, say: o && o.textContent, vt: r[0] && r[0].getAttribute('aria-valuetext'), label: !!g.querySelector('label[for="' + (r[0] && r[0].id) + '"]'), ends: g.innerText.includes('Spread evenly') && g.innerText.includes('Use it now'), buttons: [...g.querySelectorAll('button')].map(b => b.textContent) }; })()`);
+    check('slider: two range inputs, the suggestion set, the value in plain words, labelled, end labels', sl0 && sl0.n === 2 && sl0.v === '95' && /up to 95% of this week's Claude/.test(sl0.say) && sl0.vt === sl0.say && sl0.label && sl0.ends, sl0);
+    check('slider card: Set, Keep paused and Use another model meanwhile', sl0 && ['Set', 'Keep paused', 'Use another model meanwhile'].every(b => sl0.buttons.includes(b)), sl0 && sl0.buttons);
+    await js(`(() => { ${card('q-000119')}.querySelector('input[type=range]').focus(); return 1; })()`);
+    for (let i = 0; i < 3; i++) { await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 }); }
+    const sl1 = await js(`(() => { const g = ${card('q-000119')}; const r = g.querySelector('input[type=range]'); return { v: r.value, say: g.querySelector('output.q-say').textContent, focused: document.activeElement === r }; })()`);
+    check('slider: the arrow keys move it and the words follow', sl1 && sl1.v === '92' && /up to 92% of this week's Claude/.test(sl1.say) && sl1.focused, sl1);
+    await js(`(() => { [...${card('q-000119')}.querySelectorAll('button')].find(x => x.textContent === 'Set').click(); return 1; })()`);
+    const slGone = await until(() => js(`!${card('q-000119')}`), 5000);
+    const slAns = await until(() => js(`(() => { const d = [...document.querySelectorAll('details')].find(x => /Answered today/.test(x.textContent)); return d && d.textContent; })()`), 4000);
+    check('slider: Set records the answer in the plain words', slGone && /up to 92% of this week's Claude/.test(slAns || ''), slAns);
     // Reply is long-form; a key pasted into it is stopped in the browser
     await js(`(() => { [...${card('q-000113')}.querySelectorAll('button')].find(x => x.textContent === 'Reply').click(); return 1; })()`);
     const rta = await until(() => js(`(() => { const t = ${card('q-000113')}.querySelector('textarea[aria-label^="Your reply"]'); return t ? Number(t.getAttribute('rows')) : 0; })()`), 3000);
@@ -103,6 +115,16 @@ const SECRET = 'mock-secret-value-never-echoed-0123456789';
     const snoozed = await until(() => js(`!${card('q-000117')} && [...document.querySelectorAll('summary')].some(s => /Snoozed \\(1\\)/.test(s.textContent))`), 5000);
     check('Snooze hides the card until then and lists it under "Snoozed"', snoozed);
     await shot('today-after');
+    // Settings: Usage and models > Subscription cutoffs, the same sliders, saved through the recorded pacer path
+    await js('location.hash = "/usage"; 1');
+    const cut = await until(() => js(`(() => { const c = document.querySelector('[aria-labelledby=cutoffs] [data-sub=claude]'); return c ? { ranges: c.querySelectorAll('input[type=range]').length, say: c.querySelector('output.q-say').textContent, text: c.innerText } : null; })()`), 8000);
+    check('Usage: Claude\'s weekly stop and daily pacing sliders, usage, reset and the seats affected', cut && cut.ranges === 2 && /up to 95% of this week's Claude/.test(cut.say) && /Used this week/.test(cut.text) && /Resets/.test(cut.text) && /Ingrid Halvorsen/.test(cut.text), cut);
+    await js(`(() => { document.querySelector('[data-sub=claude] input[type=range]').focus(); return 1; })()`);
+    for (let i = 0; i < 5; i++) { await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 }); }
+    await js(`(() => { [...document.querySelectorAll('[data-sub=claude] button')].find(b => b.textContent === 'Save').click(); return 1; })()`);
+    const saved = await until(() => js(`(() => { const c = document.querySelector('[data-sub=claude]'); return c && /Last set by/.test(c.innerText) && c.querySelector('input[type=range]').value === '90' ? c.innerText : null; })()`), 5000);
+    check('Usage: Save records the new weekly stop (90%) and who set it', !!saved, await js(`(document.querySelector('[data-sub=claude]') || {}).innerText`));
+    await shot('usage-cutoffs');
     check('no page exceptions', !errors.length, errors);
     console.log(fails ? 'TODAY QUESTIONS WALK: FAIL (' + fails + ')' : 'TODAY QUESTIONS WALK: PASS');
     ws.close(); done(fails ? 1 : 0);

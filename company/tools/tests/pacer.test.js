@@ -1104,3 +1104,134 @@ test('a seat with its own model chain: plan leaves its routine alone; the hook f
   const mv = fs.readFileSync(path.join(fx.root, 'company/state/model-moves.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
   assert.deepEqual(mv.map(x => x.direction), ['down', 'up']);
 });
+
+// The subscription cutoffs are the owner's decisions (lib/pacing-ask.js): the live pacer asks once on Today, the
+// answer goes through the recorded `pacer.js limit` path, and at auto/notify it is an FYI that does not wait.
+const PA = require('../lib/pacing-ask.js');
+const inboxRows = root => { try { return fs.readFileSync(path.join(root, 'company/pm-inbox.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch (_) { return []; } };
+const pacerAsks = root => inboxRows(root).filter(r => r.type === 'ask' && /^pacing:/.test(r.about || ''));
+const readPol = root => JSON.parse(fs.readFileSync(path.join(root, 'company/work/finance/pacing-policy.json'), 'utf8'));
+const heldTick = h => { const jobs = crewJobs(); return h.p.hook({ jobs, order: ['agent', 'engineer', 'designer'], ownerWake: new Set(), maxPerTick: 2 }); };
+function heldFixture(o) {
+  const jobs = crewJobs(), st = station(jobs);
+  const fx = liveFixture(Object.assign({ feedPct: 28, policy: { mode: 'live' } }, o || {}));
+  return { fx, st, h: make(fx, st, { mm: mmBody(94, 10), extra: dsOut }) };
+}
+test('cutoffs: a held seat makes the live pacer ask the owner ONCE, with two sliders and three buttons; deduped by subscription and week', async () => {
+  const { fx, st, h } = heldFixture({ budgetLevel: 'approve' });
+  await heldTick(h);
+  let asks = pacerAsks(fx.root);
+  assert.equal(asks.length, 1, h.lines.join('\n'));
+  const q = asks[0];
+  assert.equal(q.about, 'pacing:claude'); assert.equal(q.blocking, true); assert.equal(q.from, 'Pacer');
+  assert.match(q.message, /^Claude is 28% used this week and resets \w+ \d\d:\d\d\. The company's routines are paused on Claude for today\. How much of this week's Claude may routines use\?$/);
+  const [stop, spread] = q.form.fields;
+  assert.equal(stop.type, 'slider'); assert.equal(stop.min, 28); assert.equal(stop.max, 100); assert.equal(stop.value, 95);
+  assert.match(stop.say, /Let routines use up to \{value\}% of this week's Claude/);
+  assert.equal(spread.type, 'slider'); assert.equal(spread.minLabel, 'Spread evenly'); assert.equal(spread.maxLabel, 'Use it now');
+  assert.deepEqual(q.form.actions.map(a => a.label), ['Set', 'Keep paused', 'Use another model meanwhile']);
+  assert.ok(h.lines.some(l => /PACER ASK q-\d+ \(waits for the owner\)/.test(l)), h.lines.join('\n'));
+  // the same situation on later ticks: no second question (one open at a time; and deduped by week)
+  h.clock.t += 10 * MIN; await heldTick(make(fx, st, { t: h.clock.t, mm: mmBody(94, 10), extra: dsOut }));
+  h.clock.t += 10 * MIN; await heldTick(make(fx, st, { t: h.clock.t, mm: mmBody(94, 10), extra: dsOut }));
+  assert.equal(pacerAsks(fx.root).length, 1);
+  // closed by the owner without an answer: still not asked again this week while nothing changes
+  fs.appendFileSync(path.join(fx.root, 'company/pm-inbox.jsonl'), JSON.stringify({ type: 'close', id: q.id, at: new Date().toISOString(), by: 'Commander' }) + '\n');
+  h.clock.t += 10 * MIN; await heldTick(make(fx, st, { t: h.clock.t, mm: mmBody(94, 10), extra: dsOut }));
+  assert.equal(pacerAsks(fx.root).length, 1);
+  // a material change (the week rises by 15+ points): asked again
+  fs.writeFileSync(path.join(fx.root, 'home/.local/state/usage/claude-usage.json'), JSON.stringify({ at: h.clock.t + 9 * MIN, seven_day: { used_percentage: 45, resets_at: CLAUDE_RESET / 1000 } }));
+  h.clock.t += 10 * MIN; await heldTick(make(fx, st, { t: h.clock.t, mm: mmBody(94, 10), extra: dsOut }));
+  asks = pacerAsks(fx.root);
+  assert.equal(asks.length, 2); assert.match(asks[1].message, /Claude is 45% used/);
+});
+test('cutoffs: shadow mode never asks (nothing is held)', async () => {
+  const { fx, h } = heldFixture({ policy: { mode: 'shadow' }, budgetLevel: 'approve' });
+  await heldTick(h);
+  assert.equal(pacerAsks(fx.root).length, 0);
+});
+test('cutoffs: the owner\'s Set is applied through the recorded path (provenance, changes, dispatch log), takes effect on the next tick, and locked-watch stays quiet', async () => {
+  const { fx, st, h } = heldFixture({ budgetLevel: 'approve' });
+  const prevProv = process.env.PROVENANCE_ROOT; process.env.PROVENANCE_ROOT = fx.root;
+  const P = require('../provenance.js'); const pin = P.underStation(); P.pinUnderStation(false);
+  const LW = require('../locked-watch.js');
+  const C = now => ({ root: fx.root, home: fx.home, now, log: () => {}, underStation: false, jobs: [] });
+  try {
+    assert.ok((await LW.tick(C(Date.now()))).initialized, 'locked-watch baseline');
+    await heldTick(h);
+    const q = pacerAsks(fx.root)[0];
+    const ib = (() => { process.env.PM_INBOX_FILE = path.join(fx.root, 'company/pm-inbox.jsonl'); return require('../inbox.js'); })();
+    try { ib.answer({ id: q.id, by: 'Commander', answer: { action: 'set', values: { weekstop: 90, usenow: 100 } }, quiet: true }); } finally { delete process.env.PM_INBOX_FILE; }
+    h.clock.t += 10 * MIN;
+    const h2 = make(fx, st, { t: h.clock.t, mm: mmBody(94, 10), extra: dsOut });
+    await heldTick(h2);   // this tick applies the answer
+    const pol = readPol(fx.root);
+    assert.equal(pol.claude.weekCloseAtUsedPct, 90); assert.equal(pol.claude.useNowPct, 100);
+    assert.equal(pol.claude.ownerSet.via, q.id); assert.equal(pol.claude.ownerSet.choice, 'set');
+    assert.match(pol.changes[pol.changes.length - 1].what, /Claude week stop 95% -> 90%, use-now 0% -> 100%/);
+    assert.ok(h2.lines.some(l => /PACER LIMIT applied q-\d+: week stop 95% -> 90%/.test(l)), h2.lines.join('\n'));
+    const prov = fs.readFileSync(path.join(fx.root, 'company/state/locked/provenance.jsonl'), 'utf8');
+    assert.match(prov, /"file":"company\/work\/finance\/pacing-policy.json","kind":"write".*"writer":"pacer.js"/);
+    assert.match(fs.readFileSync(path.join(fx.root, 'company/work/dispatch-log.md'), 'utf8'), /PACER LIMIT Claude: week stop 95% -> 90%/);
+    // the next tick: today's line is the stop (use it now), so Claude is open again and nobody is held or asked
+    h.clock.t += 10 * MIN;
+    const h3 = make(fx, st, { t: h.clock.t, mm: mmBody(94, 10), extra: dsOut });
+    const r = await measurePlan(h3, crewJobs());
+    assert.equal(r.m.claude.open, true, r.m.claude.why); assert.equal(Math.round(r.m.claude.line), 90);
+    await heldTick(h3);
+    assert.equal(pacerAsks(fx.root).length, 1, 'the owner decided this week: not asked again');
+    const lw = await LW.tick(C(Date.now() + 60e3));
+    assert.ok(!lw.events.some(e => e.key === 'company/work/finance/pacing-policy.json'), JSON.stringify(lw.events));
+    // a hand edit of the same file is still flagged
+    const f = path.join(fx.root, 'company/work/finance/pacing-policy.json'); const pol2 = readPol(fx.root); pol2.claude.weekCloseAtUsedPct = 100; fs.writeFileSync(f, JSON.stringify(pol2));
+    const lw2 = await LW.tick(C(Date.now() + 120e3));
+    assert.ok(lw2.events.some(e => e.key === 'company/work/finance/pacing-policy.json' && e.kind === 'flagged'), JSON.stringify(lw2.events));
+  } finally { P.pinUnderStation(pin); if (prevProv === undefined) delete process.env.PROVENANCE_ROOT; else process.env.PROVENANCE_ROOT = prevProv; }
+});
+test('cutoffs: Keep paused and Use another model meanwhile are recorded; the second hands the people seat an OPEN handoff', async () => {
+  for (const action of ['keep', 'other']) {
+    const { fx, st, h } = heldFixture({ budgetLevel: 'approve' });
+    await heldTick(h);
+    const q = pacerAsks(fx.root)[0];
+    process.env.PM_INBOX_FILE = path.join(fx.root, 'company/pm-inbox.jsonl');
+    try { require('../inbox.js').answer({ id: q.id, by: 'Commander', answer: { action }, quiet: true }); } finally { delete process.env.PM_INBOX_FILE; }
+    h.clock.t += 10 * MIN; await heldTick(make(fx, st, { t: h.clock.t, mm: mmBody(94, 10), extra: dsOut }));
+    const pol = readPol(fx.root);
+    assert.equal(pol.claude.weekCloseAtUsedPct === undefined ? 95 : pol.claude.weekCloseAtUsedPct, 95);
+    assert.equal(pol.claude.ownerSet.choice, action === 'keep' ? 'keep' : 'other-model');
+    if (action === 'other') {
+      const hand = fs.readdirSync(path.join(fx.root, 'company/work/handoffs')).map(n => fs.readFileSync(path.join(fx.root, 'company/work/handoffs', n), 'utf8')).join('\n');
+      assert.match(hand, /from Pacer — give .* a model to use while Claude is paused[\s\S]*\*\*Status:\*\* OPEN/);
+    }
+  }
+});
+test('cutoffs: at Autonomous (budget auto) the pacer decides alone, files a non-blocking FYI with the same sliders, tells the owner, and does not wait', async () => {
+  const { fx, h } = heldFixture({ budgetLevel: 'auto' });
+  const r = await heldTick(h);
+  const q = pacerAsks(fx.root)[0];
+  assert.ok(q && q.blocking === false && q.batch === 'fyi', JSON.stringify(q));
+  assert.match(q.message, /You let the company decide pacing, so it keeps its current cutoffs/);
+  assert.equal(q.form.fields[0].type, 'slider'); assert.deepEqual(q.form.actions.map(a => a.id), ['set', 'keep', 'other']);
+  assert.match(fs.readFileSync(path.join(fx.root, 'company/owner/outbound.jsonl'), 'utf8'), /FYI: Claude is 28% used this week/);
+  assert.ok(h.lines.some(l => /PACER ASK q-\d+ \(FYI/.test(l)), h.lines.join('\n'));
+  assert.ok(r && typeof r.extra === 'number', 'the tick returns at once');
+});
+test('cutoffs: pacer.js limit is the recorded write; the owner always, the CEO only when budget is the company\'s', async t => {
+  const fx = fixture({ budgetLevel: 'approve' });
+  const out = []; const print = s => out.push(s);
+  const owner = (require('../lib/company').config.owner || {}).name || 'owner';
+  const P = require('../provenance.js'); const pin = P.underStation(); P.pinUnderStation(false);   // measure the tool, not the caller
+  t.after(() => P.pinUnderStation(pin));
+  assert.equal(await pacer.cli(['limit', 'claude', '--week-stop', '80', '--by', 'Alex', '--why', 'more room'], { root: fx.root, print }), 3);
+  assert.match(JSON.parse(out.pop()).error, /budget is at "approve"/);
+  assert.equal(await pacer.cli(['limit', 'claude', '--week-stop', '180', '--by', owner, '--why', 'x'], { root: fx.root, print }), 2);
+  assert.equal(await pacer.cli(['limit', 'claude', '--week-stop', '80', '--use-now', '50', '--by', owner, '--why', 'set in the console'], { root: fx.root, print }), 0, out.join('\n'));
+  let pol = readPol(fx.root); assert.equal(pol.claude.weekCloseAtUsedPct, 80); assert.equal(pol.claude.useNowPct, 50); assert.equal(pol.claude.ownerSet.by, owner);
+  const fx2 = fixture({ budgetLevel: 'auto' });
+  assert.equal(await pacer.cli(['limit', 'minimax', '--week-stop', '90', '--by', 'Alex', '--why', 'leave room'], { root: fx2.root, print }), 0, out.join('\n'));
+  pol = readPol(fx2.root); assert.equal(pol.minimax.weekCloseAtUsedPct, 90); assert.equal(pol.minimax.companySet.by, 'Alex'); assert.ok(!pol.minimax.ownerSet);
+  // useNowPct moves today's line from the even line to the stop
+  const h = make(fx, station(crewJobs()));
+  const m = (await measurePlan(h, crewJobs())).m;
+  assert.equal(Math.round(m.claude.line * 10) / 10, Math.round((pacer.lineFor(1, 1 / 7, 1) + (80 - pacer.lineFor(1, 1 / 7, 1)) * 0.5) * 10) / 10);
+});

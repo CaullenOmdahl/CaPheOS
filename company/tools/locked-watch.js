@@ -88,7 +88,7 @@ const MANIFEST = [
   { p: 'company/work/models/house-benchmarks.md', cls: 'R', writers: ['model-stats.js'], regen: ['model-stats.js'], owner: 'people', area: 'record', why: 'house benchmarks' },
   // F — policy, access, tools that measure or limit, gates, records with many writers
   { p: 'company/work/security/default-branch-watch.json', cls: 'F', owner: 'risk', area: 'gate', why: 'the repositories the default-branch rule watches' },
-  { p: 'company/work/finance/pacing-policy.json', cls: 'F', owner: 'finance', area: 'policy', why: 'usage pacing numbers' },
+  { p: 'company/work/finance/pacing-policy.json', cls: 'F', writers: ['pacer.js'], owner: 'finance', area: 'policy', why: 'usage pacing numbers (the subscription cutoffs only through pacer.js limit / mode, or a reviewed harness change)' },
   { p: 'company/work/finance/dispatch-budget.json', cls: 'F', owner: 'finance', area: 'policy', why: 'the daily spending cap' },
   { p: 'company/model-policy.json', cls: 'F', owner: 'people', area: 'policy', why: 'allowed models, the routing table and performance thresholds' },
   { p: 'company/competence-policy.json', cls: 'F', owner: 'people', area: 'policy', why: 'how competence is scored' },
