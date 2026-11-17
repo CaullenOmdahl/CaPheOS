@@ -766,6 +766,9 @@ function lastRunTail(job) {
   try { require('./long-sleep.js').tick({ dry: DRY, log }); } catch (e) { log('LONG SLEEP ERROR: ' + String(e.message).slice(0, 200)); }
   try { await require('./routine-rules.js').ensure({ dry: DRY, log }); } catch (e) { log('HOUSE RULES ERROR: ' + e.message); }
   try { require('./handoff-archive.js').run({ dry: DRY, log }); } catch (e) { log('ARCHIVE ERROR: ' + e.message); }
+  // approvals (company/tools/approvals.js): expiry (default deny) and the batched reminders run on every tick, so they
+  // happen whether or not the owner has the console open; the console calls the same tick when it lists approvals
+  if (!DRY) try { const t = require('./approvals.js').tick(); const n = ((t.expired || []).length || 0); if (n) log('APPROVALS: ' + n + ' expired (default deny applied)'); } catch (e) { log('APPROVALS ERROR: ' + String(e.message).slice(0, 200)); }
   try { require('./retention.js').daily({ dry: DRY, log }); } catch (e) { log('RETENTION ERROR: ' + String(e.message).slice(0, 200)); }   // once a company day (docs/RETENTION.md)
   // house benchmark (company/tools/model-stats.js): refreshed at most hourly, read by the people owner and the pacer for model pairing
   try {

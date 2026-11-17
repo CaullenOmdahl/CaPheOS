@@ -292,3 +292,9 @@ test('I-a / I-b (integration): approval events through company/tools/decision.js
   assert.equal(v.status, 0, v.stdout + v.stderr);
   assert.equal(JSON.parse(v.stdout).anchors, 1);
 });
+
+// Expiry (default deny) and reminders must not depend on the console being open: the dispatcher's tick runs them too.
+test('the dispatcher tick runs approvals.tick (expiry and reminders without the console)', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'dispatch.js'), 'utf8');
+  assert.ok(/require\('\.\/approvals\.js'\)\.tick\(\)/.test(src), 'dispatch.js must call approvals.tick() every tick');
+});
