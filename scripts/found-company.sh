@@ -71,6 +71,7 @@ try { new Intl.DateTimeFormat("en", { timeZone: e.TZ_ }); } catch (_) { console.
 c.name = e.NAME; c.shortName = e.NAME; c.slug = e.SLUG; c.industry = e.INDUSTRY; c.timezone = e.TZ_;
 c.owner = Object.assign({}, c.owner, { name: e.OWNER, addressAs: e.OWNER });
 c.station = Object.assign({}, c.station, { port: Number(e.PORT), url: "http://127.0.0.1:" + e.PORT, serviceName: e.SLUG + "-station" });
+c.runtime = Object.assign({}, c.runtime); if (!c.runtime.scheduler) { c.runtime.scheduler = "dispatcher"; c.runtime.schedulerSetBy = "found-company.sh"; c.runtime.schedulerSetAt = new Date().toISOString(); }   // a new company starts on the dispatcher (docs/BUDGET.md); an existing one migrates with budget-migrate.js
 fs.writeFileSync(f, JSON.stringify(c, null, 2) + "\n");
 // Competence scoring starts at founding and stays in shadow (measure, change nothing) for its first 30 days.
 const cp = "company/competence-policy.json"; const p = JSON.parse(fs.readFileSync(cp, "utf8")); const now = new Date();

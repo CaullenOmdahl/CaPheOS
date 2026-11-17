@@ -51,7 +51,7 @@ async function company(o) {
   const tag = path.basename(T);
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };
   const cfg = { name: 'Gate Test ' + tag, owner: { name: 'Pat' }, timezone: 'UTC', station: { port, serviceName: 'gate-test' } };
-  if (o.scheduler) cfg.runtime = { scheduler: o.scheduler };
+  if (o.scheduler) cfg.runtime = { scheduler: o.scheduler, schedulerSetBy: o.setBy === undefined ? 'budget-migrate.js' : o.setBy };
   w('company/company.json', cfg);
   w('secrets/station-token', TOKEN + '\n');
   for (const f of ['watchdog.js', 'lib/admit.js', 'lib/scheduler.js']) { const d = path.join(T, 'company', 'tools', f); fs.mkdirSync(path.dirname(d), { recursive: true }); fs.symlinkSync(path.join(TOOLS, f), d); }   // the framework files the migration checks for
@@ -290,4 +290,14 @@ test('6 reversibility: runtime.scheduler back to station returns the routines, t
   await st('POST', '/api/cron/arm', { enabled: true });
   const tk = await c.stTick();
   assert.ok(tk.fired.some(f => f.id === c.ids.agent), 'the station fires it on its schedule again');
+});
+
+// A "dispatcher" setting that arrived without the migration tool (e.g. a framework update merged into company.json)
+// leaves the schedule with the station: the dispatcher must not pause the station's loops on its own.
+test('a dispatcher setting with no recorded switch keeps the station schedule', () => {
+  const S = require('../lib/scheduler');
+  assert.equal(S.mode({ runtime: { scheduler: 'dispatcher' } }), 'station');
+  assert.equal(S.mode({ runtime: { scheduler: 'dispatcher', schedulerSetBy: 'hand edit' } }), 'station');
+  assert.equal(S.mode({ runtime: { scheduler: 'dispatcher', schedulerSetBy: 'budget-migrate.js' } }), 'dispatcher');
+  assert.equal(S.mode({ runtime: { scheduler: 'dispatcher', schedulerSetBy: 'found-company.sh' } }), 'dispatcher');
 });

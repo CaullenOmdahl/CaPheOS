@@ -95,7 +95,7 @@ async function apply(p, by) {
   const done = [], errors = [];
   const setFlag = () => {
     const f = co.p('company', 'company.json'); const cfg = readJson(f, {}) || {};
-    cfg.runtime = Object.assign({ _doc: 'runtime.scheduler: who starts the crew\'s scheduled loop runs. "dispatcher" = the dispatcher, through admit(), with the crew loop routines paused on the station and one watchdog routine there; "station" = the station\'s own schedule (the old way). Switch only with company/tools/budget-migrate.js (docs/BUDGET.md).' }, cfg.runtime || {}, { scheduler: p.to });
+    cfg.runtime = Object.assign({ _doc: 'runtime.scheduler: who starts the crew\'s scheduled loop runs. "dispatcher" = the dispatcher, through admit(), with the crew loop routines paused on the station and one watchdog routine there; "station" = the station\'s own schedule (the old way). Switch only with company/tools/budget-migrate.js (docs/BUDGET.md).' }, cfg.runtime || {}, { scheduler: p.to, schedulerSetBy: 'budget-migrate.js', schedulerSetAt: new Date().toISOString() });
     const tmp = f + '.tmp-' + process.pid; fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + '\n'); fs.renameSync(tmp, f);
     done.push('company.json runtime.scheduler = ' + p.to);
   };

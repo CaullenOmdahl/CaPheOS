@@ -42,7 +42,10 @@ function writeState(st, root) {
 function mode(cfg) {
   const c = cfg || co.config || {};
   const m = c.runtime && c.runtime.scheduler;
-  return m === 'dispatcher' ? 'dispatcher' : 'station';
+  // The dispatcher takes the schedule over only when budget-migrate.js or found-company.sh switched it (schedulerSetBy):
+  // a "dispatcher" value that arrived any other way (a framework update merged into company.json, a hand edit) must not
+  // pause the station's loops on its own; the station keeps the schedule until the owner migrates.
+  return m === 'dispatcher' && /^(budget-migrate\.js|found-company\.sh)$/.test(String((c.runtime && c.runtime.schedulerSetBy) || '')) ? 'dispatcher' : 'station';
 }
 const isWatchdog = j => !!j && (j.name === WATCHDOG.name || (j.noAgent === true && String(j.script || '') === WATCHDOG.script));
 // this company's watchdog: one whose workdir is this company's folder (a station serves one company; tests share one)
