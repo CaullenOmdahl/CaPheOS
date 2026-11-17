@@ -113,7 +113,30 @@ Efficiency is a consequence of the cuts, not a separate project.
 
 ## 7. What P0 still has to name
 
-- **The kept tool set.** Which of the 80 `company/tools/*.js` back the ledger areas and duties (kept), and which are
-  baggage (dropped). One list, reviewed once.
-- **UI copy.** The console's labels change from quests to tasks in one pass at P2 — no migration means no dual wording.
-- **The area tests.** One test per ledger area (§3), named in P0 and written as each area lands.
+**It is not a list of files to keep.** The toolbag was built without a plugin standard: 80 tools, 36 `lib/` helpers, 12
+modules and a retrofitted pack scaffold, each with its own argument parsing, JSON output, `--selftest`, state reads and
+error handling. That duplication is a consequence of having no standard, not a design to preserve. The rewrite keeps
+**behaviour** and replaces the packaging.
+
+| Today's artifact | What it becomes under the standard |
+|---|---|
+| `company/tools/*.js` (80) | a tool definition in a unit, plus a CLI adapter only where the crew actually shells to it (duties, ops, selftests) |
+| `company/tools/lib/*.js` (36) | services — the proto-services the standard names: `company`, `seats`, `work`, `money`, `approvals`, `governance`, `budget`, `store` |
+| `modules/*` (12) | framework core modules or format-2 units, with `module.json` format 1 as the migration source |
+| `packs/*` | stacks of units |
+| `console/panels/*` | surface units, unchanged contract |
+| `company/skills/*` | files carried by a seat or unit |
+| duties in `duties.js` and module manifests | schedule entries declared by the unit |
+| `--selftest` per tool | one conformance test per unit |
+
+So P0 names three things:
+
+1. **The behaviour inventory** — the parity areas (§3), not the files. Every behaviour gets an owning unit.
+2. **The unit mapping** — which behaviours share a unit and which `lib/` helpers become which service. Expect **fewer
+   artifacts**, not the same ones renamed: several tools that exist separately only because they were written one at a
+   time become one unit with several tools, and the plumbing they each duplicate becomes a service.
+3. **The adapter list** — the behaviours the crew must still call from a shell, and therefore the only CLI surfaces
+   worth keeping.
+
+Plus: **UI copy** (quests → tasks, one pass at P2) and **the area tests** (§3), one per area, written as each area
+lands.

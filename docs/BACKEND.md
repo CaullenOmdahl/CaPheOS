@@ -205,7 +205,7 @@ disposable home of the machine, not the identity.
 
 | Disposition | What |
 |---|---|
-| **Keep as-is** | the console UI and its 70 routes; the company tools; the dispatcher; approvals; budgets; governance; meetings; commitments; intake; ledger; core modules; skills |
+| **Keep the behaviour** | the console UI and its 70 routes; the company tools' behaviour; the dispatcher; approvals; budgets; governance; meetings; commitments; intake; ledger; core modules; skills — re-expressed under the standard, not kept as files |
 | **Vendor with attribution** | StarNet's provider adapters (`anthropic`, `openai-compatible`, `openrouter`, `gemini`, `ollama-native`, `claude-cli`, `codex`), the MCP client and transports, the streaming event vocabulary. MIT/BSD with `NOTICE`; no StarNet branding; renamed to our vocabulary (§7.2) |
 | **Rewrite** | the run loop (today it lives inside StarNet and CaPheOS only drives it); run/transcript storage; schedules (→ the dispatcher); seat identity (→ files) |
 | **Rewrite small** | the chat run system (`console/chat-runs.js`) against our own runs instead of StarNet's observer feed |
@@ -213,6 +213,11 @@ disposable home of the machine, not the identity.
 
 Quests are the one concept that is dropped as a *word* and kept as a *thing*: CaPheOS's dispatch, handoffs,
 competence and evidence all depend on "a unit of work with steps that closes on proof". That is a task.
+
+**The toolbag predates the standard.** 80 tools, 36 `lib/` helpers, 12 modules and a retrofitted pack scaffold were
+built without a plugin standard, so each carries its own argument parsing, JSON output, state reads and selftest. That
+shape is the migration source, not the target: behaviours are preserved, the plumbing they duplicate becomes services,
+and the packaging is replaced. Expect fewer artifacts, not the same ones renamed (§7.1, `docs/PARITY.md` §7).
 
 ### 7.1 The core is small; everything else is a plugin
 

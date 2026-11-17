@@ -539,9 +539,14 @@ An integration with no UI is preferably an MCP server:
 
 MCP is the portability boundary: the same module works in any MCP host, independent of DSH.
 
-### 12.3 Legacy packs (v1)
+### 12.3 Legacy packs and core modules (v1)
 
-`pack.json` v1 remains readable. `unit.js` maps: `owner`→`owner`, `requires.*`→`requires.*`, `tools`→`provides.tools`, `seats`→`provides.seats`, `panels`→`provides.surfaces`, `limits`/`meters` unchanged, `conformance` unchanged. A v1 pack is imported as `kind: "stack"` at `format: 2` on first install. No v1 pack is invalidated by this spec.
+The 12 core modules and the pack scaffold were written without this standard; they are the **migration source, not the
+target shape**. `unit.js inspect` still reads a v1 `pack.json` so an author can see what a pack does, but a new
+workplace does not install one — it installs format-2 units (§8, no migration). When a pack or core module is touched
+it is rewritten as a unit with the same behaviour, one conformance test and a manifest; the old shape is not carried
+forward. Mapping for reference: `owner`→`owner`, `requires.*`→`requires.*`, `tools`→`provides.tools`,
+`seats`→`provides.seats`, `panels`→`provides.surfaces`, `limits`/`meters` unchanged, `conformance` unchanged.
 
 ---
 
