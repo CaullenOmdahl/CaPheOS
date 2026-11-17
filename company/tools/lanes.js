@@ -318,12 +318,14 @@ async function hook(a) {
       const mine = new Set(st.lanes.filter(l => l.seat === id).map(l => l.heading));
       const names = Object.fromEntries(Object.entries(crew).map(([k, v]) => [k, (v && v.name) || k]));
       const items = [];
+      const notYet = new Set(String((((a.state || {}).agents || {})[id] || {}).deferred || '').split('|').filter(Boolean));
       for (const sec of parts) {
         if (!sec.startsWith('## ')) continue;
         const it = SP.parseItems(sec)[0]; if (!it || !it.open) continue;
         if (mine.has(it.heading)) continue;   // a live lane has it
         if (st.history.some(h => h.inbox === c.inbox && h.heading === it.heading)) continue;   // one lane per item: one that ended without finishing goes back to the main loop
         if (typeof SP.waitingOn === 'function' && SP.waitingOn(it.status, names, id, ceo)) continue;   // not actionable: waits on someone
+        if (notYet.has(it.heading)) continue;   // set aside by its own **Not before:** (dispatch.js notBeforeDeferrals)
         items.push(Object.assign(it, { text: sec }));
       }
       const plan = SP.lanePlan(items, { lanes: Math.max(1, cfg.perSeat), isCeo, held });

@@ -286,6 +286,9 @@ test('6 reversibility: runtime.scheduler back to station returns the routines, t
   assert.equal((await c.jobs()).filter(j => j.noAgent && j.script === 'company/tools/watchdog.js' && j.workdir === c.T).length, 0, 'the watchdog is gone');
   assert.deepEqual(c.migrate('station').plan, { pause: 0, resume: 0, create: false, remove: 0, flag: false, blockers: [] }, 'idempotent back too');
   await c.lastRun('agent', 61); await c.lastRun('sam', 30);
+  // the watchers' own OPEN handoffs to the CEO (dated next day) are work now, a Deadline defers nothing: close them, so
+  // the tick below tests the schedule alone
+  c.w('company/work/handoffs/to-founder.md', c.r('company/work/handoffs/to-founder.md').replace(/^\*\*Status:\*\* OPEN/gm, '**Status:** DONE — closed by the test'));
   assert.deepEqual(c.tick().firedSeats, [], 'the old behaviour: the dispatcher does not start scheduled loops');
   await st('POST', '/api/cron/arm', { enabled: true });
   const tk = await c.stTick();

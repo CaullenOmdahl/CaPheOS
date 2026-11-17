@@ -72,6 +72,11 @@ entry's id; a stamp ("15:30") works too. Owning an error: `decision.js add ... -
 
 ## Handoffs
 - Read your inbox `company/work/handoffs/to-founder.md` at the start of every session.
+- When you hand work out, the `**Deadline:**` is when it must be done; it never means "start then", and the crew works
+  it now. If an item truly must not start before a day (a result that lands then), add `**Not before:** YYYY-MM-DD`
+  (at most 14 days ahead; the first date written counts). Never tell a seat to park work behind its Deadline, and when
+  a seat looks idle with dated items open, check `node company/tools/handoff-status.js --due` and the lint's
+  DEADLINE AS NOT BEFORE warnings (company/HANDOFFS.md).
 - You are the only seat that writes to the owner, through `node company/tools/inbox.js ask` (skill `owner-questions`):
   one decision per question, several decisions as one request with `--questions`, and never a command for the owner to
   run. The owner works only in the console: a change to a tool goes through `harness-change.js propose` (a locked tool

@@ -18,7 +18,7 @@
  *   node company/tools/handoff-status.js            # lint: report, exit 1 if any handoff section lacks a Status line
  *   node company/tools/handoff-status.js --all      # include work/handoffs/archive/
  *   node company/tools/handoff-status.js --quiet    # only the summary line
- *   node company/tools/handoff-status.js --due      # the OPEN set, sorted by **Deadline:** (report only, exit 0)
+ *   node company/tools/handoff-status.js --due      # the OPEN set, sorted by **Deadline:**, Not-before items marked (report only, exit 0)
  *   node company/tools/handoff-status.js --due --json
  *   node company/tools/handoff-status.js --selftest # prove both behaviours on fixtures, including the failures
  *   node company/tools/handoff-status.js --duty     # read-only duty check (docs/DUTIES.md): exit 1 + JSON when an OPEN handoff
@@ -107,13 +107,14 @@ function classify(text) {
     const st = statusOf(s);
     const appendix = APPENDIX.test(s.heading) && prevStatus !== null;
     prevStatus = appendix ? prevStatus : st;   // an appendix inherits; a handoff sets (even to null)
-    return { heading: s.heading, line: s.line, status: st, appendix, open: !appendix && isOpen(st), deadline: deadlineOf(s) };
+    return { heading: s.heading, line: s.line, status: st, appendix, open: !appendix && isOpen(st), deadline: deadlineOf(s), notBefore: notBeforeOf(s) };
   });
 }
 
 /* UNREAD DEADLINE — an OPEN block whose **Deadline:** the dispatcher cannot read: missing, or not a plain YYYY-MM-DD (or
- * "today") as the line's first characters (company/HANDOFFS.md). The dispatcher then counts it as due now: it wakes the
- * seat for it and counts it toward STALLED, which looks exactly like an idle seat. A warning, never a failure. */
+ * "today") as the line's first characters (company/HANDOFFS.md). A Deadline never defers work (only **Not before:**
+ * does); the dispatcher uses it to order a seat's items and to mark the overdue ones, so an unread one is undated: worked
+ * after every dated item and never flagged late. A warning, never a failure. */
 const DEADLINE_LEAD = /^\*\*Deadline:\*\*\s*(\d{4}-\d{2}-\d{2}\b|today\b)/im;
 function unreadDeadlines(text) {
   const out = [];
@@ -126,6 +127,37 @@ function unreadDeadlines(text) {
     out.push({ kind: 'UNREAD DEADLINE', line: s.line, heading: s.heading, deadline: line || null });
   });
   return out;
+}
+
+/* DEADLINE AS NOT BEFORE — an OPEN block whose Deadline looks like it was meant as a start date: "wait until",
+ * "no earlier than", "not before", "hold until"… on the Deadline line or the line next to it, and no **Not before:**
+ * line. The Deadline defers nothing (it is when the work must be DONE), so the item is worked now; if it really must not
+ * start yet, the block needs `**Not before:** YYYY-MM-DD`. Until 2026-11-17 the Deadline line itself deferred, and the
+ * crew wrote "finish by" dates there, which left every dated item untouched until its due day. A warning. */
+const WAIT_PROSE = /\b(no earlier than|not before|not until|wait(?:ing)? (?:until|till)|hold (?:it |this )?(?:until|till)|(?:do not|don'?t) (?:start|begin)(?: it)? (?:before|until)|start(?:s|ing)? no earlier|defer(?:red)? (?:to|until)|set aside until)\b/i;
+const NOT_BEFORE_LINE = /^\*\*Not before:\*\*/im;
+function deadlineAsNotBefore(text) {
+  const out = [];
+  const secs = sections(text); const cls = classify(text);
+  secs.forEach((s, i) => {
+    if (!cls[i] || !cls[i].open || NOT_BEFORE_LINE.test(s.body.join('\n'))) return;
+    const k = s.body.findIndex(l => /^\*\*Deadline:\*\*/i.test(l)); if (k < 0) return;
+    const near = [s.body[k], s.body[k - 1], s.body[k + 1]].filter(l => l != null);   // the Deadline line and its neighbours
+    const hit = near.map(l => (l.match(WAIT_PROSE) || [])[1]).find(Boolean);
+    if (hit) out.push({ kind: 'DEADLINE AS NOT BEFORE', line: s.line, heading: s.heading, deadline: s.body[k].replace(/^\*\*Deadline:\*\*\s*/i, ''), phrase: hit });
+  });
+  return out;
+}
+
+// the block's own **Not before:** (a plain date first, company time), for the --due listing
+function notBeforeOf(sec) {
+  for (const l of sec.body) {
+    const m = l.match(/^\*\*Not before:\*\*\s*(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?\b/i);
+    if (!m) continue;
+    const ms = localToEpoch(m[1], m[2] || '00:00');
+    return Number.isFinite(ms) && fmtLocal(ms) === m[1] + ' ' + (m[2] || '00:00') ? new Date(ms) : null;
+  }
+  return null;
 }
 
 function scan(text) {
@@ -224,7 +256,8 @@ function dueLine(e, now) {
   // hours off, which on a deadline queue is an error in the direction that can make people late.
   const when = e.deadline.at ? (fmt(e.deadline.at) + '  ' + rel(e.deadline.at, now)).padEnd(26) : 'undated'.padEnd(26);
   const flag = e.deadline.at && e.deadline.at < now ? 'OVERDUE ' : (e.deadline.at && e.deadline.at - now <= 24 * 3600 * 1000 ? 'TODAY   ' : '        ');
-  return flag + when + ' ' + (e.file + ':' + e.line).padEnd(34) + ' ' + e.heading.slice(0, 96);
+  const later = e.notBefore && e.notBefore > now ? '  [not before ' + fmt(e.notBefore) + ']' : '';
+  return flag + when + ' ' + (e.file + ':' + e.line).padEnd(34) + ' ' + e.heading.slice(0, 96) + later;
 }
 
 function rel(at, now) {
@@ -411,6 +444,15 @@ function selftest() {
     && unreadDeadlines(dl('none')).length === 1 && unreadDeadlines(dl(null))[0].deadline === null);
   ok('a DONE block is not checked', unreadDeadlines(dl('next week').replace('**Status:** OPEN', '**Status:** DONE')).length === 0);
 
+  // DEADLINE AS NOT BEFORE: wait-until prose by the Deadline warns, a finish-by Deadline and a block with Not before do not
+  const dnb = (d, extra) => HEAD + '## 2026-11-17 10:00 from B — ask\n**Need:** x\n**Deadline:** ' + d + '\n' + (extra || '') + '**Status:** OPEN\n';
+  ok('a Deadline with "no earlier than" prose is DEADLINE AS NOT BEFORE', (deadlineAsNotBefore(dnb('2026-11-24 — floor no earlier than 2026-11-24'))[0] || {}).phrase === 'no earlier than');
+  ok('"wait until" on the line after the Deadline warns too', deadlineAsNotBefore(dnb('2026-11-20', 'Wait until the bank run before starting.\n')).length === 1);
+  ok('a plain finish-by Deadline is not a finding', deadlineAsNotBefore(dnb('2026-11-20')).length === 0 && deadlineAsNotBefore(dnb('2026-11-20 review')).length === 0);
+  ok('a block that already has **Not before:** is not a finding', deadlineAsNotBefore(dnb('2026-11-24 — not before the 20th', '**Not before:** 2026-11-20\n')).length === 0);
+  ok('a DONE block is not checked for it', deadlineAsNotBefore(dnb('wait until 2026-11-20').replace('**Status:** OPEN', '**Status:** DONE')).length === 0);
+  ok('the --due listing reads **Not before:** in company time', fmt(classify(dnb('2026-11-24', '**Not before:** 2026-11-20 09:30\n'))[0].notBefore) === '2026-11-20 09:30');
+
   // DUTY: counts and ids only, routed to the inbox owner's manager (the CEO for a seat with none)
   const crewT = { ceo1: { name: 'Alex', inbox: 'to-alex.md', manager: null }, sam: { name: 'Sam', inbox: 'to-sam.md', manager: 'ceo1' } };
   const ent = (file, text) => classify(text).map(c => Object.assign({ file: 'company/work/handoffs/' + file }, c));
@@ -459,7 +501,8 @@ function main() {
       console.log(JSON.stringify(set.map(e => ({
         due: e.deadline.at ? e.deadline.at.toISOString() : null,
         raw: e.deadline.raw, file: e.file, line: e.line, heading: e.heading,
-        overdue: !!(e.deadline.at && e.deadline.at < now)
+        overdue: !!(e.deadline.at && e.deadline.at < now),
+        notBefore: e.notBefore && e.notBefore > now ? e.notBefore.toISOString() : null
       })), null, 1));
     } else {
       console.log('OPEN HANDOFFS by due — read at ' + fmtLocal(now) + ' (' + co.TZ + ')');
@@ -468,7 +511,7 @@ function main() {
       }
       console.log('DUE SUMMARY: ' + set.length + ' OPEN — ' + overdue.length + ' overdue, ' + soon.length + ' due within 24h, '
         + (set.length - overdue.length - soon.length - set.filter(e => !e.deadline.at).length) + ' dated later, '
-        + set.filter(e => !e.deadline.at).length + ' undated');
+        + set.filter(e => !e.deadline.at).length + ' undated; ' + set.filter(e => e.notBefore && e.notBefore > now).length + ' set aside by Not before');
     }
     process.exit(argv.includes('--fail-on-overdue') && overdue.length ? 1 : 0);
   }
@@ -488,7 +531,11 @@ function main() {
     }
     for (const u of unreadDeadlines(text)) {
       warns++;
-      if (!quiet) console.log('WARN  UNREAD DEADLINE    ' + path.relative(ROOT, f) + ':' + u.line + '  ' + (u.deadline === null ? 'no **Deadline:** line' : '"' + u.deadline.slice(0, 60) + '"') + ' — the dispatcher counts it as due now (start the line with YYYY-MM-DD or today)  "' + u.heading.slice(0, 60) + '"');
+      if (!quiet) console.log('WARN  UNREAD DEADLINE    ' + path.relative(ROOT, f) + ':' + u.line + '  ' + (u.deadline === null ? 'no **Deadline:** line' : '"' + u.deadline.slice(0, 60) + '"') + ' — undated: worked after the dated items and never marked overdue (start the line with YYYY-MM-DD or today)  "' + u.heading.slice(0, 60) + '"');
+    }
+    for (const u of deadlineAsNotBefore(text)) {
+      warns++;
+      if (!quiet) console.log('WARN  DEADLINE AS NOT BEFORE ' + path.relative(ROOT, f) + ':' + u.line + '  "' + u.phrase + '" by the Deadline — a Deadline is when it must be done and defers nothing; if it must not start yet, add **Not before:** YYYY-MM-DD  "' + u.heading.slice(0, 60) + '"');
     }
     for (const st of futureStamps(text, Date.now())) {
       const rel = path.relative(ROOT, f);
@@ -531,4 +578,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { sections, statusOf, classify, scan, dueSet, deadlineOf, dutyResult, futureStamps, unreadDeadlines };
+module.exports = { sections, statusOf, classify, scan, dueSet, deadlineOf, notBeforeOf, dutyResult, futureStamps, unreadDeadlines, deadlineAsNotBefore };

@@ -164,26 +164,46 @@ function firstStatusOf(sectionText) {
   const m = String(sectionText || '').match(/^\*\*Status:\*\*(.*)$/m);
   return m ? m[1].trim() : null;
 }
-/* A handoff block's own **Deadline:** line (company/HANDOFFS.md requires one) can set it aside until that day: it is not
- * woken by the dispatcher and not counted toward STALLED (no dispatcher run is spent on it, so nothing goes uncounted);
- * the seat's own schedule still runs it. Only a plain YYYY-MM-DD date later than today and at most STALL_DEADLINE_CAP days
- * ahead defers; 'today', prose, a past date or a far date counts as due now. The dispatcher cannot tell who wrote the line,
- * so it remembers the FIRST deadline it saw per block (seen: heading -> date): moving the date later never extends the
- * deferral, an earlier date takes effect at once. */
-const STALL_DEADLINE_CAP = num('DISPATCH_STALL_DEADLINE_CAP', 14);
-function deadlineDeferrals(sections, seen, todayStr, capDays) {
-  const dayMs = d => Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10));
-  const now = dayMs(todayStr), nextSeen = {}, deferred = new Map();
+/* When a handoff block may be worked, and in what order (company/HANDOFFS.md).
+ * **Deadline:** is when the work must be DONE, never when it may start: it does not defer anything. It only orders the
+ * seat's open items (soonest first, undated last) and marks the ones already past as overdue.
+ * **Not before:** YYYY-MM-DD[ HH:MM] (company time) is the one line that sets an OPEN block aside: until then it is not
+ * woken by the dispatcher and not counted toward STALLED (no dispatcher run is spent on it, so nothing goes uncounted),
+ * and it blocks nobody; the seat's own schedule still runs it. Only a plain date as the line's first characters, later
+ * than now and at most NOT_BEFORE_CAP days ahead, defers; prose, a past or a far date counts as workable now. The
+ * dispatcher cannot tell who wrote the line, so it remembers the FIRST date it saw per block (seen: heading -> stamp):
+ * moving it later never extends the deferral, an earlier one takes effect at once. (Until 2026-11-17 the Deadline line
+ * deferred, which the crew read as "finish by": every dated item sat untouched until its due day.) */
+const NOT_BEFORE_CAP = num('DISPATCH_NOT_BEFORE_CAP', 14);
+const dayMsOf = d => Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10));
+function notBeforeDeferrals(sections, seen, nowStr, capDays) {
+  const now = String(nowStr).length > 10 ? String(nowStr) : nowStr + ' 00:00', nextSeen = {}, deferred = new Map();
   for (const [heading, text] of sections) {
-    const m = String(text || '').match(/^\*\*Deadline:\*\*\s*(\d{4}-\d{2}-\d{2})\b/m);
-    if (!m || !Number.isFinite(dayMs(m[1]))) continue;
+    const m = String(text || '').match(/^\*\*Not before:\*\*\s*(\d{4}-\d{2}-\d{2})(?:[ T]([01]\d:[0-5]\d|2[0-3]:[0-5]\d))?\b/im);
+    if (!m || !Number.isFinite(dayMsOf(m[1])) || new Date(dayMsOf(m[1])).toISOString().slice(0, 10) !== m[1]) continue;   // an impossible date never rolls over
+    const at = m[1] + ' ' + (m[2] || '00:00');
     const prev = seen && seen[heading];
-    const d = prev && prev < m[1] ? prev : m[1];   // the first date seen, unless the line now says earlier
+    const d = prev && prev < at ? prev : at;   // the first stamp seen, unless the line now says earlier
     nextSeen[heading] = d;
-    if (dayMs(d) > now && dayMs(d) - now <= capDays * 86400000) deferred.set(heading, d);
+    if (d > now && dayMsOf(d) - dayMsOf(now) <= capDays * 86400000) deferred.set(heading, d);
   }
   return { deferred, seen: nextSeen };
 }
+// each section's own leading **Deadline:** date (or 'today'), for ordering and overdue only: { due: Map heading -> date, overdue: [heading] }
+function deadlineOrder(sections, todayStr) {
+  const due = new Map(), overdue = [];
+  for (const [heading, text] of sections) {
+    const m = String(text || '').match(/^\*\*Deadline:\*\*\s*(\d{4}-\d{2}-\d{2}\b|today\b)/im);
+    if (!m) continue;
+    const d = /^today$/i.test(m[1]) ? todayStr : m[1];
+    if (!Number.isFinite(dayMsOf(d))) continue;
+    due.set(heading, d);
+    if (d < todayStr) overdue.push(heading);
+  }
+  return { due, overdue };
+}
+// open headings soonest Deadline first, undated last (ties keep their written order)
+const byDue = (heads, due) => heads.map((h, i) => [h, i]).sort((a, b) => (due.get(a[0]) || '9999').localeCompare(due.get(b[0]) || '9999') || a[1] - b[1]).map(x => x[0]);
 // the full text of each OPEN section (duty dedup: is an item id already in an OPEN handoff to this seat?)
 function openSectionTexts(file) {
   let txt; try { txt = fs.readFileSync(file, 'utf8'); } catch (_) { return []; }
@@ -255,15 +275,21 @@ function selftestOpenHandoffs() {
   const noteOnly = doneClosed + '**Note (no status on purpose):** a bodyless block from a batch pass\n';
 
   check('a section whose first status is OPEN is woken', openHandoffs(write('a.md', openBlock)).length === 1);
-  // Deadline deferral: capped, a plain date only, the first date seen, an earlier date at once
-  const sec = d => '2026-11-17 10:00 from X — ask\n**Need:** y\n**Status:** OPEN\n**Deadline:** ' + d + '\n';
-  const dd = (d, seen) => deadlineDeferrals(new Map([['h', sec(d)]]), seen, '2026-11-17', 14);
-  check('a Deadline 4 days ahead defers', dd('2026-11-21').deferred.get('h') === '2026-11-21');
-  check('today, a past date, prose and no date count as due now', !dd('2026-11-17').deferred.size && !dd('2026-11-10').deferred.size && !dd('next week').deferred.size && !dd('today').deferred.size);
-  check('the cap: 14 days ahead defers, 15 does not', dd('2026-12-01').deferred.size === 1 && !dd('2026-12-02').deferred.size);
-  check('a date in the body text is not the Deadline line', !deadlineDeferrals(new Map([['h', '2026-11-17 x\n**Status:** OPEN\ndue 2026-11-25 per X\n']]), {}, '2026-11-17', 14).deferred.size);
-  check('moving the Deadline later never extends the deferral (the first date seen holds)', dd('2026-11-28', { h: '2026-11-17' }).deferred.size === 0 && dd('2026-11-28', { h: '2026-11-17' }).seen.h === '2026-11-17');
-  check('an earlier Deadline takes effect at once', dd('2026-11-17', { h: '2026-11-21' }).deferred.size === 0 && dd('2026-11-19', { h: '2026-11-21' }).seen.h === '2026-11-19');
+  // Not before deferral (rewritten from the hc-0015 Deadline cases on purpose: a Deadline never defers now)
+  const sec = (d, k) => '2026-11-17 10:00 from X — ask\n**Need:** y\n**Status:** OPEN\n**' + (k || 'Not before') + ':** ' + d + '\n';
+  const nbd = (d, seen, now) => notBeforeDeferrals(new Map([['h', sec(d)]]), seen, now || '2026-11-17 10:00', 14);
+  check('a Not before 3 days ahead defers', nbd('2026-11-20').deferred.get('h') === '2026-11-20 00:00');
+  check('a Not before with a time defers until that minute, then not', nbd('2026-11-17 14:00').deferred.size === 1 && !nbd('2026-11-17 14:00', null, '2026-11-17 14:00').deferred.size);
+  check('a Deadline in 3 days defers nothing', !notBeforeDeferrals(new Map([['h', sec('2026-11-20', 'Deadline')]]), {}, '2026-11-17 10:00', 14).deferred.size);
+  check('today, a past date, prose and an impossible date count as workable now', !nbd('2026-11-17').deferred.size && !nbd('2026-11-10').deferred.size && !nbd('next week').deferred.size && !nbd('2026-13-45').deferred.size);
+  check('the cap: 14 days ahead defers, 15 does not', nbd('2026-12-01').deferred.size === 1 && !nbd('2026-12-02').deferred.size);
+  check('a date in the body text is not the Not before line', !notBeforeDeferrals(new Map([['h', '2026-11-17 x\n**Status:** OPEN\nnot before 2026-11-25 per X\n']]), {}, '2026-11-17 10:00', 14).deferred.size);
+  check('the first Not before seen wins: moving it later never extends the deferral', nbd('2026-11-28', { h: '2026-11-19 00:00' }).deferred.get('h') === '2026-11-19 00:00' && nbd('2026-11-28', { h: '2026-11-17 00:00' }).deferred.size === 0 && nbd('2026-11-28', { h: '2026-11-17 00:00' }).seen.h === '2026-11-17 00:00');
+  check('an earlier Not before takes effect at once', nbd('2026-11-17', { h: '2026-11-21 00:00' }).deferred.size === 0 && nbd('2026-11-19', { h: '2026-11-21 00:00' }).seen.h === '2026-11-19 00:00');
+  // Deadline: ordering and overdue only
+  const dlo = deadlineOrder(new Map([['late', sec('2026-11-24', 'Deadline')], ['past', sec('2026-11-15', 'Deadline')], ['none', sec('none', 'Deadline')], ['soon', sec('2026-11-18 (the verdict)', 'Deadline')], ['now', sec('today', 'Deadline')]]), '2026-11-17');
+  check('a Deadline orders the work soonest first, undated last', byDue(['late', 'none', 'soon', 'past', 'now'], dlo.due).join(',') === 'past,now,soon,late,none', byDue(['late', 'none', 'soon', 'past', 'now'], dlo.due).join(','));
+  check('a Deadline in the past is overdue; today is not', dlo.overdue.join(',') === 'past', dlo.overdue.join(','));
   check('a DONE block with an appended OPEN line is NOT woken (the re-open defect)', openHandoffs(write('b.md', doneThenOpen)).length === 0,
     JSON.stringify(openHandoffs(path.join(dir, 'b.md'))));
   check('a block whose first status is OPEN stays woken even with a later DONE (the first line governs)', openHandoffs(write('c.md', openThenDone)).length === 1);
@@ -835,11 +861,16 @@ function lastRunTail(job) {
     }
     const st = state.agents[agentId] || { key: '', count: 0 };
     const openSecs = new Map(txt.split(/^## /m).slice(1).map(sec => [sec.split('\n')[0].trim(), sec]).filter(([h]) => its.some(i => i.heading === h && !i.waitingOn)));
-    const dl = deadlineDeferrals(openSecs, st.deadlines, today(), STALL_DEADLINE_CAP);
-    st.deadlines = dl.seen;
-    const open = its.filter(i => !i.waitingOn && !dl.deferred.has(i.heading)).map(i => i.heading).sort();
-    const dkey = [...dl.deferred.keys()].sort().join('|');
-    if (dkey !== (st.deferred || '')) { st.deferred = dkey; if (dkey) log('WAITING handoffs ' + inbox + ' (' + agentId + '): ' + dl.deferred.size + ' OPEN set aside until their own Deadline (nearest ' + [...dl.deferred.values()].sort()[0] + '): not woken, not counted as stalled'); }
+    const lpNow = co.localParts();
+    const nb = notBeforeDeferrals(openSecs, st.notBefore, lpNow.date + ' ' + lpNow.time, NOT_BEFORE_CAP);
+    st.notBefore = nb.seen; delete st.deadlines;   // st.deadlines: the old Deadline-deferral memory, dropped (a Deadline defers nothing now)
+    for (const it of its) if (nb.deferred.has(it.heading)) it.notBefore = nb.deferred.get(it.heading);   // not open work now: blocks nobody (blockersOf)
+    const open = its.filter(i => !i.waitingOn && !i.notBefore).map(i => i.heading).sort();
+    const dkey = [...nb.deferred.keys()].sort().join('|');
+    if (dkey !== (st.deferred || '')) { st.deferred = dkey; if (dkey) log('WAITING handoffs ' + inbox + ' (' + agentId + '): ' + nb.deferred.size + ' OPEN set aside by their own Not before (nearest ' + [...nb.deferred.values()].sort()[0] + '): not woken, not counted as stalled'); }
+    const due = deadlineOrder(openSecs, lpNow.date);
+    st.nextDue = byDue(open, due.due).map(h => due.due.get(h)).find(Boolean) || null;   // the wake order across seats (soonest first)
+    const dueNote = open.length ? [due.overdue.filter(h => open.includes(h)).length ? due.overdue.filter(h => open.includes(h)).length + ' overdue' : '', st.nextDue ? 'next due ' + st.nextDue : ''].filter(Boolean).join(', ') : '';
     const key = open.join('|');
     if (key !== st.key) { st.key = key; st.count = 0; st.flagged = false; }   // inbox changed: fresh budget
     state.agents[agentId] = st;
@@ -854,7 +885,7 @@ function lastRunTail(job) {
       continue;
     }
     work[agentId] = work[agentId] || [];
-    reason[agentId] = (reason[agentId] ? reason[agentId] + '; ' : '') + open.length + ' OPEN in ' + inbox;
+    reason[agentId] = (reason[agentId] ? reason[agentId] + '; ' : '') + open.length + ' OPEN in ' + inbox + (dueNote ? ' (' + dueNote + ')' : '');
   }
   // Artifact wake: a quest with an artifact contract, every step ticked and its file already on disk is waiting on
   // exactly one thing — a run by its owner, because StarNet completes an artifact contract only in that agent's
@@ -959,10 +990,12 @@ function lastRunTail(job) {
       reason[agentId] = (reason[agentId] ? reason[agentId] + '; ' : '') + 'scheduled loop (' + SCHED.schedText(sch) + ', due ' + co.localParts(new Date(due)).time + ')';
     }
   }
-  // Owner messages first, then by revenue priority, then in the order found. The priority exists so that when only
-  // MAX_PER_TICK loops can fire, the ones the revenue line depends on are the ones that fire.
+  // Owner messages first, then by revenue priority, then the seat whose open handoff is due soonest (its Deadline; an
+  // undated inbox last), then in the order found. The priority exists so that when only MAX_PER_TICK loops can fire,
+  // the ones the revenue line depends on are the ones that fire.
+  const nextDue = id => ((state.agents[id] || {}).nextDue) || '9999';
   const order = Object.keys(work).sort((a, b) =>
-    ((ownerWake.has(b) ? 1 : 0) - (ownerWake.has(a) ? 1 : 0)) || ((hiringWake.has(b) ? 1 : 0) - (hiringWake.has(a) ? 1 : 0)) || (prio(b) - prio(a)));
+    ((ownerWake.has(b) ? 1 : 0) - (ownerWake.has(a) ? 1 : 0)) || ((hiringWake.has(b) ? 1 : 0) - (hiringWake.has(a) ? 1 : 0)) || (prio(b) - prio(a)) || nextDue(a).localeCompare(nextDue(b)));
   // ---- Sprint: what each seat has to do now (its signature), the Sprint numbers, effort per seat, lanes ----
   const sigOf = id => SP.workSig([(work[id] || []).map(q => q.id + ':' + (q.duty ? q.key : (state.quests[q.id] || {}).done)), (state.agents[id] || {}).key || '',
     ownerWake.has(id) ? state.owner.key : '', hiringWake.get(id) || [], artifactWakes[id] || []]);

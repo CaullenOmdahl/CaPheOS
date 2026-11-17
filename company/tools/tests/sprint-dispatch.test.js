@@ -62,6 +62,7 @@ async function company(o) {
   const agents = {}; for (const [id, s] of Object.entries(SEATS)) { const c = Object.assign({}, s); delete c.provider; agents[id] = c; }
   w('company/tools/loops.json', { agents });
   const cad = JSON.parse(fs.readFileSync(path.join(REPO, 'company', 'defaults', 'work', 'ops', 'cadence.json'), 'utf8'));
+  if (o.maxPerTick) cad.maxPerTick = o.maxPerTick;
   cad.tempo.sprint = o.sprint ? Object.assign({ on: true, since: new Date(Date.now() - HOUR).toISOString(), until: null, by: 'owner' }, o.sprintCfg || {}) : { on: false };
   w('company/work/ops/cadence.json', cad);
   w('company/work/finance/dispatch-budget.json', { dailyUsd: o.dailyUsd != null ? o.dailyUsd : 1, perAgentUsd: 0, unmeteredProviders: ['claude-cli'] });
@@ -108,15 +109,77 @@ test('Sprint off: seats inside their cooldown wait (the baseline)', async () => 
   assert.deepEqual(r.fired, []);
 });
 
-test('a handoff whose own Deadline is a few days ahead is set aside (not woken, logged WAITING); one due today wakes', async () => {
-  const day = n => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(Date.now() + n * 86400e3));
-  const c = await company({ sprint: false, lastRunMinAgo: 600, handoffs: {
-    'to-wen.md': block('draft the pricing page', '**Deadline:** ' + day(4) + '\n'),
-    'to-uma.md': block('check the data feed', '**Deadline:** ' + day(0) + '\n') } });
+// A Deadline is when the work must be DONE, never when it may start (rewritten from the hc-0015 case on purpose):
+// it orders the wakes and marks overdue items; only **Not before:** sets a block aside.
+const day = n => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(Date.now() + n * 86400e3));
+
+test('a block with only a Deadline in 3 days wakes its holder now, and the wakes go soonest-due first', async () => {
+  const c = await company({ sprint: false, lastRunMinAgo: 600, maxPerTick: 1, handoffs: {
+    'to-wen.md': block('draft the pricing page', '**Deadline:** ' + day(5) + '\n'),
+    'to-uma.md': block('check the data feed', '**Deadline:** ' + day(3) + '\n') + block('tidy the notes', '**Deadline:** none\n') } });
   const r = c.tick();
   assert.equal(r.code, 0, r.out);
-  assert.deepEqual(r.fired, ['w2'], r.log);   // w2 holds to-uma.md (due today); w1 holds to-wen.md (due in 4 days)
-  assert.match(r.log, /WAITING handoffs to-wen\.md .*set aside until their own Deadline/);
+  assert.deepEqual(r.fired, ['w2'], r.log);   // one slot: Uma's item is due sooner than Wen's
+  assert.match(r.log, new RegExp('RUN Uma loop .*\\(2 OPEN in to-uma\\.md \\(next due ' + day(3) + '\\)\\)'));
+  assert.doesNotMatch(r.log, /WAITING handoffs|set aside/);
+  await c.lastRun('w2', 1);
+  const r2 = c.tick();
+  assert.deepEqual(r2.fired, ['w1'], r2.log);   // Wen's Deadline item is work now too: the next free slot takes it
+});
+
+test('a Deadline in the past is marked overdue in the wake', async () => {
+  const c = await company({ sprint: false, lastRunMinAgo: 600, handoffs: {
+    'to-wen.md': block('draft the pricing page', '**Deadline:** ' + day(-2) + '\n') + block('the footer', '**Deadline:** ' + day(1) + '\n') } });
+  const r = c.tick();
+  assert.deepEqual(r.fired, ['w1'], r.log);
+  assert.match(r.log, new RegExp('\\(2 OPEN in to-wen\\.md \\(1 overdue, next due ' + day(-2) + '\\)\\)'));
+});
+
+test('a block with Not before in 3 days is set aside: not woken, logged WAITING once, no stall count; the first date seen wins', async () => {
+  const c = await company({ sprint: false, lastRunMinAgo: 600, handoffs: {
+    'to-wen.md': block('draft the pricing page', '**Not before:** ' + day(3) + '\n**Deadline:** ' + day(6) + '\n'),
+    'to-uma.md': block('check the data feed', '**Deadline:** ' + day(3) + '\n') } });
+  const r = c.tick();
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(r.fired, ['w2'], r.log);
+  assert.match(r.log, new RegExp('WAITING handoffs to-wen\\.md \\(w1\\): 1 OPEN set aside by their own Not before \\(nearest ' + day(3) + ' 00:00\\)'));
+  const head = '2026-11-17 from Alex — draft the pricing page';
+  let st = c.json('company/work/dispatch-state.json').agents.w1;
+  assert.equal(st.count, 0); assert.equal(st.key, ''); assert.equal(st.notBefore[head], day(3) + ' 00:00');
+  // the holder moves the date later: the first date seen still holds; ticks go by without a wake or a STALLED
+  c.w('company/work/handoffs/to-wen.md', '# Handoffs\n' + block('draft the pricing page', '**Not before:** ' + day(9) + '\n'));
+  for (let i = 0; i < 4; i++) { const ri = c.tick(); assert.ok(!ri.fired.includes('w1'), ri.log); }
+  const log = c.r('company/work/dispatch-log.md');
+  assert.equal((log.match(/WAITING handoffs to-wen\.md/g) || []).length, 1, log);
+  assert.doesNotMatch(log, /STALLED handoffs to-wen/);
+  st = c.json('company/work/dispatch-state.json').agents.w1;
+  assert.equal(st.notBefore[head], day(3) + ' 00:00'); assert.equal(st.count, 0);
+});
+
+test('an existing company: items the old rule deferred by Deadline wake at once in Sprint, each seat once, within the per-tick limits', async () => {
+  const H = { 'to-sam.md': block('build the intake form', '**Deadline:** ' + day(2) + '\n**Touches:** src/intake/\n') + block('write the API docs', '**Deadline:** ' + day(4) + '\n**Touches:** docs/api.md\n'),
+    'to-wen.md': block('draft the pricing page', '**Deadline:** ' + day(3) + '\n'), 'to-uma.md': block('check the data feed', '**Deadline:** ' + day(1) + '\n'),
+    'to-kim.md': block('the onboarding page', '**Deadline:** ' + day(5) + '\n') };
+  // dispatch-state.json as the hc-0015 rule left it: every dated item remembered and deferred
+  const old = {}; for (const [id, s] of Object.entries(SEATS)) { const t = H[s.inbox]; if (!t) continue; const hs = [...t.matchAll(/^## (.*)$/gm)].map(m => m[1].trim()); old[id] = { key: '', count: 0, deadlines: Object.fromEntries(hs.map(h => [h, day(3)])), deferred: hs.sort().join('|') }; }
+  const c = await company({ sprint: true, lastRunMinAgo: 600, handoffs: H });
+  c.w('company/work/dispatch-state.json', { agents: old });
+  const r = c.tick();
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(r.fired, ['kim', 'sam', 'w1', 'w2'], r.log);   // every holder, each exactly once
+  assert.equal(new Set(r.fired).size, r.fired.length);
+  const admits = c.r('company/state/admit-log.jsonl').split('\n').filter(Boolean).map(l => JSON.parse(l)).filter(x => x.door === 'dispatch');
+  assert.equal(admits.length, 4, JSON.stringify(admits));   // admit() saw every start
+  const st = c.json('company/work/dispatch-state.json').agents;
+  assert.ok(!st.sam.deadlines && st.sam.deferred === '' && st.sam.count === 1, JSON.stringify(st.sam));
+  for (const id of Object.keys(SEATS)) await c.lastRun(id, 3);
+  assert.deepEqual(c.tick().fired, []);   // no second fire for the same work
+  // Sprint off: the per-tick limit holds the same release to maxPerTick starts
+  const c2 = await company({ sprint: false, lastRunMinAgo: 600, maxPerTick: 2, handoffs: H });
+  c2.w('company/work/dispatch-state.json', { agents: old });
+  const r2 = c2.tick();
+  assert.deepEqual(r2.fired, ['sam', 'w2'], r2.log);   // the two soonest due (Uma day 1, Sam day 2)
+  assert.match(r2.log, /DEFERRED past the 2\/tick limit, by priority: Wen, Kim/);   // the rest wait for the next check, sooner due first
 });
 
 test('Sprint on: every seat with open work wakes past its cooldown, in one tick; a seat with none is not woken', async () => {

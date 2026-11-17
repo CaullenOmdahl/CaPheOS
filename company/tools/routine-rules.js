@@ -30,6 +30,8 @@
  *     sent every seat to the commitments tool in a company that never enabled the module, and the Founder had to ask the owner
  *     to switch it on. The block is rebuilt from the enabled modules on every tick, so enabling or disabling a module
  *     refreshes every routine within ten minutes, and existing companies get the fix through the same refresh.
+ *     The fallback's "later" line names **Not before:** (2026-11-17): it said **Deadline:**, which the dispatcher then
+ *     read as a start date, while the crew writes a Deadline to mean "finish by"; every dated item sat until its due day.
  *  3. Short waits. The station reclaims a routine run that shows no progress for 8 minutes (CRON_HEARTBEAT_STALE_MS
  *     480000), and a tool call in progress does not count, so one long shell_bg_wait loses the run's final reply.
  *
@@ -80,7 +82,7 @@ function moduleTools() {
 }
 // what a module line says when its module is off (no line = the rule is left out)
 const FALLBACK = {
-  commitments: '- Never wait inside a run for more than about 2 minutes in all (sleep, shell_bg_wait, a polling loop) to reach a wall-clock time. A waiting run holds your seat, blocks lanes and station restarts, and does no work; the station\'s sleep refuses more than 120 s. To act at a later time, write what to do and when in a handoff to yourself (company/work/handoffs/, with a **Deadline:** line) and end the run: your next run picks it up. For continuous recording or watching, use a background service (node company/tools/service.js propose).',
+  commitments: '- Never wait inside a run for more than about 2 minutes in all (sleep, shell_bg_wait, a polling loop) to reach a wall-clock time. A waiting run holds your seat, blocks lanes and station restarts, and does no work; the station\'s sleep refuses more than 120 s. To act at a later time, write what to do in a handoff to yourself (company/work/handoffs/) with a **Not before:** YYYY-MM-DD[ HH:MM] line for when it may start, and end the run: the dispatcher leaves it until then. A **Deadline:** line is when work must be done, never a start time: it defers nothing. For continuous recording or watching, use a background service (node company/tools/service.js propose).',
 };
 let modulesOverride = null;   // the selftest's enabled list
 function enabledModules() { if (modulesOverride) return modulesOverride; try { return require('./lib/modules').enabled(); } catch (_) { return []; } }

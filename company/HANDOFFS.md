@@ -8,19 +8,31 @@ Append a block to `company/work/handoffs/to-<name>.md` (the `inbox` field of the
 ## <ISO date> from <YourName> — <one-line ask>
 **Need:** what exactly you need back
 **Why:** why it matters now
-**Deadline:** 2026-11-18            (a plain YYYY-MM-DD as the line's first characters, or the word today)
+**Deadline:** 2026-11-18            (when it must be DONE: a plain YYYY-MM-DD first, or the word today)
+**Not before:** 2026-11-20 09:00    (optional, rare: the earliest it may START, company time)
 **Quest:** q:N step <key> (optional)
 **Status:** OPEN
 **Evidence:** link the work, command output or file
 **Touches:** src/intake/, docs/intake.md (optional: the paths or areas this work changes)
 **Effort:** mechanical | reasoning (optional)
 ```
-**The Deadline line is read by a parser, not by a person.** The dispatcher sets an OPEN block aside (no wake, no stall
-count) only when that line begins with a plain `YYYY-MM-DD` no more than 14 days ahead. Prose, `none`, a missing line, a
-past date or a date buried in a sentence all count as **due now**, so "the verdict 2026-11-19; the heartbeat 2026-11-20"
-is not a deadline at all, and the seat keeps being woken until the dispatcher calls it STALLED. Write the date first and
-the detail after it. The first date the dispatcher sees for a block is the one that counts; moving it later never extends
-the wait. `node company/tools/handoff-status.js --due` shows what it is counting.
+**A Deadline is when the work must be done, never when it may start.** It defers nothing: an OPEN block with a Deadline
+next week is work now. The dispatcher reads the line only to order the work (a seat with an item due sooner is woken
+first, and each wake names the next due date) and to mark the overdue ones. Start the line with a plain `YYYY-MM-DD` (or
+`today`) and put any detail after it; prose, `none` or a date buried in a sentence is undated, so the item is worked
+after the dated ones and never flagged late.
+
+**Not before:** is the one line that sets an OPEN block aside: the dispatcher does not wake the holder for it, does not
+count it toward STALLED, and nobody counts as blocked by it, until that date (`YYYY-MM-DD`, or `YYYY-MM-DD HH:MM`,
+company time). Use it only when the work truly cannot start earlier (a result that lands on a given day, a market that
+opens then). The date must come first on the line and be no more than 14 days ahead; prose, a past or a farther date
+counts as workable now. The first date the dispatcher sees for a block is the one that counts: moving it later never
+extends the wait, moving it earlier takes effect at once. The seat's own schedule may still run it; leave it until its
+day. Waiting on someone is different and keeps its own form: say it in the Status (`**Status:** OPEN — waiting on
+Ingrid's review`), and the holder is not woken for it until that seat or decision moves.
+
+`node company/tools/handoff-status.js --due` lists the open set by Deadline and marks Not-before items; the lint warns
+when a Deadline line reads like a start date ("wait until", "no earlier than" next to it) with no Not before line.
 
 `Touches:` says which files or folders the work changes, so two items with disjoint paths can be worked at the same time
 in Sprint (docs/TEMPO.md "Sprint"); an item without it is treated as touching everything and is worked on its own.
@@ -30,7 +42,8 @@ a cheaper model of its own chain and keep Claude for reasoning work; no tag mean
 
 ## Read your handoffs
 At the start of every session read your own inbox. Open handoffs outrank your own backlog; one due today outranks
-everything except a live incident. Work every OPEN item in the session, reviews included (`harness-change.js` reviews
+everything except a live incident. Work them soonest Deadline first (overdue ones before anything else
+but a live incident), and do not hold a dated item back for its due day: start it now. Work every OPEN item in the session, reviews included (`harness-change.js` reviews
 arrive as handoffs: approve or reject each one in this run): one wake, all the queued items, rather than one wake each.
 An item with a `**Lane:** n, run <id>, since <time>` line is owned by a parallel lane, another run of you working it in
 its own folder right now (Sprint, `company/tools/lanes.js`): skip it, and do not edit that section. When the lane ends, its
