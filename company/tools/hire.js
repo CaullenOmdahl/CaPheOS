@@ -276,7 +276,7 @@ function runTurn(agentId, model, provider, messages, streamId) {
           if (ev.name === 'agent.run.end' && p.runId === lead) end = p;
         }
       });
-      res.on('end', () => resolve({ text: text.trim(), runId: lead, reason: end && (end.reason || end.outcome), usd: end && end.usd }));
+      res.on('end', () => resolve({ text: text.trim(), runId: lead, reason: end && (end.reason || end.outcome), outcome: end && end.outcome, failureCode: end && end.failureCode, usd: end && end.usd }));
       res.on('error', reject);
     });
     req.setTimeout(TURN_TIMEOUT_MS, () => req.destroy(new Error('turn timed out after ' + (TURN_TIMEOUT_MS / 60000) + ' min')));
@@ -352,6 +352,20 @@ function parseQuestions(file) {
   if (!qs.length) out(2, { ok: false, error: 'no questions: put each one under its own "## " heading' });
   return qs;
 }
+/* one interview turn; a turn the model refused (lib/refusal.js, owner ruling) is asked again ONCE on the next model, and the
+ * transcript says so, so the scorecard never reads a declined answer as the candidate's. run: runTurn (a seam for the tests) */
+async function answerTurn(cand, messages, streamId, run) {
+  const REF = require('./lib/refusal');
+  const res = await run(cand.agentId, cand.model, cand.provider, messages, streamId);
+  if (!REF.isRefusal(res)) return res;
+  const from = { provider: cand.provider, model: cand.model };
+  const next = REF.nextEntry(null, from, [], { root: ROOT });
+  if (!next) { REF.record({ root: ROOT, seat: cand.agentId, door: 'interview', runId: res.runId, from, to: null }); return Object.assign({}, res, { text: '(no answer: ' + REF.plainLine(from, null) + ')' }); }
+  const again = await run(cand.agentId, next.model, next.provider, messages, streamId);
+  REF.record({ root: ROOT, seat: cand.agentId, door: 'interview', runId: res.runId, retryRunId: again.runId, from, to: next });
+  if (REF.isRefusal(again)) return Object.assign({}, again, { text: '(no answer: ' + REF.pname(from.provider) + ' and ' + REF.pname(next.provider) + ' both declined this question)' });
+  return Object.assign({}, again, { usd: (Number(res.usd) || 0) + (Number(again.usd) || 0), note: REF.plainLine(from, next) + ' This answer is ' + REF.keyOf(next) + '\'s, not ' + REF.keyOf(from) + '\'s.' });
+}
 async function interviewOne(dir, round, cand, questions) {
   let f = path.join(dir, 'interviews', cand.agentId + '.md');
   fs.mkdirSync(path.dirname(f), { recursive: true });
@@ -363,11 +377,11 @@ async function interviewOne(dir, round, cand, questions) {
   for (let i = 0; i < questions.length; i++) {
     messages.push({ role: 'user', content: questions[i] });
     let res;
-    try { res = await runTurn(cand.agentId, cand.model, cand.provider, messages, 'interview-' + round.slug + '-' + cand.agentId); }
+    try { res = await answerTurn(cand, messages, 'interview-' + round.slug + '-' + cand.agentId, runTurn); }
     catch (e) { fs.appendFileSync(f, '## Question ' + (i + 1) + '\n\n' + questions[i] + '\n\n**No answer:** ' + e.message + '\n\n'); logLine(dir, 'INTERVIEW ' + cand.name + ' question ' + (i + 1) + ' failed: ' + e.message); try { fs.unlinkSync(running); } catch (_) {} return { agentId: cand.agentId, ok: false, error: e.message }; }
     messages.push({ role: 'assistant', content: res.text || '(no answer)' });
     usd += Number(res.usd) || 0;
-    fs.appendFileSync(f, '## Question ' + (i + 1) + '\n\n' + questions[i] + '\n\n### Answer\n\n' + (res.text || '(no answer)') + '\n\n_run ' + res.runId + ', ' + (res.reason || '?') + '_\n\n');
+    fs.appendFileSync(f, '## Question ' + (i + 1) + '\n\n' + questions[i] + '\n\n### Answer\n\n' + (res.note ? '> ' + res.note + '\n\n' : '') + (res.text || '(no answer)') + '\n\n_run ' + res.runId + ', ' + (res.reason || '?') + '_\n\n');
   }
   fs.appendFileSync(f, 'Finished ' + stamp() + '.\n');
   try { fs.unlinkSync(running); } catch (_) {}
@@ -1300,4 +1314,4 @@ async function selftest() {
   out(2, { ok: false, error: 'commands: open, candidate, interview, advance, pick, hire, release, remodel, fire, status, models, selftest' });
 })().catch(e => out(1, { ok: false, error: e.message }));
 
-module.exports = { selftest, roundStage, pickSeats, advanceRound, rulePick, profileName, profileModel, pool, soft, openRounds, independenceRules, independenceConflicts, governanceCheck, budgetState, assertBudget, candidateSkin, deskHandoff, writeJson, moveFunctions, setSection, deciders, approverOk, companyModel };   // test seam only; hire.js is run as a script everywhere else
+module.exports = { answerTurn, selftest, roundStage, pickSeats, advanceRound, rulePick, profileName, profileModel, pool, soft, openRounds, independenceRules, independenceConflicts, governanceCheck, budgetState, assertBudget, candidateSkin, deskHandoff, writeJson, moveFunctions, setSection, deciders, approverOk, companyModel };   // test seam only; hire.js is run as a script everywhere else
