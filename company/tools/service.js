@@ -674,14 +674,23 @@ function failing(ctx, doc) {
   const out = [];
   for (const e of Object.values(doc.services || {})) {
     if (e.status !== 'installed' || e.desired === 'stopped') continue;
-    const txt = String(ctx.journal(e.unit + '.service', 3600) || '');
-    const results = [...txt.matchAll(/Failed with result '([^']+)'/g)].map(m => m[1]);
+    // a rare timer (on a calendar, or every 20 min or more) cannot fail 3 times in an hour: one failure of its latest run
+    // counts, read over a window that covers at least one of its runs (2 periods, at least an hour; 26 h on a calendar)
+    const s = e.schedule || {}; const per = s.every ? secsOf(s.every) : 0;
+    const rare = e.kind === 'timer' && (!!s.onCalendar || per >= 1200);
+    const windowSec = s.onCalendar ? 26 * 3600 : Math.max(3600, 2 * per);
+    const txt = String(ctx.journal(e.unit + '.service', rare ? windowSec : 3600) || '');
+    // only what happened since the last successful run counts: a later success clears it
+    const since = txt.split(/\n/).reduce((acc, l) => (/Deactivated successfully|Finished /.test(l) && !/Failed/.test(l) ? [] : /Failed with result '([^']+)'/.test(l) ? acc.concat([l.match(/Failed with result '([^']+)'/)[1]]) : acc), []);
+    const all = [...txt.matchAll(/Failed with result '([^']+)'/g)].map(m => m[1]);
+    const results = rare ? since : all;
     if (!results.length) continue;
     const halt = HALT_RE.test([e.name, e.why, (e.argv || []).join(' ')].join(' '));
-    if (results.length >= FAIL_IN_HOUR || halt) out.push({ name: e.name, by: e.by || 'owner', count: results.length, last: results[results.length - 1], halt });
+    if (results.length >= FAIL_IN_HOUR || halt || rare) out.push({ name: e.name, by: e.by || 'owner', count: results.length, last: results[results.length - 1], halt, rare });
   }
   return out;
 }
+const secsOf = v => { const m = String(v || '').match(/^(\d+)\s*(s|sec|m|min|h|d)$/i); return m ? Number(m[1]) * ({ s: 1, sec: 1, m: 60, min: 60, h: 3600, d: 86400 })[m[2].toLowerCase()] : 0; };
 function duty(ctx) {
   const f = findings(ctx);
   const items = f.unregistered.map(u => ({ id: 'unregistered:' + u })).concat(f.unscoped.map(u => ({ id: 'unscoped:' + u }))).concat(f.edited.map(u => ({ id: 'edited:' + u.split(' ')[0] })))
@@ -689,7 +698,7 @@ function duty(ctx) {
     .concat(f.failing.map(x => ({ id: 'failing:' + x.name, route: x.by && x.by !== 'owner' ? x.by : 'risk' })));
   if (!items.length) return { due: false };
   const parts = [];
-  if (f.failing.length) parts.push(f.failing.length + ' registered service(s) failing: ' + f.failing.slice(0, 4).map(x => x.name + ' ' + x.count + ' failed run(s) in the last hour, last ' + x.last + (x.halt ? ' (halt-related: any failure counts)' : '')).join('; ') + ' (service.js status; fix the cause, or stop it)');
+  if (f.failing.length) parts.push(f.failing.length + ' registered service(s) failing: ' + f.failing.slice(0, 4).map(x => x.name + ' ' + x.count + (x.rare ? ' failed run(s) since its last success (a rare timer: one failure counts)' : ' failed run(s) in the last hour') + ', last ' + x.last + (x.halt ? ' (halt-related: any failure counts)' : '')).join('; ') + ' (service.js status; fix the cause, or stop it)');
   if (f.unregistered.length) parts.push(f.unregistered.length + ' background unit(s) run from this company folder but are not registered with service.js: ' + f.unregistered.slice(0, 6).join(', ') + (f.unregistered.length > 6 ? ' and more' : '') + (f.transient.length ? ' (' + f.transient.length + ' transient)' : ''));
   if (f.unscoped.length) parts.push(f.unscoped.length + ' registered unit(s) not company-scoped by name: ' + f.unscoped.slice(0, 4).join(', '));
   if (f.edited.length) parts.push(f.edited.length + ' registered unit file(s) changed by hand: ' + f.edited.slice(0, 4).join(', '));
@@ -919,6 +928,16 @@ function selftest() {
     journal['testco-svc-halt-watchdog.service'] = fails(1);
     ok('duty: one failed run of a halt-related service is enough', failing(ctx, { services: { hw } }).length === 1 && failing(ctx, { services: { hw } })[0].halt === true);
     ok('duty: one failed run of an ordinary service is not', failing(ctx, { services: { hw: Object.assign({}, hw, { name: 'feed', why: 'record a feed' }) } }).length === 0);
+    // a nightly timer: one failure of its latest run counts (it can never fail 3 times in an hour); a later success clears it
+    const nightly = { status: 'installed', name: 'bank', unit: 'testco-svc-nightly', kind: 'timer', by: 'data', why: 'bank the day', argv: ['sh', 'b.sh'], schedule: { onCalendar: '*-*-* 00:30:00' } };
+    let asked = 0; const realJ = ctx.journal;
+    journal['testco-svc-nightly.service'] = 'testco-svc-nightly.service: Main process exited, code=exited, status=3/NOTIMPLEMENTED\ntestco-svc-nightly.service: Failed with result \'exit-code\'.';
+    ctx.journal = (u, sec) => { if (u === 'testco-svc-nightly.service') asked = sec; return realJ(u, sec); };
+    const nf = failing(ctx, { services: { nightly } });
+    ok('duty: one failure of a nightly timer is due (read over 26 h)', nf.length === 1 && nf[0].rare && asked === 26 * 3600, JSON.stringify({ nf, asked }));
+    journal['testco-svc-nightly.service'] += '\ntestco-svc-nightly.service: Deactivated successfully.';
+    ok('duty: a later successful run of that timer clears it', failing(ctx, { services: { nightly } }).length === 0);
+    ctx.journal = realJ;
     fs.writeFileSync(path.join(U, 'testco-station.service'), '[Service]\nWorkingDirectory=' + R + '/starnet\nExecStart=/usr/bin/env node sidecar/index.js\n');
     fs.writeFileSync(path.join(U, 'other-company.service'), '[Service]\nWorkingDirectory=/elsewhere\nExecStart=/usr/bin/python3 /elsewhere/x.py\n');
     fs.writeFileSync(path.join(U, 'capheos-depth-stopgap.service'), '[Unit]\nDescription=stopgap\n[Service]\nExecStart="/usr/bin/python3" "' + R + '/company/work/sim/scripts/rec.py"\nRestart=always\n[Install]\nWantedBy=default.target\n');
