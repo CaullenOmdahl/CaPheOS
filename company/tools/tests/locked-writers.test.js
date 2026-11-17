@@ -14,3 +14,14 @@ test('a tool that records writes to a locked policy file is one of its allowed w
     assert.ok(e && (e.writers || []).includes(tool), file + ' lists ' + tool + ' as a writer');
   }
 });
+
+// The framework's own units (systemd/*.in, named for the station) are never crew services: the unregistered-services
+// duty must not flag them (sandbox 2026-11-17: the new heartbeat timer was flagged every run and offered for "adoption").
+test('every unit the framework installs counts as a framework unit', () => {
+  const S = require('../service.js');
+  const fu = (S._internals && S._internals.frameworkUnits) || null;
+  if (!fu) return;   // not exported: covered by the selftest
+  const set = fu({ stationSvc: 'acme-station' });
+  for (const u of ['acme-station-liveness-heartbeat.timer', 'acme-station-liveness-heartbeat.service', 'acme-station-console.service', 'acme-station.service'])
+    assert.ok(set.has(u), u);
+});

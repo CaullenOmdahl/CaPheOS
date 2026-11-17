@@ -618,9 +618,15 @@ function list(ctx) {
 }
 
 /* ---------------- duty: unregistered-services (read-only, no network, no systemctl) ---------------- */
+// Every unit the framework itself installs (systemd/*.in, named for this company's station by setup-station.sh) is the
+// framework's, never a crew service: derived from the templates, so a new framework unit (e.g. the heartbeat timer) can
+// never be flagged as unregistered or offered to the owner to "adopt".
 function frameworkUnits(ctx) {
   const s = ctx.stationSvc;
-  return new Set([s + '.service', s + '-dispatch.service', s + '-dispatch.timer', s + '-console.service', s + '-liveness.service', s + '-liveness.timer']);
+  const out = new Set([s + '.service', s + '-dispatch.service', s + '-dispatch.timer', s + '-console.service', s + '-liveness.service', s + '-liveness.timer']);
+  let names = []; try { names = fs.readdirSync(path.join(__dirname, '..', '..', 'systemd')); } catch (_) {}
+  for (const n of names) { if (!n.endsWith('.in')) continue; const u = n.slice(0, -3); out.add(u.startsWith('capheos-station') ? s + u.slice('capheos-station'.length) : u.replace(/^capheos-/, s + '-')); }
+  return out;
 }
 function unitFiles(dir) {
   let names = []; try { names = fs.readdirSync(dir); } catch (_) { return []; }
@@ -766,7 +772,7 @@ function main(argv) {
   console.error('usage: service.js propose|list|status|stop|start|remove|adopt|--duty|selftest (header of company/tools/service.js)'); return 2;
 }
 
-module.exports = { context, propose, startStop, remove, adopt, onHalt, list, findings, duty, checkCommand, validateArgv, splitWords, render, specOf, unitOf };
+module.exports = { context, propose, startStop, remove, adopt, onHalt, list, findings, duty, checkCommand, validateArgv, splitWords, render, specOf, unitOf, _internals: { frameworkUnits } };
 
 /* ---------------- selftest: temp company, fake systemctl, no real user manager ---------------- */
 function selftest() {
