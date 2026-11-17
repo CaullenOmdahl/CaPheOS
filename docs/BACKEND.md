@@ -147,8 +147,16 @@ abstraction* and reuses the CUA backend, and changes the target: never the owner
 
 What the `desktop` plugin ships:
 
-- **the driver abstraction** `{screenshot, readTree, click, type, key, drag}`, with Windows CUA (x64) and Linux
-  (XTEST/libei, AT-SPI) as backends;
+- **the driver abstraction** `{screenshot, readTree, click, type, key, drag}`, with Linux (XTEST/libei, AT-SPI) as the
+  backend that runs in the deploy, and Windows CUA (x64) as an optional backend for a Windows target;
+
+**The desktop is Linux.** The environment is a Linux microVM with a virtual display and a headed Chrome — the same Linux
+the deployment already is (s6, btrfs/LUKS, read-only root), and microVMs (Firecracker, Cloud Hypervisor, Kata) take
+Linux guests. Windows CUA is **not the environment and not a container**: it is a driver backend for the cases where the
+target really is a Windows desktop (an x64 app under test), it is x64-only, and it is simply unused in a Linux deploy.
+Containerized Windows is not on the table: Windows containers need a Windows host and licence, they double the memory
+budget, and they buy nothing for browser work. If a Windows app ever has to be driven, that is a separate opt-in plugin
+with a signed risk acceptance — not the default desk.
 - **the environment**: a microVM with no host mounts, no Docker socket, an egress allowlist, an ephemeral profile,
   PID/memory caps and a kill switch; no GPU passthrough without a signed risk acceptance (D13);
 - **the browser**: headed real Chrome with a dedicated extension-free profile per identity, launched without

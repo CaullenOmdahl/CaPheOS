@@ -9,6 +9,10 @@ Preserved here because that path is temporary.
 `docs/STYLE.md` §Vocabulary. The decisions it leaves open are D1–D19 in §8. The backend design that consumes §4 and §5
 is `docs/BACKEND.md` §6.5.
 
+**Clarification on §4:** the desktop environment is a **Linux microVM** (the deployment in §2 is Linux: s6, btrfs/LUKS,
+read-only root). Windows CUA is a driver backend for a Windows target, not the environment and not a container; it is
+unused in a Linux deploy. Containerized Windows is not part of this plan.
+
 ---
 
 (Plan v2, pasted by the owner on 2026-11-17: "Deployable, containerized CaPheOS with browser identity, grants, and a security seat". The draft is for independent audit; this is a faithful summary.)
