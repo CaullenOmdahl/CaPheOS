@@ -552,6 +552,10 @@ function requestPayload(ctx, rec) {
   if (!rel) return '';
   try { return fs.readFileSync(ctx.P(rel), 'utf8'); } catch (_) { return ''; }
 }
+function nextFrameworkRequestId(dir) {
+  let n = 0; try { for (const f of fs.readdirSync(dir)) { const m = /^fr-(\d+)\.md$/.exec(f); if (m) n = Math.max(n, Number(m[1])); } } catch (_) {}
+  return 'fr-' + String(n + 1).padStart(4, '0');
+}
 function frameworkRequest(ctx, rec, p) {
   const file = rec && rec.target && rec.target.file;
   if (!file || !['tool', 'house-rule', 'policy'].includes(rec.kind) || OWNED_FILES.has(file)) return null;
@@ -562,13 +566,16 @@ function frameworkRequest(ctx, rec, p) {
   if (top.status !== 0 || top.stdout.trim() !== real) return null;   // not its own checkout (e.g. a test copy inside another repo)
   if (cpx.spawnSync('git', ['-C', ctx.root, 'ls-files', '--error-unmatch', '--', file], { stdio: 'ignore' }).status !== 0) return null;   // a company-only file
   const dir = path.join(ctx.root, 'company', 'work', 'framework-requests'); fs.mkdirSync(dir, { recursive: true });
-  const out = path.join(dir, rec.id + '.md');
+  // framework requests have their own sequence (fr-0001, ...): the company's hc ids are per company and would collide in
+  // the framework's queue; each request names the company change it came from
+  const frId = rec.frameworkRequest || nextFrameworkRequestId(dir);
+  const out = path.join(dir, frId + '.md');
   // the proposal's diff/body is stored at rec.change.payload (relative to the root); the request carries it in full
   const payload = requestPayload(ctx, rec);
   if (!payload.trim()) throw E(rec.id + ': no change text to send to the framework (the proposal has no payload); propose it again with the diff', 'state');
-  fs.writeFileSync(out, '# Framework change request ' + rec.id + '\n\n- File: `' + file + '`\n- Proposed by: ' + rec.by + '; reviewed by: ' + ((rec.approvals || []).map(a => a.name).join(', ') || '-') + '\n- Why: ' + rec.why + '\n\nThis file belongs to the CaPheOS framework, so the change was not applied in this company. Forward it to the framework (it reaches this company with the next update).\n\n```diff\n' + payload.slice(0, 60000) + '\n```\n');
-  rec.status = 'upstream'; rec.upstreamAt = new Date(ctx.now).toISOString(); saveRec(ctx, rec);
-  appendLog(ctx, { event: 'upstream', id: rec.id, by: p.name, file, request: path.relative(ctx.root, out) });
+  fs.writeFileSync(out, '# Framework change request ' + frId + '\n\n- Company change: ' + rec.id + ' (company/work/changes/' + rec.id + '.json)\n- File: `' + file + '`\n- Proposed by: ' + rec.by + '; reviewed by: ' + ((rec.approvals || []).map(a => a.name).join(', ') || '-') + '\n- Why: ' + rec.why + '\n\nThis file belongs to the CaPheOS framework, so the change was not applied in this company. Forward it to the framework (it reaches this company with the next update).\n\n```diff\n' + payload.slice(0, 60000) + '\n```\n');
+  rec.status = 'upstream'; rec.upstreamAt = new Date(ctx.now).toISOString(); rec.frameworkRequest = frId; saveRec(ctx, rec);
+  appendLog(ctx, { event: 'upstream', id: rec.id, frameworkRequest: frId, by: p.name, file, request: path.relative(ctx.root, out) });
   // only the real company's owner hears of it: a selftest or fixture tree (ctx.root elsewhere) never writes the owner channel
   let realRoot = false; try { realRoot = fs.realpathSync(ctx.root) === fs.realpathSync(co.ROOT); } catch (_) {}
   if (realRoot) try { require('./owner-inbox.js').send({ from: 'harness-change.js', text: 'The crew wants to change a framework file (' + file + '): ' + rec.why + ' It was approved but not applied here, because framework files change only through framework updates. The full request is in ' + path.relative(ctx.root, out) + '.' }); } catch (_) {}
@@ -1100,9 +1107,13 @@ async function selftest() {
       assert.ok(requestPayload(cx, rec).includes('+y'), 'payload read from rec.change.payload');
       const r = frameworkRequest(cx, rec, { name: 'Max' });
       assert.ok(r && /^\+y$/m.test(fs.readFileSync(path.join(G, r.upstream), 'utf8')), 'the request file holds the diff');
+      assert.strictEqual(r.upstream, 'company/work/framework-requests/fr-0001.md', 'framework requests have their own id sequence');
+      assert.ok(/^- Company change: hc-0001 /m.test(fs.readFileSync(path.join(G, r.upstream), 'utf8')) && r.frameworkRequest === 'fr-0001', 'the request names the company change');
+      const r2 = frameworkRequest(cx, Object.assign({}, rec, { id: 'hc-0003', status: 'approved', frameworkRequest: undefined }), { name: 'Max' });
+      assert.strictEqual(r2.upstream, 'company/work/framework-requests/fr-0002.md', 'the next request takes the next number');
       const bad = Object.assign({}, rec, { id: 'hc-0002', change: { mode: 'patch', payload: 'company/work/changes/hc-0002/change.diff' }, status: 'approved' });
       assert.throws(() => frameworkRequest(cx, bad, { name: 'Max' }), /no change text/);
-      assert.ok(!fs.existsSync(path.join(G, 'company/work/framework-requests/hc-0002.md')) && bad.status === 'approved', 'nothing written, status unchanged');
+      assert.ok(fs.readdirSync(path.join(G, 'company/work/framework-requests')).length === 2 && bad.status === 'approved', 'nothing written, status unchanged');
     } finally { fs.rmSync(G, { recursive: true, force: true }); }
   });
   if (prevProv === undefined) delete process.env.PROVENANCE_ROOT; else process.env.PROVENANCE_ROOT = prevProv;
