@@ -43,6 +43,7 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/merge-gate.js` | the company's client-side merge gate, since GitHub branch protection needs GitHub Pro on a | risk | `selftest` | `status` `selftest` | — |
 | `company/tools/model-drift.js` | the same setting in three places, checked in one run. | people | `--selftest` | `--json` `--selftest` `--roster` | station-token |
 | `company/tools/model-stats.js` | our own "house benchmark": how each model actually performs on this company's work. | people | — | `[--days N] [--json]` | — |
+| `company/tools/models.js` | each seat's own model chain: a primary and ordered fallbacks, set per agent, with automatic failover (model-policy.json seats; moves logged in company/state/model-moves.jsonl). | people | `selftest` | `show` `set` `chain` `check` `tick` `selftest` | station-token |
 | `company/tools/module.js` | core modules: list them, check them, enable and disable them (docs/CORE-MODULES.md). | ceo | `selftest` / `--selftest` | `list` `status` `doctor` `enable` `disable` `gates` `selftest` | — |
 | `company/tools/my-section.js` | each person's own section of their routine prompts: notes they write to themselves, kept on every run. | people | `selftest` | `show` `check` `set` `append` `clear` `history` `revert` `selftest` | — |
 | `company/tools/offpeak-clocks.js` | does any routine own a clock inside a provider's peak-price blocks? | finance | `--selftest` | `--json` `--file` `--selftest` | station-token |

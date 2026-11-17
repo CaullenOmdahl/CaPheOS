@@ -129,6 +129,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/merge-gate.js | risk | `selftest` |
 | company/tools/model-drift.js | people | `--selftest` |
 | company/tools/model-stats.js | people | none |
+| company/tools/models.js | people | `selftest` |
 | company/tools/module.js | ceo | `selftest` / `--selftest` |
 | company/tools/my-section.js | people | `selftest` |
 | company/tools/offpeak-clocks.js | finance | `--selftest` |

@@ -495,6 +495,7 @@ route('POST', /^\/api\/onboarding\/certify$/, async () => { const r = await run(
 // Setup (console/setup.js): the seven-step guided setup, every write as the owner
 const SETUP = require(path.join(__dirname, 'setup.js'))({ co, run, runApi, stationGet, stationPost, owner: () => OWNER, setOwner: n => { OWNER = n || OWNER; }, bad, HttpError, tool, emit: t => emit(t) });
 for (const [mth, re, fn] of SETUP.routes) route(mth, re, fn);
+require(path.join(__dirname, 'models.js')).mount(route, { co, runApi, stationGet, bad, owner: () => OWNER });   // per-seat model chains (console/models.js)
 route('GET', /^\/api\/locked$/, () => runApi('locked-watch.js', ['status']));
 route('GET', /^\/api\/external$/, () => runApi('external-gate.js', ['list']));
 

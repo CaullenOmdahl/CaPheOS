@@ -250,7 +250,7 @@ curl -s -X POST -H "x-console-token: $CTOKEN" -H 'content-type: application/json
 SQ="$(node "$TOOLS/inbox.js" ask --from Founder --kind secret --name e2e-api-key --label 'Example API key' --message 'Could you paste the example API key here? It lets the walk test the secure field. If you say no, nothing changes.' | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).id||""))')"
 check "inbox.js ask --kind secret filed $SQ" test -n "$SQ"
 if [[ "${E2E_NO_BROWSER:-0}" != "1" ]]; then
-  check "headless Chrome: every route, Setup -> draft with the Founder -> streamed reply, Now strip" node "$R/tests/console-walk.js" --url "http://127.0.0.1:$CPORT" --token "$CTOKEN" --shots "$T/shots"
+  check "headless Chrome: every route, Setup -> draft with the Founder -> streamed reply, Now strip" node "$R/tests/console-walk.js" --url "http://127.0.0.1:$CPORT" --token "$CTOKEN" --shots "$T/shots" --out "$T/walk.out"
 fi
 printf '%s' '{"action":"store","values":{"key":"e2e-secret-value-0123456789"}}' > "$T/secret.json"
 check "the console stores the key in secrets/e2e-api-key (0600) and the answer never carries it" bash -c "
@@ -357,6 +357,39 @@ check "GET /api/hiring: both rounds hired, with the timeline from opened to hire
   let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const o=JSON.parse(d);for(const id of [\"qa-lead-1\",\"data-analyst-1\"]){const r=o.rounds.find(x=>x.id===id);const s=r&&r.stage;
   if(!s||s.key!==\"hired\"||s.timeline[0].step!==\"opened\"||s.timeline[s.timeline.length-1].step!==\"hired\"){console.error(JSON.stringify(s));process.exit(1)}}})'"
 UNKNOWN="$(mocklog 'r.status===404' | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const s=new Set(d.split("\n").filter(Boolean).map(l=>{const r=JSON.parse(l);return r.method+" "+r.path}));console.log([...s].join(", "))})')"
+
+# ---------- 18. per-seat model chains: the owner sets one, the seat fails over and recovers (company/tools/models.js) ----------
+st -X POST "$STARNET_URL/__providers" -d '{"claude-cli":true,"deepseek":true}' > /dev/null
+check "hire gave $HNAME a default model chain in model-policy.json seats" node -e '
+  const p=require(process.argv[1]+"/company/model-policy.json"); const s=p.seats&&p.seats[process.argv[2]];
+  if(!s||!Array.isArray(s.chain)||!s.chain.length||s.chain[0].provider!=="deepseek"){console.error(JSON.stringify(p.seats));process.exit(1)}' "$R" "$CAND"
+con POST "/api/models/seat/$CAND/chain" -d '{"chain":[{"provider":"deepseek","model":"deepseek-flash","effort":"high"},{"provider":"claude-cli","model":"claude-sonnet-5-5"}]}' > "$T/models-set.out"
+check "console: the owner sets $HNAME's chain (DeepSeek primary, Claude fallback)" node -e '
+  const o=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!o.ok||o.chain.length!==2||!o.owner){console.error(JSON.stringify(o));process.exit(1)}' "$T/models-set.out"
+QLOOP() { st "$STARNET_URL/api/cron" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const j=JSON.parse(d).jobs.find(j=>j.agentId===process.argv[1]);console.log(j?j.provider+"/"+j.model:"")})' "$CAND"; }
+check "$HNAME's loop runs on the primary" test "$(QLOOP)" = "deepseek/deepseek-flash"
+st -X POST "$STARNET_URL/__providers" -d '{"deepseek":false}' > /dev/null
+# a fresh Claude meter reading (the station's subscription file the pacer reads): 5% of the week, so Claude is open
+node -e 'const f=process.argv[1]+"/.starnet-data/workspaces/.usage/subscriptions.json";require("fs").mkdirSync(require("path").dirname(f),{recursive:true});
+  const t=Date.now();require("fs").writeFileSync(f,JSON.stringify({v:1,providers:{"claude-cli":{primary:{seenAt:t,windows:[{id:"seven_day",usedPct:5,resetsAt:t+5*864e5,status:"allowed"}]}}}}))' "$R"
+node "$TOOLS/models.js" tick > "$T/models-tick-1.out" 2>&1
+check "failover: DeepSeek disconnected -> $HNAME moves to the Claude fallback (loop and roster)" bash -c "
+  [[ \"\$(curl -s -H 'x-starnet-token: $TOKEN' $STARNET_URL/api/cron | node -e 'let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const j=JSON.parse(d).jobs.find(j=>j.agentId===\"$CAND\");console.log(j.provider)})')\" == claude-cli ]] &&
+  node -e 'const r=require(\"$R/.starnet-data/workspaces/agent.roster.json\").agents.find(a=>a.agentId===\"$CAND\"); if(!r||r.provider!==\"claude-cli\") process.exit(1)' &&
+  grep -q 'MODELS MOVE $HNAME deepseek/deepseek-flash -> claude-cli/claude-sonnet-5-5' company/work/dispatch-log.md &&
+  grep -q '\"direction\":\"down\"' company/state/model-moves.jsonl" || tail -5 "$T/models-tick-1.out"
+check "falling to the last entry: the manager (Founder) has an OPEN handoff" bash -c "grep -q 'is on the last model in their chain' company/work/handoffs/to-founder.md"
+st -X POST "$STARNET_URL/__providers" -d '{"deepseek":true}' > /dev/null
+node "$TOOLS/models.js" tick > "$T/models-tick-2.out" 2>&1
+check "recovery waits for the hysteresis (stays on the fallback right after DeepSeek returns)" test "$(QLOOP)" = "claude-cli/claude-sonnet-5-5"
+node -e 'const f=process.argv[1]+"/company/model-policy.json";const p=require(f);p.failover=Object.assign({},p.failover,{recoverAfterMin:0,upAtMostEveryMin:0});require("fs").writeFileSync(f,JSON.stringify(p,null,1))' "$R"
+node "$TOOLS/models.js" tick > "$T/models-tick-3.out" 2>&1
+check "recovery: back on the primary once it has held, logged as a move up" bash -c "[[ \"\$(curl -s -H 'x-starnet-token: $TOKEN' $STARNET_URL/api/cron | node -e 'let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const j=JSON.parse(d).jobs.find(j=>j.agentId===\"$CAND\");console.log(j.provider)})')\" == deepseek ]] && grep -q '\"direction\":\"up\"' company/state/model-moves.jsonl" || tail -5 "$T/models-tick-3.out"
+check "GET /api/models: $HNAME on the primary, with the moves in its history" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/models/seat/$CAND | node -e '
+  let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const s=JSON.parse(d).seats[0];const dirs=s.history.map(h=>h.direction);if(s.now.index!==0||!dirs.includes(\"down\")||!dirs.includes(\"up\")){console.error(d.slice(0,800));process.exit(1)}})'"
+check "models.js check: every chain entry allowed and connected" node "$TOOLS/models.js" check
+node "$TOOLS/dispatch.js" > "$T/dispatch-models.out" 2>&1
+check "a dispatcher tick with seat chains runs clean (the pacer hook calls models.js)" bash -c "! grep -q 'MODELS ERROR' company/work/dispatch-log.md"
 
 # ---------- summary ----------
 UNKNOWN="$(mocklog 'r.status===404' | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const s=new Set(d.split("\n").filter(Boolean).map(l=>{const r=JSON.parse(l);return r.method+" "+r.path}));console.log([...s].join(", "))})')"

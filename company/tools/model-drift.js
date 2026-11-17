@@ -18,6 +18,8 @@
  *   routine-on-forbidden-subscription  pinned to `custom` while routing says `minimax: false`, or its scope's
  *                                 chain (routing.scopes[scope].chain) has no `minimax` link       — S2
  *   routine-tier-drift            pinned to a Claude tier other than routing's `claude`         — S2
+ *   routine-off-seat-chain        a seat with its own chain (`seats.<id>.chain`, models.js) has a routine pinned to a
+ *                                 model outside that chain                                        — S2
  * Notes (printed, never a finding): a routine on `deepseek` whose routing allows a subscription. The pacer moves
  *   routines onto DeepSeek when the subscriptions are closed, so that state is legitimate and a checker that flagged
  *   it would be turned off within a day.
@@ -90,6 +92,13 @@ function audit(policy, roster, jobs) {
     const models = allowedOf(policy, j.provider);
     if (!models) { findings.push({ code: 'routine-model-not-allowed', who: j.id, name: j.name, provider: j.provider, model: j.model, why: 'provider "' + j.provider + '" has no allow-list' }); continue; }
     if (!models.includes(j.model)) { findings.push({ code: 'routine-model-not-allowed', who: j.id, name: j.name, provider: j.provider, model: j.model, why: '"' + j.model + '" is not in allowed.' + j.provider + '.models' }); continue; }
+    // a seat with its own chain (model-policy.json seats, company/tools/models.js): the pin must be one of its entries
+    const seat = j.agentId && policy.seats && policy.seats[j.agentId];
+    if (seat && Array.isArray(seat.chain) && seat.chain.length) {
+      if (!seat.chain.some(e => e && e.provider === j.provider && e.model === j.model))
+        findings.push({ code: 'routine-off-seat-chain', who: j.id, name: j.name, provider: j.provider, model: j.model, why: 'seats["' + j.agentId + '"].chain is ' + seat.chain.map(e => e.provider + '/' + e.model).join(' > ') + ', and the routine is pinned elsewhere (models.js tick moves it back)' });
+      continue;
+    }
     // 3. and against the routing table, which is the place the company says what each routine should be on
     // matched as the pacer matches: exact name, or the longest routing key the name starts with
     const n = String(j.name || '');
@@ -158,6 +167,12 @@ function selftest() {
   check('a routine pinned to MiniMax whose scope has no minimax link is a finding (prefix-matched name)', offChain.findings.some(f => f.code === 'routine-on-forbidden-subscription'), JSON.stringify(offChain.findings));
   const onChain = audit(policy, [], [{ id: 'r8', name: 'Founder loop — run the company', provider: 'claude-cli', model: 'claude-sonnet-5-5' }]);
   check('the same routine on its Claude tier is clean', onChain.findings.length === 0, JSON.stringify(onChain.findings));
+
+  const chained = Object.assign({}, policy, { seats: { eng: { chain: [{ provider: 'deepseek', model: 'deepseek-flash' }, { provider: 'custom', model: 'MiniMax-M3.1-Flash' }] } } });
+  const onSeat = audit(chained, [], [{ id: 'r9', name: 'Founder loop', agentId: 'eng', provider: 'custom', model: 'MiniMax-M3.1-Flash' }]);
+  check('a seat-chained routine on one of its chain entries is clean (routing rules do not apply)', onSeat.findings.length === 0, JSON.stringify(onSeat.findings));
+  const offSeat = audit(chained, [], [{ id: 'r10', name: 'Jo loop', agentId: 'eng', provider: 'claude-cli', model: 'haiku' }]);
+  check('a seat-chained routine off its chain is a finding', offSeat.findings.some(f => f.code === 'routine-off-seat-chain'), JSON.stringify(offSeat.findings));
 
   const noProvider = audit(policy, [], [{ id: 'r6', name: 'X', provider: 'weird-provider', model: 'm' }]);
   check('an unknown provider fails closed', noProvider.findings.some(f => f.code === 'routine-model-not-allowed'), JSON.stringify(noProvider.findings));

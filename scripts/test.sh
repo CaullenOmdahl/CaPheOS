@@ -87,6 +87,7 @@ done
 
 echo "== console"
 step "console/server.js --selftest" node console/server.js --selftest
+step "console/models.js --selftest" node console/models.js --selftest
 step "tests/today-questions-walk.js (headless Chrome: Today renders each question kind; SKIP without Chrome)" node tests/today-questions-walk.js
 
 echo "== syntax and data files"

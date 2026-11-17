@@ -69,7 +69,29 @@ unless there is an emergency.
 The pacing numbers, the shared-account share and the metered cap are finance's
 (`company/work/finance/pacing-policy.json`); the routing table is people's, with the CEO's approval. `hire.js remodel`
 sets a person's own model and their routines; the pacer then moves routines listed in the routing table back to the
-table's choice.
+table's choice (a seat with its own chain, below, keeps it with the new model as its primary; the pacer leaves it alone).
+
+## Per-seat model chains and failover
+
+Each seat can have its own chain (`company/model-policy.json` `seats.<station id>.chain`): a primary and ordered
+fallbacks, each `{ provider, model, effort? }`. The seat (its roster model and every routine of it) runs on the first
+entry that can run, and `company/tools/models.js` (run by the dispatcher on every pacer tick) moves it:
+- **down at once** when its model cannot run: its provider is not connected on the station, the pacer has that
+  subscription closed, a pay-per-use provider is near the station's daily rail or out of credit, a budget cap held its
+  last run, or its last `failover.errorsInARow` runs on that model were provider errors;
+- **back up** once the better entry has been able to run for `failover.recoverAfterMin`, at most once per
+  `failover.upAtMostEveryMin` (no flapping), and never in the middle of a run.
+
+Every move is in `company/work/dispatch-log.md` (`MODELS ...`) and `company/state/model-moves.jsonl`. A seat that has
+to fall to its last entry gets its manager an OPEN handoff (the CEO seat: one owner notice). A seat with a chain is not
+routed by the pacer's routing table. StarNet's station-wide fallback chain (Settings > Models, `/api/fallback/chain`)
+stays the last backstop for a single run whose model fails mid-run; nothing here writes it.
+
+A new hire starts with `[interviewed model, candidateDefault, a connected subscription model]`. The owner changes a
+chain directly (console Crew > seat > Model, or `models.js set|chain --by <owner>`); anyone else names who decided in
+`--approved` (the seat's manager or people; the CEO for a `needsCeoApproval` model; never for the CEO seat) and the
+self-governance level for `models` applies. `node company/tools/models.js show` says what each seat runs now and why;
+`check` proves every entry is allowed and connected.
 
 ## Performance: fix, re-model or replace
 

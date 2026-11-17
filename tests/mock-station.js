@@ -6,7 +6,8 @@
  * Covers the endpoints the tools in company/tools call (grep "'/api/" there): roster, agent/*, run (NDJSON events),
  * run/stream, observe (SSE; POST /__live starts a fake in-flight run), transcript, consent, projects (+ bless), cron (list, create, update, run, arm, remove, history), halt (+ status, resume), loops (+ control),
  * quests (+ update, mint, confirm), state/snapshot, runs, connectors, servicekeys, groups, save, budget/status and a few
- * read-only odds and ends. Every request needs header x-starnet-token (401 otherwise, like the station).
+ * read-only odds and ends (GET /api/providers from a provider map; POST /__providers {id: true|false} connects or
+ * disconnects one, and POST /api/agent/model refuses a disconnected one as the station does). Every request needs header x-starnet-token (401 otherwise, like the station).
  *
  * Every request is appended to --log as one JSON line {at, method, path, query, body, status}; a test asserts on it.
  * Unknown routes answer 404 {error:"mock: no route"} and are logged too, so a test can list what the mock lacks.
@@ -44,6 +45,7 @@ const S = {
   runs: [],
   roster: [],
   groups: [],
+  providers: { deepseek: true },   // GET /api/providers; POST /__providers changes it (models.js failover tests)
   save: {
     revision: 1,
     doc: {
@@ -136,7 +138,9 @@ function handle(method, p, q, body, res) {
     return send(res, 200, { ok: true, agentId: B.agentId, mode: B.mode, via: 'roster' });
   }
   if (p === '/api/agent/model' && method === 'POST') {
-    const r = S.roster.find(x => x.agentId === B.agentId); if (r) { r.model = B.model; r.provider = B.provider; writeRoster(); }
+    // like the station: a provider that is not connected is refused (POST /__providers marks one so)
+    if (S.providers[B.provider] === false) return send(res, 409, { error: 'the provider "' + B.provider + '" is not connected on this station (no key or sign-in)' });
+    const r = S.roster.find(x => x.agentId === B.agentId); if (r) { r.model = B.model; r.provider = B.provider; if (B.effort) r.reasoningEffort = B.effort; writeRoster(); }
     return send(res, 200, { ok: true, via: 'roster' });
   }
   if (p === '/api/agent/delete' && method === 'POST') {
@@ -306,7 +310,7 @@ function handle(method, p, q, body, res) {
   }
   if (p === '/api/budget/status' && method === 'GET') return send(res, 200, { ok: true, providers: {} });
   if (p === '/api/version' && method === 'GET') return send(res, 200, { ok: true, version: 'mock-station' });
-  if (p === '/api/providers' && method === 'GET') return send(res, 200, { ok: true, providers: [{ id: 'deepseek', configured: true, unattendedReady: true }] });
+  if (p === '/api/providers' && method === 'GET') return send(res, 200, { ok: true, providers: Object.entries(S.providers).map(([id, on]) => ({ id, configured: on, unattendedReady: on, reason: on ? 'verified' : 'credential missing' })) });
   if (p.startsWith('/api/models/') && method === 'GET') return send(res, 200, { ok: true, models: [{ id: 'deepseek-flash' }] });
   if (p === '/api/permissions' && method === 'GET') return send(res, 200, { ok: true, bypass: false });
   if (p === '/api/permissions/bypass' && method === 'POST') return send(res, 200, { ok: true, bypass: !!B.on });
@@ -327,6 +331,8 @@ const server = http.createServer((req, res) => {
     const row = { at: nowIso(), method: req.method, path: u.pathname, query: u.search || '', body };
     if (req.headers['x-starnet-token'] !== TOKEN) { row.status = send(res, 401, { error: 'token required' }); return logReq(row); }
     if (u.pathname === '/__state') { row.status = send(res, 200, S); return logReq(row); }
+    // test seam: POST /__providers { "claude-cli": false, ... } connects or disconnects providers (GET /api/providers)
+    if (u.pathname === '/__providers' && req.method === 'POST') { for (const [k, v] of Object.entries(body || {})) S.providers[k] = v === true; row.status = send(res, 200, { ok: true, providers: S.providers }); return logReq(row); }
     if (u.pathname === '/__live' && req.method === 'POST') { row.status = send(res, 200, { ok: true, run: startLive(body || {}) }); return logReq(row); }
     if (u.pathname === '/api/observe' && req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' }); res.write('retry: 3000\n\n');

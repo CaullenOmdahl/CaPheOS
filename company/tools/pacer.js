@@ -46,6 +46,10 @@
  * provider's own refusal still does); each such state is logged once as SPENDCAP OFF. A hand-started emergency is a budget
  * decision under self-governance (company/state/governance.json): at approve it waits for the owner's yes.
  *
+ * Seats with their own model chain (company/model-policy.json seats, company/tools/models.js) are not routed here: plan()
+ * leaves their routines untouched, and each hook tick hands its measurement to models.js tick(), which moves those
+ * seats down and back up their chains (its own failover.mode; StarNet's station-wide fallback chain stays the backstop).
+ *
  * dispatch.js calls dispatchHook() once per tick inside try/catch; an error or a 40-second timeout leaves the tick as
  * it would have been without the pacer. It never prints a key: provider keys are read from secrets/ (or the station's
  * key file) and sent only in the Authorization header.
@@ -885,10 +889,13 @@ function makePacer(o) {
     const R = loadRouting(root);
     const blocked = (id, prov) => (st.blocks || []).find(b => b.routineId === id && b.provider === prov && b.until > t) || null;
     const rows = [], untouched = [];
+    // a seat with its own model chain (model-policy.json seats, company/tools/models.js) is moved by models.js, not here
+    let chained = new Set(); try { chained = require('./models.js').chainedSeats(root); } catch (_) {}
     for (const job of jobs || []) {
       if (!job || job.noAgent === true) continue;
       const key = routingKeyFor(job.name, R.routines);
       const cur = { provider: (job.wire && job.wire.provider) || job.provider || '', model: (job.wire && job.wire.model) || job.model || '' };
+      if (job.agentId && chained.has(job.agentId)) { untouched.push({ id: job.id, name: job.name, now: cur, seatChain: true }); continue; }
       if (!key) { untouched.push({ id: job.id, name: job.name, now: cur }); continue; }
       const e = R.routines[key] || {};
       const tried = [];
@@ -1299,6 +1306,8 @@ function makePacer(o) {
     else if (st.keys && st.keys.railEta) st.keys.railEta = '';
     if (a.late) return { extra: 0, late: true };
     const done = await apply(m, pl, st, jobs);
+    // per-seat model chains (company/tools/models.js): failover and recovery on this tick's measurement; never throws
+    if (!a.late) await require('./models.js').tick({ root, m, jobs, log: a.log || (l => note(l)), dry, call, now });
     if (a.late) { saveState(st); return { extra: 0, late: true }; }
     if (!live) {
       // keyed on every planned move (a running routine's included), so a routine starting or ending does not re-log it

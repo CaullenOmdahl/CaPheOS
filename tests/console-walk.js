@@ -2,7 +2,7 @@
 /* console-walk.js — drive the owner console in headless Chrome (DevTools protocol, no dependencies) and check what the
  * owner sees. Used by scripts/e2e-first-light.sh against a console that talks to tests/mock-station.js.
  *
- *   node tests/console-walk.js --url http://127.0.0.1:<console port> --token <console token> [--shots <dir>]
+ *   node tests/console-walk.js --url http://127.0.0.1:<console port> --token <console token> [--shots <dir>] [--out <file>]
  *
  * Walks: every route of the route map renders without an exception; Setup → Charter → "Draft it with the Founder" opens
  * the live chat and the Founder's reply streams in (tool step, text, a console: link that stays in the app); Today's
@@ -27,7 +27,8 @@ const chrome = spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const getJson = u => new Promise((res, rej) => http.get(u, r => { let d = ''; r.on('data', c => d += c); r.on('end', () => { try { res(JSON.parse(d)); } catch (e) { rej(e); } }); }).on('error', rej));
 let fails = 0;
-const check = (name, ok, info) => { if (!ok) fails++; console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok || info === undefined ? '' : ' — ' + JSON.stringify(info).slice(0, 400))); };
+const OUT = opt('out');
+const check = (name, ok, info) => { if (!ok) fails++; if (OUT) fs.appendFileSync(OUT, (ok ? 'PASS ' : 'FAIL ') + name + (ok || info === undefined ? '' : ' — ' + JSON.stringify(info).slice(0, 1200)) + '\n'); console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok || info === undefined ? '' : ' — ' + JSON.stringify(info).slice(0, 400))); };
 async function until(fn, ms) { const end = Date.now() + ms; let v; while (Date.now() < end) { v = await fn(); if (v) return v; await sleep(200); } return v; }
 (async () => {
   let targets; for (let i = 0; i < 60 && !targets; i++) { try { targets = await getJson('http://127.0.0.1:' + port + '/json'); } catch (_) { await sleep(200); } }
@@ -47,6 +48,17 @@ async function until(fn, ms) { const end = Date.now() + ms; let v; while (Date.n
     const ok = await until(() => js(`(() => { const t = (document.getElementById('main') || {}).innerText || ''; return t.trim().length > 40 && !/Loading…$/.test(t.trim()) && !/This screen failed/.test(t); })()`), 6000);
     check('route ' + r + ' renders', ok && !errors.length, { errors, text: await js(`((document.getElementById('main')||{}).innerText||'').slice(0,200)`) });
   }
+  // Crew > seat > Model: the primary picker, the chain editor and "running now ... because ..." (console/models.js)
+  await js('location.hash = "/crew/agent"; 1');
+  await until(() => js(`[...document.querySelectorAll('[role=tab]')].some(b => b.textContent === 'Model')`), 6000);
+  errors.length = 0;
+  await js(`[...document.querySelectorAll('[role=tab]')].find(b => b.textContent === 'Model').click(); 1`);
+  const mp = await until(() => js(`(() => { const t = (document.getElementById('main') || {}).innerText || ''; const i = t.toLowerCase().indexOf('running now'); return i >= 0 && /Fallback chain/i.test(t) && document.querySelector('select[aria-label="Set primary provider"]') ? t.slice(i, i + 200) : null; })()`), 8000);
+  check('Crew > seat > Model shows what it runs now and why, a primary picker and the chain editor', !!mp && /Because/.test(mp) && !errors.length, { mp, errors });
+  await shot('crew-model');
+  await js('location.hash = "/usage"; 1');
+  const ct = await until(() => js(`(() => { const s = document.querySelector('[aria-labelledby=chains]'); return s && s.querySelector('table') ? s.innerText.slice(0, 300) : null; })()`), 8000);
+  check('Usage shows every seat\'s chain in one table', !!ct && /running now/i.test(ct), ct);
   // Setup -> Charter -> Draft it with the Founder -> the reply streams in
   await js('location.hash = "/setup/charter"; 1');
   const btn = await until(() => js(`!!document.querySelector('#step-charter') && [...document.querySelectorAll('#step-charter button')].some(b => /Draft it with the Founder/.test(b.textContent))`), 8000);

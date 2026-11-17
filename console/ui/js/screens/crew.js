@@ -3,6 +3,7 @@ import { h, fill, Button, Tag, errLine, empty, tabs, screenHead, initial, status
 import { api } from '../api.js';
 import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
+import { modelPanel } from './crew-model.js';
 
 const FUNCS = ['ceo', 'people', 'tools', 'risk', 'floor', 'finance'];
 const FN_LABEL = { ceo: 'CEO', people: 'People', tools: 'Tools', risk: 'Risk', floor: 'Floor', finance: 'Finance' };
@@ -16,7 +17,7 @@ export async function render(root, ctx) {
   fill(root, head, errEl,
     h('section', { 'aria-labelledby': 'fn', class: 'stack-16' }, h('h2', { id: 'fn', class: 'h4' }, 'Who holds each function'), fnHost),
     h('section', { style: 'display:flex;flex-wrap:wrap;gap:32px' }, listHost, dossier), side);
-  let data = null;
+  let data = null, modelView = null;
 
   const offNow = events.on('now', () => load());
   async function load() {
@@ -49,14 +50,14 @@ export async function render(root, ctx) {
   }
 
   function drawDossier(s, seats) {
-    const defs = [['brief', 'Brief'], ['growth', 'Growth'], ['record', 'Record'], ['memory', 'Memory'], ['competence', 'Competence'], ['latitude', 'Own section'], ['config', 'Config']];
+    const defs = [['brief', 'Brief'], ['growth', 'Growth'], ['record', 'Record'], ['memory', 'Memory'], ['competence', 'Competence'], ['latitude', 'Own section'], ['model', 'Model'], ['config', 'Config']];
     const other = {
       growth: 'XP, ratings and corrections over time; the competence scoreboard by skill bucket.',
       record: 'Logbook of every run with its transcript, and restore to a checkpoint.',
       memory: 'Memory records, pending proposals, declined items, pins and forget.',
       competence: 'Experience and verified flaws per skill bucket (competence.js scoreboard).',
       latitude: 'Their own section of their routine prompts (my-section.js) and change history.',
-      config: 'Purpose, instructions, model and effort, personality preset, access and approval mode, appearance, skills.',
+      config: 'Purpose, instructions, personality preset, access and approval mode, appearance, skills.',
     };
     const st = s.station || {};
     const tabHost = h('div');
@@ -70,6 +71,11 @@ export async function render(root, ctx) {
           kv('Loop', [s.loop, s.cooldownMin ? 'cooldown ' + s.cooldownMin + ' min' : null, s.wakeOnInbox ? 'woken early by handoffs' : null].filter(Boolean).join(' · ') || '—')),
         h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px' },
           kpi(s.priority != null ? s.priority : '—', 'dispatch priority'), kpi(s.inbox || '—', 'handoff inbox'), kpi(s.log || '—', 'work log'), kpi(s.role || '—', 'charter')));
+      else if (tab === 'model') {
+        // kept across the crew screen's live reloads, so a choice being made in the picker is not wiped
+        if (!modelView || modelView.id !== s.id) { modelView = { id: s.id, el: h('div') }; modelPanel(modelView.el, s.id); }
+        fill(pane, modelView.el);
+      }
       else fill(pane, h('div', { class: 'empty' }, h('p', null, other[tab]), h('p', null, NOT_CONNECTED)));
     };
     fill(dossier,

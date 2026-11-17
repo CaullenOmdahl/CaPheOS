@@ -34,6 +34,9 @@
  *                                        [--functions people,tools]   the hire takes these utility functions from whoever holds them
  *   node company/tools/hire.js release   --round <r> --agent <id> --reason "<why not hired>" --by <name>
  *   node company/tools/hire.js remodel   --agent <id> --provider <p> --model <m> --by <name> --approved "<who decided>, <where and when>" [--reason "..."]
+ *        (a seat with a model chain keeps its fallbacks, with the new model as primary; chains: company/tools/models.js)
+ *   A hire's model chain (model-policy.json seats.<id>.chain) starts as [interviewed model, candidateDefault, a connected
+ *   subscription model]; company/tools/models.js fails the seat over along it.
  *   node company/tools/hire.js fire      --agent <id> --reason "<why>" --by <name> --approved "<who decided>, <where and when>" [--replace]
  *        (fire: not the CEO; open handoffs and quests go to the manager; charter and inbox archived under company/hiring/former/;
  *         --replace opens a replacement round seeded from the old charter and hands it to the people owner)
@@ -965,6 +968,15 @@ async function hire(a) {
   const job = await C.call('POST', '/api/cron', { name: loopName, agentId, schedule: String(a.schedule || '0 */2 * * *'), tz: co.TZ, prompt,
     workdir: ROOT, deliver: 'local', enabled: true, model: cand.model, provider: cand.provider, unattendedGrants: FL.LOOP_GRANTS });
   const jj = (() => { try { return JSON.parse(job.body); } catch (_) { return {}; } })();
+  // the hire's own model chain (company/tools/models.js): the interviewed model first, then candidateDefault, then a
+  // subscription model when one is connected on the station; the failover tick moves the seat along it
+  let chain = null;
+  try {
+    const MD = require('./models.js');
+    let pv = null; try { pv = JSON.parse((await C.call('GET', '/api/providers')).body).providers || null; } catch (_) {}
+    chain = MD.hireChain({ provider: cand.provider, model: cand.model, effort: cand.effort || undefined }, pv, modelPolicy());
+    if (!MD.recordHireChain(agentId, chain, by)) chain = null;
+  } catch (e) { staffLog('MODEL CHAIN not recorded for ' + display + ': ' + String(e.message).slice(0, 160)); }
   // everyone's prompt carries the crew line, so recompose them all
   const synced = [];
   // With a station page open the page recomposes prompts itself and this push is ignored; that is reported, not fatal.
@@ -983,7 +995,7 @@ async function hire(a) {
   try { const F = require('./station-floor.js'); deskCheck = F.checkDesk(F.env(doc).WorldModel.deserialize(doc.station), agentId, { rows: C.rows(doc), name: display, title }); }
   catch (e) { deskCheck = { ok: false, desk: null, problems: [{ code: 'CHECK_FAILED', msg: 'The desk check could not run (' + String(e.message).slice(0, 160) + '); run `node company/tools/station-floor.js audit`.' }] }; }
   fs.appendFileSync(path.join(HANDOFFS, fnInbox('floor')), deskHandoff(deskCheck, { title, display, roomId: desk && desk.roomId, slug: round.slug }));
-  return { ok: true, agentId, name: officeName, title, access, desk: desk && desk.ok ? desk.roomId : null, deskCheck: deskCheck.ok ? 'ok' : deskCheck.problems.map(p => p.code).join(','), loop: jj.ok ? (jj.job && jj.job.id) : ('failed: ' + job.body.slice(0, 160)), role: path.relative(ROOT, roleFile), inbox: path.relative(ROOT, inboxFile), functions: moved ? moved.take : [], functionsFrom: moved ? moved.from : {},
+  return { ok: true, agentId, name: officeName, title, access, modelChain: chain ? chain.map(e => e.provider + '/' + e.model) : null, desk: desk && desk.ok ? desk.roomId : null, deskCheck: deskCheck.ok ? 'ok' : deskCheck.problems.map(p => p.code).join(','), loop: jj.ok ? (jj.job && jj.job.id) : ('failed: ' + job.body.slice(0, 160)), role: path.relative(ROOT, roleFile), inbox: path.relative(ROOT, inboxFile), functions: moved ? moved.take : [], functionsFrom: moved ? moved.from : {},
     stationPage: pageOpen ? (reloaded === 'reloaded' ? 'was open; reloaded so it shows the hire' : reloaded === 'busy' ? 'is open with a conversation in progress; it shows the hire after its next reload' : 'is open and could not be reloaded') : 'closed; prompts updated directly', promptsSynced: synced.filter(x => !/via:page/.test(String(x))) };
 }
 
@@ -1032,6 +1044,8 @@ async function remodel(a) {
   }
   const jobs = (JSON.parse((await C.call('GET', '/api/cron')).body).jobs || []).filter(j => j.agentId === agentId);
   for (const j of jobs) await C.call('POST', '/api/cron/update', { id: j.id, patch: { model, provider } });
+  // a seat with its own model chain keeps it, with the new model as its primary (company/tools/models.js)
+  try { require('./models.js').putPrimary(agentId, { provider, model, effort }, by); } catch (_) {}
   const page = mj.via === 'page' ? await C.reloadStationPage() : 'closed';
   staffLog('REMODEL ' + crew[agentId].name + ' (' + agentId + '): ' + before + ' -> ' + provider + '/' + model + ' by ' + by + ' (approved: ' + approved + ')' + (a.reason ? ': ' + String(a.reason).slice(0, 200) : ''));
   return { ok: true, agentId, from: before, to: provider + '/' + model, routines: jobs.map(j => j.name), via: mj.via || null, stationPage: page };

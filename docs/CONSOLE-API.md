@@ -154,6 +154,18 @@ Governance, guardrails and certification use the endpoints above (`/api/governan
 `poll`, `code`, `cancel` are on the POST allowlist): start returns a sign-in URL, the owner pastes the code the page
 shows, the UI polls until `connected`; the terminal alternative is `claude auth login` on the station machine.
 
+## Seat models (console/models.js)
+
+Per-seat model chains (company/tools/models.js; every write runs it as the owner).
+- `GET /api/models` → every seat: `{ id, name, hasChain, primary, chain: [{ provider, model, effort, ok, why, connected }],
+  now: { model, index, why, roster, routines, running }, history }`, plus `failover`, `providers`, `pacer`, `backstop`.
+- `GET /api/models/seat/<id>` → the same for one seat, with up to 50 moves of history.
+- `GET /api/models/providers` → the allowed providers, `connected` true/false (null when the station is down).
+- `GET /api/models/catalog/<provider>` → that provider's allowed models with the station's `efforts` (404 off the list).
+- `POST /api/models/seat/<id>/primary` `{ provider, model, effort? }` → the new primary, the rest of the chain behind it.
+- `POST /api/models/seat/<id>/chain` `{ chain: [{ provider, model, effort? }, …] }` (1–8) → the whole ordered chain.
+  A changed primary (or a current model that left the chain) is applied at once to the roster and the routines.
+
 ## Station proxy
 
 `/api/station/<path>` → `<station url>/api/<path>` with the station token added. GET is passed through. POST is passed

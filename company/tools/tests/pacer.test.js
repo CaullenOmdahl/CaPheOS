@@ -1050,3 +1050,38 @@ test('emergency by hand at notify starts at once and tells the owner', async () 
   assert.equal(h.p.emergencyOn({ why: 'production API down (S0)', by: 'Max', hours: 4 }).ok, true);
   assert.match(fs.readFileSync(path.join(fx.root, 'company/owner/outbound.jsonl'), 'utf8'), /Max decided to lift the subscription pacing lines/);
 });
+// Per-seat model chains (company/tools/models.js): the pacer leaves a chained seat's routines alone, and its hook
+// tick hands its measurement to models.js, which moves the seat down its chain when a link closes.
+test('a seat with its own model chain: plan leaves its routine alone; the hook fails it over when Claude closes, and back', async () => {
+  const mp = JSON.parse(LEGACY_POLICY);
+  mp.seats = { engineer: { chain: [{ provider: 'claude-cli', model: 'claude-sonnet-5-5' }, { provider: 'deepseek', model: 'deepseek-flash' }] } };
+  mp.failover = { recoverAfterMin: 0, upAtMostEveryMin: 0 };
+  const jobs = crewJobs().map(j => j.agentId === 'engineer' ? Object.assign(j, { provider: 'claude-cli', model: 'claude-sonnet-5-5', wire: { provider: 'claude-cli', model: 'claude-sonnet-5-5', source: 'routine' } }) : j);
+  const fx = fixture({ feedPct: 95, stationPct: 95, modelPolicy: JSON.stringify(mp), policy: { mode: 'shadow' } });
+  const st = station(jobs);
+  const base = st.call;
+  const sent = [];
+  st.call = async (method, p, body) => {
+    if (p === '/api/providers') return { status: 200, body: JSON.stringify({ providers: [{ id: 'claude-cli', configured: true }, { id: 'deepseek', configured: true }] }) };
+    if (p === '/api/agent/model') { sent.push(body); return { status: 200, body: '{"ok":true,"via":"roster"}' }; }
+    return base(method, p, body);
+  };
+  const h = make(fx, st);
+  const r = await measurePlan(h, st.copy);
+  assert.ok(!r.pl.rows.some(x => x.name === 'Engineering loop'), 'the chained seat is not in the pacer plan');
+  assert.ok(r.pl.untouched.some(x => x.name === 'Engineering loop' && x.seatChain));
+  await tick(h, st.copy);   // Claude is over the line (95%): the seat falls to DeepSeek even with the pacer in shadow
+  const eng = () => st.copy.find(j => j.id === 'j-eng');
+  assert.equal(eng().provider, 'deepseek'); assert.equal(sent[0].provider, 'deepseek');
+  assert.ok(h.lines.some(l => /MODELS MOVE Jo claude-cli\/claude-sonnet-5-5 -> deepseek\/deepseek-flash/.test(l)), h.lines.join('\n'));
+  // the fixture's engineer has no manager: the owner hears it once (a seat with a manager gets an OPEN handoff)
+  assert.match(fs.readFileSync(path.join(fx.root, 'company/owner/outbound.jsonl'), 'utf8'), /Jo fell to the last model in their chain/);
+  // Claude reopens (two hours on, a fresh low reading; the 95% one is stale): back to the primary
+  h.clock.t = T0 + 2 * HOUR;
+  fs.writeFileSync(path.join(fx.root, 'home/.local/state/usage/claude-usage.json'), JSON.stringify({ at: h.clock.t - MIN, seven_day: { used_percentage: 5, resets_at: CLAUDE_RESET / 1000 } }));
+  fs.writeFileSync(path.join(fx.root, '.starnet-data/workspaces/.usage/subscriptions.json'), JSON.stringify({ v: 1, providers: {} }));
+  await tick(h, st.copy);
+  assert.equal(eng().provider, 'claude-cli', h.lines.join('\n'));
+  const mv = fs.readFileSync(path.join(fx.root, 'company/state/model-moves.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  assert.deepEqual(mv.map(x => x.direction), ['down', 'up']);
+});

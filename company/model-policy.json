@@ -141,6 +141,17 @@
    }
   }
  },
+ "seats": {
+  "_doc": "Per-seat model chains, kept by company/tools/models.js (and the console: Crew > seat > Model). seats.<station agent id>.chain is an ordered list of {provider, model, effort?}: the first entry is the seat's primary, the rest are its fallbacks. The seat (its roster model and every routine of it) runs on the first entry that can run now and moves back up when a better one recovers (failover below). A seat with a chain is not routed by the pacer's routing table. A new hire starts with [interviewed model, candidateDefault, a connected subscription model]. Every model must be on the allowed lists above. The owner changes a chain directly; anyone else needs --approved and the self-governance level for models. Optional per seat: claudeReserve (true = its Claude entry ignores the daily pacing line up to the weekly stop; the CEO seat defaults to true)."
+ },
+ "failover": {
+  "_doc": "How models.js moves a seat along its chain. mode live|shadow (shadow logs what it would do). An entry cannot run when its provider is not connected on the station, the pacer has its subscription closed, a metered provider is near the station's daily rail or out of credit, or the seat's last errorsInARow runs on it were provider errors or a budget hold (held errorHoldMin, then retried). Moving down is immediate; moving back up waits recoverAfterMin of the better entry being able to run, and at most one move up per upAtMostEveryMin. StarNet's station-wide fallback chain (GET/POST /api/fallback/chain) stays the last backstop for a run that fails mid-run.",
+  "mode": "live",
+  "errorsInARow": 3,
+  "errorHoldMin": 60,
+  "recoverAfterMin": 30,
+  "upAtMostEveryMin": 60
+ },
  "performance": {
   "consecutiveFailures": 3,
   "failureRate": 0.5,
