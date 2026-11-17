@@ -102,7 +102,11 @@ check "founder-loop.js status: green" node "$TOOLS/founder-loop.js" status
 FOUNDER_JOB="$(st "$STARNET_URL/api/cron" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).jobs.find(j=>j.name.startsWith("Founder loop")).id))')"
 
 # ---------- 5. owner message -> dispatcher wakes the Founder ----------
-printf '%s\n' "{\"id\":\"in-first-1\",\"at\":\"$(date -u +%FT%TZ)\",\"from\":\"Pat\",\"text\":\"Welcome aboard. What do you need from me this week?\"}" >> company/owner/inbound.jsonl
+# the owner writes through their own CLI (a hand-appended line is ignored: company/tools/lib/owner-channel.js). This temp
+# company is marked as a throwaway fixture for the one command, so it is the owner's whoever runs the suite (CI too).
+touch .capheos-selftest-fixture
+check "owner-inbox.js say: the owner's message is recorded and written" node "$TOOLS/owner-inbox.js" say --text "Welcome aboard. What do you need from me this week?"
+rm -f .capheos-selftest-fixture
 M=$(logmark)
 node "$TOOLS/dispatch.js" > "$T/dispatch-1.out" 2>&1; DRC=$?
 check "dispatch tick exits 0" test "$DRC" -eq 0

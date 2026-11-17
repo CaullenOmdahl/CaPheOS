@@ -1046,7 +1046,8 @@ async function collect(opt) {
   /* --- soft signals (H.5): owner corrections and "(own error)" rows, each matched to the run of the person it names --- */
   const S = P.soft;
   const softSkip = why => (report.soft.skipped = report.soft.skipped || []).push(why);
-  const inbound = (readText(F.ownerInbound) || '').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean);
+  // only lines the owner channel check trusts (lib/owner-channel.js); a forged owner line is nobody's correction
+  const inbound = (() => { try { return require('./lib/owner-channel').messages({ file: F.ownerInbound, root: ROOT }); } catch (_) { return []; } })();
   const acked = (readJson(F.ownerInbox, {}) || {}).acked || {};
   const ackRe = new RegExp(S.ackCorrectionPattern, 'i'), replyRe = new RegExp(S.replyAdmissionPattern, 'i');
   const correction = (msg, agentId, how, evidence, extra) => {

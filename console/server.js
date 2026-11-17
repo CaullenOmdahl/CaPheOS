@@ -397,8 +397,9 @@ function postOwnerMessage(body) {
   const file = oi.INBOUND();
   const row = { id: 'in-' + Date.now().toString(36) + '-' + crypto.randomBytes(2).toString('hex'), at: new Date().toISOString(), from: OWNER, text };
   if (body.re) row.re = String(body.re);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.appendFileSync(file, JSON.stringify(row) + '\n');
+  // recorded in the provenance log before it is written: only lines the console or the owner's tools recorded count as
+  // the owner's (company/tools/lib/owner-channel.js); a line appended by anyone else is ignored and quarantined
+  require(co.p('company', 'tools', 'lib', 'owner-channel.js')).append(file, row, 'console');
   return { ok: true, message: Object.assign({ dir: 'in' }, row) };
 }
 async function crewView() {

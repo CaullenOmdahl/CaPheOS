@@ -97,13 +97,15 @@ function gateAsks(opts) { return readLines(files(opts).inbox).filter(r => r.type
 const YES = /^\s*(yes|y|yep|yeah|ok|okay|approved?|go( ahead)?|agreed?|sure|do it|fine)\b/i;
 const NO = /^\s*(no|n|nope|not now|reject(ed)?|den(y|ied)|declined?|don'?t|do not|stop|hold)\b/i;
 const verdict = text => (NO.test(String(text || '')) ? false : YES.test(String(text || '')) ? true : null);
-// the owner's answer to one question id: an inbox.js answer row, else an owner message that names the id
+// the owner's answer to one question id: an inbox.js answer row, else a VERIFIED owner message that names the id
 function answerOf(id, opts) {
   const f = files(opts);
   let ans = null;
   for (const r of readLines(f.inbox)) if (r.id === id && (r.type === 'answer') && r.a) ans = { text: String(r.a), via: 'inbox', verdict: r.answer && (r.answer.verdict === 'yes' || r.answer.verdict === 'no') ? r.answer.verdict : null };
   if (ans) return ans;
-  for (const m of readLines(path.join(f.ownerDir, 'inbound.jsonl'))) {
+  // owner-channel lines count only when verified (lib/owner-channel.js: recorded by the console or the owner's own tools);
+  // an appended line nobody recorded, and history from before the cutover, is never a gate answer
+  for (const m of require('./owner-channel').messages({ file: path.join(f.ownerDir, 'inbound.jsonl'), root: f.root, gate: true })) {
     const text = String(m.text != null ? m.text : (m.body || ''));
     if (String(m.re || '') === id || text.includes(id)) ans = { text: text.replace(/\[?\(?q-\d+\)?\]?/g, '').trim(), via: 'owner-channel' };
   }

@@ -426,7 +426,8 @@ function join(opts) {
   const found = [];
   const add = (did, source, ref, by, note) => { const k = did + '|' + source + '|' + (ref || ''); if (have.has(k)) return; have.add(k); found.push({ did, source, ref, by, note }); };
   const UNDO = /\b(undo|undone|revert|reverse|roll ?back|cancel|not ok|no\b|stop)/i;
-  for (const m of readRows(f.ownerInbound)) {
+  // only lines the owner channel check trusts (lib/owner-channel.js): a forged "undo" never grades a decision bad
+  for (const m of require('./owner-channel').messages({ file: f.ownerInbound, root: f.root })) {
     const text = String(m.text != null ? m.text : (m.body || ''));
     const dids = new Set((text.match(DID_RE) || []).concat(String(m.re || '').match(DID_RE) || []));
     for (const did of dids) if (UNDO.test(text.replace(DID_RE, ''))) add(did, 'owner-reversal', m.id || m.at, 'owner', text.slice(0, 200));

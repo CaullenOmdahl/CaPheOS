@@ -783,8 +783,8 @@ function deliver(q, plain) {
   const text = (who ? who + ', ' : '') + 'my answer to your question ' + q.id + (titleOf(q) ? ' ("' + titleOf(q).replace(/"/g, "'") + '")' : '') + ': ' + plain;
   const row = { id: 'in-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6), at: new Date().toISOString(),
     from: (co.config.owner && co.config.owner.name) || 'owner', text, re: q.id, via: 'inbox.js answer' };
-  const file = oi.INBOUND(); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.appendFileSync(file, JSON.stringify(row) + '\n');
-  return row;
+  // recorded in the provenance log first (lib/owner-channel.js); an agent's run writes nothing here (it is not the owner)
+  return require('./lib/owner-channel').append(oi.INBOUND(), row, 'inbox.js');
 }
 /* answer({id, by, answer|text, quiet}) — record the owner's answer. Returns {ok, id, state, a, answer, delivered}. */
 function answer(o) {
@@ -878,6 +878,7 @@ function selftest() {
   const os = require('os');
   const T = fs.mkdtempSync(path.join(os.tmpdir(), 'inbox-selftest-'));
   process.env.PM_INBOX_FILE = path.join(T, 'company', 'pm-inbox.jsonl'); process.env.OWNER_DIR = path.join(T, 'company', 'owner');
+  process.env.PROVENANCE_ROOT = T; require('./provenance.js').pinUnderStation(false);   // the owner channel's provenance (lib/owner-channel.js) is this fixture's
   const cases = []; const t = (n, c, info) => { cases.push(!!c); console.log((c ? 'ok   ' : 'FAIL ') + n + (c || info === undefined ? '' : '  ' + JSON.stringify(info).slice(0, 300))); };
   const throws = f => { try { f(); return null; } catch (e) { return e.message; } };
   const by = 'Commander';

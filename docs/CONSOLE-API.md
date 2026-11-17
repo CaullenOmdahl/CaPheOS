@@ -44,7 +44,7 @@ scripts/console.sh                # same as the first line
 | POST | /api/questions/:id/snooze | `{ until: ISO }` (within 30 days): hidden from Today until then; `inbox.js list` shows the asker "snoozed until …" | inbox.js snooze() |
 | GET | /api/questions/answered?since=ISO | answered today | inbox.js state |
 | GET | /api/owner/messages | `{ messages, channel }`: the owner channel both ways, newest last; every owner message carries `state` (below), `channel` = `{ ok, problems: [{code, msg, fix, link}], ceo, nextCheckMin, working, tickMin, loop }` | owner-inbox.js, console/chat.js |
-| POST | /api/owner/messages | `{ text, to? }` owner writes to the company (appends company/owner/inbound.jsonl; `to` = a crew name prefixes the text so owner-addressing routes it); answers the row with its `state` | owner-inbox |
+| POST | /api/owner/messages | `{ text, to? }` owner writes to the company (appends company/owner/inbound.jsonl, recorded in the provenance log first so readers trust it: lib/owner-channel.js; `to` = a crew name prefixes the text so owner-addressing routes it); answers the row with its `state` | owner-inbox |
 | GET | /api/crew | `{ seats:[{id, ...seat, station?, hire?, firstRun?}], station:'up'\|'down' }`: loops.json seats merged with the station roster (`/api/roster`, 2.5 s timeout); a hired seat carries `hire {round, at, pickedBy}` and `firstRun {runId, at, outcome}` (its first run since the hire, from runs.jsonl; null while still to come) | loops.json, station, hiring/, runs.jsonl |
 | GET | /api/handoffs | open handoffs by deadline | `handoff-status.js --due --json` |
 | GET | /api/decisions | last 100 lines of company/work/decisions.md as `{ entries:[{text}] }` | file |

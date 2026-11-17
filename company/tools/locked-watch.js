@@ -92,6 +92,10 @@ const MANIFEST = [
   { p: 'company/work/engineering/verdicts/*.json', cls: 'A', writers: ['qa-sign.js'], owner: 'risk', area: 'gate',
     why: 'the QA acceptance record a release cites (provenance row proves a tool wrote it)' },
   { p: 'company/work/security/locked-changes.jsonl', cls: 'A', append: true, writers: ['locked-watch.js'], owner: 'risk', area: 'record', why: 'this watcher\'s own report' },
+  // the owner -> company channel: every line is the owner's words (the CEO's inbox, addressing, the wake, gate answers), so
+  // a line counts only when the console or the owner's own tools recorded it (lib/owner-channel.js); one appended by anyone
+  // else is stripped and its lines kept in quarantine/, and the readers ignore it even before this tick
+  { p: 'company/owner/inbound.jsonl', cls: 'A', append: true, ownerChannel: true, writers: Object.keys(require('./lib/owner-channel').WRITERS), owner: 'risk', area: 'policy', why: 'the owner channel (owner -> company): only the console and the owner\'s own tools write it' },
   // R — generated
   { p: 'company/work/people/competence.json', cls: 'R', writers: ['competence.js'], regen: ['competence.js', 'compute'], owner: 'people', area: 'record', why: 'competence scores (the pacer reads its serious flags)' },
   { p: 'company/work/people/scoreboard.md', cls: 'R', writers: ['competence.js'], regen: ['competence.js', 'scoreboard'], owner: 'people', area: 'record', why: 'the competence scoreboard' },
@@ -111,7 +115,7 @@ const MANIFEST = [
   { p: 'company/state/governance.json', cls: 'F', writers: ['governance.js'], owner: 'risk', area: 'policy', why: 'self-governance: how much the company decides without the owner (only the owner changes it, through governance.js)' },
   // alwaysWatched: still reported while the harnessSelfEdit guardrail is off, because it is the switch itself
   { p: 'company/state/guardrails.json', cls: 'F', writers: ['guardrails.js'], owner: 'risk', area: 'policy', alwaysWatched: true, why: 'the guardrail switches (only the owner changes them, through guardrails.js)' },
-  ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'decision.js', 'restart-station.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js', 'retention.js', 'duties.js', 'duty-status.js', 'lib/duty-runner.js', 'lib/duty-env.js', 'money-hold.js', 'lib/money-hold.js', 'lib/seat-status.js', 'lanes.js', 'lib/admit.js', 'lib/scheduler.js', 'budget.js', 'budget-migrate.js', 'watchdog.js']
+  ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'decision.js', 'restart-station.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js', 'retention.js', 'duties.js', 'duty-status.js', 'lib/duty-runner.js', 'lib/duty-env.js', 'money-hold.js', 'lib/money-hold.js', 'lib/seat-status.js', 'lanes.js', 'lib/admit.js', 'lib/scheduler.js', 'budget.js', 'budget-migrate.js', 'watchdog.js', 'lib/owner-channel.js']
     .map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'tools', area: 'tool', why: 'a tool that measures or limits the crew, or that these tools depend on' })),
   ...['merge-gate.js', 'premerge-check.js', 'external-gate.js', 'connector-scope.js', 'default-branch-watch.js', 'providers.js'].map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'risk', area: 'tool', why: 'a gate or the evidence it reads' })),
   { p: 'company/work/engineering/evidence/*.json', cls: 'F', writers: ['test-substrate.sh'], owner: 'risk', area: 'gate', why: 'test-substrate verdicts (a hand-made pass opens the merge gate): flagged, never auto-removed, so a real evidence file never blocks a merge' },
@@ -528,6 +532,7 @@ function decide(ctx, key, m, b, cur, prov, recorded, flagOnly) {
   }
   const rows = prov.get(key) || [];
   const W = m.writers || [];
+  if (m.ownerChannel) return decideOwnerChannel(ctx, key, m, b, cur, flagOnly);
   if (m.cls === 'A' || m.cls === 'R') {
     if (cur.exists && m.append) {
       const from = b.exists ? b.bytes : 0;   // a log created since the last check is tiled from its first byte
@@ -566,6 +571,23 @@ function decide(ctx, key, m, b, cur, prov, recorded, flagOnly) {
   if (cur.exists && recorded && recorded.applied.includes(cur.sha256)) return { ok: true, why: 'an applied harness change' };
   if (recorded && recorded.pending.length && ctx.now - Date.parse(recorded.pending[0].approvedAt) < 20 * 60e3) return { ok: null, why: 'approved change ' + recorded.pending.map(p => p.id).join(', ') + ' is waiting for its apply record' };
   return { ok: false, act: 'flag', why: m.append && cur.exists && b.exists ? 'history before the last check was rewritten' + (m.growOnly ? ' (an entry was edited or removed in place: correct or withdraw one with `node company/tools/decision.js amend|withdraw <id-or-stamp>`, which adds a new entry)' : '') : (m.cls === 'K' ? 'a key or credential changed' : 'changed with no reviewed change or tool record') };
+}
+
+// the owner channel: judged line by line with the readers' own rule (lib/owner-channel.js), so the watcher and the readers
+// never disagree. History before the last check must be unchanged; new lines no allowed writer recorded are taken out.
+function decideOwnerChannel(ctx, key, m, b, cur, flagOnly) {
+  if (!cur.exists) return b.exists ? { ok: false, act: flagOnly ? 'flag' : 'restore', why: 'the owner channel was deleted' } : { ok: true, why: 'absent' };
+  if (b.exists && !(cur.bytes >= b.bytes && sha(cur.buf.subarray(0, b.bytes)) === b.sha256)) return { ok: false, act: flagOnly ? 'flag' : 'restore', why: 'owner messages before the last check were rewritten' };
+  const OC = require('./lib/owner-channel'); const W = m.writers || [];
+  const from = b.exists ? b.bytes : 0;
+  const all = OC.judge({ file: abs(ctx, key), root: ctx.root, buf: cur.buf }).lines;
+  const bad = all.filter(l => l.trust === 'unverified' && l.offset >= from);
+  if (!bad.length) return { ok: true, why: 'every new line recorded by ' + W.join('/') };
+  const drop = new Set(bad.map(l => l.offset)); const keep = []; let p = 0;
+  for (const l of all) { if (!drop.has(l.offset)) keep.push(l.raw); p = l.offset + l.bytes; }
+  keep.push(cur.buf.subarray(p));   // a last line still being written stays
+  return { ok: false, act: flagOnly ? 'flag' : 'strip', rebuilt: Buffer.concat(keep), quarantine: Buffer.concat(bad.map(l => l.raw)),
+    why: bad.length + ' owner-channel line' + (bad.length > 1 ? 's' : '') + ' that no ' + W.join('/') + ' write recorded (claiming to be the owner): ignored by every reader, moved to quarantine' };
 }
 
 /* ---------------- tick ---------------- */
@@ -630,6 +652,8 @@ function runTick(ctx) {
     for (const [key, b] of Object.entries(base.files)) { if (!b || !b.exists || b.link !== undefined) continue; const s = stateOf(ctx, key); if (s.link !== undefined && s.sha256 === b.sha256 && s.mode === b.mode) b.link = s.link; }
     base.seededLinks = true;
   }
+  // the owner channel's cutover (lib/owner-channel.js): recorded once, before its lines are judged, so history is history
+  if (!ctx.dry) { try { require('./lib/owner-channel').ensureCutover({ root: ctx.root, file: ctx.P('company/owner/inbound.jsonl') }); } catch (_) {} }
   // hash first, read the records after: a write we see has always been recorded by then (the tools record right after the rename)
   const cur = new Map(); for (const key of new Set([...items.keys(), ...Object.keys(base.files)])) cur.set(key, stateOf(ctx, key));
   // provenance rows since the last check: those after the byte offset the baseline read up to
@@ -827,7 +851,14 @@ function runTick(ctx) {
     const id = evId(ctx);
     if (c.s.exists) { fs.mkdirSync(ctx.paths.replaced, { recursive: true }); writeAtomic(path.join(d.act === 'quarantine' ? ctx.paths.quarantine : ctx.paths.replaced, id + '-' + flatName(c.key)), c.s.buf, 0o600); }
     const target = abs(ctx, c.key);
-    if (d.act === 'strip') { writeAtomic(target, d.rebuilt, c.s.mode); accept(ctx, base, c.key, c.m, stateOf(ctx, c.key)); }
+    if (d.quarantine) writeAtomic(path.join(ctx.paths.quarantine, id + '-' + flatName(c.key) + '.lines'), d.quarantine, 0o600);   // the offending lines alone
+    if (d.act === 'strip') {
+      // bytes that landed after this tick read the file (a console send just now) are carried over, judged next tick
+      let now = null; try { now = fs.readFileSync(target); } catch (_) {}
+      const tail = now && now.length > c.s.bytes && sha(now.subarray(0, c.s.bytes)) === c.s.sha256 ? now.subarray(c.s.bytes) : Buffer.alloc(0);
+      writeAtomic(target, Buffer.concat([d.rebuilt, tail]), c.s.mode); const after = stateOf(ctx, c.key);
+      accept(ctx, base, c.key, c.m, tail.length ? Object.assign({}, after, { buf: d.rebuilt, bytes: d.rebuilt.length, sha256: sha(d.rebuilt) }) : after);
+    }
     else if (d.act === 'quarantine') { try { fs.unlinkSync(target); } catch (_) {} delete base.files[c.key]; }
     else if (d.act === 'regen') {
       try { execFileSync('node', [path.join(__dirname, c.m.regen[0])].concat(c.m.regen.slice(1)), { cwd: ctx.root, stdio: 'ignore', timeout: 180000, env: Object.assign({}, process.env, ctx.root !== LIVE_ROOT ? { COMPETENCE_ROOT: ctx.root } : {}) }); } catch (e) { notes.push('regenerating ' + c.key + ' failed: ' + String(e.message).slice(0, 100)); }

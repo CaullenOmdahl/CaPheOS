@@ -29,7 +29,10 @@ on the StarNet station). These rules apply to every file in `company/tools/`, `c
 4. **The owner channel is the file adapter.** Owner → company messages are `company/owner/inbound.jsonl`; company →
    owner is `company/owner/outbound.jsonl` (one JSON object per line: `{id, at, from, text, re?}`). No Baarista, no
    chat-app API. Anything that called `pm-account.js`, `pm-bridge`, or sent to `baarista:<id>` now appends to the
-   outbound file. External-gate policy for the owner channel targets `owner:file`.
+   outbound file. External-gate policy for the owner channel targets `owner:file`. Inbound lines count as the owner's
+   only when an allowed writer recorded them in the provenance log (`company/tools/lib/owner-channel.js`: the console,
+   `inbox.js` answers, `owner-inbox.js say`); a hand-appended line is ignored, raised to risk and quarantined by
+   locked-watch. Lines from before the cutover are history: read, but never a gate answer.
 5. **Policy numbers are config, not code.** Defaults that the live company tuned (peak-hour blocks, must-not-move
    routine lists, caps) move into a JSON default under `company/defaults/` (copied to `company/work/...` or
    `company/state/...` at founding), with a neutral default. Pricing rules that belong to a model provider (e.g. a

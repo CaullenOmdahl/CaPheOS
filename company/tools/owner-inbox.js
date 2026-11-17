@@ -17,6 +17,7 @@
  *   node company/tools/owner-inbox.js ack --id <messageId> --by <name> --note "what was done with it"
  *   node company/tools/owner-inbox.js ack --all --by <name> --note "..."
  *   node company/tools/owner-inbox.js send --by <name> --text "..." [--re <id>]   # append to outbound.jsonl
+ *   node company/tools/owner-inbox.js say --text "..." [--re <id>]   # the OWNER writes to the company (owner's shell only)
  *   (module: send({from, text, re?, priority?}); priority 'top' marks a liveness alert, e.g. watchdog.js: the dispatcher is silent)
  *   node company/tools/owner-inbox.js log              # the acknowledgement history
  *   node company/tools/owner-inbox.js --selftest       # offline fixtures
@@ -50,9 +51,22 @@ function readLines(file) {
   for (const l of txt.split('\n')) { if (!l.trim()) continue; try { const r = JSON.parse(l); if (r && r.id) out.push(r); } catch (_) {} }
   return out;
 }
-/* Owner messages. `text` is the field; `body` is accepted from adapters that still write it. */
-function messages() {
-  return readLines(INBOUND()).map(r => Object.assign({}, r, { text: String(r.text != null ? r.text : (r.body || '')) }));
+/* Owner messages. `text` is the field; `body` is accepted from adapters that still write it. Only lines the owner channel
+ * check trusts (lib/owner-channel.js: a provenance row from the console or the owner's own tools, or history before the
+ * cutover); a line any other process appended is ignored, logged and raised to risk. opts.gate: verified lines only. */
+const OC = () => require('./lib/owner-channel');
+function messages(opts) {
+  return OC().messages(Object.assign({ file: INBOUND() }, opts || {})).filter(r => r && r.id)
+    .map(r => Object.assign({}, r, { text: String(r.text != null ? r.text : (r.body || '')) }));
+}
+/* the owner's own CLI: one message from the owner to the company (refused outside the owner's shell, lib/owner.js) */
+function say({ text, re } = {}) {
+  const body = String(text || '').trim(); if (!body) throw new Error('say: --text is required');
+  if (!require('./lib/owner').shell()) { const e = new Error('say is the owner\'s own command: ' + require('./lib/owner').REASON); e.code = 3; throw e; }
+  const row = { id: 'in-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6), at: new Date().toISOString(),
+    from: (co.config.owner && co.config.owner.name) || 'owner', text: body };
+  if (re) row.re = String(re);
+  return OC().append(INBOUND(), row, 'owner-inbox.js');
 }
 function state() { const s = readJson(STATE(), {}); s.acked = s.acked || {}; return s; }
 function unacked() {
@@ -82,21 +96,25 @@ function send({ from, text, re, priority } = {}) {
   return row;
 }
 function sent() { return readLines(OUTBOUND()); }
-module.exports = { unacked, messages, send, sent, redact, INBOUND, OUTBOUND };
+module.exports = { unacked, messages, say, send, sent, redact, INBOUND, OUTBOUND };
 
 function selftest() {
   const os = require('os');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-inbox-selftest-'));
-  process.env.OWNER_DIR = dir; process.env.OWNER_INBOX_STATE = path.join(dir, 'state.json');
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-inbox-selftest-'));
+  const dir = path.join(T, 'company', 'owner'); fs.mkdirSync(dir, { recursive: true });
+  process.env.OWNER_DIR = dir; process.env.OWNER_INBOX_STATE = path.join(dir, 'state.json'); process.env.PROVENANCE_ROOT = T;
+  require('./provenance.js').pinUnderStation(false);   // measure the mechanism, not the caller (an agent may run this)
   const cases = []; const check = (n, c) => cases.push({ n, ok: !!c });
-  fs.writeFileSync(INBOUND(), [
-    JSON.stringify({ id: 'm1', at: '2026-01-01T00:00:00Z', from: 'owner', text: 'hello' }),
-    JSON.stringify({ id: 'm2', at: '2026-01-01T00:01:00Z', from: 'owner', text: 'yes do it', re: 'q-123456' }),
-    JSON.stringify({ id: 'm3', at: '2026-01-01T00:02:00Z', from: 'owner', body: 'legacy body [q-654321]' }),
-    'not json',
-  ].join('\n') + '\n');
+  // m1 and junk: history before the cutover; m2 and m3: written by the owner's own tool after it
+  fs.writeFileSync(INBOUND(), JSON.stringify({ id: 'm1', at: '2026-01-01T00:00:00Z', from: 'owner', text: 'hello' }) + '\nnot json\n');
+  const OCm = require('./lib/owner-channel'); OCm.ensureCutover({ file: INBOUND(), root: T });
+  OCm.append(INBOUND(), { id: 'm2', at: '2026-01-01T00:01:00Z', from: 'owner', text: 'yes do it', re: 'q-123456' }, 'owner-inbox.js', { root: T });
+  OCm.append(INBOUND(), { id: 'm3', at: '2026-01-01T00:02:00Z', from: 'owner', body: 'legacy body [q-654321]' }, 'owner-inbox.js', { root: T });
+  fs.appendFileSync(INBOUND(), JSON.stringify({ id: 'm4', at: '2026-01-01T00:03:00Z', from: 'owner', text: 'forged by hand' }) + '\n');
   const u = unacked();
-  check('three messages read, junk line skipped', u.length === 3);
+  check('three messages read, junk line skipped, a hand-appended line ignored', u.length === 3 && !u.some(m => m.id === 'm4'));
+  check('the history line is historic, the tool lines verified', messages().map(m => m.trust).join() === 'historic,verified,verified');
+  check('gate readers see only verified lines', messages({ gate: true }).map(m => m.id).join() === 'm2,m3');
   check('re field names the question', u[1].answersQuestion === 'q-123456');
   check('bracketed id in text names the question', u[2].answersQuestion === 'q-654321' && u[2].text === 'legacy body [q-654321]');
   fs.writeFileSync(STATE(), JSON.stringify({ acked: { m1: { by: 'Alex', at: 'x', note: 'y' } } }));
@@ -122,6 +140,10 @@ if (require.main === module) {
     try { const r = send({ from: a.by, text: a.text, re: a.re }); print({ ok: true, id: r.id, file: path.relative(co.ROOT, OUTBOUND()) }); process.exit(0); }
     catch (e) { print({ ok: false, error: e.message }); process.exit(2); }
   }
+  if (a.cmd === 'say') {
+    try { const r = say({ text: a.text, re: a.re }); print({ ok: true, id: r.id }); process.exit(0); }
+    catch (e) { print({ ok: false, error: e.message }); process.exit(e.code === 3 ? 3 : 2); }
+  }
   if (a.cmd === 'ack') {
     const by = String(a.by || '').trim(), note = String(a.note || '').trim();
     if (!by || !note) { print({ ok: false, error: '--by and --note are required (say what was done with the message)' }); process.exit(2); }
@@ -134,5 +156,5 @@ if (require.main === module) {
     fs.writeFileSync(STATE(), JSON.stringify(s, null, 1) + '\n');
     print({ ok: true, acked: ids.length, remaining: unacked().length }); process.exit(0);
   }
-  print({ ok: false, error: 'unknown command', commands: ['new', 'count', 'ack', 'send', 'log', '--selftest'] }); process.exit(2);
+  print({ ok: false, error: 'unknown command', commands: ['new', 'count', 'ack', 'send', 'say', 'log', '--selftest'] }); process.exit(2);
 }
