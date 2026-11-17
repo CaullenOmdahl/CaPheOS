@@ -63,6 +63,17 @@ const TOOL_NAME = 'Locked-file watch';
 
 // p: path from the project root ('~/' = the home folder; '*' one name, '**' any depth). owner: a function (loops.json
 // seat.functions: people, tools, risk, finance, ceo) — the report goes to whoever holds it.
+// files StarNet writes into its key store that hold status, not credentials (providers.js skips them too)
+const STATION_STATUS = ['provider-readiness.json', 'provider-readiness.json.bak'];
+/* the shape of station-written readiness: JSON whose every field named like a credential (key, token, secret,
+ * password, apiKey) is absent; any such field with a non-empty string value means it is no longer just status */
+function statusShape(buf) {
+  let j; try { j = JSON.parse(buf.toString('utf8')); } catch (_) { return 'not JSON'; }
+  let bad = null;
+  const walk = (o, at) => { if (bad || !o || typeof o !== 'object') return; for (const [k, v] of Object.entries(o)) { if (/^(api[-_]?key|key|token|secret|password|access[-_]?token)$/i.test(k) && typeof v === 'string' && v) { bad = 'a "' + k + '" field at ' + (at ? at + '.' : '') + k; return; } walk(v, at ? at + '.' + k : k); } };
+  walk(j, '');
+  return bad;
+}
 const MANIFEST = [
   // A — only a recording tool writes these
   { p: 'company/work/people/own-sections/*.json', cls: 'A', writers: ['my-section.js'], owner: 'people', area: 'record', why: 'agents\' own sections' },
@@ -130,6 +141,10 @@ const MANIFEST = [
   ...[STATION_UNIT + '-dispatch.service', STATION_UNIT + '-dispatch.timer', STATION_UNIT + '.service', STATION_UNIT + '.service.d/*.conf', 'capheos-backup.service', 'capheos-backup.timer', 'capheos-health-probe.service', 'capheos-health-probe.timer', 'capheos-sudo-gate.socket', 'capheos-sudo-gate@.service']
     .map(f => ({ p: '~/.config/systemd/user/' + f, cls: 'F', owner: 'tools', area: 'timer', why: 'the timers that run the dispatcher, this watcher and the backup' })),
   // K — keys: hash and mode only
+  // station-written status inside the key store: StarNet rewrites its provider readiness (status, lastVerified, httpStatus,
+  // bind hashes; no credential) after every restart and probe. Hash-tracked and never copied, like a key, but a change is
+  // accepted as the station's own while the file still has that shape; one that carries a key-like field is flagged.
+  ...STATION_STATUS.map(f => ({ p: '.starnet-data/workspaces/.secrets/' + f, cls: 'K', status: true, owner: 'risk', area: 'key', why: 'station-written provider readiness (no credential)' })),
   // the station's key store: providers.js records the files the station wrote when it applied an owner-approved setting
   // through the station API (it refuses while the store holds an unaccepted change, so it never blesses a hand edit)
   ...['secrets/*', '.starnet-data/workspaces/.secrets/*', '~/.config/' + STATION_UNIT + '.env']
@@ -504,6 +519,11 @@ function decideRolled(ctx, key, m, b, cur, prov, recorded, flagOnly) {
   return Object.assign({}, d, { why: [pre ? pre + ' (every archived byte checked)' : '', tookInserts ? 'entries added by ' + INSERT_WRITERS.join('/') + ' (recorded)' : '', d.why].filter(Boolean).join('; ') });
 }
 function decide(ctx, key, m, b, cur, prov, recorded, flagOnly) {
+  if (m.status) {
+    if (!cur.exists) return { ok: true, why: 'station-written status removed (the station writes it again)' };
+    const bad = statusShape(cur.buf);
+    return bad ? { ok: false, act: 'flag', why: 'a station status file now carries ' + bad + ' (it should hold no credential)' } : { ok: true, why: 'station-written status (no credential)' };
+  }
   const rows = prov.get(key) || [];
   const W = m.writers || [];
   if (m.cls === 'A' || m.cls === 'R') {
@@ -626,7 +646,7 @@ function runTick(ctx) {
     const b = base.files[key];
     if (!b) { if (s.exists) changed.push({ key, m, b: { exists: false, cls: m.cls }, s }); continue; }
     if (sameState(s, b)) { if (b.flagged) delete b.flagged; continue; }
-    if (b.flagged && s.exists && b.flagged.sha256 === s.sha256 && b.flagged.mode === s.mode) continue;   // reported already; waiting for accept or revert
+    if (b.flagged && s.exists && b.flagged.sha256 === s.sha256 && b.flagged.mode === s.mode && !(m.status && s.buf && !statusShape(s.buf))) continue;   // reported already; waiting for accept or revert (station status is judged again: a flag from before it was status clears)
     // a grow-only record that is already flagged: judge the new change against the FLAGGED version (a copy kept when it
     // was flagged), not the last-known-good. Entries added since by decision.js, a retention roll or a plain append are
     // the same open finding, not a new rewrite; without this, every legitimate entry after one hand edit re-reported
@@ -1191,7 +1211,7 @@ function rebaseProvenance(opts, fn) {
   saveBaseline(ctx, base);
   return { result: r, provOffset: base.provOffset };
 }
-module.exports = { tick, classify, lockedNames, MANIFEST, context, withWatchLock, rebaseProvenance, _internals: { tile, decide, decideRolled, unroll, unwind, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
+module.exports = { tick, classify, lockedNames, MANIFEST, STATION_STATUS, context, withWatchLock, rebaseProvenance, _internals: { tile, decide, decideRolled, unroll, unwind, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
 
 /* ---------------- selftest ---------------- */
 async function selftest() {
@@ -1217,6 +1237,7 @@ async function selftest() {
   W('company/work/finance/pacing-policy.json', JSON.stringify({ marginPct: 5, subs: { claude: 1 } }, null, 1));
   fs.chmodSync(W('secrets/station-token', 'secret-token-value-1234567890'), 0o600);
   W('.starnet-data/workspaces/.secrets/provider-keys.json', '{"providers":{}}');
+  W('.starnet-data/workspaces/.secrets/provider-readiness.json', '{"version":1,"providers":{"custom@key/ab":{"status":"verified","httpStatus":200}}}');
   fs.symlinkSync('station-token', path.join(T, 'secrets/alias-key'));
   W('company/work/evidence/premerge-App-aaaa.json', '{"verdict":"FAIL"}');
   W('company/work/decisions.md', '# Decisions\n| a |\n');
@@ -1327,6 +1348,26 @@ async function selftest() {
     r = await tick(C({ now })); assert.ok(r.events.some(x => x.key === 'secrets/committed-key'), 'a committed key is still a key: ' + JSON.stringify(r.events));
     fs.rmSync(path.join(T, 'secrets/committed-key'));
     fs.rmSync(path.join(T, '.git'), { recursive: true, force: true });
+  });
+  await t('station-written provider readiness: a rewrite is accepted (hash-tracked, never copied); a key in it, or a key-store change, is flagged; an old flag on it clears', async () => {
+    const rd = '.starnet-data/workspaces/.secrets/provider-readiness.json', ks = '.starnet-data/workspaces/.secrets/provider-keys.json';
+    now += 60000; W(rd, '{"version":1,"providers":{"custom@key/ab":{"status":"unverified","httpStatus":0,"lastVerified":null}}}');
+    let r = await tick(C({ now })); assert.ok(!r.events.some(x => x.key === rd), JSON.stringify(r.events));
+    let b = JSON.parse(R('company/state/locked/baseline.json')).files[rd];
+    assert.ok(b.sha256 === sha(R(rd)) && !b.lkgSha && !fs.existsSync(path.join(T, 'company/state/locked/lkg', rd)), 'tracked by hash, no copy');
+    // a flag raised before readiness was status (a baseline from an older watcher) clears on the next check
+    const base = JSON.parse(R('company/state/locked/baseline.json')); now += 60000; W(rd, '{"version":1,"providers":{"custom@key/ab":{"status":"verified","httpStatus":200}}}');
+    base.files[rd].flagged = { sha256: sha(R(rd)), mode: base.files[rd].mode, at: 'x', eventId: 'lw-old', by: [] }; saveBaseline(context(C({ now })), base);
+    r = await tick(C({ now })); b = JSON.parse(R('company/state/locked/baseline.json')).files[rd];
+    assert.ok(!b.flagged && b.sha256 === sha(R(rd)) && !r.events.some(x => x.key === rd), JSON.stringify(b));
+    now += 60000; W(rd, '{"version":1,"providers":{"custom":{"key":"sk-live-should-not-be-here"}}}');
+    r = await tick(C({ now })); assert.ok(r.events.some(x => x.key === rd && /carries a "key" field/.test(x.why) && !JSON.stringify(x).includes('sk-live')), JSON.stringify(r.events));
+    now += 60000; r = await tick(C({ now })); assert.ok(!r.events.some(x => x.key === rd), 'reported once, not every tick: ' + JSON.stringify(r.events));
+    now += 60000; W(rd, '{"version":1,"providers":{}}'); r = await tick(C({ now }));
+    assert.ok(!r.events.some(x => x.key === rd) && !JSON.parse(R('company/state/locked/baseline.json')).files[rd].flagged, 'status again: the flag clears');
+    now += 60000; W(ks, '{"providers":{"custom":{"key":"rotated-by-hand"}}}');
+    r = await tick(C({ now })); assert.ok(r.events.some(x => x.key === ks && /a key or credential changed/.test(x.why)), 'provider-keys.json stays strict: ' + JSON.stringify(r.events));
+    acceptCmd(context(C({ now, underStation: false })), ks, { by: 'owner', why: 'test: the rotation was mine' });
   });
   await t('a symlink under secrets/ is in the baseline, and retargeting it is flagged even when the content is the same', async () => {
     const b0 = JSON.parse(R('company/state/locked/baseline.json'));

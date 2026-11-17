@@ -57,12 +57,14 @@ function unreviewed(root, baseline) {
   const dir = path.join(root, SECRETS_REL); const out = [];
   let names = []; try { names = fs.readdirSync(dir); } catch (_) { return out; }
   const files = (baseline && baseline.files) || {};
+  let status = []; try { status = require('./locked-watch.js').STATION_STATUS; } catch (_) {}
   for (const n of names) {
+    if (status.includes(n)) continue;   // station-written readiness, rewritten on every probe: status, not key material
     const rel = SECRETS_REL + '/' + n; let buf; try { buf = fs.readFileSync(path.join(dir, n)); } catch (_) { continue; }
     const b = files[rel];
     if (!b || !b.exists || b.sha256 !== sha(buf)) out.push(rel);
   }
-  for (const rel of Object.keys(files)) if (rel.startsWith(SECRETS_REL + '/') && files[rel].exists && !fs.existsSync(path.join(root, rel))) out.push(rel);
+  for (const rel of Object.keys(files)) if (rel.startsWith(SECRETS_REL + '/') && !status.includes(path.basename(rel)) && files[rel].exists && !fs.existsSync(path.join(root, rel))) out.push(rel);
   return out;
 }
 function snapshot(root) {
@@ -198,6 +200,10 @@ async function selftest() {
       w(store, { providers: { custom: { key: 'sk-test-key-123456', baseUrl: 'https://hand.example/v1' } } });
       await refused({}, /has 1 change\(s\) the watcher has not accepted \(provider-keys\.json\)/, 'hand edit');
       w(store, { providers: { custom: { key: 'sk-test-key-123456' } } }); base();
+    });
+    await t('the station rewriting its readiness file (status, not key material) does not block the tool', async () => {
+      w(SECRETS_REL + '/provider-readiness.json', { version: 1, providers: { custom: { status: 'verified', lastVerified: 2 } } });
+      const r = await run({ 'dry-run': true }); assert.ok(r.dryRun);
     });
     await t('dry run: validated on the station, nothing written', async () => {
       const r = await run({ 'dry-run': true });
