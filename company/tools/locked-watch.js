@@ -625,7 +625,7 @@ function runTick(ctx) {
   try { base = loadBaseline(ctx); } catch (e) { baseErr = e.message; }
   if (!base) {
     if (baseErr) ctx.log('LOCKED WATCH ERROR: the baseline cannot be read (' + baseErr + '); rebuilt from what is on disk now, nothing reverted');
-    if (!ctx.dry) { const b = buildBaseline(ctx, items, { jobs: ctx.jobs }); saveBaseline(ctx, b); }
+    if (!ctx.dry) { const b = buildBaseline(ctx, items, { jobs: ctx.jobs }); saveBaseline(ctx, b); keyRebuildRows(ctx, null, b, baseErr ? 'the baseline could not be read, so it was rebuilt from disk' : 'the first baseline'); }
     ctx.log('LOCKED WATCH baseline' + (ctx.dry ? ' (dry run, not saved)' : '') + ': ' + items.size + ' locked files, StarNet changes and ' + ((ctx.jobs || []).length) + ' routines recorded as last-known-good');
     return { initialized: true, files: items.size };
   }
@@ -642,7 +642,7 @@ function runTick(ctx) {
   // one-time migration when the manifest grows (new watches) or the schema changes: seed files that already existed as
   // last-known-good, so adding a watch never accuses a file that predates it. Keeps every existing flag. Once per baseline.
   if (!base.seededV2) {
-    for (const [key, m] of items) if (!base.files[key]) { const s = stateOf(ctx, key); const e = Object.assign(plain(s), { cls: m.cls }); if (s.exists && !ctx.dry) e.lkgSha = saveLkg(ctx, key, m, s.buf); base.files[key] = e; }
+    for (const [key, m] of items) if (!base.files[key]) { const s = stateOf(ctx, key); const e = Object.assign(plain(s), { cls: m.cls }); if (s.exists && !ctx.dry) e.lkgSha = saveLkg(ctx, key, m, s.buf); base.files[key] = e; if (m.cls === 'K' && !m.status && s.exists) drift.push({ id: evId(ctx), at: local(ctx.now), key, cls: 'K', area: m.area, owner: m.owner, kind: 'seeded', why: 'a key the watch did not track before was taken as it is (one-time seeding of new watches)' }); }
     if (base.starnetHead === undefined) { const h = starnetHead(ctx); if (h) base.starnetHead = h; }
     base.seededV2 = true;
   }
@@ -826,7 +826,12 @@ function runTick(ctx) {
     // a direct agent APPEND to a many-writer F log (decisions.md, dispatch-log.md, the external/merge logs, runs.jsonl) is
     // normal work, not a tamper: accept it silently. For tool-only (A) logs and whole files, a direct write is still flagged.
     const normalAppend = c.m.append && c.m.cls === 'F';
-    if (d.ok && (!direct.length || normalAppend)) { accept(ctx, base, c.key, c.m, c.s); continue; }
+    if (d.ok && (!direct.length || normalAppend)) {
+      accept(ctx, base, c.key, c.m, c.s);
+      // a key's hash never moves into the baseline without a row: a recorded key write is accepted quietly (no FYI), but logged
+      if (c.m.cls === 'K' && !c.m.status) drift.push(ev(ctx, c, 'accepted', 'a key change ' + (d.why || 'recorded') + ' (accepted without a flag; the value is never shown)', null, 'content or mode changed (keys are never shown)'));
+      continue;
+    }
     if (!selfEditOn && !c.m.alwaysWatched) {
       const e = ev(ctx, c, 'drift', (d.ok ? 'written directly by an agent' : d.why) + '; recorded only (the harnessSelfEdit guardrail is off)', who(c.key) || null, null);
       drift.push(e); if (!ctx.dry) accept(ctx, base, c.key, c.m, c.s); continue;
@@ -1115,6 +1120,20 @@ function tellRisk(ctx, verb, key, person, why) {
     '**Need:** nothing unless this was not meant; a locked change accepted or undone by hand is logged here for your eyes.\n**Why:** ' + String(why || '').replace(/[\r\n]+/g, ' ').slice(0, 300) + '\n**Deadline:** none\n**Status:** DONE — FYI\n**Evidence:** `company/work/security/locked-changes.md`\n';
   try { fs.mkdirSync(ctx.paths.handoffs, { recursive: true }); fs.appendFileSync(path.join(ctx.paths.handoffs, sec.inbox), block); } catch (_) {}
 }
+/* keyRebuildRows(ctx, oldBase, newBase, why): a rebuild takes every key as it is on disk; each key whose hash differs
+ * from the old baseline (or every key, with no old one) gets a 'seeded' row, so a key hash never moves silently */
+function keyRebuildRows(ctx, oldB, newB, why) {
+  const out = [];
+  for (const [key, b] of Object.entries((newB && newB.files) || {})) {
+    if (b.cls !== 'K' || !b.exists) continue;
+    const m = entryFor(ctx, key); if (m && m.status) continue;
+    const o = oldB && oldB.files && oldB.files[key];
+    if (oldB && o && o.exists && o.sha256 === b.sha256 && o.mode === b.mode) continue;
+    out.push(key);
+  }
+  if (out.length) report(ctx, out.map(key => ({ id: evId(ctx), at: local(ctx.now), key, cls: 'K', area: 'key', owner: 'risk', kind: 'seeded', why: why + ': this key was taken as it is on disk' + (oldB ? ' (its hash changed since the last baseline)' : '') })), { noHandoffs: true });
+  return out;
+}
 function logEvent(ctx, e) { report(ctx, [e], { noHandoffs: true }); }   // people's own accept/revert/undo: in the log, no crew FYI (the risk owner is told separately)
 const isOwner = (ctx, o) => { const b = String(o.by || '').trim().toLowerCase(); const on = String(((co.config || {}).owner || {}).name || '').trim().toLowerCase(); return (b === 'owner' || (on && b === on)) && ctx.ownerShell; };
 function acceptCmd(ctx, key, o) {
@@ -1402,6 +1421,13 @@ async function selftest() {
     r = await tick(C({ now })); assert.ok(r.events.some(x => x.key === ks && /a key or credential changed/.test(x.why)), 'provider-keys.json stays strict: ' + JSON.stringify(r.events));
     acceptCmd(context(C({ now, underStation: false })), ks, { by: 'owner', why: 'test: the rotation was mine' });
   });
+  await t('a baseline rebuild logs every key whose hash it took as it is (none moves silently); unchanged keys are not listed', async () => {
+    const b0 = JSON.parse(R('company/state/locked/baseline.json'));
+    const b1 = JSON.parse(JSON.stringify(b0)); b1.files['secrets/station-token'] = Object.assign({}, b1.files['secrets/station-token'], { sha256: 'sha256:' + '0'.repeat(64) });
+    const keys = keyRebuildRows(context(C({ now })), b1, b0, 'test rebuild');
+    assert.deepStrictEqual(keys, ['secrets/station-token'], JSON.stringify(keys));
+    assert.ok(R('company/work/security/locked-changes.jsonl').split('\n').some(l => /"kind":"seeded"/.test(l) && /secrets\/station-token/.test(l) && /test rebuild/.test(l)));
+  });
   await t('a symlink under secrets/ is in the baseline, and retargeting it is flagged even when the content is the same', async () => {
     const b0 = JSON.parse(R('company/state/locked/baseline.json'));
     assert.ok(b0.files['secrets/alias-key'] && b0.files['secrets/alias-key'].link === 'station-token', JSON.stringify(b0.files['secrets/alias-key']));
@@ -1414,6 +1440,8 @@ async function selftest() {
     now += 60000; const kf = path.join(T, 'secrets/pyth-api-key');
     fs.writeFileSync(kf, 'pyth-owner-value-123456\n', { mode: 0o600 }); P.wrote(kf, 'pyth-owner-value-123456\n', 'console (owner key)');
     let r = await tick(C({ now })); assert.ok(!r.events.some(x => x.key === 'secrets/pyth-api-key'), 'new key, recorded: ' + JSON.stringify(r.events));
+    const rowsFor = k => R('company/work/security/locked-changes.jsonl').split('\n').filter(Boolean).map(l => JSON.parse(l)).filter(x => x.key === k);
+    assert.ok(rowsFor('secrets/pyth-api-key').some(x => x.kind === 'accepted' && /written by console/.test(x.why) && !/owner-value/.test(JSON.stringify(x))), 'a recorded key write still leaves a row: ' + JSON.stringify(rowsFor('secrets/pyth-api-key')));
     now += 60000; fs.writeFileSync(kf, 'pyth-replaced-value-654321\n', { mode: 0o600 }); P.wrote(kf, 'pyth-replaced-value-654321\n', 'console (owner key)');
     r = await tick(C({ now })); assert.ok(!r.events.some(x => x.key === 'secrets/pyth-api-key'), 'replaced, recorded: ' + JSON.stringify(r.events));
     now += 60000; fs.writeFileSync(kf, 'pyth-hand-edit-000000\n', { mode: 0o600 });
@@ -1711,7 +1739,9 @@ if (require.main === module) {
       if (base && !opt('force')) { console.log('a baseline exists (' + base.at + '); --force rebuilds it from what is on disk now'); return; }
       if (opt('force') && ctx.underStation) throw new Error('only the owner rebuilds the baseline');
       let jobs = null; try { const r = await call('GET', '/api/cron'); if (r.status === 200) jobs = JSON.parse(r.body).jobs; } catch (_) {}
-      saveBaseline(ctx, buildBaseline(context({ jobs }), expand(ctx), { jobs })); console.log('baseline rebuilt'); return;
+      const nb = buildBaseline(context({ jobs }), expand(ctx), { jobs }); saveBaseline(ctx, nb);
+      const keys = keyRebuildRows(ctx, base, nb, 'baseline --force by the owner');
+      console.log('baseline rebuilt' + (keys.length ? '; key(s) whose hash changed in the rebuild (logged): ' + keys.join(', ') : '')); return;
     }
     const key = a[1]; if (!key || key.startsWith('--')) throw new Error(cmd + ' needs a path or an event id');
     if (cmd === 'accept') console.log(acceptCmd(ctx, key, { by: opt('by'), why: opt('why') }));
