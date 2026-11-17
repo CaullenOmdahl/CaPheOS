@@ -212,7 +212,8 @@ if (require.main === module) {
   const pos = a.slice(1).filter((x, i, arr) => !x.startsWith('--') && !(i > 0 && arr[i - 1].startsWith('--') && !BOOL.has(arr[i - 1])));
   const json = a.includes('--json');
   const done = (r, code) => { console.log(JSON.stringify(r, null, 1)); process.exit(code != null ? code : (r.ok === false ? (r.code || 2) : 0)); };
-  if (cmd === 'selftest' || cmd === '--selftest') process.exit(selftest());
+  if (cmd === 'selftest' || cmd === '--selftest') { try { const P = require('./provenance.js'); P.pinUnderStation(false); P.pinOwnerShell(true); } catch (_) {}   // a selftest measures the mechanism in its own fixture tree, not the caller: an agent's run must not fail it
+    process.exit(selftest()); }
   try {
     if (cmd === 'list') {
       const models = dm.list();

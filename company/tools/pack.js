@@ -451,6 +451,7 @@ function list() {
 /* ---------- selftest (offline, temp root, child processes with CAPHEOS_ROOT) ---------- */
 function selftest() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pack-selftest-'));
+  fs.writeFileSync(path.join(tmp, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: owner checks pass inside this throwaway company
   let fails = 0, n = 0;
   const t = (name, ok, extra) => { n++; if (!ok) { fails++; console.log('FAIL ' + name + (extra !== undefined ? ' :: ' + JSON.stringify(extra).slice(0, 600) : '')); } else console.log('ok   ' + name); };
   const here = path.resolve(__dirname, '..', '..');
@@ -583,7 +584,8 @@ const emit = res => {
   else for (const p of res.out.packs) { console.log(p.status.toUpperCase().padEnd(11) + ' ' + p.id + (p.installed ? '  (installed)' : '')); for (const f of p.findings || []) console.log('    ' + f); }
   process.exit(res.code);
 };
-if (cmd === 'selftest' || A.selftest) process.exit(selftest());
+if (cmd === 'selftest' || A.selftest) { try { const P = require('./provenance.js'); P.pinUnderStation(false); P.pinOwnerShell(true); } catch (_) {}   // a selftest measures the mechanism in its own fixture tree, not the caller: an agent's run must not fail it
+  process.exit(selftest()); }
 if (cmd === 'list') {
   const rows = list();
   if (A.json) console.log(JSON.stringify(rows, null, 1));

@@ -111,6 +111,7 @@ const ownCgroup = () => { if (CGROUP === null) { try { CGROUP = fs.readFileSync(
 let STATION = null, OWNER = null;
 function underStation() {
   if (STATION !== null) return STATION;
+  if (fixtureRoot()) return (STATION = false);   // a selftest's throwaway company (fixtureRoot): measure the mechanism, not the caller
   STATION = classify({ chain: ancestry(), env: process.env, cgroup: ownCgroup() }).underStation;
   return STATION;
 }
@@ -121,8 +122,17 @@ function underStation() {
 // pinOwnerShell is the same for ownerShell (in this process only; there is no environment variable for either).
 function pinUnderStation(v) { STATION = (v === null || v === undefined) ? null : !!v; return STATION; }
 function pinOwnerShell(v) { OWNER = (v === null || v === undefined) ? null : !!v; return OWNER; }
+// A selftest's own throwaway company (a folder under the OS temp dir that the test marks with .capheos-selftest-fixture,
+// named by CAPHEOS_ROOT) answers owner checks as the owner, so a test that runs tools as child processes passes when an
+// agent runs it too. It grants nothing real: the owner of a fake company in /tmp is whoever made it.
+function fixtureRoot() {
+  const r = process.env.CAPHEOS_ROOT; if (!r) return false;
+  try { const os = require('os'); const t = fs.realpathSync(os.tmpdir()), real = fs.realpathSync(r);
+    return real.startsWith(t + path.sep) && fs.existsSync(path.join(real, '.capheos-selftest-fixture')); } catch (_) { return false; }
+}
 function ownerShell() {
   if (OWNER !== null) return OWNER;
+  if (fixtureRoot()) return true;
   if (underStation()) return false;
   return classify({ chain: ancestry(), env: process.env, cgroup: ownCgroup() }).ownerShell;
 }

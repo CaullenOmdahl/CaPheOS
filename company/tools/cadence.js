@@ -953,7 +953,8 @@ if (require.main === module) {
   const sopt = k => (typeof opt(k) === 'string' ? opt(k) : null);
   const out = o => console.log(JSON.stringify(o, null, 1));
   (async () => {
-    if (cmd === 'selftest' || cmd === '--selftest') process.exit(await selftest());
+    if (cmd === 'selftest' || cmd === '--selftest') { try { const P = require('./provenance.js'); P.pinUnderStation(false); P.pinOwnerShell(true); } catch (_) {}   // a selftest measures the mechanism in its own fixture tree, not the caller: an agent's run must not fail it
+      process.exit(await selftest()); }
     if (cmd === 'show') {
       const v = view();
       if (opt('json')) return out(Object.assign({ ok: true }, v));

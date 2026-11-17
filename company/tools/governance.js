@@ -262,7 +262,8 @@ if (require.main === module) {
   const flag = k => { const i = a.indexOf('--' + k); return i >= 0 && a[i + 1] !== undefined && !a[i + 1].startsWith('--') ? a[i + 1] : null; };
   const pos = a.slice(1).filter((x, i, arr) => !x.startsWith('--') && !(i > 0 && arr[i - 1].startsWith('--')));
   const done = r => { console.log(JSON.stringify(r, null, 1)); process.exit(r.ok ? 0 : (r.code || 2)); };
-  if (cmd === 'selftest' || cmd === '--selftest') process.exit(selftest());
+  if (cmd === 'selftest' || cmd === '--selftest') { try { const P = require('./provenance.js'); P.pinUnderStation(false); P.pinOwnerShell(true); } catch (_) {}   // a selftest measures the mechanism in its own fixture tree, not the caller: an agent's run must not fail it
+    process.exit(selftest()); }
   if (cmd === 'show') {
     const s = show();
     if (a.includes('--json')) { console.log(JSON.stringify(s, null, 1)); process.exit(0); }

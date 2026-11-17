@@ -24,7 +24,8 @@ function main(argv) {
   const MH = require('./lib/money-hold');
   const opt = n => { const i = argv.indexOf('--' + n); return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : null; };
   const cmd = argv[0];
-  if (cmd === 'selftest' || argv.includes('--selftest')) return selftest();
+  if (cmd === 'selftest' || argv.includes('--selftest')) { try { const P = require('./provenance.js'); P.pinUnderStation(false); P.pinOwnerShell(true); } catch (_) {}   // a selftest measures the mechanism in its own fixture tree, not the caller: an agent's run must not fail it
+    return selftest(); }
   if (!cmd || cmd === 'status') {
     const t = MH.readToday(co.ROOT);
     const b = co.readJson(co.p('company', 'work', 'finance', 'dispatch-budget.json'), {}) || {};
@@ -49,6 +50,7 @@ function main(argv) {
 /* selftest: a scratch company; the question is asked once after two held ticks, deduped, governed, and answered */
 function selftest() {
   const T = fs.mkdtempSync(path.join(os.tmpdir(), 'money-hold-selftest-'));
+  fs.writeFileSync(path.join(T, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: owner checks pass inside this throwaway company
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };
   w('company/company.json', { name: 'MH', owner: { name: 'Pat' }, timezone: 'UTC' });
   w('company/tools/loops.json', { agents: { agent: { name: 'Founder', functions: ['ceo'] } } });
