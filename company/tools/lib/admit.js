@@ -61,6 +61,10 @@ function admit(req, opts) {
   if (kind === 'run' && req.jobId && req.provider) {
     let b = null; try { b = require('./refusal').blockFor(String(req.jobId), String(req.provider), { now, root: opts.root }); } catch (_) {}
     if (b) Object.assign(t, { decision: 'hold', reason: 'refusal block: ' + req.provider + ' refused this routine at ' + new Date(b.at).toISOString() + ' and is blocked for it until ' + new Date(b.until).toISOString() + ' (it runs on the next model meanwhile)' });
+    if (t.decision === 'allow') {
+      let c = null; try { c = require('./refusal').closureFor(String(req.provider), { now, root: opts.root }); } catch (_) {}
+      if (c) Object.assign(t, { decision: 'hold', reason: 'quota closed: ' + req.provider + ' is closed to routines until ' + new Date(Number(c.until)).toISOString() + ' (' + String(c.why || 'usage limit') + ')', quota: true });
+    }
   }
   if (kind === 'meeting-turn') {
     if (req.owner !== true) Object.assign(t, { decision: 'refuse', reason: 'a meeting turn starts only in a meeting the owner opened: no routine or agent starts one' });

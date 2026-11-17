@@ -85,6 +85,17 @@ function blockedForSeat(jobIds, o) {
   return out;
 }
 
+// A provider the pacer has closed to routines because a run hit its usage limit (pacer-state.json closures: claude →
+// claude-cli, minimax → custom). While closed, starting a run on it only burns a start and fails quota_exhausted
+// (2026-11-18 02:24-02:53: 12 such starts, and a false "failing" flag on the seat). admit() holds it; models.js moves the seat.
+const CLOSURE_KEY = { 'claude-cli': 'claude', custom: 'minimax' };
+function closureFor(provider, o) {
+  const k = CLOSURE_KEY[String(provider || '')]; if (!k) return null;
+  const root = (o && o.root) || co.ROOT; const now = (o && Number.isFinite(o.now)) ? o.now : Date.now();
+  const c = ((o && o.closures) || (readJson(path.join(root, 'company', 'state', 'pacer-state.json'), {}) || {}).closures || {})[k];
+  return c && Number(c.until) > now ? c : null;
+}
+
 // how many runs of these routines were refused in the last 24 h (the pacer's refusal log)
 function refusalCount(jobIds, o) {
   const root = (o && o.root) || co.ROOT; const now = (o && Number.isFinite(o.now)) ? o.now : Date.now();
@@ -107,4 +118,4 @@ function blockLine(seatName, b, count, now) {
   return pname(b.provider) + ' paused for ' + (seatName || 'this seat') + ' until ' + whenText(Number(b.until), null, now) + ', because it declined ' + (count > 1 ? count + ' runs' : 'a run') + ' in the last 24 hours';
 }
 
-module.exports = { refusalCount, whenText, blockLine, isRefusal, nextEntry, candidates, record, plainLine, keyOf, pname, activeBlocks, blockFor, blockedForSeat };
+module.exports = { refusalCount, whenText, blockLine, isRefusal, nextEntry, candidates, record, plainLine, keyOf, pname, activeBlocks, blockFor, blockedForSeat, closureFor };

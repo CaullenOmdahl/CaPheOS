@@ -93,10 +93,10 @@ async function assess(opts) {
     const switchedOff = myJobs.filter(j => j.enabled === false && j.disabledReason === 'consecutive-failures').map(j => j.name);
     const overdue = overdueHandoffs(c.inbox || '', P.overdueDays);
     const reasons = {}; for (const r of (streak ? streakRuns : failed)) { const k = causeOf(r); reasons[k] = (reasons[k] || 0) + 1; }
-    const limitOnly = streak > 0 && streakRuns.every(r => r.reason === 'budget');
+    const limitOnly = streak > 0 && streakRuns.every(r => r.reason === 'budget' || /quota|usage_limit|rate_limit/.test(String(r.failureCode || '')));   // a provider at its usage limit is a limit, not the person failing
     const flags = [];
     if (streak >= P.consecutiveFailures) flags.push(limitOnly
-      ? { type: 'limit', why: streak + ' routine runs in a row were stopped by a spending or token limit' }
+      ? { type: 'limit', why: streak + ' routine runs in a row were stopped by a spending, token or usage limit' }
       : { type: 'failing', why: streak + ' routine runs in a row did not finish (' + Object.entries(reasons).map(([k, v]) => v + ' ' + k).join(', ') + ')' });
     if (switchedOff.length) flags.push({ type: 'failing', why: 'StarNet switched off ' + switchedOff.join(', ') + ' after repeated failures' });
     // "unreliable" only while still struggling: a person whose latest run finished has recovered

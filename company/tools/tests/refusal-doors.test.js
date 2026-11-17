@@ -47,3 +47,17 @@ test('interview door: a refused turn is asked again once on the next model, the 
   const all = await hire.answerTurn({ agentId: 'cand1', provider: 'claude-cli', model: 'claude-sonnet-5-5' }, [], 's2', async (a, model, provider) => { calls.push(provider); return { runId: 'x', outcome: 'refused', text: '' }; });
   assert.strictEqual(calls.length, 2); assert.match(all.text, /no answer: Claude and DeepSeek both declined this question/);
 });
+
+test('quota closure: admit() holds a dispatch start on a provider the pacer closed at its usage limit, and lets it run once the closure ends', () => {
+  const now = Date.now();
+  W('company/state/pacer-state.json', { blocks: [], closures: { minimax: { until: now + 30 * 60e3, why: 'a MiniMax run hit its usage limit' } } });
+  assert.ok(REF.closureFor('custom', { root: T, now }), 'MiniMax (custom) is closed');
+  assert.strictEqual(REF.closureFor('deepseek', { root: T, now }), null, 'a metered provider has no quota closure');
+  const A = require('../lib/admit');
+  const held = A.admit({ door: 'dispatch', kind: 'run', seat: 'cand1', jobId: 'j1', provider: 'custom' }, { now, root: T, dry: true });
+  assert.strictEqual(held.decision, 'hold'); assert.ok(held.quota && /quota closed/.test(held.reason), JSON.stringify(held));
+  const other = A.admit({ door: 'dispatch', kind: 'run', seat: 'cand1', jobId: 'j1', provider: 'deepseek' }, { now, root: T, dry: true });
+  assert.strictEqual(other.decision, 'allow', 'another provider is not held');
+  const later = A.admit({ door: 'dispatch', kind: 'run', seat: 'cand1', jobId: 'j1', provider: 'custom' }, { now: now + 31 * 60e3, root: T, dry: true });
+  assert.strictEqual(later.decision, 'allow', 'the closure has ended');
+});
