@@ -4,7 +4,8 @@
 **Replaces:** the StarNetOS sidecar as CaPheOS's runtime.
 **Related:** `docs/CONSOLE-API.md` (the frozen frontend contract), `docs/FEATURES.md` (what we are *not* rebuilding),
 `docs/MODULE-SYSTEM.md` (how tools and integrations are added), `docs/PORTING.md` (house rules for ported code),
-`docs/STYLE.md` (plain language: the rule for every name, comment and error).
+`docs/DEPLOY.md` (deployment, browser/desktop, grants and the security seat), `docs/STYLE.md` (plain language: the rule
+for every name, comment and error).
 
 ---
 
@@ -137,25 +138,38 @@ are genuinely about governance.
 
 ### 6.5 Desktop and browser are a plugin, not core
 
-StarNet's browser is the **host's own Chrome** driven over CDP, and its computer control is **Windows CUA** on the
-host desktop. Both are retired with StarNet: they hand an agent the owner's real machine and their real sessions.
+The design is already written: `docs/DEPLOY.md` §4 (browser and desktop) and §5 (grants). This section states only what
+the backend owes it.
 
-CaPheOS's browser is a **containerized desktop**: a small disposable environment — container or VM — with a virtual
-display, its own browser, and its own session storage. The agent drives it through a small action interface
-(screenshot, click, type, navigate, read the page or accessibility tree); the owner can watch the same screen from the
-console and step in when asked. Sign-ins live inside that environment, never on the owner's machine.
+StarNet's mode — the owner's own headed Chrome over CDP, and Windows CUA on the owner's live desktop — is what we do
+**not** keep: it hands an agent the owner's machine and their signed-in sessions. The plan keeps the *driver
+abstraction* and reuses the CUA backend, and changes the target: never the owner's live session.
 
-It ships as a **plugin** (`desktop`), not in the core:
+What the `desktop` plugin ships:
 
-- the core only knows "a tool call ran and returned evidence";
-- the plugin owns the container lifecycle, the virtual display, the browser profile and the screenshots;
-- capabilities are explicit: network from inside the environment only, downloads land in the task's work folder, a
-  kill switch, and an owner-visible session;
-- a run gets a fresh environment per task by default; a long-lived one is a deliberate grant.
+- **the driver abstraction** `{screenshot, readTree, click, type, key, drag}`, with Windows CUA (x64) and Linux
+  (XTEST/libei, AT-SPI) as backends;
+- **the environment**: a microVM with no host mounts, no Docker socket, an egress allowlist, an ephemeral profile,
+  PID/memory caps and a kill switch; no GPU passthrough without a signed risk acceptance (D13);
+- **the browser**: headed real Chrome with a dedicated extension-free profile per identity, launched without
+  `--enable-automation`/`--headless`; a CDP attach alone does not set `navigator.webdriver`; a headless Chromium
+  sidecar server-side (D3, D12);
+- **step-in**: the agent parks, the owner signs in, then it hands back;
+- **the browser host**: on the owner's machine for realism; kill authority sits with it.
 
-**Open item:** the detailed design for this (the "Dots-like" containerized desktop) is not in this repo — I searched
-`docs/`, the git history, the StarnetOS checkout and `~/Documents` and did not find it. Before implementing, it gets its
-own `docs/DESKTOP.md`; §6.5 is the shape, not the spec.
+What the backend owes it:
+
+- **one tool name and one gate.** The plugin owns the environment lifecycle, the driver, the profile and the
+  screenshots; the core only knows "a tool call ran and returned evidence".
+- **the grant gate is the tool host's.** Every browser action is admitted by
+  `browserAdmit({grantId, url, action}) → allow | deny | ask` from a grant (origins, identity class, capability,
+  window, rate, expiry, revocation) — never from the tool call alone (D16–D18).
+- **revocation is a real kill**: three lists — live sessions, persistent profiles, service connections.
+- **capabilities stay explicit**: network from inside the environment only; downloads land in the task's work folder;
+  the owner can see the session.
+
+The environment itself is not on the backend's critical path: `docs/DEPLOY.md` puts the browser sidecar in P2 and the
+desktop microVM in P3.
 
 ---
 
@@ -167,7 +181,7 @@ own `docs/DESKTOP.md`; §6.5 is the shape, not the spec.
 | **Vendor with attribution** | StarNet's provider adapters (`anthropic`, `openai-compatible`, `openrouter`, `gemini`, `ollama-native`, `claude-cli`, `codex`), the MCP client and transports, the streaming event vocabulary. MIT/BSD with `NOTICE`; no StarNet branding; renamed to our vocabulary (§7.2) |
 | **Rewrite** | the run loop (today it lives inside StarNet and CaPheOS only drives it); run/transcript storage; schedules (→ the dispatcher); seat identity (→ files) |
 | **Rewrite small** | the chat run system (`console/chat-runs.js`) against our own runs instead of StarNet's observer feed |
-| **Drop** | every game system (floor, props, XP, levels, trophies, battle pass, quests as a StarNet concept), the app builder, channels, voice, StarNet's host-Chrome browser and Windows CUA (replaced by the containerized desktop plugin, §6.5), skill market, community maps, the station proxy, `lib/station.js`, `station-crew.js`, `station-view.js`, `.starnet-data` |
+| **Drop** | every game system (floor, props, XP, levels, trophies, battle pass, quests as a StarNet concept), the app builder, channels, voice, StarNet's browser mode (the owner's own Chrome and live desktop — the driver abstraction and the CUA backend are kept, §6.5), skill market, community maps, the station proxy, `lib/station.js`, `station-crew.js`, `station-view.js`, `.starnet-data` |
 
 Quests are the one concept that is dropped as a *word* and kept as a *thing*: CaPheOS's dispatch, handoffs,
 competence and evidence all depend on "a unit of work with steps that closes on proof". That is a task.
@@ -233,17 +247,18 @@ Vendored code is a dependency we own, not an import we trust:
 During P1–P2 the old station remains available and the console can talk to either — a switch, not a fork. From P3 it
 cannot come back.
 
-The containerized desktop (§6.5) is not on this path: it starts after P3, once the backend serves the console without
-StarNet, and arrives as a plugin on the same mechanism as every other capability.
+The desktop is a second track (`docs/DEPLOY.md` §11): its browser sidecar lands in that plan's P2, its desktop microVM
+in P3. The backend's only debt to it is the tool name and the grant gate (§6.5).
 
 ---
 
 ## 9. Non-goals
 
 We are not rebuilding StarNet. No app builder, no channels, no voice, no skill market, no games, no second UI.
-StarNet's browser-on-the-host and Windows CUA are not ported; browser and desktop control arrive later as the
-containerized plugin (§6.5), not as core. Multi-tenant hosting is out of scope for v1. The unit standard is how new
-capabilities arrive, but the backend must be useful with zero units installed.
+StarNet's browser mode — the owner's own Chrome and live desktop — is not kept; browser and desktop control arrive as
+the containerized plugin (§6.5), reusing the driver abstraction and the CUA backend, never as core. Multi-tenant
+hosting is out of scope for v1. The unit standard is how new capabilities arrive, but the backend must be useful with
+zero units installed.
 
 ---
 
@@ -259,9 +274,10 @@ capabilities arrive, but the backend must be useful with zero units installed.
 | 4 | **Desktop/browser is a plugin** on a different framework from StarNet: a containerized desktop (§6.5). |
 | 5 | **Core stays minimum.** Anything that can be removed is a plugin (§7.1). |
 | 6 | **Naming for the tree:** `server/` (the process), `runtime/` (services and run loop), `company/` (business data and tools), `vendor/` (vendored code). Cheap now, expensive later. |
+| 7 | **The desktop follows `docs/DEPLOY.md` §4–§5**: microVM, headed Chrome per identity, the driver abstraction, step-in, grants/leases/revocation. The backend owes it a tool name and the grant gate (§6.5). |
 
 **Open:**
 
 | # | Question | Recommendation |
 |---|---|---|
-| 7 | Is a task the old quest, or a thin layer over commitments? | task = the work item (steps, evidence, closer); commitment = the obligation (ack, due, escalate). A task may raise a commitment. |
+| 8 | Is a task the old quest, or a thin layer over commitments? | task = the work item (steps, evidence, closer); commitment = the obligation (ack, due, escalate). A task may raise a commitment. |
