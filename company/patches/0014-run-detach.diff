@@ -1,0 +1,42 @@
+# 0014 — POST /api/run detach:true: the watcher leaving does not cancel the run (the CaPheOS console's live chat).
+# Status: APPLIED by setup-station.sh
+# Why: an interactive /api/run is cancelled the moment its response (or the page's run stream) closes: the disconnect law
+# (handleRun, 2026-07-14 F1). The CaPheOS console proxies the owner's live chat through its own HTTP request, so a console
+# restart (a deploy) or a lost connection cancelled the Founder's reply mid-sentence (2026-11-17 19:53, run add739e5…
+# ended "cancelled" after 8 s). Run Now already has the same opt-in (body.detach, APPS 2026-09-30); /api/run had none.
+# What it changes: a non-internal /api/run body with detach:true registers no page-gone listener, so the run continues
+# until its own end. It stays in the run table (busy, in the snapshot, stoppable with POST /api/cancel); its events still
+# reach GET /api/observe, which is how the console re-attaches; an approval asked with nobody watching waits out
+# CONSENT_TIMEOUT_MS and is denied, as before. Every caller that does not send detach:true is unchanged. GET /api/version
+# lists the capability "run-detach" (console/chat-runs.js probes it; without it the console streams the old way).
+# Apply: git -C starnet apply --3way ../company/patches/0014-run-detach.diff (after 0012, whose capability line it
+# extends), then scripts/restart-station.sh --when-idle --reason "patch 0014".
+# Revert: git -C starnet apply -R ../company/patches/0014-run-detach.diff
+diff --git a/sidecar/index.js b/sidecar/index.js
+--- a/sidecar/index.js
++++ b/sidecar/index.js
+@@ -22096,7 +22096,14 @@
+   // the approvals it was still waiting on — the abort below denies them, and the conversation must say so after a reload.
+   // Registered FIRST: listeners run in order, so it reads the signal before the disconnect law aborts it.
+   let leadOver = false;   // this run's own finally ran: a close after it is just the stream's normal end
+-  if (!sink) {
++  // DETACHED (CaPheOS patch 0014, the same additive opt-in Run Now has had since APPS 2026-09-30): a caller that owns the
++  // run's life itself (the CaPheOS console: it keeps the conversation and re-attaches through GET /api/observe after its
++  // own restart or a browser reload) sends detach:true, and the watcher leaving changes nothing. The run stays in the run
++  // table (live in the snapshot, busy, stoppable with POST /api/cancel) until its own finally; an approval it asks with
++  // nobody watching waits out CONSENT_TIMEOUT_MS and is denied, as before. Never for reason-only self-talk.
++  const detachedRun = !!(body && body.detach === true) && !internal;
++  if (detachedRun) { /* the watcher leaving is not a stop */ }
++  else if (!sink) {
+     res.on('close', () => { if (!leadOver && !ac.signal.aborted && !internal) { try { notePageClosed(runId, pending); } catch (e) { failNote('run.pageClosed.note', e); } } });
+     res.on('close', () => { ac.abort(); });
+   } else sink.onGone(() => {
+@@ -27859,7 +27866,7 @@
+ async function handleVersion(req, res) {
+   // only the boot's first describe attempt is waited for, at most apiWaitMs (well inside the CLI's 5 s attach probe)
+   await versionSource.settled(versionSource.limits.apiWaitMs);
+-  const out = Object.assign({}, computeVersionSurface(), { capabilities: [WORKSPACE_LEASE_CAPABILITY] });   // patch 0012
++  const out = Object.assign({}, computeVersionSurface(), { capabilities: [WORKSPACE_LEASE_CAPABILITY, 'run-detach'] });   // patch 0012; 'run-detach': patch 0014
+   res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+   res.end(JSON.stringify(out));
+ }

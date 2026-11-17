@@ -24,10 +24,11 @@ function link(text, url) {
   return s.inApp ? h('a', { href: s.href, class: 'md-link' }, text) : h('a', { href: s.href, target: '_blank', rel: 'noopener noreferrer', class: 'md-link' }, text);
 }
 
-// inline: code spans first, then links, then bold / em, then bare URLs and bare console links
+// inline: code spans first, then links, then bold / em, then bare URLs and bare console links. _em_ only between
+// non-word characters, so an underscore inside a path or a name (company/work/to_founder.md, snake_case) stays text
 function inline(text) {
   const out = [];
-  const re = /(`[^`\n]+`)|\[([^\]\n]{1,300})\]\(([^)\s]{1,2000})\)|(\*\*[^*\n]+\*\*)|(\*[^*\n]+\*|_[^_\n]+_)|(https?:\/\/[^\s<>()"]+[^\s<>()".,;:!?'])|(console:?#\/[^\s<>()"]*[^\s<>()".,;:!?'])/g;
+  const re = /(`[^`\n]+`)|\[([^\]\n]{1,300})\]\(([^)\s]{1,2000})\)|(\*\*[^*\n]+\*\*)|(\*[^*\n]+\*|(?<![\w\/.-])_[^_\n]+_(?![\w\/.-]))|(https?:\/\/[^\s<>()"]+[^\s<>()".,;:!?'])|(console:?#\/[^\s<>()"]*[^\s<>()".,;:!?'])/g;
   let last = 0, m;
   while ((m = re.exec(text))) {
     if (m.index > last) out.push(document.createTextNode(text.slice(last, m.index)));

@@ -1,0 +1,69 @@
+
+
+<run_command>cd /home/owner/Companies/example-co && date && node company/tools/halt.js status</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && grep -rin "synpath" --include=*.md --include=*.json --include=*.jsonl . 2>/dev/null | head -40</run_command>
+
+Let me look at my own record before I point you anywhere.
+
+<run_command>cd /home/owner/Companies/example-co && node company/tools/inbox.js list --open 2>&1 | head -40</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && tail -30 company/pm-inbox.jsonl 2>/dev/null</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && node company/tools/inbox.js --help 2>&1 | head -60</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && ls company/tools/ | head -60</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && node company/tools/inbox.js ask --help 2>&1 | head -40</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && cat company/skills/*/SKILL.md 2>/dev/null | grep -in -A5 -B5 "synpath" | head -60</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && grep -rin "synpath\|google sign" company/work/decisions.md company/work/handoffs/to-founder.md 2>/dev/null | head -30</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && grep -rin "synpath" . --exclude-dir=node_modules --exclude-dir=.git -l 2>/dev/null | head -20</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && ls secrets/ 2>&1 | head -20; echo "---"; grep -rin "pyth\|hermes" company/work/decisions.md 2>/dev/null | tail -20</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && node company/tools/inbox.js list --all 2>&1 | tail -30</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && grep -rin "synpath\|Synpath" company/ --exclude-dir=node_modules 2>/dev/null | head -30</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && grep -rn "ask --form\|--form" company/tools/inbox.js | head -20</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && sed -n '1,80p' company/tools/inbox.js</run_command>
+
+I hear you, and yes — the console gives me two things worth using here: a form that puts a secret in `secrets/` instead of a chat log, and the ability to point you at a page with a link. Let me check what I actually have on file before I use either.
+
+<run_command>cd /home/owner/Companies/example-co && grep -rn "form" company/tools/inbox.js | head -40</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && node company/tools/inbox.js ask --help 2>&1 | head -50; echo "=== try help ==="; node company/tools/inbox.js 2>&1 | head -30</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && wc -l company/tools/inbox.js && grep -n "argv\|switch\|case '" company/tools/inbox.js | head -40</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && sed -n '80,220p' company/tools/inbox.js</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && sed -n '220,400p' company/tools/inbox.js</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && grep -rn "secrets/" company/tools/*.js | head -20</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && ls -la secrets/ 2>&1</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && grep -rn "SYN\|synpath" company/work/*.md company/work/handoffs/*.md company/*.md 2>/dev/null | head -30</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && ls company/work/ && echo "===" && ls company/work/handoffs/</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && grep -rin "synpath" /home/owner/Companies/example-co 2>/dev/null | head -20; echo "=== home ==="; ls /home/owner/ | head -30</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && node company/tools/inbox.js list --open 2>&1 | tail -40</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && grep -rin "synpath" company/work/decisions.md | head; echo "--- decisions tail ---"; tail -60 company/work/decisions.md</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && grep -rin "synpath\|depth" company/work/handoffs/to-founder.md | head -20</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && cat company/work/handoffs/to-founder.md | head -60</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && grep -rln "synpath\|Synpath" /home/owner 2>/dev/null | head -20</run_command>
+
+<run_command>cd /home/owner/Companies/example-co && node company/tools/inbox.js ask --form --help 2>&1 | head; echo "=== search tool dir ==="; grep -rn "form" company/tools/inbox.js company/tools/*.js 2>/dev/null | grep -i "link\|secret" | head -20</run_command>
+
+Let me be straight with you rather than keep digging: I'm going to give you the one thing I can verify and

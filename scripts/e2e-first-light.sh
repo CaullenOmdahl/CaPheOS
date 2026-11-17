@@ -262,10 +262,10 @@ check "the console stores the key in secrets/e2e-api-key (0600) and the answer n
   echo \"\$r\" | grep -q 'secrets/e2e-api-key' && ! echo \"\$r\" | grep -q e2e-secret-value && [[ \$(stat -c %a '$R/secrets/e2e-api-key') == 600 ]] && ! grep -q e2e-secret-value '$R/company/pm-inbox.jsonl' '$R/company/owner/inbound.jsonl'"
 check "GET /api/chat/agent: the Founder's model comes from its loop routine" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/chat/agent | node -e 'let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const o=JSON.parse(d);if(!o.ok||!o.model||!/loop routine/.test(o.modelFrom)){console.error(d.slice(0,300));process.exit(1)}})'"
 curl -s -N -X POST -H "x-console-token: $CTOKEN" -H 'content-type: application/json' "http://127.0.0.1:$CPORT/api/chat/agent/send" -d '{"brief":"charter","notes":{"mandate":"Field guides for night-sky observers"}}' > "$T/chat.ndjson"
-check "the charter brief streams: console.run, a tool step, tokens, then the end" node -e '
+check "the charter brief streams: console.run, a tool step, tokens, the end, then the final reply (console.final complete, console.end)" node -e '
   const ev=require("fs").readFileSync(process.argv[1],"utf8").split("\n").filter(Boolean).map(JSON.parse); const n=ev.map(e=>e.name);
-  const toks=ev.filter(e=>e.name==="agent.token").length;
-  if(!(n[0]==="console.user"&&/CHARTER\.md/.test(ev[0].payload.text)&&n.includes("console.run")&&n.includes("agent.tool_call")&&toks>3&&n[n.length-1]==="agent.run.end")){console.error(n.join(","));process.exit(1)}' "$T/chat.ndjson"
+  const toks=ev.filter(e=>e.name==="agent.token").length; const fin=ev.find(e=>e.name==="console.final");
+  if(!(n[0]==="console.user"&&/CHARTER\.md/.test(ev[0].payload.text)&&n.includes("console.run")&&n.includes("console.attached")&&n.includes("agent.tool_call")&&toks>3&&n.includes("agent.run.end")&&fin&&fin.payload.complete&&/CHARTER\.md/.test(fin.payload.text)&&n[n.length-1]==="console.end")){console.error(n.join(","));process.exit(1)}' "$T/chat.ndjson"
 check "the station run carried the seat model, the console stream and the company folder as project root" node -e '
   const rows=require("fs").readFileSync(process.argv[1],"utf8").split("\n").filter(Boolean).map(JSON.parse).filter(r=>r.path==="/api/run"&&r.body&&r.body.streamId==="console-agent");
   const b=rows.length&&rows[rows.length-1].body;

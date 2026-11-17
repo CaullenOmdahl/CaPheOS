@@ -156,6 +156,21 @@ The owner token lives in `secrets/console-token` (created 0600 on first start). 
 (`company.json` owner name) through the same tools the owner runs in a shell; station calls go through
 `/api/station/*` with an allowlist, so the browser never sees the station token. Binds 127.0.0.1 by default.
 
+**Deploying a console update.** Restart the console with
+
+```bash
+scripts/restart-console.sh --when-idle            # waits until no chat reply is streaming (GET /api/console/busy), then restarts
+scripts/restart-console.sh --when-idle --timeout 300 --force   # give up waiting after 5 min and restart anyway
+scripts/restart-console.sh --status               # the chats in flight
+```
+
+not with a bare `systemctl --user restart`. A live chat run does not depend on the console's connection: with StarNet
+patch 0014 the console starts it detached, follows it on the station's observer feed and keeps a journal, so after a
+restart (or a browser reload) the page re-attaches and shows the reply streaming again, or finished. Waiting for idle
+still spares the owner the few seconds of "Reconnecting…". Without patch 0014 a console restart ends a chat run (the
+reply is then shown as cut off, never as final), so `--when-idle` matters more there. Details: docs/CONSOLE-API.md
+"Live chat".
+
 ## Tests
 
 ```bash

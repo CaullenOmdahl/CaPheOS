@@ -94,14 +94,32 @@ Talking to a crew member from the console is a live run on the station (console/
 
 | Method | Path | Body | Does |
 |---|---|---|---|
-| GET | /api/chat/:seat | — | `{ agent: {id, name, title}, model, provider, modelFrom, streamId: "console-<seat>", turns: [{role, content, at}], problems: [{code, message, fix, link}] }`. The model is the seat's loop routine pair, else its roster row, else model-policy.json `candidateDefault`. The turns are the station transcript (`/api/transcript?stream=console-<seat>`), so the conversation reloads when the owner comes back |
-| POST | /api/chat/:seat/send | `{ text }` or `{ brief: "charter"\|"charter-change", notes? }` | streams NDJSON `{name, payload}`: first `console.user {text}` (a brief is expanded server side: the charter brief asks a few short questions, then has the seat write company/CHARTER.md with every template heading and no placeholder, and end with `[Review it in Setup](console:#/setup/charter)`), then `console.run {model, provider, from}`, then the station run's own events (`agent.run.start`, `agent.token` `{delta}`, `agent.tool_call` `{name, argsSummary}`, `agent.tool_result`, `permission.prompt`, `agent.run.error`, `agent.run.end` `{reason, outcome, usd}`). A refusal is one `console.error {code, message, fix, link}` line, never silence: `halted` (hard halt), `station-down`, `no-model`, `budget-hold` (a metered model with a $0 daily cap while the spendCap guardrail is on), `station-refused` (the station's own 4xx, e.g. a missing key), `cut-off` (the stream ended before `agent.run.end`) |
+| GET | /api/chat/:seat | — | `{ agent: {id, name, title}, model, provider, modelFrom, streamId: "console-<seat>", turns: [{role, content, at, runId?, cut?}], problems: [{code, message, fix, link}], inflight: {runId, startedAt, shownText, gap} \| null }`. The model is the seat's loop routine pair, else its roster row, else model-policy.json `candidateDefault`. The turns are the station transcript (`/api/transcript?stream=console-<seat>`), so the conversation reloads when the owner comes back. A reply whose run did not finish (cancelled, stopped, failed: the station's run log, or the console's own record) carries `cut: "<reason>"` and the page says it was cut off. `inflight` is a reply still being written: its own turns are left out of `turns`, and the page re-attaches to it |
+| POST | /api/chat/:seat/send | `{ text }` or `{ brief: "charter"\|"charter-change", notes? }` | streams NDJSON `{name, payload}`: first `console.user {text}` (a brief is expanded server side: the charter brief asks a few short questions, then has the seat write company/CHARTER.md with every template heading and no placeholder, and end with `[Review it in Setup](console:#/setup/charter)`), then `console.run {model, provider, from}`, then `console.attached {runId}`, then the run's journal from its first line: the opening lines again, the station run's own events (`agent.run.start`, `agent.token` `{delta}`, `agent.tool_call` `{name, argsSummary}`, `agent.tool_result`, `permission.prompt`, `agent.run.error`, `agent.run.end` `{reason, outcome, usd}`), `console.gap` when a console restart lost part of the live view, and last `console.final {text, complete, reason, gap}` (the reply as the transcript recorded it; `complete` only when the run ended on its own and nothing was lost) and `console.end`. A refusal before the run exists is one `console.error {code, message, fix, link}` line, never silence: `halted` (hard halt), `station-down`, `no-model`, `budget-hold` (a metered model with a $0 daily cap while the spendCap guardrail is on), `station-refused` (the station's own 4xx, e.g. a missing key), `cut-off` |
+| GET | /api/chat/:seat/attach?runId=&from=N | — | the same journal lines from line N (0 = the first after `console.attached`), then live, ending `console.final` + `console.end`; `console.gone` for a run the console does not know. The page re-attaches with the count it already has after a dropped stream (a console restart), and from 0 after a reload |
+| GET | /api/console/busy | — | `{ chats: [runIds in flight] }`: what `scripts/restart-console.sh --when-idle` waits on |
 
-The run goes to the station's `POST /api/run` with `rosterSystem: true`, `streamId: console-<seat>`, the last 40 turns,
-`projectRoot` = the company root and `placed` = files, terminal, memory and web, so the seat can do what the owner asks
-(write the charter). The company folder is blessed as a project first (`founder-loop.js blessRoot`, idempotent).
-Stop = `POST /api/station/cancel {runId}` (and the browser closing the stream, which the station also treats as a stop).
+The run goes to the station's `POST /api/run` with `rosterSystem: true`, `isTask: true` (the station puts the seat's tools
+on the wire only for a task run: with `isTask:false` the model gets NO tool definitions, and a model told about its tools
+writes the calls out as text), `streamId: console-<seat>`, the last 40 turns, `projectRoot` = the company root and
+`placed` = files, terminal, memory and web, so the seat can do what the owner asks (write the charter). The company folder
+is blessed as a project first (`founder-loop.js blessRoot`, idempotent).
+
+**The run outlives the connection (console/chat-runs.js).** When the station lists the capability `run-detach`
+(`GET /api/version`, StarNet patch 0014) the run is started with `detach: true`: the station keeps it running when the
+console's request closes. The console follows it on the observer feed (`GET /api/observe`) and appends each event to
+`company/state/chat-runs/<runId>.ndjson` (rows in `company/state/chat-runs.json`). After a console restart it reopens the
+feed from the last cursor it journaled, so what the station's replay ring still holds (512 events) comes back in order;
+past that the run is marked gap and the page waits for `console.final`. A run that goes quiet is checked against the
+station's run record (`GET /api/runs?runId=`). Without `run-detach` the console reads the `/api/run` stream itself: a
+browser reload still re-attaches, a console restart ends the run and the reply is marked cut off.
+Stop = `POST /api/station/cancel {runId}`; the browser leaving (a reload, a closed tab) never stops a run.
 Approvals the run asks for are answered with `POST /api/station/consent {runId, promptId, decision}`.
+
+**Tool calls written as text.** A reply that holds tool-call markup (`<run_command>`, `<invoke name=`, `<parameter name=`,
+`<tool_call>`, two or more `<function=…>`, a fenced JSON call; console/ui/js/leaked-tools.js) is not rendered as
+markdown: the page shows "<name> wrote N commands as text instead of running them", an Ask again button, the prose as
+plain text and the raw reply under Details.
 
 ### Chat actions and approvals
 

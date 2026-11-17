@@ -218,12 +218,19 @@ dialog.modal::backdrop { background: var(--scrim); }
 .chat-body { flex: 1; display: flex; flex-direction: column; gap: 20px; padding: 32px; max-width: 760px; }
 /* Chat is a rolling window: on desktop the screen is the window's height, the messages scroll inside it, the composer stays at the bottom */
 .chat-scroll { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
-/* one centred conversation column (~800 px): the owner's bubbles sit at its right edge, the agent's text at its left;
-   the composer and the banner are the same column */
-.chat-scroll > .chat-body { overflow-y: auto; overscroll-behavior: contain; min-height: 0; max-width: none; padding-left: max(32px, calc(50% - 400px)); padding-right: max(32px, calc(50% - 400px)); }
+/* one centred conversation column, fluid: about 70% of the chat area, at least 680 px and at most 1200 px (never closer
+   than 32 px to the edge). The owner's bubbles sit at its right edge (at most 75% of it), the agent's text uses the whole
+   column with prose held to about 110 characters a line; code, commands and Details may use the full column. The
+   composer and the banner are the same column. A percentage in padding is of the chat area, so one formula serves all. */
+.chat-scroll, .chat-live, .comms .chat { --chat-gutter: max(32px, calc((100% - min(1200px, max(680px, 70%))) / 2)); }
+.chat-scroll > .chat-body { overflow-y: auto; overscroll-behavior: contain; min-height: 0; max-width: none; padding-left: var(--chat-gutter); padding-right: var(--chat-gutter); }
 .chat-scroll > .chat-body > * { max-width: 100%; }
-.chat-live > .composer, .chat-live > .chat-banner { padding-left: max(32px, calc(50% - 400px)); padding-right: max(32px, calc(50% - 400px)); }
+.chat-live > .composer, .chat-live > .chat-banner { padding-left: var(--chat-gutter); padding-right: var(--chat-gutter); }
 .chat-scroll > .chat-body > .msg-me, .chat-scroll > .chat-body > [style*="align-self:flex-end"] { margin-left: auto; }
+.chat-scroll > .chat-body > [style*="align-self:flex-end"], .comms .chat > .chat-body > [style*="align-self:flex-end"] { max-width: 75%; }
+.chat-scroll > .chat-body > [style*="align-self:flex-end"] > .msg-me { max-width: 100%; }
+.chat-scroll > .chat-body > .msg-them-wrap, .chat-scroll > .chat-body > .msg-them-wrap > .msg-them { max-width: none; }
+.chat-body .msg-them-wrap .md > :is(p, .md-p, .md-list, .md-quote, .md-h), .chat-body .leaked-prose { max-width: 110ch; }
 .chat-jump { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); box-shadow: var(--shadow-card, 0 2px 8px rgba(0,0,0,.15)); }
 .chat-earlier { align-self: center; }
 @media (min-width: 861px) {
@@ -233,9 +240,9 @@ dialog.modal::backdrop { background: var(--scrim); }
   .comms .chat, .comms .chat-live { min-height: 0; }
   /* the owner channel and group chats put their messages straight in .chat: the same rolling window */
   .comms .chat > .chat-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; max-width: none; }
-  .comms .chat > .chat-body { padding-left: max(32px, calc(50% - 400px)); padding-right: max(32px, calc(50% - 400px)); }
+  .comms .chat > .chat-body { padding-left: var(--chat-gutter); padding-right: var(--chat-gutter); }
   .comms .chat > .chat-body > * { max-width: 100%; }
-  .comms .chat > .composer { padding-left: max(32px, calc(50% - 400px)); padding-right: max(32px, calc(50% - 400px)); }
+  .comms .chat > .composer { padding-left: var(--chat-gutter); padding-right: var(--chat-gutter); }
 }
 @media (max-width: 860px) { .chat-scroll > .chat-body, .comms .chat > .chat-body { max-height: 65vh; max-height: 65dvh; overflow-y: auto; } }
 .msg-me { align-self: flex-end; max-width: 520px; padding: 14px 18px; border-radius: var(--radius-lg); background: var(--bg-inverse); color: var(--text-on-inverse); font: var(--type-body); white-space: pre-wrap; }
@@ -303,6 +310,13 @@ dl.kv dt { color: var(--text-muted); } dl.kv dd { margin: 0; color: var(--text-s
 .charter-view .md { gap: 10px; }
 @media (max-width: 600px) { .chat-banner { padding-left: 16px; padding-right: 16px; } .charter-strip { margin-left: 16px; margin-right: 16px; } }
 .md.msg-them { white-space: normal; }
+/* tool calls a model wrote as text (js/leaked-tools.js): a note, the prose as plain text, the markup under Details */
+.leaked-tools { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.leaked-tools-note { margin: 0; }
+.leaked-prose { white-space: pre-wrap; overflow-wrap: anywhere; font: var(--type-body); color: var(--text-body); }
+.leaked-raw > summary { cursor: pointer; color: var(--text-muted); }
+.leaked-raw > pre { margin: 8px 0 0; padding: 10px 12px; max-height: 420px; overflow: auto; background: var(--bg-sunken); border-radius: var(--radius-md); font: var(--type-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-cut { margin: 0; }
 /* Needs you: typed owner questions (today.js fieldControl) */
 .gate .q-msg { font: var(--type-body); color: var(--text-strong); }
 .gate .q-details > summary { min-height: 32px; display: flex; align-items: center; }

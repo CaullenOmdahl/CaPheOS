@@ -36,6 +36,7 @@ function contextNote(id, s, co, text) {
   return '[Console context, not from the owner: you are ' + (s.name || id) + '. The company folder is ' + co.ROOT + ' (your project root; company tools run as `node company/tools/<tool>.js`).'
     + (lines.length ? ' Your own recent runs (separate conversations you can check):\n' + lines.join('\n') : ' No earlier runs of yours are recorded.')
     + (notes.length ? '\nYour written record: ' + notes.join(', ') + '. Read them before claiming what you have done.' : '')
+    + '\nRun commands and read or write files by calling your tools. Never write a tool call out as text (<run_command>, <invoke>, <tool_call>, a JSON call): text is not run, and the owner only sees the markup.'
     + '\nWhen you point the owner somewhere in the console, link it: [label](console:#/route). For a quick choice in this conversation, write an ```actions block (company/skills/console-links/SKILL.md "Chat actions").'
     + actionReplyNote(text) + ']\n\n';
 }
@@ -54,6 +55,7 @@ module.exports = function chat(deps) {
   const STREAM = id => 'console-' + id;
   const PLACED = ['cabinet', 'workbench', 'notebook', 'dish'].map(t => ({ objectType: t }));
   const svc = () => (co.config.station && co.config.station.serviceName) || 'capheos-station';
+  const RUNS = require(path.join(__dirname, 'chat-runs.js'))({ co, stationGet, finalText: (...a) => finalText(...a) });
 
   function seatOf(id) {
     const crew = co.crew();
@@ -92,12 +94,46 @@ module.exports = function chat(deps) {
     return { problems: out, jobs: cr.ok && cr.data ? cr.data.jobs || [] : [] };
   }
 
+  // how each station run ended, from the station's run log (the end only): a reply whose run was cancelled is cut off
+  function runReasons() {
+    const out = {};
+    try {
+      for (const l of require(co.p('company', 'tools', 'lib', 'bounded.js')).tailLines(co.p('.starnet-data', 'workspaces', 'runs.jsonl'), 400)) {
+        try { const r = JSON.parse(l); if (r && r.runId && /^console-/.test(String(r.streamId || ''))) out[r.runId] = r.reason || r.outcome || ''; } catch (_) {}
+      }
+    } catch (_) {}
+    return out;
+  }
+  const CUT = /^(cancelled|canceled|stopped|aborted|error|failed|cut-off|lost|interrupted)$/i;
   async function transcript(id) {
     const r = await stationGet('transcript?agent=' + encodeURIComponent(id) + '&stream=' + encodeURIComponent(STREAM(id)) + '&limit=200', 5000);
     if (!r.ok) return { ok: false, error: r.error || 'HTTP ' + r.status, turns: [] };
+    const reasons = runReasons();
     const turns = ((r.data && r.data.turns) || []).filter(t => (t.role === 'user' || t.role === 'assistant') && typeof t.content === 'string' && t.content.trim())
-      .map(t => ({ role: t.role, content: t.role === "user" ? String(t.content).replace(/^\[Console context, not from the owner:[\s\S]*?\]\n\n/, "") : t.content, at: t.at || t.ts || null }));
+      .map(t => {
+        const o = { role: t.role, content: t.role === "user" ? String(t.content).replace(/^\[Console context, not from the owner:[\s\S]*?\]\n\n/, "") : t.content, at: t.at || t.ts || null };
+        const rid = t.sourceRunId || t.runId || null;
+        if (rid) o.runId = rid;
+        // a reply the station kept from a run that did not finish (stopped, cancelled by a dropped connection, failed)
+        const mine = rid ? RUNS.runOf(rid) : null;
+        const why = mine && mine.status === 'cut' ? mine.reason : rid ? reasons[rid] : null;
+        if (t.role === 'assistant' && why && CUT.test(why)) o.cut = why;
+        return o;
+      });
     return { ok: true, turns };
+  }
+  /* the reply as the station's transcript recorded it, for console.final: the turn this run wrote (sourceRunId), else the
+     newest reply written since the run started */
+  async function finalText(seat, runId, run) {
+    const r = await stationGet('transcript?agent=' + encodeURIComponent(seat) + '&stream=' + encodeURIComponent(STREAM(seat)) + '&limit=20', 5000);
+    if (!r.ok) return null;
+    const turns = ((r.data && r.data.turns) || []).filter(t => t.role === 'assistant' && typeof t.content === 'string');
+    const own = turns.filter(t => (t.sourceRunId || t.runId) === runId);
+    if (own.length) return { text: own.map(t => t.content).join('\n\n'), exact: true };
+    if (turns.some(t => t.sourceRunId || t.runId)) return null;   // this station names runs, and none is this one: no reply was kept
+    const since = (run.startedAt || 0) - 2000;
+    const late = turns.filter(t => Date.parse(t.at || t.ts || '') >= since);
+    return late.length ? { text: late[late.length - 1].content, exact: true } : null;
   }
 
   async function info(id) {
@@ -106,8 +142,18 @@ module.exports = function chat(deps) {
     const m = await modelFor(s, cr.ok && cr.data ? cr.data.jobs || [] : []);
     const pre = await preflight(s, m);
     const t = await transcript(id);
+    // a run in flight (the page re-attaches to it): its own turns, if the station already wrote them, are left out here
+    // and come back with the run's journal, so the page never shows a reply that is still being written as finished
+    const live = RUNS.inflight(id);
+    let turns = t.turns;
+    if (live) {
+      turns = turns.filter(x => !(x.runId && x.runId === live.runId));
+      const k = turns.length - 1;
+      if (k >= 0 && turns[k].role === 'user' && turns[k].content.trim() === String(live.userText || '').trim()) turns = turns.slice(0, k);
+    }
     return { ok: true, agent: { id, name: s.name || id, title: s.title || '' }, model: m ? m.model : null, provider: m ? m.provider : null, modelFrom: m ? m.from : null,
-      streamId: STREAM(id), turns: t.turns, transcriptError: t.ok ? null : t.error, problems: pre.problems };
+      streamId: STREAM(id), turns, transcriptError: t.ok ? null : t.error, problems: pre.problems,
+      inflight: live ? { runId: live.runId, startedAt: new Date(live.startedAt).toISOString(), shownText: live.shownText || null, gap: !!live.gap } : null };
   }
 
   /* ---------- briefs: what a button in the console asks a crew member to do ---------- */
@@ -136,7 +182,13 @@ module.exports = function chat(deps) {
     bad('unknown brief ' + kind);
   }
 
-  /* ---------- POST /api/chat/<id>/send: the live run, streamed ---------- */
+  /* ---------- POST /api/chat/<id>/send: the live run, streamed ----------
+     The run is the station's, not this request's (console/chat-runs.js): with the station's "run-detach" capability
+     (StarNet patch 0014) it is started detach:true and followed on the observer feed, so a console restart does not end
+     it; either way the browser leaving (a reload, a closed tab) only stops the watching. The browser gets the opening
+     lines, then {name:'console.attached', payload:{runId}}, then the run's journal from its first line, and the run's last
+     two lines: console.final {text, complete} and console.end. It re-attaches with GET /api/chat/<id>/attach. Stop is
+     POST /api/station/cancel {runId}. */
   async function send(req, res, id, body) {
     const line = (name, payload) => { try { res.write(JSON.stringify({ name, payload }) + '\n'); } catch (_) {} };
     const s = seatOf(id);
@@ -147,59 +199,90 @@ module.exports = function chat(deps) {
     const m = await modelFor(s);
     const pre = await preflight(s, m);
     res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
-    line('console.user', { text, brief: body.brief || null });
+    const opening = [];   // the lines before the run exists: journaled as its first lines once it does, so a reload shows them
+    const say = (name, payload) => { opening.push({ name, payload }); line(name, payload); };
+    say('console.user', { text, brief: body.brief || null });
     if (pre.problems.length) { line('console.error', pre.problems[0]); return res.end(); }
-    line('console.run', { agentId: id, name: s.name, model: m.model, provider: m.provider, from: m.from });
+    say('console.run', { agentId: id, name: s.name, model: m.model, provider: m.provider, from: m.from });
     // the company folder as a blessed project (idempotent): without it the run cannot read or write a company file
-    let root = co.ROOT;
     try {
       const bl = await FL().blessRoot();
-      if (bl.ok) root = bl.root || root;
-      else line('console.note', { message: 'The company folder is not a blessed project on the station (' + bl.error + '), so ' + s.name + ' cannot read or write company files in this chat.' });
-    } catch (e) { line('console.note', { message: 'Could not check the project grant: ' + e.message }); }
+      if (!bl.ok) say('console.note', { message: 'The company folder is not a blessed project on the station (' + bl.error + '), so ' + s.name + ' cannot read or write company files in this chat.' });
+    } catch (e) { say('console.note', { message: 'Could not check the project grant: ' + e.message }); }
     const t = await transcript(id);
     const history = t.turns.slice(-40).map(x => ({ role: x.role, content: x.content }));
-    const payload = { agentId: id, model: m.model, provider: m.provider, rosterSystem: true, isTask: false, streamId: STREAM(id),
+    // isTask: true is what puts the agent's tools on the wire. With isTask:false the station sends the model NO tool
+    // definitions (capability/project-tools.js: advertised = isTask ? coreNames : []), and a model told about its tools
+    // writes the calls out as text (<run_command>…</run_command>, 2026-11-17: toolsOk 0 on every console chat).
+    const payload = { agentId: id, model: m.model, provider: m.provider, rosterSystem: true, isTask: true, streamId: STREAM(id),
       messages: history.concat([{ role: 'user', content: contextNote(id, s, co, text) + text }]), projectRoot: co.ROOT, placed: PLACED };
     let token; try { token = co.stationToken(); } catch (_) { token = null; }
     if (!token) { line('console.error', { code: 'station-down', message: 'No station token (secrets/station-token).', fix: 'Run scripts/setup-station.sh', link: '#/settings/system' }); return res.end(); }
     // the one gate (company/tools/lib/admit.js, door chat): an owner chat is always allowed and always counted
     let tk = null; try { tk = require(co.p('company', 'tools', 'lib', 'admit.js')).admit({ door: 'chat', kind: 'run', seat: id, why: body.brief ? 'console brief ' + body.brief : 'owner chat' }); } catch (_) {}
+    const shownText = body.brief ? text.split('\n')[0] : text;
+    const prep = await RUNS.prepare(STREAM(id), { seat: id, userText: text, shownText, brief: body.brief || null, model: m.model, provider: m.provider },
+      runId => { for (const l of opening) RUNS.journal(runId, l.name, l.payload); });
+    if (prep.source === 'observe') payload.detach = true;
     const u = new URL(co.STATION_URL.replace(/\/+$/, '') + '/api/run');
     const data = JSON.stringify(payload);
-    let ended = false, sawEnd = false, sawError = false, buf = '';
+    let runId = null, closed = false, off = null, upEnded = false, sawEnd = false;
+    const watch = rid => {   // the run is known: from here the browser reads its journal
+      if (runId || closed) return; runId = rid;
+      line('console.attached', { runId: rid });
+      off = RUNS.attach(rid, 0, l => { line(l.name, l.payload); if (l.name === 'console.end') { closed = true; if (off) off(); res.end(); } });
+    };
+    prep.started.then(watch);
+    const refuse = (p) => { prep.cancel(); if (!runId) { line('console.error', p); closed = true; res.end(); } };
     const up = http.request({ hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST',
       headers: { 'x-starnet-token': token, 'content-type': 'application/json', 'content-length': Buffer.byteLength(data), accept: 'application/x-ndjson' } }, ur => {
       try { require(co.p('company', 'tools', 'lib', 'admit.js')).started(tk, { status: ur.statusCode }); } catch (_) {}
       if (ur.statusCode !== 200) {
         let d = ''; ur.on('data', c => { d += c; }); ur.on('end', () => {
           let msg = d.trim(); try { const j = JSON.parse(msg); msg = j.error || j.reason || msg; } catch (_) {}
-          line('console.error', { code: 'station-refused', message: 'The station refused the run (HTTP ' + ur.statusCode + '): ' + (msg || 'no reason given').slice(0, 400), fix: /key|model|provider|credential/i.test(msg) ? 'Check the AI provider in Setup.' : null, link: /key|model|provider|credential/i.test(msg) ? '#/setup/provider' : null });
-          ended = true; res.end();
+          refuse({ code: 'station-refused', message: 'The station refused the run (HTTP ' + ur.statusCode + '): ' + (msg || 'no reason given').slice(0, 400), fix: /key|model|provider|credential/i.test(msg) ? 'Check the AI provider in Setup.' : null, link: /key|model|provider|credential/i.test(msg) ? '#/setup/provider' : null });
         });
         return;
       }
       ur.setEncoding('utf8');
-      ur.on('data', c => {
-        buf += c; let i;
-        while ((i = buf.indexOf('\n')) >= 0) {
-          const l = buf.slice(0, i); buf = buf.slice(i + 1);
-          if (!l.trim()) continue;
-          try { const ev = JSON.parse(l); if (ev && ev.name === 'agent.run.end') sawEnd = true; if (ev && ev.name === 'agent.run.error') sawError = true; } catch (_) {}
-          try { res.write(l + '\n'); } catch (_) {}
-        }
-      });
+      let buf = '', mine = null;   // mine: this run's id, known synchronously (runId is set a tick later)
+      const each = l => {
+        let ev; try { ev = JSON.parse(l); } catch (_) { return; }
+        if (!ev || !ev.name) return;
+        const rid = ev.payload && ev.payload.runId;
+        if (ev.name === 'agent.run.start' && rid && !mine) { prep.claim(rid); mine = rid; }   // first to know (the feed may be first instead)
+        if (prep.source === 'direct' && mine) { if (rid && rid !== mine) return; if (ev.name === 'agent.run.end') sawEnd = true; RUNS.ingest(mine, ev.name, ev.payload || {}); }
+      };
+      ur.on('data', c => { buf += c; let i; while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); if (l.trim()) each(l); } });
       ur.on('end', () => {
-        if (buf.trim()) { try { res.write(buf.trim() + '\n'); } catch (_) {} }
-        if (!sawEnd && !sawError) line('console.error', { code: 'cut-off', message: 'The station closed the run before ' + s.name + ' finished.', fix: 'Send the message again; if it keeps happening, look at the station log (System).', link: '#/settings/system' });
-        ended = true; res.end();
+        upEnded = true; if (buf.trim()) each(buf.trim());
+        if (!runId && !mine) return refuse({ code: 'cut-off', message: 'The station closed the run before it started.', fix: 'Send the message again; if it keeps happening, look at the station log (System).', link: '#/settings/system' });
+        // read off its own stream, the run is over when the stream is: one that stopped before its end was cut off
+        if (prep.source === 'direct' && !sawEnd) RUNS.finish(mine, { reason: 'cut-off' });
       });
-      ur.on('error', e => { if (!ended) { line('console.error', { code: 'cut-off', message: 'The connection to the station broke: ' + e.message }); ended = true; res.end(); } });
+      ur.on('error', () => { if (!upEnded && prep.source === 'direct' && mine) RUNS.finish(mine, { reason: 'cut-off' }); else if (!mine) refuse({ code: 'cut-off', message: 'The connection to the station broke before the run started.' }); });
     });
-    up.on('error', e => { if (!ended) { line('console.error', { code: 'station-down', message: 'The station is not answering: ' + e.message, fix: 'systemctl --user start ' + svc() + '.service', link: '#/settings/system' }); ended = true; res.end(); } });
-    // the owner left (closed the tab, pressed Stop): the station's own rule stops a run whose page is gone
-    res.on('close', () => { if (!ended) up.destroy(); });
+    up.on('error', e => refuse({ code: 'station-down', message: 'The station is not answering: ' + e.message, fix: 'systemctl --user start ' + svc() + '.service', link: '#/settings/system' }));
+    // the browser left (a reload, a closed tab): it stops watching; the run goes on, and the page re-attaches. Stop is
+    // POST /api/station/cancel, never a dropped connection.
+    res.on('close', () => { closed = true; if (off) off(); });
     up.end(data);
+  }
+
+  /* GET /api/chat/<id>/attach?runId=&from=N: the run's journal from line N, then live, as NDJSON (the same lines /send
+     streams after console.attached). An unknown run answers {name:'console.gone'}; a finished one replays to its end. */
+  function attach(req, res, id, q) {
+    seatOf(id);
+    const rid = String(q.get('runId') || ''); const from = Math.max(0, Number(q.get('from')) || 0);
+    res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+    const r = RUNS.runOf(rid);
+    if (!r || r.seat !== id) { res.write(JSON.stringify({ name: 'console.gone', payload: { runId: rid } }) + '\n'); return res.end(); }
+    let off = null, ended = false;
+    const ka = setInterval(() => { try { res.write('\n'); } catch (_) {} }, 20000); ka.unref();
+    const stop = () => { ended = true; clearInterval(ka); if (off) off(); };
+    off = RUNS.attach(rid, from, l => { if (ended) return; try { res.write(JSON.stringify({ name: l.name, payload: l.payload }) + '\n'); } catch (_) {} if (l.name === 'console.end') { stop(); res.end(); } });
+    if (ended) off();
+    res.on('close', stop);
   }
 
   /* ---------- the owner channel: what each message is waiting on ---------- */
@@ -253,5 +336,5 @@ module.exports = function chat(deps) {
     });
   }
 
-  return { info, send, brief, channelState, messageStates, modelFor, seatOf };
+  return { info, send, attach, brief, channelState, messageStates, modelFor, seatOf, runs: RUNS };
 };

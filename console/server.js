@@ -529,6 +529,8 @@ route('GET', /^\/api\/owner\/messages$/, ownerChannel);
 route('POST', /^\/api\/owner\/messages$/, async (m, q, b) => { const r = postOwnerMessage(b); const ch = await CHAT.channelState(); r.message = CHAT.messageStates([r.message], ch)[0]; r.channel = ch; return r; });
 // live chat with a crew member (console/chat.js); POST /api/chat/<id>/send streams and is handled in makeServer
 route('GET', /^\/api\/chat\/([A-Za-z0-9_-]{1,64})$/, m => CHAT.info(m[1]));
+// the live chat runs in flight (console/chat-runs.js): scripts/restart-console.sh --when-idle waits for an empty list
+route('GET', /^\/api\/console\/busy$/, () => ({ ok: true, chats: CHAT.runs.busy() }));
 // chat actions (docs/CHAT-ACTIONS.md): a secret field in a chat block is stored here (the same writer as Today's key
 // field); the reply says only where and how long. Approvals: the approval API over the existing owner-question
 // records (company/tools/approvals.js); the expiry default (deny) and the reminders run server-side, here.
@@ -801,6 +803,8 @@ function makeServer(token) {
         return res.end(fs.readFileSync(f));
       }
       if (req.method === 'POST' && !/json/i.test(String(req.headers['content-type'] || ''))) return sendJson(res, 415, { ok: false, error: 'POST bodies are JSON (content-type: application/json)' });
+      const am2 = p.match(/^\/api\/chat\/([A-Za-z0-9_-]{1,64})\/attach$/);
+      if (am2 && req.method === 'GET') return CHAT.attach(req, res, am2[1], url.searchParams);
       const cm = p.match(/^\/api\/chat\/([A-Za-z0-9_-]{1,64})\/send$/);
       if (cm) { if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' }); return await CHAT.send(req, res, cm[1], await readBody(req)); }
       for (const r of routes) {
@@ -830,6 +834,7 @@ function start(argv) {
   const { host, port } = listenConfig(argv);
   const server = makeServer(token);
   armWatches();
+  CHAT.runs.start();   // re-attach to the chat runs a previous console process left in flight
   setInterval(armWatches, 15000).unref();
   setInterval(() => { tool('approvals.js').tick({ actor: 'the console' }).catch(() => {}); }, 60000).unref();   // approvals: expiry (default deny) and reminders
   ACT.start();

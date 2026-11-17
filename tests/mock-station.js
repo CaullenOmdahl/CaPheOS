@@ -93,9 +93,17 @@ function finishHeld(job, status) {
   S.cron.history.push({ jobId: job.id, runId, at: job.lastRunAt, status: job.lastStatus });
   S.runs.push({ runId, agentId: job.agentId, source: 'cron', startedAt: Date.parse(job.heldSince || job.lastRunAt), endedAt: Date.now(), usd: 0, provider: job.provider });
 }
-/* the observer feed (GET /api/observe): SSE frames `data: {name, payload}` for every run event, like sidecar/observer.js */
+/* the observer feed (GET /api/observe): SSE frames `id: <epoch>:<seq>` + `data: {name, payload}` for every run event, with a
+   512-event replay ring: ?cursor=<id> replays what came after it, then a ready frame {stream:'ready', cursor, reset} (reset:
+   the cursor is not in the ring), like sidecar/observer.js + channels/sse.js. The epoch changes on POST /__restart. */
+const chats = new Map();   // runId -> {stop(reason)}: console chat runs in flight
 const watchers = new Set();
-function observe(name, payload) { const f = 'data: ' + JSON.stringify({ name, payload }) + '\n\n'; for (const w of watchers) { try { w.write(f); } catch (_) {} } }
+const ring = []; let obsSeq = 0, obsEpoch = 'mock' + Date.now().toString(36);
+function observe(name, payload) {
+  const f = 'id: ' + obsEpoch + ':' + (++obsSeq) + '\ndata: ' + JSON.stringify({ name, payload }) + '\n\n';
+  ring.push({ seq: obsSeq, f }); while (ring.length > 512) ring.shift();
+  for (const w of watchers) { try { w.write(f); } catch (_) {} }
+}
 // POST /__live {agentId, routine?, steps?: [[tool, args]], usd?, text?}: a fake in-flight run, announced on the observer feed
 function startLive(B) {
   const runId = 'live-' + (S.runSeq++);
@@ -203,34 +211,53 @@ function handle(method, p, q, body, res) {
     const msgs = Array.isArray(B.messages) ? B.messages : [];
     const last = msgs.length ? String(msgs[msgs.length - 1].content || '') : '';
     // a console chat (streamId console-*): stream the reply in pieces with a tool step, keep the transcript; a charter
-    // brief also writes company/CHARTER.md under --root, as the Founder would with its file tools
+    // brief also writes company/CHARTER.md under --root, as the Founder would with its file tools. Like the station, the
+    // run's events go down this response AND to the observer feed; the response closing cancels the run unless the body
+    // says detach:true (StarNet patch 0014). "[slow]" in the message: 250 ms a word; "[leak]": the reply is the captured
+    // text of tool calls written out as text (tests/fixtures/leaked-tool-calls.txt). POST /api/cancel {runId} stops it.
     if (B.streamId && /^console-/.test(B.streamId)) {
-      const reply = /\[fail\]/.test(last) ? null : /charter/i.test(last)
+      S.runs.pop();   // recorded when it ends, as the station's run log does
+      const leak = /\[leak\]/.test(last) ? fs.readFileSync(path.join(__dirname, 'fixtures', 'leaked-tool-calls.txt'), 'utf8') : null;
+      const reply = /\[fail\]/.test(last) ? null : leak ? leak : /charter/i.test(last)
         ? 'Happy to. Three quick questions: what does the company do, for whom, and what will it never do? I have drafted company/CHARTER.md from what you told me so far. [Review it in Setup](console:#/setup/charter)'
-        : 'Got it. ' + CANNED;
+        : /\[slow\]/.test(last) ? 'Got it. ' + CANNED + ' That is the whole plan, start to finish.' : 'Got it. ' + CANNED;
       const t = S.transcripts[B.streamId] = S.transcripts[B.streamId] || [];
-      t.push({ role: 'user', content: last, at: nowIso() });
+      t.push({ role: 'user', content: last, at: nowIso(), sourceRunId: runId });
+      S.lastRunBody = { isTask: B.isTask, detach: B.detach, placed: B.placed, streamId: B.streamId };
       res.writeHead(200, { 'content-type': 'application/x-ndjson' });
-      const evs = [{ name: 'agent.run.start', payload: { runId, agentId: B.agentId } }];
+      const evs = [{ name: 'agent.run.start', payload: { runId, agentId: B.agentId, streamId: B.streamId, model: B.model } }];
       if (!reply) evs.push({ name: 'agent.run.error', payload: { runId, message: 'provider error: HTTP 401 (mock)', failureCode: 'provider_auth' } }, { name: 'agent.run.end', payload: { runId, reason: 'error', outcome: 'failed', usd: 0 } });
       else {
-        evs.push({ name: 'agent.tool_call', payload: { runId, callId: 'c1', name: 'fs_read', argsSummary: 'company/CHARTER.md' } }, { name: 'agent.tool_result', payload: { runId, callId: 'c1', ok: true, ms: 3, summary: 'read 40 lines' } });
-        for (const w of reply.match(/\S+\s*/g)) evs.push({ name: 'agent.token', payload: { runId, delta: w } });
+        if (!leak) evs.push({ name: 'agent.tool_call', payload: { runId, callId: 'c1', name: 'fs_read', argsSummary: 'company/CHARTER.md' } }, { name: 'agent.tool_result', payload: { runId, callId: 'c1', ok: true, ms: 3, summary: 'read 40 lines' } });
+        for (const w of leak ? reply.match(/[^\n]*\n?/g).filter(Boolean) : reply.match(/\S+\s*/g)) evs.push({ name: 'agent.token', payload: { runId, delta: w } });
         evs.push({ name: 'agent.run.end', payload: { runId, reason: 'done', outcome: 'succeeded', usd: 0.0012 } });
       }
-      let i = 0;
-      const tick = () => {
-        if (i >= evs.length) {
-          if (reply) {
-            t.push({ role: 'assistant', content: reply, at: nowIso() });
-            if (/charter/i.test(last) && ROOT && B.projectRoot) {
-              try { const f = path.join(ROOT, 'company', 'CHARTER.md'); fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace(/<!--[\s\S]*?-->/g, '').replace(/<(?!none yet>)[A-Za-z][^<>\n]{0,200}>/g, 'Drafted with the owner in the console.')); } catch (_) {}
-            }
-          }
-          return res.end();
-        }
-        res.write(JSON.stringify(evs[i++]) + '\n'); setTimeout(tick, 40);
+      const live = { runId, agentId: B.agentId, startedAt: Date.now(), source: 'interactive', streamId: B.streamId };
+      S.live.push(live);
+      let i = 0, text = '', timer = null, over = false;
+      const send1 = ev => { try { if (!res.writableEnded && !res.destroyed) res.write(JSON.stringify(ev) + '\n'); } catch (_) {} observe(ev.name, ev.payload); };
+      const settle = (reason) => {
+        if (over) return; over = true; clearTimeout(timer); chats.delete(runId); S.live = S.live.filter(x => x !== live);
+        if (text) t.push({ role: 'assistant', content: reason === 'done' ? reply : text, at: nowIso(), sourceRunId: runId });
+        S.runs.push({ runId, agentId: B.agentId, source: 'interactive', streamId: B.streamId, startedAt: live.startedAt, endedAt: Date.now(), reason, usd: 0, projectRoot: B.projectRoot || null, placed: B.placed || null });
+        try { res.end(); } catch (_) {}
       };
+      const stop = reason => { if (over) return; send1({ name: 'agent.run.end', payload: { runId, reason, outcome: 'cancelled', usd: 0 } }); settle(reason); };
+      chats.set(runId, { stop });
+      const step = /\[slow\]/.test(last) ? 250 : 40;
+      const tick = () => {
+        if (over) return;
+        if (i >= evs.length) {
+          if (reply && /charter/i.test(last) && ROOT && B.projectRoot) {
+            try { const f = path.join(ROOT, 'company', 'CHARTER.md'); fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace(/<!--[\s\S]*?-->/g, '').replace(/<(?!none yet>)[A-Za-z][^<>\n]{0,200}>/g, 'Drafted with the owner in the console.')); } catch (_) {}
+          }
+          return settle(reply ? 'done' : 'error');
+        }
+        const ev = evs[i++]; if (ev.name === 'agent.token') text += ev.payload.delta;
+        send1(ev); timer = setTimeout(tick, step);
+      };
+      // the disconnect law: the watcher leaving cancels the run, unless it asked to be detached
+      res.on('close', () => { if (!over && B.detach !== true) { S.cancelledByDisconnect = (S.cancelledByDisconnect || 0) + 1; stop('cancelled'); } });
       tick();
       return 200;
     }
@@ -256,6 +283,7 @@ function handle(method, p, q, body, res) {
   if (p === '/api/run/steer') return send(res, 200, { ok: true });
   if (p === '/api/runs' && method === 'GET') return send(res, 200, { ok: true, runs: S.runs.slice(-200) });
   if (p === '/api/state/snapshot' && method === 'GET') return send(res, 200, { ok: true, runs: S.live.map(r => ({ runId: r.runId, agentId: r.agentId, startedAt: r.startedAt, source: r.source, streamId: r.streamId, stoppable: true })), agents: S.roster.map(r => ({ agentId: r.agentId, name: r.name })) });
+  if (p === '/api/cancel' && method === 'POST' && chats.has(String(B.runId || ''))) { chats.get(String(B.runId)).stop('cancelled'); return send(res, 200, { ok: true, stopped: true }); }
   if (p === '/api/cancel' && method === 'POST' && S.cron.jobs.some(j => j.inFlight && j.inFlightRunId === B.runId)) { finishHeld(S.cron.jobs.find(j => j.inFlight && j.inFlightRunId === B.runId), 'stopped'); return send(res, 200, { ok: true, stopped: true }); }
   if (p === '/api/cancel' && method === 'POST' && S.live.some(r => r.runId === B.runId)) { const r = S.live.find(x => x.runId === B.runId); S.live = S.live.filter(x => x !== r); observe('agent.run.end', { runId: r.runId, agentId: r.agentId, reason: 'cancelled', outcome: 'cancelled', usd: 0.001 }); return send(res, 200, { ok: true }); }
   if (p === '/api/cancel') return send(res, 200, { ok: true });
@@ -430,6 +458,8 @@ const server = http.createServer((req, res) => {
       for (const r of S.live) observe('agent.run.end', { runId: r.runId, agentId: r.agentId, reason: 'cancelled', outcome: 'cancelled', usd: 0 });
       S.live = []; for (const j of S.cron.jobs) { j.inFlight = false; delete j.inFlightRunId; }
       S.downUntil = Date.now() + RESTART_DOWN_MS;
+      obsEpoch = 'mock' + Date.now().toString(36); ring.length = 0;
+      for (const c of chats.values()) c.stop('cancelled');
       // a provider still checking its sign-in after a boot (POST /__boot-settle {id: ms}): not ready for that long after the restart
       S.settleUntil = {}; for (const [id, ms] of Object.entries(S.bootSettle || {})) S.settleUntil[id] = S.downUntil + Number(ms);
       row.status = send(res, 200, { ok: true, inFlight }); return logReq(row);
@@ -437,6 +467,11 @@ const server = http.createServer((req, res) => {
     if (u.pathname === '/__live' && req.method === 'POST') { row.status = send(res, 200, { ok: true, run: startLive(body || {}) }); return logReq(row); }
     if (u.pathname === '/api/observe' && req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' }); res.write('retry: 3000\n\n');
+      const cur = String(u.searchParams.get('cursor') || req.headers['last-event-id'] || '');
+      const n = cur.startsWith(obsEpoch + ':') ? Number(cur.slice(obsEpoch.length + 1)) : -1;
+      const valid = Number.isInteger(n) && n >= (ring.length ? ring[0].seq - 1 : obsSeq) && n <= obsSeq;
+      if (valid) for (const e of ring) if (e.seq > n) res.write(e.f);
+      res.write('id: ' + obsEpoch + ':' + obsSeq + '\ndata: ' + JSON.stringify({ stream: 'ready', cursor: obsEpoch + ':' + obsSeq, reset: !valid }) + '\n\n');
       watchers.add(res); res.on('close', () => watchers.delete(res));   // not req 'close': it fires once the request body is read
       row.status = 200; return logReq(row);
     }
