@@ -143,32 +143,41 @@ lands.
 
 ---
 
-## 8. Scope: this company is fintech
+## 8. Standard surfaces, then this company
 
-The framework ships no vertical (`README.md`). A workplace enables a subset. Parity is measured against **this
-company's mounted set**, not the framework's stock.
+The framework ships no vertical (`README.md`). Two different things are in play: what every workplace gets because it is
+the virgin state, and what this company adds.
 
-**In scope for this company:**
+**Standard on every deployment — the bootstrap kit.** Parity for these is tested once, for every workplace:
 
-| Layer | Mounted |
+| Layer | Standard |
 |---|---|
-| surfaces | the console, chat and runs, Today, Work, Spend, Crew, Meetings, Settings, panels |
-| work | tasks, dispatcher, duties, approvals, commitments, handoffs |
-| money | budget, holds, provider balances, subscriptions, ledger and invoices, settlement through the external gate |
-| risk | governance, guardrails, per-party scopes, evidence, verify, continuity |
+| founding | bootstrap, setup, certification, launch |
+| surfaces | Today, Chat, Crew, Work, Spend, Meetings, Settings, panels |
+| work | tasks, dispatcher, duties, approvals, commitments, handoffs, hiring, competence |
+| money | budget, holds, provider balances, subscriptions |
+| risk | governance, guardrails, decisions, backup and liveness |
 | sense and organize | intake, observe, parties, playbooks |
-| people | hiring, competence, meetings |
 | integrations | connectors, keys, skills, provider adapters |
-| desktop | yes — banking and brokerage portals are exactly why the grant tiers 2–3 exist (`DEPLOY.md` §5) |
+| owner | the owner channel and the console auth |
+
+**This company adds (fintech):** ledger and invoices, settlement through the external gate, per-party scopes, evidence,
+verify, reports, continuity, and the desktop — banking and brokerage portals are exactly why the grant tiers 2–3 exist
+(`DEPLOY.md` §5).
+
+**Most units are not in this repository.** Tools, integrations and vertical stacks are pulled from the units repo (§3.1
+of `BACKEND.md`), so the framework's parity is the core and the bootstrap kit; the workspace's parity is the kits and
+units it actually mounts.
 
 **Out of scope is not baggage.** A tool or module that serves another vertical, or that no duty, route, module manifest
-or seat routine references, stays in the framework as a unit but is **not mounted here**. It gets no row in §4: it is not
-being cut from the product, it is simply not this company's.
+or seat routine references, stays in the framework or the units repo as a unit but is **not mounted here**. It gets no
+row in §4: it is not being cut from the product, it is simply not this company's.
 
-**The rule:** a capability is in scope when the fintech stack declares it, or something uses it (a duty, a console
+**The rule:** a capability is in scope when the mounted stack declares it, or something uses it (a duty, a console
 route, a module manifest, a seat routine). Everything else is not mounted, so it registers no tools and costs no prompt
 tokens. That is where the "fewer prompt tokens" claim actually comes from — not from deleting tools, but from not
 mounting them.
 
-**Consequence for P0:** the unit mapping is per stack, and the stack is the fintech one. The parity tests run against the
-mounted set, and the failure they catch is a capability in scope that is not mounted.
+**Consequence for P0:** there are two unit mappings, not one — the bootstrap kit (the same everywhere) and the fintech
+pack (this company). The parity tests run against the mounted set, and the failure they catch is a capability in scope
+that is not mounted.

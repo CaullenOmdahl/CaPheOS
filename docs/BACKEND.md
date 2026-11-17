@@ -82,6 +82,25 @@ Cordis is the extension standard (§ `docs/MODULE-SYSTEM.md`): every service is 
 company adds (a tool, an integration, a seat) is a unit mounted into this composition. It is not the subject of the
 backend — it is how the backend grows.
 
+### 3.1 Three layers, one of them standard
+
+| Layer | Same on every deployment? | What it is |
+|---|---|---|
+| **Core harness** | yes | the eight responsibilities in §7.1 |
+| **Bootstrap kit** | yes | what a virgin workplace runs from founding to the Founder's first hires: the setup and onboarding flow, the console surfaces (Today, Chat, Crew, Work, Spend, Meetings, Settings, panels), the dispatcher and duties, approvals and questions, budget and spend, governance and decisions, handoffs, hiring, competence, commitments, intake, meetings, connectors and keys, skills, backup and liveness |
+| **Units** | no | tools, integrations, provider adapters, roles and vertical stacks — pulled from a registry and mounted by the workplace's declared stack |
+
+**The virgin state is the same everywhere.** A new workplace is core + bootstrap kit, whatever its vertical. The company
+differs only by the units it mounts. That is what makes founding repeatable and the Founder's first week predictable.
+
+**Most of the toolbag does not live in this repository.** The 80 tools become units, and units live in an adjacent
+repository — the units repo — published through an index and pulled on demand (`docs/MODULE-SYSTEM.md`). This
+repository keeps the core, the bootstrap kit and the installer. An agent that needs a capability pulls a unit, with the
+owner's approval and a verified digest. It is the same mechanism as everything else in the module standard: nothing is
+special-cased.
+
+The division is deliberate: the framework stays lean, and the toolbag keeps growing without touching the core.
+
 ---
 
 ## 4. What the backend does
@@ -206,6 +225,7 @@ disposable home of the machine, not the identity.
 | Disposition | What |
 |---|---|
 | **Keep the behaviour** | the console UI and its 70 routes; the company tools' behaviour; the dispatcher; approvals; budgets; governance; meetings; commitments; intake; ledger; core modules; skills — re-expressed under the standard, not kept as files |
+| **Move to the units repo** | most of the 80 tools — they become units published through an index and pulled on demand; this repository keeps the core, the bootstrap kit and the installer |
 | **Vendor with attribution** | StarNet's provider adapters (`anthropic`, `openai-compatible`, `openrouter`, `gemini`, `ollama-native`, `claude-cli`, `codex`), the MCP client and transports, the streaming event vocabulary. MIT/BSD with `NOTICE`; no StarNet branding; renamed to our vocabulary (§7.2) |
 | **Rewrite** | the run loop (today it lives inside StarNet and CaPheOS only drives it); run/transcript storage; schedules (→ the dispatcher); seat identity (→ files) |
 | **Rewrite small** | the chat run system (`console/chat-runs.js`) against our own runs instead of StarNet's observer feed |
@@ -217,7 +237,8 @@ competence and evidence all depend on "a unit of work with steps that closes on 
 **The toolbag predates the standard.** 80 tools, 36 `lib/` helpers, 12 modules and a retrofitted pack scaffold were
 built without a plugin standard, so each carries its own argument parsing, JSON output, state reads and selftest. That
 shape is the migration source, not the target: behaviours are preserved, the plumbing they duplicate becomes services,
-and the packaging is replaced. Expect fewer artifacts, not the same ones renamed (§7.1, `docs/PARITY.md` §7).
+and the packaging is replaced. Expect fewer artifacts, not the same ones renamed (§7.1, `docs/PARITY.md` §7) — and most
+of them move out of this repository into the units repo (§3.1).
 
 ### 7.1 The core is small; everything else is a plugin
 
@@ -239,7 +260,7 @@ Everything else is a plugin: **shipped with the base**, mounted by configuration
 | Plugin family | Examples |
 |---|---|
 | provider adapters | anthropic, openai-compatible, openrouter, gemini, ollama, claude-cli, codex |
-| tool families | shell, filesystem, web, notebook, skills, desktop/browser, MCP |
+| tool families | shell, filesystem, skills and the MCP loader ship in the bootstrap kit; web, notebook, desktop and integration tools are units pulled from the units repo |
 | integrations | connectors, OAuth sign-ins, service keys |
 | seats | role templates, personas, routines |
 | surfaces | console panels and pages |

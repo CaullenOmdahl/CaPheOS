@@ -36,6 +36,10 @@ Today's script already does the right job; the rewrite keeps its shape and drops
 
 **Does not do:** ask about the business, configure a provider, hire anyone, start anything.
 
+**The bootstrap kit it turns on is the standard one.** Every workplace gets the same virgin state — the standard
+surfaces, work, money, risk, sense and owner channel (`docs/PARITY.md` §8). Founding is repeatable because the starting
+point does not depend on the vertical.
+
 **Rules:**
 
 - **Ids are immutable, display names are not.** The company slug is fixed at bootstrap (it is in paths and identity);
@@ -54,6 +58,9 @@ other.
 
 **The conversation is gated by keys.** It needs one verified provider. Until then the form is the only path — and the
 form is never a dead end: a later conversation resumes the same record and asks only what is missing.
+
+**The bootstrap kit is mounted in full first, whichever the vertical.** No company starts without the standard
+surfaces, work, money, risk, sense and owner channel. The vertical then adds its units; the flow records which.
 
 ### 3.1 Stages
 
@@ -109,6 +116,9 @@ onboarding already exists (`0dfe341`); the new flow keeps the semantics and feed
 4. **First plan** — the first tasks, with owners and dates, and the company's first dispatch tick.
 5. **Self-rename** — at any point the owner can rename the Founder's display name (and the company's display name);
    the slug and the seat id stay. The change is recorded like any other decision.
+6. **Pull what the work needs** — the Founder installs units from the units repo as the first work requires them:
+   owner-approved, digest-verified, mounted for this workplace. Most of the toolbag arrives this way, not with the
+   install (`docs/BACKEND.md` §3.1).
 
 After launch, the Founder scaffolds the inner workings of the chosen company — the org, the routines, the integrations,
 the policies — as work, not as setup. The setup flow's job is finished.
