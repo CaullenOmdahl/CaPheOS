@@ -282,7 +282,9 @@ function makeModels(o) {
       // runs on the first entry of its OWN chain that is not Claude and can run, so the Claude quota stays for reasoning
       // work. Only inside the chain, only to an entry that can run now; a soft hold, so Claude is back as soon as a
       // reasoning item arrives (its okSince is kept, no recovery wait).
-      if (sprintMechanical(id) && ev.some(x => x.ok && x.e.provider !== 'claude-cli'))
+      // no flapping: after a move back up to Claude, the seat stays there at least 15 min before the next soft move down
+      const softRest = ss.sprintUpAt && t - ss.sprintUpAt < 15 * MIN;
+      if (!softRest && sprintMechanical(id) && ev.some(x => x.ok && x.e.provider !== 'claude-cli'))
         for (const x of ev) if (x.ok && x.e.provider === 'claude-cli') Object.assign(x, { ok: false, soft: true, why: 'Sprint: every open item is Effort: mechanical, so Claude is kept for reasoning work' });
       for (const x of ev) { const k = keyOf(x.e); if (x.ok || x.soft) { if (!ss.okSince[k]) ss.okSince[k] = t; } else delete ss.okSince[k]; }
       const cur = current(id, all), curKey = cur.pick ? keyOf(cur.pick) : null;
@@ -322,7 +324,7 @@ function makeModels(o) {
       const row = { at: new Date(t).toISOString(), seat: id, name, from: curKey, to: keyOf(to), effort: to.effort || null, toIndex: target, of: chain.length, direction: dir, why, applied: res.ok, roster: res.roster, routines: res.routines.length, errors: res.errors };
       if (!res.ok) { ss.failedAt = t; ss.failedKey = keyOf(to); note('MOVE FAILED ' + name + ' -> ' + label(to) + ': ' + res.errors.join('; ')); logMove(row); out.push(Object.assign({ action: 'failed' }, row)); continue; }
       ss.failedAt = null; ss.shadowKey = '';
-      if (dir !== 'sync') { ss.lastMoveAt = t; ss.lastWhy = why; ss.index = target; ss.sprintSoft = ev.some(x => x.soft) && dir === 'down' ? true : undefined; }
+      if (dir !== 'sync') { ss.lastMoveAt = t; ss.lastWhy = why; ss.index = target; if (/^Sprint: reasoning work again/.test(why)) ss.sprintUpAt = t; ss.sprintSoft = ev.some(x => x.soft) && dir === 'down' ? true : undefined; }
       note((dir === 'sync' ? 'SYNC ' : 'MOVE ') + name + ' ' + (curKey || '?') + ' -> ' + label(to) + ' (entry ' + (target + 1) + ' of ' + chain.length + '): ' + why);
       if (dir === 'down' && target === chain.length - 1 && chain.length > 1) row.told = tellManager(id, cur.pick, to, why, ev);
       logMove(row);
@@ -639,6 +641,13 @@ async function selftest() {
       assert.strictEqual(S.jobs[1].provider, 'claude-cli', 'with no other entry able to run, the chain still runs on Claude: ' + JSON.stringify(r));
       S.providers.deepseek = true;
       r = await M().tick({ m: openM }); assert.strictEqual(S.jobs[1].provider, 'deepseek', JSON.stringify(r));
+      // no flapping: reasoning work brings it back to Claude; mechanical again within 15 min keeps it there, after 15 min it moves
+      w(REL.sprintEffort, { sprint: true, seats: { eng: 'reasoning' } }); T += 60e3;
+      r = await M().tick({ m: openM }); assert.strictEqual(S.jobs[1].provider, 'claude-cli', 'reasoning: back to Claude ' + JSON.stringify(r));
+      w(REL.sprintEffort, { sprint: true, seats: { eng: 'mechanical' } }); T += 5 * 60e3;
+      r = await M().tick({ m: openM }); assert.strictEqual(S.jobs[1].provider, 'claude-cli', 'mechanical 5 min later: stays on Claude ' + JSON.stringify(r));
+      T += 11 * 60e3;
+      r = await M().tick({ m: openM }); assert.strictEqual(S.jobs[1].provider, 'deepseek', 'mechanical 16 min later: moves ' + JSON.stringify(r));
       const closed = Object.assign({}, openM, { claude: { open: false, known: true, hard: true, why: 'weekly stop 95%' } });
       w(REL.sprintEffort, { sprint: true, seats: { eng: 'reasoning' } });
       r = await M().tick({ m: closed });
