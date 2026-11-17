@@ -384,3 +384,9 @@ test('stall check: busy, but a due item does not move -> after STALL_AFTER*2 run
   assert.match(fyi, /Wen is working, but the due item[\s\S]*\*\*Status:\*\* DONE — FYI/);
   assert.equal((fyi.match(/is working, but the due item/g) || []).length, 1, 'said once');
 });
+
+test('stall check: starts the provider refused at its usage limit are not runs without progress (no page during a quota outage)', async () => {
+  const c = await company({ sprint: false, lastRunMinAgo: 600, handoffs: { 'to-wen.md': block('write the onboarding guide') } });
+  const r = await wakes(c, 'w1', 5, () => fs.appendFileSync(path.join(c.T, '.starnet-data/workspaces/runs.jsonl'), JSON.stringify({ runId: 'q-' + Math.random().toString(36).slice(2, 8), agentId: 'w1', startedAt: Date.now() - 60000, endedAt: Date.now() - 500, reason: 'error', failureCode: 'quota_exhausted', usd: 0 }) + '\n'));
+  assert.doesNotMatch(r.log, /STALLED handoffs to-wen/, r.log.slice(-800));
+});
