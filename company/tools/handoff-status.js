@@ -180,6 +180,23 @@ function structureFindings(text) {
   return out;
 }
 
+// FUTURE STAMP — a block stamped later than the clock (a heading stamped 14:38 written at 14:12). A stamp is meant to
+// come from `date`; one written from a sense of elapsed work reads as a decision taken after the fact it describes.
+// Covers the heading ("## <date> <time> ...", "## Progress|Resolved <date> <time> ...") and the bold Progress/Resolved
+// line ("**Resolved <date> <time> by ...**"). Stamps are company local time (co.TZ), never the machine's zone.
+const STAMP = /^(?:## (?:(?:Progress|Resolved)\s+)?|\*\*(?:Progress|Resolved)\s+)(\d{4}-\d\d-\d\d) (\d\d:\d\d)(?=[\s*:]|$)/;
+function futureStamps(text, nowMs) {
+  const out = [];
+  const lines = String(text).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const m = STAMP.exec(lines[i]);
+    if (!m) continue;
+    const t = localToEpoch(m[1], m[2]);
+    if (Number.isFinite(t) && t > nowMs) out.push({ kind: 'FUTURE STAMP', line: i + 1, stamp: m[1] + ' ' + m[2], minutesAhead: Math.ceil((t - nowMs) / 60000), heading: lines[i] });
+  }
+  return out;
+}
+
 const fmt = d => fmtLocal(d);   // company local time
 
 // One report line. It lives in a function so the selftest can grade the line the report actually prints — the first
@@ -353,6 +370,22 @@ function selftest() {
   ok('a Progress note whose status AGREES with its parent is not a finding', structureFindings(appendixAgrees).length === 0,
     JSON.stringify(structureFindings(appendixAgrees)));
 
+  // FUTURE STAMP: red on a stamp ahead of the clock, green on past, equal and prose forms; read in company time
+  const NOW = localToEpoch('2026-11-17', '14:20');
+  const fut = HEAD + '## 2026-11-17 14:38 from B — stamped from a sense of elapsed time\n**Need:** x\n**Status:** OPEN\n';
+  const fs1 = futureStamps(fut, NOW);
+  ok('a heading stamped 18 minutes ahead is a FUTURE STAMP naming its line and the gap',
+    fs1.length === 1 && fs1[0].minutesAhead === 18 && fs1[0].line === 5, JSON.stringify(fs1));
+  ok('a stamp equal to now or in the past is not a finding',
+    futureStamps(HEAD + '## 2026-11-17 14:20 from B — now\n## 2026-11-17 09:00 from B — earlier\n', NOW).length === 0);
+  const boldLine = HEAD + '## 2026-11-17 10:00 from B — a handoff\n**Status:** DONE\n**Resolved 2026-11-17 14:31 by B:** done\n'
+    + '## Progress 2026-11-17 14:45 by B — note\n';
+  ok('the bold Resolved line and a Progress heading are checked too', futureStamps(boldLine, NOW).length === 2, JSON.stringify(futureStamps(boldLine, NOW)));
+  ok('prose that merely contains a later date is not a stamp',
+    futureStamps(HEAD + 'The release is on 2026-12-01 09:00 per the calendar\n**Deadline:** 2026-12-01 09:00\n', NOW).length === 0);
+  ok('the stamp is read in the company timezone (an hour ahead in co.TZ is 60 minutes ahead)',
+    (futureStamps('## 2026-11-17 15:20 from B\n', NOW)[0] || {}).minutesAhead === 60);
+
   // DUTY: counts and ids only, routed to the inbox owner's manager (the CEO for a seat with none)
   const crewT = { ceo1: { name: 'Alex', inbox: 'to-alex.md', manager: null }, sam: { name: 'Sam', inbox: 'to-sam.md', manager: 'ceo1' } };
   const ent = (file, text) => classify(text).map(c => Object.assign({ file: 'company/work/handoffs/' + file }, c));
@@ -419,6 +452,7 @@ function main() {
   let total = 0;
   let structural = 0;
   let warns = 0;
+  let future = 0;
   for (const f of files) {
     let text = '';
     try { text = fs.readFileSync(f, 'utf8'); } catch (_) { continue; }
@@ -426,6 +460,12 @@ function main() {
     for (const bad of scan(text)) {
       findings++;
       if (!quiet) console.log('MISSING STATUS  ' + path.relative(ROOT, f) + ':' + bad.line + '  "' + bad.heading.slice(0, 90) + '"');
+    }
+    for (const st of futureStamps(text, Date.now())) {
+      const rel = path.relative(ROOT, f);
+      if (rel.includes(path.sep + 'archive' + path.sep)) { warns++; if (!quiet) console.log('WARN  ' + st.kind.padEnd(20) + rel + ':' + st.line + '  ' + st.stamp); continue; }
+      future++;
+      if (!quiet) console.log(st.kind.padEnd(20) + rel + ':' + st.line + '  ' + st.stamp + '  (' + st.minutesAhead + ' min ahead of the clock; stamp from `date`)  "' + st.heading.slice(0, 70) + '"');
     }
     for (const s of structureFindings(text)) {
       const rel = path.relative(ROOT, f);
@@ -442,6 +482,8 @@ function main() {
     + ' structural finding(s) that change what dispatch does (an OPEN block with nothing to act on; a block re-opened by a second status line); '
     + warns + ' warning(s) (an appendix status contradicting its parent, two status lines that agree, anything inside an archive)');
 
+  console.log((future ? 'FUTURE STAMPS: FAIL — ' : 'FUTURE STAMPS: PASS — ') + future + ' block(s) stamped later than the clock (a stamp comes from `date`, not from a sense of elapsed work)');
+
   // Sibling check, run in the same pass: a money figure written through a
   // shell arrives as `/bin/sh.9311` where `$0.9311` belongs, and it still reads as prose. One command
   // covers both lints so neither is a tool somebody has to remember to run.
@@ -456,8 +498,8 @@ function main() {
   } catch (e) {
     console.log('TEXT INTEGRITY: SKIPPED — ' + e.message + ' (the corruption check did not run; this is not a pass)');
   }
-  process.exit(findings || structural || corrupt ? 1 : 0);
+  process.exit(findings || structural || future || corrupt ? 1 : 0);
 }
 
 if (require.main === module) main();
-module.exports = { sections, statusOf, classify, scan, dueSet, deadlineOf, dutyResult };
+module.exports = { sections, statusOf, classify, scan, dueSet, deadlineOf, dutyResult, futureStamps };
