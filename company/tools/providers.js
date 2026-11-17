@@ -102,8 +102,24 @@ async function setEndpoint(D, o) {
   if (pending.length) throw refuse('the station key store has ' + pending.length + ' change(s) the watcher has not accepted (' + pending.map(p => path.basename(p)).join(', ') + '): the owner accepts or rotates them first (Settings, or locked-watch.js accept), then run this again', 'state');
   const key = D.MME.storedKey(D.root); if (!key) throw refuse('no MiniMax key on file (secrets/minimax-key or the station store): the owner sets the key in Settings first', 'state');
   const scrub = s => String(s == null ? '' : s).split(key).join('[key]').slice(0, 160);
-  const v = await D.station('providers/validate', { provider: 'custom', key, baseUrl: ep.baseUrl }, 25000);
-  if (!v.ok || !v.data || !v.data.credentialVerified) throw refuse('MiniMax at ' + host + ' did not accept the key on file' + (v.data && v.data.reachable === false ? ' (not reachable from the station)' : v.error ? ' (' + scrub(v.error) + ')' : '') + '; nothing was changed', 'station');
+  // A probe right after another probe of the same endpoint can come back "did not complete a verification response"
+  // (reachable, no verdict) for a valid key: that is a cooldown, not a rejection. Retry it with backoff; report a
+  // rejection as a rejection and an exhausted retry as what it is.
+  const rejected = d => !!d && (d.status === 'rejected' || [401, 403].includes(Number(d.httpStatus)) || /\b(401|403)\b|reject|invalid|unauthori[sz]ed/i.test(String(d.error || '')));
+  let v, tries = 0;
+  for (const wait of [0].concat(D.retryWaitsMs || [15000, 30000, 45000])) {
+    if (wait) await D.sleep(wait);
+    tries++;
+    v = await D.station('providers/validate', { provider: 'custom', key, baseUrl: ep.baseUrl }, 25000);
+    const d = v && v.data;
+    if (v && v.ok && d && d.credentialVerified) break;
+    if (!d || d.reachable === false || rejected(d)) break;   // a real answer: not reachable, or the key was refused
+  }
+  if (!v.ok || !v.data || !v.data.credentialVerified) {
+    const d = v.data;
+    if (d && d.reachable !== false && !rejected(d)) throw refuse('the station could not complete a verification against ' + host + ' after ' + tries + ' tries (last: ' + scrub(d.error || 'no verdict') + ') — the key was not rejected; nothing was changed, try again in a few minutes', 'station');
+    throw refuse('MiniMax at ' + host + ' did not accept the key on file' + (d && d.reachable === false ? ' (not reachable from the station)' : v.error ? ' (' + scrub(v.error) + ')' : '') + '; nothing was changed', 'station');
+  }
   if (o['dry-run']) return { ok: true, dryRun: true, by: who.name, approval: qid, endpoint: { region: ep.region, baseUrl: ep.baseUrl }, warnings: ep.warnings };
   const before = snapshot(D.root);
   let c = await D.station('providers/connect', { provider: 'custom', key, baseUrl: ep.baseUrl }, 50000);
@@ -127,7 +143,7 @@ function liveDeps() {
   const co = require('./lib/company'); const prov = require('./provenance.js'); const MME = require('./lib/minimax-endpoint.js');
   const crew = co.crew();
   return {
-    root: co.ROOT, MME, prov, now: () => Date.now(),
+    root: co.ROOT, MME, prov, now: () => Date.now(), sleep: ms => new Promise(r => setTimeout(r, ms)),
     seats: { ceo: co.ceo(), people: co.seatFor('people') },
     nameToId: n => (Object.entries(crew).find(([, s]) => String((s && s.name) || '').toLowerCase() === String(n).toLowerCase()) || [])[0] || null,
     nameOf: id => co.nameOf(id),
@@ -164,14 +180,14 @@ async function selftest() {
   const calls = []; const wrote = []; const decided = [];
   let accept = true, conflict = null;
   const D = {
-    root: T, MME, now: () => 0, seats: { ceo: 'ceo1', people: 'hr1' },
+    root: T, MME, now: () => 0, seats: { ceo: 'ceo1', people: 'hr1' }, sleep: async () => {}, retryWaitsMs: [1, 1, 1],
     nameToId: n => ({ alex: 'ceo1', hana: 'hr1', sam: 'w1' })[String(n).toLowerCase()] || null,
     nameOf: id => ({ ceo1: 'Alex', hr1: 'Hana', w1: 'Sam' })[id] || id,
     prov: { wrote: (f, b, by) => wrote.push({ f: path.relative(T, f), sha: sha(Buffer.from(b)), by }), callerConflict: () => conflict, ownerShell: () => false },
     decide: (by, text) => decided.push({ by, text }),
     station: async (p, body) => {
       calls.push({ p, baseUrl: body.baseUrl });
-      if (p === 'providers/validate') return { ok: true, data: { credentialVerified: accept, reachable: true } };
+      if (p === 'providers/validate') return { ok: true, data: accept ? { credentialVerified: true, reachable: true } : { credentialVerified: false, reachable: true, status: 'rejected', httpStatus: 401, error: 'HTTP 401' } };
       if (p === 'providers/connect') { w(store, { providers: { custom: { key: body.key, baseUrl: body.baseUrl } } }); w(SECRETS_REL + '/provider-keys.json.bak', 'old'); return { ok: true, data: { ok: true } }; }
       return { ok: false, status: 404 };
     },
@@ -191,6 +207,15 @@ async function selftest() {
       await refused({ by: 'Sam' }, /may not change provider settings/, 'worker');
       conflict = { runId: 'r9' }; await refused({}, /another seat's run/, 'conflict'); conflict = null;
       await refused({ by: 'owner' }, /owner's own interactive shell/, 'owner off-shell');
+    });
+    await t('a probe cooldown (reachable, no verdict) is retried, and an exhausted retry does not read as a rejected key', async () => {
+      const real = D.station; let n = 0;
+      D.station = async (p, body) => { if (p === 'providers/validate') { n++; return n < 3 ? { ok: true, data: { credentialVerified: false, reachable: true, error: 'the endpoint did not complete a verification response' } } : { ok: true, data: { credentialVerified: true, reachable: true } }; } return real(p, body); };
+      const r = await run({ 'dry-run': true }); assert.ok(r.dryRun && n === 3, 'retried until verified: ' + n);
+      n = -100; await refused({ 'dry-run': true }, /could not complete a verification .* after 4 tries .*the key was not rejected/, 'exhausted');
+      D.station = async p => p === 'providers/validate' ? { ok: true, data: { credentialVerified: false, reachable: true, httpStatus: 401, error: 'HTTP 401' } } : { ok: false };
+      await refused({ 'dry-run': true }, /did not accept the key on file/, 'a 401 is a rejection, not retried');
+      D.station = real;
     });
     await t('a key not accepted on the new endpoint changes nothing', async () => {
       accept = false; await refused({}, /did not accept/, 'reject'); accept = true;
