@@ -712,9 +712,14 @@ function runTick(ctx) {
     if (!st || !st.exists || !st.sha256 || /^(starnet|\.starnet-data|secrets)\//.test(key) || /^[~/]/.test(key)) return false;
     try {
       const cpx = require('child_process');
-      cpx.execFileSync('git', ['-C', ctx.root, 'ls-files', '--error-unmatch', key], { stdio: 'ignore' });
-      const head = cpx.execFileSync('git', ['-C', ctx.root, 'show', 'HEAD:' + key], { maxBuffer: 64 << 20 });
-      return require('crypto').createHash('sha256').update(head).digest('hex') === String(st.sha256).replace(/^sha256:/, '');
+      const want = String(st.sha256).replace(/^sha256:/, '');
+      const sha = b => require('crypto').createHash('sha256').update(b).digest('hex');
+      let tracked = true; try { cpx.execFileSync('git', ['-C', ctx.root, 'ls-files', '--error-unmatch', key], { stdio: 'ignore' }); } catch (_) { tracked = false; }
+      if (tracked) return sha(cpx.execFileSync('git', ['-C', ctx.root, 'show', 'HEAD:' + key], { maxBuffer: 64 << 20 })) === want;
+      // a module tool copied into company/tools/ by module.js: a framework update when it equals the module's own file at HEAD
+      const m = /^company\/tools\/([^/]+)$/.exec(key); if (!m) return false;
+      const srcs = cpx.execFileSync('git', ['-C', ctx.root, 'ls-files', '--', 'modules/*/tools/' + m[1]], { encoding: 'utf8' }).split('\n').filter(Boolean);
+      return srcs.some(src => sha(cpx.execFileSync('git', ['-C', ctx.root, 'show', 'HEAD:' + src], { maxBuffer: 64 << 20 })) === want);
     } catch (_) { return false; }
   };
   for (const c of changed) {
