@@ -1,0 +1,217 @@
+# 0013 — quest.update gets op:note (a step note WITHOUT a tick) and op:untick (repair a step ticked in error), and a
+# description that is true.
+# Status: NOT APPLIED (opt-in; scripts/setup-station.sh skips it until this line is changed). Owners: tools (the patch),
+# risk (it changes what an agent may write to quest state). The live tool path is covered by StarNet's tool tests, not
+# yet by an agent run against a running station: the first note/untick after enabling it is the real test.
+# Why: the tool said "progress is display only and never completes a quest", but op:progress ticks the step
+# (quests.js 'progress' -> store.tickStep -> done = true) and nothing could undo it. An agent that wanted to write a
+# caveat on an unfinished step had to tick it, and a wrong tick was permanent. (company/HANDOFFS.md says there is no
+# 'note' op; change it together with this line when the patch is enabled.)
+# What it changes (agent-scoped exactly like progress: store.openForAgent):
+#   sidecar/quest-store.js           noteStep(id, stepKey, note): writes the note, leaves done alone; on a done step it
+#                                    appends ("<old> | note: <new>"), never overwrites the tick's evidence; empty = no-op.
+#                                    untickStep(id, stepKey, reason): done=false on a DONE step of an OPEN quest; reason
+#                                    required, written first: "unticked: <reason> (was: <old note>)", clipped to 240.
+#   sidecar/tools/builtin/quests.js  ops 'note' and 'untick'; the description says progress TICKS.
+#   test/quest-store.test.js, test/quests-tool.test.js   cases for both ops.
+# What it does NOT do: reopen a closed quest (both ops refuse one: completion and credit stay the Commander's), or add a
+# REST route (sidecar/index.js is untouched). An untick cannot reset dispatch.js's stall counter, which only resets
+# when the done count rises above its recorded high-water mark.
+# Apply:  git -C starnet apply --3way --whitespace=nowarn ../company/patches/0013-quest-note-and-untick.diff (restart the station)
+# Revert: git -C starnet apply -R ../company/patches/0013-quest-note-and-untick.diff
+--- a/sidecar/quest-store.js
++++ b/sidecar/quest-store.js
+@@ -317,6 +317,44 @@
+     }).then(() => out);
+   }
+ 
++  // ---- noteStep: write a step's NOTE without touching its done flag. Works on an open or a done step of an OPEN quest;
++  //      an empty note is a no-op (it would otherwise erase one). Returns true only if a note was written. ----
++  function noteStep(id, stepKey, note, now) {
++    let out = false;
++    return durable.update(STORE_KEY, (cur) => {
++      const rec = normalize(cur);
++      const q = rec.quests.find(x => x.id === String(id));
++      if (!q || q.status !== 'open') return undefined;
++      const st = q.steps.find(s => s.key === String(stepKey));
++      const text = String(note == null ? '' : note).trim();
++      if (!st || !text) return undefined;
++      // a DONE step's note is the evidence its tick was made on: append to it, never overwrite it
++      st.note = st.done && st.note ? clip(st.note + ' | note: ' + text, 240) : clip(text, 240);
++      out = true;
++      return rec;
++    }).then(() => out);
++  }
++
++  // ---- untickStep: REPAIR. Put a step that was ticked in error back to not-done, on an OPEN quest only (a closed
++  //      quest is not reopened here). A reason is mandatory; it goes first, "unticked: <reason> (was: <old note>)", so the
++  //      correction and the withdrawn claim both stay readable. Idempotent: a step that is not done is a no-op. ----
++  function untickStep(id, stepKey, reason, now) {
++    let out = false;
++    return durable.update(STORE_KEY, (cur) => {
++      const rec = normalize(cur);
++      const q = rec.quests.find(x => x.id === String(id));
++      if (!q || q.status !== 'open') return undefined;
++      const st = q.steps.find(s => s.key === String(stepKey));
++      const why = String(reason == null ? '' : reason).trim();
++      if (!st || !st.done || !why) return undefined;
++      st.done = false;
++      // reason first, then the note the tick was made on, so the claim that was withdrawn stays readable
++      st.note = clip('unticked: ' + why + (st.note ? ' (was: ' + st.note + ')' : ''), 240);
++      out = true;
++      return rec;
++    }).then(() => out);
++  }
++
+   // bind the concrete run building a run-contract quest, so completeByContract('run', runId) can find it. A fresh
+   // binding clears any prior stall (the build is live again). Returns true only if a runId was actually bound.
+   function bindRun(id, runId, agentId) {
+@@ -494,7 +532,7 @@
+ 
+   return {
+     read, list, get, openForAgent,
+-    mint, forget, setDisposition, reportCompletion, tickStep, bindRun, completeByContract, stallRun, attest, confirmAttest, dismiss,
++    mint, forget, setDisposition, reportCompletion, tickStep, noteStep, untickStep, bindRun, completeByContract, stallRun, attest, confirmAttest, dismiss,
+     _durable: durable
+   };
+ }
+--- a/sidecar/tools/builtin/quests.js
++++ b/sidecar/tools/builtin/quests.js
+@@ -41,7 +41,7 @@
+ })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+   'use strict';
+ 
+-  const OPS = ['start', 'progress', 'attest_complete', 'mint'];
++  const OPS = ['start', 'progress', 'note', 'untick', 'attest_complete', 'mint'];
+   const str = v => String(v == null ? '' : v).trim();
+ 
+   const MINTS_PER_RUN = 1;      // at most ONE successful mint per run — enforced MECHANICALLY here, not just by prompt doctrine
+@@ -62,9 +62,12 @@
+     const questUpdateTool = {
+       name: 'quest.update', capability: 'quest', impact: 'none', scope: 'write', requiresConsent: false, timeoutMs: 8000,
+       description: 'Act on your STATION QUESTS (listed in your prompt). op:start binds the named run quest to '
+-        + 'this run; use it before doing that quest so an unrelated run can never complete it. op:progress ticks a named step '
+-        + '(pass id, stepKey and a short note on what you did); progress is display only and never completes a '
+-        + 'quest. op:attest_complete PROPOSES a quest is done (pass id and concrete evidence of what was '
++        + 'this run; use it before doing that quest so an unrelated run can never complete it. op:progress TICKS a named step '
++        + '(pass id, stepKey and a short note on what you did): it sets the step done, and a tick cannot be taken back '
++        + 'by progress, so use it only for a step that is finished; it never completes the quest itself. op:note writes a note on a step '
++        + 'WITHOUT ticking it (pass id, stepKey, note): use it for a conclusion or caveat about a step that is not done. '
++        + 'op:untick puts a step you ticked by mistake back to not-done (pass id, stepKey and a note giving the reason); it '
++        + 'works on an open quest only and cannot reopen a closed one. op:attest_complete PROPOSES a quest is done (pass id and concrete evidence of what was '
+         + 'accomplished); this NEVER marks it complete: the Commander must confirm. Quests that complete '
+         + 'mechanically (a run finishing, a capability going live, a deliverable existing) cannot be attested; leave '
+         + 'them to the harness. op:mint creates a NEW personalized quest for the Commander (pass title, a completion '
+@@ -114,6 +117,26 @@
+           return { content: 'Started quest ' + id + ' on this run. Only this explicitly named quest is bound.', summary: 'started ' + id };
+         }
+ 
++        // ---- note / untick: a note without a tick, and the repair for a step ticked in error. Same agent scoping as progress. ----
++        if (op === 'note' || op === 'untick') {
++          const id = str(args.id);
++          const stepKey = str(args.stepKey);
++          const text = str(args.note);
++          if (!id) return { content: 'Pass the quest id (from your STATION QUESTS list).', summary: 'noop' };
++          if (!stepKey) return { content: 'Pass the stepKey of the step.', summary: 'noop' };
++          if (!text) return { content: op === 'untick' ? 'Pass a note giving the reason the step is being unticked.' : 'Pass the note to write on the step.', summary: 'noop' };
++          const mine = store.openForAgent(agentId, now()).find(q => q.id === id);
++          if (!mine) return { content: 'Quest ' + id + ' is not one of your open quests. Only work quests listed for you can be updated.', summary: 'not yours' };
++          if (op === 'note') {
++            const wrote = await store.noteStep(id, stepKey, text, now());
++            if (!wrote) return { content: 'No step "' + stepKey + '" on ' + id + ' to write a note on.', summary: 'no-op' };
++            return { content: 'Wrote a note on step "' + stepKey + '" of ' + id + '. The step was not ticked.', summary: 'note ' + id };
++          }
++          const undone = await store.untickStep(id, stepKey, text, now());
++          if (!undone) return { content: 'Step "' + stepKey + '" on ' + id + ' is not a done step of an open quest, so there is nothing to untick.', summary: 'no-op' };
++          return { content: 'Unticked step "' + stepKey + '" on ' + id + '. It is open again; the reason is on the step.', summary: 'untick ' + id };
++        }
++
+         // ---- progress: tick a named step, agent-scoped ----
+         if (op === 'progress') {
+           const id = str(args.id);
+--- a/test/quest-store.test.js
++++ b/test/quest-store.test.js
+@@ -98,6 +98,37 @@
+     A.eq(s.get(r.id).steps[0].note, 'did one', 'the step note is stored');
+   }
+ 
++  // ---- 5b. noteStep writes a note WITHOUT ticking; untickStep repairs a mis-tick (open quests only, reason required) ----
++  {
++    const s = freshStore();
++    const r = await s.mint({ title: 'note and repair', contract: runContract('r5b'), steps: [{ key: 'a', label: 'a' }, { key: 'b', label: 'b' }] }, 1);
++    // note on an UNDONE step leaves it undone (the case progress could not express)
++    A.ok((await s.noteStep(r.id, 'a', 'caveat: not finished', 10)) === true, 'noteStep writes a note on an open step');
++    A.eq(s.get(r.id).steps[0].done, false, 'noteStep did NOT tick the step');
++    A.eq(s.get(r.id).steps[0].note, 'caveat: not finished', 'the note is stored');
++    A.ok((await s.noteStep(r.id, 'a', '   ', 11)) === false, 'an empty note is a no-op and does not erase the note');
++    A.eq(s.get(r.id).steps[0].note, 'caveat: not finished', 'the earlier note survived the empty write');
++    A.ok((await s.noteStep(r.id, 'nope', 'x', 12)) === false, 'noteStep on an unknown step is a no-op');
++    // note on a DONE step keeps it done
++    await s.tickStep(r.id, 'b', 'did b', 13);
++    A.ok((await s.noteStep(r.id, 'b', 'addendum', 14)) === true && s.get(r.id).steps[1].done === true, 'noteStep on a done step leaves it done');
++    A.eq(s.get(r.id).steps[1].note, 'did b | note: addendum', 'noteStep on a done step appends and the tick evidence survives');
++    // untick: reason required, only a done step, puts it back and says why on the step
++    A.ok((await s.untickStep(r.id, 'b', '', 15)) === false && s.get(r.id).steps[1].done === true, 'untick without a reason is refused and the step stays done');
++    A.ok((await s.untickStep(r.id, 'a', 'was never done', 16)) === false, 'untick of a step that is not done is a no-op');
++    A.ok((await s.untickStep(r.id, 'b', 'ticked in error', 17)) === true, 'untick of a done step works');
++    A.eq(s.get(r.id).steps[1].done, false, 'the step is not done again');
++    A.eq(s.get(r.id).steps[1].note, 'unticked: ticked in error (was: did b | note: addendum)', 'the reason is first and the old note (with its addendum) survives');
++    A.ok((await s.tickStep(r.id, 'b', 'done properly', 18)) === true, 'an unticked step can be ticked again');
++    // a CLOSED quest is not reopened by either op
++    const c = await s.mint({ title: 'closed one', contract: runContract('r5c'), steps: [{ key: 'x', label: 'x' }] }, 20);
++    await s.tickStep(c.id, 'x', 'ok', 21);
++    await s.completeByContract('run', 'r5c', 22);
++    A.eq(s.get(c.id).status, 'done', 'seed: the run quest is closed');
++    A.ok((await s.untickStep(c.id, 'x', 'late repair', 23)) === false && s.get(c.id).steps[0].done === true, 'untick does not touch a closed quest');
++    A.ok((await s.noteStep(c.id, 'x', 'late note', 24)) === false, 'note does not touch a closed quest');
++  }
++
+   // ---- 6. completeByContract('run', runId) — mechanical sweep completes bound run quests ----
+   {
+     const s = freshStore();
+--- a/test/quests-tool.test.js
++++ b/test/quests-tool.test.js
+@@ -68,6 +68,43 @@
+     A.ok(/No open step "zzz"/.test((await tool.run({ op: 'progress', id: q.id, stepKey: 'zzz' }, ctxOf('hero'))).content), 'progress on an unknown step → honest no-op');
+   }
+ 
++  // ---- op:note / op:untick — a note without a tick, and the repair for a step ticked in error ----
++  {
++    const store = fresh();
++    const tool = toolFor(store);
++    const q = await store.mint({ title: 'Note and repair', contract: { type: 'run', key: 'r2' },
++      steps: [{ key: 'a', label: 'first' }, { key: 'b', label: 'second' }], agentId: 'hero', kind: 'work' }, 1);
++
++    // op:note leaves the step undone (this is the case the old description promised for progress and did not deliver)
++    const n = await tool.run({ op: 'note', id: q.id, stepKey: 'a', note: 'conclusion so far, not finished' }, ctxOf('hero', 'run1'));
++    A.ok(/not ticked/.test(n.content), 'note says the step was not ticked');
++    A.eq(store.get(q.id).steps[0].done, false, 'note did not tick the step');
++    A.eq(store.get(q.id).steps[0].note, 'conclusion so far, not finished', 'the note is on the step');
++
++    // op:progress really ticks, and the description says so
++    const tool0 = tool;   // same tool instance
++    A.ok(/TICKS a named step/.test(tool0.description) && !/display only/.test(tool0.description), 'the description says progress ticks and no longer calls it display only');
++    A.ok(/op:note/.test(tool0.description) && /op:untick/.test(tool0.description), 'the description documents note and untick');
++
++    // untick repairs a mis-tick, with a reason
++    await tool.run({ op: 'progress', id: q.id, stepKey: 'b', note: 'oops' }, ctxOf('hero', 'run1'));
++    A.eq(store.get(q.id).steps[1].done, true, 'seed: step b was ticked');
++    A.ok(/reason/.test((await tool.run({ op: 'untick', id: q.id, stepKey: 'b' }, ctxOf('hero'))).content), 'untick without a reason asks for one');
++    A.eq(store.get(q.id).steps[1].done, true, 'the refused untick left the step done');
++    const u = await tool.run({ op: 'untick', id: q.id, stepKey: 'b', note: 'ticked by mistake' }, ctxOf('hero', 'run1'));
++    A.ok(/Unticked step "b"/.test(u.content), 'untick reports the repair');
++    A.eq(store.get(q.id).steps[1].done, false, 'step b is open again');
++    A.eq(store.get(q.id).steps[1].note, 'unticked: ticked by mistake (was: oops)', 'the reason is first and the old tick note survives');
++    A.ok(/nothing to untick/.test((await tool.run({ op: 'untick', id: q.id, stepKey: 'b', note: 'again' }, ctxOf('hero'))).content), 'untick of a step that is not done is an honest no-op');
++
++    // agent scoping is the same as progress: an intruder can neither note nor untick
++    await tool.run({ op: 'progress', id: q.id, stepKey: 'b', note: 'real this time' }, ctxOf('hero', 'run1'));
++    A.ok(/not one of your open quests/.test((await tool.run({ op: 'untick', id: q.id, stepKey: 'b', note: 'sabotage' }, ctxOf('intruder'))).content), 'another agent cannot untick');
++    A.ok(/not one of your open quests/.test((await tool.run({ op: 'note', id: q.id, stepKey: 'b', note: 'overwrite' }, ctxOf('intruder'))).content), 'another agent cannot note');
++    A.eq(store.get(q.id).steps[1].done, true, 'the intruder changed nothing');
++    A.eq(store.get(q.id).steps[1].note, 'real this time', 'the note survived the intruder');
++  }
++
+   // ---- op:start — explicitly bind ONLY the named run quest to THIS run ----
+   {
+     const store = fresh();

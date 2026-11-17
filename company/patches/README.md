@@ -20,6 +20,7 @@ change gets a record.
 | `0010-headless-station.diff` | with `STARNET_HEADLESS=1` (written by setup-station.sh) the engine serves no station page (410 on every non-API path); the CaPheOS console is the UI and every `/api` route is unchanged | yes |
 | `0011-artifact-needs-steps.diff` | an artifact-contract quest closes on its file only once every step is ticked (a README written on day one no longer closes the whole quest) | yes |
 | `0012-workspace-lease-per-workdir.diff` | two runs of one agent may write in two different project folders at once (the workspace lease is keyed by agent + the run's resolved project folder; the same folder stays one writer at a time; agent-wide operations still wait for every run); `GET /api/version` lists `capabilities: ["workspace-lease-per-folder"]`. The StarNet half of Sprint lanes (docs/TEMPO.md, company/tools/lanes.js) | yes |
+| `0013-quest-note-and-untick.diff` | `quest.update` (the agent tool only; no REST route) gains `note` (a note on a step without ticking it) and `untick` (put back a step ticked in error: reason required, open quests only, never reopens a closed quest); the tool description says progress ticks | **no**, opt-in: risk review, then change its Status line (and the `note` line in company/HANDOFFS.md) |
 
 Numbers 0003 and 0006 are missing on purpose: they were art overlays specific to the company CaPheOS was extracted
 from, and were not carried over. Keep the gaps; new records take the next free number.
