@@ -17,8 +17,12 @@
  *   S.parseCron(expr) / S.cronMatch(f, parts)    5-field cron, company time zone
  *   S.lastDue(schedule, anchorMs, nowMs, tz)     the latest scheduled fire time in (anchor, now], or null
  *   S.scheduleOf(seatCadence, job)       the seat's schedule: {kind:'interval', minutes} | {kind:'cron', expr, tz} | null
- *   S.WATCHDOG                           the watchdog routine spec (name, script, schedule)
- *   S.isWatchdog(job) / S.crewLoopOf(jobs, loopName)
+ *   S.WATCHDOG                           the watchdog routine spec (name = the name PREFIX, script, schedule)
+ *   S.isWatchdog(job) / S.crewLoopOf(jobs, loopName)   a watchdog: noAgent + the watchdog script + a name starting
+ *                                        with WATCHDOG.name (each one is created as "<WATCHDOG.name> #<6 hex>": StarNet
+ *                                        declines a name it remembers, also one deleted by a rollback, so never the bare name)
+ *   S.watchdogSpec(root, agentId, name?) the POST /api/cron body, with a fresh unique name unless one is given
+ *   await S.createWatchdog(call, root, agentId)   create it, read it back, retry once under a new name on a decline
  *   S.ownedOn(jobId) / S.switchedOff(job)   paused only because the dispatcher starts it / off for real
  *   S.plan(mode, { jobs, crew, state })  what the station's routines must become for that mode: { pause, resume, createWatchdog, removeWatchdog, owned }
  */
@@ -47,7 +51,8 @@ function mode(cfg) {
   // pause the station's loops on its own; the station keeps the schedule until the owner migrates.
   return m === 'dispatcher' && /^(budget-migrate\.js|found-company\.sh)$/.test(String((c.runtime && c.runtime.schedulerSetBy) || '')) ? 'dispatcher' : 'station';
 }
-const isWatchdog = j => !!j && (j.name === WATCHDOG.name || (j.noAgent === true && String(j.script || '') === WATCHDOG.script));
+// never the exact name: a rollback-and-migrate cycle names each watchdog anew ("… #25f494"), so match the prefix
+const isWatchdog = j => !!j && j.noAgent === true && String(j.script || '') === WATCHDOG.script && String(j.name || '').startsWith(WATCHDOG.name);
 // this company's watchdog: one whose workdir is this company's folder (a station serves one company; tests share one)
 const ownWatchdogs = (jobs, root) => (jobs || []).filter(j => isWatchdog(j) && (!j.workdir || path.resolve(String(j.workdir)) === path.resolve(root || co.ROOT)));
 function crewLoopOf(jobs, loopName) {
@@ -136,13 +141,18 @@ function plan(m, o) {
   else { out.removeWatchdog = wd.map(j => ({ id: j.id, name: j.name })); for (const k of Object.keys(owned)) delete owned[k]; }
   return out;
 }
-function watchdogSpec(root, agentId) {
-  return { name: WATCHDOG.name, agentId: agentId || co.ceo() || 'agent', prompt: WATCHDOG.prompt, schedule: WATCHDOG.schedule, tz: co.TZ,
+function watchdogSpec(root, agentId, name) {
+  return { name: name || require('./station').uniqueName(WATCHDOG.name, 3), agentId: agentId || co.ceo() || 'agent', prompt: WATCHDOG.prompt, schedule: WATCHDOG.schedule, tz: co.TZ,
     script: WATCHDOG.script, noAgent: true, workdir: root || co.ROOT, deliver: 'local', enabled: true, unattendedGrants: ['workbench'], scriptTimeoutMs: 30000 };
+}
+// -> { ok, job, name, reason, tries }: a 200 that declines, or a create GET /api/cron does not list, is a failure
+async function createWatchdog(call, root, agentId) {
+  const ST = require('./station');
+  return ST.createRoutine(call, watchdogSpec(root, agentId), { what: 'create watchdog', rename: () => ST.uniqueName(WATCHDOG.name, 3), attempts: 3 });
 }
 
 /* a crew loop paused on the station only because the dispatcher starts it (runtime.scheduler=dispatcher, seat on) */
 function ownedOn(jobId, root) { if (mode() !== 'dispatcher') return false; const o = readState(root).owned[jobId]; return !!o && o.on !== false; }
 const switchedOff = (job, root) => !!job && job.enabled === false && !ownedOn(job.id, root);   // off for real: the owner, or the pacer's rail pause
 
-module.exports = { WATCHDOG, mode, ownedOn, switchedOff, readState, writeState, stateFile, isWatchdog, ownWatchdogs, crewLoopOf, parseCron, cronMatch, partsIn, lastDue, scheduleOf, schedText, plan, watchdogSpec };
+module.exports = { WATCHDOG, mode, ownedOn, switchedOff, readState, writeState, stateFile, isWatchdog, ownWatchdogs, crewLoopOf, parseCron, cronMatch, partsIn, lastDue, scheduleOf, schedText, plan, watchdogSpec, createWatchdog };

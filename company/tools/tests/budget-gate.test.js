@@ -81,9 +81,9 @@ async function company(o) {
     return { code: p.status, out: (p.stdout || '') + (p.stderr || ''), mine, fired, firedSeats: Object.keys(ids).filter(k => fired.includes(ids[k])).sort(), log: c.r('company/work/dispatch-log.md') };
   };
   // the migration as the owner runs it (plan + apply, in a process rooted at this company)
-  c.migrate = to => {
+  c.migrate = (to, extra) => {
     const js = 'const M=require(' + JSON.stringify(path.join(TOOLS, 'budget-migrate.js')) + ');M.plan({to:' + JSON.stringify(to) + '}).then(async p=>{const nothing=!p.flag&&!p.pause.length&&!p.resume.length&&!p.createWatchdog&&!p.removeWatchdog.length;const r=nothing?{done:[],errors:[]}:await M.apply(p,"owner");console.log(JSON.stringify({plan:{pause:p.pause.length,resume:p.resume.length,create:p.createWatchdog,remove:p.removeWatchdog.length,flag:p.flag,blockers:p.blockers},r}))})';
-    const p = c.node(['-e', js]); assert.equal(p.status, 0, p.stderr); return JSON.parse(p.stdout.trim().split('\n').pop());
+    const p = c.node(['-e', js], extra); assert.equal(p.status, 0, p.stderr); return JSON.parse(p.stdout.trim().split('\n').pop());
   };
   c.jobs = async () => (await st('GET', '/api/cron')).jobs;
   c.mine = async () => (await c.jobs()).filter(j => Object.values(ids).includes(j.id) || (j.noAgent && j.workdir === T)).map(j => j.id);   // this company's routines
@@ -300,4 +300,78 @@ test('a dispatcher setting with no recorded switch keeps the station schedule', 
   assert.equal(S.mode({ runtime: { scheduler: 'dispatcher', schedulerSetBy: 'hand edit' } }), 'station');
   assert.equal(S.mode({ runtime: { scheduler: 'dispatcher', schedulerSetBy: 'budget-migrate.js' } }), 'dispatcher');
   assert.equal(S.mode({ runtime: { scheduler: 'dispatcher', schedulerSetBy: 'found-company.sh' } }), 'dispatcher');
+});
+
+/* ---------------- StarNet's dedupe memory: a 200 that declines (lib/station.js) ---------------- */
+// The sandbox bug: StarNet remembered a watchdog deleted by a rollback and answered the re-create with HTTP 200
+// {ok:false, declined:true}; the migration printed "done: create watchdog: HTTP 200" and nothing existed.
+const WD = () => require('../lib/scheduler').WATCHDOG.name;
+const ownWd = async c => (await c.jobs()).filter(j => require('../lib/scheduler').isWatchdog(j) && j.workdir === c.T);
+// budget.js's scheduler drift as the company sees it (its root, its jobs), in a process rooted there
+const drift = c => { const p = c.node(['-e', 'const B=require(' + JSON.stringify(path.join(TOOLS, 'budget.js')) + ');fetch(process.env.STARNET_URL+"/api/cron",{headers:{"x-starnet-token":' + JSON.stringify(TOKEN) + '}}).then(r=>r.json()).then(j=>console.log(JSON.stringify(B.schedulerDrift(j.jobs,JSON.parse(require("fs").readFileSync("company/tools/loops.json","utf8")).agents,"dispatcher"))))']); assert.equal(p.status, 0, p.stderr); return JSON.parse(p.stdout.trim().split('\n').pop()); };
+async function declining(o, fn) { await st('POST', '/__declines', Object.assign({ on: true }, o || {})); try { return await fn(); } finally { await st('POST', '/__declines', { on: false }); } }
+
+test('declines: migrate reports a declined watchdog create and retries under a new unique name', async () => {
+  const c = await company({});
+  const taken = WD() + ' #aaaaaa';
+  const m = await declining({ names: [taken] }, () => c.migrate('dispatcher', { CAPHEOS_ROUTINE_SUFFIXES: 'aaaaaa' }));
+  assert.deepEqual(m.r.errors, [], JSON.stringify(m.r));
+  assert.equal(m.r.warnings.length, 1); assert.match(m.r.warnings[0], /create watchdog: the station declined \(HTTP 200\): this routine already exists .*retried under a new name/);
+  const wd = await ownWd(c);
+  assert.equal(wd.length, 1, 'exactly one watchdog'); assert.notEqual(wd[0].name, taken); assert.match(wd[0].name, /^Watchdog \(dispatcher liveness, starts no work\) #[0-9a-f]{6}$/);
+  assert.ok(m.r.done.some(d => d.includes(wd[0].name)), JSON.stringify(m.r.done));
+});
+
+test('declines: a watchdog the station declines on every try is an ERROR, never "done"', async () => {
+  const c = await company({});
+  const names = ['a1a1a1', 'b2b2b2', 'c3c3c3'].map(x => WD() + ' #' + x);
+  const m = await declining({ names }, () => c.migrate('dispatcher', { CAPHEOS_ROUTINE_SUFFIXES: 'a1a1a1,b2b2b2,c3c3c3' }));
+  assert.equal(m.r.errors.length, 3, JSON.stringify(m.r)); assert.ok(m.r.errors.every(e => /declined \(HTTP 200\): this routine already exists/.test(e)));
+  assert.ok(!m.r.done.some(d => /watchdog/.test(d)), JSON.stringify(m.r.done));
+  assert.equal((await ownWd(c)).length, 0);
+  // the CLI exits 1 with the reason (the sandbox run printed "done: create watchdog: HTTP 200" and exited 0)
+  const p = await declining({ names: [WD() + ' #d4d4d4'] }, () => c.node([path.join(TOOLS, 'budget-migrate.js'), '--to', 'dispatcher', '--by', 'owner'], { CAPHEOS_ROUTINE_SUFFIXES: 'd4d4d4' }));
+  assert.equal(p.status, 0, p.stdout + p.stderr); assert.match(p.stdout, /FAILED, RETRIED: create watchdog: the station declined/); assert.equal((await ownWd(c)).length, 1);
+});
+
+test('declines: rollback then migrate (the station remembering every removed name) leaves one working watchdog, drift green', async () => {
+  const c = await company({});
+  await declining({ names: [WD()] }, async () => {   // the sandbox: the old bare-named watchdog is in the dedupe memory too
+    const m1 = c.migrate('dispatcher'); assert.deepEqual(m1.r.errors, []);
+    const first = await ownWd(c); assert.equal(first.length, 1);
+    const back = c.migrate('station'); assert.deepEqual(back.r.errors, []); assert.equal((await ownWd(c)).length, 0);
+    const m2 = c.migrate('dispatcher'); assert.deepEqual(m2.r.errors, [], JSON.stringify(m2.r));
+    const wd = await ownWd(c); assert.equal(wd.length, 1); assert.notEqual(wd[0].name, first[0].name, 'a fresh name, not the remembered one');
+    assert.deepEqual(drift(c).filter(x => x.cap === 'watchdog'), []);
+    await st('POST', '/api/cron/arm', { enabled: true });
+    const tk = await c.stTick(Date.now() + 16 * MIN); assert.ok(tk.fired.some(f => f.id === wd[0].id), 'the station runs the new watchdog');
+  });
+});
+
+test('declines: the hand-made sandbox watchdog "… #25f494" is recognised by prefix: migrate creates none, drift and founder-loop status stay green', async () => {
+  const c = await company({});
+  await st('POST', '/api/cron', { name: WD() + ' #25f494', agentId: 'agent', prompt: 'Script-only watchdog', schedule: 'every 15 minutes', script: 'company/tools/watchdog.js', noAgent: true, workdir: c.T, enabled: true });
+  const m = c.migrate('dispatcher');
+  assert.equal(m.plan.create, false, 'no second watchdog'); assert.deepEqual(m.r.errors, []);
+  const wd = await ownWd(c); assert.equal(wd.length, 1); assert.equal(wd[0].name, WD() + ' #25f494');
+  assert.deepEqual(drift(c), []);
+  const p = c.node([path.join(TOOLS, 'founder-loop.js'), 'status', '--json']);
+  assert.doesNotMatch(p.stdout + p.stderr, /no-watchdog/);
+});
+
+test('declines: every routine write the station declines with HTTP 200 is reported as a failure (migrate re-arm/remove, dispatcher pause and watchdog)', async () => {
+  const c = await company({});
+  assert.deepEqual(c.migrate('dispatcher').r.errors, []);
+  const back = await declining({ writes: true }, () => c.migrate('station'));
+  assert.equal(back.r.errors.length, 3, JSON.stringify(back.r));   // re-arm x2, remove watchdog
+  assert.ok(back.r.errors.every(e => /declined \(HTTP 200\)/.test(e)), JSON.stringify(back.r.errors));
+  assert.ok(!back.r.done.some(d => /re-arm|remove/.test(d)), JSON.stringify(back.r.done));
+  // the dispatcher's own scheduler upkeep: a pause and a watchdog create that the station declines are SCHEDULER ERRORs
+  const d = await company({ scheduler: 'dispatcher' });
+  const sfx = ['e5e5e5', 'f6f6f6', 'a7a7a7'];
+  const t = await declining({ writes: true, names: sfx.map(x => WD() + ' #' + x) }, async () => { d.node([path.join(TOOLS, 'dispatch.js')], { CAPHEOS_ROUTINE_SUFFIXES: sfx.join(',') }); return { log: d.r('company/work/dispatch-log.md') }; });
+  assert.match(t.log, /SCHEDULER ERROR: could not pause ".*": the station declined \(HTTP 200\)/);
+  assert.match(t.log, /SCHEDULER ERROR: could not create the watchdog routine: create watchdog.*declined \(HTTP 200\): this routine already exists/);
+  assert.doesNotMatch(t.log, /SCHEDULER: (created the watchdog|paused)/);
+  assert.equal((await ownWd(d)).length, 0);
 });

@@ -180,6 +180,10 @@ async function selftest() {
   const jobs = [{ id: 'a', name: 'Founder loop', enabled: true }, { id: 'w', name: require('./lib/scheduler').WATCHDOG.name, noAgent: true, script: 'company/tools/watchdog.js', enabled: true }];
   ok('dispatcher mode: an armed crew loop is drift', schedulerDrift(jobs, { agent: { loop: 'Founder loop' } }, 'dispatcher').length === 1);
   ok('station mode: armed loops are the old way, no drift', schedulerDrift(jobs, { agent: { loop: 'Founder loop' } }, 'station').length === 0);
+  const wdName = require('./lib/scheduler').WATCHDOG.name, paused = { id: 'a', name: 'Founder loop', enabled: false };
+  const sandboxWd = { id: '9fcf5b16-49a4-4209-b49c-f7659f6dceff', name: wdName + ' #25f494', noAgent: true, script: 'company/tools/watchdog.js', workdir: require('./lib/company').ROOT, enabled: true, agentId: 'agent' };
+  ok('dispatcher mode: the hand-made watchdog "… #25f494" (a name prefix match) is no drift', schedulerDrift([paused, sandboxWd], { agent: { loop: 'Founder loop' } }, 'dispatcher').length === 0);
+  ok('a routine merely NAMED like the watchdog (no script, an agent) is not one: drift', schedulerDrift([paused, { id: 'x', name: wdName + ' #abcdef', enabled: true }], { agent: { loop: 'Founder loop' } }, 'dispatcher').some(x => x.cap === 'watchdog'));
   ok('dispatcher mode without a watchdog is drift', schedulerDrift([{ id: 'a', name: 'Founder loop', enabled: false }], { agent: { loop: 'Founder loop' } }, 'dispatcher').some(x => x.cap === 'watchdog'));
   ok('the duty is quiet without a snapshot', dutyResult({ snapshot: null }) === null);
   const dr = dutyResult({ snapshot: { at: new Date().toISOString(), caps: { perDay: 25, perAgent: 0 }, jobs: [] }, settings: { capOn: true, baseDailyUsd: 5, dailyUsd: 5, perAgentUsd: 0 }, mode: 'station', crew: {}, now: Date.now() });

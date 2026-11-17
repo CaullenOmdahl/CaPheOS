@@ -755,7 +755,8 @@ async function cmdGive(ref, o) {
     if (!skills.some(s => normName(s) === normName(sk.name))) {
       if (skills.length >= 8) fail('routine "' + job.name + '" already preloads 8 skills, the station\'s limit');
       const u = await call('POST', '/api/cron/update', { id: job.id, patch: { skills: skills.concat([sk.name]) } });
-      if (u.status !== 200) { logRow(Object.assign({ action: 'give', decision: 'failed', source: sk.source, error: errText(u) }, ctx)); fail('the station refused the routine change (' + u.status + '): ' + errText(u)); }
+      const uv = require('./lib/station').cronResult(u, 'POST /api/cron/update');   // a 200 can be a decline
+      if (!uv.ok) { logRow(Object.assign({ action: 'give', decision: 'failed', source: sk.source, error: uv.status === 200 ? uv.reason : errText(u) }, ctx)); fail('the station refused the routine change (' + u.status + '): ' + (uv.status === 200 ? uv.reason : errText(u))); }
       const back = resolveRoutine((await get('/api/cron')).jobs || [], job.id);
       if (!back || !(back.skills || []).some(s => normName(s) === normName(sk.name))) fail('the routine change did not read back');
       routineNote = ' and preloaded in every run of "' + job.name + '"';

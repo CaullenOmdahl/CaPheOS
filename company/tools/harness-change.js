@@ -611,7 +611,8 @@ async function applyChange(ctx, id, o) {
     if (cur.expr !== rec0.before.schedule.expr) throw E('the schedule changed since the proposal (' + rec0.before.schedule.expr + ' -> ' + cur.expr + '); propose again', 'stale');
     const patch = { schedule: rec0.change.schedule.expr }; if (rec0.change.schedule.tz) patch.timezone = rec0.change.schedule.tz;
     const r = await ctx.call('POST', '/api/cron/update', { id: job.id, patch });
-    if (!r || r.status !== 200) throw E('the station refused the schedule (' + (r && r.status) + ' ' + String(r && r.body).slice(0, 160) + ')', 'station');
+    const v = require('./lib/station').cronResult(r, 'POST /api/cron/update');   // a 200 can be a decline
+    if (!v.ok) throw E('the station refused the schedule (' + v.reason + ')', 'station');
     let after = null; try { const j = JSON.parse(r.body).job; after = j && j.schedule ? { expr: j.schedule.expr, tz: j.schedule.tz || null } : null; } catch (_) {}
     result = { schedule: after || rec0.change.schedule };
   } else if (rec0.kind === 'tool' || rec0.kind === 'house-rule') {
@@ -687,7 +688,8 @@ async function revertChange(ctx, id, o) {
     if (cur !== rec0.applied.schedule.expr) throw E('the schedule changed again since ' + id + ' (' + cur + '); not reverted', 'stale');
     const patch = { schedule: rec0.before.schedule.expr }; if (rec0.before.schedule.tz) patch.timezone = rec0.before.schedule.tz;
     const r = await ctx.call('POST', '/api/cron/update', { id: job.id, patch });
-    if (!r || r.status !== 200) throw E('the station refused (' + (r && r.status) + ')', 'station');
+    const v = require('./lib/station').cronResult(r, 'POST /api/cron/update');
+    if (!v.ok) throw E('the station refused (' + v.reason + ')', 'station');
     result = { schedule: rec0.before.schedule };
   } else if (rec0.kind === 'tool' || rec0.kind === 'house-rule') {
     const target = ctx.P(rec0.target.file);

@@ -165,9 +165,9 @@ async function setHold(o) {
   if (o.firstAt) h.firstAt = o.firstAt;
   writeHold(h);   // first: from here on the dispatcher starts nothing, even if the station call below fails
   if (armed) {
-    const a = await call('POST', '/api/cron/arm', { enabled: false });
-    if (a.status === 200) { h.disarmed = true; writeHold(h); }
-    else say('could not disarm the scheduler (' + (a.error || 'HTTP ' + a.status) + '); the hold still stops the dispatcher, and a routine that fires on its schedule is waited for like any run');
+    const a = require('./lib/station').cronResult(await call('POST', '/api/cron/arm', { enabled: false }), 'POST /api/cron/arm');   // a 200 can be a decline
+    if (a.ok) { h.disarmed = true; writeHold(h); }
+    else say('could not disarm the scheduler (' + a.reason + '); the hold still stops the dispatcher, and a routine that fires on its schedule is waited for like any run');
   }
   return { hold: h };
 }
@@ -177,7 +177,7 @@ async function releaseHold(why, watch) {
   const h = readHold(); const notes = [];
   if (h && h.disarmed) {
     let ok = false;
-    for (let i = 0; i < 5 && !ok; i++) { const a = await call('POST', '/api/cron/arm', { enabled: true }); ok = a.status === 200; if (!ok) await sleep(2000); }
+    for (let i = 0; i < 5 && !ok; i++) { ok = require('./lib/station').cronResult(await call('POST', '/api/cron/arm', { enabled: true })).ok; if (!ok) await sleep(2000); }
     notes.push(ok ? 're-armed the scheduler' : 'could NOT re-arm the scheduler: run `node company/tools/founder-loop.js ensure`');
   }
   if (watch && h) writeHold({ _doc: 'restart-station.js: the restart hold is LIFTED (nothing is held); the script (pid) still watches for an idle station to restart it. co.restartHold() ignores this record.',

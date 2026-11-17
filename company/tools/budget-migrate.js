@@ -78,7 +78,7 @@ function describe(p) {
   L.push('station routines read from: ' + p.source + ' (' + p.jobsRead + ' routines)');
   for (const x of p.pause) L.push('  pause   "' + x.name + '" (' + x.seat + ', station schedule ' + (x.schedule || '?') + '): the dispatcher starts its runs');
   for (const x of p.resume) L.push('  re-arm  "' + x.name + '" (' + x.seat + '): the station schedule fires it again');
-  if (p.createWatchdog) L.push('  create  "' + require('./lib/scheduler').WATCHDOG.name + '": script only (company/tools/watchdog.js, every 15 minutes), no agent, starts no work');
+  if (p.createWatchdog) L.push('  create  "' + require('./lib/scheduler').WATCHDOG.name + ' #<6 hex>": script only (company/tools/watchdog.js, every 15 minutes), no agent, starts no work');
   for (const x of p.removeWatchdog) L.push('  remove  "' + x.name + '"');
   for (const x of p.keep) L.push('  keep    "' + x.name + '" (' + x.seat + '): ' + x.why);
   for (const x of p.missing) L.push('  note    no routine matches loop "' + x.loop + '" for ' + x.seat + ' (nothing to do for it)');
@@ -91,8 +91,9 @@ function describe(p) {
 async function apply(p, by) {
   const co = require('./lib/company');
   const SCHED = require('./lib/scheduler');
+  const ST = require('./lib/station');
   const call = (m, u, b) => require('./station-crew.js').call(m, u, b, 20000);
-  const done = [], errors = [];
+  const done = [], errors = [], warnings = [];
   const setFlag = () => {
     const f = co.p('company', 'company.json'); const cfg = readJson(f, {}) || {};
     cfg.runtime = Object.assign({ _doc: 'runtime.scheduler: who starts the crew\'s scheduled loop runs. "dispatcher" = the dispatcher, through admit(), with the crew loop routines paused on the station and one watchdog routine there; "station" = the station\'s own schedule (the old way). Switch only with company/tools/budget-migrate.js (docs/BUDGET.md).' }, cfg.runtime || {}, { scheduler: p.to, schedulerSetBy: 'budget-migrate.js', schedulerSetAt: new Date().toISOString() });
@@ -103,16 +104,22 @@ async function apply(p, by) {
   if (p.to === 'dispatcher') {
     SCHED.writeState(st, co.ROOT);                       // 1. the routines it takes over (a tick in between pauses them itself)
     if (p.flag) setFlag();                               // 2. the flag
-    if (p.createWatchdog) { const r = await call('POST', '/api/cron', SCHED.watchdogSpec(co.ROOT, co.ceo())); (r.status === 200 ? done : errors).push('create watchdog: HTTP ' + r.status); }
-    for (const x of p.pause) { const r = await call('POST', '/api/cron/update', { id: x.id, patch: { enabled: false } }); (r.status === 200 ? done : errors).push('pause "' + x.name + '": HTTP ' + r.status); }
+    if (p.createWatchdog) {
+      // a 200 can be a decline (StarNet remembers a deleted routine's name): each failed try is reported, then retried
+      // under a new unique name; done only when GET /api/cron lists the routine
+      const r = await SCHED.createWatchdog(call, co.ROOT, co.ceo());
+      if (r.ok) { for (const t of r.tries) warnings.push(t + ' (retried under a new name)'); done.push(r.reason + ' "' + r.name + '"'); }
+      else for (const t of r.tries) errors.push(t);
+    }
+    for (const x of p.pause) { const r = await ST.cron(call, 'POST', '/api/cron/update', { id: x.id, patch: { enabled: false } }, 'pause "' + x.name + '"'); (r.ok ? done : errors).push(r.reason); }
   } else {
     if (p.flag) setFlag();                               // 1. the flag first: a tick in between does not pause them again
-    for (const x of p.resume) { const r = await call('POST', '/api/cron/update', { id: x.id, patch: { enabled: true } }); (r.status === 200 ? done : errors).push('re-arm "' + x.name + '": HTTP ' + r.status); }
-    for (const x of p.removeWatchdog) { const r = await call('POST', '/api/cron/remove', { id: x.id }); (r.status === 200 ? done : errors).push('remove watchdog: HTTP ' + r.status); }
+    for (const x of p.resume) { const r = await ST.cron(call, 'POST', '/api/cron/update', { id: x.id, patch: { enabled: true } }, 're-arm "' + x.name + '"'); (r.ok ? done : errors).push(r.reason); }
+    for (const x of p.removeWatchdog) { const r = await ST.cron(call, 'POST', '/api/cron/remove', { id: x.id }, 'remove watchdog "' + x.name + '"'); (r.ok ? done : errors).push(r.reason); }
     SCHED.writeState(st, co.ROOT);
   }
-  try { const f = co.p('company', 'work', 'ops', 'scheduler-log.jsonl'); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, JSON.stringify({ at: st.at, by, from: p.from, to: p.to, done, errors }) + '\n'); } catch (_) {}
-  return { done, errors };
+  try { const f = co.p('company', 'work', 'ops', 'scheduler-log.jsonl'); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, JSON.stringify({ at: st.at, by, from: p.from, to: p.to, done, errors, warnings }) + '\n'); } catch (_) {}
+  return { done, errors, warnings };
 }
 function seatSwitch(seat, on, by) {
   const co = require('./lib/company'); const SCHED = require('./lib/scheduler');
@@ -175,6 +182,7 @@ if (require.main === module) {
     if (nothing(p)) return 0;
     const r = await apply(p, by);
     for (const d of r.done) console.log('done: ' + d);
+    for (const w of r.warnings || []) console.log('FAILED, RETRIED: ' + w);
     for (const e of r.errors) console.log('ERROR: ' + e);
     return r.errors.length ? 1 : 0;
   })().then(c => process.exit(c || 0), e => { console.error('budget-migrate.js: ' + (e && e.message || e)); process.exit(1); });

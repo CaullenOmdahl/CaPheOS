@@ -203,13 +203,14 @@ async function ensure({ dry = false, log = console.log, call: get = call, blockF
       let pattern = ''; try { pattern = String(JSON.parse(u.body).blocked || ''); } catch (_) {}
       const without = withOwn(next, '');
       const u2 = without !== next ? await get('POST', '/api/cron/update', { id: job.id, patch: { prompt: without } }) : u;
-      if (u2.status === 200) {
+      if (require('./lib/station').cronResult(u2).ok) {
         u = u2; ownDue = false; ownOff.push(label + ' (' + (pattern || 'blocked') + ')');
         try { if (mark) mark(String(job.agentId), { job: label, patternId: pattern }); } catch (e) { ownErrors.push(label + ': could not mark the section off (' + e.message + ')'); }
       }
     }
-    if (u.status === 200) { if (rulesDue) changed.push(label); if (corrDue) refreshed.push(label); if (ownDue) ownChanged.push(label); }
-    else failed.push(label + ' (' + u.status + ' ' + String(u.body).slice(0, 120) + ')');
+    const uv = require('./lib/station').cronResult(u, 'update');   // a 200 can be a decline
+    if (uv.ok) { if (rulesDue) changed.push(label); if (corrDue) refreshed.push(label); if (ownDue) ownChanged.push(label); }
+    else failed.push(label + ' (' + (uv.status === 200 ? uv.reason : u.status + ' ' + String(u.body).slice(0, 120)) + ')');
   }
   if (changed.length) log((dry ? 'would add' : 'added') + ' house rules ' + VERSION + ' to: ' + changed.join(', '));
   if (ownChanged.length) log((dry ? 'would update' : 'updated') + ' own sections in: ' + ownChanged.join(', '));

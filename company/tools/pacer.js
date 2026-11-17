@@ -1088,7 +1088,8 @@ function makePacer(o) {
   async function setEnabled(id, want) {
     let res; try { res = await call('POST', '/api/cron/update', { id, patch: { enabled: want } }); } catch (e) { res = { status: 0, body: String(e.message) }; }
     let j = {}; try { j = JSON.parse(res.body); } catch (_) {}
-    return { ok: res.status === 200 && j.ok === true && !!j.job && (j.job.enabled !== false) === want, status: res.status, body: String(res.body || '').slice(0, 160) };
+    const v = require('./lib/station').cronResult(res, 'POST /api/cron/update');   // a 200 can be a decline: its message is the body shown
+    return { ok: v.ok && j.ok === true && !!j.job && (j.job.enabled !== false) === want, status: res.status, body: v.ok ? String(res.body || '').slice(0, 160) : v.reason };
   }
   async function applyRail(m, pl, st, jobs, fresh) {
     const t = m.at, done = [], rp = pl.rail || { pause: [], resume: [], forget: [] };

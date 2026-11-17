@@ -105,7 +105,8 @@ async function cronList() {
 async function arm(enabled) {
   const r = await S.call('POST', '/api/cron/arm', { enabled });
   const b = j(r);
-  if (!r || r.status !== 200 || !b || !b.ok) throw new Error('POST /api/cron/arm ' + enabled + ' failed: HTTP ' + (r && r.status) + ' ' + String(r && r.body).slice(0, 160));
+  const v = require('./lib/station').cronResult(r, 'POST /api/cron/arm ' + enabled);   // a 200 can be a decline
+  if (!v.ok || !b || !b.ok) throw new Error(v.ok ? 'POST /api/cron/arm ' + enabled + ' failed: HTTP ' + (r && r.status) + ' ' + String(r && r.body).slice(0, 160) : v.reason);
   return b;
 }
 

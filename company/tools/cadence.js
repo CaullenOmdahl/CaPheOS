@@ -715,8 +715,9 @@ async function apply({ dry, approvedRef, by } = {}) {
     try {
       const res = await S.call('POST', '/api/cron/update', { id: r.id, patch: { schedule: r.to } });
       const b = (() => { try { return JSON.parse(res.body); } catch (_) { return {}; } })();
-      if (res.status === 200 && b.ok) done.push('routine "' + r.name + '": ' + (r.from || '?') + ' -> ' + r.to);
-      else plan.errors.push('routine "' + r.name + '" update refused: HTTP ' + res.status + ' ' + String(res.body).slice(0, 160));
+      const v = require('./lib/station').cronResult(res, 'routine "' + r.name + '" update');   // a 200 can be a decline
+      if (v.ok && b.ok) done.push('routine "' + r.name + '": ' + (r.from || '?') + ' -> ' + r.to);
+      else plan.errors.push(v.ok ? 'routine "' + r.name + '" update refused: HTTP ' + res.status + ' ' + String(res.body).slice(0, 160) : v.reason);
     } catch (e) { plan.errors.push('routine "' + r.name + '" update failed: ' + e.message); }
   }
   if (done.length) {

@@ -85,6 +85,13 @@ it again. When the dispatcher is back you get one line saying so. It never wakes
 touches a routine: while the dispatcher is down, **no work runs**, by design. Alerts are also rows in
 `company/work/ops/watchdog-alerts.jsonl`. (The optional liveness module's own watcher still works as before.)
 
+Each watchdog is created as "Watchdog (dispatcher liveness, starts no work) #<6 hex>". StarNet remembers routine names,
+also of routines deleted since (a rollback removes the watchdog), and declines a re-used name with HTTP 200
+`{ok:false, declined:true}`. A fresh suffix per create means a rollback-and-migrate cycle never hits that memory. A
+routine counts as the watchdog by script (`company/tools/watchdog.js`), `noAgent`, and the name prefix, never the exact
+name. Every routine create, update, remove and arm reads the station's answer through `company/tools/lib/station.js`:
+a 200 that declines is a failure carrying the station's message, and a create counts only once `GET /api/cron` lists it.
+
 ### Migration (existing companies)
 
 ```

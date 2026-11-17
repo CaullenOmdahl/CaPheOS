@@ -972,9 +972,12 @@ async function hire(a) {
   // runtime.scheduler=dispatcher (lib/scheduler.js): the loop is created paused on the station and recorded as the
   // dispatcher's, which starts its scheduled runs; station: armed on the station's schedule, as before
   const SCHED = require('./lib/scheduler'); const dispatcherOwns = SCHED.mode() === 'dispatcher';
-  const job = await C.call('POST', '/api/cron', { name: loopName, agentId, schedule: String(a.schedule || '0 */2 * * *'), tz: co.TZ, prompt,
-    workdir: ROOT, deliver: 'local', enabled: !dispatcherOwns, model: cand.model, provider: cand.provider, unattendedGrants: FL.LOOP_GRANTS });
-  const jj = (() => { try { return JSON.parse(job.body); } catch (_) { return {}; } })();
+  // a 200 can be a decline (lib/station.js): the loop counts as created only when GET /api/cron lists it
+  const made = await require('./lib/station').createRoutine((m, p, b) => C.call(m, p, b), { name: loopName, agentId, schedule: String(a.schedule || '0 */2 * * *'), tz: co.TZ, prompt,
+    workdir: ROOT, deliver: 'local', enabled: !dispatcherOwns, model: cand.model, provider: cand.provider, unattendedGrants: FL.LOOP_GRANTS }, { what: 'loop "' + loopName + '"' });
+  const jj = made.ok ? { ok: true, job: made.job } : { ok: false };
+  const job = { body: made.reason };
+  if (!made.ok) staffLog('LOOP NOT CREATED for ' + display + ': ' + made.reason);
   if (dispatcherOwns && jj.job && jj.job.id) { try { const st = SCHED.readState(ROOT); st.owned[jj.job.id] = { seat: agentId, name: loopName, on: true }; SCHED.writeState(Object.assign(st, { mode: 'dispatcher' }), ROOT); } catch (e) { staffLog('SCHEDULER: could not record ' + loopName + ' as the dispatcher\'s: ' + e.message); } }
   // the hire's own model chain (company/tools/models.js): the interviewed model first, then candidateDefault, then a
   // subscription model when one is connected on the station; the failover tick moves the seat along it
@@ -1051,7 +1054,7 @@ async function remodel(a) {
     out(1, { ok: false, error: 'the station refused the model change: HTTP ' + m.status + ' ' + m.body.slice(0, 200) });
   }
   const jobs = (JSON.parse((await C.call('GET', '/api/cron')).body).jobs || []).filter(j => j.agentId === agentId);
-  for (const j of jobs) await C.call('POST', '/api/cron/update', { id: j.id, patch: { model, provider } });
+  for (const j of jobs) { const u = await require('./lib/station').cron(C.call, 'POST', '/api/cron/update', { id: j.id, patch: { model, provider } }, 'move routine "' + j.name + '" to ' + provider + '/' + model); if (!u.ok) staffLog('REMODEL ROUTINE NOT MOVED ' + crew[agentId].name + ' (' + agentId + '): ' + u.reason); }
   // a seat with its own model chain keeps it, with the new model as its primary (company/tools/models.js)
   try { require('./models.js').putPrimary(agentId, { provider, model, effort }, by); } catch (_) {}
   const page = mj.via === 'page' ? await C.reloadStationPage() : 'closed';

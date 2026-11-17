@@ -241,7 +241,7 @@ async function finish(st, lane, how, ctx) {
     if (commits) branchNote = 'branch `' + lane.branch + '` in ' + (path.relative(S.root(), lane.repo) || 'the company repo') + ' has ' + commits + ' commit(s), not merged: review and merge it in your normal flow (`git log ' + lane.base.slice(0, 10) + '..' + lane.branch + '`)';
     else { try { git(lane.repo, ['branch', '-D', lane.branch]); } catch (_) {} branchNote = 'no commits'; }
   } else { try { fs.rmSync(path.join(lane.dir, 'LANE-RESULT.md'), { force: true }); } catch (_) {} }
-  if (ours) { try { await S.call('POST', '/api/cron/remove', { id: lane.jobId }, 10000); } catch (_) {} }
+  if (ours) { const rm = await require('./lib/station').cron((m, u, b) => S.call(m, u, b, 10000), 'POST', '/api/cron/remove', { id: lane.jobId }, 'remove lane routine "' + (job.name || lane.jobId) + '"'); if (!rm.ok) say('LANES: could not ' + rm.reason); }
   try { SP.makePathLock(lockFile()).release(lane.id); } catch (_) {}
   const outcome = how.why === 'ended' ? (status || 'no result file') : how.why;
   const text = (how.why === 'ended' ? '' : 'the lane was ' + (how.why === 'timeout' ? 'stopped after its ' + lane.timeoutMin + ' min limit' : how.why === 'halt' ? 'cut off by a hard halt' : how.why === 'lost' ? 'never seen running on the station' : 'stopped (' + how.why + ')') + '. ')
@@ -401,18 +401,22 @@ async function start({ id, n, laneId, c, job, it, cfg }) {
   try { const pf = rel('.starnet-data', 'workspaces', 'permissions.allow.json'); if (fs.existsSync(pf)) require('./provenance.js').wrote(pf, fs.readFileSync(pf), 'lanes.js'); } catch (_) {}
   // the name shares no word with the seat's loop or another lane: StarNet's mint gate answers a near-duplicate name of the
   // agent's routines with the EXISTING routine, and a removed routine's name is declined for that agent from then on
-  const name = 'Lane ' + require('crypto').randomBytes(4).toString('hex');
+  // (HTTP 200 {ok:false, declined:true}); lib/station.js suffix() is the same unique-name mechanism the watchdog uses
+  const ST = require('./lib/station');
+  let name = 'Lane ' + ST.suffix(4);
   const prompt = promptFor({ name: c.name || id, id: laneId, heading: it.heading, inbox: c.inbox, text: it.text, touches: place.touches || it.touches, kind: place.kind, dir: p.dir, repo: p.repo, branch: p.branch });
   const body = { name, agentId: job.agentId || id, prompt, schedule: 'every 24h', enabled: false, workdir: p.dir, deliver: 'local', model: job.model, provider: job.provider,
     unattendedGrants: Array.isArray(job.unattendedGrants) ? job.unattendedGrants.slice() : [] };
   for (const k of ['skills', 'enabledToolsets', 'reasoningEffort']) if (job[k] != null) body[k] = job[k];
-  const cr = j(await S.call('POST', '/api/cron', body)) || {};
-  if (!cr.job || !cr.job.id || cr.duplicate || cr.job.name !== name) throw new Error('POST /api/cron did not create the lane routine: ' + JSON.stringify(cr).slice(0, 160));
+  // a decline or a duplicate answer is not a lane routine; created only when GET /api/cron lists it (one retry, new name)
+  const made = await ST.createRoutine((m, u, b) => S.call(m, u, b), body, { what: 'POST /api/cron (lane routine)', rename: () => 'Lane ' + ST.suffix(4) });
+  if (!made.ok) throw new Error('the lane routine was not created: ' + made.tries.join('; '));
+  name = made.name; const cr = { job: made.job };
   const firedAt = S.now();
   const tk = A.admit({ door: 'lane', kind: 'run', seat: id, jobId: cr.job.id, why: 'lane ' + laneId + ': ' + it.heading });   // phase 1: always allow, recorded
   const f = await S.fire(cr.job.id);
   A.started(tk, f);
-  if (f.status !== 200) { try { await S.call('POST', '/api/cron/remove', { id: cr.job.id }); } catch (_) {} if (place.kind === 'worktree') { try { git(place.repo, ['worktree', 'remove', '--force', p.dir]); git(place.repo, ['branch', '-D', p.branch]); } catch (_) {} } throw new Error('the station refused the run: HTTP ' + f.status + ' ' + String(f.body).slice(0, 120)); }
+  if (f.status !== 200) { await ST.cron(S.call, 'POST', '/api/cron/remove', { id: cr.job.id }, 'remove lane routine'); if (place.kind === 'worktree') { try { git(place.repo, ['worktree', 'remove', '--force', p.dir]); git(place.repo, ['branch', '-D', p.branch]); } catch (_) {} } throw new Error('the station refused the run: HTTP ' + f.status + ' ' + String(f.body).slice(0, 120)); }
   const lane = { id: laneId, seat: id, n, heading: it.heading, inbox: c.inbox, touches: it.touches, jobId: cr.job.id, jobName: name, runId: f.runId || null,
     firedAt: iso(firedAt), startedAt: iso(firedAt), timeoutMin: cfg.timeoutMin, dir: p.dir, kind: place.kind, why: place.why || null, repo: p.repo, branch: p.branch, base: p.base,
     provider: job.provider || null, model: job.model || null };

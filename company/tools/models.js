@@ -248,10 +248,10 @@ function makeModels(o) {
       const p = jobPair(j);
       if (p.provider === e.provider && p.model === e.model && (!e.effort || j.reasoningEffort === e.effort)) { out.routines.push({ id: j.id, name: j.name, kept: true }); continue; }
       const r = await call('POST', '/api/cron/update', { id: j.id, patch: Object.assign({ model: e.model, provider: e.provider }, e.effort ? { reasoningEffort: e.effort } : {}) });
-      const ok = r.status === 200 && (parse(r) || {}).ok !== false;
+      const v = require('./lib/station').cronResult(r, 'POST /api/cron/update ' + j.name), ok = v.ok;   // a 200 can be a decline
       out.routines.push({ id: j.id, name: j.name, set: ok });
       if (ok) { j.provider = e.provider; j.model = e.model; if (j.wire) { j.wire.provider = e.provider; j.wire.model = e.model; } if (e.effort) j.reasoningEffort = e.effort; }
-      else out.errors.push('POST /api/cron/update ' + j.name + ': HTTP ' + r.status + ' ' + String(r.body || '').slice(0, 160));
+      else out.errors.push(v.status === 200 ? v.reason : 'POST /api/cron/update ' + j.name + ': HTTP ' + r.status + ' ' + String(r.body || '').slice(0, 160));
     }
     out.ok = !out.errors.length;
     return out;

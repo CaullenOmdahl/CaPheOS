@@ -170,11 +170,12 @@ async function ensure(opts) {
   const bl = await blessRoot(call);
   if (!bl.ok) { out.error = bl.error; return out; }
   out.blessed = true; out.root = bl.root; if (!bl.already) out.notes.push('blessed ' + bl.root + ' as a project root');
-  const SCHED = require('./lib/scheduler'); const dispatcherOwns = schedMode() === 'dispatcher';
+  const SCHED = require('./lib/scheduler'), ST = require('./lib/station'); const dispatcherOwns = schedMode() === 'dispatcher';
   // the watchdog: with the dispatcher owning the schedule it is the one routine the station's schedule runs (script only)
   if (dispatcherOwns && !SCHED.ownWatchdogs(cr.json.jobs, ROOT).length) {
-    const w = await call('POST', '/api/cron', SCHED.watchdogSpec(ROOT, s.id));
-    if (w.status === 200) out.notes.push('created the watchdog routine (dispatcher liveness, starts no work)'); else out.notes.push('could not create the watchdog routine: HTTP ' + w.status);
+    const w = await SCHED.createWatchdog(call, ROOT, s.id);
+    if (w.ok) out.notes.push('created the watchdog routine "' + w.name + '" (dispatcher liveness, starts no work)' + (w.tries.length ? ' after a decline: ' + w.tries.join('; ') : ''));
+    else out.notes.push('could not create the watchdog routine: ' + w.reason);
   }
   let job = findLoop(cr.json.jobs.filter(j => !SCHED.isWatchdog(j)), s);
   const want = (opts.provider && opts.model) ? { provider: String(opts.provider), model: String(opts.model) } : null;
@@ -182,13 +183,14 @@ async function ensure(opts) {
     const m = want || candidateDefault();
     if (!m.provider || !m.model) { out.error = 'no model to run the loop on: company/model-policy.json has no candidateDefault, and no provider was picked in Setup'; return out; }
     // runtime.scheduler=dispatcher (lib/scheduler.js): created paused, the dispatcher's to start; station: armed as before
-    const r = await call('POST', '/api/cron', { name: s.loop, agentId: s.id, schedule: SCHEDULE, tz: co.TZ, prompt: buildPrompt(), workdir: ROOT, deliver: 'local', enabled: !dispatcherOwns,
-      model: m.model, provider: m.provider, unattendedGrants: LOOP_GRANTS, arm: true });
-    if (!(r.status === 200 && r.json && r.json.ok && r.json.job)) { out.error = 'POST /api/cron: ' + (r.error || 'HTTP ' + r.status + ' ' + ((r.json && r.json.error) || r.text || '')); return out; }
-    job = r.json.job; out.created = !r.json.duplicate;
+    // a 200 can be a decline (lib/station.js): created only when GET /api/cron lists it; a near-name duplicate is the update path's
+    const r = await ST.createRoutine(call, { name: s.loop, agentId: s.id, schedule: SCHEDULE, tz: co.TZ, prompt: buildPrompt(), workdir: ROOT, deliver: 'local', enabled: !dispatcherOwns,
+      model: m.model, provider: m.provider, unattendedGrants: LOOP_GRANTS, arm: true }, { what: 'POST /api/cron "' + s.loop + '"', acceptDuplicate: true });
+    if (!r.ok) { out.error = r.reason; return out; }
+    job = r.job; out.created = !r.duplicate;
     if (dispatcherOwns && out.created) { const st = SCHED.readState(ROOT); st.owned[job.id] = { seat: s.id, name: job.name, on: true }; SCHED.writeState(Object.assign(st, { mode: 'dispatcher' }), ROOT); out.notes.push('created paused on the station: the dispatcher starts its scheduled runs (runtime.scheduler=dispatcher)'); }
     // the station's mint gate may hand back a near-name duplicate: fall through to the update path for it
-    if (r.json.duplicate) out.notes.push('the station already had "' + job.name + '"');
+    if (r.duplicate) out.notes.push('the station already had "' + job.name + '"');
   }
   if (!out.created) {
     const patch = {};
@@ -200,8 +202,8 @@ async function ensure(opts) {
     if (want && (job.model !== want.model || job.provider !== want.provider)) { patch.model = want.model; patch.provider = want.provider; }
     else if (!job.model || !job.provider) { const m = candidateDefault(); if (m.model && m.provider) { patch.model = m.model; patch.provider = m.provider; } }
     if (Object.keys(patch).length) {
-      const u = await call('POST', '/api/cron/update', { id: job.id, patch });
-      if (!(u.status === 200 && u.json && u.json.ok !== false)) { out.error = 'POST /api/cron/update: ' + (u.error || 'HTTP ' + u.status + ' ' + ((u.json && u.json.error) || u.text || '')); return out; }
+      const u = await ST.cron(call, 'POST', '/api/cron/update', { id: job.id, patch }, 'POST /api/cron/update');
+      if (!u.ok) { out.error = u.reason; return out; }
       out.updated = Object.keys(patch); job = (u.json && u.json.job) || Object.assign({}, job, patch);
     }
     const ownedOn = dispatcherOwns && (SCHED.readState(ROOT).owned[job.id] || {}).on === true;
@@ -215,8 +217,8 @@ async function ensure(opts) {
   else if (co.halted()) out.notes.push('the company is halted (' + co.halted() + '): the scheduler stays off until resume');
   else if (co.restartHold()) out.notes.push('a station restart is waiting for idle (restart hold): the scheduler stays off until restart-station.js re-arms it');
   else {
-    const a = await call('POST', '/api/cron/arm', { enabled: true });
-    if (!(a.status === 200 && a.json && a.json.ok !== false)) { out.error = 'POST /api/cron/arm: ' + (a.error || 'HTTP ' + a.status); return out; }
+    const a = await ST.cron(call, 'POST', '/api/cron/arm', { enabled: true }, 'POST /api/cron/arm');
+    if (!a.ok) { out.error = a.reason; return out; }
     out.armed = true; out.notes.push('armed the station scheduler');
   }
   out.ok = true;
@@ -234,10 +236,13 @@ async function selftest() {
   let n = 0, bad = 0;
   const t = (name, ok, x) => { n++; if (!ok) bad++; console.log((ok ? 'ok   ' : 'FAIL ') + name + (ok || x === undefined ? '' : ' :: ' + JSON.stringify(x).slice(0, 500))); };
   const fake = () => {
-    const S = { enabled: false, jobs: [], projects: [], calls: [] };
+    // S.declined: names StarNet's dedupe memory declines with 200 {ok:false, declined:true}; S.declineAll: every write
+    const S = { enabled: false, jobs: [], projects: [], calls: [], declined: [], declineAll: false };
     S.call = async (m, p, b) => {
       S.calls.push(m + ' ' + p);
       const J = (status, json) => ({ status, json });
+      const NO = J(200, { ok: false, declined: true, message: 'this routine already exists — do not recreate it' });
+      if (m === 'POST' && p.startsWith('/api/cron') && (S.declineAll || (p === '/api/cron' && S.declined.includes(b.name)))) return NO;
       if (m === 'GET' && p === '/api/cron') return J(200, { enabled: S.enabled, halted: false, jobs: S.jobs });
       if (m === 'GET' && p === '/api/projects') return J(200, { projects: S.projects });
       if (m === 'POST' && p === '/api/projects/bless') { S.projects.push({ root: b.path, blessed: true }); return J(200, { ok: true, root: b.path }); }
@@ -288,7 +293,28 @@ async function selftest() {
     t('dispatcher scheduler: the loop is created paused and recorded as the dispatcher\'s, plus one watchdog (script only)', r.ok && loop && loop.enabled === false && SCHED.readState(ROOT).owned[loop.id] && wd.length === 1 && wd[0].noAgent === true && wd[0].script === 'company/tools/watchdog.js', { r, jobs: S.jobs });
     st = await status({ call: S.call });
     t('dispatcher scheduler: a paused, owned loop with its watchdog is green', st.ok, st.problems);
+    t('the watchdog is created under a unique name "<prefix> #<6 hex>"', wd.length === 1 && wd[0].name.startsWith(SCHED.WATCHDOG.name + ' #') && /#[0-9a-f]{6}$/.test(wd[0].name), wd);
+    // the sandbox's hand-made watchdog (a prefix match, never the exact name) keeps status green and is not re-created
+    S.jobs = S.jobs.filter(j => !SCHED.isWatchdog(j)).concat([{ id: '9fcf5b16', name: SCHED.WATCHDOG.name + ' #25f494', noAgent: true, script: 'company/tools/watchdog.js', workdir: ROOT, enabled: true, agentId: 'agent' }]);
+    st = await status({ call: S.call }); const n0 = S.jobs.length; r = await ensure({ call: S.call });
+    t('a hand-made watchdog "… #25f494" is recognised: status green, ensure creates none', st.ok && r.ok && S.jobs.length === n0, { st: st.problems, jobs: S.jobs.map(j => j.name) });
+    // a declined watchdog create is never reported as created
+    S.jobs = S.jobs.filter(j => !SCHED.isWatchdog(j)); S.declineAll = true; S.enabled = true;
+    r = await ensure({ call: S.call });
+    t('a watchdog create the station declines (HTTP 200, ok:false) is reported as not created', !S.jobs.some(SCHED.isWatchdog) && r.notes.some(x => /could not create the watchdog.*declined.*already exists/.test(x)), r.notes);
+    S.declineAll = false;
   } finally { if (stBefore) fs.writeFileSync(stF, stBefore); else try { fs.unlinkSync(stF); } catch (_) {} MODE_PIN = null; }
+  MODE_PIN = 'station';
+  S = fake(); S.declined.push(seat().loop);
+  r = await ensure({ call: S.call });
+  t('a loop create declined with HTTP 200 fails with the station\'s message', !r.ok && /declined.*already exists/.test(r.error || '') && !S.jobs.length, r);
+  S = fake(); S.jobs.push({ id: 'k1', name: 'Founder loop', agentId: co.ceo() || 'agent', prompt: 'Do things.', workdir: null, unattendedGrants: [], model: 'm', provider: 'p', enabled: true }); S.declineAll = true;
+  r = await ensure({ call: S.call });
+  t('a routine update declined with HTTP 200 fails with the station\'s message', !r.ok && /cron\/update.*declined/.test(r.error || ''), r);
+  S = fake(); S.projects.push({ root: ROOT, blessed: true }); S.jobs.push({ id: 'k1', name: 'Founder loop', agentId: co.ceo() || 'agent', prompt: own + '\n' + HIRING_LINE, workdir: ROOT, unattendedGrants: ['workbench'], model: 'm', provider: 'p', enabled: true }); S.declineAll = true;
+  r = await ensure({ call: S.call });
+  t('an arm declined with HTTP 200 fails with the station\'s message', !r.ok && /cron\/arm.*declined/.test(r.error || ''), r);
+  MODE_PIN = null;
   const down = await status({ call: async () => ({ status: 0, json: null, error: 'refused' }) });
   t('station down: status says so with the fix', !down.ok && down.problems[0].code === 'station-down' && /systemctl/.test(down.problems[0].fix));
   console.log(bad ? 'FOUNDER-LOOP SELFTEST FAILED: ' + bad + ' of ' + n : 'FOUNDER-LOOP SELFTEST PASSED: ' + n + ' checks');

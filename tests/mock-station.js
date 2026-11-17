@@ -19,6 +19,10 @@
  * global} and POST /api/budget/caps sets them; POST /api/cron keeps noAgent + script (a script-only routine); POST /__tick
  * {now?} is one pass of the station's own scheduler over ENABLED interval routines (what it fired is answered and kept in
  * S.ticks).
+ * Dedupe declines (StarNet's mint gate, lib/station.js): with --decline-dupes (or POST /__declines {on:true, names?:[…],
+ * writes?:true}) POST /api/cron answers HTTP 200 {ok:false, declined:true, message} and creates nothing for a name the
+ * station remembers: one of the agent's live routines or one REMOVED since (any time; S.cron.removed), or a name in
+ * `names`. writes:true also declines every /api/cron/update, /remove and /arm the same way. Off: the old answers.
  * Every request is appended to --log as one JSON line {at, method, path, query, body, status}; a test asserts on it.
  * Unknown routes answer 404 {error:"mock: no route"} and are logged too, so a test can list what the mock lacks.
  * With --root, POST /api/roster also writes <root>/.starnet-data/workspaces/agent.roster.json, as the station does
@@ -45,11 +49,13 @@ const SAVE_FILE = opt('save-file', process.env.MOCK_SAVE_FILE || '');
 // GET /api/version capabilities (CaPheOS lanes probe "workspace-lease-per-folder", StarNet patch 0012); POST /__caps sets them
 const CAPS = String(opt('caps', process.env.MOCK_CAPS || '')).split(',').map(s => s.trim()).filter(Boolean);
 const RESTART_DOWN_MS = Number(opt('restart-down-ms', 300));
+const DECLINE_DUPES = argv.includes('--decline-dupes') || process.env.MOCK_DECLINE_DUPES === '1';
 
 /* ---------------- state ---------------- */
 const S = {
   // a fresh station's scheduler starts disarmed (StarNet's arm gate); onboarding arms it (POST /api/cron/arm)
-  cron: { enabled: false, halted: false, jobs: [], nextId: 1, history: [] },
+  cron: { enabled: false, halted: false, jobs: [], nextId: 1, history: [], removed: [] },
+  declines: { on: DECLINE_DUPES, names: [], writes: false },   // POST /__declines; removed: [{name, agentId}] the dedupe memory keeps
   projects: [],          // blessed project roots (POST /api/projects/bless)
   transcripts: {},       // streamId -> [{role, content, at}] (written by POST /api/run, read by GET /api/transcript)
   halt: { halted: false, at: null },
@@ -256,8 +262,14 @@ function handle(method, p, q, body, res) {
   if (p === '/api/state' && method === 'GET') return send(res, 200, { ok: true, agents: S.roster });
   // --- routines ---
   if (p === '/api/cron' && method === 'GET') return send(res, 200, { ok: true, enabled: S.cron.enabled, halted: S.cron.halted, jobs: S.cron.jobs });
+  const DECLINED = { ok: false, declined: true, message: 'this routine already exists — do not recreate it' };
+  if (S.declines.writes && method === 'POST' && ['/api/cron/update', '/api/cron/remove', '/api/cron/arm'].includes(p)) return send(res, 200, DECLINED);
   if (p === '/api/cron' && method === 'POST') {
     if (!B.name || !B.prompt) return send(res, 400, { error: 'name and prompt are required' });
+    if (S.declines.on) {
+      const ag = String(B.agentId || 'agent');
+      if (S.declines.names.includes(String(B.name)) || S.cron.removed.some(r => r.name === B.name && r.agentId === ag) || S.cron.jobs.some(j => j.name === B.name && j.agentId === ag)) return send(res, 200, DECLINED);
+    }
     const dup = S.cron.jobs.find(j => j.name === B.name && j.agentId === (B.agentId || 'agent') && (j.workdir || null) === (B.workdir || null));   // one station per company; tests share one, told apart by workdir
     if (dup) return send(res, 200, { ok: true, duplicate: true, job: dup });
     const job = { id: 'job-' + (S.cron.nextId++), name: String(B.name), agentId: String(B.agentId || 'agent'), schedule: parseSchedule(B.schedule, B.tz),
@@ -302,6 +314,7 @@ function handle(method, p, q, body, res) {
     return send(res, 200, { ok: true, enabled: S.cron.enabled });
   }
   if (p === '/api/cron/remove' && method === 'POST') {
+    const gone = S.cron.jobs.find(j => j.id === String(B.id || '')); if (gone) S.cron.removed.push({ name: gone.name, agentId: gone.agentId, at: nowIso() });
     const before = S.cron.jobs.length; S.cron.jobs = S.cron.jobs.filter(j => j.id !== String(B.id || ''));
     return before === S.cron.jobs.length ? send(res, 404, { error: 'no such routine' }) : send(res, 200, { ok: true });
   }
@@ -403,6 +416,7 @@ const server = http.createServer((req, res) => {
       }
       S.ticks.push({ at: new Date(now).toISOString(), fired }); row.status = send(res, 200, { ok: true, fired }); return logReq(row);
     }
+    if (u.pathname === '/__declines' && req.method === 'POST') { const b = body || {}; S.declines = { on: b.on !== false, names: Array.isArray(b.names) ? b.names.map(String) : [], writes: b.writes === true }; row.status = send(res, 200, { ok: true, declines: S.declines }); return logReq(row); }
     if (u.pathname === '/__caps' && req.method === 'POST') { S.caps = Array.isArray((body || {}).caps) ? body.caps.map(String) : []; row.status = send(res, 200, { ok: true, caps: S.caps }); return logReq(row); }
     if (u.pathname === '/__live/end' && req.method === 'POST') {
       const r = S.live.find(x => x.runId === (body || {}).runId); S.live = S.live.filter(x => x !== r);

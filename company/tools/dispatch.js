@@ -719,13 +719,13 @@ function lastRunTail(job) {
       const pl = SCHED.plan('dispatcher', { jobs, crew: CREW || {}, state: schedState, root: ROOT });
       let changed = false;
       for (const x of pl.pause) {
-        const r = await call('POST', '/api/cron/update', { id: x.id, patch: { enabled: false } });
-        if (r.status === 200) { const j = jobs.find(y => y.id === x.id); if (j) j.enabled = false; schedState.owned[x.id] = pl.owned[x.id]; changed = true; log('SCHEDULER: paused "' + x.name + '" on the station: the dispatcher starts its runs (runtime.scheduler=dispatcher)'); }
-        else log('SCHEDULER ERROR: could not pause "' + x.name + '": HTTP ' + r.status);
+        const r = await require('./lib/station').cron(call, 'POST', '/api/cron/update', { id: x.id, patch: { enabled: false } }, 'pause "' + x.name + '"');
+        if (r.ok) { const j = jobs.find(y => y.id === x.id); if (j) j.enabled = false; schedState.owned[x.id] = pl.owned[x.id]; changed = true; log('SCHEDULER: paused "' + x.name + '" on the station: the dispatcher starts its runs (runtime.scheduler=dispatcher)'); }
+        else log('SCHEDULER ERROR: could not ' + r.reason);
       }
       if (pl.createWatchdog) {
-        const r = await call('POST', '/api/cron', SCHED.watchdogSpec(ROOT, CEO_ID));
-        log(r.status === 200 ? 'SCHEDULER: created the watchdog routine (the only routine the station schedule runs)' : 'SCHEDULER ERROR: could not create the watchdog routine: HTTP ' + r.status + ' ' + String(r.body).slice(0, 160));
+        const r = await SCHED.createWatchdog(call, ROOT, CEO_ID);
+        log(r.ok ? 'SCHEDULER: created the watchdog routine "' + r.name + '" (the only routine the station schedule runs)' + (r.tries.length ? '; declined first: ' + r.tries.join('; ') : '') : 'SCHEDULER ERROR: could not create the watchdog routine: ' + r.reason);
       }
       if (changed) SCHED.writeState(Object.assign(schedState, { mode: 'dispatcher' }), ROOT);
     } catch (e) { log('SCHEDULER ERROR: ' + String(e.message).slice(0, 200)); }

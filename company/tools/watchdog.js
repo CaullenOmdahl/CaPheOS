@@ -2,8 +2,8 @@
 /* watchdog.js — the only thing the station's schedule runs when the dispatcher owns the schedule (docs/BUDGET.md).
  *
  * With company.json runtime.scheduler = "dispatcher" the crew's loop routines are paused on the station and the
- * dispatcher starts every run. The station keeps ONE routine: "Watchdog (dispatcher liveness, starts no work)", a
- * script-only routine (noAgent, lib/scheduler.js WATCHDOG) that runs this file every 15 minutes. It:
+ * dispatcher starts every run. The station keeps ONE routine: "Watchdog (dispatcher liveness, starts no work) #<6 hex>",
+ * a script-only routine (noAgent, lib/scheduler.js WATCHDOG) that runs this file every 15 minutes. It:
  *   1. records itself through admit() (door watchdog, kind watchdog), so the station schedule's every act is counted;
  *   2. reads how long the dispatcher has been silent (company/state/dispatcher-loop.json lastTickEndAt / lastTickAt, else
  *      the dispatch log's age) against max(3 dispatcher ticks, 30 min);
