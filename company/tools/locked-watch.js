@@ -147,8 +147,10 @@ const MANIFEST = [
   ...STATION_STATUS.map(f => ({ p: '.starnet-data/workspaces/.secrets/' + f, cls: 'K', status: true, owner: 'risk', area: 'key', why: 'station-written provider readiness (no credential)' })),
   // the station's key store: providers.js records the files the station wrote when it applied an owner-approved setting
   // through the station API (it refuses while the store holds an unaccepted change, so it never blesses a hand edit)
+  // secrets/: the console records each key the owner saves there (Settings › Connections and keys, Today's key field, a chat
+  // key field; writer "console", never trusted from an agent's run), so the owner's own key change is not flagged
   ...['secrets/*', '.starnet-data/workspaces/.secrets/*', '~/.config/' + STATION_UNIT + '.env']
-    .map(f => Object.assign({ p: f, cls: 'K', owner: 'risk', area: 'key', why: 'a key or credential' }, f === '.starnet-data/workspaces/.secrets/*' ? { writers: ['providers.js'] } : {})),
+    .map(f => Object.assign({ p: f, cls: 'K', owner: 'risk', area: 'key', why: 'a key or credential' }, f === '.starnet-data/workspaces/.secrets/*' ? { writers: ['providers.js'] } : f === 'secrets/*' ? { writers: ['console'] } : {})),
 ];
 // areas the risk owner is also told about: anything that measures, limits or protects, so a locked change never lands on the
 // desk of only the person who may have made it (the area owner). Records with many legitimate writers (decisions.md,
@@ -1376,6 +1378,21 @@ async function selftest() {
     fs.unlinkSync(path.join(T, 'secrets/alias-key')); fs.symlinkSync('other-key', path.join(T, 'secrets/alias-key'));
     const r = await tick(C({ now })); assert.ok(r.events.some(x => x.key === 'secrets/alias-key'), JSON.stringify(r.events));
     assert.ok(!inbox('jordan').includes('secret-token-value'));
+  });
+  await t('a key the owner saved through the console (recorded) is accepted quietly; the same file changed with no record, or a record from an agent run, is flagged', async () => {
+    now += 60000; const kf = path.join(T, 'secrets/pyth-api-key');
+    fs.writeFileSync(kf, 'pyth-owner-value-123456\n', { mode: 0o600 }); P.wrote(kf, 'pyth-owner-value-123456\n', 'console (owner key)');
+    let r = await tick(C({ now })); assert.ok(!r.events.some(x => x.key === 'secrets/pyth-api-key'), 'new key, recorded: ' + JSON.stringify(r.events));
+    now += 60000; fs.writeFileSync(kf, 'pyth-replaced-value-654321\n', { mode: 0o600 }); P.wrote(kf, 'pyth-replaced-value-654321\n', 'console (owner key)');
+    r = await tick(C({ now })); assert.ok(!r.events.some(x => x.key === 'secrets/pyth-api-key'), 'replaced, recorded: ' + JSON.stringify(r.events));
+    now += 60000; fs.writeFileSync(kf, 'pyth-hand-edit-000000\n', { mode: 0o600 });
+    r = await tick(C({ now })); assert.ok(r.events.some(x => x.key === 'secrets/pyth-api-key' && /a key or credential changed/.test(x.why)), 'unrecorded: ' + JSON.stringify(r.events));
+    acceptCmd(context(C({ now, underStation: false })), 'secrets/pyth-api-key', { by: 'owner', why: 'test: that key change was mine' });
+    now += 60000; const forged = 'pyth-forged-111111\n'; fs.writeFileSync(kf, forged, { mode: 0o600 });
+    fs.appendFileSync(path.join(T, 'company/state/locked/provenance.jsonl'), JSON.stringify({ at: local(now), file: 'secrets/pyth-api-key', kind: 'write', sha256: P.sha(forged), bytes: forged.length, writer: 'console (owner key)', pid: 999, underStation: true, main: 'scratch/x.js', tainted: false }) + '\n');
+    r = await tick(C({ now })); assert.ok(r.events.some(x => x.key === 'secrets/pyth-api-key'), 'a console record from an agent run is not trusted: ' + JSON.stringify(r.events));
+    assert.ok(!/owner-value|replaced-value|hand-edit|forged-111/.test(inbox('jordan')), 'no key value in any report');
+    acceptCmd(context(C({ now, underStation: false })), 'secrets/pyth-api-key', { by: 'owner', why: 'test: that key change was mine' });
   });
   await t('a baseline from before links were recorded learns an unchanged link\'s target once, without a report', async () => {
     const old = JSON.parse(R('company/state/locked/baseline.json')); delete old.seededLinks; delete old.files['secrets/alias-key'].link;

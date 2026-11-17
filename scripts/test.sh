@@ -96,6 +96,7 @@ step "tests/page-kit-walk.js (headless Chrome: every scaffold page light/dark, d
 step "tests/minimax-endpoint-walk.js (headless Chrome: MiniMax endpoint picker in Setup, Settings and Today; SKIP without Chrome)" node tests/minimax-endpoint-walk.js
 step "tests/console-routes-walk.js (headless Chrome: old routes redirect, no paths outside Details; SKIP without Chrome)" node tests/console-routes-walk.js
 step "tests/services-walk.js (headless Chrome: Settings › System › Background services; SKIP without Chrome)" node tests/services-walk.js
+step "tests/service-keys-walk.js (headless Chrome: Settings › Connections and keys › Service keys, Today's Already saved; SKIP without Chrome)" node tests/service-keys-walk.js
 
 echo "== syntax and data files"
 py_check() { local bad=0 f; while IFS= read -r -d '' f; do python3 -m py_compile "$f" || { echo "py_compile: $f"; bad=1; }; done < <(git -C "$REPO" ls-files -z '*.py'); return $bad; }

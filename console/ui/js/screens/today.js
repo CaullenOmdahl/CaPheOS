@@ -486,8 +486,14 @@ export function fieldControl(q, f, opts) {
     const showStored = () => {
       fill(storedLine, storedNow ? [h('span', { class: 'label strong', 'data-stored': storedNow.stored }, 'Stored ✓'), h('span', { class: 'caption muted mono' }, storedNow.stored + (storedNow.chars ? ' (' + storedNow.chars + ' chars)' : '')),
         Button('(replace)', { variant: 'ghost', size: 'sm', aria: 'Replace the stored key', onClick: () => { storedNow = null; replace.checked = true; showStored(); } })] : null);
-      inputRow.hidden = !!storedNow; storedLine.hidden = !storedNow;
+      inputRow.hidden = !!storedNow || keepSaved; storedLine.hidden = !storedNow; savedLine.hidden = !!storedNow || !keepSaved;
     };
+    // a key that is already in secrets/ (Settings › Connections and keys): "Already saved — replace?", the field closed
+    let keepSaved = !!(f.saved && !storedNow);
+    const savedLine = h('div', { class: 'row-8 q-saved', style: 'align-items:center;flex-wrap:wrap', 'data-saved': f.name },
+      h('span', { class: 'label strong' }, 'Already saved — replace?'), f.saved && f.saved.at ? h('span', { class: 'caption muted' }, 'Saved ' + when(f.saved.at) + '.') : null,
+      Button('Replace', { variant: 'secondary', size: 'sm', aria: 'Replace the saved key', onClick: () => { keepSaved = false; replace.checked = true; showStored(); (multi ? many : one).focus(); } }));
+    const anyTime = h('span', { class: 'caption muted q-anytime' }, 'You can also add or replace keys any time in ', h('a', { href: '#/settings/connections/service-keys' }, 'Settings › Connections and keys'), '.');
     const storeBtn = opts.onStore ? Button('Store', { variant: 'secondary', size: 'sm', aria: 'Store the key now (the question stays open)', onClick: async () => {
       const v = (multi ? many : one).value; if (!v.trim()) { storeErr.textContent = 'Paste the key first.'; return; }
       storeErr.textContent = ''; storeBtn.disabled = true;
@@ -500,7 +506,7 @@ export function fieldControl(q, f, opts) {
       note,
       h('label', { class: 'check', for: uid + '-replace' }, replace, 'Replace the saved key'), storeErr,
       Details('Details', where, nameIn ? h('label', { class: 'stack-4' }, h('span', { class: 'caption muted' }, 'File name under secrets/'), nameIn) : null));
-    const el = h('div', { class: 'stack-6 q-secret', 'data-field': f.id }, lab(f.label, uid), f.provider ? h('span', { class: 'caption' }, 'Where to get it: ', mdBlock(f.provider, 'caption')) : null, help, pickSlot, inputRow, storedLine);
+    const el = h('div', { class: 'stack-6 q-secret', 'data-field': f.id }, lab(f.label, uid), f.provider ? h('span', { class: 'caption' }, 'Where to get it: ', mdBlock(f.provider, 'caption')) : null, help, pickSlot, savedLine, inputRow, storedLine, anyTime);
     showStored();
     return { f, el, get: () => { if (storedNow) return undefined; const v = (multi ? many : one).value; return v.trim() ? v : undefined; }, clear: () => { one.value = ''; many.value = ''; },
       isStored: () => !!storedNow, endpoint: mm ? () => picker ? picker.value() : null : null,

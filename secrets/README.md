@@ -12,7 +12,8 @@ git. Tools read them through `company/tools/lib/company.js` (`co.secret(name)`);
 | `openrouter-key` | OpenRouter key (reserve) | you |
 | `openrouter-mgmt-key` | OpenRouter management key (spend gate) | you |
 
-This README is the only file here that is not a key: it is tracked by the framework and updated with it. Do not add
+The owner can add or replace any of these, and see which tools read each one, in the console: Settings › Connections
+and keys › Service keys (values are never shown). This README is the only file here that is not a key: it is tracked by the framework and updated with it. Do not add
 other notes to this folder (every file here is watched as a key). This company's own keys beyond the table (a data
 feed's key, a second account) are listed in `company/work/security/secrets.md`: file name, what it is for, who asked
 for it and when it was stored, never a value.

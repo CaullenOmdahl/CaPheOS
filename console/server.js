@@ -198,7 +198,7 @@ function questions() {
   let gates = []; try { gates = require(path.join(TOOLS, 'lib', 'governance.js')).pendingGates(); } catch (_) {}
   const byId = {}; for (const g of gates) byId[g.id] = g;
   let rec = {}; try { rec = tool('approvals.js').records(); } catch (_) {}   // approvals: reminded (the Needs-you highlight)
-  return inbox.openQuestions().map(q => Object.assign({}, q, { askerSeat: seatOf(q.from) }, byId[q.id] ? { gate: { category: byId[q.id].category, ref: byId[q.id].ref, by: byId[q.id].by, summary: byId[q.id].summary } } : {},
+  return inbox.openQuestions().map(q => SERVICE_KEYS.markSaved(q)).map(q => Object.assign({}, q, { askerSeat: seatOf(q.from) }, byId[q.id] ? { gate: { category: byId[q.id].category, ref: byId[q.id].ref, by: byId[q.id].by, summary: byId[q.id].summary } } : {},
     q.approval ? { approval: Object.assign({}, q.approval, { reminded: !!(rec[q.id] && rec[q.id].reminded), fixed: !!(rec[q.id] && rec[q.id].fixed) }) } : {}));
 }
 // the crew seat id of a question's asker (by full or first name), for Discuss; null for a tool (onboard.js) or a stranger
@@ -234,6 +234,8 @@ function writeSecret(name, value, replace) {
   const tmp = path.join(dir, '.' + name + '.' + crypto.randomBytes(4).toString('hex') + '.tmp');
   fs.writeFileSync(tmp, value + '\n', { mode: 0o600, flag: 'wx' });
   fs.chmodSync(tmp, 0o600); fs.renameSync(tmp, file); fs.chmodSync(file, 0o600);
+  // the owner's change, for locked-watch.js (keys are class K): the hash of the exact bytes, never the value
+  try { tool('provenance.js').wrote(file, value + '\n', 'console (owner key)'); } catch (_) {}
   return file;
 }
 // the secret fields of one form in a body: checked first (nothing written), then written by writePending
@@ -513,6 +515,7 @@ const onOff = v => (v === true || v === 'on') ? 'on' : (v === false || v === 'of
 const str = (v, name) => { if (v === undefined || v === null || v === '') return null; const s = String(v); if (s.startsWith('--')) bad(name + ' may not start with --'); return s; };
 const routes = [];
 const route = (method, re, fn) => routes.push({ method, re, fn });
+const SERVICE_KEYS = require(path.join(__dirname, 'service-keys.js'))({ co, bad, HttpError, tool, writeSecret, normalizeSecret, owner: () => OWNER });
 const CHAT = require(path.join(__dirname, 'chat.js'))({ co, stationGet, bad, HttpError, tool, owner: () => OWNER });
 const ACT = require(path.join(__dirname, 'activity.js'))({ co, stationGet, emit: t => emit(t), tool });
 
@@ -541,6 +544,9 @@ route('POST', /^\/api\/chat-actions\/secret$/, (m, q, b) => {
   writeSecret(name, value, !!b.replace);
   return { ok: true, stored: 'secrets/' + name, name, chars: value.length };
 });
+// Settings › Connections and keys › Service keys (console/service-keys.js): the keys in secrets/, never their values
+route('GET', /^\/api\/service-keys$/, () => SERVICE_KEYS.list());
+route('POST', /^\/api\/service-keys$/, (m, q, b) => SERVICE_KEYS.save(b));
 const approvals = async () => { const A = tool('approvals.js'); try { await A.tick({ actor: 'the console' }); } catch (_) {} return A; };
 route('GET', /^\/api\/approvals$/, async () => ({ ok: true, approvals: (await approvals()).list() }));
 route('GET', /^\/api\/approvals\/(q-\d+)$/, async m => { const r = (await approvals()).get(m[1]); if (!r) bad('no approval record ' + m[1], 404); return Object.assign({ ok: true }, r); });
@@ -1014,6 +1020,64 @@ async function selftest() {
     check('form store: Today still has it, with the stored key', f3 && f3.stored && f3.stored.pk.stored === 'secrets/ping-key-3', f3);
     r = await call('POST', '/api/questions/' + kq3.id + '/answer', { action: 'go', values: { ok: true } });
     check('form store: the final submit answers it with both, the key as {stored, chars}', r.status === 200 && r.json.state === 'answered' && r.json.answer.values.ok === true && r.json.answer.values.pk.stored === 'secrets/ping-key-3' && r.json.answer.values.pk.chars === SECRET.length, r.json);
+    // Settings › Connections and keys › Service keys: list, add, replace; values never returned; reserved names and
+    // traversal refused; the owner's change recorded for locked-watch; the CEO told; Today knows a key is already saved
+    {
+      fs.mkdirSync(path.join(tmp, 'company', 'work', 'research'), { recursive: true });
+      fs.writeFileSync(path.join(tmp, 'company', 'work', 'research', 'feed.js'), "const co = require('../../tools/lib/company');\nconst k = co.secret('pyth-api-key');\n");
+      const PYTH = 'pyth-Value-For-Selftest-9876543210', PYTH2 = 'pyth-Replaced-For-Selftest-111222333';
+      const pfile = path.join(tmp, 'secrets', 'pyth-api-key');
+      const loops = JSON.parse(fs.readFileSync(path.join(tmp, 'company', 'tools', 'loops.json'), 'utf8')).agents || {};
+      const ceoId = Object.keys(loops).find(k => (loops[k].functions || []).includes('ceo')) || Object.keys(loops).find(k => !loops[k].manager);
+      const ceoInbox = () => { try { return fs.readFileSync(path.join(tmp, 'company', 'work', 'handoffs', loops[ceoId].inbox), 'utf8'); } catch (_) { return ''; } };
+      r = await call('GET', '/api/service-keys');
+      const kal = r.json.keys && r.json.keys.find(k => k.name === 'kalshi-api-key');
+      check('service keys: lists the keys in secrets/ with a friendly name, set and a change date, never a value or the station/console token',
+        r.status === 200 && kal && kal.label === 'Kalshi API key' && kal.set === true && !isNaN(Date.parse(kal.changedAt)) && !r.text.includes(SECRET) && !r.text.includes('another-value') && !r.text.includes('selftest-fake-station-token')
+        && !r.json.keys.some(k => /^(station-token|console-token|readme\.md)$/i.test(k.name)), r.json);
+      const py0 = r.json.keys.find(k => k.name === 'pyth-api-key');
+      check('service keys: a key a company script reads but nobody saved yet is listed as not set, with who reads it', py0 && py0.set === false && py0.label === 'Pyth' && py0.usedBy.includes('the research work') && py0.files.includes('company/work/research/feed.js'), py0);
+      check('service keys: the Add list offers Pyth, Kalshi, Synpath, healthchecks.io and GitHub, each with where to get it', ['pyth', 'kalshi', 'kalshi-private', 'synpath', 'healthchecks', 'github'].every(id => (r.json.services || []).some(x => x.id === id && x.where)), r.json.services);
+      r = await call('POST', '/api/service-keys', { service: 'pyth', value: '  ' + PYTH + '\n' });
+      check('service keys: add stores secrets/pyth-api-key (0600) and answers with name and length only', r.status === 200 && r.json.name === 'pyth-api-key' && r.json.chars === PYTH.length && r.json.replaced === false && !r.text.includes(PYTH)
+        && fs.readFileSync(pfile, 'utf8') === PYTH + '\n' && (fs.statSync(pfile).mode & 0o777) === 0o600, r.json);
+      const provRows = () => fs.readFileSync(path.join(tmp, 'company', 'state', 'locked', 'provenance.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(x => x.file === 'secrets/pyth-api-key');
+      const sha = t => 'sha256:' + crypto.createHash('sha256').update(t).digest('hex');
+      let pr = provRows();
+      check('service keys: the write is recorded as the owner\'s (provenance: hash of the exact bytes, writer console, not an agent run), so locked-watch stays quiet',
+        pr.length === 1 && pr[0].sha256 === sha(PYTH + '\n') && /^console /.test(pr[0].writer) && pr[0].underStation === false && pr[0].tainted === false && !JSON.stringify(pr).includes(PYTH), pr);
+      check('service keys: the CEO\'s inbox gets "The owner saved Pyth (secrets/pyth-api-key)", never the value', /The owner saved Pyth \(secrets\/pyth-api-key\)/.test(ceoInbox()) && /\*\*Status:\*\* OPEN/.test(ceoInbox()) && !ceoInbox().includes(PYTH), ceoInbox().slice(-600));
+      r = await call('POST', '/api/service-keys', { service: 'pyth', value: PYTH2 });
+      check('service keys: saving over a saved key without replace is 409 and changes nothing', r.status === 409 && r.json.detail && r.json.detail.code === 'exists' && fs.readFileSync(pfile, 'utf8') === PYTH + '\n' && !r.text.includes(PYTH2), r.json);
+      r = await call('POST', '/api/service-keys', { name: 'pyth-api-key', value: PYTH2, replace: true });
+      check('service keys: replace overwrites it, still 0600, recorded again, the CEO told it was replaced', r.status === 200 && r.json.replaced === true && fs.readFileSync(pfile, 'utf8') === PYTH2 + '\n' && (fs.statSync(pfile).mode & 0o777) === 0o600
+        && provRows().some(x => x.sha256 === sha(PYTH2 + '\n')) && /The owner replaced Pyth/.test(ceoInbox()) && !r.text.includes(PYTH2), r.json);
+      r = await call('GET', '/api/service-keys');
+      check('service keys: the list never carries a value (after add and replace)', r.status === 200 && r.json.keys.find(k => k.name === 'pyth-api-key').set === true && !r.text.includes(PYTH) && !r.text.includes(PYTH2), r.json);
+      const tokBefore = fs.readFileSync(path.join(tmp, 'secrets', 'station-token'), 'utf8');
+      for (const nm of ['station-token', 'console-token', 'README.md', 'Station-Token']) {
+        r = await call('POST', '/api/service-keys', { name: nm, value: 'overwrite-attempt-123456', replace: true });
+        check('service keys: the framework\'s file ' + nm + ' is refused (400, named as the framework\'s)', r.status === 400 && /framework/.test(r.json.error) && !r.text.includes('overwrite-attempt'), r.json);
+      }
+      check('service keys: the station token is untouched', fs.readFileSync(path.join(tmp, 'secrets', 'station-token'), 'utf8') === tokBefore);
+      for (const nm of ['../escape', '../../company/x', 'a/b', '..hidden', '.dotfile', '/etc/passwd', 'x\\y']) {
+        r = await call('POST', '/api/service-keys', { name: nm, value: 'traversal-attempt-123456', replace: true });
+        check('service keys: path traversal refused (' + nm + ')', r.status === 400, r.json);
+      }
+      check('service keys: nothing was written outside secrets/', !fs.existsSync(path.join(tmp, 'escape')) && !fs.existsSync(path.join(tmp, 'company', 'x')) && !fs.readdirSync(path.join(tmp, 'secrets')).some(f => /escape|hidden|dotfile|^a$/.test(f)));
+      r = await call('POST', '/api/service-keys', { service: 'healthchecks', value: 'not an address' });
+      check('service keys: an address must be a web address', r.status === 400 && !fs.existsSync(path.join(tmp, 'secrets', 'liveness-heartbeat-url')), r.json);
+      r = await call('POST', '/api/service-keys', { service: 'healthchecks', value: 'https://hc-ping.com/0f0e0d0c-aaaa-bbbb-cccc-1234567890ab' });
+      check('service keys: the healthchecks.io heartbeat is saved and labelled an address', r.status === 200 && r.json.kind === 'address' && /address/.test(r.json.label) && !r.text.includes('hc-ping.com'), r.json);
+      r = await call('POST', '/api/service-keys', { service: 'nope', value: 'x-123456789' });
+      check('service keys: an unknown service is refused', r.status === 400, r.json);
+      // Today: a crew request for a key that is already saved says so
+      const kq4 = await askCli(['--message', 'The Pyth key, please.', '--kind', 'secret', '--name', 'pyth-api-key', '--label', 'Pyth API key']);
+      const kq5 = await askCli(['--message', 'A Synpath key, please.', '--kind', 'secret', '--name', 'synpath-api-key', '--label', 'Synpath key']);
+      r = await call('GET', '/api/questions'); const q4 = (r.json.questions || []).find(x => x.id === kq4.id), q5 = (r.json.questions || []).find(x => x.id === kq5.id);
+      check('Today: a request for a key that is already saved carries saved.at; one for a new key does not', q4 && q4.form.fields[0].saved && !isNaN(Date.parse(q4.form.fields[0].saved.at)) && q5 && !q5.form.fields[0].saved && !r.text.includes(PYTH2), { q4: q4 && q4.form, q5: q5 && q5.form });
+      for (const x of [kq4, kq5]) await call('POST', '/api/questions/' + x.id + '/answer', { action: 'skip' }).catch(() => {});
+    }
     // the composer refuses an ask that tells the owner to run a command
     const shellAsk = await askCli(['--message', 'Two patches need your shell.', '--details', 'patch -p1 < scratch/a.diff && node company/tools/a.js selftest']);
     check('composer: an ask telling the owner to run a command is refused with the routes', shellAsk.ok === false && /run a command/.test(shellAsk.error || '') && /framework request/.test(shellAsk.error || ''), shellAsk);

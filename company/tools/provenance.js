@@ -149,8 +149,10 @@ function relOf(file, root) {
   if (!p.startsWith(root + path.sep)) return null;
   const r = path.relative(root, p).split(path.sep).join('/');
   // under company/, plus the station's folder grants (lanes.js records the grant of each lane folder it blesses) and the
-  // station's key store (providers.js records the files the station wrote for an owner-approved setting; hashes only)
-  if ((!r.startsWith('company/') && r !== '.starnet-data/workspaces/permissions.allow.json' && !r.startsWith('.starnet-data/workspaces/.secrets/')) || r.startsWith('company/state/locked/')) return null;
+  // station's key store (providers.js records the files the station wrote for an owner-approved setting; hashes only),
+  // and the company's own keys in secrets/ (the console records each key the owner saves; hashes only, never the value)
+  const ownKey = /^secrets\/[^/]+$/.test(r) && r !== 'secrets/README.md';
+  if ((!r.startsWith('company/') && r !== '.starnet-data/workspaces/permissions.allow.json' && !r.startsWith('.starnet-data/workspaces/.secrets/') && !ownKey) || r.startsWith('company/state/locked/')) return null;
   return r;
 }
 function append(row, root) {
@@ -284,6 +286,7 @@ if (require.main === module) {
     ok(typeof r[0].main === 'string' && r[0].tainted === false, 'rows say which program wrote them and whether node was started with a preload');
     const end = readFrom(0, T).end; appended(path.join(T, 'company/work/log.jsonl'), 'two\n', 'test');
     ok(readFrom(end, T).rows.length === 1, 'reads on from an offset');
+    ok(wrote(path.join(T, 'secrets/pyth-api-key'), 'k\n', 'console (owner key)') === true && wrote(path.join(T, 'secrets/README.md'), 'x', 'test') === false && wrote(path.join(T, 'secrets/sub/x'), 'x', 'test') === false, 'records a key saved in secrets/ (hash only), never its README or a subfolder');
     ok(stationEnv({ STARNET_USER_CONTROL_MODE: 'preserve', STARNET_COMPUTER_DRIVER: '0', STARNET_MCP_STDIO: '0', BROWSER: 'none' }) && !stationEnv({ BROWSER: 'none' }), 'recognises the station\'s environment pins');
     // the owner/station rule over injected ancestry (nearest first)
     const wrap = cmd => ['/usr/bin/bash', '-c', 'source snap.sh && eval \'' + cmd + '\' && pwd -P >| /tmp/x'];

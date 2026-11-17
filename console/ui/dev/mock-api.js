@@ -34,6 +34,8 @@ const ago = m => new Date(Date.now() - m * 60000).toISOString();
 const INBOX = require(path.join(REPO, 'company', 'tools', 'inbox.js'));
 // the console's own plain-words step and run-summary code (console/activity.js), fed raw commands and tool markup
 const ACTIVITY = require(path.join(REPO, 'console', 'activity.js'));
+// Settings › Connections and keys › Service keys: the real names, labels and Today marking (console/service-keys.js)
+const SKEYS = require(path.join(REPO, 'console', 'service-keys.js'));
 const MOCK_ROOT = '/home/owner/Companies/example';
 const ACT = ACTIVITY({ co: { ROOT: MOCK_ROOT, crew: () => ({}) }, stationGet: async () => ({ ok: false }), emit() {}, tool() { throw new Error('mock'); } });
 const RAW_STEP = 'cd ' + MOCK_ROOT + ' && grep -n "decisions.md" company/work/security/locked-changes.md | tail -5';
@@ -91,7 +93,8 @@ function typedFixtures() {
 }
 // as inbox.js openQuestions(): a request's questions (typed, inferred from untyped text, or a follow-up) and progress
 function present(q) {
-  const o = Object.assign({}, q); if (!o.form) o.form = INBOX.formOf(q);
+  const o0 = Object.assign({}, q); if (!o0.form) o0.form = INBOX.formOf(q);
+  const o = SKEYS.markSaved(o0, n => (S.serviceKeys[n] && S.serviceKeys[n].at) || null);
   o.secretOnly = INBOX.secretOnly(o.form);
   const qo = INBOX.questionsOf(Object.assign({ type: 'ask' }, q));
   if (qo) {
@@ -203,6 +206,18 @@ if (MOCK_ACTIONS) {
   rec('q-000202', 'access', true, 'Could we get read access to the example bank account?', { account: 'example' });
 }
 S.mockActions = { stored: [], answers: [] };
+// secrets/ as Settings › Service keys sees it: name -> {at, chars, files} (a value is never kept); files = who reads it
+S.serviceKeys = {
+  'kalshi-api-key': { at: ago(60 * 24 * 3), chars: 36, files: ['company/work/markets/kalshi_feed.py'] },
+  'kalshi-private-key': { at: ago(60 * 24 * 3), chars: 1704, files: ['company/work/markets/kalshi_feed.py'] },
+  'pyth-api-key': { at: null, files: ['company/work/research/pyth_prices.py'] },
+  'liveness-heartbeat-url': { at: null, files: ['modules/liveness/watch.js'] },
+};
+S.mockActions.serviceKeys = [];
+function serviceKeyRows() {
+  return Object.entries(S.serviceKeys).map(([name, k]) => Object.assign(SKEYS.describe(name), { set: !!k.at, changedAt: k.at, files: k.files || [], usedBy: [...new Set((k.files || []).map(SKEYS.readerOf))], stored: 'secrets/' + name }))
+    .sort((a, b) => (b.set - a.set) || a.label.localeCompare(b.label));
+}
 S.live = STATION_DOWN ? [] : [
   { runId: 'run-live-1', agentId: 'agent', name: 'Founder', startedAt: Date.now() - 4 * 60000, kind: 'routine', label: 'routine "Founder loop"', href: '#/settings/tempo/routines', step: 'hiring…', steps: 7, usd: 0.0123, stoppable: true, watched: true },
   // a seat with two things running at once (a Sprint lane): its step is a raw shell command, said in plain words
@@ -478,6 +493,23 @@ async function apiRoute(req, res, p, q) {
     if (typeof B.value !== 'string' || !B.value.trim()) return J(res, 400, { ok: false, error: 'paste the key first' });
     const chars = B.value.trim().length; S.mockActions.stored.push({ name: B.name, chars }); return ok({ stored: 'secrets/' + B.name, name: B.name, chars }); }
   if (M === 'GET' && p === '/api/__mock/actions') return ok(S.mockActions);
+  if (M === 'GET' && p === '/api/service-keys') return ok({ keys: serviceKeyRows(), services: SKEYS.offers() });
+  if (M === 'POST' && p === '/api/service-keys') {   // as console/service-keys.js save(): checks, then keeps {at, chars} only
+    const known = B.service && B.service !== 'other' ? SKEYS.offers().find(x => x.id === B.service) : null;
+    if (B.service && B.service !== 'other' && !known) return J(res, 400, { ok: false, error: 'unknown service' });
+    const name = String(B.name || (known && known.name) || '').trim();
+    if (SKEYS.RESERVED.has(name.toLowerCase())) return J(res, 400, { ok: false, error: '"' + name + '" is the framework\'s own file; it cannot be set from here' });
+    if (!SKEYS.safeName(name)) return J(res, 400, { ok: false, error: 'the name may use letters, digits, . _ - only (no folders), up to 64 characters' });
+    if (typeof B.value !== 'string' || !B.value.trim()) return J(res, 400, { ok: false, error: 'paste the key first' });
+    const d = SKEYS.describe(name);
+    if (d.kind === 'address' && !/^https?:\/\/\S+$/.test(B.value.trim())) return J(res, 400, { ok: false, error: 'this one is a web address: paste the whole address, starting with https://' });
+    const ex = S.serviceKeys[name] && S.serviceKeys[name].at;
+    if (ex && !B.replace) return J(res, 409, { ok: false, error: d.label + ' is already saved. Use Replace to overwrite it.', detail: { code: 'exists', name } });
+    S.serviceKeys[name] = Object.assign({}, S.serviceKeys[name], { at: now(), chars: B.value.trim().length });
+    S.mockActions.serviceKeys.push({ name, chars: B.value.trim().length, replaced: !!ex, told: 'Founder' });
+    emit('questions');
+    return ok({ name, label: d.label, kind: d.kind, stored: 'secrets/' + name, chars: B.value.trim().length, replaced: !!ex, told: 'Founder' });
+  }
   if (M === 'POST' && p === '/api/__mock/archive-chat') { S.chats.agent = []; return ok({}); }
   if (M === 'GET' && p === '/api/approvals') return ok({ approvals: Object.values(S.approvals).filter(r => r.status === 'pending') });
   if (M === 'GET' && (m = /^\/api\/approvals\/(q-\d+)$/.exec(p))) { const r = S.approvals[m[1]]; return r ? ok(r) : J(res, 404, { ok: false, error: 'no approval record ' + m[1] }); }
