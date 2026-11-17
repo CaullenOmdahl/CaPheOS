@@ -538,6 +538,11 @@ function governanceCategory(rec) {
 function backupDir(ctx, rec) { return path.join(ctx.paths.dir, rec.id, 'before'); }
 
 const OWNED_FILES = new Set(['company/company.json', 'company/CHARTER.md', 'company/competence-policy.json', 'company/model-policy.json', 'company/tools/loops.json']);
+function requestPayload(ctx, rec) {
+  const rel = rec && rec.change && rec.change.payload;
+  if (!rel) return '';
+  try { return fs.readFileSync(ctx.P(rel), 'utf8'); } catch (_) { return ''; }
+}
 function frameworkRequest(ctx, rec, p) {
   const file = rec && rec.target && rec.target.file;
   if (!file || !['tool', 'house-rule', 'policy'].includes(rec.kind) || OWNED_FILES.has(file)) return null;
@@ -550,7 +555,7 @@ function frameworkRequest(ctx, rec, p) {
   const dir = path.join(ctx.root, 'company', 'work', 'framework-requests'); fs.mkdirSync(dir, { recursive: true });
   const out = path.join(dir, rec.id + '.md');
   // the proposal's diff/body is stored at rec.change.payload (relative to the root); the request carries it in full
-  const payload = (() => { try { return rec.change && rec.change.payload ? fs.readFileSync(ctx.P(rec.change.payload), 'utf8') : ''; } catch (_) { return ''; } })();
+  const payload = requestPayload(ctx, rec);
   if (!payload.trim()) throw E(rec.id + ': no change text to send to the framework (the proposal has no payload); propose it again with the diff', 'state');
   fs.writeFileSync(out, '# Framework change request ' + rec.id + '\n\n- File: `' + file + '`\n- Proposed by: ' + rec.by + '; reviewed by: ' + ((rec.approvals || []).map(a => a.name).join(', ') || '-') + '\n- Why: ' + rec.why + '\n\nThis file belongs to the CaPheOS framework, so the change was not applied in this company. Forward it to the framework (it reaches this company with the next update).\n\n```diff\n' + payload.slice(0, 60000) + '\n```\n');
   rec.status = 'upstream'; rec.upstreamAt = new Date(ctx.now).toISOString(); saveRec(ctx, rec);
@@ -1014,6 +1019,22 @@ async function selftest() {
     assert.strictEqual(governanceCategory({ kind: 'policy', target: { file: 'company/model-policy.json' } }), 'tools');
     setGov('tools', 'auto'); setGov('budget', 'auto');
   });
+  await t('a framework request carries the diff of a patch-mode change, and refuses to be written empty', async () => {
+    const cpx = require('child_process'); const G = fs.mkdtempSync(path.join(os.tmpdir(), 'hc-fw-'));
+    try {
+      const gw = (rel, v) => { fs.mkdirSync(path.dirname(path.join(G, rel)), { recursive: true }); fs.writeFileSync(path.join(G, rel), v); };
+      gw('company/work/.founded', ''); gw('company/tools/fw.js', 'x\n'); gw('company/work/changes/hc-0001/change.diff', '--- a/company/tools/fw.js\n+++ b/company/tools/fw.js\n@@ -1 +1 @@\n-x\n+y\n');
+      cpx.spawnSync('git', ['init', '-q'], { cwd: G }); cpx.spawnSync('git', ['add', 'company/tools/fw.js'], { cwd: G });
+      const cx = context({ root: G, now: Date.now() });
+      const rec = { id: 'hc-0001', kind: 'tool', by: 'Max', why: 'w', target: { type: 'file', file: 'company/tools/fw.js' }, change: { mode: 'patch', payload: 'company/work/changes/hc-0001/change.diff' }, status: 'approved', approvals: [] };
+      assert.ok(requestPayload(cx, rec).includes('+y'), 'payload read from rec.change.payload');
+      const r = frameworkRequest(cx, rec, { name: 'Max' });
+      assert.ok(r && /^\+y$/m.test(fs.readFileSync(path.join(G, r.upstream), 'utf8')), 'the request file holds the diff');
+      const bad = Object.assign({}, rec, { id: 'hc-0002', change: { mode: 'patch', payload: 'company/work/changes/hc-0002/change.diff' }, status: 'approved' });
+      assert.throws(() => frameworkRequest(cx, bad, { name: 'Max' }), /no change text/);
+      assert.ok(!fs.existsSync(path.join(G, 'company/work/framework-requests/hc-0002.md')) && bad.status === 'approved', 'nothing written, status unchanged');
+    } finally { fs.rmSync(G, { recursive: true, force: true }); }
+  });
   if (prevProv === undefined) delete process.env.PROVENANCE_ROOT; else process.env.PROVENANCE_ROOT = prevProv;
   fs.rmSync(T, { recursive: true, force: true });
   return { out, bad };
@@ -1061,7 +1082,7 @@ if (require.main === module) {
     if (cmd === 'propose') { r = await propose(ctx, o); console.log('proposed ' + r.id + ' (claimed by ' + r.by + '; --by is not cryptographically verified). Review handoff sent to ' + r.reviewers.map(p => p.name).join(' and ') + '.'); print(r); return; }
     if (cmd === 'approve' || cmd === 'reject') { r = review(ctx, id, o, cmd); console.log((cmd === 'reject' ? 'rejected ' : 'approved ') + r.id + ' — now ' + r.status + (r.status === 'approved' ? '; apply handoff sent to ' + (r.applier ? r.applier.name : 'the reviewer') : '')); return; }
     if (cmd === 'withdraw') { r = withdraw(ctx, id, o); console.log('withdrew ' + r.id); return; }
-    if (cmd === 'apply') { r = await applyChange(ctx, id, o); console.log('applied ' + r.id + (r.applied.how ? ' (' + r.applied.how + ')' : '') + '; results check due ' + r.judgeAfter.slice(0, 10)); return; }
+    if (cmd === 'apply') { r = await applyChange(ctx, id, o); console.log('applied ' + r.id + (r.applied && r.applied.how ? ' (' + r.applied.how + ')' : '') + (r.judgeAfter ? '; results check due ' + r.judgeAfter.slice(0, 10) : (r.upstream ? '; not applied here, sent upstream as ' + r.upstream : ''))); return; }
     if (cmd === 'revert') { r = await revertChange(ctx, id, o); console.log('reverted ' + r.id); return; }
     if (cmd === 'keep') { r = keepChange(ctx, id, o); console.log('kept ' + r.id); return; }
   })().catch(e => { console.error('harness-change: ' + e.message); process.exit(e && ['who', 'input', 'state', 'stale', 'locked', 'refused'].includes(e.code) ? 2 : 1); });
