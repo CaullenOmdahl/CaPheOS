@@ -11,6 +11,7 @@
  *   node company/tools/inbox.js list [--open] [--from <name>]
  *   node company/tools/inbox.js answer --id q-0003 --a "yes: rotate it" --by Commander [--answer '<json>'] [--quiet]
  *   node company/tools/inbox.js snooze --id q-0003 --until <ISO time> --by Commander
+ *   node company/tools/inbox.js withdraw q-0003 [--part <n|id>] --why "fixed by …" --from <you>   (the asker: no longer needed)
  *   node company/tools/inbox.js close --id q-0003
  *   node company/tools/inbox.js --selftest
  *
@@ -27,6 +28,9 @@
  *             id to check the key with (/api/providers/validate). The value never reaches this file or any message.
  *             `validate: custom` = a MiniMax key: Today shows the endpoint picker (Global / Mainland China / Custom) beside
  *             it and the console checks the key there, saving the endpoint in company.json providers.minimax.
+ *   url       {placeholder?, allowHttp?}             a plain web address (a ping URL, a webhook), shown, checked as https.
+ *             Only keys, tokens and passwords are secret fields: a "secret" field whose label asks for a URL or an
+ *             address (and names no key/token/password) is turned into a url field (plainFieldKinds), at ask and on read.
  *   choice    {options: [{id, label, recommended?}], multi?, allowOther?}
  *   link      {url (http/https), action: what to do there}   the owner marks it done / couldn't
  *   number    {unit?, min?, max?}     date {min?, max? YYYY-MM-DD}     checkbox {}  (a yes/no tick)
@@ -36,7 +40,8 @@
  *             Page Up/Down, Home/End); the card shows `say` with the live value in plain words. The answer must be in
  *             [min, max] and on a step from min; it is checked here, server-side, not only in the browser.
  * Every field has {id, type, label, help?, required?}. `actions` are the buttons, each {id, label, verdict, primary?,
- * needs?}: verdict is one of yes, no, submit, done, couldnt, declined (yes/no is what lib/governance approved() reads);
+ * needs?, does?}: `does` says what pressing it will do ("Approve switches the commitments module on"); an approve
+ * shortcut takes it as --spec '{"does": "..."}'. Without it Today says "Approve tells <asker> yes". verdict is one of yes, no, submit, done, couldnt, declined (yes/no is what lib/governance approved() reads);
  * needs is "fields" (the required fields must be filled; default for yes/submit/done), "none", or a list of field ids.
  * Limits: 20 fields, 6 actions, 30 options, ids [a-z][a-z0-9_-]*, http(s) links only; an unsafe form is refused with
  * the reason. Every question also takes a free Reply, Snooze and Discuss in the console.
@@ -60,8 +65,9 @@
  * the console writes the file and records {type:'secret'} (recordStored); the final submit carries {stored, chars}.
  * RECOVERY: an untyped question that was closed by storing a key alone, while its text asked for more, comes back ONCE
  * (followUpOf) with the key shown as stored and the rest open: "You stored the key; the rest of this request still needs you".
- * NEVER A COMMAND FOR THE OWNER: an ask whose text tells the owner to run something (patch -p1, node …, git …, "in your
- * shell", "run this") is refused with the routes (composerCheck): a framework file = harness-change propose (a framework
+ * NEVER A COMMAND FOR THE OWNER: an ask whose text tells the owner to run something (patch -p1, node …, git push …,
+ * systemctl …, daemon-reload, sudo …, npm/pip install …, a command in backticks, "in your shell", "run this", "on your
+ * side", "may I have that command") is refused (details may quote commands as evidence unless they hand them over) with the routes (composerCheck): a framework file = harness-change propose (a framework
  * request with the diff); a locked company tool = the same propose, approved by the owner on Today and applied by the
  * tool; anything else = a handoff to the tools seat.
  *
@@ -86,7 +92,7 @@ const FILE = () => process.env.PM_INBOX_FILE || co.p('company', 'pm-inbox.jsonl'
 const isOwner = by => { const b = String(by || '').trim().toLowerCase(); return !!b && (b === 'commander' || b === 'owner' || b === String(co.config.owner.name || '').trim().toLowerCase()); };
 
 const KINDS = ['approve', 'choice', 'text', 'secret', 'link', 'account', 'number', 'date', 'slider'];
-const FIELD_TYPES = ['info', 'text', 'secret', 'choice', 'link', 'number', 'date', 'checkbox', 'slider'];
+const FIELD_TYPES = ['info', 'text', 'secret', 'url', 'choice', 'link', 'number', 'date', 'checkbox', 'slider'];
 const VERDICTS = ['yes', 'no', 'submit', 'done', 'couldnt', 'declined'];
 const LIMITS = { fields: 20, actions: 6, options: 30, label: 200, help: 1000, info: 4000, message: 2000, details: 20000, value: 20000 };
 const MESSAGE_SOFT = 400;
@@ -125,6 +131,9 @@ function state() {
     if (r.type === 'secret') { const cur = by[r.id] = by[r.id] || {}; cur.stored = Object.assign({}, cur.stored, { [r.field]: storedOf(r) }); }
     if (r.type === 'part') { const cur = by[r.id] = by[r.id] || {}; cur.parts = Object.assign({}, cur.parts, { [r.part]: { a: r.a, answer: r.answer, at: r.at } }); }
     if (r.type === 'reclassify') Object.assign(by[r.id] = by[r.id] || {}, { reclassified: r.note, by: r.by });
+    // the asker withdrew a question ("no longer needed"): one question of a request (part) or the whole ask
+    if (r.type === 'withdraw') { const cur = by[r.id] = by[r.id] || {}; const w = { by: r.by, why: r.why, at: r.at };
+      if (r.part) cur.withdrawn = Object.assign({}, cur.withdrawn, { [r.part]: w }); else cur.withdrawnAll = w; }
     if (r.type === 'snooze') Object.assign(by[r.id] = by[r.id] || {}, { snoozedUntil: r.until || null, snoozedAt: r.at });
   }
   return by;
@@ -200,6 +209,7 @@ function normalizeForm(form) {
       o.placeholder = str(x.placeholder, 200, 'field ' + id + ' placeholder');
       if (/pass(word)?|secret|api[-_ ]?key|token|private key/i.test(id + ' ' + o.label)) throw new Error('field ' + id + ' asks for a secret in a text field: use type "secret" (the key is stored as a file, never written in the answer)');
     }
+    if (type === 'url') { o.placeholder = str(x.placeholder, 200, 'field ' + id + ' placeholder'); if (x.allowHttp) o.allowHttp = true; }
     if (type === 'secret') {
       o.name = String(x.name || '').trim();
       if (!safeSecretName(o.name)) throw new Error('secret field ' + id + ' needs name: a plain file name under secrets/ (letters, digits, . _ -; not station-token or console-token), e.g. kalshi-api-key');
@@ -250,6 +260,7 @@ function normalizeForm(form) {
     if (!VERDICTS.includes(verdict)) throw new Error('action ' + id + ': verdict must be one of ' + VERDICTS.join(', '));
     const o = { id, label, verdict };
     if (x.primary) o.primary = true;
+    const does = str(x.does, 300, 'action ' + id + ' does'); if (does) o.does = does;   // what pressing it will do, in plain words
     if (Array.isArray(x.needs)) { for (const n of x.needs) if (!ids.has(String(n))) throw new Error('action ' + id + ' needs a field that does not exist: ' + n); o.needs = x.needs.map(String); }
     else o.needs = x.needs === 'none' || x.needs === 'fields' ? x.needs : (['yes', 'submit', 'done'].includes(verdict) ? 'fields' : 'none');
     return o;
@@ -257,7 +268,27 @@ function normalizeForm(form) {
   const answerable = outF.some(f => f.type !== 'info');
   if (!outA.length) outA = answerable ? [{ id: 'send', label: 'Send', verdict: 'submit', primary: true, needs: 'fields' }] : [{ id: 'approve', label: 'Approve', verdict: 'yes', primary: true, needs: 'fields' }, { id: 'decline', label: 'Decline', verdict: 'no', needs: 'none' }];
   if (!outA.some(a => a.primary)) outA[0].primary = true;
-  return { fields: outF, actions: outA };
+  return plainFieldKinds({ fields: outF, actions: outA });
+}
+/* plainFieldKinds(form) — only keys, tokens and passwords are secret fields. A "secret" field that asks for a URL or an
+ * address (a ping URL, a webhook address, an endpoint) and names no key, token or password is a plain https URL field:
+ * the owner sees it, it is checked as https, and it is answered with the question's own button ("Store …" reads "Save …").
+ * Applied when a form is composed and again when one is read, so questions asked before the rule are shown right too. */
+const URL_WORD = /\b(url|urls|address|link|endpoint|webhook|uri|domain|website|site)\b/i;
+const SECRET_WORD = /\b(key|keys|token|tokens|password|passwords|passphrase|secret|credentials?|private|pem|api[- _]?key)\b/i;
+function looksLikeUrlField(f) { const lab = String(f.label || '') + ' ' + String(f.help || ''); return URL_WORD.test(lab) && !SECRET_WORD.test(String(f.label || '')) && !f.validate; }
+function plainFieldKinds(form) {
+  if (!form || !Array.isArray(form.fields) || !form.fields.some(f => f.type === 'secret' && looksLikeUrlField(f))) return form;
+  const changed = new Set();
+  const fields = form.fields.map(f => { if (f.type !== 'secret' || !looksLikeUrlField(f)) return f; changed.add(f.id);
+    const o = { id: f.id, type: 'url', label: f.label, required: f.required !== false, reclassified: 'secret' }; if (f.help) o.help = f.help; return o; });
+  const actions = (form.actions || []).map(a => {
+    const needs = Array.isArray(a.needs) ? a.needs : [];
+    const keysLeft = fields.some(f => f.type === 'secret');
+    if (/^store\b/i.test(a.label) && (needs.some(n => changed.has(n)) || (!keysLeft && ['done', 'submit', 'yes'].includes(a.verdict)))) return Object.assign({}, a, { label: a.label.replace(/^store( it)?( securely)?/i, m => /it/i.test(m) ? 'Save it' : 'Save') });
+    return a;
+  });
+  return Object.assign({}, form, { fields, actions });
 }
 /* a slider's checked settings: finite min < max, step > 0 (at most 1000 steps), value and marks in range and on a step */
 const onStep = (n, f) => { const k = (n - f.min) / f.step; return Math.abs(k - Math.round(k)) < 1e-6; };
@@ -302,7 +333,7 @@ function expandKind(kind, spec) {
   const reason = { id: 'reason', type: 'text', multiline: true, label: 'Reason (optional)', required: false };
   const note = { id: 'note', type: 'text', multiline: true, label: 'Note (optional)', required: false };
   switch (k) {
-    case 'approve': return { fields: [reason], actions: [{ id: 'approve', label: 'Approve', verdict: 'yes', primary: true }, { id: 'decline', label: 'Decline', verdict: 'no' }] };
+    case 'approve': return { fields: [reason], actions: [{ id: 'approve', label: 'Approve', verdict: 'yes', primary: true, does: s.does }, { id: 'decline', label: 'Decline', verdict: 'no', does: s.declineDoes }] };
     case 'choice': return { fields: [{ id: 'choice', type: 'choice', label: s.label || 'Your choice', options: s.options, recommended: s.recommended, multi: s.multi, allowOther: s.allowOther, required: true }, note],
       actions: [{ id: 'choose', label: 'Choose', verdict: 'submit', primary: true }] };
     case 'text': return { fields: [{ id: 'answer', type: 'text', multiline: true, label: s.label || 'Your answer', minLength: s.minLength !== undefined ? s.minLength : s.min, maxLength: s.maxLength !== undefined ? s.maxLength : s.max, placeholder: s.placeholder, required: true }],
@@ -351,7 +382,7 @@ function secretHint(q) {
  * "store" button that answers it: storing a key never closes a question that asks for more than the key (an untyped
  * row is shown as a multi-question request, inferQuestions, where the key is one part and the decision another). */
 function formOf(r) {
-  const form = r && r.form ? r.form : normalizeForm(expandKind('approve'));
+  const form = r && r.form ? plainFieldKinds(r.form) : normalizeForm(expandKind('approve'));
   const hint = secretHint(r);
   if (!hint) return form;
   return { fields: form.fields.concat([{ id: 'key', type: 'secret', label: 'The key (optional: only if this is what is asked for)', name: hint.name, multiline: true, required: false, hinted: true }]).filter((f, i, all) => all.findIndex(g => g.id === f.id) === i),
@@ -450,7 +481,12 @@ function followUpOf(x) {
 const storeOf = v => storedOf(v);
 // the questions of a request (typed, a follow-up, or inferred from untyped text) and the ones already answered
 function questionsOf(x) {
-  if (x.questions) return { questions: x.questions, done: Object.assign({}, x.parts) };
+  if (x.questions) {
+    const done = Object.assign({}, x.parts);
+    // a question its asker withdrew ("no longer needed") is out of the request: hidden on Today, never asked again
+    const qs = x.questions.filter(p => !(x.withdrawn && x.withdrawn[p.id])).map(p => p.form ? Object.assign({}, p, { form: plainFieldKinds(p.form) }) : p);
+    return { questions: qs, done, withdrawn: x.withdrawn || null };
+  }
   const fu = followUpOf(x); if (fu) return { questions: fu.questions, done: Object.assign({}, fu.prefilled, x.parts), followUp: fu };
   if (x.a) return null;
   const qs = inferQuestions(x); return qs ? { questions: qs, done: Object.assign({}, x.parts), inferred: true } : null;
@@ -487,7 +523,7 @@ function answerParts(o) {
   if (!isOwner(o.by)) { const e = new Error('only the Commander (the owner, the PM) can answer or close a question'); e.code = 3; throw e; }
   const id = String(o.id || ''); const row = state()[id];
   if (!row || !(row.type === 'ask' || followUpOf(row))) { const e = new Error('no open question ' + id); e.code = 4; throw e; }
-  if (row.reclassified) { const e = new Error('no open question ' + id); e.code = 4; throw e; }
+  if (row.reclassified || row.withdrawnAll) { const e = new Error('no open question ' + id); e.code = 4; throw e; }
   const c = computeParts(row, o.parts, o.closeRest);
   if (!Object.keys(c.results).length && !c.finished) throw new Error('answer at least one question, or close the rest');
   const at = new Date().toISOString();
@@ -518,9 +554,22 @@ function recordStored(o) {
  * shell", "run this") is refused with the route that does it instead. */
 const SHELL_PHRASE = /\b(?:in|from|on|into|with|needs?|use) your (?:own )?(?:shell|terminal|command line)\b|\byour shell\b|(?:^|[.!?:]\s+|\n|\b(?:please|just|you can|you could|could you|can you|would you)\s+)run (?:this|these|the following|the commands?|them|it yourself)\b|\bpatch -p\d\b/i;
 const CMD = /^\s*(?:[$>#]\s*)?(?:sudo\s+)?(?:patch|node|git|npm|npx|bash|sh|systemctl|docker|chmod|chown|curl|python3?|cd|cp|mv|rm)\s+\S/;
-function shellAsk(text) {
+// a command the owner would have to type, wherever it sits in a sentence: sudo …, systemctl …, daemon-reload, npm/pip
+// install …, git <verb> …, and any backticked text that starts with a command word
+const CMD_WORDS = 'patch|node|git|npm|npx|pnpm|yarn|pip3?|pipx|apt(?:-get)?|dnf|pacman|brew|bash|sh|systemctl|journalctl|loginctl|docker|podman|chmod|chown|curl|wget|python3?|sudo|kill|pkill|crontab|ssh|scp|make|cd|cp|mv|rm|ln|tee|echo';
+const INLINE_CMD = new RegExp('\\bsudo\\s+\\S+|\\bsystemctl\\s+(?:--user\\s+)?(?:daemon-reload|restart|start|stop|enable|disable|reload|reset-failed|mask|unmask|edit|set-property|link|kill)\\b|\\bdaemon-reload\\b|\\b(?:npm|pnpm|yarn)\\s+(?:i|install|ci|run|exec|update|link|publish)\\b|\\bpip3?\\s+install\\b|\\bgit\\s+(?:push|pull|reset|checkout|switch|commit|merge|rebase|clone|apply|am|stash|cherry-pick|revert|fetch|add|rm|tag|restore|clean)\\b|\\bloginctl\\s+enable-linger\\b|\\bjournalctl\\s+-', 'i');
+const TICKED_CMD = new RegExp('`\\s*(?:\\$\\s*)?(?:' + CMD_WORDS + ')(?:\\s+[^`]*)?`', 'i');
+// details may quote what an agent ran as evidence; there a command counts only next to words that hand it to the owner
+const HANDS_OVER = /\b(?:on your (?:side|end|machine|computer)|you(?:'d| would| will)? (?:need to |have to )?(?:run|type|paste|execute)|for you to (?:run|type)|(?:may|can|could) (?:i|we) have (?:that|this|the|one)\b[^.?!]{0,30}\bcommand|that agents are refused|agents (?:are|were) refused|only you can run)\b/i;
+function shellAsk(text, opts) {
   const t = String(text || '');
   const m = SHELL_PHRASE.exec(t); if (m) return m[0].trim();
+  const strict = !(opts && opts.evidence);
+  for (const sn of t.split(/(?<=[.!?])\s+|\n+/)) {
+    const c = INLINE_CMD.exec(sn) || TICKED_CMD.exec(sn);
+    if (c && (strict || HANDS_OVER.test(t))) return c[0].replace(/`/g, '').trim().slice(0, 80);
+  }
+  const h = HANDS_OVER.exec(t); if (h && /\bcommand\b/i.test(t)) return h[0].trim();
   // a command line the owner would type: inside a code fence, after a $ prompt, or a chained one (&&, <, |)
   let fence = false;
   for (const l of t.split('\n')) {
@@ -538,8 +587,11 @@ function routeAdvice() {
 }
 /* composerCheck({message, details, q, questions, form}) -> null, or a reason the ask is refused */
 function composerCheck(o) {
-  const texts = [o.message, o.details, o.q].concat((o.questions || []).map(x => x && x.prompt)).concat(((o.form && o.form.fields) || []).map(f => f && (f.text || f.help)));
-  for (const t of texts) { const hit = shellAsk(t); if (hit) return 'Not asked: it tells the owner to run a command ("' + hit + '"). ' + routeAdvice(); }
+  // what the owner is asked (the message, each question, a form's text) is held to the strict rule; details and an old
+  // --q may quote commands as evidence, and count only when they hand the command to the owner
+  const asks = [o.message].concat((o.questions || []).map(x => x && x.prompt)).concat((o.questions || []).map(x => x && x.form && (x.form.fields || []).map(f => f && (f.text || f.help)).join('\n'))).concat(((o.form && o.form.fields) || []).map(f => f && (f.text || f.help)));
+  const texts = asks.map(t => [t, false]).concat([[o.details, true], [o.message ? null : o.q, true]]);
+  for (const [t, evidence] of texts) { const hit = t && shellAsk(t, { evidence }); if (hit) return 'Not asked: it tells the owner to run a command ("' + hit + '"). ' + routeAdvice(); }
   return null;
 }
 
@@ -548,7 +600,7 @@ function composerCheck(o) {
 function openQuestions() {
   const now = Date.now();
   return Object.values(state())
-    .filter(x => (x.type === 'ask' && !x.a && !x.reclassified) || followUpOf(x))
+    .filter(x => ((x.type === 'ask' && !x.a && !x.reclassified) || followUpOf(x)) && !x.withdrawnAll)
     .map(x => {
       const m = messageParts(x);
       const o = { id: x.id, from: x.from, about: x.about, q: x.q, message: m.message, details: m.details, messageDerived: m.derived,
@@ -563,6 +615,7 @@ function openQuestions() {
         o.questions = qo.questions.map(p => Object.assign({}, p, { answered: qo.done[p.id] ? { a: qo.done[p.id].a, at: qo.done[p.id].at } : null }));
         o.progress = { answered: o.questions.filter(p => p.answered).length, total: o.questions.length, requiredLeft: o.questions.filter(p => !p.answered && p.required !== false).length };
         if (qo.followUp) o.followUp = { note: qo.followUp.note, storedAt: qo.followUp.storedAt, earlierAnswer: x.a };
+        if (x.withdrawn) o.withdrawn = Object.entries(x.withdrawn).map(([part, w]) => Object.assign({ part, prompt: ((x.questions || []).find(p => p.id === part) || {}).prompt || part }, w));
       }
       return o;
     });
@@ -597,7 +650,7 @@ function ask(o) {
   const row = { type: 'ask', id: newId(), at: new Date().toISOString(), from: String(o.from || 'unknown'), about: String(o.about || ''), q, blocking: !!o.blocking };
   if (message) row.message = message; if (details) row.details = details;
   if (questions) { row.kind = 'multi'; row.questions = questions; }
-  else if (kind !== 'approve') { row.kind = kind; row.form = form; }
+  else if (kind !== 'approve' || form.actions.some(a => a.does)) { row.kind = kind; row.form = form; }
   if (o.batch) row.batch = o.batch; if (o.gate) row.gate = o.gate;
   append(row);
   return { row, warnings: styleWarnings(message, details) };
@@ -624,12 +677,17 @@ function checkAnswer(row, raw) {
     let v = vals[f.id];
     if ((v === undefined || v === null || v === '') && f.type === 'secret' && kept[f.id] && act.needs !== 'none') v = kept[f.id];
     const empty = v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length) || (f.type === 'checkbox' && v === false && need.has(f.id));
-    if (empty) { if (need.has(f.id)) throw new Error((f.label || f.id) + ': ' + (f.type === 'checkbox' ? 'tick it' : f.type === 'secret' ? 'paste the key' : f.type === 'slider' ? 'set the slider' : 'fill it in')); continue; }
+    if (empty) { if (need.has(f.id)) throw new Error((f.label || f.id) + ': ' + (f.type === 'checkbox' ? 'tick it' : f.type === 'secret' ? 'paste the key' : f.type === 'slider' ? 'set the slider' : f.type === 'url' ? 'paste the address' : 'fill it in')); continue; }
     if (act.needs === 'none' && !Array.isArray(act.needs) && f.type === 'secret') continue;   // declining never stores a key
     if (f.type === 'text') {
       const t = String(v).trim(); if (f.minLength && t.length < f.minLength) throw new Error((f.label || f.id) + ': at least ' + f.minLength + ' characters, please (' + t.length + ' written)');
       if (t.length > (f.maxLength || LIMITS.value)) throw new Error((f.label || f.id) + ': at most ' + (f.maxLength || LIMITS.value) + ' characters (' + t.length + ' written)');
       if (t) out.values[f.id] = t;
+    } else if (f.type === 'url') {
+      const u = String(v).trim(); let x = null; try { x = new URL(u); } catch (_) {}
+      if (!x || !(x.protocol === 'https:' || (f.allowHttp && x.protocol === 'http:')) || x.username || x.password) throw new Error((f.label || f.id) + ': a web address starting with https://, please');
+      if (u.length > 2000) throw new Error((f.label || f.id) + ': at most 2000 characters');
+      out.values[f.id] = x.toString();
     } else if (f.type === 'secret') {
       if (typeof v !== 'object' || 'value' in v || !/^secrets\/[A-Za-z0-9._-]+$/.test(String(v.stored || ''))) throw new Error((f.label || f.id) + ': a key is stored by the console (secrets/<name>), never written into an answer');
       if (!f.hinted && v.stored !== 'secrets/' + f.name) throw new Error((f.label || f.id) + ': stored at the wrong name');
@@ -721,7 +779,7 @@ function answer(o) {
   if (!isOwner(o.by)) { const e = new Error('only the Commander (the owner, the PM) can answer or close a question'); e.code = 3; throw e; }
   const id = String(o.id || ''); if (!id) throw new Error('--id is required');
   const q = state()[id];
-  if (!q || !(q.type === 'ask' || followUpOf(q))) { const e = new Error('no question ' + id); e.code = 4; throw e; }
+  if (!q || !(q.type === 'ask' || followUpOf(q)) || q.withdrawnAll) { const e = new Error('no question ' + id + (q && q.withdrawnAll ? ' (withdrawn by ' + q.withdrawnAll.by + ')' : '')); e.code = 4; throw e; }
   if (o.parts || o.closeRest) return answerParts(o);
   const qo = questionsOf(q);
   if (qo) {   // a request with several questions: a reply answers it as a whole; a plain yes/no applies to each open approve question
@@ -743,6 +801,48 @@ function answer(o) {
   if (!o.quiet) { try { delivered = deliver(q, plain).id; } catch (_) {} }
   return { ok: true, id, state: 'answered', a: plain, answer: structured, delivered };
 }
+/* withdraw({id, part?, why, by}) — the ASKER takes back a question that is no longer needed (the thing it asked about was
+ * fixed another way, or it is moot): one question of a request (`part`: its id or its number) or the whole ask. Today
+ * stops showing it and lists "withdrawn by <asker>: <why>" under Answered today. When the questions left are all
+ * answered, the request finishes with what the owner answered (the withdrawn ones recorded as withdrawn). */
+function withdraw(o) {
+  const id = String(o.id || ''); const row = state()[id];
+  if (!row || row.type !== 'ask' || row.a || row.reclassified || row.withdrawnAll) { const e = new Error('no open question ' + id); e.code = 4; throw e; }
+  const who = String(o.by || '').trim(); const from = String(row.from || '').trim().toLowerCase();
+  const asker = who && (who.toLowerCase() === from || who.split(/\s+/)[0].toLowerCase() === from.split(/\s+/)[0]);
+  if (!asker && !isOwner(who)) { const e = new Error('only the asker (' + row.from + ') withdraws its own question'); e.code = 3; throw e; }
+  const why = String(o.why || '').replace(/\s+/g, ' ').trim().slice(0, 300); if (!why) throw new Error('--why is required: one plain line on why it is no longer needed');
+  const at = new Date().toISOString();
+  let part = o.part === undefined || o.part === null || o.part === true || o.part === '' ? null : String(o.part);
+  if (part) {
+    if (!row.questions) throw new Error(id + ' is one question: withdraw it whole (no --part)');
+    if (/^\d+$/.test(part)) { const p = row.questions[Number(part) - 1]; if (!p) throw new Error('no question ' + part + ' in ' + id); part = p.id; }
+    if (!row.questions.some(p => p.id === part)) throw new Error('no question "' + part + '" in ' + id + ' (' + row.questions.map(p => p.id).join(', ') + ')');
+    if (row.parts && row.parts[part]) throw new Error('question ' + part + ' is already answered');
+    if (row.withdrawn && row.withdrawn[part]) throw new Error('question ' + part + ' is already withdrawn');
+  }
+  append(Object.assign({ type: 'withdraw', id, at, why, by: who }, part ? { part } : {}));
+  if (!part) return { ok: true, id, state: 'withdrawn', why };
+  // every question left answered (or withdrawn): the request is finished with the answers it has
+  const now = state()[id]; const qo = questionsOf(now);
+  const left = qo.questions.filter(p => !qo.done[p.id] && p.required !== false);
+  if (!left.length) {
+    if (!qo.questions.some(p => qo.done[p.id])) { append({ type: 'withdraw', id, at, why: 'every question withdrawn: ' + why, by: who }); return { ok: true, id, part, state: 'withdrawn', why }; }
+    const final = { verdict: 'parts', parts: {} };
+    for (const p of now.questions) final.parts[p.id] = now.withdrawn && now.withdrawn[p.id] ? { withdrawn: true, why: now.withdrawn[p.id].why } : qo.done[p.id] ? Object.assign({}, qo.done[p.id].answer) : { skipped: true };
+    append({ type: 'answer', id, at, a: plainParts(qo.questions, qo.done), answer: final, by: 'Commander', closedBy: 'withdraw' });
+    return { ok: true, id, part, state: 'answered', why };
+  }
+  return { ok: true, id, part, state: 'open', left: left.map(p => p.id), why };
+}
+/* withdrawnSince(sinceMs) — withdrawn questions (whole asks and single questions of a request), newest first, for Today */
+function withdrawnSince(since) {
+  const rows = readAll(); const asks = {}; for (const r of rows) if (r.type === 'ask') asks[r.id] = r;
+  return rows.filter(r => r.type === 'withdraw' && Date.parse(r.at) >= (since || 0) && asks[r.id] && !/^every question withdrawn/.test(r.why || '')).map(r => {
+    const a = asks[r.id]; const p = r.part && (a.questions || []).find(x => x.id === r.part);
+    return { id: r.id, part: r.part || null, from: a.from, by: r.by, why: r.why, at: r.at, message: p ? p.prompt : messageParts(a).message };
+  }).reverse();
+}
 /* snooze({id, until, by}) — hide an open question from Today until `until` (at most 30 days); the asker sees it in list. */
 function snooze(o) {
   if (!isOwner(o.by)) { const e = new Error('only the owner can snooze a question'); e.code = 3; throw e; }
@@ -756,7 +856,7 @@ function snooze(o) {
 }
 function out(code, obj) { console.log(JSON.stringify(obj, null, 1)); process.exit(code); }
 
-module.exports = { secretOnly, storeOnlyAction, normalizeQuestions, decisionItems, inferQuestions, followUpOf, questionsOf, computeParts, answerParts, recordStored,
+module.exports = { withdraw, withdrawnSince, plainFieldKinds, secretOnly, storeOnlyAction, normalizeQuestions, decisionItems, inferQuestions, followUpOf, questionsOf, computeParts, answerParts, recordStored,
   shellAsk, composerCheck, routeAdvice, asksForCredential, openQuestions, state, readAll, ask, answer, snooze, normalizeForm, expandKind, formOf, checkAnswer, plainAnswer, secretHint, sliderWords,
   messageParts, styleWarnings, safeSecretName, KINDS, FIELD_TYPES, VERDICTS, FILE };
 
@@ -910,6 +1010,37 @@ function selftest() {
     const until = new Date(Date.now() + 3600e3).toISOString();
     snooze({ id: sz.row.id, by, until });
     t('a snoozed question stays open and carries snoozedUntil', open(sz.row.id).snoozedUntil === until);
+    // walk 2: a URL is not a secret; command asks are refused wherever they sit; Approve says what it does; withdraw
+    const urlQ = ask({ from: 'Founder', message: 'The outside heartbeat needs its ping address.', questions: [{ id: 'hb', prompt: 'Paste the ping URL from your new check.', form: { fields: [{ id: 'ping', type: 'secret', label: 'The ping URL from that check', name: 'hc-ping-url' }], actions: [{ id: 'store', label: 'Store the ping URL', verdict: 'done', needs: ['ping'] }, { id: 'no', label: 'Not now', verdict: 'no', needs: 'none' }] } }, { id: 'k', prompt: 'And the API key.', kind: 'secret', spec: { name: 'hc-api-key', label: 'Healthchecks API key' } }] });
+    const uq = open(urlQ.row.id); const uf = uq.questions[0].form;
+    t('a "secret" field asking for a URL is a plain url field with a Save button; a real key stays secret', uf.fields[0].type === 'url' && uf.actions[0].label === 'Save the ping URL' && uq.questions[1].form.fields[0].type === 'secret', uq.questions);
+    t('a url answer must be https', /https:\/\//.test(throws(() => answer({ id: urlQ.row.id, by, parts: { hb: { action: 'store', values: { ping: 'not a url' } } } })) || '') && /https/.test(throws(() => answer({ id: urlQ.row.id, by, parts: { hb: { action: 'store', values: { ping: 'http://hc-ping.com/x' } } } })) || ''));
+    r = answer({ id: urlQ.row.id, by, parts: { hb: { action: 'store', values: { ping: 'https://hc-ping.com/abc-123' } } }, quiet: true });
+    t('a url answer is recorded as plain text for the asker', r.state === 'open' && /https:\/\/hc-ping\.com\/abc-123/.test(r.a), r);
+    const oldRow = { type: 'ask', id: 'q-x', form: { fields: [{ id: 'u', type: 'secret', label: 'Webhook address', name: 'wh' }], actions: [{ id: 'store', label: 'Store it securely', verdict: 'done', needs: ['u'] }] } };
+    t('an old row with a URL secret field reads as a url field', formOf(oldRow).fields[0].type === 'url' && formOf(oldRow).actions[0].label === 'Save it');
+    for (const [txt, why] of [['It needs a single command on your side that agents are refused: systemctl --user daemon-reload. May I have that one command?', 'systemctl daemon-reload in prose'],
+      ['May I have `systemctl --user restart example.service`?', 'a backticked command'], ['Please approve: sudo loginctl enable-linger owner', 'sudo'], ['Could you do npm install in the console folder?', 'npm install'],
+      ['One pip install pyyaml would fix it.', 'pip install'], ['Can you git push the branch?', 'git push'], ['Is `node company/tools/x.js selftest` ok to run?', 'backticked node']]) t('composer refuses a command ask: ' + why, /run a command/.test(throws(() => ask({ from: 'Founder', message: txt })) || ''));
+    t('composer refuses a command inside one question of a request', /run a command/.test(throws(() => ask({ from: 'Founder', message: 'Three things.', questions: [{ prompt: 'Run daemon-reload for me?' }, { prompt: 'Switch on the module?' }] })) || ''));
+    t('evidence in details may quote a command the agents ran', !throws(() => ask({ from: 'Founder', message: 'May I restart the recorder?', details: 'Measured: `systemctl --user status recorder` shows 25 of 46 minutes active; git log shows the fix landed.' })));
+    t('details handing a command to the owner are refused', /run a command/.test(throws(() => ask({ from: 'Founder', message: 'One thing only you can do.', details: 'It needs one command on your side: `systemctl --user daemon-reload`.' })) || ''));
+    t('plain prose about git or the systemd unit is not a command ask', !throws(() => ask({ from: 'Founder', message: 'The systemd unit keeps hitting its start limit. May I ask the tools seat to change the unit file through a framework request?' })) && !shellAsk('The git history shows two patches.'));
+    const dq = ask({ from: 'Founder', message: 'Switch on the commitments module?', kind: 'approve', spec: { does: 'Approve switches the commitments module on (one tool, one 10-minute duty).' } });
+    t('an approve can say what Approve does', open(dq.row.id).form.actions[0].does === 'Approve switches the commitments module on (one tool, one 10-minute duty).');
+    const wq = ask({ from: 'Founder', message: 'Three things.', questions: [{ id: 'cmd', prompt: 'May the tools seat fix the start limit?' }, { id: 'mod', prompt: 'Switch the module on?' }, { id: 'url', prompt: 'Paste the ping URL.', form: { fields: [{ id: 'u', type: 'url', label: 'Ping URL' }], actions: [{ id: 'save', label: 'Save', verdict: 'done' }] } }] });
+    t('only the asker withdraws', /only the asker/.test(throws(() => withdraw({ id: wq.row.id, part: '1', why: 'moot', by: 'Mallory' })) || ''));
+    t('withdraw needs a why', /--why/.test(throws(() => withdraw({ id: wq.row.id, part: '1', by: 'Founder' })) || ''));
+    r = withdraw({ id: wq.row.id, part: '1', why: 'service.js rerender fixed the start limit at 18:00', by: 'Founder' });
+    const wo = open(wq.row.id);
+    t('a withdrawn question leaves the request; the rest stay open', r.state === 'open' && wo.questions.map(p => p.id).join() === 'mod,url' && wo.withdrawn[0].part === 'cmd' && /rerender/.test(wo.withdrawn[0].why), wo);
+    t('withdrawnSince lists it for Today', withdrawnSince(0).some(w => w.id === wq.row.id && w.part === 'cmd' && w.by === 'Founder'));
+    answer({ id: wq.row.id, by, parts: { mod: { action: 'approve' } }, quiet: true });
+    r = withdraw({ id: wq.row.id, part: 'url', why: 'built it local-only', by: 'Founder' });
+    t('withdrawing the last open question finishes the request with the answers it has', r.state === 'answered' && !open(wq.row.id) && state()[wq.row.id].answer.parts.cmd.withdrawn === true && state()[wq.row.id].answer.parts.mod.verdict === 'yes', state()[wq.row.id].answer);
+    const wh = ask({ from: 'Founder', message: 'May I keep the old feed?' });
+    withdraw({ id: wh.row.id, why: 'moot', by: 'Founder' });
+    t('a whole ask withdrawn is no longer open, and cannot be answered', !open(wh.row.id) && /no question|no open question/.test(throws(() => answer({ id: wh.row.id, by, text: 'yes' })) || 'x'));
     // governance approved(): structured verdicts
     const gov = require('./lib/governance');
     const g1 = gov.decide('hiring', { by: 'Sam', summary: 'open a round', ref: 'st:r1' }, { root: T, level: 'approve' });
@@ -976,10 +1107,15 @@ if (a.cmd === 'answer') {
   try { out(0, answer({ id: a.id, by: a.by, text: a.a, answer: structured, quiet: !!a.quiet })); }
   catch (e) { out(e.code === 3 ? 3 : 2, { ok: false, error: e.message }); }
 }
+if (a.cmd === 'withdraw') {
+  // inbox.js withdraw <q-id> [--part <n|id>] --why "fixed by …" --from <you>
+  const pos = process.argv[3] && !process.argv[3].startsWith('--') ? process.argv[3] : null;
+  try { out(0, withdraw({ id: a.id || pos, part: a.part, why: a.why, by: a.from || a.by })); } catch (e) { out(e.code === 3 ? 3 : 2, { ok: false, error: e.message }); }
+}
 if (a.cmd === 'close') {
   if (!isOwner(a.by)) out(3, { ok: false, error: 'only the Commander (the owner, the PM) can answer or close a question' });
   const id = String(a.id || ''); if (!id) out(2, { ok: false, error: '--id is required' });
   append({ type: 'close', id, at: new Date().toISOString(), by: 'Commander' });
   out(0, { ok: true, id, state: 'closed' });
 }
-out(2, { ok: false, error: 'unknown command: ' + a.cmd, commands: ['ask', 'list', 'answer', 'snooze', 'close', 'reclassify', '--selftest'] });
+out(2, { ok: false, error: 'unknown command: ' + a.cmd, commands: ['ask', 'list', 'answer', 'snooze', 'withdraw', 'close', 'reclassify', '--selftest'] });

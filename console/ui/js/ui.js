@@ -1,3 +1,4 @@
+import { whenText } from './plain.js';
 // Small DOM helpers and the design-system stand-ins (Button, Tag, Eyebrow, Logo).
 // Everything is built with textContent, so data never becomes markup.
 
@@ -139,6 +140,8 @@ export function hhmm(t, tz) {
   try { return new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: tz || undefined }).format(ms); }
   catch (_) { return new Date(ms).toTimeString().slice(0, 5); }
 }
+// the one date-time format (plain.js whenText): "today 14:22", "tomorrow 14:22", "Nov 17 03:25", company timezone
+export function when(t, tz) { return whenText(t, tz || ((typeof window !== 'undefined' && window.capheos && window.capheos.company) || {}).timezone); }
 export function asArray(d, ...keys) {
   if (Array.isArray(d)) return d;
   if (!d || typeof d !== 'object') return [];

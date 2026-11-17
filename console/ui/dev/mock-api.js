@@ -71,6 +71,14 @@ function typedFixtures() {
     // a typed form with a key and an approval: Store keeps it open, Approve answers it with both
     mk('q-000122', 12, { message: 'Two things for the alarm: the ping key, and your OK to send alerts.', form: { fields: [{ id: 'ok', type: 'checkbox', label: 'Alert emails may go to you', required: true },
       { id: 'pk', type: 'secret', label: 'Ping key', name: 'example-ping-key-2', required: false }], actions: [{ id: 'approve', label: 'Approve', verdict: 'yes' }, { id: 'decline', label: 'Decline', verdict: 'no', needs: 'none' }] } }),
+    // walk 2: a request of three different questions (no shared category), a URL the asker composed as a "secret" field
+    // (shown as a plain https field with Save), an approve with no stated action ("Approve tells Founder yes") and one
+    // whose asker said what Approve does
+    Object.assign(mk('q-000124', 25, { kind: 'approve', about: 'commitments, access, heartbeat', message: 'Three things only you can do, all access rather than policy, and each is safe to decline. The kill switch only watched 25 of the last 46 minutes because of a start limit, our own house rules send every seat to a commitments tool that is switched off here, and the outside heartbeat needs its ping address from an account in your name. Recommendations: yes to all three.' }), { kind: 'multi', form: undefined,
+      questions: INBOX.normalizeQuestions([{ id: 'limit', prompt: 'May the tools seat lift the start limit on the kill-switch unit through a framework request? Yes means the halting control is back to every minute within the hour.', kind: 'approve' },
+        { id: 'module', prompt: 'Our house rules tell every seat to hand future work off through the commitments tool, which is switched off here. May I switch the module on?', kind: 'approve', spec: { does: 'Approve switches the commitments module on: one tool and one ten-minute duty, no new authority.' } },
+        { id: 'ping', prompt: 'You approved an outside heartbeat this morning. Paste the ping URL from the free check you make at healthchecks.io, or decline and the recorder ships local-only.', form: { fields: [{ id: 'url', type: 'secret', label: 'The ping URL from that check', name: 'hc-ping-url', help: 'It looks like https://hc-ping.com/your-uuid.' }],
+          actions: [{ id: 'store', label: 'Store the ping URL', verdict: 'done', needs: ['url'] }, { id: 'local', label: 'Not now, local watchdog only', verdict: 'no', needs: 'none' }] } }]) }),
     // the recovery: an untyped request of four decisions that was closed by storing a key alone comes back once
     (() => { const q = 'Four one-file patches are ready, each measured on a copy.\n\n1. harness-change.js: a framework request carries its real diff.\n2. locked-watch.js: a symlink in a watched folder is baselined.\n3. default-branch-watch.js: an empty watch list says 0 watched.\n4. dispatch.js: a step with a due date waits instead of paging.';
       const mp = INBOX.messageParts({ q });
@@ -112,15 +120,17 @@ const S = {
     .concat(process.env.MOCK_MINIMAX ? [{ id: 'q-000130', from: 'Founder', about: 'access', blocking: false, askedAt: ago(5), batch: null, kind: 'secret',
       form: INBOX.normalizeForm(INBOX.expandKind('secret', { name: 'minimax-key', label: 'MiniMax plan key', validate: 'custom', provider: 'MiniMax > Account > API keys' })),
       message: 'Could you paste the MiniMax plan key? The crew paces its work against the plan.', details: '', q: 'Could you paste the MiniMax plan key?', askerSeat: 'agent' }] : []),
-  answered: [{ id: 'q-000090', from: 'Founder', about: 'access', q: 'Approval needed (access): read access to the shared drive.', answer: 'yes', answeredAt: ago(200) }],
+  answered: [{ id: 'q-000090', from: 'Founder', about: 'access', q: 'Approval needed (access): read access to the shared drive.', answer: 'yes', answeredAt: ago(200) },
+    // a question its asker withdrew (inbox.js withdraw): one line under Answered today
+    { id: 'q-000098', part: 'reload', from: 'Founder', message: 'May I have the one command that reloads the unit?', withdrawn: { by: 'Founder', why: 'the service rerender fixed the start limit at 18:00' }, answer: 'withdrawn by Founder: the service rerender fixed the start limit at 18:00', answeredAt: ago(30) }],
   messages: [
     { dir: 'out', id: 'out-1', at: ago(300), from: 'Founder', text: 'Morning report: two quests moved, one handoff is due today.' },
     { dir: 'in', id: 'in-1', at: ago(280), from: 'Sam Owner', text: 'Thanks. Approve the trial if it is under $100.', acked: true },
   ],
   seats: [
-    { id: 'agent', name: 'Founder', title: 'Founder and CEO', seat: 'founder', role: 'agent.md', functions: ['ceo', 'risk', 'floor', 'finance'], loop: 'Founder loop', priority: 100, inbox: 'to-founder.md', log: 'founder-log.md', wakeOnInbox: true, manager: null, station: { agentId: 'agent', model: 'example-model-large', status: 'working' } },
+    { id: 'agent', name: 'Founder', title: 'Founder and CEO', seat: 'founder', role: 'agent.md', functions: ['ceo', 'risk', 'floor', 'finance'], loop: 'Founder loop', priority: 100, inbox: 'to-founder.md', log: 'founder-log.md', wakeOnInbox: true, manager: null, station: { agentId: 'agent', model: 'deepseek-flash', provider: 'deepseek', status: 'working' } },
     { id: 'people1', name: 'Mira', title: 'People Manager', seat: 'people', role: 'people-manager.md', functions: ['people'], loop: 'People loop', priority: 50, manager: 'agent', station: { agentId: 'people1', model: 'example-model-medium', status: 'idle' } },
-    { id: 'cand-tools-backtest-engineer-1-n', name: 'Nadia farrell', title: 'Tools & Backtest Engineer', seat: 'specialist', role: 'nadia-farrell.md', functions: [], loop: 'Nadia farrell loop', priority: 40, manager: 'agent', hiredIn: 'tools-backtest-engineer-1', station: { agentId: 'cand-tools-backtest-engineer-1-n', status: 'idle' } },
+    { id: 'cand-tools-backtest-engineer-1-n', name: 'Nadia farrell', title: 'Tools & Backtest Engineer', seat: 'specialist', role: 'nadia-farrell.md', functions: [], loop: 'Nadia farrell loop', priority: 40, manager: 'agent', hiredIn: 'tools-backtest-engineer-1', hire: { at: ago(900) }, firstRun: { at: ago(895), outcome: 'stopped' }, station: { agentId: 'cand-tools-backtest-engineer-1-n', model: 'claude-sonnet-5-5', provider: 'claude-cli', status: 'idle' } },
     { id: 'tools1', name: 'Teo', title: 'Tool Builder', seat: 'tools', role: 'tool-builder.md', functions: ['tools'], loop: 'Tools loop', priority: 60, manager: 'agent', station: { agentId: 'tools1', status: 'blocked' } },
   ],
   handoffs: [
@@ -234,7 +244,7 @@ function setupView() {
   const steps = [];
   const add = (id, title, status, why) => steps.push({ id, title, status, why });
   add('company', 'Company', 'done', S.company.name + ', run by ' + S.company.owner.name + ', on ' + S.company.timezone + ' time.');
-  add('provider', 'AI provider', ready.includes(cd.provider) ? 'done' : 'needs', !up ? 'The station is not answering (connect ECONNREFUSED), so no AI provider can be checked or connected. Start it, then come back.' : ready.includes(cd.provider) ? 'New hires interview on ' + cd.provider + ' (' + cd.model + '), which the station has ready.' : 'Your crew needs an AI to think with. The station has no AI provider connected yet.');
+  add('provider', 'AI provider', ready.includes(cd.provider) ? 'done' : 'needs', !up ? 'The station is not answering (connect ECONNREFUSED), so no AI provider can be checked or connected. Start it, then come back.' : ready.includes(cd.provider) ? 'New hires interview on Claude Haiku 4.5, which the station has ready.' : 'Your crew needs an AI to think with. The station has no AI provider connected yet.');
   const metered = !b.unmeteredProviders.includes(cd.provider);
   add('budget', 'Budget', metered && b.dailyUsd <= 0 ? 'needs' : b.setBy ? 'done' : 'optional', metered && b.dailyUsd <= 0 ? 'New hires run on ' + cd.provider + ', which bills per token, and the daily cap is $0, so nothing they do can run.' : b.dailyUsd > 0 ? 'Up to $' + b.dailyUsd + ' a day on pay-per-token AI.' : 'Subscription only: $0 a day on pay-per-token AI. Fine while the crew runs on a subscription.');
   add('governance', 'How much the company decides alone', U.govChosen ? 'done' : 'optional', (U.govChosen ? 'Set to ' : 'Starts at ') + S.governance.presetLabel + '. The four owner gates (money beyond the cap, access, ownership, outside commitments) always come to you.');
@@ -312,6 +322,15 @@ async function apiRoute(req, res, p, q) {
       { at: ago(40), kind: 'hiring', who: 'Hiring', title: 'Hired: Mira (people1) as People Manager by Founder', text: 'Crew decides: done without asking you (hiring is set to "auto"; change it in Settings › Autonomy and guardrails)', links: [{ label: 'Crew', href: '#/crew/people1' }, { label: 'Hiring level', href: '#/settings/autonomy/presets' }] },
       { at: ago(300), kind: 'message', who: 'Founder', title: 'Founder wrote to you', text: 'Morning report: two quests moved.', links: [{ label: 'Open', href: '#/chat/owner' }] }] });
     case 'GET /api/setup/charter': { const ph = (S.charterText.match(/<[A-Za-z][^<>\n]{0,200}>/g) || []); return ok({ text: S.charterText, at: ago(60), placeholders: ph, fields: {} }); }
+    // walk2: Settings › Models (console/models.js GET /api/models): raw ids from the tool, now.plain is the current-state Why
+    case 'GET /api/models': {
+      const e = (provider, model, ok, why) => ({ provider, model, key: provider + '/' + model, ok, why: why || 'can run', connected: ok });
+      const row = (id, name, cur, chain, plain) => ({ id, name, hasChain: !!chain, primary: chain ? chain[0] : null, chain: chain || [], now: { model: cur, index: chain ? chain.findIndex(x => x.key === cur.provider + '/' + cur.model) : -1, why: chain ? 'fallback 1 of 2: claude-cli/claude-sonnet-5-5 cannot run (checking local sign-in)' : 'no chain of its own: on ' + cur.provider + '/' + cur.model + ', where the pacer\'s routing table or the last hand change put it', plain: plain || null }, history: [] });
+      return ok({ failover: { mode: 'live' }, backstop: 'StarNet\'s station-wide fallback chain still catches a single run whose model fails mid-run.', seats: [
+        row('agent', 'Founder', { provider: 'deepseek', model: 'deepseek-flash' }, null),
+        row('cand-tools-backtest-engineer-1-n', 'Nadia farrell', { provider: 'claude-cli', model: 'claude-sonnet-5-5' }, null),
+        row('people1', 'Priya Raman', { provider: 'deepseek', model: 'deepseek-flash' }, [e('claude-cli', 'claude-sonnet-5-5', true), e('deepseek', 'deepseek-flash', true), e('custom', 'MiniMax-M3.1-Flash', true)], 'On a fallback for now. Claude can run again, so it moves back up shortly.')] });
+    }
     case 'GET /api/crew': return ok({ seats: S.seats, station: STATION_DOWN ? 'down' : 'up' });
     case 'GET /api/handoffs': return ok({ items: S.handoffs });
     case 'GET /api/decisions': return ok({ entries: ['## 2026-11-14 Founder', '- Adopted conflicts-before-engagement.', '## 2026-11-15 People', '- Opened the analyst round.'].map(text => ({ text })) });
@@ -523,9 +542,13 @@ function station(req, res, p, q, B) {
   const route = req.method + ' ' + p;
   if (route === 'GET health') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok'); }
   if (route === 'GET quests') return J(res, 200, { ok: true, quests: [
+    // walk2: a title with its delivery target, a title the station cut, a done quest with unticked steps (no blocked one)
+    { id: 'q:11', title: 'Recorder: live day sealed, tape decided, five-day floor met -> floor-met.md', agentId: 'tools1', status: 'open', contract: { type: 'artifact', key: 'company/work/sim/floor-met.md' }, steps: [['First live day sealed', false], ['Tape decision recorded', true], ['Five sealed days', false]] },
+    { id: 'q:10', title: 'Every company day banked by the recorder, with the live sealed-day count kept as', desc: 'The live count is rewritten to day-count.md every night.', agentId: 'tools1', status: 'done', steps: [['Daily bank timer armed', true], ['First live day', false], ['Five days', false], ['Tape decision', false]] },
+    { id: 'q:9', title: 'Round B floor-manager-1 files written and the round opened with a scores rule ->', agentId: 'people1', status: 'done', contract: { type: 'artifact', key: 'company/hiring/floor-manager-1/scorecard.md' }, steps: [['Research', true], ['Scorecard', true]] },
     { id: 'q:34', title: 'Q1 plan from the charter', agentId: 'agent', status: 'open', steps: [{ key: 'a', label: 'Draft', done: true }, { key: 'b', label: 'Pricing model', done: false }] },
     { id: 'q:8', title: 'Backtest the quote recorder', agentId: 'cand-tools-backtest-engineer-1-n', status: 'open', steps: [{ key: 'a', label: 'Replay a day', done: true }, { key: 'b', label: 'Compare fills', done: false }] },
-    { id: 'q:35', title: 'Matter intake tool', agentId: 'tools1', status: 'open', disposition: 'blocked', steps: [{ key: 'a', label: 'Spec', done: true }, { key: 'b', label: 'Access', done: false }] },
+    { id: 'q:35', title: 'Matter intake tool', agentId: 'tools1', status: 'open', disposition: process.env.MOCK_BLOCKED ? 'blocked' : null, steps: [{ key: 'a', label: 'Spec', done: true }, { key: 'b', label: 'Access', done: false }] },
     { id: 'q:31', title: 'Engagement letter template', agentId: 'tools1', status: 'done', attest: true, steps: [{ key: 'a', label: 'x', done: true }] }] });
   if (route === 'GET cron') return J(res, 200, { enabled: true, halted: false, jobs: [
     { id: 'j1', name: 'Founder loop', agentId: 'agent', scheduleDisplay: 'every 2 h', model: 'example-model-large', enabled: true, nextRunAt: new Date(Date.now() + 50 * 60000).toISOString() },

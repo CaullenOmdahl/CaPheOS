@@ -2,7 +2,7 @@
 // dispatcher tick, cooldowns, wake caps, quiet hours, the crew's bounded speed-ups), per-seat cadence, and the routines
 // on the station's clock, and Sprint, the owner's start-up switch (was Controls › Ticks and cadence, and Automate). API: /api/cadence*, /api/station/cron,
 // /api/dispatch (docs/TEMPO.md).
-import { h, fill, Button, Tag, errLine, empty, table, rel, hhmm, Details, Setting, Block, humanError } from '../../ui.js';
+import { h, fill, Button, Tag, errLine, empty, table, rel, hhmm, Details, Setting, Block, humanError, when as whenAt } from '../../ui.js';
 import { api, post } from '../../api.js';
 import * as events from '../../events.js';
 import { mountPanels } from '../../panels.js';
@@ -26,7 +26,7 @@ export async function render(host, ctx) {
     catch (e) { app.toast('Not saved: ' + humanError(e), true); return null; }
     finally { load(); }
   };
-  const when = iso => { if (!iso) return '—'; const t = new Date(iso); return isNaN(t) ? String(iso) : t.toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' }); };
+  const when = iso => { if (!iso) return '—'; return whenAt(iso) || String(iso); };
   const numIn = (val, label, onchange, width) => { const i = h('input', { type: 'number', min: '1', class: 'input', style: 'width:' + (width || 88) + 'px;font:var(--type-mono)', value: val ?? '', 'aria-label': label }); i.addEventListener('change', () => onchange(i.value)); return i; };
   const unit = (input, u) => h('span', { class: 'row-8', style: 'align-items:center;flex-wrap:nowrap' }, input, h('span', { class: 'body-s muted' }, u));
 

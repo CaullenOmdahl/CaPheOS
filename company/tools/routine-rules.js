@@ -25,6 +25,11 @@
  *     15-minute market boundaries, holding its seat and blocking a station restart for everyone. Later work is a
  *     commitment with a due time; continuous recording is a background service. company/tools/shims/sleep refuses a
  *     sleep over 120 s on the station's PATH, and long-sleep.js flags a run that slept long anyway to the seat's manager.
+ *  8. Module lines (v8): a rule that names a module's tool (company/tools/commitments.js) is written only while that module
+ *     is enabled (company/state/modules.json); otherwise its FALLBACK line goes in, or the line is left out. On 2026-11-17 v7
+ *     sent every seat to the commitments tool in a company that never enabled the module, and the Founder had to ask the owner
+ *     to switch it on. The block is rebuilt from the enabled modules on every tick, so enabling or disabling a module
+ *     refreshes every routine within ten minutes, and existing companies get the fix through the same refresh.
  *  3. Short waits. The station reclaims a routine run that shows no progress for 8 minutes (CRON_HEARTBEAT_STALE_MS
  *     480000), and a tool call in progress does not count, so one long shell_bg_wait loses the run's final reply.
  *
@@ -48,7 +53,7 @@ const path = require('path');
 const call = (...a) => require('./station-crew.js').call(...a);   // loaded on first use, so the selftest needs no token
 const co = require('./lib/company');
 const ROOT = co.ROOT;
-const VERSION = 'v7';
+const VERSION = 'v8';
 const START = '[HOUSE RULES FOR SCHEDULED RUNS ';
 const END = '[END HOUSE RULES]';
 const BLOCK = START + VERSION + ']\n' + [
@@ -63,17 +68,51 @@ const BLOCK = START + VERSION + ']\n' + [
   '- What you may change on your own, what you propose for review, and what is locked: company/work/people/LATITUDE.md. Your own section above, if you have one, is your notes to yourself, changed only with node company/tools/my-section.js; where it differs from these rules or your standing corrections, these win.',
 ].join('\n') + '\n' + END;
 
+// a module's tools (modules/<id>/module.json tools[].file basenames) -> the module id
+function moduleTools() {
+  const fs = require('fs'); const out = {};
+  let ids = []; try { ids = fs.readdirSync(co.p('modules')); } catch (_) {}
+  for (const id of ids) {
+    const m = co.readJson(co.p('modules', id, 'module.json'), null);
+    for (const t of (m && Array.isArray(m.tools) ? m.tools : [])) { const b = path.basename(String((t && t.file) || ''), '.js'); if (b) out[b] = id; }
+  }
+  return out;
+}
+// what a module line says when its module is off (no line = the rule is left out)
+const FALLBACK = {
+  commitments: '- Never wait inside a run for more than about 2 minutes in all (sleep, shell_bg_wait, a polling loop) to reach a wall-clock time. A waiting run holds your seat, blocks lanes and station restarts, and does no work; the station\'s sleep refuses more than 120 s. To act at a later time, write what to do and when in a handoff to yourself (company/work/handoffs/, with a **Deadline:** line) and end the run: your next run picks it up. For continuous recording or watching, use a background service (node company/tools/service.js propose).',
+};
+let modulesOverride = null;   // the selftest's enabled list
+function enabledModules() { if (modulesOverride) return modulesOverride; try { return require('./lib/modules').enabled(); } catch (_) { return []; } }
+/* blockFor(enabled) — the house rules for a company with these modules enabled: a line naming a tool of a module that is
+ * not enabled is swapped for its FALLBACK, or left out. With every module enabled it is BLOCK, byte for byte. */
+function blockFor(enabled, tools) {
+  const on = new Set(enabled || []); const owner = tools || moduleTools();
+  const lines = BLOCK.split('\n');
+  const out = [lines[0]];
+  for (const l of lines.slice(1, -1)) {
+    const off = [...new Set((l.match(/company\/tools\/([a-z0-9-]+)\.js/g) || []).map(x => owner[x.slice(14, -3)]).filter(m => m && !on.has(m)))];
+    if (!off.length) { out.push(l); continue; }
+    const fb = off.length === 1 ? FALLBACK[off[0]] : null;
+    if (fb) out.push(fb);
+  }
+  out.push(lines[lines.length - 1]);
+  return out.join('\n');
+}
+const rulesBlock = () => blockFor(enabledModules());
+
 const applies = job => !job.noAgent && path.resolve(String(job.workdir || '')) === ROOT && typeof job.prompt === 'string' && job.prompt.trim();
-function withRules(prompt) {
+function withRules(prompt, block) {
+  block = block || rulesBlock();
   const i = prompt.indexOf(START);
   if (i >= 0) {
     const e = prompt.indexOf(END, i);
     const rest = e >= 0 ? prompt.slice(e + END.length) : '';
-    return (prompt.slice(0, i).replace(/\s+$/, '') + '\n\n' + BLOCK + rest).replace(/\s+$/, '');
+    return (prompt.slice(0, i).replace(/\s+$/, '') + '\n\n' + block + rest).replace(/\s+$/, '');
   }
-  return prompt.replace(/\s+$/, '') + '\n\n' + BLOCK;
+  return prompt.replace(/\s+$/, '') + '\n\n' + block;
 }
-const current = prompt => prompt.includes(BLOCK);
+const current = (prompt, block) => prompt.includes(block || rulesBlock());
 
 // ---- standing corrections block (rendered by corrections.js; always the last thing in the prompt) ----
 const C_START = '[YOUR STANDING CORRECTIONS]';
@@ -137,9 +176,10 @@ async function ensure({ dry = false, log = console.log, call: get = call, blockF
   let own = ownFor, mark = ownBlocked;
   if (own === undefined) { try { const M = require('./my-section.js'); own = M.blockFor; if (mark === undefined) mark = M.markBlocked; } catch (e) { own = null; log('OWN SECTION ERROR: my-section.js did not load (' + e.message + '); own sections left as they are'); } }
   const changed = [], refreshed = [], failed = [], corrErrors = [], ownChanged = [], ownErrors = [], ownOff = [];
+  const rules = rulesBlock();   // once per tick: the house rules for the modules enabled now
   for (const job of jobs) {
-    const rulesDue = applies(job) && !current(job.prompt);
-    let next = rulesDue ? withRules(job.prompt) : job.prompt;
+    const rulesDue = applies(job) && !current(job.prompt, rules);
+    let next = rulesDue ? withRules(job.prompt, rules) : job.prompt;
     let ownDue = false, ownBlock = '';
     if (own && owned(job)) {
       let b = null;
@@ -184,6 +224,7 @@ async function ensure({ dry = false, log = console.log, call: get = call, blockF
 // Offline check of the combination (no station, no token): idempotent, refreshes, removes when empty, keeps the rules.
 async function selftest() {
   const assert = require('assert');
+  modulesOverride = Object.values(moduleTools()).concat(['commitments']);   // every module on: the rules are BLOCK
   const out = []; let bad = 0;
   const t = async (name, fn) => { try { await fn(); out.push('ok   ' + name); } catch (e) { bad++; out.push('FAIL ' + name + ': ' + e.message); } };
   const E = o => ensure(Object.assign({ ownFor: () => '', ownBlocked: () => {} }, o));   // the corrections checks run with no own sections (the live store is never read)
@@ -293,10 +334,29 @@ async function selftest() {
   });
   await t('dry run with sections posts nothing and lists them', async () => { const j = mk(30); const S13 = station([j]); const r = await ensure({ dry: true, call: S13.call, blockFor: () => '', ownFor: of, ownBlocked: () => {}, log: () => {} }); assert.strictEqual(S13.posts.length, 0); assert.deepStrictEqual(r.own, ['Job 30']); });
   await t('the house rules point to LATITUDE.md and never contain an own-section marker', async () => { assert.ok(BLOCK.includes('company/work/people/LATITUDE.md')); assert.ok(!O_START_RE.test(BLOCK) && !BLOCK.includes(O_END)); });
+  // ---- module lines (v8) ----
+  await t('with commitments off, the waiting rule names no commitments tool and keeps the wait advice; on, it is BLOCK', async () => {
+    const off = blockFor([], { commitments: 'commitments' });
+    assert.ok(!/commitments\.js/.test(off) && /handoff to yourself/.test(off) && /service\.js propose/.test(off));
+    assert.strictEqual(off.split('\n').length, BLOCK.split('\n').length);
+    assert.strictEqual(blockFor(['commitments'], { commitments: 'commitments' }), BLOCK);
+  });
+  await t('a module line with no fallback is left out while its module is off', async () => {
+    const b = blockFor([], { decision: 'some-module' });
+    assert.ok(!b.includes('decision.js add') && b.split('\n').length === BLOCK.split('\n').length - 1);
+  });
+  await t('enabling the module refreshes routines on the next ensure (v8 block in place of the fallback)', async () => {
+    const j = mk(40); const S14 = station([j]);
+    modulesOverride = ['none']; await E({ call: S14.call, blockFor: () => '', log: () => {} });
+    assert.ok(!j.prompt.includes('commitments.js create') && j.prompt.includes(START + VERSION));
+    modulesOverride = Object.values(moduleTools()).concat(['commitments']); await E({ call: S14.call, blockFor: () => '', log: () => {} });
+    assert.ok(j.prompt.includes(BLOCK) && j.prompt.split(START).length === 2);
+  });
+  modulesOverride = null;
   return { out, bad };
 }
 
-module.exports = { ensure, BLOCK, VERSION, withRules, withCorrections, stripCorrections, withOwn, stripOwn, ROOT, C_START, C_END, O_END };
+module.exports = { ensure, BLOCK, blockFor, rulesBlock, moduleTools, FALLBACK, VERSION, withRules, withCorrections, stripCorrections, withOwn, stripOwn, ROOT, C_START, C_END, O_END };
 
 if (require.main === module) {
   const cmd = process.argv[2];

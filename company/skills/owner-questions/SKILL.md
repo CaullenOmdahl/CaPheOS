@@ -38,6 +38,7 @@ node company/tools/inbox.js ask --from <YOU> --q "Access gate (gate 2), no payme
 
 | You need | Ask with |
 |---|---|
+| a web address (a ping URL, a webhook) | `--form` with a `url` field (`{"id":"ping","type":"url","label":"The ping URL"}`): shown in plain text, checked as https. Never a secret field: only keys, tokens and passwords are secret |
 | a key, token, password | `--kind secret --name <file> [--label] [--provider "where to get it"] [--validate <station provider id>]` |
 | a sign-up / a page visit | `--kind link --url https://... --action "what to do there"` |
 | account details that are not secret | `--kind account --url --action --fields "username:Your username,email:Sign-in email"` |
@@ -45,7 +46,7 @@ node company/tools/inbox.js ask --from <YOU> --q "Access gate (gate 2), no payme
 | an open answer | `--kind text [--min N] [--max N] [--placeholder]` |
 | a figure / a day | `--kind number --unit USD [--min] [--max]` / `--kind date [--min YYYY-MM-DD]` |
 | a level on a scale (a cap, a share, a cutoff) | `--kind slider --min 70 --max 100 [--step 1] --value 95 --unit % --say "Let routines use up to {value}% of this week's Claude" [--min-label] [--max-label]` |
-| yes or no | nothing (the default, Approve / Decline) |
+| yes or no | nothing (the default, Approve / Decline); say what Approve does with `--spec '{"does":"Approve switches the commitments module on"}'` (else the card says "Approve tells <you> yes") |
 | something else | `--form '{"fields":[...],"actions":[...]}'` — any mix of info, text, secret, choice, link, number, date, checkbox, slider, and your own actions (`{"label":"Not now","verdict":"no"}`; verdicts yes, no, submit, done, couldnt, declined) |
 
 An unsafe form (a secret asked in a text field, a non-http link, a bad secret file name) is refused with the reason.
@@ -77,8 +78,9 @@ request or a form that asks for more than the key: the key is saved, the rest st
 
 ## 4. Never ask the owner to run anything
 
-The owner works only in the console. An ask that tells them to run a command (`patch -p1`, `node …`, `git …`, "in your
-shell", "run this") is refused. Route the work instead, then ask only the decision:
+The owner works only in the console. An ask that tells them to run a command (`patch -p1`, `node …`, `git push …`,
+`systemctl …`, `daemon-reload`, `sudo …`, `npm`/`pip install …`, any command in backticks, "in your shell", "run this",
+"on your side", "may I have that one command?") is refused. Route the work instead, then ask only the decision:
 
 - **A framework file** (tracked CaPheOS code, e.g. `company/tools/*.js`): a framework request through
   `node company/tools/harness-change.js propose --kind tool --target <file> --change <the diff> --why "…" --by <YOU>`.
@@ -103,6 +105,10 @@ chars, validated: yes/no)". Use it by name — `co.secret('<name>')` in a tool �
 print, log or copy it.
 
 ## 6. The answer
+
+**No longer needed?** When what you asked is fixed another way or moot, take it back at once — never leave the owner a
+stale question: `node company/tools/inbox.js withdraw <q-id> [--part <n>] --why "fixed by the service rerender at 18:00" --from <YOU>`.
+Today hides it and shows one line, "withdrawn by <you>: <why>", under Answered today.
 
 The owner may answer the form, Reply in their own words, Snooze it (`inbox.js list --from <YOU>` shows "snoozed until
 ..."), or Discuss it with you in a live chat. The answer reaches you as an owner message that names the question id and

@@ -32,6 +32,20 @@ async function waitFor(fn, ms) { const end = Date.now() + ms; for (;;) { try { c
   t('the composer is on screen', m && m.composerBottom <= m.winH + 1, m);
   t('opens at the newest message', m && m.atBottom, m);
   t('only the latest 40 messages render, with "Show earlier messages"', m && m.items === 41 && m.earlier, m);
+  // walk 2: on a wide screen the conversation is one centred column (~800 px): the owner's bubbles at its right edge,
+  // the agent's text at its left, the composer the same width; the header in plain words; names title-cased
+  await cmd('Emulation.setDeviceMetricsOverride', { width: 2000, height: 900, deviceScaleFactor: 1, mobile: false });
+  await new Promise(r => setTimeout(r, 300));
+  const col = await ev('(()=>{const b=document.querySelector(".chat-body"),cs=getComputedStyle(b),br=b.getBoundingClientRect();const L=br.left+parseFloat(cs.paddingLeft),R=br.left+b.clientWidth-parseFloat(cs.paddingRight);const me=[...b.querySelectorAll(".msg-me")].map(x=>x.getBoundingClientRect());const them=[...b.querySelectorAll(".msg-them-wrap")].map(x=>x.getBoundingClientRect());const ta=document.querySelector(".composer textarea").getBoundingClientRect();return {w:Math.round(R-L),center:Math.round((L+R)/2-(br.left+br.right)/2),meRight:Math.max(...me.map(r=>Math.abs(r.right-R))),meMinLeft:Math.min(...me.map(r=>r.left))-L,themLeft:Math.max(...them.map(r=>Math.abs(r.left-L))),ta:{l:Math.round(ta.left-L),r:Math.round(ta.right-R)}}})()');
+  t('walk 2: a centred 760-820 px conversation column on a 2000 px screen', col && col.w >= 760 && col.w <= 820 && Math.abs(col.center) <= 10, col);
+  t('walk 2: the owner\'s bubbles sit at the column\'s right edge, the agent\'s text at its left', col && col.meRight <= 2 && col.meMinLeft >= 0 && col.themLeft <= 2, col);
+  t('walk 2: the composer is the same width as the column (give or take the scrollbar)', col && Math.abs(col.ta.l) <= 2 && Math.abs(col.ta.r) <= 16, col);
+  const head = await ev('(()=>({sub:document.querySelector(".chat-head .caption").textContent,btns:[...document.querySelectorAll(".chat-head button")].map(b=>b.textContent),label:document.querySelector(".composer label").textContent,list:[...document.querySelectorAll(".conv-list .thread .label")].map(x=>x.textContent)}))()');
+  t('walk 2: the header says where it runs in plain words, no raw model id, no bare Reload', head && /Runs on Claude/.test(head.sub) && !/claude-cli|example-model|·\s*deepseek/.test(head.sub) && !head.btns.includes('Reload') && head.btns.includes('Refresh conversation'), head);
+  t('walk 2: the composer label is just the shortcut hint', head && /^Shift\+Enter to send/.test(head.label) && !/Live chat/.test(head.label), head && head.label);
+  t('walk 2: the conversation list title-cases names ("Nadia Farrell")', head && head.list.includes('Nadia Farrell') && !head.list.includes('Nadia farrell'), head && head.list);
+  await cmd('Emulation.clearDeviceMetricsOverride', {});
+  await new Promise(r => setTimeout(r, 300));
   const n = await ev('(()=>{const b=document.querySelector(".chat-body");const first=b.children[1];const top0=first.getBoundingClientRect().top;b.scrollTop=0;b.dispatchEvent(new Event("scroll"));return {items:b.children.length,shift:Math.abs(first.getBoundingClientRect().top-top0),scrollTop:b.scrollTop}})()');
   t('scrolling to the top loads 40 earlier messages', n && n.items === 81, n);
   t('and keeps the reader at the same message', n && n.scrollTop > 1000, n);

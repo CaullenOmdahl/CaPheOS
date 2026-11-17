@@ -32,14 +32,15 @@ export async function render(root, ctx) {
         const [d, names] = await Promise.all([api('/station/quests'), seatNames()]);
         const qs = d.quests || [];
         const who = q => q.agentName ? personName(q.agentName) : names[q.agentId] || nameFromId(q.agentId) || '';
-        const col = (name, list) => h('section', { class: 'stack-12' }, h('h2', { class: 'eyebrow-t' }, name + ' · ' + list.length),
-          list.length ? list.map(q => questCard(q, who(q))) : h('p', { class: 'caption muted' }, 'None.'));
+        // an empty column collapses to a slim header; In progress takes the room (a flex board, stacked on a phone)
+        const col = (name, list, grow) => h('section', { class: 'stack-12 quest-col' + (list.length ? '' : ' empty-col'), 'data-col': name, style: list.length ? 'flex-grow:' + grow : null },
+          h('h2', { class: 'eyebrow-t' }, name + ' · ' + list.length), list.length ? list.map(q => questCard(q, who(q))) : null);
         const open = qs.filter(q => q.status === 'open');
         const blocked = open.filter(q => /block|wait/i.test(String(q.disposition || '') + ' ' + String(q.whyNow || '')));
         const progress = open.filter(q => !blocked.includes(q));
         const done = qs.filter(q => q.status === 'done').slice(-6);
-        fill(body, qs.length ? h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px' },
-          col('In progress', progress), col('Blocked', blocked), col('Done', done)) : empty('No quests on the station yet.'));
+        fill(body, qs.length ? h('div', { class: 'quest-board' },
+          col('In progress', progress, 2), col('Blocked', blocked, 1), col('Done', done, 1)) : empty('No quests on the station yet.'));
       } else if (tab === 'handoffs') {
         const d = await api('/handoffs');
         const it = d.items || [];
@@ -82,8 +83,24 @@ export async function render(root, ctx) {
 
 function inboxName(f) { const b = String(f || '').split('/').pop().replace(/\.md$/, '').replace(/^to-/, ''); return b ? b.replace(/[-_]/g, ' ').replace(/^./, c => c.toUpperCase()) : '—'; }
 function folderName(p) { const parts = String(p || '').split('/').filter(Boolean); return parts.pop() || 'Project'; }
-// a quest title often ends "-> company/work/…/file.md": the place it delivers to goes behind Details
-function questTitle(q) { const m = /^(.*?)\s*(?:->|→)\s*(\S+\/\S+)\s*$/.exec(String(q.title || '')); return m ? { title: m[1], to: m[2] } : { title: q.title || '(untitled)', to: q.contract && q.contract.key || null }; }
+// a quest title often ends "-> company/work/…/file.md" or "→ floor-met.md": the place it delivers to goes behind Details.
+// The station cuts long titles (sometimes right after the arrow): a dangling arrow is dropped and a cut title says so (…)
+export function questTitle(q) {
+  const raw = String(q.title || '').trim();
+  const m = /^(.*?)\s*(?:->|→)\s*(\S*)\s*$/.exec(raw);
+  let title = m ? m[1] : raw; const to = (m && m[2]) || (q.contract && q.contract.key) || null;
+  if (!m && raw.length >= 76 && !/[.!?)]$/.test(raw)) title = raw + '…';
+  return { title: title || '(untitled)', to };
+}
+// steps come as {label, done} or [label, done]
+const stepOf = s => Array.isArray(s) ? { label: s[0], done: !!s[1] } : s || {};
+// the bar and the line under it: a done quest is a full bar; unticked steps on a done quest are said, not drawn
+export function questProgress(q) {
+  const steps = (q.steps || []).map(stepOf); const ticked = steps.filter(s => s.done).length;
+  if (q.status === 'done') return { pct: 100, line: 'Done' + (steps.length && ticked < steps.length ? ' (' + ticked + ' of ' + steps.length + ' steps ticked)' : '') + (q.attest ? ' · attested' : ''), aria: 'Done' };
+  const next = steps.find(s => !s.done);
+  return { pct: steps.length ? Math.round(ticked / steps.length * 100) : 0, line: next ? 'Next: ' + (next.label || next.key) : q.whyNow || '', aria: ticked + ' of ' + steps.length + ' steps done' };
+}
 // seat id -> display name, from the crew and the hiring rounds' candidates
 async function seatNames() {
   const out = {};
@@ -92,13 +109,11 @@ async function seatNames() {
   return out;
 }
 function questCard(q, owner) {
-  const steps = q.steps || []; const done = steps.filter(s => s.done).length;
-  const pct = steps.length ? Math.round(done / steps.length * 100) : q.status === 'done' ? 100 : 0;
-  const next = steps.find(s => !s.done);
-  return h('article', { class: 'card p18', style: 'gap:10px' },
-    h('div', { class: 'between-c' }, h('h3', { class: 'label strong', style: 'line-height:1.35;margin:0' }, questTitle(q).title)),
+  const pr = questProgress(q); const t = questTitle(q);
+  return h('article', { class: 'card p18 quest-card', 'data-quest': q.id, 'data-status': q.status, style: 'gap:10px' },
+    h('h3', { class: 'label strong quest-title', style: 'line-height:1.35;margin:0' }, t.title),
     owner ? h('span', { class: 'caption muted quest-owner' }, owner) : null,
-    h('div', { class: 'meter thin', role: 'img', 'aria-label': done + ' of ' + steps.length + ' steps done' }, h('div', { style: 'width:' + pct + '%' })),
-    h('span', { class: 'caption muted' }, q.status === 'done' ? 'Done' + (q.attest ? ' · attested' : '') : next ? 'Next: ' + (next.label || next.key) : q.whyNow || ''),
-    Details('Details', h('code', { class: 'mono-s' }, 'Quest ' + q.id + (q.agentId ? ' · owner ' + q.agentId : '') + (questTitle(q).to ? ' · delivers ' + questTitle(q).to : ''))));
+    h('div', { class: 'meter thin', role: 'img', 'aria-label': pr.aria }, h('div', { style: 'width:' + pr.pct + '%' })),
+    pr.line ? h('span', { class: 'caption muted quest-line' }, pr.line) : null,
+    Details('Details', q.desc ? h('p', { class: 'caption' }, String(q.desc).slice(0, 600)) : null, h('code', { class: 'mono-s' }, 'Quest ' + q.id + (q.agentId ? ' · owner ' + q.agentId : '') + (t.to ? ' · delivers ' + t.to : ''))));
 }

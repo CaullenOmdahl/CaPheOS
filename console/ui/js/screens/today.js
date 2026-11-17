@@ -1,7 +1,7 @@
 // Today (Main.dc.html): Now (who is running, the current step, Watch, Stop; each seat's next wake), Needs you (live),
 // crew, AI usage, company panels, recent activity, and the box that opens a live chat with the Founder.
-import { h, fill, Button, Tag, Eyebrow, errLine, empty, initial, rel, hhmm, statusOf, isSetupQuestion, humanError, Details } from '../ui.js';
-import { category, personName, usageLine, railLine, sprintSummary, seatState } from '../plain.js';
+import { h, fill, Button, Tag, Eyebrow, errLine, empty, initial, rel, when, statusOf, isSetupQuestion, humanError, Details } from '../ui.js';
+import { category, personName, usageLine, railLine, sprintSummary, seatState, leadLine } from '../plain.js';
 import { api, post } from '../api.js';
 import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
@@ -35,7 +35,7 @@ export async function render(root, ctx) {
   const co = app.company || {};
   const ownerName = co.owner && (co.owner.name || co.owner.first || co.owner) || '';
   const ceoId = (co.ceo && co.ceo.id) || 'agent';
-  const ceoName = (co.ceo && co.ceo.name) || 'the Founder';
+  const ceoName = personName(co.ceo && co.ceo.name) || 'the Founder';
   const hr = new Date().getHours();
   const greet = hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
   let dateLabel = ''; try { dateLabel = new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: co.timezone || undefined }).format(new Date()); } catch (_) { dateLabel = new Date().toDateString(); }
@@ -63,7 +63,7 @@ export async function render(root, ctx) {
   fill(root,
     h('header', { class: 'screen-head', style: 'gap:24px' },
       h('div', { class: 'stack-14', style: 'max-width:720px' }, Eyebrow([dateLabel, co.name]),
-        h('h1', { class: 'h1' }, greet + (ownerName ? ', ' + String(ownerName).split(' ')[0] : '') + '.'), lede),
+        h('h1', { class: 'h1' }, greet + (ownerName ? ', ' + personName(String(ownerName).split(' ')[0]) : '') + '.'), lede),
       askForm),
     onboardEl, nowEl,
     h('section', { 'aria-labelledby': 'needs', class: 'stack-16' },
@@ -125,7 +125,7 @@ export async function render(root, ctx) {
         h('span', { class: 'strong' }, questionText(q).message.slice(0, 120)), h('span', { class: 'mono muted' }, 'back ' + whenLabel(q.snoozedUntil, co.timezone)))))) : null);
   }
   function gateCard(q, fresh) {
-    if (q.questions && q.questions.length) return requestCard(q, fresh, { fieldControl, post, app, reload: loadNeeds, picks, freshIds, seat: q.askerSeat || ceoId, questionText, parseQuestion, looksLikeKeyText, snoozeUntil, whenLabel, tz: co.timezone, moreMenu, cardMeta, cardDetails });
+    if (q.questions && q.questions.length) return requestCard(q, fresh, { fieldControl, post, app, reload: loadNeeds, picks, freshIds, seat: q.askerSeat || ceoId, questionText, parseQuestion, looksLikeKeyText, snoozeUntil, whenLabel, tz: co.timezone, moreMenu, cardMeta, cardDetails, approveSays, leadLine });
     const p = parseQuestion(q);
     const qt = questionText(q);
     const form = q.form && Array.isArray(q.form.actions) && q.form.actions.length ? q.form : { fields: [], actions: [{ id: 'approve', label: 'Approve', verdict: 'yes', primary: true }, { id: 'decline', label: 'Decline', verdict: 'no' }] };
@@ -195,6 +195,7 @@ export async function render(root, ctx) {
       controls.length ? h('div', { class: 'stack-12 q-form' }, controls.map(c => c.el)) : null,
       isReplying ? h('div', { class: 'stack-6 q-reply' }, h('label', { class: 'caption muted', for: 'rp-' + q.id }, 'Your reply goes to ' + (personName(q.from) || 'the asker') + ' in your own words.'), Object.assign(ta, { id: 'rp-' + q.id }),
         h('div', { class: 'row-8' }, Button('Send reply', { variant: 'primary', size: 'sm', onClick: sendReply }), Button('Cancel', { variant: 'ghost', size: 'sm', onClick: () => { replying.delete(q.id); redraw(); } }))) : null,
+      approveSays(q, form),
       h('div', { class: 'row-8 q-actions' },
         form.actions.map(a => Button(a.label, { variant: a.primary ? 'primary' : 'secondary', size: 'sm', onClick: () => act(a) })),
         more.el),
@@ -208,8 +209,11 @@ export async function render(root, ctx) {
       const rows = d.answered || [];
       fill(answeredEl, rows.length ? h('details', { class: 'hair-top', style: 'padding-top:12px' },
         h('summary', { class: 'label muted', style: 'min-height:32px' }, 'Answered today (' + rows.length + ')'),
-        h('ul', { class: 'plain stack-8', style: 'margin-top:8px' }, rows.map(a => h('li', { class: 'between body-s' },
-          h('span', { class: 'strong' }, questionText(a).message.slice(0, 120)), h('span', { class: 'mono muted' }, String(a.answer || '').slice(0, 140) + (String(a.answer || '').length > 140 ? '…' : '') + (a.answeredAt ? ' · ' + hhmm(a.answeredAt, co.timezone) : '')))))) : null);
+        h('ul', { class: 'plain stack-8', style: 'margin-top:8px' }, rows.map(a => a.withdrawn
+          // a question its asker withdrew: one line, "withdrawn by Founder: the rerender fixed it"
+          ? h('li', { class: 'body-s muted q-withdrawn', 'data-withdrawn': a.id + (a.part ? ':' + a.part : '') }, h('span', { class: 'strong' }, leadLine(questionText(a).message, 100)), ' — withdrawn by ' + personName(a.withdrawn.by) + ': ' + a.withdrawn.why + (a.answeredAt ? ' · ' + when(a.answeredAt, co.timezone) : ''))
+          : h('li', { class: 'between body-s' },
+          h('span', { class: 'strong' }, questionText(a).message.slice(0, 120)), h('span', { class: 'mono muted' }, String(a.answer || '').slice(0, 140) + (String(a.answer || '').length > 140 ? '…' : '') + (a.answeredAt ? ' · ' + when(a.answeredAt, co.timezone) : '')))))) : null);
     } catch (e) { fill(answeredEl, errLine(e, 'Answered today')); }
   }
 
@@ -298,10 +302,10 @@ export async function render(root, ctx) {
     // also in the list above as "lane n: …" while the station reports it)
     const lanesEl = (d.lanes || []).length ? h('div', { class: 'stack-4', 'aria-label': 'Lanes running' }, h('span', { class: 'eyebrow-t' }, 'Lanes running'),
       h('ul', { class: 'plain stack-4' }, d.lanes.map(l => h('li', { class: 'body-s row-8', 'data-lane': l.id, style: 'align-items:center' }, h('span', { class: 'pulse', 'aria-hidden': 'true' }),
-        h('span', null, l.name + ' · lane ' + l.n + ': ' + String(l.handoff || '').replace(/^\S+ from \S+ — /, '') + ' · since ' + hhmm(l.since, co.timezone) + ' (' + rel(l.since) + ')'))))) : null;
+        h('span', null, l.name + ' · lane ' + l.n + ': ' + String(l.handoff || '').replace(/^\S+ from \S+ — /, '') + ' · since ' + when(l.since, co.timezone) + ' (' + rel(l.since) + ')'))))) : null;
     const idle = d.seats.filter(s => !s.running).map(s => s.idle && s.idle.reason ? h('li', { class: 'body-s muted now-idle row-8', 'data-seat': s.id, 'data-state': s.idle.state, style: 'align-items:center;flex-wrap:wrap' },
       h('span', null, idleLine(s)), s.idle.qid ? decide(s.idle.qid) : null) : sp && s.sprint ? h('li', { class: 'body-s muted now-idle' }, s.name + (s.sprint === 'working' ? ': working — ' + s.soonerBecause.join(', ') + '; starts as soon as the next tick sees it' : ': waiting for work') + '.') : h('li', { class: 'body-s muted now-idle' }, s.name + ' is idle' +
-      (s.loop ? (s.enabled === false ? '; its loop "' + s.loop + '" is switched off' : s.schedulerOn === false ? '; the scheduler is off, so its loop does not run on schedule' : s.nextRunAt ? '; next run ' + hhmm(s.nextRunAt, co.timezone) + ' (' + rel(s.nextRunAt) + ')' : '') : '; it has no loop routine') +
+      (s.loop ? (s.enabled === false ? '; its loop "' + s.loop + '" is switched off' : s.schedulerOn === false ? '; the scheduler is off, so its loop does not run on schedule' : s.nextRunAt ? '; next run ' + when(s.nextRunAt, co.timezone) + ' (' + rel(s.nextRunAt) + ')' : '') : '; it has no loop routine') +
       (s.soonerBecause.length ? ', or sooner: ' + s.soonerBecause.join(', ') : s.wakesOnMessage ? ', or sooner if you message it' : '') + '.'));
     fill(nowEl, h('div', { class: 'between-c' }, h('h2', { id: 'now-h', class: 'h3' }, 'Now'), d.station.up ? null : h('span', { class: 'err-line' }, 'Station not running: nobody can work.')),
       sprintEl, kickEl, runs.length ? h('ul', { class: 'plain stack-8' }, runs) : null, lanesEl, idle.length ? h('ul', { class: 'plain stack-4' }, idle) : null);
@@ -342,7 +346,7 @@ export async function render(root, ctx) {
       const items = (d.items || []).slice(0, 25);
       fill(overnightEl, items.length ? h('ol', { class: 'timeline' }, items.map(e => {
         const o = e.outcome ? OUT[e.outcome] || [cap(e.outcome), statusOf(e.outcome)] : null;
-        return h('li', null, h('span', { class: 'mono muted' }, hhmm(e.at, co.timezone)),
+        return h('li', null, h('span', { class: 'mono muted' }, when(e.at, co.timezone)),
           h('span', { class: 'stack-4', style: 'gap:2px' },
             h('span', { class: 'body-s row-8', style: 'align-items:center;flex-wrap:wrap' }, h('strong', { class: 'strong', style: 'font-weight:600' }, e.title), o ? Tag(o[0], { variant: 'status', status: o[1] }) : null, e.usd ? h('span', { class: 'mono-s muted' }, '$' + Number(e.usd).toFixed(4)) : null),
             e.text ? mdBlock(e.text, 'body-s muted') : null,
@@ -366,13 +370,23 @@ export async function render(root, ctx) {
 /* a Needs-you card's head: a human category, who asked and when (the question id and raw tags go under Details) */
 export function cardMeta(q, cat, fresh, extra) {
   return h('div', { class: 'between-c q-meta' },
-    h('span', { class: 'row-8', style: 'align-items:center;flex-wrap:wrap' }, Tag(cat, { variant: 'accent' }), extra || null, fresh ? h('span', { class: 'just-now' }, 'Just now') : null),
+    h('span', { class: 'row-8', style: 'align-items:center;flex-wrap:wrap' }, cat ? Tag(cat, { variant: 'accent' }) : null, extra || null, fresh ? h('span', { class: 'just-now' }, 'Just now') : null),
     h('span', { class: 'caption muted q-asker' }, [personName(q.from), rel(q.askedAt)].filter(Boolean).join(' · ')));
 }
 export function cardDetails(q) {
   const g = q.gate || {};
   const rows = [['Question id', q.id], ['Asked by', q.from], ['About', q.about], g.category ? ['Gate', g.category + (g.ref ? ' · ' + g.ref : '')] : null, q.askedAt ? ['Asked at', q.askedAt] : null].filter(r => r && r[1]);
-  return h('div', { class: 'q-card-details' }, Details('Details', h('dl', { class: 'kv' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', { class: 'mono-s' }, String(v))]))));
+  return h('div', { class: 'q-card-details' }, Details('Who asked, and the question id', h('dl', { class: 'kv' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', { class: 'mono-s' }, String(v))]))));
+}
+/* what Approve will do, said before the owner presses it: the asker's own words (action.does), else "Approve tells
+ * <asker> yes". Only on an Approve/Decline question (a yes and a no action, no field but an optional note). */
+export function approveSays(q, form) {
+  const acts = (form && form.actions) || [];
+  const yes = acts.find(a => a.verdict === 'yes'); const no = acts.find(a => a.verdict === 'no');
+  if (!yes || !no || (form.fields || []).some(f => f.type !== 'info' && !(f.type === 'text' && !f.required))) return null;
+  const who = personName(q.from) || 'the asker';
+  const text = yes.does ? yes.does.replace(/^(?!approve)/i, yes.label + ': ') : yes.label + ' tells ' + who + ' yes; ' + no.label + ' tells ' + who + ' no.';
+  return h('p', { class: 'caption muted q-does', 'data-does': yes.does ? 'asker' : 'default' }, text.replace(/([^.!?])$/, '$1.'));
 }
 /* "More ▾": the secondary actions every card has (Reply, Snooze, Discuss) behind one menu button */
 let menuSeq = 0;
@@ -413,9 +427,7 @@ function snoozeUntil(k) {
   if (k === 'hour') return new Date(Date.now() + 3600e3);
   d.setDate(d.getDate() + (k === 'week' ? 7 : 1)); d.setHours(9, 0, 0, 0); return d;
 }
-function whenLabel(iso, tz) {
-  try { return new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: tz || undefined }).format(new Date(iso)); } catch (_) { return new Date(iso).toLocaleString(); }
-}
+function whenLabel(iso, tz) { return when(iso, tz); }
 let fieldSeq = 0;
 /* one form field -> { f, el, get?, clear?, replace?, name?, onError? }. A secret's value lives only in its input. */
 export function fieldControl(q, f, opts) {
@@ -436,6 +448,15 @@ export function fieldControl(q, f, opts) {
       return { f, el: h('div', { class: 'stack-6' }, link, box), get: () => el.value.trim(), clear: () => { el.value = ''; } };
     }
     return { f, el: h('div', { class: 'stack-6' }, lab(f.label, uid), help, el, count), get: () => el.value.trim(), clear: () => { el.value = ''; } };
+  }
+  if (f.type === 'url') {
+    // a web address (a ping URL, a webhook): plain, visible, checked as https before it is sent
+    const el = h('input', { id: uid, type: 'url', class: 'input', inputmode: 'url', autocomplete: 'off', spellcheck: 'false', placeholder: f.placeholder || 'https://…' });
+    const err = h('span', { class: 'err-line caption', role: 'status' });
+    const ok = v => { try { const u = new URL(v); return (u.protocol === 'https:' || (f.allowHttp && u.protocol === 'http:')) && !u.username && !u.password; } catch (_) { return false; } };
+    el.addEventListener('input', () => { const v = el.value.trim(); err.textContent = v && !ok(v) ? 'A web address starting with https://' : ''; el.setAttribute('aria-invalid', v && !ok(v) ? 'true' : 'false'); });
+    return { f, el: h('div', { class: 'stack-6 q-url', 'data-field': f.id }, lab(f.label, uid), help, el, err),
+      get: () => { const v = el.value.trim(); if (v && !ok(v)) { err.textContent = 'A web address starting with https://'; return undefined; } return v || undefined; }, clear: () => { el.value = ''; } };
   }
   if (f.type === 'secret') {
     // password input (or a masked textarea for a multi-line PEM key); never autofilled, never echoed back
@@ -571,13 +592,5 @@ export function usagePlans(d, fmt) {
   if (!out.length) out.push({ name: 'AI usage', pct: 0, mark: null, reading: '—', aria: 'no reading', note: 'No usage reading yet.' });
   return out;
 }
-// "14:22", "14:22 tomorrow", "Thu 14:22"
-export function dayTime(t, tz) {
-  const ms = typeof t === 'number' ? t : Date.parse(t); if (!ms || isNaN(ms)) return '';
-  const day = x => { try { return new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: tz || undefined }).format(x); } catch (_) { return new Date(x).toDateString(); } };
-  const a = day(ms), today = day(Date.now()), tomorrow = day(Date.now() + 86400e3);
-  if (a === today) return hhmm(ms, tz);
-  if (a === tomorrow) return hhmm(ms, tz) + ' tomorrow';
-  let wd = ''; try { wd = new Intl.DateTimeFormat('en-GB', { weekday: 'short', timeZone: tz || undefined }).format(ms); } catch (_) {}
-  return (wd ? wd + ' ' : '') + hhmm(ms, tz);
-}
+// the one time format (plain.js whenText): "today 14:22", "tomorrow 14:22", "Nov 17 03:25"
+export function dayTime(t, tz) { return when(t, tz); }

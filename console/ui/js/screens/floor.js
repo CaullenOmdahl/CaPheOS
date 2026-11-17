@@ -4,6 +4,7 @@
 import { h, fill, Tag, errLine, empty, initial, Details } from '../ui.js';
 import { api } from '../api.js';
 import { mountPanels } from '../panels.js';
+import { personName } from '../plain.js';
 
 const list = x => Array.isArray(x) ? x : x && typeof x === 'object' ? Object.values(x) : [];
 const KIND = { hab: 'Living space', bridge: 'Bridge', lab: 'Lab', factory: 'Workshop', quarters: 'Quarters', storage: 'Storage' };
@@ -27,7 +28,7 @@ export async function renderTab(root, ctx) {
   if (!f) { fill(plan, empty('This station has no floor plan.')); return () => {}; }
   const seats = (crew && crew.seats) || [];
   const busy = new Set(((now && now.runs) || []).map(r => r.agentId));
-  const nameOf = id => (seats.find(s => s.id === id) || {}).name || null;
+  const nameOf = id => personName((seats.find(s => s.id === id) || {}).name) || null;
   const desks = f.props.filter(p => p.t === 'desk' || p.type === 'desk');
   const inRoom = (p, r) => list(r.rects).some(q => p.x >= q.x1 && p.x <= q.x2 && p.y >= q.y1 && p.y <= q.y2);
   const placed = new Set();

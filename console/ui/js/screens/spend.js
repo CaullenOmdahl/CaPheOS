@@ -1,7 +1,7 @@
 // Spend (#/spend, was the read-only half of Usage and models): today's pay-per-token spend against the daily cap, by
 // seat and by provider, and how much of each subscription this week has used. Read-only: the cap, the cutoffs and the
 // model chains are set in Settings › Models and subscriptions. API: GET /api/spend (docs/CONSOLE-API.md).
-import { h, fill, Tag, errLine, empty, screenHead, table, Details, Block } from '../ui.js';
+import { h, fill, Tag, errLine, empty, screenHead, table, Details, Block, when as whenAt } from '../ui.js';
 import { api } from '../api.js';
 import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
@@ -81,5 +81,5 @@ export async function render(root, ctx) {
 function note(title, text, why) { return h('div', { class: 'card p18', style: 'gap:8px' }, h('span', { class: 'label strong' }, title), h('span', { class: 'body-s muted' }, text), why ? Details('Why', h('p', { class: 'caption' }, why)) : null); }
 function when(ms, app) {
   const tz = app && app.company && app.company.timezone;
-  try { return new Intl.DateTimeFormat('en-GB', { weekday: 'long', hour: '2-digit', minute: '2-digit', timeZone: tz || undefined }).format(new Date(ms)); } catch (_) { return new Date(ms).toLocaleString(); }
+  return whenAt(ms, tz);
 }

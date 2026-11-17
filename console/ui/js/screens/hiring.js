@@ -1,5 +1,5 @@
 // Crew › Hiring (#/crew/hiring, was #/hiring; Hiring.dc.html): the hiring rounds and the seat templates.
-import { h, fill, Tag, errLine, empty, table, rel, Details } from '../ui.js';
+import { h, fill, Tag, errLine, empty, table, rel, Details, when } from '../ui.js';
 import { api } from '../api.js';
 import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
@@ -40,7 +40,7 @@ export async function renderTab(root, ctx) {
     const tl = (st.timeline || []).filter(x => x.at);
     return h('div', { class: 'stack-6' },
       h('div', { class: 'row-8', style: 'align-items:center;flex-wrap:wrap' }, Tag(st.label, { variant: 'status', status: STAGE_TONE[st.key] || 'info' }), st.at ? h('span', { class: 'caption muted' }, 'since ' + rel(st.at)) : null),
-      tl.length ? h('ol', { class: 'plain row-8 caption muted', style: 'flex-wrap:wrap;gap:4px 14px' }, tl.map(x => h('li', null, x.step + ' ' + new Date(x.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })))) : null);
+      tl.length ? h('ol', { class: 'plain row-8 caption muted', style: 'flex-wrap:wrap;gap:4px 14px' }, tl.map(x => h('li', null, x.step + ' ' + when(x.at)))) : null);
   }
   function roundCard(r) {
     const cands = r.candidates || [];

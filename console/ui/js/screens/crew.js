@@ -1,11 +1,11 @@
 // Crew (#/crew): People (who holds each function, the seats, one seat's dossier), Hiring and, when the station has a
 // floor plan, Floor. Routes: #/crew, #/crew/<seat id>[/model], #/crew/hiring, #/crew/floor.
-import { h, fill, Button, Tag, errLine, empty, tabs, screenHead, initial, statusOf, Details } from '../ui.js';
+import { h, fill, Button, Tag, errLine, empty, tabs, screenHead, initial, statusOf, Details, when } from '../ui.js';
 import { api } from '../api.js';
 import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
 import { modelPanel } from './crew-model.js';
-import { personName, seatState } from '../plain.js';
+import { personName, seatState, modelName, providerName } from '../plain.js';
 import * as hiring from './hiring.js';
 import * as floor from './floor.js';
 
@@ -79,7 +79,7 @@ function people(root, ctx) {
         h('span', { class: 'avatar lg', 'aria-hidden': 'true' }, initial(s.name)),
         h('span', { class: 'stack-4', style: 'gap:3px;min-width:0' }, h('span', { class: 'label strong' }, s.name || s.id),
           h('span', { class: 'body-s muted' }, (s.title || '') + ' · reports to ' + (s.manager ? nameOf(seats, s.manager) : 'you')),
-          s.hire ? h('span', { class: 'caption muted' }, 'hired ' + whenOf(s.hire.at) + (s.firstRun ? ' · first run ' + whenOf(s.firstRun.at) + (s.firstRun.outcome ? ', ' + s.firstRun.outcome : '') : run ? ' · first run in progress' : ' · first run pending')) : null,
+          s.hire ? h('span', { class: 'caption muted seat-hired' }, 'Hired ' + whenOf(s.hire.at) + ' · ' + firstRunWords(s.firstRun, run)) : null,
           // parallel work (Sprint lanes, company/tools/lanes.js): said only while a seat really runs more than one thing,
           // never for the CEO; each live lane with the handoff it owns and since when
           ss.lanes ? h('span', { class: 'caption seat-lanes' }, ss.lanes) : null,
@@ -87,7 +87,7 @@ function people(root, ctx) {
             h('span', { class: 'pulse', 'aria-hidden': 'true' }), h('span', { style: 'min-width:0;flex:1' }, String(l.handoff || '').replace(/^\S+ from \S+ — /, '') + ' · since ' + whenOf(l.since))))) : null,
           run ? h('span', { class: 'caption row-8', style: 'align-items:center' }, h('span', { class: 'pulse', 'aria-hidden': 'true' }), cap(run.step || run.label))
             : ss.line ? h('span', { class: 'caption muted seat-why' }, ss.line)
-            : nx && nx.nextRunAt ? h('span', { class: 'caption muted' }, 'Next run ' + new Date(nx.nextRunAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ((nx.soonerBecause || []).length ? ', sooner: ' + nx.soonerBecause.join(', ') : '')) : null),
+            : nx && nx.nextRunAt ? h('span', { class: 'caption muted' }, 'Next run ' + whenOf(nx.nextRunAt) + ((nx.soonerBecause || []).length ? ', sooner: ' + nx.soonerBecause.join(', ') : '')) : null),
         Tag(state, { variant: 'status', status: statusOf(state) }));
     }));
     drawDossier(seats.find(s => s.id === selId), seats);
@@ -103,11 +103,13 @@ function people(root, ctx) {
       if (tab === 'brief') fill(pane,
         h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:24px' },
           kv('Functions', (s.functions || []).map(f => FN_LABEL[f] || f).join(', ') || 'None'),
-          kv('Runs on', [st.model, st.provider].filter(Boolean).join(' · ') || 'Not reported by the station'),
+          kv('Runs on', st.model ? modelName(st.model, st.provider) : st.provider ? providerName(st.provider) : 'Not reported by the station'),
           kv('Wakes', [s.loop ? 'on its own routine' : null, s.cooldownMin ? 'at most every ' + s.cooldownMin + ' min' : null, s.wakeOnInbox ? 'early when work is handed to it' : null].filter(Boolean).join(', ') || 'only when asked'),
-          kv('Priority', s.priority != null ? String(s.priority) + (s.priority >= 80 ? ' (woken first)' : '') : 'Default')),
+          kv('Order', s.priority != null && s.priority >= 80 ? 'Woken first' : s.priority != null && s.priority < 20 ? 'Woken last' : 'Woken in turn')),
         Details('Details', h('dl', { class: 'kv' },
           h('dt', null, 'Seat id'), h('dd', { class: 'mono-s' }, s.id),
+          st.model || st.provider ? [h('dt', null, 'Model id'), h('dd', { class: 'mono-s' }, [st.provider, st.model].filter(Boolean).join('/'))] : null,
+          s.priority != null ? [h('dt', null, 'Priority'), h('dd', { class: 'mono-s' }, String(s.priority))] : null,
           s.seat ? [h('dt', null, 'Seat'), h('dd', { class: 'mono-s' }, s.seat)] : null,
           s.role ? [h('dt', null, 'Role file'), h('dd', { class: 'mono-s' }, s.role)] : null,
           s.inbox ? [h('dt', null, 'Handoff inbox'), h('dd', { class: 'mono-s' }, s.inbox)] : null,
@@ -134,6 +136,12 @@ function people(root, ctx) {
   return () => { off(); stopPanels(); };
 }
 function kv(k, v) { return h('div', { class: 'stack-8' }, h('span', { class: 'eyebrow-t' }, k), h('p', { class: 'body-s' }, v)); }
-function whenOf(t) { const d = new Date(t); return isNaN(d) ? '' : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+function whenOf(t) { return when(t); }
+// the first run in plain words, latest state only: "first run finished", "first run stopped early", "first run failed"
+export function firstRunWords(fr, running) {
+  if (!fr) return running ? 'first run in progress' : 'first run pending';
+  const o = String(fr.outcome || '').toLowerCase();
+  return o === 'succeeded' || o === 'ok' || o === 'done' ? 'first run finished' : /stop|cancel/.test(o) ? 'first run stopped early' : /fail|error/.test(o) ? 'first run failed' : 'first run ' + (o || 'done');
+}
 function nameOf(seats, id) { const s = seats.find(x => x.id === id); return s ? s.name || id : id; }
 function cap(s) { s = String(s || ''); return s.charAt(0).toUpperCase() + s.slice(1); }

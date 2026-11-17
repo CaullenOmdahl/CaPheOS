@@ -1,25 +1,39 @@
 // Plain words for the owner: the console's raw ids, tags and numbers turned into what a person reads. Pure, no DOM
 // (tested by company/tools/tests/console-plain.test.js). Raw ids stay available to callers for a Details disclosure.
 
-// a question's human category, from its gate category, `about` tag or form ("governance:hiring" -> Hiring,
-// "pacing:claude" -> AI usage, "Access gate (gate 2)" -> Access)
+// a question's human category: one of Access, Money, Hiring, AI usage, Setup, or none (''). Only structured sources
+// are trusted (a governance gate's category, a "governance:"/"pacing:" tag, the form's field kinds, a request's own
+// questions); a free-text `about` tag is not ("commitments module" once read as "Commitment" on an access request).
 const CATS = [
-  [/hir|candidate|interview|recruit|people/i, 'Hiring'],
-  [/pac|usage|claude|minimax|deepseek|model|subscription|token/i, 'AI usage'],
-  [/access|key|secret|account|credential|login|sign.?up|gate/i, 'Access'],
-  [/budget|money|spend|cost|pay|price|fee|cap\b|finance|invoice|plan/i, 'Money'],
+  [/hir|candidate|interview|recruit/i, 'Hiring'],
+  [/pac|usage|\bclaude\b|minimax|deepseek|\bmodels?\b|subscription/i, 'AI usage'],
+  [/access|\bkey\b|secret|account|credential|login|sign.?up|password|token|\burl\b|address/i, 'Access'],
+  [/budget|money|spend|cost|\$\d|price|\bfees?\b|\bcap\b|finance|invoice|paid plan/i, 'Money'],
   [/onboard|setup|charter/i, 'Setup'],
-  [/commit|ownership|legal|contract/i, 'Commitment'],
-  [/risk|safety|security/i, 'Risk'],
-  [/release|publish|post|launch/i, 'Publishing'],
 ];
+const catOf = src => { for (const [re, label] of CATS) if (re.test(src)) return label; return ''; };
+const fieldCat = form => { const kinds = form && Array.isArray(form.fields) ? form.fields.map(f => f.type) : []; return kinds.includes('secret') || kinds.includes('url') ? 'Access' : ''; };
 export function category(q) {
   q = q || {};
-  const src = [q.gate && q.gate.category, String(q.about || '').replace(/^governance:/, '')].filter(Boolean).join(' ');
-  for (const [re, label] of CATS) if (re.test(src)) return label;
-  const kinds = q.form && Array.isArray(q.form.fields) ? q.form.fields.map(f => f.type) : [];
-  if (kinds.includes('secret') || q.secretHint) return 'Access';
-  return q.blocking ? 'Blocking' : 'Question';
+  const tag = String(q.about || '');
+  const structured = [q.gate && q.gate.category, /^(governance|pacing):/.test(tag) ? tag.replace(/^governance:/, '') : ''].filter(Boolean).join(' ');
+  if (structured) { const c = catOf(structured); if (c) return c; }
+  if (Array.isArray(q.questions) && q.questions.length) {
+    // a request: the category its questions share, else none (the "N questions" tag says enough)
+    const cats = q.questions.map(p => fieldCat(p.form) || catOf(String(p.prompt || '')) || 'general');
+    return cats.every(c => c === cats[0]) && cats[0] !== 'general' ? cats[0] : '';
+  }
+  const c = fieldCat(q.form) || (q.secretHint ? 'Access' : '') || catOf(tag.length <= 24 ? tag : '');
+  if (c) return c;
+  return q.blocking ? 'Blocking' : '';
+}
+// a request's one-line lead: the asker's first sentence, at most `max` characters (cut at a word, with …)
+export function leadLine(text, max) {
+  max = max || 160;
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  const first = t.split(/(?<=[.!?])\s+(?=[A-Z("'`*\[])/)[0] || '';
+  if (first.length <= max) return first;
+  return first.slice(0, max - 1).replace(/[\s,;:]+\S*$/, '') + '…';
 }
 
 // a display name with each word capitalised ("Nadia farrell" -> "Nadia Farrell", "NADIA FARRELL" -> "Nadia Farrell");
@@ -111,3 +125,41 @@ export function groupSeats(rows, crewIds) {
   const usd = Math.round(cands.reduce((a, r) => a + (Number(r.usd) || 0), 0) * 10000) / 10000;
   return { seats, candidates: cands.length ? { n: cands.length, usd, rows: cands } : null };
 }
+
+// One time format everywhere: 24 h in the company timezone, with a relative day: "today 14:22", "tomorrow 14:22",
+// "Nov 17 03:25" (another day; the year only when it is not this year). `now` is for tests.
+export function whenText(t, tz, now) {
+  const ms = typeof t === 'number' ? t : Date.parse(t); if (!ms || isNaN(ms)) return '';
+  const parts = x => { const o = {}; try { for (const p of new Intl.DateTimeFormat('en-US', { timeZone: tz || undefined, year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(x)) o[p.type] = p.value; } catch (_) { const d = new Date(x); return { key: d.toDateString(), year: String(d.getFullYear()), month: d.toDateString().slice(4, 7), day: String(d.getDate()), hm: d.toTimeString().slice(0, 5) }; }
+    return { key: o.year + '-' + o.month + '-' + o.day, year: o.year, month: o.month, day: o.day, hm: (o.hour === '24' ? '00' : o.hour) + ':' + o.minute }; };
+  const n = now == null ? Date.now() : now;
+  const a = parts(ms), today = parts(n), tomorrow = parts(n + 86400e3);
+  if (a.key === today.key) return 'today ' + a.hm;
+  if (a.key === tomorrow.key) return 'tomorrow ' + a.hm;
+  return a.month + ' ' + a.day + (a.year !== today.year ? ' ' + a.year : '') + ' ' + a.hm;
+}
+
+// a model in plain words: "deepseek/deepseek-flash" -> "DeepSeek Flash", "claude-cli/claude-sonnet-5-5" -> "Claude Sonnet 5.5",
+// "minimax/MiniMax-M2" -> "MiniMax M2". Raw ids stay for a Details disclosure.
+const BRAND = { deepseek: 'DeepSeek', minimax: 'MiniMax', claude: 'Claude', 'claude-cli': 'Claude', openai: 'OpenAI', gpt: 'GPT', gemini: 'Gemini', anthropic: 'Anthropic', ollama: 'Ollama', qwen: 'Qwen', kimi: 'Kimi', glm: 'GLM' };
+export function providerName(p) { const s = String(p || '').trim(); return BRAND[s.toLowerCase()] || (s ? s.charAt(0).toUpperCase() + s.slice(1) : ''); }
+export function modelName(id, provider) {
+  let s = String(id || '').trim(); if (!s) return '';
+  if (s.includes('/')) { const [pv, rest] = [s.slice(0, s.indexOf('/')), s.slice(s.indexOf('/') + 1)]; provider = provider || pv; s = rest; }
+  const words = s.split(/[-_\s]+/).filter(Boolean);
+  const out = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i], lw = w.toLowerCase();
+    // version runs: "5-5" -> "5.5", "4-1" -> "4.1"
+    if (/^\d+$/.test(w) && out.length && /^\d+(\.\d+)*$/.test(out[out.length - 1])) { out[out.length - 1] += '.' + w; continue; }
+    if (BRAND[lw]) { out.push(BRAND[lw]); continue; }
+    if (/^[a-z]\d/i.test(w)) { out.push(w.toUpperCase()); continue; }   // m2 -> M2, v3 -> V3
+    out.push(/^\d/.test(w) ? w : w.charAt(0).toUpperCase() + w.slice(1));
+  }
+  let name = out.join(' ');
+  const brand = providerName(provider);
+  if (brand && !name.toLowerCase().startsWith(brand.toLowerCase()) && /^(flash|chat|reasoner|pro|lite|mini|turbo)\b/i.test(name)) name = brand + ' ' + name;
+  return name;
+}
+// "Runs on DeepSeek" / "Runs on Claude" for a chat header or crew card
+export function runsOn(provider, model) { const b = providerName(provider) || (model ? modelName(model).split(' ')[0] : ''); return b ? 'Runs on ' + b : ''; }

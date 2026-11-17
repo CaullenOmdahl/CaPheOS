@@ -4,9 +4,10 @@
 // Stop cancels the run, approvals the run asks for are answered inline, and every failure says what happened and how to
 // fix it. Never silence.
 import { composerKeys, COMPOSER_HINT } from './keys.js';
-import { h, fill, Button, errLine, empty, hhmm, humanError } from './ui.js';
+import { h, fill, Button, errLine, empty, when, humanError } from './ui.js';
 import { api, post } from './api.js';
 import { md, mdBlock } from './md.js';
+import { personName, modelName } from './plain.js';
 
 const stepWords = (name, args) => {
   const a = String(args || '').replace(/\s+/g, ' ').trim().slice(0, 100);
@@ -36,7 +37,7 @@ export function liveChat(host, opts) {
   body.addEventListener('scroll', () => { pinned = atBottom(); if (pinned) jump.hidden = true; if (body.scrollTop < 120) showEarlier(); });
   const PAGE = 40; let older = [];   // turns not rendered yet, oldest first
   const earlierBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-sm chat-earlier', onclick: () => showEarlier() }, 'Show earlier messages');
-  function turnEl(t) { return t.role === 'user' ? mine(t.content) : theirs(t.content, t.at ? name() + ' · ' + hhmm(t.at, tz) : name()); }
+  function turnEl(t) { return t.role === 'user' ? mine(t.content) : theirs(t.content, t.at ? name() + ' · ' + when(t.at, tz) : name()); }
   function showEarlier() {
     if (!older.length) return;
     const chunk = older.splice(Math.max(0, older.length - PAGE));
@@ -53,13 +54,13 @@ export function liveChat(host, opts) {
   const stopBtn = Button('Stop', { variant: 'secondary', size: 'sm', onClick: () => stop() });
   stopBtn.hidden = true;
   const form = h('form', { 'aria-label': 'Message', class: 'composer', onsubmit: e => { e.preventDefault(); send(ta.value); } },
-    h('label', { for: 'msg', class: 'caption muted' }, 'Live chat: the reply streams in here · ' + COMPOSER_HINT),
+    h('label', { for: 'msg', class: 'caption muted' }, COMPOSER_HINT),
     ta, h('div', { class: 'between-c', style: 'flex-wrap:wrap;gap:8px' }, h('span', { class: 'row-8', style: 'align-items:center' }, stateEl, sendErr), h('span', { class: 'row-8' }, stopBtn, sendBtn)));
   composerKeys(ta, () => send(ta.value), () => { if (busy) stop(); });
   const bodyWrap = h('div', { class: 'chat-scroll' }, body, jump);
   fill(host, banner, bodyWrap, form);
 
-  const name = () => (info && info.agent && info.agent.name) || agentId;
+  const name = () => personName(info && info.agent && info.agent.name) || agentId;
   // a brief a console button sent (the charter) shows as its first line, the full text one click away
   const BRIEF = /^(Let us write the company charter together|Please change company\/CHARTER\.md)/;
   function mine(text) {
@@ -144,7 +145,7 @@ export function liveChat(host, opts) {
           case 'permission.response': { const c = card.querySelector('[data-prompt="' + (p.promptId || '') + '"]'); if (c) c.replaceWith(h('p', { class: 'caption muted' }, 'Approval: ' + (p.decision || 'answered') + (p.expired ? ' (no answer in time)' : ''))); break; }
           case 'agent.run.error': if (!lead || !p.runId || p.runId === lead) fail({ message: name() + ' hit an error: ' + (p.message || 'the run failed'), fix: /budget|cap|quota|limit/i.test(p.message || '') ? 'Check the budget in Setup.' : /key|auth|401|403|credential/i.test(p.message || '') ? 'Check the AI provider in Setup.' : null, link: /budget|cap/i.test(p.message || '') ? '#/setup/budget' : /key|auth|401|403|credential/i.test(p.message || '') ? '#/setup/provider' : null }); break;
           case 'agent.run.end': if (lead && p.runId && p.runId !== lead) break; sawEnd = true;
-            meta.textContent = name() + ' · ' + hhmm(new Date().toISOString(), tz) + (card.dataset.model ? ' · ' + card.dataset.model : '') + (p.usd ? ' · $' + Number(p.usd).toFixed(4) : '');
+            meta.textContent = name() + ' · ' + when(new Date().toISOString(), tz) + (card.dataset.model ? ' · ' + modelName(card.dataset.model) : '') + (p.usd ? ' · $' + Number(p.usd).toFixed(4) : '');
             if (p.outcome && /fail|error/.test(p.outcome) && !failed) fail({ message: name() + ' could not finish (' + (p.failureCode || p.reason || p.outcome) + ').' });
             break;
           default: break;

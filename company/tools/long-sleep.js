@@ -94,6 +94,12 @@ function targetFor(agentId) {
   return ok(seat.manager) ? seat.manager : null;
 }
 const flat = v => String(v == null ? '' : v).replace(/[\r\n\u2028\u2029\u0085]+/g, ' ');
+// the commitments line only where the module is on (house rules v8 do the same)
+function laterAdvice() {
+  let on = false; try { on = require('./lib/modules').isEnabled('commitments'); } catch (_) {}
+  return on ? 'to act at a later time, record a commitment with a due time (`node company/tools/commitments.js create --title "..." --key <key> --owner <seat> --due <ISO time>`) and end the run, the commitments duty wakes them then;'
+    : 'to act at a later time, write what to do and when in a handoff to themselves (with a **Deadline:** line) and end the run;';
+}
 function handoff(to, e) {
   const c = co.crew(); const inbox = c[to] && c[to].inbox;
   if (!inbox || /[\/\\]|\.\./.test(inbox)) return null;
@@ -101,8 +107,8 @@ function handoff(to, e) {
   const lp = co.localParts(new Date(now())), at = co.localParts(new Date(e.firstAt));
   const due = co.localParts(new Date(now() + 86400e3)).date;
   const block = '\n## ' + lp.date + ' ' + lp.time + ' from long-sleep.js — ' + flat(who) + '\'s run slept ' + min + ' min waiting for a time\n' +
-    '**Need:** tell ' + flat(who) + ', once, how to wait without a run: never wait inside a run for more than about 2 minutes; to act at a later time, record a commitment with a due time (`node company/tools/commitments.js create --title "..." --key <key> --owner <seat> --due <ISO time>`) and end the run, the commitments duty wakes them then; for continuous recording or watching, a background service (`node company/tools/service.js propose`). Close this with what you told them.\n' +
-    '**Why:** run ' + flat(String(e.runId).slice(0, 12)) + ' (from ' + at.time + ') spent ' + min + ' min in ' + e.calls + ' shell_exec sleep call(s). A sleeping run holds the seat, blocks lanes and station restarts, and does no work (house rules v7). This is not a performance flag.\n' +
+    '**Need:** tell ' + flat(who) + ', once, how to wait without a run: never wait inside a run for more than about 2 minutes; ' + laterAdvice() + ' for continuous recording or watching, a background service (`node company/tools/service.js propose`). Close this with what you told them.\n' +
+    '**Why:** run ' + flat(String(e.runId).slice(0, 12)) + ' (from ' + at.time + ') spent ' + min + ' min in ' + e.calls + ' shell_exec sleep call(s). A sleeping run holds the seat, blocks lanes and station restarts, and does no work (house rules). This is not a performance flag.\n' +
     '**Deadline:** ' + due + '\n**Status:** OPEN\n**Evidence:** run ' + flat(e.runId) + ' in the station transcripts; `node company/tools/long-sleep.js scan`\n';
   const f = path.join(F.handoffs(), inbox);
   fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, block);
@@ -165,7 +171,7 @@ function selftest() {
     ok('scan: the long sleeper\'s runs are found with their totals; short, old and in-window-only runs are not', j && j.runs.length === 3 && j.runs[0].runId === 'run-hal-1' && Math.round(j.runs[0].seconds) === 2124 && j.runs[0].calls === 9 && !j.runs.some(x => x.runId === 'run-sol' || x.runId === 'run-old'), r.stdout + r.stderr);
     r = run(['tick']);
     const lee = (() => { try { return fs.readFileSync(path.join(T, 'company/work/handoffs/to-lee.md'), 'utf8'); } catch (_) { return ''; } })();
-    ok('tick: one OPEN handoff to the seat\'s manager, with the advice', (lee.match(/^## /mg) || []).length === 1 && /Halima's run slept 35 min/.test(lee) && /commitments\.js create/.test(lee) && /service\.js propose/.test(lee) && /\*\*Status:\*\* OPEN/.test(lee), lee + r.stderr);
+    ok('tick: one OPEN handoff to the seat\'s manager, with the advice (no commitments tool: the module is off here)', (lee.match(/^## /mg) || []).length === 1 && /Halima's run slept 35 min/.test(lee) && /handoff to themselves/.test(lee) && !/commitments\.js/.test(lee) && /service\.js propose/.test(lee) && /\*\*Status:\*\* OPEN/.test(lee), lee + r.stderr);
     ok('tick: a stranger to the crew is not flagged, and nothing goes to the seat itself', !fs.existsSync(path.join(T, 'company/work/handoffs/to-halima.md')) && /LONG SLEEP: Halima/.test(r.stdout) && !/stranger/.test(r.stdout), r.stdout);
     const st = readJson(path.join(T, 'company/state/long-sleep.json'), {});
     ok('tick: the second long run of the same seat inside 24 h is recorded, not flagged again', st.flagged && st.flagged['run-hal-1'] && st.flagged['run-hal-2'] && st.seats.hal, JSON.stringify(st));
@@ -184,7 +190,7 @@ function selftest() {
   const shim = path.join(__dirname, 'shims', 'sleep');
   const sh = (args, env) => require('child_process').spawnSync('bash', [shim].concat(args), { encoding: 'utf8', timeout: 10000, env: Object.assign({}, process.env, env || {}) });
   let s = sh(['236']);
-  ok('shim: sleep 236 is refused at once (exit 2), naming commitments and background services', s.status === 2 && /refused: `sleep 236` waits 236 s/.test(s.stderr) && /commitments\.js create/.test(s.stderr) && /service\.js propose/.test(s.stderr), s.status + ' ' + s.stderr);
+  ok('shim: sleep 236 is refused at once (exit 2), naming a later-time route and background services', s.status === 2 && /refused: `sleep 236` waits 236 s/.test(s.stderr) && (fs.existsSync(path.join(__dirname, 'commitments.js')) ? /commitments\.js create/ : /handoff to yourself/).test(s.stderr) && /service\.js propose/.test(s.stderr), s.status + ' ' + s.stderr);
   s = sh(['1m', '61']); ok('shim: several arguments are added (1m 61 = 121 s > 120)', s.status === 2, s.status + s.stderr);
   s = sh(['inf']); ok('shim: sleep inf is refused', s.status === 2 && /waits forever/.test(s.stderr), s.stderr);
   const t1 = Date.now(); s = sh(['0.2']); ok('shim: a short sleep runs the real sleep', s.status === 0 && Date.now() - t1 >= 180, s.status + s.stderr);

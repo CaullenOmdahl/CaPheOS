@@ -3,12 +3,13 @@
 // same steps are embedded (render with ctx.only = [step ids], ctx.embedded = true). API: GET /api/setup,
 // POST /api/setup/{company,provider,provider/validate,budget,charter}, /api/governance/preset, /api/guardrails/*,
 // /api/onboarding/certify, the station's Claude sign-in (/api/station/auth/claude-cli/*). docs/CONSOLE-API.md "Setup".
-import { h, fill, Button, Tag, errLine, Eyebrow, Details, humanError } from '../ui.js';
+import { h, fill, Button, Tag, errLine, Eyebrow, Details, humanError, when } from '../ui.js';
 import { api, post } from '../api.js';
 import * as events from '../events.js';
 import { PRESET_WHAT, GUARD_NAMES } from './settings/autonomy.js';
 import { mdBlock } from '../md.js';
 import { endpointPicker } from '../minimax-endpoint.js';
+import { modelName } from '../plain.js';
 
 const STEP_ALIAS = { ai: 'provider', providers: 'provider', model: 'provider', money: 'budget', gov: 'governance', guard: 'guardrails', check: 'certify', checks: 'certify' };
 // the certification checks in plain words (onboard.js --certify); the raw id and what is missing go behind Details
@@ -62,7 +63,7 @@ export async function render(root, ctx) {
       h('div', { class: 'meter', role: 'img', 'aria-label': d.done + ' of ' + d.total + ' steps done' }, h('div', { style: 'width:' + Math.round(d.done / d.total * 100) + '%' }))));
     fill(readyEl, d.certified ? h('section', { class: 'card p22', role: 'status', style: 'border-color:var(--status-online);gap:10px' },
       h('h2', { class: 'h3' }, 'Your company is ready.'),
-      h('p', { class: 'body-s' }, 'All checks passed' + (d.lastCertify ? ' (' + new Date(d.lastCertify).toLocaleString() + ')' : '') + '. The crew can run on its own; questions that need you land on Today.'),
+      h('p', { class: 'body-s' }, 'All checks passed' + (d.lastCertify ? ' (' + when(d.lastCertify) + ')' : '') + '. The crew can run on its own; questions that need you land on Today.'),
       h('div', { class: 'row-8' }, Button('Go to Today', { variant: 'primary', href: '#/today' }), Button('Talk to the Founder', { variant: 'secondary', href: '#/chat/agent:' + ((app.company && app.company.ceo && app.company.ceo.id) || 'agent') }))) : null);
     }
     const body = { company: stepCompany, provider: stepProvider, budget: stepBudget, governance: stepGovernance, charter: stepCharter, guardrails: stepGuardrails, certify: stepCertify };
@@ -115,7 +116,7 @@ export async function render(root, ctx) {
       h('div', { class: 'row-8' }, Button('Check again', { variant: 'secondary', onClick: load }))];
     const cd = d.candidateDefault || {};
     const cards = d.providers.map(p => p.how === 'signin' ? claudeCard(d, p) : keyCard(d, p));
-    return [h('p', { class: 'body-s muted' }, 'Connect at least one. A subscription is the simplest: a flat fee, nothing billed per token. New hires interview on the one you pick' + (cd.provider ? ' (now ' + cd.provider + ' / ' + cd.model + ')' : '') + '.'),
+    return [h('p', { class: 'body-s muted' }, 'Connect at least one. A subscription is the simplest: a flat fee, nothing billed per token. New hires interview on the one you pick' + (cd.provider ? ' (now ' + modelName(cd.model, cd.provider) + ')' : '') + '.'),
       h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:14px' }, cards)];
   }
   const provHead = p => h('div', { class: 'between-c', style: 'gap:8px' }, h('span', { class: 'label strong' }, p.name),
@@ -261,7 +262,7 @@ export async function render(root, ctx) {
       Button('Draft it with the Founder', { variant: blanks ? 'primary' : 'secondary', onClick: () => draftWithFounder(keepNotes()) }),
       blanks ? Button('Fill the blanks myself', { variant: 'secondary', onClick: () => { charterMode = 'form'; draw(); } }) : Button('Ask the Founder to change it', { variant: 'secondary', href: '#/chat/agent:' + encodeURIComponent(ceoId()) + '?brief=charter-change' }),
       Button('Edit the text', { variant: 'ghost', onClick: () => { charterMode = 'edit'; draw(); } }));
-    const head = h('p', { class: 'body-s muted' }, 'The crew reads this before every decision. ' + (blanks ? blanks + ' blank' + (blanks > 1 ? 's' : '') + ' still to fill: ' + cv.placeholders.slice(0, 3).map(x => x.replace(/^<|>$/g, '').slice(0, 50)).join(' · ') + (blanks > 3 ? '…' : '') + '.' : 'No blanks left.') + (cv.at ? ' Last changed ' + new Date(cv.at).toLocaleString() + '.' : ''));
+    const head = h('p', { class: 'body-s muted' }, 'The crew reads this before every decision. ' + (blanks ? blanks + ' blank' + (blanks > 1 ? 's' : '') + ' still to fill: ' + cv.placeholders.slice(0, 3).map(x => x.replace(/^<|>$/g, '').slice(0, 50)).join(' · ') + (blanks > 3 ? '…' : '') + '.' : 'No blanks left.') + (cv.at ? ' Last changed ' + when(cv.at) + '.' : ''));
     if (charterMode === 'edit') {
       const t = h('textarea', { class: 'textarea mono-s', rows: '22', 'aria-label': 'Charter text' }); t.value = keep.charterText !== undefined ? keep.charterText : cv.text;
       t.addEventListener('input', () => { keep.charterText = t.value; });
@@ -339,7 +340,7 @@ export async function render(root, ctx) {
         const err = errP(); const ta = h('textarea', { class: 'textarea', rows: '2', placeholder: 'Your answer' });
         const lines = String(q.q || '').split('\n').filter(l => /^\s*-\s/.test(l)).map(l => l.replace(/^\s*-\s*/, ''));
         const send = Button('Send answer', { variant: 'secondary', size: 'sm', onClick: () => { if (!ta.value.trim()) { err.textContent = 'Write an answer first.'; return; } act(send, err, () => post('/questions/' + encodeURIComponent(q.id) + '/answer', { verdict: 'reply', text: ta.value.trim() }), 'Answer recorded.'); } });
-        return h('article', { class: 'card p18', style: 'gap:10px' }, h('span', { class: 'caption muted' }, 'Asked ' + (q.askedAt ? new Date(q.askedAt).toLocaleDateString() : 'during onboarding')),
+        return h('article', { class: 'card p18', style: 'gap:10px' }, h('span', { class: 'caption muted' }, 'Asked ' + (q.askedAt ? when(q.askedAt) : 'during onboarding')),
           h('ul', { class: 'stack-6 body-s', style: 'padding-left:18px' }, (lines.length ? lines : [q.q]).map(l => h('li', null, l))), ta, h('div', { class: 'row-8' }, send), err);
       })));
   }

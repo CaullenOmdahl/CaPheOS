@@ -168,11 +168,36 @@ async function startMock(env) {
     await go('#/work/quests');
     const qw = await until(() => js(`(() => { const t = (document.getElementById('main') || {}).innerText || ''; return /Backtest the quote recorder/.test(t) ? t : null; })()`), 5000);
     check('Work › Quests: owners by display name ("Nadia Farrell"), no "q:8" or raw agent ids in view', qw && /Nadia Farrell/.test(qw) && !/\bq:\d/.test(qw) && !/cand-|tools1/.test(qw), qw && qw.slice(0, 400));
+    // Work › Quests (walk2): a done quest is a full bar and says its unticked steps; titles lose "-> file" targets and a
+    // dangling arrow, a title the station cut says so; an empty column collapses to a slim header
+    const qx = await js(`(() => { const c = id => document.querySelector('[data-quest="' + id + '"]'); const t = id => c(id) && c(id).querySelector('.quest-title').textContent;
+      const col = n => document.querySelector('[data-col="' + n + '"]'); const w = n => col(n) ? col(n).getBoundingClientRect().width : 0;
+      return { t11: t('q:11'), t10: t('q:10'), t9: t('q:9'), bar10: c('q:10') && c('q:10').querySelector('.meter > div').style.width, line10: c('q:10') && c('q:10').querySelector('.quest-line').textContent,
+        blockedEmpty: col('Blocked') && col('Blocked').classList.contains('empty-col'), wBlocked: w('Blocked'), wProgress: w('In progress') }; })()`);
+    check('Work › Quests: a done quest with unticked steps is a full bar and says "Done (1 of 4 steps ticked)"', qx && qx.bar10 === '100%' && /^Done \(1 of 4 steps ticked\)/.test(qx.line10), qx);
+    check('Work › Quests: no "-> file" in titles, no dangling arrow, a cut title ends with "…"', qx && !/->|→|\.md/.test(qx.t11 + qx.t9) && /floor met$/.test(qx.t11) && /kept as…$/.test(qx.t10), qx);
+    check('Work › Quests: an empty Blocked column collapses; In progress takes the room', qx && qx.blockedEmpty && qx.wBlocked > 0 && qx.wBlocked * 3 < qx.wProgress, qx);
+    // Settings › Models (walk2): plain model names, "—" + "Set up fallbacks" instead of "no chain", a Why only when unusual
+    await go('#/settings/models');
+    const mx = await until(() => js(`(() => { const rows = [...document.querySelectorAll('#set-chains tr[data-seat]')]; if (!rows.length) return null; const box = document.querySelector('#set-chains').cloneNode(true); box.querySelectorAll('details').forEach(d => d.remove()); const vis = box.innerText;
+      return { vis, rows: rows.map(r => ({ id: r.dataset.seat, t: r.innerText.replace(/\\s+/g, ' '), why: r.querySelector('.seat-why').textContent })), setUp: document.querySelectorAll('#set-chains a.set-fallbacks').length }; })()`), 6000);
+    const mt = mx ? mx.rows.map(r => r.t).join('\n') : '';
+    check('Settings › Models: plain model names, no raw ids, no "no chain", no routing-table jargon', mx && /DeepSeek Flash/.test(mt) && /Claude Sonnet 5\.5/.test(mt) && !/deepseek\/|claude-cli|no chain|routing table|sign-in/.test(mx.vis), mt);
+    check('Settings › Models: "Nadia Farrell" title-cased; seats without a chain show "—" and "Set up fallbacks"', mx && /Nadia Farrell/.test(mt) && !/Nadia farrell/.test(mx.vis) && mx.setUp === 2, mx && { setUp: mx.setUp, mt });
+    check('Settings › Models: a Why only when something is unusual, from the current state', mx && mx.rows.filter(r => r.why).length === 1 && /moves back up/.test(mx.rows.find(r => r.id === 'people1').why), mx && mx.rows);
+    // one time format (walk2): 24 h, never AM/PM, on Crew and Settings
+    for (const sc of ['#/crew', '#/settings/models', '#/settings/tempo', '#/settings/system']) { await go(sc); await sleep(500); const tx = await js(VISIBLE); check(sc + ': 24-hour times, no AM/PM', !/\b\d{1,2}:\d\d\s?(AM|PM)\b/i.test(tx || ''), (tx || '').match(/.{0,30}\d:\d\d\s?(AM|PM).{0,10}/i)); }
     // Crew: the status words Today uses; lanes only while a seat runs more than one thing, never for the CEO
     await go('#/crew');
     const cw = await until(() => js(`(() => { const r = [...document.querySelectorAll('.crew-item')].map(b => ({ id: b.dataset.seat, t: b.innerText.replace(/\\s+/g, ' ') })); return r.some(x => /Resting/.test(x.t)) ? r : null; })()`), 5000);
     const seat = id => ((cw || []).find(x => x.id === id) || {}).t || '';
     check('Crew: "Nadia Farrell" Resting with the dispatcher\'s reason (not Idle beside "working"); Teo "Working on 2 things at once"; the Founder shows no lanes', cw && /Nadia Farrell/.test(seat('cand-tools-backtest-engineer-1-n')) && /Resting/.test(seat('cand-tools-backtest-engineer-1-n')) && !/Idle/.test(seat('cand-tools-backtest-engineer-1-n')) && /Working on 2 things at once/.test(seat('tools1')) && !/lane|things at once/i.test(seat('agent')) && !(cw || []).some(x => /Sprint:|lanes? running/.test(x.t)), cw);
+
+    // Crew (walk2): plain model names with the ids under Details, "Woken first", a human first-run line
+    await js(`document.querySelector('.crew-item[data-seat="agent"]').click(); 1`); await sleep(400);
+    const dz = await js(`(() => { const d = document.querySelector('#dossier') && document.querySelector('#dossier').closest('section, div').parentElement; return ${VISIBLE}; })()`);
+    check('Crew: "Runs on DeepSeek Flash", "Woken first", no raw model ids or priority number in view', /DeepSeek Flash/.test(dz || '') && /Woken first/.test(dz || '') && !/deepseek-flash|PRIORITY|\(woken first\)/i.test(dz || ''), (dz || '').slice(0, 600));
+    check('Crew: a first run that was stopped reads "first run stopped early"', /first run stopped early/.test(seat('cand-tools-backtest-engineer-1-n')) && !/, stopped/.test(seat('cand-tools-backtest-engineer-1-n')), seat('cand-tools-backtest-engineer-1-n'));
 
     /* ---- a company still in its first run, on a headless station ---- */
     await send('Page.navigate', { url: 'http://127.0.0.1:' + fresh.port + '/' });

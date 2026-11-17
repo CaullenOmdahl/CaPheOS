@@ -29,8 +29,9 @@ function mount(route, d) {
     if (!PROVIDER.test(p) || !m || m.length > 200 || /[,@\s]/.test(m) || (ef && !/^[a-z]{1,12}$/.test(ef))) bad('bad chain entry: ' + JSON.stringify(e).slice(0, 120));
     return p + '/' + m + (ef ? '@' + ef : '');
   };
-  route('GET', /^\/api\/models$/, () => runApi('models.js', ['show', '--json'], { timeout: 30000 }));
-  route('GET', new RegExp('^/api/models/seat/' + SEAT + '$'), m => runApi('models.js', ['show', '--seat', m[1], '--json'], { timeout: 30000 }));
+  const withWhy = d => { for (const s of (d && d.seats) || []) if (s && s.now) s.now.plain = currentWhy(s); return d; };
+  route('GET', /^\/api\/models$/, async () => withWhy(await runApi('models.js', ['show', '--json'], { timeout: 30000 })));
+  route('GET', new RegExp('^/api/models/seat/' + SEAT + '$'), async m => withWhy(await runApi('models.js', ['show', '--seat', m[1], '--json'], { timeout: 30000 })));
   route('GET', /^\/api\/models\/providers$/, async () => {
     const pol = policy(), allowed = pol.allowed || {};
     const r = await stationGet('providers', 8000);
@@ -59,6 +60,24 @@ function mount(route, d) {
     if (b.chain.length > 8) bad('at most 8 entries');
     return runApi('models.js', ['chain', m[1], '--set', b.chain.map(entryArg).join(','), '--by', owner()], { timeout: 60000 });
   });
+}
+
+/* currentWhy(seat) — Settings › Models' Why column: only when something is unusual, and from the chain's CURRENT
+ * evaluation (each entry's ok/why as the tool measured it now), never the reason of the last move (that one goes stale:
+ * "checking local sign-in" an hour after the provider recovered). null when the seat is where it should be. */
+const PNAME = { 'claude-cli': 'Claude', custom: 'MiniMax', deepseek: 'DeepSeek', minimax: 'MiniMax' };
+const pname = e => (e && (PNAME[e.provider] || e.provider)) || 'its model';
+function currentWhy(s) {
+  const chain = (s && s.chain) || [], now = (s && s.now) || {}, idx = now.index;
+  if (!s || !s.hasChain || !chain.length) return null;
+  const p = chain[0];
+  if (idx === 0) return p.ok ? null : p.settling ? pname(p) + ' is still starting on the station; it waits rather than moving.' : 'Its primary cannot run right now: ' + p.why + '.';
+  if (idx > 0) {
+    const better = chain.slice(0, idx).find(x => x.ok);
+    if (better) return 'On a fallback for now. ' + pname(better) + ' can run again, so it moves back up shortly.';
+    return 'On a fallback: ' + pname(p) + ' cannot run right now (' + String(p.why || 'unavailable').replace(/^the /, '') + ').';
+  }
+  return 'Not on a model in its chain; the next check moves it.';
 }
 
 /* ---------- selftest ---------- */
@@ -130,6 +149,12 @@ async function selftest() {
     r = await call('GET', '/api/models/seat/eng');
     const jo = r.json && r.json.seats && r.json.seats[0];
     check('GET one seat: each entry says connected or not, running now on the primary, history of moves', jo && jo.chain.find(e => e.provider === 'custom').connected === false && jo.now.index === 0 && /primary/.test(jo.now.why) && jo.history.length === 2 && jo.history[0].direction === 'set', jo);
+    check('currentWhy: nothing unusual on a primary that can run; a recovered primary is said from the current state, not the last move', currentWhy({ hasChain: true, chain: [{ provider: 'claude-cli', ok: true }], now: { index: 0 } }) === null
+      && /Claude can run again/.test(currentWhy({ hasChain: true, chain: [{ provider: 'claude-cli', ok: true }, { provider: 'deepseek', ok: true }], now: { index: 1, why: 'fallback 1 of 1: checking local sign-in' } }))
+      && !/checking local sign-in/.test(currentWhy({ hasChain: true, chain: [{ provider: 'claude-cli', ok: true }, { provider: 'deepseek', ok: true }], now: { index: 1 } }))
+      && currentWhy({ hasChain: false, chain: [], now: { index: -1 } }) === null);
+    r = await call('GET', '/api/models');
+    check('GET /api/models carries now.plain (current-state Why)', r.json.seats.every(s => 'plain' in s.now), r.json.seats.map(s => s.now));
     r = await call('POST', '/api/models/seat/nobody/chain', { chain: [{ provider: 'deepseek', model: 'deepseek-flash' }] });
     check('an unknown seat: 400', r.status === 400, r.json);
   } catch (e) { check('selftest ran to the end', false, e.stack); }
@@ -139,5 +164,5 @@ async function selftest() {
   return failed ? 1 : 0;
 }
 
-module.exports = { mount, selftest };
+module.exports = { mount, selftest, currentWhy };
 if (require.main === module && process.argv.includes('--selftest')) selftest().then(c => process.exit(c), e => { console.error(e); process.exit(1); });

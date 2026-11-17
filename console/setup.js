@@ -12,6 +12,19 @@
  * here once the company can actually run a candidate, and the candidate-default step is recorded ok.
  */
 'use strict';
+// a model id in plain words for the owner ("claude-haiku-4-5-20251001" -> "Claude Haiku 4.5"); the same rule as plain.js modelName
+function plainModel(id, provider) {
+  const B = { deepseek: 'DeepSeek', minimax: 'MiniMax', claude: 'Claude', gpt: 'GPT', gemini: 'Gemini' };
+  let s = String(id || ''); if (s.includes('/')) s = s.slice(s.indexOf('/') + 1);
+  const out = [];
+  for (const w of s.split(/[-_\s]+/).filter(Boolean)) {
+    if (/^\d{8}$/.test(w)) continue;   // a release date
+    if (/^\d+$/.test(w) && out.length && /^\d+(\.\d+)*$/.test(out[out.length - 1])) { out[out.length - 1] += '.' + w; continue; }
+    out.push(B[w.toLowerCase()] || (/^[a-z]\d/i.test(w) ? w.toUpperCase() : /^\d/.test(w) ? w : w.charAt(0).toUpperCase() + w.slice(1)));
+  }
+  const name = out.join(' ');
+  return name || String(provider || id || '');
+}
 const fs = require('fs');
 const path = require('path');
 
@@ -180,7 +193,7 @@ module.exports = function setup(deps) {
     const cdReady = cd.provider && ready.has(cd.provider);
     const offer = offerOf(cd.provider);
     add('provider', 'AI provider', cdReady ? 'done' : 'needs', !sp.up ? 'The station is not answering (' + sp.error + '), so no AI provider can be checked or connected. Start it, then come back.'
-      : cdReady ? 'New hires interview on ' + (offer ? offer.name : cd.provider) + ' (' + cd.model + '), which the station has ready.'
+      : cdReady ? 'New hires interview on ' + plainModel(cd.model, offer ? offer.name : cd.provider) + ', which the station has ready.'
       : 'Your crew needs an AI to think with. ' + (ready.size ? 'The station has ' + [...ready].join(', ') + ' ready, but new hires default to ' + (cd.provider || 'nothing') + '.' : 'The station has no AI provider connected yet.'));
 
     const cdMetered = cd.provider && !unmetered.includes(cd.provider);

@@ -328,7 +328,10 @@ function answered(since) {
   const sinceMs = since ? Date.parse(since) : NaN;
   return Object.values(st).filter(x => x.type === 'answer' || (x.a && x.q)).filter(x => x.a)
     .filter(x => Number.isFinite(sinceMs) ? Date.parse(x.at) >= sinceMs : co.localParts(new Date(x.at)).date === today)
-    .map(x => ({ id: x.id, from: x.from, about: x.about, q: x.q, answer: x.a, answeredAt: x.at }));
+    .map(x => ({ id: x.id, from: x.from, about: x.about, q: x.q, message: x.message, answer: x.a, answeredAt: x.at }))
+    // questions their asker withdrew ("no longer needed"): one line each, "withdrawn by <asker>: <why>"
+    .concat(tool('inbox.js').withdrawnSince(0).filter(w => Number.isFinite(sinceMs) ? Date.parse(w.at) >= sinceMs : co.localParts(new Date(w.at)).date === today)
+      .map(w => ({ id: w.id, part: w.part, from: w.from, message: w.message, withdrawn: { by: w.by, why: w.why }, answer: 'withdrawn by ' + w.by + ': ' + w.why, answeredAt: w.at })));
 }
 function ownerMessages() {
   const oi = tool('owner-inbox.js');
@@ -949,6 +952,16 @@ async function selftest() {
     // the composer refuses an ask that tells the owner to run a command
     const shellAsk = await askCli(['--message', 'Two patches need your shell.', '--details', 'patch -p1 < scratch/a.diff && node company/tools/a.js selftest']);
     check('composer: an ask telling the owner to run a command is refused with the routes', shellAsk.ok === false && /run a command/.test(shellAsk.error || '') && /framework request/.test(shellAsk.error || ''), shellAsk);
+    const shellAsk2 = await askCli(['--message', 'Three things.', '--questions', JSON.stringify([{ prompt: 'It needs one daemon-reload that agents are refused. May I have that one command?' }, { prompt: 'Switch the module on?' }])]);
+    check('composer: a question asking for systemctl/daemon-reload in prose is refused', shellAsk2.ok === false && /run a command/.test(shellAsk2.error || ''), shellAsk2);
+    // withdraw: the asker takes one question back; Today hides it and lists it under Answered today
+    const wq = await askCli(['--message', 'Two things.', '--questions', JSON.stringify([{ id: 'a', prompt: 'May the tools seat fix the start limit?' }, { id: 'b', prompt: 'Switch the module on?' }])]);
+    const wd = await new Promise(res => execFile(process.execPath, [path.join(tmp, 'company', 'tools', 'inbox.js'), 'withdraw', wq.id, '--part', '1', '--why', 'the rerender fixed it', '--from', 'Founder'], { env }, (e, so) => { try { res(JSON.parse(so)); } catch (_) { res({ ok: false, raw: so }); } }));
+    r = await call('GET', '/api/questions');
+    const wqq = (r.json.questions || []).find(x => x.id === wq.id);
+    check('withdraw: the withdrawn question leaves the card, the other stays', wd.ok && wqq && wqq.questions.length === 1 && wqq.questions[0].id === 'b', { wd, wqq });
+    r = await call('GET', '/api/questions/answered');
+    check('withdraw: Answered today has "withdrawn by Founder: why"', (r.json.answered || []).some(x => x.id === wq.id && x.withdrawn && x.answer === 'withdrawn by Founder: the rerender fixed it'), r.json);
     // snooze
     const sz = await askCli(['--message', 'Whenever you have a minute.']);
     r = await call('POST', '/api/questions/' + sz.id + '/snooze', { until: '2001-01-01T00:00:00Z' });

@@ -17,7 +17,31 @@ test('Needs you: a human category, never the raw tag', async () => {
   assert.equal(P.category({ about: 'Access gate (gate 2)' }), 'Access');
   assert.equal(P.category({ about: 'budget' }), 'Money');
   assert.equal(P.category({ about: '', form: { fields: [{ type: 'secret' }] } }), 'Access');
-  assert.equal(P.category({ about: '' }), 'Question');
+  assert.equal(P.category({ about: '' }), '');
+});
+
+test('walk 2: a request\'s category comes from its questions, never a free-text tag; a one-line lead', async () => {
+  const P = await import(path.join(UI, 'plain.js'));
+  const qs = [{ prompt: 'May the tools seat lift the start limit on the kill switch unit?', form: { fields: [] } },
+    { prompt: 'Our house rules send every seat to the commitments tool. May I switch the module on?', form: { fields: [] } },
+    { prompt: 'Paste the ping URL from the check you made.', form: { fields: [{ type: 'url' }] } }];
+  assert.equal(P.category({ about: 'commitments, access, heartbeat', questions: qs }), '', 'mixed questions: no category');
+  assert.equal(P.category({ about: 'commitment', questions: [qs[2], { prompt: 'And the API key for it.', form: { fields: [{ type: 'secret' }] } }] }), 'Access');
+  assert.notEqual(P.category({ about: 'commitments module' }), 'Commitment');
+  assert.equal(P.category({ about: 'governance:hiring', questions: qs }), 'Hiring', 'a structured tag still wins');
+  const msg = 'Three things only you can do, all access rather than policy, and each is safe to decline. The kill switch that decides whether trading halts only watched 25 of the last 46 minutes.';
+  assert.equal(P.leadLine(msg), 'Three things only you can do, all access rather than policy, and each is safe to decline.');
+  const long = 'A'.repeat(10) + ' ' + 'word '.repeat(60) + 'end.';
+  assert.ok(P.leadLine(long).length <= 160 && P.leadLine(long).endsWith('…'));
+});
+
+test('walk 2: one time format, 24 h in the company timezone, relative day', async () => {
+  const P = await import(path.join(UI, 'plain.js'));
+  const now = Date.parse('2026-11-18T20:00:00Z');
+  assert.equal(P.whenText('2026-11-18T20:22:00Z', 'America/Chicago', now), 'today 14:22');
+  assert.equal(P.whenText('2026-11-19T20:22:00Z', 'America/Chicago', now), 'tomorrow 14:22');
+  assert.equal(P.whenText('2026-11-17T09:25:00Z', 'America/Chicago', now), 'Nov 17 03:25');
+  assert.doesNotMatch(P.whenText('2026-11-18T23:59:00Z', 'America/Chicago', now), /AM|PM/);
 });
 
 test('display names: title-cased for display, ids left alone, a candidate id named from its slug', async () => {
@@ -89,4 +113,26 @@ test('Recent activity: tool-call markup never reaches the owner; "Ran a command"
   assert.equal(ACT.runText('Done: closed. <invoke name="x"><parameter name="cmd">ls</parameter></invoke>').text, 'Done: closed.');
   assert.equal(ACT.runText('', 11).text, '11 tool steps');
   assert.doesNotMatch(ACT.stripToolMarkup('a <parameter name="path">/x</parameter> b').text, /<|parameter/);
+});
+
+test('one time format: 24 h in the company timezone, "today 14:22", "tomorrow 14:22", "Nov 17 03:25"', async () => {
+  const P = await import(path.join(UI, 'plain.js'));
+  const now = Date.parse('2026-11-18T20:00:00Z');   // 14:00 in Chicago
+  assert.equal(P.whenText('2026-11-18T20:22:00Z', 'America/Chicago', now), 'today 14:22');
+  assert.equal(P.whenText('2026-11-19T20:22:00Z', 'America/Chicago', now), 'tomorrow 14:22');
+  assert.equal(P.whenText('2026-11-17T09:25:00Z', 'America/Chicago', now), 'Nov 17 03:25');
+  assert.equal(P.whenText('2025-11-17T09:25:00Z', 'America/Chicago', now), 'Nov 17 2025 03:25');
+  assert.equal(P.whenText(Date.parse('2026-11-19T05:30:00Z'), 'America/Chicago', now), 'today 23:30');   // the company's day, not UTC's
+  assert.doesNotMatch(P.whenText('2026-11-18T03:25:00Z', 'America/Chicago', now), /AM|PM/);
+  assert.equal(P.whenText('not a time'), '');
+});
+
+test('model names in plain words, never the raw provider/model id', async () => {
+  const P = await import(path.join(UI, 'plain.js'));
+  assert.equal(P.modelName('deepseek/deepseek-flash'), 'DeepSeek Flash');
+  assert.equal(P.modelName('deepseek-flash', 'deepseek'), 'DeepSeek Flash');
+  assert.equal(P.modelName('claude-cli/claude-sonnet-5-5'), 'Claude Sonnet 5.5');
+  assert.equal(P.modelName('MiniMax-M3.1-Flash', 'custom'), 'MiniMax M3.1 Flash');
+  assert.equal(P.runsOn('deepseek', 'deepseek-flash'), 'Runs on DeepSeek');
+  assert.equal(P.providerName('claude-cli'), 'Claude');
 });

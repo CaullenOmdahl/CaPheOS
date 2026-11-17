@@ -1132,7 +1132,7 @@ async function selftest() {
   const C2 = context({ root: T, now: later + 2 * H });
   addManual(C2, 'designer', { by: 'Sam', title: 'Name the brief', rule: 'Name the brief file in every design handoff', instead: 'put its path on the Evidence line', example: 'Evidence: company/work/design/brief.md', evidence: 'test' });
   await RR.ensure({ call: fake, blockFor: bf, log: () => {} });
-  check('ensure adds the house rules and then the corrections block, once', () => { assert.ok(job.prompt.includes(RR.BLOCK)); assert.strictEqual(job.prompt.split(START).length, 2); assert.ok(job.prompt.indexOf(RR.BLOCK) < job.prompt.indexOf(START)); assert.ok(job.prompt.startsWith('You are Robin.')); });
+  check('ensure adds the house rules and then the corrections block, once', () => { assert.ok(job.prompt.includes(RR.rulesBlock())); assert.strictEqual(job.prompt.split(START).length, 2); assert.ok(job.prompt.indexOf(RR.rulesBlock()) < job.prompt.indexOf(START)); assert.ok(job.prompt.startsWith('You are Robin.')); });
   const n1 = posted.length; await RR.ensure({ call: fake, blockFor: bf, log: () => {} });
   check('ensure is idempotent', () => assert.strictEqual(posted.length, n1));
   editManual(context({ root: T, now: later + 3 * H }), 'designer-c6', { by: 'Sam', example: 'Evidence: company/work/design/brief-v3.md' });
@@ -1140,7 +1140,7 @@ async function selftest() {
   check('ensure refreshes a changed block in place', () => { assert.ok(job.prompt.includes('brief-v3.md') && !job.prompt.includes('design/brief.md')); assert.strictEqual(job.prompt.split(START).length, 2); });
   retireManual(context({ root: T, now: later + 4 * H }), 'designer-c6', { by: 'Sam', reason: 'fixed' });
   await RR.ensure({ call: fake, blockFor: bf, log: () => {} });
-  check('ensure removes the block when the person has none, house rules stay', () => { assert.ok(!job.prompt.includes(START) && !job.prompt.includes(END)); assert.ok(job.prompt.endsWith(RR.BLOCK)); });
+  check('ensure removes the block when the person has none, house rules stay', () => { assert.ok(!job.prompt.includes(START) && !job.prompt.includes(END)); assert.ok(job.prompt.endsWith(RR.rulesBlock())); });
 
   // 10. a policy that leaves no room (maxBlockChars 300): a correction that would not be shown is held, and an active
   // one that is not shown collects no recurrences and is never escalated

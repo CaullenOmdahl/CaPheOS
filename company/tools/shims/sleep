@@ -32,8 +32,7 @@ if [ "$total" != "x" ] && awk -v t="$total" -v m="$MAX" 'BEGIN { exit !(t > m) }
   cat >&2 <<EOF
 sleep: refused: \`sleep $*\` waits $(awk -v t="$total" 'BEGIN { if (t >= 1e17) print "forever"; else printf "%d s", t }') inside a run; this station allows at most $MAX s per sleep (company/tools/shims/sleep).
 A waiting run holds your seat, blocks lanes and station restarts, and does no work. Instead:
-  - to act at a later time, record a commitment with a due time and end this run; the commitments duty wakes you then:
-      node company/tools/commitments.js create --title "..." --key <key> --owner <you> --due <ISO time>
+$(if [ -f "$(dirname "$0")/../commitments.js" ]; then printf '%s\n' '  - to act at a later time, record a commitment with a due time and end this run; the commitments duty wakes you then:' '      node company/tools/commitments.js create --title "..." --key <key> --owner <you> --due <ISO time>'; else printf '%s\n' '  - to act at a later time, write what to do and when in a handoff to yourself (company/work/handoffs/, with a **Deadline:** line) and end this run.'; fi)
   - for continuous recording or watching, use a background service: node company/tools/service.js propose ...
   - to wait for a process you started, wait in steps of at most 120 s (shell_bg_wait timeoutMs 120000) and check between.
 EOF

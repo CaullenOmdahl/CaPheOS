@@ -4,11 +4,12 @@
 // Deep links: #/chat/<seat id> or agent:<seat id>; ?brief=charter sends the charter brief once; a message Today handed
 // over (sessionStorage capheos.chatSend) is sent on arrival.
 import { composerKeys, COMPOSER_HINT } from '../keys.js';
-import { h, fill, Button, errLine, empty, rel, hhmm, Tag, humanError } from '../ui.js';
+import { h, fill, Button, errLine, empty, rel, when, Tag, humanError } from '../ui.js';
 import { api, post } from '../api.js';
 import * as events from '../events.js';
 import { liveChat } from '../chat.js';
 import { mdBlock } from '../md.js';
+import { personName, runsOn } from '../plain.js';
 
 const ss = { get: k => { try { return sessionStorage.getItem(k); } catch (_) { return null; } }, del: k => { try { sessionStorage.removeItem(k); } catch (_) {} } };
 
@@ -32,14 +33,14 @@ export async function render(root, ctx) {
   fill(root, aside, chat);
 
   let seats = [], groups = [];
-  const memberNames = g => (g.members || []).map(id => (seats.find(s => s.id === id) || {}).name || id).join(', ');
+  const memberNames = g => (g.members || []).map(id => personName((seats.find(s => s.id === id) || {}).name) || id).join(', ');
   async function loadList() {
     fill(listErr);
     const rows = [];
     try { const c = await api('/crew'); seats = c.seats || []; } catch (e) { listErr.appendChild(errLine(e, 'Crew')); }
     try { const g = await api('/station/groups'); groups = ((g.result || g).groups || []); } catch (e) { groups = []; listErr.appendChild(errLine(e, 'Group chats')); }
     rows.push(['owner', 'Owner channel', '', 'For when you are away']);
-    for (const s of seats) rows.push(['agent:' + s.id, s.name || s.id, '', s.title || '']);
+    for (const s of seats) rows.push(['agent:' + s.id, personName(s.name) || s.id, '', s.title || '']);
     for (const g of groups) rows.push(['group:' + g.id, g.title || 'Group chat', g.updatedAt ? rel(g.updatedAt) : '', (g.members || []).length + ' members' + (g.busy ? ' · busy' : '')]);
     fill(listHost, rows.map(([id, w, at, last]) => h('a', { href: '#/chat/' + encodeURIComponent(id), class: 'thread', 'aria-current': id === sel ? 'page' : 'false' },
       h('span', { class: 'between-c' }, h('span', { class: 'label strong' }, w), h('span', { class: 'mono-s muted' }, at)),
@@ -67,9 +68,9 @@ export async function render(root, ctx) {
   let title = 'Owner channel', sub = 'Messages the company reads on its next check', placeholder = 'Write to the company…', actions = [];
   if (kind === 'agent') {
     const s = seats.find(x => x.id === cid) || { name: cid };
-    title = s.name || cid; placeholder = 'Write to ' + title + '…';
+    title = personName(s.name) || cid; placeholder = 'Write to ' + title + '…';
     sub = s.title || 'Live chat';
-    actions = [Button('Reload', { variant: 'ghost', size: 'sm', onClick: () => live && live.load() })];
+    actions = [Button('Refresh conversation', { variant: 'ghost', size: 'sm', aria: 'Load the conversation again', onClick: () => live && live.load() })];
   } else if (kind === 'group') {
     const g = groups.find(x => x.id === cid) || {};
     title = g.title || 'Group chat'; sub = memberNames(g) || 'Group chat'; placeholder = 'Write to the group…';
@@ -80,7 +81,7 @@ export async function render(root, ctx) {
   const liveHost = h('div', { class: 'chat-live' });
   if (kind === 'agent') {
     fill(chat, h('header', { class: 'chat-head' }, h('div', { class: 'stack-4' }, headTitle, headSub), h('div', { class: 'row-8' }, actions)), charterStrip, liveHost);
-    live = liveChat(liveHost, { agentId: cid, app, tz, onUpdate: inf => { headSub.textContent = [inf.agent.title, inf.provider ? inf.provider + ' · ' + inf.model : null].filter(Boolean).join(' · ') || 'Live chat'; } });
+    live = liveChat(liveHost, { agentId: cid, app, tz, onUpdate: inf => { headSub.textContent = [inf.agent.title, runsOn(inf.provider, inf.model) || null].filter(Boolean).join(' · ') || 'Live chat'; headSub.title = inf.provider ? inf.provider + ' · ' + inf.model : ''; } });
     if (draft) live.ta.value = draft;
   } else {
     fill(chat,
@@ -123,7 +124,7 @@ export async function render(root, ctx) {
         const d = await api('/station/groups?id=' + encodeURIComponent(cid));
         const g = d.result || d;
         const msgs = g.messages || [];
-        fill(body, msgs.length ? msgs.map(m => m.author === 'owner' || m.author === 'user' || m.author === 'you' ? bubble('me', m.content) : bubble('them', String(m.content || ''), (m.author || '') + (m.at ? ' · ' + hhmm(m.at, tz) : ''))) : empty('No messages in this group yet.'));
+        fill(body, msgs.length ? msgs.map(m => m.author === 'owner' || m.author === 'user' || m.author === 'you' ? bubble('me', m.content) : bubble('them', String(m.content || ''), personName(m.author || '') + (m.at ? ' · ' + when(m.at, tz) : ''))) : empty('No messages in this group yet.'));
       }
       scrollEnd();
     } catch (e) { fill(body); fill(bodyErr, errLine(e, 'Conversation')); }
@@ -138,11 +139,11 @@ export async function render(root, ctx) {
     fill(chanEl, ch.problems && ch.problems.length ? h('div', { class: 'alertbox', role: 'alert', style: 'margin-top:16px' },
       h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, 'Messages here are not being picked up: ' + ch.problems[0].msg + '.'),
         h('span', { class: 'body-s' }, 'Fix: ' + ch.problems[0].fix), ch.problems.length > 1 ? h('span', { class: 'caption muted' }, 'Also: ' + ch.problems.slice(1).map(p => p.msg).join('; ') + '.') : null),
-      h('div', { class: 'row-8' }, ch.problems[0].link ? h('a', { href: ch.problems[0].link, class: 'btn btn-secondary btn-sm' }, 'Fix it') : null, h('a', { href: '#/chat/agent:' + ceoId, class: 'btn btn-primary btn-sm' }, 'Talk to ' + ((ch.ceo && ch.ceo.name) || 'the Founder') + ' live'))) : null);
+      h('div', { class: 'row-8' }, ch.problems[0].link ? h('a', { href: ch.problems[0].link, class: 'btn btn-secondary btn-sm' }, 'Fix it') : null, h('a', { href: '#/chat/agent:' + ceoId, class: 'btn btn-primary btn-sm' }, 'Talk to ' + (personName(ch.ceo && ch.ceo.name) || 'the Founder') + ' live'))) : null);
     const threaded = new Set();
     const byId = {}; for (const m of msgs) byId[m.id] = m;
     for (const m of msgs) if (m.dir === 'in' && m.state && m.state.replies) for (const r of m.state.replies) threaded.add(r);
-    const reply = m => h('div', { class: 'stack-4 msg-them-wrap' }, mdBlock(m.text || m.body || '', 'msg-them'), h('span', { class: 'msg-meta' }, (m.from || 'Company') + ' · ' + hhmm(m.at, tz)));
+    const reply = m => h('div', { class: 'stack-4 msg-them-wrap' }, mdBlock(m.text || m.body || '', 'msg-them'), h('span', { class: 'msg-meta' }, (personName(m.from) || 'Company') + ' · ' + when(m.at, tz)));
     const rows = [];
     for (const m of msgs) {
       if (m.dir === 'out') { if (!threaded.has(m.id)) rows.push(reply(m)); continue; }
@@ -150,7 +151,7 @@ export async function render(root, ctx) {
       const [label, tone] = STATE_TAG[st.status] || STATE_TAG.waiting;
       rows.push(h('div', { class: 'stack-6 owner-msg', 'data-state': st.status, style: 'align-self:flex-end;align-items:flex-end' },
         h('div', { class: 'msg-me' }, m.text),
-        h('span', { class: 'row-8 msg-meta', style: 'align-items:center;justify-content:flex-end;flex-wrap:wrap' }, (m.from || 'You') + ' · ' + hhmm(m.at, tz), Tag(label, { variant: 'status', status: tone })),
+        h('span', { class: 'row-8 msg-meta', style: 'align-items:center;justify-content:flex-end;flex-wrap:wrap' }, (personName(m.from) || 'You') + ' · ' + when(m.at, tz), Tag(label, { variant: 'status', status: tone })),
         h('span', { class: 'caption ' + (st.status === 'stuck' ? 'danger' : 'muted'), style: 'text-align:right;max-width:520px' }, st.text + (st.fix ? '. Fix: ' + st.fix : '')),
         st.status === 'stuck' && st.link ? h('a', { href: st.link, class: 'caption' }, 'Fix it →') : null));
       for (const rid of (st.replies || [])) if (byId[rid]) rows.push(h('div', { class: 'thread-reply' }, reply(byId[rid])));
@@ -191,7 +192,7 @@ export async function render(root, ctx) {
 
   await loadList();
   // header text may improve once the list is known
-  if (kind === 'agent') { const s = seats.find(x => x.id === cid); if (s) headTitle.textContent = s.name || cid; }
+  if (kind === 'agent') { const s = seats.find(x => x.id === cid); if (s) headTitle.textContent = personName(s.name) || cid; }
   if (kind === 'group') { const g = groups.find(x => x.id === cid); if (g) { headTitle.textContent = g.title || 'Group chat'; headSub.textContent = memberNames(g); } }
   if (kind === 'agent') {
     await live.load();

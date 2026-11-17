@@ -62,7 +62,7 @@ async function until(fn, ms) { const end = Date.now() + ms; let v; while (Date.n
   errors.length = 0;
   await js(`[...document.querySelectorAll('[role=tab]')].find(b => b.textContent === 'Model').click(); 1`);
   const mp = await until(() => js(`(() => { const t = (document.getElementById('main') || {}).innerText || ''; const i = t.toLowerCase().indexOf('running now'); return i >= 0 && /Fallback chain/i.test(t) && document.querySelector('select[aria-label="Set primary provider"]') ? t.slice(i, i + 200) : null; })()`), 8000);
-  check('Crew > seat > Model shows what it runs now and why, a primary picker and the chain editor', !!mp && /Because/.test(mp) && !errors.length, { mp, errors });
+  check('Crew > seat > Model shows what it runs now (a why only when unusual), a primary picker and the chain editor', !!mp && /\bOn \S/.test(mp) && !errors.length, { mp, errors });
   await shot('crew-model');
   await js('location.hash = "/settings/models"; 1');
   const ct = await until(() => js(`(() => { const s = document.getElementById('set-chains'); return s && s.querySelector('table') ? s.innerText.slice(0, 300) : null; })()`), 8000);

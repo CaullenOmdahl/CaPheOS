@@ -1,11 +1,14 @@
 // Crew > seat > Model (console/models.js endpoints): the seat's primary model, its ordered fallback chain, what it runs
 // on right now and why, and its history of moves. Also Settings › Models and subscriptions' table of every seat's chain.
-import { h, fill, Button, Tag, errLine, empty, table, Details, humanError } from '../ui.js';
+import { h, fill, Button, Tag, errLine, empty, table, Details, humanError, when } from '../ui.js';
+import { modelName, personName } from '../plain.js';
 import { api, post } from '../api.js';
 
 const key = e => e.provider + '/' + e.model;
-const lab = e => key(e) + (e.effort ? ' · ' + e.effort : '');
-function when(t) { const d = new Date(t); return isNaN(d) ? '' : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+// plain names for the owner ("DeepSeek Flash", "Claude Sonnet 5.5"); the raw provider/model ids go under Details
+const nice = e => e ? modelName(e.model, e.provider) : '';
+const lab = e => nice(e) + (e.effort ? ' · ' + e.effort + ' effort' : '');
+const niceKey = k => { const m = /^([^/]+)\/(.+?)(?: \((\w+)\))?$/.exec(String(k || '')); return m ? modelName(m[2], m[1]) + (m[3] ? ' · ' + m[3] + ' effort' : '') : String(k || ''); };
 
 export function modelPanel(host, seatId) {
   let seat = null, providers = [], catalogs = {}, draft = null, msg = null, busy = false;
@@ -26,7 +29,7 @@ export function modelPanel(host, seatId) {
     busy = true; msg = null; draw();
     try {
       const r = await post('/models/seat/' + encodeURIComponent(seatId) + '/chain', { chain: chain.map(e => Object.assign({ provider: e.provider, model: e.model }, e.effort ? { effort: e.effort } : {})) });
-      msg = { ok: true, text: what + ' saved: ' + (r.chain || []).join(' > ') + (r.applied && r.applied.kept ? ' (it stays on ' + r.applied.kept + ')' : r.applied && r.applied.roster ? ' (applied: roster ' + r.applied.roster + ', ' + (r.applied.routines || []).length + ' routine(s))' : '') };
+      msg = { ok: true, text: what + ' saved: ' + (r.chain || []).map(niceKey).join(', then ') + (r.applied && r.applied.kept ? ' (it stays on ' + niceKey(r.applied.kept) + ')' : r.applied && r.applied.roster ? ' (applied: roster ' + r.applied.roster + ', ' + (r.applied.routines || []).length + ' routine(s))' : '') };
       busy = false; await load(); return;
     } catch (e) { msg = { ok: false, text: 'Not saved: ' + humanError(e) }; }
     busy = false; draw();
@@ -56,7 +59,7 @@ export function modelPanel(host, seatId) {
   function draw() {
     if (!seat) { fill(host, empty('No such seat.')); return; }
     const now = seat.now || {};
-    const runsOn = now.model ? key(now.model) : 'unknown';
+    const runsOn = now.model ? nice(now.model) : 'unknown';
     const rows = draft.map((e, i) => {
       const ev = seat.chain.find(x => key(x) === key(e)) || {};
       const conn = connected(e.provider);
@@ -77,7 +80,7 @@ export function modelPanel(host, seatId) {
         h('div', { class: 'card', style: 'padding:16px;gap:6px' },
           h('span', { class: 'eyebrow-t' }, 'Running now'),
           h('span', { class: 'label strong' }, 'On ' + runsOn + (now.running ? ' (in a run)' : '')),
-          h('span', { class: 'body-s muted' }, 'Because ' + (now.why || 'no reason on record')),
+          now.plain ? h('span', { class: 'body-s muted' }, now.plain) : null,
           seat.hasChain ? null : h('span', { class: 'caption muted' }, 'This seat has no chain of its own yet: saving one below gives it a primary and fallbacks, and the pacer stops routing it.')),
         h('section', { class: 'stack-8' }, h('h3', { class: 'h4' }, 'Primary model'),
           picker(e => save([e].concat(draft.filter(x => key(x) !== key(e))), 'Primary'), draft[0], 'Set primary')),
@@ -87,7 +90,7 @@ export function modelPanel(host, seatId) {
           picker(e => save(draft.filter(x => key(x) !== key(e)).concat([e]), 'Fallback'), null, 'Add fallback')),
         msg ? h('p', { class: msg.ok ? 'caption' : 'err-line', role: 'status' }, msg.text) : null,
         h('section', { class: 'stack-8' }, h('h3', { class: 'h4' }, 'History of moves'),
-          hist.length ? table(['When', 'Move', 'From', 'To', 'Why'], hist.map(m => h('tr', null, h('td', null, when(m.at)), h('td', null, m.direction + (m.applied === false ? ' (failed)' : '')), h('td', { class: 'mono' }, m.from || '—'), h('td', { class: 'mono' }, m.to), h('td', null, m.why || ''))), { minWidth: 640 })
+          hist.length ? table(['When', 'Move', 'From', 'To', 'Why'], hist.map(m => h('tr', null, h('td', null, when(m.at)), h('td', null, m.direction + (m.applied === false ? ' (failed)' : '')), h('td', null, m.from ? niceKey(m.from) : '—'), h('td', null, niceKey(m.to)), h('td', null, m.why || ''))), { minWidth: 640 })
             : empty('No moves yet.'))));
   }
   load();
@@ -98,13 +101,18 @@ export async function chainsTable(host) {
   let d; try { d = await api('/models'); } catch (e) { fill(host, errLine(e, 'Seat model chains')); return; }
   const seats = d.seats || [];
   if (!seats.length) { fill(host, empty('No seats.')); return; }
+  const ids = [];
   fill(host, h('div', { class: 'stack-8' },
-    table(['Seat', 'Running now', 'Primary', 'Fallbacks', 'Why'], seats.map(s => h('tr', null,
-      h('td', null, h('a', { href: '#/crew/' + encodeURIComponent(s.id) + '/model', 'aria-label': 'Change ' + s.name + '\'s model' }, s.name)),
-      h('td', { class: 'mono' }, s.now && s.now.model ? key(s.now.model) : '—'),
-      h('td', { class: 'mono' }, s.primary ? lab(s.primary) + (s.primary.ok ? '' : ' (cannot run)') : 'no chain'),
-      h('td', { class: 'mono' }, s.chain.slice(1).map(e => lab(e) + (e.ok ? '' : ' ✕')).join(' > ') || '—'),
-      h('td', { class: 'caption' }, s.now ? s.now.why : ''))), { minWidth: 820 }),
+    table(['Seat', 'Running now', 'Primary', 'Fallbacks', 'Why'], seats.map(s => {
+      const nm = personName(s.name) || s.id, href = '#/crew/' + encodeURIComponent(s.id) + '/model';
+      ids.push([nm, [s.now && s.now.model ? key(s.now.model) : null].concat((s.chain || []).map(key)).filter(Boolean)]);
+      return h('tr', { 'data-seat': s.id },
+        h('td', null, h('a', { href, 'aria-label': 'Change ' + nm + '\'s model' }, nm)),
+        h('td', null, s.now && s.now.model ? nice(s.now.model) : '—'),
+        h('td', null, s.primary ? lab(s.primary) + (s.primary.ok ? '' : ' (cannot run)') : h('span', null, '— ', h('a', { href, class: 'caption set-fallbacks' }, 'Set up fallbacks'))),
+        h('td', null, (s.chain || []).slice(1).map(e => lab(e) + (e.ok ? '' : ' (cannot run)')).join(', then ') || '—'),
+        h('td', { class: 'caption seat-why' }, s.now && s.now.plain ? s.now.plain : ''));
+    }), { minWidth: 600 }),
     d.failover && d.failover.mode === 'shadow' ? h('p', { class: 'caption muted' }, 'Automatic moves are in trial mode: they are recorded, not made.') : null,
-    d.backstop ? Details('Details', h('p', { class: 'caption' }, d.backstop)) : null));
+    Details('Details', h('dl', { class: 'kv' }, ids.map(([n, ks]) => [h('dt', null, n), h('dd', { class: 'mono-s' }, ks.join(' · ') || '—')])), d.backstop ? h('p', { class: 'caption' }, d.backstop) : null)));
 }

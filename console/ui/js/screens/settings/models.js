@@ -1,7 +1,8 @@
 // Settings › Models and subscriptions (#/settings/models[/chains|cutoffs|providers|budget]): every seat's model chain
 // (changed in Crew › seat › Model), the subscription cutoff sliders, the AI providers and the pay-per-token cap (was
 // Usage and models, and Setup's provider and budget steps). API: /api/models, /api/pacer/limits, /api/pacer/limit, /api/setup*.
-import { h, fill, Button, Tag, errLine, empty, Block, humanError } from '../../ui.js';
+import { h, fill, Button, Tag, errLine, empty, Block, humanError, when as whenAt } from '../../ui.js';
+import { personName } from '../../plain.js';
 import { api, post } from '../../api.js';
 import { sliderControl } from '../today.js';
 import { chainsTable } from '../crew-model.js';
@@ -27,7 +28,7 @@ export async function drawCutoffs(el, app) {
   let d;
   try { d = await api('/pacer/limits'); } catch (e) { fill(el, errLine(e, 'Subscription cutoffs')); return; }
   const tz = app && app.company && app.company.timezone;
-  const when = ms => { try { return new Intl.DateTimeFormat('en-GB', { weekday: 'long', hour: '2-digit', minute: '2-digit', timeZone: tz || undefined }).format(new Date(ms)); } catch (_) { return new Date(ms).toLocaleString(); } };
+  const when = ms => whenAt(ms, tz);
   const dd = (k, v) => h('div', null, h('dt', { class: 'caption muted' }, k), h('dd', { class: 'mono strong', style: 'margin:0' }, v));
   const cards = ['claude', 'minimax'].filter(k => d[k]).map(k => {
     const x = d[k]; const fmt = v => v == null ? '—' : (Math.round(v * 10) / 10) + '%';
@@ -40,7 +41,7 @@ export async function drawCutoffs(el, app) {
       try { await post('/pacer/limit', Object.assign({ provider: k, weekStop: stop.get() }, spread ? { useNow: spread.get() } : {})); app.toast(x.name + ' cutoffs saved. They apply on the next dispatcher check.'); drawCutoffs(el, app); }
       catch (e) { err.textContent = 'Not saved: ' + humanError(e); }
     } });
-    const set = x.ownerSet ? 'Last set by ' + x.ownerSet.by + (x.ownerSet.at ? ' on ' + when(Date.parse(x.ownerSet.at)) : '') + '.' : x.companySet ? 'Last set by ' + x.companySet.by + ' (the company decides pacing).' : 'Not set by you yet: the company default applies.';
+    const set = x.ownerSet ? 'Last set by ' + personName(x.ownerSet.by) + (x.ownerSet.at ? ' ' + when(Date.parse(x.ownerSet.at)) : '') + '.' : x.companySet ? 'Last set by ' + personName(x.companySet.by) + ' (the company decides pacing).' : 'Not set by you yet: the company default applies.';
     return h('article', { class: 'card p22 stack-12', 'data-sub': k },
       h('div', { class: 'between-c' }, h('h3', { class: 'h4' }, x.name), Tag(x.open ? 'Open to routines' : 'Paused for routines', { variant: 'status', status: x.open ? 'online' : 'warning' })),
       h('dl', { style: 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0' },
@@ -50,7 +51,7 @@ export async function drawCutoffs(el, app) {
       spread ? h('label', { class: 'label strong', for: 'cut-' + k + '-usenow' }, 'Daily pacing') : h('span', { class: 'caption muted' }, x.name + ' is paced by its own 5-hour window; only the weekly stop applies.'),
       spread ? h('p', { class: 'caption muted' }, 'Spread evenly keeps some for every day of the week; use it now lets today take more.') : null,
       spread ? spread.el : null,
-      h('span', { class: 'caption muted' }, 'Affects: ' + ((x.affected || []).join(', ') || 'no seat right now') + '. ' + set),
+      h('span', { class: 'caption muted' }, 'Affects: ' + ((x.affected || []).map(personName).join(', ') || 'no seat right now') + '. ' + set),
       h('div', { class: 'row-8' }, save), err);
   });
   fill(el, cards.length ? h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:16px' }, cards) : empty('No subscription is paced. Connect one below.'));

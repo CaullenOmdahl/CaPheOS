@@ -218,8 +218,11 @@ dialog.modal::backdrop { background: var(--scrim); }
 .chat-body { flex: 1; display: flex; flex-direction: column; gap: 20px; padding: 32px; max-width: 760px; }
 /* Chat is a rolling window: on desktop the screen is the window's height, the messages scroll inside it, the composer stays at the bottom */
 .chat-scroll { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.chat-scroll > .chat-body { overflow-y: auto; overscroll-behavior: contain; min-height: 0; max-width: none; }
-.chat-scroll > .chat-body > * { max-width: 760px; }
+/* one centred conversation column (~800 px): the owner's bubbles sit at its right edge, the agent's text at its left;
+   the composer and the banner are the same column */
+.chat-scroll > .chat-body { overflow-y: auto; overscroll-behavior: contain; min-height: 0; max-width: none; padding-left: max(32px, calc(50% - 400px)); padding-right: max(32px, calc(50% - 400px)); }
+.chat-scroll > .chat-body > * { max-width: 100%; }
+.chat-live > .composer, .chat-live > .chat-banner { padding-left: max(32px, calc(50% - 400px)); padding-right: max(32px, calc(50% - 400px)); }
 .chat-scroll > .chat-body > .msg-me, .chat-scroll > .chat-body > [style*="align-self:flex-end"] { margin-left: auto; }
 .chat-jump { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); box-shadow: var(--shadow-card, 0 2px 8px rgba(0,0,0,.15)); }
 .chat-earlier { align-self: center; }
@@ -230,7 +233,9 @@ dialog.modal::backdrop { background: var(--scrim); }
   .comms .chat, .comms .chat-live { min-height: 0; }
   /* the owner channel and group chats put their messages straight in .chat: the same rolling window */
   .comms .chat > .chat-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; max-width: none; }
-  .comms .chat > .chat-body > * { max-width: 760px; }
+  .comms .chat > .chat-body { padding-left: max(32px, calc(50% - 400px)); padding-right: max(32px, calc(50% - 400px)); }
+  .comms .chat > .chat-body > * { max-width: 100%; }
+  .comms .chat > .composer { padding-left: max(32px, calc(50% - 400px)); padding-right: max(32px, calc(50% - 400px)); }
 }
 @media (max-width: 860px) { .chat-scroll > .chat-body, .comms .chat > .chat-body { max-height: 65vh; max-height: 65dvh; overflow-y: auto; } }
 .msg-me { align-self: flex-end; max-width: 520px; padding: 14px 18px; border-radius: var(--radius-lg); background: var(--bg-inverse); color: var(--text-on-inverse); font: var(--type-body); white-space: pre-wrap; }
@@ -239,6 +244,7 @@ dialog.modal::backdrop { background: var(--scrim); }
 .composer { display: flex; flex-direction: column; gap: 10px; padding: 20px 32px 28px; border-top: 1px solid var(--border-hairline); }
 .composer .textarea { background: var(--surface-card); font: var(--type-body); padding: 12px 14px; }
 @media (max-width: 600px) { .chat-head, .chat-body, .composer { padding-left: 16px; padding-right: 16px; } .conv-list { padding: 20px 16px; } }
+@media (max-width: 600px) { .chat-scroll > .chat-body, .chat-live > .composer, .chat-live > .chat-banner { padding-left: 16px; padding-right: 16px; } }
 
 /* ---- Crew / Floor / Usage ---- */
 .crew-item { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 14px; padding: 14px 12px; border-bottom: 1px solid var(--border-hairline); border-radius: var(--radius-sm); color: inherit; width: 100%; text-align: left; background: none; border-left: 0; border-right: 0; border-top: 0; cursor: pointer; font: inherit; }
@@ -354,6 +360,10 @@ dl.kv dt { color: var(--text-muted); } dl.kv dd { margin: 0; color: var(--text-s
 .setting-control { flex: 0 1 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; max-width: 100%; }
 .block > .between-c h2 { margin: 0; }
 details.tech > summary { min-height: 32px; display: inline-flex; align-items: center; }
+/* a disclosure always shows that it opens (a bare "Details" read as an orphan label): a turning chevron */
+details.tech > summary::before, .gate .q-details > summary::before { content: ''; width: 0; height: 0; margin-right: 6px; border-left: 5px solid currentColor; border-top: 4px solid transparent; border-bottom: 4px solid transparent; transition: transform .12s; flex: none; }
+details.tech[open] > summary::before, .gate .q-details[open] > summary::before { transform: rotate(90deg); }
+details.tech > summary::-webkit-details-marker, .gate .q-details > summary::-webkit-details-marker { display: none; }
 details.tech .tech-body { padding: 6px 0 2px; overflow-wrap: anywhere; }
 .err-block { margin: 0; }
 @media (max-width: 600px) { .main { padding-left: 16px; padding-right: 16px; } .setting { padding: 14px 16px; } }
@@ -365,3 +375,10 @@ details.tech .tech-body { padding: 6px 0 2px; overflow-wrap: anywhere; }
 .keys-table td { padding: 6px 8px; font: var(--type-body); }
 .keys-table td:first-child { white-space: nowrap; }
 kbd { display: inline-block; min-width: 1.6em; padding: 2px 6px; border: 1px solid var(--border-default); border-bottom-width: 2px; border-radius: var(--radius-sm); font: 500 12px/1.4 var(--font-mono); text-align: center; background: var(--bg-page); color: var(--text-strong); }
+
+/* walk2: crew/work/models */
+.quest-board { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+.quest-col { flex: 1 1 280px; min-width: 0; }
+.quest-col.empty-col { flex: 0 0 auto; min-width: 120px; opacity: .8; }
+.quest-title { white-space: normal; overflow-wrap: break-word; hyphens: auto; }
+@media (max-width: 720px) { .quest-col, .quest-col.empty-col { flex: 1 1 100%; } }

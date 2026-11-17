@@ -9,7 +9,7 @@ import { mdBlock } from '../md.js';
 import { personName } from '../plain.js';
 
 export function requestCard(q, fresh, d) {
-  const { fieldControl, post, app, reload, picks, freshIds, seat, questionText, parseQuestion, looksLikeKeyText, snoozeUntil, whenLabel, tz, moreMenu, cardMeta, cardDetails } = d;
+  const { fieldControl, post, app, reload, picks, freshIds, seat, questionText, parseQuestion, looksLikeKeyText, snoozeUntil, whenLabel, tz, moreMenu, cardMeta, cardDetails, approveSays, leadLine } = d;
   const p = parseQuestion(q); const qt = questionText(q);
   const mine = picks[q.id] = picks[q.id] || {};
   const errEl = h('p', { class: 'err-line', role: 'status' });
@@ -90,8 +90,10 @@ export function requestCard(q, fresh, d) {
     for (const a of acts) s.buttons[a.id] = Button(a.label, { variant: total === 1 && a.primary ? 'primary' : 'secondary', size: 'sm', onClick: () => {
       if (total === 1) { mine[qp.id] = a.id; return send(false); }
       mine[qp.id] = mine[qp.id] === a.id ? undefined : a.id; if (!mine[qp.id]) delete mine[qp.id]; update(); } });
+    const says = approveSays(q, qp.form); if (says && indent) says.setAttribute('style', indent);
     s.el = h('section', { class: 'q-part' + (whole(qp) ? ' q-whole' : ''), 'data-part': qp.id, 'aria-label': label }, head,
       s.controls.length ? h('div', { class: 'stack-8 q-form', style: indent }, s.controls.map(c => c.el)) : null,
+      says,
       acts.length ? h('div', { class: 'row-8', style: indent }, acts.map(a => s.buttons[a.id])) : null);
     subs.push(s);
   });
@@ -115,11 +117,16 @@ export function requestCard(q, fresh, d) {
   });
   const openText = !!(q.inferred || q.followUp);
   const several = total > 1 && numbered;
+  // several numbered questions: a one-line lead (the asker's first sentence), each question carries its own text, and
+  // the rest of the asker's message waits under "More detail" instead of repeating every question in one paragraph
+  const lead = several && !openText ? leadLine(qt.message, 160) : null;
+  const restOfMessage = lead ? qt.message.replace(/\s+/g, ' ').trim().slice(lead.replace(/…$/, '').length).trim() : '';
+  const moreText = [lead && restOfMessage ? (lead.endsWith('…') ? qt.message : restOfMessage) : '', qt.details].filter(Boolean).join('\n\n');
   const card = h('article', { class: 'gate request' + (fresh ? ' fresh' : ''), 'data-id': q.id, 'data-kind': 'multi', 'aria-labelledby': 'g-' + q.id },
     cardMeta(q, p.cat, fresh, several ? Tag(num + ' questions', { variant: 'soft' }) : null),
     q.followUp ? h('p', { class: 'q-followup strong', role: 'note', style: 'border-left:3px solid var(--status-warning);padding-left:10px' }, q.followUp.note) : null,
-    h('div', { id: 'g-' + q.id, class: 'q-message' }, mdBlock(qt.message, 'body q-msg')),
-    qt.details ? h('details', { class: 'q-details', open: openText }, h('summary', { class: 'caption muted' }, openText ? 'The full request' : 'More detail'), mdBlock(qt.details, 'body-s q-body')) : null,
+    h('div', { id: 'g-' + q.id, class: 'q-message' + (lead ? ' q-lead' : '') }, mdBlock(lead || qt.message, 'body q-msg')),
+    (lead ? moreText : qt.details) ? h('details', { class: 'q-details', open: openText }, h('summary', { class: 'caption muted' }, openText ? 'The full request' : 'More detail'), mdBlock(lead ? moreText : qt.details, 'body-s q-body')) : null,
     h('ol', { class: 'plain stack-12 q-parts' + (numbered ? ' numbered' : '') }, subs.map(s => h('li', null, s.el))),
     total > 1 ? progress : null,
     replyBox,

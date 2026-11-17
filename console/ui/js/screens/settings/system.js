@@ -1,7 +1,7 @@
 // Settings › System (#/settings/system[/health|certification|backups|services|halt|map]): health and diagnostics, certification,
 // backups, the crew's background services (company/tools/service.js), the two ways to stop the company, and "Where did it
 // go?" (the old feature map, was #/map and System).
-import { h, fill, Button, Tag, errLine, table, Details, Block, humanError, rel, statusOf } from '../../ui.js';
+import { h, fill, Button, Tag, errLine, table, Details, Block, humanError, rel, statusOf, when } from '../../ui.js';
 import { api, post } from '../../api.js';
 import * as events from '../../events.js';
 import { CHECK_NAMES } from '../setup.js';
@@ -57,7 +57,7 @@ export async function render(host, ctx) {
       try { const r = await post('/onboarding/certify'); app.toast(r.certified ? 'Certified.' : 'Not certified yet: see what is left.'); load(); } catch (e) { err.textContent = humanError(e); } finally { runB.disabled = false; }
     } });
     fill(cert,
-      h('div', { class: 'between-c', style: 'flex-wrap:wrap' }, h('p', { class: 'body-s' }, d.certified ? 'Certified' + (d.certifiedAt ? ' on ' + new Date(d.certifiedAt).toLocaleDateString() : '') + '. ' + (d.lastCertify ? 'Last checked ' + rel(d.lastCertify) + '.' : '') : 'Not certified yet: ' + failed.length + ' check(s) still failing.'),
+      h('div', { class: 'between-c', style: 'flex-wrap:wrap' }, h('p', { class: 'body-s' }, d.certified ? 'Certified' + (d.certifiedAt ? ' ' + when(d.certifiedAt) : '') + '. ' + (d.lastCertify ? 'Last checked ' + rel(d.lastCertify) + '.' : '') : 'Not certified yet: ' + failed.length + ' check(s) still failing.'),
         Tag(d.certified ? 'Certified' : 'Not certified', { variant: 'status', status: d.certified ? 'online' : 'warning' })),
       failed.length ? h('ul', { class: 'plain' }, failed.map(c => h('li', { class: 'sys-row' }, h('span', { class: 'strong' }, CHECK_NAMES[c.id] || c.what || c.id), Tag('Failing', { variant: 'status', status: 'danger' })))) : null,
       h('div', { class: 'row-8' }, runB, h('a', { href: '#/settings/company/certify', class: 'btn btn-ghost btn-sm' }, 'Fix what is left')), err,
