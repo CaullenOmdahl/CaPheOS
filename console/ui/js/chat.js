@@ -3,6 +3,7 @@
 // arrives token by token under a visible "thinking… / writing… / using a tool" state, tool steps are listed compactly,
 // Stop cancels the run, approvals the run asks for are answered inline, and every failure says what happened and how to
 // fix it. Never silence.
+import { composerKeys, COMPOSER_HINT } from './keys.js';
 import { h, fill, Button, errLine, empty, hhmm, humanError } from './ui.js';
 import { api, post } from './api.js';
 import { md, mdBlock } from './md.js';
@@ -52,9 +53,9 @@ export function liveChat(host, opts) {
   const stopBtn = Button('Stop', { variant: 'secondary', size: 'sm', onClick: () => stop() });
   stopBtn.hidden = true;
   const form = h('form', { 'aria-label': 'Message', class: 'composer', onsubmit: e => { e.preventDefault(); send(ta.value); } },
-    h('label', { for: 'msg', class: 'caption muted' }, 'Live chat: the reply streams in here'),
+    h('label', { for: 'msg', class: 'caption muted' }, 'Live chat: the reply streams in here · ' + COMPOSER_HINT),
     ta, h('div', { class: 'between-c', style: 'flex-wrap:wrap;gap:8px' }, h('span', { class: 'row-8', style: 'align-items:center' }, stateEl, sendErr), h('span', { class: 'row-8' }, stopBtn, sendBtn)));
-  ta.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(ta.value); } });
+  composerKeys(ta, () => send(ta.value), () => { if (busy) stop(); });
   const bodyWrap = h('div', { class: 'chat-scroll' }, body, jump);
   fill(host, banner, bodyWrap, form);
 

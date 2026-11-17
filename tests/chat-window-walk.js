@@ -35,5 +35,21 @@ async function waitFor(fn, ms) { const end = Date.now() + ms; for (;;) { try { c
   const n = await ev('(()=>{const b=document.querySelector(".chat-body");const first=b.children[1];const top0=first.getBoundingClientRect().top;b.scrollTop=0;b.dispatchEvent(new Event("scroll"));return {items:b.children.length,shift:Math.abs(first.getBoundingClientRect().top-top0),scrollTop:b.scrollTop}})()');
   t('scrolling to the top loads 40 earlier messages', n && n.items === 81, n);
   t('and keeps the reader at the same message', n && n.scrollTop > 1000, n);
+  // keyboard: Enter adds a line, Shift+Enter sends; ? shows the shortcuts; g then t goes to Today
+  const key = async (key, code, mods, text) => { await cmd('Input.dispatchKeyEvent', { type: 'keyDown', key, code, modifiers: mods || 0, text, windowsVirtualKeyCode: key === 'Enter' ? 13 : 0 }); await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key, code, modifiers: mods || 0 }); };
+  await ev('(()=>{const t=document.getElementById("msg");t.focus();t.value="hello";return 1})()');
+  await key('Enter', 'Enter', 0, '\r');
+  const afterEnter = await ev('document.getElementById("msg").value');
+  t('Enter adds a new line in the message box', /^hello\n?$/.test(afterEnter) && afterEnter !== '' , afterEnter);
+  const before = await ev('document.querySelectorAll(".chat-body .msg-me").length');
+  await key('Enter', 'Enter', 8, '\r');   // 8 = Shift
+  const sent = await waitFor(async () => (await ev('document.querySelectorAll(".chat-body .msg-me").length')) > before, 5000);
+  t('Shift+Enter sends the message', !!sent, { before });
+  await ev('document.activeElement.blur()');
+  await key('?', 'Slash', 8, '?');
+  t('? shows the keyboard shortcuts', await waitFor(() => ev('!!document.querySelector("dialog.keys-dialog[open]")'), 3000));
+  await ev('document.querySelector("dialog.keys-dialog").close()');
+  await key('g', 'KeyG', 0, 'g'); await key('t', 'KeyT', 0, 't');
+  t('g then t goes to Today', await waitFor(() => ev('location.hash === "#/today"'), 3000));
   ws.close(); console.log(fails ? 'CHAT WINDOW WALK: FAIL' : 'CHAT WINDOW WALK: PASS'); done(fails ? 1 : 0);
 })().catch(e => { console.log('FAIL ' + e.message); done(1); });

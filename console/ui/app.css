@@ -333,3 +333,11 @@ details.tech > summary { min-height: 32px; display: inline-flex; align-items: ce
 details.tech .tech-body { padding: 6px 0 2px; overflow-wrap: anywhere; }
 .err-block { margin: 0; }
 @media (max-width: 600px) { .main { padding-left: 16px; padding-right: 16px; } .setting { padding: 14px 16px; } }
+
+/* ---- keyboard shortcuts (js/keys.js) ---- */
+.keys-dialog { border: 1px solid var(--border-hairline); border-radius: var(--radius-lg); background: var(--surface-card); color: var(--text-body); padding: 24px; max-width: min(420px, calc(100vw - 32px)); }
+.keys-dialog::backdrop { background: rgba(0,0,0,.35); }
+.keys-table { width: 100%; border-collapse: collapse; margin: 12px 0 16px; }
+.keys-table td { padding: 6px 8px; font: var(--type-body); }
+.keys-table td:first-child { white-space: nowrap; }
+kbd { display: inline-block; min-width: 1.6em; padding: 2px 6px; border: 1px solid var(--border-default); border-bottom-width: 2px; border-radius: var(--radius-sm); font: 500 12px/1.4 var(--font-mono); text-align: center; background: var(--bg-page); color: var(--text-strong); }

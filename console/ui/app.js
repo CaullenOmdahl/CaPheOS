@@ -2,6 +2,7 @@
 import { h, fill, Logo, Tag, Button, rel, isSetupQuestion } from './js/ui.js';
 import { api } from './js/api.js';
 import * as events from './js/events.js';
+import { globalKeys } from './js/keys.js';
 import { ALIASES, redirect } from './js/routes.js';
 
 const SCREENS = {
@@ -194,6 +195,7 @@ async function boot() {
   events.on('panels', loadCompanyNav); loadCompanyNav();
   refreshSidebar();
   window.addEventListener('hashchange', route);
+  globalKeys();
   route();
 }
 boot();

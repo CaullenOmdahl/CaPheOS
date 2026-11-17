@@ -3,6 +3,7 @@
 // message shows what it is waiting on (docs/CONSOLE-API.md "Owner channel"), then "read", then the reply under it.
 // Deep links: #/chat/<seat id> or agent:<seat id>; ?brief=charter sends the charter brief once; a message Today handed
 // over (sessionStorage capheos.chatSend) is sent on arrival.
+import { composerKeys, COMPOSER_HINT } from '../keys.js';
 import { h, fill, Button, errLine, empty, rel, hhmm, Tag, humanError } from '../ui.js';
 import { api, post } from '../api.js';
 import * as events from '../events.js';
@@ -86,10 +87,10 @@ export async function render(root, ctx) {
       h('header', { class: 'chat-head' }, h('div', { class: 'stack-4' }, headTitle, headSub), h('div', { class: 'row-8' }, actions)),
       confirmHost, chanEl, bodyErr, body,
       h('form', { 'aria-label': 'Message', class: 'composer', onsubmit: e => { e.preventDefault(); send(); } },
-        h('label', { for: 'msg', class: 'caption muted' }, kind === 'owner' ? 'Message to the company for when you are away (the CEO reads it on its next check). To talk now, open a crew member on the left.' : 'Message'),
+        h('label', { for: 'msg', class: 'caption muted' }, kind === 'owner' ? 'Message to the company for when you are away (the CEO reads it on its next check). To talk now, open a crew member on the left. ' + COMPOSER_HINT : 'Message · ' + COMPOSER_HINT),
         (ta.placeholder = placeholder, ta),
         h('div', { class: 'between-c', style: 'flex-wrap:wrap' }, sendErr, Button('Send', { variant: 'primary', type: 'submit' }))));
-    ta.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } });
+    composerKeys(ta, () => send());
   }
   // the charter brief: a strip that says how far the charter is, flipping to done when the file has no blanks
   async function drawCharterStrip() {
