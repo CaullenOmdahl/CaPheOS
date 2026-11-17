@@ -1404,3 +1404,26 @@ test('the owner clears a refusal block: owner only, recorded (who, when, why), t
   assert.equal(prov(), 'claude-cli', h.lines.slice(-4).join('\n'));
   assert.ok(h.lines.some(l => /the owner cleared the refusal block/.test(l)), h.lines.join('\n'));
 });
+
+/* ---- the DeepSeek balance: the owner's amount, the pacer's yes/no (owner ruling 2026-11-18) ---- */
+test('DeepSeek balance: the amounts go to the owner\'s state only (0600, each currency apart); the low-balance notice fires once, before a 402', async () => {
+  const jobs = crewJobs();
+  const fx = liveFixture({ feedPct: 10 });
+  const told = []; let bal = [{ currency: 'USD', total_balance: '40.00', granted_balance: '0.00', topped_up_balance: '40.00' }, { currency: 'CNY', total_balance: '120.00' }];
+  const h = make(fx, station(jobs), { extra: { fetchDeepSeek: async () => ({ ok: true, available: true, balances: bal }), notifyOwner: t => told.push(t) } });
+  let r = await measurePlan(h, jobs); h.p.saveState && h.p.saveState(r.s);
+  const f = path.join(fx.root, 'company', 'state', 'provider-balance.json');
+  const pb = JSON.parse(fs.readFileSync(f, 'utf8')).deepseek;
+  assert.equal(fs.statSync(f).mode & 0o777, 0o600);
+  assert.deepEqual(pb.balances.map(b => b.currency + ' ' + b.total), ['USD 40', 'CNY 120'], 'kept per currency, never summed');
+  assert.equal(told.length, 0, 'no notice while above the line');
+  const nothere = s => !/40\.00|120\.00|balance_infos|total_balance|"balances"|"total"/.test(s);
+  assert.ok(nothere(JSON.stringify(r.s)) && nothere(JSON.stringify(r.m)) && nothere(h.lines.join('\n')), 'no amount in the pacer\'s state, its measure or its log');
+  bal = [{ currency: 'USD', total_balance: '1.20' }, { currency: 'CNY', total_balance: '120.00' }];
+  h.clock.t += 11 * 60e3; r = await measurePlan(h, jobs);
+  assert.equal(told.length, 1, 'the drop below the low line tells the owner');
+  assert.ok(!/1\.20|\$\d/.test(told[0]) && /DeepSeek's prepaid credit is running low/.test(told[0]), 'with no amount in the notice: ' + told[0]);
+  assert.equal(r.m.deepseek.open, true, 'calls are still possible: the notice comes before the 402s');
+  h.clock.t += 11 * 60e3; await measurePlan(h, jobs);
+  assert.equal(told.length, 1, 'once per drop, not every poll');
+});

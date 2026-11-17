@@ -186,3 +186,17 @@ mock station): the 16-run bypass reproduced and gone (24 h of station ticks star
 `lanes.js`; the same `admit()` answer for a blocking seat), dispatcher outage (one top-priority alert, zero work runs),
 drift (both numbers named; apply fixes it), reversibility (back to `station`: routines, schedules and old behaviour
 intact; idempotent both ways). Selftests: `budget.js`, `budget-migrate.js` (the dry run writes nothing), `watchdog.js`.
+
+## Plans and prepaid credit (owner ruling 2026-11-18)
+
+- **Plan identity and price**: `company/work/finance/subscriptions.json` (default empty:
+  `company/defaults/work/finance/subscriptions.json`): each plan's provider, name, seats, price, currency, cycle, meter
+  and windows. The limits stay in `pacing-policy.json` and `pacer.js`. Read by the meeting's cost line and Spend ›
+  Plans and prepaid credit (`GET /api/finance/plans`).
+- **Prepaid balances are the owner's**: the pacer's DeepSeek poll (`/user/balance`, every 10 minutes) keeps only
+  "calls possible: yes/no" in its own state; the amounts, per currency as DeepSeek reports them (USD or CNY, never
+  summed, never converted), go only to `company/state/provider-balance.json` (0600, `lib/provider-balance.js`), shown on
+  Spend. Never in a log, a report or an agent's prompt. OpenRouter's credit stays with `openrouter-treasury.js`.
+- **Low balance**: below about 3 days of the last 7 days' use (at least $2, or ¥15), the owner is told once per drop
+  (a notice with no amount), before calls fail with HTTP 402; the `provider-balance` duty routes it to the finance seat
+  (again with no amount) while it lasts.

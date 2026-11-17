@@ -1,0 +1,5 @@
+{
+  "_doc": "The plans the company pays for by subscription (owner ruling 2026-11-18: plan identity and price; the limits stay in pacing-policy.json and pacer.js). The owner fills company/work/finance/subscriptions.json (this file is the empty default). Read by the meeting's cost line and the console's Spend view; never by an agent's prompt. Each plan: provider (the station provider id: claude-cli, custom for MiniMax, ...), name (the plan as the vendor sells it), seats, price (a number, per cycle), currency, cycle (monthly | yearly), meter (where its use is read: pacer = the pacer's readings of the plan's windows), windows (the plan's usage windows, e.g. five_hour, seven_day). A metered provider (DeepSeek, OpenRouter) is not a plan: its cost is dollars per run, and its balance is the owner's (company/state/provider-balance.json).",
+  "version": 1,
+  "plans": []
+}

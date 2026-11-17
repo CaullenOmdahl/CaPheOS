@@ -647,3 +647,24 @@ test('Explain for the room: one cheap talk-only turn of that speaker; the term c
   await M.close({});
   assert.ok(kinds(M, 'note').some(x => /Terms used without a definition: SLA \(first used by Sharon\)/.test(x.text)), 'the check runs after the meeting, into the minutes');
 });
+
+test('the cost line is information: dollars for a metered model, the share of a subscription\'s windows (never $0.00), "unknown" for an unmetered one', async () => {
+  W('company/work/finance/dispatch-budget.json', { dailyUsd: 5, unmeteredProviders: ['claude-cli', 'local'] });
+  W('company/work/finance/subscriptions.json', { plans: [{ provider: 'claude-cli', name: 'Claude Max', seats: 1, price: 100, currency: 'USD', cycle: 'monthly', meter: 'pacer', windows: ['five_hour', 'seven_day'] }] });
+  const pst = { history: { claude: [{ at: Date.now() - 1000, usedPct: 40 }] }, last: { claude: { at: Date.now() - 1000, fiveHour: { usedPct: 10 } } } };
+  W('company/state/pacer-state.json', pst);
+  const { M, runner } = fresh({ seats: ['dave', 'sharon', 'phil'], leader: 'dave', models: { sharon: { provider: 'deepseek', model: 'deepseek-flash' }, phil: { provider: 'local', model: 'llama' } } });
+  runner.script({ dave: 'D.', sharon: 'S.', phil: 'P.' });
+  await M.say({ text: 'Cost?' });
+  await new Promise(r => setTimeout(r, 15));
+  pst.history.claude.push({ at: Date.now(), usedPct: 42 }); pst.last.claude.fiveHour.usedPct = 13.5; W('company/state/pacer-state.json', pst);
+  await idle(M);
+  const line = (await M.view()).meeting.costLine;
+  assert.match(line, /^This meeting so far: 3 turns · /);
+  assert.match(line, /Claude \(Claude Max\): 3\.5% of the 5-hour window, 2% of the week/, line);
+  assert.match(line, /DeepSeek under \$0\.01/, line);
+  assert.match(line, /local: unknown/, line);
+  assert.doesNotMatch(line, /Claude[^·]*\$0\.00/, 'never $0.00 for a subscription');
+  assert.ok(!fs.readdirSync(path.join(T, 'company/work/finance')).some(f => /budget-meeting|envelope|estimate/.test(f)), 'no meeting budget or estimate file');
+  fs.unlinkSync(path.join(T, 'company/state/pacer-state.json')); fs.unlinkSync(path.join(T, 'company/work/finance/subscriptions.json')); fs.unlinkSync(path.join(T, 'company/work/finance/dispatch-budget.json'));
+});

@@ -382,8 +382,9 @@ function minimaxFetch(root, url) {
   };
 }
 
-// DeepSeek's balance endpoint answers { is_available, balance_infos: [...] }. Only is_available leaves this function:
-// the amounts never reach state, logs or reports (no agent sees DeepSeek cost figures).
+// DeepSeek's balance endpoint answers { is_available, balance_infos: [...] }. is_available goes to the pacer's state; the
+// amounts (balance_infos, per currency: USD or CNY, never summed) go ONLY to the owner's company/state/provider-balance.json
+// (lib/provider-balance.js, 0600), never to the pacer's state, its log, a report or an agent's prompt.
 function deepseekFetch(root, url) {
   return async () => {
     let key = mm.readSecret(root, 'deepseek-key') || '';
@@ -394,7 +395,7 @@ function deepseekFetch(root, url) {
       const r = await fetch(url, { headers: { Authorization: 'Bearer ' + key, Accept: 'application/json' }, signal: AbortSignal.timeout(10000) });
       let j = null; try { j = JSON.parse(await r.text()); } catch (_) {}
       if (!r.ok || !j || typeof j.is_available !== 'boolean') return { ok: false, error: 'DeepSeek balance check answered HTTP ' + r.status };
-      return { ok: true, available: j.is_available };
+      return { ok: true, available: j.is_available, balances: Array.isArray(j.balance_infos) ? j.balance_infos : [] };
     } catch (e) { return { ok: false, error: scrub((e && e.message) || e).slice(0, 120) }; }
   };
 }
@@ -551,7 +552,11 @@ function makePacer(o) {
     if (allowFetch && !(isNum(st.deepseek.triedAt) && t - st.deepseek.triedAt < pollMs)) {
       st.deepseek.triedAt = t;
       let r; try { r = await fetchDeepSeek(); } catch (e) { r = { ok: false, error: String((e && e.message) || e).slice(0, 120) }; }
-      if (r && r.ok && typeof r.available === 'boolean') { st.deepseek.reading = { at: t, available: r.available }; st.deepseek.error = null; }
+      if (r && r.ok && typeof r.available === 'boolean') {
+        st.deepseek.reading = { at: t, available: r.available }; st.deepseek.error = null;
+        // the amounts: the owner's file only; a drop below the low line tells the owner once (no amount in the notice)
+        if (Array.isArray(r.balances) && !o.readOnly) { try { require('./lib/provider-balance').record('deepseek', { at: t, available: r.available, balances: r.balances }, { root, now: t, notify: o.notifyOwner || (text => { try { require('./lib/governance').notify(text, { root }); } catch (_) {} }) }); } catch (_) {} }
+      }
       else st.deepseek.error = (r && r.error) || 'no answer';
     }
     // the newest credit failure among the routines whose last run was on DeepSeek, and the newest good DeepSeek run

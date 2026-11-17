@@ -464,9 +464,22 @@ module.exports = function meeting(deps) {
   async function oneRun(o) {   // start + wait, for the short talk-only checks (no retry: a refused check is a "no")
     const st = await startRun(o); if (st.error) return { error: st.error };
     active.add(st.runId);
-    try { const r = await runner.wait(st.runId); cost(r); return r; } finally { active.delete(st.runId); }
+    try { const r = await runner.wait(st.runId); cost(r, o.model); return r; } finally { active.delete(st.runId); }
   }
-  function cost(r) { M.cost.turns++; M.cost.usd = Math.round((M.cost.usd + (Number(r && r.usd) || 0)) * 1e6) / 1e6; }
+  /* cost is information, never a gate (no budget, no estimate): turns, and per provider the dollars of a metered model or
+     the share of a subscription's windows since the meeting first used it (lib/subscription-meter.js), else "unknown" */
+  const METER = require(path.join(LIB, 'subscription-meter.js'));
+  function cost(r, model) {
+    M.cost.turns++; M.cost.usd = Math.round((M.cost.usd + (Number(r && r.usd) || 0)) * 1e6) / 1e6;
+    const p = (model && model.provider) || 'unknown';
+    const bp = M.cost.byProvider = M.cost.byProvider || {};
+    if (!bp[p]) { let w = null; try { w = METER.windows(p); } catch (_) {} bp[p] = { turns: 0, usd: 0, start: w }; }
+    bp[p].turns++; bp[p].usd = Math.round((bp[p].usd + (Number(r && r.usd) || 0)) * 1e6) / 1e6;
+  }
+  function costLine() {
+    let l = ''; try { l = METER.line(M.cost.byProvider || {}); } catch (_) {}
+    return 'This meeting so far: ' + M.cost.turns + ' turn' + (M.cost.turns === 1 ? '' : 's') + (l ? ' · ' + l : '');
+  }
 
   /* ---------- the action register (company/tools/lib/meeting-register.js): the meeting's first-class output ----------
      Rows come from the lines their owners write (ACTION / QUESTION / KILL: the speaker owns the row; RULING from the
@@ -787,7 +800,7 @@ module.exports = function meeting(deps) {
       active.add(cur.runId);
       try { res = await runner.wait(cur.runId, ev => runEvent(cur, ev)); } finally { active.delete(cur.runId); }
       if (R.consent && R.consent.runId === cur.runId) consentClear(R, null);
-      cost(res);
+      cost(res, cur.model);
       if (res.refused) {
         const next = cur.attempt === 0 ? REF.nextEntry(cur.seat, cur.model, cur.tried, { root: co.ROOT }) : null;
         try { REF.record({ root: co.ROOT, seat: cur.seat, door: 'meeting', runId: cur.runId, from: cur.model, to: next }); } catch (_) {}
@@ -1119,7 +1132,7 @@ module.exports = function meeting(deps) {
       meeting: { id: M.id, type: M.type, title: M.title, state: M.state, reason: M.reason || null, closedBy: M.closedBy ? nameOf(M.closedBy) : null, closedAt: M.closedAt || null, resumeAfter: M.resumeAfter || null,
         agenda: M.agenda, agendaAt: M.agendaAt, toolsOn: toolsOn(), types: TYPES, speed: std.speed || 'manual', speeds: SPEEDS, effectiveSpeed: effectiveSpeed(), ownerPresent: ownerPresent(),
         startedAt: M.startedAt, opened: !!M.opened, observer: observing(), observeRounds: std.observeRounds, leader: std.leader, leaderSeated: !!leader(),
-        cost: M.cost, minutes: 'company/work/meetings/meeting-' + day() + '.md', excused: M.excused.map(id => ({ id, name: nameOf(id) })) },
+        cost: M.cost, costLine: costLine(), minutes: 'company/work/meetings/meeting-' + day() + '.md', excused: M.excused.map(id => ({ id, name: nameOf(id) })) },
       seats, roster, live, total: shown.length }, extra || {});
   }
   function entries(q) {

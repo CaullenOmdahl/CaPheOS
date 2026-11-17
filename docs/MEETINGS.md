@@ -103,6 +103,10 @@ What agents change lasts for that meeting; your add and remove set the standing 
   applied (its loop routine's pair, else its roster row; `console/chat.js modelFor`). A metered model under a $0 cap is
   held, as in the chat. A refused turn is retried once on the seat's next chain entry with one plain line
   (`lib/refusal.js`, door `meeting`).
+- **Cost is information, never a gate**: no meeting budget, no estimate, no per-turn dollar check. The cost line says
+  "This meeting so far: N turns" and, per provider, dollars for a metered model (DeepSeek, OpenRouter), the share of a
+  subscription's windows since the meeting began (Claude 5-hour and week, MiniMax; from the pacer's readings and
+  `company/work/finance/subscriptions.json`), never "$0.00", and "unknown" for anything unmetered with no meter.
 - Every run passes `lib/admit.js` as kind `meeting-turn` (door `meeting`, `company/state/admit-log.jsonl`): a zero-token
   permission and routing check, refused unless the owner opened the meeting, held under a hard halt or a refusal
   block. There is no meeting budget, estimate or per-turn dollar gate: cost is information.

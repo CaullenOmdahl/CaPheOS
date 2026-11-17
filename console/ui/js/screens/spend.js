@@ -14,16 +14,27 @@ const pct = v => v == null ? '—' : Math.round(v) + '%';
 export async function render(root, ctx) {
   const { app } = ctx;
   root.className = 'main gap-36';
-  const head = h('div'), todayEl = h('div'), seatsEl = h('div'), provEl = h('div'), subsEl = h('div'), pacerEl = h('div'), side = h('div', { class: 'stack-16' });
+  const plansEl = h('div'); const head = h('div'), todayEl = h('div'), seatsEl = h('div'), provEl = h('div'), subsEl = h('div'), pacerEl = h('div'), side = h('div', { class: 'stack-16' });
   fill(root, head, todayEl,
     h('section', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:32px' },
       Block({ id: 'seats', title: 'By seat', lede: 'Pay-per-token spend in the last 24 hours, per crew member.' }, seatsEl),
       Block({ id: 'providers', title: 'By provider', lede: 'Everything billed in the last 24 hours. Subscriptions are a flat fee and never count against the cap.' }, provEl)),
     Block({ id: 'subscriptions', title: 'Subscriptions this week', lede: 'How much of each subscription\'s weekly allowance is used, and where routines stop.' }, subsEl),
+    Block({ id: 'plans', title: 'Plans and prepaid credit', lede: 'What you pay for, and what is left on prepaid accounts. Only you see the amounts; the crew never does.' }, plansEl),
     pacerEl, side);
   fill(head, screenHead({ title: 'Spend.', lede: 'What the company spends on AI today, and who spends it. To change the cap or the cutoffs, go to Settings.', max: '720px',
     actions: [h('a', { href: '#/settings/models', class: 'btn btn-secondary btn-md' }, 'Change limits')] }));
 
+  async function loadPlans() {
+    let d; try { d = await api('/finance/plans'); } catch (e) { fill(plansEl, errLine(e, 'Plans')); return; }
+    const plans = (d.plans || []).map(p => h('li', { class: 'body-s', 'data-plan': p.provider }, h('strong', {}, p.name || PROVIDER[p.provider] || p.provider), ' · ' + [p.seats ? p.seats + ' seat' + (p.seats === 1 ? '' : 's') : null, p.price != null ? p.price + ' ' + (p.currency || '') + ' a ' + (p.cycle === 'yearly' ? 'year' : 'month') : null, p.windows && p.windows.length ? 'windows: ' + p.windows.join(', ') : null, p.use].filter(Boolean).join(' · ')));
+    const bal = Object.entries(d.balances || {}).map(([prov, b]) => h('li', { class: 'body-s', 'data-balance': prov }, h('strong', {}, PROVIDER[prov] || prov), ': ',
+      (b.balances || []).map(x => x.currency + ' ' + Number(x.total).toFixed(2)).join(' · ') || 'no reading', b.low ? h('span', { class: 'danger' }, ' — running low (under about 3 days of use)') : null, h('span', { class: 'caption muted' }, b.at ? ' (read ' + whenAt(b.at, app.company && app.company.timezone) + ')' : '')));
+    fill(plansEl, h('div', { class: 'stack-8' },
+      plans.length ? h('ul', { class: 'plain stack-4' }, plans) : h('p', { class: 'body-s muted' }, 'No plans recorded. Add yours to company/work/finance/subscriptions.json (plan name, seats, price, cycle, windows) and they show here and in the meeting\'s cost line.'),
+      bal.length ? h('ul', { class: 'plain stack-4' }, bal) : h('p', { class: 'body-s muted' }, 'No prepaid balance read yet.')));
+  }
+  loadPlans();
   async function load() {
     let d;
     try { d = await api('/spend'); }

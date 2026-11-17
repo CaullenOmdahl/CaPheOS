@@ -184,7 +184,7 @@ export function meetingPane(host, opts) {
     const lead = (v.seats || []).find(s => s.leader);
     subEl.textContent = [lead ? nm(lead.name) + ' leads' : 'No leader', M.observer ? 'you are observing (up to ' + M.observeRounds + ' rounds at a time)' : null, M.toolsOn ? 'tools on for this item' : 'talk only'].filter(Boolean).join(' · ');
     drawState();
-    costEl.textContent = 'This meeting so far: ' + M.cost.turns + ' turn' + (M.cost.turns === 1 ? '' : 's') + ', $' + Number(M.cost.usd || 0).toFixed(2);
+    costEl.textContent = M.costLine || ('This meeting so far: ' + M.cost.turns + ' turn' + (M.cost.turns === 1 ? '' : 's'));
   }
   function drawLive() {
     if (!v) return;

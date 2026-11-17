@@ -122,7 +122,7 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
     const p = await waitFor(async () => (await ev('window.__posts.length')) > n ? lastPost() : null, 4000);
     t('control → action: Explain for the room', p && p.path === '/meeting/explain' && p.body.i === i, { p, i }); }
   t('passes are hidden (Rachel passed)', !(await ev('/PASS/.test(document.querySelector(".chat-body").innerText)')) && !(await ev('!!document.querySelector(".chat-body [data-who=hr]")')));
-  t('the cost line counts the turns', /^This meeting so far: [1-9]\d* turns?, \$\d+\.\d\d$/.test(await ev('document.querySelector(".mtg-cost").textContent')), await ev('document.querySelector(".mtg-cost").textContent'));
+  t('the cost line counts the turns and never shows $0.00 for a subscription', await ev('(()=>{const t=document.querySelector(".mtg-cost").textContent;return /^This meeting so far: [1-9]\\d* turns? · Claude: /.test(t)&&!/\\$0\\.00/.test(t)})()'), await ev('document.querySelector(".mtg-cost").textContent'));
 
   // Round, the speaking-now line, Raise hand, Continue, Esc, Stop round
   await st('/__meeting', { reset: true, replies: { agent: [{ text: 'A slow opening statement that runs on for a while, word after word after word.', stepMs: 120 }, { text: 'Another slow answer that keeps going on and on and on for a good while yet.', stepMs: 150 }], cfo: 'Short.', sec: 'PASS' } });

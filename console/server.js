@@ -551,6 +551,14 @@ route('GET', /^\/api\/chat\/([A-Za-z0-9_-]{1,64})$/, m => CHAT.info(m[1]));
 // the live chat runs in flight (console/chat-runs.js): scripts/restart-console.sh --when-idle waits for an empty list
 route('GET', /^\/api\/console\/busy$/, () => ({ ok: true, chats: CHAT.runs.busy() }));
 MEET.mount(route);
+// plan identity and price (company/work/finance/subscriptions.json) with each plan's current use, and the prepaid balances:
+// the OWNER's view (behind the console sign-in); the amounts never go to an agent, a log or a report
+route('GET', /^\/api\/finance\/plans$/, () => {
+  const SM = require(path.join(TOOLS, 'lib', 'subscription-meter.js')), PB = require(path.join(TOOLS, 'lib', 'provider-balance.js'));
+  const plans = SM.plans().map(p => { const w = SM.windows(p.provider); return Object.assign({}, p, { use: [w.fiveHour ? Math.round(w.fiveHour.usedPct) + '% of the 5-hour window' : null, w.week ? Math.round(w.week.usedPct) + '% of the week' : null].filter(Boolean).join(', ') || 'use unknown' }); });
+  const balances = {}; for (const [k, b] of Object.entries(PB.read())) balances[k] = { at: b.at, available: b.available, balances: b.balances || [], low: !!b.low };
+  return { ok: true, plans, balances };
+});
 // chat actions (docs/CHAT-ACTIONS.md): a secret field in a chat block is stored here (the same writer as Today's key
 // field); the reply says only where and how long. Approvals: the approval API over the existing owner-question
 // records (company/tools/approvals.js); the expiry default (deny) and the reminders run server-side, here.
