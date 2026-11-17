@@ -13,8 +13,9 @@
  * Off-box heartbeat (a dead-man check such as a cron-monitoring service, which alerts when pings STOP): put its URL in
  * secrets/liveness-heartbeat-url. Every healthy check GETs it through the same gate; an outage sends nothing to it, so
  * the silence is the alarm, and a dead machine (which sends nothing at all) is caught too. Failing to reach it never
- * fails the check: the reason goes to the log. Never put such a URL in liveness-ping-url as well: an outage alert
- * POSTed to a dead-man check reads as "alive" (when both hold the same URL, the outage push is not sent to it).
+ * fails the check: the reason goes to the log. An outage alert POSTed to a dead-man check would read as "alive", so
+ * when liveness-ping-url holds the same URL the outage push is not sent to it (logged "reported by silence"): nothing
+ * needs removing. liveness-ping-url is for a separate alert endpoint; `status` shows pingEqualsHeartbeat.
  *
  *   node modules/liveness/watch.js            one check (the timer runs this); exit 0 when the module is not enabled
  *   node modules/liveness/watch.js status     both heartbeats and their ages, JSON
@@ -160,7 +161,8 @@ function status() {
   const b = readJson(F.beat(), null), w = readJson(F.watch(), null);
   const a = ageMs(b), aw = ageMs(w);
   return { ok: true, enabled: enabled(), tickMin: tickMin(), watchMin: watchMin(), heartbeat: b, heartbeatAgeMin: a === null ? null : Math.round(a / 6000) / 10,
-    watcher: w, watcherAgeMin: aw === null ? null : Math.round(aw / 6000) / 10, pingedAt: (w && w.pingedAt) || null, heartbeatAt: (w && w.heartbeatAt) || null, heartbeatError: (w && w.heartbeatError) || null, dispatcherStale: a === null || a > 3 * tickMin() * 60000 };
+    watcher: w, watcherAgeMin: aw === null ? null : Math.round(aw / 6000) / 10, pingedAt: (w && w.pingedAt) || null, heartbeatAt: (w && w.heartbeatAt) || null, heartbeatError: (w && w.heartbeatError) || null,
+    pingEqualsHeartbeat: !!(co.secret('liveness-heartbeat-url') || '').trim() && (co.secret('liveness-heartbeat-url') || '').trim() === (co.secret('liveness-ping-url') || '').trim(), dispatcherStale: a === null || a > 3 * tickMin() * 60000 };
 }
 
 async function selftest() {
@@ -226,7 +228,7 @@ async function selftest() {
     r = run(T0 + 61 * 60000, 'ping');
     t('ping reaches the owner and records pingedAt', r.code === 0 && /test ping/.test(outbound()) && readJson(path.join(tmp, 'company', 'state', 'liveness-watch.json'), {}).pingedAt, r.out);
     r = run(T0 + 61 * 60000, 'status');
-    t('status reports both heartbeats', r.j && r.j.heartbeat && r.j.watcher && r.j.enabled === true, r.out);
+    t('status reports both heartbeats', r.j && r.j.heartbeat && r.j.watcher && r.j.enabled === true && r.j.pingEqualsHeartbeat === false, r.out);
   } catch (e) { t('selftest crashed', false, e.stack); }
   finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   console.log((fails ? 'FAIL ' : 'PASS ') + (n - fails) + '/' + n);
