@@ -56,7 +56,7 @@ const PROVIDER_CODES = ['auth', 'quota_exhausted', 'rate_limited', 'provider_err
 const PROVIDER_RE = /\bhttp\s*(40[1238]|429|5\d\d)\b|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|timed? ?out|rate.?limit|overloaded|unavailable|unauthori[sz]ed|invalid api key|insufficient[_ ]balance|quota|usage limit|not connected|no key|credential|network error|upstream/i;
 
 const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } };
-function writeJson(f, obj) { fs.mkdirSync(path.dirname(f), { recursive: true }); const tmp = f + '.tmp-' + process.pid; fs.writeFileSync(tmp, JSON.stringify(obj, null, 1) + '\n'); fs.renameSync(tmp, f); }
+function writeJson(f, obj) { fs.mkdirSync(path.dirname(f), { recursive: true }); const txt = JSON.stringify(obj, null, 1) + '\n'; const tmp = f + '.tmp-' + process.pid; fs.writeFileSync(tmp, txt); fs.renameSync(tmp, f); try { require('./provenance.js').wrote(f, txt, 'models.js'); } catch (_) {} }   // locked-watch.js: this tool's own write
 const keyOf = e => e.provider + '/' + e.model;
 const label = e => e ? keyOf(e) + (e.effort ? ' (' + e.effort + ')' : '') : 'nothing';
 const z = n => String(n).padStart(2, '0');

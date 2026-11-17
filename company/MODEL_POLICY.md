@@ -67,7 +67,7 @@ unless there is an emergency.
   `node company/tools/pacer.js restore` puts routines back where they were.
 
 The pacing numbers, the shared-account share and the metered cap are finance's
-(`company/work/finance/pacing-policy.json`); the routing table is people's, with the CEO's approval. `hire.js remodel`
+(`company/work/finance/pacing-policy.json`; switch it live or back to shadow only with `node company/tools/pacer.js mode live|shadow --by <Name> --why "..."`, never by hand); the routing table is people's, with the CEO's approval. `hire.js remodel`
 sets a person's own model and their routines; the pacer then moves routines listed in the routing table back to the
 table's choice (a seat with its own chain, below, keeps it with the new model as its primary; the pacer leaves it alone).
 

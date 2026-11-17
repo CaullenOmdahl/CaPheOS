@@ -1680,7 +1680,25 @@ async function cli(argv, o) {
     print(JSON.stringify(r, null, 1));
     return r.ok ? 0 : 2;
   }
-  print('commands: status [--json], plan [--json], report, apply, restore, emergency on|off');
+  if (cmd === 'mode') {
+    // live|shadow: the one way to switch the pacer, so the change is recorded (provenance, dispatch log) and never a
+    // hand edit of pacing-policy.json, which locked-watch would flag. Who: the owner, the CEO, the finance or people seat.
+    const co = require('./lib/company');
+    const want = a._[0]; const by = a.by === true ? '' : (a.by || ''); const why = a.why === true ? '' : (a.why || '');
+    if (!['live', 'shadow'].includes(want) || !by || !why) { print('usage: pacer.js mode live|shadow --by <Name> --why "..."'); return 2; }
+    const allowed = [co.config.owner && co.config.owner.name, co.nameOf(co.ceo()), co.nameOf(co.seatFor('finance')), co.nameOf(co.seatFor('people'))].filter(Boolean).map(x => x.toLowerCase());
+    if (!allowed.includes(by.toLowerCase())) { print('refused: ' + by + ' may not switch the pacer (the owner, the CEO, the finance or the people seat may)'); return 3; }
+    const root = (o.root || co.ROOT); const f = path.join(root, REL.policy);
+    let pol = {}; try { pol = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { try { pol = JSON.parse(fs.readFileSync(path.join(root, REL.policyDefault), 'utf8')); } catch (_) {} }
+    const was = pol.mode === 'live' ? 'live' : 'shadow';
+    if (was === want) { print('the pacer is already ' + want); return 0; }
+    pol.mode = want; pol.changes = (pol.changes || []).concat([{ at: new Date().toISOString(), by, what: 'mode ' + was + ' -> ' + want, why }]).slice(-50);
+    const txt = JSON.stringify(pol, null, 1) + '\n'; fs.mkdirSync(path.dirname(f), { recursive: true }); const tmp = f + '.tmp-' + process.pid; fs.writeFileSync(tmp, txt); fs.renameSync(tmp, f);
+    try { require('./provenance.js').wrote(f, txt, 'pacer.js'); } catch (_) {}
+    try { const lf = path.join(root, 'company', 'work', 'dispatch-log.md'); fs.appendFileSync(lf, '- ' + (lp => lp.date + ' ' + lp.time)(co.localParts()) + ' PACER MODE ' + was + ' -> ' + want + ' by ' + by + ': ' + why + '\n'); } catch (_) {}
+    print('pacer mode ' + was + ' -> ' + want + ' (recorded)'); return 0;
+  }
+  print('commands: status [--json], plan [--json], report, apply, restore, emergency on|off, mode live|shadow --by --why');
   return 2;
 }
 
