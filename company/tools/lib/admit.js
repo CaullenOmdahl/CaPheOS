@@ -1,7 +1,8 @@
 'use strict';
 /* lib/admit.js — the one gate every start of work passes through (docs/BUDGET.md).
  *
- * PHASE 1 (now): a COUNTER, not a judge. admit() always answers allow, and records every call — {door, kind, seat,
+ * PHASE 1 (now): a COUNTER, not a judge, with one exception (a routine on a provider still blocked for it after a
+ * refusal is held: decision 'hold'). Otherwise admit() always answers allow, and records every call — {door, kind, seat,
  * decision, reason} — in company/state/admit-log.jsonl. It changes no budget behaviour: each door still applies the rules
  * it applied before (the daily cap, the per-agent share, the Sprint spread, the pacer, halts, guardrails), and those rules
  * now live here in ONE copy (money() below), so no door keeps its own. Phase 2 makes admit() decide, behind this same
@@ -52,7 +53,14 @@ function admit(req, opts) {
   if (!KINDS.includes(kind)) throw new TypeError('admit: unknown kind "' + kind + '" (one of ' + KINDS.join(', ') + ')');
   const now = Number.isFinite(opts.now) ? opts.now : Date.now();
   const t = { decision: 'allow', reason: PHASE1_REASON, id: newId(), door, kind, seat: req.seat != null ? clip(req.seat, 80) : null };
+  // the one rule that decides already in phase 1: a routine is never started on a provider that refused it and is still
+  // blocked for it (the pacer's refusal block, lib/refusal.js). The door holds the start; models.js moves the seat.
+  if (kind === 'run' && req.jobId && req.provider) {
+    let b = null; try { b = require('./refusal').blockFor(String(req.jobId), String(req.provider), { now, root: opts.root }); } catch (_) {}
+    if (b) Object.assign(t, { decision: 'hold', reason: 'refusal block: ' + req.provider + ' refused this routine at ' + new Date(b.at).toISOString() + ' and is blocked for it until ' + new Date(b.until).toISOString() + ' (it runs on the next model meanwhile)' });
+  }
   const row = { ts: new Date(now).toISOString(), at: now, id: t.id, phase: PHASE, door, kind, seat: t.seat, decision: t.decision, reason: t.reason };
+  if (req.provider) row.provider = clip(req.provider, 40);
   if (req.amountUsd != null && Number.isFinite(Number(req.amountUsd))) row.amountUsd = Number(req.amountUsd);
   if (req.priority != null) row.priority = clip(req.priority, 40);
   if (req.jobId) row.jobId = clip(req.jobId, 80);

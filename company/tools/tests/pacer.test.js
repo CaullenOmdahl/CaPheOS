@@ -1317,3 +1317,45 @@ test('the MiniMax usage URL follows the company region (company.json providers.m
   fx = fixture(); fx.w('company/company.json', { name: 'X', providers: { minimax: { region: 'custom', baseUrl: 'http://plain.minimax.io/v1' } } });
   assert.equal(pacer.loadPolicy(fx.root).minimax.url, MME.REGIONS.global.usageUrl);
 });
+
+test('one authority for a refusal block: a seat with its own chain is refused on Claude -> re-run on DeepSeek in the same tick -> its next scheduled runs use DeepSeek until the block ends; admit() holds a start on Claude meanwhile', async () => {
+  const mp = REAL_POLICY(); mp.seats = { drafter: { chain: [{ provider: 'claude-cli', model: 'claude-opus-5-5' }, { provider: 'deepseek', model: 'deepseek-flash' }] } };
+  mp.allowed['claude-cli'].models = Array.from(new Set((mp.allowed['claude-cli'].models || []).concat(['claude-opus-5-5'])));
+  const jobs = crewJobs();
+  Object.assign(jobs.find(j => j.id === 'j-prod'), { provider: 'claude-cli', model: 'claude-opus-5-5', wire: { provider: 'claude-cli', model: 'claude-opus-5-5', source: 'routine' }, lastRunAt: new Date(T0 - 20 * MIN).toISOString() });
+  const runs = [{ runId: 'r-opus', cronJobId: 'j-prod', agentId: 'drafter', provider: 'claude-cli', model: 'claude-opus-5-5', outcome: 'refused', failureCode: 'content_policy_blocked', reason: 'refused', startedAt: T0 - 20 * MIN, endedAt: T0 - 10 * MIN }];
+  const st = station(jobs);
+  const base = st.call;
+  st.call = async (method, p, body) => {   // the station's provider list and roster model, which models.js uses
+    if (method === 'GET' && p === '/api/providers') return { status: 200, body: JSON.stringify({ providers: [{ id: 'claude-cli', configured: true }, { id: 'deepseek', configured: true }] }) };
+    if (method === 'POST' && p === '/api/agent/model') return { status: 200, body: '{"ok":true,"via":"roster"}' };
+    return base(method, p, body);
+  };
+  const fx = fixture({ feedPct: 5, runs, policy: { mode: 'live' }, modelPolicy: JSON.stringify(mp) });
+  const h = make(fx, st);
+  const prov = () => st.copy.find(j => j.id === 'j-prod').provider;
+  // tick 1: the refusal is read, the block written, models.js moves the seat off Claude, and the run is re-run on DeepSeek now
+  await tick(h, st.copy);
+  const s1 = readState({ root: fx.root });
+  assert.ok(s1.blocks.some(b => b.routineId === 'j-prod' && b.provider === 'claude-cli' && b.until === T0 - 10 * MIN + 2 * HOUR), JSON.stringify(s1.blocks));
+  assert.equal(prov(), 'deepseek', 'the seat moved to its next entry: ' + h.lines.join('\n'));
+  assert.deepEqual(st.fires, ['j-prod'], 're-run once, in the same tick: ' + h.lines.join('\n'));
+  assert.ok(h.lines.some(l => /RE-FIRE "Product loop" on deepseek\/deepseek-flash after a refusal on Claude/.test(l)), h.lines.join('\n'));
+  // the dispatcher's door (admit) holds a start of this routine on Claude while the block is on, and allows DeepSeek
+  const A = require('../lib/admit');
+  assert.equal(A.admit({ door: 'dispatch', kind: 'run', seat: 'drafter', jobId: 'j-prod', provider: 'claude-cli' }, { now: T0 + 30 * MIN, root: fx.root, file: null }).decision, 'hold');
+  assert.equal(A.admit({ door: 'dispatch', kind: 'run', seat: 'drafter', jobId: 'j-prod', provider: 'deepseek' }, { now: T0 + 30 * MIN, root: fx.root, file: null }).decision, 'allow');
+  // the next scheduled runs, within the block: still DeepSeek (models.js reads the block as "Claude cannot run for this seat"), never re-fired twice
+  for (const dt of [40 * MIN, 80 * MIN]) {
+    h.clock.t = T0 + dt; Object.assign(st.copy.find(j => j.id === 'j-prod'), { lastRunAt: new Date(T0 + dt - 5 * MIN).toISOString(), inFlight: false });
+    await tick(h, st.copy);
+    assert.equal(prov(), 'deepseek', 'still DeepSeek at +' + (dt / MIN) + ' min: ' + h.lines.slice(-4).join('\n'));
+  }
+  assert.deepEqual(st.fires, ['j-prod']);
+  // the block over (2 h) and the recovery wait (30 min) passed: the seat goes back to its primary
+  const fresh = () => fx.w('home/.local/state/usage/claude-usage.json', { at: h.clock.t - MIN, seven_day: { used_percentage: 5, resets_at: CLAUDE_RESET / 1000 } });   // a fresh meter reading
+  h.clock.t = T0 + 2 * HOUR; fresh(); await tick(h, st.copy);   // the block ended at +1 h 50: Claude can run again from here
+  assert.equal(prov(), 'deepseek', 'the usual recovery wait before moving back up');
+  h.clock.t = T0 + 2 * HOUR + 35 * MIN; fresh(); await tick(h, st.copy);
+  assert.equal(prov(), 'claude-cli', 'back on the primary after the block: ' + h.lines.slice(-4).join('\n'));
+});

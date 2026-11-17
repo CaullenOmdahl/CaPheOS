@@ -1191,6 +1191,37 @@ function makePacer(o) {
     return done;
   }
 
+  // refused runs of routines plan() leaves to models.js (seats with their own chain): once, after the seat moved off the
+  // provider that refused; with nothing else to run on, said plainly once and stopped (lib/refusal.js)
+  async function refireChained(st, jobs, pl) {
+    const out = []; const t = now();
+    const mine = new Set((pl.untouched || []).filter(u => u.seatChain).map(u => u.id));
+    for (const p of (st.pendingRefires || []).slice()) {
+      if (!mine.has(p.routineId) || st.refired[p.runId]) continue;
+      const job = (jobs || []).find(j => j.id === p.routineId); if (!job) continue;
+      const curProv = (job.wire && job.wire.provider) || job.provider, curModel = (job.wire && job.wire.model) || job.model;
+      const lastRun = job.lastRunAt ? Date.parse(job.lastRunAt) : 0;
+      if (lastRun > p.endedAt + MIN) { st.refired[p.runId] = { at: t, status: 'not needed' }; continue; }
+      if (require('./lib/scheduler').switchedOff(job, root) || job.inFlight || job.state === 'running') continue;
+      if (curProv === p.provider) {   // models.js could not move it: no other entry can run
+        st.refired[p.runId] = { at: t, status: 'stopped' };
+        note('REFUSED, NOT RE-RUN "' + job.name + '": ' + (NAMES[p.provider] || p.provider) + ' refused it and no other model in its seat\'s chain can run. The run is reported, not lost: the CEO picks it up.');
+        try { require('./lib/refusal.js').record({ root, seat: job.agentId, door: 'routine', runId: p.runId, from: { provider: p.provider, model: p.model }, to: null }); } catch (_) {}
+        continue;
+      }
+      st.refired[p.runId] = { at: t, status: 'pending' };
+      const tk = require('./lib/admit').admit({ door: 'pacer', kind: 'run', seat: job.agentId || null, jobId: job.id, provider: curProv, why: 're-fire after a refusal on ' + p.provider });
+      const res = await fire(job.id);
+      require('./lib/admit').started(tk, res);
+      st.refired[p.runId] = { at: t, status: res.status };
+      if (res.status === 200) { job.inFlight = true; try { require('./lib/refusal.js').record({ root, seat: job.agentId, door: 'routine', runId: p.runId, retryRunId: res.runId || null, from: { provider: p.provider, model: p.model }, to: { provider: curProv, model: curModel } }); } catch (_) {} }
+      note('RE-FIRE "' + job.name + '" on ' + curProv + '/' + curModel + ' after a refusal on ' + (NAMES[p.provider] || p.provider) + ': HTTP ' + res.status);
+      journal('refire', { routine: job.name, routineId: job.id, runId: p.runId, on: curProv, status: res.status });
+      out.push({ id: job.id, name: job.name, refire: true, applied: res.status === 200 });
+    }
+    return out;
+  }
+
   // Put every routine the pacer moved back on the model it had before the pacer first moved it, and lift the
   // pacer's own rail pauses: the way to stop the pacer's effect on the station, in any mode (setting the mode to
   // shadow only stops further changes). A running routine is left for a later run of this command.
@@ -1344,7 +1375,10 @@ function makePacer(o) {
     if (a.late) return { extra: 0, late: true };
     const done = await apply(m, pl, st, jobs);
     // per-seat model chains (company/tools/models.js): failover and recovery on this tick's measurement; never throws
-    if (!a.late) await require('./models.js').tick({ root, m, jobs, log: a.log || (l => note(l)), dry, call, now });
+    // they see this tick's refusal blocks (st.blocks, not yet saved): a refused seat moves to its next entry now
+    if (!a.late) await require('./models.js').tick({ root, m, jobs, log: a.log || (l => note(l)), dry, call, now, blocks: st.blocks });
+    // a refused run of a seat with its own chain is re-run once, in this same tick, on the entry models.js just moved it to
+    if (!a.late && live) done.push(...await refireChained(st, jobs, pl));
     if (a.late) { saveState(st); return { extra: 0, late: true }; }
     if (!live) {
       // keyed on every planned move (a running routine's included), so a routine starting or ending does not re-log it

@@ -68,4 +68,21 @@ function record(o) {
   return row;
 }
 
-module.exports = { isRefusal, nextEntry, candidates, record, plainLine, keyOf, pname };
+/* The ONE record of a refusal block: the pacer's blocks (company/state/pacer-state.json, written when it reads a refused
+ * run: provider P is blocked for routine R until T). models.js treats P as "cannot run" for R's seat, the dispatcher
+ * and admit() never start R on P, and the pacer routes R off P: one authority, read the same way everywhere. */
+function activeBlocks(o) {
+  const root = (o && o.root) || co.ROOT; const now = (o && Number.isFinite(o.now)) ? o.now : Date.now();
+  const list = (o && Array.isArray(o.blocks)) ? o.blocks : ((readJson(path.join(root, 'company', 'state', 'pacer-state.json'), {}) || {}).blocks || []);
+  return list.filter(b => b && b.routineId && b.provider && Number(b.until) > now);
+}
+// the block on this routine for this provider, or null
+function blockFor(jobId, provider, o) { return activeBlocks(o).find(b => b.routineId === jobId && b.provider === provider) || null; }
+// providers blocked for a seat: any of its routines refused on that provider and still in its window
+function blockedForSeat(jobIds, o) {
+  const ids = new Set(jobIds || []); const out = {};
+  for (const b of activeBlocks(o)) if (ids.has(b.routineId) && (!out[b.provider] || out[b.provider].until < b.until)) out[b.provider] = b;
+  return out;
+}
+
+module.exports = { isRefusal, nextEntry, candidates, record, plainLine, keyOf, pname, activeBlocks, blockFor, blockedForSeat };

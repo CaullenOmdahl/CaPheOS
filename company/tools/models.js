@@ -36,6 +36,7 @@
 'use strict';
 const fs = require('fs'), path = require('path'), http = require('http');
 const co = require('./lib/company');
+const REF = require('./lib/refusal');
 const gov = require('./lib/governance');
 const mm = require('./lib/models-money');
 
@@ -186,6 +187,10 @@ function makeModels(o) {
   function evaluate(id, e, ctx) {
     const pol = ctx.pol, F = ctx.F, t = ctx.t, m = ctx.m;
     const bad = allowedWhy(e, pol); if (bad) return { ok: false, why: bad, hard: true };
+    // a refusal block (the pacer's record, lib/refusal.js): this seat's run on this provider was refused and the block is
+    // still on, so the entry cannot run for this seat until it ends; the seat runs on its next entry meanwhile
+    const rb = ctx.refusalBlocks && ctx.refusalBlocks[id] && ctx.refusalBlocks[id][e.provider];
+    if (rb) return { ok: false, why: (NAMES[e.provider] || e.provider) + ' refused a run of "' + (rb.name || 'its routine') + '" at ' + hm(rb.at) + ' and is blocked for this seat until ' + hm(rb.until), refusalBlock: true, connected: true };
     const pv = ctx.providers;
     if (pv) {
       const p = pv[e.provider];
@@ -291,7 +296,7 @@ function makeModels(o) {
       const s = seats[id], chain = s.chain, ss = st.seats[id] = st.seats[id] || { okSince: {} };
       ss.okSince = ss.okSince || {};
       st.settling = st.settling || {};
-      const ctx = { pol, F, t, m: a.m || null, providers: pv, runs, settling: st.settling, reserve: s.claudeReserve === true || (s.claudeReserve !== false && id === ceoId()) };
+      const ctx = { pol, F, t, m: a.m || null, providers: pv, runs, settling: st.settling, refusalBlocks: { [id]: REF.blockedForSeat(seatJobs(all, id).map(j => j.id), { root, now: t, blocks: a.blocks }) }, reserve: s.claudeReserve === true || (s.claudeReserve !== false && id === ceoId()) };
       const ev = chain.map(e => ({ e, ...evaluate(id, e, ctx) }));
       // Sprint (cadence.js; dispatch.js writes sprint-effort.json): a seat whose open items are all Effort: mechanical
       // runs on the first entry of its OWN chain that is not Claude and can run, so the Claude quota stays for reasoning
@@ -364,7 +369,7 @@ function makeModels(o) {
     const ids = a.seat ? [a.seat] : Object.keys(c);
     const rows = ids.map(id => {
       const s = seats[id] || null, cur = current(id, all), curKey = cur.pick ? keyOf(cur.pick) : null;
-      const ctx = { pol, F, t, m, providers: pv, runs, reserve: !!s && (s.claudeReserve === true || (s.claudeReserve !== false && id === ceoId())) };
+      const ctx = { pol, F, t, m, providers: pv, runs, refusalBlocks: { [id]: REF.blockedForSeat(seatJobs(all, id).map(j => j.id), { root, now: t }) }, reserve: !!s && (s.claudeReserve === true || (s.claudeReserve !== false && id === ceoId())) };
       const chain = (s ? s.chain : []).map((e, i) => Object.assign({ index: i, key: keyOf(e), tier: tierOf(e, pol) }, e, evaluate(id, e, ctx)));
       const idx = curKey ? chain.findIndex(x => x.key === curKey) : -1;
       const ss = st.seats[id] || {};
@@ -537,7 +542,7 @@ function chainedSeats(root) {
 /* the dispatcher's tick (called from pacer.js hookLocked with its measurement): fail-safe, never throws */
 async function tick(a) {
   a = a || {};
-  try { return await makeModels({ root: a.root, call: a.call, now: a.now, log: a.log, dry: a.dry }).tick({ m: a.m, jobs: a.jobs }); }
+  try { return await makeModels({ root: a.root, call: a.call, now: a.now, log: a.log, dry: a.dry }).tick({ m: a.m, jobs: a.jobs, blocks: a.blocks }); }
   catch (e) { if (typeof a.log === 'function') a.log('MODELS ERROR: ' + String((e && e.message) || e).slice(0, 200)); return { ok: false, error: String(e && e.message || e) }; }
 }
 

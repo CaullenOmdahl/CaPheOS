@@ -1086,6 +1086,8 @@ function lastRunTail(job) {
     const names = reason[agentId];
     const viaInbox = names.includes(' OPEN in ');
     if (DRY) { A.admit({ door: 'dispatch', kind: 'run', seat: agentId, jobId: job.id, why: names }, { dry: true }); log('WOULD run ' + job.name + ' for ' + agentId + ' (' + names + ')'); fired++; say(agentId, { state: 'started', why: names }); continue; }
+    const tk = A.admit({ door: 'dispatch', kind: 'run', seat: agentId, jobId: job.id, provider: (job.wire && job.wire.provider) || job.provider, priority: waitersOf(agentId).length ? 'blocking' : null, why: names });   // phase 1: allow, recorded; a refusal block holds
+    if (tk.decision === 'hold') { log('REFUSAL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'its model refused a run; it waits for its next model' }); continue; }
     log('RUN ' + job.name + ' for ' + agentId + ' (' + names + ')' + (rest.fast ? ' [Sprint: new work; rest ' + SPRINT.cooldownFloorMin + ' min]' : ''));
     fired++;
     // a duty wake hands the agent its reason: one OPEN handoff in its inbox, ids and counts only (dedup reads it next tick)
@@ -1093,7 +1095,6 @@ function lastRunTail(job) {
     // Fire detached: the run is admitted on a 200 and then keeps going after we close the socket, so a long
     // loop can never be cancelled by this tick's own hold (a run tied to the request socket dies with it).
     // Only a 200 counts toward the stall budget — a refused start (409/400) is not a run.
-    const tk = A.admit({ door: 'dispatch', kind: 'run', seat: agentId, jobId: job.id, priority: waitersOf(agentId).length ? 'blocking' : null, why: names });   // phase 1: always allow, recorded
     const r = await fireRun(job.id);
     A.started(tk, r);
     say(agentId, r.status === 200 ? { state: 'started', why: names } : { state: 'held', why: 'has work; the station refused the start (HTTP ' + r.status + ')' });
