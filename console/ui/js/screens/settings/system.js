@@ -1,14 +1,15 @@
-// Settings › System (#/settings/system[/health|certification|backups|services|halt|map]): health and diagnostics, certification,
-// backups, the crew's background services (company/tools/service.js), the two ways to stop the company, and "Where did it
+// Settings › System (#/settings/system[/health|certification|backups|services|alarm|halt|map]): health and diagnostics, certification,
+// backups, the crew's background services (company/tools/service.js), the outside alarm test (alarm-test.js), the two ways to stop the company, and "Where did it
 // go?" (the old feature map, was #/map and System).
 import { h, fill, Button, Tag, errLine, table, Details, Block, humanError, rel, statusOf, when } from '../../ui.js';
 import { api, post } from '../../api.js';
 import * as events from '../../events.js';
 import { CHECK_NAMES } from '../setup.js';
+import { alarmTest } from './alarm-test.js';
 
 export async function render(host, ctx) {
   const { app } = ctx;
-  const health = h('div'), cert = h('div'), backups = h('div'), services = h('div');
+  const health = h('div'), cert = h('div'), backups = h('div'), services = h('div'), alarm = h('div');
   const diag = {};
   fill(host,
     Block({ id: 'health', title: 'Health', actions: Button('Copy diagnostics', { variant: 'secondary', size: 'sm', onClick: async () => {
@@ -17,6 +18,7 @@ export async function render(host, ctx) {
     Block({ id: 'certification', title: 'Certification', lede: 'The checks that prove the company can actually run. Run them again after a big change.' }, cert),
     Block({ id: 'backups', title: 'Backups' }, backups),
     Block({ id: 'services', title: 'Background services', lede: 'Programs the crew keeps running on this computer between their working sessions, like a recorder or a nightly job. Each one was approved by you, and halting the company stops them.' }, services),
+    Block({ id: 'alarm', title: 'Test the outside alarm', lede: 'Your outside check (healthchecks.io or alike) warns you when this computer stops pinging it. This proves the warning really reaches you: the pings pause for the check\'s period plus grace, and you say whether the alert came. No terminal needed.' }, alarm),
     Block({ id: 'halt', title: 'Stopping the company', lede: 'The halt buttons are at the bottom of the sidebar on every screen.' },
       h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:16px' },
         h('article', { class: 'card p22', style: 'gap:10px' }, h('h3', { class: 'h4' }, 'Soft halt'),
@@ -72,9 +74,10 @@ export async function render(host, ctx) {
   }
   load();
   loadServices(services, app);
+  const at = alarmTest(alarm, app);
   const off = events.on(['halt', 'guardrails'], load);
   const offS = events.on(['services', 'halt'], () => loadServices(services, app));
-  return () => { off(); offS(); };
+  return () => { off(); offS(); at.destroy(); };
 }
 
 // Background services: one card per service, in plain words; Stop / Start / Remove act as the owner (service.js).

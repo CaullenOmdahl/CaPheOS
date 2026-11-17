@@ -88,6 +88,7 @@ done
 echo "== console"
 step "console/server.js --selftest" node console/server.js --selftest
 step "console/models.js --selftest" node console/models.js --selftest
+step "console/command-ask.js --selftest (chat lint: a reply that tells the owner to run a command)" node console/command-ask.js --selftest
 step "tests/today-questions-walk.js (headless Chrome: Today renders each question kind; SKIP without Chrome)" node tests/today-questions-walk.js
 step "tests/chat-actions-walk.js (headless Chrome: chat actions and approvals in chat on the mock; SKIP without Chrome)" node tests/chat-actions-walk.js
 step "tests/chat-resilience-walk.js (console + mock station: a chat run survives a console restart and a reload; busy + restart-console.sh; leaked tool calls; page checks SKIP without Chrome)" node tests/chat-resilience-walk.js
@@ -96,6 +97,7 @@ step "tests/page-kit-walk.js (headless Chrome: every scaffold page light/dark, d
 step "tests/minimax-endpoint-walk.js (headless Chrome: MiniMax endpoint picker in Setup, Settings and Today; SKIP without Chrome)" node tests/minimax-endpoint-walk.js
 step "tests/console-routes-walk.js (headless Chrome: old routes redirect, no paths outside Details; SKIP without Chrome)" node tests/console-routes-walk.js
 step "tests/services-walk.js (headless Chrome: Settings › System › Background services; SKIP without Chrome)" node tests/services-walk.js
+step "tests/alarm-walk.js (headless Chrome: the chat command notice, Settings › System › Test the outside alarm; SKIP without Chrome)" node tests/alarm-walk.js
 step "tests/service-keys-walk.js (headless Chrome: Settings › Connections and keys › Service keys, Today's Already saved; SKIP without Chrome)" node tests/service-keys-walk.js
 
 echo "== syntax and data files"

@@ -59,3 +59,30 @@ test('console/chat.js: the agent\'s next turn is told the message answers its bl
   assert.match(src, /function actionReplyNote\(text\)/);
   assert.match(src, /contextNote\(id, s, co, text\) \+ text/);
 });
+test('no command for the owner: a block whose value, option, label or prompt is a shell command is refused', () => {
+  const B = items => block({ id: 'a', prompt: 'Pick one.', items });
+  for (const [items, what] of [
+    [[{ type: 'button', label: 'Stop it', value: 'systemctl --user stop capheos-sandbox-station-liveness.timer' }], 'a button value'],
+    [[{ type: 'button', label: 'Run `sudo apt install jq`', value: 'ok' }], 'a backticked command in a label'],
+    [[{ type: 'button', label: 'Go', value: 'rm -rf scratch/' }], 'rm -rf as a value'],
+    [[{ type: 'choice', id: 'c', label: 'How', options: ['npm install', 'later'] }], 'an option'],
+    [[{ type: 'text', id: 't', label: 'Paste', placeholder: 'git push origin main' }], 'a placeholder'],
+    [[{ type: 'button', label: 'Done', value: 'node company/tools/onboard.js --certify' }], 'node company/tools/…'],
+  ]) { const r = B(items); assert.equal(r.ok, false, what); assert.match(r.error, /a command for the owner/, what); assert.match(r.error, /console action/, what); }
+  const p = block({ id: 'a', prompt: 'Then type `pip install pyyaml` and tap Done.', items: [{ type: 'button', label: 'Done', value: 'done' }] });
+  assert.equal(p.ok, false); assert.match(p.error, /^prompt: a command/);
+  // ordinary blocks pass, including the captured heartbeat block (its buttons send words, not commands)
+  for (const o of [{ id: 'hb-test-1', prompt: 'Heartbeat silence test', items: [{ type: 'link', label: 'Open healthchecks.io', href: 'https://healthchecks.io/' }, { type: 'text', id: 'period', label: 'Check period (as shown)', placeholder: 'e.g. 5 minutes' },
+    { type: 'button', label: 'I stopped the timer', value: 'stopped', tone: 'primary' }, { type: 'button', label: 'Not tonight', value: 'skip' }] },
+    { id: 'b', prompt: 'Git history looks clean. Make the release?', items: [{ type: 'button', label: 'Make it so', value: 'make it so' }, { type: 'button', label: 'Kill the plan', value: 'kill' }, { type: 'link', label: 'Background services', href: 'console:#/settings/system/services' }] }])
+    assert.equal(block(o).ok, true, JSON.stringify(block(o)));
+  assert.ok(!S.ITEM_TYPES.some(t => /command|run|exec|shell|terminal/i.test(t)), 'the schema has no command or run type');
+});
+test('the chat lint (console/command-ask.js) is a notice only: it flags, never rewrites, and points at a console route', () => {
+  const { commandAsk } = require(path.resolve(__dirname, '..', '..', '..', 'console', 'command-ask.js'));
+  const text = 'For tonight:\n\n2. Stop the timer by running `systemctl --user stop capheos-sandbox-station-liveness.timer`.';
+  const before = text; const r = commandAsk(text);
+  assert.equal(text, before);
+  assert.ok(r && r.action && /^#\//.test(r.action.href), JSON.stringify(r));
+  assert.equal(commandAsk('I ran `git push` and opened a pull request.'), null);
+});

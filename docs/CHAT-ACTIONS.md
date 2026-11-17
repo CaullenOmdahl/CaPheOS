@@ -33,6 +33,13 @@ rule). The controls are Today's own (`screens/today.js` fieldControl, sliderCont
 - **Approvals**: `GET /api/approvals/<id>`, `POST /api/approvals/<id>/answer {verdict, shownDigest, surface: "chat"}`.
 - No click runs a command, calls a tool or changes a setting. `tests/chat-actions-walk.js` records every request the
   page makes during each click and fails on anything but these four.
+- No block carries a command for the owner either. The schema has no command or run type, and a block whose value,
+  option, label, prompt, help or placeholder is a shell command (`systemctl …`, `sudo …`, `npm`/`pip install`, `git push`,
+  `node …/x.js`, `a && b`, or one in backticks) is invalid (`shellValue` in `actions-schema.js`): the owner never runs
+  commands, so a block links the console route that does the thing, or the agent routes it (approval, handoff).
+- Prose is linted, never blocked: a chat reply that tells the owner to run a command gets a notice under it ("This asks
+  you to run a command. You don't need a terminal for this: …") with the matching console action, from
+  `console/command-ask.js` (the Today composer's detector, `inbox.js shellAsk`).
 
 State: an answered block locks and shows the answer; on reload a block with a reply after it (the transcript's
 `[actionReply]` with its id) renders locked; a block older than 24 hours (`MAX_AGE_HOURS`) or followed by a newer

@@ -1,0 +1,8 @@
+[Unit]
+Description=@NAME@ off-box heartbeat — ping the outside dead-man check (paused only by the owner's alarm test)
+
+[Service]
+Type=oneshot
+WorkingDirectory=@ROOT@
+ExecStart=/usr/bin/env node @ROOT@/modules/liveness/watch.js heartbeat
+TimeoutStartSec=60

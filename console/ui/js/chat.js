@@ -44,7 +44,7 @@ export function liveChat(host, opts) {
   // later block with the same id), and the latest block per id (a newer one expires the older)
   let states = new Map(); const registry = new Map();
   const actionsFor = (i, at) => block => actionsBlock(block, { state: (states.get(i) || new Map()).get(block.id), at, who: name(), tz, app, registry, send: sendAction });
-  function turnEl(t, i) { return t.role === 'user' ? mine(t.content) : theirs(t.content, t.at ? name() + ' · ' + when(t.at, tz) : name(), { actions: actionsFor(i, t.at), cut: t.cut }); }
+  function turnEl(t, i) { return t.role === 'user' ? mine(t.content) : theirs(t.content, t.at ? name() + ' · ' + when(t.at, tz) : name(), { actions: actionsFor(i, t.at), cut: t.cut, commandAsk: t.commandAsk }); }
   function showEarlier() {
     if (!older.length) return;
     const chunk = older.splice(Math.max(0, older.length - PAGE));
@@ -85,7 +85,18 @@ export function liveChat(host, opts) {
     const lk = leakedToolCalls(text);
     return h('div', { class: 'stack-4 msg-them-wrap' }, lk ? h('div', { class: 'msg-them' }, leakNode(lk)) : mdBlock(text, 'msg-them', opts),
       opts && opts.cut ? h('p', { class: 'caption muted chat-cut' }, 'This reply was cut off before ' + name() + ' finished (' + opts.cut + ').') : null,
+      opts && opts.commandAsk ? commandNotice(opts.commandAsk) : null,
       meta ? h('span', { class: 'msg-meta' }, meta) : null);
+  }
+  // a reply that tells the owner to run a command (the server's check, console/command-ask.js): the owner never needs a
+  // terminal, so say so and point at the console action, or ask the crew member to use one
+  function commandNotice(ca) {
+    const a = ca.action;
+    const ask = () => send('You asked me to run a command' + (ca.command ? ' (' + ca.command + ')' : '') + '. I do not use a terminal. Do it with your own tools, a console action, an approval on Today or a handoff to the tools seat, and tell me only what you need me to decide.');
+    return h('div', { class: 'alertbox command-ask', role: 'status' },
+      h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, 'This asks you to run a command.'),
+        h('span', { class: 'body-s' }, 'You don\'t need a terminal for this: ', a ? h('a', { href: a.href, class: 'command-ask-link' }, a.label) : 'tell ' + name() + ' to use a console action.')),
+      a ? null : Button('Ask for a console action', { variant: 'secondary', size: 'sm', onClick: () => { if (busy) { app.toast(name() + ' is still answering. Press Stop first.', true); return; } ask(); } }));
   }
   // a reply as the page shows it: markdown, or (tool calls written out as text) the leak card, never markdown
   function replyNodes(text, o) { const lk = leakedToolCalls(text); return lk ? leakNode(lk, o && o.live) : md(text, o); }
@@ -235,6 +246,7 @@ export function liveChat(host, opts) {
         if (tries > 90) { L.lostView = true; break; }   // about five minutes of a console that does not come back
       }
       if (L.raf) { cancelAnimationFrame(L.raf); } L.final = true; render();
+      if (L.finalP && L.finalP.commandAsk && L.text.trim()) card.insertBefore(commandNotice(L.finalP.commandAsk), meta);
       unnote('reconnect');
       const fp = L.finalP;
       if (L.gone) note('gone', 'The console has no record of this reply any more. Refresh the conversation to see what ' + name() + ' wrote.');

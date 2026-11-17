@@ -35,7 +35,7 @@ if [[ "${1:-}" == "--check" ]]; then
   echo "starnet:   $( [[ -d starnet/.git ]] && git -C starnet rev-parse --short HEAD || echo 'not cloned')"
   echo "env file:  $( [[ -f $ENVFILE ]] && echo "$ENVFILE" || echo missing)"
   echo "token:     $( [[ -s secrets/station-token ]] && echo present || echo missing)"
-  systemctl --user --no-pager status "$SVC.service" "$SVC-dispatch.service" "$SVC-liveness.timer" 2>/dev/null | grep -E '●|Active:' || echo "units:     not installed"
+  systemctl --user --no-pager status "$SVC.service" "$SVC-dispatch.service" "$SVC-liveness.timer" "$SVC-liveness-heartbeat.timer" 2>/dev/null | grep -E '●|Active:' || echo "units:     not installed"
   exit 0
 fi
 
@@ -139,6 +139,12 @@ if [[ -f company/tools/locked-watch.js && -e company/state/locked/baseline.json 
     node company/tools/locked-watch.js accept "$rel" --by owner --why "owner ran scripts/setup-station.sh" >/dev/null 2>&1 || true
   done
 fi
+# Migration: the off-box heartbeat ping moved out of the liveness watcher into its own unit ($SVC-liveness-heartbeat.timer),
+# so the owner's outside-alarm test pauses only the ping and never the dispatcher-silence check. Wherever the watcher
+# timer is on, switch the heartbeat timer on beside it (until then the watcher keeps pinging, so nothing goes quiet).
+if [[ "${1:-}" != "--start" ]] && systemctl --user is-enabled --quiet "$SVC-liveness.timer" 2>/dev/null; then
+  systemctl --user enable --now "$SVC-liveness-heartbeat.timer" && echo "started $SVC-liveness-heartbeat.timer (the outside heartbeat, now its own unit)" || echo "heartbeat timer not started (non-fatal; the watcher keeps pinging)"
+fi
 if [[ $DISPATCH_WAS_ON -eq 1 && "${1:-}" != "--start" ]]; then
   systemctl --user enable "$SVC-dispatch.service" && systemctl --user restart "$SVC-dispatch.service" && echo "started the dispatcher loop in place of the old timer"
 fi
@@ -160,6 +166,7 @@ if [[ "${1:-}" == "--start" ]]; then
   systemctl --user restart "$SVC-dispatch.service"   # restart: an older unit (oneshot) may still be loaded
   # the liveness watcher (modules/liveness/watch.js) exits quietly until the liveness module is enabled
   systemctl --user enable --now "$SVC-liveness.timer" || echo "liveness timer not started (non-fatal)"
+  systemctl --user enable --now "$SVC-liveness-heartbeat.timer" || echo "heartbeat timer not started (non-fatal; the watcher keeps pinging)"
   # wait until the station answers GET /api/cron with the token (SETUP_WAIT_SEC, default 90), and record the step
   WAIT="${SETUP_WAIT_SEC:-90}"; UP=0
   for _ in $(seq 1 "$WAIT"); do

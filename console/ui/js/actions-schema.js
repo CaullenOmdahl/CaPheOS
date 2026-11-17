@@ -7,8 +7,12 @@
 // name under secrets/), approval (ref: an EXISTING owner approval's question id, answered through the approval API;
 // never minted here). Anything else (another type, a secret name the console may not write) makes the whole block
 // invalid, and
-// md.js shows it as plain text with a note. A block has no way to say "run this": every reply-type item only sends a
-// message into the chat, a link only navigates, a secret only goes to the key store.
+// md.js shows it as plain text with a note. A block has no way to say "run this": there is no command or run type, every
+// reply-type item only sends a message into the chat, a link only navigates (console:#/… or a web page, never a
+// terminal), a secret only goes to the key store. And no item may CARRY a shell command for the owner either: a value,
+// option, label, prompt, help or placeholder that is a command line (systemctl …, sudo …, npm/pip install …, git push …,
+// node company/tools/…, a $ prompt, a chained `a && b`) or holds one in backticks makes the block invalid (shellValue).
+// The owner works only in the console; an agent that needs a command run routes it (console action, approval, handoff).
 //
 // The reply is the owner's next message: a visible line ("Chose: Ship today", "Set: Share 80%", "Stored example-key
 // (40 chars)") and, on the last line, `[actionReply {"id":…,"value":…,"fields":{…}}]` for the agent to read.
@@ -21,6 +25,22 @@ const SECRET_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;   // as company/tools/inbox.
 const RESERVED = new Set(['readme.md', 'station-token', 'console-token']);
 export const safeSecretName = n => SECRET_NAME.test(String(n || '')) && !RESERVED.has(String(n).toLowerCase()) && !String(n).includes('..');
 export const safeActionHref = u => { const s = String(u || '').trim(); return /^console:?#\//i.test(s) || /^#\//.test(s) || /^https?:\/\/[^\s<>"]+$/i.test(s); };
+
+// a shell command line the owner would have to type: the structural check every text in a block passes (shellValue)
+const CMD_WORDS = 'sudo|systemctl|journalctl|loginctl|npm|npx|pnpm|yarn|pip3?|pipx|apt(?:-get)?|dnf|pacman|brew|git|node|bash|sh|zsh|docker|podman|curl|wget|python3?|chmod|chown|rm|mv|cp|kill|pkill|crontab|ssh|scp|make|patch';
+const CMD_LINE = new RegExp('^\\s*(?:\\$\\s*)?(?:' + CMD_WORDS + ')(?:\\s+\\S.*)?$', 'i');
+const CMD_TICK = new RegExp('`\\s*(?:\\$\\s*)?(?:' + CMD_WORDS + ')\\s+[^`]*`', 'i');
+const CMD_INLINE = /\bsudo\s+\S+|\bsystemctl\s+(?:--user\s+)?[a-z-]+|\b(?:npm|pnpm|yarn)\s+(?:i|install|ci|run|exec)\b|\bpip3?\s+install\b|\bgit\s+(?:push|pull|reset|checkout|commit|merge|rebase|clone|apply)\b|\bnode\s+\S+\.js\b|&&|\|\s*(?:sh|bash)\b/i;
+/* shellValue(text, {value}) -> the command it carries, or null. A value (what a click sends) counts when it is a command
+   line at all; prose (a label, the prompt) when it holds a backticked command or an inline one (sudo …, systemctl …). */
+export function shellValue(v, opts) {
+  if (typeof v !== 'string' || !v.trim()) return null;
+  const t = v.trim();
+  // a value: a command word with flags or a path after it ("rm -rf x", "node company/tools/a.js"), or an inline command
+  if (opts && opts.value && CMD_LINE.test(t) && /\s(?:-{1,2}\w|\S*[\/.]\S)/.test(t)) return t.slice(0, 80);
+  const m = CMD_TICK.exec(t) || CMD_INLINE.exec(t);
+  return m ? m[0].replace(/`/g, '').trim().slice(0, 80) : null;
+}
 
 const str = (v, max) => typeof v === 'string' && v.trim() !== '' && v.length <= max;
 const num = v => typeof v === 'number' && isFinite(v);
@@ -94,6 +114,15 @@ function check(j) {
       }
     }
     out.items.push(o);
+  });
+  // nothing in the block hands the owner a command (see the header): checked on what the renderer would show or send
+  const cmd = (v, where, value) => { const c = shellValue(v, { value }); if (c) no(where + ': a command for the owner ("' + c + '"). The owner never runs commands: link the console action that does it, ask for an approval, or hand it to the tools seat'); };
+  cmd(out.prompt, 'prompt');
+  out.items.forEach((o, n) => {
+    const at = 'item ' + (n + 1);
+    cmd(o.label, at + ' label'); cmd(o.help, at + ' help'); cmd(o.placeholder, at + ' placeholder');
+    if (typeof o.value === 'string') cmd(o.value, at + ' value', true);
+    for (const op of o.options || []) { cmd(op.id, at + ' option', true); cmd(op.label, at + ' option label'); }
   });
   const kinds = out.items.map(i => i.type);
   // a key is stored and answered on its own: a secret shares its block with links only, never with other answers

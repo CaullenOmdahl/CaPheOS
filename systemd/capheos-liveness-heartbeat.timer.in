@@ -1,0 +1,10 @@
+[Unit]
+Description=Ping the @NAME@ outside heartbeat every 5 minutes (its own timer: the dispatcher-silence check is @SVC@-liveness.timer)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

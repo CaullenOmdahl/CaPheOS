@@ -173,6 +173,9 @@ const IDLE = {
 };
 S.chats = { agent: [{ role: 'user', content: 'What is on today?', at: ago(30) }, { role: 'assistant', content: 'Two quests and **one handoff** due at 17:00. See [the handoffs](console:#/work/handoffs).', at: ago(29) }] };
 // MOCK_CHAT_TURNS=N: a long conversation with the Founder (the chat's rolling window and backscroll)
+// a reply that tells the owner to run a command (the captured 2026-11-17 one), with the server's lint (console/command-ask.js)
+if (process.env.MOCK_COMMAND_ASK) for (const content of ['For tonight, the heartbeat test is ready:\n\n1. Note the period and grace on your check.\n2. Stop the timer by running `systemctl --user stop capheos-sandbox-station-liveness.timer`.',
+  'One more: please run `git push origin main` so the branch is up.']) S.chats.agent.push({ role: 'assistant', content, at: ago(28), commandAsk: require(path.join(__dirname, '..', '..', 'command-ask.js')).commandAsk(content) });
 if (Number(process.env.MOCK_CHAT_TURNS) > 0) for (let k = Number(process.env.MOCK_CHAT_TURNS); k > 0; k--) S.chats.agent.unshift({ role: k % 2 ? 'assistant' : 'user', content: 'Message ' + k + ' of the earlier conversation.', at: ago(30 + k) });
 if (Number(process.env.MOCK_CHAT_TURNS) > 0) for (let k = Number(process.env.MOCK_CHAT_TURNS); k > 0; k--) S.messages.unshift({ dir: 'out', id: 'out-mock-' + k, at: ago(30 + k), from: 'Founder', text: 'Owner channel message ' + k + '.' });
 // MOCK_ACTIONS=1: a Founder reply with every kind of chat action, an expired one, a superseded pair, a malformed one,
@@ -342,6 +345,26 @@ async function apiRoute(req, res, p, q) {
     const after = Number(q.get('after')) || 0;
     const ev = [{ seq: 1, name: 'tool', tool: 'shell', text: r.step, raw: r.agentId === 'tools1' ? RAW_STEP : 'node company/tools/hire.js status', callId: 'c1' }, { seq: 2, name: 'result', callId: 'c1', ok: true }, { seq: 3, name: 'token', delta: 'Looking at the open items.' }];
     return ok({ known: true, runId: r.runId, agentId: r.agentId, name: r.name, events: ev.filter(e => e.seq > after), seq: 3, done: false }); } }
+  // Settings › System › Test the outside alarm (modules/liveness/http.js): pause the heartbeat ping, count down, resume
+  if (p === '/api/m/liveness/alarm-test' || p.startsWith('/api/m/liveness/alarm-test/')) {
+    const A = S.alarm = S.alarm || { saved: { periodMin: 5, graceMin: 2 }, active: null, last: null, lastPingAt: ago(3) };
+    const view = () => ok({ configured: true, enabled: true, lastPingAt: A.lastPingAt, saved: A.saved, active: A.active, last: A.last, maxWindowMin: 720, extraMin: 5 });
+    const what = p.slice('/api/m/liveness/alarm-test/'.length);
+    if (M === 'GET' && !what) return view();
+    if (M === 'POST' && what === 'start') {
+      const pm = Number(B.periodMin), gm = Number(B.graceMin);
+      if (!(pm > 0) || !(gm >= 0)) return J(res, 400, { ok: false, error: 'Give the check\'s period (minutes, above 0) and grace (minutes, 0 or more), as your check shows them.' });
+      const exp = Date.parse(A.lastPingAt) + (pm + gm) * 60000;
+      A.saved = { periodMin: pm, graceMin: gm };
+      A.active = { id: 'hbt-mock', startedAt: now(), periodMin: pm, graceMin: gm, lastPingAt: A.lastPingAt, expectAt: new Date(exp).toISOString(), until: new Date(Math.max(exp, Date.now()) + 5 * 60000).toISOString(), gotAt: null };
+      return view();
+    }
+    if (M === 'POST' && (what === 'got-it' || what === 'resume')) {
+      if (!A.active) return J(res, 409, { ok: false, error: 'No test is running.' });
+      A.last = Object.assign({}, A.active, { gotAt: what === 'got-it' ? now() : null, result: what === 'got-it' ? 'alert seen' : 'no alert seen', endedAt: now() });
+      A.active = null; A.lastPingAt = now(); return view();
+    }
+  }
   // background services (Settings › System): company/tools/service.js list --json, and stop/start/remove as the owner
   if (M === 'GET' && p === '/api/services') return ok({ company: 'mock', guardrail: 'on', services: S.services });
   const svm = p.match(/^\/api\/services\/([A-Za-z0-9@_.:-]{2,80})\/(stop|start|remove)$/);

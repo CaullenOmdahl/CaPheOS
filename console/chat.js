@@ -18,6 +18,11 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { commandAsk } = require(path.join(__dirname, 'command-ask.js'));
+// a reply that tells the owner to run a command: the page shows a notice under it (console/command-ask.js)
+const cmdAsk = text => { try { return commandAsk(text); } catch (_) { return null; } };
+// the run's last reply line, with that check added (console/chat-runs.js journals it as written)
+const withAsk = l => l.name === 'console.final' && l.payload && typeof l.payload.text === 'string' ? { name: l.name, payload: Object.assign({}, l.payload, { commandAsk: cmdAsk(l.payload.text) }) } : l;
 
 
 /* What the console knows that the chat would not: this seat's own recent work (its routine runs are separate
@@ -37,6 +42,7 @@ function contextNote(id, s, co, text) {
     + (lines.length ? ' Your own recent runs (separate conversations you can check):\n' + lines.join('\n') : ' No earlier runs of yours are recorded.')
     + (notes.length ? '\nYour written record: ' + notes.join(', ') + '. Read them before claiming what you have done.' : '')
     + '\nRun commands and read or write files by calling your tools. Never write a tool call out as text (<run_command>, <invoke>, <tool_call>, a JSON call): text is not run, and the owner only sees the markup.'
+    + '\nNever ask the owner to run a command or open a terminal (systemctl, sudo, npm/pip install, git push, node …): the owner works only in the console. Do it with your own tools, link the console action that does it ([label](console:#/route)), ask for an approval on Today, or hand it to the tools seat in a handoff; a change to a framework file is a harness-change propose. If agents are refused the command, say so and route it, never hand it over.'
     + '\nWhen you point the owner somewhere in the console, link it: [label](console:#/route). For a quick choice in this conversation, write an ```actions block (company/skills/console-links/SKILL.md "Chat actions").'
     + actionReplyNote(text) + ']\n\n';
 }
@@ -118,6 +124,7 @@ module.exports = function chat(deps) {
         const mine = rid ? RUNS.runOf(rid) : null;
         const why = mine && mine.status === 'cut' ? mine.reason : rid ? reasons[rid] : null;
         if (t.role === 'assistant' && why && CUT.test(why)) o.cut = why;
+        if (t.role === 'assistant') { const ca = cmdAsk(t.content); if (ca) o.commandAsk = ca; }
         return o;
       });
     return { ok: true, turns };
@@ -230,7 +237,7 @@ module.exports = function chat(deps) {
     const watch = rid => {   // the run is known: from here the browser reads its journal
       if (runId || closed) return; runId = rid;
       line('console.attached', { runId: rid });
-      off = RUNS.attach(rid, 0, l => { line(l.name, l.payload); if (l.name === 'console.end') { closed = true; if (off) off(); res.end(); } });
+      off = RUNS.attach(rid, 0, x => { const l = withAsk(x); line(l.name, l.payload); if (l.name === 'console.end') { closed = true; if (off) off(); res.end(); } });
     };
     prep.started.then(watch);
     const refuse = (p) => { prep.cancel(); if (!runId) { line('console.error', p); closed = true; res.end(); } };
@@ -280,7 +287,7 @@ module.exports = function chat(deps) {
     let off = null, ended = false;
     const ka = setInterval(() => { try { res.write('\n'); } catch (_) {} }, 20000); ka.unref();
     const stop = () => { ended = true; clearInterval(ka); if (off) off(); };
-    off = RUNS.attach(rid, from, l => { if (ended) return; try { res.write(JSON.stringify({ name: l.name, payload: l.payload }) + '\n'); } catch (_) {} if (l.name === 'console.end') { stop(); res.end(); } });
+    off = RUNS.attach(rid, from, x => { if (ended) return; const l = withAsk(x); try { res.write(JSON.stringify({ name: l.name, payload: l.payload }) + '\n'); } catch (_) {} if (l.name === 'console.end') { stop(); res.end(); } });
     if (ended) off();
     res.on('close', stop);
   }

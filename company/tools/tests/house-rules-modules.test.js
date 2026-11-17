@@ -34,8 +34,8 @@ test('without the commitments module, no seat is sent to the commitments tool', 
   const T = scratch([]);
   try {
     const r = ensureIn(T, 'You are Jo.\n\nDo the work.');
-    assert.equal(r.version, 'v8');
-    assert.ok(r.prompt.includes('[HOUSE RULES FOR SCHEDULED RUNS v8]'));
+    assert.equal(r.version, 'v9');
+    assert.ok(r.prompt.includes('[HOUSE RULES FOR SCHEDULED RUNS v9]'));
     assert.doesNotMatch(r.prompt, /commitments\.js/);
     assert.match(r.prompt, /handoff to yourself/);
     assert.match(r.prompt, /service\.js propose/);   // the rest of the waiting rule stays

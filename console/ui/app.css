@@ -313,6 +313,7 @@ dl.kv dt { color: var(--text-muted); } dl.kv dd { margin: 0; color: var(--text-s
 /* tool calls a model wrote as text (js/leaked-tools.js): a note, the prose as plain text, the markup under Details */
 .leaked-tools { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .leaked-tools-note { margin: 0; }
+.alertbox.command-ask { margin: 0; padding: 12px 16px; border-color: var(--status-warning); background: color-mix(in srgb, var(--status-warning) 12%, transparent); color: inherit; }
 .leaked-prose { white-space: pre-wrap; overflow-wrap: anywhere; font: var(--type-body); color: var(--text-body); }
 .leaked-raw > summary { cursor: pointer; color: var(--text-muted); }
 .leaked-raw > pre { margin: 8px 0 0; padding: 10px 12px; max-height: 420px; overflow: auto; background: var(--bg-sunken); border-radius: var(--radius-md); font: var(--type-mono); white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -32,6 +32,9 @@
  *     refreshes every routine within ten minutes, and existing companies get the fix through the same refresh.
  *     The fallback's "later" line names **Not before:** (2026-11-17): it said **Deadline:**, which the dispatcher then
  *     read as a start date, while the crew writes a Deadline to mean "finish by"; every dated item sat until its due day.
+ *  9. No commands for the owner (v9): on 2026-11-17 the Founder's chat reply told the owner to run `systemctl --user stop
+ *     …-liveness.timer` in a terminal. The owner works only in the console; Today's ask composer refused such asks, chat and
+ *     handoffs did not. Every run now carries the rule, and the console flags a chat reply that breaks it (console/command-ask.js).
  *  3. Short waits. The station reclaims a routine run that shows no progress for 8 minutes (CRON_HEARTBEAT_STALE_MS
  *     480000), and a tool call in progress does not count, so one long shell_bg_wait loses the run's final reply.
  *
@@ -55,12 +58,13 @@ const path = require('path');
 const call = (...a) => require('./station-crew.js').call(...a);   // loaded on first use, so the selftest needs no token
 const co = require('./lib/company');
 const ROOT = co.ROOT;
-const VERSION = 'v8';
+const VERSION = 'v9';
 const START = '[HOUSE RULES FOR SCHEDULED RUNS ';
 const END = '[END HOUSE RULES]';
 const BLOCK = START + VERSION + ']\n' + [
   '- In fs_write, fs_edit, fs_append and fs_patch, name files by their path relative to the company root, for example company/work/handoffs/to-<name>.md, never ' + ROOT + '/company/... An absolute path makes the station try to back up the whole disk before the write, which is slow and leaves your write with no restore point. Shell commands are not affected.',
   '- Put temporary files under scratch/ (a relative path), not /tmp.',
+  '- Never ask the owner to run a command or open a terminal (systemctl, sudo, npm or pip install, git push, node ...), in chat, on Today or in a handoff: the owner works only in the console. Do it with your tools, link the console action that does it, ask for an approval on Today, or hand it to the tools seat; a change to a framework file is a harness-change propose. If agents are refused the command, say so and route it.',
   '- The station stops a scheduled run at 90 minutes, mid-task and before your final report. Watch the clock: after about 60 minutes start no new research or build step; save what you have, write your log entry and handoffs, and end by 75 minutes. For a job bigger than one run, write down exactly where you stopped and what comes next, so your next run picks it up.',
   '- Routine models are set by the usage pacer (company/tools/pacer.js) from the routing table in company/model-policy.json, which the people owner keeps as model manager. Never change a routine\'s provider or model by hand: to change a pairing, ask the people owner to change the table.',
   '- Never wait inside a run for more than about 2 minutes in all (sleep, shell_bg_wait, a polling loop) to reach a wall-clock time. A waiting run holds your seat, blocks lanes and station restarts, and does no work; the station\'s sleep refuses more than 120 s. To act at a later time, record a commitment with a due time (node company/tools/commitments.js create --title "..." --key <key> --owner <you> --due <ISO time>) and end the run: the commitments duty wakes you then. For continuous recording or watching, use a background service (node company/tools/service.js propose).',
