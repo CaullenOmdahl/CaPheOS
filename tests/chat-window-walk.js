@@ -35,6 +35,14 @@ async function waitFor(fn, ms) { const end = Date.now() + ms; for (;;) { try { c
   const n = await ev('(()=>{const b=document.querySelector(".chat-body");const first=b.children[1];const top0=first.getBoundingClientRect().top;b.scrollTop=0;b.dispatchEvent(new Event("scroll"));return {items:b.children.length,shift:Math.abs(first.getBoundingClientRect().top-top0),scrollTop:b.scrollTop}})()');
   t('scrolling to the top loads 40 earlier messages', n && n.items === 81, n);
   t('and keeps the reader at the same message', n && n.scrollTop > 1000, n);
+  // the owner channel (its own message list, not the live chat) is the same rolling window
+  await cmd('Page.navigate', { url: 'http://127.0.0.1:' + mockPort + '/#/chat/owner' });
+  await waitFor(() => ev('document.querySelectorAll(".comms .chat-body > *").length > 30'), 15000);
+  const o = await ev('(()=>{const b=document.querySelector(".comms .chat > .chat-body"),c=document.querySelector(".comms"),f=document.querySelector(".composer").getBoundingClientRect(),l=document.querySelector(".conv-list").getBoundingClientRect();return {pageH:document.documentElement.scrollHeight,winH:innerHeight,client:b.clientHeight,scroll:b.scrollHeight,commsTop:c.scrollTop,composerBottom:f.bottom,listTop:l.top,atBottom:b.scrollHeight-b.scrollTop-b.clientHeight<80}})()');
+  t('owner channel: the page and the conversation list stay put', o && o.pageH <= o.winH + 2 && o.commsTop === 0 && o.listTop >= -1, o);
+  t('owner channel: the messages scroll on their own, the composer is on screen, newest in view', o && o.scroll > o.client + 100 && o.composerBottom <= o.winH + 1 && o.atBottom, o);
+  await cmd('Page.navigate', { url: 'http://127.0.0.1:' + mockPort + '/#/chat/agent' });
+  await waitFor(() => ev('!!document.getElementById("msg") && document.querySelectorAll(".chat-body .msg-me").length > 10'), 15000);
   // keyboard: Enter adds a line, Shift+Enter sends; ? shows the shortcuts; g then t goes to Today
   const key = async (key, code, mods, text) => { await cmd('Input.dispatchKeyEvent', { type: 'keyDown', key, code, modifiers: mods || 0, text, windowsVirtualKeyCode: key === 'Enter' ? 13 : 0 }); await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key, code, modifiers: mods || 0 }); };
   await ev('(()=>{const t=document.getElementById("msg");t.focus();t.value="hello";return 1})()');

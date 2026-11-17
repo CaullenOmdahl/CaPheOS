@@ -110,7 +110,8 @@ export async function render(root, ctx) {
     const el = role === 'me' ? h('div', { class: 'msg-me' }, text) : h('div', { class: 'stack-4' }, mdBlock(text, 'msg-them'), meta ? h('span', { class: 'msg-meta' }, meta) : null);
     return el;
   }
-  function scrollEnd() { const last = body.lastElementChild; if (last && last.scrollIntoView) last.scrollIntoView({ block: 'nearest' }); }
+  // scroll the message list itself (never the page or the conversation list) to the newest message
+  function scrollEnd() { body.scrollTop = body.scrollHeight; }
 
   async function loadThread() {
     fill(bodyErr);

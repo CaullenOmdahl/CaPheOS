@@ -226,8 +226,11 @@ dialog.modal::backdrop { background: var(--scrim); }
   .comms > .conv-list { flex: 0 0 280px; }
   .comms .conv-list { overflow-y: auto; }
   .comms .chat, .comms .chat-live { min-height: 0; }
+  /* the owner channel and group chats put their messages straight in .chat: the same rolling window */
+  .comms .chat > .chat-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; max-width: none; }
+  .comms .chat > .chat-body > * { max-width: 760px; }
 }
-@media (max-width: 860px) { .chat-scroll > .chat-body { max-height: 65vh; max-height: 65dvh; } }
+@media (max-width: 860px) { .chat-scroll > .chat-body, .comms .chat > .chat-body { max-height: 65vh; max-height: 65dvh; overflow-y: auto; } }
 .msg-me { align-self: flex-end; max-width: 520px; padding: 14px 18px; border-radius: var(--radius-lg); background: var(--bg-inverse); color: var(--text-on-inverse); font: var(--type-body); white-space: pre-wrap; }
 .msg-them { max-width: 600px; font: var(--type-body); color: var(--text-body); white-space: pre-wrap; }
 .msg-meta { font: var(--type-caption); color: var(--text-muted); }
