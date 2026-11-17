@@ -78,7 +78,15 @@ What agents change lasts for that meeting; your add and remove set the standing 
 - Runs are tracked by `console/chat-runs.js` (detached, followed on the observer feed), and the meeting saves its queue
   after every step, so a console restart re-attaches to the turn in flight and carries on; `GET /api/console/busy`
   lists it (`scripts/restart-console.sh --when-idle`).
-- A halt stops the meeting (the turn in flight is cancelled) and no round starts under one. The meeting is the owner's:
+- **Halts.** A soft halt lets the turn in progress finish, writes the minutes and marks the meeting `interrupted`; a
+  hard halt aborts the turn and marks it `interrupted` too. Resume it once the halt is lifted; no round starts under a
+  halt. The halt lists the meeting as live work (`lib/meetings.js liveWork`), and Today and the floor show it in progress.
+- **Approvals inside a turn.** A station permission prompt in a turn becomes an owner question on Today › Needs you
+  (`inbox.js ask`, kind approve) and **pauses** the meeting; your answer goes back to the station as the consent, then it
+  carries on.
+- **The dispatcher.** While a round runs, the seated seats are neither idle nor wakable (`dispatch.js`: no wake, lane or
+  re-fire; MEETING HOLD in the log). A seat already in the middle of a routine run sits its turn out with one plain line,
+  so the meeting never stalls on it. The meeting is the owner's:
   every route is behind the console sign-in, and a console inside an agent's run refuses it (`lib/owner.js`).
 - The chat's owner-scope lint (`console/command-ask.js`) runs on every reply: crew work or a command put to the owner is
   flagged under the reply and the agent is told on its next turn; while you observe, any question to you is.

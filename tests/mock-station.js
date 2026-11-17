@@ -79,7 +79,7 @@ const S = {
   },
   runSeq: 1,
   dossierBlock: '', posture: null,
-  meeting: { queues: {}, runs: [] },   // POST /__meeting {replies, reset}; GET /__state .meeting
+  meeting: { queues: {}, runs: [] }, consentWait: {}, consents: [],   // a meeting reply {consent:true} asks a permission and waits for POST /api/consent   // POST /__meeting {replies, reset}; GET /__state .meeting
   live: [],              // runs in flight (GET /api/state/snapshot); a test starts one with POST /__live
   holds: [],             // POST /__hold {names:[…]}: routines whose name contains one stay in flight on /api/cron/run
   caps: CAPS,            // GET /api/version capabilities
@@ -113,7 +113,7 @@ function meetingReply(B) {
   if (typeof e === 'string') e = { text: e };
   const refused = !!e.refuseAll || (!!e.refuse && B.provider === 'claude-cli');
   if (!refused || e.refuseAll) q.shift();
-  return { text: e.text, refused, step: Number(e.stepMs) || 5 };
+  return { text: e.text, refused, step: Number(e.stepMs) || 5, consent: !!e.consent };
 }
 const watchers = new Set();
 const ring = []; let obsSeq = 0, obsEpoch = 'mock' + Date.now().toString(36);
@@ -252,6 +252,7 @@ function handle(method, p, q, body, res) {
       if (refusedHere) evs.push({ name: 'agent.run.end', payload: { runId, reason: 'refused', outcome: 'refused', failureCode: 'content_policy_blocked', usd: 0 } });
       else if (!reply) evs.push({ name: 'agent.run.error', payload: { runId, message: 'provider error: HTTP 401 (mock)', failureCode: 'provider_auth' } }, { name: 'agent.run.end', payload: { runId, reason: 'error', outcome: 'failed', usd: 0 } });
       else {
+        if (mt && mt.consent) evs.push({ name: 'permission.prompt', payload: { runId, promptId: 'prompt-' + runId, tool: 'code.run', argsSummary: 'ls company/work' }, waitConsent: true });
         if (!leak && (!mt || B.isTask)) evs.push({ name: 'agent.tool_call', payload: { runId, callId: 'c1', name: 'fs_read', argsSummary: 'company/CHARTER.md' } }, { name: 'agent.tool_result', payload: { runId, callId: 'c1', ok: true, ms: 3, summary: 'read 40 lines' } });
         for (const w of leak ? reply.match(/[^\n]*\n?/g).filter(Boolean) : reply.match(/\S+\s*/g)) evs.push({ name: 'agent.token', payload: { runId, delta: w } });
         evs.push({ name: 'agent.run.end', payload: { runId, reason: 'done', outcome: 'succeeded', usd: 0.0012 } });
@@ -278,6 +279,7 @@ function handle(method, p, q, body, res) {
           return settle(refusedHere ? 'refused' : reply ? 'done' : 'error');
         }
         const ev = evs[i++]; if (ev.name === 'agent.token') text += ev.payload.delta;
+        if (ev.waitConsent) { send1({ name: ev.name, payload: ev.payload }); S.consentWait[ev.payload.promptId] = decision => { send1({ name: 'permission.response', payload: { runId, promptId: ev.payload.promptId, decision } }); timer = setTimeout(tick, step); }; return; }   // the run waits for POST /api/consent
         send1(ev); timer = setTimeout(tick, step);
       };
       // the disconnect law: the watcher leaving cancels the run, unless it asked to be detached
@@ -295,7 +297,7 @@ function handle(method, p, q, body, res) {
     const stream = q.get('stream') || 'global';
     return send(res, 200, { stream, turns: (S.transcripts[stream] || []).slice(-(Number(q.get('limit')) || 200)) });
   }
-  if (p === '/api/consent' && method === 'POST') return send(res, 200, { ok: true, decision: B.decision || 'deny' });
+  if (p === '/api/consent' && method === 'POST') { S.consents.push(B); const wv = S.consentWait[B.promptId]; if (wv) { delete S.consentWait[B.promptId]; wv(B.decision); } return send(res, 200, { ok: true, decision: B.decision || 'deny' }); }
   // --- projects (the blessed folders an agent may work in) ---
   if (p === '/api/projects' && method === 'GET') return send(res, 200, { projects: S.projects });
   if (p === '/api/projects/bless' && method === 'POST') {

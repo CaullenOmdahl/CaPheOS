@@ -9,6 +9,7 @@ import { mdBlock } from '../md.js';
 import { idleLine } from '../idle-line.js';
 import { requestCard } from './today-requests.js';
 import { endpointPicker, loadEndpoint } from '../minimax-endpoint.js';
+import { meetingStrip } from '../meeting-strip.js';
 
 const ss = { set: (k, v) => { try { sessionStorage.setItem(k, v); } catch (_) {} } };
 const dur = sec => sec == null ? '' : sec < 60 ? sec + ' s' : sec < 3600 ? Math.floor(sec / 60) + ' min' : Math.floor(sec / 3600) + ' h ' + Math.floor(sec % 3600 / 60) + ' min';
@@ -51,7 +52,7 @@ export async function render(root, ctx) {
   } }, h('label', { for: 'ask', class: 'sr-only' }, 'Message ' + ceoName), askInput, Button('Send', { variant: 'primary', type: 'submit' }), askErr);
   const nowEl = h('section', { class: 'stack-12', 'aria-labelledby': 'now-h', 'aria-live': 'polite' });
 
-  const onboardEl = h('div');
+  const onboardEl = h('div'); const meetEl = h('div');
   const liveDot = h('span', { class: 'live-dot' + (events.isLive() ? '' : ' off') }, events.isLive() ? 'Live' : 'Polling');
   const needsErr = h('div');
   const gatesEl = h('div', { class: 'gates', 'aria-live': 'polite', 'aria-relevant': 'additions removals' });
@@ -65,7 +66,7 @@ export async function render(root, ctx) {
       h('div', { class: 'stack-14', style: 'max-width:720px' }, Eyebrow([dateLabel, co.name]),
         h('h1', { class: 'h1' }, greet + (ownerName ? ', ' + personName(String(ownerName).split(' ')[0]) : '') + '.'), lede),
       askForm),
-    onboardEl, nowEl,
+    onboardEl, meetEl, nowEl,
     h('section', { 'aria-labelledby': 'needs', class: 'stack-16' },
       h('div', { class: 'between', style: 'gap:16px' },
         h('div', { class: 'row-8', style: 'align-items:center;gap:12px' }, h('h2', { id: 'needs', class: 'h3' }, 'Needs you'), liveDot),
@@ -365,7 +366,8 @@ export async function render(root, ctx) {
   // elapsed time ticks while something runs; a slow poll keeps "Now" honest when SSE is down
   const nowTimer = setInterval(() => { if (document.hidden) return; if (nowData && nowData.runs.length) loadNow(); }, 5000);
   const usageTimer = setInterval(() => { if (!document.hidden) loadUsage(); }, 60000);
-  return () => { offs.forEach(f => f()); stopPanels(); clearInterval(usageTimer); clearInterval(nowTimer); for (const w of watching.values()) clearTimeout(w.timer); document.removeEventListener('capheos:live', onLive); };
+  const offMeet = meetingStrip(meetEl);
+  return () => { offMeet(); offs.forEach(f => f()); stopPanels(); clearInterval(usageTimer); clearInterval(nowTimer); for (const w of watching.values()) clearTimeout(w.timer); document.removeEventListener('capheos:live', onLive); };
 }
 
 /* a Needs-you card's head: a human category, who asked and when (the question id and raw tags go under Details) */

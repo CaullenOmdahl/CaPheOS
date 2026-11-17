@@ -130,6 +130,23 @@ W('company/model-policy.json', pol);
   t('6. the turn in flight was re-attached, not started again', rs.length === 1, rs);
   t('6. its reply is recorded whole, and the meeting carried on', e2.some(e => e.kind === 'say' && e.who === 'agent' && /keeps going for a while so the console can restart under it\./.test(e.text)) && e2.some(e => e.kind === 'say' && e.who === 'cfo' && e.text === 'After the restart.'), e2.slice(-4));
 
+  // 8. a consent prompt inside a turn: an owner question on Today, the meeting paused; the answer goes back to the station
+  await api('/meeting/agenda', { op: 'tools', id: item.id, on: true });
+  await st('/__meeting', { reset: true, replies: { agent: { text: 'I read the folder.', consent: true }, cfo: 'Good.', sec: 'PASS' } });
+  await api('/meeting/say', { text: 'Look at the folder.' });
+  const paused = await waitFor(async () => { const x = (await api('/meeting')).json; return x.live.pausedFor ? x : null; }, 10000);
+  const qs = (await api('/questions')).json;
+  const q = paused && (qs.questions || []).find(x => x.id === paused.live.pausedFor.qid);
+  t('8. the prompt is a question on Today and the meeting is paused', !!(paused && q) && (await runs()).filter(x => x.kind === 'turn').length === 1, { live: paused && paused.live, q: (qs.questions || []).map(x => x.id) });
+  const st8 = (await api('/meeting/status')).json;
+  t('8. Today and the floor see the meeting as live work', st8.live && st8.live[0] && st8.live[0].running && st8.live[0].seats.includes('Founder'), st8);
+  r = await api('/questions/' + (q && q.id) + '/answer', { action: 'approve' });
+  await idle();
+  const cons = (await st('/__state')).consents;
+  e2 = await entries();
+  t('8. the answer goes back to the station, and the meeting carries on', cons.some(c => c.decision === 'once') && e2.some(e => e.who === 'cfo' && e.text === 'Good.'), { r, cons, tail: e2.slice(-3) });
+  await api('/meeting/agenda', { op: 'tools', id: item.id, on: false });
+
   // 7. halt
   await st('/__meeting', { reset: true, replies: { agent: { text: 'A slow answer that the halt cuts off before it ends, word by word by word.', stepMs: 250 }, cfo: 'Never said.' } });
   await api('/meeting/say', { text: 'Halt test.' });

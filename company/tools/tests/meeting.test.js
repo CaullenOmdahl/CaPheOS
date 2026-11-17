@@ -37,17 +37,20 @@ function makeRunner() {
     if (!refused) q.shift();
     const runId = 'r' + (++r.seq);
     r.calls.push(Object.assign({ runId, last: o.messages[o.messages.length - 1].content, all: o.messages.map(m => m.content).join('\n') }, o));
-    r.pending.set(runId, { text: e.text, refused, hold: e.hold });
+    r.pending.set(runId, { text: e.text, refused, hold: e.hold, consent: e.consent });
     return { runId };
   };
-  r.wait = async runId => {
+  r.consents = [];
+  r.wait = async (runId, onEvent) => {
     const p = r.pending.get(runId); r.live++; r.maxLive = Math.max(r.maxLive, r.live);
     await new Promise(res => setTimeout(res, 5));
+    if (p.consent && onEvent) { await new Promise(res => { p.consentDone = res; onEvent({ name: 'permission.prompt', payload: { promptId: 'p-' + runId, tool: 'code.run', argsSummary: 'ls company/work' } }); }); }
     if (p.hold) await p.hold;
     r.live--;
     if (p.cancelled) return { text: '', usd: 0.001, refused: false, complete: false, error: 'cancelled' };
     return { text: p.refused ? '' : p.text, usd: 0.002, refused: p.refused, complete: !p.refused, error: null };
   };
+  r.consent = (runId, promptId, decision) => { r.consents.push({ runId, promptId, decision }); const p = r.pending.get(runId); if (p && p.consentDone) p.consentDone(); };
   r.cancel = runId => { const p = r.pending.get(runId); if (p) p.cancelled = true; };
   r.turns = () => r.calls.filter(c => c.purpose === 'turn');
   return r;
@@ -57,7 +60,7 @@ function fresh(opts) {
   for (const f of ['company/state/meetings']) fs.rmSync(path.join(T, f), { recursive: true, force: true });
   const runner = makeRunner();
   const models = Object.assign({}, (opts && opts.models) || {});
-  const M = meetingLib({ co, owner: () => 'Caullen', runner, run, speedMs: { fast: 1, normal: 1, slow: 1 }, modelFor: async id => models[id] || { provider: 'claude-cli', model: 'claude-sonnet-5-5' } });
+  const M = meetingLib({ co, owner: () => 'Caullen', runner, run, speedMs: { fast: 1, normal: 1, slow: 1 }, consentPollMs: 20, seatBusy: async id => !!(opts && opts.busy && opts.busy.includes(id)), modelFor: async id => models[id] || { provider: 'claude-cli', model: 'claude-sonnet-5-5' } });
   if (opts && opts.seats && Object.keys(CREW).some(x => !opts.seats.includes(x))) M.seatsChange({ remove: Object.keys(CREW).filter(x => !opts.seats.includes(x)) });
   if (opts && opts.seats) M.seatsChange({ add: opts.seats });
   if (opts && 'leader' in opts) M.setLeader({ seat: opts.leader });
@@ -425,18 +428,73 @@ test('Raise hand, Continue, Stop round, a message during a round', async () => {
   assert.ok(kinds(M, 'note').some(e => e.text === 'Round stopped.'));
 });
 
-test('halt stops a meeting, and no round starts under a halt', async () => {
+test('soft halt: the turn in progress finishes, the minutes are written, the meeting is interrupted', async () => {
   const { M, runner } = fresh({ seats: ['dave', 'sharon'], leader: 'dave' });
   let release; const hold = new Promise(r => { release = r; });
-  runner.script({ dave: { text: 'Mid-sentence', hold }, sharon: 'never' });
+  runner.script({ dave: { text: 'I finish my sentence.', hold }, sharon: 'never' });
+  await M.say({ text: 'Go.' });
+  await new Promise(r => setTimeout(r, 30));
+  W('company/state/halt.json', { mode: 'soft', by: 'Caullen' });
+  await new Promise(r => setTimeout(r, 1200));
+  assert.ok(!runner.pending.get(runner.turns()[0].runId).cancelled, 'a soft halt does not cut the turn off');
+  release(); await idle(M);
+  assert.ok(kinds(M, 'say').some(e => e.who === 'dave' && e.text === 'I finish my sentence.'), 'the turn finished whole');
+  assert.ok(!runner.turns().some(c => c.seat === 'sharon'), 'nobody starts after it');
+  const v = await M.view();
+  assert.strictEqual(v.meeting.state, 'interrupted'); assert.match(v.meeting.reason, /soft halt/);
+  const mins = R('company/work/meetings/meeting-' + co.localParts(new Date()).date + '.md');
+  assert.ok(/I finish my sentence\./.test(mins) && /The meeting was interrupted: soft halt/.test(mins), 'the minutes are written');
+  await assert.rejects(async () => M.say({ text: 'Hello?' }), /halt/);
+  fs.unlinkSync(path.join(T, 'company/state/halt.json'));
+});
+
+test('hard halt: the turn is aborted, the meeting marked interrupted, and it can be resumed after the halt', async () => {
+  const { M, runner } = fresh({ seats: ['dave', 'sharon'], leader: 'dave' });
+  let release; const hold = new Promise(r => { release = r; });
+  runner.script({ dave: { text: 'Mid-sentence', hold }, sharon: ['never', 'After the halt.'] });
   await M.say({ text: 'Go.' });
   await new Promise(r => setTimeout(r, 30));
   W('company/state/halt.json', { mode: 'hard', by: 'Caullen' });
   await new Promise(r => setTimeout(r, 1200)); release(); await idle(M);
+  assert.ok(runner.pending.get(runner.turns()[0].runId).cancelled, 'the turn in flight is cancelled');
   assert.ok(!runner.turns().some(c => c.seat === 'sharon'), 'nobody speaks after the halt');
-  assert.ok(kinds(M, 'note').some(e => /halted, so the meeting stopped/.test(e.text)));
-  await assert.rejects(async () => M.say({ text: 'Hello?' }), /halt/);
+  const v = await M.view();
+  assert.strictEqual(v.meeting.state, 'interrupted'); assert.match(v.meeting.reason, /hard halt: aborted/);
+  await assert.rejects(async () => M.resume({}), /halt/, 'not under the halt');
   fs.unlinkSync(path.join(T, 'company/state/halt.json'));
+  await M.resume({});
+  assert.strictEqual((await M.view()).meeting.state, 'open', 'resumable');
+  await M.say({ text: '@sharon carry on' }); await idle(M);
+  assert.ok(kinds(M, 'say').some(e => e.who === 'sharon'));
+});
+
+test('a consent prompt inside a turn goes to the approvals path (Today) and pauses the meeting until answered', async () => {
+  const { M, runner } = fresh({ seats: ['dave', 'sharon'], leader: 'dave' });
+  M.agenda({ op: 'add', title: 'Check', tools: true });
+  runner.script({ dave: { text: 'I checked the folder.', consent: true }, sharon: 'Thanks.' });
+  await M.say({ text: 'Check it.' });
+  let v; for (let i = 0; i < 100; i++) { v = await M.view(); if (v.live.pausedFor) break; await new Promise(r => setTimeout(r, 10)); }
+  assert.ok(v.live.paused && v.live.pausedFor && v.live.pausedFor.tool === 'code.run' && v.live.pausedFor.qid, JSON.stringify(v.live));
+  const inbox = require(path.join(REPO, 'company/tools/inbox.js'));
+  const q = inbox.state()[v.live.pausedFor.qid];
+  assert.ok(q && q.type === 'ask' && /Dave wants to use code\.run during your meeting/.test(q.message), 'an owner question on Today');
+  await new Promise(r => setTimeout(r, 100));
+  assert.deepStrictEqual(runner.calls.map(c => c.seat), ['dave'], 'nothing else starts while it waits');
+  const prov = require(path.join(REPO, 'company/tools/provenance.js'));
+  prov.pinOwnerShell(true);
+  try { inbox.answer({ id: q.id, a: 'yes', answer: { verdict: 'yes' }, by: 'owner' }); } finally { prov.pinOwnerShell(null); }
+  await idle(M);
+  assert.deepStrictEqual(runner.consents.map(c => c.decision), ['once'], 'the answer goes back to the station');
+  assert.deepStrictEqual(runner.turns().map(c => c.seat), ['dave', 'sharon'], 'then the meeting carries on');
+  assert.ok(kinds(M, 'consent').some(e => e.op === 'answered' && e.decision === 'once'));
+});
+
+test('a seat in the middle of a routine run sits the turn out: the meeting does not stall on it', async () => {
+  const { M, runner } = fresh({ seats: ['dave', 'sharon', 'phil'], leader: 'dave', busy: ['sharon'] });
+  runner.script({ dave: 'D.', sharon: 'never', phil: 'P.' });
+  await M.say({ text: 'Go.' }); await idle(M);
+  assert.deepStrictEqual(runner.turns().map(c => c.seat), ['dave', 'phil']);
+  assert.ok(kinds(M, 'note').some(e => /Sharon is in the middle of a routine run, so they sit this turn out/.test(e.text)));
 });
 
 test('state: under company/state/meetings, mode 600, read bounded, covered by retention', async () => {

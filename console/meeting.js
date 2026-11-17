@@ -215,7 +215,8 @@ module.exports = function meeting(deps) {
   const parseText = e => 'The console could not read ' + nameOf(e.who) + '\'s line "' + e.line + '": ' + e.why;
   const closeText = e => e.state === 'interrupted' ? 'The meeting was interrupted' + (e.why ? ': ' + e.why : '') : 'The meeting was closed by ' + nameOf(e.who) + (e.why ? ': ' + e.why : '');
   const resumeText = e => owner() + ' resumed the meeting';
-  const TEXTS = { join: joinText, leave: leaveText, lead: leadText, ask: askText, hand: handText, call: callText, lower: lowerText, end: endText, ruling: rulingText, observe: observeText, agenda: agendaText, parse: parseText, close: closeText, resume: resumeText, note: e => e.text };
+  const consentText = e => e.op === 'asked' ? nameOf(e.who) + ' asked to use ' + (e.tool || 'a tool') + '; the meeting is paused until you answer it on Today' : 'Approval for ' + nameOf(e.who) + ' (' + (e.tool || 'a tool') + '): ' + (e.decision === 'once' ? 'allowed' : e.decision === 'deny' ? 'declined' : e.decision) + '; the meeting carries on';
+  const TEXTS = { join: joinText, leave: leaveText, lead: leadText, ask: askText, hand: handText, call: callText, lower: lowerText, end: endText, ruling: rulingText, observe: observeText, agenda: agendaText, parse: parseText, close: closeText, resume: resumeText, consent: consentText, note: e => e.text };
   const minutesFile = d => path.join(MINUTES_DIR(), 'meeting-' + (d || day()) + '.md');
   function minutes(text, kind) {
     try {
@@ -391,7 +392,7 @@ module.exports = function meeting(deps) {
         }, e => resolve({ error: e.message }));
       });
     },
-    wait(runId) {
+    wait(runId, onEvent) {
       return new Promise(resolve => {
         let usd = 0, errMsg = null, final = null, over = false, off = null;
         const end = () => { if (over) return; over = true; if (off) off();
@@ -405,11 +406,13 @@ module.exports = function meeting(deps) {
           else if (l.name === 'agent.run.error') errMsg = p.message || errMsg;
           else if (l.name === 'console.final') final = p;
           else if (l.name === 'console.end') setImmediate(end);
+          if (onEvent && (l.name === 'permission.prompt' || l.name === 'permission.response')) { try { onEvent({ name: l.name, payload: p }); } catch (_) {} }
         });
         if (!off) { over = true; resolve({ text: '', usd: 0, refused: false, error: 'the console has no record of this run any more' }); }
       });
     },
     cancel(runId) { return deps.stationPost ? deps.stationPost('cancel', { runId }, 8000) : null; },
+    consent(runId, promptId, decision) { return deps.stationPost ? deps.stationPost('consent', { runId, promptId, decision }, 8000) : null; },
   };
   const runner = deps.runner || stationRunner;
   async function modelFor(id) {
@@ -561,6 +564,51 @@ module.exports = function meeting(deps) {
     return out.filter(Boolean);
   }
 
+  /* ---------- an approval a turn asks for (a station permission prompt): the normal approvals path, the meeting paused ----
+     The prompt becomes an owner question on Today › Needs you (inbox.js ask, kind approve). The meeting is paused while it
+     waits (no new turn starts, nothing is spent); the answer goes back to the station as the consent, then it carries on. */
+  const inbox = () => require(path.join(__dirname, '..', 'company', 'tools', 'inbox.js'));
+  let consentTimer = null;
+  function runEvent(cur, ev) {
+    const R = M.run; if (!R) return;
+    const p = ev.payload || {};
+    if (ev.name === 'permission.prompt' && p.promptId && !(R.consent && R.consent.promptId === p.promptId)) {
+      let qid = null;
+      try {
+        const tool = String(p.tool || 'a tool').slice(0, 80);
+        const r = inbox().ask({ from: nameOf(cur.seat), scopeExempt: true, oneDecision: true, about: 'meeting',
+          message: nameOf(cur.seat) + ' wants to use ' + tool + ' during your meeting. Approve lets this one use go ahead; Decline stops it and the meeting carries on.',
+          details: 'Meeting ' + M.id + (M.title ? ' (' + M.title + ')' : '') + '. What it asked: ' + String(p.argsSummary || '').slice(0, 600), spec: { does: 'Approve lets ' + nameOf(cur.seat) + ' use ' + tool + ' once' } });
+        qid = r && (r.id || (r.row && r.row.id)) || null;
+      } catch (e) { note('The approval could not be put on Today: ' + e.message); }
+      R.consent = { promptId: p.promptId, runId: cur.runId, seat: cur.seat, tool: p.tool || null, qid, since: Date.now(), wasPaused: !!R.paused };
+      R.paused = 'consent'; save();
+      record({ who: cur.seat, kind: 'consent', op: 'asked', tool: p.tool || null, qid });
+      armConsent();
+    } else if (ev.name === 'permission.response' && R.consent && (!p.promptId || p.promptId === R.consent.promptId)) consentClear(R, p.decision || 'answered');
+  }
+  function armConsent() {
+    if (consentTimer) return;
+    consentTimer = setInterval(() => {
+      const R = M.run; if (!R || !R.consent) { clearInterval(consentTimer); consentTimer = null; return; }
+      if (!R.consent.qid) return;
+      let st = null; try { st = inbox().state()[R.consent.qid]; } catch (_) {}
+      if (!st || !(st.answeredAt || st.type === 'close')) return;
+      const v = String((st.answer && st.answer.verdict) || st.a || '').toLowerCase();
+      const yes = /^(yes|approve|ok|allow)/.test(v);
+      Promise.resolve(runner.consent(R.consent.runId, R.consent.promptId, yes ? 'once' : 'deny')).catch(() => {});
+      consentClear(R, yes ? 'once' : 'deny');
+    }, Number(deps.consentPollMs) > 0 ? Number(deps.consentPollMs) : 2000);
+    if (consentTimer.unref) consentTimer.unref();
+  }
+  function consentClear(R, decision) {
+    if (!R.consent) return;
+    const c = R.consent; R.consent = null;
+    if (R.paused === 'consent') R.paused = c.wasPaused || false;
+    if (decision) record({ who: c.seat, kind: 'consent', op: 'answered', tool: c.tool, decision, qid: c.qid });
+    save(); emit('meeting'); kick();
+  }
+
   /* ---------- the engine: one meeting, driven step by step, saved after each step ---------- */
   let driving = false, haltTimer = null;
   const stopping = () => !!(M.run && M.run.stopping);
@@ -569,7 +617,12 @@ module.exports = function meeting(deps) {
     if (haltTimer) return;
     haltTimer = setInterval(() => {
       if (!M.run) { clearInterval(haltTimer); haltTimer = null; return; }
-      if (co.halted() && !M.run.stopping) { M.run.stopping = 'halt'; M.run.floor = false; save(); for (const id of active) Promise.resolve(runner.cancel(id)).catch(() => {}); emit('meeting'); kick(); }
+      const h = co.halted();
+      if (h && (!M.run.stopping || (h === 'hard' && M.run.stopping === 'halt-soft'))) {
+        M.run.stopping = 'halt-' + h; M.run.floor = false; M.run.paused = false; save();
+        if (h === 'hard') for (const id of active) Promise.resolve(runner.cancel(id)).catch(() => {});   // a hard halt aborts the turn; a soft one lets it finish
+        emit('meeting'); kick();
+      }
     }, 1000);
     if (haltTimer.unref) haltTimer.unref();
   }
@@ -578,10 +631,18 @@ module.exports = function meeting(deps) {
     try {
       while (M.run) {
         const R = M.run;
-        if (co.halted() && !R.stopping) R.stopping = 'halt';
+        if (co.halted() && !R.stopping) R.stopping = 'halt-' + co.halted();
         if (R.floor && !R.stopping) { save(); emit('meeting'); return; }   // the owner has the floor: wait for them
         if (!R.round) {
-          if (R.stopping) { endRun(R.stopping === 'halt' ? 'The company is halted, so the meeting stopped.' : 'Round stopped.'); return; }
+          if (R.stopping) {
+            const h = String(R.stopping);
+            if (h.startsWith('halt')) {   // halted: the meeting is interrupted, its minutes written; Resume after the halt
+              const hard = h === 'halt-hard';
+              endRun('The company is halted, so the meeting stopped' + (hard ? ' mid-turn.' : ' after the turn in progress.'));
+              finalize('interrupted', 'console', hard ? 'hard halt: aborted mid-turn; resume it after the halt' : 'soft halt: the turn in progress finished, then the meeting stopped');
+            } else endRun('Round stopped.');
+            return;
+          }
           if (!R.pending) { endRun(null); return; }
           if (R.pending.open && gateWait(R)) return;   // an observe round carries on at the reader's pace
           beginRound(R.pending); R.pending = null; save();
@@ -605,6 +666,8 @@ module.exports = function meeting(deps) {
           if (!present().includes(item.cmd) || (item.kind === 'turn' && !hasNewFor(item.cmd))) { save(); continue; }
           const m = await modelFor(item.cmd);
           if (m.error) { note(nameOf(item.cmd) + ' sits this one out: ' + m.error); save(); continue; }
+          let mid = false; try { mid = typeof deps.seatBusy === 'function' && await deps.seatBusy(item.cmd); } catch (_) {}
+          if (mid) { note(nameOf(item.cmd) + ' is in the middle of a routine run, so they sit this turn out (no double run); they hear it all next time.'); save(); continue; }
           R.current = { item, seat: item.cmd, model: m, attempt: 0, tried: [], runId: null };
           save(); emit('meeting');
         }
@@ -652,7 +715,8 @@ module.exports = function meeting(deps) {
         cur.runId = st.runId; save(); emit('meeting'); armHalt();
       }
       active.add(cur.runId);
-      try { res = await runner.wait(cur.runId); } finally { active.delete(cur.runId); }
+      try { res = await runner.wait(cur.runId, ev => runEvent(cur, ev)); } finally { active.delete(cur.runId); }
+      if (R.consent && R.consent.runId === cur.runId) consentClear(R, null);
       cost(res);
       if (res.refused) {
         const next = cur.attempt === 0 ? REF.nextEntry(cur.seat, cur.model, cur.tried, { root: co.ROOT }) : null;
@@ -873,7 +937,7 @@ module.exports = function meeting(deps) {
     emit('meeting');
   }
   function resume(b) {
-    guard();
+    guard(); haltCheck();
     const id = b && b.id ? String(b.id) : M.id;
     if (M.run) fail('a round is running', 409);
     if (id !== M.id) { if (M.opened && M.state === 'open') fail('one meeting at a time: close this meeting first', 409); const m = readMeeting(id); if (!m) fail('no meeting ' + id, 404); load(id); }
@@ -903,7 +967,7 @@ module.exports = function meeting(deps) {
       const seen = new Set(R.current ? [R.current.seat] : []); const next = [];
       for (const x of queue) if (!seen.has(x.cmd)) { seen.add(x.cmd); next.push({ id: x.cmd, name: nameOf(x.cmd), kind: x.kind }); }
       live = { phase: R.floor ? 'floor' : R.stopping ? 'stopping' : 'round', ownerHand: !!M.ownerHand, interjection: !!R.interjection,
-        paused: !!R.paused, waitNext: !!R.waitNext, nextAt: R.gateUntil || null, yourTurn: !!R.floor, floorWhy: R.floor ? M.floorWhy || null : null,
+        paused: !!R.paused, pausedFor: R.paused === 'consent' && R.consent ? { seat: nameOf(R.consent.seat), tool: R.consent.tool, qid: R.consent.qid } : null, waitNext: !!R.waitNext, nextAt: R.gateUntil || null, yourTurn: !!R.floor, floorWhy: R.floor ? M.floorWhy || null : null,
         speaking: R.current ? { id: R.current.seat, name: nameOf(R.current.seat), kind: R.current.item.kind, from: R.current.item.from || null, runId: R.current.runId, model: modelLabel(R.current.model) } : null,
         next: next.slice(0, 4), hands: ctl ? Object.entries(ctl.up).map(([id, why]) => ({ id, name: nameOf(id), why })) : [],
         checking: R.checking ? { kind: R.checking.kind, names: R.checking.seats.map(nameOf) } : null,
@@ -953,6 +1017,7 @@ module.exports = function meeting(deps) {
     route('POST', /^\/api\/meeting\/resume$/, (m, q, b) => resume(b));
     route('GET', /^\/api\/meeting\/list$/, () => ({ ok: true, meetings: list() }));
     route('GET', /^\/api\/meeting\/timeline$/, () => timeline());
+    route('GET', /^\/api\/meeting\/status$/, () => ({ ok: true, live: require(path.join(LIB, 'meetings.js')).liveWork() }));
     route('POST', /^\/api\/meeting\/next$/, () => next());
     route('POST', /^\/api\/meeting\/pace$/, (m, q, b) => pace(b));
     route('POST', /^\/api\/meeting\/hold$/, (m, q, b) => hold(b));
@@ -965,7 +1030,7 @@ module.exports = function meeting(deps) {
   // the console started: carry on a meeting a previous console process left mid-round (the turn in flight is re-attached)
   function start() {
     load();
-    if (M.run) { M.run.checking = null; save(); if (!M.run.floor) { armHalt(); kick(); } }
+    if (M.run) { M.run.checking = null; save(); armHalt(); if (M.run.consent) armConsent(); if (!M.run.floor) kick(); }
   }
   load();
   return { mount, start, view, entries, minutesText, say, openRound, hand, carryOn, stop, setObserve, agenda, setLeader, seatsChange, newMeeting, close, resume, list, next, pace, hold, presence, catchUp, timeline, busy,

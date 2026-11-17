@@ -167,6 +167,9 @@ function continuity() {
     return require(co.p('modules', 'continuity', 'lib.js'));
   } catch (_) { return null; }
 }
+// the owner's meeting is live work (lib/meetings.js): a soft halt lets its turn in progress finish, then it is
+// interrupted with its minutes written; a hard halt aborts the turn. Listed with the commitments.
+function meetingWork() { try { return require('./lib/meetings').liveWork(); } catch (_) { return []; } }
 function continuityView() {
   const c = continuity(); if (!c) return null;
   try { const o = c.open(); return { at: iso(S.now()), count: o.count, byParty: o.byParty, unowned: c.unowned().map(x => x.id) }; } catch (e) { return { error: e.message }; }
@@ -207,11 +210,13 @@ async function soft({ by, why, deadlineMin, escalate } = {}) {
   await pauseQuietLoops(st);
   const cv = continuityView();
   if (cv) st.commitments = cv;
+  const lw = meetingWork(); if (lw.length) st.liveWork = lw;
   write(st);
   const cm = cv && cv.count ? ' Open commitments: ' + cv.count + (cv.unowned && cv.unowned.length ? ' (' + cv.unowned.length + ' unowned — reassign them before the halt can settle: node company/tools/continuity.js unowned)' : '') + '.' : '';
+  const mw = lw.length ? ' Your meeting' + (lw[0].title ? ' "' + lw[0].title + '"' : '') + ' is live work: ' + (lw[0].running ? 'the turn in progress finishes, then it is interrupted and its minutes are written.' : 'it is interrupted; resume it after the halt.') : '';
   const sd = st.shutdowns.length ? ' Shutdown routines: ' + st.shutdowns.map(x => x.seat + ' ' + x.status).join(', ') + '.' : '';
   tell('Soft halt by ' + by + (why ? ' (' + why + ')' : '') + ': nothing new starts; running work finishes by ' + st.deadline
-    + (st.escalate ? ' or the company goes to a hard halt' : '') + '.' + sd + cm + (st.cronError ? ' Scheduler NOT disarmed: ' + st.cronError + '.' : '') + ' I will tell you when it is fully stopped.');
+    + (st.escalate ? ' or the company goes to a hard halt' : '') + '.' + sd + cm + mw + (st.cronError ? ' Scheduler NOT disarmed: ' + st.cronError + '.' : '') + ' I will tell you when it is fully stopped.');
   return st;
 }
 
@@ -251,6 +256,7 @@ async function tick({ log, dry } = {}) {
   const left = w.busy.concat(w.pending).concat(((st.loops || {}).waiting || []).map(id => 'goal loop ' + id));
   const cv = continuityView();
   if (cv) { st.commitments = cv; for (const id of cv.unowned || []) left.push('commitment ' + id + ' unowned (breach-able; reassign it)'); }
+  for (const m of meetingWork()) if (m.running && m.state === 'open') left.push('the owner\'s meeting (finishing its turn)');
   if (dry) return { mode: 'soft', action: 'dry', left };
   if (!left.length) {
     st.settledAt = iso(S.now());

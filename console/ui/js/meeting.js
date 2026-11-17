@@ -163,7 +163,7 @@ export function meetingPane(host, opts) {
     if (L.phase === 'floor') items.push(b('Continue', 'continue', { variant: 'primary', aria: 'Let them carry on', onClick: () => act(ACTIONS.continue, {}) }));
     else if (run) items.push(b(L.ownerHand ? 'Hand raised' : 'Raise hand', 'hand', { disabled: L.ownerHand || L.phase === 'stopping', aria: 'Take the floor after the current speaker (Esc)', onClick: () => act(ACTIONS.hand, {}) }));
     if (run && L.waitNext) items.unshift(b(L.next && L.next[0] ? 'Next: ' + nm(L.next[0].name) : 'Next', 'next', { variant: 'primary', aria: 'You have read it: let the next person speak', onClick: () => act(ACTIONS.next, {}) }));
-    if (run && L.phase !== 'floor') items.push(L.paused ? b('Carry on', 'unpause', { variant: 'primary', aria: 'Carry on: the next turn may start', onClick: () => act(ACTIONS.hold, { on: false }) })
+    if (run && L.phase !== 'floor' && !L.pausedFor) items.push(L.paused ? b('Carry on', 'unpause', { variant: 'primary', aria: 'Carry on: the next turn may start', onClick: () => act(ACTIONS.hold, { on: false }) })
       : b('Pause', 'pause', { aria: 'Hold the floor: the current turn finishes, then nothing new starts (and nothing is spent)', onClick: () => act(ACTIONS.hold, { on: true }) }));
     if (run) items.push(b('Stop round', 'stop', { aria: 'Stop the round now', onClick: () => act(ACTIONS.stop, {}, 'Round stopped.') }));
     if (M.opened) items.push(b('Catch me up', 'catchup', { variant: 'ghost', aria: 'Five bullets of what you missed, what was decided and what is still asked', onClick: async () => { const r = await act(ACTIONS.catchup, { since: lastRead }); if (r) app.toast('Your catch-up is in the messages.'); } }));
@@ -196,7 +196,8 @@ export function meetingPane(host, opts) {
       if (L.hands && L.hands.length) parts.push(' · Hands raised: ' + L.hands.map(x => nm(x.name) + (x.why ? ' (' + x.why + ')' : '')).join('; '));
       if (L.ownerHand) parts.push(' · Your hand is up: the floor is yours after this speaker');
       if (L.round) parts.push(' · Round ' + L.round.auto + ' of up to ' + L.round.cap);
-      if (L.paused) parts.push(' · Paused: nothing new starts until you carry on');
+      if (L.pausedFor) parts.push(' · Paused: ' + nm(L.pausedFor.seat) + ' asked to use ' + (L.pausedFor.tool || 'a tool') + '. ', h('a', { href: '#/today' }, 'Answer it on Today'), ' and the meeting carries on.');
+      else if (L.paused) parts.push(' · Paused: nothing new starts until you carry on');
       else if (L.waitNext && !L.speaking) parts.push(' · Waiting for you to press Next');
       else if (L.nextAt && !L.speaking) parts.push(' · Next turn in ' + Math.max(0, Math.round((L.nextAt - Date.now()) / 1000)) + ' s');
     }
@@ -227,6 +228,7 @@ export function meetingPane(host, opts) {
     if (e.kind === 'parse') return h('div', { class: 'mtg-chip mtg-parse', 'data-kind': 'parse', 'data-i': e.i, role: 'status' }, h('span', { class: 'mtg-chip-k' }, 'COULD NOT READ'), h('span', { class: 'body-s' }, nm(e.name) + ': "' + e.line + '"'), h('span', { class: 'body-s muted' }, e.why + '. Nothing was done with it; ' + nm(e.name) + ' is told on their next turn.'));
     if (e.kind === 'close') return h('div', { class: 'mtg-end mtg-closed', 'data-i': e.i, role: 'note' }, h('span', { class: 'mtg-chip-k' }, e.state === 'interrupted' ? 'INTERRUPTED' : 'CLOSED'), h('span', { class: 'body-s' }, (e.line || '') + ' · ' + t));
     if (e.kind === 'catchup') return h('div', { class: 'mtg-end mtg-catchup', 'data-i': e.i, role: 'note' }, h('span', { class: 'mtg-chip-k' }, 'FOR YOU'), h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, 'Catch-up by ' + nm(e.name) + ' (only you see this)'), mdBlock(e.text, 'body-s'), h('span', { class: 'caption muted' }, t)));
+    if (e.kind === 'consent') return chip('APPROVAL', nm(e.name) + (e.op === 'asked' ? ' asked to use ' + (e.tool || 'a tool') : ' · ' + (e.tool || 'a tool')), e.op === 'asked' ? 'paused until you answer it on Today' : (e.decision === 'once' ? 'allowed' : e.decision === 'deny' ? 'declined' : e.decision) + '; the meeting carries on', e);
     if (e.kind === 'open') return h('p', { class: 'caption muted mtg-line', 'data-i': e.i }, 'The meeting opened · ' + t);
     return h('p', { class: 'caption muted mtg-line', 'data-i': e.i }, (e.line || e.text || '') + (t ? ' · ' + t : ''));
   }
@@ -288,19 +290,6 @@ export function meetingPane(host, opts) {
       more = d.more; cursor = d.cursor; if (!more) earlierBtn.remove();
       body.scrollTop = top + (body.scrollHeight - before);
     } catch (_) {} finally { showEarlier.busy = false; }
-  }
-
-  // an approval the speaker's run asks for (a tool it may not use unasked): answered here, as in the chat
-  function consent(card, sp, p) {
-    if (card.querySelector('[data-prompt="' + (p.promptId || '') + '"]')) return;
-    const answer = async d => {
-      try { await post('/station/consent', { runId: sp.runId, promptId: p.promptId, decision: d }); el.replaceWith(h('p', { class: 'caption muted' }, d === 'deny' ? 'You said no.' : 'You allowed it.')); }
-      catch (e) { app.toast('Not answered: ' + humanError(e), true); }
-    };
-    const el = h('div', { class: 'alertbox tool-permission', role: 'alertdialog', 'data-prompt': p.promptId || '' },
-      h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, nm(sp.name) + ' asks to use ' + (p.tool || 'a tool')), h('span', { class: 'mono-s' }, String(p.argsSummary || '').slice(0, 400))),
-      h('div', { class: 'row-8' }, Button('Allow once', { variant: 'primary', size: 'sm', onClick: () => answer('once') }), Button('No', { variant: 'ghost', size: 'sm', onClick: () => answer('deny') })));
-    card.appendChild(el);
   }
 
   /* ---------- @name autocomplete ---------- */

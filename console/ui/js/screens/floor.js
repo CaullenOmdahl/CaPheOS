@@ -1,6 +1,7 @@
 // Crew › Floor (#/crew/floor, was #/floor; Floor.dc.html): the station's rooms and who sits at which desk, read from
 // the station's save (GET /api/station/save → save.station). A headless station has no floor plan: floorOf() is null
 // and the Crew screen does not show the tab at all.
+import { meetingStrip } from '../meeting-strip.js';
 import { h, fill, Tag, errLine, empty, initial, Details } from '../ui.js';
 import { api } from '../api.js';
 import { mountPanels } from '../panels.js';
@@ -23,9 +24,11 @@ export async function renderTab(root, ctx) {
   const { app } = ctx;
   const plan = h('section', { 'aria-label': 'Floor plan', class: 'floor-plan' });
   const side = h('div', { class: 'stack-16' });
-  fill(root, h('p', { class: 'body-l muted', style: 'max-width:640px' }, 'The rooms of the station and who sits where. A lit desk is someone working right now.'), plan, side);
+  const meetEl = h('div');
+  fill(root, h('p', { class: 'body-l muted', style: 'max-width:640px' }, 'The rooms of the station and who sits where. A lit desk is someone working right now.'), meetEl, plan, side);
+  const offMeet = meetingStrip(meetEl);
   const [f, crew, now] = await Promise.all([floorOf(), api('/crew').catch(e => ({ error: e })), api('/now').catch(() => null)]);
-  if (!f) { fill(plan, empty('This station has no floor plan.')); return () => {}; }
+  if (!f) { fill(plan, empty('This station has no floor plan.')); return offMeet; }
   const seats = (crew && crew.seats) || [];
   const busy = new Set(((now && now.runs) || []).map(r => r.agentId));
   const nameOf = id => personName((seats.find(s => s.id === id) || {}).name) || null;
@@ -52,5 +55,6 @@ export async function renderTab(root, ctx) {
       busy.size ? Tag(busy.size + ' working now', { variant: 'status', status: 'online' }) : null),
     crew && crew.error ? errLine(crew.error, 'Crew') : null,
     Details('Details', h('dl', { class: 'kv' }, rooms.map(({ r, desks: ds }) => [h('dt', null, r.name || r.id), h('dd', { class: 'mono-s' }, r.id + ' · ' + (r.kind || '?') + ' · ' + ds.map(d => d.id + (d.agentId ? '=' + d.agentId : '')).join(', '))]))));
-  return mountPanels(side, 'side:floor', app);
+  const offPanels = mountPanels(side, 'side:floor', app);
+  return () => { offMeet(); if (typeof offPanels === 'function') offPanels(); };
 }

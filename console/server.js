@@ -530,7 +530,9 @@ async function meetingModel(id) {
 }
 // the owner's meeting with the crew (console/meeting.js): turns through the station, tracked by the chat's runs
 const MEET = require(path.join(__dirname, 'meeting.js'))({ co, HttpError, owner: () => OWNER, emit: t => emit(t), stationPost, runs: CHAT.runs,
-  run: (name, args) => run(name, args, { timeout: 30000 }), modelFor: meetingModel, seatJobs: id => meetJobs.jobs.filter(j => j && j.agentId === id).map(j => j.id) });
+  run: (name, args) => run(name, args, { timeout: 30000 }), modelFor: meetingModel, seatJobs: id => meetJobs.jobs.filter(j => j && j.agentId === id).map(j => j.id),
+  // a seat mid-routine sits the turn out (the station's routines, read fresh: a turn never doubles a running loop)
+  seatBusy: async id => { const cr = await stationGet('cron', 3000); const jobs = cr.ok && cr.data && Array.isArray(cr.data.jobs) ? cr.data.jobs : []; return jobs.some(j => j && j.agentId === id && j.noAgent !== true && (j.inFlight || j.state === 'running')); } });
 const ACT = require(path.join(__dirname, 'activity.js'))({ co, stationGet, emit: t => emit(t), tool });
 
 route('GET', /^\/api\/company$/, () => Object.assign({ ok: true }, companyInfo()));
