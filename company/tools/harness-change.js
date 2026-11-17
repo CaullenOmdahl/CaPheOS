@@ -536,6 +536,26 @@ function governanceCategory(rec) {
   return 'tools';
 }
 function backupDir(ctx, rec) { return path.join(ctx.paths.dir, rec.id, 'before'); }
+const OWNED_FILES = new Set(['company/company.json', 'company/CHARTER.md', 'company/competence-policy.json', 'company/model-policy.json', 'company/tools/loops.json']);
+function frameworkRequest(ctx, rec, p) {
+  const file = rec && rec.target && rec.target.file;
+  if (!file || !['tool', 'house-rule', 'policy'].includes(rec.kind) || OWNED_FILES.has(file)) return null;
+  if (!fs.existsSync(path.join(ctx.root, 'company', 'work', '.founded'))) return null;   // the framework checkout applies its own changes
+  const cpx = require('child_process');
+  const top = cpx.spawnSync('git', ['-C', ctx.root, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
+  let real = ctx.root; try { real = fs.realpathSync(ctx.root); } catch (_) {}
+  if (top.status !== 0 || top.stdout.trim() !== real) return null;   // not its own checkout (e.g. a test copy inside another repo)
+  if (cpx.spawnSync('git', ['-C', ctx.root, 'ls-files', '--error-unmatch', '--', file], { stdio: 'ignore' }).status !== 0) return null;   // a company-only file
+  const dir = path.join(ctx.root, 'company', 'work', 'framework-requests'); fs.mkdirSync(dir, { recursive: true });
+  const out = path.join(dir, rec.id + '.md');
+  const payload = (() => { try { return fs.readFileSync(path.join(ctx.paths.dir, rec.id, rec.payload ? rec.payload.name : ''), 'utf8'); } catch (_) { return ''; } })();
+  fs.writeFileSync(out, '# Framework change request ' + rec.id + '\n\n- File: `' + file + '`\n- Proposed by: ' + rec.by + '; reviewed by: ' + ((rec.approvals || []).map(a => a.name).join(', ') || '-') + '\n- Why: ' + rec.why + '\n\nThis file belongs to the CaPheOS framework, so the change was not applied in this company. Forward it to the framework (it reaches this company with the next update).\n\n```diff\n' + payload.slice(0, 60000) + '\n```\n');
+  rec.status = 'upstream'; rec.upstreamAt = new Date(ctx.now).toISOString(); saveRec(ctx, rec);
+  appendLog(ctx, { event: 'upstream', id: rec.id, by: p.name, file, request: path.relative(ctx.root, out) });
+  try { require('./owner-inbox.js').send({ from: 'harness-change.js', text: 'The crew wants to change a framework file (' + file + '): ' + rec.why + ' It was approved but not applied here, because framework files change only through framework updates. The full request is in ' + path.relative(ctx.root, out) + '.' }); } catch (_) {}
+  return Object.assign({}, rec, { applied: false, upstream: path.relative(ctx.root, out) });
+}
+
 async function applyChange(ctx, id, o) {
   const p = needBy(ctx, o.by);
   const rec0 = loadRec(ctx, id);
@@ -551,6 +571,11 @@ async function applyChange(ctx, id, o) {
   const gd = gov.decide(govCat, { by: p.name, ref: 'harness:' + rec0.id, summary: 'apply ' + rec0.id + ', a ' + rec0.kind + ' change to ' + targetLabel(rec0) + ' (' + summaryLine(rec0) + ')',
     recommendation: 'yes: reviewed and approved by ' + ((rec0.approvals || []).map(x => x.name).join(' and ') || 'its reviewers') + '; why: ' + rec0.why, default: 'the change stays approved but not applied' }, { root: ctx.root });
   if (!gd.allowed) throw E(gov.refusal(govCat, gd), 'refused');
+  // In a company checkout (founded), a change to a FRAMEWORK file (tracked in git, not one of the files a company owns)
+  // is not applied in place: it would collide with every framework update and differ from every other company. It
+  // becomes an upstream request the owner forwards to the framework; company-only tools and company files apply as usual.
+  const up = frameworkRequest(ctx, rec0, p);
+  if (up) return up;
   let result;
   if (rec0.kind === 'schedule' && rec0.target.type === 'routine') {
     const jobs = await jobsNow(ctx); const job = jobs.find(j => j.id === rec0.target.jobId);
