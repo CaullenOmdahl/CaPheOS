@@ -733,7 +733,14 @@ function makePacer(o) {
       source: r && !r.none ? r.source : null, at: r && !r.none ? r.at : null, weekStart: r && r.weekStart, weekEnd: r && r.weekEnd, emergencyOpened: false, nextOpen: null, usedToday: null };
     const stale = key === 'claude' ? policy.claude.staleAfterMin : policy.minimax.staleAfterMin;
     if (!r || r.none || !isNum(r.usedPct)) { g.why = 'no reading yet' + (r && r.lastError ? ' (' + r.lastError + ')' : ''); return g; }
-    if (t - r.at > stale * MIN) { g.why = 'the last reading is ' + age(r.at, t) + ' old (over ' + stale + ' min), so the meter is unknown'; g.usedPct = r.usedPct; return g; }
+    if (t - r.at > stale * MIN) {
+      g.why = 'the last reading is ' + age(r.at, t) + ' old (over ' + stale + ' min), so the meter is unknown'; g.usedPct = r.usedPct;
+      // the owner reopened it after that reading (pacer.js reopen): open until a run reads the meter again. Otherwise a
+      // stale meter could only refresh through a run it never lets start, and the seat stays closed until the reset.
+      const ro = st && st.reopened && st.reopened[key];
+      if (ro && Number(ro.at) > Number(r.at)) { g.open = true; g.why += '; the owner reopened it at ' + hm(ro.at) + ', so it runs until the next reading'; }
+      return g;
+    }
     if (!isNum(r.weekStart) || !isNum(r.weekEnd)) { g.why = 'the reading has no weekly window'; g.usedPct = r.usedPct; return g; }
     if (t >= r.weekEnd) { g.why = 'the reading is from a week that has ended; waiting for a new one'; return g; }
     g.known = true; g.usedPct = r.usedPct;
@@ -1775,6 +1782,25 @@ async function cli(argv, o) {
     try { require('./provenance.js').wrote(f, txt, 'pacer.js'); } catch (_) {}
     try { const lf = path.join(root, 'company', 'work', 'dispatch-log.md'); fs.appendFileSync(lf, '- ' + (lp => lp.date + ' ' + lp.time)(co.localParts()) + ' PACER MODE ' + was + ' -> ' + want + ' by ' + by + ': ' + why + '\n'); } catch (_) {}
     print('pacer mode ' + was + ' -> ' + want + ' (recorded)'); return 0;
+  }
+  if (cmd === 'reopen') {
+    // reopen claude|minimax --by owner [--why "..."]: the owner says the subscription has room again (extra usage, a plan
+    // change). It clears the usage-limit closure; the next run reads the meter afresh, and the provider's own refusal
+    // closes it again by itself if it is really full.
+    const root = o.root || DEFAULT_ROOT;
+    const which = String(a._[0] || '').toLowerCase(); const by = a.by === true ? '' : (a.by || ''); const why = a.why === true ? '' : String(a.why || '');
+    if (!/^(claude|minimax)$/.test(which) || !by) { print('usage: pacer.js reopen claude|minimax --by owner [--why "..."]'); return 2; }
+    const OW = require('./lib/owner');
+    if (!((o.ownerShell ? o.ownerShell() : OW.shell()) && OW.isOwnerName(by, root))) { print(JSON.stringify({ ok: false, error: 'reopening a subscription is the owner\'s: --by owner, from the owner\'s own shell or the console' }, null, 1)); return 3; }
+    const lk = await pz.withLock(async () => {
+      const st = pz.loadState(); const t = (o.now ? o.now() : Date.now());
+      const was = (st.closures || {})[which] || null;
+      if (st.closures) delete st.closures[which];
+      st.reopened = Object.assign({}, st.reopened || {}, { [which]: { at: t, by, why: why || null, was } });
+      pz.saveState(st);
+      return { ok: true, reopened: which, was };
+    }, 5000);
+    print(JSON.stringify(lk, null, 1)); return lk && lk.ok ? 0 : 1;
   }
   if (cmd === 'unblock') {
     // unblock <seat|routine> --by owner [--why "..."]: the owner clears a refusal block (the one record, pacer-state

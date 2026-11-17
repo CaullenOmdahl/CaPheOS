@@ -1427,3 +1427,18 @@ test('DeepSeek balance: the amounts go to the owner\'s state only (0600, each cu
   h.clock.t += 11 * 60e3; await measurePlan(h, jobs);
   assert.equal(told.length, 1, 'once per drop, not every poll');
 });
+
+test('reopen: after the owner reopens Claude, a stale meter is open until the next reading; before, it stays closed', async () => {
+  const jobs = crewJobs();
+  const fx = fixture({ feedPct: 100, feedAt: T0 - 130 * MIN, stationPct: 100, stationAt: T0 - 130 * MIN });
+  let r = await measurePlan(make(fx, station(jobs)), jobs);
+  assert.equal(r.m.claude.open, false, 'stale: closed');
+  const f = path.join(fx.root, 'company/state/pacer-state.json');
+  let st = {}; try { st = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) {}
+  st.closures = { claude: { until: T0 + 3 * 86400e3, why: 'a Claude run hit its usage limit' } };
+  st.reopened = { claude: { at: T0 - MIN, by: 'Pat', why: 'extra usage' } };
+  fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(st));
+  delete st.closures.claude; fs.writeFileSync(f, JSON.stringify(st));
+  r = await measurePlan(make(fx, station(jobs)), jobs);
+  assert.equal(r.m.claude.open, true, r.m.claude.why); assert.match(r.m.claude.why, /owner reopened it/);
+});
