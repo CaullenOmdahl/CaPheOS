@@ -648,7 +648,9 @@ async function apply({ dry, approvedRef, by } = {}) {
     const fresh = loops();   // re-read right before writing: another tool may have changed it
     for (const ch of plan.loops) if (fresh.agents && fresh.agents[ch.seat]) fresh.agents[ch.seat][ch.field] = ch.to;
     const tmp = S.loopsFile + '.tmp-' + process.pid;
-    fs.writeFileSync(tmp, JSON.stringify(fresh, null, 2) + '\n'); fs.renameSync(tmp, S.loopsFile);
+    const loopsTxt = JSON.stringify(fresh, null, 2) + '\n';
+    fs.writeFileSync(tmp, loopsTxt); fs.renameSync(tmp, S.loopsFile);
+    try { require('./provenance.js').wrote(S.loopsFile, loopsTxt, 'cadence.js'); } catch (_) {}   // locked-watch.js: this tool's own write
     done.push('loops.json: ' + plan.loops.map(x => x.seat + '.' + x.field + '=' + x.to).join(', '));
   }
   for (const r of plan.routines) {

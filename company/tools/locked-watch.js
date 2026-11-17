@@ -93,7 +93,7 @@ const MANIFEST = [
   { p: 'company/model-policy.json', cls: 'F', owner: 'people', area: 'policy', why: 'allowed models, the routing table and performance thresholds' },
   { p: 'company/competence-policy.json', cls: 'F', owner: 'people', area: 'policy', why: 'how competence is scored' },
   { p: 'company/work/people/corrections-policy.json', cls: 'F', owner: 'people', area: 'policy', why: 'how corrections work' },
-  { p: 'company/tools/loops.json', cls: 'F', writers: ['hire.js'], owner: 'people', area: 'access', why: 'the crew list: managers, HR and tool owner, who is woken' },
+  { p: 'company/tools/loops.json', cls: 'F', writers: ['hire.js', 'cadence.js'], owner: 'people', area: 'access', why: 'the crew list: managers, HR and tool owner, who is woken' },
   { p: 'company/work/ops/cadence.json', cls: 'F', writers: ['cadence.js', 'harness-change.js'], owner: 'risk', area: 'policy', why: 'the company tempo: the owner\'s base cadence, the bounds the crew moves inside and any temporary speed-up (only through cadence.js or a reviewed harness change)' },
   { p: 'company/state/governance.json', cls: 'F', writers: ['governance.js'], owner: 'risk', area: 'policy', why: 'self-governance: how much the company decides without the owner (only the owner changes it, through governance.js)' },
   // alwaysWatched: still reported while the harnessSelfEdit guardrail is off, because it is the switch itself
