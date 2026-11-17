@@ -513,6 +513,18 @@ function allowedHost(host, list) {
  * "closed" and "never existed" must stay distinguishable a year from now. Who may close is exactly who may clear:
  * the close is recorded inside the CEO's own run, by a name in CLEARERS, and an agent never closes the row its own
  * act stands on. */
+/* The ledger is append-only (locked-watch holds it so): a close is its own line, {type: 'close', id, closedAt, closedBy,
+ * closedByAgent, closedWhy, closedSession}, appended after the row. ledgerRows() reads the clearance rows with their
+ * first close folded in; the row's own line is never rewritten. */
+function ledgerRows(file) {
+  const all = readJsonl(file); const closes = new Map();
+  for (const r of all) if (r && r.type === 'close' && r.id && !closes.has(String(r.id))) closes.set(String(r.id), r);
+  return all.filter(r => !(r && r.type === 'close')).map(r => {
+    const c = r && r.id != null && closes.get(String(r.id));
+    if (!c || r.closedAt) return r;
+    const { type, id, until, at, ...fields } = c; return Object.assign({}, r, fields);
+  });
+}
 function closedReason(row) {
   if (!row || typeof row !== 'object' || !row.closedAt) return null;
   return 'closed by ' + (row.closedBy || 'an unrecorded closer') + ' at ' + row.closedAt +
@@ -692,7 +704,7 @@ function checkInner(req, opts) {
     return { allow: true, reason: 'host is on the company allowlist', clearanceId: null, clearedBy: 'allowlist', allowlistSha: allowlistDigest(allowlist) };
   }
 
-  const rows = readJsonl(ledger);
+  const rows = ledgerRows(ledger);
   const problems = [];
   for (const row of rows) {
     let why = validateRow(row, r, at);
@@ -922,18 +934,8 @@ function closeClearance(row, opts) {
   if (!closedByAgent) return { ok: false, error: 'no recording agent: pass --closed-by-agent, or run this from the CEO session' };
   if (norm(closedByAgent) !== CLEARING_AGENT) return { ok: false, error: 'only the CEO session (agent "' + CLEARING_AGENT + '") may close a row; this caller is "' + closedByAgent + '"' };
 
-  let text = '';
-  try { text = fs.readFileSync(ledger, 'utf8'); } catch (e) { return { ok: false, error: 'ledger unreadable: ' + e.message }; }
-  const raw = text.length ? text.split('\n') : [];
-  let idx = -1;
-  let target = null;
-  for (let i = 0; i < raw.length; i++) {
-    const line = raw[i].trim();
-    if (!line) continue;
-    let parsed;
-    try { parsed = JSON.parse(line); } catch (_) { continue; }
-    if (parsed && String(parsed.id) === id) { idx = i; target = parsed; break; }
-  }
+  if (!fs.existsSync(ledger)) return { ok: false, error: 'ledger unreadable: ' + ledger + ' does not exist' };
+  const target = ledgerRows(ledger).find(x => x && String(x.id) === id) || null;
   if (!target) return { ok: false, error: 'no clearance row with id "' + id + '" — close ends an existing row and creates nothing' };
   const already = closedReason(target);
   if (already) return { ok: false, error: 'row ' + id + ' is ' + already + ' — a second close is a disagreement to record, not a repeat' };
@@ -947,28 +949,16 @@ function closeClearance(row, opts) {
   if (!session.live) return { ok: false, error: 'no CEO session to close from: ' + (session.error || 'the CEO is not running') + " — a close is recorded inside the CEO's own run, not typed by whoever wants it" };
 
   const closedAt = new Date(at).toISOString();
-  const closed = Object.assign({}, target, {
-    closedAt: closedAt,
-    closedBy: String(by).trim(),
-    closedByAgent: closedByAgent,
-    closedWhy: why,
-    // The row's original line, byte for byte: criterion 2 says the original must be recoverable from the ledger
-    // itself, so it does not depend on the reader reconstructing it from fields that may later be added to.
-    closedFrom: raw[idx].trim(),
-    closedSession: { jobId: session.jobId || null, runId: session.runId || null, source: session.source || 'station' },
-  });
-  raw[idx] = JSON.stringify(closed);
-  const before = raw.filter(l => l.trim()).length;
-  const tmp = ledger + '.tmp-' + process.pid;
-  try {
-    fs.writeFileSync(tmp, raw.join('\n'));
-    fs.renameSync(tmp, ledger);
-  } catch (e) {
-    try { fs.unlinkSync(tmp); } catch (_) {}
-    return { ok: false, error: 'could not write the ledger: ' + e.message };
-  }
-  const after = readJsonl(ledger).length;
-  if (after !== before) return { ok: false, error: 'the close changed the ledger line count (' + before + ' → ' + after + ') — a close records, it never removes' };
+  // `until` is the row's own: retention keeps the close exactly as long as it keeps the row it ends
+  const ev = { type: 'close', id, at: closedAt, until: target.until || null, closedAt, closedBy: String(by).trim(), closedByAgent, closedWhy: why,
+    closedSession: { jobId: session.jobId || null, runId: session.runId || null, source: session.source || 'station' } };
+  const before = ledgerRows(ledger).length;
+  try { appendJsonl(ledger, ev); } catch (e) { return { ok: false, error: 'could not write the ledger: ' + e.message }; }
+  // the close is an appended line: record it, so the watcher reads it as the gate's own append
+  try { require('./provenance.js').appended(ledger, JSON.stringify(ev) + '\n', 'external-gate.js'); } catch (_) {}
+  const after = ledgerRows(ledger).length;
+  if (after !== before) return { ok: false, error: 'the close changed the number of clearance rows (' + before + ' → ' + after + ') — a close records, it never removes' };
+  const closed = ledgerRows(ledger).find(x => String(x.id) === id);
   return { ok: true, row: closed, rows: after };
 }
 
@@ -1350,14 +1340,15 @@ function selftest() {
   // Q4 + Q7 — a valid row inside a live CEO run: close ALLOWS, then check() REFUSES and NAMES the close
   qRows([qRow({})]);
   const q4 = qClose({ id: 'clr-q', by: CEO, why: closeWhy, closedByAgent: CEO_ID });
-  qCase('Q4 close a valid row inside a live CEO run', q4, 'allow', (r) => r.row.closedAt && r.row.closedFrom === JSON.stringify(Object.assign({}, rowBase, qRow({}))));
+  const q4line = JSON.stringify(Object.assign({}, rowBase, qRow({})));
+  qCase('Q4 close a valid row inside a live CEO run', q4, 'allow', (r) => r.row.closedAt && fs.readFileSync(ledger, 'utf8').split('\n')[0] === q4line && /"type":"close"/.test(fs.readFileSync(ledger, 'utf8').split('\n')[1]));
   const q4check = expect('Q4b the subject the closed row used to clear', { category: 'publish', target: REPO + '#fix/a', agent: 'alex' }, 'refuse');
   if (!String(q4check.reason).includes('closed by ' + CEO)) { failures++; lines.push('FAIL  Q4b refusal does not name the close: ' + q4check.reason); }
   else lines.push('ok    Q4b refusal names the close and its reason');
-  const q7 = readJsonl(ledger);
-  if (q7.length !== 1 || !q7[0].closedFrom || q7[0].target !== REPO + '#fix/a' || q7[0].clearedBy !== CEO || q7[0].until !== '2026-12-01T00:00:00Z') {
+  const q7 = ledgerRows(ledger);
+  if (q7.length !== 1 || !q7[0].closedAt || q7[0].target !== REPO + '#fix/a' || q7[0].clearedBy !== CEO || q7[0].until !== '2026-12-01T00:00:00Z') {
     failures++; lines.push('FAIL  Q7 the close did not preserve the row: ' + JSON.stringify(q7));
-  } else lines.push('ok    Q7 close keeps the row, its fields and its original text, and the ledger has 1 row');
+  } else lines.push('ok    Q7 close keeps the row line byte for byte and appends a close event: the ledger still has 1 clearance row');
   // Q5 — closing twice
   qCase('Q5 a second close of the same row', qClose({ id: 'clr-q', by: CEO, why: closeWhy, closedByAgent: CEO_ID }), 'refuse', (r) => /already|is closed by/.test(r.error));
   // Q6 — an unknown id creates nothing and changes nothing
@@ -1370,7 +1361,7 @@ function selftest() {
   const q8 = qClose({ id: 'clr-spent', by: CEO, why: closeWhy, closedByAgent: CEO_ID });
   qCase('Q8a closing one row of a pair', q8, 'allow');
   expect('Q8b control: the other valid row on the same subject class still clears', { category: 'publish', target: REPO + '#fix/a', agent: 'jordan' }, 'allow');
-  const q8list = listState(readJsonl(ledger).find(r => r.id === 'clr-spent'), at, [], null);
+  const q8list = listState(ledgerRows(ledger).find(r => r.id === 'clr-spent'), at, [], null);
   if (q8list.state !== 'closed') { failures++; lines.push('FAIL  Q8c list state for a closed row is ' + q8list.state); }
   else lines.push('ok    Q8c list reports the row as closed, not invalid and not absent (' + q8list.reason + ')');
   fs.writeFileSync(ledger, '');
@@ -1477,7 +1468,7 @@ function main() {
     process.exit(r.ok ? 0 : 2);
   }
   if (cmd === 'list') {
-    const rows = readJsonl(LEDGER);
+    const rows = ledgerRows(LEDGER);
     const at = nowMs();
     // the recent window, plus the runs around each older row's moment (bounded reads; never the whole runs.jsonl)
     const runs = readRuns().slice(); const seenRuns = new Set(runs.map(r => r.runId));
@@ -1523,7 +1514,7 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { check, checkClaim, mustPass, recordSent, releaseIdem, IDEM, IDEM_TTL_MS, addClearance, closeClearance, closedReason, selftest, CATEGORIES, CLEARERS, CLEARING_AGENT, OWNER_PIN_FILE, targetMatches, allowedHost, hostOf, validateRow, listState, liveClearingSession, liveJournalRun, _internals: { readJsonl, readRuns, runsFor, runsAround, appendJsonl, LEDGER, LOG, ALLOWLIST, JOURNAL_DIR,
+module.exports = { ledgerRows, check, checkClaim, mustPass, recordSent, releaseIdem, IDEM, IDEM_TTL_MS, addClearance, closeClearance, closedReason, selftest, CATEGORIES, CLEARERS, CLEARING_AGENT, OWNER_PIN_FILE, targetMatches, allowedHost, hostOf, validateRow, listState, liveClearingSession, liveJournalRun, _internals: { readJsonl, readRuns, runsFor, runsAround, appendJsonl, LEDGER, LOG, ALLOWLIST, JOURNAL_DIR,
   // In-process only (no CLI surface): lets a probe point the journal reader at a copy of a real journal.
   setJournalDir: (d) => { JOURNAL_DIR_OVERRIDE = d || null; return JOURNAL_DIR_OVERRIDE || JOURNAL_DIR; },
   // In-process only (no CLI surface): lets a probe hold runs.jsonl at an earlier state, so "what did the list say

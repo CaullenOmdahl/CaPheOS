@@ -141,12 +141,13 @@ function liveWindows(root, at) {
   const t = isNum(at) ? at : Date.now();
   const f = path.join(root || ROOT, REL.clearances);
   let txt = ''; try { txt = fs.readFileSync(f, 'utf8'); } catch (_) { return { known: false, rows: [], why: 'cannot read ' + REL.clearances }; }
-  const rows = [];
-  for (const line of txt.split('\n')) {
-    const s = line.trim(); if (!s) continue;
-    let r; try { r = JSON.parse(s); } catch (_) { continue; }              // a corrupt row can never clear, or hold, anything
+  const rows = [], parsed = [];
+  for (const line of txt.split('\n')) { const s = line.trim(); if (!s) continue; try { parsed.push(JSON.parse(s)); } catch (_) {} }   // a corrupt row can never clear, or hold, anything
+  const closed = new Set(parsed.filter(r => r && r.type === 'close' && r.id).map(r => String(r.id)));   // external-gate.js close appends these
+  for (const r of parsed) {
+    if (!r || r.type === 'close') continue;
     if (!WINDOW_CATEGORIES.includes(String(r.category || '').toLowerCase())) continue;
-    if (r.closedAt) continue;                                            // a closed row is not an open permission
+    if (r.closedAt || closed.has(String(r.id))) continue;                 // a closed row is not an open permission
     const until = Date.parse(r.until); if (!isNum(until) || until <= t) continue;
     rows.push({ id: r.id, category: r.category, target: r.target, until: r.until });
   }
@@ -348,6 +349,8 @@ function selftest() {
     JSON.stringify({ id: 'clr-b', category: 'publish', target: 'web:example', until: '2999-01-01T00:00:00Z', closedAt: '2026-11-16T00:00:00Z' }),
     JSON.stringify({ id: 'clr-c', category: 'publish', target: 'web:example', until: '2000-01-01T00:00:00Z' }),
     JSON.stringify({ id: 'clr-d', category: 'message', target: 'owner:file', until: '2999-01-01T00:00:00Z' }),
+    JSON.stringify({ id: 'clr-e', category: 'publish', target: 'web:example', until: '2999-01-01T00:00:00Z' }),
+    JSON.stringify({ type: 'close', id: 'clr-e', until: '2999-01-01T00:00:00Z', closedAt: '2026-11-16T00:00:00Z', closedBy: 'Alex' }),   // a close appended by external-gate.js
     'not json',
   ].join('\n') + '\n');
   check('only the live, unclosed publish row is a window', liveWindows(fx, tNine).rows.map(x => x.id), ['clr-a']);

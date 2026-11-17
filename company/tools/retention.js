@@ -130,6 +130,8 @@ function parse(a, text) {
 /* ---------------- choosing what moves ---------------- */
 function clearanceLive(row, now) {
   if (!row || typeof row !== 'object') return true;
+  // a close event (external-gate.js close appends one) lives exactly as long as the row it ends: it carries that row's until
+  if (row.type === 'close') { const cu = Date.parse(String(row.until || '')); return !Number.isFinite(cu) || cu > now; }
   if (row.closedAt) return false;
   const u = Date.parse(String(row.until || ''));
   return !Number.isFinite(u) || u > now;   // no parseable expiry: kept (never guess a row away)
@@ -524,7 +526,9 @@ async function selftest() {
   const dlog = '# Dispatch log\n\n' + ['09-01', '10-05', '11-10', '11-16', '11-17'].map((d, i) => '- ' + day(d) + ' line ' + i + (i === 1 ? ' COMPETENCE daily: anchored 4 rows, head sha256:' + 'b'.repeat(64) : '')).join('\n') + '\n';
   W('company/work/dispatch-log.md', dlog);
   const clr = [{ id: 'old-live', at: '2026-01-05T10:00:00Z', until: '2027-01-01T00:00:00Z' }, { id: 'old-spent', at: '2026-02-05T10:00:00Z', until: '2026-03-01T00:00:00Z' },
-    { id: 'old-closed', at: '2026-03-05T10:00:00Z', until: '2027-01-01T00:00:00Z', closedAt: '2026-03-06T00:00:00Z' }, { id: 'new', at: '2026-11-15T10:00:00Z', until: '2026-11-16T00:00:00Z' }];
+    { id: 'old-closed', at: '2026-03-05T10:00:00Z', until: '2027-01-01T00:00:00Z', closedAt: '2026-03-06T00:00:00Z' }, { id: 'new', at: '2026-11-15T10:00:00Z', until: '2026-11-16T00:00:00Z' },
+    // a row ended by an appended close event (external-gate.js close): the event lives as long as the row's own until
+    { id: 'old-ended', at: '2026-01-06T10:00:00Z', until: '2027-01-01T00:00:00Z' }, { type: 'close', id: 'old-ended', at: '2026-01-07T10:00:00Z', until: '2027-01-01T00:00:00Z', closedAt: '2026-01-07T10:00:00Z' }];
   W('company/state/external-clearances.jsonl', clr.map(r => JSON.stringify(r)).join('\n') + '\n');
   // older provenance rows (the watcher has read them all once it has a baseline)
   const pf = path.join(T, 'company/state/locked/provenance.jsonl'); fs.mkdirSync(path.dirname(pf), { recursive: true });
@@ -549,6 +553,8 @@ async function selftest() {
     assert.strictEqual(by('pacer-log').moved, 2, JSON.stringify(by('pacer-log')));
     assert.ok(R('company/work/decisions.md').includes(POINTER_MARK) && /2026-11-16/.test(R('company/work/decisions.md')) && !/2026-10-10/.test(R('company/work/decisions.md')));
     assert.ok(R('company/state/external-clearances.jsonl').includes('"old-live"') && !R('company/state/external-clearances.jsonl').includes('"old-spent"'));
+    assert.ok(/"type":"close","id":"old-ended"/.test(R('company/state/external-clearances.jsonl')), 'a close event is never rolled while the row it ends is still in its window');
+    assert.strictEqual(clearanceLive({ type: 'close', id: 'x', until: '2026-01-01T00:00:00Z', closedAt: '2025-12-01T00:00:00Z' }, Date.parse('2026-11-17T00:00:00Z')), false, 'an expired close rolls with its row');
   });
   await check('roll keeps every byte: live entries + archived entries = the file before, entry for entry', async () => {
     for (const [rel, txt] of Object.entries(before)) {
@@ -696,7 +702,7 @@ async function selftest() {
   process.exit(fails ? 1 : 0);
 }
 
-module.exports = { apply, status, audit, daily, find, overLiveBytes, parse, rollFile, sizeRotate, runJournal, archiveDir, loadPolicy, archiveDirOf, POINTER_MARK };
+module.exports = { clearanceLive, apply, status, audit, daily, find, overLiveBytes, parse, rollFile, sizeRotate, runJournal, archiveDir, loadPolicy, archiveDirOf, POINTER_MARK };
 if (require.main === module) {
   const a = process.argv.slice(2); const cmd = a[0];
   const json = a.includes('--json'); const dry = a.includes('--dry-run');
