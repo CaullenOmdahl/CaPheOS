@@ -112,7 +112,7 @@ Approvals the run asks for are answered with `POST /api/station/consent {runId, 
 | POST | /api/chat-actions/secret | `{ name, value, replace? }` | writes `secrets/<name>` (0600; 409 if it exists without replace); returns `{ stored, name, chars }`, never the value |
 | GET | /api/approvals | — | the pending approval records (approvals.js list), after the server-side expiry and reminder tick |
 | GET | /api/approvals/:id | — | one record: `{ status, category, fixed, params, actionDigest, expiresAt, default, authority, chatAnswerable, suppressed, answer }`; 404 when there is none |
-| POST | /api/approvals/:id/answer | `{ verdict: yes\|no, shownDigest, surface: chat\|needs-you\|console }` | the approval API answer (CAS); 409 closed / stale / route / held, 403 authority, 404 missing |
+| POST | /api/approvals/:id/answer | `{ verdict: yes\|no, shownDigest }` | the approval API answer from chat (CAS). The surface is always `chat` (a body `surface` is ignored), so a fixed gate is refused here (409 route): it is answered on Today (`POST /api/questions/:id/answer`, surface `needs-you`). 409 closed / stale / route / held, 403 authority, 404 missing |
 
 ## Owner channel
 

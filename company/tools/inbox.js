@@ -13,6 +13,9 @@
  *   node company/tools/inbox.js snooze --id q-0003 --until <ISO time> --by Commander
  *   node company/tools/inbox.js withdraw q-0003 [--part <n|id>] --why "fixed by …" --from <you>   (the asker: no longer needed)
  *   node company/tools/inbox.js close --id q-0003
+ * answer / snooze / close --by owner (or Commander, or the owner's name) follow the shared owner rule (lib/owner.js):
+ * only from the owner's own shell or the console. An APPROVAL record (row.approval, or an older gate question) is never
+ * answered or closed here: approvals.js answer (or Today › Needs you) is its only answer path (exit 5).
  *   node company/tools/inbox.js --selftest
  *
  * HOW A QUESTION READS. `--message` is what the owner sees first: 2-4 conversational sentences — what you need, why,
@@ -90,6 +93,12 @@ const path = require('path');
 const co = require('./lib/company');
 const FILE = () => process.env.PM_INBOX_FILE || co.p('company', 'pm-inbox.jsonl');
 const isOwner = by => { const b = String(by || '').trim().toLowerCase(); return !!b && (b === 'commander' || b === 'owner' || b === String(co.config.owner.name || '').trim().toLowerCase()); };
+// the shared owner rule (lib/owner.js) for the CLI's --by owner: the owner's own shell or the console, never an agent run
+const ownerRefusal = (by, what) => require('./lib/owner').refusal(by, what, { aliases: ['commander'] });
+/* an approval record (approvals.js: row.approval, or an older governance gate question: row.gate) is answered ONLY
+ * through approvals.answer (digest, lock, authority, audit line, wake): never by a plain inbox answer or close */
+const isApprovalRow = row => !!(row && (row.approval || row.gate));
+const approvalRefusal = id => { const e = new Error(id + ' is an approval: answer it on Today › Needs you or with node company/tools/approvals.js answer ' + id + ' (an inbox answer would skip the digest, the lock and the audit line)'); e.code = 5; return e; };
 
 const KINDS = ['approve', 'choice', 'text', 'secret', 'link', 'account', 'number', 'date', 'slider'];
 const FIELD_TYPES = ['info', 'text', 'secret', 'url', 'choice', 'link', 'number', 'date', 'checkbox', 'slider'];
@@ -524,6 +533,7 @@ function answerParts(o) {
   const id = String(o.id || ''); const row = state()[id];
   if (!row || !(row.type === 'ask' || followUpOf(row))) { const e = new Error('no open question ' + id); e.code = 4; throw e; }
   if (row.reclassified || row.withdrawnAll) { const e = new Error('no open question ' + id); e.code = 4; throw e; }
+  if (isApprovalRow(row)) throw approvalRefusal(id);
   const c = computeParts(row, o.parts, o.closeRest);
   if (!Object.keys(c.results).length && !c.finished) throw new Error('answer at least one question, or close the rest');
   const at = new Date().toISOString();
@@ -782,6 +792,7 @@ function answer(o) {
   const id = String(o.id || ''); if (!id) throw new Error('--id is required');
   const q = state()[id];
   if (!q || !(q.type === 'ask' || followUpOf(q)) || q.withdrawnAll) { const e = new Error('no question ' + id + (q && q.withdrawnAll ? ' (withdrawn by ' + q.withdrawnAll.by + ')' : '')); e.code = 4; throw e; }
+  if (isApprovalRow(q)) throw approvalRefusal(id);
   if (o.parts || o.closeRest) return answerParts(o);
   const qo = questionsOf(q);
   if (qo) {   // a request with several questions: a reply answers it as a whole; a plain yes/no applies to each open approve question
@@ -1048,8 +1059,11 @@ function selftest() {
     const g1 = gov.decide('hiring', { by: 'Sam', summary: 'open a round', ref: 'st:r1' }, { root: T, level: 'approve' });
     const g2 = gov.decide('hiring', { by: 'Sam', summary: 'open round 2', ref: 'st:r2' }, { root: T, level: 'approve' });
     t('governance files gate questions with a plain message', !!g1.questionId && !open(g1.questionId).messageDerived && open(g1.questionId).message.length <= MESSAGE_SOFT, open(g1.questionId));
-    answer({ id: g1.questionId, by, answer: { action: 'approve', values: { reason: 'fine' } }, quiet: true });
-    answer({ id: g2.questionId, by, answer: { verdict: 'no' }, quiet: true });
+    let refused = null; try { answer({ id: g1.questionId, by, answer: { action: 'approve' }, quiet: true }); } catch (e) { refused = e.code; }
+    t('a gate question is an approval: a plain inbox answer is refused (approvals.js answer is its path)', refused === 5 && !state()[g1.questionId].a);
+    // the rows approvals.js answer writes (structured verdicts), which governance reads
+    append({ type: 'answer', id: g1.questionId, at: new Date().toISOString(), a: 'yes (via needs-you)', answer: { verdict: 'yes', action: 'approve', values: {} }, by: 'Commander', surface: 'needs-you' });
+    append({ type: 'answer', id: g2.questionId, at: new Date().toISOString(), a: 'no (via needs-you)', answer: { verdict: 'no', action: 'decline', values: {} }, by: 'Commander', surface: 'needs-you' });
     t('governance approved(): structured yes is true, no is false', gov.approved('st:r1', { root: T }) === true && gov.approved('st:r2', { root: T }) === false);
   } catch (e) { t('selftest ran to the end', false, e.stack); }
   finally { try { fs.rmSync(T, { recursive: true, force: true }); } catch (_) {} }
@@ -1096,18 +1110,21 @@ if (a.cmd === 'reclassify') {
   out(0, { ok: true, id, state: 'reclassified-company-owned', by, note });
 }
 if (a.cmd === 'snooze') {
+  { const why = ownerRefusal(a.by, 'inbox.js snooze'); if (why) out(3, { ok: false, error: why }); }
   try { out(0, snooze({ id: a.id, until: a.until, by: a.by })); } catch (e) { out(e.code === 3 ? 3 : 2, { ok: false, error: e.message }); }
 }
 if (a.cmd === 'answer') {
   if (!isOwner(a.by)) out(3, { ok: false, error: 'only the Commander (the owner, the PM) can answer or close a question' });
+  { const why = ownerRefusal(a.by, 'inbox.js answer'); if (why) out(3, { ok: false, error: why }); }
   if (!String(a.id || '')) out(2, { ok: false, error: '--id is required' });
+  if (isApprovalRow(state()[String(a.id)])) out(5, { ok: false, code: 'approval', error: approvalRefusal(String(a.id)).message });
   if (!String(a.a || '').trim() && !a.answer) out(2, { ok: false, error: '--a is required' });
   let structured;
   if (a.answer && a.answer !== true) { try { structured = JSON.parse(a.answer); } catch (e) { out(2, { ok: false, error: '--answer is not JSON' }); } }
   // an id that was never asked still gets its answer row (old behaviour), so a reply to a question asked elsewhere is kept
   if (!state()[String(a.id)]) { append({ type: 'answer', id: String(a.id), at: new Date().toISOString(), a: String(a.a), by: 'Commander' }); out(0, { ok: true, id: String(a.id), state: 'answered' }); }
   try { out(0, answer({ id: a.id, by: a.by, text: a.a, answer: structured, quiet: !!a.quiet })); }
-  catch (e) { out(e.code === 3 ? 3 : 2, { ok: false, error: e.message }); }
+  catch (e) { out(e.code === 3 ? 3 : e.code === 5 ? 5 : 2, { ok: false, error: e.message }); }
 }
 if (a.cmd === 'withdraw') {
   // inbox.js withdraw <q-id> [--part <n|id>] --why "fixed by …" --from <you>
@@ -1116,7 +1133,9 @@ if (a.cmd === 'withdraw') {
 }
 if (a.cmd === 'close') {
   if (!isOwner(a.by)) out(3, { ok: false, error: 'only the Commander (the owner, the PM) can answer or close a question' });
+  { const why = ownerRefusal(a.by, 'inbox.js close'); if (why) out(3, { ok: false, error: why }); }
   const id = String(a.id || ''); if (!id) out(2, { ok: false, error: '--id is required' });
+  if (isApprovalRow(state()[id])) out(5, { ok: false, code: 'approval', error: approvalRefusal(id).message });
   append({ type: 'close', id, at: new Date().toISOString(), by: 'Commander' });
   out(0, { ok: true, id, state: 'closed' });
 }

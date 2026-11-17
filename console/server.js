@@ -279,9 +279,12 @@ async function answerQuestion(id, b) {
   const q = questions().find(x => x.id === id); if (!q) bad('no open question ' + id, 404);
   const keyRefusal = 'this looks like a key or a private key. Put it in the secure field instead' + (q.form.fields.some(f => f.type === 'secret') ? '' : ' ("Store the key securely")') + ': it is stored as a file and never written into a message.';
   const row = inbox.state()[id];
-  if (row && row.approval && row.approval.actionDigest && !b.store && !b.parts && b.verdict !== 'reply') {
-    const act = q.form.actions.find(a => a.id === String(b.action || '')) || q.form.actions.find(a => a.verdict === b.verdict);
-    if (act && (act.verdict === 'yes' || act.verdict === 'no')) return approvalAnswer(id, { verdict: act.verdict, shownDigest: b.shownDigest }, 'needs-you');
+  // an approval record (approvals.js, or an older gate question) is answered ONLY through the approval API, as the
+  // Needs-you surface (set here, by this route); anything that is not an approve/deny is refused, never a plain answer
+  if (row && (row.approval || row.gate)) {
+    const act = !b.store && !b.parts && b.verdict !== 'reply' ? (q.form.actions.find(a => a.id === String(b.action || '')) || q.form.actions.find(a => a.verdict === b.verdict)) : null;
+    if (!act || !(act.verdict === 'yes' || act.verdict === 'no')) bad(id + ' is an approval: answer it with Approve or Deny');
+    return approvalAnswer(id, { verdict: act.verdict, shownDigest: b.shownDigest }, 'needs-you');
   }
   const noKeys = (form, values, note) => {
     for (const [k, v] of Object.entries(values)) { const f = form.fields.find(x => x.id === k); if (f && f.type !== 'secret' && looksLikeKey(typeof v === 'string' ? v : JSON.stringify(v))) bad('Not sent: ' + (f.label || k) + ': ' + keyRefusal); }
@@ -536,13 +539,15 @@ route('POST', /^\/api\/chat-actions\/secret$/, (m, q, b) => {
   writeSecret(name, value, !!b.replace);
   return { ok: true, stored: 'secrets/' + name, name, chars: value.length };
 });
-const approvals = () => { const A = tool('approvals.js'); try { A.tick(); } catch (_) {} return A; };
-route('GET', /^\/api\/approvals$/, () => ({ ok: true, approvals: approvals().list() }));
-route('GET', /^\/api\/approvals\/(q-\d+)$/, m => { const r = approvals().get(m[1]); if (!r) bad('no approval record ' + m[1], 404); return Object.assign({ ok: true }, r); });
-route('POST', /^\/api\/approvals\/(q-\d+)\/answer$/, (m, q, b) => approvalAnswer(m[1], b, ['chat', 'needs-you', 'console'].includes(b.surface) ? b.surface : 'console'));
-function approvalAnswer(id, b, surface) {
-  const r = approvals().answer(id, { verdict: b.verdict, shownDigest: b.shownDigest, surface, by: 'owner' });
-  if (!r.ok) throw new HttpError({ missing: 404, closed: 409, stale: 409, authority: 403, route: 409, held: 409 }[r.code] || 400, r.error, { code: r.code, link: r.link || null, status: r.status || null });
+const approvals = async () => { const A = tool('approvals.js'); try { await A.tick({ actor: 'the console' }); } catch (_) {} return A; };
+route('GET', /^\/api\/approvals$/, async () => ({ ok: true, approvals: (await approvals()).list() }));
+route('GET', /^\/api\/approvals\/(q-\d+)$/, async m => { const r = (await approvals()).get(m[1]); if (!r) bad('no approval record ' + m[1], 404); return Object.assign({ ok: true }, r); });
+// the chat route: its surface is "chat", always. A body's `surface` is ignored (a crafted "console" or "needs-you" would
+// otherwise answer a fixed gate from chat); approvals.js enforces the fixed-gate rule by record on top of that.
+route('POST', /^\/api\/approvals\/(q-\d+)\/answer$/, (m, q, b) => approvalAnswer(m[1], b, 'chat'));
+async function approvalAnswer(id, b, surface) {
+  const r = await (await approvals()).answer(id, { verdict: b.verdict, shownDigest: b.shownDigest, surface, by: 'owner' });
+  if (!r.ok) throw new HttpError({ missing: 404, closed: 409, stale: 409, authority: 403, unverified: 403, route: 409, held: 409 }[r.code] || 400, r.error, { code: r.code, link: r.link || null, status: r.status || null });
   return r;
 }
 // the crew's work, visible (console/activity.js)
@@ -826,7 +831,7 @@ function start(argv) {
   const server = makeServer(token);
   armWatches();
   setInterval(armWatches, 15000).unref();
-  setInterval(() => { try { tool('approvals.js').tick(); } catch (_) {} }, 60000).unref();   // approvals: expiry (default deny) and reminders
+  setInterval(() => { tool('approvals.js').tick({ actor: 'the console' }).catch(() => {}); }, 60000).unref();   // approvals: expiry (default deny) and reminders
   ACT.start();
   setInterval(() => { for (const c of clients) c.write(': ping\n\n'); }, 25000).unref();
   server.listen(port, host, () => {

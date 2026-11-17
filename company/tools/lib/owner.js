@@ -6,6 +6,9 @@
  *   owner.shell()                    provenance.js ownerShell(): not under the station AND an ancestor is an interactive
  *                                    session (terminal, sshd, tmux/screen, Claude Code working for the owner) or the
  *                                    owner's console. A detached or env-stripped process is not the owner.
+ *                                    The console process itself (console/server.js is this process's main script,
+ *                                    not under the station) counts too: it is the owner's UI behind the owner token,
+ *                                    and the tools it requires in process (approvals.js) ask this same rule.
  *   owner.refusal(by, what)          null when this process may act as the owner for `what`, else the reason
  *
  * Before this, tools disagreed: service.js / guardrails.js / cadence.js / pacer.js / money-hold.js took "not under the
@@ -21,8 +24,9 @@ function isOwnerName(by, opts) {
   const on = ownerName().toLowerCase();
   return b === 'owner' || (!!on && b === on) || ((opts && opts.aliases) || []).some(a => String(a).toLowerCase() === b);
 }
-function shell() { try { return prov().ownerShell(); } catch (_) { return false; } }
 function underStation() { try { return prov().underStation(); } catch (_) { return false; } }
+const isConsoleMain = () => { const m = String((require.main && require.main.filename) || ''); return /(^|[\/\\])console[\/\\]server\.js$/.test(m); };
+function shell() { try { return prov().ownerShell() || (isConsoleMain() && !underStation()); } catch (_) { return false; } }
 const REASON = 'only from the owner\'s own interactive shell or the console (not an agent\'s run, and not a detached or env-stripped process)';
 function refusal(by, what, opts) {
   if (!isOwnerName(by, opts)) return null;

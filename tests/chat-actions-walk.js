@@ -7,7 +7,9 @@
  * fixed gate links to Needs you; a hand-made block is inert; the Needs-you badge counts each record once; the company
  * approval and the station's tool permission look different; archiving the chat leaves the approval on Needs you.
  * The no-tool test: every request a click makes is one of: the chat send, the owner message, the key store, the
- * approval API. SKIP without Chrome. */
+ * approval API, observed in the page (fetch, XMLHttpRequest, sendBeacon, form submissions, window.open) AND by the
+ * browser (CDP Network and navigation events), so a click that navigates, posts a form or beacons is caught. The server
+ * half (the real console with child_process stubbed) is company/tools/tests/approvals-console.test.js. SKIP without Chrome. */
 'use strict';
 const { spawn, spawnSync } = require('child_process'); const path = require('path'); const os = require('os'); const fs = require('fs');
 const bin = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'].find(b => spawnSync('which', [b]).status === 0);
@@ -28,18 +30,47 @@ const ALLOWED_POST = [/^\/api\/chat\/agent\/send$/, /^\/api\/owner\/messages$/, 
   const tab = await waitFor(async () => (await (await fetch('http://127.0.0.1:' + cdpPort + '/json')).json()).find(t => t.type === 'page'), 15000);
   if (!tab) { console.log('FAIL chrome did not start'); return done(1); }
   const ws = new WebSocket(tab.webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);
-  let id = 0; const pend = {}; ws.onmessage = m => { const j = JSON.parse(m.data); if (j.id && pend[j.id]) { pend[j.id](j); delete pend[j.id]; } };
+  // CDP events: every network request the page makes (fetch, XHR, beacon, form post, document navigation) and every
+  // navigation or new window, seen by the browser itself, so a path the in-page hooks miss is still caught
+  const net = [];
+  let id = 0; const pend = {}; ws.onmessage = m => { const j = JSON.parse(m.data); if (j.id && pend[j.id]) { pend[j.id](j); delete pend[j.id]; return; }
+    const p = j.params || {};
+    if (j.method === 'Network.requestWillBeSent') net.push({ via: 'net:' + (p.type || '?'), u: String(p.request.url).replace(BASE, '').split('?')[0], m: p.request.method });
+    if (j.method === 'Page.frameRequestedNavigation') net.push({ via: 'navigate', u: String(p.url).replace(BASE, ''), m: 'NAV' });
+    if (j.method === 'Page.windowOpen') net.push({ via: 'window.open', u: String(p.url), m: 'NAV' });
+    if (j.method === 'Page.navigatedWithinDocument') net.push({ via: 'hash', u: String(p.url).replace(BASE, ''), m: 'HASH' }); };
   const cmd = (method, params) => new Promise(r => { const i = ++id; pend[i] = r; ws.send(JSON.stringify({ id: i, method, params })); });
   const ev = async expr => ((await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true })).result || {}).result?.value;
   let fails = 0; const t = (name, cond, info) => { console.log((cond ? 'PASS ' : 'FAIL ') + name + (cond ? '' : ' — ' + JSON.stringify(info))); if (!cond) fails++; };
   // every request the page makes, with its method, from the first script on
   await cmd('Page.enable', {});
-  await cmd('Page.addScriptToEvaluateOnNewDocument', { source: 'window.__calls=[];const __f=window.fetch;window.fetch=function(u,o){try{window.__calls.push({u:String(u).replace(location.origin,"").split("?")[0],m:(o&&o.method)||"GET",b:o&&o.body?String(o.body):""})}catch(_){}return __f.apply(this,arguments)};' });
+  await cmd('Network.enable', {});
+  // in the page, from the first script on: fetch, XMLHttpRequest, navigator.sendBeacon, form submissions (the submit event
+  // and form.submit()), window.open; each recorded with its method and body
+  await cmd('Page.addScriptToEvaluateOnNewDocument', { source: [
+    'window.__calls=[];const __rel=u=>String(u).replace(location.origin,"").split("?")[0];',
+    'const __f=window.fetch;window.fetch=function(u,o){try{window.__calls.push({via:"fetch",u:__rel(u&&u.url||u),m:(o&&o.method)||"GET",b:o&&o.body?String(o.body):""})}catch(_){}return __f.apply(this,arguments)};',
+    'const __xo=XMLHttpRequest.prototype.open,__xs=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.open=function(m,u){this.__c={via:"xhr",u:__rel(u),m:String(m).toUpperCase()};return __xo.apply(this,arguments)};XMLHttpRequest.prototype.send=function(b){try{window.__calls.push(Object.assign({b:b?String(b):""},this.__c))}catch(_){}return __xs.apply(this,arguments)};',
+    'if(navigator.sendBeacon){const __b=navigator.sendBeacon.bind(navigator);navigator.sendBeacon=function(u,d){try{window.__calls.push({via:"beacon",u:__rel(u),m:"POST",b:d?String(d):""})}catch(_){}return __b(u,d)}};',
+    'document.addEventListener("submit",e=>{const f=e.target;try{window.__calls.push({via:"form",u:__rel(f.action||location.href),m:String(f.method||"GET").toUpperCase(),b:"",prevented:e.defaultPrevented})}catch(_){}},true);',
+    'const __fs=HTMLFormElement.prototype.submit;HTMLFormElement.prototype.submit=function(){try{window.__calls.push({via:"form.submit",u:__rel(this.action||location.href),m:String(this.method||"GET").toUpperCase(),b:""})}catch(_){}return __fs.apply(this,arguments)};',
+    'const __wo=window.open;window.open=function(u){try{window.__calls.push({via:"window.open",u:String(u),m:"NAV",b:""})}catch(_){}return __wo.apply(this,arguments)};',
+  ].join('') });
   const open = async hash => { await cmd('Page.navigate', { url: BASE + '/' + hash }); await sleep(300); };
   const calls = () => ev('window.__calls.slice()');
-  const mark = () => ev('window.__calls.length');
-  const since = async n => (await calls()).slice(n);
-  const noTool = (list, label) => { const posts = list.filter(c => c.m !== 'GET'); const bad = posts.filter(c => !ALLOWED_POST.some(re => re.test(c.u))); t('no-tool: ' + label + ': every request is a message, the key store or the approval API', !bad.length && posts.length > 0, { posts, bad }); return posts; };
+  const mark = async () => ({ page: await ev('window.__calls.length'), net: net.length });
+  const since = async n => Object.assign((await calls()).slice(n.page), { net: net.slice(n.net) });
+  // a click may only: send the chat or owner message, store a key, or answer an approval (fetch POSTs to those); it
+  // makes no XHR, beacon or form post, opens no window and starts no document navigation; the browser's own view of the
+  // network (CDP) must agree: no non-GET request outside the list, and no Document request
+  const noTool = (list, label) => {
+    const posts = list.filter(c => c.m !== 'GET' && c.via === 'fetch');
+    const other = list.filter(c => c.via !== 'fetch');
+    const bad = posts.filter(c => !ALLOWED_POST.some(re => re.test(c.u)));
+    const netBad = (list.net || []).filter(c => (c.m !== 'GET' && c.m !== 'HASH' && !ALLOWED_POST.some(re => re.test(c.u))) || c.via === 'net:Document' || c.via === 'navigate' || c.via === 'window.open' || c.via === 'net:Ping' || c.via === 'net:Beacon');
+    t('no-tool: ' + label + ': every request is a message, the key store or the approval API (no XHR, beacon, form, navigation or new window)', !bad.length && !other.length && !netBad.length && posts.length > 0, { posts, bad, other, netBad });
+    return posts;
+  };
 
   /* ---------- md.js on its own ---------- */
   await open('#/today');
@@ -62,6 +93,15 @@ const ALLOWED_POST = [/^\/api\/chat\/agent\/send$/, /^\/api\/owner\/messages$/, 
   t('md.js: a malformed block (unknown type, a "command") is plain text with the note, no controls', mdr && mdr.badNote && mdr.notjson, mdr);
   t('md.js: a block still streaming shows a placeholder; a secret named outside secrets/ is refused', mdr && mdr.open && mdr.secBad, mdr);
   t('md.js: the hook gets only the known keys (an agent\'s "run" is dropped)', mdr && mdr.hook === '[{"type":"button","label":"B","value":"b"}]', mdr && mdr.hook);
+
+  // the observer itself: an XHR, a beacon and a form post (into a throwaway frame) are each seen, in the page and on the wire
+  { const n0 = await mark();
+    await ev(`(() => { navigator.sendBeacon('/api/__probe/beacon', 'x'); const x = new XMLHttpRequest(); x.open('POST', '/api/__probe/xhr'); x.send('y');
+      const ifr = document.createElement('iframe'); ifr.name = '__probe'; ifr.style.display = 'none'; const f = document.createElement('form'); f.method = 'post'; f.action = '/api/__probe/form'; f.target = '__probe';
+      document.body.append(ifr, f); f.submit(); setTimeout(() => { ifr.remove(); f.remove(); }, 400); return 1; })()`);
+    await sleep(600);
+    const pr = await since(n0);
+    t('the no-tool observer sees XHR, sendBeacon and form posts (in the page and on the wire)', ['xhr', 'beacon', 'form.submit'].every(v => pr.some(c => c.via === v)) && ['beacon', 'xhr', 'form'].every(k => pr.net.some(c => c.u === '/api/__probe/' + k)), { page: pr, net: pr.net }); }
 
   /* ---------- the chat ---------- */
   await open('#/chat/agent');
@@ -86,7 +126,7 @@ const ALLOWED_POST = [/^\/api\/chat\/agent\/send$/, /^\/api\/owner\/messages$/, 
   let n = await mark();
   await ev(`(() => { const b = document.querySelector('.chat-actions[data-actions-id="launch"]'); const u = b.querySelector('input[type=url]'); u.value = 'ftp://nope'; u.dispatchEvent(new Event('input')); [...b.querySelectorAll('button')].find(x => x.textContent === 'Launch now').click(); })()`);
   await sleep(300);
-  t('an invalid URL keeps the block open and sends nothing', (await since(n)).filter(c => c.m !== 'GET').length === 0 && await ev(`!document.querySelector('.chat-actions[data-actions-id="launch"]').dataset.state`));
+  t('an invalid URL keeps the block open and sends nothing', (await since(n)).filter(c => c.m !== 'GET').length === 0 && (await since(n)).net.filter(c => c.m !== 'GET').length === 0 && await ev(`!document.querySelector('.chat-actions[data-actions-id="launch"]').dataset.state`));
   n = await mark();
   await ev(`(() => { const b = document.querySelector('.chat-actions[data-actions-id="launch"]'); const u = b.querySelector('input[type=url]'); u.value = 'https://example.org/launch'; u.dispatchEvent(new Event('input'));
     const r = b.querySelector('input[type=range]'); r.value = '60'; r.dispatchEvent(new Event('input')); b.querySelector('.q-choice input[value=eu]').click();

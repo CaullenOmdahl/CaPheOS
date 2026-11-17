@@ -768,7 +768,7 @@ function lastRunTail(job) {
   try { require('./handoff-archive.js').run({ dry: DRY, log }); } catch (e) { log('ARCHIVE ERROR: ' + e.message); }
   // approvals (company/tools/approvals.js): expiry (default deny) and the batched reminders run on every tick, so they
   // happen whether or not the owner has the console open; the console calls the same tick when it lists approvals
-  if (!DRY) try { const t = require('./approvals.js').tick(); const n = ((t.expired || []).length || 0); if (n) log('APPROVALS: ' + n + ' expired (default deny applied)'); } catch (e) { log('APPROVALS ERROR: ' + String(e.message).slice(0, 200)); }
+  if (!DRY) try { const t = await require('./approvals.js').tick({ actor: 'the dispatcher' }); const n = ((t.expired || []).length || 0); if (n) log('APPROVALS: ' + n + ' expired (default deny applied)'); } catch (e) { log('APPROVALS ERROR: ' + String(e.message).slice(0, 200)); }
   try { require('./retention.js').daily({ dry: DRY, log }); } catch (e) { log('RETENTION ERROR: ' + String(e.message).slice(0, 200)); }   // once a company day (docs/RETENTION.md)
   // house benchmark (company/tools/model-stats.js): refreshed at most hourly, read by the people owner and the pacer for model pairing
   try {
@@ -799,10 +799,40 @@ function lastRunTail(job) {
   // work for its holder: it neither wakes the seat nor counts in its signature or stall key (lib/sprint.js waitingOn).
   const NAMES = Object.fromEntries(Object.entries(CREW || {}).map(([id, c]) => [id, (c && c.name) || id]));
   const itemsOf = {}, waitsOf = {}, stalledSeats = [];
+  // Blocking approvals (company/tools/approvals.js blockingSeats(), a READ): the asker's work that depends on a pending
+  // blocking approval waits on the owner, like an item whose Status says so: the item that names the approval id or is
+  // the handoff the record names (with neither, every OPEN item of the asker: a blocking ask says it cannot go on), and
+  // a dependent record's asker's items that name that record. It wakes nobody and counts toward no stall; the seats
+  // waiting on the asker stay waiting (waitingOn). One reminder comes from approvals.tick(), not from here. The hold
+  // ends when the record is answered, expires or is withdrawn (the asker is then woken by the owner message).
+  const apHolds = {};   // seat id -> [{ id, heading?, all }]
+  try {
+    for (const [seat, recs] of Object.entries(require('./approvals.js').blockingSeats())) for (const r of recs) {
+      (apHolds[seat] = apHolds[seat] || []).push({ id: r.id, heading: r.handoff && r.handoff.heading, all: true });
+      for (const [i, dep] of (r.dependents || []).entries()) { const ds = (r.dependentSeats || [])[i]; if (ds) (apHolds[ds] = apHolds[ds] || []).push({ id: dep, all: false }); }
+    }
+  } catch (e) { log('APPROVALS ERROR: ' + String(e.message).slice(0, 200)); }
   for (const [agentId, inbox] of Object.entries(INBOX_OF)) {
     let its = [], txt = ''; try { txt = fs.readFileSync(path.join(ROOT, 'company', 'work', 'handoffs', inbox), 'utf8'); its = SP.parseItems(txt).filter(i => i.open); } catch (_) {}
     itemsOf[agentId] = its; waitsOf[agentId] = {};
     for (const it of its) { const on = SP.waitingOn(it.status, NAMES, agentId, CEO_ID); if (on) { it.waitingOn = on; const n = on === 'owner' ? 'you (the owner)' : NAMES[on] || 'someone else'; waitsOf[agentId][n] = (waitsOf[agentId][n] || 0) + 1; } }
+    if (apHolds[agentId]) {
+      const secOf = new Map(txt.split(/^## /m).slice(1).map(sec => [sec.split('\n')[0].trim(), sec]));
+      const hs = apHolds[agentId];
+      const mentions = h => its.some(i => (secOf.get(i.heading) || '').includes(h.id));
+      const blanket = hs.find(h => h.all && !h.heading && !mentions(h));   // names nothing: all of the asker's OPEN work waits
+      for (const it of its) {
+        if (it.waitingOn) continue;
+        const sec = secOf.get(it.heading) || '';
+        const h = hs.find(x => (x.heading && x.heading === it.heading) || sec.includes(x.id)) || blanket;
+        if (!h) continue;
+        it.waitingOn = 'owner'; it.approval = h.id; waitsOf[agentId]['you (the owner)'] = (waitsOf[agentId]['you (the owner)'] || 0) + 1;
+      }
+      const held = its.filter(i => i.approval);
+      const hk = held.map(i => i.approval + ':' + i.heading).sort().join('|');
+      const st0 = state.agents[agentId] = state.agents[agentId] || { key: '', count: 0 };
+      if (hk !== (st0.approvalHold || '')) { st0.approvalHold = hk; if (hk) log('WAITING on approval ' + [...new Set(held.map(i => i.approval))].join(', ') + ' (' + agentId + '): ' + held.length + ' OPEN in ' + inbox + ' held until the owner answers; not woken, not counted as stalled'); }
+    }
     const st = state.agents[agentId] || { key: '', count: 0 };
     const openSecs = new Map(txt.split(/^## /m).slice(1).map(sec => [sec.split('\n')[0].trim(), sec]).filter(([h]) => its.some(i => i.heading === h && !i.waitingOn)));
     const dl = deadlineDeferrals(openSecs, st.deadlines, today(), STALL_DEADLINE_CAP);

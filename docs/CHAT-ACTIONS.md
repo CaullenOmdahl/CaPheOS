@@ -51,22 +51,39 @@ Approvals are owner-question records in `company/pm-inbox.jsonl` (no other store
 - **actionDigest**: sha256 over the canonical `{category, from, params}` (sorted keys, NFC strings with collapsed
   whitespace, numbers to 15 significant digits), computed at creation; `amend` replaces it. An answer is refused as
   stale unless its `shownDigest` (what was displayed) equals the current actionDigest.
-- **Answer** (CAS under a lock beside pm-inbox.jsonl): the record must be pending; the answerer must have the authority
-  (a fixed gate: the owner only; any other category: the owner or the CEO; never the asking seat); `chat` may not answer
-  a fixed gate (it links to Today › Needs you with the reason) or an older record without an actionDigest (Needs you
-  only). The winner writes one answer row `{surface, shownDigest, by}` and one decisions.md line naming the surface; the
-  asker is woken through the owner-message path (inbox.js deliver: `re` the id, opening with its name). The loser is told
-  who answered, how and when, and nothing is written. Today's own Approve/Decline on such a record goes through the same
-  path with `surface: needs-you`.
-- **Expiry**: no `expiresAt`, no expiry. Past it, the server (the console's one-minute tick, and every approval API call)
-  answers `no` with `surface: expiry`, writes the audit line and tells the asker. The card shows "expires 20:40 · default:
-  deny" from its first render.
+- **Authority**: a fixed gate, an older record, and any category governance has at `approve`: the **owner only** (an
+  `approve` level means the company waits for the owner). A category governance *triages* (at `triage` when minted and
+  now): the owner or the CEO. Never the asking seat. `--by owner` (or the owner's name) is the shared owner rule,
+  `lib/owner.js`: the owner's own shell or the console process; an agent's run or a detached process is refused, in the
+  CLI and in process alike. A crew `--by` must be an exact crew seat and must be verified as the caller; a CLI cannot
+  verify that (the transcript check proves only "not in someone else's run", and the transcript lands after the
+  command), so crew answers are refused from the CLI.
+- **Surface**: set by the route that received the answer, never by a request body: `POST /api/approvals/<id>/answer` is
+  `chat`, Today's `POST /api/questions/<id>/answer` is `needs-you`, the CLI is `cli`. A fixed gate is answered only on
+  `needs-you` or `cli`; an older record only on `needs-you`. `inbox.js answer`/`close` refuse any approval record
+  (exit 5), and the console's plain answer path refuses a reply to one: approvals.answer is the only way in.
+- **Answer** (CAS under a lock beside pm-inbox.jsonl): the record must be pending and the answerer must have the
+  authority above. The winner writes a journal row, then one answer row `{surface, shownDigest, by}`, then one
+  decisions.md line naming the surface, then wakes the asker through the owner-message path (inbox.js deliver: `re`
+  the id, opening with its name) and closes the handoff the record names (`--handoff`). Each step is journalled
+  (`approval-journal` rows); `tick()` repairs an answered record with no audit line or no wake. The loser is told who
+  answered, how and when, and nothing is written.
+- **The lock**: a directory with `owner.json {pid, host, token, at}`. Waiting is an async retry, never a blocking sleep
+  (the console server's event loop does not stall). A lock whose owner pid is dead, one with no owner file after 2 s,
+  or one older than 10 min is taken over by an atomic rename (one taker wins) and re-checked. Ask, amend, answer,
+  expiry, reminders and withdraw all take it.
+- **Expiry**: no `expiresAt`, no expiry. Past it, the server (the dispatcher's tick, the console's one-minute tick, and
+  every approval API call) answers `no` with `surface: expiry` and `appliedBy` (who ran it), writes the audit line
+  naming that actor, and tells the asker. The card shows "expires 20:40 · default: deny" from its first render.
 - **Reminders**: 15 minutes after a record was created (not first shown), once per record, batched: one
   `approval-reminder` row and one owner-channel line per 15-minute window, a burst minted together as one batch, with the
   pending count; the Today card is highlighted.
-- **Dependents**: a record whose `dependsOn` names a pending blocking record is suppressed (not reminded, not answerable)
-  until that one is answered, expires or is withdrawn. The dispatcher's hook is a read: `approvals.blockingSeats()`
-  (not wired into dispatch.js yet; dispatch.js has another owner).
+- **Dependents and the dispatcher**: a record whose `dependsOn` names a pending blocking record is suppressed (not
+  reminded, not answerable) until that one is answered, expires or is withdrawn. dispatch.js reads
+  `approvals.blockingSeats()` each tick: the asker's OPEN work that depends on a pending blocking record (the handoff it
+  names, items naming its id, or with neither all of the asker's OPEN items) waits on the owner, wakes nobody and counts
+  toward no stall; seats waiting on the asker stay waiting. The hold ends with the answer, expiry or withdrawal, and the
+  asker is woken (company/tools/tests/approvals-dispatch.test.js).
 - **Withdrawal** (`approvals.js withdraw`): inbox.js withdraw (gone from Needs you; the block shows "withdrawn") and a
   decision.js withdraw of the request line, so the audit shows both events.
 - **Archive**: the record does not live in the chat; archiving the chat leaves it pending on Needs you.

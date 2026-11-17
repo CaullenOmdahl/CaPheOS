@@ -23,13 +23,16 @@ const jsonl = (root, rel) => read(root, rel).split('\n').filter(Boolean).map(l =
 function company(o) {
   const T = fs.mkdtempSync(path.join(os.tmpdir(), 'approvals-selftest-')); roots.push(T);
   w(T, 'company/company.json', { name: 'Example', owner: { name: 'Olive Owner', title: 'Owner' }, timezone: 'UTC' });
-  w(T, 'company/tools/loops.json', { agents: { agent: { name: 'Founder', manager: null, functions: ['ceo', 'people', 'tools', 'risk', 'floor', 'finance'] }, sam: { name: 'Sam', manager: 'agent', functions: [] } } });
+  w(T, 'company/tools/loops.json', { agents: { agent: { name: 'Founder', manager: null, functions: ['ceo', 'people', 'tools', 'risk', 'floor', 'finance'], inbox: 'to-founder.md' }, sam: { name: 'Sam', manager: 'agent', functions: [], inbox: 'to-sam.md' } } });
   for (const f of ['company/defaults/state/governance.json', 'company/defaults/state/guardrails.json', 'company/defaults/state/approvals-policy.json', 'company/competence-policy.json'])
     fs.mkdirSync(path.dirname(path.join(T, f)), { recursive: true }), fs.copyFileSync(path.join(REPO, f), path.join(T, f));
   fs.cpSync(path.join(REPO, 'company', 'decision-models'), path.join(T, 'company', 'decision-models'), { recursive: true });
   w(T, 'company/work/decisions.md', '# Decisions\n\nNewest first. Who decided, what, why.\n\n- 2026-11-01 09:00 Founder [d-aaaaaa] An earlier decision that must stay exactly as written.\n');
   if (o && o.governance) w(T, 'company/state/governance.json', Object.assign(JSON.parse(read(T, 'company/defaults/state/governance.json')), o.governance));
   if (o && o.policy) w(T, 'company/state/approvals-policy.json', o.policy);
+  // a selftest's own throwaway company answers the owner check as the owner (provenance fixtureRoot); the owner-rule
+  // tests below build one WITHOUT the mark, so the real rule applies to them
+  if (!(o && o.real)) w(T, '.capheos-selftest-fixture', '');
   return T;
 }
 // run a snippet in the scratch root; `A` is approvals.js, `I` inbox.js; the snippet's value is printed as JSON
@@ -129,7 +132,7 @@ test('trap 6: two concurrent answers: one CAS winner, one explained refusal, exa
   const a = run(T, askSpend());
   const at = Date.now() + 1500;
   const one = verdict => new Promise(res => {
-    const src = 'const A = require(' + JSON.stringify(AP) + '); while (Date.now() < ' + at + ') {} console.log(JSON.stringify(A.answer(' + JSON.stringify(a.id) + ', { verdict: "' + verdict + '", surface: "' + (verdict === 'yes' ? 'chat' : 'needs-you') + '", by: "owner", shownDigest: ' + JSON.stringify(a.actionDigest) + ' })));';
+    const src = 'const A = require(' + JSON.stringify(AP) + '); while (Date.now() < ' + at + ') {} A.answer(' + JSON.stringify(a.id) + ', { verdict: "' + verdict + '", surface: "' + (verdict === 'yes' ? 'chat' : 'needs-you') + '", by: "owner", shownDigest: ' + JSON.stringify(a.actionDigest) + ' }).then(r => console.log(JSON.stringify(r)));';
     const c = spawn(process.execPath, ['-e', src], { cwd: T, env: Object.assign({}, process.env, { CAPHEOS_ROOT: T, CAPHEOS_TZ: 'UTC', PROVENANCE_ROOT: T }) });
     let out = ''; c.stdout.on('data', d => { out += d; }); c.on('close', () => res(JSON.parse(out.trim().split('\n').pop())));
   });
@@ -140,18 +143,37 @@ test('trap 6: two concurrent answers: one CAS winner, one explained refusal, exa
   assert.equal(jsonl(T, 'company/pm-inbox.jsonl').filter(r => r.type === 'answer' && r.id === a.id).length, 1);
   assert.equal(decisionsHas(T, new RegExp('Approval ' + a.id + ' \\(spend\\) (approved|denied)')).length, 1);
 });
-test('trap 6: authority: never the asker; a fixed gate the owner only; any other category the owner or the CEO', () => {
+test('trap 6: authority: never the asker; fixed gates and `approve` categories the owner only; a TRIAGED category the owner or the (verified) CEO', () => {
   const T = company();
   const s = run(T, askSpend());
-  const ans = (id, by, d, surface) => run(T, 'return A.answer(' + JSON.stringify(id) + ', { verdict: "yes", surface: "' + (surface || 'needs-you') + '", by: ' + JSON.stringify(by) + ', shownDigest: ' + JSON.stringify(d) + ' });');
-  assert.equal(ans(s.id, 'Sam', s.actionDigest).code, 'authority', 'the asker');
-  assert.equal(ans(s.id, 'Mallory', s.actionDigest).code, 'authority', 'not the owner, not the CEO');
-  assert.equal(ans(s.id, 'Founder', s.actionDigest).ok, true, 'the CEO on a non-fixed category');
+  // ceo: true pins the verified caller to the CEO seat (the seam a station run identity would fill); without it no crew answer is verified
+  const ans = (id, by, d, o) => run(T, (o && o.ceo ? 'A._S.crewCaller = () => "agent"; ' : '') + 'return A.answer(' + JSON.stringify(id) + ', { verdict: "yes", surface: "' + ((o && o.surface) || 'needs-you') + '", by: ' + JSON.stringify(by) + ', shownDigest: ' + JSON.stringify(d) + ' });');
+  assert.equal(ans(s.id, 'Sam', s.actionDigest).code, 'unverified', 'the asker, unverified');
+  assert.equal(ans(s.id, 'Mallory', s.actionDigest).code, 'authority', 'not the owner, not a seat');
+  // spend is at `approve` in the framework preset: the company waits for the OWNER, so the CEO may not answer it (the old trap 6 said it could)
+  assert.equal(ans(s.id, 'Founder', s.actionDigest, { ceo: true }).code, 'authority', 'the CEO on an approve-level category');
+  assert.match(ans(s.id, 'Founder', s.actionDigest, { ceo: true }).error, /spend is at approve: the company waits for the owner/);
   const f = run(T, 'return A.ask({ from: "Sam", category: "commitment", message: "May we sign the example pilot agreement?", params: { party: "example" } });');
-  assert.equal(ans(f.id, 'Founder', f.actionDigest).code, 'authority', 'the CEO on a fixed gate');
-  const own = run(T, 'return A.ask({ from: "Founder", category: "spend", message: "May I buy the example tool for $9?", params: { amountUsd: 9 } });');
-  assert.equal(ans(own.id, 'Founder', own.actionDigest).code, 'authority', 'the CEO is never the answerer of its own ask');
+  assert.equal(ans(f.id, 'Founder', f.actionDigest, { ceo: true }).code, 'authority', 'the CEO on a fixed gate');
+  assert.equal(ans(f.id, 'owner', f.actionDigest, { surface: 'chat' }).code, 'route', 'a fixed gate is never answered from chat');
   assert.equal(ans(f.id, 'Olive Owner', f.actionDigest).ok, true, 'the owner on a fixed gate, from Needs you');
+  assert.equal(ans(s.id, 'owner', s.actionDigest, { surface: 'console' }).code, 'usage', 'a "console" surface is no longer accepted: the route names the surface');
+  // a category the owner set to triage (gate-triage escalated, so a record was minted): the owner or the CEO
+  const cats = JSON.parse(read(REPO, 'company/defaults/state/governance.json')).categories;
+  const T2 = company({ governance: { categories: Object.assign({}, cats, { hiring: 'triage' }) } });
+  const h = run(T2, 'return A.ask({ from: "Sam", category: "hiring", message: "Open a round for a designer.", params: { role: "designer" } });');
+  assert.equal(h.minted, true, JSON.stringify(h)); assert.equal(run(T2, 'return A.get(' + JSON.stringify(h.id) + ').level;'), 'triage');
+  const ans2 = (by, o) => run(T2, (o && o.ceo ? 'A._S.crewCaller = () => "agent"; ' : '') + 'return A.answer(' + JSON.stringify(h.id) + ', { verdict: "yes", surface: "needs-you", by: ' + JSON.stringify(by) + ', shownDigest: ' + JSON.stringify(h.actionDigest) + ' });');
+  assert.equal(ans2('Founder').code, 'unverified', 'a crew --by that is not verified as that seat');
+  const own = run(T2, 'return A.ask({ from: "Founder", category: "hiring", message: "Open a round for an analyst.", params: { role: "analyst" } });');
+  assert.equal(run(T2, 'A._S.crewCaller = () => "agent"; return A.answer(' + JSON.stringify(own.id) + ', { verdict: "yes", surface: "needs-you", by: "Founder", shownDigest: ' + JSON.stringify(own.actionDigest) + ' }).then(r => r.code);'), 'authority', 'the CEO never answers its own ask');
+  const ok = ans2('Founder', { ceo: true });
+  assert.equal(ok.ok, true, JSON.stringify(ok));
+  assert.equal(decisionsHas(T2, new RegExp('Approval ' + h.id + ' \\(hiring\\) approved by Founder')).length, 1);
+  // the owner turns triage off again: a pending triage record is the owner's only (level now AND when minted)
+  const h2 = run(T2, 'return A.ask({ from: "Sam", category: "hiring", message: "Open a round for a writer.", params: { role: "writer" } });');
+  w(T2, 'company/state/governance.json', { categories: Object.assign({}, cats, { hiring: 'approve' }), fixed: JSON.parse(read(REPO, 'company/defaults/state/governance.json')).fixed });
+  assert.equal(run(T2, 'A._S.crewCaller = () => "agent"; return A.answer(' + JSON.stringify(h2.id) + ', { verdict: "yes", surface: "needs-you", by: "Founder", shownDigest: ' + JSON.stringify(h2.actionDigest) + ' }).then(r => r.code);'), 'authority');
 });
 
 /* ---------- trap 7: archive and withdrawal ---------- */
@@ -169,7 +191,7 @@ test('trap 7: the record does not live in the chat: archiving the chat message l
   assert.ok(!run(T, 'return I.openQuestions().map(q => q.id);').includes(a.id));
   const g = run(T, 'return A.get(' + JSON.stringify(a.id) + ');');
   assert.equal(g.status, 'withdrawn'); assert.equal(g.answer.by, 'Sam');
-  assert.equal(run(T, 'return A.answer(' + JSON.stringify(a.id) + ', { verdict: "yes", surface: "chat", by: "owner", shownDigest: ' + JSON.stringify(a.actionDigest) + ' }).code;'), 'closed');
+  assert.equal(run(T, 'return A.answer(' + JSON.stringify(a.id) + ', { verdict: "yes", surface: "chat", by: "owner", shownDigest: ' + JSON.stringify(a.actionDigest) + ' }).then(r => r.code);'), 'closed');
 });
 
 /* ---------- trap 8: blocking, dependents, reminders, waking the asker ---------- */
@@ -179,7 +201,7 @@ test('trap 8: a blocking approval suppresses dependents, gets ONE reminder over 
   const B1 = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "Then the second month as well, $20.", params: { amountUsd: 20, month: 2 }, dependsOn: ' + JSON.stringify(A1.id) + ' });');
   const b = run(T, 'return A.get(' + JSON.stringify(B1.id) + ');');
   assert.deepEqual(b.suppressed, { by: A1.id }); assert.equal(b.chatAnswerable, false);
-  assert.deepEqual(run(T, 'return A.blockingSeats();'), { sam: [{ id: A1.id, category: 'spend', askedAt: run(T, 'return A.get(' + JSON.stringify(A1.id) + ').askedAt;'), dependents: [B1.id] }] });
+  assert.deepEqual(run(T, 'return A.blockingSeats();'), { sam: [{ id: A1.id, category: 'spend', askedAt: run(T, 'return A.get(' + JSON.stringify(A1.id) + ').askedAt;'), dependents: [B1.id], dependentSeats: ['sam'] }] });
   // ticks across 16-60 min after creation: one reminder, naming the blocking record only
   const t0 = Date.parse(run(T, 'return A.get(' + JSON.stringify(A1.id) + ').askedAt;'));
   for (const m of [16, 17, 20, 31, 46, 60]) run(T, 'A._S.now = () => ' + (t0 + m * 60e3) + '; return A.tick();');
@@ -207,7 +229,7 @@ test('trap 8: expiry tells the asker and releases the dependents (a hold is neve
 });
 test('trap 8 (batching): a same-tick burst is one reminder; one batch per 15-minute window; the clock starts at creation', () => {
   const T = company();
-  const ids = run(T, 'return [1, 2, 3].map(n => A.ask({ from: "Sam", category: "spend", message: "Purchase number " + n + " for the study.", params: { amountUsd: n } }).id);');
+  const ids = run(T, 'return (async () => { const o = []; for (const n of [1, 2, 3]) o.push((await A.ask({ from: "Sam", category: "spend", message: "Purchase number " + n + " for the study.", params: { amountUsd: n } })).id); return o; })();');
   // nobody ever rendered these; exactly 15 min after the FIRST was created, the later two are milliseconds younger
   const t0 = Date.parse(run(T, 'return A.get(' + JSON.stringify(ids[0]) + ').askedAt;'));
   const first = run(T, 'A._S.now = () => ' + (t0 + 15 * 60e3) + '; return A.remind();');
@@ -246,7 +268,7 @@ test('trap 10: expiry deny is applied by the server (tick / the answer path), no
   assert.equal(run(T, 'const g = require(' + JSON.stringify(path.join(REPO, 'company/tools/lib/governance.js')) + '); return g.answerOf(' + JSON.stringify(a.id) + ').verdict;'), 'no');
   run(T, 'A._S.now = () => Date.now() + 1000 * 86400e3; return A.tick();');
   assert.equal(run(T, 'return A.get(' + JSON.stringify(n.id) + ').status;'), 'pending', 'no expiresAt: never expires');
-  assert.equal(decisionsHas(T, /expired with no answer: default deny applied by the console \(surface: expiry\)/).length, 1);
+  assert.equal(decisionsHas(T, /expired with no answer: default deny applied by the answer path \(chat\) \(surface: expiry\)/).length, 1, 'the real actor: the answer path applied it, not "the console"');
 });
 
 /* ---------- round 3 ---------- */
@@ -264,7 +286,7 @@ test('R-B: governance first: auto acts and logs, notify acts, logs and tells (no
   assert.ok(!jsonl(T, 'company/owner/outbound.jsonl').some(r => /Rename the helper/.test(r.text)), 'auto does not tell');
   assert.deepEqual(run(T, 'return I.openQuestions().map(q => q.id);'), [appr.id], 'the badge counts only the approve record');
   const t0 = Date.parse(run(T, 'return A.get(' + JSON.stringify(appr.id) + ').askedAt;'));
-  assert.deepEqual(run(T, 'A._S.now = () => ' + (t0 + 16 * 60e3) + '; return A.remind().ids;'), [appr.id], 'reminders cover only the record');
+  assert.deepEqual(run(T, 'A._S.now = () => ' + (t0 + 16 * 60e3) + '; return A.remind().then(r => r.ids);'), [appr.id], 'reminders cover only the record');
 });
 test('I-a / I-b (integration): approval events through company/tools/decision.js keep competence.js verify green; a withdrawal shows both events', () => {
   const T = company();
@@ -296,5 +318,157 @@ test('I-a / I-b (integration): approval events through company/tools/decision.js
 // Expiry (default deny) and reminders must not depend on the console being open: the dispatcher's tick runs them too.
 test('the dispatcher tick runs approvals.tick (expiry and reminders without the console)', () => {
   const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'dispatch.js'), 'utf8');
-  assert.ok(/require\('\.\/approvals\.js'\)\.tick\(\)/.test(src), 'dispatch.js must call approvals.tick() every tick');
+  assert.ok(/await require\('\.\/approvals\.js'\)\.tick\(\{ actor: 'the dispatcher' \}\)/.test(src), 'dispatch.js must await approvals.tick() every tick, naming itself as the actor');
+});
+
+/* ---------- the authority holes (review 2026-11-17, rev/probe.js) ---------- */
+// a process that is an agent's run: the station's environment pins (provenance stationEnv) — the owner rule refuses it
+const AGENT_RUN = { STARNET_USER_CONTROL_MODE: 'preserve', STARNET_COMPUTER_DRIVER: '0', STARNET_MCP_STDIO: '0', BROWSER: 'none' };
+const envOf = (T, extra) => Object.assign({}, process.env, { CAPHEOS_ROOT: T, CAPHEOS_TZ: 'UTC', PROVENANCE_ROOT: T, STARNET_URL: 'http://127.0.0.1:1', PM_INBOX_FILE: path.join(T, 'company/pm-inbox.jsonl'), OWNER_DIR: path.join(T, 'company/owner') }, extra || {});
+const cli = (T, tool, args, extra) => spawnSync(process.execPath, [path.join(REPO, 'company/tools', tool)].concat(args), { cwd: T, env: envOf(T, extra), encoding: 'utf8', timeout: 60000 });
+const answerRows = (T, id) => jsonl(T, 'company/pm-inbox.jsonl').filter(r => r.type === 'answer' && r.id === id);
+// detached: a double fork, so the process is reparented away from any terminal or Claude Code (the probe's setsid case)
+function detached(T, args) {
+  const rc = path.join(T, 'rc-' + Date.now()); const outF = rc + '.out';
+  const q = x => "'" + String(x).replace(/'/g, "'\\''") + "'";
+  spawn('sh', ['-c', '(' + [process.execPath, path.join(REPO, 'company/tools/approvals.js')].concat(args).map(q).join(' ') + ' > ' + q(outF) + ' 2>&1; echo $? > ' + q(rc) + ') &'], { cwd: T, env: envOf(T), detached: true, stdio: 'ignore' }).unref();
+  const end = Date.now() + 30000; while (!fs.existsSync(rc) && Date.now() < end) spawnSync('sleep', ['0.1']);
+  return { status: Number(read(T, path.basename(rc)).trim()), stdout: read(T, path.basename(outF)) };
+}
+
+test('hole 1: CLI self-approval: "--by owner" from an agent run or a detached process is refused (lib/owner.js); a crew --by is refused from the CLI', () => {
+  const T = company({ real: true });   // no fixture mark: the real owner rule
+  const a = run(T, askSpend());
+  const base = ['answer', a.id, '--verdict', 'yes', '--digest', a.actionDigest, '--surface', 'cli'];
+  const agent = cli(T, 'approvals.js', base.concat(['--by', 'owner']), AGENT_RUN);
+  assert.equal(agent.status, 2, agent.stdout); assert.equal(JSON.parse(agent.stdout).code, 'authority'); assert.match(JSON.parse(agent.stdout).error, /owner's own interactive shell or the console/);
+  const byName = cli(T, 'approvals.js', base.concat(['--by', 'Olive Owner']), AGENT_RUN);
+  assert.equal(JSON.parse(byName.stdout).code, 'authority', 'the owner\'s name is the same rule');
+  const det = detached(T, base.concat(['--by', 'owner']));
+  assert.equal(det.status, 2, det.stdout); assert.equal(JSON.parse(det.stdout).code, 'authority', 'a detached process is not the owner');
+  for (const by of ['Founder', 'agent', 'Sam']) { const c = cli(T, 'approvals.js', base.concat(['--by', by])); assert.equal(JSON.parse(c.stdout).code, 'unverified', by + ': ' + c.stdout); }
+  assert.equal(answerRows(T, a.id).length, 0, 'nothing was answered');
+  assert.equal(run(T, 'return A.get(' + JSON.stringify(a.id) + ').status;'), 'pending');
+  // in process too: the module API asks the same rule (an agent's `node -e require(approvals).answer(...)`)
+  assert.equal(run(T, 'return A.answer(' + JSON.stringify(a.id) + ', { verdict: "yes", surface: "needs-you", by: "owner", shownDigest: ' + JSON.stringify(a.actionDigest) + ' }).then(r => r.code);', AGENT_RUN), 'authority');
+  // and an owner name that is also a crew name is the crew seat, not the owner
+  const T2 = company(); w(T2, 'company/company.json', { name: 'Example', owner: { name: 'Sam', title: 'Owner' }, timezone: 'UTC' });
+  const b = run(T2, askSpend());
+  assert.equal(run(T2, 'return A.answer(' + JSON.stringify(b.id) + ', { verdict: "yes", surface: "needs-you", by: "Sam", shownDigest: ' + JSON.stringify(b.actionDigest) + ' }).then(r => r.code);'), 'unverified');
+});
+
+test('hole 2: inbox.js answer/close on an approval record is refused (exit 5) even for the owner; --by owner from an agent run is refused (exit 3)', () => {
+  const T = company();
+  const b = run(T, 'return A.ask({ from: "Sam", category: "commitment", message: "Sign the pilot agreement please.", params: { p: 1 } });');
+  const r = cli(T, 'inbox.js', ['answer', '--id', b.id, '--by', 'owner', '--a', 'yes']);
+  assert.equal(r.status, 5, r.stdout); assert.match(JSON.parse(r.stdout).error, /is an approval: answer it on Today › Needs you or with node company\/tools\/approvals\.js answer/);
+  const c = cli(T, 'inbox.js', ['close', '--id', b.id, '--by', 'owner']);
+  assert.equal(c.status, 5, c.stdout);
+  // in process (the console's plain answer path): refused the same way
+  assert.equal(run(T, 'try { I.answer({ id: ' + JSON.stringify(b.id) + ', by: "owner", answer: { action: "approve" } }); return "answered"; } catch (e) { return e.code; }'), 5);
+  // an older governance gate question is an approval too
+  const legacy = run(T, 'const g = require(' + JSON.stringify(path.join(REPO, 'company/tools/lib/governance.js')) + '); return g.decide("hiring", { by: "Founder", summary: "open a round", ref: "hiring:y" });');
+  assert.equal(cli(T, 'inbox.js', ['answer', '--id', legacy.questionId, '--by', 'owner', '--a', 'yes']).status, 5);
+  assert.equal(jsonl(T, 'company/pm-inbox.jsonl').filter(x => (x.type === 'answer' || x.type === 'close') && (x.id === b.id || x.id === legacy.questionId)).length, 0, 'no answer or close row: no bypass of the digest, lock and audit');
+  assert.equal(decisionsHas(T, new RegExp('Approval ' + b.id + ' .*(approved|denied)')).length, 0);
+  // the owner rule for an ordinary question: an agent run's --by owner is refused
+  const R = company({ real: true });
+  const q = run(R, 'return I.ask({ from: "Sam", message: "Which colour should the landing page use?", kind: "text" }).row.id;');
+  const ag = cli(R, 'inbox.js', ['answer', '--id', q, '--by', 'owner', '--a', 'blue'], AGENT_RUN);
+  assert.equal(ag.status, 3, ag.stdout); assert.match(JSON.parse(ag.stdout).error, /owner's own interactive shell or the console/);
+  assert.equal(answerRows(R, q).length, 0);
+});
+
+/* ---------- the lock ---------- */
+const deadPid = () => { const c = spawnSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8' }); return Number(c.stdout.trim()); };
+const lockDir = T => path.join(T, 'company', '.approvals.lock');
+const plantLock = (T, owner, ageMs) => { const d = lockDir(T); fs.mkdirSync(d, { recursive: true }); if (owner) fs.writeFileSync(path.join(d, 'owner.json'), JSON.stringify(owner)); if (ageMs) { const t = (Date.now() - ageMs) / 1000; fs.utimesSync(d, t, t); } };
+test('hole 5: a lock left by a dead process is taken over at once (owner pid + liveness, rename takeover); one with no owner file after 2 s too', () => {
+  const T = company(); const a = run(T, askSpend());
+  plantLock(T, { pid: deadPid(), host: os.hostname(), token: 'dead', at: new Date().toISOString() });
+  const t0 = Date.now();
+  const r = run(T, 'return A.answer(' + JSON.stringify(a.id) + ', { verdict: "yes", surface: "needs-you", by: "owner", shownDigest: ' + JSON.stringify(a.actionDigest) + ' });');
+  assert.equal(r.ok, true, JSON.stringify(r)); assert.ok(Date.now() - t0 < 3000, 'took ' + (Date.now() - t0) + ' ms (the old lock waited ~7 s on a fresh orphan, then said busy)');
+  assert.ok(!fs.existsSync(lockDir(T)) && !fs.readdirSync(path.join(T, 'company')).some(f => f.startsWith('.approvals.lock')), 'the stale lock and its aside are gone');
+  const b = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "Another purchase.", params: { amountUsd: 3 } });');
+  plantLock(T, null, 5000);
+  assert.equal(run(T, 'return A.answer(' + JSON.stringify(b.id) + ', { verdict: "no", surface: "needs-you", by: "owner", shownDigest: ' + JSON.stringify(b.actionDigest) + ' }).then(r => r.ok);'), true);
+});
+test('hole 5: two processes racing to take over one stale lock: one CAS winner, one refusal, one answer row', async () => {
+  const T = company(); const a = run(T, askSpend());
+  plantLock(T, { pid: deadPid(), host: os.hostname(), token: 'dead', at: new Date().toISOString() });
+  const at = Date.now() + 1500;
+  const one = v => new Promise(res => {
+    const c = spawn(process.execPath, ['-e', 'const A = require(' + JSON.stringify(AP) + '); while (Date.now() < ' + at + ') {} A.answer(' + JSON.stringify(a.id) + ', { verdict: "' + v + '", surface: "needs-you", by: "owner", shownDigest: ' + JSON.stringify(a.actionDigest) + ' }).then(r => console.log(JSON.stringify(r)), e => console.log(JSON.stringify({ threw: e.message })));'], { cwd: T, env: envOf(T) });
+    let out = ''; c.stdout.on('data', d => { out += d; }); c.on('close', () => res(JSON.parse(out.trim().split('\n').pop())));
+  });
+  const rs = await Promise.all([one('yes'), one('no')]);
+  assert.equal(rs.filter(r => r.ok).length, 1, JSON.stringify(rs)); assert.equal(rs.filter(r => r.code === 'closed').length, 1, JSON.stringify(rs));
+  assert.equal(answerRows(T, a.id).length, 1);
+});
+test('hole 5: waiting for a live holder never blocks the event loop (< 50 ms), gives up as busy; withdraw waits for the lock too', async () => {
+  const T = company(); const a = run(T, askSpend());
+  const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], { stdio: 'ignore' });
+  try {
+    plantLock(T, { pid: holder.pid, host: os.hostname(), token: 'live', at: new Date().toISOString() });
+    const r = run(T, 'A._S.lockWaitMs = 1500; let last = Date.now(), worst = 0; const iv = setInterval(() => { const n = Date.now(); worst = Math.max(worst, n - last); last = n; }, 5);' +
+      ' const t0 = Date.now(); return A.answer(' + JSON.stringify(a.id) + ', { verdict: "yes", surface: "needs-you", by: "owner", shownDigest: ' + JSON.stringify(a.actionDigest) + ' }).then(r => ({ r }), e => ({ e: e.message })).then(x => { clearInterval(iv); return Object.assign(x, { worst, waited: Date.now() - t0 }); });');
+    assert.equal(r.e, 'approvals are busy; try again', JSON.stringify(r));
+    assert.ok(r.waited >= 1400, 'it waited for the holder: ' + r.waited);
+    assert.ok(r.worst < 50, 'the event loop was blocked ' + r.worst + ' ms at worst (Atomics.wait froze it for the whole wait)');
+    const wd = run(T, 'A._S.lockWaitMs = 800; return A.withdraw(' + JSON.stringify(a.id) + ', { by: "Sam", why: "no longer needed" }).then(r => r, e => ({ e: e.message }));');
+    assert.equal(wd.e, 'approvals are busy; try again', JSON.stringify(wd));
+    assert.equal(jsonl(T, 'company/pm-inbox.jsonl').filter(x => x.type === 'withdraw').length, 0, 'no withdraw row while another process holds the lock');
+    assert.equal(answerRows(T, a.id).length, 0);
+  } finally { const gone = new Promise(r => holder.on('exit', r)); holder.kill(); await gone; }
+  // the holder is gone: its lock is stale now, and the answer goes through
+  assert.equal(run(T, 'return A.answer(' + JSON.stringify(a.id) + ', { verdict: "yes", surface: "needs-you", by: "owner", shownDigest: ' + JSON.stringify(a.actionDigest) + ' }).then(r => r.ok);'), true);
+});
+
+/* ---------- crash safety: answer -> audit -> wake, journalled; tick() repairs ---------- */
+test('hole 5: a crash after the answer row (no audit line, no wake) is repaired by tick(), once', () => {
+  const T = company();
+  const a = run(T, askSpend());
+  // the audit writer dies mid-answer (a crash between the CAS and the audit line); the throw is not swallowed
+  const r = run(T, 'require(' + JSON.stringify(path.join(REPO, 'company/tools/decision.js')) + ').add = () => { throw new Error("killed before the audit line"); }; return A.answer(' + JSON.stringify(a.id) + ', { verdict: "yes", surface: "needs-you", by: "owner", shownDigest: ' + JSON.stringify(a.actionDigest) + ' }).then(r => r, e => ({ threwOut: e.message }));');
+  assert.equal(r.threwOut, 'killed before the audit line');
+  assert.equal(answerRows(T, a.id).length, 1, 'the CAS committed');
+  assert.equal(decisionsHas(T, new RegExp('Approval ' + a.id + ' \\(spend\\) approved')).length, 0);
+  assert.equal(jsonl(T, 'company/owner/inbound.jsonl').filter(m => m.re === a.id).length, 0);
+  const t1 = run(T, 'return A.tick();');
+  assert.deepEqual(t1.repaired, [a.id]);
+  run(T, 'return A.tick();');
+  assert.equal(decisionsHas(T, new RegExp('Approval ' + a.id + ' \\(spend\\) approved by Olive Owner \\(surface: needs-you')).length, 1, 'one audit line');
+  assert.equal(jsonl(T, 'company/owner/inbound.jsonl').filter(m => m.re === a.id).length, 1, 'one wake');
+  // the wake fails (inbox.deliver throws): the answer and the audit line stand, the error is not swallowed, tick() wakes
+  const b = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "Another purchase.", params: { amountUsd: 4 } });');
+  const r2 = run(T, 'I.deliver = () => { throw new Error("a tool ran: spawn"); }; return A.answer(' + JSON.stringify(b.id) + ', { verdict: "no", surface: "needs-you", by: "owner", shownDigest: ' + JSON.stringify(b.actionDigest) + ' }).then(r => r, e => ({ threwOut: e.message }));');
+  assert.equal(r2.threwOut, 'a tool ran: spawn', 'the inbox.deliver path no longer swallows a throw');
+  assert.equal(decisionsHas(T, new RegExp('Approval ' + b.id + ' \\(spend\\) denied')).length, 1);
+  assert.equal(jsonl(T, 'company/owner/inbound.jsonl').filter(m => m.re === b.id).length, 0);
+  assert.deepEqual(run(T, 'return A.tick();').repaired, [b.id]);
+  assert.deepEqual(run(T, 'return A.tick();').repaired, []);
+  assert.equal(jsonl(T, 'company/owner/inbound.jsonl').filter(m => m.re === b.id).length, 1);
+  assert.equal(decisionsHas(T, new RegExp('Approval ' + b.id + ' \\(spend\\) denied')).length, 1);
+});
+
+/* ---------- the expiry actor, the named handoff ---------- */
+test('hole 6: the expiry line names who applied it (the dispatcher here), not "the console"', () => {
+  const T = company();
+  const a = run(T, askSpend({ expiresMin: 1 }));
+  run(T, 'A._S.now = () => Date.now() + 2 * 60e3; return A.tick({ actor: "the dispatcher" });');
+  assert.equal(decisionsHas(T, new RegExp('Approval ' + a.id + ' \\(spend\\) expired with no answer: default deny applied by the dispatcher \\(surface: expiry\\)')).length, 1);
+  assert.equal(answerRows(T, a.id)[0].appliedBy, 'the dispatcher');
+  assert.equal(decisionsHas(T, /applied by the console/).length, 0);
+});
+test('hole 8: the handoff a record names is closed when it is answered (and the asker woken)', () => {
+  const T = company();
+  w(T, 'company/work/handoffs/to-sam.md', '# Handoffs\n\n## 2026-11-17 from Founder — buy the data plan\n**Need:** buy it once approved\n**Status:** OPEN — waiting on the owner\n\n## 2026-11-17 from Founder — other work\n**Status:** OPEN\n');
+  const a = run(T, askSpend({ blocking: true, handoff: '2026-11-17 from Founder — buy the data plan' }));
+  assert.deepEqual(run(T, 'return A.blockingSeats().sam[0].handoff;'), { inbox: 'to-sam.md', heading: '2026-11-17 from Founder — buy the data plan' });
+  run(T, 'return A.answer(' + JSON.stringify(a.id) + ', { verdict: "yes", surface: "needs-you", by: "owner", shownDigest: ' + JSON.stringify(a.actionDigest) + ' });');
+  const txt = read(T, 'company/work/handoffs/to-sam.md');
+  assert.match(txt, new RegExp('buy the data plan\\n\\*\\*Need:\\*\\* buy it once approved\\n\\*\\*Status:\\*\\* DONE — approval ' + a.id + ' approved'));
+  assert.match(txt, /other work\n\*\*Status:\*\* OPEN\n/, 'only the named handoff');
+  assert.equal(jsonl(T, 'company/owner/inbound.jsonl').filter(m => m.re === a.id).length, 1);
 });
