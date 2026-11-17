@@ -278,7 +278,7 @@ function saveLkg(ctx, key, m, buf) {
   if (m && m.bigAppend) { try { fs.unlinkSync(lkgPath(ctx, key)); } catch (_) {} return null; }   // no copy of an ever-growing log (an older one is dropped)
   if (m.cls === 'K' || !buf) return null; const f = lkgPath(ctx, key); writeAtomic(f, buf, 0o600); return sha(buf);
 }
-function readLkg(ctx, key, b) { if (!b || !b.lkgSha) return null; try { const buf = fs.readFileSync(lkgPath(ctx, key)); return sha(buf) === b.lkgSha ? buf : 'tampered'; } catch (_) { return null; } }
+function readLkg(ctx, key, b) { if (!b || !b.lkgSha) return null; try { const buf = fs.readFileSync(b.lkgFile || lkgPath(ctx, key)); return sha(buf) === b.lkgSha ? buf : 'tampered'; } catch (_) { return null; } }
 
 /* ---------------- baseline ---------------- */
 function loadBaseline(ctx) {
@@ -627,6 +627,15 @@ function runTick(ctx) {
     if (!b) { if (s.exists) changed.push({ key, m, b: { exists: false, cls: m.cls }, s }); continue; }
     if (sameState(s, b)) { if (b.flagged) delete b.flagged; continue; }
     if (b.flagged && s.exists && b.flagged.sha256 === s.sha256 && b.flagged.mode === s.mode) continue;   // reported already; waiting for accept or revert
+    // a grow-only record that is already flagged: judge the new change against the FLAGGED version (a copy kept when it
+    // was flagged), not the last-known-good. Entries added since by decision.js, a retention roll or a plain append are
+    // the same open finding, not a new rewrite; without this, every legitimate entry after one hand edit re-reported
+    // that old edit as "history rewritten" until someone accepted it.
+    if (b.flagged && b.flagged.copySha && m.growOnly && s.exists && s.buf) {
+      const fb = { exists: true, cls: b.cls, sha256: b.flagged.sha256, bytes: b.flagged.bytes, mode: b.flagged.mode, lkgSha: b.flagged.copySha, lkgFile: lkgPath(ctx, key) + '.flagged' };
+      const d = decideRolled(ctx, key, m, fb, s, prov, rec[key], true);
+      if (d.ok) { if (!ctx.dry) { writeAtomic(fb.lkgFile, s.buf, 0o600); Object.assign(b.flagged, { sha256: s.sha256, bytes: s.bytes, mode: s.mode, copySha: s.sha256 }); } notes.push(key + ': still flagged (' + b.flagged.eventId + '); the change since is not a new rewrite (' + d.why + ')'); continue; }
+    }
     changed.push({ key, m, b, s });
   }
   // StarNet's own code: uncommitted changes (git status) AND commits (HEAD moved), each only through a recorded patch
@@ -787,6 +796,8 @@ function runTick(ctx) {
       e.accept = '`node company/tools/locked-watch.js accept ' + c.key + ' --by <Name> --why "…"`';
       events.push(e);
       c.b.flagged = { sha256: c.s.sha256 || null, mode: c.s.mode || null, at: local(ctx.now), eventId: e.id, by: direct.map(x => x.agentId) };
+      // a grow-only record keeps a copy of the flagged version, so later entries are judged against it (see the changed loop)
+      if (c.m.growOnly && c.s.exists && c.s.buf && !ctx.dry) { writeAtomic(lkgPath(ctx, c.key) + '.flagged', c.s.buf, 0o600); Object.assign(c.b.flagged, { bytes: c.s.bytes, copySha: c.s.sha256 }); }
       if (!base.files[c.key]) base.files[c.key] = Object.assign({ exists: false, cls: c.m.cls }, { flagged: c.b.flagged });
       continue;
     }
@@ -1343,6 +1354,14 @@ async function selftest() {
     let r = await tick(C({ now })); assert.ok(!r.events.length, JSON.stringify(r.events));
     W('company/work/decisions.md', '# Decisions\n| a changed |\n| b |\n'); r = await tick(C({ now: now + 1000 }));
     assert.ok(r.events.some(x => x.key === 'company/work/decisions.md' && /rewritten/.test(x.why)));
+  });
+  await t('a flagged grow-only record: new entries after the flag are the same open finding (no re-report); a second rewrite is a new one', async () => {
+    now += 60000; W('company/work/decisions.md', '# Decisions\n| new entry on top |\n| a changed |\n| b |\n| c |\n');
+    let r = await tick(C({ now })); assert.ok(!r.events.some(x => x.key === 'company/work/decisions.md'), 'entries added after the flag re-reported the old rewrite: ' + JSON.stringify(r.events));
+    const b = JSON.parse(R('company/state/locked/baseline.json')).files['company/work/decisions.md'];
+    assert.ok(b.flagged && b.flagged.eventId && b.flagged.sha256 === sha(R('company/work/decisions.md')), 'still flagged, following the current version: ' + JSON.stringify(b.flagged));
+    now += 60000; W('company/work/decisions.md', '# Decisions\n| new entry on top |\n| a changed |\n| b rewritten |\n| c |\n');
+    r = await tick(C({ now })); assert.ok(r.events.some(x => x.key === 'company/work/decisions.md' && /rewritten/.test(x.why)), JSON.stringify(r.events));
   });
   await t('a Commander-only routine field change is flagged (grants), and the gh wrapper in the home folder is watched', async () => {
     now += 60000; W('~/.local/bin/gh', '#!/bin/bash\nexec /usr/bin/gh "$@"   # gate removed\n');
