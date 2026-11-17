@@ -23,7 +23,7 @@ const KNOWN = [
   { id: 'kalshi-private', label: 'Kalshi private key', name: 'kalshi-private-key', names: ['kalshi-private-key', 'kalshi-private-key.pem', 'kalshi-key.pem'], kind: 'key', multiline: true, offer: true,
     where: 'The private key file Kalshi downloaded when you created the API key: open it and paste all of it, BEGIN and END lines included.', url: 'https://kalshi.com/account/profile' },
   { id: 'synpath', label: 'Synpath', name: 'synpath-api-key', names: ['synpath-api-key', 'synpath-key', 'synpath-token'], kind: 'key', offer: true,
-    where: 'Sign in to your Synpath account and copy an API key from its API or developer settings.', url: null },
+    where: 'Sign in at synpath.dev (Google sign-in) and copy an API key from its API settings.', url: 'https://www.synpath.dev/tick-data' },
   { id: 'healthchecks', label: 'Heartbeat address (healthchecks.io)', name: 'liveness-heartbeat-url', names: ['liveness-heartbeat-url', 'healthchecks-url', 'healthchecks-ping-url'], kind: 'address', offer: true,
     where: 'healthchecks.io › your project › Add Check, then copy its ping address (https://hc-ping.com/…). The liveness check calls it while all is well.', url: 'https://healthchecks.io/accounts/signup/' },
   { id: 'github', label: 'GitHub token', name: 'github-token', names: ['github-token', 'gh-token', 'github-pat'], kind: 'key', offer: true,
