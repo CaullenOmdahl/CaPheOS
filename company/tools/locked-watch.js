@@ -90,6 +90,7 @@ const MANIFEST = [
   { p: 'company/work/security/default-branch-watch.json', cls: 'F', owner: 'risk', area: 'gate', why: 'the repositories the default-branch rule watches' },
   { p: 'company/work/finance/pacing-policy.json', cls: 'F', writers: ['pacer.js'], owner: 'finance', area: 'policy', why: 'usage pacing numbers (the subscription cutoffs only through pacer.js limit / mode, or a reviewed harness change)' },
   { p: 'company/work/finance/dispatch-budget.json', cls: 'F', owner: 'finance', area: 'policy', why: 'the daily spending cap' },
+  { p: 'company/work/finance/today-budget.json', cls: 'F', writers: ['money-hold.js'], owner: 'finance', area: 'policy', why: 'the owner\'s answer to a money hold, for one day: today\'s metered budget (only through money-hold.js set, which the dispatcher runs for an answer on Today)' },
   { p: 'company/model-policy.json', cls: 'F', owner: 'people', area: 'policy', why: 'allowed models, the routing table and performance thresholds' },
   { p: 'company/competence-policy.json', cls: 'F', owner: 'people', area: 'policy', why: 'how competence is scored' },
   { p: 'company/work/people/corrections-policy.json', cls: 'F', owner: 'people', area: 'policy', why: 'how corrections work' },
@@ -99,7 +100,7 @@ const MANIFEST = [
   { p: 'company/state/governance.json', cls: 'F', writers: ['governance.js'], owner: 'risk', area: 'policy', why: 'self-governance: how much the company decides without the owner (only the owner changes it, through governance.js)' },
   // alwaysWatched: still reported while the harnessSelfEdit guardrail is off, because it is the switch itself
   { p: 'company/state/guardrails.json', cls: 'F', writers: ['guardrails.js'], owner: 'risk', area: 'policy', alwaysWatched: true, why: 'the guardrail switches (only the owner changes them, through guardrails.js)' },
-  ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js', 'retention.js', 'duties.js', 'duty-status.js', 'lib/duty-runner.js', 'lib/duty-env.js']
+  ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js', 'retention.js', 'duties.js', 'duty-status.js', 'lib/duty-runner.js', 'lib/duty-env.js', 'money-hold.js', 'lib/money-hold.js', 'lib/seat-status.js']
     .map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'tools', area: 'tool', why: 'a tool that measures or limits the crew, or that these tools depend on' })),
   ...['merge-gate.js', 'premerge-check.js', 'external-gate.js', 'connector-scope.js', 'default-branch-watch.js'].map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'risk', area: 'tool', why: 'a gate or the evidence it reads' })),
   { p: 'company/work/engineering/evidence/*.json', cls: 'F', writers: ['test-substrate.sh'], owner: 'risk', area: 'gate', why: 'test-substrate verdicts (a hand-made pass opens the merge gate): flagged, never auto-removed, so a real evidence file never blocks a merge' },
