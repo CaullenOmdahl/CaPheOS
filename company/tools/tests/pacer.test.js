@@ -567,10 +567,32 @@ test('the routing table in company/model-policy.json passes hire.js policyCheck 
     if (e.claude) assert.ok(['light', 'standard'].includes(mp.allowed['claude-cli'].tiers[mp.routing.models[e.claude].model]), name);
     assert.ok(e.scope && mp.routing.scopes[e.scope], name + ' names a scope');
   }
-  // a new company's table names only the founder's loop (company/tools/loops.json)
+  // the table names exactly the loops that exist (company/tools/loops.json); this test also runs inside a company, whose
+  // people seat owns the table, so it checks the invariants and not that company's decisions
   const loops = JSON.parse(fs.readFileSync(path.join(REPO, 'company', 'tools', 'loops.json'), 'utf8')).agents;
-  assert.deepEqual(Object.keys(mp.routing.routines), Object.values(loops).map(a => a.loop).filter(Boolean));
-  assert.equal(mp.routing.scopes[mp.routing.routines['Founder loop'].scope].claudeReserve, true, 'the CEO loop keeps a Claude reserve');
+  routingInvariants(mp, Object.values(loops).map(a => a.loop).filter(Boolean));
+});
+
+// routingInvariants(policy, loopNames) — what any company's routing table must hold. The SET of routines matches the
+// loops (table order matters to the pacer, but it is the table owner's choice, not a side effect of this check); the ceo
+// scope keeps a Claude reserve; the CEO loop's chain includes claude, whichever scope the table puts it on.
+function routingInvariants(mp, loopNames) {
+  assert.deepEqual(Object.keys(mp.routing.routines).sort(), loopNames.slice().sort(), 'the table names the loops that exist');
+  assert.equal(mp.routing.scopes.ceo && mp.routing.scopes.ceo.claudeReserve, true, 'the ceo scope keeps a Claude reserve');
+  const ceoLoop = mp.routing.routines['Founder loop'];
+  assert.ok(ceoLoop && (mp.routing.scopes[ceoLoop.scope].chain || []).includes('claude'), 'the CEO loop\'s chain includes claude');
+}
+
+test('routing invariants hold for a grown company that reordered its table and moved the CEO loop to another claude scope', () => {
+  const mp = JSON.parse(JSON.stringify(REAL_POLICY()));
+  mp.routing.routines = { 'Sam loop': { scope: 'code' }, 'Founder loop': { scope: 'actions' } };
+  assert.doesNotThrow(() => routingInvariants(mp, ['Founder loop', 'Sam loop']));
+  assert.throws(() => routingInvariants(mp, ['Founder loop']), /loops that exist/);
+  mp.routing.routines['Founder loop'].scope = 'research';
+  mp.routing.scopes.research = { chain: ['minimax', 'deepseek'] };
+  assert.throws(() => routingInvariants(mp, ['Founder loop', 'Sam loop']), /includes claude/);
+  delete mp.routing.scopes.ceo.claudeReserve;
+  assert.throws(() => routingInvariants(mp, ['Founder loop', 'Sam loop']), /Claude reserve/);
 });
 
 /* ==== fixes after review ==== */
