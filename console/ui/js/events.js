@@ -7,9 +7,35 @@ export function on(topics, fn) {
   subs.add(s);
   return () => subs.delete(s);
 }
-function fire(topic) {
-  for (const s of [...subs]) if (topic === '*' || s.topics.has(topic) || s.topics.has('*')) { try { s.fn(topic); } catch (e) { console.error(e); } }
+// While the owner is using a control in the main area (an open dropdown, a field with the cursor in it), a live update
+// must not redraw the screen under them: it closes the dropdown and drops what they typed. Updates for that time are held
+// (one per subscriber, the latest topic wins) and delivered as soon as focus leaves the control.
+const held = new Map();
+function editing() {
+  const a = typeof document !== 'undefined' ? document.activeElement : null;
+  if (!a || a === document.body) return false;
+  if (!/^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName) && !a.isContentEditable) return false;
+  return !!(a.closest && a.closest('main'));
 }
+function run(s, topic) { try { s.fn(topic); } catch (e) { console.error(e); } }
+function fire(topic) {
+  const now = editing();
+  for (const s of [...subs]) if (topic === '*' || s.topics.has(topic) || s.topics.has('*')) {
+    if (now) held.set(s, held.has(s) && held.get(s) !== topic ? '*' : topic); else run(s, topic);
+  }
+}
+function flush() {
+  if (!held.size || editing()) return;
+  const all = [...held]; held.clear();
+  for (const [s, topic] of all) if (subs.has(s)) run(s, topic);
+}
+if (typeof document !== 'undefined') {
+  // focusout fires before the next element takes focus: check once focus has settled
+  document.addEventListener('focusout', () => setTimeout(flush, 0));
+  document.addEventListener('change', () => setTimeout(flush, 0));
+}
+export function pendingWhileEditing() { return held.size; }
+export const _test = { fire, flush };   // unit tests (company/tools/tests/live-events.test.js)
 export function isLive() { return live; }
 
 export function start() {
