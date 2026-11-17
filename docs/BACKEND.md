@@ -2,7 +2,8 @@
 
 **Status:** design, for approval. Nothing here is implemented.
 **Replaces:** the StarNetOS sidecar as CaPheOS's runtime.
-**Related:** `docs/CONSOLE-API.md` (the frozen frontend contract), `docs/FEATURES.md` (what we are *not* rebuilding),
+**Related:** `docs/PARITY.md` (the acceptance test: parity + extensibility − bloat), `docs/FOUNDING.md` (bootstrap,
+setup, launch), `docs/CONSOLE-API.md` (the frozen frontend contract), `docs/FEATURES.md` (what we are *not* rebuilding),
 `docs/MODULE-SYSTEM.md` (how tools and integrations are added), `docs/PORTING.md` (house rules for ported code),
 `docs/DEPLOY.md` (deployment, browser/desktop, grants and the security seat), `docs/STYLE.md` (plain language: the rule
 for every name, comment and error).
@@ -267,7 +268,11 @@ adapters, no dual-read of the old quest store, no dual-write, no legacy retentio
 
 What replaces migration is **founding**: `scripts/found-company.sh` and `company/defaults/` must produce the new
 backend's state directly (tasks, not quests; `company/state/` and `company/work/`, not `.starnet-data/`). Founding is
-the only path into a new workplace, and it is tested.
+the only path into a new workplace, and it is tested. The flow — bootstrap, setup, certification, launch — is
+`docs/FOUNDING.md`.
+
+**Acceptance is the parity ledger** (`docs/PARITY.md`): 17 areas, three gates, and a bloat ledger where every cut has a
+row. The build-out is finished when those gates pass, not when the phase table is empty.
 
 | Phase | Work | Exit test |
 |---|---|---|
@@ -310,9 +315,11 @@ zero units installed.
 | 6 | **Naming for the tree:** `server/` (the process), `runtime/` (services and run loop), `company/` (business data and tools), `vendor/` (vendored code). Cheap now, expensive later. |
 | 7 | **The desktop follows `docs/DEPLOY.md` §4–§5**: microVM, headed Chrome per identity, the driver abstraction, step-in, grants/leases/revocation. The backend owes it a tool name and the grant gate (§6.5). |
 | 8 | **No migration of existing workplaces.** A workplace is on one stack; new workplaces are founded fresh; existing ones are not read, converted or upgraded. Founding (`scripts/found-company.sh` + `company/defaults/`) replaces migration and is tested (§8). |
+| 9 | **The acceptance criterion is parity** (`docs/PARITY.md`): functional parity of this deployment, plus the extensibility being added, minus what is carried but unused. Every cut has a ledger row; there are no silent removals. |
+| 10 | **Task model:** task = the work item (steps, evidence, closer); commitment = the obligation (ack, due, escalate). Parity requires the same work semantics we run today — the quest model — renamed. |
+| 11 | **Run and transcript format** (delegated): append-only JSONL, one stream per run, typed events, stable IDs, a terminal status, retention by policy. |
+| 12 | **Dependencies and layout** (delegated): `server/` for the process, `runtime/` for the services and run loop, `vendor/` for vendored code; npm with a lockfile; one pinned dependency (Cordis) in the runtime only, the console and company tools stay dependency-free; SPDX licence plus `NOTICE`; CI runs `npm ci`; the image ships it under the read-only root. |
+| 13 | **Founding** (`docs/FOUNDING.md`): `found-company` is the bootstrap; a setup flow collects what the Founder needs — a guided form, or a conversation once one provider key verifies, with AI assistance either way; certification gates launch; the Founder then interviews, hires the bootstrapping crew and scaffolds. Display names are renameable; ids are not. |
 
-**Open:**
-
-| # | Question | Recommendation |
-|---|---|---|
-| 9 | Is a task the old quest, or a thin layer over commitments? | task = the work item (steps, evidence, closer); commitment = the obligation (ack, due, escalate). A task may raise a commitment. |
+**Open:** none. P0 is fully specified — write the task, run and transcript formats; the setup record; the parity test
+skeleton; and the vocabulary lint. Then the kept-tool list, and code.
