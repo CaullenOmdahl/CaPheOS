@@ -111,6 +111,23 @@ function classify(text) {
   });
 }
 
+/* UNREAD DEADLINE — an OPEN block whose **Deadline:** the dispatcher cannot read: missing, or not a plain YYYY-MM-DD (or
+ * "today") as the line's first characters (company/HANDOFFS.md). The dispatcher then counts it as due now: it wakes the
+ * seat for it and counts it toward STALLED, which looks exactly like an idle seat. A warning, never a failure. */
+const DEADLINE_LEAD = /^\*\*Deadline:\*\*\s*(\d{4}-\d{2}-\d{2}\b|today\b)/im;
+function unreadDeadlines(text) {
+  const out = [];
+  const secs = sections(text); const cls = classify(text);
+  secs.forEach((s, i) => {
+    if (!cls[i] || !cls[i].open) return;
+    const body = s.body.join('\n');
+    if (DEADLINE_LEAD.test(body)) return;
+    const line = (s.body.find(l => /^\*\*Deadline:\*\*/i.test(l)) || '').replace(/^\*\*Deadline:\*\*\s*/i, '');
+    out.push({ kind: 'UNREAD DEADLINE', line: s.line, heading: s.heading, deadline: line || null });
+  });
+  return out;
+}
+
 function scan(text) {
   return classify(text).filter(s => !s.appendix && s.status === null);
 }
@@ -386,6 +403,14 @@ function selftest() {
   ok('the stamp is read in the company timezone (an hour ahead in co.TZ is 60 minutes ahead)',
     (futureStamps('## 2026-11-17 15:20 from B\n', NOW)[0] || {}).minutesAhead === 60);
 
+  // UNREAD DEADLINE: what the dispatcher cannot read is reported, what it can is not
+  const dl = d => HEAD + '## 2026-11-17 10:00 from B — ask\n**Need:** x\n' + (d === null ? '' : '**Deadline:** ' + d + '\n') + '**Status:** OPEN\n';
+  ok('a leading date or "today" is read (no finding)', unreadDeadlines(dl('2026-11-20')).length === 0 && unreadDeadlines(dl('today')).length === 0 && unreadDeadlines(dl('2026-11-20 (the depth verdict)')).length === 0);
+  ok('a date inside a sentence, "none" or a missing line is an UNREAD DEADLINE naming what was written',
+    unreadDeadlines(dl('the depth verdict 2026-11-19; the heartbeat 2026-11-20'))[0].deadline === 'the depth verdict 2026-11-19; the heartbeat 2026-11-20'
+    && unreadDeadlines(dl('none')).length === 1 && unreadDeadlines(dl(null))[0].deadline === null);
+  ok('a DONE block is not checked', unreadDeadlines(dl('next week').replace('**Status:** OPEN', '**Status:** DONE')).length === 0);
+
   // DUTY: counts and ids only, routed to the inbox owner's manager (the CEO for a seat with none)
   const crewT = { ceo1: { name: 'Alex', inbox: 'to-alex.md', manager: null }, sam: { name: 'Sam', inbox: 'to-sam.md', manager: 'ceo1' } };
   const ent = (file, text) => classify(text).map(c => Object.assign({ file: 'company/work/handoffs/' + file }, c));
@@ -461,6 +486,10 @@ function main() {
       findings++;
       if (!quiet) console.log('MISSING STATUS  ' + path.relative(ROOT, f) + ':' + bad.line + '  "' + bad.heading.slice(0, 90) + '"');
     }
+    for (const u of unreadDeadlines(text)) {
+      warns++;
+      if (!quiet) console.log('WARN  UNREAD DEADLINE    ' + path.relative(ROOT, f) + ':' + u.line + '  ' + (u.deadline === null ? 'no **Deadline:** line' : '"' + u.deadline.slice(0, 60) + '"') + ' — the dispatcher counts it as due now (start the line with YYYY-MM-DD or today)  "' + u.heading.slice(0, 60) + '"');
+    }
     for (const st of futureStamps(text, Date.now())) {
       const rel = path.relative(ROOT, f);
       if (rel.includes(path.sep + 'archive' + path.sep)) { warns++; if (!quiet) console.log('WARN  ' + st.kind.padEnd(20) + rel + ':' + st.line + '  ' + st.stamp); continue; }
@@ -502,4 +531,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { sections, statusOf, classify, scan, dueSet, deadlineOf, dutyResult, futureStamps };
+module.exports = { sections, statusOf, classify, scan, dueSet, deadlineOf, dutyResult, futureStamps, unreadDeadlines };
