@@ -215,6 +215,14 @@ This repo holds the framework only. A running company's secrets, station checkou
 (`company/work`, `company/state`, `company/owner`, hiring rounds, role charters), media and logs are ignored; see
 `.gitignore`. If a company wants its own history, back up its working folders separately.
 
+## Licence
+
+The **code** is AGPL-3.0-or-later (`LICENSE`): personal and commercial use are free, and a modified version served to
+others must offer them its source. A **commercial licence** is available for companies that cannot meet those terms.
+The **documentation** is CC BY-NC-SA 4.0. The **name and marks** are not licensed.
+
+Contributions need the `CLA.md` and a DCO sign-off (`git commit -s`); see `CONTRIBUTING.md` and `docs/LICENSING.md`.
+
 ## Status
 
 Extracted from a running agent company and made company-agnostic. See `docs/PORTING.md` for the rules every file

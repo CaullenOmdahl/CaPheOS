@@ -288,6 +288,8 @@ Vendored code is a dependency we own, not an import we trust:
 - behaviour is kept; every identifier, string, log line, error and doc comment is renamed to our vocabulary
   (§5, `docs/STYLE.md`);
 - no StarNet branding, no station names, no game terms — a vendored file reads as if it were written here;
+- licence-compatible before it lands: MIT, BSD-2-Clause, BSD-3-Clause and Apache-2.0 are fine; GPL-2.0-only is not
+  (`docs/LICENSING.md` §8);
 - mounted as a plugin, never imported by the core;
 - a piece that cannot be detached from StarNet's own globals is **refused**: it is a port, not a vendor.
 
@@ -354,6 +356,7 @@ zero units installed.
 | 11 | **Run and transcript format** (delegated): append-only JSONL, one stream per run, typed events, stable IDs, a terminal status, retention by policy. |
 | 12 | **Dependencies and layout** (delegated): `server/` for the process, `runtime/` for the services and run loop, `vendor/` for vendored code; npm with a lockfile; one pinned dependency (Cordis) in the runtime only, the console and company tools stay dependency-free; SPDX licence plus `NOTICE`; CI runs `npm ci`; the image ships it under the read-only root. |
 | 13 | **Founding** (`docs/FOUNDING.md`): `found-company` is the bootstrap; a setup flow collects what the Founder needs — a guided form, or a conversation once one provider key verifies, with AI assistance either way; certification gates launch; the Founder then interviews, hires the bootstrapping crew and scaffolds. Display names are renameable; ids are not. |
+| 14 | **Licensing** (`docs/LICENSING.md`): code AGPL-3.0-or-later, dual-licensed commercially; documentation CC BY-NC-SA 4.0; units published to the registry must carry an OSI-approved licence; contributions under the CLA plus a DCO sign-off; vendored code keeps its licence and gets a `NOTICE` row. |
 
 **Open:** none. P0 is fully specified — write the task, run and transcript formats; the setup record; the parity test
 skeleton; and the vocabulary lint. Then the kept-tool list, and code.

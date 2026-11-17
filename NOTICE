@@ -1,0 +1,35 @@
+# NOTICE
+
+CaPheOS
+Copyright (C) 2026 the CaPheOS project owner and contributors.
+
+This product is licensed under the GNU Affero General Public License, version 3 or later (AGPL-3.0-or-later). The
+full text is in `LICENSE`. Documentation is licensed CC BY-NC-SA 4.0. The name and marks are not licensed. See
+`docs/LICENSING.md`.
+
+---
+
+## Third-party code
+
+Dependencies installed at build or run time are **not** vendored here: they keep their own licences, and their
+notices travel with the package manager's output.
+
+Code copied into this repository (`vendor/`) is listed below. Each component keeps its own licence and source
+headers; modifications are noted.
+
+**No third-party code is vendored in this repository yet.**
+
+When code is vendored, add a row:
+
+| Path | Component | Version / commit | Licence | What changed |
+|---|---|---|---|---|
+| — | — | — | — | — |
+
+Rules (from `docs/LICENSING.md` §8 and `docs/BACKEND.md` §7.2):
+
+- MIT, BSD-2-Clause, BSD-3-Clause and Apache-2.0 code may be vendored; it is compatible with AGPL-3.0.
+- GPL-2.0-only code may not be vendored. GPL-2.0-or-later is compatible with AGPL-3.0 only through its "or later"
+  option, and needs a recorded decision.
+- A component that cannot be detached from its own product's internals is a port, not a vendor, and is refused.
+- StarNet's name and artwork are not covered by its MIT licence. Vendored StarNet code uses CaPheOS vocabulary and no
+  StarNet branding.
