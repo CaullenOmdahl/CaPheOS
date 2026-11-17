@@ -1,16 +1,18 @@
-// Settings › System (#/settings/system[/health|certification|backups|services|alarm|halt|map]): health and diagnostics, certification,
-// backups, the crew's background services (company/tools/service.js), the outside alarm test (alarm-test.js), the two ways to stop the company, and "Where did it
+// Settings › System (#/settings/system[/health|certification|backups|services|alarm|signin|flags|modules|scheduler|restarts|update|halt|map]): health and diagnostics, certification,
+// backups, the crew's background services (company/tools/service.js), the outside alarm test (alarm-test.js), sign-in and the owner's server chores (system-ops.js), the two ways to stop the company, and "Where did it
 // go?" (the old feature map, was #/map and System).
 import { h, fill, Button, Tag, errLine, table, Details, Block, humanError, rel, statusOf, when } from '../../ui.js';
 import { api, post } from '../../api.js';
 import * as events from '../../events.js';
 import { CHECK_NAMES } from '../setup.js';
 import { alarmTest } from './alarm-test.js';
+import { opsBlocks } from './system-ops.js';
 
 export async function render(host, ctx) {
   const { app } = ctx;
   const health = h('div'), cert = h('div'), backups = h('div'), services = h('div'), alarm = h('div');
   const diag = {};
+  const ops = opsBlocks(ctx);   // sign-in and access, flags, modules, scheduler, restarts, framework update (system-ops.js)
   fill(host,
     Block({ id: 'health', title: 'Health', actions: Button('Copy diagnostics', { variant: 'secondary', size: 'sm', onClick: async () => {
       try { await navigator.clipboard.writeText(JSON.stringify(diag, null, 1)); app.toast('Diagnostics copied. Paste them wherever you report a problem.'); } catch (_) { app.toast('The browser did not allow copying.', true); }
@@ -18,6 +20,7 @@ export async function render(host, ctx) {
     Block({ id: 'certification', title: 'Certification', lede: 'The checks that prove the company can actually run. Run them again after a big change.' }, cert),
     Block({ id: 'backups', title: 'Backups' }, backups),
     Block({ id: 'services', title: 'Background services', lede: 'Programs the crew keeps running on this computer between their working sessions, like a recorder or a nightly job. Each one was approved by you, and halting the company stops them.' }, services),
+    ...ops.blocks,
     Block({ id: 'alarm', title: 'Test the outside alarm', lede: 'Your outside check (healthchecks.io or alike) warns you when this computer stops pinging it. This proves the warning really reaches you: the pings pause for the check\'s period plus grace, and you say whether the alert came. No terminal needed.' }, alarm),
     Block({ id: 'halt', title: 'Stopping the company', lede: 'The halt buttons are at the bottom of the sidebar on every screen.' },
       h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:16px' },
@@ -61,6 +64,7 @@ export async function render(host, ctx) {
     fill(cert,
       h('div', { class: 'between-c', style: 'flex-wrap:wrap' }, h('p', { class: 'body-s' }, d.certified ? 'Certified' + (d.certifiedAt ? ' ' + when(d.certifiedAt) : '') + '. ' + (d.lastCertify ? 'Last checked ' + rel(d.lastCertify) + '.' : '') : 'Not certified yet: ' + failed.length + ' check(s) still failing.'),
         Tag(d.certified ? 'Certified' : 'Not certified', { variant: 'status', status: d.certified ? 'online' : 'warning' })),
+      (d.warnings || []).map(w => h('p', { class: 'caption', style: 'color:var(--status-warning)' }, w.what + '.', Details('How to fix it', h('code', { class: 'mono-s' }, w.fix || '')))),
       failed.length ? h('ul', { class: 'plain' }, failed.map(c => h('li', { class: 'sys-row' }, h('span', { class: 'strong' }, CHECK_NAMES[c.id] || c.what || c.id), Tag('Failing', { variant: 'status', status: 'danger' })))) : null,
       h('div', { class: 'row-8' }, runB, h('a', { href: '#/settings/company/certify', class: 'btn btn-ghost btn-sm' }, 'Fix what is left')), err,
       Details('Every step and check', h('ul', { class: 'plain caption' }, (d.steps || []).map(x => h('li', null, (x.status === 'ok' ? '✓ ' : '• ') + x.what + (x.note ? ' — ' + x.note : ''))),
@@ -77,7 +81,7 @@ export async function render(host, ctx) {
   const at = alarmTest(alarm, app);
   const off = events.on(['halt', 'guardrails'], load);
   const offS = events.on(['services', 'halt'], () => loadServices(services, app));
-  return () => { off(); offS(); at.destroy(); };
+  return () => { off(); offS(); at.destroy(); ops.dispose && ops.dispose(); };
 }
 
 // Background services: one card per service, in plain words; Stop / Start / Remove act as the owner (service.js).

@@ -46,7 +46,8 @@ async function until(fn, ms) { const end = Date.now() + ms; let v; while (Date.n
   const js = async e => { const r = await send('Runtime.evaluate', { expression: e, returnByValue: true, awaitPromise: true }); return r.result && r.result.result ? r.result.result.value : undefined; };
   const shot = async name => { if (!SHOTS) return; fs.mkdirSync(SHOTS, { recursive: true }); const s = await send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(SHOTS, name + '.png'), Buffer.from(s.result.data, 'base64')); };
   await send('Runtime.enable'); await send('Page.enable');
-  await send('Page.navigate', { url: BASE + '/login?token=' + encodeURIComponent(TOKEN) });
+  await send('Page.navigate', { url: BASE + '/login' });   // the login form (a token never goes in an address)
+  await until(() => js('(()=>{const i=document.getElementById("secret");if(!i)return 0;i.value=' + JSON.stringify(TOKEN) + ';i.form.submit();return 1})()'), 10000);
   // signed in once the login redirect has landed on the app shell (a condition, not a fixed pause)
   const signedIn = await until(() => js(`location.pathname !== '/login' && !!document.getElementById('main') && document.readyState === 'complete'`), 20000);
   check('the login link signs in and lands on the app', signedIn, await js('location.href'));

@@ -59,9 +59,10 @@ fi
 # 3. station, dispatcher, liveness, console
 if [[ $START -eq 1 ]]; then
   scripts/setup-station.sh --start | tail -4
-  # the token goes only to an interactive terminal (an agent's run or a log gets the address and where the token is)
-  if [[ -t 1 ]]; then URL="http://127.0.0.1:$((PORT + 100))/login?token=$(cat secrets/console-token 2>/dev/null)"
-  else URL="http://127.0.0.1:$((PORT + 100))/login  (token: $DIR/secrets/console-token)"; fi
+  # the token is never put in an address; an interactive terminal gets it on its own line to paste into the login form
+  URL="http://127.0.0.1:$((PORT + 100))/login  (sign in with the token in $DIR/secrets/console-token)"
+  [[ -t 1 ]] && URL="$URL
+  token: $(cat secrets/console-token 2>/dev/null)"
   for _ in $(seq 1 20); do curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$((PORT + 100))/" 2>/dev/null && break; sleep 1; done
   echo
   echo "Open the console to finish setup:"

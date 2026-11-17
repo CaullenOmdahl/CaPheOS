@@ -14,10 +14,28 @@ scripts/console.sh                # same as the first line
   Tool exit 2 → 400, exit 3 (refused, not the owner) → 403, timeout → 504.
 - If `console/ui/index.html` does not exist yet, `/` serves a one-line placeholder page.
 
-- Binds 127.0.0.1 only (config `console.host`/`console.port` in company/company.json may change it).
-- Auth: every `/api/*` request needs the owner token from `secrets/console-token` (created on first start, 0600),
-  sent as header `x-console-token` or cookie `console_token`. `GET /login?token=…` sets the cookie and redirects to `/`.
-  The server prints the login URL on start.
+- Binds 127.0.0.1 by default. `console.host`/`console.port` in company/company.json, or env `CONSOLE_HOST`/
+  `CONSOLE_PORT` (env wins), change it; a non-loopback address prints a warning at start. Settings › System ›
+  Sign-in and access sets it from the browser (`POST /api/ops/access`, restart needed).
+- Auth (console/auth.js; docs/DEPLOY-SERVER.md): a browser signs in on the login page (`GET /login`, a form that
+  `POST /login`s `secret` = the owner token from `secrets/console-token`, a passphrase, or a one-time recovery code)
+  and gets a signed session cookie `capheos_session` (HttpOnly, SameSite=Lax, Secure over HTTPS, expiry
+  `console.sessionHours`, default 168) plus `capheos_csrf`. **A token in an address is never accepted** (`GET
+  /login?token=…` answers 400 and sets nothing). Every write signed in by the cookie needs header `x-csrf-token`
+  (console/ui/js/csrf.js adds it) and a same-site `Origin`; else 403 `{csrf:true}`. Scripts send header
+  `x-console-token` instead (no CSRF token needed: a browser cannot send it cross-site without a preflight). Failed
+  sign-ins: 5 per client per 15 min, 30 overall, then 429 + Retry-After. `X-Forwarded-Proto/-For/-Host` are believed
+  only from `console.trustProxy` (false | true = this machine | [addresses]; env `CONSOLE_TRUST_PROXY`).
+  `GET /api/health` answers `{ok:true}` with no auth and no detail (a container health check).
+  `GET /api/auth/session`; `POST /api/auth/logout`; `POST /api/auth/rotate` (sign out everywhere: new token, shown once,
+  this browser re-signed); `POST /api/auth/passphrase {passphrase, current?}` or `{clear:true}`;
+  `POST /api/auth/recovery-code` (a new one-time code, shown once). Server admin: `node console/server.js --reset-login`.
+- The owner's server chores (console/owner-ops.js, every write recorded in company/state/owner-ops.jsonl):
+  `/api/ops/flags` (+ `/accept`, `/revert` `{key, why}`), `/api/ops/scheduler` (dry runs; POST `{to, confirm}`,
+  `/seat`), `/api/ops/services/unregistered` and `/adopt`, `/api/ops/modules` and `/<id>/enable|disable`,
+  `/api/ops/guardrails/apply`, `/api/ops/restart` and `/station`, `/console`, `/api/ops/update` (the dry run) and
+  `/apply {expect}`, `/api/ops/access`, `/api/ops/jobs[/<id>]`, `/api/ops/log`. Streams (`/api/events`, chat, the
+  station proxy) carry `x-accel-buffering: no`; SSE pings every 25 s and the chat stream sends a blank line every 20 s.
 - The browser never sees the station token: station calls go through `/api/station/*`.
 - Every write acts **as the owner** (`--by <owner name>`), through the same tools an owner would run in a shell.
 - Responses are JSON. Errors: `{ ok:false, error }` with a 4xx/5xx status. Tool output that is not JSON comes back as

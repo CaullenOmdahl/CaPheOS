@@ -170,8 +170,9 @@ const killed = c => new Promise(r => { if (c.exitCode !== null) return r(); c.on
   let id = 0; const pend = {}; ws.onmessage = m => { const j = JSON.parse(m.data); if (j.id && pend[j.id]) { pend[j.id](j); delete pend[j.id]; } };
   const cmd = (method, params) => new Promise(r => { const i = ++id; pend[i] = r; ws.send(JSON.stringify({ id: i, method, params })); });
   const ev = async expr => ((await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true })).result || {}).result?.value;
-  await cmd('Page.navigate', { url: C + '/login?token=' + encodeURIComponent(ctoken) });
-  await sleep(500);
+  await cmd('Page.navigate', { url: C + '/login' });   // the login form (a token never goes in an address)
+  await waitFor(() => ev('(()=>{const i=document.getElementById("secret");if(!i)return 0;i.value=' + JSON.stringify(ctoken) + ';i.form.submit();return 1})()'), 10000);
+  await sleep(800);
   await cmd('Page.navigate', { url: C + '/#/chat/agent' });
   await waitFor(() => ev('!!document.getElementById("msg")'), 15000);
   const sendText = async txt => ev('(()=>{const t=document.getElementById("msg");t.value=' + JSON.stringify(txt) + ';t.closest("form").requestSubmit();return 1})()');

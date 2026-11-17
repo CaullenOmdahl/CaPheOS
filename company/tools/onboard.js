@@ -269,7 +269,7 @@ async function certify() {
   put('ops', !opsBad.length, opsBad.join('; '));
   // 6
   let lv = null; try { lv = require(co.p('modules', 'liveness', 'watch.js')).status(); } catch (_) {}
-  put('liveness', lv && lv.enabled && lv.heartbeat && lv.pingedAt, !lv || !lv.enabled ? 'liveness module not enabled: node company/tools/module.js enable liveness --by owner' : !lv.heartbeat ? 'no dispatcher heartbeat yet (company/state/heartbeat.json): wait one dispatcher tick' : 'never pinged: node company/tools/liveness.js ping');
+  put('liveness', lv && lv.enabled && lv.heartbeat && lv.pingedAt, !lv || !lv.enabled ? 'liveness module not enabled: switch on Liveness in Settings › System › Modules (or node company/tools/module.js enable liveness --by owner)' : !lv.heartbeat ? 'no dispatcher heartbeat yet (company/state/heartbeat.json): wait one dispatcher tick' : 'never pinged: node company/tools/liveness.js ping');
   // 7
   const pd = node([tool('pack.js'), 'doctor', '--all', '--json'], { timeout: 60000 });
   const md = node([tool('module.js'), 'doctor', '--all', '--json'], { timeout: 60000 });
@@ -296,16 +296,20 @@ async function certify() {
   // liveness: the dispatcher keeps beating through a restart hold; say that the company is paused, not broken
   if (res.liveness.ok && co.restartHold()) res.liveness.note = 'the company is ' + co.restartHoldNote();
   const ok = Object.values(res).every(x => x.ok);
+  // warnings: true on this machine but not a failed check. Linger off means the station, the dispatcher and the
+  // console stop when the account's last login ends (an SSH session closing): fine at a desk, fatal on a server.
+  const warnings = [];
+  try { const lg = require('./lib/host.js').linger(); if (lg.state === 'off') warnings.push({ id: 'linger', what: 'systemd user lingering is off for ' + lg.user + ': the station, the dispatcher and the console stop when the last login session of ' + lg.user + ' ends', fix: lg.fix }); } catch (_) {}
   const s = state();
   const was = s.certified;
-  s.checks = { at: now(), ok, results: res };
+  s.checks = { at: now(), ok, results: res, warnings };
   s.certified = ok; if (ok && !was) s.certifiedAt = now();
   writeJson(F.state, s);
   ledger({ certify: ok, failed: Object.keys(res).filter(k => !res[k].ok) });
   if (ok && !was) { try { require('./owner-inbox.js').send({ from: 'onboard.js', text: 'Onboarding: the company is CERTIFIED (all ' + CHECKS.length + ' checks green). It is operational. The Founder is drafting the first plan now: [watch it on Today](console:#/today).' }); } catch (_) {} }
   let kick = null;
   if (ok) { try { kick = await kickoff(); } catch (e) { kick = { status: 'failed', note: e.message }; setStep('kickoff', 'failed', e.message); } }
-  return { ok, certified: ok, results: res, kickoff: kick };
+  return { ok, certified: ok, results: res, warnings, kickoff: kick };
 }
 
 /* ---------- kickoff: the Founder's first planning run, once ---------- */
@@ -356,7 +360,7 @@ function check() {
   const checks = CHECKS.map(([id, what]) => { const r = last && last.results && last.results[id]; return { id, what, status: r ? (r.ok ? 'ok' : 'failed') : 'unchecked', missing: r ? r.missing : null }; });
   const provisioned = ['founded', 'station-installed', 'station-answers'].every(k => steps.find(x => x.id === k).status === 'ok');
   return { ok: true, provisioned, certified: !!s.certified, certifiedAt: s.certifiedAt || null, lastCertify: last ? last.at : null, steps, checks,
-    missing: steps.filter(x => x.status !== 'ok').map(x => x.id + ': ' + (x.note || x.what)).concat(checks.filter(x => x.status !== 'ok').map(x => x.id + ': ' + (x.missing || 'run onboard.js --certify'))), gates: s.gates || {} };
+    missing: steps.filter(x => x.status !== 'ok').map(x => x.id + ': ' + (x.note || x.what)).concat(checks.filter(x => x.status !== 'ok').map(x => x.id + ': ' + (x.missing || 'run onboard.js --certify'))), gates: s.gates || {}, warnings: (last && last.warnings) || [] };
 }
 
 /* ---------- teardown ---------- */

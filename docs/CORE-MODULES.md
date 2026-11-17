@@ -40,6 +40,7 @@ category `packs`), listed in `company/state/modules.json`. A pack declares the m
 
 ## The module mechanism
 
+From the console: Settings › System › Modules switches a module on or off as the owner (`POST /api/ops/modules/<id>/enable|disable`).
 Tool: `company/tools/module.js` (`list`, `status <id>`, `doctor [<id>|--all]`, `enable|disable <id> --by owner`,
 `gates`, `selftest`). Runtime hooks: `company/tools/lib/modules.js`. Registry: `company/state/modules.json` (only
 module.js writes it; locked-watch class F, owner risk). Log: `company/state/modules-log.jsonl`.

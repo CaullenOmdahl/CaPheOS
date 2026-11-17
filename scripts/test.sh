@@ -89,6 +89,7 @@ echo "== console"
 step "console/server.js --selftest" node console/server.js --selftest
 step "console/models.js --selftest" node console/models.js --selftest
 step "console/command-ask.js --selftest (chat lint: a reply that tells the owner to run a command)" node console/command-ask.js --selftest
+step "tests/remote-access-test.js (login form, sessions, CSRF, rate limit, proxy + SSE, owner ops recorded, break-glass, crash restart, linger)" node tests/remote-access-test.js
 step "tests/today-questions-walk.js (headless Chrome: Today renders each question kind; SKIP without Chrome)" node tests/today-questions-walk.js
 step "tests/chat-actions-walk.js (headless Chrome: chat actions and approvals in chat on the mock; SKIP without Chrome)" node tests/chat-actions-walk.js
 step "tests/chat-resilience-walk.js (console + mock station: a chat run survives a console restart and a reload; busy + restart-console.sh; leaked tool calls; page checks SKIP without Chrome)" node tests/chat-resilience-walk.js

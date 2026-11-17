@@ -144,16 +144,14 @@ function admitThenProxy(req, res, sub, u, token) {
 
 /* ---------------- auth ---------------- */
 const TOKEN_FILE = path.join(co.SECRETS_DIR, 'console-token');
-function consoleToken() {
-  try { const t = fs.readFileSync(TOKEN_FILE, 'utf8').trim(); if (t) return t; } catch (_) {}
-  fs.mkdirSync(co.SECRETS_DIR, { recursive: true });
-  const t = crypto.randomBytes(24).toString('hex');
-  fs.writeFileSync(TOKEN_FILE, t + '\n', { mode: 0o600 });
-  try { fs.chmodSync(TOKEN_FILE, 0o600); } catch (_) {}
-  return t;
+// sign-in, sessions, CSRF, rate limit, trusted proxy: console/auth.js (docs/DEPLOY-SERVER.md)
+const AUTH = require(path.join(__dirname, 'auth.js'))({ co, tokenFile: TOKEN_FILE, HttpError });
+const consoleToken = () => AUTH.token();
+// headers for every answer: no framing by other sites, no referrer leaking an address; a stream is never buffered by a proxy
+function baseHeaders(res, p) {
+  res.setHeader('x-frame-options', 'SAMEORIGIN'); res.setHeader('referrer-policy', 'same-origin');   // same-origin: a form POST keeps its Origin (the CSRF check), other sites get no referrer
+  if (p === '/api/events' || p.startsWith('/api/chat/') || p.startsWith('/api/station/') || p.startsWith('/api/now/run/')) res.setHeader('x-accel-buffering', 'no');
 }
-function cookies(req) { const o = {}; for (const part of String(req.headers.cookie || '').split(';')) { const i = part.indexOf('='); if (i > 0) o[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim()); } return o; }
-function same(a, b) { const x = Buffer.from(String(a || '')), y = Buffer.from(String(b || '')); return x.length === y.length && crypto.timingSafeEqual(x, y); }
 
 /* ---------------- responses ---------------- */
 function sendJson(res, status, obj) {
@@ -712,6 +710,8 @@ const MME_same = (a, b) => require(path.join(__dirname, '..', 'company', 'tools'
 const SETUP = require(path.join(__dirname, 'setup.js'))({ co, run, runApi, stationGet, stationPost, owner: () => OWNER, setOwner: n => { OWNER = n || OWNER; }, bad, HttpError, tool, emit: t => emit(t) });
 for (const [mth, re, fn] of SETUP.routes) route(mth, re, fn);
 require(path.join(__dirname, 'models.js')).mount(route, { co, runApi, stationGet, bad, owner: () => OWNER });   // per-seat model chains (console/models.js)
+// the owner's server chores without a terminal: flags, scheduler, services, modules, restarts, framework update, access
+const OPS = require(path.join(__dirname, 'owner-ops.js')).mount(route, { co, run, runApi, bad, owner: () => OWNER, tool, busy: () => CHAT.runs.busy(), emit: t => emit(t) });
 route('GET', /^\/api\/locked$/, () => runApi('locked-watch.js', ['status']));
 route('GET', /^\/api\/external$/, () => runApi('external-gate.js', ['list']));
 
@@ -753,7 +753,7 @@ function armWatches() {
   });
 }
 function events(req, res) {
-  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
   res.write('retry: 5000\n: hello\n\n');
   clients.add(res);
   req.on('close', () => clients.delete(res));
@@ -793,24 +793,29 @@ async function moduleRoute(req, res, url, auth, id, sub) {
 }
 
 /* ---------------- server ---------------- */
-function makeServer(token) {
+function makeServer() {
   return http.createServer(async (req, res) => {
     let url; try { url = new URL(req.url, 'http://x'); } catch (_) { return sendJson(res, 400, { ok: false, error: 'bad url' }); }
     const p = url.pathname;
+    baseHeaders(res, p);
     try {
-      if (p === '/login') {
-        if (!same(url.searchParams.get('token'), token)) return sendJson(res, 401, { ok: false, error: 'bad token' });
-        res.writeHead(302, { 'set-cookie': 'console_token=' + encodeURIComponent(token) + '; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000', location: '/' });
-        return res.end();
-      }
+      if (p === '/api/health') return sendJson(res, 200, { ok: true });   // for a container's health check: no auth, no detail
+      if (await AUTH.handle(req, res, url)) return;   // GET/POST /login, POST /logout
       const hk = p.match(/^\/hooks\/([^/]+)(?:\/(.*))?$/);
       if (hk) return await moduleRoute(req, res, url, 'source', hk[1], hk[2]);
       if (/^\/preview\/[a-z0-9-]+$/.test(p)) {   // the page preview shell; its data comes from /api/preview/<id>
-        if (!same(req.headers['x-console-token'] || cookies(req).console_token, token)) return sendJson(res, 401, { ok: false, error: 'owner token required (GET /login?token=...)' });
+        if (!AUTH.check(req).ok) { res.writeHead(303, { location: '/login?next=' + encodeURIComponent(p) }); return res.end(); }
         return serveStatic(req, res, '/preview.html');
       }
-      if (!p.startsWith('/api/') && p !== '/api') return serveStatic(req, res, p);
-      if (!same(req.headers['x-console-token'] || cookies(req).console_token, token)) return sendJson(res, 401, { ok: false, error: 'owner token required (x-console-token header or console_token cookie; GET /login?token=...)' });
+      if (!p.startsWith('/api/') && p !== '/api') {
+        // the app shell needs a session: a signed-out browser goes to the login page (assets stay public: no data in them)
+        if ((p === '/' || p === '/index.html') && !AUTH.check(req).ok) { res.writeHead(303, { location: '/login', 'cache-control': 'no-store' }); return res.end(); }
+        return serveStatic(req, res, p);
+      }
+      const who = AUTH.check(req);
+      if (!who.ok) return sendJson(res, 401, { ok: false, error: 'sign in first (the login page is /login; scripts send the x-console-token header)', login: '/login' });
+      if (req.method !== 'GET' && req.method !== 'HEAD' && !AUTH.csrfOk(req, who)) return sendJson(res, 403, { ok: false, error: 'refused: this write has no valid CSRF token (x-csrf-token) or came from another site', csrf: true });
+      for (const [mth, re, fn] of AUTH.routes) { const m = p.match(re); if (m && req.method === mth) { const body = mth === 'POST' ? await readBody(req) : {}; return sendJson(res, 200, await fn(m, url.searchParams, body, req, res)); } }
       if (p === '/api/events') return events(req, res);
       if (p.startsWith('/api/station/')) return stationProxy(req, res, p.slice('/api/station/'.length), url.search);
       const am = p.match(/^\/api\/m\/([^/]+)(?:\/(.*))?$/);
@@ -847,36 +852,51 @@ function makeServer(token) {
  * every diagnostic reads, so there the line names where the token is kept instead (scripts/console.sh --url prints
  * the full address to a terminal). */
 function loginLine(base, token, tty) {
-  return tty ? 'console: ' + base + '/login?token=' + token
-    : 'console: ' + base + '/login (the token is in secrets/console-token; `scripts/console.sh --url` in a terminal prints the full address)';
+  // the token is never part of an address any more (an address lands in history, proxy and access logs); a terminal
+  // gets the sign-in page and, on its own line, where the token is kept
+  void token; void tty;
+  return 'console: ' + base + '/login (sign in with the owner token in secrets/console-token, or your passphrase)';
 }
 function listenConfig(argv) {
   const cc = co.config.console || {};
   const flag = k => { const i = argv.indexOf('--' + k); return i >= 0 ? argv[i + 1] : undefined; };
   let stationPort = 0; try { stationPort = Number(new URL(co.STATION_URL).port) || 0; } catch (_) {}
   const port = flag('port') !== undefined ? Number(flag('port')) : process.env.CONSOLE_PORT ? Number(process.env.CONSOLE_PORT) : cc.port || (stationPort ? stationPort + 100 : 8901);
-  return { host: flag('host') || cc.host || '127.0.0.1', port };
+  return { host: flag('host') || process.env.CONSOLE_HOST || cc.host || '127.0.0.1', port };
 }
 function printUrl(argv) {
   const { host, port } = listenConfig(argv);
   const shown = host.includes(':') ? '[' + host + ']' : host;
   if (!process.stdout.isTTY) { console.error('console --url prints the login token, so only to an interactive terminal (stdout here is a pipe or a log). The token is in secrets/console-token.'); return 2; }
-  console.log(loginLine('http://' + shown + ':' + port, consoleToken(), true)); return 0;
+  console.log(loginLine('http://' + shown + ':' + port) + '\ntoken (paste it into the form; never into an address): ' + consoleToken()); return 0;
 }
-// --rotate-token: a new console token (the owner's own shell only); the running console keeps the old one until it restarts
+// --rotate-token: a new console token (the owner's own shell only); every session ends at once (the console re-reads the token file)
 function rotateToken() {
   let owner = false; try { owner = require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'owner.js')).shell(); } catch (_) {}
   if (!owner) { console.error('rotating the console token is the owner\'s, from the owner\'s own shell'); return 2; }
-  fs.mkdirSync(co.SECRETS_DIR, { recursive: true });
-  const tmp = TOKEN_FILE + '.tmp-' + process.pid;
-  fs.writeFileSync(tmp, crypto.randomBytes(24).toString('hex') + '\n', { mode: 0o600 }); fs.renameSync(tmp, TOKEN_FILE);
-  console.log('a new console token is in secrets/console-token; restart the console (scripts/restart-console.sh --when-idle) and log in again with scripts/console.sh --url');
+  AUTH.writeToken(crypto.randomBytes(24).toString('hex'));
+  console.log('a new console token is in secrets/console-token; every browser is signed out (the running console reads the new token by itself). The owner can do the same from Settings › System › Sign-in › Sign out everywhere.');
+  return 0;
+}
+/* --reset-login: the server admin's break-glass for an owner who is locked out (docs/DEPLOY-SERVER.md "Locked out").
+ * A new token, the passphrase and recovery code removed, every session ended. From a shell on the server only (not an
+ * agent's run); the new token goes to a terminal only. The running console picks it up without a restart. */
+function resetLogin() {
+  let agent = false; try { agent = require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'owner.js')).underStation(); } catch (_) {}
+  if (agent) { console.error('refused: --reset-login is the server admin\'s, never an agent run\'s'); return 2; }
+  AUTH.writeToken(crypto.randomBytes(24).toString('hex'));
+  for (const f of ['console-passphrase', 'console-recovery']) { try { fs.unlinkSync(path.join(co.SECRETS_DIR, f)); } catch (_) {} }
+  try { fs.appendFileSync(co.p('company', 'work', 'decisions.md'), '- ' + new Date().toISOString() + ' server admin reset the console sign-in (--reset-login): new token, passphrase and recovery code removed\n'); } catch (_) {}
+  console.log('console sign-in reset: new token written to secrets/console-token, passphrase and recovery code removed, every session ended.');
+  if (process.stdout.isTTY) console.log('new token (give it to the owner privately; they sign in with it, then set a passphrase): ' + consoleToken());
+  else console.log('read the new token with: cat secrets/console-token   (in a terminal; it is not printed to a pipe or a log)');
   return 0;
 }
 function start(argv) {
   const token = consoleToken();
   const { host, port } = listenConfig(argv);
-  const server = makeServer(token);
+  const server = makeServer();
+  const bw = require(path.join(__dirname, 'auth.js')).bindWarning(host); if (bw) console.error('console: WARNING ' + bw);
   armWatches();
   CHAT.runs.start();   // re-attach to the chat runs a previous console process left in flight
   setInterval(armWatches, 15000).unref();
@@ -946,10 +966,12 @@ async function selftest() {
     r = await call('GET', '/api/today', undefined, { 'x-console-token': 'wrong' });
     check('wrong token: 401', r.status === 401, r.status);
     r = await call('GET', '/login?token=' + token, undefined, {});
+    check('a token in the login address is not accepted (no cookie)', r.status === 400 && !r.headers['set-cookie'] && !r.text.includes(token), r.status);
+    r = await call('POST', '/login', { secret: token }, { 'content-type': 'application/json' });
     const cookie = String((r.headers['set-cookie'] || [''])[0]).split(';')[0];
-    check('login sets cookie and redirects', r.status === 302 && cookie === 'console_token=' + token, r.headers);
-    // the login token never reaches the journal: off a terminal the line names where it is kept; --url refuses a pipe
-    check('the login line carries the token only to a terminal', !loginLine('http://h:1', 'tok-secret-1', false).includes('tok-secret-1') && /secrets\/console-token/.test(loginLine('http://h:1', 'tok-secret-1', false)) && loginLine('http://h:1', 'tok-secret-1', true).includes('/login?token=tok-secret-1'));
+    check('login form sets a session cookie (not the token)', r.status === 200 && /^capheos_session=v1\./.test(cookie) && !cookie.includes(token), r.headers);
+    // the login token never reaches the journal or an address
+    check('the login line never carries the token', !loginLine('http://h:1', 'tok-secret-1', false).includes('tok-secret-1') && !loginLine('http://h:1', 'tok-secret-1', true).includes('tok-secret-1') && /secrets\/console-token/.test(loginLine('http://h:1', 'tok-secret-1', false)));
     { const u = require('child_process').spawnSync(process.execPath, [__filename, '--url'], { encoding: 'utf8', env: Object.assign({}, process.env), timeout: 15000 });
       check('console --url to a pipe is refused and prints no token', u.status === 2 && !/token=/.test(u.stdout + u.stderr), u.stdout + u.stderr); }
     r = await call('GET', '/api/company', undefined, { cookie });
@@ -1253,6 +1275,8 @@ async function selftest() {
     check('non-JSON POST: 415', r.status === 415, r.status);
     // static
     r = await call('GET', '/', undefined, {});
+    check('signed out, the app shell sends the browser to the login page', r.status === 303 && r.headers.location === '/login', r.status);
+    r = await call('GET', '/');
     check('static index', r.status === 200 && /text\/html/.test(r.headers['content-type']), r.status);
     r = await call('GET', '/ds/styles.css', undefined, {});
     check('static css content type', r.status === 200 && /text\/css/.test(r.headers['content-type']), r.headers['content-type']);
@@ -1473,6 +1497,7 @@ if (require.main === module) {
   if (argv.includes('--selftest')) selftest().then(c => process.exit(c), e => { console.error(e); process.exit(1); });
   else if (argv.includes('--url')) process.exit(printUrl(argv));
   else if (argv.includes('--rotate-token')) process.exit(rotateToken());
+  else if (argv.includes('--reset-login')) process.exit(resetLogin());
   else start(argv);
 }
-module.exports = { makeServer, start, postAllowed, loginLine };
+module.exports = { makeServer, start, postAllowed, loginLine, listenConfig, AUTH };

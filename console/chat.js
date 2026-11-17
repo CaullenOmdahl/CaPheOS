@@ -206,6 +206,9 @@ module.exports = function chat(deps) {
     const m = await modelFor(s);
     const pre = await preflight(s, m);
     res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+    // a blank line every 20 s while the run is quiet: a reverse proxy's read timeout never cuts a long tool call
+    const ka = setInterval(() => { try { res.write('\n'); } catch (_) {} }, 20000); ka.unref();
+    res.on('close', () => clearInterval(ka)); res.on('finish', () => clearInterval(ka));
     const opening = [];   // the lines before the run exists: journaled as its first lines once it does, so a reload shows them
     const say = (name, payload) => { opening.push({ name, payload }); line(name, payload); };
     say('console.user', { text, brief: body.brief || null });

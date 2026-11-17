@@ -100,6 +100,9 @@ node company/tools/budget-migrate.js --to dispatcher --by owner     # do it (pau
 node company/tools/budget-migrate.js --to station --by owner        # roll back: loops re-armed as they were, watchdog removed
 ```
 
+From the console (no terminal): Settings › System › Who starts the crew's routines shows the dry run and switches or
+rolls back (`POST /api/ops/scheduler`, recorded in company/state/owner-ops.jsonl).
+
 The dry run reads `company.json`, `loops.json`, `company/state/scheduler.json` and the station's routine store file
 (`.starnet-data/workspaces/cron.jobs.json`), never the station API; every write and every network call in that process
 throws while it runs. `--root <folder>` points it at another company. It refuses to apply while the company does not

@@ -108,6 +108,11 @@ runtime file, secret, module copy or anything key-shaped was ever committed.
 
 ### Updating a company to a newer framework
 
+The owner does this from the console: Settings › System › Framework update shows the dry run (commits, files, new
+StarNet patches, how the company's own files merge) and applies exactly that commit (`company/tools/framework-update.js`:
+instance guard, backup, fast-forward only, company JSON deep-merged, setup when a patch ships, idle restarts; it never
+pushes). By hand, the same thing is:
+
 ```bash
 cd ~/Companies/example-law
 node company/tools/halt.js soft --by Alex     # let running work finish
@@ -147,13 +152,17 @@ The owner console is a local web app: `console/server.js` (Node 22, no dependenc
 and a JSON API over the company's own tools (`docs/CONSOLE-API.md`).
 
 ```bash
-scripts/console.sh                  # starts it; in a terminal it prints http://127.0.0.1:<port>/login?token=... (port: station port + 100)
-scripts/console.sh --url            # the login address with its token, to a terminal only (never to the journal or a pipe)
-scripts/console.sh --port 9000      # or company.json "console": { "host", "port" }
+scripts/console.sh                  # starts it; prints http://127.0.0.1:<port>/login (port: station port + 100), never the token
+scripts/console.sh --url            # the login address and the token to paste into the form, to a terminal only
+scripts/console.sh --port 9000      # or company.json "console": { "host", "port" } (env CONSOLE_HOST / CONSOLE_PORT win)
+scripts/console.sh --reset-login    # the server admin's break-glass: new token, passphrase and recovery code removed
 node console/server.js --selftest   # runs against a temp copy of company/ and a dead station; touches nothing live
 ```
 
-The owner token lives in `secrets/console-token` (created 0600 on first start). Every write acts as the owner
+Sign in on the login page with the owner token from `secrets/console-token` (created 0600 on first start) or a
+passphrase set in Settings › System › Sign-in; a token in an address is not accepted. Running it on a server and using
+it from another machine's browser (HTTPS proxy, linger, backups, the owner's chores from the console):
+**docs/DEPLOY-SERVER.md**. Every write acts as the owner
 (`company.json` owner name) through the same tools the owner runs in a shell; station calls go through
 `/api/station/*` with an allowlist, so the browser never sees the station token. Binds 127.0.0.1 by default.
 

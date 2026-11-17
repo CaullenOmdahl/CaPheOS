@@ -11,7 +11,7 @@ export async function api(path, opts = {}) {
   catch (e) { throw mark(new Error('Console server not reachable'), isStation); }
   let data = null; const text = await res.text();
   try { data = text ? JSON.parse(text) : null; } catch (_) { data = { ok: res.ok, text }; }
-  if (res.status === 401 || res.status === 403) throw Object.assign(new Error('Not signed in: open the login link the console printed'), { auth: true });
+  if (res.status === 401 || res.status === 403) throw Object.assign(new Error('Not signed in: sign in again on the login page'), { auth: true });
   if (!res.ok || (data && data.ok === false)) {
     const msg = (data && (data.error || data.text)) || res.status + ' ' + res.statusText;
     const err = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));

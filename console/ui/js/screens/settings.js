@@ -20,7 +20,7 @@ const LEDE = {
   models: 'Which AI each crew member runs on, how much of each subscription routines may use, and the pay-per-token cap.',
   connections: 'What the crew can reach: connected services, skills, channels and keys.',
   pages: 'Panels and pages the crew added to this console. Hide or remove any of them.',
-  system: 'Health, certification, backups, background services, and how to stop the company.',
+  system: 'Health, certification, backups, background services, sign-in and access, flags, modules, restarts, framework updates, and how to stop the company.',
 };
 
 export async function render(root, ctx) {

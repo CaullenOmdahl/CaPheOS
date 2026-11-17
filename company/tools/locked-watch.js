@@ -8,7 +8,7 @@
  * tool may write. Plain-words guide: company/work/people/LATITUDE.md.
  *
  *   node company/tools/locked-watch.js tick [--dry-run]        compare every locked file with its last-known-good, act, report
- *   node company/tools/locked-watch.js status                  what is watched, open flags
+ *   node company/tools/locked-watch.js status [--json]         what is watched, open flags (--json: the flags as rows, for the console)
  *   node company/tools/locked-watch.js revert <path> --by <Name>                put the last-known-good copy back (flagged files)
  *   node company/tools/locked-watch.js accept <path> --by <Name> --why "…"      take the change as the new last-known-good
  *   node company/tools/locked-watch.js undo <event id> --by <Name>              undo one of the watcher's own automatic reverts
@@ -1742,10 +1742,33 @@ async function selftest() {
 }
 
 /* ---------------- CLI ---------------- */
+/* status --json: every open flag as one row the console's Settings › System › Flags list shows, with what the watcher
+ * logged about it (the report row of its event) and what the owner can do: accept (take it as the new last-known-good)
+ * and revert (put the last-known-good back; not for keys, never for a connector, which the watcher only reports). */
+function flagsList(ctx) {
+  let base = null; try { base = loadBaseline(ctx); } catch (_) {}
+  if (!base) return { ok: true, baseline: null, flags: [] };
+  const evs = {}; try { for (const l of fs.readFileSync(ctx.paths.report, 'utf8').trim().split('\n').slice(-3000)) { try { const e = JSON.parse(l); if (e && e.id) evs[e.id] = e; } catch (_) {} } } catch (_) {}
+  const brief = id => { const e = evs[id]; return e ? { kind: e.kind, why: e.why || null, who: e.who || null, summary: e.summary || null, at: e.at || null } : null; };
+  const flags = [];
+  for (const [k, b] of Object.entries(base.files || {})) if (b && b.flagged) {
+    const m = entryFor(ctx, k) || {};
+    flags.push({ key: k, kind: 'file', cls: m.cls || null, area: m.area || null, since: b.flagged.at, eventId: b.flagged.eventId || null, by: (b.flagged.by || []).map(x => nameOf(ctx, x)), event: brief(b.flagged.eventId), canAccept: true, canRevert: m.cls !== 'K' });
+  }
+  for (const k of Object.keys(base.starnetFlagged || {})) flags.push({ key: 'starnet/' + k, kind: 'starnet', since: null, canAccept: true, canRevert: true });
+  for (const [id, r] of Object.entries(base.routines || {})) {
+    if (r && r.flagged) flags.push({ key: 'routine:' + id, kind: 'routine', canAccept: true, canRevert: false });
+    if (r && r.schedFlagged) flags.push({ key: 'schedule:' + id, kind: 'schedule', canAccept: true, canRevert: false });
+  }
+  for (const id of Object.keys(base.rosterFlagged || {})) flags.push({ key: 'mode:' + id, kind: 'mode', canAccept: true, canRevert: false });
+  for (const [k, c] of Object.entries(base.connectors || {})) flags.push({ key: 'connector:' + k, kind: 'connector', since: c && c.at, eventId: c && c.eventId, event: brief(c && c.eventId), canAccept: false, canRevert: false });
+  return { ok: true, baseline: base.at, tampered: !!base._tampered, flags };
+}
+
 if (require.main === module) {
   const a = process.argv.slice(2); const cmd = a[0];
   const opt = k => { const i = a.indexOf('--' + k); return i >= 0 ? (a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true) : null; };
-  const known = { tick: ['dry-run'], status: [], accept: ['by', 'why'], 'clear-name': ['by', 'why', 'name'], revert: ['by'], undo: ['by'], baseline: ['force'], selftest: [] };
+  const known = { tick: ['dry-run'], status: ['json'], accept: ['by', 'why'], 'clear-name': ['by', 'why', 'name'], revert: ['by'], undo: ['by'], baseline: ['force'], selftest: [] };
   if (!known[cmd]) { console.log('usage: locked-watch.js tick [--dry-run] | status | accept <path> --by <Name> --why "…" | clear-name <path> --name <Name> --by <Name> --why "…" | revert <path> --by <Name> | undo <event id> --by <Name> | baseline [--force] | selftest'); process.exit(2); }
   for (const x of a.slice(1)) if (x.startsWith('--') && !known[cmd].includes(x.slice(2))) { console.error('locked-watch: unknown option ' + x + ' for ' + cmd + '; nothing was done'); process.exit(2); }
   (async () => {
@@ -1753,6 +1776,7 @@ if (require.main === module) {
     const call = (...x) => require('./station-crew.js').call(...x);
     if (cmd === 'tick') { const r = await tick({ dry: opt('dry-run') === true, call }); if (!r.initialized && !r.busy) console.log((opt('dry-run') ? 'DRY RUN (nothing written) ' : '') + 'checked ' + r.checked + ' locked files: ' + (r.events.length ? r.events.length + ' event(s), see above' : 'no unrecorded change') + (r.flagOnly ? ' [automatic reverts off: ' + r.notes.join('; ') + ']' : '')); return; }
     const ctx = context({});
+    if (cmd === 'status' && opt('json')) { console.log(JSON.stringify(flagsList(ctx), null, 1)); return; }
     if (cmd === 'status') {
       const items = expand(ctx); const base = loadBaseline(ctx); const by = {}; for (const [, m] of items) by[m.cls] = (by[m.cls] || 0) + 1;
       console.log('watching ' + items.size + ' files: ' + Object.entries(by).map(([k, v]) => v + ' class ' + k).join(', ') + '; baseline ' + (base ? base.at + (base._tampered ? ' (DOES NOT MATCH ITS MIRROR: automatic reverts off)' : '') : 'not built yet'));

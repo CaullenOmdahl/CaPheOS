@@ -79,7 +79,8 @@ async function until(fn, ms) { const end = Date.now() + ms; let v; while (Date.n
         hscroll: d.scrollWidth > d.clientWidth + 1 ? d.scrollWidth + ' > ' + d.clientWidth : false, wide, lum: +lum.toFixed(2),
         svgs: document.querySelectorAll('${sel} .ch svg[role=img]').length, tables: document.querySelectorAll('${sel} .ch + .legend, ${sel} details.as-table').length }; })()`);
     await send('Runtime.enable'); await send('Page.enable');
-    await go(base + '/login?token=' + encodeURIComponent(token));
+    await go(base + '/login');   // the login form (a token never goes in an address)
+    await until(() => js('(()=>{const i=document.getElementById("secret");if(!i)return 0;i.value=' + JSON.stringify(token) + ';i.form.submit();return 1})()'), 8000);
     await until(() => js('!!document.querySelector(".shell")'), 8000);
     const nav = await until(() => js(`[...document.querySelectorAll('a.nav-item[href^="#/p/"]')].map(a => a.getAttribute('href'))`).then(x => x && x.length >= pages.length && x), 8000);
     check('the Company nav group lists every installed page', nav && pages.every(p => nav.includes('#/p/' + p.id)), nav);
@@ -128,7 +129,7 @@ async function until(fn, ms) { const end = Date.now() + ms; let v; while (Date.n
     check('/preview/<id>: no page exceptions or console errors', !errors.length, errors);
     await shot('preview-noc-health-dark');
     const anon = await new Promise(res => http.get(base + '/preview/noc-health', r => { r.resume(); res(r.statusCode); }).on('error', () => res(0)));
-    check('/preview/<id> needs the owner token', anon === 401, anon);
+    check('/preview/<id> needs the owner sign-in (signed out: to the login page)', anon === 303, anon);
     // the gallery: every kind, light and dark, desktop and phone
     for (const [w, scheme] of [[1280, 'light'], [1280, 'dark'], [390, 'light']]) {
       await view(w, scheme); errors = [];

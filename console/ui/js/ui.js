@@ -55,7 +55,7 @@ export function Logo(size = 28) {
 const TECH = /(company\/|\.js\b|\.jsonl?\b|\.md\b|\/api\/|https?:|ENOENT|EACCES|ECONN|\bHTTP\b|\b[45]\d\d\b|no such API route|Unknown path|stack|at \w+ \()/;
 export function humanError(e) {
   const m = String(e && e.message || e || '');
-  if (e && e.auth) return 'You are not signed in. Open the login link the console printed when it started.';
+  if (e && e.auth) return 'You are not signed in. Sign in again on the login page (/login).';
   if (e && e.stationDown) return 'The station is not running. Start it, then try again.';
   if (/no such API route|Unknown path|not found/i.test(m) || (e && e.status === 404)) return 'The station does not support this yet.';
   if (e && (e.status === 504 || /timed? ?out/i.test(m))) return 'That took too long. Try again in a minute.';

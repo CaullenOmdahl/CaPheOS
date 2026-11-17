@@ -1,4 +1,5 @@
 // CaPheOS owner console: shell, sidebar and hash router. No build step.
+import './js/csrf.js';   // first: every write carries the CSRF token; a 401 goes to the login page
 import { h, fill, Logo, Tag, Button, rel, isSetupQuestion } from './js/ui.js';
 import { api } from './js/api.js';
 import * as events from './js/events.js';

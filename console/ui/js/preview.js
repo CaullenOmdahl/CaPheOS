@@ -1,3 +1,4 @@
+import './csrf.js';
 // Page preview (docs/CONSOLE-PANELS.md §12): /preview/<id>[?dir=company/work/...][&theme=dark]. Draws a page or a
 // panel exactly as its company screen would, from GET /api/preview/<id>, before (or after) `console-panel.js add`.
 // Served by the console behind the owner token, and by `console-panel.js render --page <dir> --png` on a private port.

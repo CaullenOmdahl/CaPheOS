@@ -35,6 +35,7 @@ if [[ "${1:-}" == "--check" ]]; then
   echo "starnet:   $( [[ -d starnet/.git ]] && git -C starnet rev-parse --short HEAD || echo 'not cloned')"
   echo "env file:  $( [[ -f $ENVFILE ]] && echo "$ENVFILE" || echo missing)"
   echo "token:     $( [[ -s secrets/station-token ]] && echo present || echo missing)"
+  echo "linger:    $(node company/tools/lib/host.js --json 2>/dev/null | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const l=JSON.parse(d).linger;console.log(l.state+(l.state==="off"?"  (the units stop when your last login ends; fix: "+l.fix+")":""))}catch(_){console.log("unknown")}})')"
   systemctl --user --no-pager status "$SVC.service" "$SVC-dispatch.service" "$SVC-liveness.timer" "$SVC-liveness-heartbeat.timer" 2>/dev/null | grep -E '●|Active:' || echo "units:     not installed"
   exit 0
 fi
@@ -149,6 +150,23 @@ if [[ $DISPATCH_WAS_ON -eq 1 && "${1:-}" != "--start" ]]; then
   systemctl --user enable "$SVC-dispatch.service" && systemctl --user restart "$SVC-dispatch.service" && echo "started the dispatcher loop in place of the old timer"
 fi
 
+# 5. systemd user lingering. Without it the user manager — and with it the station, the dispatcher and the console —
+# is stopped when this account's last login session ends (an SSH session closing). On a desktop that is rarely noticed;
+# on a server it takes the company down. Turn it on when allowed (polkit lets a user do it on many distributions),
+# else say plainly that the server's admin must, once. Not applicable in a container (company/tools/lib/host.js).
+LINGER_STATE="$(node company/tools/lib/host.js --json 2>/dev/null | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{console.log(JSON.parse(d).linger.state)}catch(_){console.log("unknown")}})')"
+if [[ "$LINGER_STATE" == off || "$LINGER_STATE" == unknown ]]; then
+  if "${LOGINCTL:-loginctl}" enable-linger "$USER" >/dev/null 2>&1 && [[ "$("${LOGINCTL:-loginctl}" show-user "$USER" --property=Linger --value 2>/dev/null)" == yes ]]; then
+    echo "turned on systemd user lingering for $USER (the company keeps running after you log out)"
+  else
+    echo
+    echo "WARNING: systemd user lingering is OFF for $USER, and this account may not turn it on itself."
+    echo "  Without it the station, the dispatcher and the console stop when $USER's last login session ends."
+    echo "  Whoever administers this server runs this once:  sudo loginctl enable-linger $USER"
+    echo
+  fi
+fi
+
 # A patch applied to a RUNNING station is on disk but not live until the station restarts. Never restart here: a restart
 # cuts off every run in flight. Print the one command that restarts it safely (it waits until nothing runs).
 if [[ ${#NEW_PATCHES[@]} -gt 0 ]] && systemctl --user is-active --quiet "$SVC.service" 2>/dev/null; then
@@ -181,7 +199,7 @@ if [[ "${1:-}" == "--start" ]]; then
     # the console is the UI (the station runs headless): start it as its own unit and print where it is
     systemctl --user enable --now "$SVC-console.service" || echo "console not started (non-fatal): scripts/console.sh"
     echo "station up on http://127.0.0.1:$PORT (headless engine; the UI is the console)"
-    echo "console: http://127.0.0.1:$((PORT + 100))/login?token=\$(cat secrets/console-token)"
+    echo "console: http://127.0.0.1:$((PORT + 100))/login  (sign in with the token in secrets/console-token; never put it in an address)"
   else
     node company/tools/onboard.js --record station-answers failed --note "GET /api/cron did not answer within ${WAIT}s" >/dev/null 2>&1 || true
     echo "station did NOT answer GET /api/cron within ${WAIT}s; see .starnet-data/station.log" >&2; exit 1
