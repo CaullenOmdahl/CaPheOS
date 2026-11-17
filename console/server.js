@@ -205,30 +205,12 @@ function writeSecret(name, value, replace) {
   fs.chmodSync(tmp, 0o600); fs.renameSync(tmp, file); fs.chmodSync(file, 0o600);
   return file;
 }
-async function answerQuestion(id, b) {
-  const inbox = tool('inbox.js');
-  const q = questions().find(x => x.id === id); if (!q) bad('no open question ' + id, 404);
-  const keyRefusal = 'this looks like a key or a private key. Put it in the secure field instead' + (q.form.fields.some(f => f.type === 'secret') ? '' : ' ("Store the key securely")') + ': it is stored as a file and never written into a message.';
-  // the old body: {verdict: yes|no|reply, text}
-  if (!b.action && ['yes', 'no', 'reply'].includes(b.verdict)) {
-    const text = String(b.text || '').trim();
-    if (looksLikeKey(text)) bad('Not sent: ' + keyRefusal);
-    if (b.verdict === 'reply') { if (!text) bad('text is required for a reply'); return inbox.answer({ id, by: OWNER, answer: { verdict: 'reply', value: text } }); }
-    const act = q.form.actions.find(a => a.verdict === b.verdict); if (!act) bad('this question has no ' + b.verdict + ' action (' + q.form.actions.map(a => a.id).join(', ') + ')');
-    const hasReason = q.form.fields.some(f => f.id === 'reason');
-    return wrap(() => inbox.answer({ id, by: OWNER, answer: { action: act.id, values: text && hasReason ? { reason: text } : {}, note: text && !hasReason ? text : undefined } }));
-  }
-  if (!b.action) bad('verdict must be yes, no or reply, or name an action (' + q.form.actions.map(a => a.id).join(', ') + ')');
-  const act = q.form.actions.find(a => a.id === String(b.action)); if (!act) bad('no action "' + b.action + '" on ' + id);
-  const values = Object.assign({}, b.values && typeof b.values === 'object' ? b.values : {});
-  const note = b.note == null ? '' : String(b.note);
-  for (const [k, v] of Object.entries(values)) { const f = q.form.fields.find(x => x.id === k); if (f && f.type !== 'secret' && looksLikeKey(typeof v === 'string' ? v : JSON.stringify(v))) bad('Not sent: ' + (f.label || k) + ': ' + keyRefusal); }
-  if (looksLikeKey(note)) bad('Not sent: the note: ' + keyRefusal);
-  // secrets: check everything first, then write the files, then record the answer
+// the secret fields of one form in a body: checked first (nothing written), then written by writePending
+function prepareSecrets(inbox, form, values, b, act) {
   const pending = [];
-  for (const f of q.form.fields.filter(x => x.type === 'secret')) {
+  for (const f of form.fields.filter(x => x.type === 'secret')) {
     const raw = values[f.id]; delete values[f.id];
-    if (act.needs === 'none' || raw === undefined || raw === null || String(raw).trim() === '') continue;
+    if ((act && act.needs === 'none') || raw === undefined || raw === null || String(raw).trim() === '') continue;
     if (typeof raw !== 'string') bad((f.label || f.id) + ': paste the key as text');
     const value = normalizeSecret(raw);
     if (value.length > 16384) bad((f.label || f.id) + ': longer than 16 KB; is this the key?');
@@ -238,10 +220,10 @@ async function answerQuestion(id, b) {
     if (fs.existsSync(path.join(co.SECRETS_DIR, name)) && !replace) throw new HttpError(409, 'secrets/' + name + ' already exists. Tick "replace the stored key" to overwrite it.', { code: 'exists', field: f.id, name });
     pending.push({ f, name, value, replace });
   }
-  // dry run of the answer with placeholders, so a bad field never leaves a key file behind
-  const placeholder = Object.assign({}, values); for (const p of pending) placeholder[p.f.id] = { stored: 'secrets/' + (p.f.hinted ? p.f.name : p.name), chars: p.value.length };
-  const row = inbox.state()[id];
-  try { inbox.checkAnswer(row, { action: act.id, values: placeholder, note }); } catch (e) { bad(e.message); }
+  return pending;
+}
+const placeholderOf = p => ({ stored: 'secrets/' + (p.f.hinted ? p.f.name : p.name), chars: p.value.length });
+async function writePending(pending, values) {
   for (const p of pending) {
     writeSecret(p.name, p.value, p.replace);
     let validated = null, validateError;
@@ -252,6 +234,80 @@ async function answerQuestion(id, b) {
     }
     values[p.f.id] = Object.assign({ stored: 'secrets/' + p.name, chars: p.value.length, validated }, validateError ? { validateError } : {});
   }
+}
+async function answerQuestion(id, b) {
+  const inbox = tool('inbox.js');
+  const q = questions().find(x => x.id === id); if (!q) bad('no open question ' + id, 404);
+  const keyRefusal = 'this looks like a key or a private key. Put it in the secure field instead' + (q.form.fields.some(f => f.type === 'secret') ? '' : ' ("Store the key securely")') + ': it is stored as a file and never written into a message.';
+  const row = inbox.state()[id];
+  const noKeys = (form, values, note) => {
+    for (const [k, v] of Object.entries(values)) { const f = form.fields.find(x => x.id === k); if (f && f.type !== 'secret' && looksLikeKey(typeof v === 'string' ? v : JSON.stringify(v))) bad('Not sent: ' + (f.label || k) + ': ' + keyRefusal); }
+    if (looksLikeKey(note)) bad('Not sent: the note: ' + keyRefusal);
+  };
+  // the old "Store the key securely" on a request whose key is one of its questions: that question only
+  if (q.questions && !b.parts && (b.action === 'store-key' || b.store)) {
+    const kp = q.questions.find(p => p.kind === 'secret' && !p.answered);
+    if (!kp) bad('no key question left to answer in ' + id);
+    const sf = kp.form.fields.find(f => f.type === 'secret'); const v = (b.values || {})[b.store || 'key'] !== undefined ? (b.values || {})[b.store || 'key'] : (b.values || {})[sf.id];
+    b = { parts: { [kp.id]: { action: (kp.form.actions.find(a => a.verdict === 'done') || kp.form.actions[0]).id, values: { [sf.id]: v }, replace: b.replace && (b.replace === true || b.replace[b.store || 'key']) ? { [sf.id]: true } : undefined,
+      secretNames: b.secretNames && b.secretNames[b.store || 'key'] ? { [sf.id]: b.secretNames[b.store || 'key'] } : undefined } } };
+  }
+  // several questions in one request: {parts: {<question id>: {action, values, note, replace?, secretNames?}}, closeRest?}
+  if (q.questions && (b.parts || b.closeRest)) {
+    const parts = {}; const writes = [];
+    for (const [pid, raw] of Object.entries(b.parts && typeof b.parts === 'object' ? b.parts : {})) {
+      const p = q.questions.find(x => x.id === pid); if (!p) bad('no question "' + pid + '" in ' + id);
+      const r0 = raw && typeof raw === 'object' ? raw : {};
+      if (r0.verdict === 'reply') { if (looksLikeKey(r0.value)) bad('Not sent: ' + keyRefusal); parts[pid] = { verdict: 'reply', value: String(r0.value || '') }; continue; }
+      const act = p.form.actions.find(a => a.id === String(r0.action)); if (!act) bad('question ' + (q.questions.indexOf(p) + 1) + ': no action "' + r0.action + '"');
+      const values = Object.assign({}, r0.values && typeof r0.values === 'object' ? r0.values : {}); const note = r0.note == null ? '' : String(r0.note);
+      noKeys(p.form, values, note);
+      const pending = prepareSecrets(inbox, p.form, values, r0, act);
+      const ph = Object.assign({}, values); for (const x of pending) ph[x.f.id] = placeholderOf(x);
+      parts[pid] = { action: act.id, values: ph, note }; writes.push({ pid, pending, values, act, note });
+    }
+    try { inbox.computeParts(row, parts, !!b.closeRest); } catch (e) { bad(e.message); }   // dry run: a bad answer never leaves a key file behind
+    const stored = [];
+    for (const w of writes) { await writePending(w.pending, w.values); parts[w.pid] = { action: w.act.id, values: w.values, note: w.note }; stored.push(...w.pending.map(x => w.values[x.f.id])); }
+    const r = wrap(() => inbox.answerParts({ id, by: OWNER, parts, closeRest: !!b.closeRest }));
+    return Object.assign({}, r, { stored });
+  }
+  // the old body: {verdict: yes|no|reply, text}
+  if (!b.action && !b.store && ['yes', 'no', 'reply'].includes(b.verdict)) {
+    const text = String(b.text || '').trim();
+    if (looksLikeKey(text)) bad('Not sent: ' + keyRefusal);
+    if (b.verdict === 'reply') { if (!text) bad('text is required for a reply'); return inbox.answer({ id, by: OWNER, answer: { verdict: 'reply', value: text } }); }
+    if (q.questions) return wrap(() => inbox.answer({ id, by: OWNER, answer: { verdict: b.verdict, note: text || undefined } }));
+    const act = q.form.actions.find(a => a.verdict === b.verdict); if (!act) bad('this question has no ' + b.verdict + ' action (' + q.form.actions.map(a => a.id).join(', ') + ')');
+    const hasReason = q.form.fields.some(f => f.id === 'reason');
+    return wrap(() => inbox.answer({ id, by: OWNER, answer: { action: act.id, values: text && hasReason ? { reason: text } : {}, note: text && !hasReason ? text : undefined } }));
+  }
+  // storing a key inside a form that asks for more ({store: <field id>}, or a store-only action such as the old
+  // "Store the key securely"): the file is written and recorded, the question STAYS OPEN for its final submit
+  const actIn = b.action ? q.form.actions.find(a => a.id === String(b.action)) : null;
+  const storing = b.store || (!q.secretOnly && (b.action === 'store-key' || (actIn && inbox.storeOnlyAction(q.form, actIn))));
+  if (storing) {
+    const values = Object.assign({}, b.values && typeof b.values === 'object' ? b.values : {});
+    const only = b.store ? { [String(b.store)]: values[String(b.store)] } : values;
+    const form = { fields: q.form.fields.filter(f => f.type === 'secret' && f.id in only), actions: [] };
+    if (!form.fields.length) bad('no key to store: name a secret field of ' + id);
+    const pending = prepareSecrets(inbox, form, only, b, null); if (!pending.length) bad('paste the key first');
+    const out = {}; await writePending(pending, out);
+    const stored = pending.map(p => wrap(() => inbox.recordStored(Object.assign({ id, by: OWNER, field: p.f.id }, out[p.f.id]))).stored);
+    return { ok: true, id, state: 'open', stored, note: 'Key stored. The question stays open: answer the rest of it.' };
+  }
+  if (q.questions) bad('this request has ' + q.questions.length + ' questions: answer them with parts (or Reply to it as a whole)');
+  if (!b.action) bad('verdict must be yes, no or reply, or name an action (' + q.form.actions.map(a => a.id).join(', ') + ')');
+  const act = actIn; if (!act) bad('no action "' + b.action + '" on ' + id);
+  const values = Object.assign({}, b.values && typeof b.values === 'object' ? b.values : {});
+  const note = b.note == null ? '' : String(b.note);
+  noKeys(q.form, values, note);
+  // secrets: check everything first, then write the files, then record the answer
+  const pending = prepareSecrets(inbox, q.form, values, b, act);
+  // dry run of the answer with placeholders, so a bad field never leaves a key file behind
+  const placeholder = Object.assign({}, values); for (const p of pending) placeholder[p.f.id] = placeholderOf(p);
+  try { inbox.checkAnswer(row, { action: act.id, values: placeholder, note }); } catch (e) { bad(e.message); }
+  await writePending(pending, values);
   // a hinted field stored under another name than the suggestion still records the real path
   const r = wrap(() => inbox.answer({ id, by: OWNER, answer: { action: act.id, values, note } }));
   return { ok: true, id, state: r.state, a: r.a, answer: r.answer, stored: pending.map(p => values[p.f.id]) };
@@ -852,7 +908,22 @@ async function selftest() {
     r = await call('POST', '/api/questions/' + kq.legacy.id + '/answer', { action: 'store-key', values: { key: SECRET }, secretNames: { key: '../escape' } });
     check('legacy: an unsafe file name is refused', r.status === 400 && !r.text.includes(SECRET), r.json);
     r = await call('POST', '/api/questions/' + kq.legacy.id + '/answer', { action: 'store-key', values: { key: SECRET }, secretNames: { key: 'acme-api-key' } });
-    check('legacy key question: stored through the secure field', r.status === 200 && fs.existsSync(path.join(tmp, 'secrets', 'acme-api-key')) && /secrets\/acme-api-key/.test(r.json.a), r.json);
+    check('legacy key question: stored through the secure field, the request stays open for its decision', r.status === 200 && fs.existsSync(path.join(tmp, 'secrets', 'acme-api-key')) && r.json.state === 'open' && /secrets\/acme-api-key/.test(r.json.a), r.json);
+    r = await call('GET', '/api/questions'); const lq2 = (r.json.questions || []).find(x => x.id === kq.legacy.id);
+    check('legacy key question: still on Today with the key question answered', lq2 && lq2.kind === 'multi' && lq2.questions.find(p => p.kind === 'secret').answered && lq2.progress.requiredLeft === 1, lq2);
+    r = await call('POST', '/api/questions/' + kq.legacy.id + '/answer', { parts: { decision: { action: 'approve' } } });
+    check('legacy key question: Approve closes it and the answer has both parts', r.status === 200 && r.json.state === 'answered' && r.json.answer.parts.decision.verdict === 'yes' && r.json.answer.parts.key.values.key.stored === 'secrets/acme-api-key' && !r.text.includes(SECRET), r.json);
+    // a typed form with a key and a checkbox: Store keeps it open, the final submit carries both
+    const kq3 = await askCli(['--message', 'Two quick things.', '--form', JSON.stringify({ fields: [{ id: 'ok', type: 'checkbox', label: 'Emails may go to you', required: true }, { id: 'pk', type: 'secret', label: 'Ping key', name: 'ping-key-3', required: false }], actions: [{ id: 'go', label: 'Here you go', verdict: 'done' }] })]);
+    r = await call('POST', '/api/questions/' + kq3.id + '/answer', { store: 'pk', values: { pk: SECRET } });
+    check('form store: the key is written, the question stays open', r.status === 200 && r.json.state === 'open' && fs.existsSync(path.join(tmp, 'secrets', 'ping-key-3')) && !r.text.includes(SECRET), r.json);
+    r = await call('GET', '/api/questions'); const f3 = (r.json.questions || []).find(x => x.id === kq3.id);
+    check('form store: Today still has it, with the stored key', f3 && f3.stored && f3.stored.pk.stored === 'secrets/ping-key-3', f3);
+    r = await call('POST', '/api/questions/' + kq3.id + '/answer', { action: 'go', values: { ok: true } });
+    check('form store: the final submit answers it with both, the key as {stored, chars}', r.status === 200 && r.json.state === 'answered' && r.json.answer.values.ok === true && r.json.answer.values.pk.stored === 'secrets/ping-key-3' && r.json.answer.values.pk.chars === SECRET.length, r.json);
+    // the composer refuses an ask that tells the owner to run a command
+    const shellAsk = await askCli(['--message', 'Two patches need your shell.', '--details', 'patch -p1 < scratch/a.diff && node company/tools/a.js selftest']);
+    check('composer: an ask telling the owner to run a command is refused with the routes', shellAsk.ok === false && /run a command/.test(shellAsk.error || '') && /framework request/.test(shellAsk.error || ''), shellAsk);
     // snooze
     const sz = await askCli(['--message', 'Whenever you have a minute.']);
     r = await call('POST', '/api/questions/' + sz.id + '/snooze', { until: '2001-01-01T00:00:00Z' });

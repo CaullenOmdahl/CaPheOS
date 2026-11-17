@@ -4,7 +4,7 @@ description: How to ask the owner something through company/tools/inbox.js so it
 license: MIT
 metadata:
   owner: company
-  version: "1.1"
+  version: "1.2"
 ---
 
 # Owner questions
@@ -56,14 +56,46 @@ shows live as the owner drags it (`sayAt` gives whole sentences for particular v
 The owner can move it with the keyboard. An answer off the range or between steps is refused on the server. Use it
 when the owner picks a level, not when they pick between named options (that is a choice).
 
-## 3. Keys never travel in words
+## 3. One decision per question; several decisions = `--questions`
+
+Each decision gets its own answer. When you need several (four patches to approve, a plan to pick, a key), send ONE
+request with a list of questions; the owner answers each on its own, can send the ones done so far ("2 of 5 answered"),
+and the request stays open until every required one is answered or the owner closes the rest (recorded as skipped):
+
+```bash
+node company/tools/inbox.js ask --from <YOU> --message "Three things for the recorder this week." \
+  --questions '[{"id":"trial","prompt":"Start the free trial?"},
+                {"id":"plan","prompt":"Which plan after it?","kind":"choice","spec":{"options":"free:Free,hobby:Hobby"}},
+                {"id":"key","prompt":"The data service key","kind":"secret","spec":{"name":"data-api-key"},"required":false}]'
+```
+
+Each question is `{id, prompt, kind?, spec?, form?, required?}` (approve by default; any kind or a composed form). You
+hear each answer as it comes ("2 of 3 answered so far…"), and at the end the whole list: which were approved, declined
+or skipped. A single Approve/Decline whose text lists several decisions (1. … 2. … 3. …) is **refused** with the split
+ready to paste; add `--one-decision` only when the list is evidence for one decision. Storing a key never closes a
+request or a form that asks for more than the key: the key is saved, the rest stays in front of the owner.
+
+## 4. Never ask the owner to run anything
+
+The owner works only in the console. An ask that tells them to run a command (`patch -p1`, `node …`, `git …`, "in your
+shell", "run this") is refused. Route the work instead, then ask only the decision:
+
+- **A framework file** (tracked CaPheOS code, e.g. `company/tools/*.js`): a framework request through
+  `node company/tools/harness-change.js propose --kind tool --target <file> --change <the diff> --why "…" --by <YOU>`.
+  Once reviewed, apply sends the framework the request with the real diff.
+- **A company file only the owner may approve** (a locked tool: the pacer, the gates, the dispatcher, the watchers):
+  the same `propose`. It becomes one owner question on Today with the diff; when the owner presses Approve,
+  harness-change applies it (or forwards it, for a framework file). Nobody runs anything by hand.
+- **Anything else that needs a command run**: a handoff to the tools seat.
+
+## 5. Keys never travel in words
 
 Never ask the owner to paste a key into a message or the live chat; the console refuses a reply that looks like one.
 The console writes the key to `secrets/<name>` (mode 0600) and your answer says only "stored at secrets/<name> (N
 chars, validated: yes/no)". Use it by name — `co.secret('<name>')` in a tool — under the `secrets` guardrail. Never
 print, log or copy it.
 
-## 4. The answer
+## 6. The answer
 
 The owner may answer the form, Reply in their own words, Snooze it (`inbox.js list --from <YOU>` shows "snoozed until
 ..."), or Discuss it with you in a live chat. The answer reaches you as an owner message that names the question id and

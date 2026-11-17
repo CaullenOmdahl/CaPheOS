@@ -6,6 +6,7 @@ import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
 import { mdBlock } from '../md.js';
 import { idleLine } from '../idle-line.js';
+import { requestCard } from './today-requests.js';
 
 const ss = { set: (k, v) => { try { sessionStorage.setItem(k, v); } catch (_) {} } };
 const dur = sec => sec == null ? '' : sec < 60 ? sec + ' s' : sec < 3600 ? Math.floor(sec / 60) + ' min' : Math.floor(sec / 3600) + ' h ' + Math.floor(sec % 3600 / 60) + ' min';
@@ -95,7 +96,7 @@ export async function render(root, ctx) {
   document.addEventListener('capheos:live', onLive);
 
   /* ---- Needs you: each question is a form its asker composed (company/tools/inbox.js) ---- */
-  const replying = new Set(); const drafts = {};
+  const replying = new Set(); const drafts = {}; const picks = {};   // picks: a request's chosen-but-unsent answers
   let lastQs = []; let snoozedQs = [];
   async function loadNeeds() {
     let d;
@@ -123,12 +124,20 @@ export async function render(root, ctx) {
         h('span', { class: 'strong' }, questionText(q).message.slice(0, 120)), h('span', { class: 'mono muted' }, 'back ' + whenLabel(q.snoozedUntil, co.timezone)))))) : null);
   }
   function gateCard(q, fresh) {
+    if (q.questions && q.questions.length) return requestCard(q, fresh, { fieldControl, post, app, reload: loadNeeds, picks, freshIds, seat: q.askerSeat || ceoId, questionText, parseQuestion, looksLikeKeyText, snoozeUntil, whenLabel, tz: co.timezone });
     const p = parseQuestion(q);
     const qt = questionText(q);
     const form = q.form && Array.isArray(q.form.actions) && q.form.actions.length ? q.form : { fields: [], actions: [{ id: 'approve', label: 'Approve', verdict: 'yes', primary: true }, { id: 'decline', label: 'Decline', verdict: 'no' }] };
     const errEl = h('p', { class: 'err-line', role: 'status' });
     const isReplying = replying.has(q.id);
-    const controls = form.fields.map(f => fieldControl(q, f));
+    // a key inside a form that asks for more is stored on its own (Store) and the question stays open; a key-only
+    // question (q.secretOnly) is answered by its Store button as before
+    const onStore = f => q.secretOnly ? null : async (value, rep, name) => {
+      const body = { store: f.id, values: { [f.id]: value } }; if (rep) body.replace = { [f.id]: true }; if (name) body.secretNames = { [f.id]: name };
+      const r = await post('/questions/' + encodeURIComponent(q.id) + '/answer', body);
+      app.toast('Key stored securely. The question stays open: answer the rest.'); return (r.stored || [])[0];
+    };
+    const controls = form.fields.map(f => fieldControl(q, f, f.type === 'secret' ? { onStore: onStore(f), stored: (q.stored || {})[f.id] } : null));
     const busy = on => card.querySelectorAll('button, input, textarea, select').forEach(b => { b.disabled = on; });
     const send = async (body, okText) => {
       errEl.textContent = ''; busy(true);
@@ -362,7 +371,8 @@ function whenLabel(iso, tz) {
 }
 let fieldSeq = 0;
 /* one form field -> { f, el, get?, clear?, replace?, name?, onError? }. A secret's value lives only in its input. */
-function fieldControl(q, f) {
+export function fieldControl(q, f, opts) {
+  opts = opts || {};
   const uid = 'qf-' + q.id + '-' + f.id + '-' + (++fieldSeq);
   const help = f.help ? mdBlock(f.help, 'caption muted') : null;
   const lab = (text, forId) => h('label', { for: forId, class: 'label strong' }, text, f.required ? null : (/optional/i.test(text || '') ? null : h('span', { class: 'caption muted' }, ' (optional)')));
@@ -388,12 +398,30 @@ function fieldControl(q, f) {
     const nameIn = f.hinted ? h('input', { type: 'text', class: 'input mono', id: uid + '-name', value: f.name, autocomplete: 'off', spellcheck: 'false', 'aria-label': 'File name under secrets/' }) : null;
     const note = h('span', { id: uid + '-note', class: 'caption muted' }, 'Stored on the console machine at secrets/' + f.name + ' (owner-only, mode 0600). It is never shown again and never goes into a message; ' + (q.from || 'the asker') + ' only learns where it is.');
     if (nameIn) nameIn.addEventListener('input', () => { note.textContent = 'Stored at secrets/' + (nameIn.value.trim() || '…') + ' (owner-only, mode 0600). Never shown again, never sent in a message.'; });
-    const body = h('div', { class: 'stack-6 q-secret' }, lab(f.label, uid), f.provider ? h('span', { class: 'caption' }, 'Where to get it: ', mdBlock(f.provider, 'caption')) : null, help,
-      h('div', { class: 'row-8', style: 'align-items:flex-start;flex-wrap:nowrap' }, h('div', { style: 'flex:1;min-width:0' }, slot), showBtn, multiBtn),
+    // inside a form that asks for more than the key: Store writes the key now and the question STAYS OPEN; the field
+    // then reads "Stored ✓ (replace)" and the final button answers the whole question (the key as {stored, chars})
+    let storedNow = opts.stored || null;
+    const storedLine = h('div', { class: 'row-8 q-stored', style: 'align-items:center;flex-wrap:wrap' });
+    const storeErr = h('span', { class: 'err-line store-err', role: 'status' });
+    const showStored = () => {
+      fill(storedLine, storedNow ? [h('span', { class: 'label strong', 'data-stored': storedNow.stored }, 'Stored ✓'), h('span', { class: 'caption muted mono' }, storedNow.stored + (storedNow.chars ? ' (' + storedNow.chars + ' chars)' : '')),
+        Button('(replace)', { variant: 'ghost', size: 'sm', aria: 'Replace the stored key', onClick: () => { storedNow = null; replace.checked = true; showStored(); } })] : null);
+      inputRow.hidden = !!storedNow; storedLine.hidden = !storedNow;
+    };
+    const storeBtn = opts.onStore ? Button('Store', { variant: 'secondary', size: 'sm', aria: 'Store the key now (the question stays open)', onClick: async () => {
+      const v = (multi ? many : one).value; if (!v.trim()) { storeErr.textContent = 'Paste the key first.'; return; }
+      storeErr.textContent = ''; storeBtn.disabled = true;
+      try { const r = await opts.onStore(v, replace.checked, nameIn ? nameIn.value.trim() : null); one.value = ''; many.value = ''; storedNow = r || { stored: 'secrets/' + f.name }; showStored(); }
+      catch (e) { storeErr.textContent = 'Not stored: ' + humanError(e); if (e && e.status === 409) replace.parentElement.classList.add('attn'); }
+      storeBtn.disabled = false;
+    } }) : null;
+    const inputRow = h('div', { class: 'stack-6' }, h('div', { class: 'row-8', style: 'align-items:flex-start;flex-wrap:nowrap' }, h('div', { style: 'flex:1;min-width:0' }, slot), showBtn, multiBtn, storeBtn),
       nameIn ? h('label', { class: 'stack-4' }, h('span', { class: 'caption muted' }, 'File name under secrets/'), nameIn) : null,
-      h('label', { class: 'check', for: uid + '-replace' }, replace, 'Replace the stored key if secrets/' + f.name + ' already exists'), note);
-    const el = f.hinted ? h('details', { class: 'q-secret-hint' }, h('summary', { class: 'label' }, 'Asked for a key? Store it securely instead of pasting it'), body) : body;
-    return { f, el, get: () => { const v = (multi ? many : one).value; return v.trim() ? v : undefined; }, clear: () => { one.value = ''; many.value = ''; },
+      h('label', { class: 'check', for: uid + '-replace' }, replace, 'Replace the stored key if secrets/' + f.name + ' already exists'), note, storeErr);
+    const el = h('div', { class: 'stack-6 q-secret', 'data-field': f.id }, lab(f.label, uid), f.provider ? h('span', { class: 'caption' }, 'Where to get it: ', mdBlock(f.provider, 'caption')) : null, help, inputRow, storedLine);
+    showStored();
+    return { f, el, get: () => { if (storedNow) return undefined; const v = (multi ? many : one).value; return v.trim() ? v : undefined; }, clear: () => { one.value = ''; many.value = ''; },
+      isStored: () => !!storedNow,
       replace: () => replace.checked, name: nameIn ? () => nameIn.value.trim() : null,
       onError: e => { if (e && e.status === 409) replace.parentElement.classList.add('attn'); } };
   }

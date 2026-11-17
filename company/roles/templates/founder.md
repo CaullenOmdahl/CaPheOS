@@ -63,7 +63,11 @@ decisions.md.
 
 ## Handoffs
 - Read your inbox `company/work/handoffs/to-founder.md` at the start of every session.
-- You are the only seat that writes to the owner, through `node company/tools/inbox.js ask`.
+- You are the only seat that writes to the owner, through `node company/tools/inbox.js ask` (skill `owner-questions`):
+  one decision per question, several decisions as one request with `--questions`, and never a command for the owner to
+  run. The owner works only in the console: a change to a tool goes through `harness-change.js propose` (a locked tool
+  becomes an owner Approve on Today that the tool applies; a framework file becomes a framework request), anything else
+  that needs a command is a handoff to the tools seat.
 
 ## Sources
 1. The owner's founding brief (`company/CHARTER.md`)

@@ -6,7 +6,8 @@
  * names the question id comes back through company/owner/inbound.jsonl (owner-inbox.js).
  *
  *   node company/tools/inbox.js ask --from <name> --message "2-4 plain sentences" [--details "evidence, numbers"]
- *        [--about <project>] [--blocking] [--kind <shortcut> + its flags | --form '<json>']     (--q is the old form)
+ *        [--about <project>] [--blocking] [--kind <shortcut> + its flags | --form '<json>' | --questions '<json>']
+ *        [--one-decision]                                                                        (--q is the old form)
  *   node company/tools/inbox.js list [--open] [--from <name>]
  *   node company/tools/inbox.js answer --id q-0003 --a "yes: rotate it" --by Commander [--answer '<json>'] [--quiet]
  *   node company/tools/inbox.js snooze --id q-0003 --until <ISO time> --by Commander
@@ -44,6 +45,23 @@
  * --fields "id:Label,..."; non-secret fields only), number ([--unit] [--min] [--max]), date ([--min] [--max]),
  * slider (--min --max [--step] [--value] [--unit] [--say "... {value} ..."] [--min-label] [--max-label]).
  * `--spec '<json>'` gives the shortcut's fields as JSON.
+ *
+ * SEVERAL DECISIONS = SEVERAL QUESTIONS. `--questions '[{id, prompt, kind?, spec?, form?, required?}, ...]'` (at most 12)
+ * is one request whose questions the owner answers one by one (approve/decline by default, any kind or form each).
+ * Each answer is a {type:'part'} row and reaches the asker at once; the request stays open until every required
+ * question is answered or the owner closes the rest (skipped), then the answer row is {verdict:'parts', parts:{<id>:
+ * {verdict, action, values} | {skipped:true}}}. A single Approve/Decline whose text lists several decisions (1. 2. …)
+ * is refused with the split ready (`--one-decision` when the list is only evidence). An untyped old row is reshaped
+ * the same way when read (inferQuestions): each listed decision its own approve/decline, a key it asks for its own
+ * secret question — never one binary answer, never a key field that closes it.
+ * KEYS INSIDE A LARGER QUESTION: storing a key never answers a question that asks for more (secretOnly(form) is false):
+ * the console writes the file and records {type:'secret'} (recordStored); the final submit carries {stored, chars}.
+ * RECOVERY: an untyped question that was closed by storing a key alone, while its text asked for more, comes back ONCE
+ * (followUpOf) with the key shown as stored and the rest open: "You stored the key; the rest of this request still needs you".
+ * NEVER A COMMAND FOR THE OWNER: an ask whose text tells the owner to run something (patch -p1, node …, git …, "in your
+ * shell", "run this") is refused with the routes (composerCheck): a framework file = harness-change propose (a framework
+ * request with the diff); a locked company tool = the same propose, approved by the owner on Today and applied by the
+ * tool; anything else = a handoff to the tools seat.
  *
  * ANSWERS are stored as { type:'answer', id, a: <plain words>, answer: {verdict, action, values, note?}, by } and,
  * unless --quiet, delivered to the asker as an owner message (company/owner/inbound.jsonl, `re` the question id,
@@ -90,11 +108,20 @@ function readAll() {
   try { return fs.readFileSync(FILE(), 'utf8').trim().split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean); } catch (_) { return []; }
 }
 function append(row) { fs.mkdirSync(path.dirname(FILE()), { recursive: true }); fs.appendFileSync(FILE(), JSON.stringify(row) + '\n'); }
+const storedOf = v => Object.assign({ stored: String(v.stored), chars: Number(v.chars) || 0, validated: v.validated === true ? true : v.validated === false ? false : null }, v.validateError ? { validateError: String(v.validateError).slice(0, 200) } : {});
 function state() {
   const by = {};
   for (const r of readAll()) {
-    if (r.type === 'ask') by[r.id] = Object.assign({}, r);
-    if (r.type === 'answer' || r.type === 'close') Object.assign(by[r.id] = by[r.id] || {}, r);
+    if (r.type === 'ask') by[r.id] = Object.assign({}, r, { askedAt: r.at });
+    if (r.type === 'answer' || r.type === 'close') {
+      const cur = by[r.id] = by[r.id] || {};
+      if (r.type === 'answer' && cur.answer && !cur.prevAnswer) cur.prevAnswer = cur.answer;   // the first answer, for the follow-up recovery
+      if (r.type === 'answer' && r.followUp) cur.followedUp = true;
+      Object.assign(cur, r); if (r.type === 'answer') cur.answeredAt = r.at;
+    }
+    // a key stored inside a multi-field form (the question stays open) and one question of a multi-question request
+    if (r.type === 'secret') { const cur = by[r.id] = by[r.id] || {}; cur.stored = Object.assign({}, cur.stored, { [r.field]: storedOf(r) }); }
+    if (r.type === 'part') { const cur = by[r.id] = by[r.id] || {}; cur.parts = Object.assign({}, cur.parts, { [r.part]: { a: r.a, answer: r.answer, at: r.at } }); }
     if (r.type === 'reclassify') Object.assign(by[r.id] = by[r.id] || {}, { reclassified: r.note, by: r.by });
     if (r.type === 'snooze') Object.assign(by[r.id] = by[r.id] || {}, { snoozedUntil: r.until || null, snoozedAt: r.at });
   }
@@ -318,13 +345,200 @@ function secretHint(q) {
   return { name: safeSecretName(name) ? name : 'key-' + String(q.id || 'x').replace(/[^a-z0-9]/gi, '') };
 }
 /* formOf(row) — the form a question is answered with: its own, or (an old row) Approve/Decline + reason. A row that
- * asks for a key without a secret field gets an optional secret field `key` and a "Store the key securely" action. */
+ * asks for a key without a secret field gets an optional secret field `key` beside Approve/Decline. There is no
+ * "store" button that answers it: storing a key never closes a question that asks for more than the key (an untyped
+ * row is shown as a multi-question request, inferQuestions, where the key is one part and the decision another). */
 function formOf(r) {
   const form = r && r.form ? r.form : normalizeForm(expandKind('approve'));
   const hint = secretHint(r);
   if (!hint) return form;
   return { fields: form.fields.concat([{ id: 'key', type: 'secret', label: 'The key (optional: only if this is what is asked for)', name: hint.name, multiline: true, required: false, hinted: true }]).filter((f, i, all) => all.findIndex(g => g.id === f.id) === i),
-    actions: form.actions.concat([{ id: 'store-key', label: 'Store the key securely', verdict: 'done', needs: ['key'] }]) };
+    actions: form.actions };
+}
+/* secretOnly(form) — a form that asks for nothing but a key (the secret kind: key + optional note, Store / Decline).
+ * Only such a form closes when the key is stored; on any other form storing a key keeps the question open. */
+function secretOnly(form) {
+  const fs0 = (form && form.fields || []).filter(f => f.type !== 'info');
+  return fs0.some(f => f.type === 'secret') && fs0.every(f => f.type === 'secret' || (f.type === 'text' && !f.required))
+    && (form.actions || []).every(a => ['done', 'declined', 'couldnt', 'no'].includes(a.verdict));
+}
+// an action that only stores keys (needs = secret fields only): on a form that asks for more, it stores and keeps it open
+function storeOnlyAction(form, act) {
+  if (!act || !Array.isArray(act.needs) || !act.needs.length) return act && act.id === 'store-key';
+  return act.needs.every(id => (form.fields || []).some(f => f.id === id && f.type === 'secret'));
+}
+
+/* ---- several questions in one request ----
+ * A request may carry `questions`: [{id, prompt, kind?, spec?, form?, required?}], each its own little form
+ * (approve/decline by default; any kind or a composed form). The owner answers each one on its own, and may send the
+ * ones answered so far; the request stays open until every required question is answered or the owner closes the
+ * rest (skipped). The final answer is {verdict: 'parts', parts: {<id>: {verdict, action, values, note?} | {skipped:true}}}. */
+const QLIMIT = 12;
+function normalizeQuestions(list) {
+  if (!Array.isArray(list) || !list.length) throw new Error('questions must be a non-empty list');
+  if (list.length > QLIMIT) throw new Error('at most ' + QLIMIT + ' questions in one request');
+  const ids = new Set(); const names = new Set();
+  return list.map((x, i) => {
+    if (!x || typeof x !== 'object') throw new Error('question ' + (i + 1) + ' is not an object');
+    const id = String(x.id || 'q' + (i + 1)).trim();
+    if (!ID.test(id)) throw new Error('question id "' + id + '": use lowercase letters, digits, - or _ (start with a letter)');
+    if (ids.has(id)) throw new Error('two questions are called "' + id + '"'); ids.add(id);
+    const prompt = str(x.prompt || x.message, 1000, 'question ' + id + ' prompt'); if (!prompt) throw new Error('question ' + id + ' needs a prompt (one plain sentence: the one decision it asks for)');
+    const kind = x.form ? 'form' : String(x.kind || 'approve').toLowerCase();
+    const form = x.form ? normalizeForm(x.form) : normalizeForm(expandKind(kind, x.spec || x));
+    for (const f of form.fields) if (f.type === 'secret') { if (names.has(f.name)) throw new Error('two questions write secrets/' + f.name); names.add(f.name); }
+    for (const f of form.fields) if (x.hinted && f.type === 'secret') f.hinted = true;
+    return Object.assign({ id, prompt, kind, form }, x.required === false ? { required: false } : { required: true });
+  });
+}
+/* decisionItems(text) — the separate decisions in an untyped text: a numbered list (1. … 2. …, at least two), else
+ * at least two "should we / may we / do you approve" questions. null when it reads as one decision. */
+function decisionItems(text) {
+  const items = []; let cur = null;
+  for (const l of String(text || '').split('\n')) {
+    const m = /^\s{0,3}(\d{1,2})[.)]\s+(\S.*)$/.exec(l);
+    if (m && Number(m[1]) === items.length + 1) { cur = { text: m[2].trim() }; items.push(cur); continue; }
+    if (m && Number(m[1]) === 1) { if (items.length >= 2) break; items.length = 0; cur = { text: m[2].trim() }; items.push(cur); continue; }
+    if (m) { if (items.length >= 2) break; items.length = 0; cur = null; continue; }
+    if (cur && /^\s{2,}\S/.test(l)) cur.text += ' ' + l.trim(); else if (!l.trim()) cur = null;
+  }
+  if (items.length >= 2) return items.map(x => x.text);
+  const qs = sentences(String(text || '').replace(/\n+/g, ' ')).filter(x => /\?\s*$/.test(x) && /\b(should|shall|may|can) (we|i)\b|\bdo you (approve|agree|want)\b|\bapprove\b/i.test(x));
+  return qs.length >= 2 ? qs : null;
+}
+const short = (t, n) => { const s = String(t || '').replace(/[`*_]/g, '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1).replace(/\s+\S*$/, '') + '…' : s; };
+/* inferQuestions(row) — an untyped row reshaped without dropping a part: each decision it lists becomes its own
+ * approve/decline question, and a key it asks for becomes one more (optional) question with a secure field. One
+ * decision and no key: null (the plain Approve / Decline / Reply card with the full text). */
+function inferQuestions(r, opts) {
+  if (!r || r.form || r.questions || r.gate) return null;
+  const text = String(r.q || [r.message, r.details].filter(Boolean).join('\n\n'));
+  const items = decisionItems(text);
+  const hint = secretHint(r) || (opts && opts.keyName ? { name: opts.keyName } : null);
+  if (!items && !hint) return null;
+  const parts = items ? items.map((t, i) => ({ id: 'item-' + (i + 1), prompt: short(t, 600), kind: 'approve' }))
+    : [{ id: 'decision', prompt: 'The request above, as a whole', kind: 'approve' }];
+  if (hint) parts.push({ id: 'key', prompt: 'The key it asks for. Store it here, never in a message.', kind: 'secret', spec: { name: hint.name, label: 'The key', multiline: true }, hinted: true, required: false });
+  return normalizeQuestions(parts);
+}
+// an answer that only stored a key (the old "Store the key securely" button, or a done with nothing but stored keys)
+function storeOnlyAnswer(ans) {
+  if (!ans || ans.verdict === 'parts' || ans.verdict === 'reply') return false;
+  const v = ans.values || {}; const keys = Object.keys(v);
+  return ans.action === 'store-key' || (ans.verdict === 'done' && keys.length > 0 && keys.every(k => v[k] && typeof v[k] === 'object' && v[k].stored));
+}
+const FOLLOW_UP_DAYS = 30;
+const APPROVAL_WORDS = /\b(approve|approval|permission|go[- ]ahead|sign[- ]off|(may|should|shall|can) (we|i)|do you (want|agree)|patch(es)?|apply|merge|deploy|enable)\b/i;
+/* followUpOf(row) — the recovery: an untyped question that was closed by storing a key while its text asked for more
+ * comes back ONCE as a request with the key already stored and the rest still open. Never a second time (followedUp). */
+function followUpOf(x) {
+  if (!x || x.form || x.questions || x.gate || x.reclassified || x.followedUp || x.type !== 'answer' || !x.q) return null;
+  if (!storeOnlyAnswer(x.answer)) return null;
+  if (Date.now() - Date.parse(x.answeredAt || x.at) > FOLLOW_UP_DAYS * 86400e3) return null;
+  const vals = x.answer.values || {}; const fid = Object.keys(vals).find(k => vals[k] && vals[k].stored);
+  const keyName = fid ? String(vals[fid].stored).replace(/^secrets\//, '') : null;
+  const qs = inferQuestions(x, { keyName });
+  if (!qs || !qs.some(p => p.kind !== 'secret')) return null;
+  // the rest must be a real ask: several listed decisions, or approval words (a key-only question stays answered)
+  if (!qs.some(p => /^item-/.test(p.id)) && !APPROVAL_WORDS.test(String(x.q))) return null;
+  const key = qs.find(p => p.kind === 'secret');
+  return { questions: qs, prefilled: key && fid ? { [key.id]: { a: 'stored at ' + vals[fid].stored, answer: { verdict: 'done', action: 'store', values: { key: storeOf(vals[fid]) } }, at: x.answeredAt } } : {},
+    storedAt: x.answeredAt, note: 'You stored the key; the rest of this request still needs you.' };
+}
+const storeOf = v => storedOf(v);
+// the questions of a request (typed, a follow-up, or inferred from untyped text) and the ones already answered
+function questionsOf(x) {
+  if (x.questions) return { questions: x.questions, done: Object.assign({}, x.parts) };
+  const fu = followUpOf(x); if (fu) return { questions: fu.questions, done: Object.assign({}, fu.prefilled, x.parts), followUp: fu };
+  if (x.a) return null;
+  const qs = inferQuestions(x); return qs ? { questions: qs, done: Object.assign({}, x.parts), inferred: true } : null;
+}
+function plainParts(questions, all) {
+  return questions.map((p, i) => (i + 1) + '. ' + short(p.prompt, 90) + ': ' + (all[p.id] ? all[p.id].a || all[p.id].answer.verdict : 'skipped (closed without an answer)')).join('\n');
+}
+/* computeParts(row, parts, closeRest) — pure: check each answered question, say whether the request is now finished.
+ * parts = {<question id>: {action, values, note} | {verdict:'reply', value}}. Throws Error with a plain reason. */
+function computeParts(row, parts, closeRest) {
+  const qo = questionsOf(row); if (!qo) throw new Error('this question has no separate questions; answer it as a whole');
+  const results = {};
+  for (const [pid, raw] of Object.entries(parts || {})) {
+    const p = qo.questions.find(x => x.id === pid); if (!p) throw new Error('no question "' + pid + '" in this request (' + qo.questions.map(x => x.id).join(', ') + ')');
+    if (qo.done[pid]) throw new Error('question ' + (qo.questions.indexOf(p) + 1) + ' is already answered');
+    const prow = { form: p.form, stored: row.stored };
+    let st; try { st = checkAnswer(prow, raw); } catch (e) { throw new Error('question ' + (qo.questions.indexOf(p) + 1) + ': ' + e.message); }
+    results[pid] = { a: plainAnswer(prow, st).trim() || st.verdict, answer: st };
+  }
+  const all = Object.assign({}, qo.done, results);
+  const left = qo.questions.filter(p => !all[p.id]);
+  const finished = !!closeRest || !left.some(p => p.required !== false);
+  const out = { results, all, questions: qo.questions, left: left.map(p => p.id), finished, followUp: !!qo.followUp };
+  if (finished) {
+    out.final = { verdict: 'parts', parts: {} };
+    for (const p of qo.questions) out.final.parts[p.id] = all[p.id] ? Object.assign({}, all[p.id].answer) : { skipped: true };
+    out.a = plainParts(qo.questions, all);
+  } else out.a = plainParts(qo.questions.filter(p => all[p.id]), all);
+  return out;
+}
+/* answerParts({id, by, parts, closeRest, quiet}) — record the owner's answers to some questions of a request; the
+ * asker gets them at once (what is approved can start), and the whole list when the request is finished. */
+function answerParts(o) {
+  if (!isOwner(o.by)) { const e = new Error('only the Commander (the owner, the PM) can answer or close a question'); e.code = 3; throw e; }
+  const id = String(o.id || ''); const row = state()[id];
+  if (!row || !(row.type === 'ask' || followUpOf(row))) { const e = new Error('no open question ' + id); e.code = 4; throw e; }
+  if (row.reclassified) { const e = new Error('no open question ' + id); e.code = 4; throw e; }
+  const c = computeParts(row, o.parts, o.closeRest);
+  if (!Object.keys(c.results).length && !c.finished) throw new Error('answer at least one question, or close the rest');
+  const at = new Date().toISOString();
+  for (const [pid, r] of Object.entries(c.results)) append({ type: 'part', id, part: pid, at, a: r.a, answer: r.answer, by: 'Commander' });
+  let delivered = null;
+  if (c.finished) {
+    append(Object.assign({ type: 'answer', id, at, a: c.a, answer: c.final, by: 'Commander' }, c.followUp ? { followUp: true } : {}));
+    if (!o.quiet) { try { delivered = deliver(row, '\n' + c.a).id; } catch (_) {} }
+  } else if (!o.quiet && Object.keys(c.results).length) {
+    const n = c.questions.length - c.left.length;
+    try { delivered = deliver(row, '(' + n + ' of ' + c.questions.length + ' answered so far; the rest are still open)\n' + plainParts(c.questions.filter(p => c.results[p.id]), c.all)).id; } catch (_) {}
+  }
+  return { ok: true, id, state: c.finished ? 'answered' : 'open', a: c.a, answer: c.finished ? c.final : null, answered: c.questions.length - c.left.length, total: c.questions.length, left: c.left, delivered };
+}
+/* recordStored({id, field, stored, by}) — a key stored inside a multi-field form: the file exists (the console wrote it),
+ * the question stays open, and its final answer carries {stored, chars} for that field. */
+function recordStored(o) {
+  if (!isOwner(o.by)) { const e = new Error('only the owner stores keys'); e.code = 3; throw e; }
+  const row = state()[String(o.id || '')]; if (!row || row.type !== 'ask') { const e = new Error('no open question ' + o.id); e.code = 4; throw e; }
+  const f = formOf(row).fields.find(x => x.id === o.field && x.type === 'secret'); if (!f) throw new Error('no secret field "' + o.field + '" on this question');
+  const v = storedOf(o); if (!/^secrets\/[A-Za-z0-9._-]+$/.test(v.stored)) throw new Error('a key is stored by the console (secrets/<name>)');
+  append(Object.assign({ type: 'secret', id: row.id, at: new Date().toISOString(), field: f.id, by: 'Commander' }, v));
+  return { ok: true, id: row.id, state: 'open', field: f.id, stored: v };
+}
+
+/* ---- the composer's rules: one decision per question, and never a shell command for the owner ----
+ * The owner works only in the console. An ask that tells them to run something (patch -p1, node …, git …, "in your
+ * shell", "run this") is refused with the route that does it instead. */
+const SHELL_PHRASE = /\b(?:in|from|on|into|with|needs?|use) your (?:own )?(?:shell|terminal|command line)\b|\byour shell\b|(?:^|[.!?:]\s+|\n|\b(?:please|just|you can|you could|could you|can you|would you)\s+)run (?:this|these|the following|the commands?|them|it yourself)\b|\bpatch -p\d\b/i;
+const CMD = /^\s*(?:[$>#]\s*)?(?:sudo\s+)?(?:patch|node|git|npm|npx|bash|sh|systemctl|docker|chmod|chown|curl|python3?|cd|cp|mv|rm)\s+\S/;
+function shellAsk(text) {
+  const t = String(text || '');
+  const m = SHELL_PHRASE.exec(t); if (m) return m[0].trim();
+  // a command line the owner would type: inside a code fence, after a $ prompt, or a chained one (&&, <, |)
+  let fence = false;
+  for (const l of t.split('\n')) {
+    if (/^\s*```/.test(l)) { fence = !fence; continue; }
+    if (CMD.test(l) && (fence || /^\s*\$\s/.test(l) || /&&|\s<\s|\s\|\s/.test(l))) return l.trim().slice(0, 80);
+  }
+  return null;
+}
+function routeAdvice() {
+  let tools = 'the tools seat'; try { const id = co.seatFor('tools'); if (id) tools = co.nameOf(id) + ' (the tools seat)'; } catch (_) {}
+  return 'The owner works only in the console and never runs commands. Route it instead: ' +
+    '(1) a change to a FRAMEWORK file (a tracked CaPheOS file such as company/tools/*.js) is a framework request: `node company/tools/harness-change.js propose --kind tool --target <file> --change <the diff> --why "…" --by <you>`; once reviewed, apply sends the framework the real diff. ' +
+    '(2) a change to a company file only the owner may approve (a locked tool) is the same propose: it becomes one owner approval on Today, and harness-change applies it after the owner presses Approve. ' +
+    '(3) anything else that needs a command run is a handoff to ' + tools + '. Then ask the owner only the decision, in plain words.';
+}
+/* composerCheck({message, details, q, questions, form}) -> null, or a reason the ask is refused */
+function composerCheck(o) {
+  const texts = [o.message, o.details, o.q].concat((o.questions || []).map(x => x && x.prompt)).concat(((o.form && o.form.fields) || []).map(f => f && (f.text || f.help)));
+  for (const t of texts) { const hit = shellAsk(t); if (hit) return 'Not asked: it tells the owner to run a command ("' + hit + '"). ' + routeAdvice(); }
+  return null;
 }
 
 /* openQuestions() — the single definition of "an open PM question": an ask that has no answer and has not been
@@ -332,13 +546,22 @@ function formOf(r) {
 function openQuestions() {
   const now = Date.now();
   return Object.values(state())
-    .filter(x => x.type === 'ask' && !x.a && !x.reclassified)
+    .filter(x => (x.type === 'ask' && !x.a && !x.reclassified) || followUpOf(x))
     .map(x => {
       const m = messageParts(x);
       const o = { id: x.id, from: x.from, about: x.about, q: x.q, message: m.message, details: m.details, messageDerived: m.derived,
-        blocking: x.blocking, askedAt: x.at, batch: x.batch || null, kind: x.kind || (x.form ? 'form' : 'approve'), form: formOf(x) };
+        blocking: x.blocking, askedAt: x.askedAt || x.at, batch: x.batch || null, kind: x.kind || (x.form ? 'form' : 'approve'), form: formOf(x) };
       if (x.snoozedUntil && Date.parse(x.snoozedUntil) > now) o.snoozedUntil = x.snoozedUntil;
       const hint = secretHint(x); if (hint) o.secretHint = hint;
+      if (x.stored) o.stored = x.stored;
+      o.secretOnly = secretOnly(o.form);
+      const qo = questionsOf(x);
+      if (qo) {
+        o.kind = 'multi'; if (qo.inferred) o.inferred = true;
+        o.questions = qo.questions.map(p => Object.assign({}, p, { answered: qo.done[p.id] ? { a: qo.done[p.id].a, at: qo.done[p.id].at } : null }));
+        o.progress = { answered: o.questions.filter(p => p.answered).length, total: o.questions.length, requiredLeft: o.questions.filter(p => !p.answered && p.required !== false).length };
+        if (qo.followUp) o.followUp = { note: qo.followUp.note, storedAt: qo.followUp.storedAt, earlierAnswer: x.a };
+      }
       return o;
     });
 }
@@ -356,12 +579,23 @@ function ask(o) {
   const q = message ? message + (details ? '\n\n' + details : '') : String(o.q || '').trim();
   if (!q) throw new Error('--message is required (2-4 plain sentences; old form: --q)');
   if (String(q).length > LIMITS.details + LIMITS.message) throw new Error('the question is too long');
-  let kind = o.kind ? String(o.kind).toLowerCase() : null, form;
-  if (o.form) { form = normalizeForm(typeof o.form === 'string' ? JSON.parse(o.form) : o.form); kind = 'form'; }
+  let kind = o.kind ? String(o.kind).toLowerCase() : null, form, questions = null;
+  const rawForm = o.form ? (typeof o.form === 'string' ? JSON.parse(o.form) : o.form) : null;
+  const rawQs = o.questions ? (typeof o.questions === 'string' ? JSON.parse(o.questions) : o.questions) : null;
+  const refused = composerCheck({ message, details, q, questions: rawQs, form: rawForm }); if (refused) throw Object.assign(new Error(refused), { code: 'shell' });
+  if (rawQs) { questions = normalizeQuestions(rawQs); kind = 'multi'; }
+  else if (rawForm) { form = normalizeForm(rawForm); kind = 'form'; }
   else { form = normalizeForm(expandKind(kind || 'approve', o.spec)); kind = kind || 'approve'; }
+  // one decision per question: a single Approve/Decline that bundles several decisions is refused, with the split ready
+  if (kind === 'approve' && !o.gate && !o.oneDecision) {
+    const items = decisionItems(q);
+    if (items) throw Object.assign(new Error('Not asked: this is one Approve/Decline for ' + items.length + ' separate decisions, so the owner could only say yes or no to all of them. Send one question per decision with --questions (each is answered on its own), e.g. --questions \'' +
+      JSON.stringify(items.slice(0, QLIMIT).map((t, i) => ({ id: 'item-' + (i + 1), prompt: short(t, 160), kind: 'approve' }))) + '\' — or, if the list is only evidence for ONE decision, add --one-decision.'), { code: 'bundled', suggestion: items.map((t, i) => ({ id: 'item-' + (i + 1), prompt: short(t, 600), kind: 'approve' })) });
+  }
   const row = { type: 'ask', id: newId(), at: new Date().toISOString(), from: String(o.from || 'unknown'), about: String(o.about || ''), q, blocking: !!o.blocking };
   if (message) row.message = message; if (details) row.details = details;
-  if (kind !== 'approve') { row.kind = kind; row.form = form; }
+  if (questions) { row.kind = 'multi'; row.questions = questions; }
+  else if (kind !== 'approve') { row.kind = kind; row.form = form; }
   if (o.batch) row.batch = o.batch; if (o.gate) row.gate = o.gate;
   append(row);
   return { row, warnings: styleWarnings(message, details) };
@@ -382,9 +616,11 @@ function checkAnswer(row, raw) {
   const need = act.needs === 'none' ? new Set() : Array.isArray(act.needs) ? new Set(act.needs) : new Set(form.fields.filter(f => f.required).map(f => f.id));
   const vals = a.values && typeof a.values === 'object' ? a.values : {};
   const out = { verdict: act.verdict, action: act.id, values: {} };
+  const kept = (row && row.stored) || {};   // keys stored earlier inside this form (recordStored): part of the final answer
   for (const f of form.fields) {
     if (f.type === 'info') continue;
     let v = vals[f.id];
+    if ((v === undefined || v === null || v === '') && f.type === 'secret' && kept[f.id] && act.needs !== 'none') v = kept[f.id];
     const empty = v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length) || (f.type === 'checkbox' && v === false && need.has(f.id));
     if (empty) { if (need.has(f.id)) throw new Error((f.label || f.id) + ': ' + (f.type === 'checkbox' ? 'tick it' : f.type === 'secret' ? 'paste the key' : f.type === 'slider' ? 'set the slider' : 'fill it in')); continue; }
     if (act.needs === 'none' && !Array.isArray(act.needs) && f.type === 'secret') continue;   // declining never stores a key
@@ -483,8 +719,22 @@ function answer(o) {
   if (!isOwner(o.by)) { const e = new Error('only the Commander (the owner, the PM) can answer or close a question'); e.code = 3; throw e; }
   const id = String(o.id || ''); if (!id) throw new Error('--id is required');
   const q = state()[id];
-  if (!q || q.type !== 'ask') { const e = new Error('no question ' + id); e.code = 4; throw e; }
-  const structured = checkAnswer(q, o.answer || fromText(o.text, q));
+  if (!q || !(q.type === 'ask' || followUpOf(q))) { const e = new Error('no question ' + id); e.code = 4; throw e; }
+  if (o.parts || o.closeRest) return answerParts(o);
+  const qo = questionsOf(q);
+  if (qo) {   // a request with several questions: a reply answers it as a whole; a plain yes/no applies to each open approve question
+    const raw = o.answer || fromText(o.text, q);
+    if (raw && raw.verdict !== 'reply') {
+      const parts = {};
+      for (const p of qo.questions) if (!qo.done[p.id] && p.form.actions.some(a => a.verdict === raw.verdict)) parts[p.id] = { verdict: raw.verdict, values: {}, note: raw.note || (raw.values && raw.values.reason) || undefined };
+      if (!Object.keys(parts).length) throw new Error('this request has ' + qo.questions.length + ' questions; answer each one (parts)');
+      return answerParts(Object.assign({}, o, { parts }));
+    }
+  }
+  const form0 = formOf(q); const raw0 = o.answer || fromText(o.text, q);
+  const act0 = raw0 && form0.actions.find(x => x.id === raw0.action);
+  if (act0 && storeOnlyAction(form0, act0) && !secretOnly(form0)) throw new Error('storing a key does not answer this question: it asks for more than the key. Store the key (it stays open), then answer with ' + form0.actions.filter(a => !storeOnlyAction(form0, a)).map(a => a.label).join(' / '));
+  const structured = checkAnswer(q, raw0);
   const plain = plainAnswer(q, structured).trim() || structured.verdict;
   append({ type: 'answer', id, at: new Date().toISOString(), a: plain, answer: structured, by: 'Commander' });
   let delivered = null;
@@ -495,7 +745,7 @@ function answer(o) {
 function snooze(o) {
   if (!isOwner(o.by)) { const e = new Error('only the owner can snooze a question'); e.code = 3; throw e; }
   const id = String(o.id || ''); const q = state()[id];
-  if (!q || q.type !== 'ask' || q.a || q.reclassified) { const e = new Error('no open question ' + id); e.code = 4; throw e; }
+  if (!q || ((q.type !== 'ask' || q.a || q.reclassified) && !followUpOf(q))) { const e = new Error('no open question ' + id); e.code = 4; throw e; }
   const t = Date.parse(o.until);
   if (!Number.isFinite(t) || t <= Date.now() || t > Date.now() + 31 * 86400e3) throw new Error('--until must be a time in the next 30 days');
   const until = new Date(t).toISOString();
@@ -504,7 +754,8 @@ function snooze(o) {
 }
 function out(code, obj) { console.log(JSON.stringify(obj, null, 1)); process.exit(code); }
 
-module.exports = { asksForCredential, openQuestions, state, readAll, ask, answer, snooze, normalizeForm, expandKind, formOf, checkAnswer, plainAnswer, secretHint, sliderWords,
+module.exports = { secretOnly, storeOnlyAction, normalizeQuestions, decisionItems, inferQuestions, followUpOf, questionsOf, computeParts, answerParts, recordStored,
+  shellAsk, composerCheck, routeAdvice, asksForCredential, openQuestions, state, readAll, ask, answer, snooze, normalizeForm, expandKind, formOf, checkAnswer, plainAnswer, secretHint, sliderWords,
   messageParts, styleWarnings, safeSecretName, KINDS, FIELD_TYPES, VERDICTS, FILE };
 
 /* ---- selftest: a scratch inbox, owner dir and governance root ---- */
@@ -523,7 +774,8 @@ function selftest() {
     t('an old-style --q ask warns that there is no message', legacy.warnings.length === 1 && /no --message/.test(legacy.warnings[0]));
     const lq = open(legacy.row.id);
     t('an old question shows its first two sentences as the message, the rest as detail', lq.messageDerived && /^Access gate/.test(lq.message) && /binding one/.test(lq.message) && /1 Hz/.test(lq.details) && !/1 Hz/.test(lq.message), lq);
-    t('an ask with no kind is an approve form: Approve / Decline + reason, no form written', !('form' in legacy.row) && lq.kind === 'approve' && lq.form.actions.map(a => a.id).join() === 'approve,decline,store-key');
+    t('an ask with no kind is an approve form: Approve / Decline + reason, no form written, no store-key button', !('form' in legacy.row) && lq.form.actions.map(a => a.id).join() === 'approve,decline');
+    t('an untyped key ask is reshaped into two questions: the decision and the key (nothing dropped)', lq.kind === 'multi' && lq.questions.map(p => p.id + ':' + p.kind).join() === 'decision:approve,key:secret' && lq.questions[1].required === false, lq.questions);
     const long = ask({ from: 'Founder', message: 'We need ' + 'a lot of words here, '.repeat(25) + 'ok.', details: 'x' });
     t('a long message warns', long.warnings.some(w => /characters/.test(w)));
     const jar = ask({ from: 'Founder', message: 'Edit `company/tools/x.js` so q-123456 exits 0 (HTTP 401 at 50 ms).' });
@@ -588,20 +840,68 @@ function selftest() {
     const sec = ask({ from: 'Founder', message: 'The Kalshi key, please.', kind: 'secret', spec: { name: 'kalshi-api-key' } });
     r = answer({ id: sec.row.id, by, answer: { action: 'decline', note: 'not this week' } });
     t('secret: declining needs no key', r.answer.verdict === 'declined' && /will not provide/.test(r.a));
-    r = answer({ id: legacy.row.id, by, text: 'yes: go ahead' });
+    r = answer({ id: 'q-000001', by, text: 'yes: go ahead' });
     t('a legacy text answer becomes {verdict: yes, reason}', r.answer.verdict === 'yes' && r.answer.values.reason === 'go ahead' && r.a === 'yes. go ahead');
     // legacy key question: a secure field as an extra option
     const kq = ask({ from: 'Founder', q: 'Access gate (gate 2), no payment: a read-only Kalshi API key, from an account you create in your own name.' });
-    t('legacy key question: secretHint kalshi-api-key and a store-key action', (open(kq.row.id).secretHint || {}).name === 'kalshi-api-key' && open(kq.row.id).form.actions.some(a => a.id === 'store-key'));
+    t('legacy key question: secretHint kalshi-api-key, a key question in the request, no store-key action', (open(kq.row.id).secretHint || {}).name === 'kalshi-api-key' && open(kq.row.id).questions.some(p => p.id === 'key' && p.form.fields[0].name === 'kalshi-api-key') && !open(kq.row.id).form.actions.some(a => a.id === 'store-key'));
     t('legacy: "a free Pyth API key" -> pyth-api-key', (secretHint({ q: 'Access gate (gate 2), no payment, second key: a free Pyth API key.' }) || {}).name === 'pyth-api-key');
     // a question that MENTIONS a credential is not a question that ASKS for one
-    const mq = ask({ from: 'Founder', q: 'Four one-file patches need your shell. Two close blind spots, and the provider key is a symlink the watcher cannot see. Do you approve them?' });
+    const mq = ask({ from: 'Founder', q: 'Four one-file patches are ready. Two close blind spots, and the provider key is a symlink the watcher cannot see. Do you approve them?' });
     t('approve that only mentions a key: no hint, Approve/Decline only', !open(mq.row.id).secretHint && open(mq.row.id).form.actions.map(a => a.id).join() === 'approve,decline', JSON.stringify(open(mq.row.id).form.actions.map(a => a.id)));
     t('a plain approve row refuses store-key (no store-key action on it)', throws(() => answer({ id: mq.row.id, by, answer: { action: 'store-key', values: { key: { stored: 'secrets/x', chars: 5 } } } })) !== null);
     t('asksForCredential: asks vs mentions', asksForCredential('Could you create an account and paste its API key?') && asksForCredential('Gate 2: a free Pyth API key.') && !asksForCredential('The key is a symlink the watcher cannot see.') && !asksForCredential('Reads the password policy and approves.') && asksForCredential('We need a read-only exchange API key.'));
-    t('store-key needs the key', /paste the key/.test(throws(() => answer({ id: kq.row.id, by, answer: { action: 'store-key' } }))));
-    r = answer({ id: kq.row.id, by, answer: { action: 'store-key', values: { key: { stored: 'secrets/kalshi-api-key', chars: 40 } } } });
-    t('legacy key question takes a stored secret (validated: not checked)', /stored at secrets\/kalshi-api-key \(40 chars, validated: not checked\)/.test(r.a), r.a);
+    t('the key question needs the key', /paste the key/.test(throws(() => answer({ id: kq.row.id, by, parts: { key: { action: 'store' } } }))));
+    r = answer({ id: kq.row.id, by, parts: { key: { action: 'store', values: { key: { stored: 'secrets/kalshi-api-key', chars: 40 } } } } });
+    t('storing the key answers only the key question: the request stays open, 1 of 2', r.state === 'open' && r.answered === 1 && open(kq.row.id) && open(kq.row.id).progress.answered === 1 && open(kq.row.id).questions[1].answered, r);
+    r = answer({ id: kq.row.id, by, parts: { decision: { action: 'approve' } } });
+    t('approving closes it; the answer has both (approve + {stored, chars})', r.state === 'answered' && !open(kq.row.id) && r.answer.verdict === 'parts' && r.answer.parts.decision.verdict === 'yes' && r.answer.parts.key.values.key.stored === 'secrets/kalshi-api-key' && r.answer.parts.key.values.key.chars === 40 && /stored at secrets\/kalshi-api-key \(40 chars, validated: not checked\)/.test(r.a), r);
+    // several questions in one request: each answered on its own, partial sends, the request open until all are done
+    const three = ask({ from: 'Founder', message: 'Three things for the recorder this week.', questions: [
+      { id: 'trial', prompt: 'Start the free trial?', kind: 'approve' },
+      { id: 'plan', prompt: 'Which plan after it?', kind: 'choice', spec: { options: 'free:Free,hobby:Hobby' } },
+      { id: 'cap', prompt: 'Monthly cap?', kind: 'number', spec: { unit: 'USD', min: 0, max: 50 } }] });
+    t('a request with 3 questions opens as kind multi, 0 of 3', open(three.row.id).kind === 'multi' && open(three.row.id).progress.total === 3 && open(three.row.id).progress.answered === 0);
+    r = answer({ id: three.row.id, by, parts: { trial: { action: 'approve' }, plan: { action: 'choose', values: { choice: 'hobby' } } } });
+    t('2 of 3 sent: still open with one left; the asker hears the two now', r.state === 'open' && r.left.join() === 'cap' && open(three.row.id).progress.requiredLeft === 1 && require('./owner-inbox.js').messages().some(m => m.re === three.row.id && /2 of 3 answered so far/.test(m.text)), r);
+    t('an answered question cannot be answered again', /already answered/.test(throws(() => answer({ id: three.row.id, by, parts: { trial: { action: 'decline' } } }))));
+    r = answer({ id: three.row.id, by, parts: { cap: { action: 'send', values: { value: 20 } } } });
+    t('the last one closes it; the record has all three', r.state === 'answered' && !open(three.row.id) && r.answer.parts.trial.verdict === 'yes' && r.answer.parts.plan.values.choice === 'hobby' && r.answer.parts.cap.values.value === 20 && /1\. Start the free trial\?: yes/.test(r.a) && state()[three.row.id].answer.verdict === 'parts', r);
+    const two = ask({ from: 'Founder', message: 'Two things.', questions: [{ id: 'a', prompt: 'Do A?' }, { id: 'b', prompt: 'Do B?' }] });
+    answer({ id: two.row.id, by, parts: { a: { action: 'decline' } } });
+    r = answer({ id: two.row.id, by, closeRest: true });
+    t('closing the rest: the unanswered ones are recorded as skipped', r.state === 'answered' && r.answer.parts.a.verdict === 'no' && r.answer.parts.b.skipped === true && /skipped/.test(r.a), r);
+    // the composer: one decision per question, never a shell command for the owner
+    const bundled = throws(() => ask({ from: 'Founder', message: 'Four fixes are ready. Approve them?', details: '1. Fix the watcher.\n2. Fix the dispatcher.\n3. Fix the budget.' }));
+    t('composer: a single approve that bundles 3 numbered decisions is refused with a --questions split', /3 separate decisions/.test(bundled || '') && /--questions/.test(bundled), bundled);
+    t('composer: --one-decision lets a numbered evidence list through', !!ask({ from: 'Founder', message: 'Ship it?', details: '1. tests green\n2. reviewed', oneDecision: true }).row.id);
+    for (const [label, txt] of [['patch -p1', 'Apply it with `patch -p1 < scratch/x.diff`, please.'], ['node in a fence', 'Approve?\n\n```\nnode company/tools/dispatch.js --selftest\n```'], ['git chained', 'Then:\ngit pull && git push'], ['in your shell', 'This needs a minute in your shell.'], ['run this', 'Could you run this for me? It is quick.']]) {
+      const e = throws(() => ask({ from: 'Founder', message: 'One quick thing.', details: txt }));
+      t('composer refuses a shell ask (' + label + ') and names the routes', /tells the owner to run a command/.test(e || '') && /framework request/.test(e) && /harness-change applies it after the owner presses Approve/.test(e) && /handoff to/.test(e), e);
+    }
+    t('composer: a question prompt with a command is refused too', /run a command/.test(throws(() => ask({ from: 'F', message: 'Two.', questions: [{ prompt: 'OK to run: patch -p1 < a.diff' }, { prompt: 'B?' }] })) || ''));
+    t('composer: evidence that mentions a tool in prose is fine', !!ask({ from: 'Founder', message: 'May we keep the watcher on?', details: 'I ran the selftest of locked-watch.js: 16 checks passed.' }).row.id);
+    // a typed form with a key and more: storing the key keeps it open; the final answer carries both
+    const kf = ask({ from: 'Founder', message: 'Two quick things.', form: { fields: [{ id: 'ok', type: 'checkbox', label: 'Emails may go to you', required: true }, { id: 'pk', type: 'secret', label: 'Ping key', name: 'ping-key', required: false }], actions: [{ id: 'store', label: 'Store the key', verdict: 'done', needs: ['pk'] }, { id: 'go', label: 'Here you go', verdict: 'done' }] } });
+    t('form: a store-only action on a form that asks for more does not answer it', /does not answer this question/.test(throws(() => answer({ id: kf.row.id, by, answer: { action: 'store', values: { pk: { stored: 'secrets/ping-key', chars: 9 } } } })) || '') && !open(kf.row.id).secretOnly);
+    recordStored({ id: kf.row.id, by, field: 'pk', stored: 'secrets/ping-key', chars: 9, validated: null });
+    t('form: a key stored inside it is recorded and the question stays open', open(kf.row.id) && open(kf.row.id).stored.pk.chars === 9);
+    r = answer({ id: kf.row.id, by, answer: { action: 'go', values: { ok: true } } });
+    t('form: the final submit carries every part, the key as {stored, chars} only', r.answer.values.ok === true && r.answer.values.pk.stored === 'secrets/ping-key' && r.answer.values.pk.chars === 9, r.answer);
+    t('a secret-only question is secretOnly (Store may close it)', secretOnly(open(sec.row.id) ? open(sec.row.id).form : normalizeForm(expandKind('secret', { name: 'x-key' }))));
+    // the recovery: an untyped question closed by storing a key comes back once for the rest
+    const stuck = ask({ from: 'Founder', q: 'Four patches are ready, all measured on copies.\n\n1. harness-change.js: carry the real diff.\n2. locked-watch.js: baseline symlinks.\n3. default-branch-watch.js: say 0 watched.\n4. dispatch.js: WAITING until a due date.', oneDecision: true });
+    fs.appendFileSync(FILE(), JSON.stringify({ type: 'answer', id: stuck.row.id, at: new Date().toISOString(), a: 'The key: stored at secrets/minimax-api-key (125 chars).', answer: { verdict: 'done', action: 'store-key', values: { key: { stored: 'secrets/minimax-api-key', chars: 125, validated: null } } }, by: 'Commander' }) + '\n');
+    const fu = open(stuck.row.id);
+    t('recovery: the store-only answer re-opens the rest: 4 approve questions + the key already stored', fu && fu.followUp && /You stored the key; the rest of this request still needs you/.test(fu.followUp.note) && fu.questions.filter(p => p.kind === 'approve').length === 4 && fu.questions.find(p => p.kind === 'secret').answered && fu.progress.answered === 1, fu && fu.questions);
+    r = answer({ id: stuck.row.id, by, parts: { 'item-1': { action: 'approve' }, 'item-2': { action: 'approve' }, 'item-3': { action: 'decline' } } });
+    t('recovery: a partial answer keeps it open', r.state === 'open' && open(stuck.row.id).progress.requiredLeft === 1);
+    r = answer({ id: stuck.row.id, by, parts: { 'item-4': { action: 'approve' } } });
+    t('recovery: finished, the record has every item and the key', r.state === 'answered' && r.answer.parts['item-3'].verdict === 'no' && r.answer.parts.key.values.key.stored === 'secrets/minimax-api-key', r.answer);
+    t('recovery: never twice', !open(stuck.row.id) && !followUpOf(state()[stuck.row.id]));
+    const kOnly = ask({ from: 'Founder', q: 'Gate 2: a free Pyth API key, please.' });
+    fs.appendFileSync(FILE(), JSON.stringify({ type: 'answer', id: kOnly.row.id, at: new Date().toISOString(), a: 'stored', answer: { verdict: 'done', action: 'store-key', values: { key: { stored: 'secrets/pyth-api-key', chars: 30 } } }, by: 'Commander' }) + '\n');
+    t('recovery: a key-only question answered by its key stays answered', !open(kOnly.row.id));
     // snooze
     const sz = ask({ from: 'Founder', message: 'Later is fine.' });
     t('snooze in the past refused', /next 30 days/.test(throws(() => snooze({ id: sz.row.id, by, until: '2020-01-01T00:00:00Z' }))));
@@ -638,9 +938,11 @@ if (a.cmd === 'ask') {
     step: 'step', value: 'value', say: 'say', 'min-label': 'minLabel', 'max-label': 'maxLabel' };
   for (const [f, k] of Object.entries(flag)) if (a[f] !== undefined) spec[k] = a[f];
   try {
-    const { row, warnings } = ask({ from: a.from, about: a.about, message: a.message, details: a.details, q: a.q, blocking: a.blocking, kind: a.kind || spec.kind, spec, form });
-    out(0, Object.assign({ ok: true, id: row.id, kind: row.kind || 'approve', status: 'open', note: 'the owner answers on Today in the console; the answer comes back to you as an owner message naming ' + row.id }, warnings.length ? { warnings } : {}));
-  } catch (e) { out(2, { ok: false, error: e.message }); }
+    let questions = null;
+    if (a.questions && a.questions !== true) { try { questions = JSON.parse(a.questions); } catch (e) { out(2, { ok: false, error: '--questions is not JSON: ' + e.message }); } }
+    const { row, warnings } = ask({ from: a.from, about: a.about, message: a.message, details: a.details, q: a.q, blocking: a.blocking, kind: a.kind || spec.kind, spec, form, questions, oneDecision: !!a['one-decision'] });
+    out(0, Object.assign({ ok: true, id: row.id, kind: row.kind || 'approve', status: 'open', note: 'the owner answers on Today in the console' + (row.questions ? ', one question at a time; each answer' : '; the answer') + ' comes back to you as an owner message naming ' + row.id }, warnings.length ? { warnings } : {}));
+  } catch (e) { out(2, Object.assign({ ok: false, error: e.message }, e.code === 'bundled' ? { suggestion: e.suggestion } : {}, e.code ? { code: e.code } : {})); }
 }
 if (a.cmd === 'list') {
   const now = Date.now();

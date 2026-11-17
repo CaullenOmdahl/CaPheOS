@@ -33,6 +33,11 @@ defect, not diligence.
 
 Asked through `node company/tools/inbox.js ask` (skill `owner-questions`). It shows on the owner's Today screen the moment
 it is asked, so ask when the decision is ready, one decision per question, and retire a question you replace.
+Several decisions at once go in ONE request with `--questions` (each answered on its own; a single Approve/Decline that
+lists several decisions is refused). **Never ask the owner to run a command** (`patch -p1`, `node …`, `git …`, "in
+your shell"): the ask is refused. A framework file is a framework request (`harness-change.js propose`); a locked
+company tool is the same propose, which the owner approves on Today and harness-change applies; anything else is a
+handoff to the tools seat. Details: skill `owner-questions`.
 
 **Say it like a person.** `--message` is 2-4 conversational sentences: what you need, why, and what happens if the
 owner says no. Evidence, numbers, ids, file paths and alternatives go in `--details`, which the console folds under

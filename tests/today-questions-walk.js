@@ -53,7 +53,7 @@ const SECRET = 'mock-secret-value-never-echoed-0123456789';
     check('Today shows the typed question cards', loaded, await js(`document.querySelectorAll('.gate').length`));
     await shot('today-questions');
     const kinds = await js(`[...document.querySelectorAll('.gate')].map(g => g.dataset.kind)`);
-    for (const k of ['approve', 'secret', 'choice', 'text', 'link', 'account', 'number', 'date', 'form']) check('a ' + k + ' card renders', (kinds || []).includes(k), kinds);
+    for (const k of ['approve', 'secret', 'choice', 'text', 'link', 'account', 'number', 'date', 'form', 'multi']) check('a ' + k + ' card renders', (kinds || []).includes(k), kinds);
     // every card: Reply (a textarea), Snooze, Discuss
     const common = await js(`[...document.querySelectorAll('.gate')].every(g => { const b = [...g.querySelectorAll('button, a')].map(x => x.textContent); return b.includes('Reply') && b.includes('Snooze') && b.includes('Discuss'); })`);
     check('every card has Reply, Snooze and Discuss', common);
@@ -67,9 +67,42 @@ const SECRET = 'mock-secret-value-never-echoed-0123456789';
     await js(`(() => { const g = ${card('q-000111')}; [...g.querySelectorAll('button')].find(x => x.textContent === 'Hide').click(); return 1; })()`);
     check('secret: Show / Hide toggles the field', shown === 'text' && await js(`${card('q-000111')}.querySelector('input.secret-input').type`) === 'password');
     // legacy dense question: first two sentences, detail collapsed, a secure field offered with a suggested name
-    const leg = await js(`(() => { const g = ${card('q-000120')}; const d = g.querySelector('details.q-details'); const hint = g.querySelector('details.q-secret-hint'); return { msg: g.querySelector('.q-message').innerText, detail: d && d.textContent, hint: hint && hint.querySelector('input[aria-label^="File name"]').value, actions: [...g.querySelectorAll('button')].map(b => b.textContent) }; })()`);
+    const leg = await js(`(() => { const g = ${card('q-000120')}; const d = g.querySelector('details.q-details'); const key = g.querySelector('[data-part="key"]'); const dec = g.querySelector('[data-part="decision"]'); return { msg: g.querySelector('.q-message').innerText, detail: d && d.textContent, name: key && key.querySelector('input[aria-label^="File name"]').value, store: key && [...key.querySelectorAll('button')].some(b => b.textContent === 'Store'), decision: dec && [...dec.querySelectorAll('button')].map(b => b.textContent), actions: [...g.querySelectorAll('button')].map(b => b.textContent) }; })()`);
     check('legacy: the first two sentences are the message, the rest is detail', leg && /binding one/.test(leg.msg) && !/1 Hz/.test(leg.msg) && /1 Hz/.test(leg.detail), leg);
-    check('legacy key question: a secure field with a suggested name and a "Store the key securely" action', leg && leg.hint === 'example-api-key' && leg.actions.includes('Approve') && leg.actions.includes('Store the key securely'), leg);
+    check('legacy key question: reshaped into a decision (Approve/Decline) AND a key question with a suggested name — no single secret card, no closing "Store the key securely"', leg && leg.name === 'example-api-key' && leg.store && leg.decision.includes('Approve') && leg.decision.includes('Decline') && !leg.actions.includes('Store the key securely'), leg);
+    // a key + approve form: Store keeps the card (Stored ✓ (replace)), Approve closes it, the answer has both
+    await js(`(() => { const g = ${card('q-000122')}; const i = g.querySelector('input.secret-input'); i.value = ${JSON.stringify(SECRET)}; [...g.querySelectorAll('button')].find(x => x.textContent === 'Store').click(); return 1; })()`);
+    const st1 = await until(() => js(`(() => { const g = ${card('q-000122')}; return g && g.querySelector('[data-stored]') ? { text: g.querySelector('.q-stored').innerText, input: !!g.querySelector('input.secret-input') && g.querySelector('input.secret-input').value } : null; })()`), 4000);
+    check('key + approve form: Store keeps the card open and the field reads "Stored ✓ (replace)"', st1 && /Stored ✓/.test(st1.text) && /\(replace\)/.test(st1.text) && /secrets\/example-ping-key-2/.test(st1.text) && st1.input === '', st1);
+    await js(`(() => { const g = ${card('q-000122')}; g.querySelector('input[type=checkbox]:not([id$="-replace"])').click(); [...g.querySelectorAll('button')].find(x => x.textContent === 'Approve').click(); return 1; })()`);
+    check('key + approve form: Approve closes it', await until(() => js(`!${card('q-000122')}`), 5000));
+    const ans122 = await js(`fetch('/api/questions/answered').then(r => r.json()).then(d => (d.answered.find(a => a.id === 'q-000122') || {}).answerDetail)`);
+    check('key + approve form: the answer has both parts, the key only as {stored, chars}', ans122 && ans122.verdict === 'yes' && ans122.values.ok === true && ans122.values.pk.stored === 'secrets/example-ping-key-2' && ans122.values.pk.chars === SECRET.length && !JSON.stringify(ans122).includes(SECRET), ans122);
+    // a request of 3 questions: answer 2, send them, the card stays with 1 left; answer it, it closes with all 3
+    const btn = (id, part, label) => `[...${card(id)}.querySelector('[data-part="${part}"]').querySelectorAll('button')].find(x => x.textContent === '${label}')`;
+    const r121 = await js(`(() => { const g = ${card('q-000121')}; return g && { parts: g.querySelectorAll('.q-part').length, progress: g.querySelector('[data-progress]').textContent }; })()`);
+    check('a 3-question request renders three numbered sub-cards, 0 of 3 answered', r121 && r121.parts === 3 && /0 of 3 answered/.test(r121.progress), r121);
+    await js(`(() => { ${btn('q-000121', 'trial', 'Approve')}.click(); ${card('q-000121')}.querySelector('[data-part="plan"] input[value="hobby"]').click(); ${btn('q-000121', 'plan', 'Choose')}.click(); return 1; })()`);
+    const picked = await js(`(() => { const g = ${card('q-000121')}; return { progress: g.querySelector('[data-progress]').textContent, send: [...g.querySelectorAll('button')].map(b => b.textContent).find(t => /^Send/.test(t)) }; })()`);
+    check('picking answers: "2 picked, not sent yet" and "Send 2 answered"', /2 picked/.test(picked.progress) && picked.send === 'Send 2 answered', picked);
+    await js(`(() => { [...${card('q-000121')}.querySelectorAll('button')].find(b => b.textContent === 'Send 2 answered').click(); return 1; })()`);
+    const part2 = await until(() => js(`(() => { const g = ${card('q-000121')}; return g && /2 of 3 answered/.test(g.querySelector('[data-progress]').textContent) ? { answered: g.querySelectorAll('.q-part.answered').length, left: [...g.querySelectorAll('.q-part:not(.answered)')].map(x => x.dataset.part) } : null; })()`), 5000);
+    check('partial send: the card stays with 1 left (2 of 3 answered)', part2 && part2.answered === 2 && part2.left.join() === 'post', part2);
+    await js(`(() => { ${btn('q-000121', 'post', 'Decline')}.click(); [...${card('q-000121')}.querySelectorAll('button')].find(b => b.textContent === 'Send 1 answered').click(); return 1; })()`);
+    check('the last answer closes the request', await until(() => js(`!${card('q-000121')}`), 5000));
+    const ans121 = await js(`fetch('/api/questions/answered').then(r => r.json()).then(d => (d.answered.find(a => a.id === 'q-000121') || {}))`);
+    check('the asker\'s record has all 3, each with its own result', ans121.answerDetail && ans121.answerDetail.verdict === 'parts' && ans121.answerDetail.parts.trial.verdict === 'yes' && ans121.answerDetail.parts.plan.values.choice === 'hobby' && ans121.answerDetail.parts.post.verdict === 'no' && /1\. .*: yes/.test(ans121.answer) && /3\. .*: no/.test(ans121.answer), ans121);
+    // the legacy key question: store the key (stays), approve (closes), both in the answer
+    await js(`(() => { const k = ${card('q-000120')}.querySelector('[data-part="key"]'); k.querySelector('.secret-input').value = ${JSON.stringify(SECRET)}; [...k.querySelectorAll('button')].find(x => x.textContent === 'Store').click(); return 1; })()`);
+    const legStored = await until(() => js(`(() => { const g = ${card('q-000120')}; return g && g.querySelector('[data-part="key"].answered') ? g.querySelector('[data-progress]').textContent : null; })()`), 5000);
+    check('legacy key question: storing the key answers only the key question; the card stays', legStored && /1 of 2 answered/.test(legStored), legStored);
+    await js(`(() => { ${btn('q-000120', 'decision', 'Approve')}.click(); [...${card('q-000120')}.querySelectorAll('button')].find(b => b.textContent === 'Send 1 answered').click(); return 1; })()`);
+    check('legacy key question: Approve closes it', await until(() => js(`!${card('q-000120')}`), 5000));
+    const ans120 = await js(`fetch('/api/questions/answered').then(r => r.json()).then(d => (d.answered.find(a => a.id === 'q-000120') || {}).answerDetail)`);
+    check('legacy key question: the answer has the approval and the key {stored, chars}', ans120 && ans120.parts.decision.verdict === 'yes' && ans120.parts.key.values.key.stored === 'secrets/example-api-key' && !JSON.stringify(ans120).includes(SECRET), ans120);
+    // the recovery card: a request closed by a key alone comes back for the rest
+    const fu = await js(`(() => { const g = ${card('q-000123')}; return g && { note: (g.querySelector('.q-followup') || {}).textContent, approves: [...g.querySelectorAll('.q-part:not(.answered)')].length, keyDone: !!g.querySelector('[data-part="key"].answered'), open: g.querySelector('details.q-details').open }; })()`);
+    check('recovery: "You stored the key; the rest of this request still needs you", four decisions open, the key shown as done, the full text open', fu && /You stored the key; the rest of this request still needs you/.test(fu.note) && fu.approves === 4 && fu.keyDone && fu.open, fu);
     // choice, link, number, date, account, form
     const ch = await js(`(() => { const g = ${card('q-000112')}; const r = [...g.querySelectorAll('input[type=radio]')]; return { n: r.length, checked: (r.find(x => x.checked) || {}).value, rec: g.innerText.includes('Recommended'), other: !!g.querySelector('input[aria-label="Your own answer"]') }; })()`);
     check('choice: radio options, the recommended one picked and tagged, an "other" box', ch && ch.n === 4 && ch.checked === 'free' && ch.rec && ch.other, ch);
@@ -81,7 +114,7 @@ const SECRET = 'mock-secret-value-never-echoed-0123456789';
     check('account: the link plus its non-secret fields', await js(`(() => { const g = ${card('q-000115')}; return !!g.querySelector('a[target=_blank]') && g.innerText.includes('The sign-in email') && g.querySelectorAll('input[type=text]').length >= 2; })()`));
     check('an asker-composed form: info, link, text, secret, checkbox and its own named actions', await js(`(() => { const g = ${card('q-000118')}; const b = [...g.querySelectorAll('button')].map(x => x.textContent); return g.innerText.includes('It costs') && !!g.querySelector('input.secret-input') && !!g.querySelector('input[type=checkbox]') && b.includes('Here you go') && b.includes('Use another free service instead'); })()`));
     await js(`(() => { [...${card('q-000118')}.querySelectorAll('button')].find(x => x.textContent === 'Here you go').click(); return 1; })()`);
-    const ferr = await until(() => js(`${card('q-000118')}.querySelector('.err-line').textContent`), 4000);
+    const ferr = await until(() => js(`${card('q-000118')}.querySelector('.err-line:not(.store-err)').textContent`), 4000);
     check('a form with a required field left empty says which one', /Not recorded: .*(Sign up|Sign-in email|tick it|fill it in)/.test(ferr || ''), ferr);
     // slider (the pacer's cutoff question): a range input with the live value in plain words, moved by the keyboard
     const sl0 = await js(`(() => { const g = ${card('q-000119')}; const r = [...g.querySelectorAll('input[type=range]')]; const o = g.querySelector('output.q-say'); return { n: r.length, v: r[0] && r[0].value, say: o && o.textContent, vt: r[0] && r[0].getAttribute('aria-valuetext'), label: !!g.querySelector('label[for="' + (r[0] && r[0].id) + '"]'), ends: g.innerText.includes('Spread evenly') && g.innerText.includes('Use it now'), buttons: [...g.querySelectorAll('button')].map(b => b.textContent) }; })()`);

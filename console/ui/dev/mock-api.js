@@ -32,7 +32,7 @@ function typedFixtures() {
   const legacy = { id: 'q-000120', from: 'Founder', about: '', blocking: false, askedAt: ago(300), batch: null,
     q: 'Access gate (gate 2), no payment: a read-only Example API key, from an account you create in your own name. Why it is the binding one: the websocket rejects anonymous connections (HTTP/1.1 401 measured today), so sub-second book data is closed to us. A key buys about 1 Hz quotes.' };
   const lp = (() => { const ss = legacy.q.split(/(?<=[.!?])\s+(?=[A-Z])/); return { message: ss.slice(0, 2).join(' '), details: ss.slice(2).join(' ') }; })();
-  Object.assign(legacy, lp, { messageDerived: true, kind: 'approve', form: INBOX.formOf(legacy), secretHint: INBOX.secretHint(legacy), askerSeat: 'agent' });
+  Object.assign(legacy, lp, { messageDerived: true, kind: 'approve', secretHint: INBOX.secretHint(legacy), askerSeat: 'agent' });
   return [
     mk('q-000111', 20, { kind: 'secret', message: 'Could you make a read-only Example Exchange key and paste it here? It lets the recorder see the live order book. If you would rather not, we keep using the slower public feed.', details: 'Anonymous websocket: HTTP 401. Public REST: 0.8 snapshots/s per series.', spec: { name: 'example-exchange-key', label: 'Example Exchange API key', provider: 'example.com > Account > API keys (read-only)' } }),
     mk('q-000112', 25, { kind: 'choice', message: 'Which plan should we start with?', spec: { options: 'free:The free tier,pro:Pro at $20 a month,later:Ask me in a month', recommended: 'free', allowOther: true } }),
@@ -53,8 +53,36 @@ function typedFixtures() {
         { id: 'usenow', type: 'slider', label: 'Spread evenly or use it now', min: 0, max: 100, step: 10, value: 0, unit: '%', say: '{value}% of the way from an even share each day to using it all now', sayAt: { 0: 'Spread evenly: an even share of the week each day', 100: 'Use it now: routines may go up to the weekly stop today' }, minLabel: 'Spread evenly', maxLabel: 'Use it now', required: false }],
         actions: [{ id: 'set', label: 'Set', verdict: 'submit', primary: true }, { id: 'keep', label: 'Keep paused', verdict: 'no', needs: 'none' }, { id: 'other', label: 'Use another model meanwhile', verdict: 'done', needs: 'none' }] } }),
     legacy,
+    // several questions in one request: each answered on its own (inbox.js questions)
+    Object.assign(mk('q-000121', 10, { kind: 'approve', message: 'Three decisions for the recorder this week. Answer each one on its own.' }), { kind: 'multi', form: undefined,
+      questions: INBOX.normalizeQuestions([{ id: 'trial', prompt: 'Start the free trial of the data service?', kind: 'approve' },
+        { id: 'plan', prompt: 'Which plan after the trial?', kind: 'choice', spec: { options: 'free:Free,hobby:Hobby at $5' } },
+        { id: 'post', prompt: 'May the weekly post go out on Friday?', kind: 'approve' }]) }),
+    // a typed form with a key and an approval: Store keeps it open, Approve answers it with both
+    mk('q-000122', 12, { message: 'Two things for the alarm: the ping key, and your OK to send alerts.', form: { fields: [{ id: 'ok', type: 'checkbox', label: 'Alert emails may go to you', required: true },
+      { id: 'pk', type: 'secret', label: 'Ping key', name: 'example-ping-key-2', required: false }], actions: [{ id: 'approve', label: 'Approve', verdict: 'yes' }, { id: 'decline', label: 'Decline', verdict: 'no', needs: 'none' }] } }),
+    // the recovery: an untyped request of four decisions that was closed by storing a key alone comes back once
+    (() => { const q = 'Four one-file patches are ready, each measured on a copy.\n\n1. harness-change.js: a framework request carries its real diff.\n2. locked-watch.js: a symlink in a watched folder is baselined.\n3. default-branch-watch.js: an empty watch list says 0 watched.\n4. dispatch.js: a step with a due date waits instead of paging.';
+      const mp = INBOX.messageParts({ q });
+      return { type: 'answer', id: 'q-000123', from: 'Founder', about: 'four patches', blocking: false, askedAt: ago(90), at: ago(80), answeredAt: ago(80), batch: null, q, message: mp.message, details: mp.details, messageDerived: true, askerSeat: 'agent',
+        a: 'The key: stored at secrets/example-minimax-key (40 chars).', answer: { verdict: 'done', action: 'store-key', values: { key: { stored: 'secrets/example-minimax-key', chars: 40, validated: null } } } }; })(),
   ];
 }
+// as inbox.js openQuestions(): a request's questions (typed, inferred from untyped text, or a follow-up) and progress
+function present(q) {
+  const o = Object.assign({}, q); if (!o.form) o.form = INBOX.formOf(q);
+  o.secretOnly = INBOX.secretOnly(o.form);
+  const qo = INBOX.questionsOf(Object.assign({ type: 'ask' }, q));
+  if (qo) {
+    o.kind = 'multi'; if (qo.inferred) o.inferred = true;
+    o.questions = qo.questions.map(p => Object.assign({}, p, { answered: qo.done[p.id] ? { a: qo.done[p.id].a, at: qo.done[p.id].at } : null }));
+    o.progress = { answered: o.questions.filter(p => p.answered).length, total: o.questions.length, requiredLeft: o.questions.filter(p => !p.answered && p.required !== false).length };
+    if (qo.followUp) o.followUp = { note: qo.followUp.note, storedAt: qo.followUp.storedAt, earlierAnswer: q.a };
+  }
+  return o;
+}
+const placeholderSecrets = (form, values, b) => { const out = Object.assign({}, values); for (const f of form.fields.filter(x => x.type === 'secret')) { const v = out[f.id]; if (v === undefined || typeof v === 'object') continue;
+  const name = f.hinted && b && b.secretNames && b.secretNames[f.id] ? b.secretNames[f.id] : f.name; out[f.id] = { stored: 'secrets/' + name, chars: String(v).trim().length, validated: null }; S.mockStored = (S.mockStored || 0) + 1; } return out; };
 
 const S = {
   limits: { level: 'approve',
@@ -206,7 +234,7 @@ async function apiRoute(req, res, p, q) {
   if (p.startsWith('/api/station/')) return station(req, res, p.slice('/api/station/'.length), q, B);
   switch (M + ' ' + p) {
     case 'GET /api/company': return J(res, 200, S.company);
-    case 'GET /api/questions': return ok({ questions: S.questions });
+    case 'GET /api/questions': return ok({ questions: S.questions.map(present) });
     case 'GET /api/questions/answered': return ok({ answered: S.answered });
     case 'GET /api/owner/messages': return ok(ownerView());
     case 'POST /api/owner/messages': { if (!B.text) return J(res, 400, { ok: false, error: 'text is required' }); const m = { dir: 'in', id: 'in-' + Date.now(), at: now(), from: 'Sam Owner', text: (B.to ? B.to + ', ' : '') + B.text }; S.messages.push(m); emit('owner'); return ok({ message: ownerView().messages.find(x => x.id === m.id) }); }
@@ -290,7 +318,7 @@ async function apiRoute(req, res, p, q) {
     case 'GET /api/governance-log': return ok({ entries: [{ at: ago(600), by: 'Sam Owner', event: 'preset', preset: 'gate-money-people' }] });
     case 'GET /api/locked': return ok({ text: 'locked-watch: 14 files watched, 0 drifted (mock)' });
     case 'GET /api/external': return ok({ text: 'external-gate: 1 clearance\n  message  owner channel (file adapter)  pinned (mock)' });
-    case 'GET /api/today': return ok({ company: S.company, needsYou: { questions: S.questions, count: S.questions.length }, halt: S.halt });
+    case 'GET /api/today': return ok({ company: S.company, needsYou: { questions: S.questions.map(present), count: S.questions.length }, halt: S.halt });
   }
   let m;
   if (M === 'GET' && (m = /^\/api\/chat\/([A-Za-z0-9_-]+)$/.exec(p))) {
@@ -308,22 +336,39 @@ async function apiRoute(req, res, p, q) {
     const i = S.questions.findIndex(x => x.id === m[1]); if (i < 0) return J(res, 404, { ok: false, error: 'no open question ' + m[1] });
     const q0 = S.questions[i];
     let ans;
+    const pq = present(q0);
+    // several questions: {parts, closeRest}; the old store-key on a request maps to its key question
+    if (pq.questions && !B.parts && (B.action === 'store-key' || B.store)) { const kp = pq.questions.find(x => x.kind === 'secret' && !x.answered); if (kp) B.parts = { [kp.id]: { action: 'store', values: { key: (B.values || {})[B.store || 'key'] } } }; }
+    if (pq.questions && (B.parts || B.closeRest)) {
+      const parts = {};
+      for (const [pid, r0] of Object.entries(B.parts || {})) { const qp = pq.questions.find(x => x.id === pid); if (!qp) return J(res, 400, { ok: false, error: 'no question ' + pid }); parts[pid] = Object.assign({}, r0, { values: placeholderSecrets(qp.form, r0.values || {}, r0) }); }
+      let c; try { c = INBOX.computeParts(Object.assign({ type: 'ask' }, q0), parts, !!B.closeRest); } catch (e) { return J(res, 400, { ok: false, error: e.message }); }
+      q0.parts = Object.assign({}, q0.parts); for (const [pid, r] of Object.entries(c.results)) q0.parts[pid] = Object.assign({ at: now() }, r);
+      const stored = Object.values(c.results).flatMap(r => Object.values(r.answer.values || {}).filter(v => v && v.stored));
+      if (c.finished) { S.questions.splice(i, 1); S.answered.push(Object.assign({}, q0, { answer: c.a, answerDetail: c.final, answeredAt: now() })); }
+      emit('questions'); return ok({ state: c.finished ? 'answered' : 'open', a: c.a, answer: c.finished ? c.final : null, answered: c.questions.length - c.left.length, total: c.questions.length, left: c.left, stored });
+    }
+    if (B.store) {   // a key stored inside a form that asks for more: kept as {stored, chars}, the question stays open
+      const v = placeholderSecrets(pq.form, { [B.store]: (B.values || {})[B.store] }, B)[B.store];
+      if (!v || typeof v !== 'object') return J(res, 400, { ok: false, error: 'paste the key first' });
+      q0.stored = Object.assign({}, q0.stored, { [B.store]: v }); emit('questions'); return ok({ state: 'open', stored: [v] });
+    }
     if (!B.action) {
       if (!['yes', 'no', 'reply'].includes(B.verdict)) return J(res, 400, { ok: false, error: 'verdict must be yes, no or reply' });
       ans = { a: B.verdict === 'reply' ? B.text : B.verdict + (B.text ? ': ' + B.text : '') };
     } else {
       // as the real server: a secret value is replaced by where it would be stored before anything else sees it; never kept
-      const form = q0.form || INBOX.formOf(q0); const values = Object.assign({}, B.values || {}); const stored = [];
+      const form = pq.form; const values = Object.assign({}, B.values || {}); const stored = [];
       for (const f of form.fields.filter(x => x.type === 'secret')) {
         const v = values[f.id]; if (v === undefined) continue;
         const name = f.hinted && B.secretNames && B.secretNames[f.id] ? B.secretNames[f.id] : f.name;
         if (name === 'existing-key' && !(B.replace && B.replace[f.id])) return J(res, 409, { ok: false, error: 'secrets/' + name + ' already exists. Tick "replace the stored key" to overwrite it.' });
         values[f.id] = { stored: 'secrets/' + name, chars: String(v).trim().length, validated: null }; stored.push(values[f.id]); S.mockStored = (S.mockStored || 0) + 1;
       }
-      try { const row = Object.assign({}, q0, { form }); const st = INBOX.checkAnswer(row, { action: B.action, values, note: B.note }); ans = { a: INBOX.plainAnswer(row, st), answerDetail: st, stored }; }
+      try { const row = Object.assign({}, q0, { form }); if (INBOX.storeOnlyAction(form, form.actions.find(a => a.id === B.action)) && !INBOX.secretOnly(form)) throw new Error('storing a key does not answer this question'); const st = INBOX.checkAnswer(row, { action: B.action, values, note: B.note }); ans = { a: INBOX.plainAnswer(row, st), answerDetail: st, stored }; }
       catch (e) { return J(res, 400, { ok: false, error: e.message }); }
     }
-    S.questions.splice(i, 1); S.answered.push(Object.assign({}, q0, { answer: ans.a, answeredAt: now() })); emit('questions'); return ok({ a: ans.a, stored: ans.stored || [] });
+    S.questions.splice(i, 1); S.answered.push(Object.assign({}, q0, { answer: ans.a, answerDetail: ans.answerDetail || null, answeredAt: now() })); emit('questions'); return ok({ state: 'answered', a: ans.a, answer: ans.answerDetail || null, stored: ans.stored || [] });
   }
   if (M === 'POST' && (m = /^\/api\/questions\/(q-\d+)\/snooze$/.exec(p))) {
     const q0 = S.questions.find(x => x.id === m[1]); if (!q0) return J(res, 404, { ok: false, error: 'no open question ' + m[1] });
