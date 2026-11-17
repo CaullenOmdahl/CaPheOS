@@ -1,0 +1,68 @@
+[
+ {
+  "start": "{{t:-7d@09:00}}",
+  "end": "{{t:-4d@09:00}}",
+  "who": "On call: Ana",
+  "role": "primary"
+ },
+ {
+  "start": "{{t:-4d@09:00}}",
+  "end": "{{t:-1d@09:00}}",
+  "who": "On call: Ben",
+  "role": "primary"
+ },
+ {
+  "start": "{{t:-1d@09:00}}",
+  "end": "{{t:+2d@09:00}}",
+  "who": "On call: Chi",
+  "role": "primary"
+ },
+ {
+  "start": "{{t:+2d@09:00}}",
+  "end": "{{t:+5d@09:00}}",
+  "who": "On call: Dev",
+  "role": "primary"
+ },
+ {
+  "start": "{{t:+5d@09:00}}",
+  "end": "{{t:+8d@09:00}}",
+  "who": "On call: Ana",
+  "role": "primary"
+ },
+ {
+  "start": "{{t:+8d@09:00}}",
+  "end": "{{t:+11d@09:00}}",
+  "who": "On call: Ben",
+  "role": "primary"
+ },
+ {
+  "start": "{{t:+11d@09:00}}",
+  "end": "{{t:+14d@09:00}}",
+  "who": "On call: Chi",
+  "role": "primary"
+ },
+ {
+  "start": "{{t:+14d@09:00}}",
+  "end": "{{t:+17d@09:00}}",
+  "who": "On call: Dev",
+  "role": "primary"
+ },
+ {
+  "start": "{{t:+17d@09:00}}",
+  "end": "{{t:+20d@09:00}}",
+  "who": "On call: Ana",
+  "role": "primary"
+ },
+ {
+  "start": "{{t:+20d@09:00}}",
+  "end": "{{t:+23d@09:00}}",
+  "who": "On call: Ben",
+  "role": "primary"
+ },
+ {
+  "start": "{{t:+2d@14:00}}",
+  "end": "{{t:+2d@15:00}}",
+  "who": "Failover drill",
+  "role": "drill"
+ }
+]

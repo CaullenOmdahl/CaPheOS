@@ -1,0 +1,34 @@
+{
+  "$schema": "../../../schemas/console-panel.schema.json",
+  "version": 1,
+  "kind": "page",
+  "id": "production-board",
+  "title": "Production board",
+  "description": "Every video from brief to delivery: how many sit in each step, which are stuck, and the board itself.",
+  "owner": "ceo",
+  "why": "A content studio owner wants to see at a glance where each client video is, what is late and what is stuck; the producer keeps the list in one file.",
+  "placement": { "area": "screen", "nav": "Production", "order": 1 },
+  "refresh": 120,
+  "sources": {
+    "videos": { "type": "file", "glob": "{{data}}/videos.json" }
+  },
+  "units": [
+    { "id": "headline", "span": 12, "view": { "kind": "stat-row", "items": [
+      { "source": "videos", "value": "summary.inProduction", "label": "In production", "format": "integer" },
+      { "source": "videos", "value": "summary.overdue", "label": "Overdue", "format": "integer", "goodWhen": "zero" },
+      { "source": "videos", "value": "summary.stuck", "label": "Stuck", "format": "integer", "goodWhen": "zero" },
+      { "source": "videos", "value": "summary.deliveredThisMonth", "label": "Delivered this month", "format": "integer" } ] } },
+    { "id": "stages", "title": "By step", "span": 12,
+      "view": { "kind": "pipeline", "source": "videos", "rows": "items", "by": "stage", "stuck": "stuck",
+        "stages": [ { "id": "brief", "label": "Brief" }, { "id": "script", "label": "Script" }, { "id": "shoot", "label": "Shoot" }, { "id": "edit", "label": "Edit" }, { "id": "review", "label": "Client review" }, { "id": "delivered", "label": "Delivered" } ] } },
+    { "id": "board", "title": "Board", "span": 12, "rows": 4,
+      "view": { "kind": "kanban", "source": "videos", "rows": "items", "key": "id", "column": "stage",
+        "columns": [ { "id": "brief", "label": "Brief" }, { "id": "script", "label": "Script" }, { "id": "shoot", "label": "Shoot", "limit": 3 }, { "id": "edit", "label": "Edit", "limit": 3 }, { "id": "review", "label": "Client review" }, { "id": "delivered", "label": "Delivered" } ],
+        "title": "title", "subtitle": "client", "badges": ["format", "tags"], "assignee": "owner", "due": "due", "steps": { "done": "stepsDone", "total": "stepsTotal" },
+        "tone": "risk", "toneMap": { "late": "warn", "stuck": "bad", "ok": "neutral" }, "move": "move-card", "empty": "No videos in production." } }
+  ],
+  "actions": [
+    { "id": "move-card", "label": "Move", "kind": "handoff", "to": "ceo", "scope": "move",
+      "text": "Owner asks to move {{row.title}} ({{row.id}}, {{row.client}}) from {{move.from}} to {{move.to}}. Please update the board and tell the people involved." }
+  ]
+}

@@ -1,7 +1,8 @@
 // Company panels (docs/CONSOLE-PANELS.md). Built-in kinds drawn here; `custom` in a sandboxed srcdoc iframe (§6).
-import { h, fill, Button, errLine, dig, rel, table } from './ui.js';
+import { h, fill, Button, errLine, dig } from './ui.js';
 import { api, post } from './api.js';
 import * as events from './events.js';
+import * as kit from './kit.js';
 
 const LIMITS = { today: 6, side: 3 };
 
@@ -58,7 +59,7 @@ export function mountPanel(el, meta, app) {
     if (r.view && r.view.kind === 'custom') {
       if (!frameCtl) { fill(body); frameCtl = customFrame(body, meta, r, app); } else frameCtl.send(r);
     } else {
-      fill(body, renderKind(r.view || {}, r, (a, row) => runAction(r, a, row, app)),
+      fill(body, renderKind(r.view || {}, r, (a, row, extra) => runAction(r, a, row, app, extra)),
         failed.length ? h('p', { class: 'err-line' }, 'Source ' + failed.map(([n, s]) => n + ': ' + (s.error || 'failed')).join('; ')) : null,
         r.page && r.page.more ? h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => { want = Math.min(1000, want + 200); load(); } }, 'Load more (' + (r.page.total - r.data.length) + ' more)') : null,
         panelActions(r, app));
@@ -79,73 +80,16 @@ function panelActions(r, app) {
   return h('div', { class: 'row-8' }, acts.map(a => Button(a.label, { variant: 'secondary', size: 'sm', onClick: () => runAction(r, a, null, app) })));
 }
 
-/* ---------- formats ---------- */
-export function fmt(v, f) {
-  if (v == null || v === '') return '—';
-  switch (f) {
-    case 'number': return typeof v === 'number' ? v.toLocaleString() : String(v);
-    case 'integer': return typeof v === 'number' ? Math.round(v).toLocaleString() : String(v);
-    case 'percent': return typeof v === 'number' ? (Math.abs(v) <= 1 ? (v * 100).toFixed(0) : v.toFixed(0)) + '%' : String(v);
-    case 'money': return typeof v === 'number' ? v.toLocaleString(undefined, { style: 'currency', currency: (window.capheos.company && window.capheos.company.currency) || 'USD' }) : String(v);
-    case 'date': return dateFmt(v, { day: '2-digit', month: 'short' });
-    case 'datetime': return dateFmt(v, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
-    case 'relative': return rel(v) || String(v);
-    case 'duration': return typeof v === 'number' ? (v >= 3600 ? (v / 3600).toFixed(1) + ' h' : v >= 60 ? Math.round(v / 60) + ' min' : v + ' s') : String(v);
-    case 'bool': return v ? 'Yes' : 'No';
-    default: return typeof v === 'object' ? JSON.stringify(v) : String(v);
-  }
-}
-function dateFmt(v, o) {
-  const ms = Date.parse(v); if (isNaN(ms)) return String(v);
-  const tz = window.capheos.company && window.capheos.company.timezone;
-  try { return new Intl.DateTimeFormat('en-GB', Object.assign({ timeZone: tz || undefined }, o)).format(ms); } catch (_) { return new Date(ms).toLocaleString(); }
-}
-
-/* ---------- built-in kinds ---------- */
-function srcData(r, name) { return r.data ? r.data[name] : undefined; }
-function rowsOf(r, v) { const d = dig(srcData(r, v.source), v.rows || v.items); return Array.isArray(d) ? d : d == null ? [] : [d]; }
+/* ---------- kinds: drawn by kit.js (docs/CONSOLE-DESIGN.md) ---------- */
+export { fmt } from './kit.js';
 
 export function renderKind(v, r, onAction) {
-  const rowActs = (r.actions || []).filter(a => a.scope === 'row');
-  switch (v.kind) {
-    case 'stat': return statEl(v, r);
-    case 'stat-row': return h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px' }, (v.items || []).map(i => statEl(i, r)));
-    case 'table': case 'chart': {
-      let rows = rowsOf(r, v);
-      const cols = v.kind === 'chart' ? [v.x].concat(v.series || []) : (v.columns || []);
-      if (v.sort && v.sort.key) rows = rows.slice().sort((a, b) => cmp(a[v.sort.key], b[v.sort.key]) * (v.sort.dir === 'desc' ? -1 : 1));
-      rows = rows.slice(0, Math.min(v.limit || 200, 200));
-      if (!rows.length) return h('p', { class: 'body-s muted' }, v.empty || 'Nothing to show.');
-      const body = rows.map(row => h('tr', null,
-        cols.map((c, i) => h('td', { class: (c.flag && row[c.flag] ? 'warn ' : '') + (i === 0 ? 'num strong' : ''), style: c.width === 'wide' ? 'min-width:260px' : c.width === 'narrow' ? 'white-space:nowrap' : '' }, fmt(row[c.key], c.format || (v.kind === 'chart' && i ? 'number' : null)))),
-        rowActs.length ? h('td', { style: 'text-align:right;white-space:nowrap' }, rowActs.map(a => h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => onAction(a, row) }, a.label))) : null));
-      return h('div', { class: 'stack-6' },
-        table(cols.map(c => c.label || c.key).concat(rowActs.length ? [''] : []), body, { minWidth: 560, bare: true }),
-        v.kind === 'chart' ? h('span', { class: 'caption muted' }, 'Chart shown as a table for now.') : null);
-    }
-    case 'list': {
-      const rows = rowsOf(r, v).slice(0, v.limit || 50);
-      if (!rows.length) return h('p', { class: 'body-s muted' }, v.empty || 'Nothing to show.');
-      return h('ul', { class: 'plain hair-top' }, rows.map(row => h('li', { class: 'between', style: 'padding:12px 0;border-bottom:1px solid var(--border-hairline)' },
-        h('span', { class: 'stack-4' }, h('span', { class: 'label strong' }, fmt(dig(row, v.title))), v.subtitle ? h('span', { class: 'body-s muted' }, fmt(dig(row, v.subtitle))) : null),
-        h('span', { class: 'row-8', style: 'align-items:center' }, v.badge && dig(row, v.badge) != null ? h('span', { class: 'tag tag-soft' }, fmt(dig(row, v.badge))) : null,
-          rowActs.map(a => h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => onAction(a, row) }, a.label))))));
-    }
-    case 'timeline': {
-      const rows = rowsOf(r, v).slice().sort((a, b) => cmp(dig(b, v.at), dig(a, v.at))).slice(0, v.limit || 50);
-      if (!rows.length) return h('p', { class: 'body-s muted' }, v.empty || 'Nothing yet.');
-      return h('ol', { class: 'timeline' }, rows.map(row => h('li', null, h('span', { class: 'mono muted' }, fmt(dig(row, v.at), 'datetime')),
-        h('span', { class: 'body-s' }, v.who ? h('strong', { class: 'strong', style: 'font-weight:600' }, fmt(dig(row, v.who)) + ' ') : null, fmt(dig(row, v.text))))));
-    }
-    case 'markdown': return markdown(String(srcData(r, v.source) || ''));
-    default: return h('p', { class: 'body-s muted' }, 'This panel kind (' + (v.kind || '?') + ') is not drawn yet.');
-  }
+  if (v.kind === 'markdown') return markdown(String(kit.srcData(r, v.source) || ''));
+  const all = r.actions || [];
+  // a panel's row actions show on its rows; the move/ack actions a kanban or feed names are drawn by that view
+  const named = [v.move, v.ack].filter(Boolean);
+  return kit.renderView(v, r, { all, rowActions: all.filter(a => a.scope === 'row' && !named.includes(a.id)), onAction: (a, row, extra) => onAction(a, row, extra) });
 }
-function statEl(i, r) {
-  const val = dig(srcData(r, i.source), i.value);
-  return h('div', { class: 'kpi' }, h('span', { class: 'big-num' }, fmt(val, i.format) + (i.unit ? ' ' + i.unit : '')), h('span', { class: 'caption muted' }, i.label || ''));
-}
-function cmp(a, b) { if (a == null) return 1; if (b == null) return -1; return typeof a === 'number' && typeof b === 'number' ? a - b : String(a).localeCompare(String(b)); }
 
 // sanitised markdown: text only, no HTML, no images, links as text (§4)
 export function markdown(src) {
@@ -168,13 +112,17 @@ export function markdown(src) {
 }
 
 /* ---------- actions: only declared ids, three doors, owner confirms (§7) ---------- */
-function fillTemplate(t, r, row) {
-  return String(t || '').replace(/\{\{\s*(panel\.title|row\.[A-Za-z0-9_.-]+)\s*\}\}/g, (_, k) => k === 'panel.title' ? r.title : String(dig(row || {}, k.slice(4)) ?? '')).slice(0, 2000);
+function fillTemplate(t, r, row, extra) {
+  const mv = (extra && extra.move) || {};
+  return String(t || '').replace(/\{\{\s*(panel\.title|move\.from|move\.to|row\.[A-Za-z0-9_.-]+)\s*\}\}/g, (_, k) => k === 'panel.title' ? r.title : k === 'move.from' ? String(mv.from ?? '') : k === 'move.to' ? String(mv.to ?? '') : String(dig(row || {}, k.slice(4)) ?? '')).slice(0, 2000);
 }
-async function runAction(r, a, row, app) {
+// only declared ids, only the three doors, the owner confirms the filled text (§7). A kanban move is the same: a
+// handoff (or message) asking the owning seat to move the card; the console never writes the board's file.
+export async function runAction(r, a, row, app, extra) {
   const decl = (r.actions || []).find(x => x.id === (a && a.id));
   if (!decl) { console.warn('panel action not declared', r.id, a); return; }
-  const text = fillTemplate(decl.text, r, row);
+  if (decl.scope === 'move' && !(extra && extra.move)) { console.warn('move action without a move', r.id, a); return; }
+  const text = fillTemplate(decl.text, r, row, extra);
   const where = decl.kind === 'handoff' ? 'a handoff to ' + decl.to : decl.kind === 'ask-ceo' ? 'a message to the CEO' : 'your Comms composer (nothing is sent yet)';
   if (!(await app.confirmDialog({ title: decl.label, body: 'This goes to ' + where + ':\n\n' + text, confirm: decl.kind === 'owner-question-draft' ? 'Open draft' : 'Send' }))) return;
   try {
@@ -233,4 +181,59 @@ function customFrame(host, meta, first, app) {
     fill(host, frame);
   })();
   return { send, stop: () => window.removeEventListener('message', onMsg) };
+}
+
+/* ---------- pages: a company screen made of units on a 12-column grid (docs/CONSOLE-PANELS.md §12) ---------- */
+function unitSources(v) { return [v.source].concat((v.items || []).map(i => i.source)).filter(Boolean); }
+// draw one unit from a page's render() answer; `onAction(decl, row, extra)` runs an action
+export function renderUnit(u, r, onAction) {
+  const v = u.view || {};
+  const span = Math.max(1, Math.min(12, u.span || 12));
+  const head = 'unit-' + r.id + '-' + u.id;
+  const body = h('div', { class: 'unit-body' });
+  const failed = unitSources(v).map(n => [n, (r.sources || {})[n]]).filter(([, st]) => st && !st.ok && !st.offline);
+  const offline = unitSources(v).map(n => (r.sources || {})[n]).filter(st => st && st.offline);
+  if (r.loading) fill(body, kit.loadingState());
+  else if (failed.length) fill(body, kit.stateLine('Could not load ' + failed.map(([n, st]) => n + ' (' + (st.error || 'failed') + ')').join('; ') + '.', 'err'));
+  else if (offline.length && unitSources(v).every(n => r.data[n] == null)) fill(body, kit.stateLine('Live station data: shown when the station is running.'));
+  else {
+    const all = (r.actions || []);
+    const rowActions = all.filter(a => a.scope === 'row' && (u.actions || []).includes(a.id));
+    try { fill(body, v.kind === 'markdown' ? markdown(String(kit.srcData(r, v.source) || '')) : kit.renderView(v, r, { all, rowActions, onAction })); }
+    catch (e) { console.warn('unit failed to draw', r.id, u.id, e); fill(body, kit.stateLine('This unit could not be drawn: ' + e.message, 'err')); }
+  }
+  return h('section', { class: 'unit u-s' + span + (u.rows > 1 ? ' u-r' + Math.min(4, u.rows) : ''), 'aria-labelledby': u.title ? head : null, 'aria-label': u.title ? null : v.kind, 'data-unit': u.id, 'data-kind': v.kind },
+    u.title ? h('div', { class: 'unit-head' }, h('h2', { id: head, class: 'unit-title' }, u.title)) : null,
+    u.note ? h('p', { class: 'unit-note' }, u.note) : null, body);
+}
+export function renderPageGrid(r, onAction) {
+  return h('div', { class: 'page-wrap' }, h('div', { class: 'page-grid', 'data-page': r.id }, (r.units || []).map(u => renderUnit(u, r, onAction))));
+}
+// the page screen: header (title, why, owner, page actions, hide) and the grid; refreshes like a panel
+export function mountPage(root, meta, app, head) {
+  const grid = h('div'); const about = h('div', { class: 'stack-6 caption muted', style: 'padding-top:6px;max-width:560px' });
+  const acts = h('div', { class: 'page-head-actions' });
+  const hide = h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: async () => {
+    if (!(await app.confirmDialog({ title: 'Hide "' + (meta.nav || meta.title || meta.id) + '"?', body: 'It stays installed; unhide it from System › Console panels.', confirm: 'Hide' }))) return;
+    try { await post('/panels/' + encodeURIComponent(meta.id) + '/hide'); app.toast('Page hidden.'); location.hash = '#/today'; } catch (e) { app.toast('Could not hide: ' + e.message, true); }
+  } }, 'Hide');
+  fill(root, head, h('div', { class: 'between' }, acts, h('div', { class: 'row-14', style: 'align-items:flex-start' }, hide, h('details', { class: 'body-s' }, h('summary', { style: 'min-height:32px;color:var(--text-accent)' }, 'About this page'), about))), grid);
+  fill(grid, renderPageGrid({ id: meta.id, units: [], loading: true }, () => {}));
+  let timer = null, dead = false;
+  const load = async () => {
+    if (document.hidden) return;
+    let r;
+    try { r = await api('/panels/' + encodeURIComponent(meta.id) + '/data'); }
+    catch (e) { fill(grid, errLine(e, 'Page data')); return; }
+    if (dead) return;
+    const run = (a, row, extra) => runAction(r, a, row, app, extra);
+    fill(about, h('span', null, h('strong', null, 'Why: '), r.why || '—'), h('span', null, h('strong', null, 'Owner: '), r.owner || '—'), h('span', null, h('strong', null, 'Refreshes every '), fmtSecs(r.refresh || 300)), h('span', null, h('strong', null, 'Id: '), r.id));
+    fill(acts, (r.actions || []).filter(a => a.scope !== 'row' && a.scope !== 'move').map(a => Button(a.label, { variant: 'secondary', size: 'sm', onClick: () => run(a, null) })));
+    fill(grid, renderPageGrid(r, run));
+    clearTimeout(timer); timer = setTimeout(load, Math.max(r.refresh || 300, 30) * 1000);
+  };
+  const vis = () => { if (!document.hidden) load(); };
+  document.addEventListener('visibilitychange', vis);
+  load();
+  return () => { dead = true; clearTimeout(timer); document.removeEventListener('visibilitychange', vis); };
 }

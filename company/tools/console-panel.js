@@ -15,7 +15,17 @@
  *   node company/tools/console-panel.js hide <id> --by owner                # owner only; survives re-adds
  *   node company/tools/console-panel.js unhide <id> --by owner
  *   node company/tools/console-panel.js render <id> --json [--live]         # the data the console passes in
+ *   node company/tools/console-panel.js scaffolds [--json]                  # ready pages: trading-desk, noc-health, ...
+ *   node company/tools/console-panel.js scaffold <name> --as <id> --by <seat> [--nav <label>] [--force]
+ *                                                                           # copy one into company/work/<seat>/pages/<id>/ (+ sample data)
+ *   node company/tools/console-panel.js render --page <id|dir> --png <out.png> [--theme dark] [--width 390] [--height N]
+ *   node company/tools/console-panel.js render --page <id|dir> --serve      # a local preview URL instead of a picture
+ *   node company/tools/console-panel.js tokens [--write|--print]            # check (default) / regenerate docs/CONSOLE-DESIGN.md's token table
  *   node company/tools/console-panel.js selftest
+ *
+ * A folder holding page.json instead of panel.json is a PAGE: a company screen made of units (each a view kind with a
+ * span on a 12-column grid). Pages share everything with panels: validation, the dashboard gate, add/approve/remove/
+ * hide, owner, why, changes.jsonl and the 8-company-screen limit; they install into company/console/pages/<id>/.
  *
  * Why the gate: what the owner sees every morning is the owner's, so an agent's change to it goes through
  * co.gate('dashboard') like any other self-governed decision: auto installs, notify installs and tells the owner,
@@ -45,8 +55,8 @@ function root() { return process.env.CONSOLE_ROOT ? path.resolve(process.env.CON
 function paths(r) {
   r = r || root();
   const c = path.join(r, 'company', 'console');
-  return { root: r, console: c, panels: path.join(c, 'panels'), proposed: path.join(c, 'proposed'),
-    examples: path.join(c, 'examples'), sources: path.join(c, 'sources.json'), changes: path.join(c, 'changes.jsonl'),
+  return { root: r, console: c, panels: path.join(c, 'panels'), pages: path.join(c, 'pages'), proposed: path.join(c, 'proposed'),
+    examples: path.join(c, 'examples'), scaffolds: path.join(c, 'scaffolds'), sources: path.join(c, 'sources.json'), changes: path.join(c, 'changes.jsonl'),
     state: path.join(c, 'state.json'), tools: path.join(r, 'company', 'tools'), loops: path.join(r, 'company', 'tools', 'loops.json') };
 }
 const readJson = (f, fb) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return fb; } };
@@ -375,9 +385,115 @@ function placementKey(pl) {
   return pl.area;
 }
 function listDir(d) { try { return fs.readdirSync(d, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name).sort(); } catch (_) { return []; } }
+/* Installed panels and pages: [{ id, type: 'panel'|'page', dir, panel }] (`panel` is the parsed panel.json or page.json) */
 function installed(r) {
   const P = paths(r);
-  return listDir(P.panels).map(id => ({ id, dir: path.join(P.panels, id), panel: readJson(path.join(P.panels, id, 'panel.json'), null) }));
+  return listDir(P.panels).map(id => ({ id, type: 'panel', dir: path.join(P.panels, id), panel: readJson(path.join(P.panels, id, 'panel.json'), null) }))
+    .concat(listDir(P.pages).map(id => ({ id, type: 'page', dir: path.join(P.pages, id), panel: readJson(path.join(P.pages, id, 'page.json'), null) })));
+}
+/* A folder is a page when it holds page.json, else a panel. */
+const isPageDir = d => fs.existsSync(path.join(d, 'page.json'));
+const manifestOf = d => isPageDir(d) ? 'page.json' : 'panel.json';
+/* Validate one view (a panel's view, or a page unit's view). `at` is the field prefix ("view" or "units[2].view").
+ * ctx = { pf, srcNames, sources (the panel's own), actions, inPage }. Returns findings. */
+function validateView(v, at, ctx) {
+  const out = []; const pf = ctx.pf; v = v || {};
+  const refs = [];
+  if (v.source) refs.push([at + '.source', v.source]);
+  if (v.kind === 'stat-row') (v.items || []).forEach((it, i) => refs.push([at + '.items[' + i + '].source', it.source]));
+  if (v.kind === 'gauge' || v.kind === 'progress') (v.items || []).forEach((it, i) => { if (it.source) refs.push([at + '.items[' + i + '].source', it.source]); });
+  (v.sources || []).forEach((s, i) => refs.push([at + '.sources[' + i + ']', s]));
+  for (const [field, name] of refs) if (name && !ctx.srcNames.includes(name)) out.push(pf + ':' + field + ': no source named "' + name + '" in sources');
+  const srcs = ctx.sources || {};
+  if (v.kind === 'markdown' && v.source && srcs[v.source] && srcs[v.source].type === 'file' && !/\.md$/i.test(srcs[v.source].glob || '')) out.push(pf + ':' + at + '.source: a markdown view reads a .md file');
+  const act = id => (ctx.actions || []).find(a => a.id === id);
+  if (v.kind === 'chart') {
+    if (v.chart === 'candlestick') { if (!v.ohlc) out.push(pf + ':' + at + '.ohlc: a candlestick chart names open, high, low and close'); }
+    else if (!v.series || !v.series.length) out.push(pf + ':' + at + '.series: required: a ' + (v.chart || '?') + ' chart names 1 to 6 series (key + label); series are never guessed');
+    if (v.ohlc && v.chart !== 'candlestick') out.push(pf + ':' + at + '.ohlc: only a candlestick chart takes ohlc');
+    (v.refs || []).forEach((r, i) => { if ((r.value == null) === (r.from == null)) out.push(pf + ':' + at + '.refs[' + i + ']: give exactly one of value (a number) or from (a dot path)'); });
+    if (v.chart === 'scatter' && v.x && v.x.time) out.push(pf + ':' + at + '.x.time: a scatter plots two measures; use a line chart for values over time');
+  }
+  if (v.kind === 'kanban' && v.move) { const a = act(v.move); if (!a) out.push(pf + ':' + at + '.move: no action "' + v.move + '" in actions'); else if (a.scope !== 'move') out.push(pf + ':' + at + '.move: action "' + v.move + '" needs scope "move"'); }
+  if (v.kind === 'kanban' && v.columns) { const ids = v.columns.map(c => c.id); if (new Set(ids).size !== ids.length) out.push(pf + ':' + at + '.columns: duplicate column id'); }
+  if (v.kind === 'feed' && v.ack) { const a = act(v.ack); if (!a) out.push(pf + ':' + at + '.ack: no action "' + v.ack + '" in actions'); else if (a.scope !== 'row') out.push(pf + ':' + at + '.ack: action "' + v.ack + '" needs scope "row"'); if (!v.acked) out.push(pf + ':' + at + '.acked: an ack action needs the field that says an alert is already acknowledged'); }
+  if (v.kind === 'pipeline') {
+    if (v.by && (v.label || v.count)) out.push(pf + ':' + at + ': either `by` (count items per stage) or `label` + `count` (rows are stages), not both');
+    else if (!v.by && !(v.label && v.count)) out.push(pf + ':' + at + ': name `by` (count items per stage) or `label` + `count` (rows are stages)');
+  }
+  if (v.kind === 'gauge' || v.kind === 'progress') (v.items || []).forEach((it, i) => { if (it.warnAt != null && it.badAt != null && it.warnAt >= it.badAt) out.push(pf + ':' + at + '.items[' + i + '].warnAt: must be below badAt'); });
+  if (ctx.inPage && v.kind === 'custom') out.push(pf + ':' + at + '.kind: a page unit is drawn by the console; custom views are single panels only');
+  return out;
+}
+const MOVE_PH = /^\{\{(move\.(from|to))\}\}$/;
+function validateActions(acts, ctx) {
+  const out = []; const pf = ctx.pf; const r = ctx.root;
+  if (ctx.max && acts.length > ctx.max) out.push(pf + ':actions: at most ' + ctx.max);
+  const seen = new Set();
+  acts.forEach((a, i) => {
+    const at = pf + ':actions[' + i + ']';
+    if (seen.has(a.id)) out.push(at + '.id: duplicate'); seen.add(a.id);
+    if (a.kind === 'handoff') {
+      if (!a.to) out.push(at + '.to: a handoff names the function or seat it goes to');
+      else if (!FUNCTIONS.includes(a.to) && !findSeat(a.to, r)) out.push(at + '.to: not a function or a seat in loops.json');
+    } else if (a.to) out.push(at + '.to: only a handoff has a recipient (' + a.kind + ' goes to ' + (a.kind === 'ask-ceo' ? 'the CEO' : "the owner's own composer") + ')');
+    const tpl = String(a.text || '');
+    for (const m of tpl.match(/\{\{[^}]*\}\}/g) || []) {
+      if (MOVE_PH.test(m)) { if (a.scope !== 'move') out.push(at + '.text: ' + m + ' needs scope "move"'); continue; }
+      if (!/^\{\{(row\.[A-Za-z0-9_.-]+|panel\.title)\}\}$/.test(m)) out.push(at + '.text: placeholder ' + m + ' (only {{row.<key>}}, {{panel.title}}, and {{move.from}}/{{move.to}} with scope "move")');
+      else if (m.startsWith('{{row.') && a.scope !== 'row' && a.scope !== 'move') out.push(at + '.text: ' + m + ' needs scope "row"');
+    }
+    if (/\{\{|\}\}/.test(tpl.replace(/\{\{[^}]*\}\}/g, ''))) out.push(at + '.text: unbalanced braces');
+  });
+  return out;
+}
+function validateSources(srcMap, sources, pf, max) {
+  const out = []; const names = Object.keys(srcMap || {});
+  if (max && names.length > max) out.push(pf + ':sources: at most ' + max);
+  for (const n of names) {
+    const s = srcMap[n] || {};
+    if (s.type === 'file') for (const b of checkGlob(s.glob, sources)) out.push(pf + ':sources.' + n + '.glob: ' + b);
+    if (s.type === 'tool' && (!(sources.tool || {})[s.id] || String(s.id).startsWith('_'))) out.push(pf + ':sources.' + n + '.id: "' + s.id + '" is not an allowlisted tool (sources.json tool: ' + Object.keys(sources.tool || {}).filter(k => !k.startsWith('_')).join(', ') + ')');
+    if (s.type === 'station' && (!(sources.station || {})[s.id] || String(s.id).startsWith('_'))) out.push(pf + ':sources.' + n + '.id: "' + s.id + '" is not an allowlisted station endpoint (sources.json station: ' + Object.keys(sources.station || {}).filter(k => !k.startsWith('_')).join(', ') + ')');
+  }
+  return out;
+}
+/* checks shared by panels and pages: id, owner, nav label, refresh, the per-placement limit and nav clashes */
+function validateCommon(doc, dir, pf, r, sources) {
+  const out = []; const lim = sources.limits || {}; const screens = sources.screens || {};
+  if (doc.id && path.basename(dir) !== doc.id) out.push(pf + ':id: must equal the folder name (' + path.basename(dir) + ')');
+  if ((sources.reservedIds || []).includes(doc.id)) out.push(pf + ':id: reserved for the console');
+  if (doc.owner && !FUNCTIONS.includes(doc.owner) && !findSeat(doc.owner, r)) out.push(pf + ':owner: not a function (' + FUNCTIONS.join(', ') + ') or a seat in loops.json');
+  const pl = doc.placement || {};
+  if (pl.area === 'side') {
+    if ((screens.protected || []).includes(pl.screen)) out.push(pf + ':placement.screen: ' + pl.screen + ' is protected');
+    else if (pl.screen && !(screens.sideAllowed || []).includes(pl.screen)) out.push(pf + ':placement.screen: side panels are allowed on ' + (screens.sideAllowed || []).join(', '));
+  }
+  if (pl.area === 'screen' && pl.nav && (screens.builtinLabels || []).some(l => l.toLowerCase() === String(pl.nav).trim().toLowerCase())) out.push(pf + ':placement.nav: "' + pl.nav + '" is a built-in console label');
+  if (doc.refresh != null) {
+    if (doc.refresh < (lim.minRefreshSeconds || 30)) out.push(pf + ':refresh: at least ' + (lim.minRefreshSeconds || 30) + ' seconds');
+    if (lim.maxRefreshSeconds && doc.refresh > lim.maxRefreshSeconds) out.push(pf + ':refresh: at most ' + lim.maxRefreshSeconds + ' seconds');
+  }
+  // limits per placement (count installed panels and pages in the same placement, hidden ones included, not counting itself)
+  const key = placementKey(pl);
+  const limitKey = pl.area === 'side' ? 'side' : pl.area;
+  const max = (lim.perPlacement || {})[limitKey];
+  const all = installed(r);
+  const twin = all.find(x => x.id === doc.id && x.type !== (doc.units ? 'page' : 'panel'));
+  if (twin) out.push(pf + ':id: "' + doc.id + '" is already installed as a ' + twin.type + '; remove it first or pick another id');
+  if (max && pl.area) {
+    const others = all.filter(x => x.id !== doc.id && x.panel && placementKey(x.panel.placement) === key);
+    if (others.length + 1 > max) out.push(pf + ':placement: ' + key + ' already holds ' + others.length + ' company ' + (pl.area === 'screen' ? 'screens' : 'panels') + ' (limit ' + max + '); remove one first');
+    if (pl.area === 'screen' && pl.nav) {
+      const clash = all.find(x => x.id !== doc.id && x.panel && x.panel.placement && x.panel.placement.area === 'screen' && String(x.panel.placement.nav).toLowerCase() === String(pl.nav).toLowerCase());
+      if (clash) out.push(pf + ':placement.nav: "' + pl.nav + '" is already used by ' + clash.id);
+    }
+  }
+  return out;
+}
+function folderExtras(dir, allowed, r) {
+  let names = []; try { names = fs.readdirSync(dir); } catch (_) {}
+  return names.filter(f => !allowed.includes(f)).map(x => rel(path.join(dir, x), r) + ': a ' + (allowed.includes('page.json') ? 'page folder holds page.json and README.md' : 'panel folder holds panel.json, view.html and README.md') + ' only');
 }
 /* Validate a parsed panel and its folder. Returns findings as "file:field: message" strings. */
 function validatePanel(panel, dir, opts) {
@@ -392,41 +508,11 @@ function validatePanel(panel, dir, opts) {
   for (const s of sc) out.push(pf + ':' + s);
   if (!panel || typeof panel !== 'object') return out;
   const lim = sources.limits || {};
-  const screens = sources.screens || {};
-
-  if (panel.id && path.basename(dir) !== panel.id) out.push(pf + ':id: must equal the folder name (' + path.basename(dir) + ')');
-  if ((sources.reservedIds || []).includes(panel.id)) out.push(pf + ':id: reserved for the console');
-
-  if (panel.owner && !FUNCTIONS.includes(panel.owner) && !findSeat(panel.owner, r)) out.push(pf + ':owner: not a function (' + FUNCTIONS.join(', ') + ') or a seat in loops.json');
-
-  const pl = panel.placement || {};
-  if (pl.area === 'side') {
-    if ((screens.protected || []).includes(pl.screen)) out.push(pf + ':placement.screen: ' + pl.screen + ' is protected');
-    else if (pl.screen && !(screens.sideAllowed || []).includes(pl.screen)) out.push(pf + ':placement.screen: side panels are allowed on ' + (screens.sideAllowed || []).join(', '));
-  }
-  if (pl.area === 'screen' && pl.nav && (screens.builtinLabels || []).some(l => l.toLowerCase() === String(pl.nav).trim().toLowerCase())) out.push(pf + ':placement.nav: "' + pl.nav + '" is a built-in console label');
-
-  if (panel.refresh != null) {
-    if (panel.refresh < (lim.minRefreshSeconds || 30)) out.push(pf + ':refresh: at least ' + (lim.minRefreshSeconds || 30) + ' seconds');
-    if (lim.maxRefreshSeconds && panel.refresh > lim.maxRefreshSeconds) out.push(pf + ':refresh: at most ' + lim.maxRefreshSeconds + ' seconds');
-  }
-
+  out.push(...validateCommon(panel, dir, pf, r, sources));
+  out.push(...validateSources(panel.sources, sources, pf, lim.maxSourcesPerPanel));
   const srcNames = Object.keys(panel.sources || {});
-  if (lim.maxSourcesPerPanel && srcNames.length > lim.maxSourcesPerPanel) out.push(pf + ':sources: at most ' + lim.maxSourcesPerPanel);
-  for (const n of srcNames) {
-    const s = panel.sources[n] || {};
-    if (s.type === 'file') for (const b of checkGlob(s.glob, sources)) out.push(pf + ':sources.' + n + '.glob: ' + b);
-    if (s.type === 'tool' && (!(sources.tool || {})[s.id] || String(s.id).startsWith('_'))) out.push(pf + ':sources.' + n + '.id: "' + s.id + '" is not an allowlisted tool (sources.json tool: ' + Object.keys(sources.tool || {}).filter(k => !k.startsWith('_')).join(', ') + ')');
-    if (s.type === 'station' && (!(sources.station || {})[s.id] || String(s.id).startsWith('_'))) out.push(pf + ':sources.' + n + '.id: "' + s.id + '" is not an allowlisted station endpoint (sources.json station: ' + Object.keys(sources.station || {}).filter(k => !k.startsWith('_')).join(', ') + ')');
-  }
-
   const v = panel.view || {};
-  const refs = [];
-  if (v.source) refs.push(['view.source', v.source]);
-  (v.items && v.kind === 'stat-row' ? v.items : []).forEach((it, i) => refs.push(['view.items[' + i + '].source', it.source]));
-  (v.sources || []).forEach((s, i) => refs.push(['view.sources[' + i + ']', s]));
-  for (const [field, name] of refs) if (name && !srcNames.includes(name)) out.push(pf + ':' + field + ': no source named "' + name + '" in sources');
-  if (v.kind === 'markdown' && v.source && panel.sources && panel.sources[v.source] && panel.sources[v.source].type === 'file' && !/\.md$/i.test(panel.sources[v.source].glob || '')) out.push(pf + ':view.source: a markdown view reads a .md file');
+  out.push(...validateView(v, 'view', { pf, srcNames, sources: panel.sources, actions: panel.actions || [] }));
   if (v.kind === 'custom') {
     const vh = path.join(dir, 'view.html');
     if (!fs.existsSync(vh)) out.push(pf + ':view.html: view.html is missing from the panel folder');
@@ -434,39 +520,39 @@ function validatePanel(panel, dir, opts) {
     const h = lim.customHeight || {};
     if (v.height != null && ((h.min && v.height < h.min) || (h.max && v.height > h.max))) out.push(pf + ':view.height: between ' + h.min + ' and ' + h.max);
   } else if (fs.existsSync(path.join(dir, 'view.html'))) out.push(rel(path.join(dir, 'view.html'), r) + ': only a custom view may ship view.html');
-  const extra = (() => { try { return fs.readdirSync(dir).filter(f => !['panel.json', 'view.html', 'README.md', 'fixture'].includes(f)); } catch (_) { return []; } })();
-  for (const x of extra) out.push(rel(path.join(dir, x), r) + ': a panel folder holds panel.json, view.html and README.md only');
-
-  const acts = panel.actions || [];
-  if (lim.maxActionsPerPanel && acts.length > lim.maxActionsPerPanel) out.push(pf + ':actions: at most ' + lim.maxActionsPerPanel);
-  const seen = new Set();
-  acts.forEach((a, i) => {
-    const at = pf + ':actions[' + i + ']';
-    if (seen.has(a.id)) out.push(at + '.id: duplicate'); seen.add(a.id);
-    if (a.kind === 'handoff') {
-      if (!a.to) out.push(at + '.to: a handoff names the function or seat it goes to');
-      else if (!FUNCTIONS.includes(a.to) && !findSeat(a.to, r)) out.push(at + '.to: not a function or a seat in loops.json');
-    } else if (a.to) out.push(at + '.to: only a handoff has a recipient (' + a.kind + ' goes to ' + (a.kind === 'ask-ceo' ? 'the CEO' : "the owner's own composer") + ')');
-    const tpl = String(a.text || '');
-    for (const m of tpl.match(/\{\{[^}]*\}\}/g) || []) {
-      if (!/^\{\{(row\.[A-Za-z0-9_.-]+|panel\.title)\}\}$/.test(m)) out.push(at + '.text: placeholder ' + m + ' (only {{row.<key>}} and {{panel.title}})');
-      else if (m.startsWith('{{row.') && a.scope !== 'row') out.push(at + '.text: ' + m + ' needs scope "row"');
-    }
-    if (/\{\{|\}\}/.test(tpl.replace(/\{\{[^}]*\}\}/g, ''))) out.push(at + '.text: unbalanced braces');
+  out.push(...folderExtras(dir, ['panel.json', 'view.html', 'README.md', 'fixture'], r));
+  out.push(...validateActions(panel.actions || [], { pf, root: r, max: lim.maxActionsPerPanel }));
+  return out;
+}
+/* Validate a parsed page (page.json: a company screen made of units) and its folder. */
+function validatePage(page, dir, opts) {
+  opts = opts || {};
+  const r = opts.root || root();
+  const sources = opts.sources || loadSources(r);
+  const pf = rel(path.join(dir, 'page.json'), r);
+  const out = [];
+  const schema = readJson(SCHEMA_FILE, null);
+  if (!schema) return [rel(SCHEMA_FILE, r) + ': cannot read the schema'];
+  const sc = []; schemaCheck(schema.$defs.page, page, '', sc, schema);
+  for (const s of sc) out.push(pf + ':' + s);
+  if (!page || typeof page !== 'object') return out;
+  const lim = sources.limits || {}; const pl = lim.page || {};
+  out.push(...validateCommon(page, dir, pf, r, sources));
+  out.push(...validateSources(page.sources, sources, pf, pl.maxSources || 8));
+  const srcNames = Object.keys(page.sources || {});
+  const acts = page.actions || [];
+  const units = Array.isArray(page.units) ? page.units : [];
+  if (pl.maxUnits && units.length > pl.maxUnits) out.push(pf + ':units: at most ' + pl.maxUnits);
+  const ids = new Set();
+  units.forEach((u, i) => {
+    const at = 'units[' + i + ']';
+    if (!u || typeof u !== 'object') return;
+    if (ids.has(u.id)) out.push(pf + ':' + at + '.id: duplicate unit id "' + u.id + '"'); ids.add(u.id);
+    out.push(...validateView(u.view, at + '.view', { pf, srcNames, sources: page.sources, actions: acts, inPage: true }));
+    (u.actions || []).forEach((id, j) => { const a = acts.find(x => x.id === id); if (!a) out.push(pf + ':' + at + '.actions[' + j + ']: no action "' + id + '" in actions'); else if (a.scope !== 'row') out.push(pf + ':' + at + '.actions[' + j + ']: "' + id + '" is not a row action (panel-wide actions show in the page header; move and ack are named by the view)'); });
   });
-
-  // limits per placement (count installed panels in the same placement, hidden ones included, not counting itself)
-  const key = placementKey(pl);
-  const limitKey = pl.area === 'side' ? 'side' : pl.area;
-  const max = (lim.perPlacement || {})[limitKey];
-  if (max && pl.area) {
-    const others = installed(r).filter(x => x.id !== panel.id && x.panel && placementKey(x.panel.placement) === key);
-    if (others.length + 1 > max) out.push(pf + ':placement: ' + key + ' already holds ' + others.length + ' company panels (limit ' + max + '); remove one first');
-    if (pl.area === 'screen' && pl.nav) {
-      const clash = installed(r).find(x => x.id !== panel.id && x.panel && x.panel.placement && x.panel.placement.area === 'screen' && String(x.panel.placement.nav).toLowerCase() === String(pl.nav).toLowerCase());
-      if (clash) out.push(pf + ':placement.nav: "' + pl.nav + '" is already used by ' + clash.id);
-    }
-  }
+  out.push(...folderExtras(dir, ['page.json', 'README.md'], r));
+  out.push(...validateActions(acts, { pf, root: r, max: pl.maxActions || 6 }));
   return out;
 }
 /* An id (installed, then proposed, then examples) or a path. add prefers the path: you add from a working folder. */
@@ -474,15 +560,16 @@ function resolveDir(arg, r, preferPath) {
   const P = paths(r);
   if (!arg || typeof arg !== 'string') return null;
   const byPath = () => { const a = path.resolve(arg); return fs.existsSync(a) ? (fs.statSync(a).isDirectory() ? a : path.dirname(a)) : null; };
-  const byId = () => { if (!/^[a-z][a-z0-9-]{1,39}$/.test(arg)) return null; for (const d of [P.panels, P.proposed, P.examples]) if (fs.existsSync(path.join(d, arg, 'panel.json'))) return path.join(d, arg); return null; };
+  const byId = () => { if (!/^[a-z][a-z0-9-]{1,39}$/.test(arg)) return null; for (const d of [P.panels, P.pages, P.proposed, P.examples]) for (const m of ['panel.json', 'page.json']) if (fs.existsSync(path.join(d, arg, m))) return path.join(d, arg); return null; };
   return preferPath ? (byPath() || byId()) : (byId() || byPath());
 }
 function validateDir(dir, opts) {
   const r = (opts && opts.root) || root();
-  const pfile = path.join(dir, 'panel.json');
+  const page = isPageDir(dir);
+  const pfile = path.join(dir, page ? 'page.json' : 'panel.json');
   let panel;
-  try { panel = JSON.parse(fs.readFileSync(pfile, 'utf8')); } catch (e) { return { panel: null, findings: [rel(pfile, r) + ': ' + (fs.existsSync(pfile) ? 'not valid JSON: ' + e.message : 'missing')] }; }
-  return { panel, findings: validatePanel(panel, dir, opts) };
+  try { panel = JSON.parse(fs.readFileSync(pfile, 'utf8')); } catch (e) { return { panel: null, page, findings: [rel(pfile, r) + ': ' + (fs.existsSync(pfile) ? 'not valid JSON: ' + e.message : 'missing (panel.json or page.json)')] }; }
+  return { panel, page, findings: page ? validatePage(panel, dir, opts) : validatePanel(panel, dir, opts) };
 }
 
 /* ---------- state, provenance ---------- */
@@ -490,7 +577,7 @@ function consoleState(r) { const s = readJson(paths(r).state, {}) || {}; s.hidde
 function writeState(s, r) { fs.mkdirSync(paths(r).console, { recursive: true }); fs.writeFileSync(paths(r).state, JSON.stringify(s, null, 2) + '\n'); }
 function digest(dir) {
   const h = crypto.createHash('sha256');
-  for (const f of ['panel.json', 'view.html']) { try { h.update(f + '\0' + fs.readFileSync(path.join(dir, f))); } catch (_) {} }
+  for (const f of ['panel.json', 'page.json', 'view.html']) { try { h.update(f + '\0' + fs.readFileSync(path.join(dir, f))); } catch (_) {} }
   return h.digest('hex').slice(0, 16);
 }
 function record(row, r) {
@@ -503,7 +590,7 @@ function record(row, r) {
 function copyPanel(src, dest) {
   fs.rmSync(dest, { recursive: true, force: true });
   fs.mkdirSync(dest, { recursive: true });
-  for (const f of ['panel.json', 'view.html', 'README.md']) if (fs.existsSync(path.join(src, f))) fs.copyFileSync(path.join(src, f), path.join(dest, f));
+  for (const f of ['panel.json', 'page.json', 'view.html', 'README.md']) if (fs.existsSync(path.join(src, f))) fs.copyFileSync(path.join(src, f), path.join(dest, f));
 }
 function tellOwner(text, from, r) {
   const mod = path.join(paths(r).tools, 'owner-inbox.js');
@@ -528,47 +615,49 @@ function cmdAdd(dirArg, by, r) {
   if (!by) return { code: 2, out: { ok: false, error: '--by <seat> is required' } };
   const owner = isOwner(by); const seat = findSeat(by, r);
   if (!owner && !seat) return { code: 1, out: { ok: false, error: '--by ' + by + ' is not a seat in loops.json or the owner' } };
-  if (path.resolve(dir).startsWith(path.resolve(P.panels) + path.sep)) return { code: 2, out: { ok: false, error: 'already installed; add from a working folder' } };
-  const { panel, findings } = validateDir(dir, { root: r });
+  if ([P.panels, P.pages].some(d => path.resolve(dir).startsWith(path.resolve(d) + path.sep))) return { code: 2, out: { ok: false, error: 'already installed; add from a working folder' } };
+  const { panel, findings, page } = validateDir(dir, { root: r });
   if (findings.length) return { code: 1, out: { ok: false, findings } };
-  const existing = readJson(path.join(P.panels, panel.id, 'panel.json'), null);
+  const home = page ? P.pages : P.panels; const what0 = page ? 'console page' : 'console panel';
+  const existing = readJson(path.join(home, panel.id, page ? 'page.json' : 'panel.json'), null);
   if (existing && !owner && !answersFor(by, existing.owner, r) && !holdsFn(seat.seat, 'tools') && !holdsFn(seat.seat, 'ceo'))
     return { code: 1, out: { ok: false, error: panel.id + ' is owned by ' + existing.owner + '; only its owner, the tools or CEO seat, or the owner may change it' } };
   const gate = owner ? 'owner' : gateFor('dashboard', r);
   const from = path.relative(r, dir);
   const who = owner ? 'owner' : seat.seat.name || seat.id;
-  const what = (existing ? 'changed' : 'added') + ' console panel "' + panel.title + '" (' + panel.id + ', ' + placementKey(panel.placement) + ', owner ' + panel.owner + ')';
+  const what = (existing ? 'changed' : 'added') + ' ' + what0 + ' "' + panel.title + '" (' + panel.id + ', ' + placementKey(panel.placement) + ', owner ' + panel.owner + ')';
   if (gate === 'approve') {
     copyPanel(dir, path.join(P.proposed, panel.id));
-    const q = who + ' proposes a console panel: "' + panel.title + '" (' + placementKey(panel.placement) + '). Why: ' + panel.why
+    const q = who + ' proposes a ' + what0 + ': "' + panel.title + '" (' + placementKey(panel.placement) + '). Why: ' + panel.why
       + ' Recommendation: approve. Default if unanswered: not installed. Approve: node company/tools/console-panel.js approve ' + panel.id + ' --by owner';
     const asked = askOwner(q, who, r);
-    const line = record({ op: 'propose', id: panel.id, by: who, gate, from, digest: digest(dir), question: asked.id || null }, r);
+    const line = record({ op: 'propose', id: panel.id, type: page ? 'page' : 'panel', by: who, gate, from, digest: digest(dir), question: asked.id || null }, r);
     return { code: 0, out: { ok: true, status: 'proposed', id: panel.id, dir: rel(path.join(P.proposed, panel.id), r), asked, change: line } };
   }
-  copyPanel(dir, path.join(P.panels, panel.id));
-  const line = record({ op: existing ? 'change' : 'add', id: panel.id, by: who, gate, from, digest: digest(dir) }, r);
+  copyPanel(dir, path.join(home, panel.id));
+  const line = record({ op: existing ? 'change' : 'add', id: panel.id, type: page ? 'page' : 'panel', by: who, gate, from, digest: digest(dir) }, r);
   const told = gate === 'notify' ? tellOwner(who + ' ' + what + '. Why: ' + panel.why + ' Hide it any time: console-panel.js hide ' + panel.id + ' --by owner', who, r) : null;
   const hidden = !!consoleState(r).hidden[panel.id];
-  return { code: 0, out: { ok: true, status: 'installed', id: panel.id, gate, hidden, told, change: line } };
+  return { code: 0, out: { ok: true, status: 'installed', id: panel.id, type: page ? 'page' : 'panel', gate, hidden, told, change: line } };
 }
 function cmdApprove(id, by, r, reject, note) {
   r = r || root(); const P = paths(r);
   if (!isOwner(by)) return { code: 1, out: { ok: false, error: 'only the owner ' + (reject ? 'rejects' : 'approves') + ' a proposed panel' } };
   const src = path.join(P.proposed, String(id || ''));
-  if (!id || !fs.existsSync(path.join(src, 'panel.json'))) return { code: 1, out: { ok: false, error: 'no proposed panel ' + id } };
+  if (!id || !fs.existsSync(path.join(src, manifestOf(src)))) return { code: 1, out: { ok: false, error: 'no proposed panel or page ' + id } };
   if (reject) { fs.rmSync(src, { recursive: true, force: true }); return { code: 0, out: { ok: true, status: 'rejected', change: record({ op: 'reject', id, by: 'owner', note: note || null }, r) } }; }
   const { findings } = validateDir(src, { root: r });
   if (findings.length) return { code: 1, out: { ok: false, findings } };
-  copyPanel(src, path.join(P.panels, id));
+  copyPanel(src, path.join(isPageDir(src) ? P.pages : P.panels, id));
   const d = digest(src); fs.rmSync(src, { recursive: true, force: true });
   return { code: 0, out: { ok: true, status: 'installed', id, change: record({ op: 'approve', id, by: 'owner', digest: d }, r) } };
 }
 function cmdRemove(id, by, r) {
   r = r || root(); const P = paths(r);
-  const dir = path.join(P.panels, String(id || ''));
-  const panel = readJson(path.join(dir, 'panel.json'), null);
-  if (!id || !panel) return { code: 1, out: { ok: false, error: 'no installed panel ' + id } };
+  const pdir = path.join(P.pages, String(id || ''));
+  const dir = id && fs.existsSync(path.join(pdir, 'page.json')) ? pdir : path.join(P.panels, String(id || ''));
+  const panel = readJson(path.join(dir, manifestOf(dir)), null);
+  if (!id || !panel) return { code: 1, out: { ok: false, error: 'no installed panel or page ' + id } };
   const owner = isOwner(by); const seat = findSeat(by, r);
   if (!owner && !(seat && (answersFor(by, panel.owner, r) || holdsFn(seat.seat, 'tools') || holdsFn(seat.seat, 'ceo'))))
     return { code: 1, out: { ok: false, error: 'only the panel owner (' + panel.owner + '), the tools or CEO seat, or the owner may remove ' + id } };
@@ -577,7 +666,7 @@ function cmdRemove(id, by, r) {
   fs.rmSync(dir, { recursive: true, force: true });
   const gate = owner ? 'owner' : gateFor('dashboard', r);
   const line = record({ op: 'remove', id, by: who, gate, digest: d }, r);
-  const told = gate === 'notify' || gate === 'approve' ? tellOwner(who + ' removed console panel "' + panel.title + '" (' + id + ').', who, r) : null;
+  const told = gate === 'notify' || gate === 'approve' ? tellOwner(who + ' removed console ' + (dir === pdir ? 'page' : 'panel') + ' "' + panel.title + '" (' + id + ').', who, r) : null;
   return { code: 0, out: { ok: true, status: 'removed', id, told, change: line } };
 }
 function cmdHide(id, by, r, unhide) {
@@ -593,14 +682,15 @@ function listPanels(r) {
   r = r || root(); const P = paths(r); const s = consoleState(r);
   let sources = null; try { sources = loadSources(r); } catch (_) {}
   const row = (status, dir) => {
-    const v = sources ? validateDir(dir, { root: r, sources }) : { panel: readJson(path.join(dir, 'panel.json'), null), findings: ['sources.json unreadable'] };
+    const v = sources ? validateDir(dir, { root: r, sources }) : { panel: readJson(path.join(dir, manifestOf(dir)), null), findings: ['sources.json unreadable'] };
     const p = v.panel || {};
-    return { id: path.basename(dir), status, title: p.title || null, placement: p.placement ? placementKey(p.placement) : null,
-      nav: p.placement && p.placement.nav || null, owner: p.owner || null, view: p.view && p.view.kind || null,
+    return { id: path.basename(dir), type: isPageDir(dir) ? 'page' : 'panel', units: Array.isArray(p.units) ? p.units.length : undefined, description: p.description || null, status, title: p.title || null, placement: p.placement ? placementKey(p.placement) : null,
+      nav: p.placement && p.placement.nav || null, order: p.placement && p.placement.order || null, owner: p.owner || null, view: p.units ? 'page' : p.view && p.view.kind || null,
       refresh: p.refresh || (sources && sources.limits && sources.limits.defaultRefreshSeconds) || 300,
       hidden: !!s.hidden[path.basename(dir)], valid: !v.findings.length, findings: v.findings.length };
   };
   return listDir(P.panels).map(id => row('installed', path.join(P.panels, id)))
+    .concat(listDir(P.pages).map(id => row('installed', path.join(P.pages, id))))
     .concat(listDir(P.proposed).map(id => row('proposed', path.join(P.proposed, id))));
 }
 
@@ -614,7 +704,7 @@ async function render(idOrDir, opts) {
   const { panel, findings } = validateDir(dir, { root: r, sources });
   if (!panel || findings.length) return { ok: false, id: panel && panel.id, error: 'panel does not validate', findings };
   const data = {}; const status = {};
-  const wanted = panel.view.kind === 'custom' && panel.view.sources ? panel.view.sources : Object.keys(panel.sources);
+  const wanted = panel.view && panel.view.kind === 'custom' && panel.view.sources ? panel.view.sources : Object.keys(panel.sources);
   for (const name of wanted) {
     const src = panel.sources[name]; let res;
     if (src.type === 'file') res = resolveFileSource(src, sources, r);
@@ -629,9 +719,134 @@ async function render(idOrDir, opts) {
     type: 'capheos:panel-data', version: 1, id: panel.id, at: new Date().toISOString(),
     title: panel.title, owner: panel.owner, why: panel.why, placement: panel.placement,
     refresh: Math.max(panel.refresh || lim.defaultRefreshSeconds || 300, lim.minRefreshSeconds || 30),
-    hidden: !!consoleState(r).hidden[panel.id], view: panel.view, actions: panel.actions || [],
+    hidden: !!consoleState(r).hidden[panel.id], actions: panel.actions || [],
+    ...(Array.isArray(panel.units) ? { kind: 'page', description: panel.description || null, units: panel.units } : { view: panel.view }),
     data, sources: status
   };
+}
+
+/* ---------- scaffolds: ready pages a seat copies and customises (company/console/scaffolds/<name>/) ----------
+ * A scaffold is page.json (source globs say {{data}}/<file>), README.md and sample/ (data files). Sample times are
+ * written as {{t:-2h}}, {{t:+3d}} or {{t:+1d@09:30}} (a wall time in the company timezone) and become ISO times when
+ * the scaffold is copied, so a fresh page always shows "today". The copy lands in the seat's working folder: the page
+ * in company/work/<seat>/pages/<id>/, the sample data in company/work/<seat>/page-data/<id>/, and the globs point
+ * there. The seat then edits it, points the sources at its real files, validates, previews and adds as usual. */
+function listScaffolds(r) {
+  const P = paths(r);
+  return listDir(P.scaffolds).filter(n => fs.existsSync(path.join(P.scaffolds, n, 'page.json'))).map(n => {
+    const p = readJson(path.join(P.scaffolds, n, 'page.json'), {}) || {};
+    return { name: n, title: p.title || n, description: p.description || '', units: (p.units || []).map(u => u.view && u.view.kind), samples: listFiles(path.join(P.scaffolds, n, 'sample')) };
+  });
+}
+function listFiles(d) { try { return fs.readdirSync(d, { withFileTypes: true }).filter(e => e.isFile()).map(e => e.name).sort(); } catch (_) { return []; } }
+function tzOffsetMs(t, tz) {
+  try {
+    const f = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const o = {}; for (const x of f.formatToParts(t)) o[x.type] = x.value;
+    return Date.UTC(+o.year, +o.month - 1, +o.day, +o.hour % 24, +o.minute, +o.second) - Math.floor(t / 1000) * 1000;
+  } catch (_) { return 0; }
+}
+/* {{t:<+|-><n><m|h|d>[@HH:MM]}} -> ISO time, relative to `now`, wall time in `tz` */
+function sampleTimes(text, now, tz) {
+  return String(text).replace(/\{\{t:([+-])(\d{1,4})([mhd])(?:@(\d{2}):(\d{2}))?\}\}/g, (_, sign, n, unit, hh, mm) => {
+    const k = (sign === '-' ? -1 : 1) * Number(n);
+    if (unit !== 'd' || hh == null) return new Date(now + k * { m: 6e4, h: 36e5, d: 864e5 }[unit]).toISOString();
+    const local = now + tzOffsetMs(now, tz);                       // wall clock in tz, as if UTC
+    const d = new Date(local + k * 864e5);
+    const wall = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), Number(hh), Number(mm));
+    return new Date(wall - tzOffsetMs(wall, tz)).toISOString();
+  });
+}
+function companyTz(r) {
+  if (paths(r).root === co.ROOT) return process.env.CAPHEOS_TZ || (co.config && co.config.timezone) || co.TZ || 'UTC';
+  const c = readJson(path.join(paths(r).root, 'company', 'company.json'), {}) || {};
+  return process.env.CAPHEOS_TZ || c.timezone || 'UTC';
+}
+function cmdScaffold(name, opts, r) {
+  r = r || root(); const P = paths(r); opts = opts || {};
+  const all = listScaffolds(r);
+  if (!name || name === true) return { code: 2, out: { ok: false, error: 'scaffold <name> --as <id> --by <seat>; scaffolds: ' + all.map(x => x.name).join(', ') } };
+  const src = path.join(P.scaffolds, String(name));
+  if (!/^[a-z][a-z0-9-]{1,39}$/.test(String(name)) || !fs.existsSync(path.join(src, 'page.json'))) return { code: 1, out: { ok: false, error: 'no scaffold "' + name + '"; scaffolds: ' + all.map(x => x.name).join(', ') } };
+  const id = opts.as && opts.as !== true ? String(opts.as) : String(name);
+  if (!/^[a-z][a-z0-9-]{1,39}$/.test(id)) return { code: 2, out: { ok: false, error: '--as must be a lowercase kebab-case id, 2 to 40 characters' } };
+  let seatId = null;
+  if (opts.by && opts.by !== true) { const s0 = isOwner(opts.by) ? { id: 'owner' } : findSeat(opts.by, r); if (!s0) return { code: 1, out: { ok: false, error: '--by ' + opts.by + ' is not a seat in loops.json or the owner' } }; seatId = s0.id; }
+  const under = d => { const a = path.resolve(r, d); return a.startsWith(path.join(P.root, 'company', 'work') + path.sep) ? a : null; };
+  const dir = opts.dir && opts.dir !== true ? under(opts.dir) : seatId ? path.join(P.root, 'company', 'work', seatId, 'pages', id) : null;
+  if (!dir) return { code: 2, out: { ok: false, error: opts.dir ? '--dir must be under company/work/' : '--by <seat> (or --dir under company/work/) is required' } };
+  if (path.basename(dir) !== id) return { code: 2, out: { ok: false, error: 'the page folder must be named after the id (' + id + ')' } };
+  const dataDir = opts.data && opts.data !== true ? under(opts.data) : path.join(path.dirname(path.dirname(dir)), 'page-data', id);
+  if (!dataDir) return { code: 2, out: { ok: false, error: '--data must be under company/work/' } };
+  if (fs.existsSync(dir) && !opts.force) return { code: 1, out: { ok: false, error: rel(dir, r) + ' already exists; edit it, or pass --force to overwrite it with a fresh copy' } };
+  const now = Date.now(); const tz = companyTz(r); const dataRel = path.relative(r, dataDir).split(path.sep).join('/');
+  fs.mkdirSync(dir, { recursive: true }); fs.mkdirSync(dataDir, { recursive: true });
+  const page = JSON.parse(fs.readFileSync(path.join(src, 'page.json'), 'utf8').split('{{data}}').join(dataRel));
+  page.id = id; delete page.$schema;
+  if (opts.nav && opts.nav !== true) page.placement = Object.assign({}, page.placement, { nav: String(opts.nav) });
+  if (opts.owner && opts.owner !== true) page.owner = String(opts.owner);
+  fs.writeFileSync(path.join(dir, 'page.json'), JSON.stringify(page, null, 2) + '\n');
+  if (fs.existsSync(path.join(src, 'README.md'))) fs.copyFileSync(path.join(src, 'README.md'), path.join(dir, 'README.md'));
+  const written = [];
+  for (const f of listFiles(path.join(src, 'sample'))) {
+    const dest = path.join(dataDir, f);
+    if (fs.existsSync(dest) && !opts.force) continue;   // never overwrite data a routine already writes
+    fs.writeFileSync(dest, sampleTimes(fs.readFileSync(path.join(src, 'sample', f), 'utf8'), now, tz)); written.push(rel(dest, r));
+  }
+  const d = rel(dir, r);
+  return { code: 0, out: { ok: true, scaffold: name, id, dir: d, data: dataRel, written, next: [
+    'edit ' + d + '/page.json: title, why, owner, nav, units; point sources at the files your routine writes',
+    'node company/tools/console-panel.js validate ' + d,
+    'node company/tools/console-panel.js render --page ' + d + ' --png /tmp/' + id + '.png   # look at it, light and dark (--theme dark), phone (--width 390)',
+    'node company/tools/console-panel.js add ' + d + ' --by <you>'] } };
+}
+
+/* ---------- design tokens: the table in docs/CONSOLE-DESIGN.md is generated from console/ui/ds/tokens ---------- */
+const TOKENS_BEGIN = '<!-- tokens:begin (generated by console-panel.js tokens --write; do not edit by hand) -->';
+const TOKENS_END = '<!-- tokens:end -->';
+function frameworkDir(r) { const a = path.join(paths(r).root, 'console', 'ui', 'ds', 'tokens'); return fs.existsSync(a) ? paths(r).root : path.join(__dirname, '..', '..'); }
+function readTokens(r) {
+  const dir = path.join(frameworkDir(r), 'console', 'ui', 'ds', 'tokens');
+  const out = []; const seen = new Map();
+  for (const f of ['colors.css', 'dataviz.css', 'typography.css', 'spacing.css', 'effects.css', 'dark.css']) {
+    let css = ''; try { css = fs.readFileSync(path.join(dir, f), 'utf8'); } catch (_) { continue; }
+    if (f === 'dark.css') {
+      const block = (css.match(/:root\[data-theme="dark"\]\{([\s\S]*?)\}/) || [])[1] || '';
+      for (const m of block.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)) { const t = seen.get(m[1]); if (t) t.dark = m[2].trim(); }
+      continue;
+    }
+    for (const m of css.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)) {
+      const name = m[1]; if (seen.has(name)) continue;
+      const group = f === 'colors.css' ? (/^--(espresso|robusta|clay|brass|jungle|linen|rust|paper|ink)/.test(name) ? 'brand palette (do not use directly)' : /^--status/.test(name) ? 'status' : 'colour role')
+        : f === 'dataviz.css' ? 'chart' : f === 'typography.css' ? (/^--(type|tracking)/.test(name) ? 'type scale' : 'font') : f === 'spacing.css' ? (/^--space/.test(name) ? 'spacing' : 'layout') : /^--radius/.test(name) ? 'radius' : /^--shadow/.test(name) ? 'shadow' : 'effect';
+      const t = { name, group, light: m[2].trim(), dark: null }; seen.set(name, t); out.push(t);
+    }
+  }
+  return out;
+}
+function tokenTable(r) {
+  const order = ['colour role', 'status', 'chart', 'type scale', 'font', 'spacing', 'radius', 'shadow', 'layout', 'effect', 'brand palette (do not use directly)'];
+  const toks = readTokens(r).sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));
+  const esc = x => String(x == null ? '' : x).replace(/\|/g, '\\|');
+  const lines = [TOKENS_BEGIN, '', '| Token | Group | Light | Dark |', '|---|---|---|---|'];
+  const byName = new Map(toks.map(t => [t.name, t]));
+  const resolve = v => { const m = /^var\((--[a-z0-9-]+)\)$/.exec(v); const t = m && byName.get(m[1]); return t && /^#/.test(t.light) ? '`' + esc(v) + '` = `' + t.light + '`' : '`' + esc(v) + '`'; };
+  for (const t of toks) lines.push('| `' + t.name + '` | ' + t.group + ' | ' + resolve(t.light) + ' | ' + (t.dark ? '`' + esc(t.dark) + '`' : 'same') + ' |');
+  lines.push('', TOKENS_END);
+  return lines.join('\n');
+}
+function designDoc(r) { return path.join(frameworkDir(r), 'docs', 'CONSOLE-DESIGN.md'); }
+/* check (default) or write the generated table; { ok, drift, file } */
+function cmdTokens(write, r) {
+  const f = designDoc(r); let doc = '';
+  try { doc = fs.readFileSync(f, 'utf8'); } catch (_) { return { code: 1, out: { ok: false, error: 'cannot read ' + f } }; }
+  const a = doc.indexOf(TOKENS_BEGIN), b = doc.indexOf(TOKENS_END);
+  if (a < 0 || b < a) return { code: 1, out: { ok: false, error: f + ' has no tokens:begin/end markers' } };
+  const want = tokenTable(r); const have = doc.slice(a, b + TOKENS_END.length);
+  if (have === want) return { code: 0, out: { ok: true, drift: false, file: rel(f, r), tokens: readTokens(r).length } };
+  if (!write) return { code: 1, out: { ok: false, drift: true, file: rel(f, r), error: 'the token table in ' + rel(f, r) + ' is out of date: run node company/tools/console-panel.js tokens --write' } };
+  fs.writeFileSync(f, doc.slice(0, a) + want + doc.slice(b + TOKENS_END.length));
+  return { code: 0, out: { ok: true, drift: false, wrote: rel(f, r), tokens: readTokens(r).length } };
 }
 
 /* ---------- selftest (offline, temp copy of fixtures/console) ---------- */
@@ -739,6 +954,111 @@ function selftest() {
 
       res = cmdRemove('trading-positions', 'Alex', tmp);
       t('panel owner removes', res.code === 0 && !fs.existsSync(path.join(tmp, 'company', 'console', 'panels', 'trading-positions')), res.out);
+
+      /* ---------- page kit: every new kind's schema + validation, pages, scaffolds, tokens ---------- */
+      const pv = (units, extra) => Object.assign({ version: 1, id: 'kit-page', title: 'Kit page', owner: 'tools', why: 'Selftest page used to prove the page kit validation.',
+        placement: { area: 'screen', nav: 'Kit' }, sources: { rows: { type: 'file', glob: 'company/work/desk/positions.json' } }, units,
+        actions: [{ id: 'mv', label: 'Move', kind: 'handoff', to: 'tools', scope: 'move', text: 'Move {{row.symbol}} from {{move.from}} to {{move.to}}.' },
+          { id: 'ack', label: 'Acknowledge', kind: 'handoff', to: 'tools', scope: 'row', text: 'Ack {{row.symbol}}.' },
+          { id: 'note', label: 'Ask for a note', kind: 'ask-ceo', scope: 'panel', text: 'A note on {{panel.title}} please.' }] }, extra || {});
+      const checkPage = (page) => { const d = path.join(tmp, 'kit', page.id); fs.rmSync(d, { recursive: true, force: true }); fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, 'page.json'), JSON.stringify(page)); return validatePage(page, d, { root: tmp, sources }); };
+      const U = view => [{ id: 'u1', title: 'Unit', span: 6, view }];
+      const GOOD = {
+        kanban: { kind: 'kanban', source: 'rows', rows: 'positions', column: 'side', title: 'symbol', columns: [{ id: 'long', label: 'Long' }, { id: 'short', label: 'Short', limit: 3 }], steps: { done: 'a', total: 'b' }, move: 'mv' },
+        calendar: { kind: 'calendar', source: 'rows', rows: 'positions', start: 'opened', title: 'symbol', view: 'week', views: ['week', 'agenda'] },
+        'status-grid': { kind: 'status-grid', source: 'rows', rows: 'positions', name: 'symbol', state: 'side', stateMap: { long: 'ok', short: 'warn' }, history: 'h', historyN: 10 },
+        positions: { kind: 'positions', source: 'rows', rows: 'positions', symbol: 'symbol', size: 'qty', entry: 'avg', mark: 'mark', totals: true },
+        'chart area': { kind: 'chart', chart: 'area', source: 'rows', rows: 'positions', x: { key: 'at', time: true }, series: [{ key: 'pnl', label: 'P&L' }], refs: [{ label: 'Limit', value: -5, tone: 'bad' }] },
+        'chart stacked-bar': { kind: 'chart', chart: 'stacked-bar', source: 'rows', rows: 'positions', x: { key: 'symbol' }, series: [{ key: 'a', label: 'A' }, { key: 'b', label: 'B' }] },
+        'chart candlestick': { kind: 'chart', chart: 'candlestick', source: 'rows', rows: 'positions', x: { key: 'at', time: true }, ohlc: { open: 'o', high: 'h', low: 'l', close: 'c' } },
+        'chart scatter': { kind: 'chart', chart: 'scatter', source: 'rows', rows: 'positions', x: { key: 'qty' }, series: [{ key: 'pnl', label: 'P&L' }] },
+        gauge: { kind: 'gauge', source: 'rows', items: [{ label: 'Gross', value: 'gross', max: 100, warnAt: 0.7, badAt: 0.9 }, { label: 'Net', value: 'net', max: 'limits.net' }] },
+        progress: { kind: 'progress', source: 'rows', items: [{ label: 'Target', value: 'x', max: 10, goodWhen: 'high' }] },
+        'pipeline by': { kind: 'pipeline', source: 'rows', rows: 'positions', by: 'side', stuck: 'stuck', stages: [{ id: 'long', label: 'Long' }, { id: 'short', label: 'Short' }] },
+        'pipeline rows': { kind: 'pipeline', source: 'rows', rows: 'positions', label: 'symbol', count: 'qty' },
+        feed: { kind: 'feed', source: 'rows', rows: 'positions', at: 'at', title: 'symbol', severity: 'side', severityMap: { short: 'warn' }, acked: 'acked', ack: 'ack' }
+      };
+      for (const [k, v] of Object.entries(GOOD)) { const f = checkPage(pv(U(v))); t('page kit: a good ' + k + ' unit validates', !f.length, f); }
+      const pnl = { version: 1, id: 'kit-panel', title: 'Kit panel', owner: 'tools', why: 'Selftest panel: a new kind works as a single panel too.', placement: { area: 'side', screen: 'work' }, sources: { rows: { type: 'file', glob: 'company/work/desk/positions.json' } }, view: GOOD.kanban, actions: pv([]).actions };
+      { const d = path.join(tmp, 'kit', 'kit-panel'); fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, 'panel.json'), JSON.stringify(pnl)); const f = validatePanel(pnl, d, { root: tmp, sources }); t('page kit: a new kind works as a single panel', !f.length, f); }
+      const mut = (k, patch) => Object.assign({}, GOOD[k], patch);
+      const BAD = [
+        ['kanban without column', U(Object.assign(mut('kanban'), { column: undefined })), /column: required/],
+        ['kanban move naming no action', U(mut('kanban', { move: 'nope' })), /move: no action "nope"/],
+        ['kanban move naming a row action', U(mut('kanban', { move: 'ack' })), /needs scope "move"/],
+        ['calendar view "year"', U(mut('calendar', { view: 'year' })), /view: must be one of/],
+        ['status-grid stateMap to a colour', U(mut('status-grid', { stateMap: { long: 'red' } })), /stateMap\.long: must be one of/],
+        ['positions without mark', U(Object.assign(mut('positions'), { mark: undefined })), /mark: required/],
+        ['chart kind pie', U(mut('chart area', { chart: 'pie' })), /chart: must be one of/],
+        ['candlestick without ohlc', U(Object.assign(mut('chart candlestick'), { ohlc: undefined })), /ohlc: a candlestick chart names/],
+        ['line chart without series', U(Object.assign(mut('chart area', { chart: 'line' }), { series: undefined })), /series: required/],
+        ['scatter on a time axis', U(mut('chart scatter', { x: { key: 'at', time: true } })), /scatter plots two measures/],
+        ['reference line with value and from', U(mut('chart area', { refs: [{ label: 'L', value: 1, from: 'limits.x' }] })), /exactly one of value/],
+        ['gauge warnAt above badAt', U(mut('gauge', { items: [{ label: 'G', value: 'g', max: 1, warnAt: 0.95, badAt: 0.9 }] })), /warnAt: must be below badAt/],
+        ['gauge max an object', U(mut('gauge', { items: [{ label: 'G', value: 'g', max: { x: 1 } }] })), /max: matches no allowed shape/],
+        ['progress with no items', U(mut('progress', { items: [] })), /items: needs at least 1/],
+        ['pipeline with both by and count', U(mut('pipeline by', { label: 'a', count: 'b' })), /either `by`/],
+        ['pipeline with neither', U({ kind: 'pipeline', source: 'rows' }), /name `by`/],
+        ['feed ack on a panel-wide action', U(mut('feed', { ack: 'note' })), /needs scope "row"/],
+        ['feed ack without acked', U(Object.assign(mut('feed'), { acked: undefined })), /acked: an ack action needs/],
+        ['a custom view in a page', U({ kind: 'custom', html: 'view.html' }), /custom views are single panels only/],
+        ['a unit naming an unknown source', U(mut('positions', { source: 'nope' })), /no source named "nope"/],
+        ['span 13', [{ id: 'u1', span: 13, view: GOOD.positions }], /span: above maximum 12/],
+        ['duplicate unit ids', [{ id: 'u1', view: GOOD.positions }, { id: 'u1', view: GOOD.gauge }], /duplicate unit id/],
+        ['a unit offering a non-row action', [{ id: 'u1', view: GOOD.positions, actions: ['note'] }], /is not a row action/],
+        ['13 units', Array.from({ length: 13 }, (_, i) => ({ id: 'u' + i, view: GOOD.positions })), /units: at most 12/]
+      ];
+      for (const [name, units, re] of BAD) { const f = checkPage(pv(JSON.parse(JSON.stringify(units)))); t('page kit refuses: ' + name, has(f, re), f); }
+      t('page kit refuses: a page placed on Today', has(checkPage(pv(U(GOOD.positions), { placement: { area: 'today' } })), /placement\.area: must be "screen"|placement\.nav: required/));
+      t('page kit refuses: 9 sources', has(checkPage(pv(U(GOOD.positions), { sources: Object.fromEntries(Array.from({ length: 9 }, (_, i) => ['s' + i, { type: 'file', glob: 'company/work/desk/positions.json' }])) })), /sources: at most 8/));
+      t('page kit refuses: {{move.to}} outside a move action', has(checkPage(pv(U(GOOD.positions), { actions: [{ id: 'x', label: 'Ask', kind: 'ask-ceo', scope: 'row', text: 'To {{move.to}} please' }] })), /needs scope "move"/));
+      t('page kit refuses: a built-in nav label', has(checkPage(pv(U(GOOD.positions), { placement: { area: 'screen', nav: 'System' } })), /built-in console label/));
+      t('page kit refuses: a stray file in the page folder', (() => { const d = path.join(tmp, 'kit', 'kit-page'); checkPage(pv(U(GOOD.positions))); fs.writeFileSync(path.join(d, 'data.json'), '{}'); return has(validatePage(pv(U(GOOD.positions)), d, { root: tmp, sources }), /holds page\.json and README\.md only/); })());
+
+      // sample times: wall time in the company timezone
+      const st = sampleTimes('{{t:+1d@09:30}}|{{t:-2h}}', Date.parse('2026-03-07T12:00:00Z'), 'America/New_York');
+      t('sample times: {{t:+1d@09:30}} is 09:30 local the next day; {{t:-2h}} is two hours ago', st === '2026-03-08T14:30:00.000Z|2026-03-07T10:00:00.000Z' || st === '2026-03-08T13:30:00.000Z|2026-03-07T10:00:00.000Z', st);
+
+      // scaffolds: copy -> validate -> add -> render, for every one that ships
+      fs.cpSync(path.join(__dirname, '..', 'console', 'scaffolds'), path.join(tmp, 'company', 'console', 'scaffolds'), { recursive: true });
+      const names = listScaffolds(tmp).map(x => x.name);
+      t('five scaffolds ship', ['trading-desk', 'noc-health', 'production-board', 'calendar', 'client-portfolio'].every(n => names.includes(n)), names);
+      for (const n of names) {
+        const sc = cmdScaffold(n, { as: n, by: 'Sam' }, tmp);
+        const dir = sc.out.dir ? path.join(tmp, sc.out.dir) : null;
+        t('scaffold ' + n + ': copied into the seat\'s working folder with its data', sc.code === 0 && /^company\/work\/sam\/pages\//.test(sc.out.dir) && sc.out.written.length > 0 && !fs.readFileSync(path.join(dir, 'page.json'), 'utf8').includes('{{data}}'), sc.out);
+        if (!dir) continue;
+        const vf = validateDir(dir, { root: tmp }).findings; t('scaffold ' + n + ': validates', !vf.length, vf);
+        const leftover = sc.out.written.filter(f => /\{\{t:/.test(fs.readFileSync(path.join(tmp, f), 'utf8'))); t('scaffold ' + n + ': every sample time filled in', !leftover.length, leftover);
+        const ad = cmdAdd(dir, 'Sam', tmp); t('scaffold ' + n + ': add installs it into company/console/pages/', ad.code === 0 && ad.out.type === 'page' && fs.existsSync(path.join(tmp, 'company', 'console', 'pages', n, 'page.json')), ad.out);
+        const rr = await render(n, { root: tmp }); t('scaffold ' + n + ': render resolves every source', rr.ok && rr.kind === 'page' && rr.units.length > 0 && Object.values(rr.sources).every(x => x.ok), rr.sources || rr);
+      }
+      t('scaffold refuses to overwrite a working copy', cmdScaffold('calendar', { as: 'calendar', by: 'Sam' }, tmp).code === 1);
+      t('scaffold refuses an unknown name', cmdScaffold('nope', { as: 'x1', by: 'Sam' }, tmp).code === 1);
+      t('scaffold refuses a --dir outside company/work', cmdScaffold('calendar', { as: 'cal2', dir: 'company/state/cal2' }, tmp).code === 2);
+      const lp = listPanels(tmp);
+      t('list shows pages with type, units and placement', names.every(n => lp.some(x => x.id === n && x.type === 'page' && x.placement === 'screen' && x.units > 0 && x.valid)), lp);
+      t('changes.jsonl records a page add', fs.readFileSync(path.join(tmp, 'company', 'console', 'changes.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)).some(c => c.op === 'add' && c.type === 'page' && c.digest));
+      // the 8-screen limit counts pages: 5 pages so far, 3 more fit, the 9th does not
+      let nineth = null;
+      for (let i = 1; i <= 4; i++) { const sc = cmdScaffold('calendar', { as: 'cal-' + i, by: 'Sam', nav: 'Cal ' + i }, tmp); nineth = cmdAdd(path.join(tmp, sc.out.dir), 'Sam', tmp); if (i < 4) t('page ' + (5 + i) + ' of 8 installs', nineth.code === 0, nineth.out); }
+      t('a ninth company screen is refused (limit 8)', nineth.code === 1 && has(nineth.out.findings || [], /limit 8/), nineth.out);
+      t('a page cannot reuse a panel id (or a panel a page id)', (() => { const d = path.join(tmp, 'kit', 'calendar'); fs.mkdirSync(d, { recursive: true }); const p0 = Object.assign({}, pnl, { id: 'calendar' }); fs.writeFileSync(path.join(d, 'panel.json'), JSON.stringify(p0)); return has(validatePanel(p0, d, { root: tmp, sources }), /already installed as a page/); })());
+      t('owner hides a page', cmdHide('noc-health', 'owner', tmp).code === 0 && listPanels(tmp).some(x => x.id === 'noc-health' && x.hidden));
+      t('a seat that does not answer for a page cannot remove it', cmdRemove('trading-desk', 'Kim', tmp).code === 1);
+      res = cmdRemove('trading-desk', 'Alex', tmp);
+      t('the page owner (finance) removes it', res.code === 0 && !fs.existsSync(path.join(tmp, 'company', 'console', 'pages', 'trading-desk')), res.out);
+
+      // tokens: the doc table matches the CSS, and a drift is caught
+      t('docs/CONSOLE-DESIGN.md token table matches console/ui/ds/tokens', cmdTokens(false, path.join(__dirname, '..', '..')).code === 0, cmdTokens(false, path.join(__dirname, '..', '..')).out);
+      { const fw = path.join(tmp, 'fw'); fs.mkdirSync(path.join(fw, 'docs'), { recursive: true }); fs.cpSync(path.join(__dirname, '..', '..', 'console', 'ui', 'ds', 'tokens'), path.join(fw, 'console', 'ui', 'ds', 'tokens'), { recursive: true });
+        fs.copyFileSync(path.join(__dirname, '..', '..', 'docs', 'CONSOLE-DESIGN.md'), path.join(fw, 'docs', 'CONSOLE-DESIGN.md'));
+        fs.appendFileSync(path.join(fw, 'console', 'ui', 'ds', 'tokens', 'dataviz.css'), ':root{--chart-7:#000000;}\n');
+        const d1 = cmdTokens(false, fw); const d2 = cmdTokens(true, fw); const d3 = cmdTokens(false, fw);
+        t('a new token without a doc row is caught, and tokens --write fixes it', d1.code === 1 && d1.out.drift && d2.code === 0 && d3.code === 0, [d1.out, d3.out]); }
+      { const css = fs.readFileSync(path.join(__dirname, '..', '..', 'console', 'ui', 'ds', 'tokens', 'dark.css'), 'utf8');
+        const a = (css.match(/:root:not\(\[data-theme="light"\]\)\{([\s\S]*?)\}/) || [])[1], b = (css.match(/:root\[data-theme="dark"\]\{([\s\S]*?)\}/) || [])[1];
+        t('dark.css: the device-setting block and the data-theme block are the same', a && a.trim() === (b || '').trim()); }
     } catch (e) { t('selftest crashed', false, e.stack); }
     done();
     console.log(fails ? fails + ' FAILED' : 'ALL PASS');
@@ -746,7 +1066,7 @@ function selftest() {
   })();
 }
 
-module.exports = { render, validatePanel, validateDir, listPanels, loadSources, gateFor, resolveFileSource, lintViewHtml, checkGlob, paths };
+module.exports = { render, validatePanel, validatePage, validateView, validateDir, listPanels, listScaffolds, cmdScaffold, cmdTokens, tokenTable, sampleTimes, loadSources, gateFor, resolveFileSource, lintViewHtml, checkGlob, paths, companyTz };
 
 if (require.main !== module) return;
 
@@ -784,10 +1104,27 @@ const emit = res => { console.log(JSON.stringify(res.out, null, 1)); process.exi
   if (cmd === 'remove') emit(cmdRemove(A._[1], A.by));
   if (cmd === 'hide') emit(cmdHide(A._[1], A.by));
   if (cmd === 'unhide') emit(cmdHide(A._[1], A.by, undefined, true));
-  if (cmd === 'render') {
-    const res = await render(A._[1], { live: !!A.live });
-    console.log(JSON.stringify(res, null, A.json ? 1 : 2)); process.exit(res.ok ? 0 : 1);
+  if (cmd === 'scaffolds') { const rows = listScaffolds(); if (A.json) console.log(JSON.stringify(rows, null, 1)); else for (const x of rows) console.log(x.name.padEnd(20) + ' ' + x.title + ' — ' + x.units.join(', ')); process.exit(0); }
+  if (cmd === 'scaffold') emit(cmdScaffold(A._[1], { as: A.as, by: A.by, dir: A.dir, data: A.data, nav: A.nav, owner: A.owner, force: !!A.force }));
+  if (cmd === 'tokens') {
+    if (A.print) { console.log(tokenTable()); process.exit(0); }
+    emit(cmdTokens(!!A.write));
   }
-  console.error('usage: console-panel.js list [--json] | validate <id|dir> | add <dir> --by <seat> | approve|reject <id> --by owner | remove <id> --by <seat> | hide|unhide <id> --by owner | render <id> --json [--live] | selftest');
+  if (cmd === 'render') {
+    const target = A.page && A.page !== true ? A.page : A._[1];
+    const res = await render(target, { live: !!A.live });
+    if (!A.png && !A.serve) { console.log(JSON.stringify(res, null, A.json ? 1 : 2)); process.exit(res.ok ? 0 : 1); }
+    // a picture of it, drawn by the console's own code (lib/page-preview.js)
+    const pv = require('./lib/page-preview.js');
+    const info = (() => { try { return { name: co.config.name, timezone: companyTz(), currency: co.config.currency || 'USD' }; } catch (_) { return {}; } })();
+    const answer = res.ok || res.view || res.units ? res : Object.assign({ id: res.id || target }, res);
+    const srv = await pv.serve(answer, { theme: A.theme === 'dark' ? 'dark' : A.theme === 'light' ? 'light' : null, company: info });
+    if (A.serve) { console.log('preview: ' + srv.url + '  (Ctrl-C to stop; append ?theme=dark for the dark theme)'); return; }
+    const shot = await pv.screenshot(srv.url, A.png === true ? (res.id || 'preview') + '.png' : A.png, { width: A.width, height: A.height, theme: A.theme });
+    await srv.close();
+    console.log(JSON.stringify({ ok: shot.ok && !!res.ok, png: shot.file || null, error: shot.error || (res.ok ? undefined : res.error), findings: res.findings, sources: res.sources }, null, 1));
+    process.exit(shot.ok && res.ok ? 0 : 1);
+  }
+  console.error('usage: console-panel.js list [--json] | validate <id|dir> | add <dir> --by <seat> | scaffolds | scaffold <name> --as <id> --by <seat> | render --page <id|dir> [--png out.png] [--theme dark] [--width 390] [--serve] | tokens [--write|--print] | approve|reject <id> --by owner | remove <id> --by <seat> | hide|unhide <id> --by owner | render <id> --json [--live] | selftest');
   process.exit(2);
 })();

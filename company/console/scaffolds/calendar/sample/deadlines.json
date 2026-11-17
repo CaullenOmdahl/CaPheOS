@@ -1,0 +1,26 @@
+[
+ {
+  "due": "{{t:+2d@00:00}}",
+  "title": "VAT return due",
+  "owner": "finance",
+  "late": false
+ },
+ {
+  "due": "{{t:+7d@00:00}}",
+  "title": "Contract renewal: Fabrikam",
+  "owner": "ceo",
+  "late": false
+ },
+ {
+  "due": "{{t:+14d@00:00}}",
+  "title": "Payroll cut-off",
+  "owner": "finance",
+  "late": false
+ },
+ {
+  "due": "{{t:+21d@00:00}}",
+  "title": "Insurance renewal",
+  "owner": "risk",
+  "late": false
+ }
+]

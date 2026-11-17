@@ -1,10 +1,10 @@
 ---
 name: console-panels
-description: Add, change or remove a panel on the owner console (Today, a screen's side column, or a Company screen) so it fits this company's work. Use when the owner keeps asking for the same numbers or list, or when your function produces data the owner would check often; not for one-off reports.
+description: Add, change or remove a panel or a whole page (a dashboard screen of units, from a scaffold) on the owner console so it fits this company's work. Use when the owner keeps asking for the same numbers or list, or when your function produces data the owner would check often; not for one-off reports.
 license: MIT
 metadata:
   owner: company
-  version: "1.0"
+  version: "1.1"
 ---
 
 # Console panels
@@ -60,6 +60,39 @@ owner looks at it often), `placement`, `sources`, `view`, optional `refresh` (>=
   never anything external; the owner confirms every action.
 - A hidden panel is the owner's verdict. Do not re-add it under a new id; ask through the CEO what would make it
   useful.
+
+## Pages: a whole dashboard screen
+
+When the owner needs a screen of their own (a trading desk, a NOC health board, a production board, a calendar, a
+client portfolio), build a **page**: units on a 12-column grid. Start from the nearest scaffold, never from nothing.
+
+```bash
+node company/tools/console-panel.js scaffolds
+node company/tools/console-panel.js scaffold trading-desk --as desk --by <you> [--nav "Desk"]
+# edit company/work/<you>/pages/desk/page.json: title, why, owner, units; point each source at the file YOUR ROUTINE
+# writes (the sample data in company/work/<you>/page-data/desk/ only makes the first preview draw)
+node company/tools/console-panel.js validate company/work/<you>/pages/desk
+node company/tools/console-panel.js render --page company/work/<you>/pages/desk --png /tmp/desk.png
+node company/tools/console-panel.js render --page company/work/<you>/pages/desk --png /tmp/desk-phone-dark.png --width 390 --theme dark
+node company/tools/console-panel.js add company/work/<you>/pages/desk --by <you>
+```
+
+Look at both pictures before `add`. Units: `stat-row` (headline, first, span 12), `positions`, `gauge`, `progress`,
+`chart` (`line`, `area`, `bar`, `stacked-bar`, `candlestick`, `scatter`, with `refs` for limits), `status-grid`,
+`feed` (with an `ack` action), `pipeline`, `kanban` (with a `move` action), `calendar`, `table`, `list`, `timeline`,
+`markdown`. The console draws them all; you write no HTML or CSS. Gallery: System › Page kit gallery.
+
+### Design, in short (full rules: `docs/CONSOLE-DESIGN.md`)
+
+- **Spans**: headline row 12; main thing 8 + context 4; two charts 6 + 6 or 7 + 5. At most 12 units; fewer is better.
+- **Tones are meaning**: `good`/`warn`/`bad` only for a state the owner acts on, `accent` for the one thing to look at,
+  `neutral` otherwise. Map your words with `toneMap`/`stateMap`/`severityMap`; never colour to decorate.
+- **Charts**: series take the palette in order; one y-axis; a limit is a `refs` line, not a series; one number is a
+  `stat`, not a chart; `x.time: true` for times (company timezone).
+- **Copy**: plain words, sentence case, units on numbers (`format`, `unit`), an `empty` text that says what empty
+  means, action labels the owner would say ("Acknowledge", "Move", "Ask about this").
+- **Moves and acknowledgements are requests**: a kanban `move` or a feed `ack` opens a handoff to the seat that owns
+  the data; that seat updates its file. Keep that routine running, or the board lies.
 
 ## Review
 

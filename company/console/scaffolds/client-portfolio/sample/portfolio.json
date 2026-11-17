@@ -1,0 +1,64 @@
+{
+ "summary": {
+  "aum": 55000000,
+  "clients": 6,
+  "ytd": 0.064,
+  "reviewsDue": 2
+ },
+ "clients": [
+  {
+   "name": "Harbor Trust",
+   "aum": 12400000,
+   "ytd": 0.071,
+   "risk": "low",
+   "manager": "Sam",
+   "review": "{{t:+3d@10:00}}",
+   "reviewDue": false
+  },
+  {
+   "name": "Lindqvist family",
+   "aum": 8100000,
+   "ytd": 0.054,
+   "risk": "medium",
+   "manager": "Kim",
+   "review": "{{t:+12d@10:00}}",
+   "reviewDue": false
+  },
+  {
+   "name": "Oak & Ash LLP",
+   "aum": 5600000,
+   "ytd": -0.012,
+   "risk": "high",
+   "manager": "Sam",
+   "review": "{{t:+21d@10:00}}",
+   "reviewDue": true
+  },
+  {
+   "name": "Meridian Foundation",
+   "aum": 21900000,
+   "ytd": 0.083,
+   "risk": "low",
+   "manager": "Alex",
+   "review": "{{t:+30d@10:00}}",
+   "reviewDue": false
+  },
+  {
+   "name": "R. Okafor",
+   "aum": 2300000,
+   "ytd": 0.038,
+   "risk": "medium",
+   "manager": "Kim",
+   "review": "{{t:+39d@10:00}}",
+   "reviewDue": true
+  },
+  {
+   "name": "Blue Fern Ltd",
+   "aum": 4700000,
+   "ytd": 0.061,
+   "risk": "low",
+   "manager": "Alex",
+   "review": "{{t:+48d@10:00}}",
+   "reviewDue": false
+  }
+ ]
+}

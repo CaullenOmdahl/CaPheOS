@@ -3,4 +3,6 @@
 @import "tokens/typography.css";
 @import "tokens/spacing.css";
 @import "tokens/effects.css";
+@import "tokens/dataviz.css";
+@import "tokens/dark.css";
 @import "tokens/base.css";

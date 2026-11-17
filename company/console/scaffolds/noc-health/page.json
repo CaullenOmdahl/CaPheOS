@@ -1,0 +1,47 @@
+{
+  "$schema": "../../../schemas/console-panel.schema.json",
+  "version": 1,
+  "kind": "page",
+  "id": "noc-health",
+  "title": "Service health",
+  "description": "What is up, what is not, open incidents, uptime and who is on call.",
+  "owner": "tools",
+  "why": "The owner of an operations company looks first at whether every service is healthy and who is handling what is not; the checks already run every minute.",
+  "placement": { "area": "screen", "nav": "Health", "order": 1 },
+  "refresh": 60,
+  "sources": {
+    "checks": { "type": "file", "glob": "{{data}}/checks.json" },
+    "incidents": { "type": "file", "glob": "{{data}}/incidents.json" },
+    "uptime": { "type": "file", "glob": "{{data}}/uptime.json" },
+    "oncall": { "type": "file", "glob": "{{data}}/oncall.json" }
+  },
+  "units": [
+    { "id": "headline", "span": 12, "view": { "kind": "stat-row", "items": [
+      { "source": "checks", "value": "summary.ok", "label": "Services healthy", "format": "integer" },
+      { "source": "checks", "value": "summary.problems", "label": "Services with a problem", "format": "integer", "goodWhen": "zero" },
+      { "source": "checks", "value": "summary.openIncidents", "label": "Open incidents", "format": "integer", "goodWhen": "zero" },
+      { "source": "checks", "value": "summary.uptime30", "label": "Uptime, 30 days", "format": "number", "unit": "%" } ] } },
+    { "id": "grid", "title": "Checks", "span": 8, "rows": 3,
+      "view": { "kind": "status-grid", "source": "checks", "rows": "checks", "name": "service", "state": "state", "group": "group", "checked": "checkedAt", "detail": "detail", "history": "history", "historyN": 20,
+        "stateMap": { "up": "ok", "degraded": "warn", "down": "bad", "unknown": "unknown" }, "empty": "No checks configured yet." } },
+    { "id": "incidents", "title": "Incidents", "span": 4, "rows": 3,
+      "view": { "kind": "feed", "source": "incidents", "at": "at", "title": "title", "text": "text", "severity": "severity", "origin": "service", "acked": "acked", "ack": "ack-incident", "limit": 20, "empty": "No incidents. All quiet." } },
+    { "id": "uptime", "title": "Daily uptime, 30 days", "span": 8, "rows": 2,
+      "view": { "kind": "chart", "chart": "line", "source": "uptime", "x": { "key": "day", "label": "Day", "time": true, "format": "date" },
+        "series": [ { "key": "api", "label": "API" }, { "key": "web", "label": "Web app" }, { "key": "db", "label": "Database" } ],
+        "y": { "label": "Uptime %", "format": "number", "zero": false }, "refs": [ { "label": "Objective 99.9%", "value": 99.9, "tone": "warn" } ] } },
+    { "id": "budget", "title": "Error budget used this month", "span": 4, "rows": 2,
+      "view": { "kind": "progress", "source": "checks", "items": [
+        { "label": "API", "value": "summary.budget.api.used", "max": "summary.budget.api.allowed", "format": "integer", "unit": "min", "warnAt": 0.6 },
+        { "label": "Web app", "value": "summary.budget.web.used", "max": "summary.budget.web.allowed", "format": "integer", "unit": "min", "warnAt": 0.6 },
+        { "label": "Database", "value": "summary.budget.db.used", "max": "summary.budget.db.allowed", "format": "integer", "unit": "min", "warnAt": 0.6 } ] } },
+    { "id": "oncall", "title": "On call", "span": 12, "rows": 3,
+      "view": { "kind": "calendar", "source": "oncall", "start": "start", "end": "end", "title": "who", "tone": "role", "toneMap": { "primary": "accent", "drill": "warn" }, "view": "week", "views": ["week", "month", "agenda"], "empty": "Nobody is scheduled." } }
+  ],
+  "actions": [
+    { "id": "ack-incident", "label": "Acknowledge", "kind": "handoff", "to": "tools", "scope": "row",
+      "text": "Owner acknowledges incident {{row.id}} ({{row.title}}). Please mark it acknowledged in the incidents file and tell me the next step." },
+    { "id": "status-note", "label": "Ask for a status note", "kind": "ask-ceo", "scope": "panel",
+      "text": "Please send me a plain status note on {{panel.title}}: what is down, who is on it, when it will be back." }
+  ]
+}

@@ -40,7 +40,7 @@ export async function render(root, ctx) {
       card('You', [r('About you, aims, preferences', NOT_CONNECTED)]),
       card('Spending limits', [r('Pacer and caps', 'see Usage', '#/usage')]),
       card('App and backup', [r('Export, recovery, updates', NOT_CONNECTED)]),
-      card('Look, sound and alerts', [r('Theme', 'Light'), r('Notifications, voice, remote', NOT_CONNECTED)]));
+      card('Look, sound and alerts', [r('Theme', ({ light: 'Light', dark: 'Dark' })[document.documentElement.dataset.theme] || 'Follows your device', '#/kit'), r('Page kit gallery', 'every unit a company page can use', '#/kit'), r('Notifications, voice, remote', NOT_CONNECTED)]));
     // Provisioning / certification (company/tools/onboard.js): per step status and what is missing
     try {
       const d = await api('/onboarding');
@@ -59,7 +59,7 @@ export async function render(root, ctx) {
     try {
       const d = await api('/panels');
       const broken = (d.panels || []).filter(p => !p.valid), hidden = (d.panels || []).filter(p => p.hidden);
-      fill(panels, h('section', { class: 'stack-14' }, h('h2', { class: 'h3' }, 'Console panels'),
+      fill(panels, h('section', { class: 'stack-14' }, h('div', { class: 'between-c' }, h('h2', { class: 'h3' }, 'Console panels and pages'), h('a', { href: '#/kit', class: 'btn btn-ghost btn-sm' }, 'Page kit gallery')),
         !broken.length && !hidden.length ? h('p', { class: 'body-s muted' }, 'No broken or hidden panels.') : null,
         broken.length ? h('div', { class: 'card', style: 'border-color:var(--status-danger)' }, h('h3', { class: 'h4' }, 'Broken (not shown)'),
           h('ul', { class: 'plain' }, broken.map(p => r(p.title || p.id, p.findings + ' findings · run console-panel.js validate ' + p.id)))) : null,

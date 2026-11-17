@@ -83,6 +83,8 @@ scripts/console.sh                # same as the first line
 | GET | /api/panels/:id/data | resolved data for a panel | console-panel.js `render()` (required as a module) |
 | GET | /api/panels/:id/view | the panel's custom view.html (served for a sandboxed iframe srcdoc) | file |
 | POST | /api/panels/:id/hide \| unhide \| approve \| reject \| remove | — | console-panel.js |
+| GET | /api/preview/:id[?dir=company/work/...] | render() of an installed/proposed panel or page, or of a working folder named :id under company/work/; `{ valid, findings }` when it does not validate | console-panel.js `render()` |
+| GET | /preview/:id[?dir=...&theme=dark] | the preview page (console/ui/preview.html) that draws it like its company screen; owner token (cookie or header), actions never sent | static |
 | GET | /api/governance-log, /api/locked, /api/external | read-only reports | governance-log.jsonl (last 200 rows as `{entries}`), `locked-watch.js status` (no JSON mode: `{ ok, text }`), `external-gate.js list` (JSON) |
 
 ## Live chat

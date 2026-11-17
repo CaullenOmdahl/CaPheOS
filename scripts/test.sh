@@ -89,6 +89,7 @@ echo "== console"
 step "console/server.js --selftest" node console/server.js --selftest
 step "console/models.js --selftest" node console/models.js --selftest
 step "tests/today-questions-walk.js (headless Chrome: Today renders each question kind; SKIP without Chrome)" node tests/today-questions-walk.js
+step "tests/page-kit-walk.js (headless Chrome: every scaffold page light/dark, desktop/phone; SKIP without Chrome)" node tests/page-kit-walk.js
 
 echo "== syntax and data files"
 py_check() { local bad=0 f; while IFS= read -r -d '' f; do python3 -m py_compile "$f" || { echo "py_compile: $f"; bad=1; }; done < <(git -C "$REPO" ls-files -z '*.py'); return $bad; }

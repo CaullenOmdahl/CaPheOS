@@ -93,9 +93,11 @@ Thumbs.db
 *.gz
 *.jsonl
 !company/tools/tests/fixtures/**/*.jsonl
+!company/console/scaffolds/*/sample/*.jsonl
 
 # ── Console panels a running company's crew added (examples and the contract stay tracked) ──
 /company/console/panels/
+/company/console/pages/
 /company/console/proposed/
 /company/console/changes.jsonl
 /company/console/state.json

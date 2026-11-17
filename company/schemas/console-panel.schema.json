@@ -531,8 +531,7 @@
             "kind",
             "source",
             "chart",
-            "x",
-            "series"
+            "x"
           ],
           "additionalProperties": false,
           "properties": {
@@ -545,7 +544,11 @@
             "chart": {
               "enum": [
                 "line",
-                "bar"
+                "bar",
+                "area",
+                "stacked-bar",
+                "candlestick",
+                "scatter"
               ]
             },
             "rows": {
@@ -567,6 +570,10 @@
                 },
                 "format": {
                   "$ref": "#/$defs/format"
+                },
+                "time": {
+                  "type": "boolean",
+                  "description": "x values are times: a time axis in the company timezone"
                 }
               }
             },
@@ -592,6 +599,9 @@
                   },
                   "format": {
                     "$ref": "#/$defs/format"
+                  },
+                  "tone": {
+                    "$ref": "#/$defs/tone"
                   }
                 }
               }
@@ -606,8 +616,83 @@
                 },
                 "zero": {
                   "type": "boolean"
+                },
+                "format": {
+                  "$ref": "#/$defs/format"
                 }
               }
+            },
+            "ohlc": {
+              "type": "object",
+              "required": [
+                "open",
+                "high",
+                "low",
+                "close"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "open": {
+                  "$ref": "#/$defs/dotPath"
+                },
+                "high": {
+                  "$ref": "#/$defs/dotPath"
+                },
+                "low": {
+                  "$ref": "#/$defs/dotPath"
+                },
+                "close": {
+                  "$ref": "#/$defs/dotPath"
+                }
+              },
+              "description": "candlestick only"
+            },
+            "refs": {
+              "type": "array",
+              "maxItems": 4,
+              "items": {
+                "type": "object",
+                "required": [
+                  "label"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32
+                  },
+                  "value": {
+                    "type": "number"
+                  },
+                  "from": {
+                    "$ref": "#/$defs/dotPath",
+                    "description": "a dot path into the source data (not a row), e.g. limits.var"
+                  },
+                  "tone": {
+                    "$ref": "#/$defs/tone"
+                  }
+                }
+              },
+              "description": "Reference lines, e.g. a risk limit"
+            },
+            "legend": {
+              "type": "boolean",
+              "description": "default: shown for 2+ series"
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 140,
+              "maximum": 480
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 500
+            },
+            "empty": {
+              "type": "string",
+              "maxLength": 120
             }
           }
         },
@@ -624,6 +709,485 @@
             },
             "source": {
               "$ref": "#/$defs/sourceRef"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "Cards in columns. Columns from `columns` or, without it, the distinct values of `column` in data order.",
+          "required": [
+            "kind",
+            "source",
+            "column",
+            "title"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "kanban"
+            },
+            "source": {
+              "$ref": "#/$defs/sourceRef"
+            },
+            "rows": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "column": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "columns": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 10,
+              "items": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "label"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 60
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 99
+                  }
+                }
+              }
+            },
+            "key": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "title": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "subtitle": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "badges": {
+              "type": "array",
+              "maxItems": 4,
+              "items": {
+                "$ref": "#/$defs/dotPath"
+              }
+            },
+            "assignee": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "due": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "steps": {
+              "type": "object",
+              "required": [
+                "done",
+                "total"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "done": {
+                  "$ref": "#/$defs/dotPath"
+                },
+                "total": {
+                  "$ref": "#/$defs/dotPath"
+                }
+              }
+            },
+            "tone": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "toneMap": {
+              "$ref": "#/$defs/valueMap"
+            },
+            "move": {
+              "$ref": "#/$defs/actionId"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "empty": {
+              "type": "string",
+              "maxLength": 120
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "Events in the company timezone.",
+          "required": [
+            "kind",
+            "source",
+            "start",
+            "title"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "calendar"
+            },
+            "source": {
+              "$ref": "#/$defs/sourceRef"
+            },
+            "rows": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "start": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "end": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "title": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "tone": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "toneMap": {
+              "$ref": "#/$defs/valueMap"
+            },
+            "allDay": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "view": {
+              "enum": [
+                "month",
+                "week",
+                "agenda"
+              ]
+            },
+            "views": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 3,
+              "items": {
+                "enum": [
+                  "month",
+                  "week",
+                  "agenda"
+                ]
+              }
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            },
+            "empty": {
+              "type": "string",
+              "maxLength": 120
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "Health tiles: ok/warn/bad/unknown, last checked, the last N checks.",
+          "required": [
+            "kind",
+            "source",
+            "name",
+            "state"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "status-grid"
+            },
+            "source": {
+              "$ref": "#/$defs/sourceRef"
+            },
+            "rows": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "name": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "state": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "stateMap": {
+              "$ref": "#/$defs/healthMap"
+            },
+            "checked": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "history": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "historyN": {
+              "type": "integer",
+              "minimum": 3,
+              "maximum": 60
+            },
+            "group": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "detail": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            },
+            "empty": {
+              "type": "string",
+              "maxLength": 120
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "Open positions with unrealised P&L (computed from side, size, entry and mark when `pnl` is absent).",
+          "required": [
+            "kind",
+            "source",
+            "symbol",
+            "size",
+            "entry",
+            "mark"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "positions"
+            },
+            "source": {
+              "$ref": "#/$defs/sourceRef"
+            },
+            "rows": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "symbol": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "side": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "size": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "entry": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "mark": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "pnl": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "format": {
+              "$ref": "#/$defs/format"
+            },
+            "totals": {
+              "type": "boolean"
+            },
+            "sort": {
+              "type": "object",
+              "required": [
+                "key"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "key": {
+                  "$ref": "#/$defs/dotPath"
+                },
+                "dir": {
+                  "enum": [
+                    "asc",
+                    "desc"
+                  ]
+                }
+              }
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            },
+            "empty": {
+              "type": "string",
+              "maxLength": 120
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "Arc gauges against a limit or target.",
+          "required": [
+            "kind",
+            "source",
+            "items"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "gauge"
+            },
+            "source": {
+              "$ref": "#/$defs/sourceRef"
+            },
+            "items": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 6,
+              "items": {
+                "$ref": "#/$defs/meterItem"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "Bars against a limit or target.",
+          "required": [
+            "kind",
+            "source",
+            "items"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "progress"
+            },
+            "source": {
+              "$ref": "#/$defs/sourceRef"
+            },
+            "items": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "$ref": "#/$defs/meterItem"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "Steps with counts and stuck flags: rows are stages (label, count, stuck), or with `by` the rows are items counted per stage.",
+          "required": [
+            "kind",
+            "source"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "pipeline"
+            },
+            "source": {
+              "$ref": "#/$defs/sourceRef"
+            },
+            "rows": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "stages": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 12,
+              "items": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "label"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 60
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32
+                  }
+                }
+              }
+            },
+            "by": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "label": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "count": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "stuck": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "empty": {
+              "type": "string",
+              "maxLength": 120
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "Alerts, newest first; `ack` names a row action that acknowledges one.",
+          "required": [
+            "kind",
+            "source",
+            "at",
+            "title"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "feed"
+            },
+            "source": {
+              "$ref": "#/$defs/sourceRef"
+            },
+            "rows": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "at": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "title": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "text": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "severity": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "severityMap": {
+              "$ref": "#/$defs/valueMap"
+            },
+            "origin": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "acked": {
+              "$ref": "#/$defs/dotPath"
+            },
+            "ack": {
+              "$ref": "#/$defs/actionId"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            },
+            "empty": {
+              "type": "string",
+              "maxLength": 120
             }
           }
         },
@@ -694,15 +1258,266 @@
         "scope": {
           "enum": [
             "panel",
-            "row"
+            "row",
+            "move"
           ],
-          "description": "row = offered on each row/item and may use {{row.<key>}}"
+          "description": "row = offered on each row/item and may use {{row.<key>}}; move = a kanban card move, may use {{row.<key>}}, {{move.from}} and {{move.to}}"
         },
         "text": {
           "type": "string",
           "minLength": 5,
           "maxLength": 600,
           "description": "Template; placeholders {{row.<key>}} and {{panel.title}} only"
+        }
+      }
+    },
+    "tone": {
+      "enum": [
+        "neutral",
+        "accent",
+        "good",
+        "warn",
+        "bad"
+      ],
+      "description": "Tones carry meaning: good/warn/bad only for a state the owner should act on; accent for the one thing to look at; neutral otherwise."
+    },
+    "health": {
+      "enum": [
+        "ok",
+        "warn",
+        "bad",
+        "unknown"
+      ]
+    },
+    "actionId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,31}$",
+      "description": "The id of an action declared in actions[]"
+    },
+    "valueMap": {
+      "type": "object",
+      "maxProperties": 24,
+      "additionalProperties": {
+        "$ref": "#/$defs/tone"
+      },
+      "description": "Data value -> tone, e.g. {\"critical\": \"bad\"}"
+    },
+    "healthMap": {
+      "type": "object",
+      "maxProperties": 24,
+      "additionalProperties": {
+        "$ref": "#/$defs/health"
+      },
+      "description": "Data value -> ok|warn|bad|unknown, e.g. {\"up\": \"ok\", \"degraded\": \"warn\"}"
+    },
+    "meterItem": {
+      "type": "object",
+      "required": [
+        "label",
+        "value",
+        "max"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "source": {
+          "$ref": "#/$defs/sourceRef"
+        },
+        "value": {
+          "$ref": "#/$defs/dotPath"
+        },
+        "max": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/dotPath"
+            }
+          ],
+          "description": "The limit or target: a number, or a dot path into the same source"
+        },
+        "format": {
+          "$ref": "#/$defs/format"
+        },
+        "unit": {
+          "type": "string",
+          "maxLength": 12
+        },
+        "warnAt": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Fraction of max where the warn tone starts (default 0.8)"
+        },
+        "badAt": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Fraction of max where the bad tone starts (default 1)"
+        },
+        "goodWhen": {
+          "enum": [
+            "low",
+            "high"
+          ],
+          "description": "low (default): a limit, staying under it is good; high: a target, reaching it is good"
+        }
+      }
+    },
+    "unit": {
+      "type": "object",
+      "required": [
+        "id",
+        "view"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{1,39}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 60
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "span": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12,
+          "description": "Columns of the 12-column grid (default 12). On a phone every unit is full width."
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4,
+          "description": "Height hint: 1 compact, 2 a chart or short table, 3-4 a board or calendar"
+        },
+        "view": {
+          "$ref": "#/$defs/view"
+        },
+        "actions": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/actionId"
+          },
+          "description": "Row actions offered in this unit (move and ack are named by the view itself)"
+        }
+      }
+    },
+    "page": {
+      "title": "CaPheOS console page (company/console/pages/<id>/page.json)",
+      "type": "object",
+      "required": [
+        "version",
+        "id",
+        "title",
+        "owner",
+        "why",
+        "placement",
+        "sources",
+        "units"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "$schema": {
+          "type": "string"
+        },
+        "version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "page"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{1,39}$",
+          "description": "Must equal the folder name."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 60
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 280
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 60,
+          "description": "The accountable seat: a function (ceo, people, tools, risk, floor, finance) or a seat id/name from company/tools/loops.json. A function survives a re-hire; prefer it."
+        },
+        "why": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 400,
+          "description": "Why the owner would look at this often. Shown on the panel's info popover."
+        },
+        "placement": {
+          "type": "object",
+          "required": [
+            "area",
+            "nav"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "area": {
+              "const": "screen"
+            },
+            "nav": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 24,
+              "description": "Label under the Company nav group."
+            },
+            "order": {
+              "$ref": "#/$defs/order"
+            }
+          }
+        },
+        "refresh": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 86400,
+          "description": "Seconds between refreshes. Default 300."
+        },
+        "sources": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 8,
+          "propertyNames": {
+            "pattern": "^[a-z][a-zA-Z0-9_]{0,31}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/source"
+          }
+        },
+        "units": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "items": {
+            "$ref": "#/$defs/unit"
+          }
+        },
+        "actions": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "$ref": "#/$defs/action"
+          }
         }
       }
     }

@@ -1,0 +1,17 @@
+/* Data-viz tokens (docs/CONSOLE-DESIGN.md "Charts"). Series slots are assigned in this fixed order, never cycled and
+ * never re-ordered by rank; a 7th series folds into "Other". Validated as a set (CVD and normal-vision separation of
+ * adjacent slots, lightness band) against --surface-card in each mode. Slots 3, 4 and 5 sit below 3:1 on the light
+ * surface, so every chart ships its legend and a table view. Good/warn/bad are status tokens, never a series colour. */
+:root{
+--chart-1:#2a78d6; /* blue */
+--chart-2:#eb6834; /* orange */
+--chart-3:#1baf7a; /* aqua */
+--chart-4:#eda100; /* yellow */
+--chart-5:#e87ba4; /* magenta */
+--chart-6:#6250d6; /* violet */
+--chart-grid:var(--border-hairline);
+--chart-axis:var(--border-default);
+--chart-ref:var(--text-muted);
+--chart-up:var(--status-online);
+--chart-down:var(--status-danger);
+}

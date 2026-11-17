@@ -1,0 +1,80 @@
+{
+ "asOf": "{{t:-2m}}",
+ "summary": {
+  "unrealised": 6249,
+  "realisedToday": 4820.5,
+  "gross": 595617,
+  "openOrders": 5
+ },
+ "exposure": {
+  "gross": 595617,
+  "net": 369282.54,
+  "largest": 0.31,
+  "dayLoss": 6200
+ },
+ "limits": {
+  "gross": 900000,
+  "net": 600000,
+  "largest": 0.35,
+  "dayLoss": 15000,
+  "drawdown": -25000
+ },
+ "positions": [
+  {
+   "symbol": "BTC-USD",
+   "side": "long",
+   "qty": 1.8,
+   "entry": 61250,
+   "mark": 63840,
+   "opened": "{{t:-1d}}"
+  },
+  {
+   "symbol": "ETH-USD",
+   "side": "long",
+   "qty": 24,
+   "entry": 3380,
+   "mark": 3291,
+   "opened": "{{t:-9d}}"
+  },
+  {
+   "symbol": "SOL-USD",
+   "side": "short",
+   "qty": 400,
+   "entry": 148.2,
+   "mark": 151.9,
+   "opened": "{{t:-3d}}"
+  },
+  {
+   "symbol": "AAPL",
+   "side": "long",
+   "qty": 300,
+   "entry": 214.1,
+   "mark": 222.35,
+   "opened": "{{t:-2d}}"
+  },
+  {
+   "symbol": "NVDA",
+   "side": "long",
+   "qty": 120,
+   "entry": 121.4,
+   "mark": 129.8,
+   "opened": "{{t:-7d}}"
+  },
+  {
+   "symbol": "EUR-USD",
+   "side": "short",
+   "qty": 150000,
+   "entry": 1.0912,
+   "mark": 1.0868,
+   "opened": "{{t:-5d}}"
+  },
+  {
+   "symbol": "XAU-USD",
+   "side": "long",
+   "qty": 40,
+   "entry": 2365,
+   "mark": 2391.5,
+   "opened": "{{t:-3d}}"
+  }
+ ]
+}

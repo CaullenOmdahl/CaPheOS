@@ -1,0 +1,37 @@
+{
+  "$schema": "../../../schemas/console-panel.schema.json",
+  "version": 1,
+  "kind": "page",
+  "id": "client-portfolio",
+  "title": "Client portfolio",
+  "description": "Assets under management, how they are split, returns against the benchmark, and each client.",
+  "owner": "finance",
+  "why": "An advisory owner checks assets, returns and which client reviews are due every morning; the month-end and daily files already hold them.",
+  "placement": { "area": "screen", "nav": "Portfolio", "order": 1 },
+  "refresh": 900,
+  "sources": {
+    "book": { "type": "file", "glob": "{{data}}/portfolio.json" },
+    "history": { "type": "file", "glob": "{{data}}/aum-history.csv" }
+  },
+  "units": [
+    { "id": "headline", "span": 12, "view": { "kind": "stat-row", "items": [
+      { "source": "book", "value": "summary.aum", "label": "Assets under management", "format": "money" },
+      { "source": "book", "value": "summary.clients", "label": "Clients", "format": "integer" },
+      { "source": "book", "value": "summary.ytd", "label": "Return this year", "format": "percent" },
+      { "source": "book", "value": "summary.reviewsDue", "label": "Reviews due", "format": "integer", "goodWhen": "zero" } ] } },
+    { "id": "mix", "title": "Assets by class, 12 months", "span": 7, "rows": 2,
+      "view": { "kind": "chart", "chart": "stacked-bar", "source": "history", "x": { "key": "month", "label": "Month", "time": true, "format": "date" },
+        "series": [ { "key": "equity", "label": "Equity", "format": "money" }, { "key": "bonds", "label": "Bonds", "format": "money" }, { "key": "cash", "label": "Cash", "format": "money" } ], "y": { "format": "money" } } },
+    { "id": "returns", "title": "Return against benchmark", "span": 5, "rows": 2,
+      "view": { "kind": "chart", "chart": "line", "source": "history", "x": { "key": "month", "label": "Month", "time": true, "format": "date" },
+        "series": [ { "key": "portfolio", "label": "Portfolio", "format": "percent" }, { "key": "benchmark", "label": "Benchmark", "format": "percent" } ], "y": { "format": "percent", "zero": true } } },
+    { "id": "clients", "title": "Clients", "span": 12, "actions": ["ask-client"],
+      "view": { "kind": "table", "source": "book", "rows": "clients", "columns": [ { "key": "name", "label": "Client", "width": "wide" }, { "key": "aum", "label": "Assets", "format": "money" },
+        { "key": "ytd", "label": "This year", "format": "percent" }, { "key": "risk", "label": "Risk" }, { "key": "manager", "label": "Manager" }, { "key": "review", "label": "Next review", "format": "date", "flag": "reviewDue" } ],
+        "sort": { "key": "aum", "dir": "desc" }, "empty": "No clients yet." } }
+  ],
+  "actions": [
+    { "id": "ask-client", "label": "Ask", "kind": "handoff", "to": "finance", "scope": "row",
+      "text": "Owner asks about {{row.name}} ({{row.manager}}): {{row.aum}} under management, {{row.ytd}} this year. Anything I should know before the review?" }
+  ]
+}

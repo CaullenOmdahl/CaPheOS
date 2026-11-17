@@ -53,7 +53,8 @@
     "maxActionsPerPanel": 4,
     "maxRows": 500,
     "maxViewHtmlBytes": 262144,
-    "customHeight": { "min": 120, "max": 1200 }
+    "customHeight": { "min": 120, "max": 1200 },
+    "page": { "_doc": "A page (company/console/pages/<id>/page.json) is a company screen made of units on a 12-column grid. It counts toward perPlacement.screen like a single-panel screen.", "maxUnits": 12, "maxSources": 8, "maxActions": 6 }
   },
 
   "screens": {

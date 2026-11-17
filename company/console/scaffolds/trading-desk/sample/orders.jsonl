@@ -1,0 +1,6 @@
+{"id":"ord-1040","at":"{{t:-4m}}","title":"Bought 0.3 BTC-USD at 63,790","status":"filled","origin":"Desk algo"}
+{"id":"ord-1041","at":"{{t:-18m}}","title":"Sell 200 SOL-USD limit 152.50 working","status":"working","origin":"Desk algo"}
+{"id":"ord-1042","at":"{{t:-41m}}","title":"Order rejected: NVDA 500 exceeds the single-name limit","status":"rejected","origin":"Risk check"}
+{"id":"ord-1043","at":"{{t:-1h}}","title":"Bought 100 AAPL at 221.90","status":"filled","origin":"Desk"}
+{"id":"ord-1044","at":"{{t:-2h}}","title":"Partly filled: 40,000 of 100,000 EUR-USD at 1.0871","status":"partial","origin":"Desk algo"}
+{"id":"ord-1045","at":"{{t:-3h}}","title":"Cancelled: ETH-USD stop at 3,250","status":"cancelled","origin":"Desk"}

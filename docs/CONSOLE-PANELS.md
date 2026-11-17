@@ -3,12 +3,14 @@
 The owner console has fixed screens (Today, Comms, Crew, Work, Hiring, Automate, Governance, Usage and models, Floor,
 Abilities, System, Feature map). Every company is different, so the crew may add **panels** that fit the company's
 work: a trading firm puts positions and P&L on Today, a law firm puts matters by deadline there, a library shows its
-loans due. A panel is a small declaration, not code that runs in the console. It is checked by a tool, gated by
+loans due. A whole company screen can be a **page** of units (§12): a trading desk, a NOC health board, a production
+kanban, a calendar. A panel or page is a small declaration, not code that runs in the console. It is checked by a tool, gated by
 governance, recorded, and can always be hidden by the owner.
 
 This guide is the contract. The console must honour it; `company/tools/console-panel.js` enforces the parts that can be
 checked before install. Shape: `company/schemas/console-panel.schema.json`. Allowlists and limits:
-`company/console/sources.json`. Agent skill: `company/skills/console-panels/SKILL.md`.
+`company/console/sources.json`. Agent skill: `company/skills/console-panels/SKILL.md`. Design rules for agents (tokens,
+tones, spans, charts, copy): `docs/CONSOLE-DESIGN.md`.
 
 ## 1. What a panel is
 
@@ -81,9 +83,19 @@ values out of the source data; `length` on an array counts it.
 | `table` | `source`, `rows?`, `columns` (1 to 12: `key`, `label`, `format?`, `width?`, `flag?`), `sort?`, `limit?` (max 200), `empty?` | a table; `flag` names a boolean key that gives the cell the warn tone |
 | `list` | `source`, `items?`, `title`, `subtitle?`, `badge?`, `limit?`, `empty?` | a list |
 | `timeline` | `source`, `items?`, `at`, `text`, `who?`, `limit?`, `empty?` | events by time, newest first |
-| `chart` | `source`, `chart` (`line`/`bar`), `rows?`, `x` (`key`, `label?`, `format?`), `series` (1 to 6, explicit `key` + `label`), `y?` | a chart; no guessing series from the data |
+| `chart` | `source`, `chart` (`line`/`bar`/`area`/`stacked-bar`/`candlestick`/`scatter`), `rows?`, `x` (`key`, `label?`, `format?`, `time?`), `series` (1 to 6, explicit `key` + `label`; candlestick takes `ohlc: {open, high, low, close}` instead), `y?` (`label`, `zero`, `format`), `refs?` (up to 4 reference lines: `label` + `value` or `from` a dot path, `tone`), `legend?`, `height?`, `empty?` | an SVG chart in the series palette with a time axis in the company timezone, legend, hover tooltip, an `aria-label` summary and a "Show as a table" view; no guessing series from the data |
+| `kanban` | `source`, `rows?`, `column` (field), `columns?` (`id`, `label`, `limit?`; default: distinct values in data order), `title`, `subtitle?`, `badges?`, `assignee?`, `due?`, `steps?` (`done`, `total`), `tone?` + `toneMap?`, `key?`, `move?` (an action id with scope `move`), `limit?`, `empty?` | cards in columns; overdue and WIP-over-limit in the warn tone; Move opens the named action (§7), never a write |
+| `calendar` | `source`, `rows?`, `start`, `end?`, `title`, `allDay?`, `tone?` + `toneMap?`, `view?` and `views?` (`month`/`week`/`agenda`), `limit?`, `empty?` | month, week and agenda views in the company timezone |
+| `status-grid` | `source`, `rows?`, `name`, `state` (+ `stateMap` to `ok`/`warn`/`bad`/`unknown`), `checked?`, `history?` (array of states or numbers), `historyN?` (3 to 60), `group?`, `detail?`, `limit?`, `empty?` | health tiles, worst first, grouped, with a sparkline of the last N checks and a summary line |
+| `positions` | `source`, `rows?`, `symbol`, `side?`, `size`, `entry`, `mark`, `pnl?` (else computed), `format?` (default money), `totals?`, `sort?`, `limit?`, `empty?` | a positions table: unrealised P&L signed and coloured by sign, gross and P&L totals |
+| `gauge` / `progress` | `source`, `items` (1 to 6 / 8): `label`, `value`, `max` (a number or a dot path), `source?`, `format?`, `unit?`, `warnAt?` (0.8), `badAt?` (1), `goodWhen?` (`low`: a limit; `high`: a target) | arc gauges / bars against a limit or target, with the state in words |
+| `pipeline` | `source`, `rows?`, either `by` (count items per stage, `stages?` for order, `stuck?` a flag) or `label` + `count` (+ `stuck?`) when rows are stages, `empty?` | steps with counts and stuck flags |
+| `feed` | `source`, `rows?`, `at`, `title`, `text?`, `severity?` (+ `severityMap?`), `origin?`, `acked?`, `ack?` (a row action id), `limit?`, `empty?` | alerts newest first; Acknowledge opens the named row action |
 | `markdown` | `source` (a `.md` file source) | sanitised markdown: no raw HTML, no images from URLs, links shown as text |
 | `custom` | `html: "view.html"`, `height?` (120 to 1200), `sources?` (subset to pass in) | the panel's own sandboxed view (section 6) |
+
+Every built-in kind has a loading state, an empty state (`empty`, or a plain default) and an error state (the source
+that failed and why). The console's Page kit gallery (`#/kit`, linked from System) draws every kind with sample data.
 
 Formats: `text`, `number`, `integer`, `percent`, `money` (in `company.json` currency), `date`, `datetime`, `relative`,
 `duration`, `bool`. Dates are shown in the company timezone.
@@ -163,7 +175,9 @@ moves money, or leaves the company. The owner always confirms the filled-in text
 | `owner-question-draft` | the owner's Comms composer, prefilled; nothing is sent until the owner presses send | |
 
 `text` is a template of at most 600 characters. Placeholders: `{{panel.title}}` and, with `"scope": "row"`,
-`{{row.<key>}}`. The console HTML-escapes values and cuts the result to 2000 characters. Anything that follows from
+`{{row.<key>}}`. A kanban `move` names an action with `"scope": "move"`, which may also use `{{move.from}}` and
+`{{move.to}}` (the column labels): moving a card asks the owning seat to move it; the console never writes the board's
+file. A feed's `ack` names a row action the same way. The console HTML-escapes values and cuts the result to 2000 characters. Anything that follows from
 the message (a trade, a payment, a filing, an email) still goes through the seat's own work, the external gate
 (`external-gate.js`) and the owner gates; a panel never short-circuits them.
 
@@ -211,6 +225,10 @@ node company/tools/console-panel.js approve|reject <id> --by owner
 node company/tools/console-panel.js remove <id> --by <seat>
 node company/tools/console-panel.js hide|unhide <id> --by owner
 node company/tools/console-panel.js render <id> --json [--live]   # the data the console passes in
+node company/tools/console-panel.js scaffolds                     # the ready pages (§12)
+node company/tools/console-panel.js scaffold <name> --as <id> --by <seat> [--nav <label>] [--force]
+node company/tools/console-panel.js render --page <id|dir> --png <out.png> [--theme dark] [--width 390] [--height N] | --serve
+node company/tools/console-panel.js tokens [--write]              # docs/CONSOLE-DESIGN.md token table in sync with the CSS
 node company/tools/console-panel.js selftest
 ```
 
@@ -231,3 +249,51 @@ for every panel refresh, so what an agent checks offline is what the owner sees.
 - Custom views: section 6 exactly.
 - Actions: only declared ids, only the three doors, owner confirms the filled text.
 - Show `why`, `owner` and the latest `changes.jsonl` line in each panel's info popover.
+
+## 12. Pages: a company screen made of units
+
+A page is a folder `company/console/pages/<id>/` holding `page.json` (and an optional `README.md`): a company screen
+laid out as a responsive grid of **units**, each one built-in view kind from §4 (not `custom`) with a span. It is
+governed exactly like a panel: same validation, `add` through the `dashboard` gate, `approve`/`reject`, `remove`,
+owner-only `hide`, `owner`, `why`, `changes.jsonl` (with `type: "page"`), and it counts toward the 8 company screens.
+Panel and page ids share one namespace. Shape: `$defs.page` in `company/schemas/console-panel.schema.json`.
+
+```json
+{
+  "version": 1, "kind": "page", "id": "desk", "title": "Trading desk", "owner": "finance",
+  "why": "The owner checks positions, P&L and the distance to each risk limit many times a day.",
+  "placement": { "area": "screen", "nav": "Desk", "order": 1 }, "refresh": 60,
+  "sources": { "book": { "type": "file", "glob": "company/work/desk/positions.json" } },
+  "units": [
+    { "id": "headline", "span": 12, "view": { "kind": "stat-row", "items": [ ... ] } },
+    { "id": "positions", "title": "Open positions", "span": 8, "rows": 2, "actions": ["ask"],
+      "view": { "kind": "positions", "source": "book", "rows": "positions", "symbol": "symbol", "size": "qty", "entry": "entry", "mark": "mark" } },
+    { "id": "limits", "title": "Exposure against limits", "span": 4, "view": { "kind": "gauge", "source": "book", "items": [ ... ] } }
+  ],
+  "actions": [ { "id": "ask", "label": "Ask about this", "kind": "handoff", "to": "finance", "scope": "row", "text": "..." } ]
+}
+```
+
+| Field | Rule |
+|---|---|
+| `placement` | `{ "area": "screen", "nav", "order?" }` only: a page is a company screen |
+| `sources` | 1 to 8 (`limits.page.maxSources`), the same three allowlisted types as a panel |
+| `units` | 1 to 12: `id` (unique), `view` (a §4 kind other than `custom`), `title?`, `note?`, `span?` (1 to 12, default 12), `rows?` (1 to 4 height hint), `actions?` (row action ids offered in that unit) |
+| `actions` | up to 6. Panel-wide ones show in the page header; row ones in the units that list them; `move`/`ack` ones in the kanban/feed that names them |
+
+The grid is 12 columns; below about 760 px of content width short units go half width and long ones full width; on
+a phone every unit is full width, and wide content scrolls inside its unit, never the page.
+
+**Scaffolds** (`company/console/scaffolds/<name>/`: page.json, README.md, sample/) are ready pages to copy and
+customise: `trading-desk`, `noc-health`, `production-board`, `calendar`, `client-portfolio`. `scaffold <name> --as <id>
+--by <seat>` writes the page into `company/work/<seat>/pages/<id>/` and its sample data (times made current, in the
+company timezone) into `company/work/<seat>/page-data/<id>/`, with the source globs pointing there; then the normal
+validate, preview, add path.
+
+**Preview** before `add`: `render --page <dir> --png out.png [--theme dark] [--width 390]` draws the page with the
+console's own code on a private port and screenshots it with headless Chrome (`--serve` prints a URL instead). The
+console serves the same at `/preview/<id>` (owner token; `?dir=company/work/...` for a working folder, `?theme=dark`).
+A preview never sends an action.
+
+The console must also honour, for pages: render only from `company/console/pages/`; re-validate at load; never show a
+hidden page; draw each unit with its loading, empty and error state, so one broken source never blanks the page.

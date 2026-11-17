@@ -1,0 +1,93 @@
+{
+ "summary": {
+  "meetingsThisWeek": 5,
+  "deadlines7d": 2,
+  "nextDeadline": "{{t:+2d@23:59}}"
+ },
+ "events": [
+  {
+   "start": "{{t:+0d@09:30}}",
+   "end": "{{t:+0d@10:00}}",
+   "title": "Stand-up",
+   "kind": "meeting",
+   "allDay": false
+  },
+  {
+   "start": "{{t:+0d@14:00}}",
+   "end": "{{t:+0d@15:00}}",
+   "title": "Client review: Contoso",
+   "kind": "client",
+   "allDay": false
+  },
+  {
+   "start": "{{t:+1d@11:00}}",
+   "end": "{{t:+1d@12:00}}",
+   "title": "Hiring panel",
+   "kind": "meeting",
+   "allDay": false
+  },
+  {
+   "start": "{{t:+2d@00:00}}",
+   "end": "{{t:+2d@23:59}}",
+   "title": "VAT return due",
+   "kind": "deadline",
+   "allDay": true
+  },
+  {
+   "start": "{{t:+3d@10:00}}",
+   "end": "{{t:+3d@11:30}}",
+   "title": "Quarterly planning",
+   "kind": "meeting",
+   "allDay": false
+  },
+  {
+   "start": "{{t:+5d@16:00}}",
+   "end": "{{t:+5d@17:00}}",
+   "title": "Board call",
+   "kind": "client",
+   "allDay": false
+  },
+  {
+   "start": "{{t:+7d@00:00}}",
+   "end": "{{t:+7d@23:59}}",
+   "title": "Contract renewal: Fabrikam",
+   "kind": "deadline",
+   "allDay": true
+  },
+  {
+   "start": "{{t:+9d@09:00}}",
+   "end": "{{t:+11d@17:00}}",
+   "title": "Trade show",
+   "kind": "travel",
+   "allDay": false
+  },
+  {
+   "start": "{{t:+14d@00:00}}",
+   "end": "{{t:+14d@23:59}}",
+   "title": "Payroll cut-off",
+   "kind": "deadline",
+   "allDay": true
+  },
+  {
+   "start": "{{t:-2d@15:00}}",
+   "end": "{{t:-2d@16:00}}",
+   "title": "Supplier call",
+   "kind": "meeting",
+   "allDay": false
+  },
+  {
+   "start": "{{t:+18d@10:00}}",
+   "end": "{{t:+18d@11:00}}",
+   "title": "Audit kick-off",
+   "kind": "client",
+   "allDay": false
+  },
+  {
+   "start": "{{t:+21d@00:00}}",
+   "end": "{{t:+21d@23:59}}",
+   "title": "Insurance renewal",
+   "kind": "deadline",
+   "allDay": true
+  }
+ ]
+}

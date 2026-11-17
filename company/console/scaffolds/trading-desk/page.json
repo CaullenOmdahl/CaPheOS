@@ -1,0 +1,51 @@
+{
+  "$schema": "../../../schemas/console-panel.schema.json",
+  "version": 1,
+  "kind": "page",
+  "id": "trading-desk",
+  "title": "Trading desk",
+  "description": "Open positions, P&L, exposure against the risk limits, and the order flow.",
+  "owner": "finance",
+  "why": "A trading owner checks positions, P&L and how close the desk is to its risk limits many times a day; the desk writes them to its working files every few minutes.",
+  "placement": { "area": "screen", "nav": "Desk", "order": 1 },
+  "refresh": 60,
+  "sources": {
+    "book": { "type": "file", "glob": "{{data}}/positions.json" },
+    "pnl": { "type": "file", "glob": "{{data}}/pnl.json" },
+    "prices": { "type": "file", "glob": "{{data}}/prices.json" },
+    "orders": { "type": "file", "glob": "{{data}}/orders.jsonl" }
+  },
+  "units": [
+    { "id": "headline", "span": 12, "view": { "kind": "stat-row", "items": [
+      { "source": "book", "value": "summary.unrealised", "label": "Unrealised P&L", "format": "money" },
+      { "source": "book", "value": "summary.realisedToday", "label": "Realised today", "format": "money" },
+      { "source": "book", "value": "summary.gross", "label": "Gross exposure", "format": "money" },
+      { "source": "book", "value": "summary.openOrders", "label": "Open orders", "format": "integer" } ] } },
+    { "id": "positions", "title": "Open positions", "span": 8, "rows": 2, "actions": ["ask-position"],
+      "view": { "kind": "positions", "source": "book", "rows": "positions", "symbol": "symbol", "side": "side", "size": "qty", "entry": "entry", "mark": "mark", "format": "money", "totals": true, "empty": "No open positions." } },
+    { "id": "limits", "title": "Exposure against limits", "span": 4, "rows": 2,
+      "view": { "kind": "gauge", "source": "book", "items": [
+        { "label": "Gross exposure", "value": "exposure.gross", "max": "limits.gross", "format": "money" },
+        { "label": "Net exposure", "value": "exposure.net", "max": "limits.net", "format": "money" },
+        { "label": "Largest position", "value": "exposure.largest", "max": "limits.largest", "format": "percent" },
+        { "label": "Loss today", "value": "exposure.dayLoss", "max": "limits.dayLoss", "format": "money" } ] } },
+    { "id": "pnl-chart", "title": "Cumulative P&L, 30 days", "span": 7, "rows": 2,
+      "view": { "kind": "chart", "chart": "area", "source": "pnl", "x": { "key": "at", "label": "Day", "time": true, "format": "date" },
+        "series": [ { "key": "cumulative", "label": "Cumulative P&L", "format": "money" } ], "y": { "format": "money", "zero": true },
+        "refs": [ { "label": "Drawdown limit", "value": -25000, "tone": "bad" } ], "empty": "No P&L history yet." } },
+    { "id": "price", "title": "BTC-USD, daily", "span": 5, "rows": 2,
+      "view": { "kind": "chart", "chart": "candlestick", "source": "prices", "rows": "bars", "x": { "key": "at", "label": "Day", "time": true, "format": "date" },
+        "ohlc": { "open": "open", "high": "high", "low": "low", "close": "close" }, "y": { "format": "number" } } },
+    { "id": "orders", "title": "Orders and fills", "span": 12, "actions": ["ask-order"],
+      "view": { "kind": "feed", "source": "orders", "at": "at", "title": "title", "severity": "status", "origin": "origin",
+        "severityMap": { "filled": "good", "working": "neutral", "partial": "warn", "rejected": "bad", "cancelled": "neutral" }, "limit": 20, "empty": "No orders today." } }
+  ],
+  "actions": [
+    { "id": "ask-position", "label": "Ask about this", "kind": "handoff", "to": "finance", "scope": "row",
+      "text": "Owner question on {{row.symbol}}: {{row.side}} {{row.qty}} from {{row.entry}}, now {{row.mark}}. What is the plan for it?" },
+    { "id": "ask-order", "label": "Ask", "kind": "handoff", "to": "finance", "scope": "row",
+      "text": "Owner question on order {{row.id}} ({{row.status}}): {{row.title}}. What happened and what next?" },
+    { "id": "risk-summary", "label": "Ask for a risk summary", "kind": "ask-ceo", "scope": "panel",
+      "text": "Please send me a short risk summary of the desk today: biggest positions, distance to each limit, anything you would cut." }
+  ]
+}

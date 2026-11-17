@@ -1,0 +1,32 @@
+{
+  "$schema": "../../../schemas/console-panel.schema.json",
+  "version": 1,
+  "kind": "page",
+  "id": "calendar",
+  "title": "Calendar",
+  "description": "Meetings and deadlines in the company timezone.",
+  "owner": "ceo",
+  "why": "The owner plans the week around client meetings and filing deadlines; the crew keeps both in one events file so nothing is missed.",
+  "placement": { "area": "screen", "nav": "Calendar", "order": 2 },
+  "refresh": 300,
+  "sources": {
+    "events": { "type": "file", "glob": "{{data}}/events.json" },
+    "deadlines": { "type": "file", "glob": "{{data}}/deadlines.json" }
+  },
+  "units": [
+    { "id": "headline", "span": 12, "view": { "kind": "stat-row", "items": [
+      { "source": "events", "value": "summary.meetingsThisWeek", "label": "Meetings this week", "format": "integer" },
+      { "source": "events", "value": "summary.deadlines7d", "label": "Deadlines in 7 days", "format": "integer" },
+      { "source": "events", "value": "summary.nextDeadline", "label": "Next deadline", "format": "date" } ] } },
+    { "id": "month", "title": "This month", "span": 8, "rows": 3,
+      "view": { "kind": "calendar", "source": "events", "rows": "events", "start": "start", "end": "end", "title": "title", "allDay": "allDay", "tone": "kind",
+        "toneMap": { "deadline": "bad", "client": "accent", "meeting": "neutral", "travel": "warn" }, "view": "month", "views": ["month", "week", "agenda"], "empty": "Nothing scheduled." } },
+    { "id": "deadlines", "title": "Deadlines", "span": 4, "rows": 3, "actions": ["ask-deadline"],
+      "view": { "kind": "table", "source": "deadlines", "columns": [ { "key": "due", "label": "Due", "format": "date", "flag": "late" }, { "key": "title", "label": "What" }, { "key": "owner", "label": "Owner" } ],
+        "sort": { "key": "due", "dir": "asc" }, "limit": 10, "empty": "No deadlines." } }
+  ],
+  "actions": [
+    { "id": "ask-deadline", "label": "Ask", "kind": "handoff", "to": "ceo", "scope": "row",
+      "text": "Owner asks about the deadline {{row.title}} due {{row.due}} ({{row.owner}}): are we on track?" }
+  ]
+}

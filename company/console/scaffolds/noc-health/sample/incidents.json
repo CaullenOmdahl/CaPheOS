@@ -1,0 +1,38 @@
+[
+ {
+  "id": "inc-311",
+  "at": "{{t:-12m}}",
+  "title": "Replica DB not answering",
+  "text": "Replication lag alarm, then no answer for 3 checks. Primary is fine.",
+  "severity": "critical",
+  "service": "Replica DB",
+  "acked": false
+ },
+ {
+  "id": "inc-310",
+  "at": "{{t:-47m}}",
+  "title": "Web app slow (p95 640 ms)",
+  "text": "Above the 400 ms objective since 09:10.",
+  "severity": "warning",
+  "service": "Web app",
+  "acked": true
+ },
+ {
+  "id": "inc-309",
+  "at": "{{t:-1d}}",
+  "title": "Backups check did not run",
+  "text": "The nightly check job was skipped.",
+  "severity": "warning",
+  "service": "Backups",
+  "acked": false
+ },
+ {
+  "id": "inc-305",
+  "at": "{{t:-3d}}",
+  "title": "CDN error rate back to normal",
+  "text": "Resolved after the edge config rollback.",
+  "severity": "resolved",
+  "service": "CDN",
+  "acked": true
+ }
+]

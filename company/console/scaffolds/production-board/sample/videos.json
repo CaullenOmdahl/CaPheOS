@@ -1,0 +1,184 @@
+{
+ "summary": {
+  "inProduction": 10,
+  "overdue": 2,
+  "stuck": 2,
+  "deliveredThisMonth": 7
+ },
+ "items": [
+  {
+   "id": "vid-201",
+   "title": "Spring launch teaser",
+   "client": "Northwind",
+   "stage": "brief",
+   "owner": "Mai",
+   "due": "{{t:+1d@17:00}}",
+   "stepsDone": 0,
+   "stepsTotal": 6,
+   "format": "16:9",
+   "tags": [
+    "Paid"
+   ],
+   "stuck": false,
+   "risk": "ok"
+  },
+  {
+   "id": "vid-202",
+   "title": "Founder interview",
+   "client": "Contoso",
+   "stage": "script",
+   "owner": "Tom",
+   "due": "{{t:+4d@17:00}}",
+   "stepsDone": 2,
+   "stepsTotal": 6,
+   "format": "9:16",
+   "tags": [],
+   "stuck": false,
+   "risk": "ok"
+  },
+  {
+   "id": "vid-203",
+   "title": "How-to: setup in 60 s",
+   "client": "Northwind",
+   "stage": "shoot",
+   "owner": "Lena",
+   "due": "{{t:-7d@17:00}}",
+   "stepsDone": 2,
+   "stepsTotal": 6,
+   "format": "1:1",
+   "tags": [],
+   "stuck": false,
+   "risk": "late"
+  },
+  {
+   "id": "vid-204",
+   "title": "Case study: Fabrikam",
+   "client": "Fabrikam",
+   "stage": "edit",
+   "owner": "Raj",
+   "due": "{{t:+10d@17:00}}",
+   "stepsDone": 4,
+   "stepsTotal": 6,
+   "format": "16:9",
+   "tags": [],
+   "stuck": true,
+   "risk": "stuck"
+  },
+  {
+   "id": "vid-205",
+   "title": "Product walkthrough",
+   "client": "Contoso",
+   "stage": "review",
+   "owner": "Mai",
+   "due": "{{t:+1d@17:00}}",
+   "stepsDone": 4,
+   "stepsTotal": 6,
+   "format": "9:16",
+   "tags": [
+    "Paid"
+   ],
+   "stuck": false,
+   "risk": "ok"
+  },
+  {
+   "id": "vid-206",
+   "title": "Event recap",
+   "client": "Tailspin",
+   "stage": "delivered",
+   "owner": "Tom",
+   "due": "{{t:+4d@17:00}}",
+   "stepsDone": 6,
+   "stepsTotal": 6,
+   "format": "1:1",
+   "tags": [],
+   "stuck": false,
+   "risk": "ok"
+  },
+  {
+   "id": "vid-207",
+   "title": "Customer story: Ada",
+   "client": "Fabrikam",
+   "stage": "brief",
+   "owner": "Lena",
+   "due": "{{t:+7d@17:00}}",
+   "stepsDone": 0,
+   "stepsTotal": 6,
+   "format": "16:9",
+   "tags": [],
+   "stuck": false,
+   "risk": "ok"
+  },
+  {
+   "id": "vid-208",
+   "title": "Shorts pack (5)",
+   "client": "Tailspin",
+   "stage": "script",
+   "owner": "Raj",
+   "due": "{{t:-10d@17:00}}",
+   "stepsDone": 2,
+   "stepsTotal": 6,
+   "format": "9:16",
+   "tags": [],
+   "stuck": false,
+   "risk": "late"
+  },
+  {
+   "id": "vid-209",
+   "title": "Webinar cut-downs",
+   "client": "Contoso",
+   "stage": "shoot",
+   "owner": "Mai",
+   "due": "{{t:+1d@17:00}}",
+   "stepsDone": 2,
+   "stepsTotal": 6,
+   "format": "1:1",
+   "tags": [
+    "Paid"
+   ],
+   "stuck": false,
+   "risk": "ok"
+  },
+  {
+   "id": "vid-210",
+   "title": "Brand film v2",
+   "client": "Northwind",
+   "stage": "edit",
+   "owner": "Tom",
+   "due": "{{t:+4d@17:00}}",
+   "stepsDone": 4,
+   "stepsTotal": 6,
+   "format": "16:9",
+   "tags": [],
+   "stuck": true,
+   "risk": "stuck"
+  },
+  {
+   "id": "vid-211",
+   "title": "FAQ series ep. 3",
+   "client": "Tailspin",
+   "stage": "review",
+   "owner": "Lena",
+   "due": "{{t:+7d@17:00}}",
+   "stepsDone": 4,
+   "stepsTotal": 6,
+   "format": "9:16",
+   "tags": [],
+   "stuck": false,
+   "risk": "ok"
+  },
+  {
+   "id": "vid-212",
+   "title": "Holiday ad",
+   "client": "Northwind",
+   "stage": "delivered",
+   "owner": "Raj",
+   "due": "{{t:+10d@17:00}}",
+   "stepsDone": 6,
+   "stepsTotal": 6,
+   "format": "1:1",
+   "tags": [],
+   "stuck": false,
+   "risk": "ok"
+  }
+ ]
+}

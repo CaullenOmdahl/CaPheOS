@@ -502,10 +502,21 @@ route('POST', /^\/api\/cadence\/seat$/, async (m, q, b) => {
 route('GET', /^\/api\/panels$/, () => ({ ok: true, panels: panelsList() }));
 route('GET', /^\/api\/panels\/([a-z0-9-]+)\/data$/, async (m, q) => {
   if (!PANEL_ID.test(m[1])) bad('bad panel id');
-  const r = await tool('console-panel.js').render(m[1], { live: true });
-  if (!r.ok) throw new HttpError(/^no panel/.test(r.error || '') ? 404 : 400, r.error || 'render failed', r);
+  let r = await tool('console-panel.js').render(m[1], { live: true });
+  // a source that failed is reported per source (the unit shows its error state); only a missing or invalid panel is an HTTP error
+  if (!r.ok && !r.data) throw new HttpError(/^no panel/.test(r.error || '') ? 404 : 400, r.error || 'render failed', r);
+  if (!r.ok) r = Object.assign({}, r, { ok: true, partial: true });
   if (Array.isArray(r.data)) { const p = arrayPage(r.data, q, 200); return Object.assign({}, r, { data: p.items, page: { cursor: p.cursor, more: p.more, total: p.total } }); }   // a list panel pages
   return r;
+});
+// page/panel preview (docs/CONSOLE-PANELS.md §12): an installed or proposed id, or ?dir= a working folder under company/work/
+route('GET', /^\/api\/preview\/([a-z0-9-]+)$/, async (m, q) => {
+  if (!PANEL_ID.test(m[1])) bad('bad panel id');
+  let target = m[1]; const dir = q.get('dir');
+  if (dir) { const a = path.resolve(co.ROOT, dir); if (!a.startsWith(co.p('company', 'work') + path.sep) || path.basename(a) !== m[1]) bad('dir must be a working folder under company/work/ named ' + m[1]); target = a; }
+  const r = await tool('console-panel.js').render(target, { live: true });
+  if (!r.ok && !r.findings && !r.data) throw new HttpError(404, r.error || 'no panel or page ' + m[1]);
+  return Object.assign({}, r, { ok: true, valid: !!r.ok });
 });
 route('POST', /^\/api\/panels\/([a-z0-9-]+)\/(hide|unhide|approve|reject|remove)$/, (m, q, b) => {
   if (!PANEL_ID.test(m[1])) bad('bad panel id');
@@ -536,6 +547,7 @@ const WATCHES = [
   ['cadence', ['company', 'work', 'ops'], f => f === 'cadence.json'],
   ['panels', ['company', 'console'], f => f === 'state.json' || f === 'changes.jsonl' || f === 'panels' || f === 'proposed'],
   ['panels', ['company', 'console', 'panels'], () => true],
+  ['panels', ['company', 'console', 'pages'], () => true],
   ['dispatch', ['company', 'work'], f => f === 'dispatch-log.md' || f === 'dispatch-state.json'],
   ['crew', ['company', 'tools'], f => f === 'loops.json'],
   ['charter', ['company'], f => f === 'CHARTER.md' || /^CHARTER\.md\.tmp/.test(f)],
@@ -612,6 +624,10 @@ function makeServer(token) {
       }
       const hk = p.match(/^\/hooks\/([^/]+)(?:\/(.*))?$/);
       if (hk) return await moduleRoute(req, res, url, 'source', hk[1], hk[2]);
+      if (/^\/preview\/[a-z0-9-]+$/.test(p)) {   // the page preview shell; its data comes from /api/preview/<id>
+        if (!same(req.headers['x-console-token'] || cookies(req).console_token, token)) return sendJson(res, 401, { ok: false, error: 'owner token required (GET /login?token=...)' });
+        return serveStatic(req, res, '/preview.html');
+      }
       if (!p.startsWith('/api/') && p !== '/api') return serveStatic(req, res, p);
       if (!same(req.headers['x-console-token'] || cookies(req).console_token, token)) return sendJson(res, 401, { ok: false, error: 'owner token required (x-console-token header or console_token cookie; GET /login?token=...)' });
       if (p === '/api/events') return events(req, res);

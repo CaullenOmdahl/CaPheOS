@@ -20,9 +20,10 @@ const SCREENS = {
   map: () => import('./js/screens/map.js'),
   halt: () => import('./js/screens/halt.js'),
   p: () => import('./js/screens/panel-screen.js'),
+  kit: () => import('./js/screens/kit-gallery.js'),
 };
 const TITLES = { today: 'Today', setup: 'Setup', comms: 'Comms', crew: 'Crew', work: 'Work', hiring: 'Hiring', controls: 'Controls', automate: 'Automate',
-  governance: 'Governance', usage: 'Usage and models', floor: 'Floor', abilities: 'Abilities', system: 'System', map: 'Feature map', halt: 'Halt', p: 'Company' };
+  governance: 'Governance', usage: 'Usage and models', floor: 'Floor', abilities: 'Abilities', system: 'System', map: 'Feature map', halt: 'Halt', p: 'Company', kit: 'Page kit' };
 const NAV = [
   ['Company', [['setup', 'Setup'], ['today', 'Today'], ['comms', 'Comms'], ['crew', 'Crew'], ['work', 'Work'], ['hiring', 'Hiring']]],
   ['Operations', [['controls', 'Controls'], ['automate', 'Automate'], ['governance', 'Governance'], ['usage', 'Usage and models']]],
