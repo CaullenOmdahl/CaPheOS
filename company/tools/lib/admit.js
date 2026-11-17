@@ -61,6 +61,19 @@ function admit(req, opts) {
   if (kind === 'run' && req.jobId && req.provider) {
     let b = null; try { b = require('./refusal').blockFor(String(req.jobId), String(req.provider), { now, root: opts.root }); } catch (_) {}
     if (b) Object.assign(t, { decision: 'hold', reason: 'refusal block: ' + req.provider + ' refused this routine at ' + new Date(b.at).toISOString() + ' and is blocked for it until ' + new Date(b.until).toISOString() + ' (it runs on the next model meanwhile)' });
+    // models.js judged that nothing in this seat's chain can run (every entry closed, blocked or at the spend rail): a
+    // start would only be stopped by the station partway ("budget") or fail at the provider. Hold it; models.js moves the
+    // seat as soon as an entry opens. Read only while models-state.json is fresh (fail open on a stale or missing file).
+    if (t.decision === 'allow' && req.seat && door === 'dispatch') {
+      try {
+        const f = path.join(opts.root || co.ROOT, 'company', 'state', 'models-state.json');
+        const st = fs.statSync(f);
+        if (now - st.mtimeMs < 10 * 60e3) {
+          const ss = ((JSON.parse(fs.readFileSync(f, 'utf8')) || {}).seats || {})[String(req.seat)];
+          if (ss && ss.nothingKey) Object.assign(t, { decision: 'hold', reason: 'no model can run: ' + String(ss.nothingKey).split('|').slice(0, 3).join('; ').slice(0, 220), noModel: true });
+        }
+      } catch (_) {}
+    }
     if (t.decision === 'allow') {
       let c = null; try { c = require('./refusal').closureFor(String(req.provider), { now, root: opts.root }); } catch (_) {}
       if (c) Object.assign(t, { decision: 'hold', reason: 'quota closed: ' + req.provider + ' is closed to routines until ' + new Date(Number(c.until)).toISOString() + ' (' + String(c.why || 'usage limit') + ')', quota: true });

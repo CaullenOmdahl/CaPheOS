@@ -1252,6 +1252,7 @@ function lastRunTail(job) {
     const viaInbox = names.includes(' OPEN in ');
     if (DRY) { A.admit({ door: 'dispatch', kind: 'run', seat: agentId, jobId: job.id, why: names }, { dry: true }); log('WOULD run ' + job.name + ' for ' + agentId + ' (' + names + ')'); fired++; say(agentId, { state: 'started', why: names }); continue; }
     const tk = A.admit({ door: 'dispatch', kind: 'run', seat: agentId, jobId: job.id, provider: (job.wire && job.wire.provider) || job.provider, priority: waitersOf(agentId).length ? 'blocking' : null, why: names });   // phase 1: allow, recorded; a refusal block holds
+    if (tk.decision === 'hold' && tk.noModel) { log('NO MODEL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'none of its models can run right now (limits or the daily budget); it starts when one opens' }); continue; }
     if (tk.decision === 'hold' && tk.quota) { log('QUOTA HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'its model is at its usage limit; it waits for the limit to reset or its next model' }); continue; }
     if (tk.decision === 'hold') { log('REFUSAL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'its model refused a run; it waits for its next model' }); continue; }
     log('RUN ' + job.name + ' for ' + agentId + ' (' + names + ')' + (rest.fast ? ' [Sprint: new work; rest ' + SPRINT.cooldownFloorMin + ' min]' : ''));

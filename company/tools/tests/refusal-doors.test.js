@@ -61,3 +61,15 @@ test('quota closure: admit() holds a dispatch start on a provider the pacer clos
   const later = A.admit({ door: 'dispatch', kind: 'run', seat: 'cand1', jobId: 'j1', provider: 'custom' }, { now: now + 31 * 60e3, root: T, dry: true });
   assert.strictEqual(later.decision, 'allow', 'the closure has ended');
 });
+
+test('no model can run: admit() holds a dispatch start while models.js says nothing in the seat\'s chain can run; fresh state only', () => {
+  const now = Date.now(); const A = require('../lib/admit');
+  W('company/state/pacer-state.json', { blocks: [], closures: {} });
+  W('company/state/models-state.json', { v: 1, seats: { cand1: { nothingKey: 'the pacer has Claude closed|metered: the station\'s daily spend rail is at 96% (holds from 85%)' }, alex: { nothingKey: '' } } });
+  const held = A.admit({ door: 'dispatch', kind: 'run', seat: 'cand1', jobId: 'j1', provider: 'deepseek' }, { now, root: T, dry: true });
+  assert.strictEqual(held.decision, 'hold'); assert.ok(held.noModel && /no model can run/.test(held.reason), JSON.stringify(held));
+  assert.strictEqual(A.admit({ door: 'dispatch', kind: 'run', seat: 'alex', jobId: 'j2', provider: 'deepseek' }, { now, root: T, dry: true }).decision, 'allow', 'a seat with a runnable entry starts');
+  assert.strictEqual(A.admit({ door: 'chat', kind: 'run', seat: 'cand1' }, { now, root: T, dry: true }).decision, 'allow', 'the owner\'s chat is never held here');
+  const old = new Date(now - 20 * 60e3); fs.utimesSync(path.join(T, 'company/state/models-state.json'), old, old);
+  assert.strictEqual(A.admit({ door: 'dispatch', kind: 'run', seat: 'cand1', jobId: 'j1', provider: 'deepseek' }, { now, root: T, dry: true }).decision, 'allow', 'a stale models state fails open');
+});
