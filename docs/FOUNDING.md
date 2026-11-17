@@ -84,7 +84,11 @@ build those; the flow's job is to make the first turn good.
 - **Nothing is final except the slug.** Name, purpose, vertical, crew and keys are all changeable after launch through
   normal governance; the setup record keeps the decision history.
 - **The vertical is a seed, not a decision.** Choosing "fintech" suggests role templates, guardrails and modules; it
-  never hires, never installs a unit, never sets a policy the owner did not see.
+  never hires, never installs a unit, never sets a policy the owner did not see. The fintech seed: modules `parties`,
+  `scopes`, `ledger`, `evidence`, `verify`, `reports`, `commitments`, `playbooks`, `intake`, `observe`, `continuity`;
+  role templates `finance-manager`, `risk-manager`, `specialist`; guardrails `externalActions` and `spendCap`; desktop
+  grant tiers 2–3 for banking and brokerage (`DEPLOY.md` §5). Modules the vertical does not need stay unmounted
+  (`PARITY.md` §8).
 - **Resumable and auditable.** Every stage writes as it completes; the record says who answered, when, and what changed.
 
 ---

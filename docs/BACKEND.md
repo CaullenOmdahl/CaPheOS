@@ -249,6 +249,11 @@ Everything else is a plugin: **shipped with the base**, mounted by configuration
 A plugin shipped with the base is enabled in the default composition. A capability the owner adds is a unit. Both are
 the same mechanism, so there is one way to extend the backend and one way to remove something.
 
+**A workplace mounts a stack, not the catalogue.** Plugins ship with the base, but a workplace mounts the stack it
+declares (`docs/PARITY.md` §8 — the current company is fintech). An unmounted plugin registers no tools and costs no
+prompt tokens; a mounted one declares its capability and its limits. Out of scope is not baggage: framework stock that
+another vertical uses is left alone, not deleted.
+
 **The test:** the backend must boot, serve the console and run one turn with the core plus one provider adapter. Every
 other plugin is mounted from configuration. If removing something breaks boot, it was core and should be named as core
 — not left as a plugin.

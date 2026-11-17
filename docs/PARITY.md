@@ -140,3 +140,35 @@ So P0 names three things:
 
 Plus: **UI copy** (quests → tasks, one pass at P2) and **the area tests** (§3), one per area, written as each area
 lands.
+
+---
+
+## 8. Scope: this company is fintech
+
+The framework ships no vertical (`README.md`). A workplace enables a subset. Parity is measured against **this
+company's mounted set**, not the framework's stock.
+
+**In scope for this company:**
+
+| Layer | Mounted |
+|---|---|
+| surfaces | the console, chat and runs, Today, Work, Spend, Crew, Meetings, Settings, panels |
+| work | tasks, dispatcher, duties, approvals, commitments, handoffs |
+| money | budget, holds, provider balances, subscriptions, ledger and invoices, settlement through the external gate |
+| risk | governance, guardrails, per-party scopes, evidence, verify, continuity |
+| sense and organize | intake, observe, parties, playbooks |
+| people | hiring, competence, meetings |
+| integrations | connectors, keys, skills, provider adapters |
+| desktop | yes — banking and brokerage portals are exactly why the grant tiers 2–3 exist (`DEPLOY.md` §5) |
+
+**Out of scope is not baggage.** A tool or module that serves another vertical, or that no duty, route, module manifest
+or seat routine references, stays in the framework as a unit but is **not mounted here**. It gets no row in §4: it is not
+being cut from the product, it is simply not this company's.
+
+**The rule:** a capability is in scope when the fintech stack declares it, or something uses it (a duty, a console
+route, a module manifest, a seat routine). Everything else is not mounted, so it registers no tools and costs no prompt
+tokens. That is where the "fewer prompt tokens" claim actually comes from — not from deleting tools, but from not
+mounting them.
+
+**Consequence for P0:** the unit mapping is per stack, and the stack is the fintech one. The parity tests run against the
+mounted set, and the failure they catch is a capability in scope that is not mounted.
