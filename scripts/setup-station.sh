@@ -127,6 +127,9 @@ if [[ -f "$UNITDIR/$SVC-dispatch.timer" ]]; then
   echo "retired $SVC-dispatch.timer (the dispatcher is now the self-paced $SVC-dispatch.service)"
 fi
 systemctl --user daemon-reload
+# registered background services (company/tools/service.js): units an older template wrote are written again from the
+# current one, so a template fix (e.g. the start limit of a fast timer) reaches what is already installed
+[[ -f company/state/services.json ]] && { node company/tools/service.js rerender --by owner || echo "service.js rerender did not run (see above)"; }
 # these writes are the owner's own setup, not drift: record them with the change watcher so nobody is flagged
 if [[ -f company/tools/locked-watch.js && -e company/state/locked/baseline.json ]]; then
   OWNER_NAME="$(cfg 'c.owner&&c.owner.name')"

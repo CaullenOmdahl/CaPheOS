@@ -9,6 +9,8 @@
  *   node company/tools/service.js status                 the same, in words
  *   node company/tools/service.js stop|start <name> --by <seat>    the seat that asked for it, or the owner
  *   node company/tools/service.js remove <name> --by <seat>        stops it, deletes its unit files, drops it from the register
+ *   node company/tools/service.js rerender --by owner     units an older template wrote are written again from this one
+ *        (reset and their timers restarted); scripts/setup-station.sh runs it, so a template fix reaches installed units
  *   node company/tools/service.js adopt <unit> --by <owner> [--as <name>] [--seat <seat>] [--why "..."]
  *        registers a unit made outside this tool. With --as it is rebuilt from the template under the company-scoped name
  *        and the old unit is disabled and its files moved to company/state/services-adopted/; without --as it is only
@@ -244,12 +246,18 @@ const specKey = s => sha(JSON.stringify([s.kind, s.argv, s.schedule, s.restart, 
 const scheduleWords = s => !s ? 'runs all the time' : s.every ? 'every ' + s.every : 'on the calendar ' + s.onCalendar;
 
 /* ---------------- unit files ---------------- */
+/* Start limit: systemd allows StartLimitBurst starts per StartLimitIntervalSec, and a timer's own activations count
+ * against it, so 5 per 10 min turns a timer that fires every minute into one that runs half the time (5 starts, then
+ * start-limit-hit until the window expires, while the timer reads active). A timer's oneshot has no Restart= and gets one
+ * start per firing, so it cannot crash-loop: timers get no start limit. A long-running service (Restart=on-failure)
+ * keeps the 5-per-10-min guard it exists for. */
+const startLimit = e => e.kind === 'timer' ? 'StartLimitIntervalSec=0\n' : 'StartLimitIntervalSec=10min\nStartLimitBurst=5\n';
 function render(ctx, e) {
   const head = '# Written by company/tools/service.js for ' + (ctx.config.name || ctx.slug) + '. Change it with service.js, not by hand: a hand edit is flagged.\n';
   const x = 'X-CaPheOS-Company=' + ctx.slug + '\nX-CaPheOS-Root=' + ctx.root + '\nX-CaPheOS-Service=' + e.name + '\n';
   const svc = head + '[Unit]\nDescription=' + (ctx.config.name || ctx.slug) + ' background service ' + e.name + '\n'
     + 'Documentation=file:' + path.join(ctx.root, 'company', 'state', 'services.json') + '\n'
-    + 'StartLimitIntervalSec=10min\nStartLimitBurst=5\n' + x + '\n[Service]\n'
+    + startLimit(e) + x + '\n[Service]\n'
     + 'Type=' + (e.kind === 'timer' ? 'oneshot' : 'simple') + '\n'
     + 'WorkingDirectory=' + ctx.root + '\n'
     + 'ExecStart=' + execLine(e.argv) + '\n'
@@ -423,6 +431,26 @@ function startStop(ctx, cmd, name, o) {
   e.lastControl = { cmd, by: who.seat || 'owner', at: new Date(ctx.now()).toISOString() };
   write(ctx, doc); logRow(ctx, { event: cmd, name, by: who.seat || 'owner' });
   return { ok: !e.lastError, name, done: cmd, error: e.lastError || undefined };
+}
+/* rerender (the owner, e.g. from scripts/setup-station.sh): units written by an older template are written again from
+ * this one, so a template fix reaches what is already installed. Adopted units (managed: false) are left as they are. */
+function rerender(ctx, o) {
+  if (!isOwner(ctx, o.by)) throw err('rerender is the owner\'s: --by owner, from the owner\'s own shell', 3);
+  const doc = read(ctx); const changed = [];
+  for (const e of Object.values(doc.services || {})) {
+    if (e.status !== 'installed' || e.managed === false) continue;
+    const files = render(ctx, e);
+    if (Object.entries(files).every(([f, text]) => (e.files || {})[f] === sha(text))) continue;
+    writeUnits(ctx, e); changed.push(e);
+  }
+  if (!changed.length) return { ok: true, rerendered: [] };
+  sc(ctx, ['daemon-reload']);
+  for (const e of changed) {
+    sc(ctx, ['reset-failed', e.unit + '.service'], e);   // a unit the old template rate-limited starts clean
+    if (e.kind === 'timer' && e.desired === 'running' && !e.halt) sc(ctx, ['restart', e.unit + '.timer'], e);
+  }
+  write(ctx, doc); logRow(ctx, { event: 'rerendered', names: changed.map(e => e.name), by: 'owner' });
+  return { ok: true, rerendered: changed.map(e => e.name) };
 }
 function remove(ctx, name, o) {
   const doc = read(ctx); const e = entry(doc, name);
@@ -671,7 +699,7 @@ function parseArgs(a) {
 }
 function printStatus(r) {
   if (!r.services.length) { console.log('No background services are registered (guardrail localComputer ' + r.guardrail + ').'); return; }
-  for (const s of r.services) console.log(s.name.padEnd(20) + ' ' + String(s.state).padEnd(12) + ' ' + s.scheduleWords + (s.lastRun ? ', last run ' + s.lastRun : '') + ' — asked by ' + s.byName + ': ' + s.why.slice(0, 80) + (s.scoped ? '' : '  [NOT company-scoped: ' + s.unit + ']'));
+  for (const s of r.services) console.log(s.name.padEnd(20) + ' ' + String(s.state).padEnd(12) + ' ' + s.scheduleWords + (s.lastRun ? ', last run ' + s.lastRun : '') + (s.result && s.result !== 'success' ? ' [last result: ' + s.result + ']' : '') + ' — asked by ' + s.byName + ': ' + s.why.slice(0, 80) + (s.scoped ? '' : '  [NOT company-scoped: ' + s.unit + ']'));
 }
 function main(argv) {
   const cmd = argv[0];
@@ -695,6 +723,7 @@ function main(argv) {
   if (cmd === 'propose') { const r = propose(ctx, o._[0], o); print(r); return r.waiting ? 4 : r.ok ? 0 : 1; }
   if (cmd === 'start' || cmd === 'stop') { const r = startStop(ctx, cmd, o._[0], o); print(r); return r.ok ? 0 : 1; }
   if (cmd === 'remove') { print(remove(ctx, o._[0], o)); return 0; }
+  if (cmd === 'rerender') { print(rerender(ctx, o)); return 0; }
   if (cmd === 'adopt') { const r = adopt(ctx, o._[0], o); print(r); return r.ok ? 0 : 1; }
   console.error('usage: service.js propose|list|status|stop|start|remove|adopt|--duty|selftest (header of company/tools/service.js)'); return 2;
 }
@@ -787,6 +816,24 @@ function selftest() {
     const tm = fs.readFileSync(path.join(U, 'testco-svc-bank.timer'), 'utf8'); const ts1 = fs.readFileSync(path.join(U, 'testco-svc-bank.service'), 'utf8');
     ok('guardrail OFF + schedules notify: installed without a question, owner told', r.ok && r.status === 'installed' && fs.existsSync(path.join(R, 'company/owner/outbound.jsonl')), r);
     ok('timer rendered: OnUnitActiveSec, oneshot service, no network', /OnUnitActiveSec=1h/.test(tm) && /Unit=testco-svc-bank.service/.test(tm) && /Type=oneshot/.test(ts1) && /RestrictAddressFamilies=AF_UNIX/.test(ts1) && fake.active['testco-svc-bank.timer']);
+    // start limit: a timer must not rate-limit itself to half its schedule; a long-running service keeps the guard
+    const minuteSvc = render(ctx, specOf(ctx, 'minute', { kind: 'timer', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', every: '1min', why: 'one pass every minute' }, { resolve: false }))['testco-svc-minute.service'];
+    ok('a 1-min timer gets no start limit (its own firings would hit 5 per 10 min)', /StartLimitIntervalSec=0/.test(minuteSvc) && !/StartLimitBurst/.test(minuteSvc), minuteSvc);
+    ok('a long-running service keeps the 5-per-10-min limit', /StartLimitIntervalSec=10min/.test(render(ctx, good)['testco-svc-depth.service']) && /StartLimitBurst=5/.test(render(ctx, good)['testco-svc-depth.service']));
+    // rerender: a unit written by an older template is written again (owner only), reset and its timer restarted
+    {
+      const was = agent; agent = true;
+      ok('rerender is the owner\'s only', throwsCode(() => rerender(ctx, { by: 'data' }), 3) === true);
+      agent = false;
+      const doc = read(ctx); const be = doc.services.bank; const f = path.join(U, 'testco-svc-bank.service');
+      const old = fs.readFileSync(f, 'utf8').replace('StartLimitIntervalSec=0\n', 'StartLimitIntervalSec=10min\nStartLimitBurst=5\n');
+      fs.writeFileSync(f, old); be.files['testco-svc-bank.service'] = sha(old); write(ctx, doc);
+      const n0 = fake.calls.length; const rr = rerender(ctx, { by: 'Pat' }); const calls = fake.calls.slice(n0);
+      ok('rerender rewrites an old-template unit, resets it and restarts its timer', rr.rerendered.join() === 'bank' && /StartLimitIntervalSec=0/.test(fs.readFileSync(f, 'utf8'))
+        && calls.includes('daemon-reload') && calls.includes('reset-failed testco-svc-bank.service') && calls.includes('restart testco-svc-bank.timer'), { rr, calls });
+      ok('rerender with nothing out of date changes nothing', rerender(ctx, { by: 'Pat' }).rerendered.length === 0);
+      agent = was;
+    }
     guardOn = true; govLevel = null;
     // start/stop/remove rights
     ok('stop by another seat is refused', throwsCode(() => startStop(ctx, 'stop', 'depth', { by: 'agent' }), 3, /belongs to/) === true);
