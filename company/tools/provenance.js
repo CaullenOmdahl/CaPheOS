@@ -16,6 +16,7 @@
  *   prov.rolled(file, { before, after, ops, chunks }, 'retention.js')   after a retention roll (docs/RETENTION.md)
  *   prov.inserted(file, { before, after, offset }, 'decision.js')    after inserting bytes at `offset` of a grow-only record
  *                                                   (decisions.md is newest first: a new entry goes in at the top)
+ *   prov.removed(file, 'console (owner disconnect)')   after deleting a key file (a connector's credential, Disconnect)
  *   node company/tools/provenance.js record <file> <writer>   for a shell tool (test-substrate.sh): hashes the file on disk
  *   node company/tools/provenance.js tail [n]       print the last n rows (no file contents, only hashes)
  *
@@ -44,6 +45,7 @@ const crypto = require('crypto');
 const co = require('./lib/company');
 const LIVE_ROOT = co.ROOT;
 const rootOf = () => path.resolve(process.env.PROVENANCE_ROOT || LIVE_ROOT);   // env only for selftests
+const homeOf = () => path.resolve(process.env.PROVENANCE_HOME || require('os').homedir());   // env only for selftests
 const logFile = root => path.join(root, 'company', 'state', 'locked', 'provenance.jsonl');
 const sha = data => 'sha256:' + crypto.createHash('sha256').update(Buffer.isBuffer(data) ? data : Buffer.from(String(data))).digest('hex');
 
@@ -146,9 +148,16 @@ function mainInfo(root) {
 }
 
 /* ---------------- recording ---------------- */
-function relOf(file, root) {
+// a file in the home folder, outside the project (a connector's credential, ~/.config/<cli>/...): '~/<path>', the key
+// locked-watch.js uses for it. Only keys the console records (writer "console", hashes only) are ever written this way.
+function homeRel(p) {
+  const home = homeOf(); if (!p.startsWith(home + path.sep)) return null;
+  const r = path.relative(home, p).split(path.sep).join('/');
+  return r && !r.split('/').includes('..') ? '~/' + r : null;
+}
+function relOf(file, root, o) {
   const p = path.resolve(String(file || ''));
-  if (!p.startsWith(root + path.sep)) return null;
+  if (!p.startsWith(root + path.sep)) return o && o.home ? homeRel(p) : null;
   const r = path.relative(root, p).split(path.sep).join('/');
   // under company/, plus the station's folder grants (lanes.js records the grant of each lane folder it blesses) and the
   // station's key store (providers.js records the files the station wrote for an owner-approved setting; hashes only),
@@ -165,9 +174,17 @@ function append(row, root) {
 function common(root, writer) { const m = mainInfo(root); return { writer: String(writer || '?'), pid: process.pid, underStation: underStation(), main: m.main, tainted: m.tainted }; }
 function wrote(file, data, writer) {
   try {
-    const root = rootOf(), rel = relOf(file, root); if (!rel) return false;
+    const root = rootOf(), rel = relOf(file, root, { home: /^console\b/.test(String(writer || '')) }); if (!rel) return false;
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(String(data));
     append(Object.assign({ at: new Date().toISOString(), file: rel, kind: 'write', sha256: sha(buf), bytes: buf.length }, common(root, writer)), root);
+    return true;
+  } catch (_) { return false; }
+}
+// a key file the console deleted (Disconnect): locked-watch.js accepts its absence instead of flagging "a key changed"
+function removed(file, writer) {
+  try {
+    const root = rootOf(), rel = relOf(file, root, { home: true }); if (!rel) return false;
+    append(Object.assign({ at: new Date().toISOString(), file: rel, kind: 'delete' }, common(root, writer)), root);
     return true;
   } catch (_) { return false; }
 }
@@ -272,7 +289,7 @@ function callerConflict(root, parts, claimedId, nowMs) {
   } catch (_) { return null; }
 }
 
-module.exports = { wrote, appended, noted, rolled, inserted, readFrom, sha, logFile, underStation, pinUnderStation, pinOwnerShell, ownerShell, classify, recentCalls, callerConflict, _internals: { stationEnv, mainInfo, scriptOf, inStationCgroup } };
+module.exports = { wrote, removed, appended, noted, rolled, inserted, readFrom, sha, logFile, underStation, pinUnderStation, pinOwnerShell, ownerShell, classify, recentCalls, callerConflict, _internals: { stationEnv, mainInfo, scriptOf, inStationCgroup } };
 
 if (require.main === module) {
   const [cmd, n, w] = process.argv.slice(2);

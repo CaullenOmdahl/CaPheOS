@@ -14,7 +14,8 @@ const fs = require('fs');
 const path = require('path');
 
 // The services the Add form offers, and the friendly names of the files they and the framework use. kind 'address' is a
-// web address (a ping URL), labelled "address", never "key". `names` are the file names this entry describes.
+// web address (a ping URL), labelled "address", never "key". `names` are the file names this entry describes. `connector`:
+// the same service's sign-in in company/connectors/<id>.json (console/connectors.js), the way to get it without pasting.
 const KNOWN = [
   { id: 'pyth', label: 'Pyth', name: 'pyth-api-key', names: ['pyth-api-key', 'pyth-key', 'pyth-token'], kind: 'key', offer: true,
     where: 'Sign in at Pyth, open API keys and create one; copy the key it shows.', url: 'https://app.pyth.com' },
@@ -23,11 +24,11 @@ const KNOWN = [
   { id: 'kalshi-private', label: 'Kalshi private key', name: 'kalshi-private-key', names: ['kalshi-private-key', 'kalshi-private-key.pem', 'kalshi-key.pem'], kind: 'key', multiline: true, offer: true,
     where: 'The private key file Kalshi downloaded when you created the API key: open it and paste all of it, BEGIN and END lines included.', url: 'https://kalshi.com/account/profile' },
   { id: 'synpath', label: 'Synpath', name: 'synpath-api-key', names: ['synpath-api-key', 'synpath-key', 'synpath-token'], kind: 'key', offer: true,
-    where: 'Sign in at synpath.dev (Google sign-in) and copy an API key from its API settings.', url: 'https://www.synpath.dev/tick-data' },
+    where: 'Easiest: Sign-ins above › Synpath › Connect (you sign in with Google; the station keeps the key it creates). Or sign in at synpath.dev and copy an API key from its API settings.', url: 'https://www.synpath.dev/tick-data', connector: 'synpath' },
   { id: 'healthchecks', label: 'Heartbeat address (healthchecks.io)', name: 'liveness-heartbeat-url', names: ['liveness-heartbeat-url', 'healthchecks-url', 'healthchecks-ping-url'], kind: 'address', offer: true,
     where: 'healthchecks.io › your project › Add Check, then copy its ping address (https://hc-ping.com/…). The liveness check calls it while all is well.', url: 'https://healthchecks.io/accounts/signup/' },
   { id: 'github', label: 'GitHub token', name: 'github-token', names: ['github-token', 'gh-token', 'github-pat'], kind: 'key', offer: true,
-    where: 'GitHub › Settings › Developer settings › Fine-grained tokens: give it only the repositories and permissions it needs.', url: 'https://github.com/settings/personal-access-tokens/new' },
+    where: 'GitHub › Settings › Developer settings › Fine-grained tokens: give it only the repositories and permissions it needs.', url: 'https://github.com/settings/personal-access-tokens/new', connector: 'github-cli' },
   // not offered in the picker (set elsewhere, or by the framework), but named when the file is there
   { id: 'healthchecks-key', label: 'healthchecks.io ping key', names: ['healthchecks-ping-key'], kind: 'key', where: 'healthchecks.io › your project › Settings › Ping key.', url: 'https://healthchecks.io/' },
   { id: 'liveness-alert', label: 'Outage alert address', names: ['liveness-ping-url'], kind: 'address', where: 'An address the liveness check calls once when the station goes down (a ntfy.sh or healthchecks.io /fail address).', url: null },

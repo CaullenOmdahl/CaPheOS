@@ -1,0 +1,27 @@
+{
+  "id": "synpath",
+  "label": "Synpath",
+  "provider": "Google",
+  "about": "Tick-level Kalshi order book and trade history, and cross-venue market matching. Signing in with your Google account creates the company's API key.",
+  "docs": "https://github.com/Synpath-ai/synpath#free-kalshi-tick-data-in-60-seconds",
+  "serviceKey": "synpath",
+  "style": "loopback",
+  "loginCommand": ["synpath", "login", "--no-browser"],
+  "postLogin": [["synpath", "keys", "create", "capheos", "--no-print-key"]],
+  "configEnv": { "SYNPATH_CREDENTIALS_FILE": "{dir}/credentials.json" },
+  "credentialPath": "company/connections/synpath/credentials.json",
+  "verify": ["synpath", "keys", "list"],
+  "logout": ["synpath", "logout"],
+  "redirectUri": "http://127.0.0.1:{port}/callback",
+  "portParam": "cli_port",
+  "stateParam": "cli_state",
+  "callbackStateParam": "state",
+  "urlPattern": "/oauth/google/start\\?",
+  "expiredHint": "Synpath's management sign-in has expired (the API key it created may still work). Reconnect to sign in again.",
+  "knownIssues": [
+    { "title": "Google refuses the sign-in",
+      "match": "access_denied|access blocked|test user|not completed the Google verification|403",
+      "text": "While Synpath's Google app is in testing, only Google accounts on its test-user list can sign in. If Google says access is blocked, ask Synpath to add your Google account as a test user, then Connect again." }
+  ],
+  "notes": "synpath login (synpath/hosted_auth.py) listens on 127.0.0.1 at a random port, named as cli_port in the sign-in address, for /callback?code=...&state=<cli_state>. It has --no-browser but no device flow, so a remote owner uses the paste fallback or an SSH tunnel. SYNPATH_CREDENTIALS_FILE moves its credentials.json (0600) into the company's connections folder."
+}

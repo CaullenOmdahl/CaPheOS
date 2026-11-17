@@ -548,6 +548,20 @@ route('POST', /^\/api\/chat-actions\/secret$/, (m, q, b) => {
 // Settings › Connections and keys › Service keys (console/service-keys.js): the keys in secrets/, never their values
 route('GET', /^\/api\/service-keys$/, () => SERVICE_KEYS.list());
 route('POST', /^\/api\/service-keys$/, (m, q, b) => SERVICE_KEYS.save(b));
+// Settings › Connections and keys › <service> › Connect (console/connectors.js, docs/CONNECTORS.md): the owner's own
+// sign-in to a CLI, run here on the station; the owner's browser may be on another machine. Owner token like every /api.
+const CONNECTORS = require(path.join(__dirname, 'connectors.js'))({ co, bad, HttpError, tool, owner: () => OWNER });
+process.on('exit', () => CONNECTORS.stopAll());   // a sign-in CLI runs in its own process group: it never outlives the console
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) if (!process.listenerCount(sig)) process.once(sig, () => { CONNECTORS.stopAll(); process.exit(128 + ({ SIGHUP: 1, SIGINT: 2, SIGTERM: 15 })[sig]); });
+const CONN = '\\/api\\/connectors\\/([a-z0-9][a-z0-9-]{0,40})';
+route('GET', /^\/api\/connectors$/, () => CONNECTORS.list());
+route('GET', new RegExp('^' + CONN + '$'), m => CONNECTORS.status(m[1]));
+route('GET', new RegExp('^' + CONN + '\\/session$'), (m, q, b, req) => CONNECTORS.session(m[1], req));
+route('POST', new RegExp('^' + CONN + '\\/connect$'), (m, q, b, req) => CONNECTORS.start(m[1], b, req));
+route('POST', new RegExp('^' + CONN + '\\/callback$'), (m, q, b) => CONNECTORS.callback(m[1], b));
+route('POST', new RegExp('^' + CONN + '\\/code$'), (m, q, b) => CONNECTORS.code(m[1], b));
+route('POST', new RegExp('^' + CONN + '\\/cancel$'), m => CONNECTORS.cancel(m[1]));
+route('POST', new RegExp('^' + CONN + '\\/disconnect$'), (m, q, b) => CONNECTORS.disconnect(m[1], b));
 const approvals = async () => { const A = tool('approvals.js'); try { await A.tick({ actor: 'the console' }); } catch (_) {} return A; };
 route('GET', /^\/api\/approvals$/, async () => ({ ok: true, approvals: (await approvals()).list() }));
 route('GET', /^\/api\/approvals\/(q-\d+)$/, async m => { const r = (await approvals()).get(m[1]); if (!r) bad('no approval record ' + m[1], 404); return Object.assign({ ok: true }, r); });
@@ -818,7 +832,7 @@ function makeServer(token) {
         const m = p.match(r.re); if (!m) continue;
         if (req.method !== r.method) continue;
         const body = req.method === 'POST' ? await readBody(req) : {};
-        const out = await r.fn(m, url.searchParams, body);
+        const out = await r.fn(m, url.searchParams, body, req);
         return sendJson(res, 200, out);
       }
       return sendJson(res, routes.some(r => r.re.test(p)) ? 405 : 404, { ok: false, error: 'no such endpoint: ' + req.method + ' ' + p });
@@ -903,7 +917,7 @@ async function selftest() {
   fs.writeFileSync(path.join(tmp, 'company', 'state', 'services.json'), JSON.stringify({ services: {
     rec: { name: 'rec', unit: 'company-svc-rec', kind: 'service', status: 'installed', argv: ['/usr/bin/python3', path.join(tmp, 'company/work/rec.py')], schedule: null, why: 'records depth between runs', by: 'agent', byName: 'Founder', files: {} },
     tape: { name: 'tape', unit: 'company-svc-tape', kind: 'timer', status: 'proposed', argv: ['/bin/sh', 'x.sh'], schedule: { onCalendar: '*-*-* 18:00:00 UTC' }, why: 'banks the tape daily', by: 'agent', byName: 'Founder' } } }));
-  const env = Object.assign({}, process.env, { CAPHEOS_ROOT: tmp, STARNET_URL: 'http://127.0.0.1:' + dead, SERVICE_SYSTEMCTL: fakeSc, SERVICE_UNIT_DIR: path.join(tmp, 'units') });
+  const env = Object.assign({}, process.env, { CAPHEOS_ROOT: tmp, CONNECTORS_HOME: path.join(tmp, 'home'), STARNET_URL: 'http://127.0.0.1:' + dead, SERVICE_SYSTEMCTL: fakeSc, SERVICE_UNIT_DIR: path.join(tmp, 'units') });
   delete env.CONSOLE_PORT;
   const child = spawn(process.execPath, [__filename, '--port', '0', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let errText = ''; child.stderr.on('data', d => { errText += d; });
@@ -1048,6 +1062,21 @@ async function selftest() {
     check('form store: Today still has it, with the stored key', f3 && f3.stored && f3.stored.pk.stored === 'secrets/ping-key-3', f3);
     r = await call('POST', '/api/questions/' + kq3.id + '/answer', { action: 'go', values: { ok: true } });
     check('form store: the final submit answers it with both, the key as {stored, chars}', r.status === 200 && r.json.state === 'answered' && r.json.answer.values.ok === true && r.json.answer.values.pk.stored === 'secrets/ping-key-3' && r.json.answer.values.pk.chars === SECRET.length, r.json);
+    // Settings › Connections and keys › <service> › Connect (console/connectors.js): owner-only, like every /api route
+    {
+      r = await call('GET', '/api/connectors', undefined, {});
+      check('connectors: no owner token, 401', r.status === 401, r.status);
+      r = await call('POST', '/api/connectors/synpath/connect', {}, { 'content-type': 'application/json', 'x-console-token': 'wrong' });
+      check('connectors: a wrong token cannot start a sign-in', r.status === 401, r.status);
+      r = await call('GET', '/api/connectors');
+      const syn = r.json && (r.json.connectors || []).find(c => c.id === 'synpath');
+      check('connectors: the owner sees Synpath and the GitHub CLI, not connected, stored under the company root, the same-user promise stated',
+        r.status === 200 && syn && syn.state === 'not-connected' && syn.style === 'loopback' && syn.storage === 'company' && syn.isolation === 'same-user' && /not out of reach of the crew/.test(syn.promise) && (r.json.connectors || []).some(c => c.id === 'github-cli' && c.style === 'device-code') && !(r.json.errors || []).length, r.json);
+      r = await call('POST', '/api/connectors/synpath/callback', { address: 'http://127.0.0.1:1/callback?code=x&state=y' });
+      check('connectors: a pasted address with no sign-in waiting is refused (409)', r.status === 409, r.json);
+      r = await call('POST', '/api/connectors/nope/connect', {});
+      check('connectors: an unknown connector is 404', r.status === 404, r.json);
+    }
     // Settings › Connections and keys › Service keys: list, add, replace; values never returned; reserved names and
     // traversal refused; the owner's change recorded for locked-watch; the CEO told; Today knows a key is already saved
     {

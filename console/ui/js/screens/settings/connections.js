@@ -6,6 +6,7 @@ import { h, fill, Button, Tag, errLine, empty, statusOf, asArray, Details, Setti
 import { api, post } from '../../api.js';
 import { mountPanels } from '../../panels.js';
 import { endpointPicker } from '../../minimax-endpoint.js';
+import { drawSignIns } from './sign-ins.js';
 
 const SOURCES = [
   ['connected', 'Connected services', 'Accounts and tools the crew can use. Each one is checked against what it was allowed to do, every check.', '/station/connectors', 'connectors'],
@@ -15,15 +16,18 @@ const SOURCES = [
 
 export async function render(host, ctx) {
   const { app } = ctx;
-  const keys = h('div'), skeys = h('div'), side = h('div', { class: 'stack-16' });
+  const keys = h('div'), skeys = h('div'), signins = h('div'), side = h('div', { class: 'stack-16' });
   const blocks = SOURCES.map(([id, title, lede]) => { const body = h('div'); return { id, el: Block({ id, title, lede }, body), body }; });
   fill(host, Block({ id: 'keys', title: 'API keys', lede: 'Keys the crew uses to reach paid services. A key goes straight to the station and is never shown again: you can only set or replace it.' }, keys),
+    Block({ id: 'sign-ins', title: 'Sign-ins', lede: 'Services that need your own sign-in (Google, GitHub). The sign-in runs on the station; you sign in in your own browser, on this computer or any other, and only the credential it creates stays on the station. The crew never gets your browser session.' }, signins),
     Block({ id: 'service-keys', title: 'Service keys', lede: 'Keys and addresses for the outside services the crew uses: data feeds, exchanges, monitoring. Each is saved on this computer and never shown again; you can add one or replace it at any time.' }, skeys),
     blocks.map(b => b.el), side);
   drawServiceKeys(skeys, app);
+  const stopSignIns = drawSignIns(signins, app, ctx.anchor);
   SOURCES.forEach(([id, , , path, key], i) => drawSource(blocks[i], path, key));
   drawKeys(keys, app);
-  return mountPanels(side, 'side:abilities', app);
+  const unmount = await mountPanels(side, 'side:abilities', app);
+  return () => { stopSignIns(); if (typeof unmount === 'function') unmount(); };
 }
 
 async function drawSource(b, path, key) {

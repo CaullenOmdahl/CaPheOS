@@ -411,3 +411,9 @@ kbd { display: inline-block; min-width: 1.6em; padding: 2px 6px; border: 1px sol
 .company-approval[data-state="approved"] { border-left-color: var(--status-online); }
 .company-approval[data-state="denied"], .company-approval[data-state="expired"], .company-approval[data-state="withdrawn"], .company-approval[data-state="inert"] { border-left-color: var(--border-hairline); }
 .tool-permission .consent-prov { color: var(--status-warning); letter-spacing: .02em; }
+
+/* Settings › Connections and keys › Sign-ins: the Connect dialog (js/screens/settings/sign-ins.js) */
+.connect-dialog { max-width: min(560px, calc(100vw - 32px)); width: 100%; }
+.connect-dialog input.input { box-sizing: border-box; }
+.connect-dialog code, .connect-dialog pre { overflow-wrap: anywhere; white-space: pre-wrap; }
+.linkish { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; text-align: left; }

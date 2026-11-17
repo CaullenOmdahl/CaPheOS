@@ -98,6 +98,7 @@ step "tests/minimax-endpoint-walk.js (headless Chrome: MiniMax endpoint picker i
 step "tests/console-routes-walk.js (headless Chrome: old routes redirect, no paths outside Details; SKIP without Chrome)" node tests/console-routes-walk.js
 step "tests/services-walk.js (headless Chrome: Settings › System › Background services; SKIP without Chrome)" node tests/services-walk.js
 step "tests/alarm-walk.js (headless Chrome: the chat command notice, Settings › System › Test the outside alarm; SKIP without Chrome)" node tests/alarm-walk.js
+step "tests/connect-walk.js (headless Chrome: Settings › Connections and keys › Sign-ins, the Connect dialog; SKIP without Chrome)" node tests/connect-walk.js
 step "tests/service-keys-walk.js (headless Chrome: Settings › Connections and keys › Service keys, Today's Already saved; SKIP without Chrome)" node tests/service-keys-walk.js
 
 echo "== syntax and data files"

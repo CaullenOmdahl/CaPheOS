@@ -217,6 +217,33 @@ S.serviceKeys = {
   'liveness-heartbeat-url': { at: null, files: ['modules/liveness/watch.js'] },
 };
 S.mockActions.serviceKeys = [];
+// Settings › Connections and keys › Sign-ins (console/connectors.js): the real declarations and address checks, a
+// simulated CLI. Synpath (loopback) waits for a pasted return address; the GitHub CLI (device code) for
+// POST /api/__mock/approve/github-cli. Nothing is ever run.
+const CONN = require(path.join(REPO, 'console', 'connectors.js'));
+const CONN_DECLS = CONN.loadDeclarations(path.join(REPO, 'company', 'connectors')).connectors;
+S.connections = { 'github-cli': { state: 'expired', at: ago(60 * 24 * 40) } };
+S.connSessions = {}; S.mockActions.connectors = [];
+function connRow(d) {
+  const c = S.connections[d.id] || { state: 'not-connected' }; const sess = S.connSessions[d.id];
+  return { id: d.id, label: d.label, about: d.about || null, docs: d.docs || null, style: d.style, provider: d.provider || null, state: c.state,
+    expiredHint: c.state === 'expired' ? (d.expiredHint || 'The saved sign-in no longer works. Reconnect to sign in again.') : null,
+    artefacts: d.credentialPath.map(p => ({ path: p, exists: c.state !== 'not-connected', mode: c.state !== 'not-connected' ? '0600' : null })),
+    connectedAt: c.state !== 'not-connected' ? c.at : null, by: c.state !== 'not-connected' ? 'owner' : null, outside: false,
+    knownIssues: (d.knownIssues || []).map(k => ({ title: k.title, text: k.text })), serviceKey: d.serviceKey || null, signingIn: !!(sess && !sess.ended),
+    storage: d.credentialPath.every(p => p.startsWith('~/')) ? 'home' : 'company', crewEnv: d.configEnv ? Object.fromEntries(Object.entries(d.configEnv).map(([k, v]) => [k, 'company/connections/' + d.id + v.slice(5)])) : null, storageNote: null,
+    isolation: 'same-user', crewCanRead: c.state !== 'not-connected' ? true : null,
+    promise: 'Kept out of prompts and logs, not out of reach of the crew\'s tools: the file is owner-only (0600) for the one user the console, crew and station all run as.' };
+}
+function connView(d, req) {
+  const x = S.connSessions[d.id]; if (!x) return { session: null };
+  if (x.phase === 'finishing' && Date.now() - x.at > 700) { x.phase = 'connected'; x.ended = true; x.message = 'Connected. ' + d.label + ' is ready for the crew.'; S.connections[d.id] = { state: 'connected', at: now() }; S.mockActions.connectors.push({ id: d.id, connected: true }); }
+  return { session: { id: 's1', connector: d.id, label: d.label, style: d.style, provider: d.provider || null, phase: x.phase,
+    url: x.phase === 'sign-in' ? x.url : null, code: x.phase === 'sign-in' ? x.code : null,
+    needs: x.phase !== 'sign-in' ? null : d.style === 'device-code' ? 'enter-code-there' : d.style === 'paste-code' ? 'paste-code' : 'loopback',
+    sameMachine: CONN.sameMachine(req), port: x.expect ? x.expect.port : null, message: x.message || null, error: x.error || null, knownIssue: x.knownIssue || null, steps: [],
+    startedAt: x.started, endsAt: new Date(Date.parse(x.started) + 600e3).toISOString(), output: '' } };
+}
 function serviceKeyRows() {
   return Object.entries(S.serviceKeys).map(([name, k]) => Object.assign(SKEYS.describe(name), { set: !!k.at, changedAt: k.at, files: k.files || [], usedBy: [...new Set((k.files || []).map(SKEYS.readerOf))], stored: 'secrets/' + name }))
     .sort((a, b) => (b.set - a.set) || a.label.localeCompare(b.label));
@@ -516,6 +543,33 @@ async function apiRoute(req, res, p, q) {
     if (typeof B.value !== 'string' || !B.value.trim()) return J(res, 400, { ok: false, error: 'paste the key first' });
     const chars = B.value.trim().length; S.mockActions.stored.push({ name: B.name, chars }); return ok({ stored: 'secrets/' + B.name, name: B.name, chars }); }
   if (M === 'GET' && p === '/api/__mock/actions') return ok(S.mockActions);
+  if (M === 'GET' && p === '/api/connectors') return ok({ connectors: CONN_DECLS.map(connRow), errors: [] });
+  if ((m = /^\/api\/(?:__mock\/approve|connectors)\/([a-z0-9-]+)(?:\/([a-z]+))?$/.exec(p))) {
+    const d = CONN_DECLS.find(x => x.id === m[1]); if (!d) return J(res, 404, { ok: false, error: 'no connector "' + m[1] + '"' });
+    const act = p.startsWith('/api/__mock/') ? 'approve' : (m[2] || '');
+    const x = S.connSessions[d.id];
+    if (M === 'GET' && act === '') return ok({ connector: connRow(d) });
+    if (M === 'GET' && act === 'session') return ok(connView(d, req));
+    if (M === 'POST' && act === 'connect') {
+      if (x && !x.ended) return J(res, 409, { ok: false, error: d.label + ' sign-in is already open. Finish it or cancel it first.' });
+      const url = d.style === 'loopback' ? 'https://auth.example.invalid/oauth/google/start?cli_port=48123&cli_state=mock-state-1&cli_challenge=x' : 'https://github.com/login/device';
+      S.connSessions[d.id] = { phase: 'sign-in', url, code: d.style === 'device-code' ? 'MOCK-1234' : null, expect: d.style === 'loopback' ? CONN.expectation(d, url) : null, started: now(), at: Date.now() };
+      return ok(connView(d, req));
+    }
+    if (M === 'POST' && act === 'callback') {
+      if (!x || x.ended || x.phase !== 'sign-in' || d.style !== 'loopback') return J(res, 409, { ok: false, error: 'No ' + d.label + ' sign-in is waiting for an address. Start one with Connect.' });
+      const c = CONN.checkCallback(B.address, x.expect); if (!c.ok) return J(res, 400, { ok: false, error: c.error });
+      if (c.error) { Object.assign(x, { phase: 'failed', ended: true, error: d.label + ' sign-in did not finish (the program stopped with exit 1).', knownIssue: (d.knownIssues || [])[0] ? { title: d.knownIssues[0].title, text: d.knownIssues[0].text } : null }); return ok(Object.assign(connView(d, req), { accepted: false })); }
+      Object.assign(x, { phase: 'finishing', at: Date.now() }); return ok(Object.assign(connView(d, req), { accepted: true }));
+    }
+    if (M === 'POST' && act === 'approve') { if (x && x.phase === 'sign-in') Object.assign(x, { phase: 'finishing', at: Date.now() }); return ok({}); }
+    if (M === 'POST' && act === 'cancel') { if (x && !x.ended) Object.assign(x, { phase: 'cancelled', ended: true, message: 'Cancelled.' }); return ok(connView(d, req)); }
+    if (M === 'POST' && act === 'disconnect') {
+      if (B.confirm !== true) return J(res, 400, { ok: false, error: 'Disconnecting removes ' + d.credentialPath.join(', ') + ' from the station. Confirm to go ahead.' });
+      S.connections[d.id] = { state: 'not-connected' }; S.mockActions.connectors.push({ id: d.id, disconnected: true }); return ok({ id: d.id, removed: d.credentialPath, loggedOut: true });
+    }
+    return J(res, 405, { ok: false, error: 'mock: ' + M + ' ' + p });
+  }
   if (M === 'GET' && p === '/api/service-keys') return ok({ keys: serviceKeyRows(), services: SKEYS.offers() });
   if (M === 'POST' && p === '/api/service-keys') {   // as console/service-keys.js save(): checks, then keeps {at, chars} only
     const known = B.service && B.service !== 'other' ? SKEYS.offers().find(x => x.id === B.service) : null;

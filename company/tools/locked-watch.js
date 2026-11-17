@@ -185,6 +185,23 @@ function extraEntries(P) {
   return (Array.isArray(rows) ? rows : []).filter(e => e && typeof e.p === 'string' && ['A', 'F', 'R'].includes(e.cls) && !e.p.startsWith('/') && !e.p.split('/').includes('..') && !e.p.startsWith('~'))
     .map(e => Object.assign({}, e, { owner: ['ceo', 'people', 'tools', 'risk', 'floor', 'finance'].includes(e.owner) ? e.owner : 'risk', area: e.area || 'record', why: e.why || 'registered in locked-extra.json' }));
 }
+// company/connectors/*.json (console/connectors.js, docs/CONNECTORS.md): each connector's credentialPath files are keys
+// (class K, hash and mode only) whose one legitimate writer is the console's Connect flow, which records the owner's
+// connect (a write row) and disconnect (a delete row). Paths are '~/' (the home folder) or relative to the root; an
+// absolute path or one with '..' is skipped (usually company/connections/<id>/..., the one volume that keeps them).
+// Declaring a path only ever adds a watch.
+function connectorEntries(P) {
+  let files = []; try { files = fs.readdirSync(P('company/connectors')).filter(f => /^[a-z0-9][a-z0-9-]{0,40}\.json$/.test(f)); } catch (_) { return []; }
+  const out = [];
+  for (const f of files) {
+    const d = readJson(P('company/connectors/' + f), null); if (!d || d.credentialPath === undefined) continue;
+    for (const a of [].concat(d.credentialPath)) {
+      if (typeof a !== 'string' || !a || a.startsWith('/') || a.split('/').includes('..') || a.includes('*') || (a.startsWith('~') && !a.startsWith('~/'))) continue;
+      out.push({ p: a, cls: 'K', writers: ['console'], owner: 'risk', area: 'key', why: 'a credential the owner connected (' + String(d.label || d.id || f).slice(0, 40) + ', Settings › Connections and keys)' });
+    }
+  }
+  return out;
+}
 function context(opts) {
   opts = opts || {};
   const root = path.resolve(opts.root || process.env.LOCKED_WATCH_ROOT || LIVE_ROOT);
@@ -199,7 +216,7 @@ function context(opts) {
   const roles = { people: seat('people'), tools: seat('tools'), finance: seat('finance'), risk: seat('risk'), floor: seat('floor'), ceo: ceoRow };
   const dir = P('company/state/locked');
   return { root, home, P, now: Number.isFinite(opts.now) ? opts.now : Date.now(), agents, roles, dry: !!opts.dry, log: opts.log || console.log,
-    manifest: opts.manifest || MANIFEST.concat(extraEntries(P)), call: opts.call || null, jobs: opts.jobs || null, guards: opts.guards || null,
+    manifest: opts.manifest || MANIFEST.concat(extraEntries(P), connectorEntries(P)), call: opts.call || null, jobs: opts.jobs || null, guards: opts.guards || null,
     paths: { dir, baseline: path.join(dir, 'baseline.json'), lkg: path.join(dir, 'lkg'), replaced: path.join(dir, 'replaced'), quarantine: path.join(dir, 'quarantine'),
       mirror: path.join(home, GUARD_DIR, 'locked-baseline.sha256'), report: P('company/work/security/locked-changes.jsonl'), reportMd: P('company/work/security/locked-changes.md'),
       handoffs: P('company/work/handoffs'), transcripts: P('.starnet-data/workspaces/transcript-history-v2'), runs: P('.starnet-data/workspaces/runs.jsonl'),
@@ -571,6 +588,7 @@ function decide(ctx, key, m, b, cur, prov, recorded, flagOnly) {
   }
   if (m.append && cur.exists && (!b || !b.exists)) return { ok: true, why: 'a new append-only log (accepted; appending is normal)' };   // created after the baseline: seed it, do not re-flag as it grows
   if (cur.exists && W.length && byWriter(rows, W).some(r => r.kind === 'write' && r.sha256 === cur.sha256)) return { ok: true, why: 'written by ' + W.join('/') };
+  if (!cur.exists && m.cls === 'K' && W.length && byWriter(rows, W).some(r => r.kind === 'delete')) return { ok: true, why: 'removed by ' + W.join('/') + ' (recorded)' };
   if (cur.exists && byWriter(rows, ['harness-change.js']).some(r => r.kind === 'write' && r.sha256 === cur.sha256) && recorded && recorded.applied.includes(cur.sha256)) return { ok: true, why: 'an applied harness change' };
   if (cur.exists && recorded && recorded.applied.includes(cur.sha256)) return { ok: true, why: 'an applied harness change' };
   if (recorded && recorded.pending.length && ctx.now - Date.parse(recorded.pending[0].approvedAt) < 20 * 60e3) return { ok: null, why: 'approved change ' + recorded.pending.map(p => p.id).join(', ') + ' is waiting for its apply record' };
@@ -1270,7 +1288,7 @@ function rebaseProvenance(opts, fn) {
   saveBaseline(ctx, base);
   return { result: r, provOffset: base.provOffset };
 }
-module.exports = { tick, classify, lockedNames, MANIFEST, STATION_STATUS, context, withWatchLock, rebaseProvenance, _internals: { tile, decide, decideRolled, unroll, unwind, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
+module.exports = { tick, classify, lockedNames, MANIFEST, connectorEntries, STATION_STATUS, context, withWatchLock, rebaseProvenance, _internals: { tile, decide, decideRolled, unroll, unwind, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
 
 /* ---------------- selftest ---------------- */
 async function selftest() {

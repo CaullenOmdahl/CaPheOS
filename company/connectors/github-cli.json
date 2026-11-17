@@ -1,0 +1,17 @@
+{
+  "id": "github-cli",
+  "label": "GitHub CLI",
+  "provider": "GitHub",
+  "about": "Signs the gh command in with your GitHub account, using GitHub's device code: no address to copy back, wherever your browser is.",
+  "docs": "https://cli.github.com/manual/gh_auth_login",
+  "serviceKey": "github",
+  "style": "device-code",
+  "loginCommand": ["gh", "auth", "login", "--web", "--hostname", "github.com", "--git-protocol", "https", "--skip-ssh-key", "--insecure-storage"],
+  "configEnv": { "GH_CONFIG_DIR": "{dir}" },
+  "credentialPath": "company/connections/github-cli/hosts.yml",
+  "verify": ["gh", "auth", "status", "--hostname", "github.com"],
+  "logout": ["gh", "auth", "logout", "--hostname", "github.com"],
+  "codePattern": "one-time code: ([A-Z0-9]{4}-[A-Z0-9]{4})",
+  "urlPattern": "^https://github\\.com/login/device",
+  "notes": "--insecure-storage keeps the token in hosts.yml (0600) instead of an OS keychain, which a headless server does not have. GH_CONFIG_DIR puts that file in the company's connections folder; a crew tool that should use this sign-in runs gh with the same GH_CONFIG_DIR."
+}

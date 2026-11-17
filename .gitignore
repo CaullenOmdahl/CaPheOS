@@ -107,3 +107,7 @@ Thumbs.db
 
 # the station floor plan a running company writes (station-floor.js)
 /company/FLOOR_PLAN.md
+
+# ── Connections the owner signed in (console/connectors.js): credentials, never in git ──
+/company/connections/*
+!/company/connections/.gitkeep
