@@ -10,6 +10,11 @@
  * the owner is told once (owner-inbox send) and, when secrets/liveness-ping-url exists, that URL is called through the
  * external gate (category network: its host must be on company/state/external-allowlist.txt, else the push is
  * refused and logged, never sent around the gate). Recovery is told once too.
+ * Off-box heartbeat (a dead-man check such as a cron-monitoring service, which alerts when pings STOP): put its URL in
+ * secrets/liveness-heartbeat-url. Every healthy check GETs it through the same gate; an outage sends nothing to it, so
+ * the silence is the alarm, and a dead machine (which sends nothing at all) is caught too. Failing to reach it never
+ * fails the check: the reason goes to the log. Never put such a URL in liveness-ping-url as well: an outage alert
+ * POSTed to a dead-man check reads as "alive" (when both hold the same URL, the outage push is not sent to it).
  *
  *   node modules/liveness/watch.js            one check (the timer runs this); exit 0 when the module is not enabled
  *   node modules/liveness/watch.js status     both heartbeats and their ages, JSON
@@ -69,9 +74,27 @@ function push(text) {
     req.end(body);
   });
 }
+/* the off-box heartbeat: a GET on the healthy path (secrets/liveness-heartbeat-url), through the gate; never throws */
+function heartbeat() {
+  const url = co.secret('liveness-heartbeat-url');
+  if (!url) return Promise.resolve({ sent: false, why: 'no secrets/liveness-heartbeat-url' });
+  let gate; try { gate = require(co.p('company', 'tools', 'external-gate.js')); } catch (e) { return Promise.resolve({ sent: false, why: 'external-gate.js missing (fail closed)' }); }
+  let v; try { v = gate.check({ category: 'network', target: url, agent: 'liveness' }); } catch (e) { v = { allow: false, reason: e.message }; }
+  if (!v || !v.allow) return Promise.resolve({ sent: false, why: 'external gate refused: ' + ((v && v.reason) || 'no verdict') });
+  return new Promise(resolve => {
+    let u; try { u = new URL(url); } catch (e) { resolve({ sent: false, why: 'bad url' }); return; }
+    const lib = u.protocol === 'https:' ? require('https') : require('http');
+    const req = lib.request(u, { method: 'GET' }, res => { res.resume(); resolve({ sent: res.statusCode < 400, status: res.statusCode }); });
+    req.setTimeout(10000, () => req.destroy(new Error('timeout')));
+    req.on('error', e => resolve({ sent: false, why: e.message }));
+    req.end();
+  });
+}
 async function alert(kind, text) {
   const told = tellOwner(text);
-  const p = await push(text);
+  // the outage push never goes to a dead-man heartbeat URL: a POST there would mark the check alive during the outage
+  const same = (co.secret('liveness-ping-url') || '').trim() && (co.secret('liveness-ping-url') || '').trim() === (co.secret('liveness-heartbeat-url') || '').trim();
+  const p = same ? { sent: false, why: 'liveness-ping-url is the heartbeat URL: an outage is reported by silence there, not by a push' } : await push(text);
   note({ kind, text, told, push: p });
   return { told, push: p };
 }
@@ -99,6 +122,13 @@ async function check() {
   w.dispatcher = w.dispatcher || {};
   const res = await judge({ rec: readJson(F.beat(), null), limitMs: 3 * tickMin() * 60000, label: 'dispatcher', st: w.dispatcher, kind: 'dispatcher' });
   w.at = iso(now()); w.pid = process.pid; w.everyMin = watchMin(); w.checks = (w.checks || 0) + 1;
+  // healthy: the off-box heartbeat (only while the dispatcher is beating; an outage is told by silence there)
+  if (!res.stale) {
+    const hb = await heartbeat();
+    if (hb.sent) { w.heartbeatAt = iso(now()); w.heartbeatError = null; }
+    else if (hb.why !== 'no secrets/liveness-heartbeat-url' && w.heartbeatError !== (hb.why || 'HTTP ' + hb.status)) { w.heartbeatError = hb.why || 'HTTP ' + hb.status; note({ kind: 'heartbeat-failed', why: w.heartbeatError }); }
+    res.heartbeat = hb;
+  }
   writeJson(F.watch(), w);
   return Object.assign({ ok: !res.stale }, res);
 }
@@ -130,7 +160,7 @@ function status() {
   const b = readJson(F.beat(), null), w = readJson(F.watch(), null);
   const a = ageMs(b), aw = ageMs(w);
   return { ok: true, enabled: enabled(), tickMin: tickMin(), watchMin: watchMin(), heartbeat: b, heartbeatAgeMin: a === null ? null : Math.round(a / 6000) / 10,
-    watcher: w, watcherAgeMin: aw === null ? null : Math.round(aw / 6000) / 10, pingedAt: (w && w.pingedAt) || null, dispatcherStale: a === null || a > 3 * tickMin() * 60000 };
+    watcher: w, watcherAgeMin: aw === null ? null : Math.round(aw / 6000) / 10, pingedAt: (w && w.pingedAt) || null, heartbeatAt: (w && w.heartbeatAt) || null, heartbeatError: (w && w.heartbeatError) || null, dispatcherStale: a === null || a > 3 * tickMin() * 60000 };
 }
 
 async function selftest() {
@@ -151,8 +181,14 @@ async function selftest() {
     fs.writeFileSync(path.join(tmp, 'secrets', 'liveness-ping-url'), 'https://push.example.invalid/hook\n', { mode: 0o600 });
     const T0 = Date.parse('2030-01-01T00:00:00Z');
     const run = (at, ...a) => { const r = spawnSync(process.execPath, [path.join(tmp, 'modules', 'liveness', 'watch.js'), ...a], { encoding: 'utf8', env: Object.assign({}, process.env, { CAPHEOS_ROOT: tmp, LIVENESS_NOW: String(at) }) }); let j = null; try { j = JSON.parse(r.stdout); } catch (_) {} return { code: r.status, j, out: r.stdout + r.stderr }; };
+    // async, so the local test endpoint in this process can answer while the watcher runs
+    const runA = (at, ...a) => new Promise(resolve => { const ch = require('child_process').spawn(process.execPath, [path.join(tmp, 'modules', 'liveness', 'watch.js'), ...a], { env: Object.assign({}, process.env, { CAPHEOS_ROOT: tmp, LIVENESS_NOW: String(at) }) }); let o = ''; ch.stdout.on('data', d => { o += d; }); ch.stderr.on('data', d => { o += d; }); ch.on('exit', code => { let j = null; try { j = JSON.parse(o); } catch (_) {} resolve({ code, j, out: o }); }); });
     const tick = (at, halted) => spawnSync(process.execPath, ['-e', "require(process.argv[1]).tick({log:console.log,halted:process.argv[2]==='1'?'soft':false}).then(r=>console.log(JSON.stringify(r)))", path.join(tmp, 'modules', 'liveness', 'tick.js'), halted ? '1' : '0'], { encoding: 'utf8', env: Object.assign({}, process.env, { CAPHEOS_ROOT: tmp, LIVENESS_NOW: String(at) }) });
     const outbound = () => { try { return fs.readFileSync(path.join(tmp, 'company', 'owner', 'outbound.jsonl'), 'utf8'); } catch (_) { return ''; } };
+    // a local dead-man endpoint that counts GETs (and POSTs, which it must never get)
+    const hits = []; const srv = require('http').createServer((q, res) => { hits.push(q.method); res.end('OK'); });
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const HB = 'http://127.0.0.1:' + srv.address().port + '/ping/abc';
     let r = run(T0);
     t('not enabled: the watcher does nothing, exit 0', r.code === 0 && r.j.skipped && !fs.existsSync(path.join(tmp, 'company', 'state', 'liveness-watch.json')), r.out);
     fs.writeFileSync(path.join(tmp, 'company', 'state', 'modules.json'), JSON.stringify({ enabled: { liveness: { at: 'x' } } }));
@@ -161,7 +197,21 @@ async function selftest() {
     t('tick.js runs while halted', require(path.join(tmp, 'modules', 'liveness', 'tick.js')).runWhenHalted === true);
     r = run(T0 + 5 * 60000);
     t('fresh heartbeat: the watcher is quiet', r.code === 0 && r.j.ok && !outbound(), r.out);
-    r = run(T0 + 31 * 60000);
+    // the off-box heartbeat: gate refuses -> logged, check still passes; gate allows -> one GET per healthy check
+    fs.writeFileSync(path.join(tmp, 'secrets', 'liveness-heartbeat-url'), HB + '\n', { mode: 0o600 });
+    r = await runA(T0 + 6 * 60000);
+    t('heartbeat refused by the gate: the check still passes, the reason is logged once', r.code === 0 && r.j.ok && hits.length === 0 && /heartbeat-failed/.test(fs.readFileSync(path.join(tmp, 'company', 'work', 'liveness', 'alerts.jsonl'), 'utf8')), r.out);
+    fs.writeFileSync(path.join(tmp, 'company', 'tools', 'external-gate.js'), "module.exports={check:({target})=>target.startsWith('http://127.0.0.1')?{allow:true}:({allow:false,reason:'not on the allowlist: '+target})};\n");
+    r = await runA(T0 + 7 * 60000);
+    t('healthy check: one GET to the heartbeat URL, recorded', r.code === 0 && hits.join() === 'GET' && readJson(path.join(tmp, 'company', 'state', 'liveness-watch.json'), {}).heartbeatAt, r.out + hits.join());
+    // an outage: nothing goes to the heartbeat URL (silence is the alarm), even when the ping URL is the same address
+    fs.writeFileSync(path.join(tmp, 'secrets', 'liveness-ping-url'), HB + '\n', { mode: 0o600 });
+    r = await runA(T0 + 31 * 60000);
+    t('outage: no GET and no POST to the heartbeat URL (an outage push to the same address is not sent)', hits.join() === 'GET' && /reported by silence/.test(fs.readFileSync(path.join(tmp, 'company', 'work', 'liveness', 'alerts.jsonl'), 'utf8')), hits.join());
+    fs.writeFileSync(path.join(tmp, 'secrets', 'liveness-ping-url'), 'https://push.example.invalid/hook\n', { mode: 0o600 });
+    fs.rmSync(path.join(tmp, 'secrets', 'liveness-heartbeat-url'));
+    fs.writeFileSync(path.join(tmp, 'company', 'tools', 'external-gate.js'), "module.exports={check:({target})=>({allow:false,reason:'not on the allowlist: '+target})};\n");
+    srv.close();
     t('heartbeat older than 3 ticks: the owner is told once', r.code === 1 && /dispatcher has not checked in/.test(outbound()), r.out + outbound());
     t('the push without an allowlisted host is refused by the gate and logged', /external gate refused/.test(fs.readFileSync(path.join(tmp, 'company', 'work', 'liveness', 'alerts.jsonl'), 'utf8')));
     run(T0 + 36 * 60000);
