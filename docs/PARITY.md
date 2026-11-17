@@ -28,6 +28,10 @@ Three gates. All three pass before the old stack is considered replaced.
 3. **The kept tools' selftests.** Every tool in the kept set passes its own `--selftest`; every dropped tool is a row
    in §4 with its reason, never a silent absence.
 
+The formats are not being invented. The run journal already exists in `console/chat-runs.js` (`c554f79`, `8a33e94`),
+the refusal policy in `lib/refusal.js` and `ESCALATION_POLICY.md` (`a383a0c`), and the budget gate in `admit()`
+(`5f923d1`). Parity means keeping what those commits hardened.
+
 ---
 
 ## 3. The parity ledger
@@ -39,7 +43,7 @@ Three gates. All three pass before the old stack is considered replaced.
 | 3 | Work items | quests: 1,687 references across `dispatch.js`, `inbox.js`, `hire.js`, `console/` | tasks | steps, evidence, closure on proof, wake the owner | renamed model; no legacy store |
 | 4 | Dispatcher | `dispatch.js` (1,366 lines), `duties.js` (9 duties), lanes, cadence | the same | the same wakes, routes and reasons | no cron; the dispatcher is the only schedule |
 | 5 | Approvals and questions | `inbox.js`, `approvals.js`, `/api/questions`, `/api/approvals` | the same | the same gates, answers, snooze, refusals | in-process calls, not HTTP to a station |
-| 6 | Budget and spend | `budget.js`, `money-hold.js`, `provider-balance.js`, `subscription-meter.js` | the same | caps, holds, balances, subscription windows, one warning before failure | provider-priced only; no invented estimates |
+| 6 | Budget and spend | `budget.js`, `money-hold.js`, `provider-balance.js`, `subscription-meter.js` | the same | `admit()` at every door; caps, holds, balances, subscription windows, one warning before failure | provider-priced only; no invented estimates |
 | 7 | Meetings | `console/meeting.js`, `docs/MEETINGS.md`; turns, pacing, register, minutes | the same | the same protocol and record | runs on the new runtime |
 | 8 | Hiring and competence | `hire.js`, `competence.js`, `company/roles/templates/` | the same | the same flows and templates | none |
 | 9 | Commitments and handoffs | `modules/commitments`, `company/HANDOFFS.md` | the same | the same state machine and escalation | task and commitment named separately |
@@ -51,9 +55,16 @@ Three gates. All three pass before the old stack is considered replaced.
 | 15 | Repos and workspaces | `company/repos/`, `project.js` | the same | file access and project work | "workspace" naming |
 | 16 | Browser and desktop | StarNet's host Chrome and Windows CUA; step-in | the desktop plugin | **not parity — this replaces it** | containerized desktop, grants, step-in (`BACKEND.md` §6.5) |
 | 17 | Owner channel | `company/owner/*.jsonl`, `/api/owner/*` | the same | the same file adapter and provenance | none |
+| 18 | Refusal handling | `lib/refusal.js`, `ESCALATION_POLICY.md`, the pacer's provider blocks, `POST /api/models/seat/<id>/unblock` | the same | one retry on the next model with the prompt unchanged; every model refusing is reported plainly; the refusing provider is blocked 2 h, then 24 h on a repeat; the owner can clear it; `admit()` holds a start on a blocked provider | none — this is tested, owner-ruled behaviour, not a new design (`a383a0c`, `89bd1e2`, `b269103`) |
 
-Areas 1–15 and 17 are parity. Area 16 is the one place we knowingly exceed today's deployment, because the current
+Areas 1–15, 17 and 18 are parity. Area 16 is the one place we knowingly exceed today's deployment, because the current
 mode hands an agent the owner's machine.
+
+**Reading the history.** 140 commits touch `company/` since the layer landed (`ce72450`, 2026-11-16). The areas with the
+most iteration are the ones actually used and the hardest to match: budget (`5f923d1`), meetings (`c5f20f4`,
+`8a33e94`), chat (`c554f79`, `a383a0c`), dependencies (`8427801`), remote ops (`592528d`), hiring (`c2058f1`). A tool
+with no commits since the layer landed is *unmodified*, not unused — the usage evidence is the duty list, the inventory
+and the console routes, never commit counts.
 
 ---
 

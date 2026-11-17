@@ -129,9 +129,11 @@ are genuinely about governance.
 - **Frozen:** `docs/CONSOLE-API.md` keeps its paths and shapes. The frontend does not change for this rewrite.
 - **New, under `/api/runtime/`:** start a run, attach to a run's stream, cancel, list running runs, list a seat's
   runs. These replace `/api/station/*` and the StarNet-specific chat proxy.
-- **Runs are addressable and replayable:** every run writes a JSONL transcript plus a journal; the console re-attaches
-  with the line count it already has. This is what `console/chat-runs.js` does today against StarNet's observer feed —
-  the same guarantee, one implementation.
+- **Runs are addressable and replayable**, and the format is not new. `console/chat-runs.js` already carries it: an
+  NDJSON journal of `{c?, name, payload}` lines, one `company/state/chat-runs.json` row per run, and a final
+  `console.final {text, complete}` line; hardened by `c554f79` (survives a console restart and a reload), `8a33e94`
+  (a meeting re-attaches) and `a383a0c` (a refusal is journaled). The new runtime keeps those shapes and drops only the
+  station cursor (`c`) and the observer feed.
 - **Tool results and approvals are structured**, not scraped from text: a run step is
   `{type: text|tool|approval|usage|end, ...}` and the console renders it.
 - **Failure is explicit:** a provider refusal, a budget hold, a missing tool and a timeout each end the run with a
@@ -271,7 +273,7 @@ backend's state directly (tasks, not quests; `company/state/` and `company/work/
 the only path into a new workplace, and it is tested. The flow — bootstrap, setup, certification, launch — is
 `docs/FOUNDING.md`.
 
-**Acceptance is the parity ledger** (`docs/PARITY.md`): 17 areas, three gates, and a bloat ledger where every cut has a
+**Acceptance is the parity ledger** (`docs/PARITY.md`): 18 areas, three gates, and a bloat ledger where every cut has a
 row. The build-out is finished when those gates pass, not when the phase table is empty.
 
 | Phase | Work | Exit test |

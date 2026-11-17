@@ -40,7 +40,8 @@ Today's script already does the right job; the rewrite keeps its shape and drops
 
 - **Ids are immutable, display names are not.** The company slug is fixed at bootstrap (it is in paths and identity);
   the display name, the short name and the Founder's name can change later, through governance, with a decision row.
-- Re-running with the same identity resumes; a different one needs `--force`.
+- Re-running with the same identity resumes; a different one needs `--force`. `--check` reports the preflight and what
+  is founded already and writes nothing (`d69728e`).
 - It never needs a model, a key or a network.
 
 ---
@@ -90,7 +91,10 @@ build those; the flow's job is to make the first turn good.
 
 ## 4. Launch and the Founder's first turn
 
-Launch is one run of the Founder seat with a brief assembled from the setup record:
+Launch is one run of the Founder seat with a brief assembled from the setup record. It is the **kickoff**, and today's
+flow already has the right behaviour: it is idempotent — an archived kickoff or a `plan.md` counts as launched, and a
+second attempt is refused with 409 rather than starting a second loop (`be4959d`). The Founder's first loop at
+onboarding already exists (`0dfe341`); the new flow keeps the semantics and feeds it a better brief.
 
 1. **Interview** — where the setup left gaps or where the owner said "the Founder decides", it asks the owner in plain
    language, in the conversation, a few questions at a time. It does not re-ask what the owner already answered.
@@ -133,6 +137,8 @@ Not required: every integration, every seat, a finished charter. Those are the F
 - `company/state/onboarding-state.json` — kept as the derived, API-facing view (steps, checks, certified, kickoff), so
   `GET /api/onboarding` and `POST /api/onboarding/certify` keep the shape the console already renders. The console does
   not change for this.
+- The console surface already exists: the **Provisioning** panel and the **Today** banner (`d69728e`); the flow extends
+  them rather than adding a new surface.
 - The setup flow is a console surface: a wizard for the form path, the chat for the conversation path, both reading and
   writing the same record.
 
