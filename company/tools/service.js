@@ -53,7 +53,9 @@
  *     the route through this tool. Read-only verbs pass. OFF: allowed and logged as UNGUARDED. An absolute /usr/bin path
  *     skips a shim (the same limit as the merge gate's wrappers), which is why there is also:
  *   - flagged: the duty below finds every unit whose ExecStart or WorkingDirectory is inside this company folder but is
- *     not registered (including transient systemd-run units), and every registered unit edited by hand.
+ *     not registered (including transient systemd-run units), every registered unit edited by hand, and every registered
+ *     service whose runs fail (3 failed runs in the last hour by its journal, or any for a halt-related service), routed to
+ *     the seat that asked for it.
  * Env (tests only): SERVICE_SYSTEMCTL (the systemctl this tool runs; default /usr/bin/systemctl), SERVICE_UNIT_DIR,
  * SERVICE_TRANSIENT_DIR, SERVICE_REAL_SYSTEMCTL / SERVICE_REAL_SYSTEMD_RUN (what a shim passes through to).
  * Exit: 0 ok, 1 error, 2 bad usage or input, 3 refused, 4 waiting for the owner. Owner of this tool: the risk function.
@@ -92,6 +94,7 @@ function context(o) {
     unitDir: o.unitDir || process.env.SERVICE_UNIT_DIR || path.join(os.homedir(), '.config', 'systemd', 'user'),
     transientDir: o.transientDir || process.env.SERVICE_TRANSIENT_DIR || path.join(process.env.XDG_RUNTIME_DIR || '/run/user/' + uid, 'systemd', 'transient'),
     systemctl: o.systemctl || realSystemctl,
+    journal: o.journal || realJournal,
     now: o.now || (() => Date.now()),
     isAgent: o.isAgent || (() => require('./lib/guardrails').isAgentCaller()),
     ownerShell: o.ownerShell || (() => require('./lib/owner').shell()),   // the one owner rule (lib/owner.js)
@@ -107,6 +110,12 @@ function realSystemctl(args) {
   const bin = process.env.SERVICE_SYSTEMCTL || '/usr/bin/systemctl';
   try { return { code: 0, out: execFileSync(bin, ['--user'].concat(args), { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'pipe'] }) }; }
   catch (e) { return { code: typeof e.status === 'number' ? e.status : 1, out: String(e.stdout || ''), err: String(e.stderr || e.message || '').slice(0, 300) }; }
+}
+
+// a unit's journal for the last hour, read only (the failing-service check); '' when it cannot be read
+function realJournal(unit, sinceSec) {
+  try { return execFileSync(process.env.SERVICE_JOURNALCTL || '/usr/bin/journalctl', ['--user', '-u', unit, '--since', '-' + Math.round(sinceSec) + 's', '-o', 'cat', '--no-pager'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 8 << 20 }); }
+  catch (_) { return ''; }
 }
 
 /* ---------------- the register ---------------- */
@@ -654,18 +663,39 @@ function findings(ctx) {
     if (!x) edited.push(f + ' (missing)'); else if (sha(x.text) !== h) edited.push(f);
   }
   const transient = files.filter(x => x.transient && unregistered.includes(x.file)).map(x => x.file);
-  return { unregistered, unscoped, edited: edited.sort(), transient };
+  return { unregistered, unscoped, edited: edited.sort(), transient, failing: failing(ctx, doc) };
+}
+/* failing(ctx, doc): registered services whose runs fail. A timer's failed run changes nothing anyone reads (the timer
+ * stays active, the next run may pass), so it is counted from the unit's journal: FAIL_IN_HOUR failed runs in the last
+ * hour, or any failed run of a halt-related service (name, why or command naming the halt / kill switch). */
+const FAIL_IN_HOUR = 3;
+const HALT_RE = /\bhalt|kill[- ]?switch/i;
+function failing(ctx, doc) {
+  const out = [];
+  for (const e of Object.values(doc.services || {})) {
+    if (e.status !== 'installed' || e.desired === 'stopped') continue;
+    const txt = String(ctx.journal(e.unit + '.service', 3600) || '');
+    const results = [...txt.matchAll(/Failed with result '([^']+)'/g)].map(m => m[1]);
+    if (!results.length) continue;
+    const halt = HALT_RE.test([e.name, e.why, (e.argv || []).join(' ')].join(' '));
+    if (results.length >= FAIL_IN_HOUR || halt) out.push({ name: e.name, by: e.by || 'owner', count: results.length, last: results[results.length - 1], halt });
+  }
+  return out;
 }
 function duty(ctx) {
   const f = findings(ctx);
-  const items = f.unregistered.map(u => ({ id: 'unregistered:' + u })).concat(f.unscoped.map(u => ({ id: 'unscoped:' + u }))).concat(f.edited.map(u => ({ id: 'edited:' + u.split(' ')[0] })));
+  const items = f.unregistered.map(u => ({ id: 'unregistered:' + u })).concat(f.unscoped.map(u => ({ id: 'unscoped:' + u }))).concat(f.edited.map(u => ({ id: 'edited:' + u.split(' ')[0] })))
+    // a failing service goes to the seat that asked for it (the owner's own go to risk); the id is stable while it fails, so it is handed over once
+    .concat(f.failing.map(x => ({ id: 'failing:' + x.name, route: x.by && x.by !== 'owner' ? x.by : 'risk' })));
   if (!items.length) return { due: false };
   const parts = [];
+  if (f.failing.length) parts.push(f.failing.length + ' registered service(s) failing: ' + f.failing.slice(0, 4).map(x => x.name + ' ' + x.count + ' failed run(s) in the last hour, last ' + x.last + (x.halt ? ' (halt-related: any failure counts)' : '')).join('; ') + ' (service.js status; fix the cause, or stop it)');
   if (f.unregistered.length) parts.push(f.unregistered.length + ' background unit(s) run from this company folder but are not registered with service.js: ' + f.unregistered.slice(0, 6).join(', ') + (f.unregistered.length > 6 ? ' and more' : '') + (f.transient.length ? ' (' + f.transient.length + ' transient)' : ''));
   if (f.unscoped.length) parts.push(f.unscoped.length + ' registered unit(s) not company-scoped by name: ' + f.unscoped.slice(0, 4).join(', '));
   if (f.edited.length) parts.push(f.edited.length + ' registered unit file(s) changed by hand: ' + f.edited.slice(0, 4).join(', '));
   const key = sha(items.map(i => i.id).sort().join('|'));
-  return { due: true, reason: (parts.join('; ') + '. Adopt or remove them (service.js adopt / remove; the owner decides).').slice(0, 300), route: 'risk', key, items: items.slice(0, 50) };
+  const tail = f.unregistered.length || f.unscoped.length || f.edited.length ? '. Adopt or remove the unregistered or changed ones (service.js adopt / remove; the owner decides).' : '.';
+  return { due: true, reason: (parts.join('; ') + tail).slice(0, 300), route: 'risk', key, items: items.slice(0, 50) };
 }
 
 /* ---------------- the shims: check-systemctl / check-systemd-run ---------------- */
@@ -763,7 +793,8 @@ function selftest() {
       return { code: 0, out: '' };
     };
     let halted = false, agent = true, guardOn = true, govLevel = null, conflict = null;
-    const ctx = context({ root: R, unitDir: U, transientDir: TR, systemctl, now: () => Date.parse('2026-11-17T10:00:00Z'), isAgent: () => agent, ownerShell: () => !agent,
+    const journal = {};
+    const ctx = context({ root: R, unitDir: U, transientDir: TR, systemctl, journal: u => journal[u] || '', now: () => Date.parse('2026-11-17T10:00:00Z'), isAgent: () => agent, ownerShell: () => !agent,
       guard: nm => nm === 'localComputer' ? guardOn : true, halted: () => halted, callerConflict: () => conflict,
       gov: { root: R, get level() { return govLevel || undefined; } } });
     const inbox = path.join(R, 'company', 'pm-inbox.jsonl');
@@ -875,6 +906,19 @@ function selftest() {
 
     // ---- the duty: unregistered and unscoped units
     ok('duty: nothing due while every unit is registered', duty(ctx).due === false, duty(ctx));
+    // ---- the duty: a registered service whose runs fail reaches the seat that asked for it, once
+    const fails = n => Array.from({ length: n }, () => 'testco-svc-depth.service: Failed with result \'core-dump\'.').join('\n');
+    journal['testco-svc-depth.service'] = fails(2);
+    ok('duty: 2 failed runs in the hour of an ordinary service are not due yet', duty(ctx).due === false, duty(ctx));
+    journal['testco-svc-depth.service'] = fails(3);
+    const d0 = duty(ctx);
+    ok('duty: 3 failed runs in the hour are due, routed to the seat that asked for the service, with a stable id (handed over once)',
+      d0.due && d0.items.some(i => i.id === 'failing:depth' && i.route === read(ctx).services.depth.by) && /depth 3 failed run\(s\) in the last hour, last core-dump/.test(d0.reason) && duty(ctx).key === d0.key, d0);
+    journal['testco-svc-depth.service'] = '';
+    const hw = { status: 'installed', name: 'halt-watchdog', unit: 'testco-svc-halt-watchdog', by: 'tools1', why: 'the kill switch watchdog', argv: ['python3', 'w.py'] };
+    journal['testco-svc-halt-watchdog.service'] = fails(1);
+    ok('duty: one failed run of a halt-related service is enough', failing(ctx, { services: { hw } }).length === 1 && failing(ctx, { services: { hw } })[0].halt === true);
+    ok('duty: one failed run of an ordinary service is not', failing(ctx, { services: { hw: Object.assign({}, hw, { name: 'feed', why: 'record a feed' }) } }).length === 0);
     fs.writeFileSync(path.join(U, 'testco-station.service'), '[Service]\nWorkingDirectory=' + R + '/starnet\nExecStart=/usr/bin/env node sidecar/index.js\n');
     fs.writeFileSync(path.join(U, 'other-company.service'), '[Service]\nWorkingDirectory=/elsewhere\nExecStart=/usr/bin/python3 /elsewhere/x.py\n');
     fs.writeFileSync(path.join(U, 'capheos-depth-stopgap.service'), '[Unit]\nDescription=stopgap\n[Service]\nExecStart="/usr/bin/python3" "' + R + '/company/work/sim/scripts/rec.py"\nRestart=always\n[Install]\nWantedBy=default.target\n');
