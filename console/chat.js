@@ -95,12 +95,15 @@ module.exports = function chat(deps) {
     const cr = await stationGet('cron', 4000);
     if (!cr.ok) out.push({ code: 'station-down', message: 'The station is not answering (' + (cr.error || 'HTTP ' + cr.status) + '), so ' + s.name + ' cannot answer.', fix: 'Start it on the station machine: systemctl --user start ' + svc() + '.service', link: '#/settings/system' });
     if (!m) out.push({ code: 'no-model', message: s.name + ' has no AI model to think with.', fix: 'Connect an AI provider.', link: '#/setup/provider' });
-    else {
-      const b = budget();
-      const unmetered = (Array.isArray(b.unmeteredProviders) && b.unmeteredProviders.length ? b.unmeteredProviders : ['claude-cli']).map(String);
-      if (!unmetered.includes(m.provider) && co.guard('spendCap') && !(Number(b.dailyUsd) > 0)) out.push({ code: 'budget-hold', message: s.name + ' runs on ' + m.provider + ' (' + m.model + '), which bills per token, and the daily cap is $0: the budget holds every metered run.', fix: 'Set a daily budget in Setup, or connect a subscription provider.', link: '#/setup/budget' });
-    }
+    else { const h = meteredHold(s, m); if (h) out.push(h); }
     return { problems: out, jobs: cr.ok && cr.data ? cr.data.jobs || [] : [] };
+  }
+  // a metered model with a $0 daily cap: the budget holds the run (the chat and the meeting both check it)
+  function meteredHold(s, m) {
+    const b = budget();
+    const unmetered = (Array.isArray(b.unmeteredProviders) && b.unmeteredProviders.length ? b.unmeteredProviders : ['claude-cli']).map(String);
+    if (!unmetered.includes(m.provider) && co.guard('spendCap') && !(Number(b.dailyUsd) > 0)) return { code: 'budget-hold', message: s.name + ' runs on ' + m.provider + ' (' + m.model + '), which bills per token, and the daily cap is $0: the budget holds every metered run.', fix: 'Set a daily budget in Setup, or connect a subscription provider.', link: '#/setup/budget' };
+    return null;
   }
 
   // how each station run ended, from the station's run log (the end only): a reply whose run was cancelled is cut off
@@ -135,7 +138,7 @@ module.exports = function chat(deps) {
   /* the reply as the station's transcript recorded it, for console.final: the turn this run wrote (sourceRunId), else the
      newest reply written since the run started */
   async function finalText(seat, runId, run) {
-    const r = await stationGet('transcript?agent=' + encodeURIComponent(seat) + '&stream=' + encodeURIComponent(STREAM(seat)) + '&limit=20', 5000);
+    const r = await stationGet('transcript?agent=' + encodeURIComponent(seat) + '&stream=' + encodeURIComponent((run && run.streamId) || STREAM(seat)) + '&limit=20', 5000);
     if (!r.ok) return null;
     const turns = ((r.data && r.data.turns) || []).filter(t => t.role === 'assistant' && typeof t.content === 'string');
     const own = turns.filter(t => (t.sourceRunId || t.runId) === runId);
@@ -379,5 +382,5 @@ module.exports = function chat(deps) {
     });
   }
 
-  return { info, send, attach, brief, channelState, messageStates, modelFor, seatOf, runs: RUNS };
+  return { info, send, attach, brief, channelState, messageStates, modelFor, meteredHold, seatOf, runs: RUNS };
 };

@@ -162,6 +162,13 @@ plain text and the raw reply under Details.
 | GET | /api/approvals/:id | — | one record: `{ status, category, fixed, params, actionDigest, expiresAt, default, authority, chatAnswerable, suppressed, answer }`; 404 when there is none |
 | POST | /api/approvals/:id/answer | `{ verdict: yes\|no, shownDigest }` | the approval API answer from chat (CAS). The surface is always `chat` (a body `surface` is ignored), so a fixed gate is refused here (409 route): it is answered on Today (`POST /api/questions/:id/answer`, surface `needs-you`). 409 closed / stale / route / held, 403 authority, 404 missing |
 
+## Meeting
+
+Chat › Meeting (`console/meeting.js`): `GET /api/meeting`, `GET /api/meeting/entries`, `GET /api/meeting/minutes`,
+`GET /api/meeting/live` (NDJSON), and `POST /api/meeting/{say,round,hand,continue,stop,observe,talk-only,lead,seats,new}`;
+live updates are the `meeting` topic on `/api/events`. Every turn is a tracked chat run (stream `meeting-<seat>`), so
+`/api/console/busy` lists it and a restart re-attaches. Spec: docs/MEETINGS.md.
+
 ## Owner channel
 
 The asynchronous channel (company/owner/inbound.jsonl → the dispatcher wakes the CEO's loop) stays for messages the

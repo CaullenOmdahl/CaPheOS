@@ -1,6 +1,7 @@
 /* Keyboard shortcuts (console-wide). Shown by pressing ? anywhere outside a text box.
  *
  *   In a message box     Shift+Enter or Ctrl/⌘+Enter sends · Enter adds a line · Esc stops a reply that is streaming
+ *   In a meeting         Esc raises your hand while a round runs (js/meeting.js) · @ suggests names
  *   Anywhere else        /  jump to the message box   ·   ?  this list
  *                        g then t / c / r / w / s / ,   Today, Chat, Crew, Work, Spend, Settings
  */
@@ -28,7 +29,7 @@ function help() {
     h('h2', { class: 'h3' }, 'Keyboard shortcuts'),
     h('table', { class: 'keys-table' }, h('tbody', {},
       row(['Shift', 'Enter'], 'Send the message'), row(['Ctrl/⌘', 'Enter'], 'Send the message'), row(['Enter'], 'New line in a message'),
-      row(['Esc'], 'Stop a reply while it streams'), row(['/'], 'Jump to the message box'),
+      row(['Esc'], 'Stop a reply while it streams'), row(['Esc'], 'In a meeting: raise your hand while they talk'), row(['/'], 'Jump to the message box'),
       row(['g', 't'], 'Today'), row(['g', 'c'], 'Chat'), row(['g', 'r'], 'Crew'), row(['g', 'w'], 'Work'), row(['g', 's'], 'Spend'), row(['g', ','], 'Settings'),
       row(['?'], 'Show or hide this list'))),
     h('form', { method: 'dialog' }, h('button', { class: 'btn btn-secondary btn-sm' }, 'Close')));

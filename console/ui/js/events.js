@@ -7,6 +7,13 @@ export function on(topics, fn) {
   subs.add(s);
   return () => subs.delete(s);
 }
+// onLive(): delivered at once even while the owner edits, for a subscriber that only appends (a meeting's messages and
+// its speaking-now line) and never redraws a control. Anything that redraws a dropdown or a field uses on().
+export function onLive(topics, fn) {
+  const s = { topics: new Set([].concat(topics)), fn, live: true };
+  subs.add(s);
+  return () => subs.delete(s);
+}
 // While the owner is using a control in the main area (an open dropdown, a field with the cursor in it), a live update
 // must not redraw the screen under them: it closes the dropdown and drops what they typed. Updates for that time are held
 // (one per subscriber, the latest topic wins) and delivered as soon as focus leaves the control.
@@ -21,7 +28,7 @@ function run(s, topic) { try { s.fn(topic); } catch (e) { console.error(e); } }
 function fire(topic) {
   const now = editing();
   for (const s of [...subs]) if (topic === '*' || s.topics.has(topic) || s.topics.has('*')) {
-    if (now) held.set(s, held.has(s) && held.get(s) !== topic ? '*' : topic); else run(s, topic);
+    if (now && !s.live) held.set(s, held.has(s) && held.get(s) !== topic ? '*' : topic); else run(s, topic);
   }
 }
 function flush() {

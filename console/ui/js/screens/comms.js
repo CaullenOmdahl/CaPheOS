@@ -1,4 +1,6 @@
-// Chat (#/chat, was Comms; Comms.dc.html): conversations (owner channel, each seat via the station, group chats), chat, delete a group.
+// Chat (#/chat, was Comms; Comms.dc.html): conversations (owner channel, each seat via the station, group chats, the
+// meeting), chat, delete a group. A crew group has two modes: the plain Group chat (StarNet's groups: unaddressed goes
+// to the lead, @mention, queued handoff) and Meeting (#/chat/meeting, js/meeting.js: everyone seated in turn).
 // A seat's conversation is a LIVE chat (js/chat.js): the reply streams in. The owner channel is asynchronous: every
 // message shows what it is waiting on (docs/CONSOLE-API.md "Owner channel"), then "read", then the reply under it.
 // Deep links: #/chat/<seat id> or agent:<seat id>; ?brief=charter sends the charter brief once; a message Today handed
@@ -8,6 +10,7 @@ import { h, fill, Button, errLine, empty, rel, when, Tag, humanError } from '../
 import { api, post } from '../api.js';
 import * as events from '../events.js';
 import { liveChat } from '../chat.js';
+import { meetingPane } from '../meeting.js';
 import { mdBlock } from '../md.js';
 import { actionsBlock } from '../chat-actions.js';
 import { blockStates, stripReplyLine } from '../actions-schema.js';
@@ -20,7 +23,7 @@ export async function render(root, ctx) {
   // Chat uses its own two-column layout instead of the padded main column
   root.className = 'comms'; root.removeAttribute('style');
   let sel = ctx.rest[0] || 'owner';
-  if (sel !== 'owner' && !sel.includes(':')) sel = 'agent:' + sel;   // #/chat/<seat id>
+  if (sel !== 'owner' && sel !== 'meeting' && !sel.includes(':')) sel = 'agent:' + sel;   // #/chat/<seat id>
   const draft = ctx.query.get('draft') || '';
   const briefKind = ctx.query.get('brief') || '';
   const tz = app.company && app.company.timezone;
@@ -43,6 +46,7 @@ export async function render(root, ctx) {
     try { const g = await api('/station/groups'); groups = ((g.result || g).groups || []); } catch (e) { groups = []; listErr.appendChild(errLine(e, 'Group chats')); }
     rows.push(['owner', 'Owner channel', '', 'For when you are away']);
     for (const s of seats) rows.push(['agent:' + s.id, personName(s.name) || s.id, '', s.title || '']);
+    rows.push(['meeting', 'Meeting', '', 'The crew in turn, you lead or watch']);
     for (const g of groups) rows.push(['group:' + g.id, g.title || 'Group chat', g.updatedAt ? rel(g.updatedAt) : '', (g.members || []).length + ' members' + (g.busy ? ' · busy' : '')]);
     fill(listHost, rows.map(([id, w, at, last]) => h('a', { href: '#/chat/' + encodeURIComponent(id), class: 'thread', 'aria-current': id === sel ? 'page' : 'false' },
       h('span', { class: 'between-c' }, h('span', { class: 'label strong' }, w), h('span', { class: 'mono-s muted' }, at)),
@@ -58,6 +62,11 @@ export async function render(root, ctx) {
 
   /* ---------- chat pane ---------- */
   const [kind, ...idParts] = sel.split(':'); const cid = idParts.join(':');
+  // the two modes of the crew group: Group chat (the station's group) and Meeting
+  const modeSwitch = on => h('nav', { class: 'seg mtg-mode', 'aria-label': 'Group mode' },
+    h('a', { href: on === 'group' ? '#/chat/group:' + encodeURIComponent(cid) : groups.length ? '#/chat/group:' + encodeURIComponent(groups[0].id) : '#/chat', class: on === 'group' ? 'on' : '', 'aria-current': on === 'group' ? 'page' : null, onclick: e => { if (on !== 'group' && !groups.length) { e.preventDefault(); newGroup(); } } }, 'Group chat'),
+    h('a', { href: '#/chat/meeting', class: on === 'meeting' ? 'on' : '', 'aria-current': on === 'meeting' ? 'page' : null }, 'Meeting'));
+  let meet = null;
   const body = h('div', { class: 'chat-body', 'aria-live': 'polite' });
   const bodyErr = h('div', { style: 'padding:0 32px' });
   const confirmHost = h('div');
@@ -78,10 +87,15 @@ export async function render(root, ctx) {
     title = g.title || 'Group chat'; sub = memberNames(g) || 'Group chat'; placeholder = 'Write to the group…';
     actions = [h('button', { type: 'button', class: 'btn btn-outline-danger btn-sm', onclick: askDelete }, 'Delete chat')];
   }
+  if (kind === 'group') actions.unshift(modeSwitch('group'));
   const headTitle = h('h1', { class: 'h3' }, title), headSub = h('span', { class: 'caption muted' }, sub);
   const charterStrip = h('div');
   const liveHost = h('div', { class: 'chat-live' });
-  if (kind === 'agent') {
+  if (kind === 'meeting') {
+    const mh = h('div', { class: 'chat-live mtg' });
+    fill(chat, mh);
+    meet = meetingPane(mh, { app, tz, modeSwitch: modeSwitch('meeting') });
+  } else if (kind === 'agent') {
     fill(chat, h('header', { class: 'chat-head' }, h('div', { class: 'stack-4' }, headTitle, headSub), h('div', { class: 'row-8' }, actions)), charterStrip, liveHost);
     live = liveChat(liveHost, { agentId: cid, app, tz, onUpdate: inf => { headSub.textContent = [inf.agent.title, runsOn(inf.provider, inf.model) || null].filter(Boolean).join(' · ') || 'Live chat'; headSub.title = inf.provider ? inf.provider + ' · ' + inf.model : ''; } });
     if (draft) live.ta.value = draft;
@@ -200,7 +214,12 @@ export async function render(root, ctx) {
   // header text may improve once the list is known
   if (kind === 'agent') { const s = seats.find(x => x.id === cid); if (s) headTitle.textContent = personName(s.name) || cid; }
   if (kind === 'group') { const g = groups.find(x => x.id === cid); if (g) { headTitle.textContent = g.title || 'Group chat'; headSub.textContent = memberNames(g); } }
-  if (kind === 'agent') {
+  if (kind === 'meeting') {
+    // the mode switch needs the group list, known only now
+    const ms = chat.querySelector('.mtg-mode'); if (ms) ms.replaceWith(modeSwitch('meeting'));
+    await meet.load();
+    if (draft) { meet.ta.value = draft; meet.ta.focus(); }
+  } else if (kind === 'agent') {
     await live.load();
     drawCharterStrip();
     // hand-offs from other screens, sent once: the charter brief (Setup), a message typed on Today
@@ -213,11 +232,11 @@ export async function render(root, ctx) {
       if (briefKind === 'charter-change') { live.ta.value = 'Please change the charter: '; live.ta.focus(); }
       else live.sendBrief(briefKind, notes);
     } else if (draft) live.ta.focus();
-  } else { loadThread(); if (draft) ta.focus(); }
+  } else if (kind !== 'meeting') { loadThread(); if (draft) ta.focus(); }
   const off = events.on(['owner', 'crew', 'charter', 'dispatch'], t => {
     if ((t === 'owner' || t === 'dispatch' || t === '*') && kind === 'owner') loadThread();
     if (t === 'crew' || t === '*') loadList();
     if (t === 'charter' || t === '*') drawCharterStrip();
   });
-  return () => { off(); if (live) live.destroy(); };
+  return () => { off(); if (live) live.destroy(); if (meet) meet.destroy(); };
 }

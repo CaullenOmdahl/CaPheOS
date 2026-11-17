@@ -42,6 +42,7 @@ station actually started it (`started`, HTTP 200) or refused it.
 | `lane` | a Sprint lane (`lanes.js`) | the same money verdict as a wake, from the same code (`admit.money()`), plus the lane rules |
 | `hire` | each interview turn (`hire.js`) | hire.js's budget check before interviews start |
 | `chat` | your chat with a seat in the console | always allowed, always counted (a $0 budget on a metered model is still refused by the chat's own check) |
+| `meeting` | a turn, hand check or leader call in your meeting (Chat › Meeting, docs/MEETINGS.md) | always allowed, always counted (the same $0-budget check as the chat) |
 | `health` | a health-check run from the console | always allowed, always counted |
 | `console` | a run or Run now you start from the console | always allowed, always counted |
 | `act` | an external-gate `spend` act, with its amount | the clearance row, as before |

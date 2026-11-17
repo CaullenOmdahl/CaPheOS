@@ -29,3 +29,15 @@ test('updates go straight through when nothing is being edited, or the field is 
   assert.deepEqual(seen, ['crew', 'crew']);
   off();
 });
+test('onLive: a subscriber that only appends (the meeting\'s messages) is delivered even while a dropdown has focus', async () => {
+  const ev = await import(url);
+  const live = [], heldSeen = [];
+  const off1 = ev.onLive(['meeting'], t => live.push(t)); const off2 = ev.on(['meeting'], t => heldSeen.push(t));
+  el.inMain = true; document.activeElement = el('SELECT');
+  ev._test.fire('meeting');
+  assert.deepEqual(live, ['meeting'], 'the messages follow at once');
+  assert.deepEqual(heldSeen, [], 'the strip with the dropdown waits');
+  document.activeElement = document.body; listeners.focusout(); await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(heldSeen, ['meeting']);
+  off1(); off2();
+});

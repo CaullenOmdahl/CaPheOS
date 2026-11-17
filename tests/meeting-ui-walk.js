@@ -1,0 +1,181 @@
+#!/usr/bin/env node
+/* Chat › Meeting in headless Chrome, against the real console and tests/mock-station.js (scripted replies):
+ *   - every control calls its API action (the page's fetches are recorded): Talk only, the rounds stepper, Observe /
+ *     Take part, the crown, No leader, ×, + Add, New meeting, Shift+Enter, Round, Raise hand, Esc, Continue, Stop round
+ *   - @name autocomplete in the composer
+ *   - the speaking-now line, ASK / INVITE chips, passes hidden, the END card, the cost line, Open minutes
+ *   - a live update does not close the roster dropdown (held: events.js pendingWhileEditing), while the controls still
+ *     follow; the strip redraws once focus leaves
+ *   - phone width: no horizontal scroll
+ * SKIP without Chrome. */
+'use strict';
+const { spawn, spawnSync } = require('child_process'); const path = require('path'); const os = require('os'); const fs = require('fs');
+const bin = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'].find(b => spawnSync('which', [b]).status === 0);
+if (!bin) { console.log('SKIP meeting-ui-walk: no Chrome'); process.exit(0); }
+const REPO = path.join(__dirname, '..');
+const TOKEN = 'mock-meeting-ui-token';
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let fails = 0; const t = (name, cond, info) => { console.log((cond ? 'PASS ' : 'FAIL ') + name + (cond ? '' : ' — ' + JSON.stringify(info).slice(0, 900))); if (!cond) fails++; };
+const kids = new Set();
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'meeting-ui-selftest-'));
+const udd = fs.mkdtempSync(path.join(os.tmpdir(), 'meeting-ui-chrome-'));
+process.on('exit', () => { for (const k of kids) { try { k.kill('SIGKILL'); } catch (_) {} } for (const d of [tmp, udd]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {} } });
+async function waitFor(fn, ms, step) { const end = Date.now() + ms; for (;;) { try { const v = await fn(); if (v) return v; } catch (_) {} if (Date.now() > end) return null; await sleep(step || 150); } }
+const freePort = () => new Promise(r => { const s = require('net').createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+const R = rel => { try { return fs.readFileSync(path.join(tmp, rel), 'utf8'); } catch (_) { return ''; } };
+const W = (rel, v) => { const f = path.join(tmp, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof v === 'string' ? v : JSON.stringify(v, null, 1)); };
+
+fs.cpSync(path.join(REPO, 'company'), path.join(tmp, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
+for (const d of ['console', 'modules', 'scripts']) fs.cpSync(path.join(REPO, d), path.join(tmp, d), { recursive: true });
+fs.rmSync(path.join(tmp, 'company', 'state', 'meetings'), { recursive: true, force: true });
+W('secrets/station-token', TOKEN + '\n'); fs.chmodSync(path.join(tmp, 'secrets', 'station-token'), 0o600);
+const loops = JSON.parse(R('company/tools/loops.json'));
+loops.agents.cfo = { name: 'Sharon', title: 'CFO', manager: 'agent' };
+loops.agents.sec = { name: 'Phil', title: 'IT Admin and Security', manager: 'agent' };
+loops.agents.hr = { name: 'Rachel', title: 'Hiring Manager', manager: 'agent' };
+W('company/tools/loops.json', loops);
+W('.starnet-data/workspaces/agent.roster.json', { agents: ['agent', 'cfo', 'sec', 'hr'].map(id => ({ agentId: id, name: loops.agents[id].name, model: 'claude-sonnet-5-5', provider: 'claude-cli' })) });
+W('company/work/finance/dispatch-budget.json', { dailyUsd: 5 });
+W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader: 'agent', talkOnly: false, observeRounds: 6 });
+
+(async () => {
+  const sp = await freePort(), cp = await freePort();
+  const m = spawn(process.execPath, [path.join(__dirname, 'mock-station.js'), '--port', String(sp), '--token', TOKEN, '--root', tmp, '--caps', 'run-detach'], { stdio: ['ignore', 'pipe', 'inherit'] }); kids.add(m);
+  const st = (p, b) => fetch('http://127.0.0.1:' + sp + p, { method: b ? 'POST' : 'GET', headers: { 'x-starnet-token': TOKEN, 'content-type': 'application/json' }, body: b ? JSON.stringify(b) : undefined }).then(r => r.json());
+  await waitFor(async () => (await fetch('http://127.0.0.1:' + sp + '/api/health', { headers: { 'x-starnet-token': TOKEN } })).status < 500, 10000);
+  let err = '';
+  const env = Object.assign({}, process.env, { CAPHEOS_ROOT: tmp, STARNET_URL: 'http://127.0.0.1:' + sp }); delete env.CONSOLE_PORT;
+  const c = spawn(process.execPath, [path.join(tmp, 'console', 'server.js'), '--port', String(cp), '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] }); kids.add(c);
+  c.stderr.on('data', d => { err += d; });
+  await new Promise((resolve, reject) => { let b = ''; c.stdout.on('data', d => { b += d; if (/\{"port":\d+\}/.test(b)) resolve(); }); setTimeout(() => reject(new Error('console did not start: ' + err)), 20000); });
+  const ctoken = fs.readFileSync(path.join(tmp, 'secrets', 'console-token'), 'utf8').trim();
+  const C = 'http://127.0.0.1:' + cp;
+  const api = async (p, b) => { const r = await fetch(C + '/api' + p, { method: b ? 'POST' : 'GET', headers: { 'content-type': 'application/json', 'x-console-token': ctoken }, body: b ? JSON.stringify(b) : undefined }); return r.json(); };
+
+  const cdpPort = await freePort();
+  const chrome = spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--user-data-dir=' + udd, '--remote-debugging-port=' + cdpPort, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore' }); kids.add(chrome);
+  const tab = await waitFor(async () => (await (await fetch('http://127.0.0.1:' + cdpPort + '/json')).json()).find(x => x.type === 'page'), 15000);
+  if (!tab) { t('chrome started', false); process.exit(1); }
+  const ws = new WebSocket(tab.webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);
+  let id = 0; const pend = {}; ws.onmessage = mm => { const j = JSON.parse(mm.data); if (j.id && pend[j.id]) { pend[j.id](j); delete pend[j.id]; } };
+  const cmd = (method, params) => new Promise(r => { const i = ++id; pend[i] = r; ws.send(JSON.stringify({ id: i, method, params })); });
+  const ev = async expr => ((await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true })).result || {}).result?.value;
+  const key = async (k, code, mods, text, vk) => { await cmd('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code, modifiers: mods || 0, text, windowsVirtualKeyCode: vk || 0 }); await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, modifiers: mods || 0, windowsVirtualKeyCode: vk || 0 }); };
+  await cmd('Page.navigate', { url: C + '/login' });
+  await waitFor(() => ev('(()=>{const i=document.getElementById("secret");if(!i)return 0;i.value=' + JSON.stringify(ctoken) + ';i.form.submit();return 1})()'), 10000);
+  await sleep(800);
+  await cmd('Page.navigate', { url: C + '/#/chat/meeting' });
+  t('the meeting opens with the seat strip in speaking order', await waitFor(() => ev('[...document.querySelectorAll(".mtg-seat")].map(x=>x.dataset.seat).join()==="agent,cfo,sec"'), 15000), await ev('document.querySelector("main")&&document.querySelector("main").innerText.slice(0,400)'));
+  t('the conversation list has Meeting, and the header switches between Group chat and Meeting', await ev('!!document.querySelector(".conv-list a[href=\\"#/chat/meeting\\"]") && [...document.querySelectorAll(".mtg-mode a")].map(a=>a.textContent).join()==="Group chat,Meeting"'));
+  // record every POST the page makes
+  await ev('(()=>{window.__posts=[];const f=window.fetch;window.fetch=function(u,o){try{if(o&&o.method==="POST")window.__posts.push({path:String(u).replace(/^.*\\/api/,""),body:o.body?JSON.parse(o.body):null})}catch(_){}return f.apply(this,arguments)};return 1})()');
+  const lastPost = () => ev('window.__posts[window.__posts.length-1]||null');
+  const click = sel => ev('(()=>{const b=document.querySelector(' + JSON.stringify(sel) + ');if(!b||b.disabled)return false;b.click();return true})()');
+  async function maps(name, sel, want) {
+    const n = await ev('window.__posts.length');
+    const ok = await click(sel);
+    const p = await waitFor(async () => (await ev('window.__posts.length')) > n ? lastPost() : null, 4000);
+    t('control → action: ' + name, ok && p && p.path === want.path && JSON.stringify(p.body) === JSON.stringify(want.body), { ok, p, want });
+    await sleep(350);
+  }
+  t('talk only is the default', /talk only/.test(await ev('document.querySelector(".mtg-sub").textContent')));
+  await ev('(()=>{const i=document.getElementById("mtg-item-new");i.value="Check the books";return 1})()');
+  await maps('Add agenda item', '.mtg-agenda .mtg-add .btn', { path: '/meeting/agenda', body: { op: 'add', title: 'Check the books' } });
+  await waitFor(() => ev('!!document.querySelector("[data-act=item-tools]")'), 3000);
+  await maps('Tools on for an item', '[data-act="item-tools"]', { path: '/meeting/agenda', body: { op: 'tools', id: 'a1', on: true } });
+  t('the item shows tools on', await waitFor(() => ev('document.querySelector("[data-act=item-tools]").getAttribute("aria-pressed")==="true"'), 3000));
+  await maps('Talk only for the item again', '[data-act="item-tools"]', { path: '/meeting/agenda', body: { op: 'tools', id: 'a1', on: false } });
+  await maps('More rounds (stepper)', '[data-act="rounds-up"]', { path: '/meeting/observe', body: { on: false, rounds: 7 } });
+  await maps('Observe', '[data-act="observe"]', { path: '/meeting/observe', body: { on: true, rounds: 7 } });
+  await maps('Take part', '[data-act="take-part"]', { path: '/meeting/observe', body: { on: false } });
+  await maps('the crown (make leader)', '.mtg-seat[data-seat="cfo"] [data-act="lead"]', { path: '/meeting/lead', body: { seat: 'cfo' } });
+  t('the new leader is first in the strip', await waitFor(() => ev('document.querySelector(".mtg-seat").dataset.seat==="cfo"'), 3000));
+  await maps('No leader', '[data-act="no-leader"]', { path: '/meeting/lead', body: { seat: null } });
+  await maps('the crown again', '.mtg-seat[data-seat="agent"] [data-act="lead"]', { path: '/meeting/lead', body: { seat: 'agent' } });
+  await maps('× (remove)', '.mtg-seat[data-seat="sec"] [data-act="remove"]', { path: '/meeting/seats', body: { remove: ['sec'] } });
+  await waitFor(() => ev('!document.querySelector(".mtg-seat[data-seat=sec]")'), 3000);
+  await ev('(()=>{const s=document.getElementById("mtg-pick");s.value="sec";return 1})()');
+  await maps('+ Add (roster picker)', '[data-act="add"]', { path: '/meeting/seats', body: { add: ['sec'] } });
+  await maps('New meeting (with its type)', '[data-act="new"]', { path: '/meeting/new', body: { type: 'decision' } });
+  // the model on hover or tap
+  t('the model shows on hover (title) and on tap', await ev('(()=>{const a=document.querySelector(".mtg-seat[data-seat=cfo] .mtg-av");a.click();const m=document.querySelector(".mtg-seat[data-seat=cfo] .mtg-model");return /Claude Sonnet/.test(a.title)&&!m.hidden&&/Claude Sonnet/.test(m.textContent)})()'));
+
+  // @name autocomplete, then Shift+Enter sends
+  await ev('(()=>{const t=document.getElementById("msg");t.focus();t.value="";return 1})()');
+  await cmd('Input.insertText', { text: '@sh' });
+  const acShown = await waitFor(() => ev('(()=>{const a=document.getElementById("mtg-ac");return a&&!a.hidden?[...a.querySelectorAll("li")].map(x=>x.textContent).join("|"):null})()'), 3000);
+  t('@name autocomplete suggests the seated person', acShown && /@Sharon/.test(acShown), acShown);
+  await key('Tab', 'Tab', 0, '', 9);
+  t('Tab completes the name', (await ev('document.getElementById("msg").value')) === '@sharon ', await ev('document.getElementById("msg").value'));
+  await cmd('Input.insertText', { text: 'what is the budget?' });
+  await st('/__meeting', { reset: true, replies: { cfo: 'The budget is fine.\nASK: Phil — any risk?', sec: 'No risk.\nINVITE: Rachel — hiring view', hr: 'PASS' } });
+  const n0 = await ev('window.__posts.length');
+  await key('Enter', 'Enter', 8, '\r', 13);
+  const sent = await waitFor(async () => (await ev('window.__posts.length')) > n0 ? lastPost() : null, 4000);
+  t('control → action: Shift+Enter sends the message', sent && sent.path === '/meeting/say' && sent.body.text === '@sharon what is the budget?', sent);
+  const chips = await waitFor(() => ev('(()=>{const k=[...document.querySelectorAll(".chat-body .mtg-chip")].map(x=>x.dataset.kind);return k.includes("ask")&&k.includes("invite")?k:null})()'), 15000);
+  t('ASK and INVITE lines are labelled chips, not raw text', chips && !(await ev('/ASK:|INVITE:/.test(document.querySelector(".chat-body").innerText)')), chips);
+  await waitFor(() => ev('document.querySelector("[data-act=round]") && !document.querySelector("[data-act=round]").disabled'), 10000);
+  t('passes are hidden (Rachel passed)', !(await ev('/PASS/.test(document.querySelector(".chat-body").innerText)')) && !(await ev('!!document.querySelector(".chat-body [data-who=hr]")')));
+  t('the cost line counts the turns', /^This meeting so far: [1-9]\d* turns?, \$\d+\.\d\d$/.test(await ev('document.querySelector(".mtg-cost").textContent')), await ev('document.querySelector(".mtg-cost").textContent'));
+
+  // Round, the speaking-now line, Raise hand, Continue, Esc, Stop round
+  await st('/__meeting', { reset: true, replies: { agent: [{ text: 'A slow opening statement that runs on for a while, word after word after word.', stepMs: 120 }, { text: 'Another slow answer that keeps going on and on and on for a good while yet.', stepMs: 150 }], cfo: 'Short.', sec: 'PASS' } });
+  await maps('Round', '[data-act="round"]', { path: '/meeting/round', body: {} });
+  const speaking = await waitFor(() => ev('(()=>{const l=document.querySelector(".mtg-live");return l&&/Speaking now: Founder/.test(l.textContent)?l.textContent:null})()'), 6000, 80);
+  t('the live line says who is speaking now and who is next', speaking && /Next up: Sharon/.test(speaking), speaking);
+  t('the words stream in as they come', await waitFor(() => ev('(()=>{const c=document.querySelector(".mtg-livecard .msg-them");return c&&c.textContent.length>10})()'), 6000, 80));
+  await maps('Raise hand', '[data-act="hand"]', { path: '/meeting/hand', body: {} });
+  t('the floor comes to the owner after the current speaker', await waitFor(() => ev('!!document.querySelector("[data-act=continue]") && /You have the floor/.test(document.querySelector(".mtg-live").textContent)'), 15000));
+  await maps('Continue', '[data-act="continue"]', { path: '/meeting/continue', body: {} });
+  await waitFor(() => ev('document.querySelector("[data-act=round]").disabled===false'), 15000);
+  await maps('Round again', '[data-act="round"]', { path: '/meeting/round', body: {} });
+  await waitFor(() => ev('!!document.querySelector("[data-act=hand]") && !document.querySelector("[data-act=hand]").disabled'), 5000, 80);
+  const n1 = await ev('window.__posts.length');
+  await ev('document.activeElement && document.activeElement.blur && document.activeElement.blur()');
+  await key('Escape', 'Escape', 0, '', 27);
+  const esc = await waitFor(async () => (await ev('window.__posts.length')) > n1 ? lastPost() : null, 3000);
+  t('control → action: Esc raises a hand while a round runs', esc && esc.path === '/meeting/hand', esc);
+  await maps('Stop round', '[data-act="stop"]', { path: '/meeting/stop', body: {} });
+  t('the round stops', await waitFor(() => ev('document.querySelector("[data-act=round]").disabled===false && !document.querySelector("[data-act=stop]")'), 15000));
+
+  // the dropdown is held during live events; the controls still follow
+  await api('/meeting/seats', { remove: ['hr'] });   // Rachel came in as a guest: unseat her, so the picker has someone
+  await waitFor(() => ev('!document.getElementById("mtg-pick").disabled'), 4000);
+  const f0 = await ev('(()=>{const s=document.getElementById("mtg-pick");s.__mark=1;s.focus();return document.activeElement===s})()');
+  await api('/meeting/agenda', { op: 'add', title: 'Tools item', tools: true });   // a change from elsewhere: the server emits "meeting"
+  const followed = await waitFor(() => ev('/tools on for this item/.test(document.querySelector(".mtg-sub").textContent)'), 5000);
+  const held = await ev('(async()=>{const e=await import("/js/events.js");const s=document.getElementById("mtg-pick");return {same:!!(s&&s.__mark),focused:document.activeElement===s,pending:e.pendingWhileEditing()}})()');
+  t('a live update does not close the roster dropdown (held)', f0 && held && held.same && held.focused && held.pending >= 1, held);
+  t('...while the controls follow the change at once', !!followed);
+  await ev('document.getElementById("mtg-pick").blur()');
+  t('the strip redraws once focus leaves', await waitFor(() => ev('!document.getElementById("mtg-pick").__mark'), 4000));
+  await api('/meeting/agenda', { op: 'remove', id: 'a1' }); await api('/meeting/agenda', { op: 'remove', id: 'a2' });
+
+  // observe to END: the END card
+  await api('/meeting/observe', { on: true, rounds: 3 });
+  await st('/__meeting', { reset: true, replies: { agent: 'We agree.\nEND: ship it, Sharon writes it up', cfo: 'Agreed.' } });
+  await api('/meeting/say', { text: 'Settle it.' });
+  const endCard = await waitFor(() => ev('(()=>{const e=document.querySelector(".chat-body .mtg-end");return e?e.textContent:null})()'), 15000);
+  t('the END summary is a card', endCard && /Discussion closed by Founder/.test(endCard) && /ship it, Sharon writes it up/.test(endCard), endCard);
+  await api('/meeting/observe', { on: false });
+  // Open minutes
+  await click('.mtg-head-actions button');
+  const mins = await waitFor(() => ev('(()=>{const d=document.querySelector("dialog.mtg-minutes[open]");return d?d.textContent:null})()'), 4000);
+  t('Open minutes shows every word', mins && /The budget is fine\./.test(mins) && /company\/work\/meetings\/meeting-/.test(mins), mins && mins.slice(0, 300));
+  await ev('document.querySelector("dialog.mtg-minutes").close()');
+
+  // Close without END
+  await maps('Close meeting', '[data-act="close"]', { path: '/meeting/close', body: {} });
+  t('the meeting shows as closed, by whom, and offers a new one', await waitFor(() => ev('/closed by/.test(document.querySelector(".mtg-state").textContent) && !!document.querySelector(".chat-body .mtg-closed")'), 5000));
+  // phone width
+  await cmd('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+  await sleep(500);
+  const phone = await ev('(()=>({w:document.documentElement.scrollWidth,iw:innerWidth,btns:[...document.querySelectorAll(".mtg-controls .btn")].every(b=>b.getBoundingClientRect().right<=innerWidth+1)}))()');
+  t('phone width: no horizontal scroll, every control on screen', phone && phone.w <= phone.iw + 1 && phone.btns, phone);
+  await cmd('Emulation.clearDeviceMetricsOverride', {});
+
+  ws.close();
+  console.log(fails ? 'MEETING UI WALK: FAIL (' + fails + ')' : 'MEETING UI WALK: PASS');
+  process.exit(fails ? 1 : 0);
+})().catch(e => { console.error(e); process.exit(1); });

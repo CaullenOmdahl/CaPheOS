@@ -17,12 +17,15 @@
  *   A.money(o)                            the existing money rules, unchanged: { verdict, why }  (dispatch.js and lanes.js)
  *
  * Doors (DOORS): dispatch (the dispatcher's wakes and, with runtime.scheduler=dispatcher, its scheduled loops), lane
- * (Sprint lanes), hire (interview turns), chat (the owner's console chat), health (a console health check run), console
+ * (Sprint lanes), hire (interview turns), chat (the owner's console chat), meeting (a turn, hand check or leader call in the
+ * owner's meeting, console/meeting.js), health (a console health check run), console
  * (the owner's Run now / run from the console), act (an external-gate spend act), watchdog (the station's one routine),
  * halt (a soft halt's shutdown routine), onboard (the kickoff run), pacer (a re-fire after a refusal), schedule (a run the
  * station's own schedule started: recorded by attribution, never through a door — it is the bypass the dispatcher-owned
  * schedule removes).
- * Kinds: run (starts a model run), act (an outbound act, e.g. a spend), watchdog (the liveness check: starts nothing).
+ * Kinds: run (starts a model run), act (an outbound act, e.g. a spend), watchdog (the liveness check: starts nothing),
+ * meeting-turn (a turn of the owner's meeting, console/meeting.js: a zero-token permission and routing check, no budget:
+ * refused unless the owner opened the meeting (req.owner true), held under a hard halt or a refusal block on the provider).
  * Owner: the finance function.
  */
 const fs = require('fs');
@@ -30,8 +33,8 @@ const path = require('path');
 const co = require('./company');
 
 const PHASE = 1;
-const DOORS = ['dispatch', 'lane', 'hire', 'chat', 'health', 'console', 'act', 'watchdog', 'halt', 'onboard', 'pacer', 'schedule'];
-const KINDS = ['run', 'act', 'watchdog'];
+const DOORS = ['dispatch', 'lane', 'hire', 'chat', 'meeting', 'health', 'console', 'act', 'watchdog', 'halt', 'onboard', 'pacer', 'schedule'];
+const KINDS = ['run', 'act', 'watchdog', 'meeting-turn'];
 const PHASE1_REASON = 'phase 1 counts, it does not decide: allowed and recorded; the door\'s own rules (cap, share, spread, pacer, halt) decided as before';
 const logFile = o => (o && o.file) || process.env.ADMIT_LOG || co.p('company', 'state', 'admit-log.jsonl');
 const clip = (s, n) => String(s == null ? '' : s).replace(/[\r\n\t]+/g, ' ').slice(0, n || 200);
@@ -59,7 +62,17 @@ function admit(req, opts) {
     let b = null; try { b = require('./refusal').blockFor(String(req.jobId), String(req.provider), { now, root: opts.root }); } catch (_) {}
     if (b) Object.assign(t, { decision: 'hold', reason: 'refusal block: ' + req.provider + ' refused this routine at ' + new Date(b.at).toISOString() + ' and is blocked for it until ' + new Date(b.until).toISOString() + ' (it runs on the next model meanwhile)' });
   }
+  if (kind === 'meeting-turn') {
+    if (req.owner !== true) Object.assign(t, { decision: 'refuse', reason: 'a meeting turn starts only in a meeting the owner opened: no routine or agent starts one' });
+    else if (co.halted() === 'hard') Object.assign(t, { decision: 'hold', reason: 'the company is under a hard halt' });
+    else if (req.provider && Array.isArray(req.jobIds) && req.jobIds.length) {
+      let b = null; try { b = require('./refusal').blockedForSeat(req.jobIds.map(String), { now, root: opts.root })[String(req.provider)] || null; } catch (_) {}
+      if (b) Object.assign(t, { decision: 'hold', reason: 'refusal block: ' + req.provider + ' is blocked for this seat until ' + new Date(b.until).toISOString() });
+    }
+    if (t.decision === 'allow') t.reason = 'meeting turn: the owner\'s meeting, no hold; counted, not priced';
+  }
   const row = { ts: new Date(now).toISOString(), at: now, id: t.id, phase: PHASE, door, kind, seat: t.seat, decision: t.decision, reason: t.reason };
+  if (req.meetingId) row.meetingId = clip(req.meetingId, 40);
   if (req.provider) row.provider = clip(req.provider, 40);
   if (req.amountUsd != null && Number.isFinite(Number(req.amountUsd))) row.amountUsd = Number(req.amountUsd);
   if (req.priority != null) row.priority = clip(req.priority, 40);

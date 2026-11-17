@@ -23,6 +23,9 @@
  * writes?:true}) POST /api/cron answers HTTP 200 {ok:false, declined:true, message} and creates nothing for a name the
  * station remembers: one of the agent's live routines or one REMOVED since (any time; S.cron.removed), or a name in
  * `names`. writes:true also declines every /api/cron/update, /remove and /arm the same way. Off: the old answers.
+ * Meeting turns (console/meeting.js, streamId meeting-<seat>[-hand|-call]): POST /__meeting {replies: {<agentId>[:hand|:call]:
+ * [text | {text, refuse, refuseAll, stepMs}]}, reset?} scripts each seat's next replies (none left: PASS, NO, OK); every
+ * meeting run's body is kept in GET /__state .meeting.runs (isTask, placed, provider, model, the last message).
  * Every request is appended to --log as one JSON line {at, method, path, query, body, status}; a test asserts on it.
  * Unknown routes answer 404 {error:"mock: no route"} and are logged too, so a test can list what the mock lacks.
  * With --root, POST /api/roster also writes <root>/.starnet-data/workspaces/agent.roster.json, as the station does
@@ -76,6 +79,7 @@ const S = {
   },
   runSeq: 1,
   dossierBlock: '', posture: null,
+  meeting: { queues: {}, runs: [] },   // POST /__meeting {replies, reset}; GET /__state .meeting
   live: [],              // runs in flight (GET /api/state/snapshot); a test starts one with POST /__live
   holds: [],             // POST /__hold {names:[…]}: routines whose name contains one stay in flight on /api/cron/run
   caps: CAPS,            // GET /api/version capabilities
@@ -97,6 +101,20 @@ function finishHeld(job, status) {
    512-event replay ring: ?cursor=<id> replays what came after it, then a ready frame {stream:'ready', cursor, reset} (reset:
    the cursor is not in the ring), like sidecar/observer.js + channels/sse.js. The epoch changes on POST /__restart. */
 const chats = new Map();   // runId -> {stop(reason)}: console chat runs in flight
+/* meeting turns: S.meeting.queues[<agentId>[:hand|:call]] = [reply, ...], each a string or {text, refuse (claude-cli
+   declines it, the next model gets the text), refuseAll, stepMs}; every meeting run is kept in S.meeting.runs */
+function meetingReply(B) {
+  const kind = /-hand$/.test(B.streamId) ? 'hand' : /-call$/.test(B.streamId) ? 'call' : 'turn';
+  const key = B.agentId + (kind === 'turn' ? '' : ':' + kind);
+  const q = S.meeting.queues[key] = S.meeting.queues[key] || [];
+  const msgs = Array.isArray(B.messages) ? B.messages : [];
+  S.meeting.runs.push({ agentId: B.agentId, kind, streamId: B.streamId, isTask: B.isTask, placed: B.placed || null, detach: B.detach, provider: B.provider, model: B.model, last: String((msgs[msgs.length - 1] || {}).content || '').slice(-2000), first: String((msgs[0] || {}).content || '').slice(0, 400), count: msgs.length, at: Date.now() });
+  let e = q[0]; if (e === undefined) e = kind === 'turn' ? 'PASS' : kind === 'hand' ? 'NO' : 'OK';
+  if (typeof e === 'string') e = { text: e };
+  const refused = !!e.refuseAll || (!!e.refuse && B.provider === 'claude-cli');
+  if (!refused || e.refuseAll) q.shift();
+  return { text: e.text, refused, step: Number(e.stepMs) || 5 };
+}
 const watchers = new Set();
 const ring = []; let obsSeq = 0, obsEpoch = 'mock' + Date.now().toString(36);
 function observe(name, payload) {
@@ -215,10 +233,13 @@ function handle(method, p, q, body, res) {
     // run's events go down this response AND to the observer feed; the response closing cancels the run unless the body
     // says detach:true (StarNet patch 0014). "[slow]" in the message: 250 ms a word; "[leak]": the reply is the captured
     // text of tool calls written out as text (tests/fixtures/leaked-tool-calls.txt). POST /api/cancel {runId} stops it.
-    if (B.streamId && /^console-/.test(B.streamId)) {
+    if (B.streamId && /^(console|meeting)-/.test(B.streamId)) {
       S.runs.pop();   // recorded when it ends, as the station's run log does
-      const leak = /\[leak\]/.test(last) ? fs.readFileSync(path.join(__dirname, 'fixtures', 'leaked-tool-calls.txt'), 'utf8') : null;
-      const reply = /\[fail\]/.test(last) ? null : leak ? leak : /charter/i.test(last)
+      // a meeting turn (console/meeting.js, streamId meeting-<seat>[-hand|-call]): the next scripted reply for that seat
+      // (POST /__meeting); none scripted: PASS for a turn, NO for a hand check, OK for a leader's call on hands
+      const mt = /^meeting-/.test(B.streamId) ? meetingReply(B) : null;
+      const leak = !mt && /\[leak\]/.test(last) ? fs.readFileSync(path.join(__dirname, 'fixtures', 'leaked-tool-calls.txt'), 'utf8') : null;
+      const reply = mt ? mt.text : /\[fail\]/.test(last) ? null : leak ? leak : /charter/i.test(last)
         ? 'Happy to. Three quick questions: what does the company do, for whom, and what will it never do? I have drafted company/CHARTER.md from what you told me so far. [Review it in Setup](console:#/setup/charter)'
         : /\[slow\]/.test(last) ? 'Got it. ' + CANNED + ' That is the whole plan, start to finish.' : 'Got it. ' + CANNED;
       const t = S.transcripts[B.streamId] = S.transcripts[B.streamId] || [];
@@ -227,11 +248,11 @@ function handle(method, p, q, body, res) {
       res.writeHead(200, { 'content-type': 'application/x-ndjson' });
       const evs = [{ name: 'agent.run.start', payload: { runId, agentId: B.agentId, streamId: B.streamId, model: B.model } }];
       // "[refuse]": the first model's filter declines (claude-cli refuses, others answer); "[refuse-all]": every model does
-      const refusedHere = /\[refuse-all\]/.test(last) || (/\[refuse\]/.test(last) && B.provider === 'claude-cli');
+      const refusedHere = mt ? mt.refused : /\[refuse-all\]/.test(last) || (/\[refuse\]/.test(last) && B.provider === 'claude-cli');
       if (refusedHere) evs.push({ name: 'agent.run.end', payload: { runId, reason: 'refused', outcome: 'refused', failureCode: 'content_policy_blocked', usd: 0 } });
       else if (!reply) evs.push({ name: 'agent.run.error', payload: { runId, message: 'provider error: HTTP 401 (mock)', failureCode: 'provider_auth' } }, { name: 'agent.run.end', payload: { runId, reason: 'error', outcome: 'failed', usd: 0 } });
       else {
-        if (!leak) evs.push({ name: 'agent.tool_call', payload: { runId, callId: 'c1', name: 'fs_read', argsSummary: 'company/CHARTER.md' } }, { name: 'agent.tool_result', payload: { runId, callId: 'c1', ok: true, ms: 3, summary: 'read 40 lines' } });
+        if (!leak && (!mt || B.isTask)) evs.push({ name: 'agent.tool_call', payload: { runId, callId: 'c1', name: 'fs_read', argsSummary: 'company/CHARTER.md' } }, { name: 'agent.tool_result', payload: { runId, callId: 'c1', ok: true, ms: 3, summary: 'read 40 lines' } });
         for (const w of leak ? reply.match(/[^\n]*\n?/g).filter(Boolean) : reply.match(/\S+\s*/g)) evs.push({ name: 'agent.token', payload: { runId, delta: w } });
         evs.push({ name: 'agent.run.end', payload: { runId, reason: 'done', outcome: 'succeeded', usd: 0.0012 } });
       }
@@ -247,7 +268,7 @@ function handle(method, p, q, body, res) {
       };
       const stop = reason => { if (over) return; send1({ name: 'agent.run.end', payload: { runId, reason, outcome: 'cancelled', usd: 0 } }); settle(reason); };
       chats.set(runId, { stop });
-      const step = /\[slow\]/.test(last) ? 250 : 40;
+      const step = mt ? mt.step : /\[slow\]/.test(last) ? 250 : 40;
       const tick = () => {
         if (over) return;
         if (i >= evs.length) {
@@ -426,6 +447,7 @@ const server = http.createServer((req, res) => {
     if (u.pathname === '/__state') { row.status = send(res, 200, S); return logReq(row); }
     // test seam: POST /__providers { "claude-cli": false, ... } connects or disconnects providers (GET /api/providers)
     if (u.pathname === '/__providers' && req.method === 'POST') { for (const [k, v] of Object.entries(body || {})) S.providers[k] = v === true; row.status = send(res, 200, { ok: true, providers: S.providers }); return logReq(row); }
+    if (u.pathname === '/__meeting' && req.method === 'POST') { const b = body || {}; if (b.reset) S.meeting = { queues: {}, runs: [] }; for (const [k, v] of Object.entries(b.replies || {})) (S.meeting.queues[k] = S.meeting.queues[k] || []).push(...[].concat(v)); row.status = send(res, 200, { ok: true, queues: S.meeting.queues }); return logReq(row); }
     if (u.pathname === '/__hold' && req.method === 'POST') { S.holds = Array.isArray((body || {}).names) ? body.names.map(String) : []; row.status = send(res, 200, { ok: true, holds: S.holds }); return logReq(row); }
     if (u.pathname === '/__finish' && req.method === 'POST') { const jb = findJob((body || {}).id) || S.cron.jobs.find(x => x.inFlightRunId && (body || {}).name && x.name.includes(body.name)); finishHeld(jb, (body || {}).status); row.status = send(res, 200, { ok: !!jb }); return logReq(row); }
     // test seam: POST /__tick {now?, cronDue?:[jobId], only?:[jobId]} is one pass of the station's OWN scheduler: while it is armed and not

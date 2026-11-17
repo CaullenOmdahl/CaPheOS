@@ -27,7 +27,7 @@ const http = require('http');
 
 const QUIET_MS = Number(process.env.CHAT_RUN_QUIET_MS) > 0 ? Number(process.env.CHAT_RUN_QUIET_MS) : 60000;   // then ask the station
 const MAX_AGE_MS = 3 * 3600e3;   // a run older than this with no end is given up on (the station's own limit is lower)
-const SEAT_STREAM = /^console-([A-Za-z0-9_-]{1,64})$/;
+const SEAT_STREAM = /^(?:console|meeting)-([A-Za-z0-9_-]{1,100})$/;   // a console chat, or a meeting turn (console/meeting.js)
 
 module.exports = function chatRuns(deps) {
   const { co, stationGet } = deps;
@@ -217,7 +217,7 @@ module.exports = function chatRuns(deps) {
   }
   function inflight(seat) {
     const s = load();
-    const id = running().filter(x => s.runs[x].seat === seat).sort((a, b) => s.runs[b].startedAt - s.runs[a].startedAt)[0];
+    const id = running().filter(x => s.runs[x].seat === seat && !s.runs[x].meeting).sort((a, b) => s.runs[b].startedAt - s.runs[a].startedAt)[0];
     return id ? Object.assign({ runId: id }, s.runs[id]) : null;
   }
   function runOf(id) { return load().runs[id] || null; }

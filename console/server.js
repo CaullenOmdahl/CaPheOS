@@ -516,6 +516,21 @@ const routes = [];
 const route = (method, re, fn) => routes.push({ method, re, fn });
 const SERVICE_KEYS = require(path.join(__dirname, 'service-keys.js'))({ co, bad, HttpError, tool, writeSecret, normalizeSecret, owner: () => OWNER });
 const CHAT = require(path.join(__dirname, 'chat.js'))({ co, stationGet, bad, HttpError, tool, owner: () => OWNER });
+/* a meeting seat's model: the seat's current chain entry (the loop routine's pair models.js keeps on it, else its roster
+   row, else the company default: console/chat.js modelFor), with the routines read once a few seconds for all seats;
+   a metered model under a $0 cap is held, as in the chat */
+let meetJobs = { at: 0, jobs: [] };
+async function meetingModel(id) {
+  const s = CHAT.seatOf(id);
+  if (Date.now() - meetJobs.at > 5000) { const cr = await stationGet('cron', 4000); meetJobs = { at: Date.now(), jobs: cr.ok && cr.data && Array.isArray(cr.data.jobs) ? cr.data.jobs : [] }; }
+  const m = await CHAT.modelFor(s, meetJobs.jobs);
+  if (!m) return null;
+  const h = CHAT.meteredHold(s, m); if (h) throw new Error(h.message);
+  return m;
+}
+// the owner's meeting with the crew (console/meeting.js): turns through the station, tracked by the chat's runs
+const MEET = require(path.join(__dirname, 'meeting.js'))({ co, HttpError, owner: () => OWNER, emit: t => emit(t), stationPost, runs: CHAT.runs,
+  run: (name, args) => run(name, args, { timeout: 30000 }), modelFor: meetingModel, seatJobs: id => meetJobs.jobs.filter(j => j && j.agentId === id).map(j => j.id) });
 const ACT = require(path.join(__dirname, 'activity.js'))({ co, stationGet, emit: t => emit(t), tool });
 
 route('GET', /^\/api\/company$/, () => Object.assign({ ok: true }, companyInfo()));
@@ -533,6 +548,7 @@ route('POST', /^\/api\/owner\/messages$/, async (m, q, b) => { const r = postOwn
 route('GET', /^\/api\/chat\/([A-Za-z0-9_-]{1,64})$/, m => CHAT.info(m[1]));
 // the live chat runs in flight (console/chat-runs.js): scripts/restart-console.sh --when-idle waits for an empty list
 route('GET', /^\/api\/console\/busy$/, () => ({ ok: true, chats: CHAT.runs.busy() }));
+MEET.mount(route);
 // chat actions (docs/CHAT-ACTIONS.md): a secret field in a chat block is stored here (the same writer as Today's key
 // field); the reply says only where and how long. Approvals: the approval API over the existing owner-question
 // records (company/tools/approvals.js); the expiry default (deny) and the reminders run server-side, here.
@@ -855,6 +871,7 @@ function makeServer() {
       if (req.method === 'POST' && !/json/i.test(String(req.headers['content-type'] || ''))) return sendJson(res, 415, { ok: false, error: 'POST bodies are JSON (content-type: application/json)' });
       const am2 = p.match(/^\/api\/chat\/([A-Za-z0-9_-]{1,64})\/attach$/);
       if (am2 && req.method === 'GET') return CHAT.attach(req, res, am2[1], url.searchParams);
+      if (p === '/api/meeting/live' && req.method === 'GET') return MEET.live(req, res, url.searchParams);
       const cm = p.match(/^\/api\/chat\/([A-Za-z0-9_-]{1,64})\/send$/);
       if (cm) { if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' }); return await CHAT.send(req, res, cm[1], await readBody(req)); }
       for (const r of routes) {
@@ -923,6 +940,7 @@ function start(argv) {
   const bw = require(path.join(__dirname, 'auth.js')).bindWarning(host); if (bw) console.error('console: WARNING ' + bw);
   armWatches();
   CHAT.runs.start();   // re-attach to the chat runs a previous console process left in flight
+  MEET.start();        // and carry on a meeting it left mid-round (its turn in flight is one of those runs)
   setInterval(armWatches, 15000).unref();
   setInterval(() => { tool('approvals.js').tick({ actor: 'the console' }).catch(() => {}); }, 60000).unref();   // approvals: expiry (default deny) and reminders
   ACT.start();

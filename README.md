@@ -166,6 +166,13 @@ it from another machine's browser (HTTPS proxy, linger, backups, the owner's cho
 (`company.json` owner name) through the same tools the owner runs in a shell; station calls go through
 `/api/station/*` with an allowlist, so the browser never sees the station token. Binds 127.0.0.1 by default.
 
+**Meetings.** Chat › Meeting puts the crew at one table: write once and everyone seated answers in turn, the leader
+first, each hearing what came before (start with `@name` to ask particular people). Buttons do the rest: Round for an
+open round, Raise hand (or Esc) to take the floor after the current speaker, Stop round, Observe to watch them settle a
+question by themselves for a few rounds, Talk only for a quick discussion, the crown to pick the leader, × and + Add for
+the seats, New meeting to start fresh. Every word goes to the minutes (Open minutes), and the leader's closing summary
+and rulings go to Decisions. Details: docs/MEETINGS.md.
+
 **Deploying a console update.** Restart the console with
 
 ```bash

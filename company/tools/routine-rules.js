@@ -48,6 +48,10 @@
  *     that meant "after X is done", two core items for a week. Work that waits on other work names it in **Waiting on:**
  *     and is woken the tick it is met; a long job is started through notify-when.js, which wakes the seat when it ends;
  *     Not before is a real clock time with a reason, inside its caps (company/HANDOFFS.md). The fallback line says the same.
+ * 13. Meeting etiquette (v13, 2026-11-18): the owner's meeting (console Chat › Meeting, console/meeting.js) puts every seat
+ *     at one table in turn; a run that treats it like a chat (long reports, no PASS, raw questions to an observing owner)
+ *     stalls it for everyone. The line says how to use ASK, INVITE, DISMISS, END and RULING, to keep replies short and to
+ *     pass with nothing to add; the meeting's own preamble says the same at every turn.
  *  3. Short waits. The station reclaims a routine run that shows no progress for 8 minutes (CRON_HEARTBEAT_STALE_MS
  *     480000), and a tool call in progress does not count, so one long shell_bg_wait loses the run's final reply.
  *
@@ -71,7 +75,7 @@ const path = require('path');
 const call = (...a) => require('./station-crew.js').call(...a);   // loaded on first use, so the selftest needs no token
 const co = require('./lib/company');
 const ROOT = co.ROOT;
-const VERSION = 'v12';
+const VERSION = 'v13';
 const START = '[HOUSE RULES FOR SCHEDULED RUNS ';
 const END = '[END HOUSE RULES]';
 const BLOCK = START + VERSION + ']\n' + [
@@ -88,6 +92,7 @@ const BLOCK = START + VERSION + ']\n' + [
   '- Check whether a connector or key works only through its own check: the connector\'s verify command in company/connectors/<id>.json (its exit code), or the tool that uses the key. Never read, cat, list, grep or print a credential file or folder (secrets/, the station\'s .secrets/, a CLI\'s config or session folder such as ~/.config/<tool>/), not even redacted: it puts keys in transcripts, and the model provider\'s filter may refuse the whole run.',
   '- Record a decision only with node company/tools/decision.js add --by <your name> --text "..." --why "...". Never edit company/work/decisions.md by hand, not even your own entry minutes later: to correct one run decision.js amend <id-or-stamp>, to take one back decision.js withdraw <id-or-stamp> (both with --by and --why; ids: decision.js list). The record is grow-only and an in-place edit is flagged as a rewrite.',
   '- Install a Python or Node package only with node company/tools/deps.js add <python|node> <package> --why "..." --by <your name>; its CLIs are on your PATH (company/env/bin) or run with deps.js run <bin>. Never pip install, npm install -g, pipx or a --user install by hand, and never make your own venv for a tool: an ad hoc install is unpinned, unchecked and gone after a rebuild, and the deps duty reports it to the risk owner. A system package (apt and the like) is the owner\'s: deps.js asks them.',
+  '- Meeting etiquette (the owner\'s meeting in the console, Chat › Meeting): speak when it is your turn, in a few sentences, from your own area; reply PASS when you have nothing to add. End a reply with a line of its own to run it like a call: ASK: <name> — <question> (they answer next; keep the exchange short), INVITE: <name> — <why> only when the discussion needs them, DISMISS: <name> — <why> (yourself too, when your part is done; never the leader), and, as the leader, CALL: <name>, RULING: <what was decided, who does it> and END: <what was decided and who does what> to close. While the owner observes, put no question to them; never put crew work or a command to the owner there either.',
   '- What you may change on your own, what you propose for review, and what is locked: company/work/people/LATITUDE.md. Your own section above, if you have one, is your notes to yourself, changed only with node company/tools/my-section.js; where it differs from these rules or your standing corrections, these win.',
 ].join('\n') + '\n' + END;
 

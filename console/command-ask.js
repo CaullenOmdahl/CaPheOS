@@ -28,8 +28,7 @@ const path = require('path');
 let detector = null;
 function shellAsk(text, opts) {
   if (!detector) {
-    const co = require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'company.js'));
-    detector = require(co.p('company', 'tools', 'inbox.js')).shellAsk;
+    detector = require(path.join(__dirname, '..', 'company', 'tools', 'inbox.js')).shellAsk;   // this checkout's own (the console runs from the company root)
   }
   return detector(text, opts);
 }
@@ -51,7 +50,7 @@ function actionFor(cmd) {
 
 let scopeLib = null;
 function scope() {
-  if (!scopeLib) { const co = require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'company.js')); scopeLib = require(co.p('company', 'tools', 'lib', 'owner-scope.js')); }
+  if (!scopeLib) scopeLib = require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'owner-scope.js'));
   return scopeLib;
 }
 // a sentence that puts a question or a request to the owner
@@ -67,6 +66,26 @@ function ownerAsk(text) {
     if (cls.scope === 'crew') return { kind: 'crew-scope', question: sn.slice(0, 200), why: cls.why, route: S.routeFor(cls).to, words: [...new Set(cls.crew.map(c => c.hit))].slice(0, 6) };
     const jar = S.plainScore(sn).jargon;
     if (cls.owner.length && jar.length >= 2) return { kind: 'jargon', question: sn.slice(0, 200), why: 'it asks you in technical words', route: null, words: [...new Set(jar)].slice(0, 6) };
+  }
+  return null;
+}
+
+/* observeAsk(text, ownerName) — the meeting's observe-mode lint: while the owner observes (console/meeting.js), a reply
+ * may not put a question to them at all. A question or request that names the owner ("Caullen, could you …?", "the
+ * owner should decide …?", "@owner") is flagged; a question to a seated colleague ("Dave, can you …?") is not.
+ *   observeAsk(text, ownerName) -> null | { kind: 'observe-question', question } */
+function observeAsk(text, ownerName) {
+  const prose = String(text || '').replace(/```[\s\S]*?```/g, '\n');
+  if (prose.length < 6) return null;
+  const on = String(ownerName || '').trim(); const first = on.split(/\s+/)[0];
+  const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const names = ['the owner', '@owner', 'owner'].concat(on ? [esc(on)] : [], first && first !== on ? [esc(first)] : []);
+  const NAMED = new RegExp('(?:^|[^\\w@])(?:' + names.join('|') + ')\\b', 'i');
+  for (const raw of prose.split(/(?<=[.!?])\s+|\n+/)) {
+    const sn = raw.replace(/^[\s>*\-\d.)]+/, '').trim();
+    if (sn.length < 6 || !TO_OWNER.test(sn)) continue;
+    if (/^ASK\s*:/i.test(sn)) { const who = sn.replace(/^ASK\s*:\s*/i, '').split(/\s/)[0].replace(/^@|[,:;.]+$/g, ''); if (NAMED.test(' ' + who) || /^(owner|you)$/i.test(who)) return { kind: 'observe-question', question: sn.slice(0, 200) }; continue; }
+    if (NAMED.test(sn)) return { kind: 'observe-question', question: sn.slice(0, 200) };
   }
   return null;
 }
@@ -125,11 +144,16 @@ function selftest() {
   for (const [txt, what] of [['May I spend $40 on a month of market data? It lets us test the price idea; if you skip it, we keep the free feed.', 'a plain money question'],
     ['I fixed the timer and the heartbeat is green again. Nothing for you to do.', 'a report about infrastructure with no question'],
     ['Which market should we focus on first, sports or weather?', 'a direction question']]) ok('owner scope: does not flag ' + what, ownerAsk(txt) === null, { txt, got: ownerAsk(txt) });
+  // the meeting's observe-mode lint: no question to the owner at all while they observe
+  for (const [txt, what] of [['Caullen, could you confirm the budget before we go on?', 'a question that names the owner'], ['I think the owner should decide this. Do you agree, Caullen?', 'a question to the owner by name at the end'],
+    ['Should we ask the owner about the price?', 'a question about asking the owner'], ['ASK: Caullen — which market first?', 'an ASK line to the owner']]) ok('observe: flags ' + what, !!observeAsk(txt, 'Caullen Nguyen'), { txt, got: observeAsk(txt, 'Caullen Nguyen') });
+  for (const [txt, what] of [['Dave, can you take the ranked list?', 'a question to a colleague'], ['Caullen asked for this plan, so here it is.', 'a mention of the owner with no question'],
+    ['ASK: Nadia — which items are push items?', 'an ASK line to a colleague']]) ok('observe: does not flag ' + what, observeAsk(txt, 'Caullen Nguyen') === null, { txt, got: observeAsk(txt, 'Caullen Nguyen') });
   console.log((fails ? 'FAIL ' : 'PASS ') + (n - fails) + '/' + n);
   return fails ? 1 : 0;
 }
 
-module.exports = { commandAsk, ownerAsk, actionFor };
+module.exports = { commandAsk, ownerAsk, observeAsk, actionFor };
 if (require.main === module) {
   if (process.argv.includes('--selftest')) process.exit(selftest());
   console.error('usage: node console/command-ask.js --selftest'); process.exit(2);

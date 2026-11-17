@@ -34,8 +34,10 @@ test('without the commitments module, no seat is sent to the commitments tool', 
   const T = scratch([]);
   try {
     const r = ensureIn(T, 'You are Jo.\n\nDo the work.');
-    assert.equal(r.version, 'v12');
-    assert.ok(r.prompt.includes('[HOUSE RULES FOR SCHEDULED RUNS v12]'));
+    assert.equal(r.version, 'v13');
+    assert.ok(r.prompt.includes('[HOUSE RULES FOR SCHEDULED RUNS v13]'));
+    // v13: meeting etiquette (ASK, INVITE, DISMISS, END; short replies; PASS)
+    assert.match(r.prompt, /Meeting etiquette .*reply PASS when you have nothing to add.*ASK: <name> — <question>.*INVITE: <name>.*DISMISS: <name>.*END: <what was decided/);
     // v12: work that waits on work names it in Waiting on; a long job goes through notify-when.js; Not before is a clock time
     assert.match(r.prompt, /Use \*\*Waiting on:\*\* for anything that waits on other work/);
     assert.match(r.prompt, /node company\/tools\/notify-when\.js --seat <you>/);
