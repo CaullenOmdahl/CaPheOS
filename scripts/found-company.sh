@@ -98,6 +98,7 @@ done
 touch company/owner/inbound.jsonl company/owner/outbound.jsonl company/escalations.jsonl
 [[ -e company/work/handoffs/to-founder.md ]] || printf '# Handoffs to the Founder\n\n' > company/work/handoffs/to-founder.md
 [[ -e company/work/decisions.md ]] || printf '# Decisions\n\nNewest first. Who decided, what, why.\n\n' > company/work/decisions.md
+[[ -e company/work/improvements.md ]] || printf '# Improvements\n\nIdeas to make the company work better. One line each: who, what, why, and the seat whose scope it is in. Close one by changing it to DONE with the evidence.\n\n' > company/work/improvements.md
 [[ -e company/projects.json ]] || printf '{ "projects": {} }\n' > company/projects.json
 [[ -e company/mandates.json ]] || printf '{ "mandates": [] }\n' > company/mandates.json
 [[ -e company/work/.founded ]] || date -Is > company/work/.founded   # kept for older tools; onboarding state is the record

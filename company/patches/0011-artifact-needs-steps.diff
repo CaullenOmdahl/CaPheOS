@@ -1,0 +1,37 @@
+# 0011 — an artifact quest closes on its file only once every step is ticked (CaPheOS).
+# Status: APPLIED by setup-station.sh
+# Why: StarNet's run-end sweep completed an artifact-contract quest as soon as its file existed, even with steps unticked;
+# a README or plan written on day one closed whole quests early (sandbox q:2, q:4, q:10). With this patch a quest with an
+# unticked step is not a sweep candidate; quests without steps behave as before. Adds three cases to test/questsweeps.test.js.
+# Apply: git -C starnet apply --3way ../company/patches/0011-artifact-needs-steps.diff   Revert: same with -R
+diff --git a/sidecar/questsweeps.js b/sidecar/questsweeps.js
+index d28f3948..1ffc21fd 100644
+--- a/sidecar/questsweeps.js
++++ b/sidecar/questsweeps.js
+@@ -91,6 +91,9 @@ function artifactQuestKeys(quests, agentId) {
+   const out = []; const seen = new Set();
+   for (const q of (Array.isArray(quests) ? quests : [])) {
+     if (!openFor(q, 'artifact', agentId)) continue;
++    // CaPheOS patch 0011: a quest with unticked steps is not done because its file exists (a README or plan written on day
++    // one would otherwise close the whole quest); it completes on its artifact only once every step is ticked
++    if (Array.isArray(q.steps) && q.steps.some(st => st && !st.done)) continue;
+     const key = String(q.contract.key == null ? '' : q.contract.key).trim();
+     if (key && !seen.has(key)) { seen.add(key); out.push({ id: q.id, key: key }); }
+   }
+diff --git a/test/questsweeps.test.js b/test/questsweeps.test.js
+index aa98fe36..1594449f 100644
+--- a/test/questsweeps.test.js
++++ b/test/questsweeps.test.js
+@@ -113,3 +113,12 @@ const fresh = () => makeQuestStore({ fs: memFs(), path, workspaces: '/ws', write
+ 
+   A.report('questsweeps.test');
+ })();
++
++// CaPheOS patch 0011: an artifact quest with unticked steps is not a candidate, even when its file exists
++{
++  const A = require('assert'); const QS = require('../sidecar/questsweeps.js');
++  const base = { status: 'open', agentId: 'a1', contract: { type: 'artifact', key: 'work/x.md' } };
++  A.deepStrictEqual(QS.artifactQuestKeys([Object.assign({ id: 'q:1', steps: [{ key: 's1', done: true }, { key: 's2', done: false }] }, base)], 'a1'), [], 'unticked step: not a candidate');
++  A.strictEqual(QS.artifactQuestKeys([Object.assign({ id: 'q:2', steps: [{ key: 's1', done: true }] }, base)], 'a1').length, 1, 'all steps ticked: candidate');
++  A.strictEqual(QS.artifactQuestKeys([Object.assign({ id: 'q:3' }, base)], 'a1').length, 1, 'no steps: candidate');
++}
