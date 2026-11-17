@@ -147,6 +147,9 @@ module.exports = function activity(deps) {
     }
     // runs the observer saw start that the snapshot does not list (yet): still in flight
     if (!held) for (const r of live.values()) if (!ids.has(r.runId)) runs.push(view(r, jobs));
+    // Sprint lanes (company/tools/lanes.js): which run is which seat's lane, on which handoff, since when
+    let lanes = []; try { lanes = tool('lanes.js').view().lanes || []; } catch (_) {}
+    for (const r of runs) { const l = lanes.find(x => x.runId && x.runId === r.runId); if (l) { r.lane = { id: l.id, n: l.n, handoff: l.handoff, since: l.since }; r.kind = 'lane'; r.label = 'lane ' + l.n + ': ' + String(l.handoff).replace(/^\S+ from \S+ — /, '').slice(0, 80); } }
     const crew = co.crew();
     let unread = 0; try { unread = tool('owner-inbox.js').unacked().length; } catch (_) {}
     const seats = Object.entries(crew).map(([id, c]) => {
@@ -178,12 +181,14 @@ module.exports = function activity(deps) {
           itemsDone: s.itemsDone, spentUsd: s.spentUsd, budgetUsd: s.budgetUsd, usdPerItem: s.usdPerItem, proposalsPerHour: s.proposalsPerHour, reviewsPerHour: s.reviewsPerHour };
         for (const x of seats) {
           const ln = (s.lanes || {})[x.id] || {};
-          x.lanes = { running: x.running, max: ln.max || 1, possible: ln.possible || 0, why: ln.why || null };
+          x.lanes = { running: x.running, max: ln.max || 1, possible: ln.possible || 0, why: ln.why || null, live: lanes.filter(l => l.seat === x.id).map(l => ({ n: l.n, handoff: l.handoff, since: l.since, runId: l.runId })) };
           x.sprint = x.running ? 'working' : x.soonerBecause.length ? 'working' : 'waiting for work';
         }
       }
     } catch (_) { sprint = null; }
-    return { ok: true, station: { up: !!snap.ok, error: snap.ok ? null : snap.error || 'HTTP ' + snap.status, feed: feed.up }, runs, seats, sprint };
+    for (const x of seats) if (!x.lanes && lanes.some(l => l.seat === x.id)) x.lanes = { running: x.running, max: null, possible: 0, why: null, live: lanes.filter(l => l.seat === x.id).map(l => ({ n: l.n, handoff: l.handoff, since: l.since, runId: l.runId })) };   // lanes still finishing after Sprint ended
+    return { ok: true, station: { up: !!snap.ok, error: snap.ok ? null : snap.error || 'HTTP ' + snap.status, feed: feed.up }, runs, seats, sprint,
+      lanes: lanes.map(l => ({ id: l.id, seat: l.seat, name: (crew[l.seat] || {}).name || l.seat, n: l.n, handoff: l.handoff, since: l.since, runId: l.runId, running: runs.some(r => r.runId === l.runId) })) };
   }
   function view(r, jobs) {
     const k = kindOf(r, jobs);

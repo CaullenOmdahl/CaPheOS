@@ -79,6 +79,11 @@ function people(root, ctx) {
           s.hire ? h('span', { class: 'caption muted' }, 'hired ' + whenOf(s.hire.at) + (s.firstRun ? ' · first run ' + whenOf(s.firstRun.at) + (s.firstRun.outcome ? ', ' + s.firstRun.outcome : '') : run ? ' · first run in progress' : ' · first run pending')) : null,
           now && now.sprint && nx && nx.lanes ? h('span', { class: 'caption muted', title: nx.lanes.why || '' }, 'Sprint: ' + nx.lanes.running + ' of ' + nx.lanes.max + (nx.lanes.max === 1 ? ' lane' : ' lanes') + ' running'
             + (nx.lanes.possible > nx.lanes.max ? ' · ' + nx.lanes.possible + ' items could run in parallel' : '') + (nx.lanes.running ? '' : ' · ' + nx.sprint)) : null,
+          // Sprint lanes (company/tools/lanes.js): why a seat with parallel work runs one lane (e.g. the station lacks patch
+          // 0012), and each live lane with the handoff it owns and since when
+          now && now.sprint && nx && nx.lanes && nx.lanes.possible > 1 && nx.lanes.max === 1 && nx.lanes.why ? h('span', { class: 'caption muted' }, 'One lane: ' + nx.lanes.why) : null,
+          nx && nx.lanes && (nx.lanes.live || []).length ? h('ul', { class: 'plain stack-4', style: 'margin:2px 0 0' }, nx.lanes.live.map(l => h('li', { class: 'caption row-8', style: 'align-items:center' },
+            h('span', { class: 'pulse', 'aria-hidden': 'true' }), 'Lane ' + l.n + ': ' + String(l.handoff || '').replace(/^\S+ from \S+ — /, '') + ' · since ' + whenOf(l.since)))) : null,
           run ? h('span', { class: 'caption row-8', style: 'align-items:center' }, h('span', { class: 'pulse', 'aria-hidden': 'true' }), cap(run.step || run.label)) : now && now.sprint && nx && nx.sprint ? null : nx && nx.nextRunAt ? h('span', { class: 'caption muted' }, 'next run ' + new Date(nx.nextRunAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ((nx.soonerBecause || []).length ? ', sooner: ' + nx.soonerBecause.join(', ') : '')) : null),
         Tag(cap(state), { variant: 'status', status: statusOf(state) }));
     }));

@@ -129,6 +129,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/hire.js | people | `selftest` / `--selftest` |
 | company/tools/inbox.js | ceo | none |
 | company/tools/incident-open.py | risk | none |
+| company/tools/lanes.js | tools | none |
 | company/tools/locked-watch.js | risk | `selftest` / `--selftest` |
 | company/tools/mandate.js | ceo | none |
 | company/tools/merge-gate.js | risk | `selftest` |

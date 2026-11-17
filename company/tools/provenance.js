@@ -89,7 +89,8 @@ function relOf(file, root) {
   const p = path.resolve(String(file || ''));
   if (!p.startsWith(root + path.sep)) return null;
   const r = path.relative(root, p).split(path.sep).join('/');
-  if (!r.startsWith('company/') || r.startsWith('company/state/locked/')) return null;
+  // under company/, plus the station's folder grants (lanes.js records the grant of each lane folder it blesses)
+  if ((!r.startsWith('company/') && r !== '.starnet-data/workspaces/permissions.allow.json') || r.startsWith('company/state/locked/')) return null;
   return r;
 }
 function append(row, root) {

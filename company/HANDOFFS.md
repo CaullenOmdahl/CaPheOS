@@ -25,6 +25,10 @@ a cheaper model of its own chain and keep Claude for reasoning work; no tag mean
 At the start of every session read your own inbox. Open handoffs outrank your own backlog; one due today outranks
 everything except a live incident. Work every OPEN item in the session, reviews included (`harness-change.js` reviews
 arrive as handoffs: approve or reject each one in this run): one wake, all the queued items, rather than one wake each.
+An item with a `**Lane:** n, run <id>, since <time>` line is owned by a parallel lane, another run of you working it in
+its own folder right now (Sprint, `company/tools/lanes.js`): skip it, and do not edit that section. When the lane ends, its
+result lands in the item as `**Lane result (…):**` (a branch to review and merge, or what is left) and the item is yours
+again. Review a lane's branch like any other change; never push it.
 
 ## Close a handoff
 Change that block's own `**Status:** OPEN` line to `**Status:** DONE` and add `**Resolved <date> by <you>:**` with the

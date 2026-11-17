@@ -143,6 +143,9 @@ async function hard({ by, why, auto } = {}) {
     const b = j(r) || {};
     st.station = { ok: r.status === 200, status: r.status, halted: b.halted, cronAborted: b.cronAborted, loopAborted: b.loopAborted };
   } catch (e) { st.station = { ok: false, error: e.message }; }
+  // Sprint lanes (company/tools/lanes.js): every live lane is cut off now (its run stopped, its path lock released, its
+  // handoff told), even if the station did not answer the E-STOP
+  try { const cut = await require('./lanes.js').cutOff({}); if (cut && cut.cut) st.lanesCut = cut.cut; } catch (e) { st.lanesError = String(e.message).slice(0, 160); }
   write(st);
   if (!auto) tell('Hard halt by ' + by + (why ? ' (' + why + ')' : '') + ': the station E-STOP ' + (st.station.ok ? 'stopped every run' : 'did NOT answer (' + (st.station.error || 'HTTP ' + st.station.status) + '); the dispatcher still wakes nobody') + '. Resume with `node company/tools/halt.js resume --by <name>`.');
   return st;

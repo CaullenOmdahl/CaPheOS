@@ -284,12 +284,17 @@ export async function render(root, ctx) {
       Button('Settings', { variant: 'ghost', size: 'sm', href: '#/settings/tempo/sprint' })) : null;
     // the dispatcher's own reason from its last tick (dispatch-state.json seats), with Decide when a question waits on the owner
     const decide = qid => Button('Decide', { variant: 'secondary', size: 'sm', onClick: () => { const c = document.querySelector('[data-id="' + CSS.escape(qid) + '"]'); if (c) { c.scrollIntoView({ behavior: 'smooth', block: 'center' }); const f = c.querySelector('button, input, [tabindex]'); if (f) f.focus({ preventScroll: true }); } else location.hash = '#/today'; } });
+    // Sprint lanes (company/tools/lanes.js): each running lane, whose it is, the handoff it owns and since when (its run is
+    // also in the list above as "lane n: …" while the station reports it)
+    const lanesEl = (d.lanes || []).length ? h('div', { class: 'stack-4', 'aria-label': 'Lanes running' }, h('span', { class: 'eyebrow-t' }, 'Lanes running'),
+      h('ul', { class: 'plain stack-4' }, d.lanes.map(l => h('li', { class: 'body-s row-8', 'data-lane': l.id, style: 'align-items:center' }, h('span', { class: 'pulse', 'aria-hidden': 'true' }),
+        h('span', null, l.name + ' · lane ' + l.n + ': ' + String(l.handoff || '').replace(/^\S+ from \S+ — /, '') + ' · since ' + hhmm(l.since, co.timezone) + ' (' + rel(l.since) + ')'))))) : null;
     const idle = d.seats.filter(s => !s.running).map(s => s.idle && s.idle.reason ? h('li', { class: 'body-s muted now-idle row-8', 'data-seat': s.id, 'data-state': s.idle.state, style: 'align-items:center;flex-wrap:wrap' },
       h('span', null, idleLine(s)), s.idle.qid ? decide(s.idle.qid) : null) : sp && s.sprint ? h('li', { class: 'body-s muted now-idle' }, s.name + (s.sprint === 'working' ? ': working — ' + s.soonerBecause.join(', ') + '; starts as soon as the next tick sees it' : ': waiting for work') + '.') : h('li', { class: 'body-s muted now-idle' }, s.name + ' is idle' +
       (s.loop ? (s.enabled === false ? '; its loop "' + s.loop + '" is switched off' : s.schedulerOn === false ? '; the scheduler is off, so its loop does not run on schedule' : s.nextRunAt ? '; next run ' + hhmm(s.nextRunAt, co.timezone) + ' (' + rel(s.nextRunAt) + ')' : '') : '; it has no loop routine') +
       (s.soonerBecause.length ? ', or sooner: ' + s.soonerBecause.join(', ') : s.wakesOnMessage ? ', or sooner if you message it' : '') + '.'));
     fill(nowEl, h('div', { class: 'between-c' }, h('h2', { id: 'now-h', class: 'h3' }, 'Now'), d.station.up ? null : h('span', { class: 'err-line' }, 'Station not running: nobody can work.')),
-      sprintEl, kickEl, runs.length ? h('ul', { class: 'plain stack-8' }, runs) : null, idle.length ? h('ul', { class: 'plain stack-4' }, idle) : null);
+      sprintEl, kickEl, runs.length ? h('ul', { class: 'plain stack-8' }, runs) : null, lanesEl, idle.length ? h('ul', { class: 'plain stack-4' }, idle) : null);
   }
   function toggleWatch(r) {
     const w = watching.get(r.runId);

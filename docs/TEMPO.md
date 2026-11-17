@@ -74,7 +74,7 @@ as fast as its open work allows, without spending tokens on wakes that find noth
 ```
 node company/tools/cadence.js sprint on [--hours N] [--budget-usd X] --by owner     # until turned off, or N hours
 node company/tools/cadence.js sprint off --by owner
-node company/tools/cadence.js sprint config --budget-usd 5 --lanes 2 --by owner
+node company/tools/cadence.js sprint config --budget-usd 5 --lanes 2 --max-lanes-total 6 --by owner
 node company/tools/cadence.js sprint status [--json]
 ```
 
@@ -134,7 +134,8 @@ Reviewed by finance, risk and people like any tempo change; applied, it starts a
 
 ### Settings (`tempo.sprint`)
 
-`cooldownFloorMin` 2 · `fallbackTickMin` 5 · `watchDebounceSec` 45 · `minTickGapSec` 30 · `lanes` 2 · `budgetUsd` null
+`cooldownFloorMin` 2 · `fallbackTickMin` 5 · `watchDebounceSec` 45 · `minTickGapSec` 30 · `lanes` 2 · `maxLanesTotal` 6 ·
+`laneTimeoutMin` 95 · `budgetUsd` null
 (= 2 x the daily cap) · `spreadDailyCap` true.
 
 ### Measuring it
@@ -144,22 +145,61 @@ work signature was unchanged once its run ended), items done (OPEN handoffs that
 Sprint spend against its budget, proposals/h against reviews/h, and the time from founding to certified. The dispatcher
 keeps the counts in `company/state/sprint-metrics.json`.
 
-### Parallel lanes (not running yet: a StarNet limit)
+### Parallel lanes
 
-The design: in Sprint a worker seat with two or more OPEN handoffs whose `**Touches:**` paths are disjoint could run up
-to `lanes` of them at once, each lane in its own git worktree, told which handoff it owns, behind a per-path lock
-(`lib/sprint.js` `lanePlan`, `makePathLock`); an item without `Touches:` conflicts with everything, so the seat runs one
-lane with all its items. The CEO is always one lane.
+In Sprint a worker seat with two or more OPEN, actionable handoffs whose `**Touches:**` paths are disjoint works them at
+the same time: its main loop takes one batch and `company/tools/lanes.js` starts extra **lanes** for the others. An item
+without `Touches:` conflicts with everything, so while one is open the seat runs one lane with all its items; an item
+whose Status says it waits on someone else is not a lane's to take. The CEO seat never gets lanes (one CEO run).
 
-What StarNet allows (read in `starnet/sidecar`, proven by `company/tools/tests/sprint.test.js` against its own modules):
-a second run of one agent **is** admitted (`concurrency.js` counts distinct agents), and routines are leased one run
-per routine, so a lane would have to be its own run (`POST /api/run`). But every file write and **every shell call**
-first takes `workspace-lease.js`, keyed on the agent id alone and held until the run ends: the second run's first shell
-call waits 45 s and then fails "workspace busy". CaPheOS seats work through the shell, so a second lane would spend
-tokens and do nothing. So lanes stay at one; the dispatcher computes the plan, logs `SPRINT LANES held at 1`, and Crew
-shows "N items could run in parallel (held: …)". The smallest StarNet change is `company/patches/0012-workspace-lease-
-per-workdir.diff` (not applied by default): key the lease on agent + project folder. With it, the remaining work is the
-lane launcher in dispatch.js; lane runs count in the daily cap and the Sprint budget like any run (runs.jsonl).
+**How a lane runs.** `dispatch.js` calls `lanes.js dispatchHook` once a tick, after the pacer (fail-safe, 60 s limit).
+A lane is its **own station run**, never the seat's routine fired twice (routines are leased one run each): a disabled
+one-off routine `Lane <8 hex>` (a name that shares no word with the seat's loop or another lane: StarNet's mint gate
+answers a near-duplicate name with the existing routine, and declines a removed routine's name), fired once with `POST /api/cron/run`, on the seat's agent id with the
+provider, model, grants and skills its loop routine has at that moment (so the pacer's and `models.js` chain moves and
+Sprint's mechanical-work routing apply to lanes exactly as to the seat). Its folder is
+`company/work/lanes/<seat>/<n>` (gitignored, blessed on the station as its own project folder): a **git worktree** on
+branch `lane/<seat>-<n>-<stamp>` when the seat writes code (loops.json `writesCode`, else a tools seat or an engineer's
+title) and the item's paths are tracked in one repository (the company repo, or one under `company/repos/`), else a
+**scratch folder** (its own `git init`; the declared paths are written in the company folder). The prompt names the one
+handoff the lane owns, its text, and says to touch only its declared paths, commit on its branch, never push, and finish
+with `LANE-RESULT.md` (`Status: DONE|BLOCKED|OPEN — …`). A per-path lock (`lib/sprint.js` `makePathLock`,
+`company/state/lane-locks.json`) is held for the lane's life; an item whose paths overlap a live lane's waits.
+
+**The main loop and the lane.** Lanes start only between the main loop's runs, and the handoff gets
+`**Lane:** n, run <id>, since <time>` under its Status line, so the main loop (fired later in the same tick) leaves it
+alone (`company/HANDOFFS.md`). When every open item of a seat is lane-owned the dispatcher does not wake its main loop
+(`LANES: main loop not woken for …`).
+
+**When a lane ends** (its run finished, it hung past `laneTimeoutMin`, or a hard halt cut it off), the next tick removes
+its routine, releases its lock, takes the Lane line off and writes `**Lane result (lane n, run <id>, <time>):** …` into
+the handoff. Work left uncommitted is committed on the lane's branch; a branch with commits is **left for the seat's
+normal review flow** (the item stays OPEN: review and merge it), a branch with none is deleted, and nothing is merged
+into the main checkout or pushed. A scratch lane that says DONE closes the item. An item gets one lane: one whose lane
+ended without finishing goes back to the main loop. History: `company/state/lanes.json`.
+
+| Rule | How |
+|---|---|
+| Per seat | `tempo.sprint.lanes` runs at once, the main loop included (default 2: one extra lane) |
+| Per company | `tempo.sprint.maxLanesTotal` extra lanes (default 6) |
+| Time limit | `tempo.sprint.laneTimeoutMin` (default 95, past the station's own 90-minute wall): the run is cancelled and its lock released |
+| Money | the same verdict as a wake: the daily metered cap, the per-agent share, Sprint's spread, and the Sprint budget hold a metered seat's lanes (a subscription seat is not held by USD); lane runs land in runs.jsonl like any run, so they count in all of them |
+| Tempo and the pacer | a lane is a counted wake (`cadence.js tempoAllows`: quiet hours hold it); a seat the pacer held this tick, whose loop is paused, or whose approval mode is "ask" gets no lane |
+| Halts | a soft halt starts no lane (running ones finish, and the soft halt waits for them); a hard halt (`halt.js hard`) cuts every lane off at once |
+| The station | lanes need StarNet patch 0012 (the workspace lease keyed by agent + folder). `lanes.js` probes `GET /api/version` for `capabilities: ["workspace-lease-per-folder"]`; without it no lane starts (a second run's first shell call would wait 45 s and fail), the log says `SPRINT LANES held at 1: … has not applied patch 0012 …` once, and Crew says why |
+| Locked-watch, provenance | a lane routine with exactly its seat's Commander-only fields and a folder under `company/work/lanes/<seat>/` is the seat's own (`lanes.isLaneJob`), never flagged as a new routine; lane runs carry the seat's agent id, so their tool calls are attributed to the seat; `lanes.json` and the station's folder grants it adds are recorded with `provenance.js` |
+
+The owner sets the numbers: `node company/tools/cadence.js sprint config --lanes 2 --max-lanes-total 6
+--lane-timeout-min 95 --by owner`. Seen on Crew (each seat's lanes: the handoff each is on and since when, or why the
+seat runs one lane) and on Today's Now ("Lanes running"; each lane's run is listed as `lane n: <handoff>`).
+`node company/tools/lanes.js status` shows the live lanes and the last ended ones; `lanes.js end <seat>/<n> --by <name>`
+stops one. Tests: `company/tools/tests/lanes-dispatch.test.js` (the real dispatch.js against the mock station; in
+`scripts/test.sh`), `company/tools/tests/lanes.e2e.js` (a throwaway real station from a fresh StarNet checkout with
+every default patch; not in test.sh), and StarNet's own `test/e2e.workspace-lease-per-folder.test.js` (in patch 0012).
+
+**Adopting lanes in an existing company:** pull the framework, re-run `scripts/setup-station.sh` (it applies patch
+0012; a checkout whose index no longer matches its files gets a plain apply), then restart the station
+(`systemctl --user restart <station>.service`) and the dispatcher loop. Until the station restarts, lanes refuse cleanly.
 
 ### Adopting it in an existing company
 

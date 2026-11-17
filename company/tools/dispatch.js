@@ -60,8 +60,6 @@ const SS = require('./lib/seat-status');
 const SPRINT = (() => { try { return require('./cadence.js').effective().sprint || null; } catch (_) { return null; } })();
 const SPRINT_METRICS = path.join(ROOT, 'company', 'state', 'sprint-metrics.json');
 const SPRINT_EFFORT = path.join(ROOT, 'company', 'state', 'sprint-effort.json');
-// parallel lanes need a station that lets two runs of one agent work in different folders (company/patches/0012)
-const STATION_LANES = (() => { try { return fs.readdirSync(path.join(ROOT, 'company', 'patches')).some(f => /^0012-.*\.diff\.applied$/.test(f)); } catch (_) { return false; } })();
 const STALL_AFTER = num('DISPATCH_STALL_AFTER', 3);
 // The CFO's budget file (company/work/finance/dispatch-budget.json) wins over the env vars and defaults.
 const BUDGET = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'company', 'work', 'finance', 'dispatch-budget.json'), 'utf8')) || {}; } catch (_) { return {}; } })();
@@ -872,17 +870,16 @@ function lastRunTail(job) {
       const isCeo = id === CEO_ID;
       const plan = SP.lanePlan(items, { lanes: SPRINT.lanes, isCeo });
       const job = findLoop(jobs, id);
-      // lanes stay at 1 for now: the station serialises one agent's file and shell work (patch 0012 lifts that per
-      // folder), and the lane launcher (one /api/run per lane in its own worktree) is not built; never faked
+      // the main loop is one lane; company/tools/lanes.js (the hook after the pacer) starts the extra ones, sets max/why
+      // from what the station allows (patch 0012) and logs why lanes are held
       const max = 1;
       SM.lanes[id] = { running: job && (job.inFlight || job.state === 'running') ? 1 : 0, max, possible: plan.lanes.length, wanted: isCeo ? 1 : Math.max(1, Number(SPRINT.lanes) || 1),
-        why: isCeo ? 'the CEO works one run at a time' : plan.lanes.length > 1 ? (STATION_LANES ? 'patch 0012 is applied, but the lane launcher is not built yet' : 'StarNet lets only one run of an agent write files or use the shell at a time (patch 0012 not applied)') : plan.why };
+        why: isCeo ? 'the CEO works one run at a time' : plan.lanes.length > 1 ? 'StarNet lets only one run of an agent write files or use the shell at a time (patch 0012 not applied)' : plan.why };
       if (plan.lanes.length > 1 && max < plan.lanes.length) laneHeld.push(((CREW[id] || {}).name || id) + ' (' + plan.lanes.length + ' independent)');
     }
     const eff = { _doc: 'Sprint: seats whose open items are all Effort: mechanical (models.js keeps Claude for reasoning work)', sprint: true, since: SPRINT.since, seats: effort };
     if (JSON.stringify((readJson(SPRINT_EFFORT, {}) || {}).seats) !== JSON.stringify(effort) && !DRY) { try { fs.mkdirSync(path.dirname(SPRINT_EFFORT), { recursive: true }); fs.writeFileSync(SPRINT_EFFORT, JSON.stringify(eff, null, 1) + '\n'); } catch (_) {} }
     const lk = laneHeld.join(', ');
-    if (lk && state.sprintLaneKey !== lk) log('SPRINT LANES held at 1: ' + lk + ' could run in parallel, but StarNet lets one run of an agent hold its files and shell at a time (workspace lease per agent); see company/patches/0012');
     state.sprintLaneKey = lk;
   } else if ((readJson(SPRINT_EFFORT, {}) || {}).sprint && !DRY) { try { fs.writeFileSync(SPRINT_EFFORT, JSON.stringify({ sprint: false, seats: {} }) + '\n'); } catch (_) {} }
   // Sprint spreads the daily metered cap over the company day: the last hour's metered spend, and the hours left
@@ -896,6 +893,10 @@ function lastRunTail(job) {
   const moneyHolds = [];
   const hoursLeft = (() => { const lp = co.localParts(); return Math.max(1, 24 - (Number(lp.hour) || 0) - (Number(lp.minute) || 0) / 60); })();
   let fired = 0; try { const pace = await require('./pacer.js').dispatchHook({ dry: DRY, log, jobs, order, ownerWake, maxPerTick: MAX_PER_TICK }); fired = -Math.max(0, Math.min(2, Number(pace && pace.extra) || 0)); } catch (e) { fired = 0; log('PACER ERROR: ' + e.message); }   // pacer.js (fail-safe): may drop metered wakes held near the station rail from `order`, and lends extra per-tick slots by starting `fired` below 0
+  // Sprint lanes (company/tools/lanes.js, fail-safe, after the pacer so it sees what the pacer held and the models it set):
+  // ends finished, timed-out or cut-off lanes, starts lanes for seats with independent OPEN items within the same money
+  // and tempo rules as a wake, and takes a seat out of `order` when live lanes own all its open items
+  try { await require('./lanes.js').dispatchHook({ dry: DRY, log, jobs, work, reason, order, ownerWake, hiringWake, modes, allowAsk: ALLOW_ASK, state, sprint: SPRINT, metrics: SM, budget: { capOn: CAP_ON, capped, dailyUsd: DAILY_USD, perAgentUsd: PER_AGENT_USD, byAgent, spent, lastHourMetered, hoursLeft, spread: !!(SPRINT && SPRINT.spreadDailyCap), unmetered: UNMETERED_PROVIDERS } }); } catch (e) { log('LANES ERROR: ' + String(e.message).slice(0, 200)); }
   const deferred = [];
   for (const agentId of order) {
     const qs = work[agentId];

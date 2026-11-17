@@ -103,7 +103,9 @@ test('StarNet: a second run of one agent is admitted, but its first file or shel
   // the mutating tools that take the lease: every file write and EVERY shell call (CaPheOS seats work through the shell)
   const idx = fs.readFileSync(path.join(SN, 'sidecar', 'index.js'), 'utf8');
   assert.match(idx, /const mutatesWorkspace = \(name\) => \/\^fs\\\.\(write\|append\|edit\|patch\)\$\/\.test\(name\) \|\| \/\^\(shell\|verify\)\\\.\/\.test\(name\)/);
-  assert.match(idx, /workspaceLease\.acquire\(agentId, runId\)/);
+  // the per-agent key above is the module's; patch 0012 (applied by default) keys a run's lease by agent + its folder
+  assert.match(idx, /workspaceLease\.acquire\(agentId, runId\)|acquireRunLease\(agentId, runId, o\.projectRoot\)/);
+  if (/acquireRunLease/.test(idx)) assert.match(idx, /capabilities: \[WORKSPACE_LEASE_CAPABILITY\]/, 'patch 0012 names its capability on GET /api/version');
 });
 
 test('spreadHold never holds a seat other seats are waiting on (a blocker); it still holds one nobody waits on', () => {

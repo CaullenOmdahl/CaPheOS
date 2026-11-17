@@ -6,7 +6,9 @@
  * Covers the endpoints the tools in company/tools call (grep "'/api/" there): roster, agent/*, run (NDJSON events),
  * run/stream, observe (SSE; POST /__live starts a fake in-flight run), transcript, consent, projects (+ bless), cron (list, create, update, run, arm, remove, history), halt (+ status, resume), loops (+ control),
  * quests (+ update, mint, confirm), state/snapshot, runs, connectors, servicekeys, groups, save, budget/status and a few
- * read-only odds and ends (GET /api/providers from a provider map; POST /__providers {id: true|false} connects or
+ * read-only odds and ends (GET /api/version, with --caps a,b or POST /__caps {caps} for its capabilities; POST /__hold {names}
+ * keeps a routine whose name contains one in flight on /api/cron/run until POST /__finish {id|name, status}, /api/cancel or
+ * /api/halt; GET /api/providers from a provider map; POST /__providers {id: true|false} connects or
  * disconnects one, and POST /api/agent/model refuses a disconnected one as the station does). Every request needs header x-starnet-token (401 otherwise, like the station).
  *
  * Every request is appended to --log as one JSON line {at, method, path, query, body, status}; a test asserts on it.
@@ -32,6 +34,8 @@ const LOG = opt('log', process.env.MOCK_LOG || '');
 const ROOT = opt('root', process.env.MOCK_ROOT || '');
 const FRESH = argv.includes('--fresh') || process.env.MOCK_FRESH === '1';
 const SAVE_FILE = opt('save-file', process.env.MOCK_SAVE_FILE || '');
+// GET /api/version capabilities (CaPheOS lanes probe "workspace-lease-per-folder", StarNet patch 0012); POST /__caps sets them
+const CAPS = String(opt('caps', process.env.MOCK_CAPS || '')).split(',').map(s => s.trim()).filter(Boolean);
 
 /* ---------------- state ---------------- */
 const S = {
@@ -58,7 +62,18 @@ const S = {
   runSeq: 1,
   dossierBlock: '', posture: null,
   live: [],              // runs in flight (GET /api/state/snapshot); a test starts one with POST /__live
+  holds: [],             // POST /__hold {names:[…]}: routines whose name contains one stay in flight on /api/cron/run
+  caps: CAPS,            // GET /api/version capabilities
 };
+// a held routine run ends: as the station records it (lastRunAt, lastRunId, lastStatus), out of the snapshot
+function finishHeld(job, status) {
+  if (!job || !job.inFlightRunId) return;
+  const runId = job.inFlightRunId; job.inFlight = false; delete job.inFlightRunId;
+  job.lastRunAt = nowIso(); job.lastRunId = runId; job.lastStatus = status || 'ok';
+  S.live = S.live.filter(r => r.runId !== runId);
+  S.cron.history.push({ jobId: job.id, runId, at: job.lastRunAt, status: job.lastStatus });
+  S.runs.push({ runId, agentId: job.agentId, source: 'cron', startedAt: Date.parse(job.heldSince || job.lastRunAt), endedAt: Date.now(), usd: 0, provider: job.provider });
+}
 /* the observer feed (GET /api/observe): SSE frames `data: {name, payload}` for every run event, like sidecar/observer.js */
 const watchers = new Set();
 function observe(name, payload) { const f = 'data: ' + JSON.stringify({ name, payload }) + '\n\n'; for (const w of watchers) { try { w.write(f); } catch (_) {} } }
@@ -222,6 +237,7 @@ function handle(method, p, q, body, res) {
   if (p === '/api/run/steer') return send(res, 200, { ok: true });
   if (p === '/api/runs' && method === 'GET') return send(res, 200, { ok: true, runs: S.runs.slice(-200) });
   if (p === '/api/state/snapshot' && method === 'GET') return send(res, 200, { ok: true, runs: S.live.map(r => ({ runId: r.runId, agentId: r.agentId, startedAt: r.startedAt, source: r.source, streamId: r.streamId, stoppable: true })), agents: S.roster.map(r => ({ agentId: r.agentId, name: r.name })) });
+  if (p === '/api/cancel' && method === 'POST' && S.cron.jobs.some(j => j.inFlight && j.inFlightRunId === B.runId)) { finishHeld(S.cron.jobs.find(j => j.inFlight && j.inFlightRunId === B.runId), 'stopped'); return send(res, 200, { ok: true, stopped: true }); }
   if (p === '/api/cancel' && method === 'POST' && S.live.some(r => r.runId === B.runId)) { const r = S.live.find(x => x.runId === B.runId); S.live = S.live.filter(x => x !== r); observe('agent.run.end', { runId: r.runId, agentId: r.agentId, reason: 'cancelled', outcome: 'cancelled', usd: 0.001 }); return send(res, 200, { ok: true }); }
   if (p === '/api/cancel') return send(res, 200, { ok: true });
   if (p === '/api/state' && method === 'GET') return send(res, 200, { ok: true, agents: S.roster });
@@ -253,7 +269,14 @@ function handle(method, p, q, body, res) {
   if (p === '/api/cron/run' && method === 'POST') {
     const job = findJob(B.id); if (!job) return send(res, 404, { error: 'no such routine' });
     if (S.halt.halted) return send(res, 409, { error: 'station is halted' });
+    if (job.inFlightRunId) return send(res, 409, { error: 'this routine is already running — wait for it to finish' });
     const runId = 'run-' + (S.runSeq++);
+    // a routine whose name matches a POST /__hold pattern stays in flight until POST /__finish (or /api/cancel, /api/halt)
+    if (S.holds.some(h => job.name.includes(h))) {
+      job.inFlight = true; job.inFlightRunId = runId; job.heldSince = nowIso();
+      S.live.push({ runId, agentId: job.agentId, startedAt: Date.now(), source: 'cron', streamId: 'cron-' + runId, jobId: job.id });
+      return send(res, 200, { ok: true, runId, detached: !!B.detach });
+    }
     job.lastRunAt = nowIso(); job.lastStatus = 'ok'; job.inFlight = false;   // the mock run finishes at once
     S.cron.history.push({ jobId: job.id, runId, at: job.lastRunAt, status: 'ok' });
     S.runs.push({ runId, agentId: job.agentId, source: 'cron', startedAt: Date.now(), endedAt: Date.now(), usd: 0, provider: job.provider });
@@ -272,7 +295,7 @@ function handle(method, p, q, body, res) {
   // --- halt ---
   if (p === '/api/halt' && method === 'POST') {
     S.halt = { halted: true, at: nowIso() }; S.cron.halted = true;
-    for (const j of S.cron.jobs) j.inFlight = false;
+    for (const j of S.cron.jobs) { if (j.inFlightRunId) finishHeld(j, 'stopped'); j.inFlight = false; }
     return send(res, 200, { ok: true, halted: 1, cronAborted: 0, loopAborted: 0 });
   }
   if (p === '/api/halt' && method === 'GET') return send(res, 200, { ok: true, halted: S.halt.halted, at: S.halt.at });
@@ -309,7 +332,7 @@ function handle(method, p, q, body, res) {
     return send(res, 200, { ok: true });
   }
   if (p === '/api/budget/status' && method === 'GET') return send(res, 200, { ok: true, providers: {} });
-  if (p === '/api/version' && method === 'GET') return send(res, 200, { ok: true, version: 'mock-station' });
+  if (p === '/api/version' && method === 'GET') return send(res, 200, Object.assign({ ok: true, version: 'mock-station' }, S.caps.length ? { capabilities: S.caps } : {}));
   if (p === '/api/providers' && method === 'GET') return send(res, 200, { ok: true, providers: Object.entries(S.providers).map(([id, on]) => ({ id, configured: on, unattendedReady: on, reason: on ? 'verified' : 'credential missing' })) });
   if (p.startsWith('/api/models/') && method === 'GET') return send(res, 200, { ok: true, models: [{ id: 'deepseek-flash' }] });
   if (p === '/api/permissions' && method === 'GET') return send(res, 200, { ok: true, bypass: false });
@@ -333,6 +356,9 @@ const server = http.createServer((req, res) => {
     if (u.pathname === '/__state') { row.status = send(res, 200, S); return logReq(row); }
     // test seam: POST /__providers { "claude-cli": false, ... } connects or disconnects providers (GET /api/providers)
     if (u.pathname === '/__providers' && req.method === 'POST') { for (const [k, v] of Object.entries(body || {})) S.providers[k] = v === true; row.status = send(res, 200, { ok: true, providers: S.providers }); return logReq(row); }
+    if (u.pathname === '/__hold' && req.method === 'POST') { S.holds = Array.isArray((body || {}).names) ? body.names.map(String) : []; row.status = send(res, 200, { ok: true, holds: S.holds }); return logReq(row); }
+    if (u.pathname === '/__finish' && req.method === 'POST') { const jb = findJob((body || {}).id) || S.cron.jobs.find(x => x.inFlightRunId && (body || {}).name && x.name.includes(body.name)); finishHeld(jb, (body || {}).status); row.status = send(res, 200, { ok: !!jb }); return logReq(row); }
+    if (u.pathname === '/__caps' && req.method === 'POST') { S.caps = Array.isArray((body || {}).caps) ? body.caps.map(String) : []; row.status = send(res, 200, { ok: true, caps: S.caps }); return logReq(row); }
     if (u.pathname === '/__live' && req.method === 'POST') { row.status = send(res, 200, { ok: true, run: startLive(body || {}) }); return logReq(row); }
     if (u.pathname === '/api/observe' && req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' }); res.write('retry: 3000\n\n');
@@ -347,6 +373,9 @@ const server = http.createServer((req, res) => {
     logReq(row);
   });
 });
+// a test's fetch() reuses kept-alive sockets: a server that closes an idle one at the default 5 s races the next request
+// ("fetch failed", ECONNRESET) on a busy machine, so idle sockets stay open longer than any test waits between calls
+server.keepAliveTimeout = 120000; server.headersTimeout = 125000;
 server.listen(PORT, '127.0.0.1', () => {
   console.log(JSON.stringify({ ok: true, port: server.address().port, pid: process.pid }));
 });

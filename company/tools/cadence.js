@@ -12,7 +12,8 @@
  *   node company/tools/cadence.js end-temporary --by <name> [--why "…"]     end a temporary speed-up early
  *   node company/tools/cadence.js apply [--dry-run] [--approved-ref <questionId>] [--by <name>]
  *   node company/tools/cadence.js sprint on|off [--hours N] [--budget-usd X] [--lanes N] --by <owner> [--why "…"]
- *   node company/tools/cadence.js sprint config [--budget-usd X|default] [--lanes N] [--cooldown-floor-min N] [--fallback-tick-min N]
+ *   node company/tools/cadence.js sprint config [--budget-usd X|default] [--lanes N] [--max-lanes-total N] [--lane-timeout-min N]
+ *                                  [--cooldown-floor-min N] [--fallback-tick-min N]
  *                                  [--watch-debounce-sec N] [--spread on|off|today] --by <owner> [--why …]
  *                                  --spread: Sprint's spread of the daily metered cap over the day; today = off until midnight
  *   node company/tools/cadence.js sprint status [--json]      Sprint (start-up): on or off, until when, and how it is going
@@ -221,6 +222,8 @@ function saveSprint(doc, sprint, by, what, why) {
 function sprintConfigFrom(o, into) {
   if (o.budgetUsd != null) { if (o.budgetUsd === 'default') delete into.budgetUsd; else { const n = Number(o.budgetUsd); if (!(Number.isFinite(n) && n >= 0)) throw new Error('--budget-usd is a number of dollars >= 0, or default'); into.budgetUsd = n; } }
   if (o.lanes != null) into.lanes = posInt(o.lanes, 'lanes');
+  if (o.maxLanesTotal != null) { const n = Math.floor(Number(o.maxLanesTotal)); if (!(Number.isFinite(n) && n >= 0)) throw new Error('--max-lanes-total is a whole number >= 0'); into.maxLanesTotal = n; }
+  if (o.laneTimeoutMin != null) into.laneTimeoutMin = posInt(o.laneTimeoutMin, 'lane-timeout-min');
   if (o.cooldownFloorMin != null) into.cooldownFloorMin = posInt(o.cooldownFloorMin, 'cooldown-floor-min');
   if (o.fallbackTickMin != null) into.fallbackTickMin = posInt(o.fallbackTickMin, 'fallback-tick-min');
   if (o.watchDebounceSec != null) into.watchDebounceSec = posInt(o.watchDebounceSec, 'watch-debounce-sec');
@@ -974,7 +977,7 @@ if (require.main === module) {
     if (cmd === 'end-temporary') return run(() => endTemporary({ by, why }));
     if (cmd === 'sprint') {
       const sub = a[1];
-      const cfg = { budgetUsd: sopt('budget-usd'), lanes: sopt('lanes'), cooldownFloorMin: sopt('cooldown-floor-min'), fallbackTickMin: sopt('fallback-tick-min'), watchDebounceSec: sopt('watch-debounce-sec'), spread: sopt('spread') };
+      const cfg = { budgetUsd: sopt('budget-usd'), lanes: sopt('lanes'), maxLanesTotal: sopt('max-lanes-total'), laneTimeoutMin: sopt('lane-timeout-min'), cooldownFloorMin: sopt('cooldown-floor-min'), fallbackTickMin: sopt('fallback-tick-min'), watchDebounceSec: sopt('watch-debounce-sec'), spread: sopt('spread') };
       if (sub === 'on' || sub === 'off') return run(() => setSprint(sub === 'on', Object.assign({ by, why, hours: sopt('hours') }, cfg)));
       if (sub === 'config') return run(() => setSprintConfig(Object.assign({ by, why }, cfg)));
       if (sub === 'status' || !sub) {

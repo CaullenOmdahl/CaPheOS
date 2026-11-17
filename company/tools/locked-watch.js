@@ -100,7 +100,7 @@ const MANIFEST = [
   { p: 'company/state/governance.json', cls: 'F', writers: ['governance.js'], owner: 'risk', area: 'policy', why: 'self-governance: how much the company decides without the owner (only the owner changes it, through governance.js)' },
   // alwaysWatched: still reported while the harnessSelfEdit guardrail is off, because it is the switch itself
   { p: 'company/state/guardrails.json', cls: 'F', writers: ['guardrails.js'], owner: 'risk', area: 'policy', alwaysWatched: true, why: 'the guardrail switches (only the owner changes them, through guardrails.js)' },
-  ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js', 'retention.js', 'duties.js', 'duty-status.js', 'lib/duty-runner.js', 'lib/duty-env.js', 'money-hold.js', 'lib/money-hold.js', 'lib/seat-status.js']
+  ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js', 'retention.js', 'duties.js', 'duty-status.js', 'lib/duty-runner.js', 'lib/duty-env.js', 'money-hold.js', 'lib/money-hold.js', 'lib/seat-status.js', 'lanes.js']
     .map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'tools', area: 'tool', why: 'a tool that measures or limits the crew, or that these tools depend on' })),
   ...['merge-gate.js', 'premerge-check.js', 'external-gate.js', 'connector-scope.js', 'default-branch-watch.js'].map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'risk', area: 'tool', why: 'a gate or the evidence it reads' })),
   { p: 'company/work/engineering/evidence/*.json', cls: 'F', writers: ['test-substrate.sh'], owner: 'risk', area: 'gate', why: 'test-substrate verdicts (a hand-made pass opens the merge gate): flagged, never auto-removed, so a real evidence file never blocks a merge' },
@@ -124,7 +124,7 @@ const MANIFEST = [
   { p: 'company/work/decisions.md', cls: 'F', append: true, growOnly: true, owner: 'ceo', area: 'record', why: 'decisions (it carries the competence anchors)' },
   { p: 'company/work/dispatch-log.md', cls: 'F', append: true, owner: 'tools', area: 'record', why: 'the dispatch log (a competence anchor copy)' },
   { p: 'company/state/locked/provenance.jsonl', cls: 'F', append: true, owner: 'tools', area: 'record', why: 'the tools\' write records this watcher trusts' },
-  { p: '.starnet-data/workspaces/permissions.allow.json', cls: 'F', owner: 'risk', area: 'access', why: 'the station\'s folder grants' },
+  { p: '.starnet-data/workspaces/permissions.allow.json', cls: 'F', writers: ['lanes.js'], owner: 'risk', area: 'access', why: 'the station\'s folder grants (lanes.js records the grant of each Sprint lane folder it blesses)' },
   { p: '.starnet-data/workspaces/runtime.knobs.json', cls: 'F', owner: 'risk', area: 'access', why: 'the station\'s runtime limits' },
   ...[STATION_UNIT + '-dispatch.service', STATION_UNIT + '-dispatch.timer', STATION_UNIT + '.service', STATION_UNIT + '.service.d/*.conf', 'capheos-backup.service', 'capheos-backup.timer', 'capheos-health-probe.service', 'capheos-health-probe.timer', 'capheos-sudo-gate.socket', 'capheos-sudo-gate@.service']
     .map(f => ({ p: '~/.config/systemd/user/' + f, cls: 'F', owner: 'tools', area: 'timer', why: 'the timers that run the dispatcher, this watcher and the backup' })),
@@ -631,8 +631,11 @@ function runTick(ctx) {
   if (curHead) base.starnetHead = curHead;
   // routines' Commander-only fields and approval modes
   const rtChanged = [];
+  // a Sprint lane's routine is its seat's own (company/tools/lanes.js isLaneJob: the seat's agent, exactly its loop's
+  // Commander-only fields, a folder under company/work/lanes/<seat>/): never a new routine to flag, never kept in the baseline
+  const laneJob = j => { try { return require('./lanes.js').isLaneJob(j, ctx.jobs, ctx.root); } catch (_) { return false; } };
   if (ctx.jobs && base.routines) for (const j of ctx.jobs) {
-    if (!j || !j.id) continue; const v = routineView(j); const old = base.routines[j.id];
+    if (!j || !j.id || laneJob(j)) continue; const v = routineView(j); const old = base.routines[j.id];
     if (!old) { if ((j.unattendedGrants || []).some(g => g !== 'workbench') || j.script || j.noAgent) rtChanged.push({ id: j.id, name: j.name, diff: 'new routine with ' + ['unattendedGrants', 'script', 'noAgent'].filter(k => k === 'unattendedGrants' ? (j[k] || []).length : j[k]).join(', '), view: v }); else base.routines[j.id] = { name: j.name, view: v }; continue; }
     if (JSON.stringify(old.view) === JSON.stringify(v) || (old.flagged && JSON.stringify(old.flagged) === JSON.stringify(v))) continue;
     const d = []; for (const k of ROUTINE_FIELDS) if (JSON.stringify(old.view[k]) !== JSON.stringify(v[k])) d.push(k + ': ' + redact(JSON.stringify(old.view[k])).slice(0, 50) + ' -> ' + redact(JSON.stringify(v[k])).slice(0, 50));
@@ -654,7 +657,7 @@ function runTick(ctx) {
   const appliedSched = (() => { try { return require('./harness-change.js').appliedSchedules({ root: ctx.root }); } catch (_) { return {}; } })();
   const schedChanged = [];
   if (ctx.jobs && base.routines) for (const j of ctx.jobs) {
-    if (!j || !j.id || !j.schedule) continue;
+    if (!j || !j.id || !j.schedule || laneJob(j)) continue;
     const r = base.routines[j.id]; if (!r) continue;   // a brand-new routine is handled by the Commander-field check
     const cur = { expr: (j.schedule && j.schedule.expr) || null, tz: (j.schedule && j.schedule.tz) || null };
     if (r.sched === undefined) { r.sched = cur; continue; }   // first sight of a schedule: seed, never flag

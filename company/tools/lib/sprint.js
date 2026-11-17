@@ -29,7 +29,9 @@ const SPRINT_DEFAULTS = {
   fallbackTickMin: 5,       // the dispatcher's timer while Sprint is on; inbox changes wake it sooner (watch)
   watchDebounceSec: 45,     // an inbox change wakes the dispatcher this long after the last change (more items per wake)
   minTickGapSec: 30,        // never two ticks closer than this, whatever changes
-  lanes: 2,                 // parallel lanes per worker seat (held at 1 until the station can run them: patch 0012)
+  lanes: 2,                 // runs per worker seat at once, its main loop included (company/tools/lanes.js; needs patch 0012)
+  maxLanesTotal: 6,         // extra lane runs in the whole company at once
+  laneTimeoutMin: 95,       // a lane still running after this long is stopped and its path lock released
   budgetUsd: null,          // total metered USD for the whole Sprint; null = 2 x the daily cap
   spreadDailyCap: true,     // spread the daily metered cap over the company day (cadence.js sprint config --spread on|off|today)
   spreadOffUntil: null,     // ISO time: the spread is off until then (--spread today = until local midnight), then on again
