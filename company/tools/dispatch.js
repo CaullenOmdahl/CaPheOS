@@ -154,6 +154,26 @@ function firstStatusOf(sectionText) {
   const m = String(sectionText || '').match(/^\*\*Status:\*\*(.*)$/m);
   return m ? m[1].trim() : null;
 }
+/* A handoff block's own **Deadline:** line (company/HANDOFFS.md requires one) can set it aside until that day: it is not
+ * woken by the dispatcher and not counted toward STALLED (no dispatcher run is spent on it, so nothing goes uncounted);
+ * the seat's own schedule still runs it. Only a plain YYYY-MM-DD date later than today and at most STALL_DEADLINE_CAP days
+ * ahead defers; 'today', prose, a past date or a far date counts as due now. The dispatcher cannot tell who wrote the line,
+ * so it remembers the FIRST deadline it saw per block (seen: heading -> date): moving the date later never extends the
+ * deferral, an earlier date takes effect at once. */
+const STALL_DEADLINE_CAP = num('DISPATCH_STALL_DEADLINE_CAP', 14);
+function deadlineDeferrals(sections, seen, todayStr, capDays) {
+  const dayMs = d => Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10));
+  const now = dayMs(todayStr), nextSeen = {}, deferred = new Map();
+  for (const [heading, text] of sections) {
+    const m = String(text || '').match(/^\*\*Deadline:\*\*\s*(\d{4}-\d{2}-\d{2})\b/m);
+    if (!m || !Number.isFinite(dayMs(m[1]))) continue;
+    const prev = seen && seen[heading];
+    const d = prev && prev < m[1] ? prev : m[1];   // the first date seen, unless the line now says earlier
+    nextSeen[heading] = d;
+    if (dayMs(d) > now && dayMs(d) - now <= capDays * 86400000) deferred.set(heading, d);
+  }
+  return { deferred, seen: nextSeen };
+}
 // the full text of each OPEN section (duty dedup: is an item id already in an OPEN handoff to this seat?)
 function openSectionTexts(file) {
   let txt; try { txt = fs.readFileSync(file, 'utf8'); } catch (_) { return []; }
@@ -230,6 +250,15 @@ function selftestOpenHandoffs() {
   const noteOnly = doneClosed + '**Note (no status on purpose):** a bodyless block from a batch pass\n';
 
   check('a section whose first status is OPEN is woken', openHandoffs(write('a.md', openBlock)).length === 1);
+  // Deadline deferral: capped, a plain date only, the first date seen, an earlier date at once
+  const sec = d => '2026-11-17 10:00 from X — ask\n**Need:** y\n**Status:** OPEN\n**Deadline:** ' + d + '\n';
+  const dd = (d, seen) => deadlineDeferrals(new Map([['h', sec(d)]]), seen, '2026-11-17', 14);
+  check('a Deadline 4 days ahead defers', dd('2026-11-21').deferred.get('h') === '2026-11-21');
+  check('today, a past date, prose and no date count as due now', !dd('2026-11-17').deferred.size && !dd('2026-11-10').deferred.size && !dd('next week').deferred.size && !dd('today').deferred.size);
+  check('the cap: 14 days ahead defers, 15 does not', dd('2026-12-01').deferred.size === 1 && !dd('2026-12-02').deferred.size);
+  check('a date in the body text is not the Deadline line', !deadlineDeferrals(new Map([['h', '2026-11-17 x\n**Status:** OPEN\ndue 2026-11-25 per X\n']]), {}, '2026-11-17', 14).deferred.size);
+  check('moving the Deadline later never extends the deferral (the first date seen holds)', dd('2026-11-28', { h: '2026-11-17' }).deferred.size === 0 && dd('2026-11-28', { h: '2026-11-17' }).seen.h === '2026-11-17');
+  check('an earlier Deadline takes effect at once', dd('2026-11-17', { h: '2026-11-21' }).deferred.size === 0 && dd('2026-11-19', { h: '2026-11-21' }).seen.h === '2026-11-19');
   check('a DONE block with an appended OPEN line is NOT woken (the re-open defect)', openHandoffs(write('b.md', doneThenOpen)).length === 0,
     JSON.stringify(openHandoffs(path.join(dir, 'b.md'))));
   check('a block whose first status is OPEN stays woken even with a later DONE (the first line governs)', openHandoffs(write('c.md', openThenDone)).length === 1);
@@ -739,11 +768,16 @@ function lastRunTail(job) {
   const NAMES = Object.fromEntries(Object.entries(CREW || {}).map(([id, c]) => [id, (c && c.name) || id]));
   const itemsOf = {}, waitsOf = {}, stalledSeats = [];
   for (const [agentId, inbox] of Object.entries(INBOX_OF)) {
-    let its = []; try { its = SP.parseItems(fs.readFileSync(path.join(ROOT, 'company', 'work', 'handoffs', inbox), 'utf8')).filter(i => i.open); } catch (_) {}
+    let its = [], txt = ''; try { txt = fs.readFileSync(path.join(ROOT, 'company', 'work', 'handoffs', inbox), 'utf8'); its = SP.parseItems(txt).filter(i => i.open); } catch (_) {}
     itemsOf[agentId] = its; waitsOf[agentId] = {};
     for (const it of its) { const on = SP.waitingOn(it.status, NAMES, agentId, CEO_ID); if (on) { it.waitingOn = on; const n = on === 'owner' ? 'you (the owner)' : NAMES[on] || 'someone else'; waitsOf[agentId][n] = (waitsOf[agentId][n] || 0) + 1; } }
-    const open = its.filter(i => !i.waitingOn).map(i => i.heading).sort();
     const st = state.agents[agentId] || { key: '', count: 0 };
+    const openSecs = new Map(txt.split(/^## /m).slice(1).map(sec => [sec.split('\n')[0].trim(), sec]).filter(([h]) => its.some(i => i.heading === h && !i.waitingOn)));
+    const dl = deadlineDeferrals(openSecs, st.deadlines, today(), STALL_DEADLINE_CAP);
+    st.deadlines = dl.seen;
+    const open = its.filter(i => !i.waitingOn && !dl.deferred.has(i.heading)).map(i => i.heading).sort();
+    const dkey = [...dl.deferred.keys()].sort().join('|');
+    if (dkey !== (st.deferred || '')) { st.deferred = dkey; if (dkey) log('WAITING handoffs ' + inbox + ' (' + agentId + '): ' + dl.deferred.size + ' OPEN set aside until their own Deadline (nearest ' + [...dl.deferred.values()].sort()[0] + '): not woken, not counted as stalled'); }
     const key = open.join('|');
     if (key !== st.key) { st.key = key; st.count = 0; st.flagged = false; }   // inbox changed: fresh budget
     state.agents[agentId] = st;

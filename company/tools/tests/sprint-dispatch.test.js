@@ -108,6 +108,17 @@ test('Sprint off: seats inside their cooldown wait (the baseline)', async () => 
   assert.deepEqual(r.fired, []);
 });
 
+test('a handoff whose own Deadline is a few days ahead is set aside (not woken, logged WAITING); one due today wakes', async () => {
+  const day = n => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(Date.now() + n * 86400e3));
+  const c = await company({ sprint: false, lastRunMinAgo: 600, handoffs: {
+    'to-wen.md': block('draft the pricing page', '**Deadline:** ' + day(4) + '\n'),
+    'to-uma.md': block('check the data feed', '**Deadline:** ' + day(0) + '\n') } });
+  const r = c.tick();
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(r.fired, ['w2'], r.log);   // w2 holds to-uma.md (due today); w1 holds to-wen.md (due in 4 days)
+  assert.match(r.log, /WAITING handoffs to-wen\.md .*set aside until their own Deadline/);
+});
+
 test('Sprint on: every seat with open work wakes past its cooldown, in one tick; a seat with none is not woken', async () => {
   const c = await company({ sprint: true, handoffs: WORK });
   const r = c.tick();
