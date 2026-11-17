@@ -218,19 +218,27 @@ function prepareSecrets(inbox, form, values, b, act) {
     if (!inbox.safeSecretName(name)) bad('the file name under secrets/ may use letters, digits, . _ - (not station-token or console-token)');
     const replace = !!(b.replace && (b.replace === true || b.replace[f.id]));
     if (fs.existsSync(path.join(co.SECRETS_DIR, name)) && !replace) throw new HttpError(409, 'secrets/' + name + ' already exists. Tick "replace the stored key" to overwrite it.', { code: 'exists', field: f.id, name });
-    pending.push({ f, name, value, replace });
+    // a MiniMax key: the endpoint picked next to the field ({endpoints: {<field id>: {region, baseUrl?, other?}}}), checked
+    // now (400 before anything is written); none picked = the company's stored endpoint
+    const mmEp = minimaxField(f) ? SETUP.mmWanted(b.endpoints && typeof b.endpoints === 'object' ? b.endpoints[f.id] : undefined) : null;
+    pending.push({ f, name, value, replace, mmEp });
   }
   return pending;
 }
+// a secret field that holds a MiniMax key: validated as StarNet's `custom` provider against the MiniMax endpoint
+const minimaxField = f => f.validate === 'custom' || (!f.validate && /minimax/i.test(String(f.name || '')));
 const placeholderOf = p => ({ stored: 'secrets/' + (p.f.hinted ? p.f.name : p.name), chars: p.value.length });
 async function writePending(pending, values) {
   for (const p of pending) {
     writeSecret(p.name, p.value, p.replace);
     let validated = null, validateError;
-    if (p.f.validate) {
-      const v = await stationPost('providers/validate', { provider: p.f.validate, key: p.value }, 25000);
+    if (p.f.validate || p.mmEp) {
+      const v = await stationPost('providers/validate', Object.assign({ provider: p.f.validate || 'custom', key: p.value }, p.mmEp ? { baseUrl: p.mmEp.ep.baseUrl } : {}), 25000);
       if (!v.ok && !v.data) { validated = false; validateError = 'the station could not be reached to check it'; }
-      else { validated = !!(v.data && v.data.credentialVerified); if (!validated) validateError = String((v.data && v.data.error) || 'not verified').replace(p.value, '[key]').slice(0, 120); }
+      else { validated = !!(v.data && v.data.credentialVerified); if (!validated) validateError = String((v.data && v.data.error) || 'not verified').split(p.value).join('[key]').slice(0, 120); }
+      // the key works on the endpoint the owner picked: that endpoint becomes the company's (company.json)
+      if (validated && p.mmEp && p.mmEp.explicit) { const prev = SETUP.minimaxEndpoint(); if (!prev.stored || !MME_same(p.mmEp.ep, prev)) SETUP.saveEndpoint(p.mmEp.ep, prev); }
+      if (p.mmEp && validated === false) validateError = 'on MiniMax ' + p.mmEp.ep.label + ': ' + (validateError || 'not verified');
     }
     values[p.f.id] = Object.assign({ stored: 'secrets/' + p.name, chars: p.value.length, validated }, validateError ? { validateError } : {});
   }
@@ -250,7 +258,8 @@ async function answerQuestion(id, b) {
     if (!kp) bad('no key question left to answer in ' + id);
     const sf = kp.form.fields.find(f => f.type === 'secret'); const v = (b.values || {})[b.store || 'key'] !== undefined ? (b.values || {})[b.store || 'key'] : (b.values || {})[sf.id];
     b = { parts: { [kp.id]: { action: (kp.form.actions.find(a => a.verdict === 'done') || kp.form.actions[0]).id, values: { [sf.id]: v }, replace: b.replace && (b.replace === true || b.replace[b.store || 'key']) ? { [sf.id]: true } : undefined,
-      secretNames: b.secretNames && b.secretNames[b.store || 'key'] ? { [sf.id]: b.secretNames[b.store || 'key'] } : undefined } } };
+      secretNames: b.secretNames && b.secretNames[b.store || 'key'] ? { [sf.id]: b.secretNames[b.store || 'key'] } : undefined,
+      endpoints: b.endpoints && b.endpoints[b.store || 'key'] ? { [sf.id]: b.endpoints[b.store || 'key'] } : undefined } } };
   }
   // several questions in one request: {parts: {<question id>: {action, values, note, replace?, secretNames?}}, closeRest?}
   if (q.questions && (b.parts || b.closeRest)) {
@@ -607,6 +616,7 @@ route('GET', /^\/api\/decision-models$/, () => runApi('decide.js', ['list', '--j
 route('GET', /^\/api\/onboarding$/, () => runApi('onboard.js', ['--check', '--json']));
 route('POST', /^\/api\/onboarding\/certify$/, async () => { const r = await run('onboard.js', ['--certify', '--json'], { timeout: 300000 }); return Object.assign({}, r.data, { ok: true, certified: !!(r.data && r.data.certified) }); });
 // Setup (console/setup.js): the seven-step guided setup, every write as the owner
+const MME_same = (a, b) => require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'minimax-endpoint.js')).same(a, b);
 const SETUP = require(path.join(__dirname, 'setup.js'))({ co, run, runApi, stationGet, stationPost, owner: () => OWNER, setOwner: n => { OWNER = n || OWNER; }, bad, HttpError, tool, emit: t => emit(t) });
 for (const [mth, re, fn] of SETUP.routes) route(mth, re, fn);
 require(path.join(__dirname, 'models.js')).mount(route, { co, runApi, stationGet, bad, owner: () => OWNER });   // per-seat model chains (console/models.js)
@@ -1099,11 +1109,17 @@ async function selftest() {
     const fsrv = http.createServer((req, res) => {
       let d = ''; req.on('data', c => { d += c; }); req.on('end', () => {
         const u = req.url.split('?')[0]; let b = {}; try { b = JSON.parse(d || '{}'); } catch (_) {}
-        fake.calls.push({ m: req.method, u, key: b.key });
+        fake.calls.push({ m: req.method, u, key: b.key, provider: b.provider, baseUrl: b.baseUrl });
         const J = (c, o) => { res.writeHead(c, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
         if (req.headers['x-starnet-token'] !== 'selftest-fake-station-token') return J(401, { error: 'token' });
         if (u === '/api/providers') return J(200, { providers: [{ id: 'deepseek', configured: fake.ready, unattendedReady: fake.ready, credential: { present: fake.ready } }, { id: 'claude-cli', configured: false, unattendedReady: false }] });
         if (u === '/api/auth/claude-cli/status') return J(200, { installed: true, loggedIn: false });
+        if (u === '/api/providers/validate' && b.provider === 'custom') {
+          // MiniMax: mm-cn-key answers only on api.minimaxi.com, mm-global-key only on api.minimax.io, mm-net-key nowhere
+          if (b.key === 'mm-net-key') return J(200, { ok: false, credentialVerified: false, reachable: false, status: 'unreachable', error: 'fetch failed' });
+          const good = (b.key === 'mm-cn-key' && /^https:\/\/api\.minimaxi\.com\//.test(b.baseUrl || '')) || (b.key === 'mm-global-key' && /^https:\/\/api\.minimax\.io\//.test(b.baseUrl || ''));
+          return J(200, { ok: good, credentialVerified: good, reachable: true, status: good ? 'verified' : 'rejected', httpStatus: good ? 200 : 401, error: good ? undefined : 'provider rejected this key (HTTP 401) ' + b.key });
+        }
         if (u === '/api/providers/validate') return J(200, { ok: b.key === 'good-key', credentialVerified: b.key === 'good-key', reachable: true, error: b.key === 'good-key' ? undefined : 'HTTP 401' });
         if (u === '/api/providers/connect') return J(409, { ok: false, provider: b.provider, code: 'no-page' });
         if (u === '/api/providers/engine-key') { fake.ready = true; return J(200, { ok: true, provider: b.provider, applied: true }); }
@@ -1145,6 +1161,60 @@ async function selftest() {
       check('secret with validate: a rejected key is stored and recorded as validated: no', r.status === 200 && /validated: no/.test(r.json.a) && fs.existsSync(path.join(tmp, 'secrets', 'deepseek-key-2')), r.json);
       r = await call2('GET', '/api/setup');
       check('fake station: provider and budget steps done', ['provider', 'budget'].every(id => r.json.steps.find(x => x.id === id).status === 'done'), r.json.steps);
+      // MiniMax endpoints (company.json providers.minimax): migration default, detect, save, switch, custom URLs, questions
+      const mmCfg = () => (readJson(path.join(tmp, 'company', 'company.json'), {}).providers || {}).minimax || null;
+      let mmP = r.json.providers.find(p => p.id === 'custom');
+      check('minimax: nothing stored = Global (today\'s behaviour): base URL, key page, three plain choices', !mmCfg() && mmP.endpoint.region === 'global' && !mmP.endpoint.stored && mmP.baseUrl === 'https://api.minimax.io/v1' && /platform\.minimax\.io/.test(mmP.keyUrl)
+        && mmP.endpoint.choices.map(c => c.label).join('/') === 'Global/Mainland China/Custom', mmP);
+      fake.calls.length = 0;
+      r = await call2('POST', '/api/setup/provider/detect', { provider: 'custom', key: 'mm-cn-key' });
+      check('minimax detect: tries Global then Mainland China through the station and picks the one that answers', r.status === 200 && r.json.found === 'cn' && /works on Mainland China/.test(r.json.text)
+        && JSON.stringify(fake.calls.filter(c => c.u === '/api/providers/validate').map(c => c.baseUrl)) === JSON.stringify(['https://api.minimax.io/v1', 'https://api.minimaxi.com/v1']), { r: r.json, calls: fake.calls });
+      check('minimax detect: the key never comes back (not even inside a station error)', !JSON.stringify(r.json).includes('mm-cn-key'), r.json);
+      check('minimax detect saves nothing', !mmCfg());
+      r = await call2('POST', '/api/setup/provider/detect', { provider: 'custom', key: 'wrong-key' });
+      check('minimax detect: a key no region accepts says so in plain words (bad key)', r.json.found === null && r.json.why === 'bad-key' && /Neither Global nor Mainland China accepted/.test(r.json.text), r.json);
+      r = await call2('POST', '/api/setup/provider/detect', { provider: 'custom', key: 'mm-net-key' });
+      check('minimax detect: no region reachable is a network problem, not a bad key', r.json.found === null && r.json.why === 'network' && /could be reached/.test(r.json.text), r.json);
+      r = await call2('POST', '/api/setup/provider/validate', { provider: 'custom', key: 'mm-cn-key', region: 'cn' });
+      check('minimax validate: checks against the chosen region', r.json.valid === true && r.json.endpoint.region === 'cn' && fake.calls.slice(-1)[0].baseUrl === 'https://api.minimaxi.com/v1', r.json);
+      fake.calls.length = 0;
+      r = await call2('POST', '/api/setup/provider', { provider: 'custom', key: 'mm-global-key', region: 'cn', keepDefault: true });
+      check('minimax connect: a key the chosen region refuses is not saved and the endpoint stays', r.status === 400 && /Mainland China did not accept/.test(r.json.error) && !mmCfg() && !fake.calls.some(c => c.u === '/api/providers/engine-key'), r.json);
+      r = await call2('POST', '/api/setup/provider', { provider: 'custom', key: 'mm-cn-key', region: 'cn', keepDefault: true });
+      check('minimax connect: Mainland China saved once in company.json, the station gets its base URL', r.status === 200 && mmCfg() && mmCfg().region === 'cn' && !mmCfg().baseUrl
+        && fake.calls.some(c => c.u === '/api/providers/engine-key' && c.baseUrl === 'https://api.minimaxi.com/v1'), { r: r.json, cfg: mmCfg(), calls: fake.calls });
+      r = await call2('GET', '/api/setup'); mmP = r.json.providers.find(p => p.id === 'custom');
+      check('minimax: Setup now shows Mainland China, its key page and base URL', mmP.endpoint.region === 'cn' && mmP.endpoint.stored && /platform\.minimaxi\.com/.test(mmP.keyUrl) && mmP.baseUrl === 'https://api.minimaxi.com/v1', mmP);
+      const pacerP = require(path.join(tmp, 'company', 'tools', 'pacer.js')).loadPolicy(tmp);
+      check('minimax: the pacer polls the Mainland China usage URL', pacerP.minimax.url === 'https://api.minimaxi.com/v1/token_plan/remains', pacerP.minimax);
+      check('minimax: the change is in decisions.md', /set the MiniMax endpoint to Mainland China/.test(fs.readFileSync(path.join(tmp, 'company', 'work', 'decisions.md'), 'utf8')));
+      // switching back with no key pasted: the key on file is re-checked on the new endpoint first
+      fs.writeFileSync(path.join(tmp, 'secrets', 'minimax-key'), 'mm-cn-key\n', { mode: 0o600 });
+      r = await call2('POST', '/api/setup/provider', { provider: 'custom', region: 'global', keepDefault: true });
+      check('minimax switch: the key on file does not work on Global, so nothing changes', r.status === 400 && /Global did not accept the key on file/.test(r.json.error) && mmCfg().region === 'cn' && !r.json.error.includes('mm-cn-key'), r.json);
+      fs.writeFileSync(path.join(tmp, 'secrets', 'minimax-key'), 'mm-global-key\n', { mode: 0o600 });
+      r = await call2('POST', '/api/setup/provider', { provider: 'custom', region: 'global', keepDefault: true });
+      check('minimax switch: re-validated on Global with the key on file, then saved', r.status === 200 && r.json.switched && mmCfg().region === 'global' && fake.calls.slice(-1)[0].baseUrl === 'https://api.minimax.io/v1', { r: r.json, cfg: mmCfg() });
+      // custom base URLs
+      r = await call2('POST', '/api/setup/provider/validate', { provider: 'custom', key: 'mm-global-key', region: 'custom', baseUrl: 'http://api.minimax.io/v1' });
+      check('minimax custom: http is refused (400)', r.status === 400 && /https/.test(r.json.error), r.json);
+      r = await call2('POST', '/api/setup/provider', { provider: 'custom', key: 'mm-global-key', region: 'custom', baseUrl: 'https://llm.example.com/v1', keepDefault: true });
+      check('minimax custom: a non-MiniMax host is refused unless "other" is ticked', r.status === 400 && /not a MiniMax address/.test(r.json.error) && mmCfg().region === 'global', r.json);
+      r = await call2('POST', '/api/setup/provider', { provider: 'custom', key: 'mm-global-key', region: 'custom', baseUrl: 'https://api.minimax.io/v1/', keepDefault: true });
+      check('minimax custom: a MiniMax https URL is saved with its address (trailing slash dropped)', r.status === 200 && mmCfg().region === 'custom' && mmCfg().baseUrl === 'https://api.minimax.io/v1' && r.json.endpoint.warnings.length === 0, { r: r.json, cfg: mmCfg() });
+      // a typed owner question asking for the MiniMax key: the endpoint picked next to it is checked and saved
+      const mq1 = await askCli(['--message', 'The MiniMax key, please.', '--kind', 'secret', '--name', 'minimax-key-q', '--validate', 'custom']);
+      fake.calls.length = 0;
+      r = await call2('POST', '/api/questions/' + mq1.id + '/answer', { action: 'store', values: { key: 'mm-cn-key' }, endpoints: { key: { region: 'cn' } } });
+      check('minimax question: the key is checked on the picked region (validated: yes) and that region is saved', r.status === 200 && /validated: yes/.test(r.json.a) && mmCfg().region === 'cn'
+        && fake.calls.some(c => c.u === '/api/providers/validate' && c.baseUrl === 'https://api.minimaxi.com/v1'), { r: r.json, cfg: mmCfg() });
+      const mq2 = await askCli(['--message', 'Another MiniMax key.', '--kind', 'secret', '--name', 'minimax-key-q2', '--validate', 'custom']);
+      r = await call2('POST', '/api/questions/' + mq2.id + '/answer', { action: 'store', values: { key: 'mm-cn-key' }, endpoints: { key: { region: 'global' } } });
+      check('minimax question: a key the picked region refuses is stored as validated: no and the endpoint is not changed', r.status === 200 && /validated: no/.test(r.json.a) && /Global/.test(r.json.a) && mmCfg().region === 'cn' && !JSON.stringify(r.json).includes('mm-cn-key'), { r: r.json, cfg: mmCfg() });
+      const mq3 = await askCli(['--message', 'A third MiniMax key.', '--kind', 'secret', '--name', 'minimax-key-q3', '--validate', 'custom']);
+      r = await call2('POST', '/api/questions/' + mq3.id + '/answer', { action: 'store', values: { key: 'mm-cn-key' }, endpoints: { key: { region: 'custom', baseUrl: 'ftp://x' } } });
+      check('minimax question: a bad custom URL is refused before the key file is written', r.status === 400 && !fs.existsSync(path.join(tmp, 'secrets', 'minimax-key-q3')), r.json);
     } finally { child2.kill(); fsrv.close(); }
     // the real company was not touched
     check('real company untouched', snap() === before);

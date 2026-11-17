@@ -7,6 +7,7 @@ import { mountPanels } from '../panels.js';
 import { mdBlock } from '../md.js';
 import { idleLine } from '../idle-line.js';
 import { requestCard } from './today-requests.js';
+import { endpointPicker, loadEndpoint } from '../minimax-endpoint.js';
 
 const ss = { set: (k, v) => { try { sessionStorage.setItem(k, v); } catch (_) {} } };
 const dur = sec => sec == null ? '' : sec < 60 ? sec + ' s' : sec < 3600 ? Math.floor(sec / 60) + ' min' : Math.floor(sec / 3600) + ' h ' + Math.floor(sec % 3600 / 60) + ' min';
@@ -132,8 +133,8 @@ export async function render(root, ctx) {
     const isReplying = replying.has(q.id);
     // a key inside a form that asks for more is stored on its own (Store) and the question stays open; a key-only
     // question (q.secretOnly) is answered by its Store button as before
-    const onStore = f => q.secretOnly ? null : async (value, rep, name) => {
-      const body = { store: f.id, values: { [f.id]: value } }; if (rep) body.replace = { [f.id]: true }; if (name) body.secretNames = { [f.id]: name };
+    const onStore = f => q.secretOnly ? null : async (value, rep, name, endpoint) => {
+      const body = { store: f.id, values: { [f.id]: value } }; if (rep) body.replace = { [f.id]: true }; if (name) body.secretNames = { [f.id]: name }; if (endpoint) body.endpoints = { [f.id]: endpoint };
       const r = await post('/questions/' + encodeURIComponent(q.id) + '/answer', body);
       app.toast('Key stored securely. The question stays open: answer the rest.'); return (r.stored || [])[0];
     };
@@ -151,16 +152,18 @@ export async function render(root, ctx) {
       }
     };
     const act = a => {
-      const values = {}; const replace = {}; const secretNames = {};
+      const values = {}; const replace = {}; const secretNames = {}; const endpoints = {};
       for (const c of controls) {
         if (!c.get) continue;
         const v = c.get(); if (v !== undefined && v !== '' && !(Array.isArray(v) && !v.length)) values[c.f.id] = v;
         if (c.replace && c.replace()) replace[c.f.id] = true;
         if (c.name) secretNames[c.f.id] = c.name();
+        if (c.endpoint && c.endpoint()) endpoints[c.f.id] = c.endpoint();
       }
       if (a.needs === 'none') for (const c of controls) if (c.f.type === 'secret') delete values[c.f.id];
       const body = { action: a.id, values };
       if (Object.keys(replace).length) body.replace = replace;
+      if (Object.keys(endpoints).length) body.endpoints = endpoints;
       if (Object.keys(secretNames).length) body.secretNames = secretNames;
       const stores = controls.some(c => c.f.type === 'secret' && values[c.f.id] !== undefined);
       send(body, stores ? 'Key stored securely. Answer recorded.' : 'Answer recorded.');
@@ -401,6 +404,10 @@ export function fieldControl(q, f, opts) {
     const multiBtn = Button(multi ? 'One line' : 'Multi-line key', { variant: 'ghost', size: 'sm', onClick: () => { const v = (multi ? many : one).value; multi = !multi; (multi ? many : one).value = v; one.value = multi ? '' : one.value; many.value = multi ? many.value : ''; fill(slot, multi ? many : one); multiBtn.textContent = multi ? 'One line' : 'Multi-line key'; } });
     const replace = h('input', { type: 'checkbox', id: uid + '-replace' });
     const nameIn = f.hinted ? h('input', { type: 'text', class: 'input mono', id: uid + '-name', value: f.name, autocomplete: 'off', spellcheck: 'false', 'aria-label': 'File name under secrets/' }) : null;
+    // a MiniMax key: where the account is (Global / Mainland China / Custom); the key is checked there when stored
+    const mm = minimaxField(f);
+    let picker = null; const pickSlot = mm ? h('div', { class: 'q-endpoint' }) : null;
+    if (mm) loadEndpoint().then(ep => { picker = endpointPicker({ endpoint: ep, getKey: () => (multi ? many : one).value, saveLabel: 'Store' }); fill(pickSlot, picker.el); });
     const note = h('span', { id: uid + '-note', class: 'caption muted' }, 'Stored on the console machine at secrets/' + f.name + ' (owner-only, mode 0600). It is never shown again and never goes into a message; ' + (q.from || 'the asker') + ' only learns where it is.');
     if (nameIn) nameIn.addEventListener('input', () => { note.textContent = 'Stored at secrets/' + (nameIn.value.trim() || '…') + ' (owner-only, mode 0600). Never shown again, never sent in a message.'; });
     // inside a form that asks for more than the key: Store writes the key now and the question STAYS OPEN; the field
@@ -416,17 +423,17 @@ export function fieldControl(q, f, opts) {
     const storeBtn = opts.onStore ? Button('Store', { variant: 'secondary', size: 'sm', aria: 'Store the key now (the question stays open)', onClick: async () => {
       const v = (multi ? many : one).value; if (!v.trim()) { storeErr.textContent = 'Paste the key first.'; return; }
       storeErr.textContent = ''; storeBtn.disabled = true;
-      try { const r = await opts.onStore(v, replace.checked, nameIn ? nameIn.value.trim() : null); one.value = ''; many.value = ''; storedNow = r || { stored: 'secrets/' + f.name }; showStored(); }
+      try { const r = await opts.onStore(v, replace.checked, nameIn ? nameIn.value.trim() : null, picker ? picker.value() : null); one.value = ''; many.value = ''; storedNow = r || { stored: 'secrets/' + f.name }; showStored(); }
       catch (e) { storeErr.textContent = 'Not stored: ' + humanError(e); if (e && e.status === 409) replace.parentElement.classList.add('attn'); }
       storeBtn.disabled = false;
     } }) : null;
     const inputRow = h('div', { class: 'stack-6' }, h('div', { class: 'row-8', style: 'align-items:flex-start;flex-wrap:nowrap' }, h('div', { style: 'flex:1;min-width:0' }, slot), showBtn, multiBtn, storeBtn),
       nameIn ? h('label', { class: 'stack-4' }, h('span', { class: 'caption muted' }, 'File name under secrets/'), nameIn) : null,
       h('label', { class: 'check', for: uid + '-replace' }, replace, 'Replace the stored key if secrets/' + f.name + ' already exists'), note, storeErr);
-    const el = h('div', { class: 'stack-6 q-secret', 'data-field': f.id }, lab(f.label, uid), f.provider ? h('span', { class: 'caption' }, 'Where to get it: ', mdBlock(f.provider, 'caption')) : null, help, inputRow, storedLine);
+    const el = h('div', { class: 'stack-6 q-secret', 'data-field': f.id }, lab(f.label, uid), f.provider ? h('span', { class: 'caption' }, 'Where to get it: ', mdBlock(f.provider, 'caption')) : null, help, pickSlot, inputRow, storedLine);
     showStored();
     return { f, el, get: () => { if (storedNow) return undefined; const v = (multi ? many : one).value; return v.trim() ? v : undefined; }, clear: () => { one.value = ''; many.value = ''; },
-      isStored: () => !!storedNow,
+      isStored: () => !!storedNow, endpoint: mm ? () => picker ? picker.value() : null : null,
       replace: () => replace.checked, name: nameIn ? () => nameIn.value.trim() : null,
       onError: e => { if (e && e.status === 409) replace.parentElement.classList.add('attn'); } };
   }
@@ -497,6 +504,8 @@ export function parseLogLine(line) {
   return m ? { at: m[2], text: m[3].replace(/\*\*/g, '') } : { at: '', text: s.replace(/\*\*/g, '') };
 }
 
+// a secret field that holds a MiniMax key (console/server.js minimaxField: the same rule)
+const minimaxField = f => f.validate === 'custom' || (!f.validate && /minimax/i.test(String(f.name || '')));
 // pacer status → meter rows (Claude / MiniMax plans, metered DeepSeek)
 export function usagePlans(d) {
   const out = [];

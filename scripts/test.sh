@@ -91,6 +91,7 @@ step "console/models.js --selftest" node console/models.js --selftest
 step "tests/today-questions-walk.js (headless Chrome: Today renders each question kind; SKIP without Chrome)" node tests/today-questions-walk.js
 step "tests/chat-window-walk.js (headless Chrome: Chat is a rolling window with backscroll; SKIP without Chrome)" node tests/chat-window-walk.js
 step "tests/page-kit-walk.js (headless Chrome: every scaffold page light/dark, desktop/phone; SKIP without Chrome)" node tests/page-kit-walk.js
+step "tests/minimax-endpoint-walk.js (headless Chrome: MiniMax endpoint picker in Setup, Settings and Today; SKIP without Chrome)" node tests/minimax-endpoint-walk.js
 step "tests/console-routes-walk.js (headless Chrome: old routes redirect, no paths outside Details; SKIP without Chrome)" node tests/console-routes-walk.js
 
 echo "== syntax and data files"

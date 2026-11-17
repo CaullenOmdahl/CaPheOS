@@ -1280,3 +1280,28 @@ test('Sprint on changes nothing in the pacer: the Claude weekly stop at 95% and 
   await h.p.hook({ jobs, order, ownerWake: new Set(['agent']), maxPerTick: 7 });   // Sprint's maxPerTick: every seat
   assert.deepEqual(order, ['agent', 'engineer'], 'near the rail the pacer still drops the metered wakes with nothing due');
 });
+
+test('the MiniMax usage URL follows the company region (company.json providers.minimax); an explicit policy URL wins', () => {
+  const MME = require('../lib/minimax-endpoint');
+  // no region stored = Global, today's behaviour (also when the policy still holds the old built-in URL)
+  let fx = fixture({ policy: { minimax: { url: 'https://www.minimax.io/v1/token_plan/remains' } } });
+  assert.equal(pacer.loadPolicy(fx.root).minimax.url, MME.REGIONS.global.usageUrl);
+  fx = fixture();
+  assert.equal(pacer.loadPolicy(fx.root).minimax.url, MME.REGIONS.global.usageUrl, 'no url and no region = Global');
+  // Mainland China: the old default URL in the policy file is not an override
+  fx = fixture({ policy: { minimax: { url: 'https://www.minimax.io/v1/token_plan/remains' } } });
+  fx.w('company/company.json', { name: 'X', providers: { minimax: { region: 'cn' } } });
+  let p = pacer.loadPolicy(fx.root);
+  assert.equal(p.minimax.url, 'https://api.minimaxi.com/v1/token_plan/remains'); assert.match(p.minimax.urlFrom, /cn/);
+  // a custom endpoint: its origin's token_plan/remains
+  fx.w('company/company.json', { name: 'X', providers: { minimax: { region: 'custom', baseUrl: 'https://mm-proxy.minimax.io/v1' } } });
+  assert.equal(pacer.loadPolicy(fx.root).minimax.url, 'https://mm-proxy.minimax.io/v1/token_plan/remains');
+  // an explicit non-default URL in pacing-policy.json is an override and wins over the region
+  fx = fixture({ policy: { minimax: { url: 'https://usage.example.test/remains' } } });
+  fx.w('company/company.json', { name: 'X', providers: { minimax: { region: 'cn' } } });
+  p = pacer.loadPolicy(fx.root);
+  assert.equal(p.minimax.url, 'https://usage.example.test/remains'); assert.match(p.minimax.urlFrom, /pacing-policy/);
+  // a broken stored entry falls back to Global instead of stopping the pacer
+  fx = fixture(); fx.w('company/company.json', { name: 'X', providers: { minimax: { region: 'custom', baseUrl: 'http://plain.minimax.io/v1' } } });
+  assert.equal(pacer.loadPolicy(fx.root).minimax.url, MME.REGIONS.global.usageUrl);
+});

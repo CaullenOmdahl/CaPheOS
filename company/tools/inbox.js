@@ -25,6 +25,8 @@
  *   secret    {name, provider?, validate?}             a password field; the CONSOLE SERVER writes secrets/<name> (0600)
  *             and the answer carries only {stored: "secrets/<name>", chars, validated}. `validate` = a station provider
  *             id to check the key with (/api/providers/validate). The value never reaches this file or any message.
+ *             `validate: custom` = a MiniMax key: Today shows the endpoint picker (Global / Mainland China / Custom) beside
+ *             it and the console checks the key there, saving the endpoint in company.json providers.minimax.
  *   choice    {options: [{id, label, recommended?}], multi?, allowOther?}
  *   link      {url (http/https), action: what to do there}   the owner marks it done / couldn't
  *   number    {unit?, min?, max?}     date {min?, max? YYYY-MM-DD}     checkbox {}  (a yes/no tick)

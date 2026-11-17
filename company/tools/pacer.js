@@ -64,6 +64,7 @@
 const fs = require('fs'), path = require('path'), http = require('http'), os = require('os');
 const co = require('./lib/company');
 const mm = require('./lib/models-money');
+const MME = require('./lib/minimax-endpoint');
 const gov = require('./lib/governance');
 
 const DEFAULT_ROOT = co.ROOT;
@@ -97,7 +98,8 @@ const DEFAULTS = {
   reopenBandPct: 1,
   shareOfAccount: 1,
   claude: { feedFile: '', staleAfterMin: 90, fiveHourCloseAtUsedPct: 70 },
-  minimax: { url: 'https://www.minimax.io/v1/token_plan/remains', modelName: 'general', pollEveryMin: 10, staleAfterMin: 45, fiveHourCloseBelowLeftPct: 20 },
+  // url '' = from the company's MiniMax endpoint (company.json providers.minimax, lib/minimax-endpoint.js)
+  minimax: { url: '', modelName: 'general', pollEveryMin: 10, staleAfterMin: 45, fiveHourCloseBelowLeftPct: 20 },
   emergency: { ceilingPct: 90, maxHours: 12, allowedBy: ['ceo', 'risk'], autoOnSerious: true, autoHours: 6 },
   routing: { switchAtMostEveryMin: 60, maxOntoSubscriptionPerHour: 2, refusalBlockHours: 24, refireWithinMin: 0, blockOutcomes: ['refused'], blockFailureCodes: ['content_policy_blocked'] },
   deepseekRail: { holdAtPct: 85, pauseScheduledAtPct: 90, resumeBelowPct: 80, projectFromHours: 3, overflowToMiniMax: true },
@@ -185,6 +187,9 @@ function loadPolicy(root, override) {
   p.reopenBandPct = numOr(p.reopenBandPct, 1, 0, 20);
   p.claude.staleAfterMin = numOr(p.claude.staleAfterMin, 90, 1, 24 * 60);
   p.claude.fiveHourCloseAtUsedPct = numOr(p.claude.fiveHourCloseAtUsedPct, 70, 0, 100);
+  // the usage URL follows the company's MiniMax region unless pacing-policy.json names its own (not a built-in default)
+  const mmUse = MME.usageUrlFor(p.minimax.url, MME.read(root));
+  p.minimax.url = mmUse.url; p.minimax.urlFrom = mmUse.from;
   p.minimax.pollEveryMin = numOr(p.minimax.pollEveryMin, 10, 10, 24 * 60);   // never more often than every 10 minutes
   p.minimax.staleAfterMin = numOr(p.minimax.staleAfterMin, 45, 10, 24 * 60);
   p.minimax.fiveHourCloseBelowLeftPct = numOr(p.minimax.fiveHourCloseBelowLeftPct, 20, 0, 100);
@@ -360,8 +365,7 @@ function stationFire(root, host) {
 // GET the MiniMax plan's remaining quota. The key goes only into the Authorization header; nothing returned holds it.
 function minimaxFetch(root, url) {
   return async () => {
-    let key = mm.readSecret(root, 'minimax-key') || '';   // secrets/ first, then the station's provider-key store
-    if (!key) try { key = String((((readJson(path.join(root, REL.keys), {}) || {}).providers || {}).custom || {}).key || ''); } catch (_) {}
+    let key = mm.readSecret(root, 'minimax-key') || MME.storedKey(root);   // secrets/ first, then the station's provider-key store
     if (!key) return { ok: false, error: 'no MiniMax key on file' };
     const scrub = s => String(s).split(key).join('[key]');
     try {

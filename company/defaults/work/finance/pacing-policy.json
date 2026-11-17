@@ -19,7 +19,8 @@
   "_dailyLineFrom": "Optional ISO time (with offset). Before it, the daily line does not apply to Claude and routines may use it up to weekCloseAtUsedPct (useful while a company is being set up before a weekly reset). Empty = the daily line always applies."
  },
  "minimax": {
-  "url": "https://www.minimax.io/v1/token_plan/remains",
+  "url": "",
+  "_url": "Empty = the plan's usage address for the company's MiniMax region (company/company.json providers.minimax: Global www.minimax.io, Mainland China api.minimaxi.com, or a custom address), set in Settings › Models and subscriptions. Set a URL here only to override it; the old built-in Global URL counts as empty.",
   "pollEveryMin": 10,
   "staleAfterMin": 45,
   "fiveHourCloseBelowLeftPct": 0,

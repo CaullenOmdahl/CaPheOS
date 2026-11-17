@@ -26,17 +26,18 @@ export function requestCard(q, fresh, d) {
     for (const s of subs) for (const [aid, b] of Object.entries(s.buttons)) { const on = mine[s.p.id] === aid; b.classList.toggle('btn-primary', on); b.classList.toggle('btn-secondary', !on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); }
   };
   const bodyOf = (s, aid) => {
-    const values = {}; const replace = {}; const secretNames = {};
+    const values = {}; const replace = {}; const secretNames = {}; const endpoints = {};
     for (const c of s.controls) {
       if (!c.get) continue;
       const v = c.get(); if (v !== undefined && v !== '' && !(Array.isArray(v) && !v.length)) values[c.f.id] = v;
       if (c.replace && c.replace()) replace[c.f.id] = true;
       if (c.name) secretNames[c.f.id] = c.name();
+      if (c.endpoint && c.endpoint()) endpoints[c.f.id] = c.endpoint();
     }
     const act = s.p.form.actions.find(a => a.id === aid);
     if (act && act.needs === 'none') for (const c of s.controls) if (c.f.type === 'secret') delete values[c.f.id];
     const out = { action: aid, values };
-    if (Object.keys(replace).length) out.replace = replace; if (Object.keys(secretNames).length) out.secretNames = secretNames;
+    if (Object.keys(replace).length) out.replace = replace; if (Object.keys(secretNames).length) out.secretNames = secretNames; if (Object.keys(endpoints).length) out.endpoints = endpoints;
     return out;
   };
   const busy = on => card.querySelectorAll('button, input, textarea, select').forEach(b => { b.disabled = on; });

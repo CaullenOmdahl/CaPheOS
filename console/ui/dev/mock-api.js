@@ -7,6 +7,10 @@
  *   MOCK_NO_PUSH=1 node console/ui/dev/mock-api.js        # no new question pushed 8 s after the first SSE client (scripted walks)
  *   MOCK_PLAIN=1 node console/ui/dev/mock-api.js          # without the typed-question fixtures (one card per question kind)
  *   MOCK_HEADLESS=1 node console/ui/dev/mock-api.js       # a station with no floor plan (Crew hides its Floor tab)
+ *   MOCK_MINIMAX=1 node console/ui/dev/mock-api.js        # adds a question asking for the MiniMax key (endpoint picker)
+ * MiniMax endpoint (company.json providers.minimax, company/tools/lib/minimax-endpoint.js): a key starting sk-good-cn
+ * validates on Mainland China only, any other sk-good key on Global (and Custom) only, sk-net is "unreachable".
+ * GET /api/__mock/minimax lists what each MiniMax save or validate was sent (region, baseUrl, key present: never the key).
  *
  * Never contacts a real station. State lives in memory: answering a question removes it, halts change mode, and so on.
  * 8 s after the first SSE client connects a new owner question arrives (event: change {topic:'questions'}) to exercise
@@ -98,7 +102,10 @@ const S = {
   ].concat(CERTIFIED ? [] : [{ id: 'q-000050', from: 'onboard.js', about: 'onboarding', blocking: false, askedAt: ago(600), batch: null,
       q: 'Onboarding: what the enabled packs and modules need from you (one batch, asked once):\n- Hiring candidates default to the metered model deepseek/deepseek-flash, but the metered daily cap is $0 and the station has no subscription provider (claude-cli) ready. Either connect a subscription provider on the station, or set a daily cap for pay-per-token AI (console Setup, step Budget).\n- provide secrets/example-key (0600) for example-module\nRecommendation: answer each line; secrets go in secrets/<name> with mode 0600, never in a message.\nIf you do not answer: those packs and modules stay uncertified.' }])
     // typed questions (company/tools/inbox.js forms): one of each kind, plus an asker-composed form; MOCK_PLAIN=1 leaves them out
-    .concat(process.env.MOCK_PLAIN ? [] : typedFixtures()),
+    .concat(process.env.MOCK_PLAIN ? [] : typedFixtures())
+    .concat(process.env.MOCK_MINIMAX ? [{ id: 'q-000130', from: 'Founder', about: 'access', blocking: false, askedAt: ago(5), batch: null, kind: 'secret',
+      form: INBOX.normalizeForm(INBOX.expandKind('secret', { name: 'minimax-key', label: 'MiniMax plan key', validate: 'custom', provider: 'MiniMax > Account > API keys' })),
+      message: 'Could you paste the MiniMax plan key? The crew paces its work against the plan.', details: '', q: 'Could you paste the MiniMax plan key?', askerSeat: 'agent' }] : []),
   answered: [{ id: 'q-000090', from: 'Founder', about: 'access', q: 'Approval needed (access): read access to the shared drive.', answer: 'yes', answeredAt: ago(200) }],
   messages: [
     { dir: 'out', id: 'out-1', at: ago(300), from: 'Founder', text: 'Morning report: two quests moved, one handoff is due today.' },
@@ -178,9 +185,17 @@ const PANELS = {
 const panelList = () => Object.entries(PANELS).map(([id, p]) => Object.assign({ id, hidden: !!S.hidden[id] }, p.meta));
 
 /* ---------- Setup ---------- */
+const MME = require(path.join(REPO, 'company', 'tools', 'lib', 'minimax-endpoint.js'));
+const mmLog = [];
+const mmOk = (ep, key) => { const k = String(key || ''); if (/^sk-net/.test(k)) return { valid: false, reachable: false, error: 'connect ETIMEDOUT' };
+  const ok = ep.region === 'cn' ? /^sk-good-cn/.test(k) : /^sk-good/.test(k) && !/^sk-good-cn/.test(k);
+  return { valid: ok, reachable: true, status: ok ? 'verified' : 'rejected', error: ok ? null : 'provider rejected this key (HTTP 401)' }; };
+const mmEp = () => MME.fromConfig({ providers: { minimax: S.setup.mm } });
+const mmViewOf = ep => ({ region: ep.region, label: ep.label, plain: MME.plain(ep), custom: ep.custom, other: !!ep.other, baseUrl: ep.baseUrl, keyUrl: ep.keyUrl, usageUrl: ep.usageUrl, warnings: ep.warnings || [], problem: ep.problem || null, stored: !!ep.stored, choices: MME.choices() });
+const mmWanted = b => (b.region === undefined && b.baseUrl === undefined) ? { ep: mmEp(), explicit: false } : { ep: MME.resolve({ region: b.region || 'custom', baseUrl: b.baseUrl, other: b.other === true }), explicit: true };
 const OFFER = [
   { id: 'claude-cli', name: 'Claude subscription', how: 'signin', unmetered: true, blurb: 'Your Claude Pro or Max plan, through Claude Code on this machine. Flat fee: nothing is billed per token.' },
-  { id: 'custom', name: 'MiniMax Coding Plan', how: 'key', unmetered: true, keyUrl: 'https://platform.minimax.io/', blurb: 'A MiniMax plan key. Flat fee, paced against the plan.' },
+  { id: 'custom', name: 'MiniMax Coding Plan', how: 'key', unmetered: true, /* keyUrl, baseUrl, endpoint: from mmEp() */ blurb: 'A MiniMax plan key. Flat fee, paced against the plan.' },
   { id: 'deepseek', name: 'DeepSeek', how: 'key', unmetered: false, keyUrl: 'https://platform.deepseek.com/api_keys', blurb: 'Pay per token from a prepaid balance. Needs a daily cap in step 3.' },
   { id: 'openrouter', name: 'OpenRouter', how: 'key', unmetered: false, keyUrl: 'https://openrouter.ai/keys', blurb: 'One key for many models, pay per token. Needs a daily cap in step 3.' },
   { id: 'anthropic', name: 'Anthropic API', how: 'key', unmetered: false, keyUrl: 'https://console.anthropic.com/settings/keys', blurb: 'Claude by API key, pay per token. Needs a daily cap in step 3.' },
@@ -204,7 +219,7 @@ function setupView() {
   return { certified: U.certified, done: steps.filter(x => x.status === 'done').length, total: steps.length, steps,
     company: { name: S.company.name, ownerName: S.company.owner.name, timezone: S.company.timezone },
     station: { up, error: up ? null : 'connect ECONNREFUSED', url: S.company.station.url, claude: up ? U.claude : null },
-    providers: OFFER.map(o => Object.assign({}, o, { ready: ready.includes(o.id), present: ready.includes(o.id), isDefault: cd.provider === o.id, metered: !b.unmeteredProviders.includes(o.id) })),
+    providers: OFFER.map(o => o.id !== 'custom' ? o : Object.assign({}, o, { keyUrl: mmEp().keyUrl, baseUrl: mmEp().baseUrl, endpoint: mmViewOf(mmEp()) })).map(o => Object.assign({}, o, { ready: ready.includes(o.id), present: ready.includes(o.id), isDefault: cd.provider === o.id, metered: !b.unmeteredProviders.includes(o.id) })),
     candidateDefault: cd, budget: b,
     governance: { preset: S.governance.preset, presetLabel: S.governance.presetLabel, presets: S.governance.presets, chosen: U.govChosen },
     charter: Object.assign({ exists: true, placeholders: U.charter ? [] : ['<What the company exists to do…>', '<Work the company will not take on…>'], mandate: '', forWhom: '', outOfScope: '', firstGoal: '' }, U.charter || {}),
@@ -285,14 +300,39 @@ async function apiRoute(req, res, p, q) {
       try { new Intl.DateTimeFormat('en', { timeZone: B.timezone }); } catch (_) { return J(res, 400, { ok: false, error: 'timezone must be an IANA zone such as Europe/London or America/New_York' }); }
       if (!String(B.name || '').trim() || !String(B.ownerName || '').trim()) return J(res, 400, { ok: false, error: 'name and owner name are required' });
       S.company.name = B.name.trim(); S.company.owner = { name: B.ownerName.trim() }; S.company.timezone = B.timezone; return ok({ changes: ['mock'] }); }
-    case 'POST /api/setup/provider/validate': return ok({ provider: B.provider, valid: /^sk-good/.test(B.key || ''), reachable: true, error: /^sk-good/.test(B.key || '') ? null : 'HTTP 401: invalid key (mock: keys starting sk-good pass)', modelCount: 12 });
+    case 'GET /api/__mock/minimax': return ok({ log: mmLog, stored: S.setup.mm || null });
+    case 'GET /api/setup/minimax-endpoint': return ok({ endpoint: mmViewOf(mmEp()) });
+    case 'POST /api/setup/provider/detect': {
+      const key = String(B.key || '') || S.setup.mmKey || ''; if (!key) return J(res, 400, { ok: false, error: 'paste your MiniMax key first' });
+      const tried = [];
+      for (const region of MME.ORDER) { const r = mmOk(MME.resolve({ region }), key); mmLog.push({ path: 'detect', region, baseUrl: MME.REGIONS[region].baseUrl, key: true }); tried.push(Object.assign({ region, label: MME.REGIONS[region].label }, r)); if (r.valid) break; }
+      const hit = tried.find(t => t.valid);
+      if (hit) return ok({ found: hit.region, label: hit.label, why: 'found', tried, text: 'Your key works on ' + hit.label + '.' + (hit.region === 'global' ? '' : ' Global did not accept it.') });
+      const net = tried.every(t => !t.reachable);
+      return ok({ found: null, why: net ? 'network' : 'bad-key', tried, text: net ? 'Neither MiniMax region could be reached from the station machine, so the key was not checked. Check the station\'s internet connection and try again.' : 'Neither Global nor Mainland China accepted this key. Check that you copied all of it, from the MiniMax site where your account is, and that the plan is active.' }); }
+    case 'POST /api/setup/provider/validate': if (B.provider === 'custom') {
+      const w = mmWanted(B); if (!w.ep.ok) return J(res, 400, { ok: false, error: w.ep.error });
+      mmLog.push({ path: 'validate', region: w.ep.region, baseUrl: w.ep.baseUrl, key: !!B.key });
+      const r = mmOk(w.ep, B.key); return ok({ provider: 'custom', valid: r.valid, reachable: r.reachable, error: r.error, modelCount: r.valid ? 3 : 0, endpoint: mmViewOf(w.ep) });
+    }
+      return ok({ provider: B.provider, valid: /^sk-good/.test(B.key || ''), reachable: true, error: /^sk-good/.test(B.key || '') ? null : 'HTTP 401: invalid key (mock: keys starting sk-good pass)', modelCount: 12 });
     case 'POST /api/setup/provider': {
       const U = S.setup;
       if (STATION_DOWN) return J(res, 502, { ok: false, error: 'station unreachable: connect ECONNREFUSED' });
       if (B.provider === 'claude-cli') { if (!U.claude.loggedIn) return J(res, 400, { ok: false, error: 'Claude is not signed in on the station yet: finish the sign-in first' }); }
+      else if (B.provider === 'custom') {
+        // as console/setup.js: the endpoint asked for is checked with the key (the key on file when switching with none)
+        const w = mmWanted(B); if (!w.ep.ok) return J(res, 400, { ok: false, error: w.ep.error });
+        const prev = mmEp(); const switching = w.explicit && !MME.same(w.ep, prev);
+        const key = String(B.key || '') || (switching ? U.mmKey || '' : '');
+        if (!key && !U.ready.includes('custom')) return J(res, 400, { ok: false, error: 'paste the API key' });
+        if (key) { const r = mmOk(w.ep, key); if (!r.valid) return J(res, 400, { ok: false, error: 'MiniMax ' + MME.plain(w.ep) + ' did not accept ' + (B.key ? 'that key' : 'the key on file') + (r.reachable ? '. Check the key, or pick the region where your account is.' : ': it could not be reached from the station machine.') }); U.mmKey = key; }
+        if (w.explicit && (switching || !prev.stored)) U.mm = MME.entryOf(w.ep, 'Owner');
+        mmLog.push({ path: 'provider', region: w.ep.region, baseUrl: w.ep.baseUrl, key: !!B.key, saved: !!U.mm });
+      }
       else if (!U.ready.includes(B.provider) && !/^sk-good/.test(B.key || '')) return J(res, 400, { ok: false, error: 'the provider did not accept that key: HTTP 401 (mock: keys starting sk-good pass)' });
       if (!U.ready.includes(B.provider)) U.ready.push(B.provider);
-      if (B.keepDefault === true) return ok({ connected: true, provider: B.provider, keyOnly: true });
+      if (B.keepDefault === true) return ok({ connected: true, provider: B.provider, keyOnly: true, endpoint: B.provider === 'custom' ? mmViewOf(mmEp()) : undefined });
       if (B.provider === 'custom' && B.subscription !== false && !U.budget.unmeteredProviders.includes('custom')) U.budget.unmeteredProviders.push('custom');
       const model = { 'claude-cli': 'claude-haiku-4-5-20251001', custom: 'MiniMax-M3.1-Pro', deepseek: 'deepseek-flash', openrouter: 'deepseek/deepseek-chat', anthropic: 'claude-haiku-4-5' }[B.provider];
       U.candidateDefault = { provider: B.provider, model };
@@ -339,6 +379,12 @@ async function apiRoute(req, res, p, q) {
     const i = S.questions.findIndex(x => x.id === m[1]); if (i < 0) return J(res, 404, { ok: false, error: 'no open question ' + m[1] });
     const q0 = S.questions[i];
     let ans;
+    if (B.endpoints || (B.parts && Object.values(B.parts).some(x => x && x.endpoints))) {
+      for (const [fid, e] of Object.entries(B.endpoints || Object.assign({}, ...Object.values(B.parts).map(x => (x && x.endpoints) || {})))) {
+        const ep = MME.resolve(Object.assign({}, e, { region: e.region || 'custom' })); if (!ep.ok) return J(res, 400, { ok: false, error: ep.error });
+        mmLog.push({ path: 'question', id: m[1], field: fid, region: ep.region, baseUrl: ep.baseUrl, key: true }); S.setup.mm = MME.entryOf(ep, 'Owner');
+      }
+    }
     const pq = present(q0);
     // several questions: {parts, closeRest}; the old store-key on a request maps to its key question
     if (pq.questions && !B.parts && (B.action === 'store-key' || B.store)) { const kp = pq.questions.find(x => x.kind === 'secret' && !x.answered); if (kp) B.parts = { [kp.id]: { action: 'store', values: { key: (B.values || {})[B.store || 'key'] } } }; }

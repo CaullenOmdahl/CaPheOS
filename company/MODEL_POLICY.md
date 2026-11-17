@@ -21,7 +21,7 @@ is not re-sent to another model (`company/ESCALATION_POLICY.md`, T3).
 | Provider | How StarNet reaches it | Cost model | Typical use |
 |---|---|---|---|
 | Claude (Haiku, Sonnet, Opus, Fable) | `claude-cli`, on a Claude Max subscription | flat monthly fee, 5-hour window and weekly limit, possibly shared with the owner's own use | work that needs Claude, at the smallest tier that does it; writing code |
-| MiniMax | `custom` OpenAI-compatible endpoint, on a MiniMax plan | flat fee, 5-hour window and weekly limit; may bill credits once the plan runs out | heavy reading and research, long sessions |
+| MiniMax | `custom` OpenAI-compatible endpoint, on a MiniMax plan (Global, Mainland China or a custom address: company.json `providers.minimax`) | flat fee, 5-hour window and weekly limit; may bill credits once the plan runs out | heavy reading and research, long sessions |
 | DeepSeek | `deepseek` | pay per use, with peak-hour pricing (config, keyed by provider) | the fallback when the subscriptions are closed to a routine |
 | OpenRouter | `openrouter` | pay per use, from a reserve finance tops up (`company/tools/openrouter-treasury.js`) | reserve only, inside the metered cap |
 

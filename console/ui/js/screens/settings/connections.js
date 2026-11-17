@@ -5,6 +5,7 @@
 import { h, fill, Button, Tag, errLine, empty, statusOf, asArray, Details, Setting, Block, humanError } from '../../ui.js';
 import { api, post } from '../../api.js';
 import { mountPanels } from '../../panels.js';
+import { endpointPicker } from '../../minimax-endpoint.js';
 
 const SOURCES = [
   ['connected', 'Connected services', 'Accounts and tools the crew can use. Each one is checked against what it was allowed to do, every check.', '/station/connectors', 'connectors'],
@@ -50,18 +51,22 @@ async function drawKeys(el, app) {
     const box = h('div', { class: 'stack-8', hidden: true });
     const key = h('input', { class: 'input', type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: 'Paste the new key', 'aria-label': p.name + ' API key', style: 'max-width:420px' });
     const err = h('p', { class: 'err-line', role: 'status' });
+    // MiniMax: the endpoint picker; with no new key, a changed endpoint is a switch (the key on file is re-checked there)
+    const ep = p.id === 'custom' ? endpointPicker({ endpoint: p.endpoint, getKey: () => key.value, showCurrent: true, saveLabel: 'Save', onChange: () => { save.textContent = !key.value && ep.changed() ? 'Switch endpoint' : 'Save key'; } }) : null;
     const save = Button('Save key', { variant: 'primary', size: 'sm', onClick: async () => {
-      if (!key.value.trim()) { err.textContent = 'Paste the key first.'; return; }
+      const switchOnly = ep && !key.value.trim() && ep.changed();
+      if (!key.value.trim() && !switchOnly) { err.textContent = 'Paste the key first.'; return; }
       err.textContent = ''; save.disabled = true;
-      try { await post('/setup/provider', { provider: p.id, key: key.value, keepDefault: true }); key.value = ''; app.toast(p.name + ' key saved.'); drawKeys(el, app); }
+      try { await post('/setup/provider', Object.assign({ provider: p.id, key: key.value, keepDefault: true }, ep ? ep.value() : {})); key.value = ''; app.toast(switchOnly ? 'MiniMax now uses ' + ep.label() + '. The key was checked there first.' : p.name + ' key saved' + (ep ? ' (' + ep.label() + ')' : '') + '.'); drawKeys(el, app); }
       catch (e) { err.textContent = 'Not saved: ' + humanError(e); } finally { save.disabled = false; key.value = ''; }
     } });
-    box.append(key, h('div', { class: 'row-8' }, save, Button('Cancel', { variant: 'ghost', size: 'sm', onClick: () => { key.value = ''; box.hidden = true; } })), err);
-    return Setting({ id: 'set-key-' + p.id, title: p.name, value: p.present || p.ready ? 'Set' : 'Not set', valueTone: p.present || p.ready ? 'online' : 'neutral',
+    box.append(...(ep ? [ep.el] : []), key, h('div', { class: 'row-8' }, save, Button('Cancel', { variant: 'ghost', size: 'sm', onClick: () => { key.value = ''; box.hidden = true; } })), err);
+    const isSet = p.present || p.ready;
+    return Setting({ id: 'set-key-' + p.id, title: p.name, value: (isSet ? 'Set' : 'Not set') + (p.endpoint && (isSet || p.endpoint.stored) ? ' · ' + p.endpoint.plain : ''), valueTone: isSet ? 'online' : 'neutral',
       what: p.present || p.ready ? 'Saved on the station as ••••••••. It is never shown again.' : 'No key yet.' + (p.blurb ? ' ' + p.blurb : ''),
       flip: p.present || p.ready ? 'Replacing it changes the key only; who new hires run on stays the same.' : 'Setting one lets crew members use ' + p.name + '. Pick it for new hires under Models and subscriptions.',
       extra: [box, p.keyUrl ? h('a', { href: p.keyUrl, target: '_blank', rel: 'noopener noreferrer', class: 'caption' }, 'Get a key →') : null],
-      control: Button(p.present || p.ready ? 'Replace' : 'Set', { variant: 'secondary', size: 'sm', onClick: () => { box.hidden = false; key.focus(); } }) });
+      control: Button(p.present || p.ready ? (ep ? 'Replace or switch' : 'Replace') : 'Set', { variant: 'secondary', size: 'sm', onClick: () => { box.hidden = false; key.focus(); } }) });
   };
   const service = sk && Array.isArray(sk.keys) ? sk.keys : [];
   fill(el,

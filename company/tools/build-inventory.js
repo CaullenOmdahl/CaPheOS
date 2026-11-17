@@ -139,13 +139,14 @@ if (agyModels.length) {
   md.push('');
 }
 const minimaxKey = !!co.secret('minimax-key');
+const mmEp = require('./lib/minimax-endpoint').read(co.ROOT);   // company.json providers.minimax (nothing stored = Global)
 md.push('## 4. MiniMax direct (StarNet `custom` provider) — Coding Plan');
 md.push('');
-md.push('MiniMax Coding Plan key ' + (minimaxKey ? 'on file (`secrets/minimax-key`)' : '**not on file** (`secrets/minimax-key`)') + '. The wire is OpenAI-compatible at `https://api.minimax.io/v1`, tool calling returns native OpenAI tool_calls, and `thinking:{type:"disabled"}` yields clean output. Registered in StarNet as the `custom` provider, runs come back `unpriced: true` — subscription-billed, so they do not count against the metered daily budget (`company/work/finance/dispatch-budget.json`); the pacer meters them against the plan instead. Prefer a model that separates reasoning into `reasoning_content` (no inline `<think>`).');
+md.push('MiniMax Coding Plan key ' + (minimaxKey ? 'on file (`secrets/minimax-key`)' : '**not on file** (`secrets/minimax-key`)') + '. Endpoint: ' + mmEp.label + ' (company.json `providers.minimax`, Settings › Models and subscriptions). The wire is OpenAI-compatible at `' + mmEp.baseUrl + '`, tool calling returns native OpenAI tool_calls, and `thinking:{type:"disabled"}` yields clean output. Registered in StarNet as the `custom` provider, runs come back `unpriced: true` — subscription-billed, so they do not count against the metered daily budget (`company/work/finance/dispatch-budget.json`); the pacer meters them against the plan instead. Prefer a model that separates reasoning into `reasoning_content` (no inline `<think>`).');
 md.push('');
 let mmModels = [];
 try { mmModels = fs.readFileSync(path.join(OUT, 'minimax-models.txt'), 'utf8').trim().split('\n').filter(Boolean); } catch (_) {}
-inv.minimax = { baseUrl: 'https://api.minimax.io/v1', starnetProvider: 'custom', keyOnFile: minimaxKey, auth: 'Coding Plan subscription', tools: true, unpriced: true, models: mmModels };
+inv.minimax = { region: mmEp.region, baseUrl: mmEp.baseUrl, usageUrl: mmEp.usageUrl, starnetProvider: 'custom', keyOnFile: minimaxKey, auth: 'Coding Plan subscription', tools: true, unpriced: true, models: mmModels };
 if (mmModels.length) {
   md.push('| Model id | Wire | Tool calls |');
   md.push('|---|---|---|');

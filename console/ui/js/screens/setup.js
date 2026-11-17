@@ -8,6 +8,7 @@ import { api, post } from '../api.js';
 import * as events from '../events.js';
 import { PRESET_WHAT, GUARD_NAMES } from './settings/autonomy.js';
 import { mdBlock } from '../md.js';
+import { endpointPicker } from '../minimax-endpoint.js';
 
 const STEP_ALIAS = { ai: 'provider', providers: 'provider', model: 'provider', money: 'budget', gov: 'governance', guard: 'guardrails', check: 'certify', checks: 'certify' };
 // the certification checks in plain words (onboard.js --certify); the raw id and what is missing go behind Details
@@ -178,19 +179,35 @@ export async function render(root, ctx) {
     const err = errP(); const note = h('p', { class: 'caption', role: 'status' });
     const key = h('input', { class: 'input', type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: p.present ? 'A key is saved. Paste a new one to replace it' : 'Paste the API key', 'aria-label': p.name + ' API key' });
     const sub = p.id === 'custom' ? h('input', { type: 'checkbox', checked: true }) : null;
+    // MiniMax: where the account is (company.json providers.minimax); switching it re-checks the key before saving
+    const keyLink = p.keyUrl ? h('a', { href: p.keyUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Get a key →') : null;
+    const ep = p.id === 'custom' ? endpointPicker({ endpoint: p.endpoint, getKey: () => key.value, showCurrent: p.ready, saveLabel: p.ready && !key.value ? 'Switch endpoint' : 'Connect', onChange: () => relabel() }) : null;
+    const epBody = () => ep ? ep.value() : {};
     const validate = Button('Validate', { variant: 'secondary', size: 'sm', onClick: async () => {
-      err.textContent = ''; note.textContent = 'Checking with ' + p.name + '…'; validate.disabled = true;
-      try { const r = await post('/setup/provider/validate', { provider: p.id, key: key.value }); note.textContent = r.valid ? 'The key works.' + (r.modelCount ? ' ' + r.modelCount + ' models available.' : '') : ''; if (!r.valid) err.textContent = 'Not accepted: ' + (r.error || 'unknown reason'); }
+      err.textContent = ''; note.textContent = 'Checking with ' + p.name + (ep ? ' (' + ep.label() + ')' : '') + '…'; validate.disabled = true;
+      try { const r = await post('/setup/provider/validate', Object.assign({ provider: p.id, key: key.value }, epBody())); note.textContent = r.valid ? 'The key works' + (ep ? ' on ' + ep.label() : '') + '.' + (r.modelCount ? ' ' + r.modelCount + ' models available.' : '') : ''; if (!r.valid) err.textContent = 'Not accepted: ' + (r.error || 'unknown reason'); }
       catch (e) { note.textContent = ''; err.textContent = humanError(e); } finally { validate.disabled = false; }
     } });
+    const switching = () => !!(ep && p.ready && ep.changed());
     const connect = Button(p.ready && !key.value ? (p.isDefault ? 'In use for new hires' : 'Use for new hires') : 'Connect', { variant: 'primary', size: 'sm', disabled: p.ready && p.isDefault, onClick: () => {
       if (!key.value.trim() && !p.ready) { err.textContent = 'Paste the API key first.'; return; }
+      if (switching() && !key.value.trim()) {
+        note.textContent = 'Checking your key on ' + ep.label() + ' before switching…';
+        act(connect, err, () => post('/setup/provider', Object.assign({ provider: p.id, keepDefault: true }, epBody())), () => 'MiniMax now uses ' + ep.label() + '. The key was checked there first.', () => { note.textContent = ''; });
+        return;
+      }
       note.textContent = key.value ? 'Checking the key and saving it on the station…' : '';
-      act(connect, err, () => post('/setup/provider', { provider: p.id, key: key.value, subscription: sub ? sub.checked : undefined }), r => p.name + ' connected. New hires and the Founder run on ' + r.model + '.' + (r.runnable ? '' : ' Set a daily budget in step 3 so they can run.') + (r.founderLoop && !r.founderLoop.ok ? ' The Founder loop was not updated: ' + r.founderLoop.text : ''), () => { key.value = ''; note.textContent = ''; });
+      act(connect, err, () => post('/setup/provider', Object.assign({ provider: p.id, key: key.value, subscription: sub ? sub.checked : undefined }, epBody())), r => p.name + ' connected' + (ep ? ' (' + ep.label() + ')' : '') + '. New hires and the Founder run on ' + r.model + '.' + (r.runnable ? '' : ' Set a daily budget in step 3 so they can run.') + (r.founderLoop && !r.founderLoop.ok ? ' The Founder loop was not updated: ' + r.founderLoop.text : ''), () => { key.value = ''; note.textContent = ''; });
     } });
-    key.addEventListener('input', () => { if (p.ready && p.isDefault) connect.disabled = !key.value; connect.textContent = key.value ? 'Connect' : p.isDefault ? 'In use for new hires' : 'Use for new hires'; });
-    return h('article', { class: 'card p18', style: 'gap:10px' + (p.isDefault && p.ready ? ';border-color:var(--status-online)' : '') }, provHead(p),
-      h('p', { class: 'body-s muted' }, p.blurb, ' ', p.keyUrl ? h('a', { href: p.keyUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Get a key →') : null),
+    function relabel() {
+      if (ep && keyLink) keyLink.href = ep.keyUrl() || p.keyUrl;
+      if (switching() && !key.value) { connect.disabled = false; connect.textContent = 'Switch endpoint'; return; }
+      if (p.ready && p.isDefault) connect.disabled = !key.value; connect.textContent = key.value ? 'Connect' : p.isDefault ? 'In use for new hires' : 'Use for new hires';
+    }
+    key.addEventListener('input', relabel);
+    return h('article', { class: 'card p18', style: 'gap:10px' + (p.isDefault && p.ready ? ';border-color:var(--status-online)' : ''), 'data-provider': p.id }, provHead(p),
+      h('p', { class: 'body-s muted' }, p.blurb, ' ', keyLink),
+      ep ? ep.el : null,
       key, sub ? h('label', { class: 'check body-s' }, sub, 'This is a Coding Plan (a flat-fee subscription)') : null,
       h('div', { class: 'row-8' }, validate, connect), note, err,
       h('span', { class: 'caption muted' }, 'The key goes straight to the station and is never shown again.'));

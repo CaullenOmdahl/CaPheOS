@@ -62,13 +62,36 @@ module.exports = function setup(deps) {
   // id = the station provider id. unmetered = billed by subscription (never counts against dailyUsd).
   const OFFER = [
     { id: 'claude-cli', name: 'Claude subscription', how: 'signin', unmetered: true, blurb: 'Your Claude Pro or Max plan, through Claude Code on this machine. Flat fee: nothing is billed per token.' },
-    { id: 'custom', name: 'MiniMax Coding Plan', how: 'key', unmetered: true, baseUrl: 'https://api.minimax.io/v1', keyUrl: 'https://platform.minimax.io/user-center/basic-information/interface-key', blurb: 'A MiniMax plan key. Flat fee, paced against the plan.' },
+    { id: 'custom', name: 'MiniMax Coding Plan', how: 'key', unmetered: true, /* baseUrl, keyUrl: offerNow() from company.json providers.minimax */ blurb: 'A MiniMax plan key. Flat fee, paced against the plan.' },
     { id: 'deepseek', name: 'DeepSeek', how: 'key', unmetered: false, keyUrl: 'https://platform.deepseek.com/api_keys', blurb: 'Pay per token from a prepaid balance. Needs a daily cap in step 3.' },
     { id: 'openrouter', name: 'OpenRouter', how: 'key', unmetered: false, keyUrl: 'https://openrouter.ai/keys', blurb: 'One key for many models, pay per token. Needs a daily cap in step 3.' },
     { id: 'anthropic', name: 'Anthropic API', how: 'key', unmetered: false, keyUrl: 'https://console.anthropic.com/settings/keys', blurb: 'Claude by API key, pay per token. Needs a daily cap in step 3.' },
   ];
   const FALLBACK_MODEL = { anthropic: 'claude-haiku-4-5', openrouter: 'deepseek/deepseek-chat' };
   const offerOf = id => OFFER.find(o => o.id === id);
+
+  /* ---------- the MiniMax endpoint (company.json providers.minimax; company/tools/lib/minimax-endpoint.js) ---------- */
+  const MME = require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'minimax-endpoint.js'));
+  const mmNow = () => MME.read(co.ROOT);
+  // the endpoint a request asks for ({region, baseUrl?, other?}), or the stored one when it names none
+  function mmWanted(b) {
+    if (!b || (b.region === undefined && b.baseUrl === undefined)) return { ep: mmNow(), explicit: false };
+    const ep = MME.resolve({ region: b.region || 'custom', baseUrl: b.baseUrl, other: b.other === true });
+    if (!ep.ok) throw new HttpError(400, ep.error, { code: ep.code || 'bad-endpoint' });
+    return { ep, explicit: true };
+  }
+  const mmView = ep => ({ region: ep.region, label: ep.label, plain: MME.plain(ep), custom: ep.custom, other: !!ep.other, baseUrl: ep.baseUrl, keyUrl: ep.keyUrl,
+    usageUrl: ep.usageUrl, warnings: ep.warnings || [], problem: ep.problem || null, stored: !!ep.stored, choices: MME.choices() });
+  // the offer as the owner sees it: MiniMax's address and key page follow the stored endpoint
+  function offerNow(o) { if (o.id !== 'custom') return o; const ep = mmNow(); return Object.assign({}, o, { baseUrl: ep.baseUrl, keyUrl: ep.keyUrl, endpoint: mmView(ep) }); }
+  function saveEndpoint(ep, prev) {
+    const cfg = readJson(F.company, null); if (!cfg) bad('company/company.json is missing or not JSON', 500);
+    cfg.providers = Object.assign({}, cfg.providers || {}, { minimax: MME.entryOf(ep, owner()) });
+    writeJson(F.company, cfg);
+    co.config.providers = cfg.providers;
+    decision('set the MiniMax endpoint to ' + MME.plain(ep) + (ep.custom ? ' (' + ep.baseUrl + ')' : '') + (prev && prev.stored ? ', was ' + MME.plain(prev) : '') + ' (company.json providers.minimax)');
+  }
+  const scrubKey = (s, key) => String(s == null ? '' : s).split(key || '\u0000').join('[key]').slice(0, 160);
 
   function budget() { return Object.assign({}, readJson(F.budgetDefault, {}), readJson(F.budget, {}) || {}); }
   function unmeteredList(b) { return (Array.isArray(b.unmeteredProviders) && b.unmeteredProviders.length ? b.unmeteredProviders : ['claude-cli']).map(String); }
@@ -180,7 +203,7 @@ module.exports = function setup(deps) {
     add('certify', 'Certify', onb.certified ? 'done' : 'needs', onb.certified ? 'All checks passed' + (onb.certifiedAt ? ' on ' + String(onb.certifiedAt).slice(0, 10) : '') + '. The company is operational.'
       : onb.checks ? failed.length + ' of ' + Object.keys(res).length + ' checks still failing: ' + failed.join(', ') + '.' : 'The final check that the company can actually run. It has not run yet.');
 
-    const providers = OFFER.map(o => {
+    const providers = OFFER.map(offerNow).map(o => {
       const st = sp.list.find(p => String(p.id) === o.id) || null;
       return Object.assign({}, o, { ready: ready.has(o.id), present: !!(st && st.credential && st.credential.present), reason: st ? st.reason || null : null,
         isDefault: cd.provider === o.id, metered: !unmetered.includes(o.id) });
@@ -269,13 +292,24 @@ module.exports = function setup(deps) {
       if (!(sp.claude && sp.claude.installed && sp.claude.loggedIn)) bad(sp.claude && sp.claude.installed === false ? 'Claude Code is not installed on the station machine' : 'Claude is not signed in on the station yet: finish the sign-in first');
       return Object.assign({ ok: true, connected: true }, await setDefault(id, b.model, false));
     }
-    const key = String(b.key || '').replace(/\s+/g, '');
-    const baseUrl = String(b.baseUrl || o.baseUrl || '').trim();
+    let key = String(b.key || '').replace(/\s+/g, '');
+    // MiniMax: the endpoint asked for (or the stored one). Switching it re-checks the key on the new endpoint before
+    // anything is saved; with no key pasted, the key the company already holds is used for that check.
+    const mm = id === 'custom' ? mmWanted(b) : null;
+    const mmPrev = mm ? mmNow() : null;
+    const switching = !!(mm && mm.explicit && !MME.same(mm.ep, mmPrev));
+    let keyFromStore = false;
+    if (switching && !key) { key = MME.storedKey(co.ROOT); keyFromStore = !!key; if (!key) bad('paste your MiniMax key: switching the endpoint checks the key against the new one first'); }
+    const baseUrl = mm ? mm.ep.baseUrl : String(b.baseUrl || o.baseUrl || '').trim();
     const presentAlready = readySet(sp).has(id);
     if (!key && !presentAlready) bad('paste the API key');
     if (key) {
       const v = await stationPost('providers/validate', { provider: id, key, baseUrl: baseUrl || undefined }, 25000);
-      if (!v.ok || !v.data || !v.data.credentialVerified) bad('the provider did not accept that key' + (v.data && v.data.error ? ': ' + v.data.error : v.error ? ': ' + v.error : ''));
+      if (!v.ok || !v.data || !v.data.credentialVerified) {
+        // MiniMax: in plain words (the owner sees this line as it is); the station's own words for any other provider
+        if (mm) bad('MiniMax ' + MME.plain(mm.ep) + ' did not accept ' + (keyFromStore ? 'the key on file' : 'that key') + (v.data && v.data.reachable === false ? ': it could not be reached from the station machine.' : '. Check the key, or pick the region where your account is.'));
+        bad('the provider did not accept that key' + (v.data && v.data.error ? ': ' + scrubKey(v.data.error, key) : v.error ? ': ' + scrubKey(v.error, key) : ''));
+      }
       let c = await stationPost('providers/connect', { provider: id, key, baseUrl: baseUrl || undefined }, 50000);
       if (!(c.ok && c.data && c.data.ok)) {
         if (c.data && c.data.code && c.data.code !== 'no-page') bad((c.data && c.data.error) || 'the station did not save the key');
@@ -284,17 +318,55 @@ module.exports = function setup(deps) {
         if (!(c.ok && c.data && c.data.ok)) throw new HttpError(502, 'the station did not save the key: ' + ((c.data && c.data.error) || c.error || 'HTTP ' + c.status));
       }
     }
+    // the key worked on this endpoint and the station holds it: now the endpoint is saved (one place: company.json)
+    let endpoint = null;
+    if (mm) { if (mm.explicit && (switching || !mmPrev.stored)) saveEndpoint(mm.ep, mmPrev); endpoint = mmView(mm.explicit ? mm.ep : mmPrev); }
     // keepDefault: only set or replace the key (Settings › Connections and keys); who new hires run on stays as it is
-    if (b.keepDefault === true) { if (!key) bad('paste the API key'); decision((presentAlready ? 'replaced' : 'set') + ' the ' + id + ' API key'); return { ok: true, connected: true, provider: id, keyOnly: true }; }
-    return Object.assign({ ok: true, connected: true }, await setDefault(id, b.model, !!b.subscription || (o.unmetered && b.subscription !== false)));
+    if (b.keepDefault === true) {
+      if (!key) bad('paste the API key');
+      if (!keyFromStore) decision((presentAlready ? 'replaced' : 'set') + ' the ' + id + ' API key');
+      return { ok: true, connected: true, provider: id, keyOnly: true, switched: switching, endpoint };
+    }
+    return Object.assign({ ok: true, connected: true, switched: switching, endpoint }, await setDefault(id, b.model, !!b.subscription || (o.unmetered && b.subscription !== false)));
   }
   async function validate(b) {
     const id = String(b.provider || ''); const o = offerOf(id); if (!o || o.how !== 'key') bad('validate takes a key provider');
     const key = String(b.key || '').replace(/\s+/g, ''); if (!key) bad('paste the API key');
-    const v = await stationPost('providers/validate', { provider: id, key, baseUrl: b.baseUrl || o.baseUrl || undefined }, 25000);
-    if (!v.ok && !v.data) throw new HttpError(502, 'station unreachable: ' + (v.error || 'HTTP ' + v.status));
+    const mm = id === 'custom' ? mmWanted(b) : null;
+    const v = await stationPost('providers/validate', { provider: id, key, baseUrl: mm ? mm.ep.baseUrl : b.baseUrl || o.baseUrl || undefined }, 25000);
+    if (!v.ok && !v.data) throw new HttpError(502, 'station unreachable: ' + scrubKey(v.error || 'HTTP ' + v.status, key));
     const d = v.data || {};
-    return { ok: true, provider: id, valid: !!d.credentialVerified, reachable: !!d.reachable, error: d.credentialVerified ? null : d.error || 'not verified', modelCount: d.modelCount || 0 };
+    return Object.assign({ ok: true, provider: id, valid: !!d.credentialVerified, reachable: !!d.reachable, error: d.credentialVerified ? null : scrubKey(d.error || 'not verified', key), modelCount: d.modelCount || 0 },
+      mm ? { endpoint: mmView(mm.ep) } : {});
+  }
+  // "Find my endpoint": try the key on each MiniMax region through the station (never from the browser), in order,
+  // and name the one that answers. Nothing is saved; the owner then connects with that region selected.
+  async function detect(b) {
+    const id = String(b.provider || 'custom'); if (id !== 'custom') bad('finding the endpoint is for MiniMax only');
+    let key = String(b.key || '').replace(/\s+/g, ''); let fromStore = false;
+    if (!key) { key = MME.storedKey(co.ROOT); fromStore = !!key; }
+    if (!key) bad('paste your MiniMax key first');
+    const tried = [];
+    for (const region of MME.ORDER) {
+      const ep = MME.resolve({ region });
+      const v = await stationPost('providers/validate', { provider: id, key, baseUrl: ep.baseUrl }, 25000);
+      if (!v.ok && !v.data) throw new HttpError(502, 'the station is not answering, so the key could not be tried (' + scrubKey(v.error || 'HTTP ' + v.status, key) + ')');
+      const d = v.data || {};
+      const rejected = !d.credentialVerified && (d.status === 'rejected' || [401, 403].includes(Number(d.httpStatus)) || /\b(401|403)\b|reject|invalid/i.test(String(d.error || '')));
+      const t = { region, label: ep.label, valid: !!d.credentialVerified, reachable: d.reachable !== false, rejected, error: d.credentialVerified ? null : scrubKey(d.error || 'not verified', key) };
+      tried.push(t);
+      if (t.valid) break;
+    }
+    const hit = tried.find(t => t.valid);
+    const keyWord = fromStore ? 'The key on file' : 'Your key';
+    if (hit) return { ok: true, found: hit.region, label: hit.label, why: 'found', tried, fromStore,
+      text: keyWord + ' works on ' + hit.label + '.' + (hit.region === 'global' ? '' : ' ' + tried.filter(t => !t.valid).map(t => t.label).join(' and ') + ' did not accept it.') };
+    const down = tried.filter(t => !t.reachable);
+    const why = !down.length ? 'bad-key' : down.length === tried.length ? 'network' : 'mixed';
+    const text = why === 'bad-key' ? 'Neither Global nor Mainland China accepted ' + (fromStore ? 'the key on file' : 'this key') + '. Check that you copied all of it, from the MiniMax site where your account is, and that the plan is active.'
+      : why === 'network' ? 'Neither MiniMax region could be reached from the station machine, so the key was not checked. Check the station\'s internet connection and try again.'
+      : tried.map(t => t.label + (t.reachable ? ' did not accept the key' : ' could not be reached')).join('; ') + '. Try again in a minute; if it keeps happening, check the station\'s internet connection.';
+    return { ok: true, found: null, why, tried, fromStore, text };
   }
 
   async function setBudget(b) {
@@ -360,10 +432,12 @@ module.exports = function setup(deps) {
       ['POST', /^\/api\/setup\/company$/, (m, q, b) => setCompany(b)],
       ['POST', /^\/api\/setup\/provider$/, (m, q, b) => connect(b)],
       ['POST', /^\/api\/setup\/provider\/validate$/, (m, q, b) => validate(b)],
+      ['POST', /^\/api\/setup\/provider\/detect$/, (m, q, b) => detect(b)],
+      ['GET', /^\/api\/setup\/minimax-endpoint$/, () => ({ ok: true, endpoint: mmView(mmNow()) })],
       ['POST', /^\/api\/setup\/budget$/, (m, q, b) => setBudget(b)],
       ['POST', /^\/api\/setup\/charter$/, (m, q, b) => setCharter(b)],
       ['GET', /^\/api\/setup\/charter$/, () => charterView()],
     ],
-    onboardingQuestions, placeholders,
+    onboardingQuestions, placeholders, minimaxEndpoint: mmNow, mmWanted, saveEndpoint,
   };
 };
