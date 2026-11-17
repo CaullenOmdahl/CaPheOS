@@ -60,7 +60,7 @@ const run = (name, args) => new Promise(resolve => execFile(process.execPath, [p
 function fresh(opts) {
   for (const f of ['company/state/meetings']) fs.rmSync(path.join(T, f), { recursive: true, force: true });
   const runner = makeRunner();
-  const models = Object.assign({}, (opts && opts.models) || {});
+  const models = (opts && opts.models) || {};
   const M = meetingLib({ co, owner: () => 'Caullen', runner, run, speedMs: { fast: 1, normal: 1, slow: 1 }, consentPollMs: 20, seatBusy: async id => !!(opts && opts.busy && opts.busy.includes(id)), modelFor: async id => models[id] || { provider: 'claude-cli', model: 'claude-sonnet-5-5' } });
   if (opts && opts.seats && Object.keys(CREW).some(x => !opts.seats.includes(x))) M.seatsChange({ remove: Object.keys(CREW).filter(x => !opts.seats.includes(x)) });
   if (opts && opts.seats) M.seatsChange({ add: opts.seats });
@@ -667,4 +667,17 @@ test('the cost line is information: dollars for a metered model, the share of a 
   assert.doesNotMatch(line, /Claude[^·]*\$0\.00/, 'never $0.00 for a subscription');
   assert.ok(!fs.readdirSync(path.join(T, 'company/work/finance')).some(f => /budget-meeting|envelope|estimate/.test(f)), 'no meeting budget or estimate file');
   fs.unlinkSync(path.join(T, 'company/state/pacer-state.json')); fs.unlinkSync(path.join(T, 'company/work/finance/subscriptions.json')); fs.unlinkSync(path.join(T, 'company/work/finance/dispatch-budget.json'));
+});
+
+test('seats vs roster: a seat with no usable model sits the turn out with one plain line; the model is resolved per turn, never snapshotted', async () => {
+  const models = {};
+  const { M, runner } = fresh({ seats: ['dave', 'sharon'], leader: 'dave', models });
+  models.sharon = {};   // no usable model (a seat with no chain and no roster model)
+  runner.script({ dave: ['D1.', 'D2.'], sharon: ['S2.'] });
+  await M.say({ text: 'First.' }); await idle(M);
+  assert.ok(kinds(M, 'note').some(e => /^Sharon sits this one out: Sharon has no AI model to think with/.test(e.text)), 'a visible note, not a silent drop');
+  models.sharon = { provider: 'deepseek', model: 'deepseek-flash' }; models.dave = { provider: 'deepseek', model: 'deepseek-flash' };
+  await M.say({ text: 'Second.' }); await idle(M);
+  const last = runner.turns().slice(-2);
+  assert.deepStrictEqual(last.map(c => c.seat + '/' + c.model.provider), ['dave/deepseek', 'sharon/deepseek'], 'the model is read again for every turn');
 });

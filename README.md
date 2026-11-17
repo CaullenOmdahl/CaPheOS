@@ -167,11 +167,15 @@ it from another machine's browser (HTTPS proxy, linger, backups, the owner's cho
 `/api/station/*` with an allowlist, so the browser never sees the station token. Binds 127.0.0.1 by default.
 
 **Meetings.** Chat › Meeting puts the crew at one table: write once and everyone seated answers in turn, the leader
-first, each hearing what came before (start with `@name` to ask particular people). Buttons do the rest: Round for an
-open round, Raise hand (or Esc) to take the floor after the current speaker, Stop round, Observe to watch them settle a
-question by themselves for a few rounds, Talk only for a quick discussion, the crown to pick the leader, × and + Add for
-the seats, New meeting to start fresh. Every word goes to the minutes (Open minutes), and the leader's closing summary
-and rulings go to Decisions. Details: docs/MEETINGS.md.
+first, each hearing what came before (start with `@name` to ask particular people). It goes at your pace: press Next
+after each turn, or let it run on its own while you are away; Pause holds it without spending anything. Buttons do
+the rest: Round, Raise hand (or Esc), Stop round, Observe to watch them settle a question for a few rounds, an agenda
+with tools switched on only for the items that need checking (talk only is the default), the crown to pick the
+leader, × and + Add for the seats, Close meeting and New meeting. What comes out is the Register: your rulings (only
+the ones you confirm go to Decisions), each person's actions with a plain-language line, open questions and kill
+conditions, each kept by its own owner. Catch me up, Explain for the room, the timeline and the minutes help you read
+it; the cost line shows turns and, per model, dollars or the share of a subscription, never a budget. Details:
+docs/MEETINGS.md.
 
 **Deploying a console update.** Restart the console with
 

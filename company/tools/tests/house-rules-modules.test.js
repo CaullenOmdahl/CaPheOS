@@ -34,10 +34,10 @@ test('without the commitments module, no seat is sent to the commitments tool', 
   const T = scratch([]);
   try {
     const r = ensureIn(T, 'You are Jo.\n\nDo the work.');
-    assert.equal(r.version, 'v13');
-    assert.ok(r.prompt.includes('[HOUSE RULES FOR SCHEDULED RUNS v13]'));
-    // v13: meeting etiquette (ASK, INVITE, DISMISS, END; short replies; PASS)
-    assert.match(r.prompt, /Meeting etiquette .*reply PASS when you have nothing to add.*ASK: <name> — <question>.*INVITE: <name>.*DISMISS: <name>.*END: <what was decided/);
+    assert.equal(r.version, 'v14');
+    assert.ok(r.prompt.includes('[HOUSE RULES FOR SCHEDULED RUNS v14]'));
+    // v13/v14: meeting etiquette (ASK, INVITE, DISMISS, END; short replies; PASS) and the register lines with their plain part
+    assert.match(r.prompt, /Meeting etiquette .*your point first in one line.*reply PASS when you have nothing to add.*ASK: <name> — <question>.*INVITE: <name>.*DISMISS: <name>.*ACTION: <what> — by <date> — plain: .*meeting-register\.js update.*END: <what was decided/);
     // v12: work that waits on work names it in Waiting on; a long job goes through notify-when.js; Not before is a clock time
     assert.match(r.prompt, /Use \*\*Waiting on:\*\* for anything that waits on other work/);
     assert.match(r.prompt, /node company\/tools\/notify-when\.js --seat <you>/);

@@ -6,6 +6,15 @@ people at one table: a message goes to everyone seated, in turn, the leader firs
 them. A seat with nothing to add passes, and passes are not shown. The meeting carries on (the last one resumes) until
 **New meeting**, which keeps the seats.
 
+## Seats
+
+Anyone on the crew (`company/tools/loops.json`) can be seated. Each turn uses the seat's model at that moment, never a
+snapshot from the meeting's start: the entry of its own model-policy chain that `models.js` and the pacer have put on its
+loop routine, else its roster row, else the company default (a seat with no chain of its own, or no HR scope, gets
+its roster model). A seat with no usable model, or one held by a $0 cap on a metered model, sits the turn out with one
+plain line. The leader persists across meetings (default: the CEO seat); seats the owner adds or removes are the
+standing seats, an agent's INVITE or DISMISS lasts for that meeting only.
+
 ## The controls
 
 | Control | What it does | API (POST unless noted) |
@@ -85,8 +94,9 @@ The meeting's output (`company/tools/lib/meeting-register.js`): owner rulings, a
 status, a plain-language line and "affects"), open questions, kill conditions and "Not recorded here", rendered to
 `company/work/meetings/<date>-<id>-register.md` in the shape of the table registers. No model writes a row for anyone:
 a row is its owner's line from the meeting, or the owner's own (Register › Add your ruling, Not recorded here). Each
-owner updates only their own lines (`node company/tools/meeting-register.js update <id> actions <n> --by <name>
---status "…"`); a row without its plain line, or an action without owner, date or status, fails validation and is shown
+owner updates only their own lines, and only through the register (`node company/tools/meeting-register.js update <id>
+actions <n> --by <name> --status "…"`, or the console for the owner): the markdown file is rendered from it, so a hand
+edit there is overwritten; a row without its plain line, or an action without owner, date or status, fails validation and is shown
 so. **Only an owner ruling the owner confirms goes to `decisions.md`** (`decision.js add`, by the owner); the rest stays
 in the register. API: `GET /api/meeting/register`, `POST /api/meeting/register {op: ruling|confirm|not-recorded|question|kill|update}`.
 
@@ -94,7 +104,7 @@ Searchable: `company/state/meetings/index.json` (one row per meeting: id, type, 
 actions, links to quests `q:N` and handoffs `to-<name>.md`), `GET /api/meeting/search?q=` (Open minutes › Search).
 
 What agents change lasts for that meeting; your add and remove set the standing seats and override it. The house rules
-(v13) carry a short meeting-etiquette line, and every turn carries the meeting's own preamble.
+(v14) carry a short meeting-etiquette line, and every turn carries the meeting's own preamble.
 
 ## Runs, safety, records
 
