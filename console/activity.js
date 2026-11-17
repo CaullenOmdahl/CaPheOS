@@ -16,6 +16,64 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
+/* ---------- a shell command or a run's output, in plain words (pure; tested in company/tools/tests/console-plain.test.js) ----------
+ * The owner never reads a raw command or tool-call markup on Today: a step is "searching company files", "running a
+ * test", "reading a company tool"; the command itself goes only to Watch / Details. */
+const CMD_KINDS = [
+  // [test on one command segment, the step while it runs, the line once it ran]; checked in this order across segments
+  [/(^|\s)(scripts\/test\.sh|npm (run )?test|pytest|jest|mocha|node --test)\b|\.test\.js\b|(^|\s)\S*selftest\S*|\s--?selftest\b|\btests?\/\S+-walk\.js\b/, 'running a test', 'Ran a test'],
+  [/^\s*(sudo\s+)?systemctl\b.*\b(restart|start|stop|reload)\b/, 'restarting a service', 'Restarted a service'],
+  [/^\s*(sudo\s+)?(systemctl|journalctl)\b/, 'checking a service', 'Checked a service'],
+  [/^\s*git\s+(commit|push|merge|rebase|cherry-pick|am|apply)\b/, 'saving code changes', 'Saved code changes'],
+  [/^\s*git\b/, 'checking the code history', 'Checked the code history'],
+  [/^\s*(curl|wget)\b/, 'fetching a web page', 'Fetched a web page'],
+  [/^\s*(grep|rg|ag|egrep|fgrep|find|fd|locate)\b/, 'searching company files', 'Searched company files'],
+  [/^\s*(ls|tree|du)\b/, 'looking through a folder', 'Looked through a folder'],
+  [/^\s*python3?\b.*(-m\s+py_?compile|-c\s+['"]?import ast)/, 'checking a script', 'Checked a script'],
+  [/^\s*(node|python3?|bash|sh|npm|npx|deno)\b/, 'running a script', 'Ran a script'],
+  [/^\s*(cat|sed|head|tail|less|more|wc|jq|awk|diff|stat|file|nl)\b/, 'reading a file', 'Read a file'],
+  [/^\s*(cp|mv|rm|mkdir|touch|tee|chmod|ln|install)\b/, 'arranging files', 'Arranged files'],
+];
+// The owner reads these on Today and Crew: a company tool or file in plain words, never its path
+const TOOL_WORDS = { 'hire.js': 'hiring', 'inbox.js': 'asking you a question', 'ask.js': 'asking you a question', 'owner-inbox.js': 'writing to you', 'handoff-status.js': 'checking handoffs',
+  'handoff-archive.js': 'tidying handoffs', 'dispatch.js': 'checking the queue', 'pacer.js': 'checking AI usage', 'governance.js': 'checking the rules', 'guardrails.js': 'checking the guardrails',
+  'models.js': 'checking models', 'cadence.js': 'adjusting the tempo', 'project.js': 'updating a project', 'competence.js': 'reviewing skills', 'performance.js': 'reviewing performance',
+  'external-gate.js': 'checking the external gate', 'console-panel.js': 'working on a console panel', 'station-floor.js': 'working on the floor plan', 'onboard.js': 'checking setup', 'halt.js': 'checking the halt' };
+const toolWords = file => { const b = String(file).split('/').pop(); return (TOOL_WORDS[b] || 'using the ' + b.replace(/\.js$/, '').replace(/[-_]/g, ' ') + ' tool') + '…'; };
+const segments = cmd => String(cmd || '').split(/\s*(?:&&|\|\||;|\|)\s*/).map(x => x.trim()).filter(x => x && !/^(cd|export|set|source|\.|true|echo|printf|sleep)\b/.test(x));
+// plainCommand('cd /x && grep -n foo y') -> { now: 'searching company files', past: 'Searched company files' }
+function plainCommand(cmd, toolWords) {
+  const segs = segments(cmd);
+  for (const s of segs) { const t = /\bnode\s+(?:\S*\/)?(company\/tools\/[\w.-]+\.js)\b/.exec(s); if (t && toolWords && !/\.test\.js$/.test(t[1]) && !/\s--?selftest\b|\sselftest\b/.test(s)) { const w = toolWords(t[1]).replace(/…$/, ''); const b = t[1].split('/').pop(); return { now: w, past: TOOL_WORDS[b] ? 'Used the company tool for ' + w : 'Used the ' + b.replace(/\.js$/, '').replace(/[-_]/g, ' ') + ' tool' }; } }
+  for (const [re, now, past] of CMD_KINDS) for (const s of segs) if (re.test(s)) {
+    if (now === 'reading a file' && /company\/tools\//.test(s)) return { now: 'reading a company tool', past: 'Read a company tool' };
+    if (now === 'fetching a web page') { const u = /https?:\/\/([^\s/"']+)/.exec(s); if (u) return { now: 'fetching ' + u[1], past: 'Fetched ' + u[1] }; }
+    return { now, past };
+  }
+  return { now: 'running a command', past: 'Ran a command' };
+}
+// tool-call markup an agent's output can carry (<invoke …>, <parameter name="cmd">…, <function_calls>), cut out;
+// the commands inside are returned so the caller can say what ran. A truncated tag (no closing >) is cut too.
+function stripToolMarkup(text) {
+  let t = String(text || ''); const cmds = [];
+  const grab = v => { v = String(v || '').trim(); if (v) cmds.push(v); };
+  t = t.replace(/<parameter\s+name="(?:cmd|command)"\s*>?([\s\S]*?)(?:<\/parameter>|<\/invoke>|$)/gi, (_, v) => { grab(v); return ' '; });
+  t = t.replace(/<\/?(?:antml:)?(?:function_calls|invoke|parameter|tool_use|tool_call|tool_result|function_results|result|output)\b[^>]*>?/gi, ' ');
+  t = t.replace(/<(?:antml:)?(?:invoke|parameter)\b[\s\S]*$/i, ' ');
+  t = t.replace(/\{"(?:cmd|command)"\s*:\s*"((?:[^"\\]|\\.)*)"?\}?/g, (_, v) => { grab(v.replace(/\\"/g, '"')); return ' '; });
+  return { text: t.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim(), commands: cmds };
+}
+
+const firstSentence = t => { const s = stripToolMarkup(t).text.replace(/[#*_`>\[\]]/g, '').replace(/\s+/g, ' ').trim(); const m = /^(.{8,220}?[.!?])(\s|$)/.exec(s); return (m ? m[1] : s.slice(0, 200)) || ''; };
+// a finished run's line: its reply's first sentence; output that was only tool-call markup says what ran, in plain
+// words ("Ran a test", else "Ran a command"), with the command itself under Details (detail)
+function runText(out, toolsOk, rel) {
+  const st = stripToolMarkup(out); const first = firstSentence(st.text);
+  if (first && first.length >= 3) return { text: first };
+  if (st.commands.length) return { text: plainCommand(st.commands[0], toolWords).past + (st.commands.length > 1 ? ' and ' + (st.commands.length - 1) + ' more' : '') + '.', detail: st.commands.map(c => (rel ? rel(c) : c).slice(0, 300)).join('\n') };
+  return { text: toolsOk ? toolsOk + ' tool steps' : '' };
+}
+
 module.exports = function activity(deps) {
   const { co, stationGet, emit, tool } = deps;
   const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } };
@@ -25,12 +83,6 @@ module.exports = function activity(deps) {
 
   /* ---------- the current step, in words ---------- */
   const rel = p => String(p || '').replace(co.ROOT + path.sep, '').replace(/^\.\//, '');
-  // The owner reads these on Today and Crew: a company tool or file in plain words, never its path
-  const TOOL_WORDS = { 'hire.js': 'hiring', 'inbox.js': 'asking you a question', 'ask.js': 'asking you a question', 'owner-inbox.js': 'writing to you', 'handoff-status.js': 'checking handoffs',
-    'handoff-archive.js': 'tidying handoffs', 'dispatch.js': 'checking the queue', 'pacer.js': 'checking AI usage', 'governance.js': 'checking the rules', 'guardrails.js': 'checking the guardrails',
-    'models.js': 'checking models', 'cadence.js': 'adjusting the tempo', 'project.js': 'updating a project', 'competence.js': 'reviewing skills', 'performance.js': 'reviewing performance',
-    'external-gate.js': 'checking the external gate', 'console-panel.js': 'working on a console panel', 'station-floor.js': 'working on the floor plan', 'onboard.js': 'checking setup', 'halt.js': 'checking the halt' };
-  const toolWords = file => { const b = String(file).split('/').pop(); return (TOOL_WORDS[b] || 'using the ' + b.replace(/\.js$/, '').replace(/[-_]/g, ' ') + ' tool') + '…'; };
   const place = p => {
     const s = String(p || '');
     if (/(^|\/)CHARTER\.md$/.test(s)) return 'the charter';
@@ -49,9 +101,7 @@ module.exports = function activity(deps) {
         const c = rel(String(cmd)).replace(/\s+/g, ' ');
         const tool = /node\s+(?:\S*\/)?(company\/tools\/[\w.-]+\.js)(\s+[\w-]+)?/.exec(c);
         if (tool) return toolWords(tool[1]);
-        const url = /https?:\/\/[^\s"']+/.exec(c);
-        if (/^\s*(curl|wget)\b/.test(c) && url) return 'fetching ' + host(url[0]);
-        return 'running `' + c.slice(0, 70) + (c.length > 70 ? '…' : '') + '`';
+        return plainCommand(c, toolWords).now;
       }
       if (obj.url) return 'reading ' + host(obj.url);
       if (obj.query || obj.q) return 'searching for “' + String(obj.query || obj.q).slice(0, 60) + '”';
@@ -64,11 +114,18 @@ module.exports = function activity(deps) {
     if (/fs_read|read_file|fs\.read/i.test(n)) return 'reading ' + place(a);
     if (/fs_list|list_dir|fs\.list/i.test(n)) return 'looking through ' + (a ? place(a) : 'a folder');
     if (/fs_write|fs_append|fs_edit|fs_patch|write_file/i.test(n)) return 'writing ' + place(a);
-    if (/web|search|fetch/i.test(n)) return 'searching the web' + (a ? ': ' + a : '');
-    if (/^(code\.run|shell|shell_bg|terminal)/i.test(n)) return 'running ' + (a || 'a command');
+    if (/web|search|fetch/i.test(n)) return 'searching the web';
+    if (/^(code\.run|shell|shell_bg|terminal)/i.test(n)) return a ? plainCommand(a, toolWords).now : 'running a command';
     if (/memory/i.test(n)) return 'checking its notes';
     if (/team\.|dispatch|spawn/i.test(n)) return 'handing work to a colleague';
-    return n.replace(/[_.]/g, ' ') + (a ? ' ' + a : '');
+    return 'using ' + (n ? 'the ' + n.replace(/[_.]+/g, ' ').trim() + ' tool' : 'a tool');
+  }
+  // the raw command or argument of a step, for Watch / Details only
+  function stepRaw(args) {
+    const raw = String(args || '').trim(); let obj = null;
+    if (/^\{/.test(raw)) { try { obj = JSON.parse(raw); } catch (_) {} }
+    const v = obj && typeof obj === 'object' ? obj.cmd || obj.command || obj.url || obj.path || obj.file || obj.query || obj.q || raw : raw;
+    return rel(String(v)).slice(0, 400);
   }
   function runRow(id) { let r = live.get(id); if (!r) { r = { runId: id, agentId: '', startedAt: Date.now(), events: [], text: '', usd: 0, step: null, steps: 0 }; live.set(id, r); } return r; }
   function push(r, ev) { ev.seq = ++seq; r.events.push(ev); if (r.events.length > 400) r.events.splice(0, r.events.length - 400); }
@@ -82,7 +139,7 @@ module.exports = function activity(deps) {
     if (!r) return;
     if (p.agentId && !r.agentId) r.agentId = p.agentId;
     if (name === 'agent.token') { r.text = (r.text + p.delta).slice(-6000); push(r, { name: 'token', delta: p.delta }); }
-    else if (name === 'agent.tool_call') { r.step = stepText(p.name, p.argsSummary); r.steps++; push(r, { name: 'tool', tool: p.name, text: r.step, callId: p.callId }); emit('now'); }
+    else if (name === 'agent.tool_call') { r.step = stepText(p.name, p.argsSummary); r.steps++; push(r, { name: 'tool', tool: p.name, text: r.step, raw: stepRaw(p.argsSummary), callId: p.callId }); emit('now'); }
     else if (name === 'agent.tool_result') push(r, { name: 'result', callId: p.callId, ok: !!p.ok && !p.isError, summary: p.summary || '' });
     else if (name === 'agent.cost') { r.usd += Number(p.usd) || 0; }
     else if (name === 'agent.run.error') push(r, { name: 'error', message: p.message || 'run failed' });
@@ -204,7 +261,6 @@ module.exports = function activity(deps) {
   }
 
   /* ---------- recent activity ---------- */
-  const firstSentence = t => { const s = String(t || '').replace(/[#*_`>\[\]]/g, '').replace(/\s+/g, ' ').trim(); const m = /^(.{8,220}?[.!?])(\s|$)/.exec(s); return (m ? m[1] : s.slice(0, 200)) || ''; };
   function linksFor(text) {
     const out = []; const t = String(text || '');
     const add = (label, href) => { if (!out.some(x => x.href === href)) out.push({ label, href }); };
@@ -240,10 +296,10 @@ module.exports = function activity(deps) {
       const what = /^console-/.test(String(r.streamId || '')) ? 'chatted with you' : job ? 'ran "' + job.name + '"' : r.surface === 'autonomous' ? 'ran a routine' : 'ran';
       items.push({ at: new Date(Number(r.endedAt || r.ts)).toISOString(), kind: 'run', who: crewName(r.agentId), agentId: r.agentId, runId: r.runId,
         title: crewName(r.agentId) + ' ' + what, outcome: r.outcome || (r.reason === 'done' ? 'succeeded' : r.reason || null), usd: Number(r.usd) || 0,
-        text: firstSentence(out) || (r.toolsOk ? r.toolsOk + ' tool steps' : ''), links: linksFor(out).concat([{ label: crewName(r.agentId), href: '#/crew/' + r.agentId }]) });
+        ...runText(out, r.toolsOk, rel), links: linksFor(out).concat([{ label: crewName(r.agentId), href: '#/crew/' + r.agentId }]) });
     }
     // runs we watched end that runs.jsonl does not have yet
-    for (const r of ended) if (!items.some(x => x.runId === r.runId) && r.endedAt >= since) items.push({ at: new Date(r.endedAt).toISOString(), kind: 'run', who: crewName(r.agentId), agentId: r.agentId, runId: r.runId, title: crewName(r.agentId) + ' ran', outcome: r.outcome, usd: r.usd, text: firstSentence(r.text), links: linksFor(r.text) });
+    for (const r of ended) if (!items.some(x => x.runId === r.runId) && r.endedAt >= since) items.push({ at: new Date(r.endedAt).toISOString(), kind: 'run', who: crewName(r.agentId), agentId: r.agentId, runId: r.runId, title: crewName(r.agentId) + ' ran', outcome: r.outcome, usd: r.usd, ...runText(r.text, 0, rel), links: linksFor(r.text) });
     // hiring: every round's log (open, interviews, hire), with the governance level that let it happen
     const lvl = govLevel('hiring');
     let rounds = []; try { rounds = fs.readdirSync(co.p('company', 'hiring')).filter(d => fs.existsSync(co.p('company', 'hiring', d, 'log.md'))); } catch (_) {}
@@ -285,3 +341,6 @@ module.exports = function activity(deps) {
 
   return { start, stop, now, runEvents, recent, onEvent, stepText, feed: () => feed };
 };
+module.exports.plainCommand = plainCommand;
+module.exports.stripToolMarkup = stripToolMarkup;
+module.exports.runText = runText;

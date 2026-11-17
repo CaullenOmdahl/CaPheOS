@@ -181,8 +181,10 @@ dialog.modal { border: 1px solid var(--status-danger); border-radius: var(--radi
 dialog.modal::backdrop { background: var(--scrim); }
 
 /* ---- Today ---- */
-.gates { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
-.gate { display: flex; flex-direction: column; gap: 14px; padding: 24px; background: var(--surface-card); border-radius: var(--radius-lg); border: 1px solid var(--border-hairline); }
+/* Needs you: one readable column of full-width cards (two only on very wide screens), each as tall as its content */
+.gates { display: grid; grid-template-columns: minmax(0, 760px); gap: 16px; align-items: start; }
+@media (min-width: 1800px) { .gates { grid-template-columns: repeat(2, minmax(0, 760px)); } }
+.gate { display: flex; flex-direction: column; gap: 14px; padding: 24px; min-width: 0; background: var(--surface-card); border-radius: var(--radius-lg); border: 1px solid var(--border-hairline); }
 .gate.fresh { border: 1px solid var(--accent); box-shadow: var(--shadow-md); animation: cp-fade-up var(--dur-slow) var(--ease-out); }
 .gate .q-body { white-space: pre-wrap; }
 .just-now { font: 600 12px/1 var(--font-sans); color: var(--accent); }
@@ -304,14 +306,33 @@ dl.kv dt { color: var(--text-muted); } dl.kv dd { margin: 0; color: var(--text-s
 .gate .secret-mask { -webkit-text-security: disc; font-family: var(--font-mono, monospace); }
 .gate .secret-input { font-family: var(--font-mono, monospace); }
 .gate .check.attn { color: var(--status-danger); font-weight: 600; }
-.gate .snooze-menu[hidden] { display: none; }
+.gate .snooze-menu[hidden], .gate .more-menu[hidden], .gate .q-reply[hidden], .gate .q-note[hidden] { display: none; }
+.gate .q-meta { gap: 8px 12px; flex-wrap: wrap; }
+.gate .q-actions { align-items: center; flex-wrap: wrap; gap: 8px; }
+.gate .more { position: relative; margin-left: auto; }
+.gate .more-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; min-width: 200px; max-width: calc(100vw - 48px); padding: 6px; gap: 2px; box-shadow: var(--shadow-md); }
+.gate .more-menu .more-item { justify-content: flex-start; width: 100%; color: var(--text-body); }
+.gate .more-menu .snooze-menu { flex-direction: column; align-items: stretch; padding-left: 12px; gap: 2px; }
+.gate .q-card-details { margin-top: -6px; }
+.gate .err-line:empty, .gate .store-err:empty { display: none; }
+.gate .q-parts.numbered { border-left: 2px solid var(--border-hairline); padding-left: 12px; }
+.gate .q-secret-row { display: flex; gap: 8px; align-items: flex-start; }
+.gate .q-secret-slot { flex: 1 1 auto; min-width: 0; }
+.gate .q-secret-slot .input, .gate .q-secret-slot .textarea { width: 100%; }
+.link-btn { background: none; border: 0; padding: 4px 0; min-height: 32px; font: var(--type-body-s); color: var(--text-accent); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; align-self: flex-start; }
+.link-btn:hover { color: var(--accent-hover); }
+.link-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-sm); }
+.link-btn[hidden] { display: none; }
+.meter > .meter-mark { position: absolute; top: -2px; bottom: -2px; width: 2px; margin-left: -1px; background: var(--text-strong); opacity: .55; }
+.sprint-chip .pulse.warn { background: var(--status-warning); box-shadow: none; }
+.sprint-more details.tech[open] { flex-basis: 100%; }
+.now-watch .chat-step .step-raw { display: block; overflow-wrap: anywhere; }
 .gate .q-secret-hint > summary { min-height: 36px; display: flex; align-items: center; }
 .q-slider { max-width: 520px; }
 .q-slider .q-range { width: 100%; min-height: 36px; accent-color: var(--accent); }
 .q-slider .q-range:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-md); }
 .q-slider .q-say { color: var(--text-strong); }
-.q-slider .q-range-marks { position: relative; height: 16px; }
-.q-slider .q-range-marks > span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.q-slider .q-range-ends { gap: 16px; } .q-slider .q-range-ends > span:last-child { text-align: right; }
 
 /* ---- Settings: a section list beside one section; tabs on a phone ---- */
 .stack-32 { display: flex; flex-direction: column; gap: 32px; } .stack-36 { display: flex; flex-direction: column; gap: 36px; }

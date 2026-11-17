@@ -10,7 +10,10 @@
  *  - the sidebar is Today · Chat · Crew · Work · Spend, then Settings pinned last; no Feature map; Setup only until certified;
  *  - every owner-facing screen, at desktop (1280 px) and phone (390 px) width, renders without a page exception, keeps the
  *    halt buttons on screen, and shows no `company/`, `.js` or `/api/` text outside a Details disclosure (agent-written
- *    markdown, `.md`, and a crew-made panel's body, `.panel-body`, are the crew's own words and are not checked);
+ *    markdown, `.md`, and a crew-made panel's body, `.panel-body`, are the crew's own words and are not checked), nor raw
+ *    ids and tags (question ids, candidate ids, pacing tags, lane counters); Today is walked with the question fixtures;
+ *  - Today's Now steps and Recent activity carry no shell command or tool-call markup, even inside their markdown;
+ *  - Spend folds interview candidates into one row; Work and Crew show display names; Crew shows lanes only while running;
  *  - Crew shows its Floor tab only when the station reports a floor plan (a second, headless mock hides it);
  *  - while the company is not certified, #/setup stays the first-run wizard and the landing page is Setup.
  * Starts the mocks on free ports (never 8800). Exits 0 with "SKIP" when no Chrome is installed or Node has no WebSocket;
@@ -46,7 +49,11 @@ const REDIRECTS = [
 // every owner-facing screen (the halt screen included)
 const SCREENS = ['#/today', '#/chat/owner', '#/chat/agent:agent', '#/chat/group:g1', '#/crew', '#/crew/agent/model', '#/crew/hiring', '#/crew/floor', '#/work/quests', '#/work/handoffs', '#/work/decisions', '#/work/projects',
   '#/spend', '#/settings/company', '#/settings/autonomy', '#/settings/tempo', '#/settings/models', '#/settings/connections', '#/settings/pages', '#/settings/system', '#/halt'];
-const LEAK = /company\/|\.js\b|\/api\//;
+// file paths, tool names, API routes, and the raw ids, tags and counters the owner should never read outside Details:
+// question ids, candidate seat ids, governance/pacing tags, tool-call markup, lane counters, the pacer's jargon
+const LEAK = /company\/|\.js\b|\/api\/|\bq-\d{4,}\b|\bcand-[a-z]|\b(governance|pacing):|<parameter|<invoke|parameter name=|lanes? running|days' share|% did nothing|\/item\b|proposals\/h|spend rail|\(owner-only|mode 0600/;
+// agent-written text the console summarises (Now steps, Recent activity) is checked too, inside its markdown
+const MARKUP = /<parameter|<invoke|parameter name=|`[^`]*(cd |grep|&&)|\bcd \/|&&|\/home\//;
 // the visible text of the page outside any <details> body, outside agent-written markdown, scripts and styles
 const VISIBLE = `(() => { const out = []; const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); let n;
   while ((n = w.nextNode())) { const el = n.parentElement; if (!el || el.closest('script,style,noscript,dialog:not([open])')) continue;
@@ -115,6 +122,11 @@ async function startMock(env) {
         const halt = await js(`(() => { const a = document.querySelector('.halt-btns a.halt-hard'); return !!a && a.getClientRects().length > 0; })()`);
         const wide = await js(`document.documentElement.scrollWidth <= window.innerWidth + 1`);
         check(label + ' ' + s + ' renders, keeps the halt buttons, no file paths, tool names or API routes outside Details' + (w < 600 ? ', no sideways scroll' : ''), !!ok && !errors.length && halt && !leaks.length && (w >= 600 || wide), { errors, leaks: leaks.slice(0, 6), halt, wide });
+        if (s === '#/today') {
+          const sum = await js(`(() => { const out = []; for (const el of document.querySelectorAll('.now-run .now-step, .timeline > li')) { const c = el.cloneNode(true); c.querySelectorAll('details').forEach(d => d.remove()); out.push(c.innerText); } return out; })()`);
+          const bad = (sum || []).filter(t => MARKUP.test(t));
+          check(label + ' Today: Now steps and Recent activity carry no shell command or tool-call markup (outside Details)', sum && sum.length >= 4 && !bad.length, { bad: bad.slice(0, 4), n: sum && sum.length });
+        }
         if (SHOTS) await shot(label + '-' + s.replace(/[#/:?=]+/g, '-').replace(/^-|-$/g, ''));
       }
     }
@@ -149,6 +161,18 @@ async function startMock(env) {
     // Spend is read-only: no inputs, and it links to Settings for the limits
     await go('#/spend');
     check('Spend shows today against the cap, by seat and by provider, and the week\'s subscription use, read-only', await until(() => js(`(() => { const m = document.getElementById('main'); const t = m.innerText; return /of \\$5/.test(t) && /By seat/.test(t) && /By provider/.test(t) && /Subscriptions this week/.test(t) && !m.querySelector('input, select, textarea') && !!m.querySelector('a[href="#/settings/models"]'); })()`), 5000));
+    // Spend › By seat: interview candidates in one row that opens to their names; the crew by display name
+    const seatsTxt = await js(`(() => { const r = [...document.querySelectorAll('#set-seats tr')].map(t => t.innerText.replace(/\\s+/g, ' ')); const g = document.querySelector('#set-seats [data-candidates]'); return { r, n: g && g.dataset.candidates, names: g && [...g.querySelectorAll('li')].map(l => l.firstChild.textContent) }; })()`);
+    check('Spend › By seat: "Interview candidates (12)" as one row that lists their names; "Nadia Farrell" on her own row; no raw ids', seatsTxt && seatsTxt.n === '12' && seatsTxt.r.some(x => /^Interview candidates \(12\) \$0\.2\d/.test(x)) && seatsTxt.names.includes('Tobias Lin') && seatsTxt.r.some(x => /^Nadia Farrell \$/.test(x)) && !seatsTxt.r.some(x => /cand-/.test(x)), seatsTxt);
+    // Work › Quests: the owner's display name, the quest id only under Details
+    await go('#/work/quests');
+    const qw = await until(() => js(`(() => { const t = (document.getElementById('main') || {}).innerText || ''; return /Backtest the quote recorder/.test(t) ? t : null; })()`), 5000);
+    check('Work › Quests: owners by display name ("Nadia Farrell"), no "q:8" or raw agent ids in view', qw && /Nadia Farrell/.test(qw) && !/\bq:\d/.test(qw) && !/cand-|tools1/.test(qw), qw && qw.slice(0, 400));
+    // Crew: the status words Today uses; lanes only while a seat runs more than one thing, never for the CEO
+    await go('#/crew');
+    const cw = await until(() => js(`(() => { const r = [...document.querySelectorAll('.crew-item')].map(b => ({ id: b.dataset.seat, t: b.innerText.replace(/\\s+/g, ' ') })); return r.some(x => /Resting/.test(x.t)) ? r : null; })()`), 5000);
+    const seat = id => ((cw || []).find(x => x.id === id) || {}).t || '';
+    check('Crew: "Nadia Farrell" Resting with the dispatcher\'s reason (not Idle beside "working"); Teo "Working on 2 things at once"; the Founder shows no lanes', cw && /Nadia Farrell/.test(seat('cand-tools-backtest-engineer-1-n')) && /Resting/.test(seat('cand-tools-backtest-engineer-1-n')) && !/Idle/.test(seat('cand-tools-backtest-engineer-1-n')) && /Working on 2 things at once/.test(seat('tools1')) && !/lane|things at once/i.test(seat('agent')) && !(cw || []).some(x => /Sprint:|lanes? running/.test(x.t)), cw);
 
     /* ---- a company still in its first run, on a headless station ---- */
     await send('Page.navigate', { url: 'http://127.0.0.1:' + fresh.port + '/' });

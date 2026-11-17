@@ -3,6 +3,7 @@ import { h, fill, Button, Tag, errLine, empty, tabs, screenHead, table, rel, Det
 import { api } from '../api.js';
 import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
+import { personName, nameFromId } from '../plain.js';
 
 
 export async function render(root, ctx) {
@@ -28,10 +29,11 @@ export async function render(root, ctx) {
     fill(body, h('p', { class: 'caption muted' }, 'Loading…'));
     try {
       if (tab === 'quests') {
-        const d = await api('/station/quests');
+        const [d, names] = await Promise.all([api('/station/quests'), seatNames()]);
         const qs = d.quests || [];
+        const who = q => q.agentName ? personName(q.agentName) : names[q.agentId] || nameFromId(q.agentId) || '';
         const col = (name, list) => h('section', { class: 'stack-12' }, h('h2', { class: 'eyebrow-t' }, name + ' · ' + list.length),
-          list.length ? list.map(questCard) : h('p', { class: 'caption muted' }, 'None.'));
+          list.length ? list.map(q => questCard(q, who(q))) : h('p', { class: 'caption muted' }, 'None.'));
         const open = qs.filter(q => q.status === 'open');
         const blocked = open.filter(q => /block|wait/i.test(String(q.disposition || '') + ' ' + String(q.whyNow || '')));
         const progress = open.filter(q => !blocked.includes(q));
@@ -82,14 +84,21 @@ function inboxName(f) { const b = String(f || '').split('/').pop().replace(/\.md
 function folderName(p) { const parts = String(p || '').split('/').filter(Boolean); return parts.pop() || 'Project'; }
 // a quest title often ends "-> company/work/…/file.md": the place it delivers to goes behind Details
 function questTitle(q) { const m = /^(.*?)\s*(?:->|→)\s*(\S+\/\S+)\s*$/.exec(String(q.title || '')); return m ? { title: m[1], to: m[2] } : { title: q.title || '(untitled)', to: q.contract && q.contract.key || null }; }
-function questCard(q) {
+// seat id -> display name, from the crew and the hiring rounds' candidates
+async function seatNames() {
+  const out = {};
+  try { for (const r of (await api('/hiring')).rounds || []) for (const c of r.candidates || []) if (c.agentId && c.name) out[c.agentId] = personName(c.name); } catch (_) {}
+  try { for (const s of (await api('/crew')).seats || []) if (s.id && s.name) out[s.id] = personName(s.name); } catch (_) {}
+  return out;
+}
+function questCard(q, owner) {
   const steps = q.steps || []; const done = steps.filter(s => s.done).length;
   const pct = steps.length ? Math.round(done / steps.length * 100) : q.status === 'done' ? 100 : 0;
   const next = steps.find(s => !s.done);
   return h('article', { class: 'card p18', style: 'gap:10px' },
-    h('div', { class: 'between-c' }, h('span', { class: 'mono muted' }, q.id), h('span', { class: 'caption muted' }, q.agentName || q.agentId || '')),
-    h('h3', { class: 'label strong', style: 'line-height:1.35;margin:0' }, questTitle(q).title),
+    h('div', { class: 'between-c' }, h('h3', { class: 'label strong', style: 'line-height:1.35;margin:0' }, questTitle(q).title)),
+    owner ? h('span', { class: 'caption muted quest-owner' }, owner) : null,
     h('div', { class: 'meter thin', role: 'img', 'aria-label': done + ' of ' + steps.length + ' steps done' }, h('div', { style: 'width:' + pct + '%' })),
     h('span', { class: 'caption muted' }, q.status === 'done' ? 'Done' + (q.attest ? ' · attested' : '') : next ? 'Next: ' + (next.label || next.key) : q.whyNow || ''),
-    questTitle(q).to ? Details('Details', h('code', { class: 'mono-s' }, 'Delivers ' + questTitle(q).to)) : null);
+    Details('Details', h('code', { class: 'mono-s' }, 'Quest ' + q.id + (q.agentId ? ' · owner ' + q.agentId : '') + (questTitle(q).to ? ' · delivers ' + questTitle(q).to : ''))));
 }

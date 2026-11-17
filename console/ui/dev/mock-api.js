@@ -29,6 +29,12 @@ const ago = m => new Date(Date.now() - m * 60000).toISOString();
 
 // the real question schema (company/tools/inbox.js is pure for these calls: no company files are read or written)
 const INBOX = require(path.join(REPO, 'company', 'tools', 'inbox.js'));
+// the console's own plain-words step and run-summary code (console/activity.js), fed raw commands and tool markup
+const ACTIVITY = require(path.join(REPO, 'console', 'activity.js'));
+const MOCK_ROOT = '/home/owner/Companies/example';
+const ACT = ACTIVITY({ co: { ROOT: MOCK_ROOT, crew: () => ({}) }, stationGet: async () => ({ ok: false }), emit() {}, tool() { throw new Error('mock'); } });
+const RAW_STEP = 'cd ' + MOCK_ROOT + ' && grep -n "decisions.md" company/work/security/locked-changes.md | tail -5';
+const RAW_RUN_OUT = '<parameter name="cmd"cd ' + MOCK_ROOT + ' && python3 -I -m py_compile company/work/sim/scripts/record.py && systemctl --user restart example-recorder.servic';
 function typedFixtures() {
   const mk = (id, mins, o) => { const form = o.form ? INBOX.normalizeForm(o.form) : INBOX.normalizeForm(INBOX.expandKind(o.kind, o.spec));
     return { id, from: o.from || 'Founder', about: o.about || 'access', blocking: false, askedAt: ago(mins), batch: null, kind: o.form ? 'form' : o.kind, form,
@@ -114,6 +120,7 @@ const S = {
   seats: [
     { id: 'agent', name: 'Founder', title: 'Founder and CEO', seat: 'founder', role: 'agent.md', functions: ['ceo', 'risk', 'floor', 'finance'], loop: 'Founder loop', priority: 100, inbox: 'to-founder.md', log: 'founder-log.md', wakeOnInbox: true, manager: null, station: { agentId: 'agent', model: 'example-model-large', status: 'working' } },
     { id: 'people1', name: 'Mira', title: 'People Manager', seat: 'people', role: 'people-manager.md', functions: ['people'], loop: 'People loop', priority: 50, manager: 'agent', station: { agentId: 'people1', model: 'example-model-medium', status: 'idle' } },
+    { id: 'cand-tools-backtest-engineer-1-n', name: 'Nadia farrell', title: 'Tools & Backtest Engineer', seat: 'specialist', role: 'nadia-farrell.md', functions: [], loop: 'Nadia farrell loop', priority: 40, manager: 'agent', hiredIn: 'tools-backtest-engineer-1', station: { agentId: 'cand-tools-backtest-engineer-1-n', status: 'idle' } },
     { id: 'tools1', name: 'Teo', title: 'Tool Builder', seat: 'tools', role: 'tool-builder.md', functions: ['tools'], loop: 'Tools loop', priority: 60, manager: 'agent', station: { agentId: 'tools1', status: 'blocked' } },
   ],
   handoffs: [
@@ -143,11 +150,20 @@ const S = {
 S.company.onboarding = { certified: CERTIFIED, kickoff: CERTIFIED ? { status: 'ok', at: ago(4), planOpen: true } : null };
 S.company.ceo = { id: 'agent', name: 'Founder' };
 // live chat transcripts (console-<id>) and the runs in flight (Now strip); one fake in-flight routine run
+const IDLE = {
+  people1: { state: 'waiting', reason: 'waiting on Founder for 2 items', waitingOn: ['Founder'], since: ago(30), qid: null },
+  'cand-tools-backtest-engineer-1-n': { state: 'resting', reason: 'nothing new since its last run; looks again at 16:34', waitingOn: [], since: ago(20), qid: null },
+};
 S.chats = { agent: [{ role: 'user', content: 'What is on today?', at: ago(30) }, { role: 'assistant', content: 'Two quests and **one handoff** due at 17:00. See [the handoffs](console:#/work/handoffs).', at: ago(29) }] };
 // MOCK_CHAT_TURNS=N: a long conversation with the Founder (the chat's rolling window and backscroll)
 if (Number(process.env.MOCK_CHAT_TURNS) > 0) for (let k = Number(process.env.MOCK_CHAT_TURNS); k > 0; k--) S.chats.agent.unshift({ role: k % 2 ? 'assistant' : 'user', content: 'Message ' + k + ' of the earlier conversation.', at: ago(30 + k) });
 if (Number(process.env.MOCK_CHAT_TURNS) > 0) for (let k = Number(process.env.MOCK_CHAT_TURNS); k > 0; k--) S.messages.unshift({ dir: 'out', id: 'out-mock-' + k, at: ago(30 + k), from: 'Founder', text: 'Owner channel message ' + k + '.' });
-S.live = STATION_DOWN ? [] : [{ runId: 'run-live-1', agentId: 'agent', name: 'Founder', startedAt: Date.now() - 4 * 60000, kind: 'routine', label: 'routine "Founder loop"', href: '#/settings/tempo/routines', step: 'hiring…', steps: 7, usd: 0.0123, stoppable: true, watched: true }];
+S.live = STATION_DOWN ? [] : [
+  { runId: 'run-live-1', agentId: 'agent', name: 'Founder', startedAt: Date.now() - 4 * 60000, kind: 'routine', label: 'routine "Founder loop"', href: '#/settings/tempo/routines', step: 'hiring…', steps: 7, usd: 0.0123, stoppable: true, watched: true },
+  // a seat with two things running at once (a Sprint lane): its step is a raw shell command, said in plain words
+  { runId: 'run-live-2', agentId: 'tools1', name: 'Teo', startedAt: Date.now() - 2 * 60000, kind: 'routine', label: 'routine "Tools loop"', href: '#/settings/tempo/routines', step: ACT.stepText('shell', JSON.stringify({ cmd: RAW_STEP })), steps: 3, usd: 0.004, stoppable: true, watched: true },
+  { runId: 'run-live-3', agentId: 'tools1', name: 'Teo', startedAt: Date.now() - 60000, kind: 'lane', label: 'lane 2: fix the intake form', href: '#/crew/tools1', step: ACT.stepText('shell', JSON.stringify({ cmd: 'bash scripts/test.sh' })), steps: 1, usd: 0.001, stoppable: true, watched: true }
+];
 S.charterText = CERTIFIED ? '# Example Co — Company Charter\n\n## Mandate\n\nWe run an example business.\n\n**For whom:** Example customers\n\n## What is out of scope\n\nNothing regulated.\n\n## First goal\n\nFirst sale.\n' : '# Example Co — Company Charter\n\n## Mandate\n\n<What the company exists to do, for whom, and how it makes money.>\n\n## What is out of scope\n\n<Work the company will not take on.>\n';
 const PRESETS = { 'approve-everything': 'Approve everything', 'gate-money-people': 'Gate money and people', 'gate-money': 'Gate money', autonomous: 'Autonomous' };
 const CATS = { hiring: 'opening a role and picking the hire', release: 'releasing or replacing a crew member', budget: 'setting or changing the metered cap', spend: 'new spend inside the approved cap',
@@ -250,6 +266,11 @@ async function apiRoute(req, res, p, q) {
     return;
   }
   if (p.startsWith('/api/station/')) return station(req, res, p.slice('/api/station/'.length), q, B);
+  // Watch: a run's steps, each in plain words with its raw command (Watch is where the command may be read)
+  { const m = M === 'GET' && /^\/api\/now\/run\/([\w-]+)$/.exec(p); if (m) { const r = S.live.find(x => x.runId === m[1]); if (!r) return ok({ known: false, events: [], done: null });
+    const after = Number(q.get('after')) || 0;
+    const ev = [{ seq: 1, name: 'tool', tool: 'shell', text: r.step, raw: r.agentId === 'tools1' ? RAW_STEP : 'node company/tools/hire.js status', callId: 'c1' }, { seq: 2, name: 'result', callId: 'c1', ok: true }, { seq: 3, name: 'token', delta: 'Looking at the open items.' }];
+    return ok({ known: true, runId: r.runId, agentId: r.agentId, name: r.name, events: ev.filter(e => e.seq > after), seq: 3, done: false }); } }
   switch (M + ' ' + p) {
     case 'GET /api/company': return J(res, 200, S.company);
     case 'GET /api/questions': return ok({ questions: S.questions.map(present) });
@@ -258,10 +279,14 @@ async function apiRoute(req, res, p, q) {
     case 'POST /api/owner/messages': { if (!B.text) return J(res, 400, { ok: false, error: 'text is required' }); const m = { dir: 'in', id: 'in-' + Date.now(), at: now(), from: 'Sam Owner', text: (B.to ? B.to + ', ' : '') + B.text }; S.messages.push(m); emit('owner'); return ok({ message: ownerView().messages.find(x => x.id === m.id) }); }
     case 'GET /api/now': return ok({ station: { up: !STATION_DOWN, feed: !STATION_DOWN }, runs: S.live.map(r => Object.assign({}, r, { elapsedSec: Math.round((Date.now() - r.startedAt) / 1000) })),
       seats: S.seats.map(x => Object.assign({ id: x.id, name: x.name, title: x.title, running: S.live.filter(r => r.agentId === x.id).length, loop: x.loop || null, enabled: true, nextRunAt: new Date(Date.now() + 50 * 60000).toISOString(), soonerBecause: x.id === 'agent' ? ['1 open handoff'] : [], wakesOnMessage: x.id === 'agent', schedulerOn: true },
-        S.cadence.sprint.active ? { sprint: S.live.some(r => r.agentId === x.id) || x.id === 'agent' ? 'working' : 'waiting for work', lanes: { running: S.live.filter(r => r.agentId === x.id).length, max: 1, possible: x.id === 'tools1' ? 2 : 0, why: x.id === 'agent' ? 'the CEO works one run at a time' : 'StarNet lets only one run of an agent write files or use the shell at a time (patch 0012 not applied)' } } : {})),
+        // the dispatcher's reason for a seat that is not running (dispatch-state.json seats, lib/seat-status.js)
+        IDLE[x.id] ? { idle: IDLE[x.id] } : {},
+        S.cadence.sprint.active ? { sprint: S.live.some(r => r.agentId === x.id) || x.id === 'agent' || x.id === 'cand-tools-backtest-engineer-1-n' ? 'working' : 'waiting for work', lanes: { running: S.live.filter(r => r.agentId === x.id).length, max: x.id === 'agent' ? 1 : 2, possible: x.id === 'tools1' ? 2 : x.id === 'cand-tools-backtest-engineer-1-n' ? 1 : 0, why: x.id === 'agent' ? 'the CEO works one run at a time' : '7 open item(s) declare no Touches, so everything runs in one lane',
+          live: x.id === 'tools1' ? [{ n: 2, handoff: '## from Founder — fix the intake form', since: new Date(Date.now() - 60000).toISOString(), runId: 'run-live-3' }] : [] } } : {})),
       sprint: S.cadence.sprint.active ? { on: true, since: S.cadence.sprint.since, until: S.cadence.sprint.until, untilWhy: S.cadence.sprint.untilWhy, by: S.cadence.sprint.by, floorMin: 2, wakes: 14, idleWakes: 2, idleWakeRatio: 0.15, itemsDone: 9, spentUsd: 0.42, budgetUsd: 4, usdPerItem: 0.047, proposalsPerHour: 1, reviewsPerHour: 0.7 } : null });
     case 'GET /api/activity': return ok({ items: [
       { at: ago(12), kind: 'run', who: 'Founder', title: 'Founder ran "Founder loop"', outcome: 'succeeded', usd: 0.0047, text: 'Wrote the first plan to company/work/plan.md and opened a People Manager round.', links: [{ label: 'Quests', href: '#/work/quests' }, { label: 'Hiring', href: '#/crew/hiring' }] },
+      Object.assign({ at: ago(20), kind: 'run', who: 'Teo', title: 'Teo ran "Tools loop"', outcome: 'succeeded', usd: 0, links: [{ label: 'Teo', href: '#/crew/tools1' }] }, ACTIVITY.runText(RAW_RUN_OUT, 0, x => x.split(MOCK_ROOT + '/').join(''))),
       { at: ago(40), kind: 'hiring', who: 'Hiring', title: 'Hired: Mira (people1) as People Manager by Founder', text: 'Crew decides: done without asking you (hiring is set to "auto"; change it in Settings › Autonomy and guardrails)', links: [{ label: 'Crew', href: '#/crew/people1' }, { label: 'Hiring level', href: '#/settings/autonomy/presets' }] },
       { at: ago(300), kind: 'message', who: 'Founder', title: 'Founder wrote to you', text: 'Morning report: two quests moved.', links: [{ label: 'Open', href: '#/chat/owner' }] }] });
     case 'GET /api/setup/charter': { const ph = (S.charterText.match(/<[A-Za-z][^<>\n]{0,200}>/g) || []); return ok({ text: S.charterText, at: ago(60), placeholders: ph, fields: {} }); }
@@ -271,12 +296,14 @@ async function apiRoute(req, res, p, q) {
     case 'GET /api/dispatch': return ok({ state: { lastTick: ago(4) }, log: ['- 06:40 Dispatcher closed quest q:31 on checked evidence.', '- 04:12 woke Mira (handoff to-people.md)', '- 02:05 held 0, woke Teo (quest q:35)', '- 00:15 Pacer moved two routines off the large model'] });
     case 'GET /api/hiring': return ok({ rounds: [{ id: 'analyst-2026-11', title: 'Analyst', openedBy: 'Founder', template: 'specialist', at: ago(2000), candidates: [{ agentId: 'c1', name: 'Candidate A', provider: 'claude', model: 'example-medium', status: 'candidate', interviewedAt: ago(100) }, { agentId: 'c2', name: 'Candidate B', provider: 'minimax', model: 'example-m', status: 'candidate' }] }], templates: ['people-manager', 'tool-builder', 'risk-manager', 'finance-manager', 'floor-manager', 'specialist'] });
     case 'GET /api/spend': return ok({ windowHours: 24, known: true, today: { usd: 1.37, ownerPaidUsd: 0, capUsd: 5, perSeatCapUsd: 2, inFlightRuns: 1 },
-      bySeat: [{ id: 'agent', name: 'Founder', usd: 0.92 }, { id: 'tools1', name: 'Teo', usd: 0.45 }], byProvider: [{ id: 'deepseek', usd: 1.37, capped: true }, { id: 'claude-cli', usd: 0, capped: false }],
+      bySeat: [{ id: 'agent', name: 'Founder', usd: 0.92 }, { id: 'tools1', name: 'Teo', usd: 0.45 }, { id: 'cand-tools-backtest-engineer-1-n', name: 'Nadia farrell', candidate: false, usd: 0.22 }].concat(
+        ['tobias-lin:Tobias Lin', 'oskar-:Oskar Berg', 'imani-okafo:Imani Okafor', 'tomas-fe:Tomas Ferreira', 'junko-:Junko Sato', 'priya-raghun:Priya Raghunathan', 's:Sven Ek', 'r:Ruth Adeyemi', 'clara-vo:Clara Vogel', 'marc-delacro:Marc Delacroix', 'tomas-weiss:Tomas Weiss', 'aisha-bell:Aisha Bello']
+          .map((x, i) => { const [slug, name] = x.split(':'); return { id: 'cand-example-role-1-' + slug, name, candidate: true, round: 'example-role-1', usd: Math.round((0.0206 - i * 0.0005) * 10000) / 10000 }; })), byProvider: [{ id: 'deepseek', usd: 1.37, capped: true }, { id: 'claude-cli', usd: 0, capped: false }],
       subscriptions: Object.keys(S.limits).filter(k => S.limits[k] && S.limits[k].name).map(k => ({ id: k, name: S.limits[k].name, usedPct: S.limits[k].usedPct, weekStop: S.limits[k].weekStop, line: S.limits[k].line, resetsAt: S.limits[k].resetsAt, open: S.limits[k].open, paceBy: S.limits[k].paceBy, why: S.limits[k].why })),
       pacer: { mode: 'shadow', live: false, emergency: null, boost: null, rail: null, problems: [] } });
-    case 'GET /api/usage': return ok({ mode: 'shadow', live: false, claude: { key: 'claude', label: 'Claude Max', known: true, open: true, usedPct: 31, usedToday: 9, line: 14, share: 50, why: 'under today\'s line' },
+    case 'GET /api/usage': return ok({ mode: 'shadow', live: false, claude: { key: 'claude', label: 'Claude Max', known: true, open: true, usedPct: 78, usedToday: null, line: 90, normalLine: 41.9, left: 12, sharesLeft: 0.8, share: 14.3, emergencyOpened: true, why: '12 points under today\'s line (0.8 days\' share) — open only because of the emergency' },
       minimax: { key: 'minimax', label: 'MiniMax', known: true, open: true, usedPct: 24, usedToday: 22, line: 28, share: 50, why: 'near the line' }, deepseek: { label: 'DeepSeek', open: true, why: 'no credit failure seen', reading: null },
-      rail: { known: true, pct: 12, perDay: 25, source: 'runs.jsonl' }, emergency: { active: false }, boost: { on: false, why: 'off' }, problems: [] });
+      rail: { known: true, pct: 12, perDay: 25, source: 'runs.jsonl' }, emergency: { active: true, by: 'Founder', why: 'the owner lifted today\'s line', until: Date.now() + 5 * 3600e3, ceilingPct: 90 }, boost: { on: false, why: 'off' }, problems: [] });
     case 'GET /api/pacer/limits': return ok(S.limits);
     case 'POST /api/pacer/limit': { const l = S.limits[B.provider]; if (!l) return J(res, 400, { ok: false, error: 'provider is claude or minimax' });
       for (const [k, f] of [['weekStop', 'weekStop'], ['useNow', 'useNow']]) if (B[k] != null) { const n = Number(B[k]); if (!(n >= 0 && n <= 100)) return J(res, 400, { ok: false, error: k + ' must be a number from 0 to 100' }); l[f] = n; }
@@ -475,6 +502,7 @@ function station(req, res, p, q, B) {
   if (route === 'GET health') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok'); }
   if (route === 'GET quests') return J(res, 200, { ok: true, quests: [
     { id: 'q:34', title: 'Q1 plan from the charter', agentId: 'agent', status: 'open', steps: [{ key: 'a', label: 'Draft', done: true }, { key: 'b', label: 'Pricing model', done: false }] },
+    { id: 'q:8', title: 'Backtest the quote recorder', agentId: 'cand-tools-backtest-engineer-1-n', status: 'open', steps: [{ key: 'a', label: 'Replay a day', done: true }, { key: 'b', label: 'Compare fills', done: false }] },
     { id: 'q:35', title: 'Matter intake tool', agentId: 'tools1', status: 'open', disposition: 'blocked', steps: [{ key: 'a', label: 'Spec', done: true }, { key: 'b', label: 'Access', done: false }] },
     { id: 'q:31', title: 'Engagement letter template', agentId: 'tools1', status: 'done', attest: true, steps: [{ key: 'a', label: 'x', done: true }] }] });
   if (route === 'GET cron') return J(res, 200, { enabled: true, halted: false, jobs: [

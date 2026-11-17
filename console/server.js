@@ -423,12 +423,16 @@ async function spendView() {
   const b = readJson(co.p('company', 'work', 'finance', 'dispatch-budget.json'), {}) || {};
   let c = null, err = null; try { c = tool('cap-numerator.js').compute({ hours: 24 }); } catch (e) { err = e.message; }
   const crew = (() => { try { return co.crew(); } catch (_) { return {}; } })();
+  const cands = {};
+  try { const dir = co.p('company', 'hiring'); for (const d of fs.readdirSync(dir)) { const r = readJson(path.join(dir, d, 'round.json'), null); for (const x of (r && r.candidates) || []) if (x && x.agentId) cands[x.agentId] = { name: x.name || null, round: d }; } } catch (_) {}
   const [use, lim] = await Promise.all([usage(), runApi('pacer.js', ['limits', '--json'], { timeout: 15000 }).catch(() => null)]);
   const round = v => Math.round((Number(v) || 0) * 10000) / 10000;
   const subs = ['claude', 'minimax'].filter(k => lim && lim[k]).map(k => { const x = lim[k]; return { id: k, name: x.name, usedPct: x.usedPct, weekStop: x.weekStop, line: x.line, resetsAt: x.resetsAt, open: x.open, paceBy: x.paceBy, why: x.why }; });
   return { ok: true, windowHours: 24, known: !!c, error: err,
     today: { usd: round(c && c.metered), ownerPaidUsd: round(c && c.ownerPaid), capUsd: Number(b.dailyUsd) || 0, perSeatCapUsd: Number(b.perAgentUsd) || 0, inFlightRuns: c ? c.inFlightRuns : 0 },
-    bySeat: Object.entries((c && c.byAgent) || {}).map(([id, usd]) => ({ id, name: (crew[id] && crew[id].name) || co.nameOf(id) || id, usd: round(usd) })).sort((a, z) => z.usd - a.usd),
+    // an interview candidate (not in the crew) is flagged and named from its round, so Spend folds them into one row
+    bySeat: Object.entries((c && c.byAgent) || {}).map(([id, usd]) => crew[id] ? { id, name: crew[id].name || id, candidate: false, usd: round(usd) }
+      : { id, name: (cands[id] && cands[id].name) || co.nameOf(id) || id, candidate: !!cands[id] || /^cand-/.test(id), round: cands[id] ? cands[id].round : null, usd: round(usd) }).sort((a, z) => z.usd - a.usd),
     byProvider: Object.entries((c && c.byProvider) || {}).map(([id, x]) => ({ id, usd: round(x.usd), capped: x.capped })).sort((a, z) => z.usd - a.usd),
     subscriptions: subs,
     pacer: use && use.ok !== false ? { mode: use.mode, live: use.live, emergency: use.emergency || null, boost: use.boost || null, rail: use.rail || null, problems: use.problems || [] } : null };

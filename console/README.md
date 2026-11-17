@@ -21,6 +21,11 @@ station box on every screen (at the top on a phone).
 - No file paths, tool names, API routes or raw errors in the main text: they go behind a "Details" disclosure
   (`ui.js` `Details`), and errors are said in plain words (`ui.js` `humanError`, `errLine`).
   `tests/console-routes-walk.js` checks every screen at desktop and phone width.
+- Raw ids, tags and counters (question ids, `cand-…` seat ids, `pacing:` tags, lane counts, shell commands, tool-call
+  markup) never show in the main text: `js/plain.js` turns them into words (a question's category, display names, AI
+  usage, the Sprint line, a seat's status) and `console/activity.js` says each step and run in plain words, with the raw
+  command under Watch / Details. Needs you is one column of natural-height cards; Reply, Snooze and Discuss sit in each
+  card's "More ▾" menu.
 - Empty or unsupported sections are hidden, or show one line with a next step. Never invented data.
 - Agent-written text is rendered by `js/md.js` (safe markdown, `console:#/…` links stay in the app). A crew member's
   conversation is a live chat (`js/chat.js`); Today's Now strip and the Crew pulse come from `/api/now` (console/activity.js).

@@ -5,6 +5,7 @@ import { h, fill, Tag, errLine, empty, screenHead, table, Details, Block } from 
 import { api } from '../api.js';
 import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
+import { groupSeats, usageLine } from '../plain.js';
 
 const PROVIDER = { 'claude-cli': 'Claude subscription', claude: 'Claude', anthropic: 'Anthropic API', deepseek: 'DeepSeek', custom: 'MiniMax', minimax: 'MiniMax', openrouter: 'OpenRouter', openai: 'OpenAI', unknown: 'Not recorded' };
 const usd = v => '$' + (Number(v) || 0).toFixed(Number(v) >= 10 ? 0 : 2);
@@ -38,25 +39,32 @@ export async function render(root, ctx) {
         (t.ownerPaidUsd ? usd(t.ownerPaidUsd) + ' more went to providers billed outside the cap. ' : '') + (t.inFlightRuns ? t.inFlightRuns + ' run(s) still in flight are counted at their estimate.' : '')),
       d.known ? null : h('p', { class: 'caption muted' }, 'The spend records could not be read, so these numbers may be low.'),
       d.error ? Details('Details', h('code', { class: 'mono-s' }, d.error)) : null));
-    const seats = d.bySeat || [];
-    fill(seatsEl, seats.length ? table(['Crew member', 'Today'], seats.map(s => h('tr', null,
+    // the crew one row each; interview candidates folded into one row that opens to their names
+    const g = groupSeats(d.bySeat || []);
+    const rows = g.seats.map(s => h('tr', null,
       h('th', { scope: 'row' }, h('a', { href: '#/crew/' + encodeURIComponent(s.id) }, s.name)),
-      h('td', { class: 'num' }, usd(s.usd), t.perSeatCapUsd && s.usd >= t.perSeatCapUsd ? h('span', { class: 'caption danger' }, ' at the limit') : null))), { minWidth: 280 })
-      : empty('Nobody has spent anything pay-per-token today.'));
+      h('td', { class: 'num' }, usd(s.usd), t.perSeatCapUsd && s.usd >= t.perSeatCapUsd ? h('span', { class: 'caption danger' }, ' at the limit') : null)));
+    if (g.candidates) rows.push(h('tr', { 'data-candidates': String(g.candidates.n) },
+      h('th', { scope: 'row' }, h('details', { class: 'cand-group' }, h('summary', { class: 'label' }, 'Interview candidates (' + g.candidates.n + ')'),
+        h('ul', { class: 'plain stack-4', style: 'margin-top:6px' }, g.candidates.rows.map(c => h('li', { class: 'between body-s', style: 'gap:12px' }, h('span', null, c.name), h('span', { class: 'mono-s muted' }, usd(c.usd))))))),
+      h('td', { class: 'num', style: 'vertical-align:top' }, usd(g.candidates.usd))));
+    fill(seatsEl, rows.length ? table(['Crew member', 'Today'], rows, { minWidth: 280 }) : empty('Nobody has spent anything pay-per-token today.'));
     const prov = d.byProvider || [];
     fill(provEl, prov.length ? table(['Provider', 'Today', ''], prov.map(p => h('tr', null,
       h('th', { scope: 'row' }, PROVIDER[p.id] || p.id), h('td', { class: 'num' }, usd(p.usd)),
       h('td', null, Tag(p.capped ? 'Counts against the cap' : 'Outside the cap', { variant: p.capped ? 'soft' : 'outline' })))), { minWidth: 280 })
       : empty('Nothing billed in the last 24 hours.'));
     const subs = d.subscriptions || [];
+    const em = d.pacer && d.pacer.emergency;
     fill(subsEl, subs.length ? h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:16px' }, subs.map(s => {
       const u = Number(s.usedPct) || 0, stop = Number(s.weekStop) || 100;
       return h('article', { class: 'card p22', style: 'gap:12px', 'data-sub': s.id },
         h('div', { class: 'between-c' }, h('h3', { class: 'h4' }, s.name), Tag(s.open ? 'Open to routines' : 'Paused for routines', { variant: 'status', status: s.open ? 'online' : 'warning' })),
         h('div', { class: 'row-8', style: 'align-items:baseline;gap:10px' }, h('span', { class: 'big-num' }, pct(u)), h('span', { class: 'body-s muted' }, 'used this week · routines stop at ' + pct(stop))),
         h('div', { class: 'meter', role: 'img', 'aria-label': pct(u) + ' of the week used' }, h('div', { class: u >= stop ? 'over' : '', style: 'width:' + Math.min(100, Math.round(u)) + '%' })),
-        h('p', { class: 'caption muted' }, (s.resetsAt ? 'Resets ' + when(s.resetsAt, app) + '. ' : '') + (s.paceBy === 'fiveHour' ? 'Paced by its own 5-hour window.' : s.line != null ? 'Today\'s line: ' + pct(s.line) + '.' : '')),
-        s.why ? Details('Why it is ' + (s.open ? 'open' : 'paused'), h('p', { class: 'caption' }, s.why)) : null);
+        h('p', { class: 'caption muted' }, (s.resetsAt ? 'Resets ' + when(s.resetsAt, app) + '. ' : '') + (s.paceBy === 'fiveHour' ? 'Paced by its own 5-hour window.' : s.line != null ? 'Today\'s allowance: ' + pct(s.line) + '.' : '')),
+        h('p', { class: 'caption muted' }, usageLine({ label: s.name, known: s.usedPct != null, usedPct: s.usedPct, line: s.line, open: s.open, paceBy: s.paceBy, emergencyOpened: /emergency/.test(String(s.why || '')) }, em, t => when(t, app)).note),
+        s.why ? Details('Details', h('p', { class: 'caption' }, s.why)) : null);
     })) : empty('No subscription is connected, or the pacer is not reporting yet.'));
     const p = d.pacer;
     fill(pacerEl, p && ((p.emergency && p.emergency.active) || (p.boost && p.boost.on) || (p.problems || []).length) ? Block({ id: 'pacer', title: 'Right now' },

@@ -1,6 +1,7 @@
 // Today (Main.dc.html): Now (who is running, the current step, Watch, Stop; each seat's next wake), Needs you (live),
 // crew, AI usage, company panels, recent activity, and the box that opens a live chat with the Founder.
-import { h, fill, Button, Tag, Eyebrow, errLine, empty, initial, rel, hhmm, statusOf, isSetupQuestion, humanError } from '../ui.js';
+import { h, fill, Button, Tag, Eyebrow, errLine, empty, initial, rel, hhmm, statusOf, isSetupQuestion, humanError, Details } from '../ui.js';
+import { category, personName, usageLine, railLine, sprintSummary, seatState } from '../plain.js';
 import { api, post } from '../api.js';
 import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
@@ -25,8 +26,7 @@ export function parseQuestion(q) {
   const g = q.gate || {};
   let title = g.summary || rest.shift() || q.id;
   title = title.replace(/^Approval needed \([^)]*\):\s*/i, '');
-  const cat = g.category || String(q.about || '').replace(/^governance:/, '') || (q.blocking ? 'Blocking' : 'Question');
-  return { title, why: rest.join('\n'), rec, dflt, cat: cat.charAt(0).toUpperCase() + cat.slice(1) };
+  return { title, why: rest.join('\n'), rec, dflt, cat: category(q) };
 }
 
 export async function render(root, ctx) {
@@ -125,7 +125,7 @@ export async function render(root, ctx) {
         h('span', { class: 'strong' }, questionText(q).message.slice(0, 120)), h('span', { class: 'mono muted' }, 'back ' + whenLabel(q.snoozedUntil, co.timezone)))))) : null);
   }
   function gateCard(q, fresh) {
-    if (q.questions && q.questions.length) return requestCard(q, fresh, { fieldControl, post, app, reload: loadNeeds, picks, freshIds, seat: q.askerSeat || ceoId, questionText, parseQuestion, looksLikeKeyText, snoozeUntil, whenLabel, tz: co.timezone });
+    if (q.questions && q.questions.length) return requestCard(q, fresh, { fieldControl, post, app, reload: loadNeeds, picks, freshIds, seat: q.askerSeat || ceoId, questionText, parseQuestion, looksLikeKeyText, snoozeUntil, whenLabel, tz: co.timezone, moreMenu, cardMeta, cardDetails });
     const p = parseQuestion(q);
     const qt = questionText(q);
     const form = q.form && Array.isArray(q.form.actions) && q.form.actions.length ? q.form : { fields: [], actions: [{ id: 'approve', label: 'Approve', verdict: 'yes', primary: true }, { id: 'decline', label: 'Decline', verdict: 'no' }] };
@@ -168,36 +168,37 @@ export async function render(root, ctx) {
       const stores = controls.some(c => c.f.type === 'secret' && values[c.f.id] !== undefined);
       send(body, stores ? 'Key stored securely. Answer recorded.' : 'Answer recorded.');
     };
-    const ta = h('textarea', { rows: '6', class: 'textarea', placeholder: 'Write as much as you need…', 'aria-label': 'Your reply to ' + (q.from || 'the asker') });
+    const ta = h('textarea', { rows: '6', class: 'textarea', placeholder: 'Write as much as you need…', 'aria-label': 'Your reply to ' + (personName(q.from) || 'the asker') });
     ta.value = drafts[q.id] || ''; ta.addEventListener('input', () => { drafts[q.id] = ta.value; });
-    const snoozeMenu = h('div', { class: 'row-8 snooze-menu', hidden: true },
-      [['In an hour', 'hour'], ['Tomorrow morning', 'tomorrow'], ['Next week', 'week']].map(([label, k]) => Button(label, { variant: 'ghost', size: 'sm', onClick: async () => {
-        const until = snoozeUntil(k);
-        try { await post('/questions/' + encodeURIComponent(q.id) + '/snooze', { until: until.toISOString() }); app.toast('Snoozed until ' + whenLabel(until.toISOString(), co.timezone) + '. ' + (q.from || 'The asker') + ' sees that.'); loadNeeds(); }
-        catch (e) { errEl.textContent = 'Not snoozed: ' + humanError(e); }
-      } })));
     const seat = q.askerSeat || ceoId;
     const quote = qt.message.split('\n').map(l => '> ' + l).join('\n').slice(0, 600);
+    const sendReply = () => {
+      const text = ta.value.trim(); if (!text) { errEl.textContent = 'Write a reply first.'; return; }
+      if (looksLikeKeyText(text)) { errEl.textContent = 'This looks like a key. Use the secure field instead, so it is stored as a file and never written into a message.'; return; }
+      send({ verdict: 'reply', text });
+    };
+    const more = moreMenu(q, {
+      onReply: () => { replying.add(q.id); redraw(); const t = gatesEl.querySelector('[data-id="' + CSS.escape(q.id) + '"] textarea[aria-label^="Your reply"]'); if (t) t.focus(); },
+      onSnooze: async k => {
+        const until = snoozeUntil(k);
+        try { await post('/questions/' + encodeURIComponent(q.id) + '/snooze', { until: until.toISOString() }); app.toast('Snoozed until ' + whenLabel(until.toISOString(), co.timezone) + '. ' + (personName(q.from) || 'The asker') + ' sees that.'); loadNeeds(); }
+        catch (e) { errEl.textContent = 'Not snoozed: ' + humanError(e); }
+      },
+      discuss: '#/chat/agent:' + encodeURIComponent(seat) + '?draft=' + encodeURIComponent(quote + '\n\nAbout this question: '),
+    });
+    const titled = !!(q.gate && q.gate.summary);
     const card = h('article', { class: 'gate' + (fresh ? ' fresh' : ''), 'data-id': q.id, 'data-kind': q.kind || 'approve', 'aria-labelledby': 'g-' + q.id },
-      h('div', { class: 'between-c' },
-        h('span', { class: 'row-8', style: 'align-items:center' }, Tag(p.cat, { variant: 'accent' }), fresh ? h('span', { class: 'just-now' }, 'Just now') : null),
-        h('span', { class: 'mono muted' }, [q.from, q.id, rel(q.askedAt)].filter(Boolean).join(' · '))),
-      q.gate && q.gate.summary ? h('h3', { id: 'g-' + q.id, class: 'h4' }, p.title) : null,
-      q.gate && q.gate.summary && qt.message.replace(/\.$/, '') === p.title.replace(/\.$/, '') ? null : h('div', q.gate && q.gate.summary ? { class: 'q-message' } : { id: 'g-' + q.id, class: 'q-message' }, mdBlock(qt.message, 'body q-msg')),
+      cardMeta(q, p.cat, fresh),
+      titled ? h('h3', { id: 'g-' + q.id, class: 'h4' }, p.title) : null,
+      titled && qt.message.replace(/\.$/, '') === p.title.replace(/\.$/, '') ? null : h('div', titled ? { class: 'q-message' } : { id: 'g-' + q.id, class: 'q-message' }, mdBlock(qt.message, 'body q-msg')),
       qt.details ? h('details', { class: 'q-details' }, h('summary', { class: 'caption muted' }, 'More detail'), mdBlock(qt.details, 'body-s q-body')) : null,
       controls.length ? h('div', { class: 'stack-12 q-form' }, controls.map(c => c.el)) : null,
-      isReplying ? h('label', { class: 'stack-6' }, h('span', { class: 'caption muted' }, 'Your reply goes to ' + (q.from || 'the asker') + ' in your own words.'), ta) : null,
-      h('div', { class: 'row-8', style: 'margin-top:auto' },
+      isReplying ? h('div', { class: 'stack-6 q-reply' }, h('label', { class: 'caption muted', for: 'rp-' + q.id }, 'Your reply goes to ' + (personName(q.from) || 'the asker') + ' in your own words.'), Object.assign(ta, { id: 'rp-' + q.id }),
+        h('div', { class: 'row-8' }, Button('Send reply', { variant: 'primary', size: 'sm', onClick: sendReply }), Button('Cancel', { variant: 'ghost', size: 'sm', onClick: () => { replying.delete(q.id); redraw(); } }))) : null,
+      h('div', { class: 'row-8 q-actions' },
         form.actions.map(a => Button(a.label, { variant: a.primary ? 'primary' : 'secondary', size: 'sm', onClick: () => act(a) })),
-        Button(isReplying ? 'Send reply' : 'Reply', { variant: 'ghost', size: 'sm', onClick: () => {
-          if (!isReplying) { replying.add(q.id); redraw(); const t = gatesEl.querySelector('[data-id="' + CSS.escape(q.id) + '"] textarea[aria-label^="Your reply"]'); if (t) t.focus(); return; }
-          const text = ta.value.trim(); if (!text) { errEl.textContent = 'Write a reply first.'; return; }
-          if (looksLikeKeyText(text)) { errEl.textContent = 'This looks like a key. Use the secure field instead, so it is stored as a file and never written into a message.'; return; }
-          send({ verdict: 'reply', text });
-        } }),
-        Button('Snooze', { variant: 'ghost', size: 'sm', aria: 'Ask me later', onClick: () => { snoozeMenu.hidden = !snoozeMenu.hidden; } }),
-        Button('Discuss', { variant: 'ghost', size: 'sm', href: '#/chat/agent:' + encodeURIComponent(seat) + '?draft=' + encodeURIComponent(quote + '\n\nAbout ' + q.id + ': ') })),
-      snoozeMenu, errEl);
+        more.el),
+      errEl, cardDetails(q));
     return card;
   }
   async function loadAnswered() {
@@ -213,33 +214,38 @@ export async function render(root, ctx) {
   }
 
   /* ---- crew ---- */
+  let crewData = null;
   async function loadCrew() {
-    try {
-      const d = await api('/crew');
+    try { crewData = await api('/crew'); drawCrew(); } catch (e) { fill(crewEl, errLine(e, 'Crew')); }
+  }
+  function drawCrew() {
+    const d = crewData; if (!d) return;
+    {
       const seats = d.seats || [];
       if (!seats.length) return fill(crewEl, empty('No crew yet.'));
       fill(crewEl, d.station === 'down' ? h('p', { class: 'err-line' }, 'Station not running: live status unavailable.') : null,
         h('ul', { class: 'plain hair-top' }, seats.map(s => {
           const st = s.station || {};
           const run = nowData && nowData.runs.find(r => r.agentId === s.id);
-          const state = run ? 'Working' : st.status || st.state || (d.station === 'down' ? 'Unknown' : st.busy ? 'Working' : 'Idle');
-          const doing = run ? cap(run.step || run.label) : st.doing || st.activity || st.task || (s.loop ? s.loop : '');
-          return h('li', { class: 'crew-row' }, h('span', { class: 'avatar', 'aria-hidden': 'true' }, initial(s.name)),
+          const nx = nowData && (nowData.seats || []).find(x => x.id === s.id);
+          const ss = seatState({ run, seat: nx, station: st, stationDown: d.station === 'down', isCeo: s.id === ceoId });
+          const doing = run ? cap(run.step || run.label) : ss.line || (s.loop && !nx ? personName(s.loop) : '');
+          return h('li', { class: 'crew-row', 'data-seat': s.id }, h('span', { class: 'avatar', 'aria-hidden': 'true' }, initial(personName(s.name))),
             h('div', { class: 'stack-4', style: 'gap:2px;min-width:0' },
-              h('span', { class: 'label strong' }, s.name || s.id, ' ', h('span', { style: 'font-weight:400;color:var(--text-muted)' }, '· ' + (s.title || s.seat || ''))),
-              h('span', { class: 'body-s muted ellip' }, doing)),
-            Tag(cap(state), { variant: 'status', status: statusOf(state) }));
+              h('span', { class: 'label strong' }, personName(s.name) || s.id, ' ', h('span', { style: 'font-weight:400;color:var(--text-muted)' }, '· ' + (s.title || s.seat || ''))),
+              h('span', { class: 'body-s muted ellip' }, [ss.lanes, doing].filter(Boolean).join(' · '))),
+            Tag(ss.word, { variant: 'status', status: statusOf(ss.word) }));
         })));
-    } catch (e) { fill(crewEl, errLine(e, 'Crew')); }
+    }
   }
 
   /* ---- usage ---- */
   async function loadUsage() {
     try {
       const d = await api('/usage');
-      fill(usageEl, h('div', { class: 'card', style: 'gap:18px' }, usagePlans(d).map(p => h('div', { class: 'stack-8' },
-        h('div', { class: 'between-c' }, h('span', { class: 'label strong' }, p.name), h('span', { class: 'mono muted' }, p.reading)),
-        h('div', { class: 'meter', role: 'img', 'aria-label': p.aria }, h('div', { class: p.over ? 'over' : '', style: 'width:' + p.pct + '%' })),
+      fill(usageEl, h('div', { class: 'card', style: 'gap:18px' }, usagePlans(d, t => dayTime(t, co.timezone)).map(p => h('div', { class: 'stack-8 usage-row', 'data-plan': p.key || '' },
+        h('div', { class: 'between-c', style: 'gap:8px;flex-wrap:wrap' }, h('span', { class: 'label strong' }, p.name), h('span', { class: 'body-s muted' }, p.reading)),
+        h('div', { class: 'meter', role: 'img', 'aria-label': p.aria }, h('div', { class: p.over ? 'over' : '', style: 'width:' + p.pct + '%' }), p.mark != null ? h('span', { class: 'meter-mark', style: 'left:' + p.mark + '%', title: 'Today\'s allowance' }) : null),
         h('span', { class: 'caption muted' }, p.note)))));
     } catch (e) { fill(usageEl, errLine(e, 'Usage')); }
   }
@@ -250,7 +256,8 @@ export async function render(root, ctx) {
     let d, c = null;
     try { [d, c] = await Promise.all([api('/now'), api('/company').catch(() => null)]); }
     catch (e) { fill(nowEl, h('h2', { id: 'now-h', class: 'h3' }, 'Now'), errLine(e, 'Now')); return; }
-    nowData = d; drawNow(c);
+    for (const x of [].concat(d.runs || [], d.seats || [], d.lanes || [])) if (x && x.name) x.name = personName(x.name);
+    nowData = d; drawNow(c); drawCrew();
   }
   let nowCo = null;
   function drawNow(c) {
@@ -266,10 +273,10 @@ export async function render(root, ctx) {
       const w = watching.get(r.runId);
       const row = h('li', { class: 'now-run', 'data-run': r.runId },
         h('div', { class: 'between-c', style: 'gap:12px;flex-wrap:wrap' },
-          h('span', { class: 'row-8', style: 'align-items:center;min-width:0;flex:1' }, h('span', { class: 'pulse', 'aria-hidden': 'true' }),
+          h('span', { class: 'row-8', style: 'align-items:center;min-width:0;flex:1 1 220px' }, h('span', { class: 'pulse', 'aria-hidden': 'true' }),
             h('span', { class: 'stack-4', style: 'gap:2px;min-width:0' },
               h('span', { class: 'label strong' }, r.name, h('span', { style: 'font-weight:400;color:var(--text-muted)' }, ' · ', h('a', { href: r.href }, r.label))),
-              h('span', { class: 'body-s ellip' }, r.step ? cap(r.step) : r.watched ? 'thinking…' : 'working (started before the console was watching)'))),
+              h('span', { class: 'body-s ellip now-step' }, r.step ? cap(r.step) : r.watched ? 'Thinking…' : 'Working (started before the console was watching)'))),
           h('span', { class: 'row-8', style: 'align-items:center' }, h('span', { class: 'mono-s muted' }, [dur(r.elapsedSec), r.usd != null ? '$' + Number(r.usd).toFixed(4) : null, r.steps ? r.steps + (r.steps === 1 ? ' step' : ' steps') : null].filter(Boolean).join(' · ')),
             Button(w ? 'Hide' : 'Watch', { variant: 'secondary', size: 'sm', onClick: () => toggleWatch(r) }),
             r.stoppable ? Button('Stop', { variant: 'ghost', size: 'sm', onClick: async () => { if (!await app.confirmDialog({ title: 'Stop ' + r.name + '\'s run?', body: 'The run stops at its next step. Work already saved stays.', confirm: 'Stop it', danger: true })) return; try { await post('/station/cancel', { runId: r.runId }); app.toast('Stop sent.'); } catch (e) { app.toast('Stop: ' + e.message, true); } } }) : null)),
@@ -278,11 +285,11 @@ export async function render(root, ctx) {
     });
     // Sprint (start-up): a chip with the end time, the key numbers and an Off button; seats say working / waiting for work
     const sp = d.sprint;
-    const sprintEl = sp ? h('div', { class: 'card p18 row-8', role: 'status', style: 'flex-direction:row;flex-wrap:wrap;align-items:center;gap:12px;padding:12px 16px' },
-      Tag('Sprint on — ' + (sp.until ? 'until ' + hhmm(sp.until, co.timezone) + ' (' + rel(sp.until) + ')' : sp.untilWhy && /certified/.test(sp.untilWhy) ? 'until certified + 24 h' : 'until you turn it off'), { variant: 'status', status: 'warning' }),
-      h('span', { class: 'mono-s muted', style: 'flex:1;min-width:200px' }, [sp.itemsDone + ' done', sp.wakes + ' wakes' + (sp.idleWakeRatio != null ? ' (' + Math.round(sp.idleWakeRatio * 100) + '% did nothing)' : ''),
-        '$' + Number(sp.spentUsd || 0).toFixed(2) + ' of $' + Number(sp.budgetUsd || 0).toFixed(2), sp.usdPerItem != null ? '$' + Number(sp.usdPerItem).toFixed(3) + '/item' : null,
-        sp.proposalsPerHour != null ? sp.proposalsPerHour + ' proposals/h vs ' + sp.reviewsPerHour + ' reviews/h' : null].filter(Boolean).join(' · ')),
+    const spx = sp ? sprintSummary(sp, t => dayTime(t, co.timezone)) : null;
+    const sprintEl = sp ? h('div', { class: 'card p18 row-8 sprint-chip', role: 'status', style: 'flex-direction:row;flex-wrap:wrap;align-items:center;gap:12px;padding:12px 16px' },
+      h('span', { class: 'pulse warn', 'aria-hidden': 'true' }),
+      h('span', { class: 'body-s strong sprint-line', style: 'flex:1;min-width:200px' }, spx.line),
+      spx.details.length ? h('span', { class: 'sprint-more' }, Details('Details', h('ul', { class: 'plain stack-4 caption' }, spx.details.map(x => h('li', null, x))))) : null,
       Button('Off', { variant: 'secondary', size: 'sm', onClick: async () => { if (!await app.confirmDialog({ title: 'Turn Sprint off?', body: 'The company goes back to your base tempo: seats rest their full cooldown again and the wake limits apply.', confirm: 'Turn it off' })) return; try { await post('/cadence/sprint', { on: false }); app.toast('Sprint off.'); loadNow(); } catch (e) { app.toast('Sprint: ' + humanError(e), true); } } }),
       Button('Settings', { variant: 'ghost', size: 'sm', href: '#/settings/tempo/sprint' })) : null;
     // the dispatcher's own reason from its last tick (dispatch-state.json seats), with Decide when a question waits on the owner
@@ -312,7 +319,8 @@ export async function render(root, ctx) {
         if (!d.known) status.textContent = 'This run started before the console was watching; new steps appear as they happen. The full transcript is in Chat once it ends.';
         for (const e of d.events || []) {
           st.after = Math.max(st.after, e.seq);
-          if (e.name === 'tool') steps.appendChild(h('li', { class: 'chat-step', 'data-call': e.callId || '' }, h('span', { class: 'step-dot', 'aria-hidden': 'true' }), h('span', { class: 'mono-s' }, e.text)));
+          if (e.name === 'tool') steps.appendChild(h('li', { class: 'chat-step', 'data-call': e.callId || '' }, h('span', { class: 'step-dot', 'aria-hidden': 'true' }), h('span', { class: 'body-s' }, cap(e.text)),
+            e.raw ? h('code', { class: 'mono-s muted step-raw' }, e.raw) : null));
           else if (e.name === 'result') { const li = [...steps.children].find(x => x.dataset.call === String(e.callId || '')); if (li) li.classList.add(e.ok ? 'ok' : 'bad'); }
           else if (e.name === 'token') st.raw += e.delta || '';
           else if (e.name === 'error') steps.appendChild(h('li', { class: 'danger body-s' }, e.message));
@@ -338,6 +346,7 @@ export async function render(root, ctx) {
           h('span', { class: 'stack-4', style: 'gap:2px' },
             h('span', { class: 'body-s row-8', style: 'align-items:center;flex-wrap:wrap' }, h('strong', { class: 'strong', style: 'font-weight:600' }, e.title), o ? Tag(o[0], { variant: 'status', status: o[1] }) : null, e.usd ? h('span', { class: 'mono-s muted' }, '$' + Number(e.usd).toFixed(4)) : null),
             e.text ? mdBlock(e.text, 'body-s muted') : null,
+            e.detail ? Details('Details', h('code', { class: 'mono-s' }, e.detail)) : null,
             (e.links || []).length ? h('span', { class: 'row-8 caption' }, e.links.slice(0, 4).map(l => h('a', { href: l.href }, l.label + ' →'))) : null));
       })) : empty('Nothing has happened yet. Runs, hires, replies and decisions show here as they happen.'));
     } catch (e) { fill(overnightEl, errLine(e, 'Recent activity')); }
@@ -352,6 +361,36 @@ export async function render(root, ctx) {
   const nowTimer = setInterval(() => { if (document.hidden) return; if (nowData && nowData.runs.length) loadNow(); }, 5000);
   const usageTimer = setInterval(() => { if (!document.hidden) loadUsage(); }, 60000);
   return () => { offs.forEach(f => f()); stopPanels(); clearInterval(usageTimer); clearInterval(nowTimer); for (const w of watching.values()) clearTimeout(w.timer); document.removeEventListener('capheos:live', onLive); };
+}
+
+/* a Needs-you card's head: a human category, who asked and when (the question id and raw tags go under Details) */
+export function cardMeta(q, cat, fresh, extra) {
+  return h('div', { class: 'between-c q-meta' },
+    h('span', { class: 'row-8', style: 'align-items:center;flex-wrap:wrap' }, Tag(cat, { variant: 'accent' }), extra || null, fresh ? h('span', { class: 'just-now' }, 'Just now') : null),
+    h('span', { class: 'caption muted q-asker' }, [personName(q.from), rel(q.askedAt)].filter(Boolean).join(' · ')));
+}
+export function cardDetails(q) {
+  const g = q.gate || {};
+  const rows = [['Question id', q.id], ['Asked by', q.from], ['About', q.about], g.category ? ['Gate', g.category + (g.ref ? ' · ' + g.ref : '')] : null, q.askedAt ? ['Asked at', q.askedAt] : null].filter(r => r && r[1]);
+  return h('div', { class: 'q-card-details' }, Details('Details', h('dl', { class: 'kv' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', { class: 'mono-s' }, String(v))]))));
+}
+/* "More ▾": the secondary actions every card has (Reply, Snooze, Discuss) behind one menu button */
+let menuSeq = 0;
+export function moreMenu(q, { onReply, onSnooze, discuss }) {
+  const id = 'more-' + (++menuSeq);
+  const snoozeRow = h('div', { class: 'row-8 snooze-menu', hidden: true, role: 'group', 'aria-label': 'Snooze until' },
+    [['In an hour', 'hour'], ['Tomorrow morning', 'tomorrow'], ['Next week', 'week']].map(([label, k]) => Button(label, { variant: 'ghost', size: 'sm', onClick: () => { close(); onSnooze(k); } })));
+  const item = (label, opts) => { const b = Button(label, Object.assign({ variant: 'ghost', size: 'sm', class: 'more-item' }, opts)); b.setAttribute('role', 'menuitem'); return b; };
+  const menu = h('div', { id, class: 'more-menu card', role: 'menu', hidden: true, 'aria-label': 'More for this question', onkeydown: e => { if (e.key === 'Escape') { close(); button.focus(); } } },
+    item('Reply', { aria: 'Reply in your own words', onClick: () => { close(); onReply(); } }),
+    item('Snooze', { aria: 'Ask me later', onClick: () => { snoozeRow.hidden = !snoozeRow.hidden; } }),
+    snoozeRow,
+    item('Discuss', { href: discuss, aria: 'Discuss it in a chat with the asker' }));
+  const button = Button('More ▾', { variant: 'ghost', size: 'sm', class: 'more-btn', onClick: () => { menu.hidden ? open() : close(); } });
+  button.setAttribute('aria-haspopup', 'menu'); button.setAttribute('aria-expanded', 'false'); button.setAttribute('aria-controls', id);
+  function open() { menu.hidden = false; button.setAttribute('aria-expanded', 'true'); const f = menu.querySelector('[role=menuitem]'); if (f) f.focus({ preventScroll: true }); }
+  function close() { menu.hidden = true; snoozeRow.hidden = true; button.setAttribute('aria-expanded', 'false'); }
+  return { button, menu, el: h('span', { class: 'more' }, button, menu) };
 }
 
 // the plain message first, dense detail under "More detail"; an old question shows its first two sentences
@@ -390,6 +429,12 @@ export function fieldControl(q, f, opts) {
     const count = (f.minLength || f.maxLength) ? h('span', { class: 'caption muted' }) : null;
     const upd = () => { if (count) count.textContent = el.value.trim().length + (f.maxLength ? ' / ' + f.maxLength : '') + ' characters' + (f.minLength ? ' (at least ' + f.minLength + ')' : ''); };
     el.addEventListener('input', upd); upd();
+    // an optional note or reason (the approve / choice / link shortcuts add one): an "Add a note" link that opens it
+    if (!f.required && /^(reason|note)$/.test(f.id)) {
+      const box = h('div', { class: 'stack-6 q-note', hidden: true }, h('label', { for: uid, class: 'label strong' }, String(f.label || 'Note').replace(/\s*\(optional\)\s*$/i, '')), help, el);
+      const link = h('button', { type: 'button', class: 'link-btn q-note-open', 'aria-expanded': 'false', 'aria-controls': uid, onclick: () => { box.hidden = false; link.hidden = true; link.setAttribute('aria-expanded', 'true'); el.focus(); } }, 'Add a note');
+      return { f, el: h('div', { class: 'stack-6' }, link, box), get: () => el.value.trim(), clear: () => { el.value = ''; } };
+    }
     return { f, el: h('div', { class: 'stack-6' }, lab(f.label, uid), help, el, count), get: () => el.value.trim(), clear: () => { el.value = ''; } };
   }
   if (f.type === 'secret') {
@@ -400,16 +445,17 @@ export function fieldControl(q, f, opts) {
     const many = h('textarea', Object.assign({}, attrs, { class: 'textarea secret-input secret-mask', rows: '4', placeholder: 'Paste the key (a multi-line private key is fine)' }));
     const slot = h('div'); fill(slot, multi ? many : one);
     let shown = false;
-    const showBtn = Button('Show', { variant: 'ghost', size: 'sm', aria: 'Show or hide the key', onClick: () => { shown = !shown; one.type = shown ? 'text' : 'password'; many.classList.toggle('secret-mask', !shown); showBtn.textContent = shown ? 'Hide' : 'Show'; } });
-    const multiBtn = Button(multi ? 'One line' : 'Multi-line key', { variant: 'ghost', size: 'sm', onClick: () => { const v = (multi ? many : one).value; multi = !multi; (multi ? many : one).value = v; one.value = multi ? '' : one.value; many.value = multi ? many.value : ''; fill(slot, multi ? many : one); multiBtn.textContent = multi ? 'One line' : 'Multi-line key'; } });
+    const showBtn = h('button', { type: 'button', class: 'link-btn', 'aria-label': 'Show or hide the key', onclick: () => { shown = !shown; one.type = shown ? 'text' : 'password'; many.classList.toggle('secret-mask', !shown); showBtn.textContent = shown ? 'Hide' : 'Show'; } }, 'Show');
+    const multiBtn = h('button', { type: 'button', class: 'link-btn', onclick: () => { const v = (multi ? many : one).value; multi = !multi; (multi ? many : one).value = v; one.value = multi ? '' : one.value; many.value = multi ? many.value : ''; fill(slot, multi ? many : one); multiBtn.textContent = multi ? 'One line' : 'Multi-line key'; } }, multi ? 'One line' : 'Multi-line key');
     const replace = h('input', { type: 'checkbox', id: uid + '-replace' });
     const nameIn = f.hinted ? h('input', { type: 'text', class: 'input mono', id: uid + '-name', value: f.name, autocomplete: 'off', spellcheck: 'false', 'aria-label': 'File name under secrets/' }) : null;
     // a MiniMax key: where the account is (Global / Mainland China / Custom); the key is checked there when stored
     const mm = minimaxField(f);
     let picker = null; const pickSlot = mm ? h('div', { class: 'q-endpoint' }) : null;
     if (mm) loadEndpoint().then(ep => { picker = endpointPicker({ endpoint: ep, getKey: () => (multi ? many : one).value, saveLabel: 'Store' }); fill(pickSlot, picker.el); });
-    const note = h('span', { id: uid + '-note', class: 'caption muted' }, 'Stored on the console machine at secrets/' + f.name + ' (owner-only, mode 0600). It is never shown again and never goes into a message; ' + (q.from || 'the asker') + ' only learns where it is.');
-    if (nameIn) nameIn.addEventListener('input', () => { note.textContent = 'Stored at secrets/' + (nameIn.value.trim() || '…') + ' (owner-only, mode 0600). Never shown again, never sent in a message.'; });
+    const note = h('span', { id: uid + '-note', class: 'caption muted' }, 'Stored safely on this computer; never shown again, and never sent in a message.');
+    const where = h('span', { class: 'mono-s' }, 'Saved as secrets/' + f.name + ' (owner-only, mode 0600). ' + (personName(q.from) || 'The asker') + ' only learns where it is.');
+    if (nameIn) nameIn.addEventListener('input', () => { where.textContent = 'Saved as secrets/' + (nameIn.value.trim() || '…') + ' (owner-only, mode 0600).'; });
     // inside a form that asks for more than the key: Store writes the key now and the question STAYS OPEN; the field
     // then reads "Stored ✓ (replace)" and the final button answers the whole question (the key as {stored, chars})
     let storedNow = opts.stored || null;
@@ -427,9 +473,11 @@ export function fieldControl(q, f, opts) {
       catch (e) { storeErr.textContent = 'Not stored: ' + humanError(e); if (e && e.status === 409) replace.parentElement.classList.add('attn'); }
       storeBtn.disabled = false;
     } }) : null;
-    const inputRow = h('div', { class: 'stack-6' }, h('div', { class: 'row-8', style: 'align-items:flex-start;flex-wrap:nowrap' }, h('div', { style: 'flex:1;min-width:0' }, slot), showBtn, multiBtn, storeBtn),
-      nameIn ? h('label', { class: 'stack-4' }, h('span', { class: 'caption muted' }, 'File name under secrets/'), nameIn) : null,
-      h('label', { class: 'check', for: uid + '-replace' }, replace, 'Replace the stored key if secrets/' + f.name + ' already exists'), note, storeErr);
+    const inputRow = h('div', { class: 'stack-6' }, h('div', { class: 'q-secret-row' }, h('div', { class: 'q-secret-slot' }, slot), storeBtn),
+      h('div', { class: 'row-8 caption', style: 'align-items:center;gap:16px;flex-wrap:wrap' }, showBtn, multiBtn),
+      note,
+      h('label', { class: 'check', for: uid + '-replace' }, replace, 'Replace the saved key'), storeErr,
+      Details('Details', where, nameIn ? h('label', { class: 'stack-4' }, h('span', { class: 'caption muted' }, 'File name under secrets/'), nameIn) : null));
     const el = h('div', { class: 'stack-6 q-secret', 'data-field': f.id }, lab(f.label, uid), f.provider ? h('span', { class: 'caption' }, 'Where to get it: ', mdBlock(f.provider, 'caption')) : null, help, pickSlot, inputRow, storedLine);
     showStored();
     return { f, el, get: () => { if (storedNow) return undefined; const v = (multi ? many : one).value; return v.trim() ? v : undefined; }, clear: () => { one.value = ''; many.value = ''; },
@@ -492,8 +540,8 @@ export function sliderControl(f, uid, onInput) {
   el.addEventListener('input', upd); upd();
   const ends = (f.minLabel || f.maxLabel) ? h('div', { class: 'between caption muted q-range-ends' }, h('span', null, f.minLabel || ''), h('span', null, f.maxLabel || '')) : null;
   const marks = listId ? h('datalist', { id: listId }, f.marks.map(m => h('option', { value: String(m.value), label: m.label }))) : null;
-  const markRow = listId ? h('div', { class: 'caption muted q-range-marks' }, f.marks.map(m => h('span', { style: 'left:' + ((m.value - f.min) / (f.max - f.min) * 100) + '%' }, m.label))) : null;
-  return { el: h('div', { class: 'stack-4 q-slider' }, say, el, marks, markRow, ends), get: () => Number(el.value), input: el, set: v => { el.value = String(v); upd(); } };
+  // a mark is a tick (datalist) only: its label would crowd the end labels, and the live sentence already says it
+  return { el: h('div', { class: 'stack-4 q-slider' }, say, el, marks, ends), get: () => Number(el.value), input: el, set: v => { el.value = String(v); upd(); } };
 }
 function cap(s) { s = String(s || ''); return s.charAt(0).toUpperCase() + s.slice(1); }
 
@@ -506,26 +554,30 @@ export function parseLogLine(line) {
 
 // a secret field that holds a MiniMax key (console/server.js minimaxField: the same rule)
 const minimaxField = f => f.validate === 'custom' || (!f.validate && /minimax/i.test(String(f.name || '')));
-// pacer status → meter rows (Claude / MiniMax plans, metered DeepSeek)
-export function usagePlans(d) {
+// pacer status → meter rows (Claude / MiniMax plans, metered DeepSeek, the station-wide limit), in plain words (plain.js)
+export function usagePlans(d, fmt) {
   const out = [];
   for (const k of ['claude', 'minimax']) {
     const p = d && d[k]; if (!p) continue;
-    const used = p.usedToday != null ? p.usedToday : p.usedPct;
-    const line = p.line;
-    const known = p.known && used != null;
-    const pct = known && line ? Math.min(100, Math.round(used / line * 100)) : known ? Math.min(100, Math.round(used)) : 0;
-    out.push({ name: p.label || k, pct, over: known && line != null && used > line,
-      reading: known ? round(used) + '%' + (line != null ? ' of ' + round(line) + '% today' : '') : 'no reading',
-      aria: (p.label || k) + (known ? ': ' + round(used) + ' percent used' + (line != null ? ', daily line ' + round(line) + ' percent' : '') : ': no reading'),
-      note: p.why || (p.weekEnd ? 'Week resets ' + new Date(p.weekEnd).toLocaleString() : '') });
+    const u = usageLine(Object.assign({ key: k }, p), d.emergency, fmt);
+    out.push(Object.assign({ key: k }, u, { reading: u.reading }));
   }
   if (d && d.deepseek) {
     const p = d.deepseek;
-    out.push({ name: p.label || 'Metered', pct: 0, reading: p.open ? 'open' : 'closed', aria: (p.label || 'Metered') + (p.open ? ' open' : ' closed'), note: p.why || '' });
+    out.push({ key: 'deepseek', name: p.label || 'Metered', pct: 0, mark: null, reading: p.open ? 'Open' : 'Closed', aria: (p.label || 'Metered') + (p.open ? ' open' : ' closed'), note: p.open ? 'Pay-per-token: billed by use, under your daily cap.' : 'Not usable right now: its balance or limit ran out.' });
   }
-  if (d && d.rail && d.rail.known) out.push({ name: 'Station spend rail', pct: Math.min(100, Math.round(d.rail.pct || 0)), over: d.rail.pressure, reading: Math.round(d.rail.pct || 0) + '% of $' + d.rail.perDay, aria: 'Station spend rail ' + Math.round(d.rail.pct || 0) + ' percent', note: d.rail.source || '' });
-  if (!out.length) out.push({ name: 'Pacer', pct: 0, reading: '—', aria: 'no pacer reading', note: 'The pacer returned no plans.' });
+  const rl = d && railLine(d.rail);
+  if (rl) out.push(Object.assign({ key: 'rail', mark: null, aria: rl.name + ': ' + rl.reading }, rl));
+  if (!out.length) out.push({ name: 'AI usage', pct: 0, mark: null, reading: '—', aria: 'no reading', note: 'No usage reading yet.' });
   return out;
 }
-function round(n) { return Math.round(Number(n) * 10) / 10; }
+// "14:22", "14:22 tomorrow", "Thu 14:22"
+export function dayTime(t, tz) {
+  const ms = typeof t === 'number' ? t : Date.parse(t); if (!ms || isNaN(ms)) return '';
+  const day = x => { try { return new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: tz || undefined }).format(x); } catch (_) { return new Date(x).toDateString(); } };
+  const a = day(ms), today = day(Date.now()), tomorrow = day(Date.now() + 86400e3);
+  if (a === today) return hhmm(ms, tz);
+  if (a === tomorrow) return hhmm(ms, tz) + ' tomorrow';
+  let wd = ''; try { wd = new Intl.DateTimeFormat('en-GB', { weekday: 'short', timeZone: tz || undefined }).format(ms); } catch (_) {}
+  return (wd ? wd + ' ' : '') + hhmm(ms, tz);
+}

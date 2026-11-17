@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
 import { modelPanel } from './crew-model.js';
+import { personName, seatState } from '../plain.js';
 import * as hiring from './hiring.js';
 import * as floor from './floor.js';
 
@@ -59,8 +60,9 @@ function people(root, ctx) {
   async function load() {
     try { data = await api('/crew'); fill(errEl, data.station === 'down' ? h('p', { class: 'err-line' }, 'The station is not running, so live status is unavailable.') : null); }
     catch (e) { fill(errEl, errLine(e, 'Crew')); data = { seats: [] }; }
-    const seats = data.seats || [];
+    const seats = (data.seats || []).map(s => Object.assign({}, s, { name: personName(s.name) }));
     let now = null; try { now = await api('/now'); } catch (_) {}
+    const ceo = (app.company && app.company.ceo && app.company.ceo.id) || (seats.find(s => (s.functions || []).includes('ceo')) || {}).id || 'agent';
     fill(fnHost, h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px' }, FUNCS.map(fn => {
       const holder = seats.find(s => (s.functions || []).includes(fn));
       return h('div', { class: 'card', style: 'gap:6px;padding:16px' }, h('span', { class: 'eyebrow-t' }, FN_LABEL[fn]),
@@ -71,21 +73,22 @@ function people(root, ctx) {
     if (!selId || !seats.some(s => s.id === selId)) selId = seats[0].id;
     fill(listHost, seats.map(s => {
       const st = s.station || {}; const run = now && (now.runs || []).find(r => r.agentId === s.id); const nx = now && (now.seats || []).find(x => x.id === s.id);
-      const state = run ? 'Working' : st.status || st.state || (data.station === 'down' ? 'Unknown' : 'Idle');
-      return h('button', { type: 'button', class: 'crew-item', 'aria-current': s.id === selId ? 'true' : 'false', onclick: () => { selId = s.id; history.replaceState(null, '', '#/crew/' + encodeURIComponent(s.id) + (tab === 'model' ? '/model' : '')); load(); } },
+      const ss = seatState({ run, seat: nx, station: st, stationDown: data.station === 'down', isCeo: s.id === ceo });
+      const state = ss.word;
+      return h('button', { type: 'button', class: 'crew-item', 'data-seat': s.id, 'aria-current': s.id === selId ? 'true' : 'false', onclick: () => { selId = s.id; history.replaceState(null, '', '#/crew/' + encodeURIComponent(s.id) + (tab === 'model' ? '/model' : '')); load(); } },
         h('span', { class: 'avatar lg', 'aria-hidden': 'true' }, initial(s.name)),
         h('span', { class: 'stack-4', style: 'gap:3px;min-width:0' }, h('span', { class: 'label strong' }, s.name || s.id),
           h('span', { class: 'body-s muted' }, (s.title || '') + ' · reports to ' + (s.manager ? nameOf(seats, s.manager) : 'you')),
           s.hire ? h('span', { class: 'caption muted' }, 'hired ' + whenOf(s.hire.at) + (s.firstRun ? ' · first run ' + whenOf(s.firstRun.at) + (s.firstRun.outcome ? ', ' + s.firstRun.outcome : '') : run ? ' · first run in progress' : ' · first run pending')) : null,
-          now && now.sprint && nx && nx.lanes ? h('span', { class: 'caption muted', title: nx.lanes.why || '' }, 'Sprint: ' + nx.lanes.running + ' of ' + nx.lanes.max + (nx.lanes.max === 1 ? ' lane' : ' lanes') + ' running'
-            + (nx.lanes.possible > nx.lanes.max ? ' · ' + nx.lanes.possible + ' items could run in parallel' : '') + (nx.lanes.running ? '' : ' · ' + nx.sprint)) : null,
-          // Sprint lanes (company/tools/lanes.js): why a seat with parallel work runs one lane (e.g. the station lacks patch
-          // 0012), and each live lane with the handoff it owns and since when
-          now && now.sprint && nx && nx.lanes && nx.lanes.possible > 1 && nx.lanes.max === 1 && nx.lanes.why ? h('span', { class: 'caption muted' }, 'One lane: ' + nx.lanes.why) : null,
-          nx && nx.lanes && (nx.lanes.live || []).length ? h('ul', { class: 'plain stack-4', style: 'margin:2px 0 0' }, nx.lanes.live.map(l => h('li', { class: 'caption row-8', style: 'align-items:center' },
-            h('span', { class: 'pulse', 'aria-hidden': 'true' }), 'Lane ' + l.n + ': ' + String(l.handoff || '').replace(/^\S+ from \S+ — /, '') + ' · since ' + whenOf(l.since)))) : null,
-          run ? h('span', { class: 'caption row-8', style: 'align-items:center' }, h('span', { class: 'pulse', 'aria-hidden': 'true' }), cap(run.step || run.label)) : now && now.sprint && nx && nx.sprint ? null : nx && nx.nextRunAt ? h('span', { class: 'caption muted' }, 'next run ' + new Date(nx.nextRunAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ((nx.soonerBecause || []).length ? ', sooner: ' + nx.soonerBecause.join(', ') : '')) : null),
-        Tag(cap(state), { variant: 'status', status: statusOf(state) }));
+          // parallel work (Sprint lanes, company/tools/lanes.js): said only while a seat really runs more than one thing,
+          // never for the CEO; each live lane with the handoff it owns and since when
+          ss.lanes ? h('span', { class: 'caption seat-lanes' }, ss.lanes) : null,
+          s.id !== ceo && nx && nx.lanes && (nx.lanes.live || []).length ? h('ul', { class: 'plain stack-4', style: 'margin:2px 0 0' }, nx.lanes.live.map(l => h('li', { class: 'caption row-8', style: 'align-items:center;flex-wrap:nowrap' },
+            h('span', { class: 'pulse', 'aria-hidden': 'true' }), h('span', { style: 'min-width:0;flex:1' }, String(l.handoff || '').replace(/^\S+ from \S+ — /, '') + ' · since ' + whenOf(l.since))))) : null,
+          run ? h('span', { class: 'caption row-8', style: 'align-items:center' }, h('span', { class: 'pulse', 'aria-hidden': 'true' }), cap(run.step || run.label))
+            : ss.line ? h('span', { class: 'caption muted seat-why' }, ss.line)
+            : nx && nx.nextRunAt ? h('span', { class: 'caption muted' }, 'Next run ' + new Date(nx.nextRunAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ((nx.soonerBecause || []).length ? ', sooner: ' + nx.soonerBecause.join(', ') : '')) : null),
+        Tag(state, { variant: 'status', status: statusOf(state) }));
     }));
     drawDossier(seats.find(s => s.id === selId), seats);
   }

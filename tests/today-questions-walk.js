@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /* today-questions-walk.js — headless Chrome against the console mock (console/ui/dev/mock-api.js): Today's Needs-you
  * cards render each question kind's control, the plain message comes first with the detail collapsed, a secret goes
- * through a password field that never echoes, and Snooze / Discuss / Reply work.
+ * through a password field that never echoes, and Snooze / Discuss / Reply work from each card's "More ▾" menu. The
+ * layout is one readable column of natural-height cards; card heads say who asked, when and a human category (ids under
+ * Details); the secret field is full width with its path under Details; Now says each step in plain words.
  *
  *   node tests/today-questions-walk.js [--shots <dir>]
  *
@@ -54,12 +56,50 @@ const SECRET = 'mock-secret-value-never-echoed-0123456789';
     await shot('today-questions');
     const kinds = await js(`[...document.querySelectorAll('.gate')].map(g => g.dataset.kind)`);
     for (const k of ['approve', 'secret', 'choice', 'text', 'link', 'account', 'number', 'date', 'form', 'multi']) check('a ' + k + ' card renders', (kinds || []).includes(k), kinds);
-    // every card: Reply (a textarea), Snooze, Discuss
-    const common = await js(`[...document.querySelectorAll('.gate')].every(g => { const b = [...g.querySelectorAll('button, a')].map(x => x.textContent); return b.includes('Reply') && b.includes('Snooze') && b.includes('Discuss'); })`);
-    check('every card has Reply, Snooze and Discuss', common);
+    // every card: the primary actions in view, Reply / Snooze / Discuss in one "More ▾" menu
+    const common = await js(`[...document.querySelectorAll('.gate')].map(g => { const row = g.querySelector('.q-actions'); const vis = [...row.querySelectorAll('button, a')].filter(b => b.getClientRects().length && !b.closest('.more-menu')).map(x => x.textContent); const menu = [...g.querySelectorAll('.more-menu [role=menuitem]')].map(x => x.textContent); return { id: g.dataset.id, vis, menu, hidden: g.querySelector('.more-menu').hidden }; })`);
+    check('every card has one "More ▾" menu holding Reply, Snooze and Discuss (closed), and none of them sits beside the primary actions', common && common.every(c => c.vis.includes('More ▾') && !c.vis.some(t => /^(Reply|Snooze|Discuss)$/.test(t)) && ['Reply', 'Snooze', 'Discuss'].every(t => c.menu.includes(t)) && c.hidden), common && common.filter(c => !c.vis.includes('More ▾') || !c.hidden));
+    await js(`(() => { ${card('q-000101')}.querySelector('.more-btn').click(); return 1; })()`);
+    const opened = await js(`(() => { const g = ${card('q-000101')}; const m = g.querySelector('.more-menu'); return { open: !m.hidden, exp: g.querySelector('.more-btn').getAttribute('aria-expanded'), items: [...m.querySelectorAll('[role=menuitem]')].filter(b => b.getClientRects().length).length }; })()`);
+    check('More ▾ opens its menu (aria-expanded) with three items', opened && opened.open && opened.exp === 'true' && opened.items === 3, opened);
+    await js(`(() => { ${card('q-000101')}.querySelector('.more-btn').click(); return 1; })()`);
+    // 1. layout: one column at most 760 px wide, cards as tall as their content, the actions right under the question
+    const lay = await js(`(() => { const gs = document.querySelector('.gates'); const cols = getComputedStyle(gs).gridTemplateColumns.split(' ').length; const g = ${card('q-000101')}; const r = g.getBoundingClientRect(); const t = g.querySelector('h3, .q-message').getBoundingClientRect(); const a = g.querySelector('.q-actions').getBoundingClientRect();
+      const g2 = ${card('q-000112')}.getBoundingClientRect(); return { cols, width: Math.round(r.width), gap: Math.round(a.top - t.bottom), tail: Math.round(r.bottom - a.bottom), h1: Math.round(r.height), h2: Math.round(g2.height), sameLeft: Math.abs(r.left - g2.left) < 2 }; })()`);
+    check('Needs you is one column (≤ 760 px) of full-width cards at 1280 px', lay && lay.cols === 1 && lay.width <= 760 && lay.width >= 600 && lay.sameLeft, lay);
+    check('a short approve card is as tall as its content: its buttons sit right under the question', lay && lay.gap < 140 && lay.tail < 90 && lay.h1 !== lay.h2, lay);
+    // 3. the optional reason is an "Add a note" link that opens a textarea
+    const note0 = await js(`(() => { const g = ${card('q-000101')}; const t = g.querySelector('.q-note textarea'); return { link: !!g.querySelector('.q-note-open'), shown: !!t && t.getClientRects().length > 0, label: g.innerText.includes('Reason (optional)') }; })()`);
+    await js(`(() => { ${card('q-000101')}.querySelector('.q-note-open').click(); return 1; })()`);
+    const note1 = await js(`(() => { const t = ${card('q-000101')}.querySelector('.q-note textarea'); return !!t && t.getClientRects().length > 0 && document.activeElement === t; })()`);
+    check('approve card: no open "Reason (optional)" box, an "Add a note" link that opens one', note0 && note0.link && !note0.shown && !note0.label && note1, { note0, note1 });
+    // 4. card heads: who asked, when, and a human category; ids and raw tags only under Details
+    const heads = await js(`[...document.querySelectorAll('.gate')].map(g => ({ id: g.dataset.id, cat: g.querySelector('.q-meta .tag').textContent, who: g.querySelector('.q-asker').textContent, details: g.querySelector('.q-card-details details').textContent }))`);
+    check('card heads show a human category and "asker · time", never the question id or a raw tag', heads && heads.every(x => ['Hiring', 'Money', 'Access', 'AI usage', 'Question', 'Setup', 'Commitment', 'Risk', 'Publishing', 'Blocking'].includes(x.cat) && /ago|just now/.test(x.who) && !/q-\d/.test(x.who + x.cat) && x.details.includes(x.id)), heads);
+    check('the pacer\'s question is "AI usage", the hiring gate "Hiring"', heads && (heads.find(x => x.id === 'q-000119') || {}).cat === 'AI usage' && (heads.find(x => x.id === 'q-000101') || {}).cat === 'Hiring', heads && heads.map(x => x.cat));
+    // 6. a split request: no "as a whole", no implementation note; several decisions are numbered with their own text
+    const split = await js(`(() => { const t = document.querySelector('.gates').innerText; const nums = [...${card('q-000121')}.querySelectorAll('.q-num')].map(x => x.textContent); const leg = ${card('q-000120')}; return { whole: /as a whole/i.test(t), form: /came without a form/i.test(t), nums, legNums: leg.querySelectorAll('.q-num').length }; })()`);
+    check('split requests: no "the request above, as a whole", no "came without a form"; 1. 2. 3. only where there are several', split && !split.whole && !split.form && split.nums.join() === '1.,2.,3.' && split.legNums === 0, split);
+    // 8 + 9. Now: each running step in plain words; Sprint in one plain line, the rest under Details
+    const now = await until(() => js(`(() => { const s = [...document.querySelectorAll('.now-step')].map(x => x.textContent); return s.length >= 3 ? { s, sprint: (document.querySelector('.sprint-line') || {}).textContent, more: !!document.querySelector('.sprint-chip details') } : null; })()`), 5000);
+    check('Now: a running shell command reads "Searching company files" / "Running a test", never the command', now && now.s.includes('Searching company files') && now.s.includes('Running a test') && !now.s.some(x => /[`\/]|\bcd\b|grep/.test(x)), now);
+    check('Now: Sprint is one plain line ("Sprint on … · N things done · $x of $y spent"), the ratios under Details', now && /^Sprint on .+ · \d+ things done · \$[\d.]+ of \$[\d.]+ spent$/.test(now.sprint || '') && !/wakes|\/item|proposals/.test(now.sprint) && now.more, now);
+    await js(`(() => { [...document.querySelectorAll('.now-run')].find(r => /Searching company files/.test(r.textContent)).querySelector('button').click(); return 1; })()`);
+    const watch = await until(() => js(`(() => { const r = document.querySelector('.now-watch .step-raw'); return r ? r.textContent : null; })()`), 4000);
+    check('Watch shows the raw command (only there)', /grep -n/.test(watch || ''), watch);
+    // 10. Recent activity: no tool-call markup, a plain summary and the command under Details
+    const act = await until(() => js(`(() => { const t = document.querySelector('.timeline'); if (!t) return null; const li = [...t.children].find(x => /Teo ran/.test(x.textContent)); return { all: t.innerText, line: li && li.querySelector('.md') && li.querySelector('.md').innerText, det: li && li.querySelector('details') && li.querySelector('details').textContent }; })()`), 5000);
+    check('Recent activity: tool-call markup never shows; a run that only ran a command says so in plain words, the command under Details', act && !/<parameter|<invoke|parameter name|cd \//.test(act.all) && /Restarted a service/.test(act.line || '') && /systemctl/.test(act.det || ''), act);
+    // 11. AI usage card in plain words
+    const use = await until(() => js(`(() => { const r = [...document.querySelectorAll('.usage-row')].map(x => x.innerText.replace(/\\s+/g, ' ')); return r.length ? r : null; })()`), 5000);
+    check('AI usage: "78% of this week used; today\'s allowance 90%", "open because you lifted today\'s limit until …", "Station-wide limit $3 of $25 today"', use && use.some(x => /78% of this week used; today's allowance 90%/.test(x) && /Open because you lifted today's limit until \d\d:\d\d/.test(x)) && use.some(x => /Station-wide limit \$3 of \$25 today/.test(x)) && !use.some(x => /days' share|emergency|rail/.test(x)), use);
+    // 14 + 15. Crew right now: the dispatcher's status words, display names title-cased
+    const crewNow = await until(() => js(`(() => { const r = [...document.querySelectorAll('.crew-row')].map(x => x.innerText.replace(/\\s+/g, ' ')); return r.some(x => /Resting/.test(x)) ? r : null; })()`), 5000);
+    check('Crew right now: "Nadia Farrell" (title-cased), "Resting" with its reason, Teo "Working on 2 things at once", no lane counts', crewNow && crewNow.some(x => /Nadia Farrell/.test(x) && /Resting/.test(x) && /Nothing new since its last run/.test(x)) && crewNow.some(x => /^T Teo/.test(x) && /Working on 2 things at once/.test(x)) && !crewNow.some(x => /lanes? running|of \d lanes?/.test(x)) && !crewNow.some(x => /Founder/.test(x) && /things at once/.test(x)), crewNow);
     // secret
-    const sec = await js(`(() => { const g = ${card('q-000111')}; const i = g.querySelector('input.secret-input'); return i && { type: i.type, ac: i.getAttribute('autocomplete'), spell: i.getAttribute('spellcheck'), note: g.innerText.includes('secrets/example-exchange-key'), replace: !!g.querySelector('input[type=checkbox]') }; })()`);
-    check('secret: a password input, autocomplete off, no spellcheck, names secrets/<name>, a replace tick-box', sec && sec.type === 'password' && sec.ac === 'off' && sec.spell === 'false' && sec.note && sec.replace, sec);
+    const sec = await js(`(() => { const g = ${card('q-000111')}; const i = g.querySelector('input.secret-input'); return i && { type: i.type, ac: i.getAttribute('autocomplete'), spell: i.getAttribute('spellcheck'), path: g.textContent.includes('secrets/example-exchange-key'), visiblePath: g.innerText.includes('secrets/'), plain: g.innerText.includes('Stored safely on this computer; never shown again'), replaceText: g.innerText.includes('Replace the saved key'), replace: !!g.querySelector('input[type=checkbox]'), w: Math.round(i.getBoundingClientRect().width), cw: Math.round(g.getBoundingClientRect().width) }; })()`);
+    check('secret: a password input, autocomplete off, no spellcheck, a replace tick-box', sec && sec.type === 'password' && sec.ac === 'off' && sec.spell === 'false' && sec.replace, sec);
+    check('secret: the field is full width; "Stored safely on this computer; never shown again" and "Replace the saved key"; secrets/<name> only under Details', sec && sec.w >= sec.cw * 0.8 && sec.plain && sec.replaceText && sec.path && !sec.visiblePath, sec);
     const msgFirst = await js(`(() => { const g = ${card('q-000111')}; const m = g.querySelector('.q-message'); const d = g.querySelector('details.q-details'); return { msg: m && m.innerText, closed: d && !d.open, detail: d && d.innerText, order: m && d && (m.compareDocumentPosition(d) & 4) }; })()`);
     check('the plain message comes first; the detail is collapsed under "More detail"', msgFirst.msg && /Could you make/.test(msgFirst.msg) && !/HTTP 401/.test(msgFirst.msg) && msgFirst.closed && /More detail/.test(msgFirst.detail) && msgFirst.order, msgFirst);
     await js(`(() => { const g = ${card('q-000111')}; const b = [...g.querySelectorAll('button')].find(x => x.textContent === 'Show'); b.click(); return 1; })()`);
@@ -83,7 +123,7 @@ const SECRET = 'mock-secret-value-never-echoed-0123456789';
     const r121 = await js(`(() => { const g = ${card('q-000121')}; return g && { parts: g.querySelectorAll('.q-part').length, progress: g.querySelector('[data-progress]').textContent }; })()`);
     check('a 3-question request renders three numbered sub-cards, 0 of 3 answered', r121 && r121.parts === 3 && /0 of 3 answered/.test(r121.progress), r121);
     await js(`(() => { ${btn('q-000121', 'trial', 'Approve')}.click(); ${card('q-000121')}.querySelector('[data-part="plan"] input[value="hobby"]').click(); ${btn('q-000121', 'plan', 'Choose')}.click(); return 1; })()`);
-    const picked = await js(`(() => { const g = ${card('q-000121')}; return { progress: g.querySelector('[data-progress]').textContent, send: [...g.querySelectorAll('button')].map(b => b.textContent).find(t => /^Send/.test(t)) }; })()`);
+    const picked = await js(`(() => { const g = ${card('q-000121')}; return { progress: g.querySelector('[data-progress]').textContent, send: [...g.querySelectorAll('button')].map(b => b.textContent).find(t => /^Send( \\d|$)/.test(t)) }; })()`);
     check('picking answers: "2 picked, not sent yet" and "Send 2 answered"', /2 picked/.test(picked.progress) && picked.send === 'Send 2 answered', picked);
     await js(`(() => { [...${card('q-000121')}.querySelectorAll('button')].find(b => b.textContent === 'Send 2 answered').click(); return 1; })()`);
     const part2 = await until(() => js(`(() => { const g = ${card('q-000121')}; return g && /2 of 3 answered/.test(g.querySelector('[data-progress]').textContent) ? { answered: g.querySelectorAll('.q-part.answered').length, left: [...g.querySelectorAll('.q-part:not(.answered)')].map(x => x.dataset.part) } : null; })()`), 5000);
