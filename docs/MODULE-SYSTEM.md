@@ -112,7 +112,7 @@ Legacy `company/tools/packs/<id>/` remains readable during migration; §13 defin
 
 **Units live in adjacent repositories, not here.** This framework ships the core, the bootstrap kit and the installer;
 `packs/` stays the authoring location for the starter stack. A units repo publishes an index (§10), and agents pull from
-it on demand — owner-approved, digest-verified, mounted by the workplace's declared stack.
+it on demand — owner-approved, digest-verified, mounted by the Founder's decision, recorded in the unit store.
 
 ---
 

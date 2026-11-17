@@ -88,7 +88,7 @@ backend — it is how the backend grows.
 |---|---|---|
 | **Core harness** | yes | the eight responsibilities in §7.1 |
 | **Bootstrap kit** | yes | what a virgin workplace runs from founding to the Founder's first hires: the setup and onboarding flow, the console surfaces (Today, Chat, Crew, Work, Spend, Meetings, Settings, panels), the dispatcher and duties, approvals and questions, budget and spend, governance and decisions, handoffs, hiring, competence, commitments, intake, meetings, connectors and keys, skills, backup and liveness |
-| **Units** | no | tools, integrations, provider adapters, roles and vertical stacks — pulled from a registry and mounted by the workplace's declared stack |
+| **Units** | no | tools, integrations, provider adapters, roles and vertical stacks — pulled from a registry, and mounted by the Founder's decisions made from the onboarding build profile |
 
 **The virgin state is the same everywhere.** A new workplace is core + bootstrap kit, whatever its vertical. The company
 differs only by the units it mounts. That is what makes founding repeatable and the Founder's first week predictable.
@@ -270,10 +270,11 @@ Everything else is a plugin: **shipped with the base**, mounted by configuration
 A plugin shipped with the base is enabled in the default composition. A capability the owner adds is a unit. Both are
 the same mechanism, so there is one way to extend the backend and one way to remove something.
 
-**A workplace mounts a stack, not the catalogue.** Plugins ship with the base, but a workplace mounts the stack it
-declares (`docs/PARITY.md` §8 — the current company is fintech). An unmounted plugin registers no tools and costs no
-prompt tokens; a mounted one declares its capability and its limits. Out of scope is not baggage: framework stock that
-another vertical uses is left alone, not deleted.
+**The catalogue is installed; the decisions are the Founder's.** Plugins ship with the base, and the units catalogue is
+available, but what a workplace mounts is decided by the Founder from the onboarding build profile (§3.1,
+`docs/FOUNDING.md`) and recorded in the unit store. An unmounted plugin registers no tools and costs no prompt tokens; a
+mounted one declares its capability and its limits. Out of scope is not baggage: framework stock that another vertical
+uses is left alone, not deleted.
 
 **The test:** the backend must boot, serve the console and run one turn with the core plus one provider adapter. Every
 other plugin is mounted from configuration. If removing something breaks boot, it was core and should be named as core

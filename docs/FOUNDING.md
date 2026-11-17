@@ -56,6 +56,10 @@ point does not depend on the vertical.
 to fill the same record, with the same validation and the same audit rows. The owner can start in one and finish in the
 other.
 
+**The output is a build profile, not a stack.** Identity, business, needs, constraints, access, AI and crew intent —
+recorded, readable, and given to the Founder. Nothing in it names a unit: the Founder reads it at launch and decides
+what to hire, install and mount.
+
 **The conversation is gated by keys.** It needs one verified provider. Until then the form is the only path — and the
 form is never a dead end: a later conversation resumes the same record and asks only what is missing.
 
@@ -90,12 +94,10 @@ build those; the flow's job is to make the first turn good.
   why, and that it can be changed later.
 - **Nothing is final except the slug.** Name, purpose, vertical, crew and keys are all changeable after launch through
   normal governance; the setup record keeps the decision history.
-- **The vertical is a seed, not a decision.** Choosing "fintech" suggests role templates, guardrails and modules; it
-  never hires, never installs a unit, never sets a policy the owner did not see. The fintech seed: modules `parties`,
-  `scopes`, `ledger`, `evidence`, `verify`, `reports`, `commitments`, `playbooks`, `intake`, `observe`, `continuity`;
-  role templates `finance-manager`, `risk-manager`, `specialist`; guardrails `externalActions` and `spendCap`; desktop
-  grant tiers 2–3 for banking and brokerage (`DEPLOY.md` §5). Modules the vertical does not need stay unmounted
-  (`PARITY.md` §8).
+- **The vertical is an input, not a plan.** It goes into the build profile; the Founder decides what to hire, install
+  and mount from it. Choosing "fintech" hires nobody, installs nothing and sets no policy by itself. There is no
+  per-vertical plan shipped with the framework: the decisions are the Founder's, recorded like any other, and that
+  record is what the company is measured against (`PARITY.md` §8).
 - **Resumable and auditable.** Every stage writes as it completes; the record says who answered, when, and what changed.
 
 ---
@@ -160,8 +162,8 @@ Not required: every integration, every seat, a finished charter. Those are the F
 
 ## 7. Open for later
 
-- The **vertical starter content**: which role templates, guardrails and modules each vertical seeds. Empty in P0, one
-  vertical (the first real workplace's) in P1.
+- **Per-vertical defaults:** deliberately none. The build profile informs the Founder, who decides; the framework ships
+  no plan per vertical. Revisit only if the Founder proves it needs a starting suggestion.
 - The **interview script** as a skill (`SKILL.md`), shared by the conversational starter and the Founder's own first
   turn, so there is one set of questions and one voice.
 - **Multi-owner** workplaces: the flow assumes one owner today.

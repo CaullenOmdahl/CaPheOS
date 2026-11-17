@@ -132,9 +132,11 @@ error handling. That duplication is a consequence of having no standard, not a d
 So P0 names three things:
 
 1. **The behaviour inventory** — the parity areas (§3), not the files. Every behaviour gets an owning unit.
-2. **The unit mapping** — which behaviours share a unit and which `lib/` helpers become which service. Expect **fewer
-   artifacts**, not the same ones renamed: several tools that exist separately only because they were written one at a
-   time become one unit with several tools, and the plumbing they each duplicate becomes a service.
+2. **The catalogue and the decision path** — what the units repo offers, and how the Founder decides what to install
+   from the build profile. Expect **fewer artifacts**, not the same ones renamed: several tools that exist separately
+   only because they were written one at a time become one unit with several tools, and the plumbing they each
+   duplicate becomes a service. The decision is the Founder's; the record is `company/state/units.json` and the
+   decisions log.
 3. **The adapter list** — the behaviours the crew must still call from a shell, and therefore the only CLI surfaces
    worth keeping.
 
@@ -161,23 +163,24 @@ the virgin state, and what this company adds.
 | integrations | connectors, keys, skills, provider adapters |
 | owner | the owner channel and the console auth |
 
-**This company adds (fintech):** ledger and invoices, settlement through the external gate, per-party scopes, evidence,
-verify, reports, continuity, and the desktop — banking and brokerage portals are exactly why the grant tiers 2–3 exist
-(`DEPLOY.md` §5).
+**This company's set is the Founder's decision.** The onboarding build profile records what the business needs —
+vertical, services, constraints, access, integrations, budget. At launch the Founder reads it and decides what to
+install, hire and mount; the decisions are recorded in `company/state/units.json` and the decisions log. There is no
+per-vertical list to author here: this document does not map units.
 
 **Most units are not in this repository.** Tools, integrations and vertical stacks are pulled from the units repo (§3.1
-of `BACKEND.md`), so the framework's parity is the core and the bootstrap kit; the workspace's parity is the kits and
-units it actually mounts.
+of `BACKEND.md`), so the framework's parity is the core and the bootstrap kit; the workspace's parity is what the
+recorded mounted set says.
 
 **Out of scope is not baggage.** A tool or module that serves another vertical, or that no duty, route, module manifest
 or seat routine references, stays in the framework or the units repo as a unit but is **not mounted here**. It gets no
 row in §4: it is not being cut from the product, it is simply not this company's.
 
-**The rule:** a capability is in scope when the mounted stack declares it, or something uses it (a duty, a console
-route, a module manifest, a seat routine). Everything else is not mounted, so it registers no tools and costs no prompt
-tokens. That is where the "fewer prompt tokens" claim actually comes from — not from deleting tools, but from not
-mounting them.
+**The rule:** a capability is in scope when the recorded mounted set includes it, or something uses it (a duty, a
+console route, a module manifest, a seat routine). Everything else is not mounted, so it registers no tools and costs
+no prompt tokens. That is where the "fewer prompt tokens" claim actually comes from — not from deleting tools, but from
+not mounting them.
 
-**Consequence for P0:** there are two unit mappings, not one — the bootstrap kit (the same everywhere) and the fintech
-pack (this company). The parity tests run against the mounted set, and the failure they catch is a capability in scope
-that is not mounted.
+**Consequence for P0:** P0 defines the build profile, the units catalogue and the decision record — not a mapping. The
+parity tests run against the recorded mounted set, so the failure they catch is a capability the Founder decided to
+mount that is not working.
