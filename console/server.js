@@ -197,7 +197,9 @@ function questions() {
   const inbox = tool('inbox.js');
   let gates = []; try { gates = require(path.join(TOOLS, 'lib', 'governance.js')).pendingGates(); } catch (_) {}
   const byId = {}; for (const g of gates) byId[g.id] = g;
-  return inbox.openQuestions().map(q => Object.assign({}, q, { askerSeat: seatOf(q.from) }, byId[q.id] ? { gate: { category: byId[q.id].category, ref: byId[q.id].ref, by: byId[q.id].by, summary: byId[q.id].summary } } : {}));
+  let rec = {}; try { rec = tool('approvals.js').records(); } catch (_) {}   // approvals: reminded (the Needs-you highlight)
+  return inbox.openQuestions().map(q => Object.assign({}, q, { askerSeat: seatOf(q.from) }, byId[q.id] ? { gate: { category: byId[q.id].category, ref: byId[q.id].ref, by: byId[q.id].by, summary: byId[q.id].summary } } : {},
+    q.approval ? { approval: Object.assign({}, q.approval, { reminded: !!(rec[q.id] && rec[q.id].reminded), fixed: !!(rec[q.id] && rec[q.id].fixed) }) } : {}));
 }
 // the crew seat id of a question's asker (by full or first name), for Discuss; null for a tool (onboard.js) or a stranger
 function seatOf(from) {
@@ -277,6 +279,10 @@ async function answerQuestion(id, b) {
   const q = questions().find(x => x.id === id); if (!q) bad('no open question ' + id, 404);
   const keyRefusal = 'this looks like a key or a private key. Put it in the secure field instead' + (q.form.fields.some(f => f.type === 'secret') ? '' : ' ("Store the key securely")') + ': it is stored as a file and never written into a message.';
   const row = inbox.state()[id];
+  if (row && row.approval && row.approval.actionDigest && !b.store && !b.parts && b.verdict !== 'reply') {
+    const act = q.form.actions.find(a => a.id === String(b.action || '')) || q.form.actions.find(a => a.verdict === b.verdict);
+    if (act && (act.verdict === 'yes' || act.verdict === 'no')) return approvalAnswer(id, { verdict: act.verdict, shownDigest: b.shownDigest }, 'needs-you');
+  }
   const noKeys = (form, values, note) => {
     for (const [k, v] of Object.entries(values)) { const f = form.fields.find(x => x.id === k); if (f && f.type !== 'secret' && looksLikeKey(typeof v === 'string' ? v : JSON.stringify(v))) bad('Not sent: ' + (f.label || k) + ': ' + keyRefusal); }
     if (looksLikeKey(note)) bad('Not sent: the note: ' + keyRefusal);
@@ -520,6 +526,25 @@ route('GET', /^\/api\/owner\/messages$/, ownerChannel);
 route('POST', /^\/api\/owner\/messages$/, async (m, q, b) => { const r = postOwnerMessage(b); const ch = await CHAT.channelState(); r.message = CHAT.messageStates([r.message], ch)[0]; r.channel = ch; return r; });
 // live chat with a crew member (console/chat.js); POST /api/chat/<id>/send streams and is handled in makeServer
 route('GET', /^\/api\/chat\/([A-Za-z0-9_-]{1,64})$/, m => CHAT.info(m[1]));
+// chat actions (docs/CHAT-ACTIONS.md): a secret field in a chat block is stored here (the same writer as Today's key
+// field); the reply says only where and how long. Approvals: the approval API over the existing owner-question
+// records (company/tools/approvals.js); the expiry default (deny) and the reminders run server-side, here.
+route('POST', /^\/api\/chat-actions\/secret$/, (m, q, b) => {
+  const name = String(b.name || '').trim(); if (!tool('inbox.js').safeSecretName(name)) bad('the file name under secrets/ may use letters, digits, . _ - (not station-token or console-token)');
+  if (typeof b.value !== 'string' || !b.value.trim()) bad('paste the key first');
+  const value = normalizeSecret(b.value); if (value.length > 16384) bad('longer than 16 KB; is this the key?');
+  writeSecret(name, value, !!b.replace);
+  return { ok: true, stored: 'secrets/' + name, name, chars: value.length };
+});
+const approvals = () => { const A = tool('approvals.js'); try { A.tick(); } catch (_) {} return A; };
+route('GET', /^\/api\/approvals$/, () => ({ ok: true, approvals: approvals().list() }));
+route('GET', /^\/api\/approvals\/(q-\d+)$/, m => { const r = approvals().get(m[1]); if (!r) bad('no approval record ' + m[1], 404); return Object.assign({ ok: true }, r); });
+route('POST', /^\/api\/approvals\/(q-\d+)\/answer$/, (m, q, b) => approvalAnswer(m[1], b, ['chat', 'needs-you', 'console'].includes(b.surface) ? b.surface : 'console'));
+function approvalAnswer(id, b, surface) {
+  const r = approvals().answer(id, { verdict: b.verdict, shownDigest: b.shownDigest, surface, by: 'owner' });
+  if (!r.ok) throw new HttpError({ missing: 404, closed: 409, stale: 409, authority: 403, route: 409, held: 409 }[r.code] || 400, r.error, { code: r.code, link: r.link || null, status: r.status || null });
+  return r;
+}
 // the crew's work, visible (console/activity.js)
 route('GET', /^\/api\/now$/, () => ACT.now());
 route('GET', /^\/api\/now\/run\/([A-Za-z0-9_-]{1,80})$/, (m, q) => ACT.runEvents(m[1], q.get('after')));
@@ -801,6 +826,7 @@ function start(argv) {
   const server = makeServer(token);
   armWatches();
   setInterval(armWatches, 15000).unref();
+  setInterval(() => { try { tool('approvals.js').tick(); } catch (_) {} }, 60000).unref();   // approvals: expiry (default deny) and reminders
   ACT.start();
   setInterval(() => { for (const c of clients) c.write(': ping\n\n'); }, 25000).unref();
   server.listen(port, host, () => {
@@ -1131,6 +1157,18 @@ async function selftest() {
     check('POST /api/chat/agent/send: station down streams console.user then console.error', r.status === 200 && lines[0].name === 'console.user' && lines.some(l => l.name === 'console.error' && l.payload.code === 'station-down'), r.text);
     r = await call('GET', '/api/chat/nobody');
     check('GET /api/chat/<unknown seat>: 404', r.status === 404, r.status);
+    // chat actions: a key field stores through the key store; the response never carries the value
+    r = await call('POST', '/api/chat-actions/secret', { name: 'chat-feed-key', value: 'sk-chat-selftest-value-123456' });
+    const cf = path.join(tmp, 'secrets', 'chat-feed-key');
+    check('POST /api/chat-actions/secret: secrets/<name> 0600, the reply says where and how long, never the value', r.status === 200 && r.json.stored === 'secrets/chat-feed-key' && r.json.chars === 29 && !r.text.includes('sk-chat-selftest') && fs.existsSync(cf) && (fs.statSync(cf).mode & 0o777) === 0o600, r.json);
+    r = await call('POST', '/api/chat-actions/secret', { name: 'chat-feed-key', value: 'other' });
+    check('POST /api/chat-actions/secret: an existing key is not overwritten without replace (409)', r.status === 409 && fs.readFileSync(cf, 'utf8').startsWith('sk-chat'), r.json);
+    r = await call('POST', '/api/chat-actions/secret', { name: 'station-token', value: 'x' });
+    check('POST /api/chat-actions/secret: the station token is not a name a chat may write', r.status === 400, r.json);
+    r = await call('GET', '/api/approvals');
+    check('GET /api/approvals: the approval API answers (expiry and reminders run first, server-side)', r.status === 200 && Array.isArray(r.json.approvals), r.json);
+    r = await call('POST', '/api/approvals/q-999999/answer', { verdict: 'yes', surface: 'chat' });
+    check('POST /api/approvals/<no record>/answer: 404, nothing created', r.status === 404, r.json);
     r = await call('GET', '/api/owner/messages');
     check('owner messages carry a state; with the station down they are stuck with a fix', r.json.ok && r.json.messages.filter(m => m.dir === 'in').every(m => m.state && (m.state.status === 'stuck' || m.state.status === 'read' || m.state.status === 'answered')) && r.json.channel.problems.length > 0, r.json.channel);
     r = await call('GET', '/api/now');

@@ -103,6 +103,17 @@ The run goes to the station's `POST /api/run` with `rosterSystem: true`, `stream
 Stop = `POST /api/station/cancel {runId}` (and the browser closing the stream, which the station also treats as a stop).
 Approvals the run asks for are answered with `POST /api/station/consent {runId, promptId, decision}`.
 
+### Chat actions and approvals
+
+`docs/CHAT-ACTIONS.md`. A reply to an ```actions block is an ordinary `send` whose text ends in `[actionReply {...}]`.
+
+| Method | Path | Body | Does |
+|---|---|---|---|
+| POST | /api/chat-actions/secret | `{ name, value, replace? }` | writes `secrets/<name>` (0600; 409 if it exists without replace); returns `{ stored, name, chars }`, never the value |
+| GET | /api/approvals | — | the pending approval records (approvals.js list), after the server-side expiry and reminder tick |
+| GET | /api/approvals/:id | — | one record: `{ status, category, fixed, params, actionDigest, expiresAt, default, authority, chatAnswerable, suppressed, answer }`; 404 when there is none |
+| POST | /api/approvals/:id/answer | `{ verdict: yes\|no, shownDigest, surface: chat\|needs-you\|console }` | the approval API answer (CAS); 409 closed / stale / route / held, 403 authority, 404 missing |
+
 ## Owner channel
 
 The asynchronous channel (company/owner/inbound.jsonl → the dispatcher wakes the CEO's loop) stays for messages the

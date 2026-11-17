@@ -162,6 +162,7 @@ export async function render(root, ctx) {
       }
       if (a.needs === 'none') for (const c of controls) if (c.f.type === 'secret') delete values[c.f.id];
       const body = { action: a.id, values };
+      if (q.approval && q.approval.actionDigest) body.shownDigest = q.approval.actionDigest;   // approvals.js: refused if the record changed since
       if (Object.keys(replace).length) body.replace = replace;
       if (Object.keys(endpoints).length) body.endpoints = endpoints;
       if (Object.keys(secretNames).length) body.secretNames = secretNames;
@@ -187,7 +188,7 @@ export async function render(root, ctx) {
       discuss: '#/chat/agent:' + encodeURIComponent(seat) + '?draft=' + encodeURIComponent(quote + '\n\nAbout this question: '),
     });
     const titled = !!(q.gate && q.gate.summary);
-    const card = h('article', { class: 'gate' + (fresh ? ' fresh' : ''), 'data-id': q.id, 'data-kind': q.kind || 'approve', 'aria-labelledby': 'g-' + q.id },
+    const card = h('article', { class: 'gate' + (fresh || (q.approval && q.approval.reminded) ? ' fresh' : ''), 'data-id': q.id, 'data-kind': q.kind || 'approve', 'aria-labelledby': 'g-' + q.id },
       cardMeta(q, p.cat, fresh),
       titled ? h('h3', { id: 'g-' + q.id, class: 'h4' }, p.title) : null,
       titled && qt.message.replace(/\.$/, '') === p.title.replace(/\.$/, '') ? null : h('div', titled ? { class: 'q-message' } : { id: 'g-' + q.id, class: 'q-message' }, mdBlock(qt.message, 'body q-msg')),

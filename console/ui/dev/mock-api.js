@@ -8,6 +8,9 @@
  *   MOCK_PLAIN=1 node console/ui/dev/mock-api.js          # without the typed-question fixtures (one card per question kind)
  *   MOCK_HEADLESS=1 node console/ui/dev/mock-api.js       # a station with no floor plan (Crew hides its Floor tab)
  *   MOCK_MINIMAX=1 node console/ui/dev/mock-api.js        # adds a question asking for the MiniMax key (endpoint picker)
+ *   MOCK_ACTIONS=1 node console/ui/dev/mock-api.js        # chat actions: a Founder reply with ```actions blocks and two approvals
+ * Chat actions: POST /api/chat-actions/secret keeps only {name, chars}; GET /api/__mock/actions lists what was stored and
+ * every approval answer; POST /api/__mock/archive-chat empties the Founder chat (the approvals stay on Needs you).
  * MiniMax endpoint (company.json providers.minimax, company/tools/lib/minimax-endpoint.js): a key starting sk-good-cn
  * validates on Mainland China only, any other sk-good key on Global (and Custom) only, sk-net is "unreachable".
  * GET /api/__mock/minimax lists what each MiniMax save or validate was sent (region, baseUrl, key present: never the key).
@@ -169,6 +172,37 @@ S.chats = { agent: [{ role: 'user', content: 'What is on today?', at: ago(30) },
 // MOCK_CHAT_TURNS=N: a long conversation with the Founder (the chat's rolling window and backscroll)
 if (Number(process.env.MOCK_CHAT_TURNS) > 0) for (let k = Number(process.env.MOCK_CHAT_TURNS); k > 0; k--) S.chats.agent.unshift({ role: k % 2 ? 'assistant' : 'user', content: 'Message ' + k + ' of the earlier conversation.', at: ago(30 + k) });
 if (Number(process.env.MOCK_CHAT_TURNS) > 0) for (let k = Number(process.env.MOCK_CHAT_TURNS); k > 0; k--) S.messages.unshift({ dir: 'out', id: 'out-mock-' + k, at: ago(30 + k), from: 'Founder', text: 'Owner channel message ' + k + '.' });
+// MOCK_ACTIONS=1: a Founder reply with every kind of chat action, an expired one, a superseded pair, a malformed one,
+// and approvals: one answerable in chat, one fixed owner gate, one block naming a record that does not exist
+const MOCK_ACTIONS = !!process.env.MOCK_ACTIONS;
+const D = (s) => require('crypto').createHash('sha256').update(s).digest('hex');
+S.approvals = {};
+if (MOCK_ACTIONS) {
+  const fence = o => '```actions\n' + JSON.stringify(o) + '\n```';
+  S.chats.agent.push(
+    { role: 'assistant', at: ago(60 * 30), content: 'Yesterday I asked:\n\n' + fence({ id: 'old-pick', prompt: 'Which day for the review?', items: [{ type: 'button', label: 'Monday', value: 'mon' }, { type: 'button', label: 'Friday', value: 'fri' }] }) },
+    { role: 'assistant', at: ago(20), content: 'First draft:\n\n' + fence({ id: 'tone', prompt: 'Which tone?', items: [{ type: 'button', label: 'Formal', value: 'formal' }] }) },
+    { role: 'assistant', at: ago(19), content: 'Better options:\n\n' + fence({ id: 'tone', prompt: 'Which tone?', items: [{ type: 'button', label: 'Formal', value: 'formal' }, { type: 'button', label: 'Friendly', value: 'friendly' }] }) },
+    { role: 'assistant', at: ago(18), content: 'This one is broken:\n\n```actions\n{"id": "bad", "items": [{"type": "run", "label": "rm -rf"}]}\n```' },
+    { role: 'assistant', at: ago(5), content: 'Two decisions before I start:\n\n' + fence({ id: 'launch', prompt: 'How should we launch?', items: [
+      { type: 'choice', id: 'region', label: 'Region', options: [{ id: 'eu', label: 'Europe' }, { id: 'us', label: 'United States', recommended: true }] },
+      { type: 'url', id: 'site', label: 'Landing page', placeholder: 'https://…' },
+      { type: 'slider', id: 'share', label: 'Budget share', min: 0, max: 100, step: 5, value: 80, unit: '%' },
+      { type: 'button', label: 'Launch now', value: 'now', tone: 'primary', run: 'rm -rf /', tool: 'code.run' },
+      { type: 'button', label: 'Wait a week', value: 'wait' },
+      { type: 'link', label: 'See the budget', href: 'console:#/spend' },
+      { type: 'link', label: 'Read the docs', href: 'https://example.org/docs' },
+      { type: 'link', label: 'Evil', href: 'javascript:alert(1)' }] }) + '\n\nAnd the key for the data feed:\n\n' + fence({ id: 'feed-key', items: [{ type: 'secret', id: 'key', label: 'Example feed key', name: 'example-feed-key' }] }) },
+    { role: 'assistant', at: ago(4), content: 'Two approvals are waiting:\n\n' + fence({ id: 'approvals', items: [{ type: 'approval', ref: 'q-000201' }, { type: 'approval', ref: 'q-000202' }, { type: 'approval', ref: 'q-000999', label: 'A hand-made approve' }] }) });
+  const rec = (id, category, fixed, message, params) => { const r = { id, from: 'Sam', category, fixed, message, params, actionDigest: 'sha256:' + D(id + JSON.stringify(params)), expiresAt: new Date(Date.now() + 90 * 60e3).toISOString(), default: 'deny', status: 'pending', answer: null, legacy: false, suppressed: null,
+    authority: fixed ? { who: ['owner'], why: category + ' is a fixed owner gate (governance.json fixed): only the owner decides it, on Today › Needs you' } : { who: ['owner', 'ceo'], why: 'owner or CEO' } };
+    r.chatAnswerable = !fixed; S.approvals[id] = r;
+    S.questions.push({ id, from: 'Sam', about: 'approval:' + category, blocking: false, askedAt: ago(6), batch: null, kind: 'approve', q: message, message, approval: { category, actionDigest: r.actionDigest, expiresAt: r.expiresAt, default: 'deny', fixed } }); };
+  S.messages.push({ dir: 'out', id: 'out-actions', at: ago(3), from: 'Founder', text: 'While you are away:\n\n' + fence({ id: 'away', prompt: 'Shall I keep the trial running?', items: [{ type: 'button', label: 'Keep it', value: 'keep', tone: 'primary' }, { type: 'button', label: 'Stop it', value: 'stop', tone: 'danger' }] }) });
+  rec('q-000201', 'spend', false, 'May we buy one month of the example data plan for $20?', { amountUsd: 20, vendor: 'data.example.com' });
+  rec('q-000202', 'access', true, 'Could we get read access to the example bank account?', { account: 'example' });
+}
+S.mockActions = { stored: [], answers: [] };
 S.live = STATION_DOWN ? [] : [
   { runId: 'run-live-1', agentId: 'agent', name: 'Founder', startedAt: Date.now() - 4 * 60000, kind: 'routine', label: 'routine "Founder loop"', href: '#/settings/tempo/routines', step: 'hiring…', steps: 7, usd: 0.0123, stoppable: true, watched: true },
   // a seat with two things running at once (a Sprint lane): its step is a raw shell command, said in plain words
@@ -438,6 +472,23 @@ async function apiRoute(req, res, p, q) {
       problems: STATION_DOWN ? [{ code: 'station-down', message: 'The station is not answering, so ' + seat.name + ' cannot answer.', fix: 'Start it on the station machine.', link: '#/settings/system' }] : [] });
   }
   if (M === 'POST' && (m = /^\/api\/chat\/([A-Za-z0-9_-]+)\/send$/.exec(p))) return chatSend(req, res, m[1], B);
+  // chat actions and approvals (console/server.js): the key store keeps only the name and length; approvals as approvals.js
+  if (M === 'POST' && p === '/api/chat-actions/secret') {
+    if (!INBOX.safeSecretName(B.name)) return J(res, 400, { ok: false, error: 'bad secret name' });
+    if (typeof B.value !== 'string' || !B.value.trim()) return J(res, 400, { ok: false, error: 'paste the key first' });
+    const chars = B.value.trim().length; S.mockActions.stored.push({ name: B.name, chars }); return ok({ stored: 'secrets/' + B.name, name: B.name, chars }); }
+  if (M === 'GET' && p === '/api/__mock/actions') return ok(S.mockActions);
+  if (M === 'POST' && p === '/api/__mock/archive-chat') { S.chats.agent = []; return ok({}); }
+  if (M === 'GET' && p === '/api/approvals') return ok({ approvals: Object.values(S.approvals).filter(r => r.status === 'pending') });
+  if (M === 'GET' && (m = /^\/api\/approvals\/(q-\d+)$/.exec(p))) { const r = S.approvals[m[1]]; return r ? ok(r) : J(res, 404, { ok: false, error: 'no approval record ' + m[1] }); }
+  if (M === 'POST' && (m = /^\/api\/approvals\/(q-\d+)\/answer$/.exec(p))) {
+    const r = S.approvals[m[1]]; S.mockActions.answers.push({ id: m[1], verdict: B.verdict, surface: B.surface, shownDigest: B.shownDigest });
+    if (!r) return J(res, 404, { ok: false, error: 'no approval record ' + m[1] });
+    if (r.status !== 'pending') return J(res, 409, { ok: false, error: m[1] + ' is already ' + r.status });
+    if (B.surface === 'chat' && r.fixed) return J(res, 409, { ok: false, error: r.authority.why });
+    if (B.shownDigest !== r.actionDigest) return J(res, 409, { ok: false, error: 'stale' });
+    r.status = B.verdict === 'yes' ? 'approved' : 'denied'; r.answer = { by: 'Commander', surface: B.surface, at: now() }; r.chatAnswerable = false;
+    S.questions = S.questions.filter(x => x.id !== m[1]); emit('questions'); return ok({ state: r.status, surface: B.surface }); }
   if (M === 'GET' && (m = /^\/api\/now\/run\/([A-Za-z0-9_-]+)$/.exec(p))) {
     const after = Number(q.get('after')) || 0;
     const evs = [{ seq: 1, name: 'tool', tool: 'fs_read', text: 'reading the charter', callId: 'c1' }, { seq: 2, name: 'result', callId: 'c1', ok: true }, { seq: 3, name: 'tool', tool: 'code.run', text: 'running hire.js open…', callId: 'c2' }, { seq: 4, name: 'token', delta: 'Opening a **People Manager** round now.' }];
@@ -522,10 +573,11 @@ function chatSend(req, res, id, B) {
   const out = [{ name: 'console.user', payload: { text, brief: B.brief || null } }];
   if (STATION_DOWN) { out.push({ name: 'console.error', payload: { code: 'station-down', message: 'The station is not answering, so ' + seat.name + ' cannot answer.', fix: 'Start it on the station machine.', link: '#/settings/system' } }); for (const e of out) res.write(JSON.stringify(e) + '\n'); return res.end(); }
   const reply = B.brief === 'charter' ? 'Happy to. Three quick questions:\n\n1. What does the company do?\n2. For whom?\n3. What will it never do?\n\nWhen I have your answers I will write `company/CHARTER.md`. [Review it in Setup](console:#/setup/charter)'
-    : /fail/i.test(text) ? null : 'Mock reply from ' + seat.name + ': I read your message and would start with **the overdue handoff**. See [Work](console:#/work/handoffs) and [the docs](https://example.org/docs). [bad](javascript:alert(1))';
+    : /\n\[actionReply \{/.test(text) ? 'Got it: ' + text.split('\n')[0] + '.' : /fail/i.test(text) ? null : 'Mock reply from ' + seat.name + ': I read your message and would start with **the overdue handoff**. See [Work](console:#/work/handoffs) and [the docs](https://example.org/docs). [bad](javascript:alert(1))';
   out.push({ name: 'console.run', payload: { agentId: id, name: seat.name, model: 'example-model-large', provider: 'claude-cli' } }, { name: 'agent.run.start', payload: { runId: 'chat-' + Date.now(), agentId: id } });
   const runId = out[out.length - 1].payload.runId;
   out.push({ name: 'agent.tool_call', payload: { runId, callId: 't1', name: 'fs_read', argsSummary: 'company/CHARTER.md' } }, { name: 'agent.tool_result', payload: { runId, callId: 't1', ok: true, summary: '40 lines' } });
+  if (/use a tool/i.test(text)) { out.push({ name: 'permission.prompt', payload: { runId, promptId: 'p1', tool: 'code.run', argsSummary: 'ls company/work' } }); for (let k = 0; k < 80; k++) out.push({ name: 'mock.wait', payload: {} }); }
   if (!reply) out.push({ name: 'agent.run.error', payload: { runId, message: 'provider error: HTTP 401 invalid key' } }, { name: 'agent.run.end', payload: { runId, reason: 'error', outcome: 'failed', usd: 0 } });
   else { for (const w of reply.match(/\S+\s*/g)) out.push({ name: 'agent.token', payload: { runId, delta: w } }); out.push({ name: 'agent.run.end', payload: { runId, reason: 'done', outcome: 'succeeded', usd: 0.0021 } }); }
   const t = (S.chats[id] = S.chats[id] || []);

@@ -7,6 +7,8 @@ import { composerKeys, COMPOSER_HINT } from './keys.js';
 import { h, fill, Button, errLine, empty, when, humanError } from './ui.js';
 import { api, post } from './api.js';
 import { md, mdBlock } from './md.js';
+import { actionsBlock } from './chat-actions.js';
+import { blockStates, parseActionReply } from './actions-schema.js';
 import { personName, modelName } from './plain.js';
 
 const stepWords = (name, args) => {
@@ -37,13 +39,17 @@ export function liveChat(host, opts) {
   body.addEventListener('scroll', () => { pinned = atBottom(); if (pinned) jump.hidden = true; if (body.scrollTop < 120) showEarlier(); });
   const PAGE = 40; let older = [];   // turns not rendered yet, oldest first
   const earlierBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-sm chat-earlier', onclick: () => showEarlier() }, 'Show earlier messages');
-  function turnEl(t) { return t.role === 'user' ? mine(t.content) : theirs(t.content, t.at ? name() + ' · ' + when(t.at, tz) : name()); }
+  // chat actions (chat-actions.js): each block's state from the transcript (answered by a later reply, superseded by a
+  // later block with the same id), and the latest block per id (a newer one expires the older)
+  let states = new Map(); const registry = new Map();
+  const actionsFor = (i, at) => block => actionsBlock(block, { state: (states.get(i) || new Map()).get(block.id), at, who: name(), tz, app, registry, send: sendAction });
+  function turnEl(t, i) { return t.role === 'user' ? mine(t.content) : theirs(t.content, t.at ? name() + ' · ' + when(t.at, tz) : name(), { actions: actionsFor(i, t.at) }); }
   function showEarlier() {
     if (!older.length) return;
     const chunk = older.splice(Math.max(0, older.length - PAGE));
     const before = body.scrollHeight, top = body.scrollTop;
     const anchor = earlierBtn.isConnected ? earlierBtn.nextSibling : body.firstChild;
-    for (const t of chunk) body.insertBefore(turnEl(t), anchor);
+    const base = older.length; chunk.forEach((t, k) => body.insertBefore(turnEl(t, base + k), anchor));
     if (!older.length) earlierBtn.remove();
     body.scrollTop = top + (body.scrollHeight - before);   // keep the reader's place
   }
@@ -64,6 +70,8 @@ export function liveChat(host, opts) {
   // a brief a console button sent (the charter) shows as its first line, the full text one click away
   const BRIEF = /^(Let us write the company charter together|Please change company\/CHARTER\.md)/;
   function mine(text) {
+    const ar = parseActionReply(text);
+    if (ar) return h('div', { class: 'stack-4', style: 'align-self:flex-end;align-items:flex-end' }, h('div', { class: 'msg-me action-reply', 'data-reply-id': ar.reply.id }, ar.shown));
     const t = String(text || '');
     if (BRIEF.test(t)) {
       const first = t.split('\n')[0];
@@ -72,7 +80,7 @@ export function liveChat(host, opts) {
     }
     return h('div', { class: 'stack-4', style: 'align-self:flex-end;align-items:flex-end' }, h('div', { class: 'msg-me' }, t));
   }
-  function theirs(text, meta) { return h('div', { class: 'stack-4 msg-them-wrap' }, mdBlock(text, 'msg-them'), meta ? h('span', { class: 'msg-meta' }, meta) : null); }
+  function theirs(text, meta, opts) { return h('div', { class: 'stack-4 msg-them-wrap' }, mdBlock(text, 'msg-them', opts), meta ? h('span', { class: 'msg-meta' }, meta) : null); }
   function scrollEnd() { if (pinned) toBottom(); else jump.hidden = false; }
   function problemCard(p, kind) {
     return h('div', { class: 'alertbox chat-problem', role: kind === 'error' ? 'alert' : 'status' },
@@ -87,9 +95,10 @@ export function liveChat(host, opts) {
     ta.placeholder = 'Write to ' + name() + '…';
     fill(banner, (info.problems || []).map(p => problemCard(p)));
     const turns = info.turns || [];
+    states = blockStates(turns); registry.clear();
     older = turns.slice(0, Math.max(0, turns.length - PAGE));
-    const recent = turns.slice(-PAGE);
-    fill(body, turns.length ? [older.length ? earlierBtn : null].concat(recent.map(turnEl)).filter(Boolean)
+    const recent = turns.slice(-PAGE); const off = older.length;
+    fill(body, turns.length ? [older.length ? earlierBtn : null].concat(recent.map((t, k) => turnEl(t, off + k))).filter(Boolean)
       : empty('No messages yet. Write below; ' + name() + ' answers here, live.'));
     pinned = true;
     if (info.transcriptError) body.prepend(h('p', { class: 'caption muted' }, 'Earlier messages could not be loaded (' + info.transcriptError + ').'));
@@ -115,7 +124,9 @@ export function liveChat(host, opts) {
     const say = t => { who.lastChild.textContent = ' ' + t; setState(t); };
     say(name() + ' is thinking…');
     let text = '', lead = null, sawEnd = false, failed = null, raf = 0, consentHost = null;
-    const render = () => { raf = 0; fill(reply, md(text)); scrollEnd(); };
+    let final = false;
+    const liveActions = block => final ? actionsBlock(block, { state: null, at: new Date().toISOString(), who: name(), tz, app, registry, send: sendAction }) : h('p', { class: 'caption muted chat-actions-pending' }, 'Preparing buttons…');
+    const render = () => { raf = 0; fill(reply, md(text, { actions: liveActions })); scrollEnd(); };
     const fail = (p) => { failed = p; card.appendChild(problemCard(p, 'error')); };
     ctrl = new AbortController();
     try {
@@ -157,11 +168,11 @@ export function liveChat(host, opts) {
         while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (l) handle(l); }
       }
       if (buf.trim()) handle(buf.trim());
-      if (raf) { cancelAnimationFrame(raf); } render();
+      if (raf) { cancelAnimationFrame(raf); } final = true; render();
       if (!sawEnd && !failed) fail({ message: 'The answer stopped before ' + name() + ' finished.', fix: 'Send it again.' });
       else if (sawEnd && !text.trim() && !failed) fail({ message: name() + ' finished without writing a reply.', fix: 'Ask again, or look at the steps above.' });
     } catch (e) {
-      if (e.name === 'AbortError') { render(); card.appendChild(h('p', { class: 'caption muted' }, 'Stopped.')); }
+      if (e.name === 'AbortError') { final = true; render(); card.appendChild(h('p', { class: 'caption muted' }, 'Stopped.')); }
       else fail({ message: /Failed to fetch|NetworkError/.test(e.message) ? 'The console server is not reachable.' : 'Not sent: ' + humanError(e), fix: e.status === 404 ? 'This crew member is not on the crew any more.' : null });
     } finally {
       who.remove(); card.classList.remove('live');
@@ -176,8 +187,8 @@ export function liveChat(host, opts) {
       try { await post('/station/consent', { runId: runId || p.runId, promptId: p.promptId, decision: d }); el.replaceWith(h('p', { class: 'caption muted' }, d === 'deny' ? 'You said no.' : 'You allowed it.')); }
       catch (e) { app.toast('Not answered: ' + humanError(e), true); }
     };
-    const el = h('div', { class: 'alertbox', role: 'alertdialog', 'data-prompt': p.promptId || '' },
-      h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, name() + ' asks to use ' + (p.tool || 'a tool')), h('span', { class: 'mono-s' }, String(p.argsSummary || '').slice(0, 400))),
+    const el = h('div', { class: 'alertbox tool-permission', role: 'alertdialog', 'data-prompt': p.promptId || '' },
+      h('div', { class: 'stack-4' }, h('span', { class: 'consent-prov caption strong' }, 'Tool permission · station'), h('span', { class: 'label strong' }, name() + ' asks to use ' + (p.tool || 'a tool')), h('span', { class: 'mono-s' }, String(p.argsSummary || '').slice(0, 400))),
       h('div', { class: 'row-8' }, Button('Allow once', { variant: 'primary', size: 'sm', onClick: () => answer('once') }), Button('Allow in this chat', { variant: 'secondary', size: 'sm', onClick: () => answer('session') }), Button('No', { variant: 'ghost', size: 'sm', onClick: () => answer('deny') })));
     card.appendChild(el); scrollEnd();
     setState(name() + ' is waiting for your answer…', 'warning');
@@ -194,5 +205,10 @@ export function liveChat(host, opts) {
     return stream({ text }, text);
   }
   function sendBrief(brief, notes) { return stream({ brief, notes: notes || {} }, null); }
+  // a chat action's reply: the owner's next message (the visible line + the actionReply line); false when not sent
+  async function sendAction(text) {
+    if (busy) { app.toast(name() + ' is still answering. Press Stop first, then choose again.', true); return false; }
+    stream({ text }, text); return true;
+  }
   return { load, send, sendBrief, stop, ta, isBusy: () => busy, destroy: () => { if (ctrl) ctrl.abort(); } };
 }

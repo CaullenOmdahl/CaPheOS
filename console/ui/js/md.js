@@ -4,8 +4,11 @@
 // is dropped and only its text is kept. An old route (#/comms, #/controls/guard, …) is rewritten to its new home
 // (routes.js redirect), so the link the owner hovers is the place it opens. Covers what agents write: paragraphs, line breaks, # headings, - and 1. lists,
 // > quotes, ``` code blocks, `code`, **bold**, *em*, [text](url), bare URLs and tables (shown as code blocks).
+// A ```actions fence (docs/CHAT-ACTIONS.md) goes, validated, to opts.actions(block) where the page can answer it (live chat,
+// the owner channel); elsewhere it shows read-only. A malformed one is plain text with a note, never broken controls.
 import { h } from './ui.js';
 import { redirect } from './routes.js';
+import { parseActions } from './actions-schema.js';
 
 export function safeHref(url) {
   const u = String(url || '').trim();
@@ -42,13 +45,18 @@ function inline(text) {
 function withBreaks(lines) { const out = []; lines.forEach((l, i) => { if (i) out.push(h('br')); out.push(...inline(l)); }); return out; }
 
 // markdown -> a DocumentFragment-like array of nodes
-export function md(src) {
+export function md(src, opts) {
   const lines = String(src == null ? '' : src).replace(/\r/g, '').replace(/<!--[\s\S]*?-->/g, '').split('\n');
   const out = [];
   let i = 0;
   while (i < lines.length) {
     const l = lines[i];
     if (!l.trim()) { i++; continue; }
+    if (/^\s*```\s*actions\s*$/i.test(l)) {
+      const buf = []; i++; while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) buf.push(lines[i++]);
+      const closed = i < lines.length; i++;
+      out.push(actionsNode(buf.join('\n'), closed, opts)); continue;
+    }
     const fence = /^\s*```/.exec(l);
     if (fence) { const buf = []; i++; while (i < lines.length && !/^\s*```/.test(lines[i])) buf.push(lines[i++]); i++; out.push(h('pre', { class: 'md-pre' }, h('code', null, buf.join('\n')))); continue; }
     const hd = /^(#{1,4})\s+(.*)$/.exec(l);
@@ -81,4 +89,17 @@ function table(rows) {
     h('tbody', null, rest.map(r => h('tr', null, cells(r).map(c => h('td', null, inline(c))))))));
 }
 // one block element holding the rendered markdown
-export function mdBlock(src, cls) { return h('div', { class: 'md' + (cls ? ' ' + cls : '') }, md(src)); }
+export function mdBlock(src, cls, opts) { return h('div', { class: 'md' + (cls ? ' ' + cls : '') }, md(src, opts)); }
+
+// an actions block: still streaming -> a placeholder; malformed -> its text and a note; a page that answers it ->
+// opts.actions; anywhere else -> read-only (its prompt, its choices as plain words, links that still work)
+function actionsNode(raw, closed, opts) {
+  if (!closed) return h('p', { class: 'caption muted chat-actions-pending' }, 'Preparing buttons…');
+  const p = parseActions(raw);
+  if (!p.ok) return h('div', { class: 'chat-actions-bad' }, h('pre', { class: 'md-pre' }, h('code', null, raw)), h('p', { class: 'caption muted', role: 'note' }, 'Couldn\'t show these buttons (' + p.error + ').'));
+  if (opts && opts.actions) return opts.actions(p.block);
+  const b = p.block;
+  return h('div', { class: 'chat-actions readonly', 'data-actions-id': b.id }, b.prompt ? h('p', { class: 'md-p' }, inline(b.prompt)) : null,
+    h('ul', { class: 'md-list' }, b.items.map(it => h('li', null, it.type === 'link' ? link(it.label, it.href) : it.type === 'approval' ? 'Approval ' + it.ref + ' (on Today › Needs you)' : it.label + (it.options ? ': ' + it.options.map(o => o.label).join(' / ') : '')))),
+    h('p', { class: 'caption muted' }, 'Answer these in a live chat or the owner channel.'));
+}

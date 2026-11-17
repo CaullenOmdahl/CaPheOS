@@ -1,0 +1,8 @@
+{
+  "_doc": "Limits for owner approvals (company/tools/approvals.js). maxPendingPerSeat: approvals one seat may have waiting at once; maxPerWindowPerSeat in windowMin minutes: how many it may ask for; reminderMin: a record is reminded once, this long after it was created, in one batch per window; defaultExpiryMin: null = a record expires only when its asker set expires-min (no expiresAt = no expiry; the default at expiry is always deny). company/state/approvals-policy.json overrides.",
+  "maxPendingPerSeat": 5,
+  "maxPerWindowPerSeat": 10,
+  "windowMin": 60,
+  "reminderMin": 15,
+  "defaultExpiryMin": null
+}

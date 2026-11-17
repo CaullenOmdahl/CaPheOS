@@ -11,6 +11,7 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | tool | purpose | owner | selftest | CLI | credentials |
 |---|---|---|---|---|---|
 | `company/tools/agy-contract.js` | run a scoped job through the Antigravity (AGY) CLI and return schema-validated JSON. | tools | — | `--prompt` `--prompt-file` | — |
+| `company/tools/approvals.js` | owner approvals as EXISTING owner-question records (company/pm-inbox.jsonl, read through inbox.js): mint one only when governance says the owner must approve, answer it from any surface with compare-and-swap, expire it to its default (deny) server-side, remind in batches. Audit lines through decision.js add; the dispatcher's hook is the read `blockingSeats()`. | ceo | via `node --test company/tools/tests/approvals.test.js` | `ask` `amend` `withdraw` `answer` `list` `get` `blocking-seats` `tick` | — |
 | `company/tools/ask.js` | route a question to the right level, and refuse to route non-CEO questions to the CEO. | ceo | — | `--from` `list` `owners` | — |
 | `company/tools/backup-freshness.js` | is there a state snapshot (scripts/backup.sh) from the last 26 hours? | risk | `--selftest` | `--json` `--duty` `--selftest` | — |
 | `company/tools/budget.js` | the station's spending caps follow the company's settings (apply, drift, the budget-drift duty), and every run carries a door (doors, coverage). | finance | `selftest` / `--selftest` | `apply` `drift` `--duty` `doors` `coverage` `status` `selftest` | station-token |

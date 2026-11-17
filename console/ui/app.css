@@ -382,3 +382,17 @@ kbd { display: inline-block; min-width: 1.6em; padding: 2px 6px; border: 1px sol
 .quest-col.empty-col { flex: 0 0 auto; min-width: 120px; opacity: .8; }
 .quest-title { white-space: normal; overflow-wrap: break-word; hyphens: auto; }
 @media (max-width: 720px) { .quest-col, .quest-col.empty-col { flex: 1 1 100%; } }
+
+/* chat actions (js/chat-actions.js, docs/CHAT-ACTIONS.md): an agent's choices inside its message */
+.chat-actions { display: flex; flex-direction: column; gap: 12px; margin: 8px 0; padding: 14px 16px; border: 1px solid var(--border-hairline); border-radius: var(--radius-lg); background: var(--surface-card); white-space: normal; }
+.chat-actions[data-state="answered"] { border-color: var(--status-online); }
+.chat-actions[data-state="expired"] { opacity: .7; }
+.chat-actions[data-state] .chat-action-link[aria-disabled="true"] { pointer-events: none; opacity: .6; }
+.chat-actions.readonly { background: transparent; }
+.chat-actions-bad .md-pre { opacity: .8; }
+/* a company approval (approvals.js, recorded in decisions.md) never looks like the station's tool permission prompt */
+.company-approval { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-left: 4px solid var(--accent); border-radius: var(--radius-lg); background: var(--surface-card); }
+.company-approval .approval-prov { color: var(--accent); letter-spacing: .02em; }
+.company-approval[data-state="approved"] { border-left-color: var(--status-online); }
+.company-approval[data-state="denied"], .company-approval[data-state="expired"], .company-approval[data-state="withdrawn"], .company-approval[data-state="inert"] { border-left-color: var(--border-hairline); }
+.tool-permission .consent-prov { color: var(--status-warning); letter-spacing: .02em; }

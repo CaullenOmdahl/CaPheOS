@@ -608,6 +608,7 @@ function openQuestions() {
       if (x.snoozedUntil && Date.parse(x.snoozedUntil) > now) o.snoozedUntil = x.snoozedUntil;
       const hint = secretHint(x); if (hint) o.secretHint = hint;
       if (x.stored) o.stored = x.stored;
+      if (x.approval) o.approval = { category: x.approval.category, actionDigest: x.approval.actionDigest || null, expiresAt: x.approval.expiresAt || null, default: 'deny' };
       o.secretOnly = secretOnly(o.form);
       const qo = questionsOf(x);
       if (qo) {
@@ -652,6 +653,7 @@ function ask(o) {
   if (questions) { row.kind = 'multi'; row.questions = questions; }
   else if (kind !== 'approve' || form.actions.some(a => a.does)) { row.kind = kind; row.form = form; }
   if (o.batch) row.batch = o.batch; if (o.gate) row.gate = o.gate;
+  if (o.approval) row.approval = o.approval;   // approvals.js: category, canonical params, actionDigest, expiresAt, dependsOn
   append(row);
   return { row, warnings: styleWarnings(message, details) };
 }
@@ -858,7 +860,7 @@ function out(code, obj) { console.log(JSON.stringify(obj, null, 1)); process.exi
 
 module.exports = { withdraw, withdrawnSince, plainFieldKinds, secretOnly, storeOnlyAction, normalizeQuestions, decisionItems, inferQuestions, followUpOf, questionsOf, computeParts, answerParts, recordStored,
   shellAsk, composerCheck, routeAdvice, asksForCredential, openQuestions, state, readAll, ask, answer, snooze, normalizeForm, expandKind, formOf, checkAnswer, plainAnswer, secretHint, sliderWords,
-  messageParts, styleWarnings, safeSecretName, KINDS, FIELD_TYPES, VERDICTS, FILE };
+  messageParts, styleWarnings, safeSecretName, KINDS, FIELD_TYPES, VERDICTS, FILE, deliver, isOwner };
 
 /* ---- selftest: a scratch inbox, owner dir and governance root ---- */
 function selftest() {

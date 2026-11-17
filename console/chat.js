@@ -22,7 +22,7 @@ const http = require('http');
 
 /* What the console knows that the chat would not: this seat's own recent work (its routine runs are separate
    conversations), so "what are you working on?" gets a real answer. Marked as console context, not the owner's words. */
-function contextNote(id, s, co) {
+function contextNote(id, s, co, text) {
   const lines = [];
   try {
     const runs = require(co.p('company', 'tools', 'lib', 'bounded.js')).tailLines(co.p('.starnet-data', 'workspaces', 'runs.jsonl'), 400)   // the end only
@@ -36,7 +36,15 @@ function contextNote(id, s, co) {
   return '[Console context, not from the owner: you are ' + (s.name || id) + '. The company folder is ' + co.ROOT + ' (your project root; company tools run as `node company/tools/<tool>.js`).'
     + (lines.length ? ' Your own recent runs (separate conversations you can check):\n' + lines.join('\n') : ' No earlier runs of yours are recorded.')
     + (notes.length ? '\nYour written record: ' + notes.join(', ') + '. Read them before claiming what you have done.' : '')
-    + '\nWhen you point the owner somewhere in the console, link it: [label](console:#/route).]\n\n';
+    + '\nWhen you point the owner somewhere in the console, link it: [label](console:#/route). For a quick choice in this conversation, write an ```actions block (company/skills/console-links/SKILL.md "Chat actions").'
+    + actionReplyNote(text) + ']\n\n';
+}
+/* the parse helper for the agent's next turn: the owner clicked a control in an ```actions block, so say so plainly */
+function actionReplyNote(text) {
+  let p = null; try { p = require(path.join(__dirname, 'ui', 'js', 'actions-schema.js')).parseActionReply(text); } catch (_) {}
+  if (!p) return '';
+  const r = p.reply;
+  return '\nThis message is the owner\'s answer to your actions block "' + r.id + '"' + (r.value !== undefined ? ': value ' + JSON.stringify(r.value) : '') + (r.fields ? '; fields ' + JSON.stringify(r.fields) : '') + (r.stored ? '; a key was stored at secrets/' + r.stored.name + ' (' + r.stored.chars + ' chars), read it with co.secret() in a tool, never print it' : '') + '. The last line, [actionReply {...}], is the machine-readable form.';
 }
 
 module.exports = function chat(deps) {
@@ -152,7 +160,7 @@ module.exports = function chat(deps) {
     const t = await transcript(id);
     const history = t.turns.slice(-40).map(x => ({ role: x.role, content: x.content }));
     const payload = { agentId: id, model: m.model, provider: m.provider, rosterSystem: true, isTask: false, streamId: STREAM(id),
-      messages: history.concat([{ role: 'user', content: contextNote(id, s, co) + text }]), projectRoot: co.ROOT, placed: PLACED };
+      messages: history.concat([{ role: 'user', content: contextNote(id, s, co, text) + text }]), projectRoot: co.ROOT, placed: PLACED };
     let token; try { token = co.stationToken(); } catch (_) { token = null; }
     if (!token) { line('console.error', { code: 'station-down', message: 'No station token (secrets/station-token).', fix: 'Run scripts/setup-station.sh', link: '#/settings/system' }); return res.end(); }
     // the one gate (company/tools/lib/admit.js, door chat): an owner chat is always allowed and always counted

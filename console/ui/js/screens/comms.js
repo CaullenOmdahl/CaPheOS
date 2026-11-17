@@ -9,6 +9,8 @@ import { api, post } from '../api.js';
 import * as events from '../events.js';
 import { liveChat } from '../chat.js';
 import { mdBlock } from '../md.js';
+import { actionsBlock } from '../chat-actions.js';
+import { blockStates, stripReplyLine } from '../actions-schema.js';
 import { personName, runsOn } from '../plain.js';
 
 const ss = { get: k => { try { return sessionStorage.getItem(k); } catch (_) { return null; } }, del: k => { try { sessionStorage.removeItem(k); } catch (_) {} } };
@@ -143,14 +145,18 @@ export async function render(root, ctx) {
     const threaded = new Set();
     const byId = {}; for (const m of msgs) byId[m.id] = m;
     for (const m of msgs) if (m.dir === 'in' && m.state && m.state.replies) for (const r of m.state.replies) threaded.add(r);
-    const reply = m => h('div', { class: 'stack-4 msg-them-wrap' }, mdBlock(m.text || m.body || '', 'msg-them'), h('span', { class: 'msg-meta' }, (personName(m.from) || 'Company') + ' · ' + when(m.at, tz)));
+    // chat actions in the company's messages: a reply is the owner's next owner-channel message (chat-actions.js)
+    const turns = msgs.map(m => ({ role: m.dir === 'out' ? 'assistant' : 'user', content: String(m.text || m.body || ''), at: m.at }));
+    const states = blockStates(turns); const registry = new Map(); const idx = new Map(msgs.map((m, i) => [m, i]));
+    const sendAction = async text => { try { await post('/owner/messages', { text }); loadThread(); return true; } catch (e) { sendErr.textContent = 'Not sent: ' + humanError(e); return false; } };
+    const reply = m => h('div', { class: 'stack-4 msg-them-wrap' }, mdBlock(m.text || m.body || '', 'msg-them', { actions: block => actionsBlock(block, { state: (states.get(idx.get(m)) || new Map()).get(block.id), at: m.at, who: personName(m.from) || 'the company', tz, app, registry, send: sendAction }) }), h('span', { class: 'msg-meta' }, (personName(m.from) || 'Company') + ' · ' + when(m.at, tz)));
     const rows = [];
     for (const m of msgs) {
       if (m.dir === 'out') { if (!threaded.has(m.id)) rows.push(reply(m)); continue; }
       const st = m.state || { status: m.acked ? 'read' : 'waiting', text: m.acked ? 'read' : 'waiting' };
       const [label, tone] = STATE_TAG[st.status] || STATE_TAG.waiting;
       rows.push(h('div', { class: 'stack-6 owner-msg', 'data-state': st.status, style: 'align-self:flex-end;align-items:flex-end' },
-        h('div', { class: 'msg-me' }, m.text),
+        h('div', { class: 'msg-me' }, stripReplyLine(m.text)),
         h('span', { class: 'row-8 msg-meta', style: 'align-items:center;justify-content:flex-end;flex-wrap:wrap' }, (personName(m.from) || 'You') + ' · ' + when(m.at, tz), Tag(label, { variant: 'status', status: tone })),
         h('span', { class: 'caption ' + (st.status === 'stuck' ? 'danger' : 'muted'), style: 'text-align:right;max-width:520px' }, st.text + (st.fix ? '. Fix: ' + st.fix : '')),
         st.status === 'stuck' && st.link ? h('a', { href: st.link, class: 'caption' }, 'Fix it →') : null));

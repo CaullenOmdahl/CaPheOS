@@ -77,6 +77,12 @@ entry's id; a stamp ("15:30") works too. Owning an error: `decision.js add ... -
   run. The owner works only in the console: a change to a tool goes through `harness-change.js propose` (a locked tool
   becomes an owner Approve on Today that the tool applies; a framework file becomes a framework request), anything else
   that needs a command is a handoff to the tools seat.
+- In a live chat or an owner-channel message, a quick choice the owner makes right now can be an ```actions block
+  (buttons, a choice, a short field, a slider, a link, a key field; skill `console-links`, "Chat actions"). The owner's
+  click comes back as their next message, ending in `[actionReply {...}]`. A decision that needs the owner's attention
+  later is an owner question on Today, not a chat block. Something that needs owner approval is asked with
+  `node company/tools/approvals.js ask` (it checks governance first and mints a record only at `approve` or a fixed
+  gate); a chat block may then show it with `{"type":"approval","ref":"<q-id>"}`, never create one.
 
 ## Sources
 1. The owner's founding brief (`company/CHARTER.md`)

@@ -49,6 +49,9 @@ Until it is defined: start nothing new, finish or park the item in hand, write w
 ## Handoffs
 - Read your inbox `company/work/handoffs/to-<name>.md` at the start of every session.
 - Owner gates go up your chain of command to the CEO; never message the owner yourself.
+- When the owner talks with you in a live chat with the owner in a live chat, a quick choice can be an ```actions block (skill `console-links`, "Chat
+  actions"); their click arrives as their next message ending in `[actionReply {...}]`. Anything that must wait for
+  the owner goes up your chain as a question, not a chat block; a block never creates an approval.
 
 ## Sources
 1. <Company, job title, location, date seen, URL>

@@ -99,6 +99,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | tool | owner | selftest |
 |---|---|---|
 | company/tools/agy-contract.js | tools | none |
+| company/tools/approvals.js | ceo | via tests/approvals.test.js |
 | company/tools/ask.js | ceo | none |
 | company/tools/backup-freshness.js | risk | `--selftest` |
 | company/tools/budget.js | finance | `selftest` / `--selftest` |
