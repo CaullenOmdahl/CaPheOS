@@ -98,7 +98,7 @@ const MANIFEST = [
   { p: 'company/work/models/house-benchmarks.json', cls: 'R', writers: ['model-stats.js'], regen: ['model-stats.js'], owner: 'people', area: 'record', why: 'house benchmarks' },
   { p: 'company/work/models/house-benchmarks.md', cls: 'R', writers: ['model-stats.js'], regen: ['model-stats.js'], owner: 'people', area: 'record', why: 'house benchmarks' },
   // F — policy, access, tools that measure or limit, gates, records with many writers
-  { p: 'company/work/security/default-branch-watch.json', cls: 'F', owner: 'risk', area: 'gate', why: 'the repositories the default-branch rule watches' },
+  { p: 'company/work/security/default-branch-watch.json', cls: 'F', writers: ['default-branch-watch.js'], owner: 'risk', area: 'gate', why: 'the repositories the default-branch rule watches (only through default-branch-watch.js watch add|remove)' },
   { p: 'company/work/finance/pacing-policy.json', cls: 'F', writers: ['pacer.js'], owner: 'finance', area: 'policy', why: 'usage pacing numbers (the subscription cutoffs only through pacer.js limit / mode, or a reviewed harness change)' },
   { p: 'company/work/finance/dispatch-budget.json', cls: 'F', owner: 'finance', area: 'policy', why: 'the daily spending cap' },
   { p: 'company/work/finance/today-budget.json', cls: 'F', writers: ['money-hold.js'], owner: 'finance', area: 'policy', why: 'the owner\'s answer to a money hold, for one day: today\'s metered budget (only through money-hold.js set, which the dispatcher runs for an answer on Today)' },

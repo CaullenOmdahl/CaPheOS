@@ -23,7 +23,7 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/decide.js` | decision models: deterministic, versioned, logged, replayable rules that turn observed state into an action. | risk | `selftest` / `--selftest` | `list` `show` `eval` `replay` `test` `promote` `set-param` `outcome` `join` `health` `register` `selftest` | — |
 | `company/tools/decision.js` | the one way an agent writes company/work/decisions.md: add a decision, amend one, withdraw one. | ceo | `selftest` | `add` `amend <id-or-stamp>` `withdraw <id-or-stamp>` `list` `show` `selftest` | — |
 | `company/tools/delegation.js` | while the owner is away, someone they name answers some of their approval questions for them. | ceo | `selftest` / `--selftest` | `grant` `revoke` `list` `answer` `register` `selftest` | — |
-| `company/tools/default-branch-watch.js` | the GitHub-side tripwire for the one rule about GitHub: nothing lands on a repository's default | risk | `selftest` | `tick` `status` `baseline` `selftest` | — |
+| `company/tools/default-branch-watch.js` | the GitHub-side tripwire for the one rule about GitHub: nothing lands on a repository's default | risk | `selftest` | `tick` `status` `baseline` `watch add|remove <owner/name>` `selftest` | — |
 | `company/tools/dispatch.js` | wakes the agent who owns open work. | tools | `--selftest` | `--dry-run` `--selftest` | station-token |
 | `company/tools/dispatcher-loop.js` | the self-paced dispatcher: one dispatch tick, then sleep the current tempo, forever. | tools | `selftest` / `--selftest` | `--once` `status` `selftest` | — |
 | `company/tools/dossier.js` | keep every agent's StarNet dossier (identity.md, purpose.md, context.md, operating-manual.md) complete | people | — | `check` `sync` | — |

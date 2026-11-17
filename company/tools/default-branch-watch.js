@@ -17,6 +17,10 @@
  *   node company/tools/default-branch-watch.js status                            watched repos, heads, errors, recent flags
  *   node company/tools/default-branch-watch.js baseline                          take today's heads as known-good (owner's own
  *        terminal only: it skips checking how the heads got there; the risk owner and the CEO are told what it took unchecked)
+ *   node company/tools/default-branch-watch.js watch add|remove <owner/name> --by <Name> --why "..."
+ *        the recorded way to change the watch list (company/work/security/default-branch-watch.json): add is the risk
+ *        seat's or the owner's (it only tightens), remove is the owner's alone (it loosens). List the company's OWN repos:
+ *        a repository the company cannot push to (the framework's, a vendor's) is listed but never watched.
  *   node company/tools/default-branch-watch.js selftest                          fake gh, temp folders, no network
  *
  * Which repos: the watch list, company/work/security/default-branch-watch.state.json (default in company/defaults/work/security/):
@@ -1000,6 +1004,31 @@ function run(ctx, st, tamper) {
 }
 
 /* ---------------- baseline, status ---------------- */
+/* watch add|remove: the watch list's one writer besides the owner's editor. Recorded with provenance, so locked-watch
+ * accepts the bytes; the decision goes to decisions.md through decision.js. */
+function watchCmd(ctx, verb, repo, o) {
+  repo = String(repo || '').trim();
+  if (!['add', 'remove'].includes(verb)) throw new Error('watch add|remove <owner/name> --by <Name> --why "..."');
+  if (!SLUG.test(repo)) throw new Error('give the repository as owner/name ("' + one(repo).slice(0, 60) + '" is not one)');
+  const why = String((o && o.why) || '').trim(); if (why.length < 12) throw new Error('--why must say why this repository is (no longer) watched (12+ characters)');
+  const by = String((o && o.by) || '').trim(); const risk = ctx.roles.risk;
+  const owner = by.toLowerCase() === 'owner' && ctx.ownerShell && !ctx.underStation;
+  const isRisk = !!risk && by.toLowerCase() === String(risk.name || '').toLowerCase();
+  if (verb === 'remove' && !owner) throw new Error('removing a watched repository loosens the rule: only the owner, from the owner\'s own shell (--by owner)');
+  if (!owner && !isRisk) throw new Error('--by must be the risk seat (' + roleName(ctx, 'risk') + ') or the owner from the owner\'s own shell');
+  if (isRisk && ctx.live) { try { const c = require('./provenance.js').callerConflict(ctx.root, [TOOL, 'watch', repo, by], risk.id); if (c) throw new Error('this command claims --by ' + by + ' but ran in another seat\'s run (' + c.runId + ')'); } catch (e) { if (/claims --by/.test(e.message)) throw e; } }
+  const f = path.join(ctx.root, CONFIG_REL);
+  const cur = readJson(f, null) || readJson(path.join(ctx.root, CONFIG_DEFAULT_REL), null) || { repos: [], discover: false, watchStart: '' };
+  const list = (Array.isArray(cur.repos) ? cur.repos : []).map(x => String(typeof x === 'string' ? x : (x && x.repo) || ''));
+  const has = list.some(x => x.toLowerCase() === repo.toLowerCase());
+  if (verb === 'add' && has) return { ok: true, unchanged: true, repo, repos: list };
+  if (verb === 'remove' && !has) return { ok: true, unchanged: true, repo, repos: list };
+  cur.repos = verb === 'add' ? list.concat([repo]) : list.filter(x => x.toLowerCase() !== repo.toLowerCase());
+  const text = JSON.stringify(cur, null, 2) + '\n';
+  if (!ctx.dry) { writeAtomic(f, text); prov(ctx, 'write', f, text); }
+  if (ctx.live && !ctx.dry) { try { require('./decision.js').add({ by: owner ? 'owner' : risk.name, text: (verb === 'add' ? 'watching ' : 'no longer watching ') + repo + ' for direct pushes to its default branch (default-branch-watch.js watch ' + verb + ')', why }); } catch (_) {} }
+  return { ok: true, repo, verb, by: owner ? 'owner' : risk.name, repos: cur.repos, note: 'a repository the company cannot push to is listed but not watched; watch the company\'s own repos' };
+}
 function baseline(ctx) {
   if (!ctx.ownerShell || !ctx.tty || ctx.underStation) throw new Error('baseline is for the owner\'s own terminal only (an interactive shell): it takes the current heads as known-good without checking how they got there. A normal tick checks every change; nothing else needs a baseline.');
   const lk = takeLock(ctx); if (!lk.ok) throw new Error('a check is running now (' + lk.held + '); try again in a minute');
@@ -1497,6 +1526,20 @@ function selftest() {
     ok(kinds(r) === 'pushed' && !r.flags[0].unguarded && S.blocks('to-jo.md') === 1, 'guardrail back ON: the next direct push is an OPEN handoff again');
   }
 
+  { // watch add|remove: the recorded writer of the watch list
+    const W = setup(); const cfgF = path.join(W.T, CONFIG_REL); W.W(CONFIG_REL, JSON.stringify({ repos: [], discover: false, watchStart: START }));
+    const riskName = (W.C().roles.risk || {}).name; let e1 = null;
+    try { watchCmd(W.C(), 'add', 'acme/app', { by: 'Nobody', why: 'the product repository we ship from' }); } catch (e) { e1 = e.message; }
+    ok(/risk seat/.test(e1 || ''), 'watch add: refused for someone who is neither the risk seat nor the owner');
+    const r = watchCmd(W.C(), 'add', 'acme/app', { by: riskName, why: 'the product repository we ship from' });
+    const provRows = fs.readFileSync(path.join(W.T, 'company/state/locked/provenance.jsonl'), 'utf8');
+    ok(r.ok && readJson(cfgF, {}).repos.join() === 'acme/app' && provRows.includes('"file":"' + CONFIG_REL + '"') && provRows.includes(sha256(fs.readFileSync(cfgF, 'utf8'))), 'watch add by the risk seat: written and recorded (provenance, the exact bytes)');
+    ok(watchCmd(W.C(), 'add', 'acme/app', { by: riskName, why: 'the product repository we ship from' }).unchanged, 'watch add: twice is a no-op');
+    let e2 = null; try { watchCmd(W.C(), 'remove', 'acme/app', { by: riskName, why: 'we stopped shipping from this one' }); } catch (e) { e2 = e.message; }
+    ok(/only the owner/.test(e2 || ''), 'watch remove: loosening is the owner\'s alone');
+    ok(watchCmd(W.C({ ownerShell: true }), 'remove', 'acme/app', { by: 'owner', why: 'we stopped shipping from this one' }).repos.length === 0, 'watch remove by the owner from the owner\'s shell');
+  }
+
   fs.rmSync(TMP, { recursive: true, force: true }); TZ = savedTZ;
   console.log(bad ? bad + ' FAILED' : 'all checks passed'); return bad ? 1 : 0;
 }
@@ -1507,7 +1550,8 @@ if (require.main === module) {
     if (cmd === 'tick') { const i = rest.indexOf('--preview'); const r = tick(context({ dry: rest.includes('--dry-run'), preview: i >= 0 ? Number(rest[i + 1]) || 10 : 0 })); if (r && r.refused) { console.log('tick refused by design: a real check never runs from an agent run' + (typeof r.reason === 'string' ? ' (' + r.reason + ')' : '')); process.exit(0); } }
     else if (cmd === 'status') console.log(status(context()));
     else if (cmd === 'baseline') baseline(context());
+    else if (cmd === 'watch') { const o = {}; for (let i = 2; i < rest.length; i++) if (rest[i].startsWith('--')) o[rest[i].slice(2)] = rest[i + 1] && !rest[i + 1].startsWith('--') ? rest[++i] : true; console.log(JSON.stringify(watchCmd(context(), rest[0], rest[1], o), null, 1)); }
     else if (cmd === 'selftest') process.exit(selftest());
-    else { console.error('usage: default-branch-watch.js tick [--dry-run] [--preview N] | status | baseline | selftest'); process.exit(2); }
+    else { console.error('usage: default-branch-watch.js tick [--dry-run] [--preview N] | status | baseline | watch add|remove <owner/name> --by <Name> --why "..." | selftest'); process.exit(2); }
   } catch (e) { console.error('default-branch-watch: ' + one(e.message).slice(0, 300)); process.exit(1); }
 }
