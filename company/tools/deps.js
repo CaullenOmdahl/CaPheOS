@@ -3,6 +3,9 @@
  *
  *   node company/tools/deps.js add <python|node> <package>[==<version>] --why "..." --by <seat>
  *   node company/tools/deps.js remove <package> [--ecosystem python|node] --by <seat>
+ *   node company/tools/deps.js adopt <python|node> <package>==<version> --by <seat> --why "..."   an ad hoc install (pipx,
+ *        pip --user, npm -g) made the company's: added through deps.js like `add`, and the duty stops reporting it
+ *   node company/tools/deps.js settle <package> --by <risk seat> --why "..."   an ad hoc install removed or not needed
  *   node company/tools/deps.js list [--json]
  *   node company/tools/deps.js verify [--rebuild]      env matches the lock; rebuild it from the lock when missing or wrong
  *   node company/tools/deps.js --duty                  read-only: the same check, for the dispatcher (docs/DUTIES.md)
@@ -729,13 +732,36 @@ function duty() {
   if (!t.length) for (const E of Object.values(ECOSYSTEMS)) { const s = envState(E, m); if (!s.ok) { items.push({ id: 'deps:env:' + E.id, route: 'tools' }); reasons.push(E.id + ' environment ' + (s.why === 'missing' ? 'missing' : 'differs from its lock')); } }
   let gov = null; try { gov = require('./lib/governance'); } catch (_) {}
   for (const [ref, p] of Object.entries(m.pending || {})) { if (gov && gov.approved(ref) !== null) { items.push({ id: 'deps:pending:' + p.questionId, route: p.byId || 'tools' }); reasons.push('owner answered ' + p.questionId); } }
-  const adhoc = adhocInstalls(Date.now() - DAY);
+  const adhoc = openAdhoc(adhocInstalls(Date.now() - DAY), m);
   for (const a of adhoc.slice(0, 20)) items.push({ id: 'deps:adhoc:' + a.runId, route: 'risk' });
-  if (adhoc.length) reasons.push(adhoc.length + ' ad hoc install(s) outside deps.js in 24 h');
+  if (adhoc.length) reasons.push(adhoc.length + ' ad hoc install(s) outside deps.js in 24 h (' + [...new Set(adhoc.map(a => a.pkg || '?'))].join(', ') + ')');
   if (!items.length) return 0;
-  const reason = (reasons.join('; ') + '. Fix: node company/tools/deps.js verify').slice(0, 300);
+  const reason = dutyReason(reasons, { tampered: t.length > 0, env: items.some(i => /^deps:env:/.test(i.id)), adhoc: adhoc.length > 0 });
   process.stdout.write(JSON.stringify({ due: true, reason, route: items[0].route, key: sha256(Buffer.from(items.map(i => i.id).join(','))).slice(7, 23), items }) + '\n');
   return 1;
+}
+
+// what to do, per finding; none of it is the owner's (the risk seat and the tools seat handle it, never an owner question)
+function dutyReason(reasons, k) {
+  const fix = [];
+  if (k.tampered) fix.push('tampered lock: the risk seat reviews it (locked-watch.js revert or accept)');
+  if (k.env) fix.push('environment: node company/tools/deps.js verify --rebuild');
+  if (k.adhoc) fix.push('ad hoc install: the risk seat keeps it with `deps.js adopt <python|node> <package>==<version> --by <seat> --why ..` (installs that version through deps.js checks; then remove the ad hoc copy) or, once it is removed or not needed, `deps.js settle <package> --by <risk seat> --why ..`');
+  return (reasons.join('; ') + '. Fix: ' + fix.join('; ') + '. Not an owner question.').slice(0, 600);
+}
+// ad hoc installs not yet settled (adopt or settle records the package and when; an install after that is new)
+function openAdhoc(list, m) { const st = (m && m.adhocSettled) || {}; return list.filter(a => !(a.pkg && st[a.pkg] && Date.parse(st[a.pkg].at) >= a.ts)); }
+function settle(pkg, o, how) {
+  const name = String(pkg || '').trim().toLowerCase().replace(/(==|@(?=\d)).*$/, ''); if (!name) throw new Usage('settle <package> --by <risk seat> --why "..."');
+  if (!o.why || !String(o.why).trim()) throw new Usage('--why "..." is required');
+  const seat = needSeat(o.by); const risk = riskSeat();
+  if (!how && !seat.owner && !(risk && risk.id === seat.id)) throw new Refusal('only the risk seat (' + (risk ? risk.name : 'none') + ') or the owner settles an ad hoc install');
+  return withLock(() => {
+    refuseTampered();
+    const m = load(); m.adhocSettled = m.adhocSettled || {};
+    m.adhocSettled[name] = { at: nowIso(), by: seat.name, how: how || 'settled', why: String(o.why) };
+    save(m); return { ok: true, package: name, how: how || 'settled' };
+  });
 }
 
 /* ---------------- ad hoc installs in the agents' transcripts ---------------- */
@@ -749,6 +775,11 @@ const ADHOC_INSTALL = new RegExp([
   String.raw`(?:^|[\s;&|(\x60'"/])yarn\s+global\s+add\b`,
   String.raw`(?:^|[\s;&|(\x60'"/])(?:apt|apt-get|dnf|yum|apk|zypper|brew|snap)\s+(?:-\S+\s+)*install\b|(?:^|[\s;&|(\x60'"/])pacman\s+-S`,
 ].join('|'));
+// the first package named after "install"/"add" (flags and their values skipped), lower-case and without a version: for settling
+function adhocPackage(cmd) {
+  const m = String(cmd || '').match(/(?:\binstall|\badd|\bi|-S)\s+((?:-\S+\s+)*)([A-Za-z0-9@][A-Za-z0-9@._/-]*)/);
+  return m ? m[2].replace(/(==|@(?=\d)|>=|<=|~=).*$/, '').toLowerCase() : null;
+}
 const isAdhoc = cmd => ADHOC_INSTALL.test(String(cmd || '')) && !/company\/tools\/deps\.js|\bdeps\.js\b/.test(String(cmd || ''));
 function adhocInstalls(sinceMs) {
   const dir = P('.starnet-data', 'workspaces', 'transcript-history-v2');
@@ -766,7 +797,7 @@ function adhocInstalls(sinceMs) {
         const fn = (tc && tc.function) || {}; if (!/shell|exec|bash|terminal|run_command/i.test(String(fn.name || ''))) continue;
         let a = fn.arguments; if (typeof a === 'string') { try { a = JSON.parse(a); } catch (_) { a = { command: a }; } }
         const cmd = String((a && (a.command || a.cmd || a.script)) || '');
-        if (isAdhoc(cmd)) out.push({ agentId: String(r.agentId), name: co.nameOf(String(r.agentId)), runId: String(r.sourceRunId || r.runId || 'run').slice(0, 12), ts: Number(r.ts) });
+        if (isAdhoc(cmd)) out.push({ agentId: String(r.agentId), name: co.nameOf(String(r.agentId)), runId: String(r.sourceRunId || r.runId || 'run').slice(0, 12), ts: Number(r.ts), pkg: adhocPackage(cmd) });
       }
     }
   }
@@ -809,6 +840,10 @@ function main(argv) {
   if (argv[0] === '--duty' || (argv[0] === 'verify' && argv.includes('--duty'))) return duty();
   const a = parseArgs(argv); const cmd = a._[0];
   if (cmd === 'add') { add(a._[1], a._[2], a); return 0; }
+  // adopt: an ad hoc install (pipx, pip --user, npm -g) made the company's: the same package through deps.js (pinned,
+  // hashed, checked), then the ad hoc install is settled. Remove the ad hoc copy afterwards (pipx uninstall <pkg>).
+  if (cmd === 'adopt') { const r = add(a._[1], a._[2], Object.assign({}, a, { why: a.why || 'adopted from an ad hoc install' })); settle(String(a._[2] || ''), Object.assign({}, a, { why: a.why || 'adopted into deps.js' }), 'adopted into deps.js'); return r && typeof r.then === 'function' ? r.then(() => 0) : 0; }
+  if (cmd === 'settle') { console.log(JSON.stringify(settle(a._[1], a))); return 0; }
   if (cmd === 'remove') { if (!a._[1]) throw new Usage('remove <package> --by <seat>'); remove(a._[1], a); return 0; }
   if (cmd === 'list') return list(!!a.json);
   if (cmd === 'verify') return verify(a);
@@ -818,7 +853,7 @@ function main(argv) {
   return cmd ? 2 : 0;
 }
 
-module.exports = { classifyLicence, typoOf, isAdhoc, ADHOC_INSTALL, pyLicenceText, REGISTRIES, ECOSYSTEMS, distance };
+module.exports = { adhocPackage, openAdhoc, dutyReason, classifyLicence, typoOf, isAdhoc, ADHOC_INSTALL, pyLicenceText, REGISTRIES, ECOSYSTEMS, distance };
 
 if (require.main === module) {
   let code;

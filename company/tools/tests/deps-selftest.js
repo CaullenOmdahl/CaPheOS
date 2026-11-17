@@ -143,6 +143,17 @@ async function selftest() {
     for (const c of ['pip install -r requirements.txt', 'pip install -e .', 'npm install', 'npm ci', 'cd app && npm install lodash', 'node company/tools/deps.js add python synpath --why x --by y', 'echo "never pip install"x | grep pip']) assert.ok(!D.isAdhoc(c), c);
   });
 
+  await t('ad hoc installs: the package is named, a settled one is not reported again (a later install is), and the fix says what to do (never the owner)', () => {
+    assert.strictEqual(D.adhocPackage('pipx install synpath-cli'), 'synpath-cli'); assert.strictEqual(D.adhocPackage('pip install --user requests==2.31.0'), 'requests');
+    assert.strictEqual(D.adhocPackage('npm i --global pm2@5.3.0'), 'pm2'); assert.strictEqual(D.adhocPackage('uv tool install ruff'), 'ruff');
+    const seen = [{ runId: 'r1', pkg: 'synpath-cli', ts: Date.parse('2030-01-01T10:00:00Z') }, { runId: 'r2', pkg: 'black', ts: Date.parse('2030-01-01T10:00:00Z') }];
+    const open = D.openAdhoc(seen, { adhocSettled: { 'synpath-cli': { at: '2030-01-01T11:00:00Z' } } });
+    assert.deepStrictEqual(open.map(a => a.runId), ['r2']);
+    assert.strictEqual(D.openAdhoc([{ runId: 'r3', pkg: 'synpath-cli', ts: Date.parse('2030-01-02T10:00:00Z') }], { adhocSettled: { 'synpath-cli': { at: '2030-01-01T11:00:00Z' } } }).length, 1, 'an install after the settle is new');
+    const r = D.dutyReason(['1 ad hoc install(s) outside deps.js in 24 h (synpath-cli)'], { adhoc: true });
+    assert.ok(/deps\.js adopt <python\|node> <package>==<version>/.test(r) && /deps\.js settle/.test(r) && /Not an owner question/.test(r) && !/Fix: node company\/tools\/deps\.js verify\b(?! --rebuild)/.test(r), r);
+  });
+
   const T = fs.mkdtempSync(path.join(os.tmpdir(), 'deps-selftest-'));
   const H = mk(path.join(T, 'outside-home'));           // HOME of every child: must stay empty
   const LWH = mk(path.join(T, 'outside-lw'));            // locked-watch's own mirror home (it writes there by design)

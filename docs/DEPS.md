@@ -95,6 +95,10 @@ token, no provider key), and HOME/TMPDIR/caches inside `company/env`.
   `pip install`, `--user`/`--break-system-packages` install, `pipx`/`uv tool install`, global npm/yarn/pnpm install or
   system package manager call that did not go through deps.js. A project repo's own `npm install` / `pip install -r`
   is project work and is not flagged.
+- what the risk seat does with one (never an owner question): keep it as the company's with
+  `deps.js adopt <python|node> <package>==<version> --by <seat> --why ".."` (installed through deps.js with every check
+  above; then remove the ad hoc copy, e.g. `pipx uninstall <package>`), or, once it is removed or not needed,
+  `deps.js settle <package> --by <risk seat> --why ".."`. Either stops the report; a later install of it is new.
 
 ## Servers and containers
 
