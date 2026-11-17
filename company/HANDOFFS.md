@@ -8,13 +8,20 @@ Append a block to `company/work/handoffs/to-<name>.md` (the `inbox` field of the
 ## <ISO date> from <YourName> — <one-line ask>
 **Need:** what exactly you need back
 **Why:** why it matters now
-**Deadline:** date or "today"
+**Deadline:** 2026-11-18            (a plain YYYY-MM-DD as the line's first characters, or the word today)
 **Quest:** q:N step <key> (optional)
 **Status:** OPEN
 **Evidence:** link the work, command output or file
 **Touches:** src/intake/, docs/intake.md (optional: the paths or areas this work changes)
 **Effort:** mechanical | reasoning (optional)
 ```
+**The Deadline line is read by a parser, not by a person.** The dispatcher sets an OPEN block aside (no wake, no stall
+count) only when that line begins with a plain `YYYY-MM-DD` no more than 14 days ahead. Prose, `none`, a missing line, a
+past date or a date buried in a sentence all count as **due now**, so "the verdict 2026-11-19; the heartbeat 2026-11-20"
+is not a deadline at all, and the seat keeps being woken until the dispatcher calls it STALLED. Write the date first and
+the detail after it. The first date the dispatcher sees for a block is the one that counts; moving it later never extends
+the wait. `node company/tools/handoff-status.js --due` shows what it is counting.
+
 `Touches:` says which files or folders the work changes, so two items with disjoint paths can be worked at the same time
 in Sprint (docs/TEMPO.md "Sprint"); an item without it is treated as touching everything and is worked on its own.
 Prefer one owner per new file: parallel work that targets new files never waits on another. `Effort: mechanical`
