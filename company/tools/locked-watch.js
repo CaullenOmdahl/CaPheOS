@@ -180,7 +180,8 @@ function context(opts) {
       handoffs: P('company/work/handoffs'), transcripts: P('.starnet-data/workspaces/transcript-history-v2'), runs: P('.starnet-data/workspaces/runs.jsonl'),
       roster: P('.starnet-data/workspaces/agent.roster.json'), starnet: P('starnet'), patches: P('company/patches'), harnessLog: P('company/work/people/harness-log.jsonl'), lock: P('company/state/locked-watch.lock') },
     underStation: typeof opts.underStation === 'boolean' ? opts.underStation : (() => { try { return require('./provenance.js').underStation(); } catch (_) { return false; } })(),
-    ownerShell: typeof opts.ownerShell === 'boolean' ? opts.ownerShell : (() => { try { return require('./provenance.js').ownerShell(); } catch (_) { return false; } })() };
+    // the owner rule is lib/owner.js (provenance.js ownerShell()); a test hands it an ancestry instead of this process's
+    ownerShell: typeof opts.ownerShell === 'boolean' ? opts.ownerShell : Array.isArray(opts.ancestry) ? require('./provenance.js').classify({ chain: opts.ancestry, env: opts.env || {}, cgroup: opts.cgroup || '' }).ownerShell : require('./lib/owner').shell() };
 }
 const abs = (ctx, key) => key.startsWith('~/') ? path.join(ctx.home, key.slice(2)) : path.join(ctx.root, key);
 const lkgPath = (ctx, key) => path.join(ctx.paths.lkg, key.startsWith('~/') ? '_home/' + key.slice(2) : key);
@@ -921,7 +922,7 @@ function report(ctx, events, opt) {
 function needPerson(ctx, by, key, m, allowRisk) {
   const n = String(by || '').trim().toLowerCase();
   const ownerName = String(((co.config || {}).owner || {}).name || '').trim().toLowerCase();
-  if (n === 'owner' || (ownerName && n === ownerName && !Object.values(ctx.agents).some(c => String((c && c.name) || '').toLowerCase() === n))) { if (!ctx.ownerShell) throw new Error('"owner" is accepted only from the owner\'s own interactive shell (not an agent run, and not a detached or env-stripped process)'); return { id: 'owner', name: 'owner' }; }
+  if (n === 'owner' || (ownerName && n === ownerName && !Object.values(ctx.agents).some(c => String((c && c.name) || '').toLowerCase() === n))) { if (!ctx.ownerShell) throw new Error('"owner" is accepted ' + require('./lib/owner').REASON); return { id: 'owner', name: 'owner' }; }
   const e = Object.entries(ctx.agents).find(([, c]) => String((c && c.name) || '').toLowerCase() === n);
   if (!e) throw new Error('--by <Name> must be someone on the crew');
   const p = { id: e[0], name: e[1].name };
@@ -1551,6 +1552,27 @@ async function selftest() {
       assert.ok(e && e.kind === 'flagged' && /history before the last check was rewritten/.test(e.why) && /no copy is kept/.test(e.summary || ''), JSON.stringify(r.events));
       assert.strictEqual(whole, 0, 'still never read whole');
     } finally { fs.readFileSync = realRead; }
+  });
+  await t('--by owner from the owner\'s terminal (Claude Code under ptyxis; the command line names every key, the sidecar too) accepts each key class; the same command under the station is refused', async () => {
+    const keys = ['company/work/finance/pacing-policy.json', '.starnet-data/workspaces/.secrets/provider-keys.json', 'starnet/sidecar/index.js', '~/.local/bin/gh'];
+    const why = 'owner reviewed: approved endpoint and framework patch';
+    const line = keys.map(k => 'node company/tools/locked-watch.js accept ' + k + ' --by owner --why "' + why + '"').join(' && ');
+    // what Claude Code's bash tool (and its `!` prompt) really runs, nearest ancestor first
+    const desk = [['/usr/bin/bash', '-c', 'source snap.sh 2>/dev/null || true && eval \'' + line + '\' && pwd -P >| /tmp/cwd'], ['claude', '--dangerously-skip-permissions'], ['/usr/bin/bash'], ['/usr/lib/ptyxis-agent', '--socket-fd=3'], ['/usr/bin/ptyxis', '--gapplication-service']];
+    const station = [['/bin/sh', '-c', line], ['node', 'sidecar/index.js'], ['/usr/lib/systemd/systemd', '--user']];
+    now += 60000;
+    W(keys[0], JSON.stringify({ marginPct: 9, subs: { claude: 1 } }, null, 1));
+    W(keys[1], '{"providers":{"minimax":{"baseUrl":"https://api.minimax.io/v1"}}}');
+    W(keys[3], '#!/bin/bash\n# patched\nexec /usr/bin/gh "$@"\n');
+    const r = await tick(C({ now }));
+    for (const k of [keys[0], keys[1], keys[3]]) assert.ok(r.events.some(x => x.key === k), k + ' flagged: ' + JSON.stringify(r.events.map(x => [x.key, x.kind])));
+    const b0 = loadBaseline(context(C({ now }))); b0.starnet = b0.starnet || {}; b0.starnetFlagged = Object.assign(b0.starnetFlagged || {}, { 'sidecar/index.js': now }); saveBaseline(context(C({ now })), b0);
+    for (const k of keys) assert.throws(() => acceptCmd(context(C({ now, underStation: true, ancestry: station })), k, { by: 'owner', why }), /owner's own interactive shell/, 'under the station: ' + k);
+    for (const k of keys) assert.ok(/^accepted /.test(acceptCmd(context(C({ now, ancestry: desk })), k, { by: 'owner', why })), 'from the owner\'s terminal: ' + k);
+    const b1 = loadBaseline(context(C({ now })));
+    for (const k of [keys[0], keys[1], keys[3]]) assert.ok(!(b1.files[k] || {}).flagged, k + ' still flagged');
+    assert.ok(!(b1.starnetFlagged || {})['sidecar/index.js'], 'starnet/sidecar/index.js still flagged');
+    now += 60000; const r2 = await tick(C({ now })); assert.ok(!r2.events.some(x => keys.includes(x.key)), JSON.stringify(r2.events));
   });
   if (prevProv === undefined) delete process.env.PROVENANCE_ROOT; else process.env.PROVENANCE_ROOT = prevProv;
   P.pinUnderStation(null);

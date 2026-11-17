@@ -54,6 +54,7 @@ function presetOf(d) {
 function refuseCaller(by) {
   if (!gov.isOwnerName(by)) return 'only the owner sets self-governance: --by must be "' + ((co.config.owner && co.config.owner.name) || 'Owner') + '" or "owner"';
   if (underStation()) return 'this runs inside an agent\'s station run: only the owner, from their own shell, changes self-governance';
+  if (!require('./lib/owner').shell()) return 'only the owner changes self-governance, ' + require('./lib/owner').REASON;
   return null;
 }
 function record(opts, by, changes, d) {

@@ -59,8 +59,9 @@ const list = a => a.length <= 1 ? a.join('') : a.slice(0, -1).join(', ') + ' and
 function authorize(root, by, opts) {
   if (!by) return { code: 2, error: '--by is required' };
   if (isOwner(by)) {
-    let under = false; try { under = require('../provenance.js').underStation(); } catch (_) {}
-    if (under && !(opts && opts.trustOwner)) return { code: 3, error: 'an agent\'s run may not answer for the owner; the dispatcher asks the owner on Today' };
+    // the one owner rule (lib/owner.js); trustOwner: the dispatcher relaying the owner's own answer on Today
+    const ownerHere = opts && typeof opts.ownerShell === 'function' ? opts.ownerShell() : require('./owner').shell();
+    if (!ownerHere && !(opts && opts.trustOwner)) return { code: 3, error: 'an agent\'s run may not answer for the owner; the dispatcher asks the owner on Today' };
     return null;
   }
   const loops = (readJson(path.join(root, 'company', 'tools', 'loops.json'), {}) || {}).agents || {};

@@ -51,6 +51,7 @@ function decisionsLine(text, opts) {
 function ownerRefusal(by) {
   if (!gov().isOwnerName(by)) return 'only the owner grants or revokes a delegation: --by must be "' + ((co.config.owner && co.config.owner.name) || 'Owner') + '" or "owner"';
   if (underStation()) return 'this runs inside an agent\'s station run: only the owner, from their own shell, delegates';
+  if (!require('./lib/owner').shell()) return 'only the owner delegates, ' + require('./lib/owner').REASON;
   return null;
 }
 const isActive = (d, at) => { const t = at == null ? Date.now() : at; return Date.parse(d.at) <= t && t < Date.parse(d.until) && !(d.revokedAt && Date.parse(d.revokedAt) <= t); };

@@ -80,7 +80,7 @@ function guardOf(opts, root, name) {
   try { return require('./lib/guardrails').guardIn(root, name); } catch (_) { return true; }
 }
 function underStation() { try { return require('./provenance.js').underStation(); } catch (_) { return false; } }
-function ownerShell() { try { return require('./provenance.js').ownerShell(); } catch (_) { return false; } }
+function ownerShell() { return require('./lib/owner').shell(); }   // the one owner rule (lib/owner.js)
 const prov = () => { try { return require('./provenance.js'); } catch (_) { return null; } };
 const nameOf = (ctx, id) => ((ctx.crew.agents[id] || {}).name) || id;
 const peopleName = ctx => (ctx.crew.hr && ctx.crew.hr.name) || (ctx.crew.ceoId ? nameOf(ctx, ctx.crew.ceoId) : 'the CEO');

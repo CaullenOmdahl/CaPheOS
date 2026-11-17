@@ -26,10 +26,11 @@
  * What it is not: proof. Everyone runs as the same Unix user, so a determined forger can still fake a row; the checks
  * above make a forgery take several deliberate steps, each visible in the agent's transcript, which the watcher reads.
  *
- * underStation(): an agent's run started this process (an ancestor is the StarNet sidecar, or the process carries the
- * environment pins the station puts on every child it starts). ownerShell(): the opposite, positively: not under the
- * station, AND an ancestor is an interactive session (a terminal, sshd, tmux/screen, or Claude Code working for the
- * owner). "--by owner" is accepted only when ownerShell() is true.
+ * underStation(): an agent's run started this process (an ancestor is node running the StarNet sidecar, the process is in
+ * the station's cgroup, or it carries the environment pins the station puts on every child it starts). ownerShell(): the
+ * opposite, positively: not under the station, AND an ancestor is an interactive session (a terminal, sshd, tmux/screen,
+ * Claude Code working for the owner) or the owner's console. "--by owner" is accepted only when ownerShell() is true;
+ * every owner-only command asks through company/tools/lib/owner.js. classify() is the same rule over injected ancestry.
  * transcripts: callerConflict() looks at the agents' recent tool calls (in memory only; nothing is printed or kept) for
  * the command now running, so a tool can refuse a --by claim made from somebody else's run.
  * Log: company/state/locked/provenance.jsonl (append-only). Owner of this tool: the tools seat (co.seatFor('tools')).
@@ -45,7 +46,7 @@ const logFile = root => path.join(root, 'company', 'state', 'locked', 'provenanc
 const sha = data => 'sha256:' + crypto.createHash('sha256').update(Buffer.isBuffer(data) ? data : Buffer.from(String(data))).digest('hex');
 
 /* ---------------- who is running ---------------- */
-let CHAIN = null;
+let CHAIN = null, CHAIN_CG = '';
 // the command lines of this process's ancestors, nearest first
 function ancestry() {
   if (CHAIN) return CHAIN;
@@ -55,6 +56,7 @@ function ancestry() {
     try {
       const argv = fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0').filter(Boolean);
       CHAIN.push(argv);
+      try { CHAIN_CG += fs.readFileSync('/proc/' + pid + '/cgroup', 'utf8') + '\n'; } catch (_) {}
       const st = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
       pid = Number(st.slice(st.lastIndexOf(')') + 2).split(' ')[1]);
     } catch (_) { break; }
@@ -63,21 +65,66 @@ function ancestry() {
 }
 // the pins StarNet's sanitizeChildEnv puts on every process an agent's run starts (sidecar/environment.js)
 const stationEnv = env => env.STARNET_USER_CONTROL_MODE === 'preserve' && env.STARNET_COMPUTER_DRIVER === '0' && env.STARNET_MCP_STDIO === '0' && env.BROWSER === 'none';
-let STATION = null;
+// The script a node process runs: argv[0] is node, the script is its first non-option argument. Anything else (a shell
+// whose `-c` text merely MENTIONS a path, an editor opening the file, `git diff starnet/sidecar/index.js`) runs no script.
+// Measured, 2026-11-17: the old test was /sidecar\/index\.js/ over the ancestor's whole joined command line, so the
+// owner's own `bash -c "node company/tools/locked-watch.js accept starnet/sidecar/index.js --by owner ..."` (Claude
+// Code's bash tool and its `!` prompt both run each command that way) counted as the station, and every --by owner in
+// that shell was refused, for any key run in the same command line.
+const NODE_BIN = /(^|\/)(node|nodejs)(\d+)?$/;
+const NODE_ARG_FLAGS = /^(-r|--require|--import|--loader|--experimental-loader|-e|--eval|-p|--print|--input-type|--conditions|-C)$/;
+function scriptOf(argv) {
+  if (!Array.isArray(argv) || !NODE_BIN.test(String(argv[0] || ''))) return null;
+  for (let i = 1; i < argv.length; i++) {
+    const a = String(argv[i]);
+    if (a === '--') return argv[i + 1] != null ? String(argv[i + 1]) : null;
+    if (/^(-e|--eval|-p|--print)$/.test(a)) return null;   // an eval runs no script file
+    if (a.startsWith('-')) { if (NODE_ARG_FLAGS.test(a)) i++; continue; }
+    return a;
+  }
+  return null;
+}
+const isScript = (argv, rel) => { const s = scriptOf(argv); return !!s && (s === rel || s.endsWith('/' + rel)); };
+const isStationArgv = argv => isScript(argv, 'sidecar/index.js');
+// the owner's console (console/server.js, behind the owner token) runs tools as the owner; it is the owner's own UI
+const isConsoleArgv = argv => isScript(argv, 'console/server.js');
+const INTERACTIVE = /(^|\/)(sshd|login|tmux|tmux: server|screen|SCREEN|ptyxis|ptyxis-agent|gnome-terminal-server|konsole|kitty|alacritty|foot|wezterm-gui|xterm|terminator|tilix|claude)$/;
+// Claude Code working for the owner: the native binary (argv[0] "claude", whatever /proc/<pid>/comm says), or node
+// running its cli (…/claude, …/claude.js, …/@anthropic-ai/claude-code/cli.js)
+const isInteractiveArgv = argv => Array.isArray(argv) && argv.length > 0 && (INTERACTIVE.test(String(argv[0])) ||
+  (() => { const s = scriptOf(argv); return !!s && (/(^|\/)claude(\.js)?$/.test(s) || /claude-code\/cli(\.m?js)?$/.test(s)); })());
+// this process's cgroup is the station's unit (/<serviceName>.service; the -dispatch/-console units do not match)
+function stationUnit() { try { return '/' + ((co.config.station && co.config.station.serviceName) || 'capheos-station') + '.service'; } catch (_) { return '/capheos-station.service'; } }
+const inStationCgroup = (cgroupText, unit) => String(cgroupText || '').split('\n').some(l => { const p = l.slice(l.lastIndexOf(':') + 1); return p.endsWith(unit) || p.includes(unit + '/'); });
+/* The one rule, as a pure function so a test can hand it any ancestry:
+ *   underStation: the station's environment pins, or the station's cgroup, or an ancestor that IS node running sidecar/index.js;
+ *   ownerShell:   not underStation, and an ancestor is an interactive session or the owner's console. */
+function classify(o) {
+  o = o || {};
+  const chain = Array.isArray(o.chain) ? o.chain : [];
+  const under = stationEnv(o.env || {}) || inStationCgroup(o.cgroup, o.unit || stationUnit()) || chain.some(isStationArgv);
+  return { underStation: under, ownerShell: !under && chain.some(a => isInteractiveArgv(a) || isConsoleArgv(a)) };
+}
+let CGROUP = null;
+// this process's cgroup and its ancestors' (the merge gate's check: an ancestor in the station's unit)
+const ownCgroup = () => { if (CGROUP === null) { try { CGROUP = fs.readFileSync('/proc/self/cgroup', 'utf8'); } catch (_) { CGROUP = ''; } ancestry(); CGROUP += '\n' + CHAIN_CG; } return CGROUP; };
+let STATION = null, OWNER = null;
 function underStation() {
   if (STATION !== null) return STATION;
-  STATION = stationEnv(process.env) || ancestry().some(a => /sidecar\/index\.js/.test(a.join(' ')));
+  STATION = classify({ chain: ancestry(), env: process.env, cgroup: ownCgroup() }).underStation;
   return STATION;
 }
 // A selftest must measure the mechanism, not the caller's environment. When an agent's run runs a selftest, this
 // process IS under the station, so every row it records is re-checked against `main` — and eight locked-watch cases
 // that are about something else then fail on the caller rather than on the code. pinUnderStation(false) pins the
 // answer for the duration of a test; pinUnderStation(null) restores the live computation. Nothing else uses it.
+// pinOwnerShell is the same for ownerShell (in this process only; there is no environment variable for either).
 function pinUnderStation(v) { STATION = (v === null || v === undefined) ? null : !!v; return STATION; }
-const INTERACTIVE = /(^|\/)(sshd|login|tmux|tmux: server|screen|SCREEN|ptyxis|ptyxis-agent|gnome-terminal-server|konsole|kitty|alacritty|foot|wezterm-gui|xterm|terminator|tilix|claude)$/;
+function pinOwnerShell(v) { OWNER = (v === null || v === undefined) ? null : !!v; return OWNER; }
 function ownerShell() {
+  if (OWNER !== null) return OWNER;
   if (underStation()) return false;
-  return ancestry().some(a => a.length && (INTERACTIVE.test(a[0]) || (/(^|\/)node$/.test(a[0]) && /(^|\/)claude(\.js)?$/.test(String(a[1] || '')))));
+  return classify({ chain: ancestry(), env: process.env, cgroup: ownCgroup() }).ownerShell;
 }
 function mainInfo(root) {
   let main = '[none]';
@@ -201,7 +248,7 @@ function callerConflict(root, parts, claimedId, nowMs) {
   } catch (_) { return null; }
 }
 
-module.exports = { wrote, appended, rolled, inserted, readFrom, sha, logFile, underStation, pinUnderStation, ownerShell, recentCalls, callerConflict, _internals: { stationEnv, mainInfo } };
+module.exports = { wrote, appended, rolled, inserted, readFrom, sha, logFile, underStation, pinUnderStation, pinOwnerShell, ownerShell, classify, recentCalls, callerConflict, _internals: { stationEnv, mainInfo, scriptOf, inStationCgroup } };
 
 if (require.main === module) {
   const [cmd, n, w] = process.argv.slice(2);
@@ -228,6 +275,20 @@ if (require.main === module) {
     const end = readFrom(0, T).end; appended(path.join(T, 'company/work/log.jsonl'), 'two\n', 'test');
     ok(readFrom(end, T).rows.length === 1, 'reads on from an offset');
     ok(stationEnv({ STARNET_USER_CONTROL_MODE: 'preserve', STARNET_COMPUTER_DRIVER: '0', STARNET_MCP_STDIO: '0', BROWSER: 'none' }) && !stationEnv({ BROWSER: 'none' }), 'recognises the station\'s environment pins');
+    // the owner/station rule over injected ancestry (nearest first)
+    const wrap = cmd => ['/usr/bin/bash', '-c', 'source snap.sh && eval \'' + cmd + '\' && pwd -P >| /tmp/x'];
+    const desk = cmd => [wrap(cmd), ['claude', '--dangerously-skip-permissions'], ['/usr/bin/bash'], ['/usr/lib/ptyxis-agent', '--socket-fd=3'], ['/usr/bin/ptyxis', '--gapplication-service']];
+    for (const key of ['starnet/sidecar/index.js', '.starnet-data/workspaces/.secrets/provider-keys.json', 'company/work/finance/pacing-policy.json', '~/.config/x.json'])
+      ok(classify({ chain: desk('node company/tools/locked-watch.js accept ' + key + ' --by owner --why x'), env: {} }).ownerShell === true, 'the owner\'s Claude Code shell is the owner, whatever key the command names: ' + key);
+    ok(classify({ chain: [['/usr/bin/bash', '-c', 'x starnet/sidecar/index.js'], ['node', 'sidecar/index.js'], ['/usr/lib/systemd/systemd', '--user']], env: {} }).ownerShell === false, 'node sidecar/index.js as an ancestor is the station');
+    ok(classify({ chain: [['/usr/bin/node', '--max-old-space-size=4096', '/srv/co/starnet/sidecar/index.js']], env: {} }).underStation === true, 'the sidecar by absolute path, with node flags, is the station');
+    ok(classify({ chain: desk('ls'), env: { STARNET_USER_CONTROL_MODE: 'preserve', STARNET_COMPUTER_DRIVER: '0', STARNET_MCP_STDIO: '0', BROWSER: 'none' } }).ownerShell === false, 'the station\'s environment pins refuse even under a terminal');
+    ok(classify({ chain: desk('ls'), env: {}, cgroup: '0::/user.slice/user@1000.service/app.slice/capheos-station.service', unit: '/capheos-station.service' }).ownerShell === false, 'the station\'s cgroup refuses even under a terminal');
+    ok(classify({ chain: desk('ls'), env: {}, cgroup: '0::/user.slice/user@1000.service/app.slice/capheos-station-dispatch.service', unit: '/capheos-station.service' }).underStation === false, 'the dispatcher\'s unit is not the station\'s');
+    ok(classify({ chain: [['node', '/srv/co/company/tools/dispatcher-loop.js'], ['/usr/lib/systemd/systemd', '--user']], env: {} }).ownerShell === false, 'a detached service is not the owner');
+    ok(classify({ chain: [['/usr/bin/node', '/srv/co/console/server.js'], ['/usr/lib/systemd/systemd', '--user']], env: {} }).ownerShell === true, 'the owner\'s console is the owner');
+    ok(classify({ chain: [['node', '/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js'], ['/usr/bin/bash']], env: {} }).ownerShell === true, 'Claude Code as node cli.js is interactive');
+    ok(classify({ chain: [['/usr/bin/bash', '-c', 'echo claude'], ['vim', 'sidecar/index.js']], env: {} }).underStation === false, 'a command that only names sidecar/index.js is not the station');
     // callerConflict on a fake transcript
     const seg = path.join(T, '.starnet-data/workspaces/transcript-history-v2/segment-000001.jsonl'); fs.mkdirSync(path.dirname(seg), { recursive: true });
     const row = (agentId, name, args) => JSON.stringify({ agentId, sourceRunId: 'run-' + agentId, ts: Date.now() - 1000, toolCalls: JSON.stringify([{ function: { name, arguments: JSON.stringify(args) } }]) });

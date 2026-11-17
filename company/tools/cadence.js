@@ -78,6 +78,7 @@ const S = {
   governance: () => { try { return require('./lib/governance'); } catch (_) { return null; } },
   decide: (cat, o) => require('./lib/governance').decide(cat, o),
   underStation: () => { try { return require('./provenance.js').underStation(); } catch (_) { return false; } },
+  ownerShell: () => require('./lib/owner').shell(),   // the one owner rule (lib/owner.js)
   ownerName: () => (co.config.owner && co.config.owner.name) || 'Owner',
   peakCfg: () => require('./offpeak-hold.js').peakConfig(),
   notify: text => require('./owner-inbox.js').send({ from: co.nameOf(co.ceo()), text }),
@@ -111,7 +112,7 @@ const onOff = (v, what) => { if (v === 'on' || v === true) return true; if (v ==
 const iso = ms => new Date(ms).toISOString();
 function isOwner(by) {
   const b = String(by || '').trim().toLowerCase();
-  if (!b || S.underStation()) return false;   // an agent's run cannot claim to be the owner
+  if (!b || S.underStation() || !S.ownerShell()) return false;   // an agent's run, or a detached process, cannot claim to be the owner
   return b === 'owner' || b === String(S.ownerName()).trim().toLowerCase();
 }
 const needWhy = why => { const w = typeof why === 'string' ? why.trim() : ''; if (!w) throw E('--why "<reason>" is required: every tempo change by the crew is logged with its reason'); return w.slice(0, 300); };

@@ -78,7 +78,7 @@ async function setEndpoint(D, o) {
   if (String(o.provider || '') !== 'minimax') throw refuse('set-endpoint takes minimax (the only provider with an endpoint choice)', 'input');
   const byRaw = String(o.by || '').trim(); if (!byRaw || byRaw === 'true') throw refuse('--by <Name> is required', 'input');
   let who;
-  if (byRaw.toLowerCase() === 'owner') { if (!D.prov.ownerShell()) throw refuse('"--by owner" only from the owner\'s own shell'); who = { id: 'owner', name: 'owner' }; }
+  if (byRaw.toLowerCase() === 'owner') { if (!D.prov.ownerShell()) throw refuse('"--by owner" is accepted ' + require('./lib/owner').REASON); who = { id: 'owner', name: 'owner' }; }
   else {
     const id = D.nameToId(byRaw); if (!id) throw refuse('--by must be someone on the crew', 'input');
     if (id !== D.seats.ceo && id !== D.seats.people) throw refuse(D.nameOf(id) + ' may not change provider settings: the CEO (' + D.nameOf(D.seats.ceo) + ') or the people seat (' + D.nameOf(D.seats.people) + ') applies an owner-approved one');
@@ -188,7 +188,7 @@ async function selftest() {
     await t('only the CEO or the people seat; a claimed --by from another run is refused', async () => {
       await refused({ by: 'Sam' }, /may not change provider settings/, 'worker');
       conflict = { runId: 'r9' }; await refused({}, /another seat's run/, 'conflict'); conflict = null;
-      await refused({ by: 'owner' }, /owner's own shell/, 'owner off-shell');
+      await refused({ by: 'owner' }, /owner's own interactive shell/, 'owner off-shell');
     });
     await t('a key not accepted on the new endpoint changes nothing', async () => {
       accept = false; await refused({}, /did not accept/, 'reject'); accept = true;

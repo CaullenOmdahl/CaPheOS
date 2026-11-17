@@ -240,9 +240,9 @@ test('Sprint on: cadence.js sprint config --spread today turns the spread off un
   const env = Object.assign({}, process.env, { CAPHEOS_ROOT: c.T, CAPHEOS_TZ: TZ });
   // Sprint config is the owner's switch (cadence.js setSprintConfig), and isOwner() is false for any process under the
   // station, which includes a test run by an agent. The test is about the spread, not about who may switch it, so the
-  // child process pins "not under the station" (the same pin the selftests use) and calls as the owner.
+  // child process pins "not under the station" and "the owner's shell" (in-process pins, as the selftests use) and calls as the owner.
   const pin = path.join(c.T, 'pin-owner-shell.js');
-  fs.writeFileSync(pin, "require(" + JSON.stringify(path.join(REPO, 'company/tools/provenance.js')) + ").pinUnderStation(false);\n");
+  fs.writeFileSync(pin, "require(" + JSON.stringify(path.join(REPO, 'company/tools/provenance.js')) + ").pinUnderStation(false); require(" + JSON.stringify(path.join(REPO, 'company/tools/provenance.js')) + ").pinOwnerShell(true);\n");
   const cad = [ '-r', pin, path.join(REPO, 'company/tools/cadence.js') ];
   const out = JSON.parse(execFileSync(process.execPath, [...cad, 'sprint', 'config', '--spread', 'today', '--by', 'owner', '--why', 'test'], { env, encoding: 'utf8' }));
   assert.equal(out.ok, true);

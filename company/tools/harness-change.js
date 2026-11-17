@@ -87,6 +87,7 @@ function context(opts) {
       summary: P('company/work/changes/CHANGES.md'), runs: P('.starnet-data/workspaces/runs.jsonl'), modelPolicy: P('company/model-policy.json'), rules: P('company/tools/routine-rules.js') },
     call: opts.call || ((...a) => require('./station-crew.js').call(...a)),
     underStation: typeof opts.underStation === 'boolean' ? opts.underStation : (() => { try { return require('./provenance.js').underStation(); } catch (_) { return false; } })(),
+    ownerShell: typeof opts.ownerShell === 'boolean' ? opts.ownerShell : require('./lib/owner').shell(),   // the one owner rule (lib/owner.js)
     skipSelftest: !!opts.skipSelftest };
 }
 const prov = () => { try { return require('./provenance.js'); } catch (_) { return null; } };
@@ -95,7 +96,7 @@ const relOf = (ctx, f) => path.relative(ctx.root, f).split(path.sep).join('/');
 function person(ctx, name) {
   const n = String(name || '').trim().toLowerCase();
   if (!n) return null;
-  if (n === 'owner' && !ctx.underStation) return { id: 'owner', name: 'owner' };
+  if (n === 'owner' && !ctx.underStation && ctx.ownerShell) return { id: 'owner', name: 'owner' };
   const e = Object.entries(ctx.crew.agents).find(([, c]) => String((c && c.name) || '').toLowerCase() === n);
   return e ? Object.assign({ id: e[0] }, e[1]) : null;
 }
@@ -1061,7 +1062,7 @@ async function selftest() {
     assert.ok(!fs.existsSync(path.join(T2, 'company/owner/outbound.jsonl')) || !fs.readFileSync(path.join(T2, 'company/owner/outbound.jsonl'), 'utf8').includes('harness-change.js approve'));
     assert.throws(() => review(C2(), r.id, { by: 'Alex' }, 'approve'), /own proposal/);
     assert.throws(() => review(C2(), r.id, { by: 'owner' }, 'approve'), /must be someone/);   // not from inside a station run
-    assert.strictEqual(review(C2({ underStation: false }), r.id, { by: 'owner' }, 'approve').status, 'approved');
+    assert.strictEqual(review(C2({ underStation: false, ownerShell: true }), r.id, { by: 'owner' }, 'approve').status, 'approved');
   });
   await t('every event is logged with its claimed author, and the summary lists every change', async () => {
     const log = R('company/work/people/harness-log.jsonl').trim().split('\n').map(JSON.parse);

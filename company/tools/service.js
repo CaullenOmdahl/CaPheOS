@@ -92,6 +92,7 @@ function context(o) {
     systemctl: o.systemctl || realSystemctl,
     now: o.now || (() => Date.now()),
     isAgent: o.isAgent || (() => require('./lib/guardrails').isAgentCaller()),
+    ownerShell: o.ownerShell || (() => require('./lib/owner').shell()),   // the one owner rule (lib/owner.js)
     guard: o.guard || (name => require('./lib/guardrails').guardIn(root, name)),
     halted: o.halted || (() => { const m = (co.readJson(P('company', 'state', 'halt.json'), {}) || {}).mode; return m === 'soft' || m === 'hard' ? m : false; }),
     gov: o.gov || { root },
@@ -285,7 +286,7 @@ function isActive(ctx, unit) { return String(ctx.systemctl(['is-active', unit]).
 function isOwner(ctx, by) {
   const b = String(by || '').trim().toLowerCase();
   const own = String((ctx.config.owner && ctx.config.owner.name) || '').trim().toLowerCase();
-  return !!b && (b === 'owner' || (own && b === own)) && !ctx.isAgent();
+  return !!b && (b === 'owner' || (own && b === own)) && !ctx.isAgent() && !!ctx.ownerShell();
 }
 function seatOf(ctx, by) {
   const c = ctx.crew(); const b = String(by || '').trim();
@@ -297,7 +298,7 @@ function actor(ctx, by, cmd, name) {
   if (!by) throw err('--by <seat> is required');
   if (isOwner(ctx, by)) return { owner: true, seat: null, name: (ctx.config.owner && ctx.config.owner.name) || 'Owner' };
   const lb = String(by).trim().toLowerCase();
-  if (lb === 'owner' || lb === String((ctx.config.owner && ctx.config.owner.name) || '').toLowerCase()) throw err('--by ' + by + ' is the owner\'s name, and this command runs inside an agent\'s run', 3);
+  if (lb === 'owner' || lb === String((ctx.config.owner && ctx.config.owner.name) || '').toLowerCase()) throw err('--by ' + by + ' is the owner\'s name; it is accepted ' + require('./lib/owner').REASON, 3);
   const seat = seatOf(ctx, by);
   if (!seat) throw err('--by ' + by + ' is not a seat in company/tools/loops.json', 2);
   const clash = ctx.callerConflict(['service.js', cmd, name].filter(Boolean), seat);
@@ -733,7 +734,7 @@ function selftest() {
       return { code: 0, out: '' };
     };
     let halted = false, agent = true, guardOn = true, govLevel = null, conflict = null;
-    const ctx = context({ root: R, unitDir: U, transientDir: TR, systemctl, now: () => Date.parse('2026-11-17T10:00:00Z'), isAgent: () => agent,
+    const ctx = context({ root: R, unitDir: U, transientDir: TR, systemctl, now: () => Date.parse('2026-11-17T10:00:00Z'), isAgent: () => agent, ownerShell: () => !agent,
       guard: nm => nm === 'localComputer' ? guardOn : true, halted: () => halted, callerConflict: () => conflict,
       gov: { root: R, get level() { return govLevel || undefined; } } });
     const inbox = path.join(R, 'company', 'pm-inbox.jsonl');

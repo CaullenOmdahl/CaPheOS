@@ -325,6 +325,7 @@ function underStation() { if (process.env.DECIDE_ASSUME_AGENT === '1') return tr
 function ownerRefusal(by) {
   if (!isOwnerName(by)) return 'only the owner promotes decision models or sets their params: --by must be "' + ((co.config.owner && co.config.owner.name) || 'Owner') + '" or "owner"';
   if (underStation()) return 'this runs inside an agent\'s station run: only the owner, from their own shell, does this';
+  if (!require('./owner').shell()) return 'only the owner does this, ' + require('./owner').REASON;
   return null;
 }
 function recordOwner(opts, by, what, s, auto) {

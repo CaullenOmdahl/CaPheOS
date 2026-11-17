@@ -43,19 +43,9 @@ function guardIn(root, name) {
 
 // ── who is calling (merge-gate.js underStation(), plus provenance.js's station environment pins) ─────────────────
 const STATION_UNIT = '/' + ((co.config.station && co.config.station.serviceName) || 'capheos-station') + '.service';
-function mergeGateUnderStation() {
-  let pid = process.ppid;
-  for (let i = 0; i < 40 && pid > 1; i++) {
-    try {
-      const cmd = fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8');
-      if (cmd.split('\0').some(a => a === 'sidecar/index.js' || a.endsWith('/sidecar/index.js'))) return true;
-      try { if (fs.readFileSync('/proc/' + pid + '/cgroup', 'utf8').includes(STATION_UNIT)) return true; } catch (_) {}
-      const st = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
-      pid = Number(st.slice(st.lastIndexOf(')') + 2).split(' ')[1]);
-    } catch (_) { return false; }
-  }
-  return false;
-}
+// provenance.js underStation() is the merge gate's detection made exact (an ancestor that IS node running
+// sidecar/index.js, not a shell whose command text names it; this process in the station's cgroup) plus the env pins
+function mergeGateUnderStation() { try { return require('../provenance.js').underStation(); } catch (_) { return false; } }
 function isAgentCaller() {
   if (process.env.GUARDRAILS_ASSUME_AGENT === '1') return true;
   if (mergeGateUnderStation()) return true;

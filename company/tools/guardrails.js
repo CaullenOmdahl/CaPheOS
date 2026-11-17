@@ -34,6 +34,7 @@ const fs = require('fs');
 const path = require('path');
 const co = require('./lib/company');
 const gr = require('./lib/guardrails');
+const OWNER = require('./lib/owner');
 
 const CONFIRM = 'I understand there are no guardrails';
 const FIXED_ON = new Set(['halt']);
@@ -64,6 +65,7 @@ function context(o) {
   return {
     root, now: () => (o.now ? o.now() : Date.now()),
     isAgent: o.isAgent || gr.isAgentCaller,
+    ownerShell: o.ownerShell || (o.isAgent ? () => !o.isAgent() : OWNER.shell),   // the one owner rule (lib/owner.js)
     call: o.call || stationCall,
     notify: o.notify || notifyOwner,
     fsRoot: o.fsRoot || '/', env: o.env || process.env,
@@ -97,6 +99,7 @@ const isOwnerName = by => { const b = String(by || '').trim().toLowerCase(); ret
 function refuseCaller(ctx, by) {
   if (!isOwnerName(by)) return 'only the owner changes guardrails: --by must be "' + ownerName() + '" or "owner"';
   if (ctx.isAgent()) return 'this runs inside an agent\'s station run: only the owner, from their own shell, changes guardrails';
+  if (!ctx.ownerShell()) return 'only the owner changes guardrails, ' + OWNER.REASON;
   return null;
 }
 const err = (code, error) => ({ ok: false, code, error });
