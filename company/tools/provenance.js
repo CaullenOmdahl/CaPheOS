@@ -91,8 +91,9 @@ function relOf(file, root) {
   const p = path.resolve(String(file || ''));
   if (!p.startsWith(root + path.sep)) return null;
   const r = path.relative(root, p).split(path.sep).join('/');
-  // under company/, plus the station's folder grants (lanes.js records the grant of each lane folder it blesses)
-  if ((!r.startsWith('company/') && r !== '.starnet-data/workspaces/permissions.allow.json') || r.startsWith('company/state/locked/')) return null;
+  // under company/, plus the station's folder grants (lanes.js records the grant of each lane folder it blesses) and the
+  // station's key store (providers.js records the files the station wrote for an owner-approved setting; hashes only)
+  if ((!r.startsWith('company/') && r !== '.starnet-data/workspaces/permissions.allow.json' && !r.startsWith('.starnet-data/workspaces/.secrets/')) || r.startsWith('company/state/locked/')) return null;
   return r;
 }
 function append(row, root) {

@@ -4,7 +4,7 @@ description: How to ask the owner something through company/tools/inbox.js so it
 license: MIT
 metadata:
   owner: company
-  version: "1.2"
+  version: "1.3"
 ---
 
 # Owner questions
@@ -86,6 +86,13 @@ shell", "run this") is refused. Route the work instead, then ask only the decisi
 - **A company file only the owner may approve** (a locked tool: the pacer, the gates, the dispatcher, the watchers):
   the same `propose`. It becomes one owner question on Today with the diff; when the owner presses Approve,
   harness-change applies it (or forwards it, for a framework file). Nobody runs anything by hand.
+- **A provider setting the owner approved** (today: the MiniMax endpoint): ask one approve question that names
+  MiniMax and the exact address, then, as the CEO or the people seat, apply it with
+  `node company/tools/providers.js set-endpoint minimax --region global|cn|custom [--base-url <url>] --by <YOU> --approval <q-id>`
+  (`--dry-run` first checks the key on that endpoint and changes nothing). It goes through the station API the console
+  uses, records the write so the watcher stays quiet, and updates `company.json` and the decisions log. Never edit
+  `.starnet-data/workspaces/.secrets/` or `company.json` by hand: a hand edit of the key store is flagged, and the tool
+  refuses to run until the owner has accepted or reverted it.
 - **Anything else that needs a command run**: a handoff to the tools seat.
 
 ## 5. Keys never travel in words

@@ -152,6 +152,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/premerge-check.js | risk | `--selftest` |
 | company/tools/project.js | ceo | none |
 | company/tools/provenance.js | risk | `selftest` |
+| company/tools/providers.js | ceo | `selftest` |
 | company/tools/quest-audit.js | tools | `--selftest` |
 | company/tools/restart-station-idle.sh | tools | `--selftest` |
 | company/tools/restart-station.js | tools | `selftest` |
@@ -239,6 +240,7 @@ in §5a instead.
 | `company/tools/owner-addressing.js` | ceo | `node company/tools/owner-addressing.js --selftest` |
 | `company/tools/owner-inbox.js` | ceo | `node company/tools/owner-inbox.js --selftest` |
 | `company/tools/pack.js` | ceo | `node company/tools/pack.js selftest` |
+| `company/tools/providers.js` | ceo | `node company/tools/providers.js selftest` |
 | `company/tools/quest-audit.js` | tools | `node company/tools/quest-audit.js --selftest` |
 | `company/tools/restart-station-idle.sh` | tools | `bash company/tools/restart-station-idle.sh --selftest` |
 | `company/tools/restart-station.js` | tools | `node company/tools/restart-station.js selftest` |

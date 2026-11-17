@@ -123,9 +123,10 @@ function usageUrlFor(policyUrl, ep) {
   if (u && !DEFAULT_USAGE.has(u.replace(/\/+$/, ''))) return { url: u, from: 'pacing-policy.json minimax.url' };
   return { url: (ep || REGIONS.global).usageUrl, from: 'company.json providers.minimax (' + ((ep && ep.region) || 'global') + ')' };
 }
-// the MiniMax key the company already holds: secrets/minimax-key, then the station's provider-key store
+// the MiniMax key the company already holds: secrets/minimax-key (or minimax-api-key, the name a typed owner question
+// suggests), then the station's provider-key store
 function storedKey(root) {
-  try { const k = fs.readFileSync(path.join(root, 'secrets', 'minimax-key'), 'utf8').trim(); if (k) return k; } catch (_) {}
+  for (const n of ['minimax-key', 'minimax-api-key']) { try { const k = fs.readFileSync(path.join(root, 'secrets', n), 'utf8').trim(); if (k) return k; } catch (_) {} }
   try { const j = JSON.parse(fs.readFileSync(path.join(root, '.starnet-data', 'workspaces', '.secrets', 'provider-keys.json'), 'utf8')); const k = String(((j.providers || {}).custom || {}).key || '').trim(); if (k) return k; } catch (_) {}
   return '';
 }

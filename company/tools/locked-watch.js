@@ -102,7 +102,7 @@ const MANIFEST = [
   { p: 'company/state/guardrails.json', cls: 'F', writers: ['guardrails.js'], owner: 'risk', area: 'policy', alwaysWatched: true, why: 'the guardrail switches (only the owner changes them, through guardrails.js)' },
   ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'decision.js', 'restart-station.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js', 'retention.js', 'duties.js', 'duty-status.js', 'lib/duty-runner.js', 'lib/duty-env.js', 'money-hold.js', 'lib/money-hold.js', 'lib/seat-status.js', 'lanes.js']
     .map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'tools', area: 'tool', why: 'a tool that measures or limits the crew, or that these tools depend on' })),
-  ...['merge-gate.js', 'premerge-check.js', 'external-gate.js', 'connector-scope.js', 'default-branch-watch.js'].map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'risk', area: 'tool', why: 'a gate or the evidence it reads' })),
+  ...['merge-gate.js', 'premerge-check.js', 'external-gate.js', 'connector-scope.js', 'default-branch-watch.js', 'providers.js'].map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'risk', area: 'tool', why: 'a gate or the evidence it reads' })),
   { p: 'company/work/engineering/evidence/*.json', cls: 'F', writers: ['test-substrate.sh'], owner: 'risk', area: 'gate', why: 'test-substrate verdicts (a hand-made pass opens the merge gate): flagged, never auto-removed, so a real evidence file never blocks a merge' },
   // bigAppend: StarNet's append-only run log grows without end, so it is checked incrementally (the 64 KB before the
   // last checked end and the first 64 KB are unchanged, the rest is new), never hashed whole, never copied
@@ -129,8 +129,10 @@ const MANIFEST = [
   ...[STATION_UNIT + '-dispatch.service', STATION_UNIT + '-dispatch.timer', STATION_UNIT + '.service', STATION_UNIT + '.service.d/*.conf', 'capheos-backup.service', 'capheos-backup.timer', 'capheos-health-probe.service', 'capheos-health-probe.timer', 'capheos-sudo-gate.socket', 'capheos-sudo-gate@.service']
     .map(f => ({ p: '~/.config/systemd/user/' + f, cls: 'F', owner: 'tools', area: 'timer', why: 'the timers that run the dispatcher, this watcher and the backup' })),
   // K — keys: hash and mode only
+  // the station's key store: providers.js records the files the station wrote when it applied an owner-approved setting
+  // through the station API (it refuses while the store holds an unaccepted change, so it never blesses a hand edit)
   ...['secrets/*', '.starnet-data/workspaces/.secrets/*', '~/.config/' + STATION_UNIT + '.env']
-    .map(f => ({ p: f, cls: 'K', owner: 'risk', area: 'key', why: 'a key or credential' })),
+    .map(f => Object.assign({ p: f, cls: 'K', owner: 'risk', area: 'key', why: 'a key or credential' }, f === '.starnet-data/workspaces/.secrets/*' ? { writers: ['providers.js'] } : {})),
 ];
 // areas the risk owner is also told about: anything that measures, limits or protects, so a locked change never lands on the
 // desk of only the person who may have made it (the area owner). Records with many legitimate writers (decisions.md,
@@ -1200,6 +1202,7 @@ async function selftest() {
   W('company/state/pacer-log.jsonl', '{"a":1}\n');
   W('company/work/finance/pacing-policy.json', JSON.stringify({ marginPct: 5, subs: { claude: 1 } }, null, 1));
   fs.chmodSync(W('secrets/station-token', 'secret-token-value-1234567890'), 0o600);
+  W('.starnet-data/workspaces/.secrets/provider-keys.json', '{"providers":{}}');
   fs.symlinkSync('station-token', path.join(T, 'secrets/alias-key'));
   W('company/work/evidence/premerge-App-aaaa.json', '{"verdict":"FAIL"}');
   W('company/work/decisions.md', '# Decisions\n| a |\n');
@@ -1290,6 +1293,13 @@ async function selftest() {
     now += 60000; fs.appendFileSync(path.join(T, 'company/work/decisions.md'), '| appended by an agent |\n');
     fs.appendFileSync(path.join(T, seg), row('agent', 'fs_append', { path: 'company/work/decisions.md', content: '| appended by an agent |\n' }, now - 20000) + '\n');
     const r = await tick(C({ now })); assert.ok(!r.events.some(x => x.key === 'company/work/decisions.md'), JSON.stringify(r.events));
+  });
+  await t('the station key store: a write recorded by providers.js is accepted; the same change unrecorded is flagged', async () => {
+    const ks = '.starnet-data/workspaces/.secrets/provider-keys.json';
+    now += 60000; recorded(ks, '{"providers":{"custom":{"baseUrl":"https://api.example.io/v1"}}}', 'providers.js');
+    let r = await tick(C({ now })); assert.ok(!r.events.some(x => x.key === ks), JSON.stringify(r.events));
+    now += 60000; W(ks, '{"providers":{"custom":{"baseUrl":"https://hand.example/v1"}}}');
+    r = await tick(C({ now })); assert.ok(r.events.some(x => x.key === ks && x.kind === 'flagged'), JSON.stringify(r.events));
   });
   await t('a symlink under secrets/ is in the baseline, and retargeting it is flagged even when the content is the same', async () => {
     const b0 = JSON.parse(R('company/state/locked/baseline.json'));
