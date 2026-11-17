@@ -11,7 +11,8 @@
     "schedules": "notify",
     "external": "approve",
     "dashboard": "notify",
-    "packs": "approve"
+    "packs": "approve",
+    "deps": "notify"
   },
   "fixed": {
     "access": "approve",
@@ -29,12 +30,13 @@
     "schedules": "routine clocks, dispatcher tick and per-seat cadence, inside the owner's tempo bounds (docs/TEMPO.md)",
     "external": "anything that leaves the company (external-gate.js categories message, publish, form, network)",
     "dashboard": "agents adding or changing console panels",
+    "deps": "adding a Python or Node package to the company environment (company/tools/deps.js): notify = install, then a one-line FYI to the risk seat; approve = an owner question with an Approve button first. Licence, age, install-script and typo exceptions are the risk seat's (AGPL the owner's) at every level.",
     "packs": "approving a capability pack (a new line of business: tools, seats, limits, meters); installing one is always the owner's (pack.js install). Approve in every preset."
   },
   "presets": {
-    "approve-everything": { "label": "Approve everything", "categories": { "hiring": "approve", "release": "approve", "budget": "approve", "spend": "approve", "models": "approve", "tools": "approve", "schedules": "approve", "external": "approve", "dashboard": "approve", "packs": "approve" } },
-    "gate-money-people": { "label": "Gate money and people", "categories": { "hiring": "approve", "release": "approve", "budget": "approve", "spend": "approve", "models": "notify", "tools": "notify", "schedules": "notify", "external": "approve", "dashboard": "notify", "packs": "approve" } },
-    "gate-money": { "label": "Gate money", "categories": { "hiring": "notify", "release": "notify", "budget": "approve", "spend": "approve", "models": "auto", "tools": "auto", "schedules": "auto", "external": "notify", "dashboard": "auto", "packs": "approve" } },
-    "autonomous": { "label": "Autonomous", "categories": { "hiring": "auto", "release": "notify", "budget": "auto", "spend": "auto", "models": "auto", "tools": "auto", "schedules": "auto", "external": "auto", "dashboard": "auto", "packs": "approve" } }
+    "approve-everything": { "label": "Approve everything", "categories": { "hiring": "approve", "release": "approve", "budget": "approve", "spend": "approve", "models": "approve", "tools": "approve", "schedules": "approve", "external": "approve", "dashboard": "approve", "packs": "approve", "deps": "approve" } },
+    "gate-money-people": { "label": "Gate money and people", "categories": { "hiring": "approve", "release": "approve", "budget": "approve", "spend": "approve", "models": "notify", "tools": "notify", "schedules": "notify", "external": "approve", "dashboard": "notify", "packs": "approve", "deps": "notify" } },
+    "gate-money": { "label": "Gate money", "categories": { "hiring": "notify", "release": "notify", "budget": "approve", "spend": "approve", "models": "auto", "tools": "auto", "schedules": "auto", "external": "notify", "dashboard": "auto", "packs": "approve", "deps": "notify" } },
+    "autonomous": { "label": "Autonomous", "categories": { "hiring": "auto", "release": "notify", "budget": "auto", "spend": "auto", "models": "auto", "tools": "auto", "schedules": "auto", "external": "auto", "dashboard": "auto", "packs": "approve", "deps": "auto" } }
   }
 }

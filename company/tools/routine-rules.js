@@ -28,7 +28,8 @@
  *  8. Module lines (v8): a rule that names a module's tool (company/tools/commitments.js) is written only while that module
  *     is enabled (company/state/modules.json); otherwise its FALLBACK line goes in, or the line is left out. On 2026-11-17 v7
  *     sent every seat to the commitments tool in a company that never enabled the module, and the Founder had to ask the owner
- *     to switch it on. The block is rebuilt from the enabled modules on every tick, so enabling or disabling a module
+ *     to switch it on. The same goes for a company tool this checkout does not carry (deps.js, v8 line 2026-11-17): the
+ *     line naming it is left out until the file exists. The block is rebuilt from the enabled modules on every tick, so enabling or disabling a module
  *     refreshes every routine within ten minutes, and existing companies get the fix through the same refresh.
  *     The fallback's "later" line names **Not before:** (2026-11-17): it said **Deadline:**, which the dispatcher then
  *     read as a start date, while the crew writes a Deadline to mean "finish by"; every dated item sat until its due day.
@@ -71,6 +72,7 @@ const BLOCK = START + VERSION + ']\n' + [
   '- Never call shell_bg_wait with timeoutMs above 240000. The station stops a run that shows no progress for 8 minutes, and the run loses its final reply. Wait in short steps; if a job needs longer than this run has, leave it writing to a log under scratch/, write a handoff that names the log, and end the run.',
   '- Use sudo only for the commands the gate allows: the company\'s docker use and read-only host diagnostics. The gate runs them through a broker automatically, so `sudo docker ...` and `sudo ufw status` work as before, but there is no general root: `sudo cat`, `sudo curl`, arbitrary files and dangerous docker flags are refused. Run anything else without sudo, or ask the risk owner to add it (company/work/security/sudo-gate.md).',
   '- Record a decision only with node company/tools/decision.js add --by <your name> --text "..." --why "...". Never edit company/work/decisions.md by hand, not even your own entry minutes later: to correct one run decision.js amend <id-or-stamp>, to take one back decision.js withdraw <id-or-stamp> (both with --by and --why; ids: decision.js list). The record is grow-only and an in-place edit is flagged as a rewrite.',
+  '- Install a Python or Node package only with node company/tools/deps.js add <python|node> <package> --why "..." --by <your name>; its CLIs are on your PATH (company/env/bin) or run with deps.js run <bin>. Never pip install, npm install -g, pipx or a --user install by hand, and never make your own venv for a tool: an ad hoc install is unpinned, unchecked and gone after a rebuild, and the deps duty reports it to the risk owner. A system package (apt and the like) is the owner\'s: deps.js asks them.',
   '- What you may change on your own, what you propose for review, and what is locked: company/work/people/LATITUDE.md. Your own section above, if you have one, is your notes to yourself, changed only with node company/tools/my-section.js; where it differs from these rules or your standing corrections, these win.',
 ].join('\n') + '\n' + END;
 
@@ -93,11 +95,15 @@ function enabledModules() { if (modulesOverride) return modulesOverride; try { r
 /* blockFor(enabled) — the house rules for a company with these modules enabled: a line naming a tool of a module that is
  * not enabled is swapped for its FALLBACK, or left out. With every module enabled it is BLOCK, byte for byte. */
 function blockFor(enabled, tools) {
+  const fs = require('fs');
   const on = new Set(enabled || []); const owner = tools || moduleTools();
   const lines = BLOCK.split('\n');
   const out = [lines[0]];
   for (const l of lines.slice(1, -1)) {
-    const off = [...new Set((l.match(/company\/tools\/([a-z0-9-]+)\.js/g) || []).map(x => owner[x.slice(14, -3)]).filter(m => m && !on.has(m)))];
+    const named = (l.match(/company\/tools\/([a-z0-9-]+)\.js/g) || []).map(x => x.slice(14, -3));
+    // a line about a company tool that this checkout does not have (yet) is left out, like a disabled module's line
+    if (named.some(n => !owner[n] && !fs.existsSync(path.join(__dirname, n + '.js')) && !moduleTools()[n])) continue;
+    const off = [...new Set(named.map(n => owner[n]).filter(m => m && !on.has(m)))];
     if (!off.length) { out.push(l); continue; }
     const fb = off.length === 1 ? FALLBACK[off[0]] : null;
     if (fb) out.push(fb);

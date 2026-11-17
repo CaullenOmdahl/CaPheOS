@@ -11,7 +11,9 @@
 # What is in a snapshot: company/work, company/state, company/owner, company/hiring, company/roles/*.md,
 # company/console (panels the crew added), company/*.jsonl, company/projects.json, company/mandates.json,
 # company/company.json, company/tools/loops.json. NOT secrets/, NOT the station (.starnet-data) and NOT the StarNet
-# checkout. Backup dir: $CAPHEOS_BACKUP_DIR, else ~/.local/share/capheos-backups/<slug>/. Each snapshot is
+# checkout, and NOT the package environments (company/env: venv, node_modules): only their locks and hashes
+# (company/state/deps.json, company/state/deps/), and `restore` rebuilds the environments from them with
+# company/tools/deps.js verify (hash-checked; docs/DEPS.md). Backup dir: $CAPHEOS_BACKUP_DIR, else ~/.local/share/capheos-backups/<slug>/. Each snapshot is
 # <UTC stamp>.tar.gz plus <stamp>.sha256 (one digest per file inside, sha256sum format) and the archive's own digest.
 # Run it hourly from a timer if you like:  systemd-run --user --on-calendar=hourly <repo>/scripts/backup.sh
 set -euo pipefail
@@ -22,6 +24,7 @@ DIR="${CAPHEOS_BACKUP_DIR:-$HOME/.local/share/capheos-backups/$SLUG}"
 mkdir -p "$DIR"; chmod 700 "$DIR"
 
 paths() {
+  # company/env (venvs, node_modules) is deliberately absent: lock-only, rebuilt on restore
   for p in company/work company/state company/owner company/hiring company/console company/projects.json \
            company/mandates.json company/company.json company/tools/loops.json; do [[ -e "$p" ]] && echo "$p"; done
   ls company/roles/*.md company/*.jsonl 2>/dev/null || true
@@ -60,7 +63,12 @@ case "${1:-backup}" in
     "$0" backup >/dev/null && echo "current state saved first: $(basename "$(newest)")"
     # the snapshot is the whole truth for the folders it holds: replace them, don't merge into them
     for d in work state owner hiring console; do [[ -d "$tmpx/company/$d" ]] && rm -rf "company/$d"; done
-    cp -a "$tmpx/." "$ROOT/" && rm -rf "$tmpx" && echo "restored $(basename "$tgz")" ;;
+    cp -a "$tmpx/." "$ROOT/" && rm -rf "$tmpx" && echo "restored $(basename "$tgz")"
+    # the package environments are never in a snapshot: rebuild them from the restored lock (non-fatal; the deps duty
+    # reports a missing environment, and `node company/tools/deps.js verify` retries)
+    if [[ -f company/state/deps.json && -f company/tools/deps.js ]]; then
+      node company/tools/deps.js verify --rebuild || echo "deps.js verify did not finish; the deps duty will report it (node company/tools/deps.js verify)"
+    fi ;;
   drill)
     # A backup nobody has restored is a hope. Restore the snapshot into a throwaway copy of the repo, verify every
     # digest, check the company's own tools still read the restored state, and record how long it took.

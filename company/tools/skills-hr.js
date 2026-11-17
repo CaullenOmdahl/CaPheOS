@@ -238,6 +238,7 @@ const GATE_RULES = [
   { cat: 'account', re: /\b(?:sign[\s-]?up for|create (?:a |an )?(?:new )?(?:\w+ )?account|register (?:a |an )?(?:new )?account|open (?:a |an )?(?:new )?account)\b/i, why: 'creates an outside account' },
   { cat: 'account', re: /\b(?:create|generate|mint|issue|request)\s+(?:a |an )?(?:new )?(?:api[\s-]?key|personal access token|access token|deploy key|oauth (?:app|client|token))\b/i, why: 'creates a credential' },
   { cat: 'spend', re: /(?<![-\w/])(?:purchase|buy(?!-in)|pay for|top[\s-]?up|subscribe to|upgrade (?:the |our )?(?:plan|tier|subscription)|add (?:a )?(?:credit )?card)\b/i, why: 'spends money' },
+  { cat: 'install', re: /(?:^|[\s;&|(`'"/])(?:python3?(?:\.\d+)?\s+-m\s+)?pip3?(?:\.\d+)?\s+install\s+(?:-(?!r\b|e\b|-requirement|-editable|-constraint|c\b)\S*\s+)*(?![-.])[A-Za-z0-9]|\bpip3?\s+install\b[^\n]*--(?:user|break-system-packages)\b|(?:^|[\s;&|(`'"/])(?:pipx|uv\s+tool)\s+install\b|(?:^|[\s;&|(`'"/])(?:npm|pnpm)\s+(?:install|i|add)\b[^\n]*\s(?:-g|--global)\b|\byarn\s+global\s+add\b/, why: 'installs a package by hand instead of through company/tools/deps.js (pinned, hash-checked, licence-checked)' },
   { cat: 'network', net: true, why: 'calls a host that is not on company/state/external-allowlist.txt' },
   { cat: 'bypass', re: /(?<![-\w])(?:bypass|circumvent|work around|get around|disable|skip|turn off|override|silence)\s+(?:the |a |an |our |any |this |that |its |their )?(?:[\w'-]+ ){0,3}?(?:gates?|guard|hooks?|pre-push|approvals?|clearance|pacer|spend cap|budget cap|locked-watch|skill guard|premerge)\b/i, why: 'gets around a gate' },
   { cat: 'bypass', re: /\b(?:SKYNET|STARNET)_FULL_ACCESS\b|approvalMode["']?\s*[:=]\s*["']?full\b|\/api\/agent\/(?:approval|mode)\b/, why: 'changes approval or access' },
@@ -854,6 +855,10 @@ async function selftest() {
   t('sudo under a "never" line is still a finding (sudo checks its own line only)', () => assert.ok(codes(cand('Never do this lightly.\nsudo rm -rf /var/lib/x')).includes('gate:sudo')));
   t('--no-verify, force push and pushing to main are publishing outside the gate', () => { for (const l of ['git push --no-verify', 'git push -f origin fix', 'git push origin main']) assert.ok(codes(cand(l)).includes('gate:publish'), l); });
   t('gh pr merge goes through the company wrapper (merge gate), so it is not a finding', () => assert.ok(!codes(cand('Run node company/tools/premerge-check.js --pr 12, then gh pr merge 12 once it passes.')).includes('gate:publish')));
+  t('an ad hoc package install is a finding; deps.js, a requirements file and a rule against it are not', () => {
+    for (const l of ['pip install synpath==0.11.0', 'npm install -g typescript', 'pipx install black']) assert.ok(codes(cand(l)).includes('gate:install'), l);
+    for (const l of ['node company/tools/deps.js add python synpath --why "x" --by Kim', 'pip install -r requirements.txt', 'Never pip install by hand; use deps.js.']) assert.ok(!codes(cand(l)).includes('gate:install'), l);
+  });
   t('curl to a host off the allowlist is a network finding; the station and github are not', () => {
     assert.ok(codes(cand('curl -s https://api.unknown-vendor.io/v1/data')).includes('gate:network'));
     assert.ok(!codes(cand('curl -s ' + require('./lib/company').STATION_URL + '/api/cron\ncurl https://api.github.com/repos/x/y')).includes('gate:network'));

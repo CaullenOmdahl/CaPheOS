@@ -34,6 +34,8 @@ const DUTIES = [
     why: 'a systemd user unit running from this company folder that service.js did not register, a registered unit not company-scoped by name, one edited by hand, or a registered service whose runs fail (3 in an hour; any for a halt-related one or a rare timer, nightly included, until a later run succeeds; to the seat that asked for it)' },
   { id: 'budget-drift', tool: 'budget.js', route: 'finance', everyMin: 30, timeoutMs: 15000, whileHalted: false, enabledByDefault: true,
     why: 'the station\'s spending caps differ from the company settings (budget.js apply), or, with the dispatcher owning the schedule, a crew loop is armed on the station, the watchdog routine is missing or the station\'s own schedule started a run (docs/BUDGET.md)' },
+  { id: 'deps-verify', tool: 'deps.js', route: 'tools', everyMin: 60, timeoutMs: 15000, whileHalted: false, enabledByDefault: true,
+    why: 'a package environment missing or different from its lock (to tools), a dependency lock or manifest edited outside deps.js or an ad hoc pip/npm install seen in a transcript (to risk), an owner answer on a pending dependency (to the asker)' },
 ];
 
 const ID_RE = /^[a-z][a-z0-9-]{1,39}$/;

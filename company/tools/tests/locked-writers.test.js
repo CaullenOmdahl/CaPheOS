@@ -6,10 +6,10 @@ const test = require('node:test'), assert = require('node:assert/strict'), fs = 
 const LW = require('../locked-watch.js');
 const tools = path.join(__dirname, '..');
 test('a tool that records writes to a locked policy file is one of its allowed writers', () => {
-  const pairs = [['company/model-policy.json', 'models.js']];
+  const pairs = [['company/model-policy.json', 'models.js'], ['company/state/deps.json', 'deps.js'], ['company/state/deps/**', 'deps.js']];
   for (const [file, tool] of pairs) {
     const src = fs.readFileSync(path.join(tools, tool), 'utf8');
-    assert.ok(/provenance\.js'\)\.wrote\(/.test(src), tool + ' records its writes');
+    assert.ok(/provenance\.js'\)\.wrote\(|prov\(\)\.wrote\(/.test(src), tool + ' records its writes');
     const e = LW.MANIFEST.find(m => m.p === file);
     assert.ok(e && (e.writers || []).includes(tool), file + ' lists ' + tool + ' as a writer');
   }

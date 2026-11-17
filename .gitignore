@@ -46,6 +46,8 @@ station.log
 /company/repos/
 /company/floor_snapshots/
 /company/memory/
+# package environments deps.js builds (venv, node_modules, CLI links): rebuilt from company/state/deps (docs/DEPS.md)
+/company/env/
 /company/brand/
 /company/roles/*.md
 !/company/roles/templates/

@@ -186,6 +186,13 @@ risk-reviewed action, and creating or reissuing a credential is an owner gate. A
 - **Risk review triggers:** a tool that reads, stores or sends credentials; a new token; new network exposure; a change
   to the bind; a tool that executes remote input.
 - **Finance triggers:** a new paid tool, plan upgrade, new provider, or a measurable usage increase.
+- **Packages:** a Python or Node package the crew needs goes in only with `node company/tools/deps.js add <python|node>
+  <package> --why "..." --by <seat>` (docs/DEPS.md): pinned with registry hashes into the company's own environment,
+  licence-, age- and typo-checked, no install scripts, rebuilt from the lock after a server rebuild or restore. Never an
+  ad hoc `pip install`, `npm install -g`, `pipx`, `--user` install or a private venv for a tool: the deps duty and the skill
+  review flag them. Exceptions (a GPL or unknown licence, a fresh release, install scripts, a near-miss name, a new
+  registry) are the risk seat's `deps.js approve`; AGPL is the owner's. System packages (apt and the like) are the
+  owner's: deps.js refuses them and asks.
 - **Secrets:** read them only through `co.secret(name)` / `co.stationToken()`. Never print, log, paste or copy them into
   docs, handoffs or chat. If a secret appears in output, treat it as exposed and rotate it.
 - **Party credentials** (module `scopes`): `secrets/parties/<party>/<name>`, 0600, read only through

@@ -91,6 +91,9 @@ const MANIFEST = [
   { p: 'company/work/evidence/premerge-*.json', cls: 'A', writers: ['premerge-check.js'], owner: 'risk', area: 'gate', why: 'pre-merge verdicts (a forged PASS opens the merge gate)' },
   { p: 'company/work/engineering/verdicts/*.json', cls: 'A', writers: ['qa-sign.js'], owner: 'risk', area: 'gate',
     why: 'the QA acceptance record a release cites (provenance row proves a tool wrote it)' },
+  // dependencies: the manifest and the locks (company/tools/deps.js is their only writer; docs/DEPS.md)
+  { p: 'company/state/deps.json', cls: 'A', writers: ['deps.js'], owner: 'risk', area: 'policy', why: 'the dependency manifest: every installed package, its hashes and licence, and the risk seat\'s exceptions (only through deps.js)' },
+  { p: 'company/state/deps/**', cls: 'A', writers: ['deps.js'], owner: 'risk', area: 'policy', why: 'the dependency locks (pip hashes, npm integrity) the environments are rebuilt from (only through deps.js)' },
   { p: 'company/work/security/locked-changes.jsonl', cls: 'A', append: true, writers: ['locked-watch.js'], owner: 'risk', area: 'record', why: 'this watcher\'s own report' },
   // the owner -> company channel: every line is the owner's words (the CEO's inbox, addressing, the wake, gate answers), so
   // a line counts only when the console or the owner's own tools recorded it (lib/owner-channel.js); one appended by anyone
@@ -121,7 +124,7 @@ const MANIFEST = [
   { p: 'company/state/guardrails.json', cls: 'F', writers: ['guardrails.js'], owner: 'risk', area: 'policy', alwaysWatched: true, why: 'the guardrail switches (only the owner changes them, through guardrails.js)' },
   ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'decision.js', 'restart-station.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js', 'retention.js', 'duties.js', 'duty-status.js', 'lib/duty-runner.js', 'lib/duty-env.js', 'money-hold.js', 'lib/money-hold.js', 'lib/seat-status.js', 'lanes.js', 'lib/admit.js', 'lib/scheduler.js', 'budget.js', 'budget-migrate.js', 'watchdog.js', 'lib/owner-channel.js', 'lib/pm-inbox-guard.js']
     .map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'tools', area: 'tool', why: 'a tool that measures or limits the crew, or that these tools depend on' })),
-  ...['merge-gate.js', 'premerge-check.js', 'external-gate.js', 'connector-scope.js', 'default-branch-watch.js', 'providers.js'].map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'risk', area: 'tool', why: 'a gate or the evidence it reads' })),
+  ...['merge-gate.js', 'premerge-check.js', 'external-gate.js', 'connector-scope.js', 'default-branch-watch.js', 'providers.js', 'deps.js'].map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'risk', area: 'tool', why: 'a gate or the evidence it reads' })),
   { p: 'company/work/engineering/evidence/*.json', cls: 'F', writers: ['test-substrate.sh'], owner: 'risk', area: 'gate', why: 'test-substrate verdicts (a hand-made pass opens the merge gate): flagged, never auto-removed, so a real evidence file never blocks a merge' },
   // bigAppend: StarNet's append-only run log grows without end, so it is checked incrementally (the 64 KB before the
   // last checked end and the first 64 KB are unchanged, the rest is new), never hashed whole, never copied
