@@ -167,3 +167,25 @@ test('a hold whose script died expires by itself; --release drops it at once', a
   const r = await script(['--release', '--by', 'Olive']).done;
   assert.strictEqual(r.code, 0, r.out); assert.strictEqual(co().startsHeld(), false);
 });
+
+test('the hold stays until every provider that was ready before the restart is ready again (Claude checks its sign-in at boot)', async () => {
+  await req('POST', '/__providers', { 'claude-cli': true, deepseek: true });
+  await req('POST', '/__boot-settle', { 'claude-cli': 1500 });
+  const HOLD = path.join(T, 'company/state/restart-hold.json');
+  const s = script(['--when-idle', '--max-wait-min', '5', '--reason', 'a settle test', '--by', 'Olive']);
+  // at no point while Claude still reads "checking local sign-in" after the restart is the hold gone
+  let settling = 0, releasedEarly = 0, finishedAt = 0; s.done.then(() => { finishedAt = Date.now(); });
+  while (!finishedAt || Date.now() - finishedAt < 2500) {   // and a while after the script ended
+    const pv = await req('GET', '/api/providers');
+    const c = pv && pv.providers && pv.providers.find(p => p.id === 'claude-cli');
+    if (c && c.reason === 'checking local sign-in') { settling++; if (!fs.existsSync(HOLD)) releasedEarly++; }
+    await sleep(40);
+  }
+  assert.ok(settling > 0, 'the provider was seen settling after the restart');
+  assert.strictEqual(releasedEarly, 0, 'the hold was released while Claude was still checking its sign-in');
+  const r = await s.done;
+  assert.strictEqual(r.code, 0, r.out);
+  assert.ok(/providers ready again: claude-cli, deepseek/.test(r.out), r.out);
+  assert.ok(!fs.existsSync(HOLD), 'released once ready');
+  await req('POST', '/__boot-settle', {});
+});

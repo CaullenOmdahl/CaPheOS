@@ -39,7 +39,9 @@
  * meanwhile"), the owner once. It still never kills a run and still gives up at --max-wait-min.
  *
  * Then: restart the unit (systemctl --user restart <company.json station.serviceName>.service), wait for GET /api/health
- * "ok" and GET /api/cron (RESTART_HEALTH_SEC, default 180), re-arm the scheduler if it disarmed it, drop the hold, and
+ * "ok" and GET /api/cron (RESTART_HEALTH_SEC, default 180), then until every provider that was ready before the restart
+ * is ready again in GET /api/providers (RESTART_PROVIDERS_SEC, default 180: the station checks Claude's local sign-in
+ * after it answers health, and a routine started meanwhile is refused "not set up"), re-arm the scheduler, drop the hold, and
  * write one plain line to company/work/dispatch-log.md and one message to the owner channel ("Station restarted to load
  * patch 0013 at 16:00; no run was interrupted."). With --max-wait-min (default 120) it gives up when idle never comes:
  * the hold is released, the scheduler re-armed, nothing is stopped, and the log and the owner are told what kept it
@@ -61,6 +63,7 @@ const num = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 
 const S = {
   pollMs: () => num(process.env.RESTART_POLL_SEC, 20) * 1000,
   healthMs: () => num(process.env.RESTART_HEALTH_SEC, 180) * 1000,
+  providersMs: () => num(process.env.RESTART_PROVIDERS_SEC, 180) * 1000,
   idlePolls: () => num(process.env.RESTART_IDLE_POLLS, 3),
   minuteMs: () => num(process.env.RESTART_MINUTE_MS, 60000),
   service: () => { const s = String(co.config.station.serviceName || 'capheos-station'); return s.endsWith('.service') ? s : s + '.service'; },
@@ -202,6 +205,25 @@ async function waitHealthy() {
   return false;
 }
 
+// the providers the station calls ready (configured, unattended-ready), or null when it does not answer
+async function readyProviders() {
+  const r = await call('GET', '/api/providers', null, 8000);
+  if (r.status !== 200 || !r.json || !Array.isArray(r.json.providers)) return null;
+  return r.json.providers.filter(p => p && p.id && p.configured === true && p.unattendedReady !== false).map(p => String(p.id)).sort();
+}
+// after a restart the station answers /api/health before it has re-checked every provider (Claude's local sign-in is
+// checked at boot): wait until each provider ready before the restart is ready again, or the cap. Returns what is missing.
+async function waitProviders(want) {
+  if (!want || !want.length) return [];
+  const until = Date.now() + S.providersMs(); let missing = want.slice();
+  while (Date.now() < until) {
+    const now = await readyProviders();
+    if (now) { missing = want.filter(id => !now.includes(id)); if (!missing.length) return []; }
+    await sleep(Math.min(2000, S.pollMs()));
+  }
+  return missing;
+}
+
 /* ---------------- main ---------------- */
 function args(argv) {
   const o = { _: [] };
@@ -296,6 +318,7 @@ async function run(a) {
 }
 async function restartNow(o) {
   say('idle: restarting ' + S.service());
+  const readyBefore = await readyProviders();
   const r = await restartUnit();
   const at = hm();
   if (!r.ok) {
@@ -306,7 +329,12 @@ async function restartNow(o) {
     return 4;
   }
   const ok = await waitHealthy();
-  const notes = o.held ? await releaseHold(ok ? 'restart done' : 'the station did not come back healthy') : [];
+  // the hold stays until the providers that were ready are ready again, so no routine starts into "not set up"
+  const notReady = ok ? await waitProviders(readyBefore) : [];
+  if (notReady.length) say('providers not ready ' + Math.round(S.providersMs() / 1000) + ' s after the restart: ' + notReady.join(', ') + ' (the hold is released anyway)');
+  else if (ok && readyBefore && readyBefore.length) say('providers ready again: ' + readyBefore.join(', '));
+  const notes = o.held ? await releaseHold(ok ? 'restart done' + (notReady.length ? '; not ready yet: ' + notReady.join(', ') : '') : 'the station did not come back healthy') : [];
+  if (notReady.length) notes.push('not ready ' + Math.round(S.providersMs() / 1000) + ' s after the restart: ' + notReady.join(', '));
   const waitedTxt = o.waited.length ? ' after waiting ' + Math.max(1, Math.round((Date.now() - o.t0) / 60000)) + ' min for ' + o.waited.length + ' run(s) to finish' : '';
   if (!ok) {
     say('STATION NOT HEALTHY ' + Math.round(S.healthMs() / 1000) + ' s after the restart');

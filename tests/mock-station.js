@@ -341,7 +341,10 @@ function handle(method, p, q, body, res) {
   if (p === '/api/budget/status' && method === 'GET') return send(res, 200, { ok: true, providers: {} });
   if (p === '/api/health' && method === 'GET') { if (Date.now() < S.downUntil) { res.writeHead(503); res.end('starting'); return 503; } res.writeHead(200); res.end('ok'); return 200; }
   if (p === '/api/version' && method === 'GET') return send(res, 200, Object.assign({ ok: true, version: 'mock-station' }, S.caps.length ? { capabilities: S.caps } : {}));
-  if (p === '/api/providers' && method === 'GET') return send(res, 200, { ok: true, providers: Object.entries(S.providers).map(([id, on]) => ({ id, configured: on, unattendedReady: on, reason: on ? 'verified' : 'credential missing' })) });
+  if (p === '/api/providers' && method === 'GET') return send(res, 200, { ok: true, providers: Object.entries(S.providers).map(([id, on]) => {
+    const settling = on && S.settleUntil && S.settleUntil[id] > Date.now();
+    return { id, configured: on && !settling, unattendedReady: on && !settling, reason: settling ? 'checking local sign-in' : on ? 'verified' : 'credential missing' };
+  }) });
   if (p.startsWith('/api/models/') && method === 'GET') return send(res, 200, { ok: true, models: [{ id: 'deepseek-flash' }] });
   if (p === '/api/permissions' && method === 'GET') return send(res, 200, { ok: true, bypass: false });
   if (p === '/api/permissions/bypass' && method === 'POST') return send(res, 200, { ok: true, bypass: !!B.on });
@@ -372,12 +375,15 @@ const server = http.createServer((req, res) => {
       if (r) { for (const j of S.cron.jobs) if (j.lastRunId === r.runId) j.inFlight = false; observe('agent.run.end', { runId: r.runId, agentId: r.agentId, reason: 'done', outcome: 'succeeded', usd: 0 }); S.runs.push({ runId: r.runId, agentId: r.agentId, source: r.source, startedAt: r.startedAt, endedAt: Date.now(), usd: 0 }); }
       row.status = send(res, 200, { ok: !!r }); return logReq(row);
     }
+    if (u.pathname === '/__boot-settle' && req.method === 'POST') { S.bootSettle = body || {}; row.status = send(res, 200, { ok: true }); return logReq(row); }
     if (u.pathname === '/__restart' && req.method === 'POST') {
       const inFlight = [...new Set(S.live.map(r => r.runId).concat(S.cron.jobs.filter(j => j.inFlight).map(j => j.inFlightRunId || j.lastRunId || j.id)))];
       S.restarts.push({ at: nowIso(), inFlight });
       for (const r of S.live) observe('agent.run.end', { runId: r.runId, agentId: r.agentId, reason: 'cancelled', outcome: 'cancelled', usd: 0 });
       S.live = []; for (const j of S.cron.jobs) { j.inFlight = false; delete j.inFlightRunId; }
       S.downUntil = Date.now() + RESTART_DOWN_MS;
+      // a provider still checking its sign-in after a boot (POST /__boot-settle {id: ms}): not ready for that long after the restart
+      S.settleUntil = {}; for (const [id, ms] of Object.entries(S.bootSettle || {})) S.settleUntil[id] = S.downUntil + Number(ms);
       row.status = send(res, 200, { ok: true, inFlight }); return logReq(row);
     }
     if (u.pathname === '/__live' && req.method === 'POST') { row.status = send(res, 200, { ok: true, run: startLive(body || {}) }); return logReq(row); }

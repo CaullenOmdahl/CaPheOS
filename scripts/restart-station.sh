@@ -11,7 +11,7 @@
 # wakes nobody, the scheduler is disarmed); running work is never stopped. The hold has its own cap (--hold-max-min,
 # default 15): after it, with work still in flight, the hold is lifted so the crew works again, and the script keeps
 # watching; the next time the station is idle by itself it holds again briefly and restarts. Then it restarts the unit, waits for
-# /api/health, re-arms, releases the hold and writes one line to the dispatch log and the owner channel. With
+# /api/health and for the providers that were ready before to be ready again, re-arms, releases the hold and writes one line to the dispatch log and the owner channel. With
 # --max-wait-min (default 120) it gives up cleanly. Details: company/tools/restart-station.js.
 #
 # It waits as long as runs take, so start it detached when you will not watch it, e.g.

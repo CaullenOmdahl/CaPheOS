@@ -46,6 +46,10 @@ const REL = {
   runs: '.starnet-data/workspaces/runs.jsonl', roster: '.starnet-data/workspaces/agent.roster.json', handoffs: 'company/work/handoffs',
   staffLog: 'company/hiring/staff-log.md', sprintEffort: 'company/state/sprint-effort.json',
 };
+// a provider the station has not finished checking since it started (StarNet: "checking local sign-in"; status
+// unavailable while it probes): not a reason to move a seat for the first SETTLE_MIN minutes
+const SETTLING_RE = /\bchecking\b|\bstarting\b|\bwarming\b|\bpending\b|status unavailable/i;
+const SETTLE_MIN = 10;
 const FAILOVER = { mode: 'live', errorsInARow: 3, errorHoldMin: 60, recoverAfterMin: 30, upAtMostEveryMin: 60 };
 const MAX_CHAIN = 8;
 const SUBS = ['claude-cli', 'custom'];
@@ -186,7 +190,17 @@ function makeModels(o) {
     if (pv) {
       const p = pv[e.provider];
       if (!p) return { ok: false, why: 'the provider "' + e.provider + '" is not on this station', hard: true, connected: false };
-      if (!p.configured) return { ok: false, why: (NAMES[e.provider] || p.name) + ' is not connected on the station (' + (p.reason || 'no key or sign-in') + ')', hard: true, connected: false };
+      if (!p.configured) {
+        // a station that just started reports a provider it has not re-checked yet ("checking local sign-in"): that is a
+        // wait, not a failover, for SETTLE_MIN after it was first seen so (then it counts as not connected, as before)
+        if (SETTLING_RE.test(String(p.reason || ''))) {
+          const k = e.provider, since = ctx.settling && ctx.settling[k];
+          if (ctx.settling && !since) ctx.settling[k] = t;
+          if (!since || t - since < SETTLE_MIN * MIN) return { ok: false, settling: true, why: (NAMES[e.provider] || p.name) + ' is still starting on the station (' + p.reason + '): waiting, not moving', connected: false };
+        }
+        return { ok: false, why: (NAMES[e.provider] || p.name) + ' is not connected on the station (' + (p.reason || 'no key or sign-in') + ')', hard: true, connected: false };
+      }
+      if (ctx.settling) delete ctx.settling[e.provider];
     }
     const connected = pv ? true : null;
     const metered = !SUBS.includes(e.provider) && !(pv && pv[e.provider] && pv[e.provider].unmetered);
@@ -276,7 +290,8 @@ function makeModels(o) {
     for (const id of ids) {
       const s = seats[id], chain = s.chain, ss = st.seats[id] = st.seats[id] || { okSince: {} };
       ss.okSince = ss.okSince || {};
-      const ctx = { pol, F, t, m: a.m || null, providers: pv, runs, reserve: s.claudeReserve === true || (s.claudeReserve !== false && id === ceoId()) };
+      st.settling = st.settling || {};
+      const ctx = { pol, F, t, m: a.m || null, providers: pv, runs, settling: st.settling, reserve: s.claudeReserve === true || (s.claudeReserve !== false && id === ceoId()) };
       const ev = chain.map(e => ({ e, ...evaluate(id, e, ctx) }));
       // Sprint (cadence.js; dispatch.js writes sprint-effort.json): a seat whose open items are all Effort: mechanical
       // runs on the first entry of its OWN chain that is not Claude and can run, so the Claude quota stays for reasoning
@@ -289,6 +304,7 @@ function makeModels(o) {
       for (const x of ev) { const k = keyOf(x.e); if (x.ok || x.soft) { if (!ss.okSince[k]) ss.okSince[k] = t; } else delete ss.okSince[k]; }
       const cur = current(id, all), curKey = cur.pick ? keyOf(cur.pick) : null;
       const curIdx = curKey ? chain.findIndex(e => keyOf(e) === curKey) : -1;
+      if (curIdx >= 0 && ev[curIdx].settling) { out.push({ seat: id, action: 'wait', why: ev[curIdx].why }); continue; }
       const target = ev.findIndex(x => x.ok);
       const name = (crew()[id] || {}).name || id;
       if (target < 0) {
@@ -543,7 +559,7 @@ async function selftest() {
   writeRoster();
   const call = async (method, p, body) => {
     S.calls.push({ method, p, body });
-    if (p === '/api/providers') return { status: 200, body: JSON.stringify({ providers: Object.entries(S.providers).map(([id, c]) => ({ id, configured: c, unmetered: id === 'ollama', reason: c ? 'verified' : 'credential missing' })) }) };
+    if (p === '/api/providers') return { status: 200, body: JSON.stringify({ providers: Object.entries(S.providers).map(([id, c]) => ({ id, configured: c, unmetered: id === 'ollama', reason: c ? 'verified' : (S.reason && S.reason[id]) || 'credential missing' })) }) };
     if (p === '/api/cron') return { status: 200, body: JSON.stringify({ jobs: S.jobs }) };
     if (p === '/api/agent/model') { if (!S.providers[body.provider]) return { status: 409, body: '{"error":"not connected"}' }; S.roster[body.agentId] = { provider: body.provider, model: body.model, reasoningEffort: body.effort }; writeRoster(); return { status: 200, body: '{"ok":true,"via":"roster"}' }; }
     if (p === '/api/cron/update') { const j = S.jobs.find(x => x.id === body.id); Object.assign(j, body.patch); return { status: 200, body: JSON.stringify({ ok: true, job: j }) }; }
@@ -605,6 +621,19 @@ async function selftest() {
       assert.strictEqual(r.all[0].action, 'wait', JSON.stringify(r));   // the last move was under an hour ago
       T += 30 * MIN; r = await M().tick({ m: openM });
       assert.strictEqual(r.moves[0].direction, 'up', JSON.stringify(r)); assert.strictEqual(S.jobs[1].provider, 'deepseek'); assert.strictEqual(r.moves[0].toIndex, 0);
+    });
+    await t('a provider still checking its sign-in after a station start is a wait, not a failover (for 10 min)', async () => {
+      S.providers.deepseek = false; S.reason = { deepseek: 'checking local sign-in' };
+      T += MIN; let r = await M().tick({ m: openM });
+      assert.strictEqual(r.all[0].action, 'wait', JSON.stringify(r)); assert.strictEqual(S.jobs[1].provider, 'deepseek', 'moved off while the station was still starting');
+      S.providers.deepseek = true; S.reason = {};
+      T += MIN; r = await M().tick({ m: openM }); assert.strictEqual(S.jobs[1].provider, 'deepseek'); assert.ok(!r.moves.length, JSON.stringify(r));
+      const pv = { deepseek: { configured: false, reason: 'checking local sign-in' } }, e = { provider: 'deepseek', model: 'deepseek-flash' };
+      const ctx = st => ({ pol, F: FAILOVER, t: T, m: openM, providers: pv, runs: {}, settling: st });
+      assert.ok(M().evaluate('eng', e, ctx({})).settling, 'first seen: settling');
+      const late = M().evaluate('eng', e, ctx({ deepseek: T - 11 * MIN }));
+      assert.ok(!late.settling && late.hard && /not connected/.test(late.why), 'after 10 min it counts as not connected: ' + JSON.stringify(late));
+      assert.ok(M().evaluate('eng', e, Object.assign(ctx({}), { providers: { deepseek: { configured: false, reason: 'credential missing' } } })).hard, 'a missing key is never a wait');
     });
     await t('a running seat is not switched; a metered entry near the rail cannot run', async () => {
       S.jobs[1].inFlight = true; S.providers.deepseek = false;
