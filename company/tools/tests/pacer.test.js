@@ -1082,7 +1082,7 @@ test('emergency by hand under self-governance: budget at approve files one owner
   const a2 = h.p.emergencyOn({ why: 'production API down (S0)', by: 'Max', hours: 4 });
   assert.equal(a1.ok, false); assert.match(a1.error, /budget is at approve/); assert.equal(a1.governance.questionId, a2.governance.questionId);
   assert.ok(!fs.existsSync(path.join(fx.root, 'company/state/emergency.json')));
-  fs.appendFileSync(path.join(fx.root, 'company/pm-inbox.jsonl'), JSON.stringify({ type: 'answer', id: a1.governance.questionId, a: 'yes', by: 'Commander' }) + '\n');
+  require('../lib/pm-inbox-guard').append(path.join(fx.root, 'company/pm-inbox.jsonl'), { type: 'answer', id: a1.governance.questionId, a: 'yes', by: 'Commander' }, 'selftest');
   assert.equal(h.p.emergencyOn({ why: 'production API down (S0)', by: 'Max', hours: 4 }).ok, true);
 });
 test('emergency by hand at notify starts at once and tells the owner', async () => {
@@ -1158,7 +1158,7 @@ test('cutoffs: a held seat makes the live pacer ask the owner ONCE, with two sli
   h.clock.t += 10 * MIN; await heldTick(make(fx, st, { t: h.clock.t, mm: mmBody(94, 10), extra: dsOut }));
   assert.equal(pacerAsks(fx.root).length, 1);
   // closed by the owner without an answer: still not asked again this week while nothing changes
-  fs.appendFileSync(path.join(fx.root, 'company/pm-inbox.jsonl'), JSON.stringify({ type: 'close', id: q.id, at: new Date().toISOString(), by: 'Commander' }) + '\n');
+  require('../lib/pm-inbox-guard').append(path.join(fx.root, 'company/pm-inbox.jsonl'), { type: 'close', id: q.id, at: new Date().toISOString(), by: 'Commander' }, 'selftest');
   h.clock.t += 10 * MIN; await heldTick(make(fx, st, { t: h.clock.t, mm: mmBody(94, 10), extra: dsOut }));
   assert.equal(pacerAsks(fx.root).length, 1);
   // a material change (the week rises by 15+ points): asked again

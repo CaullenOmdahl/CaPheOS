@@ -11,7 +11,8 @@
  *   const prov = require('./provenance.js');
  *   prov.wrote(file, text, 'corrections.js')        after a whole-file write (atomic rename) of `text`
  *   prov.appended(file, chunk, 'pacer.js')          after appending `chunk` to an append-only log
- *   prov.noted(file, { kind: 'cutover', bytes, sha256 }, 'owner-channel')   a marker, not a write (lib/owner-channel.js)
+ *   prov.noted(file, { kind: 'cutover', bytes, sha256 }, 'owner-channel')   a marker, not a write (lib/owner-channel.js,
+ *                                                   lib/pm-inbox-guard.js)
  *   prov.rolled(file, { before, after, ops, chunks }, 'retention.js')   after a retention roll (docs/RETENTION.md)
  *   prov.inserted(file, { before, after, offset }, 'decision.js')    after inserting bytes at `offset` of a grow-only record
  *                                                   (decisions.md is newest first: a new entry goes in at the top)
@@ -175,7 +176,8 @@ function appended(file, chunk, writer, o) {
     const root = o && o.root ? path.resolve(o.root) : rootOf(), rel = relOf(file, root); if (!rel) return false;
     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
     if (!buf.length) return false;
-    append(Object.assign({ at: new Date().toISOString(), file: rel, kind: 'append', chunkSha: sha(buf), chunkBytes: buf.length }, common(root, writer)), root);
+    // o.seat: the seat a writer verified as its caller (lib/pm-inbox-guard.js: an asker's own withdraw / reclassify)
+    append(Object.assign({ at: new Date().toISOString(), file: rel, kind: 'append', chunkSha: sha(buf), chunkBytes: buf.length }, common(root, writer), o && o.seat ? { seat: String(o.seat) } : {}), root);
     return true;
   } catch (_) { return false; }
 }

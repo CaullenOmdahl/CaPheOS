@@ -92,7 +92,9 @@ async function setEndpoint(D, o) {
   if (!ep.ok) throw refuse(ep.error, 'input');
   const host = new URL(ep.baseUrl).hostname;
   const qid = String(o.approval || '').trim(); if (!/^q-\d+$/.test(qid)) throw refuse('--approval <q-id> is required: the owner question that approved this endpoint', 'input');
-  const ap = approvalFor(readLines(path.join(D.root, 'company', 'pm-inbox.jsonl')), qid, host);
+  // only rows the owner-question check trusts, gate view (lib/pm-inbox-guard.js): a hand-appended "yes", or one from before
+  // the cutover, never approves an endpoint
+  const ap = approvalFor(D.inboxRows ? D.inboxRows(D.root) : require('./lib/pm-inbox-guard').rows({ file: path.join(D.root, 'company', 'pm-inbox.jsonl'), gate: true }), qid, host);
   if (ap.error) throw refuse(ap.error);
   const cfgFile = path.join(D.root, 'company', 'company.json'); const cfg = readJson(cfgFile, null);
   if (!cfg) throw refuse('company/company.json is missing or not JSON', 'state');
@@ -174,7 +176,9 @@ async function selftest() {
   w(store, { providers: { custom: { key: 'sk-test-key-123456' } } });
   const base = () => w('company/state/locked/baseline.json', { files: Object.fromEntries(fs.readdirSync(path.join(T, SECRETS_REL)).map(n => [SECRETS_REL + '/' + n, { exists: true, sha256: sha(fs.readFileSync(path.join(T, SECRETS_REL, n))) }])) });
   base();
-  const inbox = rows => w('company/pm-inbox.jsonl', rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+  // the rows as their tools would write them: recorded in this fixture's provenance log (lib/pm-inbox-guard.js)
+  require('./provenance.js').pinUnderStation(false); const G = require('./lib/pm-inbox-guard'); G.pinMains(() => true);
+  const inbox = rows => { const f = path.join(T, 'company', 'pm-inbox.jsonl'); fs.rmSync(f, { force: true }); for (const r of rows) G.append(f, r, 'selftest'); return f; };
   const ASK = { type: 'ask', id: 'q-100001', from: 'Alex', q: 'May we use https://api.minimax.io/v1 as the MiniMax base URL?' };
   const YES = { type: 'answer', id: 'q-100001', at: '2030-01-01T00:00:00Z', a: 'yes', answer: { verdict: 'yes', action: 'approve' }, by: 'Pat' };
   const calls = []; const wrote = []; const decided = [];

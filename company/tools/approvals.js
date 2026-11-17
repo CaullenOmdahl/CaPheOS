@@ -259,7 +259,9 @@ async function withLock(fn) {
     if (o && o.token === token) { const aside = lock + '.done-' + token; try { fs.renameSync(lock, aside); fs.rmSync(aside, { recursive: true, force: true }); } catch (_) {} }
   }
 }
-const append = row => { fs.mkdirSync(path.dirname(inbox.FILE()), { recursive: true }); fs.appendFileSync(inbox.FILE(), JSON.stringify(row) + '\n'); };
+// every row is recorded in the provenance log before it is written (lib/pm-inbox-guard.js): readers trust only recorded rows,
+// an answer only from the owner's side (the console, the owner's CLI, the dispatcher's tick), an amend only from the asker
+const append = (row, o) => require('./lib/pm-inbox-guard').append(inbox.FILE(), row, 'approvals.js', o);
 const journal = (id, step, extra) => append(Object.assign({ type: 'approval-journal', id, step, at: new Date(S.now()).toISOString() }, extra || {}));
 const refuse = (code, msg, extra) => Object.assign({ ok: false, code, error: msg }, extra || {});
 
@@ -312,9 +314,10 @@ async function amend(id, o) {
     const r = get(id); if (!r || r.legacy) return refuse('missing', 'no approval record ' + id);
     if (r.status !== 'pending') return refuse('closed', id + ' is ' + r.status);
     if (!sameSeat(o.by, r.from)) return refuse('authority', 'only the asker (' + r.from + ') amends ' + id);
+    let seat = null; try { seat = inbox.callerSeat({ id, from: r.from }, o.by, 'amend'); } catch (e) { return refuse('authority', e.message); }
     let params; try { params = canonical(typeof o.params === 'string' ? JSON.parse(o.params) : o.params || {}); } catch (e) { return refuse('usage', '--params: ' + e.message); }
     const actionDigest = actionDigestOf(r.category, r.from, params);
-    append({ type: 'approval-amend', id, at: new Date(S.now()).toISOString(), by: o.by, params, actionDigest });
+    append({ type: 'approval-amend', id, at: new Date(S.now()).toISOString(), by: o.by, params, actionDigest }, seat ? { seat } : undefined);
     return { ok: true, id, actionDigest, was: r.actionDigest };
   });
 }
@@ -438,6 +441,9 @@ function repair() {
 /* ---------- tick: expiry (server-side), then batched reminders, then repair ---------- */
 async function expire(o) {
   const actor = (o && o.actor) || processActor();
+  // the default answer is written on the owner's side (the dispatcher's tick, the console): an agent's run never writes an
+  // answer row (lib/pm-inbox-guard.js), so it leaves expiry to them
+  try { if (require('./provenance.js').underStation()) return []; } catch (_) {}
   const now = S.now(); const done = [];
   const due = list().filter(r => r.expiresAt && Date.parse(r.expiresAt) <= now);
   for (const d of due) {

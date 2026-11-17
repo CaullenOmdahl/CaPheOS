@@ -116,7 +116,8 @@ function selftest() {
   const out = []; let bad = 0;
   const t = (n, fn) => { try { fn(); out.push('ok   ' + n); } catch (e) { bad++; out.push('FAIL ' + n + ': ' + e.message); } };
   const F = gov.files(opts);
-  const ownerSays = (id, text) => fs.appendFileSync(F.inbox, JSON.stringify({ type: 'answer', id, at: new Date().toISOString(), a: text, by: 'Commander' }) + '\n');
+  // the owner's answer as the owner's tools write it: recorded first (lib/pm-inbox-guard.js), else no reader trusts it
+  const ownerSays = (id, text) => require('./lib/pm-inbox-guard').append(F.inbox, { type: 'answer', id, at: new Date().toISOString(), a: text, by: 'Commander' }, 'selftest');
   t('no state file: levels come from the defaults copy; unknown category fails closed', () => {
     assert.strictEqual(gov.level('hiring', opts), 'approve'); assert.strictEqual(gov.level('models', opts), 'notify');
     assert.strictEqual(gov.level('no-such-thing', opts), 'approve');

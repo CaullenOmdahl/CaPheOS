@@ -85,7 +85,9 @@ function plantApproval(c) {
   assert.equal(a.minted, true, JSON.stringify(a));
   const f = path.join(c.T, 'company/pm-inbox.jsonl');
   const back = new Date(Date.now() - 20 * MIN).toISOString();
-  fs.writeFileSync(f, fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map(l => { const r = JSON.parse(l); if (r.type === 'ask' && r.id === a.id) r.at = back; return JSON.stringify(r); }).join('\n') + '\n');
+  // rewritten row by row through the recording writer (lib/pm-inbox-guard.js), so the readers still trust each row
+  const rows = fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map(l => { const r = JSON.parse(l); if (r.type === 'ask' && r.id === a.id) r.at = back; return r; });
+  fs.rmSync(f); const G = require('../lib/pm-inbox-guard'); for (const r of rows) G.append(f, r, 'selftest');
   return a;
 }
 

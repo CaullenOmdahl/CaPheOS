@@ -349,9 +349,8 @@ function askOwner(ctx, e, who, ref, why) {
   const row = { type: 'ask', id, at: new Date(ctx.now()).toISOString(), from: who.name, about: 'service:' + e.name, kind: 'form', form, message, details: facts,
     q: message + '\n\n' + facts, blocking: false, batch: 'gate',
     gate: { category: why, ref, by: who.seat || 'owner', summary: 'run the background service ' + e.name + ' (' + sched + ')', recommendation: null, default: 'nothing is installed' } };
-  const inbox = gov.files(ctx.gov).inbox;
-  fs.mkdirSync(path.dirname(inbox), { recursive: true });
-  fs.appendFileSync(inbox, JSON.stringify(row) + '\n');
+  // recorded in the provenance log first (lib/pm-inbox-guard.js), so every reader trusts the question
+  require('./lib/pm-inbox-guard').append(gov.files(ctx.gov).inbox, row, 'service.js');
   return row;
 }
 // may this proposal go ahead? -> {allowed, waiting?, denied?, questionId?, level, via}
@@ -370,7 +369,7 @@ function decision(ctx, e, who, ref) {
     const a = gov.approved(ref, ctx.gov);
     if (a === true) return { allowed: true, level: 'approve', questionId: q.id, via: (lcOn ? 'localComputer guardrail on' : 'schedules approve') + ': owner said yes to ' + q.id };
     if (a === false) return { allowed: false, denied: true, level: 'approve', questionId: q.id };
-    const closed = gov.readLines(gov.files(ctx.gov).inbox).some(r => r.id === q.id && (r.type === 'close' || r.type === 'reclassify'));
+    const closed = gov.inboxRows(ctx.gov).some(r => r.id === q.id && (r.type === 'close' || r.type === 'reclassify'));
     if (!closed) return { allowed: false, waiting: true, level: 'approve', questionId: q.id };
   }
   const row = askOwner(ctx, e, who, ref, lcOn ? 'localComputer' : 'schedules');
@@ -807,7 +806,7 @@ function selftest() {
       guard: nm => nm === 'localComputer' ? guardOn : true, halted: () => halted, callerConflict: () => conflict,
       gov: { root: R, get level() { return govLevel || undefined; } } });
     const inbox = path.join(R, 'company', 'pm-inbox.jsonl');
-    const answer = (qid, verdict) => fs.appendFileSync(inbox, JSON.stringify({ type: 'answer', id: qid, a: verdict === 'yes' ? 'yes' : 'no', answer: { verdict }, by: 'Pat' }) + '\n');
+    const answer = (qid, verdict) => require('./lib/pm-inbox-guard').append(inbox, { type: 'answer', id: qid, a: verdict === 'yes' ? 'yes' : 'no', answer: { verdict }, by: 'Pat' }, 'selftest');
 
     // ---- argv validation refusals
     const P = (exec, extra) => () => specOf(ctx, 'rec', Object.assign({ kind: 'service', exec, why: 'records depth between runs' }, extra), { resolve: false });

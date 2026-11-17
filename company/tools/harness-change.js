@@ -788,7 +788,7 @@ function ownerQuestion(ctx, rec) {
   let n = Number(String(ctx.now).slice(-6)); let qid = 'q-' + String(n).padStart(6, '0'); while (used.has(qid)) { n = (n + 1) % 1e6; qid = 'q-' + String(n).padStart(6, '0'); }
   const row = { type: 'ask', id: qid, at: new Date(ctx.now).toISOString(), from: rec.by, about: 'harness change ' + rec.id, q: message + '\n\n' + details, message, details, blocking: false,
     batch: 'gate', gate: { category: 'tools', ref, by: rec.by, summary: 'apply ' + rec.id + ' to ' + what } };
-  fs.mkdirSync(path.dirname(file), { recursive: true }); fs.appendFileSync(file, JSON.stringify(row) + '\n');
+  require('./lib/pm-inbox-guard').append(file, row, 'harness-change.js');   // recorded first, so every reader trusts it
   appendLog(ctx, { event: 'owner-question', id: rec.id, question: qid, by: TOOL_NAME });
   return qid;
 }
@@ -1032,13 +1032,13 @@ async function selftest() {
     assert.ok(!/node company\/tools|patch -p|your shell/.test(q[0].message + q[0].details), 'the owner question carries no command');
     assert.strictEqual(require('./inbox.js').shellAsk(q[0].message), null);
     assert.strictEqual(await ownerDecisions(C()), 0);   // no answer yet: nothing happens
-    fs.appendFileSync(path.join(T, 'company/pm-inbox.jsonl'), JSON.stringify({ type: 'answer', id: q[0].id, a: 'yes', answer: { verdict: 'yes', action: 'approve', values: {} }, by: 'Commander' }) + '\n');
+    require('./lib/pm-inbox-guard').append(path.join(T, 'company/pm-inbox.jsonl'), { type: 'answer', id: q[0].id, a: 'yes', answer: { verdict: 'yes', action: 'approve', values: {} }, by: 'Commander' }, 'selftest');
     assert.strictEqual(await ownerDecisions(C()), 1);
     const done = loadRec(C(), r.id); assert.strictEqual(done.status, 'applied'); assert.strictEqual(done.approvals[0].id, 'owner'); assert.ok(R('company/tools/pacer.js').includes('// pacer'));
     assert.strictEqual(await ownerDecisions(C()), 0);   // acted on once
     const r2 = await propose(C(), { kind: 'tool', target: 'company/tools/external-gate.js', why: 'open the external gate a crack for my sends', change: "'use strict';\n// open\nmodule.exports = {};\n", by: 'Jo' });
     const q2 = inboxRows().find(x => x.type === 'ask' && x.gate && x.gate.ref === r2.ownerRef);
-    fs.appendFileSync(path.join(T, 'company/pm-inbox.jsonl'), JSON.stringify({ type: 'answer', id: q2.id, a: 'no', answer: { verdict: 'no', action: 'decline', values: {} }, by: 'Commander' }) + '\n');
+    require('./lib/pm-inbox-guard').append(path.join(T, 'company/pm-inbox.jsonl'), { type: 'answer', id: q2.id, a: 'no', answer: { verdict: 'no', action: 'decline', values: {} }, by: 'Commander' }, 'selftest');
     await ownerDecisions(C()); assert.strictEqual(loadRec(C(), r2.id).status, 'rejected'); assert.ok(!R('company/tools/external-gate.js').includes('// open'));
     // the crew list and records keep their own routes
     await assert.rejects(propose(C(), { kind: 'tool', target: 'company/tools/loops.json', why: 'give myself a different manager quietly', change: '{"agents":{}}', by: 'Jo' }), /locked/);
@@ -1086,7 +1086,7 @@ async function selftest() {
     await assert.rejects(applyChange(C(), r.id, { by: 'Pat' }), /budget is at approve/);
     const asks = R('company/pm-inbox.jsonl').trim().split('\n').map(JSON.parse).filter(x => x.type === 'ask' && x.gate && x.gate.ref === 'harness:' + r.id);
     assert.strictEqual(asks.length, 1); assert.strictEqual(JSON.parse(R('company/work/finance/pacing-policy.json')).marginPct !== 7, true);
-    fs.appendFileSync(path.join(T, 'company/pm-inbox.jsonl'), JSON.stringify({ type: 'answer', id: asks[0].id, a: 'yes', by: 'Commander' }) + '\n');
+    require('./lib/pm-inbox-guard').append(path.join(T, 'company/pm-inbox.jsonl'), { type: 'answer', id: asks[0].id, a: 'yes', by: 'Commander' }, 'selftest');
     const a = await applyChange(C(), r.id, { by: 'Pat' }); assert.strictEqual(a.status, 'applied'); assert.strictEqual(JSON.parse(R('company/work/finance/pacing-policy.json')).marginPct, 7);
   });
   await t('self-governance at apply: tools at notify applies and tells the owner; schedules/models/tools map from the kind', async () => {

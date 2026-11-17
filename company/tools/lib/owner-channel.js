@@ -174,4 +174,5 @@ function append(file, row, writer, o) {
   return row;
 }
 
-module.exports = { REL, WRITERS, IGNORED_MSG, trusted, judge, messages, append, ensureCutover, pinMains };
+// the provenance readers, shared with lib/pm-inbox-guard.js (the same mechanism for company/pm-inbox.jsonl)
+module.exports = { REL, WRITERS, IGNORED_MSG, trusted, judge, messages, append, ensureCutover, pinMains, _lib: { provRows, cutoverRow, sha } };

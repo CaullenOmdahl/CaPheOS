@@ -191,7 +191,7 @@ function selftest() {
     const b = gov('budget', { by: 'Sam', summary: 'raise the cap', ref: 'budget:1' }); assert.strictEqual(answer(b.questionId, { by: 'Pat', a: 'yes' }, opts).code, 3);
     const own = gov('spend', { by: 'Pat', summary: 'Pat buys a tool', ref: 'spend:pat' }); assert.strictEqual(answer(own.questionId, { by: 'Pat', a: 'yes' }, opts).code, 3);
     const x = gov('spend', { by: 'Sam', summary: 'x', ref: 'spend:x' }); assert.strictEqual(answer(x.questionId, { by: 'Lee', a: 'yes' }, opts).code, 3);
-    fs.appendFileSync(path.join(T, 'company', 'pm-inbox.jsonl'), JSON.stringify({ type: 'answer', id: x.questionId, a: 'no', by: 'Commander', at: new Date().toISOString() }) + '\n');
+    require('./lib/pm-inbox-guard').append(path.join(T, 'company', 'pm-inbox.jsonl'), { type: 'answer', id: x.questionId, a: 'no', by: 'Commander', at: new Date().toISOString() }, 'selftest');
     assert.strictEqual(answer(x.questionId, { by: 'Pat', a: 'yes' }, opts).code, 2);
     assert.ok(gov('spend', { by: 'Sam', summary: 'x', ref: 'spend:x' }).denied);
   });

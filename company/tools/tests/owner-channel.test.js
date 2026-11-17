@@ -100,7 +100,7 @@ test('history before the cutover: read as the owner\'s, never as a gate answer; 
   assert.equal(r.answer, null, 'a historic "yes (' + QID + ')" is no gate answer');
   assert.equal(r.approved, null);
   assert.equal(run('cutover').row, null, 'one cutover only');
-  const cuts = R('company/state/locked/provenance.jsonl').split('\n').filter(l => l.includes('"kind":"cutover"'));
+  const cuts = R('company/state/locked/provenance.jsonl').split('\n').filter(l => l.includes('"kind":"cutover"') && l.includes('"file":"company/owner/inbound.jsonl"'));
   assert.equal(cuts.length, 1); assert.equal(JSON.parse(cuts[0]).bytes, fs.statSync(INB).size);
   // a later cutover row (forged, wider) cannot turn later lines into history: the earliest wins
   fs.appendFileSync(path.join(T, 'company/state/locked/provenance.jsonl'), line(Object.assign(JSON.parse(cuts[0]), { at: '2099-01-01T00:00:00Z', bytes: 10e6 })));

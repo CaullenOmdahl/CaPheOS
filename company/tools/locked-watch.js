@@ -96,6 +96,10 @@ const MANIFEST = [
   // a line counts only when the console or the owner's own tools recorded it (lib/owner-channel.js); one appended by anyone
   // else is stripped and its lines kept in quarantine/, and the readers ignore it even before this tick
   { p: 'company/owner/inbound.jsonl', cls: 'A', append: true, ownerChannel: true, writers: Object.keys(require('./lib/owner-channel').WRITERS), owner: 'risk', area: 'policy', why: 'the owner channel (owner -> company): only the console and the owner\'s own tools write it' },
+  // the owner's questions and answers: an answer/close/snooze row is the owner's word (gates, approvals, the asker's wake),
+  // a withdraw/reclassify the asker's; a row counts only when its allowed writer recorded it (lib/pm-inbox-guard.js), so one
+  // appended by anyone else is stripped and kept in quarantine/, and the readers ignore it even before this tick
+  { p: 'company/pm-inbox.jsonl', cls: 'A', append: true, ownerChannel: 'pm-inbox', writers: require('./lib/pm-inbox-guard').WRITERS, owner: 'risk', area: 'policy', why: 'the owner\'s questions and answers: only the console and the owner\'s tools answer, only the asking seat withdraws' },
   // R — generated
   { p: 'company/work/people/competence.json', cls: 'R', writers: ['competence.js'], regen: ['competence.js', 'compute'], owner: 'people', area: 'record', why: 'competence scores (the pacer reads its serious flags)' },
   { p: 'company/work/people/scoreboard.md', cls: 'R', writers: ['competence.js'], regen: ['competence.js', 'scoreboard'], owner: 'people', area: 'record', why: 'the competence scoreboard' },
@@ -115,7 +119,7 @@ const MANIFEST = [
   { p: 'company/state/governance.json', cls: 'F', writers: ['governance.js'], owner: 'risk', area: 'policy', why: 'self-governance: how much the company decides without the owner (only the owner changes it, through governance.js)' },
   // alwaysWatched: still reported while the harnessSelfEdit guardrail is off, because it is the switch itself
   { p: 'company/state/guardrails.json', cls: 'F', writers: ['guardrails.js'], owner: 'risk', area: 'policy', alwaysWatched: true, why: 'the guardrail switches (only the owner changes them, through guardrails.js)' },
-  ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'decision.js', 'restart-station.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js', 'retention.js', 'duties.js', 'duty-status.js', 'lib/duty-runner.js', 'lib/duty-env.js', 'money-hold.js', 'lib/money-hold.js', 'lib/seat-status.js', 'lanes.js', 'lib/admit.js', 'lib/scheduler.js', 'budget.js', 'budget-migrate.js', 'watchdog.js', 'lib/owner-channel.js']
+  ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'decision.js', 'restart-station.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js', 'retention.js', 'duties.js', 'duty-status.js', 'lib/duty-runner.js', 'lib/duty-env.js', 'money-hold.js', 'lib/money-hold.js', 'lib/seat-status.js', 'lanes.js', 'lib/admit.js', 'lib/scheduler.js', 'budget.js', 'budget-migrate.js', 'watchdog.js', 'lib/owner-channel.js', 'lib/pm-inbox-guard.js']
     .map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'tools', area: 'tool', why: 'a tool that measures or limits the crew, or that these tools depend on' })),
   ...['merge-gate.js', 'premerge-check.js', 'external-gate.js', 'connector-scope.js', 'default-branch-watch.js', 'providers.js'].map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'risk', area: 'tool', why: 'a gate or the evidence it reads' })),
   { p: 'company/work/engineering/evidence/*.json', cls: 'F', writers: ['test-substrate.sh'], owner: 'risk', area: 'gate', why: 'test-substrate verdicts (a hand-made pass opens the merge gate): flagged, never auto-removed, so a real evidence file never blocks a merge' },
@@ -575,10 +579,12 @@ function decide(ctx, key, m, b, cur, prov, recorded, flagOnly) {
 
 // the owner channel: judged line by line with the readers' own rule (lib/owner-channel.js), so the watcher and the readers
 // never disagree. History before the last check must be unchanged; new lines no allowed writer recorded are taken out.
+// The same for company/pm-inbox.jsonl (ownerChannel 'pm-inbox': lib/pm-inbox-guard.js judges each row by its authority).
 function decideOwnerChannel(ctx, key, m, b, cur, flagOnly) {
-  if (!cur.exists) return b.exists ? { ok: false, act: flagOnly ? 'flag' : 'restore', why: 'the owner channel was deleted' } : { ok: true, why: 'absent' };
-  if (b.exists && !(cur.bytes >= b.bytes && sha(cur.buf.subarray(0, b.bytes)) === b.sha256)) return { ok: false, act: flagOnly ? 'flag' : 'restore', why: 'owner messages before the last check were rewritten' };
-  const OC = require('./lib/owner-channel'); const W = m.writers || [];
+  const pm = m.ownerChannel === 'pm-inbox'; const what = pm ? 'owner-question row' : 'owner-channel line';
+  if (!cur.exists) return b.exists ? { ok: false, act: flagOnly ? 'flag' : 'restore', why: pm ? 'the owner\'s question log was deleted' : 'the owner channel was deleted' } : { ok: true, why: 'absent' };
+  if (b.exists && !(cur.bytes >= b.bytes && sha(cur.buf.subarray(0, b.bytes)) === b.sha256)) return { ok: false, act: flagOnly ? 'flag' : 'restore', why: (pm ? 'owner questions and answers' : 'owner messages') + ' before the last check were rewritten' };
+  const OC = require(pm ? './lib/pm-inbox-guard' : './lib/owner-channel'); const W = m.writers || [];
   const from = b.exists ? b.bytes : 0;
   const all = OC.judge({ file: abs(ctx, key), root: ctx.root, buf: cur.buf }).lines;
   const bad = all.filter(l => l.trust === 'unverified' && l.offset >= from);
@@ -587,7 +593,7 @@ function decideOwnerChannel(ctx, key, m, b, cur, flagOnly) {
   for (const l of all) { if (!drop.has(l.offset)) keep.push(l.raw); p = l.offset + l.bytes; }
   keep.push(cur.buf.subarray(p));   // a last line still being written stays
   return { ok: false, act: flagOnly ? 'flag' : 'strip', rebuilt: Buffer.concat(keep), quarantine: Buffer.concat(bad.map(l => l.raw)),
-    why: bad.length + ' owner-channel line' + (bad.length > 1 ? 's' : '') + ' that no ' + W.join('/') + ' write recorded (claiming to be the owner): ignored by every reader, moved to quarantine' };
+    why: bad.length + ' ' + what + (bad.length > 1 ? 's' : '') + ' that no ' + (pm ? 'allowed' : W.join('/')) + ' write recorded (claiming ' + (pm ? 'an authority it does not have' : 'to be the owner') + '): ignored by every reader, moved to quarantine' };
 }
 
 /* ---------------- tick ---------------- */
@@ -654,6 +660,7 @@ function runTick(ctx) {
   }
   // the owner channel's cutover (lib/owner-channel.js): recorded once, before its lines are judged, so history is history
   if (!ctx.dry) { try { require('./lib/owner-channel').ensureCutover({ root: ctx.root, file: ctx.P('company/owner/inbound.jsonl') }); } catch (_) {} }
+  if (!ctx.dry) { try { require('./lib/pm-inbox-guard').ensureCutover({ root: ctx.root, file: ctx.P('company/pm-inbox.jsonl') }); } catch (_) {} }
   // hash first, read the records after: a write we see has always been recorded by then (the tools record right after the rename)
   const cur = new Map(); for (const key of new Set([...items.keys(), ...Object.keys(base.files)])) cur.set(key, stateOf(ctx, key));
   // provenance rows since the last check: those after the byte offset the baseline read up to

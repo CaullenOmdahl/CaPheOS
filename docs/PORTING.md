@@ -32,7 +32,10 @@ on the StarNet station). These rules apply to every file in `company/tools/`, `c
    outbound file. External-gate policy for the owner channel targets `owner:file`. Inbound lines count as the owner's
    only when an allowed writer recorded them in the provenance log (`company/tools/lib/owner-channel.js`: the console,
    `inbox.js` answers, `owner-inbox.js say`); a hand-appended line is ignored, raised to risk and quarantined by
-   locked-watch. Lines from before the cutover are history: read, but never a gate answer.
+   locked-watch. Lines from before the cutover are history: read, but never a gate answer. The same holds for the
+   owner's questions, `company/pm-inbox.jsonl` (`company/tools/lib/pm-inbox-guard.js`): write every row through
+   `inbox.js` / `approvals.js` (or the guard's `append`), never by hand. An answer, close or snooze counts only from the
+   console or the owner's own tools, a withdraw or reclassify only from the asking seat's own run.
 5. **Policy numbers are config, not code.** Defaults that the live company tuned (peak-hour blocks, must-not-move
    routine lists, caps) move into a JSON default under `company/defaults/` (copied to `company/work/...` or
    `company/state/...` at founding), with a neutral default. Pricing rules that belong to a model provider (e.g. a

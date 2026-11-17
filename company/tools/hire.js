@@ -1186,7 +1186,7 @@ async function selftest() {
   });
   t('hiring at approve: refused with an owner question; goes on after the owner says yes', () => {
     setLevel('hiring', 'approve'); const r = governanceCheck('hiring', o, g); assert.ok(!r.ok && r.d.questionId); assert.ok(/waits for the owner/.test(r.error));
-    fs.appendFileSync(path.join(T, 'company', 'pm-inbox.jsonl'), JSON.stringify({ type: 'answer', id: r.d.questionId, a: 'yes', by: 'Commander' }) + '\n');
+    require('./lib/pm-inbox-guard').append(path.join(T, 'company', 'pm-inbox.jsonl'), { type: 'answer', id: r.d.questionId, a: 'yes', by: 'Commander' }, 'selftest');
     assert.ok(governanceCheck('hiring', o, g).ok);
   });
   t('release and models read their own categories (release approve, models notify by default)', () => {

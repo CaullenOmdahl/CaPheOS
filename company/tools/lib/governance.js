@@ -93,15 +93,19 @@ function readLines(file) {
   const out = []; for (const l of txt.split('\n')) { if (!l.trim()) continue; try { const r = JSON.parse(l); if (r) out.push(r); } catch (_) {} }
   return out;
 }
-function gateAsks(opts) { return readLines(files(opts).inbox).filter(r => r.type === 'ask' && r.gate && r.gate.ref); }
+/* the question log's rows that the owner-question check trusts (lib/pm-inbox-guard.js); gate:true = what may count as
+ * the owner's answer (verified owner rows only: never a hand-appended row, never history from before the cutover) */
+function inboxRows(opts, gate) { try { return require('./pm-inbox-guard').rows({ file: files(opts).inbox, gate: !!gate }); } catch (_) { return []; } }
+function gateAsks(opts) { return inboxRows(opts).filter(r => r.type === 'ask' && r.gate && r.gate.ref); }
 const YES = /^\s*(yes|y|yep|yeah|ok|okay|approved?|go( ahead)?|agreed?|sure|do it|fine)\b/i;
 const NO = /^\s*(no|n|nope|not now|reject(ed)?|den(y|ied)|declined?|don'?t|do not|stop|hold)\b/i;
 const verdict = text => (NO.test(String(text || '')) ? false : YES.test(String(text || '')) ? true : null);
-// the owner's answer to one question id: an inbox.js answer row, else a VERIFIED owner message that names the id
+// the owner's answer to one question id: a VERIFIED inbox.js / approvals.js answer row, else a VERIFIED owner message that
+// names the id. An answer row any agent appended, or one from before the cutover, is never a gate answer.
 function answerOf(id, opts) {
   const f = files(opts);
   let ans = null;
-  for (const r of readLines(f.inbox)) if (r.id === id && (r.type === 'answer') && r.a) ans = { text: String(r.a), via: 'inbox', verdict: r.answer && (r.answer.verdict === 'yes' || r.answer.verdict === 'no') ? r.answer.verdict : null };
+  for (const r of inboxRows(opts, true)) if (r.id === id && (r.type === 'answer') && r.a) ans = { text: String(r.a), via: 'inbox', verdict: r.answer && (r.answer.verdict === 'yes' || r.answer.verdict === 'no') ? r.answer.verdict : null };
   if (ans) return ans;
   // owner-channel lines count only when verified (lib/owner-channel.js: recorded by the console or the owner's own tools);
   // an appended line nobody recorded, and history from before the cutover, is never a gate answer
@@ -115,7 +119,7 @@ function answerOf(id, opts) {
   if (q) { try { const d = require('../delegation.js').answerFor(q, Object.assign({}, opts, { root: rootOf(opts) })); if (d) return d; } catch (_) {} }
   return null;
 }
-function closedOrReclassified(id, opts) { return readLines(files(opts).inbox).some(r => r.id === id && (r.type === 'close' || r.type === 'reclassify')); }
+function closedOrReclassified(id, opts) { return inboxRows(opts).some(r => r.id === id && (r.type === 'close' || r.type === 'reclassify')); }
 function questionFor(ref, opts) { const asks = gateAsks(opts).filter(r => r.gate.ref === ref); return asks.length ? asks[asks.length - 1] : null; }
 /* true = the owner said yes to the question for `ref`; false = said no; null = no answer yet (or never asked). */
 function approved(ref, opts) {
@@ -130,7 +134,7 @@ function pendingGates(opts) {
     .map(q => ({ id: q.id, askedAt: q.at, category: q.gate.category, ref: q.gate.ref, by: q.gate.by, summary: q.gate.summary, q: q.q }));
 }
 function newId(opts) {
-  const used = new Set(readLines(files(opts).inbox).map(r => r.id));
+  const used = new Set(readLines(files(opts).inbox).map(r => r.id));   // every id in the file, trusted or not: never reuse one
   let n = Number(String(Date.now()).slice(-6));
   let id = 'q-' + String(n).padStart(6, '0');
   while (used.has(id)) { n = (n + 1) % 1e6; id = 'q-' + String(n).padStart(6, '0'); }
@@ -152,8 +156,8 @@ function fileQuestion(category, o, opts) {
     'If you say no or do not answer, ' + String(o.default || 'nothing happens and the company waits for you').trim().replace(/\.$/, '').replace(/^./, c => c.toLowerCase()) + '.').slice(0, 600);
   const row = { type: 'ask', id, at: new Date().toISOString(), from: co.nameOf(co.ceo()) || 'company', about: 'governance:' + category, q: lines.join('\n'), message, details: lines.slice(1).join('\n'), blocking: true,
     batch: 'gate', gate: { category, ref: o.ref, by: o.by || null, summary: o.summary || null, recommendation: o.recommendation || null, default: o.default || null } };
-  fs.mkdirSync(path.dirname(f.inbox), { recursive: true });
-  fs.appendFileSync(f.inbox, JSON.stringify(row) + '\n');
+  // recorded in the provenance log first (lib/pm-inbox-guard.js), so every reader trusts the question
+  require('./pm-inbox-guard').append(f.inbox, row, 'governance');
   return row;
 }
 
@@ -298,4 +302,4 @@ function refusal(category, d) {
   return 'self-governance: ' + category + ' is at ' + lv + ', so this waits for the owner. Question ' + d.questionId + ' is in the owner inbox (company/pm-inbox.jsonl); run the same command again after the owner answers yes';
 }
 
-module.exports = { LEVELS, TRIAGE_MODEL, triage, triageFacts, gateAsks, readLines, level, guard, decide, approved, pendingGates, notify, refusal, isOwnerName, files, doc, questionFor, answerOf, verdict };
+module.exports = { LEVELS, TRIAGE_MODEL, triage, triageFacts, gateAsks, inboxRows, readLines, level, guard, decide, approved, pendingGates, notify, refusal, isOwnerName, files, doc, questionFor, answerOf, verdict };

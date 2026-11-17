@@ -12,6 +12,7 @@
  *   node company/tools/inbox.js answer --id q-0003 --a "yes: rotate it" --by Commander [--answer '<json>'] [--quiet]
  *   node company/tools/inbox.js snooze --id q-0003 --until <ISO time> --by Commander
  *   node company/tools/inbox.js withdraw q-0003 [--part <n|id>] --why "fixed by …" --from <you>   (the asker: no longer needed)
+ *   node company/tools/inbox.js reclassify --id q-0003 --note "the company decides: <who owns it>" --by <you>   (the asker)
  *   node company/tools/inbox.js close --id q-0003
  * answer / snooze / close --by owner (or Commander, or the owner's name) follow the shared owner rule (lib/owner.js):
  * only from the owner's own shell or the console. An APPROVAL record (row.approval, or an older gate question) is never
@@ -83,6 +84,15 @@
  * Only `answer`/`close`/`snooze` require --by Commander (or --by owner, or the owner's name from company/company.json).
  * An agent may ask, never resolve its own question.
  *
+ * WHO WROTE A ROW (lib/pm-inbox-guard.js). Every row is recorded in the provenance log before it is appended, and every
+ * reader (state, openQuestions: Today, the dispatcher, approvals; lib/governance answerOf) trusts only recorded rows. An
+ * answer, part, secret, close or snooze counts only from the owner's side (the console, this CLI / approvals.js under the
+ * lib/owner.js rule, the dispatcher's approvals tick); an agent's run cannot write one (code 3). An ask, withdraw or
+ * reclassify comes from the asker's own run: withdraw / reclassify name the asker (--from) and, in an agent's run,
+ * callerSeat() checks the run is the asker's (the station's agent id, the transcript) and records that seat with the row.
+ * A row anyone appended by hand is ignored, logged, raised to risk and quarantined by locked-watch. Rows from before the
+ * cutover are history: shown, never a gate answer.
+ *
  * Also a module: `require('./inbox.js').openQuestions()` is the single source of truth for "what is an open PM
  * question". ask(), answer(), snooze(), normalizeForm(), expandKind(), formOf(), plainAnswer(), secretHint(),
  * messageParts() are exported. Env PM_INBOX_FILE overrides the file (tests only).
@@ -121,10 +131,32 @@ function args() {
   }
   return o;
 }
+/* Only rows the owner-question check trusts (lib/pm-inbox-guard.js): each was recorded in the provenance log by an allowed
+ * writer (an owner row by the console or the owner's own tools, an asker's row by that seat's own tool run), or is history
+ * from before the cutover. A row anyone else appended is ignored, logged, raised to risk and quarantined by locked-watch. */
+const GUARD = () => require('./lib/pm-inbox-guard');
 function readAll() {
-  try { return fs.readFileSync(FILE(), 'utf8').trim().split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean); } catch (_) { return []; }
+  try { return GUARD().rows({ file: FILE() }); } catch (_) { return []; }
 }
-function append(row) { fs.mkdirSync(path.dirname(FILE()), { recursive: true }); fs.appendFileSync(FILE(), JSON.stringify(row) + '\n'); }
+// record, then append (an owner row from an agent's run is refused with code 3); o.seat: the asker's verified seat
+function append(row, o) { return GUARD().append(FILE(), row, 'inbox.js', o); }
+/* callerSeat(question, by, verb) — the asker acting on its OWN question. Outside an agent's run: no check (the owner's side,
+ * the dispatcher). In an agent's run the caller must be the asker's seat: the station's agent id (STARNET_AGENT_ID) when it
+ * gives one, and no transcript shows another seat running this command (provenance.callerConflict). Returns the seat id
+ * (recorded with the row, so readers can check it), null outside a run; throws code 3 otherwise. */
+function callerSeat(row, by, verb) {
+  const prov = require('./provenance.js');
+  if (!prov.underStation()) return null;
+  const no = m => { const e = new Error(m); e.code = 3; return e; };
+  if (isOwner(by)) throw no('an agent\'s run is not the owner: ' + verb + ' ' + row.id + ' --from <the asker>');
+  const seat = GUARD().seatOfName(co.crew(), row.from);
+  if (!seat) throw no(row.id + ' was asked by ' + row.from + ', who is not a seat on the crew: only the owner ' + verb + 's it');
+  const env = String(process.env.STARNET_AGENT_ID || '').trim();
+  if (env && env !== seat) throw no('this run is ' + (co.nameOf(env) || env) + '\'s, not ' + row.from + '\'s: a seat ' + verb + 's only its own question');
+  const c = prov.callerConflict(co.ROOT, [verb, row.id], seat);
+  if (c) throw no('this command claims to be ' + row.from + ' but ran in another seat\'s run (' + (co.nameOf(c.agentId) || c.agentId) + ', ' + c.runId + '): a seat ' + verb + 's only its own question');
+  return seat;
+}
 const storedOf = v => Object.assign({ stored: String(v.stored), chars: Number(v.chars) || 0, validated: v.validated === true ? true : v.validated === false ? false : null }, v.validateError ? { validateError: String(v.validateError).slice(0, 200) } : {});
 function state() {
   const by = {};
@@ -824,6 +856,7 @@ function withdraw(o) {
   const who = String(o.by || '').trim(); const from = String(row.from || '').trim().toLowerCase();
   const asker = who && (who.toLowerCase() === from || who.split(/\s+/)[0].toLowerCase() === from.split(/\s+/)[0]);
   if (!asker && !isOwner(who)) { const e = new Error('only the asker (' + row.from + ') withdraws its own question'); e.code = 3; throw e; }
+  const seat = callerSeat(row, who, 'withdraw'); const so = seat ? { seat } : undefined;
   const why = String(o.why || '').replace(/\s+/g, ' ').trim().slice(0, 300); if (!why) throw new Error('--why is required: one plain line on why it is no longer needed');
   const at = new Date().toISOString();
   let part = o.part === undefined || o.part === null || o.part === true || o.part === '' ? null : String(o.part);
@@ -834,16 +867,16 @@ function withdraw(o) {
     if (row.parts && row.parts[part]) throw new Error('question ' + part + ' is already answered');
     if (row.withdrawn && row.withdrawn[part]) throw new Error('question ' + part + ' is already withdrawn');
   }
-  append(Object.assign({ type: 'withdraw', id, at, why, by: who }, part ? { part } : {}));
+  append(Object.assign({ type: 'withdraw', id, at, why, by: who }, part ? { part } : {}), so);
   if (!part) return { ok: true, id, state: 'withdrawn', why };
   // every question left answered (or withdrawn): the request is finished with the answers it has
   const now = state()[id]; const qo = questionsOf(now);
   const left = qo.questions.filter(p => !qo.done[p.id] && p.required !== false);
   if (!left.length) {
-    if (!qo.questions.some(p => qo.done[p.id])) { append({ type: 'withdraw', id, at, why: 'every question withdrawn: ' + why, by: who }); return { ok: true, id, part, state: 'withdrawn', why }; }
+    if (!qo.questions.some(p => qo.done[p.id])) { append({ type: 'withdraw', id, at, why: 'every question withdrawn: ' + why, by: who }, so); return { ok: true, id, part, state: 'withdrawn', why }; }
     const final = { verdict: 'parts', parts: {} };
     for (const p of now.questions) final.parts[p.id] = now.withdrawn && now.withdrawn[p.id] ? { withdrawn: true, why: now.withdrawn[p.id].why } : qo.done[p.id] ? Object.assign({}, qo.done[p.id].answer) : { skipped: true };
-    append({ type: 'answer', id, at, a: plainParts(qo.questions, qo.done), answer: final, by: 'Commander', closedBy: 'withdraw' });
+    append({ type: 'answer', id, at, a: plainParts(qo.questions, qo.done), answer: final, by: 'Commander', closedBy: 'withdraw' }, so);
     return { ok: true, id, part, state: 'answered', why };
   }
   return { ok: true, id, part, state: 'open', left: left.map(p => p.id), why };
@@ -855,6 +888,19 @@ function withdrawnSince(since) {
     const a = asks[r.id]; const p = r.part && (a.questions || []).find(x => x.id === r.part);
     return { id: r.id, part: r.part || null, from: a.from, by: r.by, why: r.why, at: r.at, message: p ? p.prompt : messageParts(a).message };
   }).reverse();
+}
+/* reclassify({id, note, by}) — the ASKER says its question is the company's to decide after all (who owns it in the note):
+ * it leaves the owner's list. Only the asker's own run (callerSeat), or the owner. */
+function reclassify(o) {
+  const id = String(o.id || ''); const row = state()[id];
+  if (!row || row.type !== 'ask' || row.a || row.reclassified || row.withdrawnAll) { const e = new Error('no open question ' + id); e.code = 4; throw e; }
+  const note = String(o.note || '').trim(); if (!note) throw new Error('--note is required (what the company decided and who owns it)');
+  const by = String(o.by || '').trim(); const from = String(row.from || '');
+  const asker = by && (by.toLowerCase() === from.toLowerCase() || by.split(/\s+/)[0].toLowerCase() === from.split(/\s+/)[0].toLowerCase());
+  if (!asker && !isOwner(by)) { const e = new Error('only the asker (' + row.from + ') reclassifies its own question'); e.code = 3; throw e; }
+  const seat = callerSeat(row, by, 'reclassify');
+  append({ type: 'reclassify', id, at: new Date().toISOString(), note, by }, seat ? { seat } : undefined);
+  return { ok: true, id, state: 'reclassified-company-owned', by, note };
 }
 /* snooze({id, until, by}) — hide an open question from Today until `until` (at most 30 days); the asker sees it in list. */
 function snooze(o) {
@@ -869,7 +915,7 @@ function snooze(o) {
 }
 function out(code, obj) { console.log(JSON.stringify(obj, null, 1)); process.exit(code); }
 
-module.exports = { withdraw, withdrawnSince, plainFieldKinds, secretOnly, storeOnlyAction, normalizeQuestions, decisionItems, inferQuestions, followUpOf, questionsOf, computeParts, answerParts, recordStored,
+module.exports = { withdraw, withdrawnSince, reclassify, callerSeat, plainFieldKinds, secretOnly, storeOnlyAction, normalizeQuestions, decisionItems, inferQuestions, followUpOf, questionsOf, computeParts, answerParts, recordStored,
   shellAsk, composerCheck, routeAdvice, asksForCredential, openQuestions, state, readAll, ask, answer, snooze, normalizeForm, expandKind, formOf, checkAnswer, plainAnswer, secretHint, sliderWords,
   messageParts, styleWarnings, safeSecretName, KINDS, FIELD_TYPES, VERDICTS, FILE, deliver, isOwner };
 
@@ -898,7 +944,7 @@ function selftest() {
     t('a jargon-dense message warns', jar.warnings.some(w => /reads like a report/.test(w)), jar.warnings);
     const good = ask({ from: 'Founder', message: 'Could you make us a free Pyth account and paste its API key? It lets us test our main idea about commodity prices. If you say no, that idea waits.', details: 'Pyth answers 401 without a key; 200 ms gold, 50 ms WTI.', kind: 'secret', spec: { name: 'pyth-api-key', label: 'Pyth API key', provider: 'pyth.network > Developers' } });
     t('a plain message with details: no warnings; q keeps both for old readers', good.warnings.length === 0 && /\n\nPyth answers 401/.test(good.row.q) && open(good.row.id).details.startsWith('Pyth'));
-    fs.appendFileSync(FILE(), JSON.stringify({ type: 'ask', id: 'q-000001', at: new Date().toISOString(), from: 'Founder', q: 'Old row. May we go?' }) + '\n');
+    require('./lib/pm-inbox-guard').append(FILE(), { type: 'ask', id: 'q-000001', at: new Date().toISOString(), from: 'Founder', q: 'Old row. May we go?' }, 'selftest');
     t('an old row with no kind reads as approve', open('q-000001').kind === 'approve' && open('q-000001').form.actions[0].verdict === 'yes' && !open('q-000001').secretHint);
     // shortcuts and validation
     t('unknown kind refused', /unknown --kind/.test(throws(() => ask({ message: 'x', kind: 'poll' }))));
@@ -1007,7 +1053,7 @@ function selftest() {
     t('a secret-only question is secretOnly (Store may close it)', secretOnly(open(sec.row.id) ? open(sec.row.id).form : normalizeForm(expandKind('secret', { name: 'x-key' }))));
     // the recovery: an untyped question closed by storing a key comes back once for the rest
     const stuck = ask({ from: 'Founder', q: 'Four patches are ready, all measured on copies.\n\n1. harness-change.js: carry the real diff.\n2. locked-watch.js: baseline symlinks.\n3. default-branch-watch.js: say 0 watched.\n4. dispatch.js: WAITING until a due date.', oneDecision: true });
-    fs.appendFileSync(FILE(), JSON.stringify({ type: 'answer', id: stuck.row.id, at: new Date().toISOString(), a: 'The key: stored at secrets/minimax-api-key (125 chars).', answer: { verdict: 'done', action: 'store-key', values: { key: { stored: 'secrets/minimax-api-key', chars: 125, validated: null } } }, by: 'Commander' }) + '\n');
+    require('./lib/pm-inbox-guard').append(FILE(), { type: 'answer', id: stuck.row.id, at: new Date().toISOString(), a: 'The key: stored at secrets/minimax-api-key (125 chars).', answer: { verdict: 'done', action: 'store-key', values: { key: { stored: 'secrets/minimax-api-key', chars: 125, validated: null } } }, by: 'Commander' }, 'selftest');
     const fu = open(stuck.row.id);
     t('recovery: the store-only answer re-opens the rest: 4 approve questions + the key already stored', fu && fu.followUp && /You stored the key; the rest of this request still needs you/.test(fu.followUp.note) && fu.questions.filter(p => p.kind === 'approve').length === 4 && fu.questions.find(p => p.kind === 'secret').answered && fu.progress.answered === 1, fu && fu.questions);
     r = answer({ id: stuck.row.id, by, parts: { 'item-1': { action: 'approve' }, 'item-2': { action: 'approve' }, 'item-3': { action: 'decline' } } });
@@ -1016,7 +1062,7 @@ function selftest() {
     t('recovery: finished, the record has every item and the key', r.state === 'answered' && r.answer.parts['item-3'].verdict === 'no' && r.answer.parts.key.values.key.stored === 'secrets/minimax-api-key', r.answer);
     t('recovery: never twice', !open(stuck.row.id) && !followUpOf(state()[stuck.row.id]));
     const kOnly = ask({ from: 'Founder', q: 'Gate 2: a free Pyth API key, please.' });
-    fs.appendFileSync(FILE(), JSON.stringify({ type: 'answer', id: kOnly.row.id, at: new Date().toISOString(), a: 'stored', answer: { verdict: 'done', action: 'store-key', values: { key: { stored: 'secrets/pyth-api-key', chars: 30 } } }, by: 'Commander' }) + '\n');
+    require('./lib/pm-inbox-guard').append(FILE(), { type: 'answer', id: kOnly.row.id, at: new Date().toISOString(), a: 'stored', answer: { verdict: 'done', action: 'store-key', values: { key: { stored: 'secrets/pyth-api-key', chars: 30 } } }, by: 'Commander' }, 'selftest');
     t('recovery: a key-only question answered by its key stays answered', !open(kOnly.row.id));
     // snooze
     const sz = ask({ from: 'Founder', message: 'Later is fine.' });
@@ -1106,9 +1152,7 @@ if (a.cmd === 'list') {
 if (a.cmd === 'reclassify') {
   const id = String(a.id || ''); if (!id) out(2, { ok: false, error: '--id is required' });
   const note = String(a.note || '').trim(); if (!note) out(2, { ok: false, error: '--note is required (what the company decided and who owns it)' });
-  const by = String(a.by || 'unknown');
-  append({ type: 'reclassify', id, at: new Date().toISOString(), note, by });
-  out(0, { ok: true, id, state: 'reclassified-company-owned', by, note });
+  try { out(0, reclassify({ id, note, by: a.by || a.from })); } catch (e) { out(e.code === 3 ? 3 : e.code === 4 ? 4 : 2, { ok: false, error: e.message }); }
 }
 if (a.cmd === 'snooze') {
   { const why = ownerRefusal(a.by, 'inbox.js snooze'); if (why) out(3, { ok: false, error: why }); }
