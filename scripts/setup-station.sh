@@ -73,7 +73,9 @@ for d in company/patches/[0-9][0-9][0-9][0-9]-*.diff; do
     [[ -e "$req" ]] || printf '# Framework change request: StarNet patch %s\n\nThe crew wrote this StarNet patch inside the company. Patches change the shared engine, so they are applied only from the framework. Forward it to the framework; it reaches this company with the next update.\n\nFile: `%s`\n' "$(basename "$d")" "$d" > "$req"
     echo "skip $(basename "$d") (written in this company, not by the framework: see $req)"; continue
   fi
-  if git -C starnet apply --3way --whitespace=nowarn "../$d"; then
+  # --3way needs the checkout's index to match its files; a record applied earlier without it (git's "falling back to
+  # direct application") leaves them apart, so a later record on the same file is retried as a plain apply
+  if git -C starnet apply --3way --whitespace=nowarn "../$d" || git -C starnet apply --whitespace=nowarn "../$d"; then
     date -Is > "$mark"; echo "applied $(basename "$d")"
   else
     echo "FAILED to apply $(basename "$d"); fix by hand, then: date -Is > $mark" >&2

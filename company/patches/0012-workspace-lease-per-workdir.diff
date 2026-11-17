@@ -1,54 +1,265 @@
-# 0012-workspace-lease-per-workdir.diff — two runs of one agent may write in two DIFFERENT project folders at once.
-# Status: NOT APPLIED — a proposal for Sprint lanes (docs/TEMPO.md "Sprint", "Parallel lanes"). setup-station.sh skips it.
-#
-# Why: StarNet admits a second run of an agent (sidecar/concurrency.js counts distinct agents; a second run of an
-# admitted agent takes no slot) and leases one run per ROUTINE (cron-driver leases), so a lane would be a separate run
-# (POST /api/run with its own streamId and projectRoot). But every workspace-mutating tool call (fs.write/append/edit/
-# patch, EVERY shell.* and verify.* call, terminal.start/write: index.js mutatesWorkspace) first takes
-# sidecar/workspace-lease.js keyed on the agent id ALONE, held until the run ends. The second run's first shell call
-# waits 45 s (WORKSPACE_LEASE_WAIT_MS) and then fails "workspace busy". CaPheOS seats work through the shell, so a
-# second lane would spend tokens and get nothing done. Proven offline by company/tools/tests/sprint.test.js (it loads
-# the station's own modules from a checkout: STARNET_DIR=… node --test company/tools/tests/sprint.test.js).
-#
-# What it changes (smallest): the lease key becomes agentId + the run's projectRoot when the run has one (a blessed
-# folder, e.g. one git worktree per lane); a run without a projectRoot keeps the per-agent key, so nothing else changes.
-# Runs in the same folder still have one writer at a time.
-# Known gap: the shadow-git checkpoint store stays per agent (WORKSPACES/.checkpoints/<agentId>/). Checkpoints are
-# fail-open, so two lanes snapshotting at the same moment can miss a snapshot (a git index.lock clash), never corrupt
-# a run. A follow-up should key the store by folder too before lanes are relied on for rollback.
-# Also needed on the CaPheOS side before lanes run: the lane launcher in dispatch.js (one /api/run per lane, its own
-# worktree, the handoff it owns named in the prompt, lib/sprint.js makePathLock around it). Until then dispatch.js
-# keeps every seat at one lane and says why (Crew, sprint status).
+# 0012 — two runs of one agent may write in two DIFFERENT project folders at once (CaPheOS Sprint lanes).
+# Status: APPLIED by setup-station.sh
+# Why: StarNet admits a second run of an agent (sidecar/concurrency.js counts distinct agents) and leases one run per
+# ROUTINE, so a Sprint lane is its own run in its own folder (docs/TEMPO.md "Parallel lanes"). But every workspace-mutating
+# tool call (fs.write/append/edit/patch, every shell.* and verify.* call, terminal.start/write: index.js mutatesWorkspace)
+# took sidecar/workspace-lease.js keyed on the agent id ALONE, held until the run ends: the second run's first shell call
+# waited 45 s (WORKSPACE_LEASE_WAIT_MS) and failed "workspace busy", so a lane spent tokens and did nothing.
+# What it changes: the lease key is agentId + the run's resolved project folder (o.projectRoot: a routine's workdir as the
+# station canonicalised it, or a blessed /api/run projectRoot; realpath'd once per run so acquire and release always use
+# the same key). Runs in different folders no longer wait on each other; two runs in the SAME folder, and runs with no
+# folder, share one key exactly as before. Agent-wide operations (checkpoint restore, POST /api/autonomy/write, delete)
+# still exclude every run of the agent: they take the agent's own key and refuse "workspace busy" while any folder lease of
+# that agent is held, and a folder write that starts during one answers busy (retryable). GET /api/version gains
+# `capabilities: ["workspace-lease-per-folder"]`, the marker company/tools/lanes.js probes before it starts a lane.
+# Test: test/e2e.workspace-lease-per-folder.test.js boots the real sidecar and drives two runs of one agent (different
+# folders: B writes while A is live; same folder: B is refused busy; the autonomy write is refused while A holds a folder;
+# the version marker). It fails 4 of 14 without this patch. test/e2e.workspace-lease.test.js, workspace-lease.test.js and
+# agent-lifecycle.test.js are unchanged and pass.
+# Known gap: the checkpoint index (WORKSPACES/.checkpoints/<agentId>/index.json) stays per agent; each folder already has
+# its own shadow git dir (roots/<scope>), and checkpoints are fail-open, so two lanes snapshotting at the same instant can
+# lose one index entry, never corrupt a run.
 # Apply: git -C starnet apply --3way ../company/patches/0012-workspace-lease-per-workdir.diff, then restart the station.
 # Revert: git -C starnet apply -R ../company/patches/0012-workspace-lease-per-workdir.diff
+diff --git a/sidecar/index.js b/sidecar/index.js
+index 7c046ead..0fa74620 100644
 --- a/sidecar/index.js
 +++ b/sidecar/index.js
-@@ -11555,6 +11555,10 @@
+@@ -11555,8 +11555,50 @@ const workspaceLease = makeWorkspaceLease(Object.assign(
    { now: () => Date.now() },
    (_leaseWaitMs >= 0 && isFinite(_leaseWaitMs)) ? { waitMs: Math.floor(_leaseWaitMs) } : {}
  ));
-+// patch 0012 (CaPheOS lanes): a run with its own blessed project folder (projectRoot, e.g. a git worktree per lane) leases
-+// that folder, not the agent's whole workspace, so two runs of one agent in two different folders do not wait on each
-+// other; a run without one keeps the old per-agent key. Runs in the SAME folder still have one writer at a time.
-+function workspaceLeaseKey(agentId, projectRoot) { const r = String(projectRoot || '').trim(); return r ? String(agentId) + '\u0000' + r : String(agentId); }
++// patch 0012 (CaPheOS lanes): a run with a project folder (projectRoot: a routine's workdir, or a blessed /api/run root)
++// leases agent + that folder (realpath'd once per run), not the agent alone, so two runs of one agent in two different
++// folders do not wait on each other; two runs in the SAME folder, and runs with no folder, share a key exactly as before.
++// Agent-wide operations (checkpoint restore, the autonomy write, delete) still exclude every run of the agent: they take
++// the agent's own key and also refuse while any folder lease of it is held; a folder write during one answers busy.
++const WORKSPACE_LEASE_CAPABILITY = 'workspace-lease-per-folder';   // GET /api/version capabilities (CaPheOS probes it)
++const runLeaseKeys = new Map();      // runId -> the lease key this run uses (one value for its acquire and its release)
++const folderLeaseRuns = new Map();   // agentId -> Map(runId -> since) of folder leases held now
++const agentWideOps = new Set();      // agentIds with an agent-wide operation in progress
++function workspaceLeaseKey(agentId, projectRoot) {
++  const raw = String(projectRoot || '').trim();
++  if (!raw) return String(agentId);
++  let root = path.resolve(raw); try { root = fs.realpathSync(root); } catch (_) {}
++  return String(agentId) + '\u0000' + (path.sep === '\\' ? root.toLowerCase() : root);
++}
++async function acquireRunLease(agentId, runId, projectRoot) {
++  let k = runLeaseKeys.get(runId);
++  if (!k) { k = workspaceLeaseKey(agentId, projectRoot); runLeaseKeys.set(runId, k); }
++  if (k === String(agentId)) return workspaceLease.acquire(k, runId);
++  const held = folderLeaseRuns.get(String(agentId));
++  if (agentWideOps.has(String(agentId)) && !(held && held.has(runId))) return { ok: false, timedOut: true, holder: workspaceLease.holderOf(agentId) };
++  const got = await workspaceLease.acquire(k, runId);
++  if (got.ok && agentWideOps.has(String(agentId)) && !(held && held.has(runId))) { workspaceLease.release(k, runId); return { ok: false, timedOut: true, holder: workspaceLease.holderOf(agentId) }; }   // one began while this waited
++  if (got.ok) { const m = folderLeaseRuns.get(String(agentId)) || new Map(); if (!m.has(runId)) m.set(runId, Date.now()); folderLeaseRuns.set(String(agentId), m); }
++  return got;
++}
++function releaseRunLease(agentId, runId) {
++  const k = runLeaseKeys.get(runId) || String(agentId); runLeaseKeys.delete(runId);
++  const m = folderLeaseRuns.get(String(agentId)); if (m) { m.delete(runId); if (!m.size) folderLeaseRuns.delete(String(agentId)); }
++  workspaceLease.release(k, runId);
++}
++const agentWideLease = {
++  async acquire(agentId, op) {
++    const got = await workspaceLease.acquire(agentId, op);
++    if (!got.ok) return got;
++    const m = folderLeaseRuns.get(String(agentId));
++    if (m && m.size) { workspaceLease.release(agentId, op); const [runId, since] = m.entries().next().value; return { ok: false, timedOut: true, holder: { runId, since } }; }
++    agentWideOps.add(String(agentId));
++    return got;
++  },
++  release(agentId, op) { if ((workspaceLease.holderOf(agentId) || {}).runId === String(op)) agentWideOps.delete(String(agentId)); workspaceLease.release(agentId, op); }
++};
  const agentLifecycle = makeAgentLifecycle({
-   workspaceLease,
+-  workspaceLease,
++  workspaceLease: agentWideLease,
    isActive: (agentId) => concurrencyGate.inFlight(agentId) > 0
-@@ -24849,7 +24853,7 @@
+ });
+ // NAME IS LOAD-BEARING: a second module-scope `function runGit(root, args, timeoutMs)` (the night-shift /
+@@ -24853,7 +24895,7 @@ async function runOnceCore(o) {
      // (bounded, visible as its in-flight agent.tool_call), then fails truthfully naming the holder. Re-entrant:
      // the holding run's later tools never re-wait.
      if (mutatesWorkspace(c.name)) {
 -      const lease = await workspaceLease.acquire(agentId, runId);
-+      const lease = await workspaceLease.acquire(workspaceLeaseKey(agentId, o.projectRoot), runId);   // patch 0012: one writer per agent AND folder
++      const lease = await acquireRunLease(agentId, runId, o.projectRoot);   // patch 0012: one writer per agent AND folder
        if (!lease.ok) {
          let holderNote = 'another live run of this agent holds the workspace.';
          try {
-@@ -26796,7 +26800,7 @@
+@@ -26800,7 +26842,7 @@ async function runOnceCore(o) {
      if (runComputer?.close) { try { await runComputer.close(); } catch (_) { failNote('computer.run.close', 'Native run cleanup failed'); } }
      computerRuns.delete(runComputer);
      concurrencyGate.leave(agentId);   // release the admission slot on EVERY exit (normal, early-return, or throw)
 -    workspaceLease.release(agentId, runId);   // free (or withdraw the queued wait for) this run's workspace lease — same guarantee
-+    workspaceLease.release(workspaceLeaseKey(agentId, o.projectRoot), runId);   // free (or withdraw the queued wait for) this run's workspace lease — same guarantee
++    releaseRunLease(agentId, runId);   // free (or withdraw the queued wait for) this run's workspace lease — same guarantee (patch 0012)
  
    }
  }
+@@ -27821,7 +27863,7 @@ function computeVersionSurface() {
+ async function handleVersion(req, res) {
+   // only the boot's first describe attempt is waited for, at most apiWaitMs (well inside the CLI's 5 s attach probe)
+   await versionSource.settled(versionSource.limits.apiWaitMs);
+-  const out = computeVersionSurface();
++  const out = Object.assign({}, computeVersionSurface(), { capabilities: [WORKSPACE_LEASE_CAPABILITY] });   // patch 0012
+   res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+   res.end(JSON.stringify(out));
+ }
+diff --git a/test/e2e.workspace-lease-per-folder.test.js b/test/e2e.workspace-lease-per-folder.test.js
+new file mode 100644
+index 00000000..82cafbe4
+--- /dev/null
++++ b/test/e2e.workspace-lease-per-folder.test.js
+@@ -0,0 +1,153 @@
++/* node test/e2e.workspace-lease-per-folder.test.js — CaPheOS patch 0012, end to end: boot the ACTUAL sidecar and drive two
++   runs of ONE agent whose (mocked) model calls fs_write, each run in a blessed project folder (projectRoot).
++     1. DIFFERENT FOLDERS: run A takes its folder's lease and stays live on a held final turn; run B, in another folder,
++        writes at once (no wait, no workspace-busy) while A is still live. Both files land, each in its own folder.
++     2. SAME FOLDER (STARNET_WORKSPACE_LEASE_WAIT_MS=250): B's write in A's folder is refused workspace-busy and does not
++        land, exactly as two runs of one agent were serialised before the patch.
++     3. AGENT-WIDE OPERATIONS still exclude a run in a folder: POST /api/autonomy/write for the agent answers 409
++        "workspace busy" while A holds its folder lease, and succeeds once A has ended.
++     4. GET /api/version names the capability ("workspace-lease-per-folder") that CaPheOS lanes probe for.
++   No real key, no network. */
++'use strict';
++const A = require('./_assert.js');
++const http = require('http');
++const path = require('path');
++const os = require('os');
++const fs = require('fs');
++const { spawn } = require('child_process');
++const { bootToken } = require('./_httpToken.js');
++const { userWords } = require('./helpers/host-notes.js');
++const { allocatePort, BIND_REFUSED } = require('./helpers/ports.js');
++const HOST = '127.0.0.1';
++const INDEX = path.resolve(__dirname, '..', 'sidecar', 'index.js');
++const TOKEN = 'lease-per-folder-test-token';
++
++// mock OpenRouter (the same three turns as e2e.workspace-lease.test.js): brief_proceed, fs_write, final text (held on SLOWFINISH)
++function startMockOpenRouter() {
++  const requests = []; const held = new Map();
++  return new Promise((resolve) => {
++    const server = http.createServer((req, res) => {
++      if (req.url.indexOf('/models') >= 0) {
++        res.writeHead(200, { 'Content-Type': 'application/json' });
++        res.end(JSON.stringify({ data: [{ id: 'test/model', context_length: 8000, pricing: { prompt: '0', completion: '0' }, supported_parameters: ['tools'] }] }));
++        return;
++      }
++      if (req.url.indexOf('/chat/completions') >= 0) {
++        let body = ''; req.on('data', d => { body += d; }); req.on('end', () => {
++          let msgs = []; try { msgs = (JSON.parse(body).messages) || []; } catch (_) {}
++          requests.push(msgs);
++          const toolResults = msgs.filter(m => m && m.role === 'tool').length;
++          const lastUser = [...msgs].reverse().find(m => m && m.role === 'user');
++          const directive = lastUser ? userWords(lastUser) : '';
++          const m = /WRITE\s+(\S+)/.exec(directive);
++          res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
++          const toolTurn = (id, name, args) => {
++            res.write('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }] }) + '\n\n');
++            res.write('data: ' + JSON.stringify({ choices: [{ finish_reason: 'tool_calls', delta: {} }], usage: { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12 } }) + '\n\n');
++            res.write('data: [DONE]\n\n'); res.end();
++          };
++          if (toolResults === 0 && m) { toolTurn('p1', 'brief_proceed', { objective: 'write the requested file' }); return; }
++          if (toolResults === 1 && m) { toolTurn('w1', 'fs_write', { path: m[1], content: 'payload of ' + m[1] }); return; }
++          const finish = () => {
++            res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: 'work complete' } }] }) + '\n\n');
++            res.write('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12 } }) + '\n\n');
++            res.write('data: [DONE]\n\n'); res.end();
++          };
++          if (directive.indexOf('SLOWFINISH') >= 0 && m) held.set(m[1], finish); else finish();
++        });
++        return;
++      }
++      res.writeHead(404); res.end();
++    });
++    server.listen(0, HOST, () => resolve({ server, requests, held,
++      release(name) { const finish = held.get(name); held.delete(name); if (finish) finish(); },
++      base: 'http://' + HOST + ':' + server.address().port + '/api/v1' }));
++  });
++}
++
++function boot(port, env, attemptsLeft) {
++  return new Promise((resolve, reject) => {
++    const child = spawn(process.execPath, [INDEX], { env: Object.assign({}, process.env, env, { SKYNET_PORT: String(port) }), stdio: ['ignore', 'pipe', 'pipe'] });
++    let out = '', settled = false;
++    const onData = d => {
++      out += d.toString();
++      if (!settled && out.indexOf('http://' + HOST + ':' + port) >= 0) { settled = true; resolve({ child, port }); }
++      else if (!settled && BIND_REFUSED.test(out)) { settled = true; try { child.kill(); } catch (_) {} if (attemptsLeft > 0) resolve(allocatePort().then(next => boot(next, env, attemptsLeft - 1))); else reject(new Error('no free port')); }
++    };
++    child.stdout.on('data', onData); child.stderr.on('data', onData);
++    child.on('error', e => { if (!settled) { settled = true; reject(e); } });
++    child.on('close', code => { if (!settled) { settled = true; reject(new Error('sidecar exited before it was up (' + code + ')' + ':\n' + out)); } });
++    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout:\n' + out)); } }, 30000).unref();
++  });
++}
++
++const H = (token, B) => ({ 'Content-Type': 'application/json', 'X-StarNet-Token': token, Origin: B });
++async function bless(B, token, dir) {
++  const r = await fetch(B + '/api/projects/bless', { method: 'POST', headers: H(token, B), body: JSON.stringify({ path: dir }) });
++  const j = await r.json().catch(() => ({}));
++  if (!j.ok) throw new Error('bless ' + dir + ' failed: ' + JSON.stringify(j));
++}
++async function driveRun(B, token, agentId, text, streamId, projectRoot) {
++  const res = await fetch(B + '/api/run', { method: 'POST', headers: H(token, B),
++    body: JSON.stringify({ key: 'sk-or-v1-fake', model: 'test/model', agentId, streamId, isTask: true, placed: ['cabinet'], projectRoot, messages: [{ role: 'user', content: text }] }) });
++  return res.text();
++}
++const endsOf = raw => raw.split('\n').map(l => l.trim()).filter(Boolean).map(l => { try { return JSON.parse(l); } catch (_) { return null; } })
++  .filter(e => e && e.name === 'agent.run.end').map(e => e.payload.reason);
++async function untilReady(check, label) {
++  const deadline = Date.now() + 15000;
++  while (!check()) { if (Date.now() >= deadline) throw new Error('timed out waiting for ' + label); await new Promise(r => setTimeout(r, 20)); }
++}
++const dir = name => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), name)));
++
++(async () => {
++  const mock = await startMockOpenRouter();
++  async function station(extraEnv, fn) {
++    const ws = dir('wlease-pf-ws-');
++    const env = Object.assign({ SKYNET_WORKSPACES: ws, SKYNET_OPENROUTER_BASE: mock.base, SKYNET_FULL_ACCESS: '1', STARNET_API_TOKEN: TOKEN }, extraEnv);
++    const { child, port } = await boot(await allocatePort(), env, 25);
++    const B = 'http://' + HOST + ':' + port;
++    try { const token = (await bootToken(B, B)) || TOKEN; await fn(B, token, ws); } finally { try { child.kill(); } catch (_) {} }
++  }
++
++  // ===== 1 + 3 + 4: different folders run at once; an agent-wide operation still waits for a folder run =====
++  await station({}, async (B, token) => {
++    const ver = await (await fetch(B + '/api/version', { headers: H(token, B) })).json();
++    A.ok(Array.isArray(ver.capabilities) && ver.capabilities.includes('workspace-lease-per-folder'), 'GET /api/version names the workspace-lease-per-folder capability');
++    const X = dir('wlease-pf-x-'), Y = dir('wlease-pf-y-');
++    await bless(B, token, X); await bless(B, token, Y);
++    const pA = driveRun(B, token, 'lane-agent', 'WRITE a.txt SLOWFINISH', 'sess-a', X);
++    await untilReady(() => mock.held.has('a.txt') && fs.existsSync(path.join(X, 'a.txt')), 'A holds the lease of folder X');
++    const t0 = Date.now();
++    const aw = await fetch(B + '/api/autonomy/write', { method: 'POST', headers: H(token, B), body: JSON.stringify({ agentId: 'lane-agent', path: 'drafts/x.md', content: 'x' }) });
++    A.eq(aw.status, 409, 'an agent-wide operation (autonomy write) is refused while a run of the agent holds a folder lease');
++    const rawB = await driveRun(B, token, 'lane-agent', 'WRITE b.txt', 'sess-b', Y);   // A is still live and held
++    A.ok(mock.held.has('a.txt'), 'run A was still live while run B ran');
++    A.eq(endsOf(rawB)[0], 'done', 'scenario 1: run B (other folder) completed clean while A was live');
++    A.ok(rawB.indexOf('workspace-busy') < 0 && rawB.indexOf('workspace busy') < 0, 'scenario 1: B never saw workspace busy');
++    A.ok(Date.now() - t0 < 30000, 'scenario 1: B did not wait for the 45 s lease timeout');
++    A.ok(fs.existsSync(path.join(Y, 'b.txt')), 'scenario 1: B\'s file landed in folder Y while A was live');
++    mock.release('a.txt');
++    A.eq(endsOf(await pA)[0], 'done', 'scenario 1: run A completed clean');
++    A.ok(fs.existsSync(path.join(X, 'a.txt')) && !fs.existsSync(path.join(X, 'b.txt')) && !fs.existsSync(path.join(Y, 'a.txt')), 'scenario 1: each file is in its own folder');
++    const aw2 = await fetch(B + '/api/autonomy/write', { method: 'POST', headers: H(token, B), body: JSON.stringify({ agentId: 'lane-agent', path: 'drafts/x.md', content: 'x' }) });
++    A.ok(aw2.status !== 409, 'the agent-wide operation is no longer refused as busy once the folder run ended (HTTP ' + aw2.status + ')');
++  });
++
++  // ===== 2: the SAME folder stays serialised (bounded refusal, as before the patch) =====
++  await station({ STARNET_WORKSPACE_LEASE_WAIT_MS: '250' }, async (B, token) => {
++    const X = dir('wlease-pf-same-');
++    await bless(B, token, X);
++    const pA = driveRun(B, token, 'lane-agent', 'WRITE a2.txt SLOWFINISH', 'sess-a2', X);
++    await untilReady(() => mock.held.has('a2.txt') && fs.existsSync(path.join(X, 'a2.txt')), 'A2 holds the lease of folder X');
++    const rawB = await driveRun(B, token, 'lane-agent', 'WRITE b2.txt', 'sess-b2', X);
++    mock.release('a2.txt');
++    A.eq(endsOf(await pA)[0], 'done', 'scenario 2: the lease holder completed clean');
++    A.eq(endsOf(rawB)[0], 'done', 'scenario 2: the refused run still completed clean (tool error, not run error)');
++    A.ok(rawB.indexOf('workspace-busy') >= 0, 'scenario 2: B in the SAME folder got the truthful workspace-busy refusal');
++    A.ok(!fs.existsSync(path.join(X, 'b2.txt')), 'scenario 2: the refused write did NOT land');
++  });
++
++  try { mock.server.close(); } catch (_) {}
++  A.report('e2e.workspace-lease-per-folder.test');
++})().catch(e => { console.error(e); process.exit(1); });

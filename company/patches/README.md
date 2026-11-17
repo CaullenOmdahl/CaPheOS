@@ -5,8 +5,8 @@ CaPheOS runs on an unmodified StarNet checkout at `./starnet` plus the small, re
 and revert it. A change to StarNet's own code that is not recorded here is lost on the next StarNet update, so every
 change gets a record.
 
-`scripts/setup-station.sh` applies the records in number order with `git -C starnet apply --3way <record>`, skipping
-any that are optional. After applying, restart the station.
+`scripts/setup-station.sh` applies the records in number order with `git -C starnet apply --3way <record>` (a plain
+`git apply` when the checkout's index no longer matches its files), skipping any that are optional. After applying, restart the station.
 
 | Record | What it does | Applied by default |
 |---|---|---|
@@ -19,7 +19,7 @@ any that are optional. After applying, restart the station.
 | `0009-runtime-time-and-zone.diff` | the per-run runtime line gives agents date, time, IANA zone and UTC offset at run start (not just the date), and says to run `date` for the time now; zone = station TZ from company.json | yes |
 | `0010-headless-station.diff` | with `STARNET_HEADLESS=1` (written by setup-station.sh) the engine serves no station page (410 on every non-API path); the CaPheOS console is the UI and every `/api` route is unchanged | yes |
 | `0011-artifact-needs-steps.diff` | an artifact-contract quest closes on its file only once every step is ticked (a README written on day one no longer closes the whole quest) | yes |
-| `0012-workspace-lease-per-workdir.diff` | two runs of one agent may write in two different project folders at once (the workspace lease is keyed by agent + project folder); the StarNet half of Sprint lanes (docs/TEMPO.md) | **no**, a proposal: see its header |
+| `0012-workspace-lease-per-workdir.diff` | two runs of one agent may write in two different project folders at once (the workspace lease is keyed by agent + the run's resolved project folder; the same folder stays one writer at a time; agent-wide operations still wait for every run); `GET /api/version` lists `capabilities: ["workspace-lease-per-folder"]`. The StarNet half of Sprint lanes (docs/TEMPO.md, company/tools/lanes.js) | yes |
 
 Numbers 0003 and 0006 are missing on purpose: they were art overlays specific to the company CaPheOS was extracted
 from, and were not carried over. Keep the gaps; new records take the next free number.
