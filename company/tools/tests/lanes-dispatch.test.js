@@ -170,6 +170,31 @@ test('a lane is its own run: the seat\'s agent and current model, its own worktr
   assert.ok(!/Lane sam/.test(flagged), flagged.slice(0, 400));
 });
 
+test('a lane run the model refused is re-run once on the seat\'s next model, the same item; refused again, it is said plainly and goes back to the main loop', async () => {
+  const c = await company({ handoffs: SAM2, hold: ['Lane '] });
+  c.w('company/model-policy.json', { seats: { sam: { chain: [{ provider: 'claude-cli', model: 'claude-sonnet-5-5' }, { provider: 'deepseek', model: 'deepseek-flash' }] } } });
+  await st('POST', '/api/cron/update', { id: c.ids.sam, patch: { model: 'claude-sonnet-5-5' } });
+  c.tick();
+  const lane = c.lanes().lanes[0]; assert.ok(lane && lane.runId);
+  const runsF = path.join(c.T, '.starnet-data', 'workspaces', 'runs.jsonl');
+  const refuse = (runId, provider, model) => fs.appendFileSync(runsF, JSON.stringify({ runId, cronJobId: 'x', agentId: 'sam', provider, model, outcome: 'refused', failureCode: 'content_policy_blocked', reason: 'refused', startedAt: Date.now() - 60000, endedAt: Date.now() }) + '\n');
+  refuse(lane.runId, 'claude-cli', 'claude-sonnet-5-5');
+  await st('POST', '/__finish', { id: lane.jobId, status: 'error' });
+  await c.lastRun('sam', 1);
+  const r2 = c.tick();
+  const now = c.lanes().lanes.find(l => l.id === 'sam/1');
+  assert.ok(now && now.runId !== lane.runId && now.retryOf === lane.runId && now.provider !== 'claude-cli' && now.heading === lane.heading, r2.log.slice(-800));
+  assert.match(r2.log, /LANE RETRY sam\/1: Claude declined this; DeepSeek takes the lane instead/); assert.equal(now.provider, 'deepseek');
+  assert.match(c.r('company/state/model-moves.jsonl'), /"direction":"refusal".*"door":"lane"|"door":"lane".*"direction":"refusal"/);
+  // the retry is refused too: no third run, said plainly, the item goes back to the main loop
+  refuse(now.runId, now.provider, now.model);
+  await st('POST', '/__finish', { id: now.jobId, status: 'error' });
+  const r3 = c.tick();
+  assert.ok(!c.lanes().lanes.some(l => l.id === 'sam/1'), r3.log.slice(-600));
+  assert.match(r3.log, /LANE REFUSED sam\/1: \S+ declined it too after a retry; the item goes back to the seat's main loop/);
+  assert.equal(r3.laneCreates.length, 0);
+});
+
 test('a writer\'s lane works in a scratch folder (its own project root); a DONE without commits closes the item', async () => {
   const c = await company({ handoffs: { 'to-kim.md': block('draft the guide', 'docs/guide.md') + block('draft the FAQ', 'company/work/faq.md') }, hold: ['Lane '] });
   const r = c.tick();

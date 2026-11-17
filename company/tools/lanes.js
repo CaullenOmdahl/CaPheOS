@@ -40,6 +40,7 @@ const co = require('./lib/company');
 const SP = require('./lib/sprint');
 const A = require('./lib/admit');
 const SCHED = require('./lib/scheduler');
+const REF = require('./lib/refusal');
 
 const CAPABILITY = 'workspace-lease-per-folder';
 const HOOK_TIMEOUT_MS = 60000;
@@ -253,6 +254,38 @@ async function finish(st, lane, how, ctx) {
   if (ctx && ctx.state && ctx.state.sprintSig) delete ctx.state.sprintSig[lane.seat];   // the seat's main loop sees the result at its next tick
   say('LANE END ' + lane.id + ' (' + name + ', "' + lane.heading.slice(0, 80) + '"): ' + outcome + (commits ? ', ' + commits + ' commit(s) on ' + lane.branch : ''));
 }
+/* a lane run the model refused (lib/refusal.js, owner ruling): the lane is re-run ONCE on the seat's next model, the same
+ * item and folder; a retry refused again, or no other model in the chain, is said plainly and the item goes back to the
+ * seat's main loop */
+function runRecord(runId) {
+  try {
+    for (const l of require('./lib/bounded').tailLines(rel('.starnet-data', 'workspaces', 'runs.jsonl'), 400).reverse()) {
+      if (!l.includes(runId)) continue; let r; try { r = JSON.parse(l); } catch (_) { continue; }
+      if (r && r.runId === runId) return r;
+    }
+  } catch (_) {}
+  return null;
+}
+async function refused(st, lane, jobs, ctx) {
+  const say = (ctx && ctx.log) || (() => {});
+  const from = { provider: lane.provider, model: lane.model };
+  const next = lane.retryOf ? null : REF.nextEntry(lane.seat, from, lane.tried || []);
+  await finish(st, lane, { why: next ? 'refused' : 'refused by every model' }, ctx);
+  if (!next) { say('LANE REFUSED ' + lane.id + ': ' + (lane.retryOf ? REF.pname(lane.provider) + ' declined it too after a retry' : REF.plainLine(from, null)) + '; the item goes back to the seat\'s main loop'); REF.record({ root: S.root(), seat: lane.seat, door: 'lane', runId: lane.runId, from, to: null }); return; }
+  const c = (co.crew() || {})[lane.seat] || {};
+  const loop = (jobs || []).filter(x => x && c.loop && (x.name === c.loop || String(x.name).startsWith(c.loop)))[0] || { agentId: lane.seat };
+  const sec = sections(inboxPath(lane.inbox)).parts.find(x => x.startsWith('## ') && x.split('\n')[0].slice(3).trim() === lane.heading) || '';
+  const n = lane.n, laneId = lane.id;
+  try {
+    const lock = SP.makePathLock(lockFile()).acquire(laneId, lane.touches);
+    if (lock && lock.ok === false) throw new Error('its paths are held by another lane');
+    const r = await start({ id: lane.seat, n, laneId, c, job: Object.assign({}, loop, { model: next.model, provider: next.provider }), it: { heading: lane.heading, text: sec, touches: lane.touches }, cfg: { timeoutMin: lane.timeoutMin } });
+    r.retryOf = lane.runId; r.tried = [REF.keyOf(from)];
+    st.lanes.push(r);
+    REF.record({ root: S.root(), seat: lane.seat, door: 'lane', runId: lane.runId, retryRunId: r.runId, from, to: next });
+    say('LANE RETRY ' + laneId + ': ' + REF.plainLine(from, next).replace('answered instead.', 'takes the lane instead') + ' (run ' + String(r.runId || '?').slice(0, 12) + ')');
+  } catch (e) { try { SP.makePathLock(lockFile()).release(laneId); } catch (_) {} say('LANE RETRY ' + laneId + ' could not start: ' + String(e.message).slice(0, 160) + '; the item goes back to the seat\'s main loop'); }
+}
 /* reconcile(): every live lane is checked against the station; finished, timed-out and (hard halt) cut-off lanes end */
 async function reconcile(st, jobs, ctx) {
   const now = S.now(); const hard = co.halted() === 'hard';
@@ -262,6 +295,7 @@ async function reconcile(st, jobs, ctx) {
     const ranAfter = job && job.lastRunAt && Date.parse(job.lastRunAt) >= Date.parse(lane.firedAt) - 2000;
     const ended = !job || (!live && (ranAfter || (lane.runId && job.lastRunId === lane.runId)));
     if (hard && !ended) await finish(st, lane, { why: 'halt', cancel: true }, ctx);
+    else if (ended && lane.runId && REF.isRefusal(runRecord(lane.runId) || {})) await refused(st, lane, jobs, ctx);
     else if (ended) await finish(st, lane, { why: 'ended' }, ctx);
     else if (now - Date.parse(lane.startedAt) > lane.timeoutMin * 60000) await finish(st, lane, { why: 'timeout', cancel: true }, ctx);
     else if (!live && now - Date.parse(lane.firedAt) > 3 * 60000) await finish(st, lane, { why: 'lost', cancel: true }, ctx);
