@@ -102,7 +102,7 @@ const MANIFEST = [
   { p: 'company/work/finance/pacing-policy.json', cls: 'F', writers: ['pacer.js'], owner: 'finance', area: 'policy', why: 'usage pacing numbers (the subscription cutoffs only through pacer.js limit / mode, or a reviewed harness change)' },
   { p: 'company/work/finance/dispatch-budget.json', cls: 'F', owner: 'finance', area: 'policy', why: 'the daily spending cap' },
   { p: 'company/work/finance/today-budget.json', cls: 'F', writers: ['money-hold.js'], owner: 'finance', area: 'policy', why: 'the owner\'s answer to a money hold, for one day: today\'s metered budget (only through money-hold.js set, which the dispatcher runs for an answer on Today)' },
-  { p: 'company/model-policy.json', cls: 'F', owner: 'people', area: 'policy', why: 'allowed models, the routing table and performance thresholds' },
+  { p: 'company/model-policy.json', cls: 'F', writers: ['models.js', 'hire.js'], owner: 'people', area: 'policy', why: 'allowed models, the routing table and performance thresholds' },
   { p: 'company/competence-policy.json', cls: 'F', owner: 'people', area: 'policy', why: 'how competence is scored' },
   { p: 'company/work/people/corrections-policy.json', cls: 'F', owner: 'people', area: 'policy', why: 'how corrections work' },
   { p: 'company/tools/loops.json', cls: 'F', writers: ['hire.js', 'cadence.js'], owner: 'people', area: 'access', why: 'the crew list: managers, HR and tool owner, who is woken' },
