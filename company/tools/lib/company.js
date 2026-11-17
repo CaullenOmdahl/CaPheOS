@@ -111,6 +111,20 @@ function gate(category, opts) {
 const HALT_FILE = p('company', 'state', 'halt.json');
 function haltState() { return readJson(HALT_FILE, { mode: 'running' }) || { mode: 'running' }; }
 function halted() { const m = haltState().mode; return m === 'soft' || m === 'hard' ? m : false; }
+/* Restart hold (company/state/restart-hold.json, written only by company/tools/restart-station.js while it waits for an
+ * idle station to restart it): { by, at, reason, pid, expiresAt, ... }. While it holds, nothing new starts — the
+ * dispatcher wakes nobody, hiring does not advance — exactly as a soft halt, but no shutdown routine runs and nothing is
+ * told to wind down. A hold past its expiresAt (the script died) holds nothing. startsHeld(): why nothing may start now
+ * ('soft' | 'hard' | 'restart'), or false. */
+const RESTART_HOLD_FILE = p('company', 'state', 'restart-hold.json');
+function restartHold(now) {
+  const h = readJson(RESTART_HOLD_FILE, null);
+  if (!h || typeof h !== 'object') return null;
+  const exp = Date.parse(String(h.expiresAt || ''));
+  if (!Number.isFinite(exp) || exp <= (Number.isFinite(now) ? now : Date.now())) return null;
+  return h;
+}
+function startsHeld() { return halted() || (restartHold() ? 'restart' : false); }
 
 /* Guardrails: hard blocks, one switch each (company/state/guardrails.json, defaults in company/defaults/state/).
  * co.guard(name) === true means the block is ON. Unknown name or unreadable file => ON (fail closed); 'halt' is always ON.
@@ -126,6 +140,7 @@ function guard(name) {
 
 module.exports = { ROOT, p, config, readJson, TZ, SECRETS_DIR, secret, stationToken, LOOPS_FILE, crew,
   holds, ceo, seatFor, nameOf, localParts, GOV_FILE, LEVELS, governance, gate, HALT_FILE, haltState, halted,
+  RESTART_HOLD_FILE, restartHold, startsHeld,
   GUARD_FILE, guardrails, guard };
 
 Object.defineProperty(module.exports, 'STATION_URL', { enumerable: true, get: resolveStationUrl });

@@ -6,7 +6,9 @@ and revert it. A change to StarNet's own code that is not recorded here is lost 
 change gets a record.
 
 `scripts/setup-station.sh` applies the records in number order with `git -C starnet apply --3way <record>` (a plain
-`git apply` when the checkout's index no longer matches its files), skipping any that are optional. After applying, restart the station.
+`git apply` when the checkout's index no longer matches its files), skipping any that are optional. After applying, restart the station when nothing is running: setup-station.sh never
+restarts a running station itself; it prints the command, `scripts/restart-station.sh --when-idle --reason "patch NNNN"`,
+which holds new starts, waits until no run is in flight and never cuts one off.
 
 | Record | What it does | Applied by default |
 |---|---|---|

@@ -428,7 +428,7 @@ async function interview(a) {
     const mgrId = now.manager || round.manager || ceoId();
     const mgr = crewNow[mgrId];
     const pickLine = (mgrId === ceoId() || !mgr || mgrId === peopleId())
-      ? 'make the pick yourself (the role reports to ' + (mgr ? mgr.name : 'the CEO') + '), record it as one dated row in company/work/decisions.md, where the CEO can overrule it, then run hire.js hire for one and release for the others. Do not send it to the CEO.'
+      ? 'make the pick yourself (the role reports to ' + (mgr ? mgr.name : 'the CEO') + '), record it as one dated row in company/work/decisions.md with `node company/tools/decision.js add --by <you> --text "..." --why "..."`, where the CEO can overrule it, then run hire.js hire for one and release for the others. Do not send it to the CEO.'
       : 'send ' + mgr.name + ' your recommendation (who, why, scores, scorecard link) in company/work/handoffs/' + mgr.inbox + ' and agree the pick with them; run hire.js hire and release once they answer.';
     const block = '\n## ' + stamp().slice(0, 10) + ' from hire.js — ' + round.role + ' round (' + round.slug + '): ' + (allIn ? 'every interview is in' : done.map(c => c.name).join(', ') + ' interviewed; ' + (pending.map(c => c.name).join(', ') || 'none') + ' still to go') + '\n' +
       '**Need:** ' + (allIn ? 'score every transcript against the role-spec criteria in company/hiring/' + round.slug + '/scorecard.md, then ' + pickLine
@@ -668,7 +668,7 @@ async function advanceRound(slug, o) {
   const did = [], notes = [];
   const res = () => { const r = load() || round; const s = roundStage(dir, r); return { slug, role: r.role, stage: s.key, label: s.label, at: s.at, counts: s.counts, pickSeats: pickSeats(r), pickRequestAt: r.pickRequest ? r.pickRequest.at : null, hired: r.hired || null, hiredNow: did.some(x => /^hired /.test(x)) ? r.hired : null, did, notes }; };
   if (round.hired || round.closed) return res();
-  if (co.halted()) { notes.push('the company is halted (' + co.halted() + '): nothing advances'); return res(); }
+  if (co.startsHeld()) { notes.push(co.halted() ? 'the company is halted (' + co.halted() + '): nothing advances' : 'a station restart is waiting for idle (restart hold): nothing advances until it is done'); return res(); }
   if (o.dry) { notes.push('dry run'); return res(); }
   const by = round.openedBy || co.nameOf(peopleId());
   // 1. a recorded pick: finish the hire
@@ -766,7 +766,7 @@ async function pickCmd(a) {
   const pick = recordPick(dir, slug, { agentId: need(a, 'agent'), by: need(a, 'by'), why: need(a, 'why'), title: a.title && a.title !== true ? String(a.title) : null,
     functions: a.functions && a.functions !== true ? String(a.functions) : null, template: a.template && a.template !== true ? String(a.template) : null,
     access: a.access === 'ask' ? 'ask' : null, name: a.name && a.name !== true ? String(a.name) : null });
-  const f = co.halted() ? { ok: false, error: 'the company is halted; the hire finishes on the first tick after resume' } : await finishHire(dir, slug);
+  const f = co.startsHeld() ? { ok: false, error: co.halted() ? 'the company is halted; the hire finishes on the first tick after resume' : 'a station restart is waiting for idle; the hire finishes on the first tick after it' } : await finishHire(dir, slug);
   return { ok: true, picked: pick.agentId, name: pick.name, hired: f.ok ? f.hired : null, released: f.released || [], waitingOwner: !!f.waitingOwner, questionId: f.questionId || null,
     note: f.ok ? 'hired; the new seat\'s first run starts on this dispatcher tick' : f.waitingOwner ? 'the pick is recorded; hiring is "approve", so the owner was asked; the hire finishes on the first tick after their yes' : 'the pick is recorded; ' + (f.error || 'the hire finishes on the next tick') };
 }

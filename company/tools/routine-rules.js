@@ -19,6 +19,8 @@
  *  4. The 90-minute wall (v2): a long research run can do hundreds of real steps and be cut off at 90 minutes before
  *     its report, because nothing told the agent the limit existed.
  *  5. Routine models (v3): the pacer sets them from the people owner's routing table; a hand edit just fights the pacer.
+ *  6. Decisions (v6): company/work/decisions.md is grow-only; agents write it only with company/tools/decision.js (add, amend,
+ *     withdraw), because an in-place edit of a recent entry is a rewrite the locked-file watch flags.
  *  3. Short waits. The station reclaims a routine run that shows no progress for 8 minutes (CRON_HEARTBEAT_STALE_MS
  *     480000), and a tool call in progress does not count, so one long shell_bg_wait loses the run's final reply.
  *
@@ -42,7 +44,7 @@ const path = require('path');
 const call = (...a) => require('./station-crew.js').call(...a);   // loaded on first use, so the selftest needs no token
 const co = require('./lib/company');
 const ROOT = co.ROOT;
-const VERSION = 'v5';
+const VERSION = 'v6';
 const START = '[HOUSE RULES FOR SCHEDULED RUNS ';
 const END = '[END HOUSE RULES]';
 const BLOCK = START + VERSION + ']\n' + [
@@ -52,6 +54,7 @@ const BLOCK = START + VERSION + ']\n' + [
   '- Routine models are set by the usage pacer (company/tools/pacer.js) from the routing table in company/model-policy.json, which the people owner keeps as model manager. Never change a routine\'s provider or model by hand: to change a pairing, ask the people owner to change the table.',
   '- Never call shell_bg_wait with timeoutMs above 240000. The station stops a run that shows no progress for 8 minutes, and the run loses its final reply. Wait in short steps; if a job needs longer than this run has, leave it writing to a log under scratch/, write a handoff that names the log, and end the run.',
   '- Use sudo only for the commands the gate allows: the company\'s docker use and read-only host diagnostics. The gate runs them through a broker automatically, so `sudo docker ...` and `sudo ufw status` work as before, but there is no general root: `sudo cat`, `sudo curl`, arbitrary files and dangerous docker flags are refused. Run anything else without sudo, or ask the risk owner to add it (company/work/security/sudo-gate.md).',
+  '- Record a decision only with node company/tools/decision.js add --by <your name> --text "..." --why "...". Never edit company/work/decisions.md by hand, not even your own entry minutes later: to correct one run decision.js amend <id-or-stamp>, to take one back decision.js withdraw <id-or-stamp> (both with --by and --why; ids: decision.js list). The record is grow-only and an in-place edit is flagged as a rewrite.',
   '- What you may change on your own, what you propose for review, and what is locked: company/work/people/LATITUDE.md. Your own section above, if you have one, is your notes to yourself, changed only with node company/tools/my-section.js; where it differs from these rules or your standing corrections, these win.',
 ].join('\n') + '\n' + END;
 

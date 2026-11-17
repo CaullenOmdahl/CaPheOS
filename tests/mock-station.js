@@ -10,6 +10,10 @@
  * keeps a routine whose name contains one in flight on /api/cron/run until POST /__finish {id|name, status}, /api/cancel or
  * /api/halt; GET /api/providers from a provider map; POST /__providers {id: true|false} connects or
  * disconnects one, and POST /api/agent/model refuses a disconnected one as the station does). Every request needs header x-starnet-token (401 otherwise, like the station).
+ * Restarts (scripts/restart-station.sh tests): POST /__live/end {runId} ends a POST /__live run normally (as it would finish
+ * on its own); POST /__restart is the test's stand-in for `systemctl restart`: it records {at, inFlight: [runIds live or
+ * leased at that moment]} in S.restarts (GET /__state), drops every in-flight run as a real restart would, and answers
+ * GET /api/health with 503 for --restart-down-ms (default 300) before "ok" again.
  *
  * Every request is appended to --log as one JSON line {at, method, path, query, body, status}; a test asserts on it.
  * Unknown routes answer 404 {error:"mock: no route"} and are logged too, so a test can list what the mock lacks.
@@ -36,6 +40,7 @@ const FRESH = argv.includes('--fresh') || process.env.MOCK_FRESH === '1';
 const SAVE_FILE = opt('save-file', process.env.MOCK_SAVE_FILE || '');
 // GET /api/version capabilities (CaPheOS lanes probe "workspace-lease-per-folder", StarNet patch 0012); POST /__caps sets them
 const CAPS = String(opt('caps', process.env.MOCK_CAPS || '')).split(',').map(s => s.trim()).filter(Boolean);
+const RESTART_DOWN_MS = Number(opt('restart-down-ms', 300));
 
 /* ---------------- state ---------------- */
 const S = {
@@ -64,6 +69,8 @@ const S = {
   live: [],              // runs in flight (GET /api/state/snapshot); a test starts one with POST /__live
   holds: [],             // POST /__hold {names:[…]}: routines whose name contains one stay in flight on /api/cron/run
   caps: CAPS,            // GET /api/version capabilities
+  restarts: [],          // POST /__restart: {at, inFlight} each time the "unit" was restarted
+  downUntil: 0,          // GET /api/health answers 503 until then (a restart in progress)
 };
 // a held routine run ends: as the station records it (lastRunAt, lastRunId, lastStatus), out of the snapshot
 function finishHeld(job, status) {
@@ -332,6 +339,7 @@ function handle(method, p, q, body, res) {
     return send(res, 200, { ok: true });
   }
   if (p === '/api/budget/status' && method === 'GET') return send(res, 200, { ok: true, providers: {} });
+  if (p === '/api/health' && method === 'GET') { if (Date.now() < S.downUntil) { res.writeHead(503); res.end('starting'); return 503; } res.writeHead(200); res.end('ok'); return 200; }
   if (p === '/api/version' && method === 'GET') return send(res, 200, Object.assign({ ok: true, version: 'mock-station' }, S.caps.length ? { capabilities: S.caps } : {}));
   if (p === '/api/providers' && method === 'GET') return send(res, 200, { ok: true, providers: Object.entries(S.providers).map(([id, on]) => ({ id, configured: on, unattendedReady: on, reason: on ? 'verified' : 'credential missing' })) });
   if (p.startsWith('/api/models/') && method === 'GET') return send(res, 200, { ok: true, models: [{ id: 'deepseek-flash' }] });
@@ -359,6 +367,19 @@ const server = http.createServer((req, res) => {
     if (u.pathname === '/__hold' && req.method === 'POST') { S.holds = Array.isArray((body || {}).names) ? body.names.map(String) : []; row.status = send(res, 200, { ok: true, holds: S.holds }); return logReq(row); }
     if (u.pathname === '/__finish' && req.method === 'POST') { const jb = findJob((body || {}).id) || S.cron.jobs.find(x => x.inFlightRunId && (body || {}).name && x.name.includes(body.name)); finishHeld(jb, (body || {}).status); row.status = send(res, 200, { ok: !!jb }); return logReq(row); }
     if (u.pathname === '/__caps' && req.method === 'POST') { S.caps = Array.isArray((body || {}).caps) ? body.caps.map(String) : []; row.status = send(res, 200, { ok: true, caps: S.caps }); return logReq(row); }
+    if (u.pathname === '/__live/end' && req.method === 'POST') {
+      const r = S.live.find(x => x.runId === (body || {}).runId); S.live = S.live.filter(x => x !== r);
+      if (r) { for (const j of S.cron.jobs) if (j.lastRunId === r.runId) j.inFlight = false; observe('agent.run.end', { runId: r.runId, agentId: r.agentId, reason: 'done', outcome: 'succeeded', usd: 0 }); S.runs.push({ runId: r.runId, agentId: r.agentId, source: r.source, startedAt: r.startedAt, endedAt: Date.now(), usd: 0 }); }
+      row.status = send(res, 200, { ok: !!r }); return logReq(row);
+    }
+    if (u.pathname === '/__restart' && req.method === 'POST') {
+      const inFlight = [...new Set(S.live.map(r => r.runId).concat(S.cron.jobs.filter(j => j.inFlight).map(j => j.inFlightRunId || j.lastRunId || j.id)))];
+      S.restarts.push({ at: nowIso(), inFlight });
+      for (const r of S.live) observe('agent.run.end', { runId: r.runId, agentId: r.agentId, reason: 'cancelled', outcome: 'cancelled', usd: 0 });
+      S.live = []; for (const j of S.cron.jobs) { j.inFlight = false; delete j.inFlightRunId; }
+      S.downUntil = Date.now() + RESTART_DOWN_MS;
+      row.status = send(res, 200, { ok: true, inFlight }); return logReq(row);
+    }
     if (u.pathname === '/__live' && req.method === 'POST') { row.status = send(res, 200, { ok: true, run: startLive(body || {}) }); return logReq(row); }
     if (u.pathname === '/api/observe' && req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' }); res.write('retry: 3000\n\n');

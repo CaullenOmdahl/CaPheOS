@@ -1101,7 +1101,8 @@ async function collect(opt) {
       const agentId = crew.idOf(n); if (!agentId) continue;
       const d = S.ownError;
       // an "(own error)" row counts only if the person it names wrote it: their run wrote decisions.md around that time
-      const run = RI.wroteAround(agentId, F.decisions, e.at, (d.writerSlackMinutes || 30) * MIN);
+      // (or their run ran `company/tools/decision.js add ... --own-error`, the recorded way to write decisions.md)
+      const run = RI.wroteAround(agentId, F.decisions, e.at, (d.writerSlackMinutes || 30) * MIN) || RI.find(agentId, e.at, (d.writerSlackMinutes || 30) * MIN, t => /decision\.js\s+add\b/.test(t) && /--own-error\b/.test(t));
       if (!run) { softSkip('decisions.md:' + e.line + ' "' + n + ' (own error)": no run of ' + n + "'s wrote decisions.md then, so it is not counted as theirs"); continue; }
       rows.push(base(P, { kind: 'demerit', signal: 'own-error', agent: agentId, bucket: d.bucket, at: iso(e.at), key: e.date + '|' + e.hash, soft: true, msgTimes: e.msgTimes,
         appliesAt: iso(e.at + S.applyAfterHours * HOUR), severity: d.severity, reach: d.reach, caught: d.caught, ownUp: true, source: { type: 'decisions-own-error', ref: 'company/work/decisions.md' }, line: e.line,

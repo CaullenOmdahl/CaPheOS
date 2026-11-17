@@ -98,7 +98,7 @@ async function probe() {
     const r = await S.call('GET', '/api/version', null, 5000);
     const v = r.status === 200 ? j(r) : null;
     if (v && Array.isArray(v.capabilities) && v.capabilities.includes(CAPABILITY)) return { ok: true };
-    return { ok: false, why: 'this station has not applied patch 0012 (StarNet lets one run of an agent hold its files and shell at a time, so a second lane would wait 45 s and fail): re-run scripts/setup-station.sh, then restart the station' };
+    return { ok: false, why: 'this station has not applied patch 0012 (StarNet lets one run of an agent hold its files and shell at a time, so a second lane would wait 45 s and fail): re-run scripts/setup-station.sh, then restart the station when idle (scripts/restart-station.sh --when-idle)' };
   } catch (e) { return { ok: false, why: 'the station did not answer GET /api/version (' + String(e.message).slice(0, 80) + ')' }; }
 }
 

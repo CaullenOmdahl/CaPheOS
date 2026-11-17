@@ -12,6 +12,8 @@
  *   prov.wrote(file, text, 'corrections.js')        after a whole-file write (atomic rename) of `text`
  *   prov.appended(file, chunk, 'pacer.js')          after appending `chunk` to an append-only log
  *   prov.rolled(file, { before, after, ops, chunks }, 'retention.js')   after a retention roll (docs/RETENTION.md)
+ *   prov.inserted(file, { before, after, offset }, 'decision.js')    after inserting bytes at `offset` of a grow-only record
+ *                                                   (decisions.md is newest first: a new entry goes in at the top)
  *   node company/tools/provenance.js record <file> <writer>   for a shell tool (test-substrate.sh): hashes the file on disk
  *   node company/tools/provenance.js tail [n]       print the last n rows (no file contents, only hashes)
  *
@@ -129,6 +131,21 @@ function rolled(file, info, writer) {
     return true;
   } catch (_) { return false; }
 }
+// after a grow-only record was written with new bytes inserted at `offset` (everything else unchanged): enough for
+// locked-watch to take the insert back out (even after later appends or a retention roll) and check the rest is history.
+// Row: sha256/bytes of the file after, beforeSha/beforeBytes of the file before, offset, chunkSha/chunkBytes of the insert.
+function inserted(file, info, writer) {
+  try {
+    const root = rootOf(), rel = relOf(file, root); if (!rel || !info) return false;
+    const before = Buffer.isBuffer(info.before) ? info.before : Buffer.from(String(info.before));
+    const after = Buffer.isBuffer(info.after) ? info.after : Buffer.from(String(info.after));
+    const off = Number(info.offset); const n = after.length - before.length;
+    if (!(n > 0) || !(off >= 0) || off > before.length) return false;
+    append(Object.assign({ at: new Date().toISOString(), file: rel, kind: 'insert', sha256: sha(after), bytes: after.length, beforeSha: sha(before), beforeBytes: before.length,
+      offset: off, chunkSha: sha(after.subarray(off, off + n)), chunkBytes: n }, common(root, writer)), root);
+    return true;
+  } catch (_) { return false; }
+}
 // rows after byte offset `from` of the log (locked-watch keeps the offset it has read up to)
 function readFrom(from, root) {
   const f = logFile(path.resolve(root || rootOf()));
@@ -183,7 +200,7 @@ function callerConflict(root, parts, claimedId, nowMs) {
   } catch (_) { return null; }
 }
 
-module.exports = { wrote, appended, rolled, readFrom, sha, logFile, underStation, pinUnderStation, ownerShell, recentCalls, callerConflict, _internals: { stationEnv, mainInfo } };
+module.exports = { wrote, appended, rolled, inserted, readFrom, sha, logFile, underStation, pinUnderStation, ownerShell, recentCalls, callerConflict, _internals: { stationEnv, mainInfo } };
 
 if (require.main === module) {
   const [cmd, n, w] = process.argv.slice(2);

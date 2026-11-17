@@ -60,6 +60,7 @@ else
 fi
 
 # 2. Patches (records under company/patches/, applied once; a marker file records each)
+NEW_PATCHES=()
 for d in company/patches/[0-9][0-9][0-9][0-9]-*.diff; do
   [[ -e "$d" ]] || continue
   mark="$d.applied"
@@ -76,7 +77,7 @@ for d in company/patches/[0-9][0-9][0-9][0-9]-*.diff; do
   # --3way needs the checkout's index to match its files; a record applied earlier without it (git's "falling back to
   # direct application") leaves them apart, so a later record on the same file is retried as a plain apply
   if git -C starnet apply --3way --whitespace=nowarn "../$d" || git -C starnet apply --whitespace=nowarn "../$d"; then
-    date -Is > "$mark"; echo "applied $(basename "$d")"
+    date -Is > "$mark"; echo "applied $(basename "$d")"; NEW_PATCHES+=("$(basename "$d" .diff)")
   else
     echo "FAILED to apply $(basename "$d"); fix by hand, then: date -Is > $mark" >&2
   fi
@@ -132,6 +133,17 @@ if [[ -f company/tools/locked-watch.js && -e company/state/locked/baseline.json 
 fi
 if [[ $DISPATCH_WAS_ON -eq 1 && "${1:-}" != "--start" ]]; then
   systemctl --user enable "$SVC-dispatch.service" && systemctl --user restart "$SVC-dispatch.service" && echo "started the dispatcher loop in place of the old timer"
+fi
+
+# A patch applied to a RUNNING station is on disk but not live until the station restarts. Never restart here: a restart
+# cuts off every run in flight. Print the one command that restarts it safely (it waits until nothing runs).
+if [[ ${#NEW_PATCHES[@]} -gt 0 ]] && systemctl --user is-active --quiet "$SVC.service" 2>/dev/null; then
+  echo
+  echo "The station is running the old code: ${NEW_PATCHES[*]} load at its next restart. Not restarted (that would cut off running work)."
+  echo "Restart it safely, when nothing is running (it holds new starts meanwhile and gives up after 90 min):"
+  echo "  nohup setsid $ROOT/scripts/restart-station.sh --when-idle --max-wait-min 90 --reason \"patch ${NEW_PATCHES[*]}\" >/dev/null 2>&1 &"
+  echo "Follow it: tail -f $ROOT/company/work/restart-station.log"
+  echo
 fi
 
 if [[ "${1:-}" == "--start" ]]; then

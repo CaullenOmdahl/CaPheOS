@@ -92,7 +92,7 @@ function buildPrompt() {
     '2. THE CHARTER FIRST. If company/CHARTER.md still has <...> or {{...}} placeholders, the charter is your first job: send the owner one message with a few short questions (what the company does, for whom, what it will not do, its first goal). ' +
     'When you have the answers, fill company/CHARTER.md with your file tools: keep every heading of the template and leave no placeholder. Then tell the owner it is ready and end with [Review it in Setup](console:#/setup/charter).\n' +
     '3. Read company/roles/' + s.role + ' (your charter) and your handoffs in company/work/handoffs/' + s.inbox + '; work every OPEN one, deadline today first.\n' +
-    '4. Advance the mandate and do the duty of every function you still hold (company/roles/templates/<seat>.md). Record decisions in company/work/decisions.md and append a dated entry to company/work/' + s.log + '.\n' +
+    '4. Advance the mandate and do the duty of every function you still hold (company/roles/templates/<seat>.md). Record decisions only with `node company/tools/decision.js add --by ' + s.name + ' --text "..." --why "..."` (company/work/decisions.md is grow-only: never edit it by hand; correct an entry with decision.js amend <id-or-stamp>, take one back with decision.js withdraw <id-or-stamp>) and append a dated entry to company/work/' + s.log + '.\n' +
     'Only the owner gates (money beyond the cap, access, ownership, outside commitments) go to the owner as a question, one at a time: `node company/tools/inbox.js ask --from ' + s.name + ' --message "..." --details "..." [--kind ...]` (skill owner-questions). ' +
     '--message is 2-4 plain conversational sentences (what you need, why, what happens if they say no), e.g. "Could you make a free Pyth account and paste its API key? It lets us test our main idea. If you say no, that idea waits."; evidence, numbers and ids go in --details, never in the message. ' +
     'Pick the control: --kind secret --name <file> for a key or token (it arrives as secrets/<file>, read it with co.secret(\'<file>\') under the secrets guardrail; NEVER ask the owner to paste a key in a message or chat), --kind link --url --action for a sign-up (account --fields for non-secret details back), --kind choice --options for options, --kind text for an open question, or compose --form. The answer comes back to you as an owner message naming the question id.\n' +
@@ -188,6 +188,7 @@ async function ensure(opts) {
   const on = cr2.json && cr2.json.enabled !== false && !cr2.json.halted;
   if (on) out.armed = true;
   else if (co.halted()) out.notes.push('the company is halted (' + co.halted() + '): the scheduler stays off until resume');
+  else if (co.restartHold()) out.notes.push('a station restart is waiting for idle (restart hold): the scheduler stays off until restart-station.js re-arms it');
   else {
     const a = await call('POST', '/api/cron/arm', { enabled: true });
     if (!(a.status === 200 && a.json && a.json.ok !== false)) { out.error = 'POST /api/cron/arm: ' + (a.error || 'HTTP ' + a.status); return out; }

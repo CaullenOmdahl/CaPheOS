@@ -120,7 +120,7 @@ function render(a) {
   const lp = co.localParts(); const stamp = lp.date + ' ' + lp.time + ' (' + co.TZ + ')';
   const rows = a.people.map(p => '| ' + p.name + ' | ' + p.title + ' | ' + p.model + ' | ' + p.runs + ' | ' + p.failed + ' | ' + p.streak + ' | ' + p.overdue + ' | ' + (p.flags.map(f => f.type + ': ' + f.why).join('; ') || 'ok') + ' |');
   return '# Performance\n\nWritten by company/tools/performance.js at ' + stamp + ' from the station\'s run records (last ' + a.windowHours + ' hours of routine runs; cancelled and restart-interrupted runs are not counted).\n\n' +
-    'Flags go to the people owner (' + co.nameOf(co.seatFor('people')) + '), with an FYI to the person\'s manager: the people owner and the manager decide fix, re-model or replace (the people owner alone when the manager is the CEO), and record it in company/work/decisions.md. A limit flag goes to the tools owner (' + co.nameOf(co.seatFor('tools')) + '). A flag about the CEO goes to the CEO; replacing the CEO is the owner\'s call (company/MODEL_POLICY.md).\n\n' +
+    'Flags go to the people owner (' + co.nameOf(co.seatFor('people')) + '), with an FYI to the person\'s manager: the people owner and the manager decide fix, re-model or replace (the people owner alone when the manager is the CEO), and record it in company/work/decisions.md (node company/tools/decision.js add). A limit flag goes to the tools owner (' + co.nameOf(co.seatFor('tools')) + '). A flag about the CEO goes to the CEO; replacing the CEO is the owner\'s call (company/MODEL_POLICY.md).\n\n' +
     '| Person | Role | Model | Runs | Failed | Failing streak | Overdue handoffs | Status |\n|---|---|---|---|---|---|---|---|\n' + rows.join('\n') + '\n';
 }
 

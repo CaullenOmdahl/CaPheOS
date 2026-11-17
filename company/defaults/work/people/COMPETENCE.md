@@ -130,7 +130,7 @@ A flaw caught **before acceptance** never stands alone, never voids the work and
 
 ## Owning mistakes, and the owner's corrections
 
-- **Owning an error.** Writing `(own error)` after your name in the Owner column of `company/work/decisions.md` makes the charge × 0.8, and you can still dispute its severity and reach. It counts only if **you** wrote the row: a run of yours wrote `decisions.md` within 30 minutes of the row's time. Nobody can own an error for someone else.
+- **Owning an error.** Writing `(own error)` after your name in the Owner column of `company/work/decisions.md` makes the charge × 0.8, and you can still dispute its severity and reach. Write that row with `node company/tools/decision.js add --by <you> --text "..." --own-error`. It counts only if **you** wrote the row: a run of yours wrote `decisions.md` (or ran `decision.js add --own-error`) within 30 minutes of the row's time. Nobody can own an error for someone else.
 - **Owner corrections.** An owner correction is counted when the ack note in `company/state/owner-inbox.json` says "correction" (and the acker's own run ran `owner-inbox.js ack` for that message), or when your reply on the owner channel (`company/owner/outbound.jsonl`, sent with `owner-inbox.js send` by your own run) admits the error. **Admitting it in your reply counts as owning it**: × 0.8, the same as an `(own error)` row.
 - **One incident, one charge.** When an `(own error)` row and an owner correction are about the same incident, they are charged once. The row names the owner message it answers (for example "His 16:33 message"); times are company time (the timezone in `company/company.json`).
 - **Changing direction.** The owner changing direction charges nobody. Being overruled is not being wrong.

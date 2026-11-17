@@ -99,4 +99,5 @@ print, log or copy it.
 
 The owner may answer the form, Reply in their own words, Snooze it (`inbox.js list --from <YOU>` shows "snoozed until
 ..."), or Discuss it with you in a live chat. The answer reaches you as an owner message that names the question id and
-says it in plain words. Act on it, and record decisions in `company/work/decisions.md`.
+says it in plain words. Act on it, and record decisions in `company/work/decisions.md` with
+`node company/tools/decision.js add --by <you> --text "..." --why "..."` (never by hand; `decision.js amend|withdraw` to correct one).

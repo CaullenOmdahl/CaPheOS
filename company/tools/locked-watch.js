@@ -100,7 +100,7 @@ const MANIFEST = [
   { p: 'company/state/governance.json', cls: 'F', writers: ['governance.js'], owner: 'risk', area: 'policy', why: 'self-governance: how much the company decides without the owner (only the owner changes it, through governance.js)' },
   // alwaysWatched: still reported while the harnessSelfEdit guardrail is off, because it is the switch itself
   { p: 'company/state/guardrails.json', cls: 'F', writers: ['guardrails.js'], owner: 'risk', area: 'policy', alwaysWatched: true, why: 'the guardrail switches (only the owner changes them, through guardrails.js)' },
-  ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js', 'retention.js', 'duties.js', 'duty-status.js', 'lib/duty-runner.js', 'lib/duty-env.js', 'money-hold.js', 'lib/money-hold.js', 'lib/seat-status.js', 'lanes.js']
+  ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'decision.js', 'restart-station.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js', 'retention.js', 'duties.js', 'duty-status.js', 'lib/duty-runner.js', 'lib/duty-env.js', 'money-hold.js', 'lib/money-hold.js', 'lib/seat-status.js', 'lanes.js']
     .map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'tools', area: 'tool', why: 'a tool that measures or limits the crew, or that these tools depend on' })),
   ...['merge-gate.js', 'premerge-check.js', 'external-gate.js', 'connector-scope.js', 'default-branch-watch.js'].map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'risk', area: 'tool', why: 'a gate or the evidence it reads' })),
   { p: 'company/work/engineering/evidence/*.json', cls: 'F', writers: ['test-substrate.sh'], owner: 'risk', area: 'gate', why: 'test-substrate verdicts (a hand-made pass opens the merge gate): flagged, never auto-removed, so a real evidence file never blocks a merge' },
@@ -121,7 +121,7 @@ const MANIFEST = [
   { p: 'company/work/external-actions.jsonl', cls: 'F', append: true, owner: 'risk', area: 'gate', why: 'the external-action log' },
   { p: 'company/work/external-idempotency.jsonl', cls: 'F', append: true, owner: 'risk', area: 'gate', why: 'the record of acts that already went out (a deleted row would let a payment or a send repeat)' },
   { p: 'company/work/merge-gate.log', cls: 'F', append: true, owner: 'risk', area: 'gate', why: 'the merge-gate log' },
-  { p: 'company/work/decisions.md', cls: 'F', append: true, growOnly: true, owner: 'ceo', area: 'record', why: 'decisions (it carries the competence anchors)' },
+  { p: 'company/work/decisions.md', cls: 'F', append: true, growOnly: true, owner: 'ceo', area: 'record', why: 'decisions (it carries the competence anchors): grow-only, newest first; entries are added, amended and withdrawn only with company/tools/decision.js, never edited in place' },
   { p: 'company/work/dispatch-log.md', cls: 'F', append: true, owner: 'tools', area: 'record', why: 'the dispatch log (a competence anchor copy)' },
   { p: 'company/state/locked/provenance.jsonl', cls: 'F', append: true, owner: 'tools', area: 'record', why: 'the tools\' write records this watcher trusts' },
   { p: '.starnet-data/workspaces/permissions.allow.json', cls: 'F', writers: ['lanes.js'], owner: 'risk', area: 'access', why: 'the station\'s folder grants (lanes.js records the grant of each Sprint lane folder it blesses)' },
@@ -441,11 +441,22 @@ function tile(region, chunks) {
 // where the archived bytes went. unroll() rebuilds the file as if the roll never happened — every archived byte must be
 // read back from the archive with its recorded hash — so the usual checks (appends tiled, history unchanged, grow-only)
 // run on the whole history. A roll that does not rebuild byte for byte is reported, never accepted, never "repaired".
-function unroll(ctx, cur, rolls) {
+function unroll(ctx, cur, rolls) { return unwind(ctx, cur, rolls); }
+// unwind(ctx, cur, events): take recorded rolls (retention.js) and inserts (decision.js: a new entry at the top of a
+// grow-only record) back out of the file, newest first. Each step needs the file to start with exactly the bytes that
+// step left (later appends ride along at the end), and must rebuild the recorded file-before byte for byte.
+function unwind(ctx, cur, events) {
   let buf = cur.buf;
-  for (const r of rolls.slice().reverse()) {
-    if (!(buf.length >= r.bytes) || sha(buf.subarray(0, r.bytes)) !== r.sha256) return { error: 'the file no longer starts with the bytes the roll left' };
+  for (const r of events.slice().reverse()) {
+    if (!(buf.length >= r.bytes) || sha(buf.subarray(0, r.bytes)) !== r.sha256) return { error: r.kind === 'insert' ? 'the file no longer starts with the bytes the ' + String(r.writer || 'insert').split(' ')[0] + ' write left' : 'the file no longer starts with the bytes the roll left' };
     const after = buf.subarray(0, r.bytes), rest = buf.subarray(r.bytes);
+    if (r.kind === 'insert') {
+      const off = Number(r.offset), n = Number(r.chunkBytes);
+      if (!(off >= 0 && n > 0 && off + n <= after.length) || sha(after.subarray(off, off + n)) !== r.chunkSha) return { error: 'the insert record does not match the file' };
+      const before = Buffer.concat([after.subarray(0, off), after.subarray(off + n)]);
+      if (sha(before) !== r.beforeSha) return { error: 'taking the recorded insert out does not give the file as it was before it' };
+      buf = Buffer.concat([before, rest]); continue;
+    }
     const pieces = [];
     for (const c of r.chunks || []) {
       // a replaced pointer line: its old text rides in the (trusted) roll row; it can only rebuild the beforeSha below
@@ -469,15 +480,24 @@ function unroll(ctx, cur, rolls) {
   }
   return { buf };
 }
+// the tools that insert entries into a grow-only record, each recording the insert (provenance.inserted)
+const INSERT_WRITERS = ['decision.js'];
 function decideRolled(ctx, key, m, b, cur, prov, recorded, flagOnly) {
-  const rolls = cur.exists ? byWriter(prov.get(key) || [], ['retention.js']).filter(r => r.kind === 'roll') : [];
-  if (!rolls.length) return decide(ctx, key, m, b, cur, prov, recorded, flagOnly);
-  const u = unroll(ctx, cur, rolls);
+  const rows = cur.exists ? prov.get(key) || [] : [];
+  const rollSet = new Set(byWriter(rows, ['retention.js']).filter(r => r.kind === 'roll'));
+  const insSet = new Set(m.growOnly ? byWriter(rows, INSERT_WRITERS).filter(r => r.kind === 'insert') : []);
+  if (!rollSet.size && !insSet.size) return decide(ctx, key, m, b, cur, prov, recorded, flagOnly);
+  const rolls = rows.filter(r => rollSet.has(r));
+  let u = unwind(ctx, cur, rows.filter(r => rollSet.has(r) || insSet.has(r)));   // in the order they happened
+  let tookInserts = insSet.size > 0;
+  // an insert that cannot be taken back (someone else wrote the same region since): judge the file as before, rolls only
+  if (u.error && insSet.size) { tookInserts = false; if (!rolls.length) return decide(ctx, key, m, b, cur, prov, recorded, flagOnly); u = unwind(ctx, cur, rolls); }
   if (u.error) return { ok: false, act: 'flag', why: 'a retention roll was recorded, but ' + u.error };
   const whole = Object.assign({}, cur, { buf: u.buf, bytes: u.buf.length, sha256: sha(u.buf) });
   const d = decide(ctx, key, m, b, whole, prov, recorded, flagOnly);
-  if (d.ok === false) return { ok: false, act: 'flag', why: 'rolled by retention.js, but ' + d.why };
-  return Object.assign({}, d, { why: 'rolled by retention.js (every archived byte checked); ' + d.why });
+  const pre = rolls.length ? 'rolled by retention.js' : '';
+  if (d.ok === false) return { ok: false, act: 'flag', why: (pre ? pre + ', but ' : '') + d.why };
+  return Object.assign({}, d, { why: [pre ? pre + ' (every archived byte checked)' : '', tookInserts ? 'entries added by ' + INSERT_WRITERS.join('/') + ' (recorded)' : '', d.why].filter(Boolean).join('; ') });
 }
 function decide(ctx, key, m, b, cur, prov, recorded, flagOnly) {
   const rows = prov.get(key) || [];
@@ -519,7 +539,7 @@ function decide(ctx, key, m, b, cur, prov, recorded, flagOnly) {
   if (cur.exists && byWriter(rows, ['harness-change.js']).some(r => r.kind === 'write' && r.sha256 === cur.sha256) && recorded && recorded.applied.includes(cur.sha256)) return { ok: true, why: 'an applied harness change' };
   if (cur.exists && recorded && recorded.applied.includes(cur.sha256)) return { ok: true, why: 'an applied harness change' };
   if (recorded && recorded.pending.length && ctx.now - Date.parse(recorded.pending[0].approvedAt) < 20 * 60e3) return { ok: null, why: 'approved change ' + recorded.pending.map(p => p.id).join(', ') + ' is waiting for its apply record' };
-  return { ok: false, act: 'flag', why: m.append && cur.exists && b.exists ? 'history before the last check was rewritten' : (m.cls === 'K' ? 'a key or credential changed' : 'changed with no reviewed change or tool record') };
+  return { ok: false, act: 'flag', why: m.append && cur.exists && b.exists ? 'history before the last check was rewritten' + (m.growOnly ? ' (an entry was edited or removed in place: correct or withdraw one with `node company/tools/decision.js amend|withdraw <id-or-stamp>`, which adds a new entry)' : '') : (m.cls === 'K' ? 'a key or credential changed' : 'changed with no reviewed change or tool record') };
 }
 
 /* ---------------- tick ---------------- */
@@ -1155,7 +1175,7 @@ function rebaseProvenance(opts, fn) {
   saveBaseline(ctx, base);
   return { result: r, provOffset: base.provOffset };
 }
-module.exports = { tick, classify, lockedNames, MANIFEST, context, withWatchLock, rebaseProvenance, _internals: { tile, decide, decideRolled, unroll, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
+module.exports = { tick, classify, lockedNames, MANIFEST, context, withWatchLock, rebaseProvenance, _internals: { tile, decide, decideRolled, unroll, unwind, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
 
 /* ---------------- selftest ---------------- */
 async function selftest() {

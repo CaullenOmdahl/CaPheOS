@@ -43,6 +43,9 @@ chain still works once seats are hired.
    not by a specialist, and via `company/tools/inbox.js`. How to write one — plain words first, a secure field for
    keys, a link for sign-ups — is the `owner-questions` skill.
 5. **Record** anything decided in `company/work/decisions.md`; the chain is only real if decisions leave a trace.
+   Write it only with `node company/tools/decision.js add --by <you> --text "..." --why "..."`; correct an entry with `decision.js amend <id-or-stamp>`, take one back with
+   `decision.js withdraw <id-or-stamp>` (both `--by` and `--why`). Never edit decisions.md by hand, even your own entry:
+   it is grow-only and an in-place edit is flagged as a rewrite.
 
 ## Procedure and skill proposals
 

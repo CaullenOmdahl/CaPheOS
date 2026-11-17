@@ -111,6 +111,12 @@ row's `beforeSha`), then runs its usual check on the whole history (appends tile
 grow-only). A roll that does not rebuild byte for byte is reported, never accepted and never "repaired".
 The whole `apply` runs under the watcher's lock (`withWatchLock`), so a tick never sees a roll half done.
 
+New `decisions.md` entries go in at the top (newest first) through `company/tools/decision.js` (add, amend, withdraw),
+also under the watcher's lock, each recorded as `prov.inserted(file, { before, after, offset }, 'decision.js')`. The
+watcher takes recorded rolls and inserts back out in the order they happened (each must leave exactly the recorded
+bytes), so a roll and a decision.js write in the same tick are checked as a whole and stay quiet; an entry edited in
+place is still "history rewritten".
+
 The provenance log itself (`company/state/locked/provenance.jsonl`) is rolled last, inside
 `locked-watch.rebaseProvenance()`: only rows before the watcher's byte offset (already read) may move, and the stored
 offset and the log's baseline entry are updated in the same operation. A shrunk log with no rebase still reads from 0

@@ -19,7 +19,8 @@ _Owner of this standard: the CEO. Adopted through `company/tools/mandate.js`; re
 - The CEO decides, sets priorities and budgets, delegates and drives revenue. Once there are other seats, the CEO does
   not do a specialist's work: work goes to its owner by handoff, with a clear ask and a date.
 - Every revenue line has a seller, a deliverer, a budget row and a dated next step.
-- Decisions are written in `company/work/decisions.md`.
+- Decisions are written in `company/work/decisions.md`, only with `node company/tools/decision.js add|amend|withdraw`
+  (grow-only: never edited in place).
 
 ## 5. What goes to the owner
 - Only the four gates (`company/DECISION_RIGHTS.md`): money beyond the cap, access and credentials, ownership,

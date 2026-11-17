@@ -109,6 +109,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/console-panel.js | tools | `selftest` |
 | company/tools/corrections.js | people | `selftest` |
 | company/tools/decide.js | risk | `selftest` / `--selftest` |
+| company/tools/decision.js | ceo | `selftest` |
 | company/tools/default-branch-watch.js | risk | `selftest` |
 | company/tools/delegation.js | ceo | `selftest` / `--selftest` |
 | company/tools/dispatch.js | tools | `--selftest` |
@@ -153,6 +154,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/provenance.js | risk | `selftest` |
 | company/tools/quest-audit.js | tools | `--selftest` |
 | company/tools/restart-station-idle.sh | tools | `--selftest` |
+| company/tools/restart-station.js | tools | `selftest` |
 | company/tools/retention.js | tools | `selftest` |
 | company/tools/routine-length.js | people | none |
 | company/tools/routine-rules.js | tools | `selftest` / `--selftest` |
@@ -214,6 +216,7 @@ in §5a instead.
 | `company/tools/cap-numerator.js` | finance | `node company/tools/cap-numerator.js --selftest` |
 | `company/tools/connector-scope.js` | risk | `node company/tools/connector-scope.js --selftest` |
 | `company/tools/decide.js` | risk | `node company/tools/decide.js selftest` |
+| `company/tools/decision.js` | ceo | `node company/tools/decision.js selftest` |
 | `company/tools/delegation.js` | ceo | `node company/tools/delegation.js selftest` |
 | `company/tools/dispatch.js` | tools | `node company/tools/dispatch.js --selftest` |
 | `company/tools/dispatcher-loop.js` | tools | `node company/tools/dispatcher-loop.js selftest` |
@@ -238,6 +241,7 @@ in §5a instead.
 | `company/tools/pack.js` | ceo | `node company/tools/pack.js selftest` |
 | `company/tools/quest-audit.js` | tools | `node company/tools/quest-audit.js --selftest` |
 | `company/tools/restart-station-idle.sh` | tools | `bash company/tools/restart-station-idle.sh --selftest` |
+| `company/tools/restart-station.js` | tools | `node company/tools/restart-station.js selftest` |
 | `company/tools/retention.js` | tools | `node company/tools/retention.js selftest` |
 | `company/tools/routine-rules.js` | tools | `node company/tools/routine-rules.js selftest` |
 | `company/tools/station-seed.js` | ceo | `node company/tools/station-seed.js --selftest` |

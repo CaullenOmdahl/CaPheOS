@@ -199,7 +199,8 @@ every default patch; not in test.sh), and StarNet's own `test/e2e.workspace-leas
 
 **Adopting lanes in an existing company:** pull the framework, re-run `scripts/setup-station.sh` (it applies patch
 0012; a checkout whose index no longer matches its files gets a plain apply), then restart the station
-(`systemctl --user restart <station>.service`) and the dispatcher loop. Until the station restarts, lanes refuse cleanly.
+when nothing runs (`scripts/restart-station.sh --when-idle --reason "patch 0012"`; a plain `systemctl restart` cuts off
+running work) and the dispatcher loop. Until the station restarts, lanes refuse cleanly.
 
 ### Adopting it in an existing company
 

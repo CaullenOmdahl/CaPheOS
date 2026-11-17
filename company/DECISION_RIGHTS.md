@@ -144,4 +144,8 @@ hard; a delegate never answers a question they raised; an owner answer always wi
 
 ## Decisions taken
 
-Recorded in `company/work/decisions.md`, newest first, with who decided and why.
+Recorded in `company/work/decisions.md`, newest first, with who decided and why, only through
+`node company/tools/decision.js add --by <you> --text "..." --why "..."`. The file is grow-only: an entry is never edited or
+removed in place. A decision that changes is amended (`decision.js amend <id-or-stamp> --by <you> --why "..."`) and one
+that no longer stands is withdrawn (`decision.js withdraw <id-or-stamp> --by <you> --why "..."`); both add a new entry
+that names the earlier one.

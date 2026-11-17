@@ -36,7 +36,7 @@ composed
 
 ## KPIs
 - Charter written and approved by the owner within the first week
-- Every utility function either held deliberately or handed to a hire, recorded in decisions.md
+- Every utility function either held deliberately or handed to a hire, recorded in decisions.md (with `decision.js add`)
 - Every owner question is a real gate, asked when the decision is ready, with a recommendation and a default
 
 ## What good looks like
@@ -57,9 +57,18 @@ This is guidance, not a gate: nothing checks it, but parallel work without a con
 
 ## Soft shutdown
 Soft halt: `node company/tools/halt.js status` says `mode: soft`. Start nothing new: no new quest, handoff ask, routine or external action. Finish the decision in hand if it fits in this session, otherwise park it: write where it
-stands, the options and your recommendation to `company/work/decisions.md`. Leave a one-line status in every handoff you
+stands, the options and your recommendation to `company/work/decisions.md` (with `decision.js add`). Leave a one-line status in every handoff you
 own, write nothing to the owner except the halt notices the tool sends, and end the session. On resume, start from
 decisions.md.
+
+## Recording decisions
+`company/work/decisions.md` is grow-only, newest first, and carries the competence anchors. Write it only with
+`node company/tools/decision.js add --by <you> --text "..." --why "..."`.
+Never edit or delete an entry by hand, not even your own from ten minutes ago: the locked-file watch flags that
+as a rewrite of the record. To correct an entry, `node company/tools/decision.js amend <id-or-stamp> --by <you> --why "..."
+[--text "the decision as it now stands"]`; to take one back, `decision.js withdraw <id-or-stamp> --by <you> --why "..."`.
+Both add a new entry at the top that names the earlier one, which stays as written. `decision.js list` shows each
+entry's id; a stamp ("15:30") works too. Owning an error: `decision.js add ... --own-error`.
 
 ## Handoffs
 - Read your inbox `company/work/handoffs/to-founder.md` at the start of every session.

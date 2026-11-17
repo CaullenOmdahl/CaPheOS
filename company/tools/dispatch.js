@@ -13,6 +13,7 @@
  * Env: DISPATCH_COOLDOWN_MIN=40 DISPATCH_MAX_PER_TICK=4 DISPATCH_STALL_AFTER=3 DISPATCH_DAILY_USD=2
  *   (cooldown and per-tick defaults come from company/work/ops/cadence.json when present; the env vars still win)
  * Halt: every tick first runs company/tools/halt.js tick; while co.halted() is 'soft' or 'hard' nobody is woken.
+ * Restart hold: while company/state/restart-hold.json holds (restart-station.js waiting for idle), nobody is woken either.
  * Modules: then each enabled core module's tick.js (lib/modules.js runTicks; halted: only runWhenHalted ones).
  * Guardrail spendCap (co.guard): when the owner turns it off, the USD caps hold nothing (one line says what they would have held).
  * Hiring: each tick runs hire.js advance --all (the mechanical steps of every open round, within the cap) and wakes the
@@ -174,6 +175,11 @@ function haltLine(st) {
   if (m !== 'soft' && m !== 'hard') return null;
   return 'HALTED (' + m + (st.by ? ' by ' + st.by : '') + (st.why ? ': ' + String(st.why).slice(0, 120) : '') + ')'
     + (m === 'soft' ? (st.settledAt ? ' — soft halt complete' : ' — running work finishes, nothing new starts') : ' — station E-STOP') + '; waking nobody';
+}
+/* Restart hold gate (co.restartHold(), written by restart-station.js): the line logged while it holds. */
+function restartHoldLine(h) {
+  return 'RESTART HOLD (' + (h.by ? 'by ' + h.by : 'restart-station.js') + (h.reason ? ': ' + String(h.reason).slice(0, 120) : '') + ')'
+    + ' — waiting for running work to finish so the station can restart; waking nobody';
 }
 /* USD cap verdict for one due loop: 'run' | 'held' (daily cap) | 'perAgentHeld' | 'wouldHold' (spendCap guardrail off). */
 function capDecision({ capOn, capped, metered, ownerWake, perAgentOver }) {
@@ -627,10 +633,14 @@ function lastRunTail(job) {
   // Core modules (company/tools/lib/modules.js): ONE generic hook runs each enabled module's tick.js, fail-safe (a
   // throw or a timeout is one log line). A halted company runs only modules that export runWhenHalted: true
   // (liveness: the heartbeat must keep beating through a halt, or the dead-man's switch would page the owner).
-  const halted = co.halted();
+  // A restart hold (company/tools/restart-station.js, waiting for an idle station to restart it) holds starts exactly as a
+  // soft halt does: modules run as halted, only whileHalted duties run, nobody is woken. It is not a halt: halt.json is
+  // untouched and no shutdown routine runs; the hold ends when the restart is done (or expires if its script died).
+  const rhold = co.halted() ? null : co.restartHold();
+  const halted = co.halted() || (rhold ? 'soft' : false);
   try { await require('./lib/modules').runTicks({ log, dry: DRY, halted }); } catch (e) { log('MODULE TICKS ERROR: ' + String(e.message).slice(0, 200)); }
   // halted: only the duties marked whileHalted (liveness) run; they record their state and wake nobody, flag nobody
-  if (halted) { try { await require('./lib/duty-runner').tick({ log, dry: DRY, halted }); } catch (e) { log('DUTIES ERROR: ' + String(e.message).slice(0, 200)); } log(haltLine(co.haltState())); return; }
+  if (halted) { try { await require('./lib/duty-runner').tick({ log, dry: DRY, halted }); } catch (e) { log('DUTIES ERROR: ' + String(e.message).slice(0, 200)); } log(rhold ? restartHoldLine(rhold) : haltLine(co.haltState())); return; }
   const split = spendSplit();
   const spent = split.metered;
   // Say the numerator out loud when the two records disagree: the cap now reads the ledger, so a tick where it
