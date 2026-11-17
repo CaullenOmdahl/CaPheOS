@@ -7,7 +7,9 @@
  *
  *   node company/tools/approvals.js ask --from <seat name> --category <governance category> --message "2-4 sentences"
  *        --params '<json: what exactly is approved>' [--details ".."] [--expires-min N] [--blocking] [--depends-on q-1,q-2]
- *        [--handoff "<heading of the asker's OPEN handoff this waits on>"]
+ *        [--handoff "<heading of the asker's OPEN handoff this waits on>"] [--changed "<what changed since a not now>"]
+ *        (the message must pass the owner-scope plain-language check, lib/owner-scope.js: two short plain sentences that
+ *        say what the owner gets or risks; the record's default, deny, is the skip clause)
  *   node company/tools/approvals.js amend <id> --params '<json>' --by <asker>       (a new actionDigest: old answers refused)
  *   node company/tools/approvals.js withdraw <id> --why ".." --by <asker>           (inbox.js withdraw + the audit withdraw)
  *   node company/tools/approvals.js list [--all]  |  get <id>  |  blocking-seats
@@ -284,6 +286,9 @@ async function ask(o) {
     return { ok: true, minted: false, level: lv, allowed: true, audit: a.id, told: !!told };
   }
   const actionDigest = actionDigestOf(category, from, params);
+  // the owner-scope rule (lib/owner-scope.js via inbox.js): plain words, not a topic the owner said "not now" to this week
+  const scope = inbox.ownerScopeCheck({ from, about: 'approval:' + category, message, details: o.details, approval: { category, level: tri ? 'triage' : 'approve', actionDigest }, fixedGate: isFixed(category), changed: o.changed });
+  if (scope) return refuse(scope.code, scope.error, scope.suggestion ? { suggestion: scope.suggestion } : {});
   let handoff = null;
   if (o.handoff && o.handoff !== true) {
     const seat = askerSeat(from); const ib = seat && (co.crew()[seat] || {}).inbox;
@@ -305,7 +310,7 @@ async function ask(o) {
     const a = audit(author(from), 'Approval requested by ' + from + ' (' + category + (isFixed(category) ? ', a fixed owner gate' : '') + '): ' + summary + ' (digest ' + actionDigest.slice(0, 19) + '…' + (expiresAt ? '; expires ' + expiresAt.slice(0, 16).replace('T', ' ') + ' UTC, default deny' : '') + ')');
     const approval = { category, level: tri ? 'triage' : 'approve', params, actionDigest, expiresAt, default: 'deny', blocking: !!o.blocking, dependsOn: deps, auditId: a.id, auditBy: author(from) };
     if (handoff) approval.handoff = handoff;
-    const r = inbox.ask({ from, about: 'approval:' + category, message, details: o.details, blocking: !!o.blocking, kind: 'approve', oneDecision: true, approval });
+    const r = inbox.ask({ from, about: 'approval:' + category, message, details: o.details, blocking: !!o.blocking, kind: 'approve', oneDecision: true, approval, fixedGate: isFixed(category), changed: o.changed });
     return { ok: true, minted: true, level: 'approve', id: r.row.id, actionDigest, expiresAt, audit: a.id };
   });
 }

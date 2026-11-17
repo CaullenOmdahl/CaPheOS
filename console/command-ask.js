@@ -13,6 +13,13 @@
  * line), and each sentence in its strict mode when the sentence tells the reader to run, type or paste it ("run:"
  * followed by a backticked line on the next line counts too). "I ran `git push`" is a report, not an ask.
  *
+ * ownerAsk(text) is the same lint for the OWNER SCOPE (company/tools/lib/owner-scope.js, the ask composer's rule): a
+ * question the reply puts to the owner ("could you …?", "shall I …?", "please …") about infrastructure, monitoring,
+ * health checks, timers, tools or framework bugs is the crew's job, and an owner question full of technical words is
+ * not one the owner can answer. The chat page shows a notice under it with where it goes.
+ *
+ *   ownerAsk(text) -> null | { kind: 'crew-scope' | 'jargon', question, why, route: 'risk'|'tools'|'floor'|'framework'|null, words }
+ *
  *   node console/command-ask.js --selftest
  */
 'use strict';
@@ -39,6 +46,28 @@ function actionFor(cmd) {
   if (/\bhalt\.js\b|\bhalt\b/i.test(c)) return { label: 'Halt', href: '#/halt' };
   if (/\bguardrails?\.js\b/i.test(c)) return { label: 'Guardrails (Settings › Autonomy)', href: '#/settings/autonomy/guardrails' };
   if (/\bsecrets\/|\bservice-keys?\b/i.test(c)) return { label: 'Service keys (Settings › Connections and keys)', href: '#/settings/connections/keys' };
+  return null;
+}
+
+let scopeLib = null;
+function scope() {
+  if (!scopeLib) { const co = require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'company.js')); scopeLib = require(co.p('company', 'tools', 'lib', 'owner-scope.js')); }
+  return scopeLib;
+}
+// a sentence that puts a question or a request to the owner
+const TO_OWNER = /\?\s*$|^(?:please|could you|can you|would you|will you|may (?:i|we)|shall (?:i|we)|should (?:i|we)|do you want|are you ok)\b|\b(?:please|could you|can you|would you)\b/i;
+function ownerAsk(text) {
+  const prose = String(text || '').replace(/```[\s\S]*?```/g, '\n');
+  if (prose.length < 12) return null;
+  const S = scope();
+  for (const raw of prose.split(/(?<=[.!?])\s+|\n+/)) {
+    const sn = raw.replace(/^[\s>*\-\d.)]+/, '').trim();
+    if (sn.length < 8 || !TO_OWNER.test(sn) || !/\b(?:you|your|i|we)\b/i.test(sn)) continue;
+    const cls = S.classify({ message: sn });
+    if (cls.scope === 'crew') return { kind: 'crew-scope', question: sn.slice(0, 200), why: cls.why, route: S.routeFor(cls).to, words: [...new Set(cls.crew.map(c => c.hit))].slice(0, 6) };
+    const jar = S.plainScore(sn).jargon;
+    if (cls.owner.length && jar.length >= 2) return { kind: 'jargon', question: sn.slice(0, 200), why: 'it asks you in technical words', route: null, words: [...new Set(jar)].slice(0, 6) };
+  }
   return null;
 }
 
@@ -86,11 +115,21 @@ function selftest() {
   for (const [txt, what] of [['I ran `git push` on the branch and opened a pull request.', 'a report of what the agent ran'], ['Done: I wrote company/CHARTER.md and ran `node company/tools/onboard.js --certify`, which passed.', 'a report with a backticked command'],
     ['The dispatcher checks in every 10 minutes; nothing for you to do.', 'plain prose'], ['The service is stopped. You can start it again from Background services.', 'a pointer to a console place'],
     ['Agents run `systemctl --user status` to read the timer; nothing changed.', 'what agents run']]) ok('does not flag ' + what, commandAsk(txt) === null, { txt, got: commandAsk(txt) });
+  // the owner-scope lint: crew work put to the owner in chat
+  let oa = ownerAsk('The recorder now has its own watchdog. Could you add a healthchecks check named recorder, period 5, grace 15, and paste its ping URL?');
+  ok('owner scope: a health-check request in chat is flagged as the crew\'s, routed to the risk seat', oa && oa.kind === 'crew-scope' && oa.route === 'risk' && /healthchecks/.test(oa.words.join()), oa);
+  oa = ownerAsk('Shall I adopt the heartbeat timer onto the service register? Nothing new runs.');
+  ok('owner scope: "shall I adopt the timer" is flagged: handle it yourself', oa && oa.kind === 'crew-scope', oa);
+  oa = ownerAsk('Could you sign up for a free Acme account and paste the API token and the webhook endpoint here?');
+  ok('owner scope: an account ask in technical words is flagged as jargon', oa && oa.kind === 'jargon', oa);
+  for (const [txt, what] of [['May I spend $40 on a month of market data? It lets us test the price idea; if you skip it, we keep the free feed.', 'a plain money question'],
+    ['I fixed the timer and the heartbeat is green again. Nothing for you to do.', 'a report about infrastructure with no question'],
+    ['Which market should we focus on first, sports or weather?', 'a direction question']]) ok('owner scope: does not flag ' + what, ownerAsk(txt) === null, { txt, got: ownerAsk(txt) });
   console.log((fails ? 'FAIL ' : 'PASS ') + (n - fails) + '/' + n);
   return fails ? 1 : 0;
 }
 
-module.exports = { commandAsk, actionFor };
+module.exports = { commandAsk, ownerAsk, actionFor };
 if (require.main === module) {
   if (process.argv.includes('--selftest')) process.exit(selftest());
   console.error('usage: node console/command-ask.js --selftest'); process.exit(2);

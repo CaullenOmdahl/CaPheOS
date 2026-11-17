@@ -5,9 +5,9 @@
  * batches open questions and the dispatcher delivers the CEO's to company/owner/outbound.jsonl; an owner reply that
  * names the question id comes back through company/owner/inbound.jsonl (owner-inbox.js).
  *
- *   node company/tools/inbox.js ask --from <name> --message "2-4 plain sentences" [--details "evidence, numbers"]
+ *   node company/tools/inbox.js ask --from <name> --message "two plain sentences" [--details "evidence, numbers"]
  *        [--about <project>] [--blocking] [--kind <shortcut> + its flags | --form '<json>' | --questions '<json>']
- *        [--one-decision]                                                                        (--q is the old form)
+ *        [--one-decision] [--changed "what is materially different since the owner said not now"]   (--q is the old form)
  *   node company/tools/inbox.js list [--open] [--from <name>]
  *   node company/tools/inbox.js answer --id q-0003 --a "yes: rotate it" --by Commander [--answer '<json>'] [--quiet]
  *   node company/tools/inbox.js snooze --id q-0003 --until <ISO time> --by Commander
@@ -19,7 +19,16 @@
  * answered or closed here: approvals.js answer (or Today › Needs you) is its only answer path (exit 5).
  *   node company/tools/inbox.js --selftest
  *
- * HOW A QUESTION READS. `--message` is what the owner sees first: 2-4 conversational sentences — what you need, why,
+ * OWNER SCOPE (lib/owner-scope.js, enforced here for every ask, approvals included). The owner is a busy non-technical
+ * person, asked only for money beyond the company's limits, accounts or identity in their own name, legal/ownership/
+ * commitment decisions, company direction, risk governance reserves for them, and the fixed gates. An ask about
+ * infrastructure, monitoring, health checks, tooling, registers, timers, framework bugs or internal process is refused
+ * (code crew-scope) with where it goes: yourself, the risk/tools/floor seat, or a framework request. A topic the owner
+ * answered "not now" within 7 days is refused (code backoff) unless --changed says what changed. Every owner question
+ * must pass the plain-language check (code plain, with a `suggestion`): at most two short sentences, no jargon, ids,
+ * paths or stray figures, what the owner gets or risks, and what happens if they skip it.
+ *
+ * HOW A QUESTION READS. `--message` is what the owner sees first: two short conversational sentences — what you need, what they get,
  * what happens if they say no. Evidence, numbers, alternatives and ids go in `--details`, shown collapsed under "More
  * detail". `ask` warns (field `warnings`) when there is no message, or it is long (> 400 chars) or dense with jargon.
  * An old question with only `q` shows its first two sentences as the message and the rest as detail.
@@ -196,7 +205,7 @@ const JARGON = [/`[^`]+`/g, /\b[\w./-]+\.(js|json|jsonl|md|py|sh)\b/g, /\bq-\d{6
 /* styleWarnings(message, details) -> [plain advice to the asker] */
 function styleWarnings(message, details) {
   const w = [];
-  if (!message) return ['no --message: the owner sees the first two sentences of --q. Write 2-4 plain sentences (what you need, why, what happens if they say no) and move evidence to --details.'];
+  if (!message) return ['no --message: the owner sees the first two sentences of --q. Write two plain sentences (what you need, what the owner gets, what happens if they skip it) and move evidence to --details.'];
   if (message.length > MESSAGE_SOFT) w.push('the message is ' + message.length + ' characters; keep it under ' + MESSAGE_SOFT + ' and move the rest to --details.');
   const hits = JARGON.reduce((n, re) => n + (message.match(re) || []).length, 0);
   if (hits >= 3) w.push('the message reads like a report (' + hits + ' ids, paths, units or abbreviations); say it the way you would to a person and put the numbers in --details.');
@@ -637,6 +646,40 @@ function composerCheck(o) {
   return null;
 }
 
+/* ownerScopeCheck(o) — the owner-scope rule (lib/owner-scope.js): a crew-scope ask is refused with where it goes, a
+ * topic the owner answered "not now" within 7 days is refused unless o.changed says what changed, and every owner
+ * question must read plainly (two short sentences, no jargon, what they get, what happens if they skip it).
+ * An approval record carries its category (and the fixed flag) from approvals.js; an older gate question is a fixed gate. */
+function crewSeats() {
+  const out = {};
+  for (const fn of ['risk', 'tools', 'floor']) { try { const c = co.crew(); const id = Object.keys(c).find(k => co.holds(c[k], fn)); out[fn] = id ? co.nameOf(id) : null; } catch (_) { out[fn] = null; } }
+  return out;
+}
+/* scopeExempt (in process only, never from the CLI): 'framework' for the framework's own owner gates (the money hold,
+ * the pacer), true for the selftest's form fixtures below.
+ * framework-composed asks: a framework tool that composes its own owner gate (an onboarding batch, a pack, a console
+ * panel, a system package) is exempt from the owner-scope rule. In process it passes scopeExempt: 'framework'; over the
+ * CLI it passes --via <tool>, honoured only when the parent process really is that framework tool (Linux /proc: a node
+ * whose script is company/tools/<tool>), so an agent's shell cannot claim it. */
+const FRAMEWORK_VIA = new Set(['onboard.js', 'pack.js', 'console-panel.js', 'deps.js']);
+function viaFramework(via) {
+  const v = String(via || ''); if (!FRAMEWORK_VIA.has(v)) return false;
+  try {
+    const argv = fs.readFileSync('/proc/' + process.ppid + '/cmdline', 'utf8').split('\0').filter(Boolean);
+    if (!argv.length || !/(^|\/)node(js)?$/.test(argv[0]) && argv[0] !== process.execPath) return false;
+    const cwd = fs.readlinkSync('/proc/' + process.ppid + '/cwd');
+    const script = argv.slice(1).find(x => !x.startsWith('-'));
+    return !!script && path.resolve(cwd, script).split(path.sep).slice(-3).join('/') === 'company/tools/' + v;
+  } catch (_) { return false; }
+}
+function ownerScopeCheck(o) {
+  const ap = o.approval || null;
+  const fixedGate = !!o.gate || !!o.fixedGate;
+  return require('./lib/owner-scope').check({ from: o.from, about: o.about, message: o.message, details: o.details, q: o.q, questions: o.questions,
+    category: ap ? ap.category : (o.gate ? 'gate' : null), level: ap && ap.level, fixed: fixedGate, approvalDigest: ap && ap.actionDigest, changed: o.changed },
+  { rows: readAll(), seats: crewSeats() });
+}
+
 /* openQuestions() — the single definition of "an open PM question": an ask that has no answer and has not been
  * reclassified to company ownership. A snoozed question is still open; it carries snoozedUntil while the snooze runs. */
 function openQuestions() {
@@ -675,7 +718,7 @@ function ask(o) {
   const message = str(o.message, LIMITS.message, 'the message');
   const details = str(o.details, LIMITS.details, 'the details');
   const q = message ? message + (details ? '\n\n' + details : '') : String(o.q || '').trim();
-  if (!q) throw new Error('--message is required (2-4 plain sentences; old form: --q)');
+  if (!q) throw new Error('--message is required (two plain sentences; old form: --q)');
   if (String(q).length > LIMITS.details + LIMITS.message) throw new Error('the question is too long');
   let kind = o.kind ? String(o.kind).toLowerCase() : null, form, questions = null;
   const rawForm = o.form ? (typeof o.form === 'string' ? JSON.parse(o.form) : o.form) : null;
@@ -684,6 +727,7 @@ function ask(o) {
   if (rawQs) { questions = normalizeQuestions(rawQs); kind = 'multi'; }
   else if (rawForm) { form = normalizeForm(rawForm); kind = 'form'; }
   else { form = normalizeForm(expandKind(kind || 'approve', o.spec)); kind = kind || 'approve'; }
+  if (!o.scopeExempt) { const sc = ownerScopeCheck({ from: o.from, about: o.about, message, details, q, questions: rawQs, approval: o.approval, gate: o.gate, fixedGate: o.fixedGate, changed: o.changed }); if (sc) throw Object.assign(new Error(sc.error), { code: sc.code, suggestion: sc.suggestion, route: sc.route, prior: sc.prior }); }
   // one decision per question: a single Approve/Decline that bundles several decisions is refused, with the split ready
   if (kind === 'approve' && !o.gate && !o.oneDecision) {
     const items = decisionItems(q);
@@ -695,6 +739,7 @@ function ask(o) {
   if (questions) { row.kind = 'multi'; row.questions = questions; }
   else if (kind !== 'approve' || form.actions.some(a => a.does)) { row.kind = kind; row.form = form; }
   if (o.batch) row.batch = o.batch; if (o.gate) row.gate = o.gate;
+  if (o.changed && String(o.changed).trim()) row.changed = String(o.changed).replace(/\s+/g, ' ').trim().slice(0, 300);   // asked again after a "not now": what changed
   if (o.approval) row.approval = o.approval;   // approvals.js: category, canonical params, actionDigest, expiresAt, dependsOn
   append(row);
   return { row, warnings: styleWarnings(message, details) };
@@ -916,7 +961,7 @@ function snooze(o) {
 function out(code, obj) { console.log(JSON.stringify(obj, null, 1)); process.exit(code); }
 
 module.exports = { withdraw, withdrawnSince, reclassify, callerSeat, plainFieldKinds, secretOnly, storeOnlyAction, normalizeQuestions, decisionItems, inferQuestions, followUpOf, questionsOf, computeParts, answerParts, recordStored,
-  shellAsk, composerCheck, routeAdvice, asksForCredential, openQuestions, state, readAll, ask, answer, snooze, normalizeForm, expandKind, formOf, checkAnswer, plainAnswer, secretHint, sliderWords,
+  shellAsk, composerCheck, ownerScopeCheck, viaFramework, routeAdvice, asksForCredential, openQuestions, state, readAll, ask, answer, snooze, normalizeForm, expandKind, formOf, checkAnswer, plainAnswer, secretHint, sliderWords,
   messageParts, styleWarnings, safeSecretName, KINDS, FIELD_TYPES, VERDICTS, FILE, deliver, isOwner };
 
 /* ---- selftest: a scratch inbox, owner dir and governance root ---- */
@@ -927,6 +972,8 @@ function selftest() {
   process.env.PROVENANCE_ROOT = T; require('./provenance.js').pinUnderStation(false);   // the owner channel's provenance (lib/owner-channel.js) is this fixture's
   const cases = []; const t = (n, c, info) => { cases.push(!!c); console.log((c ? 'ok   ' : 'FAIL ') + n + (c || info === undefined ? '' : '  ' + JSON.stringify(info).slice(0, 300))); };
   const throws = f => { try { f(); return null; } catch (e) { return e.message; } };
+  // the fixtures below test the form, answer and message machinery, not the owner-scope rule (its own cases are at the end)
+  const ask = o => module.exports.ask(Object.assign({ scopeExempt: true }, o));
   const by = 'Commander';
   const open = id => openQuestions().find(q => q.id === id);
   try {
@@ -1136,9 +1183,9 @@ if (a.cmd === 'ask') {
   try {
     let questions = null;
     if (a.questions && a.questions !== true) { try { questions = JSON.parse(a.questions); } catch (e) { out(2, { ok: false, error: '--questions is not JSON: ' + e.message }); } }
-    const { row, warnings } = ask({ from: a.from, about: a.about, message: a.message, details: a.details, q: a.q, blocking: a.blocking, kind: a.kind || spec.kind, spec, form, questions, oneDecision: !!a['one-decision'] });
+    const { row, warnings } = ask({ from: a.from, about: a.about, message: a.message, details: a.details, q: a.q, blocking: a.blocking, kind: a.kind || spec.kind, spec, form, questions, oneDecision: !!a['one-decision'], scopeExempt: a.via && viaFramework(a.via) ? 'framework' : undefined, changed: a.changed && a.changed !== true ? a.changed : undefined });
     out(0, Object.assign({ ok: true, id: row.id, kind: row.kind || 'approve', status: 'open', note: 'the owner answers on Today in the console' + (row.questions ? ', one question at a time; each answer' : '; the answer') + ' comes back to you as an owner message naming ' + row.id }, warnings.length ? { warnings } : {}));
-  } catch (e) { out(2, Object.assign({ ok: false, error: e.message }, e.code === 'bundled' ? { suggestion: e.suggestion } : {}, e.code ? { code: e.code } : {})); }
+  } catch (e) { out(2, Object.assign({ ok: false, error: e.message }, e.code === 'bundled' || e.code === 'plain' ? { suggestion: e.suggestion } : {}, e.route ? { route: e.route } : {}, e.prior ? { prior: e.prior } : {}, e.code ? { code: e.code } : {})); }
 }
 if (a.cmd === 'list') {
   const now = Date.now();

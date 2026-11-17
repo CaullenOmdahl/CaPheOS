@@ -669,7 +669,7 @@ async function apply({ dry, approvedRef, by } = {}) {
   if (level === 'approve') {
     if (!approvedRef) {
       return { ok: false, refused: true, gate: 'approve',
-        error: 'schedules are at governance level "approve": ask the owner first, e.g. `node company/tools/inbox.js ask --from <you> --about cadence --q "May we change the company cadence to <what>?"`, then rerun with --approved-ref <questionId> once answered yes' };
+        error: 'schedules are at governance level "approve": ask the owner first, as an approval (governance reserves it, so the owner-scope rule lets it through), e.g. `node company/tools/approvals.js ask --from <you> --category schedules --message "May we check in <how often, in everyday words>? It <what the owner gets>." --params \'{"cadence":"<what>"}\'`, then rerun with --approved-ref <questionId> once answered yes' };
     }
     const gov = S.governance();
     if (gov && typeof gov.answerOf === 'function' && typeof gov.verdict === 'function') {
@@ -856,7 +856,7 @@ async function selftest() {
     check('dry-run plans without writing', dry.plan.loops.length === 3 && dry.plan.routines.length === 1 && JSON.parse(fs.readFileSync(S.loopsFile, 'utf8')).agents.desk.cooldownMin === 30, JSON.stringify(dry.plan));
     level = 'approve';
     const refused = await apply({ by: 'Alex' });
-    check('approve level refuses an agent without --approved-ref and says how to ask', refused.refused && /inbox\.js ask/.test(refused.error));
+    check('approve level refuses an agent without --approved-ref and says how to ask', refused.refused && /approvals\.js ask --from <you> --category schedules/.test(refused.error));
     const ownerApply = await apply({ dry: true, by: 'owner' });
     check('the owner applies without the gate', ownerApply.ok && ownerApply.gate === 'owner');
     level = 'notify';

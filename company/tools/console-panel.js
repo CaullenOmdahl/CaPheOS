@@ -601,7 +601,7 @@ function askOwner(q, from, r) {
   const tool = path.join(paths(r).tools, 'inbox.js');
   if (!fs.existsSync(tool)) return { asked: false, why: 'inbox.js not present' };
   try {
-    const outp = execFileSync(process.execPath, [tool, 'ask', '--from', from, '--about', 'console', '--q', q], { cwd: paths(r).root, encoding: 'utf8', timeout: 15000 });
+    const outp = execFileSync(process.execPath, [tool, 'ask', '--from', from, '--about', 'console', '--q', q, '--via', 'console-panel.js'], { cwd: paths(r).root, encoding: 'utf8', timeout: 15000 });
     const j = JSON.parse(outp); return { asked: !!j.ok, id: j.id };
   } catch (e) { return { asked: false, why: e.message }; }
 }

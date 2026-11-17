@@ -50,7 +50,7 @@ const decisionsHas = (T, re) => read(T, 'company/work/decisions.md').split('\n')
 test('trap 1: an approval is one open question on Needs you (the console badge counts it once); notify/auto add nothing', () => {
   const T = company({ governance: { categories: Object.assign({}, JSON.parse(read(path.join(REPO), 'company/defaults/state/governance.json')).categories, { models: 'notify', tools: 'auto' }) } });
   const r = run(T, askSpend() + '');
-  run(T, 'A.ask({ from: "Sam", category: "models", message: "Switch the research seat to the smaller model.", params: { seat: "sam" } }); A.ask({ from: "Sam", category: "tools", message: "Rename a helper.", params: { f: "x" } });');
+  run(T, 'A.ask({ from: "Sam", category: "models", message: "Switch the research seat to the smaller model. It lets us go on with the work.", params: { seat: "sam" } }); A.ask({ from: "Sam", category: "tools", message: "Rename a helper. It lets us go on with the work.", params: { f: "x" } });');
   const q = run(T, 'return { open: I.openQuestions().map(q => q.id), approvals: A.list().map(r => r.id) };');
   assert.deepEqual(q.open, [r.id], 'the badge source (/api/questions = inbox.openQuestions) lists the approval exactly once');
   assert.deepEqual(q.approvals, [r.id], 'the approval API reads the same record (no second queue)');
@@ -80,15 +80,15 @@ test('trap 3: two key orders give one digest; a changed amount is refused as sta
   const d = run(T, 'return [A.digestOf({ b: 2, a: { y: "x  y", x: 5.0 } }), A.digestOf({ a: { x: 5, y: " x y " }, b: 2 }), A.digestOf({ a: { x: 6, y: "x y" }, b: 2 })];');
   assert.equal(d[0], d[1], 'stable key order, normalised numbers and strings'); assert.notEqual(d[0], d[2]);
   const a = run(T, askSpend());
-  const again = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "Same thing, asked again in other words.", params: { vendor: "data.example.com", amountUsd: 20.0 } });');
+  const again = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "Same thing, asked again in other words. It lets us go on with the work.", params: { vendor: "data.example.com", amountUsd: 20.0 } });');
   assert.equal(again.deduped, true); assert.equal(again.id, a.id);
   const am = run(T, 'return A.amend(' + JSON.stringify(a.id) + ', { by: "Sam", params: { amountUsd: 200, vendor: "data.example.com" } });');
   assert.notEqual(am.actionDigest, a.actionDigest);
   const stale = run(T, 'return A.answer(' + JSON.stringify(a.id) + ', { verdict: "yes", surface: "chat", by: "owner", shownDigest: ' + JSON.stringify(a.actionDigest) + ' });');
   assert.equal(stale.code, 'stale', JSON.stringify(stale));
   assert.equal(run(T, 'return A.get(' + JSON.stringify(a.id) + ').status;'), 'pending', 'nothing was approved');
-  run(T, 'return A.ask({ from: "Sam", category: "spend", message: "A second purchase, a different one.", params: { amountUsd: 5 } });');
-  const cap = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "A third purchase.", params: { amountUsd: 6 } });');
+  run(T, 'return A.ask({ from: "Sam", category: "spend", message: "A second purchase, a different one. It lets us go on with the work.", params: { amountUsd: 5 } });');
+  const cap = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "A third purchase. It lets us go on with the work.", params: { amountUsd: 6 } });');
   assert.equal(cap.code, 'cap', 'maxPendingPerSeat from the policy file');
 });
 
@@ -102,12 +102,12 @@ test('trap 4: the fixed-gate set is governance.json fixed (one source), equals e
     const rule = (JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')).rules || []).find(r => r.id === 'fixed-gate');
     assert.ok(rule, 'gate-triage ' + f + ' has a fixed-gate rule'); assert.deepEqual([...rule.when.value].sort(), [...fixed].sort(), 'drift: gate-triage ' + f + ' vs governance.json fixed');
   }
-  const r = run(T, 'return A.ask({ from: "Sam", category: "access", message: "Could we get read access to the example bank account?", params: { account: "example" } });');
+  const r = run(T, 'return A.ask({ from: "Sam", category: "access", message: "Could we get read access to the example bank account? It lets us go on with the work.", params: { account: "example" } });');
   const chat = run(T, 'return A.answer(' + JSON.stringify(r.id) + ', { verdict: "yes", surface: "chat", by: "owner", shownDigest: ' + JSON.stringify(r.actionDigest) + ' });');
   assert.equal(chat.code, 'route'); assert.match(chat.error, /fixed owner gate/);
   // not a hand-typed list: a category the owner adds to governance.json `fixed` routes the same way
   const T2 = company({ governance: { fixed: Object.assign({ hiring: 'approve' }, JSON.parse(read(REPO, 'company/defaults/state/governance.json')).fixed) } });
-  const h = run(T2, 'return A.ask({ from: "Sam", category: "hiring", message: "Open a round for a designer.", params: { role: "designer" } });');
+  const h = run(T2, 'return A.ask({ from: "Sam", category: "hiring", message: "Open a round for a designer. It lets us go on with the work.", params: { role: "designer" } });');
   assert.equal(run(T2, 'return A.get(' + JSON.stringify(h.id) + ').fixed;'), true);
 });
 
@@ -153,7 +153,7 @@ test('trap 6: authority: never the asker; fixed gates and `approve` categories t
   // spend is at `approve` in the framework preset: the company waits for the OWNER, so the CEO may not answer it (the old trap 6 said it could)
   assert.equal(ans(s.id, 'Founder', s.actionDigest, { ceo: true }).code, 'authority', 'the CEO on an approve-level category');
   assert.match(ans(s.id, 'Founder', s.actionDigest, { ceo: true }).error, /spend is at approve: the company waits for the owner/);
-  const f = run(T, 'return A.ask({ from: "Sam", category: "commitment", message: "May we sign the example pilot agreement?", params: { party: "example" } });');
+  const f = run(T, 'return A.ask({ from: "Sam", category: "commitment", message: "May we sign the example pilot agreement? It lets us go on with the work.", params: { party: "example" } });');
   assert.equal(ans(f.id, 'Founder', f.actionDigest, { ceo: true }).code, 'authority', 'the CEO on a fixed gate');
   assert.equal(ans(f.id, 'owner', f.actionDigest, { surface: 'chat' }).code, 'route', 'a fixed gate is never answered from chat');
   assert.equal(ans(f.id, 'Olive Owner', f.actionDigest).ok, true, 'the owner on a fixed gate, from Needs you');
@@ -161,17 +161,17 @@ test('trap 6: authority: never the asker; fixed gates and `approve` categories t
   // a category the owner set to triage (gate-triage escalated, so a record was minted): the owner or the CEO
   const cats = JSON.parse(read(REPO, 'company/defaults/state/governance.json')).categories;
   const T2 = company({ governance: { categories: Object.assign({}, cats, { hiring: 'triage' }) } });
-  const h = run(T2, 'return A.ask({ from: "Sam", category: "hiring", message: "Open a round for a designer.", params: { role: "designer" } });');
+  const h = run(T2, 'return A.ask({ from: "Sam", category: "hiring", message: "Open a round for a designer. It lets us go on with the work.", params: { role: "designer" } });');
   assert.equal(h.minted, true, JSON.stringify(h)); assert.equal(run(T2, 'return A.get(' + JSON.stringify(h.id) + ').level;'), 'triage');
   const ans2 = (by, o) => run(T2, (o && o.ceo ? 'A._S.crewCaller = () => "agent"; ' : '') + 'return A.answer(' + JSON.stringify(h.id) + ', { verdict: "yes", surface: "needs-you", by: ' + JSON.stringify(by) + ', shownDigest: ' + JSON.stringify(h.actionDigest) + ' });');
   assert.equal(ans2('Founder').code, 'unverified', 'a crew --by that is not verified as that seat');
-  const own = run(T2, 'return A.ask({ from: "Founder", category: "hiring", message: "Open a round for an analyst.", params: { role: "analyst" } });');
+  const own = run(T2, 'return A.ask({ from: "Founder", category: "hiring", message: "Open a round for an analyst. It lets us go on with the work.", params: { role: "analyst" } });');
   assert.equal(run(T2, 'A._S.crewCaller = () => "agent"; return A.answer(' + JSON.stringify(own.id) + ', { verdict: "yes", surface: "needs-you", by: "Founder", shownDigest: ' + JSON.stringify(own.actionDigest) + ' }).then(r => r.code);'), 'authority', 'the CEO never answers its own ask');
   const ok = ans2('Founder', { ceo: true });
   assert.equal(ok.ok, true, JSON.stringify(ok));
   assert.equal(decisionsHas(T2, new RegExp('Approval ' + h.id + ' \\(hiring\\) approved by Founder')).length, 1);
   // the owner turns triage off again: a pending triage record is the owner's only (level now AND when minted)
-  const h2 = run(T2, 'return A.ask({ from: "Sam", category: "hiring", message: "Open a round for a writer.", params: { role: "writer" } });');
+  const h2 = run(T2, 'return A.ask({ from: "Sam", category: "hiring", message: "Open a round for a writer. It lets us go on with the work.", params: { role: "writer" } });');
   w(T2, 'company/state/governance.json', { categories: Object.assign({}, cats, { hiring: 'approve' }), fixed: JSON.parse(read(REPO, 'company/defaults/state/governance.json')).fixed });
   assert.equal(run(T2, 'A._S.crewCaller = () => "agent"; return A.answer(' + JSON.stringify(h2.id) + ', { verdict: "yes", surface: "needs-you", by: "Founder", shownDigest: ' + JSON.stringify(h2.actionDigest) + ' }).then(r => r.code);'), 'authority');
 });
@@ -198,7 +198,7 @@ test('trap 7: the record does not live in the chat: archiving the chat message l
 test('trap 8: a blocking approval suppresses dependents, gets ONE reminder over many ticks; an answer wakes the asker and releases', () => {
   const T = company();
   const A1 = run(T, askSpend({ blocking: true }));
-  const B1 = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "Then the second month as well, $20.", params: { amountUsd: 20, month: 2 }, dependsOn: ' + JSON.stringify(A1.id) + ' });');
+  const B1 = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "Then the second month as well, $20. It lets us go on with the work.", params: { amountUsd: 20, month: 2 }, dependsOn: ' + JSON.stringify(A1.id) + ' });');
   const b = run(T, 'return A.get(' + JSON.stringify(B1.id) + ');');
   assert.deepEqual(b.suppressed, { by: A1.id }); assert.equal(b.chatAnswerable, false);
   assert.deepEqual(run(T, 'return A.blockingSeats();'), { sam: [{ id: A1.id, category: 'spend', askedAt: run(T, 'return A.get(' + JSON.stringify(A1.id) + ').askedAt;'), dependents: [B1.id], dependentSeats: ['sam'] }] });
@@ -220,7 +220,7 @@ test('trap 8: a blocking approval suppresses dependents, gets ONE reminder over 
 test('trap 8: expiry tells the asker and releases the dependents (a hold is never permanent and silent)', () => {
   const T = company();
   const A1 = run(T, askSpend({ blocking: true, expiresMin: 30 }));
-  const B1 = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "And the add-on, $4.", params: { amountUsd: 4 }, dependsOn: ' + JSON.stringify(A1.id) + ' });');
+  const B1 = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "And the add-on, $4. It lets us go on with the work.", params: { amountUsd: 4 }, dependsOn: ' + JSON.stringify(A1.id) + ' });');
   run(T, 'A._S.now = () => Date.now() + 31 * 60e3; return A.tick();');
   assert.equal(run(T, 'return A.get(' + JSON.stringify(A1.id) + ').status;'), 'expired');
   const told = jsonl(T, 'company/owner/inbound.jsonl').filter(m => m.re === A1.id);
@@ -229,7 +229,7 @@ test('trap 8: expiry tells the asker and releases the dependents (a hold is neve
 });
 test('trap 8 (batching): a same-tick burst is one reminder; one batch per 15-minute window; the clock starts at creation', () => {
   const T = company();
-  const ids = run(T, 'return (async () => { const o = []; for (const n of [1, 2, 3]) o.push((await A.ask({ from: "Sam", category: "spend", message: "Purchase number " + n + " for the study.", params: { amountUsd: n } })).id); return o; })();');
+  const ids = run(T, 'return (async () => { const o = []; for (const n of [1, 2, 3]) o.push((await A.ask({ from: "Sam", category: "spend", message: "Purchase number  It lets us go on with the work." + n + " for the study.", params: { amountUsd: n } })).id); return o; })();');
   // nobody ever rendered these; exactly 15 min after the FIRST was created, the later two are milliseconds younger
   const t0 = Date.parse(run(T, 'return A.get(' + JSON.stringify(ids[0]) + ').askedAt;'));
   const first = run(T, 'A._S.now = () => ' + (t0 + 15 * 60e3) + '; return A.remind();');
@@ -258,7 +258,7 @@ test('trap 9: blockingSeats() is a read (no file changes) and approvals.js never
 test('trap 10: expiry deny is applied by the server (tick / the answer path), not by a renderer; no expiresAt means no expiry', () => {
   const T = company();
   const a = run(T, askSpend({ expiresMin: 1 }));
-  const n = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "A purchase that never expires.", params: { amountUsd: 3 } });');
+  const n = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "A purchase that never expires. It lets us go on with the work.", params: { amountUsd: 3 } });');
   assert.ok(run(T, 'return A.get(' + JSON.stringify(a.id) + ').expiresAt;'));
   // two minutes later an answer arrives: the answer path applies the expiry first and refuses
   const late = run(T, 'A._S.now = () => Date.now() + 2 * 60e3; return A.answer(' + JSON.stringify(a.id) + ', { verdict: "yes", surface: "chat", by: "owner", shownDigest: ' + JSON.stringify(a.actionDigest) + ' });');
@@ -275,8 +275,8 @@ test('trap 10: expiry deny is applied by the server (tick / the answer path), no
 test('R-B: governance first: auto acts and logs, notify acts, logs and tells (no record, no badge, no reminder), approve mints', () => {
   const cats = JSON.parse(read(REPO, 'company/defaults/state/governance.json')).categories;
   const T = company({ governance: { categories: Object.assign({}, cats, { tools: 'auto', models: 'notify', spend: 'approve' }) } });
-  const auto = run(T, 'return A.ask({ from: "Sam", category: "tools", message: "Rename the helper script.", params: { f: "helper" } });');
-  const note = run(T, 'return A.ask({ from: "Sam", category: "models", message: "Move the research seat to the smaller model.", params: { seat: "sam" } });');
+  const auto = run(T, 'return A.ask({ from: "Sam", category: "tools", message: "Rename the helper script. It lets us go on with the work.", params: { f: "helper" } });');
+  const note = run(T, 'return A.ask({ from: "Sam", category: "models", message: "Move the research seat to the smaller model. It lets us go on with the work.", params: { seat: "sam" } });');
   const appr = run(T, askSpend());
   assert.deepEqual([auto.minted, auto.level, note.minted, note.level, appr.minted, appr.level], [false, 'auto', false, 'notify', true, 'approve']);
   assert.equal(jsonl(T, 'company/pm-inbox.jsonl').filter(r => r.type === 'ask').length, 1, 'one record: the approve one');
@@ -296,7 +296,7 @@ test('I-a / I-b (integration): approval events through company/tools/decision.js
   assert.ok(before.some(l => /Competence ledger anchor: 3 events/.test(l)));
   const a = run(T, askSpend());
   run(T, 'return A.answer(' + JSON.stringify(a.id) + ', { verdict: "yes", surface: "needs-you", by: "owner", shownDigest: ' + JSON.stringify(a.actionDigest) + ' });');
-  const b = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "A purchase we will not need.", params: { amountUsd: 7 } });');
+  const b = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "A purchase we will not need. It lets us go on with the work.", params: { amountUsd: 7 } });');
   const wd = run(T, 'return A.withdraw(' + JSON.stringify(b.id) + ', { by: "Sam", why: "not needed after all" });');
   assert.equal(wd.ok, true, JSON.stringify(wd)); assert.ok(wd.audit, 'the withdrawal is an audit event');
   const after = read(T, 'company/work/decisions.md').split('\n').filter(Boolean);
@@ -359,7 +359,7 @@ test('hole 1: CLI self-approval: "--by owner" from an agent run or a detached pr
 
 test('hole 2: inbox.js answer/close on an approval record is refused (exit 5) even for the owner; --by owner from an agent run is refused (exit 3)', () => {
   const T = company();
-  const b = run(T, 'return A.ask({ from: "Sam", category: "commitment", message: "Sign the pilot agreement please.", params: { p: 1 } });');
+  const b = run(T, 'return A.ask({ from: "Sam", category: "commitment", message: "Sign the pilot agreement please. It lets us go on with the work.", params: { p: 1 } });');
   const r = cli(T, 'inbox.js', ['answer', '--id', b.id, '--by', 'owner', '--a', 'yes']);
   assert.equal(r.status, 5, r.stdout); assert.match(JSON.parse(r.stdout).error, /is an approval: answer it on Today › Needs you or with node company\/tools\/approvals\.js answer/);
   const c = cli(T, 'inbox.js', ['close', '--id', b.id, '--by', 'owner']);
@@ -373,7 +373,7 @@ test('hole 2: inbox.js answer/close on an approval record is refused (exit 5) ev
   assert.equal(decisionsHas(T, new RegExp('Approval ' + b.id + ' .*(approved|denied)')).length, 0);
   // the owner rule for an ordinary question: an agent run's --by owner is refused
   const R = company({ real: true });
-  const q = run(R, 'return I.ask({ from: "Sam", message: "Which colour should the landing page use?", kind: "text" }).row.id;');
+  const q = run(R, 'return I.ask({ from: "Sam", message: "Which colour should the landing page use? It sets the look of the page; if you skip it, we keep the current one.", kind: "text" }).row.id;');
   const ag = cli(R, 'inbox.js', ['answer', '--id', q, '--by', 'owner', '--a', 'blue'], AGENT_RUN);
   assert.equal(ag.status, 3, ag.stdout); assert.match(JSON.parse(ag.stdout).error, /owner's own interactive shell or the console/);
   assert.equal(answerRows(R, q).length, 0);
@@ -390,7 +390,7 @@ test('hole 5: a lock left by a dead process is taken over at once (owner pid + l
   const r = run(T, 'return A.answer(' + JSON.stringify(a.id) + ', { verdict: "yes", surface: "needs-you", by: "owner", shownDigest: ' + JSON.stringify(a.actionDigest) + ' });');
   assert.equal(r.ok, true, JSON.stringify(r)); assert.ok(Date.now() - t0 < 3000, 'took ' + (Date.now() - t0) + ' ms (the old lock waited ~7 s on a fresh orphan, then said busy)');
   assert.ok(!fs.existsSync(lockDir(T)) && !fs.readdirSync(path.join(T, 'company')).some(f => f.startsWith('.approvals.lock')), 'the stale lock and its aside are gone');
-  const b = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "Another purchase.", params: { amountUsd: 3 } });');
+  const b = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "Another purchase. It lets us go on with the work.", params: { amountUsd: 3 } });');
   plantLock(T, null, 5000);
   assert.equal(run(T, 'return A.answer(' + JSON.stringify(b.id) + ', { verdict: "no", surface: "needs-you", by: "owner", shownDigest: ' + JSON.stringify(b.actionDigest) + ' }).then(r => r.ok);'), true);
 });
@@ -441,7 +441,7 @@ test('hole 5: a crash after the answer row (no audit line, no wake) is repaired 
   assert.equal(decisionsHas(T, new RegExp('Approval ' + a.id + ' \\(spend\\) approved by Olive Owner \\(surface: needs-you')).length, 1, 'one audit line');
   assert.equal(jsonl(T, 'company/owner/inbound.jsonl').filter(m => m.re === a.id).length, 1, 'one wake');
   // the wake fails (inbox.deliver throws): the answer and the audit line stand, the error is not swallowed, tick() wakes
-  const b = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "Another purchase.", params: { amountUsd: 4 } });');
+  const b = run(T, 'return A.ask({ from: "Sam", category: "spend", message: "Another purchase. It lets us go on with the work.", params: { amountUsd: 4 } });');
   const r2 = run(T, 'I.deliver = () => { throw new Error("a tool ran: spawn"); }; return A.answer(' + JSON.stringify(b.id) + ', { verdict: "no", surface: "needs-you", by: "owner", shownDigest: ' + JSON.stringify(b.actionDigest) + ' }).then(r => r, e => ({ threwOut: e.message }));');
   assert.equal(r2.threwOut, 'a tool ran: spawn', 'the inbox.deliver path no longer swallows a throw');
   assert.equal(decisionsHas(T, new RegExp('Approval ' + b.id + ' \\(spend\\) denied')).length, 1);

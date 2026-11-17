@@ -34,8 +34,8 @@ test('without the commitments module, no seat is sent to the commitments tool', 
   const T = scratch([]);
   try {
     const r = ensureIn(T, 'You are Jo.\n\nDo the work.');
-    assert.equal(r.version, 'v9');
-    assert.ok(r.prompt.includes('[HOUSE RULES FOR SCHEDULED RUNS v9]'));
+    assert.equal(r.version, 'v10');
+    assert.ok(r.prompt.includes('[HOUSE RULES FOR SCHEDULED RUNS v10]'));
     assert.doesNotMatch(r.prompt, /commitments\.js/);
     assert.match(r.prompt, /handoff to yourself/);
     assert.match(r.prompt, /service\.js propose/);   // the rest of the waiting rule stays
@@ -61,4 +61,15 @@ test('blockFor: every module enabled is BLOCK byte for byte; a module line witho
   const b = R.blockFor([], { 'my-section': 'some-module' });
   assert.ok(!b.includes('my-section.js') && b.split('\n').length === R.BLOCK.split('\n').length - 1);
   assert.equal(R.moduleTools().commitments, 'commitments');
+});
+
+test('house rules v10 carry the owner-scope rule: infrastructure is the crew\'s, the owner gets only the short list in two plain sentences with a default', () => {
+  const T = scratch([]);
+  try {
+    const r = ensureIn(T, 'You are Jo.\n\nDo the work.');
+    assert.match(r.prompt, /The owner is a busy non-technical person\. Handle infrastructure yourself/);
+    assert.match(r.prompt, /Ask the owner only for money beyond the company's limits, an account or identity in their own name, legal, ownership or commitment decisions, company direction and priorities, risk the governance level reserves for them, or a fixed gate, in two plain sentences/);
+    assert.match(r.prompt, /what happens if they skip it \(your default\)/);
+    assert.match(r.prompt, /"not now" is not asked again for 7 days/);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });

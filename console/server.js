@@ -981,7 +981,7 @@ async function selftest() {
     r = await call('GET', '/api/spend');
     check('GET /api/spend: today against the cap, by seat and by provider (read-only)', r.status === 200 && r.json.ok && r.json.today && typeof r.json.today.usd === 'number' && typeof r.json.today.capUsd === 'number' && Array.isArray(r.json.bySeat) && Array.isArray(r.json.byProvider) && Array.isArray(r.json.subscriptions), r.json);
     // questions
-    const ask = await new Promise(res => execFile(process.execPath, [path.join(tmp, 'company', 'tools', 'inbox.js'), 'ask', '--from', 'Selftest', '--about', 'console', '--q', 'May we test the console?', '--blocking'], { env }, (e, so) => res(JSON.parse(so))));
+    const ask = await new Promise(res => execFile(process.execPath, [path.join(tmp, 'company', 'tools', 'inbox.js'), 'ask', '--from', 'Selftest', '--about', 'console', '--q', 'May we test the console? It lets us check the screens; if you skip it, we wait.', '--blocking'], { env }, (e, so) => res(JSON.parse(so))));
     r = await call('GET', '/api/questions');
     check('question asked via inbox.js shows', r.json.ok && r.json.questions.some(q => q.id === ask.id && q.blocking), r.json);
     r = await call('POST', '/api/questions/' + ask.id + '/answer', { verdict: 'maybe' });
@@ -995,7 +995,10 @@ async function selftest() {
     r = await call('POST', '/api/questions/' + ask.id + '/answer', { verdict: 'yes' });
     check('answering again: 404', r.status === 404, r.json);
     // typed questions: every shortcut kind, a free-form form, snooze, and the secret store
-    const askCli = argv => new Promise(res => execFile(process.execPath, [path.join(tmp, 'company', 'tools', 'inbox.js'), 'ask', '--from', 'Founder'].concat(argv), { env }, (e, so) => { try { res(JSON.parse(so)); } catch (_) { res({ ok: false, raw: so }); } }));
+    // a fixture message gets the plain tail the owner-scope rule asks for (what the owner gets, what happens if they skip it)
+    const PLAIN_TAIL = ' It lets us go on; if you skip it, we wait.';
+    const plainArgv = argv => argv.map((x, i) => argv[i - 1] === '--message' && x.length > 1 && !/\bskip\b/.test(x) ? x + PLAIN_TAIL : x);
+    const askCli = argv => new Promise(res => execFile(process.execPath, [path.join(tmp, 'company', 'tools', 'inbox.js'), 'ask', '--from', 'Founder'].concat(plainArgv(argv)), { env }, (e, so) => { try { res(JSON.parse(so)); } catch (_) { res({ ok: false, raw: so }); } }));
     const SECRET = 'S3cr3t-Value-For-Selftest-0123456789';
     const sseBuf = { d: '' };
     const sseReq = http.request({ host: '127.0.0.1', port, path: '/api/events', headers: { 'x-console-token': token } }, res => res.on('data', c => { sseBuf.d += c; }));
@@ -1006,12 +1009,12 @@ async function selftest() {
     kq.secret = await askCli(['--message', 'Please make a read-only Kalshi key and paste it here.', '--details', 'Kalshi refuses anonymous websockets.', '--kind', 'secret', '--name', 'kalshi-api-key', '--label', 'Kalshi API key']);
     kq.secret2 = await askCli(['--message', 'And once more, the same Kalshi key file.', '--kind', 'secret', '--name', 'kalshi-api-key']);
     kq.link = await askCli(['--message', 'Could you sign up at Synpath?', '--kind', 'link', '--url', 'https://synpath.example/signup', '--action', 'Sign in with Google']);
-    kq.account = await askCli(['--message', 'Make a healthchecks.io account.', '--kind', 'account', '--url', 'https://healthchecks.io/', '--action', 'Sign up', '--fields', 'email:Sign-in email']);
+    kq.account = await askCli(['--message', 'Make a free Acme account.', '--kind', 'account', '--url', 'https://healthchecks.io/', '--action', 'Sign up', '--fields', 'email:Sign-in email']);
     kq.number = await askCli(['--message', 'What monthly cap?', '--kind', 'number', '--unit', 'USD', '--min', '0', '--max', '100']);
     kq.date = await askCli(['--message', 'When do we launch?', '--kind', 'date', '--min', '2026-01-01']);
     kq.slider = await askCli(['--message', 'How much of this week may routines use?', '--kind', 'slider', '--min', '70', '--max', '100', '--step', '5', '--value', '95', '--unit', '%', '--say', 'Let routines use up to {value}% of this week']);
     kq.form = await askCli(['--message', 'Two quick things.', '--form', JSON.stringify({ fields: [{ id: 'ok', type: 'checkbox', label: 'Emails may go to you', required: true }, { id: 'pk', type: 'secret', label: 'Ping key', name: 'ping-key', required: false }], actions: [{ id: 'go', label: 'Here you go', verdict: 'done' }, { id: 'later', label: 'Not now', verdict: 'no' }] })]);
-    kq.legacy = await askCli(['--q', 'Access gate (gate 2), no payment: a free Acme API key from an account in your name. It unlocks the reference series.']);
+    kq.legacy = await askCli(['--q', 'A free Acme key from an account in your name, please. It unlocks the reference series; if you skip it, we wait.\nAccess gate (gate 2), no payment: the Acme API key.']);
     kq.unsafe = await askCli(['--message', 'x', '--kind', 'link', '--url', 'javascript:alert(1)', '--action', 'click']);
     check('inbox.js ask: every kind filed; an unsafe link refused with the reason', Object.entries(kq).every(([k, v]) => k === 'unsafe' ? (!v.ok && /http or https/.test(v.error)) : v.ok) && /no --message/.test((kq.legacy.warnings || []).join()), kq);
     r = await call('GET', '/api/questions');
@@ -1163,7 +1166,7 @@ async function selftest() {
     const shellAsk2 = await askCli(['--message', 'Three things.', '--questions', JSON.stringify([{ prompt: 'It needs one daemon-reload that agents are refused. May I have that one command?' }, { prompt: 'Switch the module on?' }])]);
     check('composer: a question asking for systemctl/daemon-reload in prose is refused', shellAsk2.ok === false && /run a command/.test(shellAsk2.error || ''), shellAsk2);
     // withdraw: the asker takes one question back; Today hides it and lists it under Answered today
-    const wq = await askCli(['--message', 'Two things.', '--questions', JSON.stringify([{ id: 'a', prompt: 'May the tools seat fix the start limit?' }, { id: 'b', prompt: 'Switch the module on?' }])]);
+    const wq = await askCli(['--message', 'Two things.', '--questions', JSON.stringify([{ id: 'a', prompt: 'May we spend $10 on the trial? It lets us test the idea; if you skip it, we wait.' }, { id: 'b', prompt: 'May we sign the pilot agreement? It gives us a first client; if you skip it, we wait.' }])]);
     const wd = await new Promise(res => execFile(process.execPath, [path.join(tmp, 'company', 'tools', 'inbox.js'), 'withdraw', wq.id, '--part', '1', '--why', 'the rerender fixed it', '--from', 'Founder'], { env }, (e, so) => { try { res(JSON.parse(so)); } catch (_) { res({ ok: false, raw: so }); } }));
     r = await call('GET', '/api/questions');
     const wqq = (r.json.questions || []).find(x => x.id === wq.id);
@@ -1401,7 +1404,7 @@ async function selftest() {
         req.setTimeout(60000, () => req.destroy(new Error('timeout ' + p))); req.on('error', reject); if (data) req.write(data); req.end();
       });
       const gq = await new Promise(res => execFile(process.execPath, [path.join(tmp, 'company', 'tools', 'inbox.js'), 'ask', '--from', 'onboard.js', '--about', 'onboarding', '--q',
-        'Onboarding: what the enabled packs and modules need from you (one batch, asked once):\n- Hiring candidates default to the metered model deepseek/deepseek-flash, but the metered daily cap is $0.\nRecommendation: answer each line.'], { env }, (e, so) => res(JSON.parse(so))));
+        'Onboarding: a few things the new parts of the company need from you. It lets us finish setup; if you skip it, they stay off.\n- Hiring candidates default to the metered model deepseek/deepseek-flash, but the metered daily cap is $0.\nRecommendation: answer each line.'], { env }, (e, so) => res(JSON.parse(so))));
       r = await call2('GET', '/api/setup');
       check('fake station: GET /api/setup lists the onboarding question and the provider still needs you', r.json.station.up && r.json.steps.find(x => x.id === 'provider').status === 'needs' && r.json.onboardingQuestions.some(q => q.id === gq.id), r.json);
       r = await call2('POST', '/api/setup/provider/validate', { provider: 'deepseek', key: 'bad-key' });

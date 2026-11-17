@@ -128,9 +128,9 @@ test('history before the cutover: readable, never a gate answer; the cutover is 
   const cuts = R('company/state/locked/provenance.jsonl').split('\n').filter(l => l.includes('"kind":"cutover"') && l.includes('pm-inbox.jsonl'));
   assert.equal(cuts.length, 1, 'one cutover only'); assert.equal(JSON.parse(cuts[0]).bytes, fs.statSync(PMI).size);
   // a question asked through the tool after the cutover is trusted
-  const a = cli('inbox.js', ['ask', '--from', 'Sam', '--message', 'May we send the newsletter on Friday? It is ready.']);
+  const a = cli('inbox.js', ['ask', '--from', 'Sam', '--message', 'May we send the newsletter on Friday? It is ready and lets us reach readers; if you skip it, we wait a week.']);
   assert.equal(a.status, 0, a.out); ASKED = a.json.id;
-  const b = cli('inbox.js', ['ask', '--from', 'Sam', '--message', 'May we archive the old wiki? Nobody reads it.'], { agent: true });
+  const b = cli('inbox.js', ['ask', '--from', 'Sam', '--message', 'May we archive the old wiki? Nobody reads it, so it saves clutter; if you skip it, it stays.'], { agent: true });
   assert.equal(b.status, 0, 'an ask from the asker\'s own run: ' + b.out); ASKED2 = b.json.id;
   const r2 = run('read');
   assert.deepEqual(r2.open, [QOLD, ASKED, ASKED2]);
@@ -201,9 +201,9 @@ test('a withdraw of another seat\'s question is refused; a hand-appended one is 
 });
 
 test('the console answer (Today), Today, a snooze and an approval answered in chat still work and are trusted', opt, async () => {
-  const ap = cli('approvals.js', ['ask', '--from', 'Sam', '--category', 'spend', '--message', 'May we buy one month of the example data plan for $20?', '--params', '{"amountUsd":20}']);
+  const ap = cli('approvals.js', ['ask', '--from', 'Sam', '--category', 'spend', '--message', 'May we buy one month of the example data plan for $20? It unblocks the price study.', '--params', '{"amountUsd":20}']);
   assert.equal(ap.status, 0, ap.out); assert.equal(ap.json.minted, true, ap.out);
-  const snz = cli('inbox.js', ['ask', '--from', 'Sam', '--message', 'May we change the logo next month? No rush.']);
+  const snz = cli('inbox.js', ['ask', '--from', 'Sam', '--message', 'May we change the logo next month? It gives us a fresher look; if you skip it, we keep the old one.']);
   assert.equal(snz.status, 0, snz.out);
   const child = spawn(process.execPath, [path.join(REPO, 'console', 'server.js'), '--port', '0', '--print-port'], { env: baseEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
   let err = ''; child.stderr.on('data', d => { err += d; });

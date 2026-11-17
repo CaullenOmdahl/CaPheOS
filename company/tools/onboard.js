@@ -176,7 +176,7 @@ function ownerGates(extra) {
   if (!fresh.length) { writeJson(F.state, Object.assign(state(), { gates: s.gates })); return { status: 'ok', note: items.length ? items.length + ' gate(s) asked; answers in the ledger' : 'no owner gates needed' }; }
   const lines = fresh.map(g => '- ' + (g.text || (g.kind === 'secret' ? 'provide secrets/' + g.name + ' (0600) for ' + g.from : g.kind === 'externalGate' ? 'decide clearance policy for external-gate category "' + g.name + '" (' + g.from + ')' : g.kind === 'stationAbility' ? 'station ability "' + g.name + '" for ' + g.from : g.kind + ' ' + g.name)));
   const q = 'Onboarding: what the enabled packs and modules need from you (one batch, asked once):\n' + lines.join('\n') + '\nRecommendation: answer each line; secrets go in secrets/<name> with mode 0600, never in a message.\nIf you do not answer: those packs and modules stay uncertified.';
-  const r = node([tool('inbox.js'), 'ask', '--from', 'onboard.js', '--about', 'onboarding', '--q', q], { timeout: 15000 });
+  const r = node([tool('inbox.js'), 'ask', '--from', 'onboard.js', '--about', 'onboarding', '--q', q, '--via', 'onboard.js'], { timeout: 15000 });
   const j = jsonOf(r);
   if (r.status !== 0 || !j || !j.id) return { status: 'failed', note: 'could not ask the owner: ' + String(r.stderr || r.stdout).trim().slice(0, 200) };
   s.gates.asked = (s.gates.asked || []).concat(fresh.map(g => ({ kind: g.kind, name: g.name, from: g.from || '' })));

@@ -91,7 +91,7 @@ async function until(fn, ms) { const end = Date.now() + ms; let v; while (Date.n
   await shot('today-now');
   // Needs you: the typed secret question the e2e asked renders a password field (never autofilled) and the plain message
   const secretCard = await until(() => js(`(() => { const g = document.querySelector('.gate[data-kind="secret"]'); if (!g) return null; const i = g.querySelector('input.secret-input'); return { type: i && i.type, ac: i && i.getAttribute('autocomplete'), msg: (g.querySelector('.q-message') || {}).innerText || '', buttons: [...g.querySelectorAll('button, a')].map(b => b.textContent) }; })()`), 8000);
-  check('Today renders the secret question with a password field, its message and Reply / Snooze / Discuss', secretCard && secretCard.type === 'password' && secretCard.ac === 'off' && /paste the example API key/.test(secretCard.msg) && ['Store it securely', 'Reply', 'Snooze', 'Discuss'].every(b => secretCard.buttons.includes(b)), secretCard);
+  check('Today renders the secret question with a password field, its message and Reply / Snooze / Discuss', secretCard && secretCard.type === 'password' && secretCard.ac === 'off' && /paste its key here/.test(secretCard.msg) && ['Store it securely', 'Reply', 'Snooze', 'Discuss'].every(b => secretCard.buttons.includes(b)), secretCard);
   console.log(fails ? 'CONSOLE WALK: FAIL (' + fails + ')' : 'CONSOLE WALK: PASS');
   ws.close(); chrome.kill(); try { fs.rmSync(udd, { recursive: true, force: true }); } catch (_) {}
   setTimeout(() => process.exit(fails ? 1 : 0), 200);

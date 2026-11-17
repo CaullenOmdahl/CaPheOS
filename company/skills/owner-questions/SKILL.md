@@ -4,28 +4,45 @@ description: How to ask the owner something through company/tools/inbox.js so it
 license: MIT
 metadata:
   owner: company
-  version: "1.3"
+  version: "1.4"
 ---
 
 # Owner questions
 
-Only the four owner gates (money, access, ownership, commitment) reach the owner (`chain-of-command`,
+**The owner is a busy non-technical person. Handle infrastructure yourself.** Ask the owner only for: money beyond the
+company's limits; an account or identity in their own name (a sign-up, a sign-in, a key only they can get); legal,
+ownership or commitment decisions; company direction and priorities; risk the governance level reserves for them; the
+fixed gates. Monitoring, health checks, timers, services, registers, tools, framework bugs and internal process are
+the crew's: do it, hand it to the risk, tools or floor seat, or file a framework request. The composer refuses
+anything else (`code: crew-scope`, with where it goes), returns an unplain question with a rewrite (`code: plain`,
+`suggestion`), and refuses a topic the owner answered "not now" within 7 days (`code: backoff`) unless `--changed
+"<what is materially different>"`. Details: `company/DECISION_RIGHTS.md` "Owner scope".
+
+Only these owner-scope questions reach the owner (`chain-of-command`,
 `company/DECISION_RIGHTS.md`). When one does, ask it well: the owner answers on Today in the console, one card per
 question.
 
 ## 1. Plain words first
 
-`--message` is 2-4 conversational sentences: what you need, why, what happens if they say no. Everything dense —
-evidence, numbers, ids, paths, alternatives — goes in `--details` (collapsed under "More detail"). `ask` prints
-`warnings` when the message is missing, over 400 characters or full of jargon: fix it and ask again.
+`--message` is at most two short plain sentences: what you need, what the owner gets or risks, and what happens if
+they skip it (your default). No technical words (period, grace, egress, duty, register, unit, timer, systemd, API, CLI,
+token, endpoint, webhook, port), no file paths, tool names, ids or stray figures: all of that goes in `--details`
+(collapsed under "More detail"). The composer scores the message and refuses one that fails, with the reasons and a
+plain version to start from (`suggestion`).
 
 Good:
 
 ```bash
-node company/tools/inbox.js ask --from <YOU> --kind secret --name pyth-api-key --label "Pyth API key" \
+node company/tools/inbox.js ask --from <YOU> --kind secret --name pyth-api-key --label "Pyth key" \
   --provider "pyth.network > Developers > API keys (free)" \
-  --message "Could you make a free Pyth account and paste its API key here? It lets us test our main idea about commodity prices. If you say no, that idea waits and nothing else changes." \
+  --message "Could you make a free Pyth account and paste its key here? It lets us test our main idea about prices; if you skip it, that idea waits and nothing else changes." \
   --details "Pyth's price stream answers 401 without a key. Grain: 200 ms gold, 50 ms WTI. Alternatives considered: ..."
+```
+
+Refused as crew scope (the crew sets up its own monitoring; hand it to the risk seat):
+
+```bash
+node company/tools/inbox.js ask --from <YOU> --message "One more healthchecks check, please: name it recorder, period 5 minutes, grace 15, and paste its ping URL."
 ```
 
 Bad (a report with the ask buried in it, and the key would come back in a message):

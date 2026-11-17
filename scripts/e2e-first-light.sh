@@ -255,7 +255,7 @@ printf '%s' '{"text":"hello"}' > "$T/hello.json"
 check "with a \$0 cap, a metered Founder's live chat is refused with the fix (budget hold)" bash -c "curl -s -N -X POST -H 'x-console-token: $CTOKEN' -H 'content-type: application/json' http://127.0.0.1:$CPORT/api/chat/agent/send -d @'$T/hello.json' | grep -q 'budget-hold'"
 curl -s -X POST -H "x-console-token: $CTOKEN" -H 'content-type: application/json' "http://127.0.0.1:$CPORT/api/setup/budget" -d '{"dailyUsd":2,"perAgentUsd":1}' > "$T/budget.out"
 # a typed owner question (a key, asked the right way) for the walk to find on Today
-SQ="$(node "$TOOLS/inbox.js" ask --from Founder --kind secret --name e2e-api-key --label 'Example API key' --message 'Could you paste the example API key here? It lets the walk test the secure field. If you say no, nothing changes.' | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).id||""))')"
+SQ="$(node "$TOOLS/inbox.js" ask --from Founder --kind secret --name e2e-api-key --label 'Example API key' --message 'Could you make a free Example account and paste its key here? It lets the walk test the secure field; if you skip it, nothing changes.' | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).id||""))')"
 check "inbox.js ask --kind secret filed $SQ" test -n "$SQ"
 if [[ "${E2E_NO_BROWSER:-0}" != "1" ]]; then
   check "headless Chrome: every route, Setup -> draft with the Founder -> streamed reply, Now strip" node "$R/tests/console-walk.js" --url "http://127.0.0.1:$CPORT" --token "$CTOKEN" --shots "$T/shots" --out "$T/walk.out"

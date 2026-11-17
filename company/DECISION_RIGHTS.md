@@ -29,6 +29,28 @@ defect, not diligence.
 3. **Ownership**: takeover scope, contracts, legal, who owns what.
 4. **Commitment**: a promise to anyone outside the company, a public or irreversible move.
 
+## Owner scope: what may go to the owner at all
+
+The owner is a busy non-technical person. Only these reach them:
+
+- money beyond the company's own limits;
+- an account or identity in the owner's own name (a sign-up, a sign-in, a key only they can get);
+- legal, ownership or commitment decisions;
+- company direction and priorities;
+- risk acceptance the governance level reserves for the owner (a category at `approve`);
+- the fixed gates.
+
+Everything else (infrastructure, monitoring, health checks, tooling, service registers, timers, framework bugs,
+internal process) is the crew's: handle it yourself, hand it to the risk, tools or floor seat, or file a framework
+request (`harness-change.js propose`). The ask composer (`company/tools/lib/owner-scope.js`, used by `inbox.js ask` and
+`approvals.js ask`) refuses a crew-scope ask and says where it goes. An owner question must be two short plain
+sentences that say what the owner gets or risks and what happens if they skip it (a sensible default), with every
+technical word, number, id and path under `--details`; one that is not is returned with a plain rewrite. A topic the
+owner answered "not now" is not asked again for 7 days unless something material changed (`--changed "<what>"`).
+When an owner-scope ask needs an account only the owner can make (a free monitoring account, say), use the plain
+template: "Could you create a free <service> account in your name and paste what it gives you here? It lets us <what
+you get>; if you skip it, <what we do instead>."
+
 ## How an owner question is written
 
 Asked through `node company/tools/inbox.js ask` (skill `owner-questions`). It shows on the owner's Today screen the moment

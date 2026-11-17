@@ -44,7 +44,7 @@ export function liveChat(host, opts) {
   // later block with the same id), and the latest block per id (a newer one expires the older)
   let states = new Map(); const registry = new Map();
   const actionsFor = (i, at) => block => actionsBlock(block, { state: (states.get(i) || new Map()).get(block.id), at, who: name(), tz, app, registry, send: sendAction });
-  function turnEl(t, i) { return t.role === 'user' ? mine(t.content) : theirs(t.content, t.at ? name() + ' · ' + when(t.at, tz) : name(), { actions: actionsFor(i, t.at), cut: t.cut, commandAsk: t.commandAsk }); }
+  function turnEl(t, i) { return t.role === 'user' ? mine(t.content) : theirs(t.content, t.at ? name() + ' · ' + when(t.at, tz) : name(), { actions: actionsFor(i, t.at), cut: t.cut, commandAsk: t.commandAsk, ownerAsk: t.ownerAsk }); }
   function showEarlier() {
     if (!older.length) return;
     const chunk = older.splice(Math.max(0, older.length - PAGE));
@@ -86,6 +86,7 @@ export function liveChat(host, opts) {
     return h('div', { class: 'stack-4 msg-them-wrap' }, lk ? h('div', { class: 'msg-them' }, leakNode(lk)) : mdBlock(text, 'msg-them', opts),
       opts && opts.cut ? h('p', { class: 'caption muted chat-cut' }, 'This reply was cut off before ' + name() + ' finished (' + opts.cut + ').') : null,
       opts && opts.commandAsk ? commandNotice(opts.commandAsk) : null,
+      opts && opts.ownerAsk && !opts.commandAsk ? scopeNotice(opts.ownerAsk) : null,
       meta ? h('span', { class: 'msg-meta' }, meta) : null);
   }
   // a reply that tells the owner to run a command (the server's check, console/command-ask.js): the owner never needs a
@@ -97,6 +98,19 @@ export function liveChat(host, opts) {
       h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, 'This asks you to run a command.'),
         h('span', { class: 'body-s' }, 'You don\'t need a terminal for this: ', a ? h('a', { href: a.href, class: 'command-ask-link' }, a.label) : 'tell ' + name() + ' to use a console action.')),
       a ? null : Button('Ask for a console action', { variant: 'secondary', size: 'sm', onClick: () => { if (busy) { app.toast(name() + ' is still answering. Press Stop first.', true); return; } ask(); } }));
+  }
+  // a reply that puts crew work to the owner, or asks in technical words (the server's owner-scope lint, console/command-ask.js)
+  function scopeNotice(oa) {
+    const seat = oa.route && oa.route !== 'framework' ? 'the ' + oa.route + ' seat' : oa.route === 'framework' ? 'a framework request' : null;
+    const text = oa.kind === 'crew-scope'
+      ? 'This is the crew\'s job, not yours. You can tell ' + name() + ' to handle it' + (seat ? ' or hand it to ' + seat : '') + '.'
+      : 'This asks you in technical words. You can ask ' + name() + ' to say it plainly.';
+    const msg = oa.kind === 'crew-scope'
+      ? 'That is crew work, not a question for me: handle it yourself' + (seat ? ' or hand it to ' + seat : '') + '. Ask me only for money, accounts in my name, legal or commitment decisions, or company direction.'
+      : 'Please ask me that again in two plain sentences: what you need, what I get, and what happens if I skip it.';
+    return h('div', { class: 'alertbox command-ask', role: 'status' },
+      h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, oa.kind === 'crew-scope' ? 'The crew can handle this.' : 'This is hard to follow.'), h('span', { class: 'body-s' }, text)),
+      Button(oa.kind === 'crew-scope' ? 'Tell them to handle it' : 'Ask for plain words', { variant: 'secondary', size: 'sm', onClick: () => { if (busy) { app.toast(name() + ' is still answering. Press Stop first.', true); return; } send(msg); } }));
   }
   // a reply as the page shows it: markdown, or (tool calls written out as text) the leak card, never markdown
   function replyNodes(text, o) { const lk = leakedToolCalls(text); return lk ? leakNode(lk, o && o.live) : md(text, o); }
@@ -247,6 +261,7 @@ export function liveChat(host, opts) {
       }
       if (L.raf) { cancelAnimationFrame(L.raf); } L.final = true; render();
       if (L.finalP && L.finalP.commandAsk && L.text.trim()) card.insertBefore(commandNotice(L.finalP.commandAsk), meta);
+      else if (L.finalP && L.finalP.ownerAsk && L.text.trim()) card.insertBefore(scopeNotice(L.finalP.ownerAsk), meta);
       unnote('reconnect');
       const fp = L.finalP;
       if (L.gone) note('gone', 'The console has no record of this reply any more. Refresh the conversation to see what ' + name() + ' wrote.');

@@ -45,7 +45,7 @@ test('the real console server: no click path runs a tool, forks, or reaches a st
   const stationLog = [];
   const station = http.createServer((req, res) => {
     let b = ''; req.on('data', c => { b += c; }); req.on('end', () => {
-      stationLog.push({ method: req.method, path: req.url.split('?')[0], body: b.slice(0, 2000) });
+      stationLog.push({ method: req.method, path: req.url.split('?')[0], body: b.slice(0, 8000) });
       if (req.url.startsWith('/api/run')) { res.writeHead(200, { 'content-type': 'application/x-ndjson' }); res.end(JSON.stringify({ name: 'agent.run.end', payload: {} }) + '\n'); return; }
       if (req.url.split('?')[0] === '/api/cron') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ jobs: [{ id: 'j-founder', name: 'Founder loop', agentId: 'agent', model: 'haiku', provider: 'claude-cli', enabled: true }] })); return; }
       res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}');
@@ -56,9 +56,9 @@ test('the real console server: no click path runs a tool, forks, or reaches a st
   const env = Object.assign({}, process.env, { CAPHEOS_ROOT: T, CAPHEOS_TZ: 'UTC', PROVENANCE_ROOT: T, STARNET_URL: 'http://127.0.0.1:' + sport, NOTOOL_LOG: LOG });
   delete env.CONSOLE_PORT;
   const ap = code => { const r = spawnSync(process.execPath, ['-e', 'const A = require(' + JSON.stringify(AP) + '); Promise.resolve((() => {' + code + '})()).then(v => console.log(JSON.stringify(v === undefined ? null : v)));'], { cwd: T, env, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return JSON.parse(r.stdout.trim().split('\n').pop()); };
-  const spend = ap('return A.ask({ from: "Sam", category: "spend", message: "May we buy one month of the example data plan for $20?", params: { amountUsd: 20 } });');
-  const spend2 = ap('return A.ask({ from: "Sam", category: "spend", message: "And a second month for $20?", params: { amountUsd: 20, month: 2 } });');
-  const fixed = ap('return A.ask({ from: "Sam", category: "access", message: "Could we get read access to the example bank account?", params: { account: "example" } });');
+  const spend = ap('return A.ask({ from: "Sam", category: "spend", message: "May we buy one month of the example data plan for $20? It lets us go on with the work.", params: { amountUsd: 20 } });');
+  const spend2 = ap('return A.ask({ from: "Sam", category: "spend", message: "And a second month for $20? It lets us go on with the work.", params: { amountUsd: 20, month: 2 } });');
+  const fixed = ap('return A.ask({ from: "Sam", category: "access", message: "Could we get read access to the example bank account? It lets us go on with the work.", params: { account: "example" } });');
   assert.ok(spend.minted && spend2.minted && fixed.minted);
 
   const srv = spawn(process.execPath, ['-r', hook, path.join(REPO, 'console', 'server.js'), '--port', '0', '--host', '127.0.0.1', '--print-port'], { cwd: T, env, stdio: ['ignore', 'pipe', 'pipe'] }); kids.push(srv);

@@ -186,7 +186,7 @@ function tick(a) {
       const sit = { kind, names: hs.map(h => h.name), waiting, cap: a.cap, spent: a.spent, lastHour: a.lastHour, allowance: a.allowance, ticks: first.ticks, since: first.since };
       const fyi = companyDecides(govLevel(root, a.govOpts));
       const q = questionFor(sit, fyi);
-      const r = withInbox(root, ib => ib.ask({ from: 'Dispatcher', about: ABOUT(kind), message: q.message, details: q.details, blocking: !fyi, form: q.form, batch: fyi ? 'fyi' : null }));
+      const r = withInbox(root, ib => ib.ask({ scopeExempt: 'framework', from: 'Dispatcher', about: ABOUT(kind), message: q.message, details: q.details, blocking: !fyi, form: q.form, batch: fyi ? 'fyi' : null }));
       st.moneyAsks[key] = { qid: r.row.id, status: 'open', at: new Date(now).toISOString(), day, kind, fyi, seats: hs.map(h => h.seat) };
       for (const h of hs) out.open[h.seat] = r.row.id;
       if (fyi) { try { require('./governance.js').notify('FYI: ' + q.message.replace(/ You let the company.*$/, '') + ' The company keeps it this way; you can change it on Today (' + r.row.id + ').', { root, from: 'Dispatcher' }); } catch (_) {} }

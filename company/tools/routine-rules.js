@@ -36,6 +36,10 @@
  *  9. No commands for the owner (v9): on 2026-11-17 the Founder's chat reply told the owner to run `systemctl --user stop
  *     …-liveness.timer` in a terminal. The owner works only in the console; Today's ask composer refused such asks, chat and
  *     handoffs did not. Every run now carries the rule, and the console flags a chat reply that breaks it (console/command-ask.js).
+ * 10. Owner scope (v10): on 2026-11-17 the Founder asked the owner for health-check plumbing three times (a check "named
+ *     recorder, period 5, grace 15", a timer "not on the service register … no new egress", a systemd start limit). The
+ *     owner is a busy non-technical person; the ask composer now refuses crew-scope asks and unplain ones
+ *     (company/tools/lib/owner-scope.js), and every run carries the rule.
  *  3. Short waits. The station reclaims a routine run that shows no progress for 8 minutes (CRON_HEARTBEAT_STALE_MS
  *     480000), and a tool call in progress does not count, so one long shell_bg_wait loses the run's final reply.
  *
@@ -59,12 +63,13 @@ const path = require('path');
 const call = (...a) => require('./station-crew.js').call(...a);   // loaded on first use, so the selftest needs no token
 const co = require('./lib/company');
 const ROOT = co.ROOT;
-const VERSION = 'v9';
+const VERSION = 'v10';
 const START = '[HOUSE RULES FOR SCHEDULED RUNS ';
 const END = '[END HOUSE RULES]';
 const BLOCK = START + VERSION + ']\n' + [
   '- In fs_write, fs_edit, fs_append and fs_patch, name files by their path relative to the company root, for example company/work/handoffs/to-<name>.md, never ' + ROOT + '/company/... An absolute path makes the station try to back up the whole disk before the write, which is slow and leaves your write with no restore point. Shell commands are not affected.',
   '- Put temporary files under scratch/ (a relative path), not /tmp.',
+  '- The owner is a busy non-technical person. Handle infrastructure yourself: monitoring, health checks, timers, services, tools, framework bugs and internal process are the crew\'s (yours, the risk, tools or floor seat, or a framework request with harness-change.js propose). Ask the owner only for money beyond the company\'s limits, an account or identity in their own name, legal, ownership or commitment decisions, company direction and priorities, risk the governance level reserves for them, or a fixed gate, in two plain sentences that say what they get or risk and what happens if they skip it (your default), with every technical detail under --details. The ask composer refuses anything else, and a topic the owner answered "not now" is not asked again for 7 days unless something material changed (--changed).',
   '- Never ask the owner to run a command or open a terminal (systemctl, sudo, npm or pip install, git push, node ...), in chat, on Today or in a handoff: the owner works only in the console. Do it with your tools, link the console action that does it, ask for an approval on Today, or hand it to the tools seat; a change to a framework file is a harness-change propose. If agents are refused the command, say so and route it.',
   '- The station stops a scheduled run at 90 minutes, mid-task and before your final report. Watch the clock: after about 60 minutes start no new research or build step; save what you have, write your log entry and handoffs, and end by 75 minutes. For a job bigger than one run, write down exactly where you stopped and what comes next, so your next run picks it up.',
   '- Routine models are set by the usage pacer (company/tools/pacer.js) from the routing table in company/model-policy.json, which the people owner keeps as model manager. Never change a routine\'s provider or model by hand: to change a pairing, ask the people owner to change the table.',

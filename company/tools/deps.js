@@ -568,7 +568,7 @@ function refuseSystem(spec, seat, why) {
     const msg = 'The crew would like the system program "' + pkg + '" on this machine' + (why ? ' (' + String(why).slice(0, 160).replace(/\.$/, '') + ')' : '') + '. ' +
       'Installing system programs needs administrator rights on the host, which the crew does not have on purpose, so it cannot do this itself. ' +
       'If you want it, have it installed on the machine (or in the company\'s container image); if not, say no and the crew will do without it.';
-    const r = run(process.execPath, [path.join(__dirname, 'inbox.js'), 'ask', '--from', seat.name, '--message', msg, '--details', 'Asked through company/tools/deps.js, which installs only Python and Node packages inside the company folder.', '--about', about], { env: process.env, must: false, cwd: ROOT });
+    const r = run(process.execPath, [path.join(__dirname, 'inbox.js'), 'ask', '--from', seat.name, '--message', msg, '--details', 'Asked through company/tools/deps.js, which installs only Python and Node packages inside the company folder.', '--about', about, '--via', 'deps.js'], { env: process.env, must: false, cwd: ROOT });
     if (r.status !== 0) process.stderr.write('deps.js: could not file the owner question: ' + String(r.stderr || '').trim().slice(0, 200) + '\n');
   }
   throw new Refusal('needs the owner: system packages install on the host. deps.js installs only python and node packages inside the company folder' + (asked ? '; the owner question for "' + pkg + '" is already open.' : '; an owner question explains what is needed.'));

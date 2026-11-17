@@ -213,7 +213,7 @@ function tick(a) {
     if (prev && prev.weekStart === sit.weekStart && !material(prev, sit)) continue;   // asked this week; nothing changed
     const fyi = companyDecides(govLevel(root, a.govOpts));
     const q = questionFor(sit, fyi);
-    const r = withInbox(root, ib => ib.ask({ from: 'Pacer', about: ABOUT(key), message: q.message, details: q.details, blocking: !fyi, form: q.form, batch: fyi ? 'fyi' : null }));
+    const r = withInbox(root, ib => ib.ask({ scopeExempt: 'framework', from: 'Pacer', about: ABOUT(key), message: q.message, details: q.details, blocking: !fyi, form: q.form, batch: fyi ? 'fyi' : null }));
     st.limitAsks[key] = { qid: r.row.id, status: 'open', at: new Date().toISOString(), weekStart: sit.weekStart, usedPct: sit.usedPct, cause: sit.cause, fyi,
       situation: { name: sit.name, held: sit.held, moved: sit.moved, usedPct: sit.usedPct, cause: sit.cause, weekStart: sit.weekStart } };
     if (fyi) {

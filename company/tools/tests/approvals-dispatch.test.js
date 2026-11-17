@@ -81,7 +81,7 @@ async function company() {
 }
 // a blocking approval Sam asked for 20 minutes ago (so one reminder is due), minted the way approvals.js ask mints it
 function plantApproval(c) {
-  const a = c.ap('return A.ask({ from: "Sam", category: "spend", message: "May we buy one month of the example data plan for $20?", params: { amountUsd: 20 }, blocking: true });');
+  const a = c.ap('return A.ask({ from: "Sam", category: "spend", message: "May we buy one month of the example data plan for $20? It lets us go on with the work.", params: { amountUsd: 20 }, blocking: true });');
   assert.equal(a.minted, true, JSON.stringify(a));
   const f = path.join(c.T, 'company/pm-inbox.jsonl');
   const back = new Date(Date.now() - 20 * MIN).toISOString();
@@ -128,12 +128,12 @@ test('a blocking approval: zero wakes for the asker and the seat waiting on it o
 
 test('expiry and withdrawal release the hold too (a hold is never permanent)', async () => {
   const c = await company();
-  const a = c.ap('return A.ask({ from: "Sam", category: "spend", message: "A purchase that may expire.", params: { amountUsd: 5 }, blocking: true, expiresMin: 1 });');
+  const a = c.ap('return A.ask({ from: "Sam", category: "spend", message: "A purchase that may expire. It lets us go on with the work.", params: { amountUsd: 5 }, blocking: true, expiresMin: 1 });');
   await c.rest(); assert.ok(!c.tick().fired.includes('sam'), 'held while pending');
   c.ap('A._S.now = () => Date.now() + 2 * 60e3; return A.tick({ actor: "the dispatcher" });');
   assert.equal(c.ap('return A.get(' + JSON.stringify(a.id) + ').status;'), 'expired');
   await c.rest(); assert.ok(c.tick().fired.includes('sam'), 'released by expiry');
-  const b = c.ap('return A.ask({ from: "Sam", category: "spend", message: "A purchase Sam will withdraw.", params: { amountUsd: 6 }, blocking: true });');
+  const b = c.ap('return A.ask({ from: "Sam", category: "spend", message: "A purchase Sam will withdraw. It lets us go on with the work.", params: { amountUsd: 6 }, blocking: true });');
   await c.rest(); assert.ok(!c.tick().fired.includes('sam'), 'held again');
   assert.equal(c.ap('return A.withdraw(' + JSON.stringify(b.id) + ', { by: "Sam", why: "found a free source" });').ok, true);
   await c.rest(); assert.ok(c.tick().fired.includes('sam'), 'released by withdrawal');
