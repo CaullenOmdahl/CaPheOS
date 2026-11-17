@@ -227,3 +227,15 @@ dispatcher loop unit once after the framework update so it runs the new `dispatc
 The dispatcher used to be a oneshot service fired by `<station>-dispatch.timer`, whose interval `cadence.js apply`
 rewrote without reloading. `scripts/setup-station.sh` now disables and removes that timer, installs the loop unit, and
 starts it when the timer was enabled. `cadence.js apply` warns while an old timer is still installed.
+
+## Waiting on, Not before and watched jobs
+
+Nobody is parked behind a guessed date (owner ruling: get work done as soon as possible; company/HANDOFFS.md).
+`**Waiting on:**` names what an OPEN item waits for (a handoff, a quest step, a file, a service run, a watched job, a
+seat's item); the dispatcher resolves it every tick (lib/sprint.js parseDeps/resolveDeps, lib/gates.js) and wakes the
+holder past its rest the tick it is met; an unresolvable reference fails open. `**Not before:**` is a real clock time
+with a reason: 24 h without a reason category, 72 h with one, 12 h in Sprint unless external (lib/sprint.js
+notBeforeGate); beyond that it is ignored and logged once. The seventh wake source is a watched job's end
+(company/tools/notify-when.js, service.js `--wake`): each row in company/state/completions.jsonl wakes the seats it
+names once, a failure too, through admit() door `dispatch`, never while halted. Work › Handoffs shows the parked items,
+the running jobs and recent completions; Start now releases a parked item.

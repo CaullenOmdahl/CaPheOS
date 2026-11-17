@@ -32,6 +32,10 @@
  * under the same stall rule, cooldown, caps, halt and Sprint rules; a result already covered by an OPEN handoff to that
  * seat or by its open quest wakes nobody. A broken or stale duty is flagged once to the tools owner. While halted only
  * the whileHalted duties (liveness) run.
+ * Watched jobs (company/tools/notify-when.js, service.js --wake): the seventh source. Each completion row wakes the seats it
+ * names once, past their rest (a failure too, labelled as one), and satisfies a `**Waiting on:** job:<id>` / `service:<name>`.
+ * Waiting on / Not before / Start now: see notBeforeDeferrals below and company/HANDOFFS.md; company/state/parked.json
+ * says what is parked and why, for the console.
  * One gate (docs/BUDGET.md, lib/admit.js): every run this tick starts goes through admit() first (door dispatch), which
  * in phase 1 always allows and records {door, seat, kind, decision, reason}; the money rules (cap, share, spread) are
  * lib/admit.js money(), the one copy lanes.js uses too. Scheduler (lib/scheduler.js, company.json runtime.scheduler):
@@ -65,6 +69,8 @@ let MAX_PER_TICK = TUNING.maxPerTick;   // agents work in parallel; the pacer st
 const SP = require('./lib/sprint');
 const SS = require('./lib/seat-status');
 const A = require('./lib/admit');
+const G = require('./lib/gates');
+const CMP = require('./lib/completions');
 const SCHED = require('./lib/scheduler');
 const SCHED_MODE = SCHED.mode();
 // Sprint (cadence.js effective().sprint): null when off. Fail-safe: an unreadable cadence means no Sprint.
@@ -167,27 +173,37 @@ function firstStatusOf(sectionText) {
 /* When a handoff block may be worked, and in what order (company/HANDOFFS.md).
  * **Deadline:** is when the work must be DONE, never when it may start: it does not defer anything. It only orders the
  * seat's open items (soonest first, undated last) and marks the ones already past as overdue.
- * **Not before:** YYYY-MM-DD[ HH:MM] (company time) is the one line that sets an OPEN block aside: until then it is not
- * woken by the dispatcher and not counted toward STALLED (no dispatcher run is spent on it, so nothing goes uncounted),
- * and it blocks nobody; the seat's own schedule still runs it. Only a plain date as the line's first characters, later
- * than now and at most NOT_BEFORE_CAP days ahead, defers; prose, a past or a far date counts as workable now. The
- * dispatcher cannot tell who wrote the line, so it remembers the FIRST date it saw per block (seen: heading -> stamp):
- * moving it later never extends the deferral, an earlier one takes effect at once. (Until 2026-11-17 the Deadline line
- * deferred, which the crew read as "finish by": every dated item sat untouched until its due day.) */
-const NOT_BEFORE_CAP = num('DISPATCH_NOT_BEFORE_CAP', 14);
+ * **Waiting on:** names what an OPEN block waits for (another handoff, a quest step, a file, a service run, a watched job,
+ * a seat's item): it is set aside until every dependency is met, then its holder is woken at once (lib/sprint.js
+ * parseDeps/resolveDeps, lib/gates.js lookups). An unresolvable reference is work now (fail open) and logged once.
+ * **Not before:** YYYY-MM-DD[ HH:MM] <reason> (company time) is for a genuine wall-clock reason only (a market opens, a
+ * provider's data release, a time someone outside named). It sets a block aside within its caps (lib/sprint.js
+ * notBeforeGate: 24 h ahead without a reason category, 72 h with one, 12 h in Sprint unless the reason is an external
+ * time), measured from when the dispatcher FIRST saw the line; beyond them the line is ignored, the block is work now,
+ * and that is logged once per block ("released: a 7-day Not before with no external reason"). Only a plain date as the
+ * line's first characters counts. The dispatcher remembers the first date it saw per block (seen: heading -> {at,
+ * first}): moving it later never extends the deferral, an earlier one takes effect at once. (Until 2026-11-17 the
+ * Deadline line deferred; on 2026-11-17 the CEO parked ~13 items behind guessed Not before dates that meant "after X is
+ * done", two core items for a week: hence Waiting on and the caps.) */
 const dayMsOf = d => Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10));
-function notBeforeDeferrals(sections, seen, nowStr, capDays) {
-  const now = String(nowStr).length > 10 ? String(nowStr) : nowStr + ' 00:00', nextSeen = {}, deferred = new Map();
+function notBeforeDeferrals(sections, seen, nowStr, opts) {
+  const o = opts && typeof opts === 'object' ? opts : {};
+  const now = String(nowStr).length > 10 ? String(nowStr) : nowStr + ' 00:00', nextSeen = {}, deferred = new Map(), ignored = new Map(), info = new Map();
   for (const [heading, text] of sections) {
-    const m = String(text || '').match(/^\*\*Not before:\*\*\s*(\d{4}-\d{2}-\d{2})(?:[ T]([01]\d:[0-5]\d|2[0-3]:[0-5]\d))?\b/im);
-    if (!m || !Number.isFinite(dayMsOf(m[1])) || new Date(dayMsOf(m[1])).toISOString().slice(0, 10) !== m[1]) continue;   // an impossible date never rolls over
-    const at = m[1] + ' ' + (m[2] || '00:00');
-    const prev = seen && seen[heading];
-    const d = prev && prev < at ? prev : at;   // the first stamp seen, unless the line now says earlier
-    nextSeen[heading] = d;
-    if (d > now && dayMsOf(d) - dayMsOf(now) <= capDays * 86400000) deferred.set(heading, d);
+    const lm = String(text || '').match(/^\*\*Not before:\*\*(.*)$/im); if (!lm) continue;
+    const nb = G.parseNotBefore(lm[1]); if (!nb) continue;   // prose or an impossible date: workable now
+    const at = nb.date + ' ' + nb.time;
+    const prev0 = seen && seen[heading];
+    const prev = typeof prev0 === 'string' ? { at: prev0, first: now } : prev0 && prev0.at ? prev0 : null;   // a string: the pre-cap memory (migration: measured from now)
+    const d = prev && prev.at < at ? prev.at : at;   // the first stamp seen, unless the line now says earlier
+    const first = prev && prev.first ? prev.first : now;
+    nextSeen[heading] = { at: d, first };
+    if (!(d > now)) continue;
+    const g = SP.notBeforeGate({ rest: nb.rest, hoursAhead: (G.stampMs(d) - G.stampMs(first)) / 3600e3, sprint: !!o.sprint });
+    info.set(heading, { at: d, reason: g.reason, category: g.category, external: g.external, dep: g.dep });
+    if (g.honour) deferred.set(heading, d); else ignored.set(heading, { at: d, why: g.why, dep: g.dep, reason: g.reason });
   }
-  return { deferred, seen: nextSeen };
+  return { deferred, seen: nextSeen, ignored, info };
 }
 // each section's own leading **Deadline:** date (or 'today'), for ordering and overdue only: { due: Map heading -> date, overdue: [heading] }
 function deadlineOrder(sections, todayStr) {
@@ -277,15 +293,21 @@ function selftestOpenHandoffs() {
   check('a section whose first status is OPEN is woken', openHandoffs(write('a.md', openBlock)).length === 1);
   // Not before deferral (rewritten from the hc-0015 Deadline cases on purpose: a Deadline never defers now)
   const sec = (d, k) => '2026-11-17 10:00 from X — ask\n**Need:** y\n**Status:** OPEN\n**' + (k || 'Not before') + ':** ' + d + '\n';
-  const nbd = (d, seen, now) => notBeforeDeferrals(new Map([['h', sec(d)]]), seen, now || '2026-11-17 10:00', 14);
-  check('a Not before 3 days ahead defers', nbd('2026-11-20').deferred.get('h') === '2026-11-20 00:00');
-  check('a Not before with a time defers until that minute, then not', nbd('2026-11-17 14:00').deferred.size === 1 && !nbd('2026-11-17 14:00', null, '2026-11-17 14:00').deferred.size);
-  check('a Deadline in 3 days defers nothing', !notBeforeDeferrals(new Map([['h', sec('2026-11-20', 'Deadline')]]), {}, '2026-11-17 10:00', 14).deferred.size);
-  check('today, a past date, prose and an impossible date count as workable now', !nbd('2026-11-17').deferred.size && !nbd('2026-11-10').deferred.size && !nbd('next week').deferred.size && !nbd('2026-13-45').deferred.size);
-  check('the cap: 14 days ahead defers, 15 does not', nbd('2026-12-01').deferred.size === 1 && !nbd('2026-12-02').deferred.size);
-  check('a date in the body text is not the Not before line', !notBeforeDeferrals(new Map([['h', '2026-11-17 x\n**Status:** OPEN\nnot before 2026-11-25 per X\n']]), {}, '2026-11-17 10:00', 14).deferred.size);
-  check('the first Not before seen wins: moving it later never extends the deferral', nbd('2026-11-28', { h: '2026-11-19 00:00' }).deferred.get('h') === '2026-11-19 00:00' && nbd('2026-11-28', { h: '2026-11-17 00:00' }).deferred.size === 0 && nbd('2026-11-28', { h: '2026-11-17 00:00' }).seen.h === '2026-11-17 00:00');
-  check('an earlier Not before takes effect at once', nbd('2026-11-17', { h: '2026-11-21 00:00' }).deferred.size === 0 && nbd('2026-11-19', { h: '2026-11-21 00:00' }).seen.h === '2026-11-19 00:00');
+  const nbd = (d, seen, now, sprint) => notBeforeDeferrals(new Map([['h', sec(d)]]), seen, now || '2026-11-17 10:00', { sprint });
+  const def = (d, seen, now, sprint) => nbd(d, seen, now, sprint).deferred;
+  check('a Not before 20 h ahead with no reason defers (inside the 24 h cap)', def('2026-11-18 06:00').get('h') === '2026-11-18 06:00');
+  check('a Not before with a time defers until that minute, then not', def('2026-11-17 14:00').size === 1 && !def('2026-11-17 14:00', null, '2026-11-17 14:00').size);
+  check('a Deadline in 3 days defers nothing', !notBeforeDeferrals(new Map([['h', sec('2026-11-20', 'Deadline')]]), {}, '2026-11-17 10:00').deferred.size);
+  check('today, a past date, prose and an impossible date count as workable now', !def('2026-11-17').size && !def('2026-11-10').size && !def('next week').size && !def('2026-13-45').size);
+  check('a 7-day Not before with no reason is ignored, and says why', !def('2026-11-24').size && nbd('2026-11-24').ignored.get('h').why === 'a 7-day Not before with no external reason');
+  check('the caps: 26 h with no reason category is ignored; 26 h for a market opening defers; 74 h for it is ignored', !def('2026-11-18 12:00').size && def('2026-11-18 12:00 — the market opens').size === 1 && !def('2026-11-20 12:00 — the market opens').size);
+  check('a dependency-shaped reason is no category (24 h cap) and is named', nbd('2026-11-18 12:00 (set 2026-11-17 22:24 by Founder: the recompute needs the finished gold backfill)').ignored.get('h').dep === 'needs');
+  check('Sprint: 13 h is ignored unless the reason is an external time; a quota reset is not', !def('2026-11-17 23:00', null, null, true).size && def('2026-11-17 23:00 — EIA data release', null, null, true).size === 1 && !def('2026-11-17 23:00 — the quota resets', null, null, true).size && def('2026-11-17 23:00 — the quota resets').size === 1);
+  check('a date in the body text is not the Not before line', !notBeforeDeferrals(new Map([['h', '2026-11-17 x\n**Status:** OPEN\nnot before 2026-11-25 per X\n']]), {}, '2026-11-17 10:00').deferred.size);
+  check('the first Not before seen wins: moving it later never extends the deferral', def('2026-11-28', { h: { at: '2026-11-17 18:00', first: '2026-11-17 09:00' } }).get('h') === '2026-11-17 18:00' && def('2026-11-28', { h: { at: '2026-11-17 00:00', first: '2026-11-16 09:00' } }).size === 0 && nbd('2026-11-28', { h: { at: '2026-11-17 00:00', first: '2026-11-16 09:00' } }).seen.h.at === '2026-11-17 00:00');
+  check('an earlier Not before takes effect at once', def('2026-11-17', { h: { at: '2026-11-18 00:00', first: '2026-11-17 09:00' } }).size === 0 && nbd('2026-11-17 20:00', { h: { at: '2026-11-18 00:00', first: '2026-11-17 09:00' } }).seen.h.at === '2026-11-17 20:00');
+  check('the cap counts from when the line was first seen, not from now (it never re-parks as the date nears)', !def('2026-11-24', { h: { at: '2026-11-24 00:00', first: '2026-11-17 10:00' } }, '2026-11-23 12:00').size);
+  check('migration: the old memory (a plain stamp) is measured from now', !def('2026-11-24', { h: '2026-11-24 00:00' }).size && nbd('2026-11-24', { h: '2026-11-24 00:00' }).seen.h.first === '2026-11-17 10:00');
   // Deadline: ordering and overdue only
   const dlo = deadlineOrder(new Map([['late', sec('2026-11-24', 'Deadline')], ['past', sec('2026-11-15', 'Deadline')], ['none', sec('none', 'Deadline')], ['soon', sec('2026-11-18 (the verdict)', 'Deadline')], ['now', sec('today', 'Deadline')]]), '2026-11-17');
   check('a Deadline orders the work soonest first, undated last', byDue(['late', 'none', 'soon', 'past', 'now'], dlo.due).join(',') === 'past,now,soon,late,none', byDue(['late', 'none', 'soon', 'past', 'now'], dlo.due).join(','));
@@ -838,10 +860,63 @@ function lastRunTail(job) {
       for (const [i, dep] of (r.dependents || []).entries()) { const ds = (r.dependentSeats || [])[i]; if (ds) (apHolds[ds] = apHolds[ds] || []).push({ id: dep, all: false }); }
     }
   } catch (e) { log('APPROVALS ERROR: ' + String(e.message).slice(0, 200)); }
+  // Waiting on, Not before and the owner's Start now (lib/gates.js, lib/sprint.js): which OPEN items are parked, why, in
+  // plain words for Work › Handoffs (company/state/parked.json), and who is woken at once because what they waited for
+  // happened (wakeNotes: a dependency met, a Start now, a watched job that ended; rest 0, every other rule as usual).
+  const RELEASES = (() => { try { return G.releases(ROOT); } catch (_) { return new Map(); } })();
+  const lpNow = co.localParts(), nowStamp = lpNow.date + ' ' + lpNow.time;
+  const parked = [], nbNotice = [];
+  state.releasesDone = state.releasesDone || {};
+  const note = (id, n) => { const a = state.agents[id] = state.agents[id] || { key: '', count: 0 }; if ((a.wakeNotes || []).some(x => x.key === n.key)) return; a.wakeNotes = (a.wakeNotes || []).concat([Object.assign({ at: Date.now() }, n)]); };
+  const seatOfInbox = ib => Object.keys(CREW || {}).find(k => CREW[k] && CREW[k].inbox === ib) || null;
+  const askOf = h => String(h).split(/ — /).slice(1).join(' — ').trim() || String(h);
+  const { localToEpoch } = require('./lib/core-loop');
+  const sinceOf = (heading, seenAt) => { const hs = G.headingStamp(heading); const ms = hs ? localToEpoch(hs.slice(0, 10), hs.slice(11)) : NaN; return Number.isFinite(ms) && ms <= seenAt && seenAt - ms < 48 * 3600e3 ? ms : seenAt; };
+  // a registered service's last successful run (systemd), for `**Waiting on:** service:<name>` when no completion row says so
+  const svcLastOk = e => {
+    if (process.env.DISPATCH_NO_SYSTEMCTL) return null;
+    try {
+      const out = String(require('child_process').execFileSync(process.env.SERVICE_SYSTEMCTL || '/usr/bin/systemctl', ['--user', 'show', e.unit + '.service', '--timestamp=unix', '-p', 'Result,ExecMainExitTimestamp'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }));
+      const m = out.match(/ExecMainExitTimestamp=@(\d+)/); return /Result=success/.test(out) && m ? Number(m[1]) * 1000 : null;
+    } catch (_) { return null; }
+  };
+  const LOOK = G.lookups({ root: ROOT, crew: CREW || {}, quests, serviceLastOk: svcLastOk });
   for (const [agentId, inbox] of Object.entries(INBOX_OF)) {
     let its = [], txt = ''; try { txt = fs.readFileSync(path.join(ROOT, 'company', 'work', 'handoffs', inbox), 'utf8'); its = SP.parseItems(txt).filter(i => i.open); } catch (_) {}
     itemsOf[agentId] = its; waitsOf[agentId] = {};
-    for (const it of its) { const on = SP.waitingOn(it.status, NAMES, agentId, CEO_ID); if (on) { it.waitingOn = on; const n = on === 'owner' ? 'you (the owner)' : NAMES[on] || 'someone else'; waitsOf[agentId][n] = (waitsOf[agentId][n] || 0) + 1; } }
+    const stw = state.agents[agentId] = state.agents[agentId] || { key: '', count: 0 };
+    const prevWaits = stw.waits || {}, waitsNext = {};
+    for (const it of its) {
+      const rel = RELEASES.get(inbox + '\n' + it.heading);
+      if (rel) {   // the owner's Start now: no gate holds it (Waiting on, Not before, a waiting Status); its holder is woken once
+        it.released = rel; it.waitSeats = [];
+        if (!state.releasesDone[rel.id]) { state.releasesDone[rel.id] = new Date().toISOString(); const msg = (NAMES[agentId] || agentId) + ': ' + (rel.by || 'the owner') + ' said Start now — "' + askOf(it.heading).slice(0, 100) + '"'; log('START NOW ' + inbox + ' "' + it.heading.slice(0, 80) + '": released by ' + (rel.by || 'the owner') + ' (' + rel.id + '); waking ' + (NAMES[agentId] || agentId)); note(agentId, { key: 'release:' + rel.id, kind: 'release', text: msg }); }
+        continue;
+      }
+      if (it.waitingOnLine == null) { const on = SP.waitingOn(it.status, NAMES, agentId, CEO_ID); if (on) { it.waitingOn = on; const n = on === 'owner' ? 'you (the owner)' : NAMES[on] || 'someone else'; waitsOf[agentId][n] = (waitsOf[agentId][n] || 0) + 1; parked.push({ seat: agentId, name: NAMES[agentId] || agentId, inbox, heading: it.heading, kind: 'status', words: 'waiting for: ' + n }); } continue; }
+      // **Waiting on:** governs this item (its Status prose does not): resolved on every tick
+      const pd = SP.parseDeps(it.waitingOnLine);
+      if (pd.none) { it.waitSeats = []; continue; }   // "Waiting on: nothing": its own work, whatever the Status prose says
+      const pw = prevWaits[it.heading];
+      const seenAt = pw && pw.line === it.waitingOnLine ? pw.seenAt : Date.now();
+      const since = sinceOf(it.heading, seenAt);
+      for (const d of pd.deps) { d.since = since; d.self = { inbox, heading: it.heading }; }
+      const r = SP.resolveDeps(pd.deps, LOOK);
+      waitsNext[it.heading] = { line: it.waitingOnLine, seenAt, state: r.state };
+      it.waitSeats = r.state === 'waiting' ? [...new Set(r.pending.map(d => d.kind === 'seat' ? d.seatId : d.kind === 'handoff' ? seatOfInbox(d.inbox) : null).filter(x => x && x !== agentId))] : [];
+      if (r.state === 'waiting') {
+        it.waitingOn = 'dep'; it.waitWords = pd.label || r.pending.map(d => d.words).join('; ');
+        const n = it.waitSeats.length === 1 && r.pending.length === 1 ? NAMES[it.waitSeats[0]] || it.waitSeats[0] : it.waitWords.slice(0, 80);
+        waitsOf[agentId][n] = (waitsOf[agentId][n] || 0) + 1;
+        parked.push({ seat: agentId, name: NAMES[agentId] || agentId, inbox, heading: it.heading, kind: 'waiting', words: 'waiting for: ' + it.waitWords, deps: r.pending.map(d => d.raw) });
+      } else if (r.state === 'unresolvable') {
+        if (!pw || pw.state !== 'unresolvable' || pw.line !== it.waitingOnLine) log('WAITING ON UNRESOLVED ' + inbox + ' "' + it.heading.slice(0, 80) + '" (' + (NAMES[agentId] || agentId) + '): ' + (r.unresolved.map(d => d.raw).join('; ') || 'no dependency named') + ' — names nothing the dispatcher can find, so the item is work now (handoff-status.js tells the writer)');
+      } else if (pw && pw.state === 'waiting') {
+        const msg = (NAMES[agentId] || agentId) + ': ' + (pd.label || pd.deps.map(d => d.words).join('; ')) + ' — done; starting "' + askOf(it.heading).slice(0, 100) + '"';
+        log('WAKE ' + msg); note(agentId, { key: 'dep:' + inbox + ':' + it.heading, kind: 'dependency', text: msg });
+      }
+    }
+    stw.waits = waitsNext;
     if (apHolds[agentId]) {
       const secOf = new Map(txt.split(/^## /m).slice(1).map(sec => [sec.split('\n')[0].trim(), sec]));
       const hs = apHolds[agentId];
@@ -860,14 +935,23 @@ function lastRunTail(job) {
       if (hk !== (st0.approvalHold || '')) { st0.approvalHold = hk; if (hk) log('WAITING on approval ' + [...new Set(held.map(i => i.approval))].join(', ') + ' (' + agentId + '): ' + held.length + ' OPEN in ' + inbox + ' held until the owner answers; not woken, not counted as stalled'); }
     }
     const st = state.agents[agentId] || { key: '', count: 0 };
-    const openSecs = new Map(txt.split(/^## /m).slice(1).map(sec => [sec.split('\n')[0].trim(), sec]).filter(([h]) => its.some(i => i.heading === h && !i.waitingOn)));
-    const lpNow = co.localParts();
-    const nb = notBeforeDeferrals(openSecs, st.notBefore, lpNow.date + ' ' + lpNow.time, NOT_BEFORE_CAP);
+    const openSecs = new Map(txt.split(/^## /m).slice(1).map(sec => [sec.split('\n')[0].trim(), sec]).filter(([h]) => its.some(i => i.heading === h && !i.waitingOn && !i.released)));
+    const nb = notBeforeDeferrals(openSecs, st.notBefore, nowStamp, { sprint: !!SPRINT });
     st.notBefore = nb.seen; delete st.deadlines;   // st.deadlines: the old Deadline-deferral memory, dropped (a Deadline defers nothing now)
     for (const it of its) if (nb.deferred.has(it.heading)) it.notBefore = nb.deferred.get(it.heading);   // not open work now: blocks nobody (blockersOf)
+    // a Not before over its cap is ignored (the item is work now), logged once per item; the CEO gets one handoff about the rules
+    const nbr = st.nbReleased || {}; st.nbReleased = {};
+    for (const [h, x] of nb.ignored) {
+      st.nbReleased[h] = nbr[h] || x.why;
+      if (nbr[h]) continue;
+      nbNotice.push({ inbox, heading: h, why: x.why, name: NAMES[agentId] || agentId });
+      log('RELEASED ' + inbox + ' "' + h.slice(0, 80) + '" (' + (NAMES[agentId] || agentId) + '): ' + x.why + ' — treated as work now; ' + (x.dep ? 'it reads like a dependency: write **Waiting on:** instead' : 'for work that waits on other work write **Waiting on:**, or ask the CEO'));
+    }
+    for (const [h, d] of nb.deferred) { const i = nb.info.get(h) || {}; parked.push({ seat: agentId, name: NAMES[agentId] || agentId, inbox, heading: h, kind: 'notBefore', until: d, words: 'not before ' + G.whenWords(d, lpNow.date) + (i.reason ? ': ' + i.reason.slice(0, 120) : ''), dependencyShaped: !!i.dep }); }
     const open = its.filter(i => !i.waitingOn && !i.notBefore).map(i => i.heading).sort();
+    st.deferred = [...new Set([...nb.deferred.keys()].concat(its.filter(i => i.waitingOn === 'dep').map(i => i.heading)))].sort().join('|');   // lanes.js skips these
     const dkey = [...nb.deferred.keys()].sort().join('|');
-    if (dkey !== (st.deferred || '')) { st.deferred = dkey; if (dkey) log('WAITING handoffs ' + inbox + ' (' + agentId + '): ' + nb.deferred.size + ' OPEN set aside by their own Not before (nearest ' + [...nb.deferred.values()].sort()[0] + '): not woken, not counted as stalled'); }
+    if (dkey !== (st.nbKey || '')) { st.nbKey = dkey; if (dkey) log('WAITING handoffs ' + inbox + ' (' + agentId + '): ' + nb.deferred.size + ' OPEN set aside by their own Not before (nearest ' + [...nb.deferred.values()].sort()[0] + '): not woken, not counted as stalled'); }
     const due = deadlineOrder(openSecs, lpNow.date);
     st.nextDue = byDue(open, due.due).map(h => due.due.get(h)).find(Boolean) || null;   // the wake order across seats (soonest first)
     const dueNote = open.length ? [due.overdue.filter(h => open.includes(h)).length ? due.overdue.filter(h => open.includes(h)).length + ' overdue' : '', st.nextDue ? 'next due ' + st.nextDue : ''].filter(Boolean).join(', ') : '';
@@ -973,6 +1057,47 @@ function lastRunTail(job) {
       reason[seat] = (reason[seat] ? reason[seat] + '; ' : '') + 'duty:' + d.id + ' (' + why + ')';
     }
   }
+  // Watched jobs (the seventh source, company/tools/notify-when.js and service.js --wake): each completion row in
+  // company/state/completions.jsonl wakes the seats it names once (a failure too, labelled as one), past their rest, under
+  // every other rule (admit door dispatch, caps, tempo, halt: a halted tick never gets here, so the row waits for the resume).
+  state.completionsSeen = state.completionsSeen || {};
+  try {
+    const firstTime = !Object.keys(state.completionsSeen).length && !state.completionsSince;
+    state.completionsSince = state.completionsSince || new Date().toISOString();
+    for (const r of CMP.recent(ROOT, 200)) {
+      if (state.completionsSeen[r.id]) continue;
+      state.completionsSeen[r.id] = Date.now();
+      if (firstTime && Date.now() - Date.parse(r.endedAt || '') > 24 * 3600e3) continue;   // a first tick does not replay old history
+      const failed = CMP.failed(r);
+      for (const seat of [].concat(r.seat || [])) {
+        if (!LOOP_OF[seat]) continue;
+        log('JOB ' + (failed ? 'FAILED ' : 'ENDED ') + r.id + (r.job ? ' (job:' + r.job + ')' : '') + (r.service ? ' (service:' + r.service + ')' : '') + ': ' + CMP.words(r) + ' — waking ' + (NAMES[seat] || seat));
+        note(seat, { key: 'job:' + r.id, kind: 'completion', failed, id: r.id, words: CMP.words(r), text: 'your ' + CMP.words(r) + '; output tail in completions id ' + r.id });
+      }
+    }
+    for (const [id, t] of Object.entries(state.completionsSeen)) if (Date.now() - t > 7 * 86400e3) delete state.completionsSeen[id];
+  } catch (e) { log('COMPLETIONS ERROR: ' + String(e.message).slice(0, 200)); }
+  const urgent = new Map();   // agentId -> wake notes (rest 0)
+  for (const [id, a] of Object.entries(state.agents || {})) {
+    if (!a || !Array.isArray(a.wakeNotes)) continue;
+    a.wakeNotes = a.wakeNotes.filter(n => Date.now() - (Number(n.at) || 0) < 24 * 3600e3);
+    if (!a.wakeNotes.length) { delete a.wakeNotes; continue; }
+    if (!LOOP_OF[id]) continue;
+    urgent.set(id, a.wakeNotes);
+    work[id] = work[id] || [];
+    reason[id] = (reason[id] ? reason[id] + '; ' : '') + a.wakeNotes.map(n => n.kind === 'completion' ? (n.failed ? 'watched job FAILED: ' : 'watched job ended: ') + n.words + ' (' + n.id + ')' : n.text).join('; ');
+  }
+  // the parked items, for Work › Handoffs (plain words; the console's Start now writes company/state/gate-releases.jsonl)
+  if (!DRY) { try { const pf = G.PARKED(ROOT); fs.mkdirSync(path.dirname(pf), { recursive: true }); fs.writeFileSync(pf, JSON.stringify({ _doc: 'written by dispatch.js every tick: OPEN handoff items set aside (Waiting on, Not before, a waiting Status); read by the console', at: new Date().toISOString(), items: parked }, null, 1) + '\n'); } catch (e) { log('PARKED ERROR: ' + String(e.message).slice(0, 160)); } }
+  // existing companies: the first time a Not before is released by the caps, the CEO gets one handoff about the rules
+  if (nbNotice.length && !state.gateRulesNotice && CEO_ID && inboxOf(CEO_ID)) {
+    state.gateRulesNotice = new Date().toISOString();
+    appendHandoff(inboxOf(CEO_ID), 'new rules: Waiting on for work that waits on work, Not before only for a real clock time', {
+      Need: 'Read company/HANDOFFS.md (Waiting on, Not before). Use **Waiting on:** for anything that waits on other work: a handoff (to-<name>.md#<heading words>), a quest step (q:13 step x), a file (file: <path>), a service run (service: <name>), a job started with node company/tools/notify-when.js (job: <id>), a seat\'s item (seat: <name> — <heading words>); the holder is woken the tick it is met. Use **Not before:** only for a real clock time, with a reason after the date (a market opens, a provider\'s data release, a time someone outside named): at most 24 h ahead without such a reason, 72 h with one, 12 h in Sprint unless the reason is an external time. Never park work to look busy-free or to avoid stall checks. Rewrite the lines below as Waiting on where they wait on work (node company/tools/handoff-status.js shows them all), then set this DONE.',
+      Why: 'the owner\'s ruling: get work done as soon as possible; work is never parked behind a guessed date. The dispatcher now ignores these lines and treats the items as work now: ' + nbNotice.slice(0, 12).map(x => x.name + ' "' + askOf(x.heading).slice(0, 60) + '" (' + x.why + ')').join('; ') + (nbNotice.length > 12 ? '; and ' + (nbNotice.length - 12) + ' more' : '') + '.',
+      Deadline: 'today', Status: 'OPEN', Evidence: 'RELEASED lines in company/work/dispatch-log.md' });
+    log('RULES NOTICE: told ' + CEO_NAME + ' (CEO) once about Waiting on and the Not before caps (' + nbNotice.length + ' released)');
+  }
   // Scheduled loops (runtime.scheduler=dispatcher): a seat whose schedule came due since its last run is woken like any
   // other wake (admit(), cap, share, spread, pacer, tempo); with nothing else to do it is not held by its cooldown (its
   // schedule is its rest) and counts toward no stall. A seat switched off (scheduler.json on:false) is not scheduled.
@@ -995,10 +1120,10 @@ function lastRunTail(job) {
   // the ones the revenue line depends on are the ones that fire.
   const nextDue = id => ((state.agents[id] || {}).nextDue) || '9999';
   const order = Object.keys(work).sort((a, b) =>
-    ((ownerWake.has(b) ? 1 : 0) - (ownerWake.has(a) ? 1 : 0)) || ((hiringWake.has(b) ? 1 : 0) - (hiringWake.has(a) ? 1 : 0)) || (prio(b) - prio(a)) || nextDue(a).localeCompare(nextDue(b)));
+    ((ownerWake.has(b) ? 1 : 0) - (ownerWake.has(a) ? 1 : 0)) || ((hiringWake.has(b) ? 1 : 0) - (hiringWake.has(a) ? 1 : 0)) || ((urgent.has(b) ? 1 : 0) - (urgent.has(a) ? 1 : 0)) || (prio(b) - prio(a)) || nextDue(a).localeCompare(nextDue(b)));
   // ---- Sprint: what each seat has to do now (its signature), the Sprint numbers, effort per seat, lanes ----
   const sigOf = id => SP.workSig([(work[id] || []).map(q => q.id + ':' + (q.duty ? q.key : (state.quests[q.id] || {}).done)), (state.agents[id] || {}).key || '',
-    ownerWake.has(id) ? state.owner.key : '', hiringWake.get(id) || [], artifactWakes[id] || []]);
+    ownerWake.has(id) ? state.owner.key : '', hiringWake.get(id) || [], artifactWakes[id] || [], (urgent.get(id) || []).map(n => n.key)]);
   let SM = null; const laneHeld = []; const spreadHeld = [];
   state.sprintSig = state.sprintSig || {};
   if (SPRINT) {
@@ -1067,7 +1192,7 @@ function lastRunTail(job) {
     const ownCooldown = CREW && CREW[agentId] && Number(CREW[agentId].cooldownMin) > 0 ? Number(CREW[agentId].cooldownMin) * 60000 : COOLDOWN_MS;   // per-person rest, loops.json cooldownMin
     // rest: the seat's cooldown (owner message: the short one); in Sprint only the floor when its work changed since its last wake
     const sig = SPRINT ? sigOf(agentId) : null;
-    const rest = (schedWake.get(agentId) || {}).only ? { ms: 0, fast: false } : SP.restMs({ baseMs: ownerWake.has(agentId) ? OWNER_COOLDOWN_MS : ownCooldown, sprint: !!SPRINT, changed: !!SPRINT && state.sprintSig[agentId] !== sig, floorMin: SPRINT && SPRINT.cooldownFloorMin, unchangedMin: SPRINT && SPRINT.unchangedRestMin, hiring: hiringWake.has(agentId) });
+    const rest = (schedWake.get(agentId) || {}).only ? { ms: 0, fast: false } : SP.restMs({ baseMs: ownerWake.has(agentId) ? OWNER_COOLDOWN_MS : ownCooldown, sprint: !!SPRINT, changed: !!SPRINT && state.sprintSig[agentId] !== sig, floorMin: SPRINT && SPRINT.cooldownFloorMin, unchangedMin: SPRINT && SPRINT.unchangedRestMin, hiring: hiringWake.has(agentId) || urgent.has(agentId) });
     if (Date.now() - last < rest.ms) { say(agentId, { state: 'resting', changed: rest.fast || !SPRINT, at: co.localParts(new Date(last + rest.ms)).time, waits: waitsOf[agentId] }); continue; }
     if (!ALLOW_ASK && modes[agentId] === 'ask') { askHeld.push(job.name + ' (' + agentId + ')'); say(agentId, { state: 'held', why: 'has work, but its approval mode is "ask", so an unattended run could not save anything' }); continue; }   // due, but cannot save unattended
     // the global USD cap, then this agent's share (an owner message is never held; a subscription loop is not metered).
@@ -1095,6 +1220,11 @@ function lastRunTail(job) {
     // Fire detached: the run is admitted on a 200 and then keeps going after we close the socket, so a long
     // loop can never be cancelled by this tick's own hold (a run tied to the request socket dies with it).
     // Only a 200 counts toward the stall budget — a refused start (409/400) is not a run.
+    // a watched job's end hands the seat its context: one notice in its inbox (a failure is OPEN work; a success is DONE, a note)
+    for (const n of (urgent.get(agentId) || [])) if (n.kind === 'completion' && !n.written && inboxOf(agentId)) {
+      n.written = true;
+      appendHandoff(inboxOf(agentId), (n.failed ? 'FAILED: ' : '') + n.words.slice(0, 140), { Need: n.failed ? 'the job failed. Read its output tail (`node company/tools/notify-when.js show ' + n.id + '`; the whole log under scratch/jobs/), fix or re-run it (through notify-when.js again), then set this DONE.' : 'carry on with the work that waited for it. Its output tail: `node company/tools/notify-when.js show ' + n.id + '`.', Why: 'you asked to be woken when it ended (company/tools/notify-when.js)', Deadline: 'today', Status: n.failed ? 'OPEN' : 'DONE — a notice, nothing to close', Evidence: 'company/state/completions.jsonl ' + n.id });
+    }
     const r = await fireRun(job.id);
     A.started(tk, r);
     say(agentId, r.status === 200 ? { state: 'started', why: names } : { state: 'held', why: 'has work; the station refused the start (HTTP ' + r.status + ')' });
@@ -1104,6 +1234,7 @@ function lastRunTail(job) {
       if (viaInbox) state.agents[agentId].count++;
       if (ownerWake.has(agentId)) state.owner.count++;
       for (const slug of (hiringWake.get(agentId) || [])) state.hiringWake[slug] = new Date().toISOString();   // spent: once per round
+      if (urgent.has(agentId)) delete state.agents[agentId].wakeNotes;   // spent: one wake per completion, release or met dependency
       if (SPRINT) { state.sprintSig[agentId] = sig; SM.wakes++; SM.pending[agentId] = { at: Date.now(), sig }; }
       fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
     } else {

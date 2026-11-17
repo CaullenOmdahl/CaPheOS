@@ -11,7 +11,12 @@
  *   spreadHold(o)               Sprint spreads the daily metered cap over the day: hold a wake that would spend it early
  *                               (never a seat other seats are waiting on: o.blocking)
  *   waitingOn(status, names, self)  the seat an OPEN item's Status says it waits on ("waiting on Ingrid's review"), or null
- *   blockersOf(o)               seat -> the seats waiting on it (items that name it, STALLED seats that need the CEO)
+ *   blockersOf(o)               seat -> the seats waiting on it (items that name it, STALLED seats that need the CEO, and
+ *                               items whose **Waiting on:** names that seat's open item: it.waitSeats)
+ *   parseDeps(value)            the dependencies a **Waiting on:** line names (handoff, quest step, file, service, job, seat)
+ *   resolveDeps(deps, look)     'waiting' | 'met' | 'unresolvable' (fail open: never silently parked) for those dependencies
+ *   notBeforeGate(o)            whether a **Not before:** line may set an item aside (reason, caps, Sprint), and why not
+ *   depShaped(text)             a Not before reason that reads like a dependency ("after", "needs", "once X lands")
  *   effortOf(items)             'mechanical' | 'reasoning' | 'default' for a seat's open items (the Effort: field)
  *   lanePlan(items, o)          which open items could run in parallel lanes (Touches: disjoint), CEO always serial
  *   overlaps(a, b)              two Touches lists share a path or area
@@ -54,7 +59,8 @@ function parseItems(text) {
   for (const sec of String(text || '').split(/^## /m).slice(1)) {
     const heading = sec.split('\n')[0].trim();
     const status = field(sec, 'Status');   // the FIRST status line governs (dispatch.js firstStatusOf)
-    out.push({ heading, status, open: !!status && /^OPEN\b/i.test(status), touches: parseTouches(field(sec, 'Touches')), effort: parseEffort(field(sec, 'Effort')) });
+    out.push({ heading, status, open: !!status && /^OPEN\b/i.test(status), touches: parseTouches(field(sec, 'Touches')), effort: parseEffort(field(sec, 'Effort')),
+      waitingOnLine: field(sec, 'Waiting on'), notBeforeLine: field(sec, 'Not before'), id: (field(sec, 'Id') || '').replace(/`/g, '').trim() || null });
   }
   return out;
 }
@@ -113,9 +119,107 @@ function waitingOn(status, names, self, ceo) {
  * items after the stall limit), which needs the CEO. */
 function blockersOf(o) {
   const out = {}; const add = (b, w) => { if (!b || b === w || b === 'someone' || b === 'owner') return; (out[b] = out[b] || []); if (!out[b].includes(w)) out[b].push(w); };
-  for (const [seat, items] of Object.entries(o.items || {})) for (const it of items || []) if (it && it.open) add(waitingOn(it.status, o.names, seat, o.ceo), seat);
+  for (const [seat, items] of Object.entries(o.items || {})) for (const it of items || []) {
+    if (!it || !it.open) continue;
+    if (Array.isArray(it.waitSeats)) { for (const b of it.waitSeats) add(b, seat); continue; }   // its **Waiting on:** governs (dispatch.js)
+    add(waitingOn(it.status, o.names, seat, o.ceo), seat);
+  }
   for (const seat of o.stalled || []) add(o.ceo, seat);
   return out;
+}
+/* ---------- Waiting on: event-driven dependencies (company/HANDOFFS.md) ----------
+ * `**Waiting on:** <dep>[; <dep>…] (plain words)` names what an OPEN item waits for. Each dependency is one of:
+ *   to-nadia-farrell.md#gold backfill   (or `handoff: to-x.md — <heading words or **Id:**>`)  that handoff is closed
+ *   q:13 step rank                      (or `q:13`)                                            that quest step is ticked (the quest closed)
+ *   file: company/work/strategies/RANKING.md [changed]                                         the file exists (or changed since)
+ *   service: bank-day                   a registered background service's next successful run (company/tools/service.js)
+ *   job: gold-backfill                  a job started with company/tools/notify-when.js --id gold-backfill has ended
+ *   seat: Nadia — gold backfill         that seat's open item (the words of its heading or its **Id:**) is closed
+ * A trailing "(…)" is the plain words the console shows ("waiting for: gold history download to finish"). The dispatcher
+ * resolves every dependency on every tick and wakes the holder the tick they are all met; a reference it cannot resolve
+ * (no such inbox, item, quest, step, service or job) is a lint warning, and the item is work now (fail open). */
+const DEP_SPLIT = /\s*;\s*|\s+\+\s+|,\s*(?=(?:handoff|quest|file|service|job|seat)\s*:|q:\d|to-[\w.-]+\.md)/i;
+function depWords(d) {
+  switch (d.kind) {
+    case 'handoff': return '"' + d.ref + '" in ' + d.inbox + ' to close';
+    case 'seat': return d.name + (d.ref ? ': "' + d.ref + '"' : '') + ' to close';
+    case 'quest': return d.qid + (d.step ? ' step ' + d.step : '') + ' to be done';
+    case 'file': return d.path + (d.changed ? ' to change' : ' to appear');
+    case 'service': return 'the ' + d.name + ' run to finish';
+    case 'job': return 'job ' + d.id + ' to finish';
+    default: return '"' + d.raw + '" (not a dependency the dispatcher can read)';
+  }
+}
+const NO_WAIT = /^(?:nothing|none|no(?:thing)?\s+(?:further|else|external|more)|n\/a|-|—)(?:\b|\s|$)/i;
+function parseDeps(value) {
+  let s = String(value == null ? '' : value).replace(/`/g, '').trim();
+  if (!s || NO_WAIT.test(s)) return { deps: [], label: null, words: '', none: true };   // "Waiting on: nothing — …": not waiting
+  let label = null;
+  const lm = s.match(/\(([^()]{2,200})\)\s*$/); if (lm) { label = lm[1].trim(); s = s.slice(0, lm.index).trim(); }
+  const deps = [];
+  for (const raw of s.split(DEP_SPLIT).map(x => x.trim()).filter(Boolean)) {
+    let p = raw.replace(/^quest\s*:\s*/i, ''), m;
+    if ((m = p.match(/^q:(\d+)(?:\s+step\s+([\w.-]+))?\s*$/i))) deps.push({ kind: 'quest', qid: 'q:' + m[1], step: m[2] || null, raw });
+    else if ((m = p.match(/^file\s*:\s*(\S+)(\s+changed)?\s*$/i))) deps.push({ kind: 'file', path: m[1].replace(/^\.\//, ''), changed: !!m[2], raw });
+    else if ((m = p.match(/^service\s*:\s*([a-z][a-z0-9-]{1,30})\s*$/i))) deps.push({ kind: 'service', name: m[1].toLowerCase(), raw });
+    else if ((m = p.match(/^job\s*:\s*([A-Za-z0-9][\w.:-]{0,79})\s*$/))) deps.push({ kind: 'job', id: m[1], raw });
+    else if ((m = p.match(/^seat\s*:\s*([^—–#:]+?)\s*(?:(?:—|–|#|:|\s-\s)\s*(.+))?$/i))) deps.push({ kind: 'seat', name: m[1].trim(), ref: m[2] ? m[2].trim() : null, raw });
+    else if ((m = p.match(/^(?:handoff\s*:\s*)?(to-[\w.-]+\.md)\s*(?:(?:#|—|–|:|\s-\s)\s*(.*))?$/i))) deps.push({ kind: 'handoff', inbox: m[1], ref: (m[2] || '').trim() || null, raw });
+    else deps.push({ kind: 'unknown', raw });
+  }
+  for (const d of deps) d.words = depWords(d);
+  return { deps, label, words: label || deps.map(d => d.words).join('; ') };
+}
+/* resolveDeps(deps, look) -> { state, pending, met, unresolved }
+ * look.<kind>(dep) answers 'met' | 'waiting' | null (null: the reference names nothing that exists). Any unresolved
+ * reference (or no dependency at all) makes the whole line 'unresolvable', and the item is work now. */
+function resolveDeps(deps, look) {
+  const out = { state: 'met', pending: [], met: [], unresolved: [] };
+  if (!Array.isArray(deps) || !deps.length) { out.state = 'unresolvable'; return out; }
+  for (const d of deps) {
+    let r = null;
+    try { const f = look && look[d.kind]; r = typeof f === 'function' ? f(d) : null; } catch (_) { r = null; }
+    if (r === 'met') out.met.push(d); else if (r === 'waiting') out.pending.push(d); else out.unresolved.push(d);
+  }
+  out.state = out.unresolved.length ? 'unresolvable' : out.pending.length ? 'waiting' : 'met';
+  return out;
+}
+
+/* ---------- Not before: a genuine wall-clock reason only ----------
+ * `**Not before:** YYYY-MM-DD[ HH:MM] <reason>`. The reason says which clock: a market opening, a provider's data release,
+ * a time someone outside the company named (external), or a provider's quota reset (a category, not external). Caps,
+ * measured from when the dispatcher first saw the line: at most 24 h ahead without a reason category, at most 72 h with
+ * one; in Sprint at most 12 h unless the reason is an external time. Beyond that the line is ignored (the item is work
+ * now) and the lint says to use **Waiting on:** or ask the CEO. A reason that reads like a dependency never counts as a
+ * category: it is waiting on work, not on a clock. */
+const NB_CATEGORIES = [
+  ['market', true, /\b(markets?|exchanges?|(?:trading )?sessions?|opening bell|bell|trading (?:day|hours)|pre-?market|NYSE|NASDAQ|CME|LSE|COMEX|NYMEX|ICE|futures (?:open|close)|(?:opens|closes) at)\b/i],
+  ['release', true, /\b(releases?|released|publish(?:es|ed)?|data drop|daily (?:file|data|report)|end[- ]of[- ]day (?:data|file|prices)|EOD (?:data|file|prices)|settlement prices?|fixing|print(?:s)? at|report(?:s)? at|comes out)\b/i],
+  ['outside', true, /\b(?:(?:owner|customer|client|vendor|supplier|partner|regulator|broker|counterparty|auditor|landlord|they|he|she)\s+(?:named|set|asked for|chose|said|scheduled|booked|agreed)|meeting|call with|appointment|embargo(?:ed)?|launch window|go-?live|maintenance window|planned outage)\b/i],
+  ['quota', false, /\b(quota|rate[- ]limit|limit resets?|window resets?|resets? at|cool-?down ends?)\b/i],
+];
+const DEP_SHAPED = /\b(after\b|needs?\b|waits? (?:on|for)|waiting (?:on|for)|once\b|when\b[^.]{0,60}\b(?:lands?|finishes|finished|is done|exists|arrives|completes|is in)\b|comes after|reads? the\b|rides? (?:inside|on|with)|depends? on|until\b[^.]{0,60}\b(?:done|finished|exists|lands|is in)\b|is done\b)/i;
+function depShaped(text) { const m = String(text || '').match(DEP_SHAPED); return m ? m[1] : null; }
+// what follows the date: "— market opens 09:30 ET", "(set 2026-11-17 22:24 by Founder: the verdict reads the 00:30 bank)"
+function nbReason(rest) {
+  let r = String(rest || '').trim().replace(/^[—–:,;-]+\s*/, '').trim();
+  if (/^\(.*\)$/.test(r)) r = r.slice(1, -1).trim();
+  r = r.replace(/^set\s+\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2})?\s+by\s+[^:]{1,60}:\s*/i, '').trim();
+  return r.replace(/^[—–:,;-]+\s*/, '').trim();
+}
+/* notBeforeGate({ rest, hoursAhead, sprint }) -> { honour, reason, category, external, dep, why, cap }
+ * rest: the line after its date; hoursAhead: from when the line was first seen to its date. */
+function notBeforeGate(o) {
+  const reason = nbReason(o.rest);
+  const dep = reason ? depShaped(reason) : null;
+  const hit = dep ? null : NB_CATEGORIES.find(c => c[2].test(reason));
+  const category = hit ? hit[0] : null, external = !!(hit && hit[1]);
+  const h = Number(o.hoursAhead) || 0;
+  const cap = o.sprint && !external ? 12 : category ? 72 : 24;
+  const span = h >= 47.5 ? Math.round(h / 24) + '-day' : Math.max(1, Math.round(h)) + '-hour';
+  const whyNot = !reason ? 'no external reason' : dep ? 'a dependency ("' + dep + '"), not a clock time' : category ? (external ? 'more than 72 h ahead' : 'no external reason') : 'no external reason';
+  if (h > cap) return { honour: false, reason, category, external, dep, cap, why: 'a ' + span + ' Not before with ' + (o.sprint && cap === 12 && h <= (category ? 72 : 24) ? 'no external reason during Sprint' : whyNot) };
+  return { honour: true, reason, category, external, dep, cap, why: null };
 }
 /* spreadOn(config, now): the spread holds only while spreadDailyCap is not false and no "off until" is still running */
 function spreadOn(config, now) {
@@ -203,4 +307,4 @@ function sprintSpend(rows, sinceMs, unmetered) {
   return { usd: Math.round(usd * 1e6) / 1e6, runs };
 }
 
-module.exports = { SPRINT_DEFAULTS, CONFIG_KEYS, parseItems, parseTouches, parseEffort, workSig, restMs, spreadHold, spreadOn, waitingOn, blockersOf, effortOf, lanePlan, overlaps, pathOverlap, makePathLock, sprintSpend };
+module.exports = { SPRINT_DEFAULTS, CONFIG_KEYS, parseItems, parseTouches, parseEffort, workSig, restMs, spreadHold, spreadOn, waitingOn, blockersOf, parseDeps, resolveDeps, depWords, notBeforeGate, nbReason, depShaped, NB_CATEGORIES, effortOf, lanePlan, overlaps, pathOverlap, makePathLock, sprintSpend };

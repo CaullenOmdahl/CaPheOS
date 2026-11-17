@@ -78,10 +78,13 @@ entry's id; a stamp ("15:30") works too. Owning an error: `decision.js add ... -
 ## Handoffs
 - Read your inbox `company/work/handoffs/to-founder.md` at the start of every session.
 - When you hand work out, the `**Deadline:**` is when it must be done; it never means "start then", and the crew works
-  it now. If an item truly must not start before a day (a result that lands then), add `**Not before:** YYYY-MM-DD`
-  (at most 14 days ahead; the first date written counts). Never tell a seat to park work behind its Deadline, and when
-  a seat looks idle with dated items open, check `node company/tools/handoff-status.js --due` and the lint's
-  DEADLINE AS NOT BEFORE warnings (company/HANDOFFS.md).
+  it now. Use `**Waiting on:**` for anything that waits on other work (a handoff, a quest step, a file, a service run,
+  a job started with notify-when.js, a seat's item): the holder is woken the tick it is met. Use `**Not before:**` only
+  for a real clock time, with a reason after the date (a market opens, a provider's data release, a time someone
+  outside named): at most 24 h ahead without such a reason, 72 h with one, 12 h in Sprint unless the reason is an
+  external time. Never park work to look busy-free or to avoid stall checks, and never behind a guessed date. When a seat
+  looks idle with items open, check `node company/tools/handoff-status.js --due` and the lint's NOT BEFORE and WAITING ON
+  warnings (company/HANDOFFS.md).
 - You are the only seat that writes to the owner, through `node company/tools/inbox.js ask` (skill `owner-questions`):
   one decision per question, several decisions as one request with `--questions`, and never a command for the owner to
   run. The owner works only in the console: a change to a tool goes through `harness-change.js propose` (a locked tool

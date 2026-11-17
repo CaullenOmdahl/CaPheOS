@@ -432,6 +432,12 @@ async function apiRoute(req, res, p, q) {
     }
     case 'GET /api/crew': return ok({ seats: S.seats, station: STATION_DOWN ? 'down' : 'up' });
     case 'GET /api/handoffs': return ok({ items: S.handoffs });
+    case 'GET /api/handoffs/parked': return ok({ at: now(), items: (S.parked = S.parked || [
+      { seat: 'agent', name: 'Founder', inbox: 'to-founder.md', heading: '2026-11-17 22:24 from Teo — recompute the ranking', kind: 'waiting', words: 'waiting for: gold history download to finish' },
+      { seat: 'agent', name: 'Founder', inbox: 'to-founder.md', heading: '2026-11-17 22:24 from Teo — read the open', kind: 'notBefore', until: '2026-11-19 09:00', words: 'not before 09:00 tomorrow: market opens' }]),
+      running: [{ id: 'c-mock-1', job: 'gold-backfill', why: 'gold backfill', since: ago(40), wakes: ['Founder'] }],
+      completions: [{ id: 'c-mock-0', words: 'feed check FAILED: exit 2 after 3 min', failed: true, at: ago(90), wakes: ['Founder'] }] });
+    case 'POST /api/handoffs/start-now': S.parked = (S.parked || []).filter(x => x.heading !== B.heading); return ok({ release: { id: 'rel-mock' } });
     case 'GET /api/decisions': return ok({ entries: ['## 2026-11-14 Founder', '- Adopted conflicts-before-engagement.', '## 2026-11-15 People', '- Opened the analyst round.'].map(text => ({ text })) });
     case 'GET /api/dispatch': return ok({ state: { lastTick: ago(4) }, log: ['- 06:40 Dispatcher closed quest q:31 on checked evidence.', '- 04:12 woke Mira (handoff to-people.md)', '- 02:05 held 0, woke Teo (quest q:35)', '- 00:15 Pacer moved two routines off the large model'] });
     case 'GET /api/hiring': return ok({ rounds: [{ id: 'analyst-2026-11', title: 'Analyst', openedBy: 'Founder', template: 'specialist', at: ago(2000), candidates: [{ agentId: 'c1', name: 'Candidate A', provider: 'claude', model: 'example-medium', status: 'candidate', interviewedAt: ago(100) }, { agentId: 'c2', name: 'Candidate B', provider: 'minimax', model: 'example-m', status: 'candidate' }] }], templates: ['people-manager', 'tool-builder', 'risk-manager', 'finance-manager', 'floor-manager', 'specialist'] });

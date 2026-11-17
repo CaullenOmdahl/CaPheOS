@@ -73,7 +73,7 @@ brokenSince, error, lastFlaggedKey, waits, history}` (last 12 results).
 
 ## 4. What a result does
 
-- **Due**: the result is the sixth source of work in the dispatcher's `work` map (`{id: 'duty:<id>', why}`) for the
+- **Due**: the result is the sixth source of work (the seventh is a watched job's end, company/tools/notify-when.js; docs/TEMPO.md) in the dispatcher's `work` map (`{id: 'duty:<id>', why}`) for the
   seat it routes to (items split by their own routes). It inherits the stall rule (the stall key is the duty id plus its
   `key` and item ids: the same failure after 3 wakes is flagged once and stops waking), `RUN … (duty:<id> (<reason>))`
   logging, the cooldown, the wake caps, the spend caps, the halt and Sprint (a new key is new work). When the seat is

@@ -151,3 +151,40 @@ test('seat-status: the plain reason Today shows for each kind of idle', () => {
   const a = SS.carry(null, SS.entry({ state: 'idle' }), 't1'); const b = SS.carry(a, SS.entry({ state: 'idle' }), 't2');
   assert.equal(b.since, 't1', 'since is kept while the reason stays the same');
 });
+
+test('Waiting on: parseDeps reads every dependency form, the plain words and "nothing"', () => {
+  const p = SP.parseDeps('to-nadia-farrell.md#gold backfill; q:8 step rank, file: company/work/strategies/RANKING.md changed; service: bank-day + job: gold-backfill; seat: Nadia — the field list (gold history download to finish)');
+  assert.deepEqual(p.deps.map(d => d.kind), ['handoff', 'quest', 'file', 'service', 'job', 'seat']);
+  assert.equal(p.deps[0].inbox, 'to-nadia-farrell.md'); assert.equal(p.deps[0].ref, 'gold backfill');
+  assert.equal(p.deps[1].qid, 'q:8'); assert.equal(p.deps[1].step, 'rank');
+  assert.equal(p.deps[2].changed, true); assert.equal(p.deps[5].name, 'Nadia'); assert.equal(p.deps[5].ref, 'the field list');
+  assert.equal(p.words, 'gold history download to finish');
+  assert.equal(SP.parseDeps('`company/work/x.md` existing').deps[0].kind, 'unknown');
+  assert.ok(SP.parseDeps('nothing — it rides inside the ranking work').none);
+});
+test('Waiting on: resolveDeps is met only when all are met; any unresolvable reference fails open', () => {
+  const look = { handoff: d => d.ref === 'done' ? 'met' : d.ref === 'open' ? 'waiting' : null, file: () => 'met', job: () => { throw new Error('x'); } };
+  const r = (s) => SP.resolveDeps(SP.parseDeps(s).deps, look).state;
+  assert.equal(r('to-a.md#done; file: x.md'), 'met');
+  assert.equal(r('to-a.md#done; to-a.md#open'), 'waiting');
+  assert.equal(r('to-a.md#open; to-a.md#missing'), 'unresolvable');
+  assert.equal(r('job: gb'), 'unresolvable', 'a lookup that throws is unresolvable, never parked');
+  assert.equal(SP.resolveDeps([], look).state, 'unresolvable');
+});
+test('blockersOf: an item whose Waiting on names a seat\'s item blocks that seat; its own Status prose no longer counts', () => {
+  const names = { nad: 'Nadia Farrell', roh: 'Rohan Iyer', ing: 'Ingrid' };
+  const b = SP.blockersOf({ items: { roh: [{ open: true, status: 'OPEN — waiting on Ingrid', waitSeats: ['nad'] }], ing: [{ open: true, status: 'OPEN — waiting on Rohan', waitSeats: [] }] }, names, ceo: 'agent' });
+  assert.deepEqual(b, { nad: ['roh'] });
+});
+test('Not before: notBeforeGate caps, categories, Sprint and dependency shape', () => {
+  const g = (rest, h, sprint) => SP.notBeforeGate({ rest, hoursAhead: h, sprint });
+  assert.equal(g('', 20).honour, true); assert.equal(g('', 25).honour, false);
+  assert.equal(g('— the exchange opens', 70).honour, true); assert.equal(g('— the exchange opens', 73).honour, false);
+  assert.equal(g('— the API quota resets', 30).category, 'quota');
+  assert.equal(g('— the API quota resets', 13, true).honour, false); assert.equal(g('— EIA data release', 13, true).honour, true);
+  assert.equal(g('(set 2026-11-17 22:24 by Founder: the verdict reads the 00:30 bank)', 2).dep, 'reads the');
+  assert.equal(g('(after RANKING.md)', 30).category, null, 'a dependency-shaped reason is no category');
+  assert.equal(g('', 7 * 24).why, 'a 7-day Not before with no external reason');
+  for (const s of ['after the review', 'needs the gold data', 'waits on Nadia', 'once the bank lands', 'when the backfill lands', 'comes after RANKING.md']) assert.ok(SP.depShaped(s), s);
+  assert.equal(SP.depShaped('the market opens at 09:30'), null);
+});

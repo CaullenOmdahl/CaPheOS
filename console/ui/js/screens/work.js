@@ -1,6 +1,6 @@
 // Work (Work.dc.html): quests (station), handoffs, decisions, and the project folders the crew may work in.
 import { h, fill, Button, Tag, errLine, empty, tabs, screenHead, table, rel, Details } from '../ui.js';
-import { api } from '../api.js';
+import { api, post } from '../api.js';
 import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
 import { personName, nameFromId } from '../plain.js';
@@ -42,9 +42,9 @@ export async function render(root, ctx) {
         fill(body, qs.length ? h('div', { class: 'quest-board' },
           col('In progress', progress, 2), col('Blocked', blocked, 1), col('Done', done, 1)) : empty('No quests on the station yet.'));
       } else if (tab === 'handoffs') {
-        const d = await api('/handoffs');
+        const [d, pk] = await Promise.all([api('/handoffs'), api('/handoffs/parked').catch(() => null)]);
         const it = d.items || [];
-        fill(body, it.length ? table(['Deadline', 'For', 'Ask', 'Status'], it.map(x => h('tr', null,
+        fill(body, parkedCard(pk, load), jobsCard(pk), it.length ? table(['Deadline', 'For', 'Ask', 'Status'], it.map(x => h('tr', null,
           h('td', { class: 'num strong', style: 'white-space:nowrap' }, x.raw || x.due || '—'),
           h('td', { style: 'white-space:nowrap' }, inboxName(x.file)),
           h('td', { class: 'strong' }, String(x.heading || x.ask || '').replace(/^#+\s*/, '')),
@@ -116,4 +116,35 @@ function questCard(q, owner) {
     h('div', { class: 'meter thin', role: 'img', 'aria-label': pr.aria }, h('div', { style: 'width:' + pr.pct + '%' })),
     pr.line ? h('span', { class: 'caption muted quest-line' }, pr.line) : null,
     Details('Details', q.desc ? h('p', { class: 'caption' }, String(q.desc).slice(0, 600)) : null, h('code', { class: 'mono-s' }, 'Quest ' + q.id + (q.agentId ? ' · owner ' + q.agentId : '') + (t.to ? ' · delivers ' + t.to : ''))));
+}
+
+// Parked: open items set aside for now, in plain words, each with the owner's Start now (it removes the gate, is
+// recorded, and the holder is woken on the next check). Waiting on another item, a file, a quest step, a service run or
+// a watched job is released by itself the moment it is met; a Not before is a real clock time with its reason.
+function parkedCard(pk, reload) {
+  const items = (pk && pk.items) || [];
+  if (!items.length) return null;
+  const ask = hd => String(hd || '').replace(/^#+\s*/, '').split(' — ').slice(1).join(' — ') || String(hd || '');
+  return h('section', { class: 'card stack-12', 'data-parked': '' },
+    h('h2', { class: 'eyebrow-t' }, 'Parked for now · ' + items.length),
+    h('p', { class: 'caption muted' }, 'Set aside until what they wait for happens. Start now releases one at once.'),
+    table(['For', 'Item', 'Why it waits', ''], items.map(x => h('tr', null,
+      h('td', { style: 'white-space:nowrap' }, personName(x.name || x.seat)),
+      h('td', { class: 'strong' }, ask(x.heading)),
+      h('td', null, x.words),
+      h('td', null, Button('Start now', { size: 'sm', onClick: async ev => {
+        const b = ev && ev.currentTarget; if (b) b.disabled = true;
+        try { await post('/handoffs/start-now', { inbox: x.inbox, heading: x.heading }); reload(); }
+        catch (e) { if (b) { b.disabled = false; b.parentNode.appendChild(errLine(e, 'Start now')); } }
+      } })))), { minWidth: 640 }));
+}
+// Background jobs the crew started through notify-when.js: what is running, and what ended (a failure says so)
+function jobsCard(pk) {
+  const run = (pk && pk.running) || [], done = (pk && pk.completions) || [];
+  if (!run.length && !done.length) return null;
+  const who = l => (l || []).length ? ' · wakes ' + l.map(personName).join(', ') : '';
+  return h('section', { class: 'card stack-12', 'data-jobs': '' },
+    h('h2', { class: 'eyebrow-t' }, 'Background jobs'),
+    run.map(r => h('p', { class: 'body-s' }, Tag('Running', { variant: 'status', status: 'online' }), ' ', String(r.why || r.job || 'a job'), h('span', { class: 'caption muted' }, ' · since ' + rel(r.since) + who(r.wakes)))),
+    done.map(r => h('p', { class: 'body-s' }, Tag(r.failed ? 'Failed' : 'Ended', { variant: 'status', status: r.failed ? 'danger' : 'neutral' }), ' ', r.words, h('span', { class: 'caption muted' }, ' · ' + rel(r.at) + who(r.wakes)))));
 }

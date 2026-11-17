@@ -44,6 +44,10 @@
  *     config folder, session tokens) had two runs refused by the model provider's safety filter. A connector is checked
  *     through its own verify command (company/connectors/<id>.json `verify`) and its exit code; a credential file is
  *     never read or printed, which keeps keys out of transcripts and avoids the refusal.
+ * 12. Waiting on, not guessed dates (v12): on 2026-11-17 22:24 the CEO parked ~13 handoffs behind **Not before:** dates
+ *     that meant "after X is done", two core items for a week. Work that waits on other work names it in **Waiting on:**
+ *     and is woken the tick it is met; a long job is started through notify-when.js, which wakes the seat when it ends;
+ *     Not before is a real clock time with a reason, inside its caps (company/HANDOFFS.md). The fallback line says the same.
  *  3. Short waits. The station reclaims a routine run that shows no progress for 8 minutes (CRON_HEARTBEAT_STALE_MS
  *     480000), and a tool call in progress does not count, so one long shell_bg_wait loses the run's final reply.
  *
@@ -67,7 +71,7 @@ const path = require('path');
 const call = (...a) => require('./station-crew.js').call(...a);   // loaded on first use, so the selftest needs no token
 const co = require('./lib/company');
 const ROOT = co.ROOT;
-const VERSION = 'v11';
+const VERSION = 'v12';
 const START = '[HOUSE RULES FOR SCHEDULED RUNS ';
 const END = '[END HOUSE RULES]';
 const BLOCK = START + VERSION + ']\n' + [
@@ -78,7 +82,8 @@ const BLOCK = START + VERSION + ']\n' + [
   '- The station stops a scheduled run at 90 minutes, mid-task and before your final report. Watch the clock: after about 60 minutes start no new research or build step; save what you have, write your log entry and handoffs, and end by 75 minutes. For a job bigger than one run, write down exactly where you stopped and what comes next, so your next run picks it up.',
   '- Routine models are set by the usage pacer (company/tools/pacer.js) from the routing table in company/model-policy.json, which the people owner keeps as model manager. Never change a routine\'s provider or model by hand: to change a pairing, ask the people owner to change the table.',
   '- Never wait inside a run for more than about 2 minutes in all (sleep, shell_bg_wait, a polling loop) to reach a wall-clock time. A waiting run holds your seat, blocks lanes and station restarts, and does no work; the station\'s sleep refuses more than 120 s. To act at a later time, record a commitment with a due time (node company/tools/commitments.js create --title "..." --key <key> --owner <you> --due <ISO time>) and end the run: the commitments duty wakes you then. For continuous recording or watching, use a background service (node company/tools/service.js propose).',
-  '- Never call shell_bg_wait with timeoutMs above 240000. The station stops a run that shows no progress for 8 minutes, and the run loses its final reply. Wait in short steps; if a job needs longer than this run has, leave it writing to a log under scratch/, write a handoff that names the log, and end the run.',
+  '- Never call shell_bg_wait with timeoutMs above 240000. The station stops a run that shows no progress for 8 minutes, and the run loses its final reply. Start a long job with node company/tools/notify-when.js --seat <you> --why "..." --id <id> -- <command> (not a bare background shell plus polling), hand off the next step with **Waiting on:** job: <id>, and end the run: you are woken when it ends, a failure too.',
+  '- Use **Waiting on:** for anything that waits on other work (to-<name>.md#<heading words>, q:N step <key>, file: <path>, service: <name>, job: <id>, seat: <name> — <heading words>): the holder is woken the tick it is met. Use **Not before:** only for a real clock time, with a reason after the date (a market opens, a provider\'s data release, a time someone outside named); the dispatcher ignores one more than 24 h ahead without such a reason (72 h with one; 12 h in Sprint unless external). Never park work to look busy-free or to avoid stall checks (company/HANDOFFS.md).',
   '- Use sudo only for the commands the gate allows: the company\'s docker use and read-only host diagnostics. The gate runs them through a broker automatically, so `sudo docker ...` and `sudo ufw status` work as before, but there is no general root: `sudo cat`, `sudo curl`, arbitrary files and dangerous docker flags are refused. Run anything else without sudo, or ask the risk owner to add it (company/work/security/sudo-gate.md).',
   '- Check whether a connector or key works only through its own check: the connector\'s verify command in company/connectors/<id>.json (its exit code), or the tool that uses the key. Never read, cat, list, grep or print a credential file or folder (secrets/, the station\'s .secrets/, a CLI\'s config or session folder such as ~/.config/<tool>/), not even redacted: it puts keys in transcripts, and the model provider\'s filter may refuse the whole run.',
   '- Record a decision only with node company/tools/decision.js add --by <your name> --text "..." --why "...". Never edit company/work/decisions.md by hand, not even your own entry minutes later: to correct one run decision.js amend <id-or-stamp>, to take one back decision.js withdraw <id-or-stamp> (both with --by and --why; ids: decision.js list). The record is grow-only and an in-place edit is flagged as a rewrite.',
@@ -98,7 +103,7 @@ function moduleTools() {
 }
 // what a module line says when its module is off (no line = the rule is left out)
 const FALLBACK = {
-  commitments: '- Never wait inside a run for more than about 2 minutes in all (sleep, shell_bg_wait, a polling loop) to reach a wall-clock time. A waiting run holds your seat, blocks lanes and station restarts, and does no work; the station\'s sleep refuses more than 120 s. To act at a later time, write what to do in a handoff to yourself (company/work/handoffs/) with a **Not before:** YYYY-MM-DD[ HH:MM] line for when it may start, and end the run: the dispatcher leaves it until then. A **Deadline:** line is when work must be done, never a start time: it defers nothing. For continuous recording or watching, use a background service (node company/tools/service.js propose).',
+  commitments: '- Never wait inside a run for more than about 2 minutes in all (sleep, shell_bg_wait, a polling loop) to reach a wall-clock time. A waiting run holds your seat, blocks lanes and station restarts, and does no work; the station\'s sleep refuses more than 120 s. To act after other work, write the next step as a handoff to yourself with a **Waiting on:** line naming it (to-<name>.md#<heading>, q:N step <key>, file: <path>, service: <name>, job: <id>) and end the run: you are woken the tick it is met. Only for a real clock time (a market opens, a data release, a time someone outside named) use **Not before:** YYYY-MM-DD[ HH:MM] with that reason after the date. A **Deadline:** line is when work must be done, never a start time: it defers nothing. For continuous recording or watching, use a background service (node company/tools/service.js propose).',
 };
 let modulesOverride = null;   // the selftest's enabled list
 function enabledModules() { if (modulesOverride) return modulesOverride; try { return require('./lib/modules').enabled(); } catch (_) { return []; } }

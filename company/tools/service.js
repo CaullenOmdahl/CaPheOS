@@ -4,7 +4,10 @@
  *
  *   node company/tools/service.js propose <name> --kind service|timer --exec "<argv>" [--every 60s|5min|1h | --on-calendar "<spec>"]
  *        --why "..." --by <seat> [--restart on-failure|always] [--timeout 1h] [--success-exit "3"] [--memory 512M] [--cpu 50%]
- *        [--network none] [--soft-halt finish|stop|keep]
+ *        [--network none] [--soft-halt finish|stop|keep] [--wake <seat>[,<seat>]]
+ *        --wake (a timer only): each run's end is recorded like a watched job (company/tools/notify-when.js wraps the
+ *        ExecStart and passes its exit code through) and wakes those seats, a failure too; it also satisfies a
+ *        `**Waiting on:** service:<name>` line (company/HANDOFFS.md)
  *   node company/tools/service.js list [--json]          every registered service, with its live state (status, schedule, last run, who, why)
  *   node company/tools/service.js status                 the same, in words
  *   node company/tools/service.js stop|start <name> --by <seat>    the seat that asked for it, or the owner
@@ -251,9 +254,22 @@ function specOf(ctx, name, o, opts) {
   const timeout = o.timeout ? secs(duration(o.timeout, '--timeout', 10, 6 * 3600)) : null;
   const successExit = o['success-exit'] ? String(o['success-exit']).trim() : null;
   if (successExit && !/^\d{1,3}( \d{1,3}){0,7}$/.test(successExit)) throw err('--success-exit is exit codes separated by spaces, e.g. "3"');
-  return { name, unit: unitOf(ctx, name), kind, argv, schedule: scheduleOf(kind, o), why: why.slice(0, 400), restart, softHalt, network, limits: limitsOf(o), timeout, successExit };
+  let wake = null;
+  if (o.wake != null && o.wake !== false) {
+    if (kind !== 'timer') throw err('--wake is for a timer: a run that ends is what wakes the seats');
+    const crew = ctx.crew(); wake = [];
+    for (const w of String(o.wake).split(',').map(x => x.trim()).filter(Boolean)) {
+      const id = crew[w] ? w : Object.keys(crew).find(k => { const n = String((crew[k] || {}).name || '').toLowerCase(); return n === w.toLowerCase() || n.split(/\s+/)[0] === w.toLowerCase(); });
+      if (!id) throw err('--wake: no seat "' + w + '" in company/tools/loops.json');
+      if (!wake.includes(id)) wake.push(id);
+    }
+    if (!wake.length) throw err('--wake names the seats to wake, e.g. --wake rohan');
+  }
+  return Object.assign({ name, unit: unitOf(ctx, name), kind, argv, schedule: scheduleOf(kind, o), why: why.slice(0, 400), restart, softHalt, network, limits: limitsOf(o), timeout, successExit }, wake ? { wake } : {});
 }
-const specKey = s => sha(JSON.stringify([s.kind, s.argv, s.schedule, s.restart, s.softHalt, s.network, s.limits, s.timeout, s.successExit]));
+const specKey = s => sha(JSON.stringify([s.kind, s.argv, s.schedule, s.restart, s.softHalt, s.network, s.limits, s.timeout, s.successExit].concat(s.wake && s.wake.length ? [s.wake] : [])));
+// a timer with --wake runs through notify-when.js (company/tools), which records the run's end and passes its exit code on
+const execArgv = (ctx, e) => e.wake && e.wake.length ? [which('node') || process.execPath, path.join(ctx.root, 'company', 'tools', 'notify-when.js'), '--service-run', e.name, '--seat', e.wake.join(','), '--'].concat(e.argv) : e.argv;
 const scheduleWords = s => !s ? 'runs all the time' : s.every ? 'every ' + s.every : 'on the calendar ' + s.onCalendar;
 
 /* ---------------- unit files ---------------- */
@@ -271,7 +287,7 @@ function render(ctx, e) {
     + startLimit(e) + x + '\n[Service]\n'
     + 'Type=' + (e.kind === 'timer' ? 'oneshot' : 'simple') + '\n'
     + 'WorkingDirectory=' + ctx.root + '\n'
-    + 'ExecStart=' + execLine(e.argv) + '\n'
+    + 'ExecStart=' + execLine(execArgv(ctx, e)) + '\n'
     + 'Environment=CAPHEOS_ROOT=' + ctx.root + ' CAPHEOS_SERVICE=' + e.name + '\n'
     + (e.kind === 'timer' ? '' : 'Restart=' + e.restart + '\nRestartSec=10s\n')
     + (e.timeout ? 'TimeoutStartSec=' + e.timeout + '\n' : '')
@@ -646,7 +662,7 @@ function list(ctx) {
     return { name: e.name, unit: e.unit, kind: e.kind, status: e.status, state: lv.state, schedule: e.schedule, scheduleWords: scheduleWords(e.schedule), lastRun: lv.lastRun || null,
       nextRun: lv.nextRun || null, result: lv.result || null, exitStatus: lv.exitStatus, restarts: lv.restarts || 0, by: e.by, byName: e.byName || e.by, why: e.why,
       command: (e.argv || []).map(a => a.startsWith(ctx.root + '/') ? a.slice(ctx.root.length + 1) : a).join(' '), limits: e.limits || null, network: e.network !== false,
-      softHalt: e.softHalt || 'finish', approval: e.approval || null, questionId: (e.approval || {}).questionId || null, proposedAt: e.proposedAt || null,
+      softHalt: e.softHalt || 'finish', wake: e.wake || null, approval: e.approval || null, questionId: (e.approval || {}).questionId || null, proposedAt: e.proposedAt || null,
       installedAt: e.installedAt || null, halt: e.halt || null, scoped: String(e.unit || '').startsWith(ctx.slug + '-svc-'), managed: e.managed !== false, lastError: e.lastError || null, adopted: e.adopted || null };
   });
   return { ok: true, company: ctx.slug, guardrail: ctx.guard('localComputer') ? 'on' : 'off', services: rows };
@@ -867,6 +883,13 @@ function selftest() {
     ok('refused: --why missing', throwsCode(P('python3 company/work/sim/scripts/rec.py', { why: '' }), 2, /--why/) === true);
     const good = specOf(ctx, 'depth', { kind: 'service', exec: 'python3 -u company/work/sim/scripts/rec.py --out ' + path.join(R, 'scratch/d') + ' --hz 1', why: 'records depth between runs' }, { resolve: false });
     ok('accepted: python3 -u <company script> with in-tree args, made absolute', good.argv[0] === '/usr/bin/python3' && good.argv[2] === path.join(R, 'company/work/sim/scripts/rec.py') && good.unit === 'testco-svc-depth', good);
+    {   // --wake: a timer's ExecStart goes through notify-when.js, which records the run and wakes the seats
+      const wk = specOf(ctx, 'bank', { kind: 'timer', every: '1h', exec: 'bash company/work/sim/scripts/bank.sh', why: 'banks the day between runs', wake: 'Halima' }, { resolve: false });
+      const svc = render(ctx, wk)[wk.unit + '.service'];
+      ok('--wake: the seat is resolved and the ExecStart is wrapped by notify-when.js --service-run (exit code passed through)', JSON.stringify(wk.wake) === '["data"]' && new RegExp('ExecStart="[^"]*node" "' + R.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/company/tools/notify-when\\.js" "--service-run" "bank" "--seat" "data" "--" "[^"]*bash" "').test(svc), svc);
+      ok('--wake: refused for a long-running service and for an unknown seat', throwsCode(P('python3 company/work/sim/scripts/rec.py', { wake: 'data' }), 2, /--wake is for a timer/) === true && throwsCode(() => specOf(ctx, 'bank', { kind: 'timer', every: '1h', exec: 'bash company/work/sim/scripts/bank.sh', why: 'banks the day between runs', wake: 'zed' }, { resolve: false }), 2, /no seat "zed"/) === true);
+      ok('--wake: a spec without it keeps its old key (installed services are not re-proposed)', specKey(good) === sha(JSON.stringify([good.kind, good.argv, good.schedule, good.restart, good.softHalt, good.network, good.limits, good.timeout, good.successExit])));
+    }
 
     // ---- propose -> owner question (guardrail ON) -> approval -> unit rendered
     let r = propose(ctx, 'depth', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', why: 'records order-book depth between agent runs', 'soft-halt': 'finish' });

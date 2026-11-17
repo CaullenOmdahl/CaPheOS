@@ -135,25 +135,25 @@ test('a Deadline in the past is marked overdue in the wake', async () => {
   assert.match(r.log, new RegExp('\\(2 OPEN in to-wen\\.md \\(1 overdue, next due ' + day(-2) + '\\)\\)'));
 });
 
-test('a block with Not before in 3 days is set aside: not woken, logged WAITING once, no stall count; the first date seen wins', async () => {
+test('a block with Not before in 2 days for a market opening is set aside: not woken, logged WAITING once, no stall count; the first date seen wins', async () => {
   const c = await company({ sprint: false, lastRunMinAgo: 600, handoffs: {
-    'to-wen.md': block('draft the pricing page', '**Not before:** ' + day(3) + '\n**Deadline:** ' + day(6) + '\n'),
+    'to-wen.md': block('draft the pricing page', '**Not before:** ' + day(2) + ' — the exchange opens\n**Deadline:** ' + day(6) + '\n'),
     'to-uma.md': block('check the data feed', '**Deadline:** ' + day(3) + '\n') } });
   const r = c.tick();
   assert.equal(r.code, 0, r.out);
   assert.deepEqual(r.fired, ['w2'], r.log);
-  assert.match(r.log, new RegExp('WAITING handoffs to-wen\\.md \\(w1\\): 1 OPEN set aside by their own Not before \\(nearest ' + day(3) + ' 00:00\\)'));
+  assert.match(r.log, new RegExp('WAITING handoffs to-wen\\.md \\(w1\\): 1 OPEN set aside by their own Not before \\(nearest ' + day(2) + ' 00:00\\)'));
   const head = '2026-11-17 from Alex — draft the pricing page';
   let st = c.json('company/work/dispatch-state.json').agents.w1;
-  assert.equal(st.count, 0); assert.equal(st.key, ''); assert.equal(st.notBefore[head], day(3) + ' 00:00');
+  assert.equal(st.count, 0); assert.equal(st.key, ''); assert.equal(st.notBefore[head].at, day(2) + ' 00:00');
   // the holder moves the date later: the first date seen still holds; ticks go by without a wake or a STALLED
-  c.w('company/work/handoffs/to-wen.md', '# Handoffs\n' + block('draft the pricing page', '**Not before:** ' + day(9) + '\n'));
+  c.w('company/work/handoffs/to-wen.md', '# Handoffs\n' + block('draft the pricing page', '**Not before:** ' + day(9) + ' — the exchange opens\n'));
   for (let i = 0; i < 4; i++) { const ri = c.tick(); assert.ok(!ri.fired.includes('w1'), ri.log); }
   const log = c.r('company/work/dispatch-log.md');
   assert.equal((log.match(/WAITING handoffs to-wen\.md/g) || []).length, 1, log);
   assert.doesNotMatch(log, /STALLED handoffs to-wen/);
   st = c.json('company/work/dispatch-state.json').agents.w1;
-  assert.equal(st.notBefore[head], day(3) + ' 00:00'); assert.equal(st.count, 0);
+  assert.equal(st.notBefore[head].at, day(2) + ' 00:00'); assert.equal(st.count, 0);
 });
 
 test('an existing company: items the old rule deferred by Deadline wake at once in Sprint, each seat once, within the per-tick limits', async () => {

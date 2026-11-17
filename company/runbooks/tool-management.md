@@ -144,6 +144,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/models.js | people | `selftest` |
 | company/tools/module.js | ceo | `selftest` / `--selftest` |
 | company/tools/my-section.js | people | `selftest` |
+| company/tools/notify-when.js | tools | `selftest` |
 | company/tools/offpeak-clocks.js | finance | `--selftest` |
 | company/tools/offpeak-hold.js | finance | `--selftest` |
 | company/tools/offpeak-proof.js | finance | `--selftest` |
@@ -248,6 +249,7 @@ in §5a instead.
 | `company/tools/hire.js` | people | `node company/tools/hire.js selftest` |
 | `company/tools/locked-watch.js` | risk | `node company/tools/locked-watch.js selftest` |
 | `company/tools/long-sleep.js` | tools | `node company/tools/long-sleep.js --selftest` |
+| `company/tools/notify-when.js` | tools | `node company/tools/notify-when.js selftest` |
 | `company/tools/model-drift.js` | people | `node company/tools/model-drift.js --selftest` |
 | `company/tools/module.js` | ceo | `node company/tools/module.js selftest` |
 | `company/tools/offpeak-clocks.js` | finance | `node company/tools/offpeak-clocks.js --selftest` |

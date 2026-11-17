@@ -9,7 +9,8 @@ Append a block to `company/work/handoffs/to-<name>.md` (the `inbox` field of the
 **Need:** what exactly you need back
 **Why:** why it matters now
 **Deadline:** 2026-11-18            (when it must be DONE: a plain YYYY-MM-DD first, or the word today)
-**Not before:** 2026-11-20 09:00    (optional, rare: the earliest it may START, company time)
+**Waiting on:** to-nadia-farrell.md#gold backfill   (optional: what it waits for; see below)
+**Not before:** 2026-11-20 09:00 — the exchange opens   (optional, rare: a real clock time, with its reason)
 **Quest:** q:N step <key> (optional)
 **Status:** OPEN
 **Evidence:** link the work, command output or file
@@ -22,17 +23,51 @@ first, and each wake names the next due date) and to mark the overdue ones. Star
 `today`) and put any detail after it; prose, `none` or a date buried in a sentence is undated, so the item is worked
 after the dated ones and never flagged late.
 
-**Not before:** is the one line that sets an OPEN block aside: the dispatcher does not wake the holder for it, does not
-count it toward STALLED, and nobody counts as blocked by it, until that date (`YYYY-MM-DD`, or `YYYY-MM-DD HH:MM`,
-company time). Use it only when the work truly cannot start earlier (a result that lands on a given day, a market that
-opens then). The date must come first on the line and be no more than 14 days ahead; prose, a past or a farther date
-counts as workable now. The first date the dispatcher sees for a block is the one that counts: moving it later never
-extends the wait, moving it earlier takes effect at once. The seat's own schedule may still run it; leave it until its
-day. Waiting on someone is different and keeps its own form: say it in the Status (`**Status:** OPEN — waiting on
-Ingrid's review`), and the holder is not woken for it until that seat or decision moves.
+**Use Waiting on for anything that waits on other work. Use Not before only for a real clock time, with a reason.
+Never park work to look busy-free or to avoid stall checks.** The owner's ruling: get work done as soon as possible.
+
+**Waiting on:** names what the block waits for, one or more dependencies separated by `;`, with optional plain words
+in brackets at the end (the console shows them: "waiting for: gold history download to finish"):
+```
+**Waiting on:** to-nadia-farrell.md#gold backfill          that handoff closes (heading words or its **Id:**)
+**Waiting on:** seat: Nadia — gold backfill                  that seat's item closes
+**Waiting on:** q:13 step rank                               that quest step is ticked (q:13 alone: the quest closes)
+**Waiting on:** file: company/work/strategies/RANKING.md     the file appears (add `changed` to wait for a change)
+**Waiting on:** service: bank-day                            the background service's next successful run
+**Waiting on:** job: gold-backfill (gold history download to finish)   a job started with notify-when.js --id gold-backfill ends
+```
+The dispatcher resolves every dependency on every tick: until all are met the holder is not woken for it, it is not
+counted toward STALLED, and the seats it names count as blocking it; the tick they are all met the holder is woken at
+once, past its cooldown ("Rohan: gold history download to finish — done; starting the recompute"). A reference the
+dispatcher cannot resolve (an inbox, item, seat, service or job that does not exist) is a lint warning, and the item is
+treated as work now: a typo never parks work. `**Waiting on:** nothing` says it is your own work. Waiting on a person's
+decision can still be said in the Status (`**Status:** OPEN — waiting on Ingrid's review`); a Waiting on line, when
+present, governs instead of the Status prose.
+
+**A long job: start it, hand off, and you'll be woken when it ends.** Start it through
+`node company/tools/notify-when.js --seat <you> --why "gold backfill" --id gold-backfill -- <command…>` (it returns at
+once; `--pid` or `--service` watches one already running), write the next step as a handoff with
+`**Waiting on:** job: gold-backfill`, and end the run. When the job ends (a failure too, labelled as one) the dispatcher
+wakes the seats it names with its exit code, duration and output tail (`notify-when.js show <id>`). A timer service
+proposed with `service.js propose … --wake <seat>` does the same for every run. Never a bare background shell and a
+polling loop, and never a guessed Not before.
+
+**Not before:** is for a genuine wall-clock reason only: a market opens, a provider's daily data release, a time
+someone outside the company named. Put the date first (`YYYY-MM-DD` or `YYYY-MM-DD HH:MM`, company time) and a short
+reason after it. Caps, counted from when the dispatcher first saw the line: at most 24 h ahead without such a reason,
+at most 72 h with one, and during Sprint at most 12 h unless the reason is an external time. A line beyond its cap is
+ignored (the item is work now; the dispatcher logs it once: "released: a 7-day Not before with no external reason"):
+use Waiting on, or ask the CEO. A reason that reads like a dependency ("after", "needs", "waits on", "once X", "when X
+lands", "comes after") is not a clock time: the lint flags it and suggests the matching Waiting on. The first date seen
+for a block counts: moving it later never extends the wait, moving it earlier takes effect at once.
+
+The owner sees every parked item in Work › Handoffs in plain words with what it waits for, and can release one with
+**Start now**: the gate is removed (recorded in company/state/gate-releases.jsonl) and the holder is woken at once.
 
 `node company/tools/handoff-status.js --due` lists the open set by Deadline and marks Not-before items; the lint warns
-when a Deadline line reads like a start date ("wait until", "no earlier than" next to it) with no Not before line.
+when a Deadline line reads like a start date ("wait until", "no earlier than" next to it) with no Not before line, when
+a Waiting on names something that does not exist, and when a Not before has no reason, reads like a dependency, or is
+past its cap.
 
 `Touches:` says which files or folders the work changes, so two items with disjoint paths can be worked at the same time
 in Sprint (docs/TEMPO.md "Sprint"); an item without it is treated as touching everything and is worked on its own.

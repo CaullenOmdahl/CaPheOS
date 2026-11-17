@@ -149,6 +149,71 @@ function deadlineAsNotBefore(text) {
   return out;
 }
 
+/* WAITING ON / NOT BEFORE — the lint for the two lines that park an OPEN block (company/HANDOFFS.md), told to the writer:
+ *  - a **Waiting on:** reference the dispatcher cannot resolve (an unknown form, a to-<name>.md that does not exist, no
+ *    item in it whose heading or **Id:** matches, a seat nobody holds, a file outside the company folder, a service that
+ *    is not registered, a job nobody started): the item is treated as work now (fail open), so the wait does nothing;
+ *  - a **Not before:** with no reason after the date, one whose reason reads like a dependency ("after", "needs", "waits
+ *    on", "once X", "when X lands", "comes after"), with the matching **Waiting on:** to write instead, and one beyond its
+ *    cap (24 h ahead without a reason category, 72 h with one, measured from the block's own stamp), which the
+ *    dispatcher ignores. Warnings, never failures. Quest references are checked by the dispatcher (they need the station). */
+const SPL = require('./lib/sprint');
+function suggestWaitingOn(reason) {
+  const r = String(reason || '');
+  const q = r.match(/\bq:\d+(?:\s+step\s+[\w.-]+)?/i); if (q) return q[0];
+  const f = r.match(/(?:^|[\s(`])((?:company\/)?[\w./-]*[\w-]+\.(?:md|json|jsonl|csv|parquet|py|js|txt))\b/); if (f) return 'file: ' + (f[1].includes('/') ? f[1] : 'company/work/…/' + f[1]);
+  if (/\b(bank|backfill|download|recorder|import|export|run|job|script|build)\b/i.test(r)) return 'job: <id> (start it with node company/tools/notify-when.js --id <id>) or service: <name>';
+  return 'to-<name>.md#<words of the heading it waits on>';
+}
+function gateFindings(text, o) {
+  o = o || {};
+  const out = []; const secs = sections(text); const cls = classify(text);
+  const nowMs = o.nowMs || Date.now(); const inboxDir = o.dir || DIR;
+  const crew = o.crew || (() => { try { return co.crew(); } catch (_) { return {}; } })();
+  const services = o.services || ((co.readJson(co.p('company', 'state', 'services.json'), {}) || {}).services) || {};
+  const jobs = o.jobs || (() => { try { const C = require('./lib/completions'); return C.recent(ROOT, 300).map(r => [r.id, r.job]).concat(C.running(ROOT).map(r => [r.id, r.job])).flat().filter(Boolean); } catch (_) { return []; } })();
+  const inboxItems = ib => { try { return SPL.parseItems(fs.readFileSync(path.join(inboxDir, ib), 'utf8')); } catch (_) { return null; } };
+  const archived = ib => { try { return SPL.parseItems(fs.readFileSync(path.join(inboxDir, 'archive', ib), 'utf8')); } catch (_) { return []; } };
+  const has = (ib, ref) => { const r = String(ref || '').toLowerCase(); const m = it => (it.id && it.id.toLowerCase() === r) || it.heading.toLowerCase().includes(r); const live = inboxItems(ib); if (live === null) return 'no such inbox'; return r && (live.some(m) || archived(ib).some(m)) ? null : 'no item there whose heading or **Id:** matches "' + ref + '"'; };
+  secs.forEach((sec, i) => {
+    if (!cls[i] || !cls[i].open) return;
+    const body = sec.body.join('\n');
+    const wl = (body.match(/^\*\*Waiting on:\*\*(.*)$/im) || [])[1];
+    if (wl != null) {
+      const pd = SPL.parseDeps(wl);
+      const bad = [];
+      if (pd.none) pd.deps = [{ kind: 'none' }];
+      if (!pd.deps.length) bad.push('names no dependency');
+      for (const d of pd.deps) {
+        let why = null;
+        if (d.kind === 'none') why = null;
+        else if (d.kind === 'unknown') why = 'not a form the dispatcher reads (to-<name>.md#<heading>, q:N step <key>, file: <path>, service: <name>, job: <id>, seat: <name> — <heading>)';
+        else if (d.kind === 'handoff') why = d.ref ? has(d.inbox, d.ref) : 'say which item: ' + d.inbox + '#<heading words or Id>';
+        else if (d.kind === 'seat') { const id = Object.keys(crew).find(k => k.toLowerCase() === d.name.toLowerCase() || String((crew[k] || {}).name || '').toLowerCase() === d.name.toLowerCase() || String((crew[k] || {}).name || '').toLowerCase().split(/\s+/)[0] === d.name.toLowerCase()); why = !id ? 'nobody holds a seat called "' + d.name + '"' : !d.ref ? 'say which of ' + d.name + '\'s items: seat: ' + d.name + ' — <heading words>' : has(crew[id].inbox, d.ref); }
+        else if (d.kind === 'file') { const pth = path.resolve(ROOT, d.path); if (!pth.startsWith(ROOT + path.sep)) why = 'a path outside the company folder'; }
+        else if (d.kind === 'service') { if (!services[d.name] && !jobs.length) why = 'no registered service "' + d.name + '" (node company/tools/service.js list)'; else if (!services[d.name]) why = 'no registered service "' + d.name + '"'; }
+        else if (d.kind === 'job') { if (!jobs.includes(d.id)) why = 'no job "' + d.id + '" running or ended (start it with node company/tools/notify-when.js --id ' + d.id + ' first)'; }
+        if (why) bad.push('"' + d.raw + '": ' + why);
+      }
+      if (bad.length) out.push({ kind: 'WAITING ON UNRESOLVED', line: sec.line, heading: sec.heading, detail: bad.join('; ') + ' — the dispatcher treats the item as work now' });
+    }
+    const nl = (body.match(/^\*\*Not before:\*\*(.*)$/im) || [])[1];
+    if (nl != null) {
+      const m = nl.match(/^\s*(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?\b(.*)$/);
+      if (!m) return;
+      const at = localToEpoch(m[1], m[2] || '00:00');
+      const hs = sec.heading.match(/^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?/);
+      const from = hs ? Math.min(nowMs, localToEpoch(hs[1], hs[2] || '00:00')) : nowMs;
+      const g = SPL.notBeforeGate({ rest: m[3], hoursAhead: (at - from) / 3600e3, sprint: !!o.sprint });
+      if (at <= nowMs) return;
+      if (g.dep) out.push({ kind: 'NOT BEFORE IS A DEPENDENCY', line: sec.line, heading: sec.heading, detail: 'reads like waiting on work ("' + g.dep + '"); write **Waiting on:** ' + suggestWaitingOn(g.reason) + ' instead, and the holder is woken when it is done' });
+      else if (!g.reason) out.push({ kind: 'NOT BEFORE WITHOUT REASON', line: sec.line, heading: sec.heading, detail: 'say which clock after the date (a market opens, a provider\'s data release, a time someone outside named); without a reason it holds at most 24 h' });
+      if (!g.honour) out.push({ kind: 'NOT BEFORE IGNORED', line: sec.line, heading: sec.heading, detail: g.why + ': the dispatcher treats the item as work now. Use **Waiting on:** for work that waits on other work, or ask the CEO' });
+    }
+  });
+  return out;
+}
+
 // the block's own **Not before:** (a plain date first, company time), for the --due listing
 function notBeforeOf(sec) {
   for (const l of sec.body) {
@@ -453,6 +518,27 @@ function selftest() {
   ok('a DONE block is not checked for it', deadlineAsNotBefore(dnb('wait until 2026-11-20').replace('**Status:** OPEN', '**Status:** DONE')).length === 0);
   ok('the --due listing reads **Not before:** in company time', fmt(classify(dnb('2026-11-24', '**Not before:** 2026-11-20 09:30\n'))[0].notBefore) === '2026-11-20 09:30');
 
+  // WAITING ON / NOT BEFORE lint (gateFindings): told to the writer
+  {
+    const gdir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'handoff-gates-selftest-'));
+    fs.writeFileSync(path.join(gdir, 'to-nadia.md'), '# H\n## 2026-11-17 10:00 from R — the gold backfill\n**Status:** OPEN\n');
+    const gcrew = { nad: { name: 'Nadia Farrell', inbox: 'to-nadia.md' } };
+    const gnow = localToEpoch('2026-11-17', '23:00');
+    const gb = (line, head) => HEAD + '## ' + (head || '2026-11-17 22:24') + ' from Founder — the recompute\n**Need:** x\n' + line + '\n**Status:** OPEN\n';
+    const gf = (line, o) => gateFindings(gb(line, o && o.head), Object.assign({ nowMs: gnow, dir: gdir, crew: gcrew, services: { 'bank-day': {} }, jobs: ['gb-1'] }, o || {}));
+    ok('Waiting on: resolvable references and "nothing" are no finding', gf('**Waiting on:** nothing — it rides inside the ranking work').length === 0 && gf('**Waiting on:** to-nadia.md#gold backfill; seat: Nadia — gold backfill; service: bank-day; job: gb-1; file: company/work/x.md; q:8 step rank').length === 0);
+    const un = gf('**Waiting on:** to-nobody.md#x; seat: Zed — y; service: nope; job: never; somebody else');
+    ok('Waiting on: each unresolvable reference is named, and the item is said to be work now', un.length === 1 && /to-nobody\.md#x": no such inbox/.test(un[0].detail) && /nobody holds a seat called "Zed"/.test(un[0].detail) && /no registered service "nope"/.test(un[0].detail) && /no job "never"/.test(un[0].detail) && /not a form the dispatcher reads/.test(un[0].detail) && /work now/.test(un[0].detail), JSON.stringify(un));
+    const dep = gf('**Not before:** 2026-11-18 01:00    (set 2026-11-17 22:24 by Founder: the recompute needs the finished gold backfill)');
+    ok('Not before: a dependency-shaped reason is flagged, with the Waiting on to write', dep.length === 1 && dep[0].kind === 'NOT BEFORE IS A DEPENDENCY' && /"needs"/.test(dep[0].detail) && /job: <id>/.test(dep[0].detail), JSON.stringify(dep));
+    ok('Not before: "comes after RANKING.md" suggests file: …RANKING.md', /Waiting on:\*\* file: company\/work\/…\/RANKING\.md/.test((gf('**Not before:** 2026-11-18 09:00 (this comes after RANKING.md by design)')[0] || {}).detail || ''));
+    ok('Not before: a market opening within 72 h is no finding', gf('**Not before:** 2026-11-19 09:30 — the exchange opens').length === 0);
+    const far = gf('**Not before:** 2026-11-24');
+    ok('Not before: a 7-day date with no reason warns (no reason) and says the dispatcher ignores it', far.map(x => x.kind).join() === 'NOT BEFORE WITHOUT REASON,NOT BEFORE IGNORED' && /a 6-day Not before with no external reason/.test(far[1].detail), JSON.stringify(far));
+    ok('Not before: a past date and a DONE block are not checked', gf('**Not before:** 2026-11-10').length === 0 && gateFindings(gb('**Not before:** 2026-11-24').replace('**Status:** OPEN', '**Status:** DONE'), { nowMs: gnow, dir: gdir, crew: gcrew }).length === 0);
+    try { fs.rmSync(gdir, { recursive: true, force: true }); } catch (_) {}
+  }
+
   // DUTY: counts and ids only, routed to the inbox owner's manager (the CEO for a seat with none)
   const crewT = { ceo1: { name: 'Alex', inbox: 'to-alex.md', manager: null }, sam: { name: 'Sam', inbox: 'to-sam.md', manager: 'ceo1' } };
   const ent = (file, text) => classify(text).map(c => Object.assign({ file: 'company/work/handoffs/' + file }, c));
@@ -537,6 +623,10 @@ function main() {
       warns++;
       if (!quiet) console.log('WARN  DEADLINE AS NOT BEFORE ' + path.relative(ROOT, f) + ':' + u.line + '  "' + u.phrase + '" by the Deadline — a Deadline is when it must be done and defers nothing; if it must not start yet, add **Not before:** YYYY-MM-DD  "' + u.heading.slice(0, 60) + '"');
     }
+    if (!f.includes(path.sep + 'archive' + path.sep)) for (const g of gateFindings(text)) {
+      warns++;
+      if (!quiet) console.log('WARN  ' + g.kind.padEnd(26) + path.relative(ROOT, f) + ':' + g.line + '  ' + g.detail + '  "' + g.heading.slice(0, 60) + '"');
+    }
     for (const st of futureStamps(text, Date.now())) {
       const rel = path.relative(ROOT, f);
       if (rel.includes(path.sep + 'archive' + path.sep)) { warns++; if (!quiet) console.log('WARN  ' + st.kind.padEnd(20) + rel + ':' + st.line + '  ' + st.stamp); continue; }
@@ -578,4 +668,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { sections, statusOf, classify, scan, dueSet, deadlineOf, notBeforeOf, dutyResult, futureStamps, unreadDeadlines, deadlineAsNotBefore };
+module.exports = { sections, statusOf, classify, scan, dueSet, deadlineOf, notBeforeOf, dutyResult, futureStamps, unreadDeadlines, deadlineAsNotBefore, gateFindings, suggestWaitingOn };

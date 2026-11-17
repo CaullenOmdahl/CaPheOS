@@ -577,6 +577,30 @@ route('GET', /^\/api\/now\/run\/([A-Za-z0-9_-]{1,80})$/, (m, q) => ACT.runEvents
 route('GET', /^\/api\/activity$/, async (m, q) => { const r = await ACT.recent(); if (!r || !Array.isArray(r.items)) return r; const p = arrayPage(r.items, q, 60); return Object.assign({}, r, { items: p.items, cursor: p.cursor, more: p.more, total: p.total }); });
 route('GET', /^\/api\/crew$/, crewView);
 route('GET', /^\/api\/handoffs$/, () => runApi('handoff-status.js', ['--due', '--json']));
+// parked items in plain words (company/state/parked.json, written by the dispatcher every tick) and the watched jobs
+// (lib/completions.js); Start now releases one parked item: a row in company/state/gate-releases.jsonl, then the
+// dispatcher's next tick removes the gate and wakes the holder at once (company/HANDOFFS.md)
+const GATES = () => require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'gates.js'));
+const COMPL = () => require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'completions.js'));
+route('GET', /^\/api\/handoffs\/parked$/, () => {
+  const G = GATES(), C = COMPL(); const crew = co.crew(); const nm = id => (crew[id] && crew[id].name) || id;
+  const p = co.readJson(G.PARKED(co.ROOT), {}) || {};
+  const rel = G.releases(co.ROOT);
+  const items = (p.items || []).filter(x => !rel.has(x.inbox + '\n' + x.heading)).map(x => ({ seat: x.seat, name: x.name || nm(x.seat), inbox: x.inbox, heading: x.heading, kind: x.kind, words: x.words, until: x.until || null }));
+  const running = C.running(co.ROOT).map(r => ({ id: r.id, job: r.job || null, why: r.why || r.cmd || r.service, since: r.startedAt, wakes: (r.seat || []).map(nm) }));
+  const completions = C.recent(co.ROOT, 12).reverse().map(r => ({ id: r.id, job: r.job || null, words: C.words(r), failed: C.failed(r), at: r.endedAt, wakes: (r.seat || []).map(nm) }));
+  return { ok: true, at: p.at || null, items, running, completions };
+});
+route('POST', /^\/api\/handoffs\/start-now$/, (m, q, b) => {
+  const inbox = str(b.inbox, 'inbox'), heading = str(b.heading, 'heading');
+  if (!/^to-[\w.-]+\.md$/.test(inbox || '')) bad('inbox is a to-<name>.md file');
+  if (!heading) bad('heading is required');
+  let txt = ''; try { txt = fs.readFileSync(co.p('company', 'work', 'handoffs', inbox), 'utf8'); } catch (_) { bad('no such inbox', 404); }
+  if (!txt.split(/^## /m).slice(1).some(sec => sec.split('\n')[0].trim() === heading)) bad('no such item in ' + inbox, 404);
+  const r = GATES().release(co.ROOT, { by: OWNER, inbox, heading, why: 'Start now (Work › Handoffs)', writer: 'console (owner Start now)' });
+  emit('handoffs');
+  return { ok: true, release: r, text: 'Released. The holder is woken on the next check.' };
+});
 route('GET', /^\/api\/decisions$/, (m, q) => decisions(q));
 route('GET', /^\/api\/dispatch$/, (m, q) => dispatchView(q));
 route('GET', /^\/api\/hiring$/, hiring);

@@ -34,8 +34,12 @@ test('without the commitments module, no seat is sent to the commitments tool', 
   const T = scratch([]);
   try {
     const r = ensureIn(T, 'You are Jo.\n\nDo the work.');
-    assert.equal(r.version, 'v11');
-    assert.ok(r.prompt.includes('[HOUSE RULES FOR SCHEDULED RUNS v11]'));
+    assert.equal(r.version, 'v12');
+    assert.ok(r.prompt.includes('[HOUSE RULES FOR SCHEDULED RUNS v12]'));
+    // v12: work that waits on work names it in Waiting on; a long job goes through notify-when.js; Not before is a clock time
+    assert.match(r.prompt, /Use \*\*Waiting on:\*\* for anything that waits on other work/);
+    assert.match(r.prompt, /node company\/tools\/notify-when\.js --seat <you>/);
+    assert.match(r.prompt, /Never park work to look busy-free or to avoid stall checks/);
     // v11: a connector is checked through its own verify command; a credential file is never read or printed
     assert.match(r.prompt, /connector's verify command in company\/connectors\/<id>\.json/);
     assert.match(r.prompt, /Never read, cat, list, grep or print a credential file/);
