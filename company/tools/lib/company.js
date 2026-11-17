@@ -35,7 +35,15 @@ const config = readJson(p('company', 'company.json'), {});
 config.owner = config.owner || { name: 'Owner', title: 'Owner', addressAs: 'the owner' };
 config.station = config.station || {};
 
-const STATION_URL = process.env.STARNET_URL || config.station.url || 'http://127.0.0.1:' + (config.station.port || 8801);
+// The station address comes from STARNET_URL or company.json; there is no guessed default port (a wrong guess is a
+// silent connection error in every tool). Resolved lazily: a tool that never talks to the station (selftests, file-only
+// tools) loads fine without one, and the first real use names the problem.
+function resolveStationUrl() {
+  if (process.env.STARNET_URL) return process.env.STARNET_URL;
+  if (config.station.url) return config.station.url;
+  if (config.station.port) return 'http://127.0.0.1:' + config.station.port;
+  throw new Error('station address unknown: set STARNET_URL or company/company.json station.url (or station.port)');
+}
 const TZ = process.env.CAPHEOS_TZ || config.timezone || 'UTC';
 
 const SECRETS_DIR = p('secrets');
@@ -116,6 +124,8 @@ function guard(name) {
   return g[name] !== false;
 }
 
-module.exports = { ROOT, p, config, readJson, STATION_URL, TZ, SECRETS_DIR, secret, stationToken, LOOPS_FILE, crew,
+module.exports = { ROOT, p, config, readJson, TZ, SECRETS_DIR, secret, stationToken, LOOPS_FILE, crew,
   holds, ceo, seatFor, nameOf, localParts, GOV_FILE, LEVELS, governance, gate, HALT_FILE, haltState, halted,
   GUARD_FILE, guardrails, guard };
+
+Object.defineProperty(module.exports, 'STATION_URL', { enumerable: true, get: resolveStationUrl });
