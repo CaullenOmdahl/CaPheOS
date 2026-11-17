@@ -32,6 +32,11 @@
       "argv": ["ask.js", "owners"],
       "description": "Who holds which function now",
       "timeoutMs": 10000
+    },
+    "duties": {
+      "argv": ["duty-status.js", "--json"],
+      "description": "Every duty check and what it says now (docs/DUTIES.md): [{id, route, owner, state ok|due|broken|stale|off, checkedAt, reason, history}]; the state is computed by the tool, never by the view",
+      "timeoutMs": 10000
     }
   },
 

@@ -46,6 +46,9 @@ on the StarNet station). These rules apply to every file in `company/tools/`, `c
    `company/defaults/work/ops/retention.json` (rolled by `company/tools/retention.js`), or a bounded read
    (`company/tools/lib/bounded.js`: tail, time window, byte offset). StarNet's `runs.jsonl` and transcripts are never
    pruned by CaPheOS; read them bounded. See `docs/RETENTION.md`.
+9. **Finding work is a duty, not a model run.** A check that decides whether someone must be woken gets a read-only
+   `--duty` mode (exit 0 / 1 + `{due, reason, key, items}`, counts and ids only, no writes, no network) and a line in
+   `company/tools/duties.js` or the module's `module.json` `duties`; see `docs/DUTIES.md`.
 
 ## Check before you finish
 

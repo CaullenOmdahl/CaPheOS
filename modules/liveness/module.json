@@ -10,6 +10,8 @@
   "requires": {},
   "docs": ["README.md"],
   "tools": [{ "file": "tools/liveness.js", "purpose": "the dead-man's switch from a shell: both heartbeats, a test ping, one watcher check" }],
+  "duties": [{ "id": "liveness-watcher", "tool": "tools/liveness.js", "route": "risk", "everyMin": 10, "timeoutMs": 10000, "whileHalted": true, "enabledByDefault": true,
+    "why": "the liveness watcher's own heartbeat is missing or old, so the dead-man's switch is blind (runs while halted)" }],
   "limits": [],
   "meters": [],
   "conformance": { "test": "conformance/test.js" }

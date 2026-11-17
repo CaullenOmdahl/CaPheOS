@@ -25,6 +25,9 @@
  *   node company/tools/commitments.js show <id> [--json]
  *   node company/tools/commitments.js tick [--dry]
  *   node company/tools/commitments.js --selftest
+ *   node company/tools/commitments.js --duty      read-only duty check (docs/DUTIES.md): exit 1 + JSON when an open
+ *        commitment's due time has passed; each item routed to its owner seat (ids only, never a title). The dispatcher
+ *        wakes the owner from this, so nobody schedules their own wake for a deadline.
  * Module: require('./commitments.js') -> { create, transition, reassign, get, list, tick, STATES, NEXT, TERMINAL }.
  * Limits (kit.limits: company/state/modules/<id>/limits/ once the owner opens them; shipped closed): maxOpen (open commitments at once).
  * Exit: 0 ok, 1 refused / not found, 2 usage.
@@ -238,6 +241,18 @@ function reassign(id, to, by, note, now) {
   return c;
 }
 
+/* duty (docs/DUTIES.md): open commitments past their due time, each routed to its owner seat. Reads only. */
+const DUTY_STATES = ['received', 'acknowledged', 'in_progress', 'breached'];
+function dutyResult(now) {
+  now = now || Date.now();
+  const late = list({ open: true }).filter(c => DUTY_STATES.includes(c.state) && c.dueAt && Date.parse(c.dueAt) < now);
+  if (!late.length) return null;
+  const ids = late.map(c => c.id).sort();
+  return { due: true, reason: late.length + ' open commitment(s) past their due time: ' + ids.slice(0, 8).join(', ') + (ids.length > 8 ? ', ...' : ''),
+    key: 'cm-' + require('crypto').createHash('sha256').update(late.map(c => c.id + ':' + c.state).sort().join(',')).digest('hex').slice(0, 10),
+    items: late.map(c => ({ id: c.id, route: c.owner })) };
+}
+
 /* The clock: wake, escalate, breach. Every effect is recorded on the commitment, so a tick is idempotent. */
 function tick(opts) {
   opts = opts || {};
@@ -278,7 +293,7 @@ function tick(opts) {
   return { ok: true, acts };
 }
 
-module.exports = { create, transition, reassign, get, list, tick, suppressKey, writeOpen, handoffFields, STATES, NEXT, TERMINAL, RETRY_MS };
+module.exports = { create, transition, reassign, get, list, tick, suppressKey, writeOpen, handoffFields, dutyResult, STATES, NEXT, TERMINAL, RETRY_MS };
 
 async function selftest(ok) {
   let r = null; try { create({ title: 'x', owner: 'ceo' }); } catch (e) { r = e.message; }
@@ -308,6 +323,9 @@ async function selftest(ok) {
   tick({ now: t0 + 200 * 60000 });
   ok('escalation stops at the CEO', (inbox('to-alex.md').match(/ESCALATED/g) || []).length === 1);
   transition(a.id, 'acknowledged', 'ops1'); transition(a.id, 'in_progress', 'ops1');
+  ok('duty: nothing past due -> nothing due', dutyResult(t0 + 200 * 60000) === null);
+  { const d = dutyResult(t0 + 241 * 60000);
+    ok('duty: past due -> due, routed to its owner seat, ids only (no title)', d && d.due === true && d.items.length === 1 && d.items[0].id === a.id && d.items[0].route === 'ops1' && !JSON.stringify(d).includes('Answer the ticket'), d); }
   ok('acknowledging closes the wake and escalation handoffs', !/\*\*Status:\*\* OPEN/.test(inbox('to-kim.md')) && !/\*\*Status:\*\* OPEN/.test(inbox('to-sam.md')) && /DONE — commitment acknowledged/.test(inbox('to-alex.md')));
   tick({ now: t0 + 241 * 60000 });
   ok('past due: breached, owner and CEO told', get(a.id).state === 'breached' && /BREACHED/.test(inbox('to-kim.md')) && /FYI BREACHED/.test(inbox('to-alex.md')));
@@ -360,6 +378,7 @@ async function selftest(ok) {
 if (require.main === module) {
   const argv = process.argv.slice(2);
   if (argv.includes('--selftest') || argv[0] === 'selftest') { kit.runSelftest(__filename, 'commitments', selftest); return; }
+  if (argv.includes('--duty')) { const r = dutyResult(); if (r) console.log(JSON.stringify(r)); process.exit(r ? 1 : 0); }
   const a = kit.args(argv, ['open', 'archived']);
   const out = (o, text) => console.log(a.json ? JSON.stringify(o, null, 2) : text);
   const [cmd, id] = a._;

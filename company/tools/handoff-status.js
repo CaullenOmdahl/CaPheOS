@@ -21,6 +21,9 @@
  *   node company/tools/handoff-status.js --due      # the OPEN set, sorted by **Deadline:** (report only, exit 0)
  *   node company/tools/handoff-status.js --due --json
  *   node company/tools/handoff-status.js --selftest # prove both behaviours on fixtures, including the failures
+ *   node company/tools/handoff-status.js --duty     # read-only duty check (docs/DUTIES.md): exit 1 + JSON when an OPEN handoff
+ *                                                   # is past its deadline or a section has no Status line; each item routed
+ *                                                   # to the inbox owner's manager, else the CEO. Counts and ids only.
  *
  * Deadlines and the printed times are company local time (company.json timezone), never the machine's clock.
  * Deadline forms understood, in order of preference: `**Deadline:** 2026-11-17 12:00`, `**Deadline:** 2026-11-17`,
@@ -216,6 +219,39 @@ function entriesFrom(files) {
   return out;
 }
 
+/* ---- duty (docs/DUTIES.md): what is overdue or unstamped, as counts and ids, routed to the inbox owner's manager ----
+ * entries: entriesFrom(...) rows; crew: loops.json agents; ceo: the CEO seat id. Returns null (nothing due) or the
+ * {due, reason, key, items} object. An item id is <inbox>#<6 hex of the heading>, never the heading itself. */
+function dutyResult(entries, crew, ceo, now) {
+  const seatOf = {}; for (const [id, c] of Object.entries(crew || {})) if (c && c.inbox) seatOf[c.inbox] = id;
+  const routeOf = inbox => { const seat = seatOf[inbox]; const mgr = seat && crew[seat] && crew[seat].manager; return (mgr && crew[mgr] ? mgr : ceo) || 'ceo'; };
+  const h6 = t => require('crypto').createHash('sha256').update(String(t)).digest('hex').slice(0, 6);
+  const items = []; const per = {};
+  for (const e of entries) {
+    const inbox = path.basename(e.file);
+    const overdue = e.open && e.deadline && e.deadline.at && e.deadline.at < now;
+    const missing = !e.appendix && e.status === null;
+    if (!overdue && !missing) continue;
+    items.push({ id: inbox + '#' + h6(e.heading), route: routeOf(inbox) });
+    const p = per[inbox] = per[inbox] || { overdue: 0, missing: 0 };
+    if (overdue) p.overdue++; else p.missing++;
+  }
+  if (!items.length) return null;
+  const over = Object.values(per).reduce((n, p) => n + p.overdue, 0), miss = Object.values(per).reduce((n, p) => n + p.missing, 0);
+  const files = Object.entries(per).map(([f, p]) => f + ' (' + [p.overdue ? p.overdue + ' overdue' : '', p.missing ? p.missing + ' no status' : ''].filter(Boolean).join(', ') + ')');
+  const reason = (over + ' OPEN handoff(s) past deadline, ' + miss + ' section(s) without a Status line: ' + files.join('; ')).slice(0, 300);
+  const key = 'hs-' + h6(items.map(i => i.id).sort().join(','));
+  return { due: true, reason, key, items };
+}
+function duty() {
+  let files;
+  try { files = fs.readdirSync(DIR).filter(f => /^to-.*\.md$/.test(f)).map(f => path.join(DIR, f)); } catch (e) { console.error('cannot read the handoffs folder'); return 2; }
+  const r = dutyResult(entriesFrom(files), co.crew(), co.ceo(), new Date());
+  if (!r) return 0;
+  console.log(JSON.stringify(r));
+  return 1;
+}
+
 /* ---- selftest: each case names the behaviour, and the last two prove the checks can go red ---- */
 function selftest() {
   const results = [];
@@ -317,6 +353,18 @@ function selftest() {
   ok('a Progress note whose status AGREES with its parent is not a finding', structureFindings(appendixAgrees).length === 0,
     JSON.stringify(structureFindings(appendixAgrees)));
 
+  // DUTY: counts and ids only, routed to the inbox owner's manager (the CEO for a seat with none)
+  const crewT = { ceo1: { name: 'Alex', inbox: 'to-alex.md', manager: null }, sam: { name: 'Sam', inbox: 'to-sam.md', manager: 'ceo1' } };
+  const ent = (file, text) => classify(text).map(c => Object.assign({ file: 'company/work/handoffs/' + file }, c));
+  const nowD = new Date(localToEpoch('2026-11-15', '23:00'));
+  const secret = 'SECRET-HEADING-WORDS';
+  const dr = dutyResult(ent('to-sam.md', '## ' + secret + '\n**Need:** x\n**Status:** OPEN\n**Deadline:** 2026-11-14 12:00\n').concat(ent('to-alex.md', '## forgot\n**Need:** y\n')), crewT, 'ceo1', nowD);
+  ok('duty: an overdue OPEN handoff and a section with no status are due', !!dr && dr.due === true && dr.items.length === 2, JSON.stringify(dr));
+  ok('duty: routed to the inbox owner\'s manager, else the CEO', dr && dr.items.every(i => i.route === 'ceo1'), JSON.stringify(dr && dr.items));
+  ok('duty: the reason carries counts and file names, never a heading', dr && !JSON.stringify(dr).includes(secret) && /1 OPEN handoff\(s\) past deadline, 1 section/.test(dr.reason), dr && dr.reason);
+  ok('duty: nothing overdue, nothing missing -> nothing due', dutyResult(ent('to-sam.md', '## a\n**Need:** x\n**Status:** OPEN\n**Deadline:** 2026-11-20\n'), crewT, 'ceo1', nowD) === null);
+  ok('duty: the key is stable for the same findings', dr && dr.key === dutyResult(ent('to-sam.md', '## ' + secret + '\n**Need:** x\n**Status:** OPEN\n**Deadline:** 2026-11-14 12:00\n').concat(ent('to-alex.md', '## forgot\n**Need:** y\n')), crewT, 'ceo1', nowD).key);
+
   const bad = results.filter(r => !r.pass);
   for (const r of results) console.log((r.pass ? 'ok   ' : 'FAIL ') + r.name + (r.pass ? '' : '  [' + r.detail + ']'));
   console.log(bad.length
@@ -332,6 +380,7 @@ function main() {
     process.exit(0);
   }
   if (argv.includes('--selftest')) process.exit(selftest());
+  if (argv.includes('--duty')) process.exit(duty());
 
   const all = argv.includes('--all');
   const quiet = argv.includes('--quiet');
@@ -411,4 +460,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { sections, statusOf, classify, scan, dueSet, deadlineOf };
+module.exports = { sections, statusOf, classify, scan, dueSet, deadlineOf, dutyResult };

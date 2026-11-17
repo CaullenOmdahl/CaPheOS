@@ -15,6 +15,9 @@
  *   node company/tools/tool-parse.js <dir|file>...    # other targets (dirs are scanned one level)
  *   node company/tools/tool-parse.js --verbose        # print an ok line per file too
  *   node company/tools/tool-parse.js --selftest       # fixture dir; exit 1 if it cannot see a broken file
+ *   node company/tools/tool-parse.js --duty           # read-only duty check (docs/DUTIES.md) of the folder this tool is in:
+ *                                                     # exit 0 all parse, 1 + JSON {due, reason, key, items} naming the files,
+ *                                                     # 2 nothing to check (an empty set is never a pass)
  *
  * Exit: 0 everything parses, 1 at least one file does not (or a target is missing), 2 usage error.
  * Ownership: the tools owner. Runbook: company/work/engineering/tool-parse.md; wired into the daily Tool health
@@ -181,13 +184,33 @@ function selftest() {
   fs.writeFileSync(path.join(dir, 'broken.js'), "'use strict';\nconst msg = 'unterminated;\n");
   ok('a broken tree exits 1 through the CLI', cli(dir) === 1, `exit=${cli(dir)}`);
 
+  // 7. duty: names the broken file, never the interpreter's text; an empty set is broken (2), never ok
+  const d = dutyResult(check([dir]));
+  ok('duty: a broken file is due with its name only', d.code === 1 && d.out.items.some((i) => i.id === 'broken.js') && !/unterminated|SyntaxError/.test(JSON.stringify(d.out)), JSON.stringify(d));
+  ok('duty: a clean folder is not due', dutyResult(check([cleanDir])).code === 0);
+  ok('duty: an empty folder is broken, never ok', dutyResult(check([emptyDir])).code === 2);
+
   fs.rmSync(dir, { recursive: true, force: true });
   process.stdout.write(`\nTOOL-PARSE SELFTEST: ${pass} passed, ${fail} failed\n`);
   return fail === 0 ? 0 : 1;
 }
 
+// duty (docs/DUTIES.md): the folder this file lives in (the company's tools layer), names only, never interpreter text
+function dutyResult(res) {
+  if (!res.files.length || res.missing.length) return { code: 2 };
+  if (!res.findings.length) return { code: 0 };
+  const names = res.findings.map((f) => path.basename(f.file)).sort();
+  const key = 'tp-' + require('crypto').createHash('sha256').update(names.join(',')).digest('hex').slice(0, 10);
+  return { code: 1, out: { due: true, reason: names.length + ' of ' + res.files.length + ' tool file(s) do not parse: ' + names.slice(0, 12).join(', ') + (names.length > 12 ? ', ...' : ''), key, items: names.map((n) => ({ id: n })) } };
+}
+
 function main(argv) {
   if (argv.includes('--selftest')) return selftest();
+  if (argv.includes('--duty')) {
+    const r = dutyResult(check([__dirname]));
+    if (r.out) process.stdout.write(JSON.stringify(r.out) + '\n');
+    return r.code;
+  }
   if (argv.includes('--help') || argv.includes('-h')) {
     process.stdout.write('usage: node company/tools/tool-parse.js [--verbose|--selftest] [dir|file...]\n');
     return 0;

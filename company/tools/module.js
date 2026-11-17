@@ -20,12 +20,18 @@
  *                                                               # tracked INVENTORY.md / runbook into the local file and
  *                                                               # restore those files to HEAD (instance-guard.sh runs it)
  *   node company/tools/module.js selftest | --selftest          # offline, temp root
+ *   node company/tools/module.js --duty                         # read-only duty check (docs/DUTIES.md): the static and
+ *                                                               # enabled-state checks of every ENABLED module, without
+ *                                                               # the framework refresh and without running conformance
+ *                                                               # tests (both can write); exit 1 + JSON naming the modules
  *
  * module.json = pack.json (company/schemas/pack.schema.json) plus:
  *   layer        sense | organize | act | verify | settle | guarantee
  *   enableWhen   one sentence: when a company needs it (the CORE-MODULES.md table)
  *   requires.modules   other modules that must be enabled first
  *   limits may be empty; meters may live anywhere under company/work/ or company/state/.
+ *   duties       read-only duty checks the dispatcher runs (docs/DUTIES.md): [{id, tool, route, everyMin, timeoutMs,
+ *                whileHalted, enabledByDefault}], tool relative to the module folder and implementing --duty
  * Optional files: tick.js, http.js (see lib/modules.js), rows.md (the INVENTORY / runbook rows for its tools: sections
  * "## INVENTORY", "## 5a", "## 7b", each holding markdown table rows; generated from tools[] when absent).
  *
@@ -81,6 +87,9 @@ function moduleSchema() {
   delete m.properties.limits.minItems;
   m.properties.meters.items.properties.p = { type: 'string', pattern: '^company/(work|state)/[A-Za-z0-9_./*-]+$' };
   m.properties.requires.properties.modules = m.properties.requires.properties.modules || { type: 'array', items: { type: 'string' } };
+  m.properties.duties = { type: 'array', maxItems: 8, items: { type: 'object', required: ['id', 'tool', 'route', 'everyMin', 'timeoutMs', 'whileHalted', 'enabledByDefault'], additionalProperties: false,
+    properties: { id: { type: 'string', pattern: '^[a-z][a-z0-9-]{1,39}$' }, tool: { type: 'string', pattern: '^[A-Za-z0-9_./-]+\\.js$' }, route: { type: 'string', minLength: 2, maxLength: 64 },
+      everyMin: { type: 'integer', minimum: 5, maximum: 1440 }, timeoutMs: { type: 'integer', minimum: 1000, maximum: 60000 }, whileHalted: { type: 'boolean' }, enabledByDefault: { type: 'boolean' }, why: { type: 'string', maxLength: 300 } } } };
   return m;
 }
 
@@ -146,8 +155,8 @@ function refreshFromFramework(id, mod, reg) {
   record({ op: 'refresh', id, by: 'module.js (framework update)' });
   return true;
 }
-function checkEnabled(id, mod, reg) {
-  try { refreshFromFramework(id, mod, reg); } catch (_) {}
+function checkEnabled(id, mod, reg, opts) {
+  if (!(opts && opts.readOnly)) { try { refreshFromFramework(id, mod, reg); } catch (_) {} }
   const f = [];
   for (const t of mod.tools || []) {
     const d = path.join(P.tools, path.basename(t.file));
@@ -180,6 +189,22 @@ function doctor(arg) {
   const bad = rows.filter(r => r.enabled && r.status !== 'conformant');
   const unknown = arg && arg !== true && rows[0].status === 'absent';
   return { code: bad.length || unknown ? 1 : 0, out: { ok: !bad.length && !unknown, modules: rows } };
+}
+/* duty (docs/DUTIES.md): read only. Every ENABLED module's static checks, requirements and enabled state (tools placed and
+   unchanged, meters registered, rows present, source unchanged since enable), with no framework refresh (it copies
+   files) and no conformance test (it runs the module's code). Module ids and finding counts only. */
+function dutyResult() {
+  const bad = [];
+  for (const id of mods.enabled()) {
+    const reg = mods.state().enabled[id]; const dir = srcDir(id);
+    if (!fs.existsSync(path.join(dir, 'module.json'))) { bad.push({ id, n: 1 }); continue; }
+    const { mod, findings } = checkStatic(dir);
+    if (mod) { findings.push(...pk.checkRequires(mod, new Set(['module:' + id]))); findings.push(...checkEnabled(id, mod, reg, { readOnly: true })); }
+    if (findings.length) bad.push({ id, n: findings.length });
+  }
+  if (!bad.length) return null;
+  const ids = bad.map(b => b.id).sort();
+  return { due: true, reason: bad.length + ' enabled module(s) fail their checks: ' + bad.map(b => b.id + ' (' + b.n + ')').join(', ') + '; run module.js doctor', key: 'md-' + require('crypto').createHash('sha256').update(bad.map(b => b.id + ':' + b.n).join(',')).digest('hex').slice(0, 10), items: ids.map(id => ({ id: 'module:' + id })) };
 }
 function list() {
   const en = mods.state().enabled;
@@ -539,7 +564,7 @@ function selftest() {
   return fails ? 1 : 0;
 }
 
-module.exports = { status, doctor, list, gates, checkStatic, moduleSchema, LAYERS };
+module.exports = { status, doctor, list, gates, checkStatic, moduleSchema, LAYERS, dutyResult };
 if (require.main !== module) return;
 
 const A = (() => { const o = { _: [] }; const a = process.argv.slice(2); for (let i = 0; i < a.length; i++) { if (a[i].startsWith('--')) { const k = a[i].slice(2); o[k] = a[i + 1] !== undefined && !a[i + 1].startsWith('--') ? a[++i] : true; } else o._.push(a[i]); } return o; })();
@@ -549,6 +574,7 @@ const emit = res => {
   else for (const m of res.out.modules) { console.log(m.status.toUpperCase().padEnd(11) + ' ' + m.id + (m.enabled ? '  (enabled)' : '')); for (const f of m.findings || []) console.log('    ' + f); }
   process.exit(res.code);
 };
+if (A.duty && !cmd) { const r = dutyResult(); if (r) console.log(JSON.stringify(r)); process.exit(r ? 1 : 0); }
 if (cmd === 'selftest' || A.selftest) process.exit(selftest());
 if (cmd === 'list') { const rows = list(); if (A.json) console.log(JSON.stringify(rows, null, 1)); else { if (!rows.length) console.log('no modules'); for (const x of rows) console.log((x.enabled ? 'enabled ' : 'off     ') + ' ' + x.id.padEnd(14) + ' ' + String(x.layer || '').padEnd(10) + ' ' + (x.title || '')); } process.exit(0); }
 if (cmd === 'status') { if (!A._[1]) { console.error('status <id>'); process.exit(2); } const s = status(A._[1]); if (A.json) console.log(JSON.stringify(s, null, 1)); else { console.log(s.status); for (const f of s.findings || []) console.log('  ' + f); } process.exit(0); }

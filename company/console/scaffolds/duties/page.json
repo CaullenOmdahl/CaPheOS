@@ -1,0 +1,24 @@
+{
+  "$schema": "../../../schemas/console-panel.schema.json",
+  "version": 1,
+  "kind": "page",
+  "id": "duties",
+  "title": "Duties",
+  "description": "Every read-only duty check, what it says now, who it routes to and its last results.",
+  "owner": "tools",
+  "why": "The duty checks are how the company finds its own work without paying a model to look; the owner should see at a glance which ones are due, broken or have stopped running.",
+  "placement": { "area": "screen", "nav": "Duties", "order": 9 },
+  "refresh": 300,
+  "sources": {
+    "duties": { "type": "tool", "id": "duties" }
+  },
+  "units": [
+    { "id": "grid", "title": "Duty checks", "span": 12, "rows": 3,
+      "view": { "kind": "status-grid", "source": "duties", "name": "id", "state": "state", "group": "owner", "checked": "checkedAt", "detail": "reason", "history": "history", "historyN": 12,
+        "stateMap": { "ok": "ok", "due": "bad", "broken": "bad", "stale": "warn", "off": "unknown" }, "empty": "No duty has reported yet." } }
+  ],
+  "actions": [
+    { "id": "duty-note", "label": "Ask what is being done", "kind": "ask-ceo", "scope": "panel",
+      "text": "Please tell me in plain words which duty checks on {{panel.title}} are due, broken or stale, and who is on each." }
+  ]
+}

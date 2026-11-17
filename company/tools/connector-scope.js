@@ -12,6 +12,10 @@
  *                                                      3 = no drift seen, but a connector could not be verified
  *   node company/tools/connector-scope.js --json       same verdict as JSON
  *   node company/tools/connector-scope.js --selftest   fixtures
+ *   node company/tools/connector-scope.js --duty       read-only duty check (docs/DUTIES.md) with NO station call and no
+ *                                                      token: the saved policy header of each policy connector, and the drift
+ *                                                      locked-watch.js has flagged and not yet seen cleared (its baseline).
+ *                                                      exit 0 = none, 1 = JSON {due, reason, key, items} (ids only)
  *
  * What it reads (changes nothing):
  *   - GET /api/connectors: ids, state, enabled, url, header KEYS and tool names (the station masks header values);
@@ -175,6 +179,9 @@ function selftest() {
     ['restore for a disabled connector keeps it disabled', () => (judge([Object.assign({}, down, { enabled: false, headers: {} })], T).connectors[0].restore.includes('"enabled":false') ? 'yes' : 'no'), 'yes'],
     ['an enabled GitHub service key is drift', () => st([good], { headerValue: { github: true }, serviceKeys: [{ id: 'github', name: 'GitHub', envVar: 'GITHUB_API_KEY', enabled: true }] }), 'drift'],
     ['a disabled GitHub service key, or another platform, is not', () => st([good], { headerValue: { github: true }, serviceKeys: [{ id: 'github', name: 'GitHub', envVar: 'GITHUB_API_KEY', enabled: false }, { id: 'openweather', name: 'OpenWeather', envVar: 'OPENWEATHER_API_KEY', enabled: true }] }), 'in scope'],
+    ['duty: nothing saved, nothing flagged -> not due', () => String(dutyResult({}, {})), 'null'],
+    ['duty: a saved header that is not "true" is due, by id only', () => { const r = dutyResult({ github: false }, {}); return r && r.items.map(i => i.id).join(',') + '|' + /never|token/.test(JSON.stringify(r)); }, 'connector:github|false'],
+    ['duty: a drift locked-watch flagged is due until it clears', () => { const r = dutyResult({ github: true }, { 'servicekey:github': { flagged: 'abc' }, github: { flagged: 'def' } }); return r && r.items.map(i => i.id).join(','); }, 'connector:github,servicekey:github'],
     ['saved header value is read as a yes/no only', () => { const os = require('os'); const d = fs.mkdtempSync(path.join(os.tmpdir(), 'cscope-')); const f = path.join(d, 'state.json');
       fs.writeFileSync(f, JSON.stringify({ version: 2, configs: [{ id: 'github', headers: { 'x-mcp-readonly': 'TRUE' }, token: 'never-read' }], oauth: { byId: { github: { accessToken: 'never-read' } } } }));
       const a = savedHeaderValues(f); fs.writeFileSync(f, JSON.stringify({ version: 2, configs: [{ id: 'github', headers: { 'X-MCP-Readonly': 'false' } }] })); const b = savedHeaderValues(f);
@@ -191,8 +198,27 @@ function selftest() {
   process.exit(bad ? 1 : 0);
 }
 
+/* duty (docs/DUTIES.md): what can be known without the network. headerValue = savedHeaderValues(); watched = the
+   locked-watch baseline's connectors map ({ id: { flagged: sig } }, drift reported and not cleared). Ids only. */
+function dutyResult(headerValue, watched) {
+  const items = [];
+  for (const [id, v] of Object.entries(headerValue || {})) if (v === false) items.push({ id: 'connector:' + id, why: 'saved ' + POLICY[id].header + ' is not "' + POLICY[id].value + '"' });
+  for (const [id, w] of Object.entries(watched || {})) if (w && w.flagged && !items.some(i => i.id === 'connector:' + id && !id.startsWith('servicekey:'))) items.push({ id: id.startsWith('servicekey:') ? id : 'connector:' + id, why: 'drift flagged by locked-watch' });
+  if (!items.length) return null;
+  const ids = items.map(i => i.id.replace(/[^A-Za-z0-9:._-]/g, '')).sort();
+  const key = 'cs-' + require('crypto').createHash('sha256').update(ids.join(',')).digest('hex').slice(0, 10);
+  return { due: true, reason: ids.length + ' connector scope finding(s): ' + ids.join(', ') + ' (run connector-scope.js for the details)', key, items: ids.map(id => ({ id })) };
+}
+function duty() {
+  const base = co.readJson(path.join(ROOT, 'company', 'state', 'locked', 'baseline.json'), null) || {};
+  const r = dutyResult(savedHeaderValues(), base.connectors || {});
+  if (r) console.log(JSON.stringify(r));
+  return r ? 1 : 0;
+}
+
 if (require.main === module) {
   const args = process.argv.slice(2);
+  if (args.includes('--duty')) process.exit(duty());
   if (args.includes('--selftest')) selftest();
   else collect().then(r => {
     if (r.error) { console.log('connector-scope: ' + r.error); process.exit(2); }
@@ -201,4 +227,4 @@ if (require.main === module) {
     process.exit(exitCode(v));
   });
 }
-module.exports = { judge, collect, savedHeaderValues, exitCode, isRead, POLICY };
+module.exports = { judge, collect, savedHeaderValues, exitCode, isRead, POLICY, dutyResult };

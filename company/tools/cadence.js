@@ -16,6 +16,11 @@
  *                                  [--watch-debounce-sec N] --by <owner>
  *   node company/tools/cadence.js sprint status [--json]      Sprint (start-up): on or off, until when, and how it is going
  *   node company/tools/cadence.js selftest
+ *   node company/tools/cadence.js duties-floor [--json]   a SUGGESTION only (docs/DUTIES.md): which seats' own loop routines
+ *                                  run more often than the duty floor (bounds.loopFloorMin, default 360-720 min; a seat may
+ *                                  set seats.<id>.loopFloorMin inside it), and the command the owner or a reviewed change
+ *                                  would apply. The CEO seat keeps its loop. Nothing is changed: duties find the work now,
+ *                                  so a seat's routine loop can be slow; existing schedules move only when someone applies it.
  *
  * Source of truth: company/work/ops/cadence.json (defaults: company/defaults/work/ops/cadence.json).
  *   base values   dispatcherTickMin, defaultCooldownMin, maxPerTick, seats.<id>.*: the owner's (or a reviewed change's)
@@ -55,7 +60,7 @@ const co = require('./lib/company');
 const SP = require('./lib/sprint');
 
 const BUILTIN = { dispatcherTickMin: 10, defaultCooldownMin: 40, maxPerTick: 4, seats: {} };
-const DEFAULT_BOUNDS = { tickMin: [5, 30], cooldownMin: [10, 120], maxWakesPerHour: 12, maxWakesPerDay: 120, quietHours: null };
+const DEFAULT_BOUNDS = { tickMin: [5, 30], cooldownMin: [10, 120], maxWakesPerHour: 12, maxWakesPerDay: 120, quietHours: null, loopFloorMin: [360, 720] };
 const DEFAULT_TEMPO = { mode: 'bounded-auto', autoExpireMin: 30, minChangeIntervalMin: 15 };
 const SEAT_FIELDS = ['cooldownMin', 'priority', 'wakeOnInbox', 'wakeOnOwnerMessage'];
 const S = {
@@ -560,7 +565,7 @@ function setBounds(o = {}) {
 
 /* For harness-change.js --kind schedule --target cadence.json: check a proposed {pointer: value} set and turn it into
  * whole-section sets ("/bounds", "/tempo", "/seats/<id>", or a base number), so the reviewed apply writes exactly that. */
-const PROPOSABLE = /^\/(dispatcherTickMin|defaultCooldownMin|maxPerTick|bounds\/(tickMin|cooldownMin|maxWakesPerHour|maxWakesPerDay|quietHours)|tempo\/(mode|autoExpireMin|minChangeIntervalMin)|tempo\/sprint\/(on|hours|lanes|budgetUsd)|seats\/[A-Za-z0-9_-]+\/(loopEvery|cooldownMin))$/;
+const PROPOSABLE = /^\/(dispatcherTickMin|defaultCooldownMin|maxPerTick|bounds\/(tickMin|cooldownMin|maxWakesPerHour|maxWakesPerDay|quietHours|loopFloorMin)|tempo\/(mode|autoExpireMin|minChangeIntervalMin)|tempo\/sprint\/(on|hours|lanes|budgetUsd)|seats\/[A-Za-z0-9_-]+\/(loopEvery|cooldownMin|loopFloorMin))$/;
 function proposal(doc, set, opts) {
   opts = opts || {};
   if (!set || typeof set !== 'object' || Array.isArray(set) || !Object.keys(set).length) throw new Error('--change is {"/pointer": value, …} on cadence.json');
@@ -624,6 +629,34 @@ async function apply({ dry, approvedRef, by } = {}) {
   const plan = { loops: [], routines: [], errors: [], warnings: [] };
   for (const [id, s] of Object.entries(c.seats)) {
     const row = agents[id];
+/* duties-floor: a suggestion, never an apply. With duties detecting work (docs/DUTIES.md), a seat's own loop routine only
+ * has to catch what no duty sees, so it can run every 6-12 h. For each seat but the CEO: its loopEvery in cadence.json,
+ * the floor (seats.<id>.loopFloorMin inside bounds.loopFloorMin, else the low bound) and, when it runs more often or is
+ * not set here, the two ways to apply it. Existing companies' schedules never move by themselves. */
+function dutiesFloor() {
+  const c = load(); const agents = loops().agents || {};
+  const ceo = (Object.entries(agents).find(([, x]) => co.holds(x, 'ceo')) || Object.entries(agents).find(([, x]) => x && x.manager == null) || [null])[0];
+  const [lo, hi] = Array.isArray(c.bounds.loopFloorMin) ? c.bounds.loopFloorMin : DEFAULT_BOUNDS.loopFloorMin;
+  const rows = [];
+  for (const [id, a] of Object.entries(agents)) {
+    if (!a || !a.loop) continue;
+    if (id === ceo) { rows.push({ id, name: a.name || id, ceo: true, note: 'the CEO seat keeps its current loop' }); continue; }
+    const seat = c.seats[id] || {};
+    const floor = Math.min(hi, Math.max(lo, Number(seat.loopFloorMin) || lo));
+    let cur = null, runsEveryMin = null, note;
+    if (seat.loopEvery != null) { try { cur = parseEvery(seat.loopEvery); } catch (_) {} }
+    if (cur && cur.kind === 'interval') runsEveryMin = cur.minutes;
+    else if (cur && cur.kind === 'cron') { const f = cur.expr.split(' '); if (/^\d+$/.test(f[0]) && /^\d+$/.test(f[1])) runsEveryMin = 1440; }
+    const text = 'every ' + (floor % 60 ? floor + 'm' : floor / 60 + 'h');
+    const slower = runsEveryMin != null && runsEveryMin >= floor;
+    note = slower ? 'already at or below the floor' : cur ? (runsEveryMin == null ? 'a cron clock (' + cur.expr + '): check how often it fires' : 'runs every ' + runsEveryMin + ' min, faster than the ' + floor + ' min floor') : 'no loopEvery in cadence.json: the station\'s own schedule stands';
+    rows.push({ id, name: a.name || id, loopEvery: cur ? cur.text : null, runsEveryMin, floorMin: floor, suggest: slower ? null : text, note,
+      owner: slower ? null : 'node company/tools/cadence.js set ' + id + ' --loop-every ' + floor + ' --by owner && node company/tools/cadence.js apply --by owner',
+      reviewed: slower ? null : 'node company/tools/harness-change.js propose --kind schedule --target cadence.json --change \'' + JSON.stringify({ ['/seats/' + id + '/loopEvery']: text }) + '\' --why "duties find the work now (docs/DUTIES.md)" --by <you>' });
+  }
+  return { ok: true, suggestionOnly: true, bounds: [lo, hi], seats: rows, measure: 'compare the idle-wake ratio before and after: node company/tools/cadence.js sprint status --json (idleWakeRatio)' };
+}
+
     if (!row) { plan.errors.push('cadence.json seat "' + id + '" is not in loops.json; skipped'); continue; }
     for (const f of SEAT_FIELDS) if (s[f] !== undefined && row[f] !== s[f]) plan.loops.push({ seat: id, field: f, from: row[f], to: s[f] });
   }
@@ -669,7 +702,7 @@ async function apply({ dry, approvedRef, by } = {}) {
   return { ok: !plan.errors.length, gate: level, applied: done, errors: plan.errors, warnings: plan.warnings };
 }
 
-module.exports = { S, BUILTIN, DEFAULT_BOUNDS, DEFAULT_TEMPO, load, view, effective, tempoAllows, sprintOf, setSprint, setSprintConfig, sprintTick, sprintStatus, sprintSpent, wakeCounts, inQuiet, peakFindings, proposal, parseEvery, sameSchedule, setDefault, setSeat, setBounds, endTemporary, apply, isOwner };
+module.exports = { S, BUILTIN, DEFAULT_BOUNDS, DEFAULT_TEMPO, load, view, effective, dutiesFloor, tempoAllows, sprintOf, setSprint, setSprintConfig, sprintTick, sprintStatus, sprintSpent, wakeCounts, inQuiet, peakFindings, proposal, parseEvery, sameSchedule, setDefault, setSeat, setBounds, endTemporary, apply, isOwner };
 
 async function selftest() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadence-selftest-'));
@@ -794,6 +827,9 @@ async function selftest() {
     check('dry-run plans without writing', dry.plan.loops.length === 3 && dry.plan.routines.length === 1 && JSON.parse(fs.readFileSync(S.loopsFile, 'utf8')).agents.desk.cooldownMin === 30, JSON.stringify(dry.plan));
     level = 'approve';
     const refused = await apply({ by: 'Alex' });
+    { const before = fs.readFileSync(S.file, 'utf8'); const df = dutiesFloor(); const desk = df.seats.find(x => x.id === 'desk'), ceoRow = df.seats.find(x => x.id === 'agent');
+      check('duties-floor: a seat looping every 45 min is told the 6 h floor, the CEO keeps its loop, nothing is written', df.suggestionOnly && desk && desk.suggest === 'every 6h' && /cadence\.js set desk --loop-every 360 --by owner/.test(desk.owner) && /"\/seats\/desk\/loopEvery":"every 6h"/.test(desk.reviewed) && ceoRow && ceoRow.ceo && !ceoRow.suggest && fs.readFileSync(S.file, 'utf8') === before, JSON.stringify(df)); }
+    check('a proposal can set the loop floor bounds and a seat floor', JSON.stringify(proposal(load(), { '/bounds/loopFloorMin': '480-720', '/seats/desk/loopFloorMin': 600 }, { now })['/bounds'].loopFloorMin) === '[480,720]');
     check('approve level refuses an agent without --approved-ref and says how to ask', refused.refused && /inbox\.js ask/.test(refused.error));
     const ownerApply = await apply({ dry: true, by: 'owner' });
     check('the owner applies without the gate', ownerApply.ok && ownerApply.gate === 'owner');
@@ -938,6 +974,14 @@ if (require.main === module) {
       out(r);
       process.exit(r.ok ? 0 : 1);
     }
-    throw new Error('commands: show, set-default, set, bounds, end-temporary, apply, sprint, selftest');
+    throw new Error('commands: show, set-default, set, bounds, end-temporary, apply, sprint, duties-floor, selftest');
   })().catch(e => { console.error(JSON.stringify({ ok: false, error: e.message })); process.exit(1); });
 }
+    if (cmd === 'duties-floor') {
+      const r = dutiesFloor();
+      if (opt('json')) return out(r);
+      console.log('duties floor (a suggestion; nothing is changed): a seat loop need run no more often than every ' + r.bounds.join('-') + ' min; the CEO keeps its loop');
+      for (const x of r.seats) { console.log('  ' + x.id + ' (' + x.name + '): ' + x.note + (x.suggest ? ' -> suggest loopEvery ' + x.suggest : '')); if (x.owner) console.log('      owner:    ' + x.owner + '\n      reviewed: ' + x.reviewed); }
+      console.log(r.measure);
+      return;
+    }

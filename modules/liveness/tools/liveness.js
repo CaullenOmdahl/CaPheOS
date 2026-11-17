@@ -5,6 +5,9 @@
  *   node company/tools/liveness.js ping                a test alert to the owner (and the push URL, through the gate)
  *   node company/tools/liveness.js check               what the systemd timer runs (modules/liveness/watch.js)
  *   node company/tools/liveness.js --selftest          runs modules/liveness/watch.js --selftest
+ *   node company/tools/liveness.js --duty              read-only duty check (docs/DUTIES.md), run even while halted: exit 1 +
+ *                                                      JSON when the watcher's own heartbeat is missing or older than 3 of its
+ *                                                      intervals (the dead-man's switch is blind)
  * Module: liveness (modules/liveness/). Owner: risk.
  */
 'use strict';
@@ -18,6 +21,13 @@ if (a.includes('--selftest')) {
   process.exit(r.status === null ? 1 : r.status);
 }
 const w = require(W);
+if (a.includes('--duty')) {
+  const s = w.status();
+  const limitMin = 3 * (Number(s.watchMin) || 5);
+  const blind = s.enabled && (s.watcherAgeMin === null || s.watcherAgeMin > limitMin);
+  if (blind) console.log(JSON.stringify({ due: true, reason: s.watcherAgeMin === null ? 'the liveness watcher has never written its heartbeat: its systemd timer is not running, so a stopped dispatcher would go unnoticed' : 'the liveness watcher last wrote its heartbeat ' + s.watcherAgeMin + ' min ago (limit ' + limitMin + ' min): its timer has stopped, so a stopped dispatcher would go unnoticed', key: 'lv-' + (s.watcherAgeMin === null ? 'never' : String((s.watcher && s.watcher.at) || 'old').replace(/[^A-Za-z0-9:.-]/g, '').slice(0, 30)) }));
+  process.exit(blind ? 1 : 0);
+}
 (async () => {
   const cmd = a[0] || 'status';
   const r = cmd === 'status' ? w.status() : cmd === 'ping' ? await w.ping() : cmd === 'check' ? await w.check() : null;

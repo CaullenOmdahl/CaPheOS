@@ -859,6 +859,8 @@ function selftest() {
   fs.copyFileSync(path.join(__dirname, '..', 'console', 'sources.json'), path.join(tmp, 'company', 'console', 'sources.json'));
   // a fixture tool in the allowlisted slot, so render runs a real child process offline
   fs.writeFileSync(path.join(tmp, 'company', 'tools', 'handoff-status.js'), "console.log(JSON.stringify([{due:'2030-01-01T09:00:00.000Z',raw:'2030-01-01 09:00',file:'company/work/handoffs/to-sam.md',line:3,heading:'## 2030-01-01 from Alex — check the ledger',overdue:false}]))\n");
+  // the duties source (duty-status.js --json) as a fixture, so the Duties scaffold renders offline
+  fs.writeFileSync(path.join(tmp, 'company', 'tools', 'duty-status.js'), "console.log(JSON.stringify([{id:'tool-parse',route:'tools',owner:'Sam',state:'ok',checkedAt:'2030-01-01T09:00:00.000Z',reason:null,history:['ok','ok']},{id:'handoff-status',route:'ceo',owner:'Alex',state:'due',checkedAt:'2030-01-01T09:00:00.000Z',reason:'1 OPEN handoff(s) past deadline',history:['ok','due']}]))\n");
   // a stub owner channel, so notify is proven without touching the real one
   fs.writeFileSync(path.join(tmp, 'company', 'tools', 'owner-inbox.js'), "const fs=require('fs'),p=require('path');module.exports={send({from,text}){const r={id:'out-test',from,text};fs.appendFileSync(p.join(__dirname,'..','owner','outbound.jsonl'),JSON.stringify(r)+'\\n');return r;}};\n");
   fs.writeFileSync(path.join(tmp, 'company', 'tools', 'inbox.js'), "const fs=require('fs'),p=require('path');fs.appendFileSync(p.join(__dirname,'..','owner','questions.jsonl'),JSON.stringify(process.argv.slice(2))+'\\n');console.log(JSON.stringify({ok:true,id:'q-000001'}));\n");
@@ -1039,9 +1041,9 @@ function selftest() {
       const lp = listPanels(tmp);
       t('list shows pages with type, units and placement', names.every(n => lp.some(x => x.id === n && x.type === 'page' && x.placement === 'screen' && x.units > 0 && x.valid)), lp);
       t('changes.jsonl records a page add', fs.readFileSync(path.join(tmp, 'company', 'console', 'changes.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)).some(c => c.op === 'add' && c.type === 'page' && c.digest));
-      // the 8-screen limit counts pages: 5 pages so far, 3 more fit, the 9th does not
-      let nineth = null;
-      for (let i = 1; i <= 4; i++) { const sc = cmdScaffold('calendar', { as: 'cal-' + i, by: 'Sam', nav: 'Cal ' + i }, tmp); nineth = cmdAdd(path.join(tmp, sc.out.dir), 'Sam', tmp); if (i < 4) t('page ' + (5 + i) + ' of 8 installs', nineth.code === 0, nineth.out); }
+      // the 8-screen limit counts pages: one page per scaffold so far, the rest up to 8 fit, the 9th does not
+      let nineth = null; const more = 9 - names.length;
+      for (let i = 1; i <= more; i++) { const sc = cmdScaffold('calendar', { as: 'cal-' + i, by: 'Sam', nav: 'Cal ' + i }, tmp); nineth = cmdAdd(path.join(tmp, sc.out.dir), 'Sam', tmp); if (i < more) t('page ' + (names.length + i) + ' of 8 installs', nineth.code === 0, nineth.out); }
       t('a ninth company screen is refused (limit 8)', nineth.code === 1 && has(nineth.out.findings || [], /limit 8/), nineth.out);
       t('a page cannot reuse a panel id (or a panel a page id)', (() => { const d = path.join(tmp, 'kit', 'calendar'); fs.mkdirSync(d, { recursive: true }); const p0 = Object.assign({}, pnl, { id: 'calendar' }); fs.writeFileSync(path.join(d, 'panel.json'), JSON.stringify(p0)); return has(validatePanel(p0, d, { root: tmp, sources }), /already installed as a page/); })());
       t('owner hides a page', cmdHide('noc-health', 'owner', tmp).code === 0 && listPanels(tmp).some(x => x.id === 'noc-health' && x.hidden));

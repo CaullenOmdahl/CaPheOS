@@ -1,0 +1,8 @@
+[
+ { "id": "handoff-status", "route": "ceo", "owner": "Alex", "state": "due", "checkedAt": "{{t:-8m}}", "reason": "2 OPEN handoff(s) past deadline, 0 section(s) without a Status line: to-sam.md (2 overdue)", "history": ["ok", "ok", "ok", "due", "due"] },
+ { "id": "tool-parse", "route": "tools", "owner": "Sam", "state": "ok", "checkedAt": "{{t:-21m}}", "reason": null, "history": ["ok", "ok", "broken", "ok", "ok"] },
+ { "id": "connector-scope", "route": "risk", "owner": "Riley", "state": "ok", "checkedAt": "{{t:-8m}}", "reason": null, "history": ["ok", "ok", "ok", "ok", "ok"] },
+ { "id": "backup-freshness", "route": "risk", "owner": "Riley", "state": "stale", "checkedAt": "{{t:-5h}}", "reason": "last run 5 h ago, older than 2 x 60 min", "history": ["ok", "ok"] },
+ { "id": "module-doctor", "route": "tools", "owner": "Sam", "state": "broken", "checkedAt": "{{t:-1h}}", "reason": "no answer within 30000 ms", "history": ["ok", "broken"] },
+ { "id": "commitments-due", "route": "ceo", "owner": "Kim", "state": "ok", "checkedAt": "{{t:-3m}}", "reason": null, "history": ["ok", "due", "ok", "ok", "ok"] }
+]

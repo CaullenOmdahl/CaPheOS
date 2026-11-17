@@ -100,6 +100,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 |---|---|---|
 | company/tools/agy-contract.js | tools | none |
 | company/tools/ask.js | ceo | none |
+| company/tools/backup-freshness.js | risk | `--selftest` |
 | company/tools/build-inventory.js | people | `--selftest` |
 | company/tools/cadence.js | tools | `selftest` / `--selftest` |
 | company/tools/cap-numerator.js | finance | `--selftest` |
@@ -113,6 +114,8 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/dispatch.js | tools | `--selftest` |
 | company/tools/dispatcher-loop.js | tools | `selftest` / `--selftest` |
 | company/tools/dossier.js | people | none |
+| company/tools/duties.js | tools | `--selftest` |
+| company/tools/duty-status.js | tools | `--selftest` |
 | company/tools/escalate.js | ceo | none |
 | company/tools/external-gate.js | risk | `--selftest` |
 | company/tools/founder-loop.js | ceo | `--selftest` |
@@ -204,6 +207,7 @@ in §5a instead.
 
 | tool | owner | passes |
 |---|---|---|
+| `company/tools/backup-freshness.js` | risk | `node company/tools/backup-freshness.js --selftest` |
 | `company/tools/build-inventory.js` | people | `node company/tools/build-inventory.js --selftest` |
 | `company/tools/cadence.js` | tools | `node company/tools/cadence.js selftest` |
 | `company/tools/cap-numerator.js` | finance | `node company/tools/cap-numerator.js --selftest` |
@@ -212,6 +216,8 @@ in §5a instead.
 | `company/tools/delegation.js` | ceo | `node company/tools/delegation.js selftest` |
 | `company/tools/dispatch.js` | tools | `node company/tools/dispatch.js --selftest` |
 | `company/tools/dispatcher-loop.js` | tools | `node company/tools/dispatcher-loop.js selftest` |
+| `company/tools/duties.js` | tools | `node company/tools/duties.js --selftest` |
+| `company/tools/duty-status.js` | tools | `node company/tools/duty-status.js --selftest` |
 | `company/tools/external-gate.js` | risk | `node company/tools/external-gate.js --selftest` |
 | `company/tools/founder-loop.js` | ceo | `node company/tools/founder-loop.js --selftest` |
 | `company/tools/governance.js` | ceo | `node company/tools/governance.js selftest` |
@@ -253,6 +259,7 @@ prose after the date. Prose deadlines are left undated on purpose and sorted las
 | Skill install fails | Check health, read the jsonl entry, retry once, check the skill has a valid `SKILL.md`. Still failing: report the exact error and the agents affected. Never hand-copy files into agent state. |
 | Agent missing a skill | `skills.js install <name> --agents <id>`, then `verify`; note why it was missing. |
 | Token rotated | Update it only in `secrets/<name>`; restart the station if it reads it at startup; test the dependent tool; tell risk. A new token from the owner is an access gate. |
+| A duty is broken or stale (an OPEN `duty <id> is broken/stale` handoff) | `node company/tools/duty-status.js`; run the tool's `--duty` by hand and read its exit code and output (docs/DUTIES.md §1). Broken: fix the tool (a reviewed change). Stale: the per-tick cap (`company/state/duties.json` `waits`), a halt, or the dispatcher not ticking. Set the handoff DONE when `duty-status.js` shows it ok. |
 | StarNet update drops a patch | Re-run `scripts/setup-station.sh`; fix and re-record a patch that no longer applies. |
 
 ## 10. Weekly report to the CEO

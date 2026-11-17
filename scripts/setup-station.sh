@@ -65,6 +65,14 @@ for d in company/patches/[0-9][0-9][0-9][0-9]-*.diff; do
   mark="$d.applied"
   [[ -e "$mark" ]] && continue
   if grep -q '^# Status: NOT APPLIED' "$d"; then echo "skip $(basename "$d") (opt-in; see its header)"; continue; fi
+  # In a company (founded) checkout only the framework's own patches apply. A patch the crew wrote here (not tracked in
+  # git) changes the shared engine, so it becomes a framework request instead and reaches every company through an update.
+  if [[ -e company/work/.founded ]] && ! git ls-files --error-unmatch -- "$d" >/dev/null 2>&1; then
+    mkdir -p company/work/framework-requests
+    req="company/work/framework-requests/patch-$(basename "$d" .diff).md"
+    [[ -e "$req" ]] || printf '# Framework change request: StarNet patch %s\n\nThe crew wrote this StarNet patch inside the company. Patches change the shared engine, so they are applied only from the framework. Forward it to the framework; it reaches this company with the next update.\n\nFile: `%s`\n' "$(basename "$d")" "$d" > "$req"
+    echo "skip $(basename "$d") (written in this company, not by the framework: see $req)"; continue
+  fi
   if git -C starnet apply --3way --whitespace=nowarn "../$d"; then
     date -Is > "$mark"; echo "applied $(basename "$d")"
   else

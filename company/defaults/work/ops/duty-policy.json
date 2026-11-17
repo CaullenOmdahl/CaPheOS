@@ -1,0 +1,6 @@
+{
+  "_doc": "Duty policy (docs/DUTIES.md): the only data the duty checks read. Copied to company/work/ops/duty-policy.json at founding. duties.<id> may set enabled (true|false) and everyMin (clamped to 5-1440); tickCapMs is the most time all duties may take in one dispatcher tick (clamped to 2000-60000; duties past it wait for the next tick, and that is counted). What a duty runs, where it routes and whether it runs while halted are code (company/tools/duties.js, modules/<id>/module.json), never this file. A policy-tier file: locked-watch.js reports an edit with no reviewed change, and while that report is open the dispatcher uses the last-known-good copy.",
+  "version": 1,
+  "tickCapMs": 20000,
+  "duties": {}
+}

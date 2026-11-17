@@ -27,6 +27,18 @@
       "purpose": "create, transition, list and tick commitments"
     }
   ],
+  "duties": [
+    {
+      "id": "commitments-due",
+      "tool": "tools/commitments.js",
+      "route": "ceo",
+      "everyMin": 10,
+      "timeoutMs": 10000,
+      "whileHalted": false,
+      "enabledByDefault": true,
+      "why": "an open commitment past its due time, routed to its owner seat (replaces agents scheduling their own wakes)"
+    }
+  ],
   "seats": [],
   "routines": [],
   "panels": [
