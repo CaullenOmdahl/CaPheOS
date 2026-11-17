@@ -101,7 +101,7 @@ const SECRET = 'mock-secret-value-never-echoed-0123456789';
     check('Reply opens a long-form textarea', rta >= 4, rta);
     // Discuss opens the asker's live chat with the question quoted
     const disc = await js(`[...${card('q-000116')}.querySelectorAll('a')].find(a => a.textContent === 'Discuss').getAttribute('href')`);
-    check('Discuss opens the asker\'s live chat with the question quoted', /^#\/comms\/agent:agent\?draft=/.test(disc || '') && decodeURIComponent(disc.split('draft=')[1]).startsWith('> What is the most'), disc);
+    check('Discuss opens the asker\'s live chat with the question quoted', /^#\/chat\/agent:agent\?draft=/.test(disc || '') && decodeURIComponent(disc.split('draft=')[1]).startsWith('> What is the most'), disc);
     // store the secret: the card goes, the value appears nowhere on the page
     await js(`(() => { const i = ${card('q-000111')}.querySelector('input.secret-input'); i.value = ${JSON.stringify(SECRET)}; i.dispatchEvent(new Event('input')); [...${card('q-000111')}.querySelectorAll('button')].find(x => x.textContent === 'Store it securely').click(); return 1; })()`);
     const gone = await until(() => js(`!${card('q-000111')}`), 5000);
@@ -115,15 +115,15 @@ const SECRET = 'mock-secret-value-never-echoed-0123456789';
     const snoozed = await until(() => js(`!${card('q-000117')} && [...document.querySelectorAll('summary')].some(s => /Snoozed \\(1\\)/.test(s.textContent))`), 5000);
     check('Snooze hides the card until then and lists it under "Snoozed"', snoozed);
     await shot('today-after');
-    // Settings: Usage and models > Subscription cutoffs, the same sliders, saved through the recorded pacer path
-    await js('location.hash = "/usage"; 1');
-    const cut = await until(() => js(`(() => { const c = document.querySelector('[aria-labelledby=cutoffs] [data-sub=claude]'); return c ? { ranges: c.querySelectorAll('input[type=range]').length, say: c.querySelector('output.q-say').textContent, text: c.innerText } : null; })()`), 8000);
-    check('Usage: Claude\'s weekly stop and daily pacing sliders, usage, reset and the seats affected', cut && cut.ranges === 2 && /up to 95% of this week's Claude/.test(cut.say) && /Used this week/.test(cut.text) && /Resets/.test(cut.text) && /Ingrid Halvorsen/.test(cut.text), cut);
+    // Settings › Models and subscriptions › Subscription cutoffs, the same sliders, saved through the recorded pacer path
+    await js('location.hash = "/settings/models/cutoffs"; 1');
+    const cut = await until(() => js(`(() => { const c = document.querySelector('#set-cutoffs [data-sub=claude]'); return c ? { ranges: c.querySelectorAll('input[type=range]').length, say: c.querySelector('output.q-say').textContent, text: c.innerText } : null; })()`), 8000);
+    check('Settings › Models: Claude\'s weekly stop and daily pacing sliders, usage, reset and the seats affected', cut && cut.ranges === 2 && /up to 95% of this week's Claude/.test(cut.say) && /Used this week/.test(cut.text) && /Resets/.test(cut.text) && /Ingrid Halvorsen/.test(cut.text), cut);
     await js(`(() => { document.querySelector('[data-sub=claude] input[type=range]').focus(); return 1; })()`);
     for (let i = 0; i < 5; i++) { await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 }); }
     await js(`(() => { [...document.querySelectorAll('[data-sub=claude] button')].find(b => b.textContent === 'Save').click(); return 1; })()`);
     const saved = await until(() => js(`(() => { const c = document.querySelector('[data-sub=claude]'); return c && /Last set by/.test(c.innerText) && c.querySelector('input[type=range]').value === '90' ? c.innerText : null; })()`), 5000);
-    check('Usage: Save records the new weekly stop (90%) and who set it', !!saved, await js(`(document.querySelector('[data-sub=claude]') || {}).innerText`));
+    check('Settings › Models: Save records the new weekly stop (90%) and who set it', !!saved, await js(`(document.querySelector('[data-sub=claude]') || {}).innerText`));
     await shot('usage-cutoffs');
     check('no page exceptions', !errors.length, errors);
     console.log(fails ? 'TODAY QUESTIONS WALK: FAIL (' + fails + ')' : 'TODAY QUESTIONS WALK: PASS');

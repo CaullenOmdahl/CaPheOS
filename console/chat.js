@@ -74,8 +74,8 @@ module.exports = function chat(deps) {
     const halt = co.haltState();
     if (halt.mode === 'hard') out.push({ code: 'halted', message: 'The company is under a hard halt: the station stops every run, so ' + s.name + ' cannot answer.', fix: 'Resume on the Halt screen.', link: '#/halt' });
     const cr = await stationGet('cron', 4000);
-    if (!cr.ok) out.push({ code: 'station-down', message: 'The station is not answering (' + (cr.error || 'HTTP ' + cr.status) + '), so ' + s.name + ' cannot answer.', fix: 'Start it on the station machine: systemctl --user start ' + svc() + '.service', link: '#/system' });
-    if (!m) out.push({ code: 'no-model', message: s.name + ' has no AI model to think with.', fix: 'Connect an AI provider in Setup.', link: '#/setup/provider' });
+    if (!cr.ok) out.push({ code: 'station-down', message: 'The station is not answering (' + (cr.error || 'HTTP ' + cr.status) + '), so ' + s.name + ' cannot answer.', fix: 'Start it on the station machine: systemctl --user start ' + svc() + '.service', link: '#/settings/system' });
+    if (!m) out.push({ code: 'no-model', message: s.name + ' has no AI model to think with.', fix: 'Connect an AI provider.', link: '#/setup/provider' });
     else {
       const b = budget();
       const unmetered = (Array.isArray(b.unmeteredProviders) && b.unmeteredProviders.length ? b.unmeteredProviders : ['claude-cli']).map(String);
@@ -154,7 +154,7 @@ module.exports = function chat(deps) {
     const payload = { agentId: id, model: m.model, provider: m.provider, rosterSystem: true, isTask: false, streamId: STREAM(id),
       messages: history.concat([{ role: 'user', content: contextNote(id, s, co) + text }]), projectRoot: co.ROOT, placed: PLACED };
     let token; try { token = co.stationToken(); } catch (_) { token = null; }
-    if (!token) { line('console.error', { code: 'station-down', message: 'No station token (secrets/station-token).', fix: 'Run scripts/setup-station.sh', link: '#/system' }); return res.end(); }
+    if (!token) { line('console.error', { code: 'station-down', message: 'No station token (secrets/station-token).', fix: 'Run scripts/setup-station.sh', link: '#/settings/system' }); return res.end(); }
     const u = new URL(co.STATION_URL.replace(/\/+$/, '') + '/api/run');
     const data = JSON.stringify(payload);
     let ended = false, sawEnd = false, sawError = false, buf = '';
@@ -180,12 +180,12 @@ module.exports = function chat(deps) {
       });
       ur.on('end', () => {
         if (buf.trim()) { try { res.write(buf.trim() + '\n'); } catch (_) {} }
-        if (!sawEnd && !sawError) line('console.error', { code: 'cut-off', message: 'The station closed the run before ' + s.name + ' finished.', fix: 'Send the message again; if it keeps happening, look at the station log (System).', link: '#/system' });
+        if (!sawEnd && !sawError) line('console.error', { code: 'cut-off', message: 'The station closed the run before ' + s.name + ' finished.', fix: 'Send the message again; if it keeps happening, look at the station log (System).', link: '#/settings/system' });
         ended = true; res.end();
       });
       ur.on('error', e => { if (!ended) { line('console.error', { code: 'cut-off', message: 'The connection to the station broke: ' + e.message }); ended = true; res.end(); } });
     });
-    up.on('error', e => { if (!ended) { line('console.error', { code: 'station-down', message: 'The station is not answering: ' + e.message, fix: 'systemctl --user start ' + svc() + '.service', link: '#/system' }); ended = true; res.end(); } });
+    up.on('error', e => { if (!ended) { line('console.error', { code: 'station-down', message: 'The station is not answering: ' + e.message, fix: 'systemctl --user start ' + svc() + '.service', link: '#/settings/system' }); ended = true; res.end(); } });
     // the owner left (closed the tab, pressed Stop): the station's own rule stops a run whose page is gone
     res.on('close', () => { if (!ended) up.destroy(); });
     up.end(data);
@@ -201,8 +201,8 @@ module.exports = function chat(deps) {
     let st = null; try { st = await FL().status(); } catch (e) { st = { ok: false, problems: [{ code: 'error', msg: e.message, fix: 'node company/tools/founder-loop.js status' }] }; }
     const halt = co.halted();
     if (halt) problems.push({ code: 'halted', msg: 'the company is under a ' + halt + ' halt, so nobody is woken', fix: 'Resume on the Halt screen.', link: '#/halt' });
-    if (!wakers.length) problems.push({ code: 'no-waker', msg: 'no crew member is woken by owner messages', fix: 'Switch "wake on owner message" on for ' + ceoName + ' in Controls › Tempo.', link: '#/controls/ticks' });
-    for (const p of (st.problems || [])) if (p.code !== 'no-model') problems.push({ code: p.code, msg: p.msg, fix: p.fix === 'node company/tools/founder-loop.js ensure' ? 'Run onboarding again: node company/tools/onboard.js --step founder-loop (or pick the AI provider again in Setup).' : p.fix, link: p.code === 'scheduler-off' || p.code === 'disabled' ? '#/automate' : '#/setup/provider' });
+    if (!wakers.length) problems.push({ code: 'no-waker', msg: 'no crew member is woken by owner messages', fix: 'Switch "wake on owner message" on for ' + ceoName + ' in Settings › Tempo and routines.', link: '#/settings/tempo/seats' });
+    for (const p of (st.problems || [])) if (p.code !== 'no-model') problems.push({ code: p.code, msg: p.msg, fix: p.fix === 'node company/tools/founder-loop.js ensure' ? 'Run onboarding again: node company/tools/onboard.js --step founder-loop (or pick the AI provider again in Setup).' : p.fix, link: p.code === 'scheduler-off' || p.code === 'disabled' ? '#/settings/tempo/routines' : '#/setup/provider' });
     const cad = readJson(co.p('company', 'work', 'ops', 'cadence.json'), null) || readJson(co.p('company', 'defaults', 'work', 'ops', 'cadence.json'), {}) || {};
     // the self-paced dispatcher loop's own state (company/tools/dispatcher-loop.js): its effective tick and next tick
     const lp = readJson(co.p('company', 'state', 'dispatcher-loop.json'), null);
@@ -211,9 +211,9 @@ module.exports = function chat(deps) {
     if (!lastTick) { try { lastTick = fs.statSync(co.p('company', 'work', 'dispatch-log.md')).mtimeMs; } catch (_) {} }
     const age = lastTick ? (Date.now() - lastTick) / 60000 : null;
     const loopStopped = !!(lp && lp.status === 'stopped');
-    if (age === null || age > tick * 3 + 2 || loopStopped) problems.push({ code: 'dispatcher', msg: age === null ? 'the dispatcher has never run, and it is what wakes ' + ceoName + ' for your messages' : loopStopped ? 'the dispatcher loop is stopped, and it is what wakes ' + ceoName + ' for your messages' : 'the dispatcher last ran ' + Math.round(age) + ' min ago (it should every ' + tick + ' min)', fix: 'Start it: systemctl --user start ' + svc() + '-dispatch.service', link: '#/system' });
+    if (age === null || age > tick * 3 + 2 || loopStopped) problems.push({ code: 'dispatcher', msg: age === null ? 'the dispatcher has never run, and it is what wakes ' + ceoName + ' for your messages' : loopStopped ? 'the dispatcher loop is stopped, and it is what wakes ' + ceoName + ' for your messages' : 'the dispatcher last ran ' + Math.round(age) + ' min ago (it should every ' + tick + ' min)', fix: 'Start it: systemctl --user start ' + svc() + '-dispatch.service', link: '#/settings/system' });
     const ds = readJson(co.p('company', 'work', 'dispatch-state.json'), {}) || {};
-    if (ds.owner && ds.owner.flagged) problems.push({ code: 'stalled', msg: ceoName + ' was woken ' + (ds.owner.count || 3) + ' times for these messages without answering, so the fast wake stopped', fix: 'Talk to ' + ceoName + ' live instead.', link: '#/comms/agent:' + ceoId });
+    if (ds.owner && ds.owner.flagged) problems.push({ code: 'stalled', msg: ceoName + ' was woken ' + (ds.owner.count || 3) + ' times for these messages without answering, so the fast wake stopped', fix: 'Talk to ' + ceoName + ' live instead.', link: '#/chat/agent:' + ceoId });
     if (ds.askHeld && st.job && String(ds.askHeld).includes(st.job.name)) problems.push({ code: 'ask-mode', msg: ceoName + '\'s approval mode is "ask", so an unattended run could not save anything and the dispatcher holds it', fix: 'Talk to ' + ceoName + ' live, or give the seat full access in Crew.', link: '#/crew/' + ceoId });
     const job = st.job;
     const cooldown = Number(process.env.DISPATCH_OWNER_COOLDOWN_MIN) > 0 ? Number(process.env.DISPATCH_OWNER_COOLDOWN_MIN) : 10;

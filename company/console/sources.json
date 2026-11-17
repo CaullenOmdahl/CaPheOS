@@ -59,9 +59,9 @@
 
   "screens": {
     "_doc": "Console screens. sideAllowed = screens whose side column may hold company panels. protected = screens no panel may touch. builtinLabels = nav labels a company screen may not reuse.",
-    "sideAllowed": ["today", "comms", "crew", "work", "hiring", "automate", "usage", "floor", "abilities"],
-    "protected": ["governance", "system", "feature-map"],
-    "builtinLabels": ["Today", "Comms", "Crew", "Work", "Hiring", "Automate", "Governance", "Usage and models", "Usage", "Models", "Floor", "Abilities", "System", "Feature map", "Needs you", "Company"]
+    "sideAllowed": ["today", "comms", "chat", "crew", "work", "hiring", "automate", "usage", "spend", "floor", "abilities"],
+    "protected": ["governance", "system", "feature-map", "settings", "setup"],
+    "builtinLabels": ["Today", "Chat", "Spend", "Settings", "Setup", "Comms", "Crew", "Work", "Hiring", "Automate", "Governance", "Usage and models", "Usage", "Models", "Floor", "Abilities", "System", "Feature map", "Needs you", "Company"]
   },
 
   "reservedIds": ["needs-you", "halt", "governance", "system", "feature-map", "today", "comms", "crew", "work", "hiring", "automate", "usage", "floor", "abilities", "company", "console", "settings"],

@@ -142,7 +142,7 @@ async function resolveCandidateDefault() {
     writeJson(F.modelPolicy, pol);
     return { status: 'ok', note: 'candidates now default to subscription provider ' + sub + '/' + model };
   }
-  return { status: 'pending', gate: { kind: 'candidateDefault', name: 'candidate model', text: 'Hiring candidates default to the metered model ' + (cur.provider || '?') + '/' + (cur.model || '?') + ', but the metered daily cap is $0 and the station has no subscription provider (' + unmetered.join(', ') + ') ready. Either connect a subscription provider on the station, or set a metered cap in company/work/finance/dispatch-budget.json (dailyUsd).' }, note: 'no usable candidate default: metered model with a $0 cap and no subscription provider on the station' };
+  return { status: 'pending', gate: { kind: 'candidateDefault', name: 'candidate model', text: 'Hiring candidates default to the metered model ' + (cur.provider || '?') + '/' + (cur.model || '?') + ', but the metered daily cap is $0 and the station has no subscription provider (' + unmetered.join(', ') + ') ready. Either connect a subscription provider on the station, or set a daily cap for pay-per-token AI (console Setup, step Budget).' }, note: 'no usable candidate default: metered model with a $0 cap and no subscription provider on the station' };
 }
 function registerOps() {
   const made = [];
@@ -328,7 +328,7 @@ async function kickoff() {
       '**Need:** read company/CHARTER.md and turn it into the company\'s first plan. (1) Goals: mint each as a station quest whose contract is a company/work/ file (see your loop prompt for the mint command and the domain list). ' +
       '(2) Roles: the seats you will open first and why; open them with `node company/tools/hire.js open` — the hiring governance level (`node company/tools/governance.js check hiring`) decides whether the owner is asked first — and write each round\'s files (role-spec.md, interview.md, scorecard.md, profiles/<name>.md); the rounds then advance on their own (candidates, parallel interviews) and each pick comes back to you as a handoff. ' +
       '(3) First tasks: as quest steps or handoffs, each with an owner and a date. Write the plan to company/work/plan.md, then send the owner a short summary (owner-inbox.js send) with links: ' +
-      '[the plan\'s quests](console:#/work/quests), [hiring](console:#/hiring), [handoffs](console:#/work/handoffs). Close this handoff with the evidence.\n' +
+      '[the plan\'s quests](console:#/work/quests), [hiring](console:#/crew/hiring), [handoffs](console:#/work/handoffs). Close this handoff with the evidence.\n' +
       '**Why:** the company just certified; until there is a plan nobody knows what to build first.\n**Deadline:** ' + day + '\n**Status:** OPEN\n**Evidence:** company/state/onboarding-state.json (certified)\n';
     fs.mkdirSync(path.dirname(inbox), { recursive: true });
     fs.appendFileSync(inbox, (txt ? '' : '# Handoffs to ' + seat.name + '\n') + block);

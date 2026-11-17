@@ -10,7 +10,7 @@ export async function render(root, ctx) {
   let meta;
   try { meta = ((await api('/panels')).panels || []).find(p => p.id === id && p.status === 'installed' && !p.hidden && p.valid !== false && p.placement === 'screen'); }
   catch (e) { fill(root, errLine(e, 'Panels')); return; }
-  if (!meta) { fill(root, screenHead({ title: 'Not found.' }), empty('No company screen "' + id + '". It may be hidden, broken or removed (see System).')); return; }
+  if (!meta) { fill(root, screenHead({ title: 'Not found.' }), empty('No company screen "' + id + '". It may be hidden, broken or removed (see Settings › Console pages).')); return; }
   const head = screenHead({ eyebrow: ['Company ' + (meta.type === 'page' ? 'page' : 'screen'), 'added by ' + (meta.owner || '?')], title: (meta.nav || meta.title || id) + '.', lede: meta.type === 'page' ? meta.description : null });
   if (meta.type === 'page') return mountPage(root, meta, ctx.app, head);
   const host = h('div');

@@ -284,6 +284,8 @@ module.exports = function setup(deps) {
         if (!(c.ok && c.data && c.data.ok)) throw new HttpError(502, 'the station did not save the key: ' + ((c.data && c.data.error) || c.error || 'HTTP ' + c.status));
       }
     }
+    // keepDefault: only set or replace the key (Settings › Connections and keys); who new hires run on stays as it is
+    if (b.keepDefault === true) { if (!key) bad('paste the API key'); decision((presentAlready ? 'replaced' : 'set') + ' the ' + id + ' API key'); return { ok: true, connected: true, provider: id, keyOnly: true }; }
     return Object.assign({ ok: true, connected: true }, await setDefault(id, b.model, !!b.subscription || (o.unmetered && b.subscription !== false)));
   }
   async function validate(b) {

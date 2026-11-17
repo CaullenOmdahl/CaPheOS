@@ -1,6 +1,6 @@
 // Crew > seat > Model (console/models.js endpoints): the seat's primary model, its ordered fallback chain, what it runs
-// on right now and why, and its history of moves. Also the Usage screen's table of every seat's chain.
-import { h, fill, Button, Tag, errLine, empty, table } from '../ui.js';
+// on right now and why, and its history of moves. Also Settings › Models and subscriptions' table of every seat's chain.
+import { h, fill, Button, Tag, errLine, empty, table, Details, humanError } from '../ui.js';
 import { api, post } from '../api.js';
 
 const key = e => e.provider + '/' + e.model;
@@ -28,7 +28,7 @@ export function modelPanel(host, seatId) {
       const r = await post('/models/seat/' + encodeURIComponent(seatId) + '/chain', { chain: chain.map(e => Object.assign({ provider: e.provider, model: e.model }, e.effort ? { effort: e.effort } : {})) });
       msg = { ok: true, text: what + ' saved: ' + (r.chain || []).join(' > ') + (r.applied && r.applied.kept ? ' (it stays on ' + r.applied.kept + ')' : r.applied && r.applied.roster ? ' (applied: roster ' + r.applied.roster + ', ' + (r.applied.routines || []).length + ' routine(s))' : '') };
       busy = false; await load(); return;
-    } catch (e) { msg = { ok: false, text: e.message }; }
+    } catch (e) { msg = { ok: false, text: 'Not saved: ' + humanError(e) }; }
     busy = false; draw();
   }
 
@@ -82,7 +82,7 @@ export function modelPanel(host, seatId) {
         h('section', { class: 'stack-8' }, h('h3', { class: 'h4' }, 'Primary model'),
           picker(e => save([e].concat(draft.filter(x => key(x) !== key(e))), 'Primary'), draft[0], 'Set primary')),
         h('section', { class: 'stack-8' }, h('h3', { class: 'h4' }, 'Fallback chain'),
-          h('p', { class: 'caption muted' }, 'Top to bottom: the seat runs on the first entry that can run (connected, subscription open, under the rail, no run of errors) and moves back up once the better one has held. StarNet\'s station-wide fallback chain stays the last backstop.'),
+          h('p', { class: 'caption muted' }, 'Top to bottom: the seat runs on the first entry that can run (connected, subscription open, under the spend cap, no run of errors) and moves back up once the better one has held. The station\'s own fallback stays the last resort.'),
           draft.length ? h('ol', { class: 'stack-8', style: 'list-style:none;padding:0;margin:0' }, rows) : empty('No models yet: pick a primary above.'),
           picker(e => save(draft.filter(x => key(x) !== key(e)).concat([e]), 'Fallback'), null, 'Add fallback')),
         msg ? h('p', { class: msg.ok ? 'caption' : 'err-line', role: 'status' }, msg.text) : null,
@@ -93,17 +93,18 @@ export function modelPanel(host, seatId) {
   load();
 }
 
-// Usage: every seat's chain in one table
+// Settings › Models and subscriptions: every seat's chain in one table
 export async function chainsTable(host) {
   let d; try { d = await api('/models'); } catch (e) { fill(host, errLine(e, 'Seat model chains')); return; }
   const seats = d.seats || [];
   if (!seats.length) { fill(host, empty('No seats.')); return; }
   fill(host, h('div', { class: 'stack-8' },
     table(['Seat', 'Running now', 'Primary', 'Fallbacks', 'Why'], seats.map(s => h('tr', null,
-      h('td', null, h('a', { href: '#/crew/' + encodeURIComponent(s.id) }, s.name)),
+      h('td', null, h('a', { href: '#/crew/' + encodeURIComponent(s.id) + '/model', 'aria-label': 'Change ' + s.name + '\'s model' }, s.name)),
       h('td', { class: 'mono' }, s.now && s.now.model ? key(s.now.model) : '—'),
       h('td', { class: 'mono' }, s.primary ? lab(s.primary) + (s.primary.ok ? '' : ' (cannot run)') : 'no chain'),
       h('td', { class: 'mono' }, s.chain.slice(1).map(e => lab(e) + (e.ok ? '' : ' ✕')).join(' > ') || '—'),
       h('td', { class: 'caption' }, s.now ? s.now.why : ''))), { minWidth: 820 }),
-    h('p', { class: 'caption muted' }, (d.failover && d.failover.mode === 'shadow' ? 'Failover is in shadow mode: moves are logged, not made. ' : '') + (d.backstop || ''))));
+    d.failover && d.failover.mode === 'shadow' ? h('p', { class: 'caption muted' }, 'Automatic moves are in trial mode: they are recorded, not made.') : null,
+    d.backstop ? Details('Details', h('p', { class: 'caption' }, d.backstop)) : null));
 }

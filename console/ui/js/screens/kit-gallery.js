@@ -1,4 +1,4 @@
-// Page kit gallery (#/kit, linked from System): every unit kind a company page can use, drawn with sample data and
+// Page kit gallery (#/kit, linked from Settings › Console pages): every unit kind a company page can use, drawn with sample data and
 // shown next to its declaration. Living documentation for docs/CONSOLE-DESIGN.md: if it looks right here, it looks
 // right on a company page. Also the owner's theme choice (light, dark, follow the device).
 import { h, fill, screenHead } from '../ui.js';
@@ -102,7 +102,7 @@ export async function render(root, ctx) {
     renderUnit({ id: 'error', title: 'Error', span: 4, view: { kind: 'chart', chart: 'line', source: 'x', x: { key: 'a' }, series: [{ key: 'b', label: 'B' }] } }, { id: 'g', data: { x: null }, sources: { x: { ok: false, error: 'no file matches company/work/desk/pnl.json' } } }, onAction),
   ];
   fill(root,
-    screenHead({ eyebrow: ['System', 'page kit'], title: 'Page kit.', lede: 'Every unit a company page can be built from, with sample data. Agents copy a scaffold (console-panel.js scaffold) and pick from these; docs/CONSOLE-DESIGN.md has the rules.', max: '760px', actions: [themePicker()] }),
+    screenHead({ eyebrow: ['Settings', 'Console pages', 'page kit'], title: 'Page kit.', lede: 'Every unit a company page can be built from, with sample data. Agents copy a scaffold (console-panel.js scaffold) and pick from these; docs/CONSOLE-DESIGN.md has the rules.', max: '760px', actions: [themePicker()] }),
     swatches(), note,
     h('section', { class: 'stack-14', 'aria-labelledby': 'kit-states' }, h('h2', { id: 'kit-states', class: 'h3' }, 'Every unit has a loading, empty and error state'),
       h('div', { class: 'page-wrap' }, h('div', { class: 'page-grid' }, states))),

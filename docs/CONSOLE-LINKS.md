@@ -4,7 +4,7 @@ Agents point the owner at places in the owner console with ordinary markdown lin
 
 ```
 [finish the charter in Setup](console:#/setup/charter)
-[the hiring round](console:#/hiring)
+[the hiring round](console:#/crew/hiring)
 ```
 
 The console renders every agent-written text (live chat, owner-channel replies, questions on Today, activity lines,
@@ -15,25 +15,43 @@ The skill `company/skills/console-links/SKILL.md` teaches every agent this map.
 
 ## Route map
 
-Stable: these paths keep working; a renamed tab keeps its old name as an alias (`console/ui/app.js` `ALIASES`).
+Stable: these paths keep working. A moved screen keeps its old address: `console/ui/js/routes.js` redirects every old
+route to its new home (table below), and the safe markdown rewrites an old `console:` link before the owner sees it.
 
 | Link | Place |
 |---|---|
 | `console:#/today` | Today: Now (who is running), Needs you (open questions), crew, usage, recent activity |
-| `console:#/setup` | Setup, the guided first run |
-| `console:#/setup/company` · `/provider` · `/budget` · `/governance` · `/charter` · `/guardrails` · `/certify` | one Setup step, opened and scrolled to (aliases: `ai`, `money`, `gov`, `guard`, `checks`) |
-| `console:#/comms/owner` | the owner channel (asynchronous messages, each with its state) |
-| `console:#/comms/<seat id>` (or `agent:<seat id>`) | a live chat with that crew member, e.g. `console:#/comms/agent` for the Founder |
-| `console:#/crew` · `console:#/crew/<seat id>` | the crew, one seat's dossier |
-| `console:#/work/quests` · `/handoffs` · `/tasks` · `/deliverables` · `/review` · `/decisions` · `/projects` | Work tabs (singular aliases work) |
-| `console:#/hiring` | hiring rounds |
-| `console:#/controls/gov` · `/guard` · `/ticks` · `/panels` | Controls tabs (aliases: `governance`, `guardrails`, `cadence`, `tempo`, `sprint`; `/ticks` is the Tempo tab with the Sprint switch) |
-| `console:#/automate` | routines and the dispatcher |
-| `console:#/governance` | what may leave the company, locked files, decision models |
-| `console:#/usage` | AI usage and models |
-| `console:#/floor` · `console:#/abilities/<tab>` · `console:#/system` · `console:#/map` | station places |
+| `console:#/setup` · `/setup/<step>` | the first-run Setup wizard, until the company is certified; afterwards each step's Settings place (below) |
+| `console:#/chat/owner` | the owner channel (asynchronous messages, each with its state) |
+| `console:#/chat/<seat id>` (or `agent:<seat id>`) | a live chat with that crew member, e.g. `console:#/chat/agent` for the Founder |
+| `console:#/crew` · `/crew/<seat id>` · `/crew/<seat id>/model` | the crew, one seat's dossier, its model chain |
+| `console:#/crew/hiring` | hiring rounds and seat templates |
+| `console:#/crew/floor` | the floor plan (only when the station has one) |
+| `console:#/work/quests` · `/handoffs` · `/decisions` · `/projects` | Work tabs (singular aliases work) |
+| `console:#/spend` | today's spend against the cap, by seat and provider, subscription use this week (read-only) |
+| `console:#/settings/company` · `/company/charter` · `/company/certify` | Settings › Company and charter |
+| `console:#/settings/autonomy` · `/presets` · `/guardrails` · `/gates` · `/gate` | Settings › Autonomy and guardrails |
+| `console:#/settings/tempo` · `/ticks` · `/seats` · `/routines` | Settings › Tempo and routines |
+| `console:#/settings/models` · `/chains` · `/cutoffs` · `/providers` · `/budget` | Settings › Models and subscriptions |
+| `console:#/settings/connections` · `/keys` · `/connected` · `/skills` · `/channels` | Settings › Connections and keys |
+| `console:#/settings/pages` | Settings › Console pages (company panels and pages) |
+| `console:#/settings/system` · `/health` · `/certification` · `/backups` · `/map` | Settings › System; `/map` is "Where did it go?" |
 | `console:#/halt` · `console:#/halt?mode=soft` | stop the company |
-| `console:#/p/<panel id>` | a company panel screen |
+| `console:#/p/<panel id>` | a company page |
+
+### Old routes
+
+| Old | Now |
+|---|---|
+| `#/comms/…` | `#/chat/…` |
+| `#/controls` · `/gov` · `/guard` · `/ticks` · `/panels` | `#/settings/autonomy` · `/autonomy/presets` · `/autonomy/guardrails` · `/tempo/ticks` · `/pages` |
+| `#/governance` | `#/settings/autonomy/gate` |
+| `#/automate` | `#/settings/tempo/routines` |
+| `#/usage` (`/usage/cutoffs`) | `#/spend` (`#/settings/models/cutoffs`) |
+| `#/abilities/<tab>` | `#/settings/connections/<tab>` |
+| `#/system` · `#/map` | `#/settings/system` · `#/settings/system/map` |
+| `#/hiring` · `#/floor` | `#/crew/hiring` · `#/crew/floor` |
+| `#/setup/<step>` once certified | company, charter, certify → `#/settings/company/<step>`; provider, budget → `#/settings/models/…`; governance, guardrails → `#/settings/autonomy/…` |
 
 ## Writing links well
 

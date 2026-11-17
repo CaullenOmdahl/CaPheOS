@@ -3,7 +3,7 @@
 // arrives token by token under a visible "thinking… / writing… / using a tool" state, tool steps are listed compactly,
 // Stop cancels the run, approvals the run asks for are answered inline, and every failure says what happened and how to
 // fix it. Never silence.
-import { h, fill, Button, errLine, empty, hhmm } from './ui.js';
+import { h, fill, Button, errLine, empty, hhmm, humanError } from './ui.js';
 import { api, post } from './api.js';
 import { md, mdBlock } from './md.js';
 
@@ -136,7 +136,7 @@ export function liveChat(host, opts) {
       else if (sawEnd && !text.trim() && !failed) fail({ message: name() + ' finished without writing a reply.', fix: 'Ask again, or look at the steps above.' });
     } catch (e) {
       if (e.name === 'AbortError') { render(); card.appendChild(h('p', { class: 'caption muted' }, 'Stopped.')); }
-      else fail({ message: /Failed to fetch|NetworkError/.test(e.message) ? 'The console server is not reachable.' : 'Not sent: ' + e.message, fix: e.status === 404 ? 'This crew member is not on the crew any more.' : null });
+      else fail({ message: /Failed to fetch|NetworkError/.test(e.message) ? 'The console server is not reachable.' : 'Not sent: ' + humanError(e), fix: e.status === 404 ? 'This crew member is not on the crew any more.' : null });
     } finally {
       who.remove(); card.classList.remove('live');
       busy = false; runId = null; ctrl = null; sendBtn.disabled = false; stopBtn.hidden = true;
@@ -148,7 +148,7 @@ export function liveChat(host, opts) {
   function consentCard(p, card) {
     const answer = async d => {
       try { await post('/station/consent', { runId: runId || p.runId, promptId: p.promptId, decision: d }); el.replaceWith(h('p', { class: 'caption muted' }, d === 'deny' ? 'You said no.' : 'You allowed it.')); }
-      catch (e) { app.toast('Not answered: ' + e.message, true); }
+      catch (e) { app.toast('Not answered: ' + humanError(e), true); }
     };
     const el = h('div', { class: 'alertbox', role: 'alertdialog', 'data-prompt': p.promptId || '' },
       h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, name() + ' asks to use ' + (p.tool || 'a tool')), h('span', { class: 'mono-s' }, String(p.argsSummary || '').slice(0, 400))),
@@ -159,7 +159,7 @@ export function liveChat(host, opts) {
   }
   async function stop() {
     stopBtn.disabled = true;
-    if (runId) { try { await post('/station/cancel', { runId }); } catch (e) { app.toast('Stop: ' + e.message, true); } }
+    if (runId) { try { await post('/station/cancel', { runId }); } catch (e) { app.toast('Stop: ' + humanError(e), true); } }
     if (ctrl) ctrl.abort();
   }
   function send(raw) {

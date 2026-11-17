@@ -255,7 +255,7 @@ function endMessage(v, c, st) {
     : 'Sprint (start-up) ended by itself at ' + hhmmOf(v.ended.at) + ', the time it was set to run until.';
   const ran = st && st.wakes ? ' While it ran: ' + st.itemsDone + ' item' + (st.itemsDone === 1 ? '' : 's') + ' done in ' + st.wakes + ' wake' + (st.wakes === 1 ? '' : 's') + (st.idleWakes ? ' (' + st.idleWakes + ' of them did nothing)' : '') + ', $' + (st.spentUsd || 0).toFixed(2) + ' metered.' : '';
   return head + ' The company is back on its normal tempo: the dispatcher checks every ' + c.dispatcherTickMin + ' min, a seat rests ' + c.defaultCooldownMin + ' min between wakes, and at most ' + b.maxWakesPerHour + ' wakes an hour.' + ran
-    + ' To turn it back on: Controls › Ticks and cadence, or node company/tools/cadence.js sprint on --by owner.';
+    + ' To turn it back on: Settings › Tempo and routines in the console, or node company/tools/cadence.js sprint on --by owner.';
 }
 /* sprintTick({log, notify}) — the dispatcher loop runs this before every tick: stamps the start of a Sprint switched on
  * without one (the founding default, a reviewed proposal), and ends a Sprint whose time or budget is up: written to

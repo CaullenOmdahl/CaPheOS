@@ -1,6 +1,6 @@
 // Today (Main.dc.html): Now (who is running, the current step, Watch, Stop; each seat's next wake), Needs you (live),
 // crew, AI usage, company panels, recent activity, and the box that opens a live chat with the Founder.
-import { h, fill, Button, Tag, Eyebrow, errLine, empty, initial, rel, hhmm, statusOf, isSetupQuestion } from '../ui.js';
+import { h, fill, Button, Tag, Eyebrow, errLine, empty, initial, rel, hhmm, statusOf, isSetupQuestion, humanError } from '../ui.js';
 import { api, post } from '../api.js';
 import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
@@ -44,7 +44,7 @@ export async function render(root, ctx) {
   const askForm = h('form', { class: 'ask-form', 'aria-label': 'Message ' + ceoName, onsubmit: e => {
     e.preventDefault(); const text = askInput.value.trim(); if (!text) return;
     ss.set('capheos.chatSend', JSON.stringify({ agentId: ceoId, text }));
-    location.hash = '#/comms/agent:' + encodeURIComponent(ceoId);
+    location.hash = '#/chat/agent:' + encodeURIComponent(ceoId);
   } }, h('label', { for: 'ask', class: 'sr-only' }, 'Message ' + ceoName), askInput, Button('Send', { variant: 'primary', type: 'submit' }), askErr);
   const nowEl = h('section', { class: 'stack-12', 'aria-labelledby': 'now-h', 'aria-live': 'polite' });
 
@@ -70,12 +70,12 @@ export async function render(root, ctx) {
       needsErr, allClear, gatesEl, snoozedEl, answeredEl),
     h('section', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:32px' },
       h('div', { class: 'stack-16' }, h('div', { class: 'between' }, h('h2', { class: 'h3' }, 'Crew right now'), h('a', { href: '#/crew', class: 'body-s' }, 'All crew →')), crewEl),
-      h('div', { class: 'stack-16' }, h('div', { class: 'between' }, h('h2', { class: 'h3' }, 'AI usage today'), h('a', { href: '#/usage', class: 'body-s' }, 'Usage →')), usageEl)),
+      h('div', { class: 'stack-16' }, h('div', { class: 'between' }, h('h2', { class: 'h3' }, 'AI usage today'), h('a', { href: '#/spend', class: 'body-s' }, 'Spend →')), usageEl)),
     panelsEl,
     h('section', { class: 'stack-16' }, h('div', { class: 'between' }, h('h2', { class: 'h3' }, 'Recent activity'), h('a', { href: '#/work', class: 'body-s' }, 'All work →')), overnightEl));
 
   // Setup banner: shown until onboard.js --certify is green, or while onboarding still asks something. Onboarding
-  // questions are answered in Setup (#/setup), never as an Approve/Decline card here.
+  // questions are answered in Setup (#/setup, Settings › Company once certified), never as an Approve/Decline card here.
   async function loadOnboarding() {
     let d; try { d = await api('/setup'); } catch (_) { fill(onboardEl); return; }
     const asks = (d.onboardingQuestions || []).length;
@@ -84,8 +84,8 @@ export async function render(root, ctx) {
     fill(onboardEl, h('section', { class: 'card p22', role: 'status', style: 'border-color:var(--status-warning);gap:10px' },
       h('div', { class: 'between-c', style: 'gap:12px;flex-wrap:wrap' },
         h('div', { class: 'stack-4' }, h('h2', { class: 'h4' }, d.certified ? 'Onboarding asked you something' : 'Finish setup — ' + d.done + ' of ' + d.total + ' done'),
-          h('p', { class: 'body-s' }, d.certified ? 'Answer it in Setup.' : next ? 'Next: ' + next.title + '. ' + next.why : 'Run the final check to finish.')),
-        Button(d.certified ? 'Open Setup' : 'Continue setup', { variant: 'primary', href: '#/setup' })),
+          h('p', { class: 'body-s' }, d.certified ? 'Answer it in Settings › Company and charter.' : next ? 'Next: ' + next.title + '. ' + next.why : 'Run the final check to finish.')),
+        Button(d.certified ? 'Answer it' : 'Continue setup', { variant: 'primary', href: d.certified ? '#/settings/company' : '#/setup' })),
       h('div', { class: 'meter', role: 'img', 'aria-label': d.done + ' of ' + d.total + ' setup steps done' }, h('div', { style: 'width:' + Math.round(d.done / d.total * 100) + '%' }))));
   }
   loadOnboarding();
@@ -137,7 +137,7 @@ export async function render(root, ctx) {
         replying.delete(q.id); delete drafts[q.id]; freshIds.delete(q.id); app.toast(okText || 'Answer recorded.'); loadNeeds(); return r;
       } catch (e) {
         controls.forEach(c => c.onError && c.onError(e));
-        errEl.textContent = 'Not recorded: ' + e.message; busy(false);
+        errEl.textContent = 'Not recorded: ' + humanError(e); busy(false);
       }
     };
     const act = a => {
@@ -161,7 +161,7 @@ export async function render(root, ctx) {
       [['In an hour', 'hour'], ['Tomorrow morning', 'tomorrow'], ['Next week', 'week']].map(([label, k]) => Button(label, { variant: 'ghost', size: 'sm', onClick: async () => {
         const until = snoozeUntil(k);
         try { await post('/questions/' + encodeURIComponent(q.id) + '/snooze', { until: until.toISOString() }); app.toast('Snoozed until ' + whenLabel(until.toISOString(), co.timezone) + '. ' + (q.from || 'The asker') + ' sees that.'); loadNeeds(); }
-        catch (e) { errEl.textContent = 'Not snoozed: ' + e.message; }
+        catch (e) { errEl.textContent = 'Not snoozed: ' + humanError(e); }
       } })));
     const seat = q.askerSeat || ceoId;
     const quote = qt.message.split('\n').map(l => '> ' + l).join('\n').slice(0, 600);
@@ -183,7 +183,7 @@ export async function render(root, ctx) {
           send({ verdict: 'reply', text });
         } }),
         Button('Snooze', { variant: 'ghost', size: 'sm', aria: 'Ask me later', onClick: () => { snoozeMenu.hidden = !snoozeMenu.hidden; } }),
-        Button('Discuss', { variant: 'ghost', size: 'sm', href: '#/comms/agent:' + encodeURIComponent(seat) + '?draft=' + encodeURIComponent(quote + '\n\nAbout ' + q.id + ': ') })),
+        Button('Discuss', { variant: 'ghost', size: 'sm', href: '#/chat/agent:' + encodeURIComponent(seat) + '?draft=' + encodeURIComponent(quote + '\n\nAbout ' + q.id + ': ') })),
       snoozeMenu, errEl);
     return card;
   }
@@ -204,7 +204,7 @@ export async function render(root, ctx) {
     try {
       const d = await api('/crew');
       const seats = d.seats || [];
-      if (!seats.length) return fill(crewEl, empty('No seats in loops.json yet.'));
+      if (!seats.length) return fill(crewEl, empty('No crew yet.'));
       fill(crewEl, d.station === 'down' ? h('p', { class: 'err-line' }, 'Station not running: live status unavailable.') : null,
         h('ul', { class: 'plain hair-top' }, seats.map(s => {
           const st = s.station || {};
@@ -270,8 +270,8 @@ export async function render(root, ctx) {
       h('span', { class: 'mono-s muted', style: 'flex:1;min-width:200px' }, [sp.itemsDone + ' done', sp.wakes + ' wakes' + (sp.idleWakeRatio != null ? ' (' + Math.round(sp.idleWakeRatio * 100) + '% did nothing)' : ''),
         '$' + Number(sp.spentUsd || 0).toFixed(2) + ' of $' + Number(sp.budgetUsd || 0).toFixed(2), sp.usdPerItem != null ? '$' + Number(sp.usdPerItem).toFixed(3) + '/item' : null,
         sp.proposalsPerHour != null ? sp.proposalsPerHour + ' proposals/h vs ' + sp.reviewsPerHour + ' reviews/h' : null].filter(Boolean).join(' · ')),
-      Button('Off', { variant: 'secondary', size: 'sm', onClick: async () => { if (!await app.confirmDialog({ title: 'Turn Sprint off?', body: 'The company goes back to your base tempo: seats rest their full cooldown again and the wake limits apply.', confirm: 'Turn it off' })) return; try { await post('/cadence/sprint', { on: false }); app.toast('Sprint off.'); loadNow(); } catch (e) { app.toast('Sprint: ' + e.message, true); } } }),
-      Button('Tempo', { variant: 'ghost', size: 'sm', href: '#/controls/ticks' })) : null;
+      Button('Off', { variant: 'secondary', size: 'sm', onClick: async () => { if (!await app.confirmDialog({ title: 'Turn Sprint off?', body: 'The company goes back to your base tempo: seats rest their full cooldown again and the wake limits apply.', confirm: 'Turn it off' })) return; try { await post('/cadence/sprint', { on: false }); app.toast('Sprint off.'); loadNow(); } catch (e) { app.toast('Sprint: ' + humanError(e), true); } } }),
+      Button('Settings', { variant: 'ghost', size: 'sm', href: '#/settings/tempo/sprint' })) : null;
     const idle = d.seats.filter(s => !s.running).map(s => sp && s.sprint ? h('li', { class: 'body-s muted now-idle' }, s.name + (s.sprint === 'working' ? ': working — ' + s.soonerBecause.join(', ') + '; starts as soon as the next tick sees it' : ': waiting for work') + '.') : h('li', { class: 'body-s muted now-idle' }, s.name + ' is idle' +
       (s.loop ? (s.enabled === false ? '; its loop "' + s.loop + '" is switched off' : s.schedulerOn === false ? '; the scheduler is off, so its loop does not run on schedule' : s.nextRunAt ? '; next run ' + hhmm(s.nextRunAt, co.timezone) + ' (' + rel(s.nextRunAt) + ')' : '') : '; it has no loop routine') +
       (s.soonerBecause.length ? ', or sooner: ' + s.soonerBecause.join(', ') : s.wakesOnMessage ? ', or sooner if you message it' : '') + '.'));
@@ -288,7 +288,7 @@ export async function render(root, ctx) {
     const poll = async () => {
       try {
         const d = await api('/now/run/' + encodeURIComponent(r.runId) + '?after=' + st.after);
-        if (!d.known) status.textContent = 'This run started before the console was watching; new steps appear as they happen. The full transcript is in Comms once it ends.';
+        if (!d.known) status.textContent = 'This run started before the console was watching; new steps appear as they happen. The full transcript is in Chat once it ends.';
         for (const e of d.events || []) {
           st.after = Math.max(st.after, e.seq);
           if (e.name === 'tool') steps.appendChild(h('li', { class: 'chat-step', 'data-call': e.callId || '' }, h('span', { class: 'step-dot', 'aria-hidden': 'true' }), h('span', { class: 'mono-s' }, e.text)));
@@ -299,7 +299,7 @@ export async function render(root, ctx) {
         fill(text, mdBlock(st.raw.slice(-4000)));
         if (d.done) { status.textContent = 'Finished: ' + (d.outcome || 'done') + (d.usd ? ' · $' + Number(d.usd).toFixed(4) : '') + '.'; return; }
         if (d.known) status.textContent = 'Live.';
-      } catch (e) { status.textContent = 'Watch: ' + e.message; }
+      } catch (e) { status.textContent = 'Watch: ' + humanError(e); }
       if (watching.get(r.runId) === st) st.timer = setTimeout(poll, 1500);
     };
     poll(); drawNow();

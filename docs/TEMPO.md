@@ -33,7 +33,7 @@ changes last 30 min and come at least 15 min apart.
 | A loop clock inside a provider's peak-price block | yes (`cadence.js set <seat> --peak-ok on --by owner`) | no |
 
 "The owner" is `--by owner` or the owner's name, from outside an agent's run (an agent's run that claims to be the owner
-is treated as an agent). The console's Controls › Tempo screen acts as the owner.
+is treated as an agent). The console's Settings › Tempo and routines section acts as the owner.
 
 A reviewed proposal (`--target cadence.json`) is reviewed by the finance holder (spend rate), the risk holder (liveness
 and response times) and the people holder (workload) — never by the proposer; the CEO stands in for whichever of them
@@ -69,7 +69,7 @@ A new company has many small, connected tasks and a crew that waits on each othe
 costs a cooldown (40 min) plus a tick (10 min), and the wake caps stop the day early. The owner pays per token, so
 spacing the work out saves nothing; it only delays it. **Sprint** is the owner's switch that makes the company work
 as fast as its open work allows, without spending tokens on wakes that find nothing to do. The console shows it as
-**Sprint (start-up)** on Controls › Tempo, and as a chip on Today ("Sprint on — until …", the key numbers, Off).
+**Sprint (start-up)** in Settings › Tempo and routines, and as a chip on Today ("Sprint on — until …", the key numbers, Off).
 
 ```
 node company/tools/cadence.js sprint on [--hours N] [--budget-usd X] --by owner     # until turned off, or N hours
@@ -164,7 +164,7 @@ lane launcher in dispatch.js; lane runs count in the daily cap and the Sprint bu
 ### Adopting it in an existing company
 
 The code reads `tempo.sprint` when it is there and treats a missing one as off, so an existing company is unchanged
-until the owner runs `node company/tools/cadence.js sprint on --by owner` (or flips it in Controls › Tempo). Restart the
+until the owner runs `node company/tools/cadence.js sprint on --by owner` (or flips it in Settings › Tempo and routines). Restart the
 dispatcher loop unit once after the framework update so it runs the new `dispatcher-loop.js` (watching needs it).
 
 ## Migrating an existing instance

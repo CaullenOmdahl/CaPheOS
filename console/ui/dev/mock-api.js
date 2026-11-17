@@ -6,6 +6,7 @@
  *   MOCK_CERTIFIED=1 node console/ui/dev/mock-api.js      # a company that finished Setup (Today is the landing page)
  *   MOCK_NO_PUSH=1 node console/ui/dev/mock-api.js        # no new question pushed 8 s after the first SSE client (scripted walks)
  *   MOCK_PLAIN=1 node console/ui/dev/mock-api.js          # without the typed-question fixtures (one card per question kind)
+ *   MOCK_HEADLESS=1 node console/ui/dev/mock-api.js       # a station with no floor plan (Crew hides its Floor tab)
  *
  * Never contacts a real station. State lives in memory: answering a question removes it, halts change mode, and so on.
  * 8 s after the first SSE client connects a new owner question arrives (event: change {topic:'questions'}) to exercise
@@ -67,7 +68,7 @@ const S = {
     { id: 'q-000102', from: 'Founder', about: 'budget', blocking: false, askedAt: ago(130), batch: null,
       q: 'A research tool trial costs nothing for 14 days, then a monthly fee. Should we try it?\nRecommendation from Founder: approve the trial, decide on the paid plan after.\nIf you do not answer: no trial.' },
   ].concat(CERTIFIED ? [] : [{ id: 'q-000050', from: 'onboard.js', about: 'onboarding', blocking: false, askedAt: ago(600), batch: null,
-      q: 'Onboarding: what the enabled packs and modules need from you (one batch, asked once):\n- Hiring candidates default to the metered model deepseek/deepseek-flash, but the metered daily cap is $0 and the station has no subscription provider (claude-cli) ready. Either connect a subscription provider on the station, or set a metered cap in company/work/finance/dispatch-budget.json (dailyUsd).\n- provide secrets/example-key (0600) for example-module\nRecommendation: answer each line; secrets go in secrets/<name> with mode 0600, never in a message.\nIf you do not answer: those packs and modules stay uncertified.' }])
+      q: 'Onboarding: what the enabled packs and modules need from you (one batch, asked once):\n- Hiring candidates default to the metered model deepseek/deepseek-flash, but the metered daily cap is $0 and the station has no subscription provider (claude-cli) ready. Either connect a subscription provider on the station, or set a daily cap for pay-per-token AI (console Setup, step Budget).\n- provide secrets/example-key (0600) for example-module\nRecommendation: answer each line; secrets go in secrets/<name> with mode 0600, never in a message.\nIf you do not answer: those packs and modules stay uncertified.' }])
     // typed questions (company/tools/inbox.js forms): one of each kind, plus an asker-composed form; MOCK_PLAIN=1 leaves them out
     .concat(process.env.MOCK_PLAIN ? [] : typedFixtures()),
   answered: [{ id: 'q-000090', from: 'Founder', about: 'access', q: 'Approval needed (access): read access to the shared drive.', answer: 'yes', answeredAt: ago(200) }],
@@ -108,7 +109,7 @@ S.company.onboarding = { certified: CERTIFIED, kickoff: CERTIFIED ? { status: 'o
 S.company.ceo = { id: 'agent', name: 'Founder' };
 // live chat transcripts (console-<id>) and the runs in flight (Now strip); one fake in-flight routine run
 S.chats = { agent: [{ role: 'user', content: 'What is on today?', at: ago(30) }, { role: 'assistant', content: 'Two quests and **one handoff** due at 17:00. See [the handoffs](console:#/work/handoffs).', at: ago(29) }] };
-S.live = STATION_DOWN ? [] : [{ runId: 'run-live-1', agentId: 'agent', name: 'Founder', startedAt: Date.now() - 4 * 60000, kind: 'routine', label: 'routine "Founder loop"', href: '#/automate', step: 'running hire.js open…', steps: 7, usd: 0.0123, stoppable: true, watched: true }];
+S.live = STATION_DOWN ? [] : [{ runId: 'run-live-1', agentId: 'agent', name: 'Founder', startedAt: Date.now() - 4 * 60000, kind: 'routine', label: 'routine "Founder loop"', href: '#/settings/tempo/routines', step: 'hiring…', steps: 7, usd: 0.0123, stoppable: true, watched: true }];
 S.charterText = CERTIFIED ? '# Example Co — Company Charter\n\n## Mandate\n\nWe run an example business.\n\n**For whom:** Example customers\n\n## What is out of scope\n\nNothing regulated.\n\n## First goal\n\nFirst sale.\n' : '# Example Co — Company Charter\n\n## Mandate\n\n<What the company exists to do, for whom, and how it makes money.>\n\n## What is out of scope\n\n<Work the company will not take on.>\n';
 const PRESETS = { 'approve-everything': 'Approve everything', 'gate-money-people': 'Gate money and people', 'gate-money': 'Gate money', autonomous: 'Autonomous' };
 const CATS = { hiring: 'opening a role and picking the hire', release: 'releasing or replacing a crew member', budget: 'setting or changing the metered cap', spend: 'new spend inside the approved cap',
@@ -214,15 +215,19 @@ async function apiRoute(req, res, p, q) {
         S.cadence.sprint.active ? { sprint: S.live.some(r => r.agentId === x.id) || x.id === 'agent' ? 'working' : 'waiting for work', lanes: { running: S.live.filter(r => r.agentId === x.id).length, max: 1, possible: x.id === 'tools1' ? 2 : 0, why: x.id === 'agent' ? 'the CEO works one run at a time' : 'StarNet lets only one run of an agent write files or use the shell at a time (patch 0012 not applied)' } } : {})),
       sprint: S.cadence.sprint.active ? { on: true, since: S.cadence.sprint.since, until: S.cadence.sprint.until, untilWhy: S.cadence.sprint.untilWhy, by: S.cadence.sprint.by, floorMin: 2, wakes: 14, idleWakes: 2, idleWakeRatio: 0.15, itemsDone: 9, spentUsd: 0.42, budgetUsd: 4, usdPerItem: 0.047, proposalsPerHour: 1, reviewsPerHour: 0.7 } : null });
     case 'GET /api/activity': return ok({ items: [
-      { at: ago(12), kind: 'run', who: 'Founder', title: 'Founder ran "Founder loop"', outcome: 'succeeded', usd: 0.0047, text: 'Wrote the first plan to company/work/plan.md and opened a People Manager round.', links: [{ label: 'Quests', href: '#/work/quests' }, { label: 'Hiring', href: '#/hiring' }] },
-      { at: ago(40), kind: 'hiring', who: 'Hiring', title: 'Hired: Mira (people1) as People Manager by Founder', text: 'Crew decides: done without asking you (hiring is set to "auto"; change it in Controls)', links: [{ label: 'Crew', href: '#/crew/people1' }, { label: 'Hiring level', href: '#/controls/gov' }] },
-      { at: ago(300), kind: 'message', who: 'Founder', title: 'Founder wrote to you', text: 'Morning report: two quests moved.', links: [{ label: 'Open', href: '#/comms/owner' }] }] });
+      { at: ago(12), kind: 'run', who: 'Founder', title: 'Founder ran "Founder loop"', outcome: 'succeeded', usd: 0.0047, text: 'Wrote the first plan to company/work/plan.md and opened a People Manager round.', links: [{ label: 'Quests', href: '#/work/quests' }, { label: 'Hiring', href: '#/crew/hiring' }] },
+      { at: ago(40), kind: 'hiring', who: 'Hiring', title: 'Hired: Mira (people1) as People Manager by Founder', text: 'Crew decides: done without asking you (hiring is set to "auto"; change it in Settings › Autonomy and guardrails)', links: [{ label: 'Crew', href: '#/crew/people1' }, { label: 'Hiring level', href: '#/settings/autonomy/presets' }] },
+      { at: ago(300), kind: 'message', who: 'Founder', title: 'Founder wrote to you', text: 'Morning report: two quests moved.', links: [{ label: 'Open', href: '#/chat/owner' }] }] });
     case 'GET /api/setup/charter': { const ph = (S.charterText.match(/<[A-Za-z][^<>\n]{0,200}>/g) || []); return ok({ text: S.charterText, at: ago(60), placeholders: ph, fields: {} }); }
     case 'GET /api/crew': return ok({ seats: S.seats, station: STATION_DOWN ? 'down' : 'up' });
     case 'GET /api/handoffs': return ok({ items: S.handoffs });
     case 'GET /api/decisions': return ok({ entries: ['## 2026-11-14 Founder', '- Adopted conflicts-before-engagement.', '## 2026-11-15 People', '- Opened the analyst round.'].map(text => ({ text })) });
     case 'GET /api/dispatch': return ok({ state: { lastTick: ago(4) }, log: ['- 06:40 Dispatcher closed quest q:31 on checked evidence.', '- 04:12 woke Mira (handoff to-people.md)', '- 02:05 held 0, woke Teo (quest q:35)', '- 00:15 Pacer moved two routines off the large model'] });
     case 'GET /api/hiring': return ok({ rounds: [{ id: 'analyst-2026-11', title: 'Analyst', openedBy: 'Founder', template: 'specialist', at: ago(2000), candidates: [{ agentId: 'c1', name: 'Candidate A', provider: 'claude', model: 'example-medium', status: 'candidate', interviewedAt: ago(100) }, { agentId: 'c2', name: 'Candidate B', provider: 'minimax', model: 'example-m', status: 'candidate' }] }], templates: ['people-manager', 'tool-builder', 'risk-manager', 'finance-manager', 'floor-manager', 'specialist'] });
+    case 'GET /api/spend': return ok({ windowHours: 24, known: true, today: { usd: 1.37, ownerPaidUsd: 0, capUsd: 5, perSeatCapUsd: 2, inFlightRuns: 1 },
+      bySeat: [{ id: 'agent', name: 'Founder', usd: 0.92 }, { id: 'tools1', name: 'Teo', usd: 0.45 }], byProvider: [{ id: 'deepseek', usd: 1.37, capped: true }, { id: 'claude-cli', usd: 0, capped: false }],
+      subscriptions: Object.keys(S.limits).filter(k => S.limits[k] && S.limits[k].name).map(k => ({ id: k, name: S.limits[k].name, usedPct: S.limits[k].usedPct, weekStop: S.limits[k].weekStop, line: S.limits[k].line, resetsAt: S.limits[k].resetsAt, open: S.limits[k].open, paceBy: S.limits[k].paceBy, why: S.limits[k].why })),
+      pacer: { mode: 'shadow', live: false, emergency: null, boost: null, rail: null, problems: [] } });
     case 'GET /api/usage': return ok({ mode: 'shadow', live: false, claude: { key: 'claude', label: 'Claude Max', known: true, open: true, usedPct: 31, usedToday: 9, line: 14, share: 50, why: 'under today\'s line' },
       minimax: { key: 'minimax', label: 'MiniMax', known: true, open: true, usedPct: 24, usedToday: 22, line: 28, share: 50, why: 'near the line' }, deepseek: { label: 'DeepSeek', open: true, why: 'no credit failure seen', reading: null },
       rail: { known: true, pct: 12, perDay: 25, source: 'runs.jsonl' }, emergency: { active: false }, boost: { on: false, why: 'off' }, problems: [] });
@@ -256,6 +261,7 @@ async function apiRoute(req, res, p, q) {
       if (B.provider === 'claude-cli') { if (!U.claude.loggedIn) return J(res, 400, { ok: false, error: 'Claude is not signed in on the station yet: finish the sign-in first' }); }
       else if (!U.ready.includes(B.provider) && !/^sk-good/.test(B.key || '')) return J(res, 400, { ok: false, error: 'the provider did not accept that key: HTTP 401 (mock: keys starting sk-good pass)' });
       if (!U.ready.includes(B.provider)) U.ready.push(B.provider);
+      if (B.keepDefault === true) return ok({ connected: true, provider: B.provider, keyOnly: true });
       if (B.provider === 'custom' && B.subscription !== false && !U.budget.unmeteredProviders.includes('custom')) U.budget.unmeteredProviders.push('custom');
       const model = { 'claude-cli': 'claude-haiku-4-5-20251001', custom: 'MiniMax-M3.1-Pro', deepseek: 'deepseek-flash', openrouter: 'deepseek/deepseek-chat', anthropic: 'claude-haiku-4-5' }[B.provider];
       U.candidateDefault = { provider: B.provider, model };
@@ -290,12 +296,12 @@ async function apiRoute(req, res, p, q) {
   if (M === 'GET' && (m = /^\/api\/chat\/([A-Za-z0-9_-]+)$/.exec(p))) {
     const seat = S.seats.find(x => x.id === m[1]); if (!seat) return J(res, 404, { ok: false, error: 'no crew member ' + m[1] });
     return ok({ agent: { id: seat.id, name: seat.name, title: seat.title }, model: 'example-model-large', provider: 'claude-cli', modelFrom: 'its loop routine "Founder loop"', streamId: 'console-' + seat.id, turns: S.chats[seat.id] || [],
-      problems: STATION_DOWN ? [{ code: 'station-down', message: 'The station is not answering, so ' + seat.name + ' cannot answer.', fix: 'Start it on the station machine.', link: '#/system' }] : [] });
+      problems: STATION_DOWN ? [{ code: 'station-down', message: 'The station is not answering, so ' + seat.name + ' cannot answer.', fix: 'Start it on the station machine.', link: '#/settings/system' }] : [] });
   }
   if (M === 'POST' && (m = /^\/api\/chat\/([A-Za-z0-9_-]+)\/send$/.exec(p))) return chatSend(req, res, m[1], B);
   if (M === 'GET' && (m = /^\/api\/now\/run\/([A-Za-z0-9_-]+)$/.exec(p))) {
     const after = Number(q.get('after')) || 0;
-    const evs = [{ seq: 1, name: 'tool', tool: 'fs_read', text: 'reading company/CHARTER.md', callId: 'c1' }, { seq: 2, name: 'result', callId: 'c1', ok: true }, { seq: 3, name: 'tool', tool: 'code.run', text: 'running hire.js open…', callId: 'c2' }, { seq: 4, name: 'token', delta: 'Opening a **People Manager** round now.' }];
+    const evs = [{ seq: 1, name: 'tool', tool: 'fs_read', text: 'reading the charter', callId: 'c1' }, { seq: 2, name: 'result', callId: 'c1', ok: true }, { seq: 3, name: 'tool', tool: 'code.run', text: 'running hire.js open…', callId: 'c2' }, { seq: 4, name: 'token', delta: 'Opening a **People Manager** round now.' }];
     return ok({ known: true, runId: m[1], agentId: 'agent', name: 'Founder', events: evs.filter(e => e.seq > after), seq: 4, done: false });
   }
   if (M === 'POST' && (m = /^\/api\/questions\/(q-\d+)\/answer$/.exec(p))) {
@@ -340,9 +346,9 @@ async function apiRoute(req, res, p, q) {
 
 function ownerView() {
   const stuck = STATION_DOWN;
-  const ch = { ok: !stuck, problems: stuck ? [{ code: 'station-down', msg: 'the station does not answer', fix: 'Start it on the station machine.', link: '#/system' }] : [], ceo: { id: 'agent', name: 'Founder' }, nextCheckMin: 7, working: false };
+  const ch = { ok: !stuck, problems: stuck ? [{ code: 'station-down', msg: 'the station does not answer', fix: 'Start it on the station machine.', link: '#/settings/system' }] : [], ceo: { id: 'agent', name: 'Founder' }, nextCheckMin: 7, working: false };
   const msgs = S.messages.map(m => m.dir !== 'in' ? m : Object.assign({}, m, { state: m.acked ? { status: 'read', text: 'read by Founder: approved the trial' }
-    : stuck ? { status: 'stuck', text: 'nobody will pick this up: the station does not answer', fix: 'Start it on the station machine.', link: '#/system' } : { status: 'waiting', text: 'waiting for the Founder — next check within 7 min', nextCheckMin: 7 } }));
+    : stuck ? { status: 'stuck', text: 'nobody will pick this up: the station does not answer', fix: 'Start it on the station machine.', link: '#/settings/system' } : { status: 'waiting', text: 'waiting for the Founder — next check within 7 min', nextCheckMin: 7 } }));
   return { messages: msgs, channel: ch };
 }
 // the live chat, streamed like console/chat.js: console.user, console.run, the run events, a tool step, then the end
@@ -352,7 +358,7 @@ function chatSend(req, res, id, B) {
   if (!text) return J(res, 400, { ok: false, error: 'text is required' });
   res.writeHead(200, { 'content-type': 'application/x-ndjson' });
   const out = [{ name: 'console.user', payload: { text, brief: B.brief || null } }];
-  if (STATION_DOWN) { out.push({ name: 'console.error', payload: { code: 'station-down', message: 'The station is not answering, so ' + seat.name + ' cannot answer.', fix: 'Start it on the station machine.', link: '#/system' } }); for (const e of out) res.write(JSON.stringify(e) + '\n'); return res.end(); }
+  if (STATION_DOWN) { out.push({ name: 'console.error', payload: { code: 'station-down', message: 'The station is not answering, so ' + seat.name + ' cannot answer.', fix: 'Start it on the station machine.', link: '#/settings/system' } }); for (const e of out) res.write(JSON.stringify(e) + '\n'); return res.end(); }
   const reply = B.brief === 'charter' ? 'Happy to. Three quick questions:\n\n1. What does the company do?\n2. For whom?\n3. What will it never do?\n\nWhen I have your answers I will write `company/CHARTER.md`. [Review it in Setup](console:#/setup/charter)'
     : /fail/i.test(text) ? null : 'Mock reply from ' + seat.name + ': I read your message and would start with **the overdue handoff**. See [Work](console:#/work/handoffs) and [the docs](https://example.org/docs). [bad](javascript:alert(1))';
   out.push({ name: 'console.run', payload: { agentId: id, name: seat.name, model: 'example-model-large', provider: 'claude-cli' } }, { name: 'agent.run.start', payload: { runId: 'chat-' + Date.now(), agentId: id } });
@@ -409,7 +415,12 @@ function station(req, res, p, q, B) {
   if (route === 'GET channels/status') return J(res, 200, { telegram: { paired: false, state: 'Not paired' }, slack: { state: 'Not connected' } });
   if (route === 'GET state/snapshot') return J(res, 200, { ts: Date.now(), runs: S.live.map(r => ({ runId: r.runId, agentId: r.agentId, startedAt: r.startedAt, source: 'cron' })), prompts: [], summons: [], queues: {} });
   if (route === 'POST consent') return J(res, 200, { ok: true, decision: B.decision });
-  if (route === 'GET autonomy') return J(res, 200, { posture: 'small' });
+  if (route === 'GET autonomy') return J(res, 404, { error: 'no such API route for GET /api/autonomy' });
+  if (route === 'GET save') return process.env.MOCK_HEADLESS ? J(res, 200, { save: { agents: {} } }) : J(res, 200, { save: { station: {
+    rooms: { r1: { id: 'r1', kind: 'hab', name: 'HOME', rects: [{ x1: 0, y1: 0, x2: 9, y2: 6 }] }, r2: { id: 'r2', kind: 'lab', name: 'WORKSHOP', rects: [{ x1: 10, y1: 0, x2: 19, y2: 6 }] } },
+    props: [{ id: 'p1', t: 'desk', x: 2, y: 1, agentId: 'agent' }, { id: 'p2', t: 'desk', x: 4, y: 1, agentId: 'people1' }, { id: 'p3', t: 'desk', x: 12, y: 2, agentId: 'tools1' }, { id: 'p4', t: 'desk', x: 14, y: 2 }] } } });
+  if (route === 'GET projects') return J(res, 200, { projects: [{ root: '/srv/companies/example', displayPath: '/srv/companies/example', grantedAt: Date.now() - 864e5, lastTouchedAt: Date.now() - 3600e3, isGitRepo: true, blessed: true }] });
+  if (route === 'GET servicekeys') return J(res, 200, { keys: [{ name: 'Example exchange' }] });
   if (route === 'GET providers') return J(res, 200, { providers: OFFER.map(o => ({ id: o.id, label: o.name.toUpperCase(), configured: S.setup.ready.includes(o.id), unattendedReady: S.setup.ready.includes(o.id), reason: S.setup.ready.includes(o.id) ? 'unverified' : 'credential missing' })) });
   if (route === 'GET auth/claude-cli/status') return J(res, 200, Object.assign({ signingIn: !!S.setup.login }, S.setup.claude));
   if (route === 'POST auth/claude-cli/start') { S.setup.login = { id: 'login-' + Date.now(), at: Date.now() }; return J(res, 200, { status: 'pending', login_id: S.setup.login.id, url: 'https://claude.ai/oauth/authorize?mock=1' }); }

@@ -3,7 +3,7 @@
 Company pages (`docs/CONSOLE-PANELS.md` §12) are drawn by the console with its own design system, the Ca Phe tokens in
 `console/ui/ds/tokens/`. An agent never writes CSS for a built-in unit: it picks units, spans, formats and tones, and
 the console does the rest. This guide is how to pick well. The living version is the console's **Page kit** gallery
-(System › Page kit gallery, `#/kit`): every unit with sample data and its declaration, in light and dark.
+(Settings › Console pages › page kit gallery, `#/kit`): every unit with sample data and its declaration, in light and dark.
 
 ## 1. Start from a scaffold
 

@@ -129,6 +129,9 @@ function load(opts) {
 function compute(opts) {
   const st = load(opts);
   const perAgent = {};
+  const perProvider = {};        // every billed row by provider, capped or not (the owner's Spend screen)
+  const provOf = row => String((row && row.provider) || providerOfModel(row && row.model) || 'unknown');
+  const addProv = (row, usd, capped) => { const k = provOf(row); const x = perProvider[k] || (perProvider[k] = { usd: 0, capped }); x.usd += usd; };
   const settled = new Set();
   let cappedBilled = 0;
   let ownerBilled = 0;
@@ -154,6 +157,7 @@ function compute(opts) {
     if (base !== id || /^skill-eval/.test(id)) { auxRows++; auxUsd += usd; }
     const noRunRow = !st.inWindow.has(base) && !st.inWindow.has(id);
     if (noRunRow) { forBillingNoRunRows++; forBillingNoRunUsd += usd; }
+    addProv(row, usd, isCapped(row, st.providers));
     if (isCapped(row, st.providers)) {
       cappedBilled += usd;
       const agent = row.agentId || (st.inWindow.get(base) || {}).agentId || '(no agent)';
@@ -174,6 +178,7 @@ function compute(opts) {
     if (settled.has(id) || !isCapped(r, st.providers)) continue;
     inFlightMetered += usd;
     inFlightRuns++;
+    addProv(r, usd, true);
     const a = r.agentId || '(no agent)';
     perAgent[a] = (perAgent[a] || 0) + usd;
   }
@@ -195,6 +200,7 @@ function compute(opts) {
     runsPath: st.runsPath,
     ledgerPath: st.ledgerPath,
     byAgent: perAgent,
+    byProvider: perProvider,
   };
 }
 

@@ -25,6 +25,20 @@ module.exports = function activity(deps) {
 
   /* ---------- the current step, in words ---------- */
   const rel = p => String(p || '').replace(co.ROOT + path.sep, '').replace(/^\.\//, '');
+  // The owner reads these on Today and Crew: a company tool or file in plain words, never its path
+  const TOOL_WORDS = { 'hire.js': 'hiring', 'inbox.js': 'asking you a question', 'ask.js': 'asking you a question', 'owner-inbox.js': 'writing to you', 'handoff-status.js': 'checking handoffs',
+    'handoff-archive.js': 'tidying handoffs', 'dispatch.js': 'checking the queue', 'pacer.js': 'checking AI usage', 'governance.js': 'checking the rules', 'guardrails.js': 'checking the guardrails',
+    'models.js': 'checking models', 'cadence.js': 'adjusting the tempo', 'project.js': 'updating a project', 'competence.js': 'reviewing skills', 'performance.js': 'reviewing performance',
+    'external-gate.js': 'checking the external gate', 'console-panel.js': 'working on a console panel', 'station-floor.js': 'working on the floor plan', 'onboard.js': 'checking setup', 'halt.js': 'checking the halt' };
+  const toolWords = file => { const b = String(file).split('/').pop(); return (TOOL_WORDS[b] || 'using the ' + b.replace(/\.js$/, '').replace(/[-_]/g, ' ') + ' tool') + '…'; };
+  const place = p => {
+    const s = String(p || '');
+    if (/(^|\/)CHARTER\.md$/.test(s)) return 'the charter';
+    if (/work\/decisions\.md$/.test(s)) return 'the decision log';
+    const ho = /work\/handoffs\/to-([\w-]+)\.md$/.exec(s); if (ho) return ho[1].replace(/-/g, ' ').replace(/^./, c => c.toUpperCase()) + '\'s handoffs';
+    if (/(^|\/)company\/tools\//.test(s)) return 'a company tool';
+    return s.split('/').filter(Boolean).pop() || s;
+  };
   function stepText(name, args) {
     let raw = String(args || '').trim(), obj = null;
     if (/^\{/.test(raw)) { try { obj = JSON.parse(raw); } catch (_) { const m = /"(cmd|command|path|file|query|url|q)"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(raw); if (m) obj = { [m[1]]: m[2].replace(/\\"/g, '"') }; } }
@@ -34,7 +48,7 @@ module.exports = function activity(deps) {
       if (cmd) {
         const c = rel(String(cmd)).replace(/\s+/g, ' ');
         const tool = /node\s+(?:\S*\/)?(company\/tools\/[\w.-]+\.js)(\s+[\w-]+)?/.exec(c);
-        if (tool) return 'running ' + tool[1].replace('company/tools/', '') + (tool[2] || '') + '…';
+        if (tool) return toolWords(tool[1]);
         const url = /https?:\/\/[^\s"']+/.exec(c);
         if (/^\s*(curl|wget)\b/.test(c) && url) return 'fetching ' + host(url[0]);
         return 'running `' + c.slice(0, 70) + (c.length > 70 ? '…' : '') + '`';
@@ -46,10 +60,10 @@ module.exports = function activity(deps) {
     const a = rel(String(raw).replace(/\s+/g, ' ').trim()).slice(0, 120);
     const n = String(name || '');
     const m = /node\s+(company\/tools\/[\w.-]+\.js)(\s+[\w-]+)?/.exec(a);
-    if (/^(code\.run|shell|shell_bg|terminal)/i.test(n) && m) return 'running ' + m[1].replace('company/tools/', '') + (m[2] || '') + '…';
-    if (/fs_read|read_file|fs\.read/i.test(n)) return 'reading ' + a;
-    if (/fs_list|list_dir|fs\.list/i.test(n)) return 'looking through ' + (a || 'a folder');
-    if (/fs_write|fs_append|fs_edit|fs_patch|write_file/i.test(n)) return 'writing ' + a;
+    if (/^(code\.run|shell|shell_bg|terminal)/i.test(n) && m) return toolWords(m[1]);
+    if (/fs_read|read_file|fs\.read/i.test(n)) return 'reading ' + place(a);
+    if (/fs_list|list_dir|fs\.list/i.test(n)) return 'looking through ' + (a ? place(a) : 'a folder');
+    if (/fs_write|fs_append|fs_edit|fs_patch|write_file/i.test(n)) return 'writing ' + place(a);
     if (/web|search|fetch/i.test(n)) return 'searching the web' + (a ? ': ' + a : '');
     if (/^(code\.run|shell|shell_bg|terminal)/i.test(n)) return 'running ' + (a || 'a command');
     if (/memory/i.test(n)) return 'checking its notes';
@@ -114,10 +128,10 @@ module.exports = function activity(deps) {
   }
   function kindOf(r, jobs) {
     const sid = String(r.streamId || '');
-    if (/^console-/.test(sid)) return { kind: 'chat', label: 'live chat with you', href: '#/comms/agent:' + sid.slice(8) };
+    if (/^console-/.test(sid)) return { kind: 'chat', label: 'live chat with you', href: '#/chat/agent:' + sid.slice(8) };
     const job = (jobs || []).find(j => j.lastRunId === r.runId || (sid && sid === 'cron-' + r.runId && j.agentId === r.agentId && j.inFlight)) ||
       (r.source === 'cron' || /^cron-/.test(sid) ? (jobs || []).find(j => j.agentId === r.agentId && (j.inFlight || j.state === 'running')) : null);
-    if (job) return { kind: 'routine', label: 'routine "' + job.name + '"', href: '#/automate' };
+    if (job) return { kind: 'routine', label: 'routine "' + job.name + '"', href: '#/settings/tempo/routines' };
     return { kind: r.source || r.surface || 'run', label: r.source === 'cron' ? 'a routine' : 'a run', href: '#/crew/' + r.agentId };
   }
   async function now() {
@@ -185,7 +199,7 @@ module.exports = function activity(deps) {
     if (/CHARTER\.md/.test(t)) add('Charter', '#/setup/charter');
     if (/handoffs\//.test(t)) add('Handoffs', '#/work/handoffs');
     if (/decisions\.md/.test(t)) add('Decisions', '#/work/decisions');
-    if (/company\/hiring\/|hire\.js/.test(t)) add('Hiring', '#/hiring');
+    if (/company\/hiring\/|hire\.js/.test(t)) add('Hiring', '#/crew/hiring');
     if (/inbox\.js ask|question/.test(t)) add('Needs you', '#/today');
     if (/quests?\b/.test(t)) add('Quests', '#/work/quests');
     return out;
@@ -229,8 +243,8 @@ module.exports = function activity(deps) {
         if (Date.parse(at) < since) continue;
         const hired = /^HIRED /.test(m[3]);
         items.push({ at, kind: 'hiring', who: 'Hiring', title: hired ? 'Hired: ' + m[3].replace(/^HIRED /, '').split(';')[0] : 'Hiring round ' + d + ': ' + m[3].slice(0, 120),
-          text: hired ? (LEVEL_WORDS[lvl] || '') + (lvl === 'auto' || lvl === 'notify' ? ' (hiring is set to "' + lvl + '"; change it in Controls)' : '') : '', level: lvl,
-          links: [{ label: 'Crew', href: '#/crew' }, { label: 'Hiring', href: '#/hiring' }].concat(lvl === 'auto' || lvl === 'notify' ? [{ label: 'Hiring level', href: '#/controls/gov' }] : []) });
+          text: hired ? (LEVEL_WORDS[lvl] || '') + (lvl === 'auto' || lvl === 'notify' ? ' (hiring is set to "' + lvl + '"; change it in Settings › Autonomy and guardrails)' : '') : '', level: lvl,
+          links: [{ label: 'Crew', href: '#/crew' }, { label: 'Hiring', href: '#/crew/hiring' }].concat(lvl === 'auto' || lvl === 'notify' ? [{ label: 'Hiring level', href: '#/settings/autonomy/presets' }] : []) });
       }
     }
     // each open round's live stage (candidates created, interviewing 2/3, waiting for pick by X), one item per round
@@ -242,10 +256,10 @@ module.exports = function activity(deps) {
       if (!st) continue;
       const tl = (st.timeline || []).filter(x => x.at).map(x => x.step + ' ' + String(x.at).slice(11, 16)).join(' · ');
       items.push({ at: st.at || rd.openedAt || new Date().toISOString(), kind: 'hiring-stage', who: 'Hiring', live: true, stage: st.key,
-        title: (rd.role || d) + ': ' + st.label, text: tl, links: [{ label: 'Hiring', href: '#/hiring' }] });
+        title: (rd.role || d) + ': ' + st.label, text: tl, links: [{ label: 'Hiring', href: '#/crew/hiring' }] });
     }
     // replies on the owner channel
-    try { for (const m of tool('owner-inbox.js').sent()) if (Date.parse(m.at) >= since) items.push({ at: m.at, kind: 'message', who: m.from || 'Company', title: (m.from || 'The company') + ' wrote to you', text: firstSentence(m.text), links: [{ label: 'Open', href: '#/comms/owner' }].concat(linksFor(m.text)) }); } catch (_) {}
+    try { for (const m of tool('owner-inbox.js').sent()) if (Date.parse(m.at) >= since) items.push({ at: m.at, kind: 'message', who: m.from || 'Company', title: (m.from || 'The company') + ' wrote to you', text: firstSentence(m.text), links: [{ label: 'Open', href: '#/chat/owner' }].concat(linksFor(m.text)) }); } catch (_) {}
     // decisions
     let dec = ''; try { dec = fs.readFileSync(co.p('company', 'work', 'decisions.md'), 'utf8'); } catch (_) {}   // bounded: retention.js keeps 30 days live (docs/RETENTION.md)
     for (const l of dec.split('\n').filter(x => /^- \d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(x)).slice(-20)) {

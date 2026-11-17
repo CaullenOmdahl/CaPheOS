@@ -130,7 +130,7 @@ function questionFor(sit, fyi) {
   const who = sit.held.length ? 'Waiting for ' + sit.name + ': ' + sit.held.join(', ') + '.' : '';
   const off = sit.moved.length ? 'Moved off ' + sit.name + ': ' + sit.moved.join(', ') + '.' : '';
   const details = ['Week used: ' + f1(sit.usedPct) + '%. Today\'s line: ' + f1(sit.line) + '% (' + (sit.useNow ? sit.useNow + '% of the way to using it now' : 'spread evenly over the week') + '). Weekly stop: ' + sit.weekCap + '%. Resets ' + reset + '.',
-    who, off, '"Use another model meanwhile" asks the people seat to give these seats a fallback in their model chain (Usage and models > Seat model chains: console:#/usage).',
+    who, off, '"Use another model meanwhile" asks the people seat to give these seats a fallback in their model chain (Settings › Models and subscriptions: console:#/settings/models).',
     'The answer is recorded in company/work/finance/pacing-policy.json through pacer.js limit and takes effect on the next dispatcher tick.'].filter(Boolean).join('\n');
   const min = Math.min(100, Math.max(1, Math.ceil(sit.usedPct)));
   const stop = Math.min(100, Math.max(min, Math.round(sit.weekCap)));

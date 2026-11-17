@@ -25,16 +25,20 @@ use `javascript:`, `data:` or `file:` links.
 | Link | Place |
 |---|---|
 | `console:#/today` | Today: who is running now, open questions, recent activity |
-| `console:#/setup/charter` | the charter (also `/company`, `/provider`, `/budget`, `/governance`, `/guardrails`, `/certify`) |
-| `console:#/comms/owner` | the owner channel |
-| `console:#/comms/<seat id>` | a live chat with that crew member (`console:#/comms/agent` is the Founder) |
-| `console:#/crew/<seat id>` | a seat's dossier |
-| `console:#/work/quests` · `/handoffs` · `/decisions` · `/deliverables` · `/projects` | Work |
-| `console:#/hiring` | hiring rounds |
-| `console:#/controls/gov` · `/guard` · `/ticks` · `/panels` | Controls: self-governance, guardrails, cadence, panels |
-| `console:#/automate` | routines and the dispatcher |
-| `console:#/usage` | AI usage and models |
+| `console:#/setup/charter` | the charter (the Setup wizard before certification, Settings › Company after; also `/company`, `/provider`, `/budget`, `/certify`) |
+| `console:#/chat/owner` | the owner channel |
+| `console:#/chat/<seat id>` | a live chat with that crew member (`console:#/chat/agent` is the Founder) |
+| `console:#/crew/<seat id>` · `/crew/<seat id>/model` | a seat's dossier, its model chain |
+| `console:#/crew/hiring` | hiring rounds |
+| `console:#/work/quests` · `/handoffs` · `/decisions` · `/projects` | Work |
+| `console:#/spend` | today's AI spend and subscription use |
+| `console:#/settings/autonomy` · `/autonomy/guardrails` | self-governance, guardrails, owner gates, the external gate |
+| `console:#/settings/tempo` · `/tempo/routines` | ticks and cadence, routines |
+| `console:#/settings/models` · `/models/cutoffs` | model chains, subscription cutoffs, providers, the pay-per-token cap |
+| `console:#/settings/connections/keys` · `console:#/settings/pages` · `console:#/settings/system` | keys and connectors, console pages, health |
 | `console:#/halt` | stop the company |
+
+Old links (`#/comms`, `#/controls`, `#/usage`, `#/hiring`, `#/automate`, …) still work: they redirect. Write the new ones.
 
 Full map: `docs/CONSOLE-LINKS.md`.
 

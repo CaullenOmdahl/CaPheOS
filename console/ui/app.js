@@ -2,41 +2,28 @@
 import { h, fill, Logo, Tag, Button, rel, isSetupQuestion } from './js/ui.js';
 import { api } from './js/api.js';
 import * as events from './js/events.js';
+import { ALIASES, redirect } from './js/routes.js';
 
 const SCREENS = {
   today: () => import('./js/screens/today.js'),
   setup: () => import('./js/screens/setup.js'),
-  comms: () => import('./js/screens/comms.js'),
+  chat: () => import('./js/screens/comms.js'),
   crew: () => import('./js/screens/crew.js'),
   work: () => import('./js/screens/work.js'),
-  hiring: () => import('./js/screens/hiring.js'),
-  controls: () => import('./js/screens/controls.js'),
-  automate: () => import('./js/screens/automate.js'),
-  governance: () => import('./js/screens/governance.js'),
-  usage: () => import('./js/screens/usage.js'),
-  floor: () => import('./js/screens/floor.js'),
-  abilities: () => import('./js/screens/abilities.js'),
-  system: () => import('./js/screens/system.js'),
-  map: () => import('./js/screens/map.js'),
+  spend: () => import('./js/screens/spend.js'),
+  settings: () => import('./js/screens/settings.js'),
   halt: () => import('./js/screens/halt.js'),
   p: () => import('./js/screens/panel-screen.js'),
   kit: () => import('./js/screens/kit-gallery.js'),
 };
-const TITLES = { today: 'Today', setup: 'Setup', comms: 'Comms', crew: 'Crew', work: 'Work', hiring: 'Hiring', controls: 'Controls', automate: 'Automate',
-  governance: 'Governance', usage: 'Usage and models', floor: 'Floor', abilities: 'Abilities', system: 'System', map: 'Feature map', halt: 'Halt', p: 'Company', kit: 'Page kit' };
-const NAV = [
-  ['Company', [['setup', 'Setup'], ['today', 'Today'], ['comms', 'Comms'], ['crew', 'Crew'], ['work', 'Work'], ['hiring', 'Hiring']]],
-  ['Operations', [['controls', 'Controls'], ['automate', 'Automate'], ['governance', 'Governance'], ['usage', 'Usage and models']]],
-  ['Station', [['floor', 'Floor'], ['abilities', 'Abilities'], ['system', 'System'], ['map', 'Feature map']]],
-];
+const TITLES = { today: 'Today', setup: 'Setup', chat: 'Chat', crew: 'Crew', work: 'Work', spend: 'Spend', settings: 'Settings', halt: 'Halt', p: 'Company', kit: 'Page kit' };
+// The sidebar: five places, then the pages the crew adds (the Company group), then Settings pinned at the bottom.
+// Setup shows only until the company is certified (app.refreshSetupNav).
+const NAV = [['setup', 'Setup'], ['today', 'Today'], ['chat', 'Chat'], ['crew', 'Crew'], ['work', 'Work'], ['spend', 'Spend']];
 
-// The route map (docs/CONSOLE-LINKS.md): every place an agent may link to with `console:#/…`. Aliases keep the
-// readable names working: #/controls/guardrails is the Guardrails tab, #/setup/ai the provider step, and so on.
-export const ALIASES = {
-  controls: { governance: 'gov', 'self-governance': 'gov', guardrails: 'guard', cadence: 'ticks', schedule: 'ticks', tempo: 'ticks', sprint: 'ticks' },
-  work: { quest: 'quests', handoff: 'handoffs', decision: 'decisions', project: 'projects' },
-  abilities: { connectors: 'connected', 'api-keys': 'keys' },
-};
+// The route map (docs/CONSOLE-LINKS.md, js/routes.js): every place an agent may link to with `console:#/…`. Old routes
+// (#/comms, #/controls, #/usage, #/hiring, …) redirect to their new homes; aliases keep readable tab names working.
+export { ALIASES };
 
 // shared app context handed to every screen
 export const app = { company: null, counts: {}, toast, confirmDialog, refreshSidebar: () => refreshSidebar() };
@@ -48,7 +35,7 @@ let current = { id: null, cleanup: null, token: 0 };
 
 /* ---------- sidebar ---------- */
 const counts = {};
-// the Setup nav item shows until the company is certified (System links to Setup afterwards)
+// the Setup nav item shows until the company is certified (its steps live on in Settings › Company afterwards)
 app.refreshSetupNav = certified => { const l = navLinks.setup; if (l) l.a.hidden = !!certified; };
 const setupDone = () => !!(app.company && app.company.onboarding && app.company.onboarding.certified);
 const navLinks = {};
@@ -79,15 +66,9 @@ function buildSidebar() {
       h('div', { class: 'stack-4', style: 'gap:2px' }, h('span', { class: 'brand-name' }, 'CaPheOS'), coName),
       toggle),
     h('a', { href: '#/today', class: 'needs-link' }, h('span', null, 'Needs you'), needsN),
-    NAV.map(([label, items]) => h('div', { class: 'nav-group' },
-      h('span', { class: 'nav-label' }, label),
-      items.map(([id, text]) => {
-        const n = h('span', { class: 'n' }, '');
-        const a = h('a', { href: '#/' + id, class: 'nav-item', 'aria-current': 'false', onclick: () => { if (collapsed) { collapsed = true; } } }, h('span', null, text), n);
-        navLinks[id] = { a, n };
-        return a;
-      }))),
+    h('div', { class: 'nav-group' }, NAV.map(navItem)),
     companyGroup,
+    h('div', { class: 'nav-group nav-bottom' }, navItem(['settings', 'Settings'])),
     h('div', { class: 'station-box' },
       h('div', { class: 'between-c' }, h('span', { class: 'label strong' }, 'Station'), stationTag),
       stationLine,
@@ -95,6 +76,12 @@ function buildSidebar() {
         h('a', { href: '#/halt?mode=soft', class: 'halt-soft' }, 'Soft halt'),
         h('a', { href: '#/halt?mode=hard', class: 'halt-hard' }, 'Hard halt'))));
   fill(sideEl, nav);
+}
+function navItem([id, text]) {
+  const n = h('span', { class: 'n' }, '');
+  const a = h('a', { href: '#/' + id, class: 'nav-item', 'aria-current': 'false' }, h('span', null, text), n);
+  navLinks[id] = { a, n };
+  return a;
 }
 function setCount(id, n) {
   counts[id] = n; app.counts[id] = n;
@@ -109,22 +96,19 @@ async function refreshSidebar() {
   // a pulse on Crew while anyone is running (who and what is on Today's "Now")
   api('/now').then(d => { const l = navLinks.crew; if (!l) return; const n = (d.runs || []).length; l.a.classList.toggle('working', n > 0); l.a.title = n ? n + ' running now: ' + d.runs.map(r => r.name).join(', ') : ''; }).catch(() => {});
   api('/handoffs').then(d => setCount('work', (d.items || []).length)).catch(() => {});
-  api('/hiring').then(d => setCount('hiring', (d.rounds || []).filter(r => !r.hired && r.status !== 'closed').length)).catch(() => {});
   const [halt, disp, health] = await Promise.allSettled([api('/halt'), api('/dispatch'), fetch('/api/station/health', { credentials: 'same-origin' })]);
   const up = health.status === 'fulfilled' && health.value.ok;
   const mode = halt.status === 'fulfilled' ? halt.value.mode : null;
   let label = up ? 'Running' : 'Not running', st = up ? 'online' : 'danger';
   if (mode === 'soft') { label = 'Soft halt'; st = 'warning'; } else if (mode === 'hard') { label = 'Hard halt'; st = 'danger'; }
   fill(stationTag, Tag(label, { variant: 'status', status: st }));
-  let port = ''; try { port = ':' + new URL(app.company && app.company.station && app.company.station.url).port; } catch (_) {}
   let last = '';
   if (disp.status === 'fulfilled') {
     const s = disp.value.state || {};
     const at = s.lastTick || s.at || s.lastRun || s.tickAt;
-    if (at) last = 'dispatcher ' + rel(at);
-    else if ((disp.value.log || []).length) last = 'dispatcher log ' + (disp.value.log.length) + ' lines';
+    if (at) last = 'checked ' + rel(at);
   }
-  stationLine.textContent = [up ? port || 'up' : 'station not running', last].filter(Boolean).join(' · ');
+  stationLine.textContent = [up ? null : 'Not running', last].filter(Boolean).join(' · ');
 }
 
 /* ---------- toast + confirm ---------- */
@@ -160,16 +144,24 @@ function confirmDialog(o) {
 
 /* ---------- router ---------- */
 function parseHash() {
-  // the landing page is Setup until onboard.js --certify is green, then Today
+  // the landing page is Setup until the company is certified, then Today
   const raw = (location.hash && location.hash !== '#' && location.hash !== '#/' ? location.hash : app.company && app.company.onboarding && !setupDone() ? '#/setup' : '#/today').replace(/^#\/?/, '');
   const [p, qs] = raw.split('?');
   const parts = p.split('/').filter(Boolean).map(decodeURIComponent);
   const id = SCREENS[parts[0]] ? parts[0] : 'today';
   const rest = parts.slice(1);
-  if (rest[0] && ALIASES[id] && ALIASES[id][rest[0].toLowerCase()]) rest[0] = ALIASES[id][rest[0].toLowerCase()];
+  if (rest[0] && ALIASES[id] && ALIASES[id][rest[0].toLowerCase()] !== undefined) { const a = ALIASES[id][rest[0].toLowerCase()]; if (a) rest[0] = a; else rest.shift(); }
   return { id, rest, query: new URLSearchParams(qs || '') };
 }
+// an old route (an agent's link, a bookmark) moves to its new home without a history entry
+function redirectOld() {
+  const to = redirect(location.hash, { certified: setupDone() });
+  if (!to || to === location.hash) return false;
+  history.replaceState(null, '', to);
+  return true;
+}
 async function route() {
+  redirectOld();
   const r = parseHash();
   const token = ++current.token;
   if (current.cleanup) { try { current.cleanup(); } catch (_) {} current.cleanup = null; }
@@ -188,7 +180,7 @@ async function route() {
     current.id = r.id;
   } catch (e) {
     console.error(e);
-    fill(mainEl.firstChild, h('p', { class: 'err-line' }, 'This screen failed to load: ' + e.message));
+    fill(mainEl.firstChild, h('p', { class: 'err-line' }, 'This screen did not load. Reload the page; if it keeps happening, the browser console has the details.'));
   }
 }
 

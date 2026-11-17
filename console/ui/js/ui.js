@@ -50,14 +50,48 @@ export function Logo(size = 28) {
 }
 
 // ---- states ----
+// Errors in plain words. The raw message (a tool's output, an HTTP status, a route) goes behind a "Details" disclosure.
+const TECH = /(company\/|\.js\b|\.jsonl?\b|\.md\b|\/api\/|https?:|ENOENT|EACCES|ECONN|\bHTTP\b|\b[45]\d\d\b|no such API route|Unknown path|stack|at \w+ \()/;
+export function humanError(e) {
+  const m = String(e && e.message || e || '');
+  if (e && e.auth) return 'You are not signed in. Open the login link the console printed when it started.';
+  if (e && e.stationDown) return 'The station is not running. Start it, then try again.';
+  if (/no such API route|Unknown path|not found/i.test(m) || (e && e.status === 404)) return 'The station does not support this yet.';
+  if (e && (e.status === 504 || /timed? ?out/i.test(m))) return 'That took too long. Try again in a minute.';
+  if (/Console server not reachable/.test(m)) return 'The console server is not answering. Check that it is running.';
+  if (e && e.status === 403) return 'Not allowed from here.' + (TECH.test(m) ? '' : ' ' + m);
+  if (!m || TECH.test(m) || m.length > 160) return 'Something went wrong. Try again; if it keeps happening, the details below help.';
+  return m.replace(/^\w/, c => c.toUpperCase()).replace(/([^.!?])$/, '$1.');
+}
+export function Details(summary, ...kids) {
+  return h('details', { class: 'tech' }, h('summary', { class: 'caption muted' }, summary || 'Details'), h('div', { class: 'tech-body stack-6' }, kids));
+}
 export function errLine(e, what) {
-  const msg = e && e.stationDown ? 'Station not running.' : (what ? what + ': ' : '') + (e && e.message || String(e));
-  return h('p', { class: 'err-line', role: 'status' }, msg);
+  const human = humanError(e), raw = String(e && e.message || e || '');
+  return h('div', { class: 'err-block stack-4', role: 'status' }, h('p', { class: 'err-line' }, (what ? what + ': ' : '') + human),
+    raw && raw !== human && !(e && e.stationDown) ? Details('Details', h('code', { class: 'mono-s' }, raw)) : null);
+}
+// A setting: its name, current value, a sentence on what it does, what changes if you flip it, and the control.
+export function Setting({ id, title, value, valueTone, what, flip, control, extra }) {
+  return h('div', { class: 'setting', id: id || null },
+    h('div', { class: 'setting-text stack-4' },
+      h('div', { class: 'row-8', style: 'align-items:center' }, h('span', { class: 'label strong' }, title),
+        value != null && value !== '' ? Tag(String(value), { variant: 'status', status: valueTone || 'neutral' }) : null),
+      what ? h('p', { class: 'body-s muted' }, what) : null,
+      flip ? h('p', { class: 'caption' }, flip) : null,
+      extra || null),
+    control ? h('div', { class: 'setting-control' }, control) : null);
+}
+// A titled block inside a screen or a Settings section.
+export function Block({ id, title, lede, actions }, ...kids) {
+  return h('section', { class: 'stack-14 block', id: id ? 'set-' + id : null, 'aria-labelledby': id ? 'h-' + id : null },
+    h('div', { class: 'between-c', style: 'flex-wrap:wrap' }, h('h2', { class: 'h3', id: id ? 'h-' + id : null }, title), actions || null),
+    lede ? h('p', { class: 'body-s muted', style: 'max-width:720px' }, lede) : null, kids);
 }
 export function empty(text, opts = {}) {
   return h('div', { class: 'empty' + (opts.solid ? ' empty-solid' : '') }, opts.title ? h('h3', { class: 'h4' }, opts.title) : null, h('p', null, text));
 }
-export const NOT_CONNECTED = 'Not connected yet.';
+export const NOT_CONNECTED = 'Not available on this station yet.';
 export function loading() { return h('p', { class: 'muted caption', 'aria-busy': 'true' }, 'Loading…'); }
 
 export function tabs(defs, current, pick, label) {

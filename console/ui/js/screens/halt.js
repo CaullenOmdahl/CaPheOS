@@ -1,5 +1,5 @@
 // Halt (Halt.dc.html): soft halt with deadline/escalate/why, hard halt, settling progress, resume.
-import { h, fill, Button, Tag, Eyebrow, errLine, hhmm, rel, statusOf } from '../ui.js';
+import { h, fill, Button, Tag, Eyebrow, errLine, hhmm, rel, statusOf, humanError } from '../ui.js';
 import { api, post } from '../api.js';
 import * as events from '../events.js';
 
@@ -9,7 +9,7 @@ export async function render(root, ctx) {
   const tz = app.company && app.company.timezone;
   const head = h('div'); const body = h('div', { class: 'stack-20', style: 'gap:32px' }); const errEl = h('div');
   fill(root, head, errEl, body,
-    h('p', { class: 'caption muted', style: 'max-width:720px' }, "Each seat's soft-shutdown procedure is written in its charter (section “Soft shutdown”) and set per seat in loops.json (shutdown). The halt guardrail can never be switched off."));
+    h('p', { class: 'caption muted', style: 'max-width:720px' }, "Each crew member's soft-shutdown procedure is written in its charter, under “Soft shutdown”. The halt guardrail can never be switched off."));
   const focus = ctx.query.get('mode');
   let busy = false, lastMode = null;
 
@@ -33,7 +33,7 @@ export async function render(root, ctx) {
   }
 
   function choose() {
-    const sel = h('select', { class: 'select', id: 'h-deadline' }, [['30', '30 minutes'], ['60', '1 hour'], ['240', '4 hours'], ['', 'Default (halt.js)']].map(([v, l]) => h('option', { value: v }, l)));
+    const sel = h('select', { class: 'select', id: 'h-deadline' }, [['30', '30 minutes'], ['60', '1 hour'], ['240', '4 hours'], ['', 'The default']].map(([v, l]) => h('option', { value: v }, l)));
     const esc = h('input', { type: 'checkbox', id: 'h-esc' });
     const why = h('input', { type: 'text', id: 'h-why', class: 'input', placeholder: 'Pausing for the weekend' });
     const hwhy = h('input', { type: 'text', id: 'h-hwhy', class: 'input', placeholder: 'Something is going wrong' });
@@ -47,7 +47,7 @@ export async function render(root, ctx) {
       h('button', { type: 'button', class: 'btn btn-dark btn-tall', onclick: async () => {
         if (busy) return; busy = true; softErr.textContent = '';
         try { await post('/halt/soft', { why: why.value.trim() || undefined, deadlineMin: sel.value ? Number(sel.value) : undefined, escalate: esc.checked }); app.toast('Soft halt started.'); }
-        catch (e) { softErr.textContent = 'Not started: ' + e.message; }
+        catch (e) { softErr.textContent = 'Not started: ' + humanError(e); }
         busy = false; load(); app.refreshSidebar();
       } }, 'Start soft halt'), softErr);
     const hard = h('article', { class: 'card p28', style: 'border-color:var(--status-danger)' + (focus === 'hard' ? ';box-shadow:0 0 0 3px rgba(180,35,24,.25)' : ''), 'aria-labelledby': 'h-hard' },
@@ -89,7 +89,7 @@ export async function render(root, ctx) {
       return h('div', { class: 'stack-8 hair-top', style: 'padding-top:12px' },
         h('div', { class: 'between-c' }, h('h3', { class: 'h4' }, p),
           p !== '(no party)' ? h('span', { class: 'row-8' }, text, h('button', { type: 'button', class: 'btn btn-secondary btn-sm', onclick: async () => {
-            err.textContent = ''; try { await post('/m/continuity/notify', { party: p, text: text.value.trim() }); app.toast('Notice queued for ' + p + '.'); text.value = ''; } catch (e) { err.textContent = 'Not sent: ' + e.message; }
+            err.textContent = ''; try { await post('/m/continuity/notify', { party: p, text: text.value.trim() }); app.toast('Notice queued for ' + p + '.'); text.value = ''; } catch (e) { err.textContent = 'Not sent: ' + humanError(e); }
           } }, 'Notify')) : null),
         h('ul', { class: 'plain' }, cs.map(c => {
           const to = h('input', { type: 'text', class: 'input', placeholder: 'seat id', style: 'max-width:140px' });
@@ -97,7 +97,7 @@ export async function render(root, ctx) {
             h('span', { class: 'stack-4' }, h('span', { class: 'label strong' }, c.title), h('span', { class: 'body-s muted' }, c.id + ' · ' + c.state + ' · due ' + (c.dueAt ? hhmm(c.dueAt, tz) + ' (' + rel(c.dueAt) + ')' : c.ackBy ? 'ack ' + rel(c.ackBy) : '—') + ' · owner ' + (c.owner || 'none'))),
             h('span', { class: 'row-8' }, unowned.has(c.id) ? Tag('Unowned', { variant: 'status', status: 'danger' }) : null, to,
               h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: async () => {
-                err.textContent = ''; try { await post('/m/continuity/reassign', { id: c.id, to: to.value.trim() }); app.toast('Reassigned.'); loadCommitments(); } catch (e) { err.textContent = 'Not reassigned: ' + e.message; }
+                err.textContent = ''; try { await post('/m/continuity/reassign', { id: c.id, to: to.value.trim() }); app.toast('Reassigned.'); loadCommitments(); } catch (e) { err.textContent = 'Not reassigned: ' + humanError(e); }
               } }, 'Reassign')));
         })));
     };
@@ -111,11 +111,11 @@ export async function render(root, ctx) {
     const ok = await app.confirmDialog({ title: 'Hard halt now?', body: 'Every run stops mid-step. Schedules, lines and away work stop with it.', confirm: 'Hard halt', danger: true });
     if (!ok) return;
     try { await post('/halt/hard', why ? { why } : {}); app.toast('Hard halt done.'); }
-    catch (e) { if (errEl2) errEl2.textContent = 'Hard halt failed: ' + e.message; else app.toast(e.message, true); }
+    catch (e) { if (errEl2) errEl2.textContent = 'Hard halt failed: ' + humanError(e); else app.toast(humanError(e), true); }
     load(); app.refreshSidebar();
   }
   async function resume() {
-    try { await post('/halt/resume'); app.toast('Resumed.'); } catch (e) { app.toast('Resume failed: ' + e.message, true); }
+    try { await post('/halt/resume'); app.toast('Resumed.'); } catch (e) { app.toast('Resume failed: ' + humanError(e), true); }
     load(); app.refreshSidebar();
   }
 

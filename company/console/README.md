@@ -28,5 +28,5 @@ node company/tools/console-panel.js hide <id> --by owner
 
 Limits in short: data only from the allowlists (never `secrets/`, only `company/work/**` and `company/state/**`);
 actions only through a handoff, a message to the CEO or a drafted owner message; never above or over Needs you, the
-halt controls, Governance or System; no restyling; at most 6 panels on Today, 3 per side column, 8 company screens;
+halt controls or Settings; no restyling; at most 6 panels on Today, 3 per side column, 8 company screens;
 refresh no faster than 30 s; the owner can hide anything.

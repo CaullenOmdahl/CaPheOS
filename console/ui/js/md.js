@@ -1,17 +1,20 @@
 // Safe markdown for agent-written text (live chat, owner-channel replies, questions, handoffs, the charter).
 // Built from DOM nodes with textContent only: no string ever becomes markup. Links: `console:#/…` and `#/…` become
 // in-app links; http(s) opens in a new tab with rel="noopener noreferrer"; any other scheme (javascript:, data:, …)
-// is dropped and only its text is kept. Covers what agents write: paragraphs, line breaks, # headings, - and 1. lists,
+// is dropped and only its text is kept. An old route (#/comms, #/controls/guard, …) is rewritten to its new home
+// (routes.js redirect), so the link the owner hovers is the place it opens. Covers what agents write: paragraphs, line breaks, # headings, - and 1. lists,
 // > quotes, ``` code blocks, `code`, **bold**, *em*, [text](url), bare URLs and tables (shown as code blocks).
 import { h } from './ui.js';
+import { redirect } from './routes.js';
 
 export function safeHref(url) {
   const u = String(url || '').trim();
-  if (/^console:?#\//i.test(u)) return { href: u.replace(/^console:?/i, ''), inApp: true };   // agents also write console#/… (no colon)
-  if (/^#\//.test(u)) return { href: u, inApp: true };
+  if (/^console:?#\//i.test(u)) return inApp(u.replace(/^console:?/i, ''));   // agents also write console#/… (no colon)
+  if (/^#\//.test(u)) return inApp(u);
   if (/^https?:\/\/[^\s<>"]+$/i.test(u)) return { href: u, inApp: false };
   return null;
 }
+function inApp(href) { return { href: redirect(href) || href, inApp: true }; }
 function link(text, url) {
   const s = safeHref(url);
   if (!s) return document.createTextNode(text);

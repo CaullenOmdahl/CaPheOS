@@ -1,7 +1,6 @@
 # Console panels: how the crew shapes the owner console
 
-The owner console has fixed screens (Today, Comms, Crew, Work, Hiring, Automate, Governance, Usage and models, Floor,
-Abilities, System, Feature map). Every company is different, so the crew may add **panels** that fit the company's
+The owner console has fixed screens (Today, Chat, Crew with Hiring and Floor, Work, Spend, and Settings). Every company is different, so the crew may add **panels** that fit the company's
 work: a trading firm puts positions and P&L on Today, a law firm puts matters by deadline there, a library shows its
 loans due. A whole company screen can be a **page** of units (§12): a trading desk, a NOC health board, a production
 kanban, a calendar. A panel or page is a small declaration, not code that runs in the console. It is checked by a tool, gated by
@@ -69,7 +68,7 @@ Panels are never edited in place. A seat writes the panel in a working folder (f
 
 `order` (1 to 99) orders company panels within one placement only. Built-in content always comes first. Limits count
 installed panels, hidden ones included (remove a panel to free its slot). A company screen's `nav` label may not reuse
-a built-in label (`Today`, `System`, `Governance`, ...) or another company screen's label.
+a built-in label (`Today`, `Chat`, `Spend`, `Settings`, ...) or another company screen's label.
 
 ## 4. View kinds
 
@@ -172,7 +171,7 @@ moves money, or leaves the company. The owner always confirms the filled-in text
 |---|---|---|
 | `handoff` | a handoff block (HANDOFFS.md format, `**Status:** OPEN`, from the owner via the console) appended to the inbox of the seat holding `to` | `to` (a function or seat) |
 | `ask-ceo` | an owner message in `company/owner/inbound.jsonl`, which the CEO reads and acknowledges (`owner-inbox.js`) | |
-| `owner-question-draft` | the owner's Comms composer, prefilled; nothing is sent until the owner presses send | |
+| `owner-question-draft` | the owner's Chat composer (owner channel), prefilled; nothing is sent until the owner presses send | |
 
 `text` is a template of at most 600 characters. Placeholders: `{{panel.title}}` and, with `"scope": "row"`,
 `{{row.<key>}}`. A kanban `move` names an action with `"scope": "move"`, which may also use `{{move.from}}` and
@@ -183,8 +182,8 @@ the message (a trade, a payment, a filing, an email) still goes through the seat
 
 ## 8. The "within reason" limits
 
-1. A panel cannot hide, cover, reorder or restyle **Needs you**, the **halt controls**, **Governance** or **System**.
-   Needs you and halt always render above company panels; Governance, System and Feature map take no panels at all.
+1. A panel cannot hide, cover, reorder or restyle **Needs you**, the **halt controls** or **Settings**.
+   Needs you and halt always render above company panels; Settings takes no panels at all (a side panel declared for an old screen shows on its new home: `usage` on Spend, `hiring` and `floor` on Crew, `automate` and `abilities` in Settings).
 2. A panel cannot restyle the console. Built-in kinds use console styles; custom views get tokens only, inside their
    own frame. panel.json has no style fields.
 3. At most 6 company panels on Today, 3 per side column, 8 company screens; at most 4 sources and 4 actions per panel;
@@ -242,7 +241,7 @@ for every panel refresh, so what an agent checks offline is what the owner sees.
 - Re-run `validatePanel` at load: files can change on disk without `add`.
 - Read `company/console/state.json` `hidden` and never show a hidden panel; give the owner a hide control on every
   panel and an unhide list in System.
-- Needs you and halt first on Today; nothing on Governance, System, Feature map.
+- Needs you and halt first on Today; nothing in Settings.
 - Enforce the per-placement limit at render too (first by `order`, then id) in case files were copied by hand.
 - Data comes only from `render()`; the browser never reads files, runs tools or calls the station for a panel.
 - Refresh no faster than `max(refresh, 30)` seconds, and pause while the tab is hidden.

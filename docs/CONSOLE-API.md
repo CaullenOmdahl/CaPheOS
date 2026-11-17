@@ -51,16 +51,17 @@ scripts/console.sh                # same as the first line
 | GET | /api/dispatch | last tick, recent log lines | work/dispatch-state.json, dispatch-log.md |
 | GET | /api/hiring | rounds under company/hiring/*/round.json + templates in company/roles/templates; each round carries `stage {key, label, at, waitingOn, counts, timeline[{step, at}]}` from hire.js roundStage. Keys: `needs-files`, `candidates`, `interviewing` (label "interviewing 2/3"), `interviews-failed`, `waiting-pick` ("waiting for pick by X"), `picked`, `waiting-owner`, `declined`, `hired`, `closed` | files |
 | GET | /api/usage | pacer status | `pacer.js status --json` (or `report`) |
+| GET | /api/spend | the Spend screen, read-only: `{ today: {usd, ownerPaidUsd, capUsd, perSeatCapUsd, inFlightRuns}, bySeat: [{id, name, usd}], byProvider: [{id, usd, capped}], subscriptions: [{id, name, usedPct, weekStop, line, resetsAt, open, paceBy, why}], pacer: {mode, live, emergency, boost, rail, problems}, known, error }` over the last 24 h | `cap-numerator.js compute()` (the cap's own numerator, with `byProvider`), dispatch-budget.json, `pacer.js limits --json` |
 
-## Controls
+## Settings (Autonomy and guardrails, Tempo and routines, Console pages)
 
 | Method | Path | Body | Backed by |
 |---|---|---|---|
 | GET | /api/governance | — | `governance.js show --json` |
 | POST | /api/governance/preset | `{ preset }` | `governance.js preset <id> --by <owner>` |
 | POST | /api/governance/set | `{ category, level }` (level auto, notify, triage or approve) | `governance.js set …` |
-| GET | /api/decision-models | — | `decide.js list --json` → `{ ok, models: [{id, title, versions, active, mode, params, cases, evaluations, lastAt, valid}] }` (Controls › Self-governance) |
-| GET | /api/onboarding | — | `onboard.js --check --json` → `{ ok, provisioned, certified, certifiedAt, lastCertify, steps: [{id, what, status, at, note}], checks: [{id, what, status: ok\|failed\|unchecked, missing}], missing: [..], gates }` (System › Provisioning; Today banner while not certified). `GET /api/today` carries `onboarding: {certified, failed}` |
+| GET | /api/decision-models | — | `decide.js list --json` → `{ ok, models: [{id, title, versions, active, mode, params, cases, evaluations, lastAt, valid}] }` (Settings › Autonomy and guardrails) |
+| GET | /api/onboarding | — | `onboard.js --check --json` → `{ ok, provisioned, certified, certifiedAt, lastCertify, steps: [{id, what, status, at, note}], checks: [{id, what, status: ok\|failed\|unchecked, missing}], missing: [..], gates }` (Settings › System › Certification; Today banner while not certified). `GET /api/today` carries `onboarding: {certified, failed}` |
 | POST | /api/onboarding/certify | {} | re-runs `onboard.js --certify --json` (the 11 checks) → `{ ok: true, certified, results: {<check>: {ok, missing}} }` |
 | any | /api/m/&lt;module&gt;/&lt;path&gt; | module-defined | an enabled core module's `http.js` route with `auth: 'owner'` (docs/CORE-MODULES.md "The module mechanism"); raw body capped at 256 KB |
 | any | /hooks/&lt;module&gt;/&lt;path&gt; | module-defined | an enabled module's `auth: 'source'` route: **no owner token**, the module authenticates the caller (HMAC/token); 404 when the module is not enabled; 413 over 256 KB |
@@ -132,7 +133,7 @@ Today shows "Now" (each run with Watch and Stop, then each idle seat's next run 
 
 The guided Setup screen (`#/setup`, console/ui/js/screens/setup.js; server side console/setup.js). It is the landing
 page until `onboard.js --certify` is green (`GET /api/company` carries `onboarding: {certified, ...}`), then Today is;
-System links back to it. Seven steps, each `{ id, title, status: done|needs|optional, why }`, computed from the files and
+after that `#/setup` redirects to Settings, where the same steps live on (company, charter, certify in Settings › Company and charter; provider and budget in Settings › Models and subscriptions). Seven steps, each `{ id, title, status: done|needs|optional, why }`, computed from the files and
 the station on every call. Onboarding questions (from `onboard.js` or about `onboarding`) never render as
 Approve/Decline on Today: Today shows "Finish setup — N of 7 done" and Setup lists any onboarding ask its steps do not
 cover, with a reply box. Every write acts as the owner; locked files are recorded with provenance.js and each change
@@ -143,7 +144,7 @@ gets one line in company/work/decisions.md.
 | GET | /api/setup | — | `{ certified, done, total: 7, steps, company, station: {up, error, url, claude}, providers: [{id, name, how: signin\|key, unmetered, ready, present, isDefault, metered}], candidateDefault, budget, governance, charter: {placeholders, mandate, forWhom, outOfScope, firstGoal}, guardrails, checks, lastCertify, onboardingQuestions }` |
 | POST | /api/setup/company | `{ name?, ownerName?, timezone? }` | writes company/company.json; timezone must be a valid IANA zone (400 otherwise). Later owner writes use the new name |
 | POST | /api/setup/provider/validate | `{ provider, key, baseUrl? }` | station `providers/validate` → `{ valid, reachable, error, modelCount }`; the key is never echoed |
-| POST | /api/setup/provider | `{ provider: claude-cli\|custom\|deepseek\|openrouter\|anthropic, key?, baseUrl?, model?, subscription? }` | key providers: station `providers/validate`, then `providers/connect` (a headless station answers `no-page`: then `providers/engine-key`). claude-cli: requires the station's `auth/claude-cli/status` signed in. Then sets model-policy.json `candidateDefault` (adds the provider to `allowed` if new), marks `custom` (MiniMax plan) subscription-billed when `subscription` is not false, and, once a candidate can actually run, answers the onboard.js candidate-default question and records the `candidate-default` step ok. Station down: 502 |
+| POST | /api/setup/provider | `{ provider: claude-cli\|custom\|deepseek\|openrouter\|anthropic, key?, baseUrl?, model?, subscription?, keepDefault? }` (`keepDefault: true`: only set or replace the key, Settings › Connections and keys; who new hires run on is unchanged) | key providers: station `providers/validate`, then `providers/connect` (a headless station answers `no-page`: then `providers/engine-key`). claude-cli: requires the station's `auth/claude-cli/status` signed in. Then sets model-policy.json `candidateDefault` (adds the provider to `allowed` if new), marks `custom` (MiniMax plan) subscription-billed when `subscription` is not false, and, once a candidate can actually run, answers the onboard.js candidate-default question and records the `candidate-default` step ok. Station down: 502 |
 | POST | /api/setup/budget | `{ dailyUsd, perAgentUsd? }` | company/work/finance/dispatch-budget.json (0–10000; share ≤ cap), `setBy` = the owner (the owner's direct edit, recorded for locked-watch) |
 | POST | /api/setup/charter | `{ mandate, forWhom?, outOfScope, firstGoal? }` or `{ text }` | the form fills company/CHARTER.md from its template (Mandate, What is out of scope, First goal; 400 if any `{{…}}`/`<…>` placeholder would remain); `text` saves the owner's own edit of the whole file as written and answers the blanks left |
 | GET | /api/setup/charter | — | `{ text, at, placeholders, fields }`: the charter as it stands (Setup renders it; the step flips to Done on the `charter` SSE topic once no placeholder is left) |
@@ -188,7 +189,7 @@ text, secret, link, account, number, date). `form.fields[]` is `{id, type, label
 hinted), `choice` (options [{id,label,recommended}], multi, allowOther), `link` (url, action; value `done`/`couldnt`),
 `number` (unit, min, max), `date` (min, max), `checkbox`. `form.actions[]` is `{id, label, verdict, primary?, needs}`;
 verdict is yes, no, submit, done, couldnt or declined. Today renders each field and action, plus Reply (a long-form
-textarea), Snooze (an hour, tomorrow 09:00, next week) and Discuss (`#/comms/agent:<askerSeat>?draft=` with the message
+textarea), Snooze (an hour, tomorrow 09:00, next week) and Discuss (`#/chat/agent:<askerSeat>?draft=` with the message
 quoted). The `message` (2-4 plain sentences) shows first; `details` sits collapsed under "More detail"; a row without a
 message shows its first two sentences. Question text is rendered with js/md.js (safe markdown, links open with
 rel=noopener).

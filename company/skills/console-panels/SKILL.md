@@ -51,8 +51,8 @@ owner looks at it often), `placement`, `sources`, `view`, optional `refresh` (>=
 
 ## Limits you cannot cross
 
-- No hiding, covering, reordering or restyling **Needs you**, the **halt controls**, **Governance** or **System**; no
-  panels on Governance, System or Feature map.
+- No hiding, covering, reordering or restyling **Needs you**, the **halt controls** or **Settings**; no
+  panels in Settings.
 - No styling of the console; no colours or fonts of your own in a custom view.
 - At most 6 company panels on Today, 3 per side column, 8 company screens; 4 sources and 4 actions per panel.
 - Data only from the allowlists; never `secrets/`, never outside `company/work/**` and `company/state/**`.
@@ -80,7 +80,7 @@ node company/tools/console-panel.js add company/work/<you>/pages/desk --by <you>
 Look at both pictures before `add`. Units: `stat-row` (headline, first, span 12), `positions`, `gauge`, `progress`,
 `chart` (`line`, `area`, `bar`, `stacked-bar`, `candlestick`, `scatter`, with `refs` for limits), `status-grid`,
 `feed` (with an `ack` action), `pipeline`, `kanban` (with a `move` action), `calendar`, `table`, `list`, `timeline`,
-`markdown`. The console draws them all; you write no HTML or CSS. Gallery: System › Page kit gallery.
+`markdown`. The console draws them all; you write no HTML or CSS. Gallery: Settings › Console pages › the page kit gallery (`#/kit`).
 
 ### Design, in short (full rules: `docs/CONSOLE-DESIGN.md`)
 

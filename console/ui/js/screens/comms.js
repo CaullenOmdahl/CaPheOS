@@ -1,9 +1,9 @@
-// Comms (Comms.dc.html): conversations (owner channel, each seat via the station, group chats), chat, delete a group.
+// Chat (#/chat, was Comms; Comms.dc.html): conversations (owner channel, each seat via the station, group chats), chat, delete a group.
 // A seat's conversation is a LIVE chat (js/chat.js): the reply streams in. The owner channel is asynchronous: every
 // message shows what it is waiting on (docs/CONSOLE-API.md "Owner channel"), then "read", then the reply under it.
-// Deep links: #/comms/<seat id> or agent:<seat id>; ?brief=charter sends the charter brief once; a message Today handed
+// Deep links: #/chat/<seat id> or agent:<seat id>; ?brief=charter sends the charter brief once; a message Today handed
 // over (sessionStorage capheos.chatSend) is sent on arrival.
-import { h, fill, Button, errLine, empty, rel, hhmm, Tag } from '../ui.js';
+import { h, fill, Button, errLine, empty, rel, hhmm, Tag, humanError } from '../ui.js';
 import { api, post } from '../api.js';
 import * as events from '../events.js';
 import { liveChat } from '../chat.js';
@@ -13,10 +13,10 @@ const ss = { get: k => { try { return sessionStorage.getItem(k); } catch (_) { r
 
 export async function render(root, ctx) {
   const { app, mainEl } = ctx;
-  // Comms uses its own two-column layout instead of the padded main column
+  // Chat uses its own two-column layout instead of the padded main column
   root.className = 'comms'; root.removeAttribute('style');
   let sel = ctx.rest[0] || 'owner';
-  if (sel !== 'owner' && !sel.includes(':')) sel = 'agent:' + sel;   // #/comms/<seat id>
+  if (sel !== 'owner' && !sel.includes(':')) sel = 'agent:' + sel;   // #/chat/<seat id>
   const draft = ctx.query.get('draft') || '';
   const briefKind = ctx.query.get('brief') || '';
   const tz = app.company && app.company.timezone;
@@ -24,22 +24,23 @@ export async function render(root, ctx) {
   const listHost = h('div', { class: 'stack-4' });
   const listErr = h('div');
   const aside = h('aside', { 'aria-label': 'Conversations', class: 'conv-list' },
-    h('div', { class: 'seg' }, h('a', { href: '#/comms', class: 'on' }, 'Sessions'), h('a', { href: '#/work/projects' }, 'Projects')),
+    h('div', { class: 'seg' }, h('a', { href: '#/chat', class: 'on' }, 'Sessions'), h('a', { href: '#/work/projects' }, 'Projects')),
     listErr, listHost,
     h('div', { class: 'row-8' }, Button('New group chat', { variant: 'secondary', size: 'sm', onClick: newGroup })));
   const chat = h('section', { class: 'chat', 'aria-label': 'Chat' });
   fill(root, aside, chat);
 
   let seats = [], groups = [];
+  const memberNames = g => (g.members || []).map(id => (seats.find(s => s.id === id) || {}).name || id).join(', ');
   async function loadList() {
     fill(listErr);
     const rows = [];
     try { const c = await api('/crew'); seats = c.seats || []; } catch (e) { listErr.appendChild(errLine(e, 'Crew')); }
     try { const g = await api('/station/groups'); groups = ((g.result || g).groups || []); } catch (e) { groups = []; listErr.appendChild(errLine(e, 'Group chats')); }
-    rows.push(['owner', 'Owner channel', '', 'You and the company']);
+    rows.push(['owner', 'Owner channel', '', 'For when you are away']);
     for (const s of seats) rows.push(['agent:' + s.id, s.name || s.id, '', s.title || '']);
     for (const g of groups) rows.push(['group:' + g.id, g.title || 'Group chat', g.updatedAt ? rel(g.updatedAt) : '', (g.members || []).length + ' members' + (g.busy ? ' · busy' : '')]);
-    fill(listHost, rows.map(([id, w, at, last]) => h('a', { href: '#/comms/' + encodeURIComponent(id), class: 'thread', 'aria-current': id === sel ? 'page' : 'false' },
+    fill(listHost, rows.map(([id, w, at, last]) => h('a', { href: '#/chat/' + encodeURIComponent(id), class: 'thread', 'aria-current': id === sel ? 'page' : 'false' },
       h('span', { class: 'between-c' }, h('span', { class: 'label strong' }, w), h('span', { class: 'mono-s muted' }, at)),
       h('span', { class: 'body-s muted' }, last))));
   }
@@ -47,8 +48,8 @@ export async function render(root, ctx) {
   async function newGroup() {
     if (!seats.length) return app.toast('No crew to add.', true);
     const members = seats.map(s => s.id);
-    try { const r = await post('/station/groups', { op: 'create', members, title: 'Crew group' }); app.toast('Group created.'); loadList(); const id = (r.result || r).id || ((r.result || r).group || {}).id; if (id) location.hash = '#/comms/group:' + encodeURIComponent(id); }
-    catch (e) { app.toast(e.stationDown ? 'Station not running.' : 'Could not create: ' + e.message, true); }
+    try { const r = await post('/station/groups', { op: 'create', members, title: 'Crew group' }); app.toast('Group created.'); loadList(); const id = (r.result || r).id || ((r.result || r).group || {}).id; if (id) location.hash = '#/chat/group:' + encodeURIComponent(id); }
+    catch (e) { app.toast('Could not create the group: ' + humanError(e), true); }
   }
 
   /* ---------- chat pane ---------- */
@@ -62,7 +63,7 @@ export async function render(root, ctx) {
   let live = null;
   const chanEl = h('div', { style: 'padding:0 32px' });
 
-  let title = 'Owner channel', sub = 'company/owner/inbound.jsonl and outbound.jsonl', placeholder = 'Write to the company…', actions = [];
+  let title = 'Owner channel', sub = 'Messages the company reads on its next check', placeholder = 'Write to the company…', actions = [];
   if (kind === 'agent') {
     const s = seats.find(x => x.id === cid) || { name: cid };
     title = s.name || cid; placeholder = 'Write to ' + title + '…';
@@ -70,7 +71,7 @@ export async function render(root, ctx) {
     actions = [Button('Reload', { variant: 'ghost', size: 'sm', onClick: () => live && live.load() })];
   } else if (kind === 'group') {
     const g = groups.find(x => x.id === cid) || {};
-    title = g.title || 'Group chat'; sub = (g.members || []).join(', ') || 'Group chat'; placeholder = 'Write to the group…';
+    title = g.title || 'Group chat'; sub = memberNames(g) || 'Group chat'; placeholder = 'Write to the group…';
     actions = [h('button', { type: 'button', class: 'btn btn-outline-danger btn-sm', onclick: askDelete }, 'Delete chat')];
   }
   const headTitle = h('h1', { class: 'h3' }, title), headSub = h('span', { class: 'caption muted' }, sub);
@@ -99,7 +100,7 @@ export async function render(root, ctx) {
       const n = (c.placeholders || []).length;
       fill(charterStrip, h('div', { class: 'charter-strip ' + (n ? 'needs' : 'done'), role: 'status' },
         h('span', { class: 'row-8', style: 'align-items:center' }, Tag(n ? 'Charter: ' + n + ' blank' + (n > 1 ? 's' : '') + ' left' : 'Charter done', { variant: 'status', status: n ? 'warning' : 'online' }),
-          h('span', { class: 'body-s' }, n ? 'The Founder asks a few questions, then writes company/CHARTER.md. This turns green by itself.' : 'company/CHARTER.md has no blanks left.')),
+          h('span', { class: 'body-s' }, n ? 'The Founder asks a few questions, then writes the charter. This turns green by itself.' : 'The charter has no blanks left.')),
         h('a', { href: '#/setup/charter', class: 'btn btn-secondary btn-sm' }, n ? 'Back to Setup' : 'Review it in Setup')));
     } catch (_) {}
   }
@@ -135,7 +136,7 @@ export async function render(root, ctx) {
     fill(chanEl, ch.problems && ch.problems.length ? h('div', { class: 'alertbox', role: 'alert', style: 'margin-top:16px' },
       h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, 'Messages here are not being picked up: ' + ch.problems[0].msg + '.'),
         h('span', { class: 'body-s' }, 'Fix: ' + ch.problems[0].fix), ch.problems.length > 1 ? h('span', { class: 'caption muted' }, 'Also: ' + ch.problems.slice(1).map(p => p.msg).join('; ') + '.') : null),
-      h('div', { class: 'row-8' }, ch.problems[0].link ? h('a', { href: ch.problems[0].link, class: 'btn btn-secondary btn-sm' }, 'Fix it') : null, h('a', { href: '#/comms/agent:' + ceoId, class: 'btn btn-primary btn-sm' }, 'Talk to ' + ((ch.ceo && ch.ceo.name) || 'the Founder') + ' live'))) : null);
+      h('div', { class: 'row-8' }, ch.problems[0].link ? h('a', { href: ch.problems[0].link, class: 'btn btn-secondary btn-sm' }, 'Fix it') : null, h('a', { href: '#/chat/agent:' + ceoId, class: 'btn btn-primary btn-sm' }, 'Talk to ' + ((ch.ceo && ch.ceo.name) || 'the Founder') + ' live'))) : null);
     const threaded = new Set();
     const byId = {}; for (const m of msgs) byId[m.id] = m;
     for (const m of msgs) if (m.dir === 'in' && m.state && m.state.replies) for (const r of m.state.replies) threaded.add(r);
@@ -160,12 +161,12 @@ export async function render(root, ctx) {
     const text = ta.value.trim(); if (!text) return;
     sendErr.textContent = '';
     if (kind === 'owner') {
-      try { await post('/owner/messages', { text }); ta.value = ''; loadThread(); } catch (e) { sendErr.textContent = 'Not sent: ' + e.message; }
+      try { await post('/owner/messages', { text }); ta.value = ''; loadThread(); } catch (e) { sendErr.textContent = 'Not sent: ' + humanError(e); }
       return;
     }
     if (kind === 'group') {
       try { await post('/station/groups', { op: 'send', id: cid, key: 'console-' + Date.now().toString(36), text }); ta.value = ''; loadThread(); }
-      catch (e) { sendErr.textContent = e.stationDown ? 'Station not running.' : 'Not sent: ' + e.message; }
+      catch (e) { sendErr.textContent = 'Not sent: ' + humanError(e); }
       return;
     }
   }
@@ -175,7 +176,7 @@ export async function render(root, ctx) {
     const keep = h('button', { type: 'button', class: 'btn btn-paper', onclick: () => fill(confirmHost) }, 'Keep');
     const del = h('button', { type: 'button', class: 'btn btn-danger btn-md', onclick: async () => {
       del.disabled = true;
-      try { await post('/station/groups', { op: 'control', id: cid, action: 'delete' }); app.toast('Chat deleted.'); location.hash = '#/comms'; }
+      try { await post('/station/groups', { op: 'control', id: cid, action: 'delete' }); app.toast('Chat deleted.'); location.hash = '#/chat'; }
       catch (e) { del.disabled = false; fill(confirmHost.querySelector('.err-slot') || confirmHost, errLine(e, 'Delete failed')); }
     } }, 'Delete');
     fill(confirmHost, h('div', { role: 'alertdialog', 'aria-labelledby': 'del-title', 'aria-describedby': 'del-desc', class: 'alertbox', style: 'margin:20px 32px 0' },
@@ -189,7 +190,7 @@ export async function render(root, ctx) {
   await loadList();
   // header text may improve once the list is known
   if (kind === 'agent') { const s = seats.find(x => x.id === cid); if (s) headTitle.textContent = s.name || cid; }
-  if (kind === 'group') { const g = groups.find(x => x.id === cid); if (g) { headTitle.textContent = g.title || 'Group chat'; headSub.textContent = (g.members || []).join(', '); } }
+  if (kind === 'group') { const g = groups.find(x => x.id === cid); if (g) { headTitle.textContent = g.title || 'Group chat'; headSub.textContent = memberNames(g); } }
   if (kind === 'agent') {
     await live.load();
     drawCharterStrip();
@@ -199,7 +200,7 @@ export async function render(root, ctx) {
     else if (briefKind) {
       let notes = {}; try { notes = JSON.parse(ss.get('capheos.briefNotes') || '{}') || {}; } catch (_) {}
       ss.del('capheos.briefNotes');
-      history.replaceState(null, '', '#/comms/agent:' + encodeURIComponent(cid));
+      history.replaceState(null, '', '#/chat/agent:' + encodeURIComponent(cid));
       if (briefKind === 'charter-change') { live.ta.value = 'Please change the charter: '; live.ta.focus(); }
       else live.sendBrief(briefKind, notes);
     } else if (draft) live.ta.focus();

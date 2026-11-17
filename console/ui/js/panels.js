@@ -1,5 +1,5 @@
 // Company panels (docs/CONSOLE-PANELS.md). Built-in kinds drawn here; `custom` in a sandboxed srcdoc iframe (§6).
-import { h, fill, Button, errLine, dig } from './ui.js';
+import { h, fill, Button, errLine, dig, humanError } from './ui.js';
 import { api, post } from './api.js';
 import * as events from './events.js';
 import * as kit from './kit.js';
@@ -32,12 +32,12 @@ export function mountPanels(host, key, app) {
 }
 
 export function mountPanel(el, meta, app) {
-  const body = h('div', { class: 'stack-8' }, h('p', { class: 'caption muted' }, 'Loading…'));
+  const body = h('div', { class: 'stack-8 panel-body' }, h('p', { class: 'caption muted' }, 'Loading…'));   // the crew's own content
   const sub = h('span', { class: 'caption muted' }, 'Panel · refreshes every ' + fmtSecs(Math.max(meta.refresh || 300, 30)));
   const info = h('details', { class: 'body-s' }, h('summary', { style: 'min-height:32px;color:var(--text-accent)' }, 'About this panel'), h('div', { class: 'stack-6 caption muted', style: 'padding-top:6px;max-width:520px' }));
   const hide = h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: async () => {
-    if (!(await app.confirmDialog({ title: 'Hide "' + (meta.title || meta.id) + '"?', body: 'It stays installed; unhide it from Controls › Console panels.', confirm: 'Hide' }))) return;
-    try { await post('/panels/' + encodeURIComponent(meta.id) + '/hide'); app.toast('Panel hidden.'); } catch (e) { app.toast('Could not hide: ' + e.message, true); }
+    if (!(await app.confirmDialog({ title: 'Hide "' + (meta.title || meta.id) + '"?', body: 'It stays installed; unhide it in Settings › Console pages.', confirm: 'Hide' }))) return;
+    try { await post('/panels/' + encodeURIComponent(meta.id) + '/hide'); app.toast('Panel hidden.'); } catch (e) { app.toast('Could not hide: ' + humanError(e), true); }
   } }, 'Hide');
   const headId = 'panel-' + meta.id;
   const sec = h('section', { 'aria-labelledby': headId, class: 'card' },
@@ -123,17 +123,17 @@ export async function runAction(r, a, row, app, extra) {
   if (!decl) { console.warn('panel action not declared', r.id, a); return; }
   if (decl.scope === 'move' && !(extra && extra.move)) { console.warn('move action without a move', r.id, a); return; }
   const text = fillTemplate(decl.text, r, row, extra);
-  const where = decl.kind === 'handoff' ? 'a handoff to ' + decl.to : decl.kind === 'ask-ceo' ? 'a message to the CEO' : 'your Comms composer (nothing is sent yet)';
+  const where = decl.kind === 'handoff' ? 'a handoff to ' + decl.to : decl.kind === 'ask-ceo' ? 'a message to the CEO' : 'your owner-channel composer in Chat (nothing is sent yet)';
   if (!(await app.confirmDialog({ title: decl.label, body: 'This goes to ' + where + ':\n\n' + text, confirm: decl.kind === 'owner-question-draft' ? 'Open draft' : 'Send' }))) return;
   try {
-    if (decl.kind === 'owner-question-draft') { location.hash = '#/comms/owner?draft=' + encodeURIComponent(text); return; }
+    if (decl.kind === 'owner-question-draft') { location.hash = '#/chat/owner?draft=' + encodeURIComponent(text); return; }
     let to;
     if (decl.kind === 'handoff') {
       try { const c = await api('/crew'); const seat = (c.seats || []).find(s => s.id === decl.to || s.name === decl.to || (s.functions || []).includes(decl.to)); to = seat && seat.name; } catch (_) {}
     }
     await post('/owner/messages', to ? { text, to } : { text });
     app.toast('Sent.');
-  } catch (e) { app.toast('Could not send: ' + e.message, true); }
+  } catch (e) { app.toast('Could not send: ' + humanError(e), true); }
 }
 
 /* ---------- custom view: sandboxed iframe (§6) ---------- */

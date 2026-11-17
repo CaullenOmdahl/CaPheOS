@@ -352,6 +352,22 @@ function hiring() {
   let templates = []; try { templates = fs.readdirSync(co.p('company', 'roles', 'templates')).filter(f => f.endsWith('.md')).map(f => f.replace(/\.md$/, '')); } catch (_) {}
   return { ok: true, rounds, templates };
 }
+// GET /api/spend: the owner's Spend screen, read-only. Today's pay-per-token spend against the daily cap (the same
+// numerator the dispatcher's cap uses: cap-numerator.js), by seat and by provider, and this week's subscription use.
+async function spendView() {
+  const b = readJson(co.p('company', 'work', 'finance', 'dispatch-budget.json'), {}) || {};
+  let c = null, err = null; try { c = tool('cap-numerator.js').compute({ hours: 24 }); } catch (e) { err = e.message; }
+  const crew = (() => { try { return co.crew(); } catch (_) { return {}; } })();
+  const [use, lim] = await Promise.all([usage(), runApi('pacer.js', ['limits', '--json'], { timeout: 15000 }).catch(() => null)]);
+  const round = v => Math.round((Number(v) || 0) * 10000) / 10000;
+  const subs = ['claude', 'minimax'].filter(k => lim && lim[k]).map(k => { const x = lim[k]; return { id: k, name: x.name, usedPct: x.usedPct, weekStop: x.weekStop, line: x.line, resetsAt: x.resetsAt, open: x.open, paceBy: x.paceBy, why: x.why }; });
+  return { ok: true, windowHours: 24, known: !!c, error: err,
+    today: { usd: round(c && c.metered), ownerPaidUsd: round(c && c.ownerPaid), capUsd: Number(b.dailyUsd) || 0, perSeatCapUsd: Number(b.perAgentUsd) || 0, inFlightRuns: c ? c.inFlightRuns : 0 },
+    bySeat: Object.entries((c && c.byAgent) || {}).map(([id, usd]) => ({ id, name: (crew[id] && crew[id].name) || co.nameOf(id) || id, usd: round(usd) })).sort((a, z) => z.usd - a.usd),
+    byProvider: Object.entries((c && c.byProvider) || {}).map(([id, x]) => ({ id, usd: round(x.usd), capped: x.capped })).sort((a, z) => z.usd - a.usd),
+    subscriptions: subs,
+    pacer: use && use.ok !== false ? { mode: use.mode, live: use.live, emergency: use.emergency || null, boost: use.boost || null, rail: use.rail || null, problems: use.problems || [] } : null };
+}
 async function usage() { try { return await runApi('pacer.js', ['status', '--json'], { timeout: 15000 }); } catch (e) { return { ok: false, error: e.message }; } }
 function panelsList() { return tool('console-panel.js').listPanels(); }
 async function today() {
@@ -413,7 +429,8 @@ route('GET', /^\/api\/decisions$/, (m, q) => decisions(q));
 route('GET', /^\/api\/dispatch$/, (m, q) => dispatchView(q));
 route('GET', /^\/api\/hiring$/, hiring);
 route('GET', /^\/api\/usage$/, usage);
-// the subscription cutoffs (Usage and models > Subscription cutoffs): read, and set through the recorded pacer.js limit
+route('GET', /^\/api\/spend$/, spendView);
+// the subscription cutoffs (Settings › Models and subscriptions › Subscription cutoffs): read, and set through the recorded pacer.js limit
 route('GET', /^\/api\/pacer\/limits$/, () => runApi('pacer.js', ['limits', '--json'], { timeout: 15000 }));
 route('POST', /^\/api\/pacer\/limit$/, (m, q, b) => {
   const key = String(b.provider || ''); if (!['claude', 'minimax'].includes(key)) bad('provider is claude or minimax');
@@ -422,7 +439,7 @@ route('POST', /^\/api\/pacer\/limit$/, (m, q, b) => {
   if (b.weekStop != null && b.weekStop !== '') args.push('--week-stop', pct(b.weekStop, 'weekStop'));
   if (b.useNow != null && b.useNow !== '') args.push('--use-now', pct(b.useNow, 'useNow'));
   if (args.length === 2) bad('weekStop or useNow is required');
-  return runApi('pacer.js', args.concat(['--by', OWNER, '--why', 'set by the owner in the console (Usage and models)']));
+  return runApi('pacer.js', args.concat(['--by', OWNER, '--why', 'set by the owner in the console (Settings › Models and subscriptions)']));
 });
 
 route('GET', /^\/api\/governance$/, () => runApi('governance.js', ['show', '--json']));
@@ -737,6 +754,8 @@ async function selftest() {
     check('cookie auth works', r.status === 200 && r.json.ok && r.json.owner && r.json.owner.name === OWNER, r.json);
     r = await call('GET', '/api/today');
     check('today', r.status === 200 && r.json.ok && r.json.needsYou && Array.isArray(r.json.needsYou.questions) && r.json.halt && r.json.halt.mode === 'running', r.json);
+    r = await call('GET', '/api/spend');
+    check('GET /api/spend: today against the cap, by seat and by provider (read-only)', r.status === 200 && r.json.ok && r.json.today && typeof r.json.today.usd === 'number' && typeof r.json.today.capUsd === 'number' && Array.isArray(r.json.bySeat) && Array.isArray(r.json.byProvider) && Array.isArray(r.json.subscriptions), r.json);
     // questions
     const ask = await new Promise(res => execFile(process.execPath, [path.join(tmp, 'company', 'tools', 'inbox.js'), 'ask', '--from', 'Selftest', '--about', 'console', '--q', 'May we test the console?', '--blocking'], { env }, (e, so) => res(JSON.parse(so))));
     r = await call('GET', '/api/questions');
