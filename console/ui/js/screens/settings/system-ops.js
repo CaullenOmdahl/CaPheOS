@@ -16,16 +16,17 @@ const secretBox = (label, value, note) => h('div', { class: 'card p18 stack-8', 
 
 export function opsBlocks(ctx) {
   const { app } = ctx;
-  const signin = box(), flags = box(), modules = box(), sched = box(), restarts = box(), update = box();
+  const signin = box(), flags = box(), services = box(), modules = box(), sched = box(), restarts = box(), update = box();
   const blocks = [
     Block({ id: 'signin', title: 'Sign-in and access', lede: 'How you sign in to this console from any browser, and who can reach it.' }, signin),
     Block({ id: 'flags', title: 'Change-watcher flags', lede: 'Changes to what limits or protects the crew that nobody recorded. Take each one as meant, or put the old version back.' }, flags),
+    Block({ id: 'services-adopt', title: 'Background programs nobody registered', lede: 'Programs running from the company folder that were started outside the company\'s service list. Adopt one to keep it running under the same rules as the rest, or leave it to the risk owner.' }, services),
     Block({ id: 'modules', title: 'Modules', lede: 'Building blocks the company can switch on when it needs them.' }, modules),
     Block({ id: 'scheduler', title: 'Who starts the crew\'s routines', lede: 'The dispatcher (one gate that counts every start) or the station\'s own clock. You can switch back any time.' }, sched),
     Block({ id: 'restarts', title: 'Restarts', lede: 'Restart the station or this console without cutting off any work: each one waits until nothing is running.' }, restarts),
     Block({ id: 'update', title: 'Framework update', lede: 'Take a newer version of the framework. You see exactly what changes first; your company\'s own settings are kept.' }, update),
   ];
-  const loaders = [() => loadSignin(signin, app), () => loadFlags(flags, app), () => loadModules(modules, app), () => loadSched(sched, app), () => loadRestarts(restarts, app), () => loadUpdate(update, app)];
+  const loaders = [() => loadSignin(signin, app), () => loadFlags(flags, app), () => loadServices(services, app), () => loadModules(modules, app), () => loadSched(sched, app), () => loadRestarts(restarts, app), () => loadUpdate(update, app)];
   loaders.forEach(f => f());
   const off = events.on(['ops'], () => { loadFlags(flags, app); loadRestarts(restarts, app); loadUpdate(update, app, true); });
   return { blocks, dispose: off };
@@ -117,6 +118,25 @@ function flagCard(f, app, reload) {
     f.canAccept || f.canRevert ? why : h('p', { class: 'caption muted' }, 'This one is only reported: the risk owner looks at it.'),
     h('div', { class: 'row-8' }, f.canAccept ? Button('Accept the change', { size: 'sm', onClick: go('accept') }) : null, f.canRevert ? Button('Put the old version back', { variant: 'ghost', size: 'sm', onClick: go('revert') }) : null),
     err, ev.summary ? Details('Details', h('p', { class: 'caption mono-s' }, ev.summary)) : null);
+}
+
+/* ---------- services: adopt a unit started outside service.js ---------- */
+async function loadServices(host, app) {
+  let d; try { d = await api('/ops/services/unregistered'); } catch (e) { fill(host, errLine(e, 'Background programs')); return; }
+  const list = d.unregistered || [];
+  if (!list.length) { fill(host, h('p', { class: 'body-s muted', id: 'services-empty' }, d.error ? 'The list could not be read: ' + d.error : 'Nothing: every background program from the company folder is registered.')); return; }
+  fill(host, h('div', { class: 'stack-8', id: 'services-list' }, list.map(unit => {
+    const err = errP();
+    const as = input({ placeholder: 'Short name (optional, e.g. ' + unit.replace(/\.(service|timer)$/, '').split('-').slice(-2).join('-') + ')', 'aria-label': 'Name for ' + unit, style: 'max-width:280px' });
+    const why = input({ placeholder: 'Why it should keep running', 'aria-label': 'Reason for adopting ' + unit, style: 'max-width:420px' });
+    const b = Button('Adopt', { size: 'sm', onClick: async () => {
+      if (!(await app.confirmDialog({ title: 'Adopt ' + unit + '?', body: as.value.trim() ? 'It is rebuilt under the company\'s rules as "' + as.value.trim() + '"; the old unit is stopped and kept aside.' : 'It is registered as it is and keeps running.', confirm: 'Adopt' }))) return;
+      b.disabled = true; err.textContent = '';
+      try { await post('/ops/services/adopt', { unit, as: as.value.trim() || undefined, why: why.value.trim() || undefined }); app.toast(unit + ' is adopted.'); loadServices(host, app); }
+      catch (e) { err.textContent = humanError(e); b.disabled = false; }
+    } });
+    return h('div', { class: 'card p18', style: 'gap:6px', 'data-unit': unit }, h('span', { class: 'strong mono-s' }, unit), as, why, h('div', { class: 'row-8' }, b), err);
+  })));
 }
 
 /* ---------- modules ---------- */

@@ -11,7 +11,9 @@
  *   node company/tools/service.js remove <name> --by <seat>        stops it, deletes its unit files, drops it from the register
  *   node company/tools/service.js rerender --by owner     units an older template wrote are written again from this one
  *        (reset and their timers restarted); scripts/setup-station.sh runs it, so a template fix reaches installed units
- *   node company/tools/service.js adopt <unit> --by <owner> [--as <name>] [--seat <seat>] [--why "..."]
+ *   node company/tools/service.js adopt <unit> --by <owner|seat> [--as <name>] [--seat <seat>] [--why "..."]
+ *        a seat's adopt asks the owner once (Today or chat) and adopts on its next run after a yes (exit 4 while waiting);
+ *        the owner adopts at once from a shell or Settings › System › Background programs nobody registered
  *        registers a unit made outside this tool. With --as it is rebuilt from the template under the company-scoped name
  *        and the old unit is disabled and its files moved to company/state/services-adopted/; without --as it is only
  *        recorded (the duty keeps flagging its unscoped name)
@@ -489,8 +491,37 @@ function parseUnit(text) {
   return out;
 }
 const one = (u, k) => (u[k] || []).filter(Boolean).pop() || null;
+/* adopt by a seat: the owner's yes is the authority. The first run asks one owner question (a gate on the exact unit,
+ * name and seat); the owner answers it on Today or in chat; the seat's next run finds the yes and adopts, recorded with
+ * the question id. A no refuses; a changed unit, name or seat is a new question. */
+function adoptGate(ctx, base, o, words) {
+  const who = actor(ctx, o.by, 'adopt', base);
+  if (who.owner) return { owner: true };
+  const gov = require('./lib/governance');
+  const ref = 'service-adopt:' + sha(JSON.stringify({ unit: base, as: o.as || null, seat: o.seat || null })).replace(/^sha256:/, '').slice(0, 16);
+  const q = gov.questionFor(ref, ctx.gov);
+  if (q) {
+    const a = gov.approved(ref, ctx.gov);
+    if (a === true) return { approved: true, questionId: q.id, who };
+    if (a === false) throw err('the owner declined adopting ' + base + ' (' + q.id + ')', 3);
+    return { waiting: true, questionId: q.id };
+  }
+  const { normalizeForm } = require('./inbox.js');
+  const cmd = words.map(a => a.startsWith(ctx.root + '/') ? a.slice(ctx.root.length + 1) : a).join(' ');
+  const facts = ['**Program:** ' + base, '**What it runs:** `' + cmd + '`', '**Name it would get:** ' + (o.as || base + ' (unchanged)'), '**Owner seat:** ' + (o.seat || who.name),
+    '**Why:** ' + String(o.why || 'not given'), '**Asked by:** ' + who.name].join('\n');
+  const form = normalizeForm({ fields: [{ id: 'facts', type: 'info', text: facts }, { id: 'reason', type: 'text', multiline: true, label: 'Reason (optional)', required: false }],
+    actions: [{ id: 'approve', label: 'Approve', verdict: 'yes', primary: true }, { id: 'decline', label: 'Decline', verdict: 'no' }] });
+  const id = newQid(ctx);
+  const message = (who.name + ' wants to adopt "' + base + '", a background program already running from the company folder that nobody registered, so it runs under the company\'s rules'
+    + (o.as ? ' as "' + o.as + '"' : '') + '. If you decline or do not answer, it stays as it is and keeps being reported.').slice(0, 600);
+  const row = { type: 'ask', id, at: new Date(ctx.now()).toISOString(), from: who.name, about: 'service-adopt:' + base, kind: 'form', form, message, details: facts,
+    q: message + '\n\n' + facts, blocking: false, batch: 'gate',
+    gate: { category: 'localComputer', ref, by: who.seat, summary: 'adopt the background program ' + base + (o.as ? ' as ' + o.as : ''), recommendation: null, default: 'nothing changes' } };
+  require('./lib/pm-inbox-guard').append(gov.files(ctx.gov).inbox, row, 'service.js');
+  return { waiting: true, asked: true, questionId: id };
+}
 function adopt(ctx, unit, o) {
-  if (!isOwner(ctx, o.by)) throw err('adopt is the owner\'s: --by must be the owner, from the owner\'s own shell or the console', 3);
   const base = String(unit || '').replace(/\.(service|timer)$/, '');
   if (!/^[A-Za-z0-9@_.:-]{2,80}$/.test(base)) throw err('name a unit, e.g. capheos-depth-stopgap');
   const svcFile = path.join(ctx.unitDir, base + '.service'), tmrFile = path.join(ctx.unitDir, base + '.timer');
@@ -498,6 +529,10 @@ function adopt(ctx, unit, o) {
   const tmrText = fs.existsSync(tmrFile) ? fs.readFileSync(tmrFile, 'utf8') : null;
   const u = parseUnit(svcText), t = tmrText ? parseUnit(tmrText) : null;
   const words = splitWords(String(one(u, 'Service.ExecStart') || '').replace(/^[-@:+!]+/, ''));
+  const g = adoptGate(ctx, base, o, words);
+  if (g.waiting) return { ok: false, waiting: true, questionId: g.questionId, asked: !!g.asked, note: 'the owner decides on Today or in chat; run this again after the answer' };
+  const via = g.approved ? 'adopted after the owner approved ' + g.questionId + ' (asked by ' + g.who.name + ')' : null;
+  const byWord = g.approved ? 'owner (' + g.questionId + ')' : 'owner';
   const doc = read(ctx);
   const seat = o.seat ? seatOf(ctx, o.seat) : null;
   if (o.seat && !seat) throw err('--seat ' + o.seat + ' is not a seat in loops.json');
@@ -511,9 +546,9 @@ function adopt(ctx, unit, o) {
     const name = base;
     if (doc.services[name]) throw err('"' + name + '" is already registered');
     doc.services[name] = { name, unit: base, kind, argv: words, schedule, why, by: seat || 'owner', byName: seat ? (ctx.crew()[seat] || {}).name || seat : 'Owner',
-      status: 'installed', managed: false, desired: wasRunning ? 'running' : 'stopped', adopted: { from: base, at: now, by: 'owner', renamed: false },
-      approval: { level: 'owner', via: 'adopted by the owner', at: now }, softHalt: 'finish', files: Object.fromEntries([[base + '.service', sha(svcText)]].concat(tmrText ? [[base + '.timer', sha(tmrText)]] : [])) };
-    write(ctx, doc); logRow(ctx, { event: 'adopted', name, unit: base, renamed: false });
+      status: 'installed', managed: false, desired: wasRunning ? 'running' : 'stopped', adopted: { from: base, at: now, by: byWord, renamed: false },
+      approval: { level: 'owner', via: via || 'adopted by the owner', at: now, questionId: g.questionId || null }, softHalt: 'finish', files: Object.fromEntries([[base + '.service', sha(svcText)]].concat(tmrText ? [[base + '.timer', sha(tmrText)]] : [])) };
+    write(ctx, doc); logRow(ctx, { event: 'adopted', name, unit: base, renamed: false, by: byWord, askedBy: g.who ? g.who.seat : null, questionId: g.questionId || null });
     return { ok: true, name, unit: base, renamed: false, note: 'registered under its old name; the unregistered-services duty keeps flagging it until it is adopted with --as <name>' };
   }
   const name = String(o.as);
@@ -524,7 +559,7 @@ function adopt(ctx, unit, o) {
     timeout: kind === 'timer' && one(u, 'Service.TimeoutStartSec') ? toSec(one(u, 'Service.TimeoutStartSec')) : undefined, 'success-exit': one(u, 'Service.SuccessExitStatus') || undefined,
     'soft-halt': o['soft-halt'], memory: o.memory, cpu: o.cpu, network: o.network });
   const e = Object.assign(spec, { specKey: specKey(spec), by: seat || 'owner', byName: seat ? (ctx.crew()[seat] || {}).name || seat : 'Owner', proposedAt: now,
-    approval: { level: 'owner', via: 'adopted by the owner from ' + base, at: now }, adopted: { from: base, at: now, by: 'owner', renamed: true, wasRunning, wasEnabled } });
+    approval: { level: 'owner', via: (via || 'adopted by the owner') + ' from ' + base, at: now, questionId: g.questionId || null }, adopted: { from: base, at: now, by: byWord, renamed: true, wasRunning, wasEnabled } });
   // the old unit goes first: disabled, stopped, its files kept under company/state/services-adopted/
   sc(ctx, ['disable', '--now'].concat(t ? [base + '.timer', base + '.service'] : [base + '.service']), e);
   fs.mkdirSync(ctx.adoptedDir, { recursive: true });
@@ -538,7 +573,7 @@ function adopt(ctx, unit, o) {
   if (wasRunning && h) e.halt = { mode: h, at: now, wasRunning: true };
   e.desired = wasRunning ? 'running' : 'stopped';
   doc.services[name] = e;
-  write(ctx, doc); logRow(ctx, { event: 'adopted', name, unit: e.unit, from: base, renamed: true });
+  write(ctx, doc); logRow(ctx, { event: 'adopted', name, unit: e.unit, from: base, renamed: true, by: byWord, askedBy: g.who ? g.who.seat : null, questionId: g.questionId || null });
   return { ok: !e.lastError, name, unit: e.unit, from: base, renamed: true, started: wasRunning && !h, error: e.lastError || undefined };
 }
 
@@ -768,7 +803,7 @@ function main(argv) {
   if (cmd === 'start' || cmd === 'stop') { const r = startStop(ctx, cmd, o._[0], o); print(r); return r.ok ? 0 : 1; }
   if (cmd === 'remove') { print(remove(ctx, o._[0], o)); return 0; }
   if (cmd === 'rerender') { print(rerender(ctx, o)); return 0; }
-  if (cmd === 'adopt') { const r = adopt(ctx, o._[0], o); print(r); return r.ok ? 0 : 1; }
+  if (cmd === 'adopt') { const r = adopt(ctx, o._[0], o); print(r); return r.waiting ? 4 : r.ok ? 0 : 1; }
   console.error('usage: service.js propose|list|status|stop|start|remove|adopt|--duty|selftest (header of company/tools/service.js)'); return 2;
 }
 
@@ -958,14 +993,28 @@ function selftest() {
     ok('duty: a registered unit edited by hand is flagged', duty(ctx).items.some(i => i.id === 'edited:testco-svc-depth.service'));
     writeUnits(ctx, read(ctx).services.depth);
     // ---- adopt: as-is (still flagged unscoped), and renamed (scoped, old one disabled and moved)
-    ok('adopt is the owner\'s only', throwsCode(() => adopt(ctx, 'capheos-depth-stopgap', { by: 'data' }), 3) === true);
+    // a seat's adopt asks the owner once; a no refuses; the owner does not adopt by name from an agent's run
+    let ar = adopt(ctx, 'capheos-depth-stopgap', { by: 'data', why: 'a stopgap recorder' });
+    const aq = ar.questionId; const aRow = fs.readFileSync(inbox, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)).find(x => x.id === aq);
+    ok('adopt by a seat: one owner question (a gate on the exact unit), nothing adopted yet', ar.waiting && ar.asked && aRow && aRow.gate && /^service-adopt:/.test(aRow.gate.ref) && !read(ctx).services['capheos-depth-stopgap'] && adopt(ctx, 'capheos-depth-stopgap', { by: 'data', why: 'a stopgap recorder' }).questionId === aq, ar);
+    answer(aq, 'no');
+    ok('the owner declined: the seat\'s adopt is refused', throwsCode(() => adopt(ctx, 'capheos-depth-stopgap', { by: 'data', why: 'a stopgap recorder' }), 3) === true);
+    ok('an agent run cannot adopt as the owner', throwsCode(() => adopt(ctx, 'capheos-depth-stopgap', { by: 'Pat' }), 3) === true);
     agent = false;
     fake.active['capheos-depth-stopgap.service'] = true; fake.enabled['capheos-depth-stopgap.service'] = true;
     r = adopt(ctx, 'capheos-depth-stopgap', { by: 'Pat', as: 'depth-stopgap', seat: 'data', why: 'stopgap depth recorder, adopted' });
     ok('adopt --as: rebuilt as testco-svc-depth-stopgap, old unit disabled and moved, new one started', r.ok && r.unit === 'testco-svc-depth-stopgap' && !fs.existsSync(path.join(U, 'capheos-depth-stopgap.service'))
       && fs.existsSync(path.join(R, 'company/state/services-adopted/capheos-depth-stopgap.service')) && fake.active['testco-svc-depth-stopgap.service'] && !fake.active['capheos-depth-stopgap.service']
       && /Restart=always/.test(fs.readFileSync(path.join(U, 'testco-svc-depth-stopgap.service'), 'utf8')), r);
-    r = adopt(ctx, 'capheos-bank-day', { by: 'Pat', seat: 'data' });
+    agent = true;
+    r = adopt(ctx, 'capheos-bank-day', { by: 'data', seat: 'data' });
+    ok('adopt by a seat waits for the owner', r.waiting && r.questionId && !read(ctx).services['capheos-bank-day'], r);
+    answer(r.questionId, 'yes');
+    const bq = r.questionId;
+    r = adopt(ctx, 'capheos-bank-day', { by: 'data', seat: 'data' });
+    ok('after the owner\'s yes the seat\'s next run adopts it, recorded with the question', r.ok && read(ctx).services['capheos-bank-day'].approval.questionId === bq
+      && /owner approved/.test(read(ctx).services['capheos-bank-day'].approval.via) && fs.readFileSync(path.join(R, 'company/state/services-log.jsonl'), 'utf8').includes('"questionId":"' + bq + '"'), r);
+    agent = false;
     d = duty(ctx);
     ok('adopt without --as registers it; the duty then flags it as not company-scoped', r.ok && !r.renamed && d.items.some(i => i.id === 'unscoped:capheos-bank-day') && !d.items.some(i => i.id === 'unregistered:capheos-bank-day.timer'), d);
     r = remove(ctx, 'capheos-bank-day', { by: 'Pat' });
