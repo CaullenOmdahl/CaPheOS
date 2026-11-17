@@ -212,8 +212,8 @@ module.exports = function chat(deps) {
     // a blank line every 20 s while the run is quiet: a reverse proxy's read timeout never cuts a long tool call
     const ka = setInterval(() => { try { res.write('\n'); } catch (_) {} }, 20000); ka.unref();
     res.on('close', () => clearInterval(ka)); res.on('finish', () => clearInterval(ka));
-    const opening = [];   // the lines before the run exists: journaled as its first lines once it does, so a reload shows them
-    const say = (name, payload) => { opening.push({ name, payload }); line(name, payload); };
+    const opening0 = [];   // the lines before the run exists: journaled as its first lines once it does, so a reload shows them
+    const say = (name, payload) => { opening0.push({ name, payload }); line(name, payload); };
     say('console.user', { text, brief: body.brief || null });
     if (pre.problems.length) { line('console.error', pre.problems[0]); return res.end(); }
     say('console.run', { agentId: id, name: s.name, model: m.model, provider: m.provider, from: m.from });
@@ -227,23 +227,50 @@ module.exports = function chat(deps) {
     // isTask: true is what puts the agent's tools on the wire. With isTask:false the station sends the model NO tool
     // definitions (capability/project-tools.js: advertised = isTask ? coreNames : []), and a model told about its tools
     // writes the calls out as text (<run_command>…</run_command>, 2026-11-17: toolsOk 0 on every console chat).
-    const payload = { agentId: id, model: m.model, provider: m.provider, rosterSystem: true, isTask: true, streamId: STREAM(id),
-      messages: history.concat([{ role: 'user', content: contextNote(id, s, co, text) + text }]), projectRoot: co.ROOT, placed: PLACED };
+    const messages = history.concat([{ role: 'user', content: contextNote(id, s, co, text) + text }]);
     let token; try { token = co.stationToken(); } catch (_) { token = null; }
     if (!token) { line('console.error', { code: 'station-down', message: 'No station token (secrets/station-token).', fix: 'Run scripts/setup-station.sh', link: '#/settings/system' }); return res.end(); }
+    const shownText = body.brief ? text.split('\n')[0] : text;
+    const REF = require(co.p('company', 'tools', 'lib', 'refusal.js'));
+    let closed = false;
+    res.on('close', () => { closed = true; });
+    // one run on one model; a refusal (the model declined it) is retried ONCE on the seat's next model, the same turn,
+    // and the owner is told in one plain line (lib/refusal.js); every entry declining is reported plainly, never an error
+    const launch = (m, attempt, lead, tried) => {
+    const opening = lead.slice();
+    const payload = { agentId: id, model: m.model, provider: m.provider, rosterSystem: true, isTask: true, streamId: STREAM(id),
+      messages, projectRoot: co.ROOT, placed: PLACED };
     // the one gate (company/tools/lib/admit.js, door chat): an owner chat is always allowed and always counted
     let tk = null; try { tk = require(co.p('company', 'tools', 'lib', 'admit.js')).admit({ door: 'chat', kind: 'run', seat: id, why: body.brief ? 'console brief ' + body.brief : 'owner chat' }); } catch (_) {}
-    const shownText = body.brief ? text.split('\n')[0] : text;
-    const prep = await RUNS.prepare(STREAM(id), { seat: id, userText: text, shownText, brief: body.brief || null, model: m.model, provider: m.provider },
-      runId => { for (const l of opening) RUNS.journal(runId, l.name, l.payload); });
+    for (const l of lead) if (attempt > 0) line(l.name, l.payload);
+    return RUNS.prepare(STREAM(id), { seat: id, userText: text, shownText, brief: body.brief || null, model: m.model, provider: m.provider },
+      runId => { for (const l of opening) RUNS.journal(runId, l.name, l.payload); }).then(prep => {
     if (prep.source === 'observe') payload.detach = true;
     const u = new URL(co.STATION_URL.replace(/\/+$/, '') + '/api/run');
     const data = JSON.stringify(payload);
-    let runId = null, closed = false, off = null, upEnded = false, sawEnd = false;
+    let runId = null, off = null, upEnded = false, sawEnd = false, retrying = null;
     const watch = rid => {   // the run is known: from here the browser reads its journal
       if (runId || closed) return; runId = rid;
       line('console.attached', { runId: rid });
-      off = RUNS.attach(rid, 0, x => { const l = withAsk(x); line(l.name, l.payload); if (l.name === 'console.end') { closed = true; if (off) off(); res.end(); } });
+      off = RUNS.attach(rid, 0, x => {
+        const l = withAsk(x);
+        if (l.name === 'console.final' && REF.isRefusal(l.payload || {})) {
+          const next = attempt === 0 ? REF.nextEntry(id, m, tried) : null;
+          if (next) { retrying = next; return; }   // this run's end is replaced by the retry, not shown as a failure
+          line(l.name, l.payload);
+          line('console.error', { code: 'refused', message: attempt === 0 ? REF.plainLine(m, null) + ' The run stopped; nothing was changed.' : REF.pname(m.provider) + ' declined this too, after ' + REF.pname(tried[0].provider) + ' did. The run stopped; nothing was changed.' });
+          try { REF.record({ root: co.ROOT, seat: id, door: 'chat', runId: rid, from: m, to: null }); } catch (_) {}
+          return;
+        }
+        if (l.name === 'console.end' && retrying) {
+          const next = retrying; retrying = null; if (off) off();
+          try { REF.record({ root: co.ROOT, seat: id, door: 'chat', runId: rid, from: m, to: next }); } catch (_) {}
+          const note = { message: REF.plainLine(m, next).replace('answered instead.', 'is answering instead.'), refusal: { from: REF.keyOf(m), to: REF.keyOf(next) } };
+          return launch(next, 1, [{ name: 'console.note', payload: note }, { name: 'console.run', payload: { agentId: id, name: s.name, model: next.model, provider: next.provider, from: 'the next model in ' + s.name + '\'s chain (the first one declined)' } }], tried.concat([m]));
+        }
+        line(l.name, l.payload);
+        if (l.name === 'console.end') { closed = true; if (off) off(); res.end(); }
+      });
     };
     prep.started.then(watch);
     const refuse = (p) => { prep.cancel(); if (!runId) { line('console.error', p); closed = true; res.end(); } };
@@ -280,6 +307,9 @@ module.exports = function chat(deps) {
     // POST /api/station/cancel, never a dropped connection.
     res.on('close', () => { closed = true; if (off) off(); });
     up.end(data);
+    });
+    };
+    return launch(m, 0, opening0, []);
   }
 
   /* GET /api/chat/<id>/attach?runId=&from=N: the run's journal from line N, then live, as NDJSON (the same lines /send

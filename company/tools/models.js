@@ -376,7 +376,9 @@ function makeModels(o) {
       else why = curKey ? curKey + ' is not in its chain; the next tick moves it to the first entry that can run' : 'no model on record';
       return { id, name: (c[id] || {}).name || id, title: (c[id] || {}).title || '', manager: (c[id] || {}).manager || null, hasChain: !!s,
         primary: chain[0] || null, chain, now: { model: cur.pick, index: idx, why, roster: cur.roster, routines: cur.jobs.map(j => Object.assign({ id: j.id, name: j.name }, jobPair(j))), running: cur.running },
-        claudeReserve: ctx.reserve, setBy: s && s.setBy || null, setAt: s && s.setAt || null, history: moves(id, a.seat ? 50 : 10).reverse() };
+        claudeReserve: ctx.reserve, setBy: s && s.setBy || null, setAt: s && s.setAt || null, history: moves(id, a.seat ? 50 : 10).reverse(),
+        // a refused run retried on the next model (lib/refusal.js) in the last 24 h: Settings › Models says so
+        lastRefusal: ss.lastRefusal && t - Date.parse(ss.lastRefusal.at) < 24 * HOUR ? ss.lastRefusal : null };
     });
     return { ok: true, at: new Date(t).toISOString(), station: stationUp ? 'up' : 'down', failover: F, providersKnown: !!pv,
       providers: pv ? Object.values(pv).filter(p => (pol.allowed || {})[p.id]).map(p => ({ id: p.id, name: p.name, connected: p.configured, reason: p.reason })) : [],

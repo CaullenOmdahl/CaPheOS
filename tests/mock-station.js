@@ -226,7 +226,10 @@ function handle(method, p, q, body, res) {
       S.lastRunBody = { isTask: B.isTask, detach: B.detach, placed: B.placed, streamId: B.streamId };
       res.writeHead(200, { 'content-type': 'application/x-ndjson' });
       const evs = [{ name: 'agent.run.start', payload: { runId, agentId: B.agentId, streamId: B.streamId, model: B.model } }];
-      if (!reply) evs.push({ name: 'agent.run.error', payload: { runId, message: 'provider error: HTTP 401 (mock)', failureCode: 'provider_auth' } }, { name: 'agent.run.end', payload: { runId, reason: 'error', outcome: 'failed', usd: 0 } });
+      // "[refuse]": the first model's filter declines (claude-cli refuses, others answer); "[refuse-all]": every model does
+      const refusedHere = /\[refuse-all\]/.test(last) || (/\[refuse\]/.test(last) && B.provider === 'claude-cli');
+      if (refusedHere) evs.push({ name: 'agent.run.end', payload: { runId, reason: 'refused', outcome: 'refused', failureCode: 'content_policy_blocked', usd: 0 } });
+      else if (!reply) evs.push({ name: 'agent.run.error', payload: { runId, message: 'provider error: HTTP 401 (mock)', failureCode: 'provider_auth' } }, { name: 'agent.run.end', payload: { runId, reason: 'error', outcome: 'failed', usd: 0 } });
       else {
         if (!leak) evs.push({ name: 'agent.tool_call', payload: { runId, callId: 'c1', name: 'fs_read', argsSummary: 'company/CHARTER.md' } }, { name: 'agent.tool_result', payload: { runId, callId: 'c1', ok: true, ms: 3, summary: 'read 40 lines' } });
         for (const w of leak ? reply.match(/[^\n]*\n?/g).filter(Boolean) : reply.match(/\S+\s*/g)) evs.push({ name: 'agent.token', payload: { runId, delta: w } });
@@ -251,7 +254,7 @@ function handle(method, p, q, body, res) {
           if (reply && /charter/i.test(last) && ROOT && B.projectRoot) {
             try { const f = path.join(ROOT, 'company', 'CHARTER.md'); fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace(/<!--[\s\S]*?-->/g, '').replace(/<(?!none yet>)[A-Za-z][^<>\n]{0,200}>/g, 'Drafted with the owner in the console.')); } catch (_) {}
           }
-          return settle(reply ? 'done' : 'error');
+          return settle(refusedHere ? 'refused' : reply ? 'done' : 'error');
         }
         const ev = evs[i++]; if (ev.name === 'agent.token') text += ev.payload.delta;
         send1(ev); timer = setTimeout(tick, step);

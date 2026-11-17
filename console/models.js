@@ -68,6 +68,12 @@ function mount(route, d) {
 const PNAME = { 'claude-cli': 'Claude', custom: 'MiniMax', deepseek: 'DeepSeek', minimax: 'MiniMax' };
 const pname = e => (e && (PNAME[e.provider] || e.provider)) || 'its model';
 function currentWhy(s) {
+  const base = chainWhy(s);
+  // a refused run that fell over to the next model (lib/refusal.js) in the last 24 h is always worth a line
+  const r = s && s.lastRefusal;
+  return r ? (r.why + ' (' + String(r.at).slice(11, 16) + ' UTC)') + (base ? ' ' + base : '') : base;
+}
+function chainWhy(s) {
   const chain = (s && s.chain) || [], now = (s && s.now) || {}, idx = now.index;
   if (!s || !s.hasChain || !chain.length) return null;
   const p = chain[0];
@@ -153,6 +159,7 @@ async function selftest() {
       && /Claude can run again/.test(currentWhy({ hasChain: true, chain: [{ provider: 'claude-cli', ok: true }, { provider: 'deepseek', ok: true }], now: { index: 1, why: 'fallback 1 of 1: checking local sign-in' } }))
       && !/checking local sign-in/.test(currentWhy({ hasChain: true, chain: [{ provider: 'claude-cli', ok: true }, { provider: 'deepseek', ok: true }], now: { index: 1 } }))
       && currentWhy({ hasChain: false, chain: [], now: { index: -1 } }) === null);
+    check('currentWhy: a refused run that fell over to the next model is said (lib/refusal.js lastRefusal)', /Claude declined this; DeepSeek answered instead/.test(currentWhy({ hasChain: true, chain: [{ provider: 'claude-cli', ok: true }], now: { index: 0 }, lastRefusal: { at: '2030-01-01T10:00:00.000Z', why: 'Claude declined this; DeepSeek answered instead. (chat, one retry)' } }) || ''));
     r = await call('GET', '/api/models');
     check('GET /api/models carries now.plain (current-state Why)', r.json.seats.every(s => 'plain' in s.now), r.json.seats.map(s => s.now));
     r = await call('POST', '/api/models/seat/nobody/chain', { chain: [{ provider: 'deepseek', model: 'deepseek-flash' }] });

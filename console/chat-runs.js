@@ -87,7 +87,7 @@ module.exports = function chatRuns(deps) {
     if (c && lastSeq.has(runId) && seqOf(c) <= lastSeq.get(runId) && epochOf(c) === epochOf(r.cursor || c)) return;   // a replay of what is journaled
     if (c) r.cursor = c;
     append(runId, c ? { c, name, payload } : { name, payload });
-    if (name === 'agent.run.end') finish(runId, { reason: payload && (payload.reason || payload.outcome) || 'done', outcome: payload && payload.outcome });
+    if (name === 'agent.run.end') finish(runId, { reason: payload && (payload.reason || payload.outcome) || 'done', outcome: payload && payload.outcome, failureCode: payload && payload.failureCode });
   }
 
   async function finish(runId, how) {
@@ -98,7 +98,7 @@ module.exports = function chatRuns(deps) {
     let got = null; try { got = await finalText(r.seat, runId, r, streamed); } catch (_) {}
     const text = got && typeof got.text === 'string' ? got.text : streamed;
     // complete: the run ended on its own, and nothing between was lost (or the transcript named this run's reply exactly)
-    append(runId, { name: 'console.final', payload: { runId, text, complete: ended && (!r.gap || !!(got && got.exact)), reason: how.reason || null, gap: !!r.gap, lost: !!how.lost } });
+    append(runId, { name: 'console.final', payload: { runId, text, complete: ended && (!r.gap || !!(got && got.exact)), reason: how.reason || null, outcome: how.outcome || null, failureCode: how.failureCode || null, gap: !!r.gap, lost: !!how.lost } });
     r.status = ended ? 'done' : 'cut'; r.endedAt = Date.now(); r.reason = how.reason || null;
     save();
     append(runId, { name: 'console.end', payload: { runId, status: r.status } });
@@ -182,7 +182,7 @@ module.exports = function chatRuns(deps) {
       const got = await stationGet('runs?agent=' + encodeURIComponent(r.seat) + '&runId=' + encodeURIComponent(id) + '&limit=5', 5000).catch(() => null);
       const rows = got && got.ok && got.data && Array.isArray(got.data.runs) ? got.data.runs : [];
       const row = rows.find(x => x && x.runId === id && (x.endedAt || x.reason));
-      if (row) { if (!r.gap) { r.gap = true; save(); } finish(id, { reason: row.reason || row.outcome || 'done', outcome: row.outcome }); }
+      if (row) { if (!r.gap) { r.gap = true; save(); } finish(id, { reason: row.reason || row.outcome || 'done', outcome: row.outcome, failureCode: row.failureCode }); }
       else if (Date.now() - r.startedAt > MAX_AGE_MS) finish(id, { reason: 'lost', lost: true });
     }
   }
@@ -238,7 +238,7 @@ module.exports = function chatRuns(deps) {
         // a run read off its own /api/run stream died with the old console process: the station says how it ended
         r.gap = true; save1 = true;
       }
-      if (ls.some(l => l.name === 'agent.run.end')) { const e = ls.find(l => l.name === 'agent.run.end').payload || {}; setImmediate(() => finish(id, { reason: e.reason || e.outcome || 'done', outcome: e.outcome })); }
+      if (ls.some(l => l.name === 'agent.run.end')) { const e = ls.find(l => l.name === 'agent.run.end').payload || {}; setImmediate(() => finish(id, { reason: e.reason || e.outcome || 'done', outcome: e.outcome, failureCode: e.failureCode })); }
     }
     if (save1) save();
     const ids = running();

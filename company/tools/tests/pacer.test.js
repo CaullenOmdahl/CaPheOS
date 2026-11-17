@@ -706,7 +706,7 @@ test('fix 6: the third slot is lent only when the extra loop runs on a subscript
   assert.equal(await run(['engineer', 'treasurer', 'designer', 'cand-qa-lee'], 10), 0);
 });
 
-test('a second refusal of the same routine within 24 h: a 24 h block and no re-run (ESCALATION_POLICY T3); re-run can be turned off; a paused routine is never re-run', async () => {
+test('a second refusal of the same routine within 24 h: a 24 h block, and the run is still re-run once (never lost); refireWithinMin 0 no longer drops it; a paused routine is never re-run', async () => {
   const mk = (enabled, policy, runs) => {
     const jobs = crewJobs();
     Object.assign(jobs.find(j => j.id === 'j-prod'), { enabled, provider: 'claude-cli', model: 'claude-sonnet-5-5', wire: { provider: 'claude-cli', model: 'claude-sonnet-5-5' }, lastRunAt: new Date(T0 - 20 * MIN).toISOString() });
@@ -714,19 +714,21 @@ test('a second refusal of the same routine within 24 h: a 24 h block and no re-r
     const st = station(jobs);
     return { st, jobs, h: make(fixture({ feedPct: 5, runs, policy }), st) };
   };
-  // two refusals of one routine 5 h apart: the first gets 2 h (long expired), the second 24 h and no re-run
   let x = mk(true, { mode: 'live' }, [
     { runId: 'r-ref-a', cronJobId: 'j-prod', provider: 'claude-cli', model: 'claude-sonnet-5-5', outcome: 'refused', failureCode: 'content_policy_blocked', startedAt: T0 - 5 * HOUR - 10 * MIN, endedAt: T0 - 5 * HOUR },
     { runId: 'r-ref-b', cronJobId: 'j-prod', provider: 'claude-cli', model: 'claude-sonnet-5-5', outcome: 'refused', failureCode: 'content_policy_blocked', startedAt: T0 - 20 * MIN, endedAt: T0 - 10 * MIN }]);
   await tick(x.h, x.st.copy);
   const b = readState({ root: x.h.p.root }).blocks;
   assert.equal(b.length, 1, JSON.stringify(b)); assert.equal(b[0].runId, 'r-ref-b'); assert.equal(b[0].until, T0 - 10 * MIN + 24 * HOUR); assert.equal(b[0].repeat, true);
-  assert.deepEqual(x.st.fires, [], 'a repeat refusal is never re-run');
-  assert.ok(x.h.lines.some(l => /second refusal within 24 h: not re-run/.test(l)), x.h.lines.join('\n'));
-  // re-run turned off by policy: blocked 2 h, not re-run
+  assert.deepEqual(x.st.fires, ['j-prod'], 'a repeat refusal is re-run once too: the run is never lost');
+  const moves = fs.readFileSync(path.join(x.h.p.root, 'company/state/model-moves.jsonl'), 'utf8');
+  const mv = moves.trim().split('\n').map(l => JSON.parse(l)).find(r => r.direction === 'refusal');
+  assert.ok(mv && mv.door === 'routine' && mv.from === 'claude-cli/claude-sonnet-5-5' && mv.to && mv.to !== mv.from && mv.seat === 'drafter', 'the failover is recorded on the seat: ' + moves);
+  assert.match(fs.readFileSync(path.join(x.h.p.root, 'company/state/models-state.json'), 'utf8'), /Claude declined this/);
+  // refireWithinMin 0 (the old "never") no longer drops the run
   x = mk(true, { mode: 'live', routing: { refireWithinMin: 0 } });
   await tick(x.h, x.st.copy);
-  assert.deepEqual(x.st.fires, []); assert.equal(readState({ root: x.h.p.root }).blocks[0].until, T0 - 10 * MIN + 2 * HOUR);
+  assert.deepEqual(x.st.fires, ['j-prod']); assert.equal(readState({ root: x.h.p.root }).blocks[0].until, T0 - 10 * MIN + 2 * HOUR);
   // a paused routine is never re-run
   x = mk(false, { mode: 'live' });
   const s = x.h.p.loadState(); const m = await x.h.p.measure(s, x.st.copy); const pl = x.h.p.plan(m, s, x.st.copy);

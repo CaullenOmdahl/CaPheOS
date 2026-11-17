@@ -208,7 +208,9 @@ function loadPolicy(root, override) {
   p.routing.refusalFirstBlockHours = numOr(p.routing.refusalFirstBlockHours, 2, 0, 24 * 7);   // a routine's first refusal
   p.routing.refusalRepeatWithinHours = numOr(p.routing.refusalRepeatWithinHours, 24, 1, 24 * 7);
   p.routing.maxOntoSubscriptionPerHour = numOr(p.routing.maxOntoSubscriptionPerHour, 2, 0, 100);   // 0 = no ramp limit
-  p.routing.refireWithinMin = numOr(p.routing.refireWithinMin, 120, 0, 24 * 60);   // a FIRST refusal is re-run once, unchanged, on the next entry; 0 = never (company/ESCALATION_POLICY.md T3)
+  // owner ruling: a refused run is never lost — it is re-run once, unchanged, on the routine's next model (lib/refusal.js);
+  // refireWithinMin is only how fresh a refusal must be for that re-run (0, the old "never", reads as the default)
+  p.routing.refireWithinMin = numOr(p.routing.refireWithinMin, 120, 1, 24 * 60);
   for (const k of ['blockOutcomes', 'blockFailureCodes']) if (!Array.isArray(p.routing[k])) p.routing[k] = DEFAULTS.routing[k].slice();
   p.deepseekRail.holdAtPct = numOr(p.deepseekRail.holdAtPct, 85, 1, 100);
   p.deepseekRail.pauseScheduledAtPct = numOr(p.deepseekRail.pauseScheduledAtPct, 90, 1, 100);   // 100 = never pause
@@ -823,9 +825,9 @@ function makePacer(o) {
       const until = e.endedAt + (repeat ? policy.routing.refusalBlockHours : policy.routing.refusalFirstBlockHours) * HOUR;
       if (until <= t) continue;
       st.blocks.push({ routineId: e.routineId, name: nameOf(e.routineId), provider: e.provider, model: e.model, runId: e.runId, code: e.code, at: e.endedAt, until, repeat });
-      const fresh = !repeat && t - e.endedAt <= policy.routing.refireWithinMin * MIN;
-      if (fresh) st.pendingRefires.push({ runId: e.runId, routineId: e.routineId, provider: e.provider, endedAt: e.endedAt });
-      change('BLOCK ' + (NAMES[e.provider] || e.provider) + ' for "' + nameOf(e.routineId) + '" until ' + when(until) + ': its run at ' + hm(e.endedAt) + ' on ' + e.model + ' ended ' + e.code + (repeat ? ' (a second refusal within ' + policy.routing.refusalRepeatWithinHours + ' h: not re-run; the CEO handles it, ESCALATION_POLICY T3)' : '') + (fresh ? (live ? '; it will be re-fired once on its new model' : '; live mode would re-fire it once on its new model') : ''));
+      const fresh = t - e.endedAt <= policy.routing.refireWithinMin * MIN;   // a repeat refusal is re-run too: the run is never lost
+      if (fresh) st.pendingRefires.push({ runId: e.runId, routineId: e.routineId, provider: e.provider, model: e.model, endedAt: e.endedAt });
+      change('BLOCK ' + (NAMES[e.provider] || e.provider) + ' for "' + nameOf(e.routineId) + '" until ' + when(until) + ': its run at ' + hm(e.endedAt) + ' on ' + e.model + ' ended ' + e.code + (repeat ? ' (a second refusal within ' + policy.routing.refusalRepeatWithinHours + ' h: blocked ' + policy.routing.refusalBlockHours + ' h; the CEO looks at it, ESCALATION_POLICY T3)' : '') + (fresh ? (live ? '; it will be re-fired once on its new model' : '; live mode would re-fire it once on its new model') : ''));
       journal('block', { routine: nameOf(e.routineId), routineId: e.routineId, provider: e.provider, model: e.model, runId: e.runId, code: e.code, until: new Date(until).toISOString() });
     }
     const limitClosure = (key, list, untilOf) => {
@@ -1049,9 +1051,9 @@ function makePacer(o) {
       if (lastRun > p.endedAt + MIN) status = 'done: the routine has run again since';
       else if (require('./lib/scheduler').switchedOff(job, root)) status = 'skip: the routine is paused (Run Now would still fire it, so the pacer never does)';
       else if (job.inFlight || job.state === 'running') status = 'wait: running';
-      else if (row.to.provider === p.provider) status = 'wait: no other provider is open for it';
+      else if (row.to.provider === p.provider) status = 'stop: no other model in its chain is open, so nothing could re-run it';
       else if (row.action === 'wait') status = 'wait: ' + row.wait;
-      refires.push({ runId: p.runId, routineId: p.routineId, name: job.name, provider: p.provider, to: row.to, status });
+      refires.push({ runId: p.runId, routineId: p.routineId, name: job.name, provider: p.provider, model: p.model, to: row.to, status });
     }
     return { at: t, rows, untouched, refires, rail: railPlan(m, st, jobs, rows), blocks: (st.blocks || []).filter(b => b && b.until > t), closures: Object.assign({}, st.closures || {}), problems: R.problems };
   }
@@ -1162,6 +1164,13 @@ function makePacer(o) {
       }
     }
     for (const f of pl.refires) {
+      if (/^stop:/.test(f.status) && !(st.refired[f.runId])) {   // every entry refused or closed: said plainly, once, and stopped
+        st.refired[f.runId] = { at: t, status: 'stopped' };
+        const job0 = byId[f.routineId];
+        note('REFUSED, NOT RE-RUN "' + f.name + '": ' + (NAMES[f.provider] || f.provider) + ' refused it and no other model in its chain is open. The run is reported, not lost: the CEO picks it up.');
+        try { require('./lib/refusal.js').record({ root, seat: job0 && job0.agentId, door: 'routine', runId: f.runId, from: { provider: f.provider, model: f.model }, to: null }); } catch (_) {}
+        continue;
+      }
       if (f.status !== 'ready' && !/^done/.test(f.status)) continue;
       if (/^done/.test(f.status)) { st.refired[f.runId] = { at: t, status: 'not needed' }; continue; }
       const job = byId[f.routineId];
@@ -1174,6 +1183,7 @@ function makePacer(o) {
       st.refired[f.runId] = { at: t, status: res.status };
       if (res.status === 200 && job) job.inFlight = true;   // the dispatcher skips it this tick
       note('RE-FIRE "' + f.name + '" on ' + curProv + ' after a refusal: HTTP ' + res.status + (res.status === 200 ? '' : ' ' + String(res.body).slice(0, 120)));
+      if (res.status === 200) try { require('./lib/refusal.js').record({ root, seat: job.agentId, door: 'routine', runId: f.runId, retryRunId: res.runId || null, from: { provider: f.provider, model: f.model }, to: { provider: curProv, model: (job.wire && job.wire.model) || job.model } }); } catch (_) {}
       journal('refire', { routine: f.name, routineId: f.routineId, runId: f.runId, on: curProv, status: res.status });
       done.push({ id: f.routineId, name: f.name, refire: true, applied: res.status === 200 });
     }
@@ -1510,7 +1520,6 @@ function makePacer(o) {
     const out = [];
     const k = m.knobs || {};
     if (k.maxUnpricedTokens === 0) out.push('MiniMax runs have no per-run token ceiling (station setting maxUnpricedTokens is 0 in .starnet-data/workspaces/runtime.knobs.json), and MiniMax bills Credits once the plan runs out: set a ceiling of about 6–8M tokens first');
-    if (!(policy.routing.refireWithinMin > 0)) out.push('a refused routine is not re-fired (routing.refireWithinMin is 0); its provider is blocked for that routine for ' + policy.routing.refusalFirstBlockHours + ' h after a first refusal, ' + policy.routing.refusalBlockHours + ' h after a repeat');
     return out;
   }
   function planText(m, pl) {
