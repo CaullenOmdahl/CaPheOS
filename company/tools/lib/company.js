@@ -119,12 +119,26 @@ function halted() { const m = haltState().mode; return m === 'soft' || m === 'ha
 const RESTART_HOLD_FILE = p('company', 'state', 'restart-hold.json');
 function restartHold(now) {
   const h = readJson(RESTART_HOLD_FILE, null);
-  if (!h || typeof h !== 'object') return null;
+  if (!h || typeof h !== 'object' || h.watching === true) return null;   // watching: the hold is lifted, the script only watches
   const exp = Date.parse(String(h.expiresAt || ''));
   if (!Number.isFinite(exp) || exp <= (Number.isFinite(now) ? now : Date.now())) return null;
   return h;
 }
 function startsHeld() { return halted() || (restartHold() ? 'restart' : false); }
+/* A hold record that holds nothing any more because it is past its expiresAt (its script died): a check that finds the
+ * scheduler off must still FAIL then, and can say why. */
+function restartHoldExpired(now) {
+  const h = readJson(RESTART_HOLD_FILE, null);
+  if (!h || typeof h !== 'object' || h.watching === true) return null;
+  return restartHold(now) ? null : h;
+}
+/* the plain words a status check uses for an active hold instead of FAIL: "paused for a station restart (since 17:03,
+ * expires 18:48)" */
+function restartHoldNote(h) {
+  h = h || restartHold(); if (!h) return null;
+  const t = v => { const n = Date.parse(String(v || '')); return Number.isFinite(n) ? localParts(new Date(n)).time : '?'; };
+  return 'paused for a station restart (since ' + t(h.at) + ', expires ' + t(h.expiresAt) + (h.reason ? '; ' + String(h.reason).slice(0, 80) : '') + ')';
+}
 
 /* Guardrails: hard blocks, one switch each (company/state/guardrails.json, defaults in company/defaults/state/).
  * co.guard(name) === true means the block is ON. Unknown name or unreadable file => ON (fail closed); 'halt' is always ON.
@@ -140,7 +154,7 @@ function guard(name) {
 
 module.exports = { ROOT, p, config, readJson, TZ, SECRETS_DIR, secret, stationToken, LOOPS_FILE, crew,
   holds, ceo, seatFor, nameOf, localParts, GOV_FILE, LEVELS, governance, gate, HALT_FILE, haltState, halted,
-  RESTART_HOLD_FILE, restartHold, startsHeld,
+  RESTART_HOLD_FILE, restartHold, startsHeld, restartHoldExpired, restartHoldNote,
   GUARD_FILE, guardrails, guard };
 
 Object.defineProperty(module.exports, 'STATION_URL', { enumerable: true, get: resolveStationUrl });

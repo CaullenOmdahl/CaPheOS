@@ -735,6 +735,8 @@ function lastRunTail(job) {
   // 1-on-1s (company/tools/corrections.js, fail-safe): detect habits, then activate, record, escalate or retire standing
   // corrections. Before the house-rules hook, so a correction activated now reaches the prompts in this same tick.
   try { await require('./corrections.js').tick({ dry: DRY, log, quests, jobs }); } catch (e) { log('CORRECTIONS ERROR: ' + e.message); }
+  // a run that sleeps to a wall-clock time (company/tools/long-sleep.js, fail-safe): its seat's manager is told once
+  try { require('./long-sleep.js').tick({ dry: DRY, log }); } catch (e) { log('LONG SLEEP ERROR: ' + String(e.message).slice(0, 200)); }
   try { await require('./routine-rules.js').ensure({ dry: DRY, log }); } catch (e) { log('HOUSE RULES ERROR: ' + e.message); }
   try { require('./handoff-archive.js').run({ dry: DRY, log }); } catch (e) { log('ARCHIVE ERROR: ' + e.message); }
   try { require('./retention.js').daily({ dry: DRY, log }); } catch (e) { log('RETENTION ERROR: ' + String(e.message).slice(0, 200)); }   // once a company day (docs/RETENTION.md)

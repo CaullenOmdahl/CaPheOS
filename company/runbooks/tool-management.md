@@ -132,6 +132,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/incident-open.py | risk | none |
 | company/tools/lanes.js | tools | none |
 | company/tools/locked-watch.js | risk | `selftest` / `--selftest` |
+| company/tools/long-sleep.js | tools | `--selftest` |
 | company/tools/mandate.js | ceo | none |
 | company/tools/merge-gate.js | risk | `selftest` |
 | company/tools/model-drift.js | people | `--selftest` |
@@ -231,6 +232,7 @@ in §5a instead.
 | `company/tools/health-check.sh` | tools | `bash company/tools/health-check.sh --selftest` |
 | `company/tools/hire.js` | people | `node company/tools/hire.js selftest` |
 | `company/tools/locked-watch.js` | risk | `node company/tools/locked-watch.js selftest` |
+| `company/tools/long-sleep.js` | tools | `node company/tools/long-sleep.js --selftest` |
 | `company/tools/model-drift.js` | people | `node company/tools/model-drift.js --selftest` |
 | `company/tools/module.js` | ceo | `node company/tools/module.js selftest` |
 | `company/tools/offpeak-clocks.js` | finance | `node company/tools/offpeak-clocks.js --selftest` |

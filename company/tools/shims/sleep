@@ -1,0 +1,42 @@
+#!/bin/bash
+# company/tools/shims/sleep — first on the station's PATH (scripts/setup-station.sh puts company/tools/shims there), so
+# an agent's `sleep N` inside a run is capped: a total over SLEEP_SHIM_MAX_SEC (default 120) is refused at once, exit 2,
+# with a message that names what to do instead. Shorter sleeps, --help/--version and anything it cannot parse go to the
+# real sleep unchanged (only a parsed total over the cap is refused).
+# Why: on 2026-11-17 a run spent 40+ minutes in `sleep 236` loops waiting for 15-minute market boundaries. A waiting run
+# holds its seat, blocks lanes and station restarts, and does no work. Later work is a commitment with a due time; a
+# continuous recorder is a background service (house rules v7, company/tools/routine-rules.js).
+# An absolute /usr/bin/sleep skips this shim; company/tools/long-sleep.js (run by the dispatcher) flags a run that slept
+# long anyway to the seat's manager, once. Test: node company/tools/long-sleep.js --selftest.
+REAL="${SLEEP_SHIM_REAL:-/usr/bin/sleep}"
+[ -x "$REAL" ] || REAL=/bin/sleep
+MAX="${SLEEP_SHIM_MAX_SEC:-120}"
+# sum the arguments the way GNU sleep does: NUMBER[s|m|h|d], several are added; "inf"/"infinity" is forever
+total=$(
+  for a in "$@"; do printf '%s\n' "$a"; done | awk '
+    BEGIN { t = 0; bad = 0 }
+    {
+      a = tolower($0)
+      if (a ~ /^\+?inf(inity)?$/) { t = 1e18; next }
+      if (match(a, /^\+?([0-9]+\.?[0-9]*|\.[0-9]+)(e[+-]?[0-9]+)?[smhd]?$/)) {
+        u = substr(a, length(a), 1); n = a
+        if (u ~ /[smhd]/) n = substr(a, 1, length(a) - 1); else u = "s"
+        m = (u == "m") ? 60 : (u == "h") ? 3600 : (u == "d") ? 86400 : 1
+        t += n * m; next
+      }
+      bad = 1
+    }
+    END { if (bad || NR == 0) print "x"; else printf "%.3f\n", t }'
+)
+if [ "$total" != "x" ] && awk -v t="$total" -v m="$MAX" 'BEGIN { exit !(t > m) }'; then
+  cat >&2 <<EOF
+sleep: refused: \`sleep $*\` waits $(awk -v t="$total" 'BEGIN { if (t >= 1e17) print "forever"; else printf "%d s", t }') inside a run; this station allows at most $MAX s per sleep (company/tools/shims/sleep).
+A waiting run holds your seat, blocks lanes and station restarts, and does no work. Instead:
+  - to act at a later time, record a commitment with a due time and end this run; the commitments duty wakes you then:
+      node company/tools/commitments.js create --title "..." --key <key> --owner <you> --due <ISO time>
+  - for continuous recording or watching, use a background service: node company/tools/service.js propose ...
+  - to wait for a process you started, wait in steps of at most 120 s (shell_bg_wait timeoutMs 120000) and check between.
+EOF
+  exit 2
+fi
+exec "$REAL" "$@"

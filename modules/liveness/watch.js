@@ -114,6 +114,8 @@ async function beat({ dry, halted } = {}) {
   if (now() - first > limit || w) res = dry ? { label: 'watcher', dry: true } : await judge({ rec: w, limitMs: Math.max(limit, 3 * tickMin() * 60000), label: 'liveness watcher', st: b.watcher, kind: 'watcher' });
   if (dry) return res;
   b.firstAt = b.firstAt || iso(now()); b.at = iso(now()); b.pid = process.pid; b.ticks = (b.ticks || 0) + 1; b.halted = halted || false; b.tickMin = tickMin();
+  // a restart hold beats as halted (nothing starts) but is not a halt: say so, so nobody reads it as one
+  { const rh = co.halted() ? null : co.restartHold(); b.paused = rh ? co.restartHoldNote(rh) : null; }
   writeJson(F.beat(), b);
   return res;
 }

@@ -6,7 +6,8 @@
  *   R.registry({ toolsDir })        company duties (company/tools/duties.js) + each ENABLED module's module.json "duties"
  *   R.policy()                      { source, tickCapMs, overrides, flagged } from company/work/ops/duty-policy.json
  *   await R.tick({ log, dry, halted, now, toolsDir, flag })   run what is due, write company/state/duties.json
- *   R.view({ now, toolsDir })       per duty { id, route, state ok|due|broken|stale|off, checkedAt, reason, history, ... }
+ *   R.view({ now, toolsDir })       per duty { id, route, state ok|due|broken|stale|off|paused, checkedAt, reason, history, ... }
+ *                                   (paused: stale only because an active restart hold runs whileHalted duties only)
  *   R.sanitize(text, max)           what any reason goes through before a prompt or a log
  *
  * The contract a duty keeps: `node <tool> --duty`, no other argument. Exit 0 = nothing due; exit 1 = due, stdout one
@@ -224,11 +225,14 @@ function view(opts) {
   const pol = policy();
   const S = readState();
   const routeName = r => { if (!r) return null; const id = FUNCTIONS.includes(r) ? co.seatFor(r) : r; return id ? co.nameOf(id) : null; };
+  const rhold = co.halted() ? null : co.restartHold(now); const pausedNote = rhold ? co.restartHoldNote(rhold) : null;
   return { policySource: pol.source, policyFlagged: pol.flagged, tickCapMs: pol.tickCapMs, updatedAt: S.updatedAt || null, duties: reg.map(d => {
     const set = settings(d, pol); const st = S.duties[d.id] || {};
-    const s = pol.source === 'none' && !d.invalid ? 'stale' : stateOf(d, st, set, now);
+    let s = pol.source === 'none' && !d.invalid ? 'stale' : stateOf(d, st, set, now);
+    // a restart hold (restart-station.js) runs only whileHalted duties, on purpose: one that went stale under it is paused
+    if (s === 'stale' && pausedNote && !d.whileHalted) s = 'paused';
     return { id: d.id, source: d.source, tool: d.tool, route: st.route || d.route, owner: routeName(st.route || d.route), state: s, enabled: set.enabled, everyMin: set.everyMin,
-      checkedAt: st.lastRun || null, reason: s === 'due' ? st.reason || null : s === 'broken' ? sanitize(d.invalid || st.error || 'broken', 240) : s === 'stale' ? (st.lastRun ? 'last run ' + st.lastRun + ', older than 2 x ' + set.everyMin + ' min' : 'never run') : null,
+      checkedAt: st.lastRun || null, reason: s === 'due' ? st.reason || null : s === 'broken' ? sanitize(d.invalid || st.error || 'broken', 240) : s === 'stale' ? (st.lastRun ? 'last run ' + st.lastRun + ', older than 2 x ' + set.everyMin + ' min' : 'never run') : s === 'paused' ? pausedNote : null,
       key: st.key || null, items: s === 'due' ? (st.items || []) : [], dueSince: st.dueSince || null, brokenSince: st.brokenSince || null, waits: st.waits || 0, whileHalted: !!d.whileHalted,
       history: (st.history || []).slice(-HISTORY) };
   }) };

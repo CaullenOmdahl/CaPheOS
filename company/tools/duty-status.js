@@ -2,11 +2,12 @@
 /* duty-status.js — what every duty check says now, for people and for the console (docs/DUTIES.md).
  *
  *   node company/tools/duty-status.js            one line per duty: state, who it routes to, when it last ran, why
- *   node company/tools/duty-status.js --json     [{id, route, owner, state ok|due|broken|stale|off, checkedAt, reason,
+ *   node company/tools/duty-status.js --json     [{id, route, owner, state ok|due|broken|stale|off|paused, checkedAt, reason,
  *                                                  history: [ok|due|broken ...], everyMin, source, ...}]
  *   node company/tools/duty-status.js --selftest
  * The state is computed here (lib/duty-runner.js view), never by the page that shows it: a duty is ok only if it ran
- * inside 2 x its cadence and said ok; never-run, too-old or skipped is stale. Absence never renders green.
+ * inside 2 x its cadence and said ok; never-run, too-old or skipped is stale. Absence never renders green. While a
+ * restart hold is active (co.restartHold()) a stale duty that does not run while halted is `paused`, with the hold's words.
  * Reads company/state/duties.json, the registry (company/tools/duties.js, enabled modules) and the duty policy. Writes
  * nothing. Console source: sources.json tool "duties". Owner: the tools seat.
  */

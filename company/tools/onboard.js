@@ -292,6 +292,9 @@ async function certify() {
   // 11
   let fl = null; try { fl = await require('./founder-loop.js').status(); } catch (e) { fl = { ok: false, problems: [{ msg: e.message, fix: 'node company/tools/founder-loop.js status' }] }; }
   put('founder-loop', fl.ok, (fl.problems || []).map(p => p.msg + ' (fix: ' + p.fix + ')').join('; '));
+  if (fl.ok && fl.paused) res['founder-loop'].note = 'the scheduler is ' + fl.paused;
+  // liveness: the dispatcher keeps beating through a restart hold; say that the company is paused, not broken
+  if (res.liveness.ok && co.restartHold()) res.liveness.note = 'the company is ' + co.restartHoldNote();
   const ok = Object.values(res).every(x => x.ok);
   const s = state();
   const was = s.certified;
@@ -333,6 +336,8 @@ async function kickoff() {
     fs.mkdirSync(path.dirname(inbox), { recursive: true });
     fs.appendFileSync(inbox, (txt ? '' : '# Handoffs to ' + seat.name + '\n') + block);
   }
+  // nothing starts during a halt or a restart hold: the open handoff waits, and the dispatcher wakes the Founder after it
+  if (co.startsHeld()) return setStep('kickoff', 'pending', 'handoff written; not fired now, the company is ' + (co.halted() ? 'halted' : co.restartHoldNote()) + ' (the dispatcher wakes the Founder for the open handoff after it)');
   const cr = await FL.stationCall('GET', '/api/cron');
   const job = cr.json && Array.isArray(cr.json.jobs) ? FL.findLoop(cr.json.jobs, seat) : null;
   if (!job) { const st = setStep('kickoff', 'pending', 'handoff written; no "' + seat.loop + '" routine to fire (the dispatcher wakes the Founder once it exists)'); return st; }
@@ -462,7 +467,7 @@ if (require.main === module) {
     if (has('step')) { const r = await step(opt('step')); show(r, x => console.log((x.status || 'failed') + ' ' + (x.step || '') + ' — ' + (x.note || x.error || ''))); process.exit(r.ok ? 0 : 1); }
     if (has('check')) { const r = check(); show(r, x => { console.log((x.certified ? 'CERTIFIED' : 'NOT CERTIFIED') + ' · ' + (x.provisioned ? 'provisioned' : 'not provisioned')); for (const s of x.steps) console.log('  step  ' + s.status.padEnd(9) + ' ' + s.id + (s.note ? ' — ' + s.note : '')); for (const c of x.checks) console.log('  check ' + c.status.padEnd(9) + ' ' + c.id + (c.missing ? ' — ' + c.missing : '')); }); process.exit(0); }
     if (has('resume')) { const r = await resume(); show(r, x => { for (const [k, v] of Object.entries(x.steps)) console.log('  ' + v.status.padEnd(8) + ' ' + k + (v.note ? ' — ' + v.note : '')); }); process.exit(r.ok ? 0 : 1); }
-    if (has('certify')) { const r = await certify(); show(r, x => { console.log(x.ok ? 'CERTIFIED' : 'NOT CERTIFIED'); for (const [k, v] of Object.entries(x.results)) console.log('  ' + (v.ok ? 'ok  ' : 'FAIL') + ' ' + k + (v.missing ? ' — ' + v.missing : '')); }); process.exit(r.ok ? 0 : 1); }
+    if (has('certify')) { const r = await certify(); show(r, x => { console.log(x.ok ? 'CERTIFIED' : 'NOT CERTIFIED'); for (const [k, v] of Object.entries(x.results)) console.log('  ' + (v.ok ? 'ok  ' : 'FAIL') + ' ' + k + (v.missing ? ' — ' + v.missing : '') + (v.note ? ' — ' + v.note : '')); }); process.exit(r.ok ? 0 : 1); }
     if (has('teardown')) { const r = teardown({ by: opt('by'), purge: has('purge') }); show(r); process.exit(r.ok ? 0 : 1); }
     console.error('usage: onboard.js --check | --resume | --step <name> | --certify | --teardown [--purge] --by owner | --record <step> <status> | --selftest   [--json]');
     process.exit(2);

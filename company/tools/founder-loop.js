@@ -137,8 +137,16 @@ async function status(opts) {
     if (!job.model || !job.provider) problems.push({ code: 'no-model', msg: 'the routine "' + job.name + '" names no model', fix: 'pick an AI provider in Setup (step 2)' });
   }
   if (!blessed) problems.push({ code: 'not-blessed', msg: 'the company folder (' + ROOT + ') is not a blessed project on the station, so the crew cannot read or write it', fix: ensureCmd });
-  if (!schedulerOn) problems.push({ code: 'scheduler-off', msg: cr.json.halted ? 'the station scheduler is halted (E-STOP)' : 'the station scheduler is off, so no routine fires on its schedule', fix: co.halted() ? 'resume the company (Halt screen, Resume)' : ensureCmd });
-  return { ok: !problems.length, seat: s, stationUp: true, schedulerOn, blessed,
+  // a restart hold (restart-station.js) disarms the scheduler on purpose while it waits: paused, not broken. A hold past
+  // its expiresAt (its script died) holds nothing, so a scheduler still off then is a real FAIL.
+  const rhold = !schedulerOn && !cr.json.halted && !co.halted() ? co.restartHold() : null;
+  const paused = rhold ? co.restartHoldNote(rhold) : null;
+  if (!schedulerOn && !paused) {
+    const stale = !cr.json.halted && !co.halted() ? co.restartHoldExpired() : null;
+    problems.push({ code: 'scheduler-off', msg: cr.json.halted ? 'the station scheduler is halted (E-STOP)' : 'the station scheduler is off, so no routine fires on its schedule' + (stale ? ' (a restart hold disarmed it and expired at ' + co.localParts(new Date(Date.parse(stale.expiresAt))).time + ' without re-arming it)' : ''),
+      fix: co.halted() ? 'resume the company (Halt screen, Resume)' : stale ? 'scripts/restart-station.sh --release --by <you>, then ' + ensureCmd : ensureCmd });
+  }
+  return { ok: !problems.length, seat: s, stationUp: true, schedulerOn, blessed, paused,
     job: job ? { id: job.id, name: job.name, agentId: job.agentId, model: job.model || null, provider: job.provider || null, enabled: job.enabled !== false, workdir: job.workdir || null, grants: job.unattendedGrants || [], lastRunAt: job.lastRunAt || null, nextRunAt: job.nextRunAt || job.nextFireAt || null, inFlight: !!job.inFlight || job.state === 'running' } : null,
     problems };
 }

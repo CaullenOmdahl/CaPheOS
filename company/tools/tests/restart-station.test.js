@@ -124,6 +124,41 @@ test('--max-wait-min: gives up, releases the hold, re-arms, and never stops the 
   await req('POST', '/__live/end', { runId: live.run.runId });
 });
 
+test('the hold has its own cap: lifted while a long run goes on so the crew works, held again and restarted once idle by itself', async () => {
+  const before = (await state()).restarts.length;
+  const HOLD = path.join(T, 'company/state/restart-hold.json');
+  const live = await req('POST', '/__live', { agentId: 'halima', ageSec: 2520 });   // 42 min in, sleeping for market boundaries
+  const s = script(['--when-idle', '--max-wait-min', '60', '--hold-max-min', '1', '--reason', 'patch 0017', '--by', 'Olive']);   // a "minute" is 1 s here
+  await until(() => co().startsHeld() === 'restart', 5000, 'the hold');
+  assert.strictEqual((await state()).cron.enabled, false, 'held: the scheduler is disarmed');
+  await until(() => /RESTART WAITING \(patch 0017\): Waiting for Halima's run to end; the crew keeps working meanwhile/.test(R('company/work/dispatch-log.md')), 8000, 'the hold lifted after its cap');
+  assert.strictEqual(co().startsHeld(), false, 'lifted: the dispatcher and hiring may start work again');
+  assert.strictEqual((await state()).cron.enabled, true, 'lifted: the scheduler is re-armed');
+  const rec = JSON.parse(fs.readFileSync(HOLD, 'utf8'));
+  assert.strictEqual(rec.watching, true, 'the record stays, marked watching'); assert.strictEqual(co().restartHold(), null);
+  assert.ok(/Waiting for Halima's run to end before restarting the station to load patch 0017; the crew keeps working meanwhile/.test(R('company/owner/outbound.jsonl')), R('company/owner/outbound.jsonl'));
+  // the crew works meanwhile: a new run starts, and the restart waits for it too
+  const other = await req('POST', '/__live', { agentId: 'founder' });
+  // a second restart is still refused while the first one watches
+  const second = await script(['--when-idle', '--reason', 'patch X']).done;
+  assert.strictEqual(second.code, 2, second.out); assert.ok(/another restart is already waiting/.test(second.out), second.out);
+  await req('POST', '/__live/end', { runId: live.run.runId });
+  await sleep(1000);
+  assert.strictEqual((await state()).restarts.length, before, 'not restarted while the crew\'s new run is in flight');
+  assert.strictEqual(co().startsHeld(), false, 'and not held for it either');
+  await req('POST', '/__live/end', { runId: other.run.runId });
+  const r = await s.done;
+  assert.strictEqual(r.code, 0, r.out);
+  const st = await state();
+  assert.strictEqual(st.restarts.length, before + 1, r.out);
+  assert.deepStrictEqual(st.restarts[st.restarts.length - 1].inFlight, [], 'nothing was in flight at the restart');
+  assert.ok(/RESTART HOLD again by Olive: the station is idle by itself/.test(R('company/work/dispatch-log.md')), R('company/work/dispatch-log.md'));
+  assert.ok(/holding new starts again/.test(r.out), r.out);
+  assert.strictEqual(st.cron.enabled, true, 'the scheduler is re-armed after the restart');
+  assert.ok(!fs.existsSync(HOLD), 'the hold record is gone');
+  assert.strictEqual((R('company/owner/outbound.jsonl').match(/Waiting for Halima's run to end/g) || []).length, 1, 'the owner is told once');
+});
+
 test('a hold whose script died expires by itself; --release drops it at once', async () => {
   W('company/state/restart-hold.json', JSON.stringify({ by: 'x', pid: 999999999, at: new Date(Date.now() - 3 * 3600e3).toISOString(), expiresAt: new Date(Date.now() - 60e3).toISOString() }));
   assert.strictEqual(co().restartHold(), null, 'expired: holds nothing');

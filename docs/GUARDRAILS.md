@@ -116,6 +116,15 @@ did not show them, and nothing recorded who made them.
   ExecStart or WorkingDirectory is inside this company's folder but which is not in `services.json` (the station's own
   units are excluded). It also flags a registered unit that is not company-scoped by name, and a registered unit file
   that was edited by hand.
+- **Waiting is not work:** `company/tools/shims/sleep` sits in the same PATH folder and refuses one `sleep` over 120 s
+  (several arguments added, `inf` included) at once with exit 2 and the advice: to act later, a commitment with a
+  due time (the commitments duty wakes the seat then); to record continuously, a background service. Shorter sleeps
+  and options go to the real `sleep`; `SLEEP_SHIM_MAX_SEC` moves the cap. It is not a guardrail switch: it applies to
+  every run on the station. A run that sleeps long anyway (many short sleeps, or `/usr/bin/sleep`) is noticed by
+  `company/tools/long-sleep.js` (dispatcher, every tick: shell_exec sleep totals per run from the transcripts, over
+  10 min) and its seat's manager is told once. Why: a run that slept 40+ minutes for market boundaries held its seat
+  and blocked a station restart for the whole company (house rules v7). The shim folder is already on the PATH of a
+  station set up by `scripts/setup-station.sh`, so the shim takes effect without a restart.
 - The owner brings an existing unit under management with
   `service.js adopt <unit> --by <owner> --as <name> [--seat <seat>]`. That rebuilds it under the scoped name, disables
   the old unit and moves its files to `company/state/services-adopted/`. Or the owner removes it.

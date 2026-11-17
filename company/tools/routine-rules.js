@@ -21,6 +21,10 @@
  *  5. Routine models (v3): the pacer sets them from the people owner's routing table; a hand edit just fights the pacer.
  *  6. Decisions (v6): company/work/decisions.md is grow-only; agents write it only with company/tools/decision.js (add, amend,
  *     withdraw), because an in-place edit of a recent entry is a rewrite the locked-file watch flags.
+ *  7. No sleeping to a wall-clock time (v7): on 2026-11-17 a run spent 40+ minutes in `sleep 236` loops waiting for
+ *     15-minute market boundaries, holding its seat and blocking a station restart for everyone. Later work is a
+ *     commitment with a due time; continuous recording is a background service. company/tools/shims/sleep refuses a
+ *     sleep over 120 s on the station's PATH, and long-sleep.js flags a run that slept long anyway to the seat's manager.
  *  3. Short waits. The station reclaims a routine run that shows no progress for 8 minutes (CRON_HEARTBEAT_STALE_MS
  *     480000), and a tool call in progress does not count, so one long shell_bg_wait loses the run's final reply.
  *
@@ -44,7 +48,7 @@ const path = require('path');
 const call = (...a) => require('./station-crew.js').call(...a);   // loaded on first use, so the selftest needs no token
 const co = require('./lib/company');
 const ROOT = co.ROOT;
-const VERSION = 'v6';
+const VERSION = 'v7';
 const START = '[HOUSE RULES FOR SCHEDULED RUNS ';
 const END = '[END HOUSE RULES]';
 const BLOCK = START + VERSION + ']\n' + [
@@ -52,6 +56,7 @@ const BLOCK = START + VERSION + ']\n' + [
   '- Put temporary files under scratch/ (a relative path), not /tmp.',
   '- The station stops a scheduled run at 90 minutes, mid-task and before your final report. Watch the clock: after about 60 minutes start no new research or build step; save what you have, write your log entry and handoffs, and end by 75 minutes. For a job bigger than one run, write down exactly where you stopped and what comes next, so your next run picks it up.',
   '- Routine models are set by the usage pacer (company/tools/pacer.js) from the routing table in company/model-policy.json, which the people owner keeps as model manager. Never change a routine\'s provider or model by hand: to change a pairing, ask the people owner to change the table.',
+  '- Never wait inside a run for more than about 2 minutes in all (sleep, shell_bg_wait, a polling loop) to reach a wall-clock time. A waiting run holds your seat, blocks lanes and station restarts, and does no work; the station\'s sleep refuses more than 120 s. To act at a later time, record a commitment with a due time (node company/tools/commitments.js create --title "..." --key <key> --owner <you> --due <ISO time>) and end the run: the commitments duty wakes you then. For continuous recording or watching, use a background service (node company/tools/service.js propose).',
   '- Never call shell_bg_wait with timeoutMs above 240000. The station stops a run that shows no progress for 8 minutes, and the run loses its final reply. Wait in short steps; if a job needs longer than this run has, leave it writing to a log under scratch/, write a handoff that names the log, and end the run.',
   '- Use sudo only for the commands the gate allows: the company\'s docker use and read-only host diagnostics. The gate runs them through a broker automatically, so `sudo docker ...` and `sudo ufw status` work as before, but there is no general root: `sudo cat`, `sudo curl`, arbitrary files and dangerous docker flags are refused. Run anything else without sudo, or ask the risk owner to add it (company/work/security/sudo-gate.md).',
   '- Record a decision only with node company/tools/decision.js add --by <your name> --text "..." --why "...". Never edit company/work/decisions.md by hand, not even your own entry minutes later: to correct one run decision.js amend <id-or-stamp>, to take one back decision.js withdraw <id-or-stamp> (both with --by and --why; ids: decision.js list). The record is grow-only and an in-place edit is flagged as a rewrite.',
