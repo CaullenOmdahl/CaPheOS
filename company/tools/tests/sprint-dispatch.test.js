@@ -344,3 +344,43 @@ test('one spend numerator: the spread\'s "last hour" and sprint status read the 
   const want = cn.meteredSince(Date.parse(st.since), { runsPath: path.join(c.T, '.starnet-data/workspaces/runs.jsonl'), ledgerPath: path.join(c.T, '.starnet-data/workspaces/ledger.jsonl'), providers: ['claude-cli'] });
   assert.ok(Math.abs(st.spentUsd - want) < 1e-6 && Math.abs(st.spentUsd - 0.05) < 1e-6, 'sprint status ' + st.spentUsd + ' vs cap numerator ' + want);
 });
+
+/* ---- the stall check judges progress evidence, not the set of OPEN headings (lib/stall.js) ---- */
+const runRow = (c, seat, effects) => fs.appendFileSync(path.join(c.T, '.starnet-data/workspaces/runs.jsonl'), JSON.stringify({ runId: 'r-' + Math.random().toString(36).slice(2, 8), agentId: seat, startedAt: Date.now() - 60000, endedAt: Date.now() - 1000, ts: Date.now() - 1000, outcome: 'succeeded', reason: 'done', usd: 0, artifacts: [], completionEvidence: { effects: effects || [] } }) + '\n');
+async function wakes(c, seat, n, between) {
+  const logs = [];
+  for (let i = 0; i < n; i++) { const r = c.tick(); logs.push(r); if (between) between(i); await c.lastRun(seat, 600); }
+  return { fired: logs.filter(r => r.fired.includes(seat)).length, log: c.r('company/work/dispatch-log.md') };
+}
+
+test('stall check: a seat working through a dated backlog (files written, progress lines, nothing closed) is not stalled', async () => {
+  const items = Array.from({ length: 9 }, (_, i) => block('backlog item ' + (i + 1), '**Deadline:** ' + day(2 + (i % 5)) + '\n')).join('');
+  const c = await company({ sprint: false, lastRunMinAgo: 600, handoffs: { 'to-wen.md': items } });
+  const r = await wakes(c, 'w1', 6, i => {
+    runRow(c, 'w1', [{ tool: 'fs.write', target: 'company/work/research/notes-' + i + '.md' }]);
+    c.w('company/work/handoffs/to-wen.md', c.r('company/work/handoffs/to-wen.md').replace('backlog item 1\n**Need:** do it\n', 'backlog item 1\n**Need:** do it\n**Progress ' + i + ':** half of it\n'));
+  });
+  assert.equal(r.fired, 6, r.log);
+  assert.doesNotMatch(r.log, /STALLED handoffs to-wen/);
+});
+
+test('stall check: runs that change nothing are stalled, and the STALLED line names the block; re-dating every block does not evade it', async () => {
+  const c = await company({ sprint: false, lastRunMinAgo: 600, handoffs: { 'to-wen.md': block('write the onboarding guide') + block('fix the export', '**Deadline:** ' + day(3) + '\n') } });
+  let r = await wakes(c, 'w1', 5);
+  assert.match(r.log, /STALLED handoffs to-wen\.md \(w1\): 2 OPEN and no progress in 3 runs \(no block changed, none closed or sent, no file written\); "2026-11-17 from Alex — write the onboarding guide" \(undated\) has not moved/, r.log);
+  assert.match(c.r('company/work/handoffs/to-founder.md'), /Wen is stuck: no progress in 3 runs, starting with "2026-11-17 from Alex — write the onboarding guide"/);
+  // a second seat that only moves its dates around: still stalled
+  const c2 = await company({ sprint: false, lastRunMinAgo: 600, handoffs: { 'to-wen.md': block('fix the export', '**Deadline:** ' + day(1) + '\n') } });
+  r = await wakes(c2, 'w1', 5, i => c2.w('company/work/handoffs/to-wen.md', '# Handoffs\n' + block('fix the export', '**Deadline:** ' + day(2 + i) + '\n')));
+  assert.match(r.log, /STALLED handoffs to-wen\.md \(w1\)/, 're-dating is not progress: ' + r.log.slice(-800));
+});
+
+test('stall check: busy, but a due item does not move -> after STALL_AFTER*2 runs a softer note to the manager, not a stall', async () => {
+  const c = await company({ sprint: false, lastRunMinAgo: 600, handoffs: { 'to-wen.md': block('the due report', '**Deadline:** ' + day(0) + '\n') + block('other work', '**Deadline:** ' + day(5) + '\n') } });
+  const r = await wakes(c, 'w1', 8, i => c.w('company/work/handoffs/to-wen.md', c.r('company/work/handoffs/to-wen.md').replace('other work\n**Need:** do it\n', 'other work\n**Need:** do it\n**Progress ' + i + ':** a step\n')));
+  assert.doesNotMatch(r.log, /STALLED handoffs to-wen/, r.log.slice(-800));
+  assert.match(r.log, /SLOW to-wen\.md \(w1\): Wen is working, but the due item "2026-11-17 from Alex — the due report" \(due \d{4}-\d\d-\d\d\) has not moved in 6 runs/, r.log.slice(-800));
+  const fyi = c.r('company/work/handoffs/to-founder.md');
+  assert.match(fyi, /Wen is working, but the due item[\s\S]*\*\*Status:\*\* DONE — FYI/);
+  assert.equal((fyi.match(/is working, but the due item/g) || []).length, 1, 'said once');
+});
