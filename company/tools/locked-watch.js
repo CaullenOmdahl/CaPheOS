@@ -35,7 +35,11 @@
  * Who did it: provenance rows, then agent runs' transcripts (only the tool calls: tool name, path, agent, run and time; never
  * the content, never the owner's chats), then the runs active at the time. --by claims of my-section.js and harness-change.js
  * are checked against the transcripts: a claim made from another agent's run is reported (and an own section changed that way
- * is put back). Reports: a DONE FYI handoff to the seat that holds the file's function (owner field below: people, tools, risk, finance,
+ * is put back); a claim no transcript shows yet is kept pending (the run's tool calls reach the transcript after the tool
+ * wrote its claim) and re-checked each tick, flagged "no run of X shows this command" only if still unmatched 30 minutes on
+ * with no run of X in flight. StarNet's runs.jsonl (bigAppend) is checked incrementally: the first 64 KB and the 64 KB
+ * before the last checked end unchanged, the rest new; it is never hashed whole and no copy of it is kept.
+ * Reports: a DONE FYI handoff to the seat that holds the file's function (owner field below: people, tools, risk, finance,
  * ceo — resolved through company/tools/lib/company.js, so it follows whoever holds the seat), the risk owner too for gates,
  * keys, access and StarNet, and
  * company/work/security/locked-changes.jsonl + .md.
@@ -98,7 +102,9 @@ const MANIFEST = [
     .map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'tools', area: 'tool', why: 'a tool that measures or limits the crew, or that these tools depend on' })),
   ...['merge-gate.js', 'premerge-check.js', 'external-gate.js', 'connector-scope.js', 'default-branch-watch.js'].map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'risk', area: 'tool', why: 'a gate or the evidence it reads' })),
   { p: 'company/work/engineering/evidence/*.json', cls: 'F', writers: ['test-substrate.sh'], owner: 'risk', area: 'gate', why: 'test-substrate verdicts (a hand-made pass opens the merge gate): flagged, never auto-removed, so a real evidence file never blocks a merge' },
-  { p: '.starnet-data/workspaces/runs.jsonl', cls: 'F', append: true, owner: 'people', area: 'record', why: 'the run records that feed competence, house benchmarks and the 3-day results check' },
+  // bigAppend: StarNet's append-only run log grows without end, so it is checked incrementally (the 64 KB before the
+  // last checked end and the first 64 KB are unchanged, the rest is new), never hashed whole, never copied
+  { p: '.starnet-data/workspaces/runs.jsonl', cls: 'F', append: true, bigAppend: true, owner: 'people', area: 'record', why: 'the run records that feed competence, house benchmarks and the 3-day results check' },
   { p: '~/.local/bin/gh', cls: 'F', owner: 'risk', area: 'gate', why: 'the merge-gate wrapper around gh' },
   { p: '~/.local/bin/git', cls: 'F', owner: 'risk', area: 'gate', why: 'the merge-gate wrapper around git (no push to a default branch)' },
   { p: 'company/memory/*/.git/hooks/pre-push', cls: 'F', owner: 'risk', area: 'gate', why: 'the merge gate\'s push hook in the memory clones' },
@@ -220,14 +226,36 @@ function classify(rel, opts) {
 }
 
 /* ---------------- file state ---------------- */
+// A bigAppend file (StarNet's runs.jsonl) is never read whole: its state is its size plus the hashes of its first and
+// last 64 KB ("lite"); sha256 is a fingerprint of those, so an unchanged file still compares equal.
+const BIG_CHUNK = 64 * 1024;
+const isBig = (ctx, key) => (ctx.manifest || MANIFEST).some(m => m.bigAppend && m.p === key);
+function readRange(f, pos, len) { const fd = fs.openSync(f, 'r'); try { const b = Buffer.alloc(Math.max(0, len)); const n = fs.readSync(fd, b, 0, b.length, pos); return n < b.length ? b.subarray(0, n) : b; } finally { fs.closeSync(fd); } }
+function liteState(f, st) {
+  const size = st.size; const head = readRange(f, 0, Math.min(BIG_CHUNK, size)); const tail = readRange(f, Math.max(0, size - BIG_CHUNK), Math.min(BIG_CHUNK, size));
+  return { exists: true, lite: true, bytes: size, headSha: sha(head), tailSha: sha(tail), sha256: sha(Buffer.concat([Buffer.from(size + '\n'), head, tail])), mode: st.mode & 0o7777, mtimeMs: st.mtimeMs };
+}
 function stateOf(ctx, key) {
   const f = abs(ctx, key);
   let st; try { st = fs.statSync(f); } catch (_) { return { exists: false }; }
   if (!st.isFile()) return { exists: false, notFile: true };
+  if (isBig(ctx, key)) return liteState(f, st);
   const buf = fs.readFileSync(f);
   return { exists: true, sha256: sha(buf), bytes: buf.length, mode: st.mode & 0o7777, mtimeMs: st.mtimeMs, buf };
 }
-const plain = s => (s && s.exists ? { exists: true, sha256: s.sha256, bytes: s.bytes, mode: s.mode } : { exists: false });
+const plain = s => (s && s.exists ? Object.assign({ exists: true, sha256: s.sha256, bytes: s.bytes, mode: s.mode }, s.lite ? { lite: true, headSha: s.headSha, tailSha: s.tailSha } : {}) : { exists: false });
+// the file now starts with the bytes it had at the last check (b): only appended to since. For a bigAppend file the
+// check is incremental: the first 64 KB and the 64 KB before the old end must be unchanged (a baseline from before
+// that format is checked once in full, then kept in the new one).
+function grewFrom(ctx, key, cur, b) {
+  if (!cur || !cur.exists || !b || !b.exists || !(cur.bytes >= b.bytes)) return false;
+  if (cur.buf) return sha(cur.buf.subarray(0, b.bytes)) === b.sha256;
+  const f = abs(ctx, key);
+  try {
+    if (b.lite) return sha(readRange(f, 0, Math.min(BIG_CHUNK, b.bytes))) === b.headSha && sha(readRange(f, Math.max(0, b.bytes - BIG_CHUNK), Math.min(BIG_CHUNK, b.bytes))) === b.tailSha;
+    return sha(readRange(f, 0, b.bytes)) === b.sha256;
+  } catch (_) { return false; }
+}
 const sameState = (a, b) => !!a && !!b && a.exists === b.exists && (!a.exists || (a.sha256 === b.sha256 && a.mode === b.mode));
 function writeAtomic(file, data, mode) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -235,7 +263,10 @@ function writeAtomic(file, data, mode) {
   fs.writeFileSync(tmp, data, mode != null ? { mode } : undefined); if (mode != null) fs.chmodSync(tmp, mode);
   fs.renameSync(tmp, file);
 }
-function saveLkg(ctx, key, m, buf) { if (m.cls === 'K' || !buf) return null; const f = lkgPath(ctx, key); writeAtomic(f, buf, 0o600); return sha(buf); }
+function saveLkg(ctx, key, m, buf) {
+  if (m && m.bigAppend) { try { fs.unlinkSync(lkgPath(ctx, key)); } catch (_) {} return null; }   // no copy of an ever-growing log (an older one is dropped)
+  if (m.cls === 'K' || !buf) return null; const f = lkgPath(ctx, key); writeAtomic(f, buf, 0o600); return sha(buf);
+}
 function readLkg(ctx, key, b) { if (!b || !b.lkgSha) return null; try { const buf = fs.readFileSync(lkgPath(ctx, key)); return sha(buf) === b.lkgSha ? buf : 'tampered'; } catch (_) { return null; } }
 
 /* ---------------- baseline ---------------- */
@@ -410,6 +441,8 @@ function unroll(ctx, cur, rolls) {
     const after = buf.subarray(0, r.bytes), rest = buf.subarray(r.bytes);
     const pieces = [];
     for (const c of r.chunks || []) {
+      // a replaced pointer line: its old text rides in the (trusted) roll row; it can only rebuild the beforeSha below
+      if (c.inline != null) { const b = Buffer.from(String(c.inline), 'utf8'); if (b.length > 8192 || sha(b) !== c.sha256) return { error: 'the roll record\'s inline pointer text does not match its hash' }; pieces.push(b); continue; }
       const rel = String(c.archive || '');
       if (!rel.startsWith('company/') || rel.split('/').includes('..') || !/\/archive\//.test(rel)) return { error: 'the roll names an archive outside company/**/archive/ (' + rel.slice(0, 80) + ')' };
       let b; try { const fd = fs.openSync(path.join(ctx.root, rel), 'r'); try { b = Buffer.alloc(c.bytes); const n = fs.readSync(fd, b, 0, c.bytes, c.offset); if (n !== c.bytes) b = null; } finally { fs.closeSync(fd); } } catch (_) { b = null; }
@@ -463,7 +496,7 @@ function decide(ctx, key, m, b, cur, prov, recorded, flagOnly) {
     return { ok: false, act: flagOnly ? 'flag' : 'restore', why: cur.exists ? 'changed, and no ' + W.join('/') + ' write recorded these bytes' : 'deleted' };
   }
   // F and K: reported, never undone automatically
-  if (m.append && cur.exists && b.exists && cur.bytes >= b.bytes && sha(cur.buf.subarray(0, b.bytes)) === b.sha256 && cur.mode === b.mode) return { ok: true, why: 'appended' };
+  if (m.append && cur.exists && b.exists && cur.mode === b.mode && grewFrom(ctx, key, cur, b)) return { ok: true, why: 'appended' };
   // a grow-only record (decisions.md is written newest first): new lines may land anywhere, but every earlier line must
   // still be there, in order. Only removing or rewriting history is a finding.
   if (m.growOnly && cur.exists && b && b.exists) {
@@ -489,6 +522,7 @@ function withLock(ctx, fn) {
   catch (e) { if (e.code !== 'EEXIST') throw e; let age = 0; try { age = Date.now() - fs.statSync(ctx.paths.lock).mtimeMs; } catch (_) {} if (age < 600000) return { busy: true }; fs.unlinkSync(ctx.paths.lock); return withLock(ctx, fn); }
   try { return fn(); } finally { try { fs.unlinkSync(ctx.paths.lock); } catch (_) {} }
 }
+const CLAIM_WAIT_MS = 30 * 60e3, CLAIM_MAX_WAIT_MS = 6 * 3600e3;   // a --by claim no transcript shows: flagged after 30 min (6 h while the claimer's run is still going)
 let EVN = 0;
 const EVSUF = process.pid.toString(36) + crypto.randomBytes(2).toString('hex');   // unique per process, so two ticks in one minute never share an id
 const evId = ctx => 'lw-' + local(ctx.now).slice(0, 16).replace(/[-T:]/g, '') + '-' + EVSUF + (++EVN);
@@ -634,8 +668,9 @@ function runTick(ctx) {
       for (const id of Object.keys(base.connectors)) if (!present.has(id)) delete base.connectors[id];   // removed: it serves nothing now
     }
   }
-  // claims made with --by (my-section.js, harness-change.js) since the last check
-  let claims = []; let harnessEnd = Number(base.harnessOffset) || 0;
+  // claims made with --by (my-section.js, harness-change.js) since the last check, plus the ones still waiting for their
+  // run's transcript (base.pendingClaims: a run's tool calls reach the transcript after the tool wrote its claim)
+  let claims = (Array.isArray(base.pendingClaims) ? base.pendingClaims : []).slice(); let harnessEnd = Number(base.harnessOffset) || 0;
   try {
     const size = fs.statSync(ctx.paths.harnessLog).size;
     if (size > harnessEnd) { const buf = Buffer.alloc(size - harnessEnd); const fd = fs.openSync(ctx.paths.harnessLog, 'r'); try { fs.readSync(fd, buf, 0, buf.length, harnessEnd); } finally { fs.closeSync(fd); }
@@ -696,7 +731,8 @@ function runTick(ctx) {
     }
     if (d.ok && direct.length) { events.push(ev(ctx, c, 'flagged', 'the bytes match a recorded write, but an agent also wrote this file directly', who(c.key))); accept(ctx, base, c.key, c.m, c.s); continue; }
     const lkg = readLkg(ctx, c.key, c.b);
-    const summary = diffSummary(lkg && lkg !== 'tampered' ? lkg : null, c.s.exists ? c.s.buf : null, c.m);
+    const summary = c.s.lite ? 'append-only log of ' + (c.b.bytes || 0) + ' bytes, now ' + c.s.bytes + ' bytes: ' + (c.s.bytes < (c.b.bytes || 0) ? 'shorter' : 'bytes before the last checked end changed') + ' (no copy is kept of this log)'
+      : diffSummary(lkg && lkg !== 'tampered' ? lkg : null, c.s.exists ? c.s.buf : null, c.m);
     const byWho = who(c.key) || candidates();
     if (d.act === 'flag' || (['restore'].includes(d.act) && (!lkg || lkg === 'tampered') && c.b.exists)) {
       const e = ev(ctx, c, 'flagged', d.why + (lkg === 'tampered' ? ' (and its last-known-good copy was changed too: not restored)' : ''), byWho, summary);
@@ -754,12 +790,20 @@ function runTick(ctx) {
     e.accept = 'only the owner widens a connector\'s scope: ' + ((ownerOf(ctx, 'risk') || {}).name || 'the risk owner') + ' records it as a new inventory row and changes POLICY in company/tools/connector-scope.js (a reviewed change)';
     events.push(e); base.connectors[x.id] = { flagged: x.sig, at: local(ctx.now), eventId: e.id };
   }
+  // a claim no transcript shows yet stays pending: flagged only once it is still unmatched CLAIM_WAIT_MS after it was
+  // made and the claimer has no run in flight (the run's transcript may simply not be written yet)
+  const pending = [];
+  const inFlight = name => { const n = String(name || '').toLowerCase(); return (ctx.jobs || []).some(j => j && (j.inFlight || j.state === 'running') && j.agentId && (nameOf(ctx, j.agentId).toLowerCase() === n || String(j.agentId).toLowerCase() === n)); };
   claims.forEach((c, i) => {
     const h = hits.filter(x => x.tag === i);
     const mine = h.some(x => x.name.toLowerCase() === String(c.by).toLowerCase());
     if (mine) return;
     const others = [...new Set(h.map(x => x.name + ' (run ' + x.runId + ')'))];
     if (!others.length && c.event === 'refused') return;
+    if (!others.length) {
+      const at = Date.parse(c.at) || ctx.now; const age = ctx.now - at;
+      if (age < CLAIM_WAIT_MS || (inFlight(c.by) && age < CLAIM_MAX_WAIT_MS)) { pending.push(c); return; }
+    }
     const what = c.tool + ' ' + c.event + ' ' + (c.agentId || c.id || '') + ' claimed by ' + c.by;
     const e = ev(ctx, { key: 'claim: ' + what, m: { cls: 'F', owner: c.tool === 'my-section' ? 'people' : 'tools', area: 'claim' } }, 'flagged', others.length ? 'the command ran in ' + others.join(', ') + ', not in a run of ' + c.by : 'no run of ' + c.by + ' shows this command (it may have run inside a script)', null, null);
     // a cross-agent own-section change is PUT BACK, not only reported: the store write was a legitimate my-section.js write
@@ -776,6 +820,7 @@ function runTick(ctx) {
     events.push(e);
   });
   base.provOffset = fresh.end || base.provOffset; base.harnessOffset = harnessEnd; base.scanTs = ctx.now;
+  if (pending.length) base.pendingClaims = pending.slice(-200); else delete base.pendingClaims;
   base.seenCalls = [...seen, ...hits.map(callId)].filter((x, i, a) => a.indexOf(x) === i).slice(-300);
   // guardrail off: the other watches (StarNet code, routine fields, modes, schedules, connectors, claims) are recorded too
   if (!selfEditOn) for (let i = events.length - 1; i >= 0; i--) {
@@ -787,7 +832,7 @@ function runTick(ctx) {
   if (drift.length) ctx.log('LOCKED WATCH (guardrail off, recorded only): ' + drift.map(e => e.key).join('; ').slice(0, 400));
   if (events.length) ctx.log('LOCKED WATCH' + (ctx.dry ? ' (dry run)' : '') + ': ' + events.map(e => e.kind + ' ' + e.key).join('; ').slice(0, 600) + (flagOnly ? ' [automatic reverts off: ' + notes.join('; ') + ']' : ''));
   else if (notes.length) ctx.log('LOCKED WATCH NOTE: ' + notes.join('; '));
-  return { checked: cur.size, changed: changed.length, events, drift, flagOnly, notes };
+  return { checked: cur.size, changed: changed.length, events, drift, flagOnly, notes, pendingClaims: pending.length };
 }
 function accept(ctx, base, key, m, s) {
   const e = Object.assign(plain(s), { cls: m.cls });
@@ -1226,6 +1271,25 @@ async function selftest() {
     fs.appendFileSync(path.join(T, seg), row('engineer', 'shell_exec', { command: 'node company/tools/my-section.js set --agent researcher --by Alex --text hi' }, now - 25000) + '\n');
     const r = await tick(C({ now })); assert.ok(r.events.some(x => /^claim: my-section set researcher claimed by Alex/.test(x.key) && /Sam/.test(x.why)), JSON.stringify(r.events));
   });
+  const hlog = path.join(T, 'company/work/people/harness-log.jsonl');
+  const claimRow = (id, at) => { const line = JSON.stringify({ at: local(at), tool: 'harness-change', event: 'approved', id, by: 'Alex', claim: 'unverified', underStation: true }) + '\n'; fs.appendFileSync(hlog, line); P.appended(hlog, line, 'harness-change.js'); };
+  const claimEv = (r, id) => r.events.find(x => x.key.startsWith('claim: harness-change approved ' + id));
+  await t('a --by claim whose run transcript is written after the tick: kept pending, matched on a later tick, never flagged', async () => {
+    now += 60000; const at = now - 5000; claimRow('hc-0006', at);
+    let r = await tick(C({ now })); assert.ok(!claimEv(r, 'hc-0006') && r.pendingClaims === 1, JSON.stringify({ ev: r.events, p: r.pendingClaims }));
+    fs.appendFileSync(path.join(T, seg), row('researcher', 'shell_exec', { command: 'node company/tools/harness-change.js approve hc-0006 --by Alex' }, at - 2000) + '\n');   // the transcript lands late
+    now += 2 * 60000; r = await tick(C({ now })); assert.ok(!claimEv(r, 'hc-0006') && r.pendingClaims === 0, JSON.stringify({ ev: r.events, p: r.pendingClaims }));
+    now += 40 * 60000; r = await tick(C({ now })); assert.ok(!claimEv(r, 'hc-0006'), 'never flagged later either');
+  });
+  await t('a --by claim no run ever shows: pending while young or while the claimer\'s run is in flight, then flagged once', async () => {
+    now += 60000; const at = now - 5000; claimRow('hc-0007', at);
+    let r = await tick(C({ now })); assert.ok(!claimEv(r, 'hc-0007') && r.pendingClaims === 1, JSON.stringify(r.events));
+    const running = [{ id: 'j1', name: 'Design loop', agentId: 'designer', workdir: T, unattendedGrants: ['workbench'] }, { id: 'j9', name: 'Research loop', agentId: 'researcher', workdir: T, unattendedGrants: ['workbench'], inFlight: true }];
+    now += 31 * 60000; r = await tick(C({ now, jobs: running })); assert.ok(!claimEv(r, 'hc-0007') && r.pendingClaims === 1, 'Alex has a run in flight: still pending ' + JSON.stringify(r.events));
+    now += 60000; r = await tick(C({ now })); const e = claimEv(r, 'hc-0007');
+    assert.ok(e && /no run of Alex shows this command/.test(e.why) && r.pendingClaims === 0, JSON.stringify(r.events));
+    now += 60000; r = await tick(C({ now })); assert.ok(!claimEv(r, 'hc-0007'), 'flagged once');
+  });
   await t('a baseline changed outside the watcher turns automatic reverts off and is reported', async () => {
     now += 60000; const bf = path.join(T, 'company/state/locked/baseline.json'); const b = JSON.parse(fs.readFileSync(bf, 'utf8')); b.files[store].sha256 = 'sha256:forged'; fs.writeFileSync(bf, JSON.stringify(b));
     fs.writeFileSync(path.join(T, store), '{"corrections":["hand"]}\n'); fs.utimesSync(path.join(T, store), (now - 60000) / 1000, (now - 60000) / 1000);
@@ -1375,6 +1439,34 @@ async function selftest() {
     assert.strictEqual(after.flagged.at, keep.at, 'the flag stays: same time');
     assert.strictEqual(after.flagged.clearedNames[0].name, 'auditor');
     assert.ok(/"kind":"unattributed"/.test(R('company/work/security/locked-changes.jsonl')), 'the removal is a log row');
+  });
+  await t('runs.jsonl at 96 MB: checked incrementally (never read whole, no backup copy); a rewrite before the old end is still caught', async () => {
+    const RJ = '.starnet-data/workspaces/runs.jsonl'; const rf = path.join(T, RJ);
+    const old = Buffer.from(JSON.stringify({ runId: 'r-old', agentId: 'engineer', startedAt: 1, endedAt: 2, usd: 0.001, pad: 'p'.repeat(400) }) + '\n');
+    fs.mkdirSync(path.dirname(rf), { recursive: true }); const fd = fs.openSync(rf, 'w');
+    try { const block = Buffer.concat(Array(2048).fill(old)); for (let w = 0; w < 96 * 1024 * 1024; w += block.length) fs.writeSync(fd, block); } finally { fs.closeSync(fd); }
+    const lkgCopy = path.join(T, 'company/state/locked/lkg', RJ); fs.mkdirSync(path.dirname(lkgCopy), { recursive: true }); fs.writeFileSync(lkgCopy, 'an old full copy');
+    const realRead = fs.readFileSync; let whole = 0;
+    fs.readFileSync = function (f) { if (String(f) === rf) whole++; return realRead.apply(fs, arguments); };
+    try {
+      now += 60000; let r = await tick(C({ now })); assert.ok(!r.events.some(x => x.key === RJ), JSON.stringify(r.events));
+      const b = JSON.parse(R('company/state/locked/baseline.json')).files[RJ];
+      assert.ok(b && b.lite && b.headSha && b.tailSha && !b.lkgSha && b.bytes >= 96 * 1024 * 1024, JSON.stringify(b));
+      assert.ok(!fs.existsSync(lkgCopy), 'the full backup copy is dropped');
+      fs.appendFileSync(rf, JSON.stringify({ runId: 'r-new', agentId: 'engineer', startedAt: now - 1000, endedAt: now }) + '\n');
+      now += 60000; const t0 = Date.now(); r = await tick(C({ now })); const ms = Date.now() - t0;
+      assert.ok(!r.events.some(x => x.key === RJ), JSON.stringify(r.events));
+      assert.ok(ms < 3000, 'a tick over a 96 MB runs.jsonl took ' + ms + ' ms');
+      const t1 = Date.now(); const B = require('./lib/bounded'); const w = B.jsonlWindow(rf, { sinceMs: now - 24 * 3600e3 }); const wms = Date.now() - t1;
+      assert.ok(w.rows.length === 1 && w.rows[0].runId === 'r-new' && w.bytes <= 2 * 1024 * 1024 && wms < 1000, JSON.stringify({ n: w.rows.length, bytes: w.bytes, wms }));
+      assert.strictEqual(whole, 0, 'runs.jsonl was read whole ' + whole + ' times');
+      // the 64 KB before the last checked end: one byte changed there is history rewritten
+      const size = fs.statSync(rf).size; const fd2 = fs.openSync(rf, 'r+'); try { fs.writeSync(fd2, Buffer.from('q'), 0, 1, size - 2000); } finally { fs.closeSync(fd2); }
+      fs.appendFileSync(rf, '{"runId":"r-newer"}\n');
+      now += 60000; r = await tick(C({ now })); const e = r.events.find(x => x.key === RJ);
+      assert.ok(e && e.kind === 'flagged' && /history before the last check was rewritten/.test(e.why) && /no copy is kept/.test(e.summary || ''), JSON.stringify(r.events));
+      assert.strictEqual(whole, 0, 'still never read whole');
+    } finally { fs.readFileSync = realRead; }
   });
   if (prevProv === undefined) delete process.env.PROVENANCE_ROOT; else process.env.PROVENANCE_ROOT = prevProv;
   P.pinUnderStation(null);

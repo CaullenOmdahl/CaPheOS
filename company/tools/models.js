@@ -167,12 +167,10 @@ function makeModels(o) {
   }
   // the seat's own runs from the station's run records (the newest last), the last 3 days
   function seatRuns(t) {
-    let txt = ''; try { txt = fs.readFileSync(P('runs'), 'utf8'); } catch (_) { return {}; }
-    if (txt.length > 6e6) txt = txt.slice(-6e6);
+    // from the end of StarNet's runs.jsonl, the last 3 days only (lib/bounded.js; never the whole file)
     const out = {}; const since = t - 72 * HOUR;
-    for (const l of txt.split('\n')) {
-      if (!l || l.indexOf('"agentId"') < 0) continue;
-      let r; try { r = JSON.parse(l); } catch (_) { continue; }
+    let rows = []; try { rows = require('./lib/bounded').jsonlWindow(P('runs'), { sinceMs: since, maxBytes: 32 << 20 }).rows; } catch (_) { return {}; }
+    for (const r of rows) {
       const end = Number(r.endedAt || r.ts || r.startedAt) || 0; if (end < since || !r.agentId) continue;
       (out[r.agentId] = out[r.agentId] || []).push({ provider: r.provider, model: r.model, reason: r.reason, failureCode: r.failureCode || '', error: String(r.error || '').slice(0, 160), at: end });
     }
@@ -565,10 +563,15 @@ async function selftest() {
       let r = await M().editChain({ seat: 'agent', set: 'deepseek/deepseek-flash', by: 'Alex', approved: 'Alex, now' }); assert.ok(/owner's call/.test(r.error), JSON.stringify(r));
       r = await M().editChain({ seat: 'eng', set: 'deepseek/deepseek-v4-pro', by: 'Pat Owner' }); assert.ok(/not on the allowed list/.test(r.error), JSON.stringify(r));
     });
-    await t('failover: 3 provider errors in a row move the seat down at once, logged', async () => {
+    await t('failover: 3 provider errors in a row move the seat down at once, logged (after 64 MB of old runs, never read whole)', async () => {
       const runs = [1, 2, 3].map(i => JSON.stringify({ agentId: 'eng', provider: 'deepseek', model: 'deepseek-flash', reason: 'error', error: 'openai-compatible http 503 upstream', endedAt: T - (4 - i) * MIN }));
-      w(REL.runs, runs.join('\n') + '\n');
-      const r = await M().tick({ m: openM });
+      const rf = path.join(root, REL.runs); fs.mkdirSync(path.dirname(rf), { recursive: true });
+      const oldRow = JSON.stringify({ agentId: 'eng', provider: 'deepseek', model: 'deepseek-flash', reason: 'done', endedAt: T - 20 * 24 * HOUR, pad: 'p'.repeat(300) }) + '\n';
+      const fd = fs.openSync(rf, 'w'); try { const block = Buffer.from(oldRow.repeat(4096)); for (let n = 0; n < 64 * 1024 * 1024; n += block.length) fs.writeSync(fd, block); } finally { fs.closeSync(fd); }
+      fs.appendFileSync(rf, runs.join('\n') + '\n');
+      const real = fs.readFileSync; let whole = 0; fs.readFileSync = function (f) { if (String(f) === rf) whole++; return real.apply(fs, arguments); };
+      const t0 = Date.now(); let r; try { r = await M().tick({ m: openM }); } finally { fs.readFileSync = real; }
+      assert.strictEqual(whole, 0, 'runs.jsonl read whole'); assert.ok(Date.now() - t0 < 3000, 'tick took ' + (Date.now() - t0) + ' ms');
       assert.strictEqual(r.moves[0].direction, 'down', JSON.stringify(r)); assert.strictEqual(S.jobs[1].provider, 'claude-cli'); assert.strictEqual(S.roster.eng.provider, 'claude-cli');
       assert.ok(logs.some(l => /MOVE Jo deepseek\/deepseek-flash -> claude-cli\/claude-sonnet-5-5/.test(l)), logs.join('\n'));
       assert.strictEqual(M().moves('eng').slice(-1)[0].direction, 'down');

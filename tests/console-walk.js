@@ -31,8 +31,10 @@ const OUT = opt('out');
 const check = (name, ok, info) => { if (!ok) fails++; if (OUT) fs.appendFileSync(OUT, (ok ? 'PASS ' : 'FAIL ') + name + (ok || info === undefined ? '' : ' — ' + JSON.stringify(info).slice(0, 1200)) + '\n'); console.log((ok ? 'PASS ' : 'FAIL ') + name + (ok || info === undefined ? '' : ' — ' + JSON.stringify(info).slice(0, 400))); };
 async function until(fn, ms) { const end = Date.now() + ms; let v; while (Date.now() < end) { v = await fn(); if (v) return v; await sleep(200); } return v; }
 (async () => {
-  let targets; for (let i = 0; i < 60 && !targets; i++) { try { targets = await getJson('http://127.0.0.1:' + port + '/json'); } catch (_) { await sleep(200); } }
-  const ws = new WebSocket(targets.find(t => t.type === 'page').webSocketDebuggerUrl);
+  // Chrome answers /json before its first page target exists: wait for the page, not for the port
+  const page = await until(async () => { try { return (await getJson('http://127.0.0.1:' + port + '/json')).find(t => t.type === 'page' && t.webSocketDebuggerUrl); } catch (_) { return null; } }, 20000);
+  if (!page) { console.log('FAIL Chrome showed no page target in 20 s'); process.exit(1); }
+  const ws = new WebSocket(page.webSocketDebuggerUrl);
   await new Promise(r => { ws.onopen = r; });
   let id = 0; const pending = new Map(); const errors = [];
   ws.onmessage = ev => { const m = JSON.parse(ev.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
@@ -41,7 +43,10 @@ async function until(fn, ms) { const end = Date.now() + ms; let v; while (Date.n
   const js = async e => { const r = await send('Runtime.evaluate', { expression: e, returnByValue: true, awaitPromise: true }); return r.result && r.result.result ? r.result.result.value : undefined; };
   const shot = async name => { if (!SHOTS) return; fs.mkdirSync(SHOTS, { recursive: true }); const s = await send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(SHOTS, name + '.png'), Buffer.from(s.result.data, 'base64')); };
   await send('Runtime.enable'); await send('Page.enable');
-  await send('Page.navigate', { url: BASE + '/login?token=' + encodeURIComponent(TOKEN) }); await sleep(1500);
+  await send('Page.navigate', { url: BASE + '/login?token=' + encodeURIComponent(TOKEN) });
+  // signed in once the login redirect has landed on the app shell (a condition, not a fixed pause)
+  const signedIn = await until(() => js(`location.pathname !== '/login' && !!document.getElementById('main') && document.readyState === 'complete'`), 20000);
+  check('the login link signs in and lands on the app', signedIn, await js('location.href'));
   for (const r of ROUTES) {
     errors.length = 0;
     await js('location.hash = ' + JSON.stringify(r.slice(1)) + '; 1');

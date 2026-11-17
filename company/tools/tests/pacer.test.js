@@ -447,6 +447,25 @@ test('a usage-limit error closes Claude until its reset, and Claude routines mov
   assert.equal(ops.to.provider, 'deepseek'); assert.equal(ops.action, 'switch'); assert.ok(ops.urgent);
 });
 
+test('a 64 MB runs.jsonl is never read whole: the usage-limit error at its end still closes Claude, quickly', async () => {
+  const jobs = crewJobs();
+  Object.assign(jobs.find(j => j.id === 'j-ops'), { provider: 'claude-cli', model: 'claude-haiku-4-5-20251001', wire: { provider: 'claude-cli', model: 'claude-haiku-4-5-20251001' } });
+  const fx = legacyFixture({ feedPct: 5, fiveHour: { used_percentage: 100, resets_at: (T0 + 2 * HOUR) / 1000 } });
+  const rf = path.join(fx.root, '.starnet-data/workspaces/runs.jsonl');
+  const old = JSON.stringify({ runId: 'r-old', agentId: 'agent', provider: 'deepseek', model: 'deepseek-flash', reason: 'done', usd: 0.01, startedAt: T0 - 30 * DAY, endedAt: T0 - 30 * DAY + MIN, pad: 'p'.repeat(300) }) + '\n';
+  const fd = fs.openSync(rf, 'w'); try { const block = Buffer.from(old.repeat(4096)); for (let w = 0; w < 64 * 1024 * 1024; w += block.length) fs.writeSync(fd, block); } finally { fs.closeSync(fd); }
+  fs.appendFileSync(rf, JSON.stringify({ runId: 'r-limit', agentId: 'agent', provider: 'claude-cli', model: 'claude-haiku-4-5-20251001', outcome: 'failed', failureCode: 'quota_exhausted', error: 'Claude Code usage limit reached: You have hit your limit', startedAt: T0 - 6 * MIN, endedAt: T0 - 5 * MIN }) + '\n');
+  const h = make(fx, station(jobs));
+  const real = fs.readFileSync; let whole = 0;
+  fs.readFileSync = function (f) { if (String(f) === rf) whole++; return real.apply(fs, arguments); };
+  const t0 = Date.now(); let r;
+  try { r = await measurePlan(h, jobs); } finally { fs.readFileSync = real; }
+  const ms = Date.now() - t0;
+  assert.equal(whole, 0, 'runs.jsonl read whole ' + whole + ' times');
+  assert.equal(r.m.claude.open, false); assert.equal(r.m.claude.hard, true);
+  assert.ok(ms < 3000, 'measure + plan took ' + ms + ' ms');
+});
+
 /* ---- the dispatcher hook ---- */
 const due = d => '# inbox\n\n## 2026-11-15 from Sam — something\n**Need:** x\n**Deadline:** ' + d + '\n**Status:** OPEN\n**Evidence:** y\n';
 test('handoffsDueToday reads free-text deadlines loosely', () => {

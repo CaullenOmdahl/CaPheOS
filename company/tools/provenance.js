@@ -117,11 +117,12 @@ function appended(file, chunk, writer) {
 }
 // after retention.js rolled `file` (moved old entries into its archive): enough to rebuild the file as it was, so
 // locked-watch can check the roll lost nothing. before = after with each op applied: at after-offset op[0], drop op[1]
-// bytes (the pointer line) and put back op[2] bytes taken in order from the archived chunks ({archive, offset, bytes, sha256}).
+// bytes (the pointer line) and put back op[2] bytes taken in order from the archived chunks ({archive, offset, bytes, sha256};
+// a replaced pointer line's old text is carried inline: {inline, bytes, sha256}).
 function rolled(file, info, writer) {
   try {
     const root = rootOf(), rel = relOf(file, root); if (!rel || !info) return false;
-    const chunks = (info.chunks || []).map(c => ({ archive: String(c.archive), offset: Number(c.offset), bytes: Number(c.bytes), sha256: String(c.sha256) }));
+    const chunks = (info.chunks || []).map(c => c.inline != null ? { inline: String(c.inline), bytes: Number(c.bytes), sha256: String(c.sha256) } : { archive: String(c.archive), offset: Number(c.offset), bytes: Number(c.bytes), sha256: String(c.sha256) });
     append(Object.assign({ at: new Date().toISOString(), file: rel, kind: 'roll', sha256: sha(info.after), bytes: info.after.length, beforeSha: sha(info.before), beforeBytes: info.before.length,
       ops: (info.ops || []).map(o => [Number(o[0]), Number(o[1]), Number(o[2])]), chunks }, common(root, writer)), root);
     return true;

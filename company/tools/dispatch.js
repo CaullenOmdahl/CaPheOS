@@ -228,6 +228,16 @@ function selftestOpenHandoffs() {
     const l1 = hiringLines(rounds, st), l2 = hiringLines(rounds, st);
     check('hiring: a log line on each step or stage change, then quiet', l1.length === 2 && /^HIRING qa-1: handed the pick to Sam — now waiting for pick by Sam$/.test(l1[0]) && l2.length === 1 && /qa-1/.test(l2[0]), JSON.stringify([l1, l2]));
   }
+  {
+    // the spend window over a large runs.jsonl: the last 24 h from the end, never the whole file
+    const rf = write('runs.jsonl', ''); const old = JSON.stringify({ runId: 'old', agentId: 'a', startedAt: 1, endedAt: 2, usd: 9, pad: 'p'.repeat(400) }) + '\n';
+    const fd = fs.openSync(rf, 'w'); try { const block = Buffer.from(old.repeat(4096)); for (let w = 0; w < 48 * 1024 * 1024; w += block.length) fs.writeSync(fd, block); } finally { fs.closeSync(fd); }
+    const t = Date.now(); fs.appendFileSync(rf, [{ runId: 'n1', agentId: 'a', startedAt: t - 3600e3, endedAt: t - 3000e3, usd: 0.25 }, { runId: 'n2', agentId: 'b', startedAt: t - 600e3, endedAt: t - 60e3, usd: 0.5, provider: 'claude-cli' }].map(r => JSON.stringify(r)).join('\n') + '\n');
+    const real = fs.readFileSync; let whole = 0; fs.readFileSync = function (f) { if (String(f) === rf) whole++; return real.apply(fs, arguments); };
+    const t0 = Date.now(); let rows; try { rows = runsSince(t - 24 * 3600e3, rf); } finally { fs.readFileSync = real; }
+    const ms = Date.now() - t0; try { fs.unlinkSync(rf); } catch (_) {}
+    check('spend window: a 48 MB runs.jsonl gives the last 24 h only, read from the end (' + ms + ' ms)', whole === 0 && rows.length === 2 && rows.reduce((n, r) => n + r.usd, 0) === 0.75 && ms < 1000, JSON.stringify({ whole, n: rows.length, ms }));
+  }
   const bad = cases.filter(c => !c.pass);
   for (const c of cases) console.log((c.pass ? 'ok   ' : 'FAIL ') + c.name + (c.pass ? '' : '  [' + c.detail + ']'));
   console.log(bad.length ? 'DISPATCH SELFTEST FAILED: ' + bad.length + ' of ' + cases.length : 'DISPATCH SELFTEST PASSED: ' + cases.length + ' cases');
@@ -520,10 +530,13 @@ function spendSplit() {
   if (!capNumWarned) { capNumWarned = true; log('CAP NUMERATOR ERROR: cap-numerator.js unusable (' + (CAPNUM.error || 'no spendSplit') + ') — the cap is summing runs.jsonl only and cannot see auxiliary generations'); }
   return runsOnlySplit();
 }
+// StarNet's runs.jsonl is never read whole (docs/RETENTION.md): the window since `sinceMs`, read from the end
+// (lib/bounded.js; a run that started in the window ended after it, so the window by end time holds every one)
+function runsSince(sinceMs, file) { try { return require('./lib/bounded').jsonlWindow(file || RUNS, { sinceMs }).rows; } catch (_) { return []; } }
 // The old numerator, kept whole so the fallback is exactly the behaviour we had and the two can be compared.
 function runsOnlySplit() {
   const since = Date.now() - 24 * 3600 * 1000; let metered = 0; let ownerPaid = 0;
-  try { for (const l of fs.readFileSync(RUNS, 'utf8').split('\n')) { if (!l) continue; try { const r = JSON.parse(l); if (!(r.startedAt >= since)) continue; const usd = Number(r.usd) || 0; if (UNMETERED_PROVIDERS.includes(String(r.provider || ''))) ownerPaid += usd; else metered += usd; } catch (_) {} } } catch (_) {}
+  for (const r of runsSince(since)) { if (!(r.startedAt >= since)) continue; const usd = Number(r.usd) || 0; if (UNMETERED_PROVIDERS.includes(String(r.provider || ''))) ownerPaid += usd; else metered += usd; }
   return { metered, ownerPaid };
 }
 function spentToday() { return spendSplit().metered; }
@@ -535,7 +548,7 @@ function spentByAgent() {
 }
 function runsOnlyByAgent() {
   const since = Date.now() - 24 * 3600 * 1000; const out = {};
-  try { for (const l of fs.readFileSync(RUNS, 'utf8').split('\n')) { if (!l) continue; try { const r = JSON.parse(l); if (r.startedAt >= since && r.agentId && !UNMETERED_PROVIDERS.includes(String(r.provider || ''))) out[r.agentId] = (out[r.agentId] || 0) + (Number(r.usd) || 0); } catch (_) {} } } catch (_) {}
+  for (const r of runsSince(since)) if (r.startedAt >= since && r.agentId && !UNMETERED_PROVIDERS.includes(String(r.provider || ''))) out[r.agentId] = (out[r.agentId] || 0) + (Number(r.usd) || 0);
   return out;
 }
 

@@ -5,7 +5,8 @@
  *
  *   node tests/today-questions-walk.js [--shots <dir>]
  *
- * Starts the mock on a free port (never 8800) with MOCK_CERTIFIED=1, drives Chrome over the DevTools protocol (no
+ * Starts the mock on a free port (never 8800) with MOCK_CERTIFIED=1 and MOCK_NO_PUSH=1 (the mock's timed new question
+ * would redraw every card mid-walk and wipe the state a check is reading), drives Chrome over the DevTools protocol (no
  * dependencies). Exits 0 with "SKIP" when no Chrome is installed or Node has no WebSocket; 1 on any failed check.
  */
 'use strict';
@@ -26,16 +27,18 @@ const SECRET = 'mock-secret-value-never-echoed-0123456789';
 
 (async () => {
   let mport = await freePort(); if (mport === 8800) mport = await freePort();
-  const mock = spawn(process.execPath, [path.join(__dirname, '..', 'console', 'ui', 'dev', 'mock-api.js'), String(mport)], { env: Object.assign({}, process.env, { MOCK_CERTIFIED: '1' }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const mock = spawn(process.execPath, [path.join(__dirname, '..', 'console', 'ui', 'dev', 'mock-api.js'), String(mport)], { env: Object.assign({}, process.env, { MOCK_CERTIFIED: '1', MOCK_NO_PUSH: '1' }), stdio: ['ignore', 'pipe', 'pipe'] });
   let mockOut = ''; mock.stdout.on('data', d => { mockOut += d; }); mock.stderr.on('data', d => { mockOut += d; });
-  await until(async () => /mock console on/.test(mockOut), 8000);
+  if (!await until(async () => /mock console on/.test(mockOut), 15000)) { console.error('today questions walk: the mock did not start: ' + mockOut.slice(-400)); mock.kill(); process.exit(1); }
   const cport = await freePort();
   const udd = fs.mkdtempSync(path.join(os.tmpdir(), 'today-walk-'));
   const chrome = spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--user-data-dir=' + udd, '--remote-debugging-port=' + cport, '--window-size=1280,2400', 'about:blank'], { stdio: 'ignore' });
   const done = code => { try { chrome.kill(); } catch (_) {} try { mock.kill(); } catch (_) {} try { fs.rmSync(udd, { recursive: true, force: true }); } catch (_) {} setTimeout(() => process.exit(code), 200); };
   try {
-    let targets; for (let i = 0; i < 60 && !targets; i++) { try { targets = await getJson('http://127.0.0.1:' + cport + '/json'); } catch (_) { await sleep(200); } }
-    const ws = new WebSocket(targets.find(t => t.type === 'page').webSocketDebuggerUrl);
+    // Chrome answers /json before its first page target exists: wait for the page, not for the port
+    const page = await until(async () => { try { return (await getJson('http://127.0.0.1:' + cport + '/json')).find(t => t.type === 'page' && t.webSocketDebuggerUrl); } catch (_) { return null; } }, 20000);
+    if (!page) throw new Error('Chrome showed no page target in 20 s');
+    const ws = new WebSocket(page.webSocketDebuggerUrl);
     await new Promise(r => { ws.onopen = r; });
     let id = 0; const pending = new Map(); const errors = [];
     ws.onmessage = ev => { const m = JSON.parse(ev.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }

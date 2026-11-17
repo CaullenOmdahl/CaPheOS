@@ -20,12 +20,20 @@ reader of a file that is not bounded reads it with `lib/bounded.js`.
 node company/tools/retention.js status [--json]   # each artifact: size, rows, age of its oldest live entry, bound, over/under
 node company/tools/retention.js apply [--dry-run] # roll, rotate and archive by the policy
 node company/tools/retention.js audit             # exit 1 if any bounded artifact is over its bound
+node company/tools/retention.js find <artifact> <text> [--limit N] [--json]
+                                                  # lines with <text> in the live file and every archive month
 node company/tools/retention.js selftest
 ```
 
+`find` takes an artifact id (`decisions`, `dispatch-log`, `incidents`, ...), a live path, or a handoff archive's stem
+(`to-founder`), and searches the live file first, then the archive months newest first (case-insensitive). The pointer
+line a roll leaves in the live file names the archive files and this command, so an agent that reads only the live file
+still knows where history went and how to reach it.
+
 The dispatcher runs `apply` once a company day (`retention.daily()`, one fail-safe hook in `dispatch.js`, right after
 `handoff-archive.js`), then `audit`, and writes one `RETENTION:` line to the dispatch log (what moved, any error, any
-file over its bound).
+file over its bound). On every other tick the same hook only stats the files that have a `maxLiveBytes`; one past it is
+rolled then and there (`RETENTION (size bound): ...`), so a busy day cannot grow a live file past its byte bound.
 
 ## Policies
 
@@ -39,6 +47,13 @@ file over its bound).
 | `run-journal` | StarNet's `.run-journal/`: a journal with a resolution record, quiet for `resolvedAfterDays`, is removed; an unresolved one quiet for `keepDays` is gzipped to `.starnet-data/run-journal-archive/` (kept `archiveKeepDays`) |
 | `never` | not touched; `reason` says who bounds it |
 
+**Whichever bound is hit first.** A row policy may also carry `maxLiveBytes`: once the live file is past it, the oldest
+entries move as well (by the time in each entry: `- YYYY-MM-DD HH:MM`, a section's date, a row's `at`), until the file
+is back to `rollToFraction` (default 0.75) of the bound, so it is not rolled again on the very next entry. The newest
+entry, the `keepLast` newest and every still-live clearance always stay; the pointer line stays at the top. Entries of
+the same minute go by file order (which end is newest is read off the file: `decisions.md` is newest first, a handoff
+archive oldest first). They go to the archive month of their own date, like any other roll.
+
 Entry formats: `jsonl` (one row per line, time from `at`/`ts`/...), `lines` (a leading ISO time), `md-entries` (a line
 starting `- YYYY-MM-DD` or `| YYYY-MM-DD`, with its continuation lines; `entry` overrides the pattern, `single` makes
 each entry one line), `md-sections` (a `## ` section dated in its heading). A line with no time is never moved.
@@ -51,13 +66,13 @@ The archive of a file that already lives in an `archive/` folder (the handoff ar
 
 | artifact | live window | readers |
 |---|---|---|
-| `company/work/decisions.md` | 30 days | agents (in full), competence.js verify (anchors), console (paged) |
-| `company/work/dispatch-log.md` | 3 days | corrections.js (performance flags), competence.js verify (anchors), console (paged), health-check (mtime) |
+| `company/work/decisions.md` | 30 days or 48 KB | agents (in full; older: `retention.js find decisions`), competence.js verify (anchors), console (paged) |
+| `company/work/dispatch-log.md` | 3 days or 32 KB | corrections.js (performance flags), competence.js verify (anchors), console (paged), health-check (mtime) |
 | `company/work/incidents.md` | 180 days, newest 20 always | agents, incident-open.py (today's ids) |
 | `company/work/merge-gate.log` | 90 days | default-branch-watch.js (ALLOWED lines of recent merges) |
 | `company/work/external-actions.jsonl` | 90 days | evidence.js |
 | `company/state/external-clearances.jsonl` | 90 days + every live clearance | external-gate.js check |
-| `company/work/handoffs/archive/*.md` | 30 days | agents looking for an older thread |
+| `company/work/handoffs/archive/*.md` | 30 days (monthly) or 200 KB per file | agents looking for an older thread (`retention.js find to-<name>`) |
 | `company/state/model-moves.jsonl`, `company/state/pacer-log.jsonl`, `company/work/security/locked-changes.jsonl` | 90 / 30 / 90 days | their tools |
 | `company/state/locked/provenance.jsonl` | 14 days | locked-watch.js (from its byte offset), default-branch-watch.js (4 MB tail) |
 | `.starnet-data/station.log` | 50 MB, 5 gzipped copies | people |
@@ -76,10 +91,13 @@ A roll of one file, in order:
    touched and `audit` keeps reporting it over its bound until a person looks.
 3. Each moved chunk is appended, read back, and its sha256 and line count compared with what was meant.
 4. Index lines (an artifact's `index` patterns) are copied to `<archive dir>/index.<ext>`.
-5. The live file is replaced through a temp file and a rename, only if it still holds what was read; a pure append
+5. The pointer line is written (first roll) or replaced, when this roll adds an archive file it does not name yet; the
+   old pointer text goes into the roll's provenance row inline (`{inline, bytes, sha256}`), so the rebuild below still
+   has every byte of the file as it was.
+6. The live file is replaced through a temp file and a rename, only if it still holds what was read; a pure append
    since then is carried over; any other change leaves the live file whole (the archive then holds a second copy of
    those entries, which the next run moves again; nothing is lost).
-6. The roll is recorded in the provenance log: `prov.rolled(file, { before, after, ops, chunks }, 'retention.js')`.
+7. The roll is recorded in the provenance log: `prov.rolled(file, { before, after, ops, chunks }, 'retention.js')`.
 
 Archives are append-only. Rolls are idempotent: a second `apply` the same day moves nothing.
 
@@ -119,14 +137,18 @@ not prune them; StarNet owns their retention. Every CaPheOS reader takes a bound
 | competence.js | the station's paged `/api/runs` |
 | corrections.js, harness-change.js | the last 60 days, from the end |
 | performance.js, hire.js, cap-numerator.js, model-stats.js, routine-length.js | their own window (hours or days), from the end |
-| locked-watch.js | the last 3000 lines (32 MB at most); transcripts: the segments whose manifest range reaches the window |
+| locked-watch.js | runs: the last 3000 lines (32 MB at most); integrity: incremental (below); transcripts: the segments whose manifest range reaches the window |
+| dispatch.js (spend sums), pacer.js (24 h spend, 48 h refusals and limits, 7 days of DeepSeek runs), models.js (72 h per seat) | that window, from the end (`lib/bounded.js jsonlWindow`) |
 | default-branch-watch.js | a 6 MB tail |
 | provenance.js | the newest two transcript segments, 3 MB each |
 | console (server, activity, chat) | a tail or the window since a hire |
 
-Still reading runs.jsonl in full (follow-ups, not yet changed): `dispatch.js` (the daily spend sums, two loops over the
-file), `pacer.js` and `models.js`. locked-watch.js also hashes runs.jsonl on every tick to prove it only grew
-(an integrity check, not a parse) and keeps a last-known-good copy of it.
+No CaPheOS reader takes runs.jsonl whole. locked-watch.js proves it only grew without hashing it: the manifest marks it
+`bigAppend`, and the baseline keeps `{bytes, headSha, tailSha}` (the size at the last check and the sha256 of its first
+64 KB and of the 64 KB before that end). A tick reads those 128 KB: both unchanged and the file no shorter is "appended";
+anything else is "history before the last check was rewritten" (flagged, never restored). No copy of it is kept (an
+older last-known-good copy is deleted at the next accept). A baseline from before this format is checked once in full,
+then kept in the new one. The selftests run each reader over a 48–96 MB file and fail if it is read whole or is slow.
 
 ## Adding an artifact
 

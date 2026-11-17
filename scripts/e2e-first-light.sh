@@ -31,7 +31,11 @@ check() {
   return $rc
 }
 free_port() { node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})'; }
-wait_port() { for _ in $(seq 1 50); do (echo > "/dev/tcp/127.0.0.1/$1") 2>/dev/null && return 0; sleep 0.1; done; return 1; }
+# wait_port <port> [pid]: up to 30 s for something to listen (a loaded machine starts node slowly); gives up at once if
+# the server process it waits for has died
+wait_port() { local end=$((SECONDS + 30)); while (( SECONDS < end )); do (echo > "/dev/tcp/127.0.0.1/$1") 2>/dev/null && return 0; [[ -n "${2:-}" ]] && ! kill -0 "$2" 2>/dev/null && return 1; sleep 0.1; done; return 1; }
+# wait_for <seconds> <command...>: poll a condition every 0.2 s until it holds (exit 0) or the time is up (exit 1)
+wait_for() { local end=$((SECONDS + $1)); shift; while :; do "$@" && return 0; (( SECONDS >= end )) && return 1; sleep 0.2; done; }
 
 # ---------- setup: a temp copy of the framework ----------
 mkdir -p "$T/co"
@@ -41,6 +45,7 @@ R="$T/co"
 cp -r "$SRC/tests/fixtures/starnet-stub" "$R/starnet"
 mkdir -p "$R/secrets" "$R/company/state" "$R/company/work" "$R/company/owner"
 SPORT="$(free_port)"; CPORT="$(free_port)"
+while [[ "$CPORT" == "$SPORT" || "$CPORT" == 8800 ]]; do CPORT="$(free_port)"; done   # two free ports, never the same one
 [[ "$SPORT" != 8800 && "$CPORT" != 8800 ]] || { echo "refusing port 8800"; exit 1; }
 export CAPHEOS_ROOT="$R" STARNET_URL="http://127.0.0.1:$SPORT"
 TOOLS="$R/company/tools"
@@ -62,7 +67,7 @@ TOKEN="$(node -e 'console.log(require("crypto").randomBytes(16).toString("hex"))
 printf '%s\n' "$TOKEN" > "$R/secrets/station-token"; chmod 600 "$R/secrets/station-token"
 node "$SRC/tests/mock-station.js" --port "$SPORT" --token "$TOKEN" --log "$LOG" --root "$R" > "$T/mock.out" 2>&1 &
 PIDS+=($!)
-check "mock station up on $SPORT" wait_port "$SPORT"
+check "mock station up on $SPORT" wait_port "$SPORT" "${PIDS[-1]}"
 st() { curl -s -H "x-starnet-token: $TOKEN" -H 'Content-Type: application/json' "$@"; }
 # mocklog '<js filter on row r>' prints the matching rows (one JSON per line)
 mocklog() { node -e 'const f=process.argv[1];const fn=new Function("r","return ("+process.argv[2]+")");for(const l of require("fs").readFileSync(f,"utf8").split("\n")){if(!l)continue;const r=JSON.parse(l);if(fn(r))console.log(l)}' "$LOG" "$1"; }
@@ -110,7 +115,7 @@ check "dispatch used no route the mock lacks" test -z "$UNKNOWN" || echo "  unkn
 # ---------- 6. console API + a gate question ----------
 node "$R/console/server.js" --port "$CPORT" > "$T/console.out" 2>&1 &
 PIDS+=($!)
-check "console API up on $CPORT" wait_port "$CPORT"
+check "console API up on $CPORT" wait_port "$CPORT" "${PIDS[-1]}"
 CTOKEN="$(cat "$R/secrets/console-token" 2>/dev/null)"
 con() { local m="$1" p="$2"; shift 2; curl -s -X "$m" -H "x-console-token: $CTOKEN" -H 'content-type: application/json' "http://127.0.0.1:$CPORT$p" "$@"; }
 jget() { node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d);const v=new Function("o","return ("+process.argv[1]+")")(o);console.log(typeof v==="string"?v:JSON.stringify(v))})' "$1"; }
@@ -242,7 +247,6 @@ check "liveness ping" node "$TOOLS/liveness.js" ping
 # a run in flight on the station (a routine of the Founder's), for the "Now" strip
 curl -s -X POST -H "x-station-test: 1" -H "x-starnet-token: $TOKEN" -H 'Content-Type: application/json' "$STARNET_URL/__live" -d '{"agentId":"agent","routine":"Founder loop","ageSec":95,"usd":0.0042,"steps":[["fs_read","company/CHARTER.md"]]}' > "$T/live.out"
 LIVE_RUN="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).run.runId)' "$T/live.out")"
-sleep 1
 printf '%s' '{"text":"hello"}' > "$T/hello.json"
 check "with a \$0 cap, a metered Founder's live chat is refused with the fix (budget hold)" bash -c "curl -s -N -X POST -H 'x-console-token: $CTOKEN' -H 'content-type: application/json' http://127.0.0.1:$CPORT/api/chat/agent/send -d @'$T/hello.json' | grep -q 'budget-hold'"
 curl -s -X POST -H "x-console-token: $CTOKEN" -H 'content-type: application/json' "http://127.0.0.1:$CPORT/api/setup/budget" -d '{"dailyUsd":2,"perAgentUsd":1}' > "$T/budget.out"
@@ -273,7 +277,7 @@ check "a station refusal is a console.error line, not silence" bash -c "curl -s 
 # ---------- 16. the crew's work, visible: Now, Watch, Stop, activity, owner-message state ----------
 check "GET /api/now: the run in flight with its step, elapsed time and cost" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/now | node -e 'let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const o=JSON.parse(d);const r=o.runs.find(x=>x.runId===\"$LIVE_RUN\");if(!r||r.name!==\"Founder\"||!/reading company\/CHARTER\.md/.test(r.step)||!(r.elapsedSec>=90)||!(r.usd>0)||!/Founder loop/.test(r.label)){console.error(d.slice(0,600));process.exit(1)}})'"
 check "GET /api/now/run/:id: the Watch view's events" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/now/run/$LIVE_RUN | grep -q 'reading company/CHARTER.md'"
-check "Stop via the station proxy ends the run" bash -c "curl -s -X POST -H 'x-console-token: $CTOKEN' -H 'content-type: application/json' http://127.0.0.1:$CPORT/api/station/cancel -d '{\"runId\":\"$LIVE_RUN\"}' >/dev/null; sleep 1; ! curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/now | grep -q '$LIVE_RUN'"
+check "Stop via the station proxy ends the run" bash -c "curl -s -X POST -H 'x-console-token: $CTOKEN' -H 'content-type: application/json' http://127.0.0.1:$CPORT/api/station/cancel -d '{\"runId\":\"$LIVE_RUN\"}' >/dev/null; end=\$((SECONDS + 15)); while curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/now | grep -q '$LIVE_RUN'; do (( SECONDS < end )) || exit 1; sleep 0.2; done"
 check "GET /api/activity answers with linked items" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/activity | grep -q '\"links\"'"
 check "an owner message shows what it waits on (next check within N min)" bash -c "curl -s -X POST -H 'x-console-token: $CTOKEN' -H 'content-type: application/json' http://127.0.0.1:$CPORT/api/owner/messages -d '{\"text\":\"status please\"}' | grep -Eq 'next check within [0-9]+ min|\"status\":\"working\"'"
 node "$TOOLS/onboard.js" --certify --json > "$T/certify-2.out" 2>&1; CRC=$?
@@ -316,9 +320,8 @@ check "GET /api/hiring: each round carries its live stage and timeline" bash -c 
   let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const o=JSON.parse(d);const r=o.rounds.find(x=>x.id===\"data-analyst-1\");
   if(!r||!r.stage||!r.stage.label||!r.stage.timeline.some(x=>x.step===\"candidates created\"&&x.at)){console.error(d.slice(0,600));process.exit(1)}})'"
 # the interviews run in the background (in parallel) and move the round on when they finish
-for _ in $(seq 1 100); do
-  node -e 'const a=require(process.argv[1]+"/company/hiring/qa-lead-1/round.json"),b=require(process.argv[1]+"/company/hiring/data-analyst-1/round.json"); process.exit(a.hired&&b.pickRequest?0:1)' "$R" 2>/dev/null && break; sleep 0.2
-done
+# (a condition with a generous deadline, not a count of sleeps: on a loaded machine the interviews take longer)
+wait_for 120 node -e 'const a=require(process.argv[1]+"/company/hiring/qa-lead-1/round.json"),b=require(process.argv[1]+"/company/hiring/data-analyst-1/round.json"); process.exit(a.hired&&b.pickRequest?0:1)' "$R" 2>/dev/null
 check "both candidates were interviewed side by side (one background process, 2 at a time)" bash -c "grep -q 'INTERVIEWS started in the background (pid [0-9]*, 2 at a time)' company/hiring/data-analyst-1/log.md && [[ \$(grep -c '^Finished ' company/hiring/data-analyst-1/interviews/*.md | grep -c ':1') -eq 2 ]]"
 M2=$(logmark)
 node "$TOOLS/dispatch.js" > "$T/dispatch-h2.out" 2>&1

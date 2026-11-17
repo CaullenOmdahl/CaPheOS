@@ -4,6 +4,9 @@
  *   node company/tools/retention.js status [--json]     each artifact: size, rows, age of its oldest live entry, bound, over/under
  *   node company/tools/retention.js apply [--dry-run]   roll, rotate and archive by the policy (the dispatcher runs this once a day)
  *   node company/tools/retention.js audit               exit 1 if any bounded artifact is over its bound
+ *   node company/tools/retention.js find <artifact> <text> [--limit N] [--json]
+ *                                                       lines with <text> in the live file and every archive month
+ *                                                       (<artifact>: decisions, dispatch-log, to-founder, a path, ...)
  *   node company/tools/retention.js selftest
  *
  * The invariant (docs/RETENTION.md): any file an agent or a per-tick tool reads in full must have a bound.
@@ -11,6 +14,10 @@
  *   roll-monthly / keep-N-days  entries older than keepDays move into <dir>/archive/<name>/YYYY-MM.<ext> by the entry's own
  *                               month; one pointer line stays in the live file. keepLast keeps that many newest entries anyway;
  *                               keepIf "clearance-live" keeps every external-gate clearance that still clears something.
+ *                               maxLiveBytes: whichever bound is hit first, days or bytes; past it the oldest entries move
+ *                               too (down to rollToFraction, default 0.75, of the bound; the newest entry always stays).
+ *                               The dispatcher's hook checks the size on every tick (a stat), the days once a day.
+ *                               The pointer line names the archive files and the `find` command.
  *   keep-last-N                 all but the newest keepLast entries move the same way.
  *   size-rotate                 past maxBytes: the file is copied to <file>.1.gz (older copies shift, `keep` are kept) and
  *                               cut back (copytruncate; the bytes written while copying are put back).
@@ -65,11 +72,21 @@ function archiveDirOf(rel) {
   const dir = path.posix.dirname(rel), base = path.posix.basename(rel), ext = path.posix.extname(base), stem = base.slice(0, base.length - ext.length);
   return { dir: path.posix.basename(dir) === 'archive' ? dir + '/' + stem : dir + '/archive/' + stem, ext: ext || '.log' };
 }
-function pointerText(a, rel) {
-  const d = archiveDirOf(rel).dir + '/';
-  if (a.format === 'jsonl') return JSON.stringify({ _retention: 'rolled', archive: d, note: 'older rows were ' + POINTER_MARK + ' (docs/RETENTION.md)' }) + '\n';
-  if (a.format === 'lines') return '# older lines: ' + d + ' (' + POINTER_MARK + ')\n';
-  return '_Older entries are in `' + d + 'YYYY-MM' + archiveDirOf(rel).ext + '` (' + POINTER_MARK + '; docs/RETENTION.md)._\n';
+// the pointer line names the archive files (the newest 12; the folder holds the rest) and the command that searches them
+function findArg(a, rel) { return a.path.includes('*') ? rel : a.id; }
+function pointerText(a, rel, files) {
+  const d = archiveDirOf(rel).dir + '/'; const ext = archiveDirOf(rel).ext;
+  const fl = (files || []).slice().sort(); const shown = fl.slice(-12); const more = fl.length - shown.length;
+  const find = 'node company/tools/retention.js find ' + findArg(a, rel) + ' "<text>"';
+  if (a.format === 'jsonl') return JSON.stringify({ _retention: 'rolled', archive: d, files: shown.map(f => d + f), older: more || undefined, find, note: 'older rows were ' + POINTER_MARK + ' (docs/RETENTION.md)' }) + '\n';
+  const list = shown.length ? shown.map(f => '`' + f + '`').join(', ') + (more ? ' and ' + more + ' older' : '') : '`YYYY-MM' + ext + '`';
+  if (a.format === 'lines') return '# older lines: ' + d + ' ' + shown.join(', ') + (more ? ' (+' + more + ' older)' : '') + '; search: ' + find + ' (' + POINTER_MARK + ')\n';
+  return '_Older entries are in `' + d + '`: ' + list + (a.index && a.index.length ? ' (anchors also in `index' + ext + '`)' : '') + '. Search live and archive: `' + find + '` (' + POINTER_MARK + '; docs/RETENTION.md)._\n';
+}
+// the month files an archive folder holds now
+function archiveFiles(ctx, rel) {
+  const { dir, ext } = archiveDirOf(rel); const re = new RegExp('^\\d{4}-\\d{2}' + ext.replace(/[.]/g, '\\.') + '$');
+  try { return fs.readdirSync(ctx.P(dir)).filter(f => re.test(f)).sort(); } catch (_) { return []; }
 }
 const isPointer = (a, line) => line.includes(POINTER_MARK) || (a.format === 'jsonl' && /^\{"_retention":/.test(line));
 function tsOfRow(r) {
@@ -102,7 +119,7 @@ function parse(a, text) {
     const body = l.replace(/\n$/, '');
     const m = entryRe.exec(body);
     if (isPointer(a, body)) { cur = null; push('pointer', l); continue; }
-    if (m) { push('entry', l, m[1], null); cur = a.single ? null : units[units.length - 1]; continue; }
+    if (m) { push('entry', l, m[1], null); const u = units[units.length - 1]; const hm = /^[ T](\d{2}:\d{2})/.exec(body.slice(m.index + m[0].length)); u.hm = hm ? hm[1] : ''; cur = a.single ? null : u; continue; }
     if (a.format === 'md-sections' && /^## /.test(body)) { push('entry', l, null, null); cur = units[units.length - 1]; continue; }   // a section with no date: kept
     if (cur && !(a.format !== 'md-sections' && /^#/.test(body))) { cur.text += l; continue; }
     cur = null; push('fixed', l);
@@ -130,6 +147,29 @@ function select(a, units, ctx, maxCut) {
     if (!cutDay || !(u.day < cutDay)) continue;
     if (a.keepIf === 'clearance-live' && clearanceLive(u.row, ctx.now)) continue;
     out.add(i);
+  }
+  // maxLiveBytes: whichever bound is hit first. Past it, the oldest entries move too, until the live file is back to
+  // rollToFraction of the bound (0.75 by default, so the file is not rolled again on the very next entry). The newest
+  // entry, the keepLast newest and every still-live clearance always stay.
+  const maxB = Number(a.maxLiveBytes);
+  if (maxB > 0) {
+    const sz = units.reduce((n, u, i) => n + (out.has(i) ? 0 : Buffer.byteLength(u.text)), 0) + (units.some(u => u.kind === 'pointer') ? 0 : 400);
+    if (sz > maxB) {
+      const target = Math.floor(maxB * (Number(a.rollToFraction) > 0 && Number(a.rollToFraction) <= 1 ? Number(a.rollToFraction) : 0.75));
+      const age = x => (x.u.ms ? new Date(x.u.ms).toISOString() : x.u.day + 'T' + (x.u.hm || '00:00'));
+      // ties (the same minute) go by file order; which end of the file is newest is read off the entries themselves
+      let up = 0, down = 0; for (let k = 1; k < entries.length; k++) { const c = age(entries[k]).localeCompare(age(entries[k - 1])); if (c > 0) up++; else if (c < 0) down++; }
+      const newestFirst = down > up;
+      const order = entries.slice().sort((x, y) => age(x).localeCompare(age(y)) || (newestFirst ? y.i - x.i : x.i - y.i));
+      const youngest = order.length ? order[order.length - 1].i : -1;
+      let left = sz;
+      for (const { u, i } of order) {
+        if (left <= target) break;
+        if (out.has(i) || newest.has(i) || i === youngest) continue;
+        if (a.keepIf === 'clearance-live' && clearanceLive(u.row, ctx.now)) continue;
+        out.add(i); left -= Buffer.byteLength(u.text);
+      }
+    }
   }
   if (Number.isFinite(maxCut)) {   // the provenance log: only a prefix of rows the watcher already read
     let off = 0; const pre = new Set();
@@ -171,26 +211,36 @@ function rollFile(ctx, a, rel, st, opt) {
   const moved = select(a, units, ctx, o.maxCut);
   if (!moved.size) return { rel, moved: 0 };
   const hasPointer = units.some(u => u.kind === 'pointer');
-  // where the pointer goes: after the header (the units before the first entry), or first in a jsonl/lines file
+  const { dir, ext } = archiveDirOf(rel);
+  // the pointer names every archive file there will be after this roll; an old pointer that names fewer is replaced
+  // (its old text goes into the provenance row inline, so locked-watch still rebuilds the file as it was)
+  const files = [...new Set(archiveFiles(ctx, rel).concat([...moved].map(i => units[i].day.slice(0, 7) + ext)))];
+  const ptrNew = pointerText(a, rel, files);
+  const ptrIdx = hasPointer ? units.findIndex(u => u.kind === 'pointer') : -1;
+  // where a new pointer goes: after the header (the units before the first entry), or first in a jsonl/lines file
   let pAt = 0;
   if (!hasPointer && a.format !== 'jsonl' && a.format !== 'lines') { pAt = units.findIndex(u => u.kind === 'entry'); if (pAt < 0) pAt = units.length; }
-  const ptr = hasPointer ? '' : pointerText(a, rel);
-  const { dir, ext } = archiveDirOf(rel);
-  // archived units in file order, grouped into chunks of one month each
-  const chunks = []; const ops = []; const keptParts = []; let afterPos = 0;
+  const ptr = hasPointer ? '' : ptrNew + (a.format !== 'jsonl' && a.format !== 'lines' && pAt < units.length ? '\n' : '');   // a blank line before the first entry
+  // archived units in file order, grouped into chunks of one month each; `stream` is every piece the rebuild takes back,
+  // in the order of the ops (archive chunks and, for a replaced pointer, its old text inline)
+  const chunks = []; const stream = []; const ops = []; const keptParts = []; let afterPos = 0; let ptrWritten = 0;
   for (let i = 0; i < units.length; i++) {
-    if (i === pAt && ptr) { ops.push([afterPos, Buffer.byteLength(ptr), 0]); keptParts.push(ptr); afterPos += Buffer.byteLength(ptr); }
+    if (i === pAt && ptr) { ops.push([afterPos, Buffer.byteLength(ptr), 0]); keptParts.push(ptr); afterPos += Buffer.byteLength(ptr); ptrWritten = Buffer.byteLength(ptr); }
     const u = units[i];
+    if (i === ptrIdx && u.text !== ptrNew) {
+      ops.push([afterPos, Buffer.byteLength(ptrNew), Buffer.byteLength(u.text)]); stream.push({ inline: u.text });
+      keptParts.push(ptrNew); afterPos += Buffer.byteLength(ptrNew); ptrWritten = Buffer.byteLength(ptrNew); continue;
+    }
     if (!moved.has(i)) { keptParts.push(u.text); afterPos += Buffer.byteLength(u.text); continue; }
     const t = u.text.endsWith('\n') ? u.text : u.text + '\n';   // the last line of a file may lack its newline
     const month = u.day.slice(0, 7); const arel = dir + '/' + month + ext;
-    const last = chunks[chunks.length - 1];
+    const last = stream[stream.length - 1];
     if (last && last.archive === arel && last.unitEnd === i) { last.text += t; last.unitEnd = i + 1; last.lines += 1; last.extra += t.length - u.text.length; }
-    else chunks.push({ archive: arel, month, text: t, unitEnd: i + 1, lines: 1, extra: t.length - u.text.length });
+    else { const c = { archive: arel, month, text: t, unitEnd: i + 1, lines: 1, extra: t.length - u.text.length }; chunks.push(c); stream.push(c); }
     const lastOp = ops[ops.length - 1];
     if (lastOp && lastOp[0] === afterPos && lastOp[1] === 0) lastOp[2] += Buffer.byteLength(t); else ops.push([afterPos, 0, Buffer.byteLength(t)]);
   }
-  if (pAt === units.length && ptr) { ops.push([afterPos, Buffer.byteLength(ptr), 0]); keptParts.push(ptr); }
+  if (pAt === units.length && ptr) { ops.push([afterPos, Buffer.byteLength(ptr), 0]); keptParts.push(ptr); ptrWritten = Buffer.byteLength(ptr); }
   if (chunks.some(c => c.extra)) {
     // a moved final line without "\n": the archive gets the newline; the rebuilt file must not, so this one is left for later
     return { rel, skipped: 'the last line has no newline yet; next run' };
@@ -203,7 +253,8 @@ function rollFile(ctx, a, rel, st, opt) {
   if (!fs.readFileSync(file).equals(before)) return { rel, skipped: 'changed while rolling; next run' };
   // 2. append each chunk, then read it back
   const recs = [];
-  for (const c of chunks) {
+  for (const c of stream) {
+    if (c.inline != null) { const buf = Buffer.from(c.inline, 'utf8'); recs.push({ inline: c.inline, bytes: buf.length, sha256: sha(buf) }); continue; }
     const af = ctx.P(c.archive); fs.mkdirSync(path.dirname(af), { recursive: true });
     if (!fs.existsSync(af)) fs.writeFileSync(af, archiveHeader(a, rel, c.month));
     const offset = fs.statSync(af).size; const buf = Buffer.from(c.text, 'utf8');
@@ -233,7 +284,7 @@ function rollFile(ctx, a, rel, st, opt) {
   now = fs.readFileSync(file);
   if (!now.subarray(0, after.length).equals(after)) return { rel, error: 'the live file changed during the rename; check it' };
   if (!o.noProvenance) { try { require('./provenance.js').rolled(file, { before, after, ops, chunks: recs }, 'retention.js'); } catch (_) {} }
-  return Object.assign(res, { ops, chunks: recs, cut: before.length - after.length + Buffer.byteLength(ptr), pointer: Buffer.byteLength(ptr), hadPointer: hasPointer });
+  return Object.assign(res, { ops, chunks: recs, cut: before.length - after.length + ptrWritten, pointer: ptrWritten, hadPointer: hasPointer });
 }
 
 /* ---------------- the other policies ---------------- */
@@ -306,7 +357,9 @@ function expandPaths(ctx, p) {
 }
 const ROW_POLICIES = ['roll-monthly', 'keep-N-days', 'keep-last-N'];
 function apply(opt) {
-  const ctx = ctxOf(opt); const pol = loadPolicy(ctx); const st = loadState(ctx); const results = [];
+  const ctx = ctxOf(opt); const pol0 = loadPolicy(ctx); const st = loadState(ctx); const results = [];
+  const only = opt && Array.isArray(opt.only) ? new Set(opt.only) : null;   // a size-bound roll between daily applies
+  const pol = only ? { artifacts: pol0.artifacts.filter(a => only.has(a.id)) } : pol0;
   const LW = (() => { try { return require('./locked-watch.js'); } catch (_) { return null; } })();
   const lwOpts = { root: ctx.root, home: ctx.home };
   const body = () => {
@@ -334,7 +387,8 @@ function apply(opt) {
   let out;
   if (ctx.dry || !LW) out = body();
   else { out = LW.withWatchLock(lwOpts, body); if (out && out.busy) return { busy: true, results: [] }; }
-  st.lastApply = { at: new Date(ctx.now).toISOString(), day: lday(ctx.now), moved: out.reduce((n, r) => n + (r.moved || 0), 0), errors: out.filter(r => r.error).length };
+  const sum = { at: new Date(ctx.now).toISOString(), day: lday(ctx.now), moved: out.reduce((n, r) => n + (r.moved || 0), 0), errors: out.filter(r => r.error).length };
+  if (only) st.lastSizeRoll = Object.assign(sum, { ids: [...only] }); else st.lastApply = sum;
   saveState(ctx, st);
   return { results: out };
 }
@@ -380,9 +434,28 @@ function status(opt) {
 function audit(opt) { const s = status(opt); const over = s.artifacts.filter(r => r.over); return { ok: !over.length, over }; }
 
 /* the dispatcher's daily hook: apply once per company day, then audit; everything it does is one line in the dispatch log */
+// the artifacts whose live file is past its maxLiveBytes now (a stat per file: cheap enough for every tick)
+function overLiveBytes(ctx, pol) {
+  const out = [];
+  for (const a of pol.artifacts) {
+    if (!ROW_POLICIES.includes(a.policy) || !(Number(a.maxLiveBytes) > 0)) continue;
+    if (expandPaths(ctx, a.path).some(rel => { try { return fs.statSync(ctx.P(rel)).size > Number(a.maxLiveBytes); } catch (_) { return false; } })) out.push(a.id);
+  }
+  return out;
+}
 function daily(opt) {
+  opt = opt || {};
   const ctx = ctxOf(opt); const st = loadState(ctx);
-  if (st.lastApply && st.lastApply.day === lday(ctx.now) && !opt.force) return { skipped: 'already applied today' };
+  if (st.lastApply && st.lastApply.day === lday(ctx.now) && !opt.force) {
+    // applied today already; a file past its maxLiveBytes rolls now anyway (whichever bound is hit first)
+    const over = overLiveBytes(ctx, loadPolicy(ctx));
+    if (!over.length) return { skipped: 'already applied today' };
+    const r = apply(Object.assign({}, opt, { only: over }));
+    if (r.busy) return r;
+    const moved = r.results.filter(x => x.moved); const errs = r.results.filter(x => x.error);
+    if (moved.length || errs.length) ctx.log('RETENTION (size bound)' + (ctx.dry ? ' (dry run)' : '') + ': ' + (moved.map(x => x.id + (x.rel && x.rel !== x.id ? '(' + path.posix.basename(x.rel) + ')' : '') + ' ' + x.moved).join(', ') || 'nothing moved') + (errs.length ? '; ERRORS: ' + errs.map(x => x.id + ': ' + x.error).join('; ').slice(0, 300) : ''));
+    return Object.assign(r, { sizeRoll: over });
+  }
   const r = apply(opt);
   if (r.busy) { ctx.log('RETENTION: locked-watch is busy; next tick'); return r; }
   const moved = r.results.filter(x => x.moved || x.rotated || x.removed || x.archived);
@@ -391,6 +464,31 @@ function daily(opt) {
   const parts = moved.map(x => x.id + (x.rel && x.rel !== x.id ? '(' + path.posix.basename(x.rel) + ')' : '') + ' ' + (x.moved || x.rotated || '') + (x.removed ? ' removed ' + x.removed : '') + (x.archived ? ' archived ' + x.archived : ''));
   ctx.log('RETENTION' + (ctx.dry ? ' (dry run)' : '') + ': ' + (parts.length ? parts.join(', ') : 'nothing to move') + (errs.length ? '; ERRORS: ' + errs.map(x => x.id + ': ' + x.error).join('; ').slice(0, 300) : '') + (a.ok ? '' : '; OVER BOUND: ' + a.over.map(x => x.path + ' ' + x.state).join('; ').slice(0, 300)));
   return Object.assign(r, { audit: a });
+}
+
+/* ---------------- find: search an artifact's live file and its archive ---------------- */
+// `artifact` is an id (decisions, dispatch-log, handoff-archives, ...), a live path, or a file's stem (to-founder).
+// Lines containing `text` (case-insensitive), the live file first, then the archive months newest first.
+function find(opt, artifact, text, limit) {
+  const ctx = ctxOf(opt); const pol = loadPolicy(ctx); const want = String(artifact || '').replace(/^\.\//, '');
+  const rows = pol.artifacts.filter(a => ROW_POLICIES.includes(a.policy));
+  let rels = [];
+  const byId = rows.find(a => a.id === want);
+  if (byId) rels = expandPaths(ctx, byId.path);
+  else for (const a of rows) for (const rel of expandPaths(ctx, a.path)) if (rel === want || path.posix.basename(rel, path.posix.extname(rel)) === want || path.posix.basename(rel) === want) rels.push(rel);
+  if (!rels.length) return { error: 'no artifact ' + JSON.stringify(want) + ' (ids: ' + rows.map(a => a.id).join(', ') + ')' };
+  const needle = String(text || '').toLowerCase(); if (!needle) return { error: 'give the text to look for' };
+  const max = Number(limit) > 0 ? Number(limit) : 200; const hits = []; const searched = [];
+  for (const rel of rels) {
+    const { dir } = archiveDirOf(rel);
+    for (const f of [rel].concat(archiveFiles(ctx, rel).reverse().map(n => dir + '/' + n))) {
+      let t; try { t = fs.readFileSync(ctx.P(f), 'utf8'); } catch (_) { continue; }
+      searched.push(f);
+      const ls = t.split('\n');
+      for (let i = 0; i < ls.length && hits.length < max; i++) if (ls[i].toLowerCase().includes(needle)) hits.push({ file: f, line: i + 1, text: ls[i].length > 400 ? ls[i].slice(0, 400) + '…' : ls[i] });
+    }
+  }
+  return { hits, searched, truncated: hits.length >= max };
 }
 
 /* ---------------- selftest ---------------- */
@@ -533,6 +631,64 @@ async function selftest() {
     daily(o); const again = daily(o);
     assert.ok(/^RETENTION/.test(lines[0]) && again.skipped, JSON.stringify(lines));
   });
+  // maxLiveBytes: a day's worth of decisions past the byte bound rolls the same day (whichever bound is hit first)
+  const tnow = now + 3 * DAY;   // 2026-11-20, the day `daily` above already applied
+  const pol = loadPolicy(ctxOf(opts)); pol.artifacts.find(x => x.id === 'decisions').maxLiveBytes = 3000;
+  const ho = pol.artifacts.find(x => x.id === 'handoff-archives'); ho.maxLiveBytes = 4000;
+  const bopts = Object.assign({}, opts, { now: tnow, policy: pol });
+  const DEC = 'company/work/decisions.md';
+  const insertTop = lines => { const t = R(DEC); const at = t.indexOf('\n- ') + 1; fs.writeFileSync(path.join(T, DEC), t.slice(0, at) + lines.join('\n') + '\n' + t.slice(at)); };
+  const pad = 'x'.repeat(150);
+  await check('maxLiveBytes: the oldest entries move the same day, the newest stay, the pointer names every archive file', async () => {
+    await lwTick();
+    const rows = []; for (let m = 40; m >= 1; m--) rows.push('- 2026-11-20 11:' + String(m).padStart(2, '0') + ' Founder decided thing ' + m + ' ' + pad);
+    rows.splice(rows.length - 1, 0, '| 2026-11-20 11:00 | Competence ledger anchor: 7 events, head `sha256:' + 'c'.repeat(64) + '` (x) | Dispatcher | y |');
+    rows.splice(rows.length - 1, 0, '| 2026-11-20 11:00 | stamped three rows ahead of the clock | Founder (own error) | y |');
+    insertTop(rows); fs.appendFileSync(path.join(T, DEC), '- 2026-11-20 11:59 delegation row appended by a tool (company/tools/delegation.js)\n');
+    await lwTick();
+    const r = apply(bopts); const d = r.results.find(x => x.id === 'decisions');
+    assert.ok(d.moved >= 20, JSON.stringify(d));
+    const live = R(DEC);
+    assert.ok(Buffer.byteLength(live) <= 3000, 'live ' + Buffer.byteLength(live) + ' bytes');
+    assert.ok(/11:59 delegation row/.test(live) && /thing 40 /.test(live), 'the newest entries stay (top and bottom)');
+    assert.ok(!/thing 1 /.test(live) && !/anchor: 7 events/.test(live) && !/Founder \*\*ruled\*\* the plan/.test(live), 'the oldest moved (11-16 before the 11-20 ones)');
+    const ptr = live.split('\n').find(l => l.includes(POINTER_MARK));
+    assert.ok(/2026-09\.md/.test(ptr) && /2026-10\.md/.test(ptr) && /2026-11\.md/.test(ptr) && /retention\.js find decisions/.test(ptr) && /index\.md/.test(ptr), ptr);
+    assert.strictEqual(live.split('\n').filter(l => l.includes(POINTER_MARK)).length, 1, 'one pointer line');
+    assert.ok(/thing 1 /.test(R('company/work/archive/decisions/2026-11.md')));
+  });
+  await check('maxLiveBytes: competence anchors and "(own error)" rows that rolled by size are still found (live + archive index)', async () => {
+    const C = require('./competence.js'); const t = C.anchorText(path.join(T, DEC));
+    assert.ok(/anchor: 7 events/.test(t) && /anchor: 4 events/.test(t), 'both anchors');
+    assert.ok(/Founder \(own error\)/.test(R('company/work/archive/decisions/index.md')) && !/own error/.test(R(DEC)), 'the own-error row moved and is in the index');
+  });
+  await check('maxLiveBytes: locked-watch rebuilds the size roll, replaced pointer line included', async () => {
+    const t = await lwTick(); assert.ok(!t.events.some(e => e.key === DEC), JSON.stringify(t.events)); assert.ok(!t.flagOnly, JSON.stringify(t.notes));
+  });
+  await check('find: one command greps the live file and every archive month', async () => {
+    const a = find(bopts, 'decisions', 'decided thing 1 '); assert.ok(a.hits.some(h => h.file === 'company/work/archive/decisions/2026-11.md'), JSON.stringify(a));
+    const b = find(bopts, 'decisions', 'decided THING 40 '); assert.ok(b.hits.some(h => h.file === DEC), JSON.stringify(b));
+    const c = find(bopts, 'decisions', 'set the name'); assert.ok(c.hits.some(h => h.file === 'company/work/archive/decisions/2026-09.md'), JSON.stringify(c));
+    assert.ok(find(bopts, 'nope', 'x').error);
+  });
+  await check('daily: after the day\'s apply, a file past maxLiveBytes rolls on the next tick; under it, nothing runs', async () => {
+    const rows = []; for (let m = 30; m >= 1; m--) rows.push('- 2026-11-20 12:' + String(m).padStart(2, '0') + ' Founder decided later thing ' + m + ' ' + pad);
+    insertTop(rows); await lwTick();
+    const lines = []; const r = daily(Object.assign({}, bopts, { log: l => lines.push(l) }));
+    assert.deepStrictEqual(r.sizeRoll, ['decisions'], JSON.stringify(r)); assert.ok(/^RETENTION \(size bound\): decisions\(decisions\.md\) \d+/.test(lines[0]), JSON.stringify(lines));
+    assert.ok(Buffer.byteLength(R(DEC)) <= 3000);
+    const again = daily(Object.assign({}, bopts, { log: () => {} })); assert.ok(again.skipped, JSON.stringify(again));
+    const t = await lwTick(); assert.ok(!t.events.some(e => e.key === DEC), JSON.stringify(t.events));
+  });
+  await check('maxLiveBytes on a handoff archive (sections oldest first): the oldest sections move, find reaches them', async () => {
+    const HA = 'company/work/handoffs/archive/to-founder.md';
+    W(HA, '# Archive: to Founder\n\n' + Array.from({ length: 20 }, (_, i) => '## 2026-11-20 from hire.js — subject ' + i + '\n\n' + 'body '.repeat(80) + '\n\n').join(''));
+    const r = apply(bopts); const d = r.results.find(x => x.rel === HA);
+    assert.ok(d && d.moved > 0, JSON.stringify(r.results.filter(x => x.id === 'handoff-archives')));
+    const live = R(HA); assert.ok(Buffer.byteLength(live) <= 4000 && /subject 19\n/.test(live) && !/subject 0\n/.test(live), live.slice(0, 300));
+    assert.ok(/retention\.js find company\/work\/handoffs\/archive\/to-founder\.md/.test(live) && /`2026-11\.md`/.test(live), live.slice(0, 400));
+    const f = find(bopts, 'to-founder', 'subject 0'); assert.ok(f.hits.some(h => h.file === 'company/work/handoffs/archive/to-founder/2026-11.md'), JSON.stringify(f));
+  });
   P.pinUnderStation(null);
   for (const l of results) console.log(l);
   try { fs.rmSync(T, { recursive: true, force: true }); } catch (_) {}
@@ -540,7 +696,7 @@ async function selftest() {
   process.exit(fails ? 1 : 0);
 }
 
-module.exports = { apply, status, audit, daily, parse, rollFile, sizeRotate, runJournal, archiveDir, loadPolicy, archiveDirOf, POINTER_MARK };
+module.exports = { apply, status, audit, daily, find, overLiveBytes, parse, rollFile, sizeRotate, runJournal, archiveDir, loadPolicy, archiveDirOf, POINTER_MARK };
 if (require.main === module) {
   const a = process.argv.slice(2); const cmd = a[0];
   const json = a.includes('--json'); const dry = a.includes('--dry-run');
@@ -551,5 +707,13 @@ if (require.main === module) {
     else { console.log('retention status ' + s.at + (s.lastApply ? ' (last apply ' + s.lastApply.at + ')' : ' (never applied)')); for (const r of s.artifacts) console.log('  ' + r.id.padEnd(20) + ' ' + String(r.path).padEnd(52) + ' ' + String(r.bytes == null ? '-' : r.bytes).padStart(10) + ' B ' + String(r.rows == null ? '-' : r.rows).padStart(7) + ' rows ' + String(r.ageDays == null ? '-' : r.ageDays).padStart(4) + ' d  ' + r.state); }
   } else if (cmd === 'apply') { const r = apply({ dry, log: console.log }); console.log(JSON.stringify(r.busy ? r : r.results.map(x => { const y = Object.assign({}, x); delete y.ops; delete y.chunks; return y; }), null, 1)); process.exit(r.results && r.results.some(x => x.error) ? 1 : 0); }
   else if (cmd === 'audit') { const r = audit({}); for (const o of r.over) console.log('OVER  ' + o.path + ': ' + o.state); console.log(r.ok ? 'retention audit: every bounded artifact is inside its bound' : 'retention audit: ' + r.over.length + ' over bound'); process.exit(r.ok ? 0 : 1); }
-  else { console.log('usage: retention.js status [--json] | apply [--dry-run] | audit | selftest'); process.exit(2); }
+  else if (cmd === 'find') {
+    const li = a.indexOf('--limit'); const lim = li >= 0 ? a[li + 1] : null; const rest = a.slice(1).filter((x, i) => !((li >= 0 && (i + 1 === li || i + 1 === li + 1)) || x === '--json'));
+    const r = find({}, rest[0], rest.slice(1).join(' '), lim);
+    if (r.error) { console.error('retention find: ' + r.error); process.exit(2); }
+    if (json) console.log(JSON.stringify(r, null, 1));
+    else { for (const h of r.hits) console.log(h.file + ':' + h.line + ': ' + h.text); console.log('-- ' + r.hits.length + ' line(s)' + (r.truncated ? ' (first ' + r.hits.length + '; --limit N for more)' : '') + ' in ' + r.searched.length + ' file(s): ' + r.searched.join(', ')); }
+    process.exit(r.hits.length ? 0 : 1);
+  }
+  else { console.log('usage: retention.js status [--json] | apply [--dry-run] | audit | find <artifact> <text> [--limit N] | selftest'); process.exit(2); }
 }

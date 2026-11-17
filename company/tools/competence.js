@@ -1090,7 +1090,13 @@ async function collect(opt) {
     if (seenMsg.has(id)) continue;
     seenMsg.add(id); correction(rep.msg, rep.by, 'owner-outbound', [rel(F.ownerOutbound) + ' ' + rep.at, rel(F.ownerInbound) + ' ' + id], { ownUp: true, corroboratedBy: rep.runId });
   }
-  for (const e of (haveRuns ? parseOwnErrors(readText(F.decisions)) : [])) {
+  // the live file plus the archive index: an "(own error)" row that rolled out (retention.js: decisions.md is also
+  // bound by size, so a row can leave the live file the day it is written) was copied to the index as it moved
+  const ownErrIdx = path.join(path.dirname(F.decisions), 'archive', path.basename(F.decisions, '.md'), 'index.md');
+  const ownErrSeen = new Set();
+  const ownErrs = haveRuns ? parseOwnErrors(readText(F.decisions)).concat(parseOwnErrors(readText(ownErrIdx)).map(e => Object.assign(e, { archived: true })))
+    .filter(e => { const k = e.date + '|' + e.hash; if (ownErrSeen.has(k)) return false; ownErrSeen.add(k); return true; }) : [];
+  for (const e of ownErrs) {
     for (const n of e.names) {
       const agentId = crew.idOf(n); if (!agentId) continue;
       const d = S.ownError;
@@ -1099,7 +1105,7 @@ async function collect(opt) {
       if (!run) { softSkip('decisions.md:' + e.line + ' "' + n + ' (own error)": no run of ' + n + "'s wrote decisions.md then, so it is not counted as theirs"); continue; }
       rows.push(base(P, { kind: 'demerit', signal: 'own-error', agent: agentId, bucket: d.bucket, at: iso(e.at), key: e.date + '|' + e.hash, soft: true, msgTimes: e.msgTimes,
         appliesAt: iso(e.at + S.applyAfterHours * HOUR), severity: d.severity, reach: d.reach, caught: d.caught, ownUp: true, source: { type: 'decisions-own-error', ref: 'company/work/decisions.md' }, line: e.line,
-        corroboratedBy: run.runId, note: e.text, evidence: ['company/work/decisions.md:' + e.line], links: { parent: null } }));
+        corroboratedBy: run.runId, note: e.text, evidence: [(e.archived ? rel(ownErrIdx) : 'company/work/decisions.md') + ':' + e.line], links: { parent: null } }));
       report.soft.ownErrors = (report.soft.ownErrors || 0) + 1;
     }
   }

@@ -61,7 +61,8 @@ const mm = require('./lib/models-money');
 const gov = require('./lib/governance');
 
 const DEFAULT_ROOT = co.ROOT;
-const MIN = 60e3, HOUR = 3600e3, DAY = 86400e3;
+const MIN = 60e3, HOUR = 3600e3, DAY = 86400e3, MB = 1024 * 1024;
+const B = require('./lib/bounded');
 const HOOK_TIMEOUT_MS = 40000;
 const REL = {
   policy: 'company/work/finance/pacing-policy.json',
@@ -387,6 +388,8 @@ function makePacer(o) {
   o = o || {};
   const root = o.root || DEFAULT_ROOT;
   const P = k => path.join(root, REL[k]);
+  // StarNet's runs.jsonl, never read whole (docs/RETENTION.md): the rows that ended since sinceMs, read from the end
+  const runsWindow = (sinceMs, maxBytes) => { try { return B.jsonlWindow(P('runs'), { sinceMs, maxBytes: maxBytes || 64 * MB }).rows; } catch (_) { return []; } };
   const now = typeof o.now === 'function' ? o.now : () => Date.now();
   const home = o.home || os.homedir();
   const dry = !!o.dry;
@@ -538,10 +541,9 @@ function makePacer(o) {
     // the newest credit failure among the routines whose last run was on DeepSeek, and the newest good DeepSeek run
     const runProv = {}; let okAt = null;
     try {
-      const txt = fs.readFileSync(P('runs'), 'utf8');
-      for (const l of (txt.length > 4e6 ? txt.slice(-4e6) : txt).split('\n')) {
-        if (!l || l.indexOf('"provider":"deepseek"') < 0) continue;
-        let r; try { r = JSON.parse(l); } catch (_) { continue; }
+      // the last 7 days from the end of the file (lib/bounded.js): a routine's last run and the newest good DeepSeek run
+      for (const r of runsWindow(t - 7 * DAY, 16 * MB)) {
+        if (r.provider !== 'deepseek') continue;
         if (r.runId) runProv[r.runId] = r.provider;
         const end = Number(r.endedAt || r.ts) || 0;
         if (r.reason === 'done' && end > (okAt || 0)) okAt = end;
@@ -572,7 +574,7 @@ function makePacer(o) {
 
   function runs24hUsd(t) {
     const since = t - DAY; let usd = 0;
-    try { for (const l of fs.readFileSync(P('runs'), 'utf8').split('\n')) { if (!l) continue; try { const r = JSON.parse(l); if (Number(r.startedAt) >= since) usd += Number(r.usd) || 0; } catch (_) {} } } catch (_) {}
+    for (const r of runsWindow(since)) if (Number(r.startedAt) >= since) usd += Number(r.usd) || 0;
     return usd;
   }
   async function readRail(st, t) {
@@ -673,11 +675,9 @@ function makePacer(o) {
   // refusals, usage-limit errors: from the station's run records, the last 48 hours
   function scanRuns(t) {
     const since = t - 48 * HOUR, out = { refusals: [], claudeLimits: [], minimaxLimits: [] };
-    let txt = ''; try { txt = fs.readFileSync(P('runs'), 'utf8'); } catch (_) { return out; }
     const outcomes = policy.routing.blockOutcomes.map(String), codes = policy.routing.blockFailureCodes.map(String);
-    for (const l of (txt.length > 8e6 ? txt.slice(-8e6) : txt).split('\n')) {
-      if (!l || (!/"failureCode":"[^"]/.test(l) && !/"outcome":"[^"]/.test(l) && !/"error":"[^"]/.test(l))) continue;
-      let r; try { r = JSON.parse(l); } catch (_) { continue; }
+    for (const r of runsWindow(since, 16 * MB)) {
+      if (!r.failureCode && !r.outcome && !r.error) continue;
       const end = Number(r.endedAt || r.ts || r.startedAt) || 0;
       if (end < since) continue;
       const fc = String(r.failureCode || ''), oc = String(r.outcome || '');

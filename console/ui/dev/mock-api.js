@@ -4,6 +4,7 @@
  *   node console/ui/dev/mock-api.js [port]          # default 8931; serves console/ui and answers /api/* with fixtures
  *   MOCK_STATION_DOWN=1 node console/ui/dev/mock-api.js   # /api/station/* answers 502, as when the station is not running
  *   MOCK_CERTIFIED=1 node console/ui/dev/mock-api.js      # a company that finished Setup (Today is the landing page)
+ *   MOCK_NO_PUSH=1 node console/ui/dev/mock-api.js        # no new question pushed 8 s after the first SSE client (scripted walks)
  *   MOCK_PLAIN=1 node console/ui/dev/mock-api.js          # without the typed-question fixtures (one card per question kind)
  *
  * Never contacts a real station. State lives in memory: answering a question removes it, halts change mode, and so on.
@@ -188,7 +189,7 @@ async function apiRoute(req, res, p, q) {
   if (p === '/api/events') {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' }); res.write(': hello\n\n');
     clients.add(res); req.on('close', () => clients.delete(res));
-    if (!pushed) { pushed = true; setTimeout(newQuestion, 8000); }
+    if (!pushed && !process.env.MOCK_NO_PUSH) { pushed = true; setTimeout(newQuestion, 8000); }   // a scripted walk sets MOCK_NO_PUSH: a card redraw mid-walk would race its checks
     return;
   }
   if (p.startsWith('/api/station/')) return station(req, res, p.slice('/api/station/'.length), q, B);
