@@ -611,7 +611,8 @@ function runTick(ctx) {
   const snChanged = [];
   if (sn && base.starnet) {
     const changedPatches = Object.keys(pt).filter(n => pt[n] !== (base.patches || {})[n]);
-    const patchText = changedPatches.map(n => { try { return fs.readFileSync(path.join(ctx.paths.patches, n), 'utf8'); } catch (_) { return ''; } }).join('\n');
+    // a new `<record>.diff.applied` marker (setup-station applied a record already on disk) covers the files of its record
+    const patchText = changedPatches.map(n => n.endsWith('.applied') ? n.slice(0, -'.applied'.length) : n).map(n => { try { return fs.readFileSync(path.join(ctx.paths.patches, n), 'utf8'); } catch (_) { return ''; } }).join('\n');
     const covers = rel => patchText.includes('a/' + rel + ' ');
     for (const rel of new Set([...Object.keys(sn), ...Object.keys(base.starnet)])) {
       const now = sn[rel] || 'clean', was = base.starnet[rel] || 'clean';
