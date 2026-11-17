@@ -829,12 +829,25 @@ function makeServer(token) {
     }
   });
 }
+/* The login line. The token goes only to an interactive terminal: under systemd stdout is the user journal, which
+ * every diagnostic reads, so there the line names where the token is kept instead (scripts/console.sh --url prints
+ * the full address to a terminal). */
+function loginLine(base, token, tty) {
+  return tty ? 'console: ' + base + '/login?token=' + token
+    : 'console: ' + base + '/login (the token is in secrets/console-token; `scripts/console.sh --url` in a terminal prints the full address)';
+}
 function listenConfig(argv) {
   const cc = co.config.console || {};
   const flag = k => { const i = argv.indexOf('--' + k); return i >= 0 ? argv[i + 1] : undefined; };
   let stationPort = 0; try { stationPort = Number(new URL(co.STATION_URL).port) || 0; } catch (_) {}
   const port = flag('port') !== undefined ? Number(flag('port')) : process.env.CONSOLE_PORT ? Number(process.env.CONSOLE_PORT) : cc.port || (stationPort ? stationPort + 100 : 8901);
   return { host: flag('host') || cc.host || '127.0.0.1', port };
+}
+function printUrl(argv) {
+  const { host, port } = listenConfig(argv);
+  const shown = host.includes(':') ? '[' + host + ']' : host;
+  if (!process.stdout.isTTY) { console.error('console --url prints the login token, so only to an interactive terminal (stdout here is a pipe or a log). The token is in secrets/console-token.'); return 2; }
+  console.log(loginLine('http://' + shown + ':' + port, consoleToken(), true)); return 0;
 }
 function start(argv) {
   const token = consoleToken();
@@ -850,7 +863,7 @@ function start(argv) {
     const a = server.address();
     const shown = host.includes(':') ? '[' + host + ']' : host;
     if (argv.includes('--print-port')) console.log(JSON.stringify({ port: a.port }));
-    else console.log('console: http://' + shown + ':' + a.port + '/login?token=' + token + '\n(company root ' + co.ROOT + ', station ' + co.STATION_URL + ')');
+    else console.log(loginLine('http://' + shown + ':' + a.port, token, !!process.stdout.isTTY) + '\n(company root ' + co.ROOT + ', station ' + co.STATION_URL + ')');
   });
   return server;
 }
@@ -911,6 +924,10 @@ async function selftest() {
     r = await call('GET', '/login?token=' + token, undefined, {});
     const cookie = String((r.headers['set-cookie'] || [''])[0]).split(';')[0];
     check('login sets cookie and redirects', r.status === 302 && cookie === 'console_token=' + token, r.headers);
+    // the login token never reaches the journal: off a terminal the line names where it is kept; --url refuses a pipe
+    check('the login line carries the token only to a terminal', !loginLine('http://h:1', 'tok-secret-1', false).includes('tok-secret-1') && /secrets\/console-token/.test(loginLine('http://h:1', 'tok-secret-1', false)) && loginLine('http://h:1', 'tok-secret-1', true).includes('/login?token=tok-secret-1'));
+    { const u = require('child_process').spawnSync(process.execPath, [__filename, '--url'], { encoding: 'utf8', env: Object.assign({}, process.env), timeout: 15000 });
+      check('console --url to a pipe is refused and prints no token', u.status === 2 && !/token=/.test(u.stdout + u.stderr), u.stdout + u.stderr); }
     r = await call('GET', '/api/company', undefined, { cookie });
     check('cookie auth works', r.status === 200 && r.json.ok && r.json.owner && r.json.owner.name === OWNER, r.json);
     r = await call('GET', '/api/today');
@@ -1415,6 +1432,7 @@ async function selftest() {
 if (require.main === module) {
   const argv = process.argv.slice(2);
   if (argv.includes('--selftest')) selftest().then(c => process.exit(c), e => { console.error(e); process.exit(1); });
+  else if (argv.includes('--url')) process.exit(printUrl(argv));
   else start(argv);
 }
-module.exports = { makeServer, start, postAllowed };
+module.exports = { makeServer, start, postAllowed, loginLine };

@@ -59,12 +59,14 @@ fi
 # 3. station, dispatcher, liveness, console
 if [[ $START -eq 1 ]]; then
   scripts/setup-station.sh --start | tail -4
-  URL="http://127.0.0.1:$((PORT + 100))/login?token=$(cat secrets/console-token 2>/dev/null)"
+  # the token goes only to an interactive terminal (an agent's run or a log gets the address and where the token is)
+  if [[ -t 1 ]]; then URL="http://127.0.0.1:$((PORT + 100))/login?token=$(cat secrets/console-token 2>/dev/null)"
+  else URL="http://127.0.0.1:$((PORT + 100))/login  (token: $DIR/secrets/console-token)"; fi
   for _ in $(seq 1 20); do curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$((PORT + 100))/" 2>/dev/null && break; sleep 1; done
   echo
   echo "Open the console to finish setup:"
   echo "  $URL"
-  if [[ $OPEN -eq 1 && -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] && command -v xdg-open >/dev/null; then xdg-open "$URL" >/dev/null 2>&1 || true; fi
+  if [[ -t 1 && $OPEN -eq 1 && -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] && command -v xdg-open >/dev/null; then xdg-open "$URL" >/dev/null 2>&1 || true; fi
 else
   echo "not started (--no-start). Next: cd $DIR && scripts/setup-station.sh --start"
 fi

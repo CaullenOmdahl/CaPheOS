@@ -147,7 +147,8 @@ The owner console is a local web app: `console/server.js` (Node 22, no dependenc
 and a JSON API over the company's own tools (`docs/CONSOLE-API.md`).
 
 ```bash
-scripts/console.sh                  # prints http://127.0.0.1:<port>/login?token=...  (port: station port + 100)
+scripts/console.sh                  # starts it; in a terminal it prints http://127.0.0.1:<port>/login?token=... (port: station port + 100)
+scripts/console.sh --url            # the login address with its token, to a terminal only (never to the journal or a pipe)
 scripts/console.sh --port 9000      # or company.json "console": { "host", "port" }
 node console/server.js --selftest   # runs against a temp copy of company/ and a dead station; touches nothing live
 ```
