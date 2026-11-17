@@ -4,6 +4,7 @@
  *   node console/ui/dev/mock-api.js [port]          # default 8931; serves console/ui and answers /api/* with fixtures
  *   MOCK_STATION_DOWN=1 node console/ui/dev/mock-api.js   # /api/station/* answers 502, as when the station is not running
  *   MOCK_CERTIFIED=1 node console/ui/dev/mock-api.js      # a company that finished Setup (Today is the landing page)
+ *   MOCK_PLAIN=1 node console/ui/dev/mock-api.js          # without the typed-question fixtures (one card per question kind)
  *
  * Never contacts a real station. State lives in memory: answering a question removes it, halts change mode, and so on.
  * 8 s after the first SSE client connects a new owner question arrives (event: change {topic:'questions'}) to exercise
@@ -20,6 +21,33 @@ const CERTIFIED = !!process.env.MOCK_CERTIFIED;
 const now = () => new Date().toISOString();
 const ago = m => new Date(Date.now() - m * 60000).toISOString();
 
+// the real question schema (company/tools/inbox.js is pure for these calls: no company files are read or written)
+const INBOX = require(path.join(REPO, 'company', 'tools', 'inbox.js'));
+function typedFixtures() {
+  const mk = (id, mins, o) => { const form = o.form ? INBOX.normalizeForm(o.form) : INBOX.normalizeForm(INBOX.expandKind(o.kind, o.spec));
+    return { id, from: o.from || 'Founder', about: o.about || 'access', blocking: false, askedAt: ago(mins), batch: null, kind: o.form ? 'form' : o.kind, form,
+      message: o.message, details: o.details || '', q: o.message + (o.details ? '\n\n' + o.details : ''), askerSeat: 'agent' }; };
+  const legacy = { id: 'q-000120', from: 'Founder', about: '', blocking: false, askedAt: ago(300), batch: null,
+    q: 'Access gate (gate 2), no payment: a read-only Example API key, from an account you create in your own name. Why it is the binding one: the websocket rejects anonymous connections (HTTP/1.1 401 measured today), so sub-second book data is closed to us. A key buys about 1 Hz quotes.' };
+  const lp = (() => { const ss = legacy.q.split(/(?<=[.!?])\s+(?=[A-Z])/); return { message: ss.slice(0, 2).join(' '), details: ss.slice(2).join(' ') }; })();
+  Object.assign(legacy, lp, { messageDerived: true, kind: 'approve', form: INBOX.formOf(legacy), secretHint: INBOX.secretHint(legacy), askerSeat: 'agent' });
+  return [
+    mk('q-000111', 20, { kind: 'secret', message: 'Could you make a read-only Example Exchange key and paste it here? It lets the recorder see the live order book. If you would rather not, we keep using the slower public feed.', details: 'Anonymous websocket: HTTP 401. Public REST: 0.8 snapshots/s per series.', spec: { name: 'example-exchange-key', label: 'Example Exchange API key', provider: 'example.com > Account > API keys (read-only)' } }),
+    mk('q-000112', 25, { kind: 'choice', message: 'Which plan should we start with?', spec: { options: 'free:The free tier,pro:Pro at $20 a month,later:Ask me in a month', recommended: 'free', allowOther: true } }),
+    mk('q-000113', 30, { kind: 'text', message: 'In a few sentences, who is the newsletter for?', spec: { min: 20, max: 800, placeholder: 'Who reads it and why' } }),
+    mk('q-000114', 35, { kind: 'link', message: 'Could you sign up for the data service with your Google account? It is free and gives us a year of history.', spec: { url: 'https://example.com/signup', action: 'Sign in with Google and accept the free plan' } }),
+    mk('q-000115', 40, { kind: 'account', message: 'Please make a free uptime-monitor account so the recorder can tell us when it stops.', spec: { url: 'https://example.org/accounts/signup/', action: 'Create a free account', fields: 'email:The sign-in email,project:Project name' } }),
+    mk('q-000116', 45, { kind: 'number', message: 'What is the most we may spend on research tools each month?', spec: { unit: 'USD', min: 0, max: 500 } }),
+    mk('q-000117', 50, { kind: 'date', message: 'When should the first public post go out?', spec: { min: '2026-01-01' } }),
+    mk('q-000118', 55, { message: 'Two things for the recorder alarm. Make a free account and paste its ping key. If you would rather not, we use a different free service.', details: 'A watchdog on the same disk cannot report its own death.',
+      form: { fields: [{ id: 'intro', type: 'info', text: 'It costs **nothing**.' }, { id: 'signup', type: 'link', label: 'Sign up', url: 'https://example.net/signup', action: 'Create a free account', required: true },
+        { id: 'email', type: 'text', label: 'Sign-in email', required: true }, { id: 'ping', type: 'secret', label: 'Ping key', name: 'example-ping-key' },
+        { id: 'ok', type: 'checkbox', label: 'Alert emails may go to that address', required: true }],
+        actions: [{ id: 'go', label: 'Here you go', verdict: 'done' }, { id: 'other', label: 'Use another free service instead', verdict: 'no' }] } }),
+    legacy,
+  ];
+}
+
 const S = {
   company: { ok: true, name: 'Example Co', shortName: 'example', owner: { name: 'Sam Owner' }, timezone: 'America/Chicago', station: { url: 'http://127.0.0.1:8802' }, ownerChannel: { adapter: 'file' } },
   questions: [
@@ -29,7 +57,9 @@ const S = {
     { id: 'q-000102', from: 'Founder', about: 'budget', blocking: false, askedAt: ago(130), batch: null,
       q: 'A research tool trial costs nothing for 14 days, then a monthly fee. Should we try it?\nRecommendation from Founder: approve the trial, decide on the paid plan after.\nIf you do not answer: no trial.' },
   ].concat(CERTIFIED ? [] : [{ id: 'q-000050', from: 'onboard.js', about: 'onboarding', blocking: false, askedAt: ago(600), batch: null,
-      q: 'Onboarding: what the enabled packs and modules need from you (one batch, asked once):\n- Hiring candidates default to the metered model deepseek/deepseek-flash, but the metered daily cap is $0 and the station has no subscription provider (claude-cli) ready. Either connect a subscription provider on the station, or set a metered cap in company/work/finance/dispatch-budget.json (dailyUsd).\n- provide secrets/example-key (0600) for example-module\nRecommendation: answer each line; secrets go in secrets/<name> with mode 0600, never in a message.\nIf you do not answer: those packs and modules stay uncertified.' }]),
+      q: 'Onboarding: what the enabled packs and modules need from you (one batch, asked once):\n- Hiring candidates default to the metered model deepseek/deepseek-flash, but the metered daily cap is $0 and the station has no subscription provider (claude-cli) ready. Either connect a subscription provider on the station, or set a metered cap in company/work/finance/dispatch-budget.json (dailyUsd).\n- provide secrets/example-key (0600) for example-module\nRecommendation: answer each line; secrets go in secrets/<name> with mode 0600, never in a message.\nIf you do not answer: those packs and modules stay uncertified.' }])
+    // typed questions (company/tools/inbox.js forms): one of each kind, plus an asker-composed form; MOCK_PLAIN=1 leaves them out
+    .concat(process.env.MOCK_PLAIN ? [] : typedFixtures()),
   answered: [{ id: 'q-000090', from: 'Founder', about: 'access', q: 'Approval needed (access): read access to the shared drive.', answer: 'yes', answeredAt: ago(200) }],
   messages: [
     { dir: 'out', id: 'out-1', at: ago(300), from: 'Founder', text: 'Morning report: two quests moved, one handoff is due today.' },
@@ -251,8 +281,29 @@ async function apiRoute(req, res, p, q) {
   }
   if (M === 'POST' && (m = /^\/api\/questions\/(q-\d+)\/answer$/.exec(p))) {
     const i = S.questions.findIndex(x => x.id === m[1]); if (i < 0) return J(res, 404, { ok: false, error: 'no open question ' + m[1] });
-    if (!['yes', 'no', 'reply'].includes(B.verdict)) return J(res, 400, { ok: false, error: 'verdict must be yes, no or reply' });
-    const [q] = S.questions.splice(i, 1); S.answered.push(Object.assign({}, q, { answer: B.verdict === 'reply' ? B.text : B.verdict + (B.text ? ': ' + B.text : ''), answeredAt: now() })); emit('questions'); return ok();
+    const q0 = S.questions[i];
+    let ans;
+    if (!B.action) {
+      if (!['yes', 'no', 'reply'].includes(B.verdict)) return J(res, 400, { ok: false, error: 'verdict must be yes, no or reply' });
+      ans = { a: B.verdict === 'reply' ? B.text : B.verdict + (B.text ? ': ' + B.text : '') };
+    } else {
+      // as the real server: a secret value is replaced by where it would be stored before anything else sees it; never kept
+      const form = q0.form || INBOX.formOf(q0); const values = Object.assign({}, B.values || {}); const stored = [];
+      for (const f of form.fields.filter(x => x.type === 'secret')) {
+        const v = values[f.id]; if (v === undefined) continue;
+        const name = f.hinted && B.secretNames && B.secretNames[f.id] ? B.secretNames[f.id] : f.name;
+        if (name === 'existing-key' && !(B.replace && B.replace[f.id])) return J(res, 409, { ok: false, error: 'secrets/' + name + ' already exists. Tick "replace the stored key" to overwrite it.' });
+        values[f.id] = { stored: 'secrets/' + name, chars: String(v).trim().length, validated: null }; stored.push(values[f.id]); S.mockStored = (S.mockStored || 0) + 1;
+      }
+      try { const row = Object.assign({}, q0, { form }); const st = INBOX.checkAnswer(row, { action: B.action, values, note: B.note }); ans = { a: INBOX.plainAnswer(row, st), answerDetail: st, stored }; }
+      catch (e) { return J(res, 400, { ok: false, error: e.message }); }
+    }
+    S.questions.splice(i, 1); S.answered.push(Object.assign({}, q0, { answer: ans.a, answeredAt: now() })); emit('questions'); return ok({ a: ans.a, stored: ans.stored || [] });
+  }
+  if (M === 'POST' && (m = /^\/api\/questions\/(q-\d+)\/snooze$/.exec(p))) {
+    const q0 = S.questions.find(x => x.id === m[1]); if (!q0) return J(res, 404, { ok: false, error: 'no open question ' + m[1] });
+    const t = Date.parse(B.until); if (!(t > Date.now())) return J(res, 400, { ok: false, error: 'until must be in the future' });
+    q0.snoozedUntil = new Date(t).toISOString(); emit('questions'); return ok({ id: q0.id, snoozedUntil: q0.snoozedUntil });
   }
   if ((m = /^\/api\/panels\/([a-z0-9-]+)\/(data|view)$/.exec(p))) {
     const P = PANELS[m[1]]; if (!P) return J(res, 404, { ok: false, error: 'no panel ' + m[1] });

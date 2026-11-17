@@ -6,7 +6,8 @@
  *
  * Walks: every route of the route map renders without an exception; Setup → Charter → "Draft it with the Founder" opens
  * the live chat and the Founder's reply streams in (tool step, text, a console: link that stays in the app); Today's
- * "Now" strip shows the run in flight (the test started one on the mock with POST /__live) with Watch and Stop.
+ * "Now" strip shows the run in flight (the test started one on the mock with POST /__live) with Watch and Stop; Needs you
+ * renders the secret question the e2e asked with a password field.
  * Prints one line per check and exits 1 on any failure; exits 0 with "SKIP" when no Chrome is installed.
  */
 'use strict';
@@ -65,6 +66,9 @@ async function until(fn, ms) { const end = Date.now() + ms; let v; while (Date.n
   const now = await until(() => js(`(() => { const r = document.querySelector('.now-run'); return r ? r.innerText : null; })()`), 8000);
   check('Today\'s Now strip shows the run in flight with its step, Watch and Stop', now && /Founder/.test(now) && /reading company\/CHARTER\.md/i.test(now) && /Watch/.test(now) && /Stop/.test(now), now);
   await shot('today-now');
+  // Needs you: the typed secret question the e2e asked renders a password field (never autofilled) and the plain message
+  const secretCard = await until(() => js(`(() => { const g = document.querySelector('.gate[data-kind="secret"]'); if (!g) return null; const i = g.querySelector('input.secret-input'); return { type: i && i.type, ac: i && i.getAttribute('autocomplete'), msg: (g.querySelector('.q-message') || {}).innerText || '', buttons: [...g.querySelectorAll('button, a')].map(b => b.textContent) }; })()`), 8000);
+  check('Today renders the secret question with a password field, its message and Reply / Snooze / Discuss', secretCard && secretCard.type === 'password' && secretCard.ac === 'off' && /paste the example API key/.test(secretCard.msg) && ['Store it securely', 'Reply', 'Snooze', 'Discuss'].every(b => secretCard.buttons.includes(b)), secretCard);
   console.log(fails ? 'CONSOLE WALK: FAIL (' + fails + ')' : 'CONSOLE WALK: PASS');
   ws.close(); chrome.kill(); try { fs.rmSync(udd, { recursive: true, force: true }); } catch (_) {}
   setTimeout(() => process.exit(fails ? 1 : 0), 200);

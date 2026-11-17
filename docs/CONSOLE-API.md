@@ -39,8 +39,9 @@ scripts/console.sh                # same as the first line
 |---|---|---|---|
 | GET | /api/company | company.json (name, owner, timezone, station, ownerChannel), `ceo: {id, name}`, `onboarding: {certified, kickoff: {status, at, planOpen}}` | lib/company.js, onboarding-state.json |
 | GET | /api/today | `{ company, needsYou, crew, usage, overnight, halt, panels: [ids placed on today] }` in one call | below |
-| GET | /api/questions | open owner questions `[{id, from, about, q, blocking, askedAt, batch, gate?}]` | inbox.js openQuestions() + lib/governance pendingGates() |
-| POST | /api/questions/:id/answer | `{ verdict: "yes"\|"no"\|"reply", text? }` records the owner's answer | inbox.js answer (CLI) |
+| GET | /api/questions | open owner questions `[{id, from, about, q, message, details, messageDerived, blocking, askedAt, batch, kind, form: {fields, actions}, snoozedUntil?, secretHint?, askerSeat, gate?}]` (see "Typed owner questions") | inbox.js openQuestions() + lib/governance pendingGates() |
+| POST | /api/questions/:id/answer | `{ action, values: {<fieldId>: value}, note?, replace?: {<secretFieldId>: true}, secretNames?: {<hinted field>: name} }`, or the old `{ verdict: "yes"\|"no"\|"reply", text? }`; answers `{ok, id, a (plain words), answer, stored: [{stored, chars, validated}]}` | secrets written here (0600), then inbox.js answer() |
+| POST | /api/questions/:id/snooze | `{ until: ISO }` (within 30 days): hidden from Today until then; `inbox.js list` shows the asker "snoozed until …" | inbox.js snooze() |
 | GET | /api/questions/answered?since=ISO | answered today | inbox.js state |
 | GET | /api/owner/messages | `{ messages, channel }`: the owner channel both ways, newest last; every owner message carries `state` (below), `channel` = `{ ok, problems: [{code, msg, fix, link}], ceo, nextCheckMin, working, tickMin, loop }` | owner-inbox.js, console/chat.js |
 | POST | /api/owner/messages | `{ text, to? }` owner writes to the company (appends company/owner/inbound.jsonl; `to` = a crew name prefixes the text so owner-addressing routes it); answers the row with its `state` | owner-inbox |
@@ -162,3 +163,30 @@ delete), `cron/run`, `cron/update`, `cron/arm`, `loops/control`, `consent`, `con
 `auth/claude-cli/start`, `auth/claude-cli/poll`, `auth/claude-cli/code`, `auth/claude-cli/cancel`.
 Streaming responses (`run/stream`, SSE) are piped through unchanged. Station down or no `secrets/station-token`: 502
 `{ ok:false, error }`. Paths with `..`, `.` or empty segments: 400.
+
+## Typed owner questions
+
+A question is a form its asker composed (`company/tools/inbox.js ask --form`, or a `--kind` shortcut: approve, choice,
+text, secret, link, account, number, date). `form.fields[]` is `{id, type, label, help?, required?, ...}` with type
+`info` (text), `text` (multiline, minLength, maxLength, placeholder), `secret` (name, provider, validate, multiline,
+hinted), `choice` (options [{id,label,recommended}], multi, allowOther), `link` (url, action; value `done`/`couldnt`),
+`number` (unit, min, max), `date` (min, max), `checkbox`. `form.actions[]` is `{id, label, verdict, primary?, needs}`;
+verdict is yes, no, submit, done, couldnt or declined. Today renders each field and action, plus Reply (a long-form
+textarea), Snooze (an hour, tomorrow 09:00, next week) and Discuss (`#/comms/agent:<askerSeat>?draft=` with the message
+quoted). The `message` (2-4 plain sentences) shows first; `details` sits collapsed under "More detail"; a row without a
+message shows its first two sentences. Question text is rendered with js/md.js (safe markdown, links open with
+rel=noopener).
+
+**Secrets.** A secret field's value is only ever in the POST body. The server writes `secrets/<name>` with mode 0600
+(409 `{detail:{code:"exists"}}` unless `replace` is ticked), a PEM key whose line breaks were lost is reflowed, the
+station checks it when the field names `validate` (POST station `providers/validate`), and the answer records only
+`{stored: "secrets/<name>", chars, validated}`, in words "stored at secrets/<name> (N chars, validated: yes/no)". The
+value never reaches pm-inbox.jsonl, the owner channel, a response body, SSE or a log. A reply, note or text field that
+looks like a key (a private key block, a known key shape, or the value of a stored secret) is refused with a pointer to
+the secure field. An old question whose text asks for a key gets `secretHint: {name}`: an optional secret field `key`
+and a "Store the key securely" action (the owner may change the file name: `secretNames`).
+
+**Delivery.** `inbox.js answer` writes `{type:"answer", a: <plain words>, answer: {verdict, action, values, note}}` and
+an owner message (`company/owner/inbound.jsonl`, `re` the question id, opening with the asker's name), so the
+dispatcher's owner-message wake brings the answer to the asker. `lib/governance approved()` reads `answer.verdict`
+(yes/no, or a single choice of yes/no) and falls back to the text.

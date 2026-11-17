@@ -167,8 +167,95 @@ function questions() {
   const inbox = tool('inbox.js');
   let gates = []; try { gates = require(path.join(TOOLS, 'lib', 'governance.js')).pendingGates(); } catch (_) {}
   const byId = {}; for (const g of gates) byId[g.id] = g;
-  return inbox.openQuestions().map(q => Object.assign({}, q, byId[q.id] ? { gate: { category: byId[q.id].category, ref: byId[q.id].ref, by: byId[q.id].by, summary: byId[q.id].summary } } : {}));
+  return inbox.openQuestions().map(q => Object.assign({}, q, { askerSeat: seatOf(q.from) }, byId[q.id] ? { gate: { category: byId[q.id].category, ref: byId[q.id].ref, by: byId[q.id].by, summary: byId[q.id].summary } } : {}));
 }
+// the crew seat id of a question's asker (by full or first name), for Discuss; null for a tool (onboard.js) or a stranger
+function seatOf(from) {
+  const f = String(from || '').trim().toLowerCase(); if (!f) return null;
+  try { for (const [id, c] of Object.entries(co.crew() || {})) { const n = String((c && c.name) || '').toLowerCase(); if (n && (n === f || n.split(/\s+/)[0] === f || id.toLowerCase() === f)) return id; } } catch (_) {}
+  return null;
+}
+
+/* ---------------- owner answers: typed forms and the secret store ----------------
+ * A secret field's value is in the HTTP body only. This process writes secrets/<name> (0600, never over an existing
+ * file unless the owner ticked replace), optionally checks it with the station, and hands inbox.js only
+ * {stored, chars, validated}. The value is never written to pm-inbox.jsonl, a message, a log line, an SSE event or a
+ * response body; error messages never quote it. */
+const PEM = /-----BEGIN ([A-Z0-9 ]+)-----\s*([\s\S]+?)\s*-----END \1-----/;
+function looksLikeKey(t) {
+  const s = String(t || ''); if (!s) return false;
+  if (/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/.test(s)) return true;
+  try { return tool('owner-inbox.js').redact(s) !== s; } catch (_) { return false; }
+}
+// a pasted PEM block whose line breaks were lost (a one-line field, a chat paste) is put back in its 64-column shape
+function normalizeSecret(v) {
+  let s = String(v == null ? '' : v).replace(/\r/g, '').trim();
+  const m = PEM.exec(s);
+  if (m) { const body = m[2].replace(/\s+/g, ''); if (/^[A-Za-z0-9+/=]+$/.test(body)) s = '-----BEGIN ' + m[1] + '-----\n' + body.match(/.{1,64}/g).join('\n') + '\n-----END ' + m[1] + '-----'; }
+  return s;
+}
+function writeSecret(name, value, replace) {
+  const dir = co.SECRETS_DIR; const file = path.resolve(dir, name);
+  if (path.dirname(file) !== path.resolve(dir)) bad('bad secret name', 400);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (fs.existsSync(file) && !replace) throw new HttpError(409, 'secrets/' + name + ' already exists. Tick "replace the stored key" to overwrite it.', { code: 'exists', name });
+  const tmp = path.join(dir, '.' + name + '.' + crypto.randomBytes(4).toString('hex') + '.tmp');
+  fs.writeFileSync(tmp, value + '\n', { mode: 0o600, flag: 'wx' });
+  fs.chmodSync(tmp, 0o600); fs.renameSync(tmp, file); fs.chmodSync(file, 0o600);
+  return file;
+}
+async function answerQuestion(id, b) {
+  const inbox = tool('inbox.js');
+  const q = questions().find(x => x.id === id); if (!q) bad('no open question ' + id, 404);
+  const keyRefusal = 'this looks like a key or a private key. Put it in the secure field instead' + (q.form.fields.some(f => f.type === 'secret') ? '' : ' ("Store the key securely")') + ': it is stored as a file and never written into a message.';
+  // the old body: {verdict: yes|no|reply, text}
+  if (!b.action && ['yes', 'no', 'reply'].includes(b.verdict)) {
+    const text = String(b.text || '').trim();
+    if (looksLikeKey(text)) bad('Not sent: ' + keyRefusal);
+    if (b.verdict === 'reply') { if (!text) bad('text is required for a reply'); return inbox.answer({ id, by: OWNER, answer: { verdict: 'reply', value: text } }); }
+    const act = q.form.actions.find(a => a.verdict === b.verdict); if (!act) bad('this question has no ' + b.verdict + ' action (' + q.form.actions.map(a => a.id).join(', ') + ')');
+    const hasReason = q.form.fields.some(f => f.id === 'reason');
+    return wrap(() => inbox.answer({ id, by: OWNER, answer: { action: act.id, values: text && hasReason ? { reason: text } : {}, note: text && !hasReason ? text : undefined } }));
+  }
+  if (!b.action) bad('verdict must be yes, no or reply, or name an action (' + q.form.actions.map(a => a.id).join(', ') + ')');
+  const act = q.form.actions.find(a => a.id === String(b.action)); if (!act) bad('no action "' + b.action + '" on ' + id);
+  const values = Object.assign({}, b.values && typeof b.values === 'object' ? b.values : {});
+  const note = b.note == null ? '' : String(b.note);
+  for (const [k, v] of Object.entries(values)) { const f = q.form.fields.find(x => x.id === k); if (f && f.type !== 'secret' && looksLikeKey(typeof v === 'string' ? v : JSON.stringify(v))) bad('Not sent: ' + (f.label || k) + ': ' + keyRefusal); }
+  if (looksLikeKey(note)) bad('Not sent: the note: ' + keyRefusal);
+  // secrets: check everything first, then write the files, then record the answer
+  const pending = [];
+  for (const f of q.form.fields.filter(x => x.type === 'secret')) {
+    const raw = values[f.id]; delete values[f.id];
+    if (act.needs === 'none' || raw === undefined || raw === null || String(raw).trim() === '') continue;
+    if (typeof raw !== 'string') bad((f.label || f.id) + ': paste the key as text');
+    const value = normalizeSecret(raw);
+    if (value.length > 16384) bad((f.label || f.id) + ': longer than 16 KB; is this the key?');
+    const name = f.hinted && b.secretNames && b.secretNames[f.id] ? String(b.secretNames[f.id]).trim() : f.name;
+    if (!inbox.safeSecretName(name)) bad('the file name under secrets/ may use letters, digits, . _ - (not station-token or console-token)');
+    const replace = !!(b.replace && (b.replace === true || b.replace[f.id]));
+    if (fs.existsSync(path.join(co.SECRETS_DIR, name)) && !replace) throw new HttpError(409, 'secrets/' + name + ' already exists. Tick "replace the stored key" to overwrite it.', { code: 'exists', field: f.id, name });
+    pending.push({ f, name, value, replace });
+  }
+  // dry run of the answer with placeholders, so a bad field never leaves a key file behind
+  const placeholder = Object.assign({}, values); for (const p of pending) placeholder[p.f.id] = { stored: 'secrets/' + (p.f.hinted ? p.f.name : p.name), chars: p.value.length };
+  const row = inbox.state()[id];
+  try { inbox.checkAnswer(row, { action: act.id, values: placeholder, note }); } catch (e) { bad(e.message); }
+  for (const p of pending) {
+    writeSecret(p.name, p.value, p.replace);
+    let validated = null, validateError;
+    if (p.f.validate) {
+      const v = await stationPost('providers/validate', { provider: p.f.validate, key: p.value }, 25000);
+      if (!v.ok && !v.data) { validated = false; validateError = 'the station could not be reached to check it'; }
+      else { validated = !!(v.data && v.data.credentialVerified); if (!validated) validateError = String((v.data && v.data.error) || 'not verified').replace(p.value, '[key]').slice(0, 120); }
+    }
+    values[p.f.id] = Object.assign({ stored: 'secrets/' + p.name, chars: p.value.length, validated }, validateError ? { validateError } : {});
+  }
+  // a hinted field stored under another name than the suggestion still records the real path
+  const r = wrap(() => inbox.answer({ id, by: OWNER, answer: { action: act.id, values, note } }));
+  return { ok: true, id, state: r.state, a: r.a, answer: r.answer, stored: pending.map(p => values[p.f.id]) };
+}
+function wrap(fn) { try { return fn(); } catch (e) { throw new HttpError(e.code === 3 ? 403 : e.code === 4 ? 404 : 400, e.message); } }
 function answered(since) {
   const st = tool('inbox.js').state();
   const today = co.localParts().date;
@@ -304,17 +391,10 @@ route('GET', /^\/api\/company$/, () => Object.assign({ ok: true }, companyInfo()
 route('GET', /^\/api\/today$/, today);
 route('GET', /^\/api\/questions$/, () => ({ ok: true, questions: questions() }));
 route('GET', /^\/api\/questions\/answered$/, (m, q) => ({ ok: true, answered: answered(q.get('since')) }));
-route('POST', /^\/api\/questions\/(q-\d+)\/answer$/, async (m, q, b) => {
-  const id = m[1];
-  if (!questions().some(x => x.id === id)) bad('no open question ' + id, 404);
-  const extra = String(b.text || '').trim();
-  let a;
-  if (b.verdict === 'yes') a = 'yes' + (extra ? ': ' + extra : '');
-  else if (b.verdict === 'no') a = 'no' + (extra ? ': ' + extra : '');
-  else if (b.verdict === 'reply') { if (!extra) bad('text is required for a reply'); a = extra; }
-  else bad('verdict must be yes, no or reply');
-  if (a.startsWith('--')) a = ' ' + a;
-  return runApi('inbox.js', ['answer', '--id', id, '--a', a, '--by', OWNER]);
+route('POST', /^\/api\/questions\/(q-\d+)\/answer$/, (m, q, b) => answerQuestion(m[1], b));
+route('POST', /^\/api\/questions\/(q-\d+)\/snooze$/, (m, q, b) => {
+  if (!questions().some(x => x.id === m[1])) bad('no open question ' + m[1], 404);
+  return wrap(() => tool('inbox.js').snooze({ id: m[1], until: String(b.until || ''), by: OWNER }));
 });
 route('GET', /^\/api\/owner\/messages$/, ownerChannel);
 route('POST', /^\/api\/owner\/messages$/, async (m, q, b) => { const r = postOwnerMessage(b); const ch = await CHAT.channelState(); r.message = CHAT.messageStates([r.message], ch)[0]; r.channel = ch; return r; });
@@ -584,6 +664,7 @@ async function selftest() {
   delete env.CONSOLE_PORT;
   const child = spawn(process.execPath, [__filename, '--port', '0', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let errText = ''; child.stderr.on('data', d => { errText += d; });
+  const serverOut = { d: '' }; child.stdout.on('data', d => { serverOut.d += d; });
   const port = await new Promise((resolve, reject) => {
     let buf = ''; child.stdout.on('data', d => { buf += d; const m = buf.match(/\{"port":(\d+)\}/); if (m) resolve(Number(m[1])); });
     child.on('exit', c => reject(new Error('server exited ' + c + ': ' + errText)));
@@ -628,6 +709,96 @@ async function selftest() {
     check('answered today lists it', r.json.ok && r.json.answered.some(q => q.id === ask.id && /^yes/.test(q.answer)), r.json);
     r = await call('POST', '/api/questions/' + ask.id + '/answer', { verdict: 'yes' });
     check('answering again: 404', r.status === 404, r.json);
+    // typed questions: every shortcut kind, a free-form form, snooze, and the secret store
+    const askCli = argv => new Promise(res => execFile(process.execPath, [path.join(tmp, 'company', 'tools', 'inbox.js'), 'ask', '--from', 'Founder'].concat(argv), { env }, (e, so) => { try { res(JSON.parse(so)); } catch (_) { res({ ok: false, raw: so }); } }));
+    const SECRET = 'S3cr3t-Value-For-Selftest-0123456789';
+    const sseBuf = { d: '' };
+    const sseReq = http.request({ host: '127.0.0.1', port, path: '/api/events', headers: { 'x-console-token': token } }, res => res.on('data', c => { sseBuf.d += c; }));
+    sseReq.on('error', () => {}); sseReq.end();
+    const kq = {};
+    kq.choice = await askCli(['--message', 'Which plan should we try?', '--kind', 'choice', '--options', 'trial:The free trial,skip:Skip it', '--recommended', 'trial']);
+    kq.text = await askCli(['--message', 'What should the newsletter cover?', '--kind', 'text', '--min', '10']);
+    kq.secret = await askCli(['--message', 'Please make a read-only Kalshi key and paste it here.', '--details', 'Kalshi refuses anonymous websockets.', '--kind', 'secret', '--name', 'kalshi-api-key', '--label', 'Kalshi API key']);
+    kq.secret2 = await askCli(['--message', 'And once more, the same Kalshi key file.', '--kind', 'secret', '--name', 'kalshi-api-key']);
+    kq.link = await askCli(['--message', 'Could you sign up at Synpath?', '--kind', 'link', '--url', 'https://synpath.example/signup', '--action', 'Sign in with Google']);
+    kq.account = await askCli(['--message', 'Make a healthchecks.io account.', '--kind', 'account', '--url', 'https://healthchecks.io/', '--action', 'Sign up', '--fields', 'email:Sign-in email']);
+    kq.number = await askCli(['--message', 'What monthly cap?', '--kind', 'number', '--unit', 'USD', '--min', '0', '--max', '100']);
+    kq.date = await askCli(['--message', 'When do we launch?', '--kind', 'date', '--min', '2026-01-01']);
+    kq.form = await askCli(['--message', 'Two quick things.', '--form', JSON.stringify({ fields: [{ id: 'ok', type: 'checkbox', label: 'Emails may go to you', required: true }, { id: 'pk', type: 'secret', label: 'Ping key', name: 'ping-key', required: false }], actions: [{ id: 'go', label: 'Here you go', verdict: 'done' }, { id: 'later', label: 'Not now', verdict: 'no' }] })]);
+    kq.legacy = await askCli(['--q', 'Access gate (gate 2), no payment: a free Acme API key from an account in your name. It unlocks the reference series.']);
+    kq.unsafe = await askCli(['--message', 'x', '--kind', 'link', '--url', 'javascript:alert(1)', '--action', 'click']);
+    check('inbox.js ask: every kind filed; an unsafe link refused with the reason', Object.entries(kq).every(([k, v]) => k === 'unsafe' ? (!v.ok && /http or https/.test(v.error)) : v.ok) && /no --message/.test((kq.legacy.warnings || []).join()), kq);
+    r = await call('GET', '/api/questions');
+    const byId = Object.fromEntries((r.json.questions || []).map(x => [x.id, x]));
+    check('GET /api/questions carries kind, form, message and details', byId[kq.secret.id] && byId[kq.secret.id].kind === 'secret' && byId[kq.secret.id].form.fields[0].type === 'secret' && byId[kq.secret.id].message.startsWith('Please') && /websockets/.test(byId[kq.secret.id].details), byId[kq.secret.id]);
+    check('the asker\'s seat is named for Discuss', byId[kq.choice.id] && byId[kq.choice.id].askerSeat === (co.ceo() || 'agent'), byId[kq.choice.id] && byId[kq.choice.id].askerSeat);
+    check('a legacy key question offers the secret field (acme-api-key)', byId[kq.legacy.id] && byId[kq.legacy.id].secretHint && byId[kq.legacy.id].secretHint.name === 'acme-api-key', byId[kq.legacy.id]);
+    r = await call('POST', '/api/questions/' + kq.choice.id + '/answer', { action: 'choose', values: { choice: 'nope' } });
+    check('choice: an option off the list: 400', r.status === 400 && /not one of the options/.test(r.json.error), r.json);
+    r = await call('POST', '/api/questions/' + kq.choice.id + '/answer', { action: 'choose', values: { choice: 'trial' }, note: 'two weeks' });
+    check('choice answered in plain words', r.status === 200 && /"The free trial"/.test(r.json.a), r.json);
+    r = await call('POST', '/api/questions/' + kq.text.id + '/answer', { action: 'send', values: { answer: 'short' } });
+    check('text: under the minimum length: 400', r.status === 400, r.json);
+    r = await call('POST', '/api/questions/' + kq.text.id + '/answer', { action: 'send', values: { answer: 'sk-abcdefghijklmnopqrstuvwxyz123456 is the key' } });
+    check('a key pasted into a text field is refused, pointing at the secure field', r.status === 400 && /secure field/.test(r.json.error) && !r.text.includes('sk-abcdefghijklmnopqrstuvwxyz123456'), r.json);
+    r = await call('POST', '/api/questions/' + kq.text.id + '/answer', { verdict: 'reply', text: '-----BEGIN PRIVATE KEY----- MC4CAQAwBQYDK2VwBCIEIAkR -----END PRIVATE KEY-----' });
+    check('a private key pasted into Reply is refused', r.status === 400 && /secure field/.test(r.json.error), r.json);
+    r = await call('POST', '/api/questions/' + kq.text.id + '/answer', { action: 'send', values: { answer: 'Night-sky field guides for beginners.' } });
+    check('text answered', r.status === 200 && r.json.a === 'Night-sky field guides for beginners.', r.json);
+    r = await call('POST', '/api/questions/' + kq.number.id + '/answer', { action: 'send', values: { value: 500 } });
+    check('number above max: 400', r.status === 400, r.json);
+    r = await call('POST', '/api/questions/' + kq.number.id + '/answer', { action: 'send', values: { value: 40 } });
+    check('number answered with its unit', r.status === 200 && /40 USD/.test(r.json.a), r.json);
+    r = await call('POST', '/api/questions/' + kq.date.id + '/answer', { action: 'send', values: { value: 'soon' } });
+    check('date not a date: 400', r.status === 400, r.json);
+    r = await call('POST', '/api/questions/' + kq.date.id + '/answer', { action: 'send', values: { value: '2026-12-01' } });
+    check('date answered', r.status === 200 && /2026-12-01/.test(r.json.a), r.json);
+    r = await call('POST', '/api/questions/' + kq.link.id + '/answer', { action: 'couldnt', values: { note: 'Google asked for a phone' } });
+    check('link: could not, with the note', r.status === 200 && /could not/.test(r.json.a) && /phone/.test(r.json.a), r.json);
+    r = await call('POST', '/api/questions/' + kq.account.id + '/answer', { action: 'done', values: {} });
+    check('account: a missing field: 400', r.status === 400 && /Sign-in email/.test(r.json.error), r.json);
+    r = await call('POST', '/api/questions/' + kq.account.id + '/answer', { action: 'done', values: { email: 'me@example.com' } });
+    check('account answered with the field', r.status === 200 && /me@example\.com/.test(r.json.a), r.json);
+    // the secret store
+    r = await call('POST', '/api/questions/' + kq.secret.id + '/answer', { action: 'store', values: { key: '   ' } });
+    check('secret: an empty key: 400, nothing written', r.status === 400 && !fs.existsSync(path.join(tmp, 'secrets', 'kalshi-api-key')), r.json);
+    r = await call('POST', '/api/questions/' + kq.secret.id + '/answer', { action: 'store', values: { key: '  ' + SECRET + '\n' } });
+    const kfile = path.join(tmp, 'secrets', 'kalshi-api-key');
+    check('secret: stored, the answer names the path and length only', r.status === 200 && r.json.stored[0].stored === 'secrets/kalshi-api-key' && r.json.stored[0].chars === SECRET.length && /secrets\/kalshi-api-key \(36 chars, validated: not checked\)/.test(r.json.a), r.json);
+    check('secret: the response body never carries the value', !r.text.includes(SECRET));
+    check('secret: the file is 0600 and holds the value', fs.existsSync(kfile) && (fs.statSync(kfile).mode & 0o777) === 0o600 && fs.readFileSync(kfile, 'utf8') === SECRET + '\n', fs.existsSync(kfile) && (fs.statSync(kfile).mode & 0o777).toString(8));
+    r = await call('POST', '/api/questions/' + kq.secret2.id + '/answer', { action: 'store', values: { key: 'another-value-1234567890' } });
+    check('secret: an existing file is not overwritten without replace (409)', r.status === 409 && r.json.detail && r.json.detail.code === 'exists' && fs.readFileSync(kfile, 'utf8') === SECRET + '\n', r.json);
+    r = await call('POST', '/api/questions/' + kq.secret2.id + '/answer', { action: 'store', values: { key: 'another-value-1234567890' }, replace: { key: true } });
+    check('secret: replace ticked overwrites it, still 0600', r.status === 200 && fs.readFileSync(kfile, 'utf8') === 'another-value-1234567890\n' && (fs.statSync(kfile).mode & 0o777) === 0o600, r.json);
+    r = await call('POST', '/api/questions/' + kq.form.id + '/answer', { action: 'go', values: { pk: SECRET } });
+    check('form: a required checkbox missing: 400 and no key file left behind', r.status === 400 && !fs.existsSync(path.join(tmp, 'secrets', 'ping-key')), r.json);
+    r = await call('POST', '/api/questions/' + kq.form.id + '/answer', { action: 'go', values: { ok: true, pk: '-----BEGIN PRIVATE KEY----- MC4CAQAwBQYDK2VwBCIEIAkRaIju+GQX99lOzlTW4ttYt7vtuKO3/TIksMVHD0PA -----END PRIVATE KEY-----' } });
+    const pk = fs.existsSync(path.join(tmp, 'secrets', 'ping-key')) ? fs.readFileSync(path.join(tmp, 'secrets', 'ping-key'), 'utf8') : '';
+    check('form: a flattened PEM key is stored with its line breaks back', r.status === 200 && /^-----BEGIN PRIVATE KEY-----\nMC4C[^\n]+\n-----END PRIVATE KEY-----\n$/.test(pk), { r: r.json, pk: pk.length });
+    r = await call('POST', '/api/questions/' + kq.legacy.id + '/answer', { action: 'store-key', values: { key: SECRET }, secretNames: { key: '../escape' } });
+    check('legacy: an unsafe file name is refused', r.status === 400 && !r.text.includes(SECRET), r.json);
+    r = await call('POST', '/api/questions/' + kq.legacy.id + '/answer', { action: 'store-key', values: { key: SECRET }, secretNames: { key: 'acme-api-key' } });
+    check('legacy key question: stored through the secure field', r.status === 200 && fs.existsSync(path.join(tmp, 'secrets', 'acme-api-key')) && /secrets\/acme-api-key/.test(r.json.a), r.json);
+    // snooze
+    const sz = await askCli(['--message', 'Whenever you have a minute.']);
+    r = await call('POST', '/api/questions/' + sz.id + '/snooze', { until: '2001-01-01T00:00:00Z' });
+    check('snooze into the past: 400', r.status === 400, r.json);
+    const until = new Date(Date.now() + 3600e3).toISOString();
+    r = await call('POST', '/api/questions/' + sz.id + '/snooze', { until });
+    const listed = await new Promise(res => execFile(process.execPath, [path.join(tmp, 'company', 'tools', 'inbox.js'), 'list', '--open'], { env }, (e, so) => res(JSON.parse(so))));
+    check('snoozed: the question carries snoozedUntil and the asker sees "snoozed until"', r.status === 200 && listed.items.some(x => x.id === sz.id && /^snoozed until /.test(x.status)), listed.items.find(x => x.id === sz.id));
+    // the secret value is nowhere
+    await new Promise(rs => setTimeout(rs, 600));
+    const answeredNow = await call('GET', '/api/questions/answered');
+    const msgsNow = await call('GET', '/api/owner/messages');
+    const inboxText = fs.readFileSync(path.join(tmp, 'company', 'pm-inbox.jsonl'), 'utf8');
+    const inboundText = (() => { try { return fs.readFileSync(path.join(tmp, 'company', 'owner', 'inbound.jsonl'), 'utf8'); } catch (_) { return ''; } })();
+    const leaks = { inbox: inboxText.includes(SECRET), inbound: inboundText.includes(SECRET), answered: answeredNow.text.includes(SECRET), messages: msgsNow.text.includes(SECRET), sse: sseBuf.d.includes(SECRET), serverOut: serverOut.d.includes(SECRET) || errText.includes(SECRET),
+      pem: inboxText.includes('MC4CAQAwBQYDK2VwBCIEIAkR') || inboundText.includes('MC4CAQAwBQYDK2VwBCIEIAkR') };
+    check('the secret value is in no inbox row, owner message, answered list, SSE event or server log', Object.values(leaks).every(v => !v), leaks);
+    check('answers reach the asker as owner messages naming the question', inboundText.includes('my answer to your question ' + kq.secret.id) && /stored at secrets\/kalshi-api-key/.test(inboundText));
+    sseReq.destroy();
     // owner messages
     r = await call('POST', '/api/owner/messages', { text: 'Hello company' });
     check('owner message posted', r.status === 200 && r.json.ok && r.json.message.from === OWNER, r.json);
@@ -811,6 +982,12 @@ async function selftest() {
       check('setup provider: the key never comes back in the answer', !JSON.stringify(r.json).includes('good-key'));
       r = await call2('GET', '/api/questions');
       check('setup provider: the onboarding gate question is answered', r.json.ok && !r.json.questions.some(q => q.id === gq.id), r.json);
+      const vq = await askCli(['--message', 'The DeepSeek key, please.', '--kind', 'secret', '--name', 'deepseek-key', '--validate', 'deepseek']);
+      const vq2 = await askCli(['--message', 'A second DeepSeek key.', '--kind', 'secret', '--name', 'deepseek-key-2', '--validate', 'deepseek']);
+      r = await call2('POST', '/api/questions/' + vq.id + '/answer', { action: 'store', values: { key: 'good-key' } });
+      check('secret with validate: the station checks it (validated: yes)', r.status === 200 && /validated: yes/.test(r.json.a) && fake.calls.some(c => c.u === '/api/providers/validate' && c.key === 'good-key'), r.json);
+      r = await call2('POST', '/api/questions/' + vq2.id + '/answer', { action: 'store', values: { key: 'bad-key' } });
+      check('secret with validate: a rejected key is stored and recorded as validated: no', r.status === 200 && /validated: no/.test(r.json.a) && fs.existsSync(path.join(tmp, 'secrets', 'deepseek-key-2')), r.json);
       r = await call2('GET', '/api/setup');
       check('fake station: provider and budget steps done', ['provider', 'budget'].every(id => r.json.steps.find(x => x.id === id).status === 'done'), r.json.steps);
     } finally { child2.kill(); fsrv.close(); }

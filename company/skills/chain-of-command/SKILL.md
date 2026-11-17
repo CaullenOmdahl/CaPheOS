@@ -4,7 +4,7 @@ description: Ask up one level, not to the top. Use before addressing the CEO or 
 license: MIT
 metadata:
   owner: company
-  version: "1.1"
+  version: "1.2"
 ---
 
 # Chain of Command
@@ -40,7 +40,8 @@ chain still works once seats are hired.
 3. **A CEO question carries options.** The CEO answers with a decision; "what should we do?" without a
    recommendation is not a CEO question, it is a delegation of your job.
 4. **Owner gates** are only money, access, ownership, commitment — raised by the function owner or the CEO,
-   not by a specialist, and via `company/tools/inbox.js`.
+   not by a specialist, and via `company/tools/inbox.js`. How to write one — plain words first, a secure field for
+   keys, a link for sign-ups — is the `owner-questions` skill.
 5. **Record** anything decided in `company/work/decisions.md`; the chain is only real if decisions leave a trace.
 
 ## Procedure and skill proposals

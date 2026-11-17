@@ -422,9 +422,16 @@ function deliverOwnerQuestions() {
   if (sentToday >= dailyLimit && !bundle.some(q => /\burgent\b/i.test(String(q.q).slice(0, 200)))) return;   // only when a push adapter sets a daily limit
   // Sent as the CEO wrote it: a plain message between two people. Each id rides in brackets so a reply that quotes it is
   // matched automatically; a reply without it still reaches the CEO, who records it.
+  // The plain message goes out (inbox.js messageParts); the detail stays on Today. A question with a secret field says
+  // where to answer it, so nobody pastes a key into a message.
+  const said = q => {
+    const secret = ((q.form && q.form.fields) || []).some(f => f.type === 'secret' && !f.hinted) || !!q.secretHint;
+    return String(q.message || q.q).slice(0, 1200).trim() + (q.details ? ' (More detail on Today in the console.)' : '') +
+      (secret ? ' Please answer this one on Today in the console: it has a secure field for the key. Never paste a key into a message.' : '');
+  };
   const body = bundle.length > 1
-    ? ('A few things need your yes or no:\n\n' + bundle.map((q, i) => (i + 1) + '. ' + String(q.q).slice(0, 1200).trim() + ' (' + q.id + ')').join('\n\n')).slice(0, 3800)
-    : String(next.q).slice(0, 3800).trim() + '\n\n(' + next.id + ')';
+    ? ('A few things need your yes or no:\n\n' + bundle.map((q, i) => (i + 1) + '. ' + said(q) + ' (' + q.id + ')').join('\n\n')).slice(0, 3800)
+    : said(next).slice(0, 3800) + '\n\n(' + next.id + ')';
   if (DRY) { log('WOULD SEND owner question ' + bundle.map(q => q.id).join(', ') + ' (' + body.length + ' chars)'); return; }
   for (const q of bundle) ob.sent[q.id] = { pendingAt: new Date().toISOString() };   // marked before sending: a failure never sends it twice
   fs.writeFileSync(OUTBOX, JSON.stringify(ob, null, 1) + '\n');

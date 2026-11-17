@@ -125,7 +125,7 @@ module.exports = function setup(deps) {
     for (const q of onboardingQuestions(qs)) {
       const items = String(q.q || '').split('\n').filter(l => /^\s*-\s/.test(l));
       if (!items.length || !items.every(l => /Hiring candidates default/i.test(l))) continue;
-      const r = await run('inbox.js', ['answer', '--id', q.id, '--a', 'resolved in Setup: ' + note, '--by', owner()]);
+      const r = await run('inbox.js', ['answer', '--id', q.id, '--a', 'resolved in Setup: ' + note, '--by', owner(), '--quiet']);
       out.push({ id: q.id, ok: r.code === 0 });
     }
     await run('onboard.js', ['--record', 'candidate-default', 'ok', '--note', note]);

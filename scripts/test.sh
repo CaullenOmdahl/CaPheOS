@@ -87,6 +87,7 @@ done
 
 echo "== console"
 step "console/server.js --selftest" node console/server.js --selftest
+step "tests/today-questions-walk.js (headless Chrome: Today renders each question kind; SKIP without Chrome)" node tests/today-questions-walk.js
 
 echo "== syntax and data files"
 py_check() { local bad=0 f; while IFS= read -r -d '' f; do python3 -m py_compile "$f" || { echo "py_compile: $f"; bad=1; }; done < <(git -C "$REPO" ls-files -z '*.py'); return $bad; }

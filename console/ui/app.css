@@ -270,3 +270,14 @@ dl.kv dt { color: var(--text-muted); } dl.kv dd { margin: 0; color: var(--text-s
 .charter-view .md { gap: 10px; }
 @media (max-width: 600px) { .chat-banner { padding-left: 16px; padding-right: 16px; } .charter-strip { margin-left: 16px; margin-right: 16px; } }
 .md.msg-them { white-space: normal; }
+/* Needs you: typed owner questions (today.js fieldControl) */
+.gate .q-msg { font: var(--type-body); color: var(--text-strong); }
+.gate .q-details > summary { min-height: 32px; display: flex; align-items: center; }
+.gate .q-form { padding-top: 4px; }
+.gate fieldset.q-choice { border: 0; padding: 0; margin: 0; }
+.gate .q-choice .check { min-height: 36px; }
+.gate .secret-mask { -webkit-text-security: disc; font-family: var(--font-mono, monospace); }
+.gate .secret-input { font-family: var(--font-mono, monospace); }
+.gate .check.attn { color: var(--status-danger); font-weight: 600; }
+.gate .snooze-menu[hidden] { display: none; }
+.gate .q-secret-hint > summary { min-height: 36px; display: flex; align-items: center; }

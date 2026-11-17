@@ -31,11 +31,34 @@ defect, not diligence.
 
 ## How an owner question is written
 
-Asked through `node company/tools/inbox.js ask`. It shows on the owner's Today screen the moment it is asked, so ask when the
-decision is ready, one decision per question, and retire a question you replace:
+Asked through `node company/tools/inbox.js ask` (skill `owner-questions`). It shows on the owner's Today screen the moment
+it is asked, so ask when the decision is ready, one decision per question, and retire a question you replace.
 
-> **Decision needed:** X. **Why only you:** gate 2 (access). **Options:** A / B. **Recommendation:** A, because...
-> **Default if silent:** we proceed with A on <date>.
+**Say it like a person.** `--message` is 2-4 conversational sentences: what you need, why, and what happens if the
+owner says no. Evidence, numbers, ids, file paths and alternatives go in `--details`, which the console folds under
+"More detail". `ask` warns when the message is missing, over 400 characters, or reads like a report.
+
+- Good: `--message "Could you make a free Pyth account and paste its API key? It lets us test our main idea about
+  commodity prices. If you say no, that idea waits and nothing else changes." --details "Pyth answers 401 without a
+  key; 200 ms gold, 50 ms WTI; ..."`
+- Bad: `--q "Access gate (gate 2), no payment, second key: a free Pyth API key. Pyth's discovery endpoint answers us
+  anonymously (200 ms gold, 50 ms WTI) but the price stream is 401, so ..."` (a report, with the ask buried in it)
+
+**Give the owner the right control.** A question is a form: pick a shortcut with `--kind`, or compose your own with
+`--form` (fields: info, text, secret, choice, link, number, date, checkbox; and your own named actions such as
+"Approve", "Not now", "Use the free tier instead", each mapping to a verdict).
+
+- A key, token or password: `--kind secret --name <file>` (e.g. `kalshi-api-key`). The owner pastes it into a password
+  field; the console stores it as `secrets/<name>` (0600) and you get back only "stored at secrets/<name> (N chars,
+  validated: yes/no)". **Never ask the owner to paste a key in a message or in chat**, and never ask for one in a text
+  field (refused). Your tools read it with `co.secret('<name>')`, under the secrets guardrail; never print it.
+- A sign-up or a page the owner must visit: `--kind link --url --action`; when you need non-secret details back (a
+  username, the sign-in email): `--kind account --fields "id:Label,..."`.
+- Options: `--kind choice --options "id:Label,..." --recommended <id>`. An open question: `--kind text`.
+  A figure: `--kind number --unit`. A day: `--kind date`. A plain yes/no: the default (`approve`).
+
+The owner may also Reply in their own words, Snooze ("snoozed until ..." shows in `inbox.js list`), or Discuss it in a
+live chat with you. The answer comes back to you as an owner message naming the question id, in plain words.
 
 ## Self-governance
 

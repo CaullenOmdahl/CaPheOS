@@ -101,7 +101,7 @@ const verdict = text => (NO.test(String(text || '')) ? false : YES.test(String(t
 function answerOf(id, opts) {
   const f = files(opts);
   let ans = null;
-  for (const r of readLines(f.inbox)) if (r.id === id && (r.type === 'answer') && r.a) ans = { text: String(r.a), via: 'inbox' };
+  for (const r of readLines(f.inbox)) if (r.id === id && (r.type === 'answer') && r.a) ans = { text: String(r.a), via: 'inbox', verdict: r.answer && (r.answer.verdict === 'yes' || r.answer.verdict === 'no') ? r.answer.verdict : null };
   if (ans) return ans;
   for (const m of readLines(path.join(f.ownerDir, 'inbound.jsonl'))) {
     const text = String(m.text != null ? m.text : (m.body || ''));
@@ -119,6 +119,7 @@ function questionFor(ref, opts) { const asks = gateAsks(opts).filter(r => r.gate
 function approved(ref, opts) {
   const q = questionFor(ref, opts); if (!q) return null;
   const a = answerOf(q.id, opts); if (!a) return null;
+  if (a.verdict) return a.verdict === 'yes';   // a structured answer (inbox.js answer): Approve/Decline, or a choice of yes/no
   return verdict(a.text);
 }
 /* Open gate questions (no answer, not closed): for a dispatcher that folds them into one owner message. */
@@ -143,7 +144,11 @@ function fileQuestion(category, o, opts) {
     o.triage ? 'The triage model escalated this: ' + o.triage + '.' : null,
     'Reply yes or no and name ' + id + '. You set this through self-governance: ' + category + ' is at "' + (o.triage ? 'triage' : 'approve') + '" (company/tools/governance.js).',
   ].filter(Boolean);
-  const row = { type: 'ask', id, at: new Date().toISOString(), from: co.nameOf(co.ceo()) || 'company', about: 'governance:' + category, q: lines.join('\n'), blocking: true,
+  // the plain message the owner reads first (inbox.js messageParts); the lines above stay as the detail
+  const summ = String(o.summary || 'an act in ' + category).trim().replace(/\.$/, '');
+  const message = ('May ' + (o.by || 'we') + ' go ahead: ' + summ + '? ' + (o.recommendation ? 'The recommendation is ' + String(o.recommendation).trim().replace(/\.$/, '') + '. ' : '') +
+    'If you say no or do not answer, ' + String(o.default || 'nothing happens and the company waits for you').trim().replace(/\.$/, '').replace(/^./, c => c.toLowerCase()) + '.').slice(0, 600);
+  const row = { type: 'ask', id, at: new Date().toISOString(), from: co.nameOf(co.ceo()) || 'company', about: 'governance:' + category, q: lines.join('\n'), message, details: lines.slice(1).join('\n'), blocking: true,
     batch: 'gate', gate: { category, ref: o.ref, by: o.by || null, summary: o.summary || null, recommendation: o.recommendation || null, default: o.default || null } };
   fs.mkdirSync(path.dirname(f.inbox), { recursive: true });
   fs.appendFileSync(f.inbox, JSON.stringify(row) + '\n');

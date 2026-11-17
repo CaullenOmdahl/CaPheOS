@@ -54,6 +54,7 @@ export async function render(root, ctx) {
   const gatesEl = h('div', { class: 'gates', 'aria-live': 'polite', 'aria-relevant': 'additions removals' });
   const allClear = h('div');
   const answeredEl = h('div');
+  const snoozedEl = h('div');
   const crewEl = h('div'); const usageEl = h('div'); const panelsEl = h('div', { class: 'stack-24' }); const overnightEl = h('div');
 
   fill(root,
@@ -66,7 +67,7 @@ export async function render(root, ctx) {
       h('div', { class: 'between', style: 'gap:16px' },
         h('div', { class: 'row-8', style: 'align-items:center;gap:12px' }, h('h2', { id: 'needs', class: 'h3' }, 'Needs you'), liveDot),
         h('span', { class: 'caption muted' }, 'Questions land here the moment they are asked. Your self-governance settings decide which ones come to you.')),
-      needsErr, allClear, gatesEl, answeredEl),
+      needsErr, allClear, gatesEl, snoozedEl, answeredEl),
     h('section', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:32px' },
       h('div', { class: 'stack-16' }, h('div', { class: 'between' }, h('h2', { class: 'h3' }, 'Crew right now'), h('a', { href: '#/crew', class: 'body-s' }, 'All crew →')), crewEl),
       h('div', { class: 'stack-16' }, h('div', { class: 'between' }, h('h2', { class: 'h3' }, 'AI usage today'), h('a', { href: '#/usage', class: 'body-s' }, 'Usage →')), usageEl)),
@@ -92,14 +93,17 @@ export async function render(root, ctx) {
   const onLive = e => { liveDot.textContent = e.detail ? 'Live' : 'Polling'; liveDot.classList.toggle('off', !e.detail); };
   document.addEventListener('capheos:live', onLive);
 
-  /* ---- Needs you ---- */
+  /* ---- Needs you: each question is a form its asker composed (company/tools/inbox.js) ---- */
   const replying = new Set(); const drafts = {};
-  let lastQs = [];
+  let lastQs = []; let snoozedQs = [];
   async function loadNeeds() {
     let d;
     try { d = await api('/questions'); fill(needsErr); }
     catch (e) { fill(needsErr, errLine(e, 'Questions')); return; }
-    const qs = (d.questions || []).filter(q => !isSetupQuestion(q));
+    const all = (d.questions || []).filter(q => !isSetupQuestion(q));
+    const now = Date.now();
+    const qs = all.filter(q => !(q.snoozedUntil && Date.parse(q.snoozedUntil) > now));
+    snoozedQs = all.filter(q => q.snoozedUntil && Date.parse(q.snoozedUntil) > now);
     lastQs = qs;
     app.setCount && app.setCount('needs', qs.length);
     const n = qs.length;
@@ -110,40 +114,77 @@ export async function render(root, ctx) {
     redraw();
     loadAnswered();
   }
-  function redraw() { fill(gatesEl, lastQs.map(q => gateCard(q, freshIds.has(q.id)))); }
+  function redraw() {
+    fill(gatesEl, lastQs.map(q => gateCard(q, freshIds.has(q.id))));
+    fill(snoozedEl, snoozedQs.length ? h('details', { class: 'hair-top', style: 'padding-top:12px' },
+      h('summary', { class: 'label muted', style: 'min-height:32px' }, 'Snoozed (' + snoozedQs.length + ')'),
+      h('ul', { class: 'plain stack-8', style: 'margin-top:8px' }, snoozedQs.map(q => h('li', { class: 'between body-s', 'data-snoozed': q.id },
+        h('span', { class: 'strong' }, questionText(q).message.slice(0, 120)), h('span', { class: 'mono muted' }, 'back ' + whenLabel(q.snoozedUntil, co.timezone)))))) : null);
+  }
   function gateCard(q, fresh) {
     const p = parseQuestion(q);
+    const qt = questionText(q);
+    const form = q.form && Array.isArray(q.form.actions) && q.form.actions.length ? q.form : { fields: [], actions: [{ id: 'approve', label: 'Approve', verdict: 'yes', primary: true }, { id: 'decline', label: 'Decline', verdict: 'no' }] };
     const errEl = h('p', { class: 'err-line', role: 'status' });
-    const ta = h('textarea', { rows: '3', class: 'textarea', placeholder: 'Yes, but…', 'aria-label': 'Your answer' });
-    ta.value = drafts[q.id] || ''; ta.addEventListener('input', () => { drafts[q.id] = ta.value; });
     const isReplying = replying.has(q.id);
-    const answer = async (verdict, text) => {
-      errEl.textContent = '';
-      card.querySelectorAll('button').forEach(b => { b.disabled = true; });
-      try { await post('/questions/' + encodeURIComponent(q.id) + '/answer', text ? { verdict, text } : { verdict }); replying.delete(q.id); delete drafts[q.id]; freshIds.delete(q.id); app.toast('Answer recorded.'); loadNeeds(); }
-      catch (e) { errEl.textContent = 'Not recorded: ' + e.message; card.querySelectorAll('button').forEach(b => { b.disabled = false; }); }
+    const controls = form.fields.map(f => fieldControl(q, f));
+    const busy = on => card.querySelectorAll('button, input, textarea, select').forEach(b => { b.disabled = on; });
+    const send = async (body, okText) => {
+      errEl.textContent = ''; busy(true);
+      try {
+        const r = await post('/questions/' + encodeURIComponent(q.id) + '/answer', body);
+        controls.forEach(c => c.clear && c.clear());
+        replying.delete(q.id); delete drafts[q.id]; freshIds.delete(q.id); app.toast(okText || 'Answer recorded.'); loadNeeds(); return r;
+      } catch (e) {
+        controls.forEach(c => c.onError && c.onError(e));
+        errEl.textContent = 'Not recorded: ' + e.message; busy(false);
+      }
     };
-    const card = h('article', { class: 'gate' + (fresh ? ' fresh' : ''), 'data-id': q.id, 'aria-labelledby': 'g-' + q.id },
+    const act = a => {
+      const values = {}; const replace = {}; const secretNames = {};
+      for (const c of controls) {
+        if (!c.get) continue;
+        const v = c.get(); if (v !== undefined && v !== '' && !(Array.isArray(v) && !v.length)) values[c.f.id] = v;
+        if (c.replace && c.replace()) replace[c.f.id] = true;
+        if (c.name) secretNames[c.f.id] = c.name();
+      }
+      if (a.needs === 'none') for (const c of controls) if (c.f.type === 'secret') delete values[c.f.id];
+      const body = { action: a.id, values };
+      if (Object.keys(replace).length) body.replace = replace;
+      if (Object.keys(secretNames).length) body.secretNames = secretNames;
+      const stores = controls.some(c => c.f.type === 'secret' && values[c.f.id] !== undefined);
+      send(body, stores ? 'Key stored securely. Answer recorded.' : 'Answer recorded.');
+    };
+    const ta = h('textarea', { rows: '6', class: 'textarea', placeholder: 'Write as much as you need…', 'aria-label': 'Your reply to ' + (q.from || 'the asker') });
+    ta.value = drafts[q.id] || ''; ta.addEventListener('input', () => { drafts[q.id] = ta.value; });
+    const snoozeMenu = h('div', { class: 'row-8 snooze-menu', hidden: true },
+      [['In an hour', 'hour'], ['Tomorrow morning', 'tomorrow'], ['Next week', 'week']].map(([label, k]) => Button(label, { variant: 'ghost', size: 'sm', onClick: async () => {
+        const until = snoozeUntil(k);
+        try { await post('/questions/' + encodeURIComponent(q.id) + '/snooze', { until: until.toISOString() }); app.toast('Snoozed until ' + whenLabel(until.toISOString(), co.timezone) + '. ' + (q.from || 'The asker') + ' sees that.'); loadNeeds(); }
+        catch (e) { errEl.textContent = 'Not snoozed: ' + e.message; }
+      } })));
+    const seat = q.askerSeat || ceoId;
+    const quote = qt.message.split('\n').map(l => '> ' + l).join('\n').slice(0, 600);
+    const card = h('article', { class: 'gate' + (fresh ? ' fresh' : ''), 'data-id': q.id, 'data-kind': q.kind || 'approve', 'aria-labelledby': 'g-' + q.id },
       h('div', { class: 'between-c' },
         h('span', { class: 'row-8', style: 'align-items:center' }, Tag(p.cat, { variant: 'accent' }), fresh ? h('span', { class: 'just-now' }, 'Just now') : null),
         h('span', { class: 'mono muted' }, [q.from, q.id, rel(q.askedAt)].filter(Boolean).join(' · '))),
-      h('h3', { id: 'g-' + q.id, class: 'h4' }, p.title),
-      p.why ? mdBlock(p.why, 'body-s q-body') : null,
-      (p.rec || p.dflt) ? h('div', { class: 'sunken' },
-        h('span', { class: 'eyebrow-t' }, 'Recommendation'),
-        h('span', { class: 'body-s strong' }, p.rec || '—'),
-        p.dflt ? h('span', { class: 'caption muted' }, 'If silent: ' + p.dflt) : null) : null,
-      isReplying ? h('label', { class: 'stack-6' }, h('span', { class: 'caption muted' }, 'Your answer goes to ' + (q.from || 'the asker')), ta) : null,
+      q.gate && q.gate.summary ? h('h3', { id: 'g-' + q.id, class: 'h4' }, p.title) : null,
+      q.gate && q.gate.summary && qt.message.replace(/\.$/, '') === p.title.replace(/\.$/, '') ? null : h('div', q.gate && q.gate.summary ? { class: 'q-message' } : { id: 'g-' + q.id, class: 'q-message' }, mdBlock(qt.message, 'body q-msg')),
+      qt.details ? h('details', { class: 'q-details' }, h('summary', { class: 'caption muted' }, 'More detail'), mdBlock(qt.details, 'body-s q-body')) : null,
+      controls.length ? h('div', { class: 'stack-12 q-form' }, controls.map(c => c.el)) : null,
+      isReplying ? h('label', { class: 'stack-6' }, h('span', { class: 'caption muted' }, 'Your reply goes to ' + (q.from || 'the asker') + ' in your own words.'), ta) : null,
       h('div', { class: 'row-8', style: 'margin-top:auto' },
-        Button('Approve', { variant: 'primary', size: 'sm', onClick: () => answer('yes', isReplying ? ta.value.trim() : '') }),
-        Button('Decline', { variant: 'secondary', size: 'sm', onClick: () => answer('no', isReplying ? ta.value.trim() : '') }),
-        Button(isReplying ? 'Send answer' : 'Reply', { variant: 'ghost', size: 'sm', onClick: () => {
-          if (!isReplying) { replying.add(q.id); redraw(); const t = gatesEl.querySelector('[data-id="' + CSS.escape(q.id) + '"] textarea'); if (t) t.focus(); return; }
-          if (!ta.value.trim()) { errEl.textContent = 'Write an answer first.'; return; }
-          answer('reply', ta.value.trim());
+        form.actions.map(a => Button(a.label, { variant: a.primary ? 'primary' : 'secondary', size: 'sm', onClick: () => act(a) })),
+        Button(isReplying ? 'Send reply' : 'Reply', { variant: 'ghost', size: 'sm', onClick: () => {
+          if (!isReplying) { replying.add(q.id); redraw(); const t = gatesEl.querySelector('[data-id="' + CSS.escape(q.id) + '"] textarea[aria-label^="Your reply"]'); if (t) t.focus(); return; }
+          const text = ta.value.trim(); if (!text) { errEl.textContent = 'Write a reply first.'; return; }
+          if (looksLikeKeyText(text)) { errEl.textContent = 'This looks like a key. Use the secure field instead, so it is stored as a file and never written into a message.'; return; }
+          send({ verdict: 'reply', text });
         } }),
-        Button('Discuss', { variant: 'ghost', size: 'sm', href: '#/comms/agent:' + encodeURIComponent(ceoId) + '?draft=' + encodeURIComponent('About ' + q.id + ': ') })),
-      errEl);
+        Button('Snooze', { variant: 'ghost', size: 'sm', aria: 'Ask me later', onClick: () => { snoozeMenu.hidden = !snoozeMenu.hidden; } }),
+        Button('Discuss', { variant: 'ghost', size: 'sm', href: '#/comms/agent:' + encodeURIComponent(seat) + '?draft=' + encodeURIComponent(quote + '\n\nAbout ' + q.id + ': ') })),
+      snoozeMenu, errEl);
     return card;
   }
   async function loadAnswered() {
@@ -154,7 +195,7 @@ export async function render(root, ctx) {
       fill(answeredEl, rows.length ? h('details', { class: 'hair-top', style: 'padding-top:12px' },
         h('summary', { class: 'label muted', style: 'min-height:32px' }, 'Answered today (' + rows.length + ')'),
         h('ul', { class: 'plain stack-8', style: 'margin-top:8px' }, rows.map(a => h('li', { class: 'between body-s' },
-          h('span', { class: 'strong' }, parseQuestion(a).title), h('span', { class: 'mono muted' }, String(a.answer || '').slice(0, 60) + (a.answeredAt ? ' · ' + hhmm(a.answeredAt, co.timezone) : '')))))) : null);
+          h('span', { class: 'strong' }, questionText(a).message.slice(0, 120)), h('span', { class: 'mono muted' }, String(a.answer || '').slice(0, 140) + (String(a.answer || '').length > 140 ? '…' : '') + (a.answeredAt ? ' · ' + hhmm(a.answeredAt, co.timezone) : '')))))) : null);
     } catch (e) { fill(answeredEl, errLine(e, 'Answered today')); }
   }
 
@@ -281,6 +322,104 @@ export async function render(root, ctx) {
   const nowTimer = setInterval(() => { if (document.hidden) return; if (nowData && nowData.runs.length) loadNow(); }, 5000);
   const usageTimer = setInterval(() => { if (!document.hidden) loadUsage(); }, 60000);
   return () => { offs.forEach(f => f()); stopPanels(); clearInterval(usageTimer); clearInterval(nowTimer); for (const w of watching.values()) clearTimeout(w.timer); document.removeEventListener('capheos:live', onLive); };
+}
+
+// the plain message first, dense detail under "More detail"; an old question shows its first two sentences
+export function questionText(q) {
+  if (q && q.message) return { message: String(q.message), details: q.details ? String(q.details) : '' };
+  const p = parseQuestion(q || {});
+  const src = [p.title, p.why].filter(Boolean).join('\n');
+  const first = src.split('\n')[0] || '';
+  const ss = first.replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s+(?=[A-Z("'`*\[])/);
+  let msg = ss.slice(0, 2).join(' '); if (msg.length > 400) msg = ss[0].slice(0, 399) + (ss[0].length > 399 ? '…' : '');
+  const rest = src.slice(src.indexOf(msg.replace(/…$/, '')) + msg.replace(/…$/, '').length).trim();
+  const extra = [rest, p.rec ? 'Recommendation: ' + p.rec : '', p.dflt ? 'If you do not answer: ' + p.dflt : ''].filter(Boolean).join('\n');
+  return { message: msg || q.id, details: extra };
+}
+export function looksLikeKeyText(t) {
+  return /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/.test(t) || /\b(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abp]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b/.test(t);
+}
+function snoozeUntil(k) {
+  const d = new Date();
+  if (k === 'hour') return new Date(Date.now() + 3600e3);
+  d.setDate(d.getDate() + (k === 'week' ? 7 : 1)); d.setHours(9, 0, 0, 0); return d;
+}
+function whenLabel(iso, tz) {
+  try { return new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: tz || undefined }).format(new Date(iso)); } catch (_) { return new Date(iso).toLocaleString(); }
+}
+let fieldSeq = 0;
+/* one form field -> { f, el, get?, clear?, replace?, name?, onError? }. A secret's value lives only in its input. */
+function fieldControl(q, f) {
+  const uid = 'qf-' + q.id + '-' + f.id + '-' + (++fieldSeq);
+  const help = f.help ? mdBlock(f.help, 'caption muted') : null;
+  const lab = (text, forId) => h('label', { for: forId, class: 'label strong' }, text, f.required ? null : (/optional/i.test(text || '') ? null : h('span', { class: 'caption muted' }, ' (optional)')));
+  if (f.type === 'info') return { f, el: h('div', { class: 'q-info' }, mdBlock(f.text, 'body-s')) };
+  if (f.type === 'text') {
+    const el = f.multiline ? h('textarea', { id: uid, rows: f.required ? '4' : '2', class: 'textarea', placeholder: f.placeholder || '', maxlength: f.maxLength || null }) : h('input', { id: uid, type: 'text', class: 'input', placeholder: f.placeholder || '', maxlength: f.maxLength || null });
+    const count = (f.minLength || f.maxLength) ? h('span', { class: 'caption muted' }) : null;
+    const upd = () => { if (count) count.textContent = el.value.trim().length + (f.maxLength ? ' / ' + f.maxLength : '') + ' characters' + (f.minLength ? ' (at least ' + f.minLength + ')' : ''); };
+    el.addEventListener('input', upd); upd();
+    return { f, el: h('div', { class: 'stack-6' }, lab(f.label, uid), help, el, count), get: () => el.value.trim(), clear: () => { el.value = ''; } };
+  }
+  if (f.type === 'secret') {
+    // password input (or a masked textarea for a multi-line PEM key); never autofilled, never echoed back
+    let multi = !!f.multiline;
+    const attrs = { id: uid, class: 'input secret-input', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false', 'data-lpignore': 'true', 'data-1p-ignore': 'true', 'aria-describedby': uid + '-note' };
+    const one = h('input', Object.assign({ type: 'password', name: 'q-secret-' + f.id }, attrs));
+    const many = h('textarea', Object.assign({}, attrs, { class: 'textarea secret-input secret-mask', rows: '4', placeholder: 'Paste the key (a multi-line private key is fine)' }));
+    const slot = h('div'); fill(slot, multi ? many : one);
+    let shown = false;
+    const showBtn = Button('Show', { variant: 'ghost', size: 'sm', aria: 'Show or hide the key', onClick: () => { shown = !shown; one.type = shown ? 'text' : 'password'; many.classList.toggle('secret-mask', !shown); showBtn.textContent = shown ? 'Hide' : 'Show'; } });
+    const multiBtn = Button(multi ? 'One line' : 'Multi-line key', { variant: 'ghost', size: 'sm', onClick: () => { const v = (multi ? many : one).value; multi = !multi; (multi ? many : one).value = v; one.value = multi ? '' : one.value; many.value = multi ? many.value : ''; fill(slot, multi ? many : one); multiBtn.textContent = multi ? 'One line' : 'Multi-line key'; } });
+    const replace = h('input', { type: 'checkbox', id: uid + '-replace' });
+    const nameIn = f.hinted ? h('input', { type: 'text', class: 'input mono', id: uid + '-name', value: f.name, autocomplete: 'off', spellcheck: 'false', 'aria-label': 'File name under secrets/' }) : null;
+    const note = h('span', { id: uid + '-note', class: 'caption muted' }, 'Stored on the console machine at secrets/' + f.name + ' (owner-only, mode 0600). It is never shown again and never goes into a message; ' + (q.from || 'the asker') + ' only learns where it is.');
+    if (nameIn) nameIn.addEventListener('input', () => { note.textContent = 'Stored at secrets/' + (nameIn.value.trim() || '…') + ' (owner-only, mode 0600). Never shown again, never sent in a message.'; });
+    const body = h('div', { class: 'stack-6 q-secret' }, lab(f.label, uid), f.provider ? h('span', { class: 'caption' }, 'Where to get it: ', mdBlock(f.provider, 'caption')) : null, help,
+      h('div', { class: 'row-8', style: 'align-items:flex-start;flex-wrap:nowrap' }, h('div', { style: 'flex:1;min-width:0' }, slot), showBtn, multiBtn),
+      nameIn ? h('label', { class: 'stack-4' }, h('span', { class: 'caption muted' }, 'File name under secrets/'), nameIn) : null,
+      h('label', { class: 'check', for: uid + '-replace' }, replace, 'Replace the stored key if secrets/' + f.name + ' already exists'), note);
+    const el = f.hinted ? h('details', { class: 'q-secret-hint' }, h('summary', { class: 'label' }, 'Asked for a key? Store it securely instead of pasting it'), body) : body;
+    return { f, el, get: () => { const v = (multi ? many : one).value; return v.trim() ? v : undefined; }, clear: () => { one.value = ''; many.value = ''; },
+      replace: () => replace.checked, name: nameIn ? () => nameIn.value.trim() : null,
+      onError: e => { if (e && e.status === 409) replace.parentElement.classList.add('attn'); } };
+  }
+  if (f.type === 'choice') {
+    const type = f.multi ? 'checkbox' : 'radio'; const nm = uid + '-c';
+    const boxes = (f.options || []).map(o => ({ o, input: h('input', { type, name: nm, value: o.id, checked: !f.multi && !!o.recommended }) }));
+    const other = f.allowOther ? { input: h('input', { type, name: nm, value: '__other' }), text: h('input', { type: 'text', class: 'input', style: 'flex:1;min-width:0;height:36px', placeholder: 'Something else…', 'aria-label': 'Your own answer' }) } : null;
+    if (other) other.text.addEventListener('input', () => { if (other.text.value.trim()) other.input.checked = true; });
+    return { f, el: h('fieldset', { class: 'stack-4 q-choice' }, h('legend', { class: 'label strong' }, f.label), help,
+      boxes.map(b => h('label', { class: 'check' }, b.input, b.o.label, b.o.recommended ? Tag('Recommended', { variant: 'soft' }) : null)),
+      other ? h('label', { class: 'check' }, other.input, other.text) : null),
+      get: () => {
+        const picked = boxes.filter(b => b.input.checked).map(b => b.o.id);
+        if (other && other.input.checked && other.text.value.trim()) picked.push(other.text.value.trim());
+        return f.multi ? picked : picked[0];
+      } };
+  }
+  if (f.type === 'link') {
+    let host = ''; try { host = new URL(f.url).host; } catch (_) {}
+    const done = h('input', { type: 'checkbox', id: uid });
+    return { f, el: h('div', { class: 'stack-6 q-link sunken' }, h('span', { class: 'label strong' }, f.label), h('span', { class: 'body-s' }, f.action), help,
+      h('div', { class: 'row-8', style: 'align-items:center' }, h('a', { class: 'btn btn-secondary btn-sm', href: f.url, target: '_blank', rel: 'noopener noreferrer' }, 'Open ' + (host || 'the page') + ' ↗'),
+        h('label', { class: 'check', for: uid }, done, 'I did this'))),
+      get: () => done.checked ? 'done' : undefined };
+  }
+  if (f.type === 'number') {
+    const el = h('input', { id: uid, type: 'number', class: 'input', step: 'any', min: f.min != null ? String(f.min) : null, max: f.max != null ? String(f.max) : null, inputmode: 'decimal', style: 'max-width:200px' });
+    return { f, el: h('div', { class: 'stack-6' }, lab(f.label, uid), help, h('div', { class: 'row-8', style: 'align-items:center' }, el, f.unit ? h('span', { class: 'body-s muted' }, f.unit) : null)),
+      get: () => el.value === '' ? undefined : Number(el.value) };
+  }
+  if (f.type === 'date') {
+    const el = h('input', { id: uid, type: 'date', class: 'input', min: f.min || null, max: f.max || null, style: 'max-width:220px' });
+    return { f, el: h('div', { class: 'stack-6' }, lab(f.label, uid), help, el), get: () => el.value || undefined };
+  }
+  if (f.type === 'checkbox') {
+    const el = h('input', { type: 'checkbox', id: uid });
+    return { f, el: h('div', { class: 'stack-4' }, h('label', { class: 'check', for: uid }, el, f.label), help), get: () => el.checked ? true : undefined };
+  }
+  return { f, el: h('p', { class: 'caption muted' }, 'This console cannot show a "' + f.type + '" field; use Reply.') };
 }
 
 function cap(s) { s = String(s || ''); return s.charAt(0).toUpperCase() + s.slice(1); }
