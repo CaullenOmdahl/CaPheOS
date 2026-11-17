@@ -13,6 +13,10 @@ is `docs/BACKEND.md` §6.5.
 read-only root). Windows CUA is a driver backend for a Windows target, not the environment and not a container; it is
 unused in a Linux deploy. Containerized Windows is not part of this plan.
 
+**Clarification on persistence:** §3's "ephemeral profile" is the machine's disposable home, not the identity. Identity
+profiles are persistent per §5 (its revocation list names them): the runner hydrates the profile into the environment at
+boot and commits it back at the end. The machine is disposable; the identity is not. See `docs/BACKEND.md` §6.5.
+
 ---
 
 (Plan v2, pasted by the owner on 2026-11-17: "Deployable, containerized CaPheOS with browser identity, grants, and a security seat". The draft is for independent audit; this is a faithful summary.)

@@ -157,8 +157,8 @@ target really is a Windows desktop (an x64 app under test), it is x64-only, and 
 Containerized Windows is not on the table: Windows containers need a Windows host and licence, they double the memory
 budget, and they buy nothing for browser work. If a Windows app ever has to be driven, that is a separate opt-in plugin
 with a signed risk acceptance — not the default desk.
-- **the environment**: a microVM with no host mounts, no Docker socket, an egress allowlist, an ephemeral profile,
-  PID/memory caps and a kill switch; no GPU passthrough without a signed risk acceptance (D13);
+- **the environment**: a microVM with no host mounts, no Docker socket, an egress allowlist, a disposable home, PID/
+  memory caps and a kill switch; no GPU passthrough without a signed risk acceptance (D13);
 - **the browser**: headed real Chrome with a dedicated extension-free profile per identity, launched without
   `--enable-automation`/`--headless`; a CDP attach alone does not set `navigator.webdriver`; a headless Chromium
   sidecar server-side (D3, D12);
@@ -178,6 +178,23 @@ What the backend owes it:
 
 The environment itself is not on the backend's critical path: `docs/DEPLOY.md` puts the browser sidecar in P2 and the
 desktop microVM in P3.
+
+**Persistence — three stores, deliberately separate.**
+
+| Store | Persists? | Where | Bounds |
+|---|---|---|---|
+| **the identity profile** (cookies, sign-ins) | **yes, per identity** | an encrypted profile store, hydrated into the environment at boot and committed at the end | the grant: window, expiry, revocation; 30-day idle, 90-day re-consent (D16–D18) |
+| **the task workspace** (downloads, screenshots, evidence) | yes, per task | `company/work/tasks/<id>/` | the retention policy |
+| **the desktop itself** | **no, by default** | disposable; a pre-warmed base image makes boot cheap | a long-lived machine is an explicit grant |
+
+The rule: **the machine is disposable; the identity is not.** Without that, step-in is useless — the owner would sign in
+on every task — and the three identity classes (personal, dedicated-agent, service) have nothing to describe. The
+profile store is never readable by the agent, only by the browser inside the environment; revocation deletes it; a
+snapshot never contains it in the clear; and an identity is created by step-in, never imported from the owner's own
+browser (D14).
+
+`docs/DEPLOY.md` §5 already lists persistent profiles in its revocation lists; §3's "ephemeral profile" means the
+disposable home of the machine, not the identity.
 
 ---
 
