@@ -135,7 +135,7 @@ function runConformance(dir, mod, installed) {
 /* A framework update (git pull) changes modules/<id>/ under an enabled module. When the module's source matches the
    checked-out commit exactly and every copied tool is still the copy enable placed (nobody edited it), take the update:
    re-copy the tools and record the new digest. Anything else stays a finding (a local edit, a tampered copy). */
-function refreshFromFramework(id, mod, reg) {
+function wouldRefresh(id, mod, reg) {
   if (!reg || !reg.digest || pk.digest(srcDir(id)) === reg.digest) return false;
   try {
     const cpx = require('child_process');
@@ -146,6 +146,10 @@ function refreshFromFramework(id, mod, reg) {
     const d = path.join(P.tools, path.basename(t.file));
     if (fs.existsSync(d) && reg.tools && reg.tools[t.file] && pk.sha(fs.readFileSync(d)) !== reg.tools[t.file]) return false;   // the copy was edited: report, never overwrite
   }
+  return true;
+}
+function refreshFromFramework(id, mod, reg) {
+  if (!wouldRefresh(id, mod, reg)) return false;
   const tools = {};
   for (const t of mod.tools || []) { const to = path.join(P.tools, path.basename(t.file)); fs.copyFileSync(path.join(srcDir(id), t.file), to); fs.chmodSync(to, 0o755); tools[t.file] = pk.sha(fs.readFileSync(to)); try { require('./provenance.js').wrote(to, fs.readFileSync(to), 'module.js'); } catch (_) {} }
   const st = readJson(P.state, {}) || {}; st.enabled = st.enabled || {};
@@ -154,6 +158,23 @@ function refreshFromFramework(id, mod, reg) {
   Object.assign(reg, st.enabled[id]);
   record({ op: 'refresh', id, by: 'module.js (framework update)' });
   return true;
+}
+/* Refresh pending vs drift, for the read-only duty (which never refreshes: refreshing copies files). Right after a framework
+   update the module source differs from the recorded digest until a read-write path (doctor, status, enable) refreshes it.
+   'pending' only when the refresh would take the change (wouldRefresh: source clean at HEAD, copies untouched), the files
+   are newer than the recorded baseline (refreshedAt, else at), and that was less than the grace ago; a refresh that never
+   lands, a local edit, or no baseline time is 'drift' and pages. */
+const REFRESH_GRACE_MS = 30 * 60 * 1000;
+function newestMtimeMs(dir) {
+  let m = 0;
+  const walk = d => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) walk(f); else m = Math.max(m, fs.statSync(f).mtimeMs); } };
+  try { walk(dir); } catch (_) {}
+  return m;
+}
+function refreshPending(reg, newestMs, nowMs, graceMs) {
+  const base = Date.parse((reg && (reg.refreshedAt || reg.at)) || '');
+  if (!Number.isFinite(base) || !newestMs || newestMs <= base) return 'drift';
+  return nowMs - newestMs <= (graceMs === undefined ? REFRESH_GRACE_MS : graceMs) ? 'pending' : 'drift';
 }
 function checkEnabled(id, mod, reg, opts) {
   if (!(opts && opts.readOnly)) { try { refreshFromFramework(id, mod, reg); } catch (_) {} }
@@ -167,7 +188,10 @@ function checkEnabled(id, mod, reg, opts) {
   for (const m of mod.meters || []) if (!extra.some(e => e.module === id && e.p === m.p)) f.push('enabled: meter ' + m.p + ' not registered in ' + rel(P.lockedExtra));
   const inv = [P.inventory, P.runbook, P.local].map(f => { try { return fs.readFileSync(f, 'utf8'); } catch (_) { return ''; } }).join('\n');
   for (const t of mod.tools || []) if (!inv.includes('company/tools/' + path.basename(t.file))) f.push('enabled: tool ' + path.basename(t.file) + ' has no INVENTORY/runbook row');
-  if (reg.digest && pk.digest(srcDir(id)) !== reg.digest) f.push('enabled: modules/' + id + '/ changed since enable (disable and enable again to take the change)');
+  if (reg.digest && pk.digest(srcDir(id)) !== reg.digest) {
+    if (opts && opts.readOnly && opts.waiting && wouldRefresh(id, mod, reg) && refreshPending(reg, newestMtimeMs(srcDir(id)), Date.now()) === 'pending') opts.waiting.push(id);
+    else f.push('enabled: modules/' + id + '/ changed since enable (disable and enable again to take the change)');
+  }
   return f;
 }
 function status(id, seen) {
@@ -193,14 +217,16 @@ function doctor(arg) {
 /* duty (docs/DUTIES.md): read only. Every ENABLED module's static checks, requirements and enabled state (tools placed and
    unchanged, meters registered, rows present, source unchanged since enable), with no framework refresh (it copies
    files) and no conformance test (it runs the module's code). Module ids and finding counts only. */
-function dutyResult() {
+function dutyResult(waitingOut) {
   const bad = [];
   for (const id of mods.enabled()) {
     const reg = mods.state().enabled[id]; const dir = srcDir(id);
     if (!fs.existsSync(path.join(dir, 'module.json'))) { bad.push({ id, n: 1 }); continue; }
     const { mod, findings } = checkStatic(dir);
-    if (mod) { findings.push(...pk.checkRequires(mod, new Set(['module:' + id]))); findings.push(...checkEnabled(id, mod, reg, { readOnly: true })); }
+    const waiting = [];
+    if (mod) { findings.push(...pk.checkRequires(mod, new Set(['module:' + id]))); findings.push(...checkEnabled(id, mod, reg, { readOnly: true, waiting })); }
     if (findings.length) bad.push({ id, n: findings.length });
+    else if (waiting.length && Array.isArray(waitingOut)) waitingOut.push(id);
   }
   if (!bad.length) return null;
   const ids = bad.map(b => b.id).sort();
@@ -438,6 +464,12 @@ function selftest() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'module-selftest-'));
   let fails = 0, n = 0;
   const t = (name, ok, extra) => { n++; if (!ok) { fails++; console.log('FAIL ' + name + (extra !== undefined ? ' :: ' + JSON.stringify(extra).slice(0, 700) : '')); } else console.log('ok   ' + name); };
+  const T0 = Date.parse('2030-01-01T08:00:00Z'), reg0 = { refreshedAt: '2030-01-01T07:00:00Z' };
+  t('refresh pending: files newer than the baseline, inside the grace', refreshPending(reg0, T0, T0 + 60e3) === 'pending');
+  t('drift: files not newer than the baseline', refreshPending(reg0, T0 - 7200e3, T0) === 'drift');
+  t('drift: a refresh that never lands pages after the grace', refreshPending(reg0, T0, T0 + 31 * 60e3) === 'drift');
+  t('drift: no baseline time is never excused', refreshPending({}, T0, T0) === 'drift');
+  t('pending falls back to the enable time when never refreshed', refreshPending({ at: '2030-01-01T07:00:00Z' }, T0, T0) === 'pending');
   const here = path.resolve(__dirname, '..', '..');
   try {
     const mk = (...p) => { const d = path.join(tmp, ...p); fs.mkdirSync(d, { recursive: true }); return d; };
@@ -536,6 +568,18 @@ function selftest() {
     r = run('doctor', 'demo');
     t('tampered tool: doctor exit 1', r.code === 1 && /changed since enable/.test(r.out), r.out);
     fs.writeFileSync(path.join(tmp, 'company', 'tools', 'demo-mod.js'), fs.readFileSync(path.join(md, 'tools', 'demo-mod.js')));
+    // the duty during a framework update: committed module source not refreshed yet is WAITING (no page); a local edit pages
+    {
+      const duty = () => spawnSync(process.execPath, [path.join(tmp, 'company', 'tools', 'module.js'), '--duty'], { cwd: tmp, encoding: 'utf8', env, timeout: 60000 });
+      fs.appendFileSync(path.join(md, 'README.md'), 'update\n'); g('add', '-A', 'modules'); g('commit', '-qm', 'framework update');
+      let d = duty();
+      t('duty: a framework update not refreshed yet is WAITING (refresh due), exit 0', d.status === 0 && /WAITING \(refresh due\): demo/.test(d.stdout), d.stdout + d.stderr);
+      fs.appendFileSync(path.join(md, 'README.md'), 'local edit\n');
+      d = duty();
+      t('duty: a local edit in the module source is not excused as a pending refresh (exit 1)', d.status === 1 && /demo/.test(d.stdout), d.stdout + d.stderr);
+      g('checkout', '--', 'modules'); run('doctor', 'demo');
+      t('duty: after the refresh lands, nothing is waiting or due', (d = duty()).status === 0 && !d.stdout.trim(), d.stdout);
+    }
     // a module that requires demo; disable demo refused while it is enabled
     const m2 = mk('modules', 'dep'); mk('modules', 'dep', 'conformance');
     fs.writeFileSync(path.join(m2, 'module.json'), JSON.stringify(Object.assign({}, mj, { id: 'dep', title: 'Dep', tools: [], meters: [], limits: [], order: 1, requires: { modules: ['demo'] } })));
@@ -564,7 +608,7 @@ function selftest() {
   return fails ? 1 : 0;
 }
 
-module.exports = { status, doctor, list, gates, checkStatic, moduleSchema, LAYERS, dutyResult };
+module.exports = { status, doctor, list, gates, checkStatic, moduleSchema, LAYERS, dutyResult, refreshPending };
 if (require.main !== module) return;
 
 const A = (() => { const o = { _: [] }; const a = process.argv.slice(2); for (let i = 0; i < a.length; i++) { if (a[i].startsWith('--')) { const k = a[i].slice(2); o[k] = a[i + 1] !== undefined && !a[i + 1].startsWith('--') ? a[++i] : true; } else o._.push(a[i]); } return o; })();
@@ -574,7 +618,7 @@ const emit = res => {
   else for (const m of res.out.modules) { console.log(m.status.toUpperCase().padEnd(11) + ' ' + m.id + (m.enabled ? '  (enabled)' : '')); for (const f of m.findings || []) console.log('    ' + f); }
   process.exit(res.code);
 };
-if (A.duty && !cmd) { const r = dutyResult(); if (r) console.log(JSON.stringify(r)); process.exit(r ? 1 : 0); }
+if (A.duty && !cmd) { const w = []; const r = dutyResult(w); if (r) console.log(JSON.stringify(r)); else if (w.length) console.log('WAITING (refresh due): ' + w.join(', ')); process.exit(r ? 1 : 0); }
 if (cmd === 'selftest' || A.selftest) process.exit(selftest());
 if (cmd === 'list') { const rows = list(); if (A.json) console.log(JSON.stringify(rows, null, 1)); else { if (!rows.length) console.log('no modules'); for (const x of rows) console.log((x.enabled ? 'enabled ' : 'off     ') + ' ' + x.id.padEnd(14) + ' ' + String(x.layer || '').padEnd(10) + ' ' + (x.title || '')); } process.exit(0); }
 if (cmd === 'status') { if (!A._[1]) { console.error('status <id>'); process.exit(2); } const s = status(A._[1]); if (A.json) console.log(JSON.stringify(s, null, 1)); else { console.log(s.status); for (const f of s.findings || []) console.log('  ' + f); } process.exit(0); }
