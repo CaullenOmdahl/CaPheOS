@@ -3,7 +3,8 @@
 **Status:** design, for approval. Nothing here is implemented.
 **Replaces:** the StarNetOS sidecar as CaPheOS's runtime.
 **Related:** `docs/CONSOLE-API.md` (the frozen frontend contract), `docs/FEATURES.md` (what we are *not* rebuilding),
-`docs/MODULE-SYSTEM.md` (how tools and integrations are added), `docs/PORTING.md` (house rules for ported code).
+`docs/MODULE-SYSTEM.md` (how tools and integrations are added), `docs/PORTING.md` (house rules for ported code),
+`docs/STYLE.md` (plain language: the rule for every name, comment and error).
 
 ---
 
@@ -55,8 +56,8 @@ by `company/state/` and `company/work/`, which is where the rest of CaPheOS alre
 
 ## 3. The shape
 
-**One process.** The console server and the runtime are the same Node program: no proxy, no second port, no second
-token, no `.starnet-data`. The console's existing 70 routes keep their paths; the runtime adds its own.
+**One process (decided).** The console server and the runtime are the same Node program: no proxy, no second port, no
+second token, no `.starnet-data`. The console's existing 70 routes keep their paths; the runtime adds its own.
 
 ```
 ┌──────────────────────────── server (one process) ───────────────────────────┐
@@ -134,6 +135,28 @@ are genuinely about governance.
 - **Failure is explicit:** a provider refusal, a budget hold, a missing tool and a timeout each end the run with a
   distinct status the console already knows how to show.
 
+### 6.5 Desktop and browser are a plugin, not core
+
+StarNet's browser is the **host's own Chrome** driven over CDP, and its computer control is **Windows CUA** on the
+host desktop. Both are retired with StarNet: they hand an agent the owner's real machine and their real sessions.
+
+CaPheOS's browser is a **containerized desktop**: a small disposable environment — container or VM — with a virtual
+display, its own browser, and its own session storage. The agent drives it through a small action interface
+(screenshot, click, type, navigate, read the page or accessibility tree); the owner can watch the same screen from the
+console and step in when asked. Sign-ins live inside that environment, never on the owner's machine.
+
+It ships as a **plugin** (`desktop`), not in the core:
+
+- the core only knows "a tool call ran and returned evidence";
+- the plugin owns the container lifecycle, the virtual display, the browser profile and the screenshots;
+- capabilities are explicit: network from inside the environment only, downloads land in the task's work folder, a
+  kill switch, and an owner-visible session;
+- a run gets a fresh environment per task by default; a long-lived one is a deliberate grant.
+
+**Open item:** the detailed design for this (the "Dots-like" containerized desktop) is not in this repo — I searched
+`docs/`, the git history, the StarnetOS checkout and `~/Documents` and did not find it. Before implementing, it gets its
+own `docs/DESKTOP.md`; §6.5 is the shape, not the spec.
+
 ---
 
 ## 7. Keep, port, rewrite, drop
@@ -141,13 +164,58 @@ are genuinely about governance.
 | Disposition | What |
 |---|---|
 | **Keep as-is** | the console UI and its 70 routes; the company tools; the dispatcher; approvals; budgets; governance; meetings; commitments; intake; ledger; core modules; skills |
-| **Port with attribution** | StarNet's provider adapters (`anthropic`, `openai-compatible`, `openrouter`, `gemini`, `ollama-native`, `claude-cli`, `codex`), the MCP client and transports, the streaming event vocabulary. MIT/BSD with `NOTICE`; no StarNet branding |
+| **Vendor with attribution** | StarNet's provider adapters (`anthropic`, `openai-compatible`, `openrouter`, `gemini`, `ollama-native`, `claude-cli`, `codex`), the MCP client and transports, the streaming event vocabulary. MIT/BSD with `NOTICE`; no StarNet branding; renamed to our vocabulary (§7.2) |
 | **Rewrite** | the run loop (today it lives inside StarNet and CaPheOS only drives it); run/transcript storage; schedules (→ the dispatcher); seat identity (→ files) |
 | **Rewrite small** | the chat run system (`console/chat-runs.js`) against our own runs instead of StarNet's observer feed |
-| **Drop** | every game system (floor, props, XP, levels, trophies, battle pass, quests as a StarNet concept), the app builder, channels, voice, browser step-in, computer control, skill market, community maps, the station proxy, `lib/station.js`, `station-crew.js`, `station-view.js`, `.starnet-data` |
+| **Drop** | every game system (floor, props, XP, levels, trophies, battle pass, quests as a StarNet concept), the app builder, channels, voice, StarNet's host-Chrome browser and Windows CUA (replaced by the containerized desktop plugin, §6.5), skill market, community maps, the station proxy, `lib/station.js`, `station-crew.js`, `station-view.js`, `.starnet-data` |
 
 Quests are the one concept that is dropped as a *word* and kept as a *thing*: CaPheOS's dispatch, handoffs,
 competence and evidence all depend on "a unit of work with steps that closes on proof". That is a task.
+
+### 7.1 The core is small; everything else is a plugin
+
+The core is what cannot be removed and still be this product:
+
+| Core | Why it cannot be a plugin |
+|---|---|
+| HTTP face (console API, runtime API, SSE) | it is the frontend's contract |
+| run loop (one turn: model call → tool call → result) | it is the backend's reason to exist |
+| provider **interface** (the contract, not any adapter) | the run loop calls it |
+| tool host (register, gate, route consent, execute) | the loop calls it |
+| task store + transcript store | the record is the company's memory |
+| approvals and questions routing | a run that cannot ask is not trustworthy |
+| budget enforcement | the same |
+| scheduler (the dispatch tick) | the same |
+
+Everything else is a plugin: **shipped with the base**, mounted by configuration, removable without touching the core:
+
+| Plugin family | Examples |
+|---|---|
+| provider adapters | anthropic, openai-compatible, openrouter, gemini, ollama, claude-cli, codex |
+| tool families | shell, filesystem, web, notebook, skills, desktop/browser, MCP |
+| integrations | connectors, OAuth sign-ins, service keys |
+| seats | role templates, personas, routines |
+| surfaces | console panels and pages |
+| desktop | the containerized desktop (§6.5) |
+| units | the portable modules of `docs/MODULE-SYSTEM.md` — a unit is a plugin with a manifest |
+
+A plugin shipped with the base is enabled in the default composition. A capability the owner adds is a unit. Both are
+the same mechanism, so there is one way to extend the backend and one way to remove something.
+
+**The test:** the backend must boot, serve the console and run one turn with the core plus one provider adapter. Every
+other plugin is mounted from configuration. If removing something breaks boot, it was core and should be named as core
+— not left as a plugin.
+
+### 7.2 How we vendor StarNet
+
+Vendored code is a dependency we own, not an import we trust:
+
+- lives in `vendor/starnet/<name>/` with `LICENSE`, `NOTICE` and `PROVENANCE` (the source commit);
+- behaviour is kept; every identifier, string, log line, error and doc comment is renamed to our vocabulary
+  (§5, `docs/STYLE.md`);
+- no StarNet branding, no station names, no game terms — a vendored file reads as if it were written here;
+- mounted as a plugin, never imported by the core;
+- a piece that cannot be detached from StarNet's own globals is **refused**: it is a port, not a vendor.
 
 ---
 
@@ -165,26 +233,35 @@ competence and evidence all depend on "a unit of work with steps that closes on 
 During P1–P2 the old station remains available and the console can talk to either — a switch, not a fork. From P3 it
 cannot come back.
 
+The containerized desktop (§6.5) is not on this path: it starts after P3, once the backend serves the console without
+StarNet, and arrives as a plugin on the same mechanism as every other capability.
+
 ---
 
 ## 9. Non-goals
 
-We are not rebuilding StarNet. No app builder, no channels, no voice, no browser/computer control, no skill market, no
-games, no second UI. Multi-tenant hosting is out of scope for v1. The unit standard is how new capabilities arrive, but
-the backend must be useful with zero units installed.
+We are not rebuilding StarNet. No app builder, no channels, no voice, no skill market, no games, no second UI.
+StarNet's browser-on-the-host and Windows CUA are not ported; browser and desktop control arrive later as the
+containerized plugin (§6.5), not as core. Multi-tenant hosting is out of scope for v1. The unit standard is how new
+capabilities arrive, but the backend must be useful with zero units installed.
 
 ---
 
-## 10. Decisions for the owner
+## 10. Decisions
 
-1. **One process or two?** Recommendation: one (console + runtime). The two-process split only existed because StarNet
-   was a separate product.
-2. **Is a task the old quest, or a thin layer over commitments?** Recommendation: a task is the work item (steps,
-   evidence, closer). Commitments stay obligations (ack/due/escalate). A task may raise a commitment; a commitment may
-   name the task that satisfies it.
-3. **Provider adapters: vendor StarNet's, or write fresh?** Recommendation: vendor with attribution — they carry years
-   of provider quirks, and they are the highest-value reuse in the whole backend.
-4. **Names.** `server/` (the process), `runtime/` (the services and run loop), `company/` (business data and tools).
-   Open to other names.
-5. **How much of StarNet's tool suite do we port for runs?** Recommendation: shell, filesystem, web, MCP, skills,
-   notebook. Not browser/computer control — that is game-adjacent surface we do not need yet.
+**Taken** (owner, 2026-11-18):
+
+| # | Decision |
+|---|---|
+| 1 | **One process.** The console HTTP face and the runtime are one program. |
+| 2 | **Vendor StarNet with attribution**, abstract each vendored piece into a plugin, ship it with the base, and rename its vocabulary to ours (§7.2). |
+| 3 | **Plain language is binding.** ELI5 naming, comments, errors and docs; one noun per thing; `docs/STYLE.md`. |
+| 4 | **Desktop/browser is a plugin** on a different framework from StarNet: a containerized desktop (§6.5). |
+| 5 | **Core stays minimum.** Anything that can be removed is a plugin (§7.1). |
+| 6 | **Naming for the tree:** `server/` (the process), `runtime/` (services and run loop), `company/` (business data and tools), `vendor/` (vendored code). Cheap now, expensive later. |
+
+**Open:**
+
+| # | Question | Recommendation |
+|---|---|---|
+| 7 | Is a task the old quest, or a thin layer over commitments? | task = the work item (steps, evidence, closer); commitment = the obligation (ack, due, escalate). A task may raise a commitment. |
