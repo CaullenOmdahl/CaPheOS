@@ -16,6 +16,12 @@ A refusal is **information, not failure**: record it, hand it to someone who can
 **Never reword a prompt to get around a T3 refusal.** That is circumvention, not escalation. A T3 stops the work on
 that request. The company may solve a different, legitimate problem another way, and the CEO says exactly which.
 
+**A refused scheduled run (the pacer, company/tools/pacer.js).** A provider's filter can refuse an ordinary routine
+run, for example one that printed a credential file. A routine's FIRST refusal blocks that provider for that routine for
+2 hours, and that one run is re-run once on the routine's next model, its prompt unchanged (a retry, not a rewording).
+A SECOND refusal of the same routine within 24 hours is a T3: the provider is blocked for that routine for 24 hours,
+nothing is re-run, and the CEO handles it as above. Nobody edits a routine's prompt to get past a refusal.
+
 ## How an agent reports a block
 
 ```

@@ -402,7 +402,7 @@ test('apply in live mode: POST /api/cron/update {id, patch:{provider, model}}, r
   assert.equal(r2.rows.find(x => x.id === 'j-brief').action, 'stay');
 });
 
-test('a refused routine run blocks that provider for that routine for 24h and, when re-fire is turned on, is re-fired once on its new model', async () => {
+test('a routine\'s first refusal blocks that provider for that routine for 2 h and is re-run once, unchanged, on its new model', async () => {
   const jobs = crewJobs();
   Object.assign(jobs.find(j => j.id === 'j-prod'), { provider: 'claude-cli', model: 'claude-sonnet-5-5', wire: { provider: 'claude-cli', model: 'claude-sonnet-5-5' }, lastRunAt: new Date(T0 - 20 * MIN).toISOString() });
   const runs = [{ runId: 'r-refused', cronJobId: 'j-prod', agentId: 'drafter', provider: 'claude-cli', model: 'claude-sonnet-5-5', outcome: 'refused', failureCode: 'content_policy_blocked', reason: 'error', startedAt: T0 - 20 * MIN, endedAt: T0 - 10 * MIN }];
@@ -412,7 +412,7 @@ test('a refused routine run blocks that provider for that routine for 24h and, w
   s.routines['j-prod'] = { lastSwitchAt: T0 - 15 * MIN };   // urgent: the hourly limit does not hold a refusal
   const m = await h.p.measure(s, jobs);
   assert.equal(s.blocks.length, 1);
-  assert.equal(s.blocks[0].until, T0 - 10 * MIN + 24 * HOUR);
+  assert.equal(s.blocks[0].until, T0 - 10 * MIN + 2 * HOUR);
   const pl = h.p.plan(m, s, jobs);
   const row = pl.rows.find(x => x.id === 'j-prod');
   assert.equal(row.to.provider, 'custom');           // Claude is open but blocked for this routine
@@ -706,19 +706,29 @@ test('fix 6: the third slot is lent only when the extra loop runs on a subscript
   assert.equal(await run(['engineer', 'treasurer', 'designer', 'cand-qa-lee'], 10), 0);
 });
 
-test('fix 7: re-fire after a refusal is off by default (ESCALATION_POLICY T3), and never fires a paused routine', async () => {
-  const mk = (enabled, policy) => {
+test('a second refusal of the same routine within 24 h: a 24 h block and no re-run (ESCALATION_POLICY T3); re-run can be turned off; a paused routine is never re-run', async () => {
+  const mk = (enabled, policy, runs) => {
     const jobs = crewJobs();
     Object.assign(jobs.find(j => j.id === 'j-prod'), { enabled, provider: 'claude-cli', model: 'claude-sonnet-5-5', wire: { provider: 'claude-cli', model: 'claude-sonnet-5-5' }, lastRunAt: new Date(T0 - 20 * MIN).toISOString() });
-    const runs = [{ runId: 'r-ref', cronJobId: 'j-prod', provider: 'claude-cli', model: 'claude-sonnet-5-5', outcome: 'refused', failureCode: 'content_policy_blocked', startedAt: T0 - 20 * MIN, endedAt: T0 - 10 * MIN }];
+    runs = runs || [{ runId: 'r-ref', cronJobId: 'j-prod', provider: 'claude-cli', model: 'claude-sonnet-5-5', outcome: 'refused', failureCode: 'content_policy_blocked', startedAt: T0 - 20 * MIN, endedAt: T0 - 10 * MIN }];
     const st = station(jobs);
     return { st, jobs, h: make(fixture({ feedPct: 5, runs, policy }), st) };
   };
-  let x = mk(true, { mode: 'live' });
+  // two refusals of one routine 5 h apart: the first gets 2 h (long expired), the second 24 h and no re-run
+  let x = mk(true, { mode: 'live' }, [
+    { runId: 'r-ref-a', cronJobId: 'j-prod', provider: 'claude-cli', model: 'claude-sonnet-5-5', outcome: 'refused', failureCode: 'content_policy_blocked', startedAt: T0 - 5 * HOUR - 10 * MIN, endedAt: T0 - 5 * HOUR },
+    { runId: 'r-ref-b', cronJobId: 'j-prod', provider: 'claude-cli', model: 'claude-sonnet-5-5', outcome: 'refused', failureCode: 'content_policy_blocked', startedAt: T0 - 20 * MIN, endedAt: T0 - 10 * MIN }]);
   await tick(x.h, x.st.copy);
-  assert.deepEqual(x.st.fires, []);
-  assert.equal(readState({ root: x.h.p.root }).blocks.length, 1);   // the 24-hour block still routes it elsewhere
-  x = mk(false, { mode: 'live', routing: { refireWithinMin: 120 } });
+  const b = readState({ root: x.h.p.root }).blocks;
+  assert.equal(b.length, 1, JSON.stringify(b)); assert.equal(b[0].runId, 'r-ref-b'); assert.equal(b[0].until, T0 - 10 * MIN + 24 * HOUR); assert.equal(b[0].repeat, true);
+  assert.deepEqual(x.st.fires, [], 'a repeat refusal is never re-run');
+  assert.ok(x.h.lines.some(l => /second refusal within 24 h: not re-run/.test(l)), x.h.lines.join('\n'));
+  // re-run turned off by policy: blocked 2 h, not re-run
+  x = mk(true, { mode: 'live', routing: { refireWithinMin: 0 } });
+  await tick(x.h, x.st.copy);
+  assert.deepEqual(x.st.fires, []); assert.equal(readState({ root: x.h.p.root }).blocks[0].until, T0 - 10 * MIN + 2 * HOUR);
+  // a paused routine is never re-run
+  x = mk(false, { mode: 'live' });
   const s = x.h.p.loadState(); const m = await x.h.p.measure(s, x.st.copy); const pl = x.h.p.plan(m, s, x.st.copy);
   assert.match(pl.refires[0].status, /^skip: the routine is paused/);
   await x.h.p.apply(m, pl, s, x.st.copy);

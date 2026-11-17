@@ -40,6 +40,10 @@
  *     recorder, period 5, grace 15", a timer "not on the service register … no new egress", a systemd start limit). The
  *     owner is a busy non-technical person; the ask composer now refuses crew-scope asks and unplain ones
  *     (company/tools/lib/owner-scope.js), and every run carries the rule.
+ * 11. Credentials (v11): an agent that inspected a connector's credential files (cat with redaction, listing the CLI's
+ *     config folder, session tokens) had two runs refused by the model provider's safety filter. A connector is checked
+ *     through its own verify command (company/connectors/<id>.json `verify`) and its exit code; a credential file is
+ *     never read or printed, which keeps keys out of transcripts and avoids the refusal.
  *  3. Short waits. The station reclaims a routine run that shows no progress for 8 minutes (CRON_HEARTBEAT_STALE_MS
  *     480000), and a tool call in progress does not count, so one long shell_bg_wait loses the run's final reply.
  *
@@ -63,7 +67,7 @@ const path = require('path');
 const call = (...a) => require('./station-crew.js').call(...a);   // loaded on first use, so the selftest needs no token
 const co = require('./lib/company');
 const ROOT = co.ROOT;
-const VERSION = 'v10';
+const VERSION = 'v11';
 const START = '[HOUSE RULES FOR SCHEDULED RUNS ';
 const END = '[END HOUSE RULES]';
 const BLOCK = START + VERSION + ']\n' + [
@@ -76,6 +80,7 @@ const BLOCK = START + VERSION + ']\n' + [
   '- Never wait inside a run for more than about 2 minutes in all (sleep, shell_bg_wait, a polling loop) to reach a wall-clock time. A waiting run holds your seat, blocks lanes and station restarts, and does no work; the station\'s sleep refuses more than 120 s. To act at a later time, record a commitment with a due time (node company/tools/commitments.js create --title "..." --key <key> --owner <you> --due <ISO time>) and end the run: the commitments duty wakes you then. For continuous recording or watching, use a background service (node company/tools/service.js propose).',
   '- Never call shell_bg_wait with timeoutMs above 240000. The station stops a run that shows no progress for 8 minutes, and the run loses its final reply. Wait in short steps; if a job needs longer than this run has, leave it writing to a log under scratch/, write a handoff that names the log, and end the run.',
   '- Use sudo only for the commands the gate allows: the company\'s docker use and read-only host diagnostics. The gate runs them through a broker automatically, so `sudo docker ...` and `sudo ufw status` work as before, but there is no general root: `sudo cat`, `sudo curl`, arbitrary files and dangerous docker flags are refused. Run anything else without sudo, or ask the risk owner to add it (company/work/security/sudo-gate.md).',
+  '- Check whether a connector or key works only through its own check: the connector\'s verify command in company/connectors/<id>.json (its exit code), or the tool that uses the key. Never read, cat, list, grep or print a credential file or folder (secrets/, the station\'s .secrets/, a CLI\'s config or session folder such as ~/.config/<tool>/), not even redacted: it puts keys in transcripts, and the model provider\'s filter may refuse the whole run.',
   '- Record a decision only with node company/tools/decision.js add --by <your name> --text "..." --why "...". Never edit company/work/decisions.md by hand, not even your own entry minutes later: to correct one run decision.js amend <id-or-stamp>, to take one back decision.js withdraw <id-or-stamp> (both with --by and --why; ids: decision.js list). The record is grow-only and an in-place edit is flagged as a rewrite.',
   '- Install a Python or Node package only with node company/tools/deps.js add <python|node> <package> --why "..." --by <your name>; its CLIs are on your PATH (company/env/bin) or run with deps.js run <bin>. Never pip install, npm install -g, pipx or a --user install by hand, and never make your own venv for a tool: an ad hoc install is unpinned, unchecked and gone after a rebuild, and the deps duty reports it to the risk owner. A system package (apt and the like) is the owner\'s: deps.js asks them.',
   '- What you may change on your own, what you propose for review, and what is locked: company/work/people/LATITUDE.md. Your own section above, if you have one, is your notes to yourself, changed only with node company/tools/my-section.js; where it differs from these rules or your standing corrections, these win.',

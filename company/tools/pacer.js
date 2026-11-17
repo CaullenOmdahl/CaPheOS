@@ -101,7 +101,7 @@ const DEFAULTS = {
   // url '' = from the company's MiniMax endpoint (company.json providers.minimax, lib/minimax-endpoint.js)
   minimax: { url: '', modelName: 'general', pollEveryMin: 10, staleAfterMin: 45, fiveHourCloseBelowLeftPct: 20 },
   emergency: { ceilingPct: 90, maxHours: 12, allowedBy: ['ceo', 'risk'], autoOnSerious: true, autoHours: 6 },
-  routing: { switchAtMostEveryMin: 60, maxOntoSubscriptionPerHour: 2, refusalBlockHours: 24, refireWithinMin: 0, blockOutcomes: ['refused'], blockFailureCodes: ['content_policy_blocked'] },
+  routing: { switchAtMostEveryMin: 60, maxOntoSubscriptionPerHour: 2, refusalBlockHours: 24, refusalFirstBlockHours: 2, refusalRepeatWithinHours: 24, refireWithinMin: 120, blockOutcomes: ['refused'], blockFailureCodes: ['content_policy_blocked'] },
   deepseekRail: { holdAtPct: 85, pauseScheduledAtPct: 90, resumeBelowPct: 80, projectFromHours: 3, overflowToMiniMax: true },
   // DeepSeek is prepaid: when the balance runs out every call answers 402 "Insufficient Balance" and every routine on
   // it stops. The pacer asks DeepSeek's balance endpoint whether calls are possible (is_available only: no amount is
@@ -204,9 +204,11 @@ function loadPolicy(root, override) {
   p.emergency.autoHours = Math.min(p.emergency.maxHours, numOr(p.emergency.autoHours, 6, 0, 12));
   if (!Array.isArray(p.emergency.allowedBy)) p.emergency.allowedBy = DEFAULTS.emergency.allowedBy.slice();
   p.routing.switchAtMostEveryMin = numOr(p.routing.switchAtMostEveryMin, 60, 0, 24 * 60);
-  p.routing.refusalBlockHours = numOr(p.routing.refusalBlockHours, 24, 0, 24 * 7);
+  p.routing.refusalBlockHours = numOr(p.routing.refusalBlockHours, 24, 0, 24 * 7);   // a REPEAT refusal (2+ in refusalRepeatWithinHours)
+  p.routing.refusalFirstBlockHours = numOr(p.routing.refusalFirstBlockHours, 2, 0, 24 * 7);   // a routine's first refusal
+  p.routing.refusalRepeatWithinHours = numOr(p.routing.refusalRepeatWithinHours, 24, 1, 24 * 7);
   p.routing.maxOntoSubscriptionPerHour = numOr(p.routing.maxOntoSubscriptionPerHour, 2, 0, 100);   // 0 = no ramp limit
-  p.routing.refireWithinMin = numOr(p.routing.refireWithinMin, 0, 0, 24 * 60);   // 0 = never re-fire (company/ESCALATION_POLICY.md T3)
+  p.routing.refireWithinMin = numOr(p.routing.refireWithinMin, 120, 0, 24 * 60);   // a FIRST refusal is re-run once, unchanged, on the next entry; 0 = never (company/ESCALATION_POLICY.md T3)
   for (const k of ['blockOutcomes', 'blockFailureCodes']) if (!Array.isArray(p.routing[k])) p.routing[k] = DEFAULTS.routing[k].slice();
   p.deepseekRail.holdAtPct = numOr(p.deepseekRail.holdAtPct, 85, 1, 100);
   p.deepseekRail.pauseScheduledAtPct = numOr(p.deepseekRail.pauseScheduledAtPct, 90, 1, 100);   // 100 = never pause
@@ -808,15 +810,22 @@ function makePacer(o) {
 
     // events from the run records
     const ev = scanRuns(t);
+    // A routine's FIRST refusal (a filter can refuse an ordinary run) blocks that provider for that routine for
+    // refusalFirstBlockHours and re-runs that one run once, prompt unchanged, on its next entry. A second refusal of the
+    // same routine within refusalRepeatWithinHours is a pattern: refusalBlockHours, no re-run, and the CEO handles it (T3).
+    st.refusalLog = (st.refusalLog || []).filter(x => x && t - x.at < policy.routing.refusalRepeatWithinHours * HOUR);
     for (const e of ev.refusals) {
       if (!e.runId || st.handled[e.runId]) continue;
       st.handled[e.runId] = t;
-      const until = e.endedAt + policy.routing.refusalBlockHours * HOUR;
+      const prior = st.refusalLog.filter(x => x.routineId === e.routineId && x.runId !== e.runId && Math.abs(e.endedAt - x.at) < policy.routing.refusalRepeatWithinHours * HOUR).length;
+      st.refusalLog.push({ routineId: e.routineId, runId: e.runId, at: e.endedAt });
+      const repeat = prior >= 1;
+      const until = e.endedAt + (repeat ? policy.routing.refusalBlockHours : policy.routing.refusalFirstBlockHours) * HOUR;
       if (until <= t) continue;
-      st.blocks.push({ routineId: e.routineId, name: nameOf(e.routineId), provider: e.provider, model: e.model, runId: e.runId, code: e.code, at: e.endedAt, until });
-      const fresh = t - e.endedAt <= policy.routing.refireWithinMin * MIN;
+      st.blocks.push({ routineId: e.routineId, name: nameOf(e.routineId), provider: e.provider, model: e.model, runId: e.runId, code: e.code, at: e.endedAt, until, repeat });
+      const fresh = !repeat && t - e.endedAt <= policy.routing.refireWithinMin * MIN;
       if (fresh) st.pendingRefires.push({ runId: e.runId, routineId: e.routineId, provider: e.provider, endedAt: e.endedAt });
-      change('BLOCK ' + (NAMES[e.provider] || e.provider) + ' for "' + nameOf(e.routineId) + '" until ' + when(until) + ': its run at ' + hm(e.endedAt) + ' on ' + e.model + ' ended ' + e.code + (fresh ? (live ? '; it will be re-fired once on its new model' : '; live mode would re-fire it once on its new model') : ''));
+      change('BLOCK ' + (NAMES[e.provider] || e.provider) + ' for "' + nameOf(e.routineId) + '" until ' + when(until) + ': its run at ' + hm(e.endedAt) + ' on ' + e.model + ' ended ' + e.code + (repeat ? ' (a second refusal within ' + policy.routing.refusalRepeatWithinHours + ' h: not re-run; the CEO handles it, ESCALATION_POLICY T3)' : '') + (fresh ? (live ? '; it will be re-fired once on its new model' : '; live mode would re-fire it once on its new model') : ''));
       journal('block', { routine: nameOf(e.routineId), routineId: e.routineId, provider: e.provider, model: e.model, runId: e.runId, code: e.code, until: new Date(until).toISOString() });
     }
     const limitClosure = (key, list, untilOf) => {
@@ -1501,7 +1510,7 @@ function makePacer(o) {
     const out = [];
     const k = m.knobs || {};
     if (k.maxUnpricedTokens === 0) out.push('MiniMax runs have no per-run token ceiling (station setting maxUnpricedTokens is 0 in .starnet-data/workspaces/runtime.knobs.json), and MiniMax bills Credits once the plan runs out: set a ceiling of about 6–8M tokens first');
-    if (!(policy.routing.refireWithinMin > 0)) out.push('a refused routine is not re-fired (routing.refireWithinMin is 0, per company/ESCALATION_POLICY.md T3); its provider is still blocked for that routine for ' + policy.routing.refusalBlockHours + ' h. the CEO rules whether to turn re-fire on');
+    if (!(policy.routing.refireWithinMin > 0)) out.push('a refused routine is not re-fired (routing.refireWithinMin is 0); its provider is blocked for that routine for ' + policy.routing.refusalFirstBlockHours + ' h after a first refusal, ' + policy.routing.refusalBlockHours + ' h after a repeat');
     return out;
   }
   function planText(m, pl) {

@@ -1,7 +1,7 @@
 {
  "_doc": "AI usage pacing numbers. Owned by the finance seat (co.seatFor('finance')); read by company/tools/pacer.js on every dispatcher tick. Copied to company/work/finance/pacing-policy.json at founding. The rule: lean into the flat-fee subscriptions, but each subscription with a weekly limit may use at most dailyFraction of that limit per day, counted from the start of its own weekly window, with unused share carried forward within the week: on day k the week's used % may not pass k x 100 x dailyFraction x shareOfAccount - marginPct ('today's line'). Routines get a subscription only while its meter is under today's line; once closed, it reopens only reopenBandPct under the line, so a meter hovering at the line does not flip routines back and forth. The routing table (which routine may use which model) is in company/model-policy.json 'routing', kept by the people seat.",
  "mode": "shadow",
- "_mode": "shadow = measure, plan, log and report (company/work/finance/ai-usage.md), change nothing on the station (the one exception: it lifts a rail pause it made itself while live). live = also switch routine models (POST /api/cron/update), pause and resume scheduled DeepSeek routines near the station rail, hold DeepSeek wake-ups near the rail, and let the dispatcher fire a third loop a tick when that loop runs on a subscription with room. Switching back to shadow stops further changes, but routines keep the model the pacer last gave them: `node company/tools/pacer.js restore` puts every routine the pacer moved back on its earlier model. Before live: set a per-run token ceiling for unpriced providers on the station (runtime.knobs.json maxUnpricedTokens; 0 = none), and get a CEO ruling on routing.refireWithinMin.",
+ "_mode": "shadow = measure, plan, log and report (company/work/finance/ai-usage.md), change nothing on the station (the one exception: it lifts a rail pause it made itself while live). live = also switch routine models (POST /api/cron/update), pause and resume scheduled DeepSeek routines near the station rail, hold DeepSeek wake-ups near the rail, and let the dispatcher fire a third loop a tick when that loop runs on a subscription with room. Switching back to shadow stops further changes, but routines keep the model the pacer last gave them: `node company/tools/pacer.js restore` puts every routine the pacer moved back on its earlier model. Before live: set a per-run token ceiling for unpriced providers on the station (runtime.knobs.json maxUnpricedTokens; 0 = none).",
  "dailyFraction": "1/7",
  "marginPct": 1,
  "reopenBandPct": 1,
@@ -45,14 +45,16 @@
   "switchAtMostEveryMin": 60,
   "maxOntoSubscriptionPerHour": 2,
   "refusalBlockHours": 24,
-  "refireWithinMin": 0,
+  "refusalFirstBlockHours": 2,
+  "refusalRepeatWithinHours": 24,
+  "refireWithinMin": 120,
   "blockOutcomes": [
    "refused"
   ],
   "blockFailureCodes": [
    "content_policy_blocked"
   ],
-  "_doc": "A routine never changes model while it runs. It moves onto a subscription at most once every switchAtMostEveryMin, and at most maxOntoSubscriptionPerHour routines move onto a subscription in any hour, in the routing table's order (0 = no limit), so going live or a subscription reopening never moves every routine at once. It moves off a subscription that has closed at once. A routine run that ended with one of blockOutcomes/blockFailureCodes blocks that provider for that routine for refusalBlockHours. refireWithinMin 0 = a refused run is not re-fired: a policy refusal stops that request and the company does not shop for a permissive model. Set it (for example 120) only on a CEO ruling; the pacer then re-fires a refusal younger than that once on the routine's new model, never a paused routine."
+  "_doc": "A routine never changes model while it runs. It moves onto a subscription at most once every switchAtMostEveryMin, and at most maxOntoSubscriptionPerHour routines move onto a subscription in any hour, in the routing table's order (0 = no limit), so going live or a subscription reopening never moves every routine at once. It moves off a subscription that has closed at once. A routine run that ended with one of blockOutcomes/blockFailureCodes blocks that provider for that routine: refusalFirstBlockHours after its first refusal, and that one run is re-run once, its prompt unchanged, on the routine's next entry if the refusal is younger than refireWithinMin (never a paused routine; 0 = never re-run). A second refusal of the same routine within refusalRepeatWithinHours blocks it for refusalBlockHours, is not re-run, and goes to the CEO (company/ESCALATION_POLICY.md T3). Nobody rewords a prompt to get past a refusal."
  },
  "deepseekRail": {
   "holdAtPct": 85,

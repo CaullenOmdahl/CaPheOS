@@ -154,7 +154,7 @@ test('backoff: a topic the owner answered "not now" is refused for 7 days unless
 
 test('the guidance carries the rule: house rules, the Founder loop, the role template, decision rights, the chat context note', () => {
   const RR = require(path.join(REPO, 'company', 'tools', 'routine-rules.js'));
-  assert.equal(RR.VERSION, 'v10');
+  assert.ok(Number(String(RR.VERSION).slice(1)) >= 10, RR.VERSION);   // v10 brought the owner-scope rule; later versions keep it
   assert.match(RR.BLOCK, /The owner is a busy non-technical person\. Handle infrastructure yourself/);
   assert.match(RR.BLOCK, /in two plain sentences that say what they get or risk and what happens if they skip it \(your default\)/);
   const read = rel => fs.readFileSync(path.join(REPO, rel), 'utf8');

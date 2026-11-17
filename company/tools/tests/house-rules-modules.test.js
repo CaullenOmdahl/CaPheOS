@@ -34,8 +34,11 @@ test('without the commitments module, no seat is sent to the commitments tool', 
   const T = scratch([]);
   try {
     const r = ensureIn(T, 'You are Jo.\n\nDo the work.');
-    assert.equal(r.version, 'v10');
-    assert.ok(r.prompt.includes('[HOUSE RULES FOR SCHEDULED RUNS v10]'));
+    assert.equal(r.version, 'v11');
+    assert.ok(r.prompt.includes('[HOUSE RULES FOR SCHEDULED RUNS v11]'));
+    // v11: a connector is checked through its own verify command; a credential file is never read or printed
+    assert.match(r.prompt, /connector's verify command in company\/connectors\/<id>\.json/);
+    assert.match(r.prompt, /Never read, cat, list, grep or print a credential file/);
     assert.doesNotMatch(r.prompt, /commitments\.js/);
     assert.match(r.prompt, /handoff to yourself/);
     assert.match(r.prompt, /service\.js propose/);   // the rest of the waiting rule stays

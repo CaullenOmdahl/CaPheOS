@@ -29,6 +29,14 @@ only the CLI's resulting credential lands on the station.
 runs through it (e.g. as a separate user) and status reports `isolation: "broker"` and whatever `canRead` answers. It
 is never loaded from a file in the company tree (the crew could write one). None ships today.
 
+## For the crew: checking a connector
+
+A seat checks a connector by running the `verify` command declared in `company/connectors/<id>.json` (for Synpath,
+`synpath keys list`) and reading its exit code: 0 is Connected, non-zero is Expired, and the owner reconnects from
+Settings. A seat never reads, lists, greps or prints a credential file or the CLI's config/session folder, not even
+redacted: that puts credentials in a transcript, and a model provider's safety filter may refuse the whole run (it did,
+twice, on such an inspection). The house rules (v10) say the same.
+
 ## Adding a connector
 
 Write `company/connectors/<id>.json` (the file name is the id):
