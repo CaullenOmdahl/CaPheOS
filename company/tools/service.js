@@ -827,6 +827,9 @@ module.exports = { context, propose, startStop, remove, adopt, onHalt, list, fin
 
 /* ---------------- selftest: temp company, fake systemctl, no real user manager ---------------- */
 function selftest() {
+  // a selftest measures the mechanism, not the caller (fr-0018): run by an agent, this process IS under the station, and the
+  // owner-answer guard would refuse the fixture's own answer. Pin it for the test (provenance.js:122), restore after.
+  try { const P = require('./provenance.js'); P.pinUnderStation(false); P.pinOwnerShell(true); } catch (_) {}
   const { spawnSync } = require('child_process');
   const T = fs.mkdtempSync(path.join(os.tmpdir(), 'service-selftest-'));
   let bad = 0, n = 0;
