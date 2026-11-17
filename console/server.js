@@ -849,6 +849,16 @@ function printUrl(argv) {
   if (!process.stdout.isTTY) { console.error('console --url prints the login token, so only to an interactive terminal (stdout here is a pipe or a log). The token is in secrets/console-token.'); return 2; }
   console.log(loginLine('http://' + shown + ':' + port, consoleToken(), true)); return 0;
 }
+// --rotate-token: a new console token (the owner's own shell only); the running console keeps the old one until it restarts
+function rotateToken() {
+  let owner = false; try { owner = require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'owner.js')).shell(); } catch (_) {}
+  if (!owner) { console.error('rotating the console token is the owner\'s, from the owner\'s own shell'); return 2; }
+  fs.mkdirSync(co.SECRETS_DIR, { recursive: true });
+  const tmp = TOKEN_FILE + '.tmp-' + process.pid;
+  fs.writeFileSync(tmp, crypto.randomBytes(24).toString('hex') + '\n', { mode: 0o600 }); fs.renameSync(tmp, TOKEN_FILE);
+  console.log('a new console token is in secrets/console-token; restart the console (scripts/restart-console.sh --when-idle) and log in again with scripts/console.sh --url');
+  return 0;
+}
 function start(argv) {
   const token = consoleToken();
   const { host, port } = listenConfig(argv);
@@ -1433,6 +1443,7 @@ if (require.main === module) {
   const argv = process.argv.slice(2);
   if (argv.includes('--selftest')) selftest().then(c => process.exit(c), e => { console.error(e); process.exit(1); });
   else if (argv.includes('--url')) process.exit(printUrl(argv));
+  else if (argv.includes('--rotate-token')) process.exit(rotateToken());
   else start(argv);
 }
 module.exports = { makeServer, start, postAllowed, loginLine };
