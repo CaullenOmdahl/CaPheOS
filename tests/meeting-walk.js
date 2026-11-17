@@ -6,7 +6,7 @@
  *      each turn is admitted as a meeting-turn (company/state/admit-log.jsonl); the minutes are written; the cost counts turns
  *   3. tools for one agenda item: isTask true with the tools placed for its turns, hand checks still talk only
  *   4. a refused turn is retried once on the seat's next chain entry, in one plain line
- *   5. END goes to company/work/decisions.md through decision.js add
+ *   5. END is the register's summary; a ruling reaches decisions.md (decision.js add) only once the owner confirms it
  *   6. a console restart mid-turn: the turn in flight is re-attached (not started again) and the meeting carries on
  *   7. halt stops a meeting: the turn in flight is cancelled and nobody speaks after it; no round starts under a halt */
 'use strict';
@@ -106,12 +106,16 @@ W('company/model-policy.json', pol);
   t('4. said in one plain line, and the answer is recorded on the second model', e2.some(e => e.kind === 'note' && e.text === 'Founder: Claude declined this; DeepSeek is answering instead.') && e2.some(e => e.kind === 'say' && e.who === 'agent' && e.model === 'DeepSeek (deepseek-flash)'), e2.slice(-4));
   t('4. the failover is recorded on the seat', /"door":"meeting"/.test(R('company/state/model-moves.jsonl')));
 
-  // 5. END to decisions.md
+  // 5. END: the register's summary; a ruling reaches decisions.md only once the owner confirms it
   await api('/meeting/observe', { on: true, rounds: 3 });
-  await st('/__meeting', { reset: true, replies: { agent: 'We agree.\nEND: ship the plan, Sharon writes it up', cfo: 'Agreed.', sec: 'PASS' } });
+  await st('/__meeting', { reset: true, replies: { agent: ['We agree.\nRULING: ship the plan — plain: we go ahead with the plan', 'Done.\nEND: ship the plan, Sharon writes it up — plain: we go ahead and Sharon writes it down'], cfo: 'Agreed.\nACTION: Write up the plan — by 2026-11-20 — plain: Sharon writes the plan down — affects: everyone', sec: 'PASS' } });
   await api('/meeting/say', { text: 'Settle it while I watch.' });
   await idle();
-  t('5. END goes to decisions.md through decision.js add', /Founder \[d-[0-9a-f]{6}\] Meeting \d{4}-\d{2}-\d{2} closed: ship the plan, Sharon writes it up/.test(R('company/work/decisions.md')), R('company/work/decisions.md').slice(0, 600));
+  let rg = (await api('/meeting/register')).json;
+  t('5. END is the register\'s summary; the leader\'s ruling is proposed, not yet in decisions.md', rg.register.summary && rg.register.summary.plain === 'we go ahead and Sharon writes it down' && rg.register.rulings[0] && !rg.register.rulings[0].confirmed && !/ship the plan/.test(R('company/work/decisions.md')), rg);
+  t('5. a seat\'s own ACTION line is its row in the register, rendered as markdown', rg.register.actions[0] && rg.register.actions[0].owner === 'cfo' && /\| Write up the plan \| Sharon writes the plan down \| Sharon \| 2026-11-20 \| open \| everyone \|/.test(R(rg.file)), rg.register.actions);
+  r = await api('/meeting/register', { op: 'confirm', n: 1 });
+  t('5. the owner confirms it: decisions.md through decision.js add', r.status === 200 && /\[d-[0-9a-f]{6}\] Meeting ruling \(\d{4}-\d{2}-\d{2}\): ship the plan In plain words: we go ahead with the plan/.test(R('company/work/decisions.md')), { r: r.json, d: R('company/work/decisions.md').slice(0, 500) });
   await api('/meeting/observe', { on: false });
 
   // 6. a console restart mid-turn

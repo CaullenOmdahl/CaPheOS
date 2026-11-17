@@ -113,6 +113,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/corrections.js | people | `selftest` |
 | company/tools/decide.js | risk | `selftest` / `--selftest` |
 | company/tools/decision.js | ceo | `selftest` |
+| company/tools/meeting-register.js | tools | `selftest` |
 | company/tools/default-branch-watch.js | risk | `selftest` |
 | company/tools/delegation.js | ceo | `selftest` / `--selftest` |
 | company/tools/dispatch.js | tools | `--selftest` |
@@ -235,6 +236,7 @@ in §5a instead.
 | `company/tools/decide.js` | risk | `node company/tools/decide.js selftest` |
 | `company/tools/decision.js` | ceo | `node company/tools/decision.js selftest` |
 | `company/tools/delegation.js` | ceo | `node company/tools/delegation.js selftest` |
+| `company/tools/meeting-register.js` | tools | `node company/tools/meeting-register.js selftest` |
 | `company/tools/dispatch.js` | tools | `node company/tools/dispatch.js --selftest` |
 | `company/tools/dispatcher-loop.js` | tools | `node company/tools/dispatcher-loop.js selftest` |
 | `company/tools/duties.js` | tools | `node company/tools/duties.js --selftest` |

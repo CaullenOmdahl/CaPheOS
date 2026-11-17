@@ -35,17 +35,17 @@ const HISTORY_MAX_MSGS = 120, HISTORY_MAX_BYTES = 1 << 20;
 const LOG_READ_BYTES = 16 << 20;   // the end of log.jsonl read on start (lib/bounded.js); older rows are in the minutes
 
 /* ---------------- the protocol: pure functions (unit-tested) ---------------- */
-const DIRECTIVE = /^[ \t>*_-]*(INVITE|DISMISS|ASK|CALL|LATER|LOWER|END|RULING)\b[*_]*\s*:\s*(.+?)\s*$/gim;
+const DIRECTIVE = /^[ \t>*_-]*(INVITE|DISMISS|ASK|CALL|LATER|LOWER|END|RULING|ACTION|QUESTION|KILL)\b[*_]*\s*:\s*(.+?)\s*$/gim;
 const cleanName = n => String(n || '').replace(/^[@*_`\s]+|[*_`.,:;\s]+$/g, '');
 // a line that starts like a protocol line but cannot be read (no colon, an ASK with no question, an END with no
 // summary): reported as a parse failure, shown to the owner and to the writer, never silently taken as plain text
-const LOOKS_LIKE = /^[ \t>*_-]*\**(INVITE|DISMISS|ASK|CALL|LATER|LOWER|END|RULING)\b(?![*_]*\s*:)\s*[—–-]?\s*(.*)$/gm;
+const LOOKS_LIKE = /^[ \t>*_-]*\**(INVITE|DISMISS|ASK|CALL|LATER|LOWER|END|RULING|ACTION|QUESTION|KILL)\b(?![*_]*\s*:)\s*[—–-]?\s*(.*)$/gm;
 function directives(text) {
   const list = [], failures = [];
   const body = String(text || '').replace(DIRECTIVE, (line, kind, rest) => {
     kind = kind.toUpperCase();
     rest = rest.replace(/^[*_`\s]+/, '');
-    if (kind === 'END' || kind === 'RULING') {
+    if (kind === 'END' || kind === 'RULING' || kind === 'ACTION' || kind === 'QUESTION' || kind === 'KILL') {
       if (!rest.trim()) { failures.push({ line: line.trim(), why: kind + ' needs a line after the colon' }); return ''; }
       list.push({ kind, name: '', why: rest.trim() }); return '';
     }
@@ -62,7 +62,7 @@ function directives(text) {
   }).replace(/\n{3,}/g, '\n\n').trim();
   for (const m of body.matchAll(LOOKS_LIKE)) {
     const k = m[1].toUpperCase();
-    if (/^(END|ASK|CALL|INVITE|DISMISS|RULING)$/.test(k) && /^[A-Z]+\b/.test(m[0].trim().replace(/^[>*_\s-]+/, ''))) failures.push({ line: m[0].trim().slice(0, 200), why: k + ' needs a colon: ' + k + ': …' });
+    if (/^(END|ASK|CALL|INVITE|DISMISS|RULING|ACTION|QUESTION|KILL)$/.test(k) && /^[A-Z]+\b/.test(m[0].trim().replace(/^[>*_\s-]+/, ''))) failures.push({ line: m[0].trim().slice(0, 200), why: k + ' needs a colon: ' + k + ': …' });
   }
   return { body, list, failures };
 }
@@ -209,14 +209,15 @@ module.exports = function meeting(deps) {
   const callText = e => nameOf(e.who) + ' called on ' + nameOf(e.to) + (e.later ? ', once the exchange is done' : '');
   const lowerText = e => nameOf(e.who) + ' lowered ' + nameOf(e.to) + '\'s hand';
   const endText = e => nameOf(e.who) + ' closed the discussion' + (e.text ? ': ' + e.text : '');
-  const rulingText = e => nameOf(e.who) + ' recorded a ruling: ' + e.text;
+  const rulingText = e => e.who === 'owner' ? owner() + ' ruled: ' + e.text : nameOf(e.who) + ' proposed a ruling for ' + owner() + ' to confirm: ' + e.text;
   const observeText = e => e.on ? owner() + ' is observing: they will not speak unless they step in' : owner() + ' is taking part again';
   const agendaText = e => e.op === 'add' ? 'Agenda item added: ' + e.text + (e.tools ? ' (tools on)' : '') : e.op === 'current' ? 'Now on: ' + e.text + (e.tools ? ' (tools on: people may read and check)' : ' (talk only)') : e.op === 'tools' ? (e.tools ? 'Tools on for "' + e.text + '": people may read and check' : 'Talk only for "' + e.text + '"') : e.op === 'done' ? 'Done: ' + e.text : 'Agenda item removed: ' + e.text;
   const parseText = e => 'The console could not read ' + nameOf(e.who) + '\'s line "' + e.line + '": ' + e.why;
   const closeText = e => e.state === 'interrupted' ? 'The meeting was interrupted' + (e.why ? ': ' + e.why : '') : 'The meeting was closed by ' + nameOf(e.who) + (e.why ? ': ' + e.why : '');
   const resumeText = e => owner() + ' resumed the meeting';
+  const registerText = e => nameOf(e.who) + ' put in the register (' + ({ actions: 'action', questions: 'open question', kills: 'kill condition' }[e.section] || e.section) + ' ' + e.n + '): ' + e.text + (e.plain ? ' — in plain words: ' + e.plain : '');
   const consentText = e => e.op === 'asked' ? nameOf(e.who) + ' asked to use ' + (e.tool || 'a tool') + '; the meeting is paused until you answer it on Today' : 'Approval for ' + nameOf(e.who) + ' (' + (e.tool || 'a tool') + '): ' + (e.decision === 'once' ? 'allowed' : e.decision === 'deny' ? 'declined' : e.decision) + '; the meeting carries on';
-  const TEXTS = { join: joinText, leave: leaveText, lead: leadText, ask: askText, hand: handText, call: callText, lower: lowerText, end: endText, ruling: rulingText, observe: observeText, agenda: agendaText, parse: parseText, close: closeText, resume: resumeText, consent: consentText, note: e => e.text };
+  const TEXTS = { join: joinText, leave: leaveText, lead: leadText, ask: askText, hand: handText, call: callText, lower: lowerText, end: endText, ruling: rulingText, observe: observeText, agenda: agendaText, parse: parseText, close: closeText, resume: resumeText, consent: consentText, register: registerText, note: e => e.text };
   const minutesFile = d => path.join(MINUTES_DIR(), 'meeting-' + (d || day()) + '.md');
   function minutes(text, kind) {
     try {
@@ -237,6 +238,7 @@ module.exports = function meeting(deps) {
     if (e.kind === 'say') minutes('\n**' + nameOf(e.who) + '** (' + t + (e.model ? ', ' + e.model : '') + (e.to ? ', answering ' + nameOf(e.to) : '') + (e.interject ? ', interjecting' : '') + '):\n' + e.text + '\n', e.kind);
     else if (e.kind === 'open') { M.opened = true; minutes('\n## ' + t + ': the meeting opens\n\nAt the meeting: ' + e.text + '.\n', e.kind); }
     else if (TEXTS[e.kind]) { const s = TEXTS[e.kind](e); minutes('\n_' + t + ': ' + s + (/[.!?]$/.test(s) ? '' : '.') + '_\n', e.kind); }
+    if (e.kind === 'say' || e.kind === 'open' || e.kind === 'agenda') reindex();   // searchable as it goes
     emit('meeting');
     return e;
   }
@@ -249,9 +251,10 @@ module.exports = function meeting(deps) {
     '- If you have nothing to add, reply with exactly PASS and nothing else.\n' +
     '- Check the facts you state, but do not start long work during the meeting: say what you will do, write it where your own loop picks it up (your files or a handoff), and do it there. When the turn note says talk only, you have no tools: say only what you know, and never claim you read or changed something.\n' +
     '- The owner is a busy non-technical person. In a meeting too, infrastructure, monitoring, tools, framework bugs and internal process are the crew\'s: settle them among yourselves or route them, never put them to the owner, and never ask the owner to run a command.\n' +
-    '- The meeting may have a leader (each turn note names them). The leader runs it: keeps it on the owner\'s question, brings in the right people, and closes each topic with what was decided and who does what. A decision the owner makes here is an owner ruling: the leader ends a reply with a line of its own, RULING: <what was decided, who does it>, and the console records it in company/work/decisions.md (with no leader, whoever the ruling concerns writes that line). Everyone else writes down only what is theirs to do.\n' +
+    '- The meeting may have a leader (each turn note names them). The leader runs it: keeps it on the owner\'s question, brings in the right people, and closes each topic with what was decided and who does what. A decision the owner makes here is an owner ruling: the leader ends a reply with a line of its own, RULING: <what was decided, who does it> — plain: <one sentence anyone can read>; it goes into the meeting\'s register as proposed, and the owner confirms it (only then is it in company/work/decisions.md). With no leader, whoever the ruling concerns writes that line.\n' +
+    '- The register is the meeting\'s output, and nobody writes a line for someone else. For what is yours to do, end your reply with ACTION: <what> — by <date, or own loop> — plain: <one sentence anyone can read> — affects: <who it touches>. An open question of yours: QUESTION: <it> — plain: <…>. A condition that would stop the work: KILL: <it> — plain: <…>. A line without its plain part is refused. Later you update only your own lines: node company/tools/meeting-register.js update <meeting> actions <n> --by <your name> --status "…".\n' +
     '- To ask someone a question directly, end your reply with a line of its own: ASK: <name> — <your question>. They answer next and may ASK you back; keep such an exchange short. While two people are in an exchange, the others are asked after each answer whether they want to interject; then reply HAND — <what you want to add> to come in now, otherwise NO. The leader calls on raised hands (with no leader, a raised hand gets the floor next); the leader can also give anyone the floor by ending a reply with CALL: <name>.\n' +
-    '- When the owner is observing (the turn note says so), they will not speak unless they step in: do not put questions to them or wait for their answer; keep the discussion going among yourselves. The leader runs it through to a result and, when it is complete, ends a reply with a line of its own: END: <one line on what was decided and who does what>. With no leader, anyone may close it that way.\n' +
+    '- When the owner is observing (the turn note says so), they will not speak unless they step in: do not put questions to them or wait for their answer; keep the discussion going among yourselves. The leader runs it through to a result and, when it is complete, ends a reply with a line of its own: END: <one line on what was decided and who does what> — plain: <the same in one sentence anyone can read>. With no leader, anyone may close it that way.\n' +
     '- You can bring people in and out, as on a call: INVITE: <name> — <why the discussion needs them> (they join at once, see the meeting so far and speak after the others this round), DISMISS: <name> — <why> (yourself included, when you have nothing more to give). Invite only when the discussion needs that person. The leader stays unless the owner changes it.\n' +
     '- The minutes, every word as said, are in company/work/meetings/meeting-<date>.md.]';
   // talk only is the default: tools are on only for the agenda item the owner switched them on for
@@ -290,7 +293,7 @@ module.exports = function meeting(deps) {
     const upList = Object.entries((ctl && ctl.up) || {});
     const up = upList.length ? upList.map(([c, why]) => nameOf(c) + (why ? ' (' + why + ')' : '')).join('; ') : '';
     const lead = isLead ? ' You lead this meeting.' + (up ? ' Hands up: ' + up + '; end your reply with CALL: <name> to give one the floor.' : '')
-      + (observing() ? ' Move it to a result; when the discussion is complete, end your reply with END: <what was decided and who does what>.' : '') : '';
+      + (observing() ? ' Move it to a result; when the discussion is complete, end your reply with END: <what was decided and who does what> — plain: <one sentence anyone can read>.' : '') : '';
     const tail = lintLine(id);
     if (item.kind === 'ask') return '[' + nameOf(item.from) + ' asked you directly: ' + item.text + ' Answer ' + nameOf(item.from) + ', ' + n + '; you may ASK back.' + lead + ' ' + context() + ']' + tail;
     if (item.kind === 'hand') return '[' + (item.calledBy ? nameOf(item.calledBy) + ' called on you' : 'You raised your hand') + (item.why ? ' (' + item.why + ')' : '')
@@ -441,15 +444,49 @@ module.exports = function meeting(deps) {
   }
   function cost(r) { M.cost.turns++; M.cost.usd = Math.round((M.cost.usd + (Number(r && r.usd) || 0)) * 1e6) / 1e6; }
 
-  /* ---------- decisions.md: END and RULING ---------- */
+  /* ---------- the action register (company/tools/lib/meeting-register.js): the meeting's first-class output ----------
+     Rows come from the lines their owners write (ACTION / QUESTION / KILL: the speaker owns the row; RULING from the
+     leader: proposed, the owner confirms it) and from the owner's controls. No model writes a row for anyone. Only a
+     ruling the owner confirms goes to decisions.md (owner ruling: register lines stay in the register). */
+  const REG = require(path.join(LIB, 'meeting-register.js'));
+  const regNames = x => x === 'owner' ? owner() : nameOf(x);
+  let regCache = null;
+  const reg = () => { if (!regCache || regCache.id !== M.id) regCache = REG.load(M.id, { date: String(M.startedAt).slice(0, 10), title: M.title, type: M.type }); return regCache; };
+  const saveReg = () => { const r = reg(); r.title = M.title; r.type = M.type; REG.save(r, regNames); reindex(); emit('meeting'); };
+  function regAdd(section, row, by, line) {
+    try { const r = REG.add(reg(), section, row, by); saveReg(); return r; }
+    catch (e) { record({ who: by, kind: 'parse', line: String(line || row.text).slice(0, 200), why: String(e.message).replace(/^not recorded: /, 'not put in the register: ') }); return null; }
+  }
+  /* ---------- the search index (company/state/meetings/index.json): one small row per meeting ---------- */
+  function reindex() {
+    try {
+      const f = path.join(DIR(), 'index.json'); const idx = (readJ(f) || {}).meetings || [];
+      const r = reg(); const said = LOG.filter(e => e.kind === 'say');
+      const text = said.map(e => e.text).join('\n') + '\n' + REG.SECTIONS.map(s => r[s].map(x => x.text + ' ' + (x.plain || '') + ' ' + (x.status || '')).join('\n')).join('\n');
+      const row = { id: M.id, type: M.type, title: M.title, state: M.state, startedAt: M.startedAt, closedAt: M.closedAt || null,
+        agenda: (M.agenda || []).map(a => a.title), participants: [...new Set(said.map(e => e.who === 'owner' ? owner() : nameOf(e.who)).concat(present().map(nameOf)))],
+        decisions: r.rulings.map(x => x.text).concat(r.summary ? [r.summary.text] : []), actions: r.actions.map(a => ({ n: a.n, text: a.text, owner: regNames(a.owner), status: a.status })),
+        links: { quests: [...new Set((text.match(/\bq[:-]?\d{1,6}\b/gi) || []).map(x => x.toLowerCase().replace(/^q[:-]?/, 'q:')))].slice(0, 50), handoffs: [...new Set(text.match(/\bto-[a-z0-9-]+\.md\b/g) || [])].slice(0, 50) } };
+      const out = [row].concat(idx.filter(x => x && x.id !== M.id)).slice(0, 1000);
+      writeJ(f, { v: 1, meetings: out });
+    } catch (_) {}
+  }
+  function search(q) {
+    const s = String((q && q.get && q.get('q')) || '').trim().toLowerCase();
+    const idx = (readJ(path.join(DIR(), 'index.json')) || {}).meetings || [];
+    const hit = x => !s || JSON.stringify(x).toLowerCase().includes(s);
+    return { ok: true, q: s, meetings: idx.filter(hit).slice(0, 100) };
+  }
+  // decisions.md, for an owner ruling the owner confirmed (decision.js add, by the owner)
   async function decide(by, text, why) {
     const clean = s => String(s || '').replace(/^[-\s]+/, '').replace(/\s+/g, ' ').trim().slice(0, 900);
     if (!clean(text)) return;
     const name = by === 'owner' ? owner() : nameOf(by);
     try {
       const r = await deps.run('decision.js', ['add', '--by', name, '--text', clean(text), '--why', why + ' (minutes: company/work/meetings/meeting-' + day() + '.md)']);
-      if (r && r.code) note('Not recorded in decisions.md: ' + String((r.data && (r.data.error || r.data.text)) || 'decision.js refused').slice(0, 200));
-    } catch (e) { note('Not recorded in decisions.md: ' + e.message); }
+      if (r && r.code) { note('Not recorded in decisions.md: ' + String((r.data && (r.data.error || r.data.text)) || 'decision.js refused').slice(0, 200)); return null; }
+      const m = /\[(d-[0-9a-f]{6})\]/.exec(JSON.stringify((r && r.data) || '')); return m ? m[1] : 'recorded';
+    } catch (e) { note('Not recorded in decisions.md: ' + e.message); return null; }
   }
 
   /* ---------- the agent lines ---------- */
@@ -458,16 +495,25 @@ module.exports = function meeting(deps) {
     for (const d of list) {
       if (d.kind === 'END') {
         if (leader() && by !== leader()) { note(nameOf(by) + ' suggested closing; only the leader, ' + nameOf(leader()) + ', closes the discussion'); continue; }
-        ctl.ended = d.why || 'closed';
-        record({ who: by, kind: 'end', text: d.why });
-        pending.push(decide(by, 'Meeting ' + day() + ' closed: ' + (d.why || 'closed'), 'the owner\'s meeting, closed by its ' + (leader() ? 'leader' : 'members')));
+        const pl = REG.parseLine('END', d.why);
+        ctl.ended = pl.text || d.why || 'closed';
+        record({ who: by, kind: 'end', text: pl.text || d.why, plain: pl.plain || null });
+        reg().summary = { text: pl.text || d.why, plain: pl.plain || null, by, at: new Date().toISOString() }; saveReg();
+        if (!pl.plain) record({ who: by, kind: 'parse', line: 'END: ' + d.why, why: 'END needs a plain-language line: END: <summary> — plain: <one sentence anyone can read>; the register marks the summary as failing until it has one' });
         continue;
       }
       if (d.kind === 'RULING') {
         if (leader() && by !== leader()) { note(nameOf(by) + ' wrote a ruling; the leader, ' + nameOf(leader()) + ', records rulings'); continue; }
-        if (!d.why) continue;
-        record({ who: by, kind: 'ruling', text: d.why });
-        pending.push(decide(by, 'Meeting ruling: ' + d.why, 'decided at the owner\'s meeting'));
+        const pl = REG.parseLine('RULING', d.why);
+        const row = regAdd('rulings', { text: pl.text, plain: pl.plain, proposedBy: by }, by, 'RULING: ' + d.why);
+        if (row) record({ who: by, kind: 'ruling', text: pl.text, plain: pl.plain, n: row.n, proposed: true });
+        continue;
+      }
+      if (d.kind === 'ACTION' || d.kind === 'QUESTION' || d.kind === 'KILL') {   // the speaker's own line in the register
+        const section = d.kind === 'ACTION' ? 'actions' : d.kind === 'QUESTION' ? 'questions' : 'kills';
+        const pl = REG.parseLine(d.kind, d.why);
+        const row = regAdd(section, Object.assign({}, pl, { owner: by }), by, d.kind + ': ' + d.why);
+        if (row) record({ who: by, kind: 'register', section, n: row.n, text: row.text, plain: row.plain, date: row.date || null, affects: row.affects || null });
         continue;
       }
       if (d.kind === 'LATER' || d.kind === 'LOWER') continue;   // only in the leader's answer on raised hands
@@ -929,7 +975,7 @@ module.exports = function meeting(deps) {
     M.closeAfter = null;
     M.state = state; M.closedAt = new Date().toISOString(); M.closedBy = by; if (why) M.reason = why;
     if (M.opened) record({ who: by, kind: 'close', state, why });
-    save();
+    save(); reindex();
     if (state === 'closed' && M.resumeAfter) {   // the meeting an incident interrupted carries on
       const back = readMeeting(M.resumeAfter);
       if (back && back.state === 'interrupted') { load(back.id); M.state = 'open'; M.reason = null; save(); record({ who: 'owner', kind: 'resume' }); }
@@ -945,6 +991,28 @@ module.exports = function meeting(deps) {
     M.state = 'open'; M.reason = null; save(); record({ who: 'owner', kind: 'resume' }); emit('meeting');
     return view();
   }
+  // the owner's register controls: an owner ruling (confirmed: decisions.md), confirming a proposed one, "not recorded
+  // here", an open question of their own, and their own lines only (each owner updates their own)
+  async function register(b) {
+    guard();
+    b = b || {}; const op = String(b.op || '');
+    const r = reg();
+    if (op === 'ruling') {
+      const row = REG.add(r, 'rulings', { text: b.text, plain: b.plain, confirmed: true }, 'owner');
+      row.decisionId = await decide('owner', 'Meeting ruling (' + day() + (M.title ? ', ' + M.title : '') + '): ' + row.text + ' In plain words: ' + row.plain, 'the owner\'s ruling at the meeting');
+      saveReg(); if (M.opened) record({ who: 'owner', kind: 'ruling', text: row.text, plain: row.plain, n: row.n, proposed: false });
+    } else if (op === 'confirm') {
+      const row = REG.update(r, 'rulings', b.n, { confirmed: true, plain: b.plain, text: b.text }, 'owner', true);
+      if (!row.decisionId) row.decisionId = await decide('owner', 'Meeting ruling (' + day() + (M.title ? ', ' + M.title : '') + '): ' + row.text + ' In plain words: ' + row.plain, 'proposed by ' + nameOf(row.proposedBy || 'owner') + ', confirmed by the owner at the meeting');
+      saveReg(); if (M.opened) record({ who: 'owner', kind: 'note', text: owner() + ' confirmed ruling ' + row.n + ': ' + row.text });
+    } else if (op === 'not-recorded') { REG.add(r, 'notRecorded', { text: b.text }, 'owner'); saveReg(); }
+    else if (op === 'question' || op === 'kill') { REG.add(r, op === 'question' ? 'questions' : 'kills', { text: b.text, plain: b.plain, owner: 'owner' }, 'owner'); saveReg(); }
+    else if (op === 'update') { REG.update(r, String(b.section || ''), b.n, b, 'owner', true); saveReg(); }
+    else fail('op is ruling, confirm, not-recorded, question, kill or update');
+    return registerView();
+  }
+  const registerView = () => { const r = reg(); return { ok: true, register: r, problems: REG.problems(r), file: path.relative(co.ROOT, REG.mdFile(r)) }; };
+  const regSafe = fn => async (...a) => { try { return await fn(...a); } catch (e) { if (e.code === 'invalid' || e.code === 'not-yours' || e.code === 'missing') fail(e.message, e.code === 'missing' ? 404 : e.code === 'not-yours' ? 403 : 400); throw e; } };
   // the meetings on record, newest first (the meta files are small: one per meeting)
   function list() {
     let ids = []; try { ids = fs.readdirSync(path.join(DIR(), 'm')).filter(f => /^m-[a-z0-9]+\.json$/.test(f)).map(f => f.slice(0, -5)); } catch (_) {}
@@ -1017,6 +1085,9 @@ module.exports = function meeting(deps) {
     route('POST', /^\/api\/meeting\/resume$/, (m, q, b) => resume(b));
     route('GET', /^\/api\/meeting\/list$/, () => ({ ok: true, meetings: list() }));
     route('GET', /^\/api\/meeting\/timeline$/, () => timeline());
+    route('GET', /^\/api\/meeting\/register$/, () => registerView());
+    route('POST', /^\/api\/meeting\/register$/, regSafe((m, q, b) => register(b)));
+    route('GET', /^\/api\/meeting\/search$/, (m, q) => search(q));
     route('GET', /^\/api\/meeting\/status$/, () => ({ ok: true, live: require(path.join(LIB, 'meetings.js')).liveWork() }));
     route('POST', /^\/api\/meeting\/next$/, () => next());
     route('POST', /^\/api\/meeting\/pace$/, (m, q, b) => pace(b));
@@ -1033,7 +1104,7 @@ module.exports = function meeting(deps) {
     if (M.run) { M.run.checking = null; save(); armHalt(); if (M.run.consent) armConsent(); if (!M.run.floor) kick(); }
   }
   load();
-  return { mount, start, view, entries, minutesText, say, openRound, hand, carryOn, stop, setObserve, agenda, setLeader, seatsChange, newMeeting, close, resume, list, next, pace, hold, presence, catchUp, timeline, busy,
+  return { mount, start, view, entries, minutesText, say, openRound, hand, carryOn, stop, setObserve, agenda, setLeader, seatsChange, newMeeting, close, resume, list, register: regSafe(b => register(b)), registerView, search: q => search(q), reindex, next, pace, hold, presence, catchUp, timeline, busy,
     idle: () => !M.run && !driving, _state: () => ({ std, M, LOG }), _reload: load };
 };
 module.exports.directives = directives;

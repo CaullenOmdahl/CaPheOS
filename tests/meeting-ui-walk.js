@@ -188,7 +188,17 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   t('the END summary is a card', endCard && /Discussion closed by Founder/.test(endCard) && /ship it, Sharon writes it up/.test(endCard), endCard);
   await api('/meeting/observe', { on: false });
   // Open minutes
-  await click('.mtg-head-actions button');
+  // the Register: the leader's proposed ruling, confirmed by the owner
+  await st('/__meeting', { reset: true, replies: { agent: 'RULING: keep the plan — plain: we keep the plan' } });
+  await api('/meeting/say', { text: '@founder rule on it' });
+  await waitFor(() => ev('[...document.querySelectorAll(".chat-body .mtg-chip")].some(x=>x.dataset.kind==="ruling")'), 8000);
+  await click('[data-act="register"]');
+  await waitFor(() => ev('!!document.querySelector("dialog.mtg-register[open] [data-ruling] button")'), 4000);
+  { const n = await ev('window.__posts.length'); await ev('document.querySelector("dialog.mtg-register [data-ruling] button").click()'); const p = await waitFor(async () => (await ev('window.__posts.length')) > n ? lastPost() : null, 4000);
+    t('control → action: Confirm ruling in the Register', p && p.path === '/meeting/register' && p.body.op === 'confirm' && p.body.n === 1, p); }
+  await sleep(600); await ev('(()=>{const d=document.querySelector("dialog.mtg-register");if(d)d.close();return 1})()');
+  t('the confirmed ruling is in decisions.md', /Meeting ruling \(\d{4}-\d{2}-\d{2}\): keep the plan/.test(R('company/work/decisions.md')));
+  await click('[data-act="minutes"]');
   const mins = await waitFor(() => ev('(()=>{const d=document.querySelector("dialog.mtg-minutes[open]");return d?d.textContent:null})()'), 4000);
   t('Open minutes shows every word', mins && /The budget is fine\./.test(mins) && /company\/work\/meetings\/meeting-/.test(mins), mins && mins.slice(0, 300));
   await ev('document.querySelector("dialog.mtg-minutes").close()');

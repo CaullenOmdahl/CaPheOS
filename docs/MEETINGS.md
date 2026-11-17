@@ -58,8 +58,24 @@ told on their next turn; it is never silently taken as plain text.
 - `CALL: <name>` (the leader): that seat has the floor next.
 - `INVITE: <name> — <why>`: joins at once and speaks after the others that round; at most 3 a round.
 - `DISMISS: <name> — <why>`: leaves this meeting (an agent may dismiss itself; the leader cannot be dismissed).
-- `END: <summary>` (the leader; anyone with no leader) closes the discussion; `RULING: <decision>` records one.
-  Both go to `company/work/decisions.md` through `decision.js add`.
+- `END: <summary> — plain: <one sentence>` (the leader; anyone with no leader) closes the discussion; it is the
+  register's summary. `RULING: <decision> — plain: <…>` (the leader) proposes an owner ruling.
+- `ACTION: <what> — by <date> — plain: <…> — affects: <who>`, `QUESTION: <it> — plain: <…>`, `KILL: <it> — plain: <…>`:
+  the speaker's own line in the register. A line without its plain part is refused, visibly.
+
+## The action register
+
+The meeting's output (`company/tools/lib/meeting-register.js`): owner rulings, actions (each with an owner, a date, a
+status, a plain-language line and "affects"), open questions, kill conditions and "Not recorded here", rendered to
+`company/work/meetings/<date>-<id>-register.md` in the shape of the table registers. No model writes a row for anyone:
+a row is its owner's line from the meeting, or the owner's own (Register › Add your ruling, Not recorded here). Each
+owner updates only their own lines (`node company/tools/meeting-register.js update <id> actions <n> --by <name>
+--status "…"`); a row without its plain line, or an action without owner, date or status, fails validation and is shown
+so. **Only an owner ruling the owner confirms goes to `decisions.md`** (`decision.js add`, by the owner); the rest stays
+in the register. API: `GET /api/meeting/register`, `POST /api/meeting/register {op: ruling|confirm|not-recorded|question|kill|update}`.
+
+Searchable: `company/state/meetings/index.json` (one row per meeting: id, type, agenda, participants, decisions,
+actions, links to quests `q:N` and handoffs `to-<name>.md`), `GET /api/meeting/search?q=` (Open minutes › Search).
 
 What agents change lasts for that meeting; your add and remove set the standing seats and override it. The house rules
 (v13) carry a short meeting-etiquette line, and every turn carries the meeting's own preamble.
@@ -91,7 +107,7 @@ What agents change lasts for that meeting; your add and remove set the standing 
 - The chat's owner-scope lint (`console/command-ask.js`) runs on every reply: crew work or a command put to the owner is
   flagged under the reply and the agent is told on its next turn; while you observe, any question to you is.
 - Minutes: `company/work/meetings/meeting-<date>.md`, every word by speaker with the time and the model, written as it
-  happens. State: `company/state/meetings/` (mode 600, folders 700): `seats.json`, `current.json`, `m/<id>.json` (one
+  happens (rendered from the structured events: `events/<id>.jsonl`). State: `company/state/meetings/` (mode 600, folders 700): `seats.json`, `current.json`, `m/<id>.json` (one
   per meeting), `events/<id>.jsonl` (each meeting's events, read from the end, rolled by `retention.js`, artifact
   `meeting-events`).
 

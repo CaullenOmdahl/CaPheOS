@@ -14,7 +14,7 @@ import * as events from './events.js';
 
 export const ACTIONS = {   // the controls and the API action each one calls (tests/meeting-ui-walk.js checks the map)
   round: '/meeting/round', hand: '/meeting/hand', continue: '/meeting/continue', stop: '/meeting/stop', observe: '/meeting/observe',
-  next: '/meeting/next', pace: '/meeting/pace', hold: '/meeting/hold', catchup: '/meeting/catchup', newMeeting: '/meeting/new', agenda: '/meeting/agenda', close: '/meeting/close', resume: '/meeting/resume', lead: '/meeting/lead', seats: '/meeting/seats', say: '/meeting/say',
+  next: '/meeting/next', register: '/meeting/register', pace: '/meeting/pace', hold: '/meeting/hold', catchup: '/meeting/catchup', newMeeting: '/meeting/new', agenda: '/meeting/agenda', close: '/meeting/close', resume: '/meeting/resume', lead: '/meeting/lead', seats: '/meeting/seats', say: '/meeting/say',
 };
 const CHIP = { ask: 'ASK', hand: 'HAND', call: 'CALL', lower: 'LOWER', ruling: 'RULING' };
 const maybePass = t => String(t).trim().length <= 8 && 'PASS'.startsWith(String(t).toUpperCase().replace(/[^A-Z]/g, ''));
@@ -29,9 +29,12 @@ export function meetingPane(host, opts) {
   const subEl = h('span', { class: 'caption muted mtg-sub' }, '');
   const costEl = h('span', { class: 'caption muted mtg-cost', role: 'status' }, '');
   const minutesBtn = Button('Open minutes', { variant: 'ghost', size: 'sm', aria: 'Open the minutes of this meeting', onClick: () => openMinutes() });
+  const registerBtn = Button('Register', { variant: 'secondary', size: 'sm', aria: 'The action register: rulings, actions, open questions, kill conditions', onClick: () => openRegister() });
+  registerBtn.dataset.act = 'register';
+  minutesBtn.dataset.act = 'minutes';
   const head = h('header', { class: 'chat-head' },
     h('div', { class: 'stack-4' }, h('h1', { class: 'h3' }, 'Meeting'), subEl, costEl),
-    h('div', { class: 'row-8 mtg-head-actions' }, opts.modeSwitch || null, minutesBtn));
+    h('div', { class: 'row-8 mtg-head-actions' }, opts.modeSwitch || null, registerBtn, minutesBtn));
   const seatsHost = h('div', { class: 'mtg-seats', role: 'group', 'aria-label': 'Seats, in speaking order' });
   const agendaHost = h('div', { class: 'mtg-agenda', role: 'group', 'aria-label': 'Agenda' });
   const stateHost = h('div', { class: 'mtg-state' });
@@ -224,7 +227,8 @@ export function meetingPane(host, opts) {
     if (e.kind === 'call') return chip(e.later ? 'LATER' : 'CALL', nm(e.name) + (e.later ? ' takes ' : ' calls on ') + nm(e.toName) + (e.later ? ' once the exchange is done' : ''), null, e);
     if (e.kind === 'lower') return chip('LOWER', nm(e.name) + ' lowered ' + nm(e.toName) + '\'s hand', null, e);
     if (e.kind === 'hand') return chip('HAND', nm(e.name) + ' raised a hand', e.why, e);
-    if (e.kind === 'ruling') return chip('RULING', nm(e.name) + ' recorded a ruling', e.text, e);
+    if (e.kind === 'ruling') return chip('RULING', e.who === 'owner' ? 'You ruled' : nm(e.name) + ' proposed a ruling (confirm it in the Register)', e.text + (e.plain ? ' — in plain words: ' + e.plain : ''), e);
+    if (e.kind === 'register') return chip({ actions: 'ACTION', questions: 'QUESTION', kills: 'KILL' }[e.section] || 'REGISTER', nm(e.name) + ' (' + ({ actions: 'action', questions: 'open question', kills: 'kill condition' }[e.section] || '') + ' ' + e.n + ')', e.text + (e.date ? ' · by ' + e.date : '') + (e.plain ? ' — in plain words: ' + e.plain : '') + (e.affects ? ' · affects ' + e.affects : ''), e);
     if (e.kind === 'parse') return h('div', { class: 'mtg-chip mtg-parse', 'data-kind': 'parse', 'data-i': e.i, role: 'status' }, h('span', { class: 'mtg-chip-k' }, 'COULD NOT READ'), h('span', { class: 'body-s' }, nm(e.name) + ': "' + e.line + '"'), h('span', { class: 'body-s muted' }, e.why + '. Nothing was done with it; ' + nm(e.name) + ' is told on their next turn.'));
     if (e.kind === 'close') return h('div', { class: 'mtg-end mtg-closed', 'data-i': e.i, role: 'note' }, h('span', { class: 'mtg-chip-k' }, e.state === 'interrupted' ? 'INTERRUPTED' : 'CLOSED'), h('span', { class: 'body-s' }, (e.line || '') + ' · ' + t));
     if (e.kind === 'catchup') return h('div', { class: 'mtg-end mtg-catchup', 'data-i': e.i, role: 'note' }, h('span', { class: 'mtg-chip-k' }, 'FOR YOU'), h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, 'Catch-up by ' + nm(e.name) + ' (only you see this)'), mdBlock(e.text, 'body-s'), h('span', { class: 'caption muted' }, t)));
@@ -328,7 +332,45 @@ export function meetingPane(host, opts) {
   const onKey = e => { if (e.key !== 'Escape' || e.defaultPrevented || e.target === ta || document.querySelector('dialog[open]')) return; if (/^(SELECT|INPUT)$/.test((e.target || {}).tagName || '')) return; raiseHand(); };
   document.addEventListener('keydown', onKey);
 
+  /* ---------- the register: each owner's lines; the owner's rulings ---------- */
+  async function openRegister() {
+    let d; try { d = await api('/meeting/register'); } catch (e) { app.toast(humanError(e), true); return; }
+    const old = document.querySelector('dialog.mtg-register'); if (old) old.remove();
+    const r = d.register; const bad = new Map((d.problems || []).map(p => [p.section + ':' + p.n, p.errors]));
+    const flag = (s, n) => bad.has(s + ':' + n) ? h('span', { class: 'caption danger' }, ' Fails validation: ' + bad.get(s + ':' + n).join('; ') + '.') : null;
+    const who = id => id === 'owner' ? 'you' : nm(nameOfId(id));
+    const sec = (title, rows, render) => h('section', { class: 'stack-6' }, h('h3', { class: 'label strong' }, title), rows.length ? h('ul', { class: 'plain stack-6' }, rows.map(render)) : h('p', { class: 'caption muted' }, 'None yet.'));
+    const reload = () => { dlg.close(); openRegister(); };
+    const rtext = h('input', { class: 'input', placeholder: 'Your ruling', 'aria-label': 'Your ruling', id: 'mtg-ruling-text' });
+    const rplain = h('input', { class: 'input', placeholder: 'In plain words (one sentence anyone can read)', 'aria-label': 'Your ruling in plain words', id: 'mtg-ruling-plain' });
+    const nrec = h('input', { class: 'input', placeholder: 'Something not recorded here (e.g. no money was spent)', 'aria-label': 'Not recorded here', id: 'mtg-notrec' });
+    const dlg = h('dialog', { class: 'keys-dialog mtg-register', 'aria-label': 'Action register' },
+      h('h2', { class: 'h3' }, 'Action register'),
+      h('p', { class: 'caption muted' }, 'What the meeting decided and who does what. Nobody writes a line for someone else: each owner updates their own. File: ' + d.file),
+      r.summary ? h('p', { class: 'body-s' }, h('strong', {}, 'Closed with: '), r.summary.text + (r.summary.plain ? ' — in plain words: ' + r.summary.plain : ''), r.summary.plain ? null : h('span', { class: 'caption danger' }, ' Fails validation: no plain-language line.')) : null,
+      sec('Your rulings', r.rulings, x => h('li', { class: 'stack-4', 'data-ruling': x.n }, h('span', { class: 'body-s' }, x.n + '. ' + x.text + (x.plain ? ' — in plain words: ' + x.plain : '')),
+        h('span', { class: 'caption muted' }, x.confirmed ? 'Confirmed by you' + (x.decisionId ? ' · in Decisions (' + x.decisionId + ')' : '') : 'Proposed by ' + who(x.proposedBy) + ': not yours until you confirm it'), flag('rulings', x.n),
+        x.confirmed ? null : Button('Confirm ruling', { variant: 'primary', size: 'sm', onClick: async () => { try { await post(ACTIONS.register, { op: 'confirm', n: x.n }); app.toast('Confirmed: it is in Decisions.'); reload(); } catch (e) { app.toast(humanError(e), true); } } }))),
+      h('div', { class: 'row-8' }, rtext, rplain, Button('Add your ruling', { variant: 'secondary', size: 'sm', onClick: async () => { try { await post(ACTIONS.register, { op: 'ruling', text: rtext.value, plain: rplain.value }); app.toast('Ruling recorded, and in Decisions.'); reload(); } catch (e) { app.toast(humanError(e), true); } } })),
+      sec('Actions', r.actions, x => h('li', { class: 'stack-2', 'data-action': x.n }, h('span', { class: 'body-s' }, x.n + '. ' + x.text), h('span', { class: 'body-s muted' }, 'In plain words: ' + (x.plain || '—')),
+        h('span', { class: 'caption muted' }, who(x.owner) + ' · ' + (x.date || 'no date') + ' · ' + (x.status || 'no status') + (x.affects ? ' · affects ' + x.affects : '') + ' · ' + who(x.owner) + ' updates this line'), flag('actions', x.n))),
+      sec('Open questions', r.questions, x => h('li', { class: 'body-s' }, x.text + (x.plain ? ' — in plain words: ' + x.plain : '') + ' (' + who(x.owner) + ')', flag('questions', x.n))),
+      sec('Kill conditions', r.kills, x => h('li', { class: 'body-s' }, x.text + (x.plain ? ' — in plain words: ' + x.plain : '') + ' (' + who(x.owner) + ')', flag('kills', x.n))),
+      sec('Not recorded here', r.notRecorded, x => h('li', { class: 'body-s' }, x.text)),
+      h('div', { class: 'row-8' }, nrec, Button('Add', { variant: 'secondary', size: 'sm', onClick: async () => { try { await post(ACTIONS.register, { op: 'not-recorded', text: nrec.value }); reload(); } catch (e) { app.toast(humanError(e), true); } } })),
+      h('form', { method: 'dialog' }, h('button', { class: 'btn btn-secondary btn-sm' }, 'Close')));
+    document.body.appendChild(dlg); dlg.addEventListener('close', () => dlg.remove()); dlg.showModal();
+  }
+
   /* ---------- the minutes ---------- */
+  function searchBox() {
+    const out = h('ul', { class: 'plain stack-4 mtg-search-out' });
+    const q = h('input', { class: 'input', type: 'search', placeholder: 'Search meetings: a name, a decision, an action, q:78…', 'aria-label': 'Search meetings', id: 'mtg-search' });
+    const go = async () => { let d; try { d = await api('/meeting/search?q=' + encodeURIComponent(q.value)); } catch (_) { return; }
+      fill(out, (d.meetings || []).length ? d.meetings.map(m => h('li', { class: 'body-s' }, h('strong', {}, String(m.startedAt || '').slice(0, 10) + ' · ' + m.type + (m.title ? ': ' + m.title : '')), ' — ' + (m.participants || []).join(', ') + (m.decisions && m.decisions.length ? ' · decided: ' + m.decisions.join('; ') : '') + (m.actions && m.actions.length ? ' · ' + m.actions.length + ' actions' : '') + ' (' + m.state + ')')) : h('li', { class: 'caption muted' }, 'No meeting matches.')); };
+    q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+    return h('div', { class: 'stack-6' }, h('div', { class: 'row-8' }, q, Button('Search', { variant: 'secondary', size: 'sm', onClick: go })), out);
+  }
   async function openMinutes(date) {
     let d; try { d = await api('/meeting/minutes' + (date ? '?date=' + encodeURIComponent(date) : '')); } catch (e) { app.toast(humanError(e), true); return; }
     const old = document.querySelector('dialog.mtg-minutes'); if (old) old.remove();
@@ -336,6 +378,7 @@ export function meetingPane(host, opts) {
     const dlg = h('dialog', { class: 'keys-dialog mtg-minutes', 'aria-label': 'Meeting minutes' },
       h('div', { class: 'between-c', style: 'flex-wrap:wrap;gap:8px' }, h('h2', { class: 'h3' }, 'Minutes'), days),
       h('p', { class: 'caption muted' }, 'Every word, as it was said: ' + d.path),
+      searchBox(),
       d.text ? mdBlock(d.text, 'mtg-minutes-body') : empty('No minutes for this day yet.'),
       h('form', { method: 'dialog' }, h('button', { class: 'btn btn-secondary btn-sm' }, 'Close')));
     document.body.appendChild(dlg); dlg.addEventListener('close', () => dlg.remove()); dlg.showModal();

@@ -26,6 +26,8 @@
       "bound": { "days": 33, "bytes": 32000000 }, "readers": "budget.js doors/coverage and the budget-drift duty (the last 24 h, read from the end)" },
     { "id": "meeting-events", "path": "company/state/meetings/events/*.jsonl", "policy": "roll-monthly", "format": "jsonl", "keepDays": 90, "maxLiveBytes": 8000000,
       "bound": { "days": 93, "bytes": 12000000 }, "readers": "console/meeting.js (one meeting's events, from the end: lib/bounded.js tailText 16 MB); the minutes and the register keep every word" },
+    { "id": "meeting-registers", "path": "company/state/meetings/register", "policy": "never",
+      "reason": "one small file per meeting (the action register, mode 600) and index.json (one row per meeting, capped at 1000 by console/meeting.js); a register is a record its owners keep updating" },
     { "id": "meeting-minutes", "path": "company/work/meetings", "policy": "never",
       "reason": "one file a day (meeting-<date>.md), written as the meeting goes; read by people and agents one day at a time, the console reads the last 2 MB of a day" },
     { "id": "locked-changes", "path": "company/work/security/locked-changes.jsonl", "policy": "roll-monthly", "format": "jsonl", "keepDays": 90,

@@ -1,7 +1,7 @@
 'use strict';
 // meeting.test.js — the owner's meeting (console/meeting.js) with a scripted runner in place of the station: turn order
 // and passes, @name, open rounds, the leader, observe, ASK / hands / CALL / LATER / LOWER, INVITE / DISMISS, seats for
-// this meeting vs standing seats, talk only, minutes, END and RULING to decisions.md, refusal fallback, the owner-scope
+// this meeting vs standing seats, talk only, minutes, the action register (END, RULING, ACTION; owner-confirmed rulings to decisions.md), refusal fallback, the owner-scope
 // lint, halt, state files. The station path (isTask on the wire, admit, restart re-attach, owner-only) is
 // tests/meeting-walk.js against tests/mock-station.js.
 //   node --test company/tools/tests/meeting.test.js
@@ -138,13 +138,15 @@ test('the leader: speaks first, can be set, kept across meetings, "no leader" wo
 test('observe: no owner turn, told not to ask the owner, carries on up to N rounds; stops on END or a silent round', async () => {
   let { M, runner } = fresh({ seats: ['dave', 'sharon'], leader: 'dave' });
   M.setObserve({ on: true, rounds: 4 });
-  runner.script({ dave: ['Plan A.', 'Agreed.\nEND: Plan A, Sharon writes it up'], sharon: ['Plan A works.', 'PASS'] });
+  runner.script({ dave: ['Plan A.', 'Agreed.\nEND: Plan A, Sharon writes it up — plain: we go with plan A and Sharon writes it down'], sharon: ['Plan A works.', 'PASS'] });
   await M.say({ text: 'Decide among yourselves.' }); await idle(M);
   assert.ok(runner.turns().every(c => /Caullen is observing: they will not speak unless they step in, so do not put questions to them/.test(c.last)), 'told not to ask the owner');
   assert.ok(/Open round, carried on without Caullen/.test(runner.turns()[2].last), 'the second round started by itself');
   assert.strictEqual(kinds(M, 'end').length, 1, 'END closes it');
   assert.strictEqual(runner.turns().length, 3, 'nothing after END');
-  assert.ok(/Meeting \d{4}-\d{2}-\d{2} closed: Plan A, Sharon writes it up/.test(R('company/work/decisions.md')), 'END goes to decisions.md: ' + R('company/work/decisions.md'));
+  const rg = M.registerView();
+  assert.ok(rg.register.summary && rg.register.summary.text === 'Plan A, Sharon writes it up' && rg.register.summary.plain === 'we go with plan A and Sharon writes it down', 'END is the register\'s summary with its plain line');
+  assert.ok(!/Plan A, Sharon writes it up/.test(R('company/work/decisions.md')), 'an END is not an owner ruling: not in decisions.md');
   // a round with nothing said stops it
   ({ M, runner } = fresh({ seats: ['dave', 'sharon'], leader: 'dave' }));
   M.setObserve({ on: true, rounds: 6 });
@@ -351,7 +353,7 @@ test('a malformed ASK / CALL / END surfaces a visible parse failure, and the wri
 test('minutes: written as it happens, every word by speaker with times and models, in the reference shape', async () => {
   const { M, runner } = fresh({ seats: ['dave', 'phil'], leader: 'dave', models: { phil: { provider: 'deepseek', model: 'deepseek-flash' } } });
   let release; const hold = new Promise(r => { release = r; });
-  runner.script({ dave: 'First words.\nRULING: Phil owns the fix', phil: { text: 'Second words.', hold } });
+  runner.script({ dave: 'First words.\nRULING: Phil owns the fix — plain: Phil fixes it', phil: { text: 'Second words.', hold } });
   await M.say({ text: 'Minutes check.' });
   const day = co.localParts(new Date()).date; const f = 'company/work/meetings/meeting-' + day + '.md';
   for (let i = 0; i < 200 && !/First words/.test(R(f)); i++) await new Promise(r => setTimeout(r, 10));
@@ -361,8 +363,8 @@ test('minutes: written as it happens, every word by speaker with times and model
   release(); await idle(M);
   const all = R(f);
   assert.ok(/\*\*Phil\*\* \(\d\d:\d\d, DeepSeek \(deepseek-flash\)\):\nSecond words\./.test(all), all);
-  assert.ok(/_\d\d:\d\d: Dave recorded a ruling: Phil owns the fix\._/.test(all));
-  assert.ok(/Meeting ruling: Phil owns the fix/.test(R('company/work/decisions.md')), 'a RULING goes to decisions.md through decision.js add');
+  assert.ok(/_\d\d:\d\d: Dave proposed a ruling for Caullen to confirm: Phil owns the fix\._/.test(all));
+  assert.ok(!/Phil owns the fix/.test(R('company/work/decisions.md')), 'a proposed ruling is not in decisions.md until the owner confirms it');
   assert.ok(!/PASS/.test(all), 'passes are not shown');
 });
 
@@ -582,4 +584,32 @@ test('your turn: an ASK of the owner or a CALL from the leader gives the owner t
   await M.say({ text: 'Next.' }); await idle(M);
   assert.ok(!/Summary bullets/.test(runner.turns().pop().all), 'the seats never see the catch-up');
   assert.ok(M.timeline().moments.some(m => m.kind === 'ask'), 'the timeline has the moments to scrub to');
+});
+
+test('the action register: rows come from their owners\' lines, a row without a plain line fails visibly, only confirmed owner rulings reach decisions.md, each owner updates their own lines', async () => {
+  const { M, runner } = fresh({ seats: ['dave', 'sharon', 'phil'], leader: 'dave' });
+  runner.script({ dave: 'Proposal.\nRULING: Email stays on Proton for now — plain: we keep the email we have', sharon: 'I will price it.\nACTION: Price both email options — by 2026-11-20 — plain: Sharon finds what each email option costs — affects: Finance, Risk\nQUESTION: Does mail from home deliver? — plain: can we send mail from the office line', phil: 'ACTION: Check port 25 — by own loop' });
+  await M.say({ text: 'Email: what do we do?' }); await idle(M);
+  const rv = M.registerView(); const r = rv.register;
+  assert.deepStrictEqual(r.actions.map(a => [a.n, a.owner, a.date, a.status, a.affects]), [[1, 'sharon', '2026-11-20', 'open', 'Finance, Risk']], 'Sharon\'s own line');
+  assert.strictEqual(r.actions[0].plain, 'Sharon finds what each email option costs');
+  assert.ok(kinds(M, 'parse').some(e => e.who === 'phil' && /no plain-language line/.test(e.why)), 'Phil\'s line without a plain part is refused, visibly');
+  assert.ok(r.questions.length === 1 && r.questions[0].owner === 'sharon');
+  assert.ok(r.rulings.length === 1 && !r.rulings[0].confirmed && r.rulings[0].proposedBy === 'dave', 'the leader proposes; the owner confirms');
+  assert.ok(!/Email stays on Proton/.test(R('company/work/decisions.md')));
+  await M.register({ op: 'confirm', n: 1 });
+  assert.ok(/Caullen \[d-[0-9a-f]{6}\] Meeting ruling \(\d{4}-\d{2}-\d{2}\): Email stays on Proton for now In plain words: we keep the email we have/.test(R('company/work/decisions.md')), R('company/work/decisions.md').slice(0, 400));
+  await M.register({ op: 'ruling', text: 'No new tools this week', plain: 'we use what we have this week' });
+  await assert.rejects(async () => M.register({ op: 'ruling', text: 'No plain line' }), /plain-language line/);
+  await assert.rejects(async () => M.register({ op: 'update', section: 'actions', n: 1, status: 'done' }), /only sharon updates this line/);
+  await M.register({ op: 'not-recorded', text: 'No outside party was contacted.' });
+  const md = R(path.relative(T, path.join(T, M.registerView().file)));
+  assert.ok(/## Owner rulings/.test(md) && /confirmed by the owner/.test(md) && /\| 1 \| Price both email options \| Sharon finds what each email option costs \| Sharon \| 2026-11-20 \| open \| Finance, Risk \|/.test(md) && /## Not recorded here\n- No outside party was contacted\./.test(md), md);
+  // searchable: participants, decisions, actions, links
+  runner.script({ dave: 'See q:78 and to-sharon.md.' });
+  await M.say({ text: '@dave links?' }); await idle(M);
+  const s1 = M.search(new URLSearchParams('q=price both email')).meetings;
+  assert.ok(s1.length === 1 && s1[0].actions[0].owner === 'Sharon' && s1[0].participants.includes('Sharon'));
+  const s2 = M.search(new URLSearchParams('q=q:78')).meetings;
+  assert.ok(s2.length === 1 && s2[0].links.quests.includes('q:78') && s2[0].links.handoffs.includes('to-sharon.md'), JSON.stringify(s2));
 });
