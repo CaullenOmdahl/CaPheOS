@@ -552,10 +552,8 @@ function requestPayload(ctx, rec) {
   if (!rel) return '';
   try { return fs.readFileSync(ctx.P(rel), 'utf8'); } catch (_) { return ''; }
 }
-function nextFrameworkRequestId(dir) {
-  let n = 0; try { for (const f of fs.readdirSync(dir)) { const m = /^fr-(\d+)\.md$/.exec(f); if (m) n = Math.max(n, Number(m[1])); } } catch (_) {}
-  return 'fr-' + String(n + 1).padStart(4, '0');
-}
+// one sequence with lib/framework-edits.js (fr-0007.md and a hand-written fr-0007-title.md count alike)
+function nextFrameworkRequestId(dir) { return require('./lib/framework-edits').nextRequestId(dir); }
 function frameworkRequest(ctx, rec, p) {
   const file = rec && rec.target && rec.target.file;
   if (!file || !['tool', 'house-rule', 'policy'].includes(rec.kind) || OWNED_FILES.has(file)) return null;

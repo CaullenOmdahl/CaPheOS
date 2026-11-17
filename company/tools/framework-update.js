@@ -34,7 +34,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync, spawn } = require('child_process');
 
-const OWNED = ['company/company.json', 'company/CHARTER.md', 'company/competence-policy.json', 'company/model-policy.json', 'company/tools/loops.json'];
+const OWNED = require('./lib/framework-edits').OWNED;   // the one list of company-owned tracked files
 const MERGE_JSON = ['company/company.json', 'company/competence-policy.json', 'company/model-policy.json'];
 
 const isObj = v => v && typeof v === 'object' && !Array.isArray(v);
@@ -83,16 +83,11 @@ function check(opts) {
   const patches = files.filter(f => f.status === 'A' && /^company\/patches\/\d{4}-.*\.diff$/.test(f.file)).map(f => path.basename(f.file, '.diff'));
   const needsSetup = patches.length > 0 || files.some(f => /^systemd\//.test(f.file) || f.file === 'scripts/setup-station.sh');
   const needsConsoleRestart = files.some(f => /^console\/[^/]+\.js$/.test(f.file) || /^company\/tools\/lib\//.test(f.file));
-  // hidden (skip-worktree) tracked files other than the owned ones that this company changed and the update also changes
-  const hidden = git(root, ['ls-files', '-v']).out.split('\n').filter(l => /^S /.test(l)).map(l => l.slice(2));
-  for (const f of hidden) {
-    if (OWNED.includes(f) || !changed.has(f)) continue;
-    const same = spawnSync('git', ['-C', root, 'diff', '--quiet', 'HEAD', '--', f]).status === 0;
-    const onDisk = fs.existsSync(path.join(root, f));
-    if (onDisk && !same) blockers.push(f + ' was changed in this company and the update changes it too; it needs the server admin (a company should not edit framework files: a framework request instead)');
-  }
-  const dirty = git(root, ['diff', '--name-only', 'HEAD']).out.split('\n').filter(Boolean).filter(f => !OWNED.includes(f) && changed.has(f));
-  for (const f of dirty) if (!hidden.includes(f)) blockers.push(f + ' has uncommitted changes the update would overwrite');
+  // framework files this company edited in place (hidden with skip-worktree, or visibly): no longer a blocker; apply saves
+  // each one as a framework request and puts it back before it pulls (lib/framework-edits.js)
+  const FE = require('./lib/framework-edits');
+  const edited = FE.crewEdits(root);
+  if (edited.length) notes.push(edited.length + ' framework file(s) were edited in this company (' + edited.map(e => e.file).join(', ') + '): the update saves each as a framework request and puts it back first');
   const owned = [];
   for (const f of OWNED) {
     if (!changed.has(f)) continue;
@@ -139,6 +134,9 @@ function apply(opts) {
   }
   const backup = path.join(root, 'scripts', 'backup.sh');
   if (!opts.noBackup && fs.existsSync(backup) && !runStep(steps, 'backup', 'bash', [backup], { cwd: root })) return { ok: false, code: 1, error: 'the backup failed; nothing was changed', steps };
+  // 2b. framework files the crew edited in place: each saved as a framework request and put back, so the pull is clean
+  { const sw = require('./lib/framework-edits').sweep(root, { via: 'framework-update.js apply', by: 'the crew (found before the update)' });
+    steps.push({ step: 'framework files edited in this company', ok: true, out: sw.line || 'none' }); }
   // 3. save and un-hide the owned files
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const keep = path.join(root, 'company', 'state', 'framework-update', stamp);
@@ -249,6 +247,21 @@ function selftest() {
     const rows = fs.readFileSync(path.join(I, 'company', 'state', 'framework-updates.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
     ok(rows.length === 1 && rows[0].by === 'owner' && rows[0].to === upHead && /owner\) took the framework update/.test(fs.readFileSync(path.join(I, 'company', 'work', 'decisions.md'), 'utf8')), 'apply: recorded as the owner\'s (framework-updates.jsonl and decisions.md)');
     ok(fs.existsSync(path.join(I, rows[0].saved, 'company', 'company.json')), 'apply: the owned files as they were are kept');
+    // a crew edit of a framework file, hidden with skip-worktree, no longer blocks an update: it is filed and put back
+    W(I, 'console/server.js', '// v2\n// a rule the crew wrote in place\n'); G(I, 'update-index', '--skip-worktree', 'console/server.js');
+    G(I, 'update-index', '--skip-worktree', '.gitignore');   // hidden but unchanged: nothing to file
+    W(U, 'console/server.js', '// v2.5\n'); G(U, 'commit', '-qam', 'v2.5'); const up25 = G(U, 'rev-parse', 'HEAD');
+    let c2 = check({ root: I });
+    ok(c2.ok && !c2.blockers.length && c2.notes.some(x => /console\/server\.js/.test(x) && /framework request/.test(x)), 'check: a hidden crew edit of a framework file is a note, not a blocker: ' + JSON.stringify(c2.blockers));
+    const charterBefore = fs.readFileSync(path.join(I, 'company', 'CHARTER.md'), 'utf8');
+    r = apply({ root: I, by: 'owner', expect: up25.slice(0, 12), ownerRefusal: () => null, noBackup: true, noSetup: true, noRestart: true });
+    ok(r.ok && r.updated && fs.readFileSync(path.join(I, 'console', 'server.js'), 'utf8') === '// v2.5\n', 'apply: the hidden crew edit did not block the pull: ' + (r.error || ''));
+    const reqs = fs.readdirSync(path.join(I, 'company', 'work', 'framework-requests')).filter(f => /^fr-\d+/.test(f));
+    const req = reqs.map(f => fs.readFileSync(path.join(I, 'company', 'work', 'framework-requests', f), 'utf8')).find(t => t.includes('`console/server.js`'));
+    ok(req && /\+\/\/ a rule the crew wrote in place/.test(req) && /^--- a\/console\/server\.js$/m.test(req), 'apply: the edit is filed as a framework request with its diff');
+    ok(!reqs.some(f => /gitignore/.test(fs.readFileSync(path.join(I, 'company', 'work', 'framework-requests', f), 'utf8'))), 'apply: no request for a hidden file that matches HEAD');
+    ok(fs.readFileSync(path.join(I, 'company', 'CHARTER.md'), 'utf8') === charterBefore, 'apply: company-owned files are untouched');
+    ok(r.steps.some(x => /framework files edited/.test(x.step) && /fr-\d{4}/.test(x.out)), 'apply: one plain line says what was filed');
     // a company commit of its own blocks
     W(I, 'x.txt', 'x'); spawnSync('git', ['-C', I, '-c', 'core.hooksPath=/dev/null', '-c', 'user.name=t', '-c', 'user.email=t@t', 'add', 'x.txt']); spawnSync('git', ['-C', I, '-c', 'core.hooksPath=/dev/null', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'local']);
     W(U, 'console/server.js', '// v3\n'); G(U, 'commit', '-qam', 'v3');

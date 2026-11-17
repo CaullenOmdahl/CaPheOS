@@ -683,6 +683,25 @@ function runTick(ctx) {
   // the owner channel's cutover (lib/owner-channel.js): recorded once, before its lines are judged, so history is history
   if (!ctx.dry) { try { require('./lib/owner-channel').ensureCutover({ root: ctx.root, file: ctx.P('company/owner/inbound.jsonl') }); } catch (_) {} }
   if (!ctx.dry) { try { require('./lib/pm-inbox-guard').ensureCutover({ root: ctx.root, file: ctx.P('company/pm-inbox.jsonl') }); } catch (_) {} }
+  // a crew edit of a FRAMEWORK file (tracked, not company-owned) in a running company, caught within this tick: saved as a
+  // framework request with its diff and put back to the framework's version now (lib/framework-edits.js), so the company
+  // runs on the rules that were shipped and the next framework update pulls clean. The editor and the CEO are told.
+  const fwEdits = [];
+  if (!ctx.dry && !flagOnly) {
+    try {
+      const FE = require('./lib/framework-edits');
+      const pending = FE.crewEdits(ctx.root);
+      if (pending.length) {
+        let h = []; try { h = scanCalls(ctx, ctx.now - 30 * 60000, pending.map(e => ({ key: e.file, text: e.file }))); } catch (_) {}
+        for (const e of pending) {
+          const w = h.filter(x => x.key === e.file && x.write).pop() || null;
+          const r = FE.fileRequest(ctx.root, e, { by: w ? w.name + ' (' + w.agentId + ', run ' + w.runId + ')' : null, via: 'locked-watch.js' });
+          const restored = FE.restore(ctx.root, e.file);
+          fwEdits.push({ file: e.file, fr: r.id, already: r.already, restored, editor: w });
+        }
+      }
+    } catch (e) { notes.push('framework-edit check failed: ' + e.message); }
+  }
   // hash first, read the records after: a write we see has always been recorded by then (the tools record right after the rename)
   const cur = new Map(); for (const key of new Set([...items.keys(), ...Object.keys(base.files)])) cur.set(key, stateOf(ctx, key));
   // provenance rows since the last check: those after the byte offset the baseline read up to
@@ -973,6 +992,18 @@ function runTick(ctx) {
     if (e.kind !== 'flagged' || (items.get(e.key) || {}).alwaysWatched) continue;
     drift.unshift(Object.assign({}, e, { kind: 'drift', why: e.why + '; recorded only (the harnessSelfEdit guardrail is off)', undo: undefined, accept: undefined })); events.splice(i, 1);
   }
+  for (const x of fwEdits.filter(x => !x.already)) {
+    const ev1 = { id: evId(ctx), at: local(ctx.now), key: x.file, cls: 'F', area: 'framework', owner: 'ceo', kind: 'framework-request', who: x.editor ? x.editor.name + ' (' + x.editor.agentId + ')' : null,
+      why: 'a framework file edited in this company: framework files are changed upstream, so the edit is saved as ' + x.fr + ' (company/work/framework-requests/' + x.fr + '.md) and the file ' + (x.restored ? 'was put back to the framework\'s version' : 'could NOT be put back (check it)'),
+      undo: 'none needed: the edit is kept in ' + x.fr + '; forward it to the framework' };
+    events.push(ev1);
+    // the editor hears it in plain words, in their own inbox
+    const ed = x.editor && (ctx.agents || {})[x.editor.agentId];
+    if (ed && ed.inbox && /^[A-Za-z0-9_.-]+\.md$/.test(ed.inbox) && !ctx.dry) {
+      try { fs.mkdirSync(ctx.paths.handoffs, { recursive: true }); fs.appendFileSync(path.join(ctx.paths.handoffs, ed.inbox), '\n## ' + stamp(ctx.now) + ' from ' + TOOL_NAME + ' — your edit of ' + x.file + ' is saved as ' + x.fr + '\n**Need:** nothing to redo. Framework files are changed upstream, not in the company: your edit is saved as ' + x.fr + ' (company/work/framework-requests/' + x.fr + '.md) for the framework, and ' + x.file + ' is back to the shipped version. To change a rule for this company, propose it with company/tools/harness-change.js.\n**Deadline:** none\n**Status:** DONE — FYI\n'); } catch (_) {}
+    }
+  }
+  if (fwEdits.length) notes.push(fwEdits.length + ' framework file(s) edited in this company saved as framework requests and put back: ' + fwEdits.map(x => x.file + ' -> ' + x.fr).join(', '));
   if (!ctx.dry) { saveBaseline(ctx, base); if (events.length) report(ctx, events); if (drift.length) report(ctx, drift, { noHandoffs: true }); }
   if (drift.length) ctx.log('LOCKED WATCH (guardrail off, recorded only): ' + drift.map(e => e.key).join('; ').slice(0, 400));
   if (events.length) ctx.log('LOCKED WATCH' + (ctx.dry ? ' (dry run)' : '') + ': ' + events.map(e => e.kind + ' ' + e.key).join('; ').slice(0, 600) + (flagOnly ? ' [automatic reverts off: ' + notes.join('; ') + ']' : ''));

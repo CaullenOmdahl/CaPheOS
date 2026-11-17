@@ -78,4 +78,18 @@ git pull -q --ff-only >/dev/null 2>&1 || bad "pull after stash"
 scripts/instance-guard.sh >/dev/null
 check "README update commands: update taken, owner choice kept, clean again" bash -c 'node -e "const p=require(\"./company/model-policy.json\");process.exit(p._docUpdate===\"framework 3\"&&p.candidateDefault.setBy===\"Alex\"?0:1)" && [[ -z "$(git status --porcelain)" ]] && scripts/instance-guard.sh --check >/dev/null'
 
+# a crew edit of a framework doc in place, hidden with skip-worktree (the old instance-guard step 4 did that): the guard
+# files it as a framework request with its diff and puts the file back, so the next pull is clean; owner files untouched
+printf '%s\n' '- a rule the crew wrote in place' >> company/HANDOFFS.md
+git update-index --skip-worktree company/HANDOFFS.md
+cp company/CHARTER.md "$T/charter.before"
+( cd "$U" && printf '%s\n' '- framework update 4' >> company/HANDOFFS.md && "${G[@]}" commit -qam "update 4" )
+scripts/instance-guard.sh >/dev/null
+check "a hidden crew edit of a framework doc is filed with its diff" bash -c 'grep -l "\`company/HANDOFFS.md\`" company/work/framework-requests/fr-*.md >/dev/null && grep -q "^+- a rule the crew wrote in place" $(grep -l "\`company/HANDOFFS.md\`" company/work/framework-requests/fr-*.md | head -1)'
+check "...and the file is back to the framework's version, not hidden" bash -c '! git ls-files -v company/HANDOFFS.md | grep -q "^S" && git diff --quiet HEAD -- company/HANDOFFS.md'
+check "the next pull is clean" bash -c 'git pull -q --ff-only >/dev/null 2>&1 && grep -q "framework update 4" company/HANDOFFS.md'
+check "company-owned files are untouched" cmp -s company/CHARTER.md "$T/charter.before"
+n0=$(ls company/work/framework-requests/fr-*.md | wc -l); scripts/instance-guard.sh >/dev/null
+check "no request for a file that matches HEAD (a second guard run files nothing)" bash -c "[[ \$(ls company/work/framework-requests/fr-*.md | wc -l) == $n0 ]]"
+
 [[ $fails = 0 ]] && echo "PASS" || { echo "FAIL $fails"; exit 1; }

@@ -12,8 +12,9 @@
 #      instance-local company/state/inventory-local.md and restores those two files to HEAD (module.js migrate-rows),
 #      so a framework `git pull` stays clean;
 #   4. hides, up front, the tracked files a company owns (OWNED below: company.json, CHARTER.md, competence-policy.json,
-#      model-policy.json, tools/loops.json) and any other tracked file that has changed, with `git update-index --skip-worktree`, so they
-#      never show as changes to commit (console Setup reruns this after each write to a tracked file);
+#      model-policy.json, tools/loops.json) with `git update-index --skip-worktree`, so they never show as changes to commit
+#      (console Setup reruns this after each write to a tracked file). Any OTHER tracked file the company changed is a
+#      framework file: it is saved as a framework request and put back (lib/framework-edits.js), never hidden;
 #   5. lists files a running company adds next to framework files (module tools copied into company/tools/)
 #      in .git/info/exclude — local only, never committed.
 # Everything else a company creates (company/work, state, owner, hiring, roles, console panels, secrets, the station
@@ -66,10 +67,18 @@ for f in "${OWNED[@]}"; do
   [[ "$(git ls-files -v -- "$f" | cut -c1)" == "S" ]] && continue
   if [[ $CHECK = 1 ]]; then echo "LEAK  company-owned tracked file not hidden: $f"; leaks=1; else git update-index --skip-worktree -- "$f" && echo "hidden from git: $f"; fi
 done
-while IFS= read -r f; do
-  [[ -z "$f" ]] && continue
-  if [[ $CHECK = 1 ]]; then echo "LEAK  tracked file changed: $f"; leaks=1; else git update-index --skip-worktree -- "$f" && echo "hidden from git: $f"; fi
-done < <(git diff --name-only)
+# any other tracked file the company changed is a FRAMEWORK file: never hidden (that blocked every later git pull). It is
+# saved as a framework request and put back to the framework's version (company/tools/lib/framework-edits.js).
+FE=company/tools/lib/framework-edits.js
+if [[ $CHECK = 1 ]]; then
+  while IFS= read -r f; do [[ -z "$f" ]] && continue; echo "LEAK  framework file changed in this company: $f (instance-guard.sh files it as a framework request and restores it)"; leaks=1; done < <(
+    if command -v node >/dev/null 2>&1 && [[ -f $FE ]]; then CAPHEOS_ROOT="$ROOT" node "$FE" list 2>/dev/null | grep -v '^no framework file'; else git diff --name-only; fi)
+elif command -v node >/dev/null 2>&1 && [[ -f $FE ]]; then
+  out="$(CAPHEOS_ROOT="$ROOT" node "$FE" sweep --by "the crew (found by instance-guard.sh)" 2>/dev/null || true)"
+  [[ -n "$out" && "$out" != no\ framework* ]] && echo "$out" || true
+else
+  while IFS= read -r f; do [[ -z "$f" ]] && continue; git update-index --skip-worktree -- "$f" && echo "hidden from git: $f"; done < <(git diff --name-only)
+fi
 # 5. untracked, not ignored → .git/info/exclude
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
