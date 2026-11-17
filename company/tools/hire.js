@@ -252,12 +252,16 @@ function readIf(p, n) { try { return fs.readFileSync(p, 'utf8').slice(0, n || 60
 
 // POST /api/run with no tools; returns the lead run's text. Keeps the socket open (closing it aborts the run).
 function runTurn(agentId, model, provider, messages, streamId) {
+  // the one gate (lib/admit.js, door hire): phase 1 always allows and records each interview turn; the budget check above
+  // (budgetState) still decides whether interviews start at all
+  const tk = require('./lib/admit').admit({ door: 'hire', kind: 'run', seat: agentId, why: 'interview turn ' + streamId });
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ agentId, model, provider, rosterSystem: true, client: 'terminal', isTask: false, streamId, messages });
     const station = new URL(co.STATION_URL);
     let token; try { token = co.stationToken(); } catch (e) { reject(e); return; }
     const req = http.request({ hostname: station.hostname, port: station.port || 80, path: '/api/run', method: 'POST',
       headers: { 'x-starnet-token': token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, res => {
+      require('./lib/admit').started(tk, { status: res.statusCode });
       if (res.statusCode !== 200) { let d = ''; res.on('data', c => d += c); res.on('end', () => reject(new Error('HTTP ' + res.statusCode + ' ' + d.slice(0, 200)))); return; }
       let buf = '', lead = null, text = '', end = null;
       res.on('data', c => {
@@ -965,9 +969,13 @@ async function hire(a) {
   const FL = require('./founder-loop.js');
   const blessed = await FL.blessRoot(async (m, p, b) => { const r = await C.call(m, p, b); let j = null; try { j = JSON.parse(r.body); } catch (_) {} return { status: r.status, json: j, text: String(r.body || '').slice(0, 200) }; });
   if (!blessed.ok) staffLog('BLESS FAILED for the company folder while hiring ' + display + ': ' + blessed.error);
+  // runtime.scheduler=dispatcher (lib/scheduler.js): the loop is created paused on the station and recorded as the
+  // dispatcher's, which starts its scheduled runs; station: armed on the station's schedule, as before
+  const SCHED = require('./lib/scheduler'); const dispatcherOwns = SCHED.mode() === 'dispatcher';
   const job = await C.call('POST', '/api/cron', { name: loopName, agentId, schedule: String(a.schedule || '0 */2 * * *'), tz: co.TZ, prompt,
-    workdir: ROOT, deliver: 'local', enabled: true, model: cand.model, provider: cand.provider, unattendedGrants: FL.LOOP_GRANTS });
+    workdir: ROOT, deliver: 'local', enabled: !dispatcherOwns, model: cand.model, provider: cand.provider, unattendedGrants: FL.LOOP_GRANTS });
   const jj = (() => { try { return JSON.parse(job.body); } catch (_) { return {}; } })();
+  if (dispatcherOwns && jj.job && jj.job.id) { try { const st = SCHED.readState(ROOT); st.owned[jj.job.id] = { seat: agentId, name: loopName, on: true }; SCHED.writeState(Object.assign(st, { mode: 'dispatcher' }), ROOT); } catch (e) { staffLog('SCHEDULER: could not record ' + loopName + ' as the dispatcher\'s: ' + e.message); } }
   // the hire's own model chain (company/tools/models.js): the interviewed model first, then candidateDefault, then a
   // subscription model when one is connected on the station; the failover tick moves the seat along it
   let chain = null;

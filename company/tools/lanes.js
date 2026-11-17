@@ -38,6 +38,8 @@ const fs = require('fs'), path = require('path'), http = require('http');
 const { execFileSync } = require('child_process');
 const co = require('./lib/company');
 const SP = require('./lib/sprint');
+const A = require('./lib/admit');
+const SCHED = require('./lib/scheduler');
 
 const CAPABILITY = 'workspace-lease-per-folder';
 const HOOK_TIMEOUT_MS = 60000;
@@ -204,19 +206,15 @@ function promptFor(o) {
   return lines.join('\n');
 }
 
-/* ---------- budget: the same rules as a wake ---------- */
+/* ---------- budget: the same rules as a wake, from the one copy (lib/admit.js money()) ----------
+ * No money rule lives here: the dispatcher's numbers (a.budget) go to A.money(), and a lane's start goes through admit()
+ * (door lane). Phase 1 keeps the lane's inputs as they were (no `blocking` passed to the spread); phase 2 decides in admit(). */
 function moneyHold(seatJob, b, agentId) {
   if (!b) return null;
-  const metered = !(b.unmetered || ['claude-cli']).includes(String(seatJob.provider || ''));
-  if (!metered) return null;
-  if (b.capped) return b.capOn ? 'the daily metered cap is reached' : null;
-  if (b.perAgentUsd > 0 && ((b.byAgent || {})[agentId] || 0) >= b.perAgentUsd) return b.capOn ? 'the seat is at its per-agent share' : null;
-  if (b.sprintBudgetLeft != null && b.sprintBudgetLeft <= 0) return 'the Sprint budget is spent';
-  if (b.capOn && b.spread !== false && b.dailyUsd > 0) {
-    const why = SP.spreadHold({ cap: b.dailyUsd, spent24h: b.spent, spentLastHour: b.lastHourMetered, hoursLeft: b.hoursLeft });
-    if (why) return why;
-  }
-  return null;
+  const m = A.money({ metered: !(b.unmetered || ['claude-cli']).includes(String(seatJob.provider || '')), capOn: b.capOn, capped: b.capped,
+    share: { usd: b.perAgentUsd, spent: (b.byAgent || {})[agentId] }, sprintBudgetLeft: b.sprintBudgetLeft,
+    spread: { on: b.spread !== false, cap: b.dailyUsd, spent24h: b.spent, spentLastHour: b.lastHourMetered, hoursLeft: b.hoursLeft } });
+  return m.verdict === 'run' || m.verdict === 'wouldHold' ? null : m.why;
 }
 
 /* ---------- end a lane ---------- */
@@ -335,7 +333,8 @@ async function hook(a) {
       const job = loopOf(id);
       // the main loop's run may be working any of these items right now: lanes start only between its runs, and the
       // main loop fired later in this same tick sees the Lane line on what the lanes took
-      const hold = !job ? 'its loop routine was not found' : job.enabled === false ? 'its loop routine is paused (the pacer or the owner)' : (a.modes || {})[id] === 'ask' && !a.allowAsk ? 'its approval mode is "ask"'
+      const ow = job && SCHED.mode() === 'dispatcher' ? SCHED.readState(S.root()).owned[job.id] : null;   // paused on the station because the dispatcher starts it: not paused
+      const hold = !job ? 'its loop routine was not found' : job.enabled === false && !(ow && ow.on !== false) ? 'its loop routine is paused (the pacer or the owner)' : (a.modes || {})[id] === 'ask' && !a.allowAsk ? 'its approval mode is "ask"'
         : job.inFlight || job.state === 'running' ? 'its main loop is running (lanes start between its runs)' : null;
       if (hold) { out.held.push(id + ': ' + hold); continue; }
       for (let k = 1; k < plan.lanes.length; k++) {
@@ -410,7 +409,9 @@ async function start({ id, n, laneId, c, job, it, cfg }) {
   const cr = j(await S.call('POST', '/api/cron', body)) || {};
   if (!cr.job || !cr.job.id || cr.duplicate || cr.job.name !== name) throw new Error('POST /api/cron did not create the lane routine: ' + JSON.stringify(cr).slice(0, 160));
   const firedAt = S.now();
+  const tk = A.admit({ door: 'lane', kind: 'run', seat: id, jobId: cr.job.id, why: 'lane ' + laneId + ': ' + it.heading });   // phase 1: always allow, recorded
   const f = await S.fire(cr.job.id);
+  A.started(tk, f);
   if (f.status !== 200) { try { await S.call('POST', '/api/cron/remove', { id: cr.job.id }); } catch (_) {} if (place.kind === 'worktree') { try { git(place.repo, ['worktree', 'remove', '--force', p.dir]); git(place.repo, ['branch', '-D', p.branch]); } catch (_) {} } throw new Error('the station refused the run: HTTP ' + f.status + ' ' + String(f.body).slice(0, 120)); }
   const lane = { id: laneId, seat: id, n, heading: it.heading, inbox: c.inbox, touches: it.touches, jobId: cr.job.id, jobName: name, runId: f.runId || null,
     firedAt: iso(firedAt), startedAt: iso(firedAt), timeoutMin: cfg.timeoutMin, dir: p.dir, kind: place.kind, why: place.why || null, repo: p.repo, branch: p.branch, base: p.base,

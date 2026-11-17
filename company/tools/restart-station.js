@@ -27,6 +27,8 @@
  * 'restart': the dispatcher wakes nobody (its log says RESTART HOLD), hiring does not advance, founder-loop ensure does
  * not re-arm. It also disarms the station scheduler (POST /api/cron/arm {enabled:false}) when it was armed, so no routine
  * fires on its schedule; it never touches a scheduler that is off or E-STOP halted. Running work is never stopped.
+ * With company.json runtime.scheduler = "dispatcher" (docs/BUDGET.md) the only armed routine is the watchdog, so
+ * disarming pauses only that check; the dispatcher's own hold is what keeps the crew's loops from starting.
  * The hold expires by itself (its cap + 15 min) if this script dies; --release drops it at once.
  *
  * THE HOLD HAS ITS OWN CAP (--hold-max-min, default 15). On 2026-11-17 a hold froze the whole company for 40+ minutes

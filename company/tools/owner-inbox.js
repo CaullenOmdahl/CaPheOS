@@ -17,6 +17,7 @@
  *   node company/tools/owner-inbox.js ack --id <messageId> --by <name> --note "what was done with it"
  *   node company/tools/owner-inbox.js ack --all --by <name> --note "..."
  *   node company/tools/owner-inbox.js send --by <name> --text "..." [--re <id>]   # append to outbound.jsonl
+ *   (module: send({from, text, re?, priority?}); priority 'top' marks a liveness alert, e.g. watchdog.js: the dispatcher is silent)
  *   node company/tools/owner-inbox.js log              # the acknowledgement history
  *   node company/tools/owner-inbox.js --selftest       # offline fixtures
  *
@@ -69,12 +70,13 @@ function redact(t) {
   try { for (const f of fs.readdirSync(co.SECRETS_DIR)) { if (f === 'README.md') continue; const v = (co.secret(f) || '').trim(); if (v.length >= 12) out = out.split(v).join('[secret ' + f + ']'); } } catch (_) {}
   return out.replace(/\b(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abp]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b/g, '[redacted key]');
 }
-function send({ from, text, re } = {}) {
+function send({ from, text, re, priority } = {}) {
   const body = redact(String(text || '').trim());
   if (!body) throw new Error('send: text is required');
   const row = { id: 'out-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6), at: new Date().toISOString(),
     from: String(from || co.nameOf(co.ceo()) || 'company'), text: body };
   if (re) row.re = String(re);
+  if (priority === 'top') row.priority = 'top';   // a liveness alert (watchdog.js): the console shows it first
   fs.mkdirSync(path.dirname(OUTBOUND()), { recursive: true });
   fs.appendFileSync(OUTBOUND(), JSON.stringify(row) + '\n');
   return row;

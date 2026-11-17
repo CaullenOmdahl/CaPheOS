@@ -99,6 +99,9 @@ function stationProxy(req, res, sub, search) {
   const token = stationToken();
   if (!token) return sendJson(res, 502, { ok: false, error: 'station unavailable: no station token (secrets/station-token)' });
   let u; try { u = new URL(co.STATION_URL + '/api/' + sub + (search || '')); } catch (e) { return sendJson(res, 502, { ok: false, error: e.message }); }
+  // the one gate (company/tools/lib/admit.js): a run started from the console is counted (door health for a health-check
+  // stream, console otherwise). Phase 1 always allows: the body is read, recorded, and passed on unchanged.
+  if (req.method === 'POST' && (sub === 'run' || sub === 'cron/run')) return admitThenProxy(req, res, sub, u, token);
   const headers = { 'x-starnet-token': token, accept: req.headers.accept || '*/*' };
   if (req.headers['content-type']) headers['content-type'] = req.headers['content-type'];
   if (req.headers['content-length']) headers['content-length'] = req.headers['content-length'];
@@ -111,6 +114,32 @@ function stationProxy(req, res, sub, search) {
   up.on('error', e => { if (!res.headersSent) sendJson(res, 502, { ok: false, error: 'station unreachable: ' + e.message }); else res.end(); });
   res.on('close', () => up.destroy());
   if (req.method === 'POST') req.pipe(up); else up.end();
+}
+
+function admitThenProxy(req, res, sub, u, token) {
+  const chunks = []; let size = 0, over = false;
+  req.on('data', c => { size += c.length; if (size > 4 << 20) { over = true; req.destroy(); } else chunks.push(c); });
+  req.on('end', () => {
+    if (over) return sendJson(res, 413, { ok: false, error: 'body too large' });
+    const buf = Buffer.concat(chunks);
+    let b = {}; try { b = JSON.parse(buf.toString('utf8') || '{}') || {}; } catch (_) {}
+    let tk = null;
+    try {
+      const health = sub === 'run' && /^(aicheck|health)/i.test(String(b.streamId || ''));
+      tk = require(co.p('company', 'tools', 'lib', 'admit.js')).admit({ door: health ? 'health' : 'console', kind: 'run', seat: sub === 'run' ? String(b.agentId || 'agent') : null, jobId: sub === 'cron/run' ? String(b.id || '') : null, why: health ? 'console health check' : 'owner: ' + sub + ' from the console' });
+    } catch (_) {}
+    const headers = { 'x-starnet-token': token, accept: req.headers.accept || '*/*', 'content-type': req.headers['content-type'] || 'application/json', 'content-length': buf.length };
+    const up = http.request({ hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: 'POST', headers }, ur => {
+      try { require(co.p('company', 'tools', 'lib', 'admit.js')).started(tk, { status: ur.statusCode }); } catch (_) {}
+      const h = {}; for (const k of ['content-type', 'cache-control', 'content-length']) if (ur.headers[k]) h[k] = ur.headers[k];
+      res.writeHead(ur.statusCode || 502, h);
+      ur.pipe(res);
+    });
+    up.setTimeout(30000, () => up.destroy(new Error('station timeout')));
+    up.on('error', e => { if (!res.headersSent) sendJson(res, 502, { ok: false, error: 'station unreachable: ' + e.message }); else res.end(); });
+    res.on('close', () => up.destroy());
+    up.end(buf);
+  });
 }
 
 /* ---------------- auth ---------------- */

@@ -22,6 +22,8 @@
       "bound": { "days": 93, "bytes": 4000000 }, "readers": "models.js" },
     { "id": "pacer-log", "path": "company/state/pacer-log.jsonl", "policy": "roll-monthly", "format": "jsonl", "keepDays": 30,
       "bound": { "days": 33, "bytes": 16000000 }, "readers": "pacer.js, offpeak-proof.js (one day at a time)" },
+    { "id": "admit-log", "path": "company/state/admit-log.jsonl", "policy": "roll-monthly", "format": "jsonl", "keepDays": 30,
+      "bound": { "days": 33, "bytes": 32000000 }, "readers": "budget.js doors/coverage and the budget-drift duty (the last 24 h, read from the end)" },
     { "id": "locked-changes", "path": "company/work/security/locked-changes.jsonl", "policy": "roll-monthly", "format": "jsonl", "keepDays": 90,
       "bound": { "days": 93, "bytes": 8000000 }, "readers": "locked-watch.js (writes), console" },
     { "id": "provenance", "path": "company/state/locked/provenance.jsonl", "policy": "roll-monthly", "format": "jsonl", "keepDays": 14, "special": "provenance",

@@ -102,6 +102,7 @@ brokenSince, error, lastFlaggedKey, waits, history}` (last 12 results).
 | `module-doctor` | `module.js` | tools | 6 h | an enabled module failing its static and enabled-state checks | **without** the framework refresh (copies files) and **without** conformance tests (they run module code): `doctor` remains the full check |
 | `commitments-due` | `modules/commitments/tools/commitments.js` | each commitment's owner seat | 10 min | an open commitment past its due time | `list()` only; replaces agents scheduling their own wakes for a deadline |
 | `unregistered-services` | `service.js` | risk | 30 min | a systemd user unit (unit file or transient) whose ExecStart or WorkingDirectory is inside this company folder but is not in `company/state/services.json`; a registered unit not named `<slug>-svc-<name>`; a registered unit file edited by hand | unit-file reads only (`~/.config/systemd/user`, `$XDG_RUNTIME_DIR/systemd/transient`): **no systemctl call**; item ids `unregistered:<unit>`, `unscoped:<unit>`, `edited:<file>` |
+| `budget-drift` | `budget.js` | finance (scheduler items: tools) | 30 min | the station's spending caps differ from the company settings (`perDay` vs today's daily budget, `perAgent` vs no cap), naming both numbers; with `runtime.scheduler=dispatcher`, a crew loop armed on the station, no watchdog routine, or a run the station's own schedule started (docs/BUDGET.md) | **no station call**: the snapshot the dispatcher tick writes (`company/state/station-caps.json`), `dispatch-budget.json`, runs.jsonl and the admit log, read from their ends; item ids `cap:perDay`, `schedule:<seat>`, `watchdog:station`, `schedule-runs` |
 | `liveness-watcher` | `modules/liveness/tools/liveness.js` | risk | 10 min, **whileHalted** | the watcher's own heartbeat missing or older than 3 of its intervals (the dead-man's switch is blind) | `watch.js status()` |
 
 ## 6. Slower routine loops
@@ -111,7 +112,9 @@ hours. `company/work/ops/cadence.json` `bounds.loopFloorMin` (default `[360, 720
 `seats.<id>.loopFloorMin` inside it) records that floor. **Existing schedules are never changed automatically**:
 `node company/tools/cadence.js duties-floor [--json]` lists the seats that loop faster than the floor and prints the two
 ways to apply it (the owner's `cadence.js set <seat> --loop-every <min> --by owner` + `apply`, or a reviewed
-`harness-change.js propose --kind schedule` change). The CEO seat keeps its loop.
+`harness-change.js propose --kind schedule` change). The CEO seat keeps its loop. Who starts that loop when it is due,
+the dispatcher (through `admit()`, the default for new companies) or the station's own schedule, is
+`company.json` `runtime.scheduler` (docs/BUDGET.md).
 
 Measure it with the Sprint numbers: `node company/tools/cadence.js sprint status --json` → `idleWakeRatio` (wakes that
 changed nothing ÷ wakes resolved). Read it before turning duties on and before applying a floor, and again a day

@@ -155,11 +155,14 @@ module.exports = function chat(deps) {
       messages: history.concat([{ role: 'user', content: contextNote(id, s, co) + text }]), projectRoot: co.ROOT, placed: PLACED };
     let token; try { token = co.stationToken(); } catch (_) { token = null; }
     if (!token) { line('console.error', { code: 'station-down', message: 'No station token (secrets/station-token).', fix: 'Run scripts/setup-station.sh', link: '#/settings/system' }); return res.end(); }
+    // the one gate (company/tools/lib/admit.js, door chat): an owner chat is always allowed and always counted
+    let tk = null; try { tk = require(co.p('company', 'tools', 'lib', 'admit.js')).admit({ door: 'chat', kind: 'run', seat: id, why: body.brief ? 'console brief ' + body.brief : 'owner chat' }); } catch (_) {}
     const u = new URL(co.STATION_URL.replace(/\/+$/, '') + '/api/run');
     const data = JSON.stringify(payload);
     let ended = false, sawEnd = false, sawError = false, buf = '';
     const up = http.request({ hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST',
       headers: { 'x-starnet-token': token, 'content-type': 'application/json', 'content-length': Buffer.byteLength(data), accept: 'application/x-ndjson' } }, ur => {
+      try { require(co.p('company', 'tools', 'lib', 'admit.js')).started(tk, { status: ur.statusCode }); } catch (_) {}
       if (ur.statusCode !== 200) {
         let d = ''; ur.on('data', c => { d += c; }); ur.on('end', () => {
           let msg = d.trim(); try { const j = JSON.parse(msg); msg = j.error || j.reason || msg; } catch (_) {}

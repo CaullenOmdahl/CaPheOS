@@ -63,6 +63,18 @@ the last hour or 24 hours reach the caps, the wake is held. A wake for an owner 
 Heartbeats are unchanged: `dispatch.js` still runs the liveness tick every iteration. The watcher allows three ticks,
 using the longer of the base and the effective tick.
 
+## Who starts scheduled loops
+
+`company/company.json` `runtime.scheduler` (docs/BUDGET.md "Who starts scheduled loops"). With **`dispatcher`** (new
+companies) the dispatcher starts each seat's loop when its schedule is due (`seats.<id>.loopEvery` above, else the
+routine's own schedule), through `admit()` and every rule in this file: a scheduled loop is a counted wake, held by
+quiet hours and the wake caps like any other; with nothing else to do it is not held by its cooldown. The crew's loop
+routines stay paused on the station and the station's schedule runs only the watchdog routine, which alerts you when the
+dispatcher is silent and starts no work. With **`station`** (absent = station; an existing company until it runs
+`company/tools/budget-migrate.js --to dispatcher --by owner`) the station fires each loop routine on its own clock and the
+dispatcher wakes only seats that have work, as before. `cadence.js apply` writes `loopEvery` onto the routine either
+way, so switching back keeps the clock you set.
+
 ## Sprint (start-up)
 
 A new company has many small, connected tasks and a crew that waits on each other. Under the normal tempo each wait
@@ -88,7 +100,7 @@ it runs until the company is certified, then 24 hours more. The first dispatcher
 |---|---|---|
 | A seat with **new** open work (a handoff, a review, an owner message, quest progress) | waits out its cooldown | wakes as soon as it is idle; rests only `cooldownFloorMin` (2 min) |
 | A seat whose open work has **not changed** since its last wake | cooldown | the same cooldown and stall rule: it is not woken again for nothing |
-| A seat with **no** open work | not woken by the dispatcher | not woken (its own loop clock is unchanged) |
+| A seat with **no** open work | not woken for work; its scheduled loop runs on its own clock (started by the dispatcher or the station: `runtime.scheduler`) | the same |
 | What wakes the dispatcher | its tick (10 min) | a change in `company/work/handoffs`, `company/owner` or `company/work/changes` (fs.watch, `watchDebounceSec` 45 s after the last change, at most one tick per `minTickGapSec` 30 s); the tick (`fallbackTickMin` 5 min) is only the fallback |
 | Wakes per tick | `maxPerTick` (4) | every seat |
 | Wakes per hour / day | `maxWakesPerHour` / `maxWakesPerDay` | lifted (still counted); quiet hours still hold |
@@ -102,7 +114,7 @@ are handoffs, so a reviewer is woken as soon as a proposal arrives; reviews stay
 stale target, so prefer parallel work that targets new files with one owner each (`sprint status` shows proposals/h
 against reviews/h: when proposals outrun reviews, that is the bottleneck).
 
-**What stays in force:** the daily cap and per-agent share (`dispatch-budget.json`) and the finance gate, the soft and
+**What stays in force:** the daily cap and per-agent share (`dispatch-budget.json`; docs/BUDGET.md), the soft and
 hard halt, every guardrail (spendCap off still means "nothing held, noted"), the pacer's subscription stops (Claude at
 its weekly stop, MiniMax windows, the station rail) and per-seat model chains (Sprint only picks inside a seat's chain,
 only an entry that can run). The CEO stays one run at a time. Tests: `cadence.js selftest`, `dispatcher-loop.js
@@ -183,7 +195,7 @@ ended without finishing goes back to the main loop. History: `company/state/lane
 | Per seat | `tempo.sprint.lanes` runs at once, the main loop included (default 2: one extra lane) |
 | Per company | `tempo.sprint.maxLanesTotal` extra lanes (default 6) |
 | Time limit | `tempo.sprint.laneTimeoutMin` (default 95, past the station's own 90-minute wall): the run is cancelled and its lock released |
-| Money | the same verdict as a wake: the daily metered cap, the per-agent share, Sprint's spread, and the Sprint budget hold a metered seat's lanes (a subscription seat is not held by USD); lane runs land in runs.jsonl like any run, so they count in all of them |
+| Money | the same verdict as a wake, from the same code (`lib/admit.js` `money()`; `lanes.js` keeps no copy): the daily metered cap, the per-agent share, Sprint's spread, and the Sprint budget hold a metered seat's lanes (a subscription seat is not held by USD); each lane start passes `admit()` (door `lane`); lane runs land in runs.jsonl like any run, so they count in all of them |
 | Tempo and the pacer | a lane is a counted wake (`cadence.js tempoAllows`: quiet hours hold it); a seat the pacer held this tick, whose loop is paused, or whose approval mode is "ask" gets no lane |
 | Halts | a soft halt starts no lane (running ones finish, and the soft halt waits for them); a hard halt (`halt.js hard`) cuts every lane off at once |
 | The station | lanes need StarNet patch 0012 (the workspace lease keyed by agent + folder). `lanes.js` probes `GET /api/version` for `capabilities: ["workspace-lease-per-folder"]`; without it no lane starts (a second run's first shell call would wait 45 s and fail), the log says `SPRINT LANES held at 1: … has not applied patch 0012 …` once, and Crew says why |

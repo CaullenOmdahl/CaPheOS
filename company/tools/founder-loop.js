@@ -9,6 +9,9 @@
  *   2. the CEO seat's loop routine (loops.json `loop`, matched by name prefix like dispatch.js) exists, with the company
  *      root as its workdir and the terminal grant (unattendedGrants ["workbench"], which gives code.run);
  *   3. the station scheduler is armed (POST /api/cron/arm {enabled:true}), unless the company is halted.
+ * With company.json runtime.scheduler = "dispatcher" (lib/scheduler.js, docs/BUDGET.md) a new loop routine is created
+ * PAUSED and recorded as the dispatcher's (company/state/scheduler.json), and the watchdog routine is created: the one
+ * routine the armed station scheduler runs. status reports a missing watchdog, and a dispatcher-owned paused loop is fine.
  * Created routines run every 2 hours in the company timezone on the candidate default model (model-policy.json) or the
  * provider the owner picked in Setup. An existing routine keeps its model and prompt unless --model/--provider are given
  * or its prompt does not read and answer the owner inbox.
@@ -30,6 +33,8 @@ const co = require('./lib/company');
 
 const ROOT = co.ROOT;
 const LOOP_GRANTS = ['workbench'];
+let MODE_PIN = null;   // the selftest pins the scheduler mode; otherwise company.json runtime.scheduler (lib/scheduler.js)
+const schedMode = () => MODE_PIN || require('./lib/scheduler').mode();
 const SCHEDULE = 'every 2 hours';
 // how a loop treats hiring (hire.js advance runs the mechanical steps every dispatcher tick)
 const HIRING_LINE = 'HIRING: hiring rounds advance on their own; when a pick handoff arrives, pick from the scorecard and record it with hire.js (`node company/tools/hire.js pick --round <round> --agent <id> --by <you> --why "..."`); don\'t run interviews yourself. Your part of a round is its files (role-spec.md, interview.md, scorecard.md, profiles/) and the pick.';
@@ -131,7 +136,10 @@ async function status(opts) {
   const ensureCmd = 'node company/tools/founder-loop.js ensure';
   if (!job) problems.push({ code: 'no-routine', msg: 'no routine matches "' + s.loop + '" for ' + s.name + ', so nothing ever wakes the ' + s.title, fix: ensureCmd });
   else {
-    if (job.enabled === false) problems.push({ code: 'disabled', msg: 'the routine "' + job.name + '" is switched off', fix: 'switch it on in Automate, or POST /api/cron/update {id, patch:{enabled:true}}' });
+    const SCHED = require('./lib/scheduler');
+    const ownedOn = schedMode() === 'dispatcher' && (SCHED.readState(ROOT).owned[job.id] || {}).on === true;   // paused on purpose: the dispatcher starts it
+    if (schedMode() === 'dispatcher' && !SCHED.ownWatchdogs(cr.json.jobs, ROOT).length) problems.push({ code: 'no-watchdog', msg: 'the dispatcher owns the schedule but the station has no watchdog routine, so a silent dispatcher would go unnoticed', fix: ensureCmd });
+    if (job.enabled === false && !ownedOn) problems.push({ code: 'disabled', msg: 'the routine "' + job.name + '" is switched off', fix: 'switch it on in Automate, or POST /api/cron/update {id, patch:{enabled:true}}' });
     if (!sameDir(job.workdir, ROOT)) problems.push({ code: 'no-workdir', msg: 'the routine "' + job.name + '" does not run in the company folder' + (job.workdir ? ' (it runs in ' + job.workdir + ')' : ''), fix: ensureCmd });
     if (!(Array.isArray(job.unattendedGrants) && job.unattendedGrants.includes('workbench'))) problems.push({ code: 'no-terminal', msg: 'the routine "' + job.name + '" has no terminal grant, so it cannot run the company tools', fix: ensureCmd });
     if (!job.model || !job.provider) problems.push({ code: 'no-model', msg: 'the routine "' + job.name + '" names no model', fix: 'pick an AI provider in Setup (step 2)' });
@@ -162,15 +170,23 @@ async function ensure(opts) {
   const bl = await blessRoot(call);
   if (!bl.ok) { out.error = bl.error; return out; }
   out.blessed = true; out.root = bl.root; if (!bl.already) out.notes.push('blessed ' + bl.root + ' as a project root');
-  let job = findLoop(cr.json.jobs, s);
+  const SCHED = require('./lib/scheduler'); const dispatcherOwns = schedMode() === 'dispatcher';
+  // the watchdog: with the dispatcher owning the schedule it is the one routine the station's schedule runs (script only)
+  if (dispatcherOwns && !SCHED.ownWatchdogs(cr.json.jobs, ROOT).length) {
+    const w = await call('POST', '/api/cron', SCHED.watchdogSpec(ROOT, s.id));
+    if (w.status === 200) out.notes.push('created the watchdog routine (dispatcher liveness, starts no work)'); else out.notes.push('could not create the watchdog routine: HTTP ' + w.status);
+  }
+  let job = findLoop(cr.json.jobs.filter(j => !SCHED.isWatchdog(j)), s);
   const want = (opts.provider && opts.model) ? { provider: String(opts.provider), model: String(opts.model) } : null;
   if (!job) {
     const m = want || candidateDefault();
     if (!m.provider || !m.model) { out.error = 'no model to run the loop on: company/model-policy.json has no candidateDefault, and no provider was picked in Setup'; return out; }
-    const r = await call('POST', '/api/cron', { name: s.loop, agentId: s.id, schedule: SCHEDULE, tz: co.TZ, prompt: buildPrompt(), workdir: ROOT, deliver: 'local', enabled: true,
+    // runtime.scheduler=dispatcher (lib/scheduler.js): created paused, the dispatcher's to start; station: armed as before
+    const r = await call('POST', '/api/cron', { name: s.loop, agentId: s.id, schedule: SCHEDULE, tz: co.TZ, prompt: buildPrompt(), workdir: ROOT, deliver: 'local', enabled: !dispatcherOwns,
       model: m.model, provider: m.provider, unattendedGrants: LOOP_GRANTS, arm: true });
     if (!(r.status === 200 && r.json && r.json.ok && r.json.job)) { out.error = 'POST /api/cron: ' + (r.error || 'HTTP ' + r.status + ' ' + ((r.json && r.json.error) || r.text || '')); return out; }
     job = r.json.job; out.created = !r.json.duplicate;
+    if (dispatcherOwns && out.created) { const st = SCHED.readState(ROOT); st.owned[job.id] = { seat: s.id, name: job.name, on: true }; SCHED.writeState(Object.assign(st, { mode: 'dispatcher' }), ROOT); out.notes.push('created paused on the station: the dispatcher starts its scheduled runs (runtime.scheduler=dispatcher)'); }
     // the station's mint gate may hand back a near-name duplicate: fall through to the update path for it
     if (r.json.duplicate) out.notes.push('the station already had "' + job.name + '"');
   }
@@ -188,7 +204,8 @@ async function ensure(opts) {
       if (!(u.status === 200 && u.json && u.json.ok !== false)) { out.error = 'POST /api/cron/update: ' + (u.error || 'HTTP ' + u.status + ' ' + ((u.json && u.json.error) || u.text || '')); return out; }
       out.updated = Object.keys(patch); job = (u.json && u.json.job) || Object.assign({}, job, patch);
     }
-    if (job.enabled === false) out.notes.push('"' + job.name + '" is switched off; left off (switch it on in Automate)');
+    const ownedOn = dispatcherOwns && (SCHED.readState(ROOT).owned[job.id] || {}).on === true;
+    if (job.enabled === false && !ownedOn) out.notes.push('"' + job.name + '" is switched off; left off (switch it on in Automate)');
   }
   out.job = { id: job.id, name: job.name, model: job.model || null, provider: job.provider || null };
   // the scheduler: armed unless the company is halted (a halt disarms it on purpose; resume re-arms)
@@ -231,6 +248,7 @@ async function selftest() {
     };
     return S;
   };
+  MODE_PIN = 'station';   // the cases below are the station scheduler's; the dispatcher's come last
   let S = fake();
   let st = await status({ call: S.call });
   t('status on an empty station: no routine, not blessed, scheduler off', !st.ok && ['no-routine', 'not-blessed', 'scheduler-off'].every(c => st.problems.some(p => p.code === c)), st.problems);
@@ -261,6 +279,16 @@ async function selftest() {
   st = await status({ call: S.call });
   r = await ensure({ call: S.call });
   t('a loop already blessed, granted and armed by hand counts as done', st.ok && r.ok && !r.created && !r.updated.length && !S.calls.some(c => /^POST/.test(c)), { st: st.problems, calls: S.calls });
+  // runtime.scheduler = dispatcher: the loop is created paused and owned, the watchdog routine created, status green
+  MODE_PIN = 'dispatcher'; S = fake();
+  const SCHED = require('./lib/scheduler'); const stF = SCHED.stateFile(ROOT); const stBefore = fs.existsSync(stF) ? fs.readFileSync(stF) : null;
+  try {
+    r = await ensure({ call: S.call });
+    const loop = S.jobs.find(j => !SCHED.isWatchdog(j)), wd = S.jobs.filter(SCHED.isWatchdog);
+    t('dispatcher scheduler: the loop is created paused and recorded as the dispatcher\'s, plus one watchdog (script only)', r.ok && loop && loop.enabled === false && SCHED.readState(ROOT).owned[loop.id] && wd.length === 1 && wd[0].noAgent === true && wd[0].script === 'company/tools/watchdog.js', { r, jobs: S.jobs });
+    st = await status({ call: S.call });
+    t('dispatcher scheduler: a paused, owned loop with its watchdog is green', st.ok, st.problems);
+  } finally { if (stBefore) fs.writeFileSync(stF, stBefore); else try { fs.unlinkSync(stF); } catch (_) {} MODE_PIN = null; }
   const down = await status({ call: async () => ({ status: 0, json: null, error: 'refused' }) });
   t('station down: status says so with the fix', !down.ok && down.problems[0].code === 'station-down' && /systemctl/.test(down.problems[0].fix));
   console.log(bad ? 'FOUNDER-LOOP SELFTEST FAILED: ' + bad + ' of ' + n : 'FOUNDER-LOOP SELFTEST PASSED: ' + n + ' checks');

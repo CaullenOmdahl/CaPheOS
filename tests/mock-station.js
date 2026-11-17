@@ -15,6 +15,10 @@
  * leased at that moment]} in S.restarts (GET /__state), drops every in-flight run as a real restart would, and answers
  * GET /api/health with 503 for --restart-down-ms (default 300) before "ok" again.
  *
+ * Money and scheduler (budget.js, lib/scheduler.js tests): GET /api/budget/status answers caps {perRun, perAgent, perDay,
+ * global} and POST /api/budget/caps sets them; POST /api/cron keeps noAgent + script (a script-only routine); POST /__tick
+ * {now?} is one pass of the station's own scheduler over ENABLED interval routines (what it fired is answered and kept in
+ * S.ticks).
  * Every request is appended to --log as one JSON line {at, method, path, query, body, status}; a test asserts on it.
  * Unknown routes answer 404 {error:"mock: no route"} and are logged too, so a test can list what the mock lacks.
  * With --root, POST /api/roster also writes <root>/.starnet-data/workspaces/agent.roster.json, as the station does
@@ -71,6 +75,8 @@ const S = {
   caps: CAPS,            // GET /api/version capabilities
   restarts: [],          // POST /__restart: {at, inFlight} each time the "unit" was restarted
   downUntil: 0,          // GET /api/health answers 503 until then (a restart in progress)
+  budgetCaps: { perRun: 0, perAgent: 0, perDay: 25, global: 0 },   // GET /api/budget/status caps; POST /api/budget/caps sets them
+  ticks: [],             // POST /__tick: what the station's own scheduler fired, each time
 };
 // a held routine run ends: as the station records it (lastRunAt, lastRunId, lastStatus), out of the snapshot
 function finishHeld(job, status) {
@@ -252,12 +258,13 @@ function handle(method, p, q, body, res) {
   if (p === '/api/cron' && method === 'GET') return send(res, 200, { ok: true, enabled: S.cron.enabled, halted: S.cron.halted, jobs: S.cron.jobs });
   if (p === '/api/cron' && method === 'POST') {
     if (!B.name || !B.prompt) return send(res, 400, { error: 'name and prompt are required' });
-    const dup = S.cron.jobs.find(j => j.name === B.name && j.agentId === (B.agentId || 'agent'));
+    const dup = S.cron.jobs.find(j => j.name === B.name && j.agentId === (B.agentId || 'agent') && (j.workdir || null) === (B.workdir || null));   // one station per company; tests share one, told apart by workdir
     if (dup) return send(res, 200, { ok: true, duplicate: true, job: dup });
     const job = { id: 'job-' + (S.cron.nextId++), name: String(B.name), agentId: String(B.agentId || 'agent'), schedule: parseSchedule(B.schedule, B.tz),
       prompt: String(B.prompt), workdir: B.workdir || null, deliver: B.deliver || 'local', enabled: B.enabled !== false, model: B.model || null,
       provider: B.provider || null, unattendedGrants: Array.isArray(B.unattendedGrants) ? B.unattendedGrants.filter(g => ['workbench', 'connectors', 'studio'].includes(g)) : [],
       createdAt: nowIso(), lastRunAt: null, lastStatus: null, inFlight: false };
+    if (B.noAgent === true) { if (!B.script) return send(res, 400, { error: 'script-only routines require a script' }); job.noAgent = true; job.script = String(B.script); }
     S.cron.jobs.push(job);
     if (B.arm === true && !S.cron.armSet) { S.cron.enabled = true; S.cron.armSet = true; }
     return send(res, 200, { ok: true, job, scheduler: { armed: S.cron.enabled } });
@@ -338,7 +345,15 @@ function handle(method, p, q, body, res) {
     if (B.op === 'control' && B.action === 'delete') { S.groups = S.groups.filter(g => g.id !== B.id); return send(res, 200, { ok: true }); }
     return send(res, 200, { ok: true });
   }
-  if (p === '/api/budget/status' && method === 'GET') return send(res, 200, { ok: true, providers: {} });
+  if (p === '/api/budget/status' && method === 'GET') return send(res, 200, { ok: true, providers: {}, caps: Object.assign({}, S.budgetCaps) });
+  if (p === '/api/budget/caps' && method === 'POST') {
+    for (const k of ['perRun', 'perAgent', 'perDay', 'global']) {
+      if (!B || !Object.prototype.hasOwnProperty.call(B, k)) continue;
+      const n = Number(B[k]); if (!Number.isFinite(n) || n < 0) return send(res, 400, { error: k + ' must be a number >= 0 (0 = no cap)' });
+      S.budgetCaps[k] = Math.round(n * 1e6) / 1e6;
+    }
+    return send(res, 200, { ok: true, caps: Object.assign({}, S.budgetCaps) });
+  }
   if (p === '/api/health' && method === 'GET') { if (Date.now() < S.downUntil) { res.writeHead(503); res.end('starting'); return 503; } res.writeHead(200); res.end('ok'); return 200; }
   if (p === '/api/version' && method === 'GET') return send(res, 200, Object.assign({ ok: true, version: 'mock-station' }, S.caps.length ? { capabilities: S.caps } : {}));
   if (p === '/api/providers' && method === 'GET') return send(res, 200, { ok: true, providers: Object.entries(S.providers).map(([id, on]) => {
@@ -369,6 +384,25 @@ const server = http.createServer((req, res) => {
     if (u.pathname === '/__providers' && req.method === 'POST') { for (const [k, v] of Object.entries(body || {})) S.providers[k] = v === true; row.status = send(res, 200, { ok: true, providers: S.providers }); return logReq(row); }
     if (u.pathname === '/__hold' && req.method === 'POST') { S.holds = Array.isArray((body || {}).names) ? body.names.map(String) : []; row.status = send(res, 200, { ok: true, holds: S.holds }); return logReq(row); }
     if (u.pathname === '/__finish' && req.method === 'POST') { const jb = findJob((body || {}).id) || S.cron.jobs.find(x => x.inFlightRunId && (body || {}).name && x.name.includes(body.name)); finishHeld(jb, (body || {}).status); row.status = send(res, 200, { ok: !!jb }); return logReq(row); }
+    // test seam: POST /__tick {now?, cronDue?:[jobId], only?:[jobId]} is one pass of the station's OWN scheduler: while it is armed and not
+    // halted, every ENABLED routine whose interval came due since its last run (or creation) fires — an agent routine as a
+    // scheduled run (S.runs, cronJobId, streamId cron-…), a script-only (noAgent) routine as a script run that wakes no agent
+    if (u.pathname === '/__tick' && req.method === 'POST') {
+      const now = Number((body || {}).now) || Date.now(); const fired = [];
+      if (S.cron.enabled && !S.cron.halted && !S.halt.halted) for (const j of S.cron.jobs) {
+        if (j.enabled === false || j.inFlightRunId) continue;
+        if (Array.isArray((body || {}).only) && !body.only.includes(j.id)) continue;   // one test company's routines only
+        const anchor = Date.parse(j.lastRunAt || j.createdAt || '') || 0;
+        const due = j.schedule && j.schedule.kind === 'interval' ? now - anchor >= j.schedule.minutes * 60e3 : ((body || {}).cronDue || []).includes(j.id);
+        if (!due) continue;
+        const runId = 'run-' + (S.runSeq++);
+        j.lastRunAt = new Date(now).toISOString(); j.lastStatus = 'ok'; j.lastRunId = runId;
+        if (j.noAgent) { fired.push({ id: j.id, name: j.name, noAgent: true, script: j.script || null }); S.cron.history.push({ jobId: j.id, runId, at: j.lastRunAt, status: 'ok', script: true }); continue; }
+        S.runs.push({ runId, agentId: j.agentId, source: 'cron', trigger: 'schedule', cronJobId: j.id, streamId: 'cron-' + runId, startedAt: now, endedAt: now, usd: 0, provider: j.provider });
+        fired.push({ id: j.id, name: j.name, agentId: j.agentId, runId });
+      }
+      S.ticks.push({ at: new Date(now).toISOString(), fired }); row.status = send(res, 200, { ok: true, fired }); return logReq(row);
+    }
     if (u.pathname === '/__caps' && req.method === 'POST') { S.caps = Array.isArray((body || {}).caps) ? body.caps.map(String) : []; row.status = send(res, 200, { ok: true, caps: S.caps }); return logReq(row); }
     if (u.pathname === '/__live/end' && req.method === 'POST') {
       const r = S.live.find(x => x.runId === (body || {}).runId); S.live = S.live.filter(x => x !== r);

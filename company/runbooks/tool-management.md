@@ -101,6 +101,8 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/agy-contract.js | tools | none |
 | company/tools/ask.js | ceo | none |
 | company/tools/backup-freshness.js | risk | `--selftest` |
+| company/tools/budget.js | finance | `selftest` / `--selftest` |
+| company/tools/budget-migrate.js | tools | `selftest` / `--selftest` |
 | company/tools/build-inventory.js | people | `--selftest` |
 | company/tools/cadence.js | tools | `selftest` / `--selftest` |
 | company/tools/cap-numerator.js | finance | `--selftest` |
@@ -170,6 +172,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/tool-inventory-check.js | tools | `--selftest` |
 | company/tools/tool-parse.js | tools | `--selftest` |
 | company/tools/vision.js | tools | none |
+| company/tools/watchdog.js | tools | `selftest` / `--selftest` |
 | company/tools/workspace-modes.sh | risk | `--selftest` |
 
 **Rotation:** every credential has a rotation date in the inventory. Tools prepares; the rotation itself is a
@@ -213,6 +216,8 @@ in §5a instead.
 | tool | owner | passes |
 |---|---|---|
 | `company/tools/backup-freshness.js` | risk | `node company/tools/backup-freshness.js --selftest` |
+| `company/tools/budget.js` | finance | `node company/tools/budget.js --selftest` |
+| `company/tools/budget-migrate.js` | tools | `node company/tools/budget-migrate.js --selftest` |
 | `company/tools/build-inventory.js` | people | `node company/tools/build-inventory.js --selftest` |
 | `company/tools/cadence.js` | tools | `node company/tools/cadence.js selftest` |
 | `company/tools/cap-numerator.js` | finance | `node company/tools/cap-numerator.js --selftest` |
@@ -253,6 +258,7 @@ in §5a instead.
 | `company/tools/tool-inventory-check.js` | tools | `node company/tools/tool-inventory-check.js --selftest` |
 | `company/tools/tool-parse.js` | tools | `node company/tools/tool-parse.js --selftest` |
 | `company/tools/workspace-modes.sh` | risk | `bash company/tools/workspace-modes.sh --selftest` |
+| `company/tools/watchdog.js` | tools | `node company/tools/watchdog.js --selftest` |
 
 ## 8. The handoff queue in due order
 

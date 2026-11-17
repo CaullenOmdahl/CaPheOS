@@ -1038,7 +1038,7 @@ function makePacer(o) {
       const lastRun = job.lastRunAt ? Date.parse(job.lastRunAt) : 0;
       let status = 'ready';
       if (lastRun > p.endedAt + MIN) status = 'done: the routine has run again since';
-      else if (job.enabled === false) status = 'skip: the routine is paused (Run Now would still fire it, so the pacer never does)';
+      else if (require('./lib/scheduler').switchedOff(job, root)) status = 'skip: the routine is paused (Run Now would still fire it, so the pacer never does)';
       else if (job.inFlight || job.state === 'running') status = 'wait: running';
       else if (row.to.provider === p.provider) status = 'wait: no other provider is open for it';
       else if (row.action === 'wait') status = 'wait: ' + row.wait;
@@ -1158,7 +1158,9 @@ function makePacer(o) {
       const curProv = job ? ((job.wire && job.wire.provider) || job.provider) : null;
       if (!job || curProv === f.provider) continue;   // the switch did not happen: never re-fire on the model that refused
       st.refired[f.runId] = { at: t, status: 'pending' };   // marked before firing: a timeout never fires it twice
+      const tk = require('./lib/admit').admit({ door: 'pacer', kind: 'run', seat: job.agentId || null, jobId: f.routineId, why: 're-fire after a refusal on ' + f.provider });   // the one gate, phase 1: recorded
       const res = await fire(f.routineId);
+      require('./lib/admit').started(tk, res);
       st.refired[f.runId] = { at: t, status: res.status };
       if (res.status === 200 && job) job.inFlight = true;   // the dispatcher skips it this tick
       note('RE-FIRE "' + f.name + '" on ' + curProv + ' after a refusal: HTTP ' + res.status + (res.status === 200 ? '' : ' ' + String(res.body).slice(0, 120)));
@@ -1431,7 +1433,7 @@ function makePacer(o) {
     const cdMin = k => { const v = Number(process.env[k]); return Number.isFinite(v) && v > 0 ? v : null; };
     const cooldown = (cdMin('DISPATCH_COOLDOWN_MIN') || 40) * MIN, ownerCooldown = (cdMin('DISPATCH_OWNER_COOLDOWN_MIN') || 10) * MIN;
     const isOwner = id => !!(a.ownerWake && typeof a.ownerWake.has === 'function' && a.ownerWake.has(id));
-    const fireable = order.map(id => ({ id, job: loopJob(jobs, crew, id) })).filter(x => x.job && x.job.enabled !== false && !x.job.inFlight && x.job.state !== 'running'
+    const fireable = order.map(id => ({ id, job: loopJob(jobs, crew, id) })).filter(x => x.job && !require('./lib/scheduler').switchedOff(x.job, root) && !x.job.inFlight && x.job.state !== 'running'
       && m.at - (Date.parse(x.job.lastRunAt) || 0) >= (isOwner(x.id) ? ownerCooldown : cooldown));
     let lend = 0;
     for (let i = maxPerTick; i < Math.min(fireable.length, maxPerTick + wouldExtra); i++) {

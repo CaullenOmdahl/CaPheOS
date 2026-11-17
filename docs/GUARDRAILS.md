@@ -46,7 +46,7 @@ When any switch is off and `sandbox` is not set, `show` prints a loud banner.
 | Switch | Blocks (while ON) | Enforced in | Backing | Turning it OFF means |
 |---|---|---|---|---|
 | `ownerGates` | the four owner gates (access, ownership, commitment, spend beyond the cap) always need the owner | `lib/company.js` `gate()`, `lib/governance.js`, `governance.js` | framework-only | governance levels alone decide those categories too |
-| `spendCap` | metered spend stops at the daily cap and per-agent shares; subscriptions stop at their pacing line | `dispatch.js`, `hire.js`, `pacer.js` | framework-only | no cap holds a run |
+| `spendCap` | metered spend stops at the daily cap and per-agent shares; subscriptions stop at their pacing line (docs/BUDGET.md) | `dispatch.js` and `lanes.js` (one copy: `lib/admit.js` `money()`), `hire.js`, `pacer.js`; `budget.js apply` copies it onto the station's caps | framework-only | no cap holds a run (and `budget.js apply` sets the station's day cap to "no cap" too) |
 | `externalActions` | nothing leaves the company without a clearance row | `external-gate.js` | framework-only | the gate logs but allows |
 | `harnessSelfEdit` | agents cannot change their own harness; locked files are watched and put back; tool changes are reviewed | `locked-watch.js`, `harness-change.js` | framework-only | agents may edit any of it; changes are still logged |
 | `defaultBranch` | no agent pushes or merges to a default branch except a PR with a pre-merge PASS | `merge-gate.js`, `premerge-check.js`, `default-branch-watch.js` | framework-only | see below |

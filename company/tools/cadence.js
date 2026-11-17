@@ -48,7 +48,7 @@
  * Sprint (start-up), tempo.sprint {on, since, until|null, by, …config}: the owner's switch to work as fast as the open
  * work allows (docs/TEMPO.md "Sprint"). While on: a seat whose open work CHANGED wakes as soon as it is idle (cooldown
  * floor), the dispatcher wakes on inbox changes (dispatcher-loop.js watch) with a fallback timer, maxPerTick is the
- * number of seats, and the hourly/daily wake caps are lifted. The spend cap, the finance gate, halts, guardrails, the
+ * number of seats, and the hourly/daily wake caps are lifted. The spend cap (docs/BUDGET.md), halts, guardrails, the
  * pacer's subscription stops and per-seat model chains are untouched. It ends by itself at `until`, at certified +
  * afterCertifiedH (the founding default), or when its own budget (budgetUsd, default 2 x the daily cap) is spent;
  * sprintTick() (run by the dispatcher loop) writes the end and tells the owner in plain words. Owner only: an agent

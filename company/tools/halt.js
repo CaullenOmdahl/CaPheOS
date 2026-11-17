@@ -195,7 +195,9 @@ async function soft({ by, why, deadlineMin, escalate } = {}) {
     const job = matchJob(jobs, sd.routine);
     if (!job) { row.status = 'missing'; st.shutdowns.push(row); continue; }
     row.jobId = job.id; row.lastRunAtBefore = job.lastRunAt || null;
+    const tk = require('./lib/admit').admit({ door: 'halt', kind: 'run', seat: id, jobId: job.id, why: 'soft halt: shutdown routine ' + sd.routine });   // the one gate, phase 1: recorded
     const r = await S.fire(job.id);
+    require('./lib/admit').started(tk, r);
     row.firedAt = iso(S.now());
     row.status = r.status === 200 ? 'fired' : 'refused';
     if (r.status !== 200) row.error = 'HTTP ' + r.status + ' ' + String(r.body || '').slice(0, 160);

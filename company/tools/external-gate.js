@@ -32,6 +32,7 @@
  * told of each allowed act on a CEO row; approve = only a row whose clearedBy is the owner clears. The externalActions
  * guardrail (company/state/guardrails.json) off = every act is logged as allowed-guardrail-off and allowed.
  *
+ *   node company/tools/external-gate.js check --category spend ... [--amount-usd N]   # a spend act is also recorded by admit() (door act)
  *   node company/tools/external-gate.js check ... --idem <key> [--idem-ttl <seconds>|forever]
  *                                              # idempotent act: a key that already went out is answered duplicate
  *   node company/tools/external-gate.js idem list | sent --attempt <id> | release --category <c> --key <k> --by owner --why ".."
@@ -771,6 +772,9 @@ function idemFind(file, category, key, at) {
   return live;
 }
 function check(req, opts) {
+  // a spend act passes the one gate first (lib/admit.js, door act): phase 1 always allows and records it with its amount;
+  // the clearance rule below decides, exactly as before (an approval threshold is phase 2, docs/BUDGET.md)
+  if (req && norm(req.category) === 'spend') { try { require('./lib/admit').admit({ door: 'act', kind: 'act', seat: norm(req.agent || 'unknown') || 'unknown', amountUsd: req.amountUsd, why: 'spend ' + String(req.target || '').slice(0, 120) }, { file: opts && opts.log === null ? null : undefined }); } catch (_) {} }
   const key = req && req.idem != null && req.idem !== true ? String(req.idem).trim().slice(0, 300) : '';
   if (!key) return checkInner(req, opts);
   opts = opts || {};
@@ -1438,7 +1442,7 @@ function main() {
   if (cmd === 'check' || cmd === 'guard') {
     // `--act` used to be silently dropped here: check() supports acts and the CLI never passed one, so a person could
     // not ask the gate the question the acts field exists to answer ("is this PUSH covered by a row that says push?").
-    const d = check({ category: a.category, target: a.target, agent: a.agent || process.env.STARNET_AGENT_ID, act: a.act, note: a.note, idem: a.idem, idemTtlMs: a['idem-ttl'] === 'forever' ? 'forever' : (a['idem-ttl'] ? Number(a['idem-ttl']) * 1000 : undefined) });
+    const d = check({ category: a.category, target: a.target, agent: a.agent || process.env.STARNET_AGENT_ID, act: a.act, note: a.note, idem: a.idem, amountUsd: a['amount-usd'] != null ? Number(a['amount-usd']) : undefined, idemTtlMs: a['idem-ttl'] === 'forever' ? 'forever' : (a['idem-ttl'] ? Number(a['idem-ttl']) * 1000 : undefined) });
     console.log(JSON.stringify(d));
     process.exit(d.allow ? 0 : d.duplicate ? 4 : 3);
   }

@@ -54,7 +54,7 @@ const STEPS = [
   ['owner-gates', 'the owner gates the enabled packs and modules need, asked once on Today'],
   ['guardrails-applied', 'guardrails.js apply: station-side switches pushed'],
   ['station-seed', 'the headless station has its save and the Founder (save + roster, approval mode from self-governance): station-seed.js'],
-  ['founder-loop', 'the Founder loop routine exists (company root workdir, terminal grant), the company folder is a blessed project, the scheduler is armed (founder-loop.js)'],
+  ['founder-loop', 'the Founder loop routine exists (company root workdir, terminal grant), the company folder is a blessed project, the scheduler is armed (founder-loop.js); with runtime.scheduler=dispatcher the loop is paused on the station (the dispatcher starts it) and the watchdog routine exists (docs/BUDGET.md)'],
   ['kickoff', 'after certification: the Founder\'s first planning run (one OPEN handoff + one loop run), once'],
 ];
 const CHECKS = [
@@ -341,7 +341,9 @@ async function kickoff() {
   const cr = await FL.stationCall('GET', '/api/cron');
   const job = cr.json && Array.isArray(cr.json.jobs) ? FL.findLoop(cr.json.jobs, seat) : null;
   if (!job) { const st = setStep('kickoff', 'pending', 'handoff written; no "' + seat.loop + '" routine to fire (the dispatcher wakes the Founder once it exists)'); return st; }
+  const tk = require('./lib/admit').admit({ door: 'onboard', kind: 'run', seat: seat.id, jobId: job.id, why: 'kickoff: the first plan' });   // the one gate, phase 1: recorded
   const r = await FL.stationCall('POST', '/api/cron/run', { id: job.id, detach: true }, 20000);
+  require('./lib/admit').started(tk, { status: r.status, runId: r.json && r.json.runId });
   const ok = r.status === 200 || r.status === 409;   // 409: the loop is already running and reads its inbox this session
   return setStep('kickoff', ok ? 'ok' : 'pending', ok ? 'fired "' + job.name + '" for the first plan' + (r.json && r.json.runId ? ' (run ' + r.json.runId + ')' : '') : 'handoff written; firing "' + job.name + '" answered ' + (r.error || 'HTTP ' + r.status) + ' (the dispatcher wakes it for the open handoff)');
 }

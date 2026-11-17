@@ -18,6 +18,10 @@
     "port": 8801,
     "serviceName": "capheos-station"
   },
+  "runtime": {
+    "_doc": "runtime.scheduler: who starts the crew's scheduled loop runs. \"dispatcher\" = the dispatcher, through admit(), with the crew loop routines paused on the station and one watchdog routine there; \"station\" = the station's own schedule (the old way; absent = station). Switch only with company/tools/budget-migrate.js (docs/BUDGET.md).",
+    "scheduler": "dispatcher"
+  },
   "ownerChannel": {
     "_doc": "How the owner and the company talk. 'console' (default) = the owner console: every open question shows on Today the moment it is asked and is answered there; messages travel through company/owner/inbound.jsonl (owner -> company) and company/owner/outbound.jsonl (company -> owner), read and written by company/tools/owner-inbox.js and the dispatcher. 'file' = the same files with no console. A push adapter (a chat app, email) plugs in by delivering outbound.jsonl and appending to inbound.jsonl; set dailyLimit (questions per day) so it does not buzz all day.",
     "adapter": "console",
