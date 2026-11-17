@@ -30,8 +30,10 @@ finished threads older than three hours to `company/work/handoffs/archive/` (`to
 - `{"id":"q:N","op":"tick","stepKey":"<key>","note":"<what was concluded>"}`: tick a step with its conclusion.
 - `{"id":"q:N","op":"attest","agentId":"<agent>","evidence":"<files, commits>"}`: propose the quest closed. The
   dispatcher closes it once the cited evidence checks out.
-- A tick cannot be undone through the API. Tick only what is done; use the station tool's `note` op for a note
-  without a tick.
+- A tick cannot be undone through the API, and **there is no `note` op**: `op:"progress"` *is* a tick (it sets the
+  step's `done` flag, whatever its description says; the quest ops are `start, progress, attest_complete, mint`). Tick
+  only what is done. A conclusion or a caveat about a step you have not finished goes in your handoff or
+  `company/work/improvements.md`, never through `progress`.
 
 ## Escalation
 Only unresolved cross-team conflict, a missed deadline that blocks the mandate, or an owner gate goes up the chain
