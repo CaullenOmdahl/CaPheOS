@@ -876,6 +876,9 @@ async function selftest() {
   W('company/state/governance.json', govDoc);
   W('company/tools/sample.js', "'use strict';\nconst N = 1;\nif (process.argv[2] === 'selftest') { if (N + 1 !== 2) { console.log('FAIL math'); process.exit(1); } console.log('all checks passed'); }\nmodule.exports = { N };\n");
   fs.copyFileSync(path.join(__dirname, 'routine-rules.js'), path.join(T, 'company/tools/routine-rules.js'));
+  // routine-rules.js requires ./lib/company, and the apply path runs the edited copy from T/company/tools, so the scratch
+  // company needs lib/ beside it (without it the house-rule case fails wherever StarNet is installed and the case runs)
+  fs.cpSync(path.join(__dirname, 'lib'), path.join(T, 'company/tools/lib'), { recursive: true });
   W('company/work/finance/pacing-policy.json', { _doc: 'x', marginPct: 5, subs: { claude: { dailyFraction: 0.142857 } } });
   W('company/model-policy.json', { routing: { models: { haiku: { provider: 'claude-cli', model: 'haiku' }, sonnet: { provider: 'claude-cli', model: 's' }, deepseek: { provider: 'deepseek', model: 'd' } }, routines: { 'Design loop': { claude: null, minimax: true } } }, performance: { consecutiveFailures: 3 } });
   const job = { id: 'job-design', name: 'Design loop', agentId: 'designer', schedule: { kind: 'cron', expr: '45 11 * * *', tz: 'Europe/Lisbon' } };
