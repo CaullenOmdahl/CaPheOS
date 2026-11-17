@@ -1203,6 +1203,11 @@ function lastRunTail(job) {
   const seatSay = {}; const say = (id, o) => { if (!seatSay[id]) seatSay[id] = SS.entry(o); };   // the first decision about a seat this tick is its reason
   const moneyHolds = [];
   const hoursLeft = (() => { const lp = co.localParts(); return Math.max(1, 24 - (Number(lp.hour) || 0) - (Number(lp.minute) || 0) / 60); })();
+  // seats in the owner's meeting while a round runs (lib/meetings.js) are neither idle nor wakable: no wake, no lane, no
+  // re-fire for them this tick (no double runs); the next tick after the round wakes them as usual
+  { const inMeeting = []; try { const MT = require('./lib/meetings'); for (const id of order) if (MT.busy(id)) inMeeting.push(id); } catch (_) {}
+    for (const id of inMeeting) { order.splice(order.indexOf(id), 1); say(id, { state: 'held', why: 'in the owner\'s meeting' }); }
+    if (inMeeting.length) log('MEETING HOLD: ' + inMeeting.map(id => (CREW[id] || {}).name || id).join(', ') + ' (in the owner\'s meeting; woken after the round)'); }
   let fired = 0; try { const pace = await require('./pacer.js').dispatchHook({ dry: DRY, log, jobs, order, ownerWake, maxPerTick: MAX_PER_TICK }); fired = -Math.max(0, Math.min(2, Number(pace && pace.extra) || 0)); } catch (e) { fired = 0; log('PACER ERROR: ' + e.message); }   // pacer.js (fail-safe): may drop metered wakes held near the station rail from `order`, and lends extra per-tick slots by starting `fired` below 0
   // Sprint lanes (company/tools/lanes.js, fail-safe, after the pacer so it sees what the pacer held and the models it set):
   // ends finished, timed-out or cut-off lanes, starts lanes for seats with independent OPEN items within the same money
