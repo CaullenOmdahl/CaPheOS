@@ -165,7 +165,7 @@ plain text and the raw reply under Details.
 ## Meeting
 
 Chat › Meeting (`console/meeting.js`): `GET /api/meeting`, `GET /api/meeting/entries`, `GET /api/meeting/minutes`,
-`GET /api/meeting/live` (NDJSON), and `POST /api/meeting/{say,round,hand,continue,stop,observe,talk-only,lead,seats,new}`;
+`GET /api/meeting/{list,timeline}`, and `POST /api/meeting/{say,round,hand,continue,next,pace,hold,presence,catchup,stop,observe,agenda,lead,seats,new,close,resume}`;
 live updates are the `meeting` topic on `/api/events`. Every turn is a tracked chat run (stream `meeting-<seat>`), so
 `/api/console/busy` lists it and a restart re-attaches. Spec: docs/MEETINGS.md.
 

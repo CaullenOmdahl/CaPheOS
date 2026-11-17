@@ -24,9 +24,25 @@ them. A seat with nothing to add passes, and passes are not shown. The meeting c
 | New meeting (type) | a fresh meeting, same seats and leader: decision, incident, planning or review (the type picks the prompt block and the pacing default, not the protocol). One at a time: close the current one first; an incident meeting may interrupt an open one, which resumes when the incident meeting closes | `/api/meeting/new {type, title?}` |
 | Open minutes | the day's minutes | GET `/api/meeting/minutes?date=` |
 
+## Pacing, built for a reader
+
+- **Pace** (`/api/meeting/pace {speed}`): Next (you advance; the default while you are present), instant, fast,
+  normal, slow. You count as present while the tab is visible and was used in the last 2 minutes (the page says so
+  every 20 s: `/api/meeting/presence`); when you are away the meeting advances by itself at the meeting type's speed
+  (incident fast, decision and planning normal, review slow). **Next** (`/api/meeting/next`) lets the next person speak.
+- **Pause** (`/api/meeting/hold {on}`): the current turn finishes and is shown; nothing new starts, so nothing is spent,
+  until Carry on.
+- The page shows **completed turns**, not words as they stream; nothing scrolls or jumps by itself (a pill counts
+  what is new below), and the meeting opens where you left off ("You left off here").
+- **Your turn**: an `ASK:` of you or the leader's `CALL:` of you gives you the floor after the current speaker; the
+  page says so (a toast, the tab title, a browser notice when the tab is hidden), whatever the pace.
+- **Catch me up** (`/api/meeting/catchup {since}`): one talk-only turn by the leader for you only: five bullets,
+  what was decided, what is still asked. The seats never see it.
+- Reading modes: Everything, By speaker (each reply collapsed), Skim (decisions, asks, hands, rulings, closes); the
+  **Timeline** (`GET /api/meeting/timeline`) jumps to a moment.
+
 `GET /api/meeting` is the state (seats in speaking order with each one's model, the roster, the speaking-now / next up /
-hands line, the cost so far); `GET /api/meeting/entries?limit=&before=` pages the messages (backscroll);
-`GET /api/meeting/live?runId=&from=` streams the current speaker's words. Live updates arrive as the `meeting` topic on
+hands line, the cost so far); `GET /api/meeting/entries?limit=&before=|from=` pages the messages (backscroll, the timeline). Live updates arrive as the `meeting` topic on
 `/api/events`.
 
 ## The agents' lines

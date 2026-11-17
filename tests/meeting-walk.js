@@ -14,7 +14,7 @@ const { spawn } = require('child_process'); const path = require('path'); const 
 const REPO = path.join(__dirname, '..');
 const TOKEN = 'mock-meeting-token';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-let fails = 0; const t = (name, cond, info) => { console.log((cond ? 'PASS ' : 'FAIL ') + name + (cond ? '' : ' — ' + JSON.stringify(info).slice(0, 900))); if (!cond) fails++; };
+let fails = 0; const t = (name, cond, info) => { console.log((cond ? 'PASS ' : 'FAIL ') + name + (cond ? '' : ' — ' + String(JSON.stringify(info)).slice(0, 900))); if (!cond) fails++; };
 const kids = new Set();
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'meeting-walk-selftest-'));
 process.on('exit', () => { for (const k of kids) { try { k.kill('SIGKILL'); } catch (_) {} } try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
@@ -65,6 +65,7 @@ W('company/model-policy.json', pol);
   r = await api('/meeting/say', { text: 'hello' }, true);
   t('1. owner-only: a write without the sign-in is refused too', r.status === 401, r);
 
+  await api('/meeting/pace', { speed: 'instant' });   // no reading pauses in a test
   // 2. a round through the station
   r = await api('/meeting');
   t('2. the default seats are the crew, the CEO seat leads', r.status === 200 && r.json.seats.map(s => s.id).join() === 'agent,cfo,sec' && r.json.meeting.leader === 'agent' && r.json.seats[2].model.provider === 'deepseek', r.json);

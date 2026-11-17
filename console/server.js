@@ -871,7 +871,6 @@ function makeServer() {
       if (req.method === 'POST' && !/json/i.test(String(req.headers['content-type'] || ''))) return sendJson(res, 415, { ok: false, error: 'POST bodies are JSON (content-type: application/json)' });
       const am2 = p.match(/^\/api\/chat\/([A-Za-z0-9_-]{1,64})\/attach$/);
       if (am2 && req.method === 'GET') return CHAT.attach(req, res, am2[1], url.searchParams);
-      if (p === '/api/meeting/live' && req.method === 'GET') return MEET.live(req, res, url.searchParams);
       const cm = p.match(/^\/api\/chat\/([A-Za-z0-9_-]{1,64})\/send$/);
       if (cm) { if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' }); return await CHAT.send(req, res, cm[1], await readBody(req)); }
       for (const r of routes) {

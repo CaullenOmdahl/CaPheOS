@@ -23,8 +23,8 @@
  * writes?:true}) POST /api/cron answers HTTP 200 {ok:false, declined:true, message} and creates nothing for a name the
  * station remembers: one of the agent's live routines or one REMOVED since (any time; S.cron.removed), or a name in
  * `names`. writes:true also declines every /api/cron/update, /remove and /arm the same way. Off: the old answers.
- * Meeting turns (console/meeting.js, streamId meeting-<seat>[-hand|-call]): POST /__meeting {replies: {<agentId>[:hand|:call]:
- * [text | {text, refuse, refuseAll, stepMs}]}, reset?} scripts each seat's next replies (none left: PASS, NO, OK); every
+ * Meeting turns (console/meeting.js, streamId meeting-<seat>[-hand|-call|-catchup|-explain]): POST /__meeting {replies: {<agentId>[:hand|:call]:
+ * [text | {text, refuse, refuseAll, stepMs}]}, reset?} scripts each seat's next replies (none left: PASS, NO, OK, a short line for a catchup or explain); every
  * meeting run's body is kept in GET /__state .meeting.runs (isTask, placed, provider, model, the last message).
  * Every request is appended to --log as one JSON line {at, method, path, query, body, status}; a test asserts on it.
  * Unknown routes answer 404 {error:"mock: no route"} and are logged too, so a test can list what the mock lacks.
@@ -104,12 +104,12 @@ const chats = new Map();   // runId -> {stop(reason)}: console chat runs in flig
 /* meeting turns: S.meeting.queues[<agentId>[:hand|:call]] = [reply, ...], each a string or {text, refuse (claude-cli
    declines it, the next model gets the text), refuseAll, stepMs}; every meeting run is kept in S.meeting.runs */
 function meetingReply(B) {
-  const kind = /-hand$/.test(B.streamId) ? 'hand' : /-call$/.test(B.streamId) ? 'call' : 'turn';
+  const km = /-(hand|call|catchup|explain)$/.exec(B.streamId); const kind = km ? km[1] : 'turn';
   const key = B.agentId + (kind === 'turn' ? '' : ':' + kind);
   const q = S.meeting.queues[key] = S.meeting.queues[key] || [];
   const msgs = Array.isArray(B.messages) ? B.messages : [];
   S.meeting.runs.push({ agentId: B.agentId, kind, streamId: B.streamId, isTask: B.isTask, placed: B.placed || null, detach: B.detach, provider: B.provider, model: B.model, last: String((msgs[msgs.length - 1] || {}).content || '').slice(-2000), first: String((msgs[0] || {}).content || '').slice(0, 400), count: msgs.length, at: Date.now() });
-  let e = q[0]; if (e === undefined) e = kind === 'turn' ? 'PASS' : kind === 'hand' ? 'NO' : 'OK';
+  let e = q[0]; if (e === undefined) e = kind === 'turn' ? 'PASS' : kind === 'hand' ? 'NO' : kind === 'call' ? 'OK' : 'In short: nothing new.';
   if (typeof e === 'string') e = { text: e };
   const refused = !!e.refuseAll || (!!e.refuse && B.provider === 'claude-cli');
   if (!refused || e.refuseAll) q.shift();
@@ -235,7 +235,7 @@ function handle(method, p, q, body, res) {
     // text of tool calls written out as text (tests/fixtures/leaked-tool-calls.txt). POST /api/cancel {runId} stops it.
     if (B.streamId && /^(console|meeting)-/.test(B.streamId)) {
       S.runs.pop();   // recorded when it ends, as the station's run log does
-      // a meeting turn (console/meeting.js, streamId meeting-<seat>[-hand|-call]): the next scripted reply for that seat
+      // a meeting turn (console/meeting.js, streamId meeting-<seat>[-hand|-call|-catchup|-explain]): the next scripted reply for that seat
       // (POST /__meeting); none scripted: PASS for a turn, NO for a hand check, OK for a leader's call on hands
       const mt = /^meeting-/.test(B.streamId) ? meetingReply(B) : null;
       const leak = !mt && /\[leak\]/.test(last) ? fs.readFileSync(path.join(__dirname, 'fixtures', 'leaked-tool-calls.txt'), 'utf8') : null;

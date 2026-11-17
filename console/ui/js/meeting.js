@@ -14,14 +14,14 @@ import * as events from './events.js';
 
 export const ACTIONS = {   // the controls and the API action each one calls (tests/meeting-ui-walk.js checks the map)
   round: '/meeting/round', hand: '/meeting/hand', continue: '/meeting/continue', stop: '/meeting/stop', observe: '/meeting/observe',
-  newMeeting: '/meeting/new', agenda: '/meeting/agenda', close: '/meeting/close', resume: '/meeting/resume', lead: '/meeting/lead', seats: '/meeting/seats', say: '/meeting/say',
+  next: '/meeting/next', pace: '/meeting/pace', hold: '/meeting/hold', catchup: '/meeting/catchup', newMeeting: '/meeting/new', agenda: '/meeting/agenda', close: '/meeting/close', resume: '/meeting/resume', lead: '/meeting/lead', seats: '/meeting/seats', say: '/meeting/say',
 };
 const CHIP = { ask: 'ASK', hand: 'HAND', call: 'CALL', lower: 'LOWER', ruling: 'RULING' };
 const maybePass = t => String(t).trim().length <= 8 && 'PASS'.startsWith(String(t).toUpperCase().replace(/[^A-Z]/g, ''));
 
 export function meetingPane(host, opts) {
   const { app, tz } = opts;
-  let v = null, destroyed = false, liveCtl = null, liveRun = null, lastI = 0, firstI = null, meetingId = null, more = false, cursor = null;
+  let v = null, destroyed = false, lastI = 0, firstI = null, meetingId = null, more = false, cursor = null;
   const nm = n => personName(n) || n;
   const running = () => !!(v && v.live && v.live.phase !== 'idle');
 
@@ -39,12 +39,24 @@ export function meetingPane(host, opts) {
   const liveLine = h('p', { class: 'mtg-live caption', role: 'status', 'aria-live': 'polite' });
   const errHost = h('div', { class: 'mtg-err' });
   const body = h('div', { class: 'chat-body', 'aria-live': 'polite', tabindex: '0', 'aria-label': 'Meeting messages' });
-  let pinned = true;
-  const jump = h('button', { type: 'button', class: 'btn btn-secondary btn-sm chat-jump', hidden: true, onclick: () => { pinned = true; toBottom(); } }, 'Jump to latest ↓');
+  // Scrolling is the reader's: nothing scrolls or jumps by itself. New turns are counted on a pill; reading back is never
+  // pulled away. Where you left off is kept per meeting (this browser) and the meeting opens there.
+  let unseen = 0;
+  const jump = h('button', { type: 'button', class: 'btn btn-secondary btn-sm chat-jump', hidden: true, onclick: () => { toBottom(); } }, 'Jump to latest ↓');
   const atBottom = () => body.scrollHeight - body.scrollTop - body.clientHeight < 80;
-  function toBottom() { body.scrollTop = body.scrollHeight; jump.hidden = true; }
-  function scrollEnd() { if (pinned) toBottom(); else jump.hidden = false; }
-  body.addEventListener('scroll', () => { pinned = atBottom(); if (pinned) jump.hidden = true; if (body.scrollTop < 120) showEarlier(); });
+  function toBottom() { body.scrollTop = body.scrollHeight; unseen = 0; jump.hidden = true; markRead(); }
+  function newBelow(n) { if (n <= 0) return; if (atBottom() && body.scrollHeight <= body.clientHeight + 4) { markRead(); return; } unseen += n; jump.hidden = false; jump.textContent = unseen + ' new below ↓'; }
+  const readKey = () => 'capheos.meeting.read.' + (v && v.meeting ? v.meeting.id : '');
+  const lsGet = k => { try { return localStorage.getItem(k); } catch (_) { return null; } };
+  const lsSet = (k, x) => { try { localStorage.setItem(k, x); } catch (_) {} };
+  let lastRead = 0;
+  function markRead() {
+    const box = body.getBoundingClientRect(); let max = lastRead;
+    for (const el of body.querySelectorAll('[data-i]')) { const r = el.getBoundingClientRect(); if (r.top < box.bottom && r.bottom > box.top) max = Math.max(max, Number(el.dataset.i) || 0); }
+    if (max > lastRead) { lastRead = max; lsSet(readKey(), String(lastRead)); }
+    if (atBottom()) { unseen = 0; jump.hidden = true; }
+  }
+  body.addEventListener('scroll', () => { markRead(); if (body.scrollTop < 120) showEarlier(); });
   const earlierBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-sm chat-earlier', onclick: () => showEarlier() }, 'Show earlier messages');
   const ta = h('textarea', { id: 'msg', rows: '3', class: 'textarea', placeholder: 'Write to everyone seated, or start with @name…', 'aria-autocomplete': 'list', 'aria-controls': 'mtg-ac' });
   const ac = h('ul', { id: 'mtg-ac', class: 'mtg-ac plain', role: 'listbox', hidden: true, 'aria-label': 'People to address' });
@@ -54,17 +66,18 @@ export function meetingPane(host, opts) {
     h('label', { for: 'msg', class: 'caption muted' }, COMPOSER_HINT + ' · @name to ask particular people · Esc raises your hand while they talk'),
     h('div', { class: 'mtg-ta-wrap' }, ta, ac),
     h('div', { class: 'between-c', style: 'flex-wrap:wrap;gap:8px' }, sendErr, sendBtn));
-  fill(host, head, stateHost, seatsHost, agendaHost, ctrlHost, liveLine, errHost, h('div', { class: 'chat-scroll' }, body, jump), form);
+  fill(host, head, stateHost, seatsHost, agendaHost, ctrlHost, liveLine, errHost, h('div', { class: 'row-8 mtg-readbar' }, null), h('div', { class: 'chat-scroll' }, body, jump), form);
 
   /* ---------- actions ---------- */
   async function act(path, b, okMsg) {
+    askNotify();
     try { const r = await post(path, b); if (r && r.note && r.note !== 'sent') app.toast(r.note); else if (okMsg) app.toast(okMsg); v = r && r.meeting ? r : v; if (r && r.meeting) { drawControls(); drawLive(); drawSeats(); drawAgenda(); } refreshEntries(); return r; }
     catch (e) { app.toast(humanError(e), true); return null; }
   }
   async function send() {
     const text = ta.value.trim(); if (!text) return;
     sendErr.textContent = '';
-    try { const r = await post(ACTIONS.say, { text }); ta.value = ''; closeAc(); if (r && r.note && r.note !== 'sent') app.toast(r.note); if (r && r.missing && r.missing.length) app.toast(r.missing.join(', ') + ' not seated: the message went to the others.'); v = r; drawControls(); drawLive(); pinned = true; refreshEntries(); }
+    try { const r = await post(ACTIONS.say, { text }); ta.value = ''; closeAc(); if (r && r.note && r.note !== 'sent') app.toast(r.note); if (r && r.missing && r.missing.length) app.toast(r.missing.join(', ') + ' not seated: the message went to the others.'); v = r; drawControls(); drawLive(); refreshEntries(); }
     catch (e) { sendErr.textContent = 'Not sent: ' + humanError(e); }
   }
   const raiseHand = () => { if (running() && v.live.phase === 'round' && !v.live.ownerHand) act(ACTIONS.hand, {}); };
@@ -122,7 +135,13 @@ export function meetingPane(host, opts) {
         h('span', { class: 'caption muted' }, 'Agenda · talk only unless you switch tools on for an item' + (M.toolsOn ? ' · tools are on now' : '')),
         items.length ? h('ul', { class: 'plain mtg-items' }, items.map(row)) : null,
         h('div', { class: 'row-8 mtg-add' }, title, Button('Add item', { variant: 'secondary', size: 'sm', onClick: addItem }))),
-      h('div', { class: 'row-8 mtg-add' }, type, nb));
+      h('div', { class: 'row-8 mtg-add' }, speed(M), type, nb));
+  }
+  function speed(M) {
+    const label = { manual: 'Next (I advance)', instant: 'Instant', fast: 'Fast', normal: 'Normal', slow: 'Slow' };
+    const sel = h('select', { class: 'select mtg-speed', id: 'mtg-speed', 'aria-label': 'Pace: how the meeting advances', onchange: e => act(ACTIONS.pace, { speed: e.target.value }) },
+      (M.speeds || []).map(x => h('option', { value: x, selected: x === M.speed }, 'Pace: ' + (label[x] || x))));
+    return sel;
   }
   function drawState() {
     if (!v) return;
@@ -143,7 +162,11 @@ export function meetingPane(host, opts) {
     items.push(b('Round', 'round', { variant: run ? 'secondary' : 'primary', disabled: run || !(v.seats || []).length, aria: 'An open round: they answer each other, with no new message from you', onClick: () => act(ACTIONS.round, {}) }));
     if (L.phase === 'floor') items.push(b('Continue', 'continue', { variant: 'primary', aria: 'Let them carry on', onClick: () => act(ACTIONS.continue, {}) }));
     else if (run) items.push(b(L.ownerHand ? 'Hand raised' : 'Raise hand', 'hand', { disabled: L.ownerHand || L.phase === 'stopping', aria: 'Take the floor after the current speaker (Esc)', onClick: () => act(ACTIONS.hand, {}) }));
+    if (run && L.waitNext) items.unshift(b(L.next && L.next[0] ? 'Next: ' + nm(L.next[0].name) : 'Next', 'next', { variant: 'primary', aria: 'You have read it: let the next person speak', onClick: () => act(ACTIONS.next, {}) }));
+    if (run && L.phase !== 'floor') items.push(L.paused ? b('Carry on', 'unpause', { variant: 'primary', aria: 'Carry on: the next turn may start', onClick: () => act(ACTIONS.hold, { on: false }) })
+      : b('Pause', 'pause', { aria: 'Hold the floor: the current turn finishes, then nothing new starts (and nothing is spent)', onClick: () => act(ACTIONS.hold, { on: true }) }));
     if (run) items.push(b('Stop round', 'stop', { aria: 'Stop the round now', onClick: () => act(ACTIONS.stop, {}, 'Round stopped.') }));
+    if (M.opened) items.push(b('Catch me up', 'catchup', { variant: 'ghost', aria: 'Five bullets of what you missed, what was decided and what is still asked', onClick: async () => { const r = await act(ACTIONS.catchup, { since: lastRead }); if (r) app.toast('Your catch-up is in the messages.'); } }));
     const isOpen = M.state === 'open';
     if (M.observer) items.push(b('Take part', 'take-part', { aria: 'Take part again: the meeting waits for you after each round', onClick: () => act(ACTIONS.observe, { on: false }) }));
     else {
@@ -163,7 +186,7 @@ export function meetingPane(host, opts) {
   function drawLive() {
     if (!v) return;
     const L = v.live; const parts = [];
-    if (L.phase === 'floor') parts.push(h('strong', {}, 'You have the floor.'), ' Write to everyone, or press Continue to let them carry on.');
+    if (L.phase === 'floor') parts.push(h('strong', {}, 'Your turn: you have the floor.'), L.floorWhy ? ' ' + L.floorWhy + '.' : '', ' Write to everyone, or press Continue to let them carry on.');
     else if (L.phase === 'stopping') parts.push('Stopping the round…');
     else if (L.phase === 'round') {
       if (L.speaking) parts.push(h('span', { class: 'pulse', 'aria-hidden': 'true' }), ' ', h('strong', {}, 'Speaking now: ' + nm(L.speaking.name)), L.speaking.kind === 'ask' && L.speaking.from ? ' (answering ' + nm(nameOfId(L.speaking.from)) + ')' : L.speaking.kind === 'hand' ? ' (has the floor)' : '');
@@ -173,10 +196,13 @@ export function meetingPane(host, opts) {
       if (L.hands && L.hands.length) parts.push(' · Hands raised: ' + L.hands.map(x => nm(x.name) + (x.why ? ' (' + x.why + ')' : '')).join('; '));
       if (L.ownerHand) parts.push(' · Your hand is up: the floor is yours after this speaker');
       if (L.round) parts.push(' · Round ' + L.round.auto + ' of up to ' + L.round.cap);
+      if (L.paused) parts.push(' · Paused: nothing new starts until you carry on');
+      else if (L.waitNext && !L.speaking) parts.push(' · Waiting for you to press Next');
+      else if (L.nextAt && !L.speaking) parts.push(' · Next turn in ' + Math.max(0, Math.round((L.nextAt - Date.now()) / 1000)) + ' s');
     }
     fill(liveLine, parts);
     liveLine.hidden = !parts.length;
-    follow(L.phase === 'round' && L.speaking && L.speaking.runId ? L.speaking : null);
+    notifyTurn(L);
   }
   const nameOfId = id => ((v && v.roster) || []).concat({ id: 'owner', name: v && v.owner }).find(r => r.id === id)?.name || id;
 
@@ -200,6 +226,7 @@ export function meetingPane(host, opts) {
     if (e.kind === 'ruling') return chip('RULING', nm(e.name) + ' recorded a ruling', e.text, e);
     if (e.kind === 'parse') return h('div', { class: 'mtg-chip mtg-parse', 'data-kind': 'parse', 'data-i': e.i, role: 'status' }, h('span', { class: 'mtg-chip-k' }, 'COULD NOT READ'), h('span', { class: 'body-s' }, nm(e.name) + ': "' + e.line + '"'), h('span', { class: 'body-s muted' }, e.why + '. Nothing was done with it; ' + nm(e.name) + ' is told on their next turn.'));
     if (e.kind === 'close') return h('div', { class: 'mtg-end mtg-closed', 'data-i': e.i, role: 'note' }, h('span', { class: 'mtg-chip-k' }, e.state === 'interrupted' ? 'INTERRUPTED' : 'CLOSED'), h('span', { class: 'body-s' }, (e.line || '') + ' · ' + t));
+    if (e.kind === 'catchup') return h('div', { class: 'mtg-end mtg-catchup', 'data-i': e.i, role: 'note' }, h('span', { class: 'mtg-chip-k' }, 'FOR YOU'), h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, 'Catch-up by ' + nm(e.name) + ' (only you see this)'), mdBlock(e.text, 'body-s'), h('span', { class: 'caption muted' }, t)));
     if (e.kind === 'open') return h('p', { class: 'caption muted mtg-line', 'data-i': e.i }, 'The meeting opened · ' + t);
     return h('p', { class: 'caption muted mtg-line', 'data-i': e.i }, (e.line || e.text || '') + (t ? ' · ' + t : ''));
   }
@@ -231,16 +258,23 @@ export function meetingPane(host, opts) {
         more = d.more; cursor = d.cursor;
         firstI = list.length ? list[0].i : null; lastI = list.length ? list[list.length - 1].i : 0;
         fill(body, more ? earlierBtn : null, list.length ? list.map(entryEl) : empty('Nobody has spoken yet. Write below and everyone seated answers in turn, the leader first. Start with @name to ask particular people.'));
-        pinned = true; scrollEnd(); return;
+        applyMode();
+        // open where the owner left off: the first turn after their last read, with a marker; else at the latest
+        lastRead = Number(lsGet(readKey())) || 0;
+        const firstNew = lastRead ? [...body.querySelectorAll('[data-i]')].find(el => Number(el.dataset.i) > lastRead) : null;
+        if (firstNew) { body.insertBefore(h('p', { class: 'caption mtg-leftoff', role: 'note' }, 'You left off here'), firstNew); body.scrollTop = Math.max(0, firstNew.offsetTop - body.offsetTop - 40); }
+        else body.scrollTop = body.scrollHeight;
+        markRead(); return;
       }
       const fresh = list.filter(e => e.i > lastI);
       if (!fresh.length) return;
       const emptyEl = body.querySelector('.empty'); if (emptyEl) emptyEl.remove();
-      const liveCard = body.querySelector('.mtg-livecard');
-      for (const e of fresh) body.insertBefore(entryEl(e), liveCard && !(e.kind === 'say' && liveRun && e.who === liveRun.id) ? liveCard : null);
-      if (fresh.some(e => e.kind === 'say' && liveRun && e.who === liveRun.id) && liveCard) { liveCard.remove(); }
+      const top = body.scrollTop;
+      for (const e of fresh) body.appendChild(entryEl(e));
+      body.scrollTop = top;   // never moved by an arrival
+      applyMode();
       lastI = fresh[fresh.length - 1].i;
-      scrollEnd();
+      newBelow(fresh.filter(e => e.kind !== 'note').length);
     } catch (e) { if (!destroyed) fill(errHost, errLine(e, 'Meeting')); }
   }
   async function showEarlier() {
@@ -256,45 +290,6 @@ export function meetingPane(host, opts) {
     } catch (_) {} finally { showEarlier.busy = false; }
   }
 
-  /* ---------- the speaker's words as they come (GET /api/meeting/live) ---------- */
-  function follow(sp) {
-    if (liveRun && sp && liveRun.runId === sp.runId) return;
-    if (liveCtl) { liveCtl.abort(); liveCtl = null; }
-    const old = body.querySelector('.mtg-livecard'); if (old) old.remove();
-    liveRun = sp;
-    if (!sp) return;
-    const text = h('div', { class: 'md msg-them' });
-    const steps = h('span', { class: 'caption muted' }, '');
-    const card = h('div', { class: 'stack-4 msg-them-wrap live mtg-livecard', 'data-who': sp.id }, h('span', { class: 'chat-who caption' }, h('span', { class: 'pulse', 'aria-hidden': 'true' }), ' ' + nm(sp.name) + ' is thinking…'), steps, text);
-    body.appendChild(card); scrollEnd();
-    const ctl = liveCtl = new AbortController(); let got = '', from = 0;
-    const draw = () => { if (maybePass(got)) return; const shown = got.replace(/^[ \t>*_-]*(INVITE|DISMISS|ASK|CALL|LATER|LOWER|END|RULING)\b.*$/gim, '').trim(); fill(text, md(shown)); card.firstChild.lastChild.textContent = ' ' + nm(sp.name) + ' is speaking…'; scrollEnd(); };
-    (async () => {
-      for (let tries = 0; tries < 30 && !ctl.signal.aborted; tries++) {
-        try {
-          const res = await fetch('/api/meeting/live?runId=' + encodeURIComponent(sp.runId) + '&from=' + from, { credentials: 'same-origin', signal: ctl.signal });
-          const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '', end = false;
-          for (;;) {
-            const { value, done } = await reader.read(); if (done) break;
-            buf += dec.decode(value, { stream: true }); let i;
-            while ((i = buf.indexOf('\n')) >= 0) {
-              const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!l) continue;
-              let ev; try { ev = JSON.parse(l); } catch (_) { continue; }
-              from++;
-              if (ev.name === 'agent.token') { got += ev.payload.delta || ''; draw(); }
-              else if (ev.name === 'agent.tool_call') steps.textContent = 'checking: ' + String(ev.payload.name || '').replace(/[_.]/g, ' ') + (ev.payload.argsSummary ? ' ' + String(ev.payload.argsSummary).slice(0, 80) : '');
-              else if (ev.name === 'permission.prompt') consent(card, sp, ev.payload || {});
-              else if (ev.name === 'permission.response') { const c = card.querySelector('[data-prompt="' + ((ev.payload || {}).promptId || '') + '"]'); if (c) c.replaceWith(h('p', { class: 'caption muted' }, 'Approval: ' + ((ev.payload || {}).decision || 'answered'))); }
-              else if (ev.name === 'console.end' || ev.name === 'console.gone') end = true;
-            }
-          }
-          if (end) return;
-        } catch (e) { if (e.name === 'AbortError') return; }
-        await new Promise(r => setTimeout(r, 800));
-      }
-    })();
-  }
-
   // an approval the speaker's run asks for (a tool it may not use unasked): answered here, as in the chat
   function consent(card, sp, p) {
     if (card.querySelector('[data-prompt="' + (p.promptId || '') + '"]')) return;
@@ -305,7 +300,7 @@ export function meetingPane(host, opts) {
     const el = h('div', { class: 'alertbox tool-permission', role: 'alertdialog', 'data-prompt': p.promptId || '' },
       h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, nm(sp.name) + ' asks to use ' + (p.tool || 'a tool')), h('span', { class: 'mono-s' }, String(p.argsSummary || '').slice(0, 400))),
       h('div', { class: 'row-8' }, Button('Allow once', { variant: 'primary', size: 'sm', onClick: () => answer('once') }), Button('No', { variant: 'ghost', size: 'sm', onClick: () => answer('deny') })));
-    card.appendChild(el); scrollEnd();
+    card.appendChild(el);
   }
 
   /* ---------- @name autocomplete ---------- */
@@ -357,10 +352,61 @@ export function meetingPane(host, opts) {
     document.body.appendChild(dlg); dlg.addEventListener('close', () => dlg.remove()); dlg.showModal();
   }
 
+  /* ---------- reading aids: modes, the timeline, your-turn notice, presence ---------- */
+  let mode = lsGet('capheos.meeting.mode') || 'all';
+  const SKIM = new Set(['end', 'ruling', 'ask', 'hand', 'call', 'lower', 'parse', 'close', 'catchup']);
+  const modeBar = h('nav', { class: 'seg mtg-modes', 'aria-label': 'Reading mode' }, ['all', 'speaker', 'skim'].map(m => h('button', { type: 'button', 'data-mode': m, class: m === mode ? 'on' : '', 'aria-pressed': String(m === mode), onclick: () => { mode = m; lsSet('capheos.meeting.mode', m); for (const x of modeBar.children) { x.classList.toggle('on', x.dataset.mode === m); x.setAttribute('aria-pressed', String(x.dataset.mode === m)); } applyMode(); } }, m === 'all' ? 'Everything' : m === 'speaker' ? 'By speaker' : 'Skim: decisions, asks, hands')));
+  function applyMode() {
+    for (const el of body.querySelectorAll('[data-i]')) {
+      const k = el.dataset.kind || (el.classList.contains('mtg-end') ? (el.classList.contains('mtg-catchup') ? 'catchup' : el.classList.contains('mtg-closed') ? 'close' : 'end') : el.classList.contains('msg-them-wrap') ? 'say' : '');
+      el.hidden = mode === 'skim' && !SKIM.has(k);
+      el.classList.toggle('mtg-collapsed', mode === 'speaker' && el.classList.contains('msg-them-wrap'));
+    }
+  }
+  const tlHost = h('details', { class: 'mtg-timeline' }, h('summary', { class: 'caption' }, 'Timeline'), h('ol', { class: 'plain' }));
+  tlHost.addEventListener('toggle', async () => {
+    if (!tlHost.open) return;
+    let d; try { d = await api('/meeting/timeline'); } catch (_) { return; }
+    fill(tlHost.querySelector('ol'), (d.moments || []).map(m => h('li', {}, h('button', { type: 'button', class: 'btn btn-ghost btn-sm', 'data-to': m.i, onclick: () => scrub(m.i) }, (m.at ? when(m.at, tz) + ' · ' : '') + ({ end: 'END', ruling: 'Ruling', close: 'Closed', resume: 'Resumed', agenda: 'Agenda', ask: 'Ask', call: 'Call', catchup: 'Catch-up', open: 'Opened' }[m.kind] || m.kind) + ': ' + m.text))));
+  });
+  async function scrub(i) {
+    let el = body.querySelector('[data-i="' + i + '"]');
+    if (!el) {   // not loaded yet: load from that moment on
+      let d; try { d = await api('/meeting/entries?limit=200&from=' + i); } catch (_) { return; }
+      more = d.more; cursor = d.cursor;
+      fill(body, more ? earlierBtn : null, (d.entries || []).map(entryEl));
+      lastI = d.entries && d.entries.length ? d.entries[d.entries.length - 1].i : lastI;
+      applyMode(); el = body.querySelector('[data-i="' + i + '"]');
+    }
+    if (el) { body.scrollTop = Math.max(0, el.offsetTop - body.offsetTop - 20); el.classList.add('mtg-flash'); setTimeout(() => el.classList.remove('mtg-flash'), 1600); }
+  }
+  let wasTurn = false; const baseTitle = document.title;
+  function notifyTurn(L) {
+    const now = !!(L && L.yourTurn);
+    if (now && !wasTurn) {
+      app.toast('Your turn: ' + (L.floorWhy || 'you have the floor') + '.');
+      document.title = '● Your turn · ' + baseTitle;
+      try { if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) new Notification('Your turn in the meeting', { body: L.floorWhy || 'You have the floor.' }); } catch (_) {}
+    }
+    if (!now && wasTurn) document.title = baseTitle;
+    wasTurn = now;
+  }
+  const askNotify = () => { try { if (typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission(); } catch (_) {} };
+  // presence: the tab is visible and was used in the last 2 minutes (owner ruling): Next pacing applies while present
+  let usedAt = Date.now();
+  const used = () => { usedAt = Date.now(); };
+  for (const evn of ['pointerdown', 'keydown', 'wheel', 'touchstart']) host.addEventListener(evn, used, { passive: true });
+  const beat = () => { if (destroyed) return; const here = !document.hidden && Date.now() - usedAt < 120000; post('/meeting/presence', { here }).catch(() => {}); };
+  const beatTimer = setInterval(beat, 20000);
+  const onVis = () => { if (!document.hidden) used(); beat(); };
+  document.addEventListener('visibilitychange', onVis);
+
   /* ---------- load and live updates ---------- */
   async function load() {
     try { v = await api('/meeting'); } catch (e) { fill(errHost, errLine(e, 'Meeting')); return null; }
     fill(errHost);
+    fill(host.querySelector('.mtg-readbar'), modeBar, tlHost);
+    beat();
     drawSeats(); drawAgenda(); drawControls(); drawLive(); await refreshEntries(true);
     return v;
   }
@@ -372,5 +418,5 @@ export function meetingPane(host, opts) {
   async function seatUpdate() { if (destroyed) return; try { const x = await api('/meeting'); v = x; drawSeats(); drawAgenda(); } catch (_) {} }
   const offLive = events.onLive(['meeting'], liveUpdate);
   const offSeats = events.on(['meeting', 'crew'], seatUpdate);
-  return { load, ta, destroy: () => { destroyed = true; offLive(); offSeats(); document.removeEventListener('keydown', onKey); if (liveCtl) liveCtl.abort(); }, _view: () => v };
+  return { load, ta, destroy: () => { destroyed = true; offLive(); offSeats(); clearInterval(beatTimer); document.removeEventListener('keydown', onKey); document.removeEventListener('visibilitychange', onVis); document.title = baseTitle; }, _view: () => v };
 }

@@ -57,8 +57,8 @@ function fresh(opts) {
   for (const f of ['company/state/meetings']) fs.rmSync(path.join(T, f), { recursive: true, force: true });
   const runner = makeRunner();
   const models = Object.assign({}, (opts && opts.models) || {});
-  const M = meetingLib({ co, owner: () => 'Caullen', runner, run, modelFor: async id => models[id] || { provider: 'claude-cli', model: 'claude-sonnet-5-5' } });
-  if (opts && opts.seats) M.seatsChange({ remove: Object.keys(CREW).filter(x => !opts.seats.includes(x)) });
+  const M = meetingLib({ co, owner: () => 'Caullen', runner, run, speedMs: { fast: 1, normal: 1, slow: 1 }, modelFor: async id => models[id] || { provider: 'claude-cli', model: 'claude-sonnet-5-5' } });
+  if (opts && opts.seats && Object.keys(CREW).some(x => !opts.seats.includes(x))) M.seatsChange({ remove: Object.keys(CREW).filter(x => !opts.seats.includes(x)) });
   if (opts && opts.seats) M.seatsChange({ add: opts.seats });
   if (opts && 'leader' in opts) M.setLeader({ seat: opts.leader });
   return { M, runner };
@@ -463,4 +463,65 @@ test('protocol lines are parsed and hidden from what was said', () => {
   assert.strictEqual(d.list[0].why, 'what is the budget?');
   assert.ok(meetingLib.isPass('PASS') && meetingLib.isPass(' pass. ') && !meetingLib.isPass('I pass on that, but'));
   assert.strictEqual(meetingLib.handReply('HAND — on cost.'), 'on cost'); assert.strictEqual(meetingLib.handReply('NO'), null);
+});
+
+test('pacing: with the owner present and manual pacing, a 7-seat 3-round meeting never advances without Next', async () => {
+  const seats = ['dave', 'sharon', 'phil', 'rachel', 'nadia', 'omar', 'leo'];
+  const { M, runner } = fresh({ seats, leader: 'dave' });
+  M.setObserve({ on: true, rounds: 3 });
+  const script = {}; for (const id of seats) script[id] = ['r1 ' + id, 'r2 ' + id, 'r3 ' + id];
+  runner.script(script);
+  M.presence({ here: true });
+  assert.strictEqual((await M.view()).meeting.effectiveSpeed, 'manual', 'Next is the default while the owner is present');
+  await M.say({ text: 'Three rounds, at my pace.' });
+  const wait = async n => { for (let i = 0; i < 200 && runner.turns().length < n; i++) await new Promise(r => setTimeout(r, 5)); await new Promise(r => setTimeout(r, 60)); };
+  for (let k = 1; k <= 21; k++) {
+    await wait(k);
+    M.presence({ here: true });
+    assert.strictEqual(runner.turns().length, k, 'turn ' + k + ' and no further without Next');
+    const v = await M.view();
+    if (k < 21) { assert.ok(v.live.waitNext, 'waiting for Next after turn ' + k); M.next(); }
+  }
+  await idle(M);
+  assert.strictEqual(runner.turns().length, 21, '7 seats x 3 rounds');
+  // away: the meeting advances by itself at the type's speed
+  const t2 = fresh({ seats: ['dave', 'sharon'], leader: 'dave' });
+  t2.runner.script({ dave: 'a', sharon: 'b' });
+  t2.M.presence({ here: false });
+  await t2.M.say({ text: 'While I am away.' }); await idle(t2.M);
+  assert.strictEqual(t2.runner.turns().length, 2, 'advances with nobody pressing Next');
+});
+
+test('pause: the current turn finishes, nothing new starts and nothing is spent until released', async () => {
+  const { M, runner } = fresh({ seats: ['dave', 'sharon', 'phil'], leader: 'dave' });
+  let release; const hold = new Promise(r => { release = r; });
+  runner.script({ dave: { text: 'Finishing my point.', hold }, sharon: 'S.', phil: 'P.' });
+  await M.say({ text: 'Go.' }); await new Promise(r => setTimeout(r, 30));
+  M.hold({ on: true }); release();
+  await new Promise(r => setTimeout(r, 150));
+  assert.deepStrictEqual(runner.calls.map(c => c.seat), ['dave'], 'no new run while paused');
+  assert.ok(kinds(M, 'say').some(e => e.who === 'dave'), 'the turn in progress finished and is shown');
+  assert.ok((await M.view()).live.paused);
+  M.hold({ on: false }); await idle(M);
+  assert.deepStrictEqual(runner.turns().map(c => c.seat), ['dave', 'sharon', 'phil']);
+});
+
+test('your turn: an ASK of the owner or a CALL from the leader gives the owner the floor; Catch me up is one talk-only turn for the owner', async () => {
+  const { M, runner } = fresh({ seats: ['dave', 'sharon'], leader: 'dave' });
+  runner.script({ dave: 'Over to you.\nASK: Caullen — which market first?', sharon: 'S.' });
+  await M.say({ text: 'Go.' });
+  for (let i = 0; i < 100 && (await M.view()).live.phase !== 'floor'; i++) await new Promise(r => setTimeout(r, 10));
+  const v = await M.view();
+  assert.ok(v.live.yourTurn && /Dave asked you: which market first\?/.test(v.live.floorWhy), JSON.stringify(v.live));
+  await M.say({ text: 'Sports first.' }); await idle(M);
+  runner.script({ 'dave:catchup': 'Summary bullets.\n- a\n- b' });
+  const n = runner.calls.length;
+  await M.catchUp({ since: 0 });
+  const c = runner.calls.slice(n);
+  assert.ok(c.length === 1 && c[0].purpose === 'catchup' && c[0].tools === false && /CATCH-UP for Caullen/.test(c[0].last));
+  assert.ok(kinds(M, 'catchup').length === 1 && !kinds(M, 'say').some(e => /Summary bullets/.test(e.text)), 'shown to the owner, not part of the meeting');
+  runner.script({ sharon: 'Later.' });
+  await M.say({ text: 'Next.' }); await idle(M);
+  assert.ok(!/Summary bullets/.test(runner.turns().pop().all), 'the seats never see the catch-up');
+  assert.ok(M.timeline().moments.some(m => m.kind === 'ask'), 'the timeline has the moments to scrub to');
 });

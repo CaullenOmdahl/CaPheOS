@@ -15,7 +15,7 @@ if (!bin) { console.log('SKIP meeting-ui-walk: no Chrome'); process.exit(0); }
 const REPO = path.join(__dirname, '..');
 const TOKEN = 'mock-meeting-ui-token';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-let fails = 0; const t = (name, cond, info) => { console.log((cond ? 'PASS ' : 'FAIL ') + name + (cond ? '' : ' — ' + JSON.stringify(info).slice(0, 900))); if (!cond) fails++; };
+let fails = 0; const t = (name, cond, info) => { console.log((cond ? 'PASS ' : 'FAIL ') + name + (cond ? '' : ' — ' + String(JSON.stringify(info)).slice(0, 900))); if (!cond) fails++; };
 const kids = new Set();
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'meeting-ui-selftest-'));
 const udd = fs.mkdtempSync(path.join(os.tmpdir(), 'meeting-ui-chrome-'));
@@ -67,6 +67,8 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   await cmd('Page.navigate', { url: C + '/#/chat/meeting' });
   t('the meeting opens with the seat strip in speaking order', await waitFor(() => ev('[...document.querySelectorAll(".mtg-seat")].map(x=>x.dataset.seat).join()==="agent,cfo,sec"'), 15000), await ev('document.querySelector("main")&&document.querySelector("main").innerText.slice(0,400)'));
   t('the conversation list has Meeting, and the header switches between Group chat and Meeting', await ev('!!document.querySelector(".conv-list a[href=\\"#/chat/meeting\\"]") && [...document.querySelectorAll(".mtg-mode a")].map(a=>a.textContent).join()==="Group chat,Meeting"'));
+  await api('/meeting/pace', { speed: 'instant' });   // the walk's own pace; Next is checked below
+  await sleep(400);
   // record every POST the page makes
   await ev('(()=>{window.__posts=[];const f=window.fetch;window.fetch=function(u,o){try{if(o&&o.method==="POST")window.__posts.push({path:String(u).replace(/^.*\\/api/,""),body:o.body?JSON.parse(o.body):null})}catch(_){}return f.apply(this,arguments)};return 1})()');
   const lastPost = () => ev('window.__posts[window.__posts.length-1]||null');
@@ -124,9 +126,9 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   await maps('Round', '[data-act="round"]', { path: '/meeting/round', body: {} });
   const speaking = await waitFor(() => ev('(()=>{const l=document.querySelector(".mtg-live");return l&&/Speaking now: Founder/.test(l.textContent)?l.textContent:null})()'), 6000, 80);
   t('the live line says who is speaking now and who is next', speaking && /Next up: Sharon/.test(speaking), speaking);
-  t('the words stream in as they come', await waitFor(() => ev('(()=>{const c=document.querySelector(".mtg-livecard .msg-them");return c&&c.textContent.length>10})()'), 6000, 80));
+  t('completed turns only: no token stream on the page', !(await ev('!!document.querySelector(".mtg-livecard")')));
   await maps('Raise hand', '[data-act="hand"]', { path: '/meeting/hand', body: {} });
-  t('the floor comes to the owner after the current speaker', await waitFor(() => ev('!!document.querySelector("[data-act=continue]") && /You have the floor/.test(document.querySelector(".mtg-live").textContent)'), 15000));
+  t('the floor comes to the owner after the current speaker', await waitFor(() => ev('!!document.querySelector("[data-act=continue]") && /you have the floor/i.test(document.querySelector(".mtg-live").textContent)'), 15000));
   await maps('Continue', '[data-act="continue"]', { path: '/meeting/continue', body: {} });
   await waitFor(() => ev('document.querySelector("[data-act=round]").disabled===false'), 15000);
   await maps('Round again', '[data-act="round"]', { path: '/meeting/round', body: {} });
@@ -139,6 +141,32 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   await maps('Stop round', '[data-act="stop"]', { path: '/meeting/stop', body: {} });
   t('the round stops', await waitFor(() => ev('document.querySelector("[data-act=round]").disabled===false && !document.querySelector("[data-act=stop]")'), 15000));
 
+  // Pace: Next (manual), Pause, Catch me up
+  await ev('(()=>{const s=document.getElementById("mtg-speed");s.value="manual";s.dispatchEvent(new Event("change"));return 1})()');
+  const pc = await waitFor(() => lastPost(), 3000);
+  t('control → action: the pace picker', pc && pc.path === '/meeting/pace' && pc.body.speed === 'manual', pc);
+  await st('/__meeting', { reset: true, replies: { agent: 'First.', cfo: 'Second.', sec: 'Third.' } });
+  await api('/meeting/say', { text: 'At my pace.' });
+  t('with Next pacing the meeting waits for you after a turn', await waitFor(() => ev('!!document.querySelector("[data-act=next]")'), 8000));
+  await maps('Next', '[data-act="next"]', { path: '/meeting/next', body: {} });
+  await waitFor(() => ev('!!document.querySelector("[data-act=pause]")'), 5000);
+  await maps('Pause', '[data-act="pause"]', { path: '/meeting/hold', body: { on: true } });
+  await waitFor(() => ev('!!document.querySelector("[data-act=unpause]")'), 5000);
+  await maps('Carry on', '[data-act="unpause"]', { path: '/meeting/hold', body: { on: false } });
+  await api('/meeting/pace', { speed: 'instant' }); await api('/meeting/next', {});
+  await waitFor(() => ev('document.querySelector("[data-act=round]").disabled===false'), 10000);
+  await st('/__meeting', { replies: { 'agent:catchup': 'Five bullets for you.' } });
+  { const n = await ev('window.__posts.length'); await click('[data-act="catchup"]'); const p = await waitFor(async () => (await ev('window.__posts.length')) > n ? lastPost() : null, 4000);
+    t('control → action: Catch me up', p && p.path === '/meeting/catchup' && typeof p.body.since === 'number', p); }
+  t('the catch-up is a card only the owner sees', await waitFor(() => ev('!!document.querySelector(".chat-body .mtg-catchup")'), 8000));
+  t('reading modes: Skim hides what was said, Everything shows it', await ev('(()=>{const b=[...document.querySelectorAll(".mtg-modes button")];b[2].click();const hid=[...document.querySelectorAll(".chat-body .msg-them-wrap")].every(x=>x.hidden);b[0].click();return hid&&[...document.querySelectorAll(".chat-body .msg-them-wrap")].some(x=>!x.hidden)})()'));
+  t('nothing scrolls by itself: reading back stays put when a turn arrives', await (async () => {
+    await ev('document.querySelector(".chat-body").scrollTop=0'); const top0 = await ev('document.querySelector(".chat-body").scrollTop');
+    await st('/__meeting', { reset: true, replies: { agent: 'An arrival.' } }); await api('/meeting/say', { text: '@founder one more' });
+    await waitFor(() => ev('[...document.querySelectorAll(".chat-body .msg-them-wrap")].some(x=>/An arrival/.test(x.textContent))'), 8000);
+    return (await ev('document.querySelector(".chat-body").scrollTop')) === top0;
+  })());
+  t('the timeline lists the moments to scrub to', await ev('(async()=>{const d=document.querySelector(".mtg-timeline");d.open=true;d.dispatchEvent(new Event("toggle"));await new Promise(r=>setTimeout(r,800));return d.querySelectorAll("li button").length>0})()'));
   // the dropdown is held during live events; the controls still follow
   await api('/meeting/seats', { remove: ['hr'] });   // Rachel came in as a guest: unseat her, so the picker has someone
   await waitFor(() => ev('!document.getElementById("mtg-pick").disabled'), 4000);
@@ -156,7 +184,7 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   await api('/meeting/observe', { on: true, rounds: 3 });
   await st('/__meeting', { reset: true, replies: { agent: 'We agree.\nEND: ship it, Sharon writes it up', cfo: 'Agreed.' } });
   await api('/meeting/say', { text: 'Settle it.' });
-  const endCard = await waitFor(() => ev('(()=>{const e=document.querySelector(".chat-body .mtg-end");return e?e.textContent:null})()'), 15000);
+  const endCard = await waitFor(() => ev('(()=>{const e=[...document.querySelectorAll(".chat-body .mtg-end")].find(x=>/Discussion closed/.test(x.textContent));return e?e.textContent:null})()'), 15000);
   t('the END summary is a card', endCard && /Discussion closed by Founder/.test(endCard) && /ship it, Sharon writes it up/.test(endCard), endCard);
   await api('/meeting/observe', { on: false });
   // Open minutes
