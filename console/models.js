@@ -9,6 +9,7 @@
  *   GET  /api/models/catalog/<provider>       the allowed models of one provider, with the station's efforts for each
  *   POST /api/models/seat/<id>/primary        { provider, model, effort? }   the seat's primary (the rest of the chain stays)
  *   POST /api/models/seat/<id>/chain          { chain: [{ provider, model, effort? }, ...] }   the whole ordered chain
+ *   POST /api/models/seat/<id>/unblock        { why? }   clear the seat's refusal block (owner only; pacer.js unblock)
  *
  * Mounted by console/server.js: require('./models.js').mount(route, deps). All of /api is owner-only (the console token).
  *   node console/models.js --selftest         a temp company, a fake station and a console server: exercises every route
@@ -49,6 +50,12 @@ function mount(route, d) {
     const tiers = fam.tiers || {};
     return { ok: true, provider: m[1], stationError: r.ok ? (r.data && r.data.error) || null : (r.error || 'station not answering'),
       models: (fam.models || []).map(id => { const c = cat.find(x => x && x.id === id); return { id, name: (c && c.name) || id, onStation: !!c, efforts: (c && c.reasoningEfforts) || [], tier: tiers[id] || null }; }) };
+  });
+  // the owner clears a seat's refusal block (pacer.js unblock: recorded, the seat's manager told, effective next tick)
+  route('POST', new RegExp('^/api/models/seat/' + SEAT + '/unblock$'), (m, q, b) => {
+    const why = b && b.why ? String(b.why).trim().slice(0, 300) : '';
+    if (why.startsWith('--')) bad('why may not start with --');
+    return runApi('pacer.js', ['unblock', m[1], '--by', owner()].concat(why ? ['--why', why] : []), { timeout: 30000 });
   });
   route('POST', new RegExp('^/api/models/seat/' + SEAT + '/primary$'), (m, q, b) => {
     const args = ['set', m[1], '--primary', entryArg({ provider: b.provider, model: b.model }), '--by', owner()];

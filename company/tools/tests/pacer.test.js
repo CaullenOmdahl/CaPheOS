@@ -1359,3 +1359,48 @@ test('one authority for a refusal block: a seat with its own chain is refused on
   h.clock.t = T0 + 2 * HOUR + 35 * MIN; fresh(); await tick(h, st.copy);
   assert.equal(prov(), 'claude-cli', 'back on the primary after the block: ' + h.lines.slice(-4).join('\n'));
 });
+
+test('the owner clears a refusal block: owner only, recorded (who, when, why), the manager told, and the next run uses the primary; the block line carries a date', async () => {
+  const mp = REAL_POLICY(); mp.seats = { drafter: { chain: [{ provider: 'claude-cli', model: 'claude-opus-5-5' }, { provider: 'deepseek', model: 'deepseek-flash' }] } };
+  mp.allowed['claude-cli'].models = Array.from(new Set((mp.allowed['claude-cli'].models || []).concat(['claude-opus-5-5'])));
+  const jobs = crewJobs();
+  Object.assign(jobs.find(j => j.id === 'j-prod'), { provider: 'claude-cli', model: 'claude-opus-5-5', wire: { provider: 'claude-cli', model: 'claude-opus-5-5', source: 'routine' }, lastRunAt: new Date(T0 - 20 * MIN).toISOString() });
+  const runs = [{ runId: 'r-opus2', cronJobId: 'j-prod', agentId: 'drafter', provider: 'claude-cli', model: 'claude-opus-5-5', outcome: 'refused', failureCode: 'content_policy_blocked', startedAt: T0 - 20 * MIN, endedAt: T0 - 10 * MIN }];
+  const st = station(jobs); const base = st.call;
+  st.call = async (method, p, body) => {
+    if (method === 'GET' && p === '/api/providers') return { status: 200, body: JSON.stringify({ providers: [{ id: 'claude-cli', configured: true }, { id: 'deepseek', configured: true }] }) };
+    if (method === 'POST' && p === '/api/agent/model') return { status: 200, body: '{"ok":true,"via":"roster"}' };
+    return base(method, p, body);
+  };
+  const fx = fixture({ feedPct: 5, runs, policy: { mode: 'live' }, modelPolicy: JSON.stringify(mp) });
+  fx.w('company/work/handoffs/to-alex.md', '# Handoffs\n');
+  const loops = JSON.parse(fs.readFileSync(path.join(fx.root, 'company/tools/loops.json'), 'utf8')); loops.agents.drafter.manager = 'agent';
+  fx.w('company/tools/loops.json', loops);
+  const h = make(fx, st); const prov = () => st.copy.find(j => j.id === 'j-prod').provider;
+  await tick(h, st.copy);
+  assert.equal(prov(), 'deepseek');
+  // the block line carries a date (the shared time format), not a bare time
+  const REF = require('../lib/refusal');
+  const b0 = readState({ root: fx.root }).blocks[0];
+  assert.match(REF.blockLine('Sam', b0, 1, T0), /^Claude paused for Sam until (today|tomorrow|[A-Z][a-z]{2} \d{1,2}) \d\d:\d\d, because it declined a run in the last 24 hours$/);
+  assert.match(REF.blockLine('Sam', Object.assign({}, b0, { until: T0 + 50 * HOUR }), 3, T0), /until [A-Z][a-z]{2} \d{1,2} \d\d:\d\d, because it declined 3 runs/);
+  const out = []; const cliO = (ownerShell) => ({ root: fx.root, home: fx.home, now: () => h.clock.t, call: st.call, fire: st.fire, print: l => out.push(l), jobs: st.copy, ownerShell: () => ownerShell });
+  // owner only: an agent's run (no owner shell) is refused; nothing changes
+  assert.equal(await pacer.cli(['unblock', 'drafter', '--by', 'owner', '--why', 'try again'], cliO(false)), 3);
+  assert.equal(readState({ root: fx.root }).blocks.length, 1);
+  // the owner clears it: recorded, the manager told
+  h.clock.t = T0 + 20 * MIN;
+  assert.equal(await pacer.cli(['unblock', 'Sam', '--by', 'owner', '--why', 'a one-off filter hit; try Claude again'], cliO(true)), 0, out.join('\n'));
+  const s2 = readState({ root: fx.root });
+  assert.equal(s2.blocks.length, 0); assert.ok(s2.clearedBlocks[0].clearedBy === 'owner' && s2.clearedBlocks[0].clearedWhy === 'a one-off filter hit; try Claude again' && s2.clearedBlocks[0].clearedAt);
+  assert.match(fs.readFileSync(path.join(fx.root, 'company/work/dispatch-log.md'), 'utf8'), /REFUSAL BLOCK CLEARED for Sam \(Claude\) by owner: a one-off filter hit/);
+  assert.match(fs.readFileSync(path.join(fx.root, 'company/work/handoffs/to-alex.md'), 'utf8'), /the owner cleared Sam's refusal block/);
+  const A = require('../lib/admit');
+  assert.equal(A.admit({ door: 'dispatch', kind: 'run', seat: 'drafter', jobId: 'j-prod', provider: 'claude-cli' }, { now: h.clock.t, root: fx.root, file: null }).decision, 'allow', 'admit no longer holds Claude');
+  // the next tick puts the seat back on its primary at once (no recovery wait: the owner decided), so the next run uses it
+  Object.assign(st.copy.find(j => j.id === 'j-prod'), { inFlight: false, lastRunAt: new Date(T0 + 15 * MIN).toISOString() });   // the DeepSeek re-run has ended
+  h.clock.t = T0 + 25 * MIN; fx.w('home/.local/state/usage/claude-usage.json', { at: h.clock.t - MIN, seven_day: { used_percentage: 5, resets_at: CLAUDE_RESET / 1000 } });
+  await tick(h, st.copy);
+  assert.equal(prov(), 'claude-cli', h.lines.slice(-4).join('\n'));
+  assert.ok(h.lines.some(l => /the owner cleared the refusal block/.test(l)), h.lines.join('\n'));
+});

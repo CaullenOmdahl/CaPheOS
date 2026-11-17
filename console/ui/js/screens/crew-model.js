@@ -81,6 +81,7 @@ export function modelPanel(host, seatId) {
           h('span', { class: 'eyebrow-t' }, 'Running now'),
           h('span', { class: 'label strong' }, 'On ' + runsOn + (now.running ? ' (in a run)' : '')),
           now.plain ? h('span', { class: 'body-s muted' }, now.plain) : null,
+          blockLines(seat, load),
           seat.hasChain ? null : h('span', { class: 'caption muted' }, 'This seat has no chain of its own yet: saving one below gives it a primary and fallbacks, and the pacer stops routing it.')),
         h('section', { class: 'stack-8' }, h('h3', { class: 'h4' }, 'Primary model'),
           picker(e => save([e].concat(draft.filter(x => key(x) !== key(e))), 'Primary'), draft[0], 'Set primary')),
@@ -94,6 +95,22 @@ export function modelPanel(host, seatId) {
             : empty('No moves yet.'))));
   }
   load();
+}
+
+// a seat's active refusal blocks: the owner's plain line and Clear (POST /api/models/seat/<id>/unblock), with an optional note
+export function blockLines(seat, reload, opts) {
+  const list = (seat && seat.refusalBlocks) || [];
+  if (!list.length) return null;
+  return h('div', { class: 'stack-4', 'data-blocks': seat.id }, list.map(b => {
+    const err = h('span', { class: 'err-line', role: 'status' });
+    const note = h('input', { class: 'input', type: 'text', placeholder: 'Note (optional)', 'aria-label': 'Why clear the block for ' + (seat.name || seat.id), style: 'max-width:240px' });
+    const btn = Button('Clear', { size: 'sm', variant: (opts && opts.link) ? 'ghost' : 'secondary', onClick: async () => {
+      btn.disabled = true; err.textContent = '';
+      try { await post('/models/seat/' + encodeURIComponent(seat.id) + '/unblock', note.value.trim() ? { why: note.value.trim() } : {}); if (reload) reload(); }
+      catch (e) { err.textContent = humanError(e); btn.disabled = false; }
+    } });
+    return h('div', { class: 'row-8', style: 'flex-wrap:wrap;align-items:center', 'data-block': b.provider }, h('span', { class: 'body-s' }, b.line + '.'), note, btn, err);
+  }));
 }
 
 // Settings › Models and subscriptions: every seat's chain in one table
@@ -113,6 +130,7 @@ export async function chainsTable(host) {
         h('td', null, (s.chain || []).slice(1).map(e => lab(e) + (e.ok ? '' : ' (cannot run)')).join(', then ') || '—'),
         h('td', { class: 'caption seat-why' }, s.now && s.now.plain ? s.now.plain : ''));
     }), { minWidth: 600 }),
+    seats.some(s => (s.refusalBlocks || []).length) ? h('div', { class: 'stack-8', id: 'refusal-blocks' }, seats.map(s => blockLines(s, () => chainsTable(host)))) : null,
     d.failover && d.failover.mode === 'shadow' ? h('p', { class: 'caption muted' }, 'Automatic moves are in trial mode: they are recorded, not made.') : null,
     Details('Details', h('dl', { class: 'kv' }, ids.map(([n, ks]) => [h('dt', null, n), h('dd', { class: 'mono-s' }, ks.join(' · ') || '—')])), d.backstop ? h('p', { class: 'caption' }, d.backstop) : null)));
 }

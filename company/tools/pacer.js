@@ -1771,6 +1771,46 @@ async function cli(argv, o) {
     try { const lf = path.join(root, 'company', 'work', 'dispatch-log.md'); fs.appendFileSync(lf, '- ' + (lp => lp.date + ' ' + lp.time)(co.localParts()) + ' PACER MODE ' + was + ' -> ' + want + ' by ' + by + ': ' + why + '\n'); } catch (_) {}
     print('pacer mode ' + was + ' -> ' + want + ' (recorded)'); return 0;
   }
+  if (cmd === 'unblock') {
+    // unblock <seat|routine> --by owner [--why "..."]: the owner clears a refusal block (the one record, pacer-state
+    // blocks): kept as cleared (who, when, why), the seat moves back on the next tick, its manager is told
+    const co = require('./lib/company'); const root = o.root || DEFAULT_ROOT;
+    const target = String(a._[0] || ''); const by = a.by === true ? '' : (a.by || ''); const why = a.why === true ? '' : String(a.why || '');
+    if (!target || !by) { print('usage: pacer.js unblock <seat|routine> --by owner [--why "..."]'); return 2; }
+    const OW = require('./lib/owner');
+    const ownerOk = (o.ownerShell ? o.ownerShell() : OW.shell()) && OW.isOwnerName(by, root);
+    if (!ownerOk) { print(JSON.stringify({ ok: false, error: 'clearing a refusal block is the owner\'s: --by owner, from the owner\'s own shell or the console' }, null, 1)); return 3; }
+    const jobs = o.jobs || await pz.getJobs();
+    const crew = (() => { try { return JSON.parse(fs.readFileSync(path.join(root, 'company', 'tools', 'loops.json'), 'utf8')).agents || {}; } catch (_) { return {}; } })();
+    const seatId = crew[target] ? target : Object.keys(crew).find(k => String((crew[k] || {}).name || '').toLowerCase() === target.toLowerCase()) || null;
+    const ids = new Set(seatId ? (jobs || []).filter(j => j.agentId === seatId).map(j => j.id) : (jobs || []).filter(j => j.id === target || j.name === target).map(j => j.id).concat([target]));
+    const lk = await pz.withLock(async () => {
+      const st = pz.loadState(); const t = (o.now ? o.now() : Date.now());
+      const hit = (st.blocks || []).filter(b => b && ids.has(b.routineId) && !b.clearedAt && Number(b.until) > t);
+      if (!hit.length) return { ok: true, cleared: 0, note: 'no active refusal block for ' + target };
+      for (const b of hit) Object.assign(b, { clearedAt: t, clearedBy: by, clearedWhy: why || null });
+      st.blocks = (st.blocks || []).filter(b => !b.clearedAt); st.clearedBlocks = (st.clearedBlocks || []).concat(hit).slice(-100);
+      pz.saveState(st);
+      return { ok: true, cleared: hit.length, blocks: hit, seat: seatId || (jobs.find(j => ids.has(j.id)) || {}).agentId || null };
+    }, 5000);
+    const r = lk && lk.value;
+    if (!r || !r.ok || !r.cleared) { print(JSON.stringify(r || { ok: false, error: 'the pacer is busy; try again in a minute' }, null, 1)); return r && r.ok ? 0 : 1; }
+    const seat = r.seat; const names = [...new Set(r.blocks.map(b => b.provider))];
+    // the seat moves back on the next tick without the usual recovery wait (models.js reads ownerCleared once)
+    try { const f = path.join(root, 'company', 'state', 'models-state.json'); const ms = JSON.parse(fs.readFileSync(f, 'utf8') || '{}'); ms.seats = ms.seats || {}; const ss = ms.seats[seat] = ms.seats[seat] || { okSince: {} };
+      ss.ownerCleared = { at: new Date().toISOString(), by, why: why || null, providers: names }; const tmp = f + '.tmp-' + process.pid; fs.writeFileSync(tmp, JSON.stringify(ms, null, 1) + '\n'); fs.renameSync(tmp, f); } catch (_) {
+      try { const f = path.join(root, 'company', 'state', 'models-state.json'); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify({ v: 1, seats: { [seat]: { okSince: {}, ownerCleared: { at: new Date().toISOString(), by, why: why || null, providers: names } } } }, null, 1) + '\n'); } catch (_) {} }
+    const seatName = (crew[seat] || {}).name || seat; const lp = co.localParts();
+    const line = 'REFUSAL BLOCK CLEARED for ' + seatName + ' (' + names.map(p => NAMES[p] || p).join(', ') + ') by ' + by + (why ? ': ' + why : '') + '; it runs on its primary again from the next check';
+    try { fs.appendFileSync(path.join(root, 'company', 'work', 'dispatch-log.md'), '- ' + lp.date + ' ' + lp.time + ' ' + line + '\n'); } catch (_) {}
+    try { fs.appendFileSync(path.join(root, 'company', 'state', 'pacer-log.jsonl'), JSON.stringify({ at: new Date().toISOString(), event: 'unblock', seat, by, why: why || null, blocks: r.blocks.map(b => ({ routineId: b.routineId, provider: b.provider, until: b.until })) }) + '\n'); } catch (_) {}
+    // the seat's manager is told (an FYI handoff in their inbox)
+    try {
+      const mgr = (crew[seat] || {}).manager || null; const mi = mgr && crew[mgr] && crew[mgr].inbox;
+      if (mi) fs.appendFileSync(path.join(root, 'company', 'work', 'handoffs', mi), '\n## ' + lp.date + ' ' + lp.time + ' from the pacer — the owner cleared ' + seatName + '\'s refusal block\n**Need:** nothing; for your information. ' + line + '.\n**Why:** the owner chose to let ' + seatName + ' run on ' + names.map(p => NAMES[p] || p).join(', ') + ' again.\n**Deadline:** today\n**Status:** DONE — for your information\n');
+    } catch (_) {}
+    print(JSON.stringify({ ok: true, cleared: r.cleared, seat, providers: names, line }, null, 1)); return 0;
+  }
   if (cmd === 'limit') {
     // limit claude|minimax [--week-stop N] [--use-now N] --by <Name> --why "...": the recorded way to set a subscription
     // cutoff (lib/pacing-ask.js setLimit: provenance, changes[], dispatch log); the owner's answers on Today use it too
@@ -1785,7 +1825,7 @@ async function cli(argv, o) {
     }
     print(JSON.stringify(r, null, 1)); return r.ok ? 0 : (r.code || 2);
   }
-  print('commands: status [--json], plan [--json], report, limits [--json], apply, restore, emergency on|off, mode live|shadow --by --why, limit claude|minimax --week-stop N --use-now N --by --why');
+  print('commands: status [--json], plan [--json], report, limits [--json], apply, restore, emergency on|off, mode live|shadow --by --why, limit claude|minimax --week-stop N --use-now N --by --why, unblock <seat|routine> --by owner [--why]');
   return 2;
 }
 

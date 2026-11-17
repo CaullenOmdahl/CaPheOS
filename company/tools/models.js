@@ -190,7 +190,7 @@ function makeModels(o) {
     // a refusal block (the pacer's record, lib/refusal.js): this seat's run on this provider was refused and the block is
     // still on, so the entry cannot run for this seat until it ends; the seat runs on its next entry meanwhile
     const rb = ctx.refusalBlocks && ctx.refusalBlocks[id] && ctx.refusalBlocks[id][e.provider];
-    if (rb) return { ok: false, why: (NAMES[e.provider] || e.provider) + ' refused a run of "' + (rb.name || 'its routine') + '" at ' + hm(rb.at) + ' and is blocked for this seat until ' + hm(rb.until), refusalBlock: true, connected: true };
+    if (rb) return { ok: false, why: (NAMES[e.provider] || e.provider) + ' refused a run of "' + (rb.name || 'its routine') + '" ' + REF.whenText(Number(rb.at), co.TZ, t) + ' and is blocked for this seat until ' + REF.whenText(Number(rb.until), co.TZ, t), refusalBlock: true, connected: true };
     const pv = ctx.providers;
     if (pv) {
       const p = pv[e.provider];
@@ -329,6 +329,7 @@ function makeModels(o) {
       else if (target < curIdx) {
         const since = ss.okSince[keyOf(to)], last = ss.lastMoveAt;
         if (ss.sprintSoft) { dir = 'up'; why = 'Sprint: reasoning work again, back to ' + keyOf(to); }   // the soft hold ended: no recovery wait
+        else if (ss.ownerCleared && ss.ownerCleared.providers && ss.ownerCleared.providers.includes(to.provider)) { dir = 'up'; why = 'the owner cleared the refusal block (' + (ss.ownerCleared.why || 'no note') + '), so ' + keyOf(to) + ' runs again now'; delete ss.ownerCleared; }   // no recovery wait: the owner decided
         else if (t - since < F.recoverAfterMin * MIN) { out.push({ seat: id, action: 'wait', why: keyOf(to) + ' can run again since ' + hm(since) + '; back after ' + F.recoverAfterMin + ' min' }); continue; }
         else if (last && t - last < F.upAtMostEveryMin * MIN) { out.push({ seat: id, action: 'wait', why: 'moved at ' + hm(last) + '; at most one move back up every ' + F.upAtMostEveryMin + ' min' }); continue; }
         else dir = 'up', why = keyOf(to) + ' has been able to run since ' + hm(since) + (target === 0 ? ' (the primary)' : '');
@@ -383,7 +384,10 @@ function makeModels(o) {
         primary: chain[0] || null, chain, now: { model: cur.pick, index: idx, why, roster: cur.roster, routines: cur.jobs.map(j => Object.assign({ id: j.id, name: j.name }, jobPair(j))), running: cur.running },
         claudeReserve: ctx.reserve, setBy: s && s.setBy || null, setAt: s && s.setAt || null, history: moves(id, a.seat ? 50 : 10).reverse(),
         // a refused run retried on the next model (lib/refusal.js) in the last 24 h: Settings › Models says so
-        lastRefusal: ss.lastRefusal && t - Date.parse(ss.lastRefusal.at) < 24 * HOUR ? ss.lastRefusal : null };
+        lastRefusal: ss.lastRefusal && t - Date.parse(ss.lastRefusal.at) < 24 * HOUR ? ss.lastRefusal : null,
+        // active refusal blocks, each with the owner's plain line (Settings › Models and Crew › Model show it with Clear)
+        refusalBlocks: Object.values(ctx.refusalBlocks[id] || {}).map(b => ({ provider: b.provider, routine: b.name || null, routineId: b.routineId, at: new Date(Number(b.at)).toISOString(), until: new Date(Number(b.until)).toISOString(),
+          line: REF.blockLine((c[id] || {}).name || id, b, REF.refusalCount(cur.jobs.map(j => j.id), { root, now: t }), t) })) };
     });
     return { ok: true, at: new Date(t).toISOString(), station: stationUp ? 'up' : 'down', failover: F, providersKnown: !!pv,
       providers: pv ? Object.values(pv).filter(p => (pol.allowed || {})[p.id]).map(p => ({ id: p.id, name: p.name, connected: p.configured, reason: p.reason })) : [],

@@ -74,7 +74,7 @@ function record(o) {
 function activeBlocks(o) {
   const root = (o && o.root) || co.ROOT; const now = (o && Number.isFinite(o.now)) ? o.now : Date.now();
   const list = (o && Array.isArray(o.blocks)) ? o.blocks : ((readJson(path.join(root, 'company', 'state', 'pacer-state.json'), {}) || {}).blocks || []);
-  return list.filter(b => b && b.routineId && b.provider && Number(b.until) > now);
+  return list.filter(b => b && b.routineId && b.provider && !b.clearedAt && Number(b.until) > now);
 }
 // the block on this routine for this provider, or null
 function blockFor(jobId, provider, o) { return activeBlocks(o).find(b => b.routineId === jobId && b.provider === provider) || null; }
@@ -85,4 +85,26 @@ function blockedForSeat(jobIds, o) {
   return out;
 }
 
-module.exports = { isRefusal, nextEntry, candidates, record, plainLine, keyOf, pname, activeBlocks, blockFor, blockedForSeat };
+// how many runs of these routines were refused in the last 24 h (the pacer's refusal log)
+function refusalCount(jobIds, o) {
+  const root = (o && o.root) || co.ROOT; const now = (o && Number.isFinite(o.now)) ? o.now : Date.now();
+  const ids = new Set(jobIds || []); const st = readJson(path.join(root, 'company', 'state', 'pacer-state.json'), {}) || {};
+  const seen = new Set(); for (const x of (st.refusalLog || []).concat(st.blocks || [])) if (x && ids.has(x.routineId) && now - Number(x.at) < 24 * 3600e3) seen.add(x.runId || x.at);
+  return seen.size;
+}
+// the one time format (console/ui/js/plain.js whenText, server side): "today 14:22", "tomorrow 14:22", "Nov 17 03:25"
+function whenText(t, tz, now) {
+  const ms = typeof t === 'number' ? t : Date.parse(t); if (!ms || isNaN(ms)) return '';
+  const parts = x => { const o = {}; for (const p of new Intl.DateTimeFormat('en-US', { timeZone: tz || co.TZ || undefined, year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(x)) o[p.type] = p.value;
+    return { key: o.year + '-' + o.month + '-' + o.day, year: o.year, month: o.month, day: o.day, hm: (o.hour === '24' ? '00' : o.hour) + ':' + o.minute }; };
+  const n = now == null ? Date.now() : now; const a = parts(ms), today = parts(n), tomorrow = parts(n + 86400e3);
+  if (a.key === today.key) return 'today ' + a.hm;
+  if (a.key === tomorrow.key) return 'tomorrow ' + a.hm;
+  return a.month + ' ' + a.day + (a.year !== today.year ? ' ' + a.year : '') + ' ' + a.hm;
+}
+// the owner's plain line for a seat's block: "Claude paused for the Founder until tomorrow 23:22, because it declined 3 runs in the last 24 hours"
+function blockLine(seatName, b, count, now) {
+  return pname(b.provider) + ' paused for ' + (seatName || 'this seat') + ' until ' + whenText(Number(b.until), null, now) + ', because it declined ' + (count > 1 ? count + ' runs' : 'a run') + ' in the last 24 hours';
+}
+
+module.exports = { refusalCount, whenText, blockLine, isRefusal, nextEntry, candidates, record, plainLine, keyOf, pname, activeBlocks, blockFor, blockedForSeat };
