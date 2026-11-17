@@ -227,13 +227,21 @@ test('Sprint on: cadence.js sprint config --spread today turns the spread off un
   const spent = [{ runId: 'x1', agentId: 'mo', provider: 'deepseek', usd: 0.6, startedAt: Date.now() - 20 * MIN, endedAt: Date.now() - 10 * MIN }];
   const c = await company({ sprint: true, handoffs: WORK, runs: spent });
   const env = Object.assign({}, process.env, { CAPHEOS_ROOT: c.T, CAPHEOS_TZ: TZ });
-  const out = JSON.parse(execFileSync(process.execPath, [path.join(REPO, 'company/tools/cadence.js'), 'sprint', 'config', '--spread', 'today', '--by', 'Pat', '--why', 'test'], { env, encoding: 'utf8' }));
+  // Sprint config is the owner's switch (cadence.js setSprintConfig), and isOwner() is false for any process under the
+  // station, which includes a test run by an agent. The test is about the spread, not about who may switch it, so the
+  // child process pins "not under the station" (the same pin the selftests use) and calls as the owner.
+  const pin = path.join(c.T, 'pin-owner-shell.js');
+  fs.writeFileSync(pin, "require(" + JSON.stringify(path.join(REPO, 'company/tools/provenance.js')) + ").pinUnderStation(false);\n");
+  const cad = [ '-r', pin, path.join(REPO, 'company/tools/cadence.js') ];
+  const out = JSON.parse(execFileSync(process.execPath, [...cad, 'sprint', 'config', '--spread', 'today', '--by', 'owner', '--why', 'test'], { env, encoding: 'utf8' }));
   assert.equal(out.ok, true);
   const sp = c.json('company/work/ops/cadence.json').tempo.sprint;
   assert.ok(Date.parse(sp.spreadOffUntil) > Date.now() && Date.parse(sp.spreadOffUntil) <= Date.now() + 24 * HOUR, JSON.stringify(sp));
   const r = c.tick();
   assert.ok(r.fired.includes('mo'), r.log);
-  assert.throws(() => execFileSync(process.execPath, [path.join(REPO, 'company/tools/cadence.js'), 'sprint', 'config', '--spread', 'sometimes', '--by', 'Pat'], { env, stdio: 'pipe' }));
+  assert.throws(() => execFileSync(process.execPath, [...cad, 'sprint', 'config', '--spread', 'sometimes', '--by', 'owner'], { env, stdio: 'pipe' }));
+  // and the refusal that broke the old call is itself pinned: a named non-owner is turned away
+  assert.throws(() => execFileSync(process.execPath, [...cad, 'sprint', 'config', '--spread', 'today', '--by', 'Pat'], { env, stdio: 'pipe' }), /owner/);
 });
 
 test('Sprint on: unchanged work is not woken again every minute, however short the cooldown', async () => {
