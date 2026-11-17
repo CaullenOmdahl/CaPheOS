@@ -505,6 +505,11 @@ route('POST', /^\/api\/cadence\/sprint$/, (m, q, b) => {
   args.push('--by', OWNER, '--why', on ? 'switched on by the owner in the console' : 'switched off by the owner in the console');
   return runApi('cadence.js', args);
 });
+// Sprint's spread of the daily metered cap over the day: on, off, or off until midnight (cadence.js sprint config --spread)
+route('POST', /^\/api\/cadence\/sprint\/spread$/, (m, q, b) => {
+  const v = String(b.spread || ''); if (!['on', 'off', 'today'].includes(v)) bad('spread is on, off or today');
+  return runApi('cadence.js', ['sprint', 'config', '--spread', v, '--by', OWNER, '--why', 'set by the owner in the console (Settings › Tempo)']);
+});
 route('POST', /^\/api\/cadence\/end-temporary$/, () => runApi('cadence.js', ['end-temporary', '--by', OWNER, '--why', 'ended by the owner in the console']));
 route('POST', /^\/api\/cadence\/seat$/, async (m, q, b) => {
   const seat = str(b.seat, 'seat') || bad('seat is required');

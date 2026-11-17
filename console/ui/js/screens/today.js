@@ -5,6 +5,7 @@ import { api, post } from '../api.js';
 import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
 import { mdBlock } from '../md.js';
+import { idleLine } from '../idle-line.js';
 
 const ss = { set: (k, v) => { try { sessionStorage.setItem(k, v); } catch (_) {} } };
 const dur = sec => sec == null ? '' : sec < 60 ? sec + ' s' : sec < 3600 ? Math.floor(sec / 60) + ' min' : Math.floor(sec / 3600) + ' h ' + Math.floor(sec % 3600 / 60) + ' min';
@@ -272,7 +273,10 @@ export async function render(root, ctx) {
         sp.proposalsPerHour != null ? sp.proposalsPerHour + ' proposals/h vs ' + sp.reviewsPerHour + ' reviews/h' : null].filter(Boolean).join(' · ')),
       Button('Off', { variant: 'secondary', size: 'sm', onClick: async () => { if (!await app.confirmDialog({ title: 'Turn Sprint off?', body: 'The company goes back to your base tempo: seats rest their full cooldown again and the wake limits apply.', confirm: 'Turn it off' })) return; try { await post('/cadence/sprint', { on: false }); app.toast('Sprint off.'); loadNow(); } catch (e) { app.toast('Sprint: ' + humanError(e), true); } } }),
       Button('Settings', { variant: 'ghost', size: 'sm', href: '#/settings/tempo/sprint' })) : null;
-    const idle = d.seats.filter(s => !s.running).map(s => sp && s.sprint ? h('li', { class: 'body-s muted now-idle' }, s.name + (s.sprint === 'working' ? ': working — ' + s.soonerBecause.join(', ') + '; starts as soon as the next tick sees it' : ': waiting for work') + '.') : h('li', { class: 'body-s muted now-idle' }, s.name + ' is idle' +
+    // the dispatcher's own reason from its last tick (dispatch-state.json seats), with Decide when a question waits on the owner
+    const decide = qid => Button('Decide', { variant: 'secondary', size: 'sm', onClick: () => { const c = document.querySelector('[data-id="' + CSS.escape(qid) + '"]'); if (c) { c.scrollIntoView({ behavior: 'smooth', block: 'center' }); const f = c.querySelector('button, input, [tabindex]'); if (f) f.focus({ preventScroll: true }); } else location.hash = '#/today'; } });
+    const idle = d.seats.filter(s => !s.running).map(s => s.idle && s.idle.reason ? h('li', { class: 'body-s muted now-idle row-8', 'data-seat': s.id, 'data-state': s.idle.state, style: 'align-items:center;flex-wrap:wrap' },
+      h('span', null, idleLine(s)), s.idle.qid ? decide(s.idle.qid) : null) : sp && s.sprint ? h('li', { class: 'body-s muted now-idle' }, s.name + (s.sprint === 'working' ? ': working — ' + s.soonerBecause.join(', ') + '; starts as soon as the next tick sees it' : ': waiting for work') + '.') : h('li', { class: 'body-s muted now-idle' }, s.name + ' is idle' +
       (s.loop ? (s.enabled === false ? '; its loop "' + s.loop + '" is switched off' : s.schedulerOn === false ? '; the scheduler is off, so its loop does not run on schedule' : s.nextRunAt ? '; next run ' + hhmm(s.nextRunAt, co.timezone) + ' (' + rel(s.nextRunAt) + ')' : '') : '; it has no loop routine') +
       (s.soonerBecause.length ? ', or sooner: ' + s.soonerBecause.join(', ') : s.wakesOnMessage ? ', or sooner if you message it' : '') + '.'));
     fill(nowEl, h('div', { class: 'between-c' }, h('h2', { id: 'now-h', class: 'h3' }, 'Now'), d.station.up ? null : h('span', { class: 'err-line' }, 'Station not running: nobody can work.')),

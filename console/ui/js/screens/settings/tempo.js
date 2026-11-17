@@ -7,6 +7,7 @@ import { api, post } from '../../api.js';
 import * as events from '../../events.js';
 import { mountPanels } from '../../panels.js';
 import { parseLogLine } from '../today.js';
+import { EXPLAIN, sprintOverride, spreadSetting } from './tempo-explain.js';
 
 export async function render(host, ctx) {
   const { app } = ctx;
@@ -50,7 +51,20 @@ export async function render(host, ctx) {
         : 'Off. ' + ended + ' The crew wakes at your base tempo below.',
       flip: sp.active ? 'Turning it off returns to your base tempo: full cooldowns and the wake limits again.' : 'Turning it on wakes the crew as fast as the work allows and lifts the wake limits, until its budget of ' + budget + ' is spent or its time is up.',
       control: sp.active ? Button('Turn off', { variant: 'secondary', size: 'sm', onClick: () => act('/cadence/sprint', { on: false }, 'Sprint off: back to your base values.') })
-        : h('span', { class: 'row-8', style: 'align-items:center' }, hours, Button('Turn on…', { variant: 'primary', size: 'sm', onClick: turnOn })) }));
+        : h('span', { class: 'row-8', style: 'align-items:center' }, hours, Button('Turn on…', { variant: 'primary', size: 'sm', onClick: turnOn })) }),
+      spreadSettingEl(sp));
+  }
+  // Sprint's spread of the daily cap (cadence.js sprint config --spread on|off|today, POST /api/cadence/sprint/spread)
+  function spreadSettingEl(sp) {
+    const cur = spreadSetting(sp);
+    const until = sp.config && sp.config.spreadOffUntil;
+    const sel = h('select', { class: 'select', 'aria-label': 'Spread the daily budget', style: 'width:auto' },
+      [['on', 'Spread it over the day'], ['today', 'Off until midnight'], ['off', 'Off']].map(([v, l]) => h('option', { value: v, selected: cur === v }, l)));
+    sel.addEventListener('change', () => act('/cadence/sprint/spread', { spread: sel.value }, sel.value === 'on' ? 'The daily budget is spread over the day again.' : sel.value === 'today' ? 'Spreading is off until midnight.' : 'Spreading is off.'));
+    return Setting({ id: 'set-sprint-spread', title: 'Spread the daily budget', value: cur === 'on' ? 'On' : cur === 'today' ? 'Off until ' + when(until) : 'Off', valueTone: cur === 'on' ? 'neutral' : 'warning',
+      what: EXPLAIN.spread.replace(/^[^:]+: /, ''),
+      flip: cur === 'on' ? 'Turning it off lets metered agents use today\'s budget as fast as the work needs; the daily cap still stops them when it is spent.' : 'Turning it on paces metered agents so the day\'s budget lasts until midnight.',
+      control: sel });
   }
 
   function drawCadence(d) {
@@ -71,16 +85,18 @@ export async function render(host, ctx) {
         h('span', { class: 'caption muted' }, 'Your own messages always get through, but they count.')) : null),
       tmp ? h('div', { class: 'alertbox', role: 'status' }, h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, (tmp.by || 'The crew') + ' sped things up until ' + when(tmp.expiresAt)),
         tmp.why ? h('span', { class: 'body-s' }, 'Why: ' + tmp.why) : null), Button('End it now', { variant: 'secondary', size: 'sm', onClick: () => act('/cadence/end-temporary', {}, 'Back to your base values.') })) : null);
+    // while Sprint is on, a base value it overrides says so (tempo-explain.js) instead of looking editable-but-ineffective
+    const ov = (key, mine) => { const o = sprintOverride(key, d, when); return o ? { value: o.value, valueTone: 'warning', what: EXPLAIN[key].replace(/^[^:]+: /, '') + ' ' + o.note + ' Your value (' + mine + ') applies again when Sprint ends.' } : { value: mine, what: EXPLAIN[key].replace(/^[^:]+: /, '') }; };
     fill(base, h('div', { class: 'stack-10' },
-      Setting({ id: 'set-tick', title: 'Dispatcher tick', value: d.dispatcherTickMin + ' min', what: 'How long the dispatcher waits between checks for open work.',
+      Setting(Object.assign({ id: 'set-tick', title: 'Dispatcher tick' }, ov('tick', d.dispatcherTickMin + ' min'), {
         flip: 'Shorter wakes the crew sooner and uses the day\'s spend and subscriptions faster; longer saves both.',
-        control: unit(numIn(d.dispatcherTickMin, 'Dispatcher tick in minutes', val => act('/cadence/default', { minutes: Number(val) }, 'Tick: every ' + val + ' min.')), 'min') }),
-      Setting({ id: 'set-cooldown', title: 'Default cooldown', value: d.defaultCooldownMin + ' min', what: 'The least time between two wakes of the same crew member.',
+        control: unit(numIn(d.dispatcherTickMin, 'Dispatcher tick in minutes', val => act('/cadence/default', { minutes: Number(val) }, 'Tick: every ' + val + ' min.')), 'min') })),
+      Setting(Object.assign({ id: 'set-cooldown', title: 'Rest between wakes' }, ov('cooldown', d.defaultCooldownMin + ' min'), {
         flip: 'Shorter lets one member work in quick bursts; longer spreads the work out.',
-        control: unit(numIn(d.defaultCooldownMin, 'Default cooldown in minutes', val => act('/cadence/default', { cooldown: Number(val) }, 'Cooldown: ' + val + ' min.')), 'min') }),
-      Setting({ id: 'set-per-tick', title: 'Wakes per check', value: String(d.maxPerTick), what: 'The most crew members started in one check.',
+        control: unit(numIn(d.defaultCooldownMin, 'Default cooldown in minutes', val => act('/cadence/default', { cooldown: Number(val) }, 'Cooldown: ' + val + ' min.')), 'min') })),
+      Setting(Object.assign({ id: 'set-per-tick', title: 'Wakes per check' }, ov('perTick', String(d.maxPerTick)), {
         flip: 'More runs more people at once (and spends faster); fewer keeps it calm.',
-        control: unit(numIn(d.maxPerTick, 'Wakes per check', val => act('/cadence/default', { maxPerTick: Number(val) }, 'Wakes per check: ' + val + '.')), 'people') })));
+        control: unit(numIn(d.maxPerTick, 'Wakes per check', val => act('/cadence/default', { maxPerTick: Number(val) }, 'Wakes per check: ' + val + '.')), 'people') }))));
     const range = (key, label) => {
       const r = Array.isArray(b[key]) ? b[key] : ['', ''];
       const save = () => act('/cadence/bounds', { [key]: [Number(lo.value), Number(hi.value)] }, label + ': ' + lo.value + '–' + hi.value + ' min.');
@@ -98,10 +114,10 @@ export async function render(host, ctx) {
         control: mode }),
       Setting({ id: 'set-tick-bounds', title: 'Tick range', value: (b.tickMin || []).join('–') + ' min', what: 'How short or long the crew may make the dispatcher tick.', control: range('tickMin', 'Tick range') }),
       Setting({ id: 'set-cool-bounds', title: 'Cooldown range', value: (b.cooldownMin || []).join('–') + ' min', what: 'How short or long the crew may make a member\'s cooldown.', control: range('cooldownMin', 'Cooldown range') }),
-      Setting({ id: 'set-wakes', title: 'Wake caps', value: (b.maxWakesPerHour ?? '—') + ' an hour · ' + (b.maxWakesPerDay ?? '—') + ' a day', what: 'The most wakes in an hour and in a day, however busy it gets.',
+      Setting(Object.assign({ id: 'set-wakes', title: 'Wake caps' }, ov('wakeCaps', (b.maxWakesPerHour ?? '—') + ' an hour · ' + (b.maxWakesPerDay ?? '—') + ' a day'), {
         flip: 'Higher lets a busy day run on; lower caps the day\'s activity.',
         control: h('span', { class: 'row-8' }, unit(numIn(b.maxWakesPerHour, 'Wakes per hour', val => act('/cadence/bounds', { maxWakesPerHour: Number(val) }, 'Wakes per hour: ' + val + '.')), '/ hour'),
-          unit(numIn(b.maxWakesPerDay, 'Wakes per day', val => act('/cadence/bounds', { maxWakesPerDay: Number(val) }, 'Wakes per day: ' + val + '.')), '/ day')) }),
+          unit(numIn(b.maxWakesPerDay, 'Wakes per day', val => act('/cadence/bounds', { maxWakesPerDay: Number(val) }, 'Wakes per day: ' + val + '.')), '/ day')) })),
       Setting({ id: 'set-quiet', title: 'Quiet hours', value: b.quietHours || 'Off', what: 'Company time when nobody is woken except by your own messages.', flip: b.quietHours ? 'Clear the box to switch quiet hours off.' : 'Type a range like 22:00-07:00 to let the company rest at night.', control: quiet }),
       Setting({ id: 'set-speedup', title: 'Speed-up length', value: (tp.autoExpireMin ?? 30) + ' min, ' + (tp.minChangeIntervalMin ?? 15) + ' min apart', what: 'How long a crew speed-up lasts, and how far apart two may be.',
         control: h('span', { class: 'row-8' }, unit(numIn(tp.autoExpireMin, 'Speed-up length', val => act('/cadence/bounds', { autoExpireMin: Number(val) }, 'Speed-ups last ' + val + ' min.')), 'min'),

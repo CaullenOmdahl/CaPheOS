@@ -13,7 +13,8 @@
  *   node company/tools/cadence.js apply [--dry-run] [--approved-ref <questionId>] [--by <name>]
  *   node company/tools/cadence.js sprint on|off [--hours N] [--budget-usd X] [--lanes N] --by <owner> [--why "…"]
  *   node company/tools/cadence.js sprint config [--budget-usd X|default] [--lanes N] [--cooldown-floor-min N] [--fallback-tick-min N]
- *                                  [--watch-debounce-sec N] --by <owner>
+ *                                  [--watch-debounce-sec N] [--spread on|off|today] --by <owner> [--why …]
+ *                                  --spread: Sprint's spread of the daily metered cap over the day; today = off until midnight
  *   node company/tools/cadence.js sprint status [--json]      Sprint (start-up): on or off, until when, and how it is going
  *   node company/tools/cadence.js duties-floor [--json]   a SUGGESTION only (docs/DUTIES.md): which seats' own loop routines
  *                                  run more often than the duty floor (bounds.loopFloorMin, default 360-720 min; a seat may
@@ -166,11 +167,16 @@ function dailyCapUsd() {
 }
 function unmeteredProviders() { const b = co.readJson(S.budgetFile, null) || {}; return Array.isArray(b.unmeteredProviders) && b.unmeteredProviders.length ? b.unmeteredProviders.map(String) : ['claude-cli']; }
 function sprintConfig(raw) { const out = {}; for (const k of SP.CONFIG_KEYS) out[k] = raw && raw[k] != null ? raw[k] : SP.SPRINT_DEFAULTS[k]; return out; }
-// metered USD of the runs since Sprint began (runs.jsonl, read from the end: lib/bounded.js)
+// metered USD since Sprint began: the cap's own numerator (cap-numerator.js meteredSince: the ledger plus runs not
+// settled yet), so Sprint's budget, `sprint status`, the spread and the daily cap are one number cut at different times.
+// `runs` is how many runs ended since (runs.jsonl, read from the end: lib/bounded.js).
 function sprintSpent(sinceMs) {
   if (!sinceMs) return { usd: 0, runs: 0 };
   let rows = []; try { rows = require('./lib/bounded').jsonlWindow(S.runsFile, { sinceMs }).rows; } catch (_) {}
-  return SP.sprintSpend(rows, sinceMs, unmeteredProviders());
+  const old = SP.sprintSpend(rows, sinceMs, unmeteredProviders());
+  let usd = old.usd;
+  try { usd = require('./cap-numerator.js').meteredSince(sinceMs, { now: S.now(), runsPath: S.runsFile, ledgerPath: path.join(path.dirname(S.runsFile), 'ledger.jsonl'), providers: unmeteredProviders() }); } catch (_) {}
+  return { usd: Math.round(usd * 1e6) / 1e6, runs: old.runs };
 }
 function seatCount() { return Object.keys(loops().agents || {}).length || 1; }
 /* sprintOf(c, now, {spend}) -> {on, active, since, until, untilWhy, by, config, budgetUsd, ended:{reason, at}|null, …}
@@ -218,6 +224,13 @@ function sprintConfigFrom(o, into) {
   if (o.cooldownFloorMin != null) into.cooldownFloorMin = posInt(o.cooldownFloorMin, 'cooldown-floor-min');
   if (o.fallbackTickMin != null) into.fallbackTickMin = posInt(o.fallbackTickMin, 'fallback-tick-min');
   if (o.watchDebounceSec != null) into.watchDebounceSec = posInt(o.watchDebounceSec, 'watch-debounce-sec');
+  if (o.spread != null) {   // Sprint's spread of the daily cap over the day: on, off, or off until local midnight
+    const v = String(o.spread).trim().toLowerCase();
+    if (v === 'on') { into.spreadDailyCap = true; delete into.spreadOffUntil; }
+    else if (v === 'off') { into.spreadDailyCap = false; delete into.spreadOffUntil; }
+    else if (v === 'today') { into.spreadDailyCap = true; into.spreadOffUntil = iso(nextLocalMidnight(S.now())); }
+    else throw new Error('--spread is on, off or today (off until midnight, company time)');
+  }
   return into;
 }
 /* setSprint(on, {by, hours, why, budgetUsd, lanes}): the owner turns Sprint on (until --hours from now, or until turned
@@ -243,13 +256,19 @@ function setSprint(on, o = {}) {
   saveSprint(doc, sprint, o.by, what, typeof o.why === 'string' ? o.why : null);
   return { ok: true, sprint: sprintOf(load(), S.now()), note: on ? 'the dispatcher loop picks it up within 30 s' : 'back to the base tempo within 30 s' };
 }
+// the next company-local midnight after `now` (co.TZ), to the minute
+function nextLocalMidnight(now) {
+  const lp = co.localParts(new Date(now));
+  const sec = Number(new Intl.DateTimeFormat('en-GB', { timeZone: co.TZ, second: '2-digit' }).format(new Date(now))) || 0;
+  return now - ((lp.hour * 60 + lp.minute) * 60 + sec) * 1000 - (now % 1000) + 24 * 3600e3;
+}
 function setSprintConfig(o = {}) {
   if (!o.by) throw new Error('--by <owner> is required');
   if (!isOwner(o.by)) throw ownerOnlySprint();
   const doc = rawDoc(); const sprint = Object.assign({ on: false }, (doc.tempo && doc.tempo.sprint) || {});
   const before = JSON.stringify(sprint); sprintConfigFrom(o, sprint);
   if (JSON.stringify(sprint) === before) throw new Error('nothing to set');
-  saveSprint(doc, sprint, o.by, 'Sprint settings: ' + SP.CONFIG_KEYS.filter(k => sprint[k] != null).map(k => k + '=' + sprint[k]).join(', '), null);
+  saveSprint(doc, sprint, o.by, 'Sprint settings: ' + SP.CONFIG_KEYS.filter(k => sprint[k] != null).map(k => k + '=' + sprint[k]).join(', '), o.why || null);
   return { ok: true, sprint: sprintOf(load(), S.now()) };
 }
 const hhmmOf = ms => { const lp = co.localParts(new Date(ms)); return lp.date + ' ' + String(lp.time || '').slice(0, 5); };
@@ -332,7 +351,9 @@ function effective(opts) {
     eff.tickMin = Math.min(Number(eff.tickMin) || sp.config.fallbackTickMin, sp.config.fallbackTickMin);
     eff.maxPerTick = Math.max(Number(eff.maxPerTick) || 1, seatCount());
     sprint = { on: true, since: sp.since, until: sp.until, untilWhy: sp.untilWhy, by: sp.by, cooldownFloorMin: sp.config.cooldownFloorMin, watchDebounceSec: sp.config.watchDebounceSec,
-      minTickGapSec: sp.config.minTickGapSec, lanes: sp.config.lanes, budgetUsd: sp.budgetUsd, spreadDailyCap: sp.config.spreadDailyCap !== false };
+      minTickGapSec: sp.config.minTickGapSec, lanes: sp.config.lanes, budgetUsd: sp.budgetUsd, spreadDailyCap: SP.spreadOn(sp.config, now),
+      spreadSetting: sp.config.spreadDailyCap === false ? 'off' : SP.spreadOn(sp.config, now) ? 'on' : 'today', spreadOffUntil: sp.config.spreadOffUntil || null,
+      unchangedRestMin: sp.config.unchangedRestMin };
     source = 'sprint';
     reason = 'Sprint (start-up) by ' + (sp.by || '?') + (sp.until ? ' until ' + sp.until : sp.untilWhy ? ' ' + sp.untilWhy : ', until turned off') + ': seats with new open work wake when idle (floor ' + sp.config.cooldownFloorMin + ' min), inbox changes wake the dispatcher, wake caps lifted; budget, halts, guardrails and the pacer still hold';
   }
@@ -953,9 +974,9 @@ if (require.main === module) {
     if (cmd === 'end-temporary') return run(() => endTemporary({ by, why }));
     if (cmd === 'sprint') {
       const sub = a[1];
-      const cfg = { budgetUsd: sopt('budget-usd'), lanes: sopt('lanes'), cooldownFloorMin: sopt('cooldown-floor-min'), fallbackTickMin: sopt('fallback-tick-min'), watchDebounceSec: sopt('watch-debounce-sec') };
+      const cfg = { budgetUsd: sopt('budget-usd'), lanes: sopt('lanes'), cooldownFloorMin: sopt('cooldown-floor-min'), fallbackTickMin: sopt('fallback-tick-min'), watchDebounceSec: sopt('watch-debounce-sec'), spread: sopt('spread') };
       if (sub === 'on' || sub === 'off') return run(() => setSprint(sub === 'on', Object.assign({ by, why, hours: sopt('hours') }, cfg)));
-      if (sub === 'config') return run(() => setSprintConfig(Object.assign({ by }, cfg)));
+      if (sub === 'config') return run(() => setSprintConfig(Object.assign({ by, why }, cfg)));
       if (sub === 'status' || !sub) {
         const st = sprintStatus();
         if (opt('json')) return out(st);

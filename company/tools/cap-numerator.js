@@ -51,7 +51,8 @@
  *   node company/tools/cap-numerator.js --selftest
  *
  * `dispatch.js` calls `spendSplit()` and `spentByAgent()` from here, so the cap, the per-agent shares
- * and the monthly close read the same number.
+ * and the monthly close read the same number; `meteredSince()` is that number over another window (the Sprint
+ * spread's last hour, Sprint's budget since it began).
  */
 'use strict';
 const fs = require('fs');
@@ -211,6 +212,17 @@ function spendSplit(opts) {
 
 function spentByAgent(opts) { return compute(opts).byAgent; }
 
+/* meteredSince(sinceMs, opts) -> cap-countable USD from sinceMs to now (opts.now): the same numerator as the daily cap,
+ * over any window. The Sprint spread (the last hour), Sprint's own budget (since it began) and `cadence.js sprint status`
+ * read this, so every spend figure the owner sees is one number cut at different times, never a second sum. */
+function meteredSince(sinceMs, opts) {
+  opts = Object.assign({}, opts || {});
+  const now = Number(opts.now) || Date.now(); const since = Number(sinceMs) || 0;
+  if (!(since > 0) || since >= now) return 0;
+  opts.now = now; opts.hours = (now - since) / 3600e3;
+  return compute(opts).metered;
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const arg = n => { const i = argv.indexOf('--' + n); return i >= 0 && argv[i + 1] ? argv[i + 1] : null; };
@@ -327,6 +339,17 @@ function selftest() {
     return near(s.metered, 1.1) ? null : 'metered ' + s.metered + ' want 1.1 (settled after the window closed)';
   });
 
+  add('meteredSince is the cap numerator over a shorter window (no slack rows from hours earlier)', () => {
+    const runs = write('r10.jsonl', [
+      { runId: 'OLD', agentId: 'x', provider: 'deepseek', startedAt: now - 5 * 3600e3, endedAt: now - 5 * 3600e3 + 60e3, usd: 0.80 },
+      { runId: 'NEW', agentId: 'x', provider: 'deepseek', startedAt: now - 20 * 60e3, endedAt: now - 10 * 60e3, usd: 0.30 },
+    ]);
+    const ledger = write('l10.jsonl', [{ runId: 'NEW', agentId: 'x', ts: now - 10 * 60e3, usd: 0.35, model: 'deepseek-flash' }, { runId: 'OLD', agentId: 'x', ts: now - 5 * 3600e3 + 60e3, usd: 0.80, model: 'deepseek-flash' }]);
+    const h1 = meteredSince(now - 3600e3, { runsPath: runs, ledgerPath: ledger, now, providers: ['claude-cli'] });
+    const d = compute({ runsPath: runs, ledgerPath: ledger, now, providers: ['claude-cli'] }).metered;
+    return near(h1, 0.35) && near(d, 1.15) ? null : 'last hour ' + h1 + ' want 0.35, 24h ' + d + ' want 1.15';
+  });
+
   let pass = 0;
   for (const c of cases) {
     let err = null;
@@ -342,4 +365,4 @@ function selftest() {
 function near(a, b) { return Math.abs(Number(a) - Number(b)) < 0.0000005; }
 
 if (require.main === module) main();
-module.exports = { spendSplit, spentByAgent, isCapped, baseRunId, compute, unmeteredProviders, providerOfModel };
+module.exports = { spendSplit, spentByAgent, meteredSince, isCapped, baseRunId, compute, unmeteredProviders, providerOfModel };

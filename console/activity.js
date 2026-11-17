@@ -161,6 +161,13 @@ module.exports = function activity(deps) {
         nextRunAt: next, lastRunAt: job ? job.lastRunAt || null : null, schedule: job ? job.scheduleDisplay || (job.schedule && (job.schedule.display || job.schedule.expr)) || null : null,
         soonerBecause: sooner, wakesOnMessage: !!c.wakeOnOwnerMessage, schedulerOn: cr.ok ? cr.data.enabled !== false && !cr.data.halted : null };
     });
+    // why each seat is or is not working, from the dispatcher's last tick (dispatch.js -> dispatch-state.json seats,
+    // lib/seat-status.js): {state, reason, waitingOn, since, qid?}; ignored when older than an hour (the dispatcher is down)
+    try {
+      const ds = JSON.parse(fs.readFileSync(co.p('company', 'work', 'dispatch-state.json'), 'utf8')) || {};
+      const fresh = Date.now() - Date.parse(ds.seatsAt || '') < 3600e3;
+      if (fresh && ds.seats) for (const x of seats) { const e = ds.seats[x.id]; if (e && e.reason) x.idle = { state: e.state, reason: String(e.reason).slice(0, 240), waitingOn: Array.isArray(e.waitingOn) ? e.waitingOn.slice(0, 6) : [], since: e.since || null, qid: e.qid || null }; }
+    } catch (_) {}
     // Sprint (start-up, cadence.js): while it is on, a seat's next wake is its open work, not a clock
     let sprint = null;
     try {

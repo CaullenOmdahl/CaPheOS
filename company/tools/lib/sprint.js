@@ -9,6 +9,9 @@
  *   workSig(parts)              a short hash of what a seat has to do now (its open items, unread owner messages, …)
  *   restMs(o)                   how long a seat rests before the dispatcher may wake it again
  *   spreadHold(o)               Sprint spreads the daily metered cap over the day: hold a wake that would spend it early
+ *                               (never a seat other seats are waiting on: o.blocking)
+ *   waitingOn(status, names, self)  the seat an OPEN item's Status says it waits on ("waiting on Ingrid's review"), or null
+ *   blockersOf(o)               seat -> the seats waiting on it (items that name it, STALLED seats that need the CEO)
  *   effortOf(items)             'mechanical' | 'reasoning' | 'default' for a seat's open items (the Effort: field)
  *   lanePlan(items, o)          which open items could run in parallel lanes (Touches: disjoint), CEO always serial
  *   overlaps(a, b)              two Touches lists share a path or area
@@ -28,7 +31,9 @@ const SPRINT_DEFAULTS = {
   minTickGapSec: 30,        // never two ticks closer than this, whatever changes
   lanes: 2,                 // parallel lanes per worker seat (held at 1 until the station can run them: patch 0012)
   budgetUsd: null,          // total metered USD for the whole Sprint; null = 2 x the daily cap
-  spreadDailyCap: true,     // spread the daily metered cap over the company day
+  spreadDailyCap: true,     // spread the daily metered cap over the company day (cadence.js sprint config --spread on|off|today)
+  spreadOffUntil: null,     // ISO time: the spread is off until then (--spread today = until local midnight), then on again
+  unchangedRestMin: 15,     // a seat whose work did NOT change since its last wake rests at least this long (or its cooldown, if longer)
 };
 const CONFIG_KEYS = Object.keys(SPRINT_DEFAULTS);
 
@@ -54,25 +59,66 @@ function parseItems(text) {
 
 /* ---------- wakes ---------- */
 function workSig(parts) { return crypto.createHash('sha1').update(JSON.stringify(parts || [])).digest('hex').slice(0, 16); }
-/* restMs({ baseMs, sprint, changed, floorMin, hiring }) -> { ms, fast }
+/* restMs({ baseMs, sprint, changed, floorMin, unchangedMin, hiring }) -> { ms, fast }
  * Outside Sprint: the seat's own cooldown (or the owner-message cooldown). In Sprint, a seat whose work CHANGED since its
- * last wake (a new handoff, a new owner message, a review to do) rests only the floor; unchanged work keeps the normal
- * cooldown, so a seat waiting on someone else is not woken again and again for nothing. */
+ * last wake (a new handoff, a new owner message, a review to do) rests only the floor; unchanged work rests its cooldown,
+ * but never less than unchangedMin (default 15): a seat whose last run left its work as it was is not woken again every
+ * minute for the same items, however short the owner set the base cooldown. */
 function restMs(o) {
   if (o.hiring) return { ms: 0, fast: false };
   const base = Number(o.baseMs) || 0;
   if (o.sprint && o.changed) return { ms: Math.min(base, Math.max(0, Number(o.floorMin == null ? SPRINT_DEFAULTS.cooldownFloorMin : o.floorMin)) * 60000), fast: true };
+  if (o.sprint) return { ms: Math.max(base, Math.max(0, Number(o.unchangedMin == null ? SPRINT_DEFAULTS.unchangedRestMin : o.unchangedMin)) * 60000), fast: false };
   return { ms: base, fast: false };
 }
-/* spreadHold({ cap, spent24h, spentLastHour, hoursLeft }) -> null | reason
+/* spreadHold({ cap, spent24h, spentLastHour, hoursLeft, blocking }) -> null | reason
  * In Sprint the daily metered cap is spread: the last hour may spend at most twice the even share of what is left of
- * the cap over the hours left in the company day (and never less than an eighth of the cap, so work always moves). */
+ * the cap over the hours left in the company day (and never less than an eighth of the cap, so work always moves).
+ * A seat other seats are waiting on (blocking: their names) is never held by the spread: holding it would idle all of
+ * them to save the money one run costs. The daily cap itself still holds it. */
 function spreadHold(o) {
   const cap = Number(o.cap) || 0; if (!(cap > 0)) return null;
+  if (Array.isArray(o.blocking) && o.blocking.length) return null;
   const remaining = Math.max(0, cap - (Number(o.spent24h) || 0));
   const allowance = Math.max(cap / 8, 2 * remaining / Math.max(1, Number(o.hoursLeft) || 1));
   const last = Number(o.spentLastHour) || 0;
   return last >= allowance ? 'Sprint spreads the daily cap: $' + last.toFixed(2) + ' metered in the last hour, allowance $' + allowance.toFixed(2) + ' ($' + remaining.toFixed(2) + ' left over ' + Math.max(1, Math.round(Number(o.hoursLeft) || 1)) + ' h)' : null;
+}
+
+/* ---------- who waits on whom ---------- */
+/* waitingOn(status, names, self, ceo) -> the seat id an OPEN item waits on, 'owner', or null (the item is the holder's own work)
+ * status: the item's first Status line ("OPEN — fix written, waiting on Ingrid Halvorsen's review"); names: {seatId: name};
+ * self: the holder's id (waiting on yourself is not waiting); ceo: the CEO's id ("waiting for the CEO"). "waiting on/for", "blocked on/by", "held for", "needs <name>"
+ * and "with <name> for review" all count; a phrase that names nobody we know waits on 'someone' (still not the holder's). */
+function waitingOn(status, names, self, ceo) {
+  const s = String(status || '').replace(/^OPEN\b\s*[—–:-]*\s*/i, '');
+  const m = s.match(/\b(?:waiting|waits)\s+(?:on|for)\s+(.+)|\bblocked\s+(?:on|by)\s+(.+)|\bheld\s+(?:for|by)\s+(.+)|\bneeds\s+(.+?)(?:'s|’s)?\s+(?:review|sign-?off|approval|ruling|answer|decision|reply)\b|\bwith\s+(.+?)\s+for\s+(?:review|sign-?off|approval)\b/i);
+  if (!m) return null;
+  const who = (m[1] || m[2] || m[3] || m[4] || m[5] || '').toLowerCase();
+  if (/^(?:the\s+)?(?:owner|commander)\b/.test(who)) return 'owner';
+  let best = null, at = Infinity;
+  for (const [id, n] of Object.entries(names || {})) {
+    const full = String(n || '').toLowerCase(); if (!full) continue;
+    const first = full.split(/\s+/)[0];
+    for (const k of [full, first]) { const i = k.length > 1 ? who.search(new RegExp('\\b' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b')) : -1; if (i >= 0 && i < at) { at = i; best = id; } }
+  }
+  if (!best && ceo && /\b(?:ceo|founder)\b/.test(who)) best = ceo;
+  if (best === self) return null;
+  return best || 'someone';
+}
+/* blockersOf({ items: {seatId: [{heading, status, open}]}, names, ceo, stalled: [seatId] }) -> { seatId: [waiting seat ids] }
+ * A seat blocks another when one of the other's OPEN items says it waits on it, or when the other is STALLED (the same
+ * items after the stall limit), which needs the CEO. */
+function blockersOf(o) {
+  const out = {}; const add = (b, w) => { if (!b || b === w || b === 'someone' || b === 'owner') return; (out[b] = out[b] || []); if (!out[b].includes(w)) out[b].push(w); };
+  for (const [seat, items] of Object.entries(o.items || {})) for (const it of items || []) if (it && it.open) add(waitingOn(it.status, o.names, seat, o.ceo), seat);
+  for (const seat of o.stalled || []) add(o.ceo, seat);
+  return out;
+}
+/* spreadOn(config, now): the spread holds only while spreadDailyCap is not false and no "off until" is still running */
+function spreadOn(config, now) {
+  const c = config || {}; if (c.spreadDailyCap === false) return false;
+  const u = Date.parse(c.spreadOffUntil || ''); return !(Number.isFinite(u) && u > (Number(now) || Date.now()));
 }
 function effortOf(items) {
   const open = (items || []).filter(i => i.open);
@@ -155,4 +201,4 @@ function sprintSpend(rows, sinceMs, unmetered) {
   return { usd: Math.round(usd * 1e6) / 1e6, runs };
 }
 
-module.exports = { SPRINT_DEFAULTS, CONFIG_KEYS, parseItems, parseTouches, parseEffort, workSig, restMs, spreadHold, effortOf, lanePlan, overlaps, pathOverlap, makePathLock, sprintSpend };
+module.exports = { SPRINT_DEFAULTS, CONFIG_KEYS, parseItems, parseTouches, parseEffort, workSig, restMs, spreadHold, spreadOn, waitingOn, blockersOf, effortOf, lanePlan, overlaps, pathOverlap, makePathLock, sprintSpend };

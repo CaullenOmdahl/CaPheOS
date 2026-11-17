@@ -105,3 +105,47 @@ test('StarNet: a second run of one agent is admitted, but its first file or shel
   assert.match(idx, /const mutatesWorkspace = \(name\) => \/\^fs\\\.\(write\|append\|edit\|patch\)\$\/\.test\(name\) \|\| \/\^\(shell\|verify\)\\\.\/\.test\(name\)/);
   assert.match(idx, /workspaceLease\.acquire\(agentId, runId\)/);
 });
+
+test('spreadHold never holds a seat other seats are waiting on (a blocker); it still holds one nobody waits on', () => {
+  const o = { cap: 5, spent24h: 2.39, spentLastHour: 0.95, hoursLeft: 9 };
+  assert.match(SP.spreadHold(o), /Sprint spreads the daily cap/);
+  assert.equal(SP.spreadHold(Object.assign({ blocking: ['Rohan', 'Halima'] }, o)), null);
+  assert.match(SP.spreadHold(Object.assign({ blocking: [] }, o)), /allowance \$0\.63/);
+});
+
+test('waitingOn: an OPEN item that waits on another seat is not its holder\'s work; blockersOf names who blocks whom', () => {
+  const names = { agent: 'Founder', ing: 'Ingrid Halvorsen', nad: 'Nadia farrell', hal: 'Halima Cisse' };
+  assert.equal(SP.waitingOn('OPEN — fix written and proposed as hc-0008, waiting on Ingrid Halvorsen\'s review', names, 'nad', 'agent'), 'ing');
+  assert.equal(SP.waitingOn('OPEN', names, 'nad', 'agent'), null);
+  assert.equal(SP.waitingOn('OPEN — needs Founder\'s ruling', names, 'nad', 'agent'), 'agent');
+  assert.equal(SP.waitingOn('OPEN — waiting for the CEO', names, 'nad', 'agent'), 'agent');
+  assert.equal(SP.waitingOn('OPEN — blocked on the owner', names, 'nad', 'agent'), 'owner');
+  assert.equal(SP.waitingOn('OPEN — waiting on Nadia', names, 'nad', 'agent'), null, 'waiting on yourself is your own work');
+  assert.equal(SP.waitingOn('OPEN — waiting on the vendor', names, 'nad', 'agent'), 'someone');
+  const b = SP.blockersOf({ items: { nad: [{ open: true, status: 'OPEN — waiting on Ingrid\'s review' }, { open: true, status: 'OPEN' }] }, names, ceo: 'agent', stalled: ['hal', 'roh'] });
+  assert.deepEqual(b, { ing: ['nad'], agent: ['hal', 'roh'] });
+});
+
+test('rest in Sprint: unchanged work rests at least unchangedRestMin even when the owner set a 1-minute cooldown', () => {
+  assert.deepEqual(SP.restMs({ baseMs: 60000, sprint: true, changed: false }), { ms: 15 * 60000, fast: false });
+  assert.deepEqual(SP.restMs({ baseMs: 60000, sprint: true, changed: false, unchangedMin: 5 }), { ms: 5 * 60000, fast: false });
+  assert.equal(SP.restMs({ baseMs: 60000, sprint: false, changed: false }).ms, 60000, 'outside Sprint the owner\'s cooldown is the rule');
+});
+
+test('spreadOn: spreadDailyCap false is off; spreadOffUntil in the future is off until then', () => {
+  const now = Date.parse('2026-11-17T08:00:00Z');
+  assert.equal(SP.spreadOn({}, now), true);
+  assert.equal(SP.spreadOn({ spreadDailyCap: false }, now), false);
+  assert.equal(SP.spreadOn({ spreadOffUntil: '2026-11-17T17:00:00Z' }, now), false);
+  assert.equal(SP.spreadOn({ spreadOffUntil: '2026-11-17T07:00:00Z' }, now), true);
+});
+
+test('seat-status: the plain reason Today shows for each kind of idle', () => {
+  const SS = require('../lib/seat-status');
+  assert.equal(SS.entry({ state: 'held-money', kind: 'spread', waiting: ['Rohan', 'Halima'] }).reason, 'paused to make today\'s budget last — Rohan and Halima are waiting on it');
+  assert.equal(SS.entry({ state: 'waiting', waits: { Founder: 3 } }).reason, 'waiting on Founder for 3 items');
+  assert.equal(SS.entry({ state: 'idle' }).reason, 'waiting for new work');
+  assert.equal(SS.entry({ state: 'stuck', open: 4, runs: 3, ceoName: 'Founder' }).reason, 'stuck — same 4 items after 3 runs; Founder has been asked');
+  const a = SS.carry(null, SS.entry({ state: 'idle' }), 't1'); const b = SS.carry(a, SS.entry({ state: 'idle' }), 't2');
+  assert.equal(b.since, 't1', 'since is kept while the reason stays the same');
+});

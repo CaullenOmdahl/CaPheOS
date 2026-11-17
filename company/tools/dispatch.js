@@ -55,6 +55,7 @@ const TUNING = tuning(process.env, CADENCE);
 const COOLDOWN_MS = TUNING.cooldownMin * 60000;
 let MAX_PER_TICK = TUNING.maxPerTick;   // agents work in parallel; the pacer still paces the subscriptions
 const SP = require('./lib/sprint');
+const SS = require('./lib/seat-status');
 // Sprint (cadence.js effective().sprint): null when off. Fail-safe: an unreadable cadence means no Sprint.
 const SPRINT = (() => { try { return require('./cadence.js').effective().sprint || null; } catch (_) { return null; } })();
 const SPRINT_METRICS = path.join(ROOT, 'company', 'state', 'sprint-metrics.json');
@@ -64,7 +65,9 @@ const STATION_LANES = (() => { try { return fs.readdirSync(path.join(ROOT, 'comp
 const STALL_AFTER = num('DISPATCH_STALL_AFTER', 3);
 // The CFO's budget file (company/work/finance/dispatch-budget.json) wins over the env vars and defaults.
 const BUDGET = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'company', 'work', 'finance', 'dispatch-budget.json'), 'utf8')) || {}; } catch (_) { return {}; } })();
-const DAILY_USD = (typeof BUDGET.dailyUsd === 'number' && Number.isFinite(BUDGET.dailyUsd) && BUDGET.dailyUsd >= 0) ? BUDGET.dailyUsd : num('DISPATCH_DAILY_USD', 2);
+// The owner may raise it for today only, answering a money-hold question on Today (lib/money-hold.js, today-budget.json).
+const MH = require('./lib/money-hold');
+const DAILY_USD = MH.capToday(ROOT, (typeof BUDGET.dailyUsd === 'number' && Number.isFinite(BUDGET.dailyUsd) && BUDGET.dailyUsd >= 0) ? BUDGET.dailyUsd : num('DISPATCH_DAILY_USD', 2));
 // Per-agent metered share (set by the finance owner): a metered loop is held once its own agent's 24h spend reaches this
 // share, even when the global daily cap still has room, so one loop cannot drain the day. 0 = off.
 const PER_AGENT_USD = (typeof BUDGET.perAgentUsd === 'number' && Number.isFinite(BUDGET.perAgentUsd) && BUDGET.perAgentUsd > 0) ? BUDGET.perAgentUsd : 0;
@@ -723,14 +726,29 @@ function lastRunTail(job) {
   state.agents = state.agents || {};
   const reason = {};   // agentId -> label for the log
   for (const [agentId, qs] of Object.entries(work)) reason[agentId] = qs.map(q => q.id).join(',');
+  // An OPEN item whose Status says it waits on another seat ("waiting on Ingrid's review", "blocked on the owner") is not
+  // work for its holder: it neither wakes the seat nor counts in its signature or stall key (lib/sprint.js waitingOn).
+  const NAMES = Object.fromEntries(Object.entries(CREW || {}).map(([id, c]) => [id, (c && c.name) || id]));
+  const itemsOf = {}, waitsOf = {}, stalledSeats = [];
   for (const [agentId, inbox] of Object.entries(INBOX_OF)) {
-    const open = openHandoffs(path.join(ROOT, 'company', 'work', 'handoffs', inbox));
+    let its = []; try { its = SP.parseItems(fs.readFileSync(path.join(ROOT, 'company', 'work', 'handoffs', inbox), 'utf8')).filter(i => i.open); } catch (_) {}
+    itemsOf[agentId] = its; waitsOf[agentId] = {};
+    for (const it of its) { const on = SP.waitingOn(it.status, NAMES, agentId, CEO_ID); if (on) { it.waitingOn = on; const n = on === 'owner' ? 'you (the owner)' : NAMES[on] || 'someone else'; waitsOf[agentId][n] = (waitsOf[agentId][n] || 0) + 1; } }
+    const open = its.filter(i => !i.waitingOn).map(i => i.heading).sort();
     const st = state.agents[agentId] || { key: '', count: 0 };
     const key = open.join('|');
     if (key !== st.key) { st.key = key; st.count = 0; st.flagged = false; }   // inbox changed: fresh budget
     state.agents[agentId] = st;
     if (!open.length) continue;
-    if (st.count >= STALL_AFTER) { if (!st.flagged) { st.flagged = true; log('STALLED handoffs ' + inbox + ' (' + agentId + '): ' + open.length + ' OPEN unchanged after ' + STALL_AFTER + ' runs — needs ' + CEO_NAME + ' (CEO)' + lastRunTail(findLoop(jobs, agentId))); } continue; }
+    if (st.count >= STALL_AFTER) {
+      stalledSeats.push(agentId);
+      if (!st.flagged) {
+        st.flagged = true; log('STALLED handoffs ' + inbox + ' (' + agentId + '): ' + open.length + ' OPEN unchanged after ' + STALL_AFTER + ' runs — needs ' + CEO_NAME + ' (CEO)' + lastRunTail(findLoop(jobs, agentId)));
+        // "needs the CEO" is said to the CEO, not only to the log: one OPEN handoff per stall (a new item set is a new stall)
+        if (agentId !== CEO_ID && inboxOf(CEO_ID)) appendHandoff(inboxOf(CEO_ID), (NAMES[agentId] || agentId) + ' is stuck: the same ' + open.length + ' item' + (open.length === 1 ? '' : 's') + ' after ' + STALL_AFTER + ' runs', { Need: 'look at ' + inbox + ' and unblock it: answer what ' + (NAMES[agentId] || agentId) + ' is waiting for, re-scope the items, or mark them DONE/blocked with a reason. The dispatcher stops waking ' + (NAMES[agentId] || agentId) + ' for them until the set changes.', Why: 'the dispatcher woke ' + (NAMES[agentId] || agentId) + ' ' + STALL_AFTER + ' times for the same open items and nothing moved.', Items: open.slice(0, 6).join(' · ').slice(0, 600), Deadline: 'today', Status: 'OPEN' });
+      }
+      continue;
+    }
     work[agentId] = work[agentId] || [];
     reason[agentId] = (reason[agentId] ? reason[agentId] + '; ' : '') + open.length + ' OPEN in ' + inbox;
   }
@@ -868,39 +886,48 @@ function lastRunTail(job) {
     state.sprintLaneKey = lk;
   } else if ((readJson(SPRINT_EFFORT, {}) || {}).sprint && !DRY) { try { fs.writeFileSync(SPRINT_EFFORT, JSON.stringify({ sprint: false, seats: {} }) + '\n'); } catch (_) {} }
   // Sprint spreads the daily metered cap over the company day: the last hour's metered spend, and the hours left
-  const lastHourMetered = (() => { if (!SPRINT) return 0; let u = 0; for (const r of runsSince(Date.now() - 3600e3)) if (!UNMETERED_PROVIDERS.includes(String(r.provider || '')) && Number.isFinite(Number(r.usd))) u += Number(r.usd); return u; })();
+  // (the cap's own numerator, cap-numerator.js meteredSince; runsSince() returns hours of slack before the window, so summing
+  // it read the last ~7 h as "the last hour")
+  const lastHourMetered = (() => { if (!SPRINT) return 0; if (CAPNUM && typeof CAPNUM.meteredSince === 'function') return CAPNUM.meteredSince(Date.now() - 3600e3); const since = Date.now() - 3600e3; let u = 0; for (const r of runsSince(since)) if (Number(r.startedAt) >= since && !UNMETERED_PROVIDERS.includes(String(r.provider || '')) && Number.isFinite(Number(r.usd))) u += Number(r.usd); return u; })();
+  // who waits on whom (lib/sprint.js blockersOf): a seat others are waiting on is never held by the spread
+  const blockers = SP.blockersOf({ items: itemsOf, names: NAMES, ceo: CEO_ID, stalled: stalledSeats.concat(Object.values(quests).filter(q => q && q.agentId && (state.quests[q.id] || {}).count >= STALL_AFTER && q.status === 'open').map(q => q.agentId)) });
+  const waitersOf = id => (blockers[id] || []).map(x => NAMES[x] || x);
+  const seatSay = {}; const say = (id, o) => { if (!seatSay[id]) seatSay[id] = SS.entry(o); };   // the first decision about a seat this tick is its reason
+  const moneyHolds = [];
   const hoursLeft = (() => { const lp = co.localParts(); return Math.max(1, 24 - (Number(lp.hour) || 0) - (Number(lp.minute) || 0) / 60); })();
   let fired = 0; try { const pace = await require('./pacer.js').dispatchHook({ dry: DRY, log, jobs, order, ownerWake, maxPerTick: MAX_PER_TICK }); fired = -Math.max(0, Math.min(2, Number(pace && pace.extra) || 0)); } catch (e) { fired = 0; log('PACER ERROR: ' + e.message); }   // pacer.js (fail-safe): may drop metered wakes held near the station rail from `order`, and lends extra per-tick slots by starting `fired` below 0
   const deferred = [];
   for (const agentId of order) {
     const qs = work[agentId];
-    if (fired >= MAX_PER_TICK) { deferred.push((CREW[agentId] || {}).name || agentId); continue; }
+    if (fired >= MAX_PER_TICK) { deferred.push((CREW[agentId] || {}).name || agentId); say(agentId, { state: 'held', why: 'has work, waiting for a free slot (' + MAX_PER_TICK + ' starts per check); next check picks it up' }); continue; }
     if (!LOOP_OF[agentId]) continue;   // not on the crew (for example a departed person's leftover quest): nothing to wake
     const job = findLoop(jobs, agentId);
     if (!job) { log('NO LOOP for ' + agentId + ': no routine matches "' + (LOOP_OF[agentId] || '?') + '"'); continue; }
-    if (job.enabled === false) { log('DISABLED loop "' + job.name + '" for ' + agentId + ' — routine exists but is disabled; not fired'); continue; }
-    if (job.inFlight || job.state === 'running') continue;
+    if (job.enabled === false) { log('DISABLED loop "' + job.name + '" for ' + agentId + ' — routine exists but is disabled; not fired'); say(agentId, { state: 'held', why: 'has work, but its routine "' + job.name + '" is switched off' }); continue; }
+    if (job.inFlight || job.state === 'running') { say(agentId, { state: 'working' }); continue; }
     const last = job.lastRunAt ? Date.parse(job.lastRunAt) : 0;
     const ownCooldown = CREW && CREW[agentId] && Number(CREW[agentId].cooldownMin) > 0 ? Number(CREW[agentId].cooldownMin) * 60000 : COOLDOWN_MS;   // per-person rest, loops.json cooldownMin
     // rest: the seat's cooldown (owner message: the short one); in Sprint only the floor when its work changed since its last wake
     const sig = SPRINT ? sigOf(agentId) : null;
-    const rest = SP.restMs({ baseMs: ownerWake.has(agentId) ? OWNER_COOLDOWN_MS : ownCooldown, sprint: !!SPRINT, changed: !!SPRINT && state.sprintSig[agentId] !== sig, floorMin: SPRINT && SPRINT.cooldownFloorMin, hiring: hiringWake.has(agentId) });
-    if (Date.now() - last < rest.ms) continue;
-    if (!ALLOW_ASK && modes[agentId] === 'ask') { askHeld.push(job.name + ' (' + agentId + ')'); continue; }   // due, but cannot save unattended
+    const rest = SP.restMs({ baseMs: ownerWake.has(agentId) ? OWNER_COOLDOWN_MS : ownCooldown, sprint: !!SPRINT, changed: !!SPRINT && state.sprintSig[agentId] !== sig, floorMin: SPRINT && SPRINT.cooldownFloorMin, unchangedMin: SPRINT && SPRINT.unchangedRestMin, hiring: hiringWake.has(agentId) });
+    if (Date.now() - last < rest.ms) { say(agentId, { state: 'resting', changed: rest.fast || !SPRINT, at: co.localParts(new Date(last + rest.ms)).time, waits: waitsOf[agentId] }); continue; }
+    if (!ALLOW_ASK && modes[agentId] === 'ask') { askHeld.push(job.name + ' (' + agentId + ')'); say(agentId, { state: 'held', why: 'has work, but its approval mode is "ask", so an unattended run could not save anything' }); continue; }   // due, but cannot save unattended
     // the global USD cap, then this agent's share (an owner message is never held; a subscription loop is not metered).
     // With the spendCap guardrail off nothing is held; the loop runs and is listed once in the log.
     const cap = capDecision({ capOn: CAP_ON, capped, metered: isMetered(job), ownerWake: ownerWake.has(agentId), perAgentOver: PER_AGENT_USD > 0 && (byAgent[agentId] || 0) >= PER_AGENT_USD });
-    if (cap === 'held') { held.push(job.name); continue; }
-    if (cap === 'perAgentHeld') { perAgentHeld.push(job.name); continue; }
+    const moneyHold = kind => { moneyHolds.push({ seat: agentId, name: NAMES[agentId] || agentId, kind, waiting: waitersOf(agentId) }); say(agentId, { state: 'held-money', kind, waiting: waitersOf(agentId) }); };
+    if (cap === 'held') { held.push(job.name); moneyHold('cap'); continue; }
+    if (cap === 'perAgentHeld') { perAgentHeld.push(job.name); moneyHold('perAgent'); continue; }
     if (cap === 'wouldHold') wouldHold.push(job.name);
     if (SPRINT && SPRINT.spreadDailyCap && CAP_ON && cap === 'run' && isMetered(job) && !ownerWake.has(agentId)) {
-      const why = SP.spreadHold({ cap: DAILY_USD, spent24h: spent, spentLastHour: lastHourMetered, hoursLeft });
-      if (why) { spreadHeld.push(job.name + ' — ' + why); continue; }
+      // never the seat others wait on (blockers): holding it idles them all; the daily cap above still holds it
+      const why = SP.spreadHold({ cap: DAILY_USD, spent24h: spent, spentLastHour: lastHourMetered, hoursLeft, blocking: waitersOf(agentId) });
+      if (why) { spreadHeld.push(job.name + ' — ' + why); moneyHold('spread'); continue; }
     }
-    { const tempo = require('./cadence.js').tempoAllows(agentId, Date.now(), { record: !DRY, ownerWake: ownerWake.has(agentId) }); if (!tempo.ok) { log('TEMPO HOLD ' + job.name + ' for ' + agentId + ': ' + tempo.reason); continue; } }   // wake caps (cadence.json bounds): an owner message is never held but still counts
+    { const tempo = require('./cadence.js').tempoAllows(agentId, Date.now(), { record: !DRY, ownerWake: ownerWake.has(agentId) }); if (!tempo.ok) { log('TEMPO HOLD ' + job.name + ' for ' + agentId + ': ' + tempo.reason); say(agentId, { state: 'held', why: 'has work, held by the wake limits: ' + tempo.reason }); continue; } }   // wake caps (cadence.json bounds): an owner message is never held but still counts
     const names = reason[agentId];
     const viaInbox = names.includes(' OPEN in ');
-    if (DRY) { log('WOULD run ' + job.name + ' for ' + agentId + ' (' + names + ')'); fired++; continue; }
+    if (DRY) { log('WOULD run ' + job.name + ' for ' + agentId + ' (' + names + ')'); fired++; say(agentId, { state: 'started', why: names }); continue; }
     log('RUN ' + job.name + ' for ' + agentId + ' (' + names + ')' + (rest.fast ? ' [Sprint: new work; rest ' + SPRINT.cooldownFloorMin + ' min]' : ''));
     fired++;
     // a duty wake hands the agent its reason: one OPEN handoff in its inbox, ids and counts only (dedup reads it next tick)
@@ -909,6 +936,7 @@ function lastRunTail(job) {
     // loop can never be cancelled by this tick's own hold (a run tied to the request socket dies with it).
     // Only a 200 counts toward the stall budget — a refused start (409/400) is not a run.
     const r = await fireRun(job.id);
+    say(agentId, r.status === 200 ? { state: 'started', why: names } : { state: 'held', why: 'has work; the station refused the start (HTTP ' + r.status + ')' });
     if (r.status === 200) {
       for (const q of qs) { if (q.duty) state.duties[q.skey].count++; else state.quests[q.id].count++; }
       for (const qid of (artifactWakes[agentId] || [])) state.artifactWait[qid].wakes++;   // a real start is a wake
@@ -924,6 +952,27 @@ function lastRunTail(job) {
   if (!DRY) fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
   if (SM && !DRY) { SM.updatedAt = new Date().toISOString(); try { fs.mkdirSync(path.dirname(SPRINT_METRICS), { recursive: true }); fs.writeFileSync(SPRINT_METRICS, JSON.stringify(SM, null, 1) + '\n'); } catch (_) {} }
   if (spreadHeld.length) log('SPRINT SPREAD: metered loop(s) held so the daily cap lasts the day: ' + spreadHeld.join('; '));
+  // A money hold for more than one tick is the owner's decision: ONE question on Today (lib/money-hold.js), then every
+  // seat's state in plain words for Today (lib/seat-status.js), from this tick's decisions
+  try {
+    const allowance = Math.max(DAILY_USD / 8, 2 * Math.max(0, DAILY_USD - spent) / Math.max(1, hoursLeft));
+    const mh = MH.tick({ root: ROOT, holds: moneyHolds, st: state, spent, cap: DAILY_USD, lastHour: lastHourMetered, allowance, live: !DRY, dry: DRY, log });
+    for (const [id, qid] of Object.entries(mh.open || {})) if (seatSay[id] && seatSay[id].state === 'held-money') seatSay[id].qid = qid;
+    const nowIso = new Date().toISOString(); const prevSeats = state.seats || {}; const seatsOut = {};
+    for (const id of Object.keys(LOOP_OF)) {
+      let e = seatSay[id];
+      if (!e) {
+        const job = findLoop(jobs, id);
+        if (job && (job.inFlight || job.state === 'running')) e = SS.entry({ state: 'working' });
+        else if (stalledSeats.includes(id)) e = SS.entry({ state: 'stuck', open: ((state.agents[id] || {}).key || '').split('|').filter(Boolean).length, runs: STALL_AFTER, ceoName: id === CEO_ID ? 'the owner' : CEO_NAME });
+        else if (Object.keys(waitsOf[id] || {}).length) e = SS.entry({ state: 'waiting', waits: waitsOf[id] });
+        else e = SS.entry({ state: 'idle' });
+      }
+      seatsOut[id] = SS.carry(prevSeats[id], e, nowIso);
+    }
+    state.seats = seatsOut; state.seatsAt = nowIso;
+    if (!DRY) fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
+  } catch (e) { log('SEAT STATUS ERROR: ' + String(e.message).slice(0, 200)); }
   // Competence ledger, at most once a day (company/tools/competence.js daily, shadow mode: collect, compute, scoreboard,
   // serious flags, merged-without-gate audit, chain anchor). Runs after the wakes so it can never delay one, in a child
   // process with a timeout, and one attempt a day: its failure is logged and never breaks or repeats a tick.

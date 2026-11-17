@@ -195,3 +195,70 @@ test('Sprint on: the CEO stays one run at a time (a live CEO run is never double
   assert.ok(r.fired.includes('sam') && r.fired.includes('w1'), r.log);
   assert.equal(c.json('company/state/sprint-metrics.json').lanes.agent.max, 1);
 });
+
+test('Sprint on: the spread never holds a seat others wait on; it holds one nobody waits on, and asks the owner once after two ticks', async () => {
+  const spent = [{ runId: 'x1', agentId: 'mo', provider: 'deepseek', usd: 0.6, startedAt: Date.now() - 20 * MIN, endedAt: Date.now() - 10 * MIN }];
+  // Wen's only item waits on Mo's review: Mo is a blocker, so the spread lets Mo run
+  const blocked = Object.assign({}, WORK, { 'to-wen.md': block('ship the pricing page').replace('**Status:** OPEN', '**Status:** OPEN — waiting on Mo\'s review') });
+  const b = await company({ sprint: true, handoffs: blocked, runs: spent });
+  const rb = b.tick();
+  assert.ok(rb.fired.includes('mo'), rb.log);
+  assert.ok(!rb.fired.includes('w1'), 'an item waiting on someone else does not wake its holder: ' + rb.log);
+  const sb = b.json('company/work/dispatch-state.json').seats;
+  assert.equal(sb.w1.state, 'waiting'); assert.equal(sb.w1.reason, 'waiting on Mo for 1 item');
+  assert.equal(sb.kim.reason, 'waiting for new work');
+  // nobody waits on Mo: held by the spread, then ONE owner question after the second held tick, deduped on the third
+  const c = await company({ sprint: true, handoffs: WORK, runs: spent });
+  const r1 = c.tick();
+  assert.ok(!r1.fired.includes('mo'), r1.log);
+  const s1 = c.json('company/work/dispatch-state.json').seats.mo;
+  assert.equal(s1.state, 'held-money'); assert.equal(s1.reason, 'paused to make today\'s budget last'); assert.ok(s1.since);
+  assert.doesNotMatch(r1.log, /MONEY HOLD ASK/);
+  const r2 = c.tick();
+  assert.match(r2.log, /MONEY HOLD ASK q-\S+ \(waits for the owner\): Mo held by the spread of today's budget for 2 ticks/);
+  const qs = c.r('company/pm-inbox.jsonl').split('\n').filter(Boolean).map(l => JSON.parse(l)).filter(x => x.type === 'ask');
+  assert.equal(qs.length, 1); assert.match(qs[0].message, /^Mo is paused so today's \$1 lasts until midnight\./);
+  assert.equal(c.json('company/work/dispatch-state.json').seats.mo.qid, qs[0].id);
+  c.tick();
+  assert.equal(c.r('company/pm-inbox.jsonl').split('\n').filter(Boolean).filter(l => JSON.parse(l).type === 'ask').length, 1, 'deduped');
+});
+
+test('Sprint on: cadence.js sprint config --spread today turns the spread off until midnight (and the held seat runs)', async () => {
+  const spent = [{ runId: 'x1', agentId: 'mo', provider: 'deepseek', usd: 0.6, startedAt: Date.now() - 20 * MIN, endedAt: Date.now() - 10 * MIN }];
+  const c = await company({ sprint: true, handoffs: WORK, runs: spent });
+  const env = Object.assign({}, process.env, { CAPHEOS_ROOT: c.T, CAPHEOS_TZ: TZ });
+  const out = JSON.parse(execFileSync(process.execPath, [path.join(REPO, 'company/tools/cadence.js'), 'sprint', 'config', '--spread', 'today', '--by', 'Pat', '--why', 'test'], { env, encoding: 'utf8' }));
+  assert.equal(out.ok, true);
+  const sp = c.json('company/work/ops/cadence.json').tempo.sprint;
+  assert.ok(Date.parse(sp.spreadOffUntil) > Date.now() && Date.parse(sp.spreadOffUntil) <= Date.now() + 24 * HOUR, JSON.stringify(sp));
+  const r = c.tick();
+  assert.ok(r.fired.includes('mo'), r.log);
+  assert.throws(() => execFileSync(process.execPath, [path.join(REPO, 'company/tools/cadence.js'), 'sprint', 'config', '--spread', 'sometimes', '--by', 'Pat'], { env, stdio: 'pipe' }));
+});
+
+test('Sprint on: unchanged work is not woken again every minute, however short the cooldown', async () => {
+  const c = await company({ sprint: true, handoffs: WORK, lastRunMinAgo: 60 });
+  const cad = c.json('company/work/ops/cadence.json'); cad.defaultCooldownMin = 1; c.w('company/work/ops/cadence.json', cad);
+  const r1 = c.tick();
+  assert.ok(r1.fired.includes('sam'), r1.log);
+  for (const id of Object.keys(SEATS)) await c.lastRun(id, 3);
+  const r2 = c.tick();
+  assert.deepEqual(r2.fired, [], r2.log);
+  assert.match(c.json('company/work/dispatch-state.json').seats.sam.reason, /^nothing new since its last run; looks again at \d\d:\d\d$/);
+});
+
+test('one spend numerator: the spread\'s "last hour" and sprint status read the cap numerator (ledger + unsettled runs)', async () => {
+  // $0.60 three hours ago: in the day's total, not in the last hour (the old sum read ~7 h as "the last hour" and held Mo)
+  const old = [{ runId: 'x1', agentId: 'mo', provider: 'deepseek', usd: 0.6, startedAt: Date.now() - 3 * HOUR, endedAt: Date.now() - 3 * HOUR + MIN }];
+  const c = await company({ sprint: true, handoffs: WORK, runs: old });
+  c.w('.starnet-data/workspaces/ledger.jsonl', JSON.stringify({ runId: 'x1', agentId: 'mo', ts: Date.now() - 3 * HOUR + MIN, usd: 0.65, model: 'deepseek-flash' }) + '\n'
+    + JSON.stringify({ runId: 'x1_skill_review_a', agentId: 'mo', ts: Date.now() - 30 * MIN, usd: 0.05, model: 'deepseek-flash' }) + '\n');
+  const r = c.tick();
+  assert.ok(r.fired.includes('mo'), r.log);
+  assert.doesNotMatch(r.log, /SPRINT SPREAD/);
+  const env = Object.assign({}, process.env, { CAPHEOS_ROOT: c.T, CAPHEOS_TZ: TZ });
+  const st = JSON.parse(execFileSync(process.execPath, [path.join(REPO, 'company/tools/cadence.js'), 'sprint', 'status', '--json'], { env, encoding: 'utf8' }));
+  const cn = require(path.join(REPO, 'company/tools/cap-numerator.js'));
+  const want = cn.meteredSince(Date.parse(st.since), { runsPath: path.join(c.T, '.starnet-data/workspaces/runs.jsonl'), ledgerPath: path.join(c.T, '.starnet-data/workspaces/ledger.jsonl'), providers: ['claude-cli'] });
+  assert.ok(Math.abs(st.spentUsd - want) < 1e-6 && Math.abs(st.spentUsd - 0.05) < 1e-6, 'sprint status ' + st.spentUsd + ' vs cap numerator ' + want);
+});
