@@ -15,12 +15,12 @@
  *   node company/tools/cadence.js sprint config [--budget-usd X|default] [--lanes N] [--cooldown-floor-min N] [--fallback-tick-min N]
  *                                  [--watch-debounce-sec N] --by <owner>
  *   node company/tools/cadence.js sprint status [--json]      Sprint (start-up): on or off, until when, and how it is going
- *   node company/tools/cadence.js selftest
  *   node company/tools/cadence.js duties-floor [--json]   a SUGGESTION only (docs/DUTIES.md): which seats' own loop routines
  *                                  run more often than the duty floor (bounds.loopFloorMin, default 360-720 min; a seat may
  *                                  set seats.<id>.loopFloorMin inside it), and the command the owner or a reviewed change
  *                                  would apply. The CEO seat keeps its loop. Nothing is changed: duties find the work now,
  *                                  so a seat's routine loop can be slow; existing schedules move only when someone applies it.
+ *   node company/tools/cadence.js selftest
  *
  * Source of truth: company/work/ops/cadence.json (defaults: company/defaults/work/ops/cadence.json).
  *   base values   dispatcherTickMin, defaultCooldownMin, maxPerTick, seats.<id>.*: the owner's (or a reviewed change's)
@@ -608,27 +608,6 @@ function proposal(doc, set, opts) {
   return out;
 }
 
-function timerPath() { return path.join(S.unitDir, S.service() + '-dispatch.timer'); }
-
-async function apply({ dry, approvedRef, by } = {}) {
-  const owner = isOwner(by);
-  const level = owner ? 'owner' : S.gate();
-  if (level === 'approve') {
-    if (!approvedRef) {
-      return { ok: false, refused: true, gate: 'approve',
-        error: 'schedules are at governance level "approve": ask the owner first, e.g. `node company/tools/inbox.js ask --from <you> --about cadence --q "May we change the company cadence to <what>?"`, then rerun with --approved-ref <questionId> once answered yes' };
-    }
-    const gov = S.governance();
-    if (gov && typeof gov.answerOf === 'function' && typeof gov.verdict === 'function') {
-      const a = gov.answerOf(approvedRef);
-      if (!a || gov.verdict(a.text) !== true) return { ok: false, refused: true, gate: 'approve', error: 'approval ' + approvedRef + ' not accepted: ' + (a ? 'the answer was not yes' : 'no answer on record') };
-    }
-  }
-  const c = load(); const now = S.now();
-  const L = loops(); const agents = L.agents || {};
-  const plan = { loops: [], routines: [], errors: [], warnings: [] };
-  for (const [id, s] of Object.entries(c.seats)) {
-    const row = agents[id];
 /* duties-floor: a suggestion, never an apply. With duties detecting work (docs/DUTIES.md), a seat's own loop routine only
  * has to catch what no duty sees, so it can run every 6-12 h. For each seat but the CEO: its loopEvery in cadence.json,
  * the floor (seats.<id>.loopFloorMin inside bounds.loopFloorMin, else the low bound) and, when it runs more often or is
@@ -657,6 +636,27 @@ function dutiesFloor() {
   return { ok: true, suggestionOnly: true, bounds: [lo, hi], seats: rows, measure: 'compare the idle-wake ratio before and after: node company/tools/cadence.js sprint status --json (idleWakeRatio)' };
 }
 
+function timerPath() { return path.join(S.unitDir, S.service() + '-dispatch.timer'); }
+
+async function apply({ dry, approvedRef, by } = {}) {
+  const owner = isOwner(by);
+  const level = owner ? 'owner' : S.gate();
+  if (level === 'approve') {
+    if (!approvedRef) {
+      return { ok: false, refused: true, gate: 'approve',
+        error: 'schedules are at governance level "approve": ask the owner first, e.g. `node company/tools/inbox.js ask --from <you> --about cadence --q "May we change the company cadence to <what>?"`, then rerun with --approved-ref <questionId> once answered yes' };
+    }
+    const gov = S.governance();
+    if (gov && typeof gov.answerOf === 'function' && typeof gov.verdict === 'function') {
+      const a = gov.answerOf(approvedRef);
+      if (!a || gov.verdict(a.text) !== true) return { ok: false, refused: true, gate: 'approve', error: 'approval ' + approvedRef + ' not accepted: ' + (a ? 'the answer was not yes' : 'no answer on record') };
+    }
+  }
+  const c = load(); const now = S.now();
+  const L = loops(); const agents = L.agents || {};
+  const plan = { loops: [], routines: [], errors: [], warnings: [] };
+  for (const [id, s] of Object.entries(c.seats)) {
+    const row = agents[id];
     if (!row) { plan.errors.push('cadence.json seat "' + id + '" is not in loops.json; skipped'); continue; }
     for (const f of SEAT_FIELDS) if (s[f] !== undefined && row[f] !== s[f]) plan.loops.push({ seat: id, field: f, from: row[f], to: s[f] });
   }
@@ -806,6 +806,9 @@ async function selftest() {
     const pr = proposal(load(), { '/bounds/tickMin': [3, 30], '/tempo/autoExpireMin': 45, '/seats/desk/cooldownMin': 25, '/maxPerTick': 6 }, { agents: loops().agents, now });
     check('a proposal becomes whole-section sets', pr['/bounds'].tickMin.join('-') === '3-30' && pr['/bounds'].maxWakesPerHour === 2 && pr['/tempo'].autoExpireMin === 45 && pr['/seats'].desk.cooldownMin === 25 && pr['/seats'].desk.loopEvery === 'every 45m' && pr['/maxPerTick'] === 6, JSON.stringify(pr));
     check('a proposal refuses a non-tempo pointer', throwsWith(() => proposal(load(), { '/changes': [] }), /not a tempo number/) === true);
+    { const before = fs.readFileSync(S.file, 'utf8'); const df = dutiesFloor(); const desk = df.seats.find(x => x.id === 'desk'), ceoRow = df.seats.find(x => x.id === 'agent');
+      check('duties-floor: a seat looping every 45 min is told the 6 h floor, the CEO keeps its loop, nothing is written', df.suggestionOnly && desk && desk.suggest === 'every 6h' && /cadence\.js set desk --loop-every 360 --by owner/.test(desk.owner) && /"\/seats\/desk\/loopEvery":"every 6h"/.test(desk.reviewed) && ceoRow && ceoRow.ceo && !ceoRow.suggest && fs.readFileSync(S.file, 'utf8') === before, JSON.stringify(df)); }
+    check('a proposal can set the loop floor bounds and a seat floor', JSON.stringify(proposal(load(), { '/bounds/loopFloorMin': '480-720', '/seats/desk/loopFloorMin': 600 }, { now })['/bounds'].loopFloorMin) === '[480,720]');
     check('a proposal refuses a peak clock', throwsWith(() => proposal(load(), { '/seats/desk/loopEvery': '0 10 * * 1' }, { now }), /peak-price/) === true);
 
     // wake caps and quiet hours
@@ -827,9 +830,6 @@ async function selftest() {
     check('dry-run plans without writing', dry.plan.loops.length === 3 && dry.plan.routines.length === 1 && JSON.parse(fs.readFileSync(S.loopsFile, 'utf8')).agents.desk.cooldownMin === 30, JSON.stringify(dry.plan));
     level = 'approve';
     const refused = await apply({ by: 'Alex' });
-    { const before = fs.readFileSync(S.file, 'utf8'); const df = dutiesFloor(); const desk = df.seats.find(x => x.id === 'desk'), ceoRow = df.seats.find(x => x.id === 'agent');
-      check('duties-floor: a seat looping every 45 min is told the 6 h floor, the CEO keeps its loop, nothing is written', df.suggestionOnly && desk && desk.suggest === 'every 6h' && /cadence\.js set desk --loop-every 360 --by owner/.test(desk.owner) && /"\/seats\/desk\/loopEvery":"every 6h"/.test(desk.reviewed) && ceoRow && ceoRow.ceo && !ceoRow.suggest && fs.readFileSync(S.file, 'utf8') === before, JSON.stringify(df)); }
-    check('a proposal can set the loop floor bounds and a seat floor', JSON.stringify(proposal(load(), { '/bounds/loopFloorMin': '480-720', '/seats/desk/loopFloorMin': 600 }, { now })['/bounds'].loopFloorMin) === '[480,720]');
     check('approve level refuses an agent without --approved-ref and says how to ask', refused.refused && /inbox\.js ask/.test(refused.error));
     const ownerApply = await apply({ dry: true, by: 'owner' });
     check('the owner applies without the gate', ownerApply.ok && ownerApply.gate === 'owner');
@@ -969,14 +969,6 @@ if (require.main === module) {
       }
       throw new Error('sprint on|off [--hours N] --by owner, sprint config …, sprint status [--json]');
     }
-    if (cmd === 'apply') {
-      const r = await apply({ dry: !!opt('dry-run'), approvedRef: sopt('approved-ref'), by });
-      out(r);
-      process.exit(r.ok ? 0 : 1);
-    }
-    throw new Error('commands: show, set-default, set, bounds, end-temporary, apply, sprint, duties-floor, selftest');
-  })().catch(e => { console.error(JSON.stringify({ ok: false, error: e.message })); process.exit(1); });
-}
     if (cmd === 'duties-floor') {
       const r = dutiesFloor();
       if (opt('json')) return out(r);
@@ -985,3 +977,11 @@ if (require.main === module) {
       console.log(r.measure);
       return;
     }
+    if (cmd === 'apply') {
+      const r = await apply({ dry: !!opt('dry-run'), approvedRef: sopt('approved-ref'), by });
+      out(r);
+      process.exit(r.ok ? 0 : 1);
+    }
+    throw new Error('commands: show, set-default, set, bounds, end-temporary, apply, sprint, duties-floor, selftest');
+  })().catch(e => { console.error(JSON.stringify({ ok: false, error: e.message })); process.exit(1); });
+}

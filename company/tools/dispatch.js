@@ -152,14 +152,14 @@ function firstStatusOf(sectionText) {
   const m = String(sectionText || '').match(/^\*\*Status:\*\*(.*)$/m);
   return m ? m[1].trim() : null;
 }
-function openHandoffs(file) {
-  let txt; try { txt = fs.readFileSync(file, 'utf8'); } catch (_) { return []; }
-  const out = [];
 // the full text of each OPEN section (duty dedup: is an item id already in an OPEN handoff to this seat?)
 function openSectionTexts(file) {
   let txt; try { txt = fs.readFileSync(file, 'utf8'); } catch (_) { return []; }
   return txt.split(/^## /m).slice(1).filter(sec => { const st = firstStatusOf(sec); return st && /^OPEN\b/i.test(st); });
 }
+function openHandoffs(file) {
+  let txt; try { txt = fs.readFileSync(file, 'utf8'); } catch (_) { return []; }
+  const out = [];
   for (const sec of txt.split(/^## /m).slice(1)) {
     const st = firstStatusOf(sec);
     if (st && /^OPEN\b/i.test(st)) out.push(sec.split('\n')[0].trim());
@@ -338,15 +338,15 @@ function appendHandoff(inbox, heading, fields) {
   const block = '\n## ' + today() + ' from Dispatcher — ' + heading + '\n' + Object.entries(fields).map(([k, v]) => '**' + k + ':** ' + (k === 'Deadline' && v === 'today' ? today() : v)).join('\n') + '\n';
   if (!DRY) fs.appendFileSync(f, block);
 }
-// flip the Status line of the dispatcher's own handoff whose heading contains `needle` (never touches anyone else's block)
-function closeHandoff(inbox, needle, note) {
-  const f = path.join(ROOT, 'company', 'work', 'handoffs', inbox);
 // a broken or stale duty, flagged once per change to the tools owner (the default-branch-watch pattern)
 function dutyFlag({ d, state: s, why }) {
   const row = seatRow('tools'); const tools = row && row[1];
   if (tools && tools.inbox) appendHandoff(tools.inbox, 'duty ' + d.id + ' is ' + s, { Need: s === 'broken' ? 'get `' + d.tool + ' --duty` answering again (exit 0 or 1 with its JSON); run it by hand to see why, then set Status to DONE.' : 'find out why the duty has not run inside its cadence (the per-tick cap, a halt, a dispatcher that is not ticking), then set Status to DONE.', Why: 'while a duty is ' + s + ' the work it watches for goes unseen; ' + s + ' never shows as ok (docs/DUTIES.md).', Deadline: 'today', Status: 'OPEN', Evidence: why });
   log('DUTY ' + s.toUpperCase() + ' ' + d.id + ': ' + why + (tools ? ' — told ' + (tools.name || 'the tools owner') : ''));
 }
+// flip the Status line of the dispatcher's own handoff whose heading contains `needle` (never touches anyone else's block)
+function closeHandoff(inbox, needle, note) {
+  const f = path.join(ROOT, 'company', 'work', 'handoffs', inbox);
   let txt; try { txt = fs.readFileSync(f, 'utf8'); } catch (_) { return false; }
   const parts = txt.split(/^(?=## )/m); let changed = false;
   for (let i = 0; i < parts.length; i++) {
@@ -683,15 +683,15 @@ function lastRunTail(job) {
   // write. Then the 3-day results checks of applied harness changes (company/tools/harness-change.js).
   try { await require('./locked-watch.js').tick({ dry: DRY, log, jobs, from: 'dispatch' }); } catch (e) { log('LOCKED WATCH ERROR: ' + String(e.message).slice(0, 200)); }
   try { await require('./harness-change.js').tick({ dry: DRY, log }); } catch (e) { log('HARNESS CHANGE ERROR: ' + String(e.message).slice(0, 200)); }
-  const state = readJson(STATE, { quests: {}, agents: {} });
-  try { await closeQuests(quests, state); } catch (e) { log('CLOSER ERROR: ' + e.message); }
-  try { deliverOwnerQuestions(); } catch (e) { log('OUTBOX ERROR: ' + e.message); }
   // Duties (docs/DUTIES.md): after the locked-file watch, so an unrecorded policy edit is reported (and not obeyed) before
   // anything runs. Fail-safe: an error here is one line and the tick goes on without duty work.
   const DR = require('./lib/duty-runner');
   let dutyRun = null;
   try { dutyRun = await DR.tick({ log, dry: DRY, flag: dutyFlag }); } catch (e) { log('DUTIES ERROR: ' + String(e.message).slice(0, 200)); }
   for (const id of (dutyRun && dutyRun.recovered) || []) for (const c of Object.values(CREW || {})) if (c && c.inbox) { closeHandoff(c.inbox, 'duty ' + id + ':', 'the duty check passes now'); closeHandoff(c.inbox, 'duty ' + id + ' is ', 'the duty check runs and passes again'); }
+  const state = readJson(STATE, { quests: {}, agents: {} });
+  try { await closeQuests(quests, state); } catch (e) { log('CLOSER ERROR: ' + e.message); }
+  try { deliverOwnerQuestions(); } catch (e) { log('OUTBOX ERROR: ' + e.message); }
   // 1-on-1s (company/tools/corrections.js, fail-safe): detect habits, then activate, record, escalate or retire standing
   // corrections. Before the house-rules hook, so a correction activated now reaches the prompts in this same tick.
   try { await require('./corrections.js').tick({ dry: DRY, log, quests, jobs }); } catch (e) { log('CORRECTIONS ERROR: ' + e.message); }
@@ -793,24 +793,6 @@ function lastRunTail(job) {
     work[seat] = work[seat] || [];
     reason[seat] = (reason[seat] ? reason[seat] + '; ' : '') + 'pick waiting in hiring round ' + slug;
   }
-  // Owner messages first, then by revenue priority, then in the order found. The priority exists so that when only
-  // MAX_PER_TICK loops can fire, the ones the revenue line depends on are the ones that fire.
-  const order = Object.keys(work).sort((a, b) =>
-    ((ownerWake.has(b) ? 1 : 0) - (ownerWake.has(a) ? 1 : 0)) || ((hiringWake.has(b) ? 1 : 0) - (hiringWake.has(a) ? 1 : 0)) || (prio(b) - prio(a)));
-  // ---- Sprint: what each seat has to do now (its signature), the Sprint numbers, effort per seat, lanes ----
-  const sigOf = id => SP.workSig([(work[id] || []).map(q => q.id + ':' + (q.duty ? q.key : (state.quests[q.id] || {}).done)), (state.agents[id] || {}).key || '',
-    ownerWake.has(id) ? state.owner.key : '', hiringWake.get(id) || [], artifactWakes[id] || []]);
-  let SM = null; const laneHeld = []; const spreadHeld = [];
-  state.sprintSig = state.sprintSig || {};
-  if (SPRINT) {
-    MAX_PER_TICK = Math.max(MAX_PER_TICK, Object.keys(LOOP_OF).length);
-    SM = readJson(SPRINT_METRICS, null) || {};
-    if (SM.since !== SPRINT.since) { SM = { since: SPRINT.since, wakes: 0, resolved: 0, idleWakes: 0, itemsDone: 0, pending: {}, seen: {}, lanes: {} }; state.sprintSig = {}; }
-    for (const inbox of new Set(Object.values(INBOX_OF))) {   // items done: OPEN headings that are no longer OPEN
-      const cur = openHandoffs(path.join(ROOT, 'company', 'work', 'handoffs', inbox)); const prev = SM.seen[inbox];
-      if (Array.isArray(prev)) SM.itemsDone += prev.filter(x => !cur.includes(x)).length;
-      SM.seen[inbox] = cur;
-    }
   // Duty wakes (the sixth source): each due duty's items grouped by the seat they route to. Skipped when every item (or,
   // without items, its key) is already in an OPEN handoff to that seat or in its open quest; otherwise the same stall rule
   // as handoffs: the same duty key after STALL_AFTER wakes => flag once and stop.
@@ -838,6 +820,24 @@ function lastRunTail(job) {
       reason[seat] = (reason[seat] ? reason[seat] + '; ' : '') + 'duty:' + d.id + ' (' + why + ')';
     }
   }
+  // Owner messages first, then by revenue priority, then in the order found. The priority exists so that when only
+  // MAX_PER_TICK loops can fire, the ones the revenue line depends on are the ones that fire.
+  const order = Object.keys(work).sort((a, b) =>
+    ((ownerWake.has(b) ? 1 : 0) - (ownerWake.has(a) ? 1 : 0)) || ((hiringWake.has(b) ? 1 : 0) - (hiringWake.has(a) ? 1 : 0)) || (prio(b) - prio(a)));
+  // ---- Sprint: what each seat has to do now (its signature), the Sprint numbers, effort per seat, lanes ----
+  const sigOf = id => SP.workSig([(work[id] || []).map(q => q.id + ':' + (q.duty ? q.key : (state.quests[q.id] || {}).done)), (state.agents[id] || {}).key || '',
+    ownerWake.has(id) ? state.owner.key : '', hiringWake.get(id) || [], artifactWakes[id] || []]);
+  let SM = null; const laneHeld = []; const spreadHeld = [];
+  state.sprintSig = state.sprintSig || {};
+  if (SPRINT) {
+    MAX_PER_TICK = Math.max(MAX_PER_TICK, Object.keys(LOOP_OF).length);
+    SM = readJson(SPRINT_METRICS, null) || {};
+    if (SM.since !== SPRINT.since) { SM = { since: SPRINT.since, wakes: 0, resolved: 0, idleWakes: 0, itemsDone: 0, pending: {}, seen: {}, lanes: {} }; state.sprintSig = {}; }
+    for (const inbox of new Set(Object.values(INBOX_OF))) {   // items done: OPEN headings that are no longer OPEN
+      const cur = openHandoffs(path.join(ROOT, 'company', 'work', 'handoffs', inbox)); const prev = SM.seen[inbox];
+      if (Array.isArray(prev)) SM.itemsDone += prev.filter(x => !cur.includes(x)).length;
+      SM.seen[inbox] = cur;
+    }
     const resolveMs = (Number(process.env.DISPATCH_SPRINT_RESOLVE_SEC) >= 0 && process.env.DISPATCH_SPRINT_RESOLVE_SEC !== undefined ? Number(process.env.DISPATCH_SPRINT_RESOLVE_SEC) : 60) * 1000;
     for (const [id, p] of Object.entries(SM.pending || {})) {   // a wake that has finished: did its seat's work change?
       const job = findLoop(jobs, id);
@@ -903,6 +903,8 @@ function lastRunTail(job) {
     if (DRY) { log('WOULD run ' + job.name + ' for ' + agentId + ' (' + names + ')'); fired++; continue; }
     log('RUN ' + job.name + ' for ' + agentId + ' (' + names + ')' + (rest.fast ? ' [Sprint: new work; rest ' + SPRINT.cooldownFloorMin + ' min]' : ''));
     fired++;
+    // a duty wake hands the agent its reason: one OPEN handoff in its inbox, ids and counts only (dedup reads it next tick)
+    for (const q of qs) if (q.duty && inboxOf(agentId)) appendHandoff(inboxOf(agentId), 'duty ' + q.duty.id + ': ' + q.why.slice(0, 160), { Need: (q.duty.why ? q.duty.why + '. ' : '') + 'The check says: ' + q.why + '. Fix the cause or hand it to whoever can; the duty clears this by itself once the check passes. See it again: `node ' + (q.duty.source === 'company/tools/duties.js' ? 'company/tools/' : q.duty.source.replace(/module\.json$/, '')) + q.duty.tool + ' --duty`.', Why: 'a read-only duty check found it (docs/DUTIES.md); the dispatcher woke you for it.', Duty: q.duty.id + ' key ' + q.key + (q.items.length ? ' items ' + q.items.join(', ') : ''), Deadline: 'today', Status: 'OPEN' });
     // Fire detached: the run is admitted on a 200 and then keeps going after we close the socket, so a long
     // loop can never be cancelled by this tick's own hold (a run tied to the request socket dies with it).
     // Only a 200 counts toward the stall budget — a refused start (409/400) is not a run.
@@ -930,8 +932,6 @@ function lastRunTail(job) {
     if ((readJson(path.join(ROOT, 'company', 'state', 'competence-state.json'), {}) || {}).lastDaily !== day && state.competenceTried !== day) {
       if (DRY) log('WOULD run competence.js daily');
       else {
-    // a duty wake hands the agent its reason: one OPEN handoff in its inbox, ids and counts only (dedup reads it next tick)
-    for (const q of qs) if (q.duty && inboxOf(agentId)) appendHandoff(inboxOf(agentId), 'duty ' + q.duty.id + ': ' + q.why.slice(0, 160), { Need: (q.duty.why ? q.duty.why + '. ' : '') + 'The check says: ' + q.why + '. Fix the cause or hand it to whoever can; the duty clears this by itself once the check passes. See it again: `node ' + (q.duty.source === 'company/tools/duties.js' ? 'company/tools/' : q.duty.source.replace(/module\.json$/, '')) + q.duty.tool + ' --duty`.', Why: 'a read-only duty check found it (docs/DUTIES.md); the dispatcher woke you for it.', Duty: q.duty.id + ' key ' + q.key + (q.items.length ? ' items ' + q.items.join(', ') : ''), Deadline: 'today', Status: 'OPEN' });
         state.competenceTried = day; fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
         const out = require('child_process').execFileSync('node', [path.join(__dirname, 'competence.js'), 'daily'], { cwd: ROOT, timeout: 300000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
         let j = {}; try { j = JSON.parse(String(out).trim().split('\n').pop()); } catch (_) {}
