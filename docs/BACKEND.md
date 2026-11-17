@@ -258,19 +258,28 @@ Vendored code is a dependency we own, not an import we trust:
 
 ---
 
-## 8. Migration, with an exit test per phase
+## 8. Build-out, with an exit test per phase
+
+**No migration.** A workplace is either on the old stack or on this one; nothing is carried across. New workplaces are
+founded fresh from the framework defaults. Existing workplaces are not converted, not read and not upgraded — they keep
+running the old stack until they are retired or re-founded by hand. That removes a whole class of work: no compatibility
+adapters, no dual-read of the old quest store, no dual-write, no legacy retention rows, and no shims in the new tree.
+
+What replaces migration is **founding**: `scripts/found-company.sh` and `company/defaults/` must produce the new
+backend's state directly (tasks, not quests; `company/state/` and `company/work/`, not `.starnet-data/`). Founding is
+the only path into a new workplace, and it is tested.
 
 | Phase | Work | Exit test |
 |---|---|---|
-| **P0** | Freeze the contract; write the run, task and transcript formats; add the vocabulary lint | lint fails on today's tree with a known list; the formats are reviewed |
-| **P1** | The runtime runs one seat's turn with one tool and streams to the console; chat works with StarNet stopped | a chat message gets a streamed reply and a stored transcript, with `STATION_URL` dead |
-| **P2** | Tasks replace quests in dispatch, inbox, hire and the console; `quest-audit` becomes `task-audit` | no business tool reads `_station.quests.json`; the console's work views read tasks |
-| **P3** | Schedules become the dispatcher; delete the station proxy and the station tools | the dispatcher wakes seats with the station uninstalled |
+| **P0** | Freeze the console contract and test it; write the run, task and transcript formats; add the vocabulary lint | the contract test passes against the current console; the formats are reviewed; the lint fails on today's tree with a known list |
+| **P1** | The runtime runs one seat's turn with one tool and streams to the console | a chat message gets a streamed reply and a stored transcript, with no station anywhere in the tree |
+| **P2** | The work tools (dispatch, inbox, hire, console views) are rewritten on tasks — no adapter for the old store, which is never read | no business tool mentions quests; tasks are the only work model |
+| **P3** | Schedules become the dispatcher; the station proxy and the station-only tools are deleted | the dispatcher wakes seats with no station anywhere in the tree |
 | **P4** | Providers and spend reach parity; meetings run on the new runtime | a meeting and a routine both run; spend rows match the old ones |
-| **P5** | Delete the last `.starnet-data` reference; uninstall StarNet | `grep -r starnet` is empty; `STATION_URL` is gone from the code |
+| **P5** | The framework tree carries no StarNet reference; the old stack is left untouched for existing workplaces | `grep -r starnet` is empty in the framework tree |
 
-During P1–P2 the old station remains available and the console can talk to either — a switch, not a fork. From P3 it
-cannot come back.
+There is no dual-run switch: a workplace is on one stack. The framework tree becomes the new backend; the old tree stays
+frozen for existing workplaces and is out of scope for this work.
 
 The desktop is a second track (`docs/DEPLOY.md` §11): its browser sidecar lands in that plan's P2, its desktop microVM
 in P3. The backend's only debt to it is the tool name and the grant gate (§6.5).
@@ -300,9 +309,10 @@ zero units installed.
 | 5 | **Core stays minimum.** Anything that can be removed is a plugin (§7.1). |
 | 6 | **Naming for the tree:** `server/` (the process), `runtime/` (services and run loop), `company/` (business data and tools), `vendor/` (vendored code). Cheap now, expensive later. |
 | 7 | **The desktop follows `docs/DEPLOY.md` §4–§5**: microVM, headed Chrome per identity, the driver abstraction, step-in, grants/leases/revocation. The backend owes it a tool name and the grant gate (§6.5). |
+| 8 | **No migration of existing workplaces.** A workplace is on one stack; new workplaces are founded fresh; existing ones are not read, converted or upgraded. Founding (`scripts/found-company.sh` + `company/defaults/`) replaces migration and is tested (§8). |
 
 **Open:**
 
 | # | Question | Recommendation |
 |---|---|---|
-| 8 | Is a task the old quest, or a thin layer over commitments? | task = the work item (steps, evidence, closer); commitment = the obligation (ack, due, escalate). A task may raise a commitment. |
+| 9 | Is a task the old quest, or a thin layer over commitments? | task = the work item (steps, evidence, closer); commitment = the obligation (ack, due, escalate). A task may raise a commitment. |
