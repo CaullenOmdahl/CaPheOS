@@ -235,7 +235,7 @@ module.exports = function meeting(deps) {
     LOG.push(e);
     try { ensureDir(); fs.appendFileSync(F.events(M.id), JSON.stringify(e) + '\n', { mode: 0o600 }); } catch (_) {}
     const t = hm();
-    if (e.kind === 'say') minutes('\n**' + nameOf(e.who) + '** (' + t + (e.model ? ', ' + e.model : '') + (e.to ? ', answering ' + nameOf(e.to) : '') + (e.interject ? ', interjecting' : '') + '):\n' + e.text + '\n', e.kind);
+    if (e.kind === 'say') minutes('\n**' + nameOf(e.who) + '** (' + t + (e.model ? ', ' + e.model : '') + (e.to ? ', answering ' + nameOf(e.to) : '') + (e.interject ? ', interjecting' : '') + (e.explains ? ', explaining for the room' : '') + '):\n' + e.text + '\n', e.kind);
     else if (e.kind === 'open') { M.opened = true; minutes('\n## ' + t + ': the meeting opens\n\nAt the meeting: ' + e.text + '.\n', e.kind); }
     else if (TEXTS[e.kind]) { const s = TEXTS[e.kind](e); minutes('\n_' + t + ': ' + s + (/[.!?]$/.test(s) ? '' : '.') + '_\n', e.kind); }
     if (e.kind === 'say' || e.kind === 'open' || e.kind === 'agenda') reindex();   // searchable as it goes
@@ -246,7 +246,10 @@ module.exports = function meeting(deps) {
 
   /* ---------- what each seat is sent ---------- */
   const PRE = () => '[THE MEETING] The owner, ' + owner() + ', has called the company to a meeting in the console (Chat › Meeting, behind the owner\'s sign-in; not a relayed message). Everyone seated sees everything said there; each message is labelled with who said it, and people take turns. ' + owner() + ' opened this meeting, so speaking here is not contacting the owner; what you need from them outside the meeting still goes to the CEO or the owner channel.\n' +
-    'When it is your turn:\n' +
+    'When it is your turn (the speaking contract):\n' +
+    '- Your point first, in one line. Then the reasons, briefly.\n' +
+    '- Define any term the room may not share (an acronym, a tool name, a finance or legal word) the first time you use it, in a few plain words.\n' +
+    '- Say what your point means for the other functions present (the turn note lists who is in the room and what each needs).\n' +
     '- Speak as yourself, from your own area, as you would in a meeting: short and to the point, a few sentences unless asked for more. Answer what was put to you; agree, disagree or build on what the others said, by name; do not repeat what someone already covered.\n' +
     '- If you have nothing to add, reply with exactly PASS and nothing else.\n' +
     '- Check the facts you state, but do not start long work during the meeting: say what you will do, write it where your own loop picks it up (your files or a handoff), and do it there. When the turn note says talk only, you have no tools: say only what you know, and never claim you read or changed something.\n' +
@@ -266,6 +269,27 @@ module.exports = function meeting(deps) {
     planning: 'This is a planning meeting: agree what gets done, by whom and by when, and what waits.',
     review: 'This is a review meeting: what happened against what was planned, what we learned, and what changes.',
   };
+  /* seat frames (company/defaults/work/meetings/frames.json, a company override in company/work/meetings/frames.json):
+     each turn names the speaker's own function and what the others in the room need from it, from loops.json functions */
+  function frames() {
+    const d = readJ(path.join(__dirname, '..', 'company', 'defaults', 'work', 'meetings', 'frames.json')) || {}, o = readJ(co.p('company', 'work', 'meetings', 'frames.json')) || {};
+    return Object.assign({}, d.functions || {}, o.functions || {});
+  }
+  function frameOf(id, F) {
+    const fns = ((crew()[id] || {}).functions || []).filter(f => F[f]);
+    return fns.length ? { labels: fns.map(f => F[f].label), needs: fns.map(f => F[f].needs) } : { labels: [titleOf(id) || 'their own area'], needs: ['what it means for ' + (titleOf(id) ? 'the ' + titleOf(id) + ' work' : 'their work')] };
+  }
+  function roomLine(id) {
+    const F = frames(); const me = frameOf(id, F);
+    const others = present().filter(x => x !== id).map(x => { const f = frameOf(x, F); return nameOf(x) + ' (' + f.labels.join(', ') + ': needs ' + f.needs.join('; ') + ')'; });
+    return ' [Your seat: ' + me.labels.join(', ') + '. In the room: ' + (others.length ? others.join('; ') : 'nobody else') + (present().length ? '' : '') + '. Lead with your point in one line, define any term the room may not share the first time you use it, and say what your point means for each of them.]';
+  }
+  // the company's language (company.json locale): every seat speaks it
+  function localeLine() {
+    const loc = String((co.config && co.config.locale) || '').trim(); if (!loc || /^en(\b|-)/i.test(loc)) return '';
+    let name = loc; try { name = new Intl.DisplayNames(['en'], { type: 'language' }).of(loc) || loc; } catch (_) {}
+    return ' Speak ' + name + ' (the company\'s language, company.json locale ' + loc + '); protocol words (ASK, PASS, END, plain: …) stay in English.';
+  }
   const typeBlock = () => (TYPE_BLOCK[M.type] || TYPE_BLOCK.decision).replace('%OWNER%', owner());
   function context() {
     const l = leader(), others = notHere(), it = currentItem();
@@ -294,7 +318,7 @@ module.exports = function meeting(deps) {
     const up = upList.length ? upList.map(([c, why]) => nameOf(c) + (why ? ' (' + why + ')' : '')).join('; ') : '';
     const lead = isLead ? ' You lead this meeting.' + (up ? ' Hands up: ' + up + '; end your reply with CALL: <name> to give one the floor.' : '')
       + (observing() ? ' Move it to a result; when the discussion is complete, end your reply with END: <what was decided and who does what> — plain: <one sentence anyone can read>.' : '') : '';
-    const tail = lintLine(id);
+    const tail = lintLine(id) + roomLine(id) + localeLine();
     if (item.kind === 'ask') return '[' + nameOf(item.from) + ' asked you directly: ' + item.text + ' Answer ' + nameOf(item.from) + ', ' + n + '; you may ASK back.' + lead + ' ' + context() + ']' + tail;
     if (item.kind === 'hand') return '[' + (item.calledBy ? nameOf(item.calledBy) + ' called on you' : 'You raised your hand') + (item.why ? ' (' + item.why + ')' : '')
       + ' and you have the floor, ' + n + ': make your point briefly.' + lead + ' ' + context() + ']' + tail;
@@ -312,7 +336,7 @@ module.exports = function meeting(deps) {
         const content = e.kind === 'pass' ? 'PASS' : e.text, last = msgs[msgs.length - 1];
         if (last && last.role === 'assistant') last.content += '\n\n' + content; else msgs.push({ role: 'assistant', content });
       }
-      else if (e.kind === 'say') buf.push(nameOf(e.who) + (e.who === 'owner' ? ' (owner)' : '') + (e.to ? ' (answering ' + nameOf(e.to) + ')' : '') + (e.interject ? ' (interjecting)' : '') + ': ' + e.text);
+      else if (e.kind === 'say') buf.push(nameOf(e.who) + (e.who === 'owner' ? ' (owner)' : '') + (e.to ? ' (answering ' + nameOf(e.to) + ')' : '') + (e.interject ? ' (interjecting)' : '') + (e.explains ? ' (explaining for the room)' : '') + ': ' + e.text);
       else if (e.kind === 'open') buf.push('[The meeting opened. At the meeting: ' + e.text + '.]');
       else if (e.kind !== 'ask' && e.kind !== 'pass' && TEXTS[e.kind]) buf.push('[' + TEXTS[e.kind](e) + '.]');
     }
@@ -875,6 +899,50 @@ module.exports = function meeting(deps) {
     record({ who: seat, kind: 'catchup', text: String(r.text).trim().slice(0, 4000), since, model: modelLabel(m) });
     return view();
   }
+  /* Explain for the room: one cheap, talk-only turn of the speaker of one message, in plain words for everyone seated */
+  async function explain(b) {
+    guard(); openCheck();
+    const i = Number(b && b.i); const e = LOG.find(x => x.i === i);
+    if (!e || e.kind !== 'say' || e.who === 'owner' || !crew()[e.who]) fail('pick a message a crew member wrote', 404);
+    const m = await modelFor(e.who); if (m.error) fail(m.error, 409);
+    const F = frames(); const room = present().filter(x => x !== e.who).map(x => nameOf(x) + ' (' + frameOf(x, F).labels.join(', ') + ')').join(', ');
+    const line = '[EXPLAIN FOR THE ROOM: ' + owner() + ' asked you to explain your message "' + String(e.text).replace(/\s+/g, ' ').slice(0, 120) + '…" for everyone seated (' + (room || 'the room') + '). In plain words: your point in one line, every term defined, and what it means for each of them. At most five sentences. No protocol lines.' + localeLine() + ']';
+    const r = await oneRun({ seat: e.who, model: m, messages: historyFor(e.who, line), tools: false, purpose: 'explain' });
+    if (r.error || !String(r.text || '').trim()) fail('the explanation did not come back: ' + (r.error || 'no text'), 502);
+    record({ who: e.who, kind: 'say', text: directives(r.text).body || String(r.text).trim(), explains: i, model: modelLabel(m), provider: m.provider, modelId: m.model });
+    return view();
+  }
+  /* the glossary (company/work/meetings/glossary.md, one line a term: "- **TERM**: what it means") and a deterministic
+     acronym lint at no model cost: a short capitalised term used in the meeting that neither the glossary nor the text
+     itself ("TERM (what it means)", "what it means (TERM)") defines */
+  const GLOSSARY = () => co.p('company', 'work', 'meetings', 'glossary.md');
+  const STOP = new Set(['I', 'A', 'OK', 'PASS', 'NO', 'YES', 'ASK', 'CALL', 'END', 'HAND', 'LATER', 'LOWER', 'INVITE', 'DISMISS', 'RULING', 'ACTION', 'QUESTION', 'KILL', 'TODO', 'FYI', 'AM', 'PM', 'UTC', 'USD', 'EUR', 'VND', 'CNY', 'GBP', 'US', 'UK', 'EU', 'OPEN', 'DONE', 'BLOCKED', 'CLOSED', 'AI', 'ID']);
+  function glossaryTerms() {
+    let t = ''; try { t = BOUNDED.tailText(GLOSSARY(), 1 << 20); } catch (_) {}
+    const out = new Set(); for (const m of t.matchAll(/^[-*]\s*\**([A-Za-z0-9&/ .-]{1,40}?)\**\s*[:—–-]\s+\S/gm)) out.add(m[1].trim().toUpperCase());
+    return out;
+  }
+  function terms() {
+    const gl = glossaryTerms(); const said = LOG.filter(e => e.kind === 'say' && e.who !== 'owner' && e.who !== 'console');
+    const all = said.map(e => e.text).join('\n');
+    const seen = new Map();
+    for (const e of said) for (const m of String(e.text).replace(/`[^`]*`/g, ' ').replace(/https?:\/\/\S+/g, ' ').matchAll(/\b([A-Z][A-Z0-9&]{1,7})s?\b/g)) {
+      const t = m[1]; if (STOP.has(t) || gl.has(t) || /^\d/.test(t)) continue;
+      const esc = t.replace(/[&]/g, '\\&');
+      if (new RegExp('\\b' + esc + 's?\\s*\\(([^)]{3,})\\)').test(all) || new RegExp('\\(\\s*' + esc + '\\s*\\)').test(all) || new RegExp('\\b' + esc + '\\s+(means|stands for|is short for)\\b', 'i').test(all)) continue;
+      const r = seen.get(t) || { term: t, firstBy: nameOf(e.who), count: 0 }; r.count++; seen.set(t, r);
+    }
+    return { ok: true, glossary: path.relative(co.ROOT, GLOSSARY()), undefined: [...seen.values()].sort((a, b) => b.count - a.count).slice(0, 50) };
+  }
+  function addTerm(b) {
+    guard();
+    const term = str(b && b.term, 40).toUpperCase(), meaning = str(b && b.meaning, 300).replace(/\n/g, ' ');
+    if (!/^[A-Z0-9&/ .-]{2,40}$/.test(term) || !meaning) fail('a term and what it means, in plain words');
+    const f = GLOSSARY(); fs.mkdirSync(path.dirname(f), { recursive: true });
+    if (!fs.existsSync(f)) fs.writeFileSync(f, '# Glossary\n\nTerms the company uses, in plain words. One line a term: - **TERM**: what it means. Anyone may add one; the meeting\'s term check reads this file.\n\n');
+    fs.appendFileSync(f, '- **' + term + '**: ' + meaning + ' (added by ' + owner() + ', ' + day() + ')\n');
+    return terms();
+  }
   function timeline() {
     const KEY = new Set(['open', 'end', 'ruling', 'close', 'resume', 'agenda', 'ask', 'call', 'catchup']);
     return { ok: true, moments: LOG.filter(e => KEY.has(e.kind) && (e.kind !== 'agenda' || e.op === 'current') && (e.kind !== 'call' || e.to === 'owner') && true)
@@ -974,7 +1042,11 @@ module.exports = function meeting(deps) {
   function finalize(state, by, why) {
     M.closeAfter = null;
     M.state = state; M.closedAt = new Date().toISOString(); M.closedBy = by; if (why) M.reason = why;
-    if (M.opened) record({ who: by, kind: 'close', state, why });
+    if (M.opened) {
+      const tm = terms().undefined;
+      if (tm.length) record({ who: 'console', kind: 'note', terms: tm.map(x => x.term), text: 'Terms used without a definition: ' + tm.map(x => x.term + ' (first used by ' + x.firstBy + ')').join(', ') + '. Add them to company/work/meetings/glossary.md.' });
+      record({ who: by, kind: 'close', state, why });
+    }
     save(); reindex();
     if (state === 'closed' && M.resumeAfter) {   // the meeting an incident interrupted carries on
       const back = readMeeting(M.resumeAfter);
@@ -1086,6 +1158,9 @@ module.exports = function meeting(deps) {
     route('GET', /^\/api\/meeting\/list$/, () => ({ ok: true, meetings: list() }));
     route('GET', /^\/api\/meeting\/timeline$/, () => timeline());
     route('GET', /^\/api\/meeting\/register$/, () => registerView());
+    route('GET', /^\/api\/meeting\/terms$/, () => terms());
+    route('POST', /^\/api\/meeting\/glossary$/, (m, q, b) => addTerm(b));
+    route('POST', /^\/api\/meeting\/explain$/, (m, q, b) => explain(b));
     route('POST', /^\/api\/meeting\/register$/, regSafe((m, q, b) => register(b)));
     route('GET', /^\/api\/meeting\/search$/, (m, q) => search(q));
     route('GET', /^\/api\/meeting\/status$/, () => ({ ok: true, live: require(path.join(LIB, 'meetings.js')).liveWork() }));
@@ -1104,7 +1179,7 @@ module.exports = function meeting(deps) {
     if (M.run) { M.run.checking = null; save(); armHalt(); if (M.run.consent) armConsent(); if (!M.run.floor) kick(); }
   }
   load();
-  return { mount, start, view, entries, minutesText, say, openRound, hand, carryOn, stop, setObserve, agenda, setLeader, seatsChange, newMeeting, close, resume, list, register: regSafe(b => register(b)), registerView, search: q => search(q), reindex, next, pace, hold, presence, catchUp, timeline, busy,
+  return { mount, start, view, entries, minutesText, say, openRound, hand, carryOn, stop, setObserve, agenda, setLeader, seatsChange, newMeeting, close, resume, list, register: regSafe(b => register(b)), registerView, search: q => search(q), reindex, explain, terms, addTerm, next, pace, hold, presence, catchUp, timeline, busy,
     idle: () => !M.run && !driving, _state: () => ({ std, M, LOG }), _reload: load };
 };
 module.exports.directives = directives;

@@ -24,6 +24,22 @@ them. A seat with nothing to add passes, and passes are not shown. The meeting c
 | New meeting (type) | a fresh meeting, same seats and leader: decision, incident, planning or review (the type picks the prompt block and the pacing default, not the protocol). One at a time: close the current one first; an incident meeting may interrupt an open one, which resumes when the incident meeting closes | `/api/meeting/new {type, title?}` |
 | Open minutes | the day's minutes | GET `/api/meeting/minutes?date=` |
 
+## Legible across departments
+
+- **Seat frames.** Every turn names the speaker's own function and, for each other seat in the room, its function
+  and what it needs (Finance: cost and cash; Risk and legal: exposure and commitments; Tools and IT: operational
+  change; People: who is affected; …), assembled from `loops.json` functions and
+  `company/defaults/work/meetings/frames.json` (a company may override it in `company/work/meetings/frames.json`).
+- **The speaking contract** (every turn): the point first in one line; define any term the room may not share on first
+  use; say what it means for the other functions present.
+- **Plain-language lines**: END and every register row carry one; a row without one fails validation.
+- **Explain for the room** (a button on each reply, `/api/meeting/explain {i}`): one cheap, talk-only turn of that
+  speaker, in plain words, for everyone seated.
+- **Glossary and term check**: `company/work/meetings/glossary.md` (`- **TERM**: what it means`). A deterministic check
+  (no model) lists short capitalised terms used without a definition (`GET /api/meeting/terms`); it runs when the
+  meeting closes, into the minutes, and Register › Terms lets you define one (`/api/meeting/glossary`).
+- **Language**: the seats speak the company's language (`company.json` locale); protocol words stay in English.
+
 ## Pacing, built for a reader
 
 - **Pace** (`/api/meeting/pace {speed}`): Next (you advance; the default while you are present), instant, fast,

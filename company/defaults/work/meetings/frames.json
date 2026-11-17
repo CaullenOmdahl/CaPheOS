@@ -1,0 +1,11 @@
+{
+  "_doc": "Seat frames for the owner's meeting (console/meeting.js): what each company FUNCTION (loops.json functions) cares about, so every turn names the speaker's own frame and what the others in the room need from it. Keyed by function, never by a seat or a line of business. A company may override any entry in company/work/meetings/frames.json (merged by function). A seat that holds no function speaks from its title.",
+  "functions": {
+    "ceo": { "label": "Direction", "needs": "what it changes in the plan, the priorities and who decides" },
+    "finance": { "label": "Finance", "needs": "what it costs, what it does to cash, and whether it is inside the limits" },
+    "risk": { "label": "Risk and legal", "needs": "the exposure, and any commitment or promise it makes for the company" },
+    "tools": { "label": "Tools and IT", "needs": "what has to change in how things run, and who builds and checks it" },
+    "people": { "label": "People", "needs": "who is affected, whose work moves, and whether anyone is overloaded" },
+    "floor": { "label": "Floor", "needs": "who is busy now and what has to move to make room" }
+  }
+}

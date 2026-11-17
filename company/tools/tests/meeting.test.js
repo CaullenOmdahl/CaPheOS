@@ -13,7 +13,8 @@ const T = fs.mkdtempSync(path.join(os.tmpdir(), 'meeting-selftest-'));
 const W = (rel, v) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof v === 'string' ? v : JSON.stringify(v, null, 1)); };
 const R = rel => { try { return fs.readFileSync(path.join(T, rel), 'utf8'); } catch (_) { return ''; } };
 const CREW = { dave: ['Dave', 'CEO'], sharon: ['Sharon', 'CFO'], phil: ['Phil', 'IT Admin'], rachel: ['Rachel', 'Hiring Manager'], nadia: ['Nadia', 'Engineer'], omar: ['Omar', 'DevOps'], leo: ['Leo', 'Designer'] };
-const agents = {}; for (const [id, [name, title]] of Object.entries(CREW)) agents[id] = Object.assign({ name, title, manager: id === 'dave' ? null : 'dave' }, id === 'dave' ? { functions: ['ceo', 'people', 'tools', 'risk', 'floor', 'finance'] } : {});
+const FNS = { dave: ['ceo', 'people', 'floor'], sharon: ['finance'], phil: ['risk'], nadia: ['tools'] };
+const agents = {}; for (const [id, [name, title]] of Object.entries(CREW)) agents[id] = Object.assign({ name, title, manager: id === 'dave' ? null : 'dave' }, FNS[id] ? { functions: FNS[id] } : {});
 W('company/company.json', { name: 'Meeting Test', owner: { name: 'Caullen' }, timezone: 'UTC', station: { port: 1 } });
 W('company/tools/loops.json', { agents });
 W('company/model-policy.json', { allowed: { 'claude-cli': { models: ['claude-sonnet-5-5'] }, deepseek: { models: ['deepseek-flash'] } },
@@ -612,4 +613,37 @@ test('the action register: rows come from their owners\' lines, a row without a 
   assert.ok(s1.length === 1 && s1[0].actions[0].owner === 'Sharon' && s1[0].participants.includes('Sharon'));
   const s2 = M.search(new URLSearchParams('q=q:78')).meetings;
   assert.ok(s2.length === 1 && s2[0].links.quests.includes('q:78') && s2[0].links.handoffs.includes('to-sharon.md'), JSON.stringify(s2));
+});
+
+test('legibility: seat frames name the speaker\'s function and what the others in the room need; the speaking contract; the company language', async () => {
+  const { M, runner } = fresh({ seats: ['sharon', 'phil', 'nadia'], leader: null });
+  runner.script({ sharon: 'S.', phil: 'P.', nadia: 'N.' });
+  co.config.locale = 'vi';
+  try { await M.say({ text: 'Should we self-host email?' }); await idle(M); } finally { co.config.locale = 'en'; }
+  const sh = runner.turns().find(c => c.seat === 'sharon');
+  assert.match(sh.last, /Your seat: Finance\. In the room: Phil \(Risk and legal: needs the exposure, and any commitment or promise it makes for the company\); Nadia \(Tools and IT: needs what has to change in how things run, and who builds and checks it\)/, 'a Finance + Tools + Risk table addresses the room');
+  assert.match(runner.turns().find(c => c.seat === 'phil').last, /Your seat: Risk and legal\. In the room: Sharon \(Finance: needs what it costs/);
+  assert.match(sh.all, /Your point first, in one line[\s\S]*Define any term the room may not share[\s\S]*Say what your point means for the other functions present/, 'the speaking contract');
+  assert.match(sh.last, /Speak Vietnamese \(the company's language, company\.json locale vi\)/);
+});
+
+test('Explain for the room: one cheap talk-only turn of that speaker; the term check (no model) and the glossary', async () => {
+  const { M, runner } = fresh({ seats: ['sharon', 'phil'], leader: null });
+  runner.script({ sharon: 'Our CAC is up and the MRR (monthly recurring revenue) is flat; the SLA holds.', phil: 'PASS', 'sharon:explain': 'In short: getting each customer costs more, income is flat.' });
+  await M.say({ text: 'Numbers?' }); await idle(M);
+  const e = kinds(M, 'say').find(x => x.who === 'sharon');
+  const n = runner.calls.length;
+  await M.explain({ i: e.i });
+  const c = runner.calls.slice(n);
+  assert.ok(c.length === 1 && c[0].purpose === 'explain' && c[0].tools === false && c[0].seat === 'sharon' && /EXPLAIN FOR THE ROOM/.test(c[0].last), 'one talk-only turn of the speaker');
+  assert.ok(kinds(M, 'say').some(x => x.explains === e.i && /getting each customer costs more/.test(x.text)), 'everyone in the room sees it');
+  const before = runner.calls.length;
+  const t1 = M.terms().undefined.map(x => x.term);
+  assert.strictEqual(runner.calls.length, before, 'the term check runs no model');
+  assert.deepStrictEqual(t1.sort(), ['CAC', 'SLA'], 'MRR is defined in the text; CAC and SLA are not');
+  M.addTerm({ term: 'CAC', meaning: 'what it costs to win one customer' });
+  assert.ok(/- \*\*CAC\*\*: what it costs to win one customer/.test(R('company/work/meetings/glossary.md')));
+  assert.deepStrictEqual(M.terms().undefined.map(x => x.term), ['SLA']);
+  await M.close({});
+  assert.ok(kinds(M, 'note').some(x => /Terms used without a definition: SLA \(first used by Sharon\)/.test(x.text)), 'the check runs after the meeting, into the minutes');
 });

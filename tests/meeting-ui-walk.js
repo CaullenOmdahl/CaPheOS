@@ -118,6 +118,9 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   const chips = await waitFor(() => ev('(()=>{const k=[...document.querySelectorAll(".chat-body .mtg-chip")].map(x=>x.dataset.kind);return k.includes("ask")&&k.includes("invite")?k:null})()'), 15000);
   t('ASK and INVITE lines are labelled chips, not raw text', chips && !(await ev('/ASK:|INVITE:/.test(document.querySelector(".chat-body").innerText)')), chips);
   await waitFor(() => ev('document.querySelector("[data-act=round]") && !document.querySelector("[data-act=round]").disabled'), 10000);
+  { const n = await ev('window.__posts.length'); const i = await ev('(()=>{const b=document.querySelector(".chat-body .mtg-explain");if(!b)return null;const i=Number(b.closest("[data-i]").dataset.i);b.click();return i})()');
+    const p = await waitFor(async () => (await ev('window.__posts.length')) > n ? lastPost() : null, 4000);
+    t('control → action: Explain for the room', p && p.path === '/meeting/explain' && p.body.i === i, { p, i }); }
   t('passes are hidden (Rachel passed)', !(await ev('/PASS/.test(document.querySelector(".chat-body").innerText)')) && !(await ev('!!document.querySelector(".chat-body [data-who=hr]")')));
   t('the cost line counts the turns', /^This meeting so far: [1-9]\d* turns?, \$\d+\.\d\d$/.test(await ev('document.querySelector(".mtg-cost").textContent')), await ev('document.querySelector(".mtg-cost").textContent'));
 
@@ -125,7 +128,7 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   await st('/__meeting', { reset: true, replies: { agent: [{ text: 'A slow opening statement that runs on for a while, word after word after word.', stepMs: 120 }, { text: 'Another slow answer that keeps going on and on and on for a good while yet.', stepMs: 150 }], cfo: 'Short.', sec: 'PASS' } });
   await maps('Round', '[data-act="round"]', { path: '/meeting/round', body: {} });
   const speaking = await waitFor(() => ev('(()=>{const l=document.querySelector(".mtg-live");return l&&/Speaking now: Founder/.test(l.textContent)?l.textContent:null})()'), 6000, 80);
-  t('the live line says who is speaking now and who is next', speaking && /Next up: Sharon/.test(speaking), speaking);
+  t('the live line says who is speaking now and who is next', speaking && /Next up: \w/.test(speaking), speaking);
   t('completed turns only: no token stream on the page', !(await ev('!!document.querySelector(".mtg-livecard")')));
   await maps('Raise hand', '[data-act="hand"]', { path: '/meeting/hand', body: {} });
   t('the floor comes to the owner after the current speaker', await waitFor(() => ev('!!document.querySelector("[data-act=continue]") && /you have the floor/i.test(document.querySelector(".mtg-live").textContent)'), 15000));

@@ -14,7 +14,7 @@ import * as events from './events.js';
 
 export const ACTIONS = {   // the controls and the API action each one calls (tests/meeting-ui-walk.js checks the map)
   round: '/meeting/round', hand: '/meeting/hand', continue: '/meeting/continue', stop: '/meeting/stop', observe: '/meeting/observe',
-  next: '/meeting/next', register: '/meeting/register', pace: '/meeting/pace', hold: '/meeting/hold', catchup: '/meeting/catchup', newMeeting: '/meeting/new', agenda: '/meeting/agenda', close: '/meeting/close', resume: '/meeting/resume', lead: '/meeting/lead', seats: '/meeting/seats', say: '/meeting/say',
+  next: '/meeting/next', register: '/meeting/register', explain: '/meeting/explain', glossary: '/meeting/glossary', pace: '/meeting/pace', hold: '/meeting/hold', catchup: '/meeting/catchup', newMeeting: '/meeting/new', agenda: '/meeting/agenda', close: '/meeting/close', resume: '/meeting/resume', lead: '/meeting/lead', seats: '/meeting/seats', say: '/meeting/say',
 };
 const CHIP = { ask: 'ASK', hand: 'HAND', call: 'CALL', lower: 'LOWER', ruling: 'RULING' };
 const maybePass = t => String(t).trim().length <= 8 && 'PASS'.startsWith(String(t).toUpperCase().replace(/[^A-Z]/g, ''));
@@ -215,8 +215,10 @@ export function meetingPane(host, opts) {
     const t = e.at ? when(e.at, tz) : '';
     if (e.kind === 'say' && e.who === 'owner') return h('div', { class: 'stack-4', style: 'align-self:flex-end;align-items:flex-end', 'data-i': e.i }, h('div', { class: 'msg-me' }, e.text), h('span', { class: 'msg-meta' }, 'You · ' + t));
     if (e.kind === 'say') {
-      const meta = [nm(e.name), t, e.model, e.to ? 'answering ' + nm(e.toName) : null, e.interject ? 'interjecting' : null].filter(Boolean).join(' · ');
-      return h('div', { class: 'stack-4 msg-them-wrap', 'data-i': e.i, 'data-who': e.who }, h('span', { class: 'label strong mtg-who' }, nm(e.name)), mdBlock(e.text, 'msg-them'), e.lint ? lintNotice(e) : null, h('span', { class: 'msg-meta' }, meta));
+      const meta = [nm(e.name), t, e.model, e.to ? 'answering ' + nm(e.toName) : null, e.interject ? 'interjecting' : null, e.explains ? 'explaining for the room' : null].filter(Boolean).join(' · ');
+      const ex = e.explains ? null : h('button', { type: 'button', class: 'btn btn-ghost btn-sm mtg-explain', 'data-act': 'explain', 'data-i': null, 'aria-label': 'Ask ' + nm(e.name) + ' to explain this for the room, in plain words',
+        onclick: async ev => { ev.currentTarget.disabled = true; await act(ACTIONS.explain, { i: e.i }); } }, 'Explain for the room');
+      return h('div', { class: 'stack-4 msg-them-wrap', 'data-i': e.i, 'data-who': e.who }, h('span', { class: 'label strong mtg-who' }, nm(e.name)), mdBlock(e.text, 'msg-them'), e.lint ? lintNotice(e) : null, h('span', { class: 'row-8', style: 'align-items:center' }, h('span', { class: 'msg-meta' }, meta), ex));
     }
     if (e.kind === 'end') return h('div', { class: 'mtg-end', 'data-i': e.i, role: 'note' }, h('span', { class: 'mtg-chip-k' }, 'END'), h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, 'Discussion closed by ' + nm(e.name)), e.text ? mdBlock(e.text, 'body-s') : null, h('span', { class: 'caption muted' }, t + ' · recorded in Decisions')));
     if (e.kind === 'join' || e.kind === 'leave') {
@@ -357,9 +359,24 @@ export function meetingPane(host, opts) {
       sec('Open questions', r.questions, x => h('li', { class: 'body-s' }, x.text + (x.plain ? ' — in plain words: ' + x.plain : '') + ' (' + who(x.owner) + ')', flag('questions', x.n))),
       sec('Kill conditions', r.kills, x => h('li', { class: 'body-s' }, x.text + (x.plain ? ' — in plain words: ' + x.plain : '') + ' (' + who(x.owner) + ')', flag('kills', x.n))),
       sec('Not recorded here', r.notRecorded, x => h('li', { class: 'body-s' }, x.text)),
+      termsBox(),
       h('div', { class: 'row-8' }, nrec, Button('Add', { variant: 'secondary', size: 'sm', onClick: async () => { try { await post(ACTIONS.register, { op: 'not-recorded', text: nrec.value }); reload(); } catch (e) { app.toast(humanError(e), true); } } })),
       h('form', { method: 'dialog' }, h('button', { class: 'btn btn-secondary btn-sm' }, 'Close')));
     document.body.appendChild(dlg); dlg.addEventListener('close', () => dlg.remove()); dlg.showModal();
+  }
+
+  // terms the room may not share: the meeting's acronym check (no model), and the glossary to define them in
+  function termsBox() {
+    const box = h('section', { class: 'stack-6 mtg-terms' }, h('h3', { class: 'label strong' }, 'Terms the room may not share'), h('p', { class: 'caption muted' }, 'Checking…'));
+    api('/meeting/terms').then(d => {
+      const list = d.undefined || [];
+      fill(box, h('h3', { class: 'label strong' }, 'Terms the room may not share'),
+        h('p', { class: 'caption muted' }, list.length ? 'Used without a definition. Define one here and it goes into ' + d.glossary + '.' : 'Every short term used so far is defined (' + d.glossary + ').'),
+        list.length ? h('ul', { class: 'plain stack-4' }, list.map(x => { const inp = h('input', { class: 'input', placeholder: 'What ' + x.term + ' means', 'aria-label': 'What ' + x.term + ' means' });
+          return h('li', { class: 'row-8', 'data-term': x.term, style: 'align-items:center' }, h('span', { class: 'body-s' }, h('strong', {}, x.term), ' (first used by ' + nm(x.firstBy) + ')'), inp,
+            Button('Define', { variant: 'secondary', size: 'sm', onClick: async () => { try { await post(ACTIONS.glossary, { term: x.term, meaning: inp.value }); app.toast(x.term + ' is in the glossary.'); inp.closest('li').remove(); } catch (e) { app.toast(humanError(e), true); } } })); })) : null);
+    }).catch(() => {});
+    return box;
   }
 
   /* ---------- the minutes ---------- */
