@@ -1,0 +1,14 @@
+#!/bin/bash
+# company/tools/shims/systemd-run — first on the station's PATH (scripts/setup-station.sh writes it into the station env).
+# Asks company/tools/service.js check-systemd-run whether an agent may run this systemd-run: with the localComputer
+# guardrail ON, any systemd-run --user (a transient background unit) is refused with the
+# route through service.js propose. The owner, and any gate crash, pass through to the real systemd-run
+# (only exit 3 blocks). An absolute /usr/bin/systemd-run skips this shim; the unregistered-services duty catches what it makes.
+REAL="${SERVICE_REAL_SYSTEMD_RUN:-/usr/bin/systemd-run}"
+GATE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/service.js"
+NODE="$(command -v node 2>/dev/null)"
+if [ -n "$NODE" ] && [ -f "$GATE" ]; then
+  env -u NODE_OPTIONS -u NODE_PATH "$NODE" "$GATE" check-systemd-run -- "$@"
+  [ "$?" = 3 ] && exit 3
+fi
+exec "$REAL" "$@"

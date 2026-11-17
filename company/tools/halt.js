@@ -33,6 +33,10 @@
  * Continuity (core module, when enabled): soft lists open commitments by party/due in halt.json `commitments`; tick does
  * not settle while a breach-able commitment is unowned (modules/continuity/lib.js).
  *
+ * Background services (company/tools/service.js): every write of halt.json hands the new state to service.js onHalt(),
+ * the one call: soft stops the registered timers firing (a run in progress finishes) and asks long-running services to
+ * finish, unless they declared --soft-halt keep; hard stops every registered unit now; resume starts what was running.
+ *
  * Guardrail: co.guard('halt') is always ON; nothing here can be switched off.
  */
 'use strict';
@@ -50,6 +54,7 @@ const S = {
   call: (method, p, body) => require('./station-crew.js').call(method, p, body, 20000),
   fire: fireRun,
   notify: text => require('./owner-inbox.js').send({ from: co.nameOf(co.ceo()), text }),
+  services: st => require('./service.js').onHalt(st),
 };
 
 // POST /api/cron/run {detach:true}: the run is admitted on a 200 and keeps going after the socket closes, so resolve on
@@ -82,6 +87,7 @@ function write(st) {
   const tmp = S.haltFile + '.tmp-' + process.pid;
   fs.writeFileSync(tmp, JSON.stringify(st, null, 1) + '\n');
   fs.renameSync(tmp, S.haltFile);
+  try { S.services(st); } catch (_) {}   // background services follow the halt (service.js onHalt; idempotent per halt)
   return st;
 }
 function seats() { return (co.readJson(S.loopsFile, {}) || {}).agents || {}; }
@@ -308,6 +314,7 @@ async function selftest() {
   const check = (name, cond, detail) => cases.push({ name, pass: !!cond, detail: detail || '' });
   let clock = Date.parse('2026-01-05T10:00:00Z');
   const told = [];
+  const svc = [];
   const station = {};
   const calls = [];
   const reset = () => Object.assign(station, { enabled: true, halted: false, estops: 0, resumes: 0, runs: [], jobs: [
@@ -330,7 +337,7 @@ async function selftest() {
   };
   Object.assign(S, {
     haltFile: path.join(dir, 'halt.json'), loopsFile: path.join(dir, 'loops.json'), now: () => clock,
-    call: fake, fire: id => fake('POST', '/api/cron/run', { id }), notify: t => { told.push(t); },
+    call: fake, fire: id => fake('POST', '/api/cron/run', { id }), notify: t => { told.push(t); }, services: st => { svc.push(st.mode); },
   });
   fs.writeFileSync(S.loopsFile, JSON.stringify({ agents: {
     agent: { name: 'Alex', loop: 'Founder loop', manager: null },
@@ -360,6 +367,7 @@ async function selftest() {
     check('the finished loop pass was paused, never cut, and resume restarts only the loops the halt paused', station.loops[0].state === 'idle' && station.loops[1].state === 'idle' && !station.loops[1].cut && station.loops[2].state === 'paused');
     check('resume from soft re-arms to the prior state', r.mode === 'running' && station.enabled === true && station.resumes === 0);
     check('resume tells the owner', /running again/.test(told[told.length - 1]));
+    check('every halt.json write hands the state to service.js (soft, then running)', svc[0] === 'soft' && svc[svc.length - 1] === 'running', svc);
 
     // deadline without escalate
     reset(); told.length = 0;
@@ -385,6 +393,7 @@ async function selftest() {
     reset(); told.length = 0; station.enabled = false;
     st = await hard({ by: 'Alex', why: 'stop now' });
     check('hard posts /api/halt and records it', st.mode === 'hard' && station.estops === 1 && st.station.ok && st.cronWasEnabled === false);
+    check('hard reaches service.js before the station is called', svc.includes('hard'));
     let threw = null; try { await soft({ by: 'Alex' }); } catch (e) { threw = e.message; }
     check('soft is refused while hard-halted', threw && /hard-halted/.test(threw));
     await resume({ by: 'Alex' });

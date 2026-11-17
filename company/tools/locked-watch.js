@@ -114,6 +114,7 @@ const MANIFEST = [
   // pack and module registrations: what pack.js / module.js lock on install/enable, and the registries themselves
   { p: 'company/state/locked-extra.json', cls: 'F', writers: ['pack.js', 'module.js'], owner: 'risk', area: 'policy', why: 'extra locked-watch entries registered by pack.js and module.js (editing it would quietly unlock a meter)' },
   { p: 'company/state/packs.json', cls: 'F', writers: ['pack.js'], owner: 'risk', area: 'policy', why: 'the installed and approved capability packs' },
+  { p: 'company/state/services.json', cls: 'F', writers: ['service.js', 'halt.js'], owner: 'risk', area: 'policy', why: 'the registered background services (systemd user units): what runs between agent runs, who asked, the owner\'s approval (only through service.js; halt.js calls it)' },
   { p: 'company/state/modules.json', cls: 'F', writers: ['module.js'], owner: 'risk', area: 'policy', why: 'the enabled core modules (their ticks run in the dispatcher, their routes in the console)' },
   { p: 'company/state/external-allowlist.txt', cls: 'F', owner: 'risk', area: 'gate', why: 'the external-action allowlist' },
   { p: 'company/state/owner-channel-policy.json', cls: 'F', owner: 'risk', area: 'gate', why: 'the owner channel pin: the one target, the senders and the expiry external-gate.js reads — ending the channel is an edit here with a diff, not a merge' },

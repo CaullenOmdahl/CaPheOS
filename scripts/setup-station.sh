@@ -93,8 +93,13 @@ if [[ ! -s secrets/station-token ]]; then
   echo "created secrets/station-token"
 fi
 mkdir -p "$(dirname "$ENVFILE")"
+# Guardrail localComputer: the company's systemctl / systemd-run shims (company/tools/shims, company/tools/service.js) go
+# first on the station's PATH, so an agent's `systemctl --user enable/start/daemon-reload` is refused while the guardrail
+# is on. The rest is the user manager's own PATH, so the station finds exactly the programs it found before.
+UPATH="$(systemctl --user show-environment 2>/dev/null | sed -n 's/^PATH=//p')"; UPATH="${UPATH:-/usr/local/bin:/usr/bin:/bin}"
 ( umask 077; cat > "$ENVFILE" <<EOF
 # $SVC — written by $ROOT/scripts/setup-station.sh. Holds the station token (mode 0600).
+PATH=$ROOT/company/tools/shims:$UPATH
 STARNET_WORKSPACES=$ROOT/.starnet-data/workspaces
 XDG_DATA_HOME=$ROOT/.starnet-data
 PORT=$PORT

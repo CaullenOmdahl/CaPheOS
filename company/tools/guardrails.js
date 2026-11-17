@@ -48,7 +48,7 @@ const MAP = {
   defaultBranch: { files: ['company/tools/merge-gate.js', 'company/tools/premerge-check.js', 'company/tools/default-branch-watch.js'] },
   secrets: { files: ['company/tools/my-section.js'],
     station: 'service keys: the unattended grant of each key (POST /api/servicekeys/autonomy). Off: apply grants unattended use of every enabled key that supports it; on: apply takes back only the grants it made' },
-  localComputer: { files: ['company/tools/my-section.js', 'company/tools/workspace-modes.sh'],
+  localComputer: { files: ['company/tools/my-section.js', 'company/tools/workspace-modes.sh', 'company/tools/service.js'],
     station: 'computer control (POST /api/computer-control select off) and the FULL BYPASS permission switch (POST /api/permissions/bypass). On: apply sets computer control off and bypass off; off: apply sets bypass on (computer control stays the owner\'s pick in the station: it needs the Windows desktop app)' },
   privilegedShell: { files: ['company/tools/sudo-gate/broker.py', 'company/tools/sudo-gate/install.sh'],
     note: 'the installed root broker trusts only its root-owned gate.json: turning this OFF takes effect after the owner runs `sudo bash company/tools/sudo-gate/install.sh`; turning it ON takes effect at once' },

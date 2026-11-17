@@ -101,6 +101,7 @@ brokenSince, error, lastFlaggedKey, waits, history}` (last 12 results).
 | `backup-freshness` | `backup-freshness.js` (new) | risk | 60 min | no `scripts/backup.sh` snapshot younger than 26 h, or none at all | reads the backup folder listing |
 | `module-doctor` | `module.js` | tools | 6 h | an enabled module failing its static and enabled-state checks | **without** the framework refresh (copies files) and **without** conformance tests (they run module code): `doctor` remains the full check |
 | `commitments-due` | `modules/commitments/tools/commitments.js` | each commitment's owner seat | 10 min | an open commitment past its due time | `list()` only; replaces agents scheduling their own wakes for a deadline |
+| `unregistered-services` | `service.js` | risk | 30 min | a systemd user unit (unit file or transient) whose ExecStart or WorkingDirectory is inside this company folder but is not in `company/state/services.json`; a registered unit not named `<slug>-svc-<name>`; a registered unit file edited by hand | unit-file reads only (`~/.config/systemd/user`, `$XDG_RUNTIME_DIR/systemd/transient`): **no systemctl call**; item ids `unregistered:<unit>`, `unscoped:<unit>`, `edited:<file>` |
 | `liveness-watcher` | `modules/liveness/tools/liveness.js` | risk | 10 min, **whileHalted** | the watcher's own heartbeat missing or older than 3 of its intervals (the dead-man's switch is blind) | `watch.js status()` |
 
 ## 6. Slower routine loops

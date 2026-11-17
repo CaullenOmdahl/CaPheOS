@@ -1,0 +1,14 @@
+#!/bin/bash
+# company/tools/shims/systemctl — first on the station's PATH (scripts/setup-station.sh writes it into the station env).
+# Asks company/tools/service.js check-systemctl whether an agent may run this systemctl: with the localComputer
+# guardrail ON, a --user verb that changes units (enable, start, daemon-reload, link, edit, ...) is refused with the
+# route through service.js propose. Read-only verbs, the owner, and any gate crash pass through to the real systemctl
+# (only exit 3 blocks). An absolute /usr/bin/systemctl skips this shim; the unregistered-services duty catches what it makes.
+REAL="${SERVICE_REAL_SYSTEMCTL:-/usr/bin/systemctl}"
+GATE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/service.js"
+NODE="$(command -v node 2>/dev/null)"
+if [ -n "$NODE" ] && [ -f "$GATE" ]; then
+  env -u NODE_OPTIONS -u NODE_PATH "$NODE" "$GATE" check-systemctl -- "$@"
+  [ "$?" = 3 ] && exit 3
+fi
+exec "$REAL" "$@"

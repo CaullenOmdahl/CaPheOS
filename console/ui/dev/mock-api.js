@@ -128,6 +128,7 @@ const S = {
     { due: ago(60), raw: 'today 09:00', file: 'company/work/handoffs/to-people.md', line: 9, heading: '## from Founder — shortlist for the analyst role', overdue: true },
   ],
   halt: { mode: 'running' },
+  services: null,
   governance: null, guardrails: null,
   cadence: { dispatcherTickMin: 10, defaultCooldownMin: 40, maxPerTick: 4, file: 'company/work/ops/cadence.json', unknownSeats: [],
     sprint: { on: true, active: true, since: new Date(Date.now() - 3 * 3600e3).toISOString(), until: null, untilWhy: 'until the company is certified, then 24 h more', by: 'founding', budgetUsd: 4, budgetIsDefault: true, config: { cooldownFloorMin: 2, lanes: 2, fallbackTickMin: 5 } },
@@ -173,6 +174,17 @@ const LV = { 'approve-everything': {}, 'gate-money-people': { models: 'notify', 
 function setPreset(p) { S.governance = { preset: p, presetLabel: PRESETS[p] || 'Custom', categories: Object.keys(CATS).map(c => ({ category: c, level: (LV[p] || {})[c] || 'approve', what: CATS[c] })),
   fixed: ['access', 'ownership', 'commitment', 'spendBeyondCap'].map(c => ({ category: c, level: 'approve' })), ownerGatesGuardrail: 'on', presets: Object.entries(PRESETS).map(([id, label]) => ({ id, label })) }; }
 setPreset('gate-money-people');
+S.services = [
+  { name: 'depth-recorder', unit: 'company-svc-depth-recorder', kind: 'service', status: 'installed', state: 'running', schedule: null, scheduleWords: 'runs all the time', lastRun: ago(300),
+    by: 'data1', byName: 'Halima', why: 'Records the order book once a second, so the back-tests have depth data that cannot be fetched later.', command: '/usr/bin/python3 company/work/sim/scripts/record_depth.py --hz 1',
+    limits: { memoryMax: '512M', cpuQuota: '50%' }, network: true, softHalt: 'keep', approval: { level: 'approve', via: 'owner said yes to q-104511', at: ago(600) }, scoped: true, managed: true, halt: null },
+  { name: 'bank-day', unit: 'company-svc-bank-day', kind: 'timer', status: 'installed', state: 'scheduled', schedule: { onCalendar: '*-*-* 17:30:00 UTC' }, scheduleWords: 'on the calendar *-*-* 17:30:00 UTC',
+    lastRun: ago(900), nextRun: new Date(Date.now() + 6 * 3600e3).toISOString(), by: 'data1', byName: 'Halima', why: 'Banks the day that just closed, every night after midnight company time.',
+    command: '/bin/sh company/work/sim/scripts/bank_yesterday.sh', limits: { memoryMax: '512M', cpuQuota: '50%' }, network: true, softHalt: 'finish', approval: { level: 'owner', via: 'adopted by the owner', at: ago(700) }, scoped: true, managed: true, halt: null },
+  { name: 'tape-check', unit: 'company-svc-tape-check', kind: 'timer', status: 'proposed', state: 'proposed', schedule: { every: '1h' }, scheduleWords: 'every 1h', lastRun: null,
+    by: 'tools1', byName: 'Teo', why: 'Checks every hour that yesterday\'s trade tape is complete.', command: '/usr/bin/node company/work/sim/tape-check.js', limits: { memoryMax: '256M', cpuQuota: '25%' },
+    network: false, softHalt: 'finish', approval: { level: 'approve', questionId: 'q-104520' }, questionId: 'q-104520', scoped: true, managed: true, halt: null },
+];
 const GUARDS = ['ownerGates', 'spendCap', 'externalActions', 'harnessSelfEdit', 'defaultBranch', 'secrets', 'localComputer', 'privilegedShell', 'promptInjection', 'halt'];
 S.guardrails = { sandbox: false, banner: null, guards: GUARDS.map(n => ({ name: n, on: true, fixed: n === 'halt', blocks: 'what ' + n + ' stops. Off: it no longer holds.', enforcedIn: ['company/tools/' + n.toLowerCase() + '.js'], note: null })) };
 const guardView = () => Object.assign({ ok: true }, S.guardrails, { off: S.guardrails.guards.filter(g => !g.on).map(g => g.name) });
@@ -271,6 +283,16 @@ async function apiRoute(req, res, p, q) {
     const after = Number(q.get('after')) || 0;
     const ev = [{ seq: 1, name: 'tool', tool: 'shell', text: r.step, raw: r.agentId === 'tools1' ? RAW_STEP : 'node company/tools/hire.js status', callId: 'c1' }, { seq: 2, name: 'result', callId: 'c1', ok: true }, { seq: 3, name: 'token', delta: 'Looking at the open items.' }];
     return ok({ known: true, runId: r.runId, agentId: r.agentId, name: r.name, events: ev.filter(e => e.seq > after), seq: 3, done: false }); } }
+  // background services (Settings › System): company/tools/service.js list --json, and stop/start/remove as the owner
+  if (M === 'GET' && p === '/api/services') return ok({ company: 'mock', guardrail: 'on', services: S.services });
+  const svm = p.match(/^\/api\/services\/([A-Za-z0-9@_.:-]{2,80})\/(stop|start|remove)$/);
+  if (M === 'POST' && svm) {
+    const sv = S.services.find(x => x.name === svm[1]); if (!sv) return J(res, 400, { ok: false, error: 'no registered service "' + svm[1] + '"' });
+    if (svm[2] === 'remove') S.services = S.services.filter(x => x !== sv);
+    else if (sv.status !== 'installed') return J(res, 400, { ok: false, error: '"' + sv.name + '" is ' + sv.status + ', not installed' });
+    else sv.state = svm[2] === 'stop' ? 'stopped' : sv.kind === 'timer' ? 'scheduled' : 'running';
+    emit('services'); return ok({ name: sv.name, done: svm[2] });
+  }
   switch (M + ' ' + p) {
     case 'GET /api/company': return J(res, 200, S.company);
     case 'GET /api/questions': return ok({ questions: S.questions.map(present) });

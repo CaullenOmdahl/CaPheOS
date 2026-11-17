@@ -538,6 +538,9 @@ route('POST', /^\/api\/halt\/soft$/, (m, q, b) => {
 });
 route('POST', /^\/api\/halt\/hard$/, (m, q, b) => runApi('halt.js', ['hard', '--by', OWNER].concat(b.why ? ['--why', str(b.why, 'why')] : []), { timeout: 60000 }));
 route('POST', /^\/api\/halt\/resume$/, () => runApi('halt.js', ['resume', '--by', OWNER], { timeout: 60000 }));
+// background services (company/tools/service.js): Settings › System › Background services; stop/start/remove as the owner
+route('GET', /^\/api\/services$/, () => runApi('service.js', ['list', '--json']));
+route('POST', /^\/api\/services\/([A-Za-z0-9@_.:-]{2,80})\/(stop|start|remove)$/, m => runApi('service.js', [m[2], m[1], '--by', OWNER], { timeout: 60000 }));
 route('GET', /^\/api\/cadence$/, () => runApi('cadence.js', ['show', '--json']));
 route('POST', /^\/api\/cadence\/default$/, (m, q, b) => {
   const pos = (v, what) => { const n = Number(v); if (!(Number.isInteger(n) && n > 0)) bad(what + ' must be a whole number above 0'); return String(n); };
@@ -636,6 +639,7 @@ const WATCHES = [
   ['halt', ['company', 'state'], f => f === 'halt.json'],
   ['governance', ['company', 'state'], f => f === 'governance.json' || f === 'governance-log.jsonl'],
   ['guardrails', ['company', 'state'], f => f === 'guardrails.json'],
+  ['services', ['company', 'state'], f => f === 'services.json'],
   ['cadence', ['company', 'work', 'ops'], f => f === 'cadence.json'],
   ['panels', ['company', 'console'], f => f === 'state.json' || f === 'changes.jsonl' || f === 'panels' || f === 'proposed'],
   ['panels', ['company', 'console', 'panels'], () => true],
@@ -794,7 +798,14 @@ async function selftest() {
   fs.writeFileSync(path.join(tmp, 'company', 'state', 'modules.json'), JSON.stringify({ enabled: { demo: { at: 'x' } } }));
   // a dead station: a port we bound and released, so every station call is refused
   const dead = await new Promise(r => { const s = require('net').createServer(); s.listen(0, '127.0.0.1', () => { const pt = s.address().port; s.close(() => r(pt)); }); });
-  const env = Object.assign({}, process.env, { CAPHEOS_ROOT: tmp, STARNET_URL: 'http://127.0.0.1:' + dead });
+  // background services: one installed (driven through a fake systemctl, never the real user manager) and one proposed
+  const fakeSc = path.join(tmp, 'fake-systemctl'), scLog = path.join(tmp, 'fake-systemctl.log');
+  fs.writeFileSync(fakeSc, '#!/bin/sh\necho "$@" >> ' + JSON.stringify(scLog) + '\ncase "$2" in show) echo ActiveState=active;; esac\n', { mode: 0o755 });
+  fs.mkdirSync(path.join(tmp, 'units'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'company', 'state', 'services.json'), JSON.stringify({ services: {
+    rec: { name: 'rec', unit: 'company-svc-rec', kind: 'service', status: 'installed', argv: ['/usr/bin/python3', path.join(tmp, 'company/work/rec.py')], schedule: null, why: 'records depth between runs', by: 'agent', byName: 'Founder', files: {} },
+    tape: { name: 'tape', unit: 'company-svc-tape', kind: 'timer', status: 'proposed', argv: ['/bin/sh', 'x.sh'], schedule: { onCalendar: '*-*-* 18:00:00 UTC' }, why: 'banks the tape daily', by: 'agent', byName: 'Founder' } } }));
+  const env = Object.assign({}, process.env, { CAPHEOS_ROOT: tmp, STARNET_URL: 'http://127.0.0.1:' + dead, SERVICE_SYSTEMCTL: fakeSc, SERVICE_UNIT_DIR: path.join(tmp, 'units') });
   delete env.CONSOLE_PORT;
   const child = spawn(process.execPath, [__filename, '--port', '0', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let errText = ''; child.stderr.on('data', d => { errText += d; });
@@ -980,6 +991,19 @@ async function selftest() {
     check('guardrail back on', r.status === 200 && r.json.ok, r.json);
     r = await call('POST', '/api/guardrails/set', { name: 'halt', on: false });
     check('halt guardrail cannot be switched off', r.status >= 400, r.json);
+    // background services (Settings › System)
+    r = await call('GET', '/api/services');
+    check('services list: each service with state, schedule words, who asked and why', r.status === 200 && r.json.ok && r.json.services.length === 2
+      && r.json.services.some(x => x.name === 'rec' && x.state === 'running' && x.byName === 'Founder' && /depth/.test(x.why) && x.scheduleWords === 'runs all the time')
+      && r.json.services.some(x => x.name === 'tape' && x.state === 'proposed'), r.json);
+    r = await call('POST', '/api/services/rec/stop', {});
+    check('services: the owner stops one (through service.js, as the owner)', r.status === 200 && /--user stop company-svc-rec.service/.test(fs.readFileSync(scLog, 'utf8')), r.json);
+    r = await call('POST', '/api/services/tape/start', {});
+    check('services: starting one that is not installed is refused in the tool\'s words', r.status === 400 && /not installed/.test(r.json && r.json.error), r.json);
+    r = await call('POST', '/api/services/rec/remove', {});
+    check('services: the owner removes one', r.status === 200 && r.json.removed === true && !JSON.parse(fs.readFileSync(path.join(tmp, 'company', 'state', 'services.json'), 'utf8')).services.rec, r.json);
+    r = await call('POST', '/api/services/..%2Fx/stop', {});
+    check('services: a bad name never reaches the tool', r.status === 404 || r.status === 400, r.status);
     // halt (station unreachable: state is still recorded)
     r = await call('POST', '/api/halt/soft', { why: 'selftest', deadlineMin: 5 });
     check('soft halt recorded', r.status === 200 && r.json.mode === 'soft', r.json);

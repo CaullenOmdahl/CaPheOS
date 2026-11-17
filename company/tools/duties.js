@@ -30,6 +30,8 @@ const DUTIES = [
     why: 'no state snapshot in the last 26 hours' },
   { id: 'module-doctor', tool: 'module.js', route: 'tools', everyMin: 360, timeoutMs: 30000, whileHalted: false, enabledByDefault: true,
     why: 'an enabled core module that no longer passes its static checks' },
+  { id: 'unregistered-services', tool: 'service.js', route: 'risk', everyMin: 30, timeoutMs: 10000, whileHalted: false, enabledByDefault: true,
+    why: 'a systemd user unit running from this company folder that service.js did not register, a registered unit not company-scoped by name, or one edited by hand' },
 ];
 
 const ID_RE = /^[a-z][a-z0-9-]{1,39}$/;

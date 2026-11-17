@@ -51,7 +51,7 @@ When any switch is off and `sandbox` is not set, `show` prints a loud banner.
 | `harnessSelfEdit` | agents cannot change their own harness; locked files are watched and put back; tool changes are reviewed | `locked-watch.js`, `harness-change.js` | framework-only | agents may edit any of it; changes are still logged |
 | `defaultBranch` | no agent pushes or merges to a default branch except a PR with a pre-merge PASS | `merge-gate.js`, `premerge-check.js`, `default-branch-watch.js` | framework-only | see below |
 | `secrets` | agents never read, print or copy `secrets/` or the station key store | `my-section.js`; station: service keys | station-backed | see below |
-| `localComputer` | agents work only inside the workspace and the blessed project folders; computer control stays off | `my-section.js`, `workspace-modes.sh`; station: computer control and FULL BYPASS | station-backed | see below |
+| `localComputer` | agents work only inside the workspace and the blessed project folders; computer control stays off; nothing runs in the background except services the owner approved | `my-section.js`, `workspace-modes.sh`, `service.js` (+ `shims/systemctl`, `shims/systemd-run`); station: computer control and FULL BYPASS | station-backed | see below |
 | `privilegedShell` | sudo only through the sudo gate's allowlist | `sudo-gate/broker.py`, `sudo-gate/install.sh` | framework-only (root side) | see below |
 | `promptInjection` | the station's injection tripwire refuses routines carrying override or exfiltration payloads | the station's `cron-guard.js` | framework-only, **not switchable** | see below |
 | `halt` | soft and hard halt work, and a halted company starts nothing | `halt.js`, `dispatch.js` | — | cannot be turned off |
@@ -81,7 +81,44 @@ When any switch is off and `sandbox` is not set, `show` prints a loud banner.
     the agent workspace plus blessed project folders: without it no loop or chat could read the charter or the owner inbox.
   - `my-section.js --file` may read a file outside the company folder. The read is logged as `event: "unguarded"`.
   - `workspace-modes.sh --check` still lists permission drift but exits 0, and `--fix` tightens nothing.
+  - Background services: a new one follows the `schedules` self-governance level instead of always asking the owner,
+    and the systemctl/systemd-run shims let an agent's unit changes through, logged `UNGUARDED` in
+    `company/state/services-log.jsonl`.
   - Station side, see `apply`.
+
+### localComputer and background services (systemd user units)
+
+**The gap (found in the sandbox, 2026-11-17).** Every loop seat runs on full approval (`station-seed.js`), which StarNet
+treats as per-agent Full Power. Full Power skips the station's own command floor, the one that refuses `systemctl`,
+`crontab`, `kill` and other machine-state commands. And `apply` only turns off the station-wide FULL BYPASS; it
+cannot change an agent's own full approval. So with localComputer ON, seats wrote unit files with
+`cat > ~/.config/systemd/user/<unit> <<EOF` (and before that, `systemd-run --user`) in `shell_exec`, then ran
+`systemctl --user daemon-reload` and `enable --now`. The units had unscoped names, halt did not stop them, the console
+did not show them, and nothing recorded who made them.
+
+**While ON:**
+- The sanctioned route is `node company/tools/service.js propose <name> --kind service|timer --exec "<argv>" …
+  --why … --by <seat>`. The argv must be a company script (python3, node, bash or sh on a file under `company/work/` or
+  `company/tools/`) with no shell syntax and no sudo. The unit is `<slug>-svc-<name>` and is built from a fixed template
+  (WorkingDirectory = the company folder, a restart policy, MemoryMax/CPUQuota). It is recorded in
+  `company/state/services.json` (locked-watch policy tier). Each new service needs the owner's Approve on a typed
+  question showing its name, command, schedule and why. Soft and hard halt stop these units, and they are listed in
+  Settings › System › Background services.
+- **Refused:** `company/tools/shims/systemctl` and `shims/systemd-run` come first on the station's PATH
+  (`scripts/setup-station.sh` writes that PATH into the station env file). For an agent's run they refuse every
+  `systemctl --user` verb that changes units (`enable`, `start`, `restart`, `daemon-reload`, `link`, `edit`, `mask`,
+  …) and every `systemd-run --user`, with exit 3 and the `service.js` route. Read-only verbs (`status`, `show`,
+  `list-*`, `is-active`, `cat`) pass. This takes effect once the owner re-runs `scripts/setup-station.sh` and restarts
+  the station.
+- **Flagged:** a binary called by absolute path (`/usr/bin/systemctl`) skips a shim, and a unit file is just a file,
+  so the shims cannot catch everything. The duty `unregistered-services` covers that (`service.js --duty`, routed to
+  risk, flagged once per set of findings). It flags any unit file in `~/.config/systemd/user` or the transient unit folder whose
+  ExecStart or WorkingDirectory is inside this company's folder but which is not in `services.json` (the station's own
+  units are excluded). It also flags a registered unit that is not company-scoped by name, and a registered unit file
+  that was edited by hand.
+- The owner brings an existing unit under management with
+  `service.js adopt <unit> --by <owner> --as <name> [--seat <seat>]`. That rebuilds it under the scoped name, disables
+  the old unit and moves its files to `company/state/services-adopted/`. Or the owner removes it.
 - **secrets.**
   - `my-section.js --file` may name a file in `secrets/`. The read is logged, but the section's R6 rule still keeps
     key-shaped text out of routine prompts.

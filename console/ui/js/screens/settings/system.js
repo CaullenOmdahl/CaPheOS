@@ -1,13 +1,14 @@
-// Settings › System (#/settings/system[/health|certification|backups|halt|map]): health and diagnostics, certification,
-// backups, the two ways to stop the company, and "Where did it go?" (the old feature map, was #/map and System).
-import { h, fill, Button, Tag, errLine, table, Details, Block, humanError, rel } from '../../ui.js';
+// Settings › System (#/settings/system[/health|certification|backups|services|halt|map]): health and diagnostics, certification,
+// backups, the crew's background services (company/tools/service.js), the two ways to stop the company, and "Where did it
+// go?" (the old feature map, was #/map and System).
+import { h, fill, Button, Tag, errLine, table, Details, Block, humanError, rel, statusOf } from '../../ui.js';
 import { api, post } from '../../api.js';
 import * as events from '../../events.js';
 import { CHECK_NAMES } from '../setup.js';
 
 export async function render(host, ctx) {
   const { app } = ctx;
-  const health = h('div'), cert = h('div'), backups = h('div');
+  const health = h('div'), cert = h('div'), backups = h('div'), services = h('div');
   const diag = {};
   fill(host,
     Block({ id: 'health', title: 'Health', actions: Button('Copy diagnostics', { variant: 'secondary', size: 'sm', onClick: async () => {
@@ -15,6 +16,7 @@ export async function render(host, ctx) {
     } }) }, health),
     Block({ id: 'certification', title: 'Certification', lede: 'The checks that prove the company can actually run. Run them again after a big change.' }, cert),
     Block({ id: 'backups', title: 'Backups' }, backups),
+    Block({ id: 'services', title: 'Background services', lede: 'Programs the crew keeps running on this computer between their working sessions, like a recorder or a nightly job. Each one was approved by you, and halting the company stops them.' }, services),
     Block({ id: 'halt', title: 'Stopping the company', lede: 'The halt buttons are at the bottom of the sidebar on every screen.' },
       h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:16px' },
         h('article', { class: 'card p22', style: 'gap:10px' }, h('h3', { class: 'h4' }, 'Soft halt'),
@@ -69,8 +71,57 @@ export async function render(host, ctx) {
       b && b.note ? Details('Details', h('p', { class: 'caption mono-s' }, b.what + ' — ' + b.note)) : null);
   }
   load();
+  loadServices(services, app);
   const off = events.on(['halt', 'guardrails'], load);
-  return () => off();
+  const offS = events.on(['services', 'halt'], () => loadServices(services, app));
+  return () => { off(); offS(); };
+}
+
+// Background services: one card per service, in plain words; Stop / Start / Remove act as the owner (service.js).
+const STATE_WORDS = { running: ['Running', 'online'], scheduled: ['On schedule', 'online'], 'running now': ['Running now', 'online'], starting: ['Starting', 'warning'],
+  stopped: ['Stopped', 'neutral'], failed: ['Failed', 'danger'], proposed: ['Waiting for your answer', 'warning'], declined: ['You declined it', 'neutral'], unknown: ['Unknown', 'neutral'] };
+async function loadServices(host, app) {
+  let d;
+  try { d = await api('/services'); } catch (e) { fill(host, errLine(e, 'Background services')); return; }
+  const list = (d && d.services) || [];
+  if (!list.length) { fill(host, h('p', { class: 'body-s muted', id: 'svc-empty' }, 'Nothing runs in the background. When a crew member needs something to keep going between their working sessions, they ask you first.')); return; }
+  fill(host, h('div', { class: 'stack-14', id: 'svc-list' }, list.map(s => serviceCard(s, app, () => loadServices(host, app)))));
+}
+function serviceCard(s, app, reload) {
+  const [word, tone] = STATE_WORDS[s.state] || [String(s.state || 'Unknown'), statusOf(s.state)];
+  const err = h('p', { class: 'err-line', role: 'status' });
+  const act = (what, label) => Button(label, { variant: what === 'remove' ? 'danger' : 'secondary', size: 'sm', onClick: async ev => {
+    err.textContent = ''; const b = ev && ev.currentTarget; if (b) b.disabled = true;
+    try { await post('/services/' + encodeURIComponent(s.name) + '/' + what); app.toast(what === 'remove' ? s.name + ' was removed.' : what === 'stop' ? s.name + ' was stopped.' : s.name + ' was started.'); reload(); }
+    catch (e) { err.textContent = humanError(e); if (b) b.disabled = false; }
+  } });
+  const buttons = h('div', { class: 'row-8' });
+  const showButtons = () => {
+    const kids = [];
+    if (s.status === 'installed') kids.push(/^(running|scheduled|running now|starting)$/.test(s.state) ? act('stop', 'Stop') : act('start', 'Start'));
+    if (s.status === 'proposed' && s.questionId) kids.push(h('a', { href: '#/today', class: 'btn btn-secondary btn-sm' }, 'Answer on Today'));
+    kids.push(Button('Remove…', { variant: 'ghost', size: 'sm', onClick: () => fill(buttons, h('span', { class: 'body-s' }, 'Remove ' + s.name + ' for good?'), act('remove', 'Yes, remove it'), Button('Keep it', { variant: 'ghost', size: 'sm', onClick: showButtons })) }));
+    fill(buttons, ...kids);
+  };
+  showButtons();
+  const when = s.scheduleWords === 'runs all the time' ? 'Runs all the time' : s.scheduleWords.replace(/^every /, 'Runs every ').replace(/^on the calendar /, 'Runs on the schedule ');
+  const ran = s.lastRun ? 'Last ran ' + rel(s.lastRun) : s.status === 'installed' ? 'Has not run yet' : null;
+  const halted = s.halt ? (s.halt.kept ? 'Kept running through the soft halt, as it said it would.' : s.halt.wasRunning ? 'Paused by the halt. It starts again when you resume.' : null) : null;
+  return h('article', { class: 'card p18', style: 'gap:8px', 'data-service': s.name },
+    h('div', { class: 'between-c', style: 'flex-wrap:wrap;gap:8px' }, h('h3', { class: 'h4' }, s.name), Tag(word, { variant: 'status', status: tone })),
+    h('p', { class: 'body-s' }, [when, ran].filter(Boolean).join(' · ') + (s.nextRun ? ' · Next run ' + rel(s.nextRun) : '')),
+    h('p', { class: 'body-s' }, h('span', { class: 'strong' }, 'Asked by ' + (s.byName || s.by) + ': '), s.why),
+    halted ? h('p', { class: 'caption muted' }, halted) : null,
+    s.scoped === false ? h('p', { class: 'caption', style: 'color:var(--status-warning)' }, 'Made outside the company\'s own way of doing this, so its name is not tied to this company. Remove it, or ask the crew to set it up again properly.') : null,
+    s.lastError ? h('p', { class: 'caption', style: 'color:var(--status-danger)' }, 'The last change did not go through cleanly. See the details.') : null,
+    buttons, err,
+    Details('Details', h('dl', { class: 'kv' },
+      h('dt', null, 'What it runs'), h('dd', { class: 'mono-s' }, s.command || '—'),
+      h('dt', null, 'Name on this computer'), h('dd', { class: 'mono-s' }, s.unit),
+      h('dt', null, 'Limits'), h('dd', null, s.limits ? s.limits.memoryMax + ' memory, ' + s.limits.cpuQuota + ' of one processor' : '—', s.network === false ? ', no network' : ''),
+      h('dt', null, 'In a soft halt'), h('dd', null, s.kind === 'timer' ? 'Stops starting new runs; a run in progress finishes' : s.softHalt === 'keep' ? 'Keeps running (a hard halt stops it)' : 'Finishes what it is doing and stops'),
+      h('dt', null, 'Approved'), h('dd', null, s.approval ? (s.approval.via || s.approval.level || '—') + (s.approval.at ? ', ' + rel(s.approval.at) : '') : '—'),
+      s.lastError ? h('dt', null, 'Last problem') : null, s.lastError ? h('dd', { class: 'mono-s' }, s.lastError) : null)));
 }
 
 // The old places and their new homes (was the Feature map, #/map).
