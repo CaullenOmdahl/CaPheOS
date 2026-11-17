@@ -22,6 +22,12 @@
  * State: company/state/dispatcher-loop.json {status, pid, startedAt, lastTickAt, lastTickEndAt, lastExit, lastTickSec,
  *   nextTickAt, tempo:{tickMin, cooldownMin, maxPerTick, source}, reason, ticks}. onboard.js, liveness and the console
  *   read it. One log line per tick on stdout (the journal).
+ * Sprint (start-up, cadence.js tempo.sprint): before every tick the loop runs cadence.js sprintTick() (stamps a new
+ * Sprint's start; ends one whose time or budget is up, with one plain log line and one owner message). While Sprint is
+ * on, the timer is only a fallback: the loop watches the handoff inboxes (company/work/handoffs), the owner's channel
+ * (company/owner) and harness-change proposals (company/work/changes) with fs.watch, and a change starts the next tick
+ * watchDebounceSec after the last change (so several new items go to one wake), never sooner than minTickGapSec after
+ * the last tick ended. Changes made while a tick runs are the tick's own (dispatch.js writes handoffs) and are ignored.
  * Env (tests): DISPATCHER_LOOP_CMD (a script to run instead of dispatch.js), DISPATCHER_LOOP_STATE (state file),
  *   DISPATCHER_LOOP_MINUTE_MS (length of a minute, default 60000).
  */
@@ -40,8 +46,12 @@ const DEFAULTS = {
   sliceMs: 30000,
   stopGraceMs: 60000,
   tempo: () => require('./cadence.js').effective(),
+  sprintTick: process.env.DISPATCHER_LOOP_NO_SPRINT === '1' ? null : log => require('./cadence.js').sprintTick({ log }),
+  watchPaths: () => [co.p('company', 'work', 'handoffs'), co.p('company', 'owner'), co.p('company', 'work', 'changes')],
   log: line => console.log(new Date().toISOString() + ' ' + line),
 };
+// a file whose change is work for someone: inbox markdown, the owner's channel, a proposal record (not temp files or locks)
+const workFile = f => !!f && !/(\.tmp(-\d+)?|\.lock|~|\.swp)$/.test(f) && !/\.tmp-/.test(f) && /\.(md|jsonl?|json)$/.test(f);
 
 function readJson(f, d) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } }
 function writeState(file, st) {
@@ -65,7 +75,7 @@ function safeTempo(o) {
   try { const t = o.tempo(); if (t && Number(t.tickMin) > 0) return t; } catch (e) { o.log('TEMPO ERROR: ' + e.message + ' (using 10 min)'); }
   return { tickMin: 10, cooldownMin: null, maxPerTick: null, source: 'fallback', reason: 'cadence.json unreadable' };
 }
-const tempoOf = t => ({ tickMin: t.tickMin, cooldownMin: t.cooldownMin, maxPerTick: t.maxPerTick, source: t.source, quiet: !!t.quiet });
+const tempoOf = t => ({ tickMin: t.tickMin, cooldownMin: t.cooldownMin, maxPerTick: t.maxPerTick, source: t.source, quiet: !!t.quiet, sprint: t.sprint ? { until: t.sprint.until || null, by: t.sprint.by || null, watching: true } : null });
 
 /* runLoop(opts) -> Promise<exit code>. opts.stop() ends it (as SIGTERM does); opts.maxTicks bounds it (tests, --once). */
 function runLoop(opts) {
@@ -83,6 +93,23 @@ function runLoop(opts) {
   };
   if (o.signals !== false) { process.on('SIGTERM', () => stop('SIGTERM')); process.on('SIGINT', () => stop('SIGINT')); }
   if (opts && opts.onStop) opts.onStop(stop);
+  // Sprint: inbox changes wake the loop early (fs.watch, debounced); watchers live only while Sprint is on
+  let watchers = [], changed = null, debTimer = null;
+  const unwatch = () => { for (const w of watchers) try { w.close(); } catch (_) {} watchers = []; clearTimeout(debTimer); debTimer = null; };
+  const watchOn = debounceMs => {
+    if (watchers.length) return;
+    for (const dir of [].concat(typeof o.watchPaths === 'function' ? o.watchPaths() : o.watchPaths || [])) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        watchers.push(fs.watch(dir, { persistent: false }, (ev, f) => {
+          if (child || !workFile(String(f || ''))) return;   // a running tick's own writes are not news
+          const t = Date.now(); changed = changed ? Object.assign(changed, { last: t, n: changed.n + 1 }) : { first: t, last: t, n: 1, file: path.join(path.basename(dir), String(f)) };
+          clearTimeout(debTimer); debTimer = setTimeout(() => { debTimer = null; if (wake) wake(); }, debounceMs + 5);
+          if (debTimer.unref) debTimer.unref();
+        }));
+      } catch (e) { o.log('WATCH ERROR ' + dir + ': ' + e.message); }
+    }
+  };
   const sleep = ms => new Promise(r => { const t = setTimeout(() => { wake = null; r(); }, Math.max(0, ms)); wake = () => { clearTimeout(t); wake = null; r(); }; });
   const tick = tempo => new Promise(resolve => {
     const env = Object.assign({}, process.env);
@@ -97,12 +124,14 @@ function runLoop(opts) {
   return (async () => {
     try {
       while (!stopping) {
+        if (o.sprintTick) { try { o.sprintTick(o.log); } catch (e) { o.log('SPRINT ERROR: ' + String(e.message).slice(0, 200)); } }
         const tempo = safeTempo(o);
         const t0 = Date.now();
         Object.assign(st, { status: 'ticking', lastTickAt: new Date(t0).toISOString(), nextTickAt: null, tempo: tempoOf(tempo), reason: tempo.reason || null });
         writeState(o.stateFile, st);
         lastExit = await tick(tempo);
         const t1 = Date.now();
+        changed = null;   // what changed while the tick ran was the tick's own doing or is in its result
         st.ticks = (st.ticks || 0) + 1;
         Object.assign(st, { lastTickEndAt: new Date(t1).toISOString(), lastExit, lastTickSec: Math.round((t1 - t0) / 100) / 10 });
         if (o.maxTicks && st.ticks >= o.maxTicks) break;
@@ -110,6 +139,17 @@ function runLoop(opts) {
         let next = null, first = true;
         while (!stopping) {
           const t = safeTempo(o);
+          const sp = t.sprint || null;
+          const secMs = o.minuteMs / 60;
+          if (sp) watchOn(Math.max(0, Number(sp.watchDebounceSec) || 45) * secMs); else if (watchers.length) { unwatch(); changed = null; }
+          if (sp && changed) {
+            const deb = Math.max(0, Number(sp.watchDebounceSec) || 45) * secMs, gap = Math.max(0, Number(sp.minTickGapSec) || 30) * secMs, nowMs = Date.now();
+            if ((nowMs - changed.last >= deb || nowMs - changed.first >= 3 * deb) && nowMs - t1 >= gap) {
+              st.early = { at: new Date(nowMs).toISOString(), file: changed.file, changes: changed.n };
+              o.log('Sprint: ' + changed.file + (changed.n > 1 ? ' and ' + (changed.n - 1) + ' more change(s)' : '') + ' — starting the next tick now instead of in ' + Math.max(0, Math.round(((next || nowMs) - nowMs) / o.minuteMs * 10) / 10) + ' min');
+              break;
+            }
+          }
           const at = t1 + t.tickMin * o.minuteMs;
           if (at !== next) {
             next = at;
@@ -124,6 +164,7 @@ function runLoop(opts) {
         }
       }
     } finally {
+      unwatch();
       Object.assign(st, { status: 'stopped', stoppedAt: new Date().toISOString(), nextTickAt: null });
       writeState(o.stateFile, st);
       try { if (Number(String(fs.readFileSync(lf, 'utf8')).trim()) === process.pid) fs.unlinkSync(lf); } catch (_) {}
@@ -146,7 +187,7 @@ async function selftest() {
     // in process: three ticks, never overlapping, tempo re-read each iteration
     let tickMin = 1; let reads = 0;
     const tempo = () => { reads++; return { tickMin, cooldownMin: 7, maxPerTick: 2, source: tickMin === 1 ? 'base' : 'temporary', reason: 'test ' + tickMin }; };
-    const code = await runLoop({ cmd: fake, stateFile, minuteMs: 60, sliceMs: 10, tempo, log: l => lines.push(l), signals: false, maxTicks: 3 });
+    const code = await runLoop({ cmd: fake, stateFile, minuteMs: 60, sliceMs: 10, tempo, log: l => lines.push(l), signals: false, maxTicks: 3, sprintTick: null, watchPaths: [] });
     const m = fs.readFileSync(marks, 'utf8').trim().split('\n');
     check('three ticks ran', m.filter(x => x.startsWith('start')).length === 3, m.join('|'));
     let overlap = false; for (let i = 0; i < m.length; i += 2) if (!m[i].startsWith('start') || !(m[i + 1] || '').startsWith('end')) overlap = true;
@@ -163,7 +204,7 @@ async function selftest() {
     // a speed-up while sleeping moves the next tick at once
     fs.writeFileSync(marks, ''); lines.length = 0; tickMin = 1000;
     let stopFn = null; const t0 = Date.now();
-    const p = runLoop({ cmd: fake, stateFile, minuteMs: 60, sliceMs: 10, tempo, log: l => lines.push(l), signals: false, onStop: s => { stopFn = s; } });
+    const p = runLoop({ cmd: fake, stateFile, minuteMs: 60, sliceMs: 10, tempo, log: l => lines.push(l), signals: false, onStop: s => { stopFn = s; }, sprintTick: null, watchPaths: [] });
     await new Promise(r => setTimeout(r, 150));
     st = readJson(stateFile, {});
     check('a long tick: the state says sleeping with the next tick far out', st.status === 'sleeping' && Date.parse(st.nextTickAt) - t0 > 30000, JSON.stringify(st));
@@ -176,14 +217,41 @@ async function selftest() {
 
     // a second loop does not start while one holds the lock
     fs.writeFileSync(stateFile.replace(/\.json$/, '') + '.lock', String(process.ppid || 1));
-    const second = await runLoop({ cmd: fake, stateFile, minuteMs: 60, tempo, log: l => lines.push(l), signals: false, maxTicks: 1 });
+    const second = await runLoop({ cmd: fake, stateFile, minuteMs: 60, tempo, log: l => lines.push(l), signals: false, maxTicks: 1, sprintTick: null, watchPaths: [] });
     check('a second loop refuses to run beside a live one', second === 1 && lines.some(l => /holds the lock/.test(l)));
     fs.unlinkSync(stateFile.replace(/\.json$/, '') + '.lock');
+
+    // Sprint: an inbox change wakes the loop early (debounced); outside Sprint it does not; sprintTick runs every iteration
+    {
+      const inbox = path.join(dir, 'handoffs'); fs.mkdirSync(inbox, { recursive: true });
+      let sprintOn = true, sprintTicks = 0;
+      const stempo = () => ({ tickMin: 1000, cooldownMin: 40, maxPerTick: 7, source: sprintOn ? 'sprint' : 'base', reason: 'test', sprint: sprintOn ? { watchDebounceSec: 100, minTickGapSec: 0, until: null, by: 'owner' } : null });
+      fs.writeFileSync(marks, ''); const sl = []; let stop2 = null;
+      const sf = path.join(dir, 'state3', 'dispatcher-loop.json');
+      const p2 = runLoop({ cmd: fake, stateFile: sf, minuteMs: 60, sliceMs: 10, tempo: stempo, log: l => sl.push(l), signals: false, onStop: s => { stop2 = s; }, sprintTick: () => { sprintTicks++; }, watchPaths: [inbox] });
+      const starts = () => fs.readFileSync(marks, 'utf8').split('\n').filter(x => x.startsWith('start')).length;
+      await new Promise(r => setTimeout(r, 150));
+      check('Sprint: one tick, then asleep on a long fallback timer', starts() === 1, String(starts()));
+      fs.writeFileSync(path.join(inbox, 'to-sam.md'), '## x\n**Status:** OPEN\n'); fs.appendFileSync(path.join(inbox, 'to-sam.md'), '## y\n**Status:** OPEN\n');
+      await new Promise(r => setTimeout(r, 60));
+      check('Sprint: the change waits out the debounce (several items, one wake)', starts() === 1, String(starts()));
+      await new Promise(r => setTimeout(r, 250));
+      check('Sprint: an inbox change starts the next tick early, once', starts() === 2 && sl.some(l => /Sprint: handoffs\/to-sam\.md and \d+ more change\(s\) — starting the next tick now/.test(l)) && readJson(sf, {}).early && readJson(sf, {}).tempo.sprint, starts() + ' ' + sl.join(' | '));
+      fs.writeFileSync(path.join(inbox, 'notes.tmp-123'), 'x');
+      await new Promise(r => setTimeout(r, 250));
+      check('Sprint: temp files are not news', starts() === 2, String(starts()));
+      sprintOn = false; await new Promise(r => setTimeout(r, 40));
+      fs.appendFileSync(path.join(inbox, 'to-sam.md'), '## z\n**Status:** OPEN\n');
+      await new Promise(r => setTimeout(r, 300));
+      check('outside Sprint an inbox change waits for the timer', starts() === 2, String(starts()));
+      check('sprintTick runs before every tick', sprintTicks === 2, String(sprintTicks));
+      stop2('test'); await p2;
+    }
 
     // as a real process: SIGTERM during a tick lets it finish (signalled), state written, exit 0
     fs.writeFileSync(marks, '');
     const stateFile2 = path.join(dir, 'state2', 'dispatcher-loop.json');
-    const proc = spawn(process.execPath, [__filename], { env: Object.assign({}, process.env, { DISPATCHER_LOOP_CMD: fake, DISPATCHER_LOOP_STATE: stateFile2, DISPATCHER_LOOP_MINUTE_MS: '20', FAKE_MS: '400' }), stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = spawn(process.execPath, [__filename], { env: Object.assign({}, process.env, { DISPATCHER_LOOP_CMD: fake, DISPATCHER_LOOP_STATE: stateFile2, DISPATCHER_LOOP_MINUTE_MS: '20', FAKE_MS: '400', DISPATCHER_LOOP_NO_SPRINT: '1' }), stdio: ['ignore', 'pipe', 'pipe'] });
     let out = ''; proc.stdout.on('data', d => { out += d; }); proc.stderr.on('data', d => { out += d; });
     await new Promise(r => setTimeout(r, 250));
     proc.kill('SIGTERM');

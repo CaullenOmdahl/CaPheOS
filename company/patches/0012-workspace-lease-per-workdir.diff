@@ -1,0 +1,54 @@
+# 0012-workspace-lease-per-workdir.diff — two runs of one agent may write in two DIFFERENT project folders at once.
+# Status: NOT APPLIED — a proposal for Sprint lanes (docs/TEMPO.md "Sprint", "Parallel lanes"). setup-station.sh skips it.
+#
+# Why: StarNet admits a second run of an agent (sidecar/concurrency.js counts distinct agents; a second run of an
+# admitted agent takes no slot) and leases one run per ROUTINE (cron-driver leases), so a lane would be a separate run
+# (POST /api/run with its own streamId and projectRoot). But every workspace-mutating tool call (fs.write/append/edit/
+# patch, EVERY shell.* and verify.* call, terminal.start/write: index.js mutatesWorkspace) first takes
+# sidecar/workspace-lease.js keyed on the agent id ALONE, held until the run ends. The second run's first shell call
+# waits 45 s (WORKSPACE_LEASE_WAIT_MS) and then fails "workspace busy". CaPheOS seats work through the shell, so a
+# second lane would spend tokens and get nothing done. Proven offline by company/tools/tests/sprint.test.js (it loads
+# the station's own modules from a checkout: STARNET_DIR=… node --test company/tools/tests/sprint.test.js).
+#
+# What it changes (smallest): the lease key becomes agentId + the run's projectRoot when the run has one (a blessed
+# folder, e.g. one git worktree per lane); a run without a projectRoot keeps the per-agent key, so nothing else changes.
+# Runs in the same folder still have one writer at a time.
+# Known gap: the shadow-git checkpoint store stays per agent (WORKSPACES/.checkpoints/<agentId>/). Checkpoints are
+# fail-open, so two lanes snapshotting at the same moment can miss a snapshot (a git index.lock clash), never corrupt
+# a run. A follow-up should key the store by folder too before lanes are relied on for rollback.
+# Also needed on the CaPheOS side before lanes run: the lane launcher in dispatch.js (one /api/run per lane, its own
+# worktree, the handoff it owns named in the prompt, lib/sprint.js makePathLock around it). Until then dispatch.js
+# keeps every seat at one lane and says why (Crew, sprint status).
+# Apply: git -C starnet apply --3way ../company/patches/0012-workspace-lease-per-workdir.diff, then restart the station.
+# Revert: git -C starnet apply -R ../company/patches/0012-workspace-lease-per-workdir.diff
+--- a/sidecar/index.js
++++ b/sidecar/index.js
+@@ -11555,6 +11555,10 @@
+   { now: () => Date.now() },
+   (_leaseWaitMs >= 0 && isFinite(_leaseWaitMs)) ? { waitMs: Math.floor(_leaseWaitMs) } : {}
+ ));
++// patch 0012 (CaPheOS lanes): a run with its own blessed project folder (projectRoot, e.g. a git worktree per lane) leases
++// that folder, not the agent's whole workspace, so two runs of one agent in two different folders do not wait on each
++// other; a run without one keeps the old per-agent key. Runs in the SAME folder still have one writer at a time.
++function workspaceLeaseKey(agentId, projectRoot) { const r = String(projectRoot || '').trim(); return r ? String(agentId) + '\u0000' + r : String(agentId); }
+ const agentLifecycle = makeAgentLifecycle({
+   workspaceLease,
+   isActive: (agentId) => concurrencyGate.inFlight(agentId) > 0
+@@ -24849,7 +24853,7 @@
+     // (bounded, visible as its in-flight agent.tool_call), then fails truthfully naming the holder. Re-entrant:
+     // the holding run's later tools never re-wait.
+     if (mutatesWorkspace(c.name)) {
+-      const lease = await workspaceLease.acquire(agentId, runId);
++      const lease = await workspaceLease.acquire(workspaceLeaseKey(agentId, o.projectRoot), runId);   // patch 0012: one writer per agent AND folder
+       if (!lease.ok) {
+         let holderNote = 'another live run of this agent holds the workspace.';
+         try {
+@@ -26796,7 +26800,7 @@
+     if (runComputer?.close) { try { await runComputer.close(); } catch (_) { failNote('computer.run.close', 'Native run cleanup failed'); } }
+     computerRuns.delete(runComputer);
+     concurrencyGate.leave(agentId);   // release the admission slot on EVERY exit (normal, early-return, or throw)
+-    workspaceLease.release(agentId, runId);   // free (or withdraw the queued wait for) this run's workspace lease — same guarantee
++    workspaceLease.release(workspaceLeaseKey(agentId, o.projectRoot), runId);   // free (or withdraw the queued wait for) this run's workspace lease — same guarantee
+ 
+   }
+ }

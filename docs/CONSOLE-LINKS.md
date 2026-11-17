@@ -27,7 +27,7 @@ Stable: these paths keep working; a renamed tab keeps its old name as an alias (
 | `console:#/crew` · `console:#/crew/<seat id>` | the crew, one seat's dossier |
 | `console:#/work/quests` · `/handoffs` · `/tasks` · `/deliverables` · `/review` · `/decisions` · `/projects` | Work tabs (singular aliases work) |
 | `console:#/hiring` | hiring rounds |
-| `console:#/controls/gov` · `/guard` · `/ticks` · `/panels` | Controls tabs (aliases: `governance`, `guardrails`, `cadence`) |
+| `console:#/controls/gov` · `/guard` · `/ticks` · `/panels` | Controls tabs (aliases: `governance`, `guardrails`, `cadence`, `tempo`, `sprint`; `/ticks` is the Tempo tab with the Sprint switch) |
 | `console:#/automate` | routines and the dispatcher |
 | `console:#/governance` | what may leave the company, locked files, decision models |
 | `console:#/usage` | AI usage and models |

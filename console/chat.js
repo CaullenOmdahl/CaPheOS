@@ -201,7 +201,7 @@ module.exports = function chat(deps) {
     let st = null; try { st = await FL().status(); } catch (e) { st = { ok: false, problems: [{ code: 'error', msg: e.message, fix: 'node company/tools/founder-loop.js status' }] }; }
     const halt = co.halted();
     if (halt) problems.push({ code: 'halted', msg: 'the company is under a ' + halt + ' halt, so nobody is woken', fix: 'Resume on the Halt screen.', link: '#/halt' });
-    if (!wakers.length) problems.push({ code: 'no-waker', msg: 'no crew member is woken by owner messages', fix: 'Switch "wake on owner message" on for ' + ceoName + ' in Controls, Ticks and cadence.', link: '#/controls/ticks' });
+    if (!wakers.length) problems.push({ code: 'no-waker', msg: 'no crew member is woken by owner messages', fix: 'Switch "wake on owner message" on for ' + ceoName + ' in Controls › Tempo.', link: '#/controls/ticks' });
     for (const p of (st.problems || [])) if (p.code !== 'no-model') problems.push({ code: p.code, msg: p.msg, fix: p.fix === 'node company/tools/founder-loop.js ensure' ? 'Run onboarding again: node company/tools/onboard.js --step founder-loop (or pick the AI provider again in Setup).' : p.fix, link: p.code === 'scheduler-off' || p.code === 'disabled' ? '#/automate' : '#/setup/provider' });
     const cad = readJson(co.p('company', 'work', 'ops', 'cadence.json'), null) || readJson(co.p('company', 'defaults', 'work', 'ops', 'cadence.json'), {}) || {};
     // the self-paced dispatcher loop's own state (company/tools/dispatcher-loop.js): its effective tick and next tick

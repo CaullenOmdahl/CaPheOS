@@ -1235,3 +1235,26 @@ test('cutoffs: pacer.js limit is the recorded write; the owner always, the CEO o
   const m = (await measurePlan(h, crewJobs())).m;
   assert.equal(Math.round(m.claude.line * 10) / 10, Math.round((pacer.lineFor(1, 1 / 7, 1) + (80 - pacer.lineFor(1, 1 / 7, 1)) * 0.5) * 10) / 10);
 });
+
+/* ---- Sprint (start-up, cadence.js tempo.sprint) never loosens the pacer ---- */
+test('Sprint on changes nothing in the pacer: the Claude weekly stop at 95% and the station-rail hold still apply', async () => {
+  const sprintOn = { dispatcherTickMin: 10, defaultCooldownMin: 40, maxPerTick: 4, tempo: { mode: 'bounded-auto', sprint: { on: true, since: new Date(T0 - HOUR).toISOString(), until: null, by: 'owner' } }, seats: {} };
+  const measureWith = async sprint => {
+    const jobs = crewJobs(); const fx = legacyFixture({ feedPct: 96, stationPct: 96 });
+    if (sprint) fx.w('company/work/ops/cadence.json', sprintOn);
+    const r = await measurePlan(make(fx, station(jobs)), jobs);
+    return { open: r.m.claude.open, why: r.m.claude.why, rows: r.pl.rows.map(x => [x.name, x.action, x.to && x.to.provider]) };
+  };
+  const off = await measureWith(false), on = await measureWith(true);
+  assert.equal(on.open, false, 'Claude past its weekly stop is closed with Sprint on');
+  assert.deepEqual(on, off);
+  const budget = { caps: { perDay: 25 }, day: { usd: null, estimatedUsd: 21.5, cap: 25 }, live: 0.3 };
+  const handoffs = { 'to-kim.md': due('2026-11-20 12:00'), 'to-jo.md': due('today'), 'to-pat.md': due('2026-11-17') };
+  const jobs = crewJobs(), st = station(jobs, budget);
+  const fx = fixture({ feedPct: 28, handoffs, policy: { mode: 'live' } });
+  fx.w('company/work/ops/cadence.json', sprintOn);
+  const h = make(fx, st, { mm: mmBody(94, 10) });
+  const order = ['agent', 'engineer', 'designer', 'treasurer', 'cand-qa-lee'];
+  await h.p.hook({ jobs, order, ownerWake: new Set(['agent']), maxPerTick: 7 });   // Sprint's maxPerTick: every seat
+  assert.deepEqual(order, ['agent', 'engineer'], 'near the rail the pacer still drops the metered wakes with nothing due');
+});

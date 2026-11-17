@@ -34,7 +34,7 @@ export async function render(root, ctx) {
   const eyebrow = () => fill(eyebrowHost, h('p', { class: 'eyebrow' }, [gov ? 'Preset: ' + (gov.presetLabel || gov.preset) : null,
     guards ? ((guards.off || []).length ? guards.off.length + ' guardrails off' : 'All guardrails on') : null].filter(Boolean).join(' / ')));
   const pick = id => { tab = id; history.replaceState(null, '', '#/controls/' + id); drawTabs(); load(); };
-  const drawTabs = () => fill(tabsHost, tabs([['gov', 'Self-governance'], ['guard', 'Guardrails'], ['ticks', 'Ticks and cadence'], ['panels', 'Console panels']], tab, pick, 'Controls'));
+  const drawTabs = () => fill(tabsHost, tabs([['gov', 'Self-governance'], ['guard', 'Guardrails'], ['ticks', 'Tempo'], ['panels', 'Console panels']], tab, pick, 'Controls'));
   drawTabs();
   const act = async (path, b, okMsg) => {
     try { const r = await post(path, b); app.toast(okMsg || 'Saved.'); return r; }
@@ -164,12 +164,28 @@ export async function render(root, ctx) {
       [['bounded-auto', 'Crew may speed up inside the bounds'], ['fixed', 'Only you change the tempo']].map(([val, label]) => h('option', { value: val, selected: tp.mode === val }, label)));
     mode.addEventListener('change', () => act('/cadence/bounds', { mode: mode.value }, 'Tempo mode: ' + mode.value));
     const card = (title, ...kids) => h('div', { class: 'card p18', style: 'gap:8px' }, h('span', { class: 'label strong' }, title), ...kids);
+    // Sprint (start-up): the owner's switch to work as fast as the open work allows (docs/TEMPO.md "Sprint")
+    const sp = d.sprint || {};
+    const spHours = h('select', { class: 'input', 'aria-label': 'Sprint length' },
+      [['', 'until I turn it off'], ['4', 'for 4 hours'], ['12', 'for 12 hours'], ['24', 'for 24 hours'], ['72', 'for 3 days']].map(([val, label]) => h('option', { value: val }, label)));
+    const spToggle = h('input', { type: 'checkbox', role: 'switch', checked: !!sp.active, 'aria-label': 'Sprint (start-up)', onchange: e => e.target.checked
+      ? act('/cadence/sprint', { on: true, hours: spHours.value || null }, 'Sprint on' + (spHours.value ? ' for ' + spHours.value + ' h.' : ' until you turn it off.'))
+      : act('/cadence/sprint', { on: false }, 'Sprint off: back to your base values.') });
+    const sprintCard = h('section', { class: 'card p18', style: 'gap:10px', 'aria-labelledby': 'sprint-h' },
+      h('div', { class: 'between-c', style: 'gap:12px;flex-wrap:wrap' },
+        h('span', { class: 'stack-4', style: 'gap:2px' }, h('h2', { id: 'sprint-h', class: 'h3' }, 'Sprint (start-up)'),
+          h('span', { class: 'body-s muted' }, sp.active ? 'On' + (sp.by ? ' (by ' + sp.by + ')' : '') + (sp.until ? ' until ' + when(sp.until) : sp.untilWhy ? ' — ' + sp.untilWhy : ' until you turn it off') + '.'
+            : 'Off' + (sp.endedAt ? ': ended ' + when(sp.endedAt) + (sp.endedWhy === 'budget' ? ' (its budget was spent)' : sp.endedWhy === 'certified' ? ' (24 h after certification)' : sp.endedWhy === 'time' ? ' (its time was up)' : '') : '') + '.')),
+        h('span', { class: 'row-8', style: 'align-items:center' }, sp.active ? null : spHours, h('label', { class: 'check', style: 'min-height:44px' }, spToggle, sp.active ? 'On' : 'Off'))),
+      h('p', { class: 'body-s', style: 'max-width:760px' }, 'While Sprint is on, a seat with new work (a handoff, a review, your message) starts as soon as it is free (it rests ' + ((sp.config && sp.config.cooldownFloorMin) || 2) + ' min, not its cooldown), every seat may start in the same tick, the hourly and daily wake limits are lifted, and a change in an inbox wakes the dispatcher within a minute. Seats with nothing to do are not woken. Your daily spend cap, the halts, the guardrails and the subscription stops stay exactly as they are, and the daily cap is spread over the day.'),
+      h('span', { class: 'caption muted' }, 'Sprint budget: $' + (sp.budgetUsd != null ? Number(sp.budgetUsd).toFixed(2) : '—') + (sp.budgetIsDefault ? ' (twice the daily cap)' : '') + ' metered in total; Sprint ends by itself when it is spent, or at its end time. Status: node company/tools/cadence.js sprint status'));
     fill(body,
+      sprintCard,
       h('section', { class: 'stack-12' },
         h('h2', { class: 'h3' }, 'Right now'),
         h('section', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px' },
           card('Effective tempo', h('span', { class: 'body-l num' }, 'tick ' + (eff.tickMin ?? '—') + ' min · cooldown ' + (eff.cooldownMin ?? '—') + ' min'),
-            Tag(eff.source === 'temporary' ? 'Temporary speed-up' : 'Your base values', { variant: 'status', status: eff.source === 'temporary' ? 'warning' : 'online' }),
+            Tag(eff.source === 'sprint' ? 'Sprint (start-up)' : eff.source === 'temporary' ? 'Temporary speed-up' : 'Your base values', { variant: 'status', status: eff.source === 'temporary' || eff.source === 'sprint' ? 'warning' : 'online' }),
             eff.quiet ? h('span', { class: 'caption' }, 'Quiet hours: only your own messages wake anyone.') : null),
           card('Dispatcher loop', h('span', { class: 'body-s' }, 'Last tick ' + when(lp && (lp.lastTickEndAt || lp.lastTickAt))), h('span', { class: 'body-s' }, 'Next tick ' + (lp && lp.status === 'ticking' ? 'running now' : when(lp && lp.nextTickAt))),
             h('span', { class: 'caption muted' }, lp ? 'State: ' + (lp.status || '?') : 'The loop has not written its state yet (company/state/dispatcher-loop.json).')),

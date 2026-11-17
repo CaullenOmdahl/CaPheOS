@@ -35,7 +35,7 @@ const COMPANY = [
   row('Floor audit, desks', 'Floor', 'station-floor.js'), row('Station view (screenshots)', 'Floor › Snapshot', 'station-view.js'),
   row('Health, incidents, tool integrity', 'System › Health', 'health-check.sh · tool-parse.js · quest-audit.js'),
   row('Self-governance levels and presets (new)', 'Controls', 'governance.js · state/governance.json'), row('Guardrail switches, no-guardrails mode (new)', 'Controls › Guardrails', 'guardrails.js · state/guardrails.json'),
-  row('Dispatcher tick and per-seat cadence (new)', 'Controls › Ticks and cadence', 'cadence.js · work/ops/cadence.json'), row('Soft halt with shutdown procedures, hard halt (new)', 'Halt', 'halt.js · state/halt.json · /api/halt'),
+  row('Dispatcher tick and per-seat cadence (new)', 'Controls › Tempo', 'cadence.js · work/ops/cadence.json'), row('Soft halt with shutdown procedures, hard halt (new)', 'Halt', 'halt.js · state/halt.json · /api/halt'),
   row('Panels the crew adds to this console (new)', 'Controls › Console panels', 'console-panel.js · company/console/'), row('Delete or archive a chat (new)', 'Comms', '/api/groups control delete'),
 ];
 

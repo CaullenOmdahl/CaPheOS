@@ -478,6 +478,16 @@ route('POST', /^\/api\/cadence\/bounds$/, (m, q, b) => {
   if (args.length === 1) bad('nothing to set');
   return runApi('cadence.js', args.concat(['--by', OWNER]));
 });
+// Sprint (start-up): the owner's switch (cadence.js sprint on|off), and how it is going (sprint status)
+route('GET', /^\/api\/cadence\/sprint$/, () => runApi('cadence.js', ['sprint', 'status', '--json']));
+route('POST', /^\/api\/cadence\/sprint$/, (m, q, b) => {
+  const on = onOff(b.on) === 'on';
+  const args = ['sprint', on ? 'on' : 'off'];
+  if (on && b.hours != null && b.hours !== '') { const n = Number(b.hours); if (!(n > 0 && n <= 336)) bad('hours must be above 0 and at most 336'); args.push('--hours', String(n)); }
+  if (b.budgetUsd != null && b.budgetUsd !== '') { const n = Number(b.budgetUsd); if (!(n >= 0)) bad('budgetUsd must be a number >= 0'); args.push('--budget-usd', String(n)); }
+  args.push('--by', OWNER, '--why', on ? 'switched on by the owner in the console' : 'switched off by the owner in the console');
+  return runApi('cadence.js', args);
+});
 route('POST', /^\/api\/cadence\/end-temporary$/, () => runApi('cadence.js', ['end-temporary', '--by', OWNER, '--why', 'ended by the owner in the console']));
 route('POST', /^\/api\/cadence\/seat$/, async (m, q, b) => {
   const seat = str(b.seat, 'seat') || bad('seat is required');

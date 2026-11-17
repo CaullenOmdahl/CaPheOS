@@ -76,6 +76,8 @@ scripts/console.sh                # same as the first line
 | POST | /api/cadence/default | `{ minutes?, cooldown?, maxPerTick? }` | `cadence.js set-default --by <owner>`: the owner's base values |
 | POST | /api/cadence/bounds | `{ tickMin?: [lo,hi], cooldownMin?: [lo,hi], maxWakesPerHour?, maxWakesPerDay?, quietHours?: "HH:MM-HH:MM"\|null, mode?: "fixed"\|"bounded-auto", autoExpireMin?, minChangeIntervalMin? }` | `cadence.js bounds --by <owner>` (docs/TEMPO.md) |
 | POST | /api/cadence/end-temporary | — | `cadence.js end-temporary`: back to the base values now |
+| GET | /api/cadence/sprint | — | `cadence.js sprint status --json`: Sprint (start-up) on/off, until when, wakes, idle-wake ratio, items done, spend vs budget, proposals/h vs reviews/h |
+| POST | /api/cadence/sprint | `{ on: true\|false, hours?, budgetUsd? }` | `cadence.js sprint on\|off --by <owner>` (docs/TEMPO.md "Sprint") |
 | POST | /api/cadence/seat | `{ seat, loopEvery?, cooldown?, priority?, wakeOnInbox?, wakeOnOwner? }` | `cadence.js set` then `apply`; returns `{ set, apply }` (apply may refuse at the `schedules` approve level) |
 | GET | /api/panels | panels with placement and state | `console-panel.js list --json` |
 | GET | /api/panels/:id/data | resolved data for a panel | console-panel.js `render()` (required as a module) |
@@ -117,7 +119,7 @@ The crew's work, visible (console/activity.js). The console keeps one connection
 
 | Method | Path | Does |
 |---|---|---|
-| GET | /api/now | `{ station: {up, feed}, runs: [{runId, agentId, name, kind: routine\|chat\|…, label, href, step ("reading company/CHARTER.md", "running hire.js open…"), steps, elapsedSec, usd, stoppable, watched}], seats: [{id, name, running, loop, enabled, nextRunAt, schedule, soonerBecause: ["2 open handoffs", "1 unread message from you"], wakesOnMessage, schedulerOn}] }` |
+| GET | /api/now | `{ station: {up, feed}, runs: [{runId, agentId, name, kind: routine\|chat\|…, label, href, step ("reading company/CHARTER.md", "running hire.js open…"), steps, elapsedSec, usd, stoppable, watched}], seats: [{id, name, running, loop, enabled, nextRunAt, schedule, soonerBecause: ["2 open handoffs", "1 unread message from you"], wakesOnMessage, schedulerOn, sprint?: "working"\|"waiting for work", lanes?: {running, max, possible, why}}], sprint: null \| {on, since, until, untilWhy, by, floorMin, wakes, idleWakes, idleWakeRatio, itemsDone, spentUsd, budgetUsd, usdPerItem, proposalsPerHour, reviewsPerHour} }` (sprint and the seat fields only while Sprint is on) |
 | GET | /api/now/run/:runId?after=N | the run's events after `N` (`start`, `tool {text}`, `result {ok}`, `token {delta}`, `error`, `end`) for the Watch view, `done`, `outcome`, `usd` |
 | GET | /api/activity | recent activity (48 h), newest first: finished runs from runs.jsonl (outcome, cost, the first sentence of the reply), hiring-round log lines with the hiring governance level, one `kind:'hiring-stage'` item per open round with its live stage and timeline times ("Crew decides: done without asking you"), owner-channel replies and decisions, each with `links: [{label, href}]` into the console |
 

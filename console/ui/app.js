@@ -32,7 +32,7 @@ const NAV = [
 // The route map (docs/CONSOLE-LINKS.md): every place an agent may link to with `console:#/…`. Aliases keep the
 // readable names working: #/controls/guardrails is the Guardrails tab, #/setup/ai the provider step, and so on.
 export const ALIASES = {
-  controls: { governance: 'gov', 'self-governance': 'gov', guardrails: 'guard', cadence: 'ticks', schedule: 'ticks' },
+  controls: { governance: 'gov', 'self-governance': 'gov', guardrails: 'guard', cadence: 'ticks', schedule: 'ticks', tempo: 'ticks', sprint: 'ticks' },
   work: { quest: 'quests', handoff: 'handoffs', decision: 'decisions', project: 'projects' },
   abilities: { connectors: 'connected', 'api-keys': 'keys' },
 };

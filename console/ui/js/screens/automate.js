@@ -36,7 +36,7 @@ export async function render(root, ctx) {
     const lastAt = s.lastTick || s.at || s.lastRun;
     fill(stats, h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px' },
       stat('Last tick', lastAt ? hhmm(lastAt, tz) : lines.length ? lines[lines.length - 1].at || '—' : '—', lastAt ? rel(lastAt) : lines.length ? lines[lines.length - 1].text.slice(0, 60) : 'no tick recorded'),
-      stat('Tick', cad ? cad.dispatcherTickMin + ' min' : '—', 'Controls › Ticks and cadence'),
+      stat('Tick', cad ? cad.dispatcherTickMin + ' min' : '—', 'Controls › Tempo'),
       stat('Wakes per tick', cad ? String(cad.maxPerTick) : '—', 'most seats started in one tick'),
       stat('Scheduler', cron && !cron.error ? (cron.halted ? 'Halted' : cron.enabled === false ? 'Off' : 'On') : '—', cron && cron.error ? (cron.error.stationDown ? 'Station not running' : cron.error.message) : cron && cron.degraded ? 'degraded: ' + (cron.degraded.reason || '') : 'station cron')));
     if (cron && cron.error) fill(sched, errLine(cron.error, 'Schedules'));

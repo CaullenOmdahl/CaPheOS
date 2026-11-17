@@ -18,6 +18,13 @@
  * Hiring: each tick runs hire.js advance --all (the mechanical steps of every open round, within the cap) and wakes the
  * seat that must pick once per round, past its cooldown; a seat hired this tick gets its first run in the same tick.
  *   node company/tools/dispatch.js --selftest # offline fixtures for the handoff reader
+ * Sprint (start-up, cadence.js tempo.sprint; docs/TEMPO.md): while it is on, a seat whose open work CHANGED since its
+ * last wake (a new handoff or review, an owner message, quest progress) rests only the cooldown floor; unchanged work
+ * keeps the normal cooldown and the stall rule, so nobody is woken for nothing. Every seat may wake in one tick and
+ * the wake caps are lifted (cadence.js). The daily metered cap, the per-agent share, the halt, the guardrails and the
+ * pacer's hook all run exactly as outside Sprint; in Sprint the metered cap is also spread over the company day
+ * (lib/sprint.js spreadHold). The tick keeps the Sprint numbers (company/state/sprint-metrics.json: wakes, wakes that
+ * did nothing, items done, lanes) and tells models.js which seats have only mechanical work (sprint-effort.json).
  */
 'use strict';
 const fs = require('fs'), path = require('path'), http = require('http');
@@ -40,7 +47,14 @@ function tuning(env, cad) {
 const CADENCE = co.readJson(co.p('company', 'work', 'ops', 'cadence.json'), null) || co.readJson(co.p('company', 'defaults', 'work', 'ops', 'cadence.json'), null);
 const TUNING = tuning(process.env, CADENCE);
 const COOLDOWN_MS = TUNING.cooldownMin * 60000;
-const MAX_PER_TICK = TUNING.maxPerTick;   // agents work in parallel; the pacer still paces the subscriptions
+let MAX_PER_TICK = TUNING.maxPerTick;   // agents work in parallel; the pacer still paces the subscriptions
+const SP = require('./lib/sprint');
+// Sprint (cadence.js effective().sprint): null when off. Fail-safe: an unreadable cadence means no Sprint.
+const SPRINT = (() => { try { return require('./cadence.js').effective().sprint || null; } catch (_) { return null; } })();
+const SPRINT_METRICS = path.join(ROOT, 'company', 'state', 'sprint-metrics.json');
+const SPRINT_EFFORT = path.join(ROOT, 'company', 'state', 'sprint-effort.json');
+// parallel lanes need a station that lets two runs of one agent work in different folders (company/patches/0012)
+const STATION_LANES = (() => { try { return fs.readdirSync(path.join(ROOT, 'company', 'patches')).some(f => /^0012-.*\.diff\.applied$/.test(f)); } catch (_) { return false; } })();
 const STALL_AFTER = num('DISPATCH_STALL_AFTER', 3);
 // The CFO's budget file (company/work/finance/dispatch-budget.json) wins over the env vars and defaults.
 const BUDGET = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'company', 'work', 'finance', 'dispatch-budget.json'), 'utf8')) || {}; } catch (_) { return {}; } })();
@@ -759,6 +773,52 @@ function lastRunTail(job) {
   // MAX_PER_TICK loops can fire, the ones the revenue line depends on are the ones that fire.
   const order = Object.keys(work).sort((a, b) =>
     ((ownerWake.has(b) ? 1 : 0) - (ownerWake.has(a) ? 1 : 0)) || ((hiringWake.has(b) ? 1 : 0) - (hiringWake.has(a) ? 1 : 0)) || (prio(b) - prio(a)));
+  // ---- Sprint: what each seat has to do now (its signature), the Sprint numbers, effort per seat, lanes ----
+  const sigOf = id => SP.workSig([(work[id] || []).map(q => q.id + ':' + ((state.quests[q.id] || {}).done)), (state.agents[id] || {}).key || '',
+    ownerWake.has(id) ? state.owner.key : '', hiringWake.get(id) || [], artifactWakes[id] || []]);
+  let SM = null; const laneHeld = []; const spreadHeld = [];
+  state.sprintSig = state.sprintSig || {};
+  if (SPRINT) {
+    MAX_PER_TICK = Math.max(MAX_PER_TICK, Object.keys(LOOP_OF).length);
+    SM = readJson(SPRINT_METRICS, null) || {};
+    if (SM.since !== SPRINT.since) { SM = { since: SPRINT.since, wakes: 0, resolved: 0, idleWakes: 0, itemsDone: 0, pending: {}, seen: {}, lanes: {} }; state.sprintSig = {}; }
+    for (const inbox of new Set(Object.values(INBOX_OF))) {   // items done: OPEN headings that are no longer OPEN
+      const cur = openHandoffs(path.join(ROOT, 'company', 'work', 'handoffs', inbox)); const prev = SM.seen[inbox];
+      if (Array.isArray(prev)) SM.itemsDone += prev.filter(x => !cur.includes(x)).length;
+      SM.seen[inbox] = cur;
+    }
+    const resolveMs = (Number(process.env.DISPATCH_SPRINT_RESOLVE_SEC) >= 0 && process.env.DISPATCH_SPRINT_RESOLVE_SEC !== undefined ? Number(process.env.DISPATCH_SPRINT_RESOLVE_SEC) : 60) * 1000;
+    for (const [id, p] of Object.entries(SM.pending || {})) {   // a wake that has finished: did its seat's work change?
+      const job = findLoop(jobs, id);
+      if (job && (job.inFlight || job.state === 'running')) continue;
+      if (Date.now() - p.at < resolveMs) continue;
+      SM.resolved++; if (sigOf(id) === p.sig) SM.idleWakes++;
+      delete SM.pending[id];
+    }
+    const effort = {}; SM.lanes = {};
+    for (const id of Object.keys(LOOP_OF)) {
+      const inbox = (CREW && CREW[id] && CREW[id].inbox) || null;
+      let items = []; if (inbox) { try { items = SP.parseItems(fs.readFileSync(path.join(ROOT, 'company', 'work', 'handoffs', inbox), 'utf8')); } catch (_) {} }
+      effort[id] = SP.effortOf(items);
+      const isCeo = id === CEO_ID;
+      const plan = SP.lanePlan(items, { lanes: SPRINT.lanes, isCeo });
+      const job = findLoop(jobs, id);
+      // lanes stay at 1 for now: the station serialises one agent's file and shell work (patch 0012 lifts that per
+      // folder), and the lane launcher (one /api/run per lane in its own worktree) is not built; never faked
+      const max = 1;
+      SM.lanes[id] = { running: job && (job.inFlight || job.state === 'running') ? 1 : 0, max, possible: plan.lanes.length, wanted: isCeo ? 1 : Math.max(1, Number(SPRINT.lanes) || 1),
+        why: isCeo ? 'the CEO works one run at a time' : plan.lanes.length > 1 ? (STATION_LANES ? 'patch 0012 is applied, but the lane launcher is not built yet' : 'StarNet lets only one run of an agent write files or use the shell at a time (patch 0012 not applied)') : plan.why };
+      if (plan.lanes.length > 1 && max < plan.lanes.length) laneHeld.push(((CREW[id] || {}).name || id) + ' (' + plan.lanes.length + ' independent)');
+    }
+    const eff = { _doc: 'Sprint: seats whose open items are all Effort: mechanical (models.js keeps Claude for reasoning work)', sprint: true, since: SPRINT.since, seats: effort };
+    if (JSON.stringify((readJson(SPRINT_EFFORT, {}) || {}).seats) !== JSON.stringify(effort) && !DRY) { try { fs.mkdirSync(path.dirname(SPRINT_EFFORT), { recursive: true }); fs.writeFileSync(SPRINT_EFFORT, JSON.stringify(eff, null, 1) + '\n'); } catch (_) {} }
+    const lk = laneHeld.join(', ');
+    if (lk && state.sprintLaneKey !== lk) log('SPRINT LANES held at 1: ' + lk + ' could run in parallel, but StarNet lets one run of an agent hold its files and shell at a time (workspace lease per agent); see company/patches/0012');
+    state.sprintLaneKey = lk;
+  } else if ((readJson(SPRINT_EFFORT, {}) || {}).sprint && !DRY) { try { fs.writeFileSync(SPRINT_EFFORT, JSON.stringify({ sprint: false, seats: {} }) + '\n'); } catch (_) {} }
+  // Sprint spreads the daily metered cap over the company day: the last hour's metered spend, and the hours left
+  const lastHourMetered = (() => { if (!SPRINT) return 0; let u = 0; for (const r of runsSince(Date.now() - 3600e3)) if (!UNMETERED_PROVIDERS.includes(String(r.provider || '')) && Number.isFinite(Number(r.usd))) u += Number(r.usd); return u; })();
+  const hoursLeft = (() => { const lp = co.localParts(); return Math.max(1, 24 - (Number(lp.hour) || 0) - (Number(lp.minute) || 0) / 60); })();
   let fired = 0; try { const pace = await require('./pacer.js').dispatchHook({ dry: DRY, log, jobs, order, ownerWake, maxPerTick: MAX_PER_TICK }); fired = -Math.max(0, Math.min(2, Number(pace && pace.extra) || 0)); } catch (e) { fired = 0; log('PACER ERROR: ' + e.message); }   // pacer.js (fail-safe): may drop metered wakes held near the station rail from `order`, and lends extra per-tick slots by starting `fired` below 0
   const deferred = [];
   for (const agentId of order) {
@@ -771,7 +831,10 @@ function lastRunTail(job) {
     if (job.inFlight || job.state === 'running') continue;
     const last = job.lastRunAt ? Date.parse(job.lastRunAt) : 0;
     const ownCooldown = CREW && CREW[agentId] && Number(CREW[agentId].cooldownMin) > 0 ? Number(CREW[agentId].cooldownMin) * 60000 : COOLDOWN_MS;   // per-person rest, loops.json cooldownMin
-    if (!hiringWake.has(agentId) && Date.now() - last < (ownerWake.has(agentId) ? OWNER_COOLDOWN_MS : ownCooldown)) continue;
+    // rest: the seat's cooldown (owner message: the short one); in Sprint only the floor when its work changed since its last wake
+    const sig = SPRINT ? sigOf(agentId) : null;
+    const rest = SP.restMs({ baseMs: ownerWake.has(agentId) ? OWNER_COOLDOWN_MS : ownCooldown, sprint: !!SPRINT, changed: !!SPRINT && state.sprintSig[agentId] !== sig, floorMin: SPRINT && SPRINT.cooldownFloorMin, hiring: hiringWake.has(agentId) });
+    if (Date.now() - last < rest.ms) continue;
     if (!ALLOW_ASK && modes[agentId] === 'ask') { askHeld.push(job.name + ' (' + agentId + ')'); continue; }   // due, but cannot save unattended
     // the global USD cap, then this agent's share (an owner message is never held; a subscription loop is not metered).
     // With the spendCap guardrail off nothing is held; the loop runs and is listed once in the log.
@@ -779,11 +842,15 @@ function lastRunTail(job) {
     if (cap === 'held') { held.push(job.name); continue; }
     if (cap === 'perAgentHeld') { perAgentHeld.push(job.name); continue; }
     if (cap === 'wouldHold') wouldHold.push(job.name);
+    if (SPRINT && SPRINT.spreadDailyCap && CAP_ON && cap === 'run' && isMetered(job) && !ownerWake.has(agentId)) {
+      const why = SP.spreadHold({ cap: DAILY_USD, spent24h: spent, spentLastHour: lastHourMetered, hoursLeft });
+      if (why) { spreadHeld.push(job.name + ' — ' + why); continue; }
+    }
     { const tempo = require('./cadence.js').tempoAllows(agentId, Date.now(), { record: !DRY, ownerWake: ownerWake.has(agentId) }); if (!tempo.ok) { log('TEMPO HOLD ' + job.name + ' for ' + agentId + ': ' + tempo.reason); continue; } }   // wake caps (cadence.json bounds): an owner message is never held but still counts
     const names = reason[agentId];
     const viaInbox = names.includes(' OPEN in ');
     if (DRY) { log('WOULD run ' + job.name + ' for ' + agentId + ' (' + names + ')'); fired++; continue; }
-    log('RUN ' + job.name + ' for ' + agentId + ' (' + names + ')');
+    log('RUN ' + job.name + ' for ' + agentId + ' (' + names + ')' + (rest.fast ? ' [Sprint: new work; rest ' + SPRINT.cooldownFloorMin + ' min]' : ''));
     fired++;
     // Fire detached: the run is admitted on a 200 and then keeps going after we close the socket, so a long
     // loop can never be cancelled by this tick's own hold (a run tied to the request socket dies with it).
@@ -795,12 +862,15 @@ function lastRunTail(job) {
       if (viaInbox) state.agents[agentId].count++;
       if (ownerWake.has(agentId)) state.owner.count++;
       for (const slug of (hiringWake.get(agentId) || [])) state.hiringWake[slug] = new Date().toISOString();   // spent: once per round
+      if (SPRINT) { state.sprintSig[agentId] = sig; SM.wakes++; SM.pending[agentId] = { at: Date.now(), sig }; }
       fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
     } else {
       log('  ' + job.name + ' refused: HTTP ' + r.status + ' ' + r.body.slice(0, 160) + ' (not counted toward stall)');
     }
   }
   if (!DRY) fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
+  if (SM && !DRY) { SM.updatedAt = new Date().toISOString(); try { fs.mkdirSync(path.dirname(SPRINT_METRICS), { recursive: true }); fs.writeFileSync(SPRINT_METRICS, JSON.stringify(SM, null, 1) + '\n'); } catch (_) {} }
+  if (spreadHeld.length) log('SPRINT SPREAD: metered loop(s) held so the daily cap lasts the day: ' + spreadHeld.join('; '));
   // Competence ledger, at most once a day (company/tools/competence.js daily, shadow mode: collect, compute, scoreboard,
   // serious flags, merged-without-gate audit, chain anchor). Runs after the wakes so it can never delay one, in a child
   // process with a timeout, and one attempt a day: its failure is logged and never breaks or repeats a tick.

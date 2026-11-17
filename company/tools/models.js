@@ -44,7 +44,7 @@ const REL = {
   policy: 'company/model-policy.json', loops: 'company/tools/loops.json', company: 'company/company.json',
   state: 'company/state/models-state.json', moves: 'company/state/model-moves.jsonl', dispatchLog: 'company/work/dispatch-log.md',
   runs: '.starnet-data/workspaces/runs.jsonl', roster: '.starnet-data/workspaces/agent.roster.json', handoffs: 'company/work/handoffs',
-  staffLog: 'company/hiring/staff-log.md',
+  staffLog: 'company/hiring/staff-log.md', sprintEffort: 'company/state/sprint-effort.json',
 };
 const FAILOVER = { mode: 'live', errorsInARow: 3, errorHoldMin: 60, recoverAfterMin: 30, upAtMostEveryMin: 60 };
 const MAX_CHAIN = 8;
@@ -261,6 +261,8 @@ function makeModels(o) {
     return 'owner notified';
   }
 
+  function sprintMechanical(id) { const f = readJson(P('sprintEffort'), null); return !!(f && f.sprint === true && f.seats && f.seats[id] === 'mechanical'); }
+
   /* ---- failover: one pass over every seat with a chain ---- */
   async function tick(a) {
     a = a || {};
@@ -276,7 +278,13 @@ function makeModels(o) {
       ss.okSince = ss.okSince || {};
       const ctx = { pol, F, t, m: a.m || null, providers: pv, runs, reserve: s.claudeReserve === true || (s.claudeReserve !== false && id === ceoId()) };
       const ev = chain.map(e => ({ e, ...evaluate(id, e, ctx) }));
-      for (const x of ev) { const k = keyOf(x.e); if (x.ok) { if (!ss.okSince[k]) ss.okSince[k] = t; } else delete ss.okSince[k]; }
+      // Sprint (cadence.js; dispatch.js writes sprint-effort.json): a seat whose open items are all Effort: mechanical
+      // runs on the first entry of its OWN chain that is not Claude and can run, so the Claude quota stays for reasoning
+      // work. Only inside the chain, only to an entry that can run now; a soft hold, so Claude is back as soon as a
+      // reasoning item arrives (its okSince is kept, no recovery wait).
+      if (sprintMechanical(id) && ev.some(x => x.ok && x.e.provider !== 'claude-cli'))
+        for (const x of ev) if (x.ok && x.e.provider === 'claude-cli') Object.assign(x, { ok: false, soft: true, why: 'Sprint: every open item is Effort: mechanical, so Claude is kept for reasoning work' });
+      for (const x of ev) { const k = keyOf(x.e); if (x.ok || x.soft) { if (!ss.okSince[k]) ss.okSince[k] = t; } else delete ss.okSince[k]; }
       const cur = current(id, all), curKey = cur.pick ? keyOf(cur.pick) : null;
       const curIdx = curKey ? chain.findIndex(e => keyOf(e) === curKey) : -1;
       const target = ev.findIndex(x => x.ok);
@@ -297,9 +305,10 @@ function makeModels(o) {
       else if (!ev[curIdx].ok) { dir = target > curIdx ? 'down' : 'up'; why = keyOf(chain[curIdx]) + ' cannot run (' + ev[curIdx].why + ')'; }
       else if (target < curIdx) {
         const since = ss.okSince[keyOf(to)], last = ss.lastMoveAt;
-        if (t - since < F.recoverAfterMin * MIN) { out.push({ seat: id, action: 'wait', why: keyOf(to) + ' can run again since ' + hm(since) + '; back after ' + F.recoverAfterMin + ' min' }); continue; }
-        if (last && t - last < F.upAtMostEveryMin * MIN) { out.push({ seat: id, action: 'wait', why: 'moved at ' + hm(last) + '; at most one move back up every ' + F.upAtMostEveryMin + ' min' }); continue; }
-        dir = 'up'; why = keyOf(to) + ' has been able to run since ' + hm(since) + (target === 0 ? ' (the primary)' : '');
+        if (ss.sprintSoft) { dir = 'up'; why = 'Sprint: reasoning work again, back to ' + keyOf(to); }   // the soft hold ended: no recovery wait
+        else if (t - since < F.recoverAfterMin * MIN) { out.push({ seat: id, action: 'wait', why: keyOf(to) + ' can run again since ' + hm(since) + '; back after ' + F.recoverAfterMin + ' min' }); continue; }
+        else if (last && t - last < F.upAtMostEveryMin * MIN) { out.push({ seat: id, action: 'wait', why: 'moved at ' + hm(last) + '; at most one move back up every ' + F.upAtMostEveryMin + ' min' }); continue; }
+        else dir = 'up', why = keyOf(to) + ' has been able to run since ' + hm(since) + (target === 0 ? ' (the primary)' : '');
       }
       if (!dir) { out.push({ seat: id, action: 'stay', index: target }); continue; }
       if (cur.running && dir !== 'sync') { out.push({ seat: id, action: 'wait', why: 'a run is in progress; moved after it ends' }); continue; }
@@ -313,7 +322,7 @@ function makeModels(o) {
       const row = { at: new Date(t).toISOString(), seat: id, name, from: curKey, to: keyOf(to), effort: to.effort || null, toIndex: target, of: chain.length, direction: dir, why, applied: res.ok, roster: res.roster, routines: res.routines.length, errors: res.errors };
       if (!res.ok) { ss.failedAt = t; ss.failedKey = keyOf(to); note('MOVE FAILED ' + name + ' -> ' + label(to) + ': ' + res.errors.join('; ')); logMove(row); out.push(Object.assign({ action: 'failed' }, row)); continue; }
       ss.failedAt = null; ss.shadowKey = '';
-      if (dir !== 'sync') { ss.lastMoveAt = t; ss.lastWhy = why; ss.index = target; }
+      if (dir !== 'sync') { ss.lastMoveAt = t; ss.lastWhy = why; ss.index = target; ss.sprintSoft = ev.some(x => x.soft) && dir === 'down' ? true : undefined; }
       note((dir === 'sync' ? 'SYNC ' : 'MOVE ') + name + ' ' + (curKey || '?') + ' -> ' + label(to) + ' (entry ' + (target + 1) + ' of ' + chain.length + '): ' + why);
       if (dir === 'down' && target === chain.length - 1 && chain.length > 1) row.told = tellManager(id, cur.pick, to, why, ev);
       logMove(row);
@@ -619,6 +628,24 @@ async function selftest() {
       const r = await M().setPrimary({ seat: 'eng', primary: 'claude-cli/haiku', effort: 'low', by: 'owner' });
       assert.strictEqual(r.ok, true, JSON.stringify(r)); assert.deepStrictEqual(r.chain, ['claude-cli/haiku (low)', 'deepseek/deepseek-flash (high)', 'claude-cli/claude-sonnet-5-5', 'custom/MiniMax-M3.1-Flash']);
       assert.strictEqual(S.jobs[1].model, 'haiku');
+    });
+    await t('Sprint: a seat with only mechanical items leaves Claude for the next entry of its own chain, and comes back at once', async () => {
+      // eng's chain is now claude-cli/haiku, deepseek, claude-cli/sonnet, custom (set --primary above)
+      w(REL.sprintEffort, { sprint: true, seats: { eng: 'mechanical' } });
+      let r = await M().tick({ m: openM });
+      assert.strictEqual(S.jobs[1].provider, 'deepseek', JSON.stringify(r)); assert.ok(/Sprint: every open item is Effort: mechanical/.test(r.moves[0].why), JSON.stringify(r));
+      S.providers.deepseek = false; S.providers.custom = false;
+      r = await M().tick({ m: openM });
+      assert.strictEqual(S.jobs[1].provider, 'claude-cli', 'with no other entry able to run, the chain still runs on Claude: ' + JSON.stringify(r));
+      S.providers.deepseek = true;
+      r = await M().tick({ m: openM }); assert.strictEqual(S.jobs[1].provider, 'deepseek', JSON.stringify(r));
+      const closed = Object.assign({}, openM, { claude: { open: false, known: true, hard: true, why: 'weekly stop 95%' } });
+      w(REL.sprintEffort, { sprint: true, seats: { eng: 'reasoning' } });
+      r = await M().tick({ m: closed });
+      assert.strictEqual(S.jobs[1].provider, 'deepseek', 'reasoning work, but the pacer\'s Claude stop still holds in Sprint: ' + JSON.stringify(r));
+      w(REL.sprintEffort, { sprint: false, seats: {} });
+      r = await M().tick({ m: openM });
+      assert.strictEqual(S.jobs[1].provider, 'claude-cli', JSON.stringify(r)); assert.strictEqual(S.jobs[1].model, 'haiku'); assert.ok(/back to/.test(r.moves[0].why), JSON.stringify(r));
     });
     await t('hire default chain: interviewed, candidateDefault, a connected subscription', async () => {
       const ch = hireChain({ provider: 'deepseek', model: 'deepseek-flash', effort: 'high' }, [{ id: 'claude-cli', configured: true }], pol);

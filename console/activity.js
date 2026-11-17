@@ -147,7 +147,22 @@ module.exports = function activity(deps) {
         nextRunAt: next, lastRunAt: job ? job.lastRunAt || null : null, schedule: job ? job.scheduleDisplay || (job.schedule && (job.schedule.display || job.schedule.expr)) || null : null,
         soonerBecause: sooner, wakesOnMessage: !!c.wakeOnOwnerMessage, schedulerOn: cr.ok ? cr.data.enabled !== false && !cr.data.halted : null };
     });
-    return { ok: true, station: { up: !!snap.ok, error: snap.ok ? null : snap.error || 'HTTP ' + snap.status, feed: feed.up }, runs, seats };
+    // Sprint (start-up, cadence.js): while it is on, a seat's next wake is its open work, not a clock
+    let sprint = null;
+    try {
+      const cad = tool('cadence.js'); const v = cad.sprintOf(cad.load(), Date.now());
+      if (v.active) {
+        const s = cad.sprintStatus({ view: v });
+        sprint = { on: true, since: v.since, until: v.until, untilWhy: v.untilWhy, by: v.by, floorMin: v.config.cooldownFloorMin, wakes: s.wakes, idleWakes: s.idleWakes, idleWakeRatio: s.idleWakeRatio,
+          itemsDone: s.itemsDone, spentUsd: s.spentUsd, budgetUsd: s.budgetUsd, usdPerItem: s.usdPerItem, proposalsPerHour: s.proposalsPerHour, reviewsPerHour: s.reviewsPerHour };
+        for (const x of seats) {
+          const ln = (s.lanes || {})[x.id] || {};
+          x.lanes = { running: x.running, max: ln.max || 1, possible: ln.possible || 0, why: ln.why || null };
+          x.sprint = x.running ? 'working' : x.soonerBecause.length ? 'working' : 'waiting for work';
+        }
+      }
+    } catch (_) { sprint = null; }
+    return { ok: true, station: { up: !!snap.ok, error: snap.ok ? null : snap.error || 'HTTP ' + snap.status, feed: feed.up }, runs, seats, sprint };
   }
   function view(r, jobs) {
     const k = kindOf(r, jobs);

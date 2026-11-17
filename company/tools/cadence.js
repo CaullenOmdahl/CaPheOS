@@ -11,6 +11,10 @@
  *                                  [--auto-expire-min N] [--min-change-interval-min N] --by owner
  *   node company/tools/cadence.js end-temporary --by <name> [--why "…"]     end a temporary speed-up early
  *   node company/tools/cadence.js apply [--dry-run] [--approved-ref <questionId>] [--by <name>]
+ *   node company/tools/cadence.js sprint on|off [--hours N] [--budget-usd X] [--lanes N] --by <owner> [--why "…"]
+ *   node company/tools/cadence.js sprint config [--budget-usd X|default] [--lanes N] [--cooldown-floor-min N] [--fallback-tick-min N]
+ *                                  [--watch-debounce-sec N] --by <owner>
+ *   node company/tools/cadence.js sprint status [--json]      Sprint (start-up): on or off, until when, and how it is going
  *   node company/tools/cadence.js selftest
  *
  * Source of truth: company/work/ops/cadence.json (defaults: company/defaults/work/ops/cadence.json).
@@ -34,12 +38,21 @@
  * reload; dispatch.js asks tempoAllows(seatId, now) before each wake (wakes-per-hour/day caps, quiet hours).
  * `apply` writes per-seat fields into loops.json and updates loop routine schedules on the station (POST /api/cron/update).
  * loopEvery is minutes (30 => "every 30m"), "every Nm" / "every Nh", or a 5-field cron ("0 9 * * 1-5").
+ * Sprint (start-up), tempo.sprint {on, since, until|null, by, …config}: the owner's switch to work as fast as the open
+ * work allows (docs/TEMPO.md "Sprint"). While on: a seat whose open work CHANGED wakes as soon as it is idle (cooldown
+ * floor), the dispatcher wakes on inbox changes (dispatcher-loop.js watch) with a fallback timer, maxPerTick is the
+ * number of seats, and the hourly/daily wake caps are lifted. The spend cap, the finance gate, halts, guardrails, the
+ * pacer's subscription stops and per-seat model chains are untouched. It ends by itself at `until`, at certified +
+ * afterCertifiedH (the founding default), or when its own budget (budgetUsd, default 2 x the daily cap) is spent;
+ * sprintTick() (run by the dispatcher loop) writes the end and tells the owner in plain words. Owner only: an agent
+ * proposes it with harness-change.js propose --kind schedule --target cadence.json --change '{"/tempo/sprint/on":true}'.
  */
 'use strict';
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const co = require('./lib/company');
+const SP = require('./lib/sprint');
 
 const BUILTIN = { dispatcherTickMin: 10, defaultCooldownMin: 40, maxPerTick: 4, seats: {} };
 const DEFAULT_BOUNDS = { tickMin: [5, 30], cooldownMin: [10, 120], maxWakesPerHour: 12, maxWakesPerDay: 120, quietHours: null };
@@ -62,6 +75,11 @@ const S = {
   peakCfg: () => require('./offpeak-hold.js').peakConfig(),
   notify: text => require('./owner-inbox.js').send({ from: co.nameOf(co.ceo()), text }),
   now: () => Date.now(),
+  onboardingFile: co.p('company', 'state', 'onboarding-state.json'),
+  budgetFile: co.p('company', 'work', 'finance', 'dispatch-budget.json'),
+  runsFile: co.p('.starnet-data', 'workspaces', 'runs.jsonl'),
+  metricsFile: co.p('company', 'state', 'sprint-metrics.json'),
+  harnessLog: co.p('company', 'work', 'people', 'harness-log.jsonl'),
 };
 
 const E = (msg, extra) => Object.assign(new Error(msg), { refused: true }, extra || {});
@@ -134,6 +152,163 @@ function activeTemporary(c, now) {
   if (!t || !t.set || t.endedAt || !(Date.parse(t.expiresAt) > now)) return null;
   return t;
 }
+/* ---------------- Sprint (start-up): tempo.sprint ---------------- */
+function rawDoc() { return co.readJson(S.file, null) || co.readJson(S.defaultFile, null) || {}; }
+function dailyCapUsd() {
+  const b = co.readJson(S.budgetFile, null) || {};
+  if (typeof b.dailyUsd === 'number' && Number.isFinite(b.dailyUsd) && b.dailyUsd >= 0) return b.dailyUsd;
+  return Number(process.env.DISPATCH_DAILY_USD) > 0 ? Number(process.env.DISPATCH_DAILY_USD) : 2;
+}
+function unmeteredProviders() { const b = co.readJson(S.budgetFile, null) || {}; return Array.isArray(b.unmeteredProviders) && b.unmeteredProviders.length ? b.unmeteredProviders.map(String) : ['claude-cli']; }
+function sprintConfig(raw) { const out = {}; for (const k of SP.CONFIG_KEYS) out[k] = raw && raw[k] != null ? raw[k] : SP.SPRINT_DEFAULTS[k]; return out; }
+// metered USD of the runs since Sprint began (runs.jsonl, read from the end: lib/bounded.js)
+function sprintSpent(sinceMs) {
+  if (!sinceMs) return { usd: 0, runs: 0 };
+  let rows = []; try { rows = require('./lib/bounded').jsonlWindow(S.runsFile, { sinceMs }).rows; } catch (_) {}
+  return SP.sprintSpend(rows, sinceMs, unmeteredProviders());
+}
+function seatCount() { return Object.keys(loops().agents || {}).length || 1; }
+/* sprintOf(c, now, {spend}) -> {on, active, since, until, untilWhy, by, config, budgetUsd, ended:{reason, at}|null, …}
+ * on = the switch is on; active = on and none of its ends has come (until, certified + afterCertifiedH, budget spent).
+ * The budget end needs the spend (opts.spend or opts.withSpend); effective() never reads runs.jsonl, sprintTick() does
+ * once per dispatcher iteration and writes the end, so a spent budget ends Sprint within one iteration. */
+function sprintOf(c, now, opts) {
+  opts = opts || {};
+  const raw = (c && c.tempo && c.tempo.sprint) || null;
+  const config = sprintConfig(raw);
+  const budgetUsd = config.budgetUsd != null && Number.isFinite(Number(config.budgetUsd)) ? Number(config.budgetUsd) : Math.round(2 * dailyCapUsd() * 100) / 100;
+  const v = { on: false, active: false, stored: !!raw, since: (raw && raw.since) || null, by: (raw && raw.by) || null, until: null, untilWhy: null,
+    afterCertifiedH: raw && raw.afterCertifiedH != null ? Number(raw.afterCertifiedH) : null, config, budgetUsd, budgetIsDefault: config.budgetUsd == null,
+    endedAt: (raw && raw.endedAt) || null, endedBy: (raw && raw.endedBy) || null, endedWhy: (raw && raw.endedWhy) || null, ended: null };
+  if (!raw || raw.on !== true) return v;
+  v.on = true;
+  const sinceMs = Date.parse(raw.since || '') || null;
+  let until = Date.parse(raw.until || '') || null, why = until ? 'until ' + iso(until) + ' (set by ' + (raw.by || '?') + ')' : null;
+  if (!until && Number(raw.hours) > 0) { until = (sinceMs || now) + Number(raw.hours) * 3600e3; why = raw.hours + ' h from the start'; }
+  if (v.afterCertifiedH != null) {
+    const ob = co.readJson(S.onboardingFile, null) || {};
+    const cert = ob.certified ? Date.parse(ob.certifiedAt || '') : NaN;
+    if (Number.isFinite(cert)) { const u = cert + v.afterCertifiedH * 3600e3; if (!until || u < until) { until = u; why = 'certified + ' + v.afterCertifiedH + ' h'; } }
+    else if (!until) why = 'until the company is certified, then ' + v.afterCertifiedH + ' h more';
+    v.waitingForCertify = !Number.isFinite(cert);
+  }
+  v.until = until ? iso(until) : null; v.untilWhy = why;
+  const spend = opts.spend !== undefined ? opts.spend : opts.withSpend ? sprintSpent(sinceMs || now) : null;
+  if (spend) v.spent = spend;
+  if (until && until <= now) v.ended = { reason: /certified/.test(why || '') ? 'certified' : 'time', at: until };
+  else if (spend && budgetUsd > 0 && spend.usd >= budgetUsd) v.ended = { reason: 'budget', at: now };
+  v.active = !v.ended;
+  return v;
+}
+const ownerOnlySprint = () => E('Sprint (start-up) is the owner\'s switch: nobody lifts their own limits. Ask the owner, or propose it for review by finance, risk and people: node company/tools/harness-change.js propose --kind schedule --target cadence.json --change \'{"/tempo/sprint/on":true,"/tempo/sprint/hours":24}\' --why "…" --by <you>', { code: 'owner' });
+function saveSprint(doc, sprint, by, what, why) {
+  doc.tempo = Object.assign({}, DEFAULT_TEMPO, doc.tempo || {}, { sprint });
+  for (const k of ['dispatcherTickMin', 'defaultCooldownMin', 'maxPerTick']) if (doc[k] == null) doc[k] = BUILTIN[k];
+  if (!doc.seats) doc.seats = {};
+  record(doc, by, what, why || null); save(doc);
+}
+function sprintConfigFrom(o, into) {
+  if (o.budgetUsd != null) { if (o.budgetUsd === 'default') delete into.budgetUsd; else { const n = Number(o.budgetUsd); if (!(Number.isFinite(n) && n >= 0)) throw new Error('--budget-usd is a number of dollars >= 0, or default'); into.budgetUsd = n; } }
+  if (o.lanes != null) into.lanes = posInt(o.lanes, 'lanes');
+  if (o.cooldownFloorMin != null) into.cooldownFloorMin = posInt(o.cooldownFloorMin, 'cooldown-floor-min');
+  if (o.fallbackTickMin != null) into.fallbackTickMin = posInt(o.fallbackTickMin, 'fallback-tick-min');
+  if (o.watchDebounceSec != null) into.watchDebounceSec = posInt(o.watchDebounceSec, 'watch-debounce-sec');
+  return into;
+}
+/* setSprint(on, {by, hours, why, budgetUsd, lanes}): the owner turns Sprint on (until --hours from now, or until turned
+ * off) or off. Anyone else is refused and told how to propose it. */
+function setSprint(on, o = {}) {
+  if (!o.by) throw new Error('--by <owner> is required');
+  if (!isOwner(o.by)) throw ownerOnlySprint();
+  const now = S.now(); const doc = rawDoc();
+  const cur = Object.assign({}, (doc.tempo && doc.tempo.sprint) || {});
+  const cfg = {}; for (const k of SP.CONFIG_KEYS) if (cur[k] != null) cfg[k] = cur[k];
+  sprintConfigFrom(o, cfg);
+  let sprint, what;
+  if (on) {
+    const hours = o.hours != null ? Number(o.hours) : null;
+    if (hours != null && !(Number.isFinite(hours) && hours > 0 && hours <= 24 * 14)) throw new Error('--hours is a number of hours above 0 (at most 336)');
+    sprint = Object.assign(cfg, { on: true, since: iso(now), until: hours ? iso(now + hours * 3600e3) : null, by: o.by });
+    what = 'Sprint on' + (hours ? ' for ' + hours + ' h, until ' + sprint.until : ', until turned off');
+  } else {
+    if (cur.on !== true) return { ok: true, note: 'Sprint is already off' };
+    sprint = Object.assign(cfg, { on: false, since: cur.since || null, until: cur.until || null, by: cur.by || null, endedAt: iso(now), endedBy: o.by, endedWhy: typeof o.why === 'string' && o.why ? o.why.slice(0, 300) : 'turned off by the owner' });
+    what = 'Sprint off';
+  }
+  saveSprint(doc, sprint, o.by, what, typeof o.why === 'string' ? o.why : null);
+  return { ok: true, sprint: sprintOf(load(), S.now()), note: on ? 'the dispatcher loop picks it up within 30 s' : 'back to the base tempo within 30 s' };
+}
+function setSprintConfig(o = {}) {
+  if (!o.by) throw new Error('--by <owner> is required');
+  if (!isOwner(o.by)) throw ownerOnlySprint();
+  const doc = rawDoc(); const sprint = Object.assign({ on: false }, (doc.tempo && doc.tempo.sprint) || {});
+  const before = JSON.stringify(sprint); sprintConfigFrom(o, sprint);
+  if (JSON.stringify(sprint) === before) throw new Error('nothing to set');
+  saveSprint(doc, sprint, o.by, 'Sprint settings: ' + SP.CONFIG_KEYS.filter(k => sprint[k] != null).map(k => k + '=' + sprint[k]).join(', '), null);
+  return { ok: true, sprint: sprintOf(load(), S.now()) };
+}
+const hhmmOf = ms => { const lp = co.localParts(new Date(ms)); return lp.date + ' ' + String(lp.time || '').slice(0, 5); };
+function endMessage(v, c, st) {
+  const b = c.bounds || {};
+  const head = v.ended.reason === 'budget' ? 'Sprint (start-up) ended by itself: it spent its budget ($' + (v.spent ? v.spent.usd.toFixed(2) : '?') + ' of $' + v.budgetUsd.toFixed(2) + ' metered since ' + (v.since ? hhmmOf(Date.parse(v.since)) : 'it began') + ').'
+    : v.ended.reason === 'certified' ? 'Sprint (start-up) ended by itself: the company was certified, and Sprint was set to run until ' + v.afterCertifiedH + ' h after that (' + hhmmOf(v.ended.at) + ').'
+    : 'Sprint (start-up) ended by itself at ' + hhmmOf(v.ended.at) + ', the time it was set to run until.';
+  const ran = st && st.wakes ? ' While it ran: ' + st.itemsDone + ' item' + (st.itemsDone === 1 ? '' : 's') + ' done in ' + st.wakes + ' wake' + (st.wakes === 1 ? '' : 's') + (st.idleWakes ? ' (' + st.idleWakes + ' of them did nothing)' : '') + ', $' + (st.spentUsd || 0).toFixed(2) + ' metered.' : '';
+  return head + ' The company is back on its normal tempo: the dispatcher checks every ' + c.dispatcherTickMin + ' min, a seat rests ' + c.defaultCooldownMin + ' min between wakes, and at most ' + b.maxWakesPerHour + ' wakes an hour.' + ran
+    + ' To turn it back on: Controls › Ticks and cadence, or node company/tools/cadence.js sprint on --by owner.';
+}
+/* sprintTick({log, notify}) — the dispatcher loop runs this before every tick: stamps the start of a Sprint switched on
+ * without one (the founding default, a reviewed proposal), and ends a Sprint whose time or budget is up: written to
+ * cadence.json, one plain line in the dispatcher log, one owner message. */
+function sprintTick(o) {
+  o = o || {}; const log = o.log || (() => {}); const notify = o.notify || S.notify;
+  const now = S.now(); const doc = rawDoc(); const raw = doc.tempo && doc.tempo.sprint;
+  if (!raw || raw.on !== true) return { on: false };
+  const sprint = Object.assign({}, raw);
+  if (!sprint.since) {
+    sprint.since = iso(now);
+    if (Number(sprint.hours) > 0) { sprint.until = iso(now + Number(sprint.hours) * 3600e3); delete sprint.hours; }
+    saveSprint(doc, sprint, 'dispatcher', 'Sprint started' + (sprint.until ? ' (until ' + sprint.until + ')' : ''), sprint.by ? 'switched on by ' + sprint.by : null);
+    log('SPRINT started (switched on by ' + (sprint.by || '?') + '): seats with new open work wake as soon as they are idle; the wake caps are lifted; the budget, halts, guardrails and the pacer still hold');
+  }
+  const c = load(); const v = sprintOf(c, now, { withSpend: true });
+  if (!v.ended) return { on: true, active: true, sprint: v };
+  let st = null; try { st = sprintStatus({ now, view: v }); } catch (_) {}
+  const d2 = rawDoc(); const s2 = Object.assign({}, d2.tempo.sprint, { on: false, endedAt: iso(v.ended.at), endedBy: 'itself', endedWhy: v.ended.reason });
+  saveSprint(d2, s2, 'dispatcher', 'Sprint ended by itself (' + v.ended.reason + ')', null);
+  const message = endMessage(v, c, st);
+  log('SPRINT ENDED: ' + message);
+  try { notify(message); } catch (e) { log('SPRINT ENDED: the owner message failed: ' + e.message); }
+  return { on: false, ended: true, reason: v.ended.reason, message };
+}
+/* sprintStatus() -> how the Sprint is going: idle-wake ratio, items done, spend per item, Sprint spend vs budget,
+ * proposals/h vs reviews/h, time to certified. The dispatcher keeps the wake and item counts (sprint-metrics.json). */
+function sprintStatus(o) {
+  o = o || {}; const now = o.now || S.now(); const c = load();
+  const v = o.view || sprintOf(c, now, { withSpend: true });
+  const sinceMs = Date.parse(v.since || '') || null;
+  const endMs = v.on ? now : (Date.parse(v.endedAt || '') || now);
+  const m0 = co.readJson(S.metricsFile, null) || {};
+  const m = v.since && m0.since === v.since ? m0 : {};
+  const spent = v.spent || sprintSpent(sinceMs);
+  const hours = sinceMs ? Math.max(0, (endMs - sinceMs) / 3600e3) : 0;
+  let proposals = 0, reviews = 0;
+  if (sinceMs) {
+    let rows = []; try { rows = require('./lib/bounded').jsonlWindow(S.harnessLog, { sinceMs, tsOf: r => Date.parse(r.at) || 0 }).rows; } catch (_) {}
+    for (const r of rows) { const t = Date.parse(r.at) || 0; if (t < sinceMs || t > endMs) continue; if (r.event === 'proposed') proposals++; else if (r.event === 'approved' || r.event === 'rejected') reviews++; }
+  }
+  const ob = co.readJson(S.onboardingFile, null) || {};
+  const founded = Date.parse(((ob.steps || {}).founded || {}).at || '') || null, cert = ob.certified ? Date.parse(ob.certifiedAt || '') || null : null;
+  const wakes = Number(m.wakes) || 0, idle = Number(m.idleWakes) || 0, resolved = Number(m.resolved) || 0, done = Number(m.itemsDone) || 0;
+  const per = h => hours > 0 ? Math.round(h / hours * 10) / 10 : null;
+  return { ok: true, on: v.on, active: v.active, since: v.since, until: v.until, untilWhy: v.untilWhy, by: v.by, endedAt: v.endedAt, endedWhy: v.endedWhy, ended: v.ended,
+    hours: Math.round(hours * 10) / 10, wakes, idleWakes: idle, idleWakeRatio: resolved ? Math.round(idle / resolved * 100) / 100 : null, itemsDone: done,
+    spentUsd: spent.usd, runs: spent.runs, budgetUsd: v.budgetUsd, budgetIsDefault: v.budgetIsDefault, usdPerItem: done ? Math.round(spent.usd / done * 10000) / 10000 : null,
+    proposals, reviews, proposalsPerHour: per(proposals), reviewsPerHour: per(reviews),
+    certified: !!cert, timeToCertifiedH: founded && cert ? Math.round((cert - founded) / 3600e3 * 10) / 10 : null, sinceFoundedH: founded ? Math.round((now - founded) / 3600e3 * 10) / 10 : null,
+    lanes: m.lanes || {}, config: v.config, updatedAt: m.updatedAt || null };
+}
+
 /* effective({now}) -> what the dispatcher runs on right now: the base, or an active temporary change over it. */
 function effective(opts) {
   const now = (opts && opts.now) || S.now();
@@ -142,9 +317,21 @@ function effective(opts) {
   const t = activeTemporary(c, now);
   const eff = Object.assign({}, base);
   if (t) { if (t.set.dispatcherTickMin) eff.tickMin = t.set.dispatcherTickMin; if (t.set.defaultCooldownMin) eff.cooldownMin = t.set.defaultCooldownMin; }
-  const reason = t ? 'temporary (' + Object.entries(t.set).map(([k, v]) => k + '=' + v).join(', ') + ') by ' + t.by + ' until ' + t.expiresAt + ': ' + t.why
+  let reason = t ? 'temporary (' + Object.entries(t.set).map(([k, v]) => k + '=' + v).join(', ') + ') by ' + t.by + ' until ' + t.expiresAt + ': ' + t.why
     : 'base (owner-set)' + (c.temporary && c.temporary.set ? '; the last speed-up by ' + c.temporary.by + ' expired at ' + c.temporary.expiresAt : '');
-  return Object.assign(eff, { source: t ? 'temporary' : 'base', base, temporary: t, quiet: inQuiet(c.bounds.quietHours, now), reason });
+  let source = t ? 'temporary' : 'base', sprint = null;
+  const sp = sprintOf(c, now);
+  if (sp.active) {
+    // Sprint: the timer is only a fallback (inbox changes wake the loop: dispatcher-loop.js), every seat may wake in one
+    // tick, and a seat with NEW open work rests only the floor (dispatch.js); unchanged work keeps cooldownMin
+    eff.tickMin = Math.min(Number(eff.tickMin) || sp.config.fallbackTickMin, sp.config.fallbackTickMin);
+    eff.maxPerTick = Math.max(Number(eff.maxPerTick) || 1, seatCount());
+    sprint = { on: true, since: sp.since, until: sp.until, untilWhy: sp.untilWhy, by: sp.by, cooldownFloorMin: sp.config.cooldownFloorMin, watchDebounceSec: sp.config.watchDebounceSec,
+      minTickGapSec: sp.config.minTickGapSec, lanes: sp.config.lanes, budgetUsd: sp.budgetUsd, spreadDailyCap: sp.config.spreadDailyCap !== false };
+    source = 'sprint';
+    reason = 'Sprint (start-up) by ' + (sp.by || '?') + (sp.until ? ' until ' + sp.until : sp.untilWhy ? ' ' + sp.untilWhy : ', until turned off') + ': seats with new open work wake when idle (floor ' + sp.config.cooldownFloorMin + ' min), inbox changes wake the dispatcher, wake caps lifted; budget, halts, guardrails and the pacer still hold';
+  }
+  return Object.assign(eff, { source, base, temporary: t, sprint, quiet: inQuiet(c.bounds.quietHours, now), reason });
 }
 // the time of the last tempo change, for the rate limit: a recorded change, or the end of the last speed-up
 function lastTempoChange(c, now) {
@@ -179,9 +366,11 @@ function tempoAllows(seatId, now, opts) {
   opts = opts || {}; now = Number(now) || S.now();
   let c; try { c = load(); } catch (_) { return { ok: true, reason: 'cadence unreadable: not held' }; }
   const b = c.bounds; const wakes = readWakes(now); const n = wakeCounts(now, wakes);
-  const out = { hour: n.hour, day: n.day, maxPerHour: b.maxWakesPerHour, maxPerDay: b.maxWakesPerDay, ok: true, reason: null };
+  const sprint = sprintOf(c, now).active;   // Sprint lifts the hourly and daily caps (wakes are still counted); quiet hours still hold
+  const out = { hour: n.hour, day: n.day, maxPerHour: b.maxWakesPerHour, maxPerDay: b.maxWakesPerDay, ok: true, reason: null, sprint };
   if (!opts.ownerWake) {
     if (inQuiet(b.quietHours, now)) Object.assign(out, { ok: false, reason: 'quiet hours ' + b.quietHours + ' (' + co.TZ + ')' });
+    else if (sprint) { /* caps lifted */ }
     else if (Number(b.maxWakesPerHour) > 0 && n.hour >= b.maxWakesPerHour) Object.assign(out, { ok: false, reason: n.hour + ' wakes in the last hour, cap ' + b.maxWakesPerHour });
     else if (Number(b.maxWakesPerDay) > 0 && n.day >= b.maxWakesPerDay) Object.assign(out, { ok: false, reason: n.day + ' wakes in the last 24 h, cap ' + b.maxWakesPerDay });
   }
@@ -251,8 +440,9 @@ function view() {
   const n = wakeCounts(now);
   return { dispatcherTickMin: c.dispatcherTickMin, defaultCooldownMin: c.defaultCooldownMin, maxPerTick: c.maxPerTick, seats, unknownSeats: unknown,
     bounds: c.bounds, tempo: c.tempo,
-    effective: { tickMin: eff.tickMin, cooldownMin: eff.cooldownMin, maxPerTick: eff.maxPerTick, source: eff.source, quiet: eff.quiet, reason: eff.reason },
+    effective: { tickMin: eff.tickMin, cooldownMin: eff.cooldownMin, maxPerTick: eff.maxPerTick, source: eff.source, quiet: eff.quiet, reason: eff.reason, sprint: eff.sprint },
     temporary: eff.temporary ? Object.assign({}, eff.temporary) : null,
+    sprint: sprintOf(c, now),
     wakes: { hour: n.hour, day: n.day, maxPerHour: c.bounds.maxWakesPerHour, maxPerDay: c.bounds.maxWakesPerDay },
     loop: loopState(), changes: (c.changes || []).slice(-10).reverse(),
     file: path.relative(co.ROOT, fs.existsSync(S.file) ? S.file : S.defaultFile) };
@@ -370,16 +560,29 @@ function setBounds(o = {}) {
 
 /* For harness-change.js --kind schedule --target cadence.json: check a proposed {pointer: value} set and turn it into
  * whole-section sets ("/bounds", "/tempo", "/seats/<id>", or a base number), so the reviewed apply writes exactly that. */
-const PROPOSABLE = /^\/(dispatcherTickMin|defaultCooldownMin|maxPerTick|bounds\/(tickMin|cooldownMin|maxWakesPerHour|maxWakesPerDay|quietHours)|tempo\/(mode|autoExpireMin|minChangeIntervalMin)|seats\/[A-Za-z0-9_-]+\/(loopEvery|cooldownMin))$/;
+const PROPOSABLE = /^\/(dispatcherTickMin|defaultCooldownMin|maxPerTick|bounds\/(tickMin|cooldownMin|maxWakesPerHour|maxWakesPerDay|quietHours)|tempo\/(mode|autoExpireMin|minChangeIntervalMin)|tempo\/sprint\/(on|hours|lanes|budgetUsd)|seats\/[A-Za-z0-9_-]+\/(loopEvery|cooldownMin))$/;
 function proposal(doc, set, opts) {
   opts = opts || {};
   if (!set || typeof set !== 'object' || Array.isArray(set) || !Object.keys(set).length) throw new Error('--change is {"/pointer": value, …} on cadence.json');
   const d = JSON.parse(JSON.stringify(doc || {}));
   const out = {};
   for (const [p, v0] of Object.entries(set)) {
-    if (!PROPOSABLE.test(p)) throw new Error(p + ' is not a tempo number in cadence.json (allowed: /dispatcherTickMin, /defaultCooldownMin, /maxPerTick, /bounds/*, /tempo/*, /seats/<id>/loopEvery|cooldownMin)');
+    if (!PROPOSABLE.test(p)) throw new Error(p + ' is not a tempo number in cadence.json (allowed: /dispatcherTickMin, /defaultCooldownMin, /maxPerTick, /bounds/*, /tempo/*, /tempo/sprint/on|hours|lanes|budgetUsd, /seats/<id>/loopEvery|cooldownMin)');
     const parts = p.slice(1).split('/');
     let v = v0;
+    if (parts[0] === 'tempo' && parts[1] === 'sprint') {
+      // Sprint through review: only switching it ON (with hours, lanes, a budget); the switch itself stays the owner's
+      // to turn off, and a reviewed Sprint starts when the dispatcher loop first sees it (sprintTick stamps since/until)
+      const cur = Object.assign({}, DEFAULT_TEMPO, d.tempo || {}).sprint || {};
+      const sp = Object.assign({}, cur);
+      if (parts[2] === 'on') { if (v0 !== true) throw new Error('/tempo/sprint/on can only be proposed as true (turning Sprint off is the owner\'s, or it ends by itself)'); }
+      else if (parts[2] === 'hours') { const n = Number(v0); if (!(Number.isFinite(n) && n > 0 && n <= 72)) throw new Error('/tempo/sprint/hours is above 0 and at most 72 for a proposal'); sp.hours = n; }
+      else if (parts[2] === 'lanes') sp.lanes = posInt(v0, 'lanes');
+      else { const n = Number(v0); if (!(Number.isFinite(n) && n >= 0)) throw new Error('/tempo/sprint/budgetUsd is dollars >= 0'); sp.budgetUsd = n; }
+      if (set['/tempo/sprint/on'] === true) Object.assign(sp, { on: true, since: null, until: null, by: 'a reviewed proposal' }), delete sp.endedAt, delete sp.endedBy, delete sp.endedWhy, delete sp.afterCertifiedH;
+      d.tempo = Object.assign({}, DEFAULT_TEMPO, d.tempo || {}, { sprint: sp }); out['/tempo'] = d.tempo;
+      continue;
+    }
     if (parts[0] === 'bounds') {
       v = /Min$/.test(parts[1]) && parts[1] !== 'quietHours' ? parseRange(v0, parts[1]) : parts[1] === 'quietHours' ? parseQuiet(v0) : posInt(v0, parts[1]);
       d.bounds = Object.assign({}, DEFAULT_BOUNDS, d.bounds || {}, { [parts[1]]: v }); out['/bounds'] = d.bounds;
@@ -464,7 +667,7 @@ async function apply({ dry, approvedRef, by } = {}) {
   return { ok: !plan.errors.length, gate: level, applied: done, errors: plan.errors, warnings: plan.warnings };
 }
 
-module.exports = { S, BUILTIN, DEFAULT_BOUNDS, DEFAULT_TEMPO, load, view, effective, tempoAllows, wakeCounts, inQuiet, peakFindings, proposal, parseEvery, sameSchedule, setDefault, setSeat, setBounds, endTemporary, apply, isOwner };
+module.exports = { S, BUILTIN, DEFAULT_BOUNDS, DEFAULT_TEMPO, load, view, effective, tempoAllows, sprintOf, setSprint, setSprintConfig, sprintTick, sprintStatus, sprintSpent, wakeCounts, inQuiet, peakFindings, proposal, parseEvery, sameSchedule, setDefault, setSeat, setBounds, endTemporary, apply, isOwner };
 
 async function selftest() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadence-selftest-'));
@@ -482,6 +685,8 @@ async function selftest() {
     file: path.join(dir, 'work', 'cadence.json'), defaultFile: path.join(dir, 'defaults.json'), loopsFile: path.join(dir, 'loops.json'),
     wakesFile: path.join(dir, 'state', 'tempo-wakes.json'), loopStateFile: path.join(dir, 'state', 'dispatcher-loop.json'),
     unitDir: dir, service: () => 'test-station', gate: () => level, governance: () => null, notify: t => told.push(t), now: () => now,
+    onboardingFile: path.join(dir, 'state', 'onboarding-state.json'), budgetFile: path.join(dir, 'dispatch-budget.json'), runsFile: path.join(dir, 'runs.jsonl'),
+    metricsFile: path.join(dir, 'state', 'sprint-metrics.json'), harnessLog: path.join(dir, 'harness-log.jsonl'),
     decide: (cat, o) => { decided.push([cat, o.ref]); return decision; }, underStation: () => false, ownerName: () => 'Pat',
     peakCfg: () => mm.normalisePeak('deepseek', { timezone: co.TZ, days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], blocks: [['09:00', '12:00']], marginMin: 10 }),
     call: async (method, p, body) => {
@@ -603,6 +808,72 @@ async function selftest() {
     check('a second apply changes nothing', again.applied.length === 0 && calls.filter(x => x[1] === '/api/cron/update').length === 1, JSON.stringify(again));
     const raw = JSON.parse(fs.readFileSync(S.file, 'utf8'));
     check('apply keeps the file as written (no builtin values folded in)', raw.bounds && raw.tempo && raw.appliedBy === 'Alex');
+
+    // ---- Sprint (start-up) ----
+    fs.writeFileSync(S.budgetFile, JSON.stringify({ dailyUsd: 3, unmeteredProviders: ['claude-cli'] }));
+    now = Date.parse('2026-01-05T12:00:00Z');
+    check('Sprint is off unless switched on', !view().sprint.on && effective().source !== 'sprint' && view().sprint.budgetUsd === 6);
+    check('an agent cannot switch Sprint on; it is told how to propose it', throwsWith(() => setSprint(true, { by: 'Alex', why: 'go fast' }), /owner's switch.*harness-change\.js propose --kind schedule --target cadence\.json --change '\{"\/tempo\/sprint\/on":true/) === true);
+    S.underStation = () => true;
+    check('"owner" from inside an agent\'s run cannot switch Sprint on', throwsWith(() => setSprint(true, { by: 'owner' }), /owner's switch/) === true && !load().tempo.sprint);
+    S.underStation = () => false;
+    check('an agent cannot switch Sprint off or change its settings either', throwsWith(() => setSprint(false, { by: 'Alex' }), /owner's switch/) === true && throwsWith(() => setSprintConfig({ by: 'Alex', lanes: 4 }), /owner's switch/) === true);
+    const on = setSprint(true, { by: 'owner', hours: 2 });
+    let e2 = effective();
+    check('the owner switches Sprint on for 2 h: stored as tempo.sprint {on, since, until, by}', on.ok && load().tempo.sprint.on === true && load().tempo.sprint.since === iso(now) && load().tempo.sprint.until === iso(now + 2 * 3600e3) && load().tempo.sprint.by === 'owner', JSON.stringify(load().tempo.sprint));
+    check('Sprint: fallback tick, every seat per tick, cooldown floor 2 min, base cooldown kept for unchanged work', e2.source === 'sprint' && e2.tickMin === 5 && e2.maxPerTick >= 2 && e2.sprint.cooldownFloorMin === 2 && e2.cooldownMin === load().defaultCooldownMin && /budget, halts, guardrails and the pacer still hold/.test(e2.reason), JSON.stringify(e2));
+    { let tw = null; for (let k = 1; k < 115 && tw == null; k++) if (!inQuiet('22:00-07:00', now + k * 60000)) tw = now + k * 60000;
+      const sb = JSON.parse(fs.readFileSync(S.file, 'utf8')); const keep = sb.tempo.sprint; delete sb.tempo.sprint; fs.writeFileSync(S.file, JSON.stringify(sb));
+      const before = tw != null && !tempoAllows('desk', tw).ok && /cap 4/.test(tempoAllows('desk', tw).reason);
+      sb.tempo.sprint = keep; fs.writeFileSync(S.file, JSON.stringify(sb));
+      check('Sprint lifts the hourly and daily wake caps (the day cap of 4 holds without it)', tw == null || (before && tempoAllows('desk', tw).ok && tempoAllows('desk', tw).sprint === true), String(tw) + ' ' + JSON.stringify(tempoAllows('desk', tw))); }
+    check('Sprint keeps quiet hours', !tempoAllows('desk', quietNow).ok);
+    check('a running Sprint is untouched by sprintTick', sprintTick({ notify: t => told.push(t) }).active === true);
+    const told0 = told.length; const lines = [];
+    now += 2 * 3600e3 + 1000;
+    check('at its end time Sprint stops counting (effective is the base again)', effective().source !== 'sprint');
+    const t1s = sprintTick({ log: l => lines.push(l), notify: t => told.push(t) });
+    check('the end is written and the owner told in plain words, once', t1s.ended && t1s.reason === 'time' && load().tempo.sprint.on === false && load().tempo.sprint.endedBy === 'itself' && told.length === told0 + 1 && /^Sprint \(start-up\) ended by itself at .*back on its normal tempo: the dispatcher checks every \d+ min/.test(told[told.length - 1]) && lines.some(l => /^SPRINT ENDED: /.test(l)), JSON.stringify([t1s, told.slice(-1), lines]));
+    check('a second sprintTick says nothing more', !sprintTick({ notify: t => told.push(t) }).ended && told.length === told0 + 1);
+    // the budget: metered spend since the start ends it; Claude (subscription) spend does not count
+    setSprint(true, { by: 'Pat', budgetUsd: 1 });
+    fs.writeFileSync(S.runsFile, [{ runId: 'a', agentId: 'desk', provider: 'claude-cli', usd: 5, startedAt: now + 1000, endedAt: now + 2000 }, { runId: 'b', agentId: 'desk', provider: 'deepseek', usd: 0.4, startedAt: now + 1000, endedAt: now + 3000 }].map(r => JSON.stringify(r)).join('\n') + '\n');
+    now += 5000;
+    check('Sprint spend counts metered runs only ($0.40 of $1)', sprintTick({ notify: t => told.push(t) }).active === true && sprintSpent(now - 10000).usd === 0.4);
+    fs.appendFileSync(S.runsFile, JSON.stringify({ runId: 'c', agentId: 'agent', provider: 'deepseek', usd: 0.7, startedAt: now, endedAt: now + 1 }) + '\n');
+    now += 1000;
+    const tb = sprintTick({ notify: t => told.push(t) });
+    check('a spent Sprint budget ends Sprint and says so', tb.ended && tb.reason === 'budget' && /spent its budget \(\$1\.10 of \$1\.00/.test(told[told.length - 1]) && load().tempo.sprint.endedWhy === 'budget', JSON.stringify([tb, told.slice(-1)]));
+    // the founding default: on, until certified + 24 h
+    const rd = JSON.parse(fs.readFileSync(S.file, 'utf8')); rd.tempo.sprint = { on: true, since: null, until: null, by: 'founding', afterCertifiedH: 24 }; fs.writeFileSync(S.file, JSON.stringify(rd));
+    sprintTick({ notify: t => told.push(t) });
+    let sv = view().sprint;
+    check('founding default: started by the first tick, waiting for certification', sv.active && sv.since === iso(now) && sv.waitingForCertify && !sv.until && /certified/.test(sv.untilWhy), JSON.stringify(sv));
+    fs.mkdirSync(path.dirname(S.onboardingFile), { recursive: true });
+    fs.writeFileSync(S.onboardingFile, JSON.stringify({ steps: { founded: { at: iso(now - 30 * 3600e3) } }, certified: true, certifiedAt: iso(now - 10 * 3600e3) }));
+    sv = view().sprint;
+    check('once certified it runs until certified + 24 h', sv.active && sv.until === iso(now + 14 * 3600e3), JSON.stringify(sv));
+    now += 14 * 3600e3 + 1000;
+    const tc = sprintTick({ notify: t => told.push(t) });
+    check('certified + 24 h ends it, in plain words', tc.ended && tc.reason === 'certified' && /the company was certified, and Sprint was set to run until 24 h after that/.test(told[told.length - 1]));
+    // the proposal path: an agent proposes ON through the schedules review; it starts when the loop first sees it
+    check('a proposal may not switch Sprint off', throwsWith(() => proposal(load(), { '/tempo/sprint/on': false }), /only be proposed as true/) === true);
+    const prp = proposal(JSON.parse(fs.readFileSync(S.file, 'utf8')), { '/tempo/sprint/on': true, '/tempo/sprint/hours': 24 });
+    check('a proposal becomes a whole /tempo section with Sprint on and no start yet', prp['/tempo'].sprint.on === true && prp['/tempo'].sprint.hours === 24 && prp['/tempo'].sprint.since === null && prp['/tempo'].mode === 'bounded-auto', JSON.stringify(prp));
+    const rd2 = JSON.parse(fs.readFileSync(S.file, 'utf8')); rd2.tempo = prp['/tempo']; fs.writeFileSync(S.file, JSON.stringify(rd2));   // what harness-change.js apply writes
+    sprintTick({ notify: t => told.push(t) });
+    check('an applied proposal starts at the next loop iteration, for its hours', view().sprint.active && load().tempo.sprint.since === iso(now) && load().tempo.sprint.until === iso(now + 24 * 3600e3) && load().tempo.sprint.by === 'a reviewed proposal');
+    setSprint(false, { by: 'owner' });
+    check('the owner switches Sprint off', !view().sprint.on && load().tempo.sprint.endedBy === 'owner' && effective().source !== 'sprint');
+    // status: idle-wake ratio, items, spend per item, proposals/h vs reviews/h, time to certified
+    setSprint(true, { by: 'owner', budgetUsd: 50 });
+    fs.writeFileSync(S.metricsFile, JSON.stringify({ since: load().tempo.sprint.since, wakes: 10, resolved: 8, idleWakes: 2, itemsDone: 4 }));
+    fs.appendFileSync(S.runsFile, JSON.stringify({ runId: 'd', agentId: 'desk', provider: 'deepseek', usd: 0.8, startedAt: now + 10, endedAt: now + 20 }) + '\n');
+    fs.writeFileSync(S.harnessLog, [{ at: iso(now + 100), event: 'proposed' }, { at: iso(now + 200), event: 'proposed' }, { at: iso(now + 300), event: 'approved' }].map(r => JSON.stringify(r)).join('\n') + '\n');
+    now += 2 * 3600e3;
+    const ss = sprintStatus();
+    check('sprint status: idle-wake ratio, items done, $ per item, spend vs budget', ss.wakes === 10 && ss.idleWakeRatio === 0.25 && ss.itemsDone === 4 && ss.spentUsd === 0.8 && ss.usdPerItem === 0.2 && ss.budgetUsd === 50, JSON.stringify(ss));
+    check('sprint status: proposals/h vs reviews/h and time to certified', ss.proposals === 2 && ss.reviews === 1 && ss.proposalsPerHour === 1 && ss.reviewsPerHour === 0.5 && ss.timeToCertifiedH === 20, JSON.stringify(ss));
   } finally {
     Object.assign(S, saved);
     fs.rmSync(dir, { recursive: true, force: true });
@@ -627,6 +898,7 @@ if (require.main === module) {
       console.log('base: tick ' + v.dispatcherTickMin + ' min · cooldown ' + v.defaultCooldownMin + ' min · max ' + v.maxPerTick + ' wakes/tick  (' + v.file + ')');
       console.log('now:  tick ' + e.tickMin + ' min · cooldown ' + e.cooldownMin + ' min — ' + e.reason + (e.quiet ? ' · QUIET HOURS' : ''));
       console.log('bounds: tick ' + v.bounds.tickMin.join('-') + ' min · cooldown ' + v.bounds.cooldownMin.join('-') + ' min · wakes ' + v.wakes.hour + '/' + v.bounds.maxWakesPerHour + ' this hour, ' + v.wakes.day + '/' + v.bounds.maxWakesPerDay + ' in 24 h · quiet ' + (v.bounds.quietHours || 'off') + ' · mode ' + v.tempo.mode + ' (speed-ups last ' + v.tempo.autoExpireMin + ' min, ' + v.tempo.minChangeIntervalMin + ' min apart)');
+      { const sp = v.sprint; console.log('sprint: ' + (sp.active ? 'ON (start-up) by ' + (sp.by || '?') + (sp.until ? ' until ' + sp.until : ' — ' + (sp.untilWhy || 'until turned off')) + ' · floor ' + sp.config.cooldownFloorMin + ' min · lanes ' + sp.config.lanes + ' · budget $' + sp.budgetUsd : 'off' + (sp.endedAt ? ' (ended ' + sp.endedAt + ', ' + (sp.endedWhy || '?') + ')' : '') + ' — node company/tools/cadence.js sprint on --by owner')); }
       if (v.loop) console.log('loop: last tick ' + (v.loop.lastTickAt || '-') + ', next ' + (v.loop.nextTickAt || '-') + ' (' + (v.loop.status || '?') + ')');
       for (const [id, s] of Object.entries(v.seats)) {
         const f = k => s[k] ? s[k].value + (s[k].from === 'cadence' ? '' : ' [' + s[k].from + ']') : '-';
@@ -641,11 +913,29 @@ if (require.main === module) {
     if (cmd === 'set') return run(() => setSeat(a[1], { by, why, loopEvery: sopt('loop-every'), cooldown: sopt('cooldown'), priority: sopt('priority'), wakeOnInbox: sopt('wake-on-inbox'), wakeOnOwner: sopt('wake-on-owner'), peakOk: sopt('peak-ok') }));
     if (cmd === 'bounds') return run(() => setBounds({ by, why, tickMin: sopt('tick-min'), cooldownMin: sopt('cooldown-min'), maxWakesPerHour: sopt('max-wakes-per-hour'), maxWakesPerDay: sopt('max-wakes-per-day'), quietHours: sopt('quiet-hours'), mode: sopt('mode'), autoExpireMin: sopt('auto-expire-min'), minChangeIntervalMin: sopt('min-change-interval-min') }));
     if (cmd === 'end-temporary') return run(() => endTemporary({ by, why }));
+    if (cmd === 'sprint') {
+      const sub = a[1];
+      const cfg = { budgetUsd: sopt('budget-usd'), lanes: sopt('lanes'), cooldownFloorMin: sopt('cooldown-floor-min'), fallbackTickMin: sopt('fallback-tick-min'), watchDebounceSec: sopt('watch-debounce-sec') };
+      if (sub === 'on' || sub === 'off') return run(() => setSprint(sub === 'on', Object.assign({ by, why, hours: sopt('hours') }, cfg)));
+      if (sub === 'config') return run(() => setSprintConfig(Object.assign({ by }, cfg)));
+      if (sub === 'status' || !sub) {
+        const st = sprintStatus();
+        if (opt('json')) return out(st);
+        const f = (n, d) => n == null ? '-' : Number(n).toFixed(d == null ? 2 : d);
+        console.log('Sprint (start-up): ' + (st.active ? 'ON' : st.on ? 'ON, ending now' : 'off') + (st.since ? ' since ' + st.since : '') + (st.active ? (st.until ? ' until ' + st.until : ' — ' + (st.untilWhy || 'until turned off')) : st.endedAt ? ', ended ' + st.endedAt + ' (' + (st.endedWhy || '?') + ')' : '') + (st.by ? ' · by ' + st.by : ''));
+        console.log('  wakes ' + st.wakes + ' · did nothing ' + st.idleWakes + (st.idleWakeRatio != null ? ' (idle-wake ratio ' + f(st.idleWakeRatio) + ')' : '') + ' · items done ' + st.itemsDone + ' · $/item ' + f(st.usdPerItem, 4));
+        console.log('  spend $' + f(st.spentUsd) + ' of $' + f(st.budgetUsd) + (st.budgetIsDefault ? ' (2 x the daily cap)' : '') + ' metered · ' + st.runs + ' runs · ' + st.hours + ' h');
+        console.log('  proposals ' + st.proposals + ' (' + f(st.proposalsPerHour, 1) + '/h) vs reviews ' + st.reviews + ' (' + f(st.reviewsPerHour, 1) + '/h)');
+        console.log('  certified: ' + (st.certified ? 'yes, ' + st.timeToCertifiedH + ' h after founding' : 'not yet' + (st.sinceFoundedH != null ? ' (' + st.sinceFoundedH + ' h since founding)' : '')));
+        return;
+      }
+      throw new Error('sprint on|off [--hours N] --by owner, sprint config …, sprint status [--json]');
+    }
     if (cmd === 'apply') {
       const r = await apply({ dry: !!opt('dry-run'), approvedRef: sopt('approved-ref'), by });
       out(r);
       process.exit(r.ok ? 0 : 1);
     }
-    throw new Error('commands: show, set-default, set, bounds, end-temporary, apply, selftest');
+    throw new Error('commands: show, set-default, set, bounds, end-temporary, apply, sprint, selftest');
   })().catch(e => { console.error(JSON.stringify({ ok: false, error: e.message })); process.exit(1); });
 }

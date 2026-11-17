@@ -19,6 +19,7 @@ any that are optional. After applying, restart the station.
 | `0009-runtime-time-and-zone.diff` | the per-run runtime line gives agents date, time, IANA zone and UTC offset at run start (not just the date), and says to run `date` for the time now; zone = station TZ from company.json | yes |
 | `0010-headless-station.diff` | with `STARNET_HEADLESS=1` (written by setup-station.sh) the engine serves no station page (410 on every non-API path); the CaPheOS console is the UI and every `/api` route is unchanged | yes |
 | `0011-artifact-needs-steps.diff` | an artifact-contract quest closes on its file only once every step is ticked (a README written on day one no longer closes the whole quest) | yes |
+| `0012-workspace-lease-per-workdir.diff` | two runs of one agent may write in two different project folders at once (the workspace lease is keyed by agent + project folder); the StarNet half of Sprint lanes (docs/TEMPO.md) | **no**, a proposal: see its header |
 
 Numbers 0003 and 0006 are missing on purpose: they were art overlays specific to the company CaPheOS was extracted
 from, and were not carried over. Keep the gaps; new records take the next free number.

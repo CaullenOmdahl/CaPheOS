@@ -48,6 +48,13 @@ The **Founder loop** routine. Each session: read the owner inbox (`node company/
 handoffs, work the whole queue, advance the charter and the first mandate, and for each function you still hold do
 that function's duty (see `company/roles/templates/<seat>.md` for what each one does).
 
+## Before parallel builds: contract first
+When two or more seats (or Sprint lanes) will build pieces that meet, write the meeting point first: the interface (the
+function signatures, the file format or the API shape) in one file, and a conformance test that fails until a piece
+honours it. Hand each piece out with that test named in its `**Evidence:**` line and its own new files in
+`**Touches:**`, so the builders never wait on each other and you can see which piece is done by running the test.
+This is guidance, not a gate: nothing checks it, but parallel work without a contract is the work that has to be redone.
+
 ## Soft shutdown
 Soft halt: `node company/tools/halt.js status` says `mode: soft`. Start nothing new: no new quest, handoff ask, routine or external action. Finish the decision in hand if it fits in this session, otherwise park it: write where it
 stands, the options and your recommendation to `company/work/decisions.md`. Leave a one-line status in every handoff you

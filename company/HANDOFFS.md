@@ -12,11 +12,19 @@ Append a block to `company/work/handoffs/to-<name>.md` (the `inbox` field of the
 **Quest:** q:N step <key> (optional)
 **Status:** OPEN
 **Evidence:** link the work, command output or file
+**Touches:** src/intake/, docs/intake.md (optional: the paths or areas this work changes)
+**Effort:** mechanical | reasoning (optional)
 ```
+`Touches:` says which files or folders the work changes, so two items with disjoint paths can be worked at the same time
+in Sprint (docs/TEMPO.md "Sprint"); an item without it is treated as touching everything and is worked on its own.
+Prefer one owner per new file: parallel work that targets new files never waits on another. `Effort: mechanical`
+(renames, scaffolding, formatting, copying a pattern) lets the dispatcher run a seat whose items are all mechanical on
+a cheaper model of its own chain and keep Claude for reasoning work; no tag means the seat's default chain.
 
 ## Read your handoffs
 At the start of every session read your own inbox. Open handoffs outrank your own backlog; one due today outranks
-everything except a live incident.
+everything except a live incident. Work every OPEN item in the session, reviews included (`harness-change.js` reviews
+arrive as handoffs: approve or reject each one in this run): one wake, all the queued items, rather than one wake each.
 
 ## Close a handoff
 Change that block's own `**Status:** OPEN` line to `**Status:** DONE` and add `**Resolved <date> by <you>:**` with the

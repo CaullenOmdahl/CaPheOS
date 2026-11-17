@@ -263,11 +263,20 @@ export async function render(root, ctx) {
         w ? w.el : null);
       return row;
     });
-    const idle = d.seats.filter(s => !s.running).map(s => h('li', { class: 'body-s muted now-idle' }, s.name + ' is idle' +
+    // Sprint (start-up): a chip with the end time, the key numbers and an Off button; seats say working / waiting for work
+    const sp = d.sprint;
+    const sprintEl = sp ? h('div', { class: 'card p18 row-8', role: 'status', style: 'flex-direction:row;flex-wrap:wrap;align-items:center;gap:12px;padding:12px 16px' },
+      Tag('Sprint on — ' + (sp.until ? 'until ' + hhmm(sp.until, co.timezone) + ' (' + rel(sp.until) + ')' : sp.untilWhy && /certified/.test(sp.untilWhy) ? 'until certified + 24 h' : 'until you turn it off'), { variant: 'status', status: 'warning' }),
+      h('span', { class: 'mono-s muted', style: 'flex:1;min-width:200px' }, [sp.itemsDone + ' done', sp.wakes + ' wakes' + (sp.idleWakeRatio != null ? ' (' + Math.round(sp.idleWakeRatio * 100) + '% did nothing)' : ''),
+        '$' + Number(sp.spentUsd || 0).toFixed(2) + ' of $' + Number(sp.budgetUsd || 0).toFixed(2), sp.usdPerItem != null ? '$' + Number(sp.usdPerItem).toFixed(3) + '/item' : null,
+        sp.proposalsPerHour != null ? sp.proposalsPerHour + ' proposals/h vs ' + sp.reviewsPerHour + ' reviews/h' : null].filter(Boolean).join(' · ')),
+      Button('Off', { variant: 'secondary', size: 'sm', onClick: async () => { if (!await app.confirmDialog({ title: 'Turn Sprint off?', body: 'The company goes back to your base tempo: seats rest their full cooldown again and the wake limits apply.', confirm: 'Turn it off' })) return; try { await post('/cadence/sprint', { on: false }); app.toast('Sprint off.'); loadNow(); } catch (e) { app.toast('Sprint: ' + e.message, true); } } }),
+      Button('Tempo', { variant: 'ghost', size: 'sm', href: '#/controls/ticks' })) : null;
+    const idle = d.seats.filter(s => !s.running).map(s => sp && s.sprint ? h('li', { class: 'body-s muted now-idle' }, s.name + (s.sprint === 'working' ? ': working — ' + s.soonerBecause.join(', ') + '; starts as soon as the next tick sees it' : ': waiting for work') + '.') : h('li', { class: 'body-s muted now-idle' }, s.name + ' is idle' +
       (s.loop ? (s.enabled === false ? '; its loop "' + s.loop + '" is switched off' : s.schedulerOn === false ? '; the scheduler is off, so its loop does not run on schedule' : s.nextRunAt ? '; next run ' + hhmm(s.nextRunAt, co.timezone) + ' (' + rel(s.nextRunAt) + ')' : '') : '; it has no loop routine') +
       (s.soonerBecause.length ? ', or sooner: ' + s.soonerBecause.join(', ') : s.wakesOnMessage ? ', or sooner if you message it' : '') + '.'));
     fill(nowEl, h('div', { class: 'between-c' }, h('h2', { id: 'now-h', class: 'h3' }, 'Now'), d.station.up ? null : h('span', { class: 'err-line' }, 'Station not running: nobody can work.')),
-      kickEl, runs.length ? h('ul', { class: 'plain stack-8' }, runs) : null, idle.length ? h('ul', { class: 'plain stack-4' }, idle) : null);
+      sprintEl, kickEl, runs.length ? h('ul', { class: 'plain stack-8' }, runs) : null, idle.length ? h('ul', { class: 'plain stack-4' }, idle) : null);
   }
   function toggleWatch(r) {
     const w = watching.get(r.runId);

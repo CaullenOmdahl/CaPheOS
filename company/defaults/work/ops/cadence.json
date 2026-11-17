@@ -1,5 +1,5 @@
 {
-  "_doc": "How often the company wakes (its tempo). Source of truth for company/tools/cadence.js (copied to company/work/ops/cadence.json at founding); guide: docs/TEMPO.md. Base values (the owner's): dispatcherTickMin = the self-paced dispatcher loop's sleep between ticks (company/tools/dispatcher-loop.js re-reads it every iteration); defaultCooldownMin = rest between two dispatcher wakes of one seat when the seat sets no cooldownMin; maxPerTick = most loops the dispatcher starts in one tick. seats.<stationId> may set loopEvery (minutes or a 5-field cron: the seat's own loop routine schedule), cooldownMin, priority, wakeOnInbox, wakeOnOwnerMessage, peakOk (owner only: allow a loop clock inside a provider's peak-price block); `cadence.js apply` writes them into loops.json and the station. bounds and tempo are owner-set: inside bounds (and tempo.mode bounded-auto) the crew may make a temporary change that expires after tempo.autoExpireMin, at most one per tempo.minChangeIntervalMin; outside bounds is the owner's, or a harness-change.js --kind schedule --target cadence.json proposal reviewed by finance, risk and people. temporary = the active crew change (cadence.js writes it). Env DISPATCH_COOLDOWN_MIN / DISPATCH_MAX_PER_TICK still override at run time.",
+  "_doc": "How often the company wakes (its tempo). Source of truth for company/tools/cadence.js (copied to company/work/ops/cadence.json at founding); guide: docs/TEMPO.md. Base values (the owner's): dispatcherTickMin = the self-paced dispatcher loop's sleep between ticks (company/tools/dispatcher-loop.js re-reads it every iteration); defaultCooldownMin = rest between two dispatcher wakes of one seat when the seat sets no cooldownMin; maxPerTick = most loops the dispatcher starts in one tick. seats.<stationId> may set loopEvery (minutes or a 5-field cron: the seat's own loop routine schedule), cooldownMin, priority, wakeOnInbox, wakeOnOwnerMessage, peakOk (owner only: allow a loop clock inside a provider's peak-price block); `cadence.js apply` writes them into loops.json and the station. bounds and tempo are owner-set: inside bounds (and tempo.mode bounded-auto) the crew may make a temporary change that expires after tempo.autoExpireMin, at most one per tempo.minChangeIntervalMin; outside bounds is the owner's, or a harness-change.js --kind schedule --target cadence.json proposal reviewed by finance, risk and people. temporary = the active crew change (cadence.js writes it). Env DISPATCH_COOLDOWN_MIN / DISPATCH_MAX_PER_TICK still override at run time. tempo.sprint = Sprint (start-up), the owner's switch: on at founding until the company is certified + 24 h (afterCertifiedH), or until its budget (budgetUsd, default 2 x the daily cap) is spent; `cadence.js sprint on|off|status`; guide docs/TEMPO.md \"Sprint\".",
   "dispatcherTickMin": 10,
   "defaultCooldownMin": 40,
   "maxPerTick": 4,
@@ -13,7 +13,14 @@
   "tempo": {
     "mode": "bounded-auto",
     "autoExpireMin": 30,
-    "minChangeIntervalMin": 15
+    "minChangeIntervalMin": 15,
+    "sprint": {
+      "on": true,
+      "since": null,
+      "until": null,
+      "by": "founding",
+      "afterCertifiedH": 24
+    }
   },
   "seats": {}
 }
