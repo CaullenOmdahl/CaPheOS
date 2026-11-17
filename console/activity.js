@@ -188,7 +188,7 @@ module.exports = function activity(deps) {
     const cr = await stationGet('cron', 3000);
     const jobs = cr.ok && cr.data && Array.isArray(cr.data.jobs) ? cr.data.jobs : [];
     // finished runs (runs.jsonl), the reply's first sentence from the routine's last output or what we watched
-    let lines = []; try { lines = fs.readFileSync(co.p('.starnet-data', 'workspaces', 'runs.jsonl'), 'utf8').split('\n').slice(-400); } catch (_) {}
+    let lines = []; try { lines = require(co.p('company', 'tools', 'lib', 'bounded.js')).tailLines(co.p('.starnet-data', 'workspaces', 'runs.jsonl'), 400); } catch (_) {}   // the end only (runs.jsonl is StarNet's and only grows)
     for (const l of lines) {
       let r; try { r = JSON.parse(l); } catch (_) { continue; }
       if (!r || r.internal || !(Number(r.endedAt || r.ts) >= since)) continue;
@@ -232,7 +232,7 @@ module.exports = function activity(deps) {
     // replies on the owner channel
     try { for (const m of tool('owner-inbox.js').sent()) if (Date.parse(m.at) >= since) items.push({ at: m.at, kind: 'message', who: m.from || 'Company', title: (m.from || 'The company') + ' wrote to you', text: firstSentence(m.text), links: [{ label: 'Open', href: '#/comms/owner' }].concat(linksFor(m.text)) }); } catch (_) {}
     // decisions
-    let dec = ''; try { dec = fs.readFileSync(co.p('company', 'work', 'decisions.md'), 'utf8'); } catch (_) {}
+    let dec = ''; try { dec = fs.readFileSync(co.p('company', 'work', 'decisions.md'), 'utf8'); } catch (_) {}   // bounded: retention.js keeps 30 days live (docs/RETENTION.md)
     for (const l of dec.split('\n').filter(x => /^- \d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(x)).slice(-20)) {
       const m = /^- (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) (.*)$/.exec(l); if (!m) continue;
       const at = localIso(m[1], m[2]); if (!at || Date.parse(at) < since) continue;

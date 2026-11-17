@@ -295,8 +295,11 @@ function blockFor(agentId, opts) {
 }
 
 /* ---------------- sources ---------------- */
+const RUNS_WINDOW_DAYS = 60;   // detectors look back days, not months; older runs are never re-read
 function readRuns(ctx) {
-  const txt = fs.readFileSync(ctx.paths.runs, 'utf8');   // throws when missing: the run detectors then report not-ok
+  fs.statSync(ctx.paths.runs);   // throws when missing: the run detectors then report not-ok
+  // the last RUNS_WINDOW_DAYS only, read from the end (lib/bounded.js): runs.jsonl is StarNet's and only grows
+  const txt = require('./lib/bounded').jsonlWindowText(ctx.paths.runs, (ctx.now || Date.now()) - RUNS_WINDOW_DAYS * 86400e3);
   const out = [];
   for (const l of txt.split('\n')) { if (!l.trim()) continue; try { const r = JSON.parse(l); if (r && r.runId && r.agentId) out.push(r); } catch (_) {} }
   return out;

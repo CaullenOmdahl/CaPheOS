@@ -143,22 +143,49 @@ function schedulerAgents() {
 // is skipped, and a correctly named forgery names a runId that never appears in runs.jsonl once the "run" closes.
 function sha256Hex(s) { return require('crypto').createHash('sha256').update(String(s)).digest('hex'); }
 
+/* runs.jsonl is StarNet's and only grows (docs/RETENTION.md: StarNet owns its retention), so a check never parses all of
+ * it. readRuns() is the last RUNS_WINDOW_MS of it, read from the end (lib/bounded.js jsonlWindow: the file is appended as
+ * runs END, so it is in endedAt order) and kept per process while the file is unchanged. That window answers every
+ * question about runs in flight or just finished. A clearance row written BEFORE the window (a long-lived row) is
+ * matched by runsAround(at): a binary search of the file for the rows that ended around `at`, at most a few MB read.
+ * Either way the rows come from runs.jsonl itself, never from a copy an agent could edit. */
+const B = require('./lib/bounded');
+const RUNS_WINDOW_MS = 72 * 3600 * 1000;
+const RUNS_SEEK_SPAN = 8 * 1024 * 1024;
+let runsCache = null;
+let RUNS_FILE_OVERRIDE = null;          // in-process tests only (setRunsFile)
+const runsFile = () => RUNS_FILE_OVERRIDE || RUNS;
+const runOk = r => r && r.runId && r.agentId && Number.isFinite(r.startedAt);
 function readRuns() {
   if (RUNS_OVERRIDE) return RUNS_OVERRIDE;
-  const out = [];
-  try {
-    for (const l of fs.readFileSync(RUNS, 'utf8').split('\n')) {
-      if (!l.trim()) continue;
-      try { const r = JSON.parse(l); if (r && r.runId && r.agentId && Number.isFinite(r.startedAt)) out.push(r); } catch (_) {}
-    }
-  } catch (_) {}
-  return out;
+  let st; try { st = fs.statSync(runsFile()); } catch (_) { return []; }
+  const key = runsFile() + ':' + st.size + ':' + st.mtimeMs;
+  if (runsCache && runsCache.key === key && nowMs() - runsCache.at < 60 * 1000) return runsCache.rows;
+  const since = nowMs() - RUNS_WINDOW_MS;
+  const w = B.jsonlWindow(runsFile(), { sinceMs: since, maxBytes: 64 * 1024 * 1024 });
+  const rows = w.rows.filter(runOk);
+  runsCache = { key, at: nowMs(), since: w.truncated ? Infinity : since, rows };
+  return rows;
+}
+// rows of runs that ended around `at` (a run covers a moment from its start to its end plus the grace)
+function runsAround(at) {
+  if (RUNS_OVERRIDE) return RUNS_OVERRIDE;
+  try { return B.jsonlSeek(runsFile(), at, { backMs: PROVENANCE_GRACE_MS + 60 * 1000, spanBytes: RUNS_SEEK_SPAN }).filter(runOk); } catch (_) { return []; }
+}
+// the runs that can cover `at`: the recent window, plus the file around `at` when `at` is older than the window can answer
+function runsFor(at) {
+  const recent = readRuns();
+  if (RUNS_OVERRIDE || !Number.isFinite(at)) return recent;
+  const from = runsCache ? runsCache.since : nowMs() - RUNS_WINDOW_MS;
+  if (at - PROVENANCE_GRACE_MS - 60 * 1000 >= from + 12 * 3600 * 1000) return recent;   // a run ending up to 12 h after `at` is inside the window
+  const ids = new Set(recent.map(r => r.runId));
+  return recent.concat(runsAround(at).filter(r => !ids.has(r.runId)));
 }
 
 // The CEO run that covers `at` — the moment inside its window, or within the grace after it ended — or null.
 function clearingRunFor(at) {
   let best = null;
-  for (const r of readRuns()) {
+  for (const r of runsFor(at)) {
     if (String(r.agentId) !== CLEARING_AGENT) continue;
     const start = r.startedAt - 60 * 1000;
     const end = Number.isFinite(r.endedAt) ? r.endedAt + PROVENANCE_GRACE_MS : r.startedAt + PROVENANCE_MAX_OPEN_MS;
@@ -424,7 +451,7 @@ function readJsonl(file) {
   for (const line of text.split('\n')) {
     const t = line.trim();
     if (!t) continue;
-    try { rows.push(JSON.parse(t)); } catch (_) { /* a corrupt row proves nothing — it can never clear an action */ }
+    try { const r = JSON.parse(t); if (r && r._retention) continue; rows.push(r); } catch (_) { /* a corrupt row proves nothing — it can never clear an action */ }   // _retention: the pointer a retention roll leaves
   }
   return rows;
 }
@@ -1452,7 +1479,9 @@ function main() {
   if (cmd === 'list') {
     const rows = readJsonl(LEDGER);
     const at = nowMs();
-    const runs = readRuns();
+    // the recent window, plus the runs around each older row's moment (bounded reads; never the whole runs.jsonl)
+    const runs = readRuns().slice(); const seenRuns = new Set(runs.map(r => r.runId));
+    for (const r of rows) { const t = Date.parse(String((r && r.at) || '')); if (Number.isFinite(t)) for (const x of runsFor(t)) if (!seenRuns.has(x.runId)) { seenRuns.add(x.runId); runs.push(x); } }
     let liveRunId = null;
     try { const s = liveClearingSession(); if (s && s.live) liveRunId = s.runId || null; } catch (_) {}
     // ACT NARROWING AS A NUMBER: a row that lists no `acts` answers for EVERY act in its category — a row written for
@@ -1494,9 +1523,11 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { check, checkClaim, mustPass, recordSent, releaseIdem, IDEM, IDEM_TTL_MS, addClearance, closeClearance, closedReason, selftest, CATEGORIES, CLEARERS, CLEARING_AGENT, OWNER_PIN_FILE, targetMatches, allowedHost, hostOf, validateRow, listState, liveClearingSession, liveJournalRun, _internals: { readJsonl, readRuns, appendJsonl, LEDGER, LOG, ALLOWLIST, JOURNAL_DIR,
+module.exports = { check, checkClaim, mustPass, recordSent, releaseIdem, IDEM, IDEM_TTL_MS, addClearance, closeClearance, closedReason, selftest, CATEGORIES, CLEARERS, CLEARING_AGENT, OWNER_PIN_FILE, targetMatches, allowedHost, hostOf, validateRow, listState, liveClearingSession, liveJournalRun, _internals: { readJsonl, readRuns, runsFor, runsAround, appendJsonl, LEDGER, LOG, ALLOWLIST, JOURNAL_DIR,
   // In-process only (no CLI surface): lets a probe point the journal reader at a copy of a real journal.
   setJournalDir: (d) => { JOURNAL_DIR_OVERRIDE = d || null; return JOURNAL_DIR_OVERRIDE || JOURNAL_DIR; },
   // In-process only (no CLI surface): lets a probe hold runs.jsonl at an earlier state, so "what did the list say
   // mid-run" can be measured instead of described. It cannot write, clear or allow anything.
-  setRuns: (r) => { RUNS_OVERRIDE = Array.isArray(r) ? r : null; return RUNS_OVERRIDE; } } };
+  setRuns: (r) => { RUNS_OVERRIDE = Array.isArray(r) ? r : null; return RUNS_OVERRIDE; },
+  // In-process only: point the bounded runs reader at another file (tests/retention-bounded.test.js).
+  setRunsFile: (f) => { RUNS_FILE_OVERRIDE = f || null; runsCache = null; return runsFile(); } } };

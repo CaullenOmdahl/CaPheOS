@@ -57,16 +57,19 @@ function emitEvent(ev) {
 }
 
 const CDIR = () => work('commitments');
-function commitments() {
+// opts.archived: also the finished ones retention.js moved to commitments/archive/YYYY-MM/ (reports, evidence windows)
+function commitments(opts) {
+  const o = opts || {};
   const C = tool('commitments');
-  if (C && typeof C.list === 'function') { try { const l = C.list(); if (Array.isArray(l)) return l; } catch (_) {} }
-  let names = []; try { names = fs.readdirSync(CDIR()).filter(f => f.endsWith('.json')); } catch (_) {}
-  return names.map(f => readJson(path.join(CDIR(), f), null)).filter(c => c && c.id && c.state);
+  if (C && typeof C.list === 'function') { try { const l = C.list(o.archived ? { archived: true } : undefined); if (Array.isArray(l)) return l; } catch (_) {} }
+  let names = []; try { names = fs.readdirSync(CDIR()).filter(f => f.endsWith('.json')).map(f => path.join(CDIR(), f)); } catch (_) {}
+  if (o.archived) { try { for (const m of fs.readdirSync(path.join(CDIR(), 'archive'))) { try { for (const f of fs.readdirSync(path.join(CDIR(), 'archive', m))) if (f.endsWith('.json')) names.push(path.join(CDIR(), 'archive', m, f)); } catch (_) {} } } catch (_) {} }
+  return names.map(f => readJson(f, null)).filter(c => c && c.id && c.state);
 }
 function commitment(id) {
   const C = tool('commitments');
   if (C && typeof C.get === 'function') { try { const c = C.get(id); if (c) return c; } catch (_) {} }
-  return commitments().find(c => c.id === id) || null;
+  return commitments({ archived: true }).find(c => c.id === id) || null;
 }
 function transition(id, to, o) {
   o = o || {};

@@ -1,5 +1,5 @@
 // Automate (Automate.dc.html): dispatcher stats, station schedules (cron), workflow/loop/away cards.
-import { h, fill, Tag, errLine, empty, screenHead, table, rel, hhmm, NOT_CONNECTED } from '../ui.js';
+import { h, fill, Tag, Button, errLine, empty, screenHead, table, rel, hhmm, NOT_CONNECTED } from '../ui.js';
 import { api, post } from '../api.js';
 import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
@@ -22,6 +22,7 @@ export async function render(root, ctx) {
       kind('Away work', 'What the crew does while you are away: queue, grants, morning report, keep, later or discard.')),
     side);
   let cron = null, cad = null;
+  let older = [], olderCursor, expanded = false;   // dispatch-log lines before the newest page, loaded on demand (GET /api/dispatch?cursor=)
   async function load() {
     let disp = null;
     try { disp = await api('/dispatch'); } catch (e) { fill(log, errLine(e, 'Dispatch')); }
@@ -50,7 +51,16 @@ export async function render(root, ctx) {
           try { await post('/station/cron/run', { id: j.id }); app.toast('Started.'); } catch (e) { rowErr.textContent = e.message; }
         } }, 'Run now'), rowErr));
     }), { minWidth: 820 }) : empty('No routines on the station.'));
-    fill(log, lines.length ? h('ol', { class: 'timeline' }, lines.slice(-15).reverse().map(e => h('li', null, h('span', { class: 'mono muted' }, e.at || ''), h('span', { class: 'body-s' }, e.text))))
+    if (olderCursor === undefined) olderCursor = disp && disp.more ? disp.cursor : null;
+    const shown = expanded ? older.concat(lines) : lines.slice(-15);
+    const canMore = expanded ? olderCursor != null : (lines.length > 15 || olderCursor != null);
+    const loadOlder = async () => {
+      if (!expanded) { expanded = true; if (lines.length > 15) return load(); }
+      try { const d = await api('/dispatch?cursor=' + olderCursor); older = (d.log || []).map(parseLogLine).filter(x => x.text).concat(older); olderCursor = d.more ? d.cursor : null; load(); }
+      catch (e) { log.appendChild(errLine(e, 'Dispatch log')); }
+    };
+    fill(log, shown.length ? h('div', null, h('ol', { class: 'timeline' }, shown.slice().reverse().map(e => h('li', null, h('span', { class: 'mono muted' }, e.at || ''), h('span', { class: 'body-s' }, e.text)))),
+      canMore ? Button('Load older', { size: 'sm', onClick: loadOlder }) : null)
       : (log.firstChild ? log.firstChild : empty('Nothing in the dispatch log yet.')));
   }
   load();

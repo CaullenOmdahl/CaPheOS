@@ -61,6 +61,7 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/provenance.js` | a tool that writes a locked file says so here, so company/tools/locked-watch.js can tell the tool's own | risk | `selftest` | `record` `tail` `selftest` | — |
 | `company/tools/quest-audit.js` | find quests that no run can ever close. | tools | `--selftest` | `--json` `--selftest` | — |
 | `company/tools/restart-station-idle.sh` | restart the station service only when no agent loop is mid-run. | tools | `--selftest` | `--status` `--selftest` | station-token |
+| `company/tools/retention.js` | every growing file the company reads has a bound; this keeps each one inside it without losing a byte (docs/RETENTION.md). | tools | `selftest` / `--selftest` | `status` `apply` `audit` `selftest` | — |
 | `company/tools/routine-length.js` | how long each routine actually runs, against the context window it must fit in. | people | — | `[--days N] [--json]` | — |
 | `company/tools/routine-rules.js` | keep the house rules for scheduled runs at the end of every routine prompt. | tools | `selftest` / `--selftest` | `check` `ensure` `selftest` | — |
 | `company/tools/skills-hr.js` | the people owner's skill review. StarNet's background skill review drafts skill proposals for each | people | `selftest` | `pending` `show` `approve` `reject` `give` `take` `catalog` `prescreen` `log` `selftest` | station-token |
@@ -74,6 +75,7 @@ runbook (`company/runbooks/tool-management.md` §5a/§7b) to the files on disk; 
 | `company/tools/tool-parse.js` | does every tool in the layer even parse? | tools | `--selftest` | `--verbose` `--selftest` | — |
 | `company/tools/vision.js` | look at an image with DeepSeek V4.1 Flash, on the company's DeepSeek key. Never OpenRouter. | tools | — | `<image> "<question>" [--by] [--detail low|high]` | deepseek-key |
 | `company/tools/workspace-modes.sh` | the station's own files must not be readable by anyone but the user the station runs as. | risk | `--selftest` | `--check` `--fix` `--selftest` | — |
+| `company/tools/lib/bounded.js` | read the end of a growing file without reading all of it (tail, page, time window, binary seek). | tools | via retention.js selftest | library (require) | — |
 | `company/tools/lib/company.js` | the one place every CaPheOS tool learns who the company is, where things live, and who holds a seat. | tools | — | library (require) | station-token |
 | `company/tools/lib/core-loop.js` | small time helpers shared by the core-loop tools (dispatch, handoff-status, handoff-archive). | tools | — | library (require) | — |
 | `company/tools/lib/decision.js` | decision models: a deterministic function from observed state to a recommended action. No LLM, no code. | risk | via decide.js selftest | library (require) | — |

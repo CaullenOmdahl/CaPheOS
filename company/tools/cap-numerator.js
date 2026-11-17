@@ -78,10 +78,11 @@ function providerOfModel(model) {
   return null;
 }
 
-function readJsonl(p) {
+// sinceMs: read only the end of the file back to that moment (lib/bounded.js; runs.jsonl is StarNet's and only grows)
+function readJsonl(p, sinceMs) {
   const out = [];
   let text = '';
-  try { text = fs.readFileSync(p, 'utf8'); } catch (_) { return out; }
+  try { text = sinceMs ? require('./lib/bounded').jsonlWindowText(p, sinceMs) : fs.readFileSync(p, 'utf8'); } catch (_) { return out; }
   for (const line of text.split('\n')) {
     if (!line) continue;
     try { out.push(JSON.parse(line)); } catch (_) { out.bad = (out.bad || 0) + 1; }
@@ -117,7 +118,7 @@ function load(opts) {
   const now = Number(opts.now) || Date.now();
   const hours = Number(opts.hours) || 24;
   const since = now - hours * 3600 * 1000;
-  const runs = readJsonl(runsPath);
+  const runs = readJsonl(runsPath, since);
   const ledger = readJsonl(ledgerPath);
   const providers = Array.isArray(opts.providers) ? opts.providers : unmeteredProviders();
   const inWindow = new Map();

@@ -11,6 +11,10 @@ Restart=always
 RestartSec=3
 KillMode=mixed
 TimeoutStopSec=20
+# The station writes straight to a file opened O_APPEND, not to journald, so journald's rate limits
+# (LogRateLimitIntervalSec / LogRateLimitBurst) never apply here and are deliberately not set. The file's bound is
+# company/tools/retention.js: past 50 MB it is copied to station.log.1.gz (5 kept) and cut back in place (copytruncate;
+# O_APPEND means the station keeps writing at the new end, no restart needed). docs/RETENTION.md.
 StandardOutput=append:@ROOT@/.starnet-data/station.log
 StandardError=append:@ROOT@/.starnet-data/station.log
 

@@ -78,7 +78,7 @@ async function assess(opts) {
   const crew = (readJson(LOOPS, {}).agents) || {};
   const since = Date.now() - P.windowHours * 3600e3;
   const runs = [];
-  try { for (const l of fs.readFileSync(RUNS, 'utf8').split('\n')) { if (!l) continue; try { const r = JSON.parse(l); if (r.cronJobId && r.startedAt >= since) runs.push(r); } catch (_) {} } } catch (_) {}
+  try { for (const l of require('./lib/bounded').jsonlWindowText(RUNS, since).split('\n')) { if (!l) continue; try { const r = JSON.parse(l); if (r.cronJobId && r.startedAt >= since) runs.push(r); } catch (_) {} } } catch (_) {}
   const jobs = Array.isArray(opts.jobs) ? opts.jobs : await cronJobs();
   const people = [];
   for (const [id, c] of Object.entries(crew)) {

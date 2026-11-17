@@ -33,7 +33,7 @@ function template(name) {
 function data(party, from, to) {
   const a = Date.parse(from + 'T00:00:00Z'), b = Date.parse(to + 'T23:59:59.999Z');
   const inW = at => { const t = Date.parse(at); return t >= a && t <= b; };
-  const cs = S.commitments().filter(c => c.party === party && ((c.history || []).some(h => inW(h.at)) || inW(c.createdAt)));
+  const cs = S.commitments({ archived: true }).filter(c => c.party === party && ((c.history || []).some(h => inW(h.at)) || inW(c.createdAt)));
   const vr = S.readJsonl(S.work('verify', 'results.jsonl')).filter(r => r.party === party && inW(r.at));
   const ev = S.readJsonl(S.work('intake', 'events.jsonl')).filter(e => e.party === party && inW(e.at));
   let pname = party; const P = S.tool('parties'); if (P && typeof P.get === 'function') { try { const p = P.get(party); if (p && p.name) pname = p.name; } catch (_) {} }

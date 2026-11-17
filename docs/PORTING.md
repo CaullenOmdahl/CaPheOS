@@ -42,6 +42,10 @@ on the StarNet station). These rules apply to every file in `company/tools/`, `c
 7. **Stay inside your files.** Only edit the files you were assigned. If you need a helper every tool would use, add
    it to `company/tools/lib/` in a new file named for your group (`lib/<group>.js`) and say so in your report; do not
    rewrite `lib/company.js` (report what you'd add instead).
+8. **Every growing file has a bound.** Any file an agent or a per-tick tool reads in full must have a bound: a row in
+   `company/defaults/work/ops/retention.json` (rolled by `company/tools/retention.js`), or a bounded read
+   (`company/tools/lib/bounded.js`: tail, time window, byte offset). StarNet's `runs.jsonl` and transcripts are never
+   pruned by CaPheOS; read them bounded. See `docs/RETENTION.md`.
 
 ## Check before you finish
 

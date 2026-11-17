@@ -45,11 +45,11 @@ export function mountPanel(el, meta, app) {
       h('div', { class: 'row-14', style: 'align-items:flex-start' }, hide, info)),
     body);
   fill(el, sec);
-  let frameCtl = null, timer = null, dead = false;
+  let frameCtl = null, timer = null, dead = false, want = 200;   // a list panel's rows: 200 at a time, "Load more" asks for 200 more
   const load = async () => {
     if (document.hidden) return;
     let r;
-    try { r = await api('/panels/' + encodeURIComponent(meta.id) + '/data'); }
+    try { r = await api('/panels/' + encodeURIComponent(meta.id) + '/data?limit=' + want); }
     catch (e) { fill(body, errLine(e, 'Panel data')); return; }
     if (dead) return;
     sub.textContent = 'Panel by ' + (r.owner || meta.owner || '?') + ' · refreshes every ' + fmtSecs(r.refresh || 300);
@@ -60,6 +60,7 @@ export function mountPanel(el, meta, app) {
     } else {
       fill(body, renderKind(r.view || {}, r, (a, row) => runAction(r, a, row, app)),
         failed.length ? h('p', { class: 'err-line' }, 'Source ' + failed.map(([n, s]) => n + ': ' + (s.error || 'failed')).join('; ')) : null,
+        r.page && r.page.more ? h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => { want = Math.min(1000, want + 200); load(); } }, 'Load more (' + (r.page.total - r.data.length) + ' more)') : null,
         panelActions(r, app));
     }
     clearTimeout(timer);

@@ -53,11 +53,18 @@ export async function render(root, ctx) {
           h('td', null, Tag(x.overdue ? 'Overdue' : x.due ? 'Open' : 'Undated', { variant: 'status', status: x.overdue ? 'danger' : x.due ? 'warning' : 'neutral' })))), { minWidth: 720 })
           : empty('No open handoffs.'));
       } else if (tab === 'decisions') {
-        const d = await api('/decisions');
-        const ent = (d.entries || []).filter(e => String(e.text).trim());
-        n.decisions = ent.filter(e => /^#{1,3}\s|^-\s|^\*\*/.test(e.text)).length || null; drawTabs();
-        fill(body, ent.length ? h('div', { class: 'card' }, h('span', { class: 'caption muted' }, 'company/work/decisions.md, last 100 lines, newest last'), h('pre', { class: 'pre' }, ent.map(e => e.text).join('\n')))
-          : empty('No decisions recorded yet.'));
+        // paged from the end of the file (GET /api/decisions?cursor=): "Load older" fetches the 100 lines before these
+        let ent = [], cursor = null;
+        const more = async () => {
+          const d = await api('/decisions' + (cursor != null ? '?cursor=' + cursor : ''));
+          ent = (d.entries || []).filter(e => String(e.text).trim()).concat(ent); cursor = d.more ? d.cursor : null;
+          n.decisions = ent.filter(e => /^#{1,3}\s|^-\s|^\*\*/.test(e.text)).length || null; drawTabs();
+          fill(body, ent.length ? h('div', { class: 'card' }, h('span', { class: 'caption muted' }, 'company/work/decisions.md, last ' + ent.length + ' lines, newest last; older months in company/work/archive/decisions/'),
+            cursor != null ? Button('Load older', { size: 'sm', onClick: () => more().catch(e => body.appendChild(errLine(e, 'Decisions'))) }) : null,
+            h('pre', { class: 'pre' }, ent.map(e => e.text).join('\n')))
+            : empty('No decisions recorded yet.'));
+        };
+        await more();
       } else {
         const [t, x] = OTHER[tab];
         fill(body, h('div', { class: 'empty' }, h('h2', { class: 'h4' }, t), h('p', null, x), h('p', null, NOT_CONNECTED)));

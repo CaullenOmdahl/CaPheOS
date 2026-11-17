@@ -23,15 +23,16 @@ const tool = name => require(path.join(TOOLS, name));
 
 /* ---------------- small helpers ---------------- */
 const readJson = (f, fb) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return fb; } };
-function readLines(file) {
-  let t = ''; try { t = fs.readFileSync(file, 'utf8'); } catch (_) { return []; }
-  const out = []; for (const l of t.split('\n')) { if (!l.trim()) continue; try { out.push(JSON.parse(l)); } catch (_) {} }
-  return out;
-}
-function tailLines(file, n) {
-  let t = ''; try { t = fs.readFileSync(file, 'utf8'); } catch (_) { return []; }
-  return t.split('\n').filter(l => l.trim()).slice(-n);
-}
+// bounded reads (company/tools/lib/bounded.js, docs/RETENTION.md): a list endpoint never reads a whole growing file
+const BOUNDED = require(path.join(TOOLS, 'lib', 'bounded.js'));
+function tailLines(file, n) { try { return BOUNDED.tailLines(file, n); } catch (_) { return []; } }
+/* Paging for list endpoints: ?limit=N (default per endpoint, at most 1000) and ?cursor=<from the last answer>. A file
+ * list pages backwards from its end (cursor = the byte offset the next page ends at); an in-memory list by position.
+ * Every answer carries { cursor, more }; the console's "Load more" passes the cursor back. */
+const limitOf = (q, d) => { const n = Number(q && q.get && q.get('limit')); return Number.isInteger(n) && n > 0 ? Math.min(n, 1000) : d; };
+const cursorOf = q => { const c = q && q.get && q.get('cursor'); if (c == null || c === '') return null; if (!/^\d{1,15}$/.test(c)) bad('cursor must be a number from a previous answer'); return Number(c); };
+function filePage(file, q, d) { try { const p = BOUNDED.page(file, { limit: limitOf(q, d), cursor: cursorOf(q) }); return { lines: p.lines.slice().reverse(), cursor: p.cursor, more: p.more }; } catch (e) { if (e instanceof HttpError) throw e; return { lines: [], cursor: null, more: false }; } }
+function arrayPage(arr, q, d) { const list = Array.isArray(arr) ? arr : []; const from = cursorOf(q) || 0; const n = limitOf(q, d); const items = list.slice(from, from + n); const next = from + items.length; return { items, cursor: next < list.length ? next : null, more: next < list.length, total: list.length }; }
 class HttpError extends Error { constructor(status, msg, extra) { super(msg); this.status = status; this.extra = extra; } }
 const bad = (msg, status) => { throw new HttpError(status || 400, msg); };
 
@@ -323,9 +324,10 @@ async function crewView() {
   }
   return { ok: true, seats, station: r.ok ? 'up' : 'down', stationError: r.ok ? undefined : r.error };
 }
-function decisions() { return { ok: true, entries: tailLines(co.p('company', 'work', 'decisions.md'), 100).map(text => ({ text })) }; }
-function dispatchView() {
-  return { ok: true, state: readJson(co.p('company', 'work', 'dispatch-state.json'), null), log: tailLines(co.p('company', 'work', 'dispatch-log.md'), 60) };
+function decisions(q) { const p = filePage(co.p('company', 'work', 'decisions.md'), q, 100); return { ok: true, entries: p.lines.map(text => ({ text })), cursor: p.cursor, more: p.more }; }
+function dispatchView(q) {
+  const p = filePage(co.p('company', 'work', 'dispatch-log.md'), q, 60);
+  return { ok: true, state: readJson(co.p('company', 'work', 'dispatch-state.json'), null), log: p.lines, cursor: p.cursor, more: p.more };
 }
 // every round with its live stage (hire.js roundStage: candidates created, interviewing 2/3, waiting for pick by X, hired)
 function hiringRounds() {
@@ -337,9 +339,10 @@ function hiringRounds() {
   return rounds;
 }
 // a seat's first run since it was hired (runs.jsonl), for the Crew screen
+// (runs.jsonl is StarNet's and only grows: only the part since the hire is read, from the end, at most 32 MB)
 function firstRunSince(agentId, sinceMs) {
-  let lines = []; try { lines = fs.readFileSync(co.p('.starnet-data', 'workspaces', 'runs.jsonl'), 'utf8').split('\n'); } catch (_) {}
-  for (const l of lines) { let r; try { r = JSON.parse(l); } catch (_) { continue; }
+  let rows = []; try { rows = BOUNDED.jsonlWindow(co.p('.starnet-data', 'workspaces', 'runs.jsonl'), { sinceMs, maxBytes: 32 * BOUNDED.MB }).rows; } catch (_) {}
+  for (const r of rows) {
     const at = Number(r.startedAt || r.endedAt || r.ts) || 0;
     if (r && r.agentId === agentId && at >= sinceMs && !r.internal) return { runId: r.runId, at: new Date(at).toISOString(), outcome: r.outcome || (r.reason === 'done' ? 'succeeded' : r.reason || null) }; }
   return null;
@@ -403,11 +406,11 @@ route('GET', /^\/api\/chat\/([A-Za-z0-9_-]{1,64})$/, m => CHAT.info(m[1]));
 // the crew's work, visible (console/activity.js)
 route('GET', /^\/api\/now$/, () => ACT.now());
 route('GET', /^\/api\/now\/run\/([A-Za-z0-9_-]{1,80})$/, (m, q) => ACT.runEvents(m[1], q.get('after')));
-route('GET', /^\/api\/activity$/, () => ACT.recent());
+route('GET', /^\/api\/activity$/, async (m, q) => { const r = await ACT.recent(); if (!r || !Array.isArray(r.items)) return r; const p = arrayPage(r.items, q, 60); return Object.assign({}, r, { items: p.items, cursor: p.cursor, more: p.more, total: p.total }); });
 route('GET', /^\/api\/crew$/, crewView);
 route('GET', /^\/api\/handoffs$/, () => runApi('handoff-status.js', ['--due', '--json']));
-route('GET', /^\/api\/decisions$/, decisions);
-route('GET', /^\/api\/dispatch$/, dispatchView);
+route('GET', /^\/api\/decisions$/, (m, q) => decisions(q));
+route('GET', /^\/api\/dispatch$/, (m, q) => dispatchView(q));
 route('GET', /^\/api\/hiring$/, hiring);
 route('GET', /^\/api\/usage$/, usage);
 
@@ -476,10 +479,11 @@ route('POST', /^\/api\/cadence\/seat$/, async (m, q, b) => {
   return { ok: true, set, apply: apply.data };
 });
 route('GET', /^\/api\/panels$/, () => ({ ok: true, panels: panelsList() }));
-route('GET', /^\/api\/panels\/([a-z0-9-]+)\/data$/, async m => {
+route('GET', /^\/api\/panels\/([a-z0-9-]+)\/data$/, async (m, q) => {
   if (!PANEL_ID.test(m[1])) bad('bad panel id');
   const r = await tool('console-panel.js').render(m[1], { live: true });
   if (!r.ok) throw new HttpError(/^no panel/.test(r.error || '') ? 404 : 400, r.error || 'render failed', r);
+  if (Array.isArray(r.data)) { const p = arrayPage(r.data, q, 200); return Object.assign({}, r, { data: p.items, page: { cursor: p.cursor, more: p.more, total: p.total } }); }   // a list panel pages
   return r;
 });
 route('POST', /^\/api\/panels\/([a-z0-9-]+)\/(hide|unhide|approve|reject|remove)$/, (m, q, b) => {
@@ -487,7 +491,7 @@ route('POST', /^\/api\/panels\/([a-z0-9-]+)\/(hide|unhide|approve|reject|remove)
   const args = [m[2], m[1], '--by', OWNER]; if (m[2] === 'reject' && b.note) args.push('--note', str(b.note, 'note'));
   return runApi('console-panel.js', args);
 });
-route('GET', /^\/api\/governance-log$/, () => ({ ok: true, entries: readLines(co.p('company', 'state', 'governance-log.jsonl')).slice(-200) }));
+route('GET', /^\/api\/governance-log$/, (m, q) => { const p = filePage(co.p('company', 'state', 'governance-log.jsonl'), q, 200); const entries = []; for (const l of p.lines) { try { const r = JSON.parse(l); if (r && !r._retention) entries.push(r); } catch (_) {} } return { ok: true, entries, cursor: p.cursor, more: p.more }; });
 route('GET', /^\/api\/decision-models$/, () => runApi('decide.js', ['list', '--json']));
 // onboarding (company/tools/onboard.js): provisioning steps + the last certification; POST certify re-runs the 9 checks
 route('GET', /^\/api\/onboarding$/, () => runApi('onboard.js', ['--check', '--json']));
@@ -842,6 +846,17 @@ async function selftest() {
     for (const ep of ['/api/handoffs', '/api/decisions', '/api/dispatch', '/api/hiring', '/api/crew', '/api/governance-log', '/api/usage']) {
       r = await call('GET', ep);
       check('GET ' + ep + ' answers JSON', r.status < 500 && r.json && typeof r.json === 'object', { status: r.status, body: r.text.slice(0, 300) });
+    }
+    // list endpoints page from the end of their file: limit + cursor, every line exactly once, oldest page last
+    {
+      const df = path.join(tmp, 'company', 'work', 'decisions.md'); const keep = fs.existsSync(df) ? fs.readFileSync(df) : null;
+      fs.mkdirSync(path.dirname(df), { recursive: true }); fs.writeFileSync(df, '# Decisions\n\n' + Array.from({ length: 7 }, (_, i) => '- 2026-11-0' + (i + 1) + ' 09:00 decision ' + i).join('\n') + '\n');
+      const seen = []; let cur = null, pages = 0;
+      do { r = await call('GET', '/api/decisions?limit=3' + (cur != null ? '&cursor=' + cur : '')); seen.unshift(...r.json.entries.map(e => e.text)); cur = r.json.more ? r.json.cursor : null; pages++; } while (cur != null && pages < 10);
+      check('GET /api/decisions?limit=3 pages back to the first line, each line once', pages === 3 && seen.join('\n') === fs.readFileSync(df, 'utf8').trim().split('\n').filter(l => l.trim()).join('\n'), { pages, seen });
+      r = await call('GET', '/api/decisions?cursor=abc');
+      check('a malformed cursor is a 400', r.status === 400, r.status);
+      if (keep) fs.writeFileSync(df, keep); else fs.unlinkSync(df);
     }
     // core module mount
     r = await call('GET', '/api/m/demo/echo/hi');

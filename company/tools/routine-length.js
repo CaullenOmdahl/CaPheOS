@@ -53,7 +53,7 @@ try { const j = JSON.parse(fs.readFileSync(CRON, 'utf8')); for (const job of (j.
 
 const byRoutine = new Map();
 for (const id of Object.values(routineNames)) byRoutine.set(id, { routine: id, models: new Set(), all: [], finished: [] });
-let runsText = ''; try { runsText = fs.readFileSync(RUNS, 'utf8'); } catch (_) {}   // no station data yet: an empty table
+let runsText = ''; try { runsText = require('./lib/bounded').jsonlWindowText(RUNS, since); } catch (_) {}   // the window only, read from the end (lib/bounded.js)   // no station data yet: an empty table
 for (const l of runsText.split('\n')) {
   if (!l) continue;
   let r; try { r = JSON.parse(l); } catch (_) { continue; }

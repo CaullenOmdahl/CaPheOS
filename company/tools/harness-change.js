@@ -536,6 +536,7 @@ function governanceCategory(rec) {
   return 'tools';
 }
 function backupDir(ctx, rec) { return path.join(ctx.paths.dir, rec.id, 'before'); }
+
 const OWNED_FILES = new Set(['company/company.json', 'company/CHARTER.md', 'company/competence-policy.json', 'company/model-policy.json', 'company/tools/loops.json']);
 function frameworkRequest(ctx, rec, p) {
   const file = rec && rec.target && rec.target.file;
@@ -715,7 +716,8 @@ function stat(list) {
   return Object.assign(c, { judged, finishRate: judged ? Math.round(100 * c.finished / judged) : null, medianMinutes: median(done.map(r => (r.durationMs || 0) / 60000)),
     medianTokens: median(done.map(r => r.tokens || 0)), models: [...new Set(list.map(r => (r.provider || '?') + '/' + (r.model || '?')))] });
 }
-function readRuns(ctx) { const out = []; let txt = ''; try { txt = fs.readFileSync(ctx.paths.runs, 'utf8'); } catch (_) { return out; } for (const l of txt.split('\n')) { if (!l) continue; try { const r = JSON.parse(l); if (r && r.cronJobId && Number(r.startedAt)) out.push(r); } catch (_) {} } return out; }
+// the last 60 days only, read from the end (lib/bounded.js): a results check compares 14 days before an apply with 3 after
+function readRuns(ctx) { const out = []; let txt = ''; try { fs.statSync(ctx.paths.runs); txt = require('./lib/bounded').jsonlWindowText(ctx.paths.runs, (ctx.now || Date.now()) - 60 * 86400e3); } catch (_) { return out; } for (const l of txt.split('\n')) { if (!l) continue; try { const r = JSON.parse(l); if (r && r.cronJobId && Number(r.startedAt)) out.push(r); } catch (_) {} } return out; }
 function results(ctx, rec, runs) {
   const at = Number(rec.appliedAtMs) || Date.parse(rec.appliedAt);
   const scope = rec.kind === 'schedule' || rec.kind === 'model'

@@ -6,7 +6,9 @@ lives here.
 ## Contract
 
 - One append-only file, `company/work/ledger/ledger.jsonl`. Each row: `seq`, `at`, `type`, fields, `prev` (the previous
-  row's hash) and `hash` = sha256(prev + row). `ledger.js check` verifies the chain; the tick reports a break.
+  row's hash) and `hash` = sha256(prev + row). The tick verifies the chain from the last verified anchor
+  (`company/state/ledger-anchor.json`: seq, hash, byte offset) forward and reports a break; `ledger.js verify --full`
+  (and reconcile) checks every row from the first. The ledger is never rolled (docs/RETENTION.md).
 - Types: `invoice` (lines from delivered commitments: `verified` or `closed`, same party, each invoiced once unless
   credited in full), `invoice-sent`, `receipt` (no more than outstanding), `credit-note` (the only correction; nothing
   is edited), `payout` (external gate category `spend`), `reconcile`. Sends carry a gate idempotency key (invoice id +
@@ -24,7 +26,7 @@ lives here.
 
 | Tool | Purpose |
 |---|---|
-| `tools/ledger.js` | `invoice`, `send`, `receipt`, `credit`, `payout`, `reconcile`, `summary`, `check`, `--selftest` |
+| `tools/ledger.js` | `invoice`, `send`, `receipt`, `credit`, `payout`, `reconcile`, `summary`, `verify [--full]`, `check`, `--selftest` |
 
 ## External acts, limits, meters, panels, halt
 

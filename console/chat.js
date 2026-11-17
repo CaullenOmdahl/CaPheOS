@@ -25,7 +25,7 @@ const http = require('http');
 function contextNote(id, s, co) {
   const lines = [];
   try {
-    const runs = fs.readFileSync(co.p('.starnet-data', 'workspaces', 'runs.jsonl'), 'utf8').trim().split('\n').slice(-400)
+    const runs = require(co.p('company', 'tools', 'lib', 'bounded.js')).tailLines(co.p('.starnet-data', 'workspaces', 'runs.jsonl'), 400)   // the end only
       .map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(r => r && r.agentId === id && !/^console-/.test(String(r.streamId || '')));
     for (const r of runs.slice(-3)) {
       const when = r.endedAt || r.at || r.ts; const t = when ? new Date(when).toISOString().slice(0, 16).replace('T', ' ') : '';

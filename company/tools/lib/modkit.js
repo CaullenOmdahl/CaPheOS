@@ -40,7 +40,7 @@ function tool(name) {
 
 function readJsonl(file) {
   let t = ''; try { t = fs.readFileSync(file, 'utf8'); } catch (_) { return []; }
-  const out = []; for (const l of t.split('\n')) { if (!l.trim()) continue; try { out.push(JSON.parse(l)); } catch (_) {} }
+  const out = []; for (const l of t.split('\n')) { if (!l.trim()) continue; try { const r = JSON.parse(l); if (r && r._retention) continue; out.push(r); } catch (_) {} }   // _retention: a retention roll's pointer row
   return out;
 }
 function appendJsonl(file, row) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.appendFileSync(file, JSON.stringify(row) + '\n'); return row; }

@@ -94,7 +94,7 @@ const MANIFEST = [
   { p: 'company/state/governance.json', cls: 'F', writers: ['governance.js'], owner: 'risk', area: 'policy', why: 'self-governance: how much the company decides without the owner (only the owner changes it, through governance.js)' },
   // alwaysWatched: still reported while the harnessSelfEdit guardrail is off, because it is the switch itself
   { p: 'company/state/guardrails.json', cls: 'F', writers: ['guardrails.js'], owner: 'risk', area: 'policy', alwaysWatched: true, why: 'the guardrail switches (only the owner changes them, through guardrails.js)' },
-  ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js']
+  ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js', 'retention.js']
     .map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'tools', area: 'tool', why: 'a tool that measures or limits the crew, or that these tools depend on' })),
   ...['merge-gate.js', 'premerge-check.js', 'external-gate.js', 'connector-scope.js', 'default-branch-watch.js'].map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'risk', area: 'tool', why: 'a gate or the evidence it reads' })),
   { p: 'company/work/engineering/evidence/*.json', cls: 'F', writers: ['test-substrate.sh'], owner: 'risk', area: 'gate', why: 'test-substrate verdicts (a hand-made pass opens the merge gate): flagged, never auto-removed, so a real evidence file never blocks a merge' },
@@ -339,8 +339,8 @@ function scanCalls(ctx, fromMs, needles) {
   return hits;
 }
 function activeRuns(ctx, fromMs, toMs) {
-  const out = []; let txt = ''; try { txt = fs.readFileSync(ctx.paths.runs, 'utf8'); } catch (_) { return out; }
-  for (const l of txt.split('\n').slice(-3000)) { if (!l) continue; let r; try { r = JSON.parse(l); } catch (_) { continue; } if (!r || !r.agentId) continue; const s = Number(r.startedAt), e = Number(r.endedAt) || toMs; if (s <= toMs && e >= fromMs) out.push(nameOf(ctx, r.agentId) + ' (run ' + String(r.runId || '').slice(0, 8) + ')'); }
+  const out = []; let lines = []; try { lines = require('./lib/bounded').tailLines(ctx.paths.runs, 3000, { maxBytes: 32 << 20 }); } catch (_) { return out; }
+  for (const l of lines) { if (!l) continue; let r; try { r = JSON.parse(l); } catch (_) { continue; } if (!r || !r.agentId) continue; const s = Number(r.startedAt), e = Number(r.endedAt) || toMs; if (s <= toMs && e >= fromMs) out.push(nameOf(ctx, r.agentId) + ' (run ' + String(r.runId || '').slice(0, 8) + ')'); }
   for (const j of (ctx.jobs || [])) if (j && (j.inFlight || j.state === 'running') && j.agentId) out.push(nameOf(ctx, j.agentId) + ' (' + j.name + ', running now)');
   return [...new Set(out)].slice(0, 8);
 }
@@ -397,6 +397,47 @@ function tile(region, chunks) {
   }
   if (fStart >= 0) foreign.push([fStart, region.length]);
   return { foreign, kept: Buffer.concat(kept) };
+}
+// A retention roll (company/tools/retention.js, docs/RETENTION.md) moves old entries of a log into its archive and leaves
+// a pointer line. Its provenance row says exactly how: the file it left (sha256/bytes), the file before (beforeSha), and
+// where the archived bytes went. unroll() rebuilds the file as if the roll never happened — every archived byte must be
+// read back from the archive with its recorded hash — so the usual checks (appends tiled, history unchanged, grow-only)
+// run on the whole history. A roll that does not rebuild byte for byte is reported, never accepted, never "repaired".
+function unroll(ctx, cur, rolls) {
+  let buf = cur.buf;
+  for (const r of rolls.slice().reverse()) {
+    if (!(buf.length >= r.bytes) || sha(buf.subarray(0, r.bytes)) !== r.sha256) return { error: 'the file no longer starts with the bytes the roll left' };
+    const after = buf.subarray(0, r.bytes), rest = buf.subarray(r.bytes);
+    const pieces = [];
+    for (const c of r.chunks || []) {
+      const rel = String(c.archive || '');
+      if (!rel.startsWith('company/') || rel.split('/').includes('..') || !/\/archive\//.test(rel)) return { error: 'the roll names an archive outside company/**/archive/ (' + rel.slice(0, 80) + ')' };
+      let b; try { const fd = fs.openSync(path.join(ctx.root, rel), 'r'); try { b = Buffer.alloc(c.bytes); const n = fs.readSync(fd, b, 0, c.bytes, c.offset); if (n !== c.bytes) b = null; } finally { fs.closeSync(fd); } } catch (_) { b = null; }
+      if (!b || sha(b) !== c.sha256) return { error: 'the archived bytes in ' + rel + ' (offset ' + c.offset + ') are missing or changed' };
+      pieces.push(b);
+    }
+    const stream = Buffer.concat(pieces); const parts = []; let p = 0, sp = 0;
+    for (const [at, drop, take] of (r.ops || []).slice().sort((x, y) => x[0] - y[0])) {
+      if (at < p || at > after.length) return { error: 'the roll record is malformed' };
+      parts.push(after.subarray(p, at)); p = at + drop; parts.push(stream.subarray(sp, sp + take)); sp += take;
+    }
+    parts.push(after.subarray(Math.min(p, after.length)));
+    if (sp !== stream.length) return { error: 'the roll record does not account for every archived byte' };
+    const before = Buffer.concat(parts);
+    if (sha(before) !== r.beforeSha) return { error: 'live file plus archive do not rebuild the file as it was before the roll' };
+    buf = Buffer.concat([before, rest]);
+  }
+  return { buf };
+}
+function decideRolled(ctx, key, m, b, cur, prov, recorded, flagOnly) {
+  const rolls = cur.exists ? byWriter(prov.get(key) || [], ['retention.js']).filter(r => r.kind === 'roll') : [];
+  if (!rolls.length) return decide(ctx, key, m, b, cur, prov, recorded, flagOnly);
+  const u = unroll(ctx, cur, rolls);
+  if (u.error) return { ok: false, act: 'flag', why: 'a retention roll was recorded, but ' + u.error };
+  const whole = Object.assign({}, cur, { buf: u.buf, bytes: u.buf.length, sha256: sha(u.buf) });
+  const d = decide(ctx, key, m, b, whole, prov, recorded, flagOnly);
+  if (d.ok === false) return { ok: false, act: 'flag', why: 'rolled by retention.js, but ' + d.why };
+  return Object.assign({}, d, { why: 'rolled by retention.js (every archived byte checked); ' + d.why });
 }
 function decide(ctx, key, m, b, cur, prov, recorded, flagOnly) {
   const rows = prov.get(key) || [];
@@ -642,7 +683,7 @@ function runTick(ctx) {
   };
   for (const c of changed) {
     if (fromFramework(c.key, c.s)) { if (!ctx.dry) accept(ctx, base, c.key, c.m, c.s); notes.push('framework update accepted: ' + c.key + ' matches the checked-out commit'); continue; }
-    const d = decide(ctx, c.key, c.m, c.b, c.s, prov, rec[c.key], flagOnly);
+    const d = decideRolled(ctx, c.key, c.m, c.b, c.s, prov, rec[c.key], flagOnly);
     const direct = hits.filter(x => x.key === c.key && x.write && !seen.has(callId(x)));   // a call already reported (the 2-minute overlap) counts once
     if (d.ok === null) continue;
     // a direct agent APPEND to a many-writer F log (decisions.md, dispatch-log.md, the external/merge logs, runs.jsonl) is
@@ -1025,7 +1066,29 @@ function undoCmd(ctx, id, o) {
   return 'undid ' + id + ': ' + e.key + ' is back as it was before the watcher put it back';
 }
 
-module.exports = { tick, classify, lockedNames, MANIFEST, context, _internals: { tile, decide, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
+// For company/tools/retention.js: run fn while holding the watcher's lock (a tick never sees a roll half done).
+function withWatchLock(opts, fn) { return withLock(context(opts), fn); }
+// For retention.js, inside withWatchLock: roll the provenance log itself and keep the watcher's byte offset right in the
+// same operation. fn({ maxCut }) may move at most the first maxCut bytes (rows the watcher has already read) and returns
+// { cut, pointer } (bytes removed from the front, bytes of the pointer line put there) or null. Refused while the
+// baseline is not trusted or the log does not match it (the watcher reports that first).
+function rebaseProvenance(opts, fn) {
+  const ctx = context(opts); const key = 'company/state/locked/provenance.jsonl';
+  let base = null; try { base = loadBaseline(ctx); } catch (e) { return { refused: 'the baseline cannot be read: ' + e.message }; }
+  if (!base) return { result: fn({ maxCut: Infinity }) };   // no baseline yet: the first tick builds one from what is there
+  if (base._tampered) return { refused: 'the watcher\'s baseline is not trusted' };
+  const b = base.files[key]; const s = stateOf(ctx, key);
+  if (b && b.exists && s.exists && !(s.bytes >= b.bytes && sha(s.buf.subarray(0, b.bytes)) === b.sha256)) return { refused: 'the provenance log does not match the watcher\'s baseline' };
+  const off = Number(base.provOffset) || 0;
+  const r = fn({ maxCut: off });
+  if (!r || !r.cut) return { result: r };
+  base.provOffset = Math.max(0, off - r.cut + (r.pointer || 0));
+  ctx.now = Date.now();
+  accept(ctx, base, key, entryFor(ctx, key) || { cls: 'F' }, stateOf(ctx, key));
+  saveBaseline(ctx, base);
+  return { result: r, provOffset: base.provOffset };
+}
+module.exports = { tick, classify, lockedNames, MANIFEST, context, withWatchLock, rebaseProvenance, _internals: { tile, decide, decideRolled, unroll, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
 
 /* ---------------- selftest ---------------- */
 async function selftest() {

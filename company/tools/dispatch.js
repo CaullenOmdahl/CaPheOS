@@ -646,6 +646,7 @@ function lastRunTail(job) {
   try { await require('./corrections.js').tick({ dry: DRY, log, quests, jobs }); } catch (e) { log('CORRECTIONS ERROR: ' + e.message); }
   try { await require('./routine-rules.js').ensure({ dry: DRY, log }); } catch (e) { log('HOUSE RULES ERROR: ' + e.message); }
   try { require('./handoff-archive.js').run({ dry: DRY, log }); } catch (e) { log('ARCHIVE ERROR: ' + e.message); }
+  try { require('./retention.js').daily({ dry: DRY, log }); } catch (e) { log('RETENTION ERROR: ' + String(e.message).slice(0, 200)); }   // once a company day (docs/RETENTION.md)
   // house benchmark (company/tools/model-stats.js): refreshed at most hourly, read by the people owner and the pacer for model pairing
   try {
     const hb = path.join(ROOT, 'company', 'work', 'models', 'house-benchmarks.json');

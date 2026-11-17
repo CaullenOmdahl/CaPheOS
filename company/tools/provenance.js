@@ -11,6 +11,7 @@
  *   const prov = require('./provenance.js');
  *   prov.wrote(file, text, 'corrections.js')        after a whole-file write (atomic rename) of `text`
  *   prov.appended(file, chunk, 'pacer.js')          after appending `chunk` to an append-only log
+ *   prov.rolled(file, { before, after, ops, chunks }, 'retention.js')   after a retention roll (docs/RETENTION.md)
  *   node company/tools/provenance.js record <file> <writer>   for a shell tool (test-substrate.sh): hashes the file on disk
  *   node company/tools/provenance.js tail [n]       print the last n rows (no file contents, only hashes)
  *
@@ -114,6 +115,18 @@ function appended(file, chunk, writer) {
     return true;
   } catch (_) { return false; }
 }
+// after retention.js rolled `file` (moved old entries into its archive): enough to rebuild the file as it was, so
+// locked-watch can check the roll lost nothing. before = after with each op applied: at after-offset op[0], drop op[1]
+// bytes (the pointer line) and put back op[2] bytes taken in order from the archived chunks ({archive, offset, bytes, sha256}).
+function rolled(file, info, writer) {
+  try {
+    const root = rootOf(), rel = relOf(file, root); if (!rel || !info) return false;
+    const chunks = (info.chunks || []).map(c => ({ archive: String(c.archive), offset: Number(c.offset), bytes: Number(c.bytes), sha256: String(c.sha256) }));
+    append(Object.assign({ at: new Date().toISOString(), file: rel, kind: 'roll', sha256: sha(info.after), bytes: info.after.length, beforeSha: sha(info.before), beforeBytes: info.before.length,
+      ops: (info.ops || []).map(o => [Number(o[0]), Number(o[1]), Number(o[2])]), chunks }, common(root, writer)), root);
+    return true;
+  } catch (_) { return false; }
+}
 // rows after byte offset `from` of the log (locked-watch keeps the offset it has read up to)
 function readFrom(from, root) {
   const f = logFile(path.resolve(root || rootOf()));
@@ -168,7 +181,7 @@ function callerConflict(root, parts, claimedId, nowMs) {
   } catch (_) { return null; }
 }
 
-module.exports = { wrote, appended, readFrom, sha, logFile, underStation, pinUnderStation, ownerShell, recentCalls, callerConflict, _internals: { stationEnv, mainInfo } };
+module.exports = { wrote, appended, rolled, readFrom, sha, logFile, underStation, pinUnderStation, ownerShell, recentCalls, callerConflict, _internals: { stationEnv, mainInfo } };
 
 if (require.main === module) {
   const [cmd, n, w] = process.argv.slice(2);

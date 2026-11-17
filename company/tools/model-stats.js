@@ -36,7 +36,7 @@ const kind = r => {
 let names = {};
 try { const j = JSON.parse(fs.readFileSync(CRON, 'utf8')); for (const job of (j.jobs || j)) names[job.id] = job.name; } catch (_) {}
 const rows = [];
-let runsText = ''; try { runsText = fs.readFileSync(RUNS, 'utf8'); } catch (_) {}   // no runs yet on a new company
+let runsText = ''; try { runsText = require('./lib/bounded').jsonlWindowText(RUNS, since); } catch (_) {}   // the window only, read from the end (lib/bounded.js)   // no runs yet on a new company
 for (const l of runsText.split('\n')) {
   if (!l) continue;
   let r; try { r = JSON.parse(l); } catch (_) { continue; }

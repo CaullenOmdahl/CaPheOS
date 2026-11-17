@@ -1665,8 +1665,16 @@ function show(res, crew, agentArg, rows) {
   }
   return out.join('\n');
 }
+// decisions.md and the dispatch log roll monthly (company/tools/retention.js, docs/RETENTION.md): an anchor row that rolled
+// out of the live file is copied, as it moves, to <dir>/archive/<name>/index.md, so the anchors are the live file plus
+// that index — every anchor ever written, without reading every month of the archive
+function anchorText(file) {
+  const live = readText(file);
+  const idx = readText(path.join(path.dirname(file), 'archive', path.basename(file, '.md'), 'index.md'));
+  return live == null && idx == null ? null : (idx ? idx + '\n' : '') + (live || '');
+}
 function verifyNow(rows) {
-  return verifyLedger(rows, readText(F.decisions), { stateAnchors: stateAnchorsOf(readJson(F.state, {}), rows), logText: readText(F.dispatchLog) });
+  return verifyLedger(rows, anchorText(F.decisions), { stateAnchors: stateAnchorsOf(readJson(F.state, {}), rows), logText: anchorText(F.dispatchLog) });
 }
 async function daily(a) {
   const P = loadPolicy(), crew = loadCrew();
@@ -1679,7 +1687,7 @@ async function daily(a) {
   let col = null;
   try { col = await collect({ saveState: !ledgerOnly }); summary.collect = { seen: col.seen, written: col.written, byPerson: col.byPerson, errors: col.errors }; } catch (e) { summary.collectError = e.message; }
   const rows = readLedger();
-  const ver = verifyLedger(rows, readText(F.decisions), { stateAnchors: stateAnchorsOf(state, rows), logText: readText(F.dispatchLog) });
+  const ver = verifyLedger(rows, anchorText(F.decisions), { stateAnchors: stateAnchorsOf(state, rows), logText: anchorText(F.dispatchLog) });
   summary.verify = { ok: ver.ok, rows: ver.rows, unanchored: ver.unanchored, problems: ver.problems.slice(0, 5) };
   const res = compute(rows, P, crew, Date.now());
   if (!ledgerOnly) atomicWrite(F.out, JSON.stringify(res, null, 1) + '\n');
@@ -1720,6 +1728,6 @@ async function main() {
 }
 
 module.exports = { compute, verifyLedger, appendRows, readLedger, rowHash, mkId, canon, parseVerdictFile, parseDefect, parseOwnErrors, parseFindings, testRecordSignal, testRecordRun, verdictOf, findVerdict, reviewerNameOf,
-  commitAuthorName, prAuthorName, scopeShareOf, sizeFiles, sectionLines, demeritD, loadPolicy, loadCrew, makeCrew, renderScoreboard, amend, anchor, localDay, localStamp, seriousFlags, runIndex, globRe, withLock,
+  anchorText, commitAuthorName, prAuthorName, scopeShareOf, sizeFiles, sectionLines, demeritD, loadPolicy, loadCrew, makeCrew, renderScoreboard, amend, anchor, localDay, localStamp, seriousFlags, runIndex, globRe, withLock,
   commitEffect, commitNeedles, subjectNeedle, ghPrCmd, gatePassFor, amendMatches, lateRuns, stateAnchorsOf, parseLogAnchors, sevOf, setTimeZone, offsetMin, FILES: F, GENESIS, COLLECT_WRITER };
 if (require.main === module) main().then(c => process.exit(c || 0), e => { console.error('competence: ' + e.message); process.exit(1); });

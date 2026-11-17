@@ -38,7 +38,7 @@ function collect(party, w) {
   files['events.jsonl'] = ev.filter(e => e.party === party && w.in(e.at));
   let obs = []; try { for (const f of fs.readdirSync(S.work('observe')).filter(f => f.endsWith('.jsonl'))) obs = obs.concat(S.readJsonl(S.work('observe', f)).map(r => Object.assign({ _target: f.replace(/\.jsonl$/, '') }, r))); } catch (_) {}
   files['observe.jsonl'] = obs.filter(r => r.party === party && w.in(r.at));
-  const cs = S.commitments().filter(c => c.party === party && ((c.history || []).some(h => w.in(h.at)) || w.in(c.createdAt)));
+  const cs = S.commitments({ archived: true }).filter(c => c.party === party && ((c.history || []).some(h => w.in(h.at)) || w.in(c.createdAt)));
   files['commitments.jsonl'] = cs;
   const ids = new Set(cs.map(c => c.id));
   files['transitions.jsonl'] = S.readJsonl(S.work('commitments', 'commitments.jsonl')).filter(r => ids.has(r.id || r.commitment) && w.in(r.at));

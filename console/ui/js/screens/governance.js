@@ -1,5 +1,5 @@
 // Governance (Governance.dc.html): station autonomy, external gate, locked files, merge gate, governance log.
-import { h, fill, Tag, errLine, empty, screenHead, NOT_CONNECTED, rel } from '../ui.js';
+import { h, fill, Tag, Button, errLine, empty, screenHead, NOT_CONNECTED, rel } from '../ui.js';
 import { api } from '../api.js';
 import * as events from '../events.js';
 
@@ -50,12 +50,17 @@ export async function render(root, ctx) {
     api('/external').then(d => textOrRows(ext, d, c => h('li', { style: 'display:grid;grid-template-columns:96px minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px 0', class: 'hair-top body-s' },
       Tag(c.category || c.cat || '?', { variant: 'mono' }), h('span', { class: 'strong' }, c.what || c.target || c.note || c.id || ''), h('span', { class: 'mono muted' }, c.by || '')))).catch(e => fill(ext, errLine(e, 'External gate')));
     api('/locked').then(d => textOrRows(locked, d, f => h('li', { class: 'sunken', style: 'margin-top:8px' }, h('span', { class: 'mono strong' }, f.path || f.file || ''), h('span', { class: 'caption muted' }, f.note || f.status || '')))).catch(e => fill(locked, errLine(e, 'Locked files')));
-    api('/governance-log').then(d => {
-      const ent = (d.entries || []).slice().reverse().slice(0, 12);
-      fill(log, ent.length ? h('ul', { class: 'plain stack-10 body-s' }, ent.map(x => h('li', { class: 'between' },
+    // newest first, 12 at a time; "Load older" asks for the page before (GET /api/governance-log?cursor=)
+    let all = [], cursor = null, shown = 12;
+    const draw = () => {
+      const ent = all.slice(0, shown);
+      fill(log, ent.length ? h('div', null, h('ul', { class: 'plain stack-10 body-s' }, ent.map(x => h('li', { class: 'between' },
         h('span', { class: 'strong' }, [x.event || x.op, x.category, x.from && x.to ? x.from + ' → ' + x.to : x.level || x.preset].filter(Boolean).join(' · ') || JSON.stringify(x).slice(0, 80)),
-        h('span', { class: 'mono muted' }, (x.by || '') + (x.at ? ' · ' + rel(x.at) : ''))))) : h('p', { class: 'body-s muted' }, 'No changes recorded yet.'));
-    }).catch(e => fill(log, errLine(e, 'Governance log')));
+        h('span', { class: 'mono muted' }, (x.by || '') + (x.at ? ' · ' + rel(x.at) : ''))))),
+        all.length > shown || cursor != null ? Button('Load older', { size: 'sm', onClick: () => { shown += 50; if (all.length >= shown || cursor == null) return draw(); api('/governance-log?cursor=' + cursor).then(d => { all = all.concat((d.entries || []).slice().reverse()); cursor = d.more ? d.cursor : null; draw(); }).catch(e => log.appendChild(errLine(e, 'Governance log'))); } }) : null)
+        : h('p', { class: 'body-s muted' }, 'No changes recorded yet.'));
+    };
+    api('/governance-log').then(d => { all = (d.entries || []).slice().reverse(); cursor = d.more ? d.cursor : null; draw(); }).catch(e => fill(log, errLine(e, 'Governance log')));
   }
   load();
   const off = events.on('governance', load);

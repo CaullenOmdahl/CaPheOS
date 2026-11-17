@@ -112,7 +112,7 @@ function budgetState(f) {
   const since = Date.now() - 24 * 3600 * 1000;
   let total = 0; const byAgent = {};
   try {
-    for (const l of fs.readFileSync(f.runsFile || RUNS_FILE, 'utf8').split('\n')) {
+    for (const l of require('./lib/bounded').jsonlWindowText(f.runsFile || RUNS_FILE, since).split('\n')) {   // the last 24 h only, read from the end
       if (!l) continue;
       let r; try { r = JSON.parse(l); } catch (_) { continue; }
       if (!(r.startedAt >= since)) continue;                    // unmetered runs record usd:0 and are skipped by provider

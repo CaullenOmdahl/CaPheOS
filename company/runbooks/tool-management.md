@@ -50,7 +50,9 @@ report "propagated" without a clean verify run.
 The station runs as a service (for example a systemd user unit with `Restart=always`).
 
 - Health: `curl -s "$STATION_URL/api/health"`.
-- Logs: the service's journal (`journalctl --user -u <unit> -n 200 --no-pager`).
+- Logs: `.starnet-data/station.log` (the unit appends there, not to the journal); older ones are `station.log.N.gz`,
+  rotated by `company/tools/retention.js` past 50 MB. Every growing file's bound: `node company/tools/retention.js status`
+  (`audit` exits 1 when one is over; docs/RETENTION.md).
 - Restart: check health and for active runs first, restart, wait, re-check health. Tell the CEO if runs were cut off.
 - **Down:** status, the last log lines, then the cause (port in use, bad env file, missing dependency, crash loop). Fix
   the one cause, restart once, re-check. A crash loop means stop restarting and read the logs.
@@ -147,6 +149,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/provenance.js | risk | `selftest` |
 | company/tools/quest-audit.js | tools | `--selftest` |
 | company/tools/restart-station-idle.sh | tools | `--selftest` |
+| company/tools/retention.js | tools | `selftest` |
 | company/tools/routine-length.js | people | none |
 | company/tools/routine-rules.js | tools | `selftest` / `--selftest` |
 | company/tools/skills-hr.js | people | `selftest` |
@@ -228,6 +231,7 @@ in §5a instead.
 | `company/tools/pack.js` | ceo | `node company/tools/pack.js selftest` |
 | `company/tools/quest-audit.js` | tools | `node company/tools/quest-audit.js --selftest` |
 | `company/tools/restart-station-idle.sh` | tools | `bash company/tools/restart-station-idle.sh --selftest` |
+| `company/tools/retention.js` | tools | `node company/tools/retention.js selftest` |
 | `company/tools/routine-rules.js` | tools | `node company/tools/routine-rules.js selftest` |
 | `company/tools/station-seed.js` | ceo | `node company/tools/station-seed.js --selftest` |
 | `company/tools/text-corruption.js` | finance | `node company/tools/text-corruption.js --selftest` |
