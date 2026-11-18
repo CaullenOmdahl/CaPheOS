@@ -507,18 +507,29 @@ function analyze(inp) {
 
   const body = { version: 1, policyVersion: P.version == null ? null : P.version, policyDigest: policyDigest(P), windowDays: K.windowDays, oneShotWindowDays: K.oneShotDays, minItems: K.minItems,
     confidence: K.confidence, score: { cost: K.scoreCost, per: K.scorePer }, totals, cells: out, proposals, graders };
-  return { body, items, wakeById };
+  return { body, items, wakeById, runById };
 }
 
 /* ---------------- trials and tier caps: the evaluation (pure) ----------------
  * Reads the per-item rows behind the ranking and the `route` the dispatcher recorded on each wake (wakes.jsonl, the
- * router's decision: {class, source, trial?, arm?, provider, model, effort, applied, wouldApply?, reasons}). Two reports:
+ * router's decision, lib/routing.js decide(): {class, source, trial?, arm?, provider, model, effort, applied, wouldApply?,
+ * reasons}). The shapes it reads:
+ *   trial arm, override   {source: 'trial', trial, arm, <arm pair>, applied: true}
+ *   trial arm, control    {source: 'trial', trial, arm, <arm pair>, applied: false}: the seat's chain already is the arm, so
+ *                         it runs there with no override; an arm item all the same
+ *   trial in shadow       {source: 'chain', applied: false, wouldApply: {source: 'trial', trial, arm, ...}}: the chain ran;
+ *                         counted as a shadow item of that arm, never scored
+ *   tier cap applied      {source: 'tierCap', <capped pair>, applied: true}
+ *   tier cap not applied  {source: 'chain', applied: false, wouldApply: {source: 'tierCap', ...}} (shadow, or live but not in
+ *                         the override allowlist): the baseline -- the same router would have capped it, the chain ran
+ * Two reports:
  *   trials    one per trial (company/work/models/routing-policy.json trials[], and any trial id seen on a wake): each
  *             arm's items, one-shot rate with its interval, rework, defects, cost per accepted item (mean, median, p90,
- *             hardest share), served-vs-requested mismatches, and the decision rule of ranking-policy.json `trials`
- *   tierCaps  per task class: claude window use per accepted item and REVISE / reopen rates of capped items (route
- *             source tierCap, applied) against the baseline (the same router's would-apply rows: the same work, uncapped)
- *             and a verdict: keep / roll back / not enough data, by ranking-policy.json `tierCapEvaluation`
+ *             hardest share), the decision rule of ranking-policy.json `trials`, and mismatches: an item whose run was
+ *             served a model other than the arm's is counted apart (mismatches.served), not scored for the arm
+ *   tierCaps  per task class (the item's own class): claude window use per accepted item and REVISE / reopen rates of
+ *             capped items against the baseline (the would-apply wakes above, or with baseline 'uncapped' the class's
+ *             items no cap touched) and a verdict: keep / roll back / not enough data, by `tierCapEvaluation`
  * No `trials` (or `tierCapEvaluation`) section in the ranking policy: that report is off. Nothing here routes anything. */
 function routingPaths(root) {
   const r = root || co.ROOT;
@@ -576,23 +587,35 @@ function evaluate(inp, an) {
   const P = inp.policy, K = knobs(P), E = evalKnobs(P), routing = inp.routing || {};
   const res = {};
   const scoredOf = it => !it.excluded && (it.settled || K.countUnsettled);
-  const routesOf = (it, src) => (it.wakes || []).map(id => an.wakeById.get(id)).filter(w => w && w.route && typeof w.route === 'object' && w.route.source === src).sort((a, b) => (Number(a.at) || 0) - (Number(b.at) || 0));
+  const wakesOf = it => (it.wakes || []).map(id => an.wakeById.get(id)).filter(w => w && w.route && typeof w.route === 'object').sort((a, b) => (Number(a.at) || 0) - (Number(b.at) || 0));
+  const wouldOf = (w, src) => w.route.source === 'chain' && w.route.applied !== true && w.route.wouldApply && typeof w.route.wouldApply === 'object' && w.route.wouldApply.source === src;
+  // the model a wake's run was served (runs.jsonl servedModel), else the item's primary run's; null: not confirmed
+  const servedOf = (w, it) => { const r = an.runById && w.runId != null ? an.runById.get(String(w.runId)) : null; return (r && r.servedModel) || (!r && it.served) || null; };
   if (E.trials) {
     const ek = E.trials, z = zOf(ek.confidence);
     const defs = new Map(); for (const t of Array.isArray(routing.trials) ? routing.trials : []) if (t && t.id != null) defs.set(String(t.id), t);
     const seen = new Map();   // trial id -> { arms: Map(key -> bucket), mixed, lastAt }
-    const bucket = (tid, key) => { if (!seen.has(tid)) seen.set(tid, { arms: new Map(), mixed: 0, lastAt: null }); const t = seen.get(tid); if (!t.arms.has(key)) t.arms.set(key, { scored: [], settling: 0, excluded: 0, shadow: 0 }); return t.arms.get(key); };
-    for (const w of inp.wakes || []) if (w && w.route && w.route.source === 'trial' && w.route.applied === true) { const tid = trialIdOf(w.route); bucket(tid, armKeyOf(w.route, defs.get(tid))); const t = seen.get(tid); t.lastAt = Math.max(t.lastAt || 0, Number(w.at) || 0); }
+    const bucket = (tid, key) => { if (!seen.has(tid)) seen.set(tid, { arms: new Map(), mixed: 0, lastAt: null }); const t = seen.get(tid); if (!t.arms.has(key)) t.arms.set(key, { scored: [], settling: 0, excluded: 0, shadow: 0, servedOther: 0 }); return t.arms.get(key); };
+    // a wake that ran on a trial arm, override or not (the control arm runs on the chain with no override)
+    const onArm = w => w && w.route && typeof w.route === 'object' && w.route.source === 'trial';
+    for (const w of inp.wakes || []) if (onArm(w)) { const tid = trialIdOf(w.route); bucket(tid, armKeyOf(w.route, defs.get(tid))); const t = seen.get(tid); t.lastAt = Math.max(t.lastAt || 0, Number(w.at) || 0); }
+    const armSpec = (tid, key, r) => { const d = defs.get(tid); return Number.isInteger(key) && d && Array.isArray(d.arms) && d.arms[key] ? d.arms[key] : r; };
     for (const it of an.items) {
-      const rs = routesOf(it, 'trial'); if (!rs.length) continue;
-      const byTrial = new Map(); for (const w of rs) { const tid = trialIdOf(w.route); if (!byTrial.has(tid)) byTrial.set(tid, []); byTrial.get(tid).push(w.route); }
-      for (const [tid, list] of byTrial) {
-        const def = defs.get(tid), applied = list.filter(r => r.applied === true);
-        if (!applied.length) { bucket(tid, armKeyOf(list[0], def)).shadow++; continue; }
-        const keys = [...new Set(applied.map(r => String(armKeyOf(r, def))))];
-        if (keys.length > 1) { bucket(tid, armKeyOf(applied[0], def)); seen.get(tid).mixed++; continue; }   // worked on two arms: counted for neither
-        const b = bucket(tid, armKeyOf(applied[0], def));
-        if (it.excluded) b.excluded++; else if (!scoredOf(it)) b.settling++; else b.scored.push(Object.assign({ armRoute: applied[0] }, it));
+      const ws = wakesOf(it), byTrial = new Map();
+      const add = (tid, kind, w, r) => { if (!byTrial.has(tid)) byTrial.set(tid, { on: [], shadow: [] }); byTrial.get(tid)[kind].push({ w, r }); };
+      for (const w of ws) {
+        if (onArm(w)) add(trialIdOf(w.route), 'on', w, w.route);
+        else if (wouldOf(w, 'trial')) { const r = w.route.wouldApply; add(trialIdOf(r), 'shadow', w, Object.assign({}, r, { applied: true })); }
+      }
+      for (const [tid, g] of byTrial) {
+        const def = defs.get(tid);
+        if (!g.on.length) { bucket(tid, armKeyOf(g.shadow[0].r, def)).shadow++; continue; }   // only ever assigned in shadow
+        const keys = [...new Set(g.on.map(x => String(armKeyOf(x.r, def))))];
+        const key = armKeyOf(g.on[0].r, def), b = bucket(tid, key);
+        if (keys.length > 1) { seen.get(tid).mixed++; continue; }   // worked on two arms: counted for neither
+        const spec = armSpec(tid, key, g.on[0].r);
+        if (spec && spec.model && g.on.some(x => { const sv = servedOf(x.w, it); return sv && !sameModel(sv, spec.model); })) { b.servedOther++; continue; }   // ran on another model
+        if (it.excluded) b.excluded++; else if (!scoredOf(it)) b.settling++; else b.scored.push(Object.assign({ armRoute: g.on[0].r }, it));
       }
     }
     const ids = [...new Set([...defs.keys()].filter(id => String((defs.get(id) || {}).status || 'draft') !== 'draft' || seen.has(id)).concat([...seen.keys()]))].sort();
@@ -602,11 +625,13 @@ function evaluate(inp, an) {
       const defArms = def && Array.isArray(def.arms) ? def.arms : [];
       const keys = defArms.map((_, i) => i).concat([...t.arms.keys()].filter(k => !(Number.isInteger(k) && k < defArms.length)).sort((a, b) => (String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0)));
       const arms = keys.map(k => {
-        const b = t.arms.get(k) || { scored: [], settling: 0, excluded: 0, shadow: 0 }, s = b.scored, n = s.length;
+        const b = t.arms.get(k) || { scored: [], settling: 0, excluded: 0, shadow: 0, servedOther: 0 }, s = b.scored, n = s.length;
         const succ = s.reduce((x, i) => x + i.oneShot, 0), [lo, hi] = wilsonBounds(succ, n, z);
         const spec = Number.isInteger(k) && defArms[k] ? defArms[k] : (s[0] && s[0].armRoute) || null;
-        const mm = { requested: 0, served: 0, unconfirmed: 0 };
-        for (const i of s) { if (spec && spec.model && !sameModel(i.requested, spec.model)) mm.requested++; if (!i.served) mm.unconfirmed++; else if (!sameModel(i.served, i.requested)) mm.served++; }
+        // served: items served another model than the arm's (not scored); requested / unconfirmed: scored items whose run
+        // asked another model, or did not say what it was served
+        const mm = { requested: 0, served: b.servedOther, unconfirmed: 0 };
+        for (const i of s) { if (spec && spec.model && !sameModel(i.requested, spec.model)) mm.requested++; if (!i.served) mm.unconfirmed++; }
         return Object.assign({ arm: k, label: spec ? armLabel(spec) : String(k), provider: spec ? String(spec.provider || '?') : null, model: spec ? String(spec.model || '?') : null, effort: spec ? String(spec.effort || 'default') : null,
           items: n, enough: n >= minN, settling: b.settling, excluded: b.excluded, shadowItems: b.shadow,
           oneShot: rnd(succ, 4), oneShotRate: n ? rnd(succ / n, 4) : null, lower: rnd(lo, 4), upper: rnd(hi, 4),
@@ -625,14 +650,14 @@ function evaluate(inp, an) {
     const grp = cls => { if (!byClass.has(cls)) byClass.set(cls, { capped: [], baseline: [], mixed: 0, wouldApply: 0 }); return byClass.get(cls); };
     for (const it of an.items) {
       if (!scoredOf(it)) continue;
-      const rs = routesOf(it, 'tierCap'), applied = rs.filter(w => w.route.applied === true), would = rs.filter(w => w.route.applied !== true);
-      const cls = String((rs[0] && rs[0].route.class) || it.cell.class);
+      const ws = wakesOf(it), applied = ws.filter(w => w.route.source === 'tierCap' && w.route.applied === true), would = ws.filter(w => wouldOf(w, 'tierCap'));
+      const cls = String(it.cell.class);   // the item's own class: a class's verdict reads only its items
       if (applied.length && would.length) { grp(cls).mixed++; continue; }
       if (applied.length) { grp(cls).capped.push(it); continue; }
       if (would.length) { grp(cls).wouldApply++; if (ck.baseline === 'wouldApply') grp(cls).baseline.push(it); }
     }
     if (ck.baseline === 'uncapped') {   // baseline: the class's scored items that no tier-cap route touched
-      for (const it of an.items) { if (!scoredOf(it) || routesOf(it, 'tierCap').length) continue; const g = byClass.get(String(it.cell.class)); if (g) g.baseline.push(it); }
+      for (const it of an.items) { if (!scoredOf(it) || wakesOf(it).some(w => w.route.source === 'tierCap' || wouldOf(w, 'tierCap'))) continue; const g = byClass.get(String(it.cell.class)); if (g) g.baseline.push(it); }
     }
     const side = s => { const n = s.length; return { items: n, windowTokensPerItem: n ? Math.round(s.reduce((x, i) => x + i.cost.windowTokens, 0) / n) : null,
       reviseRate: n ? rnd(s.filter(i => i.reviseRounds > 0).length / n, 4) : null, reopenRate: n ? rnd(s.filter(i => i.reopened).length / n, 4) : null }; };
@@ -693,7 +718,7 @@ function trialDecision(arms, minN, ek) {
 function renderTrialMd(t, digest) {
   const pc = v => (v == null ? '–' : Math.round(1000 * v) / 10 + '%'), f = v => (v == null ? '–' : String(v));
   const L = ['# Trial ' + t.id + (t.class ? ': ' + t.class : ''), '',
-    'Written by `company/tools/model-rank.js` (docs/RANKING.md §10) from the wakes the dispatcher routed to this trial (`route.source: trial`, applied). Regenerated when the numbers change; it routes nothing. ' +
+    'Written by `company/tools/model-rank.js` (docs/RANKING.md §10) from the wakes that ran on the arms of this trial (`route.source: trial`, with or without a one-run override; shadow-only assignments and other-model runs counted apart). Regenerated when the numbers change; it routes nothing. ' +
     'Status in company/work/models/routing-policy.json: **' + t.status + '**' + (t.entryShare != null ? ', entry share ' + t.entryShare : '') + (t.scope ? ', scope `' + JSON.stringify(t.scope) + '`' : '') + '. ' +
     'Each arm needs ' + t.minItemsPerArm + ' accepted items; the one-shot range is the ' + Math.round(100 * t.confidence) + '% Wilson interval; cost is ' + t.cost + ' per accepted item. Policy ' + digest + '.', '',
     '| Arm | Model | Items | One-shot (range) | Extra runs/item | REVISE/item | Reopened | Defects (pts) | Cost/item | Median | p90 | Hardest share | Window tokens/item | Requested ≠ arm | Served ≠ requested | Unconfirmed | Settling | Shadow only |',

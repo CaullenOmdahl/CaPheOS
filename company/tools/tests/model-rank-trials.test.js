@@ -59,19 +59,36 @@ function build(o) {
       wakes.push(wake);
       for (const r2 of x.moreRoutes || []) { const rr = Object.assign({}, r, { runId: runId + '-b', startedAt: at + 2 * H, endedAt: at + 2.5 * H, ts: at + 2.5 * H }); runs.push(rr); wakes.push(Object.assign({}, wake, { at: at + 2 * H - 60e3, ts: new Date(at + 2 * H - 60e3).toISOString(), wakeId: wake.wakeId + 'b', runId: rr.runId, route: r2 })); }
       const lines = ['## ' + new Date(at - H).toISOString().slice(0, 16).replace('T', ' ') + ' from Lee — task ' + id, '**Id:** ' + id, '**Need:** task ' + id];
+      if (x.cls) lines.push('**Class:** ' + x.cls);
       if (x.fail) lines.push('**Verdict:** REVISE by Ria — check: the acceptance test fails — one finding');
       lines.push('**Status:** DONE', '**Resolved ' + new Date(closed).toISOString().slice(0, 16).replace('T', ' ') + ' by ' + (seat === 'sam' ? 'Sam' : 'Kim') + '**');
       inbox[file].push(lines.join('\n') + '\n');
     },
   };
-  const trialRoute = (i, applied) => Object.assign({ class: 'code', source: 'trial', trial: 't-code', arm: i, applied, reasons: ['trial t-code arm ' + i] }, applied ? ARMS[i] : { provider: 'claude-cli', model: 'claude-fable-5-2', effort: 'medium', wouldApply: ARMS[i] });
+  /* the router's decision shapes (lib/routing.js decide(), as its tests pin them):
+   *   override  the arm applied as a one-run override: { source: 'trial', trial, arm, <arm pair>, applied: true }
+   *   control   the seat's chain already is the assigned arm: it runs there with no override,
+   *             { source: 'trial', trial, arm, <arm pair>, applied: false } (no wouldApply)
+   *   shadow    trials in shadow (or the arm not open): the chain runs, the arm only in wouldApply,
+   *             { source: 'chain', <chain pair>, applied: false, wouldApply: { source: 'trial', <arm pair>, trial, arm } } */
+  const trialRoute = (i, kind, chainPair) => {
+    const base = { v: 1, class: 'code', classes: ['code'], mode: kind === 'shadow' ? 'shadow' : 'live', capMode: 'shadow' };
+    if (kind === 'shadow') { const c = chainPair || ARMS[(i + 1) % ARMS.length]; return Object.assign(base, { source: 'chain', provider: c.provider, model: c.model, effort: c.effort, applied: false, wouldApply: { source: 'trial', provider: ARMS[i].provider, model: ARMS[i].model, effort: ARMS[i].effort, trial: 't-code', arm: i }, reasons: ['trial in shadow: recorded, not applied'] }); }
+    return Object.assign(base, { source: 'trial', provider: ARMS[i].provider, model: ARMS[i].model, effort: ARMS[i].effort, applied: kind !== 'control', trial: 't-code', arm: i, reasons: [] });
+  };
   ctx.trialRoute = trialRoute;
-  (o.arms || []).forEach((a, i) => { for (let k = 0; k < a.n; k++) ctx.item('sam', 'A' + i + '-' + String(k).padStart(2, '0'), 3 + (k % 20), ARMS[i], trialRoute(i, true), { fail: k < a.fails }); });
+  (o.arms || []).forEach((a, i) => { for (let k = 0; k < a.n; k++) ctx.item('sam', 'A' + i + '-' + String(k).padStart(2, '0'), 3 + (k % 20), ARMS[i], trialRoute(i, a.kind || 'override'), { fail: k < a.fails }); });
+  /* tier caps, the router's shapes: an applied cap is { source: 'tierCap', <capped pair>, applied: true }; a cap in shadow (or
+   * live but not in the allowlist) runs the chain and is { source: 'chain', <chain pair>, applied: false,
+   * wouldApply: { source: 'tierCap', <capped pair> } } -- the baseline */
+  const SON = { provider: 'claude-cli', model: 'claude-sonnet-5-5', effort: 'high' }, FAB = { provider: 'claude-cli', model: 'claude-fable-5-2', effort: 'medium' };
+  const capRoute = (applied, cls) => Object.assign({ v: 1, class: cls || 'code', classes: [cls || 'code'], mode: 'off', capMode: applied ? 'live' : 'shadow' }, applied
+    ? { source: 'tierCap', provider: SON.provider, model: SON.model, effort: SON.effort, applied: true, reasons: [] }
+    : { source: 'chain', provider: FAB.provider, model: FAB.model, effort: FAB.effort, applied: false, wouldApply: { source: 'tierCap', provider: SON.provider, model: SON.model, effort: SON.effort }, reasons: ['tierCap in shadow: recorded, not applied'] });
+  Object.assign(ctx, { capRoute, SON, FAB });
   if (o.tier) {
-    const SON = { provider: 'claude-cli', model: 'claude-sonnet-5-5', effort: 'high' }, FAB = { provider: 'claude-cli', model: 'claude-fable-5-2', effort: 'medium' };
-    const tr = applied => Object.assign({ class: 'code', source: 'tierCap', applied, reasons: ['tier cap'] }, applied ? SON : Object.assign({ wouldApply: SON }, FAB));
-    for (let k = 0; k < o.tier.capped.n; k++) ctx.item('kim', 'C-' + String(k).padStart(2, '0'), 3 + (k % 20), SON, tr(true), { fail: k < o.tier.capped.fails, tokens: o.tier.capped.tokens || [300000, 150000] });
-    for (let k = 0; k < o.tier.baseline.n; k++) ctx.item('kim', 'B-' + String(k).padStart(2, '0'), 3 + (k % 20), FAB, tr(false), { fail: k < o.tier.baseline.fails, tokens: [1000000, 500000] });
+    for (let k = 0; k < o.tier.capped.n; k++) ctx.item('kim', 'C-' + String(k).padStart(2, '0'), 3 + (k % 20), SON, capRoute(true), { fail: k < o.tier.capped.fails, tokens: o.tier.capped.tokens || [300000, 150000] });
+    for (let k = 0; k < o.tier.baseline.n; k++) ctx.item('kim', 'B-' + String(k).padStart(2, '0'), 3 + (k % 20), FAB, capRoute(false), { fail: k < o.tier.baseline.fails, tokens: [1000000, 500000] });
   }
   if (o.extra) o.extra(ctx);
   wakes.sort((a, b) => a.at - b.at || (a.wakeId < b.wakeId ? -1 : 1)); runs.sort((a, b) => a.ts - b.ts || (a.runId < b.runId ? -1 : 1));
@@ -129,17 +146,32 @@ test('above minItemsPerArm, the rule the other way: no arm clearly better, or th
 
 test('mismatches, shadow-only and mixed-arm items are reported, not scored as arm items', () => {
   const T = build({ arms: [{ n: 5, fails: 0 }, { n: 5, fails: 0 }, { n: 5, fails: 0 }], extra: c => {
-    c.item('sam', 'MM-served', 5, ARMS[1], c.trialRoute(1, true), { served: 'claude-opus-4-8' });        // asked Opus 5.5, served 4.8
-    c.item('sam', 'MM-unconf', 6, ARMS[1], c.trialRoute(1, true), { served: null });                     // no servedModel
-    c.item('sam', 'MM-req', 7, ARMS[1], c.trialRoute(1, true), { runModel: 'claude-fable-5-2' });        // the override did not take
-    c.item('sam', 'SH-1', 8, ARMS[2], c.trialRoute(2, false));                                           // shadow: recorded, not applied
-    c.item('sam', 'MIX-1', 9, ARMS[0], c.trialRoute(0, true), { moreRoutes: [c.trialRoute(1, true)] });  // worked on two arms
+    c.item('sam', 'MM-served', 5, ARMS[1], c.trialRoute(1, 'override'), { served: 'claude-opus-4-8' });                   // asked Opus 5.5, served 4.8: not the arm
+    c.item('sam', 'MM-unconf', 6, ARMS[1], c.trialRoute(1, 'override'), { served: null });                                // no servedModel: counted, unconfirmed
+    c.item('sam', 'MM-req', 7, ARMS[1], c.trialRoute(1, 'override'), { runModel: 'claude-fable-5-2' });                   // the override did not take: served Fable
+    c.item('sam', 'MM-req-unconf', 7, ARMS[1], c.trialRoute(1, 'override'), { runModel: 'claude-fable-5-2', served: null }); // asked Fable, served unknown
+    c.item('sam', 'SH-1', 8, ARMS[0], c.trialRoute(2, 'shadow', ARMS[0]));                                              // shadow: the arm only in wouldApply
+    c.item('sam', 'MIX-1', 9, ARMS[0], c.trialRoute(0, 'override'), { moreRoutes: [c.trialRoute(1, 'override')] });     // worked on two arms
   } });
   const t = evalOf(T).trials[0];
-  assert.deepEqual(t.arms[1].mismatches, { requested: 1, served: 1, unconfirmed: 1 });
-  assert.equal(t.arms[1].items, 8);
+  assert.deepEqual(t.arms[1].mismatches, { requested: 1, served: 2, unconfirmed: 2 });
+  assert.equal(t.arms[1].items, 7, 'the two items served another model are counted apart, not as arm items');
   assert.equal(t.arms[2].shadowItems, 1); assert.equal(t.arms[2].items, 5);
   assert.equal(t.mixedItems, 1); assert.equal(t.arms[0].items, 5);
+});
+
+test('review probe: a control arm (the chain already is the arm: no override, applied false) counts like an override arm', () => {
+  const T = build({ arms: [{ n: 35, fails: 1, kind: 'control' }, { n: 35, fails: 10, kind: 'override' }], routing: { trials: [{ id: 't-code', class: 'code', arms: ARMS.slice(0, 2), scope: { departments: ['eng'], seats: [] }, entryShare: 0.1, status: 'running', minItemsPerArm: 30 }] } });
+  const t = evalOf(T).trials[0];
+  assert.deepEqual(t.arms.map(a => a.items), [35, 35]);
+  assert.deepEqual(t.arms.map(a => a.shadowItems), [0, 0]);
+  assert.deepEqual(t.arms.map(a => a.enough), [true, true]);
+  assert.equal(t.decision.state, 'decided'); assert.equal(t.decision.winner, 0);
+  // shadow-only assignments never count as arm items, whichever arm they name
+  const S = build({ arms: [{ n: 35, fails: 1, kind: 'shadow' }, { n: 35, fails: 10, kind: 'shadow' }], routing: { trials: [{ id: 't-code', class: 'code', arms: ARMS.slice(0, 2), status: 'running', minItemsPerArm: 30 }] } });
+  const s = evalOf(S).trials[0];
+  assert.deepEqual(s.arms.map(a => [a.items, a.shadowItems]), [[0, 35], [0, 35]]);
+  assert.equal(s.decision.state, 'no decision yet');
 });
 
 test('deterministic: refresh writes the decision file and the evaluation once; a rerun (later clock) rewrites nothing; new numbers regenerate it', () => {
@@ -181,6 +213,23 @@ test('tier caps: keep when window use falls 30% and rework stays within 1.25x; r
   // thresholds are policy: a looser rework ratio keeps what 1.25x rolled back
   const loose = evalOf(build({ tier: { capped: { n: 20, fails: 6 }, baseline: { n: 20, fails: 2 } }, policy: { tierCapEvaluation: { minItems: 20, windowCut: 0.3, reworkMaxRatio: 3.5, rates: ['revise', 'reopen'], baseline: 'wouldApply' } } })).tierCaps;
   assert.equal(loose.verdict, 'keep');
+});
+
+test('review probe: 25 applied caps against 25 would-apply baseline wakes (the router records those as source chain) give a verdict', () => {
+  const ev = evalOf(build({ tier: { capped: { n: 25, fails: 2 }, baseline: { n: 25, fails: 2 } }, routing: { trials: [] } })).tierCaps;
+  const k = ev.classes.find(c => c.class === 'code');
+  assert.deepEqual([k.capped.items, k.baseline.items], [25, 25]);
+  assert.notEqual(k.verdict, 'not enough data'); assert.equal(k.verdict, 'keep'); assert.equal(k.wouldApplyItems, 25);
+});
+
+test('tier caps: a class verdict uses only items of that class (an item classed writing on a code wake is not a code item)', () => {
+  const T = build({ tier: { capped: { n: 20, fails: 2 }, baseline: { n: 20, fails: 2 } }, routing: { trials: [] }, extra: c => {
+    for (let k = 0; k < 6; k++) c.item('kim', 'W-' + k, 4 + k, c.SON, c.capRoute(true), { cls: 'writing', fail: true, tokens: [300000, 150000] });
+  } });
+  const ev = evalOf(T).tierCaps;
+  const code = ev.classes.find(c => c.class === 'code'), wr = ev.classes.find(c => c.class === 'writing');
+  assert.equal(code.capped.items, 20); assert.equal(code.verdict, 'keep');
+  assert.ok(wr, 'the writing items form their own class'); assert.equal(wr.capped.items, 6); assert.equal(wr.verdict, 'not enough data');
 });
 
 test('the house-ranking duty: a stuck trial, a decided trial, and a tier-cap roll back while live; quiet otherwise; off without the policy sections', () => {

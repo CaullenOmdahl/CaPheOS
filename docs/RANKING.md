@@ -148,9 +148,12 @@ defines no trial). This section is how their results are read; it routes nothing
 **Items.** The same scored items as the ranking (DONE, settled, not excluded; §1-§4), each joined to the routes on the
 wakes that listed it.
 
-- An item is an **arm item** when a wake routed it to the trial with the arm **applied** (`route.source: trial`,
-  `applied: true`). Items routed in shadow only (`applied: false`) are counted apart (`shadowItems`), never as arm
-  results: they ran on the seat's chain. An item worked on two arms (two wakes, each assigned by hash) counts for neither
+- An item is an **arm item** when a wake ran it on a trial arm: `route.source: trial` with that `trial` and `arm`,
+  whether `applied` is `true` (the arm was a one-run override) or `false` (the seat's chain already is the assigned arm,
+  so it ran there with no override: typically the control arm). A trial assignment that appears only in `wouldApply`
+  (`route.source: chain`: trials in shadow, or the arm not in the override allowlist) ran on the chain and is counted
+  apart (`shadowItems`), never as an arm result. An item whose run was served a different model than the arm's
+  (`servedModel` in runs.jsonl) is counted apart too (`mismatches.served`), not scored for the arm. An item worked on two arms (two wakes, each assigned by hash) counts for neither
   (`mixedItems`). Assignment is per wake (hash of trial id + wake id), so an item that takes several wakes can
   land on two arms: watch this count; a high one means the trial measures little.
 - The arm is the route's `arm` (an index into the trial's `arms`, or an arm id), else the arm whose model matches.
@@ -165,7 +168,7 @@ wakes that listed it.
 | defects, defectPoints | confirmed defects, severity-weighted (§2) |
 | costPerItem, medianCost, p90Cost, hardestCost | `trials.cost` (default `listUsd`) per accepted item: mean, median, the `tail.percentile` cost and the mean of the most expensive `tail.hardestShare` |
 | windowTokensPerItem | estimated subscription window tokens per item (§2 cost) |
-| mismatches | `requested`: the run asked for another model than the arm's (the one-run override did not take); `served`: the provider served another model than the run asked for (`servedModel`); `unconfirmed`: no `servedModel` |
+| mismatches | `served`: items whose run was served another model than the arm's (`servedModel`): not scored; of the scored items, `requested`: the run asked for another model than the arm's and its served model is unknown; `unconfirmed`: no `servedModel` |
 
 **The decision rule** (`trials`): with every arm at `minItemsPerArm` (the trial's own, else the policy's, default 30)
 items, an arm **wins** when the lower bound of its one-shot range is not below the best other arm's point estimate
@@ -180,12 +183,14 @@ with ranges, and the decision. It carries no clock time and is replaced only whe
 the numbers do. A winning arm is not applied by this: moving a department route is a routing proposal the people
 function and the owner decide (§6).
 
-**Tier caps** (`tierCapEvaluation`, the plan's P3 acceptance), per task class:
+**Tier caps** (`tierCapEvaluation`, the plan's P3 acceptance), per task class (the item's own class, §1: a class's
+verdict reads only that class's items, whatever class the wake was routed under):
 
-- **Capped**: scored items whose wake had a tier-cap route applied (`route.source: tierCap`, `applied: true`).
-- **Baseline** (`baseline`): `wouldApply` (default) = items whose wake had a tier-cap route recorded but not applied
-  (shadow week: the same work, uncapped); `uncapped` = every scored item of the class no tier-cap route touched. An item
-  with both applied and shadow tier-cap wakes counts for neither.
+- **Capped**: scored items whose wake had a tier cap applied (`route.source: tierCap`, `applied: true`).
+- **Baseline** (`baseline`): `wouldApply` (default) = items whose wake the cap would have changed but did not: the router
+  records those as `route.source: chain`, `applied: false`, `wouldApply.source: tierCap` (caps in shadow, or live but
+  the capped entry not in the override allowlist: the same work, uncapped); `uncapped` = every scored item of the class
+  no tier cap touched either way. An item with both capped and would-apply wakes counts for neither.
 - **Verdict**: **keep** when estimated claude window tokens per accepted item fell by at least `windowCut` (default 0.3)
   **and** each rate in `rates` (`revise`: share of items with a counted REVISE; `reopen`: share reopened) is within
   `reworkMaxRatio` (default 1.25) of the baseline; **roll back** (that class) otherwise, with the reason; **not enough
