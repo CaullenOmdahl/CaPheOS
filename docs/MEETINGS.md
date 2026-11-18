@@ -27,7 +27,7 @@ Take part** and **More**. Everything else is in the **More** panel (it stays ope
 | Composer | your message to everyone; start it with `@name` (autocompleted) for those seats only, `@all` for everyone | `/api/meeting/say {text}` |
 | Round | an open round: they answer each other, no new message from you | `/api/meeting/round` |
 | Raise hand / Esc | the floor is yours after the current speaker, never cutting them off; a message typed during a round does the same, and starts a new round on your words. Esc only ever raises a hand (there is no "Esc twice") | `/api/meeting/hand` |
-| Stop after this turn | the current speaker finishes; the queued turns, the hand checks and the round are cancelled. A message written while it stops starts its round once the speaker is done. Only a company hard halt aborts a turn mid-way | `/api/meeting/stop` |
+| Stop after this turn | the current speaker finishes; the queued turns, the hand checks and the round are cancelled. A message written while it stops starts its round once the speaker is done. Only a company hard halt aborts a turn mid-way, even after Stop or Close was pressed | `/api/meeting/stop` |
 | Continue | (when you have the floor) let them carry on | `/api/meeting/continue` |
 | Observe (− N +) / Take part | you get no turn; they are told not to ask you anything and carry on by themselves for up to N rounds (default 6, 1-30) until the leader writes `END:` or a round passes with nothing said | `/api/meeting/observe {on, rounds}` |
 | More › Tools: on / off | tools are on by default, as at the table; off is **talk only** for the whole meeting (no tools on any turn) | `/api/meeting/talkonly {on}` |
@@ -38,7 +38,7 @@ Take part** and **More**. Everything else is in the **More** panel (it stays ope
 | More › Pace | Flowing (the default, as at the table), fast, normal, slow (a reading pause between turns), or Next (you advance) | `/api/meeting/pace {speed}` |
 | More › Catch me up | one talk-only turn by the leader for you only: five bullets, what was decided, what is still asked | `/api/meeting/catchup {since}` |
 | More › Register, Open minutes | the action register; the day's minutes (with search) | GET `/api/meeting/register`, `/api/meeting/minutes?date=` |
-| More › New meeting (type), Close meeting | a fresh meeting, same seats and leader (decision, incident, planning or review: the type adds one sentence to each turn, not the protocol; one at a time, an incident meeting may interrupt an open one); Close ends it with or without an END (while someone speaks, once their turn is over) | `/api/meeting/new {type, title?}`, `/api/meeting/close {why?}` |
+| More › New meeting (type), Close meeting | a fresh meeting, same seats and leader (decision, incident, planning or review: the type adds one sentence to each turn, not the protocol; one at a time, an incident meeting may interrupt an open one); Close ends it with or without an END (while someone speaks, once their turn is over; a message written meanwhile is refused in plain words, never dropped silently) | `/api/meeting/new {type, title?}`, `/api/meeting/close {why?}` |
 | Resume | carries on an `interrupted` meeting | `/api/meeting/resume {id?}` |
 | ♛ / No leader | the leader (kept across meetings; default the CEO seat) speaks first, runs the meeting, proposes rulings, cannot be dismissed | `/api/meeting/lead {seat\|null}` |
 | × / + Add | the standing seats: anyone on the crew; a new seat sees the meeting so far. Hovering the strip lists who is seated, in order, on what model (the table's `/who`) | `/api/meeting/seats {add, remove}` |
@@ -146,7 +146,8 @@ carry a short meeting-etiquette line, and every turn carries the table's rules.
   subscription's windows since the meeting began (Claude 5-hour and week, MiniMax; from the pacer's readings and
   `company/work/finance/subscriptions.json`), never "$0.00", and "unknown" for anything unmetered with no meter. Beside
   it, an estimate for the next round at the current setting (`estimateLine`): one turn per person seated at the owner's
-  level on the model each would use, from what this meeting's runs cost so far, scaled between levels (rough: Light half
+  level on the model each would use, from what this meeting's runs cost so far (all runs' cost, shared over the turns only, so the Light checks around a
+  turn are carried in its share; "more if they ask each other or raise hands"), scaled between levels (rough: Light half
   of Normal, Deep twice, Max four times); "not known yet" before a provider's first run here.
 - **Thinking level and model**: every run is sent `reasoningEffort` (the owner's level, Light for checks), so a seat whose
   own work runs at Max does not talk at Max. A picked model goes on the run as its model; see More › Model above.
@@ -163,7 +164,8 @@ carry a short meeting-etiquette line, and every turn carries the table's rules.
   after every step, so a console restart re-attaches to the turn in flight and carries on; `GET /api/console/busy`
   lists it (`scripts/restart-console.sh --when-idle`).
 - **Halts.** A soft halt lets the turn in progress finish, writes the minutes and marks the meeting `interrupted`; a
-  hard halt aborts the turn and marks it `interrupted` too. Resume it once the halt is lifted; no round starts under a
+  hard halt aborts the turn and marks it `interrupted` too. A halt wins over a pending Stop: a hard halt still aborts
+  the turn the owner let finish; with Close pending, the meeting closes as the owner asked. Resume it once the halt is lifted; no round starts under a
   halt. The halt lists the meeting as live work (`lib/meetings.js liveWork`), and Today and the floor show it in progress.
 - **Approvals inside a turn.** A station permission prompt in a turn becomes an owner question on Today › Needs you
   (`inbox.js ask`, kind approve) and **pauses** the meeting; your answer goes back to the station as the consent, then it
@@ -201,7 +203,9 @@ in a live chat, ends with the "since you last spoke" note (`sinceNote`):
 
 It lists what others said (each clipped to one line, the last 8) and who joined or left since that seat's own last
 reply (since the meeting opened for one who has not spoken), and which questions in that stretch are answered: the
-owner's message once anyone else replied to it, and a direct `ASK` once its seat replied. The last sentence is on
+owner's message once anyone else replied to it, and a direct `ASK` once its seat replied. A message the owner put to
+this seat by name (`@Dave @Nadia ...`, kept as `only` on the owner's event) is never "already answered" for it: the note
+says who answered it already and asks for its own answer, adding only what is new. The last sentence is on
 every turn. Hand checks stay the per-exchange moment when everyone takes in what was said (Light).
 
 **One run per seat that waits for its turn: not built.** The spec's design is one station run per seat per meeting with

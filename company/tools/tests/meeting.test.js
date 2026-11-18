@@ -1042,3 +1042,70 @@ test('stay in the room: every turn says what was said since that seat last spoke
   assert.ok(!/Ship Friday/.test(sharon2.last.split('Since you last spoke:')[1] || ''), 'only what is new since Sharon last spoke');
   assert.ok(/Since you last spoke: Phil: Friday works \| Caullen \(owner\): Anything else\?/.test(sharon2.last), sharon2.last);
 });
+
+/* ---------- review follow-ups: halt over Stop/Close, a message while closing, put-to-you-by-name, the estimate ---------- */
+test('a hard halt still aborts the turn after Stop (the meeting is interrupted) and after Close (it closes)', async () => {
+  for (const how of ['stop', 'close']) {
+    const { M, runner } = fresh({ seats: ['dave', 'sharon'], leader: 'dave' });
+    let release; const hold = new Promise(r => { release = r; });
+    runner.script({ dave: { text: 'Mid-sentence', hold }, sharon: ['never'] });
+    await M.say({ text: 'Go.' });
+    await new Promise(r => setTimeout(r, 30));
+    if (how === 'stop') M.stop(); else await M.close({ why: 'done' });
+    W('company/state/halt.json', { mode: 'hard', by: 'Caullen' });
+    for (let i = 0; i < 300 && !runner.pending.get(runner.turns()[0].runId).cancelled; i++) await new Promise(r => setTimeout(r, 10));
+    assert.ok(runner.pending.get(runner.turns()[0].runId).cancelled, how + ': the hard halt cancels the turn');
+    release(); await idle(M);
+    const v = await M.view();
+    fs.unlinkSync(path.join(T, 'company/state/halt.json'));
+    assert.ok(!runner.turns().some(c => c.seat === 'sharon'), how + ': nobody speaks after the halt');
+    if (how === 'stop') { assert.strictEqual(v.meeting.state, 'interrupted'); assert.match(v.meeting.reason, /hard halt: aborted/); }
+    else assert.strictEqual(v.meeting.state, 'closed', 'the owner asked to close: it closes');
+    assert.ok(kinds(M, 'note').some(e => /The company is halted, so the meeting stopped mid-turn\./.test(e.text)));
+  }
+}).timeout = 30000;
+
+test('a message written while the meeting is closing is refused in plain words, never silently dropped', async () => {
+  const { M, runner } = fresh({ seats: ['dave', 'sharon'], leader: 'dave' });
+  let rel; const hold = new Promise(r => { rel = r; });
+  runner.script({ dave: { text: 'Last words.', hold } });
+  await M.say({ text: 'Wrap up.' }); await new Promise(r => setTimeout(r, 30));
+  const cl = await M.close({});
+  assert.ok(cl.closing);
+  await assert.rejects(async () => M.say({ text: 'One more thing.' }), /meeting is closing once the current speaker finishes, so your message was not sent/);
+  rel(); await idle(M);
+  assert.strictEqual((await M.view()).meeting.state, 'closed');
+  assert.ok(!said(M).includes('owner: One more thing.'));
+});
+
+test('a question put to several people by name: one answering does not tell the others not to answer', async () => {
+  const { M, runner } = fresh({ seats: ['dave', 'nadia', 'phil'], leader: null });
+  runner.script({ dave: 'I think A.', nadia: 'I think B.' });
+  await M.say({ text: '@Dave @Nadia what does each of you think?' }); await idle(M);
+  const nadia = runner.turns().find(c => c.seat === 'nadia');
+  assert.ok(nadia, 'Nadia gets her turn');
+  assert.ok(/Caullen put this to Dave, Nadia\./.test(nadia.last), nadia.last);
+  assert.ok(!/Questions already answered: Caullen's/.test(nadia.last), 'not "already answered" for her: ' + nadia.last);
+  assert.ok(/Caullen's "@Dave @Nadia what does each of you think\?" was put to you by name; Dave already answered: give your own answer, adding only what is new\./.test(nadia.last), nadia.last);
+  assert.ok(/do not re-answer what others said\.\]$/.test(nadia.last), nadia.last);
+  const ownerSay = M._state().LOG.find(e => e.who === 'owner' && e.kind === 'say');
+  assert.deepStrictEqual(ownerSay.only, ['dave', 'nadia'], 'who it was put to is kept with the message');
+  // an open message (to nobody by name) still counts as answered for the next speaker
+  runner.script({ dave: 'Fine.', nadia: 'PASS', phil: 'PASS' });
+  await M.say({ text: 'Anything else?' }); await idle(M);
+  const n2 = runner.turns().filter(c => c.seat === 'nadia').pop();
+  assert.ok(/Questions already answered: Caullen's "Anything else\?": answered by Dave\./.test(n2.last), n2.last);
+});
+
+test('the estimate weighs turns only: hand checks and the leader\'s call add their cost, not runs', async () => {
+  const { M, runner } = fresh({ seats: ['dave', 'sharon', 'phil'], leader: 'dave', models: { dave: { provider: 'deepseek', model: 'deepseek-flash' }, sharon: { provider: 'deepseek', model: 'deepseek-flash' }, phil: { provider: 'deepseek', model: 'deepseek-flash' } } });
+  runner.script({ dave: ['ASK: Sharon — q?', 'PASS'], sharon: ['Answer.'], 'phil:hand': ['NO'] });
+  await M.say({ text: 'Go.' }); await idle(M);
+  const v = await M.view();
+  const bp = v.meeting.cost.byProvider.deepseek;
+  const turns = runner.turns().length, checks = runner.calls.length - turns;
+  assert.ok(checks >= 1, 'a hand check ran');
+  assert.strictEqual(bp.turns, turns + checks, 'every run is counted in the total');
+  assert.strictEqual(bp.w, turns, 'only turns are weighed (Normal: 1 each)');
+  assert.match(v.meeting.estimateLine, /\(a rough guess from this meeting so far; more if they ask each other or raise hands\)$/, v.meeting.estimateLine);
+});

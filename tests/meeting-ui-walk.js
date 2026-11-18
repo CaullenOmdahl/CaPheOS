@@ -86,8 +86,10 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   t('the controls in view are the table\'s: Round, Observe, More; no Next button by default', await ev('(()=>{const a=[...document.querySelectorAll(".mtg-btns [data-act]")].map(x=>x.dataset.act);return a.includes("round")&&a.includes("observe")&&!a.includes("next")&&!a.includes("register")&&!a.includes("pause")&&!!document.querySelector(".mtg-more > summary[data-act=more]")&&!document.querySelector(".mtg-more").open})()'), await ev('[...document.querySelectorAll(".mtg-btns [data-act]")].map(x=>x.dataset.act).join()'));
   await ev('document.querySelector(".mtg-more > summary").click()');
   t('More opens the rest: tools, register, minutes, agenda, pace', await waitFor(() => ev('(()=>{const d=document.querySelector(".mtg-more");return d.open&&["talk-only","register","minutes"].every(k=>!!d.querySelector("[data-act="+k+"]"))&&!!d.querySelector("#mtg-speed")&&!!d.querySelector("#mtg-item-new")})()'), 3000));
+  t('the Tools button says it is on (aria-pressed on it, not on the thinking controls)', await ev('(()=>{const d=document.querySelector(".mtg-more");const k=d.querySelector("#mtg-think");return d.querySelector("[data-act=talk-only]").getAttribute("aria-pressed")==="true"&&!!k&&!k.closest("[aria-pressed]")&&!d.querySelector("#mtg-pin").closest("[aria-pressed]")})()'));
   await maps('Tools off (talk only) for the meeting', '[data-act="talk-only"]', { path: '/meeting/talkonly', body: { on: true } });
   t('the head says talk only', await waitFor(() => ev('/talk only/.test(document.querySelector(".mtg-sub").textContent)'), 3000));
+  t('the Tools button now says it is off', await waitFor(() => ev('document.querySelector(".mtg-more [data-act=talk-only]").getAttribute("aria-pressed")==="false"'), 3000));
   await maps('Tools on again', '[data-act="talk-only"]', { path: '/meeting/talkonly', body: { on: false } });
   t('More stays open across live updates', await ev('document.querySelector(".mtg-more").open'));
   await ev('(()=>{const i=document.getElementById("mtg-item-new");i.value="Check the books";return 1})()');

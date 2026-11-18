@@ -217,8 +217,9 @@ export function meetingPane(host, opts) {
     }
     // under More
     more.push(...thinkControls(M.think));
-    more.push(b(M.talkOnly ? 'Tools: off (talk only)' : 'Tools: on', 'talk-only', { variant: 'ghost', aria: M.talkOnly ? 'Talk only: nobody has tools. Switch tools back on, so they can check what they say' : 'Tools are on: they can read and check what they say. Switch to talk only', onClick: () => act(ACTIONS.talkOnly, { on: !M.talkOnly }) }));
-    more[0].setAttribute('aria-pressed', String(!M.talkOnly));
+    const talkBtn = b(M.talkOnly ? 'Tools: off (talk only)' : 'Tools: on', 'talk-only', { variant: 'ghost', aria: M.talkOnly ? 'Talk only: nobody has tools. Switch tools back on, so they can check what they say' : 'Tools are on: they can read and check what they say. Switch to talk only', onClick: () => act(ACTIONS.talkOnly, { on: !M.talkOnly }) });
+    talkBtn.setAttribute('aria-pressed', String(!M.talkOnly));
+    more.push(talkBtn);
     if (run && L.phase !== 'floor' && !L.pausedFor) more.push(L.paused ? b('Carry on', 'unpause', { variant: 'primary', aria: 'Carry on: the next turn may start', onClick: () => act(ACTIONS.hold, { on: false }) })
       : b('Pause', 'pause', { variant: 'ghost', aria: 'Hold the floor: the current turn finishes, then nothing new starts (and nothing is spent)', onClick: () => act(ACTIONS.hold, { on: true }) }));
     if (M.opened) more.push(b('Catch me up', 'catchup', { variant: 'ghost', aria: 'Five bullets of what you missed, what was decided and what is still asked', onClick: async () => { const r = await act(ACTIONS.catchup, { since: lastRead }); if (r) app.toast('Your catch-up is in the messages.'); } }));

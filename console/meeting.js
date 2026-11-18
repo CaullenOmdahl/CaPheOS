@@ -450,7 +450,7 @@ module.exports = function meeting(deps) {
   function sinceNote(id) {
     let from = 0;
     for (let i = LOG.length - 1; i >= 0; i--) { const e = LOG[i]; if (e.who === id && (e.kind === 'say' || e.kind === 'pass')) { from = i + 1; break; } }
-    const win = LOG.slice(from), said = [], answered = [];
+    const win = LOG.slice(from), said = [], answered = [], mine = [];
     for (let i = 0; i < win.length; i++) {
       const e = win[i];
       if (e.kind === 'say' && e.who !== id) said.push(nameOf(e.who) + (e.who === 'owner' ? ' (owner)' : '') + (e.to ? ' (answering ' + nameOf(e.to) + ')' : '') + ': ' + clip(String(e.text || '').replace(/\s+/g, ' ').trim(), 140).replace(/\.+$/, ''));
@@ -461,13 +461,17 @@ module.exports = function meeting(deps) {
       }
       if (e.kind === 'say' && e.who === 'owner') {
         const by = []; for (const x of win.slice(i + 1)) { if (x.kind === 'say' && x.who === 'owner') break; if (x.kind === 'say' && x.who !== id && !by.includes(x.who)) by.push(x.who); }
-        if (by.length) answered.push(owner() + '\'s "' + clip(String(e.text || '').replace(/\s+/g, ' ').trim(), 100) + '": answered by ' + by.map(nameOf).join(', '));
+        const q = owner() + '\'s "' + clip(String(e.text || '').replace(/\s+/g, ' ').trim(), 100) + '"';
+        // put to this seat by name: the others' answers do not answer for it; it gives its own, adding what is new
+        if (by.length && Array.isArray(e.only) && e.only.includes(id)) mine.push(q + ' was put to you by name; ' + by.map(nameOf).join(', ') + ' already answered: give your own answer, adding only what is new');
+        else if (by.length) answered.push(q + ': answered by ' + by.map(nameOf).join(', '));
       }
     }
     const list = said.length > SINCE_MAX ? ['(' + (said.length - SINCE_MAX) + ' earlier, above)'].concat(said.slice(-SINCE_MAX)) : said;
     return ' [' + (list.length ? 'Since you last spoke: ' + list.join(' | ') + '. ' : '')
       + (answered.length ? 'Questions already answered: ' + answered.join('; ') + '. ' : '')
-      + 'Reply to where the discussion is now: build on or disagree with the latest; do not re-answer.]';
+      + (mine.length ? mine.join('; ') + '. ' : '')
+      + 'Reply to where the discussion is now: build on or disagree with the latest; do not re-answer' + (mine.length ? ' what others said' : '') + '.]';
   }
   function hasNewFor(id) {
     for (let i = LOG.length - 1; i >= 0; i--) {
@@ -633,7 +637,7 @@ module.exports = function meeting(deps) {
     const check = o.purpose === 'hand' || o.purpose === 'call';
     active.add(st.runId); if (check) checks.add(st.runId);
     const wd = watchdog(st.runId, { onStall: () => { Promise.resolve(runner.cancel(st.runId)).catch(() => {}); } });
-    try { const r = await runner.wait(st.runId, () => wd.saw()); cost(r, o.model); return r; } finally { wd.off(); active.delete(st.runId); checks.delete(st.runId); }
+    try { const r = await runner.wait(st.runId, () => wd.saw()); cost(r, o.model, o.purpose); return r; } finally { wd.off(); active.delete(st.runId); checks.delete(st.runId); }
   }
   /* a run's watchdog: never a time limit on a turn. onNudge once, after NUDGE_MS since the run started (the speaker is
      asked to finish); onStall only when nothing at all came from the run for STALL_MS (a run waiting on the owner's
@@ -656,13 +660,15 @@ module.exports = function meeting(deps) {
   /* cost is information, never a gate (no budget, no estimate): turns, and per provider the dollars of a metered model or
      the share of a subscription's windows since the meeting first used it (lib/subscription-meter.js), else "unknown" */
   const METER = require(path.join(LIB, 'subscription-meter.js'));
-  function cost(r, model) {
+  function cost(r, model, purpose) {
     M.cost.turns++; M.cost.usd = Math.round((M.cost.usd + (Number(r && r.usd) || 0)) * 1e6) / 1e6;
     const p = (model && model.provider) || 'unknown';
     const bp = M.cost.byProvider = M.cost.byProvider || {};
     if (!bp[p]) { let w = null; try { w = METER.windows(p); } catch (_) {} bp[p] = { turns: 0, usd: 0, start: w }; }
     bp[p].turns++; bp[p].usd = Math.round((bp[p].usd + (Number(r && r.usd) || 0)) * 1e6) / 1e6;
-    bp[p].w = Math.round(((Number(bp[p].w) || 0) + (EFFORT_WEIGHT[model && model.effort] || 1)) * 1000) / 1000;   // runs, weighted by level
+    // turns only, weighted by level: the short Light checks (hands, the leader's call) add their cost to usd, not to w,
+    // so a turn's share in the estimate carries the checks around it
+    bp[p].w = Math.round(((Number(bp[p].w) || 0) + (purpose === 'turn' ? EFFORT_WEIGHT[model && model.effort] || 1 : 0)) * 1000) / 1000;
   }
   function costLine() {
     let l = ''; try { l = METER.line(M.cost.byProvider || {}); } catch (_) {}
@@ -681,7 +687,7 @@ module.exports = function meeting(deps) {
     const bp = M.cost.byProvider || {};
     const pct = n => (n < 0.1 ? 'under 0.1' : (Math.round(n * 10) / 10).toString().replace(/\.0$/, '')) + '%';
     const parts = Object.entries(by).map(([p, b]) => {
-      const name = (METER.NAMES && METER.NAMES[p]) || p, seen = bp[p], w = seen ? Number(seen.w) || Number(seen.turns) || 0 : 0;
+      const name = (METER.NAMES && METER.NAMES[p]) || p, seen = bp[p], w = seen ? Number(seen.w != null ? seen.w : seen.turns) || 0 : 0;
       let kind = 'unknown'; try { kind = METER.kindOf(p); } catch (_) {}
       if (kind === 'metered') {
         if (!w) return name + ' not known yet';
@@ -698,7 +704,7 @@ module.exports = function meeting(deps) {
       }
       return name + ' unknown';
     });
-    return 'Next round at ' + lab + ': about ' + list.length + ' turn' + (list.length === 1 ? '' : 's') + ' · ' + parts.join(' · ') + ' (a rough guess from this ' + NOUN + ' so far)';
+    return 'Next round at ' + lab + ': about ' + list.length + ' turn' + (list.length === 1 ? '' : 's') + ' · ' + parts.join(' · ') + ' (a rough guess from this ' + NOUN + ' so far; more if they ask each other or raise hands)';
   }
 
   /* ---------- the action register (company/tools/lib/meeting-register.js): the meeting's first-class output ----------
@@ -968,7 +974,8 @@ module.exports = function meeting(deps) {
     haltTimer = setInterval(() => {
       if (!M.run) { clearInterval(haltTimer); haltTimer = null; return; }
       const h = co.halted();
-      if (h && (!M.run.stopping || (h === 'hard' && M.run.stopping === 'halt-soft'))) {
+      // a halt overrides the owner's Stop / Close (stopping 'owner'); a hard one also overrides a soft one
+      if (h && (!M.run.stopping || M.run.stopping === 'owner' || (h === 'hard' && M.run.stopping === 'halt-soft'))) {
         M.run.stopping = 'halt-' + h; M.run.floor = false; M.run.paused = false; save();
         if (h === 'hard') for (const id of active) Promise.resolve(runner.cancel(id)).catch(() => {});   // a hard halt aborts the turn; a soft one lets it finish
         emit('meeting'); kick();
@@ -981,15 +988,16 @@ module.exports = function meeting(deps) {
     try {
       while (M.run) {
         const R = M.run;
-        if (co.halted() && !R.stopping) R.stopping = 'halt-' + co.halted();
+        if (co.halted() && (!R.stopping || R.stopping === 'owner')) R.stopping = 'halt-' + co.halted();
         if (R.floor && !R.stopping) { save(); emit('meeting'); return; }   // the owner has the floor: wait for them
         if (!R.round) {
           if (R.stopping) {
             const h = String(R.stopping);
             if (h.startsWith('halt')) {   // halted: the meeting is interrupted, its minutes written; Resume after the halt
               const hard = h === 'halt-hard';
+              const closing = !!M.closeAfter;   // the owner had pressed Close: it closes, as asked, rather than waiting to resume
               endRun('The company is halted, so the meeting stopped' + (hard ? ' mid-turn.' : ' after the turn in progress.'));
-              finalize('interrupted', 'console', hard ? 'hard halt: aborted mid-turn; resume it after the halt' : 'soft halt: the turn in progress finished, then the meeting stopped');
+              if (!closing) finalize('interrupted', 'console', hard ? 'hard halt: aborted mid-turn; resume it after the halt' : 'soft halt: the turn in progress finished, then the meeting stopped');
             } else endRun('Round stopped.');
             return;
           }
@@ -1059,7 +1067,7 @@ module.exports = function meeting(deps) {
     if (p.text) {
       M.run.gate = false; M.run.gateUntil = null; M.run.waitNext = false; M.floorWhy = null;   // the owner just spoke: the first answer starts now
       if (!M.opened) record({ who: 'owner', kind: 'open', text: seatList() });
-      record({ who: 'owner', kind: 'say', text: p.text });
+      record(Object.assign({ who: 'owner', kind: 'say', text: p.text }, p.only && p.only.length ? { only: p.only.slice() } : {}));
     }
     const only = p.only && p.only.length ? p.only : null;
     M.run.round = { only, followUp: !p.text, said: 0, answered: 0, ended: null,
@@ -1112,7 +1120,7 @@ module.exports = function meeting(deps) {
         } });
       try { res = await runner.wait(rid, ev => { wd.saw(); runEvent(cur, ev); }); } finally { wd.off(); active.delete(rid); }
       if (R.consent && R.consent.runId === cur.runId) consentClear(R, null);
-      cost(res, cur.model);
+      cost(res, cur.model, 'turn');
       if (res.refused) {
         // a model picked for everyone is never swapped for another: that person sits this turn out
         let next = cur.attempt === 0 && !cur.model.pinned ? REF.nextEntry(cur.seat, cur.model, cur.tried, { root: co.ROOT }) : null;
@@ -1189,8 +1197,9 @@ module.exports = function meeting(deps) {
     const mt = mentions(text);
     if (mt.unknown.length) fail('nobody called ' + mt.unknown.join(', ') + ' is on the crew');
     if (mt.addressed && !mt.at.length) fail(mt.missing.join(', ') + (mt.missing.length === 1 ? ' is' : ' are') + ' not seated: add them first');
+    if (M.closeAfter && M.run) fail('the ' + NOUN + ' is closing once the current speaker finishes, so your message was not sent: start a new ' + NOUN + ' to carry on', 409);
     if (M.run) {
-      if (M.run.stopping === 'owner' && !M.closeAfter) {   // stopping after this turn: the message starts a round once it is over
+      if (M.run.stopping === 'owner') {   // stopping after this turn: the message starts a round once it is over
         M.run.afterStop = { text, only: mt.at }; save(); emit('meeting');
         return view({ note: 'Your message goes to the table once the current speaker finishes.' });
       }
