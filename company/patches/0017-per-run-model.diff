@@ -1,4 +1,5 @@
-# 0017 — a model for ONE run only: POST /api/cron/run and team.dispatch workers take {model, provider, effort}
+# 0017 — a model for ONE run only: POST /api/cron/run and team.dispatch workers take {model, provider, effort},
+#        and only a pair the company's override allowlist opens for that run's own agent NOW runs
 # Why: a run's model was set seat-wide (the routine's saved pair, else the agent's roster pin), so running one item on a
 # stronger or cheaper model meant re-pinning the agent and putting the pin back, and every other run on that agent in
 # between ran on the borrowed model. With this record:
@@ -14,28 +15,49 @@
 #     run; a worker beside it without one keeps its own pair. An override on another provider runs on that provider's
 #     own credential, else that worker is refused in plain words (never silently run on the lead's model). The worker's
 #     dispatch row names the override. Schema properties are bare types: the lead-with-crew tool bytes are budgeted.
+#   - THE ALLOWLIST GATE (sidecar/override-allow.js). Unchecked, any lead agent (team.dispatch) or any Run Now caller could
+#     pick any provider/model the station holds a credential for, around the company's pacer closures, the owner's
+#     subscription stops, refusal blocks and model rulings. The station reads the JSON file named by env
+#     STARNET_OVERRIDE_ALLOW (absolute path; re-read per request, cached by mtime+size):
+#       {"v":1, "at":<epoch ms>, "by":"dispatcher", "agents":{"<agentId>":[{"provider":"...","model":"..."}]}}
+#     written by the company dispatcher every tick (company/tools/lib/override-allow.js). Env unset, file missing,
+#     unreadable, bad JSON, not v:1, or "at" older than 30 minutes (or more than a minute ahead) -> every override is
+#     refused: Run Now 403 "no current override allowlist: overrides are off"; a dispatch worker gets that error row and
+#     does not run. Otherwise the override's resolved (provider, model) (a bare model borrows the routine's / worker's own
+#     provider, as for running) must equal an entry listed for THE RUN'S OWN agentId (the routine's agent; the worker's
+#     agentId); another agent's entries never count. No match -> 403 / worker error row "model <provider>/<model> is not
+#     open for <agentId> now". Effort is free: an effort-only override runs the run's own pair and needs only a current
+#     list. A host that passes no allowOverride to orchestration runs no override at all. Requests without an override
+#     behave exactly as before.
 #   - the run row in runs.jsonl gains requestedBy:"override" and override {provider?, model?, effort?}; `model` stays the
 #     model the run asked for (the override's). Absent = today's behaviour exactly, byte-identical rows.
-# Tests: test/run-override.test.js (the rule; one dispatch with an overridden and a plain worker; a refused worker; the
-# row), test/run-model-override.e2e.test.js (real sidecar + loopback mock provider: an override run uses the override
-# while the routine and the pins read unchanged mid-run, the next run uses the saved model again, bad overrides are 400,
-# a dispatch with both kinds of worker). test/run-wire.invariant.test.js hands its Run Now slice a press with no override.
-# Needs 0016 first (both touch sidecar/runstore.js and sidecar/index.js).
+# Tests: test/run-override.test.js (the rule; the allowlist reader: no env, relative path, missing, bad JSON, wrong v,
+# stale, future, current, another agent's entry, effort-only, the cache going stale and re-reading a rewritten file; one
+# dispatch with overridden, plain and gate-refused workers; a stale list and a gateless host refuse overridden workers
+# while a plain sibling runs; the row), test/run-model-override.e2e.test.js (real sidecar + loopback mock provider: no
+# STARNET_OVERRIDE_ALLOW, a missing file, a stale list and another agent's entry are each 403 and reach no provider; an
+# allowed override run uses the override while the routine and the pins read unchanged mid-run, the next run uses the
+# saved model again, bad overrides are 400, a dispatch with both kinds of worker, and a dispatch whose worker override is
+# not open: that worker's error row, its sibling runs). test/run-wire.invariant.test.js hands its Run Now slice a press
+# with no override.
+# Needs 0016 first (both touch sidecar/runstore.js and sidecar/index.js). Needs STARNET_OVERRIDE_ALLOW in the station env
+# (scripts/setup-station.sh writes it) or every override stays off.
 # Apply:  git -C starnet apply --3way company/patches/0017-per-run-model.diff ; then restart the station.
 # Revert: git -C starnet apply -R company/patches/0017-per-run-model.diff ; then restart the station.
 diff --git a/sidecar/index.js b/sidecar/index.js
-index 859e4d69..201693aa 100644
+index 859e4d6..e8f09c1 100644
 --- a/sidecar/index.js
 +++ b/sidecar/index.js
-@@ -333,6 +333,7 @@ const LineResume = require('./routing/line-resume.js');   // the one resume owne
+@@ -333,6 +333,8 @@ const LineResume = require('./routing/line-resume.js');   // the one resume owne
  const LineHold = require('./routing/line-hold.js');   // the saved hold of a job that stopped at a reviewer's gate (line-hold lane): origin mapping here, the build in the runner
  const { foldLineIntoFire } = require('./routing/line-fire.js');   // a routine's line: answer + stop note, spend, stop facts (quick win 25)
  const { routineRunIdentity, runsAsCommand, isRoutineTrigger } = require('./routine-identity.js');   // a routine run's identity + command rule, shared by the tick and Run Now (quick win 31)
 +const RunOverride = require('./run-override.js');   // CA PHE DIGITAL (company/patches/0017): a {model, provider, effort} for one run only
++const OverrideAllow = require('./override-allow.js').makeOverrideAllow();   // 0017: ...accepted only when the company's allowlist (env STARNET_OVERRIDE_ALLOW) opens it for that agent now
  const RunWire = require('./run-wire.js');   // the ONE {provider, model} decision every entry point asks (runWireFor, run-wire-resolver lane)
  const { makeStepTest } = require('./routing/steptest.js');   // the conveyor STEP-THROUGH TEST engine (/api/routing/steptest)
  const LineJobs = require('./routing/linejobs.js');   // WORKFLOWS — every job sent down a line, kept as one record the window and the OUTBOX open (/api/line-jobs)
-@@ -3240,7 +3241,11 @@ function rosterWireRows(tag) {
+@@ -3240,7 +3242,11 @@ function rosterWireRows(tag) {
  function routineWireOf(job) {
    return (job && (job.model || job.provider)) ? { source: 'routine', provider: job.provider || '', model: job.model || '' } : null;
  }
@@ -48,7 +70,7 @@ index 859e4d69..201693aa 100644
  // the READOUT of a routine's resolved pair (GET /api/cron, routine.list): null for a script-only routine, which never calls
  // a model — a pair there would claim a run that never happens
  function routineWireRow(job) {
-@@ -18427,6 +18432,12 @@ async function handleCronRun(req, res) {
+@@ -18427,6 +18433,20 @@ async function handleCronRun(req, res) {
        return res.end(JSON.stringify({ error: live.settlement ? 'this routine is waiting for its result to be saved — retry when storage recovers' : 'this routine is already running — wait for it to finish' }));
      }
    }
@@ -58,10 +80,18 @@ index 859e4d69..201693aa 100644
 +  const runOverride = RunOverride.parseRunOverride(body, { normalizeProvider: normalizeProviderId, knownProviders: PROVIDER_IDS });
 +  if (!runOverride.ok) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: runOverride.error, override: true })); }
 +  if (runOverride.override && job.noAgent === true) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'this routine runs a script, not a model: it takes no model override', override: true })); }
++  /* THE ALLOWLIST GATE (0017, sidecar/override-allow.js): an override runs only when the company's current allowlist opens
++     that (provider, model) for THIS routine's agent now; no current list -> every override is off. The pair is resolved as
++     the run will run it (a bare model borrows the routine's provider). 403, before anything starts. */
++  if (runOverride.override) {
++    const gw = cronWireFor(job, runOverride.override);
++    const gate = OverrideAllow.check({ agentId: String(job.agentId || '').trim() || 'agent', provider: gw.provider || 'openrouter', model: gw.model, override: runOverride.override });
++    if (!gate.ok) { res.writeHead(403, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: gate.error, override: true })); }
++  }
    // INJECTION TRIPWIRE at FIRE time (defense in depth): re-scan the assembled prompt before spending anything.
    // This is what catches a routine authored BEFORE the scanner existed, and — once skills/contextFrom get their
    // runtime consumers — content loaded at run time that create-time scanning never saw.
-@@ -18447,7 +18458,7 @@ async function handleCronRun(req, res) {
+@@ -18447,7 +18467,7 @@ async function handleCronRun(req, res) {
      if (typeof scan.cleaned === 'string' && scan.cleaned) assembledPrompt = scan.cleaned;
    }
    // the SAME one resolution the scheduled tick reads (cron driver wireForJob): Run Now is that fire, pressed by hand
@@ -70,7 +100,7 @@ index 859e4d69..201693aa 100644
    const model = runWire.model;
    const provider = runWire.provider || 'openrouter';
    const key = cronKeyFor(provider);
-@@ -18564,6 +18575,7 @@ async function handleCronRun(req, res) {
+@@ -18564,6 +18584,7 @@ async function handleCronRun(req, res) {
        // Overseer's when it follows the station default, else the provider default
        reasoningEffort: runWire.reasoningEffort,
        wireSource: runWire.source,   // where the pair came from, on the run row (same field the scheduled fire records)
@@ -78,18 +108,20 @@ index 859e4d69..201693aa 100644
        // LINE WATCH: the row records the bay + line this Run Now's crate named (placeCronWorkitem above)
        lineId: (cronItems.get(runId) || {}).lineId || undefined, dockId: (cronItems.get(runId) || {}).dockId || undefined,
        // per-bay capability isolation (B5): Run Now runs in the SAME bay room the scheduled fire gets (cron-driver.js
-@@ -23675,7 +23687,9 @@ async function runOnceCore(o) {
+@@ -23675,7 +23696,11 @@ async function runOnceCore(o) {
        return providerHasCredential(id, k, b) ? { provider: id, key: k, baseUrl: b } : null;
      },
      // a worker runs the pair it runs on every other surface (run-wire.js): its pin, else the station default
 -    resolveWire: (aid) => runWireFor(aid)
 +    resolveWire: (aid, explicit) => runWireFor(aid, explicit || null),
 +    // 0017: a worker spec's {model, provider, effort} for that worker's run only, checked against this station's registry
-+    parseOverride: spec => RunOverride.parseRunOverride(spec, { normalizeProvider: normalizeProviderId, knownProviders: PROVIDER_IDS })
++    parseOverride: spec => RunOverride.parseRunOverride(spec, { normalizeProvider: normalizeProviderId, knownProviders: PROVIDER_IDS }),
++    // 0017: ...and run only when the company's current allowlist opens that resolved pair for that worker's agent now
++    allowOverride: ask => OverrideAllow.check(ask)
    }).register(registry);
    // session.list/create/focus: the LEAD's session verbs, over the same station bridge dispatch's resolver
    // uses. Same 'orchestrator' capability gate as team.* — conferred on the lead run only, so a delegated
-@@ -26481,7 +26495,7 @@ async function runOnceCore(o) {
+@@ -26481,7 +26506,7 @@ async function runOnceCore(o) {
        }
        try { if (o.streamId && kinds.directiveKind !== 'station') { const files = TurnDelivery.fileRows(transcriptStore, { streamId: o.streamId, agentId, runId, turnId: runStartExtra.turnId, root: o.projectRoot || '', artifacts: execution.artifactList(), note: deliverableNotes.get(runId), quotes: execution.quotes(), taint: execution.rowTaint() || (typeof o.connectorAuthority?.taintedBy === 'function' ? o.connectorAuthority.taintedBy() : null) }); if (files.skipped.length) failNote('turn.files.skipped', new Error(files.skipped.length + ' artifact(s) not published as file rows: ' + files.skipped.map(s => s.why).join(','))); } } catch (e) { failNote('turn.files', e); }   // the run's files, as rows of their own (turn identity commit 10): get, never take, and a failure here skips nothing below (runStore.record, the final drain)
        const runEndedAt = entryEndedAt === null ? Date.now() : entryEndedAt;
@@ -98,12 +130,109 @@ index 859e4d69..201693aa 100644
  
        // P0.1/H1.1: persist the full DIALOGUE (not just the outcome) — a durable server-side transcript for EVERY
        // run, incl. headless ones (cron/Telegram/delegated). Append the triggering user directive, then EVERY new
+diff --git a/sidecar/override-allow.js b/sidecar/override-allow.js
+new file mode 100644
+index 0000000..9238743
+--- /dev/null
++++ b/sidecar/override-allow.js
+@@ -0,0 +1,91 @@
++/* sidecar/override-allow.js — THE OVERRIDE ALLOWLIST: which one-run models are open for which agent NOW
++   (CA PHE DIGITAL, company/patches/0017).
++
++   WHY. A one-run override (POST /api/cron/run, a team.dispatch worker spec: sidecar/run-override.js) names a provider and
++   a model directly. Unchecked, any lead agent or any Run Now caller could pick any provider/model this station holds a
++   credential for, around everything the company decides about models: the pacer's closures, the owner's subscription
++   stops, refusal blocks, the owner's model rulings. The station does not know those rules; the company does. So the
++   company's dispatcher writes, at the end of every tick, the pairs each agent may run NOW (company/tools/lib/
++   override-allow.js), and the station accepts an override only when it matches that list.
++
++   THE FILE. The absolute path named by env STARNET_OVERRIDE_ALLOW, read on each request (cached by path + mtime + size):
++     { "v": 1, "at": <epoch ms written>, "by": "dispatcher", "agents": { "<agentId>": [ { "provider": "...", "model": "..." } ] } }
++
++   THE RULE (fail closed).
++     - env unset or empty, file missing, unreadable, not JSON, not v:1, no agents object, or "at" older than MAX_AGE_MS
++       (30 minutes; a stopped dispatcher stops writing, and a list that old no longer says what is open now), or "at" more
++       than a minute in the future (a far-future stamp would never go stale)
++         -> every override is refused: OFF_REASON.
++     - otherwise an override that names a model is accepted only when its (provider, model), after a bare model borrowed
++       the run's own provider (the caller resolves that pair the way the run will run it), equals one entry listed for
++       THE RUN'S OWN agentId. Another agent's entries never count. Effort is free: an effort-only override runs the
++       run's own saved pair, so it needs a current list but matches no entry.
++     - no match -> 'model <provider>/<model> is not open for <agentId> now'.
++
++     makeOverrideAllow({ envName?, env?, fs?, now? }) -> { check({ agentId, provider, model, override }) -> { ok:true } | { ok:false, error },
++                                                          read() -> { ok:true, list } | { ok:false } }
++     matchAllow(list, { agentId, provider, model, override }, nowMs) -> the same answer as check, over a parsed list. */
++'use strict';
++const nodeFs = require('fs');
++
++const MAX_AGE_MS = 30 * 60 * 1000;
++const OFF_REASON = 'no current override allowlist: overrides are off';
++const ENV_NAME = 'STARNET_OVERRIDE_ALLOW';
++
++function parseList(text) {
++  let j; try { j = JSON.parse(text); } catch (_) { return null; }
++  if (!j || typeof j !== 'object' || j.v !== 1) return null;
++  const at = Number(j.at);
++  if (!Number.isFinite(at) || at <= 0) return null;
++  if (!j.agents || typeof j.agents !== 'object' || Array.isArray(j.agents)) return null;
++  const agents = Object.create(null);
++  for (const id of Object.keys(j.agents)) {
++    const rows = Array.isArray(j.agents[id]) ? j.agents[id] : [];
++    agents[id] = rows.filter(r => r && typeof r.provider === 'string' && typeof r.model === 'string' && r.provider && r.model)
++      .map(r => ({ provider: r.provider.trim().toLowerCase(), model: r.model.trim() }));
++  }
++  return { at, by: String(j.by || ''), agents };
++}
++
++function matchAllow(list, ask, nowMs) {
++  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
++  // older than MAX_AGE_MS, or stamped more than a clock-skew minute ahead (a far-future stamp would never go stale)
++  if (!list || !(now - list.at <= MAX_AGE_MS) || list.at - now > 60 * 1000) return { ok: false, error: OFF_REASON };
++  const a = ask || {};
++  const ov = a.override || {};
++  if (!ov.model) return { ok: true };   // effort only: the run's own pair, at that effort
++  const agentId = String(a.agentId || '');
++  const provider = String(a.provider || '').trim().toLowerCase();
++  const model = String(a.model || ov.model).trim();
++  const open = (agentId && Object.prototype.hasOwnProperty.call(list.agents, agentId)) ? list.agents[agentId] : [];
++  if (provider && open.some(r => r.provider === provider && r.model === model)) return { ok: true };
++  return { ok: false, error: 'model ' + (provider || '?') + '/' + model + ' is not open for ' + (agentId || '(no agent)') + ' now' };
++}
++
++function makeOverrideAllow(opts) {
++  const o = opts || {};
++  const fs = o.fs || nodeFs;
++  const env = o.env || process.env;
++  const envName = o.envName || ENV_NAME;
++  const now = typeof o.now === 'function' ? o.now : Date.now;
++  let cache = null;   // { file, mtimeMs, size, list }
++  function read() {
++    const file = String(env[envName] || '').trim();
++    if (!file || !require('path').isAbsolute(file)) return { ok: false };
++    let st; try { st = fs.statSync(file); } catch (_) { cache = null; return { ok: false }; }
++    if (!st.isFile()) return { ok: false };
++    if (cache && cache.file === file && cache.mtimeMs === st.mtimeMs && cache.size === st.size) return cache.list ? { ok: true, list: cache.list } : { ok: false };
++    let text; try { text = fs.readFileSync(file, 'utf8'); } catch (_) { cache = null; return { ok: false }; }
++    const list = text.length <= 4 * 1024 * 1024 ? parseList(text) : null;
++    cache = { file, mtimeMs: st.mtimeMs, size: st.size, list };
++    return list ? { ok: true, list } : { ok: false };
++  }
++  function check(ask) {
++    const r = read();
++    if (!r.ok) return { ok: false, error: OFF_REASON };
++    return matchAllow(r.list, ask, now());
++  }
++  return { check, read };
++}
++
++module.exports = { makeOverrideAllow, matchAllow, parseList, MAX_AGE_MS, OFF_REASON, ENV_NAME };
 diff --git a/sidecar/run-override.js b/sidecar/run-override.js
 new file mode 100644
-index 00000000..6f9c39ca
+index 0000000..7186a6d
 --- /dev/null
 +++ b/sidecar/run-override.js
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,92 @@
 +/* sidecar/run-override.js — A MODEL FOR ONE RUN ONLY (CA PHE DIGITAL, company/patches/0017).
 +
 +   WHY. A run's model was set seat-wide: the routine's saved pair, else the agent's roster pin. A caller that wanted one
@@ -125,6 +254,10 @@ index 00000000..6f9c39ca
 +     - effort                        -> one of EFFORTS.
 +   Anything else answers { ok:false, error } in plain words; the host sends it back as a 400 (Run Now) or as that
 +   worker's error row (team.dispatch), and nothing runs.
++   A well-formed override still runs only when the company's override allowlist opens its resolved (provider, model)
++   for that run's own agent now (sidecar/override-allow.js, env STARNET_OVERRIDE_ALLOW): no current list -> 403 / the
++   worker's error row "no current override allowlist: overrides are off"; not listed -> "model p/m is not open for
++   <agentId> now". This module only parses; the gate is the host's (index.js handleCronRun, orchestration allowOverride).
 +
 +     parseRunOverride(spec, { normalizeProvider?, knownProviders? }) -> { ok:true, override: null | {provider?, model?, effort?} }
 +                                                                     | { ok:false, error }
@@ -193,7 +326,7 @@ index 00000000..6f9c39ca
 +  return { parseRunOverride, explicitOf, EFFORTS };
 +});
 diff --git a/sidecar/runstore.js b/sidecar/runstore.js
-index a45e8dc4..13c6f146 100644
+index a45e8dc..13c6f14 100644
 --- a/sidecar/runstore.js
 +++ b/sidecar/runstore.js
 @@ -516,6 +516,14 @@
@@ -212,7 +345,7 @@ index a45e8dc4..13c6f146 100644
        const taintedBy = str(e.taintedBy).replace(/\s+/g, ' ').trim().slice(0, 200);
        if (taintedBy) entry.taintedBy = taintedBy;
 diff --git a/sidecar/tools/builtin/orchestration.js b/sidecar/tools/builtin/orchestration.js
-index d11828c0..e18cd925 100644
+index d11828c..45ddf18 100644
 --- a/sidecar/tools/builtin/orchestration.js
 +++ b/sidecar/tools/builtin/orchestration.js
 @@ -190,6 +190,8 @@
@@ -224,7 +357,7 @@ index d11828c0..e18cd925 100644
    /* TYPED OUTCOMES: a worker's result is 'done' only when its run SUCCEEDED (frontend/app/runoutcome.js): a reply the provider
       cut ends 'done' + finishReason 'length' and is PARTIAL work — the lead must never build on it as a finished hand-off, and the
       dispatch's "N done" never counts it. The row names that outcome (outcome / finishReason) only when it is not a success, so a
-@@ -657,7 +659,32 @@
+@@ -657,7 +659,46 @@
         when it follows the station, else the provider default — never the lead's. The lead's effort rides only a worker
         that runs on the lead's own wire (after its own class effort), and a legacy host keeps its own-class-else-lead rule. */
      const resolveWire = (typeof deps.resolveWire === 'function') ? deps.resolveWire : null;
@@ -234,7 +367,17 @@ index d11828c0..e18cd925 100644
 +       The host checks the spec against its registry (deps.parseOverride, sidecar/run-override.js); a bare host checks the
 +       shape only. The pair resolves by the one run-wire rule as the explicit level (a bare model borrows the worker's own
 +       provider). A pair on another provider runs only on that provider's own credential: with none the worker is refused
-+       in plain words, never silently run on the lead's model (that would defeat the override). */
++       in plain words, never silently run on the lead's model (that would defeat the override).
++       THE ALLOWLIST GATE: an override runs only when the host's deps.allowOverride({agentId, provider, model, override})
++       opens that resolved pair for THIS worker's own agentId now (the company's allowlist, sidecar/override-allow.js); a
++       host without the gate runs no override at all. Refused -> that worker's error row, and it does not run; a worker
++       beside it without an override runs as before. */
++    const allowOverride = (typeof deps.allowOverride === 'function') ? deps.allowOverride : null;
++    const OVERRIDE_OFF = 'no current override allowlist: overrides are off';
++    function overrideGate(agentId, pair, ov) {
++      const g = allowOverride ? allowOverride({ agentId: String(agentId || ''), provider: String((pair && pair.provider) || ''), model: String((pair && pair.model) || ''), override: ov }) : { ok: false, error: OVERRIDE_OFF };
++      return (g && g.ok === true) ? null : { error: String((g && g.error) || OVERRIDE_OFF) };
++    }
 +    const parseOverride = (typeof deps.parseOverride === 'function') ? deps.parseOverride
 +      : (spec => (RunOverride ? RunOverride.parseRunOverride(spec) : { ok: true, override: null }));
 +    function overrideWire(ident, agentId, ov) {
@@ -244,6 +387,8 @@ index d11828c0..e18cd925 100644
 +      if (!w || !w.ok || !w.model) return { error: 'model override ' + JSON.stringify(ov) + ' could not be resolved: ' + String((w && w.error) || 'no model') };
 +      const p = String(w.provider || '');
 +      const effort = ov.effort || w.reasoningEffort || undefined;
++      const refused = overrideGate(agentId, { provider: p || provider, model: String(w.model) }, ov);
++      if (refused) return refused;
 +      if (!p || p === provider) return { provider, key, baseUrl, model: String(w.model), note: '', wireSource: 'explicit', reasoningEffort: effort };
 +      const lent = providerAuth ? providerAuth(p) : null;
 +      if (lent) return { provider: lent.provider || p, key: lent.key || '', baseUrl: lent.baseUrl || '', model: String(w.model), note: '', wireSource: 'explicit', reasoningEffort: effort };
@@ -252,13 +397,15 @@ index d11828c0..e18cd925 100644
 +    function workerWire(ident, agentId, override) {
 +      if (override && override.model) return overrideWire(ident, agentId, override);
 +      const base = workerWireOwn(ident, agentId);
-+      return (override && override.effort) ? Object.assign({}, base, { reasoningEffort: override.effort }) : base;
++      if (!(override && override.effort)) return base;
++      const refused = overrideGate(agentId, base, override);   // effort only: its own pair, but the gate must be on
++      return refused || Object.assign({}, base, { reasoningEffort: override.effort });
 +    }
 +    function workerWireOwn(ident, agentId) {
        const w = (resolveWire && agentId) ? resolveWire(agentId) : null;
        const leadEffort = (ident && ident.reasoningEffort) || reasoningEffort;   // Class Loadouts S1: its own class effort first
        if (w && w.ok && w.model) {
-@@ -934,7 +961,10 @@
+@@ -934,7 +975,10 @@
                  // THE LENT BUILDER: this worker gets station.map / plan / build for this job (BUILDER_KIT above)
                  builder: { type: 'boolean' },
                  bounded: boundedParam(true),   // the one way to bound a worker (boundOf above)
@@ -270,7 +417,7 @@ index d11828c0..e18cd925 100644
                }
              }
            },
-@@ -985,7 +1015,10 @@
+@@ -985,7 +1029,10 @@
            if (builder && !canLendBuilder(ctx)) return { agentId: aid, error: 'builder:true needs the station builder in YOUR run, and it is not granted here: dispatch this worker without builder, or do the floor change yourself' };
            const scope = hostScopeOf(w);
            if (scope.error) return { agentId: aid, error: scope.error };
@@ -282,7 +429,7 @@ index d11828c0..e18cd925 100644
          });
          markBatchQuality(jobs);
          // WHERE before WHO does the work: an unresolvable session marks its job failed here, so that worker is
-@@ -1003,7 +1036,8 @@
+@@ -1003,7 +1050,8 @@
          const runWorker = async (job, o2) => {
            o2 = o2 || {};
            if (job.error) return { agentId: job.agentId, reason: 'error', result: job.error, usd: 0 };
@@ -292,7 +439,7 @@ index d11828c0..e18cd925 100644
            // PER-WORKER WALL CLOCK (2026-07-26 audit finding A). Before this, the ONLY clock was the registry's
            // tool timeout over the WHOLE dispatch: one slow worker ate the shared budget, the registry rejected, and
            // every ALREADY-COMPLETED worker's result was thrown away — the lead received the string "team.dispatch
-@@ -1020,6 +1054,7 @@
+@@ -1020,6 +1068,7 @@
              row.runId = workerRunId;
              if (bound) row.bound = BOUNDED_LABEL;   // every row of a bounded worker says who bounded it
              if (job.onlyHost) row.onlyHost = job.onlyHost;   // ...and of a scoped one, the host its lead confined it to
@@ -300,7 +447,7 @@ index d11828c0..e18cd925 100644
              handedRoot.set(row, projectOptions(job.sessionContext || ctx).projectRoot || '');   // a later worker reads this one's files from ITS base
              const envelope = await finalizeWorkerDelivery(workerRunId, row);
              // The execution loop ending is not completion: validation and any bounded repair finish first.
-@@ -1120,6 +1155,7 @@
+@@ -1120,6 +1169,7 @@
                maxIters: bound ? lowerPositive(workerMaxIters, bound.maxIters) : workerMaxIters,
                maxToolCalls: bound ? bound.maxTools : undefined,
                onlyHost: job.onlyHost || undefined,   // the lead's host scope (hostScopeOf); the run host enforces it
@@ -308,7 +455,7 @@ index d11828c0..e18cd925 100644
                steer: typeof o2.steer === 'function' ? o2.steer : undefined
              });
            } catch (e) {
-@@ -1160,6 +1196,7 @@
+@@ -1160,6 +1210,7 @@
                  maxIters: lowerPositive(4, bound ? lowerPositive(workerMaxIters, bound.maxIters) : workerMaxIters),
                  maxToolCalls: bound ? bound.maxTools : undefined,
                  onlyHost: job.onlyHost || undefined,
@@ -318,10 +465,10 @@ index d11828c0..e18cd925 100644
              } finally { repairPool.end(); }
 diff --git a/test/run-model-override.e2e.test.js b/test/run-model-override.e2e.test.js
 new file mode 100644
-index 00000000..656e5327
+index 0000000..230a1a7
 --- /dev/null
 +++ b/test/run-model-override.e2e.test.js
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,243 @@
 +/* node test/run-model-override.e2e.test.js — A MODEL FOR ONE RUN ONLY (CA PHE DIGITAL, company/patches/0017).
 +
 +   POST /api/cron/run and each team.dispatch worker spec take an optional { model, provider, effort } for THAT run only
@@ -333,7 +480,14 @@ index 00000000..656e5327
 +     C. an override that is not well formed, names an unknown provider, a provider with no model, or an unknown effort
 +        is a 400 with its reason, and starts nothing.
 +     D. one team.dispatch with a worker that carries an override and one that does not: each runs on its own model, the
-+        worker's pin is unchanged, and only the overridden worker's run row says requestedBy 'override'. */
++        worker's pin is unchanged, and only the overridden worker's run row says requestedBy 'override'.
++   THE ALLOWLIST (sidecar/override-allow.js, env STARNET_OVERRIDE_ALLOW): every override above runs only because the
++   company's list opens that pair for that run's own agent now.
++     G. a station with no STARNET_OVERRIDE_ALLOW refuses every override (403, "overrides are off"); with the env set, a
++        missing file, a stale list (at older than 30 minutes) and a list that opens the pair only for ANOTHER agent are
++        each a 403 with its reason, and none reaches the provider. A plain Run Now still runs.
++     E. a dispatch while the list does not open the worker's override: that worker gets the error row and never reaches the
++        provider, while its sibling without an override runs on its own pin. */
 +'use strict';
 +const A = require('./_assert.js');
 +const fs = require('fs');
@@ -346,6 +500,11 @@ index 00000000..656e5327
 +const DISPATCH_MARK = 'DISPATCH_MARK hand out two tasks.';
 +const seen = [];   // every chat request: { model, who, lastUser }
 +let holdRoutine = null;   // a promise the routine's first request waits on (so the test reads saved state mid-run)
++const os = require('os');
++const ALLOW_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'override-allow-e2e-'));
++const ALLOW = path.join(ALLOW_DIR, 'override-allow.json');
++const writeAllow = (agents, at) => fs.writeFileSync(ALLOW, JSON.stringify({ v: 1, at: at == null ? Date.now() : at, by: 'dispatcher', agents }));
++const OFF = 'no current override allowlist: overrides are off';
 +const sleep = ms => new Promise(r => setTimeout(r, ms));
 +const textOf = m => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content == null ? '' : m.content));
 +
@@ -363,6 +522,7 @@ index 00000000..656e5327
 +      who: /WORKER_MARK/.test(msgs.filter(m => m && m.role === 'system').map(textOf).join('\n')) ? 'worker' : 'lead',
 +      lastUser: lastUser.content ? textOf(lastUser) : '',
 +      tools: msgs.filter(m => m && m.role === 'tool').length,
++      toolText: msgs.filter(m => m && m.role === 'tool').map(textOf).join('\n'),
 +      names: (b.tools || []).map(t => t && t.function && t.function.name).filter(Boolean)
 +    };
 +    seen.push(s);
@@ -393,7 +553,8 @@ index 00000000..656e5327
 +(async () => {
 +  await new Promise(r => server.listen(0, '127.0.0.1', r));
 +  const base = 'http://127.0.0.1:' + server.address().port;
-+  const fixture = SidecarFixture.create({ timeoutMs: 30000, env: { SKYNET_AUX_BUDGET: '0', SKYNET_OPENROUTER_BASE: base, OPENROUTER_API_KEY: 'synthetic-key', SKYNET_FULL_ACCESS: '0', STARNET_FULL_ACCESS: '0' } });
++  const envOf = allow => ({ SKYNET_AUX_BUDGET: '0', SKYNET_OPENROUTER_BASE: base, OPENROUTER_API_KEY: 'synthetic-key', SKYNET_FULL_ACCESS: '0', STARNET_FULL_ACCESS: '0', STARNET_OVERRIDE_ALLOW: allow });
++  const fixture = SidecarFixture.create({ timeoutMs: 30000, env: envOf(ALLOW) });
 +  const pins = async () => {
 +    const r = await fixture.json('GET', '/api/runtime/agent');
 +    const m = {}; for (const a of ((r.body && r.body.agents) || [])) m[a.agentId] = a.model; return m;
@@ -404,6 +565,7 @@ index 00000000..656e5327
 +    return row ? { model: row.model, inFlight: !!row.inFlightRunId } : null;
 +  };
 +  const settle = async id => { for (const until = Date.now() + 20000; Date.now() < until;) { const r = await routineModel(id); if (r && !r.inFlight) return; await sleep(100); } };
++  let from = 0;
 +  try {
 +    await fixture.start();
 +    const roster = await fixture.json('POST', '/api/roster', { agents: [
@@ -415,9 +577,39 @@ index 00000000..656e5327
 +    if (mk.status !== 200) throw new Error('cron create ' + mk.status + ' ' + mk.text);
 +    const id = (mk.body && ((mk.body.job && mk.body.job.id) || mk.body.id)) || '';
 +
++    // ---- G. the allowlist gate on Run Now: missing, stale, another agent's entry -> 403, and nothing starts ----
++    {
++      from = seen.length;
++      const refusedWith = async (label, want) => {
++        const r = await fixture.json('POST', '/api/cron/run', { id, model: OTHER });
++        A.ok(r.status === 403 && String((r.body && r.body.error) || '') === want, 'G: ' + label + ' -> 403 "' + want + '" (' + r.status + ' ' + String((r.body && r.body.error) || r.text || '').slice(0, 160) + ')');
++      };
++      await refusedWith('allowlist file missing', OFF);
++      writeAllow({ agent: [{ provider: 'openrouter', model: OTHER }] }, Date.now() - 31 * 60 * 1000);
++      await refusedWith('a stale allowlist', OFF);
++      writeAllow({ worker: [{ provider: 'openrouter', model: OTHER }], agent: [{ provider: 'openrouter', model: SAVED }] });
++      await refusedWith('the pair open only for another agent', 'model openrouter/' + OTHER + ' is not open for agent now');
++      await sleep(200);
++      A.eq(seen.slice(from).length, 0, 'G: no refused override reached the provider');
++      // a station started with no STARNET_OVERRIDE_ALLOW at all refuses every override, and still runs a plain press
++      const bare = SidecarFixture.create({ timeoutMs: 30000, env: envOf('') });
++      try {
++        await bare.start();
++        await bare.json('POST', '/api/roster', { agents: [{ agentId: 'agent', name: 'LEAD', model: SAVED, provider: 'openrouter', approvalMode: 'full' }] });
++        const mk2 = await bare.json('POST', '/api/cron', { name: 'bare probe', prompt: 'BARE_MARK say hi.', schedule: 'every 1h', agentId: 'agent', model: SAVED, provider: 'openrouter' });
++        const id2 = (mk2.body && ((mk2.body.job && mk2.body.job.id) || mk2.body.id)) || '';
++        const r = await bare.json('POST', '/api/cron/run', { id: id2, model: OTHER });
++        A.ok(r.status === 403 && String((r.body && r.body.error) || '') === OFF, 'G: no STARNET_OVERRIDE_ALLOW -> 403 "' + OFF + '" (' + r.status + ' ' + String((r.body && r.body.error) || r.text || '').slice(0, 160) + ')');
++        const plain = await bare.json('POST', '/api/cron/run', { id: id2 });
++        A.eq(plain.status, 200, 'G: no STARNET_OVERRIDE_ALLOW -> a press without an override still runs');
++      } finally { try { await bare.stop(); } catch (_) {} }
++    }
++    // from here on the list opens OTHER for both agents (A, D) until E closes it for the worker
++    writeAllow({ agent: [{ provider: 'openrouter', model: OTHER }], worker: [{ provider: 'openrouter', model: OTHER }] });
++
 +    // ---- A. an override run uses the override; nothing saved changes, read while the run is in flight ----
 +    let release; holdRoutine = new Promise(r => { release = r; });
-+    let from = seen.length;
++    from = seen.length;
 +    const pressed = fixture.json('POST', '/api/cron/run', { id, model: OTHER });
 +    for (const until = Date.now() + 15000; Date.now() < until && holdRoutine; ) await sleep(50);   // the routine's request arrived: the run has started
 +    A.ok(!holdRoutine, 'A: the override run started (its model request reached the provider)');
@@ -463,8 +655,7 @@ index 00000000..656e5327
 +    A.eq(seen.slice(from).length, 0, 'C: no refused override reached the provider');
 +
 +    // ---- D. one dispatch: a worker with an override and one without ----
-+    from = seen.length;
-+    const rowsBefore = runRows(fixture.workspace).length;
++    const dispatchOnce = async () => {
 +    const response = await fetch(fixture.baseUrl + '/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-StarNet-Token': fixture.token },
 +      body: JSON.stringify({ agentId: 'agent', provider: 'openrouter', key: 'synthetic-key', model: SAVED, isTask: true, messages: [{ role: 'user', content: DISPATCH_MARK }] }) });
 +    A.eq(response.status, 200, 'D: the lead run starts');
@@ -481,6 +672,10 @@ index 00000000..656e5327
 +        if (ev.name === 'permission.prompt') await fixture.json('POST', '/api/consent', { runId, promptId: ev.payload.promptId, decision: 'once' });
 +      }
 +    }
++    };
++    from = seen.length;
++    const rowsBefore = runRows(fixture.workspace).length;
++    await dispatchOnce();
 +    const w1 = seen.slice(from).filter(s => s.who === 'worker' && s.lastUser.indexOf('W1_TASK') >= 0);
 +    const w2 = seen.slice(from).filter(s => s.who === 'worker' && s.lastUser.indexOf('W2_TASK') >= 0);
 +    A.ok(w1.length > 0 && w1.every(s => s.model === OTHER), 'D: the worker with an override ran on ' + OTHER + ' (' + w1.map(s => s.model).join(',') + ')');
@@ -494,30 +689,52 @@ index 00000000..656e5327
 +    A.eq(overridden.map(r => [r.model, r.override]), [[OTHER, { model: OTHER }]], 'D: only the overridden worker\'s row says requestedBy override');
 +    // 0016 rides here too: the mock names the model it served, so every row of this run family carries servedModel
 +    A.ok(workerRows.every(r => r.servedModel === r.model), 'D: each worker row\'s servedModel is the model the provider named');
++
++    // ---- E. the same dispatch while the list does not open the worker's override ----
++    writeAllow({ agent: [{ provider: 'openrouter', model: OTHER }], worker: [] });
++    from = seen.length;
++    const rowsBeforeE = runRows(fixture.workspace).length;
++    await dispatchOnce();
++    const e1 = seen.slice(from).filter(s => s.who === 'worker' && s.lastUser.indexOf('W1_TASK') >= 0);
++    const e2 = seen.slice(from).filter(s => s.who === 'worker' && s.lastUser.indexOf('W2_TASK') >= 0);
++    A.eq(e1.length, 0, 'E: the worker whose override is not open never reached the provider');
++    A.ok(e2.length > 0 && e2.every(s => s.model === SAVED), 'E: its sibling without an override ran on its own pin (' + e2.map(s => s.model).join(',') + ')');
++    const toolMsgs = seen.slice(from).filter(s => s.who === 'lead' && s.tools > 0);
++    A.ok(toolMsgs.some(s => s.toolText.indexOf('model openrouter/' + OTHER + ' is not open for worker now') >= 0), 'E: the lead got the refused worker\'s error row with its reason');
++    const eRows = runRows(fixture.workspace).slice(rowsBeforeE).filter(r => r.agentId === 'worker');
++    A.ok(eRows.length === 1 && !('override' in eRows[0]), 'E: one worker run row, the plain one (' + eRows.length + ')');
 +  } catch (e) {
 +    A.ok(false, 'run-model-override e2e: ' + ((e && e.stack) || e) + '\n' + String(fixture.output ? fixture.output() : '').slice(-3000));
 +  } finally {
 +    try { await fixture.stop(); } catch (_) {}
 +    try { server.close(); } catch (_) {}
++    try { fs.rmSync(ALLOW_DIR, { recursive: true, force: true }); } catch (_) {}
 +  }
 +  A.report('run-model-override.e2e');
 +})();
 diff --git a/test/run-override.test.js b/test/run-override.test.js
 new file mode 100644
-index 00000000..70e54738
+index 0000000..437840e
 --- /dev/null
 +++ b/test/run-override.test.js
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,145 @@
 +/* node test/run-override.test.js — the one-run {model, provider, effort} rule (CA PHE DIGITAL, company/patches/0017).
 +   sidecar/run-override.js parses and checks an override; team.dispatch (tools/builtin/orchestration.js) applies one per
 +   worker against a FAKE runOnce: the worker with an override runs on it, the one beside it without one keeps its own
 +   pair, a provider with no credential refuses that worker (never a silent run on the lead's model), and the run options
-+   carry the override so the run row says requestedBy 'override'. The HTTP half: test/run-model-override.e2e.test.js. */
++   carry the override so the run row says requestedBy 'override'. THE ALLOWLIST (sidecar/override-allow.js): no env, a
++   missing, bad or stale file refuses every override; a pair listed for another agent is refused; a worker refused by the
++   gate gets its error row and never runs while a sibling without an override runs; a host with no gate runs no override.
++   The HTTP half: test/run-model-override.e2e.test.js. */
 +'use strict';
 +const A = require('./_assert.js');
 +const RO = require('../sidecar/run-override.js');
 +const { makeOrchestrationTools } = require('../sidecar/tools/builtin/orchestration.js');
 +const { makeRunStore } = require('../sidecar/runstore.js');
++const OA = require('../sidecar/override-allow.js');
++const fs = require('fs');
++const os = require('os');
++const path = require('path');
 +
 +const norm = id => (['openrouter', 'anthropic', 'claude-cli'].indexOf(String(id).toLowerCase()) >= 0 ? String(id).toLowerCase() : '');
 +const parse = spec => RO.parseRunOverride(spec, { normalizeProvider: norm, knownProviders: ['openrouter', 'anthropic', 'claude-cli'] });
@@ -543,6 +760,42 @@ index 00000000..70e54738
 +  A.eq(RO.explicitOf({ effort: 'low' }, { source: 'routine', provider: 'anthropic', model: 'm1' }), { source: 'routine', provider: 'anthropic', model: 'm1', reasoningEffort: 'low' }, 'effort only keeps the saved pair');
 +  A.eq(RO.explicitOf({ effort: 'low' }, null), { source: 'explicit', provider: '', model: '', reasoningEffort: 'low' }, 'effort only, nothing saved: the next level\'s pair at that effort');
 +
++  // ---- the allowlist reader + matcher ----
++  {
++    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'override-allow-'));
++    const file = path.join(dir, 'override-allow.json');
++    let now = 10 * 60 * 60 * 1000;
++    const env = {};
++    const gate = OA.makeOverrideAllow({ env, now: () => now });
++    const write = (at, agents, extra) => fs.writeFileSync(file, JSON.stringify(Object.assign({ v: 1, at, by: 'dispatcher', agents }, extra || {})));
++    const ask = (agentId, provider, model, override) => gate.check({ agentId, provider, model, override: override || { model } });
++    const OFF = /^no current override allowlist: overrides are off$/;
++    A.ok(OFF.test(ask('w1', 'openrouter', 'm').error), 'allow: env unset -> every override refused');
++    env.STARNET_OVERRIDE_ALLOW = 'relative/override-allow.json';
++    A.ok(OFF.test(ask('w1', 'openrouter', 'm').error), 'allow: a relative path is not a list');
++    env.STARNET_OVERRIDE_ALLOW = file;
++    A.ok(OFF.test(ask('w1', 'openrouter', 'm').error), 'allow: file missing -> refused');
++    fs.writeFileSync(file, '{not json');
++    A.ok(OFF.test(ask('w1', 'openrouter', 'm').error), 'allow: bad JSON -> refused');
++    write(now, { w1: [{ provider: 'openrouter', model: 'm' }] }, { v: 2 });
++    A.ok(OFF.test(ask('w1', 'openrouter', 'm').error), 'allow: an unknown version -> refused');
++    write(now - OA.MAX_AGE_MS - 1, { w1: [{ provider: 'openrouter', model: 'm' }] });
++    A.ok(OFF.test(ask('w1', 'openrouter', 'm').error), 'allow: older than 30 minutes -> refused');
++    write(now + 10 * 60 * 1000, { w1: [{ provider: 'openrouter', model: 'm' }] });
++    A.ok(OFF.test(ask('w1', 'openrouter', 'm').error), 'allow: a far-future stamp -> refused');
++    write(now - 60 * 1000, { w1: [{ provider: 'openrouter', model: 'm' }], w2: [{ provider: 'anthropic', model: 'big' }] });
++    A.eq(ask('w1', 'openrouter', 'm'), { ok: true }, 'allow: a current entry for the run\'s own agent -> accepted');
++    A.eq(ask('w1', 'anthropic', 'big').error, 'model anthropic/big is not open for w1 now', 'allow: another agent\'s entry does not count');
++    A.eq(ask('w1', 'anthropic', 'm').error, 'model anthropic/m is not open for w1 now', 'allow: the provider must match too');
++    A.eq(ask('w3', 'openrouter', 'm').error, 'model openrouter/m is not open for w3 now', 'allow: an agent with no entries -> refused');
++    A.eq(gate.check({ agentId: 'w3', provider: 'openrouter', model: 'own', override: { effort: 'max' } }), { ok: true }, 'allow: effort is free (a current list, no entry needed)');
++    now += OA.MAX_AGE_MS;   // the same file, unchanged on disk, goes stale with time (the mtime cache never hides that)
++    A.ok(OFF.test(ask('w1', 'openrouter', 'm').error), 'allow: the cached list goes stale with time');
++    write(now, { w1: [] });
++    A.eq(ask('w1', 'openrouter', 'm').error, 'model openrouter/m is not open for w1 now', 'allow: a rewritten file is read again (mtime/size cache)');
++    fs.rmSync(dir, { recursive: true, force: true });
++  }
++
 +  // ---- team.dispatch: one worker with an override, one without, same dispatch ----
 +  {
 +    const calls = [];
@@ -555,13 +808,17 @@ index 00000000..70e54738
 +      return { ok: true, provider: 'openrouter', model: roster.get(aid).model, source: 'agent' };
 +    };
 +    const providerAuth = p => (p === 'anthropic' ? { provider: 'anthropic', key: 'ANTH-KEY', baseUrl: '' } : null);
-+    const { dispatchTool } = makeOrchestrationTools({ runOnce, roster: () => roster, key: 'LEAD-KEY', model: 'lead-m', provider: 'openrouter', newId: () => 'r' + (++n), resolveWire, providerAuth, parseOverride: parse });
++    const open = { w1: [{ provider: 'openrouter', model: 'big-model' }, { provider: 'anthropic', model: 'claude-x' }], w2: [{ provider: 'claude-cli', model: 'z' }, { provider: 'openrouter', model: 'six-m' }] };
++    const allowOverride = ask => OA.matchAllow({ at: Date.now(), agents: open }, ask, Date.now());
++    const { dispatchTool } = makeOrchestrationTools({ runOnce, roster: () => roster, key: 'LEAD-KEY', model: 'lead-m', provider: 'openrouter', newId: () => 'r' + (++n), resolveWire, providerAuth, parseOverride: parse, allowOverride });
 +    const out = await dispatchTool.run({ workers: [
 +      { agentId: 'w1', prompt: 'one', model: 'big-model', effort: 'high' },
 +      { agentId: 'w2', prompt: 'two' },
 +      { agentId: 'w1', prompt: 'three', model: 'claude-x', provider: 'anthropic' },
 +      { agentId: 'w2', prompt: 'four', model: 'z', provider: 'claude-cli' },
-+      { agentId: 'w2', prompt: 'five', provider: 'nope', model: 'z' }
++      { agentId: 'w2', prompt: 'five', provider: 'nope', model: 'z' },
++      { agentId: 'w2', prompt: 'six', model: 'big-model' },
++      { agentId: 'w1', prompt: 'seven', model: 'six-m' }
 +    ] }, { agentId: 'agent', signal: { aborted: false }, emit: () => {} });
 +    const byPrompt = p => calls.find(c => JSON.stringify(c.messages).indexOf(p) >= 0);
 +    A.eq([byPrompt('one').model, byPrompt('one').reasoningEffort, byPrompt('one').override], ['big-model', 'high', { model: 'big-model', effort: 'high' }], 'the overridden worker runs on its override, and its run options carry it');
@@ -574,7 +831,26 @@ index 00000000..70e54738
 +    A.ok(/not a provider this station knows/.test(rowOf(4).result), 'unknown provider -> that worker\'s row says why');
 +    A.eq(rowOf(0).override, { model: 'big-model', effort: 'high' }, 'the dispatch row names the override');
 +    A.ok(!('override' in rowOf(1)), 'the plain worker\'s row names none');
++    A.ok(!byPrompt('six'), 'a pair open only for another agent: that worker never ran');
++    A.eq([rowOf(5).reason, rowOf(5).result], ['error', 'model openrouter/big-model is not open for w2 now'], 'another agent\'s entry -> that worker\'s error row says why');
++    A.ok(!byPrompt('seven') && rowOf(6).result === 'model openrouter/six-m is not open for w1 now', 'a bare model is matched on the provider it would run on');
 +    A.eq(JSON.stringify([...roster]), pins, 'no roster pin changed');
++  }
++
++  // ---- team.dispatch with no current allowlist: the overridden worker is refused, its plain sibling runs ----
++  for (const [label, extra] of [['a stale list', { allowOverride: ask => OA.matchAllow({ at: Date.now() - OA.MAX_AGE_MS - 1000, agents: { w1: [{ provider: 'openrouter', model: 'big-model' }] } }, ask, Date.now()) }], ['a host with no gate', {}]]) {
++    const calls = [];
++    const runOnce = async o => { calls.push(o); return { reason: 'done', messages: [{ role: 'assistant', content: 'ok ' + o.model }], usd: 0, model: o.model }; };
++    const roster = new Map([['w1', { system: 'S1', name: 'W1', model: 'own-1' }], ['w2', { system: 'S2', name: 'W2', model: 'own-2' }]]);
++    let n = 0;
++    const resolveWire = (aid, explicit) => (explicit && explicit.model) ? { ok: true, provider: explicit.provider || 'openrouter', model: explicit.model, source: 'explicit' } : { ok: true, provider: 'openrouter', model: roster.get(aid).model, source: 'agent' };
++    const { dispatchTool } = makeOrchestrationTools(Object.assign({ runOnce, roster: () => roster, key: 'LEAD-KEY', model: 'lead-m', provider: 'openrouter', newId: () => 'q' + (++n), resolveWire, parseOverride: parse }, extra));
++    const out = await dispatchTool.run({ workers: [{ agentId: 'w1', prompt: 'gated', model: 'big-model' }, { agentId: 'w2', prompt: 'plain' }, { agentId: 'w2', prompt: 'effort', effort: 'max' }] }, { agentId: 'agent', signal: { aborted: false }, emit: () => {} });
++    const rows = JSON.parse(String(out.content).slice(String(out.content).indexOf('['), String(out.content).lastIndexOf(']') + 1));
++    const ran = p => calls.some(c => JSON.stringify(c.messages).indexOf(p) >= 0);
++    A.ok(!ran('gated') && rows[0].reason === 'error' && rows[0].result === OA.OFF_REASON, label + ': the overridden worker gets the "overrides are off" row and never runs');
++    A.ok(!ran('effort') && rows[2].result === OA.OFF_REASON, label + ': an effort-only override is refused too');
++    A.ok(ran('plain') && calls.find(c => JSON.stringify(c.messages).indexOf('plain') >= 0).model === 'own-2', label + ': the sibling without an override runs on its own pin');
 +  }
 +
 +  // ---- the run row ----
@@ -588,7 +864,7 @@ index 00000000..70e54738
 +  A.report('run-override');
 +})().catch(e => { console.error(e); process.exit(1); });
 diff --git a/test/run-wire.invariant.test.js b/test/run-wire.invariant.test.js
-index 2b26aaa3..45a11b79 100644
+index 2b26aaa..45a11b7 100644
 --- a/test/run-wire.invariant.test.js
 +++ b/test/run-wire.invariant.test.js
 @@ -231,8 +231,9 @@ function expect(entry, sc, agentId, got, opts) {

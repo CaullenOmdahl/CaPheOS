@@ -99,6 +99,8 @@ mkdir -p "$(dirname "$ENVFILE")"
 # is on. Then company/env/bin: the CLIs the crew installed through company/tools/deps.js (links into the company's own
 # venv and node_modules; docs/DEPS.md). The rest is the user manager's own PATH, so the station finds exactly the
 # programs it found before.
+# STARNET_OVERRIDE_ALLOW (StarNet patch 0017): the one-run model override allowlist the dispatcher rewrites every tick
+# (company/tools/lib/override-allow.js); without it, or once it is 30 minutes old, the station refuses every override.
 UPATH="$(systemctl --user show-environment 2>/dev/null | sed -n 's/^PATH=//p')"; UPATH="${UPATH:-/usr/local/bin:/usr/bin:/bin}"
 ( umask 077; cat > "$ENVFILE" <<EOF
 # $SVC — written by $ROOT/scripts/setup-station.sh. Holds the station token (mode 0600).
@@ -109,6 +111,7 @@ PORT=$PORT
 STARNET_API_TOKEN=$(cat secrets/station-token)
 STARNET_HOST=127.0.0.1
 STARNET_HEADLESS=1
+STARNET_OVERRIDE_ALLOW=$ROOT/company/state/override-allow.json
 TZ=$ZONE
 EOF
 )

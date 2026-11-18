@@ -61,6 +61,12 @@ The station runs as a service (for example a systemd user unit with `Restart=alw
   commands and write files. The bind and its host allowlist are a risk-reviewed setting. Revert by binding to
   `127.0.0.1` and restarting.
 - **StarNet patches:** every change to StarNet's own code is a record in `company/patches/` (see its README).
+- **One-run model overrides (patch `0017`):** the station runs a `{model, provider, effort}` override on Run Now or a
+  `team.dispatch` worker only when `company/state/override-allow.json` (env `STARNET_OVERRIDE_ALLOW`, written by
+  `scripts/setup-station.sh`) lists that pair for the run's own agent and is under 30 minutes old; the dispatcher
+  rewrites it every tick (`company/tools/lib/override-allow.js`, MODEL_POLICY.md). A station env written before this has
+  no `STARNET_OVERRIDE_ALLOW`, so every override is refused (403 "overrides are off") until `scripts/setup-station.sh`
+  is run again and the station restarted. Check what is open: `node company/tools/lib/override-allow.js show`.
 - **Headless station (no save, no Founder):** a station started with `STARNET_HEADLESS=1` (patch `0010`) never serves
   the page, so the page never creates the station save or pushes the roster: `GET /api/save` answers `{save:null}`,
   the Founder is only the engine's implicit default agent (no dossier, no approval mode, unattended writes refused),

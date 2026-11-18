@@ -93,6 +93,25 @@ chain directly (console Crew > seat > Model, or `models.js set|chain --by <owner
 self-governance level for `models` applies. `node company/tools/models.js show` says what each seat runs now and why;
 `check` proves every entry is allowed and connected.
 
+## A model for one run only (override allowlist)
+
+StarNet patch `0017` lets one run name its own model: `POST /api/cron/run` with `{model, provider, effort}`, and a
+`team.dispatch` worker spec with the same fields. That run only; nothing saved changes. So that a lead agent or a Run
+Now caller cannot route around this policy, the station runs such an override only when
+`company/state/override-allow.json` (named by `STARNET_OVERRIDE_ALLOW` in the station env, written by
+`scripts/setup-station.sh`) opens that `(provider, model)` for **the run's own agent**:
+- the dispatcher rewrites the file at the end of every tick (`company/tools/lib/override-allow.js`): for each crew seat,
+  the entries of its chain plus its department's route models (`company/departments.json` `routes`, when the file
+  exists) that `models.js` says can run **now** (allowed, connected, the pacer gate open including the owner's
+  subscription stops, no quota closure, no refusal block, no budget or provider-error hold). Nothing else is listed; a
+  seat with nothing runnable gets `[]`;
+- no file, a broken one, or one older than 30 minutes (the dispatcher stopped or the company is halted): every override
+  is refused (`403 "no current override allowlist: overrides are off"`; a dispatch worker gets that error row and does
+  not run, its siblings without an override run as usual);
+- a pair not listed for that agent: `403 "model <provider>/<model> is not open for <agentId> now"`. Effort alone is free.
+The file is class R in `locked-watch.js`: a write by anything but its generator is regenerated from the rules above.
+`node company/tools/lib/override-allow.js show` prints what would be open now.
+
 ## Performance: fix, re-model or replace
 
 `company/tools/performance.js` reads the station's own run records (`company/work/performance.md`). A person is flagged

@@ -1397,6 +1397,10 @@ function lastRunTail(job) {
       if (JSON.stringify(dw) !== was) fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
     }
   } catch (e) { log('DEFAULT-BRANCH WATCH ERROR: ' + String(e.message || e).split('\n')[0].slice(0, 160)); }
+  // the station's one-run override allowlist (lib/override-allow.js, StarNet patch 0017): rewritten at the end of every
+  // tick from what each seat can run NOW; a halted company or a stopped dispatcher stops writing it, and the station
+  // turns every override off once it is 30 minutes old. Fail-safe.
+  if (!DRY) try { await require('./lib/override-allow.js').write({ jobs, log }); } catch (e) { log('OVERRIDE ALLOWLIST ERROR: ' + String(e.message).slice(0, 200)); }
   if (deferred.length) log('DEFERRED past the ' + MAX_PER_TICK + '/tick limit, by priority: ' + deferred.join(', '));
   if (capped && held.length) log('CAP: company metered $' + spent.toFixed(2) + ' of cap $' + DAILY_USD + ' · owner-paid (not capped) $' + split.ownerPaid.toFixed(2) + ' — metered loops held: ' + (held.join(', ') || 'none due') + '; subscription loops still dispatch');
   if (wouldHold.length) log('spendCap guardrail off — would have held ' + wouldHold.join(', '));
