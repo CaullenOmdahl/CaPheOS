@@ -300,13 +300,12 @@ async function answerQuestion(id, b) {
   let ruleDraft = null;
   if (rule) {   // checked before the answer is recorded, so a refused rule never leaves a half-done answer
     const words = String(rule.text || b.text || b.note || (b.values && (b.values.reason || b.values.answer)) || '').trim();
-    const c = NEEDS.classify(q, row, []);
-    if (c.fixedGate) bad('This is one of the four decisions that are always yours, so it cannot become a standing rule. Your answer was not recorded; answer it without the rule.');
-    const category = c.category;
-    const topics = category ? [] : [String(q.about || '').trim()].filter(t => t.length >= 3 && !/^(governance|approval):/.test(t));
-    if (!category && !topics.length) bad('This question has no kind or topic a rule could cover. Your answer was not recorded; answer it without the rule.');
+    // the same check that decides whether Today offers the tick (console/owner-needs.js ruleOffer): never a rule that
+    // cannot work, and never an internal name in what the owner reads
+    const offer = NEEDS.ruleOffer(q, row, []);
+    if (!offer.ok) bad(offer.why + ' Your answer was not recorded; answer it without the rule.');
     if (words.length < 3) bad('Write the rule in your own words first (for example: “you decide these yourselves”).');
-    ruleDraft = { text: words, effect: rule.effect, scope: category ? { categories: [category] } : { topics }, fromCard: id };
+    ruleDraft = { text: words, effect: rule.effect, scope: offer.scope, fromCard: id };
   }
   const yes = (() => {
     if (b.parts || b.store) return false;

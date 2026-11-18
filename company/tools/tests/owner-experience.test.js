@@ -116,3 +116,49 @@ test('B1: crew guidance tells agents how to declare the websites a job needs', (
   const r = s.checkCommand({ isAgent: () => true, guard: () => true, root: os.tmpdir(), P: (...p) => path.join(os.tmpdir(), ...p), log: path.join(SCRIPTS, 'svc-log.jsonl'), now: () => Date.now() }, 'systemctl', ['--user', 'enable', 'x.service']);
   assert.match(r.why, /--hosts/, 'the shim\'s refusal names --hosts');
 });
+
+/* ---------------- B2: standing rules ---------------- */
+// a full copy of the framework (company/ and console/), for the console's own modules
+function fixture(o) {
+  o = o || {};
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-exp-fx-')); roots.push(root);
+  fs.cpSync(path.join(REPO, 'company'), path.join(root, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
+  fs.cpSync(path.join(REPO, 'console'), path.join(root, 'console'), { recursive: true });
+  for (const f of ['company/state/locked/provenance.jsonl', 'company/pm-inbox.jsonl', 'company/state/governance.json', 'company/state/owner-rulings.json', 'company/owner/digest.jsonl']) try { fs.rmSync(path.join(root, f)); } catch (_) {}
+  W(root, 'company/company.json', { name: 'Fixture Co', slug: 'fixture-co', timezone: 'UTC', owner: { name: 'Olive' }, station: { url: 'http://127.0.0.1:9' } });
+  W(root, 'company/tools/loops.json', { agents: { boss: { name: 'Boss', functions: ['ceo'], manager: null, inbox: 'to-boss.md' }, hal: { name: 'Hal', functions: ['people'], manager: 'boss', inbox: 'to-hal.md' }, data: { name: 'Halima', manager: 'boss', inbox: 'to-halima.md' } } });
+  const g = JSON.parse(fs.readFileSync(path.join(REPO, 'company/defaults/state/governance.json'), 'utf8')); Object.assign(g.categories, o.levels || {});
+  W(root, 'company/state/governance.json', g);
+  return root;
+}
+const NEEDS_CTX = `
+const co = require(path.join(T, 'company/tools/lib/company.js'));
+const NEEDS = require(path.join(T, 'console/owner-needs.js')).make({ co });
+const card = (about, gate, x) => Object.assign({ type: 'ask', id: 'q-' + Math.random().toString().slice(2, 8), from: 'Halima', about, message: 'Halima wants a background job to run every hour on this computer. It keeps to company files and cannot reach the internet.', gate }, x || {});
+`;
+test('B2: a standing rule is offered on a background-job card and covers the next one; never where it cannot work, and never with an internal name', () => {
+  const T = fixture({ levels: { schedules: 'approve' } });
+  const r = run(T, NEEDS_CTX + `
+const job = card('card:service:feed:k1', { ref: 'service:feed:k1', category: 'schedules', governanceCategory: 'schedules' });
+const guard = card('card:service:depth:k2', { ref: 'service:depth:k2', category: 'localComputer', governanceCategory: 'localComputer', guardrail: true });
+const money = card('money-hold:cap', null, { message: 'Halima is paused: the company has spent today\\'s budget.', blocking: true });
+const o = { job: NEEDS.ruleOffer(job, job, []), guard: NEEDS.ruleOffer(guard, guard, []), money: NEEDS.ruleOffer(money, money, []) };
+let refused = null; try { NEEDS.addRuling({ text: 'You decide these.', scope: { categories: ['localComputer'] } }, (m, c) => { throw new Error(m); }); } catch (e) { refused = e.message; }
+out({ o, refused });`);
+  assert.equal(r.o.job.ok, true, 'offered on a background-job card: ' + JSON.stringify(r.o.job));
+  assert.deepEqual(r.o.job.scope, { categories: ['schedules'] });
+  assert.equal(r.o.guard.ok, false, 'not offered on a guardrail card'); assert.equal(r.o.money.ok, false, 'not offered on the money hold');
+  for (const w of [r.o.guard.why, r.o.money.why, r.refused]) {
+    assert.ok(w, 'a reason in words');
+    assert.doesNotMatch(w, /localComputer|money-hold|schedules\b|[a-z]+[A-Z][a-z]+/, 'no internal identifier: ' + w);
+  }
+  // the rule a yes-with-rule saves covers the next background job: service.js installs it without a card
+  W(T, 'company/work/feed.py', 'print(1)\n');
+  const s = run(T, SVC_CTX.replace(/path\.join\(REPO, 'company\/tools\//g, "path.join(T, 'company/tools/") + `
+const R = require(path.join(T, 'company/tools/lib/owner-rulings.js'));
+const saved = R.add({ by: 'owner', text: 'You decide background jobs yourselves.', effect: 'crew-decides', scope: { categories: ['schedules'] } }, { root: T, shell: () => true });
+const a = tryIt(() => S.propose(S.context(svcOpts()), 'nightly', { by: 'data', kind: 'timer', exec: 'python3 company/work/feed.py', every: '1d', why: 'pulls the day\\'s numbers once a day' }));
+out({ saved: saved.ok, a, asks: asks().length });`);
+  assert.equal(s.saved, true);
+  assert.equal(s.a.ok && s.a.r.status, 'installed', 'the rule covers it: ' + JSON.stringify(s.a)); assert.equal(s.asks, 0);
+});

@@ -197,7 +197,8 @@ export async function render(root, ctx) {
       send(Object.assign({ verdict: 'reply', text }, rl ? { rule: rl } : {}));
     };
     // "Make this a standing rule": the owner's own words become a rule the crew follows from now on (never on a fixed gate)
-    const canRule = q.needsWhy !== 'fixed-gate' && !(q.approval && q.approval.fixed) && !q.questions;
+    // offered only where a rule can work (the server's ruleOffer: never a fixed gate, a guardrail's card, a key, or the money hold)
+    const canRule = q.canRule === true && q.needsWhy !== 'fixed-gate' && !(q.approval && q.approval.fixed) && !q.questions;
     const ruleTick = h('input', { type: 'checkbox', id: 'rule-' + q.id });
     const ruleText = h('input', { type: 'text', class: 'input', id: 'rule-t-' + q.id, maxlength: '500', placeholder: 'In your words, e.g. “You decide these yourselves.”', hidden: true, 'aria-label': 'Your standing rule, in your own words' });
     ruleTick.addEventListener('change', () => { ruleText.hidden = !ruleTick.checked; if (ruleTick.checked) ruleText.focus(); });

@@ -47,7 +47,7 @@ const crypto = require('crypto');
 const LEVEL_SAY = { auto: 'the crew decides', notify: 'the crew decides and tells you', triage: 'a check decides, or asks you', approve: 'you decide' };
 const CAT_SAY = { hiring: 'hiring', release: 'releasing someone', budget: 'the budget', spend: 'spending inside the cap', models: 'which AI models the crew uses',
   tools: 'changes to the crew\'s own tools', schedules: 'background jobs and timing', external: 'acting outside the company', dashboard: 'pages in this console',
-  packs: 'add-ons', deps: 'software the crew installs', org: 'how the team is organised',
+  packs: 'add-ons', deps: 'software the crew installs', org: 'how the team is organised', localComputer: 'background jobs on this computer',
   access: 'access and accounts', ownership: 'ownership', commitment: 'commitments', spendBeyondCap: 'spending beyond the cap' };
 const FIXED_ALIAS = { commitments: 'commitment', spend_beyond_cap: 'spendBeyondCap', spendbeyondcap: 'spendBeyondCap' };
 const EFFECTS = ['serviceApprove', 'harnessApply', 'none'];
@@ -87,7 +87,8 @@ function make(deps) {
     const known = Object.keys(govDoc().categories || {});
     for (const c of cats) {
       if (normFixed(c)) bad(catSay(normFixed(c)) + ' is one of the four decisions that are always yours, so no standing rule can cover it');
-      if (!known.includes(c)) bad('unknown kind of decision: ' + c);
+      // never the internal name of the kind: the owner reads what it is about
+      if (!known.includes(c)) bad(CAT_SAY[c] ? 'Questions about ' + catSay(c) + ' cannot be covered by a standing rule.' : 'This kind of question cannot be covered by a standing rule.');
     }
     const res = R().add({ by: 'owner', text, effect, scope: Object.assign({}, cats.length ? { categories: cats } : {}, topics.length ? { topics } : {}), from: o && o.fromCard ? 'card ' + String(o.fromCard).slice(0, 20) : undefined });
     if (!res || !res.ok) bad((res && res.error) || 'the standing rule was not saved', res && res.code === 3 ? 403 : 400);
@@ -136,6 +137,24 @@ function make(deps) {
     if (cls && cls.scope === 'crew') return { needsOwner: false, why: 'crew-scope', category: null };
     return { needsOwner: true, why: 'owner-scope', category: null };
   }
+  /* ruleOffer(q, row) -> {ok: true, scope} | {ok: false, why}: may "Make this a standing rule" be offered on this card,
+   * and what the rule would cover. Never where no rule can work: one of the four fixed gates, a guardrail's card (the
+   * safety setting asks, not the governance level), a key or account request, or the money hold's question (money
+   * needed now: lib/money-hold.js keeps the crew paused until the owner answers, whatever a rule says). Otherwise the
+   * card's governance category (one the owner's settings know), or its topic. */
+  function ruleOffer(q, row, list) {
+    row = row || {};
+    const c = classify(q, row, list || []);
+    if (c.fixedGate) return { ok: false, why: 'This is one of the four decisions that are always yours, so it cannot become a standing rule.' };
+    if (c.why === 'guardrail') return { ok: false, why: 'This one always comes to you while the safety setting for it is on (Settings › Autonomy › Guardrails), so a standing rule cannot cover it.' };
+    if (c.why === 'access') return { ok: false, why: 'A key or an account in your name always needs you, so it cannot become a standing rule.' };
+    if (c.why === 'money-now' || /^money-hold:/.test(String(q.about || row.about || ''))) return { ok: false, why: 'The crew stays paused until you choose on this card, so a standing rule cannot answer it.' };
+    if (q.questions) return { ok: false, why: 'A question with several parts cannot become one standing rule.' };
+    const known = Object.keys(govDoc().categories || {});
+    if (c.category) return known.includes(c.category) ? { ok: true, scope: { categories: [c.category] } } : { ok: false, why: CAT_SAY[c.category] ? 'Questions about ' + catSay(c.category) + ' cannot be covered by a standing rule.' : 'This kind of question cannot be covered by a standing rule.' };
+    const topics = [String(q.about || '').trim()].filter(t => t.length >= 3 && !/^(governance|approval|card):/.test(t));
+    return topics.length ? { ok: true, scope: { topics } } : { ok: false, why: 'This question has no kind or topic a rule could cover.' };
+  }
   // a plain lead for a read-only line: the card's own first sentence when it reads plainly, else what it is about
   function plainLead(q, category) {
     const s = String(q.message || '').replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s+/)[0] || '';
@@ -153,7 +172,8 @@ function make(deps) {
     const list = rulings(); const needs = [], handling = [];
     for (const q of qs) {
       const c = classify(q, (rowsById || {})[q.id], list);
-      const tagged = Object.assign({}, q, { needsOwner: c.needsOwner, needsWhy: c.why });
+      const offer = ruleOffer(q, (rowsById || {})[q.id], list);
+      const tagged = Object.assign({}, q, { needsOwner: c.needsOwner, needsWhy: c.why, canRule: offer.ok, ruleWhy: offer.ok ? null : offer.why });
       if (c.needsOwner) { needs.push(tagged); continue; }
       handling.push({ id: q.id, from: q.from, askerSeat: q.askerSeat || null, askedAt: q.askedAt, category: c.category, level: c.level || null, ruling: c.ruling || null,
         lead: plainLead(q, c.category), line: handlingLine(c), question: tagged });
@@ -242,6 +262,6 @@ function make(deps) {
     return { ok: true, title: 'What the crew did today', items, since: new Date(since).toISOString() };
   }
 
-  return { classify, split, rulings, addRuling, removeRuling, rulingFor, effectKind, describeEffect, cardDigest, applyEffect, digest, plainLead, LEVEL_SAY, CAT_SAY, catSay };
+  return { classify, split, ruleOffer, rulings, addRuling, removeRuling, rulingFor, effectKind, describeEffect, cardDigest, applyEffect, digest, plainLead, LEVEL_SAY, CAT_SAY, catSay };
 }
 module.exports = { make, LEVEL_SAY, CAT_SAY, EFFECTS, RULING_EFFECTS };
