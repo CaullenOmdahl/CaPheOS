@@ -1006,7 +1006,11 @@ function snooze(o) {
   append({ type: 'snooze', id, at: new Date().toISOString(), until, by: 'Commander' });
   return { ok: true, id, snoozedUntil: until };
 }
-function out(code, obj) { console.log(JSON.stringify(obj, null, 1)); process.exit(code); }
+function out(code, obj) {   // write all of it before exiting: process.exit after console.log cuts piped output at 64KB
+  const b = Buffer.from(JSON.stringify(obj, null, 1) + '\n'); let o = 0;
+  while (o < b.length) { try { o += fs.writeSync(1, b, o); } catch (e) { if (e.code === 'EPIPE') break; if (e.code !== 'EAGAIN') throw e; } }
+  process.exit(code);
+}
 
 module.exports = { withdraw, withdrawnSince, reclassify, callerSeat, plainFieldKinds, secretOnly, storeOnlyAction, normalizeQuestions, decisionItems, inferQuestions, followUpOf, questionsOf, computeParts, answerParts, recordStored,
   shellAsk, composerCheck, ownerScopeCheck, viaFramework, routeAdvice, asksForCredential, openQuestions, state, readAll, ask, answer, snooze, normalizeForm, expandKind, formOf, checkAnswer, plainAnswer, secretHint, sliderWords,
