@@ -35,8 +35,9 @@ function makeOwnerCard(root, opts) {
       }
       if (!c.ref) throw new Error('a card needs a ref');
       const rulings = (() => { try { return JSON.parse(fs.readFileSync(path.join(root, 'company', 'state', 'owner-rulings.json'), 'utf8')).rulings || []; } catch (_) { return []; } })();
-      if (!c.fixedGate && rulings.some(r => r.effect === 'crew-decides' && r.scope && (r.scope.categories || []).includes(c.category))) return { filed: false, reason: 'a standing owner ruling lets the crew decide', route: 'ruling' };
-      const lv = c.fixedGate ? 'approve' : gov.level(c.category, { root });
+      const hit = !c.fixedGate && !c.guardrail && rulings.find(r => r.effect === 'crew-decides' && r.scope && (r.scope.categories || []).includes(c.category));
+      if (hit) return { filed: false, reason: 'a standing owner ruling lets the crew decide', route: 'ruling', ruling: { id: hit.id, text: hit.text, effect: hit.effect } };
+      const lv = c.fixedGate || c.guardrail ? 'approve' : gov.level(c.category, { root });
       if (lv === 'auto') return { filed: false, reason: c.category + ' is at auto', route: 'crew' };
       if (lv === 'notify') { if (opts.notice) opts.notice.send({ kind: 'fyi', from: c.asker, text: c.lead, technical: c.technical, key: c.ref }); return { filed: false, reason: c.category + ' is at notify', route: 'digest' }; }
       const open = openFor(c.ref);
@@ -45,7 +46,7 @@ function makeOwnerCard(root, opts) {
       let id; do { id = 'q-' + String(900000 + (n++)).padStart(6, '0'); } while (used.has(id));
       const row = { type: 'ask', id, at: new Date().toISOString(), from: c.asker, about: 'card:' + c.ref, message: c.lead, details: c.consequence + '\n' + c.recommendation,
         q: c.lead + '\n\n' + c.consequence + '\n' + c.recommendation, technical: c.technical || '', effect: c.effect || { none: true }, blocking: false, batch: 'gate',
-        gate: { ref: c.ref, category: c.category, fixedGate: c.fixedGate || null } };
+        gate: { ref: c.ref, category: c.category, fixedGate: c.fixedGate || null, guardrail: c.guardrail || undefined } };
       G.append(inbox, row, 'harness-change.js');
       return { filed: true, id };
     },

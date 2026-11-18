@@ -324,9 +324,11 @@ function approveFlow(category, o, ref, opts, tri) {
   if (res.filed) return { level: lv, allowed: false, questionId: res.id, reason: 'asked the owner: ' + res.id };
   if (res.route === 'duplicate') return { level: lv, allowed: false, questionId: res.id, reason: 'waiting for the owner on ' + res.id };
   if (res.route === 'ruling' && res.ruling && res.ruling.effect === 'crew-decides') return { level: lv, allowed: true, ruling: res.ruling, approvedBy: 'the owner\'s standing rule ' + res.ruling.id };
-  if (res.route === 'ruling') return { level: lv, allowed: false, denied: !!res.ruling, ruling: res.ruling || null, backoff: res.backoff || null, reason: res.reason };
+  if (res.route === 'ruling' || res.route === 'declined') return { level: lv, allowed: false, denied: true, ruling: res.ruling || null, backoff: res.backoff || null, reason: res.reason };
   // the card found the category at a lower level than this caller read (crew or digest): the crew decides
-  return { level: lv, allowed: true, noted: res.route === 'digest', reason: res.reason };
+  if (require('./owner-card').coveredByCrew(res)) return { level: lv, allowed: true, noted: res.route === 'digest', reason: res.reason };
+  // anything else (a route nobody declared) is never a go-ahead
+  return { level: lv, allowed: false, reason: res.reason || 'the owner could not be asked (' + res.route + ')' };
 }
 /* The refusal text a tool prints when decide() says not now. */
 function refusal(category, d) {

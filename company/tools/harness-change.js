@@ -570,6 +570,17 @@ async function propose(ctx, o) {
  * the record says why; at stage 'apply' the change may then be applied. Mutates rec; the caller saves it. */
 function ownerTurn(ctx, rec, stage) {
   const r = ownerCard(ctx, rec, stage);
+  // the owner's "no" stands (a recent "not now", or a standing rule never to ask): the change is refused, never waived
+  if (refusedByOwner(r)) {
+    if (['proposed', 'approved'].includes(rec.status)) {
+      rec.status = 'rejected'; rec.ownerRefused = { stage, route: r.route, reason: r.reason || null, at: local(ctx.now) };
+      hist(ctx, rec, 'rejected', 'owner', (r.reason || r.route) + ': the owner\'s no stands');
+      appendLog(ctx, { event: 'rejected', id: rec.id, by: 'owner', via: r.route === 'declined' ? 'owner said not now' : 'owner standing rule', status: 'rejected' });
+      closeHandoffs(ctx, 'review ' + rec.id + ' ', 'refused: the owner\'s no stands ' + stamp(ctx.now));
+      handoff(ctx, person(ctx, rec.by), rec.id + ' refused: the owner already said no', { Need: 'nothing; propose again only when something material changed, and say what (--changed).', Why: r.reason || r.route, Deadline: 'none', Status: 'DONE — FYI', Evidence: '`company/work/changes/' + rec.id + '.json`' });
+    }
+    return r;
+  }
   if (!coveredByCrew(r)) return r;
   rec.ownerWaived = { stage, route: r.route, reason: r.reason || null, at: local(ctx.now) };
   hist(ctx, rec, 'owner not asked', TOOL_NAME, (r.reason || r.route) + ': the crew decides');
@@ -728,6 +739,7 @@ async function applyChange(ctx, id, o) {
     if (said === false) throw E('the owner said no to ' + rec0.id + '; it is not applied', 'refused');
     if (!(rec0.ownerWaived && rec0.ownerWaived.stage === 'apply')) {
       const r = withLock(ctx, () => { const rec = loadRec(ctx, id); const x = ownerTurn(ctx, rec, 'apply'); saveRec(ctx, rec); return x; });
+      if (refusedByOwner(r)) throw E('the owner already said no to this change (' + (r.reason || r.route) + '); ' + rec0.id + ' is refused, not applied', 'refused');
       if (!coveredByCrew(r)) throw E('self-governance: ' + govCat + ' is at approve, so ' + rec0.id + ' waits for the owner' + (r.filed || r.route === 'duplicate' ? ' (their card is on Today; it is applied after their yes, nobody needs to run apply again)' : ' (the owner card could not be filed: ' + (r.reason || r.route) + ')'), 'refused');
     }
   }
@@ -964,8 +976,18 @@ function ownerCard(ctx, rec, stage) {
   appendLog(ctx, { event: r.filed ? 'owner-card' : 'owner-card-not-filed', id: rec.id, stage, card: r.id || null, route: r.route || null, reason: r.reason || undefined, by: TOOL_NAME });
   return r;
 }
-// a not-filed card that means "the crew may decide" (governance or a standing ruling covers it): crew, digest, ruling
-const coveredByCrew = r => !!r && !r.filed && ['crew', 'digest', 'ruling'].includes(r.route);
+// a not-filed card that means "the crew may decide": ONLY crew, digest or a crew-decides ruling (lib/owner-card.js); a
+// recent "not now" or a never-ask ruling is the owner's no (refusedByOwner), and anything else waits
+const coveredByCrew = r => require('./lib/owner-card').coveredByCrew(r);
+const refusedByOwner = r => require('./lib/owner-card').refusedByOwner(r);
+/* guardrailForced(ctx, rec, stage): the harnessSelfEdit guardrail asks that a protected tool is reviewed. When nobody on
+ * the crew can review it (the owner is its only reviewer), governance cannot hand it back to the proposer to apply
+ * unreviewed: the owner's card is required, whatever the level or a ruling says. */
+function guardrailForced(ctx, rec, stage) {
+  if (stage !== 'review' || rec.kind !== 'tool' || !(rec.target && rec.target.locked)) return false;
+  if (!(rec.reviewers || []).every(r => r.id === 'owner')) return false;
+  try { return !!ctx.guard('harnessSelfEdit'); } catch (_) { return true; }
+}
 // the owner's own card for this change is answered yes (a verified owner answer; never a crew claim)
 const ownerSaidYesTo = (ctx, rec) => (rec.approvals || []).some(a => a.id === 'owner') || (!!rec.ownerRef && gov.approved(rec.ownerRef, { root: ctx.root }) === true);
 function withdrawCard(ctx, rec, by, why) {

@@ -144,7 +144,8 @@ test('a "not now" from the owner holds the same ref for 7 days unless something 
   const o = base({ category: 'budget', ref: 'budget:notnow', lead: 'May we buy a paid plan for the newsletter?' });
   const a = card.file(o);
   G.append(INBOX, { type: 'answer', id: a.id, at: new Date().toISOString(), a: 'not now', answer: { verdict: 'no' }, by: 'Commander' }, 'test');
-  const b = card.file(o); assert.deepEqual([b.filed, b.route, b.backoff && b.backoff.id], [false, 'ruling', a.id]);
+  const b = card.file(o); assert.deepEqual([b.filed, b.route, b.backoff && b.backoff.id], [false, 'declined', a.id]);
+  assert.equal(card.coveredByCrew(b), false, 'a "not now" is never the crew\'s go-ahead'); assert.equal(card.refusedByOwner(b), true);
   const c = card.file(Object.assign({}, o, { changed: 'the newsletter now has 400 readers, up from 40' })); assert.equal(c.filed, true);
 });
 

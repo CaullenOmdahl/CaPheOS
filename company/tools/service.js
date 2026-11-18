@@ -436,7 +436,13 @@ function askOwner(ctx, e, who, ref, category, prof) {
       technical, effect: { serviceApprove: { name: e.name } } }, { root: ctx.root }) || { filed: false, route: 'failed' };
   } catch (x) { logRow(ctx, { event: 'owner-card-failed', name: e.name, code: x.code || null, error: String(x.message).slice(0, 300) }); return { filed: false, route: 'failed', reason: x.message }; }
 }
-const coveredByCrew = r => !!r && !r.filed && ['crew', 'digest', 'ruling'].includes(r.route);
+// ONLY crew, digest or a crew-decides ruling lets the crew go ahead; a recent "not now" or a never-ask ruling is the
+// owner's no (lib/owner-card.js coveredByCrew / refusedByOwner)
+const coveredByCrew = r => require('./lib/owner-card').coveredByCrew(r);
+const refusedByOwner = r => require('./lib/owner-card').refusedByOwner(r);
+// the owner's card for this ref is service.js's own: it carries {serviceApprove:{name}}, an effect lib/pm-inbox-guard.js
+// keeps only on a card service.js itself recorded
+const ourCard = (q, name) => !!(q && q.effect && q.effect.serviceApprove && q.effect.serviceApprove.name === name);
 function tellOwner(ctx, o) {
   try {
     const N = ctx.notices();
@@ -469,6 +475,7 @@ function decision(ctx, e, who, ref) {
     if (!closed) return { allowed: false, waiting: true, level: 'approve', questionId: q.id };
   }
   const r = askOwner(ctx, e, who, ref, outside ? 'localComputer' : 'schedules', prof);
+  if (refusedByOwner(r)) return { allowed: false, denied: true, level: 'approve', questionId: (r.backoff && r.backoff.id) || null, refused: r.reason || r.route };
   if (coveredByCrew(r)) return { allowed: true, level: 'approve', via: via + '; not asked: ' + (r.reason || r.route) };
   if (r.filed || r.route === 'duplicate') return { allowed: false, waiting: true, level: 'approve', questionId: r.id || null, asked: !!r.filed };
   return { allowed: false, waiting: true, level: 'approve', questionId: null, error: 'the owner could not be asked (' + (r.reason || r.route) + '); nothing is installed' };
@@ -506,8 +513,8 @@ function propose(ctx, name, o) {
   const d = decision(ctx, spec, who, ref);
   const e = Object.assign({}, spec, { specKey: key, by: who.seat || 'owner', byName: who.name, proposedAt: (old && old.specKey === key && old.proposedAt) || new Date(ctx.now()).toISOString(),
     approval: { level: d.level, questionId: d.questionId || null, via: d.via || null, guardrail: ctx.guard('localComputer') ? 'on' : 'off' } });
-  if (d.denied) { e.status = 'declined'; doc.services[name] = e; write(ctx, doc); logRow(ctx, { event: 'declined', name, by: e.by, questionId: d.questionId });
-    throw err('the owner said no to ' + d.questionId + '; "' + name + '" is not installed', 3); }
+  if (d.denied) { e.status = 'declined'; doc.services[name] = e; write(ctx, doc); logRow(ctx, { event: 'declined', name, by: e.by, questionId: d.questionId, refused: d.refused || undefined });
+    throw err(d.refused ? 'the owner\'s no stands (' + d.refused + '); "' + name + '" is not installed' : 'the owner said no to ' + d.questionId + '; "' + name + '" is not installed', 3); }
   if (!d.allowed) {
     e.status = 'proposed'; doc.services[name] = e; write(ctx, doc);
     if (d.asked) logRow(ctx, { event: 'proposed', name, by: e.by, questionId: d.questionId, argv: e.argv, schedule: e.schedule });

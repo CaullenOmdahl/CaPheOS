@@ -10,7 +10,14 @@
  *   const card = require('./lib/owner-card');
  *   card.file({ asker, category, fixedGate?, ref, lead, consequence, recommendation?, technical?, options?, effect?,
  *               expiresAt?, by?, about?, fyi?, changed?, blocking? }, opts)
- *     -> { filed: true, id, updated? } | { filed: false, reason, route: 'crew'|'digest'|'duplicate'|'ruling', id?, ruling?, backoff? }
+ *     -> { filed: true, id, updated? } | { filed: false, reason, route: 'crew'|'digest'|'duplicate'|'ruling'|'declined', id?, ruling?, backoff? }
+ *        route  crew / digest: governance lets the crew decide; ruling: a standing owner ruling covers it (ruling.effect
+ *               'crew-decides' = the crew decides, 'never-ask' = the owner's "no" stands); declined: the owner answered
+ *               this "not now" within the backoff window (their "no" stands); duplicate: a card is already waiting.
+ *        A caller treats ONLY coveredByCrew(result) as "the crew may go ahead" and refusedByOwner(result) as a "no".
+ *        guardrail  true when a guardrail (not governance) requires the owner's yes (service.js outside the safe profile,
+ *               harness-change.js with nobody on the crew to review a protected tool): like a fixed gate, no ruling,
+ *               level or backoff hands it to the crew.
  *        asker      the seat id or name asking (shown as "from")
  *        category   the governance category; fixedGate one of access|ownership|commitment(s)|spendBeyondCap
  *        ref        a stable key (e.g. 'harness-review:hc-0008'): an open card with the same ref is updated, never doubled
@@ -124,6 +131,11 @@ function describeEffect(effect) {
   }
 }
 
+/* what a caller may do with a not-filed result: ONLY crew, digest, or a crew-decides ruling lets the crew go ahead */
+const coveredByCrew = r => !!r && !r.filed && (r.route === 'crew' || r.route === 'digest' || (r.route === 'ruling' && !!r.ruling && r.ruling.effect === 'crew-decides'));
+// the owner's "no" stands: a recent "not now" (declined) or a never-ask ruling. Never a go-ahead.
+const refusedByOwner = r => !!r && !r.filed && (r.route === 'declined' || (r.route === 'ruling' && !(r.ruling && r.ruling.effect === 'crew-decides')));
+
 /* ---- governance ---- */
 function govDoc(opts) { try { return GOV().doc(opts && opts.root ? { root: opts.root } : {}) || {}; } catch (_) { return {}; } }
 function isFixed(category, opts) { const f = (govDoc(opts).fixed || {}); return !!category && (!!f[category] || !!f[FIXED_ALIASES[category]]); }
@@ -208,7 +220,8 @@ function file(o, opts) {
   // 4. the owner said "not now" to this within the backoff window
   if (!cur && String(o.changed || '').trim().length < 15) {
     const prior = SCOPE().backoff({ about: o.about || 'card:' + ref, ref, message: lead }, rows, opts.now || Date.now());
-    if (prior) return { filed: false, route: 'ruling', backoff: prior, reason: 'the owner answered this "not now" on ' + String(prior.at).slice(0, 10) + '; ask again only when something material changed (changed: "...")' };
+    // the owner's "no" stands (a fixed gate too): never a go-ahead for the crew (refusedByOwner)
+    if (prior) return { filed: false, route: 'declined', backoff: prior, reason: 'the owner answered this "not now" on ' + String(prior.at).slice(0, 10) + '; their no stands; ask again only when something material changed (changed: "...")' };
   }
   // 5. write the card
   const at = new Date().toISOString();
@@ -258,4 +271,4 @@ function withdraw(o, opts) {
   return { withdrawn: out };
 }
 
-module.exports = { file, withdraw, openCard, describeEffect, plain, plainProblems, EFFECT_KINDS: Object.keys(EFFECT_SHAPES) };
+module.exports = { file, withdraw, openCard, describeEffect, plain, plainProblems, coveredByCrew, refusedByOwner, EFFECT_KINDS: Object.keys(EFFECT_SHAPES) };
