@@ -1267,12 +1267,14 @@ function selftest() {
 
   // 4d. self-governance (category external) and the externalActions guardrail
   const req4 = { category: 'spend', target: 'stripe:charge-100usd', agent: 'sam' };
-  const outbound = path.join(froot, 'company', 'owner', 'outbound.jsonl');
+  const outbound = path.join(froot, 'company', 'owner', 'digest.jsonl');   // an FYI: the day's single message (lib/owner-notice.js)
   expect('external at notify: the CEO row still clears', req4, 'allow', { level: 'notify' });
-  { // the owner's digest (lib/owner-notice.js when it is in the tree) or, until then, the owner channel
-    const sent = [path.join(froot, 'company', 'owner', 'digest.jsonl'), outbound].filter(f => fs.existsSync(f)).map(f => fs.readFileSync(f, 'utf8')).join('\n');
-    const ok = / let sam spend money outside the company\. Reply if you want it stopped\./.test(sent) && !/clr-good|stripe:|Self-governance/.test(sent);
-    if (!ok) failures++; lines.push((ok ? 'ok    ' : 'FAIL  ') + 'external at notify: the owner is told in one plain sentence, no clearance id, target or governance words'); }
+  { // the owner's digest (lib/owner-notice.js): one plain sentence, never an immediate message; the clearance id rides only in the technical part
+    const rows = (f => fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [])(path.join(froot, 'company', 'owner', 'digest.jsonl'));
+    const text = rows.map(r => r.text).join('\n'), tech = rows.map(r => r.technical || '').join('\n');
+    const out = (f => fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '')(path.join(froot, 'company', 'owner', 'outbound.jsonl'));
+    const ok = / let sam spend money outside the company\. Reply if you want it stopped\./.test(text) && !/clr-good|stripe:|Self-governance/.test(text) && /clr-good/.test(tech) && !/let sam spend money outside/.test(out);
+    if (!ok) failures++; lines.push((ok ? 'ok    ' : 'FAIL  ') + 'external at notify: the owner is told in one plain sentence in the day\'s message (no clearance id, target or governance words; those are technical)'); }
   const d4 = expect('external at approve: a CEO row is not enough', req4, 'refuse', { level: 'approve' });
   { const ok = /must name the owner/.test(d4.reason); if (!ok) failures++; lines.push((ok ? 'ok    ' : 'FAIL  ') + 'external at approve: the refusal says the owner must clear it'); }
   write([{ id: 'clr-owner', clearedBy: OWNER_NAME, category: 'spend', target: 'stripe:charge-*', agent: 'sam', until: '2026-12-01T00:00:00Z', justification: fixture }]);

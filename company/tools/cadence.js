@@ -81,7 +81,7 @@ const S = {
   ownerShell: () => require('./lib/owner').shell(),   // the one owner rule (lib/owner.js)
   ownerName: () => (co.config.owner && co.config.owner.name) || 'Owner',
   peakCfg: () => require('./offpeak-hold.js').peakConfig(),
-  notify: text => require('./owner-inbox.js').send({ from: co.nameOf(co.ceo()), text }),
+  notify: text => require('./lib/owner-notice').send({ kind: 'fyi', from: co.nameOf(co.ceo()), text }),   // an FYI: tempo changes wait for the day's message
   now: () => Date.now(),
   onboardingFile: co.p('company', 'state', 'onboarding-state.json'),
   budgetFile: co.p('company', 'work', 'finance', 'dispatch-budget.json'),

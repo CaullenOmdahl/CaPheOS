@@ -160,8 +160,9 @@ function selftest() {
     set('hiring', 'notify', owner, opts);
     const d = gov.decide('hiring', { by: 'Sam', summary: 'open the sales-lead-1 round', ref: 'hiring:open:sales-lead-1' }, opts);
     gov.decide('hiring', { by: 'Sam', summary: 'open the sales-lead-1 round', ref: 'hiring:open:sales-lead-1' }, opts);
-    // the owner's plain lines: the digest (lib/owner-notice.js) when it is in the tree, else the owner channel
-    const sent = ['digest.jsonl', 'outbound.jsonl'].map(n => path.join(F.ownerDir, n)).filter(fs.existsSync).map(f => fs.readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse))[0] || [];
+    // the owner's plain line: the day's single message (company/owner/digest.jsonl, lib/owner-notice.js), never an immediate message
+    const sent = fs.readFileSync(path.join(F.ownerDir, 'digest.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+    assert.ok(!fs.existsSync(path.join(F.ownerDir, 'outbound.jsonl')) || !/sales-lead-1/.test(fs.readFileSync(path.join(F.ownerDir, 'outbound.jsonl'), 'utf8')), 'an FYI never goes out at once');
     assert.ok(d.allowed && d.noted); assert.strictEqual(sent.length, 1); assert.ok(/^Sam decided to open the sales-lead-1 round\./.test(sent[0].text));
     assert.ok(!/Self-governance|notify/.test(sent[0].text), 'the governance internals are not in the owner\'s line: ' + sent[0].text);
   });
@@ -248,7 +249,7 @@ function selftest() {
     } finally { require('./lib/owner-channel').pinMains(null); require('./provenance.js').pinUnderStation(null); }
     assert.strictEqual(n.allowed, false); assert.strictEqual(n.triage.mode, 'shadow');
     assert.strictEqual(dm.state(opts).models['gate-triage'].mode, 'shadow');
-    assert.ok(/gate-triage v2 is back in shadow mode/.test(fs.readFileSync(path.join(F.ownerDir, 'outbound.jsonl'), 'utf8')));
+    assert.ok(/gate-triage v2 is back in shadow mode/.test(fs.readFileSync(path.join(F.ownerDir, 'digest.jsonl'), 'utf8')));
     assert.ok(dm.outcomes(opts).some(o => o.decisionId === d.triage.decisionId && o.result === 'bad' && o.source === 'owner-reversal'));
   });
   t('a promoted v1 (no safety inputs) never proceeds: it would take the actor\'s word', () => {

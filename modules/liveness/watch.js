@@ -60,7 +60,9 @@ const ageMs = rec => rec && rec.at && Date.parse(rec.at) ? now() - Date.parse(re
 
 function note(row) { try { fs.mkdirSync(path.dirname(F.log()), { recursive: true }); fs.appendFileSync(F.log(), JSON.stringify(Object.assign({ at: iso(now()) }, row)) + '\n'); } catch (_) {} }
 function tellOwner(text) {
-  try { require(co.p('company', 'tools', 'owner-inbox.js')).send({ from: 'liveness', text }); return true; } catch (e) { return 'owner channel failed: ' + e.message; }
+  // urgent (lib/owner-notice.js): the company may have stopped; a tree without it falls back to the low-level writer
+  const notice = co.p('company', 'tools', 'lib', 'owner-notice.js');
+  try { if (fs.existsSync(notice)) require(notice).send({ kind: 'urgent', from: 'liveness', text, priority: 'top' }); else require(co.p('company', 'tools', 'owner-inbox.js')).send({ from: 'liveness', text }); return true; } catch (e) { return 'owner channel failed: ' + e.message; }
 }
 /* optional push: secrets/liveness-ping-url, only through external-gate (category network) */
 function push(text) {

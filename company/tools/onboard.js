@@ -306,7 +306,8 @@ async function certify() {
   s.certified = ok; if (ok && !was) s.certifiedAt = now();
   writeJson(F.state, s);
   ledger({ certify: ok, failed: Object.keys(res).filter(k => !res[k].ok) });
-  if (ok && !was) { try { require('./owner-inbox.js').send({ from: 'onboard.js', text: 'Onboarding: the company is CERTIFIED (all ' + CHECKS.length + ' checks green). It is operational. The Founder is drafting the first plan now: [watch it on Today](console:#/today).' }); } catch (_) {} }
+  // an FYI (lib/owner-notice.js): the company is ready; the Founder's own plan summary is what reaches the owner at once
+  if (ok && !was) { try { require('./lib/owner-notice').send({ kind: 'fyi', from: co.nameOf(co.ceo()) || 'The company', key: 'onboarding:certified', text: 'Setup is finished: the company passed every start-up check and is working now. The Founder is drafting the first plan: [watch it on Today](console:#/today).', technical: 'onboard.js --certify: all ' + CHECKS.length + ' checks green (company/state/onboarding-state.json certified).' }); } catch (_) {} }
   let kick = null;
   if (ok) { try { kick = await kickoff(); } catch (e) { kick = { status: 'failed', note: e.message }; setStep('kickoff', 'failed', e.message); } }
   return { ok, certified: ok, results: res, warnings, kickoff: kick };

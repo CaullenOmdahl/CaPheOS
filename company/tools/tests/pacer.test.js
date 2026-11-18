@@ -1101,8 +1101,7 @@ test('emergency by hand at notify starts at once and tells the owner', async () 
   const fx = fixture({ feedPct: 29, budgetLevel: 'notify' }), jobs = crewJobs();
   const h = make(fx, station(jobs));
   assert.equal(h.p.emergencyOn({ why: 'production API down (S0)', by: 'Max', hours: 4 }).ok, true);
-  const told = ['company/owner/digest.jsonl', 'company/owner/outbound.jsonl'].map(f => path.join(fx.root, f)).filter(fs.existsSync).map(f => fs.readFileSync(f, 'utf8')).join('\n');
-  assert.match(told, /Max decided to lift the subscription pacing lines/);
+  assert.match(fs.readFileSync(path.join(fx.root, 'company/owner/digest.jsonl'), 'utf8'), /Max decided to lift the subscription pacing lines/);   // an FYI (lib/owner-notice.js)
 });
 // Per-seat model chains (company/tools/models.js): the pacer leaves a chained seat's routines alone, and its hook
 // tick hands its measurement to models.js, which moves the seat down its chain when a link closes.
@@ -1129,7 +1128,7 @@ test('a seat with its own model chain: plan leaves its routine alone; the hook f
   assert.equal(eng().provider, 'deepseek'); assert.equal(sent[0].provider, 'deepseek');
   assert.ok(h.lines.some(l => /MODELS MOVE Jo claude-cli\/claude-sonnet-5-5 -> deepseek\/deepseek-flash/.test(l)), h.lines.join('\n'));
   // the fixture's engineer has no manager: the owner hears it once (a seat with a manager gets an OPEN handoff)
-  assert.match(fs.readFileSync(path.join(fx.root, 'company/owner/outbound.jsonl'), 'utf8'), /Jo fell to the last model in their chain/);
+  assert.match(fs.readFileSync(path.join(fx.root, 'company/owner/digest.jsonl'), 'utf8'), /Jo fell to the last model in their chain/);   // an FYI (lib/owner-notice.js)
   // Claude reopens (two hours on, a fresh low reading; the 95% one is stale): back to the primary
   h.clock.t = T0 + 2 * HOUR;
   fs.writeFileSync(path.join(fx.root, 'home/.local/state/usage/claude-usage.json'), JSON.stringify({ at: h.clock.t - MIN, seven_day: { used_percentage: 5, resets_at: CLAUDE_RESET / 1000 } }));
@@ -1247,9 +1246,9 @@ test('cutoffs: at Autonomous (budget auto) the pacer decides alone, files a non-
   assert.ok(q && q.blocking === false && q.batch === 'fyi', JSON.stringify(q));
   assert.match(q.message, /You let the company decide pacing, so it keeps its current cutoffs/);
   assert.equal(q.form.fields[0].type, 'slider'); assert.deepEqual(q.form.actions.map(a => a.id), ['set', 'keep', 'other']);
-  // the owner's plain line: the daily digest (lib/owner-notice.js) when it is in the tree, else the owner channel; no question id in it
-  const told = ['company/owner/digest.jsonl', 'company/owner/outbound.jsonl'].map(f => path.join(fx.root, f)).filter(fs.existsSync).map(f => fs.readFileSync(f, 'utf8')).join('\n');
-  assert.match(told, /FYI: Claude is 28% used this week/); assert.doesNotMatch(told, /q-\d{6}/);
+  // the owner's plain line: the daily digest (lib/owner-notice.js), never at once; no question id in it
+  const told = fs.readFileSync(path.join(fx.root, 'company/owner/digest.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).map(r => r.text).join('\n');
+  assert.match(told, /FYI: Claude is 28% used this week/); assert.doesNotMatch(told, /q-\d{6}/);   // the question id may ride in technical only
   assert.doesNotMatch(q.details, /pacing-policy\.json|pacer\.js|console:#/); assert.match(q.technical, /pacer\.js limit/);
   assert.ok(h.lines.some(l => /PACER ASK q-\d+ \(FYI/.test(l)), h.lines.join('\n'));
   assert.ok(r && typeof r.extra === 'number', 'the tick returns at once');

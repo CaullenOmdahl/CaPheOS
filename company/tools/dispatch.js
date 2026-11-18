@@ -364,6 +364,17 @@ function selftestOpenHandoffs() {
     const ms = Date.now() - t0; try { fs.unlinkSync(rf); } catch (_) {}
     check('spend window: a 48 MB runs.jsonl gives the last 24 h only, read from the end (' + ms + ' ms)', whole === 0 && rows.length === 2 && rows.reduce((n, r) => n + r.usd, 0) === 0.75 && ms < 1000, JSON.stringify({ whole, n: rows.length, ms }));
   }
+  {   // the CEO batch lists only cards that still need the owner
+    const levels = { tools: 'notify', schedules: 'auto', hiring: 'approve', models: 'triage', access: 'auto' };
+    const o = { level: c => levels[c] || 'approve', rulings: [{ id: 'r1', by: 'owner', text: 'the crew decides hiring of interns', scope: { topics: ['intern'] }, effect: 'crew-decides' },
+      { id: 'r2', by: 'Sam', scope: { categories: ['hiring'] }, effect: 'never-ask' }] };
+    const card = (cat, extra) => Object.assign({ id: 'q-1', about: 'governance:' + cat, gate: { category: cat } }, extra || {});
+    check('batch: a card whose category is at notify or auto is not sent', !stillNeedsOwner(card('tools'), o) && !stillNeedsOwner(card('schedules'), o));
+    check('batch: a card at approve or triage is sent', stillNeedsOwner(card('hiring'), o) && stillNeedsOwner(card('models'), o));
+    check('batch: a fixed owner gate is sent whatever the level or a ruling says', stillNeedsOwner(card('access'), o) && stillNeedsOwner(card('spend', { gate: { category: 'spend', fixedGate: 'spendBeyondCap' } }), { level: () => 'auto', rulings: [{ by: 'owner', scope: { categories: ['spend'] }, effect: 'never-ask' }] }));
+    check('batch: a standing owner ruling hands the card to the crew; a ruling not by the owner does not', !stillNeedsOwner(card('hiring', { about: 'governance:hiring intern' }), o) && stillNeedsOwner(card('hiring'), o));
+    check('batch: an ask with no governance category keeps going (inbox.js ask held it to the owner scope)', stillNeedsOwner({ id: 'q-2', about: 'pricing' }, o));
+  }
   const bad = cases.filter(c => !c.pass);
   for (const c of cases) console.log((c.pass ? 'ok   ' : 'FAIL ') + c.name + (c.pass ? '' : '  [' + c.detail + ']'));
   console.log(bad.length ? 'DISPATCH SELFTEST FAILED: ' + bad.length + ' of ' + cases.length : 'DISPATCH SELFTEST PASSED: ' + cases.length + ' cases');
@@ -550,8 +561,32 @@ async function closeQuests(quests, state) {
  * question to company/owner/outbound.jsonl (owner-inbox.js send) once, tagged with its id (`re`, and in brackets at the
  * end of the text) so a reply is matched back automatically.
  * On by default with the file adapter (company.json ownerChannel.adapter "file"); company/state/owner-outbox.json
- * {"enabled": false} turns it off, {"enabled": true} turns it on for another adapter. At most one message per tick. */
+ * {"enabled": false} turns it off, {"enabled": true} turns it on for another adapter. At most one message per tick.
+ * Only a card that STILL needs the owner is sent (stillNeedsOwner): a fixed owner gate always; a governance card only while
+ * its category is at approve (or triage); never one the owner's standing rulings (company/state/owner-rulings.json) or the
+ * category's level (auto, notify) already hand to the crew. The message is urgent (lib/owner-notice.js): the CEO is
+ * asking; question ids ride in `re` and the technical part, never in the words the owner reads. */
 const OUTBOX = path.join(ROOT, 'company', 'state', 'owner-outbox.json');
+const FIXED_GATES = new Set(['access', 'ownership', 'commitment', 'commitments', 'spendBeyondCap']);
+const categoryOf = q => (q.gate && q.gate.category) || (/^governance:/.test(String(q.about || '')) ? String(q.about).slice('governance:'.length) : null);
+/* stillNeedsOwner(q, o) -> true when the owner must still decide this card (o.level / o.rulings: tests only) */
+function stillNeedsOwner(q, o) {
+  o = o || {};
+  const cat = categoryOf(q);
+  const fixedName = (q.gate && q.gate.fixedGate) || (cat && FIXED_GATES.has(cat) ? cat : null);
+  if (fixedName) return true;   // the four fixed owner gates are never handed to the crew
+  if (!cat) return true;        // not a governance card: inbox.js ask already held it to the owner's scope
+  const level = o.level ? o.level(cat) : co.gate(cat, { triage: true });
+  if (level === 'auto' || level === 'notify') return false;
+  const rulings = o.rulings || ((readJson(path.join(ROOT, 'company', 'state', 'owner-rulings.json'), {}) || {}).rulings || []);
+  const topic = String(q.about || '').toLowerCase();
+  for (const r of rulings) {
+    if (!r || r.by !== 'owner' || !r.scope) continue;
+    const hit = (r.scope.categories || []).includes(cat) || (r.scope.topics || []).some(t => t && topic.includes(String(t).toLowerCase()));
+    if (hit && (r.effect === 'crew-decides' || r.effect === 'never-ask')) return false;
+  }
+  return true;
+}
 function deliverOwnerQuestions() {
   const ob = readJson(OUTBOX, { sent: {} }) || {}; ob.sent = ob.sent || {};
   const adapter = String(((co.config.ownerChannel || {}).adapter) || 'console');
@@ -568,6 +603,7 @@ function deliverOwnerQuestions() {
   const others = open.filter(q => !ceo.has(String(q.from || '').toLowerCase()) && !ob.sent[q.id]);
   if (others.length && state_noteOthers(others)) log('OUTBOX HELD ' + others.map(q => q.id + ' (' + q.from + ')').join(', ') + ': only the CEO\'s batched question goes to the owner; ' + CEO_NAME + ' folds these in');
   const eligible = open.filter(q => !ob.sent[q.id] && ceo.has(String(q.from || '').toLowerCase()) && Date.now() - Date.parse(q.askedAt || q.at || 0) > (dailyLimit === Infinity ? 0 : 3 * 60000))
+    .filter(q => { const need = stillNeedsOwner(q); if (!need) log('OUTBOX SKIP ' + q.id + ': ' + (categoryOf(q) || '?') + ' is handled by the crew (its level or a standing owner ruling); not sent'); return need; })
     .sort((a, b) => String(a.askedAt || a.at).localeCompare(String(b.askedAt || b.at)));
   if (!eligible.length) return;
   // Self-governance approvals (lib/governance.js, batch 'gate') travel together: every pending one in a single numbered
@@ -592,7 +628,8 @@ function deliverOwnerQuestions() {
   for (const q of bundle) ob.sent[q.id] = { pendingAt: new Date().toISOString() };   // marked before sending: a failure never sends it twice
   fs.writeFileSync(OUTBOX, JSON.stringify(ob, null, 1) + '\n');
   try {
-    const row = require('./owner-inbox.js').send({ from: next.from || CEO_NAME, text: body, re: bundle.map(q => q.id).join(',') });
+    const sentRes = require('./lib/owner-notice').send({ kind: 'urgent', from: next.from || CEO_NAME, text: body, re: bundle.map(q => q.id).join(','), technical: 'Question ' + bundle.map(q => q.id).join(', ') + ' (reply on Today, or quote the id).', key: 'owner-question:' + bundle.map(q => q.id).join(',') });
+    const row = sentRes.row || { id: 'duplicate' };
     for (const q of bundle) ob.sent[q.id] = { at: new Date().toISOString(), messageId: row.id };
     fs.writeFileSync(OUTBOX, JSON.stringify(ob, null, 1) + '\n');
     log('SENT owner question ' + bundle.map(q => q.id).join(', ') + ' (from ' + next.from + ') to company/owner/outbound.jsonl');
@@ -838,6 +875,9 @@ function lastRunTail(job) {
   const state = readJson(STATE, { quests: {}, agents: {} });
   try { await closeQuests(quests, state); } catch (e) { log('CLOSER ERROR: ' + e.message); }
   try { deliverOwnerQuestions(); } catch (e) { log('OUTBOX ERROR: ' + e.message); }
+  // the day's ONE plain message to the owner (lib/owner-notice.js digest): every FYI folded, once a company day, at or
+  // after the evening hour; a no-op on every other tick
+  if (!DRY) try { const d = require('./lib/owner-notice').digest({}); if (d.sent) log('OWNER DAY MESSAGE sent (' + d.folded + ' notes folded)'); } catch (e) { log('OWNER DAY MESSAGE ERROR: ' + String(e.message).slice(0, 200)); }
   // 1-on-1s (company/tools/corrections.js, fail-safe): detect habits, then activate, record, escalate or retire standing
   // corrections. Before the house-rules hook, so a correction activated now reaches the prompts in this same tick.
   try { await require('./corrections.js').tick({ dry: DRY, log, quests, jobs }); } catch (e) { log('CORRECTIONS ERROR: ' + e.message); }

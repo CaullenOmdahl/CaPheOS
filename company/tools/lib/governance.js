@@ -173,34 +173,23 @@ function fileQuestion(category, o, opts) {
     lead, consequence, recommendation: recWords, technical, summary: o.summary || null, effect: o.effect || { none: true }, changed: o.changed }, opts);
 }
 
-/* One plain sentence to the owner (company/owner/outbound.jsonl through owner-inbox.js send). The same sentence is sent once. */
+/* notify(text, opts): one plain sentence for the owner, as an FYI in the day's single message (lib/owner-notice.js,
+ * company/owner/digest.jsonl), never its own message. The same sentence goes in once a company day (owner-notice's key). */
 function notify(text, opts) {
-  const f = files(opts); const body = String(text || '').trim(); if (!body) return null;
-  if (readLines(path.join(f.ownerDir, 'outbound.jsonl')).some(r => String(r.text || '') === body)) return { duplicate: true };
-  const prev = process.env.OWNER_DIR;
-  if (!isLive(opts)) process.env.OWNER_DIR = f.ownerDir;
-  try { return require('../owner-inbox.js').send({ from: (opts && opts.from) || co.nameOf(co.ceo()) || 'company', text: body }); }
-  finally { if (!isLive(opts)) { if (prev === undefined) delete process.env.OWNER_DIR; else process.env.OWNER_DIR = prev; } }
+  const body = String(text || '').trim(); if (!body) return null;
+  return fyi({ text: body, from: opts && opts.from }, Object.assign({}, opts, { notice: undefined }));
 }
 
-/* fyi({from, text, technical, key}, opts): one plain line for the owner's daily digest, never its own message.
- * THE INTEGRATION POINT with lib/owner-notice.js (send kind 'fyi'): when that module is in the tree it is used; until
- * then the plain text goes out through notify() as before and the technical part is not sent to the owner.
- * opts.notice: a function standing in for the digest writer (tests). */
+/* fyi({from, text, technical, key}, opts): one plain line for the owner's daily digest, never its own message, through
+ * lib/owner-notice.js send kind 'fyi' (its plain check moves anything technical into `technical`).
+ * opts.notice: a function standing in for the digest writer (tests). Returns the digest row, or {duplicate:true}. */
 function fyi(o, opts) {
   o = o || {}; const text = String(o.text || '').trim(); if (!text) return null;
   const from = o.from || (opts && opts.from) || co.nameOf(co.ceo()) || 'company';
   if (opts && typeof opts.notice === 'function') return opts.notice({ kind: 'fyi', from, text, technical: o.technical, key: o.key });
-  let N = null;
-  try { N = require('./owner-notice'); } catch (e) { if (e && e.code !== 'MODULE_NOT_FOUND') throw e; }
-  if (N && typeof N.send === 'function') {
-    const f = files(opts); const prev = process.env.OWNER_DIR;
-    if (!isLive(opts)) process.env.OWNER_DIR = f.ownerDir;
-    try { return N.send({ kind: 'fyi', from, text, technical: o.technical, key: o.key }); }
-    finally { if (!isLive(opts)) { if (prev === undefined) delete process.env.OWNER_DIR; else process.env.OWNER_DIR = prev; } }
-  }
-  // TODO(integrator): lib/owner-notice.js is not in this tree yet; remove this fallback once it is
-  return notify(text, Object.assign({}, opts, { from }));
+  const f = files(opts);
+  const r = require('./owner-notice').send({ kind: 'fyi', root: f.root, from, text, technical: o.technical || undefined, key: o.key || undefined });
+  return r && r.duplicate ? { duplicate: true } : (r && r.row) || r;
 }
 
 /* ---- triage facts from records (never the actor's word for a safety fact) ---- */

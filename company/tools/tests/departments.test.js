@@ -169,7 +169,7 @@ test('the CEO at org=approve waits for the owner (exit 3, one owner question); a
   const m = tool(n, ['move', 'cat', 'ops', '--by', 'Boss']);
   assert.equal(m.code, 0, JSON.stringify(m.out));
   assert.ok(JSON.parse(read(n, 'company/departments.json')).departments.find(d => d.id === 'ops').members.includes('cat'));
-  assert.match(read(n, 'company/owner/outbound.jsonl') || '', /move Cat/);
+  assert.match(read(n, 'company/owner/digest.jsonl') || '', /move Cat/);   // an FYI: the day's single message (lib/owner-notice.js)
   // a company founded before the org category existed reads the framework default (approve)
   const old = fixture({ org: null });
   assert.equal(tool(old, ['move', 'cat', 'ops', '--by', 'Boss']).code, 3);

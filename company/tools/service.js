@@ -440,7 +440,7 @@ function tellOwner(ctx, o) {
   try {
     const N = ctx.notices();
     if (N) return N.send({ kind: 'fyi', from: o.from, text: o.text, technical: o.technical, key: o.key }, { root: ctx.root });
-    return require('./lib/governance').notify(o.text, Object.assign({}, ctx.gov, { from: o.from }));
+    return require('./lib/governance').fyi({ from: o.from, text: o.text, technical: o.technical, key: o.key }, Object.assign({}, ctx.gov, { root: ctx.root }));
   } catch (x) { logRow(ctx, { event: 'owner-notice-failed', key: o.key, error: String(x.message).slice(0, 200) }); return null; }
 }
 // may this proposal go ahead? -> {allowed, waiting?, denied?, questionId?, level, via, tell?}

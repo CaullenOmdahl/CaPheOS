@@ -63,7 +63,8 @@ function judge(o) {
 function check(o) {
   o = o || {};
   const t = Number.isFinite(o.now) ? o.now : now();
-  const notify = o.notify || (text => require('./owner-inbox.js').send({ from: 'Watchdog', text, priority: 'top' }));
+  // urgent (lib/owner-notice.js): the company cannot work; shown first in the console (priority top)
+  const notify = o.notify || (text => require('./lib/owner-notice').send({ kind: 'urgent', from: 'Watchdog', text, priority: 'top' }));
   let ticket = null; try { ticket = require('./lib/admit').admit({ door: 'watchdog', kind: 'watchdog', seat: null, why: 'station schedule: the liveness check (starts no work)' }, { now: t }); } catch (_) {}
   const st = readJson(F.state(), {}) || {};
   const lastAt = lastHeard();

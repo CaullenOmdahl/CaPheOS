@@ -914,13 +914,13 @@ function reviewedWords(rec) {
 }
 const afterWords = rec => ((rec.approvals || []).some(a => a.id !== 'owner') ? 'after ' + reviewedWords(rec) : 'on their own, as your settings allow');
 const plainOk = t => { try { return require('./lib/owner-scope').plainScore(t, { approval: true }).ok; } catch (_) { return false; } };
-/* tellOwner(ctx, {from, text, technical, key}) -> what owner-notice returned: one line for the daily digest. Without
- * lib/owner-notice.js (not installed yet) the line goes down the owner channel once (lib/governance.js notify). */
+/* tellOwner(ctx, {from, text, technical, key}) -> what owner-notice returned: one line for the daily digest
+ * (lib/owner-notice.js; a selftest hands in a stand-in). Never an immediate owner message. */
 function tellOwner(ctx, o) {
   const N = ctx.notices ? ctx.notices() : null;
   try {
     if (N) return N.send({ kind: 'fyi', from: o.from || TOOL_NAME, text: o.text, technical: o.technical || undefined, key: o.key || undefined }, { root: ctx.root });
-    return gov.notify(o.text, { root: ctx.root, from: o.from || TOOL_NAME });
+    return gov.fyi({ from: o.from || TOOL_NAME, text: o.text, technical: o.technical || undefined, key: o.key || undefined }, { root: ctx.root });
   } catch (e) { appendLog(ctx, { event: 'owner-notice-failed', key: o.key || null, error: String(e.message).slice(0, 200), by: TOOL_NAME }); return null; }
 }
 /* ownerCard(ctx, rec, stage) -> {filed, id?, route?, reason?} — ONE card asking the owner about this change (ref

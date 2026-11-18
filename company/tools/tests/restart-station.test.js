@@ -76,7 +76,10 @@ test('waits while a run is in flight, holds new starts, restarts once idle, rele
   assert.ok(!fs.existsSync(path.join(T, 'company/state/restart-hold.json')), 'the hold is released');
   assert.strictEqual(co().startsHeld(), false);
   assert.ok(/Station restarted to load patch 0013 at \d\d:\d\d; no run was interrupted after waiting \d+ min for 1 run\(s\) to finish/.test(R('company/work/dispatch-log.md')), R('company/work/dispatch-log.md'));
-  assert.ok(/Station restarted to load patch 0013 at \d\d:\d\d; no run was interrupted/.test(R('company/owner/outbound.jsonl')), R('company/owner/outbound.jsonl'));
+  // an FYI: it waits for the day's single message (company/owner/digest.jsonl), plain in front, the detail technical
+  assert.ok(/Station restarted to load patch 0013 at \d\d:\d\d; no run was interrupted/.test(R('company/owner/digest.jsonl')), R('company/owner/digest.jsonl'));
+  assert.ok(!fs.existsSync(path.join(T, 'company/owner/outbound.jsonl')) || !/patch 0013/.test(R('company/owner/outbound.jsonl')), 'an fyi never goes to the owner at once');
+  { const row = JSON.parse(R('company/owner/digest.jsonl').trim().split('\n').pop()); assert.ok(!/patch|station|\d\d:\d\d/i.test(row.text), row.text); }
 });
 
 test('a routine lease the run table does not show also holds it', async () => {
@@ -120,7 +123,7 @@ test('--max-wait-min: gives up, releases the hold, re-arms, and never stops the 
   assert.strictEqual(st.cron.enabled, true, 'the scheduler is re-armed');
   assert.ok(!fs.existsSync(path.join(T, 'company/state/restart-hold.json')), 'the hold is released');
   assert.ok(/RESTART GAVE UP after 2 min \(patch 0016\): still in flight: Founder/.test(R('company/work/dispatch-log.md')), R('company/work/dispatch-log.md'));
-  assert.ok(/did not restart the station to load patch 0016/.test(R('company/owner/outbound.jsonl')));
+  assert.ok(/did not restart the station to load patch 0016/.test(R('company/owner/digest.jsonl')));
   await req('POST', '/__live/end', { runId: live.run.runId });
 });
 
@@ -136,7 +139,7 @@ test('the hold has its own cap: lifted while a long run goes on so the crew work
   assert.strictEqual((await state()).cron.enabled, true, 'lifted: the scheduler is re-armed');
   const rec = JSON.parse(fs.readFileSync(HOLD, 'utf8'));
   assert.strictEqual(rec.watching, true, 'the record stays, marked watching'); assert.strictEqual(co().restartHold(), null);
-  assert.ok(/Waiting for Halima's run to end before restarting the station to load patch 0017; the crew keeps working meanwhile/.test(R('company/owner/outbound.jsonl')), R('company/owner/outbound.jsonl'));
+  assert.ok(/Waiting for Halima's run to end before restarting the station to load patch 0017; the crew keeps working meanwhile/.test(R('company/owner/digest.jsonl')), R('company/owner/digest.jsonl'));
   // the crew works meanwhile: a new run starts, and the restart waits for it too
   const other = await req('POST', '/__live', { agentId: 'founder' });
   // a second restart is still refused while the first one watches
@@ -156,7 +159,7 @@ test('the hold has its own cap: lifted while a long run goes on so the crew work
   assert.ok(/holding new starts again/.test(r.out), r.out);
   assert.strictEqual(st.cron.enabled, true, 'the scheduler is re-armed after the restart');
   assert.ok(!fs.existsSync(HOLD), 'the hold record is gone');
-  assert.strictEqual((R('company/owner/outbound.jsonl').match(/Waiting for Halima's run to end/g) || []).length, 1, 'the owner is told once');
+  assert.strictEqual((R('company/owner/digest.jsonl').match(/Waiting for Halima's run to end/g) || []).length, 1, 'the owner is told once');
 });
 
 test('a hold whose script died expires by itself; --release drops it at once', async () => {

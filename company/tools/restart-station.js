@@ -86,7 +86,9 @@ function say(line) {
 function dispatchLine(line) {
   try { const f = S.dispatchLog(); if (!fs.existsSync(f)) fs.writeFileSync(f, '# Dispatch log\n\n'); fs.appendFileSync(f, '- ' + stamp() + ' ' + line + '\n'); } catch (_) {}
 }
-function tellOwner(text) { try { require('./owner-inbox.js').send({ from: co.nameOf(co.ceo()), text }); } catch (e) { say('could not write the owner channel: ' + e.message); } }
+/* tellOwner(kind, text, technical) — lib/owner-notice.js: 'urgent' only when the company cannot work (the system did not
+ * come back); every other restart note is an FYI for the day's single message. `text` is plain; the detail is technical. */
+function tellOwner(kind, text, technical) { try { require('./lib/owner-notice').send({ kind, from: co.nameOf(co.ceo()), text, technical }); } catch (e) { say('could not write the owner channel: ' + e.message); } }
 
 /* ---------------- station ---------------- */
 function call(method, p, body, timeoutMs) {
@@ -302,7 +304,8 @@ async function run(a) {
       const still = listOf(b.items) || 'the station did not answer';
       say('GAVE UP: not idle after ' + maxWaitMin + ' min; still in flight: ' + still + '. Nothing was stopped, nothing was restarted.');
       dispatchLine('RESTART GAVE UP after ' + maxWaitMin + ' min (' + reason + '): still in flight: ' + still.slice(0, 300) + '. The hold is released' + (n.length ? ' (' + n.join('; ') + ')' : '') + '; nothing was stopped or restarted.');
-      tellOwner('I did not restart the station to ' + loadWhat(reason) + ': after ' + maxWaitMin + ' minutes work was still running (' + still.slice(0, 200) + '), and a restart would have cut it off. Nothing was stopped; work goes on as before. Try again later with scripts/restart-station.sh --when-idle.');
+      tellOwner('fyi', 'The crew put off a system update because work was still running and a restart would have cut it off. Nothing was stopped, and the crew will try again later.',
+        'I did not restart the station to ' + loadWhat(reason) + ': after ' + maxWaitMin + ' minutes work was still running (' + still.slice(0, 200) + '). Retry: scripts/restart-station.sh --when-idle.');
       return 3;
     }
     if (held && quiet === 0 && Date.now() - heldAt >= holdCapMin * S.minuteMs()) {
@@ -312,7 +315,8 @@ async function run(a) {
       held = false; lastSig = null;
       say('HOLD LIFTED after ' + holdCapMin + ' min: waiting for ' + wf + ' to end; the crew keeps working meanwhile. Restarting the next time the station is idle by itself; gives up at ' + hm(giveUpAt) + '.');
       dispatchLine('RESTART WAITING (' + reason + '): Waiting for ' + wf + ' to end; the crew keeps working meanwhile. The restart hold was lifted after ' + holdCapMin + ' min' + (n.length ? ' (' + n.join('; ') + ')' : '') + '; the station restarts the next time it is idle by itself, or the restart is given up at ' + hm(giveUpAt) + '. Nothing is stopped.');
-      if (!ownerTold) { ownerTold = true; tellOwner('Waiting for ' + wf + ' to end before restarting the station to ' + loadWhat(reason) + '; the crew keeps working meanwhile. I will restart it the next time nothing is running, or give up at ' + hm(giveUpAt) + '. Nothing is stopped.'); }
+      if (!ownerTold) { ownerTold = true; tellOwner('fyi', 'A system update is waiting for running work to finish; the crew keeps working meanwhile, and nothing is stopped.',
+        'Waiting for ' + wf + ' to end before restarting the station to ' + loadWhat(reason) + '; the crew keeps working meanwhile. Restart the next time nothing is running, or give up at ' + hm(giveUpAt) + '.'); }
     }
     await sleep(S.pollMs());
   }
@@ -327,7 +331,8 @@ async function restartNow(o) {
     if (o.held) await releaseHold('the restart command failed');
     say('RESTART FAILED: ' + r.error);
     dispatchLine('RESTART FAILED (' + o.reason + '): ' + r.error + (o.held ? '; the hold is released' : ''));
-    tellOwner('I tried to restart the station to ' + loadWhat(o.reason) + ' at ' + at + ', but the restart command failed: ' + r.error.slice(0, 160) + '. No run was interrupted.');
+    tellOwner('fyi', 'A system update did not go in because the restart failed; the company keeps running as before, and no work was cut off.',
+      'I tried to restart the station to ' + loadWhat(o.reason) + ' at ' + at + ', but the restart command failed: ' + r.error.slice(0, 160) + '. No run was interrupted.');
     return 4;
   }
   const ok = await waitHealthy();
@@ -341,12 +346,13 @@ async function restartNow(o) {
   if (!ok) {
     say('STATION NOT HEALTHY ' + Math.round(S.healthMs() / 1000) + ' s after the restart');
     dispatchLine('RESTART: the station was restarted to ' + loadWhat(o.reason) + ' at ' + at + ' but did not answer /api/health within ' + Math.round(S.healthMs() / 1000) + ' s; no run was interrupted' + (notes.length ? '; ' + notes.join('; ') : ''));
-    tellOwner('Station restarted to ' + loadWhat(o.reason) + ' at ' + at + '; no run was interrupted, but it has not come back healthy yet. See .starnet-data/station.log.');
+    tellOwner('urgent', 'The system was restarted for an update and has not come back yet, so the crew cannot work right now. The crew is looking into it.',
+      'Station restarted to ' + loadWhat(o.reason) + ' at ' + at + '; no run was interrupted, but it has not come back healthy yet. See .starnet-data/station.log.');
     return 4;
   }
   say('DONE: restarted at ' + at + ', healthy; no run was interrupted' + waitedTxt);
   dispatchLine('Station restarted to ' + loadWhat(o.reason) + ' at ' + at + '; no run was interrupted' + waitedTxt + ' (scripts/restart-station.sh by ' + o.by + ')' + (notes.length ? '; ' + notes.join('; ') : ''));
-  tellOwner('Station restarted to ' + loadWhat(o.reason) + ' at ' + at + '; no run was interrupted' + waitedTxt + '.');
+  tellOwner('fyi', 'The crew restarted the system to finish an update; no work was cut off.', 'Station restarted to ' + loadWhat(o.reason) + ' at ' + at + '; no run was interrupted' + waitedTxt + '.');
   return 0;
 }
 
