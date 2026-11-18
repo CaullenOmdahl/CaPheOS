@@ -236,11 +236,38 @@ test('dispatch.js --wake-links reports the share of DONE items with a linked run
   const day = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(Date.now() - HOUR));
   const h1 = day + ' from Alex — one', h2 = day + ' from Alex — two';
   w('company/company.json', JSON.stringify({ name: 'Links Test', owner: { name: 'Pat' }, timezone: TZ }));
-  w('company/work/handoffs/to-sam.md', '# Handoffs\n\n## ' + h1 + '\n**Status:** DONE\n\n## ' + h2 + '\n**Status:** DONE\n');
+  const closedTime = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(Date.now() - HOUR));
+  w('company/work/handoffs/to-sam.md', '# Handoffs\n\n## ' + h1 + '\n**Status:** DONE\n**Resolved ' + day + ' ' + closedTime + ' by Sam:** done\n\n## ' + h2 + '\n**Status:** DONE\n**Resolved ' + day + ' ' + closedTime + ' by Sam:** done\n');
   w('company/state/wakes.jsonl', JSON.stringify({ at: Date.now() - 3 * HOUR, wakeId: 'wk-1', seat: 'sam', runId: 'r-1', door: 'dispatch', items: [{ file: 'to-sam.md', id: W.itemId('to-sam.md', h1) }] }) + '\n');
   const p = spawnSync(process.execPath, [DISPATCH, '--wake-links', '--hours', '24', '--json'], { cwd: T, encoding: 'utf8', env: Object.assign({}, process.env, { CAPHEOS_ROOT: T, CAPHEOS_TZ: TZ, STARNET_URL: 'http://127.0.0.1:1' }) });
   assert.equal(p.status, 0, p.stderr);
   const j = JSON.parse(p.stdout);
   assert.equal(j.total, 2); assert.equal(j.linked, 1); assert.equal(j.share, 0.5); assert.equal(j.met, false);
   assert.ok(!fs.existsSync(path.join(T, 'company', 'work', 'dispatch-log.md')), 'no tick ran');
+});
+
+test('closed items: a date-only Resolved stamp counts to the end of that day, so a wake later that day still links', () => {
+  const sec = 'notes for Kim — 2026-11-18 09:00 from Sam\n**Status:** DONE\n**Resolved 2026-11-18 by Kim:** done\n';
+  const done = W.closedItems([{ file: 'to-kim.md', text: '## ' + sec }]);
+  assert.equal(done.length, 1);
+  const wakeAt = W.closedAtOf('x — 2026-11-18 10:00\n');   // 10:00 the same day, company time
+  const rows = [{ at: wakeAt, wakeId: 'w1', runId: 'run-0', items: [{ file: 'to-kim.md', id: done[0].id }] }];
+  const r = W.linkItems(rows, done);
+  assert.equal(r.linked, 1, JSON.stringify(r));
+  assert.ok(done[0].closedBy > wakeAt, 'the close bound is after the 10:00 wake');
+  assert.ok(done[0].closedAt < wakeAt, 'for the report window the item closed that day (its start)');
+});
+
+test('closed items: a block DONE when written (an FYI or notice) is not finished work unless a wake listed it', () => {
+  const text = '## FYI — 2026-11-18 09:00 from the dispatcher\n**Status:** DONE — FYI\n\n'
+    + '## real work — 2026-11-18 09:05 from Sam\n**Status:** DONE\n**Resolved 2026-11-18 11:00 by Kim:** shipped\n\n'
+    + '## approved in place — 2026-11-18 09:10 from Sam\n**Status:** DONE — approved by Kim\n';
+  const done = W.closedItems([{ file: 'to-kim.md', text }]);
+  assert.equal(done.length, 3);
+  const approved = done.find(d => /approved in place/.test(d.title));
+  const rows = [{ at: W.closedAtOf('x — 2026-11-18 09:30\n'), wakeId: 'w1', runId: 'run-1', items: [{ file: 'to-kim.md', id: approved.id }] }];
+  const r = W.linkItems(rows, done);
+  assert.equal(r.total, 2, 'the FYI is left out; the resolved item and the worked one count: ' + JSON.stringify(r.items.map(i => i.title)));
+  assert.ok(!r.items.some(i => /FYI/.test(i.title)));
+  assert.equal(r.linked, 1);
 });

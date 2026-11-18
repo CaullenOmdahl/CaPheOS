@@ -67,19 +67,24 @@ function runIdOf(body) {
 }
 
 /* the newest date a closed block names (its heading or a Resolved line): when it was closed, company local time
-   (the stamp handoff-archive.js reads) */
-function closedAtOf(sec) {
+   (the stamp handoff-archive.js reads). A stamp with only a date ("**Resolved 2026-11-18 by …**") closed at some time
+   that day, so it counts as the END of that day: read as 00:00 it would cut off every wake later that same day. */
+function closeBoundsOf(sec) {
   const { localToEpoch } = require('./core-loop');
   const lines = String(sec).split('\n');
-  let best = 0;
+  let at = 0, by = 0;
   for (const l of [lines[0]].concat(lines.filter(x => /^\*\*Resolved\b/.test(x)))) {
     for (const m of l.matchAll(/(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}):(\d{2}))?/g)) {
       const t = localToEpoch(m[1], m[2] ? m[2] + ':' + m[3] : '00:00');
-      if (Number.isFinite(t) && t > best) best = t;
+      const u = m[2] ? t : localToEpoch(m[1], '23:59') + 59999;
+      if (Number.isFinite(t) && t > at) at = t;
+      if (Number.isFinite(u) && u > by) by = u;
     }
   }
-  return best || null;
+  return { at: at || null, by: by || null };
 }
+// the close time used for the report window (a date-only stamp: the start of that day)
+function closedAtOf(sec) { return closeBoundsOf(sec).at; }
 function closedItems(files, o) {
   o = o || {};
   const since = Number.isFinite(o.sinceMs) ? o.sinceMs : -Infinity, until = Number.isFinite(o.untilMs) ? o.untilMs : Infinity;
@@ -89,12 +94,14 @@ function closedItems(files, o) {
     for (const sec of String(text || '').split(/^## /m).slice(1)) {
       const it = SP.parseItems('## ' + sec)[0];
       if (!it || !it.status || !/^DONE\b/i.test(it.status)) continue;
-      const closedAt = closedAtOf(sec);
+      const { at: closedAt, by: closedBy } = closeBoundsOf(sec);
       if (!closedAt || closedAt < since || closedAt > until) continue;
       const id = itemId(file, it.heading, it.id);
       if (seen.has(file + '\n' + id)) continue;
       seen.add(file + '\n' + id);
-      out.push({ file, id, title: clip(it.heading, 160), closedAt });
+      // resolved: the block was opened and later closed (a **Resolved** line). A block DONE when written (an FYI, a
+      // notice, a completion note: "DONE — FYI", "nothing to close") is no finished work unless a wake ever listed it
+      out.push({ file, id, title: clip(it.heading, 160), closedAt, closedBy, resolved: /^\*\*Resolved\b/m.test(sec) });
     }
   }
   return out;
@@ -127,7 +134,11 @@ function linkItems(list, done, o) {
   for (const r of list || []) for (const i of (r && r.items) || []) { const k = i.file + '\n' + i.id; if (!byItem.has(k)) byItem.set(k, []); byItem.get(k).push(r); }
   const items = [];
   for (const d of done || []) {
-    const ws = (byItem.get(d.file + '\n' + d.id) || []).filter(r => !d.closedAt || (Number(r.at) || 0) <= d.closedAt + slack);
+    if (d.resolved === false && !byItem.has(d.file + '\n' + d.id)) continue;   // born DONE and never worked: not an item
+    // a wake counts when it came before the close: the latest moment the stamp allows (a date-only stamp: the end of that
+    // day). With no Resolved line the close time is not known (the heading dates the request), so every listing wake counts
+    const bound = d.resolved === false ? null : (d.closedBy || d.closedAt);
+    const ws = (byItem.get(d.file + '\n' + d.id) || []).filter(r => !bound || (Number(r.at) || 0) <= bound + slack);
     const runs = [...new Set(ws.map(r => r.runId || (r.admitId && runOfAdmit.get(r.admitId)) || null).filter(Boolean))];
     items.push({ file: d.file, id: d.id, title: d.title, closedAt: d.closedAt || null, wakes: ws.map(r => r.wakeId), runs, linked: runs.length > 0 });
   }
@@ -147,4 +158,4 @@ function report(o) {
   return Object.assign({ sinceMs, untilMs: now, hours }, linkItems(list, done, { attributed }));
 }
 
-module.exports = { TARGET, FILE, itemId, record, rows, runIdOf, closedAtOf, closedItems, doneItems, linkItems, report };
+module.exports = { TARGET, FILE, itemId, record, rows, runIdOf, closedAtOf, closeBoundsOf, closedItems, doneItems, linkItems, report };
