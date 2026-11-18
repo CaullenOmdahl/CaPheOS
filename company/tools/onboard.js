@@ -385,6 +385,7 @@ function teardown({ by, purge }) {
 /* ---------- selftest ---------- */
 async function selftest() {
   const tmp = require('./lib/temp-life').tmpDir('onboard-selftest-');
+  fs.writeFileSync(path.join(tmp, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: a selftest's throwaway company answers owner checks, also when an agent runs it
   let fails = 0, n = 0;
   const t = (name, ok, x) => { n++; if (!ok) fails++; console.log((ok ? 'ok   ' : 'FAIL ') + name + (ok || x === undefined ? '' : ' :: ' + JSON.stringify(x).slice(0, 600))); };
   const repo = path.resolve(__dirname, '..', '..');

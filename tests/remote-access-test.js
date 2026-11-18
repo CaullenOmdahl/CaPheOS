@@ -46,6 +46,7 @@ const pair = c => c ? c.split(';')[0] : '';
 /* a temp company root: company/ copied, secrets/, a dead station, stand-in restart scripts */
 function makeRoot() {
   const tmp = life.tmpDir('remote-access-selftest-');
+  fs.writeFileSync(path.join(tmp, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: a selftest's throwaway company answers owner checks, also when an agent runs it
   fs.cpSync(path.join(REPO, 'company'), path.join(tmp, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
   fs.cpSync(path.join(REPO, 'modules'), path.join(tmp, 'modules'), { recursive: true });
   fs.mkdirSync(path.join(tmp, 'secrets'), { recursive: true, mode: 0o700 });

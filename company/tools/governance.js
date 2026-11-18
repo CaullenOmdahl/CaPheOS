@@ -107,7 +107,8 @@ function show(opts) {
 function selftest() {
   const os = require('os'); const assert = require('assert');
   const T = require('./lib/temp-life').tmpDir('governance-selftest-');
-  const prevProv = process.env.PROVENANCE_ROOT; process.env.PROVENANCE_ROOT = T;
+  fs.writeFileSync(path.join(T, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: a selftest's throwaway company answers owner checks, also when an agent runs it
+  const prevProv = process.env.PROVENANCE_ROOT; process.env.PROVENANCE_ROOT = T;  const prevCR = process.env.CAPHEOS_ROOT; process.env.CAPHEOS_ROOT = T;   // provenance.fixtureRoot reads this: the suite measures the mechanism, not the caller
   const prevAgent = process.env.GOVERNANCE_ASSUME_AGENT; delete process.env.GOVERNANCE_ASSUME_AGENT;
   const opts = { root: T };
   fs.mkdirSync(path.join(T, 'company', 'defaults', 'state'), { recursive: true });
@@ -265,6 +266,7 @@ function selftest() {
     fs.rmSync(mdir, { recursive: true, force: true });
   });
   if (prevProv === undefined) delete process.env.PROVENANCE_ROOT; else process.env.PROVENANCE_ROOT = prevProv;
+  if (prevCR === undefined) delete process.env.CAPHEOS_ROOT; else process.env.CAPHEOS_ROOT = prevCR;
   if (prevAgent !== undefined) process.env.GOVERNANCE_ASSUME_AGENT = prevAgent;
   fs.rmSync(T, { recursive: true, force: true });
   for (const l of out) console.log(l);

@@ -1458,7 +1458,8 @@ module.exports = { askAcceptCmd, fixedGateFile, FIXED_GATE_FILES, acceptCmd, tic
 async function selftest() {
   const assert = require('assert');
   const T = require('./lib/temp-life').tmpDir('locked-watch-selftest-'); const H = path.join(T, 'home');
-  const prevProv = process.env.PROVENANCE_ROOT; process.env.PROVENANCE_ROOT = T;
+  fs.writeFileSync(path.join(T, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: a selftest's throwaway company answers owner checks, also when an agent runs it
+  const prevProv = process.env.PROVENANCE_ROOT; process.env.PROVENANCE_ROOT = T;  const prevCR = process.env.CAPHEOS_ROOT; process.env.CAPHEOS_ROOT = T;   // provenance.fixtureRoot reads this: the suite measures the mechanism, not the caller
   const P = require('./provenance.js');
   // ... and pin "not under the station" so a run by an agent measures the watcher instead of its own environment
   // (cases used to fail ONLY when an agent's run invoked them, because every row the test records was then
@@ -1951,6 +1952,7 @@ async function selftest() {
     now += 60000; const r2 = await tick(C({ now })); assert.ok(!r2.events.some(x => keys.includes(x.key)), JSON.stringify(r2.events));
   });
   if (prevProv === undefined) delete process.env.PROVENANCE_ROOT; else process.env.PROVENANCE_ROOT = prevProv;
+  if (prevCR === undefined) delete process.env.CAPHEOS_ROOT; else process.env.CAPHEOS_ROOT = prevCR;
   P.pinUnderStation(null);
   fs.rmSync(T, { recursive: true, force: true });
   return { out, bad };

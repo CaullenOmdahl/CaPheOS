@@ -1102,6 +1102,7 @@ async function selftest() {
     .concat([co.p('company', 'pm-inbox.jsonl')].map(f => { try { return fs.statSync(f).mtimeMs; } catch (_) { return '-'; } })).join('|');
   const before = snap();
   const tmp = require('../company/tools/lib/temp-life').tmpDir('console-selftest-');
+  fs.writeFileSync(path.join(tmp, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: a selftest's throwaway company answers owner checks, also when an agent runs it
   fs.cpSync(co.p('company'), path.join(tmp, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
   fs.mkdirSync(path.join(tmp, 'secrets'), { recursive: true });
   fs.writeFileSync(path.join(tmp, 'secrets', 'station-token'), 'selftest-fake-station-token\n', { mode: 0o600 });

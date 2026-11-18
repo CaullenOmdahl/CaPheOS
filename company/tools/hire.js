@@ -1243,6 +1243,8 @@ async function models() {
 async function selftest() {
   const os = require('os'); const assert = require('assert');
   const T = require('./lib/temp-life').tmpDir('hire-selftest-');
+  fs.writeFileSync(path.join(T, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: a selftest's throwaway company answers owner checks, also when an agent runs it
+  const prevCR = process.env.CAPHEOS_ROOT; process.env.CAPHEOS_ROOT = T;   // provenance.fixtureRoot reads this; restored before the verdict
   const out = []; let bad = 0;
   const t = (n, fn) => { try { fn(); out.push('ok   ' + n); } catch (e) { bad++; out.push('FAIL ' + n + ': ' + e.message); } };
   const govFile = path.join(T, 'company', 'state', 'governance.json');
@@ -1331,6 +1333,7 @@ async function selftest() {
   const sres = await soft(() => need({}, 'round'));
   t('soft(): a refusal inside advance is a note, not the end of the process', () => { assert.strictEqual(sres.ok, false); assert.strictEqual(sres.code, 2); assert.strictEqual(sres.error, '--round is required'); });
   for (const l of out) console.log(l);
+  if (prevCR === undefined) delete process.env.CAPHEOS_ROOT; else process.env.CAPHEOS_ROOT = prevCR;
   console.log(bad ? 'HIRE SELFTEST FAILED: ' + bad : 'HIRE SELFTEST PASSED: ' + out.length + ' cases');
   return bad ? 1 : 0;
 }

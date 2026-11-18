@@ -496,6 +496,7 @@ function gates() {
 /* ---------- selftest ---------- */
 function selftest() {
   const tmp = require('./lib/temp-life').tmpDir('module-selftest-');
+  fs.writeFileSync(path.join(tmp, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: a selftest's throwaway company answers owner checks, also when an agent runs it
   let fails = 0, n = 0;
   const t = (name, ok, extra) => { n++; if (!ok) { fails++; console.log('FAIL ' + name + (extra !== undefined ? ' :: ' + JSON.stringify(extra).slice(0, 700) : '')); } else console.log('ok   ' + name); };
   const T0 = Date.parse('2030-01-01T08:00:00Z'), reg0 = { refreshedAt: '2030-01-01T07:00:00Z' };

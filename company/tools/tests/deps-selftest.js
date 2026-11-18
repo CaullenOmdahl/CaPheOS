@@ -160,6 +160,7 @@ async function selftest() {
   const BK = mk(path.join(T, 'outside-backups'));
   const RG = mk(path.join(T, 'outside-registry'));
   const C = mk(path.join(T, 'co'));                      // the company root
+  fs.writeFileSync(path.join(C, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: owner checks pass in this throwaway company, also when an agent runs it
   let server = null;
   try {
     buildRegistry(RG);
@@ -249,7 +250,8 @@ async function selftest() {
       assert.ok(manifest().pending['deps:add:python:otherpkg==1.0.0'], 'pending recorded');
       const duty = deps(['--duty']); assert.strictEqual(duty.code, 0, 'nothing due while unanswered: ' + duty.out);
       // the owner's Approve, written the way the owner's tools write it (recorded first: lib/pm-inbox-guard.js)
-      require(path.join(C, 'company/tools/lib/pm-inbox-guard.js')).append(path.join(C, 'company/pm-inbox.jsonl'), { type: 'answer', id: qid, at: new Date().toISOString(), a: 'yes', by: 'Pat', answer: { verdict: 'yes' } }, 'selftest', { root: C });
+      const prevCR = process.env.CAPHEOS_ROOT; process.env.CAPHEOS_ROOT = C;   // fixtureRoot: this process writes the owner's answer into the throwaway company
+      try { require(path.join(C, 'company/tools/lib/pm-inbox-guard.js')).append(path.join(C, 'company/pm-inbox.jsonl'), { type: 'answer', id: qid, at: new Date().toISOString(), a: 'yes', by: 'Pat', answer: { verdict: 'yes' } }, 'selftest', { root: C }); } finally { if (prevCR === undefined) delete process.env.CAPHEOS_ROOT; else process.env.CAPHEOS_ROOT = prevCR; }
       const d2 = deps(['--duty']); assert.strictEqual(d2.code, 1); assert.match(d2.stdout, /deps:pending:q-\d+.*"route":"k"/);
       expect(deps(['verify']), 0, /otherpkg: approved by the owner, installed/, 'verify completes');
       assert.ok(manifest().packages['python:otherpkg'] && !Object.keys(manifest().pending).length);

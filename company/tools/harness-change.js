@@ -1165,7 +1165,8 @@ module.exports = { ownerNewsLine, tick, ownerDecisions, ownerApply, rerouteOwner
 async function selftest() {
   const assert = require('assert'); const os = require('os');
   const T = require('./lib/temp-life').tmpDir('harness-change-selftest-');
-  const prevProv = process.env.PROVENANCE_ROOT; process.env.PROVENANCE_ROOT = T;
+  fs.writeFileSync(path.join(T, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: a selftest's throwaway company answers owner checks, also when an agent runs it
+  const prevProv = process.env.PROVENANCE_ROOT; process.env.PROVENANCE_ROOT = T;  const prevCR = process.env.CAPHEOS_ROOT; process.env.CAPHEOS_ROOT = T;   // provenance.fixtureRoot reads this: the suite measures the mechanism, not the caller
   const out = []; let bad = 0;
   const skip = name => out.push('skip ' + name);
   const t = async (name, fn) => { try { await fn(); out.push('ok   ' + name); } catch (e) { bad++; out.push('FAIL ' + name + ': ' + (e && e.message)); } };
@@ -1502,6 +1503,7 @@ async function selftest() {
     } finally { fs.rmSync(G, { recursive: true, force: true }); }
   });
   if (prevProv === undefined) delete process.env.PROVENANCE_ROOT; else process.env.PROVENANCE_ROOT = prevProv;
+  if (prevCR === undefined) delete process.env.CAPHEOS_ROOT; else process.env.CAPHEOS_ROOT = prevCR;
   fs.rmSync(T, { recursive: true, force: true });
   return { out, bad };
 }
