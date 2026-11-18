@@ -52,10 +52,16 @@ Every decision is written on the wake's `company/state/wakes.jsonl` row as `rout
 (`history`, default `company/work/models/routing-log.jsonl`, rolled monthly, 90 days):
 
     { v, class, classes, source: trial|route|tierCap|chain, trial?, arm?, department?, provider, model, effort?,
-      applied, mode, capMode, wouldApply?: { source, provider, model, effort?, trial?, arm? }, chain?, reasons: [...] }
+      applied, mode, capMode, wouldApply?: { source, provider, model, effort?, trial?, arm? }, chain?, chainDenied?,
+      hold?, holdWhy?, reasons: [...] }
 
 `provider/model/effort` is what the run was started on. Sprint lanes (`lanes.js`) are routed and recorded the same way
 (door `lane`, one item per lane). The dispatch log says `ROUTE <seat>: …` only when the decision differs from the chain.
+
+Locked (`company/tools/locked-watch.js`): `company/work/models/routing-policy.json` is class F, owned by the people
+function and changed only through `company/tools/routing.js` (a hand edit is flagged to the people seat with the revert);
+`company/tools/lib/routing.js` is a protected tool; the history file is class A, appended only by `lib/routing.js` (each
+row recorded with `provenance.js`; a line anyone else appends is stripped).
 
 ## 3. Trials
 

@@ -35,7 +35,9 @@
  *   R.record(ctx, row)                          append one routing-log.jsonl row (policy.history)
  *   R.finish(ctx)                               save company/state/routing-state.json (trial pause state) when changed
  * Retention: routing-log.jsonl rolls monthly (company/defaults/work/ops/retention.json "routing-log"). routing-state.json is
- * one small file rewritten whole. Owner: the people function (the model manager). Never throws from the dispatcher paths.
+ * one small file rewritten whole. Owner: the people function (the model manager). locked-watch.js: the policy is class F
+ * (changed only through company/tools/routing.js), this file a protected tool, the log class A (only this file appends;
+ * each row is recorded with provenance.js). Never throws from the dispatcher paths.
  */
 const fs = require('fs');
 const path = require('path');
@@ -356,7 +358,9 @@ function record(ctx, row) {
     const f = path.join(ctx.root, ctx.K.history);
     const at = Number.isFinite(row.at) ? row.at : Date.now();
     fs.mkdirSync(path.dirname(f), { recursive: true });
-    fs.appendFileSync(f, JSON.stringify(Object.assign({ at, ts: new Date(at).toISOString() }, row)) + '\n');
+    const line = JSON.stringify(Object.assign({ at, ts: new Date(at).toISOString() }, row)) + '\n';
+    fs.appendFileSync(f, line);
+    try { require('../provenance.js').appended(f, line, 'lib/routing.js', { root: ctx.root }); } catch (_) {}   // locked-watch.js: class A, only this tool appends
   } catch (_) { /* a record never breaks a wake */ }
 }
 function finish(ctx) {

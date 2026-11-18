@@ -207,3 +207,16 @@ test('prepare: no policy anywhere = null (every wake runs on its chain); a polic
   assert.ok(lines.some(l => /trial p resumed/.test(l)));
   fs.rmSync(path.join(T, 'company/work/models/routing-policy.json'));
 });
+
+test('locked-watch.js protects the router: lib/routing.js a tool, the policy class F (people, routing.js), the log class A appended only by lib/routing.js (recorded)', () => {
+  const LW = require('../locked-watch.js');
+  const tool = LW.MANIFEST.find(m => m.p === 'company/tools/lib/routing.js');
+  assert.ok(tool && tool.cls === 'F' && tool.area === 'tool', JSON.stringify(tool));
+  const pol = LW.MANIFEST.find(m => m.p === 'company/work/models/routing-policy.json');
+  assert.deepStrictEqual(pol && [pol.cls, pol.owner, pol.writers], ['F', 'people', ['routing.js']], JSON.stringify(pol));
+  const log = LW.MANIFEST.find(m => m.p === 'company/work/models/routing-log.jsonl');
+  assert.deepStrictEqual(log && [log.cls, log.append, log.writers], ['A', true, ['lib/routing.js']], JSON.stringify(log));
+  R.record({ root: T, K: { history: 'company/work/models/routing-log.jsonl' }, dry: false }, { at: 5, seat: 'dev', route: { applied: false } });
+  const prov = fs.readFileSync(path.join(T, 'company/state/locked/provenance.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(r => r.file === 'company/work/models/routing-log.jsonl');
+  assert.ok(prov.length && prov.every(r => r.kind === 'append' && r.writer === 'lib/routing.js'), JSON.stringify(prov));
+});
