@@ -1,0 +1,31 @@
+{
+ "_doc": "How the dispatcher picks the model for one wake (lib/routing.js decide; docs/ROUTING.md). A missing company/work/models/routing-policy.json reads this default; company/tools/routing.js writes the company copy (created from this default on the first change) and is its only writer (locked-watch.js class F, owned by the people function). Every rule, threshold and weight is here, not in code: the routing is tuned in production. Anything that changes which model runs ships in shadow (recorded on the wake's wakes.jsonl row as route, not applied) until the owner switches it live in the console.",
+ "version": 1,
+
+ "mode": "shadow",
+ "_mode": "off | shadow | live, for class routes and trials. off: no route is computed. shadow: the decision is recorded on the wake (route.applied false, route.wouldApply) and the seat runs on its chain. live: the decision is passed as the one-run override, and only when the chosen pair is in the seat's company/state/override-allow.json list. Owner only: routing.js mode <m> --by owner, or Settings > Models > Routing",
+
+ "classRules": { "code": { "denyProviders": ["custom"] } },
+ "_classRules": "owner rulings per task class that apply in every mode, also to the chain fallback choices the router makes, and that a trial arm may not break (routing.js trial create refuses it). code: never written by the MiniMax plan (provider custom)",
+
+ "order": ["classRules", "trial", "route", "tierCap", "chain"],
+ "_order": "the order the router applies its steps in; the first that names a model wins, classRules filters every step",
+
+ "tierCaps": {
+  "mode": "shadow",
+  "allow": [ { "provider": "claude-cli", "model": "haiku" }, { "provider": "claude-cli", "model": "claude-sonnet-5-5" }, { "provider": "deepseek" } ],
+  "heavyEscape": "heavy",
+  "exemptFunctions": ["ceo"],
+  "exemptLeads": true
+ },
+ "_tierCaps": "executor tier caps. mode: off | shadow | live (owner only: routing.js tiercaps <m> --by owner). For a seat that holds none of exemptFunctions and is not a department lead (when exemptLeads), an item not marked **Effort:** <heavyEscape> may only run on an allow entry (an entry without model allows every model of that provider): the cap picks the first chain entry that matches; with none it records 'no capped entry' and leaves the chain",
+
+ "trialLimits": { "minArms": 2, "maxArms": 4, "maxEntryShare": 0.5, "defaultEntryShare": 0.1, "defaultMinItemsPerArm": 30, "defaultPauseWhenHeld": ["claude-cli"] },
+ "_trialLimits": "what routing.js trial create accepts: arms per trial (a trial compares at least minArms), the largest entryShare, and the defaults for --entry-share, --min-items and pauseWhenHeld",
+
+ "trials": [],
+ "_trials": "each: { id, class, arms: [{provider, model, effort}], scope: {departments: [], seats: []}, entryShare, status: draft|running|paused|done, pauseWhenHeld: [provider], minItemsPerArm, createdAt, createdBy, startedAt, startedBy }. The framework default defines none; a trial runs only where a company's own policy defines one and the owner started it. Assignment is deterministic: hash(trial id + wakeId) picks entry (entryShare) and arm (even split). A running trial pauses itself while any provider in pauseWhenHeld is held by the pacer (recorded, never a silent switch of arms)",
+
+ "history": "company/work/models/routing-log.jsonl",
+ "_history": "one row per change routing.js makes (and per trial pause or resume the router records): {at, ts, op, by, trial?, from?, to?, why?, digest}. Rolled monthly (company/defaults/work/ops/retention.json routing-log)"
+}

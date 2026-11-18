@@ -1,5 +1,5 @@
-// Settings › Models and subscriptions (#/settings/models[/chains|cutoffs|providers|budget]): every seat's model chain
-// (changed in Crew › seat › Model), the subscription cutoff sliders, the AI providers and the pay-per-token cap (was
+// Settings › Models and subscriptions (#/settings/models[/chains|routing|cutoffs|providers|budget]): every seat's model chain
+// (changed in Crew › seat › Model), the routing modes and trials (./routing.js, /api/routing*), the subscription cutoff sliders, the AI providers and the pay-per-token cap (was
 // Usage and models, and Setup's provider and budget steps). API: /api/models, /api/pacer/limits, /api/pacer/limit, /api/setup*.
 import { h, fill, Button, Tag, errLine, empty, Block, humanError, when as whenAt } from '../../ui.js';
 import { personName } from '../../plain.js';
@@ -7,19 +7,24 @@ import { api, post } from '../../api.js';
 import { sliderControl } from '../today.js';
 import { chainsTable } from '../crew-model.js';
 import * as setup from '../setup.js';
+import * as events from '../../events.js';
+import { routingSection } from './routing.js';
 
 export async function render(host, ctx) {
   const { app } = ctx;
-  const chains = h('div'), cutoffs = h('div'), providers = h('div');
+  const chains = h('div'), cutoffs = h('div'), providers = h('div'), routing = h('div', { class: 'stack-16' });
   fill(host,
     Block({ id: 'chains', title: 'Who runs on what', lede: 'Each crew member\'s primary model and the fallbacks it moves to when the primary cannot run. Open a name to change it.' }, chains),
+    Block({ id: 'routing', title: 'Routing and trials', lede: 'Whether the company may pick a different model for one piece of work: a department\'s preferred model for that kind of work, a cheaper model for routine work, or a trial that compares models on real work. Each starts as recording only; you make it live.' }, routing),
     Block({ id: 'cutoffs', title: 'Subscription cutoffs', lede: 'How much of each subscription\'s week routines may use, and how evenly. The pacer asks on Today when a cutoff is holding the crew back.' }, cutoffs),
     Block({ id: 'providers', title: 'Providers and the pay-per-token cap', lede: 'Where the crew\'s AI comes from, and the most it may spend a day on providers that bill per token.' }, providers));
   chainsTable(chains);
+  const reloadRouting = routingSection(routing, app);   // routing modes and trials (console/routing.js)
+  const offRouting = events.on('routing', reloadRouting);
   drawCutoffs(cutoffs, app);
   const step = { providers: 'provider', budget: 'budget' }[ctx.anchor] || null;
   const stop = await setup.render(providers, Object.assign({}, ctx, { only: ['provider', 'budget'], embedded: true, rest: step ? [step] : [] }));
-  return typeof stop === 'function' ? stop : undefined;
+  return () => { offRouting(); if (typeof stop === 'function') stop(); };
 }
 
 /* Subscription cutoffs (pacer.js limits / limit): per subscription the usage, the reset, the weekly stop and the

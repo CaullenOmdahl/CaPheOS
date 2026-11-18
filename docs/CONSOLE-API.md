@@ -250,6 +250,18 @@ Drawn in Crew › People under "Departments" once the company has one.
 - `POST /api/departments/move` `{ seat, to }` → `move <seat> <id|none> --by <owner>`.
   An inconsistent change (unknown seat, a seat in two departments) is refused for the owner too (400).
 
+## Routing (console/routing.js)
+
+Model routing modes and trials (company/tools/routing.js; every write runs it as the owner; docs/ROUTING.md). Drawn in
+Settings › Models › Routing and trials.
+- `GET /api/routing` → `routing.js status --json`: `{ mode, source, tierCaps: { mode, allow, heavyEscape, exemptFunctions,
+  exemptLeads }, classRules, trialLimits, trials: [{ id, class, status, entryShare, scope, minItemsPerArm, arms: [{ index,
+  label, provider, model, effort, wakes, items, shadowWakes, shadowItems }], reasons, hold, progress }], log, history }`.
+- `POST /api/routing/mode` `{ mode, why? }` → `mode <off|shadow|live> --by <owner>`.
+- `POST /api/routing/tiercaps` `{ mode, why? }` → `tiercaps <off|shadow|live> --by <owner>`.
+- `POST /api/routing/trials/<id>/<start|pause|resume|stop>` `{ why? }` → `trial <op> <id> --by <owner>`.
+  A refused change (a wrong transition, an unknown trial, a clashing running trial) is 400.
+
 ## Station proxy
 
 `/api/station/<path>` → `<station url>/api/<path>` with the station token added. GET is passed through. POST is passed

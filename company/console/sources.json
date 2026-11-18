@@ -42,6 +42,11 @@
       "argv": ["departments.js", "list", "--json"],
       "description": "The departments (docs/DEPARTMENTS.md): {departments: [{id, name, lead, leadName, members: [{id, name, isLead, escalatesTo}], defaultClass, briefChars}], unassigned, drift: {ok, mismatches, notes}, proposals}",
       "timeoutMs": 10000
+    },
+    "routing": {
+      "argv": ["routing.js", "status", "--json"],
+      "description": "Model routing (docs/ROUTING.md), read only: {mode, tierCaps: {mode, allow}, classRules, trials: [{id, class, status, entryShare, scope, arms: [{label, items, wakes, shadowItems, shadowWakes}], reasons, progress: {minItemsPerArm, lowestArm, enough}}], log}; the owner changes it in Settings > Models > Routing",
+      "timeoutMs": 10000
     }
   },
 

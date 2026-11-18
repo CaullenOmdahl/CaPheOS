@@ -402,6 +402,14 @@ async function apiRoute(req, res, p, q) {
     else sv.state = svm[2] === 'stop' ? 'stopped' : sv.kind === 'timer' ? 'scheduled' : 'running';
     emit('services'); return ok({ name: sv.name, done: svm[2] });
   }
+  // routing modes and trials (Settings › Models › Routing): console/routing.js -> company/tools/routing.js
+  if (!S.routing) S.routing = { ok: true, source: 'default', mode: 'shadow', tierCaps: { mode: 'shadow', allow: [], exemptFunctions: ['ceo'], exemptLeads: true }, log: [],
+    trials: [{ id: 'code-sonnet-vs-opus', class: 'code', status: 'draft', entryShare: 0.1, minItemsPerArm: 30, createdBy: 'Mira', scope: { departments: ['eng'], seats: [] }, reasons: [], progress: { minItemsPerArm: 30, lowestArm: 0, enough: false },
+      arms: [{ index: 0, provider: 'claude-cli', model: 'claude-sonnet-5-5', effort: 'high', items: 0, wakes: 0, shadowItems: 0, shadowWakes: 0 }, { index: 1, provider: 'claude-cli', model: 'claude-opus-5-5', effort: 'medium', items: 0, wakes: 0, shadowItems: 0, shadowWakes: 0 }] }] };
+  if (M === 'GET' && p === '/api/routing') return ok(S.routing);
+  const rtm = p.match(/^\/api\/routing\/(mode|tiercaps)$/), rtt = p.match(/^\/api\/routing\/trials\/([a-z][a-z0-9-]{1,39})\/(start|pause|resume|stop)$/);
+  if (M === 'POST' && rtm) { if (!['off', 'shadow', 'live'].includes(B.mode)) return J(res, 400, { ok: false, error: 'mode is one of off, shadow, live' }); if (rtm[1] === 'mode') S.routing.mode = B.mode; else S.routing.tierCaps.mode = B.mode; S.routing.log.unshift({ at: Date.now(), op: rtm[1], to: B.mode, by: 'owner' }); emit('routing'); return ok({ changed: true, summary: rtm[1] + ' -> ' + B.mode }); }
+  if (M === 'POST' && rtt) { const t = S.routing.trials.find(x => x.id === rtt[1]); if (!t) return J(res, 400, { ok: false, error: 'no trial' }); t.status = { start: 'running', pause: 'paused', resume: 'running', stop: 'done' }[rtt[2]]; S.routing.log.unshift({ at: Date.now(), op: 'trial-' + rtt[2], trial: t.id, to: t.status, by: 'owner' }); emit('routing'); return ok({ changed: true, summary: rtt[2] + ' trial ' + t.id }); }
   switch (M + ' ' + p) {
     case 'GET /api/company': return J(res, 200, S.company);
     case 'GET /api/questions': return ok({ questions: S.questions.map(present) });
