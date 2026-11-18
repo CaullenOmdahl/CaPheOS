@@ -1248,7 +1248,7 @@ test('cutoffs: at Autonomous (budget auto) the pacer decides alone, files a non-
   assert.equal(q.form.fields[0].type, 'slider'); assert.deepEqual(q.form.actions.map(a => a.id), ['set', 'keep', 'other']);
   // the owner's plain line: the daily digest (lib/owner-notice.js), never at once; no question id in it
   const told = fs.readFileSync(path.join(fx.root, 'company/owner/digest.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).map(r => r.text).join('\n');
-  assert.match(told, /FYI: Claude is 28% used this week/); assert.doesNotMatch(told, /q-\d{6}/);   // the question id may ride in technical only
+  assert.match(told, /Claude is 28% used this week/); assert.doesNotMatch(told, /FYI:/); assert.doesNotMatch(told, /q-\d{6}/);   // the question id may ride in technical only
   assert.doesNotMatch(q.details, /pacing-policy\.json|pacer\.js|console:#/); assert.match(q.technical, /pacer\.js limit/);
   assert.ok(h.lines.some(l => /PACER ASK q-\d+ \(FYI/.test(l)), h.lines.join('\n'));
   assert.ok(r && typeof r.extra === 'number', 'the tick returns at once');

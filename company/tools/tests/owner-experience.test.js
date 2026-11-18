@@ -396,3 +396,37 @@ test('B4: Settings › Autonomy turns a tested check on or back to practice, and
   assert.doesNotMatch(ui, /from a shell on this machine|decide\.js promote/, 'no shell instruction');
   assert.match(ui, /Turn on/); assert.match(ui, /Take it back/);
 });
+
+/* ---------------- B5: FYIs and the day message ---------------- */
+test('B5: an FYI card never lands in Needs you; a blocking money hold still does', () => {
+  const T = fixture({ levels: { budget: 'auto' } });
+  const r = run(T, NEEDS_CTX + `
+const fyi = { id: 'q-000501', from: 'Dispatcher', about: 'money-hold:cap', message: 'Halima is paused: the company has spent today\\'s $5 pay-as-you-go budget.', blocking: false, batch: 'fyi', kind: 'form' };
+const hold = Object.assign({}, fyi, { id: 'q-000502', blocking: true, batch: null });
+const s = NEEDS.split([fyi, hold], {});
+out({ needs: s.needs.map(x => x.id), handling: s.handling.map(x => ({ id: x.id, line: x.line })) });`);
+  assert.deepEqual(r.needs, ['q-000502'], 'only the blocking hold needs the owner');
+  assert.equal(r.handling.length, 1); assert.equal(r.handling[0].id, 'q-000501');
+  assert.match(r.handling[0].line, /You can still choose here/);
+});
+
+test('B5: the day message never says "nothing needs an answer" under a line that points at Today, and has no "FYI:" or long name lists', () => {
+  const T = company({ levels: { budget: 'auto' } });
+  const r = run(T, `
+const N = require(path.join(REPO, 'company/tools/lib/owner-notice.js'));
+N.send({ kind: 'fyi', from: 'Alex', text: 'One approval is waiting for you on Today › Needs you. [Open Needs you](console:#/today)', asks: true }, { root: T });
+N.send({ kind: 'fyi', from: 'Pat', text: 'Pat tidied the shared notes.' }, { root: T });
+const withAsk = N.digest({ root: T, force: true, dry: true }).text;
+const MH = require(path.join(REPO, 'company/tools/lib/money-hold.js'));
+const names = Array.from({ length: 13 }, (_, i) => 'Person ' + i);
+const q = MH.questionFor({ kind: 'cap', names, waiting: [], cap: 0, spent: 0 }, true);
+const src = fs.readFileSync(path.join(REPO, 'company/tools/lib/money-hold.js'), 'utf8') + fs.readFileSync(path.join(REPO, 'company/tools/lib/pacing-ask.js'), 'utf8');
+out({ withAsk, lead: q.message, fyiPrefix: /text: 'FYI: '/.test(src) });`);
+  assert.doesNotMatch(r.withAsk, /Nothing here needs an answer from you/, r.withAsk);
+  assert.match(r.withAsk, /Only what waits on Today needs an answer from you/);
+  assert.match(r.lead, /^13 crew members are paused: the company has spent today's \$0 pay-as-you-go budget\./, r.lead);
+  assert.doesNotMatch(r.lead, /metered|Person 4/);
+  assert.equal(r.fyiPrefix, false, 'no "FYI:" prefix inside the day message');
+  const ap = fs.readFileSync(path.join(REPO, 'company/tools/approvals.js'), 'utf8');
+  assert.match(ap, /asks: true, key: 'approval-reminder:/, 'the approval reminder marks itself as pointing at Today');
+});

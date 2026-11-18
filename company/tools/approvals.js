@@ -494,11 +494,12 @@ async function remind() {
     const ids = batch.map(r => r.id);
     append({ type: 'approval-reminder', at: new Date(now).toISOString(), window: win, ids, pending: pend.length });
     const n = pend.length;
-    const text = (n === 1 ? 'One approval is' : n + ' approvals are') + ' waiting for you on Today › Needs you (' + ids.join(', ') + (pend.length > ids.length ? ' and ' + (pend.length - ids.length) + ' more' : '') + '). [Open Needs you](console:#/today)';
+    const text = (n === 1 ? 'One approval is' : n + ' approvals are') + ' waiting for you on Today › Needs you. [Open Needs you](console:#/today)';
+    const technical = 'Waiting: ' + ids.join(', ') + (pend.length > ids.length ? ' and ' + (pend.length - ids.length) + ' more' : '') + '.';
     // lib/owner-notice.js: urgent when the crew is held up (a blocking record) or money is waiting (spend, budget); any
     // other reminder is an FYI for the day's message, since the cards are already on Today. Ids move to the technical part.
     const now_ = batch.some(r => r.blocking || ['spend', 'budget', 'spendBeyondCap'].includes(r.category));
-    let sent = null; try { const r = require('./lib/owner-notice').send({ kind: now_ ? 'urgent' : 'fyi', from: S.nameOf(S.ceo()) || 'company', text, key: 'approval-reminder:' + win }); sent = r.row || null; } catch (_) {}
+    let sent = null; try { const r = require('./lib/owner-notice').send({ kind: now_ ? 'urgent' : 'fyi', from: S.nameOf(S.ceo()) || 'company', text, technical, asks: true, key: 'approval-reminder:' + win }); sent = r.row || null; } catch (_) {}
     return { ids, pending: n, sent: !!sent };
   });
 }

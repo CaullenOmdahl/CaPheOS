@@ -222,7 +222,7 @@ function tick(a) {
     st.limitAsks[key] = { qid: r.row.id, status: 'open', at: new Date().toISOString(), weekStart: sit.weekStart, usedPct: sit.usedPct, cause: sit.cause, fyi,
       situation: { name: sit.name, held: sit.held, moved: sit.moved, usedPct: sit.usedPct, cause: sit.cause, weekStart: sit.weekStart } };
     if (fyi) {
-      try { require('./governance.js').fyi({ from: 'Pacer', text: 'FYI: ' + sit.name + ' is ' + Math.round(sit.usedPct) + '% used this week, so routines are paused on it under the current limits. You can change them on Today.', technical: 'Pacer question ' + r.row.id + ' (non-blocking: budget is the company\'s in self-governance).', key: ABOUT(key) + ':' + sit.weekStart }, { root }); } catch (_) {}
+      try { require('./governance.js').fyi({ from: 'Pacer', text: sit.name + ' is ' + Math.round(sit.usedPct) + '% used this week, so the crew\'s routines on it are paused under the current limits, as your settings allow. You can change them on Today.', technical: 'Pacer question ' + r.row.id + ' (non-blocking: budget is the company\'s in self-governance).', key: ABOUT(key) + ':' + sit.weekStart }, { root }); } catch (_) {}
     }
     log('PACER ASK ' + r.row.id + (fyi ? ' (FYI: budget is the company\'s)' : ' (waits for the owner)') + ': ' + sit.name + ' ' + f1(sit.usedPct) + '% used, cause ' + (sit.cause === 'stop' ? 'the weekly stop' : 'today\'s line') + '; ' + (sit.held.length + sit.moved.length) + ' seat(s) affected');
     out.asked = r.row.id; out.fyi = fyi;

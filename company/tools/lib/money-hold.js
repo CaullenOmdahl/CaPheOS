@@ -57,6 +57,8 @@ function withInbox(root, fn) {
 }
 const usd = n => '$' + (Math.round(Number(n) * 100) / 100).toFixed(2).replace(/\.00$/, '');
 const list = a => a.length <= 1 ? a.join('') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1];
+// who, in a lead the owner can read: up to three names, else how many
+const whoList = (names, all) => names.length <= 3 ? list(names) : (all ? 'All ' : '') + names.length + ' crew members';
 
 /* authorize(root, by) -> null (may set) or {code, error}: the owner (not from an agent's run); the CEO or finance seat
  * only while self-governance gives budget to the company. */
@@ -111,11 +113,11 @@ function set(root, o) {
 
 /* the question: plain message first, numbers in the details, a slider for today's budget, three buttons */
 function questionFor(sit, fyi) {
-  const who = sit.waiting && sit.waiting.length ? ' ' + list(sit.waiting) + (sit.waiting.length > 1 ? ' are' : ' is') + ' waiting on ' + (sit.names.length > 1 ? 'them' : 'it') + '.' : '';
-  const names = list(sit.names);
+  const who = sit.waiting && sit.waiting.length ? ' ' + whoList(sit.waiting) + (sit.waiting.length > 1 ? ' are' : ' is') + ' waiting on ' + (sit.names.length > 1 ? 'them' : 'it') + '.' : '';
+  const names = whoList(sit.names, sit.all);
   const head = sit.kind === 'spread'
     ? names + (sit.names.length > 1 ? ' are' : ' is') + ' paused so today\'s ' + usd(sit.cap) + ' lasts until midnight.'
-    : names + (sit.names.length > 1 ? ' are' : ' is') + ' paused: the company has spent today\'s ' + usd(sit.cap) + ' metered budget.';
+    : names + (sit.names.length > 1 ? ' are' : ' is') + ' paused: the company has spent today\'s ' + usd(sit.cap) + ' pay-as-you-go budget.';
   const message = head + who + (fyi ? ' You let the company decide budget, so it keeps it this way; pick something else if you want.' : '');
   const details = [
     'Spent so far today: ' + usd(sit.spent) + ' of ' + usd(sit.cap) + '. Work on the Claude and MiniMax subscriptions is not affected.',
@@ -130,7 +132,7 @@ function questionFor(sit, fyi) {
   const max = Math.max(min + 5, Math.ceil((Number(sit.cap) || 1) * 4));
   const value = Math.min(max, Math.max(min, Math.ceil(Math.max(Number(sit.cap) * 1.5, Number(sit.spent) + Number(sit.cap) / 2))));
   const form = { fields: [
-    { id: 'budget', type: 'slider', label: 'Today\'s metered budget', min, max, step: 1, value, unit: '$', say: 'Let the company spend up to ${value} metered today',
+    { id: 'budget', type: 'slider', label: 'Today\'s pay-as-you-go budget', min, max, step: 1, value, unit: '$', say: 'Let the company spend up to ${value} pay-as-you-go today',
       minLabel: 'Today\'s budget now (' + usd(min) + ')', maxLabel: usd(max), required: false },
   ], actions: (sit.kind === 'spread' ? [{ id: 'run', label: 'Let it run now', verdict: 'yes', primary: true, needs: 'none' }] : []).concat([
     { id: 'raise', label: 'Raise today\'s budget', verdict: 'submit', primary: sit.kind !== 'spread', needs: ['budget'] },
@@ -208,7 +210,7 @@ function tick(a) {
       const r = withInbox(root, ib => ib.ask({ scopeExempt: 'framework', from: 'Dispatcher', about: ABOUT(kind), message: q.message, details: q.details, technical: q.technical, blocking: !fyi, form: q.form, batch: fyi ? 'fyi' : null }));
       st.moneyAsks[key] = { qid: r.row.id, status: 'open', at: new Date(now).toISOString(), day, kind, fyi, cap: Number(a.cap), seats: hs.map(h => h.seat) };
       for (const h of hs) out.open[h.seat] = r.row.id;
-      if (fyi) { try { require('./governance.js').fyi({ from: 'Dispatcher', text: 'FYI: ' + q.message.replace(/ You let the company.*$/, '') + ' The company keeps it this way; you can change it on Today.', technical: 'Money question ' + r.row.id + ' (non-blocking: budget is the company\'s in self-governance).', key: ABOUT(kind) + ':' + day }, { root }); } catch (_) {} }
+      if (fyi) { try { require('./governance.js').fyi({ from: 'The crew', text: q.message.replace(/ You let the company.*$/, '') + ' The crew keeps it this way, as your settings allow; you can change it on Today.', technical: 'Money question ' + r.row.id + ' (non-blocking: budget is the company\'s in self-governance).', key: ABOUT(kind) + ':' + day }, { root }); } catch (_) {} }
       log('MONEY HOLD ASK ' + r.row.id + (fyi ? ' (FYI: budget is the company\'s)' : ' (waits for the owner)') + ': ' + list(sit.names) + ' held by ' + KINDS[kind] + ' for ' + sit.ticks + ' ticks' + (waiting.length ? '; waiting on them: ' + list(waiting) : ''));
       out.asked = r.row.id; out.fyi = fyi;
       break;   // one question at a time

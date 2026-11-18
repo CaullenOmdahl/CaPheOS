@@ -116,6 +116,7 @@ function make(deps) {
     if (!c) { const m = /^(?:governance|approval):([A-Za-z]+)/.exec(String(q.about || row.about || '')); if (m) c = m[1]; }
     return c && c !== 'gate' ? c : null;
   }
+  const isFyi = q => !!q && q.batch === 'fyi' && q.blocking === false;
   const asksKey = q => ['secret', 'account', 'link'].includes(q.kind) || !!(q.form && (q.form.fields || []).some(f => f.type === 'secret')) ||
     !!(q.questions || []).some(p => p.kind === 'secret' || (p.form && (p.form.fields || []).some(f => f.type === 'secret')));
   function classify(q, row, list) {
@@ -130,6 +131,9 @@ function make(deps) {
     // an act only the owner may do (install an add-on, switch one on, keep a protected file's change: lib/owner-card.js ownerAct)
     if ((row.gate && row.gate.ownerAct) || (q.gate && q.gate.ownerAct)) return { needsOwner: true, why: 'owner-act', category };
     if (asksKey(q) || asksKey(row)) return { needsOwner: true, why: 'access', category };
+    // an FYI card (non-blocking, batch "fyi": the money hold or the pacer at a budget level the crew decides) tells the
+    // owner what the crew keeps doing; its buttons stay usable under "The crew is handling", but it is never in Needs you
+    if (isFyi(q) || isFyi(row)) return { needsOwner: false, why: 'fyi', category };
     if (/^money-hold:/.test(String(q.about || row.about || ''))) return { needsOwner: true, why: 'money-now', category };
     const ruling = rulingFor({ category, about: q.about, lead, ref: (row.gate && row.gate.ref) || (q.gate && q.gate.ref) || null }, list);
     if (ruling && ruling.effect === 'ask') return { needsOwner: true, why: 'ruling-ask', category, ruling: { id: ruling.id, text: ruling.text } };
@@ -171,6 +175,7 @@ function make(deps) {
   function handlingLine(c) {
     if (c.why === 'ruling') return 'You made a standing rule: “' + c.ruling.text + '”.';
     if (c.why === 'level') return 'Your settings let the crew decide ' + catSay(c.category) + (c.level === 'notify' ? ' and tell you afterwards.' : '.');
+    if (c.why === 'fyi') return 'Your settings let the crew decide this, so it keeps things as they are. You can still choose here.';
     return 'This is the crew\'s job, not yours: they sort it out themselves.';
   }
   /* split(questions, rowsById) -> { needs: [q + {needsOwner}], handling: [{id, from, askerSeat, lead, line, category, level?, ruling?}] } */
