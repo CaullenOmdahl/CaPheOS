@@ -25,6 +25,9 @@
  *   await OA.build({ root?, now?, call?, jobs?, m?, providers?, blocks? }) -> the document (not written)
  *   await OA.write({ ...same, log?, dry? })                               -> { ok, file, seats, open, why? }
  *   OA.departmentRoutes(seatId, { root? })                                 -> [{ provider, model, effort? }] (none: [])
+ *   OA.openFor(agentId, { provider, model }, { root?, now? })              -> null (open) | a plain reason it is not
+ *     the station's own test, for a caller that starts a run itself (the console's meeting with one model picked for
+ *     everyone, console/meeting.js): the file must be under 30 minutes old and list that pair for that agent
  *
  * Regenerated on every tick: locked-watch.js class R (writer lib/override-allow.js; a foreign write is regenerated), and
  * retention keeps no history of it (rewritten whole). Never throws from write(). CLI: `node company/tools/lib/override-allow.js
@@ -97,7 +100,21 @@ async function write(o) {
   }
 }
 
-module.exports = { build, write, departmentRoutes, REL, WRITER };
+/* is (provider, model) open for this agent now? The station's rule (patch 0017): the file must exist, be less than 30
+   minutes old and list the pair for the agent; anything else is closed. -> null when open, else a plain reason */
+const MAX_AGE_MS = 30 * 60e3;
+function openFor(agentId, pair, o) {
+  o = o || {};
+  const doc = readJson(fileOf(o.root), null);
+  const now = typeof o.now === 'function' ? o.now() : Number(o.now) || Date.now();
+  if (!doc || typeof doc !== 'object' || !doc.agents || typeof doc.agents !== 'object') return 'no current list of the models each person may use';
+  if (!(Number(doc.at) > 0) || now - Number(doc.at) > MAX_AGE_MS) return 'the list of the models each person may use is out of date';
+  const list = Array.isArray(doc.agents[String(agentId || '')]) ? doc.agents[String(agentId)] : [];
+  const p = pair || {};
+  return list.some(x => x && x.provider === p.provider && x.model === p.model) ? null : 'not open for them right now';
+}
+
+module.exports = { build, write, departmentRoutes, openFor, MAX_AGE_MS, REL, WRITER };
 
 // node company/tools/lib/override-allow.js [write|show]   write: one rewrite now (locked-watch.js regenerates it so);
 // show: print what would be written. Reads the station's routines itself.

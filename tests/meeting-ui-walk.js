@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /* Chat › Meeting in headless Chrome, against the real console and tests/mock-station.js (scripted replies):
  *   - every control calls its API action (the page's fetches are recorded): More, Tools / talk only, the rounds stepper,
- *     Observe / Take part, the crown, No leader, ×, + Add, New meeting, Shift+Enter, Round, Raise hand, Esc, Esc again
- *     (stops), Continue, Stop
+ *     Observe / Take part, the crown, No leader, ×, + Add, New meeting, Shift+Enter, Round, Raise hand, Esc (a hand only:
+ *     Esc again never stops anyone), Continue, Stop after this turn, How hard they think (Max asks first), Model
  *   - as at the table: no Next button by default; the turn in flight streams; one colour per person; passes, asks,
  *     joins and hands as dim lines in order; tool steps as "· Name: …" lines; the END line
  *   - @name autocomplete in the composer
@@ -161,15 +161,38 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   await sleep(300);
   const n2 = await ev('window.__posts.length');
   await key('Escape', 'Escape', 0, '', 27);
-  const esc2 = await waitFor(async () => (await ev('window.__posts.length')) > n2 ? lastPost() : null, 3000);
-  t('control → action: Esc again stops the turn (the table\'s second Ctrl-C)', esc2 && esc2.path === '/meeting/stop', esc2);
-  t('the round stops', await waitFor(() => ev('document.querySelector("[data-act=round]").disabled===false && !document.querySelector("[data-act=stop]")'), 15000));
+  await sleep(800);
+  const esc2 = (await ev('window.__posts.length')) > n2 ? lastPost() : null;
+  t('Esc again never stops anyone: no Stop is sent', !esc2 || esc2.path !== '/meeting/stop', esc2);
+  t('the floor comes after the speaker; Continue ends the round', await waitFor(() => ev('!!document.querySelector("[data-act=continue]")'), 15000));
+  await api('/meeting/continue', {});
+  t('the round ends', await waitFor(() => ev('document.querySelector("[data-act=round]").disabled===false && !document.querySelector("[data-act=stop]")'), 15000));
   const slow = { text: 'One more slow answer that keeps going on and on for a while.', stepMs: 150 };
   await st('/__meeting', { reset: true, replies: { agent: slow, cfo: slow, sec: slow } });
-  await maps('Round for Stop', '[data-act="round"]', { path: '/meeting/round', body: {} });
+  await api('/meeting/say', { text: 'One more, slowly.' });   // a new message: everyone has something new to answer
   await waitFor(() => ev('!!document.querySelector("[data-act=stop]")'), 5000, 80);
+  await waitFor(() => ev('!!document.querySelector(".chat-body .mtg-liveturn:not([hidden]) .mtg-stream")'), 8000, 60);
+  t('the Stop button says it is after this turn', await ev('/Stop after this turn/.test(document.querySelector("[data-act=stop]").textContent)'));
   await maps('Stop', '[data-act="stop"]', { path: '/meeting/stop', body: {} });
-  t('Stop stops it', await waitFor(() => ev('document.querySelector("[data-act=round]").disabled===false && !document.querySelector("[data-act=stop]")'), 15000));
+  t('Stop stops it after the current speaker', await waitFor(() => ev('document.querySelector("[data-act=round]").disabled===false && !document.querySelector("[data-act=stop]")'), 15000));
+  const sayStop = await api('/meeting/entries?limit=200', null).catch(() => null);
+  t('the speaker was not cut off: their whole answer is in the messages', sayStop && sayStop.entries && sayStop.entries.some(e => e.kind === 'say' && e.text === slow.text), sayStop && sayStop.entries && sayStop.entries.slice(-4));
+
+  // How hard they think and on which model (More): Normal by default; Max asks first; one model for everyone
+  await ev('document.querySelector("[data-act=more]").click()');
+  t('More shows how hard they think, Normal by default, and the model', await waitFor(() => ev('(()=>{const s=document.getElementById("mtg-think"),m=document.getElementById("mtg-pin");return s&&m&&s.value==="normal"&&m.value===""})()'), 4000));
+  await ev('(()=>{const s=document.getElementById("mtg-think");s.value="deep";s.dispatchEvent(new Event("change"));return 1})()');
+  const th = await waitFor(() => { return ev('1').then(() => lastPost()).then(p => p && p.path === '/meeting/think' ? p : null); }, 3000);
+  t('control → action: How hard they think', th && th.body.level === 'deep', th);
+  await ev('window.confirm=()=>false;(()=>{const s=document.getElementById("mtg-think");s.value="max";s.dispatchEvent(new Event("change"));return 1})()');
+  await sleep(300);
+  t('Max asks first; declined, nothing is sent', (await lastPost()).body.level !== 'max' && await ev('document.getElementById("mtg-think").value!=="max"'));
+  await ev('(()=>{const s=document.getElementById("mtg-pin");s.value=s.options[1].value;s.dispatchEvent(new Event("change"));return 1})()');
+  const pn = await waitFor(() => lastPost().then(p => p && p.path === '/meeting/think' && p.body.pin ? p : null), 3000);
+  t('control → action: one model for everyone', pn && /\//.test(pn.body.pin), pn);
+  t('the cost line carries the next round\'s estimate', await waitFor(() => ev('/Next round at Deep: about \\d+ turn/.test(document.querySelector(".mtg-cost").textContent)'), 4000), await ev('document.querySelector(".mtg-cost").textContent'));
+  await api('/meeting/think', { level: 'normal', pin: 'usual' });
+  await ev('document.querySelector("[data-act=more]").click()');
 
   // Pace: Next (manual), Pause, Catch me up
   await ev('(()=>{const s=document.getElementById("mtg-speed");s.value="manual";s.dispatchEvent(new Event("change"));return 1})()');

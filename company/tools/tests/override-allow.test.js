@@ -153,3 +153,15 @@ test('the dispatcher rewrites it at the end of every tick, and the station env n
   const sh = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'scripts', 'setup-station.sh'), 'utf8');
   assert.ok(/^STARNET_OVERRIDE_ALLOW=\$ROOT\/company\/state\/override-allow\.json$/m.test(sh), 'setup-station.sh writes STARNET_OVERRIDE_ALLOW');
 });
+
+test('openFor: the station\'s own test for a caller that starts a run itself (a meeting with one model for everyone)', () => {
+  const now = Date.now();
+  fs.rmSync(path.join(T, OA.REL), { force: true });
+  assert.match(OA.openFor('jo', { provider: 'deepseek', model: 'deepseek-flash' }, { root: T }), /no current list/, 'no file: closed');
+  W(OA.REL, { v: 1, at: now - 60e3, by: 'dispatcher', agents: { jo: [{ provider: 'deepseek', model: 'deepseek-flash' }], sam: [] } });
+  assert.strictEqual(OA.openFor('jo', { provider: 'deepseek', model: 'deepseek-flash' }, { root: T, now }), null, 'listed for that agent: open');
+  assert.match(OA.openFor('jo', { provider: 'claude-cli', model: 'claude-opus-5-5' }, { root: T, now }), /not open for them/, 'not listed: closed');
+  assert.match(OA.openFor('sam', { provider: 'deepseek', model: 'deepseek-flash' }, { root: T, now }), /not open for them/, 'listed for another agent only: closed');
+  assert.match(OA.openFor('jo', { provider: 'deepseek', model: 'deepseek-flash' }, { root: T, now: now + OA.MAX_AGE_MS }), /out of date/, 'older than 30 minutes: closed');
+  fs.rmSync(path.join(T, OA.REL), { force: true });
+});

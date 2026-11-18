@@ -54,6 +54,7 @@ module.exports = function huddle(deps) {
 
   /* ---------- one engine per host, made when first needed ---------- */
   const engines = new Map();
+  const recapWanted = new Set();   // hosts whose chat is closing: the recap is written when the engine finalizes it
   function engine(host) {
     checkHost(host);
     if (engines.has(host)) return engines.get(host);
@@ -61,6 +62,8 @@ module.exports = function huddle(deps) {
       stateDir: () => hostDir(host), topic: 'huddle', streamPrefix: 'huddle-' + host + '-', minutesPrefix: 'chat-' + host + '-',
       routePrefix: '/api/huddle/' + host, door: 'chat',
       emit: t => { emitRaw(t); settleSoon(host); },
+      // the chat closed (at once, or once the current speaker finished: nobody is cut off mid-turn): the host's recap
+      onFinalize: f => { if (f.state === 'closed' && recapWanted.delete(host)) { writeRecap(host, f.id, f.LOG); emitRaw('huddle'); } },
       profile: { kind: 'huddle', noun: 'chat', fixedLeader: host, standing: [host], wrapHost: true, noRegister: true, speed: 'instant',
         maxGuests: MAX_HUDDLE_GUESTS, maxInvites: MAX_HUDDLE_INVITES, maxTurnsPerRound: MAX_HUDDLE_TURNS,
         preface: o => 'This is ' + o + '\'s live chat with ' + nameOf(host) + ' in the console (behind the owner\'s sign-in; not a relayed message), and ' + first(host) + ' brought colleagues in to help. ' + o + ' reads every word here.',
@@ -96,12 +99,9 @@ module.exports = function huddle(deps) {
   async function close(host, why) {
     const E = engine(host);
     if (!opened(E)) return view(host);
-    const v = E._state();
-    const id = v.M.id;
-    await E.close({ why: why || '' });
-    writeRecap(host, id, v.LOG);
-    emitRaw('huddle');
-    return view(host);
+    recapWanted.add(host);
+    const r = await E.close({ why: why || '' });
+    return view(host, r && r.note ? { note: r.note } : undefined);
   }
   function writeRecap(host, id, LOG) {
     const guests = [...new Set(LOG.filter(e => e.kind === 'join').map(e => e.who))];
@@ -219,9 +219,12 @@ module.exports = function huddle(deps) {
     route('GET', R('/history'), m => ({ ok: true, huddles: history(m[1]) }));
     route('POST', R('/say'), (m, q, b) => say(m[1], b));
     route('POST', R('/seats'), (m, q, b) => seats(m[1], b));
-    route('POST', R('/stop'), async m => { checkHost(m[1]); await engine(m[1]).stop(); return view(m[1]); });
+    // Stop = after this turn: the colleague writing finishes, nothing after it starts
+    route('POST', R('/stop'), async m => { checkHost(m[1]); const r = await engine(m[1]).stop(); return view(m[1], r && r.note ? { note: r.note } : undefined); });
     route('POST', R('/hand'), async m => { checkHost(m[1]); await engine(m[1]).hand(); return view(m[1]); });
     route('POST', R('/continue'), async m => { checkHost(m[1]); await engine(m[1]).carryOn(); return view(m[1]); });
+    // how hard they think, and one model for everyone or each person's usual: the owner's, kept with this chat's seats
+    route('POST', R('/think'), async (m, q, b) => { checkHost(m[1]); const r = await engine(m[1]).setThink(b); return view(m[1], r && r.note ? { note: r.note } : undefined); });
     route('POST', R('/close'), (m, q, b) => close(checkHost(m[1]), String((b && b.why) || 'closed by ' + owner()).slice(0, 300)));
     route('GET', R('/attach'), (m, q, b, req, res) => { checkHost(m[1]); return engine(m[1]).attach(req, res, q); });
   }

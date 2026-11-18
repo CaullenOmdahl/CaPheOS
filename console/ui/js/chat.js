@@ -67,7 +67,8 @@ export function liveChat(host, opts) {
   const form = h('form', { 'aria-label': 'Message', class: 'composer', onsubmit: e => { e.preventDefault(); send(ta.value); } },
     h('label', { for: 'msg', class: 'caption muted' }, COMPOSER_HINT),
     ta, h('div', { class: 'between-c', style: 'flex-wrap:wrap;gap:8px' }, h('span', { class: 'row-8', style: 'align-items:center' }, stateEl, sendErr), h('span', { class: 'row-8' }, stopBtn, sendBtn)));
-  composerKeys(ta, () => send(ta.value), () => { if (busy || hudRunning()) stop(); });
+  // Esc stops your own 1:1 reply while it streams; with colleagues in the chat it only raises your hand (nobody is cut off)
+  composerKeys(ta, () => send(ta.value), () => { if (busy) stop(); else if (hudRunning()) raiseHand(); });
   const bodyWrap = h('div', { class: 'chat-scroll' }, body, jump);
   /* ---------- colleagues in this chat (console/huddle.js) ---------- */
   let hud = null, hudWas = false, HS = null, offHud = null, offHudBar = null;
@@ -208,9 +209,25 @@ export function liveChat(host, opts) {
       h('span', { class: 'label mtg-who' }, (lead ? '♛ ' : '') + personName(x.name)),
       lead ? null : h('button', { type: 'button', class: 'mtg-rm', 'data-act': 'dismiss', 'data-seat': x.id, 'aria-label': 'Send ' + personName(x.name) + ' back out of this chat', title: 'Send back out',
         onclick: async () => { try { hud = await post(HU('/seats'), { remove: [x.id] }); app.toast(personName(x.name) + ' went back to their work.'); drawHud(); refreshHud(false); } catch (e) { app.toast(humanError(e), true); } } }, '×'));
+    // how hard they think and on which model, while colleagues are here (the owner's; hand checks stay Light), and the cost
+    const T = hud.open && hud.meeting ? hud.meeting.think : null;
+    let think = null;
+    if (T) {
+      const lv = h('select', { class: 'select hud-think', 'data-act': 'think', 'aria-label': 'How hard they think in this chat' }, T.levels.map(x => h('option', { value: x.id, selected: x.id === T.level }, 'Thinking: ' + x.label + (x.deliberate ? ' (costs the most)' : ''))));
+      lv.addEventListener('change', async () => {
+        if (lv.value === 'max' && !window.confirm('Max thinking costs the most, on every reply. Use it in this chat?')) { lv.value = T.level; return; }
+        try { hud = await post(HU('/think'), lv.value === 'max' ? { level: 'max', sure: true } : { level: lv.value }); if (hud.note) app.toast(hud.note); drawHud(); } catch (e) { app.toast(humanError(e), true); lv.value = T.level; }
+      });
+      const pinV = T.pin ? T.pin.provider + '/' + T.pin.model : '';
+      const md = h('select', { class: 'select hud-pin', 'data-act': 'pin', 'aria-label': 'Which model in this chat: each person\'s usual, or one for everyone' },
+        h('option', { value: '', selected: !pinV }, 'Model: each person\'s usual'), (T.choices || []).map(c => h('option', { value: c.provider + '/' + c.model, selected: pinV === c.provider + '/' + c.model }, 'Model: ' + c.label + ' for everyone')));
+      md.addEventListener('change', async () => { try { hud = await post(HU('/think'), { pin: md.value || 'usual' }); if (hud.note) app.toast(hud.note); drawHud(); } catch (e) { app.toast(humanError(e), true); } });
+      const cost = h('span', { class: 'caption muted hud-cost', role: 'status' }, [hud.meeting.costLine, hud.meeting.estimateLine].filter(Boolean).join(' · '));
+      think = h('span', { class: 'row-8 hud-think-row', style: 'flex-wrap:wrap' }, lv, md, cost);
+    }
     fill(hudBar, hud.open ? h('span', { class: 'caption muted' }, 'In this chat:') : null,
       hud.open ? seats.filter(x => x.leader).map(x => chip(x, true)) : null, guests.map(x => chip(x, false)),
-      h('span', { class: 'row-8 hud-add' }, pick, add));
+      h('span', { class: 'row-8 hud-add' }, pick, add), think);
   }
   function liveLine() {
     if (!hudRunning()) { if (!busy) setState(''); return; }
@@ -424,8 +441,13 @@ export function liveChat(host, opts) {
   }
   // Stop cancels the run at the station; the reply then ends with its console.final (not complete), and the page says so.
   // Without a run id yet (it has not started), the request itself is dropped.
+  async function raiseHand() {
+    if (!hudRunning() || hud.live.ownerHand) return;
+    try { hud = await post(HU('/hand'), {}); app.toast('Your hand is up: the chat is yours after the current speaker.'); } catch (e) { app.toast(humanError(e), true); }
+  }
+  // with colleagues in the chat, Stop is "after this turn": whoever is writing finishes, nothing after it starts
   async function stop() {
-    if (!busy && hudRunning()) { try { hud = await post(HU('/stop'), {}); app.toast('Stopped.'); } catch (e) { app.toast(humanError(e), true); } return; }
+    if (!busy && hudRunning()) { try { hud = await post(HU('/stop'), {}); app.toast(hud.note || 'Stopped.'); } catch (e) { app.toast(humanError(e), true); } return; }
     stopBtn.disabled = true;
     if (curL) curL.userStop = true;
     if (runId) { try { await post('/station/cancel', { runId }); return; } catch (e) { app.toast('Stop: ' + humanError(e), true); } }

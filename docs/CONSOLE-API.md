@@ -186,8 +186,9 @@ Earlier chats with colleagues stay in the conversation (`GET /api/chat/:seat` `h
 | GET | /api/huddle/:seat/history | — | `{ huddles: [{id, startedAt, closedAt, guests, entries}] }`: the closed ones, oldest first (also in `GET /api/chat/:seat` as `huddles`, with `huddleOpen`) |
 | POST | /api/huddle/:seat/say | `{ text }` | to everyone in it, the host first (409 when nobody else is in the chat; while a round runs, taken after the current speaker) |
 | POST | /api/huddle/:seat/seats | `{ add: [ids] }` \| `{ remove: [ids] }` | + Colleague (opens the chat with them from the 1:1 chat so far) and × |
-| POST | /api/huddle/:seat/stop \| hand \| continue | — | as the meeting's |
-| POST | /api/huddle/:seat/close | `{ why? }` | closes it now |
+| POST | /api/huddle/:seat/stop \| hand \| continue | — | as the meeting's: Stop is "after this turn" (the colleague writing finishes, nothing after starts; `note` says so); hand = the chat is the owner's after the current speaker (Esc in the page does only this while colleagues are in the chat) |
+| POST | /api/huddle/:seat/think | `{ level?: light\|normal\|deep\|max, sure?, pin?: "provider/model"\|{provider, model}\|"usual" }` | how hard they think and on which model in this chat, as the meeting's (`meeting.think`, `meeting.estimateLine` in the view) |
+| POST | /api/huddle/:seat/close | `{ why? }` | closes it; while a colleague is writing it closes once that turn is over (`note`), the recap written then |
 | GET | /api/huddle/:seat/attach?runId=&from=N | — | the turn in flight, as `/api/meeting/attach` |
 
 Every colleague's turn passes what a meeting turn passes: the owner-only guard (refused inside an agent's run), the halt
@@ -238,7 +239,8 @@ State: `company/state/huddles/<seat>/` (the meeting's files, `recap.json` waitin
 ## Meeting
 
 Chat › Meeting (`console/meeting.js`): `GET /api/meeting`, `GET /api/meeting/entries`, `GET /api/meeting/minutes`,
-`GET /api/meeting/{list,timeline}`, and `POST /api/meeting/{say,round,hand,continue,next,pace,hold,presence,catchup,stop,observe,agenda,lead,seats,new,close,resume}`;
+`GET /api/meeting/{list,timeline}`, and `POST /api/meeting/{say,round,hand,continue,next,pace,hold,presence,catchup,stop,observe,agenda,lead,seats,new,close,resume,think}`
+(`stop` = after this turn; `think` = how hard they think and one model for everyone, owner-only);
 live updates are the `meeting` topic on `/api/events`. Every turn is a tracked chat run (stream `meeting-<seat>`), so
 `/api/console/busy` lists it and a restart re-attaches. Spec: docs/MEETINGS.md.
 

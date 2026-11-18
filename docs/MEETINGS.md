@@ -19,24 +19,26 @@ standing seats, an agent's INVITE or DISMISS lasts for that meeting only.
 
 ## The controls
 
-In view while they talk: the seat strip, **Round**, **Raise hand / Continue**, **Stop**, **Observe (− N +) / Take
-part** and **More**. Everything else is in the **More** panel (it stays open across live updates).
+In view while they talk: the seat strip, **Round**, **Raise hand / Continue**, **Stop after this turn**, **Observe (− N +) /
+Take part** and **More**. Everything else is in the **More** panel (it stays open across live updates).
 
 | Control | What it does | API (POST unless noted) |
 |---|---|---|
 | Composer | your message to everyone; start it with `@name` (autocompleted) for those seats only, `@all` for everyone | `/api/meeting/say {text}` |
 | Round | an open round: they answer each other, no new message from you | `/api/meeting/round` |
-| Raise hand / Esc | the floor is yours after the current speaker; a message typed during a round does the same, and starts a new round on your words | `/api/meeting/hand` |
-| Esc again / Stop | stops now: the turn in flight is cancelled (the table's second Ctrl-C) | `/api/meeting/stop` |
+| Raise hand / Esc | the floor is yours after the current speaker, never cutting them off; a message typed during a round does the same, and starts a new round on your words. Esc only ever raises a hand (there is no "Esc twice") | `/api/meeting/hand` |
+| Stop after this turn | the current speaker finishes; the queued turns, the hand checks and the round are cancelled. A message written while it stops starts its round once the speaker is done. Only a company hard halt aborts a turn mid-way | `/api/meeting/stop` |
 | Continue | (when you have the floor) let them carry on | `/api/meeting/continue` |
 | Observe (− N +) / Take part | you get no turn; they are told not to ask you anything and carry on by themselves for up to N rounds (default 6, 1-30) until the leader writes `END:` or a round passes with nothing said | `/api/meeting/observe {on, rounds}` |
 | More › Tools: on / off | tools are on by default, as at the table; off is **talk only** for the whole meeting (no tools on any turn) | `/api/meeting/talkonly {on}` |
+| More › How hard they think | Light, **Normal** (the default), Deep, or Max (only when picked on purpose: the page asks first, the API needs `sure: true`): one level for every turn, whatever level the seat's own work uses. Hand checks, the leader's call on hands, Catch me up and Explain always run Light. The effort sent is the nearest one the model offers at or below the level. Kept with the seats; owner-only (no agent line changes it) | `/api/meeting/think {level, sure?}` |
+| More › Model | each person's usual (the default) or one model for everyone, from the company's list (`model-policy.json` `allowed`). A picked model still passes what the seat's own would: open for that seat in the station's override list (`company/state/override-allow.json`, less than 30 minutes old: the pacer, the subscription stops, refusal blocks), the $0 cap on a metered model, and admit. Someone who cannot use it right now sits the turn out with one plain line; nobody is ever moved to another (pricier) model, and a refused turn on it is not retried elsewhere | `/api/meeting/think {pin: "provider/model" \| "usual"}` |
 | More › Pause / Carry on | the current turn finishes and is shown; nothing new starts, so nothing is spent | `/api/meeting/hold {on}` |
 | More › Agenda | items, the one under discussion now, and tools per item (an item follows the meeting's switch until you set it) | `/api/meeting/agenda {op: add\|tools\|current\|done\|remove}` |
 | More › Pace | Flowing (the default, as at the table), fast, normal, slow (a reading pause between turns), or Next (you advance) | `/api/meeting/pace {speed}` |
 | More › Catch me up | one talk-only turn by the leader for you only: five bullets, what was decided, what is still asked | `/api/meeting/catchup {since}` |
 | More › Register, Open minutes | the action register; the day's minutes (with search) | GET `/api/meeting/register`, `/api/meeting/minutes?date=` |
-| More › New meeting (type), Close meeting | a fresh meeting, same seats and leader (decision, incident, planning or review: the type adds one sentence to each turn, not the protocol; one at a time, an incident meeting may interrupt an open one); Close ends it with or without an END | `/api/meeting/new {type, title?}`, `/api/meeting/close {why?}` |
+| More › New meeting (type), Close meeting | a fresh meeting, same seats and leader (decision, incident, planning or review: the type adds one sentence to each turn, not the protocol; one at a time, an incident meeting may interrupt an open one); Close ends it with or without an END (while someone speaks, once their turn is over) | `/api/meeting/new {type, title?}`, `/api/meeting/close {why?}` |
 | Resume | carries on an `interrupted` meeting | `/api/meeting/resume {id?}` |
 | ♛ / No leader | the leader (kept across meetings; default the CEO seat) speaks first, runs the meeting, proposes rulings, cannot be dismissed | `/api/meeting/lead {seat\|null}` |
 | × / + Add | the standing seats: anyone on the crew; a new seat sees the meeting so far. Hovering the strip lists who is seated, in order, on what model (the table's `/who`) | `/api/meeting/seats {add, remove}` |
@@ -124,6 +126,10 @@ in the register. API: `GET /api/meeting/register`, `POST /api/meeting/register {
 Searchable: `company/state/meetings/index.json` (one row per meeting: id, type, agenda, participants, decisions,
 actions, links to quests `q:N` and handoffs `to-<name>.md`), `GET /api/meeting/search?q=` (Open minutes › Search).
 
+Limits apply only between turns: the 8 replies per owner message of a live chat, the ask, hand and invite caps, the idle
+close and dismissals. Someone dismissed by an agent, or removed by the owner's ×, while speaking leaves once that turn is
+over; their reply is kept.
+
 What agents change lasts for that meeting; your add and remove set the standing seats and override it. The house rules
 carry a short meeting-etiquette line, and every turn carries the table's rules.
 
@@ -135,13 +141,23 @@ carry a short meeting-etiquette line, and every turn carries the table's rules.
   applied (its loop routine's pair, else its roster row; `console/chat.js modelFor`). A metered model under a $0 cap is
   held, as in the chat. A refused turn is retried once on the seat's next chain entry with one plain line
   (`lib/refusal.js`, door `meeting`).
-- **Cost is information, never a gate**: no meeting budget, no estimate, no per-turn dollar check. The cost line says
+- **Cost is information, never a gate**: no meeting budget, no per-turn dollar check. The cost line says
   "This meeting so far: N turns" and, per provider, dollars for a metered model (DeepSeek, OpenRouter), the share of a
   subscription's windows since the meeting began (Claude 5-hour and week, MiniMax; from the pacer's readings and
-  `company/work/finance/subscriptions.json`), never "$0.00", and "unknown" for anything unmetered with no meter.
+  `company/work/finance/subscriptions.json`), never "$0.00", and "unknown" for anything unmetered with no meter. Beside
+  it, an estimate for the next round at the current setting (`estimateLine`): one turn per person seated at the owner's
+  level on the model each would use, from what this meeting's runs cost so far, scaled between levels (rough: Light half
+  of Normal, Deep twice, Max four times); "not known yet" before a provider's first run here.
+- **Thinking level and model**: every run is sent `reasoningEffort` (the owner's level, Light for checks), so a seat whose
+  own work runs at Max does not talk at Max. A picked model goes on the run as its model; see More › Model above.
+- **No turn is cut off.** There is no turn timeout. After 10 minutes on one turn the speaker is asked to finish (a steer
+  note, `POST /api/run/steer`, and one dim line "… the console asked them to wrap up. Nobody is cut off."); only a run
+  with no output at all for 60 minutes (a stalled run: the safety ceiling; a wait on the owner's approval does not count)
+  is ended, with one plain line. Budget or pacer limits reached mid-turn let the turn finish; the next one is held.
 - Every run passes `lib/admit.js` as kind `meeting-turn` (door `meeting`, `company/state/admit-log.jsonl`): a zero-token
   permission and routing check, refused unless the owner opened the meeting, held under a hard halt or a refusal
-  block. There is no meeting budget, estimate or per-turn dollar gate: cost is information.
+  block, on the provider the run really uses (a picked model's). There is no meeting budget or per-turn dollar gate:
+  cost is information.
 - Meeting states: `open`, `interrupted`, `closed`.
 - Runs are tracked by `console/chat-runs.js` (detached, followed on the observer feed), and the meeting saves its queue
   after every step, so a console restart re-attaches to the turn in flight and carries on; `GET /api/console/busy`
@@ -174,7 +190,8 @@ console and the mock station), `tests/meeting-ui-walk.js` (headless Chrome).
 `topic` (the live-update topic), `streamPrefix`, `minutesPrefix`, `routePrefix`, `door` (admit), and a `profile`:
 `noun` ("chat"), `preface(owner)`, `fixedLeader` (the host: cannot be changed or removed), `standing` (the host only:
 fixed, so the owner's picks join as guests of that chat), `minutesHead(date)`,
-`wrapHost` (after a round the host started by bringing someone in, the host closes the loop if someone else said something;
+`onFinalize({state, id, LOG})` (the room closed or was interrupted: the live chat writes its recap then, also when a
+close waited for a turn), `wrapHost` (after a round the host started by bringing someone in, the host closes the loop if someone else said something;
 `'always'` for every round), `maxGuests`, `maxInvites`, `maxTurnsPerRound` ("The chat paused after N replies; write to
 carry on."), `noRegister`. `pullIn({by, seed, text|directives})` records the recent conversation (`src: 'chat'`) and
 runs the seat's ASK / INVITE lines as a round; `seed(list)` records the conversation alone (the owner's + Colleague).

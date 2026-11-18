@@ -5,8 +5,10 @@
 // each, in order: "(Phil passes)", "(Nadia answers Dave)", "(hands? Sharon, Phil…)", "(Sharon raises a hand: …)",
 // "(Rachel calls on Nadia)", "(Omar joins, invited by Dave: …)". In view: the seat strip (crown = leader, × = remove,
 // hover or tap an avatar for its model, + Add), Round, Raise hand / Continue, Stop, Observe (rounds) / Take part; the
-// rest (Talk only, Pause, pace, agenda, register, minutes, catch-up, a new meeting, close) is under More. Esc raises a
-// hand while they talk; Esc again stops the turn. The messages are the chat's rolling window (backscroll, Jump to latest).
+// rest (Talk only, how hard they think and on which model, Pause, pace, agenda, register, minutes, catch-up, a new
+// meeting, close) is under More. Esc raises a hand while they talk (only that: nobody is cut off). Stop is "stop after
+// this turn": the speaker finishes, nothing after starts. The cost line shows the meeting so far and the next round's
+// estimate at the current setting. The messages are the chat's rolling window (backscroll, Jump to latest).
 // Live updates: the messages and the speaking-now line follow every change (events.onLive); the seat strip and the More
 // panel, which hold dropdowns and fields, redraw through events.on, so an open dropdown is never closed under the owner.
 import { composerKeys, COMPOSER_HINT } from './keys.js';
@@ -17,7 +19,7 @@ import { personName, toolStep } from './plain.js';
 import * as events from './events.js';
 
 export const ACTIONS = {   // the controls and the API action each one calls (tests/meeting-ui-walk.js checks the map)
-  round: '/meeting/round', hand: '/meeting/hand', continue: '/meeting/continue', stop: '/meeting/stop', observe: '/meeting/observe',
+  think: '/meeting/think', round: '/meeting/round', hand: '/meeting/hand', continue: '/meeting/continue', stop: '/meeting/stop', observe: '/meeting/observe',
   next: '/meeting/next', talkOnly: '/meeting/talkonly', register: '/meeting/register', explain: '/meeting/explain', glossary: '/meeting/glossary', pace: '/meeting/pace', hold: '/meeting/hold', catchup: '/meeting/catchup', newMeeting: '/meeting/new', agenda: '/meeting/agenda', close: '/meeting/close', resume: '/meeting/resume', lead: '/meeting/lead', seats: '/meeting/seats', say: '/meeting/say',
 };
 export const maybePass = t => String(t).trim().length <= 8 && 'PASS'.startsWith(String(t).toUpperCase().replace(/[^A-Z]/g, ''));
@@ -96,13 +98,10 @@ export function meetingPane(host, opts) {
     try { const r = await post(ACTIONS.say, { text }); ta.value = ''; closeAc(); if (r && r.note && r.note !== 'sent') app.toast(r.note); if (r && r.missing && r.missing.length) app.toast(r.missing.join(', ') + ' not seated: the message went to the others.'); v = r; drawControls(); drawLive(); refreshEntries(); }
     catch (e) { sendErr.textContent = 'Not sent: ' + humanError(e); }
   }
-  // Esc raises your hand (the floor is yours after the current speaker); Esc again, with the hand up, stops the turn:
-  // the table's Ctrl-C, then Ctrl-C again
-  let lastEsc = 0;
+  // Esc raises your hand: the floor is yours after the current speaker. It never stops anyone (that would waste what
+  // they already thought); Stop is a button, and it too waits for the current speaker to finish.
   const raiseHand = () => {
     if (!running()) return;
-    const again = v.live.ownerHand || Date.now() - lastEsc < 1500; lastEsc = Date.now();
-    if (again && (v.live.phase === 'round' || v.live.phase === 'floor')) { lastEsc = 0; act(ACTIONS.stop, {}, 'Stopped.'); return; }
     if (v.live.phase === 'round' && !v.live.ownerHand) act(ACTIONS.hand, {});
   };
 
@@ -177,6 +176,24 @@ export function meetingPane(host, opts) {
     else if (M.state === 'interrupted') fill(stateHost, h('div', { class: 'alertbox mtg-banner', role: 'status' }, h('span', { class: 'body-s' }, label + ' · interrupted' + (M.reason ? ': ' + M.reason : '') + '.'), Button('Resume', { variant: 'primary', size: 'sm', onClick: () => act(ACTIONS.resume, {}) })));
     else fill(stateHost, h('p', { class: 'caption muted mtg-kind' }, label));
   }
+  /* how hard they think (Light / Normal / Deep, Max only on purpose) and on which model (each person's usual, or one for
+     everyone): the owner's, in plain words; hand checks always run Light */
+  function thinkControls(T) {
+    if (!T) return [];
+    const lv = h('select', { class: 'select mtg-think', id: 'mtg-think', 'data-act': 'think', 'aria-label': 'How hard they think: every turn uses this, whatever level their own work uses; hand checks stay Light' },
+      T.levels.map(x => h('option', { value: x.id, selected: x.id === T.level }, 'How hard they think: ' + x.label + (x.deliberate ? ' (costs the most)' : ''))));
+    lv.addEventListener('change', () => {
+      const id = lv.value;
+      if (id === 'max' && !window.confirm('Max thinking costs the most, on every turn. Use it for this meeting?')) { lv.value = T.level; return; }
+      act(ACTIONS.think, id === 'max' ? { level: id, sure: true } : { level: id });
+    });
+    const pinV = T.pin ? T.pin.provider + '/' + T.pin.model : '';
+    const md = h('select', { class: 'select mtg-pin', id: 'mtg-pin', 'data-act': 'pin', 'aria-label': 'Which model: each person\'s usual, or one for everyone (someone who cannot use it right now sits the turn out)' },
+      h('option', { value: '', selected: !pinV }, 'Model: each person\'s usual'),
+      (T.choices || []).map(c => h('option', { value: c.provider + '/' + c.model, selected: pinV === c.provider + '/' + c.model }, 'Model: ' + c.label + ' for everyone')));
+    md.addEventListener('change', () => act(ACTIONS.think, { pin: md.value || 'usual' }));
+    return [lv, md];
+  }
   const ordinal = n => ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth'][n - 1] || 'number ' + n;
 
   /* ---------- the controls and the speaking-now line (live) ---------- */
@@ -187,9 +204,9 @@ export function meetingPane(host, opts) {
     const items = [], more = [];
     items.push(b('Round', 'round', { variant: run ? 'secondary' : 'primary', disabled: run || !(v.seats || []).length, aria: 'An open round: they answer each other, with no new message from you', onClick: () => act(ACTIONS.round, {}) }));
     if (L.phase === 'floor') items.push(b('Continue', 'continue', { variant: 'primary', aria: 'Let them carry on', onClick: () => act(ACTIONS.continue, {}) }));
-    else if (run) items.push(b(L.ownerHand ? 'Hand raised' : 'Raise hand', 'hand', { disabled: L.ownerHand || L.phase === 'stopping', aria: 'Take the floor after the current speaker (Esc; Esc again stops the turn)', onClick: () => act(ACTIONS.hand, {}) }));
+    else if (run) items.push(b(L.ownerHand ? 'Hand raised' : 'Raise hand', 'hand', { disabled: L.ownerHand || L.phase === 'stopping', aria: 'Take the floor after the current speaker (Esc)', onClick: () => act(ACTIONS.hand, {}) }));
     if (run && L.waitNext) items.unshift(b(L.next && L.next[0] ? 'Next: ' + nm(L.next[0].name) : 'Next', 'next', { variant: 'primary', aria: 'You have read it: let the next person speak', onClick: () => act(ACTIONS.next, {}) }));
-    if (run) items.push(b('Stop', 'stop', { aria: 'Stop now: the turn in flight is cancelled', onClick: () => act(ACTIONS.stop, {}, 'Stopped.') }));
+    if (run) items.push(b(L.phase === 'stopping' ? 'Stopping…' : 'Stop after this turn', 'stop', { disabled: L.phase === 'stopping', aria: 'Stop after this turn: the current speaker finishes, nothing after it starts', onClick: () => act(ACTIONS.stop, {}) }));
     const isOpen = M.state === 'open';
     if (M.observer) items.push(b('Take part', 'take-part', { aria: 'Take part again: the meeting waits for you after each round', onClick: () => act(ACTIONS.observe, { on: false }) }));
     else {
@@ -199,6 +216,7 @@ export function meetingPane(host, opts) {
         minus, h('span', { class: 'caption mtg-rounds', 'aria-label': M.observeRounds + ' rounds' }, M.observeRounds + ' rounds'), plus));
     }
     // under More
+    more.push(...thinkControls(M.think));
     more.push(b(M.talkOnly ? 'Tools: off (talk only)' : 'Tools: on', 'talk-only', { variant: 'ghost', aria: M.talkOnly ? 'Talk only: nobody has tools. Switch tools back on, so they can check what they say' : 'Tools are on: they can read and check what they say. Switch to talk only', onClick: () => act(ACTIONS.talkOnly, { on: !M.talkOnly }) }));
     more[0].setAttribute('aria-pressed', String(!M.talkOnly));
     if (run && L.phase !== 'floor' && !L.pausedFor) more.push(L.paused ? b('Carry on', 'unpause', { variant: 'primary', aria: 'Carry on: the next turn may start', onClick: () => act(ACTIONS.hold, { on: false }) })
@@ -213,13 +231,13 @@ export function meetingPane(host, opts) {
     const lead = (v.seats || []).find(s => s.leader);
     subEl.textContent = [lead ? nm(lead.name) + ' leads' : 'No leader', M.observer ? 'you are observing (up to ' + M.observeRounds + ' rounds at a time)' : null, M.toolsOn ? 'tools on' : 'talk only', M.speed && M.speed !== 'instant' ? 'pace: ' + ({ manual: 'you press Next', fast: 'fast', normal: 'normal', slow: 'slow' }[M.speed] || M.speed) : null].filter(Boolean).join(' · ');
     drawState();
-    costEl.textContent = M.costLine || ('This meeting so far: ' + M.cost.turns + ' turn' + (M.cost.turns === 1 ? '' : 's'));
+    costEl.textContent = [M.costLine || ('This meeting so far: ' + M.cost.turns + ' turn' + (M.cost.turns === 1 ? '' : 's')), M.estimateLine || ''].filter(Boolean).join(' · ');
   }
   function drawLive() {
     if (!v) return;
     const L = v.live; const parts = [];
     if (L.phase === 'floor') parts.push(h('strong', {}, 'Your turn: you have the floor.'), L.floorWhy ? ' ' + L.floorWhy + '.' : '', ' Write to everyone, or press Continue to let them carry on.');
-    else if (L.phase === 'stopping') parts.push('Stopping the round…');
+    else if (L.phase === 'stopping') parts.push(L.stoppingAfter ? 'Stopping after ' + nm(L.stoppingAfter) + ' finishes this turn' + (L.closing ? ', then the meeting closes' : '') + '…' : 'Stopping the round…');
     else if (L.phase === 'round') {
       if (L.speaking) parts.push(h('span', { class: 'pulse', 'aria-hidden': 'true' }), ' ', h('strong', {}, 'Speaking now: ' + nm(L.speaking.name)), L.speaking.kind === 'ask' && L.speaking.from ? ' (answering ' + nm(nameOfId(L.speaking.from)) + ')' : L.speaking.kind === 'hand' ? ' (has the floor)' : '');
       else if (L.checking) parts.push(L.checking.kind === 'hands' ? 'Asking ' + L.checking.names.map(nm).join(', ') + ' whether they want to come in…' : nm(L.checking.names[0]) + ' is deciding on the raised hands…');

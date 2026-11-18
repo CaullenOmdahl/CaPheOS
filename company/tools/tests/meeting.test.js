@@ -432,14 +432,19 @@ test('Raise hand, Continue, Stop round, a message during a round', async () => {
   rel2(); await idle(M);
   const after = said(M).slice(-4);
   assert.deepStrictEqual(after[0], 'owner: Actually, one more thing.', 'taken after the current speaker: ' + said(M).join(' | '));
-  // Stop round stops now
+  // Stop = stop after this turn: the speaker finishes (never cancelled), nobody after
   let rel3; const hold3 = new Promise(r => { rel3 = r; });
-  runner.script({ dave: { text: 'Never finished.', hold: hold3 } });
+  runner.script({ dave: { text: 'Finished anyway.', hold: hold3 } });
   const n = runner.turns().length;
   await M.say({ text: 'Stop test.' });
   await new Promise(r => setTimeout(r, 30));
-  M.stop(); rel3(); await idle(M);
+  const sv = await M.stop();
+  assert.match(sv.note, /^Stopping after Dave finishes this turn/, sv.note);
+  assert.strictEqual(sv.live.phase, 'stopping'); assert.strictEqual(sv.live.stoppingAfter, 'Dave');
+  rel3(); await idle(M);
+  assert.ok(!runner.pending.get(runner.turns()[n].runId).cancelled, 'the turn in flight is not cancelled');
   assert.strictEqual(runner.turns().length, n + 1, 'nobody after the stopped speaker');
+  assert.ok(said(M).includes('dave: Finished anyway.'), 'what they said is kept');
   assert.ok(kinds(M, 'note').some(e => e.text === 'Round stopped.'));
 });
 
@@ -824,4 +829,193 @@ test('seats vs roster: a seat with no usable model sits the turn out with one pl
   await M.say({ text: 'Second.' }); await idle(M);
   const last = runner.turns().slice(-2);
   assert.deepStrictEqual(last.map(c => c.seat + '/' + c.model.provider), ['dave/deepseek', 'sharon/deepseek'], 'the model is read again for every turn');
+});
+
+
+/* ---------- how hard they think, one model for everyone (spec: table follow-ups §1) ---------- */
+test('thinking level: Normal on every turn by default, whatever the seat\'s own work uses; hand checks, the leader\'s call, Catch me up and Explain run Light; Max only on purpose', async () => {
+  const { M, runner } = fresh({ seats: ['dave', 'sharon', 'phil', 'rachel'], leader: 'dave', models: { sharon: { provider: 'claude-cli', model: 'claude-sonnet-5-5', effort: 'max' } } });
+  runner.script({ dave: ['ASK: Sharon — the budget?'], sharon: ['Fine.'], 'phil:hand': ['HAND — risk'], 'dave:call': ['LATER: Phil'], phil: ['Risk point.'] });
+  await M.say({ text: 'Go.' }); await idle(M);
+  const turns = runner.turns();
+  assert.ok(turns.length >= 3 && turns.every(c => c.model.effort === 'medium'), 'every turn at Normal (medium): ' + turns.map(c => c.seat + '@' + c.model.effort));
+  assert.ok(turns.find(c => c.seat === 'sharon').model.effort === 'medium', 'not the seat\'s own max');
+  const checks = runner.calls.filter(c => c.purpose === 'hand' || c.purpose === 'call');
+  assert.ok(checks.length >= 2 && checks.every(c => c.model.effort === 'low'), 'hand checks and the leader\'s call at Light: ' + checks.map(c => c.purpose + '@' + c.model.effort));
+  let v = await M.view();
+  assert.deepStrictEqual([v.meeting.think.level, v.meeting.think.label, v.meeting.think.pin], ['normal', 'Normal', null]);
+  assert.deepStrictEqual(v.meeting.think.levels.map(x => x.label), ['Light', 'Normal', 'Deep', 'Max']);
+  // Deep: high on the next turns, hand checks still Light
+  v = M.setThink({ level: 'deep' }); v = await v;
+  assert.match(v.note, /Deep thinking, each on their usual model\. Hand checks stay Light/);
+  assert.ok(kinds(M, 'think').some(e => e.level === 'deep'), 'recorded (minutes), not sent to the seats');
+  runner.script({ dave: 'Deep.' });
+  await M.say({ text: '@dave again' }); await idle(M);
+  assert.strictEqual(runner.turns().pop().model.effort, 'high');
+  assert.ok(!/set how hard they think/.test(runner.turns().pop().all), 'the setting is not meeting content');
+  await M.catchUp({ since: 0 });
+  assert.strictEqual(runner.calls.filter(c => c.purpose === 'catchup').pop().model.effort, 'low', 'Catch me up runs Light');
+  // Max only when picked deliberately
+  await assert.rejects(async () => M.setThink({ level: 'max' }), /pick it deliberately/);
+  await assert.rejects(async () => M.setThink({ level: 'huge' }), /light, normal, deep or max/);
+  await M.setThink({ level: 'max', sure: true });
+  assert.strictEqual((await M.view()).meeting.think.level, 'max');
+  await M.setThink({ level: 'normal' });
+  // kept with the seats (seats.json), owner-only
+  assert.strictEqual(JSON.parse(R('company/state/meetings/seats.json')).think.level, 'normal');
+  const prov = require(path.join(REPO, 'company/tools/provenance.js'));
+  prov.pinUnderStation(true);
+  try { await assert.rejects(async () => M.setThink({ level: 'light' }), /the meeting is the owner's/, 'an agent cannot change it'); } finally { prov.pinUnderStation(null); }
+});
+
+test('the effort is fitted to what the model offers, never above the level unless it offers nothing lower', async () => {
+  assert.strictEqual(meetingLib.fitEffort('medium', ['none', 'low', 'high', 'max']), 'low');
+  assert.strictEqual(meetingLib.fitEffort('medium', ['low', 'medium', 'high']), 'medium');
+  assert.strictEqual(meetingLib.fitEffort('low', ['high', 'max']), 'high');
+  assert.strictEqual(meetingLib.fitEffort('high', null), 'high');
+  const { M, runner } = fresh({ seats: ['sharon'], leader: null, models: { sharon: { provider: 'deepseek', model: 'deepseek-flash' } }, deps: { effortsFor: async (p, m) => p === 'deepseek' && m === 'deepseek-flash' ? ['none', 'low', 'high', 'max'] : null } });
+  runner.script({ sharon: 'S.' });
+  await M.say({ text: 'Go.' }); await idle(M);
+  assert.strictEqual(runner.turns()[0].model.effort, 'low', 'Normal on a model with no medium: low, not high');
+});
+
+test('one model for everyone: still behind the company list, the override list, the $0 cap and admit; closed = sits out with a plain line, never another model', async () => {
+  const OAF = path.join(T, 'company/state/override-allow.json');
+  const writeOA = agents => { fs.mkdirSync(path.dirname(OAF), { recursive: true }); fs.writeFileSync(OAF, JSON.stringify({ v: 1, at: Date.now(), by: 'dispatcher', agents })); };
+  writeOA({ dave: [{ provider: 'deepseek', model: 'deepseek-flash' }], sharon: [] });
+  const holds = {};
+  const { M, runner } = fresh({ seats: ['dave', 'sharon'], leader: 'dave', deps: { modelHold: id => holds[id] || null } });
+  await assert.rejects(async () => M.setThink({ pin: 'claude-cli/claude-opus-5-5' }), /not on the company's list/);
+  await assert.rejects(async () => M.setThink({ pin: 'nonsense' }), /provider\/model/);
+  const v = await M.setThink({ pin: { provider: 'deepseek', model: 'deepseek-flash' } });
+  assert.match(v.note, /everyone on DeepSeek \(deepseek-flash\)/);
+  assert.deepStrictEqual(v.meeting.think.choices.map(c => c.provider + '/' + c.model), ['claude-cli/claude-sonnet-5-5', 'deepseek/deepseek-flash'], 'the choices: the company\'s list');
+  assert.ok(v.seats.find(x => x.id === 'dave').model.pinned && v.seats.find(x => x.id === 'sharon').modelError, 'the strip shows who can use it');
+  runner.script({ dave: 'On DeepSeek.', sharon: 'never' });
+  await M.say({ text: 'Go.' }); await idle(M);
+  assert.deepStrictEqual(runner.turns().map(c => c.seat + '/' + c.model.provider + '/' + c.model.model), ['dave/deepseek/deepseek-flash'], 'Sharon is not moved to any other model');
+  assert.ok(kinds(M, 'note').some(e => /^Sharon sits this one out: the model picked for this meeting \(DeepSeek \(deepseek-flash\)\) is not open for them right now/.test(e.text)), kinds(M, 'note').map(e => e.text).join(' | '));
+  // admit runs on the picked provider
+  const admits = fs.readFileSync(path.join(T, 'company/state/admit-log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(r => r.kind === 'meeting-turn');
+  assert.ok(admits.length && admits[admits.length - 1].provider === 'deepseek', 'admit() saw the picked provider');
+  // the $0 cap on a metered model holds it
+  holds.dave = 'the daily cap is $0';
+  runner.script({ dave: 'never' });
+  await M.say({ text: 'Again.' }); await idle(M);
+  assert.ok(kinds(M, 'note').some(e => /^Dave sits this one out: .*held: the daily cap is \$0/.test(e.text)));
+  delete holds.dave;
+  // a stale list closes it for everyone
+  fs.writeFileSync(OAF, JSON.stringify({ v: 1, at: Date.now() - 31 * 60e3, agents: { dave: [{ provider: 'deepseek', model: 'deepseek-flash' }] } }));
+  await M.say({ text: 'Stale?' }); await idle(M);
+  assert.ok(kinds(M, 'note').some(e => /^Dave sits this one out: .*out of date/.test(e.text)));
+  // a refused turn on the picked model is not retried on another model
+  writeOA({ dave: [{ provider: 'claude-cli', model: 'claude-sonnet-5-5' }] });
+  await M.setThink({ pin: 'claude-cli/claude-sonnet-5-5' });
+  const before = runner.turns().length;
+  runner.script({ dave: { text: 'x', refuse: true } });
+  await M.say({ text: '@dave refused?' }); await idle(M);
+  assert.strictEqual(runner.turns().length, before + 1, 'one attempt only');
+  runner.queues.dave = [];
+  // back to each person's usual
+  await M.setThink({ pin: 'usual' });
+  assert.strictEqual((await M.view()).meeting.think.pin, null);
+  fs.rmSync(OAF, { force: true });
+});
+
+test('the cost line: a running total for the meeting and an estimate per round at the current setting', async () => {
+  W('company/work/finance/dispatch-budget.json', { dailyUsd: 5, unmeteredProviders: ['claude-cli'] });
+  const { M, runner } = fresh({ seats: ['dave', 'sharon'], leader: 'dave', models: { dave: { provider: 'deepseek', model: 'deepseek-flash' }, sharon: { provider: 'deepseek', model: 'deepseek-flash' } } });
+  let v = await M.view();
+  assert.match(v.meeting.estimateLine, /^Next round at Normal: about 2 turns · DeepSeek not known yet/, v.meeting.estimateLine);
+  runner.script({ dave: 'D.', sharon: 'S.' });
+  await M.say({ text: 'Go.' }); await idle(M);
+  v = await M.view();
+  assert.match(v.meeting.costLine, /^This meeting so far: 2 turns · DeepSeek under \$0\.01/);
+  assert.match(v.meeting.estimateLine, /^Next round at Normal: about 2 turns · DeepSeek about under \$0\.01/, v.meeting.estimateLine);
+  // the estimate scales with the level: Max costs about 4x Normal here (0.002 a turn -> 0.008 x 2)
+  await M.setThink({ level: 'max', sure: true });
+  v = await M.view();
+  assert.match(v.meeting.estimateLine, /^Next round at Max: about 2 turns · DeepSeek about \$0\.02/, v.meeting.estimateLine);
+  fs.unlinkSync(path.join(T, 'company/work/finance/dispatch-budget.json'));
+});
+
+/* ---------- never hard-stop a turn (spec: table follow-ups §2) ---------- */
+test('Stop is "after this turn": hand checks are cancelled (not turns), the speaker is not; a message written meanwhile starts after it', async () => {
+  const { M, runner } = fresh({ seats: ['dave', 'sharon', 'phil'], leader: null });
+  let relHand; const handHold = new Promise(r => { relHand = r; });
+  runner.script({ dave: ['ASK: Sharon — q?'], sharon: ['Answer.'], 'phil:hand': [{ text: 'HAND — x', hold: handHold }] });
+  await M.say({ text: 'Go.' });
+  for (let i = 0; i < 200 && !runner.calls.some(c => c.purpose === 'hand'); i++) await new Promise(r => setTimeout(r, 5));
+  M.stop();
+  const hc = runner.calls.find(c => c.purpose === 'hand');
+  assert.ok(runner.pending.get(hc.runId).cancelled, 'the hand check is cancelled');
+  relHand(); await idle(M);
+  assert.ok(!kinds(M, 'hand').length && !runner.turns().some(c => c.seat === 'phil'), 'no hand, no more turns');
+  // a message written while it stops goes to the table once the speaker finishes
+  let rel; const hold = new Promise(r => { rel = r; });
+  runner.script({ dave: [{ text: 'Long one.', hold }, 'On the new point.'], sharon: ['S.'], phil: ['P.'] });
+  await M.say({ text: 'Round two.' }); await new Promise(r => setTimeout(r, 30));
+  await M.stop();
+  const r2 = await M.say({ text: 'New point.' });
+  assert.match(r2.note, /once the current speaker finishes/);
+  rel(); await idle(M);
+  const s = said(M);
+  assert.deepStrictEqual(s.slice(s.indexOf('dave: Long one.')), ['dave: Long one.', 'owner: New point.', 'dave: On the new point.', 'sharon: S.', 'phil: P.'], s.join(' | '));
+});
+
+test('leaving is never mid-turn: the owner\'s × on the speaker takes effect after the turn, their reply kept; Close waits for the speaker', async () => {
+  const { M, runner } = fresh({ seats: ['dave', 'sharon', 'phil'], leader: 'dave' });
+  let rel; const hold = new Promise(r => { rel = r; });
+  runner.script({ dave: 'D.', sharon: { text: 'Sharon finishes.', hold }, phil: 'P.' });
+  await M.say({ text: 'Go.' });
+  for (let i = 0; i < 200 && !((await M.view()).live.speaking || {}).runId || (await M.view()).live.speaking.id !== 'sharon'; i++) await new Promise(r => setTimeout(r, 5));
+  M.seatsChange({ remove: ['sharon'] });
+  assert.ok((await M.view()).seats.some(s => s.id === 'sharon'), 'still seated while speaking');
+  assert.ok(kinds(M, 'note').some(e => /Sharon leaves the meeting once Sharon finishes this turn/.test(e.text)));
+  assert.ok(!runner.pending.get(runner.turns().find(c => c.seat === 'sharon').runId).cancelled);
+  rel(); await idle(M);
+  const log = M._state().LOG.filter(e => e.who === 'sharon').map(e => e.kind);
+  assert.deepStrictEqual(log.slice(-2), ['say', 'leave'], 'the reply, then the leave');
+  assert.ok(!(await M.view()).seats.some(s => s.id === 'sharon') && !JSON.parse(R('company/state/meetings/seats.json')).seats.includes('sharon'), 'then removed from the standing seats');
+  assert.ok(said(M).includes('phil: P.'), 'the round carries on');
+  // Close during a long turn: it answers at once and closes once the speaker is done
+  let rel2; const hold2 = new Promise(r => { rel2 = r; });
+  runner.script({ dave: { text: 'Last words.', hold: hold2 } });
+  await M.say({ text: 'Closing soon.' }); await new Promise(r => setTimeout(r, 30));
+  const cl = await M.close({ why: 'done' });
+  assert.ok(cl.closing && /closes once Dave finishes this turn/.test(cl.note), cl.note);
+  assert.strictEqual((await M.view()).meeting.state, 'open');
+  rel2(); await idle(M);
+  assert.strictEqual((await M.view()).meeting.state, 'closed');
+  assert.ok(said(M).includes('dave: Last words.'));
+}).timeout = 30000;
+
+test('no turn timeout: a soft nudge after a while, and only a run stalled with no output is ended (the safety ceiling); an approval wait is not a stall', async () => {
+  const steers = [];
+  const { M, runner } = fresh({ seats: ['dave', 'sharon'], leader: 'dave', deps: { nudgeMs: 40, stallMs: 400, watchTickMs: 10 } });
+  runner.steer = (runId, text) => { steers.push({ runId, text }); };
+  // a long turn that keeps writing: nudged once, never cut
+  let rel; const hold = new Promise(r => { rel = r; });
+  const w0 = runner.wait;
+  runner.wait = async (runId, onEvent) => { const p = runner.pending.get(runId); if (p.ticks) { const t = setInterval(() => onEvent && onEvent({ name: 'agent.token', payload: { delta: '.' } }), 20); try { return await w0(runId, onEvent); } finally { clearInterval(t); } } return w0(runId, onEvent); };
+  runner.script({ dave: { text: 'A long but live answer.', hold } });
+  const st = runner.start; runner.start = async o => { const r = await st(o); if (o.seat === 'dave') runner.pending.get(r.runId).ticks = true; return r; };
+  await M.say({ text: '@dave go' });
+  await new Promise(r => setTimeout(r, 600));
+  assert.strictEqual(steers.length, 1, 'one nudge');
+  assert.match(steers[0].text, /Finish your point now/);
+  assert.ok(!runner.pending.get(runner.turns()[0].runId).cancelled, 'a live run is never cut, even past the ceiling');
+  assert.ok(kinds(M, 'note').some(e => /Dave has been on this turn for .* the console asked Dave to wrap up\. Nobody is cut off/.test(e.text)));
+  rel(); await idle(M);
+  assert.ok(said(M).includes('dave: A long but live answer.'));
+  // a run with no output at all past the ceiling is ended, with one plain line
+  runner.start = st;
+  let rel2; const hold2 = new Promise(r => { rel2 = r; });
+  runner.script({ sharon: { text: 'never', hold: hold2 } });
+  const w1 = runner.wait; runner.wait = async (runId, onEvent) => { const p = runner.pending.get(runId); const iv = setInterval(() => { if (p.cancelled) { clearInterval(iv); rel2(); } }, 5); try { return await w1(runId, onEvent); } finally { clearInterval(iv); } };
+  await M.say({ text: '@sharon go' });
+  await idle(M);
+  assert.ok(runner.pending.get(runner.turns().pop().runId).cancelled, 'the stalled run is ended');
+  assert.ok(kinds(M, 'note').some(e => /^Sharon's turn stalled: nothing came from it for/.test(e.text)));
+  assert.ok(!kinds(M, 'note').some(e => /Sharon could not answer/.test(e.text)), 'one line, not two');
 });

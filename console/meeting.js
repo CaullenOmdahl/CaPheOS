@@ -16,6 +16,14 @@
  * the seat's next chain entry (lib/refusal.js). A seat in the middle of a routine run still speaks, talk only for that
  * turn. A halt stops the meeting.
  *
+ * How hard they think and on which model are the owner's (seats.json think: {level, pin}; POST <routePrefix>/think): one
+ * level for every turn (Normal by default; hand checks, the leader's call, Catch me up and Explain Light; Max only on
+ * purpose), each person's usual model or one for everyone (a picked model still passes the company's list, the station's
+ * override list, the $0 cap and admit; closed = that person sits out, never another model). The cost line carries an
+ * estimate for the next round at that setting. No turn is ever cut off: Stop is "after this turn", a leave waits for the
+ * speaker's turn to end, a long turn gets one soft nudge (a steer note) and only a run with no output for an hour is
+ * ended; only a company hard halt aborts mid-turn.
+ *
  * State (company/state/meetings/ by default, mode 600, folders 700): seats.json (standing seats, leader, pace, talk
  * only, frames, observe rounds), current.json ({id}), m/<id>.json (one per meeting: guests, dismissals, observe, cost,
  * the round in progress), events/<id>.jsonl (each meeting's events, read from its end with lib/bounded.js, rolled by
@@ -24,13 +32,17 @@
  *
  *   const M = require('./meeting.js')(deps); M.mount(route); M.start();
  *   deps: { co, owner(), emit(topic), stationPost, modelFor(seat), runs (chat-runs), run(tool, args), seatBusy(seat),
- *           seatJobs(seat), seatVoice(seat) -> text added after the rules (per-seat point of view; default none) }
+ *           seatJobs(seat), seatVoice(seat) -> text added after the rules (per-seat point of view; default none),
+ *           effortsFor(provider, model) -> the efforts the model offers | null, modelHold(seat, model) -> a hold message | null,
+ *           pinCheck(seat, pair) -> null | why (tests; default lib/override-allow.js openFor), onFinalize({state, id, LOG}),
+ *           nudgeMs, stallMs, watchTickMs (tests) }
  *   one engine, other rooms (a colleague brought into a live chat): deps may also carry
  *     stateDir (string | () => string), topic (emit topic, default 'meeting'), streamPrefix (default 'meeting-'),
  *     minutesPrefix (default 'meeting-'), routePrefix (default '/api/meeting'), door (admit door, default 'meeting'),
  *     profile { kind, noun, preface(owner) -> text, fixedLeader, standing: [ids] (fixed: the owner's picks join as
  *               guests), wrapHost, maxTurnsPerRound, maxGuests, maxInvites, noRegister, speed, minutesHead(date) }
- *   tests pass runner: { start(o) -> {runId}|{error}, wait(runId, onEvent) -> result, cancel(runId) } instead of the station
+ *   tests pass runner: { start(o) -> {runId}|{error}, wait(runId, onEvent) -> result, cancel(runId), steer?(runId, text) }
+ *   instead of the station
  */
 'use strict';
 const fs = require('fs');
@@ -42,6 +54,30 @@ const EVERYONE = new Set(['all', 'everyone', 'table']);
 const PLACED = ['cabinet', 'workbench', 'notebook', 'dish'].map(t => ({ objectType: t }));
 const HISTORY_MAX_MSGS = 120, HISTORY_MAX_BYTES = 1 << 20;
 const LOG_READ_BYTES = 16 << 20;   // the end of log.jsonl read on start (lib/bounded.js); older rows are in the minutes
+/* how hard they think (the owner's setting, Meeting › More and in a live chat): one level for every turn, whatever level
+   the seat's own work uses; hand checks, the leader's call on hands, Catch me up and Explain always run Light. Max only
+   when the owner picks it deliberately (sure: true). The effort sent is the closest one the model offers at or below the
+   level (never above it unless the model offers nothing lower). */
+const THINK = { light: { effort: 'low', label: 'Light' }, normal: { effort: 'medium', label: 'Normal' }, deep: { effort: 'high', label: 'Deep' }, max: { effort: 'max', label: 'Max' } };
+const THINK_DEFAULT = 'normal';
+const LIGHT_PURPOSES = new Set(['hand', 'call', 'catchup', 'explain']);
+const EFFORT_RANK = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORT_WEIGHT = { none: 0.3, minimal: 0.3, low: 0.5, medium: 1, high: 2, xhigh: 3, max: 4 };   // the estimate's rough scale between levels
+/* a turn is never cut off: after NUDGE_MS the speaker is asked (a steer note) to finish its point, and only a run with no
+   output at all for STALL_MS (a stalled run, the safety ceiling) is ended. Only a company hard halt aborts mid-turn. */
+const NUDGE_MS = 10 * 60e3, STALL_MS = 60 * 60e3, WATCH_TICK_MS = 5000;
+function fitEffort(want, supported) {
+  const rank = e => EFFORT_RANK.indexOf(e);
+  const ok = (Array.isArray(supported) ? supported : []).map(String).filter(e => rank(e) >= 0);
+  if (!ok.length || ok.includes(want)) return want;
+  const below = ok.filter(e => rank(e) <= rank(want)).sort((a, b) => rank(b) - rank(a));
+  return below.length ? below[0] : ok.sort((a, b) => rank(a) - rank(b))[0];
+}
+function parsePin(v) {
+  if (v && typeof v === 'object' && typeof v.provider === 'string' && typeof v.model === 'string' && v.provider && v.model) return { provider: v.provider.slice(0, 40), model: v.model.slice(0, 120) };
+  const m = /^([a-z0-9_-]{1,40})\/(\S{1,120})$/.exec(String(v || '').trim());
+  return m ? { provider: m[1], model: m[2] } : null;
+}
 
 /* ---------------- the protocol: pure functions (unit-tested) ---------------- */
 const DIRECTIVE = /^[ \t>*_-]*(INVITE|DISMISS|ASK|CALL|LATER|LOWER|END|RULING|ACTION|QUESTION|KILL)\b[*_]*\s*:\s*(.+?)\s*$/gim;
@@ -92,7 +128,7 @@ function fitHistory(msgs) {
 function modelLabel(m) {
   if (!m) return '';
   const p = m.provider, id = String(m.model || '');
-  if (p === 'claude-cli' || p === 'anthropic') return 'Claude ' + (/haiku/i.test(id) ? 'Haiku' : /sonnet/i.test(id) ? 'Sonnet' : /opus/i.test(id) ? 'Opus' : id);
+  if (p === 'claude-cli' || p === 'anthropic') return 'Claude ' + (/haiku/i.test(id) ? 'Haiku' : /sonnet/i.test(id) ? 'Sonnet' : /opus/i.test(id) ? 'Opus' : /fable/i.test(id) ? 'Fable' : id);
   if (p === 'custom' || p === 'minimax') return 'MiniMax (' + id + ')';
   if (p === 'deepseek') return 'DeepSeek (' + id + ')';
   return p + ' ' + id;
@@ -168,7 +204,8 @@ module.exports = function meeting(deps) {
     std = { seats: Array.isArray(P.standing) ? defaultSeats() : Array.isArray(c.seats) ? c.seats.filter(x => typeof x === 'string') : defaultSeats(),
       leader: P.fixedLeader ? P.fixedLeader : 'leader' in c ? (typeof c.leader === 'string' ? c.leader : null) : ceoId(),
       speed, speedMigrated: true, talkOnly: c.talkOnly === true, frames: c.frames === true,
-      observeRounds: Number.isInteger(c.observeRounds) && c.observeRounds > 0 ? Math.min(c.observeRounds, MAX_OBSERVE) : OBSERVE_ROUNDS };
+      observeRounds: Number.isInteger(c.observeRounds) && c.observeRounds > 0 ? Math.min(c.observeRounds, MAX_OBSERVE) : OBSERVE_ROUNDS,
+      think: { level: c.think && THINK[c.think.level] ? c.think.level : THINK_DEFAULT, pin: c.think ? parsePin(c.think.pin) : null } };
     if (migrate) { try { saveStd(); } catch (_) {} }
     return std;
   }
@@ -255,7 +292,8 @@ module.exports = function meeting(deps) {
   const resumeText = e => owner() + ' resumed the meeting';
   const registerText = e => nameOf(e.who) + ' put in the register (' + ({ actions: 'action', questions: 'open question', kills: 'kill condition' }[e.section] || e.section) + ' ' + e.n + '): ' + e.text + (e.plain ? ' — in plain words: ' + e.plain : '');
   const consentText = e => e.op === 'asked' ? nameOf(e.who) + ' asked to use ' + (e.tool || 'a tool') + '; the meeting is paused until you answer it on Today' : 'Approval for ' + nameOf(e.who) + ' (' + (e.tool || 'a tool') + '): ' + (e.decision === 'once' ? 'allowed' : e.decision === 'deny' ? 'declined' : e.decision) + '; the meeting carries on';
-  const TEXTS = { join: joinText, leave: leaveText, lead: leadText, ask: askText, hand: handText, call: callText, lower: lowerText, end: endText, ruling: rulingText, observe: observeText, agenda: agendaText, parse: parseText, close: closeText, resume: resumeText, consent: consentText, register: registerText, note: e => e.text };
+  const thinkText = e => owner() + ' set how hard they think to ' + ((THINK[e.level] || {}).label || e.level) + (e.pin ? ', with one model for everyone: ' + modelLabel(e.pin) : ', each on their usual model');
+  const TEXTS = { think: thinkText, join: joinText, leave: leaveText, lead: leadText, ask: askText, hand: handText, call: callText, lower: lowerText, end: endText, ruling: rulingText, observe: observeText, agenda: agendaText, parse: parseText, close: closeText, resume: resumeText, consent: consentText, register: registerText, note: e => e.text };
   const minutesRel = d => 'company/work/meetings/' + MIN_PREFIX + (d || day()) + '.md';
   const minutesFile = d => path.join(MINUTES_DIR(), MIN_PREFIX + (d || day()) + '.md');
   function minutes(text, kind) {
@@ -395,7 +433,7 @@ module.exports = function meeting(deps) {
       }
       else if (e.kind === 'say') buf.push(nameOf(e.who) + (e.who === 'owner' ? ' (owner)' : '') + (e.to ? ' (answering ' + nameOf(e.to) + ')' : '') + (e.interject ? ' (interjecting)' : '') + (e.explains ? ' (explaining for the room)' : '') + ': ' + e.text);
       else if (e.kind === 'open') buf.push('[The ' + NOUN + ' opened. At the table: ' + e.text + '.]');
-      else if (e.kind !== 'ask' && e.kind !== 'pass' && e.kind !== 'nudge' && TEXTS[e.kind]) buf.push('[' + TEXTS[e.kind](e) + '.]');
+      else if (e.kind !== 'ask' && e.kind !== 'pass' && e.kind !== 'nudge' && e.kind !== 'think' && TEXTS[e.kind]) buf.push('[' + TEXTS[e.kind](e) + '.]');
     }
     buf.push(lastLine); flush();
     const fit = fitHistory(msgs); const out = fit.messages;
@@ -442,7 +480,8 @@ module.exports = function meeting(deps) {
 
   /* ---------- runs: the station (default) or a test's runner ---------- */
   const RUNS = deps.runs;
-  const active = new Set();   // runIds in flight (the turn and any hand checks), for Stop and halt
+  const active = new Set();   // runIds in flight (the turn and any hand checks), for a hard halt
+  const checks = new Set();   // the hand checks and the leader's call in flight: not turns, so Stop cancels them
   const stationRunner = {
     start(o) {
       return new Promise(resolve => {
@@ -491,18 +530,62 @@ module.exports = function meeting(deps) {
           else if (l.name === 'agent.run.error') errMsg = p.message || errMsg;
           else if (l.name === 'console.final') final = p;
           else if (l.name === 'console.end') setImmediate(end);
-          if (onEvent && (l.name === 'permission.prompt' || l.name === 'permission.response' || l.name === 'agent.tool_call' || l.name === 'agent.tool_result')) { try { onEvent({ name: l.name, payload: p }); } catch (_) {} }
+          // every line goes to onEvent (the turn's watchdog counts any output as life; runEvent acts on the ones it knows)
+          if (onEvent) { try { onEvent({ name: l.name, payload: p }); } catch (_) {} }
         });
         if (!off) { over = true; resolve({ text: '', usd: 0, refused: false, error: 'the console has no record of this run any more' }); }
       });
     },
     cancel(runId) { return deps.stationPost ? deps.stationPost('cancel', { runId }, 8000) : null; },
+    steer(runId, text) { return deps.stationPost ? deps.stationPost('run/steer', { runId, text }, 8000) : null; },
     consent(runId, promptId, decision) { return deps.stationPost ? deps.stationPost('consent', { runId, promptId, decision }, 8000) : null; },
   };
   const runner = deps.runner || stationRunner;
   async function modelFor(id) {
     try { const m = await deps.modelFor(id); if (m && m.provider && m.model) return m; return { error: nameOf(id) + ' has no AI model to think with' }; }
     catch (e) { return { error: nameOf(id) + ': ' + e.message }; }
+  }
+  /* the model and effort of one run: each person's usual model (the seat's current chain entry), or the one model the owner
+     picked for everyone. A picked model still passes everything the seat's own would: it must be on the company's list
+     (model-policy.json allowed), open for that seat now in the station's override list (company/state/override-allow.json,
+     lib/override-allow.js: the pacer, the subscription stops, refusal blocks, as the dispatcher last saw them), and not held
+     by the $0 cap on a metered model (deps.modelHold); admit() then runs on its provider. When it is not open, that person
+     sits the turn out with a plain line: never a move to another model. The effort is the owner's level (Light for hand
+     checks, the leader's call, Catch me up and Explain), fitted to what the model offers (deps.effortsFor). */
+  const OA = () => require(path.join(LIB, 'override-allow.js'));
+  function pinChoices() {
+    const allowed = (readJ(co.p('company', 'model-policy.json')) || {}).allowed || {}, out = [], seen = new Set();
+    for (const [provider, fam] of Object.entries(allowed)) for (const model of (fam && Array.isArray(fam.models) ? fam.models : [])) {
+      const label = modelLabel({ provider, model }); if (seen.has(label)) continue; seen.add(label);
+      out.push({ provider, model, label });
+    }
+    return out;
+  }
+  const samePair = (a, b) => !!a && !!b && a.provider === b.provider && a.model === b.model;
+  function pinClosed(id, pin) {
+    if (!pinChoices().some(c => samePair(c, pin))) return 'no longer on the company\'s list of models';
+    let why = null;
+    try { why = typeof deps.pinCheck === 'function' ? deps.pinCheck(id, pin) : OA().openFor(id, pin, { root: co.ROOT }); } catch (e) { why = 'not open for them right now'; }
+    if (why) return why;
+    try { if (typeof deps.modelHold === 'function') { const h = deps.modelHold(id, pin); if (h) return 'held: ' + h; } } catch (_) {}
+    return null;
+  }
+  async function effortFor(m, want) {
+    let list = null;
+    if (typeof deps.effortsFor === 'function') { try { list = await deps.effortsFor(m.provider, m.model); } catch (_) {} }
+    return fitEffort(want, list);
+  }
+  const levelFor = purpose => LIGHT_PURPOSES.has(purpose) ? 'light' : std.think.level;
+  async function seatModel(id, purpose) {
+    const level = levelFor(purpose), pin = std.think.pin;
+    let m;
+    if (pin) {
+      const why = pinClosed(id, pin);
+      if (why) return { error: 'the model picked for this ' + NOUN + ' (' + modelLabel(pin) + ') is ' + why, pinned: true };
+      m = { provider: pin.provider, model: pin.model, from: 'the model picked for this ' + NOUN, pinned: true };
+    } else { m = await modelFor(id); if (m.error) return m; m = Object.assign({}, m); }
+    m.level = level; m.effort = await effortFor(m, THINK[level].effort);
+    return m;
   }
   /* every turn, hand check and leader call: admit() first (company/tools/lib/admit.js, kind 'meeting-turn': a zero-token
      permission and routing check, logged; it refuses a turn of a meeting the owner did not open, holds one under a hard
@@ -521,8 +604,28 @@ module.exports = function meeting(deps) {
   }
   async function oneRun(o) {   // start + wait, for the short talk-only checks (no retry: a refused check is a "no")
     const st = await startRun(o); if (st.error) return { error: st.error };
-    active.add(st.runId);
-    try { const r = await runner.wait(st.runId); cost(r, o.model); return r; } finally { active.delete(st.runId); }
+    const check = o.purpose === 'hand' || o.purpose === 'call';
+    active.add(st.runId); if (check) checks.add(st.runId);
+    const wd = watchdog(st.runId, { onStall: () => { Promise.resolve(runner.cancel(st.runId)).catch(() => {}); } });
+    try { const r = await runner.wait(st.runId, () => wd.saw()); cost(r, o.model); return r; } finally { wd.off(); active.delete(st.runId); checks.delete(st.runId); }
+  }
+  /* a run's watchdog: never a time limit on a turn. onNudge once, after NUDGE_MS since the run started (the speaker is
+     asked to finish); onStall only when nothing at all came from the run for STALL_MS (a run waiting on the owner's
+     approval is not stalled). saw() on every line of the run's journal. */
+  const NUDGE = Number(deps.nudgeMs) > 0 ? Number(deps.nudgeMs) : NUDGE_MS;
+  const STALL = Number(deps.stallMs) > 0 ? Number(deps.stallMs) : STALL_MS;
+  const TICK = Number(deps.watchTickMs) > 0 ? Number(deps.watchTickMs) : WATCH_TICK_MS;
+  function watchdog(runId, o) {
+    const started = Number(o.startedAt) || Date.now(); let last = Date.now(), nudged = !!o.nudged, over = false;
+    const t = setInterval(() => {
+      if (over) return;
+      const now = Date.now();
+      if (M.run && M.run.consent && M.run.consent.runId === runId) { last = now; return; }
+      if (!nudged && o.onNudge && now - started >= NUDGE) { nudged = true; try { o.onNudge(); } catch (_) {} }
+      if (now - last >= STALL) { over = true; clearInterval(t); try { o.onStall(); } catch (_) {} }
+    }, Math.min(TICK, NUDGE, STALL));
+    if (t.unref) t.unref();
+    return { saw: () => { last = Date.now(); }, off: () => { over = true; clearInterval(t); } };
   }
   /* cost is information, never a gate (no budget, no estimate): turns, and per provider the dollars of a metered model or
      the share of a subscription's windows since the meeting first used it (lib/subscription-meter.js), else "unknown" */
@@ -533,10 +636,43 @@ module.exports = function meeting(deps) {
     const bp = M.cost.byProvider = M.cost.byProvider || {};
     if (!bp[p]) { let w = null; try { w = METER.windows(p); } catch (_) {} bp[p] = { turns: 0, usd: 0, start: w }; }
     bp[p].turns++; bp[p].usd = Math.round((bp[p].usd + (Number(r && r.usd) || 0)) * 1e6) / 1e6;
+    bp[p].w = Math.round(((Number(bp[p].w) || 0) + (EFFORT_WEIGHT[model && model.effort] || 1)) * 1000) / 1000;   // runs, weighted by level
   }
   function costLine() {
     let l = ''; try { l = METER.line(M.cost.byProvider || {}); } catch (_) {}
     return 'This meeting so far: ' + M.cost.turns + ' turn' + (M.cost.turns === 1 ? '' : 's') + (l ? ' · ' + l : '');
+  }
+  /* the estimate for the next round at the current setting (information, never a gate): one turn for each person seated,
+     at the owner's level, on the model each would use; per provider, from what this meeting's runs cost so far (scaled
+     between levels: EFFORT_WEIGHT), dollars for a metered model or the share of a subscription's 5-hour window (else the
+     week), "not known yet" before that provider's first run here. seatModels: [{provider, effort}] */
+  function estimateLine(seatModels) {
+    const list = (seatModels || []).filter(x => x && x.provider);
+    const lab = THINK[std.think.level].label;
+    if (!list.length) return '';
+    const by = {};
+    for (const x of list) { const b = by[x.provider] = by[x.provider] || { n: 0, w: 0 }; b.n++; b.w += EFFORT_WEIGHT[x.effort] || 1; }
+    const bp = M.cost.byProvider || {};
+    const pct = n => (n < 0.1 ? 'under 0.1' : (Math.round(n * 10) / 10).toString().replace(/\.0$/, '')) + '%';
+    const parts = Object.entries(by).map(([p, b]) => {
+      const name = (METER.NAMES && METER.NAMES[p]) || p, seen = bp[p], w = seen ? Number(seen.w) || Number(seen.turns) || 0 : 0;
+      let kind = 'unknown'; try { kind = METER.kindOf(p); } catch (_) {}
+      if (kind === 'metered') {
+        if (!w) return name + ' not known yet';
+        const u = (Number(seen.usd) || 0) / w * b.w;
+        return name + ' about ' + (u < 0.01 ? 'under $0.01' : '$' + u.toFixed(2));
+      }
+      if (kind === 'subscription') {
+        let now = null; try { now = METER.windows(p); } catch (_) {}
+        const st = (seen && seen.start) || {};
+        for (const [k, words] of [['fiveHour', 'of the 5-hour window'], ['week', 'of the week']]) {
+          if (w && now && now[k] && st[k]) return name + ' about ' + pct(Math.max(0, now[k].usedPct - st[k].usedPct) / w * b.w) + ' ' + words;
+        }
+        return name + ' share not known yet';
+      }
+      return name + ' unknown';
+    });
+    return 'Next round at ' + lab + ': about ' + list.length + ' turn' + (list.length === 1 ? '' : 's') + ' · ' + parts.join(' · ') + ' (a rough guess from this ' + NOUN + ' so far)';
   }
 
   /* ---------- the action register (company/tools/lib/meeting-register.js): the meeting's first-class output ----------
@@ -582,6 +718,37 @@ module.exports = function meeting(deps) {
       if (r && r.code) { note('Not recorded in decisions.md: ' + String((r.data && (r.data.error || r.data.text)) || 'decision.js refused').slice(0, 200)); return null; }
       const m = /\[(d-[0-9a-f]{6})\]/.exec(JSON.stringify((r && r.data) || '')); return m ? m[1] : 'recorded';
     } catch (e) { note('Not recorded in decisions.md: ' + e.message); return null; }
+  }
+
+  /* ---------- leaving: never mid-turn. Someone dismissed (by an agent) or removed (by the owner) while speaking leaves once
+     their turn is over; their reply is kept. ---------- */
+  const speakingNow = id => !!(M.run && M.run.current && M.run.current.seat === id && M.run.current.runId);
+  function deferLeave(x) {
+    const R = M.run;
+    R.leaveAfter = (R.leaveAfter || []).filter(y => y.who !== x.who).concat([x]); save();
+    note(nameOf(x.who) + ' leaves the ' + NOUN + ' once ' + firstName(x.who) + ' finishes this turn.');
+  }
+  function dismissSeat(target, by, why) {
+    M.guests = M.guests.filter(c => c !== target);
+    if (std.seats.includes(target) && !M.excused.includes(target)) M.excused.push(target);
+    save();
+    record({ who: target, kind: 'leave', by, why });
+  }
+  // the owner's remove: the standing seats, and this meeting's guests and dismissals
+  function removeSeat(id) {
+    const wasHere = present().includes(id);
+    if (std.seats.includes(id)) { std.seats = std.seats.filter(c => c !== id); saveStd(); }
+    M.guests = M.guests.filter(c => c !== id); M.excused = M.excused.filter(c => c !== id); save();
+    if (wasHere && M.opened) record(Array.isArray(P.standing) ? { who: id, kind: 'leave', by: 'owner' } : { who: id, kind: 'leave' });
+  }
+  function applyLeaves(R) {
+    const list = (R && R.leaveAfter) || []; if (!list.length) return;
+    R.leaveAfter = [];
+    for (const x of list) {
+      if (R.current && R.current.seat === x.who && R.current.runId) { R.leaveAfter.push(x); continue; }
+      if (x.op === 'remove') removeSeat(x.who); else if (present().includes(x.who) && x.who !== leader()) dismissSeat(x.who, x.by, x.why);
+    }
+    save(); emit('meeting');
   }
 
   /* ---------- the agent lines ---------- */
@@ -656,10 +823,8 @@ module.exports = function meeting(deps) {
       } else if (d.kind === 'DISMISS') {
         if (!here) continue;
         if (target === leader()) { note(nameOf(by) + ' asked to dismiss ' + nameOf(target) + ', who leads the meeting; only the owner changes that'); continue; }
-        M.guests = M.guests.filter(c => c !== target);
-        if (std.seats.includes(target) && !M.excused.includes(target)) M.excused.push(target);
-        save();
-        record({ who: target, kind: 'leave', by, why: d.why });
+        if (speakingNow(target)) { deferLeave({ who: target, by, why: d.why, op: 'dismiss' }); continue; }   // after their turn
+        dismissSeat(target, by, d.why);
       } else if (d.kind === 'ASK') {
         if (target === by) continue;
         if (ctl.asks >= MAX_ASKS_PER_ROUND) { note(nameOf(by) + ' asked ' + nameOf(target) + ' a question; the round has had ' + MAX_ASKS_PER_ROUND + ' direct questions, so it moves on'); continue; }
@@ -675,7 +840,7 @@ module.exports = function meeting(deps) {
   // with a leader seated, raised hands wait for the leader: a short talk-only turn that answers CALL / LATER / LOWER
   async function leaderCall(l, up, a, b) {
     const res = { call: [], later: [], lower: [] };
-    const m = await modelFor(l);
+    const m = await seatModel(l, 'call');
     if (m.error || stopping()) { res.later = up.map(([c]) => c); return res; }
     const line = '[RAISED HANDS, not your turn. During the exchange between ' + nameOf(a) + ' and ' + nameOf(b) + ', hands are up: '
       + up.map(([c, why]) => nameOf(c) + (why ? ' (' + why + ')' : '')).join('; ') + '. You lead the meeting, so you call on them. Reply '
@@ -702,7 +867,7 @@ module.exports = function meeting(deps) {
       + 'reply with one line: HAND — <what you want to add>. Otherwise reply with exactly: NO]';
     M.run.checking = { kind: 'hands', seats: others }; emit('meeting');
     const out = await Promise.all(others.map(async c => {
-      const m = await modelFor(c); if (m.error) return null;
+      const m = await seatModel(c, 'hand'); if (m.error || stopping()) return null;
       const r = await oneRun({ seat: c, model: m, messages: historyFor(c, line), tools: false, purpose: 'hand' });
       const why = !r.error ? handReply(r.text) : null;
       return why !== null ? { cmd: c, why } : null;
@@ -827,7 +992,7 @@ module.exports = function meeting(deps) {
             note('The ' + NOUN + ' paused after ' + MAX_TURNS + ' replies; write to carry on.');
             ctl.front = []; ctl.after = []; ctl.normal = []; R.round.capped = true; finishRound(); continue;
           }
-          const m = await modelFor(item.cmd);
+          const m = await seatModel(item.cmd, 'turn');
           if (m.error) { note(nameOf(item.cmd) + ' sits this one out: ' + m.error); save(); continue; }
           /* a seat in the middle of a routine run still speaks, as at the table, but talk only for this turn: a talk-only
              run makes no change in the company folder, so it cannot clash with the routine's hold on it */
@@ -887,8 +1052,12 @@ module.exports = function meeting(deps) {
     R.auto = done; R.pending = { open: true }; save();
   }
   function endRun(msg) {
+    if (M.run) { M.run.current = null; applyLeaves(M.run); }
     if (msg && !(M.closeAfter && msg === 'Round stopped.')) note(msg);
+    const after = M.run && M.run.afterStop;
     M.run = null; M.ownerHand = false; save(); emit('meeting');
+    // a message the owner wrote while it was stopping: its round starts now
+    if (after && !M.closeAfter && M.state === 'open' && !co.halted()) { M.run = { auto: 0, pending: after, round: null, current: null }; save(); setImmediate(kick); return; }
     if (M.closeAfter) finalize(M.closeAfter.state, M.closeAfter.by, M.closeAfter.why);
   }
   async function turn(R) {
@@ -896,18 +1065,32 @@ module.exports = function meeting(deps) {
     let res = null;
     for (;;) {
       if (!cur.runId) {
-        if (R.stopping) { res = { stopped: true }; break; }
+        if (R.stopping || !present().includes(cur.seat)) { res = { stopped: true }; break; }
         const st = await startRun({ seat: cur.seat, model: cur.model, messages: historyFor(cur.seat, turnLine(cur.seat, item, ctl, !!cur.noTools)), tools: cur.noTools ? false : toolsOn(), purpose: 'turn' });
         if (st.error) { res = { error: st.error, text: '' }; break; }
-        cur.runId = st.runId; save(); emit('meeting'); armHalt();
+        cur.runId = st.runId; cur.startedAt = Date.now(); save(); emit('meeting'); armHalt();
       }
       active.add(cur.runId);
       cur.tools = [];   // wait() reads the run's journal from its first line (again, after a console restart)
-      try { res = await runner.wait(cur.runId, ev => runEvent(cur, ev)); } finally { active.delete(cur.runId); }
+      const rid = cur.runId;
+      const wd = watchdog(rid, { startedAt: cur.startedAt, nudged: cur.nudged,
+        onNudge: () => {   // a soft nudge, never a cut: the speaker is asked to finish its point
+          cur.nudged = true; save();
+          Promise.resolve(runner.steer ? runner.steer(rid, '[Console note: you have been on this turn for ' + Math.round(NUDGE / 60e3) + ' minutes. Finish your point now, in a few sentences; longer work goes to your own loop.]') : null).catch(() => {});
+          note(nameOf(cur.seat) + ' has been on this turn for ' + Math.round(NUDGE / 60e3) + ' minutes; the console asked ' + firstName(cur.seat) + ' to wrap up. Nobody is cut off.');
+        },
+        onStall: () => {   // the safety ceiling: only a run with no output at all for that long
+          cur.stalled = true; save();
+          note(nameOf(cur.seat) + '\'s turn stalled: nothing came from it for ' + Math.round(STALL / 60e3) + ' minutes, so the console ended it.');
+          Promise.resolve(runner.cancel(rid)).catch(() => {});
+        } });
+      try { res = await runner.wait(rid, ev => { wd.saw(); runEvent(cur, ev); }); } finally { wd.off(); active.delete(rid); }
       if (R.consent && R.consent.runId === cur.runId) consentClear(R, null);
       cost(res, cur.model);
       if (res.refused) {
-        const next = cur.attempt === 0 ? REF.nextEntry(cur.seat, cur.model, cur.tried, { root: co.ROOT }) : null;
+        // a model picked for everyone is never swapped for another: that person sits this turn out
+        let next = cur.attempt === 0 && !cur.model.pinned ? REF.nextEntry(cur.seat, cur.model, cur.tried, { root: co.ROOT }) : null;
+        if (next) next = Object.assign({}, next, { level: cur.model.level, effort: await effortFor(next, THINK[cur.model.level || std.think.level].effort) });
         try { REF.record({ root: co.ROOT, seat: cur.seat, door: DOOR, runId: cur.runId, from: cur.model, to: next }); } catch (_) {}
         if (next && !R.stopping) {
           note(nameOf(cur.seat) + ': ' + REF.plainLine(cur.model, next).replace('answered instead.', 'is answering instead.'));
@@ -920,7 +1103,7 @@ module.exports = function meeting(deps) {
       break;
     }
     R.current = null; save();
-    if (res.skip || res.stopped) { emit('meeting'); return; }
+    if (res.skip || res.stopped) { applyLeaves(R); emit('meeting'); return; }
     const raw = res.text || '';
     const { body, list, failures } = res.error ? { body: raw, list: [], failures: [] } : directives(raw);
     const passed = !res.error && (isPass(body) || (!body && list.length > 0));
@@ -931,10 +1114,11 @@ module.exports = function meeting(deps) {
       R.round.answered++; R.round.said++;
       const lt = res.error ? null : lintOf(body, list);
       record(Object.assign({ who: cur.seat, kind: 'say', text: res.error ? body + '\n\n[stopped before the end]' : body, model: modelLabel(cur.model), provider: cur.model.provider, modelId: cur.model.model }, extra, steps, lt ? { lint: lt } : {}));
-    } else if (res.error && !R.stopping) note(nameOf(cur.seat) + ' could not answer: ' + String(res.error).slice(0, 200));
+    } else if (res.error && !R.stopping && !cur.stalled) note(nameOf(cur.seat) + ' could not answer: ' + String(res.error).slice(0, 200));
     if (!passed && !body && !res.error && list.length === 0) note(nameOf(cur.seat) + ' finished without writing a reply.');
     for (const f of failures || []) record({ who: cur.seat, kind: 'parse', line: f.line, why: f.why });
     if (list.length) { const pending = []; applyDirectives(cur.seat, list, ctl, pending); await Promise.all(pending); }
+    applyLeaves(R);   // someone removed or dismissed while speaking leaves now, after their reply (and before the hand check)
     save();
     if (ctl.ended || R.stopping || res.error) return;
     // an answer in an exchange: the others may raise a hand. With no leader a raised hand speaks next; with one, the
@@ -949,7 +1133,7 @@ module.exports = function meeting(deps) {
       }
       const l = leader(), now = [];
       for (const h of freshHands) { if (!l || h.cmd === l) now.push({ cmd: h.cmd, kind: 'hand', why: h.why }); else ctl.up[h.cmd] = h.why; }
-      if (l && freshHands.some(h => h.cmd !== l) && !R.stopping) {
+      if (l && freshHands.some(h => h.cmd !== l) && !R.stopping && !M.ownerHand) {
         const dec = await leaderCall(l, Object.entries(ctl.up), item.from, cur.seat);
         const whyOf = c => ctl.up[c] || '';
         for (const c of dec.call) { record({ who: l, kind: 'call', to: c }); now.push({ cmd: c, kind: 'hand', why: whyOf(c), calledBy: l }); ctl.after = ctl.after.filter(x => x.cmd !== c); delete ctl.up[c]; }
@@ -980,6 +1164,10 @@ module.exports = function meeting(deps) {
     if (mt.unknown.length) fail('nobody called ' + mt.unknown.join(', ') + ' is on the crew');
     if (mt.addressed && !mt.at.length) fail(mt.missing.join(', ') + (mt.missing.length === 1 ? ' is' : ' are') + ' not seated: add them first');
     if (M.run) {
+      if (M.run.stopping === 'owner' && !M.closeAfter) {   // stopping after this turn: the message starts a round once it is over
+        M.run.afterStop = { text, only: mt.at }; save(); emit('meeting');
+        return view({ note: 'Your message goes to the table once the current speaker finishes.' });
+      }
       if (M.run.floor) { M.run.floor = false; M.run.interjection = null; M.run.round = null; M.run.current = null; M.run.pending = { text, only: mt.at }; M.run.auto = 0; save(); kick(); return view({ note: 'sent' }); }
       M.run.interjection = { text, only: mt.at }; M.ownerHand = true; save(); emit('meeting');
       return view({ note: 'Your message is taken after the current speaker.' });
@@ -1054,7 +1242,7 @@ module.exports = function meeting(deps) {
     guard();
     const since = Math.max(0, Number(b && b.since) || 0);
     const seat = leader() || present()[0]; if (!seat) fail('nobody is seated');
-    const m = await modelFor(seat); if (m.error) fail(m.error, 409);
+    const m = await seatModel(seat, 'catchup'); if (m.error) fail(m.error, 409);
     const part = LOG.filter(e => e.i > since && e.kind === 'say');
     if (!part.length) fail('nothing has been said since you last read', 409);
     const line = '[CATCH-UP for ' + owner() + ', not your turn and not part of the meeting: ' + owner() + ' stepped away and is back. In plain words, write exactly five bullets of what was said since they left (the messages after "' + String(part[0].text).slice(0, 60).replace(/\s+/g, ' ') + '"), then a line "Decided:" with what was decided (or "nothing yet"), then a line "Open asks:" with what is still asked of anyone. No protocol lines.]';
@@ -1068,7 +1256,7 @@ module.exports = function meeting(deps) {
     guard(); openCheck();
     const i = Number(b && b.i); const e = LOG.find(x => x.i === i);
     if (!e || e.kind !== 'say' || e.who === 'owner' || !crew()[e.who]) fail('pick a message a crew member wrote', 404);
-    const m = await modelFor(e.who); if (m.error) fail(m.error, 409);
+    const m = await seatModel(e.who, 'explain'); if (m.error) fail(m.error, 409);
     const F = frames(); const room = present().filter(x => x !== e.who).map(x => nameOf(x) + ' (' + frameOf(x, F).labels.join(', ') + ')').join(', ');
     const line = '[EXPLAIN FOR THE ROOM: ' + owner() + ' asked you to explain your message "' + String(e.text).replace(/\s+/g, ' ').slice(0, 120) + '…" for everyone seated (' + (room || 'the room') + '). In plain words: your point in one line, every term defined, and what it means for each of them. At most five sentences. No protocol lines.' + localeLine() + ']';
     const r = await oneRun({ seat: e.who, model: m, messages: historyFor(e.who, line), tools: false, purpose: 'explain' });
@@ -1112,13 +1300,48 @@ module.exports = function meeting(deps) {
     return { ok: true, moments: LOG.filter(e => KEY.has(e.kind) && (e.kind !== 'agenda' || e.op === 'current') && (e.kind !== 'call' || e.to === 'owner') && true)
       .map(e => ({ i: e.i, kind: e.kind, at: e.at, name: e.who === 'owner' ? owner() : nameOf(e.who), text: String(e.text || (TEXTS[e.kind] ? TEXTS[e.kind](e) : '')).slice(0, 140) })) };
   }
+  /* Stop = stop after this turn: the current speaker finishes (never cut off: that would waste what they already thought);
+     the queued turns, the hand checks and the round are cancelled. Only a company hard halt aborts a turn mid-way. */
   function stop() {
     guard();
     if (!M.run) return view();
-    M.run.stopping = 'owner'; M.run.floor = false; M.ownerHand = false; M.run.interjection = null; save();
-    for (const id of active) Promise.resolve(runner.cancel(id)).catch(() => {});
-    if (M.run.current && M.run.current.runId && !active.has(M.run.current.runId)) Promise.resolve(runner.cancel(M.run.current.runId)).catch(() => {});
-    kick(); emit('meeting'); return view();
+    const R = M.run;
+    if (!String(R.stopping || '').startsWith('halt')) R.stopping = 'owner';
+    R.floor = false; M.ownerHand = false; R.interjection = null; R.pending = null; save();
+    for (const id of checks) Promise.resolve(runner.cancel(id)).catch(() => {});   // hand checks and the leader's call: not turns
+    const sp = R.current && R.current.runId ? R.current.seat : null;
+    kick(); emit('meeting');
+    return view({ note: sp ? 'Stopping after ' + firstName(sp) + ' finishes this turn; nothing after it starts.' : 'Stopped.' });
+  }
+  /* how hard they think, and one model for everyone or each person's usual: the owner's setting (Meeting › More, and in
+     a live chat with colleagues), kept with the seats. Agents cannot change it (no line does; the route is the owner's). */
+  function thinkView() {
+    const t = std.think;
+    return { level: t.level, label: THINK[t.level].label, effort: THINK[t.level].effort, levels: Object.keys(THINK).map(id => ({ id, label: THINK[id].label, effort: THINK[id].effort, deliberate: id === 'max' })),
+      checks: THINK.light.label, pin: t.pin ? Object.assign({ label: modelLabel(t.pin) }, t.pin) : null, choices: pinChoices() };
+  }
+  function setThink(b) {
+    guard(); b = b || {};
+    const t = Object.assign({}, std.think);
+    if (b.level !== undefined) {
+      const lv = String(b.level || '');
+      if (!THINK[lv]) fail('how hard they think is light, normal, deep or max');
+      if (lv === 'max' && t.level !== 'max' && b.sure !== true) fail('Max thinking costs the most: pick it deliberately (sure: true)');
+      t.level = lv;
+    }
+    if (b.pin !== undefined) {
+      if (b.pin === null || b.pin === '' || b.pin === 'usual') t.pin = null;
+      else {
+        const pin = parsePin(b.pin); if (!pin) fail('pick a model as provider/model, or "usual" for each person\'s usual model');
+        if (!pinChoices().some(c => samePair(c, pin))) fail(modelLabel(pin) + ' is not on the company\'s list of models (model-policy.json allowed)');
+        t.pin = pin;
+      }
+    }
+    const changed = t.level !== std.think.level || !(t.pin ? samePair(t.pin, std.think.pin) : !std.think.pin);
+    std.think = t; saveStd();
+    if (changed && M.opened) record({ who: 'owner', kind: 'think', level: t.level, pin: t.pin });
+    emit('meeting');
+    return view(changed ? { note: 'From the next turn: ' + THINK[t.level].label + ' thinking' + (t.pin ? ', everyone on ' + modelLabel(t.pin) : ', each on their usual model') + '. Hand checks stay ' + THINK.light.label + '.' } : {});
   }
   function setObserve(b) {
     guard();
@@ -1184,10 +1407,8 @@ module.exports = function meeting(deps) {
     for (const k of remove) {
       const id = resolve(String(k)) || String(k);
       if (P.fixedLeader && id === P.fixedLeader) fail(nameOf(id) + ' leads this ' + NOUN + ' and stays', 409);
-      const wasHere = present().includes(id);
-      if (std.seats.includes(id)) { std.seats = std.seats.filter(c => c !== id); saveStd(); }
-      M.guests = M.guests.filter(c => c !== id); M.excused = M.excused.filter(c => c !== id); save();
-      if (wasHere && M.opened) record(Array.isArray(P.standing) ? { who: id, kind: 'leave', by: 'owner' } : { who: id, kind: 'leave' });
+      if (speakingNow(id)) { deferLeave({ who: id, by: 'owner', op: 'remove' }); continue; }   // never cut off mid-turn
+      removeSeat(id);
     }
     emit('meeting');
     return inner ? null : view();
@@ -1211,8 +1432,12 @@ module.exports = function meeting(deps) {
     guard();
     const why = str(b && b.why, 300);
     if (M.state === 'closed') return view();
-    if (M.run) { M.closeAfter = { state: 'closed', by: 'owner', why }; save(); stop(); for (let i = 0; i < 300 && M.run; i++) await new Promise(r => setTimeout(r, 20)); }
-    if (M.run) fail('the round is still stopping: try again in a moment', 409);
+    if (M.run) {   // the current speaker finishes first (never cut off), then it closes by itself
+      M.closeAfter = { state: 'closed', by: 'owner', why }; save(); stop();
+      for (let i = 0; i < 50 && M.run; i++) await new Promise(r => setTimeout(r, 20));   // a turn about to end ends here; a long one closes later
+      if (M.run) { const sp = M.run.current && M.run.current.seat; return view({ note: 'The ' + NOUN + ' closes once ' + (sp ? firstName(sp) : 'the current speaker') + ' finishes this turn.', closing: true }); }
+      return view();
+    }
     finalize('closed', 'owner', why);
     return view();
   }
@@ -1225,6 +1450,7 @@ module.exports = function meeting(deps) {
       record({ who: by, kind: 'close', state, why });
     }
     save(); reindex();
+    if (typeof deps.onFinalize === 'function') { try { deps.onFinalize({ state, id: M.id, LOG: LOG.slice() }); } catch (_) {} }
     if (state === 'closed' && M.resumeAfter) {   // the meeting an incident interrupted carries on
       const back = readMeeting(M.resumeAfter);
       if (back && back.state === 'interrupted') { load(back.id); M.state = 'open'; M.reason = null; save(); record({ who: 'owner', kind: 'resume' }); }
@@ -1272,9 +1498,9 @@ module.exports = function meeting(deps) {
   /* ---------- what the page shows ---------- */
   async function view(extra) {
     const seats = await Promise.all(ordered().map(async id => {
-      const m = await modelFor(id);
+      const m = await seatModel(id, 'turn');
       return { id, name: nameOf(id), title: titleOf(id), leader: id === leader(), guest: M.guests.includes(id), invitedBy: M.guests.includes(id) ? invitedBy(id) : null,
-        standing: std.seats.includes(id), model: m.error ? null : { provider: m.provider, model: m.model, label: modelLabel(m), from: m.from || null }, modelError: m.error || null };
+        standing: std.seats.includes(id), model: m.error ? null : { provider: m.provider, model: m.model, label: modelLabel(m), from: m.from || null, effort: m.effort || null, pinned: !!m.pinned }, modelError: m.error || null };
     }));
     const R = M.run;
     let live = { phase: 'idle', speaking: null, next: [], hands: [], ownerHand: !!M.ownerHand, checking: null, round: null, interjection: false, paused: false, waitNext: false, yourTurn: false };
@@ -1283,7 +1509,8 @@ module.exports = function meeting(deps) {
       const queue = ctl ? [...ctl.front, ...ctl.after, ...ctl.normal].filter(x => present().includes(x.cmd) && (x.kind !== 'turn' || hasNewFor(x.cmd) || (R.current && R.current.seat === x.cmd))) : [];
       const seen = new Set(R.current ? [R.current.seat] : []); const next = [];
       for (const x of queue) if (!seen.has(x.cmd)) { seen.add(x.cmd); next.push({ id: x.cmd, name: nameOf(x.cmd), kind: x.kind }); }
-      live = { phase: R.floor ? 'floor' : R.stopping ? 'stopping' : 'round', ownerHand: !!M.ownerHand, interjection: !!R.interjection,
+      live = { phase: R.floor ? 'floor' : R.stopping ? 'stopping' : 'round', ownerHand: !!M.ownerHand, interjection: !!R.interjection || !!R.afterStop,
+        stoppingAfter: R.stopping && R.current && R.current.runId ? nameOf(R.current.seat) : null, closing: !!M.closeAfter,
         paused: !!R.paused, pausedFor: R.paused === 'consent' && R.consent ? { seat: nameOf(R.consent.seat), tool: R.consent.tool, qid: R.consent.qid } : null, waitNext: !!R.waitNext, nextAt: R.gateUntil || null, yourTurn: !!R.floor, floorWhy: R.floor ? M.floorWhy || null : null,
         speaking: R.current ? { id: R.current.seat, name: nameOf(R.current.seat), kind: R.current.item.kind, from: R.current.item.from || null, why: R.current.item.why || null, calledBy: R.current.item.calledBy || null, wrap: !!R.current.item.wrap, runId: R.current.runId, model: modelLabel(R.current.model), noTools: !!R.current.noTools } : null,
         next: next.slice(0, 4), hands: ctl ? Object.entries(ctl.up).map(([id, why]) => ({ id, name: nameOf(id), why })) : [],
@@ -1296,7 +1523,7 @@ module.exports = function meeting(deps) {
       meeting: { id: M.id, type: M.type, title: M.title, state: M.state, reason: M.reason || null, closedBy: M.closedBy ? nameOf(M.closedBy) : null, closedAt: M.closedAt || null, resumeAfter: M.resumeAfter || null,
         agenda: M.agenda.map(a => Object.assign({}, a, { toolsOn: itemTools(a) })), agendaAt: M.agendaAt, toolsOn: toolsOn(), talkOnly: !!std.talkOnly, frames: !!std.frames, fixedLeader: P.fixedLeader || null, types: TYPES, speed: std.speed || 'instant', speeds: SPEEDS, effectiveSpeed: effectiveSpeed(), ownerPresent: ownerPresent(),
         startedAt: M.startedAt, opened: !!M.opened, observer: observing(), observeRounds: std.observeRounds, leader: std.leader, leaderSeated: !!leader(),
-        cost: M.cost, costLine: costLine(), minutes: minutesRel(), excused: M.excused.map(id => ({ id, name: nameOf(id) })) },
+        cost: M.cost, costLine: costLine(), estimateLine: estimateLine(seats.filter(x => x.model).map(x => x.model)), think: thinkView(), minutes: minutesRel(), excused: M.excused.map(id => ({ id, name: nameOf(id) })) },
       seats, roster, live, total: shown.length }, extra || {});
   }
   // what the page shows: everything said and done, passes included (one dim line each, as at the table); the console's
@@ -1356,6 +1583,7 @@ module.exports = function meeting(deps) {
     route('POST', R('/new'), (m, q, b) => newMeeting(b));
     route('POST', R('/talkonly'), (m, q, b) => setTalkOnly(b));
     route('POST', R('/frames'), (m, q, b) => setFrames(b));
+    route('POST', R('/think'), (m, q, b) => setThink(b));
     route('GET', R('/attach'), (m, q, b, req, res) => attach(req, res, q));
   }
   // the console started: carry on a meeting a previous console process left mid-round (the turn in flight is re-attached)
@@ -1365,7 +1593,7 @@ module.exports = function meeting(deps) {
   }
   load();
   return { mount, start, view, entries, minutesText, say, openRound, hand, carryOn, stop, setObserve, agenda, setLeader, seatsChange, newMeeting, close, resume, list, register: regSafe(b => register(b)), registerView, search: q => search(q), reindex, explain, terms, addTerm, next, pace, hold, presence, catchUp, timeline, busy,
-    setTalkOnly, setFrames, pullIn, seed, attach, profile: P, present: () => (M ? present() : []), state: () => (M ? M.state : null),
+    setTalkOnly, setFrames, setThink, pullIn, seed, attach, profile: P, present: () => (M ? present() : []), state: () => (M ? M.state : null),
     idle: () => !M.run && !driving, _state: () => ({ std, M, LOG }), _reload: load };
 };
 module.exports.directives = directives;
@@ -1374,4 +1602,7 @@ module.exports.maybePass = maybePass;
 module.exports.handReply = handReply;
 module.exports.fitHistory = fitHistory;
 module.exports.modelLabel = modelLabel;
+module.exports.fitEffort = fitEffort;
+module.exports.THINK = THINK;
+module.exports.TIMING = { NUDGE_MS, STALL_MS };
 module.exports.LIMITS = { MAX_INVITES_PER_ROUND, MAX_ASKS_PER_ROUND, MAX_HANDS_PER_ROUND, OBSERVE_ROUNDS };

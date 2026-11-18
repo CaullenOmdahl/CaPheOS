@@ -210,3 +210,37 @@ test('a pull-in refused (a halt) leaves no empty chat behind: nothing opened, no
   assert.deepStrictEqual(said.map(e => e.who), ['owner', 'dave'], 'the chat so far once, the host\'s ask once');
   assert.ok(said[1].text === 'Let me check with Nadia.');
 });
+
+test('the owner\'s thinking level and model reach a live chat too (POST /api/huddle/<host>/think); Stop and × wait for the turn; a close waits, then the recap', async () => {
+  const { H, runner } = fresh();
+  const routes = []; H.mount((method, re, fn) => routes.push({ method, re, fn }));
+  const call = (method, url, b) => { const r = routes.find(x => x.method === method && x.re.test(url)); return r.fn(url.match(r.re), new URLSearchParams(), b); };
+  let rel; const hold = new Promise(r => { rel = r; });
+  runner.script({ nadia: { text: 'Green, after a long look.', hold }, 'dave': ['Thanks.'] });
+  await H.pullFrom('dave', { text: 'x\nASK: Nadia — deploy?' });
+  for (let i = 0; i < 200 && !runner.turns().some(c => c.seat === 'nadia'); i++) await new Promise(r => setTimeout(r, 5));
+  const v = await call('POST', '/api/huddle/dave/think', { level: 'light' });
+  assert.ok(v.meeting.think.level === 'light' && /Light thinking/.test(v.note), 'set in this chat, by the owner');
+  assert.strictEqual(runner.turns().find(c => c.seat === 'nadia').model.effort, 'medium', 'the turn already started keeps its level (Normal by default)');
+  // the owner's × on the colleague writing: after the turn; Stop: after the turn
+  await H.seats('dave', { remove: ['nadia'] });
+  const sv = await call('POST', '/api/huddle/dave/stop', {});
+  assert.match(sv.note, /Stopping after Nadia finishes this turn/);
+  assert.ok(!runner.pending.get(runner.turns().find(c => c.seat === 'nadia').runId).cancelled, 'Nadia is not cut off');
+  rel(); await idle(H);
+  assert.ok(LOG(H).some(e => e.kind === 'say' && e.who === 'nadia' && /Green/.test(e.text)), 'her reply is kept');
+  assert.ok(!H.isOpen('dave'), 'then she leaves and the chat is 1:1 again');
+  assert.match(H.takeRecap('dave'), /Nadia: Green, after a long look\./, 'with the recap');
+  // a close while a colleague writes: closes once they finish, recap then
+  let rel2; const hold2 = new Promise(r => { rel2 = r; });
+  runner.script({ omar: { text: 'Omar, slowly.', hold: hold2 } });
+  await H.pullFrom('dave', { text: 'y\nASK: Omar — the logs?' });
+  for (let i = 0; i < 200 && !runner.turns().some(c => c.seat === 'omar'); i++) await new Promise(r => setTimeout(r, 5));
+  assert.strictEqual(runner.turns().find(c => c.seat === 'omar').model.effort, 'low', 'the new turn runs at the owner\'s Light');
+  const cv = await H.close('dave', 'closed by Caullen');
+  assert.match(cv.note || '', /closes once Omar finishes this turn/);
+  assert.strictEqual(H.takeRecap('dave'), '', 'no recap before it closes');
+  rel2(); await idle(H);
+  assert.strictEqual(H.engine('dave').state(), 'closed');
+  assert.match(H.takeRecap('dave'), /Omar: Omar, slowly\./);
+});
