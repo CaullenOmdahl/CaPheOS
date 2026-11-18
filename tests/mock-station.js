@@ -242,8 +242,8 @@ function handle(method, p, q, body, res) {
       // a meeting turn (console/meeting.js, streamId meeting-<seat>[-hand|-call|-catchup|-explain]): the next scripted reply for that seat
       // (POST /__meeting); none scripted: PASS for a turn, NO for a hand check, OK for a leader's call on hands
       // a colleague in a live chat (console/huddle.js, streamId huddle-<host>-<seat>[-hand|-call]) is scripted the same way;
-      // a console chat's next reply may be scripted too: POST /__meeting {replies: {'<agentId>:chat': text}}
-      const mt = /^(meeting|huddle)-/.test(B.streamId) ? meetingReply(B) : /^console-/.test(B.streamId) && (S.meeting.queues[B.agentId + ':chat'] || []).length ? { text: String(S.meeting.queues[B.agentId + ':chat'].shift()), refused: false, step: 5, chat: true } : null;
+      // a console chat's next reply may be scripted too: POST /__meeting {replies: {'<agentId>:chat': text | {text, stepMs}}}
+      const mt = /^(meeting|huddle)-/.test(B.streamId) ? meetingReply(B) : /^console-/.test(B.streamId) && (S.meeting.queues[B.agentId + ':chat'] || []).length ? ((q1) => (q1 && typeof q1 === 'object' ? { text: String(q1.text), refused: false, step: Number(q1.stepMs) || 5, chat: true } : { text: String(q1), refused: false, step: 5, chat: true }))(S.meeting.queues[B.agentId + ':chat'].shift()) : null;
       if (mt && mt.chat) S.meeting.runs.push({ agentId: B.agentId, kind: 'chat', streamId: B.streamId, isTask: B.isTask, placed: B.placed || null, provider: B.provider, model: B.model, last: String(last).slice(-2000), count: msgs.length, at: Date.now() });
       const leak = !mt && /\[leak\]/.test(last) ? fs.readFileSync(path.join(__dirname, 'fixtures', 'leaked-tool-calls.txt'), 'utf8') : null;
       const reply = mt ? mt.text : /\[fail\]/.test(last) ? null : leak ? leak : /charter/i.test(last)

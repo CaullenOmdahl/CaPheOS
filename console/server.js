@@ -960,6 +960,7 @@ function start(argv) {
   CHAT.runs.start();   // re-attach to the chat runs a previous console process left in flight
   MEET.start();        // and carry on a meeting it left mid-round (its turn in flight is one of those runs)
   HUD.start();         // and the live chats with colleagues in them, the same way
+  CHAT.resume();       // and follow the 1:1 runs still going: their ASK / INVITE lines bring a colleague in at the end
   setInterval(armWatches, 15000).unref();
   setInterval(() => { tool('approvals.js').tick({ actor: 'the console' }).catch(() => {}); }, 60000).unref();   // approvals: expiry (default deny) and reminders
   ACT.start();

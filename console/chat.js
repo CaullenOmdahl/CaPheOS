@@ -79,6 +79,37 @@ module.exports = function chat(deps) {
     } catch (_) {}
   }
 
+  /* a 1:1 run's own follower, whether or not a browser watches: live.json while it runs, and at its end a reply that
+     asks or invites a colleague brings them into this chat (console/huddle.js); onPull(promise) gets the pull-in. A reply
+     that did not end on its own (Stop, cut off, lost) or was refused brings nobody in, whatever its text says. */
+  function followRun(id, rid, onPull) {
+    liveSet(id, rid);
+    let finalP = null, off1 = null, over = false;
+    off1 = RUNS.attach(rid, 0, x => {
+      if (over) return;
+      if (x.name === 'console.final') finalP = x.payload || {};
+      if (x.name !== 'console.end') return;
+      over = true; setImmediate(() => { if (off1) off1(); });
+      if (liveRun[id] === rid) liveSet(id, null);
+      const Hh = HUD();
+      let refused = true; try { refused = require(co.p('company', 'tools', 'lib', 'refusal.js')).isRefusal(finalP || {}); } catch (_) {}
+      if (!Hh || !finalP || finalP.complete !== true || refused || typeof finalP.text !== 'string') return;
+      if (!Hh.pullLines(id, finalP.text).length) return;
+      const p = Hh.pullFrom(id, { text: finalP.text, runId: rid }).catch(e => ({ error: e.message }));
+      if (onPull) onPull(p);
+    });
+    if (!off1 && liveRun[id] === rid) liveSet(id, null);   // an unknown run: nothing to follow
+  }
+  /* the console started (after RUNS.start re-attached the runs a previous console left in flight): follow again each
+     1:1 run still going, so its live.json stays and its ASK / INVITE lines still bring a colleague in at its end */
+  function resume() {
+    const runs = (RUNS._state() || {}).runs || {};
+    for (const [rid, r] of Object.entries(runs)) {
+      if (!r || (r.status !== 'running' && r.status !== 'finishing') || r.meeting || !r.seat || r.streamId !== STREAM(r.seat)) continue;
+      try { followRun(r.seat, rid); } catch (_) {}
+    }
+  }
+
   function seatOf(id) {
     const crew = co.crew();
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(id || ''))) bad('bad seat id');
@@ -279,21 +310,7 @@ module.exports = function chat(deps) {
     /* the run's own follower, whether or not a browser watches: live.json while it runs, and at its end a reply that
        asks or invites a colleague brings them into this chat (console/huddle.js), the browser told with console.huddle */
     let pullP = null;
-    const follow1 = rid => {
-      liveSet(id, rid);
-      let finalP = null, off1 = null, over = false;
-      off1 = RUNS.attach(rid, 0, x => {
-        if (over) return;
-        if (x.name === 'console.final') finalP = x.payload || {};
-        if (x.name !== 'console.end') return;
-        over = true; setImmediate(() => { if (off1) off1(); });
-        if (liveRun[id] === rid) liveSet(id, null);
-        const Hh = HUD();
-        if (!Hh || !finalP || REF.isRefusal(finalP) || typeof finalP.text !== 'string') return;
-        if (!Hh.pullLines(id, finalP.text).length) return;
-        pullP = Hh.pullFrom(id, { text: finalP.text, runId: rid }).catch(e => ({ error: e.message }));
-      });
-    };
+    const follow1 = rid => followRun(id, rid, p => { pullP = p; });
     const watch = rid => {   // the run is known: from here the browser reads its journal
       if (runId || closed) return; runId = rid;
       line('console.attached', { runId: rid });
@@ -429,6 +446,6 @@ module.exports = function chat(deps) {
     });
   }
 
-  return { info, send, attach, brief, channelState, messageStates, modelFor, meteredHold, seatOf, transcript, runs: RUNS };
+  return { info, send, attach, brief, channelState, messageStates, modelFor, meteredHold, seatOf, transcript, resume, runs: RUNS };
 };
 module.exports.contextNote = contextNote;

@@ -10,7 +10,9 @@
  *   5. the owner's × sends Sharon back out: the chat is 1:1 again, the minutes are written, and the host's next 1:1
  *      message carries the recap
  *   4b. the page (headless Chrome, SKIP without): the strip, the guest's reply in the same window, the ASK as a dim line
- *   6. a plain 1:1 run writes live.json while it runs (the dispatcher holds the seat), and removes it at the end */
+ *   6. a plain 1:1 run writes live.json while it runs (the dispatcher holds the seat), and removes it at the end
+ *   7. Stop mid-reply: a cut-off reply brings nobody in, even with an ASK line in its text
+ *   8. a console restart mid-reply: the new console re-attaches the run and still acts on its ASK line */
 'use strict';
 const { spawn, spawnSync } = require('child_process'); const path = require('path'); const os = require('os'); const fs = require('fs');
 const REPO = path.join(__dirname, '..');
@@ -42,15 +44,26 @@ W('company/work/finance/dispatch-budget.json', { dailyUsd: 5 });
   const m = spawn(process.execPath, [path.join(__dirname, 'mock-station.js'), '--port', String(sp), '--token', TOKEN, '--root', tmp, '--caps', 'run-detach'], { stdio: ['ignore', 'pipe', 'inherit'] }); kids.add(m);
   const st = (p, b) => fetch('http://127.0.0.1:' + sp + p, { method: b ? 'POST' : 'GET', headers: { 'x-starnet-token': TOKEN, 'content-type': 'application/json' }, body: b ? JSON.stringify(b) : undefined }).then(r => r.json());
   await waitFor(async () => (await fetch('http://127.0.0.1:' + sp + '/api/health', { headers: { 'x-starnet-token': TOKEN } })).status < 500, 10000);
-  const cp = await freePort(); let err = '';
+  let cp = 0, c = null, err = '', ctoken = '';
   const env = Object.assign({}, process.env, { CAPHEOS_ROOT: tmp, STARNET_URL: 'http://127.0.0.1:' + sp, CHAT_RUN_QUIET_MS: '3000' }); delete env.CONSOLE_PORT;
-  const c = spawn(process.execPath, [path.join(tmp, 'console', 'server.js'), '--port', String(cp), '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] }); kids.add(c);
-  c.stderr.on('data', d => { err += d; });
-  await new Promise((resolve, reject) => { let b = ''; c.stdout.on('data', d => { b += d; if (/\{"port":\d+\}/.test(b)) resolve(); }); setTimeout(() => reject(new Error('console did not start: ' + err)), 20000); });
-  const ctoken = fs.readFileSync(path.join(tmp, 'secrets', 'console-token'), 'utf8').trim();
+  const startConsole = async () => {
+    cp = await freePort();
+    c = spawn(process.execPath, [path.join(tmp, 'console', 'server.js'), '--port', String(cp), '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] }); kids.add(c);
+    c.stderr.on('data', d => { err += d; });
+    await new Promise((resolve, reject) => { let b = ''; c.stdout.on('data', d => { b += d; if (/\{"port":\d+\}/.test(b)) resolve(); }); setTimeout(() => reject(new Error('console did not start: ' + err)), 20000); });
+    ctoken = fs.readFileSync(path.join(tmp, 'secrets', 'console-token'), 'utf8').trim();
+  };
+  await startConsole();
   const H = noAuth => Object.assign({ 'content-type': 'application/json' }, noAuth ? {} : { 'x-console-token': ctoken });
   const api = async (p, b, noAuth) => { const r = await fetch('http://127.0.0.1:' + cp + '/api' + p, { method: b ? 'POST' : 'GET', headers: H(noAuth), body: b ? JSON.stringify(b) : undefined }); let j = null; try { j = await r.json(); } catch (_) {} return { status: r.status, json: j }; };
   const ndjson = async (p, b) => { const r = await fetch('http://127.0.0.1:' + cp + '/api' + p, { method: b ? 'POST' : 'GET', headers: Object.assign(H(), { accept: 'application/x-ndjson' }), body: b ? JSON.stringify(b) : undefined }); return (await r.text()).split('\n').filter(l => l.trim()).map(l => JSON.parse(l)); };
+  // a send read as it streams: onLine(line, lines) sees each line; resolves with every line once the stream ends
+  const streamSend = async (p, b, onLine) => {
+    const r = await fetch('http://127.0.0.1:' + cp + '/api' + p, { method: 'POST', headers: Object.assign(H(), { accept: 'application/x-ndjson' }), body: JSON.stringify(b) });
+    const out = []; let buf = ''; const dec = new TextDecoder();
+    try { for await (const ch of r.body) { buf += dec.decode(ch, { stream: true }); let i; while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); if (!l.trim()) continue; const j = JSON.parse(l); out.push(j); try { await onLine(j, out); } catch (_) {} } } } catch (_) { /* the console went away */ }
+    return out;
+  };
   const idle = () => waitFor(async () => { const v = (await api('/huddle/agent')).json; return v && (!v.live || v.live.phase === 'idle') ? v : null; }, 30000);
   const runs = async () => (await st('/__state')).meeting.runs;
 
@@ -163,6 +176,34 @@ W('company/work/finance/dispatch-budget.json', { dailyUsd: 5 });
   await pend;
   const gone = await waitFor(() => !fs.existsSync(path.join(tmp, 'company/state/huddles/cfo/live.json')), 5000);
   t('6. and removes it at the end', !!gone);
+
+  // 7. the owner presses Stop while the reply is written: a cut-off reply brings nobody in, even if its text has an ASK line
+  await st('/__meeting', { reset: true, replies: { 'cfo:chat': { text: 'Let me ask Phil.\nASK: Phil — what is the firewall rule for the new box and why was it changed last week by the team', stepMs: 150 } } });
+  let rid7 = null, stopped7 = false;
+  lines = await streamSend('/chat/cfo/send', { text: 'Why did the firewall change?' }, async l => {
+    if (l.name === 'console.attached') rid7 = l.payload.runId;
+    if (!stopped7 && l.name === 'agent.token' && /firewall/.test(l.payload.delta) && rid7) { stopped7 = true; await st('/api/cancel', { runId: rid7 }); }
+  });
+  const fin7 = lines.find(l => l.name === 'console.final');
+  t('7. Stop mid-reply: the reply is marked cut off, with the ASK line in its text', stopped7 && fin7 && fin7.payload.complete === false && /ASK: Phil/.test(fin7.payload.text || ''), { stopped7, fin7 });
+  await sleep(600);
+  rs = await runs();
+  t('7. ... and nobody is brought in: no console.huddle, no run for Phil, the chat stays 1:1', !lines.some(l => l.name === 'console.huddle') && !rs.some(x => x.agentId === 'sec') && (await api('/huddle/cfo')).json.open === false, { names: lines.map(l => l.name), rs: rs.map(x => x.streamId) });
+
+  // 8. the console restarts while the host's 1:1 reply is written: the new console still acts on its ASK line
+  await st('/__meeting', { reset: true, replies: { 'agent:chat': { text: 'Let me ask Sharon about the budget for this month, she keeps the numbers.\nASK: Sharon — what is the budget this month?', stepMs: 120 }, cfo: 'Five dollars a day, as before.', agent: 'Sharon says five dollars a day.' } });
+  const oldC = c;
+  let killed8 = false;
+  await streamSend('/chat/agent/send', { text: 'What is the budget this month?' }, async l => {
+    if (!killed8 && l.name === 'agent.token' && /budget/.test(l.payload.delta)) { killed8 = true; await new Promise(r2 => { oldC.on('exit', r2); oldC.kill('SIGKILL'); }); }
+  });
+  t('8. the console was killed mid-reply', killed8);
+  await startConsole();
+  const g8 = await waitFor(async () => (await runs()).find(x => x.agentId === 'cfo' && x.streamId === 'huddle-agent-cfo'), 20000);
+  t('8. after the restart, the reply\'s ASK still brings Sharon in, and she answers', !!g8 && /what is the budget this month\?/.test(g8.last), g8);
+  v = await idle();
+  t('8. the chat is open with Sharon in it', v && v.open && v.seats.map(s => s.id).join() === 'agent,cfo', v && v.seats);
+  t('8. live.json is gone once the run ended', !fs.existsSync(path.join(tmp, 'company/state/huddles/agent/live.json')));
 
   console.log(fails ? 'HUDDLE WALK: FAIL (' + fails + ')' : 'HUDDLE WALK: PASS'); process.exit(fails ? 1 : 0);
 })().catch(e => { console.log('FAIL ' + e.stack); process.exit(1); });

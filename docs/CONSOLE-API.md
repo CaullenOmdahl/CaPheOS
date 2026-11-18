@@ -156,6 +156,10 @@ How someone comes in:
   (the last 6 turns of the 1:1 chat, at most 20 KB, go in first as what was said), the colleague answers, and the host
   closes the loop for the owner if something new was said. The 1:1 stream ends `console.final`, `console.huddle {host, id}`,
   `console.end`, and the page switches to the chat with them. On the page these lines show as dim lines, never as text.
+  Only a reply that ended on its own counts (`console.final` `complete`): one the owner stopped, one cut off or refused
+  brings nobody in, whatever its text says. A console restart while the reply is written keeps this: the new console
+  follows the 1:1 runs it re-attached and acts on their lines when they end. A pull-in that is refused (a halt) opens
+  nothing and writes no minutes.
 - **The owner brings them in**: + Colleague above the messages (the crew but the host). They join and speak when the owner
   next writes.
 
