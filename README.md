@@ -421,6 +421,9 @@ continuity, console, packs, instance guard, backups, framework updates, tests, C
 | `docs/` | the design: backend, parity, founding, units, deployment, licensing, style |
 | `scripts/` | founding, setup, tests, backup |
 | `tests/` | end-to-end walks and parity tests |
+| `container/` | the release image: `Dockerfile` and the s6 service |
+| `capheos.yml` | one compose project per company |
+| `SECURITY.md` · `CODE_OF_CONDUCT.md` · `.github/` | policy, community and contribution templates |
 | `secrets/` | keys, one file each (gitignored) |
 
 Most of the 80-tool toolbag **moves to the units repository** — an adjacent index of units, pulled on demand.
@@ -433,7 +436,7 @@ This repository keeps the core, the bootstrap kit and the installer.
 ## 8.1 The release (after containerization)
 
 ```bash
-# one compose project per company; the image is immutable, data outside it
+# image: container/Dockerfile — one compose project per company; data outside the image
 docker compose -f capheos.yml up -d
 ```
 
@@ -483,7 +486,7 @@ opens the console. `docs/FOUNDING.md` is the flow: bootstrap → setup → certi
 
 # 10 · CONTRIBUTING
 
-Read `CONTRIBUTING.md` once. The short version:
+Read `CONTRIBUTING.md` once. The [code of conduct](CODE_OF_CONDUCT.md) applies in every project space. The short version:
 
 1. **Plain language is binding** (`docs/STYLE.md`). If a name has to be explained, it is wrong.
 2. **No company data** — never a real name, owner, customer, path, port, timezone or secret.
@@ -504,7 +507,7 @@ and what is in your way.
 # 11 · SECURITY
 
 - Report a vulnerability privately through GitHub's **security advisories**, or to the project owner — never
-  in a public issue.
+  in a public issue. The full policy is [SECURITY.md](SECURITY.md).
 - The threat model is stated, not implied: `docs/GUARDRAILS.md` and `docs/DEPLOY.md` §3–§5 cover the
   execution boundary, the browser grants and the desktop microVM — including what is *not* enforced.
 - Modules and units declare capabilities; the broker grants only those; undeclared access fails closed.

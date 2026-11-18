@@ -1,0 +1,12 @@
+#!/command/with-contenv sh
+# CaPheOS is one process: the console HTTP face and the runtime are the same Node program
+# (docs/BACKEND.md §3, decision 1). s6 supervises it; nothing else is a service.
+set -eu
+
+if [ ! -f /app/server/index.js ]; then
+  echo "capheos: server/index.js is missing — the backend rewrite (P1) has not landed yet" >&2
+  echo "capheos: see container/README.md and docs/BACKEND.md §8" >&2
+  exit 78
+fi
+
+exec s6-setuidgid capheos node /app/server/index.js

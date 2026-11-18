@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security issue
+    url: https://github.com/capheos/capheos/security/advisories/new
+    about: Report a vulnerability privately. Never open a public issue for one.
+  - name: Question or design discussion
+    url: https://github.com/capheos/capheos/discussions
+    about: Ask about direction before writing code.

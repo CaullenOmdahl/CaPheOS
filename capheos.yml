@@ -1,0 +1,40 @@
+# One compose project per company. The image is immutable; the company is the data volume.
+#
+#   COMPANY_SLUG=example TZ=America/Chicago docker compose -f capheos.yml up -d
+#
+# Put TLS in front of the console before it is reachable from another machine.
+# The updater bridge is host-side and never gets a Docker socket (docs/DEPLOY.md §2).
+name: capheos-${COMPANY_SLUG:-company}
+
+services:
+  capheos:
+    image: ${CAPHEOS_IMAGE:-ghcr.io/capheos/capheos}:${CAPHEOS_TAG:-latest}
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /run
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:${CONSOLE_PORT:-8901}:8901"
+    environment:
+      TZ: ${TZ:-UTC}
+      CAPHEOS_ROOT: /app
+      CAPHEOS_DATA: /data
+      CONSOLE_HOST: 0.0.0.0
+      CONSOLE_PORT: "8901"
+    volumes:
+      - capheos-data:/data
+    stop_grace_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  capheos-data:
+    name: capheos-${COMPANY_SLUG:-company}-data

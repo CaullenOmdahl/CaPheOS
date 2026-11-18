@@ -1,0 +1,27 @@
+# The image is the framework, never the company. Everything a company owns is excluded here.
+.git
+.github
+.agents
+scratch
+secrets
+
+# Company data and runtime state (a company is a volume, not an image layer).
+company/work
+company/state
+company/owner
+company/hiring
+company/roles/*.md
+company/console
+company/LOG.md
+
+# Tests, docs and development files.
+tests
+docs
+systemd
+container/README.md
+
+# Dependencies and local artefacts.
+node_modules
+**/node_modules
+*.log
+.DS_Store
