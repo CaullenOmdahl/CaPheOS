@@ -9,7 +9,7 @@ file, not in code**, and anything that would change routing runs in **shadow** f
 Code: `company/tools/model-rank.js` (the ranking), `company/tools/lib/taskclass.js` (task classes, departments),
 `company/tools/check-benchmarks.py` (the public book). Policy: `company/work/models/ranking-policy.json` (copied at
 founding from `company/defaults/work/models/ranking-policy.json`). Tests: `node company/tools/model-rank.js --selftest`,
-`node --test company/tools/tests/model-rank.test.js`, `python3 company/tools/check-benchmarks.py --selftest`.
+`node --test company/tools/tests/model-rank.test.js`, `node --test company/tools/tests/model-rank-trials.test.js` (§10), `python3 company/tools/check-benchmarks.py --selftest`.
 Owner: the `people` function (the model manager).
 
 ## 1. What is measured
@@ -90,6 +90,7 @@ the time to undo it (`countUnsettled: true` scores it anyway).
 | `company/work/models/house-ranking-history.jsonl` | one hash-chained row per change | appended; rolled monthly, 90 days live (retention) |
 | `company/work/models/routing-proposals.jsonl` | `{kind: proposal}` rows (each proposal once) and `{kind: decision}` rows | appended; rolled monthly, 180 days |
 | `company/state/model-rank.json` | when it last checked, the hash, the policy digest | each refresh |
+| `company/work/models/routing-evaluation.json`, `company/work/models/trials/<id>.md` | the trial and tier-cap evaluation (§10) | each refresh, only when its text changed |
 
 **Deterministic**: the same inputs give byte-identical files. Keys are sorted, numbers rounded, lists sorted, and the
 body holds no clock time (the window is stated in days). A rerun that computes the same body writes nothing.
@@ -135,3 +136,72 @@ or `premergeFail`), `score.cost`, `cost.outputShare`, `cost.window.cachedWeight`
 (`company/tools/tests/fixtures/ranking/`) carries its own copy of the policy, so tuning the shipped default does not
 move it; changing the method does: rebuild it with `node company/tools/tests/fixtures/ranking/build.js --expected`
 and check the new numbers by hand before committing them.
+
+## 10. Trials and tier caps: did the routing change pay?
+
+The router (`lib/routing.js`) records its decision on each wake's row in `company/state/wakes.jsonl` as `route`:
+`{class, source: trial|route|tierCap|chain, trial, arm, provider, model, effort, applied, wouldApply, reasons}`. A
+model trial and the executor tier caps are defined in `company/work/models/routing-policy.json` (the framework default
+defines no trial). This section is how their results are read; it routes nothing. Settings: `trials` and
+`tierCapEvaluation` in the ranking policy (delete a section to switch that report off).
+
+**Items.** The same scored items as the ranking (DONE, settled, not excluded; §1-§4), each joined to the routes on the
+wakes that listed it.
+
+- An item is an **arm item** when a wake ran it on a trial arm: `route.source: trial` with that `trial` and `arm`,
+  whether `applied` is `true` (the arm was a one-run override) or `false` (the seat's chain already is the assigned arm,
+  so it ran there with no override: typically the control arm). A trial assignment that appears only in `wouldApply`
+  (`route.source: chain`: trials in shadow, or the arm not in the override allowlist) ran on the chain and is counted
+  apart (`shadowItems`), never as an arm result. An item whose run was served a different model than the arm's
+  (`servedModel` in runs.jsonl) is counted apart too (`mismatches.served`), not scored for the arm. An item worked on two arms (two wakes, each assigned by hash) counts for neither
+  (`mixedItems`). Assignment is per wake (hash of trial id + wake id), so an item that takes several wakes can
+  land on two arms: watch this count; a high one means the trial measures little.
+- The arm is the route's `arm` (an index into the trial's `arms`, or an arm id), else the arm whose model matches.
+
+**Per arm** (`company/work/models/routing-evaluation.json` `trials[].arms[]`, `model-rank.js trials`):
+
+| Field | What |
+|---|---|
+| items, settling, excluded, shadowItems | scored arm items; items still settling; items whose every run was excluded; shadow-only items |
+| oneShotRate, lower, upper | the one-shot rate and its two-sided Wilson interval at `trials.interval.confidence` (default: the ranking's 80%) |
+| extraRunsPerItem, revisePerItem, reopened | rework (§2) |
+| defects, defectPoints | confirmed defects, severity-weighted (§2) |
+| costPerItem, medianCost, p90Cost, hardestCost | `trials.cost` (default `listUsd`) per accepted item: mean, median, the `tail.percentile` cost and the mean of the most expensive `tail.hardestShare` |
+| windowTokensPerItem | estimated subscription window tokens per item (§2 cost) |
+| mismatches | `served`: items whose run was served another model than the arm's (`servedModel`): not scored; of the scored items, `requested`: the run asked for another model than the arm's and its served model is unknown; `unconfirmed`: no `servedModel` |
+
+**The decision rule** (`trials`): with every arm at `minItemsPerArm` (the trial's own, else the policy's, default 30)
+items, an arm **wins** when the lower bound of its one-shot range is not below the best other arm's point estimate
+**and** its cost per accepted item (`costStat`: mean, or median) is lower than every other arm's (`decision.cheaperThan:
+"every"`, the default) or than that best other arm's (`"bestOther"`). Otherwise the state is **no decision yet**, with
+what is missing: the arms short of items (`arm 2 (…): 12 of 30 items`), an arm with no cost recorded, "no arm is clearly
+better" (the best lower bound is below another arm's point estimate), or "clears the quality bar but does not cost
+less". There is never a winner without the data.
+
+**The decision file** `company/work/models/trials/<id>.md`: the trial's status, scope and entry share, the per-arm table
+with ranges, and the decision. It carries no clock time and is replaced only when its text changes, so it changes when
+the numbers do. A winning arm is not applied by this: moving a department route is a routing proposal the people
+function and the owner decide (§6).
+
+**Tier caps** (`tierCapEvaluation`, the plan's P3 acceptance), per task class (the item's own class, §1: a class's
+verdict reads only that class's items, whatever class the wake was routed under):
+
+- **Capped**: scored items whose wake had a tier cap applied (`route.source: tierCap`, `applied: true`).
+- **Baseline** (`baseline`): `wouldApply` (default) = items whose wake the cap would have changed but did not: the router
+  records those as `route.source: chain`, `applied: false`, `wouldApply.source: tierCap` (caps in shadow, or live but
+  the capped entry not in the override allowlist: the same work, uncapped); `uncapped` = every scored item of the class
+  no tier cap touched either way. An item with both capped and would-apply wakes counts for neither.
+- **Verdict**: **keep** when estimated claude window tokens per accepted item fell by at least `windowCut` (default 0.3)
+  **and** each rate in `rates` (`revise`: share of items with a counted REVISE; `reopen`: share reopened) is within
+  `reworkMaxRatio` (default 1.25) of the baseline; **roll back** (that class) otherwise, with the reason; **not enough
+  data** while either side has fewer than `minItems` (default 20). A baseline rate of 0 allows only 0.
+
+**Duty.** The `house-ranking` duty (§6) is also due when a running or paused trial reached a decision (item
+`trial:<id>:decided:<arm>`), when a running trial has had no routed wake for `trials.stuckDays` (default 3; item
+`trial:<id>:stuck:<since>`; a pacer hold that pauses the trial shows here too), and when the tier caps are in one of
+`tierCapEvaluation.dutyWhenModes` (default `live`) and a class says roll back (`tiercap:<class>`). In shadow the
+verdict is reported, not due.
+
+**Limits.** The evaluation sees what the ranking sees: items closed in `windowDays` and wakes inside
+`company/state/wakes.jsonl` retention (30 days). A trial longer than that keeps only its last month in the numbers; the
+decision file of the moment is the record.

@@ -75,6 +75,25 @@
  "proposals": { "mode": "shadow", "margin": 0.15, "requireRouteData": true, "allowClaimed": false },
  "_proposals": "a routing proposal is written when a cell with enough data beats a department's current route (company/departments.json routes.<class>) for that class by more than margin (0.15 = 15% higher score). mode shadow: proposals are records only, nothing is applied (applying is a later, owner-switched step). requireRouteData: no proposal while the route's own cell lacks data. allowClaimed: whether a cell whose model the provider did not confirm (no servedModel) may be proposed",
 
+ "trials": {
+  "minItemsPerArm": 30,
+  "interval": { "confidence": 0.8 },
+  "cost": "listUsd",
+  "costStat": "mean",
+  "decision": { "cheaperThan": "every" },
+  "stuckDays": 3
+ },
+ "_trials": "the arm report and decision rule for model trials (docs/RANKING.md §10). Trials themselves are defined in company/work/models/routing-policy.json trials[] (the framework default defines none); a trial's own minItemsPerArm wins over this one. Items are the DONE items whose wakes the dispatcher routed to the trial with the arm applied (route.source trial, applied true); shadow-only items are counted apart, an item worked on two arms counts for none. interval: the one-shot range (Wilson, default: the ranking's confidence). cost: listUsd | usd | windowTokens per accepted item; costStat: mean | median is the figure the rule compares (median, p90 and the hardest share are always shown). Rule: an arm wins when the lower bound of its one-shot range is not below the best other arm's point estimate AND its cost is lower than every other arm's (decision.cheaperThan 'every') or than that best other arm's ('bestOther'), both only once every arm has minItemsPerArm items; otherwise 'no decision yet' with what is missing. stuckDays: the house-ranking duty is due when a running trial has had no routed wake for this many days (or a running or paused trial reached a decision). Delete this section to switch the report off",
+ "tierCapEvaluation": {
+  "minItems": 20,
+  "windowCut": 0.3,
+  "reworkMaxRatio": 1.25,
+  "rates": ["revise", "reopen"],
+  "baseline": "wouldApply",
+  "dutyWhenModes": ["live"]
+ },
+ "_tierCapEvaluation": "whether executor tier caps pay (docs/RANKING.md §10, the middle-management plan's P3 acceptance), per task class. Capped = scored items whose wake had a tier-cap route applied (route.source tierCap, applied true). baseline 'wouldApply': items whose wake had a tier-cap route recorded but not applied (shadow: the same work, uncapped); 'uncapped': every scored item of the class that no tier-cap route touched. Verdict per class: keep when the estimated claude window tokens per accepted item (cost.window) fell by at least windowCut (0.3 = 30%) AND each rate in rates (revise: share of items with a counted REVISE; reopen: share reopened) is within reworkMaxRatio (1.25x) of the baseline; roll back otherwise; not enough data while either side has fewer than minItems items. dutyWhenModes: the house-ranking duty is due for a roll back while routing-policy.json tierCaps.mode is one of these. Delete this section to switch the evaluation off",
+
  "readBounds": { "runsMaxBytes": 67108864, "handoffMaxBytes": 8388608, "ledgerMaxBytes": 16777216, "correctionsMaxBytes": 4194304, "evidenceMaxFiles": 2000 },
  "_readBounds": "every input is read from its end, inside these bounds (docs/RETENTION.md)"
 }

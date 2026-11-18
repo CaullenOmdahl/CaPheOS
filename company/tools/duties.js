@@ -41,7 +41,7 @@ const DUTIES = [
   { id: 'departments', tool: 'departments.js', route: 'people', everyMin: 60, timeoutMs: 10000, whileHalted: false, enabledByDefault: true,
     why: 'company/departments.json, loops.json and FLOOR_PLAN.md disagree, or a department brief is missing or over its size limit (to people); a department change the people function proposed waits for the CEO (to ceo). Reports, never fixes; nothing is due while the company has no departments' },
   { id: 'house-ranking', tool: 'model-rank.js', route: 'people', everyMin: 60, timeoutMs: 30000, whileHalted: false, enabledByDefault: true,
-    why: 'a routing proposal is open: a model cell with enough data beats a department\'s current route for its task class in the house ranking (shadow: nothing is applied; docs/RANKING.md)' },
+    why: 'a routing proposal is open: a model cell with enough data beats a department\'s current route for its task class in the house ranking (shadow: nothing is applied; docs/RANKING.md); a running model trial reached a decision or has had no items for trials.stuckDays; live tier caps whose evaluation says roll back (docs/RANKING.md §10)' },
 ];
 
 const ID_RE = /^[a-z][a-z0-9-]{1,39}$/;

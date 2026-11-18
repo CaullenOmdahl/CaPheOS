@@ -8,6 +8,8 @@
  *                                         refreshMinutes, default hourly)
  *   node company/tools/model-rank.js show [--json]        the stored ranking (company/work/models/house-ranking.md|json)
  *   node company/tools/model-rank.js compute [--now <ms>] the ranking computed now, printed (writes nothing)
+ *   node company/tools/model-rank.js trials [--json] [--now <ms>]  the trial and tier-cap evaluation computed now (writes
+ *                                         nothing; refresh writes it: routing-evaluation.json and trials/<id>.md)
  *   node company/tools/model-rank.js verify               the history file's hash chain (exit 1 on a break)
  *   node company/tools/model-rank.js decide <proposal id> --verdict noted|declined --by <seat> [--reason "..."]
  *                                         record that a routing proposal was looked at (nothing is applied)
@@ -28,7 +30,8 @@
  * Writes (refresh only): company/work/models/house-ranking.json and .md (overwritten, only when the body changed),
  * company/work/models/house-ranking-history.jsonl (one hash-chained row per change; retention rolls it monthly),
  * company/work/models/routing-proposals.jsonl (proposal and decision rows; rolled monthly), company/state/model-rank.json
- * (when it last checked). Reads every input bounded, from its end (lib/bounded.js). No socket, no model run.
+ * (when it last checked), company/work/models/routing-evaluation.json and company/work/models/trials/<id>.md (the trial and
+ * tier-cap evaluation, docs/RANKING.md §10: each replaced whole only when its text changed). Reads every input bounded, from its end (lib/bounded.js). No socket, no model run.
  * Owner: the people function (the model manager).
  */
 'use strict';
@@ -266,11 +269,13 @@ function load(o) {
     const names = fs.readdirSync(P.evidence).filter(f => /^premerge-.*\.json$/.test(f)).sort();
     for (const f of names.slice(-Number(K.rb.evidenceMaxFiles || 2000))) { const j = readJson(path.join(P.evidence, f), null); if (j && typeof j === 'object') evidence.push(j); }
   } catch (_) { evidence = []; }
-  return { policy: pol.policy, policySource: pol.source, now, crew, departments, wakes, runs, attributed, files, ledger, corrections, evidence };
+  return { policy: pol.policy, policySource: pol.source, routing: loadRouting(root), now, crew, departments, wakes, runs, attributed, files, ledger, corrections, evidence };
 }
 
 /* ---------------- the ranking (pure) ---------------- */
-function rank(inp) {
+function rank(inp) { return analyze(inp).body; }
+// the ranking body plus the per-item rows behind it (the trial and tier-cap evaluation reads those; the body is unchanged)
+function analyze(inp) {
   const P = inp.policy, K = knobs(P), now = inp.now;
   const since = now - K.windowDays * DAY, settleMs = K.oneShotDays * DAY;
   const crew = inp.crew || {}, deps = inp.departments || { departments: [] };
@@ -371,7 +376,7 @@ function rank(inp) {
     const claimed = !served;
     const effort = String(first.reasoningEffort || 'default');
     const cell = { class: cls, model, provider: prov, modelId: String(served || first.model || '?'), effort, claimed };
-    const base = { key, file: li.file, id: li.id, seat, cell, cost };
+    const base = { key, file: li.file, id: li.id, seat, cell, cost, wakes: li.wakes || [], served: served || null, requested: String(((primary || first).model) || '') };
     if (!primary) { totals.excluded++; items.push(Object.assign(base, { excluded: true, excludedRuns })); continue; }
     const closedAt = d.closedAt || li.closedAt || 0, closedBy = d.closedBy || closedAt;
     const settled = now - closedAt >= settleMs;
@@ -500,8 +505,257 @@ function rank(inp) {
     }
   }
 
-  return { version: 1, policyVersion: P.version == null ? null : P.version, policyDigest: policyDigest(P), windowDays: K.windowDays, oneShotWindowDays: K.oneShotDays, minItems: K.minItems,
+  const body = { version: 1, policyVersion: P.version == null ? null : P.version, policyDigest: policyDigest(P), windowDays: K.windowDays, oneShotWindowDays: K.oneShotDays, minItems: K.minItems,
     confidence: K.confidence, score: { cost: K.scoreCost, per: K.scorePer }, totals, cells: out, proposals, graders };
+  return { body, items, wakeById, runById };
+}
+
+/* ---------------- trials and tier caps: the evaluation (pure) ----------------
+ * Reads the per-item rows behind the ranking and the `route` the dispatcher recorded on each wake (wakes.jsonl, the
+ * router's decision, lib/routing.js decide(): {class, source, trial?, arm?, provider, model, effort, applied, wouldApply?,
+ * reasons}). The shapes it reads:
+ *   trial arm, override   {source: 'trial', trial, arm, <arm pair>, applied: true}
+ *   trial arm, control    {source: 'trial', trial, arm, <arm pair>, applied: false}: the seat's chain already is the arm, so
+ *                         it runs there with no override; an arm item all the same
+ *   trial in shadow       {source: 'chain', applied: false, wouldApply: {source: 'trial', trial, arm, ...}}: the chain ran;
+ *                         counted as a shadow item of that arm, never scored
+ *   tier cap applied      {source: 'tierCap', <capped pair>, applied: true}
+ *   tier cap not applied  {source: 'chain', applied: false, wouldApply: {source: 'tierCap', ...}} (shadow, or live but not in
+ *                         the override allowlist): the baseline -- the same router would have capped it, the chain ran
+ * Two reports:
+ *   trials    one per trial (company/work/models/routing-policy.json trials[], and any trial id seen on a wake): each
+ *             arm's items, one-shot rate with its interval, rework, defects, cost per accepted item (mean, median, p90,
+ *             hardest share), the decision rule of ranking-policy.json `trials`, and mismatches: an item whose run was
+ *             served a model other than the arm's is counted apart (mismatches.served), not scored for the arm
+ *   tierCaps  per task class (the item's own class): claude window use per accepted item and REVISE / reopen rates of
+ *             capped items against the baseline (the would-apply wakes above, or with baseline 'uncapped' the class's
+ *             items no cap touched) and a verdict: keep / roll back / not enough data, by `tierCapEvaluation`
+ * No `trials` (or `tierCapEvaluation`) section in the ranking policy: that report is off. Nothing here routes anything. */
+function routingPaths(root) {
+  const r = root || co.ROOT;
+  return { policy: path.join(r, 'company', 'work', 'models', 'routing-policy.json'), policyDefault: path.join(r, 'company', 'defaults', 'work', 'models', 'routing-policy.json'),
+    evaluation: path.join(r, 'company', 'work', 'models', 'routing-evaluation.json'), trialsDir: path.join(r, 'company', 'work', 'models', 'trials') };
+}
+// the routing policy (trial definitions, tier-cap mode): the company's copy, else the default; none: no trials defined
+function loadRouting(root) {
+  const R = routingPaths(root);
+  for (const f of [R.policy, R.policyDefault]) { const j = readJson(f, null); if (j && typeof j === 'object' && !Array.isArray(j)) return j; }
+  return {};
+}
+function evalKnobs(P) {
+  const T = P && P.trials && typeof P.trials === 'object' && !Array.isArray(P.trials) ? P.trials : null;
+  const C = P && P.tierCapEvaluation && typeof P.tierCapEvaluation === 'object' ? P.tierCapEvaluation : null;
+  const g = (o, k, d) => (o && o[k] !== undefined ? o[k] : d);
+  const costOf = v => (['usd', 'listUsd', 'windowTokens'].includes(v) ? v : 'listUsd');
+  return {
+    trials: T ? { minItemsPerArm: Math.max(1, num(T.minItemsPerArm, 30)), cost: costOf(T.cost), costStat: T.costStat === 'median' ? 'median' : 'mean',
+      cheaperThan: g(T.decision, 'cheaperThan') === 'bestOther' ? 'bestOther' : 'every', stuckDays: Math.max(1, num(T.stuckDays, 3)),
+      confidence: clamp(num(g(T.interval, 'confidence', g(P.interval, 'confidence', 0.8)), 0.8), 0.5, 0.999) } : null,
+    tierCaps: C ? { minItems: Math.max(1, num(C.minItems, 20)), windowCut: clamp(num(C.windowCut, 0.3), 0, 1), reworkMaxRatio: Math.max(1, num(C.reworkMaxRatio, 1.25)),
+      baseline: C.baseline === 'uncapped' ? 'uncapped' : 'wouldApply', rates: (Array.isArray(C.rates) ? C.rates : ['revise', 'reopen']).filter(x => x === 'revise' || x === 'reopen'),
+      rollBackDutyModes: Array.isArray(C.dutyWhenModes) ? C.dutyWhenModes.map(String) : ['live'] } : null,
+  };
+}
+function wilsonBounds(successes, n, z) {
+  if (!n) return [null, null];
+  const p = clamp(successes / n, 0, 1), z2 = z * z, c = p + z2 / (2 * n), h = z * Math.sqrt(p * (1 - p) / n + z2 / (4 * n * n)), d = 1 + z2 / n;
+  return [clamp((c - h) / d, 0, 1), clamp((c + h) / d, 0, 1)];
+}
+const sameModel = (a, b) => { const x = normModel(a), y = normModel(b); return !!x && !!y && (x === y || x.includes(y) || y.includes(x)); };
+const armLabel = a => (a ? String(a.provider || '?') + '/' + String(a.model || '?') + ' @ ' + String(a.effort || 'default') : '?');
+const trialIdOf = r => String(r.trial || r.trialId || (r.arm && typeof r.arm === 'object' && (r.arm.trial || r.arm.trialId)) || '(unnamed)');
+// the arm a route names: an index into the trial's arms (a number, "2", {index}), an arm id, or the arm's model
+function armKeyOf(r, def) {
+  let a = r.arm; if (a && typeof a === 'object') a = a.index != null ? a.index : a.id;
+  if (typeof a === 'string' && /^\d+$/.test(a)) a = Number(a);
+  const arms = def && Array.isArray(def.arms) ? def.arms : [];
+  if (Number.isInteger(a) && a >= 0) return a;
+  if (a != null) { const i = arms.findIndex(x => x && x.id != null && String(x.id) === String(a)); if (i >= 0) return i; }
+  const pick = r.applied ? r : (r.wouldApply || r);
+  const i = arms.findIndex(x => x && String(x.provider) === String(pick.provider) && sameModel(x.model, pick.model) && String(x.effort || 'default') === String(pick.effort || 'default'));
+  if (i >= 0) return i;
+  return a != null ? String(a) : armLabel(pick);
+}
+function costStats(list, metric, K, ek) {
+  const s = list, n = s.length, costs = s.map(x => num(x.cost[metric], 0)).sort((a, b) => a - b), total = costs.reduce((t, x) => t + x, 0);
+  const hardN = Math.max(1, Math.ceil(K.hardest * n));
+  return { costPerItem: n ? rnd(total / n) : null, medianCost: rnd(median(costs)), p90Cost: rnd(percentile(costs, K.pct)), hardestCost: n ? rnd(costs.slice(-hardN).reduce((t, x) => t + x, 0) / hardN) : null,
+    decisionCost: n ? rnd(ek && ek.costStat === 'median' ? median(costs) : total / n) : null };
+}
+function evaluate(inp, an) {
+  an = an || analyze(inp);
+  const P = inp.policy, K = knobs(P), E = evalKnobs(P), routing = inp.routing || {};
+  const res = {};
+  const scoredOf = it => !it.excluded && (it.settled || K.countUnsettled);
+  const wakesOf = it => (it.wakes || []).map(id => an.wakeById.get(id)).filter(w => w && w.route && typeof w.route === 'object').sort((a, b) => (Number(a.at) || 0) - (Number(b.at) || 0));
+  const wouldOf = (w, src) => w.route.source === 'chain' && w.route.applied !== true && w.route.wouldApply && typeof w.route.wouldApply === 'object' && w.route.wouldApply.source === src;
+  // the model a wake's run was served (runs.jsonl servedModel), else the item's primary run's; null: not confirmed
+  const servedOf = (w, it) => { const r = an.runById && w.runId != null ? an.runById.get(String(w.runId)) : null; return (r && r.servedModel) || (!r && it.served) || null; };
+  if (E.trials) {
+    const ek = E.trials, z = zOf(ek.confidence);
+    const defs = new Map(); for (const t of Array.isArray(routing.trials) ? routing.trials : []) if (t && t.id != null) defs.set(String(t.id), t);
+    const seen = new Map();   // trial id -> { arms: Map(key -> bucket), mixed, lastAt }
+    const bucket = (tid, key) => { if (!seen.has(tid)) seen.set(tid, { arms: new Map(), mixed: 0, lastAt: null }); const t = seen.get(tid); if (!t.arms.has(key)) t.arms.set(key, { scored: [], settling: 0, excluded: 0, shadow: 0, servedOther: 0 }); return t.arms.get(key); };
+    // a wake that ran on a trial arm, override or not (the control arm runs on the chain with no override)
+    const onArm = w => w && w.route && typeof w.route === 'object' && w.route.source === 'trial';
+    for (const w of inp.wakes || []) if (onArm(w)) { const tid = trialIdOf(w.route); bucket(tid, armKeyOf(w.route, defs.get(tid))); const t = seen.get(tid); t.lastAt = Math.max(t.lastAt || 0, Number(w.at) || 0); }
+    const armSpec = (tid, key, r) => { const d = defs.get(tid); return Number.isInteger(key) && d && Array.isArray(d.arms) && d.arms[key] ? d.arms[key] : r; };
+    for (const it of an.items) {
+      const ws = wakesOf(it), byTrial = new Map();
+      const add = (tid, kind, w, r) => { if (!byTrial.has(tid)) byTrial.set(tid, { on: [], shadow: [] }); byTrial.get(tid)[kind].push({ w, r }); };
+      for (const w of ws) {
+        if (onArm(w)) add(trialIdOf(w.route), 'on', w, w.route);
+        else if (wouldOf(w, 'trial')) { const r = w.route.wouldApply; add(trialIdOf(r), 'shadow', w, Object.assign({}, r, { applied: true })); }
+      }
+      for (const [tid, g] of byTrial) {
+        const def = defs.get(tid);
+        if (!g.on.length) { bucket(tid, armKeyOf(g.shadow[0].r, def)).shadow++; continue; }   // only ever assigned in shadow
+        const keys = [...new Set(g.on.map(x => String(armKeyOf(x.r, def))))];
+        const key = armKeyOf(g.on[0].r, def), b = bucket(tid, key);
+        if (keys.length > 1) { seen.get(tid).mixed++; continue; }   // worked on two arms: counted for neither
+        const spec = armSpec(tid, key, g.on[0].r);
+        if (spec && spec.model && g.on.some(x => { const sv = servedOf(x.w, it); return sv && !sameModel(sv, spec.model); })) { b.servedOther++; continue; }   // ran on another model
+        if (it.excluded) b.excluded++; else if (!scoredOf(it)) b.settling++; else b.scored.push(Object.assign({ armRoute: g.on[0].r }, it));
+      }
+    }
+    const ids = [...new Set([...defs.keys()].filter(id => String((defs.get(id) || {}).status || 'draft') !== 'draft' || seen.has(id)).concat([...seen.keys()]))].sort();
+    res.trials = ids.map(id => {
+      const def = defs.get(id) || null, t = seen.get(id) || { arms: new Map(), mixed: 0, lastAt: null };
+      const minN = Math.max(1, num(def && def.minItemsPerArm, ek.minItemsPerArm));
+      const defArms = def && Array.isArray(def.arms) ? def.arms : [];
+      const keys = defArms.map((_, i) => i).concat([...t.arms.keys()].filter(k => !(Number.isInteger(k) && k < defArms.length)).sort((a, b) => (String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0)));
+      const arms = keys.map(k => {
+        const b = t.arms.get(k) || { scored: [], settling: 0, excluded: 0, shadow: 0, servedOther: 0 }, s = b.scored, n = s.length;
+        const succ = s.reduce((x, i) => x + i.oneShot, 0), [lo, hi] = wilsonBounds(succ, n, z);
+        const spec = Number.isInteger(k) && defArms[k] ? defArms[k] : (s[0] && s[0].armRoute) || null;
+        // served: items served another model than the arm's (not scored); requested / unconfirmed: scored items whose run
+        // asked another model, or did not say what it was served
+        const mm = { requested: 0, served: b.servedOther, unconfirmed: 0 };
+        for (const i of s) { if (spec && spec.model && !sameModel(i.requested, spec.model)) mm.requested++; if (!i.served) mm.unconfirmed++; }
+        return Object.assign({ arm: k, label: spec ? armLabel(spec) : String(k), provider: spec ? String(spec.provider || '?') : null, model: spec ? String(spec.model || '?') : null, effort: spec ? String(spec.effort || 'default') : null,
+          items: n, enough: n >= minN, settling: b.settling, excluded: b.excluded, shadowItems: b.shadow,
+          oneShot: rnd(succ, 4), oneShotRate: n ? rnd(succ / n, 4) : null, lower: rnd(lo, 4), upper: rnd(hi, 4),
+          extraRunsPerItem: n ? rnd(s.reduce((x, i) => x + i.extraRuns, 0) / n, 4) : null, revisePerItem: n ? rnd(s.reduce((x, i) => x + i.reviseRounds, 0) / n, 4) : null,
+          reopened: s.filter(i => i.reopened).length, defects: s.reduce((x, i) => x + i.defects, 0), defectPoints: rnd(s.reduce((x, i) => x + i.defectPoints, 0), 4),
+          windowTokensPerItem: n ? Math.round(s.reduce((x, i) => x + i.cost.windowTokens, 0) / n) : null, mismatches: mm }, costStats(s, ek.cost, K, ek));
+      });
+      return { id, defined: !!def, class: def && def.class ? String(def.class) : null, status: def ? String(def.status || 'draft') : 'not in routing-policy.json',
+        scope: def && def.scope ? sortKeys(def.scope) : null, entryShare: def && def.entryShare != null ? num(def.entryShare, null) : null,
+        minItemsPerArm: minN, confidence: ek.confidence, cost: ek.cost, costStat: ek.costStat, mixedItems: t.mixed, lastWakeAt: t.lastAt || null,
+        arms, decision: trialDecision(arms, minN, ek) };
+    });
+  }
+  if (E.tierCaps) {
+    const ck = E.tierCaps, byClass = new Map();
+    const grp = cls => { if (!byClass.has(cls)) byClass.set(cls, { capped: [], baseline: [], mixed: 0, wouldApply: 0 }); return byClass.get(cls); };
+    for (const it of an.items) {
+      if (!scoredOf(it)) continue;
+      const ws = wakesOf(it), applied = ws.filter(w => w.route.source === 'tierCap' && w.route.applied === true), would = ws.filter(w => wouldOf(w, 'tierCap'));
+      const cls = String(it.cell.class);   // the item's own class: a class's verdict reads only its items
+      if (applied.length && would.length) { grp(cls).mixed++; continue; }
+      if (applied.length) { grp(cls).capped.push(it); continue; }
+      if (would.length) { grp(cls).wouldApply++; if (ck.baseline === 'wouldApply') grp(cls).baseline.push(it); }
+    }
+    if (ck.baseline === 'uncapped') {   // baseline: the class's scored items that no tier-cap route touched
+      for (const it of an.items) { if (!scoredOf(it) || wakesOf(it).some(w => w.route.source === 'tierCap' || wouldOf(w, 'tierCap'))) continue; const g = byClass.get(String(it.cell.class)); if (g) g.baseline.push(it); }
+    }
+    const side = s => { const n = s.length; return { items: n, windowTokensPerItem: n ? Math.round(s.reduce((x, i) => x + i.cost.windowTokens, 0) / n) : null,
+      reviseRate: n ? rnd(s.filter(i => i.reviseRounds > 0).length / n, 4) : null, reopenRate: n ? rnd(s.filter(i => i.reopened).length / n, 4) : null }; };
+    const classes = [...byClass.keys()].sort().map(cls => {
+      const g = byClass.get(cls), c = side(g.capped), b = side(g.baseline), why = [];
+      let verdict;
+      const cut = b.windowTokensPerItem ? rnd(1 - c.windowTokensPerItem / b.windowTokensPerItem, 4) : null;
+      const ratio = k => (b[k + 'Rate'] == null || c[k + 'Rate'] == null ? null : b[k + 'Rate'] === 0 ? (c[k + 'Rate'] === 0 ? 1 : null) : rnd(c[k + 'Rate'] / b[k + 'Rate'], 4));
+      const within = k => c[k + 'Rate'] <= b[k + 'Rate'] * ck.reworkMaxRatio + 1e-9;
+      if (c.items < ck.minItems || b.items < ck.minItems) {
+        verdict = 'not enough data';
+        if (c.items < ck.minItems) why.push('capped items ' + c.items + ' of ' + ck.minItems);
+        if (b.items < ck.minItems) why.push('baseline items ' + b.items + ' of ' + ck.minItems);
+      } else if (!b.windowTokensPerItem) { verdict = 'not enough data'; why.push('the baseline used no window: nothing to cut'); }
+      else {
+        const bad = ck.rates.filter(k => !within(k));
+        for (const k of bad) why.push((k === 'revise' ? 'REVISE' : 'reopen') + ' rate ' + c[k + 'Rate'] + ' vs baseline ' + b[k + 'Rate'] + ' (over ' + ck.reworkMaxRatio + 'x)');
+        if (cut < ck.windowCut) why.push('window use per item fell ' + Math.round(100 * cut) + '%, under the ' + Math.round(100 * ck.windowCut) + '% the caps must save');
+        verdict = why.length ? 'roll back' : 'keep';
+        if (!why.length) why.push('window use per item fell ' + Math.round(100 * cut) + '% and rework stayed within ' + ck.reworkMaxRatio + 'x');
+      }
+      return { class: cls, capped: c, baseline: b, windowCut: cut, reviseRatio: ratio('revise'), reopenRatio: ratio('reopen'), mixedItems: g.mixed, wouldApplyItems: g.wouldApply, verdict, reasons: why };
+    });
+    const rollBack = classes.filter(c => c.verdict === 'roll back').map(c => c.class), keep = classes.filter(c => c.verdict === 'keep').map(c => c.class);
+    const tc = routing.tierCaps && typeof routing.tierCaps === 'object' ? routing.tierCaps : {};
+    res.tierCaps = { mode: String(tc.mode || 'off'), baseline: ck.baseline, minItems: ck.minItems, windowCut: ck.windowCut, reworkMaxRatio: ck.reworkMaxRatio, rates: ck.rates, classes,
+      verdict: rollBack.length ? 'roll back' : keep.length && keep.length === classes.length ? 'keep' : keep.length ? 'keep (some classes not enough data)' : 'not enough data', rollBack, keep };
+  }
+  return res;
+}
+/* the decision rule (ranking-policy.json trials): an arm wins when the LOWER bound of its one-shot interval is not below
+   the best other arm's point estimate AND its cost per accepted item is lower (than every other arm, or than that best
+   other arm: decision.cheaperThan), both only once every arm has minItemsPerArm. Otherwise: no decision yet, and what
+   is missing. Never a winner without the data. */
+function trialDecision(arms, minN, ek) {
+  const fmt = a => 'arm ' + a.arm + ' (' + a.label + ')';
+  if (arms.length < 2) return { state: 'no decision yet', winner: null, missing: ['a trial needs at least 2 arms (' + arms.length + ')'] };
+  const short = arms.filter(a => a.items < minN);
+  if (short.length) return { state: 'no decision yet', winner: null, missing: short.map(a => fmt(a) + ': ' + a.items + ' of ' + minN + ' items') };
+  const noCost = arms.filter(a => a.decisionCost == null);
+  if (noCost.length) return { state: 'no decision yet', winner: null, missing: noCost.map(a => fmt(a) + ': no cost recorded') };
+  const missing = [];
+  for (const a of arms) {
+    const others = arms.filter(b => b !== a), best = others.slice().sort((x, y) => y.oneShotRate - x.oneShotRate || (String(x.arm) < String(y.arm) ? -1 : 1))[0];
+    const quality = a.lower >= best.oneShotRate;
+    const rivals = ek.cheaperThan === 'bestOther' ? [best] : others;
+    const cheaper = rivals.every(b => a.decisionCost < b.decisionCost);
+    if (quality && cheaper) return { state: 'decided', winner: a.arm, label: a.label, missing: [],
+      why: fmt(a) + ': one-shot lower bound ' + a.lower + ' >= ' + fmt(best) + ' point ' + best.oneShotRate + ', and ' + ek.costStat + ' cost per accepted item ' + a.decisionCost + ' < ' + rivals.map(b => b.decisionCost).join(', ') };
+  }
+  const top = arms.slice().sort((x, y) => y.lower - x.lower || (String(x.arm) < String(y.arm) ? -1 : 1))[0];
+  const others = arms.filter(b => b !== top), best = others.slice().sort((x, y) => y.oneShotRate - x.oneShotRate || (String(x.arm) < String(y.arm) ? -1 : 1))[0];
+  if (top.lower < best.oneShotRate) missing.push('no arm is clearly better: the best lower bound, ' + fmt(top) + ' ' + top.lower + ', is below ' + fmt(best) + '\'s point estimate ' + best.oneShotRate);
+  else missing.push(fmt(top) + ' clears the quality bar but does not cost less (' + top.decisionCost + ' vs ' + (ek.cheaperThan === 'bestOther' ? [best] : others).map(b => b.decisionCost).join(', ') + ')');
+  return { state: 'no decision yet', winner: null, missing };
+}
+// one trial in words: deterministic (no clock), ranges shown, no recommendation without the data
+function renderTrialMd(t, digest) {
+  const pc = v => (v == null ? '–' : Math.round(1000 * v) / 10 + '%'), f = v => (v == null ? '–' : String(v));
+  const L = ['# Trial ' + t.id + (t.class ? ': ' + t.class : ''), '',
+    'Written by `company/tools/model-rank.js` (docs/RANKING.md §10) from the wakes that ran on the arms of this trial (`route.source: trial`, with or without a one-run override; shadow-only assignments and other-model runs counted apart). Regenerated when the numbers change; it routes nothing. ' +
+    'Status in company/work/models/routing-policy.json: **' + t.status + '**' + (t.entryShare != null ? ', entry share ' + t.entryShare : '') + (t.scope ? ', scope `' + JSON.stringify(t.scope) + '`' : '') + '. ' +
+    'Each arm needs ' + t.minItemsPerArm + ' accepted items; the one-shot range is the ' + Math.round(100 * t.confidence) + '% Wilson interval; cost is ' + t.cost + ' per accepted item. Policy ' + digest + '.', '',
+    '| Arm | Model | Items | One-shot (range) | Extra runs/item | REVISE/item | Reopened | Defects (pts) | Cost/item | Median | p90 | Hardest share | Window tokens/item | Requested ≠ arm | Served ≠ requested | Unconfirmed | Settling | Shadow only |',
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|'];
+  for (const a of t.arms) L.push('| ' + a.arm + ' | `' + a.label + '` | ' + a.items + (a.enough ? '' : ' (of ' + t.minItemsPerArm + ')') + ' | ' + (a.items ? pc(a.oneShotRate) + ' (' + pc(a.lower) + '–' + pc(a.upper) + ')' : '–') + ' | ' + f(a.extraRunsPerItem) + ' | ' + f(a.revisePerItem) + ' | ' + a.reopened + ' | ' + a.defects + ' (' + f(a.defectPoints) + ') | ' +
+    f(a.costPerItem) + ' | ' + f(a.medianCost) + ' | ' + f(a.p90Cost) + ' | ' + f(a.hardestCost) + ' | ' + f(a.windowTokensPerItem) + ' | ' + a.mismatches.requested + ' | ' + a.mismatches.served + ' | ' + a.mismatches.unconfirmed + ' | ' + a.settling + ' | ' + a.shadowItems + ' |');
+  L.push('');
+  if (t.mixedItems) L.push(t.mixedItems + ' item(s) were worked on more than one arm and are counted for none.', '');
+  L.push('## Decision', '');
+  if (t.decision.state === 'decided') L.push('**Arm ' + t.decision.winner + ' (`' + t.decision.label + '`) wins** by the policy\'s rule: ' + t.decision.why + '.', '', 'Applying it (a department route) is a separate step: a routing proposal the people function and the owner decide.');
+  else { L.push('**No decision yet.** What is missing:', ''); for (const m of t.decision.missing) L.push('- ' + m); }
+  return L.join('\n') + '\n';
+}
+const trialFile = id => (/^[A-Za-z0-9_.-]{1,64}$/.test(id) && !/^\.+$/.test(id) ? id : 'trial-' + sha(id).slice(0, 12)) + '.md';
+// write the evaluation files that changed: routing-evaluation.json and trials/<id>.md (each compared with what is on disk)
+function writeEvaluation(root, ev, digest, dry) {
+  const R = routingPaths(root), wrote = [];
+  if (!ev.trials && !ev.tierCaps) return wrote;
+  const want = [[R.evaluation, JSON.stringify(Object.assign({ hash: bodyHash(ev) }, sortKeys(ev)), null, 1) + '\n']];
+  for (const t of ev.trials || []) want.push([path.join(R.trialsDir, trialFile(t.id)), renderTrialMd(t, digest)]);
+  for (const [f, text] of want) { let cur = null; try { cur = fs.readFileSync(f, 'utf8'); } catch (_) {} if (cur !== text) { if (!dry) writeAtomic(f, text); wrote.push(path.relative(root, f)); } }
+  return wrote;
+}
+// the duty lines of the evaluation: a running (or paused) trial that reached a decision or has had no items for stuckDays;
+// tier caps whose verdict is roll back while their mode is one of dutyWhenModes (default live)
+function evaluationDuty(ev, inp) {
+  const lines = [], ids = [], E = evalKnobs(inp.policy), defs = new Map();
+  for (const t of Array.isArray((inp.routing || {}).trials) ? inp.routing.trials : []) if (t && t.id != null) defs.set(String(t.id), t);
+  for (const t of ev.trials || []) {
+    if (!['running', 'paused'].includes(t.status)) continue;
+    if (t.decision.state === 'decided') { lines.push('trial ' + t.id + ' reached a decision (arm ' + t.decision.winner + ')'); ids.push('trial:' + t.id + ':decided:' + t.decision.winner); continue; }
+    if (t.status !== 'running') continue;
+    const def = defs.get(t.id) || {}, since = t.lastWakeAt || Date.parse(def.startedAt) || null;
+    if (since && inp.now - since >= E.trials.stuckDays * DAY) { const d = Math.floor((inp.now - since) / DAY); lines.push('trial ' + t.id + ' has had no items for ' + d + ' days'); ids.push('trial:' + t.id + ':stuck:' + iso(since).slice(0, 10)); }
+  }
+  if (ev.tierCaps && ev.tierCaps.rollBack.length && E.tierCaps.rollBackDutyModes.includes(ev.tierCaps.mode)) { lines.push('tier caps: roll back ' + ev.tierCaps.rollBack.join(', ')); for (const c of ev.tierCaps.rollBack) ids.push('tiercap:' + c); }
+  return { lines, ids };
 }
 
 /* ---------------- rendering and files ---------------- */
@@ -581,11 +835,13 @@ function refresh(o) {
   o = o || {}; const root = o.root || co.ROOT; const now = Number.isFinite(o.now) ? o.now : Date.now(); const P = paths(root);
   if (!o.force && !refreshDue({ root, now })) return { skipped: 'not due' };
   const inp = load({ root, now }); if (!inp) return { skipped: 'no ranking policy' };
-  const body = rank(inp); const hash = bodyHash(body);
+  const an = analyze(inp), body = an.body; const hash = bodyHash(body);
   const stored = readJson(P.json, null);
   const changed = !stored || stored.hash !== hash;
-  const res = { changed, hash, body, newProposals: [] };
+  const evaluation = evaluate(inp, an);
+  const res = { changed, hash, body, newProposals: [], evaluation, evaluationWritten: writeEvaluation(root, evaluation, body.policyDigest, true) };
   if (o.dry) return res;
+  writeEvaluation(root, evaluation, body.policyDigest, false);
   if (changed) {
     const computedAt = iso(now);
     writeAtomic(P.json, fileText(body, computedAt));
@@ -602,14 +858,17 @@ function refresh(o) {
 function duty(o) {
   o = o || {}; const root = o.root || co.ROOT;
   const inp = load({ root, now: o.now }); if (!inp) return { due: false };
-  const body = rank(inp);
+  const an = analyze(inp), body = an.body;
   const decided = decidedIds(paths(root).proposals);
   const open = body.proposals.filter(p => !decided.has(p.id));
-  if (!open.length) return { due: false };
-  const ids = open.map(p => p.id).sort();
+  const ev = evaluationDuty(evaluate(inp, an), inp);   // trials that decided or are stuck, tier caps to roll back
+  if (!open.length && !ev.lines.length) return { due: false };
+  const ids = open.map(p => p.id).sort().concat(ev.ids.slice().sort());
   const where = [...new Set(open.map(p => p.department + '/' + p.class))].sort().join(', ');
-  return { due: true, route: 'people', key: 'rp-' + sha(ids.join(',')).slice(0, 16), items: ids.map(id => ({ id })),
-    reason: open.length + ' routing proposal(s) in ' + open[0].mode + ' mode (' + where + '): a model cell with enough data beats the current route; nothing is applied. See model-rank.js show, then decide <id> --verdict noted|declined' };
+  const parts = [];
+  if (open.length) parts.push(open.length + ' routing proposal(s) in ' + open[0].mode + ' mode (' + where + '): a model cell with enough data beats the current route; nothing is applied. See model-rank.js show, then decide <id> --verdict noted|declined');
+  if (ev.lines.length) parts.push(ev.lines.join('; ') + ' (model-rank.js trials; company/work/models/trials/)');
+  return { due: true, route: 'people', key: 'rp-' + sha(ids.join(',')).slice(0, 16), items: ids.map(id => ({ id })), reason: parts.join('. ').slice(0, 300) };
 }
 
 function decide(id, o) {
@@ -667,10 +926,20 @@ function main() {
   if (cmd === 'refresh') {
     const r = refresh({ now, force: a.includes('--force'), dry: a.includes('--dry-run') });
     if (r.skipped) { console.log('house ranking: ' + r.skipped); process.exit(0); }
-    console.log('house ranking: ' + (r.changed ? 'changed' : 'unchanged') + ' (' + r.body.cells.length + ' cells, ' + r.body.cells.filter(c => c.enough).length + ' with enough data, ' + r.body.proposals.length + ' routing proposal(s), ' + r.newProposals.length + ' new)' + (a.includes('--dry-run') ? ' [dry run: nothing written]' : ''));
+    console.log('house ranking: ' + (r.changed ? 'changed' : 'unchanged') + ' (' + r.body.cells.length + ' cells, ' + r.body.cells.filter(c => c.enough).length + ' with enough data, ' + r.body.proposals.length + ' routing proposal(s), ' + r.newProposals.length + ' new)' + (r.evaluationWritten.length ? '; trials/tier caps: ' + r.evaluationWritten.length + ' file(s) ' + (a.includes('--dry-run') ? 'would change' : 'rewritten') : '') + (a.includes('--dry-run') ? ' [dry run: nothing written]' : ''));
     process.exit(0);
   }
   if (cmd === 'compute') { const inp = load({ now }); if (!inp) { console.log('no ranking policy'); process.exit(0); } console.log(JSON.stringify(sortKeys(rank(inp)), null, 1)); process.exit(0); }
+  if (cmd === 'trials') {   // the trial and tier-cap evaluation computed now (writes nothing)
+    const inp = load({ now }); if (!inp) { console.log('no ranking policy'); process.exit(0); }
+    const ev = evaluate(inp);
+    if (a.includes('--json')) { console.log(JSON.stringify(sortKeys(ev), null, 1)); process.exit(0); }
+    if (!ev.trials && !ev.tierCaps) { console.log('trial and tier-cap evaluation is off (no trials / tierCapEvaluation section in the ranking policy)'); process.exit(0); }
+    for (const t of ev.trials || []) process.stdout.write(renderTrialMd(t, policyDigest(inp.policy)) + '\n');
+    if (!(ev.trials || []).length) console.log('No trial defined or seen.\n');
+    if (ev.tierCaps) { console.log('Tier caps (' + ev.tierCaps.mode + '): ' + ev.tierCaps.verdict); for (const c of ev.tierCaps.classes) console.log('  ' + c.class + ': ' + c.verdict + ' (capped ' + c.capped.items + ', baseline ' + c.baseline.items + '): ' + c.reasons.join('; ')); }
+    process.exit(0);
+  }
   if (cmd === 'show') {
     const P = paths();
     if (a.includes('--json')) { const j = readJson(P.json, null); console.log(JSON.stringify(j || { computedAt: null, cells: [], proposals: [] }, null, 1)); process.exit(0); }
@@ -679,9 +948,9 @@ function main() {
   }
   if (cmd === 'verify') { const v = verifyChain(paths().history); console.log(v.ok ? 'history chain ok (' + v.rows + ' row' + (v.rows === 1 ? '' : 's') + ')' : 'HISTORY CHAIN BROKEN:\n  ' + v.problems.join('\n  ')); process.exit(v.ok ? 0 : 1); }
   if (cmd === 'decide') { const r = decide(a[1], { verdict: argOf(a, '--verdict'), by: argOf(a, '--by'), reason: argOf(a, '--reason') }); if (r.code) console.error('model-rank decide: ' + r.error); else console.log('recorded: ' + r.row.id + ' ' + r.row.verdict + ' by ' + r.row.by); process.exit(r.code); }
-  console.error('usage: model-rank.js refresh [--force] [--dry-run] [--now ms] | show [--json] | compute [--now ms] | verify | decide <id> --verdict noted|declined --by <seat> | --duty | --selftest');
+  console.error('usage: model-rank.js refresh [--force] [--dry-run] [--now ms] | show [--json] | compute [--now ms] | trials [--json] [--now ms] | verify | decide <id> --verdict noted|declined --by <seat> | --duty | --selftest');
   process.exit(2);
 }
 
-module.exports = { rank, load, loadPolicy, knobs, refresh, refreshDue, duty, decide, verifyChain, historyRow, fileText, renderMd, bodyHash, wilsonLower, zOf, prRefs, verdictsIn, runKind, runCost, priceOf, paths, sortKeys };
+module.exports = { rank, analyze, evaluate, evalKnobs, trialDecision, renderTrialMd, writeEvaluation, evaluationDuty, loadRouting, wilsonBounds, armKeyOf, load, loadPolicy, knobs, refresh, refreshDue, duty, decide, verifyChain, historyRow, fileText, renderMd, bodyHash, wilsonLower, zOf, prRefs, verdictsIn, runKind, runCost, priceOf, paths, sortKeys };
 if (require.main === module) main();
