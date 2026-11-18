@@ -16,6 +16,7 @@ const fs = require('fs'), path = require('path'), os = require('os');
 
 const REPO = path.resolve(__dirname, '..', '..', '..');
 const hire = require(path.join(REPO, 'company', 'tools', 'hire.js'));
+const profile = require(path.join(REPO, 'company', 'tools', 'lib', 'profile.js'));
 const dossier = require(path.join(REPO, 'company', 'tools', 'dossier.js'));
 const TEMPLATES = path.join(REPO, 'company', 'roles', 'templates');
 
@@ -34,7 +35,7 @@ const PROFILE = [
 
 test('hire.js: a template-started charter carries every profile section the profile wrote', () => {
   const tpl = fs.readFileSync(path.join(TEMPLATES, 'idea-scout.md'), 'utf8');
-  const txt = hire.carryProfile(tpl, PROFILE);
+  const txt = profile.carryProfile(tpl, PROFILE, hire.setSection);
   assert.match(txt, /## Convictions\n- The edge was in a forum before it was in a paper\./);
   assert.match(txt, /## Will not do\n- Read a textbook to learn basics\./);
   assert.match(txt, /## Counterpart\nThe quant seat kills or tests every card\./);
@@ -45,7 +46,7 @@ test('hire.js: a template-started charter carries every profile section the prof
 });
 
 test('hire.js: a charter with no template gets the profile sections in the template order', () => {
-  const block = hire.profileBlock(PROFILE);
+  const block = profile.profileBlock(PROFILE);
   const order = ['Personality', 'Backstory and motivation', 'Voice', 'Persona preset', 'Convictions', 'Will not do', 'Where you look', 'Counterpart'].map(h => block.indexOf('## ' + h + '\n'));
   assert.ok(order.every(i => i >= 0), block);
   assert.deepEqual([...order].sort((a, b) => a - b), order);
@@ -53,15 +54,16 @@ test('hire.js: a charter with no template gets the profile sections in the templ
 });
 
 test('hire.js: the interviewed candidate is told its convictions, refusals, sources and counterpart', () => {
-  const d = hire.candidateDocs('JO VEGA', 'Idea Scout', '# Idea Scout\n## Scope\nCards.\n', PROFILE);
-  for (const s of ['Restless and quick.', 'The edge was in a forum', 'Read a textbook to learn basics', 'comment threads', 'The quant seat kills or tests']) assert.ok(d.identity.includes(s), s);
+  const lines = profile.interviewLines(PROFILE).join('\n');
+  for (const s of ['The edge was in a forum', 'Read a textbook to learn basics', 'comment threads', 'The quant seat kills or tests']) assert.ok(lines.includes(s), s);
+  assert.match(fs.readFileSync(path.join(REPO, 'company', 'tools', 'hire.js'), 'utf8'), /\.concat\(profileLib\.interviewLines\(profile\)\)/, 'candidateDocs adds the interview lines');
 });
 
 test('dossier.js: the person sections ride the identity; placeholders never do', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-sections-selftest-'));
   try {
     const tpl = fs.readFileSync(path.join(TEMPLATES, 'idea-scout.md'), 'utf8').replace(/<!--[\s\S]*?-->\n?/g, '');
-    const charter = hire.carryProfile(tpl.replace(/<Name>/g, 'Jo Vega').replace(/<Title>/g, 'Idea Scout'), PROFILE);
+    const charter = profile.carryProfile(tpl.replace(/<Name>/g, 'Jo Vega').replace(/<Title>/g, 'Idea Scout'), PROFILE, hire.setSection);
     const file = path.join(dir, 'jo-vega.md'); fs.writeFileSync(file, charter);
     const b = dossier.build('cand-x', { name: 'Jo Vega', title: 'Idea Scout', inbox: 'to-jo-vega.md', role: file }, null);
     assert.match(b.identity, /What you believe, from experience:\n- The edge was in a forum/);
@@ -89,6 +91,6 @@ test('every seat template keeps the headings dossier.js reads, and the charter t
     for (const h of ['Personality', 'Voice', 'Persona preset']) assert.match(t, new RegExp('^## ' + h, 'm'), f + ' lacks ' + h);
   }
   const base = fs.readFileSync(path.join(TEMPLATES, '_charter-template.md'), 'utf8');
-  for (const [h] of dossier.PERSON) assert.match(base, new RegExp('^## ' + h + '$', 'm'), '_charter-template.md lacks ' + h);
-  for (const h of hire.PROFILE_SECTIONS) assert.match(base, new RegExp('^## ' + h, 'm'), '_charter-template.md lacks ' + h);
+  for (const [h] of profile.PERSON) assert.match(base, new RegExp('^## ' + h + '$', 'm'), '_charter-template.md lacks ' + h);
+  for (const h of profile.PROFILE_SECTIONS) assert.match(base, new RegExp('^## ' + h, 'm'), '_charter-template.md lacks ' + h);
 });

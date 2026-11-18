@@ -40,11 +40,9 @@ const unplaceheld = b => b.replace(/<!--[\s\S]*?-->/g, '').replace(PLACEHOLDER, 
 const isPlaceholder = (txt, h) => { const m = String(txt).match(new RegExp('## ' + h + '[^\\n]*\\n([\\s\\S]*?)(?=\\n## |$)')); return !!m && !!m[1].trim() && !unplaceheld(m[1]); };
 const section = (txt, h) => { const m = String(txt).match(new RegExp('## ' + h + '[^\\n]*\\n([\\s\\S]*?)(?=\\n## |$)')); return m ? unplaceheld(m[1]).replace(/\s+/g, ' ') : ''; };
 const sectionRaw = (txt, h) => { const m = String(txt).match(new RegExp('## ' + h + '[^\\n]*\\n([\\s\\S]*?)(?=\\n## |$)')); return m ? unplaceheld(m[1]) : ''; };
-// The person beyond Personality and Backstory (company/roles/templates/_charter-template.md), each with the line that
-// introduces it in the seat's identity. A charter without them is still valid; what it has rides every run.
-const PERSON = [['Convictions', 'What you believe, from experience'], ['Will not do', 'What you refuse to do'],
-  ['Takes care of unprompted', 'What you take care of without being asked'], ['Where you look', 'Where you look first for ideas and evidence, and what you skip'],
-  ['Counterpart', 'Who checks your work, and what needs their sign-off'], ['Blind spots', 'Your known blind spots'], ['Signature habits', 'Your habits']];
+// The person beyond Personality and Backstory (company/tools/lib/profile.js, shared with hire.js), each under the line
+// that introduces it in the seat's identity. A charter without them is still valid; what it has rides every run.
+const { PERSON } = require('./lib/profile');
 const personLines = ch => PERSON.map(([h, lead]) => { const b = sectionRaw(ch, h); return b ? lead + ':\n' + b : ''; });
 const field = (txt, label) => { const m = String(txt).match(new RegExp('\\*\\*' + label + ':\\*\\*\\s*([^\\n]+)')); return m ? m[1].trim() : ''; };
 const PERSONAS = ['composed', 'warm', 'blunt', 'dry', 'upbeat'];
