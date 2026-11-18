@@ -1340,3 +1340,4 @@ async function selftest() {
 })().catch(e => out(1, { ok: false, error: e.message }));
 
 module.exports = { ASKS, answerTurn, selftest, roundStage, pickSeats, advanceRound, rulePick, profileName, profileModel, pool, soft, openRounds, independenceRules, independenceConflicts, governanceCheck, budgetState, assertBudget, candidateSkin, deskHandoff, writeJson, moveFunctions, setSection, deciders, approverOk, companyModel };   // test seam only; hire.js is run as a script everywhere else
+Object.assign(module.exports, { carryProfile, profileBlock, candidateDocs, PROFILE_SECTIONS });   // the profile seam (tests/profile-sections.test.js)
