@@ -57,7 +57,7 @@ test('replay: answered by a later reply, superseded by a later block with the sa
 test('console/chat.js: the agent\'s next turn is told the message answers its block', () => {
   const src = require('fs').readFileSync(path.resolve(__dirname, '..', '..', '..', 'console', 'chat.js'), 'utf8');
   assert.match(src, /function actionReplyNote\(text\)/);
-  assert.match(src, /contextNote\(id, s, co, text\) \+ text/);
+  assert.match(src, /contextNote\(id, s, co, text(, recap)?\) \+ text/);   // the recap of a chat with colleagues may follow the note
 });
 test('no command for the owner: a block whose value, option, label or prompt is a shell command is refused', () => {
   const B = items => block({ id: 'a', prompt: 'Pick one.', items });
