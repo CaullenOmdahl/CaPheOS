@@ -24,7 +24,8 @@
  *   node company/tools/default-branch-watch.js selftest                          fake gh, temp folders, no network
  *
  * Which repos: the watch list, company/work/security/default-branch-watch.state.json (default in company/defaults/work/security/):
- * { "repos": ["owner/name", ...], "discover": false, "watchStart": "" }. Listed repos are always watched. With discover: true
+ * { "repos": ["owner/name", ...], "discover": false, "watchStart": "", "attribution": { "nearBeforeMinutes": 180, "nearAfterMinutes": 5 } }.
+ * attribution is the window in which an agent tool call is named as a change's possible cause (else: who pushed is unknown). Listed repos are always watched. With discover: true
  * it also watches every repository the gh login can push to, from one `user/repos` listing per tick (paginated; archived,
  * disabled and not-pushable ones are left out, since nobody can push there; one the login owns is never left out, and one
  * GitHub lists without permissions is watched anyway), plus the github.com remotes of local clones (company/repos,
@@ -102,6 +103,7 @@ const CONFIG_REL = 'company/work/security/default-branch-watch.json', CONFIG_DEF
 const TOOL = 'default-branch-watch.js', TOOL_NAME = 'Default-branch watch', MAIN = 'company/tools/' + TOOL;
 const REAL_GH = '/usr/bin/gh';
 const MIN = 60e3, HOUR = 3600e3, DAY = 86400e3;
+const NEAR_BEFORE_DEFAULT_MIN = 180, NEAR_AFTER_DEFAULT_MIN = 5;   // the attribution window defaults (config: attribution.nearBeforeMinutes / nearAfterMinutes)
 const EVERY = 55 * MIN, CALL_MS = 15000, BUDGET_MS = 70000, MAX_JUDGE = 40, LAG_MS = 15 * MIN, STALE_MS = 3 * HOUR;
 const RECHECK_MS = 6 * HOUR, RECHECK_PER_TICK = 12, OTHERS_PER_TICK = 5, OTHERS_MAX = 300, LOCK_MAX_MS = 3 * MIN, PAGES = 10;
 const SLUG = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, SHA = /^[0-9a-f]{40}$/, ZERO = /^0{40}$/;
@@ -183,7 +185,12 @@ function stationFallback() {
 function loadConfig(root) {
   const c = readJson(path.join(root, CONFIG_REL), null) || readJson(path.join(root, CONFIG_DEFAULT_REL), null) || {};
   const repos = [...new Map((Array.isArray(c.repos) ? c.repos : []).map(x => String(typeof x === 'string' ? x : (x && x.repo) || '').trim()).filter(x => SLUG.test(x)).map(x => [x.toLowerCase(), x])).values()];
-  return { repos, discover: c.discover === true, watchStart: ms(c.watchStart) ? String(c.watchStart) : null };
+  // The attribution window (minutes before / after a change in which an agent tool call may be named as its possible
+  // cause); anything but a positive number is the default.
+  const at = c.attribution && typeof c.attribution === 'object' ? c.attribution : {};
+  const win = (v, dflt) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : dflt) * MIN;
+  const near = { before: win(at.nearBeforeMinutes, NEAR_BEFORE_DEFAULT_MIN), after: win(at.nearAfterMinutes, NEAR_AFTER_DEFAULT_MIN) };
+  return { repos, discover: c.discover === true, watchStart: ms(c.watchStart) ? String(c.watchStart) : null, near };
 }
 const roleName = (ctx, role) => one((ctx.roles[role] && ctx.roles[role].name) || 'unassigned');
 const startOf = ctx => ctx.cfg.watchStart || local(ctx.now);
@@ -812,6 +819,18 @@ const PUSHY = /\bpush\b|\bmerge\b|git\/refs|\/contents\/|graphql|repo\s+sync|sen
 const BREACH = new Set(['no-pr', 'no-pass', 'pushed', 'pushed-over', 'rewritten']);
 const reEsc = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const agentName = (ctx, id) => (ctx.agents[id] && ctx.agents[id].name) || String(id);
+/* ATTRIBUTION WINDOW. A run listed against a push must be a run that could have made it, and the distance between the two
+ * must be printed. A repository that has no company clone is searched over 30 days, which decides whether the row is loud
+ * at all (an agent that named the repository at any point in 30 days is why the row is not quietened); narrowing that
+ * would make the tripwire quieter. But only the calls inside the window (default 3 h before to 5 min after the change,
+ * config attribution.nearBeforeMinutes / nearAfterMinutes) are NAMED. A loud row whose runs do not overlap keeps its place
+ * and says WHO PUSHED IS UNKNOWN, with the nearest run's distance, instead of accusing a run that was nowhere near it. */
+const fmtDist = ms => {
+  const a = Math.abs(ms), m = Math.round(a / MIN);
+  const s = a < HOUR ? m + 'm' : (a < DAY ? Math.floor(m / 60) + 'h' + String(m % 60).padStart(2, '0') + 'm' : Math.floor(a / DAY) + 'd' + Math.floor((a % DAY) / HOUR) + 'h');
+  return ms < 0 ? s + ' before' : s + ' after';
+};
+const fmtSpan = ms => (ms % HOUR === 0 ? ms / HOUR + 'h' : Math.round(ms / MIN) + 'm');
 function segmentsBetween(ctx, fromMs, toMs) {   // null when the transcripts cannot be listed
   const dir = ctx.paths.transcripts; let files; try { files = fs.readdirSync(dir).filter(f => /^segment-\d+\.jsonl$/.test(f)).sort(); } catch (_) { return null; }
   const man = readJson(path.join(dir, 'manifest.json'), {}) || {}, range = new Map((man.segments || []).map(s => [s.file, s]));
@@ -847,14 +866,27 @@ function whose(ctx, st, flags) {
     if (company) {
       const t = Number(f.t) || ctx.now, gh = /GitHub/.test(f.tNote || '');
       const names = [reEsc(f.repo) + '(?![A-Za-z0-9_.-])'].concat(folders.map(p => '(?:^|[^A-Za-z0-9_.-])' + reEsc(p.split('/').pop()) + '(?![A-Za-z0-9_.-])'));
-      hits = agentCalls(ctx, gh ? t - 3 * HOUR : Math.min(t, ctx.now - 7 * DAY), gh ? t + 5 * MIN : ctx.now, new RegExp(names.join('|'), 'i'), PUSHY);
+      hits = agentCalls(ctx, gh ? t - ctx.cfg.near.before : Math.min(t, ctx.now - 7 * DAY), gh ? t + ctx.cfg.near.after : ctx.now, new RegExp(names.join('|'), 'i'), PUSHY);
     } else {
       const k = String(f.repo).toLowerCase();
       if (!cache.has(k)) cache.set(k, agentCalls(ctx, ctx.now - 30 * DAY, ctx.now, new RegExp(reEsc(f.repo) + '(?![A-Za-z0-9_.-])', 'i')));
       hits = cache.get(k);
     }
     if (hits === null) continue;   // transcripts unreadable: report as before
-    if (hits.length) { f.detail += '. Agent tool calls that ' + (company ? 'could have made it then' : 'name this repository') + ': ' + [...new Set(hits.map(h => h.name + ' (run ' + h.run + ', ' + stamp(h.ts) + ')'))].slice(-6).join(', '); continue; }
+    if (hits.length) {
+      const t = Number(f.t) || ctx.now, N = ctx.cfg.near, near = hits.filter(h => h.ts >= t - N.before && h.ts <= t + N.after);
+      if (company || near.length) {
+        f.detail += '. Agent tool calls that ' + (company ? 'could have made it then' : 'name this repository near that time (' + fmtSpan(N.before) + ' before to ' + fmtSpan(N.after) + ' after)')
+          + ': ' + [...new Set(near.map(h => h.name + ' (run ' + h.run + ', ' + fmtDist(h.ts - t) + ')'))].slice(-6).join(', ');
+      } else {
+        // No run is inside the window. The row stays (it is not quietened: an agent did name this repository inside 30
+        // days) and the attribution is UNKNOWN with the nearest distance: a row that disappears is a worse failure than a
+        // row that is imprecise.
+        const nearest = hits.slice().sort((a, b) => Math.abs(a.ts - t) - Math.abs(b.ts - t))[0];
+        f.detail += '. No agent tool call named this repository within ' + fmtSpan(N.before) + ' before to ' + fmtSpan(N.after) + ' after the change, so WHO PUSHED IS UNKNOWN — it was named once, by ' + nearest.name + ' (run ' + nearest.run + ', ' + stamp(nearest.ts) + '), ' + fmtDist(nearest.ts - t) + '. Not the owner\'s by default and not an agent\'s: unproven';
+      }
+      continue;
+    }
     f.quiet = true;
     f.detail += '. ' + (company ? 'No agent ran a command that could do this near that time' : 'No agent tool call has named this repository in 30 days (no company clone either)') + ', so it is most likely the owner\'s own work: recorded here only, nobody was told';
   }
@@ -1464,17 +1496,46 @@ function selftest() {
     let r = S.tick(); const q = r.flags.filter(f => f.quiet).map(f => f.repo).sort().join(' '), riskTxt = S.lastBlock('to-jo.md'), ceoTxt = S.lastBlock('to-alex.md');
     ok(kinds(r) === 'pushed,pushed,pushed' && q === 'acme/app acme/own', 'with no agent command that could have made it, a company-repo push and a push to a repo no agent ever named are the owner\'s, probably (' + q + ')');
     ok(S.blocks('to-jo.md') === 1 && riskTxt.includes(N) && !riskTxt.includes(O + ' ') && !riskTxt.includes('owner hotfix') && S.blocks('to-alex.md') === 1 && ceoTxt.includes(N) && !ceoTxt.includes(O + ' '), 'only the loud flag reaches Jo and Alex');
-    ok(/Agent tool calls that name this repository: Sam \(run engineer/.test(r.flags.find(f => f.repo === N).detail), 'a loud flag says which agent runs named the repository');
+    // the naming run is 2 days before the push, so it is NOT listed as the culprit: the row stays loud (an agent named this
+    // repository inside 30 days) and the attribution is UNKNOWN with the distance
+    const nd = r.flags.find(f => f.repo === N).detail;
+    ok(/No agent tool call named this repository within 3h before to 5m after the change, so WHO PUSHED IS UNKNOWN/.test(nd) && /Sam \(run engineer[^)]*\), 2d0h before/.test(nd) && !/Agent tool calls that name this repository/.test(nd),
+      'a loud flag whose run is 2 days away says UNKNOWN and prints the distance, instead of attaching the stale run');
+    // ...and a run that IS inside the window is named, with its distance
+    S.adv(H);   // a new push needs a new pushed_at, or the tick sees the same state and flags nothing
+    lines.push(call(S.now - 2 * MIN, 'engineer', 'gh api repos/acme/named/commits')); S.W(TR + 'segment-000001.jsonl', lines.join('\n') + '\n');
+    S.G.move(N, S.G.commit(N, [S.G.repos[N].heads.main], 'another direct push'), 'push');
+    const r2 = S.tick(), nd2 = (r2.flags.find(f => f.repo === N) || { detail: '' }).detail;
+    ok(/name this repository near that time \(3h before to 5m after\): Sam \(run engineer, 2m before\)$/.test(nd2),
+      'a run inside the window is named as one that could have made the change, with its distance');
+    // the window is config: a 90-minute-old call is inside the default 3 h but outside a 30-minute window
+    S.adv(H);
+    const oneCall = [call(S.now - 90 * MIN, 'engineer', 'gh api repos/acme/named/pulls')];   // the only call in the transcripts from here
+    S.W(TR + 'segment-000001.jsonl', oneCall.join('\n') + '\n');
+    S.W(CONFIG_REL, JSON.stringify({ repos: [], discover: true, watchStart: START, attribution: { nearBeforeMinutes: 30, nearAfterMinutes: 5 } }));
+    S.G.move(N, S.G.commit(N, [S.G.repos[N].heads.main], 'a third direct push'), 'push');
+    const r3 = S.tick(), nd3 = (r3.flags.find(f => f.repo === N) || { detail: '' }).detail;
+    ok(/within 30m before to 5m after the change, so WHO PUSHED IS UNKNOWN/.test(nd3) && /1h30m before/.test(nd3),
+      'the window is config: with nearBeforeMinutes 30 a call 90 minutes earlier is not named, the row says UNKNOWN');
+    S.adv(H);
+    S.W(CONFIG_REL, JSON.stringify({ repos: [], discover: true, watchStart: START }));
+    S.W(TR + 'segment-000001.jsonl', [call(S.now - 90 * MIN, 'engineer', 'gh api repos/acme/named/pulls')].join('\n') + '\n');
+    S.G.move(N, S.G.commit(N, [S.G.repos[N].heads.main], 'a fourth direct push'), 'push');
+    const r4 = S.tick(), nd4 = (r4.flags.find(f => f.repo === N) || { detail: '' }).detail;
+    ok(/near that time \(3h before to 5m after\): Sam \(run engineer, 1h30m before\)$/.test(nd4),
+      'the default window (no attribution key) is 3 h before to 5 min after: the same call is named');
+    S.adv(H);
     const md = S.Rd('company/work/security/default-branch-watch.md');
     ok((md.match(/\(owner, probably\)/g) || []).length === 2 && /most likely the owner's own work/.test(md), 'the quiet ones are still recorded in the report file');
     S.adv(H);
+    const jo0 = S.blocks('to-jo.md');   // the ticks above moved the handoff count; the assertions below count from here
     lines.push(call(S.now - 5 * MIN, 'deployer', 'cd company/repos/app && /usr/bin/git push origin main')); S.W(TR + 'segment-000001.jsonl', lines.join('\n') + '\n');
     const before = S.G.repos[A].heads.main; S.G.move(A, S.G.commit(A, [before], 'agent bypass'), 'push');
     r = S.tick();
-    ok(r.flags.length === 1 && !r.flags[0].quiet && /could have made it then: deployer \(run deployer,/.test(r.flags[0].detail) && S.blocks('to-jo.md') === 2, 'an agent push from the company clone near that time stays loud and names the run');
+    ok(r.flags.length === 1 && !r.flags[0].quiet && /could have made it then: deployer \(run deployer,/.test(r.flags[0].detail) && S.blocks('to-jo.md') === jo0 + 1, 'an agent push from the company clone near that time stays loud and names the run');
     fs.rmSync(path.join(S.T, TR), { recursive: true, force: true }); S.adv(H);
     S.G.move(O, S.G.commit(O, [S.G.repos[O].heads.main], 'more owner work'), 'push'); r = S.tick();
-    ok(r.flags.length === 1 && !r.flags[0].quiet && S.blocks('to-jo.md') === 3, 'without readable transcripts nothing is quietened');
+    ok(r.flags.length === 1 && !r.flags[0].quiet && S.blocks('to-jo.md') === jo0 + 2, 'without readable transcripts nothing is quietened');
   }
 
   // ---- the real gh path: read-only arguments, a fixed environment ----
