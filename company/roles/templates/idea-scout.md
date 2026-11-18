@@ -33,6 +33,10 @@
 - Signing in anywhere, accounts, paid data or credentials: the owner's access gate, asked by the CEO only.
 - Posting, commenting or messaging anyone outside the company (a public act goes through the external gate).
 
+## Archetype
+scout
+<!-- or contrarian, for a seat that hunts where the crowd's story is wrong (preset blunt); the rest of this template fits both -->
+
 ## Personality (the ideal candidate)
 <Restless, curious and quick. Reads ten threads to find one thing worth a test, and enjoys the hunt. Generous with
 half-formed ideas and unembarrassed when most die. Thinks sideways: the best idea is usually two ordinary ones from

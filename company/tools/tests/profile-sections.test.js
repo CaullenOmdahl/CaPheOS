@@ -94,3 +94,34 @@ test('every seat template keeps the headings dossier.js reads, and the charter t
   for (const [h] of profile.PERSON) assert.match(base, new RegExp('^## ' + h + '$', 'm'), '_charter-template.md lacks ' + h);
   for (const h of profile.PROFILE_SECTIONS) assert.match(base, new RegExp('^## ' + h, 'm'), '_charter-template.md lacks ' + h);
 });
+
+test('archetypes: a profile with no preset takes its archetype\'s; an explicit preset wins; hire.js uses it', () => {
+  assert.equal(profile.presetFor('## Archetype\ncombiner\n'), 'warm');
+  assert.equal(profile.presetFor('## Archetype\nscout\n\n## Persona preset\nblunt\n'), 'blunt');
+  assert.equal(profile.presetFor('## Archetype\nnot-a-kind\n'), '');
+  for (const a of Object.values(profile.ARCHETYPES)) assert.ok(profile.PRESETS.includes(a.preset) && a.line.length > 40);
+  assert.match(fs.readFileSync(path.join(REPO, 'company', 'tools', 'hire.js'), 'utf8'), /const presetFromProfile = profileLib\.presetFor\(profile\)/);
+});
+
+test('archetypes: the seat is told what kind of contributor it is; an eager seat must name a counterpart', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-sections-selftest-'));
+  try {
+    const tpl = fs.readFileSync(path.join(TEMPLATES, 'idea-combiner.md'), 'utf8').replace(/<!--[\s\S]*?-->\n?/g, '');
+    const file = path.join(dir, 'kit.md'); fs.writeFileSync(file, tpl.replace(/<Name>/g, 'Kit').replace(/<Title>/g, 'Combiner'));
+    const b = dossier.build('cand-y', { name: 'Kit', title: 'Combiner', inbox: 'to-kit.md', role: file }, null);
+    assert.match(b.identity, /You are the crew's combiner/);
+    assert.equal(b.personaId, 'warm');
+    assert.ok(profile.needsCounterpart(tpl), 'the template\'s counterpart is still a placeholder');
+    assert.ok(!profile.needsCounterpart(tpl.replace(/## Counterpart\n<[^>]*>/, '## Counterpart\nRohan Iyer tests or kills every card.')));
+    assert.ok(!profile.needsCounterpart('## Archetype\ntester\n'), 'a conservative seat needs none');
+    assert.match(profile.interviewLines('## Archetype\nscout\n').join('\n'), /crew's scout/);
+    assert.match(b.manual, /Studying what any practitioner already knows .* is not work/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('crew mix: a crew of careful seats with nobody proposing is noted, a mixed one is not', () => {
+  const careful = profile.crewMix(['dry', 'dry', 'dry', 'dry', 'composed', 'composed', 'composed', 'blunt'].map(p => ({ preset: p, archetype: '' })));
+  assert.equal(careful.notes.length, 3, careful.notes.join(' | '));
+  const mixed = profile.crewMix([['dry', 'tester'], ['upbeat', 'scout'], ['warm', 'combiner'], ['composed', 'builder'], ['blunt', 'contrarian']].map(([p, a]) => ({ preset: p, archetype: a })));
+  assert.deepEqual(mixed.notes, []);
+});

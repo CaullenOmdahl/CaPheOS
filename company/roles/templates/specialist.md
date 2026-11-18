@@ -16,6 +16,10 @@
 ## Out of scope (hand off, do not decide)
 <What belongs to someone else, and who.>
 
+## Archetype
+<one of: scout, combiner, contrarian (eager: they generate ideas and name a ## Counterpart), tester, builder, steward,
+connector, lead. Leave the heading out if none fits. A crew needs both kinds: people who propose and people who check.>
+
 ## Personality (the ideal candidate)
 <Three to five sentences drawn from the success traits.>
 

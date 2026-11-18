@@ -12,9 +12,10 @@
  *                                        [--provider <p> --model <model>] [--effort high]   (no model given: model-policy.json candidateDefault; the hire keeps the interviewed model)
  *        The profile is that candidate's personality written as an ideal candidate for the role, in the charter's
  *        headings (company/roles/templates/_charter-template.md: Personality, Backstory and motivation, Voice, Persona
- *        preset, Convictions, Will not do, Takes care of unprompted, Where you look, Counterpart, Blind spots, Signature
+ *        preset, Archetype, Convictions, Will not do, Takes care of unprompted, Where you look, Counterpart, Blind spots, Signature
  *        habits). The hired candidate's profile becomes part of their charter, every section it wrote.
- *                                        [--skin <skin>] [--persona composed|warm|blunt|dry|upbeat]
+ *                                        [--skin <skin>] [--persona composed|warm|blunt|dry|upbeat]   (no --persona: the profile's
+ *                                        preset, else its ## Archetype's: scout upbeat, combiner warm, contrarian blunt, tester dry ...)
  *        (no --skin: a free company candidate skin <slug>_candidate_*, else the station's default body DATA.DEFAULT_SKIN)
  *   node company/tools/hire.js interview --round <r> --questions company/hiring/<r>/interview.md [--agent <id>] [--background] [--redo] [--parallel 3]
  *                                        (all candidates at once, at most --parallel; skips candidates already interviewed or being
@@ -337,7 +338,7 @@ async function createCandidate(a) {
   const issue = AgentId.nameIssue(name); if (issue) out(2, { ok: false, error: 'name: ' + issue });
   const profile = a.profile && a.profile !== true ? readIf(path.resolve(ROOT, String(a.profile)), 8000) : '';
   if (a.profile && !profile.trim()) out(2, { ok: false, error: 'cannot read --profile ' + a.profile });
-  const presetFromProfile = sec(profile, 'Persona preset').toLowerCase().split(/\s+/)[0];
+  const presetFromProfile = profileLib.presetFor(profile);   // the profile's preset, else its archetype's (lib/profile.js)
   const persona = a.persona && M.Personas.exists(String(a.persona)) ? String(a.persona) : (presetFromProfile && M.Personas.exists(presetFromProfile) ? presetFromProfile : 'composed');
   let created = null;
   await C.editSave(doc => {
@@ -783,7 +784,7 @@ async function advanceRound(slug, o) {
     if (claim) {
       const day = stamp().slice(0, 10);
       appendInbox(fnInbox('people'), '\n## ' + day + ' from hire.js — write the files for the ' + round.role + ' round (' + slug + ')\n' +
-        '**Need:** in company/hiring/' + slug + '/ write research.md, role-spec.md, model-fit.md, interview.md (one question per "## " heading), scorecard.md, and one profiles/<name>.md per candidate (up to three; the charter headings from Personality to Signature habits, optional "## Model" line `provider/model`). Listings scope the job; write the person from how the best people in it really work and where they get their edge, not from the adjectives in a listing, and give the three candidates different temperaments. An eager seat names its conservative counterpart (## Counterpart). That is all: the round then advances on its own (candidates, parallel interviews, scorecard inputs) and the pick comes back to you as a handoff. Do not run interviews yourself.\n' +
+        '**Need:** in company/hiring/' + slug + '/ write research.md, role-spec.md, model-fit.md, interview.md (one question per "## " heading), scorecard.md, and one profiles/<name>.md per candidate (up to three; the charter headings from Archetype to Signature habits, optional "## Model" line `provider/model`). Archetype is one of ' + Object.keys(profileLib.ARCHETYPES).join(', ') + '. Listings scope the job; write the person from how the best people in it really work and where they get their edge, not from the adjectives in a listing, and give the three candidates different temperaments. An eager seat names its conservative counterpart (## Counterpart). That is all: the round then advances on its own (candidates, parallel interviews, scorecard inputs) and the pick comes back to you as a handoff. Do not run interviews yourself.\n' +
         '**Why:** ' + s.label + '.\n**Deadline:** ' + day + '\n**Status:** OPEN\n**Evidence:** `company/hiring/' + slug + '/round.json`\n');
       did.push('asked ' + co.nameOf(peopleId()) + ' for the round files');
     }
