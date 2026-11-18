@@ -74,7 +74,7 @@ function serviceCtx(c, guardOn) {
     guard: n => (n === 'localComputer' ? guardOn : true), halted: () => false, callerConflict: () => null, gov: { root: c.T }, ownerCard: c.card, ownerNotice: c.notice });
 }
 
-test('localComputer on: a safe-profile timer at schedules=auto installs with no card; a new host asks once; the same spec never twice', withProv(async () => {
+test('localComputer on: a safe-profile timer at schedules=auto installs with no card; a job with a website asks once; the same spec never twice', withProv(async () => {
   const c = company({ schedules: 'auto' });
   try {
     const ctx = serviceCtx(c, true);
@@ -82,8 +82,9 @@ test('localComputer on: a safe-profile timer at schedules=auto installs with no 
     assert.equal(r.status, 'installed'); assert.equal(c.asks().length, 0); assert.equal(c.notice.sent.length, 0);
     const o = { by: 'data', kind: 'timer', exec: 'bash company/work/jobs/report.sh', every: '1h', why: 'pulls the price feed every hour', hosts: 'api.new.example' };
     const w = SV.propose(ctx, 'feed', o);
-    // a website the company does not use yet is an `external` decision (the default keeps external at approve)
-    assert.ok(w.waiting); assert.equal(c.asks().length, 1); assert.equal(c.asks()[0].gate.category, 'external');
+    // any network is outside the safe profile while localComputer is on (named websites are declared, not enforced):
+    // the guardrail asks the owner
+    assert.ok(w.waiting); assert.equal(c.asks().length, 1); assert.equal(c.asks()[0].gate.category, 'localComputer');
     assert.deepEqual(c.asks()[0].effect, { serviceApprove: { name: 'feed' } }); assert.ok(plain(c.card.calls.find(x => x.op === 'file').card));
     SV.propose(ctx, 'feed', o);
     assert.equal(c.asks().length, 1, 'no duplicate card for the same spec');
