@@ -15,6 +15,12 @@
  *   node company/tools/budget.js doors [--hours 24] [--json]    each station run in the window -> the door that started it
  *   node company/tools/budget.js coverage [--hours 24] [--json] the same; exit 1 if any run has no door (unattributed)
  *   node company/tools/budget.js status [--json]     the projection, the last snapshot, admit() counts by door
+ *   node company/tools/budget.js settle <runId> [--usd N] --by owner
+ *        book the real charge of a run the station could not settle (POST /api/budget/settle). With any cap on, ONE
+ *        unsettled run makes the station refuse every metered run (spend_history_unavailable). A run on an unmetered
+ *        provider (dispatch-budget.json unmeteredProviders: a subscription) has no metered charge: --usd defaults to 0
+ *        there; any other run needs --usd. apply refuses to switch a cap on while runs are unsettled (--force overrides),
+ *        and the budget-drift duty reports them (finding unsettled-spend).
  *   node company/tools/budget.js --selftest
  *
  * The projection, and why (phase 1: semantics unchanged, only the numbers are copied):
@@ -77,11 +83,22 @@ function compare(want, caps) {
   }
   return out;
 }
-async function stationCaps() {
+async function stationStatus() {
   const r = await S.call('GET', '/api/budget/status');
   if (!r || r.status !== 200) throw new Error('GET /api/budget/status: HTTP ' + (r && r.status));
-  const j = JSON.parse(r.body); return j.caps || null;
+  return JSON.parse(r.body) || {};
 }
+async function stationCaps() { return (await stationStatus()).caps || null; }
+/* the station's spend history, from GET /api/budget/status: with any cap on, an unsettled run makes it refuse EVERY metered
+   run (spend_history_unavailable) — pure */
+function spendHistoryOf(status) {
+  const acc = (status && status.accounting) || null;
+  const list = Array.isArray(status && status.unsettled) ? status.unsettled : [];
+  return { complete: !acc || acc.complete !== false, readError: (acc && acc.readError) || null,
+    unsettled: list.map(u => ({ runId: String(u.runId || ''), agentId: u.agentId || null, ts: Number(u.ts) || null, provider: u.provider || null, model: u.model || null })) };
+}
+const unmeteredProviders = () => { const b = readJson(F.budget(), {}) || {}; return Array.isArray(b.unmeteredProviders) ? b.unmeteredProviders.map(String) : []; };
+const settleHint = 'node company/tools/budget.js settle <runId> --usd <its charge> --by owner (a run on an unmetered provider such as a subscription has no metered charge: --usd 0, the default there)';
 
 /* the scheduler half of drift: in dispatcher mode no crew loop is armed and the watchdog exists — pure */
 function schedulerDrift(jobs, crew, m) {
@@ -99,10 +116,10 @@ function schedulerDrift(jobs, crew, m) {
 async function snapshot(o) {
   o = o || {};
   const call = o.call || S.call;
-  let caps = null, err = null;
-  try { const r = await call('GET', '/api/budget/status'); if (r && r.status === 200) caps = (JSON.parse(r.body) || {}).caps || null; else err = 'HTTP ' + (r && r.status); } catch (e) { err = String(e.message || e).slice(0, 160); }
+  let caps = null, err = null, spendHistory = null;
+  try { const r = await call('GET', '/api/budget/status'); if (r && r.status === 200) { const st = JSON.parse(r.body) || {}; caps = st.caps || null; spendHistory = spendHistoryOf(st); } else err = 'HTTP ' + (r && r.status); } catch (e) { err = String(e.message || e).slice(0, 160); }
   const jobs = (o.jobs || []).map(j => ({ id: j.id, name: j.name, enabled: j.enabled !== false, noAgent: !!j.noAgent, script: j.script || null, workdir: j.workdir || null }));
-  const doc = { _doc: 'The station\'s spending caps and routines as the dispatcher tick last saw them (budget.js snapshot), for the budget-drift duty, which opens no socket.', at: new Date(S.now()).toISOString(), caps, error: err, jobs };
+  const doc = { _doc: 'The station\'s spending caps and routines as the dispatcher tick last saw them (budget.js snapshot), for the budget-drift duty, which opens no socket.', at: new Date(S.now()).toISOString(), caps, spendHistory, error: err, jobs };
   const f = F.snapshot(); fs.mkdirSync(path.dirname(f), { recursive: true });
   const tmp = f + '.tmp-' + process.pid; fs.writeFileSync(tmp, JSON.stringify(doc, null, 1) + '\n'); fs.renameSync(tmp, f);
   return doc;
@@ -112,16 +129,46 @@ async function apply(o) {
   o = o || {};
   if (!o.by) return { ok: false, code: 2, error: '--by <name> is required: the cap change is recorded with who asked' };
   const want = projection(settings());
-  const caps = await stationCaps();
+  const status = await stationStatus();
+  const caps = status.caps || null;
   const diff = compare(want, caps);
   if (!diff.length) return { ok: true, changed: false, want, caps, note: 'the station already holds the company settings' };
   const patch = {}; for (const d of diff) patch[d.cap] = want[d.cap];
+  const hist = spendHistoryOf(status);
+  // a cap switched on over an unsettled history stops every metered run at once: refuse unless told, and say what to do
+  if (patch.perDay > 0 && !hist.complete && hist.unsettled.length && !o.force) {
+    return { ok: false, code: 1, unsettled: hist.unsettled, want, caps,
+      error: 'the station has ' + hist.unsettled.length + ' unsettled run(s) (' + hist.unsettled.map(u => u.runId + (u.provider ? ' on ' + u.provider : '')).join(', ') + '): with a daily cap on, the station would refuse every metered run (spend_history_unavailable). Settle each first: ' + settleHint + '; or --force to set the cap anyway' };
+  }
   if (o.dry) return { ok: true, dry: true, changed: false, want, caps, patch, diff };
   const r = await S.call('POST', '/api/budget/caps', patch);
   if (!r || r.status !== 200) return { ok: false, code: 1, error: 'POST /api/budget/caps: HTTP ' + (r && r.status) + ' ' + String(r && r.body).slice(0, 200), want, caps };
   const after = ((JSON.parse(r.body) || {}).caps) || null;
   try { fs.mkdirSync(path.dirname(F.log()), { recursive: true }); fs.appendFileSync(F.log(), JSON.stringify({ at: new Date(S.now()).toISOString(), by: String(o.by).slice(0, 80), from: caps && { perDay: caps.perDay, perAgent: caps.perAgent }, to: patch, why: diff.map(d => d.why) }) + '\n'); } catch (_) {}
   return { ok: true, changed: true, want, caps: after, patch, diff };
+}
+async function settle(o) {
+  o = o || {};
+  const own = require('./lib/owner');
+  if (!o.by || !own.isOwnerName(o.by)) return { ok: false, code: 3, error: 'settling the station\'s spend books money: --by owner (or the owner\'s name)' };
+  const refusal = own.refusal(o.by, 'settling the station\'s spend');
+  if (refusal) return { ok: false, code: 3, error: refusal };
+  const runId = String(o.runId || '').trim();
+  if (!runId) return { ok: false, code: 2, error: 'which run: budget.js settle <runId> [--usd N] --by owner' };
+  const hist = spendHistoryOf(await stationStatus());
+  const run = hist.unsettled.find(u => u.runId === runId);
+  if (!run) return { ok: false, code: 1, error: 'the station lists no unsettled run ' + runId + (hist.unsettled.length ? ' (unsettled: ' + hist.unsettled.map(u => u.runId).join(', ') + ')' : ' (nothing is unsettled)') };
+  let amount;
+  if (o.usd != null && o.usd !== '') {
+    amount = Number(o.usd);
+    if (!/^\d+(\.\d+)?$/.test(String(o.usd).trim()) || !Number.isFinite(amount)) return { ok: false, code: 2, error: '--usd is a charge in USD, 0 or more' };
+  } else if (run.provider && unmeteredProviders().includes(run.provider)) amount = 0;
+  else return { ok: false, code: 2, error: 'run ' + runId + ' is on ' + (run.provider || 'an unknown provider') + ', which is metered: enter its real charge with --usd (from the provider\'s dashboard)' };
+  const r = await S.call('POST', '/api/budget/settle', { runId, usd: amount });
+  if (!r || r.status !== 200) return { ok: false, code: 1, error: 'POST /api/budget/settle: HTTP ' + (r && r.status) + ' ' + String(r && r.body).slice(0, 200) };
+  try { fs.mkdirSync(path.dirname(F.log()), { recursive: true }); fs.appendFileSync(F.log(), JSON.stringify({ at: new Date(S.now()).toISOString(), by: String(o.by).slice(0, 80), settled: runId, provider: run.provider, usd: amount, why: o.usd != null && o.usd !== '' ? 'entered' : 'unmetered provider: no metered charge' }) + '\n'); } catch (_) {}
+  const left = spendHistoryOf(await stationStatus());
+  return { ok: true, runId, usd: amount, provider: run.provider, left: left.unsettled.length, complete: left.complete };
 }
 async function drift() {
   const want = projection(settings());
@@ -141,6 +188,9 @@ function dutyResult(o) {
   const want = projection(o.settings || settings());
   const items = [];
   for (const d of (snap.caps ? compare(want, snap.caps) : [])) items.push({ id: 'cap:' + d.cap, route: 'finance', reason: d.why });
+  const sh = snap.spendHistory;
+  if (sh && !sh.complete && (sh.unsettled || []).length && snap.caps && Number(snap.caps.perDay) > 0)
+    items.push({ id: 'unsettled-spend', route: 'finance', reason: sh.unsettled.length + ' run(s) the station could not settle (' + sh.unsettled.map(u => u.runId).join(', ') + '): with the daily cap on it refuses every metered run (spend_history_unavailable). The owner settles each: ' + settleHint });
   const m = o.mode || require('./lib/scheduler').mode();
   for (const d of schedulerDrift(snap.jobs, o.crew || co.crew(), m)) items.push({ id: d.cap + ':' + (d.seat || 'station'), route: 'tools', reason: d.why });
   if (m === 'dispatcher') {
@@ -188,11 +238,33 @@ async function selftest() {
   ok('the duty is quiet without a snapshot', dutyResult({ snapshot: null }) === null);
   const dr = dutyResult({ snapshot: { at: new Date().toISOString(), caps: { perDay: 25, perAgent: 0 }, jobs: [] }, settings: { capOn: true, baseDailyUsd: 5, dailyUsd: 5, perAgentUsd: 0 }, mode: 'station', crew: {}, now: Date.now() });
   ok('the duty is due on a cap drift, routed to finance, by id only', dr && dr.due && dr.items[0].id === 'cap:perDay' && dr.items[0].route === 'finance', JSON.stringify(dr));
+  // spend history: one unsettled run with a cap on stops every metered run on the station
+  const unsettledStatus = { caps: { perDay: 0, perAgent: 0 }, accounting: { complete: false, readError: 'UNSETTLED_SPEND', unsettledRuns: 1, damagedLines: 0 }, unsettled: [{ runId: 'r-old', agentId: 'agent', ts: 1, provider: 'claude-cli', model: 'm', countAs: { usd: 2 } }] };
+  const sh = spendHistoryOf(unsettledStatus);
+  ok('spend history: an unsettled run is read with its provider', !sh.complete && sh.unsettled.length === 1 && sh.unsettled[0].provider === 'claude-cli');
+  ok('spend history: a complete one is complete', spendHistoryOf({ accounting: { complete: true }, unsettled: [] }).complete === true);
+  const du = dutyResult({ snapshot: { at: new Date().toISOString(), caps: { perDay: 5, perAgent: 0 }, spendHistory: sh, jobs: [] }, settings: { capOn: true, baseDailyUsd: 5, dailyUsd: 5, perAgentUsd: 0 }, mode: 'station', crew: {}, now: Date.now() });
+  ok('the duty reports unsettled spend under a cap, routed to finance', du && du.items.some(i => i.id === 'unsettled-spend' && i.route === 'finance'), JSON.stringify(du));
+  const du0 = dutyResult({ snapshot: { at: new Date().toISOString(), caps: { perDay: 0, perAgent: 0 }, spendHistory: sh, jobs: [] }, settings: { capOn: false, baseDailyUsd: 5, dailyUsd: 5, perAgentUsd: 0 }, mode: 'station', crew: {}, now: Date.now() });
+  ok('with no cap on the station, unsettled spend blocks nothing and is not a finding', !du0 || !du0.items.some(i => i.id === 'unsettled-spend'));
+  const realCall = S.call; const posts = [];
+  S.call = async (m, p2, b2) => { if (m === 'POST') { posts.push(p2); return { status: 200, body: JSON.stringify({ caps: Object.assign({}, unsettledStatus.caps, b2) }) }; } return { status: 200, body: JSON.stringify(unsettledStatus) }; };
+  try {
+    const capOn = co.guard('spendCap');
+    const ra = await apply({ by: 'test' });
+    if (capOn) {
+      ok('apply refuses to switch a cap on over an unsettled run, naming it and the settle command', !ra.ok && /r-old on claude-cli/.test(ra.error) && /budget\.js settle/.test(ra.error) && posts.length === 0, JSON.stringify(ra));
+      const rf = await apply({ by: 'test', force: true });
+      ok('apply --force sets the cap anyway', rf.ok && rf.changed && posts.includes('/api/budget/caps'), JSON.stringify(rf));
+    } else ok('apply with the spendCap guardrail off projects no cap, so nothing is refused', ra.ok);
+    const rs = await settle({ runId: 'r-old', by: 'someone-else' });
+    ok('settle is the owner\'s: anyone else is refused', !rs.ok && rs.code === 3);
+  } finally { S.call = realCall; }
   console.log(bad ? 'BUDGET SELFTEST FAILED: ' + bad : 'BUDGET SELFTEST PASSED');
   return bad ? 1 : 0;
 }
 
-module.exports = { S, F, CLOSED_USD, settings, projection, compare, schedulerDrift, snapshot, apply, drift, dutyResult, doors };
+module.exports = { S, F, CLOSED_USD, settings, projection, compare, schedulerDrift, spendHistoryOf, snapshot, apply, settle, drift, dutyResult, doors };
 
 if (require.main === module) {
   const a = process.argv.slice(2);
@@ -204,9 +276,15 @@ if (require.main === module) {
     if (a.includes('--duty')) { const r = dutyResult(); if (r) console.log(JSON.stringify(r)); return r ? 1 : 0; }
     const cmd = a[0] || 'status';
     if (cmd === 'apply') {
-      const r = await apply({ by: opt('by'), dry: a.includes('--dry-run') });
+      const r = await apply({ by: opt('by'), dry: a.includes('--dry-run'), force: a.includes('--force') });
       if (!r.ok) { console.error('budget.js apply: ' + r.error); return r.code || 1; }
       print(r, r.dry ? 'would set ' + JSON.stringify(r.patch) + ':\n  ' + r.diff.map(x => x.why).join('\n  ') : r.changed ? 'station caps set: ' + JSON.stringify(r.patch) + ' (perDay ' + usd(r.want.perDay) + ', perAgent no cap)' : r.note);
+      return 0;
+    }
+    if (cmd === 'settle') {
+      const r = await settle({ runId: a[1] && !a[1].startsWith('--') ? a[1] : null, usd: opt('usd'), by: opt('by') });
+      if (!r.ok) { console.error('budget.js settle: ' + r.error); return r.code || 1; }
+      print(r, 'settled ' + r.runId + (r.provider ? ' (' + r.provider + ')' : '') + ' at $' + r.usd + '; ' + (r.left ? r.left + ' unsettled run(s) left' : 'the station\'s spend history is complete'));
       return 0;
     }
     if (cmd === 'drift') {
@@ -230,6 +308,6 @@ if (require.main === module) {
       print(o, 'projection: perDay ' + usd(w.perDay) + ' (' + w.from.perDay + '); perAgent no cap\nscheduler: ' + o.scheduler + '\nadmit() last 24 h: ' + JSON.stringify(o.counts24h));
       return 0;
     }
-    console.error('usage: budget.js apply --by <name> [--dry-run] | drift | --duty | doors|coverage [--hours N] | status [--json] | --selftest'); return 2;
+    console.error('usage: budget.js apply --by <name> [--dry-run] [--force] | settle <runId> [--usd N] --by owner | drift | --duty | doors|coverage [--hours N] | status [--json] | --selftest'); return 2;
   })().then(c => process.exit(c || 0), e => { console.error('budget.js: ' + (e && e.message || e)); process.exit(1); });
 }

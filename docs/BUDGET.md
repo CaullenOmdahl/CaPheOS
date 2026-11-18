@@ -131,7 +131,17 @@ the same number, not always at the same moment.
 ```
 node company/tools/budget.js apply --by <you> [--dry-run]   # set the station caps from the settings
 node company/tools/budget.js drift                          # exit 1 naming both numbers when they differ
+node company/tools/budget.js settle <runId> [--usd N] --by owner   # book a run the station could not settle
 ```
+
+**Unsettled runs stop every metered run once a cap is on.** The station books each run's charge when the run ends. A
+run it could not book (cut off by a crash or a stop) stays *unsettled*, and while any run is unsettled and a daily cap
+is on, the station refuses every metered run with `spend_history_unavailable`: it cannot tell how much of the day is
+left. With no cap on, nothing is checked, so this shows up the moment a cap is first switched on (a company moved from
+a station that ran without one, for example). So `apply` refuses to switch a cap on while runs are unsettled and names
+them (`--force` sets it anyway), and the budget-drift duty reports `unsettled-spend` to the finance seat. The owner
+settles each: `--usd` is the run's real charge from the provider; a run on an unmetered provider (`unmeteredProviders`,
+a subscription) has no metered charge, so `--usd` defaults to 0 there.
 
 **Drift duty** (`budget-drift`, every 30 min, routed to the finance seat): the dispatcher tick records the station's
 caps and routines (`company/state/station-caps.json`), and the duty compares them with your settings. It is due when a
