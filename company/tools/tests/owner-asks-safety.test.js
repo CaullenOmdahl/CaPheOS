@@ -423,3 +423,11 @@ test('S6: the code that decides what reaches the owner is owner-gated and locked
   }
 });
 
+test('the watchdog keeps the id of the alert it sent', () => {
+  const T = company();
+  const r = run(T, `
+const W = require(path.join(REPO, 'company/tools/watchdog.js'));
+W.check({ now: Date.parse('2026-11-18T10:00:00Z'), notify: () => ({ sent: 'outbound', row: { id: 'out-123' } }) });
+out(JSON.parse(fs.readFileSync(W.F.state(), 'utf8')).outage);`);
+  assert.equal(r.alertId, 'out-123', JSON.stringify(r));
+});

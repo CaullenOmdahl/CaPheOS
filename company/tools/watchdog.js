@@ -75,7 +75,7 @@ function check(o) {
     if (!st.outage) st.outage = { since: lastAt ? new Date(lastAt).toISOString() : null, detectedAt: out.at };
     if (!st.outage.alertedAt) {
       const text = 'TOP PRIORITY: the dispatcher has been silent for ' + (v.never ? 'as long as this company has a record (it never ran)' : v.silentMin + ' minutes (last heard ' + local(lastAt) + ')') + '. While it is down NOTHING in the company starts: no seat is woken, no scheduled loop runs, no work happens (the station\'s own schedule runs only this watchdog). Start it again: `systemctl --user restart ' + svc + '` and look at `journalctl --user -u ' + svc + ' -n 50`.';
-      try { const row = notify(text); st.outage.alertId = (row && row.id) || null; } catch (e) { st.outage.alertError = String(e.message || e).slice(0, 200); }
+      try { const r = notify(text); st.outage.alertId = (r && ((r.row && r.row.id) || r.id)) || null; }  /* owner-notice send returns {sent, row} */ catch (e) { st.outage.alertError = String(e.message || e).slice(0, 200); }
       st.outage.alertedAt = out.at; out.alerted = true;
       try { fs.mkdirSync(path.dirname(F.alerts()), { recursive: true }); fs.appendFileSync(F.alerts(), JSON.stringify({ at: out.at, kind: 'dispatcher-silent', priority: 'top', silentMin: v.silentMin, limitMin: v.limitMin, lastHeard: out.lastHeard }) + '\n'); } catch (_) {}
     }
