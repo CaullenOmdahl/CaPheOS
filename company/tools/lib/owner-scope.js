@@ -222,7 +222,7 @@ function routeFor(cls, from, seats) {
  * pointed at the tool that files that card (never at a command the owner types) */
 const OWNER_ACTS = [
   [/\b(?:accept|keep|sign[- ]?off)\b[^.]*\b(?:protected|locked|owner[- ]only|baseline|last[- ]known[- ]good)\b|\b(?:protected|locked|owner[- ]only) (?:file|tool|change)\b[^.]*\baccept|\baccept command\b|locked-watch(?:\.js)? accept/i,
-    'to ask the owner to keep a protected file\'s change, file one card with an Accept button: node company/tools/locked-watch.js ask-accept <path> --by <you> --why "…"'],
+    'to ask the owner to keep a protected file\'s change, file one card with an Accept button: node company/tools/locked-watch.js ask-accept <path> --by <you> --why "…" --plain "what it changes, in everyday words" [--if-no "…"] (someone other than the one who made the edit; never for a fixed-gate file: those go back and through harness-change.js)'],
   [/\b(?:enable|switch(?:ing)? on|turn(?:ing)? on)\b[^.]*\b(?:module|add-on)\b|module\.js enable/i,
     'to ask the owner to switch a module on, file one card with a button: node company/tools/module.js ask <id> --by <you> --why "…"'],
   [/\binstall\b[^.]*\b(?:pack|capability pack|add-on)\b|pack\.js install/i,

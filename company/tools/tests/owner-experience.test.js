@@ -293,17 +293,17 @@ out({});`);
 
 test('B4: an add-on approval, a module switch-on and a protected-file accept each reach the owner as one card with a button, never a command', async () => {
   const T = fixture({ modules: true });
-  W(T, 'company/work/finance/dispatch-budget.json', '{"dailyUsd":5}\n');
+  W(T, 'company/competence-policy.json', '{"weights":{"handoffs":2}}\n');
   const r = run(T, `
 const pk = require(path.join(T, 'company/tools/pack.js'));
 const pc = pk.ownerCard({ id: 'trading-desk', title: 'Trading desk', summary: 'Trades small amounts on prediction markets within limits you set.' }, 'Boss', 'ab12cd34ef567890', 'approved');
 const L = require(path.join(T, 'company/tools/locked-watch.js'));
-const man = L.MANIFEST.filter(m => m.p === 'company/work/finance/dispatch-budget.json');
+const man = L.MANIFEST.filter(m => m.p === 'company/competence-policy.json');
 const ctx0 = () => L.context({ root: T, home: path.join(T, 'home'), manifest: man, ownerShell: false, underStation: false, log: () => {} });
 L.tick(ctx0());
-fs.writeFileSync(path.join(T, 'company/work/finance/dispatch-budget.json'), '{"dailyUsd":6}');
+fs.writeFileSync(path.join(T, 'company/competence-policy.json'), '{"weights":{"handoffs":3}}');
 L.tick(ctx0());
-let la = null; try { la = L.askAcceptCmd(ctx0(), 'company/work/finance/dispatch-budget.json', { by: 'Hal', why: 'the new cap is the one finance agreed' }); } catch (e) { la = 'ERR ' + e.message; }
+let la = null; try { la = L.askAcceptCmd(ctx0(), 'company/competence-policy.json', { by: 'Hal', why: 'late handoffs hurt customers most', plain: 'late handoffs count for more in the weekly scores' }); } catch (e) { la = 'ERR ' + e.message; }
 out({ pc, la });`);
   assert.equal(r.pc.filed, true, 'the pack card is filed: ' + JSON.stringify(r.pc));
   assert.match(String(r.la), /asked the owner/, 'the protected-file card is filed: ' + r.la);

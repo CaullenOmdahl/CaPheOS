@@ -85,6 +85,87 @@ async function consoleOn(root, fn) {
 }
 const PLAIN_RE = /node |--[a-z]|\.js\b|\.json\b|sha256|company\/|\b[a-z]+[A-Z][a-zA-Z]+\b|\bq-\d+|\bhc-\d+/;
 
+/* ---------------- safety N1: the protected-file keep card ---------------- */
+// a locked-watch context over a few manifest entries, with a fake transcript the tools read
+const LW_CTX = `
+const L = require(path.join(T, 'company/tools/locked-watch.js'));
+const SEG = path.join(T, '.starnet-data/workspaces/transcript-history-v2/segment-000001.jsonl');
+fs.mkdirSync(path.dirname(SEG), { recursive: true }); if (!fs.existsSync(SEG)) fs.writeFileSync(SEG, '');
+const said = (agentId, name, args, ts) => fs.appendFileSync(SEG, JSON.stringify({ agentId, sourceRunId: 'run-' + agentId + '-1234', ts, toolCalls: JSON.stringify([{ id: 'c', type: 'function', function: { name, arguments: JSON.stringify(args) } }]) }) + '\\n');
+const manFor = keys => L.MANIFEST.filter(m => keys.includes(m.p));
+const ctxFor = (keys, now) => L.context({ root: T, home: path.join(T, 'home'), manifest: manFor(keys), ownerShell: false, underStation: false, log: () => {}, now: now || Date.now() });
+const ask = (keys, key, o, now) => { try { return L.askAcceptCmd(ctxFor(keys, now), key, o); } catch (e) { return 'ERR ' + e.message; } };
+const G = require(path.join(T, 'company/tools/lib/pm-inbox-guard.js'));
+const cards = () => G.rows({ file: path.join(T, 'company/pm-inbox.jsonl'), noAlert: true }).filter(x => x.type === 'ask' && x.effect && x.effect.lockedAccept);
+`;
+
+test('safety N1 (poc-locked): an edit to the spending cap, the external gate or a tool that runs as the owner is never kept with one click', async () => {
+  const T = fixture();
+  W(T, 'company/work/finance/dispatch-budget.json', '{"dailyUsd":5}\n');
+  const keys = ['company/work/finance/dispatch-budget.json', 'company/tools/external-gate.js', 'company/tools/pack.js', 'company/tools/module.js', 'company/state/governance.json'];
+  const r = run(T, LW_CTX + `
+const keys = ${JSON.stringify(keys)};
+L.tick(ctxFor(keys));
+fs.writeFileSync(path.join(T, keys[0]), '{"dailyUsd":5000}');
+for (const k of keys.slice(1, 4)) fs.appendFileSync(path.join(T, k), '\\n// gate opened\\n');
+L.tick(ctxFor(keys));
+const res = keys.map(k => ask(keys, k, { by: 'Riley', why: 'routine tidy-up, nothing changes for you', plain: 'a routine tidy-up' }));
+out({ res, cards: cards().length, inMan: keys.map(k => manFor([k]).length) });`);
+  assert.deepEqual(r.inMan, [1, 1, 1, 1, 1], 'pack.js and module.js are watched (S-a)');
+  for (const [i, k] of keys.entries()) {
+    if (i === 4) continue;   // governance.json: nothing flagged (it did not change), refused before it is even looked at
+    assert.match(r.res[i], /^ERR .*fixed gates/, k + ' is refused: ' + r.res[i]);
+    assert.match(r.res[i], /harness-change\.js propose/, 'and pointed at the reviewed path');
+  }
+  assert.match(r.res[4], /^ERR .*fixed gates/);
+  assert.equal(r.cards, 0, 'no keep card at all');
+  await consoleOn(T, async (call) => {
+    const q = await call('GET', '/api/questions');
+    assert.equal((q.json.questions || []).filter(x => x.effectKind === 'lockedAccept').length, 0, 'nothing on Today');
+  });
+  assert.equal(fs.readFileSync(path.join(T, 'company/work/finance/dispatch-budget.json'), 'utf8'), '{"dailyUsd":5000}');
+  const b = JSON.parse(fs.readFileSync(path.join(T, 'company/state/locked/baseline.json'), 'utf8'));
+  assert.ok(b.files['company/work/finance/dispatch-budget.json'].flagged, 'the edit stays flagged, never accepted');
+});
+
+test('safety N1: the keep card says what changed (old to new), why, and what happens on no; --by is checked and the editor cannot ask', () => {
+  const T = fixture();
+  const key = 'company/competence-policy.json';
+  W(T, key, JSON.stringify({ weights: { handoffs: 2, tests: 1 } }, null, 1) + '\n');
+  const r = run(T, LW_CTX + `
+const keys = [${JSON.stringify(key)}];
+const now = Date.now();
+L.tick(ctxFor(keys, now - 60000));
+said('hal', 'fs_edit', { path: ${JSON.stringify(key)} }, now - 50000);
+fs.writeFileSync(path.join(T, ${JSON.stringify(key)}), JSON.stringify({ weights: { handoffs: 3, tests: 1 } }, null, 1) + '\\n');
+L.tick(ctxFor(keys, now - 40000));
+const flaggedBy = JSON.parse(fs.readFileSync(path.join(T, 'company/state/locked/baseline.json'), 'utf8')).files[${JSON.stringify(key)}].flagged.by;
+const plain = 'late handoffs now count for more in the weekly scores';
+const editor = ask(keys, ${JSON.stringify(key)}, { by: 'Hal', why: 'late handoffs hurt the customers most', plain }, now);
+const noPlain = ask(keys, ${JSON.stringify(key)}, { by: 'Riley', why: 'late handoffs hurt the customers most' }, now);
+const techPlain = ask(keys, ${JSON.stringify(key)}, { by: 'Riley', why: 'late handoffs hurt the customers most', plain: 'raise weights.handoffs in competence-policy.json' }, now);
+const stranger = ask(keys, ${JSON.stringify(key)}, { by: 'Halima', why: 'late handoffs hurt the customers most', plain }, now);
+said('boss', 'shell_exec', { command: 'node company/tools/locked-watch.js ask-accept ${key} --by Riley --why x' }, now - 1000);
+const forged = ask(keys, ${JSON.stringify(key)}, { by: 'Riley', why: 'late handoffs hurt the customers most', plain }, now);
+said('riley', 'shell_exec', { command: 'node company/tools/locked-watch.js ask-accept ${key} --by Riley --why x' }, now - 500);
+const ok = ask(keys, ${JSON.stringify(key)}, { by: 'Riley', why: 'late handoffs hurt the customers most', plain, ifNo: 'the scores stay as they are and the crew puts the old weights back' }, now);
+const c = cards().pop() || null;
+out({ flaggedBy, editor, noPlain, techPlain, stranger, forged, ok, card: c && { message: c.message, consequence: c.consequence, recommendation: c.recommendation, technical: c.technical } });`);
+  assert.deepEqual(r.flaggedBy, ['hal'], 'the watcher names the editor');
+  assert.match(r.editor, /^ERR .*own run.*cannot be the one recommending/, r.editor);
+  assert.match(r.noPlain, /^ERR --plain must say/, r.noPlain);
+  assert.match(r.techPlain, /^ERR not plain for the owner/, r.techPlain);
+  assert.match(r.stranger, /^ERR Halima may not do this/, r.stranger);
+  assert.match(r.forged, /^ERR .*ran in Boss's run/, 'a --by typed in someone else\'s run is refused: ' + r.forged);
+  assert.match(r.ok, /asked the owner/, r.ok);
+  assert.ok(r.card);
+  assert.match(r.card.message, /Riley asks you to keep a change to one of the limits the crew works within: late handoffs now count for more in the weekly scores\. One value changes from 2 to 3\./);
+  assert.match(r.card.consequence, /If you say no or do not answer, the scores stay as they are and the crew puts the old weights back\./);
+  assert.match(r.card.recommendation, /^Riley recommends yes: late handoffs hurt the customers most\./);
+  assert.doesNotMatch(r.card.message + r.card.consequence + r.card.recommendation, PLAIN_RE);
+  assert.match(r.card.technical, /edited in the run of Hal/);
+});
+
 /* ---------------- safety S-a: the add-on tools that run as the owner are owner-gated and locked ---------------- */
 test('S-a: pack.js and module.js are owner-gated (harness-change) and watched (locked-watch)', () => {
   const H = require(path.join(REPO, 'company/tools/harness-change.js'));
