@@ -49,6 +49,17 @@
  *                                 sandbox remotes are allowed so their push/merge tests can run).
  *   MERGE_GATE_LOG=<path>         redirect the refusal log (selftest; keeps the real log clean).
  *   MERGE_GATE_EVIDENCE=<dir>     where pre-merge PASS records live (tests).
+ *   MERGE_GATE_LEDGER=<path>      the external-clearance ledger read by the bypass check (tests).
+ *
+ * THE PRE-PUSH HOOK BYPASS. A `git push --no-verify` (or `-c core.hooksPath=<dir>`) never runs the pre-push hook, so
+ * there is no gate at all on that push. The check therefore lives on the `check-git` path: a github push that skips
+ * the hook is REFUSED unless one live `merge-gate-bypass` row in company/state/external-clearances.jsonl names the
+ * exact act (`push:<owner>/<repo>:<branch>`), covers every sha in the push, is oneShot, is unexpired, is granted by
+ * the owner or the CEO, and carries a reason. The row is spent at the moment of the push (usedAt/usedBy appended), so
+ * a second push against the same row is refused; a hand-written line cannot un-spend it. A row never authorises a
+ * branch deletion or a non-fast-forward update of a protected branch: those are refused before any row is read.
+ * A push carrying --receive-pack or --exec (a command run on the far side) is refused before any dry run, because the
+ * dry run would execute it. The ledger is the ONLY artefact read. Fails open for the owner.
  *
  * Inherent limits this gate CANNOT close (same Unix user) — covered after the fact by the GitHub-side tripwire
  * company/tools/default-branch-watch.js (owned elsewhere):
@@ -69,6 +80,10 @@ const { execFileSync } = require('child_process');
 const co = require('./lib/company');
 const EVIDENCE = process.env.MERGE_GATE_EVIDENCE || co.p('company', 'work', 'evidence');
 const LOG = process.env.MERGE_GATE_LOG || co.p('company', 'work', 'merge-gate.log');
+const ROOT = co.ROOT;
+// The external-clearance ledger a bypass row lives in, and the station's run journal (who presented a row).
+const LEDGER = process.env.MERGE_GATE_LEDGER || co.p('company', 'state', 'external-clearances.jsonl');
+const JOURNAL = co.p('.starnet-data', 'workspaces', '.run-journal');
 const STATION_UNIT = '/' + (co.config.station.serviceName || 'capheos-station') + '.service';
 const REAL_GH = '/usr/bin/gh';
 const REAL_GIT = '/usr/bin/git';
@@ -391,21 +406,43 @@ function pushRemote(pushArgs) {
   }
   return null;
 }
+// Flags that make git run a command on the far side of the transport: --receive-pack names the program git runs
+// there, --exec names a command it runs there. No clearance row can authorise that, and the gate's own dry-run
+// would RUN it: `git push --dry-run --receive-pack='sh -c …'` executes the command before the gate could refuse
+// the push. So these are refused before any plan is read.
+function commandTransportFlags(pushArgs) {
+  const out = [];
+  for (const a of pushArgs) {
+    if (a === '--receive-pack' || a.startsWith('--receive-pack=')) out.push('--receive-pack');
+    else if (a === '--exec' || a.startsWith('--exec=')) out.push('--exec');
+  }
+  return out;
+}
 function defaultBranchForPush(gopts, remote, dest) {
   if (remote) { try { const r = git(gopts, ['symbolic-ref', 'refs/remotes/' + remote + '/HEAD']).trim(); if (r) return r.replace('refs/remotes/' + remote + '/', ''); } catch (_) {} }
   const target = dest || remote;
   if (target) { try { const r = git(gopts, ['ls-remote', '--symref', target, 'HEAD']); const m = r.match(/^ref:\s+refs\/heads\/(\S+)\s+HEAD/m); if (m) return m[1]; } catch (_) {} }
   return null;
 }
-function checkPush(gopts, pushArgs) {
-  // A --dry-run push writes nothing, so there is nothing to gate — let git run it and report.
-  if (pushArgs.includes('-n') || pushArgs.includes('--dry-run')) process.exit(0);
+// The push plan, read from git itself: which refs move, and to where. A --dry-run plan writes nothing, so this is
+// safe to run before the real push (and it is also what the --no-verify check reads its acts and shas from).
+function planPush(gopts, pushArgs) {
   // Build the args for our own machine-readable dry-run. We always force --no-verify (so a repo hook / test
   // suite does not run during our probe and again on the real push), dropping any caller --verify/--no-verify
   // that would otherwise override it. We force --no-quiet so a caller's -q cannot blank the porcelain lines,
   // spliced in BEFORE any `--` so git does not read it as a refspec (a bare `git push origin -- feat` must
   // still be screened, not fail to parse).
   const userDry = pushArgs.filter(a => a !== '--verify' && a !== '--no-verify');
+  // A command carrier never goes into our dry run, even if the refusal above were ever bypassed.
+  const dryArgs = [];
+  for (let i = 0; i < userDry.length; i++) {
+    const a = userDry[i];
+    if (a === '--receive-pack' || a === '--exec') { i++; continue; }
+    if (a.startsWith('--receive-pack=') || a.startsWith('--exec=')) continue;
+    dryArgs.push(a);
+  }
+  userDry.length = 0;
+  userDry.push(...dryArgs);
   const dd = userDry.indexOf('--');
   if (dd >= 0) userDry.splice(dd, 0, '--no-quiet'); else userDry.push('--no-quiet');
   const dry = [...gopts, 'push', '--dry-run', '--porcelain', '--no-verify', ...userDry];
@@ -419,13 +456,20 @@ function checkPush(gopts, pushArgs) {
   const dest = toLine ? toLine.slice(3).trim() : null;
   const github = isGithub(dest) || isGithub(remote) || (remote && (() => { try { return isGithub(git(gopts, ['remote', 'get-url', remote]).trim()); } catch (_) { return false; } })());
 
-  const updates = [];                       // {flag, to}
+  const updates = [];                       // {flag, from, to}
   for (const l of lines) {
     const m = l.match(/^(.)\t([^\t]*)\t/);
     if (!m) continue;
     const flag = m[1], spec = m[2];
-    if (flag === ' ' || flag === '+' || flag === '-' || flag === '*') updates.push({ flag, to: spec.split(':').pop() });
+    if (flag === ' ' || flag === '+' || flag === '-' || flag === '*') updates.push({ flag, from: spec.split(':')[0], to: spec.split(':').pop() });
   }
+  return { out, err, code, lines, remote, dest, github, updates };
+}
+
+function checkPush(gopts, pushArgs, plan) {
+  // A --dry-run push writes nothing, so there is nothing to gate — let git run it and report.
+  if (pushArgs.includes('-n') || pushArgs.includes('--dry-run')) process.exit(0);
+  const { out, err, code, lines, github, updates, remote, dest } = plan || planPush(gopts, pushArgs);
 
   if (!updates.length) {
     // tags-only / up-to-date-only / rejected-only are harmless. Only refuse when we truly could not read the plan
@@ -452,6 +496,226 @@ function checkPush(gopts, pushArgs) {
   process.exit(0);                           // local/file sandbox remote, not in protect-all mode: allowed
 }
 
+// ── the pre-push hook bypass (--no-verify) ────────────────────────────────────────────────────────────────
+// Five behaviours: no live matching row →
+// refuse; expired or oneShot spent → refuse; a sha outside covers.commits → refuse; the use writes usedAt/usedBy
+// onto the row; and the ledger is the ONLY artefact read. The act is `push:<owner>/<repo>:<branch>` and an empty
+// acts list authorises nothing.
+const BYPASS_KIND = 'merge-gate-bypass';
+const BYPASS_FIELDS = ['id', 'kind', 'acts', 'repo', 'branch', 'covers', 'grantedBy', 'grantedAt', 'expiresAt',
+  'oneShot', 'usedAt', 'usedBy', 'reason'];
+// Who may grant a bypass: the owner and the CEO seat (by the company's own config), never another agent. An agent may
+// not write grantedBy; the names are read at use, so a hired CEO is recognised without a code change.
+function granters() {
+  const out = new Set();
+  const add = v => { const t = String(v || '').trim().toLowerCase(); if (t) out.add(t); };
+  add(co.config.owner && co.config.owner.name);
+  try { const id = co.ceo(); add(id); add(co.nameOf(id)); } catch (_) {}
+  return out;
+}
+
+// The two command-line routes that stop the pre-push hook from running. `-c core.hooksPath=` is the same door as
+// --no-verify (it points git at a directory with no hook in it), so it needs the same row: a rule a sibling flag
+// walks around is not a rule.
+function hookSkip(gopts, pushArgs) {
+  if (pushArgs.includes('--no-verify')) return { skip: true, how: '--no-verify' };
+  for (let i = 0; i < gopts.length; i++) {
+    const a = gopts[i];
+    const v = a === '-c' ? gopts[i + 1] : (a.startsWith('-c') && a.length > 2 ? a.slice(2) : null);
+    if (v && /^core\.hooksPath=/.test(v)) return { skip: true, how: '-c core.hooksPath' };
+  }
+  return { skip: false };
+}
+
+// Who presented the row: the agentId of the live station run, read from the run journal (the same source
+// external-gate.js trusts). An unreadable journal is recorded as "unknown" — it never blocks an already-cleared
+// push, and the timestamp of the use still lands.
+function presenter() {
+  if (process.env.STARNET_AGENT_ID) return { agent: process.env.STARNET_AGENT_ID, runId: process.env.STARNET_RUN_ID || '' };
+  let best = null;
+  try {
+    for (const f of fs.readdirSync(JOURNAL)) {
+      if (!f.endsWith('.jsonl')) continue;
+      const p = path.join(JOURNAL, f);
+      let st; try { st = fs.statSync(p); } catch (_) { continue; }
+      if (Date.now() - st.mtimeMs > 15 * 60 * 1000) continue;                  // a live run writes inside 15 min
+      if (!best || st.mtimeMs > best.m) best = { m: st.mtimeMs, p };
+    }
+  } catch (_) { return { agent: 'unknown', runId: '' }; }
+  if (!best) return { agent: 'unknown', runId: '' };
+  try {
+    const b = JSON.parse(fs.readFileSync(best.p, 'utf8').split('\n')[0]);
+    const pl = (b && b.payload) || {};
+    return { agent: String(pl.agentId || 'unknown'), runId: String(pl.runId || (b && b.runId) || '') };
+  } catch (_) { return { agent: 'unknown', runId: '' }; }
+}
+
+// The ledger is append-only, so the current state of a row is its LAST line carrying that id — the convention
+// external-gate.js already uses (a close/use appends the same row again with the delta fields on it).
+function bypassRows() {
+  let txt; try { txt = fs.readFileSync(LEDGER, 'utf8'); } catch (_) { return []; }
+  const byId = new Map();
+  for (const line of txt.split('\n')) {
+    if (!line.trim()) continue;
+    let r; try { r = JSON.parse(line); } catch (_) { continue; }
+    if (!r || r.kind !== BYPASS_KIND || !r.id) continue;
+    // The spend is sticky. The ledger is a file every agent on this uid can append
+    // to, so "the last line wins" let a hand-written line with usedAt:null re-open a row that had been spent — the
+    // oneShot rule undone by a keystroke. A later line may add fields; it may not clear the use.
+    const prev = byId.get(r.id);
+    if (prev && prev.usedAt) r = Object.assign({}, r, { usedAt: prev.usedAt, usedBy: prev.usedBy });
+    byId.set(r.id, r);
+  }
+  return [...byId.values()];
+}
+// Why this row cannot authorise anything, or null when it is live. Every rule returns a sentence a reader can act
+// on: a refusal that only says "no" teaches nobody how to write the row.
+function rowWhy(r, at) {
+  for (const f of BYPASS_FIELDS) if (!(f in r)) return 'row ' + r.id + ' is missing ' + f + ' (a row missing a field is not a row)';
+  if (!Array.isArray(r.acts) || !r.acts.length) return 'row ' + r.id + ' has an empty acts list (a category name is not an act)';
+  if (r.oneShot !== true) return 'row ' + r.id + ' is not oneShot (a standing bypass row is a standing hole)';
+  if (!granters().has(String(r.grantedBy || '').trim().toLowerCase()))
+    return 'row ' + r.id + ' is grantedBy ' + JSON.stringify(r.grantedBy) + '; only the owner or the CEO may grant a bypass, and no agent may write this field';
+  if (!r.covers || typeof r.covers !== 'object' || !Array.isArray(r.covers.commits)) return 'row ' + r.id + ' has no covers.commits list';
+  const exp = Date.parse(r.expiresAt);
+  if (!Number.isFinite(exp)) return 'row ' + r.id + ' has an unreadable expiresAt ' + JSON.stringify(r.expiresAt);
+  if (exp <= at) return 'row ' + r.id + ' expired at ' + r.expiresAt;
+  if (r.usedAt) return 'row ' + r.id + ' was spent at ' + r.usedAt + (r.usedBy ? ' by ' + r.usedBy : '') + ' (oneShot)';
+  const reason = String(r.reason || '').trim();
+  if (!reason) return 'row ' + r.id + ' carries no reason';
+  if (/^approved( by)?\b/i.test(reason)) return 'row ' + r.id + ' reason is ' + JSON.stringify(r.reason) + ', which is not something a reader can check a year later';
+  return null;
+}
+// The repo slug a github remote URL names, or null. `https://github.com/o/r.git`, `git@github.com:o/r.git` and a
+// local path that literally contains `//github.com/o/r.git` (the selftest's network-free github remote) all answer.
+function repoSlug(gopts, remote, dest) {
+  const urls = [];
+  if (dest) urls.push(dest);
+  if (remote) { try { urls.push(git(gopts, ['remote', 'get-url', remote]).trim()); } catch (_) {} urls.push(remote); }
+  for (const u of urls) {
+    const m = String(u || '').match(/github\.com[:/]+([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/);
+    if (m) return m[1] + '/' + m[2];
+  }
+  return null;
+}
+// The acts and commit shas this push actually carries. shas === null means git could not tell us, which is a
+// refusal (a row cannot be shown to cover a set we cannot read).
+function pushCoverage(gopts, plan) {
+  const repo = repoSlug(gopts, plan.remote, plan.dest);
+  const notRemote = plan.remote && !/[:/]/.test(plan.remote) ? '--remotes=' + plan.remote : '--remotes';
+  const items = [];
+  for (const u of plan.updates) {
+    const branch = shortRef(u.to);
+    let shas = [];
+    if (u.flag !== '-' && u.from) {                       // a branch deletion carries no commits
+      try {
+        const sha = git(gopts, ['rev-parse', '--verify', u.from + '^{commit}']).trim();
+        shas = git(gopts, ['rev-list', sha, '--not', notRemote], { timeout: 120000 }).trim().split('\n').filter(Boolean);
+      } catch (_) { shas = null; }
+    }
+    items.push({ branch, act: repo ? 'push:' + repo + ':' + branch : null, shas });
+  }
+  return { repo, items };
+}
+// The SHAPE of the push, read from git's own plan rather than from a row.
+// A clearance row names the commits it clears; it never authorises a branch to be deleted or to move backwards.
+// Those two facts are therefore read before any row is consulted, because a refusal that says "no row covers
+// this" would be a lie about a push no row can ever cover.
+function pushShape(gopts, plan) {
+  const def = defaultBranchForPush(gopts, plan.remote, plan.dest);
+  const items = [];
+  for (const u of plan.updates) {
+    items.push({
+      branch: shortRef(u.to),
+      flag: u.flag,
+      deleted: u.flag === '-',
+      protectedRef: isProtectedRef(u.to, def),
+      fastForward: isFastForward(gopts, plan, u)
+    });
+  }
+  return { def, items };
+}
+// Whether this update moves the branch forward. git's porcelain flag is the primary signal ('+' is a forced
+// update); the remote-tracking ref is the backstop behind it, because the next flag is not the last one.
+function isFastForward(gopts, plan, u) {
+  if (u.flag === '+') return false;
+  if (u.flag === '-' || u.flag === '*') return true;      // a deletion and a creation carry no ancestry question
+  if (!plan.remote || !u.from) return true;
+  let remoteTip = null, newTip = null;
+  try { remoteTip = git(gopts, ['rev-parse', '--verify', 'refs/remotes/' + plan.remote + '/' + shortRef(u.to) + '^{commit}']).trim(); } catch (_) {}
+  try { newTip = git(gopts, ['rev-parse', '--verify', u.from + '^{commit}']).trim(); } catch (_) {}
+  if (!remoteTip || !newTip) return true;                 // nothing to compare: git already said fast-forward
+  try {
+    execFileSync(REAL_GIT, [...gopts, 'merge-base', '--is-ancestor', remoteTip, newTip], { stdio: 'ignore' });
+    return true;
+  } catch (e) {
+    return e.status === 1 ? false : true;                 // 1 = not an ancestor; any other status is unknown, not a verdict
+  }
+}
+// → { allow: { row, acts, commits } }  a live row covers every act and every sha of this push
+// → { refuse: <sentence> }             nothing does, and the sentence says why each candidate row did not
+function bypassDecision(gopts, plan) {
+  // The shape first, and refused outright: a row is a clearance to push the commits it names,
+  // never a clearance to move a branch.
+  const shape = pushShape(gopts, plan);
+  for (const s of shape.items) {
+    if (s.deleted)
+      return { refuse: 'a deletion of ' + s.branch + ' is not something a clearance row can authorise: a row names the commits it clears, and a branch deletion carries none. Delete the branch without --no-verify, or push the commits the row names.' };
+    if (s.protectedRef && !s.fastForward)
+      return { refuse: 'a forced update of ' + s.branch + ' moves that branch backwards, and a clearance row can clear the commits it names — not the branch itself. Merge the commits you need through a pull request instead of rewriting ' + s.branch + '.' };
+  }
+  const cov = pushCoverage(gopts, plan);
+  if (!cov.repo)
+    return { refuse: 'a --no-verify push needs a merge-gate-bypass row naming its act, and the target ' +
+      (plan.dest || plan.remote || '(unknown)') + ' is not a github <owner>/<repo> remote, so no row can name it. Push without --no-verify.' };
+  const why = [];
+  for (const r of bypassRows()) {
+    const bad = rowWhy(r, Date.now());
+    if (bad) { why.push(bad); continue; }
+    const uncoveredActs = cov.items.filter(i => !r.acts.includes(i.act));
+    if (uncoveredActs.length) { why.push('row ' + r.id + ' does not list ' + uncoveredActs.map(i => i.act).join(', ')); continue; }
+    const covered = r.covers.commits.map(s => String(s).toLowerCase());
+    const outside = [];
+    const empties = [];
+    for (const i of cov.items) {
+      if (i.shas === null) { outside.push('git could not list the commits of ' + i.act); continue; }
+      // A push that carries no commit is "nothing to check", and nothing to check used to pass vacuously — which is
+      // how a rewind of the default branch sailed through. It is a decision, so it needs a name on it:
+      // covers.empty in the row.
+      if (!i.shas.length) { empties.push(i.act); continue; }
+      for (const s of i.shas) if (!covered.some(c => c.length >= 7 && s.toLowerCase().startsWith(c))) outside.push(s.slice(0, 12) + ' on ' + i.branch);
+    }
+    if (empties.length && r.covers.empty !== true) {
+      why.push('row ' + r.id + ' does not clear an empty commit set on ' + empties.join(', ') + ' (a push that carries no commit is a decision with a name on it: the row has to say covers.empty)');
+      continue;
+    }
+    if (outside.length) { why.push('row ' + r.id + ' does not cover ' + outside.slice(0, 5).join(', ')); continue; }
+    return { allow: { row: r, acts: cov.items.map(i => i.act), commits: cov.items.flatMap(i => i.shas || []) } };
+  }
+  return { refuse: 'a push with --no-verify skips the pre-push hook, so no gate would see it, and no live merge-gate-bypass row in ' +
+    path.relative(ROOT, LEDGER) + ' covers this push' +
+    (cov.items.length ? ' (' + cov.items.map(i => i.act || i.branch).join(', ') + ')' : '') + '.' +
+    (why.length ? ' Why each row did not answer: ' + why.slice(0, 4).join('; ') + '.' : ' No row of that kind exists.') +
+    ' A bypass is granted by the owner or the CEO as a clearance row (kind merge-gate-bypass; the fields are listed in merge-gate.js);' +
+    ' a release-evidence file, a log line or a handoff note is not an exception. Push without --no-verify to use the pre-push hook.' };
+}
+// The use is the audit trail: the row is spent by appending it again with usedAt/usedBy on it. If that cannot be
+// written the push is refused, because an unrecorded use is not a clearance.
+function recordBypassUse(allow, how) {
+  const who = presenter();
+  const spent = Object.assign({}, allow.row, {
+    usedAt: new Date().toISOString(),
+    usedBy: who.agent + (who.runId ? ' / run ' + who.runId : ''),
+    usedHow: how, usedActs: allow.acts, usedCommits: allow.commits
+  });
+  try { fs.appendFileSync(LEDGER, JSON.stringify(spent) + '\n', { mode: 0o600 }); }
+  catch (e) {
+    return 'the clearance row ' + allow.row.id + ' could not be marked used in ' + path.relative(ROOT, LEDGER) +
+      ' (' + (e.code || e.message) + '); an unrecorded use is not a clearance, so the push is refused. Fix the ledger and retry.';
+  }
+  return null;
+}
+
 // ── dispatch ──────────────────────────────────────────────────────────────────────────────────────────────
 const [cmd, ...args] = process.argv.slice(2);
 
@@ -461,6 +725,11 @@ if (cmd === 'check-git') {
   if (!sub) process.exit(0);
   const resolved = resolveToPush(sub, rest, gopts, 0);
   if (resolved === null) process.exit(0);
+  // A push that names a command to run on the far side of the transport is refused before anything is planned —
+  // the gate cannot screen it, and even a dry run would execute it.
+  const cmdFlags = commandTransportFlags(resolved.push || []);
+  if (cmdFlags.length)
+    refuse('a push that carries ' + cmdFlags.join(' and ') + ' runs a command on the far side of the transport, so no gate can screen it (and even the gate\'s own dry-run would run it). Drop the flag and push normally.');
   if (resolved.shell !== undefined) {
     // Arbitrary shell we cannot re-plan. If its body reaches a push we cannot verify the target, so refuse
     // and point at the plain `git push` path (which this wrapper screens). A body with no push token is
@@ -469,6 +738,25 @@ if (cmd === 'check-git') {
     if (PUSHY.test(resolved.shell))
       refuse("a shell git alias ('!' …) that pushes cannot be screened for its target branch; run `git push` " +
         'directly (this wrapper checks it) or push a feature branch and open a PR.');
+    process.exit(0);
+  }
+  // A --dry-run push writes nothing: nothing to gate, and a dry run must never spend a bypass row.
+  if (resolved.push.includes('-n') || resolved.push.includes('--dry-run')) process.exit(0);
+  // The pre-push hook cannot see a push that skips it, so --no-verify is screened HERE, before the real git runs.
+  if (hookSkip(gopts, resolved.push).skip) {
+    const plan = planPush(gopts, resolved.push);
+    if (!plan.github && !protectAll()) process.exit(0);      // local/file sandbox remote: not a company push
+    if (!plan.updates.length) {
+      if (plan.github && plan.code !== 0)
+        refuse('git could not plan this --no-verify push, so the gate cannot check it against a clearance row (' +
+          (plan.err.split('\n').find(Boolean) || 'git exited ' + plan.code).slice(0, 160) + '). Fix the push or retry; nothing was pushed.');
+      process.exit(0);                                        // up to date / nothing moving: nothing was skipped
+    }
+    const d = bypassDecision(gopts, plan);
+    if (d.refuse) refuse(d.refuse);
+    const unwritten = recordBypassUse(d.allow, hookSkip(gopts, resolved.push).how);
+    if (unwritten) refuse(unwritten);
+    log('ALLOWED bypass ' + d.allow.acts.join(', ') + ' under row ' + d.allow.row.id + ' (' + d.allow.commits.length + ' sha, ' + hookSkip(gopts, resolved.push).how + '); row spent');
     process.exit(0);
   }
   checkPush(gopts, resolved.push);
@@ -661,6 +949,111 @@ function selftest() {
     const wrapped = (cwd, a, env) => cp.spawnSync(WRAP, a, { cwd, encoding: 'utf8', env: Object.assign({}, process.env, env) }).status;
     battery('wrapper: ~/.local/bin/git', wrapped);
   } else console.log('  SKIP wrapper ~/.local/bin/git is not installed on this machine (a deployment check, not a unit test; install the merge-gate wrapper to run it)');
+
+  // ── the --no-verify bypass check  ───────────────
+  // A push that skips the pre-push hook must be named by a live `merge-gate-bypass` row in the clearance ledger,
+  // so these cases drive a ledger of our own (MERGE_GATE_LEDGER) and assert BOTH directions: refused with no row,
+  // allowed with one, and the row spent afterwards. A check that has never been shown to fail is not a check.
+  console.log('[--no-verify needs a live merge-gate-bypass row]');
+  {
+    const r = mkGh('master');
+    G(['-C', r.wc, 'checkout', '-q', '-b', 'feat']);
+    G(['-C', r.wc, 'commit', '-q', '--allow-empty', '-m', 'one']);
+    G(['-C', r.wc, 'commit', '-q', '--allow-empty', '-m', 'two']);
+    const shas = G(['-C', r.wc, 'rev-list', 'feat', '--not', '--remotes=origin']).stdout.trim().split('\n');
+    const led = n => path.join(TMP, 'bypass-' + n + '.jsonl');
+    const row = over => Object.assign({ id: 'clr-selftest', kind: 'merge-gate-bypass', acts: ['push:o/r:feat'], repo: 'o/r',
+      branch: 'feat', covers: { release: 'selftest', commits: shas }, grantedBy: co.config.owner.name, grantedAt: new Date().toISOString(),
+      reason: 'selftest: prove the --no-verify check refuses without a row and allows with one',
+      expiresAt: new Date(Date.now() + 600000).toISOString(), oneShot: true, usedAt: null, usedBy: null }, over);
+    const run = (a, n, over, keep) => {
+      const f = led(n);
+      if (!keep) { try { fs.unlinkSync(f); } catch (_) {} }
+      if (over !== undefined) fs.writeFileSync(f, JSON.stringify(row(over)) + '\n');
+      return cp.spawnSync('node', [__filename, 'check-git', ...a],
+        { cwd: r.wc, encoding: 'utf8', env: Object.assign({}, process.env, AENV, { MERGE_GATE_LEDGER: f }) }).status;
+    };
+    ok('--no-verify with no row of that kind → refused', run(['push', '--no-verify', 'origin', 'feat'], 1) === REFUSE);
+    ok('--no-verify with an expired row → refused', run(['push', '--no-verify', 'origin', 'feat'], 2,
+      { expiresAt: new Date(Date.now() - 3600000).toISOString() }) === REFUSE);
+    ok('--no-verify with a sha outside covers.commits → refused', run(['push', '--no-verify', 'origin', 'feat'], 3,
+      { covers: { release: 'selftest', commits: [shas[0]] } }) === REFUSE);
+    ok('--no-verify with grantedBy an agent → refused', run(['push', '--no-verify', 'origin', 'feat'], 4,
+      { grantedBy: 'Alex' }) === REFUSE);
+    ok('--no-verify with an empty acts list → refused', run(['push', '--no-verify', 'origin', 'feat'], 5,
+      { acts: [] }) === REFUSE);
+    ok('--no-verify with a live row covering the push → allowed', run(['push', '--no-verify', 'origin', 'feat'], 6, {}) === 0);
+    let spent = null; try { spent = JSON.parse(fs.readFileSync(led(6), 'utf8').trim().split('\n').pop()); } catch (_) {}
+    ok('the use is written onto the row (usedAt + usedBy)', !!(spent && spent.usedAt && spent.usedBy));
+    ok('a second push against the spent row → refused', run(['push', '--no-verify', 'origin', 'feat'], 6, undefined, true) === REFUSE);
+    ok('a feature push WITHOUT --no-verify needs no row', run(['push', 'origin', 'feat'], 7) === 0);
+    ok('--no-verify --dry-run is allowed and spends nothing', run(['push', '--no-verify', '--dry-run', 'origin', 'feat'], 8) === 0);
+    ok('-c core.hooksPath=/dev/null (the other hook-skipping route) → refused', run(['-c', 'core.hooksPath=/dev/null', 'push', 'origin', 'feat'], 9) === REFUSE);
+    // The shape of the push, and a spend that stays spent. A clearance row
+    // names the commits it clears — never a branch to be deleted or to move backwards — and a spent row stays spent
+    // however the ledger's last line for it reads. These cases drive master (the default branch) and a branch whose
+    // tip is already on the remote, because those are the two shapes that used to pass vacuously.
+    console.log('[--no-verify: the shape of the push, and a spend that stays spent]');
+    {
+      const runRow = (a, file) => cp.spawnSync('node', [__filename, 'check-git', ...a],
+        { cwd: r.wc, encoding: 'utf8', env: Object.assign({}, process.env, AENV, { MERGE_GATE_LEDGER: file }) });
+      G(['-C', r.wc, 'checkout', '-q', 'master']);
+      G(['-C', r.wc, 'commit', '-q', '--allow-empty', '-m', 'master two']);
+      const m1 = G(['-C', r.wc, 'rev-parse', 'master~1']).stdout.trim();
+      const m2 = G(['-C', r.wc, 'rev-parse', 'master']).stdout.trim();
+      G(['-C', r.wc, 'push', '-q', 'origin', 'master']);          // real git: the remote tip is m2 now
+      G(['-C', r.wc, 'checkout', '-q', '-b', 'feat2']);
+      G(['-C', r.wc, 'commit', '-q', '--allow-empty', '-m', 'feat2 one']);
+      const x = G(['-C', r.wc, 'rev-parse', 'HEAD']).stdout.trim();
+      G(['-C', r.wc, 'push', '-q', 'origin', 'feat2:other']);     // x is on the remote under another name
+      G(['-C', r.wc, 'checkout', '-q', 'feat']);
+      G(['-C', r.wc, 'commit', '-q', '--allow-empty', '-m', 'feat three']);
+      const s3 = G(['-C', r.wc, 'rev-parse', 'HEAD']).stdout.trim();
+      const mrow = over => row(Object.assign({ id: 'clr-selftest-master', acts: ['push:o/r:master'], branch: 'master',
+        covers: { release: 'selftest', commits: [m2] } }, over));
+      const f2row = over => row(Object.assign({ id: 'clr-selftest-f2', acts: ['push:o/r:feat2'], branch: 'feat2',
+        covers: { release: 'selftest', commits: [x] } }, over));
+      const write = (n, rowObj) => { const f = led(n); fs.writeFileSync(f, JSON.stringify(rowObj) + '\n'); return f; };
+      let res = runRow(['push', '--no-verify', '--delete', 'origin', 'master'], write(10, mrow({})));
+      ok('--no-verify --delete of the default branch → refused, and the refusal names the case',
+        res.status === REFUSE && /deletion of master/.test(res.stderr || ''));
+      res = runRow(['push', '--no-verify', '--force', 'origin', m1 + ':master'], write(11, mrow({})));
+      ok('--no-verify --force of an ancestor the remote already has → refused, and the refusal names the case',
+        res.status === REFUSE && /forced update of master/.test(res.stderr || ''));
+      res = runRow(['push', '--no-verify', 'origin', 'feat2'], write(12, f2row({})));
+      ok('a push that carries no commit → refused unless the row says covers.empty',
+        res.status === REFUSE && /empty commit set/.test(res.stderr || ''));
+      res = runRow(['push', '--no-verify', 'origin', 'feat2'],
+        write(13, f2row({ covers: { release: 'selftest', commits: [x], empty: true } })));
+      ok('the same push with covers.empty in the row → allowed', res.status === 0);
+      const spentFirst = new Date().toISOString();
+      const sticky = led(14);
+      fs.writeFileSync(sticky, JSON.stringify(row({ id: 'clr-selftest-sticky', covers: { release: 'selftest', commits: [s3] } })) + '\n' +
+        JSON.stringify(row({ id: 'clr-selftest-sticky', covers: { release: 'selftest', commits: [s3] }, usedAt: spentFirst, usedBy: 'someone else' })) + '\n' +
+        JSON.stringify(row({ id: 'clr-selftest-sticky', covers: { release: 'selftest', commits: [s3] }, usedAt: null, usedBy: null })) + '\n');
+      res = runRow(['push', '--no-verify', 'origin', 'feat'], sticky);
+      ok('a spent row re-appended by hand with usedAt null stays spent',
+        res.status === REFUSE && /was spent/.test(res.stderr || ''));
+      // The transport flags: a command carrier, and the two flags that
+      // carry EVERY ref instead of the ones a row names.
+      const marker = path.join(TMP, 'transport-ran');
+      res = runRow(['push', '--no-verify', '--receive-pack=sh -c "touch ' + marker + '"', 'origin', 'feat'],
+        write(15, row({ id: 'clr-selftest-rp', acts: ['push:o/r:feat'], covers: { release: 'selftest', commits: [s3] } })));
+      ok('--no-verify --receive-pack=<command> → refused, and the command never ran',
+        res.status === REFUSE && /receive-pack/.test(res.stderr || '') && !fs.existsSync(marker));
+      res = runRow(['push', '--no-verify', '--exec=touch ' + marker, 'origin', 'feat'],
+        write(16, row({ id: 'clr-selftest-ex', acts: ['push:o/r:feat'], covers: { release: 'selftest', commits: [s3] } })));
+      ok('--no-verify --exec=<command> → refused, and the command never ran',
+        res.status === REFUSE && /--exec/.test(res.stderr || '') && !fs.existsSync(marker));
+      res = runRow(['push', '--no-verify', '--all', 'origin'],
+        write(17, row({ id: 'clr-selftest-all', acts: ['push:o/r:feat'], covers: { release: 'selftest', commits: [s3] } })));
+      ok('--no-verify --all (the local repo holds branches the row does not name) → refused, and the refusal names the act',
+        res.status === REFUSE && /does not list/.test(res.stderr || ''));
+      res = runRow(['push', '--no-verify', '--mirror', 'origin'],
+        write(18, row({ id: 'clr-selftest-mirror', acts: ['push:o/r:feat'], covers: { release: 'selftest', commits: [s3] } })));
+      ok('--no-verify --mirror → refused', res.status === REFUSE);
+    }
+  }
 
   // gh decisions — pure, default branch injected (no network).
   console.log('[gh api / graphql / --auto / repo sync parsing]');
