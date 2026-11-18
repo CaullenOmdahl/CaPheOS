@@ -413,3 +413,13 @@ const C = () => H.context({ root: T, underStation: true, ownerShell: false, skip
 });
 
 /* ---------------- S6 and the watchdog ---------------- */
+test('S6: the code that decides what reaches the owner is owner-gated and locked', () => {
+  const H = require(path.join(REPO, 'company/tools/harness-change.js'));
+  const L = require(path.join(REPO, 'company/tools/locked-watch.js'));
+  const locked = new Set(L.MANIFEST.map(m => m.p));
+  for (const f of ['lib/owner-notice.js', 'lib/owner-scope.js', 'owner-inbox.js', 'watchdog.js', 'service.js', 'lib/owner-card.js', 'lib/owner-rulings.js']) {
+    assert.ok(H.OWNER_GATE_TOOLS['company/tools/' + f], f + ' is owner-gated');
+    assert.ok(locked.has('company/tools/' + f), f + ' is locked');
+  }
+});
+

@@ -156,7 +156,10 @@ function classify(ctx, rel) { try { return require('./locked-watch.js').classify
 // the crew only: nothing changes here, and the framework reviews it before any company gets it.
 const OWNER_GATE_TOOLS = Object.assign(
   Object.fromEntries(['harness-change.js', 'locked-watch.js', 'provenance.js', 'lib/pm-inbox-guard.js', 'lib/owner-channel.js', 'lib/owner.js', 'lib/owner-card.js', 'lib/owner-rulings.js',
-    'lib/governance.js', 'governance.js', 'guardrails.js', 'lib/guardrails.js', 'delegation.js', 'merge-gate.js', 'default-branch-watch.js'].map(f => ['company/tools/' + f, 'access'])),
+    'lib/governance.js', 'governance.js', 'guardrails.js', 'lib/guardrails.js', 'delegation.js', 'merge-gate.js', 'default-branch-watch.js',
+    // what reaches the owner and what their yes does: the plain check and the "not now" backoff, urgent delivery, the
+    // owner's outbound channel, the liveness alert, and the background-service gate (its card carries an owner effect)
+    'lib/owner-notice.js', 'lib/owner-scope.js', 'owner-inbox.js', 'watchdog.js', 'service.js'].map(f => ['company/tools/' + f, 'access'])),
   { 'company/tools/external-gate.js': 'commitments' },
   Object.fromEntries(['budget.js', 'money-hold.js', 'lib/money-hold.js'].map(f => ['company/tools/' + f, 'spendBeyondCap'])));
 // what a change is about, in words the owner knows (the card's lead and the digest line; never a file name)
