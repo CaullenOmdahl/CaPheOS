@@ -238,3 +238,12 @@ test('the console route runs departments.js as the owner with fixed arguments', 
   await assert.rejects(() => hit('POST', '/api/departments/move', { seat: 'cat', to: '--by' }));
   assert.deepEqual(calls, [['departments.js', 'list', '--json'], ['departments.js', 'set-lead', 'eng', 'ben', '--by', 'Olive'], ['departments.js', 'set-lead', 'eng', 'none', '--by', 'Olive'], ['departments.js', 'move', 'cat', 'ops', '--by', 'Olive']]);
 });
+
+test('no department defined yet: a FLOOR_PLAN.md that names departments is not drift (the empty list founding ships)', () => {
+  const DL = require(path.join(TOOLS, 'lib', 'departments.js'));
+  const plan = DL.parsePlan('# Floor\n\n## 1. Rooms\n\n- **North room** (desks 1-4): **Engineering**\n\n## 2. Seats\n\n| Agent | Department |\n|---|---|\n| Alex — lead | Engineering |\n');
+  const r = DL.drift({ doc: { departments: [] }, exists: true, crew: { agent: { name: 'Alex' } }, plan, ceo: 'agent' });
+  assert.equal(r.ok, true, JSON.stringify(r.mismatches));
+  assert.deepEqual(r.mismatches, []);
+  assert.ok(r.notes.some(n => n.code === 'NOT_IN_USE'));
+});

@@ -159,6 +159,9 @@ function drift(o) {
     if (s && s.department != null && String(s.department) !== (d ? String(d.id) : '')) mismatches.push({ code: 'LOOPS_MISMATCH', seat: id, msg: 'loops.json says ' + id + ' is in "' + s.department + '"; departments.json ' + (d ? 'has ' + id + ' in ' + d.id : 'has ' + id + ' in no department') });
     else if (!d && depts.length && id !== o.ceo) notes.push({ code: 'UNASSIGNED', seat: id, msg: id + ' is in no department' });
   }
+  // no department defined yet (the empty list founding ships): the feature is not in use, so a FLOOR_PLAN.md that names
+  // departments is no drift; reporting each of them every hour would only be noise
+  if (!depts.length) { notes.push({ code: 'NOT_IN_USE', msg: 'departments.json lists no departments yet: the floor plan was not compared' }); return { ok: !mismatches.length, mismatches, notes }; }
   if (!o.plan) { notes.push({ code: 'NO_FLOOR_PLAN', msg: 'no company/FLOOR_PLAN.md, so the floor plan was not compared' }); return { ok: !mismatches.length, mismatches, notes }; }
   const onPlan = new Set(), unknown = new Map();   // an unknown department is reported once, with its rooms and people
   const miss = (name, what) => { const k = String(name).trim().toLowerCase(); if (!unknown.has(k)) unknown.set(k, { name: String(name).trim(), rooms: [], people: [] }); unknown.get(k)[what[0]].push(what[1]); };
