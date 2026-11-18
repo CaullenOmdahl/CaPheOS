@@ -160,8 +160,14 @@ function continueWith(t, opts) {
   try { const agents = co.readJson(path.join(rootOf(opts), 'company', 'tools', 'loops.json'), {}).agents || {}; names = Object.values(agents).map(c => String((c && c.name) || '').split(/\s+/)[0]); } catch (_) {}
   names.push(String((co.config.owner && co.config.owner.name) || '').split(/\s+/)[0], String(co.config.name || '').split(/\s+/)[0]);
   if (names.some(n => n && n.toLowerCase() === w.toLowerCase())) return x.replace(/^./, c => c.toUpperCase());
-  return x.replace(/^./, c => c.toLowerCase());
+  // an everyday word that only starts the sentence is lowered; a full name ("Lee Park") or any other capitalised word
+  // (a candidate, a person outside the crew) keeps its capital
+  if (/^[A-Z][a-z]+\s+[A-Z][a-z]/.test(x)) return x;
+  return COMMON_START.has(w.toLowerCase()) ? x.replace(/^./, c => c.toLowerCase()) : x;
 }
+const COMMON_START = new Set(('the a an no nobody nothing none it its this that these those each every all any some they we you our your their there ' +
+  'routines work everything one only if when then so but and or keep keeps stay stays wait waits leave leaves open start hire add change use let make move ' +
+  'run set turn take have look raise lift give send pay buy approve apply switch publish sign spend release fire create remove put write ask tell').split(' '));
 /* fileQuestion(category, o, opts) -> the owner card's result (lib/owner-card.js file): {filed, id?, route?, reason?} */
 function fileQuestion(category, o, opts) {
   const card = require('./owner-card');

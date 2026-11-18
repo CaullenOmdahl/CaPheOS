@@ -317,6 +317,8 @@ out({ res, cut: { notPlain: !!cut.notPlain, questionId: cut.questionId || null }
   assert.match(by.remodel.recommendation, /cheaper for routine work/);
   assert.match(by.remodel.consequence, /Halima Cisse keeps the AI they use now/, 'a name keeps its capital');
   assert.equal(by['models chain'].recommendation, 'Nadia recommends yes.', 'never "yes: Nadia, people, <date>"');
+  assert.match(by.releaseCandidate.consequence, /do not answer, Lee Park stays a candidate\./, 'a name outside the crew keeps its capital too');
+  assert.match(by.hire.consequence, /do not answer, nobody is hired/, 'an everyday first word is lowered');
   assert.equal(by['deps add'].message, 'May Nadia go ahead and add a free software library the crew needs?');
   assert.match(by['cadence tempo'].message, /pick up work more often for the next 2 hours/);
   assert.equal(by.departments.message, 'May Nadia go ahead and start the Research department led by Nadia?');
