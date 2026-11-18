@@ -124,8 +124,15 @@ function commandAsk(text) {
 }
 
 const CHECK_PREFIX = '[Console check, not from the owner:';
+// a push to a default branch is refused for everyone (the one standing rule on agents' git access): the note never tells
+// the agent to run it itself
+const DEFAULT_PUSH = /\bgit\s+push\b(?:[^`\n]*\s)?(?:\S+:)?(?:refs\/heads\/)?(main|master|trunk)(?=$|[\s`"';])/i;
 function recheckNote(hit) {
   const a = hit && hit.action;
+  if (hit && hit.command && DEFAULT_PUSH.test(String(hit.command))) {
+    return CHECK_PREFIX + ' your reply was NOT shown to the owner, because it asked them to run a command (' + String(hit.command).slice(0, 160) + '). The owner uses the console only and never opens a terminal. ' +
+      'Do not run that command yourself either: nobody pushes to a default branch. Push a branch and open a pull request for review, or hand it to the tools seat in a handoff. Write your reply to the owner again, in plain words, without the command.]';
+  }
   return CHECK_PREFIX + ' your reply was NOT shown to the owner, because it asked them to run a command' + (hit && hit.command ? ' (' + String(hit.command).slice(0, 160) + ')' : '') +
     '. The owner uses the console only and never opens a terminal. Do it yourself with your tools, or offer the console control that does it' +
     (a ? ' ([' + a.label + '](console:' + a.href + '))' : ' (a [label](console:#/route) link, or an ```actions block)') +
@@ -159,7 +166,11 @@ function selftest() {
   let rn = recheckNote(commandAsk(CAPTURED_1));
   ok('recheck note: starts with the check prefix, says the owner uses the console only, offers the console action', rn.startsWith(CHECK_PREFIX) && /console only/.test(rn) && /#\/settings\/system\/alarm/.test(rn) && /do it yourself/i.test(rn), rn);
   rn = recheckNote(commandAsk('Could you run `git push origin main` for me?'));
-  ok('recheck note without a console action: asks for a button or doing it', /actions block/.test(rn) && /git push origin main/.test(rn), rn);
+  ok('recheck note for a push to a default branch: says not to run it, points at a pull request', /Do not run that command yourself/.test(rn) && /pull request/.test(rn) && !/Do it yourself/.test(rn) && /git push origin main/.test(rn), rn);
+  rn = recheckNote(commandAsk('Could you run `git push origin feature-x` for me?'));
+  ok('recheck note without a console action: asks for a button or doing it', /actions block/.test(rn) && /git push origin feature-x/.test(rn) && /Do it yourself/.test(rn), rn);
+  for (const c of ['git push origin HEAD:main', 'git push -f origin master', 'git push origin refs/heads/main']) ok('a default-branch push is recognised: ' + c, DEFAULT_PUSH.test(c));
+  for (const c of ['git push origin main-fix', 'git push origin feature/maintenance']) ok('not a default-branch push: ' + c, !DEFAULT_PUSH.test(c));
   // the owner-scope lint: crew work put to the owner in chat
   let oa = ownerAsk('The recorder now has its own watchdog. Could you add a healthchecks check named recorder, period 5, grace 15, and paste its ping URL?');
   ok('owner scope: a health-check request in chat is flagged as the crew\'s, routed to the risk seat', oa && oa.kind === 'crew-scope' && oa.route === 'risk' && /healthchecks/.test(oa.words.join()), oa);
