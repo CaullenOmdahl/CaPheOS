@@ -469,6 +469,7 @@ opens the console. `docs/FOUNDING.md` is the flow: bootstrap → setup → certi
 
 | Document | What it settles |
 |---|---|
+| `docs/VISION.md` | where CaPheOS is going and why, and how a change is judged against it |
 | `docs/BACKEND.md` | the backend rewrite: one process, the core, the contract, vendoring, the phases |
 | `docs/PARITY.md` | the acceptance test: 18 areas, three gates, the bloat ledger |
 | `docs/FOUNDING.md` | bootstrap, setup, certification, launch |
