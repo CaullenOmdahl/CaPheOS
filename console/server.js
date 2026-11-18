@@ -891,7 +891,8 @@ function makeServer() {
         const m = p.match(r.re); if (!m) continue;
         if (req.method !== r.method) continue;
         const body = req.method === 'POST' ? await readBody(req) : {};
-        const out = await r.fn(m, url.searchParams, body, req);
+        const out = await r.fn(m, url.searchParams, body, req, res);
+        if (res.headersSent || res.writableEnded) return;   // a route that streams its own answer (GET /api/meeting/attach)
         return sendJson(res, 200, out);
       }
       return sendJson(res, routes.some(r => r.re.test(p)) ? 405 : 404, { ok: false, error: 'no such endpoint: ' + req.method + ' ' + p });

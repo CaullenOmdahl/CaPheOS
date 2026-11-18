@@ -61,7 +61,7 @@ function fresh(opts) {
   for (const f of ['company/state/meetings']) fs.rmSync(path.join(T, f), { recursive: true, force: true });
   const runner = makeRunner();
   const models = (opts && opts.models) || {};
-  const M = meetingLib({ co, owner: () => 'Caullen', runner, run, speedMs: { fast: 1, normal: 1, slow: 1 }, consentPollMs: 20, seatBusy: async id => !!(opts && opts.busy && opts.busy.includes(id)), modelFor: async id => models[id] || { provider: 'claude-cli', model: 'claude-sonnet-5-5' } });
+  const M = meetingLib(Object.assign({ co, owner: () => 'Caullen', runner, run, speedMs: { fast: 1, normal: 1, slow: 1 }, consentPollMs: 20, seatBusy: async id => !!(opts && opts.busy && opts.busy.includes(id)), modelFor: async id => models[id] || { provider: 'claude-cli', model: 'claude-sonnet-5-5' } }, (opts && opts.deps) || {}));
   if (opts && opts.seats && Object.keys(CREW).some(x => !opts.seats.includes(x))) M.seatsChange({ remove: Object.keys(CREW).filter(x => !opts.seats.includes(x)) });
   if (opts && opts.seats) M.seatsChange({ add: opts.seats });
   if (opts && 'leader' in opts) M.setLeader({ seat: opts.leader });
@@ -71,7 +71,7 @@ async function idle(M) { for (let i = 0; i < 400; i++) { if (M.idle()) return; a
 const said = M => M._state().LOG.filter(e => e.kind === 'say').map(e => e.who + ': ' + e.text);
 const kinds = (M, k) => M._state().LOG.filter(e => e.kind === k);
 
-test('turn order: everyone seated in turn, the leader first, each seeing what came before; a pass is not shown', async () => {
+test('turn order: everyone seated in turn, the leader first, each seeing what came before; a pass is one dim line', async () => {
   const { M, runner } = fresh({ seats: ['sharon', 'phil', 'dave'], leader: 'dave' });
   runner.script({ dave: 'Dave here.', sharon: 'PASS', phil: 'Phil agrees with Dave.' });
   await M.say({ text: 'What should we do first?' }); await idle(M);
@@ -80,8 +80,8 @@ test('turn order: everyone seated in turn, the leader first, each seeing what ca
   assert.ok(/Caullen \(owner\): What should we do first\?/.test(phil.all) && /Dave: Dave here\./.test(phil.all), 'Phil sees the owner and Dave');
   assert.deepStrictEqual(said(M), ['owner: What should we do first?', 'dave: Dave here.', 'phil: Phil agrees with Dave.']);
   const e = M.entries(new URLSearchParams()).entries;
-  assert.ok(!e.some(x => x.kind === 'pass'), 'passes are not shown');
-  assert.ok(kinds(M, 'pass').length === 1, 'but they are kept, so Sharon is not asked again with nothing new');
+  assert.deepStrictEqual(e.filter(x => x.kind === 'pass').map(x => x.who), ['sharon'], 'a pass is shown, as at the table ("Sharon passes")');
+  assert.ok(kinds(M, 'pass').length === 1, 'and kept, so Sharon is not asked again with nothing new');
   // the meeting carries on: the next message sees the earlier part; New meeting starts clean with the same seats
   runner.script({ dave: 'Still here.' });
   await M.say({ text: 'And next?' }); await idle(M);
@@ -256,24 +256,36 @@ test('DISMISS and seats: agent changes last for this meeting only; the owner\'s 
   assert.ok((await M.view()).seats.some(s => s.id === 'nadia' && s.standing), 'the owner\'s add is a standing seat');
 });
 
-test('talk only is the default: zero tool calls, hand checks too; tools only for an agenda item switched on', async () => {
+test('tools are on by default, as at the table; Talk only switches them off for the meeting; an agenda item can set its own; hand checks stay talk only', async () => {
   const { M, runner } = fresh({ seats: ['dave', 'sharon', 'phil'], leader: 'dave' });
   runner.script({ dave: 'ASK: Sharon — budget?', sharon: 'Fine.' });
-  await M.say({ text: 'Talk only by default.' }); await idle(M);
-  assert.ok(runner.calls.length >= 3 && runner.calls.every(c => c.tools === false), 'every run, hand checks included, has no tools');
-  assert.ok(/Talk only: nobody has tools in this part of the meeting/.test(runner.turns()[0].last));
-  assert.strictEqual((await M.view()).meeting.toolsOn, false);
+  await M.say({ text: 'Tools by default.' }); await idle(M);
+  const turns = runner.turns(), checks = runner.calls.filter(c => c.purpose !== 'turn');
+  assert.ok(turns.length >= 2 && turns.every(c => c.tools === true), 'every turn has tools: ' + turns.map(c => c.tools));
+  assert.ok(checks.length && checks.every(c => c.tools === false), 'hand checks and the leader\'s call are talk only');
+  assert.ok(!/Talk only/.test(turns[0].last), 'no talk-only line when tools are on');
+  assert.strictEqual((await M.view()).meeting.toolsOn, true);
+  await M.setTalkOnly({ on: true });
+  runner.script({ dave: 'a', sharon: 'b', phil: 'c' });
+  let n = runner.calls.length;
+  await M.say({ text: 'Now talk only.' }); await idle(M);
+  let after = runner.calls.slice(n).filter(c => c.purpose === 'turn');
+  assert.ok(after.length && after.every(c => c.tools === false && /Talk only: nobody has tools/.test(c.last)), 'Talk only: no tools on any turn');
+  assert.strictEqual((await M.view()).meeting.talkOnly, true, 'kept with the seats');
   M.agenda({ op: 'add', title: 'Check the ledger' });
   const it = (await M.view()).meeting.agenda[0];
+  assert.strictEqual(it.toolsOn, false, 'a new item follows the meeting');
   M.agenda({ op: 'tools', id: it.id, on: true });
-  runner.script({ dave: 'c', sharon: 'd' });
-  const n = runner.calls.length;
+  runner.script({ dave: 'c', sharon: 'd', phil: 'e' });
+  n = runner.calls.length;
   await M.say({ text: 'Now with tools.' }); await idle(M);
-  const after = runner.calls.slice(n).filter(c => c.purpose === 'turn');
+  after = runner.calls.slice(n).filter(c => c.purpose === 'turn');
   assert.ok(after.length && after.every(c => c.tools === true && /Agenda item now: Check the ledger/.test(c.last)), 'tools on for that item');
   M.agenda({ op: 'add', title: 'Next topic' }); const it2 = (await M.view()).meeting.agenda[1];
   M.agenda({ op: 'current', id: it2.id });
-  assert.strictEqual((await M.view()).meeting.toolsOn, false, 'the next item is talk only again');
+  assert.strictEqual((await M.view()).meeting.toolsOn, false, 'the next item follows the meeting again');
+  await M.setTalkOnly({ on: false });
+  assert.strictEqual((await M.view()).meeting.toolsOn, true);
 });
 
 test('admit: every turn passes admit() as a meeting-turn (zero-token check), and no budget file is created', async () => {
@@ -492,12 +504,29 @@ test('a consent prompt inside a turn goes to the approvals path (Today) and paus
   assert.ok(kinds(M, 'consent').some(e => e.op === 'answered' && e.decision === 'once'));
 });
 
-test('a seat in the middle of a routine run sits the turn out: the meeting does not stall on it', async () => {
+test('a seat in the middle of a routine run still speaks, talk only for that turn, with a note to it and one dim line', async () => {
   const { M, runner } = fresh({ seats: ['dave', 'sharon', 'phil'], leader: 'dave', busy: ['sharon'] });
-  runner.script({ dave: 'D.', sharon: 'never', phil: 'P.' });
+  runner.script({ dave: 'D.', sharon: 'From what I know.', phil: 'P.' });
   await M.say({ text: 'Go.' }); await idle(M);
-  assert.deepStrictEqual(runner.turns().map(c => c.seat), ['dave', 'phil']);
-  assert.ok(kinds(M, 'note').some(e => /Sharon is in the middle of a routine run, so they sit this turn out/.test(e.text)));
+  assert.deepStrictEqual(runner.turns().map(c => c.seat), ['dave', 'sharon', 'phil'], 'nobody sits out');
+  const sh = runner.turns()[1];
+  assert.strictEqual(sh.tools, false, 'the busy seat has no tools this turn');
+  assert.ok(/You are in the middle of a routine run, so you have no tools this turn: say what you know\./.test(sh.last), sh.last);
+  assert.ok(runner.turns()[0].tools === true && runner.turns()[2].tools === true, 'the others keep their tools');
+  assert.ok(kinds(M, 'say').some(e => e.who === 'sharon' && e.text === 'From what I know.'));
+  assert.ok(kinds(M, 'note').some(e => e.text === 'Sharon is in the middle of a routine run, so Sharon speaks without tools this turn.'));
+  assert.ok(/_\d\d:\d\d: Sharon is in the middle of a routine run/.test(R('company/work/meetings/meeting-' + co.localParts(new Date()).date + '.md')), 'one dim line in the minutes');
+});
+
+test('workspace-busy: a routine that took the company folder mid-turn gets one dim line, and the turn carries on', async () => {
+  const { M, runner } = fresh({ seats: ['dave'], leader: 'dave' });
+  const wait0 = runner.wait;
+  runner.wait = async (runId, onEvent) => { if (onEvent) { onEvent({ name: 'agent.tool_result', payload: { ok: false, summary: 'workspace-busy' } }); onEvent({ name: 'agent.tool_result', payload: { ok: false, summary: 'workspace-busy' } }); } return wait0(runId, onEvent); };
+  runner.script({ dave: 'Answered without writing.' });
+  await M.say({ text: 'Go.' }); await idle(M);
+  const n = kinds(M, 'note').filter(e => /routine is using the company folder; Dave answers without changing files/.test(e.text));
+  assert.strictEqual(n.length, 1, 'once per turn');
+  assert.ok(kinds(M, 'say').some(e => e.who === 'dave' && e.text === 'Answered without writing.'));
 });
 
 test('state: under company/state/meetings, mode 600, read bounded, covered by retention', async () => {
@@ -526,14 +555,38 @@ test('protocol lines are parsed and hidden from what was said', () => {
   assert.strictEqual(meetingLib.handReply('HAND — on cost.'), 'on cost'); assert.strictEqual(meetingLib.handReply('NO'), null);
 });
 
-test('pacing: with the owner present and manual pacing, a 7-seat 3-round meeting never advances without Next', async () => {
+test('pacing: turns flow by default (no Next to press), as at the table; an old manual default moves to instant once', async () => {
+  const seats = ['dave', 'sharon', 'phil', 'rachel'];
+  const { M, runner } = fresh({ seats, leader: 'dave' });
+  M.presence({ here: true });
+  const v0 = await M.view();
+  assert.ok(v0.meeting.speed === 'instant' && v0.meeting.effectiveSpeed === 'instant', 'instant is the default, present or not: ' + v0.meeting.speed);
+  M.setObserve({ on: true, rounds: 2 });
+  const script = {}; for (const id of seats) script[id] = ['r1 ' + id, 'r2 ' + id];
+  runner.script(script);
+  let sawWait = false; const watch = setInterval(async () => { const v = await M.view(); if (v.live.waitNext) sawWait = true; }, 3);
+  await M.say({ text: 'Two rounds, flowing.' }); await idle(M); clearInterval(watch);
+  assert.strictEqual(runner.turns().length, 8, '4 seats x 2 rounds, nobody pressing Next');
+  assert.ok(!sawWait && !kinds(M, 'note').some(e => /Next/.test(e.text)), 'the default pace never waits for Next');
+  // a seats.json saved under the old default ('manual') moves to instant once; a pace picked after that is kept
+  const F = path.join(T, 'company/state/meetings/seats.json');
+  const old = JSON.parse(fs.readFileSync(F, 'utf8')); delete old.speedMigrated; old.speed = 'manual'; fs.writeFileSync(F, JSON.stringify(old));
+  M._reload();
+  assert.strictEqual((await M.view()).meeting.speed, 'instant', 'migrated');
+  assert.strictEqual(JSON.parse(fs.readFileSync(F, 'utf8')).speedMigrated, true, 'once: saved with the flag');
+  M.pace({ speed: 'manual' }); M._reload();
+  assert.strictEqual((await M.view()).meeting.speed, 'manual', 'Next picked by the owner after that is kept');
+});
+
+test('pacing: with Next picked and the owner present, a 7-seat 3-round meeting never advances without Next', async () => {
   const seats = ['dave', 'sharon', 'phil', 'rachel', 'nadia', 'omar', 'leo'];
   const { M, runner } = fresh({ seats, leader: 'dave' });
+  M.pace({ speed: 'manual' });
   M.setObserve({ on: true, rounds: 3 });
   const script = {}; for (const id of seats) script[id] = ['r1 ' + id, 'r2 ' + id, 'r3 ' + id];
   runner.script(script);
   M.presence({ here: true });
-  assert.strictEqual((await M.view()).meeting.effectiveSpeed, 'manual', 'Next is the default while the owner is present');
+  assert.strictEqual((await M.view()).meeting.effectiveSpeed, 'manual', 'Next while the owner is present');
   await M.say({ text: 'Three rounds, at my pace.' });
   const wait = async n => { for (let i = 0; i < 200 && runner.turns().length < n; i++) await new Promise(r => setTimeout(r, 5)); await new Promise(r => setTimeout(r, 60)); };
   for (let k = 1; k <= 21; k++) {
@@ -547,6 +600,7 @@ test('pacing: with the owner present and manual pacing, a 7-seat 3-round meeting
   assert.strictEqual(runner.turns().length, 21, '7 seats x 3 rounds');
   // away: the meeting advances by itself at the type's speed
   const t2 = fresh({ seats: ['dave', 'sharon'], leader: 'dave' });
+  t2.M.pace({ speed: 'manual' });
   t2.runner.script({ dave: 'a', sharon: 'b' });
   t2.M.presence({ here: false });
   await t2.M.say({ text: 'While I am away.' }); await idle(t2.M);
@@ -587,14 +641,18 @@ test('your turn: an ASK of the owner or a CALL from the leader gives the owner t
   assert.ok(M.timeline().moments.some(m => m.kind === 'ask'), 'the timeline has the moments to scrub to');
 });
 
-test('the action register: rows come from their owners\' lines, a row without a plain line fails visibly, only confirmed owner rulings reach decisions.md, each owner updates their own lines', async () => {
+test('the action register: rows come from their owners\' lines, "plain:" is welcome not required (kept, the writer told), only confirmed owner rulings reach decisions.md, each owner updates their own lines', async () => {
   const { M, runner } = fresh({ seats: ['dave', 'sharon', 'phil'], leader: 'dave' });
   runner.script({ dave: 'Proposal.\nRULING: Email stays on Proton for now — plain: we keep the email we have', sharon: 'I will price it.\nACTION: Price both email options — by 2026-11-20 — plain: Sharon finds what each email option costs — affects: Finance, Risk\nQUESTION: Does mail from home deliver? — plain: can we send mail from the office line', phil: 'ACTION: Check port 25 — by own loop' });
   await M.say({ text: 'Email: what do we do?' }); await idle(M);
   const rv = M.registerView(); const r = rv.register;
-  assert.deepStrictEqual(r.actions.map(a => [a.n, a.owner, a.date, a.status, a.affects]), [[1, 'sharon', '2026-11-20', 'open', 'Finance, Risk']], 'Sharon\'s own line');
+  assert.deepStrictEqual(r.actions.map(a => [a.n, a.owner, a.date, a.status, a.affects]), [[1, 'sharon', '2026-11-20', 'open', 'Finance, Risk'], [2, 'phil', 'own loop', 'open', '']], 'each speaker\'s own line');
   assert.strictEqual(r.actions[0].plain, 'Sharon finds what each email option costs');
-  assert.ok(kinds(M, 'parse').some(e => e.who === 'phil' && /no plain-language line/.test(e.why)), 'Phil\'s line without a plain part is refused, visibly');
+  assert.ok(r.actions[1].text === 'Check port 25' && !r.actions[1].plain, 'Phil\'s line without a plain part is kept as written');
+  assert.ok(!kinds(M, 'parse').some(e => e.who === 'phil'), 'not refused');
+  assert.ok(!rv.problems.some(p => p.section === 'actions'), 'and not failing validation: ' + JSON.stringify(rv.problems));
+  assert.ok(kinds(M, 'nudge').some(e => e.who === 'phil' && /ACTION line was recorded as written/.test(e.text)), 'Phil is told');
+  assert.ok(!M.entries(new URLSearchParams()).entries.some(e => e.kind === 'nudge'), 'the note to Phil is not on the page');
   assert.ok(r.questions.length === 1 && r.questions[0].owner === 'sharon');
   assert.ok(r.rulings.length === 1 && !r.rulings[0].confirmed && r.rulings[0].proposedBy === 'dave', 'the leader proposes; the owner confirms');
   assert.ok(!/Email stays on Proton/.test(R('company/work/decisions.md')));
@@ -605,7 +663,10 @@ test('the action register: rows come from their owners\' lines, a row without a 
   await assert.rejects(async () => M.register({ op: 'update', section: 'actions', n: 1, status: 'done' }), /only sharon updates this line/);
   await M.register({ op: 'not-recorded', text: 'No outside party was contacted.' });
   const md = R(path.relative(T, path.join(T, M.registerView().file)));
-  assert.ok(/## Owner rulings/.test(md) && /confirmed by the owner/.test(md) && /\| 1 \| Price both email options \| Sharon finds what each email option costs \| Sharon \| 2026-11-20 \| open \| Finance, Risk \|/.test(md) && /## Not recorded here\n- No outside party was contacted\./.test(md), md);
+  assert.ok(!/fails validation/.test(md) && /## Owner rulings/.test(md) && /confirmed by the owner/.test(md) && /\| 1 \| Price both email options \| Sharon finds what each email option costs \| Sharon \| 2026-11-20 \| open \| Finance, Risk \|/.test(md) && /## Not recorded here\n- No outside party was contacted\./.test(md), md);
+  runner.script({ phil: 'PASS' });
+  await M.say({ text: '@phil anything else?' }); await idle(M);
+  assert.ok(/Console note: your ACTION line was recorded as written/.test(runner.turns().filter(c => c.seat === 'phil').pop().last), 'told on his next turn');
   // searchable: participants, decisions, actions, links
   runner.script({ dave: 'See q:78 and to-sharon.md.' });
   await M.say({ text: '@dave links?' }); await idle(M);
@@ -615,16 +676,97 @@ test('the action register: rows come from their owners\' lines, a row without a 
   assert.ok(s2.length === 1 && s2[0].links.quests.includes('q:78') && s2[0].links.handoffs.includes('to-sharon.md'), JSON.stringify(s2));
 });
 
-test('legibility: seat frames name the speaker\'s function and what the others in the room need; the speaking contract; the company language', async () => {
+test('the rules are the table\'s: speak as yourself, short, by name, PASS, check facts, the lines; no speaking contract; seat frames off unless switched on; the company language', async () => {
   const { M, runner } = fresh({ seats: ['sharon', 'phil', 'nadia'], leader: null });
   runner.script({ sharon: 'S.', phil: 'P.', nadia: 'N.' });
   co.config.locale = 'vi';
   try { await M.say({ text: 'Should we self-host email?' }); await idle(M); } finally { co.config.locale = 'en'; }
   const sh = runner.turns().find(c => c.seat === 'sharon');
-  assert.match(sh.last, /Your seat: Finance\. In the room: Phil \(Risk and legal: needs the exposure, and any commitment or promise it makes for the company\); Nadia \(Tools and IT: needs what has to change in how things run, and who builds and checks it\)/, 'a Finance + Tools + Risk table addresses the room');
-  assert.match(runner.turns().find(c => c.seat === 'phil').last, /Your seat: Risk and legal\. In the room: Sharon \(Finance: needs what it costs/);
-  assert.match(sh.all, /Your point first, in one line[\s\S]*Define any term the room may not share[\s\S]*Say what your point means for the other functions present/, 'the speaking contract');
+  assert.match(sh.all, /^\[THE TABLE\]/, 'the table\'s preamble');
+  assert.match(sh.all, /Speak as yourself, from your own area, as you would in a meeting: short and to the point, a few sentences unless Caullen asks for more\. Answer what was put to you; agree, disagree or build on what the others said, by name; do not repeat/);
+  assert.match(sh.all, /If you have nothing to add, reply with exactly PASS and nothing else\./);
+  assert.match(sh.all, /Check the facts you state \(read what you need\), but do not start long work/);
+  assert.match(sh.all, /ASK: <name> — <your question>[\s\S]*HAND — <what you want to add>[\s\S]*INVITE: <name> — <why the discussion needs them>[\s\S]*DISMISS: <name> — <why>/);
+  assert.match(sh.all, /You may add "— plain: <one sentence anyone can read>"/, 'plain is optional');
+  assert.ok(!/speaking contract|Your point first|Define any term the room|A line without its plain part is refused/.test(sh.all), 'none of the added contract');
+  assert.ok(!/Your seat:|In the room:/.test(sh.last), 'no seat frames by default');
   assert.match(sh.last, /Speak Vietnamese \(the company's language, company\.json locale vi\)/);
+  assert.ok(sh.all.length < 5200, 'the preamble is short again: ' + sh.all.length);
+  await M.setFrames({ on: true });
+  runner.script({ sharon: 'S2.', phil: 'P2.', nadia: 'N2.' });
+  await M.say({ text: 'And the cost?' }); await idle(M);
+  const sh2 = runner.turns().filter(c => c.seat === 'sharon').pop();
+  assert.match(sh2.last, /Your seat: Finance\. In the room: Phil \(Risk and legal: needs the exposure, and any commitment or promise it makes for the company\); Nadia \(Tools and IT: needs what has to change in how things run, and who builds and checks it\)/, 'frames when switched on');
+});
+
+test('seatVoice: a seat\'s own point of view goes in after the rules, for that seat only', async () => {
+  const { M, runner } = fresh({ seats: ['dave', 'sharon'], leader: 'dave', deps: { seatVoice: id => id === 'sharon' ? '[YOUR VIEW] Sharon watches the money first.' : '' } });
+  runner.script({ dave: 'D.', sharon: 'S.' });
+  await M.say({ text: 'Go.' }); await idle(M);
+  const sh = runner.turns().find(c => c.seat === 'sharon'), dv = runner.turns().find(c => c.seat === 'dave');
+  assert.match(sh.messages[0].content, /^\[THE TABLE\][\s\S]*The minutes[\s\S]*\]\n\[YOUR VIEW\] Sharon watches the money first\.\n\[You are Sharon, CFO\./, 'after the rules, before who they are');
+  assert.ok(!/YOUR VIEW/.test(dv.all), 'only that seat');
+  const broken = fresh({ seats: ['dave'], leader: 'dave', deps: { seatVoice: () => { throw new Error('x'); } } });
+  broken.runner.script({ dave: 'still speaks' });
+  await broken.M.say({ text: 'Go.' }); await idle(broken.M);
+  assert.ok(kinds(broken.M, 'say').some(e => e.text === 'still speaks'), 'a failing hook never stops a turn');
+});
+
+test('a raised hand\'s reason is cut at a word boundary with "…", never mid-word', () => {
+  const long = 'HAND — ' + 'the budget line for the second quarter does not include the hosting renewal we agreed last month, '.repeat(4);
+  const w = meetingLib.handReply(long);
+  assert.ok(w.length <= 200 && w.endsWith('…'), w);
+  assert.ok(long.includes(w.slice(0, -1)) && /\w…$/.test(w) && / [a-z]+…$/.test(w), 'whole words: ' + w);
+  assert.ok(!/\s…$/.test(w));
+  assert.strictEqual(meetingLib.handReply('HAND — short point.'), 'short point');
+});
+
+test('one engine, other rooms: options for the state folder, topic, minutes, routes; a fixed host, a guest cap, a reply cap, a pull-in round with the host\'s closing turn', async () => {
+  const dir = path.join(T, 'company/state/huddles/dave');
+  fs.rmSync(dir, { recursive: true, force: true });
+  const runner = makeRunner(); const topics = [];
+  const H = meetingLib({ co, owner: () => 'Caullen', runner, run, emit: t => topics.push(t), modelFor: async () => ({ provider: 'claude-cli', model: 'claude-sonnet-5-5' }),
+    stateDir: dir, topic: 'huddle', streamPrefix: 'huddle-dave-', minutesPrefix: 'chat-dave-', routePrefix: '/api/huddle/dave', door: 'chat',
+    profile: { kind: 'huddle', noun: 'chat', preface: o => 'This is ' + o + '\'s live chat with Dave; Dave brought you in.', fixedLeader: 'dave', standing: ['dave'], wrapHost: true, maxGuests: 2, maxInvites: 2, maxTurnsPerRound: 4, noRegister: true } });
+  const v0 = await H.view();
+  assert.deepStrictEqual(v0.seats.map(s => s.id), ['dave'], 'only the host is standing');
+  assert.ok(v0.meeting.speed === 'instant' && v0.meeting.fixedLeader === 'dave');
+  assert.throws(() => H.setLeader({ seat: 'sharon' }), /Dave leads this chat/);
+  assert.throws(() => H.seatsChange({ remove: ['dave'] }), /Dave leads this chat and stays/);
+  // the host's reply asked a colleague: the conversation so far, then the ASK, the guest answers, the host closes the loop
+  runner.script({ nadia: 'The deploy is green.', dave: ['Caullen: Nadia says the deploy is green.'] });
+  await H.pullIn({ by: 'dave', seed: [{ who: 'owner', text: 'Is the deploy done?' }, { who: 'dave', text: 'Let me check with Nadia.' }], text: 'Let me check with Nadia.\nASK: Nadia — is the deploy done?' });
+  await idle(H);
+  const order = runner.turns().map(c => c.seat);
+  assert.deepStrictEqual(order, ['nadia', 'dave'], 'the guest answers first, then the host closes the loop: ' + order.join());
+  assert.ok(/This is Caullen's live chat with Dave; Dave brought you in\./.test(runner.turns()[0].all) && /Caullen \(owner\): Is the deploy done\?/.test(runner.turns()[0].all), 'the guest sees the chat so far');
+  assert.ok(/Dave asked you directly: is the deploy done\?/.test(runner.turns()[0].last));
+  assert.ok(/The others have spoken, Dave\. Close the loop for Caullen/.test(runner.turns()[1].last), 'the host\'s closing turn');
+  assert.ok(H._state().LOG.some(e => e.kind === 'join' && e.who === 'nadia' && e.by === 'dave'), 'asking someone not here brings them in');
+  assert.ok(!/RULING: <what was decided/.test(runner.turns()[0].all), 'no register lines in this room');
+  for (const f of ['current.json', 'm', 'events']) assert.ok(fs.existsSync(path.join(dir, f)), 'state under its own folder: ' + f);
+  assert.ok(fs.existsSync(path.join(T, 'company/work/meetings/chat-dave-' + co.localParts(new Date()).date + '.md')), 'its own minutes');
+  assert.ok(topics.length && topics.every(t => t === 'huddle'), 'its own live topic');
+  const adm = R('company/state/admit-log.jsonl').split('\n').filter(Boolean).map(l => JSON.parse(l)).filter(x => x.door === 'chat' && x.kind === 'meeting-turn');
+  assert.ok(adm.length >= 2 && adm.every(x => x.decision === 'allow'), 'admitted through the chat door as meeting-turns');
+  // the host stays when no wrap is due: nothing new since the host spoke
+  runner.script({ dave: 'Only me.' });
+  const n0 = runner.turns().length;
+  await H.say({ text: '@dave thanks' }); await idle(H);
+  assert.deepStrictEqual(runner.turns().slice(n0).map(c => c.seat), ['dave'], 'no closing turn when the host is the only one who spoke');
+  // guest cap: 2 colleagues at once
+  runner.script({ dave: 'INVITE: Sharon — cost\nINVITE: Phil — risk', sharon: 'S.', phil: 'P.' });
+  await H.say({ text: '@dave bring people' }); await idle(H);
+  assert.ok(H._state().LOG.some(e => e.kind === 'note' && /2 colleagues are here already, the most at once/.test(e.text)), 'the guest cap holds');
+  // reply cap: at most 4 agent turns per owner message
+  runner.script({ dave: ['ASK: Nadia — a?', 'ASK: Nadia — c?', 'x'], nadia: ['ASK: Dave — b?', 'ASK: Dave — d?'] });
+  const n1 = runner.turns().length;
+  await H.say({ text: 'Talk it through.' }); await idle(H);
+  assert.strictEqual(runner.turns().length - n1, 4, 'four replies, then it waits for the owner');
+  assert.ok(H._state().LOG.some(e => e.kind === 'note' && e.text === 'The chat paused after 4 replies; write to carry on.'));
+  // routes under the room's prefix, attach among them
+  const routes = []; H.mount((m, re) => routes.push(m + ' ' + re.source));
+  assert.ok(routes.includes('GET ^\\/api\\/huddle\\/dave$') && routes.includes('GET ^\\/api\\/huddle\\/dave\\/attach$') && !routes.some(r => /meeting/.test(r)), routes.join('\n'));
 });
 
 test('Explain for the room: one cheap talk-only turn of that speaker; the term check (no model) and the glossary', async () => {

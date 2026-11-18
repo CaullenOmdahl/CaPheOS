@@ -27,7 +27,7 @@ const http = require('http');
 
 const QUIET_MS = Number(process.env.CHAT_RUN_QUIET_MS) > 0 ? Number(process.env.CHAT_RUN_QUIET_MS) : 60000;   // then ask the station
 const MAX_AGE_MS = 3 * 3600e3;   // a run older than this with no end is given up on (the station's own limit is lower)
-const SEAT_STREAM = /^(?:console|meeting)-([A-Za-z0-9_-]{1,100})$/;   // a console chat, or a meeting turn (console/meeting.js)
+const SEAT_STREAM = /^(?:console|meeting|huddle)-([A-Za-z0-9_-]{1,100})$/;   // a console chat, a meeting turn (console/meeting.js), or the same engine in another room
 
 module.exports = function chatRuns(deps) {
   const { co, stationGet } = deps;

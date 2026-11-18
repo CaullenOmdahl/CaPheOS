@@ -1,27 +1,36 @@
-/* console/meeting.js — the owner's meeting with the crew, in the console (Chat › Meeting). Spec: docs/MEETINGS.md.
+/* console/meeting.js — the owner's meeting with the crew, in the console (Chat › Meeting), run the way the owner's
+ * terminal table ran (~/.local/lib/cpd/table.js). Spec: docs/MEETINGS.md.
  *
- * The owner speaks; everyone seated answers in turn, the leader first, each seeing everything said before them; a seat
- * with nothing to add passes (passes are not shown). The meeting carries on until New meeting. Agents run it like a
- * call with lines at the end of a reply: ASK: <name> — <q> (that seat answers next and may ask back; the others are
- * polled, talk only, for a raised hand), INVITE: / DISMISS: (seat changes for this meeting only), CALL: (the leader gives
- * the floor), END: <summary> (the leader closes the discussion) and RULING: <what was decided> (recorded). The owner's
- * controls are console buttons: Round, Raise hand / Continue, Stop round, Observe (N rounds) / Take part, New meeting,
- * Talk only, the leader, and the standing seats.
+ * The owner speaks; everyone seated answers in turn, the leader first, each seeing everything said before them; turns
+ * flow one after another (no Next to press unless the owner picks that pace) and the page streams each one as it is
+ * written. A seat with nothing to add passes, shown as one dim line. Turns have tools by default, as at the table (a
+ * meeting-wide Talk only switch, and per agenda item). Agents run it like a call with lines at the end of a reply:
+ * ASK: <name> — <q> (that seat answers next and may ask back; the others are polled, talk only, for a raised hand),
+ * INVITE: / DISMISS: (seat changes for this meeting only), CALL: (the leader gives the floor), END: <summary> (the
+ * leader closes the discussion), RULING / ACTION / QUESTION / KILL (the register; "— plain: …" is welcome, not required).
  *
- * Runs: every turn is a station run (POST /api/run, isTask true unless talk only) on the seat's current model (the entry
- * of its model-policy chain models.js has applied: console/chat.js modelFor), admitted through company/tools/lib/admit.js
- * (door 'meeting'), tracked by console/chat-runs.js (detach + observer feed), so a console restart re-attaches to the
- * turn in flight and the meeting carries on from its saved queue. A refused turn is retried once on the seat's next
- * chain entry with one plain line (lib/refusal.js). A halt stops the meeting.
+ * Runs: every turn is a station run (POST /api/run, isTask true with the tools placed unless talk only) on the seat's
+ * current model (console/chat.js modelFor), admitted through company/tools/lib/admit.js (door 'meeting'), tracked by
+ * console/chat-runs.js (detach + observer feed), so a console restart re-attaches to the turn in flight and the meeting
+ * carries on from its saved queue; GET <routePrefix>/attach streams the turn in flight. A refused turn is retried once on
+ * the seat's next chain entry (lib/refusal.js). A seat in the middle of a routine run still speaks, talk only for that
+ * turn. A halt stops the meeting.
  *
- * State (company/state/meetings/, mode 600): seats.json (the standing seats, leader, talk only, observe rounds),
- * meeting.json (this meeting: guests, dismissals, observe, cost, the round in progress), log.jsonl (every event, all
- * meetings; read from its end with lib/bounded.js, rolled by retention.js). Minutes: company/work/meetings/meeting-<date>.md,
- * written as it happens. END summaries and RULING lines go to company/work/decisions.md through decision.js add.
+ * State (company/state/meetings/ by default, mode 600, folders 700): seats.json (standing seats, leader, pace, talk
+ * only, frames, observe rounds), current.json ({id}), m/<id>.json (one per meeting: guests, dismissals, observe, cost,
+ * the round in progress), events/<id>.jsonl (each meeting's events, read from its end with lib/bounded.js, rolled by
+ * retention.js). Minutes: company/work/meetings/meeting-<date>.md, written as it happens. Rulings reach
+ * company/work/decisions.md only when the owner confirms them (decision.js add).
  *
  *   const M = require('./meeting.js')(deps); M.mount(route); M.start();
- *   deps: { co, owner(), emit(topic), stationPost, modelFor(seat), runs (chat-runs), run(tool, args) } — tests pass
- *   runner: { start(o) -> {runId}|{error}, wait(runId) -> result, cancel(runId) } instead of the station
+ *   deps: { co, owner(), emit(topic), stationPost, modelFor(seat), runs (chat-runs), run(tool, args), seatBusy(seat),
+ *           seatJobs(seat), seatVoice(seat) -> text added after the rules (per-seat point of view; default none) }
+ *   one engine, other rooms (a colleague brought into a live chat): deps may also carry
+ *     stateDir (string | () => string), topic (emit topic, default 'meeting'), streamPrefix (default 'meeting-'),
+ *     minutesPrefix (default 'meeting-'), routePrefix (default '/api/meeting'), door (admit door, default 'meeting'),
+ *     profile { kind, noun, preface(owner) -> text, fixedLeader, standing: [ids], wrapHost, maxTurnsPerRound, maxGuests,
+ *               maxInvites, noRegister, speed }
+ *   tests pass runner: { start(o) -> {runId}|{error}, wait(runId, onEvent) -> result, cancel(runId) } instead of the station
  */
 'use strict';
 const fs = require('fs');
@@ -68,7 +77,13 @@ function directives(text) {
 }
 const isPass = t => /^\W*pass\W*$/i.test(String(t || '').trim());
 const maybePass = h => String(h).trim().length <= 8 && 'PASS'.startsWith(String(h).toUpperCase().replace(/[^A-Z]/g, ''));
-function handReply(t) { const m = /^\W*HAND\b[\s—–:,-]*(.*)$/is.exec(String(t || '').trim()); return m ? m[1].split('\n')[0].trim().replace(/[.\s]+$/, '').slice(0, 200) : null; }
+// a raised hand's reason, one line, cut at the last word boundary before 200 characters ("…" when cut)
+function clip(t, n) {
+  t = String(t || ''); if (t.length <= n) return t;
+  const cut = t.slice(0, n - 1); const sp = cut.search(/\s\S*$/);
+  return (sp > n / 2 ? cut.slice(0, sp) : cut).replace(/[\s,;:.—–-]+$/, '') + '…';
+}
+function handReply(t) { const m = /^\W*HAND\b[\s—–:,-]*(.*)$/is.exec(String(t || '').trim()); return m ? clip(m[1].split('\n')[0].trim().replace(/[.\s]+$/, ''), 200) : null; }
 function fitHistory(msgs) {
   let m = msgs.slice(-HISTORY_MAX_MSGS);
   while (m.length > 1 && (m[0].role !== 'user' || Buffer.byteLength(JSON.stringify(m)) > HISTORY_MAX_BYTES)) m = m.slice(1);
@@ -86,13 +101,25 @@ function modelLabel(m) {
 module.exports = function meeting(deps) {
   const co = deps.co;
   const owner = () => (typeof deps.owner === 'function' ? deps.owner() : null) || (co.config.owner && co.config.owner.name) || 'Owner';
-  const emit = typeof deps.emit === 'function' ? deps.emit : () => {};
+  /* the room: the owner's meeting by default; the same engine runs other rooms (a colleague in a live chat) */
+  const P = Object.assign({ kind: 'meeting', noun: 'meeting' }, deps.profile || {});
+  const TOPIC = deps.topic || 'meeting';
+  const STREAM = deps.streamPrefix || 'meeting-';
+  const MIN_PREFIX = deps.minutesPrefix || 'meeting-';
+  const ROUTE = deps.routePrefix || '/api/meeting';
+  const DOOR = deps.door || 'meeting';
+  const emitRaw = typeof deps.emit === 'function' ? deps.emit : () => {};
+  const emit = () => emitRaw(TOPIC);
+  const MAX_INVITES = Number.isInteger(P.maxInvites) && P.maxInvites > 0 ? P.maxInvites : MAX_INVITES_PER_ROUND;
+  const MAX_GUESTS = Number.isInteger(P.maxGuests) && P.maxGuests >= 0 ? P.maxGuests : Infinity;
+  const MAX_TURNS = Number.isInteger(P.maxTurnsPerRound) && P.maxTurnsPerRound > 0 ? P.maxTurnsPerRound : Infinity;
+  const NOUN = P.noun;
   const LIB = path.join(__dirname, '..', 'company', 'tools', 'lib');
   const REF = require(path.join(LIB, 'refusal.js'));
   const BOUNDED = require(path.join(LIB, 'bounded.js'));
   const admitLib = () => require(path.join(LIB, 'admit.js'));
   const lint = require(path.join(__dirname, 'command-ask.js'));
-  const DIR = () => co.p('company', 'state', 'meetings');
+  const DIR = () => deps.stateDir ? (typeof deps.stateDir === 'function' ? deps.stateDir() : deps.stateDir) : co.p('company', 'state', 'meetings');
   const F = { seats: () => path.join(DIR(), 'seats.json'), current: () => path.join(DIR(), 'current.json'), meta: id => path.join(DIR(), 'm', id + '.json'), events: id => path.join(DIR(), 'events', id + '.jsonl') };
   const SAFE_ID = /^m-[a-z0-9]{4,20}$/;
   const MINUTES_DIR = () => co.p('company', 'work', 'meetings');
@@ -124,14 +151,24 @@ module.exports = function meeting(deps) {
   /* ---------- state ---------- */
   let std = null, M = null, LOG = [], seq = 0;
   function defaultSeats() {
+    if (Array.isArray(P.standing)) return P.standing.filter(x => typeof x === 'string');
     const ids = Object.keys(crew()); const ceo = ceoId();
     return (ceo && ids.includes(ceo) ? [ceo].concat(ids.filter(x => x !== ceo)) : ids).slice(0, 6);
   }
+  /* the standing seats and the room's settings. Turns flow as at the table: the pace is 'instant' unless the owner picks
+     another (Next stays one of the paces). A seats.json still on 'manual' from the old default moves to 'instant' once
+     (speedMigrated); a pace the owner picks after that is kept. Tools are on unless talkOnly; seat frames are off unless
+     frames. */
   function loadStd() {
     const c = readJ(F.seats()) || {};
+    const DEF = SPEEDS.includes(P.speed) ? P.speed : 'instant';
+    let speed = typeof c.speed === 'string' && SPEEDS.includes(c.speed) ? c.speed : DEF, migrate = false;
+    if (speed === 'manual' && !c.speedMigrated) { speed = DEF; migrate = true; }
     std = { seats: Array.isArray(c.seats) ? c.seats.filter(x => typeof x === 'string') : defaultSeats(),
-      leader: 'leader' in c ? (typeof c.leader === 'string' ? c.leader : null) : ceoId(),
-      speed: typeof c.speed === 'string' ? c.speed : 'manual', observeRounds: Number.isInteger(c.observeRounds) && c.observeRounds > 0 ? Math.min(c.observeRounds, MAX_OBSERVE) : OBSERVE_ROUNDS };
+      leader: P.fixedLeader ? P.fixedLeader : 'leader' in c ? (typeof c.leader === 'string' ? c.leader : null) : ceoId(),
+      speed, speedMigrated: true, talkOnly: c.talkOnly === true, frames: c.frames === true,
+      observeRounds: Number.isInteger(c.observeRounds) && c.observeRounds > 0 ? Math.min(c.observeRounds, MAX_OBSERVE) : OBSERVE_ROUNDS };
+    if (migrate) { try { saveStd(); } catch (_) {} }
     return std;
   }
   const saveStd = () => writeJ(F.seats(), Object.assign({}, std, { updatedAt: new Date().toISOString() }));
@@ -139,16 +176,16 @@ module.exports = function meeting(deps) {
   const fresh = (type, title) => ({ v: 2, id: 'm-' + Date.now().toString(36), type: TYPES.includes(type) ? type : 'decision', title: String(title || '').trim().slice(0, 200),
     state: 'open', openedBy: 'owner', startedAt: new Date().toISOString(), opened: false, guests: [], excused: [], observer: false, agenda: [], agendaAt: null,
     cost: { turns: 0, usd: 0 }, ownerHand: false, run: null, resumeAfter: null });
-  /* pacing, built for a reader: Next (manual) is the default while the owner is present; when they are away (or set a
-     speed) it advances by itself, waiting the speed's reading time between completed turns. The type sets the speed
-     used when the owner is away. A paused meeting starts nothing new, so it spends nothing. */
+  /* pacing: turns flow (instant) by default, as at the table. The owner may pick a reading pace (fast, normal, slow: a
+     pause between completed turns) or Next (manual: each turn waits for Next while the owner is present; when they are
+     away it advances at the meeting type's speed). A paused meeting starts nothing new, so it spends nothing. */
   const SPEEDS = ['instant', 'fast', 'normal', 'slow', 'manual'];
   const SPEED_MS = Object.assign({ instant: 0, fast: 2000, normal: 8000, slow: 20000 }, deps.speedMs || {});
   const TYPE_SPEED = { decision: 'normal', incident: 'fast', planning: 'normal', review: 'slow' };
   const PRESENT_MS = 45000;   // the page says the owner is there (tab visible, used in the last 2 minutes) every 20 s
   let lastSeen = 0;
   const ownerPresent = () => Date.now() - lastSeen < PRESENT_MS;
-  const effectiveSpeed = () => { const sp = SPEEDS.includes(std.speed) ? std.speed : 'manual'; return ownerPresent() ? sp : (sp === 'manual' ? TYPE_SPEED[M.type] || 'normal' : sp); };
+  const effectiveSpeed = () => { const sp = SPEEDS.includes(std.speed) ? std.speed : 'instant'; return sp !== 'manual' || ownerPresent() ? sp : TYPE_SPEED[M.type] || 'normal'; };
   let gateTimer = null;
   // after a completed turn: wait for Next, or the reading time, or the owner's release of a pause; true = wait now
   function gateWait(R) {
@@ -201,8 +238,8 @@ module.exports = function meeting(deps) {
   const notHere = () => Object.keys(crew()).filter(id => !present().includes(id)).map(id => nameOf(id) + ' (' + (titleOf(id) || 'crew') + ')').join(', ');
 
   /* ---------- the record: log + minutes ---------- */
-  const joinText = e => nameOf(e.who) + ' joined the meeting' + (e.by ? ', invited by ' + nameOf(e.by) : '') + (e.why ? ': ' + e.why : '');
-  const leaveText = e => nameOf(e.who) + ' left the meeting' + (e.by && e.by !== e.who ? ', dismissed by ' + nameOf(e.by) : '') + (e.why ? ': ' + e.why : '');
+  const joinText = e => nameOf(e.who) + ' joined the ' + NOUN + (e.by ? ', invited by ' + nameOf(e.by) : '') + (e.why ? ': ' + e.why : '');
+  const leaveText = e => nameOf(e.who) + ' left the ' + NOUN + (e.by && e.by !== e.who ? ', dismissed by ' + nameOf(e.by) : '') + (e.why ? ': ' + e.why : '');
   const leadText = e => e.who === 'owner' ? owner() + ' set no meeting leader' : owner() + ' made ' + nameOf(e.who) + ' the meeting leader';
   const askText = e => nameOf(e.who) + ' asked ' + nameOf(e.to) + ' directly: ' + e.text;
   const handText = e => nameOf(e.who) + ' raised a hand' + (e.why ? ': ' + e.why : '');
@@ -218,13 +255,14 @@ module.exports = function meeting(deps) {
   const registerText = e => nameOf(e.who) + ' put in the register (' + ({ actions: 'action', questions: 'open question', kills: 'kill condition' }[e.section] || e.section) + ' ' + e.n + '): ' + e.text + (e.plain ? ' — in plain words: ' + e.plain : '');
   const consentText = e => e.op === 'asked' ? nameOf(e.who) + ' asked to use ' + (e.tool || 'a tool') + '; the meeting is paused until you answer it on Today' : 'Approval for ' + nameOf(e.who) + ' (' + (e.tool || 'a tool') + '): ' + (e.decision === 'once' ? 'allowed' : e.decision === 'deny' ? 'declined' : e.decision) + '; the meeting carries on';
   const TEXTS = { join: joinText, leave: leaveText, lead: leadText, ask: askText, hand: handText, call: callText, lower: lowerText, end: endText, ruling: rulingText, observe: observeText, agenda: agendaText, parse: parseText, close: closeText, resume: resumeText, consent: consentText, register: registerText, note: e => e.text };
-  const minutesFile = d => path.join(MINUTES_DIR(), 'meeting-' + (d || day()) + '.md');
+  const minutesRel = d => 'company/work/meetings/' + MIN_PREFIX + (d || day()) + '.md';
+  const minutesFile = d => path.join(MINUTES_DIR(), MIN_PREFIX + (d || day()) + '.md');
   function minutes(text, kind) {
     try {
       fs.mkdirSync(MINUTES_DIR(), { recursive: true });
       const f = minutesFile();
       if (!fs.existsSync(f)) {
-        fs.writeFileSync(f, '# Meeting: ' + day() + '\n\n_Minutes of the owner\'s meeting with the crew (Chat › Meeting in the console), written as it happens: every word, by who said it, with the time and the model each spoke on. Passes are not shown._\n');
+        fs.writeFileSync(f, (P.minutesHead ? P.minutesHead(day()) : '# Meeting: ' + day() + '\n\n_Minutes of the owner\'s meeting with the crew (Chat › Meeting in the console), written as it happens: every word, by who said it, with the time and the model each spoke on. Passes are not shown._') + '\n');
         if (kind !== 'open' && M.opened) fs.appendFileSync(f, '\n## ' + hm() + ': the meeting carries on from ' + String(M.startedAt).slice(0, 10) + '\n\nAt the meeting: ' + seatList() + '.\n');
       }
       fs.appendFileSync(f, text);
@@ -245,32 +283,39 @@ module.exports = function meeting(deps) {
   const note = text => record({ who: 'console', kind: 'note', text });
 
   /* ---------- what each seat is sent ---------- */
-  const PRE = () => '[THE MEETING] The owner, ' + owner() + ', has called the company to a meeting in the console (Chat › Meeting, behind the owner\'s sign-in; not a relayed message). Everyone seated sees everything said there; each message is labelled with who said it, and people take turns. ' + owner() + ' opened this meeting, so speaking here is not contacting the owner; what you need from them outside the meeting still goes to the CEO or the owner channel.\n' +
-    'When it is your turn (the speaking contract):\n' +
-    '- Your point first, in one line. Then the reasons, briefly.\n' +
-    '- Define any term the room may not share (an acronym, a tool name, a finance or legal word) the first time you use it, in a few plain words.\n' +
-    '- Say what your point means for the other functions present (the turn note lists who is in the room and what each needs).\n' +
-    '- Speak as yourself, from your own area, as you would in a meeting: short and to the point, a few sentences unless asked for more. Answer what was put to you; agree, disagree or build on what the others said, by name; do not repeat what someone already covered.\n' +
+  /* the table's rules (~/.local/lib/cpd/table.js PRE), for the console: speak as yourself, short, by name; PASS; check
+     facts but do no long work here; the leader; the call lines. A room's profile may add a preface (a colleague brought
+     into a live chat), and deps.seatVoice(seat) adds that seat's own point of view after the rules. */
+  const PRE = () => {
+    const o = owner(), N = NOUN;
+    const pre = typeof P.preface === 'function' ? P.preface(o) : P.preface;
+    return '[THE TABLE] ' + (pre ? pre : 'The owner, ' + o + ', has called the company to the table: a meeting in the console (Chat › Meeting, behind the owner\'s sign-in; not a relayed message).') + ' Everyone at the table sees everything said there; each message is labelled with who said it, and people take turns. ' + o + ' opened this ' + N + ', so speaking here is not contacting the owner; what you need from ' + o + ' outside it still goes to the CEO or the owner channel.\n' +
+    'When it is your turn:\n' +
+    '- Speak as yourself, from your own area, as you would in a meeting: short and to the point, a few sentences unless ' + o + ' asks for more. Answer what was put to you; agree, disagree or build on what the others said, by name; do not repeat what someone has already covered.\n' +
     '- If you have nothing to add, reply with exactly PASS and nothing else.\n' +
-    '- Check the facts you state, but do not start long work during the meeting: say what you will do, write it where your own loop picks it up (your files or a handoff), and do it there. When the turn note says talk only, you have no tools: say only what you know, and never claim you read or changed something.\n' +
-    '- The owner is a busy non-technical person. In a meeting too, infrastructure, monitoring, tools, framework bugs and internal process are the crew\'s: settle them among yourselves or route them, never put them to the owner, and never ask the owner to run a command.\n' +
-    '- The meeting may have a leader (each turn note names them). The leader runs it: keeps it on the owner\'s question, brings in the right people, and closes each topic with what was decided and who does what. A decision the owner makes here is an owner ruling: the leader ends a reply with a line of its own, RULING: <what was decided, who does it> — plain: <one sentence anyone can read>; it goes into the meeting\'s register as proposed, and the owner confirms it (only then is it in company/work/decisions.md). With no leader, whoever the ruling concerns writes that line.\n' +
-    '- The register is the meeting\'s output, and nobody writes a line for someone else. For what is yours to do, end your reply with ACTION: <what> — by <date, or own loop> — plain: <one sentence anyone can read> — affects: <who it touches>. An open question of yours: QUESTION: <it> — plain: <…>. A condition that would stop the work: KILL: <it> — plain: <…>. A line without its plain part is refused. Later you update only your own lines: node company/tools/meeting-register.js update <meeting> actions <n> --by <your name> --status "…".\n' +
-    '- To ask someone a question directly, end your reply with a line of its own: ASK: <name> — <your question>. They answer next and may ASK you back; keep such an exchange short. While two people are in an exchange, the others are asked after each answer whether they want to interject; then reply HAND — <what you want to add> to come in now, otherwise NO. The leader calls on raised hands (with no leader, a raised hand gets the floor next); the leader can also give anyone the floor by ending a reply with CALL: <name>.\n' +
-    '- When the owner is observing (the turn note says so), they will not speak unless they step in: do not put questions to them or wait for their answer; keep the discussion going among yourselves. The leader runs it through to a result and, when it is complete, ends a reply with a line of its own: END: <one line on what was decided and who does what> — plain: <the same in one sentence anyone can read>. With no leader, anyone may close it that way.\n' +
-    '- You can bring people in and out, as on a call: INVITE: <name> — <why the discussion needs them> (they join at once, see the meeting so far and speak after the others this round), DISMISS: <name> — <why> (yourself included, when you have nothing more to give). Invite only when the discussion needs that person. The leader stays unless the owner changes it.\n' +
-    '- The minutes, every word as said, are in company/work/meetings/meeting-<date>.md.]';
-  // talk only is the default: tools are on only for the agenda item the owner switched them on for
+    '- Check the facts you state (read what you need), but do not start long work during the ' + N + ': say what you will do, write it where your own loop will pick it up (your files or a handoff), and do it there. When the turn note says you have no tools, say only what you know and never claim you read or changed something.\n' +
+    '- ' + o + ' is not technical: infrastructure, tools and internal process are the crew\'s to settle among yourselves or route, never ' + o + '\'s, and ' + o + ' never runs a command.\n' +
+    '- The ' + N + ' may have a leader (each turn note names them). The leader runs it: keeps it on the owner\'s question, brings in the right people, and closes each topic with what was decided and who does what.\n' +
+    (P.noRegister ? '- What ' + o + ' decides here is an owner ruling; everyone writes down only what is theirs to do, in their own files or a handoff.\n'
+      : '- What ' + o + ' decides here is an owner ruling. The leader proposes it with a line of its own: RULING: <what was decided, who does it>; ' + o + ' confirms it (only then is it in company/work/decisions.md). Everyone else writes down only what is theirs to do, with lines of their own: ACTION: <what> — by <date, or own loop>; QUESTION: <an open question of yours>; KILL: <a condition that would stop the work>. You may add "— plain: <one sentence anyone can read>" to any of them. With no leader, whoever a ruling concerns writes it.\n') +
+    '- To ask someone a question directly, end your reply with a line of its own: ASK: <name> — <your question>. They answer next and may ASK you back; keep such an exchange short and to the point. While two people are in an exchange, the others are asked after each answer whether they want to interject; when you are, reply HAND — <what you want to add> if you need to come in now, otherwise NO. The leader calls on raised hands (with no leader, a raised hand gets the floor next); the leader can also give anyone the floor by ending a reply with CALL: <name>.\n' +
+    '- When the owner is observing (the turn note says so), ' + o + ' will not speak unless they step in: do not put questions to them or wait for their answer, and keep the discussion going among yourselves. The leader runs it through to a result and, when it is complete, ends a reply with a line of its own: END: <one line on what was decided and who does what>. With no leader, anyone may close it that way.\n' +
+    '- You can bring people in and out, as on a call. To invite someone from the company who is not at the table, end your reply with a line of its own: INVITE: <name> — <why the discussion needs them>. To dismiss someone whose part is done (yourself included, when you have nothing more to give), end with: DISMISS: <name> — <why>. An invited person joins at once, sees the ' + N + ' so far and speaks after the others this round; a dismissed person leaves this ' + N + '. Invite only when the discussion needs that person, not to be thorough. The leader stays unless the owner changes it.\n' +
+    '- The minutes, every word as said, are in company/work/meetings/' + MIN_PREFIX + '<date>.md, so anyone can read it later.]';
+  };
+  /* tools are on by default, as at the table (a run reads and checks); the owner's Talk only switch turns them off for the
+     whole meeting, and an agenda item can set its own (tools: true / false; null follows the meeting) */
   const currentItem = () => (M.agenda || []).find(a => a.id === M.agendaAt) || null;
-  const toolsOn = () => { const it = currentItem(); return !!(it && it.tools); };
+  const toolsOn = () => { const it = currentItem(); return it && typeof it.tools === 'boolean' ? it.tools : !std.talkOnly; };
   const TYPE_BLOCK = {
-    decision: 'This is a decision meeting: bring it to a choice ' + '%OWNER% can rule on: the options, what each costs or risks, and your recommendation.',
-    incident: 'This is an incident meeting: what is broken, who is affected, what stops the harm now, and who does what next. Facts before theories; say what you checked.',
-    planning: 'This is a planning meeting: agree what gets done, by whom and by when, and what waits.',
-    review: 'This is a review meeting: what happened against what was planned, what we learned, and what changes.',
+    decision: 'This is a decision meeting: bring it to a choice %OWNER% can rule on.',
+    incident: 'This is an incident meeting: what is broken, what stops the harm now, and who does what next.',
+    planning: 'This is a planning meeting: agree what gets done, by whom and by when.',
+    review: 'This is a review meeting: what happened against the plan, and what changes.',
   };
   /* seat frames (company/defaults/work/meetings/frames.json, a company override in company/work/meetings/frames.json):
-     each turn names the speaker's own function and what the others in the room need from it, from loops.json functions */
+     each turn names the speaker's own function and what the others in the room need from it, from loops.json functions.
+     Off by default (the table had none); the owner switches them on (seats.json frames). Explain for the room uses them. */
   function frames() {
     const d = readJ(path.join(__dirname, '..', 'company', 'defaults', 'work', 'meetings', 'frames.json')) || {}, o = readJ(co.p('company', 'work', 'meetings', 'frames.json')) || {};
     return Object.assign({}, d.functions || {}, o.functions || {});
@@ -280,52 +325,63 @@ module.exports = function meeting(deps) {
     return fns.length ? { labels: fns.map(f => F[f].label), needs: fns.map(f => F[f].needs) } : { labels: [titleOf(id) || 'their own area'], needs: ['what it means for ' + (titleOf(id) ? 'the ' + titleOf(id) + ' work' : 'their work')] };
   }
   function roomLine(id) {
+    if (!std.frames) return '';
     const F = frames(); const me = frameOf(id, F);
     const others = present().filter(x => x !== id).map(x => { const f = frameOf(x, F); return nameOf(x) + ' (' + f.labels.join(', ') + ': needs ' + f.needs.join('; ') + ')'; });
-    return ' [Your seat: ' + me.labels.join(', ') + '. In the room: ' + (others.length ? others.join('; ') : 'nobody else') + (present().length ? '' : '') + '. Lead with your point in one line, define any term the room may not share the first time you use it, and say what your point means for each of them.]';
+    return ' [Your seat: ' + me.labels.join(', ') + '. In the room: ' + (others.length ? others.join('; ') : 'nobody else') + '. Say what your point means for each of them.]';
   }
   // the company's language (company.json locale): every seat speaks it
   function localeLine() {
     const loc = String((co.config && co.config.locale) || '').trim(); if (!loc || /^en(\b|-)/i.test(loc)) return '';
     let name = loc; try { name = new Intl.DisplayNames(['en'], { type: 'language' }).of(loc) || loc; } catch (_) {}
-    return ' Speak ' + name + ' (the company\'s language, company.json locale ' + loc + '); protocol words (ASK, PASS, END, plain: …) stay in English.';
+    return ' Speak ' + name + ' (the company\'s language, company.json locale ' + loc + '); protocol words (ASK, PASS, END, …) stay in English.';
   }
-  const typeBlock = () => (TYPE_BLOCK[M.type] || TYPE_BLOCK.decision).replace('%OWNER%', owner());
-  function context() {
-    const l = leader(), others = notHere(), it = currentItem();
-    return 'At the meeting now: ' + seatList() + '.' + (l ? ' ' + nameOf(l) + ' leads the meeting.' : ' There is no meeting leader.')
-      + ' ' + typeBlock() + (M.title ? ' Topic: ' + M.title + '.' : '') + (it ? ' Agenda item now: ' + it.title + '.' : '')
+  const typeBlock = () => P.kind !== 'meeting' ? '' : (TYPE_BLOCK[M.type] || TYPE_BLOCK.decision).replace('%OWNER%', owner());
+  function context(noTools) {
+    const l = leader(), others = notHere(), it = currentItem(), tb = typeBlock(), N = NOUN;
+    return 'At the table now: ' + seatList() + '.' + (l ? ' ' + nameOf(l) + ' leads the ' + N + '.' : ' There is no leader.')
+      + (tb ? ' ' + tb : '') + (M.title ? ' Topic: ' + M.title + '.' : '') + (it ? ' Agenda item now: ' + it.title + '.' : '')
       + (observing() ? ' ' + owner() + ' is observing: they will not speak unless they step in, so do not put questions to them or wait for them.' : '')
-      + (toolsOn() ? ' Tools are on for this item: check what you state, briefly.' : ' Talk only: nobody has tools in this part of the meeting; say only what you know and never claim you read or changed something.')
-      + (others ? ' Not at the meeting (you may INVITE them): ' + others + '.' : '');
+      + (noTools ? '' : toolsOn() ? '' : ' Talk only: nobody has tools in this part of the ' + N + '; say only what you know and never claim you read or changed something.')
+      + (others ? ' Not at the table (you may INVITE them): ' + others + '.' : '');
   }
-  // a correction for this seat's last reply that broke the owner-scope rule (the chat lint), shown to it on its next turn
+  // console notes for this seat on its last reply: lines that could not be read, a register line with no plain part, a
+  // reply that broke the owner-scope rule (the chat lint); shown to it on its next turn
   function lintLine(id) {
-    const parse = [];
+    const parse = [], nudge = [];
     for (let i = LOG.length - 1; i >= 0; i--) {
       const e = LOG[i];
       if (e.kind === 'parse' && e.who === id) { parse.push(e); continue; }
+      if (e.kind === 'nudge' && e.who === id) { nudge.push(e); continue; }
       if (e.who !== id || (e.kind !== 'say' && e.kind !== 'pass')) continue;
       const p = parse.length ? ' [Console note: these lines of your last reply could not be read, so nothing was done with them: ' + parse.map(x => '"' + x.line + '" (' + x.why + ')').join('; ') + '. Write each on a line of its own, exactly as the protocol says.]' : '';
-      if (!e.lint) return p;
-      return p + ' [Console note on your last reply: ' + e.lint.why + '. ' + (e.lint.kind === 'observe-question' ? owner() + ' is observing: put the question to the people seated, or settle it yourselves.' : 'That is the crew\'s, not the owner\'s: settle it among yourselves or route it.') + ']';
+      const n = nudge.length ? ' [Console note: ' + nudge.map(x => x.text).join(' ') + ']' : '';
+      if (!e.lint) return p + n;
+      return p + n + ' [Console note on your last reply: ' + e.lint.why + '. ' + (e.lint.kind === 'observe-question' ? owner() + ' is observing: put the question to the people seated, or settle it yourselves.' : 'That is the crew\'s, not the owner\'s: settle it among yourselves or route it.') + ']';
     }
     return '';
   }
-  function turnLine(id, item, ctl) {
+  const BUSY_NOTE = ' [You are in the middle of a routine run, so you have no tools this turn: say what you know.]';
+  function turnLine(id, item, ctl, noTools) {
     const n = nameOf(id), isLead = id === leader();
     const upList = Object.entries((ctl && ctl.up) || {});
     const up = upList.length ? upList.map(([c, why]) => nameOf(c) + (why ? ' (' + why + ')' : '')).join('; ') : '';
-    const lead = isLead ? ' You lead this meeting.' + (up ? ' Hands up: ' + up + '; end your reply with CALL: <name> to give one the floor.' : '')
-      + (observing() ? ' Move it to a result; when the discussion is complete, end your reply with END: <what was decided and who does what> — plain: <one sentence anyone can read>.' : '') : '';
-    const tail = lintLine(id) + roomLine(id) + localeLine();
-    if (item.kind === 'ask') return '[' + nameOf(item.from) + ' asked you directly: ' + item.text + ' Answer ' + nameOf(item.from) + ', ' + n + '; you may ASK back.' + lead + ' ' + context() + ']' + tail;
+    const lead = isLead ? ' You lead this ' + NOUN + '.' + (up ? ' Hands up: ' + up + '; end your reply with CALL: <name> to give one the floor.' : '')
+      + (observing() ? ' Move it to a result; when the discussion is complete, end your reply with END: <what was decided and who does what>.' : '') : '';
+    const tail = (noTools ? BUSY_NOTE : '') + lintLine(id) + roomLine(id) + localeLine();
+    const ctx = context(noTools);
+    if (item.kind === 'ask') return '[' + nameOf(item.from) + ' asked you directly: ' + item.text + ' Answer ' + nameOf(item.from) + ', ' + n + '; you may ASK back.' + lead + ' ' + ctx + ']' + tail;
     if (item.kind === 'hand') return '[' + (item.calledBy ? nameOf(item.calledBy) + ' called on you' : 'You raised your hand') + (item.why ? ' (' + item.why + ')' : '')
-      + ' and you have the floor, ' + n + ': make your point briefly.' + lead + ' ' + context() + ']' + tail;
-    if (item.followUp) return '[' + (observing() ? 'Open round, carried on without ' + owner() + ', who is observing.' : 'No new message from ' + owner() + ': this is an open round for the meeting to answer each other.')
-      + ' Your turn, ' + n + ': add to, answer or challenge what was said' + (observing() ? ', or move the discussion to its next point' : '') + '; or reply PASS.' + lead + ' ' + context() + ']' + tail;
+      + ' and you have the floor, ' + n + ': make your point briefly.' + lead + ' ' + ctx + ']' + tail;
+    if (item.wrap) return '[The others have spoken, ' + n + '. Close the loop for ' + owner() + ': say what you learned and what it means for what they asked, briefly; or reply PASS.' + lead + ' ' + ctx + ']' + tail;
+    if (item.followUp) return '[' + (observing() ? 'Open round, carried on without ' + owner() + ', who is observing.' : 'No new message from ' + owner() + ': this is an open round for the table to answer each other.')
+      + ' Your turn, ' + n + ': add to, answer or challenge what was said' + (observing() ? ', or move the discussion to its next point' : '') + '; or reply PASS.' + lead + ' ' + ctx + ']' + tail;
     return '[Your turn, ' + n + '.' + (item.addressed && item.addressed.length ? ' ' + owner() + ' put this to ' + item.addressed.map(nameOf).join(', ') + '.' : '')
-      + lead + ' ' + context() + ' Reply PASS if you have nothing to add.]' + tail;
+      + lead + ' ' + ctx + ' Reply PASS if you have nothing to add.]' + tail;
+  }
+  function voiceOf(id) {
+    if (typeof deps.seatVoice !== 'function') return '';
+    try { const v = deps.seatVoice(id); return typeof v === 'string' ? v.trim() : ''; } catch (_) { return ''; }
   }
   function historyFor(id, lastLine) {
     const msgs = []; let buf = [];
@@ -337,14 +393,15 @@ module.exports = function meeting(deps) {
         if (last && last.role === 'assistant') last.content += '\n\n' + content; else msgs.push({ role: 'assistant', content });
       }
       else if (e.kind === 'say') buf.push(nameOf(e.who) + (e.who === 'owner' ? ' (owner)' : '') + (e.to ? ' (answering ' + nameOf(e.to) + ')' : '') + (e.interject ? ' (interjecting)' : '') + (e.explains ? ' (explaining for the room)' : '') + ': ' + e.text);
-      else if (e.kind === 'open') buf.push('[The meeting opened. At the meeting: ' + e.text + '.]');
-      else if (e.kind !== 'ask' && e.kind !== 'pass' && TEXTS[e.kind]) buf.push('[' + TEXTS[e.kind](e) + '.]');
+      else if (e.kind === 'open') buf.push('[The ' + NOUN + ' opened. At the table: ' + e.text + '.]');
+      else if (e.kind !== 'ask' && e.kind !== 'pass' && e.kind !== 'nudge' && TEXTS[e.kind]) buf.push('[' + TEXTS[e.kind](e) + '.]');
     }
     buf.push(lastLine); flush();
     const fit = fitHistory(msgs); const out = fit.messages;
     if (out[0].role !== 'user') out.unshift({ role: 'user', content: '' });
-    out[0] = { role: 'user', content: PRE() + '\n[You are ' + nameOf(id) + (titleOf(id) ? ', ' + titleOf(id) : '') + '. The company folder is your project root; company tools run as `node company/tools/<tool>.js`.]\n\n'
-      + (fit.dropped ? '[The earliest part of this meeting is left out here; it is long. The full minutes are in company/work/meetings/.]\n\n' : '') + out[0].content };
+    const voice = voiceOf(id);
+    out[0] = { role: 'user', content: PRE() + (voice ? '\n' + voice : '') + '\n[You are ' + nameOf(id) + (titleOf(id) ? ', ' + titleOf(id) : '') + '. The company folder is your project root; company tools run as `node company/tools/<tool>.js`.]\n\n'
+      + (fit.dropped ? '[The earliest part of this ' + NOUN + ' is left out here; it is long. The full minutes are in company/work/meetings/.]\n\n' : '') + out[0].content };
     return out;
   }
   function hasNewFor(id) {
@@ -390,7 +447,7 @@ module.exports = function meeting(deps) {
       return new Promise(resolve => {
         let token = null; try { token = co.stationToken(); } catch (_) {}
         if (!token) return resolve({ error: 'no station token (secrets/station-token)' });
-        const streamId = 'meeting-' + o.seat + (o.purpose === 'turn' ? '' : '-' + o.purpose);
+        const streamId = STREAM + o.seat + (o.purpose === 'turn' ? '' : '-' + o.purpose);
         const payload = { agentId: o.seat, model: o.model.model, provider: o.model.provider, rosterSystem: true, isTask: !!o.tools, streamId, messages: o.messages, projectRoot: co.ROOT };
         if (o.tools) payload.placed = PLACED;
         if (o.model.effort) payload.reasoningEffort = o.model.effort;
@@ -433,7 +490,7 @@ module.exports = function meeting(deps) {
           else if (l.name === 'agent.run.error') errMsg = p.message || errMsg;
           else if (l.name === 'console.final') final = p;
           else if (l.name === 'console.end') setImmediate(end);
-          if (onEvent && (l.name === 'permission.prompt' || l.name === 'permission.response')) { try { onEvent({ name: l.name, payload: p }); } catch (_) {} }
+          if (onEvent && (l.name === 'permission.prompt' || l.name === 'permission.response' || l.name === 'agent.tool_result')) { try { onEvent({ name: l.name, payload: p }); } catch (_) {} }
         });
         if (!off) { over = true; resolve({ text: '', usd: 0, refused: false, error: 'the console has no record of this run any more' }); }
       });
@@ -452,7 +509,7 @@ module.exports = function meeting(deps) {
   function admitTurn(o) {
     try {
       const jobIds = typeof deps.seatJobs === 'function' ? deps.seatJobs(o.seat) : undefined;
-      const t = admitLib().admit({ door: 'meeting', kind: 'meeting-turn', seat: o.seat, provider: o.model.provider, owner: M.openedBy === 'owner', meetingId: M.id, jobIds, why: 'owner meeting ' + o.purpose + (o.tools ? ' (tools)' : ' (talk only)') });
+      const t = admitLib().admit({ door: DOOR, kind: 'meeting-turn', seat: o.seat, provider: o.model.provider, owner: M.openedBy === 'owner', meetingId: M.id, jobIds, why: 'owner ' + NOUN + ' ' + o.purpose + (o.tools ? ' (tools)' : ' (talk only)') });
       return t;
     } catch (e) { return { decision: 'allow', reason: 'admit unavailable: ' + e.message }; }
   }
@@ -491,7 +548,7 @@ module.exports = function meeting(deps) {
   const reg = () => { if (!regCache || regCache.id !== M.id) regCache = REG.load(M.id, { date: String(M.startedAt).slice(0, 10), title: M.title, type: M.type }); return regCache; };
   const saveReg = () => { const r = reg(); r.title = M.title; r.type = M.type; REG.save(r, regNames); reindex(); emit('meeting'); };
   function regAdd(section, row, by, line) {
-    try { const r = REG.add(reg(), section, row, by); saveReg(); return r; }
+    try { const r = REG.add(reg(), section, row, by, { plainOptional: true }); saveReg(); return r; }
     catch (e) { record({ who: by, kind: 'parse', line: String(line || row.text).slice(0, 200), why: String(e.message).replace(/^not recorded: /, 'not put in the register: ') }); return null; }
   }
   /* ---------- the search index (company/state/meetings/index.json): one small row per meeting ---------- */
@@ -520,7 +577,7 @@ module.exports = function meeting(deps) {
     if (!clean(text)) return;
     const name = by === 'owner' ? owner() : nameOf(by);
     try {
-      const r = await deps.run('decision.js', ['add', '--by', name, '--text', clean(text), '--why', why + ' (minutes: company/work/meetings/meeting-' + day() + '.md)']);
+      const r = await deps.run('decision.js', ['add', '--by', name, '--text', clean(text), '--why', why + ' (minutes: ' + minutesRel() + ')']);
       if (r && r.code) { note('Not recorded in decisions.md: ' + String((r.data && (r.data.error || r.data.text)) || 'decision.js refused').slice(0, 200)); return null; }
       const m = /\[(d-[0-9a-f]{6})\]/.exec(JSON.stringify((r && r.data) || '')); return m ? m[1] : 'recorded';
     } catch (e) { note('Not recorded in decisions.md: ' + e.message); return null; }
@@ -530,27 +587,32 @@ module.exports = function meeting(deps) {
   function applyDirectives(by, list, ctl, pending) {
     const callNow = [];
     for (const d of list) {
+      // "— plain: …" is welcome, not required: a line without it is kept as written, and the writer is told once
+      const plainNudge = (kind, has) => { if (!has) record({ who: by, kind: 'nudge', text: 'your ' + kind + ' line was recorded as written. When ' + owner() + ' may not follow it, add "— plain: <one sentence anyone can read>".' }); };
       if (d.kind === 'END') {
         if (leader() && by !== leader()) { note(nameOf(by) + ' suggested closing; only the leader, ' + nameOf(leader()) + ', closes the discussion'); continue; }
         const pl = REG.parseLine('END', d.why);
         ctl.ended = pl.text || d.why || 'closed';
         record({ who: by, kind: 'end', text: pl.text || d.why, plain: pl.plain || null });
-        reg().summary = { text: pl.text || d.why, plain: pl.plain || null, by, at: new Date().toISOString() }; saveReg();
-        if (!pl.plain) record({ who: by, kind: 'parse', line: 'END: ' + d.why, why: 'END needs a plain-language line: END: <summary> — plain: <one sentence anyone can read>; the register marks the summary as failing until it has one' });
+        if (!P.noRegister) { reg().summary = { text: pl.text || d.why, plain: pl.plain || null, plainOptional: !pl.plain || undefined, by, at: new Date().toISOString() }; saveReg(); }
+        continue;
+      }
+      if ((d.kind === 'RULING' || d.kind === 'ACTION' || d.kind === 'QUESTION' || d.kind === 'KILL') && P.noRegister) {   // no register in this room: kept as said
+        record({ who: by, kind: 'note', text: nameOf(by) + ' noted (' + d.kind.toLowerCase() + '): ' + d.why });
         continue;
       }
       if (d.kind === 'RULING') {
         if (leader() && by !== leader()) { note(nameOf(by) + ' wrote a ruling; the leader, ' + nameOf(leader()) + ', records rulings'); continue; }
         const pl = REG.parseLine('RULING', d.why);
         const row = regAdd('rulings', { text: pl.text, plain: pl.plain, proposedBy: by }, by, 'RULING: ' + d.why);
-        if (row) record({ who: by, kind: 'ruling', text: pl.text, plain: pl.plain, n: row.n, proposed: true });
+        if (row) { record({ who: by, kind: 'ruling', text: pl.text, plain: pl.plain, n: row.n, proposed: true }); plainNudge('RULING', !!row.plain); }
         continue;
       }
       if (d.kind === 'ACTION' || d.kind === 'QUESTION' || d.kind === 'KILL') {   // the speaker's own line in the register
         const section = d.kind === 'ACTION' ? 'actions' : d.kind === 'QUESTION' ? 'questions' : 'kills';
         const pl = REG.parseLine(d.kind, d.why);
         const row = regAdd(section, Object.assign({}, pl, { owner: by }), by, d.kind + ': ' + d.why);
-        if (row) record({ who: by, kind: 'register', section, n: row.n, text: row.text, plain: row.plain, date: row.date || null, affects: row.affects || null });
+        if (row) { record({ who: by, kind: 'register', section, n: row.n, text: row.text, plain: row.plain, date: row.date || null, affects: row.affects || null }); plainNudge(d.kind, !!row.plain); }
         continue;
       }
       if (d.kind === 'LATER' || d.kind === 'LOWER') continue;   // only in the leader's answer on raised hands
@@ -577,8 +639,9 @@ module.exports = function meeting(deps) {
       }
       const here = present().includes(target);
       const invite = why => {
-        if (ctl.invites >= MAX_INVITES_PER_ROUND) { note(nameOf(by) + ' invited ' + nameOf(target) + ': not this round, ' + MAX_INVITES_PER_ROUND + ' people were invited already'); return false; }
-        if (present().length >= MAX_SEATS) { note(nameOf(by) + ' invited ' + nameOf(target) + ': the meeting is full (' + MAX_SEATS + ' seats)'); return false; }
+        if (ctl.invites >= MAX_INVITES) { note(nameOf(by) + ' invited ' + nameOf(target) + ': not this round, ' + MAX_INVITES + ' people were invited already'); return false; }
+        if (present().length >= MAX_SEATS) { note(nameOf(by) + ' invited ' + nameOf(target) + ': the ' + NOUN + ' is full (' + MAX_SEATS + ' seats)'); return false; }
+        if (!std.seats.includes(target) && M.guests.filter(c => !M.excused.includes(c)).length >= MAX_GUESTS) { note(nameOf(by) + ' invited ' + nameOf(target) + ': ' + MAX_GUESTS + ' colleague' + (MAX_GUESTS === 1 ? ' is' : 's are') + ' here already, the most at once'); return false; }
         M.excused = M.excused.filter(c => c !== target);
         if (!std.seats.includes(target) && !M.guests.includes(target)) M.guests.push(target);
         save();
@@ -655,6 +718,12 @@ module.exports = function meeting(deps) {
   function runEvent(cur, ev) {
     const R = M.run; if (!R) return;
     const p = ev.payload || {};
+    /* a routine of this seat took the company folder between the busy check and this turn's first write: the station
+       answers its write with workspace-busy (after its wait). One dim line; the turn carries on without changing files. */
+    if (ev.name === 'agent.tool_result') {
+      if (p.summary === 'workspace-busy' && !cur.wsBusy) { cur.wsBusy = true; note(nameOf(cur.seat) + '\'s routine is using the company folder; ' + firstName(cur.seat) + ' answers without changing files.'); }
+      return;
+    }
     if (ev.name === 'permission.prompt' && p.promptId && !(R.consent && R.consent.promptId === p.promptId)) {
       let qid = null;
       try {
@@ -739,19 +808,26 @@ module.exports = function meeting(deps) {
         if (!R.current && M.ownerHand) { M.ownerHand = false; R.floor = true; R.gate = false; R.waitNext = false; save(); emit('meeting'); return; }
         if (!R.current && R.gate) {
           const speaks = x => present().includes(x.cmd) && (x.kind !== 'turn' || hasNewFor(x.cmd));
-          if (![...ctl.front, ...ctl.after, ...ctl.normal].some(speaks)) { finishRound(); if (!M.run || !M.run.pending) { R.gate = false; R.waitNext = false; } continue; }   // nobody left this round: Next only if another round follows
+          if (![...ctl.front, ...ctl.after, ...ctl.normal].some(speaks)) { if (wrapUp(R)) continue; finishRound(); if (!M.run || !M.run.pending) { R.gate = false; R.waitNext = false; } continue; }   // nobody left this round: Next only if another round follows
         }
         if (!R.current && gateWait(R)) return;
         if (!R.current) {
           const item = ctl.front.shift() || ctl.after.shift() || ctl.normal.shift();
-          if (!item) { finishRound(); continue; }
+          if (!item) { if (wrapUp(R)) continue; finishRound(); continue; }
           if (item.kind === 'hand') delete ctl.up[item.cmd];
           if (!present().includes(item.cmd) || (item.kind === 'turn' && !hasNewFor(item.cmd))) { save(); continue; }
+          if ((ctl.turns || 0) >= MAX_TURNS) {   // a room with a cap on replies per owner message (a live chat): it waits for the owner
+            note('The ' + NOUN + ' paused after ' + MAX_TURNS + ' replies; write to carry on.');
+            ctl.front = []; ctl.after = []; ctl.normal = []; R.round.capped = true; finishRound(); continue;
+          }
           const m = await modelFor(item.cmd);
           if (m.error) { note(nameOf(item.cmd) + ' sits this one out: ' + m.error); save(); continue; }
+          /* a seat in the middle of a routine run still speaks, as at the table, but talk only for this turn: a talk-only
+             run makes no change in the company folder, so it cannot clash with the routine's hold on it */
           let mid = false; try { mid = typeof deps.seatBusy === 'function' && await deps.seatBusy(item.cmd); } catch (_) {}
-          if (mid) { note(nameOf(item.cmd) + ' is in the middle of a routine run, so they sit this turn out (no double run); they hear it all next time.'); save(); continue; }
-          R.current = { item, seat: item.cmd, model: m, attempt: 0, tried: [], runId: null };
+          if (mid) note(nameOf(item.cmd) + ' is in the middle of a routine run, so ' + firstName(item.cmd) + ' speaks without tools this turn.');
+          ctl.turns = (ctl.turns || 0) + 1;
+          R.current = { item, seat: item.cmd, model: m, attempt: 0, tried: [], runId: null, noTools: mid || undefined };
           save(); emit('meeting');
         }
         await turn(R);
@@ -760,7 +836,23 @@ module.exports = function meeting(deps) {
       }
     } finally { driving = false; }
   }
+  /* the host's closing turn (profile wrapHost): when a round the host started by bringing someone in ends (or every round,
+     wrapHost 'always'), the host speaks once more if something was said since, to close the loop for the owner */
+  function wrapUp(R) {
+    const rd = R.round; if (!P.wrapHost || !rd || rd.wrapped || rd.capped || R.stopping || rd.ctl.ended) return false;
+    if (!(rd.wrap || P.wrapHost === 'always')) return false;
+    const l = leader(); if (!l || !hasNewFor(l)) return false;
+    rd.wrapped = true; rd.ctl.normal.push({ cmd: l, kind: 'turn', wrap: true }); save();
+    return true;
+  }
   function beginRound(p) {
+    if (p.pullIn) {   // a seat brought someone in (a colleague into a live chat): its ASK / INVITE lines start the round
+      const only = null;
+      M.run.round = { only, followUp: true, said: 0, answered: 0, ended: null, wrap: true,
+        ctl: { invites: 0, asks: 0, hands: 0, turns: 0, raised: [], front: [], after: [], up: {}, ended: null, normal: [] } };
+      applyDirectives(p.pullIn.by, p.pullIn.list || [], M.run.round.ctl, []);
+      return;
+    }
     if (p.text) {
       M.run.gate = false; M.run.gateUntil = null; M.run.waitNext = false; M.floorWhy = null;   // the owner just spoke: the first answer starts now
       if (!M.opened) record({ who: 'owner', kind: 'open', text: seatList() });
@@ -768,7 +860,7 @@ module.exports = function meeting(deps) {
     }
     const only = p.only && p.only.length ? p.only : null;
     M.run.round = { only, followUp: !p.text, said: 0, answered: 0, ended: null,
-      ctl: { invites: 0, asks: 0, hands: 0, raised: [], front: [], after: [], up: {}, ended: null,
+      ctl: { invites: 0, asks: 0, hands: 0, turns: 0, raised: [], front: [], after: [], up: {}, ended: null,
         normal: (only || ordered()).map(cmd => ({ cmd, kind: 'turn', followUp: !p.text, addressed: only })) } };
   }
   function finishRound() {
@@ -793,7 +885,7 @@ module.exports = function meeting(deps) {
     for (;;) {
       if (!cur.runId) {
         if (R.stopping) { res = { stopped: true }; break; }
-        const st = await startRun({ seat: cur.seat, model: cur.model, messages: historyFor(cur.seat, turnLine(cur.seat, item, ctl)), tools: toolsOn(), purpose: 'turn' });
+        const st = await startRun({ seat: cur.seat, model: cur.model, messages: historyFor(cur.seat, turnLine(cur.seat, item, ctl, !!cur.noTools)), tools: cur.noTools ? false : toolsOn(), purpose: 'turn' });
         if (st.error) { res = { error: st.error, text: '' }; break; }
         cur.runId = st.runId; save(); emit('meeting'); armHalt();
       }
@@ -803,7 +895,7 @@ module.exports = function meeting(deps) {
       cost(res, cur.model);
       if (res.refused) {
         const next = cur.attempt === 0 ? REF.nextEntry(cur.seat, cur.model, cur.tried, { root: co.ROOT }) : null;
-        try { REF.record({ root: co.ROOT, seat: cur.seat, door: 'meeting', runId: cur.runId, from: cur.model, to: next }); } catch (_) {}
+        try { REF.record({ root: co.ROOT, seat: cur.seat, door: DOOR, runId: cur.runId, from: cur.model, to: next }); } catch (_) {}
         if (next && !R.stopping) {
           note(nameOf(cur.seat) + ': ' + REF.plainLine(cur.model, next).replace('answered instead.', 'is answering instead.'));
           cur.tried.push({ provider: cur.model.provider, model: cur.model.model }); cur.model = next; cur.attempt = 1; cur.runId = null; save();
@@ -896,6 +988,45 @@ module.exports = function meeting(deps) {
   function pace(b) { guard(); const sp = String((b && b.speed) || ''); if (!SPEEDS.includes(sp)) fail('speed is ' + SPEEDS.join(', ')); std.speed = sp; saveStd(); if (M.run) kick(); emit('meeting'); return view(); }
   // hold the floor: the current turn finishes and is shown, nothing new starts (so nothing is spent) until released
   function hold(b) { guard(); const on = !!(b && b.on); if (!M.run) return view(); M.run.paused = on; save(); if (!on) kick(); emit('meeting'); return view({ note: on ? 'Paused: the current turn finishes, then nothing new starts until you carry on.' : null }); }
+  // Talk only (the whole meeting: no tools on any turn) and seat frames: the owner's switches, kept with the seats
+  function setTalkOnly(b) { guard(); std.talkOnly = !!(b && b.on); saveStd(); emit('meeting'); return view({ note: std.talkOnly ? 'Talk only: nobody has tools in this meeting until you switch it off.' : 'Tools on: people may read and check what they say.' }); }
+  function setFrames(b) { guard(); std.frames = !!(b && b.on); saveStd(); emit('meeting'); return view(); }
+  /* a seat brought someone in (console/huddle.js: a colleague into the owner's live chat with that seat): the recent
+     conversation goes in first as what was said (src 'chat'), then the seat's ASK / INVITE lines run as a round, the
+     host closing it if something new was said. b = { by: seat, seed: [{who: 'owner'|seat, text}], directives: [{kind,
+     name, why}] | text: the seat's reply with its lines } */
+  function pullIn(b) {
+    guard(); haltCheck(); openCheck();
+    b = b || {};
+    const by = resolve(String(b.by || '')); if (!by) fail('who brought them in?');
+    if (M.run) fail('a round is running', 409);
+    const list = Array.isArray(b.directives) ? b.directives.filter(d => d && /^(ASK|INVITE)$/.test(String(d.kind))) : directives(String(b.text || '')).list.filter(d => d.kind === 'ASK' || d.kind === 'INVITE');
+    if (!list.length) fail('no ASK or INVITE line to act on');
+    if (!M.opened) record({ who: 'owner', kind: 'open', text: seatList() });
+    for (const e of Array.isArray(b.seed) ? b.seed : []) {
+      const who = e && (e.who === 'owner' ? 'owner' : resolve(String(e.who || '')));
+      const text = str(e && e.text, 20000); if (!who || !text) continue;
+      record({ who, kind: 'say', text, src: 'chat' });
+    }
+    M.run = { auto: 0, pending: { pullIn: { by, list } }, round: null, current: null };
+    save(); kick(); return view();
+  }
+  /* GET <prefix>/attach?runId=&from=N: the turn in flight (or a finished one) as NDJSON, from journal line N, then live:
+     the same lines the live chat streams (agent.token, agent.tool_call, …, console.final, console.end). A run this room
+     did not start answers console.gone. */
+  function attach(req, res, q) {
+    const rid = String((q && q.get && q.get('runId')) || ''); const from = Math.max(0, Number(q && q.get && q.get('from')) || 0);
+    res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+    const r = RUNS && RUNS.runOf ? RUNS.runOf(rid) : null;
+    if (!r || r.meeting !== M.id || !String(r.streamId || '').startsWith(STREAM)) { res.write(JSON.stringify({ name: 'console.gone', payload: { runId: rid } }) + '\n'); return res.end(); }
+    let off = null, ended = false;
+    const ka = setInterval(() => { try { res.write('\n'); } catch (_) {} }, 20000); if (ka.unref) ka.unref();
+    const stop = () => { ended = true; clearInterval(ka); if (off) off(); };
+    off = RUNS.attach(rid, from, x => { if (ended) return; try { res.write(JSON.stringify({ name: x.name, payload: x.payload }) + '\n'); } catch (_) {} if (x.name === 'console.end') { stop(); res.end(); } });
+    if (!off) { res.write(JSON.stringify({ name: 'console.gone', payload: { runId: rid } }) + '\n'); return res.end(); }
+    if (ended) off();
+    res.on('close', stop);
+  }
   function presence(b) { if (b && b.here === false) lastSeen = 0; else lastSeen = Date.now(); if (M.run && !driving) kick(); return { ok: true, present: ownerPresent(), speed: effectiveSpeed() }; }
   /* Catch me up: one cheap talk-only turn (the leader, else the first seat) for the owner: five bullets of what was said
      since they last read, then what was decided and what is still asked. Shown to the owner only, not to the seats. */
@@ -976,7 +1107,9 @@ module.exports = function meeting(deps) {
     if (on !== observing()) { M.observer = on; save(); if (M.opened) record({ who: 'owner', kind: 'observe', on }); }
     emit('meeting'); return view();
   }
-  // the agenda: items, the one now under discussion, and tools switched on per item (talk only is the default)
+  // the agenda: items, the one now under discussion, and tools per item (an item follows the meeting's Talk only switch
+  // until the owner sets it: tools true or false)
+  const itemTools = it => typeof it.tools === 'boolean' ? it.tools : !std.talkOnly;
   function agenda(b) {
     guard();
     const op = String((b && b.op) || '');
@@ -984,11 +1117,11 @@ module.exports = function meeting(deps) {
     if (op === 'add') {
       const title = str(b.title, 200); if (!title) fail('give the item a title');
       if (M.agenda.length >= 30) fail('30 agenda items at most');
-      const it = { id: 'a' + (M.agenda.reduce((n, a) => Math.max(n, Number(String(a.id).slice(1)) || 0), 0) + 1), title, tools: b.tools === true, done: false };
+      const it = { id: 'a' + (M.agenda.reduce((n, a) => Math.max(n, Number(String(a.id).slice(1)) || 0), 0) + 1), title, tools: typeof b.tools === 'boolean' ? b.tools : null, done: false };
       M.agenda.push(it); if (!M.agendaAt) M.agendaAt = it.id;
-      save(); if (M.opened) record({ who: 'owner', kind: 'agenda', op: 'add', text: it.title, tools: it.tools });
+      save(); if (M.opened) record({ who: 'owner', kind: 'agenda', op: 'add', text: it.title, tools: itemTools(it) });
     } else if (op === 'tools') { const it = find(); it.tools = b.on === true; save(); if (M.opened) record({ who: 'owner', kind: 'agenda', op: 'tools', text: it.title, tools: it.tools }); }
-    else if (op === 'current') { const it = find(); M.agendaAt = it.id; it.done = false; save(); if (M.opened) record({ who: 'owner', kind: 'agenda', op: 'current', text: it.title, tools: it.tools }); }
+    else if (op === 'current') { const it = find(); M.agendaAt = it.id; it.done = false; save(); if (M.opened) record({ who: 'owner', kind: 'agenda', op: 'current', text: it.title, tools: itemTools(it) }); }
     else if (op === 'done') { const it = find(); it.done = true; if (M.agendaAt === it.id) { const nx = M.agenda.find(a => !a.done); M.agendaAt = nx ? nx.id : null; } save(); if (M.opened) record({ who: 'owner', kind: 'agenda', op: 'done', text: it.title }); }
     else if (op === 'remove') { const it = find(); M.agenda = M.agenda.filter(a => a !== it); if (M.agendaAt === it.id) M.agendaAt = (M.agenda.find(a => !a.done) || {}).id || null; save(); if (M.opened) record({ who: 'owner', kind: 'agenda', op: 'remove', text: it.title }); }
     else fail('op is add, tools, current, done or remove');
@@ -996,6 +1129,7 @@ module.exports = function meeting(deps) {
   }
   function setLeader(b) {
     guard();
+    if (P.fixedLeader) fail(nameOf(P.fixedLeader) + ' leads this ' + NOUN + '; that does not change', 409);
     const raw = b ? b.seat : null;
     if (raw === null || raw === undefined || raw === '' || /^(none|nobody|no|off)$/i.test(String(raw))) {
       if (std.leader) { std.leader = null; saveStd(); if (M.opened) record({ who: 'owner', kind: 'lead' }); }
@@ -1020,6 +1154,7 @@ module.exports = function meeting(deps) {
     }
     for (const k of remove) {
       const id = resolve(String(k)) || String(k);
+      if (P.fixedLeader && id === P.fixedLeader) fail(nameOf(id) + ' leads this ' + NOUN + ' and stays', 409);
       const wasHere = present().includes(id);
       if (std.seats.includes(id)) { std.seats = std.seats.filter(c => c !== id); saveStd(); }
       M.guests = M.guests.filter(c => c !== id); M.excused = M.excused.filter(c => c !== id); save();
@@ -1084,11 +1219,11 @@ module.exports = function meeting(deps) {
     const r = reg();
     if (op === 'ruling') {
       const row = REG.add(r, 'rulings', { text: b.text, plain: b.plain, confirmed: true }, 'owner');
-      row.decisionId = await decide('owner', 'Meeting ruling (' + day() + (M.title ? ', ' + M.title : '') + '): ' + row.text + ' In plain words: ' + row.plain, 'the owner\'s ruling at the meeting');
+      row.decisionId = await decide('owner', 'Meeting ruling (' + day() + (M.title ? ', ' + M.title : '') + '): ' + row.text + (row.plain ? ' In plain words: ' + row.plain : ''), 'the owner\'s ruling at the meeting');
       saveReg(); if (M.opened) record({ who: 'owner', kind: 'ruling', text: row.text, plain: row.plain, n: row.n, proposed: false });
     } else if (op === 'confirm') {
       const row = REG.update(r, 'rulings', b.n, { confirmed: true, plain: b.plain, text: b.text }, 'owner', true);
-      if (!row.decisionId) row.decisionId = await decide('owner', 'Meeting ruling (' + day() + (M.title ? ', ' + M.title : '') + '): ' + row.text + ' In plain words: ' + row.plain, 'proposed by ' + nameOf(row.proposedBy || 'owner') + ', confirmed by the owner at the meeting');
+      if (!row.decisionId) row.decisionId = await decide('owner', 'Meeting ruling (' + day() + (M.title ? ', ' + M.title : '') + '): ' + row.text + (row.plain ? ' In plain words: ' + row.plain : ''), 'proposed by ' + nameOf(row.proposedBy || 'owner') + ', confirmed by the owner at the meeting');
       saveReg(); if (M.opened) record({ who: 'owner', kind: 'note', text: owner() + ' confirmed ruling ' + row.n + ': ' + row.text });
     } else if (op === 'not-recorded') { REG.add(r, 'notRecorded', { text: b.text }, 'owner'); saveReg(); }
     else if (op === 'question' || op === 'kill') { REG.add(r, op === 'question' ? 'questions' : 'kills', { text: b.text, plain: b.plain, owner: 'owner' }, 'owner'); saveReg(); }
@@ -1121,22 +1256,25 @@ module.exports = function meeting(deps) {
       for (const x of queue) if (!seen.has(x.cmd)) { seen.add(x.cmd); next.push({ id: x.cmd, name: nameOf(x.cmd), kind: x.kind }); }
       live = { phase: R.floor ? 'floor' : R.stopping ? 'stopping' : 'round', ownerHand: !!M.ownerHand, interjection: !!R.interjection,
         paused: !!R.paused, pausedFor: R.paused === 'consent' && R.consent ? { seat: nameOf(R.consent.seat), tool: R.consent.tool, qid: R.consent.qid } : null, waitNext: !!R.waitNext, nextAt: R.gateUntil || null, yourTurn: !!R.floor, floorWhy: R.floor ? M.floorWhy || null : null,
-        speaking: R.current ? { id: R.current.seat, name: nameOf(R.current.seat), kind: R.current.item.kind, from: R.current.item.from || null, runId: R.current.runId, model: modelLabel(R.current.model) } : null,
+        speaking: R.current ? { id: R.current.seat, name: nameOf(R.current.seat), kind: R.current.item.kind, from: R.current.item.from || null, why: R.current.item.why || null, calledBy: R.current.item.calledBy || null, wrap: !!R.current.item.wrap, runId: R.current.runId, model: modelLabel(R.current.model), noTools: !!R.current.noTools } : null,
         next: next.slice(0, 4), hands: ctl ? Object.entries(ctl.up).map(([id, why]) => ({ id, name: nameOf(id), why })) : [],
         checking: R.checking ? { kind: R.checking.kind, names: R.checking.seats.map(nameOf) } : null,
         round: observing() && R ? { auto: (R.auto || 0) + 1, cap: std.observeRounds } : null };
     }
     const roster = Object.keys(crew()).map(id => ({ id, name: nameOf(id), title: titleOf(id), seated: present().includes(id) }));
-    const shown = LOG.filter(e => e.kind !== 'pass');
-    return Object.assign({ ok: true, owner: owner(),
+    const shown = LOG.filter(SHOWN);
+    return Object.assign({ ok: true, owner: owner(), kind: P.kind,
       meeting: { id: M.id, type: M.type, title: M.title, state: M.state, reason: M.reason || null, closedBy: M.closedBy ? nameOf(M.closedBy) : null, closedAt: M.closedAt || null, resumeAfter: M.resumeAfter || null,
-        agenda: M.agenda, agendaAt: M.agendaAt, toolsOn: toolsOn(), types: TYPES, speed: std.speed || 'manual', speeds: SPEEDS, effectiveSpeed: effectiveSpeed(), ownerPresent: ownerPresent(),
+        agenda: M.agenda.map(a => Object.assign({}, a, { toolsOn: itemTools(a) })), agendaAt: M.agendaAt, toolsOn: toolsOn(), talkOnly: !!std.talkOnly, frames: !!std.frames, fixedLeader: P.fixedLeader || null, types: TYPES, speed: std.speed || 'instant', speeds: SPEEDS, effectiveSpeed: effectiveSpeed(), ownerPresent: ownerPresent(),
         startedAt: M.startedAt, opened: !!M.opened, observer: observing(), observeRounds: std.observeRounds, leader: std.leader, leaderSeated: !!leader(),
-        cost: M.cost, costLine: costLine(), minutes: 'company/work/meetings/meeting-' + day() + '.md', excused: M.excused.map(id => ({ id, name: nameOf(id) })) },
+        cost: M.cost, costLine: costLine(), minutes: minutesRel(), excused: M.excused.map(id => ({ id, name: nameOf(id) })) },
       seats, roster, live, total: shown.length }, extra || {});
   }
+  // what the page shows: everything said and done, passes included (one dim line each, as at the table); the console's
+  // notes to a seat about its own lines are the seat's, not the page's
+  const SHOWN = e => e.kind !== 'nudge';
   function entries(q) {
-    const shown = LOG.filter(e => e.kind !== 'pass');
+    const shown = LOG.filter(SHOWN);
     const limit = Math.min(200, Math.max(1, Number(q && q.get && q.get('limit')) || 60));
     const before = q && q.get && q.get('before') ? Number(q.get('before')) : null;
     const from = q && q.get && q.get('from') ? Number(q.get('from')) : null;
@@ -1152,39 +1290,44 @@ module.exports = function meeting(deps) {
     const d = q && q.get && q.get('date') ? String(q.get('date')) : day();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) fail('date is YYYY-MM-DD');
     let text = ''; try { text = BOUNDED.tailText(minutesFile(d), 2 << 20); } catch (_) {}
-    let days = []; try { days = fs.readdirSync(MINUTES_DIR()).map(f => (/^meeting-(\d{4}-\d{2}-\d{2})\.md$/.exec(f) || [])[1]).filter(Boolean).sort().reverse().slice(0, 60); } catch (_) {}
-    return { ok: true, date: d, path: 'company/work/meetings/meeting-' + d + '.md', text, days };
+    let days = []; try { days = fs.readdirSync(MINUTES_DIR()).map(f => (f.startsWith(MIN_PREFIX) && /^(\d{4}-\d{2}-\d{2})\.md$/.exec(f.slice(MIN_PREFIX.length)) || [])[1]).filter(Boolean).sort().reverse().slice(0, 60); } catch (_) {}
+    return { ok: true, date: d, path: minutesRel(d), text, days };
   }
   function mount(route) {
-    route('GET', /^\/api\/meeting$/, () => view());
-    route('GET', /^\/api\/meeting\/entries$/, (m, q) => entries(q));
-    route('GET', /^\/api\/meeting\/minutes$/, (m, q) => minutesText(q));
-    route('POST', /^\/api\/meeting\/say$/, (m, q, b) => say(b));
-    route('POST', /^\/api\/meeting\/round$/, () => openRound());
-    route('POST', /^\/api\/meeting\/hand$/, () => hand());
-    route('POST', /^\/api\/meeting\/continue$/, () => carryOn());
-    route('POST', /^\/api\/meeting\/stop$/, () => stop());
-    route('POST', /^\/api\/meeting\/observe$/, (m, q, b) => setObserve(b));
-    route('POST', /^\/api\/meeting\/agenda$/, (m, q, b) => agenda(b));
-    route('POST', /^\/api\/meeting\/close$/, (m, q, b) => close(b));
-    route('POST', /^\/api\/meeting\/resume$/, (m, q, b) => resume(b));
-    route('GET', /^\/api\/meeting\/list$/, () => ({ ok: true, meetings: list() }));
-    route('GET', /^\/api\/meeting\/timeline$/, () => timeline());
-    route('GET', /^\/api\/meeting\/register$/, () => registerView());
-    route('GET', /^\/api\/meeting\/terms$/, () => terms());
-    route('POST', /^\/api\/meeting\/glossary$/, (m, q, b) => addTerm(b));
-    route('POST', /^\/api\/meeting\/explain$/, (m, q, b) => explain(b));
-    route('POST', /^\/api\/meeting\/register$/, regSafe((m, q, b) => register(b)));
-    route('GET', /^\/api\/meeting\/search$/, (m, q) => search(q));
-    route('GET', /^\/api\/meeting\/status$/, () => ({ ok: true, live: require(path.join(LIB, 'meetings.js')).liveWork() }));
-    route('POST', /^\/api\/meeting\/next$/, () => next());
-    route('POST', /^\/api\/meeting\/pace$/, (m, q, b) => pace(b));
-    route('POST', /^\/api\/meeting\/hold$/, (m, q, b) => hold(b));
-    route('POST', /^\/api\/meeting\/presence$/, (m, q, b) => presence(b));
-    route('POST', /^\/api\/meeting\/catchup$/, (m, q, b) => catchUp(b));
-    route('POST', /^\/api\/meeting\/lead$/, (m, q, b) => setLeader(b));
-    route('POST', /^\/api\/meeting\/seats$/, (m, q, b) => seatsChange(b));
-    route('POST', /^\/api\/meeting\/new$/, (m, q, b) => newMeeting(b));
+    const esc = ROUTE.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+    const R = sub => new RegExp('^' + esc + sub.replace(/\//g, '\\/') + '$');
+    route('GET', R(''), () => view());
+    route('GET', R('/entries'), (m, q) => entries(q));
+    route('GET', R('/minutes'), (m, q) => minutesText(q));
+    route('POST', R('/say'), (m, q, b) => say(b));
+    route('POST', R('/round'), () => openRound());
+    route('POST', R('/hand'), () => hand());
+    route('POST', R('/continue'), () => carryOn());
+    route('POST', R('/stop'), () => stop());
+    route('POST', R('/observe'), (m, q, b) => setObserve(b));
+    route('POST', R('/agenda'), (m, q, b) => agenda(b));
+    route('POST', R('/close'), (m, q, b) => close(b));
+    route('POST', R('/resume'), (m, q, b) => resume(b));
+    route('GET', R('/list'), () => ({ ok: true, meetings: list() }));
+    route('GET', R('/timeline'), () => timeline());
+    route('GET', R('/register'), () => registerView());
+    route('GET', R('/terms'), () => terms());
+    route('POST', R('/glossary'), (m, q, b) => addTerm(b));
+    route('POST', R('/explain'), (m, q, b) => explain(b));
+    route('POST', R('/register'), regSafe((m, q, b) => register(b)));
+    route('GET', R('/search'), (m, q) => search(q));
+    route('GET', R('/status'), () => ({ ok: true, live: require(path.join(LIB, 'meetings.js')).liveWork() }));
+    route('POST', R('/next'), () => next());
+    route('POST', R('/pace'), (m, q, b) => pace(b));
+    route('POST', R('/hold'), (m, q, b) => hold(b));
+    route('POST', R('/presence'), (m, q, b) => presence(b));
+    route('POST', R('/catchup'), (m, q, b) => catchUp(b));
+    route('POST', R('/lead'), (m, q, b) => setLeader(b));
+    route('POST', R('/seats'), (m, q, b) => seatsChange(b));
+    route('POST', R('/new'), (m, q, b) => newMeeting(b));
+    route('POST', R('/talkonly'), (m, q, b) => setTalkOnly(b));
+    route('POST', R('/frames'), (m, q, b) => setFrames(b));
+    route('GET', R('/attach'), (m, q, b, req, res) => attach(req, res, q));
   }
   // the console started: carry on a meeting a previous console process left mid-round (the turn in flight is re-attached)
   function start() {
@@ -1193,6 +1336,7 @@ module.exports = function meeting(deps) {
   }
   load();
   return { mount, start, view, entries, minutesText, say, openRound, hand, carryOn, stop, setObserve, agenda, setLeader, seatsChange, newMeeting, close, resume, list, register: regSafe(b => register(b)), registerView, search: q => search(q), reindex, explain, terms, addTerm, next, pace, hold, presence, catchUp, timeline, busy,
+    setTalkOnly, setFrames, pullIn, attach, profile: P, present: () => (M ? present() : []), state: () => (M ? M.state : null),
     idle: () => !M.run && !driving, _state: () => ({ std, M, LOG }), _reload: load };
 };
 module.exports.directives = directives;

@@ -6,11 +6,12 @@
  * meeting (ACTION: / QUESTION: / KILL:, the speaker owns it), from the owner's controls (rulings, not recorded), or from
  * meeting-register.js update by the row's own owner later. Each owner updates only their own lines; the owner (lib/owner.js)
  * owns the rulings. A row with no plain-language line (or an action with no owner, date or status) fails validation and
- * is shown as such. An owner ruling goes to decisions.md once the owner confirms it (decision.js add, by the owner).
+ * is shown as such, except a line a seat wrote at the meeting table: there the plain part is welcome, not required
+ * (add(..., {plainOptional: true}) marks the row, and the writer is told on its next turn). An owner ruling goes to decisions.md once the owner confirms it (decision.js add, by the owner).
  *
  *   load(id) / save(reg)        company/state/meetings/register/<id>.json (0600), and the rendered markdown
  *                               company/work/meetings/<date>-<id>-register.md
- *   add(reg, section, row, by)  -> row (numbered); refused if invalid
+ *   add(reg, section, row, by, {plainOptional}) -> row (numbered); refused if invalid
  *   update(reg, section, n, patch, by, isOwner) -> row; refused unless `by` owns the row (rulings: the owner)
  *   validate(section, row)      -> [errors]
  *   parseLine(kind, text)       ACTION: <item> — by <date> — plain: <line> — affects: <who> [— status: <s>]
@@ -37,7 +38,7 @@ function validate(section, row) {
   const errs = [];
   if (!SECTIONS.includes(section)) return ['no such section: ' + section];
   if (!clean(row.text)) errs.push('it says nothing');
-  if (section !== 'notRecorded' && !clean(row.plain)) errs.push('it has no plain-language line (plain: one sentence anyone can read)');
+  if (section !== 'notRecorded' && !clean(row.plain) && !row.plainOptional) errs.push('it has no plain-language line (plain: one sentence anyone can read)');
   if (section === 'actions') {
     if (!clean(row.owner)) errs.push('it has no owner');
     if (!clean(row.date)) errs.push('it has no date (a day, or "own loop")');
@@ -45,8 +46,9 @@ function validate(section, row) {
   }
   return errs;
 }
-function add(reg, section, row, by) {
+function add(reg, section, row, by, opts) {
   const r = { n: reg[section].reduce((m, x) => Math.max(m, x.n || 0), 0) + 1, text: clean(row.text), plain: clean(row.plain, 300), at: new Date().toISOString(), by: clean(by, 80) };
+  if (opts && opts.plainOptional && !r.plain) r.plainOptional = true;
   if (section === 'actions') Object.assign(r, { owner: clean(row.owner || by, 80), date: clean(row.date, 60), status: clean(row.status || 'open', 300), affects: clean(row.affects, 200) });
   if (section === 'questions' || section === 'kills') r.owner = clean(row.owner || by, 80);
   if (section === 'rulings') Object.assign(r, { owner: 'owner', confirmed: !!row.confirmed, proposedBy: clean(row.proposedBy, 80) || null, decisionId: null });
@@ -90,7 +92,7 @@ function render(reg, names) {
   const nm = x => (names && names(x)) || (x === 'owner' ? ((co.config.owner && co.config.owner.name) || 'the owner') : co.nameOf(x)) || x;
   const L = ['# Meeting ' + reg.date + (reg.title ? ': ' + reg.title : '') + ': action register', '',
     '_Source: what was said at the meeting (' + reg.type + '), as recorded in the minutes, meeting-' + reg.date + '.md. Nothing here was written by a model on anyone\'s behalf: each line is its owner\'s, and each owner updates their own lines (node company/tools/meeting-register.js update)._', ''];
-  if (reg.summary) L.push('**Closed with:** ' + reg.summary.text + (reg.summary.plain ? ' — in plain words: ' + reg.summary.plain : ' — (no plain-language line: fails validation)') + ' (' + nm(reg.summary.by) + ')', '');
+  if (reg.summary) L.push('**Closed with:** ' + reg.summary.text + (reg.summary.plain ? ' — in plain words: ' + reg.summary.plain : reg.summary.plainOptional ? '' : ' — (no plain-language line: fails validation)') + ' (' + nm(reg.summary.by) + ')', '');
   const bad = (s, r) => { const e = validate(s, r); return e.length ? ' **[fails validation: ' + e.join('; ') + ']**' : ''; };
   L.push('## ' + TITLES.rulings);
   if (!reg.rulings.length) L.push('_None._');
@@ -119,7 +121,7 @@ function save(reg, names) {
 function problems(reg) {
   const out = [];
   for (const s of SECTIONS) for (const r of reg[s]) { const e = validate(s, r); if (e.length) out.push({ section: s, n: r.n, errors: e }); }
-  if (reg.summary && !clean(reg.summary.plain)) out.push({ section: 'summary', n: 0, errors: ['the END summary has no plain-language line'] });
+  if (reg.summary && !clean(reg.summary.plain) && !reg.summary.plainOptional) out.push({ section: 'summary', n: 0, errors: ['the END summary has no plain-language line'] });
   return out;
 }
 module.exports = { SECTIONS, TITLES, load, save, add, update, validate, parseLine, render, problems, mdFile, file };

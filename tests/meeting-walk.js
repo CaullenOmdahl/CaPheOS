@@ -2,9 +2,11 @@
 /* The owner's meeting through the real console and tests/mock-station.js (POST /__meeting scripts each seat's replies),
  * on a temp copy of the company:
  *   1. owner-only: no sign-in is refused (401), as for every /api route
- *   2. a meeting round: turns are station runs on each seat's model, talk only by default (isTask false, nothing placed);
- *      each turn is admitted as a meeting-turn (company/state/admit-log.jsonl); the minutes are written; the cost counts turns
- *   3. tools for one agenda item: isTask true with the tools placed for its turns, hand checks still talk only
+ *   2. a meeting round: turns are station runs on each seat's model, tools on by default as at the table (isTask true,
+ *      the tools placed); each turn is admitted as a meeting-turn (company/state/admit-log.jsonl); the minutes are
+ *      written; the cost counts turns; a pass is shown as an event
+ *   2b. the turn in flight streams: GET /api/meeting/attach replays its tokens and tool steps from line N, then live
+ *   3. Talk only for the meeting (isTask false, nothing placed), and tools for one agenda item; hand checks talk only
  *   4. a refused turn is retried once on the seat's next chain entry, in one plain line
  *   5. END is the register's summary; a ruling reaches decisions.md (decision.js add) only once the owner confirms it
  *   6. a console restart mid-turn: the turn in flight is re-attached (not started again) and the meeting carries on
@@ -65,7 +67,8 @@ W('company/model-policy.json', pol);
   r = await api('/meeting/say', { text: 'hello' }, true);
   t('1. owner-only: a write without the sign-in is refused too', r.status === 401, r);
 
-  await api('/meeting/pace', { speed: 'instant' });   // no reading pauses in a test
+  r = await api('/meeting');
+  t('2. turns flow by default: the pace is instant, no Next to press', r.json.meeting.speed === 'instant' && r.json.meeting.toolsOn === true, r.json.meeting);
   // 2. a round through the station
   r = await api('/meeting');
   t('2. the default seats are the crew, the CEO seat leads', r.status === 200 && r.json.seats.map(s => s.id).join() === 'agent,cfo,sec' && r.json.meeting.leader === 'agent' && r.json.seats[2].model.provider === 'deepseek', r.json);
@@ -75,10 +78,10 @@ W('company/model-policy.json', pol);
   let v = await idle();
   let rs = await runs();
   t('2. everyone in turn, the leader first, as station runs on each seat\'s model', rs.map(x => x.agentId + '/' + x.provider).join() === 'agent/claude-cli,cfo/claude-cli,sec/deepseek', rs);
-  t('2. talk only by default: isTask false and nothing placed (zero tool calls)', rs.every(x => x.isTask === false && !x.placed), rs);
+  t('2. tools on by default, as at the table: isTask true with the tools placed', rs.every(x => x.isTask === true && x.placed && x.placed.length), rs);
   t('2. Phil saw the Founder\'s words', /Founder: The Founder speaks first\./.test(rs[2].last) || /The Founder speaks first/.test(JSON.stringify(rs[2])), rs[2]);
   const es = await entries();
-  t('2. what was said is shown, the pass is not', es.filter(e => e.kind === 'say').map(e => e.who).join() === 'owner,agent,sec' && !es.some(e => e.kind === 'pass'), es);
+  t('2. what was said is shown, and the pass as an event (one dim line on the page)', es.filter(e => e.kind === 'say').map(e => e.who).join() === 'owner,agent,sec' && es.filter(e => e.kind === 'pass').map(e => e.who).join() === 'cfo', es);
   const rows = R('company/state/admit-log.jsonl').split('\n').filter(Boolean).map(l => JSON.parse(l));
   const adm = rows.filter(x => x.door === 'meeting'); const ids = new Set(adm.map(x => x.id));
   t('2. every turn is admitted as a meeting-turn (lib/admit.js), and its start logged', adm.length === 3 && adm.every(x => x.decision === 'allow' && x.kind === 'meeting-turn') && rows.filter(x => ids.has(x.ref) && x.outcome === 'started').length === 3, rows);
@@ -87,7 +90,32 @@ W('company/model-policy.json', pol);
   t('2. the minutes have every word, by speaker, with times and models', /\*\*Founder\*\* \(\d\d:\d\d, Claude Sonnet\):\nThe Founder speaks first\./.test(minutes) && /\*\*Phil\*\* \(\d\d:\d\d, DeepSeek \(deepseek-flash\)\):\nPhil adds a point\./.test(minutes), minutes);
   t('2. the cost line counts the turns', v.meeting.cost.turns === 3 && v.meeting.cost.usd > 0, v.meeting.cost);
 
-  // 3. tools switched on for one agenda item
+  // 2b. the turn in flight streams through GET /api/meeting/attach (the same lines as the live chat)
+  const words = 'Streaming word by word so the page can show it as it is written.';
+  await st('/__meeting', { reset: true, replies: { agent: { text: words, stepMs: 60 } } });
+  await api('/meeting/say', { text: '@founder say it slowly' });
+  const sp2 = await waitFor(async () => { const x = (await api('/meeting')).json; return x.live.speaking && x.live.speaking.runId ? x.live.speaking : null; }, 10000);
+  const readAttach = async (rid, from) => {
+    const res = await fetch('http://127.0.0.1:' + cp + '/api/meeting/attach?runId=' + encodeURIComponent(rid) + '&from=' + (from || 0), { headers: { 'x-console-token': ctoken } });
+    const txt = await res.text(); return { status: res.status, type: res.headers.get('content-type'), lines: txt.split('\n').filter(l => l.trim()).map(l => JSON.parse(l)) };
+  };
+  const live2 = sp2 ? await readAttach(sp2.runId) : null;   // read while it is written: ends with console.end
+  const toks = live2 ? live2.lines.filter(l => l.name === 'agent.token').map(l => l.payload.delta).join('') : '';
+  t('2b. attach streams the turn as it is written: its tokens, its tool step, then console.final and console.end', live2 && live2.status === 200 && /ndjson/.test(live2.type) && toks === words && live2.lines.some(l => l.name === 'agent.tool_call') && live2.lines.some(l => l.name === 'console.final') && live2.lines[live2.lines.length - 1].name === 'console.end', live2 && live2.lines.map(l => l.name));
+  await idle();
+  const again2 = sp2 ? await readAttach(sp2.runId, 3) : null;
+  t('2b. a finished turn replays from line N (a page re-attaching after a reload)', again2 && live2 && again2.lines.length === live2.lines.length - 3 && again2.lines[again2.lines.length - 1].name === 'console.end', again2 && again2.lines.length);
+  const gone = await readAttach('no-such-run');
+  t('2b. a run this meeting did not start answers console.gone', gone.lines.length === 1 && gone.lines[0].name === 'console.gone', gone.lines);
+  r = await fetch('http://127.0.0.1:' + cp + '/api/meeting/attach?runId=x');
+  t('2b. attach is owner-only too', r.status === 401, r.status);
+
+  // 3. Talk only for the whole meeting, then tools switched on for one agenda item
+  await api('/meeting/talkonly', { on: true });
+  await st('/__meeting', { reset: true, replies: { agent: 'Talk only.', cfo: 'PASS', sec: 'PASS' } });
+  await api('/meeting/say', { text: 'No tools now.' });
+  await idle(); rs = await runs();
+  t('3. Talk only: isTask false and nothing placed (zero tool calls)', rs.length && rs.every(x => x.isTask === false && !x.placed), rs);
   await api('/meeting/agenda', { op: 'add', title: 'Check the books' });
   const item = (await api('/meeting')).json.meeting.agenda[0];
   await api('/meeting/agenda', { op: 'tools', id: item.id, on: true });
@@ -96,6 +124,7 @@ W('company/model-policy.json', pol);
   await idle(); rs = await runs();
   t('3. tools for this item: the turns have isTask true and the tools placed, the hand checks stay talk only', rs.filter(x => x.kind === 'turn').every(x => x.isTask === true && x.placed && x.placed.length) && rs.filter(x => x.kind === 'hand').length && rs.filter(x => x.kind === 'hand').every(x => x.isTask === false), rs);
   await api('/meeting/agenda', { op: 'tools', id: item.id, on: false });
+  await api('/meeting/talkonly', { on: false });
 
   // 4. refusal fallback mid-meeting
   await st('/__meeting', { reset: true, replies: { agent: { text: 'Answered on the second model.', refuse: true } } });
