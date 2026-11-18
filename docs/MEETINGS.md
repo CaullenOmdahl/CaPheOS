@@ -172,9 +172,11 @@ console and the mock station), `tests/meeting-ui-walk.js` (headless Chrome).
 
 `console/meeting.js` is a factory; the same engine runs a colleague brought into a live chat. Options: `stateDir`,
 `topic` (the live-update topic), `streamPrefix`, `minutesPrefix`, `routePrefix`, `door` (admit), and a `profile`:
-`noun` ("chat"), `preface(owner)`, `fixedLeader` (the host: cannot be changed or removed), `standing` (the host only),
-`wrapHost` (after a round the host started by bringing someone in, the host closes the loop if something new was said;
+`noun` ("chat"), `preface(owner)`, `fixedLeader` (the host: cannot be changed or removed), `standing` (the host only:
+fixed, so the owner's picks join as guests of that chat), `minutesHead(date)`,
+`wrapHost` (after a round the host started by bringing someone in, the host closes the loop if someone else said something;
 `'always'` for every round), `maxGuests`, `maxInvites`, `maxTurnsPerRound` ("The chat paused after N replies; write to
 carry on."), `noRegister`. `pullIn({by, seed, text|directives})` records the recent conversation (`src: 'chat'`) and
-runs the seat's ASK / INVITE lines as a round.
+runs the seat's ASK / INVITE lines as a round; `seed(list)` records the conversation alone (the owner's + Colleague).
+The room itself, its routes and its limits: console/huddle.js, docs/CONSOLE-API.md "Colleagues in a live chat".
 

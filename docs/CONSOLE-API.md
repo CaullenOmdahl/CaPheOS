@@ -114,7 +114,7 @@ Talking to a crew member from the console is a live run on the station (console/
 
 | Method | Path | Body | Does |
 |---|---|---|---|
-| GET | /api/chat/:seat | — | `{ agent: {id, name, title}, model, provider, modelFrom, streamId: "console-<seat>", turns: [{role, content, at, runId?, cut?}], problems: [{code, message, fix, link}], inflight: {runId, startedAt, shownText, gap} \| null }`. The model is the seat's loop routine pair, else its roster row, else model-policy.json `candidateDefault`. The turns are the station transcript (`/api/transcript?stream=console-<seat>`), so the conversation reloads when the owner comes back. A reply whose run did not finish (cancelled, stopped, failed: the station's run log, or the console's own record) carries `cut: "<reason>"` and the page says it was cut off. `inflight` is a reply still being written: its own turns are left out of `turns`, and the page re-attaches to it |
+| GET | /api/chat/:seat | — | `{ agent: {id, name, title}, model, provider, modelFrom, streamId: "console-<seat>", turns: [{role, content, at, runId?, cut?}], problems: [{code, message, fix, link}], inflight: {runId, startedAt, shownText, gap} \| null, huddleOpen, huddles }` (the last two: colleagues in this chat, below). The model is the seat's loop routine pair, else its roster row, else model-policy.json `candidateDefault`. The turns are the station transcript (`/api/transcript?stream=console-<seat>`), so the conversation reloads when the owner comes back. A reply whose run did not finish (cancelled, stopped, failed: the station's run log, or the console's own record) carries `cut: "<reason>"` and the page says it was cut off. `inflight` is a reply still being written: its own turns are left out of `turns`, and the page re-attaches to it |
 | POST | /api/chat/:seat/send | `{ text }` or `{ brief: "charter"\|"charter-change", notes? }` | streams NDJSON `{name, payload}`: first `console.user {text}` (a brief is expanded server side: the charter brief asks a few short questions, then has the seat write company/CHARTER.md with every template heading and no placeholder, and end with `[Review it in Setup](console:#/setup/charter)`), then `console.run {model, provider, from}`, then `console.attached {runId}`, then the run's journal from its first line: the opening lines again, the station run's own events (`agent.run.start`, `agent.token` `{delta}`, `agent.tool_call` `{name, argsSummary}`, `agent.tool_result`, `permission.prompt`, `agent.run.error`, `agent.run.end` `{reason, outcome, usd}`), `console.gap` when a console restart lost part of the live view, and last `console.final {text, complete, reason, gap}` (the reply as the transcript recorded it; `complete` only when the run ended on its own and nothing was lost) and `console.end`. A refusal before the run exists is one `console.error {code, message, fix, link}` line, never silence: `halted` (hard halt), `station-down`, `no-model`, `budget-hold` (a metered model with a $0 daily cap while the spendCap guardrail is on), `station-refused` (the station's own 4xx, e.g. a missing key), `cut-off` |
 | GET | /api/chat/:seat/attach?runId=&from=N | — | the same journal lines from line N (0 = the first after `console.attached`), then live, ending `console.final` + `console.end`; `console.gone` for a run the console does not know. The page re-attaches with the count it already has after a dropped stream (a console restart), and from 0 after a reload |
 | GET | /api/console/busy | — | `{ chats: [runIds in flight] }`: what `scripts/restart-console.sh --when-idle` waits on |
@@ -140,6 +140,66 @@ Approvals the run asks for are answered with `POST /api/station/consent {runId, 
 `<tool_call>`, two or more `<function=…>`, a fenced JSON call; console/ui/js/leaked-tools.js) is not rendered as
 markdown: the page shows "<name> wrote N commands as text instead of running them", an Ask again button, the prose as
 plain text and the raw reply under Details.
+
+### Colleagues in a live chat
+
+When the crew member the owner is chatting with needs a colleague, the colleague joins the same chat and answers right
+away, instead of a handoff the colleague picks up on a later routine run. It runs on the meeting's engine
+(console/huddle.js on console/meeting.js, docs/MEETINGS.md), so it works like the table: the host (the crew member whose
+chat it is; it always leads and stays) speaks first, then each colleague, each seeing everything said; `@name` addresses
+one person; ASK / INVITE / DISMISS, raised hands and passes work as in the meeting. There is no register here: what is
+decided goes in each person's own files or a handoff.
+
+How someone comes in:
+- **The host brings them in.** Every 1:1 message carries a line in its console context: end the reply with
+  `ASK: <name> — <question>` or `INVITE: <name> — <why>`. When that run ends, the console opens the chat with them
+  (the last 6 turns of the 1:1 chat, at most 20 KB, go in first as what was said), the colleague answers, and the host
+  closes the loop for the owner if something new was said. The 1:1 stream ends `console.final`, `console.huddle {host, id}`,
+  `console.end`, and the page switches to the chat with them. On the page these lines show as dim lines, never as text.
+- **The owner brings them in**: + Colleague above the messages (the crew but the host). They join and speak when the owner
+  next writes.
+
+While a colleague is in the chat, `POST /api/chat/:seat/send` goes to everyone in it (one line, `console.huddle {routed:
+true}`), and the page posts to `/api/huddle/:seat/say` itself. A colleague leaves by the owner's × or by an agent's
+`DISMISS: <name>` (`DISMISS: me` to leave oneself). When the last one has left and the round is over, the chat closes
+(minutes kept) and is the 1:1 chat again; the host's next 1:1 message carries a recap of the last 12 things said, at most
+6 KB, once (the owner's own bubble shows only what they wrote). An open chat nobody wrote to for 2 hours closes by itself.
+Earlier chats with colleagues stay in the conversation (`GET /api/chat/:seat` `huddles`), where they happened.
+
+| Method | Path | Body | Does |
+|---|---|---|---|
+| GET | /api/huddle/:seat | — | `{ open, host: {id, name}, roster: [{id, name, title, seated}], limits: {guests} }`, and once a chat with colleagues exists the meeting view (`meeting`, `seats` with `leader` / `guest` / `model`, `live` with `speaking.runId`, `cost`) |
+| GET | /api/huddle/:seat/entries?limit=&before= | — | the entries, as `/api/meeting/entries` (`src: "chat"` marks the 1:1 turns it started from) |
+| GET | /api/huddle/:seat/history | — | `{ huddles: [{id, startedAt, closedAt, guests, entries}] }`: the closed ones, oldest first (also in `GET /api/chat/:seat` as `huddles`, with `huddleOpen`) |
+| POST | /api/huddle/:seat/say | `{ text }` | to everyone in it, the host first (409 when nobody else is in the chat; while a round runs, taken after the current speaker) |
+| POST | /api/huddle/:seat/seats | `{ add: [ids] }` \| `{ remove: [ids] }` | + Colleague (opens the chat with them from the 1:1 chat so far) and × |
+| POST | /api/huddle/:seat/stop \| hand \| continue | — | as the meeting's |
+| POST | /api/huddle/:seat/close | `{ why? }` | closes it now |
+| GET | /api/huddle/:seat/attach?runId=&from=N | — | the turn in flight, as `/api/meeting/attach` |
+
+Every colleague's turn passes what a meeting turn passes: the owner-only guard (refused inside an agent's run), the halt
+check (no turn under a halt; a hard halt cancels the one in flight), the seat's current model (its chain entry as the
+pacer and `models.js` set it; a closed chain sits the turn out in one plain line), the metered-model hold under a $0 cap
+(that seat sits out with the reason), `admit()` with door `chat`, kind `meeting-turn`, one refusal retry on the next chain
+entry. Turns have tools; a colleague in the middle of a routine run answers at once, talk only, and a routine that takes
+the company folder mid-turn is one dim line. Runs are station runs on stream `huddle-<host>-<seat>` (hand checks
+`…-hand`, the host's call on hands `…-call`), tracked like chat runs (re-attached after a console restart).
+
+The dispatcher holds the host and its colleagues while a round runs (`MEETING HOLD … in a live chat with the owner`),
+and the seat answering a plain 1:1 chat while the reply is being written (`company/state/huddles/<seat>/live.json`,
+checked against the chat runs), so no loop starts on top of the owner's chat; an idle chat holds no one
+(company/tools/lib/meetings.js `busy`, `liveWork`).
+
+| Limit | Value |
+|---|---|
+| Colleagues in one chat | 3 (4 seats with the host) |
+| Invites per round | 2 |
+| Asks per round, hands per round | 6, 3 (as the meeting) |
+| Replies per owner message | 8, then "The chat paused after 8 replies; write to carry on." |
+| Idle close | 2 hours with no owner message |
+
+State: `company/state/huddles/<seat>/` (the meeting's files, `recap.json` waiting for the host's next 1:1 message,
+`live.json`); minutes `company/work/meetings/chat-<seat>-<date>.md`.
 
 ### Chat actions and approvals
 
