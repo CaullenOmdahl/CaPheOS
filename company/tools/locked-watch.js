@@ -10,7 +10,8 @@
  *   node company/tools/locked-watch.js tick [--dry-run]        compare every locked file with its last-known-good, act, report
  *   node company/tools/locked-watch.js status [--json]         what is watched, open flags (--json: the flags as rows, for the console)
  *   node company/tools/locked-watch.js revert <path> --by <Name>                put the last-known-good copy back (flagged files)
- *   node company/tools/locked-watch.js accept <path> --by <Name> --why "…"      take the change as the new last-known-good
+ *   node company/tools/locked-watch.js accept <path> --by <Name> --why "…" [--expect-sha <sha256>]   take the change as the new last-known-good
+ *   node company/tools/locked-watch.js ask-accept <path> --by <Name> --why "…"  only the owner may keep it: one card on Today with an Accept button
  *   node company/tools/locked-watch.js undo <event id> --by <Name>              undo one of the watcher's own automatic reverts
  *   node company/tools/locked-watch.js baseline [--force]                       (re)build the baseline (the first tick does it)
  *   node company/tools/locked-watch.js selftest
@@ -1236,10 +1237,37 @@ function acceptCmd(ctx, key, o) {
     const self = selfWrite(ctx, p.id, key, ctx.now - 2 * 3600e3);
     if (self) throw new Error(p.name + '\'s own run wrote ' + key + ' (' + self + '): someone else must accept it, or the owner');
   }
-  const s = stateOf(ctx, key); accept(ctx, base, key, m, s); saveBaseline(ctx, base);
+  const s = stateOf(ctx, key);
+  // the owner's yes on a card (lib/owner-card.js lockedAccept): keep only the content the card described
+  if (o.expectSha && o.expectSha !== true && s.sha256 !== String(o.expectSha)) throw new Error(key + ' changed since the card was filed (its content is not the one the owner saw); nothing kept');
+  accept(ctx, base, key, m, s); saveBaseline(ctx, base);
   logEvent(ctx, { id: evId(ctx), at: local(ctx.now), key, cls: m.cls, kind: 'accepted', why: why + ' (accepted by ' + p.name + ')', owner: m.owner, area: m.area });
   tellRisk(ctx, 'accepted', key, p, why);
   return 'accepted ' + key + ' as the new last-known-good';
+}
+/* askAcceptCmd(ctx, key, {by, why}) — only the owner may keep some changes (a file only a tool writes, or a flagged one
+ * nobody else on the crew may sign off): ONE card on Today whose yes keeps exactly the content on disk now (effect
+ * lockedAccept {key, sha}; the console runs `accept --by <owner> --expect-sha`). Never a command the owner types. */
+const AREA_WORDS = { record: 'one of the records that measure the crew\'s work', policy: 'one of the limits the crew works within', tool: 'one of the tools that keep the crew inside its limits',
+  key: 'a key or a sign-in the company holds', access: 'who may do what in the company', starnet: 'the system the crew runs on', prompt: 'the instructions one of the crew\'s routines follows' };
+function askAcceptCmd(ctx, key, o) {
+  const base = loadBaseline(ctx); if (!base) throw new Error('no baseline yet (run tick)');
+  const why = String(o.why || '').replace(/\s+/g, ' ').trim(); if (why.length < 10) throw new Error('--why must say why the change is meant');
+  const m = entryFor(ctx, key); if (!m) throw new Error(key + ' is not a locked file');
+  const b = base.files[key]; if (!b || !b.flagged) throw new Error('nothing flagged for ' + key + ': there is no change to keep');
+  const n = String(o.by || '').trim().toLowerCase();
+  const e = Object.entries(ctx.agents).find(([, c]) => String((c && c.name) || '').toLowerCase() === n);
+  if (!e) throw new Error('--by <Name> must be someone on the crew');
+  const s = stateOf(ctx, key); if (!s.exists || !s.sha256) throw new Error(key + ' is not on disk as a whole file; a card can only keep a file\'s content');
+  const C = require('./lib/owner-card');
+  const who = e[1].name; const area = AREA_WORDS[m.area] || 'one of the crew\'s protected files';
+  const r = C.file({ asker: e[0], category: 'tools', ref: 'locked-accept:' + key + ':' + s.sha256.slice(0, 16), ownerAct: true,
+    lead: who + ' asks you to keep a change to ' + area + '. Only you can keep it, because the crew may not sign off its own limits.',
+    consequence: 'If you say yes, the change is kept as the accepted version. If you say no, nothing is kept and the crew can put the old version back.',
+    recommendation: who + ' recommends yes. If you do not answer, nothing is kept.',
+    technical: 'Locked file ' + key + ' (class ' + m.cls + ', ' + (m.why || m.area) + '), flagged ' + (b.flagged.at || '?') + ' (' + (b.flagged.eventId || '?') + '). Content now: ' + s.sha256 + ' (' + s.bytes + ' bytes). Why keep it: ' + why,
+    effect: { lockedAccept: { key, sha: s.sha256 } } }, { root: ctx.root || co.ROOT });
+  return r.filed ? 'asked the owner: ' + r.id + ' (a card on Today with an Accept button)' : r.route === 'duplicate' ? 'already waiting for the owner: ' + r.id : 'not asked: ' + (r.reason || r.route);
 }
 /* A false name must come off an EXISTING flag without rebuilding the
  * baseline. `baseline --force` is not that — it erases the flag and its record with it. What this does, and all it
@@ -1334,7 +1362,7 @@ function rebaseProvenance(opts, fn) {
   saveBaseline(ctx, base);
   return { result: r, provOffset: base.provOffset };
 }
-module.exports = { tick, classify, lockedNames, MANIFEST, connectorEntries, STATION_STATUS, context, withWatchLock, rebaseProvenance, _internals: { tile, decide, decideRolled, unroll, unwind, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
+module.exports = { askAcceptCmd, acceptCmd, tick, classify, lockedNames, MANIFEST, connectorEntries, STATION_STATUS, context, withWatchLock, rebaseProvenance, _internals: { tile, decide, decideRolled, unroll, unwind, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
 
 /* ---------------- selftest ---------------- */
 async function selftest() {
@@ -1865,8 +1893,8 @@ function flagsList(ctx) {
 if (require.main === module) {
   const a = process.argv.slice(2); const cmd = a[0];
   const opt = k => { const i = a.indexOf('--' + k); return i >= 0 ? (a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true) : null; };
-  const known = { tick: ['dry-run'], status: ['json'], accept: ['by', 'why'], 'clear-name': ['by', 'why', 'name'], revert: ['by'], undo: ['by'], baseline: ['force'], selftest: [] };
-  if (!known[cmd]) { console.log('usage: locked-watch.js tick [--dry-run] | status | accept <path> --by <Name> --why "…" | clear-name <path> --name <Name> --by <Name> --why "…" | revert <path> --by <Name> | undo <event id> --by <Name> | baseline [--force] | selftest'); process.exit(2); }
+  const known = { tick: ['dry-run'], status: ['json'], accept: ['by', 'why', 'expect-sha'], 'ask-accept': ['by', 'why'], 'clear-name': ['by', 'why', 'name'], revert: ['by'], undo: ['by'], baseline: ['force'], selftest: [] };
+  if (!known[cmd]) { console.log('usage: locked-watch.js tick [--dry-run] | status | accept <path> --by <Name> --why "…" [--expect-sha <sha>] | ask-accept <path> --by <Name> --why "…" | clear-name <path> --name <Name> --by <Name> --why "…" | revert <path> --by <Name> | undo <event id> --by <Name> | baseline [--force] | selftest'); process.exit(2); }
   for (const x of a.slice(1)) if (x.startsWith('--') && !known[cmd].includes(x.slice(2))) { console.error('locked-watch: unknown option ' + x + ' for ' + cmd + '; nothing was done'); process.exit(2); }
   (async () => {
     if (cmd === 'selftest') { const { out, bad } = await selftest(); for (const l of out) console.log(l); console.log(bad ? bad + ' FAILED' : 'all ' + out.length + ' checks passed'); process.exit(bad ? 1 : 0); }
@@ -1890,7 +1918,8 @@ if (require.main === module) {
       console.log('baseline rebuilt' + (keys.length ? '; key(s) whose hash changed in the rebuild (logged): ' + keys.join(', ') : '')); return;
     }
     const key = a[1]; if (!key || key.startsWith('--')) throw new Error(cmd + ' needs a path or an event id');
-    if (cmd === 'accept') console.log(acceptCmd(ctx, key, { by: opt('by'), why: opt('why') }));
+    if (cmd === 'accept') console.log(acceptCmd(ctx, key, { by: opt('by'), why: opt('why'), expectSha: opt('expect-sha') }));
+    if (cmd === 'ask-accept') console.log(askAcceptCmd(ctx, key, { by: opt('by'), why: opt('why') }));
     if (cmd === 'clear-name') console.log(clearNameCmd(ctx, key, { by: opt('by'), why: opt('why'), name: opt('name') }));
     if (cmd === 'revert') console.log(revertCmd(ctx, key, { by: opt('by') }));
     if (cmd === 'undo') console.log(undoCmd(ctx, key, { by: opt('by') }));

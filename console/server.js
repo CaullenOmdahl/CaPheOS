@@ -602,6 +602,17 @@ route('GET', /^\/api\/today$/, today);
 // questions: only the cards that still need the owner (the badge counts these); crewHandling: the rest, read only
 route('GET', /^\/api\/questions$/, () => { const sp = ownerQuestions(); return { ok: true, questions: sp.needs, crewHandling: sp.handling }; });
 route('GET', /^\/api\/digest$/, (m, q) => NEEDS.digest({ hours: Math.min(72, Math.max(1, Number(q.get('hours')) || 24)) }));
+// the Undo button on a digest line (lib/owner-notice.js action undo-decision): only for a line that carries it; the owner's
+// "undo" goes to the crew as the owner's own message naming the decision (decision.js join() records it against the model)
+route('POST', /^\/api\/digest\/undo$/, (m, q, b) => {
+  const did = String((b && b.decisionId) || '');
+  if (!/^d-[0-9a-f]{12}$/.test(did)) bad('which decision to undo?');
+  const item = NEEDS.digest({ hours: 72 }).items.find(x => x.action && x.action.kind === 'undo-decision' && x.action.decisionId === did);
+  if (!item) bad('That line has no undo any more (it is older than three days, or it was never one the crew can undo).', 404);
+  const r = postOwnerMessage({ text: 'Please undo this decision: ' + item.text.replace(/\s*You can undo it on Today\.?$/, '') + ' (' + did + ')', re: did });
+  try { emit('owner'); } catch (_) {}
+  return { ok: true, said: 'Sent: the crew has your request to undo it, and the check that let it through is marked as wrong.', message: r.message };
+});
 route('GET', /^\/api\/rulings$/, () => ({ ok: true, rulings: NEEDS.rulings().map(r => Object.assign({}, r, { covers: ((r.scope && r.scope.categories) || []).map(NEEDS.catSay).concat((r.scope && r.scope.topics) || []) })) }));
 route('POST', /^\/api\/rulings$/, (m, q, b) => ({ ok: true, ruling: NEEDS.addRuling({ text: b.text, effect: b.effect, scope: b.scope }, bad) }));
 route('POST', /^\/api\/rulings\/(rule-[a-z0-9]+-[0-9a-f]{4}|r-[a-z0-9]{4,20})\/remove$/, m => NEEDS.removeRuling(m[1], bad));
@@ -822,6 +833,20 @@ route('POST', /^\/api\/panels\/([a-z0-9-]+)\/(hide|unhide|approve|reject|remove)
 });
 route('GET', /^\/api\/governance-log$/, (m, q) => { const p = filePage(co.p('company', 'state', 'governance-log.jsonl'), q, 200); const entries = []; for (const l of p.lines) { try { const r = JSON.parse(l); if (r && !r._retention) entries.push(r); } catch (_) {} } return { ok: true, entries, cursor: p.cursor, more: p.more }; });
 route('GET', /^\/api\/decision-models$/, () => runApi('decide.js', ['list', '--json']));
+// Settings › Autonomy › Decision rules: turn a tested check on (live) or back to practice (shadow), as the owner; the
+// version is the model's active one (decide.js promote checks its cases)
+route('POST', /^\/api\/decision-models\/([a-z][a-z0-9-]{1,40})\/mode$/, async (m, q, b) => {
+  const mode = b && b.mode === 'live' ? 'live' : b && b.mode === 'shadow' ? 'shadow' : bad('mode is live or shadow');
+  const list = await runApi('decide.js', ['list', '--json']);
+  const model = ((list && (list.models || list.items)) || []).find(x => x.id === m[1]);
+  if (!model) bad('no such rule', 404);
+  const v = String(model.active || model.version || '');
+  if (!/^[0-9A-Za-z._-]{1,20}$/.test(v)) bad('that rule has no version to turn on');
+  return runApi('decide.js', ['promote', m[1], v, '--mode', mode, '--by', OWNER], { timeout: 60000 });
+});
+// Settings › Autonomy › Permission to answer for you: the owner's delegations, and taking one back
+route('GET', /^\/api\/delegations$/, () => runApi('delegation.js', ['list', '--json']));
+route('POST', /^\/api\/delegations\/(dg-[0-9a-z-]{1,40})\/revoke$/, (m) => runApi('delegation.js', ['revoke', m[1], '--by', OWNER, '--why', 'taken back by the owner in the console']));
 // onboarding (company/tools/onboard.js): provisioning steps + the last certification; POST certify re-runs the 9 checks
 route('GET', /^\/api\/onboarding$/, () => runApi('onboard.js', ['--check', '--json']));
 route('POST', /^\/api\/onboarding\/certify$/, async () => { const r = await run('onboard.js', ['--certify', '--json'], { timeout: 300000 }); return Object.assign({}, r.data, { ok: true, certified: !!(r.data && r.data.certified) }); });

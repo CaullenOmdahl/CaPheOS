@@ -21,7 +21,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs'), path = require('path'), os = require('os');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
+const http = require('http');
 
 const REPO = path.resolve(__dirname, '..', '..', '..');
 const SCRIPTS = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-exp-scripts-'));
@@ -124,6 +125,8 @@ function fixture(o) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-exp-fx-')); roots.push(root);
   fs.cpSync(path.join(REPO, 'company'), path.join(root, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
   fs.cpSync(path.join(REPO, 'console'), path.join(root, 'console'), { recursive: true });
+  if (o.modules) fs.cpSync(path.join(REPO, 'modules'), path.join(root, 'modules'), { recursive: true });
+  W(root, 'secrets/station-token', 'fake-token\n');
   for (const f of ['company/state/locked/provenance.jsonl', 'company/pm-inbox.jsonl', 'company/state/governance.json', 'company/state/owner-rulings.json', 'company/owner/digest.jsonl']) try { fs.rmSync(path.join(root, f)); } catch (_) {}
   W(root, 'company/company.json', { name: 'Fixture Co', slug: 'fixture-co', timezone: 'UTC', owner: { name: 'Olive' }, station: { url: 'http://127.0.0.1:9' } });
   W(root, 'company/tools/loops.json', { agents: { boss: { name: 'Boss', functions: ['ceo'], manager: null, inbox: 'to-boss.md' }, hal: { name: 'Hal', functions: ['people'], manager: 'boss', inbox: 'to-hal.md' }, data: { name: 'Halima', manager: 'boss', inbox: 'to-halima.md' } } });
@@ -206,6 +209,8 @@ const S = tools('service.js'); const ctx = S.context({ root: T });
 fs.mkdirSync(path.join(T, 'company/work'), { recursive: true }); fs.writeFileSync(path.join(T, 'company/work/feed.py'), 'print(1)\\n');
 const e = S.specOf(ctx, 'feed', { kind: 'timer', every: '1h', exec: 'python3 company/work/feed.py', why: 'pulls prices every hour', hosts: 'api.kalshi.com' }, { resolve: false });
 lines.serviceDone = S.plainDone(ctx, e, { name: 'Halima' });
+lines.delegation = tools('delegation.js').answeredNotice('Pat', 'hiring', '2026-11-20T00:00:00Z').text;
+lines.demoted = tools('lib/decision.js').demoteNotice('gate-triage', '2', '3 bad outcomes in 14 days over the limit of 2', { root: T }).text;
 `;
 test('B3: every real sender template reads plainly, with the review\'s real inputs', () => {
   const T = company();
@@ -238,4 +243,156 @@ out({ row: a.row, items: NEEDS.digest().items, lint, day: N.digest({ root: T, fo
   assert.equal(r.items.length, 1); assert.match(r.items[0].text, /^Pat answered/);
   assert.match(r.lint, /hc-0042/, 'the crew is told which template to fix');
   assert.doesNotMatch(r.day.text, /noted something technical/);
+});
+
+/* ---------------- B4: every instruction has a console control ---------------- */
+// the real console server on a fixture company, with a fake station on loopback
+async function consoleOn(root, fn) {
+  const fake = http.createServer((req, res) => { res.writeHead(404, { 'content-type': 'application/json' }); res.end('{"error":"fake"}'); });
+  await new Promise(r => fake.listen(0, '127.0.0.1', r));
+  const env = Object.assign({}, process.env, { CAPHEOS_ROOT: root, STARNET_URL: 'http://127.0.0.1:' + fake.address().port, CAPHEOS_TZ: 'UTC' });
+  for (const k of STATION_ENV.concat(['CAPHEOS_READONLY'])) delete env[k];
+  const child = spawn(process.execPath, [path.join(root, 'console', 'server.js'), '--port', '0', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let errText = ''; child.stderr.on('data', x => { errText += x; });
+  try {
+    const port = await new Promise((resolve, reject) => { let buf = ''; child.stdout.on('data', x => { buf += x; const m = buf.match(/\{"port":(\d+)\}/); if (m) resolve(Number(m[1])); }); child.on('exit', c => reject(new Error('server exited ' + c + ': ' + errText))); setTimeout(() => reject(new Error('server did not start: ' + errText)), 15000); });
+    const token = fs.readFileSync(path.join(root, 'secrets', 'console-token'), 'utf8').trim();
+    const call = (method, p, body) => new Promise((resolve, reject) => {
+      const data = body === undefined ? null : JSON.stringify(body);
+      const req = http.request({ host: '127.0.0.1', port, path: p, method, headers: Object.assign({ 'x-console-token': token }, data ? { 'content-type': 'application/json' } : {}) }, res => {
+        let x = ''; res.on('data', c => { x += c; }); res.on('end', () => { let j = null; try { j = JSON.parse(x); } catch (_) {} resolve({ status: res.statusCode, json: j }); });
+      });
+      req.setTimeout(120000, () => req.destroy(new Error('timeout ' + p))); req.on('error', reject); if (data) req.write(data); req.end();
+    });
+    await fn(call, () => errText);
+  } finally { child.kill(); fake.close(); }
+}
+const tool = (root, args, env) => spawnSync(process.execPath, [path.join(root, 'company/tools', args[0])].concat(args.slice(1)), { cwd: root, encoding: 'utf8', env: envFor(root, env), timeout: 180000 });
+
+test('B4: a decision the crew made by a tested check has an Undo button on Today that reaches the crew as the owner\'s word', async () => {
+  const T = fixture();
+  run(T, `
+const N = require(path.join(T, 'company/tools/lib/owner-notice.js'));
+N.send({ kind: 'fyi', from: 'Sharon', text: 'Sharon decided to raise the ad budget to $40. You can undo it on Today.', key: 'd-0123456789ab', action: { kind: 'undo-decision', decisionId: 'd-0123456789ab' } }, { root: T });
+out({});`);
+  await consoleOn(T, async (call, err) => {
+    const d = await call('GET', '/api/digest');
+    const item = (d.json.items || []).find(x => x.action);
+    assert.ok(item && item.action.kind === 'undo-decision' && item.action.decisionId === 'd-0123456789ab', 'the line carries its Undo: ' + JSON.stringify(d.json));
+    const u = await call('POST', '/api/digest/undo', { decisionId: 'd-0123456789ab' });
+    assert.equal(u.status, 200, JSON.stringify(u.json) + err());
+    assert.ok(!/node |--by|d-[0-9a-f]{12}/.test(u.json.said), 'what the owner reads is plain: ' + u.json.said);
+    const none = await call('POST', '/api/digest/undo', { decisionId: 'd-ffffffffffff' });
+    assert.equal(none.status, 404, 'only a line that carries an Undo can be undone');
+  });
+  const inbound = fs.readFileSync(path.join(T, 'company/owner/inbound.jsonl'), 'utf8');
+  assert.match(inbound, /undo this decision[^\n]*d-0123456789ab/i, 'the crew gets the owner\'s undo, naming the decision (decision.js join reads it)');
+  // the governance line itself no longer says "Reply undo"
+  assert.doesNotMatch(fs.readFileSync(path.join(REPO, 'company/tools/lib/governance.js'), 'utf8'), /Reply "undo"/);
+});
+
+test('B4: an add-on approval, a module switch-on and a protected-file accept each reach the owner as one card with a button, never a command', async () => {
+  const T = fixture({ modules: true });
+  W(T, 'company/work/finance/dispatch-budget.json', '{"dailyUsd":5}\n');
+  const r = run(T, `
+const pk = require(path.join(T, 'company/tools/pack.js'));
+const pc = pk.ownerCard({ id: 'trading-desk', title: 'Trading desk', summary: 'Trades small amounts on prediction markets within limits you set.' }, 'Boss', 'ab12cd34ef567890', 'approved');
+const L = require(path.join(T, 'company/tools/locked-watch.js'));
+const man = L.MANIFEST.filter(m => m.p === 'company/work/finance/dispatch-budget.json');
+const ctx0 = () => L.context({ root: T, home: path.join(T, 'home'), manifest: man, ownerShell: false, underStation: false, log: () => {} });
+L.tick(ctx0());
+fs.writeFileSync(path.join(T, 'company/work/finance/dispatch-budget.json'), '{"dailyUsd":6}');
+L.tick(ctx0());
+let la = null; try { la = L.askAcceptCmd(ctx0(), 'company/work/finance/dispatch-budget.json', { by: 'Hal', why: 'the new cap is the one finance agreed' }); } catch (e) { la = 'ERR ' + e.message; }
+out({ pc, la });`);
+  assert.equal(r.pc.filed, true, 'the pack card is filed: ' + JSON.stringify(r.pc));
+  assert.match(String(r.la), /asked the owner/, 'the protected-file card is filed: ' + r.la);
+  const m = tool(T, ['module.js', 'ask', 'liveness', '--by', 'Hal', '--why', 'we need the outside alarm to know when the company stops']);
+  assert.equal(m.status, 0, m.stdout + m.stderr);
+  await consoleOn(T, async (call, err) => {
+    const q = await call('GET', '/api/questions');
+    const cards = (q.json.questions || []).filter(x => ['packInstall', 'moduleEnable', 'lockedAccept'].includes(x.effectKind));
+    assert.deepEqual(cards.map(c => c.effectKind).sort(), ['lockedAccept', 'moduleEnable', 'packInstall'], JSON.stringify(q.json.questions.map(x => [x.id, x.effectKind, x.message])) + err());
+    for (const c of cards) {
+      assert.equal(c.needsOwner, true, c.effectKind + ' is in Needs you');
+      assert.equal(c.canRule, false, c.effectKind + ': no standing rule offered (only the owner can do it)');
+      assert.ok(c.message && !/node |--by|\.js\b|sha256|company\//.test(c.message + ' ' + (c.consequence || '')), c.effectKind + ' is plain: ' + c.message);
+      assert.ok(c.cardDigest, 'the card can be answered with a button');
+    }
+    // the module card's yes switches it on, as the owner
+    const mc = cards.find(c => c.effectKind === 'moduleEnable');
+    const a = await call('POST', '/api/questions/' + mc.id + '/answer', { action: 'approve', cardDigest: mc.cardDigest });
+    assert.equal(a.status, 200, JSON.stringify(a.json) + err());
+    // the console ran the owner's own switch-on for that module (module.js enable --by <owner>); in this bare fixture the
+    // module's own conformance test may refuse it, which the owner reads in plain words
+    assert.equal(a.json.applied && a.json.applied.kind, 'moduleEnable', JSON.stringify(a.json) + err());
+    assert.ok(a.json.applied.applied === true || /conformance|enable/i.test(String(a.json.applied.technical)), 'module.js enable ran: ' + JSON.stringify(a.json.applied));
+    assert.ok(!/node |--by|\.js\b/.test(a.json.applied.said), a.json.applied.said);
+    // the protected-file card's yes keeps exactly that content
+    const lc = cards.find(c => c.effectKind === 'lockedAccept');
+    const b = await call('POST', '/api/questions/' + lc.id + '/answer', { action: 'approve', cardDigest: lc.cardDigest });
+    assert.equal(b.status, 200, JSON.stringify(b.json) + err());
+    assert.equal(b.json.applied && b.json.applied.applied, true, 'the change is kept: ' + JSON.stringify(b.json) + err());
+  });
+});
+
+test('B4: the crew\'s refusal points an owner-only accept at the card tool, never at the owner\'s shell', () => {
+  const scope = require(path.join(REPO, 'company/tools/lib/owner-scope.js'));
+  const c = scope.check({ from: 'Founder', message: 'One accept command only your shell can run: the locked file default-branch-watch.js changed and only you can accept it.' }, { rows: [], govOpts: { level: 'auto' } });
+  assert.ok(c && c.code === 'crew-scope', JSON.stringify(c));
+  assert.match(c.error, /locked-watch\.js ask-accept/);
+});
+
+test('B4: model trials: the people function starts one while the models level lets the crew decide; the owner is told plainly at notify', () => {
+  const run1 = (root, argv, owner) => {
+    const code = 'const prov = require(' + JSON.stringify(path.join(REPO, 'company/tools/provenance.js')) + '); prov.pinUnderStation(false); prov.pinOwnerShell(' + (owner ? 'true' : 'false') + ');' +
+      'const r = require(' + JSON.stringify(path.join(REPO, 'company/tools/routing.js')) + ').run(' + JSON.stringify(argv) + '); process.stdout.write(JSON.stringify(r));';
+    const r = spawnSync(process.execPath, ['-e', code], { cwd: root, encoding: 'utf8', timeout: 60000, env: envFor(root) });
+    assert.equal(r.status, 0, r.stdout + r.stderr); return JSON.parse(r.stdout);
+  };
+  const make = level => {
+    const T = company({ levels: { models: level }, agents: { boss: { name: 'Boss', functions: ['ceo'], manager: null, inbox: 'to-boss.md' }, hal: { name: 'Hal', functions: ['people'], manager: 'boss', inbox: 'to-hal.md' }, kim: { name: 'Kim', manager: 'boss', inbox: 'to-kim.md' } } });
+    W(T, 'company/departments.json', { version: 1, departments: [{ id: 'eng', name: 'Engineering', lead: 'kim', members: ['kim'], defaultClass: 'code', routes: {}, consult: {} }] });
+    W(T, 'company/model-policy.json', { allowed: { 'claude-cli': { models: ['haiku', 'claude-sonnet-5-5', 'claude-opus-5-5'] } } });
+    const def = 'company/defaults/work/models/routing-policy.json'; W(T, def, fs.readFileSync(path.join(REPO, def), 'utf8'));
+    W(T, 'company/work/decisions.md', '# Decisions\n\n');
+    const c = run1(T, ['trial', 'create', 'code-cmp', '--class', 'code', '--arm', 'claude-cli/claude-sonnet-5-5@high', '--arm', 'claude-cli/claude-opus-5-5@medium', '--scope-dept', 'eng', '--by', 'Hal']);
+    assert.equal(c.code, 0, JSON.stringify(c));
+    return T;
+  };
+  const N = make('notify');
+  const s = run1(N, ['trial', 'start', 'code-cmp', '--by', 'Hal']);
+  assert.equal(s.code, 0, 'models at notify: the people function starts it: ' + JSON.stringify(s));
+  const d = fs.readFileSync(path.join(N, 'company/owner/digest.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).pop();
+  assert.match(d.text, /^Hal started a trial that compares AI models on real work, as your settings allow\./);
+  const A = make('approve');
+  assert.equal(run1(A, ['trial', 'start', 'code-cmp', '--by', 'Hal']).code, 2, 'models at approve: still the owner\'s');
+  const K = make('auto');
+  assert.equal(run1(K, ['trial', 'start', 'code-cmp', '--by', 'Kim']).code, 2, 'only the people function, not any seat');
+  const ui = fs.readFileSync(path.join(REPO, 'console/ui/js/screens/settings/routing.js'), 'utf8');
+  assert.match(ui, /The crew recommends starting this/, 'the trial card has the crew\'s recommendation');
+  assert.match(ui, /If you do nothing, nothing changes/, 'and the default');
+});
+
+test('B4: Settings › Autonomy turns a tested check on or back to practice, and takes a delegation back, from the console', async () => {
+  const T = fixture();
+  const g = tool(T, ['delegation.js', 'grant', '--to', 'Hal', '--categories', 'hiring', '--until', new Date(Date.now() + 3 * 864e5).toISOString(), '--by', 'owner', '--why', 'while I am away']);
+  assert.equal(g.status, 0, g.stdout + g.stderr);
+  const id = JSON.parse(g.stdout).delegation.id;
+  await consoleOn(T, async (call, err) => {
+    const l = await call('GET', '/api/delegations');
+    assert.ok((l.json.delegations || []).some(d => d.id === id && d.active), JSON.stringify(l.json) + err());
+    const rv = await call('POST', '/api/delegations/' + id + '/revoke', {});
+    assert.equal(rv.status, 200, JSON.stringify(rv.json) + err());
+    const ms = await call('GET', '/api/decision-models');
+    const m = (ms.json.models || []).find(x => x.id === 'gate-triage');
+    assert.ok(m, JSON.stringify(ms.json));
+    const p = await call('POST', '/api/decision-models/gate-triage/mode', { mode: 'shadow' });
+    assert.equal(p.status, 200, JSON.stringify(p.json) + err());
+  });
+  const after = JSON.parse(fs.readFileSync(path.join(T, 'company/state/delegations.json'), 'utf8')).delegations.find(d => d.id === id);
+  assert.ok(after.revokedAt, 'the delegation is taken back');
+  const ui = fs.readFileSync(path.join(REPO, 'console/ui/js/screens/settings/autonomy.js'), 'utf8');
+  assert.doesNotMatch(ui, /from a shell on this machine|decide\.js promote/, 'no shell instruction');
+  assert.match(ui, /Turn on/); assert.match(ui, /Take it back/);
 });

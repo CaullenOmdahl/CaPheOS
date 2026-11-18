@@ -66,6 +66,9 @@ export function routingSection(host, app) {
       h('p', { class: 'caption' + (t.heldGuard && t.heldGuard.missing && t.heldGuard.missing.length ? ' err-line' : ' muted') }, heldLine(t)),
       wait ? h('p', { class: 'caption', role: 'status' }, wait) : null,
       t.progress && t.progress.enough ? h('p', { class: 'caption' }, 'Every model has enough results for a fair comparison.') : null,
+      // the crew's advice and what happens if the owner does nothing
+      t.status === 'draft' ? h('p', { class: 'caption' }, 'The crew recommends starting this, so it learns which model does this work well for less. If you do nothing, nothing changes.') : null,
+      t.status === 'paused' ? h('p', { class: 'caption' }, 'If you do nothing, it stays paused and nothing changes.') : null,
       ops.length ? h('div', { class: 'row-8' }, ops) : null,
       tech(technicalLines(t)));
   }

@@ -23,9 +23,9 @@ const CAT_WHAT = { hiring: 'Opening a role and picking the hire.', release: 'Rel
   schedules: 'Routine clocks, the dispatcher tick and per-seat wake times.', external: 'Anything that leaves the company: messages, publishing, forms, network calls.',
   dashboard: 'Adding or changing panels and pages in this console.', packs: 'Approving a capability pack, a new line of business. Installing one is always yours.' };
 const CAT_SEAT = { hiring: 'People', release: 'People', budget: 'Finance', spend: 'Finance', models: 'People', tools: 'Tools', schedules: 'Tools', external: 'CEO', dashboard: 'Tools', packs: 'CEO' };
-const LEVELS = [['auto', 'Crew decides'], ['notify', 'Decides, tells you'], ['triage', 'Model triages'], ['approve', 'You approve']];
-export const GUARD_NAMES = { ownerGates: 'Owner gates', spendCap: 'Spend cap', externalActions: 'External actions', harnessSelfEdit: 'Harness review',
-  defaultBranch: 'Default branch', secrets: 'Secrets', localComputer: 'Local computer', privilegedShell: 'Privileged shell', promptInjection: 'Injection tripwire', halt: 'Halt' };
+const LEVELS = [['auto', 'Crew decides'], ['notify', 'Decides, tells you'], ['triage', 'A tested check decides'], ['approve', 'You approve']];
+export const GUARD_NAMES = { ownerGates: 'Owner gates', spendCap: 'Spend cap', externalActions: 'External actions', harnessSelfEdit: 'Review of the crew\'s own rules',
+  defaultBranch: 'Main copy of the code is protected', secrets: 'Secrets', localComputer: 'Local computer', privilegedShell: 'Admin commands blocked', promptInjection: 'Suspicious instructions are flagged', halt: 'Halt' };
 // what each guardrail does while on, and what switching it off unlocks
 const GUARD_TEXT = {
   ownerGates: ['Access, ownership, commitments and spend beyond the cap always need you, whatever the levels above say.', 'The self-governance levels alone decide, so the crew could grant access or commit the company without you.'],
@@ -44,7 +44,7 @@ const POSTURE = [['wait', 'Wait', 'Ask before every action'], ['suggest', 'Sugge
 
 export async function render(host, ctx) {
   const { app } = ctx;
-  const presets = h('div'), guards = h('div'), gates = h('div'), ext = h('div'), posture = h('div'), dmodels = h('div'), changes = h('div'), rules = h('div'), projects = h('div');
+  const presets = h('div'), guards = h('div'), gates = h('div'), ext = h('div'), posture = h('div'), dmodels = h('div'), changes = h('div'), rules = h('div'), projects = h('div'), delegs = h('div');
   fill(host,
     Block({ id: 'presets', title: 'Self-governance', lede: 'How often the crew asks before it acts. Pick a preset, then fine-tune any kind of decision.' }, presets),
     Block({ id: 'rules', title: 'Standing rules', lede: 'Your own rules, in your words. A question a rule covers is left to the crew instead of coming to you. The four owner gates below always come to you.' }, rules),
@@ -52,7 +52,7 @@ export async function render(host, ctx) {
     Block({ id: 'guardrails', title: 'Guardrails', lede: 'Hard stops the crew cannot get past, whatever it decides. They start on; leave them on unless you know why.' }, guards),
     Block({ id: 'gates', title: 'Owner gates', lede: 'Four decisions that are always yours while the Owner gates guardrail is on.' }, gates),
     Block({ id: 'gate', title: 'External-action gate', lede: 'Every message, post, account, form, payment or network call that leaves the company needs a clearance naming you or the CEO. The default is no.' }, ext),
-    posture, dmodels,
+    posture, dmodels, delegs,
     Block({ id: 'changes', title: 'Recent changes', lede: 'Every change to self-governance, newest first.' }, changes));
   const act = async (path, b, okMsg) => {
     try { const r = await post(path, b); app.toast(okMsg || 'Saved.'); return r; }
@@ -81,7 +81,7 @@ export async function render(host, ctx) {
           h('td', { class: 'muted' }, CAT_SEAT[c.category] || '—'),
           LEVELS.map(([l, name]) => l === 'triage' && (d.fixed || []).some(f => f.category === c.category) ? h('td', { class: 'subtle' }, '—') : h('td', null, h('button', { type: 'button', class: 'level-btn', 'aria-pressed': c.level === l ? 'true' : 'false', 'aria-label': (CAT_NAMES[c.category] || c.category) + ': ' + name,
             onclick: () => c.level !== l && act('/governance/set', { category: c.category, level: l }, (CAT_NAMES[c.category] || c.category) + ': ' + name.toLowerCase() + '.') }, c.level === l ? '●' : '○'))))), { minWidth: 760 }),
-      h('p', { class: 'caption muted' }, '“Model triages” lets a tested rule decide the routine cases and send the rest to you.'));
+      h('p', { class: 'caption muted' }, '“A tested check decides” lets a tested rule decide the routine cases and send the rest to you.'));
   }
 
   function drawGuards(d) {
@@ -161,14 +161,37 @@ export async function render(host, ctx) {
     let d; try { d = await api('/decision-models'); } catch (_) { return fill(dmodels); }
     const rows = d.models || [];
     if (!rows.length) return fill(dmodels);
-    fill(dmodels, Block({ id: 'decision-models', title: 'Decision rules', lede: 'Tested rules the company runs instead of asking an AI. In shadow mode a rule only records what it would have done, and you are still asked.' },
-      table(['Rule', 'Mode', 'Cases tested', 'Times used', 'Last used'], rows.map(m => h('tr', null,
+    // On / Practice: the owner turns a tested check on or back to practice here (POST /api/decision-models/:id/mode)
+    const setMode = async (m, mode) => {
+      try { await post('/decision-models/' + encodeURIComponent(m.id) + '/mode', { mode }); app.toast((m.title || 'The rule') + (mode === 'live' ? ' is on.' : ' is back in practice mode.')); }
+      catch (e) { app.toast('Not changed: ' + humanError(e), true); }
+      drawDecisionModels();
+    };
+    fill(dmodels, Block({ id: 'decision-models', title: 'Decision rules', lede: 'Tested rules the company runs instead of asking an AI. In practice mode a rule only notes what it would do, and you are still asked.' },
+      table(['Rule', 'Mode', 'Cases tested', 'Times used', 'Last used', ''], rows.map(m => h('tr', null,
         h('th', { scope: 'row', class: 'label strong' }, m.title || m.id),
-        h('td', null, m.valid === false ? Tag('Broken', { variant: 'status', status: 'danger' }) : Tag(m.mode === 'live' ? 'Live' : 'Shadow', { variant: 'status', status: m.mode === 'live' ? 'online' : 'neutral' })),
+        h('td', null, m.valid === false ? Tag('Broken', { variant: 'status', status: 'danger' }) : Tag(m.mode === 'live' ? 'On' : 'Practice', { variant: 'status', status: m.mode === 'live' ? 'online' : 'neutral' })),
         h('td', { class: 'num' }, String(m.cases || 0)), h('td', { class: 'num' }, String(m.evaluations || 0)),
-        h('td', { class: 'caption muted' }, m.lastAt ? rel(m.lastAt) : '—'))), { minWidth: 560 }),
-      Details('Details', h('p', { class: 'caption' }, 'Promote a version or set a threshold from a shell on this machine: decide.js promote | set-param --by owner.'),
+        h('td', { class: 'caption muted' }, m.lastAt ? rel(m.lastAt) : '—'),
+        h('td', null, m.valid === false ? null : m.mode === 'live' ? Button('Back to practice', { variant: 'ghost', size: 'sm', onClick: () => setMode(m, 'shadow') }) : Button('Turn on', { variant: 'secondary', size: 'sm', onClick: () => setMode(m, 'live') })))), { minWidth: 640 }),
+      Details('Details', h('p', { class: 'caption' }, 'Turning a rule on uses its newest tested version; its test cases must pass first. Thresholds are set by the crew\'s risk seat and shown here.'),
         h('ul', { class: 'plain caption mono-s' }, rows.map(m => h('li', null, m.id + ' v' + (m.active || '?') + ' · ' + Object.entries(m.params || {}).map(([k, v]) => k + ' ' + v).join(', ')))))));
+  }
+
+  // the owner's delegations: who may answer some of their questions for them, until when, and taking it back
+  async function drawDelegations() {
+    let d; try { d = await api('/delegations'); } catch (_) { return fill(delegs); }
+    const act = (d.delegations || []).filter(x => x.active);
+    if (!act.length) return fill(delegs);
+    const back = async x => {
+      try { await post('/delegations/' + encodeURIComponent(x.id) + '/revoke', {}); app.toast(x.to + ' no longer answers for you.'); }
+      catch (e) { app.toast('Not changed: ' + humanError(e), true); }
+      drawDelegations();
+    };
+    fill(delegs, Block({ id: 'delegations', title: 'Permission to answer for you', lede: 'Someone you named answers some of your questions while you are away. Their answers count as yours until the date shown.' },
+      h('ul', { class: 'plain' }, act.map(x => h('li', { class: 'sys-row', style: 'align-items:flex-start' },
+        h('span', { class: 'stack-4' }, h('span', { class: 'strong' }, x.to), h('span', { class: 'caption muted' }, (x.categories || []).map(c => (CAT_NAMES[c] || c).toLowerCase()).join(', ') + ' · until ' + String(x.until || '').slice(0, 10))),
+        Button('Take it back', { variant: 'secondary', size: 'sm', onClick: () => back(x) }))))));
   }
 
   async function drawChanges() {
@@ -196,7 +219,7 @@ export async function render(host, ctx) {
     drawGates(gov.value, gr.value);
     drawExternal(); drawChanges();
   }
-  load(); drawPosture(); drawDecisionModels();
+  load(); drawPosture(); drawDecisionModels(); drawDelegations();
   const reloadRules = rulingsSection(rules, app); projectsSection(projects, app);
   const off = events.on(['governance', 'guardrails'], load);
   const offR = events.on('rulings', reloadRules);

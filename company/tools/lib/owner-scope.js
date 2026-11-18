@@ -216,6 +216,18 @@ function routeFor(cls, from, seats) {
   return { to, line: 'Handle it yourself if your seat can; otherwise ' + lines.join('; ') + '.' };
 }
 
+/* the owner-only acts that have their own card with a button on Today: a crew ask that is really one of these is
+ * pointed at the tool that files that card (never at a command the owner types) */
+const OWNER_ACTS = [
+  [/\b(?:accept|keep|sign[- ]?off)\b[^.]*\b(?:protected|locked|owner[- ]only|baseline|last[- ]known[- ]good)\b|\b(?:protected|locked|owner[- ]only) (?:file|tool|change)\b[^.]*\baccept|\baccept command\b|locked-watch(?:\.js)? accept/i,
+    'to ask the owner to keep a protected file\'s change, file one card with an Accept button: node company/tools/locked-watch.js ask-accept <path> --by <you> --why "…"'],
+  [/\b(?:enable|switch(?:ing)? on|turn(?:ing)? on)\b[^.]*\b(?:module|add-on)\b|module\.js enable/i,
+    'to ask the owner to switch a module on, file one card with a button: node company/tools/module.js ask <id> --by <you> --why "…"'],
+  [/\binstall\b[^.]*\b(?:pack|capability pack|add-on)\b|pack\.js install/i,
+    'a pack reaches the owner as one card with an Install button when you propose it (node company/tools/pack.js propose <dir> --by <you>), or when the CEO approves it'],
+];
+function ownerActHints(text) { return OWNER_ACTS.filter(([re]) => re.test(String(text || ''))).map(([, line]) => line); }
+
 /* ---- dedupe / backoff ---- */
 const STOP = new Set('that this with from have will would could should about there their they them what when your yours which into only also than then just been were more most some such each very much need needs want wants please skip skipped wait waits default otherwise happen happens owner instead nothing else change changes'.split(' '));
 function topicWords(s) { return new Set(String(s || '').toLowerCase().replace(/[^a-z0-9\s-]/g, ' ').split(/\s+/).map(w => w.replace(/(?:ing|ed|es|s)$/, '')).filter(w => w.length >= 4 && !STOP.has(w))); }
@@ -274,7 +286,9 @@ function check(o, ctx) {
   const WHO = 'The owner is a busy non-technical person, asked only for: money beyond the company\'s own limits; accounts or identity in their own name (a sign-up, a sign-in, a key only they can get); legal, ownership or commitment decisions; company direction and priorities; risk the governance level reserves for them; the fixed gates.';
   if (cls.scope === 'crew') {
     const r = routeFor(cls, o.from, ctx.seats);
-    return { code: 'crew-scope', classification: cls, route: r.to, error: 'Not asked: this is the crew\'s job, not the owner\'s — ' + cls.why + '. ' + WHO + ' ' + r.line +
+    const acts = ownerActHints([lead, o.details, o.q].filter(Boolean).join('\n'));
+    return { code: 'crew-scope', classification: cls, route: r.to, ownerActs: acts.length ? acts : undefined, error: 'Not asked: this is the crew\'s job, not the owner\'s — ' + cls.why + '. ' + WHO + ' ' + r.line +
+      (acts.length ? ' If it truly is the owner\'s own act: ' + acts.join('; ') + '.' : '') +
       ' If it truly needs something only the owner has (money, or an account in their name), ask only that, in two plain sentences with a default, e.g. "' + suggestPlain(lead, { owner: ['account'] }) + '"' };
   }
   const prior = backoff(Object.assign({}, o, { message: lead }), ctx.rows, ctx.now);
@@ -293,4 +307,4 @@ function check(o, ctx) {
   return null;
 }
 
-module.exports = { classify, plainScore, suggestPlain, routeFor, backoff, saidNotNow, check, wordsProblems, BACKOFF_DAYS, JARGON_WORDS };
+module.exports = { ownerActHints, classify, plainScore, suggestPlain, routeFor, backoff, saidNotNow, check, wordsProblems, BACKOFF_DAYS, JARGON_WORDS };

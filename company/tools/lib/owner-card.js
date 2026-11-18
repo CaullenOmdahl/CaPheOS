@@ -15,6 +15,8 @@
  *               'crew-decides' = the crew decides, 'never-ask' = the owner's "no" stands); declined: the owner answered
  *               this "not now" within the backoff window (their "no" stands); duplicate: a card is already waiting.
  *        A caller treats ONLY coveredByCrew(result) as "the crew may go ahead" and refusedByOwner(result) as a "no".
+ *        ownerAct   true for an act only the owner may do (pack.js install, module.js enable, locked-watch.js accept):
+ *               like a guardrail, filed whatever the level, and no ruling or backoff hands it to the crew.
  *        guardrail  true when a guardrail (not governance) requires the owner's yes (service.js outside the safe profile,
  *               harness-change.js with nobody on the crew to review a protected tool): like a fixed gate, no ruling,
  *               level or backoff hands it to the crew.
@@ -38,10 +40,11 @@
  *
  * EFFECTS (applied ONLY by the console's owner answer handler, an owner path; this module only checks their shape):
  *   {serviceApprove:{name}}  filed only by service.js      {harnessApply:{id}}  filed only by harness-change.js
- *   {none:true}
+ *   {packInstall:{id,digest}} filed only by pack.js        {moduleEnable:{id}}  filed only by module.js
+ *   {lockedAccept:{key,sha}} filed only by locked-watch.js  {none:true}
  * Each effect has exactly one producing tool (EFFECT_PRODUCERS); lib/pm-inbox-guard.js drops the effect of a card whose
  * recorded writer is any other program, so a card an agent's own script files can never carry owner authority. Effect
- * kinds with no producer (governance, clearance, projectApprove, moduleEnable, lockedAccept, budgetToday) are refused.
+ * kinds with no producer (governance, clearance, projectApprove, budgetToday) are refused.
  * An open card's effect never changes: an update with a different effect is refused (withdraw it and file a new one).
  *
  * ROWS: a pm-inbox ask written through lib/pm-inbox-guard.js append (recorded first, so readers trust it) with
@@ -99,6 +102,12 @@ function assertPlain(parts) {
 const EFFECT_SHAPES = {
   serviceApprove: e => e && typeof e.name === 'string' && /^[a-z][a-z0-9-]{1,30}$/.test(e.name),
   harnessApply: e => e && typeof e.id === 'string' && /^hc-\d{1,6}$/.test(e.id),
+  // an add-on (capability pack) the owner installs: the exact proposed copy, by its digest (pack.js digest)
+  packInstall: e => e && typeof e.id === 'string' && /^[a-z][a-z0-9-]{1,40}$/.test(e.id) && typeof e.digest === 'string' && /^[0-9a-f]{16}$/.test(e.digest),
+  // a core module (add-on) the owner switches on
+  moduleEnable: e => e && typeof e.id === 'string' && /^[a-z][a-z0-9-]{1,39}$/.test(e.id),
+  // a protected file's change the owner keeps: that path, at exactly the content the card described (its sha256)
+  lockedAccept: e => e && typeof e.key === 'string' && e.key.length <= 300 && /^[A-Za-z0-9_.~\/:@+-]+$/.test(e.key) && !e.key.startsWith('-') && !/(^|\/)\.\.(\/|$)/.test(e.key) && typeof e.sha === 'string' && /^(?:sha256:)?[0-9a-f]{64}$/.test(e.sha),
   none: e => e === true,
 };
 // the one program that may file each effect (a path relative to the company root; lib/pm-inbox-guard.js checks the
@@ -106,9 +115,12 @@ const EFFECT_SHAPES = {
 const EFFECT_PRODUCERS = {
   serviceApprove: ['company/tools/service.js'],
   harnessApply: ['company/tools/harness-change.js', 'company/tools/dispatch.js'],
+  packInstall: ['company/tools/pack.js'],
+  moduleEnable: ['company/tools/module.js'],
+  lockedAccept: ['company/tools/locked-watch.js'],
   none: null,   // anyone
 };
-const NO_PRODUCER = ['governance', 'clearance', 'projectApprove', 'moduleEnable', 'lockedAccept', 'budgetToday'];
+const NO_PRODUCER = ['governance', 'clearance', 'projectApprove', 'budgetToday'];
 function normEffect(effect, opts) {
   if (effect === undefined || effect === null) return { none: true };
   if (typeof effect !== 'object' || Array.isArray(effect)) throw Object.assign(new Error('effect must be an object like {none:true}'), { code: 'BAD_EFFECT' });
@@ -124,6 +136,9 @@ function describeEffect(effect) {
   switch (k) {
     case 'serviceApprove': return 'Yes sets up the background job called “' + v.name + '”, exactly as described.';
     case 'harnessApply': return 'Yes makes the crew\'s change number ' + String(v.id).replace(/^hc-0*/, '') + ', exactly as described.';
+    case 'packInstall': return 'Yes installs the add-on exactly as it was proposed.';
+    case 'moduleEnable': return 'Yes switches the add-on on.';
+    case 'lockedAccept': return 'Yes keeps the change to that protected file, exactly as it is now.';
     case 'none': return 'Yes tells the crew to go ahead.';
     default: return 'Your answer is recorded; nothing is changed automatically.';
   }
@@ -191,16 +206,19 @@ function file(o, opts) {
   const from = nameOf(o.asker, opts);
   const fixed = !!fixedGate || isFixed(category, opts);
   const guardrail = o.guardrail === true;   // a guardrail requires the owner: treated like a fixed gate below
+  // an act only the owner may do whatever the levels say (install an add-on, switch one on, keep a protected file's
+  // change): like a guardrail, no ruling, level or backoff hands it to the crew
+  const ownerAct = o.ownerAct === true;
   const technical = o.technical ? String(o.technical).slice(0, 20000) : '';
 
   // 1. a standing owner ruling (never for a fixed gate)
-  const ruling = fixed || guardrail ? null : RULINGS().match({ category, ref, about: o.about, text: lead }, opts);
+  const ruling = fixed || guardrail || ownerAct ? null : RULINGS().match({ category, ref, about: o.about, text: lead }, opts);
   if (ruling && (ruling.effect === 'crew-decides' || ruling.effect === 'never-ask'))
     return { filed: false, route: 'ruling', ruling: { id: ruling.id, text: ruling.text, effect: ruling.effect },
       reason: 'the owner\'s standing rule "' + ruling.text + '" covers this: ' + (ruling.effect === 'crew-decides' ? 'the crew decides' : 'the owner is not asked and the default (no) stands') };
   // 2. the real governance level
-  const level = fixed || guardrail ? 'approve' : levelOf(category, opts);
-  const forced = guardrail || !!(ruling && ruling.effect === 'ask');
+  const level = fixed || guardrail || ownerAct ? 'approve' : levelOf(category, opts);
+  const forced = guardrail || ownerAct || !!(ruling && ruling.effect === 'ask');
   if (!fixed && !forced && level === 'auto') return { filed: false, route: 'crew', level, reason: 'self-governance has ' + category + ' at auto: the crew decides, nobody asks the owner' };
   if (!fixed && !forced && level === 'notify') {
     const text = o.fyi ? String(o.fyi).trim() : from + ' decided this, as your settings allow: ' + lead.replace(/\?$/, '.');
@@ -229,7 +247,7 @@ function file(o, opts) {
   const row = { type: 'ask', id: cur ? cur.id : newId(f), at: cur ? cur.at : at, from, about: String(o.about || 'card:' + ref).slice(0, 200), q,
     message: lead, details: [consequence, recommendation].filter(Boolean).join('\n'), consequence, recommendation: recommendation || null,
     blocking: o.blocking !== false, batch: 'gate', card: 1,
-    gate: { ref, category: fixedGate || category, fixedGate: fixedGate || (fixed ? category : null), governanceCategory: category, guardrail: guardrail || undefined, by: o.by ? String(o.by) : from, summary: o.summary ? String(o.summary).slice(0, 300) : lead,
+    gate: { ref, category: fixedGate || category, fixedGate: fixedGate || (fixed ? category : null), governanceCategory: category, guardrail: guardrail || undefined, ownerAct: ownerAct || undefined, by: o.by ? String(o.by) : from, summary: o.summary ? String(o.summary).slice(0, 300) : lead,
       recommendation: recommendation || null, default: consequence },
     effect };
   if (technical) row.technical = technical;
@@ -272,4 +290,4 @@ function withdraw(o, opts) {
   return { withdrawn: out };
 }
 
-module.exports = { file, withdraw, openCard, describeEffect, plain, plainProblems, coveredByCrew, refusedByOwner, EFFECT_KINDS: Object.keys(EFFECT_SHAPES), EFFECT_PRODUCERS, NO_PRODUCER };
+module.exports = { file, withdraw, openCard, describeEffect, plain, plainProblems, coveredByCrew, refusedByOwner, EFFECT_KINDS: Object.keys(EFFECT_SHAPES), EFFECT_PRODUCERS, EFFECT_SHAPES, NO_PRODUCER };

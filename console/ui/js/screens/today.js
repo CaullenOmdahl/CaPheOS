@@ -400,9 +400,14 @@ export async function render(root, ctx) {
     if (!items.length) return fill(digestEl);
     fill(digestEl, h('h2', { id: 'digest-h', class: 'h3' }, d.title || 'What the crew did today'),
       h('article', { class: 'card p20 stack-12 digest-card' },
-        h('p', { class: 'caption muted' }, 'Things you may want to know. Nothing here needs an answer.'),
+        h('p', { class: 'caption muted' }, items.some(x => x.asks) ? 'Things you may want to know. Only what waits under Needs you needs an answer.' : 'Things you may want to know. Nothing here needs an answer.'),
         h('ul', { class: 'plain stack-8' }, items.map(x => h('li', { class: 'stack-4 digest-item' },
           h('span', { class: 'body-s' }, x.from ? h('span', { class: 'strong' }, personName(x.from) + ': ') : null, x.text, h('span', { class: 'caption muted' }, ' · ' + when(x.at, co.timezone))),
+          // a line the owner can act on from here (an Undo button: POST /api/digest/undo)
+          x.action && x.action.kind === 'undo-decision' ? h('div', { class: 'row-8' }, Button(x.action.label || 'Undo this', { variant: 'secondary', size: 'sm', onClick: async () => {
+            try { const r = await post('/digest/undo', { decisionId: x.action.decisionId }); app.toast(r.said || 'Sent to the crew.'); }
+            catch (e) { app.toast('Not sent: ' + humanError(e), true); }
+          } })) : null,
           x.technical ? h('details', { class: 'q-technical' }, h('summary', { class: 'caption muted' }, 'Technical details (for the crew)'), h('pre', { class: 'mono-s', style: 'white-space:pre-wrap' }, x.technical)) : null)))));
   }
   loadNeeds(); loadCrew(); loadUsage(); loadOvernight(); loadNow(); loadDigest();

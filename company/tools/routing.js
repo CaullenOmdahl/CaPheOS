@@ -59,6 +59,9 @@ const S = {   // seams for the tests (company/tools/tests/routing-controls.test.
   owner: () => require('./lib/owner'),
   prov: () => require('./provenance.js'),
   decision: o => require('./decision.js').add(o),
+  // the owner's self-governance level for model changes (lib/governance.js; a test hands in its own)
+  modelsLevel: () => { try { return require('./lib/governance').level('models', { root: co.ROOT }); } catch (_) { return 'approve'; } },
+  tellOwner: (text, technical) => { try { require('./lib/governance').notify(text, { from: 'The crew', technical }); } catch (_) {} },
   lockOpts: () => ({}),   // lib/file-lock.js options (staleMs, retries, waitMs)
   // the providers the pacer meters as flat-fee subscriptions (pacer.js SUBS is built from the same table)
   subscriptions: () => { try { return Object.values(require('./lib/pacing-ask').SUBS).map(x => String(x.provider)).filter(Boolean); } catch (_) { return ['claude-cli', 'custom']; } },
@@ -134,7 +137,7 @@ function actor(by, cmd) {
 }
 function ownerOnly(by, what) {
   const name = String(by == null ? '' : by).trim();
-  if (!S.owner().isOwnerName(name)) throw new Refusal(what + ' is the owner\'s decision: --by owner from the owner\'s own shell, or the console (Settings > Models > Routing). The people function proposes it to the owner instead');
+  if (!S.owner().isOwnerName(name)) throw new Refusal(what + ' is the owner\'s decision: --by owner from the owner\'s own shell, or the console (Settings › Models and subscriptions › Cheaper models). The people function proposes it to the owner instead');
   return actor(by, what);
 }
 
@@ -268,7 +271,7 @@ function planTrial(a, doc, ctx) {
 }
 function createTrial(a) {
   const who = actor(a.by, 'trial');
-  if (who.kind !== 'owner' && who.kind !== 'people') throw new Refusal(who.label + ' may not create a trial: the people function (the model manager) or the owner drafts one, and only the owner starts it');
+  if (who.kind !== 'owner' && who.kind !== 'people') throw new Refusal(who.label + ' may not create a trial: the people function (the model manager) or the owner drafts one; the owner starts it, or the people function while the owner\'s models level lets the crew decide');
   let departments = [];
   try { const D = require('./lib/departments'); departments = D.list(D.load({ root: S.root() }).doc); } catch (_) {}
   return change(L => {
@@ -282,9 +285,26 @@ const scopeText = s => [].concat((s.departments || []).map(d => 'department ' + 
 const FROM = { start: ['draft'], pause: ['running'], resume: ['paused'], stop: ['draft', 'running', 'paused'] };
 const TO = { start: 'running', pause: 'paused', resume: 'running', stop: 'done' };
 const overlaps = (x, y) => (x.departments || []).some(d => (y.departments || []).includes(d)) || (x.seats || []).some(s => (y.seats || []).includes(s));
+/* who may start, pause, resume or stop a trial: the owner always; the people function (the model manager) too while the
+ * owner's `models` level lets the crew decide model changes (auto, or notify: the owner then reads one plain line in the
+ * day's message). At approve (or triage) it stays the owner's, from Settings › Models and subscriptions › Cheaper models. */
 function moveTrial(op, id, a) {
-  const who = ownerOnly(a.by, (op[0].toUpperCase() + op.slice(1)) + 'ing a trial');
-  return change(L => moveIn(L, op, id, a, who));
+  const what = (op[0].toUpperCase() + op.slice(1)) + 'ing a trial';
+  const name = String(a.by == null ? '' : a.by).trim();
+  let who;
+  if (S.owner().isOwnerName(name)) who = ownerOnly(a.by, what);
+  else {
+    const lv = S.modelsLevel();
+    if (lv !== 'auto' && lv !== 'notify') return ownerOnly(a.by, what);   // throws the owner's refusal
+    who = actor(a.by, what);
+    if (who.kind !== 'people') throw new Refusal(who.label + ' may not do this: the people function (the model manager) or the owner moves a trial');
+  }
+  const r = change(L => moveIn(L, op, id, a, who));
+  if (who.kind !== 'owner' && r && r.changed !== false && S.modelsLevel() === 'notify') {
+    const did = { start: 'started', pause: 'paused', resume: 'resumed', stop: 'stopped' }[op];
+    S.tellOwner(who.name + ' ' + did + ' a trial that compares AI models on real work, as your settings allow. You can see it in Settings › Models and subscriptions.', 'routing.js trial ' + op + ' ' + id + ' by ' + who.name + ' (models at notify).');
+  }
+  return r;
 }
 function moveIn(L, op, id, a, who) {
   const trials = trialsOf(L.next), t = trials.find(x => String(x.id) === String(id));

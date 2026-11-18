@@ -291,9 +291,12 @@ function decide(category, o, opts) {
     if (!tri.escalate) {
       const who = o.by || 'The company';
       const m = tri.model;
-      const sentence = plainDecided(who, category, o.summary) + ' Reply "undo" if you want it undone.';
-      const technical = 'Self-governance: ' + category + ' is set to triage, and decision model ' + m.id + ' v' + m.version + ' let this through: ' + tri.reason + '. Decision ' + (tri.decisionId || '?') + '; the owner undoes it with "undo ' + (tri.decisionId || '') + '".' + (o.summary ? ' Summary: ' + String(o.summary).trim() : '');
-      let noted = null; try { noted = fyi({ from: o.by, text: sentence, technical, key: tri.decisionId || ref }, opts); } catch (_) {}
+      // the owner's line carries an Undo button on Today (lib/owner-notice.js action undo-decision): pressing it sends the
+      // crew the owner's "undo" for this decision, which decision.js join() also records against the model
+      const did = /^d-[0-9a-f]{12}$/.test(String(tri.decisionId || '')) ? tri.decisionId : null;
+      const sentence = plainDecided(who, category, o.summary) + (did ? ' You can undo it on Today.' : ' If you want it undone, say so in Chat.');
+      const technical = 'Self-governance: ' + category + ' is set to triage, and decision model ' + m.id + ' v' + m.version + ' let this through: ' + tri.reason + '. Decision ' + (tri.decisionId || '?') + '; the owner undoes it with the Undo button on Today (an owner message naming ' + (tri.decisionId || 'the decision') + ').' + (o.summary ? ' Summary: ' + String(o.summary).trim() : '');
+      let noted = null; try { noted = fyi({ from: o.by, text: sentence, technical, key: tri.decisionId || ref, action: did ? { kind: 'undo-decision', decisionId: did } : undefined }, opts); } catch (_) {}
       return { level: lv, allowed: true, noted: !!noted, triage: tri };
     }
   }

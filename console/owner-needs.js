@@ -30,6 +30,9 @@
  * TYPED EFFECTS (applyEffect): a card may carry `effect`, applied only here, only after the owner's own yes:
  *   {serviceApprove:{name}}  service.js owner-approve   (filed only by service.js)
  *   {harnessApply:{id}}      harness-change.js owner-apply (filed only by harness-change.js)
+ *   {packInstall:{id,digest}} pack.js approve --digest + install (filed only by pack.js)
+ *   {moduleEnable:{id}}      module.js enable (filed only by module.js)
+ *   {lockedAccept:{key,sha}} locked-watch.js accept --expect-sha (filed only by locked-watch.js)
  *   {none:true}              nothing
  * lib/pm-inbox-guard.js drops the effect of a card whose recorded writer is not the tool that owns it, and every other
  * effect kind has no producer and is never applied. The card shows what yes does in the console's own words
@@ -50,7 +53,7 @@ const CAT_SAY = { hiring: 'hiring', release: 'releasing someone', budget: 'the b
   packs: 'add-ons', deps: 'software the crew installs', org: 'how the team is organised', localComputer: 'background jobs on this computer',
   access: 'access and accounts', ownership: 'ownership', commitment: 'commitments', spendBeyondCap: 'spending beyond the cap' };
 const FIXED_ALIAS = { commitments: 'commitment', spend_beyond_cap: 'spendBeyondCap', spendbeyondcap: 'spendBeyondCap' };
-const EFFECTS = ['serviceApprove', 'harnessApply', 'none'];
+const EFFECTS = ['serviceApprove', 'harnessApply', 'packInstall', 'moduleEnable', 'lockedAccept', 'none'];
 const RULING_EFFECTS = ['crew-decides', 'never-ask', 'ask'];
 
 function make(deps) {
@@ -124,6 +127,8 @@ function make(deps) {
     if (fixedGate) return { needsOwner: true, why: 'fixed-gate', fixedGate, category: category || fixedGate };
     // never behind a ruling or a level: a guardrail's ask, a key or account request, money needed now
     if ((row.gate && row.gate.guardrail) || (q.gate && q.gate.guardrail)) return { needsOwner: true, why: 'guardrail', category };
+    // an act only the owner may do (install an add-on, switch one on, keep a protected file's change: lib/owner-card.js ownerAct)
+    if ((row.gate && row.gate.ownerAct) || (q.gate && q.gate.ownerAct)) return { needsOwner: true, why: 'owner-act', category };
     if (asksKey(q) || asksKey(row)) return { needsOwner: true, why: 'access', category };
     if (/^money-hold:/.test(String(q.about || row.about || ''))) return { needsOwner: true, why: 'money-now', category };
     const ruling = rulingFor({ category, about: q.about, lead, ref: (row.gate && row.gate.ref) || (q.gate && q.gate.ref) || null }, list);
@@ -148,6 +153,7 @@ function make(deps) {
     if (c.fixedGate) return { ok: false, why: 'This is one of the four decisions that are always yours, so it cannot become a standing rule.' };
     if (c.why === 'guardrail') return { ok: false, why: 'This one always comes to you while the safety setting for it is on (Settings › Autonomy › Guardrails), so a standing rule cannot cover it.' };
     if (c.why === 'access') return { ok: false, why: 'A key or an account in your name always needs you, so it cannot become a standing rule.' };
+    if (c.why === 'owner-act') return { ok: false, why: 'Only you can do this, so a standing rule cannot cover it.' };
     if (c.why === 'money-now' || /^money-hold:/.test(String(q.about || row.about || ''))) return { ok: false, why: 'The crew stays paused until you choose on this card, so a standing rule cannot answer it.' };
     if (q.questions) return { ok: false, why: 'A question with several parts cannot become one standing rule.' };
     const known = Object.keys(govDoc().categories || {});
@@ -182,10 +188,25 @@ function make(deps) {
   }
 
   /* ---------- typed effects ---------- */
+  // a kind the console applies, with the shape lib/owner-card.js accepts (a malformed effect is never applied)
   function effectKind(e) {
     if (!e || typeof e !== 'object' || Array.isArray(e)) return null;
     const keys = Object.keys(e).filter(k => e[k] !== undefined && e[k] !== null && e[k] !== false);
-    return keys.length === 1 && EFFECTS.includes(keys[0]) ? keys[0] : null;
+    if (keys.length !== 1 || !EFFECTS.includes(keys[0])) return null;
+    let shapes = null; try { shapes = require(path.join(TOOLS, 'lib', 'owner-card.js')).EFFECT_SHAPES; } catch (_) {}
+    return !shapes || (shapes[keys[0]] && shapes[keys[0]](e[keys[0]])) ? keys[0] : null;
+  }
+  const plainT = t => String(t || '').replace(/[\u201c\u201d"]/g, '').slice(0, 60);
+  function packWords(id) {
+    const nm = String(id || '').replace(/[^a-z0-9-]/g, '');
+    const p = readJson(co.p('company', 'state', 'packs', 'proposed', nm, 'pack.json'), null) || readJson(co.p('packs', nm, 'pack.json'), null);
+    return 'the add-on “' + plainT((p && (p.title || p.name)) || nm.replace(/-/g, ' ')) + '”';
+  }
+  function moduleWords(id) {
+    const nm = String(id || '').replace(/[^a-z0-9-]/g, '');
+    const m = readJson(co.p('modules', nm, 'module.json'), null);
+    let t = null; try { t = require(path.join(TOOLS, 'module.js')).plainTitle(nm, m); } catch (_) {}
+    return t ? (/^“/.test(t) ? 'the add-on ' + t : t) : 'the add-on “' + plainT((m && (m.title || m.name)) || nm.replace(/-/g, ' ')) + '”';
   }
   // the parameters of an effect in plain words: the crew's change by number and what it is about; the background job
   // by its name and when it runs (read from the owning tool's own record, never from the card)
@@ -208,6 +229,9 @@ function make(deps) {
     switch (k) {
       case 'serviceApprove': return 'If you say yes, ' + jobWords(v.name) + ' is set up and started now, exactly as described.';
       case 'harnessApply': return 'If you say yes, ' + changeWords(v.id) + ' is made now, exactly as described. It is checked again after three days.';
+      case 'packInstall': return 'If you say yes, ' + packWords(v.id) + ' is installed now, exactly as it was proposed. Its limits start closed.';
+      case 'moduleEnable': return 'If you say yes, ' + moduleWords(v.id) + ' is switched on now. You can switch it off again in Settings › System.';
+      case 'lockedAccept': return 'If you say yes, the change to that protected file is kept as it is now. If the file changes again before you answer, nothing is kept.';
       case 'none': return null;
     }
     return null;
@@ -235,6 +259,23 @@ function make(deps) {
         if (!r || !(r.applied || r.upstream)) return fail(new Error((r && (r.note || r.status)) || 'not applied'), 'making the change');
         return { kind: k, applied: true, said: r.upstream ? 'Done: the improvement goes to the makers of the company software, who review it before any company gets it.' : 'Done: the crew\'s change is made. It is checked again in three days.' };
       }
+      if (k === 'packInstall') {
+        // approve (if the crew has not) and install exactly the proposed copy the card named (pack.js checks the digest)
+        const st = await ctx.runApi('pack.js', ['status', S(v.id), '--json'], { timeout: 60000 }).catch(() => null);
+        if (st && (st.installed || st.status === 'conformant')) return { kind: k, applied: false, said: 'It was already installed, so nothing changed.' };
+        await ctx.runApi('pack.js', ['approve', S(v.id), '--by', ctx.owner(), '--digest', S(v.digest)], { timeout: 120000 }).catch(e => { if (!/already approved/.test(String(e && e.message))) throw e; });
+        await ctx.runApi('pack.js', ['install', S(v.id), '--by', ctx.owner()], { timeout: 180000 });
+        return { kind: k, applied: true, said: 'Done: ' + packWords(v.id) + ' is installed. Its limits start closed.' };
+      }
+      if (k === 'moduleEnable') {
+        await ctx.runApi('module.js', ['enable', S(v.id), '--by', ctx.owner(), '--json'], { timeout: 180000 });
+        return { kind: k, applied: true, said: 'Done: ' + moduleWords(v.id) + ' is switched on.' };
+      }
+      if (k === 'lockedAccept') {
+        // kept only when the file is still exactly what the card described (locked-watch.js checks --expect-sha)
+        await ctx.runApi('locked-watch.js', ['accept', S(v.key), '--by', ctx.owner(), '--why', 'kept by the owner on Today (' + (ctx.id || 'a card') + ')', '--expect-sha', S(v.sha)], { timeout: 60000 });
+        return { kind: k, applied: true, said: 'Done: the change is kept as the accepted version.' };
+      }
       if (k === 'serviceApprove') {
         // service.js owner-approve installs only the exact spec the owner's card was about, on the owner's recorded yes
         const r = await ctx.runApi('service.js', ['owner-approve', S(v.name)], { timeout: 120000 });
@@ -242,7 +283,7 @@ function make(deps) {
         if (!r || !r.installed) return fail(new Error((r && (r.text || r.error)) || 'not installed'), 'starting the job');
         return { kind: k, applied: true, said: 'Done: the background job is set up and running.' };
       }
-    } catch (err) { return fail(err, { harnessApply: 'making the change', serviceApprove: 'starting the job' }[k] || 'the change'); }
+    } catch (err) { return fail(err, { harnessApply: 'making the change', serviceApprove: 'starting the job', packInstall: 'installing the add-on', moduleEnable: 'switching the add-on on', lockedAccept: 'keeping the change' }[k] || 'the change'); }
     return { kind: k, applied: false, said: 'Your answer is recorded.' };
   }
 

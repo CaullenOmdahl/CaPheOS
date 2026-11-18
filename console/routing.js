@@ -28,7 +28,7 @@ function mount(route, d) {
   };
   // the owner's words for the tool's modes: Off (off), Watching only (shadow), On (live)
   const SAY = { off: 'Off', shadow: 'Watching only', live: 'On' };
-  const modeArg = b => { const m = String((b && b.mode) || '').trim(); if (!MODES.includes(m)) bad('pick ' + MODES.map(x => SAY[x]).join(', ').replace(/, ([^,]*)$/, ' or $1') + ' (mode is one of ' + MODES.join(', ') + ')'); return m; };
+  const modeArg = b => { const m = String((b && b.mode) || '').trim(); if (!MODES.includes(m)) bad('pick ' + MODES.map(x => SAY[x]).join(', ').replace(/, ([^,]*)$/, ' or $1')); return m; };
   route('GET', /^\/api\/routing$/, () => runApi('routing.js', ['status', '--json'], { timeout: 20000 }));
   route('POST', /^\/api\/routing\/mode$/, (m, q, b) => runApi('routing.js', ['mode', modeArg(b), '--by', owner()].concat(whyArgs(b)), { timeout: 30000 }));
   route('POST', /^\/api\/routing\/tiercaps$/, (m, q, b) => runApi('routing.js', ['tiercaps', modeArg(b), '--by', owner()].concat(whyArgs(b)), { timeout: 30000 }));
