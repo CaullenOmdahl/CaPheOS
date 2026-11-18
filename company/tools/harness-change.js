@@ -153,7 +153,7 @@ function classify(ctx, rel) { try { return require('./locked-watch.js').classify
 // that limits the crew. A change that becomes a framework request (a framework file in a company checkout) is reviewed by
 // the crew only: nothing changes here, and the framework reviews it before any company gets it.
 const OWNER_GATE_TOOLS = Object.assign(
-  Object.fromEntries(['harness-change.js', 'locked-watch.js', 'provenance.js', 'lib/pm-inbox-guard.js', 'lib/owner-channel.js', 'lib/owner.js', 'lib/owner-card.js',
+  Object.fromEntries(['harness-change.js', 'locked-watch.js', 'provenance.js', 'lib/pm-inbox-guard.js', 'lib/owner-channel.js', 'lib/owner.js', 'lib/owner-card.js', 'lib/owner-rulings.js',
     'lib/governance.js', 'governance.js', 'guardrails.js', 'lib/guardrails.js', 'delegation.js', 'merge-gate.js', 'default-branch-watch.js'].map(f => ['company/tools/' + f, 'access'])),
   { 'company/tools/external-gate.js': 'commitments' },
   Object.fromEntries(['budget.js', 'money-hold.js', 'lib/money-hold.js'].map(f => ['company/tools/' + f, 'spendBeyondCap'])));
@@ -165,7 +165,7 @@ const PLAIN_AREAS = [
   [/(^|\/)(hire|departments)\.js$/, 'how the crew is organised'],
   [/(^|\/)(routing|override-allow|models|providers)\.js$/, 'which AI models do which work'],
   [/(^|\/)routine-rules\.js$/, 'the crew\'s house rules'],
-  [/(^|\/)(harness-change|locked-watch|provenance|decision|pm-inbox-guard|owner-channel|owner|owner-card|governance|guardrails|delegation|external-gate|merge-gate|premerge-check|connector-scope|default-branch-watch|deps|gates)\.js$/, 'one of the safeguards that keep the crew inside its limits'],
+  [/(^|\/)(harness-change|locked-watch|provenance|decision|pm-inbox-guard|owner-channel|owner|owner-card|owner-rulings|governance|guardrails|delegation|external-gate|merge-gate|premerge-check|connector-scope|default-branch-watch|deps|gates)\.js$/, 'one of the safeguards that keep the crew inside its limits'],
 ];
 function plainArea(rec) {
   if (rec.kind === 'schedule') return rec.target && rec.target.type === 'json' ? 'how often the crew works' : 'when one of the crew\'s routines runs';
@@ -714,6 +714,9 @@ async function applyChange(ctx, id, o) {
   const lv = ownerSaidYes ? 'owner' : gov.level(govCat, { root: ctx.root, triage: true });
   let tellAfter = false;
   if (lv === 'notify') tellAfter = true;
+  // a locked tool (one that measures, limits or protects the crew) changed at auto: nobody asks the owner, but it is
+  // something they should know, so it is one line in the day's message (owner-notice fyi), never a card or a message
+  else if (lv === 'auto' && rec0.kind === 'tool' && rec0.target && rec0.target.locked) tellAfter = true;
   else if (lv === 'triage') {
     const gd = gov.decide(govCat, { by: p.name, ref: 'harness:' + rec0.id, summary: 'apply ' + rec0.id + ', a ' + rec0.kind + ' change to ' + targetLabel(rec0) + ' (' + summaryLine(rec0) + ')',
       recommendation: 'yes: reviewed and approved by ' + ((rec0.approvals || []).map(x => x.name).join(' and ') || 'its reviewers') + '; why: ' + rec0.why, default: 'the change stays approved but not applied' }, { root: ctx.root });
@@ -799,7 +802,7 @@ async function applyChange(ctx, id, o) {
     appendLog(ctx, { event: 'applied', id, kind: rec.kind, target: targetLabel(rec), by: p.name, claim: 'unverified', underStation: ctx.underStation, sha256: result.sha256 || undefined });
     closeHandoffs(ctx, 'apply ' + id + ' ', 'applied by ' + p.name + ' ' + stamp(ctx.now));
     if (tellAfter) tellOwner(ctx, { from: rec.by, key: 'harness-applied:' + rec.id, text: rec.by + ' changed ' + plainArea(rec) + ', ' + afterWords(rec) + '.',
-      technical: rec.id + ' (' + rec.kind + ': ' + targetLabel(rec) + ') applied by ' + p.name + ': ' + summaryLine(rec) + '. Why: ' + rec.why + ' Self-governance has ' + govCat + ' at notify.' });
+      technical: rec.id + ' (' + rec.kind + ': ' + targetLabel(rec) + ') applied by ' + p.name + ': ' + summaryLine(rec) + '. Why: ' + rec.why + ' Self-governance has ' + govCat + ' at ' + lv + '.' });
     if (rec.byId !== p.id) handoff(ctx, person(ctx, rec.by), id + ' applied (' + rec.kind + ': ' + targetLabel(rec) + ')', { Need: 'nothing; the results are checked on ' + rec.judgeAfter.slice(0, 10) + '.', Why: rec.why, Deadline: 'none', Status: 'DONE — FYI', Evidence: summaryLine(rec) });
     if (rec.kind === 'schedule' && rec.after.firesPerDay != null && rec.before.firesPerDay != null && rec.after.firesPerDay > rec.before.firesPerDay && ctx.crew.finance)
       handoff(ctx, ctx.crew.finance, 'FYI: ' + rec.target.jobName + ' now runs more often (' + rec.before.firesPerDay + ' -> ' + rec.after.firesPerDay + ' a day), ' + id, { Need: 'nothing unless the usage pacing needs it.', Why: rec.why, Deadline: 'none', Status: 'DONE — FYI', Evidence: '`company/work/changes/' + id + '.json`' });
@@ -1260,7 +1263,7 @@ async function selftest() {
   });
   const lw = (() => { try { return require('./locked-watch.js'); } catch (_) { return null; } })();
   if (!lw) skip('locked tools (locked-watch.js not installed)');
-  else await t('locked tools: the risk and tools holders review (never the proposer, the CEO stands in); at tools=auto it never reaches the owner', async () => {
+  else await t('locked tools: the risk and tools holders review (never the proposer, the CEO stands in); at tools=auto it never asks the owner, one digest line', async () => {
     W('company/tools/pacer.js', "'use strict';\nmodule.exports = {};\n");
     const n0 = card.calls.length;
     const r = await propose(C(), { kind: 'tool', target: 'company/tools/pacer.js', why: 'a comment for the next reader of the pacer', change: "'use strict';\n// pacer\nmodule.exports = {};\n", by: 'Jo' });
@@ -1272,7 +1275,9 @@ async function selftest() {
     const a = await applyChange(C(), r.id, { by: 'Max' });
     assert.strictEqual(a.status, 'applied'); assert.ok(R('company/tools/pacer.js').includes('// pacer'));
     assert.strictEqual(card.calls.length, n0, 'no owner card was even tried'); assert.strictEqual(asksFor('harness-review:' + r.id).length, 0);
-    assert.ok(!notice.sent.some(x => String(x.key || '').includes(r.id)), 'nothing in the digest at auto');
+    // a locked tool is something the owner should know: one plain line in the day's message (never a card or a message)
+    { const told = notice.sent.filter(x => String(x.key || '').includes(r.id)); assert.strictEqual(told.length, 1, 'one digest line at auto'); assert.strictEqual(told[0].kind, 'fyi');
+      assert.strictEqual(told[0].text, 'Jo changed how the crew\'s spending is paced and capped, after two colleagues reviewed it.'); }
   });
   if (lw) await t('locked tools at tools=approve: ONE plain owner card after the two reviews (the diff only under technical); yes applies it, no rejects it', async () => {
     setGov('tools', 'approve');
@@ -1442,7 +1447,7 @@ async function selftest() {
 const CLI = {
   propose: { pos: 0, val: ['kind', 'target', 'why', 'change', 'by', 'expect', 'replaces', 'plain'] }, approve: { pos: 1, val: ['by', 'note'] }, reject: { pos: 1, val: ['by', 'note'] },
   withdraw: { pos: 1, val: ['by', 'why'] }, apply: { pos: 1, val: ['by'] }, revert: { pos: 1, val: ['by', 'why'] }, keep: { pos: 1, val: ['by', 'note'] },
-  'review-due': { pos: 0, val: [] }, list: { pos: 0, val: [], bool: ['all'] }, show: { pos: 1, val: [] }, tick: { pos: 0, val: [], bool: ['dry-run'] }, selftest: { pos: 0, val: [] },
+  'review-due': { pos: 0, val: [] }, list: { pos: 0, val: [], bool: ['all'] }, show: { pos: 1, val: [] }, tick: { pos: 0, val: [], bool: ['dry-run'] }, selftest: { pos: 0, val: [] }, 'owner-apply': { pos: 1, val: [] },
 };
 function parseArgs(cmd, rest) {
   const s = CLI[cmd]; if (!s) return null;
@@ -1462,13 +1467,15 @@ function parseArgs(cmd, rest) {
 if (require.main === module) {
   const a = process.argv.slice(2); const cmd = a[0];
   let P; try { P = parseArgs(cmd, a.slice(1)); } catch (e) { console.error('harness-change: ' + e.message); process.exit(2); }
-  if (!P) { console.log('usage: harness-change.js propose --kind ' + KINDS.join('|') + ' --target … --why "…" --change <file or JSON> --by <Name> | approve|reject <id> --by <Name> [--note] | apply|revert|keep|withdraw <id> --by <Name> | review-due | list [--all] | show <id> | tick [--dry-run] | selftest'); process.exit(2); }
+  if (!P) { console.log('usage: harness-change.js propose --kind ' + KINDS.join('|') + ' --target … --why "…" --change <file or JSON> --by <Name> | approve|reject <id> --by <Name> [--note] | apply|revert|keep|withdraw <id> --by <Name> | review-due | list [--all] | show <id> | tick [--dry-run] | owner-apply <id> | selftest'); process.exit(2); }
   const { o, id } = P;
   (async () => {
     if (cmd === 'selftest') { const { out, bad } = await selftest(); for (const l of out) console.log(l); console.log(bad ? bad + ' FAILED' : 'all ' + out.filter(l => l.startsWith('ok')).length + ' checks passed' + (out.some(l => l.startsWith('skip')) ? ' (' + out.filter(l => l.startsWith('skip')).length + ' skipped)' : '')); process.exit(bad ? 1 : 0); }
     const ctx = context({});
     const print = r => console.log(r.id + '  ' + r.status.padEnd(9) + ' ' + r.kind.padEnd(10) + ' ' + targetLabel(r) + '\n    by ' + r.by + ' · reviewers ' + r.reviewers.map(p => p.name + ((r.approvals || []).some(x => x.id === p.id) ? ' (approved)' : '')).join(', ') + (r.applier ? ' · applied by ' + r.applier.name : '') + '\n    ' + summaryLine(r) + '\n    why: ' + r.why);
     if (cmd === 'tick') { const r = await tick({ dry: !!o['dry-run'] }); console.log(JSON.stringify(r)); return; }
+    // the console's {harnessApply:{id}} card effect: acts only on the owner's recorded yes to this change's own card
+    if (cmd === 'owner-apply') { if (!id) { console.error('harness-change: owner-apply <id>'); process.exit(2); } const r = await ownerApply(id, {}); console.log(JSON.stringify(Object.assign({ ok: !r.waiting }, r))); if (r.waiting) process.exit(4); return; }
     if (cmd === 'list') { const recs = allRecs(ctx).filter(r => o.all || !['rejected', 'withdrawn', 'reverted', 'kept'].includes(r.status)); if (!recs.length) console.log(o.all ? 'no changes yet' : 'no open changes (list --all for the history)'); for (const r of recs) print(r); return; }
     if (cmd === 'show') { console.log(JSON.stringify(loadRec(ctx, id), null, 1)); return; }
     if (cmd === 'review-due') {

@@ -19,13 +19,15 @@
  * STANDING RULINGS: company/state/owner-rulings.json
  *   { rulings: [{ id, at, by: 'owner', text (the owner's words), scope: { categories?: [...], topics?: [...] },
  *                 effect: 'crew-decides' | 'never-ask' | 'ask' }] }
- * Written only here (the console is an owner path) or by an owner CLI under lib/owner.js; the bytes are recorded in the
- * provenance log (writer "console (owner ruling)"). The fixed gates always override a ruling, and a ruling cannot name one.
+ * Read, matched and written through company/tools/lib/owner-rulings.js (the same file, reader and matcher lib/owner-card.js
+ * uses before it files a card, so the console and the tools never disagree about what a ruling covers). Writes are
+ * owner-only (lib/owner.js: the console is an owner path) and recorded in the provenance log (writer "owner-rulings").
+ * The fixed gates always override a ruling, and a ruling cannot name one.
  *
  * TYPED EFFECTS (applyEffect): a card may carry `effect`, applied only here, only after the owner's own yes:
  *   {governance:{category, level}}  governance.js set                     {clearance:{category, target, agent?, until, why, acts?, ownAct?}}
  *   {projectApprove:{id}}           project.js approve                     external-gate.js clear (a justification file is written)
- *   {serviceApprove:{name}}         service.js propose (the stored spec)   {harnessApply:{id}}  harness-change.js approve + apply
+ *   {serviceApprove:{name}}         service.js owner-approve               {harnessApply:{id}}  harness-change.js owner-apply
  *   {moduleEnable:{id}}             module.js enable                       {lockedAccept:{path}} locked-watch.js accept
  *   {budgetToday:{usd}}             money-hold.js set raise                {none:true}          nothing
  * Each runs the owner's own tool with --by <owner> from this process, so the tool's owner check and its own record apply.
@@ -53,7 +55,7 @@ function make(deps) {
   const TOOLS = co.p('company', 'tools');
   const gov = () => require(path.join(TOOLS, 'lib', 'governance.js'));
   const scope = () => require(path.join(TOOLS, 'lib', 'owner-scope.js'));
-  const RULINGS = () => co.p('company', 'state', 'owner-rulings.json');
+  const R = () => require(path.join(TOOLS, 'lib', 'owner-rulings.js'));
   const DIGEST = () => co.p('company', 'owner', 'digest.jsonl');
   const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } };
 
@@ -64,17 +66,7 @@ function make(deps) {
   const catSay = c => CAT_SAY[c] || String(c || 'this kind of decision').replace(/[-_]/g, ' ');
 
   /* ---------- rulings ---------- */
-  function rulings() {
-    const d = readJson(RULINGS(), null);
-    return d && Array.isArray(d.rulings) ? d.rulings.filter(r => r && r.id && RULING_EFFECTS.includes(r.effect) && r.by === 'owner') : [];
-  }
-  function writeRulings(list) {
-    const f = RULINGS(); fs.mkdirSync(path.dirname(f), { recursive: true });
-    const text = JSON.stringify({ _doc: 'Standing owner rulings (console/owner-needs.js). Written only from an owner path: the console\'s "Make this a standing rule", Settings › Autonomy › Standing rules. The fixed owner gates always override a ruling.', rulings: list }, null, 1) + '\n';
-    const tmp = f + '.tmp-' + process.pid; fs.writeFileSync(tmp, text); fs.renameSync(tmp, f);
-    try { require(path.join(TOOLS, 'provenance.js')).wrote(f, text, 'console (owner ruling)'); } catch (_) {}
-    return text;
-  }
+  function rulings() { try { return R().list(); } catch (_) { return []; } }
   function ownerPathOrThrow(bad) {
     let ok = false; try { ok = require(path.join(TOOLS, 'lib', 'owner.js')).shell(); } catch (_) {}
     if (!ok) bad('only the owner makes a standing rule, from the console', 403);
@@ -94,28 +86,19 @@ function make(deps) {
       if (normFixed(c)) bad(catSay(normFixed(c)) + ' is one of the four decisions that are always yours, so no standing rule can cover it');
       if (!known.includes(c)) bad('unknown kind of decision: ' + c);
     }
-    const r = { id: 'rule-' + Date.now().toString(36) + '-' + crypto.randomBytes(2).toString('hex'), at: new Date().toISOString(), by: 'owner', text,
-      scope: Object.assign({}, cats.length ? { categories: cats } : {}, topics.length ? { topics } : {}), effect };
-    if (o && o.fromCard) r.fromCard = String(o.fromCard).slice(0, 20);
-    writeRulings(rulings().concat([r]));
-    return r;
+    const res = R().add({ by: 'owner', text, effect, scope: Object.assign({}, cats.length ? { categories: cats } : {}, topics.length ? { topics } : {}), from: o && o.fromCard ? 'card ' + String(o.fromCard).slice(0, 20) : undefined });
+    if (!res || !res.ok) bad((res && res.error) || 'the standing rule was not saved', res && res.code === 3 ? 403 : 400);
+    return res.ruling;
   }
   function removeRuling(id, bad) {
     ownerPathOrThrow(bad);
-    const all = rulings(); const left = all.filter(r => r.id !== id);
-    if (left.length === all.length) bad('no standing rule ' + id, 404);
-    writeRulings(left);
+    const res = R().remove({ by: 'owner', id });
+    if (!res || !res.ok) bad((res && res.error) || 'no standing rule ' + id, res && res.code === 3 ? 403 : 404);
     return { ok: true, removed: id };
   }
-  const esc = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // the newest ruling covering a card: lib/owner-rulings.js match (the matcher lib/owner-card.js uses before filing)
   function rulingFor(card, list) {
-    const about = String(card.about || '').toLowerCase(); const text = about + ' ' + String(card.lead || '').toLowerCase();
-    for (const r of (list || rulings()).slice().reverse()) {
-      const cats = (r.scope && r.scope.categories) || [], topics = (r.scope && r.scope.topics) || [];
-      if (card.category && cats.includes(card.category)) return r;
-      for (const t of topics) { const tl = String(t).toLowerCase(); if (about === tl || new RegExp('(^|\\W)' + esc(tl) + '(\\W|$)', 'i').test(text)) return r; }
-    }
-    return null;
+    try { return R().match({ category: card.category, about: card.about, text: card.lead, ref: card.ref }, { rulings: list || rulings() }); } catch (_) { return null; }
   }
 
   /* ---------- needs you, or the crew is handling it ---------- */
@@ -135,7 +118,7 @@ function make(deps) {
     const fixedGate = normFixed(typeof flag === 'string' ? flag : null) || normFixed(category) || (flag === true || row.fixedGate === true ? 'gate' : null);
     const lead = String(q.message || '').trim();
     if (fixedGate) return { needsOwner: true, why: 'fixed-gate', fixedGate, category: category || fixedGate };
-    const ruling = rulingFor({ category, about: q.about, lead }, list);
+    const ruling = rulingFor({ category, about: q.about, lead, ref: (row.gate && row.gate.ref) || (q.gate && q.gate.ref) || null }, list);
     if (ruling && ruling.effect === 'ask') return { needsOwner: true, why: 'ruling-ask', category, ruling: { id: ruling.id, text: ruling.text } };
     if (ruling) return { needsOwner: false, why: 'ruling', category, ruling: { id: ruling.id, text: ruling.text, effect: ruling.effect } };
     if (category) {
@@ -227,26 +210,17 @@ function make(deps) {
         return { kind: k, applied: true, said: 'Done: today\'s spending limit is ' + money(usd) + '. It goes back to normal tomorrow.' };
       }
       if (k === 'harnessApply') {
-        const id = S(v.id);
-        try { await ctx.runApi('harness-change.js', ['approve', id, '--by', by, '--note', 'approved by the owner on Today']); } catch (err) { if (!/already|approved/i.test(String(err.message))) throw err; }
-        await ctx.runApi('harness-change.js', ['apply', id, '--by', by], { timeout: 180000 });
-        return { kind: k, applied: true, said: 'Done: the crew\'s change is made. It is checked again in three days.' };
+        // harness-change.js owner-apply acts only on the owner's recorded yes to this change's own card (just written)
+        const r = await ctx.runApi('harness-change.js', ['owner-apply', S(v.id)], { timeout: 180000 });
+        if (r && r.already) return { kind: k, applied: false, said: 'Your answer is recorded. That change was already settled, so nothing more changed.' };
+        if (!r || !(r.applied || r.upstream)) return fail(new Error((r && (r.note || r.status)) || 'not applied'), 'making the change');
+        return { kind: k, applied: true, said: r.upstream ? 'Done: the improvement goes to the makers of the company software, who review it before any company gets it.' : 'Done: the crew\'s change is made. It is checked again in three days.' };
       }
       if (k === 'serviceApprove') {
-        const name = S(v.name); const svc = require(path.join(TOOLS, 'service.js'));
-        const sctx = svc.context(); const rec = (readJson(co.p('company', 'state', 'services.json'), {}).services || {})[name];
-        if (!rec) return fail(new Error('no registered service ' + name), 'starting the job');
-        if (rec.status === 'installed') return { kind: k, applied: false, said: 'It was already running, so nothing changed.' };
-        const o = { kind: rec.kind, argv: rec.argv, why: rec.why, restart: rec.restart, 'soft-halt': rec.softHalt, by };
-        if (rec.network === false) o.network = 'none';
-        if (rec.timeout) o.timeout = rec.timeout + 's';
-        if (rec.successExit) o['success-exit'] = rec.successExit;
-        if (rec.limits) { o.memory = rec.limits.memoryMax; o.cpu = rec.limits.cpuQuota; }
-        if (rec.schedule && rec.schedule.every) o.every = rec.schedule.every + 's';
-        if (rec.schedule && rec.schedule.onCalendar) o['on-calendar'] = rec.schedule.onCalendar;
-        if (rec.wake && rec.wake.length) o.wake = rec.wake.join(',');
-        const r = svc.propose(sctx, name, o);
-        if (r && r.ok === false) return fail(new Error(r.error || 'not installed'), 'starting the job');
+        // service.js owner-approve installs only the exact spec the owner's card was about, on the owner's recorded yes
+        const r = await ctx.runApi('service.js', ['owner-approve', S(v.name)], { timeout: 120000 });
+        if (r && r.already) return { kind: k, applied: false, said: 'It was already running, so nothing changed.' };
+        if (!r || !r.installed) return fail(new Error((r && (r.text || r.error)) || 'not installed'), 'starting the job');
         return { kind: k, applied: true, said: 'Done: the background job is set up and running.' };
       }
       if (k === 'clearance') {

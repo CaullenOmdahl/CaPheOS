@@ -99,7 +99,7 @@ function write(rulings, opts) {
   const txt = JSON.stringify({ _doc: 'The owner\'s standing rules about what they want to be asked (company/tools/lib/owner-rulings.js). Written only from the owner\'s shell or the console.', rulings }, null, 1) + '\n';
   fs.mkdirSync(path.dirname(f), { recursive: true });
   const tmp = f + '.tmp-' + process.pid; fs.writeFileSync(tmp, txt); fs.renameSync(tmp, f);
-  try { require('../provenance.js').wrote(f, txt, 'owner-rulings'); } catch (_) {}
+  try { require('../provenance.js').wrote(f, txt, 'lib/owner-rulings.js'); } catch (_) {}
 }
 /* add({by, text, scope, effect}) -> {ok, ruling} */
 function add(o, opts) {

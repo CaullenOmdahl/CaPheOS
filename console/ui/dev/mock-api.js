@@ -417,7 +417,7 @@ async function apiRoute(req, res, p, q) {
   const rtm = p.match(/^\/api\/routing\/(mode|tiercaps)$/), rtt = p.match(/^\/api\/routing\/trials\/([a-z][a-z0-9-]{1,39})\/(start|pause|resume|stop)$/);
   if (M === 'POST' && rtm) { if (!['off', 'shadow', 'live'].includes(B.mode)) return J(res, 400, { ok: false, error: 'mode is one of off, shadow, live' }); if (rtm[1] === 'mode') S.routing.mode = B.mode; else S.routing.tierCaps.mode = B.mode; S.routing.log.unshift({ at: Date.now(), op: rtm[1], to: B.mode, by: 'owner' }); emit('routing'); return ok({ changed: true, summary: rtm[1] + ' -> ' + B.mode }); }
   if (M === 'POST' && rtt) { const t = S.routing.trials.find(x => x.id === rtt[1]); if (!t) return J(res, 400, { ok: false, error: 'no trial' }); t.status = { start: 'running', pause: 'paused', resume: 'running', stop: 'done' }[rtt[2]]; S.routing.log.unshift({ at: Date.now(), op: 'trial-' + rtt[2], trial: t.id, to: t.status, by: 'owner' }); emit('routing'); return ok({ changed: true, summary: rtt[2] + ' trial ' + t.id }); }
-  const rlm = p.match(/^\/api\/rulings\/(rule-[a-z0-9]+-[0-9a-f]{4})\/remove$/), pjm = p.match(/^\/api\/projects\/([a-z0-9-]+)\/(approve|revoke)$/);
+  const rlm = p.match(/^\/api\/rulings\/(rule-[a-z0-9]+-[0-9a-f]{4}|r-[a-z0-9]{4,20})\/remove$/), pjm = p.match(/^\/api\/projects\/([a-z0-9-]+)\/(approve|revoke)$/);
   if (M === 'POST' && rlm) { S.rulings = S.rulings.filter(r => r.id !== rlm[1]); emit('rulings'); return ok({ removed: rlm[1] }); }
   if (M === 'POST' && pjm) { const pj = S.projects.find(x => x.id === pjm[1]); if (!pj) return J(res, 400, { ok: false, error: 'no project' }); pj.state = pjm[2] === 'approve' ? 'approved' : 'revoked'; return ok({ project: pj }); }
   switch (M + ' ' + p) {

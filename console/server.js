@@ -597,7 +597,7 @@ route('GET', /^\/api\/questions$/, () => { const sp = ownerQuestions(); return {
 route('GET', /^\/api\/digest$/, (m, q) => NEEDS.digest({ hours: Math.min(72, Math.max(1, Number(q.get('hours')) || 24)) }));
 route('GET', /^\/api\/rulings$/, () => ({ ok: true, rulings: NEEDS.rulings().map(r => Object.assign({}, r, { covers: ((r.scope && r.scope.categories) || []).map(NEEDS.catSay).concat((r.scope && r.scope.topics) || []) })) }));
 route('POST', /^\/api\/rulings$/, (m, q, b) => ({ ok: true, ruling: NEEDS.addRuling({ text: b.text, effect: b.effect, scope: b.scope }, bad) }));
-route('POST', /^\/api\/rulings\/(rule-[a-z0-9]+-[0-9a-f]{4})\/remove$/, m => NEEDS.removeRuling(m[1], bad));
+route('POST', /^\/api\/rulings\/(rule-[a-z0-9]+-[0-9a-f]{4}|r-[a-z0-9]{4,20})\/remove$/, m => NEEDS.removeRuling(m[1], bad));
 // projects the crew asked to take over (company/tools/project.js): only the owner approves or revokes one
 route('GET', /^\/api\/projects$/, () => runApi('project.js', ['list']));
 route('POST', /^\/api\/projects\/([a-z0-9][a-z0-9-]{0,63})\/(approve|revoke)$/, (m, q, b) => runApi('project.js', [m[2], '--id', m[1], '--by', OWNER]));
@@ -1275,7 +1275,10 @@ async function selftest() {
       r = await call('POST', '/api/service-keys', { service: 'nope', value: 'x-123456789' });
       check('service keys: an unknown service is refused', r.status === 400, r.json);
       // Today: a crew request for a key that is already saved says so
-      const kq4 = await askCli(['--message', 'The Pyth key, please.', '--kind', 'secret', '--name', 'pyth-api-key', '--label', 'Pyth API key']);
+      // a key that is already saved is not asked for again (inbox.js code secret-exists), unless the asker says what changed
+      const kq4no = await askCli(['--message', 'The Pyth key, please.', '--kind', 'secret', '--name', 'pyth-api-key', '--label', 'Pyth API key']);
+      check('Today: a crew request for a key that is already saved is refused unless it says what changed', kq4no.ok === false && kq4no.code === 'secret-exists', kq4no);
+      const kq4 = await askCli(['--message', 'The Pyth key, please.', '--kind', 'secret', '--name', 'pyth-api-key', '--label', 'Pyth API key', '--changed', 'the stored key stopped working this morning']);
       const kq5 = await askCli(['--message', 'A Synpath key, please.', '--kind', 'secret', '--name', 'synpath-api-key', '--label', 'Synpath key']);
       r = await call('GET', '/api/questions'); const q4 = (r.json.questions || []).find(x => x.id === kq4.id), q5 = (r.json.questions || []).find(x => x.id === kq5.id);
       check('Today: a request for a key that is already saved carries saved.at; one for a new key does not', q4 && q4.form.fields[0].saved && !isNaN(Date.parse(q4.form.fields[0].saved.at)) && q5 && !q5.form.fields[0].saved && !r.text.includes(PYTH2), { q4: q4 && q4.form, q5: q5 && q5.form });

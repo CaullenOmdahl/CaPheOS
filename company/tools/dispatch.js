@@ -576,15 +576,15 @@ function stillNeedsOwner(q, o) {
   const fixedName = (q.gate && q.gate.fixedGate) || (cat && FIXED_GATES.has(cat) ? cat : null);
   if (fixedName) return true;   // the four fixed owner gates are never handed to the crew
   if (!cat) return true;        // not a governance card: inbox.js ask already held it to the owner's scope
+  // standing owner rulings: lib/owner-rulings.js (the reader that ignores a hand-edited file, and the matcher
+  // lib/owner-card.js and the console use), never a raw read of the file
+  const R = require('./lib/owner-rulings');
+  const about = { category: cat, about: q.about, text: q.message || q.q, ref: q.gate && q.gate.ref };
+  let ruling = null; try { ruling = R.match(about, o.rulings ? { rulings: o.rulings.filter(r => r && r.by === 'owner') } : { root: ROOT }); } catch (_) {}
+  if (ruling && ruling.effect === 'ask') return true;
   const level = o.level ? o.level(cat) : co.gate(cat, { triage: true });
   if (level === 'auto' || level === 'notify') return false;
-  const rulings = o.rulings || ((readJson(path.join(ROOT, 'company', 'state', 'owner-rulings.json'), {}) || {}).rulings || []);
-  const topic = String(q.about || '').toLowerCase();
-  for (const r of rulings) {
-    if (!r || r.by !== 'owner' || !r.scope) continue;
-    const hit = (r.scope.categories || []).includes(cat) || (r.scope.topics || []).some(t => t && topic.includes(String(t).toLowerCase()));
-    if (hit && (r.effect === 'crew-decides' || r.effect === 'never-ask')) return false;
-  }
+  if (ruling && (ruling.effect === 'crew-decides' || ruling.effect === 'never-ask')) return false;
   return true;
 }
 function deliverOwnerQuestions() {

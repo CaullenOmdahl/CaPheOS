@@ -421,8 +421,15 @@ function asksForCredential(text) {
  * field as an extra option, with a suggested file name. null when the text does not ask for one. */
 // the company's key folder (env INBOX_SECRETS_DIR: tests only)
 const secretsDir = () => process.env.INBOX_SECRETS_DIR || co.SECRETS_DIR;
-/* secretStored(name) -> true when secrets/<name> already holds a key (a non-empty file) */
-function secretStored(name) { try { return safeSecretName(name) && fs.statSync(path.join(secretsDir(), String(name))).size > 0; } catch (_) { return false; } }
+/* secretStored(name, before?) -> true when secrets/<name> already holds a key (a non-empty file), stored before `before` if given */
+function secretStored(name, before) {
+  try {
+    if (!safeSecretName(name)) return false;
+    const st = fs.statSync(path.join(secretsDir(), String(name))); if (!(st.size > 0)) return false;
+    const t = before ? Date.parse(before) : NaN;   // stored before that time (a question's asked-at), when given
+    return !Number.isFinite(t) || st.mtimeMs <= t;
+  } catch (_) { return false; }
+}
 function secretHint(q) {
   if (!q || (q.form && (q.form.fields || []).some(f => f.type === 'secret'))) return null;
   // never on an approval or gate card (it asks for a decision, not a key)
@@ -437,8 +444,10 @@ function secretHint(q) {
   const kindWord = /private key/i.test(t) && !/api key/i.test(t) ? 'private-key' : /token/i.test((m && m[0]) || '') ? 'api-token' : 'api-key';
   const name = base && base.length <= 30 ? base + '-' + kindWord : 'key-' + String(q.id || 'x').replace(/^q-/, '');
   const hint = { name: safeSecretName(name) ? name : 'key-' + String(q.id || 'x').replace(/[^a-z0-9]/gi, '') };
-  // the key is already stored: no second key field, unless the asker said what changed (it stopped working, rotated)
-  if (secretStored(hint.name) && !String(q.changed || '').trim()) return null;
+  // the key was already stored when this was asked: no second key field, unless the asker said what changed (it stopped
+  // working, rotated). A key stored after the question (the owner answering this very request) keeps the field, so a
+  // request answered in parts keeps its key part.
+  if (secretStored(hint.name, q.at) && !String(q.changed || '').trim()) return null;
   return hint;
 }
 /* formOf(row) — the form a question is answered with: its own, or (an old row) Approve/Decline + reason. A row that
@@ -747,7 +756,7 @@ function ask(o) {
   // a key that is already stored is not asked for again, unless --changed says why (it stopped working, it was rotated)
   if (!String(o.changed || '').trim()) {
     const secretNames = [].concat(form ? form.fields : [], ...(questions || []).map(x => (x.form && x.form.fields) || [])).filter(f => f && f.type === 'secret' && f.name).map(f => f.name);
-    const have = secretNames.filter(secretStored);
+    const have = secretNames.filter(n => secretStored(n));
     if (have.length) throw Object.assign(new Error('Not asked: the key ' + have.map(n => 'secrets/' + n).join(', ') + ' is already stored. Use it (read it with co.secret(\'' + have[0] + '\') in a tool); if it stopped working or must be replaced, ask again with --changed "<what is different now>".'), { code: 'secret-exists', stored: have });
   }
   if (!o.scopeExempt) { const sc = ownerScopeCheck({ from: o.from, about: o.about, message, details, q, questions: rawQs, approval: o.approval, gate: o.gate, fixedGate: o.fixedGate, changed: o.changed }); if (sc) throw Object.assign(new Error(sc.error), { code: sc.code, suggestion: sc.suggestion, route: sc.route, prior: sc.prior }); }
@@ -1080,6 +1089,14 @@ function selftest() {
     const kq = ask({ from: 'Founder', q: 'Access gate (gate 2), no payment: a read-only Kalshi API key, from an account you create in your own name.' });
     t('legacy key question: secretHint kalshi-api-key, a key question in the request, no store-key action', (open(kq.row.id).secretHint || {}).name === 'kalshi-api-key' && open(kq.row.id).questions.some(p => p.id === 'key' && p.form.fields[0].name === 'kalshi-api-key') && !open(kq.row.id).form.actions.some(a => a.id === 'store-key'));
     t('legacy: "a free Pyth API key" -> pyth-api-key', (secretHint({ q: 'Access gate (gate 2), no payment, second key: a free Pyth API key.' }) || {}).name === 'pyth-api-key');
+    { // a key stored BEFORE the question was asked is not asked again; one stored after it (the owner answering it) keeps the field
+      const sd = path.join(T, 'secrets'); fs.mkdirSync(sd, { recursive: true }); const kf = path.join(sd, 'zeta-api-key'); fs.writeFileSync(kf, 'k\n');
+      const old = new Date(Date.now() - 3600e3); fs.utimesSync(kf, old, old);
+      const row = at => ({ q: 'Access gate (gate 2), no payment: a free Zeta API key.', at });
+      t('a key stored before the ask: no key field on the old row', secretHint(row(new Date().toISOString())) === null);
+      t('a key stored after the ask (the owner answering it): the key field stays', (secretHint(row(new Date(Date.now() - 7200e3).toISOString())) || {}).name === 'zeta-api-key');
+      fs.rmSync(kf);
+    }
     // a question that MENTIONS a credential is not a question that ASKS for one
     const mq = ask({ from: 'Founder', q: 'Four one-file patches are ready. Two close blind spots, and the provider key is a symlink the watcher cannot see. Do you approve them?' });
     t('approve that only mentions a key: no hint, Approve/Decline only', !open(mq.row.id).secretHint && open(mq.row.id).form.actions.map(a => a.id).join() === 'approve,decline', JSON.stringify(open(mq.row.id).form.actions.map(a => a.id)));

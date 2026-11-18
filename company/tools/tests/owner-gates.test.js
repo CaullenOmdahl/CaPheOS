@@ -36,7 +36,7 @@ const diff = "'use strict';\n// count a report once\nmodule.exports = {};\n";
 const withProv = fn => async () => { const prev = process.env.PROVENANCE_ROOT; const T = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-gates-prov-')); process.env.PROVENANCE_ROOT = T;
   try { await fn(); } finally { if (prev === undefined) delete process.env.PROVENANCE_ROOT; else process.env.PROVENANCE_ROOT = prev; fs.rmSync(T, { recursive: true, force: true }); } };
 
-test('a locked tool change at tools=auto is reviewed by the risk and tools seats and never reaches the owner', withProv(async () => {
+test('a locked tool change at tools=auto is reviewed by the risk and tools seats, never asks the owner, and is one digest line', withProv(async () => {
   const c = company({ tools: 'auto' });
   try {
     const r = await HC.propose(c.C(), { kind: 'tool', target: 'company/tools/competence.js', why: 'count a report only once in the totals', change: diff, by: 'Kwame' });
@@ -44,7 +44,10 @@ test('a locked tool change at tools=auto is reviewed by the risk and tools seats
     HC.review(c.C(), r.id, { by: 'Riley' }, 'approve'); HC.review(c.C(), r.id, { by: 'Max' }, 'approve');
     const a = await HC.applyChange(c.C(), r.id, { by: 'Max' });
     assert.equal(a.status, 'applied');
-    assert.equal(c.asks().length, 0); assert.equal(c.card.calls.length, 0); assert.equal(c.notice.sent.length, 0);
+    assert.equal(c.asks().length, 0); assert.equal(c.card.calls.length, 0);
+    // a locked tool is something the owner should know about: one plain line in the day's message, never a card
+    assert.equal(c.notice.sent.length, 1); assert.equal(c.notice.sent[0].kind, 'fyi');
+    assert.equal(c.notice.sent[0].text, 'Kwame changed how the crew\'s work is measured, after two colleagues reviewed it.');
   } finally { c.done(); }
 }));
 

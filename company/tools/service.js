@@ -12,6 +12,7 @@
  *   node company/tools/service.js status                 the same, in words
  *   node company/tools/service.js stop|start <name> --by <seat>    the seat that asked for it, or the owner
  *   node company/tools/service.js remove <name> --by <seat>        stops it, deletes its unit files, drops it from the register
+ *   node company/tools/service.js owner-approve <name>   the console's serviceApprove card effect: installs the spec the owner said yes to (only after that yes)
  *   node company/tools/service.js rerender --by owner     units an older template wrote are written again from this one
  *        (reset and their timers restarted); scripts/setup-station.sh runs it, so a template fix reaches installed units
  *   node company/tools/service.js adopt <unit> --by <owner|seat> [--as <name>] [--seat <seat>] [--why "..."]
@@ -928,7 +929,9 @@ function main(argv) {
   if (cmd === 'remove') { print(remove(ctx, o._[0], o)); return 0; }
   if (cmd === 'rerender') { print(rerender(ctx, o)); return 0; }
   if (cmd === 'adopt') { const r = adopt(ctx, o._[0], o); print(r); return r.waiting ? 4 : r.ok ? 0 : 1; }
-  console.error('usage: service.js propose|list|status|stop|start|remove|adopt|--duty|selftest (header of company/tools/service.js)'); return 2;
+  // the console's {serviceApprove:{name}} card effect: installs only the spec the owner's recorded yes was about
+  if (cmd === 'owner-approve') { const r = ownerApprove(o._[0], { ctx }); print(r); return r.waiting ? 4 : r.ok ? 0 : 1; }
+  console.error('usage: service.js propose|list|status|stop|start|remove|adopt|owner-approve|--duty|selftest (header of company/tools/service.js)'); return 2;
 }
 
 module.exports = { context, propose, ownerApprove, safeProfile, plainWhen, startStop, remove, adopt, onHalt, list, findings, duty, checkCommand, validateArgv, splitWords, render, specOf, unitOf, _internals: { frameworkUnits } };
