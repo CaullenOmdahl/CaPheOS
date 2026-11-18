@@ -490,7 +490,7 @@ module.exports = function meeting(deps) {
           else if (l.name === 'agent.run.error') errMsg = p.message || errMsg;
           else if (l.name === 'console.final') final = p;
           else if (l.name === 'console.end') setImmediate(end);
-          if (onEvent && (l.name === 'permission.prompt' || l.name === 'permission.response' || l.name === 'agent.tool_result')) { try { onEvent({ name: l.name, payload: p }); } catch (_) {} }
+          if (onEvent && (l.name === 'permission.prompt' || l.name === 'permission.response' || l.name === 'agent.tool_call' || l.name === 'agent.tool_result')) { try { onEvent({ name: l.name, payload: p }); } catch (_) {} }
         });
         if (!off) { over = true; resolve({ text: '', usd: 0, refused: false, error: 'the console has no record of this run any more' }); }
       });
@@ -720,6 +720,12 @@ module.exports = function meeting(deps) {
     const p = ev.payload || {};
     /* a routine of this seat took the company folder between the busy check and this turn's first write: the station
        answers its write with workspace-busy (after its wait). One dim line; the turn carries on without changing files. */
+    // the turn's tool steps, kept on its entry so the page shows them as "· Name: …" lines (the table printed them)
+    if (ev.name === 'agent.tool_call') {
+      cur.tools = cur.tools || [];
+      if (cur.tools.length < 20) cur.tools.push({ name: String(p.name || '').slice(0, 80), args: clip(String(p.argsSummary || '').replace(/\s+/g, ' '), 200) });
+      return;
+    }
     if (ev.name === 'agent.tool_result') {
       if (p.summary === 'workspace-busy' && !cur.wsBusy) { cur.wsBusy = true; note(nameOf(cur.seat) + '\'s routine is using the company folder; ' + firstName(cur.seat) + ' answers without changing files.'); }
       return;
@@ -890,6 +896,7 @@ module.exports = function meeting(deps) {
         cur.runId = st.runId; save(); emit('meeting'); armHalt();
       }
       active.add(cur.runId);
+      cur.tools = [];   // wait() reads the run's journal from its first line (again, after a console restart)
       try { res = await runner.wait(cur.runId, ev => runEvent(cur, ev)); } finally { active.delete(cur.runId); }
       if (R.consent && R.consent.runId === cur.runId) consentClear(R, null);
       cost(res, cur.model);
@@ -912,11 +919,12 @@ module.exports = function meeting(deps) {
     const { body, list, failures } = res.error ? { body: raw, list: [], failures: [] } : directives(raw);
     const passed = !res.error && (isPass(body) || (!body && list.length > 0));
     const extra = item.kind === 'ask' ? { to: item.from } : item.kind === 'hand' ? { interject: true } : {};
-    if (passed) { R.round.answered++; record({ who: cur.seat, kind: 'pass' }); }
+    const steps = cur.tools && cur.tools.length ? { tools: cur.tools } : {};
+    if (passed) { R.round.answered++; record(Object.assign({ who: cur.seat, kind: 'pass' }, steps)); }
     else if (body) {
       R.round.answered++; R.round.said++;
       const lt = res.error ? null : lintOf(body, list);
-      record(Object.assign({ who: cur.seat, kind: 'say', text: res.error ? body + '\n\n[stopped before the end]' : body, model: modelLabel(cur.model), provider: cur.model.provider, modelId: cur.model.model }, extra, lt ? { lint: lt } : {}));
+      record(Object.assign({ who: cur.seat, kind: 'say', text: res.error ? body + '\n\n[stopped before the end]' : body, model: modelLabel(cur.model), provider: cur.model.provider, modelId: cur.model.model }, extra, steps, lt ? { lint: lt } : {}));
     } else if (res.error && !R.stopping) note(nameOf(cur.seat) + ' could not answer: ' + String(res.error).slice(0, 200));
     if (!passed && !body && !res.error && list.length === 0) note(nameOf(cur.seat) + ' finished without writing a reply.');
     for (const f of failures || []) record({ who: cur.seat, kind: 'parse', line: f.line, why: f.why });

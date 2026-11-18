@@ -488,3 +488,31 @@ kbd { display: inline-block; min-width: 1.6em; padding: 2px 6px; border: 1px sol
 .mtg-register .input { height: 36px; font: var(--type-body-s); flex: 1 1 200px; min-width: 0; background: var(--surface-card); }
 .mtg-search-out { max-height: 30vh; overflow: auto; margin: 0; padding: 0; }
 #mtg-search { height: 36px; flex: 1 1 220px; min-width: 0; font: var(--type-body-s); }
+
+/* the meeting, as the table showed it (console/ui/js/meeting.js): one colour per person, dim lines between turns, the
+   turn in flight streamed, the rest of the controls under More */
+.mtg-c0 { --mtg-who: var(--chart-1); } .mtg-c1 { --mtg-who: var(--chart-2); } .mtg-c2 { --mtg-who: var(--chart-3); }
+.mtg-c3 { --mtg-who: var(--chart-4); } .mtg-c4 { --mtg-who: var(--chart-5); } .mtg-c5 { --mtg-who: var(--chart-6); }
+.msg-them-wrap[class*="mtg-c"] > .mtg-who, .mtg-liveturn > .mtg-who { color: var(--mtg-who, var(--text-strong)); }
+.msg-them-wrap[class*="mtg-c"] > .msg-them, .mtg-liveturn > .msg-them { border-left: 3px solid var(--mtg-who, var(--border-default)); }
+.mtg-av[class*="mtg-c"] { box-shadow: inset 0 0 0 2px var(--mtg-who); }
+.mtg-ev { margin: 0; align-self: flex-start; max-width: 100%; overflow-wrap: anywhere; }
+.mtg-ev-lead { margin: 0 0 2px; }
+.mtg-ev-end { color: var(--text-body); }
+.mtg-ev.mtg-parse { color: var(--status-warning); border: 0; background: none; }
+.mtg-ev-btn { margin-left: 6px; vertical-align: baseline; }
+.mtg-tools { align-self: flex-start; }
+.mtg-tool { margin: 0; overflow-wrap: anywhere; }
+.mtg-livearea { display: flex; flex-direction: column; gap: 8px; }
+.mtg-livearea:empty, .mtg-liveturn[hidden], .mtg-ev-live[hidden] { display: none; }
+.mtg-stream { white-space: pre-wrap; overflow-wrap: anywhere; }
+.mtg-btns { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.mtg-controls { position: relative; }
+.mtg-more > summary { list-style: none; display: inline-flex; cursor: pointer; }
+.mtg-more > summary::-webkit-details-marker { display: none; }
+.mtg-more[open] > summary { background: var(--accent-tint); color: var(--text-accent); }
+.mtg-more-panel { position: absolute; z-index: 20; top: calc(100% + 6px); left: var(--chat-gutter, 32px); right: var(--chat-gutter, 32px); max-width: 680px; max-height: 70vh; overflow: auto; padding: 14px 16px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--surface-card); box-shadow: var(--shadow-md); }
+.mtg-more-panel .mtg-agenda { padding: 0; }
+.mtg-more-ctrl { flex-wrap: wrap; align-items: center; }
+@media (max-width: 600px) { .mtg-more-panel { left: 16px; right: 16px; } }
+.chat-body > .mtg-ev + .mtg-ev { margin-top: -12px; }

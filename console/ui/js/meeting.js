@@ -1,23 +1,31 @@
-// Chat › Meeting (#/chat/meeting): the owner's meeting with the crew, beside the plain group chat (docs/MEETINGS.md).
-// Everyone seated answers in turn, the leader first; the agents' ASK / INVITE / DISMISS / CALL / END / RULING lines show
-// as small labelled chips, passes are hidden. The meeting's commands are controls here: the seat strip (crown = leader,
-// × = remove, tap an avatar for its model, + Add), Round, Raise hand / Continue, Stop round, Observe (rounds) / Take
-// part, New meeting, Talk only. The messages are the chat's rolling window (backscroll, Jump to latest).
-// Live updates: the messages and the speaking-now line follow every change (events.onLive); the seat strip, which holds
-// the roster dropdown, redraws through events.on, so an open dropdown is never closed under the owner.
+// Chat › Meeting (#/chat/meeting): the owner's meeting with the crew, beside the plain group chat (docs/MEETINGS.md),
+// shown the way the owner's terminal table showed it. Everyone seated answers in turn, the leader first, and turns flow
+// on by themselves; the turn in flight streams word by word under the speaker's name, in a colour that stays that
+// person's, with each tool step as a dim "· Name: what they are doing" line. What happens between turns is one dim line
+// each, in order: "(Phil passes)", "(Nadia answers Dave)", "(hands? Sharon, Phil…)", "(Sharon raises a hand: …)",
+// "(Rachel calls on Nadia)", "(Omar joins, invited by Dave: …)". In view: the seat strip (crown = leader, × = remove,
+// hover or tap an avatar for its model, + Add), Round, Raise hand / Continue, Stop, Observe (rounds) / Take part; the
+// rest (Talk only, Pause, pace, agenda, register, minutes, catch-up, a new meeting, close) is under More. Esc raises a
+// hand while they talk; Esc again stops the turn. The messages are the chat's rolling window (backscroll, Jump to latest).
+// Live updates: the messages and the speaking-now line follow every change (events.onLive); the seat strip and the More
+// panel, which hold dropdowns and fields, redraw through events.on, so an open dropdown is never closed under the owner.
 import { composerKeys, COMPOSER_HINT } from './keys.js';
 import { h, fill, Button, errLine, empty, when, humanError, initial } from './ui.js';
 import { api, post } from './api.js';
 import { mdBlock, md } from './md.js';
-import { personName } from './plain.js';
+import { personName, toolStep } from './plain.js';
 import * as events from './events.js';
 
 export const ACTIONS = {   // the controls and the API action each one calls (tests/meeting-ui-walk.js checks the map)
   round: '/meeting/round', hand: '/meeting/hand', continue: '/meeting/continue', stop: '/meeting/stop', observe: '/meeting/observe',
-  next: '/meeting/next', register: '/meeting/register', explain: '/meeting/explain', glossary: '/meeting/glossary', pace: '/meeting/pace', hold: '/meeting/hold', catchup: '/meeting/catchup', newMeeting: '/meeting/new', agenda: '/meeting/agenda', close: '/meeting/close', resume: '/meeting/resume', lead: '/meeting/lead', seats: '/meeting/seats', say: '/meeting/say',
+  next: '/meeting/next', talkOnly: '/meeting/talkonly', register: '/meeting/register', explain: '/meeting/explain', glossary: '/meeting/glossary', pace: '/meeting/pace', hold: '/meeting/hold', catchup: '/meeting/catchup', newMeeting: '/meeting/new', agenda: '/meeting/agenda', close: '/meeting/close', resume: '/meeting/resume', lead: '/meeting/lead', seats: '/meeting/seats', say: '/meeting/say',
 };
-const CHIP = { ask: 'ASK', hand: 'HAND', call: 'CALL', lower: 'LOWER', ruling: 'RULING' };
 const maybePass = t => String(t).trim().length <= 8 && 'PASS'.startsWith(String(t).toUpperCase().replace(/[^A-Z]/g, ''));
+// each person keeps one colour, from their seat id (the table's fixed colours): the chart palette, themed for dark too
+export const COLORS = 6;
+// a tool step in plain words (plain.js toolStep); a bare path as its summary reads as that file
+const stepOf = (n, a) => { const raw = String(a || '').trim(); return toolStep(n, raw && !raw.startsWith('{') && /^[\w./-]{1,200}$/.test(raw) ? JSON.stringify({ path: raw }) : raw); };
+export function colorOf(id) { let x = 0; for (const c of String(id || '')) x = (x * 31 + c.charCodeAt(0)) >>> 0; return x % COLORS; }
 
 export function meetingPane(host, opts) {
   const { app, tz } = opts;
@@ -28,17 +36,22 @@ export function meetingPane(host, opts) {
   /* ---------- the frame ---------- */
   const subEl = h('span', { class: 'caption muted mtg-sub' }, '');
   const costEl = h('span', { class: 'caption muted mtg-cost', role: 'status' }, '');
-  const minutesBtn = Button('Open minutes', { variant: 'ghost', size: 'sm', aria: 'Open the minutes of this meeting', onClick: () => openMinutes() });
-  const registerBtn = Button('Register', { variant: 'secondary', size: 'sm', aria: 'The action register: rulings, actions, open questions, kill conditions', onClick: () => openRegister() });
-  registerBtn.dataset.act = 'register';
-  minutesBtn.dataset.act = 'minutes';
   const head = h('header', { class: 'chat-head' },
     h('div', { class: 'stack-4' }, h('h1', { class: 'h3' }, 'Meeting'), subEl, costEl),
-    h('div', { class: 'row-8 mtg-head-actions' }, opts.modeSwitch || null, registerBtn, minutesBtn));
+    h('div', { class: 'row-8 mtg-head-actions' }, opts.modeSwitch || null));
   const seatsHost = h('div', { class: 'mtg-seats', role: 'group', 'aria-label': 'Seats, in speaking order' });
   const agendaHost = h('div', { class: 'mtg-agenda', role: 'group', 'aria-label': 'Agenda' });
   const stateHost = h('div', { class: 'mtg-state' });
-  const ctrlHost = h('div', { class: 'mtg-controls', role: 'toolbar', 'aria-label': 'Meeting controls' });
+  // the controls in view (redrawn on every live update) and More (built once, so it stays open, with whatever is being
+  // typed in it, across live updates): everything that is not needed while they talk, in a panel over the messages
+  const btnsHost = h('div', { class: 'mtg-btns', role: 'toolbar', 'aria-label': 'Meeting controls' });
+  const moreCtrl = h('div', { class: 'row-8 mtg-more-ctrl', role: 'group', 'aria-label': 'More meeting controls' });
+  const moreEl = h('details', { class: 'mtg-more' }, h('summary', { class: 'btn btn-secondary btn-sm', 'data-act': 'more', 'aria-label': 'More: talk only, pause, pace, agenda, register, minutes, a new meeting' }, 'More'),
+    h('div', { class: 'mtg-more-panel stack-8' }, moreCtrl, agendaHost));
+  const ctrlHost = h('div', { class: 'mtg-controls' }, btnsHost, moreEl);
+  const onOutside = e => { if (moreEl.open && !moreEl.contains(e.target) && !(e.target.closest && e.target.closest('dialog'))) moreEl.open = false; };
+  document.addEventListener('pointerdown', onOutside);
+  moreEl.addEventListener('keydown', e => { if (e.key === 'Escape' && moreEl.open) { e.preventDefault(); e.stopPropagation(); moreEl.open = false; moreEl.querySelector('summary').focus(); } });
   const liveLine = h('p', { class: 'mtg-live caption', role: 'status', 'aria-live': 'polite' });
   const errHost = h('div', { class: 'mtg-err' });
   const body = h('div', { class: 'chat-body', 'aria-live': 'polite', tabindex: '0', 'aria-label': 'Meeting messages' });
@@ -69,7 +82,7 @@ export function meetingPane(host, opts) {
     h('label', { for: 'msg', class: 'caption muted' }, COMPOSER_HINT + ' · @name to ask particular people · Esc raises your hand while they talk'),
     h('div', { class: 'mtg-ta-wrap' }, ta, ac),
     h('div', { class: 'between-c', style: 'flex-wrap:wrap;gap:8px' }, sendErr, sendBtn));
-  fill(host, head, stateHost, seatsHost, agendaHost, ctrlHost, liveLine, errHost, h('div', { class: 'row-8 mtg-readbar' }, null), h('div', { class: 'chat-scroll' }, body, jump), form);
+  fill(host, head, stateHost, seatsHost, ctrlHost, liveLine, errHost, h('div', { class: 'row-8 mtg-readbar' }, null), h('div', { class: 'chat-scroll' }, body, jump), form);
 
   /* ---------- actions ---------- */
   async function act(path, b, okMsg) {
@@ -83,7 +96,15 @@ export function meetingPane(host, opts) {
     try { const r = await post(ACTIONS.say, { text }); ta.value = ''; closeAc(); if (r && r.note && r.note !== 'sent') app.toast(r.note); if (r && r.missing && r.missing.length) app.toast(r.missing.join(', ') + ' not seated: the message went to the others.'); v = r; drawControls(); drawLive(); refreshEntries(); }
     catch (e) { sendErr.textContent = 'Not sent: ' + humanError(e); }
   }
-  const raiseHand = () => { if (running() && v.live.phase === 'round' && !v.live.ownerHand) act(ACTIONS.hand, {}); };
+  // Esc raises your hand (the floor is yours after the current speaker); Esc again, with the hand up, stops the turn:
+  // the table's Ctrl-C, then Ctrl-C again
+  let lastEsc = 0;
+  const raiseHand = () => {
+    if (!running()) return;
+    const again = v.live.ownerHand || Date.now() - lastEsc < 1500; lastEsc = Date.now();
+    if (again && (v.live.phase === 'round' || v.live.phase === 'floor')) { lastEsc = 0; act(ACTIONS.stop, {}, 'Stopped.'); return; }
+    if (v.live.phase === 'round' && !v.live.ownerHand) act(ACTIONS.hand, {});
+  };
 
   /* ---------- the seat strip (held while a dropdown in it is open) ---------- */
   function drawSeats() {
@@ -93,7 +114,7 @@ export function meetingPane(host, opts) {
     const items = seats.map((s, i) => {
       const model = s.model ? s.model.label : (s.modelError || 'no model');
       const modelEl = h('span', { class: 'caption muted mtg-model', hidden: true }, model);
-      const av = h('button', { type: 'button', class: 'avatar mtg-av' + (s.leader ? ' lead' : ''), title: nm(s.name) + ' · ' + model, 'aria-label': nm(s.name) + ', speaks ' + ordinal(i + 1) + ', on ' + model + '. Show the model',
+      const av = h('button', { type: 'button', class: 'avatar mtg-av mtg-c' + colorOf(s.id) + (s.leader ? ' lead' : ''), title: nm(s.name) + ' · ' + model, 'aria-label': nm(s.name) + ', speaks ' + ordinal(i + 1) + ', on ' + model + '. Show the model',
         'aria-expanded': 'false', onclick: () => { modelEl.hidden = !modelEl.hidden; av.setAttribute('aria-expanded', String(!modelEl.hidden)); } }, initial(s.name));
       const crown = h('button', { type: 'button', class: 'mtg-crown' + (s.leader ? ' on' : ''), 'aria-pressed': String(!!s.leader), 'data-act': 'lead', 'data-seat': s.id,
         'aria-label': s.leader ? nm(s.name) + ' leads the meeting' : 'Make ' + nm(s.name) + ' the leader', title: s.leader ? 'Leads the meeting' : 'Make leader',
@@ -111,6 +132,7 @@ export function meetingPane(host, opts) {
     addBtn.dataset.act = 'add';
     const noLead = v.meeting.leader ? Button('No leader', { variant: 'ghost', size: 'sm', aria: 'Run the meeting with no leader', onClick: () => act(ACTIONS.lead, { seat: null }, 'No leader now.') }) : null;
     if (noLead) noLead.dataset.act = 'no-leader';
+    seatsHost.title = seats.length ? 'Who is at the table, in speaking order: ' + seats.map(s => nm(s.name) + (s.leader ? ' (leads)' : '') + ' on ' + (s.model ? s.model.label : (s.modelError || 'no model'))).join('; ') : '';
     fill(seatsHost, items.length ? items : h('span', { class: 'caption muted' }, 'Nobody is seated yet.'), h('div', { class: 'row-8 mtg-add' }, pick, addBtn, noLead));
   }
   function drawAgenda() {
@@ -118,8 +140,9 @@ export function meetingPane(host, opts) {
     const M = v.meeting, items = M.agenda || [];
     const row = it => {
       const now = it.id === M.agendaAt;
-      const tools = h('button', { type: 'button', class: 'btn btn-ghost btn-sm' + (it.tools ? ' on' : ''), 'data-act': 'item-tools', 'data-item': it.id, 'aria-pressed': String(!!it.tools),
-        'aria-label': (it.tools ? 'Tools are on for ' : 'Talk only for ') + it.title + '. Switch', onclick: () => act(ACTIONS.agenda, { op: 'tools', id: it.id, on: !it.tools }) }, it.tools ? 'Tools on' : 'Talk only');
+      const on = 'toolsOn' in it ? !!it.toolsOn : !!it.tools;
+      const tools = h('button', { type: 'button', class: 'btn btn-ghost btn-sm' + (on ? ' on' : ''), 'data-act': 'item-tools', 'data-item': it.id, 'aria-pressed': String(on),
+        'aria-label': (on ? 'Tools are on for ' : 'Talk only for ') + it.title + '. Switch', onclick: () => act(ACTIONS.agenda, { op: 'tools', id: it.id, on: !on }) }, on ? 'Tools on' : 'Talk only');
       return h('li', { class: 'mtg-item' + (now ? ' now' : '') + (it.done ? ' done' : ''), 'data-item': it.id },
         h('span', { class: 'body-s mtg-item-t' }, (now ? '▸ ' : '') + it.title),
         now ? h('span', { class: 'caption muted' }, 'now') : Button('Discuss now', { variant: 'ghost', size: 'sm', onClick: () => act(ACTIONS.agenda, { op: 'current', id: it.id }) }),
@@ -135,13 +158,13 @@ export function meetingPane(host, opts) {
     nb.dataset.act = 'new';
     fill(agendaHost,
       h('div', { class: 'stack-6' },
-        h('span', { class: 'caption muted' }, 'Agenda · talk only unless you switch tools on for an item' + (M.toolsOn ? ' · tools are on now' : '')),
+        h('span', { class: 'caption muted' }, 'Agenda · each item follows the meeting (' + (M.talkOnly ? 'talk only' : 'tools on') + ') unless you switch it' + (M.toolsOn ? ' · tools are on now' : ' · talk only now')),
         items.length ? h('ul', { class: 'plain mtg-items' }, items.map(row)) : null,
         h('div', { class: 'row-8 mtg-add' }, title, Button('Add item', { variant: 'secondary', size: 'sm', onClick: addItem }))),
       h('div', { class: 'row-8 mtg-add' }, speed(M), type, nb));
   }
   function speed(M) {
-    const label = { manual: 'Next (I advance)', instant: 'Instant', fast: 'Fast', normal: 'Normal', slow: 'Slow' };
+    const label = { manual: 'Next (I advance)', instant: 'Flowing (as at the table)', fast: 'Fast', normal: 'Normal', slow: 'Slow' };
     const sel = h('select', { class: 'select mtg-speed', id: 'mtg-speed', 'aria-label': 'Pace: how the meeting advances', onchange: e => act(ACTIONS.pace, { speed: e.target.value }) },
       (M.speeds || []).map(x => h('option', { value: x, selected: x === M.speed }, 'Pace: ' + (label[x] || x))));
     return sel;
@@ -161,15 +184,12 @@ export function meetingPane(host, opts) {
     if (!v) return;
     const L = v.live, M = v.meeting, run = running();
     const b = (label, act, o) => { const el = Button(label, Object.assign({ size: 'sm', variant: 'secondary' }, o)); el.dataset.act = act; return el; };
-    const items = [];
+    const items = [], more = [];
     items.push(b('Round', 'round', { variant: run ? 'secondary' : 'primary', disabled: run || !(v.seats || []).length, aria: 'An open round: they answer each other, with no new message from you', onClick: () => act(ACTIONS.round, {}) }));
     if (L.phase === 'floor') items.push(b('Continue', 'continue', { variant: 'primary', aria: 'Let them carry on', onClick: () => act(ACTIONS.continue, {}) }));
-    else if (run) items.push(b(L.ownerHand ? 'Hand raised' : 'Raise hand', 'hand', { disabled: L.ownerHand || L.phase === 'stopping', aria: 'Take the floor after the current speaker (Esc)', onClick: () => act(ACTIONS.hand, {}) }));
+    else if (run) items.push(b(L.ownerHand ? 'Hand raised' : 'Raise hand', 'hand', { disabled: L.ownerHand || L.phase === 'stopping', aria: 'Take the floor after the current speaker (Esc; Esc again stops the turn)', onClick: () => act(ACTIONS.hand, {}) }));
     if (run && L.waitNext) items.unshift(b(L.next && L.next[0] ? 'Next: ' + nm(L.next[0].name) : 'Next', 'next', { variant: 'primary', aria: 'You have read it: let the next person speak', onClick: () => act(ACTIONS.next, {}) }));
-    if (run && L.phase !== 'floor' && !L.pausedFor) items.push(L.paused ? b('Carry on', 'unpause', { variant: 'primary', aria: 'Carry on: the next turn may start', onClick: () => act(ACTIONS.hold, { on: false }) })
-      : b('Pause', 'pause', { aria: 'Hold the floor: the current turn finishes, then nothing new starts (and nothing is spent)', onClick: () => act(ACTIONS.hold, { on: true }) }));
-    if (run) items.push(b('Stop round', 'stop', { aria: 'Stop the round now', onClick: () => act(ACTIONS.stop, {}, 'Round stopped.') }));
-    if (M.opened) items.push(b('Catch me up', 'catchup', { variant: 'ghost', aria: 'Five bullets of what you missed, what was decided and what is still asked', onClick: async () => { const r = await act(ACTIONS.catchup, { since: lastRead }); if (r) app.toast('Your catch-up is in the messages.'); } }));
+    if (run) items.push(b('Stop', 'stop', { aria: 'Stop now: the turn in flight is cancelled', onClick: () => act(ACTIONS.stop, {}, 'Stopped.') }));
     const isOpen = M.state === 'open';
     if (M.observer) items.push(b('Take part', 'take-part', { aria: 'Take part again: the meeting waits for you after each round', onClick: () => act(ACTIONS.observe, { on: false }) }));
     else {
@@ -178,11 +198,20 @@ export function meetingPane(host, opts) {
       items.push(h('span', { class: 'mtg-observe row-4' }, b('Observe', 'observe', { aria: 'Watch: you get no turn and they carry on by themselves for up to ' + M.observeRounds + ' rounds', onClick: () => act(ACTIONS.observe, { on: true, rounds: M.observeRounds }) }),
         minus, h('span', { class: 'caption mtg-rounds', 'aria-label': M.observeRounds + ' rounds' }, M.observeRounds + ' rounds'), plus));
     }
-    if (isOpen && M.opened) items.push(b('Close meeting', 'close', { variant: 'ghost', aria: 'Close this meeting now, with or without an END from the leader', onClick: () => act(ACTIONS.close, {}, 'Meeting closed.') }));
+    // under More
+    more.push(b(M.talkOnly ? 'Tools: off (talk only)' : 'Tools: on', 'talk-only', { variant: 'ghost', aria: M.talkOnly ? 'Talk only: nobody has tools. Switch tools back on, so they can check what they say' : 'Tools are on: they can read and check what they say. Switch to talk only', onClick: () => act(ACTIONS.talkOnly, { on: !M.talkOnly }) }));
+    more[0].setAttribute('aria-pressed', String(!M.talkOnly));
+    if (run && L.phase !== 'floor' && !L.pausedFor) more.push(L.paused ? b('Carry on', 'unpause', { variant: 'primary', aria: 'Carry on: the next turn may start', onClick: () => act(ACTIONS.hold, { on: false }) })
+      : b('Pause', 'pause', { variant: 'ghost', aria: 'Hold the floor: the current turn finishes, then nothing new starts (and nothing is spent)', onClick: () => act(ACTIONS.hold, { on: true }) }));
+    if (M.opened) more.push(b('Catch me up', 'catchup', { variant: 'ghost', aria: 'Five bullets of what you missed, what was decided and what is still asked', onClick: async () => { const r = await act(ACTIONS.catchup, { since: lastRead }); if (r) app.toast('Your catch-up is in the messages.'); } }));
+    more.push(b('Register', 'register', { variant: 'ghost', aria: 'The action register: rulings, actions, open questions, kill conditions', onClick: () => openRegister() }));
+    more.push(b('Open minutes', 'minutes', { variant: 'ghost', aria: 'Open the minutes of this meeting', onClick: () => openMinutes() }));
+    if (isOpen && M.opened) more.push(b('Close meeting', 'close', { variant: 'ghost', aria: 'Close this meeting now, with or without an END from the leader', onClick: () => act(ACTIONS.close, {}, 'Meeting closed.') }));
     if (!isOpen) for (const x of items) if (/^(round|hand|observe|rounds-up|rounds-down)$/.test(x.dataset.act || '')) x.disabled = true;
-    fill(ctrlHost, items);
+    fill(btnsHost, items);
+    fill(moreCtrl, more);
     const lead = (v.seats || []).find(s => s.leader);
-    subEl.textContent = [lead ? nm(lead.name) + ' leads' : 'No leader', M.observer ? 'you are observing (up to ' + M.observeRounds + ' rounds at a time)' : null, M.toolsOn ? 'tools on for this item' : 'talk only'].filter(Boolean).join(' · ');
+    subEl.textContent = [lead ? nm(lead.name) + ' leads' : 'No leader', M.observer ? 'you are observing (up to ' + M.observeRounds + ' rounds at a time)' : null, M.toolsOn ? 'tools on' : 'talk only', M.speed && M.speed !== 'instant' ? 'pace: ' + ({ manual: 'you press Next', fast: 'fast', normal: 'normal', slow: 'slow' }[M.speed] || M.speed) : null].filter(Boolean).join(' · ');
     drawState();
     costEl.textContent = M.costLine || ('This meeting so far: ' + M.cost.turns + ' turn' + (M.cost.turns === 1 ? '' : 's'));
   }
@@ -207,39 +236,47 @@ export function meetingPane(host, opts) {
     fill(liveLine, parts);
     liveLine.hidden = !parts.length;
     notifyTurn(L);
+    // in the flow too, as the table printed it: who is being asked for a hand, who decides on the hands
+    const chk = L.phase === 'round' && L.checking ? (L.checking.kind === 'hands' ? '(hands? ' + L.checking.names.map(nm).join(', ') + '…)' : '(' + nm(L.checking.names[0]) + ' looks at the raised hands…)') : '';
+    liveNote.textContent = chk; liveNote.hidden = !chk;
+    follow(L);
   }
   const nameOfId = id => ((v && v.roster) || []).concat({ id: 'owner', name: v && v.owner }).find(r => r.id === id)?.name || id;
 
   /* ---------- the messages ---------- */
+  // one dim line, as the table printed what happened between turns: "(Phil passes)", "(Sharon raises a hand: …)"
+  const ev = (e, kind, text, extra) => h('p', { class: 'caption muted mtg-ev', 'data-kind': kind, 'data-i': e.i, title: e.at ? when(e.at, tz) : '' }, '(' + text + ')', extra || null);
+  const who = e => nm(e.name);
+  // the turn's tool steps, as the table printed them: "· Sharon: reading CHARTER.md"
+  const toolLines = e => e.tools && e.tools.length ? h('div', { class: 'stack-2 mtg-tools' }, e.tools.map(x => h('p', { class: 'caption muted mtg-tool', 'data-tool': x.name || '' }, '· ' + nm(e.name) + ': ' + stepOf(x.name, x.args)))) : null;
   function entryEl(e) {
     const t = e.at ? when(e.at, tz) : '';
-    if (e.kind === 'say' && e.who === 'owner') return h('div', { class: 'stack-4', style: 'align-self:flex-end;align-items:flex-end', 'data-i': e.i }, h('div', { class: 'msg-me' }, e.text), h('span', { class: 'msg-meta' }, 'You · ' + t));
+    if (e.kind === 'say' && e.who === 'owner') return h('div', { class: 'stack-4', style: 'align-self:flex-end;align-items:flex-end', 'data-i': e.i, 'data-kind': 'say' }, h('div', { class: 'msg-me' }, e.text), h('span', { class: 'msg-meta' }, 'You · ' + t));
     if (e.kind === 'say') {
-      const meta = [nm(e.name), t, e.model, e.to ? 'answering ' + nm(e.toName) : null, e.interject ? 'interjecting' : null, e.explains ? 'explaining for the room' : null].filter(Boolean).join(' · ');
+      const meta = [t, e.model, e.explains ? 'explaining for the room' : null, e.src === 'chat' ? 'in the chat' : null].filter(Boolean).join(' · ');
       const ex = e.explains ? null : h('button', { type: 'button', class: 'btn btn-ghost btn-sm mtg-explain', 'data-act': 'explain', 'data-i': null, 'aria-label': 'Ask ' + nm(e.name) + ' to explain this for the room, in plain words',
-        onclick: async ev => { ev.currentTarget.disabled = true; await act(ACTIONS.explain, { i: e.i }); } }, 'Explain for the room');
-      return h('div', { class: 'stack-4 msg-them-wrap', 'data-i': e.i, 'data-who': e.who }, h('span', { class: 'label strong mtg-who' }, nm(e.name)), mdBlock(e.text, 'msg-them'), e.lint ? lintNotice(e) : null, h('span', { class: 'row-8', style: 'align-items:center' }, h('span', { class: 'msg-meta' }, meta), ex));
+        onclick: async evt => { evt.currentTarget.disabled = true; await act(ACTIONS.explain, { i: e.i }); } }, 'Explain for the room');
+      const lead = e.to ? h('p', { class: 'caption muted mtg-ev mtg-ev-lead' }, '(' + nm(e.name) + ' answers ' + nm(e.toName) + ')') : e.interject ? h('p', { class: 'caption muted mtg-ev mtg-ev-lead' }, '(' + nm(e.name) + ' has the floor)') : null;
+      return h('div', { class: 'stack-4 msg-them-wrap mtg-c' + colorOf(e.who), 'data-i': e.i, 'data-who': e.who, 'data-kind': 'say' }, lead, toolLines(e), h('span', { class: 'label strong mtg-who' }, nm(e.name)), mdBlock(e.text, 'msg-them'), e.lint ? lintNotice(e) : null, h('span', { class: 'row-8', style: 'align-items:center' }, h('span', { class: 'msg-meta' }, meta), ex));
     }
-    if (e.kind === 'end') return h('div', { class: 'mtg-end', 'data-i': e.i, role: 'note' }, h('span', { class: 'mtg-chip-k' }, 'END'), h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, 'Discussion closed by ' + nm(e.name)), e.text ? mdBlock(e.text, 'body-s') : null, h('span', { class: 'caption muted' }, t + ' · recorded in Decisions')));
-    if (e.kind === 'join' || e.kind === 'leave') {
-      const k = e.kind === 'join' ? (e.by ? 'INVITE' : 'SEATED') : (e.by ? 'DISMISS' : 'LEFT');
-      return chip(k, e.kind === 'join' ? nm(e.name) + ' joined' + (e.by ? ', invited by ' + nm(e.byName) : '') : nm(e.name) + ' left' + (e.by && e.by !== e.who ? ', dismissed by ' + nm(e.byName) : ''), e.why, e);
-    }
-    if (e.kind === 'ask') return chip('ASK', nm(e.name) + ' → ' + nm(e.toName), e.text, e);
-    if (e.kind === 'call') return chip(e.later ? 'LATER' : 'CALL', nm(e.name) + (e.later ? ' takes ' : ' calls on ') + nm(e.toName) + (e.later ? ' once the exchange is done' : ''), null, e);
-    if (e.kind === 'lower') return chip('LOWER', nm(e.name) + ' lowered ' + nm(e.toName) + '\'s hand', null, e);
-    if (e.kind === 'hand') return chip('HAND', nm(e.name) + ' raised a hand', e.why, e);
-    if (e.kind === 'ruling') return chip('RULING', e.who === 'owner' ? 'You ruled' : nm(e.name) + ' proposed a ruling (confirm it in the Register)', e.text + (e.plain ? ' — in plain words: ' + e.plain : ''), e);
-    if (e.kind === 'register') return chip({ actions: 'ACTION', questions: 'QUESTION', kills: 'KILL' }[e.section] || 'REGISTER', nm(e.name) + ' (' + ({ actions: 'action', questions: 'open question', kills: 'kill condition' }[e.section] || '') + ' ' + e.n + ')', e.text + (e.date ? ' · by ' + e.date : '') + (e.plain ? ' — in plain words: ' + e.plain : '') + (e.affects ? ' · affects ' + e.affects : ''), e);
-    if (e.kind === 'parse') return h('div', { class: 'mtg-chip mtg-parse', 'data-kind': 'parse', 'data-i': e.i, role: 'status' }, h('span', { class: 'mtg-chip-k' }, 'COULD NOT READ'), h('span', { class: 'body-s' }, nm(e.name) + ': "' + e.line + '"'), h('span', { class: 'body-s muted' }, e.why + '. Nothing was done with it; ' + nm(e.name) + ' is told on their next turn.'));
-    if (e.kind === 'close') return h('div', { class: 'mtg-end mtg-closed', 'data-i': e.i, role: 'note' }, h('span', { class: 'mtg-chip-k' }, e.state === 'interrupted' ? 'INTERRUPTED' : 'CLOSED'), h('span', { class: 'body-s' }, (e.line || '') + ' · ' + t));
-    if (e.kind === 'catchup') return h('div', { class: 'mtg-end mtg-catchup', 'data-i': e.i, role: 'note' }, h('span', { class: 'mtg-chip-k' }, 'FOR YOU'), h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, 'Catch-up by ' + nm(e.name) + ' (only you see this)'), mdBlock(e.text, 'body-s'), h('span', { class: 'caption muted' }, t)));
-    if (e.kind === 'consent') return chip('APPROVAL', nm(e.name) + (e.op === 'asked' ? ' asked to use ' + (e.tool || 'a tool') : ' · ' + (e.tool || 'a tool')), e.op === 'asked' ? 'paused until you answer it on Today' : (e.decision === 'once' ? 'allowed' : e.decision === 'deny' ? 'declined' : e.decision) + '; the meeting carries on', e);
-    if (e.kind === 'open') return h('p', { class: 'caption muted mtg-line', 'data-i': e.i }, 'The meeting opened · ' + t);
-    return h('p', { class: 'caption muted mtg-line', 'data-i': e.i }, (e.line || e.text || '') + (t ? ' · ' + t : ''));
-  }
-  function chip(k, who, text, e) {
-    return h('div', { class: 'mtg-chip', 'data-kind': k.toLowerCase(), 'data-i': e.i }, h('span', { class: 'mtg-chip-k' }, k), h('span', { class: 'body-s' }, who + (text ? ': ' : '')), text ? h('span', { class: 'body-s muted' }, text) : null);
+    if (e.kind === 'pass') return e.tools && e.tools.length ? h('div', { class: 'stack-2 mtg-c' + colorOf(e.who), 'data-i': e.i, 'data-kind': 'pass', 'data-who': e.who }, toolLines(e), h('p', { class: 'caption muted mtg-ev', 'data-kind': 'pass' }, '(' + who(e) + ' passes)')) : ev(e, 'pass', who(e) + ' passes');
+    if (e.kind === 'join') return ev(e, 'join', who(e) + ' joins' + (e.by ? ', invited by ' + nm(e.byName) : '') + (e.why ? ': ' + e.why : ''));
+    if (e.kind === 'leave') return ev(e, 'leave', who(e) + ' leaves' + (e.by && e.by !== e.who ? ', dismissed by ' + nm(e.byName) : '') + (e.why ? ': ' + e.why : ''));
+    if (e.kind === 'ask') return ev(e, 'ask', who(e) + ' asks ' + nm(e.toName) + ': ' + e.text);
+    if (e.kind === 'hand') return ev(e, 'hand', who(e) + ' raises a hand' + (e.why ? ': ' + e.why : ''));
+    if (e.kind === 'call') return ev(e, e.later ? 'later' : 'call', e.to === 'owner' ? who(e) + ' gives you the floor' : e.later ? who(e) + ' will take ' + nm(e.toName) + ' once the exchange is done' : who(e) + ' calls on ' + nm(e.toName));
+    if (e.kind === 'lower') return ev(e, 'lower', who(e) + ' lowers ' + nm(e.toName) + '\'s hand');
+    if (e.kind === 'end') return h('p', { class: 'mtg-ev mtg-ev-end body-s', 'data-kind': 'end', 'data-i': e.i, role: 'note', title: t }, h('strong', {}, '(' + who(e) + ' closes the discussion'), (e.text ? ': ' + e.text : '') + (e.plain ? ' — in plain words: ' + e.plain : '') + ')');
+    if (e.kind === 'ruling') return ev(e, 'ruling', e.who === 'owner' ? 'You ruled: ' + e.text : who(e) + ' proposes a ruling for you to confirm: ' + e.text + (e.plain ? ' — in plain words: ' + e.plain : ''),
+      e.who === 'owner' ? null : h('button', { type: 'button', class: 'btn btn-ghost btn-sm mtg-ev-btn', 'data-act': 'open-register', onclick: () => openRegister() }, 'Confirm in the register'));
+    if (e.kind === 'register') return ev(e, 'register', who(e) + ' adds ' + ({ actions: 'an action', questions: 'an open question', kills: 'a kill condition' }[e.section] || 'a line') + ': ' + e.text + (e.date ? ' · by ' + e.date : '') + (e.plain ? ' — in plain words: ' + e.plain : '') + (e.affects ? ' · affects ' + e.affects : ''));
+    if (e.kind === 'parse') return h('p', { class: 'caption mtg-ev mtg-parse', 'data-kind': 'parse', 'data-i': e.i, role: 'status' }, '(The console could not read ' + who(e) + '\'s line "' + e.line + '": ' + e.why + '. Nothing was done with it; ' + who(e) + ' is told on their next turn.)');
+    if (e.kind === 'close') return h('div', { class: 'mtg-end mtg-closed', 'data-i': e.i, 'data-kind': 'close', role: 'note' }, h('span', { class: 'mtg-chip-k' }, e.state === 'interrupted' ? 'INTERRUPTED' : 'CLOSED'), h('span', { class: 'body-s' }, (e.line || '') + ' · ' + t));
+    if (e.kind === 'catchup') return h('div', { class: 'mtg-end mtg-catchup', 'data-i': e.i, 'data-kind': 'catchup', role: 'note' }, h('span', { class: 'mtg-chip-k' }, 'FOR YOU'), h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, 'Catch-up by ' + nm(e.name) + ' (only you see this)'), mdBlock(e.text, 'body-s'), h('span', { class: 'caption muted' }, t)));
+    if (e.kind === 'consent') return ev(e, 'consent', e.op === 'asked' ? who(e) + ' asks to use ' + (e.tool || 'a tool') + '; paused until you answer it on Today' : who(e) + ' · ' + (e.tool || 'a tool') + ': ' + (e.decision === 'once' ? 'allowed' : e.decision === 'deny' ? 'declined' : e.decision) + '; the meeting carries on',
+      e.op === 'asked' ? h('a', { href: '#/today', class: 'mtg-ev-btn' }, ' Answer it on Today') : null);
+    if (e.kind === 'open') return h('p', { class: 'caption muted mtg-line', 'data-i': e.i, 'data-kind': 'open' }, 'The meeting opened · ' + t);
+    return h('p', { class: 'caption muted mtg-line', 'data-i': e.i, 'data-kind': e.kind }, (e.line || e.text || '') + (t ? ' · ' + t : ''));
   }
   // the owner-scope lint (console/command-ask.js, the chat's): plain words and what to do
   function lintNotice(e) {
@@ -255,6 +292,75 @@ export function meetingPane(host, opts) {
   }
   const firstName = n => String(n || '').split(/\s+/)[0];
 
+  /* ---------- the turn in flight, streamed (GET /api/meeting/attach: the run's journal, then live) ----------
+     As at the table: the words appear as they are written, under the speaker's name, held back while they could still
+     turn out to be PASS (at the start and again after each tool step); each tool step is a dim "· Name: …" line. A
+     reload or a console restart re-attaches from the lines already shown. The finished turn then arrives as an entry. */
+  const liveTurn = h('div', { class: 'mtg-liveturn', hidden: true });
+  const liveNote = h('p', { class: 'caption muted mtg-ev mtg-ev-live', hidden: true, role: 'status' });
+  const liveArea = h('div', { class: 'mtg-livearea', 'data-live': '1' }, liveTurn, liveNote);
+  let S = null;
+  function follow(L) {
+    const sp = L && L.phase !== 'idle' && L.speaking && L.speaking.runId ? L.speaking : null;
+    if (S && (!sp || sp.runId !== S.runId)) endStream();
+    if (sp && !S) startStream(sp);
+  }
+  async function startStream(sp) {
+    const st = S = { runId: sp.runId, seat: sp.id, name: sp.name, ctrl: new AbortController(), count: 0, ended: false, held: '', live: false, seg: null, tools: 0 };
+    for (let tries = 0; S === st && !st.ended && !destroyed && tries < 30; tries++) {
+      try {
+        const r = await fetch('/api/meeting/attach?runId=' + encodeURIComponent(st.runId) + '&from=' + st.count, { credentials: 'same-origin', signal: st.ctrl.signal, headers: { Accept: 'application/x-ndjson' } });
+        if (!r.ok || !r.body) throw new Error('attach ' + r.status);
+        const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = '';
+        for (;;) {
+          const { value, done } = await reader.read(); if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i; while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (l) streamLine(st, l); }
+        }
+      } catch (e) { if (e && e.name === 'AbortError') return; }
+      if (S !== st || st.ended) return;
+      await new Promise(r => setTimeout(r, 1000));   // the console restarted or the network blinked: pick up where it was
+    }
+  }
+  function streamLine(st, l) {
+    let x; try { x = JSON.parse(l); } catch (_) { return; }
+    if (S !== st) return;
+    if (x.name === 'console.gone') { st.ended = true; return; }
+    st.count++;
+    const p = x.payload || {};
+    const stick = atBottom();
+    if (x.name === 'agent.token' && typeof p.delta === 'string') {
+      if (st.live) show(st, p.delta);
+      else { st.held += p.delta; if (!maybePass(st.held)) { st.live = true; const t = st.held; st.held = ''; show(st, t); } }
+    } else if (x.name === 'agent.tool_call') {
+      if (st.held.trim()) show(st, st.held);
+      st.held = ''; st.live = false; st.seg = null; st.tools++;
+      streamHead(st);
+      liveTurn.appendChild(h('p', { class: 'caption muted mtg-tool', 'data-tool': p.name || '' }, '· ' + nm(st.name) + ': ' + stepOf(p.name, p.argsSummary)));
+    } else if (x.name === 'console.end') {
+      st.ended = true;
+      if (st.held.trim() && !maybePass(st.held) && !/^\W*pass\W*$/i.test(st.held)) show(st, st.held);
+      st.held = '';
+    }
+    if (stick && !liveTurn.hidden) body.scrollTop = body.scrollHeight;   // following the latest only if you already were there
+  }
+  function streamHead(st) {
+    if (!liveTurn.hidden) return;
+    fill(liveTurn, h('span', { class: 'label strong mtg-who' }, nm(st.name)));
+    liveTurn.className = 'mtg-liveturn stack-4 mtg-c' + colorOf(st.seat); liveTurn.dataset.who = st.seat; liveTurn.hidden = false;
+  }
+  function show(st, t) {
+    streamHead(st);
+    if (!st.seg) { st.seg = h('div', { class: 'msg-them mtg-stream' }); liveTurn.appendChild(st.seg); t = t.replace(/^\s+/, ''); }
+    st.seg.appendChild(document.createTextNode(t));
+  }
+  // the turn is over: the streamed words give way to its entry (which carries its tool steps)
+  function endStream() {
+    const st = S; S = null; if (!st) return;
+    try { st.ctrl.abort(); } catch (_) {}
+    fill(liveTurn); liveTurn.hidden = true;
+  }
+
   async function refreshEntries(all) {
     try {
       const d = await api('/meeting/entries?limit=60');
@@ -265,7 +371,7 @@ export function meetingPane(host, opts) {
         meetingId = v && v.meeting ? v.meeting.id : null;
         more = d.more; cursor = d.cursor;
         firstI = list.length ? list[0].i : null; lastI = list.length ? list[list.length - 1].i : 0;
-        fill(body, more ? earlierBtn : null, list.length ? list.map(entryEl) : empty('Nobody has spoken yet. Write below and everyone seated answers in turn, the leader first. Start with @name to ask particular people.'));
+        fill(body, more ? earlierBtn : null, list.length ? list.map(entryEl) : empty('Nobody has spoken yet. Write below and everyone seated answers in turn, the leader first. Start with @name to ask particular people.'), liveArea);
         applyMode();
         // open where the owner left off: the first turn after their last read, with a marker; else at the latest
         lastRead = Number(lsGet(readKey())) || 0;
@@ -278,11 +384,11 @@ export function meetingPane(host, opts) {
       if (!fresh.length) return;
       const emptyEl = body.querySelector('.empty'); if (emptyEl) emptyEl.remove();
       const top = body.scrollTop;
-      for (const e of fresh) body.appendChild(entryEl(e));
+      for (const e of fresh) body.insertBefore(entryEl(e), liveArea.isConnected ? liveArea : null);
       body.scrollTop = top;   // never moved by an arrival
       applyMode();
       lastI = fresh[fresh.length - 1].i;
-      newBelow(fresh.filter(e => e.kind !== 'note').length);
+      newBelow(fresh.filter(e => e.kind === 'say').length);
     } catch (e) { if (!destroyed) fill(errHost, errLine(e, 'Meeting')); }
   }
   async function showEarlier() {
@@ -349,7 +455,7 @@ export function meetingPane(host, opts) {
     const dlg = h('dialog', { class: 'keys-dialog mtg-register', 'aria-label': 'Action register' },
       h('h2', { class: 'h3' }, 'Action register'),
       h('p', { class: 'caption muted' }, 'What the meeting decided and who does what. Nobody writes a line for someone else: each owner updates their own. File: ' + d.file),
-      r.summary ? h('p', { class: 'body-s' }, h('strong', {}, 'Closed with: '), r.summary.text + (r.summary.plain ? ' — in plain words: ' + r.summary.plain : ''), r.summary.plain ? null : h('span', { class: 'caption danger' }, ' Fails validation: no plain-language line.')) : null,
+      r.summary ? h('p', { class: 'body-s' }, h('strong', {}, 'Closed with: '), r.summary.text + (r.summary.plain ? ' — in plain words: ' + r.summary.plain : ''), r.summary.plain || r.summary.plainOptional ? null : h('span', { class: 'caption danger' }, ' Fails validation: no plain-language line.')) : null,
       sec('Your rulings', r.rulings, x => h('li', { class: 'stack-4', 'data-ruling': x.n }, h('span', { class: 'body-s' }, x.n + '. ' + x.text + (x.plain ? ' — in plain words: ' + x.plain : '')),
         h('span', { class: 'caption muted' }, x.confirmed ? 'Confirmed by you' + (x.decisionId ? ' · in Decisions (' + x.decisionId + ')' : '') : 'Proposed by ' + who(x.proposedBy) + ': not yours until you confirm it'), flag('rulings', x.n),
         x.confirmed ? null : Button('Confirm ruling', { variant: 'primary', size: 'sm', onClick: async () => { try { await post(ACTIONS.register, { op: 'confirm', n: x.n }); app.toast('Confirmed: it is in Decisions.'); reload(); } catch (e) { app.toast(humanError(e), true); } } }))),
@@ -403,7 +509,7 @@ export function meetingPane(host, opts) {
 
   /* ---------- reading aids: modes, the timeline, your-turn notice, presence ---------- */
   let mode = lsGet('capheos.meeting.mode') || 'all';
-  const SKIM = new Set(['end', 'ruling', 'ask', 'hand', 'call', 'lower', 'parse', 'close', 'catchup']);
+  const SKIM = new Set(['end', 'ruling', 'register', 'ask', 'hand', 'call', 'later', 'lower', 'parse', 'close', 'catchup']);
   const modeBar = h('nav', { class: 'seg mtg-modes', 'aria-label': 'Reading mode' }, ['all', 'speaker', 'skim'].map(m => h('button', { type: 'button', 'data-mode': m, class: m === mode ? 'on' : '', 'aria-pressed': String(m === mode), onclick: () => { mode = m; lsSet('capheos.meeting.mode', m); for (const x of modeBar.children) { x.classList.toggle('on', x.dataset.mode === m); x.setAttribute('aria-pressed', String(x.dataset.mode === m)); } applyMode(); } }, m === 'all' ? 'Everything' : m === 'speaker' ? 'By speaker' : 'Skim: decisions, asks, hands')));
   function applyMode() {
     for (const el of body.querySelectorAll('[data-i]')) {
@@ -423,7 +529,7 @@ export function meetingPane(host, opts) {
     if (!el) {   // not loaded yet: load from that moment on
       let d; try { d = await api('/meeting/entries?limit=200&from=' + i); } catch (_) { return; }
       more = d.more; cursor = d.cursor;
-      fill(body, more ? earlierBtn : null, (d.entries || []).map(entryEl));
+      fill(body, more ? earlierBtn : null, (d.entries || []).map(entryEl), liveArea);
       lastI = d.entries && d.entries.length ? d.entries[d.entries.length - 1].i : lastI;
       applyMode(); el = body.querySelector('[data-i="' + i + '"]');
     }
@@ -467,5 +573,5 @@ export function meetingPane(host, opts) {
   async function seatUpdate() { if (destroyed) return; try { const x = await api('/meeting'); v = x; drawSeats(); drawAgenda(); } catch (_) {} }
   const offLive = events.onLive(['meeting'], liveUpdate);
   const offSeats = events.on(['meeting', 'crew'], seatUpdate);
-  return { load, ta, destroy: () => { destroyed = true; offLive(); offSeats(); clearInterval(beatTimer); document.removeEventListener('keydown', onKey); document.removeEventListener('visibilitychange', onVis); document.title = baseTitle; }, _view: () => v };
+  return { load, ta, destroy: () => { destroyed = true; if (S) { try { S.ctrl.abort(); } catch (_) {} S = null; } offLive(); offSeats(); document.removeEventListener('pointerdown', onOutside); clearInterval(beatTimer); document.removeEventListener('keydown', onKey); document.removeEventListener('visibilitychange', onVis); document.title = baseTitle; }, _view: () => v };
 }

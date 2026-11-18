@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 /* Chat › Meeting in headless Chrome, against the real console and tests/mock-station.js (scripted replies):
- *   - every control calls its API action (the page's fetches are recorded): Talk only, the rounds stepper, Observe /
- *     Take part, the crown, No leader, ×, + Add, New meeting, Shift+Enter, Round, Raise hand, Esc, Continue, Stop round
+ *   - every control calls its API action (the page's fetches are recorded): More, Tools / talk only, the rounds stepper,
+ *     Observe / Take part, the crown, No leader, ×, + Add, New meeting, Shift+Enter, Round, Raise hand, Esc, Esc again
+ *     (stops), Continue, Stop
+ *   - as at the table: no Next button by default; the turn in flight streams; one colour per person; passes, asks,
+ *     joins and hands as dim lines in order; tool steps as "· Name: …" lines; the END line
  *   - @name autocomplete in the composer
- *   - the speaking-now line, ASK / INVITE chips, passes hidden, the END card, the cost line, Open minutes
+ *   - the speaking-now line, the cost line, Open minutes
  *   - a live update does not close the roster dropdown (held: events.js pendingWhileEditing), while the controls still
  *     follow; the strip redraws once focus leaves
  *   - phone width: no horizontal scroll
@@ -67,7 +70,6 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   await cmd('Page.navigate', { url: C + '/#/chat/meeting' });
   t('the meeting opens with the seat strip in speaking order', await waitFor(() => ev('[...document.querySelectorAll(".mtg-seat")].map(x=>x.dataset.seat).join()==="agent,cfo,sec"'), 15000), await ev('document.querySelector("main")&&document.querySelector("main").innerText.slice(0,400)'));
   t('the conversation list has Meeting, and the header switches between Group chat and Meeting', await ev('!!document.querySelector(".conv-list a[href=\\"#/chat/meeting\\"]") && [...document.querySelectorAll(".mtg-mode a")].map(a=>a.textContent).join()==="Group chat,Meeting"'));
-  await api('/meeting/pace', { speed: 'instant' });   // the walk's own pace; Next is checked below
   await sleep(400);
   // record every POST the page makes
   await ev('(()=>{window.__posts=[];const f=window.fetch;window.fetch=function(u,o){try{if(o&&o.method==="POST")window.__posts.push({path:String(u).replace(/^.*\\/api/,""),body:o.body?JSON.parse(o.body):null})}catch(_){}return f.apply(this,arguments)};return 1})()');
@@ -80,13 +82,21 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
     t('control → action: ' + name, ok && p && p.path === want.path && JSON.stringify(p.body) === JSON.stringify(want.body), { ok, p, want });
     await sleep(350);
   }
-  t('talk only is the default', /talk only/.test(await ev('document.querySelector(".mtg-sub").textContent')));
+  t('tools are on by default, as at the table', /tools on/.test(await ev('document.querySelector(".mtg-sub").textContent')) && !/talk only/.test(await ev('document.querySelector(".mtg-sub").textContent')));
+  t('the controls in view are the table\'s: Round, Observe, More; no Next button by default', await ev('(()=>{const a=[...document.querySelectorAll(".mtg-btns [data-act]")].map(x=>x.dataset.act);return a.includes("round")&&a.includes("observe")&&!a.includes("next")&&!a.includes("register")&&!a.includes("pause")&&!!document.querySelector(".mtg-more > summary[data-act=more]")&&!document.querySelector(".mtg-more").open})()'), await ev('[...document.querySelectorAll(".mtg-btns [data-act]")].map(x=>x.dataset.act).join()'));
+  await ev('document.querySelector(".mtg-more > summary").click()');
+  t('More opens the rest: tools, register, minutes, agenda, pace', await waitFor(() => ev('(()=>{const d=document.querySelector(".mtg-more");return d.open&&["talk-only","register","minutes"].every(k=>!!d.querySelector("[data-act="+k+"]"))&&!!d.querySelector("#mtg-speed")&&!!d.querySelector("#mtg-item-new")})()'), 3000));
+  await maps('Tools off (talk only) for the meeting', '[data-act="talk-only"]', { path: '/meeting/talkonly', body: { on: true } });
+  t('the head says talk only', await waitFor(() => ev('/talk only/.test(document.querySelector(".mtg-sub").textContent)'), 3000));
+  await maps('Tools on again', '[data-act="talk-only"]', { path: '/meeting/talkonly', body: { on: false } });
+  t('More stays open across live updates', await ev('document.querySelector(".mtg-more").open'));
   await ev('(()=>{const i=document.getElementById("mtg-item-new");i.value="Check the books";return 1})()');
   await maps('Add agenda item', '.mtg-agenda .mtg-add .btn', { path: '/meeting/agenda', body: { op: 'add', title: 'Check the books' } });
   await waitFor(() => ev('!!document.querySelector("[data-act=item-tools]")'), 3000);
-  await maps('Tools on for an item', '[data-act="item-tools"]', { path: '/meeting/agenda', body: { op: 'tools', id: 'a1', on: true } });
-  t('the item shows tools on', await waitFor(() => ev('document.querySelector("[data-act=item-tools]").getAttribute("aria-pressed")==="true"'), 3000));
-  await maps('Talk only for the item again', '[data-act="item-tools"]', { path: '/meeting/agenda', body: { op: 'tools', id: 'a1', on: false } });
+  t('a new item follows the meeting: tools on', await ev('document.querySelector("[data-act=item-tools]").getAttribute("aria-pressed")==="true"'));
+  await maps('Talk only for an item', '[data-act="item-tools"]', { path: '/meeting/agenda', body: { op: 'tools', id: 'a1', on: false } });
+  t('the item shows talk only', await waitFor(() => ev('document.querySelector("[data-act=item-tools]").getAttribute("aria-pressed")==="false"'), 3000));
+  await maps('Tools on for the item again', '[data-act="item-tools"]', { path: '/meeting/agenda', body: { op: 'tools', id: 'a1', on: true } });
   await maps('More rounds (stepper)', '[data-act="rounds-up"]', { path: '/meeting/observe', body: { on: false, rounds: 7 } });
   await maps('Observe', '[data-act="observe"]', { path: '/meeting/observe', body: { on: true, rounds: 7 } });
   await maps('Take part', '[data-act="take-part"]', { path: '/meeting/observe', body: { on: false } });
@@ -115,13 +125,17 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   await key('Enter', 'Enter', 8, '\r', 13);
   const sent = await waitFor(async () => (await ev('window.__posts.length')) > n0 ? lastPost() : null, 4000);
   t('control → action: Shift+Enter sends the message', sent && sent.path === '/meeting/say' && sent.body.text === '@sharon what is the budget?', sent);
-  const chips = await waitFor(() => ev('(()=>{const k=[...document.querySelectorAll(".chat-body .mtg-chip")].map(x=>x.dataset.kind);return k.includes("ask")&&k.includes("invite")?k:null})()'), 15000);
-  t('ASK and INVITE lines are labelled chips, not raw text', chips && !(await ev('/ASK:|INVITE:/.test(document.querySelector(".chat-body").innerText)')), chips);
+  const lines = await waitFor(() => ev('(()=>{const k=[...document.querySelectorAll(".chat-body .mtg-ev[data-kind]")].map(x=>x.dataset.kind);return k.includes("ask")&&k.includes("join")&&k.includes("pass")?[...document.querySelectorAll(".chat-body .mtg-ev[data-kind]")].map(x=>x.textContent):null})()'), 15000);
+  t('asks, joins and passes are dim lines in order, as at the table', lines && lines.some(x => x === '(Sharon asks Phil: any risk?)') && lines.some(x => x === '(Rachel joins, invited by Phil: hiring view)') && lines.some(x => x === '(Rachel passes)') && lines.findIndex(x => /Sharon asks Phil/.test(x)) < lines.findIndex(x => /Rachel joins/.test(x)) && lines.findIndex(x => /Rachel joins/.test(x)) < lines.findIndex(x => /Rachel passes/.test(x)), lines);
+  t('...and the protocol lines are not shown as raw text', !(await ev('/ASK:|INVITE:/.test(document.querySelector(".chat-body").innerText)')));
+  t('the answer is introduced as at the table: (Phil answers Sharon)', await ev('[...document.querySelectorAll(".chat-body .msg-them-wrap[data-who=sec] .mtg-ev-lead")].some(x=>x.textContent==="(Phil answers Sharon)")'));
+  t('tool steps stay in the flow as "· Name: …" lines (tools are on)', await waitFor(() => ev('[...document.querySelectorAll(".chat-body .msg-them-wrap[data-who=cfo] .mtg-tool")].some(x=>/^· Sharon: reading CHARTER\.md$/.test(x.textContent))'), 5000), await ev('[...document.querySelectorAll(".chat-body .mtg-tool")].map(x=>x.textContent)'));
+  t('each person keeps one colour: their avatar, their name and their turns', await ev('(()=>{const c=el=>[...el.classList].find(k=>/^mtg-c\d$/.test(k));const av=c(document.querySelector(".mtg-seat[data-seat=cfo] .mtg-av"));const turns=[...document.querySelectorAll(".chat-body .msg-them-wrap[data-who=cfo]")].map(c);const other=c(document.querySelector(".mtg-seat[data-seat=sec] .mtg-av"));return !!av&&turns.length>0&&turns.every(x=>x===av)&&getComputedStyle(document.querySelector(".chat-body .msg-them-wrap[data-who=cfo] .mtg-who")).color!==getComputedStyle(document.querySelector(".chat-body .msg-them-wrap[data-who=sec] .mtg-who")).color||av===other})()'));
   await waitFor(() => ev('document.querySelector("[data-act=round]") && !document.querySelector("[data-act=round]").disabled'), 10000);
   { const n = await ev('window.__posts.length'); const i = await ev('(()=>{const b=document.querySelector(".chat-body .mtg-explain");if(!b)return null;const i=Number(b.closest("[data-i]").dataset.i);b.click();return i})()');
     const p = await waitFor(async () => (await ev('window.__posts.length')) > n ? lastPost() : null, 4000);
     t('control → action: Explain for the room', p && p.path === '/meeting/explain' && p.body.i === i, { p, i }); }
-  t('passes are hidden (Rachel passed)', !(await ev('/PASS/.test(document.querySelector(".chat-body").innerText)')) && !(await ev('!!document.querySelector(".chat-body [data-who=hr]")')));
+  t('a pass is never shown as a turn: no PASS text, no turn for Rachel', !(await ev('/PASS/.test(document.querySelector(".chat-body").innerText)')) && !(await ev('!!document.querySelector(".chat-body .msg-them-wrap[data-who=hr]")')));
   t('the cost line counts the turns and never shows $0.00 for a subscription', await ev('(()=>{const t=document.querySelector(".mtg-cost").textContent;return /^This meeting so far: [1-9]\\d* turns? · Claude: /.test(t)&&!/\\$0\\.00/.test(t)})()'), await ev('document.querySelector(".mtg-cost").textContent'));
 
   // Round, the speaking-now line, Raise hand, Continue, Esc, Stop round
@@ -129,7 +143,10 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   await maps('Round', '[data-act="round"]', { path: '/meeting/round', body: {} });
   const speaking = await waitFor(() => ev('(()=>{const l=document.querySelector(".mtg-live");return l&&/Speaking now: Founder/.test(l.textContent)?l.textContent:null})()'), 6000, 80);
   t('the live line says who is speaking now and who is next', speaking && /Next up: \w/.test(speaking), speaking);
-  t('completed turns only: no token stream on the page', !(await ev('!!document.querySelector(".mtg-livecard")')));
+  const s1 = await waitFor(() => ev('(()=>{const l=document.querySelector(".chat-body .mtg-liveturn:not([hidden])");const s=l&&l.querySelector(".mtg-stream");return s&&s.textContent.length>5?{who:l.dataset.who,len:s.textContent.length,text:s.textContent,name:l.querySelector(".mtg-who").textContent}:null})()'), 6000, 60);
+  await sleep(500);
+  const s2 = await ev('(()=>{const s=document.querySelector(".chat-body .mtg-liveturn:not([hidden]) .mtg-stream");return s?s.textContent.length:0})()');
+  t('the turn in flight streams word by word under the speaker\'s name', s1 && s1.who === 'agent' && s1.name === 'Founder' && s2 > s1.len && 'A slow opening statement that runs on for a while, word after word after word.'.startsWith(s1.text.trim()), { s1, s2 });
   await maps('Raise hand', '[data-act="hand"]', { path: '/meeting/hand', body: {} });
   t('the floor comes to the owner after the current speaker', await waitFor(() => ev('!!document.querySelector("[data-act=continue]") && /you have the floor/i.test(document.querySelector(".mtg-live").textContent)'), 15000));
   await maps('Continue', '[data-act="continue"]', { path: '/meeting/continue', body: {} });
@@ -141,8 +158,18 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   await key('Escape', 'Escape', 0, '', 27);
   const esc = await waitFor(async () => (await ev('window.__posts.length')) > n1 ? lastPost() : null, 3000);
   t('control → action: Esc raises a hand while a round runs', esc && esc.path === '/meeting/hand', esc);
-  await maps('Stop round', '[data-act="stop"]', { path: '/meeting/stop', body: {} });
+  await sleep(300);
+  const n2 = await ev('window.__posts.length');
+  await key('Escape', 'Escape', 0, '', 27);
+  const esc2 = await waitFor(async () => (await ev('window.__posts.length')) > n2 ? lastPost() : null, 3000);
+  t('control → action: Esc again stops the turn (the table\'s second Ctrl-C)', esc2 && esc2.path === '/meeting/stop', esc2);
   t('the round stops', await waitFor(() => ev('document.querySelector("[data-act=round]").disabled===false && !document.querySelector("[data-act=stop]")'), 15000));
+  const slow = { text: 'One more slow answer that keeps going on and on for a while.', stepMs: 150 };
+  await st('/__meeting', { reset: true, replies: { agent: slow, cfo: slow, sec: slow } });
+  await maps('Round for Stop', '[data-act="round"]', { path: '/meeting/round', body: {} });
+  await waitFor(() => ev('!!document.querySelector("[data-act=stop]")'), 5000, 80);
+  await maps('Stop', '[data-act="stop"]', { path: '/meeting/stop', body: {} });
+  t('Stop stops it', await waitFor(() => ev('document.querySelector("[data-act=round]").disabled===false && !document.querySelector("[data-act=stop]")'), 15000));
 
   // Pace: Next (manual), Pause, Catch me up
   await ev('(()=>{const s=document.getElementById("mtg-speed");s.value="manual";s.dispatchEvent(new Event("change"));return 1})()');
@@ -174,27 +201,27 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   await api('/meeting/seats', { remove: ['hr'] });   // Rachel came in as a guest: unseat her, so the picker has someone
   await waitFor(() => ev('!document.getElementById("mtg-pick").disabled'), 4000);
   const f0 = await ev('(()=>{const s=document.getElementById("mtg-pick");s.__mark=1;s.focus();return document.activeElement===s})()');
-  await api('/meeting/agenda', { op: 'add', title: 'Tools item', tools: true });   // a change from elsewhere: the server emits "meeting"
-  const followed = await waitFor(() => ev('/tools on for this item/.test(document.querySelector(".mtg-sub").textContent)'), 5000);
+  await api('/meeting/talkonly', { on: true });   // a change from elsewhere: the server emits "meeting"
+  const followed = await waitFor(() => ev('/talk only/.test(document.querySelector(".mtg-sub").textContent)'), 5000);
   const held = await ev('(async()=>{const e=await import("/js/events.js");const s=document.getElementById("mtg-pick");return {same:!!(s&&s.__mark),focused:document.activeElement===s,pending:e.pendingWhileEditing()}})()');
   t('a live update does not close the roster dropdown (held)', f0 && held && held.same && held.focused && held.pending >= 1, held);
   t('...while the controls follow the change at once', !!followed);
   await ev('document.getElementById("mtg-pick").blur()');
   t('the strip redraws once focus leaves', await waitFor(() => ev('!document.getElementById("mtg-pick").__mark'), 4000));
-  await api('/meeting/agenda', { op: 'remove', id: 'a1' }); await api('/meeting/agenda', { op: 'remove', id: 'a2' });
+  await api('/meeting/agenda', { op: 'remove', id: 'a1' }); await api('/meeting/talkonly', { on: false });
 
   // observe to END: the END card
   await api('/meeting/observe', { on: true, rounds: 3 });
   await st('/__meeting', { reset: true, replies: { agent: 'We agree.\nEND: ship it, Sharon writes it up', cfo: 'Agreed.' } });
   await api('/meeting/say', { text: 'Settle it.' });
-  const endCard = await waitFor(() => ev('(()=>{const e=[...document.querySelectorAll(".chat-body .mtg-end")].find(x=>/Discussion closed/.test(x.textContent));return e?e.textContent:null})()'), 15000);
-  t('the END summary is a card', endCard && /Discussion closed by Founder/.test(endCard) && /ship it, Sharon writes it up/.test(endCard), endCard);
+  const endCard = await waitFor(() => ev('(()=>{const e=[...document.querySelectorAll(".chat-body .mtg-ev-end")].find(x=>/closes the discussion/.test(x.textContent));return e?e.textContent:null})()'), 15000);
+  t('the END summary is its own line, as at the table', endCard === '(Founder closes the discussion: ship it, Sharon writes it up)', endCard);
   await api('/meeting/observe', { on: false });
   // Open minutes
   // the Register: the leader's proposed ruling, confirmed by the owner
   await st('/__meeting', { reset: true, replies: { agent: 'RULING: keep the plan — plain: we keep the plan' } });
   await api('/meeting/say', { text: '@founder rule on it' });
-  await waitFor(() => ev('[...document.querySelectorAll(".chat-body .mtg-chip")].some(x=>x.dataset.kind==="ruling")'), 8000);
+  t('a proposed ruling is a dim line with its way to confirm', await waitFor(() => ev('[...document.querySelectorAll(".chat-body .mtg-ev[data-kind=ruling]")].some(x=>/Founder proposes a ruling for you to confirm: keep the plan/.test(x.textContent)&&!!x.querySelector("[data-act=open-register]"))'), 8000));
   await click('[data-act="register"]');
   await waitFor(() => ev('!!document.querySelector("dialog.mtg-register[open] [data-ruling] button")'), 4000);
   { const n = await ev('window.__posts.length'); await ev('document.querySelector("dialog.mtg-register [data-ruling] button").click()'); const p = await waitFor(async () => (await ev('window.__posts.length')) > n ? lastPost() : null, 4000);
@@ -212,7 +239,7 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   // phone width
   await cmd('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
   await sleep(500);
-  const phone = await ev('(()=>({w:document.documentElement.scrollWidth,iw:innerWidth,btns:[...document.querySelectorAll(".mtg-controls .btn")].every(b=>b.getBoundingClientRect().right<=innerWidth+1)}))()');
+  const phone = await ev('(()=>({w:document.documentElement.scrollWidth,iw:innerWidth,btns:[...document.querySelectorAll(".mtg-controls .btn, .mtg-more-ctrl .btn")].every(b=>b.getBoundingClientRect().right<=innerWidth+1)}))()');
   t('phone width: no horizontal scroll, every control on screen', phone && phone.w <= phone.iw + 1 && phone.btns, phone);
   await cmd('Emulation.clearDeviceMetricsOverride', {});
 
