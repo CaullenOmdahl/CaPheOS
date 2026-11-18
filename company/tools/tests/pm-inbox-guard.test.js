@@ -55,6 +55,8 @@ const rows = () => R('company/pm-inbox.jsonl').split('\n').filter(Boolean).map(l
 
 test.before(() => {
   fs.cpSync(path.join(REPO, 'company'), path.join(T, 'company'), { recursive: true });
+  // the console runs from the company it serves (lib/pm-inbox-guard.js matches a program's path inside that root only)
+  fs.cpSync(path.join(REPO, 'console'), path.join(T, 'console'), { recursive: true });
   for (const d of ['company/owner', 'company/state', 'company/work']) fs.rmSync(path.join(T, d), { recursive: true, force: true });
   fs.rmSync(PMI, { force: true });
   const cj = JSON.parse(fs.readFileSync(path.join(REPO, 'company', 'company.json'), 'utf8'));
@@ -205,7 +207,7 @@ test('the console answer (Today), Today, a snooze and an approval answered in ch
   assert.equal(ap.status, 0, ap.out); assert.equal(ap.json.minted, true, ap.out);
   const snz = cli('inbox.js', ['ask', '--from', 'Sam', '--message', 'May we change the logo next month? It gives us a fresher look; if you skip it, we keep the old one.']);
   assert.equal(snz.status, 0, snz.out);
-  const child = spawn(process.execPath, [path.join(REPO, 'console', 'server.js'), '--port', '0', '--print-port'], { env: baseEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [path.join(T, 'console', 'server.js'), '--port', '0', '--print-port'], { env: baseEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
   let err = ''; child.stderr.on('data', d => { err += d; });
   try {
     const port = await new Promise((res, rej) => { let b = ''; child.stdout.on('data', d => { b += d; const m = b.match(/\{"port":(\d+)\}/); if (m) res(Number(m[1])); }); child.on('exit', c => rej(new Error('console exited ' + c + ': ' + err))); setTimeout(() => rej(new Error('console did not start: ' + err)), 20000); });

@@ -25,14 +25,14 @@
  * The fixed gates always override a ruling, and a ruling cannot name one.
  *
  * TYPED EFFECTS (applyEffect): a card may carry `effect`, applied only here, only after the owner's own yes:
- *   {governance:{category, level}}  governance.js set                     {clearance:{category, target, agent?, until, why, acts?, ownAct?}}
- *   {projectApprove:{id}}           project.js approve                     external-gate.js clear (a justification file is written)
- *   {serviceApprove:{name}}         service.js owner-approve               {harnessApply:{id}}  harness-change.js owner-apply
- *   {moduleEnable:{id}}             module.js enable                       {lockedAccept:{path}} locked-watch.js accept
- *   {budgetToday:{usd}}             money-hold.js set raise                {none:true}          nothing
- * Each runs the owner's own tool with --by <owner> from this process, so the tool's owner check and its own record apply.
- * The card shows what yes does in the console's own words (describeEffect), never the asker's. An unknown effect: the
- * answer is recorded, nothing is applied, and the owner is told so.
+ *   {serviceApprove:{name}}  service.js owner-approve   (filed only by service.js)
+ *   {harnessApply:{id}}      harness-change.js owner-apply (filed only by harness-change.js)
+ *   {none:true}              nothing
+ * lib/pm-inbox-guard.js drops the effect of a card whose recorded writer is not the tool that owns it, and every other
+ * effect kind has no producer and is never applied. The card shows what yes does in the console's own words
+ * (describeEffect: every parameter, in plain words), never the asker's. cardDigest(row) is a hash of the card exactly as
+ * shown (its words, its technical part, its effect and what yes does): the page sends it back with the answer, and the
+ * effect is applied only when the card still hashes to what the owner saw (an asker's later update never rides on a yes).
  *
  * DIGEST: company/owner/digest.jsonl {at, kind:'fyi', from, text, technical?, key?} (company/tools/lib/owner-notice.js
  * writes it); Today shows the last day of it as one card.
@@ -47,7 +47,7 @@ const CAT_SAY = { hiring: 'hiring', release: 'releasing someone', budget: 'the b
   packs: 'add-ons', deps: 'software the crew installs', org: 'how the team is organised',
   access: 'access and accounts', ownership: 'ownership', commitment: 'commitments', spendBeyondCap: 'spending beyond the cap' };
 const FIXED_ALIAS = { commitments: 'commitment', spend_beyond_cap: 'spendBeyondCap', spendbeyondcap: 'spendBeyondCap' };
-const EFFECTS = ['governance', 'clearance', 'projectApprove', 'serviceApprove', 'harnessApply', 'moduleEnable', 'lockedAccept', 'budgetToday', 'none'];
+const EFFECTS = ['serviceApprove', 'harnessApply', 'none'];
 const RULING_EFFECTS = ['crew-decides', 'never-ask', 'ask'];
 
 function make(deps) {
@@ -161,54 +161,47 @@ function make(deps) {
     const keys = Object.keys(e).filter(k => e[k] !== undefined && e[k] !== null && e[k] !== false);
     return keys.length === 1 && EFFECTS.includes(keys[0]) ? keys[0] : null;
   }
-  const money = n => '$' + (Math.round(Number(n) * 100) / 100).toFixed(Number(n) % 1 ? 2 : 0);
-  function moduleTitle(id) { const m = readJson(co.p('modules', String(id).replace(/[^a-z0-9-]/g, ''), 'module.json'), null); return (m && (m.title || m.name)) || String(id).replace(/-/g, ' '); }
-  function projectName(id) { const d = readJson(co.p('company', 'projects.json'), null); const p = d && (d.projects || []).find(x => x.id === String(id).toLowerCase()); return (p && p.name) || String(id); }
-  const dayOf = iso => { try { return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', timeZone: process.env.CAPHEOS_TZ || co.config.timezone || co.TZ || undefined }).format(new Date(iso)); } catch (_) { return String(iso).slice(0, 10); } };
-  /* what yes does, in the console's own words (never the asker's) */
+  // the parameters of an effect in plain words: the crew's change by number and what it is about; the background job
+  // by its name and when it runs (read from the owning tool's own record, never from the card)
+  function changeWords(id) {
+    const n = String(id || '').replace(/^hc-0*/, '') || String(id);
+    const rec = /^hc-\d{1,6}$/.test(String(id)) ? readJson(co.p('company', 'work', 'changes', String(id) + '.json'), null) : null;
+    let area = null; try { area = rec ? require(path.join(TOOLS, 'harness-change.js')).plainArea(rec) : null; } catch (_) { area = null; }
+    return 'the crew\'s change number ' + n + (area ? ' (to ' + area + ')' : '') + (rec && rec.by ? ', proposed by ' + rec.by : '');
+  }
+  function jobWords(name) {
+    const nm = String(name || '').replace(/[^a-z0-9-]/g, '');
+    const e = ((readJson(co.p('company', 'state', 'services.json'), {}) || {}).services || {})[nm] || null;
+    let when = null; try { when = e ? (e.kind === 'timer' ? 'runs ' + require(path.join(TOOLS, 'service.js')).plainWhen(e.schedule) : 'keeps running') : null; } catch (_) { when = null; }
+    return 'the background job called “' + nm + '”' + (when ? ', which ' + when : '') + (e && e.byName ? ', asked for by ' + e.byName : '');
+  }
+  /* what yes does, in the console's own words (never the asker's), naming every parameter */
   function describeEffect(e) {
-    const k = effectKind(e); if (!k) return e ? 'If you say yes, your answer is recorded; the console cannot apply this kind of change itself, so the crew does it.' : null;
+    const k = effectKind(e); if (!k) return e ? 'If you say yes, your answer is recorded; the console cannot apply this kind of change itself, so nothing changes automatically.' : null;
     const v = e[k] || {};
     switch (k) {
-      case 'governance': return LEVEL_SAY[v.level] ? 'If you say yes, your setting for ' + catSay(v.category) + ' becomes “' + LEVEL_SAY[v.level] + '”. You can change it back in Settings › Autonomy.' : null;
-      case 'clearance': return 'If you say yes, the crew may do this one outside action' + (v.until ? ' until ' + dayOf(v.until) : '') + '.';
-      case 'projectApprove': return 'If you say yes, the crew may take over the project “' + projectName(v.id) + '”.';
-      case 'serviceApprove': return 'If you say yes, the background job the crew asked for is started now.';
-      case 'harnessApply': return 'If you say yes, the change the crew proposed to its own tools is made now. It is checked again after three days.';
-      case 'moduleEnable': return 'If you say yes, the add-on “' + moduleTitle(v.id) + '” is switched on now.';
-      case 'lockedAccept': return 'If you say yes, a change to one of the crew\'s protected files is kept as the accepted version.';
-      case 'budgetToday': return Number(v.usd) >= 0 ? 'If you say yes, today\'s spending limit becomes ' + money(v.usd) + ', for today only.' : null;
+      case 'serviceApprove': return 'If you say yes, ' + jobWords(v.name) + ' is set up and started now, exactly as described.';
+      case 'harnessApply': return 'If you say yes, ' + changeWords(v.id) + ' is made now, exactly as described. It is checked again after three days.';
       case 'none': return null;
     }
     return null;
+  }
+  /* cardDigest(row) -> a hash of the card as the owner sees it: from, words, technical part, effect and what yes does */
+  function cardDigest(row) {
+    const r = row || {};
+    const shown = [r.from || '', r.message || '', r.consequence || '', r.recommendation || '', r.technical || '', JSON.stringify(r.effect || null), describeEffect(r.effect) || ''];
+    return 'sha256:' + crypto.createHash('sha256').update(JSON.stringify(shown)).digest('hex');
   }
   const plainErr = m => String(m || 'it did not work').split('\n')[0].replace(/\s+/g, ' ').slice(0, 300);
   /* applyEffect(effect, {runApi, owner, id, card}) -> {kind, applied, said, technical?} */
   async function applyEffect(e, ctx) {
     const k = effectKind(e);
-    if (!k) return { kind: null, applied: false, said: 'Your answer is recorded. Nothing was changed automatically: the console does not know how to apply this request, so the crew carries it out.' };
-    const v = e[k] || {}; const by = ctx.owner();
+    if (!k) return { kind: null, applied: false, said: 'Your answer is recorded. Nothing was changed automatically: the console does not know how to apply this request, so nothing changes until the crew asks again.' };
+    const v = e[k] || {};
     const fail = (err, what) => ({ kind: k, applied: false, said: 'Your answer is recorded, but ' + what + ' did not go through, so nothing changed. The crew has been told why.', technical: plainErr(err && err.message ? err.message : err) });
     const S = s => { const t = String(s == null ? '' : s).trim(); if (!t || t.startsWith('-')) throw new Error('bad value: ' + JSON.stringify(s)); return t; };
     try {
       if (k === 'none') return { kind: k, applied: false, said: 'Your answer is recorded.' };
-      if (k === 'governance') {
-        if (normFixed(v.category)) return { kind: k, applied: false, said: 'Your answer is recorded. ' + catSay(normFixed(v.category)).replace(/^./, c => c.toUpperCase()) + ' is one of the four decisions that are always yours, so that setting was not changed.' };
-        if (!LEVEL_SAY[v.level]) return fail(new Error('unknown level ' + v.level), 'the setting change');
-        const r = await ctx.runApi('governance.js', ['set', S(v.category), S(v.level), '--by', by]);
-        return { kind: k, applied: true, said: r && r.unchanged ? 'Your setting for ' + catSay(v.category) + ' was already “' + LEVEL_SAY[v.level] + '”, so nothing changed.' : 'Done: your setting for ' + catSay(v.category) + ' is now “' + LEVEL_SAY[v.level] + '”.' };
-      }
-      if (k === 'projectApprove') { await ctx.runApi('project.js', ['approve', '--id', S(v.id), '--by', by]); return { kind: k, applied: true, said: 'Done: the crew may now take over “' + projectName(v.id) + '”.' }; }
-      if (k === 'moduleEnable') { await ctx.runApi('module.js', ['enable', S(v.id), '--by', by, '--json'], { timeout: 180000 }); return { kind: k, applied: true, said: 'Done: “' + moduleTitle(v.id) + '” is switched on.' }; }
-      if (k === 'lockedAccept') {
-        await ctx.runApi('locked-watch.js', ['accept', S(v.path), '--by', by, '--why', 'accepted by the owner on Today (' + (ctx.id || 'a card') + ')']);
-        return { kind: k, applied: true, said: 'Done: the change is kept as the accepted version.' };
-      }
-      if (k === 'budgetToday') {
-        const usd = Number(v.usd); if (!(usd >= 0 && usd <= 100000)) return fail(new Error('bad amount ' + v.usd), 'the budget change');
-        await ctx.runApi('money-hold.js', ['set', 'raise', '--budget', String(usd), '--by', by, '--why', 'raised by the owner on Today (' + (ctx.id || 'a card') + ')']);
-        return { kind: k, applied: true, said: 'Done: today\'s spending limit is ' + money(usd) + '. It goes back to normal tomorrow.' };
-      }
       if (k === 'harnessApply') {
         // harness-change.js owner-apply acts only on the owner's recorded yes to this change's own card (just written)
         const r = await ctx.runApi('harness-change.js', ['owner-apply', S(v.id)], { timeout: 180000 });
@@ -223,20 +216,7 @@ function make(deps) {
         if (!r || !r.installed) return fail(new Error((r && (r.text || r.error)) || 'not installed'), 'starting the job');
         return { kind: k, applied: true, said: 'Done: the background job is set up and running.' };
       }
-      if (k === 'clearance') {
-        const cat = S(v.category), target = S(v.target);
-        const until = v.until && Number.isFinite(Date.parse(v.until)) ? new Date(v.until).toISOString() : new Date(Date.now() + 7 * 864e5).toISOString();
-        const rel = path.join('company', 'work', 'owner-answers', String(ctx.id || 'card').replace(/[^A-Za-z0-9-]/g, '') + '-clearance.md');
-        const abs = co.p(rel); fs.mkdirSync(path.dirname(abs), { recursive: true });
-        fs.writeFileSync(abs, '# Owner clearance (' + (ctx.id || 'a card') + ')\n\nThe owner said yes on Today to: ' + String((ctx.card && ctx.card.message) || '').replace(/\s+/g, ' ').slice(0, 600) + '\n\n- category: ' + cat + '\n- target: ' + target + '\n- until: ' + until + '\n- why: ' + String(v.why || '').replace(/\s+/g, ' ').slice(0, 400) + '\n');
-        const args = ['clear', '--by', by, '--category', cat, '--target', target, '--until', until, '--justification', rel.split(path.sep).join('/'), '--note', ('owner yes on Today ' + (ctx.id || '')).trim()];
-        if (v.agent) args.push('--agent', S(v.agent));
-        if (Array.isArray(v.acts) && v.acts.length) args.push('--acts', v.acts.map(S).join(','));
-        if (v.ownAct) args.push('--own-act', S(v.ownAct));
-        await ctx.runApi('external-gate.js', args);
-        return { kind: k, applied: true, said: 'Done: the crew may do this' + ' until ' + dayOf(until) + '.' };
-      }
-    } catch (err) { return fail(err, { governance: 'the setting change', projectApprove: 'the project approval', moduleEnable: 'switching on the add-on', lockedAccept: 'keeping the change', budgetToday: 'the budget change', harnessApply: 'making the change', serviceApprove: 'starting the job', clearance: 'the clearance' }[k] || 'the change'); }
+    } catch (err) { return fail(err, { harnessApply: 'making the change', serviceApprove: 'starting the job' }[k] || 'the change'); }
     return { kind: k, applied: false, said: 'Your answer is recorded.' };
   }
 
@@ -256,6 +236,6 @@ function make(deps) {
     return { ok: true, title: 'What the crew did today', items, since: new Date(since).toISOString() };
   }
 
-  return { classify, split, rulings, addRuling, removeRuling, rulingFor, effectKind, describeEffect, applyEffect, digest, plainLead, LEVEL_SAY, CAT_SAY, catSay };
+  return { classify, split, rulings, addRuling, removeRuling, rulingFor, effectKind, describeEffect, cardDigest, applyEffect, digest, plainLead, LEVEL_SAY, CAT_SAY, catSay };
 }
 module.exports = { make, LEVEL_SAY, CAT_SAY, EFFECTS, RULING_EFFECTS };

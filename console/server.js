@@ -207,6 +207,7 @@ function cardParts(row) {
   const o = {};
   for (const k of ['consequence', 'recommendation', 'technical']) if (typeof row[k] === 'string' && row[k].trim()) o[k] = row[k].trim().slice(0, k === 'technical' ? 8000 : 600);
   if (row.effect) { o.effectSays = NEEDS.describeEffect(row.effect); o.effectKind = NEEDS.effectKind(row.effect) || 'unknown'; }
+  if (row.effect || row.card) o.cardDigest = NEEDS.cardDigest(row);   // sent back with the answer: a yes applies only what was shown
   return o;
 }
 /* Needs you: only what still needs the owner (console/owner-needs.js classify); the rest is "The crew is handling" */
@@ -319,11 +320,18 @@ async function answerQuestion(id, b) {
     const ruling = NEEDS.addRuling(ruleDraft, bad);
     return { ok: true, id, state: 'open', ruling, rulingSaid: 'Saved as a standing rule: “' + ruling.text + '”. Questions like this one are now the crew\'s to decide; this one is under “The crew is handling”, where you can still decide it.' };
   }
+  // a card whose yes does something: the answer must be to the card as the owner saw it (the page sends its cardDigest);
+  // a card the asker updated since is refused before anything is recorded
+  const acts = row.effect && NEEDS.effectKind(row.effect) && NEEDS.effectKind(row.effect) !== 'none';
+  if (acts && yes && b.cardDigest !== NEEDS.cardDigest(row)) throw new HttpError(409, 'This card changed while you were reading it, so your answer was not recorded. Read it again, then answer.', { code: 'card-changed' });
   const r = await answerOne(id, b, q);
   const out = Object.assign({}, r);
   if (ruleDraft) { try { out.ruling = NEEDS.addRuling(ruleDraft, bad); out.rulingSaid = 'Saved as a standing rule: “' + out.ruling.text + '”. You can remove it in Settings › Autonomy.'; } catch (e) { out.rulingSaid = 'Your answer is recorded, but the standing rule was not saved: ' + e.message; } }
   if (row.effect && r && r.ok !== false && String(r.state || 'answered') !== 'open') {
-    if (yes) { out.applied = await NEEDS.applyEffect(row.effect, { runApi, owner: () => OWNER, id, card: q }); out.said = out.applied.said; }
+    // the card still is what the owner saw (no update slipped in between their click and now), and its effect is the same
+    const now = tool('inbox.js').state()[id] || {};
+    if (yes && acts && NEEDS.cardDigest(now) !== b.cardDigest) { out.applied = { kind: NEEDS.effectKind(row.effect), applied: false, said: 'Your answer is recorded, but the card changed while you answered, so nothing was changed. The crew will ask again.' }; out.said = out.applied.said; }
+    else if (yes) { out.applied = await NEEDS.applyEffect(row.effect, { runApi, owner: () => OWNER, id, card: q }); out.said = out.applied.said; }
     else out.said = 'Your answer is recorded. Nothing was changed.';
     try { emit('governance'); } catch (_) {}
   }

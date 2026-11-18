@@ -49,8 +49,17 @@ const AGENT_TYPES = new Set(['ask', 'withdraw', 'reclassify', 'approval-amend'])
 const SYSTEM_TYPES = new Set(['approval-journal', 'approval-reminder']);
 const ASKER_ONLY = new Set(['withdraw', 'reclassify', 'approval-amend']);
 const OWNER_MAINS = ['console/server.js', 'company/tools/inbox.js', 'company/tools/approvals.js', 'company/tools/dispatch.js', 'company/tools/dispatcher-loop.js'];
-// a program's path relative to its project (a fixture's tools run from the checkout, so `main` may be absolute)
-const TOOL_MAIN = /(^|\/)(company\/tools\/[A-Za-z0-9._-]+\.js|console\/server\.js)$/;
+// a program's path relative to the company root. provenance.js records `main` relative to the root when the program is
+// inside it, else absolute; an absolute `main` counts only when it is this checkout's own code (a fixture's tools run from
+// the checkout), never a look-alike path elsewhere (/tmp/x/company/tools/a.js). Matched whole, never by suffix.
+const TOOL_MAIN = /^(company\/tools\/[A-Za-z0-9._-]+\.js|console\/server\.js)$/;
+const OWN_ROOT = (() => { try { return fs.realpathSync(path.resolve(__dirname, '..', '..', '..')); } catch (_) { return path.resolve(__dirname, '..', '..', '..'); } })();
+function mainRel(main) {
+  const m = String(main || '');
+  if (!m || m === '[none]') return null;
+  if (!m.startsWith('/')) return m.split('/').includes('..') ? null : m;
+  return m.startsWith(OWN_ROOT + '/') ? m.slice(OWN_ROOT.length + 1) : null;
+}
 const WRITERS = ['inbox.js', 'approvals.js', 'governance', 'service.js', 'harness-change.js', 'console'];
 const IGNORED_MSG = 'unverified pm-inbox row ignored';
 const sha = b => 'sha256:' + crypto.createHash('sha256').update(b).digest('hex');
@@ -90,7 +99,21 @@ const ownerNames = root => { let n = ''; try { n = (co.readJson(path.join(root, 
 // tests only (in this process): a function deciding whether a row's program may write, instead of the tables above
 let PIN = null;
 function pinMains(fn) { PIN = typeof fn === 'function' ? fn : null; }
-const mainOk = (p, list) => typeof p.main === 'string' && (PIN ? !!PIN(p) : list ? list.some(m => p.main === m || p.main.endsWith('/' + m)) : TOOL_MAIN.test(p.main));
+const mainOk = (p, list) => typeof p.main === 'string' && (PIN ? !!PIN(p) : (() => { const r = mainRel(p.main); return !!r && (list ? list.includes(r) : TOOL_MAIN.test(r)); })());
+
+/* An owner card's effect (what the console applies on the owner's yes) carries owner authority, so it is kept only on an
+ * ask whose provenance row names the ONE program that files that effect (lib/owner-card.js EFFECT_PRODUCERS): an ask
+ * any other program recorded keeps its words but its effect becomes {none:true} (effectDropped says why). Effect kinds
+ * with no producer are always dropped. In a throwaway company (selftests) only the program check is off, as above. */
+function effectKindOf(e) { if (!e || typeof e !== 'object' || Array.isArray(e)) return null; const k = Object.keys(e); return k.length === 1 ? k[0] : '?'; }
+function effectOk(row, p, ctx) {
+  const k = effectKindOf(row && row.effect); if (!k || (k === 'none' && row.effect.none === true)) return true;
+  let prod = null; try { prod = require('./owner-card').EFFECT_PRODUCERS[k]; } catch (_) { prod = undefined; }
+  if (!Array.isArray(prod)) return false;   // no producer: never
+  if (ctx.throwaway && !PIN) return true;
+  if (!p || p.tainted === true) return false;
+  const r = mainRel(p.main); return !!r && prod.includes(r);
+}
 
 /* A throwaway company under the OS temp dir (a selftest's or test.sh's copy) takes any program's write as its own tools'
  * (the selftests answer in process, some from `node -e`): there only the program check is off. Every other rule holds
@@ -150,8 +173,8 @@ function judge(o) {
       l.authority = l.row ? authorityOf(l.row) : null;
       const cands = avail.get(l.sha) || [];
       const i = l.row ? cands.findIndex(c => vouches(c, l.row, ctx)) : -1;
-      if (i >= 0) { cands.splice(i, 1); l.trust = 'verified'; l.why = null; }
-      else if (cut && l.offset + l.bytes <= Number(cut.bytes)) { l.trust = histOk ? 'historic' : 'unverified'; l.why = histOk ? null : 'the rows before the cutover were changed'; }
+      if (i >= 0) { const pr = cands.splice(i, 1)[0]; l.trust = 'verified'; l.why = null; if (l.row && l.row.type === 'ask' && l.row.effect !== undefined && !effectOk(l.row, pr, ctx)) l.effectDropped = 'the card was not filed by the tool that owns this effect (' + (mainRel(pr.main) || pr.main) + ')'; }
+      else if (cut && l.offset + l.bytes <= Number(cut.bytes)) { l.trust = histOk ? 'historic' : 'unverified'; l.why = histOk ? null : 'the rows before the cutover were changed'; if (l.row && l.row.type === 'ask' && l.row.effect !== undefined && !effectOk(l.row, null, ctx)) l.effectDropped = 'a card from before the provenance cutover'; }
       else {
         l.trust = 'unverified'; missing = true;
         l.why = !cut ? 'no cutover recorded yet' : cands.length && l.row && ASKER_ONLY.has(l.row.type) ? 'not written by the asker of ' + l.row.id + ' (' + ((ctx.asks[l.row.id] || {}).from || 'unknown question') + ')'
@@ -217,7 +240,7 @@ function rows(o) {
     if (l.trust === 'unverified') { bad.push(l); continue; }
     if (o.gate && l.authority === 'owner' && l.trust !== 'verified') continue;
     if (o.gate && l.row.type === 'answer' && l.authority !== 'owner') continue;
-    out.push(l.row);
+    out.push(l.effectDropped ? Object.assign({}, l.row, { effect: { none: true }, effectDropped: l.effectDropped }) : l.row);
   }
   if (!j.outside) raise(bad, o);
   return out.map(r => Object.assign({}, r));
@@ -236,4 +259,4 @@ function append(file, row, writer, o) {
   return row;
 }
 
-module.exports = { REL, WRITERS, OWNER_TYPES, AGENT_TYPES, SYSTEM_TYPES, OWNER_MAINS, IGNORED_MSG, authorityOf, judge, rows, append, ensureCutover, pinMains, seatOfName, rootOf };
+module.exports = { REL, WRITERS, OWNER_TYPES, AGENT_TYPES, SYSTEM_TYPES, OWNER_MAINS, IGNORED_MSG, authorityOf, judge, rows, append, ensureCutover, pinMains, seatOfName, rootOf, mainRel, throwaway };

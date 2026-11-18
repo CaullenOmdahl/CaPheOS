@@ -178,6 +178,7 @@ export async function render(root, ctx) {
       if (a.needs === 'none') for (const c of controls) if (c.f.type === 'secret') delete values[c.f.id];
       const body = { action: a.id, values };
       if (q.approval && q.approval.actionDigest) body.shownDigest = q.approval.actionDigest;   // approvals.js: refused if the record changed since
+      if (q.cardDigest) body.cardDigest = q.cardDigest;   // an owner card: its yes applies only the card as shown here
       if (Object.keys(replace).length) body.replace = replace;
       if (Object.keys(endpoints).length) body.endpoints = endpoints;
       if (Object.keys(secretNames).length) body.secretNames = secretNames;

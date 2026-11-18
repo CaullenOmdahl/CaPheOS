@@ -469,6 +469,7 @@ function decision(ctx, e, who, ref) {
   const q = gov.questionFor(ref, ctx.gov);
   if (q) {
     const a = gov.approved(ref, ctx.gov);
+    if (a === true && !ourCard(q, e.name)) return { allowed: false, waiting: true, level: 'approve', questionId: null, error: 'the yes on ' + q.id + ' is to a card service.js did not file; nothing is installed' };
     if (a === true) return { allowed: true, level: 'approve', questionId: q.id, via: via + ': owner said yes to ' + q.id };
     if (a === false) return { allowed: false, denied: true, level: 'approve', questionId: q.id };
     const closed = gov.inboxRows(ctx.gov).some(r => r.id === q.id && ['close', 'reclassify', 'withdraw'].includes(r.type));

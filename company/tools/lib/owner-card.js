@@ -37,10 +37,12 @@
  * parts), so the caller fixes its template. Nothing here calls a model.
  *
  * EFFECTS (applied ONLY by the console's owner answer handler, an owner path; this module only checks their shape):
- *   {governance:{category, level}}   {clearance:{category, target, agent, until, why}}   {projectApprove:{id}}
- *   {serviceApprove:{name}}   {harnessApply:{id}}   {moduleEnable:{id}}   {lockedAccept:{path}}   {budgetToday:{usd}}
+ *   {serviceApprove:{name}}  filed only by service.js      {harnessApply:{id}}  filed only by harness-change.js
  *   {none:true}
- * A governance effect never names a fixed gate. An unknown effect is refused here.
+ * Each effect has exactly one producing tool (EFFECT_PRODUCERS); lib/pm-inbox-guard.js drops the effect of a card whose
+ * recorded writer is any other program, so a card an agent's own script files can never carry owner authority. Effect
+ * kinds with no producer (governance, clearance, projectApprove, moduleEnable, lockedAccept, budgetToday) are refused.
+ * An open card's effect never changes: an update with a different effect is refused (withdraw it and file a new one).
  *
  * ROWS: a pm-inbox ask written through lib/pm-inbox-guard.js append (recorded first, so readers trust it) with
  * gate:{ref, category, fixedGate, by, summary, recommendation, default}, effect, technical, consequence, recommendation.
@@ -95,37 +97,33 @@ function assertPlain(parts) {
 
 /* ---- effects ---- */
 const EFFECT_SHAPES = {
-  governance: e => e && typeof e.category === 'string' && GOV().LEVELS.includes(e.level),
-  clearance: e => e && e.category && e.target && e.agent,
-  projectApprove: e => e && e.id,
-  serviceApprove: e => e && e.name,
-  harnessApply: e => e && e.id,
-  moduleEnable: e => e && e.id,
-  lockedAccept: e => e && e.path,
-  budgetToday: e => e && Number.isFinite(Number(e.usd)) && Number(e.usd) >= 0,
+  serviceApprove: e => e && typeof e.name === 'string' && /^[a-z][a-z0-9-]{1,30}$/.test(e.name),
+  harnessApply: e => e && typeof e.id === 'string' && /^hc-\d{1,6}$/.test(e.id),
   none: e => e === true,
 };
+// the one program that may file each effect (a path relative to the company root; lib/pm-inbox-guard.js checks the
+// provenance row of the card against it). harness-change.js also runs inside the dispatcher's tick.
+const EFFECT_PRODUCERS = {
+  serviceApprove: ['company/tools/service.js'],
+  harnessApply: ['company/tools/harness-change.js', 'company/tools/dispatch.js'],
+  none: null,   // anyone
+};
+const NO_PRODUCER = ['governance', 'clearance', 'projectApprove', 'moduleEnable', 'lockedAccept', 'budgetToday'];
 function normEffect(effect, opts) {
   if (effect === undefined || effect === null) return { none: true };
   if (typeof effect !== 'object' || Array.isArray(effect)) throw Object.assign(new Error('effect must be an object like {none:true}'), { code: 'BAD_EFFECT' });
   const keys = Object.keys(effect);
+  if (keys.length === 1 && NO_PRODUCER.includes(keys[0])) throw Object.assign(new Error('effect ' + keys[0] + ' has no tool that files it, so no card may carry it: ask with {none:true} and let the owner\'s own tool make the change'), { code: 'BAD_EFFECT' });
   if (keys.length !== 1 || !EFFECT_SHAPES[keys[0]]) throw Object.assign(new Error('unknown effect ' + JSON.stringify(effect) + ': one of ' + Object.keys(EFFECT_SHAPES).join(', ')), { code: 'BAD_EFFECT' });
   const k = keys[0];
   if (!EFFECT_SHAPES[k](effect[k])) throw Object.assign(new Error('effect ' + k + ' is missing a field: ' + JSON.stringify(effect[k])), { code: 'BAD_EFFECT' });
-  if (k === 'governance' && isFixed(effect.governance.category, opts)) throw Object.assign(new Error(effect.governance.category + ' is a fixed owner gate: no card changes its level'), { code: 'BAD_EFFECT' });
   return JSON.parse(JSON.stringify(effect));
 }
 function describeEffect(effect) {
   const e = effect || {}; const k = Object.keys(e)[0]; const v = e[k] || {};
   switch (k) {
-    case 'governance': return 'Yes changes how much the crew may decide alone about ' + v.category + ' (to ' + v.level + ').';
-    case 'clearance': return 'Yes lets ' + v.agent + ' go ahead with this outside the company' + (v.until ? ' for a limited time' : '') + '.';
-    case 'projectApprove': return 'Yes approves the project.';
-    case 'serviceApprove': return 'Yes approves the service.';
-    case 'harnessApply': return 'Yes applies the crew\'s change.';
-    case 'moduleEnable': return 'Yes switches the add-on on.';
-    case 'lockedAccept': return 'Yes accepts the change to a protected file.';
-    case 'budgetToday': return 'Yes sets today\'s budget to $' + Number(v.usd) + '.';
+    case 'serviceApprove': return 'Yes sets up the background job called “' + v.name + '”, exactly as described.';
+    case 'harnessApply': return 'Yes makes the crew\'s change number ' + String(v.id).replace(/^hc-0*/, '') + ', exactly as described.';
     case 'none': return 'Yes tells the crew to go ahead.';
     default: return 'Your answer is recorded; nothing is changed automatically.';
   }
@@ -216,6 +214,8 @@ function file(o, opts) {
   if (cur) {
     const same = cur.message === lead && (cur.consequence || '') === consequence && (cur.recommendation || '') === recommendation && (cur.technical || '') === technical && JSON.stringify(cur.effect || null) === JSON.stringify(effect);
     if (same || low(cur.from) !== low(from)) return { filed: false, route: 'duplicate', id: cur.id, reason: 'an open card with this ref is already waiting (' + cur.id + ')' };
+    // what yes does never changes under the owner's eyes: a different effect is a new card (withdraw this one first)
+    if (JSON.stringify(cur.effect || { none: true }) !== JSON.stringify(effect)) return { filed: false, route: 'duplicate', id: cur.id, reason: 'an open card with this ref is waiting (' + cur.id + ') and what its yes does cannot change: withdraw it and file a new card' };
   }
   // 4. the owner said "not now" to this within the backoff window
   if (!cur && String(o.changed || '').trim().length < 15) {
@@ -271,4 +271,4 @@ function withdraw(o, opts) {
   return { withdrawn: out };
 }
 
-module.exports = { file, withdraw, openCard, describeEffect, plain, plainProblems, coveredByCrew, refusedByOwner, EFFECT_KINDS: Object.keys(EFFECT_SHAPES) };
+module.exports = { file, withdraw, openCard, describeEffect, plain, plainProblems, coveredByCrew, refusedByOwner, EFFECT_KINDS: Object.keys(EFFECT_SHAPES), EFFECT_PRODUCERS, NO_PRODUCER };

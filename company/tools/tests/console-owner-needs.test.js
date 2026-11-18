@@ -86,7 +86,7 @@ test('Needs you: a notify-level card is not in Needs you nor the badge; a fixed-
   });
 });
 
-test('a yes on a {governance} card changes the level and says so plainly; a no changes nothing; an unknown effect is said', async () => {
+test('an effect kind no tool files ({governance}, an unknown one) is never applied: a yes is recorded and changes nothing', async () => {
   const root = fixture();
   const gc = card('hiring', { extra: { effect: { governance: { category: 'hiring', level: 'notify' } }, consequence: 'Yes: the crew hires without asking you first. No: you keep approving each hire.', recommendation: 'Yes; you still hear about each hire.', technical: 'governance.js set hiring notify' } });
   const no = card('release', { extra: { effect: { governance: { category: 'release', level: 'auto' } } } });
@@ -97,23 +97,20 @@ test('a yes on a {governance} card changes the level and says so plainly; a no c
     let r = await call('GET', '/api/questions');
     const q = r.json.questions.find(x => x.id === gc.id);
     assert.ok(q, 'the governance card is in Needs you');
-    assert.match(q.effectSays, /your setting for hiring becomes “the crew decides and tells you”/, 'what yes does is said in the console\'s words before the click');
+    assert.equal(q.effectKind, 'none', 'its effect was dropped by the reader (no tool files a governance effect)');
+    assert.ok(!q.effectSays, 'nothing is promised for yes');
     assert.equal(q.technical, 'governance.js set hiring notify', 'the technical part is carried for the collapsed details');
     assert.match(q.consequence, /^Yes: the crew hires/);
     r = await call('POST', '/api/questions/' + gc.id + '/answer', { action: 'approve' });
     assert.equal(r.status, 200, JSON.stringify(r.json) + err());
-    assert.equal(r.json.applied.applied, true, JSON.stringify(r.json.applied));
-    assert.equal(r.json.said, 'Done: your setting for hiring is now “the crew decides and tells you”.');
-    assert.doesNotMatch(r.json.said, /\.js|--|governance\b|notify\b/, 'plain words only');
-    assert.equal(govLevel(root, 'hiring'), 'notify', 'the level really changed (governance.js set, as the owner)');
+    assert.ok(!(r.json.applied && r.json.applied.applied), JSON.stringify(r.json.applied));
+    assert.equal(govLevel(root, 'hiring'), null, 'the level did not change');
     r = await call('POST', '/api/questions/' + no.id + '/answer', { action: 'decline' });
     assert.equal(r.status, 200, JSON.stringify(r.json));
-    assert.equal(r.json.said, 'Your answer is recorded. Nothing was changed.');
     assert.notEqual(govLevel(root, 'release'), 'auto');
     r = await call('POST', '/api/questions/' + odd.id + '/answer', { action: 'approve' });
     assert.equal(r.status, 200, JSON.stringify(r.json));
-    assert.equal(r.json.applied.applied, false);
-    assert.match(r.json.said, /Your answer is recorded\. Nothing was changed automatically/);
+    assert.ok(!(r.json.applied && r.json.applied.applied));
   });
 });
 
@@ -187,11 +184,13 @@ test('the digest: the day\'s fyi notices as one card, deduped by key; project ap
 test('effects are typed: one known key only; what yes does is described by the console, never by the asker', () => {
   const co = require(path.join(REPO, 'company', 'tools', 'lib', 'company.js'));
   const N = require(path.join(REPO, 'console', 'owner-needs.js')).make({ co });
-  assert.equal(N.effectKind({ governance: { category: 'hiring', level: 'notify' } }), 'governance');
-  assert.equal(N.effectKind({ governance: {}, moduleEnable: {} }), null, 'two effects in one: unknown');
+  assert.equal(N.effectKind({ harnessApply: { id: 'hc-0001' } }), 'harnessApply');
+  assert.equal(N.effectKind({ governance: { category: 'hiring', level: 'notify' } }), null, 'no tool files a governance effect');
+  assert.equal(N.effectKind({ serviceApprove: {}, harnessApply: {} }), null, 'two effects in one: unknown');
   assert.equal(N.effectKind({ rm: true }), null);
   assert.equal(N.effectKind('governance'), null);
-  assert.match(N.describeEffect({ budgetToday: { usd: 12 } }), /today's spending limit becomes \$12, for today only/);
+  assert.match(N.describeEffect({ serviceApprove: { name: 'feed' } }), /the background job called “feed”/);
+  assert.match(N.describeEffect({ harnessApply: { id: 'hc-0012' } }), /the crew's change number 12\b/);
   assert.match(N.describeEffect({ launch: 1 }), /cannot apply this kind of change itself/);
   assert.equal(N.describeEffect({ none: true }), null);
 });

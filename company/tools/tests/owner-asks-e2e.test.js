@@ -171,7 +171,7 @@ test('(b) at tools=approve: exactly one plain card in Needs you, technical detai
     assert.ok(c.technical && /competence\.js/.test(c.technical) && /count a report only once/.test(c.technical), 'the technical part carries the file and the change: ' + c.technical);
     assert.equal(c.effectKind, 'harnessApply'); assertPlain(c.effectSays, 'what yes does');
     const t = await call('GET', '/api/today'); assert.equal(t.json.needsYou.count, 1, 'the badge counts it');
-    const a = await call('POST', '/api/questions/' + c.id + '/answer', { action: 'approve' });
+    const a = await call('POST', '/api/questions/' + c.id + '/answer', { action: 'approve', cardDigest: c.cardDigest });   // as Today sends it
     assert.equal(a.status, 200, JSON.stringify(a.json) + err());
     assert.equal(a.json.applied && a.json.applied.applied, true, JSON.stringify(a.json));
     assertPlain(a.json.said, 'what the console said after yes');
@@ -214,7 +214,7 @@ test('(d) a background job talking to a new outside host: one plain card; the co
     assert.ok(c, 'the card is in Needs you: ' + JSON.stringify(q.json));
     assertPlain(c.message, 'the card lead'); assert.ok(c.technical && /api\.new\.example/.test(c.technical), 'the host is in the technical part');
     assert.equal(c.effectKind, 'serviceApprove');
-    const a = await call('POST', '/api/questions/' + c.id + '/answer', { action: 'approve' });
+    const a = await call('POST', '/api/questions/' + c.id + '/answer', { action: 'approve', cardDigest: c.cardDigest });   // as Today sends it
     assert.equal(a.status, 200, JSON.stringify(a.json) + err());
     assert.equal(a.json.applied && a.json.applied.applied, true, JSON.stringify(a.json) + err());
     assertPlain(a.json.said, 'what the console said after yes');

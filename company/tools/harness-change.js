@@ -989,7 +989,14 @@ function guardrailForced(ctx, rec, stage) {
   try { return !!ctx.guard('harnessSelfEdit'); } catch (_) { return true; }
 }
 // the owner's own card for this change is answered yes (a verified owner answer; never a crew claim)
-const ownerSaidYesTo = (ctx, rec) => (rec.approvals || []).some(a => a.id === 'owner') || (!!rec.ownerRef && gov.approved(rec.ownerRef, { root: ctx.root }) === true);
+const ownerSaidYesTo = (ctx, rec) => (rec.approvals || []).some(a => a.id === 'owner') || (!!rec.ownerRef && gov.approved(rec.ownerRef, { root: ctx.root }) === true && ourCard(ctx, rec));
+// the card the owner answered is this tool's own card for this change: it carries {harnessApply:{id}}, an effect
+// lib/pm-inbox-guard.js keeps only on a card harness-change.js itself recorded (another program's card with the same ref
+// never counts as the owner's yes to this change)
+function ourCard(ctx, rec) {
+  const q = rec.ownerRef ? gov.questionFor(rec.ownerRef, { root: ctx.root }) : null;
+  return !!(q && q.effect && q.effect.harnessApply && q.effect.harnessApply.id === rec.id);
+}
 function withdrawCard(ctx, rec, by, why) {
   if (!rec.ownerRef) return null;
   const C = ctx.cards(); if (!C || typeof C.withdraw !== 'function') return null;
@@ -1009,6 +1016,7 @@ async function ownerDecisions(ctx, opts) {
     if (opts.dry) { log('WOULD ' + (v ? 'APPLY' : 'REJECT') + ' ' + rec.id + ' (the owner answered on Today)'); continue; }
     const q = gov.questionFor(rec.ownerRef, { root: ctx.root });
     const ownerReviews = rec.status === 'proposed' && rec.reviewers.some(r => r.id === 'owner');
+    if (v === true && !ourCard(ctx, rec)) { log('HARNESS CHANGE ' + rec.id + ': a yes to a card harness-change.js did not file; ignored'); continue; }
     if (v === false) {
       if (rec.status === 'proposed') review(ctx, rec.id, { viaConsole: true, note: 'declined by the owner on Today (' + (q && q.id) + ')' }, 'reject');
       else withLock(ctx, () => { const r = loadRec(ctx, rec.id); r.status = 'rejected'; hist(ctx, r, 'rejected', 'owner', 'declined on Today (' + (q && q.id) + ')'); saveRec(ctx, r); appendLog(ctx, { event: 'rejected', id: r.id, by: 'owner', via: 'owner card', status: 'rejected' }); renderSummary(ctx); });

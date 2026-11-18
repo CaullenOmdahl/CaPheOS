@@ -66,13 +66,13 @@ test('the digest fallback (until lib/owner-notice.js is in the tree) sends only 
 });
 
 test('a category at approve is filed: plain parts, the technical part collapsed, the gate and the effect on the row', () => {
-  const o = base({ category: 'hiring', effect: { projectApprove: { id: 'designer-hire' } } });
+  const o = base({ category: 'hiring', effect: { harnessApply: { id: 'hc-0042' } } });
   const r = card.file(o);
   assert.equal(r.filed, true); assert.match(r.id, /^q-\d{6}$/);
   const row = asks().find(x => x.id === r.id);
   assert.equal(row.message, o.lead); assert.equal(row.from, 'Sam Lee'); assert.equal(row.technical, o.technical);
   assert.deepEqual([row.gate.ref, row.gate.category, row.gate.fixedGate], [o.ref, 'hiring', null]);
-  assert.deepEqual(row.effect, { projectApprove: { id: 'designer-hire' } });
+  assert.deepEqual(row.effect, { harnessApply: { id: 'hc-0042' } });   // a throwaway company: the producer check is off
   assert.doesNotMatch(row.details, /hr-0042/); assert.match(row.q, /Technical details \(for the crew\):\nRound hr-0042/);
   const open = inbox.openQuestions().find(q => q.id === r.id);
   assert.equal(open.card, true); assert.equal(open.technical, o.technical); assert.deepEqual(open.effect, row.effect); assert.ok(!open.secretHint);

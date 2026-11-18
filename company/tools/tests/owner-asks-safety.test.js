@@ -143,3 +143,134 @@ test('B1: only crew, digest or a crew-decides ruling is covered; a "not now" and
 });
 
 /* ---------------- B2 ---------------- */
+test('B2: a card from an agent\'s own script (outside or inside the root) keeps its words but not its effect; no-producer kinds are refused (poc1)', () => {
+  const T = company({ strict: true });
+  const E = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-asks-safety-evil-')); roots.push(E);
+  const evil = `
+const P = require(path.join(REPO, 'company/tools/provenance.js')); P.pinUnderStation(true);
+const card = require(path.join(REPO, 'company/tools/lib/owner-card.js'));
+const G = require(path.join(REPO, 'company/tools/lib/pm-inbox-guard.js'));
+const INBOX = path.join(T, 'company/pm-inbox.jsonl');
+const tryIt = fn => { try { return { ok: true, r: fn() }; } catch (e) { return { ok: false, code: e.code }; } };
+const tag = process.argv[2] || 'x';
+const a = tryIt(() => card.file({ asker: 'sam', fixedGate: 'access', ref: 'tidy:' + tag, lead: 'May I tidy up the shared notes folder this week?', consequence: 'If you say yes, Sam tidies the notes. If you say no, nothing changes.', effect: { lockedAccept: { path: 'company/tools/lib/pm-inbox-guard.js' } } }, { root: T }));
+const b = tryIt(() => card.file({ asker: 'sam', fixedGate: 'commitments', ref: 'news:' + tag, lead: 'May I send this week\\'s newsletter to our subscribers?', consequence: 'If you say yes, Sam sends it. If you say no, it waits.', effect: { clearance: { category: 'payments', target: 'pay.example.com', agent: 'sam' } } }, { root: T }));
+// past owner-card: a raw row carrying a real effect kind
+for (const [k, v] of [['harnessApply', { id: 'hc-0001' }], ['serviceApprove', { name: 'nightly' }]])
+  G.append(INBOX, { type: 'ask', id: 'q-' + tag + k.length, at: new Date().toISOString(), from: 'Sam Lee', about: 'card:' + tag + k, message: 'May I tidy up the shared notes folder this week?', card: 1, batch: 'gate', gate: { ref: tag + ':' + k, category: 'access', fixedGate: 'access' }, effect: { [k]: v } }, 'owner-card', { root: T });
+out({ a, b });`;
+  const outside = run(T, evil, { file: path.join(E, 'company', 'tools', 'x.js') });
+  const inside = run(T, evil.replace("process.argv[2] || 'x'", "'y'"), { file: path.join(T, 'company', 'tools', 'y.js') });
+  for (const r of [outside, inside]) {
+    assert.equal(r.a.ok, false, 'lockedAccept has no producer: refused'); assert.equal(r.a.code, 'BAD_EFFECT');
+    assert.equal(r.b.ok, false, 'clearance has no producer: refused'); assert.equal(r.b.code, 'BAD_EFFECT');
+  }
+  // the owner's side reads them: verified asks, effect dropped
+  const seen = run(T, `
+require(path.join(REPO, 'company/tools/provenance.js')).pinUnderStation(false);
+const G = require(path.join(REPO, 'company/tools/lib/pm-inbox-guard.js'));
+const rows = G.rows({ file: path.join(T, 'company/pm-inbox.jsonl'), noAlert: true }).filter(r => r.type === 'ask');
+out(rows.map(r => ({ id: r.id, effect: r.effect, dropped: !!r.effectDropped })));`);
+  assert.equal(seen.length, 4, JSON.stringify(seen));
+  for (const s of seen) { assert.deepEqual(s.effect, { none: true }, JSON.stringify(s)); assert.equal(s.dropped, true); }
+  // the producing tool's own card keeps it (a stand-in at the producer's path inside the root)
+  W(T, 'company/tools/service.js', `'use strict';
+const path = require('path'); const G = require(path.join(process.env.REPO, 'company/tools/lib/pm-inbox-guard.js'));
+G.append(path.join(process.env.T, 'company/pm-inbox.jsonl'), { type: 'ask', id: 'q-000777', at: new Date().toISOString(), from: 'Sam Lee', about: 'card:svc', message: 'May Sam set up a background job?', card: 1, batch: 'gate', gate: { ref: 'service:feed:k', category: 'schedules' }, effect: { serviceApprove: { name: 'feed' } } }, 'owner-card', { root: process.env.T });
+`);
+  const r = spawnSync(process.execPath, [path.join(T, 'company/tools/service.js')], { env: envFor(T), encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr);
+  const own = run(T, `
+const G = require(path.join(REPO, 'company/tools/lib/pm-inbox-guard.js'));
+out(G.rows({ file: path.join(T, 'company/pm-inbox.jsonl'), noAlert: true }).find(r => r.id === 'q-000777'));`);
+  assert.deepEqual(own.effect, { serviceApprove: { name: 'feed' } }, 'the owning tool\'s card keeps its effect');
+  // the program check is anchored: an absolute look-alike path is not a company tool
+  const G = require(path.join(REPO, 'company/tools/lib/pm-inbox-guard.js'));
+  assert.equal(G.mainRel('/tmp/x/company/tools/a.js'), null);
+  assert.equal(G.mainRel('company/tools/a.js'), 'company/tools/a.js');
+});
+
+test('B2: the console names every effect parameter and applies only effects a tool files', async () => {
+  const co = { p: (...a) => path.join(REPO, ...a), config: {} };
+  const N = require(path.join(REPO, 'console/owner-needs.js')).make({ co });
+  assert.match(N.describeEffect({ serviceApprove: { name: 'nightly' } }), /“nightly”/, 'which job');
+  assert.match(N.describeEffect({ harnessApply: { id: 'hc-0042' } }), /change number 42/, 'which change');
+  const calls = [];
+  const runApi = async (tool, args) => { calls.push([tool].concat(args)); return { ok: true }; };
+  for (const e of [{ lockedAccept: { path: 'company/tools/lib/pm-inbox-guard.js' } }, { clearance: { category: 'payments', target: 'pay.example.com' } }, { governance: { category: 'hiring', level: 'auto' } }, { budgetToday: { usd: 500 } }, { moduleEnable: { id: 'x' } }, { projectApprove: { id: 'x' } }]) {
+    const r = await N.applyEffect(e, { runApi, owner: () => 'Pat', id: 'q-000001' });
+    assert.equal(r.applied, false, JSON.stringify(e));
+  }
+  assert.deepEqual(calls, [], 'no owner tool ran');
+});
+
+test('B2: an asker\'s update never changes the effect; the console\'s card digest changes with anything shown', () => {
+  const T = company({ levels: { schedules: 'approve' } });
+  const r = run(T, `
+require(path.join(REPO, 'company/tools/provenance.js')).pinUnderStation(false);
+const card = require(path.join(REPO, 'company/tools/lib/owner-card.js'));
+const G = require(path.join(REPO, 'company/tools/lib/pm-inbox-guard.js'));
+const base = { asker: 'sam', category: 'schedules', ref: 'service:feed:k1', lead: 'May Sam set up a background job that runs every hour?', consequence: 'If you say yes, it runs every hour. If you say no, nothing is installed.' };
+const a = card.file(Object.assign({}, base, { effect: { none: true } }), { root: T });
+const b = card.file(Object.assign({}, base, { lead: 'May Sam set up a small background job that runs every hour?', effect: { serviceApprove: { name: 'feed' } } }), { root: T });
+const rows = G.rows({ file: path.join(T, 'company/pm-inbox.jsonl'), noAlert: true }).filter(x => x.type === 'ask' && x.id === a.id);
+out({ a, b, effects: rows.map(x => x.effect) });`);
+  assert.equal(r.a.filed, true);
+  assert.equal(r.b.filed, false, 'refused: ' + JSON.stringify(r.b)); assert.equal(r.b.route, 'duplicate');
+  assert.deepEqual(r.effects, [{ none: true }], 'the open card still does what it said');
+  const co = { p: (...a) => path.join(REPO, ...a), config: {} };
+  const N = require(path.join(REPO, 'console/owner-needs.js')).make({ co });
+  const row = { from: 'Sam Lee', message: 'May Sam set up a background job?', consequence: 'Yes: it runs.', technical: 'x', effect: { serviceApprove: { name: 'feed' } } };
+  const d = N.cardDigest(row);
+  assert.match(d, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(N.cardDigest(Object.assign({}, row)), d);
+  assert.notEqual(N.cardDigest(Object.assign({}, row, { message: 'May Sam set up a big background job?' })), d);
+  assert.notEqual(N.cardDigest(Object.assign({}, row, { effect: { serviceApprove: { name: 'other' } } })), d);
+  assert.notEqual(N.cardDigest(Object.assign({}, row, { technical: 'y' })), d);
+});
+
+test('B2: a yes on Today applies the effect only to the card as shown; an update in between is refused (console server)', async () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-asks-safety-console-')); roots.push(T);
+  fs.cpSync(path.join(REPO, 'company'), path.join(T, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
+  fs.cpSync(path.join(REPO, 'console'), path.join(T, 'console'), { recursive: true });
+  for (const f of ['company/state/locked', 'company/pm-inbox.jsonl', 'company/state/governance.json', 'company/state/owner-rulings.json', 'company/owner', 'company/state/services.json']) fs.rmSync(path.join(T, f), { recursive: true, force: true });
+  W(T, 'company/company.json', { name: 'Fixture Co', slug: 'fixture-co', timezone: 'UTC', owner: { name: 'Olive' }, station: { url: 'http://127.0.0.1:9' } });
+  W(T, 'company/tools/loops.json', { agents: { boss: { name: 'Boss', functions: ['ceo'], manager: null, inbox: 'to-boss.md' }, sam: { name: 'Sam Lee', manager: 'boss', inbox: 'to-sam.md' } } });
+  W(T, 'secrets/station-token', 'fake\n');
+  const fileCard = lead => run(T, `
+const card = require(path.join(T, 'company/tools/lib/owner-card.js'));
+out(card.file({ asker: 'sam', category: 'localComputer', guardrail: true, ref: 'service:feed:k1', lead: ${JSON.stringify(lead)}, consequence: 'If you say yes, the crew sets it up. If you say no, nothing is installed.', effect: { serviceApprove: { name: 'feed' } } }, { root: T }));`);
+  const first = fileCard('May Sam set up a background job that runs every hour?');
+  assert.equal(first.filed, true, JSON.stringify(first));
+  const fake = http.createServer((q, s) => { s.writeHead(404); s.end('{}'); });
+  await new Promise(r => fake.listen(0, '127.0.0.1', r));
+  const env = envFor(T, { STARNET_URL: 'http://127.0.0.1:' + fake.address().port });
+  const child = spawn(process.execPath, [path.join(T, 'console', 'server.js'), '--port', '0', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let errText = ''; child.stderr.on('data', x => { errText += x; });
+  try {
+    const port = await new Promise((res, rej) => { let b = ''; child.stdout.on('data', d => { b += d; const m = b.match(/\{"port":(\d+)\}/); if (m) res(Number(m[1])); }); child.on('exit', c => rej(new Error('console exited ' + c + errText))); setTimeout(() => rej(new Error('no console ' + errText)), 20000); });
+    const token = fs.readFileSync(path.join(T, 'secrets', 'console-token'), 'utf8').trim();
+    const call = (method, p, body) => new Promise((res, rej) => {
+      const data = body ? JSON.stringify(body) : null;
+      const req = http.request({ host: '127.0.0.1', port, path: p, method, headers: Object.assign({ 'x-console-token': token }, data ? { 'content-type': 'application/json' } : {}) }, r => { let d = ''; r.on('data', c => { d += c; }); r.on('end', () => { let j = null; try { j = JSON.parse(d); } catch (_) {} res({ status: r.statusCode, json: j }); }); });
+      req.on('error', rej); if (data) req.write(data); req.end();
+    });
+    let q = await call('GET', '/api/questions');
+    const shown = q.json.questions.find(x => x.id === first.id);
+    assert.ok(shown && shown.cardDigest, 'the card carries its digest: ' + JSON.stringify(q.json.questions));
+    assert.match(shown.effectSays, /“feed”/);
+    // the asker rewords the open card while the owner reads it
+    const upd = fileCard('May Sam set up a background job that runs every evening?');
+    assert.equal(upd.updated, true, JSON.stringify(upd));
+    let a = await call('POST', '/api/questions/' + first.id + '/answer', { action: 'approve', cardDigest: shown.cardDigest });
+    assert.equal(a.status, 409, 'the yes to the old words is refused: ' + JSON.stringify(a.json));
+    a = await call('POST', '/api/questions/' + first.id + '/answer', { action: 'approve' });
+    assert.equal(a.status, 409, 'a yes with no digest is refused: ' + JSON.stringify(a.json));
+    q = await call('GET', '/api/questions');
+    const now = q.json.questions.find(x => x.id === first.id);
+    assert.ok(now, 'nothing was recorded: the card is still open');
+    a = await call('POST', '/api/questions/' + first.id + '/answer', { action: 'approve', cardDigest: now.cardDigest });
+    assert.equal(a.status, 200, JSON.stringify(a.json) + errText);
+  } finally { child.kill(); fake.close(); }
+});
+
+/* ---------------- B3 ---------------- */
