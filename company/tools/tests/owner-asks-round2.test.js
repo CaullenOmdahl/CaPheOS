@@ -216,3 +216,22 @@ out({ a, message: c && c.message, technical: c && c.technical });`);
   assert.match(r.message, /the Newfeed website, which is new to the crew/, 'the website a yes approves is on the card: ' + r.message);
   assert.match(r.technical, /--soft-halt keep/, 'and the other reason is in the technical part');
 });
+
+/* ---------------- safety S-b: the "for your information" shortcut is only the money hold's and the pacer's ---------------- */
+test('S-b: a card that merely says batch "fyi" is classified by its level; the money hold and pacer FYIs still go to the crew list', () => {
+  const T = company({ levels: { hiring: 'approve', budget: 'auto' } });
+  const r = run(T, `
+const co = require(path.join(REPO, 'company/tools/lib/company.js'));
+const N = require(path.join(REPO, 'console/owner-needs.js')).make({ co });
+const c = (q) => N.classify(q, q, []);
+out({
+  hire: c({ id: 'q-1', from: 'Sam Lee', about: 'governance:hiring', message: 'May Sam hire a designer?', gate: { category: 'hiring', ref: 'x' }, batch: 'fyi', blocking: false }),
+  fake: c({ id: 'q-2', from: 'Sam Lee', about: 'money-hold:metered', message: 'Sam wants to spend more today.', batch: 'fyi', blocking: false }),
+  hold: c({ id: 'q-3', from: 'Dispatcher', about: 'money-hold:metered', message: 'The crew keeps working.', batch: 'fyi', blocking: false }),
+  pace: c({ id: 'q-4', from: 'Pacer', about: 'pacing:claude', message: 'The crew keeps working.', batch: 'fyi', blocking: false }),
+});`);
+  assert.equal(r.hire.needsOwner, true, 'a hiring card at approve is in Needs you whatever its batch: ' + JSON.stringify(r.hire));
+  assert.equal(r.fake.needsOwner, true, 'a money-hold-looking card from a crew member is not the hold FYI: ' + JSON.stringify(r.fake));
+  assert.equal(r.hold.why, 'fyi'); assert.equal(r.hold.needsOwner, false);
+  assert.equal(r.pace.why, 'fyi'); assert.equal(r.pace.needsOwner, false);
+});

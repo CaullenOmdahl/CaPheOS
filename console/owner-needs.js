@@ -116,7 +116,9 @@ function make(deps) {
     if (!c) { const m = /^(?:governance|approval):([A-Za-z]+)/.exec(String(q.about || row.about || '')); if (m) c = m[1]; }
     return c && c !== 'gate' ? c : null;
   }
-  const isFyi = q => !!q && q.batch === 'fyi' && q.blocking === false;
+  // only the money hold's and the pacer's own FYI cards (lib/money-hold.js, lib/pacing-ask.js: about money-hold:* or
+  // pacing:*, from the Dispatcher or the Pacer); any other card that says batch "fyi" is classified like every card
+  const isFyi = q => !!q && q.batch === 'fyi' && q.blocking === false && /^(money-hold|pacing):/.test(String(q.about || '')) && ['Dispatcher', 'Pacer'].includes(String(q.from || ''));
   const asksKey = q => ['secret', 'account', 'link'].includes(q.kind) || !!(q.form && (q.form.fields || []).some(f => f.type === 'secret')) ||
     !!(q.questions || []).some(p => p.kind === 'secret' || (p.form && (p.form.fields || []).some(f => f.type === 'secret')));
   function classify(q, row, list) {
