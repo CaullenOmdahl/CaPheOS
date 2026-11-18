@@ -36,7 +36,7 @@ cd "$I"
 
 bash scripts/found-company.sh --name "Update Test Co" --owner "Alex" --tz UTC --port 18871 >/dev/null
 check "founded checkout is clean in git status" clean
-check "the four company-owned files are hidden up front" bash -c '[[ $(git ls-files -v company/company.json company/CHARTER.md company/competence-policy.json company/model-policy.json | grep -c "^S") = 4 ]]'
+check "the company-owned files are hidden up front" bash -c '[[ $(git ls-files -v company/company.json company/CHARTER.md company/ORG.md company/competence-policy.json company/model-policy.json | grep -c "^S") = 5 ]]'
 
 # what console Setup does: the owner picks a provider (model-policy.json); nothing may show in git status
 node -e 'const f="company/model-policy.json",fs=require("fs");const p=JSON.parse(fs.readFileSync(f,"utf8"));p.candidateDefault.setBy="Alex";fs.writeFileSync(f,JSON.stringify(p,null,1)+"\n")'
@@ -70,7 +70,7 @@ check "git pull applies cleanly after the migration" bash -c 'git pull -q --ff-o
 # the README's commands for an update that touches one of the four owner files
 ( cd "$U" && node -e 'const f="company/model-policy.json",fs=require("fs");const p=JSON.parse(fs.readFileSync(f,"utf8"));p._docUpdate="framework 3";fs.writeFileSync(f,JSON.stringify(p,null,1)+"\n")' && "${G[@]}" commit -qam "update 3" )
 check "a pull touching an owner file stops (owner copy protected)" bash -c '! git pull -q --ff-only >/dev/null 2>&1'
-OWNED="company/company.json company/CHARTER.md company/competence-policy.json company/model-policy.json"
+OWNED="company/company.json company/CHARTER.md company/ORG.md company/competence-policy.json company/model-policy.json"
 git update-index --no-skip-worktree $OWNED
 "${G[@]}" stash push -q -- $OWNED
 git pull -q --ff-only >/dev/null 2>&1 || bad "pull after stash"

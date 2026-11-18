@@ -61,7 +61,9 @@ if command -v node >/dev/null 2>&1 && [[ -f company/tools/module.js ]]; then
   fi
 fi
 # 4. the tracked files a company owns, hidden up front, then any other tracked file the company changed → skip-worktree
-OWNED=(company/company.json company/CHARTER.md company/competence-policy.json company/model-policy.json company/tools/loops.json)
+# the one list lives in company/tools/lib/framework-edits.js (OWNED); the fallback below is only for a checkout without node
+mapfile -t OWNED < <(cd "$ROOT" && node -e 'for (const f of require("./company/tools/lib/framework-edits").OWNED) console.log(f)' 2>/dev/null)
+[[ ${#OWNED[@]} -gt 0 ]] || OWNED=(company/company.json company/CHARTER.md company/ORG.md company/competence-policy.json company/model-policy.json company/tools/loops.json)
 for f in "${OWNED[@]}"; do
   [[ -n "$(git ls-files -- "$f")" ]] || continue
   [[ "$(git ls-files -v -- "$f" | cut -c1)" == "S" ]] && continue

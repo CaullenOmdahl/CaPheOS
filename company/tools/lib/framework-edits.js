@@ -25,7 +25,9 @@ const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
 // the tracked files a company owns: its own settings, never a framework edit (framework-update.js merges them)
-const OWNED = ['company/company.json', 'company/CHARTER.md', 'company/competence-policy.json', 'company/model-policy.json', 'company/tools/loops.json'];
+// company/ORG.md is the crew roster page the people owner keeps current at every hire and exit (its own header says so):
+// company content, like the charter. scripts/instance-guard.sh reads this list; there is no second copy.
+const OWNED = ['company/company.json', 'company/CHARTER.md', 'company/ORG.md', 'company/competence-policy.json', 'company/model-policy.json', 'company/tools/loops.json'];
 const REQ_DIR = root => path.join(root, 'company', 'work', 'framework-requests');
 const sha = b => 'sha256:' + crypto.createHash('sha256').update(b).digest('hex');
 
