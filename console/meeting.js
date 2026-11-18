@@ -28,8 +28,8 @@
  *   one engine, other rooms (a colleague brought into a live chat): deps may also carry
  *     stateDir (string | () => string), topic (emit topic, default 'meeting'), streamPrefix (default 'meeting-'),
  *     minutesPrefix (default 'meeting-'), routePrefix (default '/api/meeting'), door (admit door, default 'meeting'),
- *     profile { kind, noun, preface(owner) -> text, fixedLeader, standing: [ids], wrapHost, maxTurnsPerRound, maxGuests,
- *               maxInvites, noRegister, speed }
+ *     profile { kind, noun, preface(owner) -> text, fixedLeader, standing: [ids] (fixed: the owner's picks join as
+ *               guests), wrapHost, maxTurnsPerRound, maxGuests, maxInvites, noRegister, speed, minutesHead(date) }
  *   tests pass runner: { start(o) -> {runId}|{error}, wait(runId, onEvent) -> result, cancel(runId) } instead of the station
  */
 'use strict';
@@ -164,7 +164,8 @@ module.exports = function meeting(deps) {
     const DEF = SPEEDS.includes(P.speed) ? P.speed : 'instant';
     let speed = typeof c.speed === 'string' && SPEEDS.includes(c.speed) ? c.speed : DEF, migrate = false;
     if (speed === 'manual' && !c.speedMigrated) { speed = DEF; migrate = true; }
-    std = { seats: Array.isArray(c.seats) ? c.seats.filter(x => typeof x === 'string') : defaultSeats(),
+    // a room with fixed standing seats (a live chat: only its host) keeps them; everyone else is a guest
+    std = { seats: Array.isArray(P.standing) ? defaultSeats() : Array.isArray(c.seats) ? c.seats.filter(x => typeof x === 'string') : defaultSeats(),
       leader: P.fixedLeader ? P.fixedLeader : 'leader' in c ? (typeof c.leader === 'string' ? c.leader : null) : ceoId(),
       speed, speedMigrated: true, talkOnly: c.talkOnly === true, frames: c.frames === true,
       observeRounds: Number.isInteger(c.observeRounds) && c.observeRounds > 0 ? Math.min(c.observeRounds, MAX_OBSERVE) : OBSERVE_ROUNDS };
@@ -847,9 +848,14 @@ module.exports = function meeting(deps) {
   function wrapUp(R) {
     const rd = R.round; if (!P.wrapHost || !rd || rd.wrapped || rd.capped || R.stopping || rd.ctl.ended) return false;
     if (!(rd.wrap || P.wrapHost === 'always')) return false;
-    const l = leader(); if (!l || !hasNewFor(l)) return false;
+    const l = leader(); if (!l || !saidSince(l)) return false;
     rd.wrapped = true; rd.ctl.normal.push({ cmd: l, kind: 'turn', wrap: true }); save();
     return true;
+  }
+  // someone else said something since this seat last spoke (a join or a pass alone is nothing to close the loop on)
+  function saidSince(id) {
+    for (let i = LOG.length - 1; i >= 0; i--) { const e = LOG[i]; if (e.who === id && (e.kind === 'say' || e.kind === 'pass')) return false; if (e.who !== id && e.kind === 'say') return true; }
+    return false;
   }
   function beginRound(p) {
     if (p.pullIn) {   // a seat brought someone in (a colleague into a live chat): its ASK / INVITE lines start the round
@@ -1010,15 +1016,21 @@ module.exports = function meeting(deps) {
     if (M.run) fail('a round is running', 409);
     const list = Array.isArray(b.directives) ? b.directives.filter(d => d && /^(ASK|INVITE)$/.test(String(d.kind))) : directives(String(b.text || '')).list.filter(d => d.kind === 'ASK' || d.kind === 'INVITE');
     if (!list.length) fail('no ASK or INVITE line to act on');
+    seedIn(b.seed);
+    M.run = { auto: 0, pending: { pullIn: { by, list } }, round: null, current: null };
+    save(); kick(); return view();
+  }
+  // the conversation so far, from another place (the live chat a colleague is brought into): recorded as said there
+  // (src 'chat'), after the room's open line. seed = [{who: 'owner' | seat, text}]
+  function seedIn(list) {
     if (!M.opened) record({ who: 'owner', kind: 'open', text: seatList() });
-    for (const e of Array.isArray(b.seed) ? b.seed : []) {
+    for (const e of Array.isArray(list) ? list : []) {
       const who = e && (e.who === 'owner' ? 'owner' : resolve(String(e.who || '')));
       const text = str(e && e.text, 20000); if (!who || !text) continue;
       record({ who, kind: 'say', text, src: 'chat' });
     }
-    M.run = { auto: 0, pending: { pullIn: { by, list } }, round: null, current: null };
-    save(); kick(); return view();
   }
+  function seed(list) { guard(); openCheck(); seedIn(list); save(); emit(); return view(); }
   /* GET <prefix>/attach?runId=&from=N: the turn in flight (or a finished one) as NDJSON, from journal line N, then live:
      the same lines the live chat streams (agent.token, agent.tool_call, …, console.final, console.end). A run this room
      did not start answers console.gone. */
@@ -1156,6 +1168,15 @@ module.exports = function meeting(deps) {
     for (const k of add) {
       const id = resolve(String(k)); if (!id) fail('nobody called ' + k + ' is on the crew', 404);
       const wasHere = present().includes(id);
+      if (Array.isArray(P.standing)) {   // a room with fixed standing seats: the owner's pick joins as a guest of this one
+        if (wasHere) continue;
+        if (present().length >= MAX_SEATS) fail('the ' + NOUN + ' is full (' + MAX_SEATS + ' seats)');
+        if (M.guests.filter(c => !M.excused.includes(c)).length >= MAX_GUESTS) fail(MAX_GUESTS + ' colleague' + (MAX_GUESTS === 1 ? ' is' : 's are') + ' here already, the most at once: send one back out first', 409);
+        M.excused = M.excused.filter(c => c !== id); if (!M.guests.includes(id)) M.guests.push(id); save();
+        if (!M.opened) record({ who: 'owner', kind: 'open', text: seatList() });
+        record({ who: id, kind: 'join', by: 'owner' });
+        continue;
+      }
       if (!std.seats.includes(id)) { if (std.seats.length >= MAX_SEATS) fail('the meeting is full (' + MAX_SEATS + ' seats)'); std.seats.push(id); saveStd(); }
       M.guests = M.guests.filter(c => c !== id); M.excused = M.excused.filter(c => c !== id); save();
       if (!wasHere && M.opened) record({ who: id, kind: 'join' });
@@ -1166,7 +1187,7 @@ module.exports = function meeting(deps) {
       const wasHere = present().includes(id);
       if (std.seats.includes(id)) { std.seats = std.seats.filter(c => c !== id); saveStd(); }
       M.guests = M.guests.filter(c => c !== id); M.excused = M.excused.filter(c => c !== id); save();
-      if (wasHere && M.opened) record({ who: id, kind: 'leave' });
+      if (wasHere && M.opened) record(Array.isArray(P.standing) ? { who: id, kind: 'leave', by: 'owner' } : { who: id, kind: 'leave' });
     }
     emit('meeting');
     return inner ? null : view();
@@ -1344,7 +1365,7 @@ module.exports = function meeting(deps) {
   }
   load();
   return { mount, start, view, entries, minutesText, say, openRound, hand, carryOn, stop, setObserve, agenda, setLeader, seatsChange, newMeeting, close, resume, list, register: regSafe(b => register(b)), registerView, search: q => search(q), reindex, explain, terms, addTerm, next, pace, hold, presence, catchUp, timeline, busy,
-    setTalkOnly, setFrames, pullIn, attach, profile: P, present: () => (M ? present() : []), state: () => (M ? M.state : null),
+    setTalkOnly, setFrames, pullIn, seed, attach, profile: P, present: () => (M ? present() : []), state: () => (M ? M.state : null),
     idle: () => !M.run && !driving, _state: () => ({ std, M, LOG }), _reload: load };
 };
 module.exports.directives = directives;
