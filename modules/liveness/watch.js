@@ -64,11 +64,11 @@ function tellOwner(text, technical) {
   const notice = co.p('company', 'tools', 'lib', 'owner-notice.js');
   try { if (fs.existsSync(notice)) require(notice).send({ kind: 'urgent', from: 'The alarm', text, technical, priority: 'top' }); else require(co.p('company', 'tools', 'owner-inbox.js')).send({ from: 'liveness', text: text + (technical ? '\n' + technical : '') }); return true; } catch (e) { return 'owner channel failed: ' + e.message; }
 }
-/* the owner's lines: what it means for them, in plain words; the unit names and commands are for whoever looks after
- * this computer (technical) */
+/* the owner's lines: what it means for them and what happens next, in plain words (no console control starts these
+ * units, and the owner has nobody to hand it to); the unit names and commands are `technical` */
 function downNotice(kind, ageMin) {
-  return kind === 'dispatcher' ? 'The crew\'s work has stopped: nothing new has started' + (ageMin == null ? '' : ' for ' + Math.round(ageMin) + ' minutes') + ', so no one is woken. The details below are for whoever looks after this computer.'
-    : 'The alarm that tells you when the company stops is not being checked right now. The details below are for whoever looks after this computer.';
+  return kind === 'dispatcher' ? 'The crew\'s work has stopped: nothing new has started' + (ageMin == null ? '' : ' for ' + Math.round(ageMin) + ' minutes') + ', so no one is woken. You will get a message here as soon as the work starts again.'
+    : 'The alarm that tells you when the company stops is not being checked right now, so a stop might not reach you. You will get a message here when it is checked again.';
 }
 const upNotice = kind => kind === 'dispatcher' ? 'The crew\'s work is running again after a stop.' : 'The alarm that tells you when the company stops is being checked again.';
 /* optional push: secrets/liveness-ping-url, only through external-gate (category network) */

@@ -323,3 +323,24 @@ out({ res, cut: { notPlain: !!cut.notPlain, questionId: cut.questionId || null }
   assert.match(by['pacer emergency'].message, /use more of its AI subscriptions than usual for the next 6 hours/);
   assert.equal(r.cut.notPlain, true); assert.equal(r.cut.questionId, null);
 });
+
+/* ---------------- UX N3: the urgent stop alerts say what happens next, never "whoever looks after this computer" ---------------- */
+test('UX N3: the watchdog and the liveness alarm tell the owner what happens next, in plain words, with nobody else to hand it to', () => {
+  const T = company();
+  const r = run(T, `
+const W = require(path.join(REPO, 'company/tools/watchdog.js'));
+const told = [];
+const n = (text, technical) => { told.push({ text, technical }); return { id: 'x' }; };
+fs.mkdirSync(path.join(T, 'company/state'), { recursive: true });
+fs.writeFileSync(path.join(T, 'company/state/dispatcher-loop.json'), JSON.stringify({ lastTickEndAt: new Date(Date.now() - 3 * 3600e3).toISOString() }));
+W.check({ now: Date.now(), notify: n });
+const src = fs.readFileSync(path.join(REPO, 'modules/liveness/watch.js'), 'utf8');
+out({ told, liveness: src.match(/function downNotice[\\s\\S]*?\\n}\\n/)[0] });`);
+  const card = require(path.join(REPO, 'company/tools/lib/owner-card.js'));
+  assert.equal(r.told.length, 1, JSON.stringify(r.told));
+  assert.match(r.told[0].text, /^The crew's work has stopped: nothing new has started for \d+ minutes, so no one is woken\. This check runs again every 15 minutes and tells you here as soon as the work starts again\.$/);
+  assert.ok(card.plain(r.told[0].text), r.told[0].text);
+  assert.match(r.told[0].technical, /systemctl --user restart/, 'the fix stays in the technical part');
+  for (const t of [r.told[0].text, r.liveness]) assert.doesNotMatch(t, /whoever looks after|details below are for/i);
+  assert.match(r.liveness, /You will get a message here as soon as the work starts again/);
+});

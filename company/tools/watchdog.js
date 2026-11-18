@@ -60,11 +60,12 @@ function judge(o) {
   return { silent: silentMin > limitMin, silentMin, limitMin };
 }
 
-// the owner's line: what it means for them, in plain words; the service name and the commands are for whoever looks
-// after this computer (`technical`)
+// the owner's line: what it means for them and what happens next, in plain words (there is no console control that
+// starts the dispatcher, and the owner has nobody to hand it to); the service name and the commands are `technical`
 function silentNotice(v) {
-  return v.never ? 'The crew\'s work has not started yet: the part of the system that hands out work has never run, so no one is woken. The details below are for whoever looks after this computer.'
-    : 'The crew\'s work has stopped: nothing new has started for ' + v.silentMin + ' minutes, so no one is woken. The details below are for whoever looks after this computer.';
+  const next = ' This check runs again every 15 minutes and tells you here as soon as the work starts' + (v.never ? '.' : ' again.');
+  return v.never ? 'The crew\'s work has not started yet, so no one is woken.' + next
+    : 'The crew\'s work has stopped: nothing new has started for ' + v.silentMin + ' minutes, so no one is woken.' + next;
 }
 function check(o) {
   o = o || {};
