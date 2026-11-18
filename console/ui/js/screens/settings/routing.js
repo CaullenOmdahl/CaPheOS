@@ -80,7 +80,9 @@ export function routingSection(host, app) {
         : empty('No trials. The people function drafts one when it wants to compare models on real work; you start it here.'),
       done.length ? Details(done.length + ' finished ' + (done.length === 1 ? 'trial' : 'trials'), h('div', { class: 'stack-12' }, done.map(trialCard))) : null,
       (data.log || []).length ? Details('Recent routing changes', h('ul', { class: 'plain stack-4' }, data.log.slice(0, 20).map(r =>
-        h('li', { class: 'caption' }, (r.at ? whenAt(Number(r.at), tz) + ': ' : '') + personName(r.by) + ' · ' + String(r.op || '').replace(/-/g, ' ') + (r.trial ? ' ' + r.trial : '') + (r.to ? ' → ' + r.to : '') + (r.why ? ' (' + r.why + ')' : ''))))) : null);
+        h('li', { class: 'caption' }, (r.at ? whenAt(Number(r.at), tz) + ': ' : '') + (r.op === 'trial-held' || r.op === 'trial-unheld'
+          ? 'Usage limits ' + (r.op === 'trial-held' ? 'paused' : 'resumed') + ' trial ' + (r.trial || '') + (r.why ? ' (' + r.why + ')' : '')
+          : personName(r.by) + ' · ' + String(r.op || '').replace(/-/g, ' ') + (r.trial ? ' ' + r.trial : '') + (r.to ? ' → ' + r.to : '') + (r.why ? ' (' + r.why + ')' : '')))))) : null);
   }
   load();
   return load;

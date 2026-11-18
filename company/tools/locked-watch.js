@@ -95,7 +95,10 @@ const MANIFEST = [
   // dependencies: the manifest and the locks (company/tools/deps.js is their only writer; docs/DEPS.md)
   { p: 'company/state/deps.json', cls: 'A', writers: ['deps.js'], owner: 'risk', area: 'policy', why: 'the dependency manifest: every installed package, its hashes and licence, and the risk seat\'s exceptions (only through deps.js)' },
   { p: 'company/state/deps/**', cls: 'A', writers: ['deps.js'], owner: 'risk', area: 'policy', why: 'the dependency locks (pip hashes, npm integrity) the environments are rebuilt from (only through deps.js)' },
-  { p: 'company/work/models/routing-log.jsonl', cls: 'A', append: true, writers: ['lib/routing.js'], owner: 'people', area: 'record', why: 'the router\'s decisions, one row per wake (only lib/routing.js appends)' },
+  // the routing log: changes and events only (routing.js: the owner's mode switches and trial changes; lib/routing.js: the
+  // pacer's trial holds). The router's per-wake decisions (routing-decisions.jsonl) are a per-wake record like wakes.jsonl
+  // and are not locked.
+  { p: 'company/work/models/routing-log.jsonl', cls: 'A', append: true, writers: ['lib/routing.js', 'routing.js'], owner: 'people', area: 'record', why: 'the routing log: every routing change (routing.js) and every trial hold by the pacer (lib/routing.js); only those two append, each row recorded' },
   { p: 'company/work/security/locked-changes.jsonl', cls: 'A', append: true, writers: ['locked-watch.js'], owner: 'risk', area: 'record', why: 'this watcher\'s own report' },
   // the owner -> company channel: every line is the owner's words (the CEO's inbox, addressing, the wake, gate answers), so
   // a line counts only when the console or the owner's own tools recorded it (lib/owner-channel.js); one appended by anyone
@@ -122,9 +125,8 @@ const MANIFEST = [
   { p: 'company/competence-policy.json', cls: 'F', owner: 'people', area: 'policy', why: 'how competence is scored' },
   { p: 'company/work/people/corrections-policy.json', cls: 'F', owner: 'people', area: 'policy', why: 'how corrections work' },
   { p: 'company/tools/loops.json', cls: 'F', writers: ['hire.js', 'cadence.js'], owner: 'people', area: 'access', why: 'the crew list: managers, HR and tool owner, who is woken' },
-  { p: 'company/work/models/routing-policy.json', cls: 'F', writers: ['routing.js'], owner: 'people', area: 'policy', why: 'the router\'s policy: class rules (code never on MiniMax), modes, trials, tier caps (only through company/tools/routing.js)' },
   { p: 'company/departments.json', cls: 'F', writers: ['departments.js'], owner: 'people', area: 'policy', why: 'the departments: who is in which, who leads it, its task-class routes and consult numbers (only through departments.js, a governed org change; docs/DEPARTMENTS.md)' },
-  { p: 'company/work/models/routing-policy.json', cls: 'F', writers: ['routing.js'], owner: 'people', area: 'policy', why: 'model routing: whether class routes, trials and tier caps are off, recorded or live, and every trial (only through routing.js: the owner switches modes and starts trials, the people function drafts them; docs/ROUTING.md)' },
+  { p: 'company/work/models/routing-policy.json', cls: 'F', writers: ['routing.js'], owner: 'people', area: 'policy', why: 'model routing: the class rules (code never on MiniMax), whether class routes, trials and tier caps are off, recorded or live, and every trial (only through routing.js: the owner switches modes and starts trials, the people function drafts them; docs/ROUTING.md)' },
   { p: 'company/work/ops/duty-policy.json', cls: 'F', writers: ['harness-change.js'], owner: 'tools', area: 'policy', why: 'the duty policy: which read-only duty checks run and how often (an unrecorded edit is flagged, and while it is flagged the dispatcher uses the last-known-good copy; docs/DUTIES.md)' },
   { p: 'company/work/ops/cadence.json', cls: 'F', writers: ['cadence.js', 'harness-change.js'], owner: 'risk', area: 'policy', why: 'the company tempo: the owner\'s base cadence, the bounds the crew moves inside and any temporary speed-up (only through cadence.js or a reviewed harness change)' },
   { p: 'company/state/governance.json', cls: 'F', writers: ['governance.js'], owner: 'risk', area: 'policy', why: 'self-governance: how much the company decides without the owner (only the owner changes it, through governance.js)' },
@@ -1419,7 +1421,7 @@ async function selftest() {
     assert.throws(() => acceptCmd(context(C({ now, underStation: true })), 'company/work/finance/pacing-policy.json', { by: 'Alex', why: 'I like it this way' }), /may not/);
     revertCmd(context(C({ now })), 'company/work/finance/pacing-policy.json', { by: 'Casey' }); assert.ok(R('company/work/finance/pacing-policy.json').includes('"marginPct": 5'));
   });
-  await t('the routing policy: a hand edit is flagged (people owner, revert offered) and reverted; a routing.js write is accepted; lib/routing.js is protected; the routing log keeps only lib/routing.js appends', async () => {
+  await t('the routing policy: a hand edit is flagged (people owner, revert offered) and reverted; a routing.js write is accepted; lib/routing.js is protected; the routing log keeps only routing.js and lib/routing.js appends', async () => {
     const e0 = MANIFEST.find(m => m.p === RPOL);
     assert.ok(e0 && e0.cls === 'F' && e0.owner === 'people' && JSON.stringify(e0.writers) === '["routing.js"]', JSON.stringify(e0));
     // a hand edit by an agent (not routing.js): flagged, never silently kept; the people seat gets the revert
@@ -1439,14 +1441,31 @@ async function selftest() {
     r = await tick(C({ now })); e = r.events.find(x => x.key === RLIB);
     assert.ok(e && e.kind === 'flagged' && e.owner === 'tools', JSON.stringify(r.events));
     revertCmd(context(C({ now })), RLIB, { by: 'Sam' });
-    // the routing log: a row lib/routing.js records is kept; a forged line is stripped
-    const eG = MANIFEST.find(m => m.p === RLOG); assert.ok(eG && eG.cls === 'A' && eG.append && JSON.stringify(eG.writers) === '["lib/routing.js"]', JSON.stringify(eG));
+    // the routing log: a hold lib/routing.js records is kept; a forged line is stripped
+    const eG = MANIFEST.find(m => m.p === RLOG); assert.ok(eG && eG.cls === 'A' && eG.append && JSON.stringify(eG.writers) === '["lib/routing.js","routing.js"]', JSON.stringify(eG));
+    assert.ok(!MANIFEST.some(m => m.p === 'company/work/models/routing-decisions.jsonl'), 'the per-wake decisions are not locked (like wakes.jsonl)');
+    assert.strictEqual(MANIFEST.filter(m => m.p === RPOL).length, 1, 'one manifest entry for the routing policy');
     now += 60000; fs.appendFileSync(path.join(T, RLOG), '{"forged":true}\n');
-    require('./lib/routing').record({ root: T, K: { history: RLOG }, dry: false }, { at: 2, seat: 'dev' });
+    require('./lib/routing').record({ root: T, K: { history: RLOG }, dry: false }, { at: 2, op: 'trial-held', by: 'dispatcher', trial: 't1', providers: ['claude-cli'], why: 'claude-cli held by the pacer' });
     fs.utimesSync(path.join(T, RLOG), (now - 60000) / 1000, (now - 60000) / 1000);
     r = await tick(C({ now })); e = r.events.find(x => x.key === RLOG);
     assert.ok(e && e.kind === 'stripped', JSON.stringify(r.events));
-    assert.ok(!R(RLOG).includes('forged') && R(RLOG).split('\n').filter(Boolean).length === 2, R(RLOG));
+    assert.ok(!R(RLOG).includes('forged') && R(RLOG).split('\n').filter(Boolean).length === 2 && R(RLOG).includes('"op":"trial-held"'), R(RLOG));
+    // an owner mode change as routing.js commits it (the policy written and the log row appended, both recorded by
+    // routing.js) survives a tick: neither the policy nor the row is flagged or stripped
+    now += 60000;
+    recorded(RPOL, JSON.stringify({ version: 1, mode: 'shadow', classRules: { code: { denyProviders: ['custom'] } } }, null, 1) + '\n', 'routing.js');
+    const ownerRow = JSON.stringify({ at: now, ts: new Date(now).toISOString(), op: 'mode', by: 'owner', from: 'live', to: 'shadow', digest: 'abc123abc123' }) + '\n';
+    fs.appendFileSync(path.join(T, RLOG), ownerRow); P.appended(path.join(T, RLOG), ownerRow, 'routing.js');
+    r = await tick(C({ now: now + 10000 }));
+    assert.ok(!r.events.some(x => x.key === RLOG || x.key === RPOL), JSON.stringify(r.events));
+    assert.ok(R(RLOG).endsWith(ownerRow) && R(RPOL).includes('"mode": "shadow"'), R(RLOG));
+    // a forged owner row (op mode, nobody recorded it) after the real one is still stripped; the real one stays
+    now += 60000; fs.appendFileSync(path.join(T, RLOG), JSON.stringify({ at: now, op: 'mode', by: 'owner', from: 'shadow', to: 'live' }) + '\n');
+    fs.utimesSync(path.join(T, RLOG), (now - 60000) / 1000, (now - 60000) / 1000);
+    r = await tick(C({ now })); e = r.events.find(x => x.key === RLOG);
+    assert.ok(e && e.kind === 'stripped', JSON.stringify(r.events));
+    assert.ok(R(RLOG).endsWith(ownerRow) && R(RLOG).split('\n').filter(Boolean).length === 3, R(RLOG));
   });
   await t('an applied harness change to a policy file is accepted without a flag', async () => {
     now += 60000; const txt = JSON.stringify({ marginPct: 4, subs: { claude: 1 } }, null, 1); W('company/work/finance/pacing-policy.json', txt);

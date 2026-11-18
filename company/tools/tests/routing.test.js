@@ -32,6 +32,8 @@ test('the default policy: shadow, code denies custom, no trials, tier caps shado
   assert.deepStrictEqual(K.trials, []);
   assert.deepStrictEqual(K.order, ['classRules', 'trial', 'route', 'tierCap', 'chain']);
   assert.strictEqual(K.history, 'company/work/models/routing-log.jsonl');
+  assert.strictEqual(K.decisions, 'company/work/models/routing-decisions.jsonl');
+  assert.strictEqual(R.knobs({ history: '../x.jsonl', decisions: '/abs.jsonl' }).history, 'company/work/models/routing-log.jsonl', 'a log path outside company/work reads the default');
   assert.strictEqual(R.knobs({}).mode, 'off', 'a missing key reads as off');
 });
 
@@ -132,10 +134,10 @@ test('(5) a pacer hold on claude-cli pauses the trial (no assignment, reason rec
   }
   let st = { trials: {} };
   const p1 = R.trialPauses(K, ['claude-cli'], st, 1000); st = p1.state;
-  assert.deepStrictEqual(p1.events.map(e => [e.trial, e.event]), [['t1', 'paused']]);
+  assert.deepStrictEqual(p1.events.map(e => [e.op, e.by, e.trial, e.providers]), [['trial-held', 'dispatcher', 't1', ['claude-cli']]]);
   assert.strictEqual(R.trialPauses(K, ['claude-cli'], st, 2000).events.length, 0, 'a lasting hold is recorded once');
   const p2 = R.trialPauses(K, [], st, 3000);
-  assert.deepStrictEqual(p2.events.map(e => [e.trial, e.event]), [['t1', 'resumed']]);
+  assert.deepStrictEqual(p2.events.map(e => [e.op, e.trial, e.providers]), [['trial-unheld', 't1', ['claude-cli']]]);
   const d = R.decide(args([], 'wk-r1'));
   assert.strictEqual(d.trial, 't1'); assert.strictEqual(d.applied, true);
   assert.deepStrictEqual([d.provider, d.model], [K.trials[0].arms[d.arm].provider, K.trials[0].arms[d.arm].model]);
@@ -193,7 +195,7 @@ test('allowFor reads only a current allowlist; extraEntries lists running trial 
   assert.deepStrictEqual(R.extraEntries('dev', { K: R.knobs(pol({ mode: 'off', trials })), departments: DEPS, crew: CREW, chain: [] }), []);
 });
 
-test('prepare: no policy anywhere = null (every wake runs on its chain); a policy writes trial pauses to the log', async () => {
+test('prepare: no policy anywhere = null (every wake runs on its chain); a policy writes trial holds to the routing log as op trial-held / trial-unheld', async () => {
   assert.strictEqual(await R.prepare({ root: T }), null);
   const trial = { id: 'p', class: 'code', arms: [SONNET], scope: { seats: ['dev'] }, entryShare: 1, status: 'running', pauseWhenHeld: ['claude-cli'] };
   W('company/work/models/routing-policy.json', pol({ trials: [trial] }));
@@ -201,22 +203,37 @@ test('prepare: no policy anywhere = null (every wake runs on its chain); a polic
   const ctx = await R.prepare({ root: T, held: ['claude-cli'], log: l => lines.push(l) });
   R.finish(ctx);
   assert.ok(lines.some(l => /ROUTING trial p paused: claude-cli held by the pacer/.test(l)), lines.join('\n'));
-  const log = fs.readFileSync(path.join(T, 'company/work/models/routing-log.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-  assert.deepStrictEqual(log.map(r => [r.kind, r.trial, r.event]), [['trial', 'p', 'paused']]);
+  const logOf = () => fs.readFileSync(path.join(T, 'company/work/models/routing-log.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepStrictEqual(logOf().map(r => [r.op, r.by, r.trial, r.providers, r.why]), [['trial-held', 'dispatcher', 'p', ['claude-cli'], 'claude-cli held by the pacer']]);
+  assert.ok(logOf().every(r => Number.isFinite(r.at) && typeof r.ts === 'string'));
   const c2 = await R.prepare({ root: T, held: [], log: l => lines.push(l) }); R.finish(c2);
   assert.ok(lines.some(l => /trial p resumed/.test(l)));
+  assert.deepStrictEqual(logOf().map(r => [r.op, r.trial, r.providers]), [['trial-held', 'p', ['claude-cli']], ['trial-unheld', 'p', ['claude-cli']]]);
+  // a decision row goes to the decisions log, never to the routing log
+  R.record(c2, { wakeId: 'wk-9', seat: 'dev', door: 'dispatch', route: { applied: false } });
+  assert.strictEqual(logOf().length, 2);
+  const dec = fs.readFileSync(path.join(T, 'company/work/models/routing-decisions.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepStrictEqual(dec.map(r => [r.wakeId, r.seat, 'op' in r]), [['wk-9', 'dev', false]]);
+  for (const f of ['routing-log.jsonl', 'routing-decisions.jsonl']) fs.rmSync(path.join(T, 'company/work/models', f));
   fs.rmSync(path.join(T, 'company/work/models/routing-policy.json'));
 });
 
-test('locked-watch.js protects the router: lib/routing.js a tool, the policy class F (people, routing.js), the log class A appended only by lib/routing.js (recorded)', () => {
+test('locked-watch.js protects the router: lib/routing.js a tool, the policy class F (people, routing.js), the routing log class A appended only by lib/routing.js and routing.js (recorded); the decisions log is not locked', () => {
   const LW = require('../locked-watch.js');
   const tool = LW.MANIFEST.find(m => m.p === 'company/tools/lib/routing.js');
   assert.ok(tool && tool.cls === 'F' && tool.area === 'tool', JSON.stringify(tool));
   const pol = LW.MANIFEST.find(m => m.p === 'company/work/models/routing-policy.json');
   assert.deepStrictEqual(pol && [pol.cls, pol.owner, pol.writers], ['F', 'people', ['routing.js']], JSON.stringify(pol));
   const log = LW.MANIFEST.find(m => m.p === 'company/work/models/routing-log.jsonl');
-  assert.deepStrictEqual(log && [log.cls, log.append, log.writers], ['A', true, ['lib/routing.js']], JSON.stringify(log));
-  R.record({ root: T, K: { history: 'company/work/models/routing-log.jsonl' }, dry: false }, { at: 5, seat: 'dev', route: { applied: false } });
-  const prov = fs.readFileSync(path.join(T, 'company/state/locked/provenance.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(r => r.file === 'company/work/models/routing-log.jsonl');
-  assert.ok(prov.length && prov.every(r => r.kind === 'append' && r.writer === 'lib/routing.js'), JSON.stringify(prov));
+  assert.deepStrictEqual(log && [log.cls, log.append, log.writers], ['A', true, ['lib/routing.js', 'routing.js']], JSON.stringify(log));
+  assert.strictEqual(LW.MANIFEST.filter(m => m.p === 'company/work/models/routing-policy.json').length, 1);
+  assert.ok(!LW.MANIFEST.some(m => m.p === 'company/work/models/routing-decisions.jsonl' || m.p === 'company/state/wakes.jsonl'), 'per-wake records are not locked');
+  const provRows = () => { try { return fs.readFileSync(path.join(T, 'company/state/locked/provenance.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)); } catch (_) { return []; } };
+  const before = provRows().length;
+  R.record({ root: T, K: { history: 'company/work/models/routing-log.jsonl' }, dry: false }, { at: 5, op: 'trial-held', trial: 'p', providers: ['claude-cli'], why: 'claude-cli held by the pacer' });
+  R.record({ root: T, K: {}, dry: false }, { at: 6, wakeId: 'wk-1', seat: 'dev', route: { applied: false } });
+  const prov = provRows().slice(before);
+  const pl = prov.filter(r => r.file === 'company/work/models/routing-log.jsonl');
+  assert.ok(pl.length === 1 && pl.every(r => r.kind === 'append' && r.writer === 'lib/routing.js'), JSON.stringify(prov));
+  assert.ok(!prov.some(r => r.file === 'company/work/models/routing-decisions.jsonl'), 'a decision row is not recorded with provenance (not locked)');
 });

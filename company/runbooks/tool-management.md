@@ -255,7 +255,7 @@ in §5a instead.
 | `company/tools/duties.js` | tools | `node company/tools/duties.js --selftest` |
 | `company/tools/duty-status.js` | tools | `node company/tools/duty-status.js --selftest` |
 | `company/tools/model-rank.js` | people | `node company/tools/model-rank.js --selftest` |
-| `company/tools/routing.js` | people | `node company/tools/routing.js --selftest` (the CLI, owner-only actions and the console route: `node --test company/tools/tests/routing.test.js`) |
+| `company/tools/routing.js` | people | `node company/tools/routing.js --selftest` (the CLI, owner-only actions and the console route: `node --test company/tools/tests/routing-controls.test.js`) |
 | `company/tools/check-benchmarks.py` | people | `python3 company/tools/check-benchmarks.py --selftest` |
 | `company/tools/external-gate.js` | risk | `node company/tools/external-gate.js --selftest` |
 | `company/tools/founder-loop.js` | ceo | `node company/tools/founder-loop.js --selftest` |

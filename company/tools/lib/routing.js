@@ -32,12 +32,20 @@
  *   R.heldProviders(m)                          -> the providers a pacer measurement holds (claude-cli, custom, deepseek)
  *   await R.prepare({ root, jobs, log, dry })   -> a tick context (null without a policy)
  *   R.forWake(ctx, { seat, wakeId, items, job, door }) -> the decision for one wake (logged by R.record)
- *   R.record(ctx, row)                          append one routing-log.jsonl row (policy.history)
+ *   R.record(ctx, row)                          a wake's decision row ({wakeId, seat, door, jobId, runId, status, route}) to
+ *                                               policy.decisions (routing-decisions.jsonl); an event row ({op: trial-held |
+ *                                               trial-unheld, trial, providers, why}) to policy.history (routing-log.jsonl)
  *   R.finish(ctx)                               save company/state/routing-state.json (trial pause state) when changed
- * Retention: routing-log.jsonl rolls monthly (company/defaults/work/ops/retention.json "routing-log"). routing-state.json is
- * one small file rewritten whole. Owner: the people function (the model manager). locked-watch.js: the policy is class F
- * (changed only through company/tools/routing.js), this file a protected tool, the log class A (only this file appends;
- * each row is recorded with provenance.js). Never throws from the dispatcher paths.
+ * Two logs, by purpose: company/work/models/routing-log.jsonl (policy.history) holds changes and events only, one schema
+ * {at, ts, op, by, ...}: routing.js writes the owner's changes (mode, tiercaps, trial-*), this file the pacer's holds of a
+ * trial (op trial-held / trial-unheld, by "dispatcher", with trial, providers, why). company/work/models/
+ * routing-decisions.jsonl (policy.decisions) holds one row per routed wake {at, ts, wakeId, seat, door, jobId, runId,
+ * status, route}; the same route is on the wake's company/state/wakes.jsonl row. Retention (company/defaults/work/ops/
+ * retention.json): routing-log 180 days / 2 MB (the audit of owner changes), routing-decisions 90 days / 16 MB.
+ * routing-state.json is one small file rewritten whole. Owner: the people function (the model manager). locked-watch.js:
+ * the policy is class F (changed only through company/tools/routing.js), this file a protected tool, routing-log.jsonl
+ * class A (appended only by routing.js and this file, each row recorded with provenance.js); routing-decisions.jsonl is a
+ * per-wake record like wakes.jsonl and is not locked. Never throws from the dispatcher paths.
  */
 const fs = require('fs');
 const path = require('path');
@@ -47,6 +55,11 @@ const POLICY_REL = 'company/work/models/routing-policy.json';
 const DEFAULT_REL = 'company/defaults/work/models/routing-policy.json';
 const STATE_REL = 'company/state/routing-state.json';
 const ALLOW_REL = 'company/state/override-allow.json';
+const HISTORY_REL = 'company/work/models/routing-log.jsonl';
+const DECISIONS_REL = 'company/work/models/routing-decisions.jsonl';
+const EVENT_OPS = ['trial-held', 'trial-unheld'];   // the router's own rows in routing-log.jsonl (routing.js writes the rest)
+// a log file the policy names: a .jsonl under company/work/, no '..' (anything else: the default; routing.js reads the same)
+const logRel = (v, d) => (typeof v === 'string' && /^company\/work\/[A-Za-z0-9_./-]+\.jsonl$/.test(v) && !v.split('/').some(x => x === '..' || x === '.' || x === '') ? v : d);
 const MODES = ['off', 'shadow', 'live'];
 const STEPS = ['classRules', 'trial', 'route', 'tierCap', 'chain'];
 const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } };
@@ -92,7 +105,8 @@ function knobs(P) {
     },
     trials: arr(P.trials).filter(t => t && typeof t === 'object' && t.id),
     allowMaxAgeMin: Number(P.allowMaxAgeMin) > 0 ? Number(P.allowMaxAgeMin) : 30,
-    history: typeof P.history === 'string' && P.history && !path.isAbsolute(P.history) && !P.history.split(/[\\/]/).includes('..') ? P.history : null,
+    history: logRel(P.history, HISTORY_REL),
+    decisions: logRel(P.decisions, DECISIONS_REL),
   };
 }
 
@@ -142,8 +156,8 @@ function trialPauses(K, held, state, now) {
   for (const t of K.trials) {
     if (t.status !== 'running') continue;
     const by = pausedBy(t, held); const was = st.trials[t.id] || {};
-    if (by.length && !was.paused) { st.trials[t.id] = { paused: true, since: now, why: by.join(', ') + ' held by the pacer' }; events.push({ kind: 'trial', trial: t.id, event: 'paused', why: st.trials[t.id].why }); }
-    else if (!by.length && was.paused) { st.trials[t.id] = { paused: false, since: now, why: 'resumed: ' + (was.why || 'the hold') + ' ended' }; events.push({ kind: 'trial', trial: t.id, event: 'resumed', why: st.trials[t.id].why }); }
+    if (by.length && !was.paused) { st.trials[t.id] = { paused: true, since: now, providers: by, why: by.join(', ') + ' held by the pacer' }; events.push({ op: 'trial-held', by: 'dispatcher', trial: String(t.id), providers: by, why: st.trials[t.id].why }); }
+    else if (!by.length && was.paused) { const prov = strs(was.providers); st.trials[t.id] = { paused: false, since: now, why: 'resumed: ' + (was.why || 'the hold') + ' ended' }; events.push({ op: 'trial-unheld', by: 'dispatcher', trial: String(t.id), providers: prov, why: st.trials[t.id].why }); }
   }
   return { state: st, events };
 }
@@ -338,7 +352,7 @@ async function prepare(o) {
     const prev = readJson(path.join(root, STATE_REL), null) || { trials: {} };
     const tp = trialPauses(K, held || [], prev, now);
     const ctx = { root, policy: L.policy, source: L.source, K, deps, crew, chains, held: held || [], now, state: tp.state, stateChanged: JSON.stringify(tp.state) !== JSON.stringify(prev), dry: !!o.dry, log: o.log };
-    for (const e of tp.events) { record(ctx, Object.assign({ at: now }, e)); if (typeof o.log === 'function') o.log('ROUTING trial ' + e.trial + ' ' + e.event + ': ' + e.why); }
+    for (const e of tp.events) { record(ctx, Object.assign({ at: now }, e)); if (typeof o.log === 'function') o.log('ROUTING trial ' + e.trial + ' ' + (e.op === 'trial-held' ? 'paused' : 'resumed') + ': ' + e.why); }
     return ctx;
   } catch (e) { if (o && typeof o.log === 'function') o.log('ROUTING ERROR: ' + String((e && e.message) || e).slice(0, 200) + ' (every wake runs on its chain)'); return null; }
 }
@@ -352,15 +366,21 @@ function forWake(ctx, w) {
       allow: allowFor(w.seat, { root: ctx.root, now: Date.now(), maxAgeMin: ctx.K.allowMaxAgeMin }) });
   } catch (e) { if (typeof ctx.log === 'function') ctx.log('ROUTING ERROR ' + w.seat + ': ' + String((e && e.message) || e).slice(0, 200) + ' (runs on its chain)'); return null; }
 }
+// an event (row.op trial-held / trial-unheld) goes to the routing log, recorded with provenance (locked-watch.js class A);
+// anything else is a wake's decision and goes to the decisions log (a per-wake record like wakes.jsonl, not locked)
 function record(ctx, row) {
-  if (!ctx || ctx.dry || !ctx.K.history) return;
+  if (!ctx || ctx.dry || !row || typeof row !== 'object') return;
   try {
-    const f = path.join(ctx.root, ctx.K.history);
+    const event = EVENT_OPS.includes(row.op);
+    const K = ctx.K || {};
+    const rel = event ? logRel(K.history, HISTORY_REL) : logRel(K.decisions, DECISIONS_REL);
+    const f = path.join(ctx.root, rel);
     const at = Number.isFinite(row.at) ? row.at : Date.now();
     fs.mkdirSync(path.dirname(f), { recursive: true });
-    const line = JSON.stringify(Object.assign({ at, ts: new Date(at).toISOString() }, row)) + '\n';
+    const head = event ? { at, ts: new Date(at).toISOString(), op: row.op, by: row.by || 'dispatcher' } : { at, ts: new Date(at).toISOString() };
+    const line = JSON.stringify(Object.assign({}, head, row, { at, ts: head.ts }, event ? { by: head.by } : {})) + '\n';
     fs.appendFileSync(f, line);
-    try { require('../provenance.js').appended(f, line, 'lib/routing.js', { root: ctx.root }); } catch (_) {}   // locked-watch.js: class A, only this tool appends
+    if (event) try { require('../provenance.js').appended(f, line, 'lib/routing.js', { root: ctx.root }); } catch (_) {}
   } catch (_) { /* a record never breaks a wake */ }
 }
 function finish(ctx) {
@@ -375,7 +395,7 @@ function line(seat, d) {
   return null;
 }
 
-module.exports = { POLICY_REL, DEFAULT_REL, STATE_REL, MODES, STEPS, loadPolicy, knobs, wakeClass, denied, assign, inScope, trialPauses, decide, overrideOf, allowFor, extraEntries, routeAllowed, heldProviders, prepare, forWake, record, finish, line, label };
+module.exports = { POLICY_REL, DEFAULT_REL, STATE_REL, HISTORY_REL, DECISIONS_REL, EVENT_OPS, MODES, STEPS, logRel, loadPolicy, knobs, wakeClass, denied, assign, inScope, trialPauses, decide, overrideOf, allowFor, extraEntries, routeAllowed, heldProviders, prepare, forWake, record, finish, line, label };
 
 // node company/tools/lib/routing.js show   the policy in force and its switches (read only)
 if (require.main === module) {

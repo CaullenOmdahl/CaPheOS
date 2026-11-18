@@ -48,7 +48,8 @@
  * paused again) and keeps the watchdog routine there; "station" (the default) = the station's scheduler fires the loops
  * and this tick wakes seats with work only, as before.
  * Router (lib/routing.js, docs/ROUTING.md): with a routing policy each wake's model decision (class rules, trial arm,
- * department route, tier cap, chain) is recorded on its wakes.jsonl row (route) and in routing-log.jsonl; it is passed as
+ * department route, tier cap, chain) is recorded on its wakes.jsonl row (route) and in routing-decisions.jsonl (a trial held by
+ * the pacer: op trial-held / trial-unheld in routing-log.jsonl); it is passed as
  * the one-run override on POST /api/cron/run only when its mode is live and company/state/override-allow.json opens the
  * pair for the seat (a 403 from the station's gate re-runs it on the chain). No policy: the body is {id, detach}, as before.
  */

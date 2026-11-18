@@ -2,7 +2,7 @@
 /* routing-dispatch.test.js — the router (lib/routing.js) through the real dispatch.js, against tests/mock-station.js (the
  * harness of gates-dispatch.test.js). It proves: with no routing policy and no departments every POST /api/cron/run body is
  * exactly what it was before ({id, detach}) and no wake row carries a route; shadow records wouldApply on the wake row and
- * in routing-log.jsonl and runs the chain (no override); live + a current allowlist that opens the pair passes the one-run
+ * in routing-decisions.jsonl and runs the chain (no override); live + a current allowlist that opens the pair passes the one-run
  * override; live + a pair the allowlist does not list records "not open" and runs the chain.
  *
  *   node --test company/tools/tests/routing-dispatch.test.js
@@ -102,7 +102,7 @@ test('(7) no routing policy and no departments: every cron run body is {id, deta
   for (const b of r.bodies) assert.equal(JSON.stringify(b), JSON.stringify({ id: b.id, detach: true }), 'byte for byte the old body');
   const rows = c.jsonl('company/state/wakes.jsonl');
   assert.ok(rows.length >= 2 && rows.every(x => !('route' in x)), JSON.stringify(rows));
-  assert.ok(!fs.existsSync(path.join(c.T, 'company/work/models/routing-log.jsonl')));
+  assert.ok(!fs.existsSync(path.join(c.T, 'company/work/models/routing-log.jsonl')) && !fs.existsSync(path.join(c.T, 'company/work/models/routing-decisions.jsonl')));
   assert.doesNotMatch(r.log, /ROUTE|ROUTING/);
 });
 
@@ -116,7 +116,8 @@ test('(1) shadow: the wake row and the routing log record wouldApply; the run go
   assert.equal(w.route.class, 'writing');
   assert.deepEqual(w.route.wouldApply, { source: 'route', provider: 'claude-cli', model: 'claude-sonnet-5-5', effort: 'high', department: 'eng' });
   assert.ok(w.route.reasons.some(x => /shadow/.test(x)), JSON.stringify(w.route));
-  const log = c.jsonl('company/work/models/routing-log.jsonl');
+  assert.deepEqual(c.jsonl('company/work/models/routing-log.jsonl'), [], 'decisions are never routing-log rows');
+  const log = c.jsonl('company/work/models/routing-decisions.jsonl');
   assert.ok(log.some(x => x.seat === 'sam' && x.wakeId === w.wakeId && x.route.wouldApply && x.runId === w.runId), JSON.stringify(log));
   assert.match(r.log, /ROUTE sam \(not applied\): route would run claude-cli\/claude-sonnet-5-5@high/);
   // (3) the code item's department route is MiniMax: denied by the class rules, never recorded as a choice
@@ -168,7 +169,7 @@ test('(3b) live: a code item on a custom pair with no allowed entry open is held
     assert.ok(!r.bySeat.dev, 'no run goes out for dev (' + JSON.stringify(allow) + '): ' + JSON.stringify(r.bodies) + '\n' + r.log);
     assert.ok(r.bySeat.sam, 'other seats still run');
     assert.match(r.log, /ROUTE HOLD Dev loop \S+ for dev: class rules deny custom\/MiniMax-M2 \(code never runs on provider custom\): no allowed entry open/);
-    const held = c.jsonl('company/work/models/routing-log.jsonl').filter(x => x.seat === 'dev');
+    const held = c.jsonl('company/work/models/routing-decisions.jsonl').filter(x => x.seat === 'dev');
     assert.ok(held.length && held.every(x => x.status === 'held' && x.route.hold === true && !x.runId), JSON.stringify(held));
     assert.ok(!c.wake('dev'), 'no wake row: nothing started');
   }

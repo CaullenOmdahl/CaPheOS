@@ -3,7 +3,8 @@
  * Mounted by console/server.js: require('./routing.js').mount(route, { runApi, bad, owner }).
  *
  *   GET  /api/routing                                   routing.js status --json (modes, trials with arm counts and
- *                                                       pause reasons, the last 20 routing-log rows)
+ *                                                       pause or hold reasons, the last 20 routing-log rows: changes
+ *                                                       and holds, never the per-wake decisions)
  *   POST /api/routing/mode       { mode, why? }         routing.js mode <off|shadow|live> --by <owner>
  *   POST /api/routing/tiercaps   { mode, why? }         routing.js tiercaps <off|shadow|live> --by <owner>
  *   POST /api/routing/trials/<id>/<start|pause|resume|stop>  { why? }   routing.js trial <op> <id> --by <owner>

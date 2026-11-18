@@ -4,7 +4,8 @@
  *
  *   node company/tools/routing.js status [--json]           the routing mode, the tier-cap mode, every trial with its arm
  *                                                           counts so far (from company/state/wakes.jsonl route fields),
- *                                                           why a trial is paused, and the last 20 routing-log rows
+ *                                                           why a trial is paused or held, and the last 20 routing-log
+ *                                                           rows (changes and holds; never the per-wake decisions)
  *   node company/tools/routing.js mode off|shadow|live --by owner [--why ".."]       class routes and trials (owner only)
  *   node company/tools/routing.js tiercaps off|shadow|live --by owner [--why ".."]   executor tier caps (owner only)
  *   node company/tools/routing.js trial create <id> --class <class> --arm provider/model[@effort] --arm ...
@@ -20,7 +21,11 @@
  * Every change: company/work/models/routing-policy.json replaced atomically (created from the framework default
  * company/defaults/work/models/routing-policy.json on the first change) and its bytes recorded (provenance.js wrote, so
  * locked-watch.js knows it as this tool's write), one line in company/work/decisions.md (decision.js add), one row in
- * the policy's history file (company/work/models/routing-log.jsonl). A create is checked against company/model-policy.json
+ * the policy's history file (company/work/models/routing-log.jsonl, recorded with provenance.js appended: locked-watch.js
+ * keeps only the rows routing.js and lib/routing.js recorded). That log holds changes and events only, one schema
+ * {at, ts, op, by, ...}: this tool's ops (CHANGE_OPS) and the router's trial-held / trial-unheld (lib/routing.js, when the
+ * pacer holds a provider a running trial pauses on); the router's per-wake decisions are in routing-decisions.jsonl and
+ * on wakes.jsonl, never here. A create is checked against company/model-policy.json
  * `allowed`, the policy's classRules (a code trial with a MiniMax-plan arm is refused) and trialLimits; its pauseWhenHeld
  * always covers every arm whose provider the pacer meters as a subscription (lib/pacing-ask.js SUBS, which pacer.js
  * uses: claude-cli and custom): they are added to the default, and a --pause-when-held that leaves one out is refused.
@@ -41,9 +46,12 @@ const STATUSES = ['draft', 'running', 'paused', 'done'];
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];   // models.js EFFORTS
 const TRIAL_ID = /^[a-z][a-z0-9-]{1,39}$/;
 const LOG_DEFAULT = 'company/work/models/routing-log.jsonl';
+const CHANGE_OPS = ['mode', 'tiercaps', 'trial-create', 'trial-start', 'trial-pause', 'trial-resume', 'trial-stop'];
+const EVENT_OPS = ['trial-held', 'trial-unheld'];   // written by lib/routing.js (the dispatcher), read here
+const LOG_OPS = CHANGE_OPS.concat(EVENT_OPS);
 const LIMIT_DEFAULTS = { minArms: 2, maxArms: 4, maxEntryShare: 0.5, defaultEntryShare: 0.1, defaultMinItemsPerArm: 30, defaultPauseWhenHeld: ['claude-cli'] };
 
-const S = {   // seams for the tests (company/tools/tests/routing.test.js)
+const S = {   // seams for the tests (company/tools/tests/routing-controls.test.js)
   root: () => co.ROOT,
   now: () => Date.now(),
   crew: () => co.crew(),
@@ -144,8 +152,9 @@ function commit(L, next, who, row) {
   const digest = crypto.createHash('sha256').update(text).digest('hex').slice(0, 12);
   const at = S.now();
   const log = Object.assign({ at, ts: iso(at), op: row.op, by: who.kind === 'owner' ? 'owner' : who.name }, row.fields || {}, row.why ? { why: row.why } : {}, { digest });
-  const hist = P(historyRel(next));
-  try { fs.mkdirSync(path.dirname(hist), { recursive: true }); fs.appendFileSync(hist, JSON.stringify(log) + '\n'); } catch (_) {}
+  const hist = P(historyRel(next)), line = JSON.stringify(log) + '\n';
+  // recorded like lib/routing.js record(): locked-watch.js keeps only appends a writer recorded (class A)
+  try { fs.mkdirSync(path.dirname(hist), { recursive: true }); fs.appendFileSync(hist, line); try { S.prov().appended(hist, line, TOOL, { root: S.root() }); } catch (_) {} } catch (_) {}
   let decision = null;
   try { decision = S.decision({ by: who.kind === 'owner' ? 'owner' : who.name, text: 'Model routing: ' + row.summary + '.', why: row.why || undefined }); } catch (e) { decision = { error: e.message }; }
   return { ok: true, changed: true, summary: row.summary, by: who.label, file: REL, created: L.source !== 'company' || undefined, digest,
@@ -311,7 +320,9 @@ function trialOfRoute(r) {
     if (typeof arm === 'string') { const m = arm.match(/^(.*?)[:#](\d+)$/); if (m) { trial = trial || m[1]; arm = Number(m[2]); } else if (/^\d+$/.test(arm)) arm = Number(arm); }
     return trial ? { trial: String(trial), arm: Number.isInteger(arm) ? arm : null, provider: x.provider, model: x.model, effort: x.effort, applied } : null;
   };
-  return pick(r, r.applied === true) || pick(r.wouldApply, false);
+  // the route's own source/trial is what the wake ran on: applied as the one-run override, or the arm that is the seat's
+  // own pair (the control arm, applied false but run on it); wouldApply is a shadow (or not open) assignment
+  return pick(r, true) || pick(r.wouldApply, false);
 }
 function heldOfRoute(r) {
   const x = r && (r.trialPaused || r.trialHeld);
@@ -320,8 +331,10 @@ function heldOfRoute(r) {
 function wakeRows(sinceMs) {
   try { return require('./lib/wakes').rows({ sinceMs, file: P('company', 'state', 'wakes.jsonl') }); } catch (_) { return []; }
 }
+// the routing log's change and event rows (a row without a known op, such as a decision row an older router wrote here,
+// is never shown as a change)
 function logRows(doc, n) {
-  try { return require('./lib/bounded').tailLines(P(historyRel(doc)), n, { maxBytes: 4 * 1048576 }).map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean); } catch (_) { return []; }
+  try { return require('./lib/bounded').tailLines(P(historyRel(doc)), n, { maxBytes: 4 * 1048576 }).map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(r => r && typeof r === 'object' && LOG_OPS.includes(r.op)); } catch (_) { return []; }
 }
 function armIndexOf(t, x) {
   if (Number.isInteger(x.arm) && x.arm >= 0 && x.arm < t.arms.length) return x.arm;
@@ -392,7 +405,7 @@ function statusText(s) {
   L.push('Routing (class routes and trials): ' + s.mode + '.  Tier caps: ' + s.tierCaps.mode + '.  Policy: ' + (s.source === 'company' ? s.file : 'the framework default (' + DEFAULT_REL + ')'));
   L.push(s.trials.length ? 'Trials:' : 'No trials.');
   for (const t of s.trials) L.push(trialText(t));
-  if (s.log.length) { L.push('Recent changes:'); for (const r of s.log) L.push('  ' + (r.ts || '') + ' ' + r.op + (r.trial ? ' ' + r.trial : '') + (r.to ? ' -> ' + r.to : '') + ' by ' + r.by + (r.why ? ': ' + r.why : '')); }
+  if (s.log.length) { L.push('Recent changes and holds:'); for (const r of s.log) L.push('  ' + (r.ts || '') + ' ' + r.op + (r.trial ? ' ' + r.trial : '') + (r.to ? ' -> ' + r.to : '') + ' by ' + (r.by || '?') + (r.why ? ': ' + r.why : '')); }
   return L.join('\n');
 }
 
@@ -431,7 +444,7 @@ function run(argv) {
   catch (e) { if (e instanceof Refusal) return { code: e.code, out: { ok: false, error: e.message, refused: true } }; return { code: 1, out: { ok: false, error: String(e && e.stack || e) } }; }
 }
 
-/* ---------------- selftest: the pure parts (the CLI end to end: tests/routing.test.js) ---------------- */
+/* ---------------- selftest: the pure parts (the CLI end to end: tests/routing-controls.test.js) ---------------- */
 function selftest() {
   let bad = 0; const ok = (n, c, d) => { console.log((c ? 'ok   ' : 'FAIL ') + n + (c ? '' : '  [' + (d || '') + ']')); if (!c) bad++; };
   ok('an arm parses provider/model@effort, with the model keeping its brackets', JSON.stringify(parseArm('claude-cli/claude-fable-5-2[1m]@medium')) === JSON.stringify({ provider: 'claude-cli', model: 'claude-fable-5-2[1m]', effort: 'medium' }));
@@ -458,11 +471,17 @@ function selftest() {
     { at: Date.parse('2030-01-01T02:00:00Z'), items: [{ id: 'b' }, { id: 'c' }], route: { source: 'route', applied: false, wouldApply: { source: 'trial', arm: 'cmp:1' } } },
     { at: Date.parse('2029-12-31T00:00:00Z'), items: [{ id: 'z' }], route: { source: 'trial', trial: 'cmp', arm: 0, applied: true } }], []);
   ok('counts: applied and shadow per arm, rows before the start left out', tv.arms[0].wakes === 1 && tv.arms[0].items === 1 && tv.arms[1].shadowWakes === 1 && tv.arms[1].shadowItems === 2 && tv.progress.enough === true);
+  const tc = trialView({ id: 'cmp', status: 'running', startedAt: '2030-01-01T00:00:00.000Z', minItemsPerArm: 1, arms: t.arms }, [
+    { at: Date.parse('2030-01-01T01:00:00Z'), items: [{ id: 'k' }], route: { source: 'trial', trial: 'cmp', arm: 1, applied: false, mode: 'live' } }], []);
+  ok('the control arm (the seat\'s own pair, run without an override) counts as run on that arm, not as shadow', tc.arms[1].wakes === 1 && tc.arms[1].items === 1 && tc.arms[1].shadowWakes === 0);
+  const th = trialView({ id: 'cmp', status: 'running', startedAt: '2030-01-01T00:00:00.000Z', arms: t.arms }, [], [
+    { at: Date.parse('2030-01-01T01:00:00Z'), op: 'trial-held', by: 'dispatcher', trial: 'cmp', providers: ['claude-cli'], why: 'claude-cli held by the pacer' }]);
+  ok('a trial-held row in the routing log shows the trial held, with the reason', th.hold && th.hold.why === 'claude-cli held by the pacer' && /held: claude-cli held by the pacer/.test(th.reasons.join(' ')));
   console.log(bad ? 'ROUTING SELFTEST FAILED: ' + bad : 'ROUTING SELFTEST PASSED');
   return bad ? 1 : 0;
 }
 
-module.exports = { run, status, planTrial, parseArm, trialOfRoute, heldGuard, loadPolicy, S, Refusal, REL, DEFAULT_REL };
+module.exports = { run, status, planTrial, parseArm, trialOfRoute, heldGuard, loadPolicy, S, Refusal, REL, DEFAULT_REL, LOG_DEFAULT, CHANGE_OPS, EVENT_OPS };
 if (require.main === module) {
   const argv = process.argv.slice(2);
   if (argv[0] === '--selftest' || argv[0] === 'selftest') process.exit(selftest());

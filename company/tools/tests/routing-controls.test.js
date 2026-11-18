@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-/* routing.test.js — the owner's routing switches (company/tools/routing.js, console/routing.js; docs/ROUTING.md), on a
+/* routing-controls.test.js — the owner's routing switches (company/tools/routing.js, console/routing.js; docs/ROUTING.md), on a
  * fixture company: Boss (CEO), Hal (the people function), Kim and Lee (engineers in the eng department).
  * Each case runs the tool in a child process with CAPHEOS_ROOT at a fresh fixture and pins "is this the owner's shell"
  * in that process (provenance.pinOwnerShell). The last case starts the real console server on a free loopback port
  * (with a fake station on another) and drives the owner's buttons through HTTP: the console's owner path end to end.
  *
- *   node --test company/tools/tests/routing.test.js
+ *   node --test company/tools/tests/routing-controls.test.js
  */
 'use strict';
 const test = require('node:test');

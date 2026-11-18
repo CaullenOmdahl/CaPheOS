@@ -1,5 +1,5 @@
 // Plain words for Settings › Models › Routing (routing.js beside this file): which subscriptions make a trial pause
-// itself, and the Start dialog's text. Pure (no DOM), so company/tools/tests/routing.test.js checks the wording.
+// itself, and the Start dialog's text. Pure (no DOM), so company/tools/tests/routing-controls.test.js checks the wording.
 // t.heldGuard comes from `routing.js status --json`: { providers (the trial's pauseWhenHeld), subscriptions (its arms'
 // providers the pacer meters as subscriptions), missing (subscriptions an arm runs on that do not pause it) }.
 export const PNAME = { 'claude-cli': 'Claude', custom: 'MiniMax', deepseek: 'DeepSeek' };

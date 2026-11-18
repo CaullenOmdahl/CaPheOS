@@ -321,6 +321,6 @@ test('a lane is routed like a wake: live + an open pair passes the one-run overr
   assert.deepEqual(Object.keys(mainRun.body).sort(), ['detach', 'id']);
   const mw = rows.find(x => x.door === 'dispatch' && x.seat === 'sam');
   assert.equal(mw.route.class, 'code'); assert.equal(mw.route.applied, false);
-  const log = c.r('company/work/models/routing-log.jsonl').trim().split('\n').map(l => JSON.parse(l));
+  const log = c.r('company/work/models/routing-decisions.jsonl').trim().split('\n').map(l => JSON.parse(l));
   assert.ok(log.some(x => x.door === 'lane' && x.wakeId === lw.wakeId) && log.some(x => x.door === 'dispatch' && x.wakeId === mw.wakeId), JSON.stringify(log));
 });
