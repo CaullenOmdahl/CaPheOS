@@ -25,7 +25,9 @@
  * `names`. writes:true also declines every /api/cron/update, /remove and /arm the same way. Off: the old answers.
  * Meeting turns (console/meeting.js, streamId meeting-<seat>[-hand|-call|-catchup|-explain]): POST /__meeting {replies: {<agentId>[:hand|:call]:
  * [text | {text, refuse, refuseAll, stepMs}]}, reset?} scripts each seat's next replies (none left: PASS, NO, OK, a short line for a catchup or explain); every
- * meeting run's body is kept in GET /__state .meeting.runs (isTask, placed, provider, model, the last message).
+ * meeting run's body is kept in GET /__state .meeting.runs (isTask, placed, provider, model, the last message). A colleague in a
+ * live chat (streamId huddle-<host>-<seat>[-hand|-call]) is scripted the same way, and a console chat's next reply with
+ * {replies: {'<agentId>:chat': text}}.
  * Every request is appended to --log as one JSON line {at, method, path, query, body, status}; a test asserts on it.
  * Unknown routes answer 404 {error:"mock: no route"} and are logged too, so a test can list what the mock lacks.
  * With --root, POST /api/roster also writes <root>/.starnet-data/workspaces/agent.roster.json, as the station does
@@ -235,11 +237,14 @@ function handle(method, p, q, body, res) {
     // run's events go down this response AND to the observer feed; the response closing cancels the run unless the body
     // says detach:true (StarNet patch 0014). "[slow]" in the message: 250 ms a word; "[leak]": the reply is the captured
     // text of tool calls written out as text (tests/fixtures/leaked-tool-calls.txt). POST /api/cancel {runId} stops it.
-    if (B.streamId && /^(console|meeting)-/.test(B.streamId)) {
+    if (B.streamId && /^(console|meeting|huddle)-/.test(B.streamId)) {
       S.runs.pop();   // recorded when it ends, as the station's run log does
       // a meeting turn (console/meeting.js, streamId meeting-<seat>[-hand|-call|-catchup|-explain]): the next scripted reply for that seat
       // (POST /__meeting); none scripted: PASS for a turn, NO for a hand check, OK for a leader's call on hands
-      const mt = /^meeting-/.test(B.streamId) ? meetingReply(B) : null;
+      // a colleague in a live chat (console/huddle.js, streamId huddle-<host>-<seat>[-hand|-call]) is scripted the same way;
+      // a console chat's next reply may be scripted too: POST /__meeting {replies: {'<agentId>:chat': text}}
+      const mt = /^(meeting|huddle)-/.test(B.streamId) ? meetingReply(B) : /^console-/.test(B.streamId) && (S.meeting.queues[B.agentId + ':chat'] || []).length ? { text: String(S.meeting.queues[B.agentId + ':chat'].shift()), refused: false, step: 5, chat: true } : null;
+      if (mt && mt.chat) S.meeting.runs.push({ agentId: B.agentId, kind: 'chat', streamId: B.streamId, isTask: B.isTask, placed: B.placed || null, provider: B.provider, model: B.model, last: String(last).slice(-2000), count: msgs.length, at: Date.now() });
       const leak = !mt && /\[leak\]/.test(last) ? fs.readFileSync(path.join(__dirname, 'fixtures', 'leaked-tool-calls.txt'), 'utf8') : null;
       const reply = mt ? mt.text : /\[fail\]/.test(last) ? null : leak ? leak : /charter/i.test(last)
         ? 'Happy to. Three quick questions: what does the company do, for whom, and what will it never do? I have drafted company/CHARTER.md from what you told me so far. [Review it in Setup](console:#/setup/charter)'
@@ -255,7 +260,7 @@ function handle(method, p, q, body, res) {
       else if (!reply) evs.push({ name: 'agent.run.error', payload: { runId, message: 'provider error: HTTP 401 (mock)', failureCode: 'provider_auth' } }, { name: 'agent.run.end', payload: { runId, reason: 'error', outcome: 'failed', usd: 0 } });
       else {
         if (mt && mt.consent) evs.push({ name: 'permission.prompt', payload: { runId, promptId: 'prompt-' + runId, tool: 'code.run', argsSummary: 'ls company/work' }, waitConsent: true });
-        if (!leak && (!mt || B.isTask)) evs.push({ name: 'agent.tool_call', payload: { runId, callId: 'c1', name: 'fs_read', argsSummary: 'company/CHARTER.md' } }, { name: 'agent.tool_result', payload: { runId, callId: 'c1', ok: true, ms: 3, summary: 'read 40 lines' } });
+        if (!leak && (!mt || mt.chat || B.isTask)) evs.push({ name: 'agent.tool_call', payload: { runId, callId: 'c1', name: 'fs_read', argsSummary: 'company/CHARTER.md' } }, { name: 'agent.tool_result', payload: { runId, callId: 'c1', ok: true, ms: 3, summary: 'read 40 lines' } });
         for (const w of leak ? reply.match(/[^\n]*\n?/g).filter(Boolean) : reply.match(/\S+\s*/g)) evs.push({ name: 'agent.token', payload: { runId, delta: w } });
         evs.push({ name: 'agent.run.end', payload: { runId, reason: 'done', outcome: 'succeeded', usd: 0.0012 } });
       }

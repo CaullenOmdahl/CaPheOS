@@ -515,7 +515,7 @@ const str = (v, name) => { if (v === undefined || v === null || v === '') return
 const routes = [];
 const route = (method, re, fn) => routes.push({ method, re, fn });
 const SERVICE_KEYS = require(path.join(__dirname, 'service-keys.js'))({ co, bad, HttpError, tool, writeSecret, normalizeSecret, owner: () => OWNER });
-const CHAT = require(path.join(__dirname, 'chat.js'))({ co, stationGet, bad, HttpError, tool, owner: () => OWNER });
+const CHAT = require(path.join(__dirname, 'chat.js'))({ co, stationGet, bad, HttpError, tool, owner: () => OWNER, huddle: () => HUD });
 /* a meeting seat's model: the seat's current chain entry (the loop routine's pair models.js keeps on it, else its roster
    row, else the company default: console/chat.js modelFor), with the routines read once a few seconds for all seats;
    a metered model under a $0 cap is held, as in the chat */
@@ -529,10 +529,13 @@ async function meetingModel(id) {
   return m;
 }
 // the owner's meeting with the crew (console/meeting.js): turns through the station, tracked by the chat's runs
-const MEET = require(path.join(__dirname, 'meeting.js'))({ co, HttpError, owner: () => OWNER, emit: t => emit(t), stationPost, runs: CHAT.runs,
+const MEET_DEPS = { co, HttpError, owner: () => OWNER, emit: t => emit(t), stationPost, runs: CHAT.runs,
   run: (name, args) => run(name, args, { timeout: 30000 }), modelFor: meetingModel, seatJobs: id => meetJobs.jobs.filter(j => j && j.agentId === id).map(j => j.id),
-  // a seat mid-routine sits the turn out (the station's routines, read fresh: a turn never doubles a running loop)
-  seatBusy: async id => { const cr = await stationGet('cron', 3000); const jobs = cr.ok && cr.data && Array.isArray(cr.data.jobs) ? cr.data.jobs : []; return jobs.some(j => j && j.agentId === id && j.noAgent !== true && (j.inFlight || j.state === 'running')); } });
+  // a seat mid-routine speaks talk only that turn (the station's routines, read fresh: a turn never doubles a running loop's hold on the folder)
+  seatBusy: async id => { const cr = await stationGet('cron', 3000); const jobs = cr.ok && cr.data && Array.isArray(cr.data.jobs) ? cr.data.jobs : []; return jobs.some(j => j && j.agentId === id && j.noAgent !== true && (j.inFlight || j.state === 'running')); } };
+const MEET = require(path.join(__dirname, 'meeting.js'))(MEET_DEPS);
+// a colleague brought into the owner's live chat (console/huddle.js): the same engine, the same checks on every turn
+const HUD = require(path.join(__dirname, 'huddle.js'))(Object.assign({}, MEET_DEPS, { chat: CHAT }));
 const ACT = require(path.join(__dirname, 'activity.js'))({ co, stationGet, emit: t => emit(t), tool });
 
 route('GET', /^\/api\/company$/, () => Object.assign({ ok: true }, companyInfo()));
@@ -551,6 +554,7 @@ route('GET', /^\/api\/chat\/([A-Za-z0-9_-]{1,64})$/, m => CHAT.info(m[1]));
 // the live chat runs in flight (console/chat-runs.js): scripts/restart-console.sh --when-idle waits for an empty list
 route('GET', /^\/api\/console\/busy$/, () => ({ ok: true, chats: CHAT.runs.busy() }));
 MEET.mount(route);
+HUD.mount(route);
 // plan identity and price (company/work/finance/subscriptions.json) with each plan's current use, and the prepaid balances:
 // the OWNER's view (behind the console sign-in); the amounts never go to an agent, a log or a report
 route('GET', /^\/api\/finance\/plans$/, () => {
@@ -955,6 +959,7 @@ function start(argv) {
   armWatches();
   CHAT.runs.start();   // re-attach to the chat runs a previous console process left in flight
   MEET.start();        // and carry on a meeting it left mid-round (its turn in flight is one of those runs)
+  HUD.start();         // and the live chats with colleagues in them, the same way
   setInterval(armWatches, 15000).unref();
   setInterval(() => { tool('approvals.js').tick({ actor: 'the console' }).catch(() => {}); }, 60000).unref();   // approvals: expiry (default deny) and reminders
   ACT.start();

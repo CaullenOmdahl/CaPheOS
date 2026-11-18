@@ -29,7 +29,7 @@ const withAsk = l => l.name === 'console.final' && l.payload && typeof l.payload
 
 /* What the console knows that the chat would not: this seat's own recent work (its routine runs are separate
    conversations), so "what are you working on?" gets a real answer. Marked as console context, not the owner's words. */
-function contextNote(id, s, co, text) {
+function contextNote(id, s, co, text, recap) {
   const lines = [];
   try {
     const runs = require(co.p('company', 'tools', 'lib', 'bounded.js')).tailLines(co.p('.starnet-data', 'workspaces', 'runs.jsonl'), 400)   // the end only
@@ -47,7 +47,8 @@ function contextNote(id, s, co, text) {
     + '\nThe owner is a busy non-technical person. Handle infrastructure yourself: monitoring, health checks, timers, services, tools, framework bugs and internal process are the crew\'s (yours, the risk, tools or floor seat, or a framework request), never a question for the owner. Ask the owner only for money beyond the company\'s limits, an account or identity in their own name, legal, ownership or commitment decisions, company direction and priorities, risk the governance level reserves for them, or a fixed gate, in two plain sentences that say what they get or risk and what happens if they skip it (your default); technical detail only if they ask for it.'
     + '\nNever ask the owner to run a command or open a terminal (systemctl, sudo, npm/pip install, git push, node …): the owner works only in the console. Do it with your own tools, link the console action that does it ([label](console:#/route)), ask for an approval on Today, or hand it to the tools seat in a handoff; a change to a framework file is a harness-change propose. If agents are refused the command, say so and route it, never hand it over.'
     + '\nWhen you point the owner somewhere in the console, link it: [label](console:#/route). For a quick choice in this conversation, write an ```actions block (company/skills/console-links/SKILL.md "Chat actions").'
-    + actionReplyNote(text) + ']\n\n';
+    + '\nTo bring a colleague into this chat now, end your reply with a line of its own: ASK: <name> — <your question>, or INVITE: <name> — <why you need them>. They join this chat and answer here right away; use it instead of a handoff when you need their answer to carry on. DISMISS: <name> when they are done.'
+    + actionReplyNote(text) + ']\n\n' + (recap ? recap + '\n\n' : '');
 }
 /* the parse helper for the agent's next turn: the owner clicked a control in an ```actions block, so say so plainly */
 function actionReplyNote(text) {
@@ -65,6 +66,18 @@ module.exports = function chat(deps) {
   const PLACED = ['cabinet', 'workbench', 'notebook', 'dish'].map(t => ({ objectType: t }));
   const svc = () => (co.config.station && co.config.station.serviceName) || 'capheos-station';
   const RUNS = require(path.join(__dirname, 'chat-runs.js'))({ co, stationGet, finalText: (...a) => finalText(...a) });
+  // colleagues in this chat (console/huddle.js), made after the chat: read when needed
+  const HUD = () => (typeof deps.huddle === 'function' ? deps.huddle() : null);
+  /* a plain 1:1 run in flight: company/state/huddles/<seat>/live.json, so the dispatcher does not start the seat's loop
+     on top of the owner's chat (lib/meetings.js busy reads it, and checks the run is still running) */
+  const liveFile = id => co.p('company', 'state', 'huddles', id, 'live.json');
+  const liveRun = {};   // seat -> the 1:1 run live.json names
+  function liveSet(id, runId) {
+    try {
+      if (runId) { liveRun[id] = runId; fs.mkdirSync(path.dirname(liveFile(id)), { recursive: true, mode: 0o700 }); fs.writeFileSync(liveFile(id), JSON.stringify({ seat: id, runId, at: new Date().toISOString() }) + '\n', { mode: 0o600 }); }
+      else { delete liveRun[id]; fs.unlinkSync(liveFile(id)); }
+    } catch (_) {}
+  }
 
   function seatOf(id) {
     const crew = co.crew();
@@ -123,7 +136,7 @@ module.exports = function chat(deps) {
     const reasons = runReasons();
     const turns = ((r.data && r.data.turns) || []).filter(t => (t.role === 'user' || t.role === 'assistant') && typeof t.content === 'string' && t.content.trim())
       .map(t => {
-        const o = { role: t.role, content: t.role === "user" ? String(t.content).replace(/^\[Console context, not from the owner:[\s\S]*?\]\n\n/, "") : t.content, at: t.at || t.ts || null };
+        const o = { role: t.role, content: t.role === "user" ? String(t.content).replace(/^\[Console context, not from the owner:[\s\S]*?\]\n\n/, "").replace(/^\[While [^\n]* in this chat[\s\S]*?\(end of the recap\)\]\n\n/, "") : t.content, at: t.at || t.ts || null };
         const rid = t.sourceRunId || t.runId || null;
         if (rid) o.runId = rid;
         // a reply the station kept from a run that did not finish (stopped, cancelled by a dropped connection, failed)
@@ -164,8 +177,10 @@ module.exports = function chat(deps) {
       const k = turns.length - 1;
       if (k >= 0 && turns[k].role === 'user' && turns[k].content.trim() === String(live.userText || '').trim()) turns = turns.slice(0, k);
     }
+    let huddles = [], huddleOpen = false;
+    try { const H = HUD(); if (H) { huddles = H.history(id); huddleOpen = H.isOpen(id); } } catch (_) {}
     return { ok: true, agent: { id, name: s.name || id, title: s.title || '' }, model: m ? m.model : null, provider: m ? m.provider : null, modelFrom: m ? m.from : null,
-      streamId: STREAM(id), turns, transcriptError: t.ok ? null : t.error, problems: pre.problems,
+      streamId: STREAM(id), turns, transcriptError: t.ok ? null : t.error, problems: pre.problems, huddles, huddleOpen,
       inflight: live ? { runId: live.runId, startedAt: new Date(live.startedAt).toISOString(), shownText: live.shownText || null, gap: !!live.gap } : null };
   }
 
@@ -209,6 +224,14 @@ module.exports = function chat(deps) {
     if (body.brief) text = brief(String(body.brief), body.notes);
     if (!text) bad('text is required');
     if (text.length > 20000) bad('text too long');
+    // a colleague is in this chat (console/huddle.js): the message goes to everyone in it, the host first
+    const H = HUD();
+    if (H && !body.brief && H.isOpen(id)) {
+      res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+      try { const v = await H.say(id, { text }); res.write(JSON.stringify({ name: 'console.huddle', payload: { host: id, id: v.meeting && v.meeting.id, routed: true, note: v.note || null } }) + '\n'); }
+      catch (e) { res.write(JSON.stringify({ name: 'console.error', payload: { code: 'huddle', message: 'Not sent: ' + e.message } }) + '\n'); }
+      return res.end();
+    }
     const m = await modelFor(s);
     const pre = await preflight(s, m);
     res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
@@ -230,7 +253,8 @@ module.exports = function chat(deps) {
     // isTask: true is what puts the agent's tools on the wire. With isTask:false the station sends the model NO tool
     // definitions (capability/project-tools.js: advertised = isTask ? coreNames : []), and a model told about its tools
     // writes the calls out as text (<run_command>…</run_command>, 2026-11-17: toolsOk 0 on every console chat).
-    const messages = history.concat([{ role: 'user', content: contextNote(id, s, co, text) + text }]);
+    let recap = ''; try { const Hh = HUD(); if (Hh) recap = Hh.takeRecap(id); } catch (_) {}
+    const messages = history.concat([{ role: 'user', content: contextNote(id, s, co, text, recap) + text }]);
     let token; try { token = co.stationToken(); } catch (_) { token = null; }
     if (!token) { line('console.error', { code: 'station-down', message: 'No station token (secrets/station-token).', fix: 'Run scripts/setup-station.sh', link: '#/settings/system' }); return res.end(); }
     const shownText = body.brief ? text.split('\n')[0] : text;
@@ -252,6 +276,24 @@ module.exports = function chat(deps) {
     const u = new URL(co.STATION_URL.replace(/\/+$/, '') + '/api/run');
     const data = JSON.stringify(payload);
     let runId = null, off = null, upEnded = false, sawEnd = false, retrying = null;
+    /* the run's own follower, whether or not a browser watches: live.json while it runs, and at its end a reply that
+       asks or invites a colleague brings them into this chat (console/huddle.js), the browser told with console.huddle */
+    let pullP = null;
+    const follow1 = rid => {
+      liveSet(id, rid);
+      let finalP = null, off1 = null, over = false;
+      off1 = RUNS.attach(rid, 0, x => {
+        if (over) return;
+        if (x.name === 'console.final') finalP = x.payload || {};
+        if (x.name !== 'console.end') return;
+        over = true; setImmediate(() => { if (off1) off1(); });
+        if (liveRun[id] === rid) liveSet(id, null);
+        const Hh = HUD();
+        if (!Hh || !finalP || REF.isRefusal(finalP) || typeof finalP.text !== 'string') return;
+        if (!Hh.pullLines(id, finalP.text).length) return;
+        pullP = Hh.pullFrom(id, { text: finalP.text, runId: rid }).catch(e => ({ error: e.message }));
+      });
+    };
     const watch = rid => {   // the run is known: from here the browser reads its journal
       if (runId || closed) return; runId = rid;
       line('console.attached', { runId: rid });
@@ -271,11 +313,16 @@ module.exports = function chat(deps) {
           const note = { message: REF.plainLine(m, next).replace('answered instead.', 'is answering instead.'), refusal: { from: REF.keyOf(m), to: REF.keyOf(next) } };
           return launch(next, 1, [{ name: 'console.note', payload: note }, { name: 'console.run', payload: { agentId: id, name: s.name, model: next.model, provider: next.provider, from: 'the next model in ' + s.name + '\'s chain (the first one declined)' } }], tried.concat([m]));
         }
+        if (l.name === 'console.end') {
+          if (off) off();
+          const done = () => { line(l.name, l.payload); closed = true; res.end(); };
+          // the reply brought a colleague in: say so before the end, so the page switches to the chat with them
+          return setImmediate(() => pullP ? pullP.then(h => { if (h && h.error) line('console.note', { message: 'Could not bring the colleague in: ' + h.error }); else if (h) line('console.huddle', h); done(); }, done) : done());
+        }
         line(l.name, l.payload);
-        if (l.name === 'console.end') { closed = true; if (off) off(); res.end(); }
       });
     };
-    prep.started.then(watch);
+    prep.started.then(rid => { follow1(rid); watch(rid); });
     const refuse = (p) => { prep.cancel(); if (!runId) { line('console.error', p); closed = true; res.end(); } };
     const up = http.request({ hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST',
       headers: { 'x-starnet-token': token, 'content-type': 'application/json', 'content-length': Buffer.byteLength(data), accept: 'application/x-ndjson' } }, ur => {
@@ -382,5 +429,6 @@ module.exports = function chat(deps) {
     });
   }
 
-  return { info, send, attach, brief, channelState, messageStates, modelFor, meteredHold, seatOf, runs: RUNS };
+  return { info, send, attach, brief, channelState, messageStates, modelFor, meteredHold, seatOf, transcript, runs: RUNS };
 };
+module.exports.contextNote = contextNote;
