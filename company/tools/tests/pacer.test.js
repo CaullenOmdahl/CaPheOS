@@ -1442,3 +1442,15 @@ test('reopen: after the owner reopens Claude, a stale meter is open until the ne
   r = await measurePlan(make(fx, station(jobs)), jobs);
   assert.equal(r.m.claude.open, true, r.m.claude.why); assert.match(r.m.claude.why, /owner reopened it/);
 });
+
+test('no MiniMax Credits recorded: no per-run token ceiling is not a go-live item; unknown Credits still asks for one', async () => {
+  const jobs = crewJobs();
+  for (const [credits, warned] of [[undefined, true], [true, true], [false, false]]) {
+    const fx = fixture({ knobs: { maxUnpricedTokens: 0 } });
+    if (credits !== undefined) fx.w('company/company.json', { providers: { minimax: { region: 'global', credits } } });
+    const h = make(fx, station(jobs));
+    const r = await measurePlan(h, jobs);
+    assert.equal(r.m.knobs.minimaxCredits, credits === undefined ? null : credits);
+    assert.equal(/no per-run token ceiling/.test(h.p.statusText(r.m)), warned, 'credits ' + credits);
+  }
+});

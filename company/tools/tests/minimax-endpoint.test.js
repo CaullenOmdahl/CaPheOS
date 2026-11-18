@@ -6,6 +6,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs'); const os = require('os'); const path = require('path');
+process.env.CAPHEOS_MINIMAX_WIRE = 'openai';   // these tests are about the OpenAI wire unless they say otherwise
 const M = require('../lib/minimax-endpoint');
 
 test('regions: OpenAI-compatible /v1 bases, key pages per platform, choices in plain words', () => {
@@ -55,4 +56,21 @@ test('stored entry: presets store only the region; custom stores its address; us
   assert.equal(M.usageUrlFor('', M.resolve({ region: 'cn' })).url, M.REGIONS.cn.usageUrl);
   assert.equal(M.usageUrlFor('https://www.minimax.io/v1/token_plan/remains', M.resolve({ region: 'cn' })).url, M.REGIONS.cn.usageUrl, 'the old default is not an override');
   assert.equal(M.usageUrlFor('https://my.example/remains', M.resolve({ region: 'cn' })).url, 'https://my.example/remains');
+});
+
+test('wire: with StarNet patch 0015 the presets use MiniMax\'s Anthropic-compatible address; a custom /anthropic address is warned about only without it', () => {
+  try {
+    process.env.CAPHEOS_MINIMAX_WIRE = 'anthropic';
+    assert.equal(M.wire(), 'anthropic');
+    assert.equal(M.resolve({ region: 'global' }).baseUrl, 'https://api.minimax.io/anthropic');
+    assert.equal(M.resolve({ region: 'cn' }).baseUrl, 'https://api.minimaxi.com/anthropic');
+    assert.equal(M.fromConfig({}).baseUrl, 'https://api.minimax.io/anthropic', 'an existing company with nothing stored moves too');
+    assert.equal(M.resolve({ region: 'global' }).usageUrl, 'https://www.minimax.io/v1/token_plan/remains', 'the plan usage URL is unchanged');
+    const c = M.resolve({ region: 'custom', baseUrl: 'https://api.minimax.io/anthropic' });
+    assert.equal(c.ok, true); assert.deepEqual(c.warnings, []); assert.equal(c.usageUrl, 'https://api.minimax.io/v1/token_plan/remains');
+    assert.deepEqual(M.entryOf(c), { region: 'custom', baseUrl: 'https://api.minimax.io/anthropic' });
+    process.env.CAPHEOS_MINIMAX_WIRE = 'openai';
+    assert.match(M.checkCustomUrl('https://api.minimax.io/anthropic').warnings.join(' '), /patch 0015 is not applied/);
+    assert.equal(M.resolve({ region: 'global' }).baseUrl, 'https://api.minimax.io/v1');
+  } finally { process.env.CAPHEOS_MINIMAX_WIRE = 'openai'; }
 });

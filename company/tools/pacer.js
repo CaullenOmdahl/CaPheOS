@@ -649,7 +649,10 @@ function makePacer(o) {
   function readKnobs() {
     const k = ((readJson(P('knobs'), {}) || {}).knobs) || {};
     const n = Number(k.maxUnpricedTokens);
-    return { maxUnpricedTokens: Number.isFinite(n) ? n : null };
+    // company.json providers.minimax.credits: false = the MiniMax account holds no Credits, so a run past the plan's
+    // limit is refused (quota_exhausted), never billed; true or absent = it may bill Credits (MiniMax's default)
+    const mm = ((MME.readCfg(root).providers || {}).minimax) || {};
+    return { maxUnpricedTokens: Number.isFinite(n) ? n : null, minimaxCredits: mm.credits === false ? false : mm.credits === true ? true : null };
   }
 
   // emergency.allowedBy holds function names (ceo, risk, ...) and/or literal names. A function stands for whoever holds
@@ -1565,7 +1568,7 @@ function makePacer(o) {
   function preLive(m) {
     const out = [];
     const k = m.knobs || {};
-    if (k.maxUnpricedTokens === 0) out.push('MiniMax runs have no per-run token ceiling (station setting maxUnpricedTokens is 0 in .starnet-data/workspaces/runtime.knobs.json), and MiniMax bills Credits once the plan runs out: set a ceiling of about 6–8M tokens first');
+    if (k.maxUnpricedTokens === 0 && k.minimaxCredits !== false) out.push('MiniMax runs have no per-run token ceiling (station setting maxUnpricedTokens is 0 in .starnet-data/workspaces/runtime.knobs.json), and MiniMax bills Credits once the plan runs out: set a ceiling of about 6–8M tokens first, or record that the account holds no Credits (company.json providers.minimax.credits: false; a run past the plan is then refused, never billed)');
     return out;
   }
   function planText(m, pl) {

@@ -19,8 +19,12 @@
  *   China, API keys            https://platform.minimaxi.com/user-center/basic-information/interface-key
  *                              (https://platform.minimaxi.com/docs/guides/quickstart-preparation; platform.minimaxi.com
  *                              now redirects its docs to platform.minimax.cn)
- *   Both regions offer an OpenAI-compatible /v1 AND an Anthropic-compatible /anthropic endpoint. StarNet's `custom`
- *   provider speaks the OpenAI wire, so baseUrl is always the /v1 one.
+ *   Both regions offer an OpenAI-compatible /v1 AND an Anthropic-compatible /anthropic endpoint. MiniMax recommends the
+ *   Anthropic one for agents and tool use (https://platform.minimax.io/docs/guides/text-m3-function-call.md, read
+ *   2026-11-18). StarNet's `custom` provider speaks the OpenAI wire unless StarNet patch 0015 is applied, which runs a
+ *   custom endpoint on a MiniMax host at /anthropic on StarNet's Anthropic adapter. So baseUrl is the /anthropic address
+ *   when this checkout's station carries 0015 (wire() === 'anthropic'), else the /v1 one. CAPHEOS_MINIMAX_WIRE
+ *   (openai | anthropic) pins it, for tests.
  *   Plan usage: the docs only point at the web page (https://platform.minimax.io/docs/m-plan/usage-rules: console/usage,
  *   or `mmx quota`). MiniMax's official CLI (https://github.com/MiniMax-AI/cli, src/client/endpoints.ts) calls
  *   `${host}/v1/token_plan/remains` with host api.minimax.io / api.minimax.cn, and treats api.minimaxi.com as the
@@ -36,19 +40,30 @@
 const fs = require('fs');
 const path = require('path');
 
+// which wire the station speaks to MiniMax: 'anthropic' when this checkout's StarNet carries patch 0015, else 'openai'
+let wireCache = null;
+function wire() {
+  const pin = String(process.env.CAPHEOS_MINIMAX_WIRE || '').trim().toLowerCase();
+  if (pin === 'openai' || pin === 'anthropic') return pin;
+  if (wireCache) return wireCache;
+  try { wireCache = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'starnet', 'sidecar', 'providers', 'factory.js'), 'utf8').includes('isMiniMaxAnthropic') ? 'anthropic' : 'openai'; }
+  catch (_) { wireCache = 'openai'; }
+  return wireCache;
+}
+const withWire = r => Object.defineProperty(r, 'baseUrl', { enumerable: true, get() { return wire() === 'anthropic' ? r.anthropicUrl : r.openaiUrl; } });
 const REGIONS = {
-  global: {
+  global: withWire({
     id: 'global', label: 'Global', what: 'Your account is on minimax.io (anywhere outside mainland China).',
-    baseUrl: 'https://api.minimax.io/v1', anthropicUrl: 'https://api.minimax.io/anthropic',
+    openaiUrl: 'https://api.minimax.io/v1', anthropicUrl: 'https://api.minimax.io/anthropic',
     usageUrl: 'https://www.minimax.io/v1/token_plan/remains',
     keyUrl: 'https://platform.minimax.io/user-center/basic-information/interface-key',
-  },
-  cn: {
+  }),
+  cn: withWire({
     id: 'cn', label: 'Mainland China', what: 'Your account is on minimaxi.com (the mainland China service).',
-    baseUrl: 'https://api.minimaxi.com/v1', anthropicUrl: 'https://api.minimaxi.com/anthropic',
+    openaiUrl: 'https://api.minimaxi.com/v1', anthropicUrl: 'https://api.minimaxi.com/anthropic',
     usageUrl: 'https://api.minimaxi.com/v1/token_plan/remains',
     keyUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key',
-  },
+  }),
 };
 const CUSTOM = { id: 'custom', label: 'Custom', what: 'A different address, for example a company proxy in front of MiniMax.' };
 const ORDER = ['global', 'cn'];   // what "Find my endpoint" tries, in this order
@@ -77,10 +92,13 @@ function checkCustomUrl(raw, other) {
   const warnings = [];
   if (!minimax) warnings.push('This is not a MiniMax address: your MiniMax key will be sent to ' + host + '. Only use it if you trust that service.');
   else if (!REPLAY_HOST.test(host)) warnings.push('The station keeps MiniMax\'s thinking between steps only on minimax.io and minimaxi.com addresses; on ' + host + ' agents may repeat work.');
-  if (!/\/v1$/.test(baseUrl)) warnings.push('The station speaks the OpenAI-compatible wire, which MiniMax serves under /v1. This address does not end in /v1.');
+  const anth = /\/anthropic(\/v1)?$/i.test(u.pathname.replace(/\/+$/, ''));
+  if (anth && wire() !== 'anthropic') warnings.push('This station speaks the OpenAI-compatible wire (StarNet patch 0015 is not applied), which MiniMax serves under /v1. This /anthropic address will not work here.');
+  else if (!anth && !/\/v1$/.test(baseUrl)) warnings.push('The station speaks the OpenAI-compatible wire for this address, which MiniMax serves under /v1. This address does not end in /v1.');
   return { ok: true, baseUrl, host, minimax, warnings };
 }
 
+const usageOf = baseUrl => new URL(baseUrl).origin + '/v1/token_plan/remains';   // the plan-usage URL a custom host serves
 // {region, baseUrl?, usageUrl?, other?} -> the full endpoint, or {ok:false, error}
 function resolve(input) {
   const i = input && typeof input === 'object' ? input : {};
@@ -91,7 +109,7 @@ function resolve(input) {
   if (!c.ok) return c;
   let usageUrl = null;
   if (i.usageUrl) { const u = checkCustomUrl(i.usageUrl, i.other === true); if (!u.ok) return { ok: false, error: 'usage address: ' + u.error }; usageUrl = u.baseUrl; }
-  else usageUrl = new URL(c.baseUrl).origin + '/v1/token_plan/remains';
+  else usageUrl = usageOf(c.baseUrl);
   // the key page: the platform the custom host belongs to (a non-MiniMax host gets the global page)
   const keyUrl = /(^|\.)(minimaxi\.com|minimax\.cn)$/i.test(c.host) ? REGIONS.cn.keyUrl : REGIONS.global.keyUrl;
   return { ok: true, region: 'custom', label: CUSTOM.label, baseUrl: c.baseUrl, usageUrl, keyUrl, custom: true, other: !c.minimax, warnings: c.warnings };
@@ -112,7 +130,7 @@ const read = root => fromConfig(readCfg(root));
 // what is written to company.json: the region, and for custom the address (presets are never copied: one source)
 function entryOf(ep, by) {
   const e = { region: ep.region };
-  if (ep.region === 'custom') { e.baseUrl = ep.baseUrl; if (ep.usageUrl && ep.usageUrl !== new URL(ep.baseUrl).origin + '/v1/token_plan/remains') e.usageUrl = ep.usageUrl; if (ep.other) e.other = true; }
+  if (ep.region === 'custom') { e.baseUrl = ep.baseUrl; if (ep.usageUrl && ep.usageUrl !== usageOf(ep.baseUrl)) e.usageUrl = ep.usageUrl; if (ep.other) e.other = true; }
   if (by) { e.setBy = by; e.setAt = new Date().toISOString(); }
   return e;
 }
@@ -133,4 +151,4 @@ function storedKey(root) {
 // owner-facing summary, no URL unless custom
 const plain = ep => ep.region === 'custom' ? 'Custom address' + (ep.other ? ' (not MiniMax)' : '') : ep.label;
 
-module.exports = { REGIONS, CUSTOM, ORDER, DEFAULT_USAGE, choices, checkCustomUrl, resolve, readCfg, fromConfig, read, entryOf, same, usageUrlFor, storedKey, plain, companyFile };
+module.exports = { wire, REGIONS, CUSTOM, ORDER, DEFAULT_USAGE, choices, checkCustomUrl, resolve, readCfg, fromConfig, read, entryOf, same, usageUrlFor, storedKey, plain, companyFile };

@@ -7,7 +7,7 @@ git. Tools read them through `company/tools/lib/company.js` (`co.secret(name)`);
 | File | What | Created by |
 |---|---|---|
 | `station-token` | this station's API token (per station, never shared) | `scripts/setup-station.sh` |
-| `minimax-key` | MiniMax plan key (custom OpenAI-compatible endpoint; which region it belongs to is company.json `providers.minimax`, set in Settings › Models and subscriptions) | you |
+| `minimax-key` | MiniMax plan key (the station's custom endpoint, on MiniMax's Anthropic-compatible API when StarNet patch 0015 is applied; which region it belongs to is company.json `providers.minimax`, set in Settings › Models and subscriptions) | you |
 | `deepseek-key` | DeepSeek API key (vision checks; pay-per-use) | you |
 | `openrouter-key` | OpenRouter key (reserve) | you |
 | `openrouter-mgmt-key` | OpenRouter management key (spend gate) | you |

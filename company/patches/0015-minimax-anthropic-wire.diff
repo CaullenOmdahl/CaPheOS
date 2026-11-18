@@ -1,0 +1,135 @@
+# 0015 — MiniMax on its Anthropic-compatible API
+# Why: MiniMax recommends its Anthropic-compatible API for agents and tool use with M3.x
+# (https://platform.minimax.io/docs/guides/text-m3-function-call.md, read 2026-11-18): tools, streaming, and thinking
+# blocks that carry a signature and must come back unchanged on every later request of a tool loop
+# (https://platform.minimax.io/docs/api-reference/text-anthropic-api). StarNet's CUSTOM provider only speaks the
+# OpenAI-compatible wire. With this record, a custom endpoint whose address is a MiniMax host (minimax.io /
+# minimaxi.com) at /anthropic or /anthropic/v1 runs on StarNet's own Anthropic adapter (signed thinking replay, cache
+# breakpoints, Anthropic usage fields). Every other custom endpoint, and a MiniMax /v1 address, is unchanged
+# (test/minimax-anthropic-wire.test.js). company/tools/lib/minimax-endpoint.js sends the /anthropic address only when
+# this checkout's StarNet carries this record.
+# Apply:  git -C starnet apply --3way company/patches/0015-minimax-anthropic-wire.diff ; then restart the station.
+# Revert: git -C starnet apply -R company/patches/0015-minimax-anthropic-wire.diff ; then re-save the MiniMax
+#         connection (Settings › Connections) so the station is back on the /v1 address, and restart the station.
+diff --git a/sidecar/providers/factory.js b/sidecar/providers/factory.js
+index 16b0edd..0e7879e 100644
+--- a/sidecar/providers/factory.js
++++ b/sidecar/providers/factory.js
+@@ -66,6 +66,12 @@
+     try { const u = new URL(String(baseUrl || '')); return u.port === '11434' || /ollama/i.test(u.hostname); }
+     catch (_) { return false; }
+   }
++  // CA PHE DIGITAL (company/patches/0015): a CUSTOM endpoint on MiniMax's Anthropic-compatible API
++  // (https://api.minimax.io/anthropic/v1, or api.minimaxi.com) — MiniMax's recommended wire for agents and tool use.
++  function isMiniMaxAnthropic(baseUrl) {
++    try { const u = new URL(String(baseUrl || '')); return /(^|\.)minimaxi?\.(io|com)$/i.test(u.hostname) && /^\/anthropic(\/v1)?\/?$/i.test(u.pathname); }
++    catch (_) { return false; }
++  }
+   function resolveMaxOutputTokens(profile, field = 'maxOutputTokens') {
+     if (!profile) return 0;
+     const envName = String(profile[field + 'Env'] || '');
+@@ -165,6 +171,19 @@
+         reasoningEffort: opts.reasoningEffort
+       });
+     }
++    // CA PHE DIGITAL (company/patches/0015): MiniMax on its Anthropic-compatible API runs on the Anthropic adapter —
++    // tools, streaming and signed thinking blocks replayed verbatim on every later request of a tool loop
++    // (platform.minimax.io/docs/api-reference/text-anthropic-api). Every other custom endpoint is unchanged.
++    if (id === 'custom' && isMiniMaxAnthropic(opts.baseUrl || profile.baseUrl)) {
++      const mmBase = String(opts.baseUrl || profile.baseUrl).replace(/\/+$/, '').replace(/\/anthropic$/i, '/anthropic/v1');
++      return anthropic.makeAnthropicProvider(Object.assign({
++        fetch: opts.fetch,
++        clock: opts.clock,
++        key: opts.key,
++        baseUrl: mmBase,
++        reasoningEffort: opts.reasoningEffort
++      }, catalogFor(id, mmBase, opts.key, true)));
++    }
+     if (profile.adapter === 'openai-compatible') {
+       // Device-OAuth providers (grok/kimi) authenticate the OpenAI-compatible endpoint with their OAuth ACCESS
+       // TOKEN riding in AS the Bearer key (opts.token). Static per-provider wire headers (e.g. kimi's X-Msh-*)
+@@ -280,6 +299,7 @@
+ 
+   return {
+     selectProvider,
++    isMiniMaxAnthropic,   // CA PHE DIGITAL (0015)
+     PROVIDER_IDS,
+     getProviderProfile: registry.getProviderProfile,
+     listProviderProfiles: registry.listProviderProfiles,
+diff --git a/test/minimax-anthropic-wire.test.js b/test/minimax-anthropic-wire.test.js
+new file mode 100644
+index 0000000..8213571
+--- /dev/null
++++ b/test/minimax-anthropic-wire.test.js
+@@ -0,0 +1,71 @@
++/* node test/minimax-anthropic-wire.test.js — CA PHE DIGITAL (company/patches/0015): a custom endpoint on MiniMax's
++   Anthropic-compatible API (…/anthropic) runs on the Anthropic adapter: requests go to /anthropic/v1/messages, tools work,
++   and a signed thinking block comes back verbatim on the next request of a tool loop. A MiniMax /v1 address and a
++   non-MiniMax /anthropic address keep the OpenAI-compatible wire. */
++'use strict';
++const factory = require('../sidecar/providers/factory.js');
++let fails = 0; const ok = (c, m) => { if (!c) { fails++; console.log('FAIL ' + m); } else console.log('ok   ' + m); };
++const sse = evs => new Response(evs.map(e => 'event: ' + e.type + '\ndata: ' + JSON.stringify(e) + '\n\n').join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
++const oaiSSE = chunks => new Response(chunks.map(c => 'data: ' + JSON.stringify(c) + '\n\n').join('') + 'data: [DONE]\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } });
++const TOOLS = [{ type: 'function', function: { name: 'fs_read', description: 'read', parameters: { type: 'object', properties: { path: { type: 'string' } } } } }];
++const usage = { input_tokens: 40, output_tokens: 5, cache_read_input_tokens: 300, cache_creation_input_tokens: 0 };
++function anthropicEndpoint() {
++  const posts = [];
++  const fetch = async (url, init) => {
++    if (init && init.method === 'POST') {
++      posts.push({ url: String(url), body: JSON.parse(init.body) });
++      if (posts.length === 1) return sse([
++        { type: 'message_start', message: { id: 'm1', type: 'message', role: 'assistant', model: 'MiniMax-M3.1-Flash', content: [], usage } },
++        { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } },
++        { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Read the file first.' } },
++        { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-abc' } },
++        { type: 'content_block_stop', index: 0 },
++        { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'call_1', name: 'fs_read', input: {} } },
++        { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"path":"a.txt"}' } },
++        { type: 'content_block_stop', index: 1 },
++        { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 20 } },
++        { type: 'message_stop' }]);
++      return sse([
++        { type: 'message_start', message: { id: 'm2', type: 'message', role: 'assistant', model: 'MiniMax-M3.1-Flash', content: [], usage } },
++        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
++        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'done' } },
++        { type: 'content_block_stop', index: 0 },
++        { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } },
++        { type: 'message_stop' }]);
++    }
++    return new Response(JSON.stringify({ data: [{ id: 'MiniMax-M3.1-Flash', type: 'model' }] }), { status: 200 });
++  };
++  return { fetch, posts };
++}
++async function collect(p, req) { const out = []; for await (const e of p.stream(req)) out.push(e); return out; }
++(async () => {
++  ok(factory.isMiniMaxAnthropic('https://api.minimax.io/anthropic') && factory.isMiniMaxAnthropic('https://api.minimaxi.com/anthropic/v1/'), 'MiniMax /anthropic addresses are recognised');
++  ok(!factory.isMiniMaxAnthropic('https://api.minimax.io/v1') && !factory.isMiniMaxAnthropic('https://proxy.example.com/anthropic') && !factory.isMiniMaxAnthropic('https://evil-minimax.io/anthropic'), 'a /v1 address, a non-MiniMax host and a look-alike host are not');
++  for (const base of ['https://api.minimax.io/anthropic', 'https://api.minimaxi.com/anthropic/v1']) {
++    const ep = anthropicEndpoint();
++    const p = factory.selectProvider({ provider: 'custom', fetch: ep.fetch, key: 'fixture-key', baseUrl: base });
++    const history = [{ role: 'system', content: 'be terse' }, { role: 'user', content: 'read a.txt' }];
++    const ev1 = await collect(p, { model: 'MiniMax-M3.1-Flash', messages: history, tools: TOOLS });
++    ok(/\/anthropic\/v1\/messages$/.test(ep.posts[0].url), base + ': the request goes to …/anthropic/v1/messages (' + ep.posts[0].url + ')');
++    ok(Array.isArray(ep.posts[0].body.tools) && ep.posts[0].body.tools[0].name === 'fs_read' && ep.posts[0].body.tools[0].input_schema, base + ': tools go out in the Anthropic shape');
++    ok(ep.posts[0].body.thinking === undefined, base + ': no thinking parameter is sent (M3.1-Flash always thinks; "disabled" is a 400)');
++    const tool = ev1.find(e => e.type === 'tool_start');
++    ok(tool && tool.name === 'fs_read' && tool.id === 'call_1', base + ': the tool call comes back');
++    const blocks = ev1.filter(e => e.type === 'reasoning' && e.block).map(e => e.block);
++    ok(blocks.length === 1 && blocks[0].signature === 'sig-abc', base + ': the signed thinking block is parked on the turn');
++    const turn = { role: 'assistant', content: '', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'fs_read', arguments: '{"path":"a.txt"}' } }], reasoning: blocks };
++    await collect(p, { model: 'MiniMax-M3.1-Flash', messages: history.concat([turn, { role: 'tool', tool_call_id: 'call_1', content: 'hello' }]), tools: TOOLS });
++    const sent = ep.posts[1].body.messages.find(x => x.role === 'assistant');
++    const th = sent && Array.isArray(sent.content) ? sent.content.find(b => b.type === 'thinking') : null;
++    ok(th && th.thinking === 'Read the file first.' && th.signature === 'sig-abc', base + ': the thinking block rides back verbatim on its own turn');
++    ok(sent.content.findIndex(b => b.type === 'thinking') < sent.content.findIndex(b => b.type === 'tool_use'), base + ': thinking comes before the tool_use, as produced');
++  }
++  for (const base of ['https://api.minimax.io/v1', 'https://proxy.example.com/anthropic']) {
++    const posts = [];
++    const fetch = async (url, init) => { if (init && init.method === 'POST') { posts.push(String(url)); return oaiSSE([{ choices: [{ delta: { content: 'hi' }, finish_reason: 'stop' }] }]); } return new Response(JSON.stringify({ data: [{ id: 'm', object: 'model' }] }), { status: 200 }); };
++    const p = factory.selectProvider({ provider: 'custom', fetch, key: 'fixture-key', baseUrl: base });
++    await collect(p, { model: 'm', messages: [{ role: 'user', content: 'hi' }] });
++    ok(/\/chat\/completions$/.test(posts[0] || ''), base + ': keeps the OpenAI-compatible wire (' + posts[0] + ')');
++  }
++  console.log(fails ? fails + ' FAILED' : 'all passed'); process.exit(fails ? 1 : 0);
++})();
