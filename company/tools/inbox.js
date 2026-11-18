@@ -759,7 +759,10 @@ function ask(o) {
     const have = secretNames.filter(n => secretStored(n));
     if (have.length) throw Object.assign(new Error('Not asked: the key ' + have.map(n => 'secrets/' + n).join(', ') + ' is already stored. Use it (read it with co.secret(\'' + have[0] + '\') in a tool); if it stopped working or must be replaced, ask again with --changed "<what is different now>".'), { code: 'secret-exists', stored: have });
   }
-  if (!o.scopeExempt) { const sc = ownerScopeCheck({ from: o.from, about: o.about, message, details, q, questions: rawQs, approval: o.approval, gate: o.gate, fixedGate: o.fixedGate, changed: o.changed }); if (sc) throw Object.assign(new Error(sc.error), { code: sc.code, suggestion: sc.suggestion, route: sc.route, prior: sc.prior }); }
+  // a request for a key or an account is the access gate (fixed): no standing ruling refuses or hides it
+  const accessAsk = ['secret', 'account', 'link'].includes(kind) || [].concat(form ? form.fields : [], ...(questions || []).map(x => (x.form && x.form.fields) || [])).some(f => f && f.type === 'secret') ||
+    (questions || []).some(x => x && ['secret', 'account', 'link'].includes(x.kind));
+  if (!o.scopeExempt) { const sc = ownerScopeCheck({ from: o.from, about: o.about, message, details, q, questions: rawQs, approval: o.approval, gate: o.gate, fixedGate: o.fixedGate || (accessAsk ? 'access' : undefined), changed: o.changed }); if (sc) throw Object.assign(new Error(sc.error), { code: sc.code, suggestion: sc.suggestion, route: sc.route, prior: sc.prior }); }
   // one decision per question: a single Approve/Decline that bundles several decisions is refused, with the split ready
   if (kind === 'approve' && !o.gate && !o.oneDecision) {
     const items = decisionItems(q);

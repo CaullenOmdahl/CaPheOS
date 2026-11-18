@@ -315,3 +315,30 @@ out({ edited: S.ownerApprove('feed2', svcOpts()), clean: S.ownerApprove('feed', 
 });
 
 /* ---------------- S1 ---------------- */
+test('S1: a topic ruling never hides a key request or the money hold\'s question on Today', () => {
+  const co = { p: (...a) => path.join(REPO, ...a), config: {} };
+  const N = require(path.join(REPO, 'console/owner-needs.js')).make({ co });
+  const list = [{ id: 'r-1', by: 'owner', text: 'You decide about pyth yourselves.', effect: 'crew-decides', scope: { topics: ['pyth'] } },
+    { id: 'r-2', by: 'owner', text: 'You decide about the budget.', effect: 'crew-decides', scope: { topics: ['budget'] } }];
+  const key = { id: 'q-1', kind: 'secret', message: 'The Pyth key, please.', form: { fields: [{ id: 'key', type: 'secret' }], actions: [] } };
+  assert.equal(N.classify(key, {}, list).needsOwner, true, 'a key request stays with the owner');
+  const money = { id: 'q-2', about: 'money-hold:cap', message: 'The crew is out of budget for today. Raise it so work can go on?' };
+  assert.equal(N.classify(money, {}, list).needsOwner, true, 'money needed now stays with the owner');
+  const plain = { id: 'q-3', message: 'May we tidy the pyth notes?', about: 'notes' };
+  assert.equal(N.classify(plain, {}, list).needsOwner, false, 'a plain topic ruling still works');
+});
+
+test('S1: a never-ask ruling does not refuse a key request when it is asked (inbox.js)', () => {
+  const T = company();
+  const r = run(T, `
+require(path.join(REPO, 'company/tools/provenance.js')).pinUnderStation(false);
+const R = require(path.join(REPO, 'company/tools/lib/owner-rulings.js'));
+const added = R.add({ by: 'owner', text: 'Never ask me about pyth.', effect: 'never-ask', scope: { topics: ['pyth'] } }, { root: T, shell: () => true });
+const inbox = require(path.join(REPO, 'company/tools/inbox.js'));
+let res; try { res = { ok: true, id: inbox.ask({ from: 'Sam Lee', kind: 'secret', spec: { name: 'pyth-api-key', label: 'The Pyth key' }, message: 'May I have the Pyth key? It lets us read prices; if you skip it, the price page waits.' }).row.id }; } catch (e) { res = { ok: false, code: e.code, msg: e.message }; }
+out({ added: added.ok, rulings: R.list({ root: T }).length, res });`);
+  assert.equal(r.added, true); assert.equal(r.rulings, 1, 'the ruling is in force');
+  assert.equal(r.res.ok, true, 'the key request reaches the owner: ' + JSON.stringify(r.res));
+});
+
+/* ---------------- S2 ---------------- */

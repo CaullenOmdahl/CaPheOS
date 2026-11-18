@@ -9,6 +9,9 @@
  * NEEDS YOU (classify): an open card still needs the owner only when
  *   - it is one of the four fixed owner gates (governance.json `fixed`: access, ownership, commitment, spendBeyondCap;
  *     row.gate.fixedGate, an approval record's category, or the card's category), and no ruling ever hides one; or
+ *   - a guardrail requires the owner's yes (row.gate.guardrail: lib/owner-card.js), and no ruling ever hides one; or
+ *   - it asks for a key or an account (access), or it is the money hold's question (money needed now: about
+ *     money-hold:*): no ruling ever hides either, whatever its category; or
  *   - its category's LIVE level (lib/governance.js level(), read now, not the level when it was filed) is approve
  *     (triage reads as approve: a filed triage card was escalated), and no standing ruling says the crew decides; or
  *   - it has no category, and it asks for a key or an account (access), or the owner-scope rule (lib/owner-scope.js
@@ -118,6 +121,10 @@ function make(deps) {
     const fixedGate = normFixed(typeof flag === 'string' ? flag : null) || normFixed(category) || (flag === true || row.fixedGate === true ? 'gate' : null);
     const lead = String(q.message || '').trim();
     if (fixedGate) return { needsOwner: true, why: 'fixed-gate', fixedGate, category: category || fixedGate };
+    // never behind a ruling or a level: a guardrail's ask, a key or account request, money needed now
+    if ((row.gate && row.gate.guardrail) || (q.gate && q.gate.guardrail)) return { needsOwner: true, why: 'guardrail', category };
+    if (asksKey(q) || asksKey(row)) return { needsOwner: true, why: 'access', category };
+    if (/^money-hold:/.test(String(q.about || row.about || ''))) return { needsOwner: true, why: 'money-now', category };
     const ruling = rulingFor({ category, about: q.about, lead, ref: (row.gate && row.gate.ref) || (q.gate && q.gate.ref) || null }, list);
     if (ruling && ruling.effect === 'ask') return { needsOwner: true, why: 'ruling-ask', category, ruling: { id: ruling.id, text: ruling.text } };
     if (ruling) return { needsOwner: false, why: 'ruling', category, ruling: { id: ruling.id, text: ruling.text, effect: ruling.effect } };
@@ -125,7 +132,6 @@ function make(deps) {
       const level = levelOf(category);
       return level === 'approve' || level === 'triage' ? { needsOwner: true, why: 'level', category, level } : { needsOwner: false, why: 'level', category, level };
     }
-    if (asksKey(q)) return { needsOwner: true, why: 'access', category: null };
     let cls = null; try { cls = scope().classify({ message: lead || q.q, details: q.details, about: q.about }); } catch (_) {}
     if (cls && cls.scope === 'crew') return { needsOwner: false, why: 'crew-scope', category: null };
     return { needsOwner: true, why: 'owner-scope', category: null };
