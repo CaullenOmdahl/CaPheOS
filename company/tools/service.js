@@ -1180,7 +1180,7 @@ function selftest() {
     ok('a rerun before the answer does not ask twice', r.waiting && fs.readFileSync(inbox, 'utf8').trim().split('\n').length === 1);
     answer(q.id, 'yes');
     r = propose(ctx, 'depth', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', why: 'records order-book depth between agent runs', network: 'on' });
-    // the 2026-11-18 log-archive case: a re-run with a different spec while a question is out must not mint a second one
+    // a re-run with a different spec while a question is out must not mint a second one
     {
       const sp = { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1d', why: 'daily copy of the ledger outside rotation' };
             const a1 = propose(ctx, 'dupe', sp);
