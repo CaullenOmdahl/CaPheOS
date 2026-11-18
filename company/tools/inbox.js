@@ -703,6 +703,18 @@ function ownerScopeCheck(o) {
   { rows: readAll(), seats: crewSeats() });
 }
 
+/* listItems({open?, from?}) — the rows `inbox.js list` prints. A question its asker withdrew whole is not open: before
+ * 2026-11-18 `list` printed it with status "open" (and `--open` kept it), so a withdrawn ask read as a live card. */
+function listItems(a) {
+  a = a || {}; const now = Date.now();
+  const rows = Object.values(state()).filter(x => x.type === 'ask' && (!a.open || (!x.a && !x.reclassified && !x.withdrawnAll)) && (!a.from || String(x.from).toLowerCase() === String(a.from).toLowerCase()));
+  return rows.map(x => {
+    const snoozed = !x.a && x.snoozedUntil && Date.parse(x.snoozedUntil) > now ? x.snoozedUntil : null;
+    return { id: x.id, from: x.from, about: x.about, kind: x.kind || 'approve', message: messageParts(x).message, q: x.q, blocking: x.blocking, askedAt: x.at, answer: x.a || null, answerDetail: x.answer || null, answeredBy: x.by || null, reclassified: x.reclassified || null,
+      withdrawn: x.withdrawnAll || null,
+      snoozedUntil: snoozed, status: x.a ? 'answered' : x.reclassified ? 'reclassified' : x.withdrawnAll ? 'withdrawn by ' + x.withdrawnAll.by : snoozed ? 'snoozed until ' + snoozed : 'open' };
+  });
+}
 /* openQuestions() — the single definition of "an open PM question": an ask that has no answer and has not been
  * reclassified to company ownership. A snoozed question is still open; it carries snoozedUntil while the snooze runs. */
 function openQuestions() {
@@ -1192,6 +1204,9 @@ function selftest() {
     t('withdrawing the last open question finishes the request with the answers it has', r.state === 'answered' && !open(wq.row.id) && state()[wq.row.id].answer.parts.cmd.withdrawn === true && state()[wq.row.id].answer.parts.mod.verdict === 'yes', state()[wq.row.id].answer);
     const wh = ask({ from: 'Founder', message: 'May I keep the old feed?' });
     withdraw({ id: wh.row.id, why: 'moot', by: 'Founder' });
+    { const li = listItems({}).find(x => x.id === wh.row.id) || {}; const still = ask({ from: 'Founder', message: 'May I keep the new feed?' });
+      t('list: a whole ask withdrawn reads withdrawn, not open, and --open leaves it out while a live ask stays', li.status === 'withdrawn by Founder' && li.withdrawn && li.withdrawn.why === 'moot' && !listItems({ open: true }).some(x => x.id === wh.row.id) && listItems({ open: true }).some(x => x.id === still.row.id && x.status === 'open') && listItems({ from: 'founder' }).some(x => x.id === wh.row.id), li);
+      withdraw({ id: still.row.id, why: 'test tidy', by: 'Founder' }); }
     t('a whole ask withdrawn is no longer open, and cannot be answered', !open(wh.row.id) && /no question|no open question/.test(throws(() => answer({ id: wh.row.id, by, text: 'yes' })) || 'x'));
     // governance approved(): structured verdicts
     const gov = require('./lib/governance');
@@ -1232,15 +1247,7 @@ if (a.cmd === 'ask') {
     out(0, Object.assign({ ok: true, id: row.id, kind: row.kind || 'approve', status: 'open', note: 'the owner answers on Today in the console' + (row.questions ? ', one question at a time; each answer' : '; the answer') + ' comes back to you as an owner message naming ' + row.id }, warnings.length ? { warnings } : {}));
   } catch (e) { out(2, Object.assign({ ok: false, error: e.message }, e.code === 'bundled' || e.code === 'plain' ? { suggestion: e.suggestion } : {}, e.route ? { route: e.route } : {}, e.prior ? { prior: e.prior } : {}, e.code ? { code: e.code } : {})); }
 }
-if (a.cmd === 'list') {
-  const now = Date.now();
-  const rows = Object.values(state()).filter(x => x.type === 'ask' && (!a.open || (!x.a && !x.reclassified)) && (!a.from || String(x.from).toLowerCase() === String(a.from).toLowerCase()));
-  out(0, { ok: true, open: openQuestions().length, items: rows.map(x => {
-    const snoozed = !x.a && x.snoozedUntil && Date.parse(x.snoozedUntil) > now ? x.snoozedUntil : null;
-    return { id: x.id, from: x.from, about: x.about, kind: x.kind || 'approve', message: messageParts(x).message, q: x.q, blocking: x.blocking, askedAt: x.at, answer: x.a || null, answerDetail: x.answer || null, answeredBy: x.by || null, reclassified: x.reclassified || null,
-      snoozedUntil: snoozed, status: x.a ? 'answered' : x.reclassified ? 'reclassified' : snoozed ? 'snoozed until ' + snoozed : 'open' };
-  }) });
-}
+if (a.cmd === 'list') out(0, { ok: true, open: openQuestions().length, items: listItems(a) });
 if (a.cmd === 'reclassify') {
   const id = String(a.id || ''); if (!id) out(2, { ok: false, error: '--id is required' });
   const note = String(a.note || '').trim(); if (!note) out(2, { ok: false, error: '--note is required (what the company decided and who owns it)' });
