@@ -105,7 +105,10 @@ function refuseCaller(ctx, by) {
 const err = (code, error) => ({ ok: false, code, error });
 
 /* ---------------- owner channel ---------------- */
+// a guardrail is changed only by the owner, so this is the record of their own change: an FYI for the day's message
+// (lib/owner-notice.js); a tree without it falls back to the low-level writer
 function notifyOwner(text) {
+  try { require('./lib/owner-notice').send({ kind: 'fyi', from: 'Safety settings', text }); return true; } catch (e) { if (e && e.code !== 'MODULE_NOT_FOUND') return false; }
   let oi; try { oi = require('./owner-inbox.js'); } catch (_) { return false; }
   if (!oi || typeof oi.send !== 'function') return false;
   try { oi.send({ from: 'Guardrails (company/tools/guardrails.js)', text }); return true; } catch (_) { return false; }

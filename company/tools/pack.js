@@ -86,8 +86,11 @@ function record(row) {
   fs.appendFileSync(P.log, JSON.stringify(line) + '\n');
   return line;
 }
+// an FYI for the owner's day message (lib/owner-notice.js: technical words move under the collapsed details); a tree
+// without it (an older framework copy) falls back to the owner channel's low-level writer
 function tellOwner(text, from) {
-  const mod = path.join(__dirname, 'owner-inbox.js');
+  const notice = path.join(__dirname, 'lib', 'owner-notice.js'), mod = path.join(__dirname, 'owner-inbox.js');
+  if (fs.existsSync(notice)) { try { const r = require(notice).send({ kind: 'fyi', root: path.join(__dirname, '..', '..'), from, text }); return { told: true, id: r.row ? r.row.id : null, duplicate: !!r.duplicate }; } catch (e) { return { told: false, why: e.message }; } }
   if (!fs.existsSync(mod)) return { told: false, why: 'owner-inbox.js not present' };
   try { const row = require(mod).send({ from, text }); return { told: true, id: row && row.id }; } catch (e) { return { told: false, why: e.message }; }
 }

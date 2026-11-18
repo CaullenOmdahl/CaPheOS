@@ -327,7 +327,10 @@ module.exports = function activity(deps) {
         title: (rd.role || d) + ': ' + st.label, text: tl, links: [{ label: 'Hiring', href: '#/crew/hiring' }] });
     }
     // replies on the owner channel
-    try { for (const m of tool('owner-inbox.js').sent()) if (Date.parse(m.at) >= since) items.push({ at: m.at, kind: 'message', who: m.from || 'Company', title: (m.from || 'The company') + ' wrote to you', text: firstSentence(m.text), links: [{ label: 'Open', href: '#/chat/owner' }].concat(linksFor(m.text)) }); } catch (_) {}
+    // the day's single message (lib/owner-notice.js digest) is a card of its own: its title, every line it folds
+    try { for (const m of tool('owner-inbox.js').sent()) if (Date.parse(m.at) >= since) items.push(m.kind === 'digest'
+      ? { at: m.at, kind: 'digest', who: 'The crew', title: m.title || 'What the crew did today', text: String(m.text || '').split('\n').slice(1).join('\n'), links: [{ label: 'Open', href: '#/chat/owner' }] }
+      : { at: m.at, kind: 'message', who: m.from || 'Company', title: (m.from || 'The company') + ' wrote to you', text: firstSentence(m.text), links: [{ label: 'Open', href: '#/chat/owner' }].concat(linksFor(m.text)) }); } catch (_) {}
     // decisions
     let dec = ''; try { dec = fs.readFileSync(co.p('company', 'work', 'decisions.md'), 'utf8'); } catch (_) {}   // bounded: retention.js keeps 30 days live (docs/RETENTION.md)
     for (const l of dec.split('\n').filter(x => /^- \d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(x)).slice(-20)) {

@@ -1196,7 +1196,7 @@ async function selftest() {
   t('hiring at auto: allowed, nothing sent', () => { setLevel('hiring', 'auto'); const r = governanceCheck('hiring', o, g); assert.ok(r.ok); assert.ok(!fs.existsSync(path.join(T, 'company', 'owner', 'outbound.jsonl'))); });
   t('hiring at notify: allowed, the owner is told in one sentence', () => {
     setLevel('hiring', 'notify'); const r = governanceCheck('hiring', o, g); assert.ok(r.ok);
-    assert.ok(/^Sam decided to hire Lee as QA Lead/.test(JSON.parse(fs.readFileSync(path.join(T, 'company', 'owner', 'outbound.jsonl'), 'utf8').trim()).text));
+    assert.ok(/^Sam decided to hire Lee as QA Lead/.test(JSON.parse(fs.readFileSync(path.join(T, 'company', 'owner', 'digest.jsonl'), 'utf8').trim()).text));   // an FYI: the day's single message
   });
   t('hiring at approve: refused with an owner question; goes on after the owner says yes', () => {
     setLevel('hiring', 'approve'); const r = governanceCheck('hiring', o, g); assert.ok(!r.ok && r.d.questionId); assert.ok(/waits for the owner/.test(r.error));

@@ -592,7 +592,10 @@ function copyPanel(src, dest) {
   fs.mkdirSync(dest, { recursive: true });
   for (const f of ['panel.json', 'page.json', 'view.html', 'README.md']) if (fs.existsSync(path.join(src, f))) fs.copyFileSync(path.join(src, f), path.join(dest, f));
 }
+// an FYI for the owner's day message (lib/owner-notice.js); a tree without it falls back to the low-level writer
 function tellOwner(text, from, r) {
+  const notice = path.join(paths(r).tools, 'lib', 'owner-notice.js');
+  if (fs.existsSync(notice)) { try { const n = require(notice).send({ kind: 'fyi', root: paths(r).root, from, text }); return { told: true, id: n.row ? n.row.id : null, duplicate: !!n.duplicate }; } catch (e) { return { told: false, why: e.message }; } }
   const mod = path.join(paths(r).tools, 'owner-inbox.js');
   if (!fs.existsSync(mod)) return { told: false, why: 'owner-inbox.js not present' };
   try { const row = require(mod).send({ from, text }); return { told: true, id: row && row.id }; } catch (e) { return { told: false, why: e.message }; }

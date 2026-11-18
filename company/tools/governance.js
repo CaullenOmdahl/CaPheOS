@@ -160,7 +160,7 @@ function selftest() {
     set('hiring', 'notify', owner, opts);
     const d = gov.decide('hiring', { by: 'Sam', summary: 'open the sales-lead-1 round', ref: 'hiring:open:sales-lead-1' }, opts);
     gov.decide('hiring', { by: 'Sam', summary: 'open the sales-lead-1 round', ref: 'hiring:open:sales-lead-1' }, opts);
-    const sent = fs.readFileSync(path.join(F.ownerDir, 'outbound.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    const sent = fs.readFileSync(path.join(F.ownerDir, 'digest.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);   // an FYI: the day's single message (lib/owner-notice.js)
     assert.ok(d.allowed && d.noted); assert.strictEqual(sent.length, 1); assert.ok(/^Sam decided to open the sales-lead-1 round\./.test(sent[0].text));
   });
   t('decide at approve: refused, one question (not two), then allowed after the owner says yes; no denies', () => {
@@ -228,8 +228,8 @@ function selftest() {
   t('triage live: proceed-notify goes ahead and the owner sentence names the model, version, rule and decision; escalate files a question', () => {
     const d = gov.decide('tools', { by: 'Sam', summary: 'apply tool change c-2', ref: 'harness:c-2', facts }, opts);
     assert.ok(d.allowed && d.noted, JSON.stringify(d));
-    const sent = fs.readFileSync(path.join(F.ownerDir, 'outbound.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-    assert.ok(/set to triage, and decision model gate-triage v2 let this through: routine-change.*Decision d-[0-9a-f]{12}/.test(sent[sent.length - 1].text), sent[sent.length - 1].text);
+    const sent = fs.readFileSync(path.join(F.ownerDir, 'digest.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);   // an FYI: the day's single message (lib/owner-notice.js)
+    { const last = sent[sent.length - 1]; const all = last.text + ' ' + (last.technical || ''); assert.ok(/set to triage, and decision model gate-triage v2 let this through: routine-change.*Decision d-[0-9a-f]{12}/.test(all), all); }   // the id rides in the technical part
     const e = gov.decide('tools', { by: 'Lee', summary: 'apply tool change c-3', ref: 'harness:c-3', facts }, opts);   // Lee has an open S1
     assert.strictEqual(e.allowed, false); assert.ok(e.questionId); assert.strictEqual(e.triage.wouldBe, 'escalate');
   });
@@ -243,7 +243,7 @@ function selftest() {
     } finally { require('./lib/owner-channel').pinMains(null); require('./provenance.js').pinUnderStation(null); }
     assert.strictEqual(n.allowed, false); assert.strictEqual(n.triage.mode, 'shadow');
     assert.strictEqual(dm.state(opts).models['gate-triage'].mode, 'shadow');
-    assert.ok(/gate-triage v2 is back in shadow mode/.test(fs.readFileSync(path.join(F.ownerDir, 'outbound.jsonl'), 'utf8')));
+    assert.ok(/gate-triage v2 is back in shadow mode/.test(fs.readFileSync(path.join(F.ownerDir, 'digest.jsonl'), 'utf8')));
     assert.ok(dm.outcomes(opts).some(o => o.decisionId === d.triage.decisionId && o.result === 'bad' && o.source === 'owner-reversal'));
   });
   t('a promoted v1 (no safety inputs) never proceeds: it would take the actor\'s word', () => {

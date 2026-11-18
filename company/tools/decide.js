@@ -190,7 +190,7 @@ function selftest() {
     const H = dm.health(Object.assign({ id: 'outc', apply: true }, opts)); h = H.models[0];
     assert.strictEqual(H.joined, 1); assert.deepStrictEqual([h.bad, h.precision, h.demoted], [1, 0.5, true]);
     assert.strictEqual(dm.state(opts).models.outc.mode, 'shadow'); assert.strictEqual(dm.evaluate('outc', { n: 1 }, Object.assign({ log: false }, opts)).mode, 'shadow');
-    assert.ok(/outc v1 is back in shadow mode/.test(fs.readFileSync(path.join(T, 'company', 'owner', 'outbound.jsonl'), 'utf8')));
+    assert.ok(/outc v1 is back in shadow mode/.test(fs.readFileSync(path.join(T, 'company', 'owner', 'digest.jsonl'), 'utf8')));   // an FYI (lib/owner-notice.js)
     assert.ok(/demoted decision model outc v1 from live to shadow/.test(fs.readFileSync(path.join(T, 'company', 'work', 'decisions.md'), 'utf8')));
     assert.strictEqual(dm.join(opts).recorded.length, 0);                                                     // idempotent
     fs.mkdirSync(path.join(T, 'company', 'work', 'commitments'), { recursive: true });

@@ -167,7 +167,7 @@ function notify(text, opts) {
   if (readLines(path.join(f.ownerDir, 'outbound.jsonl')).some(r => String(r.text || '') === body)) return { duplicate: true };
   const prev = process.env.OWNER_DIR;
   if (!isLive(opts)) process.env.OWNER_DIR = f.ownerDir;
-  try { return require('../owner-inbox.js').send({ from: (opts && opts.from) || co.nameOf(co.ceo()) || 'company', text: body }); }
+  try { const r = require('./owner-notice').send({ kind: 'fyi', root: f.root, from: (opts && opts.from) || co.nameOf(co.ceo()) || 'company', text: body }); return r.duplicate ? { duplicate: true } : r.row; }   // an FYI: the day's single message
   finally { if (!isLive(opts)) { if (prev === undefined) delete process.env.OWNER_DIR; else process.env.OWNER_DIR = prev; } }
 }
 

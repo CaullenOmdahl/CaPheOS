@@ -203,7 +203,7 @@ function handoff(ctx, p, heading, fields, dry) {
 function toOwner(ctx, heading, fields, dry) {
   const text = flat(heading) + ' — ' + Object.entries(fields).filter(([k]) => k !== 'Status').map(([k, v]) => k + ': ' + flat(v)).join(' | ');
   const line = JSON.stringify({ id: 'hc-' + ctx.now.toString(36) + '-' + crypto.randomBytes(3).toString('hex'), at: local(ctx.now), from: TOOL_NAME, text }) + '\n';
-  if (!dry) { const f = ctx.P('company/owner/outbound.jsonl'); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, line); }
+  if (!dry && line) require('./lib/owner-notice').send({ kind: 'fyi', root: ctx.root, from: TOOL_NAME, text });   // an FYI for the day's message (lib/owner-notice.js); the plain check moves ids and paths out
   return 'owner:outbound';
 }
 // flip OPEN -> DONE on this tool's own handoffs whose heading names `needle` (never anyone else's block); onlyFor = one person's inbox
@@ -576,7 +576,7 @@ function frameworkRequest(ctx, rec, p) {
   appendLog(ctx, { event: 'upstream', id: rec.id, frameworkRequest: frId, by: p.name, file, request: path.relative(ctx.root, out) });
   // only the real company's owner hears of it: a selftest or fixture tree (ctx.root elsewhere) never writes the owner channel
   let realRoot = false; try { realRoot = fs.realpathSync(ctx.root) === fs.realpathSync(co.ROOT); } catch (_) {}
-  if (realRoot) try { require('./owner-inbox.js').send({ from: 'harness-change.js', text: 'The crew wants to change a framework file (' + file + '): ' + rec.why + ' It was approved but not applied here, because framework files change only through framework updates. The full request is in ' + path.relative(ctx.root, out) + '.' }); } catch (_) {}
+  if (realRoot) try { require('./lib/owner-notice').send({ kind: 'fyi', root: ctx.root, from: TOOL_NAME, key: 'framework-request:' + rec.id, text: 'The crew asked for an improvement to the shared framework; it went to the framework maintainers, because framework files change only through framework updates.', technical: 'The crew wants to change a framework file (' + file + '): ' + rec.why + ' It was approved but not applied here. The full request is in ' + path.relative(ctx.root, out) + '.' }); } catch (_) {}
   return Object.assign({}, rec, { applied: false, upstream: path.relative(ctx.root, out) });
 }
 
@@ -1091,7 +1091,7 @@ async function selftest() {
     setGov('tools', 'notify');
     const r = await propose(C(), { kind: 'tool', target: 'company/tools/sample.js', why: 'another note for the next reader of it', change: R('company/tools/sample.js').replace('const N = 1;', 'const N = 1; // notify'), by: 'Jo' });
     review(C(), r.id, { by: 'Max' }, 'approve'); const a = await applyChange(C(), r.id, { by: 'Max' }); assert.strictEqual(a.status, 'applied');
-    assert.ok(R('company/owner/outbound.jsonl').includes('Max decided to apply ' + r.id));
+    assert.ok(R('company/owner/digest.jsonl').includes('Max decided to apply ' + r.id));   // an FYI (lib/owner-notice.js)
     assert.deepStrictEqual(['schedule', 'model', 'house-rule'].map(k => governanceCategory({ kind: k })), ['schedules', 'models', 'tools']);
     assert.strictEqual(governanceCategory({ kind: 'policy', target: { file: 'company/model-policy.json' } }), 'tools');
     setGov('tools', 'auto'); setGov('budget', 'auto');

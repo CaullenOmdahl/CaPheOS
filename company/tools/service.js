@@ -920,7 +920,7 @@ function selftest() {
     guardOn = false; govLevel = 'notify';
     r = propose(ctx, 'bank', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'banks the closed day every hour', network: 'none' });
     const tm = fs.readFileSync(path.join(U, 'testco-svc-bank.timer'), 'utf8'); const ts1 = fs.readFileSync(path.join(U, 'testco-svc-bank.service'), 'utf8');
-    ok('guardrail OFF + schedules notify: installed without a question, owner told', r.ok && r.status === 'installed' && fs.existsSync(path.join(R, 'company/owner/outbound.jsonl')), r);
+    ok('guardrail OFF + schedules notify: installed without a question, owner told', r.ok && r.status === 'installed' && fs.existsSync(path.join(R, 'company/owner/digest.jsonl')), r);   // an FYI (lib/owner-notice.js)
     ok('timer rendered: OnUnitActiveSec, oneshot service, no network', /OnUnitActiveSec=1h/.test(tm) && /Unit=testco-svc-bank.service/.test(tm) && /Type=oneshot/.test(ts1) && /RestrictAddressFamilies=AF_UNIX/.test(ts1) && fake.active['testco-svc-bank.timer']);
     // start limit: a timer must not rate-limit itself to half its schedule; a long-running service keeps the guard
     const minuteSvc = render(ctx, specOf(ctx, 'minute', { kind: 'timer', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', every: '1min', why: 'one pass every minute' }, { resolve: false }))['testco-svc-minute.service'];

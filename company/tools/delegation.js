@@ -183,7 +183,7 @@ function selftest() {
     const d1 = gov('spend', o); assert.strictEqual(d1.allowed, false);
     const r = answer(d1.questionId, { by: 'Pat', a: 'yes, go' }, opts); assert.ok(r.ok && r.ownerTold, JSON.stringify(r));
     const d2 = gov('spend', o); assert.ok(d2.allowed); assert.strictEqual(d2.approvedBy, 'delegate Pat for owner');
-    const sent = fs.readFileSync(path.join(T, 'company', 'owner', 'outbound.jsonl'), 'utf8'); assert.ok(/Pat answered q-\d+ for you/.test(sent));
+    const sent = fs.readFileSync(path.join(T, 'company', 'owner', 'digest.jsonl'), 'utf8');   // an FYI (lib/owner-notice.js) assert.ok(/Pat answered q-\d+ for you/.test(sent));
     assert.ok(rows(opts).some(x => x.op === 'answer' && x.delegation === dg.id));
     assert.strictEqual(answer(d1.questionId, { by: 'Pat', a: 'no' }, opts).code, 2);   // already answered
   });

@@ -28,8 +28,14 @@ on the StarNet station). These rules apply to every file in `company/tools/`, `c
    `.api-token` are gone. The company name and owner come from `co.config` (`company/company.json`).
 4. **The owner channel is the file adapter.** Owner → company messages are `company/owner/inbound.jsonl`; company →
    owner is `company/owner/outbound.jsonl` (one JSON object per line: `{id, at, from, text, re?}`). No Baarista, no
-   chat-app API. Anything that called `pm-account.js`, `pm-bridge`, or sent to `baarista:<id>` now appends to the
-   outbound file. External-gate policy for the owner channel targets `owner:file`. Inbound lines count as the owner's
+   chat-app API. Anything that called `pm-account.js`, `pm-bridge`, or sent to `baarista:<id>` now tells the owner
+   through `company/tools/lib/owner-notice.js` `send({kind, from, text, technical?, key?})`, never by appending to the
+   outbound file or calling `owner-inbox.js` `send()` (the low-level writer only owner-notice uses): `urgent` (the
+   company stopped or cannot work, money or an account is needed now, a security event, the CEO's own reply) goes out
+   at once after the plain check, which moves commands, paths, ids and raw errors into the collapsed `technical` part;
+   every other notice is an `fyi`, folded into ONE plain message a day, "What the crew did today"
+   (`company/owner/digest.jsonl`, sent at `company/work/ops/owner-notices.json` eveningHour). An owner QUESTION is an
+   owner card (`company/tools/lib/owner-card.js`), not a notice. External-gate policy for the owner channel targets `owner:file`. Inbound lines count as the owner's
    only when an allowed writer recorded them in the provenance log (`company/tools/lib/owner-channel.js`: the console,
    `inbox.js` answers, `owner-inbox.js say`); a hand-appended line is ignored, raised to risk and quarantined by
    locked-watch. Lines from before the cutover are history: read, but never a gate answer. The same holds for the

@@ -479,7 +479,10 @@ async function remind() {
     append({ type: 'approval-reminder', at: new Date(now).toISOString(), window: win, ids, pending: pend.length });
     const n = pend.length;
     const text = (n === 1 ? 'One approval is' : n + ' approvals are') + ' waiting for you on Today › Needs you (' + ids.join(', ') + (pend.length > ids.length ? ' and ' + (pend.length - ids.length) + ' more' : '') + '). [Open Needs you](console:#/today)';
-    let sent = null; try { sent = require('./owner-inbox.js').send({ from: S.nameOf(S.ceo()) || 'company', text }); } catch (_) {}
+    // lib/owner-notice.js: urgent when the crew is held up (a blocking record) or money is waiting (spend, budget); any
+    // other reminder is an FYI for the day's message, since the cards are already on Today. Ids move to the technical part.
+    const now_ = batch.some(r => r.blocking || ['spend', 'budget', 'spendBeyondCap'].includes(r.category));
+    let sent = null; try { const r = require('./lib/owner-notice').send({ kind: now_ ? 'urgent' : 'fyi', from: S.nameOf(S.ceo()) || 'company', text, key: 'approval-reminder:' + win }); sent = r.row || null; } catch (_) {}
     return { ids, pending: n, sent: !!sent };
   });
 }
