@@ -47,7 +47,7 @@ test('an fyi never hits outbound.jsonl directly; it waits in digest.jsonl, plain
 test('the digest folds N fyi rows into ONE plain message, once a day, at the evening hour', () => {
   reset();
   const texts = ['Kim finished the shop page.', 'Alex hired a writer for the blog.', 'Kim fixed a broken link (`docs/x.md`).', 'Kim finished the shop page.'];
-  texts.forEach((t, i) => N.send({ kind: 'fyi', from: i === 1 ? 'Alex' : 'Kim', text: t, key: 'k' + i, now: at('2026-11-18T0' + (8 + i) + ':00:00Z') }));
+  texts.forEach((t, i) => N.send({ kind: 'fyi', from: i === 1 ? 'Alex' : 'Kim', text: t, key: 'k' + i, now: at('2026-11-18T' + String(8 + i).padStart(2, '0') + ':00:00Z') }));
   assert.equal(N.pending().length, 4);
   let d = N.digest({ now: at('2026-11-18T17:59:00Z') });
   assert.equal(d.sent, false); assert.match(d.why, /evening hour/);
