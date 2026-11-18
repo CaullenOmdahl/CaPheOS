@@ -522,6 +522,13 @@ function tellOwner(ctx, o) {
     return require('./lib/governance').fyi({ from: o.from, text: o.text, technical: o.technical, key: o.key }, Object.assign({}, ctx.gov, { root: ctx.root }));
   } catch (x) { logRow(ctx, { event: 'owner-notice-failed', key: o.key, error: String(x.message).slice(0, 200) }); return null; }
 }
+/* ASKS: what the triage path's governance question says to the owner (lib/governance.js decide): plain words, the
+ * service name and its schedule in `technical`. Exported so a test files it at approve. */
+const ASKS = {
+  triage: e => ({ summary: 'set up a background job that ' + (e.kind === 'timer' ? 'runs ' + (plainWhen(e.schedule) || 'on a set schedule') : 'keeps running') + ' on this computer',
+    recommendation: e.plain && require('./lib/governance').plainPart(String(e.plain).replace(/[.!]$/, '')) ? 'yes: ' + String(e.plain).replace(/[.!]$/, '').replace(/^./, c => c.toLowerCase()) : 'yes', default: 'nothing is installed',
+    technical: 'Run the background service ' + e.name + ' (' + scheduleWords(e.schedule) + '): ' + String(e.why || '').slice(0, 200) }),
+};
 // may this proposal go ahead? -> {allowed, waiting?, denied?, questionId?, level, via, tell?}
 // Two decisions, the stricter one wins: the job itself (the `schedules` level, or the owner while the localComputer
 // guardrail is on and it is outside the safe profile) and the websites it declares that the company does not use yet
@@ -545,8 +552,7 @@ function decision(ctx, e, who, ref) {
   if (level === 'auto') return { allowed: true, level, via };
   if (level === 'notify') return { allowed: true, level, via, tell: true };
   if (level === 'triage') {
-    const d = gov.decide('schedules', { by: who.name, summary: 'run the background service ' + e.name + ' (' + scheduleWords(e.schedule) + '): ' + e.why.slice(0, 120), ref,
-      recommendation: 'yes', default: 'nothing is installed' }, ctx.gov);
+    const d = gov.decide('schedules', Object.assign({ by: who.name, ref }, ASKS.triage(e)), ctx.gov);
     return { allowed: !!d.allowed, waiting: !d.allowed && !d.denied, denied: !!d.denied, questionId: d.questionId || null, level: d.level, via: 'schedules ' + d.level + (lcOn ? ' (inside the safe profile)' : ' (localComputer guardrail off)'), tell: !!d.allowed && d.level !== 'auto' };
   }
   const q = gov.questionFor(ref, ctx.gov);
@@ -1050,7 +1056,7 @@ function main(argv) {
   console.error('usage: service.js propose|list|status|stop|start|remove|adopt|owner-approve|--duty|selftest (header of company/tools/service.js)'); return 2;
 }
 
-module.exports = { context, propose, ownerApprove, safeProfile, sites, siteName, sitesWords, plainLead, plainDone, plainRecommendation, decision, plainWhen, startStop, remove, adopt, onHalt, list, findings, duty, checkCommand, validateArgv, splitWords, render, specOf, unitOf, _internals: { frameworkUnits } };
+module.exports = { ASKS, context, propose, ownerApprove, safeProfile, sites, siteName, sitesWords, plainLead, plainDone, plainRecommendation, decision, plainWhen, startStop, remove, adopt, onHalt, list, findings, duty, checkCommand, validateArgv, splitWords, render, specOf, unitOf, _internals: { frameworkUnits } };
 
 /* ---------------- selftest: temp company, fake systemctl, no real user manager ---------------- */
 function selftest() {

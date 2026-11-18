@@ -1101,7 +1101,7 @@ test('emergency by hand at notify starts at once and tells the owner', async () 
   const fx = fixture({ feedPct: 29, budgetLevel: 'notify' }), jobs = crewJobs();
   const h = make(fx, station(jobs));
   assert.equal(h.p.emergencyOn({ why: 'production API down (S0)', by: 'Max', hours: 4 }).ok, true);
-  assert.match(fs.readFileSync(path.join(fx.root, 'company/owner/digest.jsonl'), 'utf8'), /Max decided to lift the subscription pacing lines/);   // an FYI (lib/owner-notice.js)
+  assert.match(fs.readFileSync(path.join(fx.root, 'company/owner/digest.jsonl'), 'utf8'), /Max decided to let the crew use more of its AI subscriptions than usual for the next 4 hours/);   // an FYI (lib/owner-notice.js)
 });
 // Per-seat model chains (company/tools/models.js): the pacer leaves a chained seat's routines alone, and its hook
 // tick hands its measurement to models.js, which moves the seat down its chain when a link closes.

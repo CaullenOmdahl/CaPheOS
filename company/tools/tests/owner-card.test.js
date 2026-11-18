@@ -108,7 +108,7 @@ test('governance: a crew-decides ruling lets decide() go ahead without a card; a
   assert.ok(card.plain(row.message), row.message); assert.ok(card.plain(row.consequence), row.consequence);
   assert.match(row.message, /^May Sam Lee go ahead and raise the daily budget to \$40\?$/);
   assert.match(row.technical, /company\/work\/finance\/budget\.json dailyUsd 20 -> 40/);
-  assert.equal(row.recommendation, 'Recommendation from Sam Lee: yes.');
+  assert.equal(row.recommendation, 'Sam Lee recommends yes.');
 });
 
 test('NOT_PLAIN: a lead with a path, a command or a model id is refused, naming the words', () => {

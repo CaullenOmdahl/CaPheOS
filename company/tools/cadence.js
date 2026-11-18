@@ -491,8 +491,25 @@ function view() {
 function record(c, by, what, why) {
   c.changes = (c.changes || []).concat([Object.assign({ at: iso(S.now()), by, what }, why ? { why } : {})]).slice(-50);
 }
-function gateOrThrow(by, summary, ref) {
-  const d = S.decide('schedules', { by, summary, ref, recommendation: 'yes: inside the bounds you set', default: 'the tempo stays as it is' });
+/* ASKS: what each governed tempo change says to the owner (lib/governance.js decide): plain words up front, the setting
+ * names and numbers in `technical`. Exported so a test files each at approve. */
+const durWords = min => { const m = Number(min); if (!(m > 0)) return 'a while'; if (m % 60 === 0) return m === 60 ? 'the next hour' : 'the next ' + (m / 60) + ' hours'; return 'the next ' + m + ' minutes'; };
+const plainWhy = t => { const g = S.governance(); const x = g && typeof g.plainPart === 'function' && t ? g.plainPart(String(t).replace(/\s+/g, ' ').trim().replace(/[.!]$/, '').slice(0, 200)) : null; return x ? x.replace(/^./, c => c.toLowerCase()) : null; };
+const ASKS = {
+  // a temporary change to the company tempo: faster when the new numbers are smaller than the base
+  tempo: ({ set, base, minutes, what, why }) => {
+    const ks = ['dispatcherTickMin', 'defaultCooldownMin'].filter(k => set[k] != null && base[k] != null);
+    const faster = ks.some(k => Number(set[k]) < Number(base[k])), slower = ks.some(k => Number(set[k]) > Number(base[k]));
+    return { summary: (faster && !slower ? 'have the crew pick up work more often' : slower && !faster ? 'have the crew pick up work less often' : 'change how often the crew picks up work') + ' for ' + durWords(minutes),
+      recommendation: 'yes' + (plainWhy(why) ? ': ' + plainWhy(why) : ', it stays inside the limits you set'), default: 'the crew keeps its usual pace',
+      technical: 'Temporary tempo change for ' + minutes + ' min (' + what + '): ' + why };
+  },
+  seat: ({ name, seatId, what, why }) => ({ summary: 'change how often ' + name + ' works',
+    recommendation: 'yes' + (plainWhy(why) ? ': ' + plainWhy(why) : ', it stays inside the limits you set'), default: name + ' keeps their usual pace',
+    technical: 'Seat ' + seatId + ': ' + what.join(', ') + ' (' + why + ')' }),
+};
+function gateOrThrow(by, ask, ref) {
+  const d = S.decide('schedules', Object.assign({ by, ref }, ask));
   if (!d || !d.allowed) { const gov = S.governance(); throw E(gov && d ? gov.refusal('schedules', d) : 'self-governance refused the change', { code: 'gate', questionId: d && d.questionId }); }
   return d;
 }
@@ -522,7 +539,7 @@ function setDefault(minutes, o = {}) {
   if (set.defaultCooldownMin != null && !inRange(set.defaultCooldownMin, c.bounds.cooldownMin)) out.push('defaultCooldownMin ' + set.defaultCooldownMin + ' (bounds ' + c.bounds.cooldownMin.join('-') + ')');
   if (out.length) throw E(out.join('; ') + ' is ' + proposeHint(ptrs), { code: 'bounds' });
   rateLimit(c, now);
-  gateOrThrow(by, 'change the tempo for ' + c.tempo.autoExpireMin + ' min (' + what + '): ' + why, 'cadence:tempo:' + what);
+  gateOrThrow(by, ASKS.tempo({ set, base: c, minutes: c.tempo.autoExpireMin, what, why }), 'cadence:tempo:' + what);
   const expiresAt = iso(now + Number(c.tempo.autoExpireMin) * 60000);
   c.temporary = { set, by, why, at: iso(now), expiresAt };
   c.tempoLastChangeAt = iso(now);
@@ -567,7 +584,7 @@ function setSeat(seatId, o = {}) {
       if (every && every.kind === 'interval' && every.minutes < c.bounds.cooldownMin[0]) throw E('a loop every ' + every.minutes + ' min runs more often than the cooldown floor (' + c.bounds.cooldownMin[0] + ' min): ' + proposeHint(ptrs), { code: 'bounds' });
       rateLimit(c, now);
     }
-    gateOrThrow(o.by, seatId + ': ' + what.join(', ') + ' (' + why + ')', 'cadence:seat:' + seatId + ':' + what.join(','));
+    gateOrThrow(o.by, ASKS.seat({ name: (loops().agents[seatId] || {}).name || 'one of the crew', seatId, what, why }), 'cadence:seat:' + seatId + ':' + what.join(','));
     if (tempoField) c.tempoLastChangeAt = iso(now);
   }
   c.seats[seatId] = s; record(c, o.by, seatId + ': ' + what.join(', '), why || (typeof o.why === 'string' ? o.why : null)); save(c);
@@ -739,7 +756,7 @@ async function apply({ dry, approvedRef, by } = {}) {
   return { ok: !plan.errors.length, gate: level, applied: done, errors: plan.errors, warnings: plan.warnings };
 }
 
-module.exports = { endNotice, cadenceNotice, S, BUILTIN, DEFAULT_BOUNDS, DEFAULT_TEMPO, load, view, effective, dutiesFloor, tempoAllows, sprintOf, setSprint, setSprintConfig, sprintTick, sprintStatus, sprintSpent, wakeCounts, inQuiet, peakFindings, proposal, parseEvery, sameSchedule, setDefault, setSeat, setBounds, endTemporary, apply, isOwner };
+module.exports = { ASKS, endNotice, cadenceNotice, S, BUILTIN, DEFAULT_BOUNDS, DEFAULT_TEMPO, load, view, effective, dutiesFloor, tempoAllows, sprintOf, setSprint, setSprintConfig, sprintTick, sprintStatus, sprintSpent, wakeCounts, inQuiet, peakFindings, proposal, parseEvery, sameSchedule, setDefault, setSeat, setBounds, endTemporary, apply, isOwner };
 
 async function selftest() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadence-selftest-'));

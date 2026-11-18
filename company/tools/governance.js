@@ -171,7 +171,7 @@ function selftest() {
     const o = { by: 'Sam', summary: 'hire Lee as QA Lead', recommendation: 'yes: best interview', default: 'nobody is hired', ref: 'hiring:hire:qa-1:lee' };
     const d1 = gov.decide('hiring', o, opts); const d2 = gov.decide('hiring', o, opts);
     assert.strictEqual(d1.allowed, false); assert.strictEqual(d1.questionId, d2.questionId);
-    assert.strictEqual(gov.pendingGates(opts).length, 1); assert.ok(/Recommendation from Sam: yes: best interview/.test(gov.pendingGates(opts)[0].q));
+    assert.strictEqual(gov.pendingGates(opts).length, 1); assert.ok(/Sam recommends yes: best interview/.test(gov.pendingGates(opts)[0].q));
     assert.strictEqual(gov.approved(o.ref, opts), null);
     ownerSays(d1.questionId, 'Yes, go ahead');
     assert.strictEqual(gov.approved(o.ref, opts), true); assert.strictEqual(gov.decide('hiring', o, opts).allowed, true);

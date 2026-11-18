@@ -118,6 +118,15 @@ function stationCall(root, host) {
 }
 const parse = r => { try { return JSON.parse(r.body); } catch (_) { return null; } };
 
+/* ASKS: what a governed model change says to the owner (lib/governance.js decide): plain words up front, the model
+ * ids and the --approved reference in `technical`. Exported so a test files it at approve. */
+const ASKS = {
+  chain: ({ name, summary, approved, why }) => {
+    const w = why && why !== true ? gov.plainPart(String(why).replace(/\s+/g, ' ').trim().replace(/[.!]$/, '').slice(0, 200)) : null;
+    return { summary: 'change which AI ' + name + ' works with', recommendation: w ? 'yes: ' + w.replace(/^./, c => c.toLowerCase()) : 'yes',
+      default: name + ' keeps the AI they use now', technical: summary + '. Approved: ' + String(approved || '') };
+  },
+};
 function makeModels(o) {
   o = o || {};
   const root = path.resolve(o.root || co.ROOT);
@@ -495,7 +504,7 @@ function makeModels(o) {
       const needCeo = (pol.needsCeoApproval || []).map(String), ceoN = String((c[ceoId()] || {}).name || '').toLowerCase();
       if (chain.some(e => needCeo.includes(e.model) || needCeo.includes(keyOf(e))) && !(ceoN && String(a.approved).toLowerCase().split(/[^a-z0-9]+/).includes(ceoN.split(/\s+/)[0])))
         return { code: 2, ok: false, error: 'a chain with ' + chain.filter(e => needCeo.includes(e.model)).map(keyOf).join(', ') + ' also needs the CEO (' + (c[ceoId()] || {}).name + ') named in --approved' };
-      const d = gov.decide('models', { by, ref: 'models:chain:' + id + ':' + chain.map(label).join(','), summary, recommendation: 'yes: ' + String(a.approved), default: name + ' keeps the current chain' }, govOpts);
+      const d = gov.decide('models', Object.assign({ by, ref: 'models:chain:' + id + ':' + chain.map(label).join(',') }, ASKS.chain({ name, summary, approved: a.approved, why: a.why })), govOpts);
       if (!d.allowed) return { code: 3, ok: false, error: gov.refusal('models', d), governance: { category: 'models', level: d.level, questionId: d.questionId || null, denied: !!d.denied } };
     }
     const before = (seatChains(pol)[id] || {}).chain || null;
@@ -837,6 +846,6 @@ async function main(argv) {
   return 2;
 }
 
-module.exports = { fallbackNotice, makeModels, tick, hireChain, recordHireChain, putPrimary, chainedSeats, parseEntry, providerError, hostStoppedChild, FAILOVER, REL };
+module.exports = { ASKS, fallbackNotice, makeModels, tick, hireChain, recordHireChain, putPrimary, chainedSeats, parseEntry, providerError, hostStoppedChild, FAILOVER, REL };
 
 if (require.main === module) main(process.argv.slice(2)).then(c => { process.exitCode = c; }, e => { console.error(JSON.stringify({ ok: false, error: e.message })); process.exitCode = 1; });

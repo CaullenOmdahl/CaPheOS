@@ -114,7 +114,7 @@ const JARGON_WORDS = ['period', 'grace', 'egress', 'duty', 'duties', 'register',
   'url', 'urls', 'http', 'https', 'json', 'jsonl', 'cron', 'oneshot', 'heartbeat', 'heartbeats', 'healthcheck', 'healthchecks', 'ping', 'pings',
   'repo', 'guardrail', 'guardrails', 'config', 'localhost', 'ssh', 'sudo', 'pid', 'uid', 'watchdog', 'module', 'modules', 'digest', 'stdout',
   'stderr', 'env', 'yaml', 'regex', 'schema', 'payload', 'latency', 'websocket', 'oauth', 'dns', 'tls', 'ssl', 'vlan', 'ufw', 'docker', 'container',
-  'liveness', 'start-limit', 'harness'];
+  'liveness', 'start-limit', 'harness', 'dispatcher', 'pacing line', 'pacing lines', 'model chain', 'dispatcher tick'];
 const JARGON_RE = new RegExp('\\b(?:' + JARGON_WORDS.map(w => w.replace(/[-]/g, '[- ]?')).join('|') + ')\\b', 'gi');
 const PATTERNS = [
   ['a code span', /`[^`]+`/g],

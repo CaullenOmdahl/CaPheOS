@@ -143,12 +143,25 @@ const CATEGORY_WORDS = { hiring: 'hiring someone', release: 'letting a crew memb
   external: 'something that leaves the company', dashboard: 'the console screens', packs: 'a new line of business',
   deps: 'adding software to the company', org: 'how the company is organised', access: 'access to an account or key',
   ownership: 'who owns what', commitment: 'a promise to someone outside the company', spendBeyondCap: 'spending beyond the budget' };
-// the text when it reads plainly, else its first clause (before ": " or " — ") when that does, else null
+// the text when it reads plainly as a whole, else null: never a first clause cut from a technical summary (that made
+// cards like "May Nadia go ahead and engineer?"); a tool writes a plain summary and puts ids, models and versions in
+// `technical`
 const plainOr = (t, card) => {
   const x = String(t || '').trim().replace(/\.$/, ''); if (!x) return null;
-  for (const c of [x, x.split(/:\s/)[0], x.split(/\s[—-]\s/)[0]]) { const y = c.trim().replace(/\.$/, ''); if (y && card.plain(y)) return y; }
-  return null;
+  return card.plain(x) ? x : null;
 };
+// lower-case the first letter to continue a sentence, unless the text starts with a name (a crew member, the owner, the
+// company) or an abbreviation: "halima keeps the current chain" never
+function continueWith(t, opts) {
+  const x = String(t || ''); const w = (x.match(/^[A-Za-z][\w'’-]*/) || [''])[0];
+  if (!w || w === w.toLowerCase()) return x;
+  if (/^[A-Z]{2,}/.test(w)) return x;
+  let names = [];
+  try { const agents = co.readJson(path.join(rootOf(opts), 'company', 'tools', 'loops.json'), {}).agents || {}; names = Object.values(agents).map(c => String((c && c.name) || '').split(/\s+/)[0]); } catch (_) {}
+  names.push(String((co.config.owner && co.config.owner.name) || '').split(/\s+/)[0], String(co.config.name || '').split(/\s+/)[0]);
+  if (names.some(n => n && n.toLowerCase() === w.toLowerCase())) return x.replace(/^./, c => c.toUpperCase());
+  return x.replace(/^./, c => c.toLowerCase());
+}
 /* fileQuestion(category, o, opts) -> the owner card's result (lib/owner-card.js file): {filed, id?, route?, reason?} */
 function fileQuestion(category, o, opts) {
   const card = require('./owner-card');
@@ -159,9 +172,11 @@ function fileQuestion(category, o, opts) {
   // a card that would say nothing ("a decision about the crew's own tools") is not sent: the caller is told to say it
   // plainly (the owner never gets an empty question)
   if (!summ) return { filed: false, route: 'not-plain', reason: 'not asked: the summary does not read plainly for the owner ("' + String(o.summary || '').slice(0, 80) + '"); say what is decided in everyday words' };
-  const lead = 'May ' + by + ' go ahead and ' + summ.replace(/^./, c => c.toLowerCase()) + '?';
-  const consequence = 'If you say yes, ' + by + ' goes ahead. If you say no or do not answer, ' + (def ? def.replace(/^./, c => c.toLowerCase()) : 'nothing happens and the crew waits for you') + '.';
-  const recWords = o.recommendation ? (rec ? 'Recommendation from ' + by + ': ' + rec + '.'
+  const lead = 'May ' + by + ' go ahead and ' + continueWith(summ, opts) + '?';
+  const consequence = 'If you say yes, ' + by + ' goes ahead. If you say no or do not answer, ' + (def ? continueWith(def, opts) : 'nothing happens and the crew waits for you') + '.';
+  const recWords = o.recommendation ? (rec && /^(yes|no)$/i.test(rec.trim()) ? by + ' recommends ' + rec.trim().toLowerCase() + '.'
+    : rec && /^(yes|no)\b[,:]\s*\S/i.test(rec) ? by + ' recommends ' + rec.replace(/^(yes|no)\b([,:])\s*/i, (m, v, p) => v.toLowerCase() + p + ' ') + '.'
+    : rec ? 'Recommendation from ' + by + ': ' + rec + '.'
     : /^\s*yes\b/i.test(o.recommendation) ? by + ' recommends yes.' : /^\s*no\b/i.test(o.recommendation) ? by + ' recommends no.' : null) : null;
   const technical = [
     'Self-governance: ' + category + ' is at "' + (o.triage ? 'triage' : 'approve') + '"' + (fixed ? ' (a fixed owner gate)' : '') + ' (company/tools/governance.js).',
@@ -280,7 +295,7 @@ function triage(category, o, opts) {
 /* "<who> decided to <summary>." in plain words, or a plain sentence about the category when the summary is not plain */
 function plainDecided(who, category, summary) {
   const card = require('./owner-card'); const summ = plainOr(summary, card);
-  return summ ? who + ' decided to ' + summ.replace(/^./, c => c.toLowerCase()) + '.' : who + ' made a decision about ' + (CATEGORY_WORDS[category] || 'the company') + ', as your settings allow.';
+  return summ ? who + ' decided to ' + continueWith(summ) + '.' : who + ' made a decision about ' + (CATEGORY_WORDS[category] || 'the company') + ', as your settings allow.';
 }
 /* decide(category, {by, summary, recommendation, default, ref, facts?}, opts) -> {level, allowed, questionId?, denied?, noted?, triage?} */
 function decide(category, o, opts) {
@@ -347,4 +362,7 @@ function refusal(category, d) {
   return 'self-governance: ' + category + ' is at ' + lv + ', so this waits for the owner. Question ' + d.questionId + ' is in the owner inbox (company/pm-inbox.jsonl); run the same command again after the owner answers yes';
 }
 
-module.exports = { LEVELS, TRIAGE_MODEL, CATEGORY_WORDS, triage, triageFacts, gateAsks, inboxRows, readLines, level, guard, decide, approved, pendingGates, notify, fyi, plainDecided, refusal, isOwnerName, files, doc, questionFor, answerOf, verdict };
+/* plainPart(text) -> the text when it reads plainly for the owner as a whole, else null (a tool building a summary from
+ * the crew's words keeps a plain reason and moves anything else to `technical`) */
+const plainPart = t => plainOr(t, require('./owner-card'));
+module.exports = { plainPart, continueWith, LEVELS, TRIAGE_MODEL, CATEGORY_WORDS, triage, triageFacts, gateAsks, inboxRows, readLines, level, guard, decide, approved, pendingGates, notify, fyi, plainDecided, refusal, isOwnerName, files, doc, questionFor, answerOf, verdict };

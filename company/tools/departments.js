@@ -103,9 +103,15 @@ function report(o) {
 function needSeat(crew, s) { const id = String(s || '').trim(); if (!id || id === 'true') throw new Refusal('name a seat (its station id from company/tools/loops.json)'); if (!crew[id]) throw new Refusal(id + ' is not a seat on the crew (company/tools/loops.json): departments hold crew seats only'); return id; }
 function needDept(doc, id) { const d = D.list(doc).find(x => String(x.id) === String(id)); if (!d) throw new Refusal('no department "' + id + '" (departments.js list)'); return d; }
 function noOther(doc, seat, id) { const o = D.deptOf(seat, doc); if (o && String(o.id) !== String(id)) throw new Refusal(seat + ' is already in ' + (o.name || o.id) + ' (' + o.id + '); a seat belongs to one department: move it instead (departments.js move ' + seat + ' ' + id + ')'); }
+// a department in the owner's words: "the Research department", or "one of the departments" when its name is not plain
+function deptWords(name) {
+  const n = String(name || '').trim(); const g = (() => { try { return S.gov(); } catch (_) { return null; } })();
+  const ok = n && g && typeof g.plainPart === 'function' && g.plainPart('the ' + n + ' department');
+  return ok ? 'the ' + n.replace(/\s+department$/i, '') + ' department' : 'one of the departments';
+}
 function plan(op, a, doc0, crew, st) {
   const doc = clone(doc0); doc.departments = D.list(doc);
-  let summary, touched = [], created = null;
+  let summary, plain = null, touched = [], created = null;
   if (op === 'create') {
     const id = String(a.pos[1] || '').trim();
     if (!D.ID_RE.test(id)) throw new Refusal('the department id must be lowercase letters, digits and dashes, 2-32 characters, starting with a letter (got "' + id + '")');
@@ -118,28 +124,32 @@ function plan(op, a, doc0, crew, st) {
     doc.departments.push({ id, name, lead, members: lead ? [lead] : [], defaultClass: cls, brief: 'company/work/departments/' + id + '/BRIEF.md',
       routes: clone(st.newDepartment.routes || {}), consult: clone(st.newDepartment.consult || {}) });
     summary = 'create the ' + name + ' department (' + id + ', default class ' + cls + (lead ? ', lead ' + nameOf(crew, lead) : ', no lead yet') + ')';
+    plain = 'start ' + deptWords(name) + (lead ? ' led by ' + nameOf(crew, lead) : '');
     touched = [id]; created = { id, name };
   } else if (op === 'set-lead') {
     const d = needDept(doc, a.pos[1]), raw = String(a.pos[2] || '').trim();
     if (raw === 'none' || raw === 'null') {
       if (!d.lead) return { unchanged: true, summary: d.id + ' has no lead already' };
-      summary = 'leave the ' + (d.name || d.id) + ' department without a lead (was ' + nameOf(crew, d.lead) + '; each member\'s manager stands in)'; d.lead = null;
+      summary = 'leave the ' + (d.name || d.id) + ' department without a lead (was ' + nameOf(crew, d.lead) + '; each member\'s manager stands in)';
+      plain = 'leave ' + deptWords(d.name) + ' without a lead, so ' + nameOf(crew, d.lead) + ' no longer leads it'; d.lead = null;
     } else {
       const s = needSeat(crew, raw); noOther(doc, s, d.id);
       if (d.lead === s) return { unchanged: true, summary: nameOf(crew, s) + ' already leads ' + d.id };
       d.members = D.members(d); if (!d.members.includes(s)) d.members.push(s);
-      summary = 'make ' + nameOf(crew, s) + ' (' + s + ') the lead of ' + (d.name || d.id) + (d.lead ? ' (was ' + nameOf(crew, d.lead) + ')' : ''); d.lead = s;
+      summary = 'make ' + nameOf(crew, s) + ' (' + s + ') the lead of ' + (d.name || d.id) + (d.lead ? ' (was ' + nameOf(crew, d.lead) + ')' : '');
+      plain = 'make ' + nameOf(crew, s) + ' the lead of ' + deptWords(d.name) + (d.lead ? ' instead of ' + nameOf(crew, d.lead) : ''); d.lead = s;
     }
     touched = [d.id];
   } else if (op === 'add-member') {
     const d = needDept(doc, a.pos[1]), s = needSeat(crew, a.pos[2]); noOther(doc, s, d.id);
     d.members = D.members(d); if (d.members.includes(s)) return { unchanged: true, summary: s + ' is already in ' + d.id };
-    d.members.push(s); summary = 'add ' + nameOf(crew, s) + ' (' + s + ') to ' + (d.name || d.id); touched = [d.id];
+    d.members.push(s); summary = 'add ' + nameOf(crew, s) + ' (' + s + ') to ' + (d.name || d.id); plain = 'add ' + nameOf(crew, s) + ' to ' + deptWords(d.name); touched = [d.id];
   } else if (op === 'remove-member') {
     const d = needDept(doc, a.pos[1]), s = String(a.pos[2] || '').trim();
     if (!D.members(d).includes(s) && d.lead !== s) throw new Refusal(s + ' is not in ' + d.id);
     d.members = D.members(d).filter(x => x !== s); const wasLead = d.lead === s; if (wasLead) d.lead = null;
-    summary = 'take ' + nameOf(crew, s) + ' (' + s + ') out of ' + (d.name || d.id) + (wasLead ? ', which leaves it without a lead' : ''); touched = [d.id];
+    summary = 'take ' + nameOf(crew, s) + ' (' + s + ') out of ' + (d.name || d.id) + (wasLead ? ', which leaves it without a lead' : '');
+    plain = 'take ' + nameOf(crew, s) + ' out of ' + deptWords(d.name) + (wasLead ? ', which leaves it without a lead' : ''); touched = [d.id];
   } else if (op === 'move') {
     const s = needSeat(crew, a.pos[1]), to = String(a.pos[2] || '').trim();
     if (!to || to === 'true') throw new Refusal('move <seat> <department id|none>');
@@ -149,13 +159,14 @@ function plan(op, a, doc0, crew, st) {
     if (from) { from.members = D.members(from).filter(x => x !== s); if (from.lead === s) { from.lead = null; wasLead = true; } touched.push(from.id); }
     if (dest) { dest.members = D.members(dest).concat([s]); touched.push(dest.id); }
     summary = 'move ' + nameOf(crew, s) + ' (' + s + ') ' + (from ? 'from ' + (from.name || from.id) + ' ' : '') + (dest ? 'to ' + (dest.name || dest.id) : 'out of every department') + (wasLead ? ' (' + (from.name || from.id) + ' is left without a lead)' : '');
+    plain = 'move ' + nameOf(crew, s) + (dest ? ' to ' + deptWords(dest.name) : ' out of every department') + (wasLead ? ', which leaves ' + deptWords(from.name) + ' without a lead' : '');
   } else throw new Refusal('unknown change ' + op);
   // refuse a change that adds a structural problem; problems the file already had do not block a fix
   const key = p => p.code + ':' + (p.dept || '') + ':' + (p.seat || '');
   const before = new Set(D.validate(doc0, crew).map(key));
   const added = D.validate(doc, crew).filter(p => !before.has(key(p)));
   if (added.length) throw new Refusal('refused, it would make company/departments.json inconsistent: ' + added.map(p => p.msg).join('; '));
-  return { doc, summary, touched, created };
+  return { doc, summary, plain, touched, created };
 }
 
 /* ---------------- who is asking ---------------- */
@@ -273,10 +284,16 @@ function change(op, a) {
   if (who.kind !== 'ceo') throw new Refusal(who.label + ' may not change departments: the CEO or the people function proposes, the CEO or the owner applies (docs/DEPARTMENTS.md)');
   return governed(op, a, p, who);
 }
+/* ASK(plan, args): what a governed department change says to the owner (lib/governance.js decide): the plan's plain
+ * words, the ids and classes in `technical`. Exported so a test files it at approve. */
+function ASK(p, a) {
+  const g = S.gov(); const why = a && a.why && a.why !== true ? g.plainPart(clean(a.why, 200).replace(/[.!]$/, '')) : null;
+  return { summary: p.plain || 'change how the crew is organised into departments', recommendation: why ? 'yes: ' + why.replace(/^./, c => c.toLowerCase()) : 'yes',
+    default: 'the departments stay as they are', technical: 'departments: ' + p.summary + (a && a.why && a.why !== true ? '. Why: ' + clean(a.why, 300) : '') };
+}
 function governed(op, a, p, who, extra) {
   const gov = S.gov();
-  const d = gov.decide('org', { by: who.name, summary: 'departments: ' + p.summary, ref: refOf(op, a),
-    recommendation: a.why && a.why !== true ? 'yes: ' + clean(a.why, 200) : 'yes', default: 'the departments stay as they are' }, orgOpts());
+  const d = gov.decide('org', Object.assign({ by: who.name, ref: refOf(op, a) }, ASK(p, a)), orgOpts());
   if (!d.allowed) throw new Refusal(gov.refusal('org', d), d.denied ? 2 : 3, { governance: { category: 'org', level: d.level, questionId: d.questionId || null, denied: !!d.denied } });
   return commit(p, who, a, Object.assign({}, extra, d.level === 'approve' ? { note: [extra && extra.note, 'owner approved ' + d.questionId].filter(Boolean).join('; ') } : {}));
 }
@@ -389,7 +406,7 @@ function selftest() {
   return bad ? 1 : 0;
 }
 
-module.exports = { run, plan, report, actor, S, Refusal };
+module.exports = { ASK, run, plan, report, actor, S, Refusal };
 if (require.main === module) {
   const argv = process.argv.slice(2);
   if (argv[0] === '--selftest' || argv[0] === 'selftest') process.exit(selftest());
