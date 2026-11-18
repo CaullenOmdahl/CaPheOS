@@ -485,6 +485,10 @@ test('M2: the word API alone does not make a key only the owner can get the crew
 test('M3: a crew member\'s name reads as people write it on Today', () => {
   const T = fixture();
   W(T, 'company/tools/loops.json', { agents: { boss: { name: 'Boss', functions: ['ceo'], manager: null, inbox: 'to-boss.md' }, people: { name: 'nadia farrell', functions: ['people'], manager: 'boss', inbox: 'to-nadia.md' } } });
-  const r = run(T, NEEDS_CTX + `out({ t: NEEDS.properNames('nadia farrell wants to change one of the safeguards.') });`);
+  const r = run(T, NEEDS_CTX + `
+const N = require(path.join(T, 'company/tools/lib/owner-notice.js'));
+const s = N.send({ kind: 'fyi', from: 'nadia farrell', text: 'nadia farrell sent the makers a suggestion. Nothing changes in your company.' }, { root: T });
+out({ t: NEEDS.properNames('nadia farrell wants to change one of the safeguards.'), row: s.row });`);
   assert.equal(r.t, 'Nadia Farrell wants to change one of the safeguards.');
+  assert.equal(r.row.from, 'Nadia Farrell'); assert.match(r.row.text, /^Nadia Farrell sent the makers/, 'the day message too');
 });

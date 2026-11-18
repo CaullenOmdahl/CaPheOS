@@ -111,6 +111,17 @@ function plain(text) {
 const withRoot = (o, opts) => { o = Object.assign({}, o || {}); if (!o.root && opts && opts.root) o.root = opts.root; if (o.now === undefined && opts && Number.isFinite(opts.now)) o.now = opts.now; return o; };
 const keyOf = (from, text) => crypto.createHash('sha256').update(String(from || '') + '\n' + String(text || '')).digest('hex').slice(0, 16);
 
+/* M3: a crew member's name as people write it ("Nadia farrell" in the crew list reads "Nadia Farrell") */
+function properNames(text, root) {
+  let t = String(text || ''); if (!t) return t;
+  let crew = {}; try { crew = (JSON.parse(fs.readFileSync(path.join(root, 'company', 'tools', 'loops.json'), 'utf8')) || {}).agents || {}; } catch (_) {}
+  for (const c of Object.values(crew)) {
+    const n = String((c && c.name) || '').trim(); if (!n || !/\s/.test(n)) continue;
+    const fixed = n.split(/(\s+|-)/).map(w => /^[a-z]/.test(w) ? w.charAt(0).toUpperCase() + w.slice(1) : w).join('');
+    if (fixed !== n) t = t.split(n).join(fixed);
+  }
+  return t;
+}
 /* urgentLead(from, raw): an urgent notice whose every sentence was technical still tells the owner what kind of trouble
  * it is, in plain words, and that the crew has the details */
 const URGENT_KINDS = [
@@ -130,9 +141,10 @@ function send(o, opts) {
   const kind = KINDS.includes(o.kind) ? o.kind : 'fyi';
   const raw = String(o.text || '').trim();
   if (!raw) throw new Error('owner-notice send: text is required');
-  const from = String(o.from || co.nameOf(co.ceo()) || 'The company');
+  const from0 = String(o.from || co.nameOf(co.ceo()) || 'The company');
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const f = files(o);
+  const from = properNames(from0, f.root);
   const p = plain(raw);
   // strict (tests, CAPHEOS_NOTICE_STRICT=1): a sender whose text is not plain fails loudly instead of being trimmed, so
   // a template that needs rewording is found by its test, never hidden from the owner
@@ -142,7 +154,7 @@ function send(o, opts) {
   const tech = [].concat(p.technical, o.technical ? [String(o.technical).trim()] : []).filter(Boolean);
   // an fyi with no plain sentence left is not filler for the owner ("noted something technical"): it is kept for the
   // crew only (never on Today, never in the day message) and recorded as a template to fix (company/state/owner-notice-lint.jsonl)
-  const lead = p.text || (kind === 'urgent' ? urgentLead(from, raw) : '');
+  const lead = properNames(p.text || (kind === 'urgent' ? urgentLead(from, raw) : ''), f.root);
   const key = String(o.key || keyOf(from, lead || raw));
   const day = dayOf(now);
   const seen = kind === 'urgent'
