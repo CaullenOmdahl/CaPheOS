@@ -8,10 +8,14 @@
  * Steps (policy.order, first choice wins): classRules (a filter on every step: e.g. code never on provider custom), trial
  * (a running trial's arm, assigned by sha256(trial id + wakeId)), route (the seat's department route for the wake's class,
  * company/departments.json), tierCap (non-exempt seats on capped entries unless an item is Effort: heavy), chain (the seat's
- * own pair; changed only when the class rules deny it). Two walks: wouldApply = the first step whose mode is shadow or
- * live; applied = the first step whose mode is live, and only when the station's override allowlist
- * (company/state/override-allow.json, lib/override-allow.js) opens that pair for the seat now. Otherwise the seat runs on
- * its chain (no override on POST /api/cron/run) and the decision says why ("not open", "shadow", ...).
+ * own pair; changed only when the class rules deny it). One walk in policy order: wouldApply = the first step whose mode
+ * is shadow or live; applied = the first live step whose pair the station's override allowlist
+ * (company/state/override-allow.json, lib/override-allow.js) opens for the seat now. A live pair that is not open is
+ * recorded ("not open") and the walk goes on to the next step. Nothing applied: the seat runs on its chain (no override on
+ * POST /api/cron/run) and the decision says why ("not open", "shadow", ...). The class rules always hold: when the seat's
+ * own pair is denied for the wake's class and nothing earlier applied, the first allowed chain entry the allowlist opens
+ * is applied; none open = hold: true (holdWhy), and the dispatcher and the lanes do not start that wake this tick
+ * (chainDenied names the rule, so a refused override never falls back to the denied pair either).
  *
  *   const R = require('./lib/routing');
  *   R.loadPolicy(root)                          -> { policy, source } | null
@@ -20,7 +24,7 @@
  *   R.denied(pair, classes, K)                  -> the class rule that denies the pair, or null
  *   R.assign(trial, wakeId)                     -> { u, entered, arm }   (deterministic)
  *   R.decide({ seat, items, wakeId, policy|K, departments, crew, chain, current, held, allow })
- *        -> { v, class, classes, source, trial?, arm?, provider, model, effort?, applied, mode, wouldApply?, reasons }
+ *        -> { v, class, classes, source, trial?, arm?, provider, model, effort?, applied, mode, wouldApply?, hold?, holdWhy?, chainDenied?, reasons }
  *   R.overrideOf(decision)                      -> { provider, model, effort? } | null   (the one-run override body fields)
  *   R.allowFor(seat, { root, now, maxAgeMin })  -> [{provider, model}] the current allowlist opens, or null (none current)
  *   R.trialPauses(K, held, state, now)          -> { state, events }  pause/resume transitions (recorded, never silent)
@@ -214,20 +218,35 @@ function decide(a) {
   };
   const memo = {};
   const cand = s => (s in memo ? memo[s] : (memo[s] = step[s] ? step[s]() : null));
-  let want = null, live = null;
+  const isOpen = e => a.allow != null && arr(a.allow).some(x => samePair(x, e));
+  // the walk, in policy order: want = the first shadow or live candidate (recorded); live = the first live candidate that
+  // is the seat's own pair (runs it, no override) or that the allowlist opens now (applied). A live candidate that is not
+  // open is recorded and the walk goes on to the next step.
+  let want = null, live = null, applied = false;
   for (const s of K.order) {
     const m = modeFor(s); if (m === 'off') continue;
     const c = cand(s); if (!c) continue;
     if (!want) want = Object.assign({ mode: m }, c);
-    if (m === 'live') { live = c; break; }
+    if (m !== 'live') continue;
+    if (sameRun(c, cur)) { live = c; break; }
+    if (isOpen(c)) { live = c; applied = true; break; }
+    if (a.allow == null) reasons.push('not open: no current override allowlist (' + label(c) + ')');
+    else reasons.push('not open: ' + c.provider + '/' + c.model + ' is not in the override allowlist for ' + seat + ' now');
   }
-  let applied = false;
-  if (live && !sameRun(live, cur)) {
-    const allow = a.allow;
-    if (allow == null) reasons.push('not open: no current override allowlist (' + label(live) + ')');
-    else if (!arr(allow).some(x => samePair(x, live))) reasons.push('not open: ' + live.provider + '/' + live.model + ' is not in the override allowlist for ' + seat + ' now');
-    else applied = true;
-  } else if (want && want.mode === 'shadow') reasons.push(want.source + ' in shadow: recorded, not applied');
+  if (!live && want && want.mode === 'shadow') reasons.push(want.source + ' in shadow: recorded, not applied');
+  // the class rules always hold, whatever the modes: a wake never starts on a pair they deny for its class. Nothing
+  // earlier applied and the seat's own pair is denied: the first chain entry the rules allow and the allowlist opens
+  // now; none open = the wake is held (hold: the dispatcher does not start it this tick).
+  const curBad = cur ? denied(cur, wc.classes, K) : null;
+  let hold = null;
+  if (curBad && !applied) {
+    const pick = chain.find(e => ok(e) && isOpen(e));
+    if (pick) { live = Object.assign({ source: 'chain', classRule: curBad }, pick); applied = true; }
+    else {
+      hold = 'class rules deny ' + label(cur) + ' (' + curBad + '): no allowed entry open (' + (chain.filter(ok).map(label).join(', ') || 'none allowed') + '); the wake is held, not started on the denied pair';
+      reasons.push(hold);
+    }
+  }
   const runs = applied ? live : cur;
   const out = { v: 1, class: wc.class, classes: wc.classes, source: applied ? live.source : 'chain', provider: runs ? runs.provider : null, model: runs ? runs.model : null, applied, mode: K.mode, capMode: K.tierCaps.mode };
   if (runs && runs.effort) out.effort = runs.effort;
@@ -243,6 +262,8 @@ function decide(a) {
     if (want.department) out.wouldApply.department = want.department;
   }
   if (cur && !applied && !sameRun(cur, runs)) out.chain = label(cur);
+  if (curBad) out.chainDenied = curBad;
+  if (hold) { out.hold = true; out.holdWhy = hold; }
   out.reasons = reasons.slice(0, 12).map(r => String(r).slice(0, 240));
   return out;
 }

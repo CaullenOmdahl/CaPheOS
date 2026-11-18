@@ -11,7 +11,7 @@
  "_classRulesApply": "always: when a wake's chain pair is denied for its class, the router picks the seat's first allowed chain entry and applies it in every mode (shadow and off included) whenever the allowlist opens it. mode: the chain fix follows mode like a route. Either way a denied pair is never offered as a choice.",
 
  "order": ["classRules", "trial", "route", "tierCap", "chain"],
- "_order": "the steps, first choice wins. classRules filters every step. trial: a running trial's arm. route: the department's route for the class. tierCap: the cap below. chain: the seat's own chain (changed only by the class rules). The applied choice is the first step whose own mode is live; the recorded wouldApply is the first step whose mode is shadow or live.",
+ "_order": "the steps, first choice wins. classRules filters every step. trial: a running trial's arm. route: the department's route for the class. tierCap: the cap below. chain: the seat's own chain (changed only by the class rules). The applied choice is the first live step whose pair the override allowlist opens (a live pair that is not open is recorded and the walk goes on); the recorded wouldApply is the first step whose mode is shadow or live. The class rules always hold: a wake whose own pair they deny and no allowed chain entry is open is held, never started on it.",
 
  "tierCaps": {
   "mode": "shadow",

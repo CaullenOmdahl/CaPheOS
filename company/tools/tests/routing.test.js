@@ -61,6 +61,41 @@ test('(3) class rules: a code item never gets a custom pair from a route, a tria
   assert.ok(n.reasons.some(r => /no chain entry is allowed/.test(r)), JSON.stringify(n));
 });
 
+test('(3b) live walk: a route the allowlist does not open is recorded and the walk goes on; a code item never stays on custom', () => {
+  // the reviewer's probe: dev, Class: code, chain [custom/MiniMax-M2, claude-cli/fable, claude-cli/claude-sonnet-5-5],
+  // current custom, allowlist [custom, fable], a live code route to a pair not in the allowlist
+  const M2 = { provider: 'custom', model: 'MiniMax-M2' }, FAB = { provider: 'claude-cli', model: 'fable' };
+  const OPUS = { provider: 'claude-cli', model: 'claude-opus-5-5' };
+  const deps = { departments: [{ id: 'eng', name: 'Engineering', lead: 'lead', members: ['lead', 'dev'], defaultClass: 'code', routes: { code: OPUS } }] };
+  for (const cm of ['off', 'shadow', 'live']) for (const cra of ['always', 'mode', 'off']) {
+    const policy = pol({ mode: 'live', classRulesApply: cra, tierCaps: caps({ mode: cm }) });
+    const d = R.decide(base({ policy, departments: deps, seat: 'dev', items: [item('code')], chain: [M2, FAB, SONNET], current: M2, allow: [M2, FAB] }));
+    const tag = 'tierCaps ' + cm + ', classRulesApply ' + cra + ': ' + JSON.stringify(d);
+    assert.deepStrictEqual([d.provider, d.model, d.applied, d.source], ['claude-cli', 'fable', true, 'chain'], tag);
+    assert.deepStrictEqual(R.overrideOf(d), FAB, tag);
+    assert.ok(d.reasons.some(r => /^not open: claude-cli\/claude-opus-5-5 is not in the override allowlist for dev/.test(r)), tag);
+    assert.ok(!d.hold, tag);
+  }
+  // the walk goes on to a later live step that is open: the tier cap's sonnet (route opus not open)
+  const t = R.decide(base({ policy: pol({ mode: 'live', tierCaps: caps({ mode: 'live' }) }), departments: deps, seat: 'dev', items: [item('code')], chain: [M2, FAB, SONNET], current: M2, allow: [M2, SONNET] }));
+  assert.deepStrictEqual([t.source, t.model, t.applied], ['tierCap', 'claude-sonnet-5-5', true], JSON.stringify(t));
+  // no allowed entry open: held, never started on the denied pair (with a list, and with no current list at all)
+  for (const allow of [[M2], null]) {
+    const h = R.decide(base({ policy: pol({ mode: 'live' }), departments: deps, seat: 'dev', items: [item('code')], chain: [M2, FAB, SONNET], current: M2, allow }));
+    assert.strictEqual(h.applied, false); assert.strictEqual(h.hold, true, JSON.stringify(h));
+    assert.match(h.holdWhy, /no allowed entry open/); assert.strictEqual(R.overrideOf(h), null);
+    assert.strictEqual(h.chainDenied, 'code never runs on provider custom');
+  }
+  // the same in shadow and off: the class rules hold in every mode
+  for (const mode of ['off', 'shadow']) {
+    const s = R.decide(base({ policy: pol({ mode, classRulesApply: 'off' }), departments: deps, seat: 'dev', items: [item('code')], chain: [M2, FAB], current: M2, allow: [M2, FAB] }));
+    assert.deepStrictEqual([s.provider, s.model, s.applied], ['claude-cli', 'fable', true], mode + ' ' + JSON.stringify(s));
+  }
+  // a writing item on custom is never held
+  const w = R.decide(base({ policy: pol({ mode: 'live' }), departments: deps, seat: 'dev', items: [item('writing')], chain: [M2], current: M2, allow: [M2] }));
+  assert.ok(!w.hold && !w.chainDenied && w.provider === 'custom', JSON.stringify(w));
+});
+
 test('(4) trial assignment is deterministic, even across arms (+-5%) and respects entryShare (+-2 points) over 2000 wakes', () => {
   const arms = [SONNET, { provider: 'claude-cli', model: 'claude-opus-5-5', effort: 'medium' }, Object.assign({ effort: 'medium' }, FABLE)];
   const trial = { id: 'bigger-lower-effort', class: 'code', arms, scope: { departments: ['eng'] }, entryShare: 0.1, status: 'running', pauseWhenHeld: ['claude-cli'] };

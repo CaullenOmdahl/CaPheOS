@@ -1299,6 +1299,16 @@ function lastRunTail(job) {
     const names = reason[agentId];
     const viaInbox = names.includes(' OPEN in ');
     if (DRY) { A.admit({ door: 'dispatch', kind: 'run', seat: agentId, jobId: job.id, why: names }, { dry: true }); log('WOULD run ' + job.name + ' for ' + agentId + ' (' + names + ')'); fired++; say(agentId, { state: 'started', why: names }); continue; }
+    // the router's decision for this wake: recorded always (with a policy), applied as a one-run override only when live and open.
+    // The class rules always hold: a wake whose own pair they deny and no allowed entry is open is held, never started on it.
+    const wakeId = W.newWakeId(Date.now());
+    const route = ROUTING ? RT.forWake(ROUTING, { seat: agentId, wakeId, job, items: viaInbox ? (wakeItemsOf[agentId] || []).map(i => ({ text: (wakeTextOf[agentId] && wakeTextOf[agentId].get(i.title)) || '' })) : [] }) : null;
+    if (route && route.hold) {
+      log('ROUTE HOLD ' + job.name + ' for ' + agentId + ': ' + route.holdWhy);
+      RT.record(ROUTING, { wakeId, seat: agentId, door: 'dispatch', jobId: job.id, runId: null, status: 'held', route });
+      say(agentId, { state: 'held', why: 'has work, but its model may not do this kind of work and no allowed model is open right now; it starts when one opens' });
+      continue;
+    }
     const tk = A.admit({ door: 'dispatch', kind: 'run', seat: agentId, jobId: job.id, provider: (job.wire && job.wire.provider) || job.provider, priority: waitersOf(agentId).length ? 'blocking' : null, why: names });   // phase 1: allow, recorded; a refusal block holds
     if (tk.decision === 'hold' && tk.noModel) { log('NO MODEL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'none of its models can run right now (limits or the daily budget); it starts when one opens' }); continue; }
     if (tk.decision === 'hold' && tk.quota) { log('QUOTA HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'its model is at its usage limit; it waits for the limit to reset or its next model' }); continue; }
@@ -1317,12 +1327,13 @@ function lastRunTail(job) {
       const wh = appendHandoff(inboxOf(agentId), (n.failed ? 'FAILED: ' : '') + n.words.slice(0, 140), { Need: n.failed ? 'the job failed. Read its output tail (`node company/tools/notify-when.js show ' + n.id + '`; the whole log under scratch/jobs/), fix or re-run it (through notify-when.js again), then set this DONE.' : 'carry on with the work that waited for it. Its output tail: `node company/tools/notify-when.js show ' + n.id + '`.', Why: 'you asked to be woken when it ended (company/tools/notify-when.js)', Deadline: 'today', Status: n.failed ? 'OPEN' : 'DONE — a notice, nothing to close', Evidence: 'company/state/completions.jsonl ' + n.id });
       if (n.failed) wroteItems.push(wh);
     }
-    // the router's decision for this wake: recorded always (with a policy), applied as a one-run override only when live and open
-    const wakeId = W.newWakeId(Date.now());
-    const route = ROUTING ? RT.forWake(ROUTING, { seat: agentId, wakeId, job, items: viaInbox ? (wakeItemsOf[agentId] || []).map(i => ({ text: (wakeTextOf[agentId] && wakeTextOf[agentId].get(i.title)) || '' })) : [] }) : null;
     { const rl = RT.line(agentId, route); if (rl) log(rl); }
     let r = await fireRun(job.id, RT.overrideOf(route));
-    if (route && route.applied && r.status === 403) {   // the station's gate refused the override: run on the chain, as without one
+    if (route && route.applied && r.status === 403 && route.chainDenied) {   // refused, and the chain's pair is denied for the class: held, never run on it
+      route.reasons.push('the station refused the override (HTTP 403 ' + String(r.body).slice(0, 120) + '); the chain is denied (' + route.chainDenied + '): held');
+      route.applied = false; route.hold = true; route.holdWhy = 'the station refused the override and the class rules deny the chain (' + route.chainDenied + ')';
+      log('ROUTE HOLD ' + job.name + ' for ' + agentId + ': ' + route.holdWhy);
+    } else if (route && route.applied && r.status === 403) {   // the station's gate refused the override: run on the chain, as without one
       route.reasons.push('the station refused the override (HTTP 403 ' + String(r.body).slice(0, 120) + '); ran on the chain');
       route.applied = false; route.wouldApply = { source: route.source, provider: route.provider, model: route.model }; route.source = 'chain';
       const cp = (job.wire && job.wire.provider) || job.provider, cm = (job.wire && job.wire.model) || job.model; route.provider = cp || null; route.model = cm || null; delete route.effort; delete route.trial; delete route.arm;

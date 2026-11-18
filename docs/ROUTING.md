@@ -27,12 +27,20 @@ manager); the mode switches are the owner's.
 | tierCap | the seat's first chain entry on the cap's allow list (section 4) | `tierCaps.mode` |
 | chain | the seat's own pair; changed only when the class rules deny it (then its first allowed chain entry) | `classRulesApply` (`always`: in every mode) |
 
-Two walks over the steps: **wouldApply** is the first choice of a step whose mode is `shadow` or `live`; **applied** is
-the first choice of a step whose mode is `live`, and it is applied only when the station's override allowlist
-(`company/state/override-allow.json`, written each tick by `lib/override-allow.js`, current for 30 minutes) opens that
-(provider, model) for the seat now. Otherwise the wake runs on its chain and the decision says why: `shadow`,
-`not open: … is not in the override allowlist`, `not open: no current override allowlist`. If the station's gate still
-refuses (HTTP 403), the dispatcher runs the wake again without the override and records that.
+One walk over the steps, in `order`: **wouldApply** is the first choice of a step whose mode is `shadow` or `live`;
+**applied** is the first choice of a `live` step that the station's override allowlist
+(`company/state/override-allow.json`, written each tick by `lib/override-allow.js`, current for 30 minutes) opens for the
+seat now (provider, model). A `live` choice that is not open is recorded (`not open: … is not in the override allowlist`,
+`not open: no current override allowlist`) and the walk goes on to the next step. Nothing applied: the wake runs on its
+chain and the decision says why (`shadow`, `not open …`). If the station's gate still refuses (HTTP 403), the dispatcher
+runs the wake again without the override and records that.
+
+The class rules always hold, whatever the modes and `classRulesApply`: when nothing earlier applied and the seat's own
+pair is denied for the wake's class (code on `custom`), the router applies the first chain entry the rules allow and the
+allowlist opens. When none is open the decision has `hold: true` (`holdWhy`: `… no allowed entry open …`): the
+dispatcher logs `ROUTE HOLD`, records the decision (status `held`) and does not start the wake this tick (a Sprint lane is
+not started either); it is tried again next tick. A 403 on such a wake's override is a hold too, never a run on the
+denied pair (`chainDenied` on the decision names the rule).
 
 The wake's class: each item's `lib/taskclass.js classOf` (a `**Class:**` line, `**Effort:** mechanical`, the department
 `defaultClass`, else `general`); the wake's class is the majority (a tie: the first item's). A wake with no item (a

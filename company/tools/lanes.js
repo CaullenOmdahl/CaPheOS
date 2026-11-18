@@ -455,8 +455,19 @@ async function start({ id, n, laneId, c, job, it, cfg, routing, log }) {
   const wakeId = W.newWakeId(S.now());
   const route = routing ? RT.forWake(routing, { seat: id, wakeId, job: Object.assign({}, job, cr.job), items: [{ text: it.text || '' }] }) : null;
   { const rl = RT.line(id, route); if (rl && log) log(rl + ' [lane ' + laneId + ']'); }
+  const drop = async () => { await ST.cron(S.call, 'POST', '/api/cron/remove', { id: cr.job.id }, 'remove lane routine'); if (place.kind === 'worktree') { try { git(place.repo, ['worktree', 'remove', '--force', p.dir]); git(place.repo, ['branch', '-D', p.branch]); } catch (_) {} } };
+  // the class rules always hold: the seat's pair is denied for this item's class and no allowed entry is open: not started
+  if (route && route.hold) {
+    RT.record(routing, { wakeId, seat: id, door: 'lane', jobId: cr.job.id, runId: null, status: 'held', route });
+    A.started(tk, { status: 0 });   // the admitted start never went out
+    await drop();
+    throw new Error('held by the class rules: ' + route.holdWhy);
+  }
   let f = await S.fire(cr.job.id, RT.overrideOf(route));
-  if (route && route.applied && f.status === 403) {   // the station's gate refused it: the lane runs on the seat's model, as without one
+  if (route && route.applied && f.status === 403 && route.chainDenied) {   // refused, and the chain is denied for the class: never run on it
+    route.reasons.push('the station refused the override (HTTP 403 ' + String(f.body).slice(0, 120) + '); the chain is denied (' + route.chainDenied + '): held');
+    route.applied = false; route.hold = true; route.holdWhy = 'the station refused the override and the class rules deny the chain (' + route.chainDenied + ')';
+  } else if (route && route.applied && f.status === 403) {   // the station's gate refused it: the lane runs on the seat's model, as without one
     route.reasons.push('the station refused the override (HTTP 403 ' + String(f.body).slice(0, 120) + '); ran on the chain');
     route.wouldApply = { source: route.source, provider: route.provider, model: route.model }; route.applied = false; route.source = 'chain';
     route.provider = job.provider || null; route.model = job.model || null; delete route.effort; delete route.trial; delete route.arm;
@@ -466,7 +477,7 @@ async function start({ id, n, laneId, c, job, it, cfg, routing, log }) {
   if (route) RT.record(routing, { wakeId, seat: id, door: 'lane', jobId: cr.job.id, runId: f.runId || null, status: f.status, route });
   // run-to-item link (lib/wakes.js): a lane is one wake for one item
   if (f.status === 200) W.record({ wakeId, seat: id, runId: f.runId || null, admitId: tk.id, jobId: cr.job.id, door: 'lane', items: [{ file: c.inbox, id: W.itemId(c.inbox, it.heading, it.id), title: it.heading, due: null }], why: 'lane ' + laneId, route: route || undefined }, { file: rel('company', 'state', 'wakes.jsonl') });
-  if (f.status !== 200) { await ST.cron(S.call, 'POST', '/api/cron/remove', { id: cr.job.id }, 'remove lane routine'); if (place.kind === 'worktree') { try { git(place.repo, ['worktree', 'remove', '--force', p.dir]); git(place.repo, ['branch', '-D', p.branch]); } catch (_) {} } throw new Error('the station refused the run: HTTP ' + f.status + ' ' + String(f.body).slice(0, 120)); }
+  if (f.status !== 200) { await drop(); throw new Error('the station refused the run: HTTP ' + f.status + ' ' + String(f.body).slice(0, 120)); }
   const lane = { id: laneId, seat: id, n, heading: it.heading, inbox: c.inbox, touches: it.touches, jobId: cr.job.id, jobName: name, runId: f.runId || null,
     firedAt: iso(firedAt), startedAt: iso(firedAt), timeoutMin: cfg.timeoutMin, dir: p.dir, kind: place.kind, why: place.why || null, repo: p.repo, branch: p.branch, base: p.base,
     provider: job.provider || null, model: job.model || null };

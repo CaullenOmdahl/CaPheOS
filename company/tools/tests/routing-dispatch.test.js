@@ -55,7 +55,8 @@ async function company(o) {
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };
   w('company/company.json', { name: 'Routing Test ' + path.basename(T), owner: { name: 'Pat' }, timezone: TZ, station: { port, serviceName: 'routing-test' } });
   w('secrets/station-token', TOKEN + '\n');
-  const agents = {}; for (const [id, s] of Object.entries(SEATS)) { const c = Object.assign({}, s); delete c.provider; agents[id] = c; }
+  const seats = o.seats || SEATS;
+  const agents = {}; for (const [id, s] of Object.entries(seats)) { const c = Object.assign({}, s); delete c.provider; agents[id] = c; }
   const cad = JSON.parse(fs.readFileSync(path.join(REPO, 'company', 'defaults', 'work', 'ops', 'cadence.json'), 'utf8'));
   cad.tempo.sprint = { on: false };
   w('company/work/ops/cadence.json', cad);
@@ -65,11 +66,12 @@ async function company(o) {
   w('.starnet-data/workspaces/runs.jsonl', '');
   if (o.policy) w('company/work/models/routing-policy.json', o.policy);
   if (o.departments) w('company/departments.json', o.departments);
-  for (const s of Object.values(SEATS)) w('company/work/handoffs/' + s.inbox, '# Handoffs\n' + ((o.handoffs || WORK)[s.inbox] || ''));
+  if (o.modelPolicy) w('company/model-policy.json', o.modelPolicy);
+  for (const s of Object.values(seats)) w('company/work/handoffs/' + s.inbox, '# Handoffs\n' + ((o.handoffs || WORK)[s.inbox] || ''));
   const ids = {};
-  for (const [id, s] of Object.entries(SEATS)) {
+  for (const [id, s] of Object.entries(seats)) {
     const name = s.loop + ' ' + path.basename(T);
-    const r = await st('POST', '/api/cron', { name, agentId: id + '-' + path.basename(T), prompt: 'Read company/work/handoffs/' + s.inbox + ', then work.', provider: s.provider, model: s.provider === 'deepseek' ? 'deepseek-flash' : 'haiku', schedule: 'every 2h' });
+    const r = await st('POST', '/api/cron', { name, agentId: id + '-' + path.basename(T), prompt: 'Read company/work/handoffs/' + s.inbox + ', then work.', provider: s.provider, model: s.model || (s.provider === 'deepseek' ? 'deepseek-flash' : 'haiku'), schedule: 'every 2h' });
     ids[id] = r.job.id;
     await st('POST', '/api/cron/update', { id: r.job.id, patch: { agentId: id, lastRunAt: new Date(Date.now() - 600 * MIN).toISOString(), inFlight: false, name } });
     agents[id].loop = name;
@@ -147,4 +149,27 @@ test('(2) live + allowed passes the one-run override; live + not in the allowlis
   const r3 = c3.tick();
   assert.deepEqual(Object.keys(r3.bySeat.sam).sort(), ['detach', 'id']);
   assert.ok(c3.wake('sam').route.reasons.some(x => /not open: no current override allowlist/.test(x)));
+});
+
+test('(3b) live: a code item on a custom pair with no allowed entry open is held (ROUTE HOLD, logged), never started on custom', async () => {
+  // the applied side (the walk goes on past a route that is not open to the first allowed open chain entry) is covered by
+  // routing.test.js (3b); here the dispatcher's side: a hold sends no POST /api/cron/run for the seat at all. The seat has
+  // no company/model-policy.json chain (the test station has Claude and MiniMax closed, so models.js would move it), so its
+  // chain is its routine's own pair, which the code rule denies.
+  const M2 = { provider: 'custom', model: 'MiniMax-M2' };
+  const seats = Object.assign({}, SEATS, { dev: { name: 'Dev', loop: 'Dev loop', inbox: 'to-dev.md', manager: 'agent', provider: 'custom', model: 'MiniMax-M2' } });
+  const handoffs = Object.assign({}, WORK, { 'to-dev.md': block('fix the lexer', '**Class:** code\n') });
+  const departments = { version: 1, departments: [{ id: 'eng', name: 'Engineering', lead: null, members: ['sam', 'mo', 'dev'], defaultClass: 'code',
+    routes: { code: { provider: 'claude-cli', model: 'claude-opus-5-5' } } }] };
+  for (const allow of [{ dev: [M2] }, null]) {
+    const c = await company({ seats, handoffs, departments, policy: policy({ mode: 'live' }), allow: allow || undefined });
+    const r = c.tick();
+    assert.equal(r.code, 0, r.out);
+    assert.ok(!r.bySeat.dev, 'no run goes out for dev (' + JSON.stringify(allow) + '): ' + JSON.stringify(r.bodies) + '\n' + r.log);
+    assert.ok(r.bySeat.sam, 'other seats still run');
+    assert.match(r.log, /ROUTE HOLD Dev loop \S+ for dev: class rules deny custom\/MiniMax-M2 \(code never runs on provider custom\): no allowed entry open/);
+    const held = c.jsonl('company/work/models/routing-log.jsonl').filter(x => x.seat === 'dev');
+    assert.ok(held.length && held.every(x => x.status === 'held' && x.route.hold === true && !x.runId), JSON.stringify(held));
+    assert.ok(!c.wake('dev'), 'no wake row: nothing started');
+  }
 });
