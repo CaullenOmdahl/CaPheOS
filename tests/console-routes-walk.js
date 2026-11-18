@@ -141,7 +141,7 @@ async function startMock(env) {
     // risky options ask first and say what they unlock
     await js(`document.querySelector('#set-guard-harnessSelfEdit [role=switch]').click(); 1`);
     const dlg = await until(() => js(`(() => { const d = document.querySelector('dialog.modal'); return d ? d.innerText : null; })()`), 3000);
-    check('switching off harness review asks first and says what it unlocks', /Switch off Harness review\?/.test(dlg || '') && /This unlocks/.test(dlg || ''), dlg);
+    check('switching off harness review asks first and says what it unlocks', /Switch off Review of the crew's own rules\?/.test(dlg || '') && /This unlocks/.test(dlg || ''), dlg);
     await js(`[...document.querySelectorAll('dialog.modal button')].find(b => b.textContent === 'Cancel').click(); 1`);
     await js(`[...document.querySelectorAll('[role=radio]')].find(b => /Autonomous/.test(b.textContent)).click(); 1`);
     const dlg2 = await until(() => js(`(() => { const d = document.querySelector('dialog.modal'); return d ? d.innerText : null; })()`), 3000);
