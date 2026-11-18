@@ -251,8 +251,22 @@ function handoff(ctx, p, heading, fields, dry) {
 // results check) becomes one plain line in their daily digest, the crew's wording under technical
 function toOwner(ctx, heading, fields, dry) {
   const technical = flat(heading) + ' — ' + Object.entries(fields).filter(([k]) => k !== 'Status').map(([k, v]) => k + ': ' + flat(v)).join(' | ');
-  if (!dry) tellOwner(ctx, { from: TOOL_NAME, text: 'There is news on a change you asked the crew to make.', technical, key: 'harness-owner:' + sha(technical).slice(7, 23) });
+  if (!dry) tellOwner(ctx, { from: 'The crew', text: ownerNewsLine(ctx, heading), technical, key: 'harness-owner:' + sha(technical).slice(7, 23) });
   return 'owner:digest';
+}
+/* what happened to a change the owner asked for, in plain words (the heading is the crew's: "<id> applied (…)",
+ * "<id> rejected by <name>", "<id> reverted by <name>", "<id> refused: …", "results due …") */
+function ownerNewsLine(ctx, heading) {
+  const h = flat(heading); const m = /\b(hc-\d{4,6})\b/.exec(h);
+  let rec = null; try { rec = m ? loadRec(ctx, m[1]) : null; } catch (_) { rec = null; }
+  const area = rec ? plainArea(rec) : 'the crew\'s work';
+  const who = (re) => { const x = re.exec(h); return x ? x[1].trim() : 'a colleague'; };
+  if (/^results check\b/.test(h)) { const v = /looks (better|worse|the same|unclear)/.exec(h); return 'The crew checked whether the change you asked for to ' + area + ' helped: ' + (v ? 'it looks ' + v[1] : 'the details are below') + '.'; }
+  if (/\bapplied\b/.test(h)) return 'The change you asked for to ' + area + ' is now live. The crew checks in three days whether it helped.';
+  if (/\brejected by\b/.test(h)) return who(/rejected by ([^(]+)/) + ' turned down the change you asked for to ' + area + '; nothing changed.';
+  if (/\breverted by\b/.test(h)) return 'The change you asked for to ' + area + ' was undone by ' + who(/reverted by ([^(]+)/) + ', because the results got worse.';
+  if (/\brefused\b/.test(h)) return 'The change you asked for to ' + area + ' was not made, because you had already said no to it.';
+  return 'There is news on the change you asked for to ' + area + '; the details are below.';
 }
 // flip OPEN -> DONE on this tool's own handoffs whose heading names `needle` (never anyone else's block); onlyFor = one person's inbox
 function closeHandoffs(ctx, needle, note, onlyFor) {
@@ -709,7 +723,7 @@ function frameworkRequest(ctx, rec, p) {
   appendLog(ctx, { event: 'upstream', id: rec.id, frameworkRequest: frId, by: p.name, file, request: path.relative(ctx.root, out) });
   // the owner hears of it once, in the daily digest, in plain words; the file and the request are for the crew
   tellOwner(ctx, { from: rec.by, key: 'harness-upstream:' + rec.id,
-    text: rec.by + ' sent the makers of the company software an improvement to ' + plainArea(rec) + ', ' + afterWords(rec) + '.',
+    text: rec.by + ' sent the makers of the company software a suggestion for ' + plainArea(rec) + ', ' + afterWords(rec) + '. Nothing changes in your company.',
     technical: rec.id + ': ' + file + ' — ' + rec.why + ' Request: ' + path.relative(ctx.root, out) + ' (framework files change only through framework updates).' });
   return Object.assign({}, rec, { applied: false, upstream: path.relative(ctx.root, out) });
 }
@@ -1105,7 +1119,7 @@ async function tick(opts) {
   return { due: due.length, opened, decided, rerouted };
 }
 
-module.exports = { tick, ownerDecisions, ownerApply, rerouteOwnerOnly, ownerCard, ownerQuestion: (ctx, rec) => ownerCard(ctx, rec, 'review'), plainArea, OWNER_GATE_TOOLS, propose, review, applyChange, revertChange, keepChange, withdraw, dueList, context, editRules, KINDS, POLICY_FILES,
+module.exports = { ownerNewsLine, tick, ownerDecisions, ownerApply, rerouteOwnerOnly, ownerCard, ownerQuestion: (ctx, rec) => ownerCard(ctx, rec, 'review'), plainArea, OWNER_GATE_TOOLS, propose, review, applyChange, revertChange, keepChange, withdraw, dueList, context, editRules, KINDS, POLICY_FILES,
   // for locked-watch.js: the files a recorded change made, and the approved changes still waiting for their apply record.
   // opts.trust(recRelPath, recFileSha) decides whether a change record may be believed: the watcher passes one that is true
   // only for a record it already accepted or one carrying a trusted harness-change.js write row, so a hand-forged hc-*.json

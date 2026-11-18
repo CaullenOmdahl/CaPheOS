@@ -177,7 +177,7 @@ function fileQuestion(category, o, opts) {
  * company/owner/digest.jsonl), never its own message. The same sentence goes in once a company day (owner-notice's key). */
 function notify(text, opts) {
   const body = String(text || '').trim(); if (!body) return null;
-  return fyi({ text: body, from: opts && opts.from }, Object.assign({}, opts, { notice: undefined }));
+  return fyi({ text: body, from: opts && opts.from, technical: opts && opts.technical, key: opts && opts.key }, Object.assign({}, opts, { notice: undefined, technical: undefined }));
 }
 
 /* fyi({from, text, technical, key}, opts): one plain line for the owner's daily digest, never its own message, through
@@ -186,9 +186,9 @@ function notify(text, opts) {
 function fyi(o, opts) {
   o = o || {}; const text = String(o.text || '').trim(); if (!text) return null;
   const from = o.from || (opts && opts.from) || co.nameOf(co.ceo()) || 'company';
-  if (opts && typeof opts.notice === 'function') return opts.notice({ kind: 'fyi', from, text, technical: o.technical, key: o.key });
+  if (opts && typeof opts.notice === 'function') return opts.notice({ kind: 'fyi', from, text, technical: o.technical, key: o.key, action: o.action });
   const f = files(opts);
-  const r = require('./owner-notice').send({ kind: 'fyi', root: f.root, from, text, technical: o.technical || undefined, key: o.key || undefined });
+  const r = require('./owner-notice').send({ kind: 'fyi', root: f.root, from, text, technical: o.technical || undefined, key: o.key || undefined, action: o.action || undefined, asks: o.asks === true || undefined });
   return r && r.duplicate ? { duplicate: true } : (r && r.row) || r;
 }
 
@@ -299,7 +299,7 @@ function decide(category, o, opts) {
   }
   if (lv === 'notify') {
     const who = o.by || 'The company';
-    const sentence = plainDecided(who, category, o.summary) + ' Reply if you want it undone.';
+    const sentence = plainDecided(who, category, o.summary) + ' If you want it undone, say so in Chat.';
     const technical = 'Self-governance: ' + category + ' is set to notify, so this is done without waiting for the owner. Ref: ' + ref + (o.summary ? '. Summary: ' + String(o.summary).trim() : '');
     let noted = null; try { noted = fyi({ from: o.by, text: sentence, technical, key: ref }, opts); } catch (_) {}
     return { level: lv, allowed: true, noted: !!noted };

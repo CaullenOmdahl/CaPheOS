@@ -395,7 +395,11 @@ function cmdEnable(id, by) {
     return { code: 1, out: { ok: false, error: 'enable failed and was rolled back: ' + err.message } };
   }
   const s = status(id);
-  const told = pk.tellOwner('Core module ' + id + ' (' + mod.title + ') enabled: ' + s.status + '.' + ((mod.requires || {}).secrets || []).map(x => ' Needs secrets/' + x + '.').join(''), 'module.js');
+  // the owner's line: which add-on is on, and whether the crew still needs a key for it (they ask on Today); the id,
+  // status and file names are the crew's detail
+  const needs = ((mod.requires || {}).secrets || []).length;
+  const told = pk.tellOwner('The add-on “' + String(mod.title || id).replace(/[\u201c\u201d"]/g, '') + '” is switched on.' + (needs ? ' It needs ' + (needs === 1 ? 'a key' : needs + ' keys') + ' to work; the crew asks you for ' + (needs === 1 ? 'it' : 'them') + ' on Today.' : ''), 'module.js',
+    'Core module ' + id + ' (' + mod.title + ') enabled: ' + s.status + '.' + ((mod.requires || {}).secrets || []).map(x => ' Needs secrets/' + x + '.').join(''));
   // a running company's copied tools and inventory rows must never reach the framework repo (scripts/instance-guard.sh)
   try { const g = path.join(co.ROOT, 'scripts', 'instance-guard.sh'); if (fs.existsSync(g) && fs.existsSync(co.p('company', 'work', '.founded'))) require('child_process').execFileSync('bash', [g], { cwd: co.ROOT, stdio: 'ignore', timeout: 30000 }); } catch (_) {}
   return { code: s.status === 'conformant' ? 0 : 1, out: { ok: s.status === 'conformant', id, status: s.status, findings: s.findings, told, change: record({ op: 'enable', id, by: 'owner', gate, status: s.status }) } };
@@ -547,7 +551,7 @@ function selftest() {
       t('migrate-rows: a second run moves nothing', run('migrate-rows').j.moved === 0 && run('migrate-rows', '--check').code === 0);
       fs.writeFileSync(locF, keep);
     }
-    t('enable: owner told', /Core module demo/.test(fs.readFileSync(path.join(tmp, 'company', 'owner', 'outbound.jsonl'), 'utf8')));
+    t('enable: owner told', /The add-on “[^”]*” is switched on/.test(fs.readFileSync(path.join(tmp, 'company', 'owner', 'outbound.jsonl'), 'utf8')));
     const tk2 = js("require('./company/tools/lib/modules').runTicks({log:console.log}).then(r=>console.log(JSON.stringify(r)))");
     t('tick hook runs the enabled module', fs.existsSync(path.join(md, 'ticked')) && /DEMO TICK/.test(tk2.stdout), tk2.stdout + tk2.stderr);
     fs.rmSync(path.join(md, 'ticked'));

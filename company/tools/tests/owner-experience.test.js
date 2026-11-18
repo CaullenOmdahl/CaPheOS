@@ -162,3 +162,80 @@ out({ saved: saved.ok, a, asks: asks().length });`);
   assert.equal(s.saved, true);
   assert.equal(s.a.ok && s.a.r.status, 'installed', 'the rule covers it: ' + JSON.stringify(s.a)); assert.equal(s.asks, 0);
 });
+
+/* ---------------- B3: notices ---------------- */
+test('B3: the notice plain check uses the card check\'s patterns (clock specs, model ids, setting names, flags)', () => {
+  const T = company();
+  const r = run(T, `
+const N = require(path.join(REPO, 'company/tools/lib/owner-notice.js'));
+const ins = ['Cadence changed by Nadia: routine "seal-nowcast": */15 * * * * -> */30 * * * *.', 'Sam switched the coding seat to claude-sonnet-4-5 for a week.', 'Sharon set fiveHourCloseBelowLeftPct to 35 for the evening.', 'Run it again with --force to finish.'];
+out(ins.map(t => N.plain(t)));`);
+  for (const p of r) {
+    assert.ok(p.technical.length > 0, 'something moved to technical: ' + JSON.stringify(p));
+    assert.doesNotMatch(p.text, /\*\/\d|claude-sonnet|fiveHour|--force/, 'nothing technical left in the words: ' + p.text);
+  }
+});
+
+// every real sender template, with the review's real inputs: plain as it stands (nothing to cut, nothing technical)
+const TEMPLATES = `
+const tools = p => require(path.join(REPO, 'company/tools', p));
+const lines = {};
+const cad = tools('cadence.js');
+lines.cadence = cad.cadenceNotice('Nadia', ['routine "seal-nowcast": */15 * * * * -> */30 * * * *', 'dispatcher tick 4 -> 6 min']).text;
+lines.sprintEnd = cad.endNotice({ ended: { reason: 'budget', at: Date.now() }, spent: { usd: 1.1 }, budgetUsd: 1, since: new Date().toISOString() }, { bounds: { maxWakesPerHour: 100 }, dispatcherTickMin: 12, defaultCooldownMin: 40 }, null).text;
+const gr = tools('guardrails.js');
+lines.guardrails = gr.changedNotice('Caullen', [{ name: 'localComputer', from: 'on', to: 'off' }], ['localComputer', 'harnessSelfEdit'], false).text;
+lines.guardrailsApplied = gr.appliedNotice([{ what: 'computer control', ok: true }, { what: 'sudo gate', ok: false, error: 'ECONNREFUSED' }]).text;
+lines.pacer = tools('pacer.js').limitNotice('Sharon', 'MiniMax', 'fiveHourCloseBelowLeftPct 0 -> 35', 'keep a margin for the evening').text;
+lines.pacerOddWhy = tools('pacer.js').limitNotice('Sharon', 'MiniMax', 'x', 'set /minimax/fiveHourCloseBelowLeftPct per hc-0008').text;
+lines.balance = tools('lib/provider-balance.js').lowNotice('DeepSeek', false);
+lines.balanceOut = tools('lib/provider-balance.js').lowNotice('DeepSeek', true);
+lines.fallback = tools('models.js').fallbackNotice('Halima');
+lines.watchdog = tools('watchdog.js').silentNotice({ silentMin: 45 });
+lines.watchdogNever = tools('watchdog.js').silentNotice({ never: true });
+const lv = require(path.join(REPO, 'modules/liveness/watch.js'));
+lines.livenessDown = lv.downNotice('dispatcher', 61); lines.livenessWatcher = lv.downNotice('watcher', null); lines.livenessUp = lv.upNotice('dispatcher');
+const hc = tools('harness-change.js'); const hctx = { paths: { dir: path.join(T, 'nowhere') } };
+lines.harnessApplied = hc.ownerNewsLine(hctx, 'hc-0008 applied (tool: company/tools/pacer.js)');
+lines.harnessRejected = hc.ownerNewsLine(hctx, 'hc-0008 rejected by Kwame Asante');
+lines.harnessResults = hc.ownerNewsLine(hctx, 'results check hc-0008 (tool: company/tools/pacer.js): looks better');
+lines.panel = tools('console-panel.js').panelNotice('Alex', false, false, { title: 'Trading positions' });
+lines.external = tools('external-gate.js').plainClearedLine('Alex', { agent: 'sam', category: 'spend' });
+lines.decided = tools('lib/governance.js').plainDecided('Sharon', 'budget', 'apply hc-0008, a policy change to company/work/finance/pacing-policy.json (/minimax/fiveHourCloseBelowLeftPct: 0 -> 35)');
+const S = tools('service.js'); const ctx = S.context({ root: T });
+fs.mkdirSync(path.join(T, 'company/work'), { recursive: true }); fs.writeFileSync(path.join(T, 'company/work/feed.py'), 'print(1)\\n');
+const e = S.specOf(ctx, 'feed', { kind: 'timer', every: '1h', exec: 'python3 company/work/feed.py', why: 'pulls prices every hour', hosts: 'api.kalshi.com' }, { resolve: false });
+lines.serviceDone = S.plainDone(ctx, e, { name: 'Halima' });
+`;
+test('B3: every real sender template reads plainly, with the review\'s real inputs', () => {
+  const T = company();
+  const r = run(T, TEMPLATES + `
+const N = require(path.join(REPO, 'company/tools/lib/owner-notice.js'));
+const scope = require(path.join(REPO, 'company/tools/lib/owner-scope.js'));
+out(Object.fromEntries(Object.entries(lines).map(([k, t]) => [k, { t, plain: N.plain(t), words: scope.wordsProblems(t) }])));`);
+  for (const [k, v] of Object.entries(r)) {
+    assert.deepEqual(v.words, [], k + ': ' + v.t);
+    assert.deepEqual(v.plain.technical, [], k + ' loses nothing to the plain check: ' + v.t);
+    assert.equal(v.plain.text, v.t.replace(/[ \t]+/g, ' ').trim(), k);
+  }
+});
+
+test('B3: nothing is swallowed: a technical-only notice fails a test (strict), is kept for the crew and recorded, and Today never shows filler', () => {
+  const T = fixture();
+  const strict = run(T, `
+const N = require(path.join(T, 'company/tools/lib/owner-notice.js'));
+let thrown = null; try { N.send({ kind: 'fyi', from: 'Dave', text: 'hc-0042 applied: company/tools/pacer.js sha256:ab12cd34ef' }, { root: T }); } catch (e) { thrown = e.code; }
+out({ thrown });`, { env: { CAPHEOS_NOTICE_STRICT: '1' } });
+  assert.equal(strict.thrown, 'NOT_PLAIN', 'a test sees the template that needs rewording');
+  const r = run(T, NEEDS_CTX + `
+const N = require(path.join(T, 'company/tools/lib/owner-notice.js'));
+const a = N.send({ kind: 'fyi', from: 'Dave', text: 'hc-0042 applied: company/tools/pacer.js sha256:ab12cd34ef' }, { root: T });
+N.send({ kind: 'fyi', from: 'Pat', text: 'Pat answered a hiring question for you.' }, { root: T });
+const lint = fs.readFileSync(path.join(T, 'company/state/owner-notice-lint.jsonl'), 'utf8');
+out({ row: a.row, items: NEEDS.digest().items, lint, day: N.digest({ root: T, force: true, dry: true }) });`);
+  assert.equal(r.row.crewOnly, true);
+  assert.doesNotMatch(JSON.stringify(r.items), /noted something technical|hc-0042/, 'Today shows no filler: ' + JSON.stringify(r.items));
+  assert.equal(r.items.length, 1); assert.match(r.items[0].text, /^Pat answered/);
+  assert.match(r.lint, /hc-0042/, 'the crew is told which template to fix');
+  assert.doesNotMatch(r.day.text, /noted something technical/);
+});

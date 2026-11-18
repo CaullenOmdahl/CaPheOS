@@ -88,9 +88,10 @@ function record(row) {
 }
 // an FYI for the owner's day message (lib/owner-notice.js: technical words move under the collapsed details); a tree
 // without it (an older framework copy) falls back to the owner channel's low-level writer
-function tellOwner(text, from) {
+const plainTitle = t => String(t || 'untitled').replace(/[\u201c\u201d"]/g, '').slice(0, 60);
+function tellOwner(text, from, technical) {
   const notice = path.join(__dirname, 'lib', 'owner-notice.js'), mod = path.join(__dirname, 'owner-inbox.js');
-  if (fs.existsSync(notice)) { try { const r = require(notice).send({ kind: 'fyi', root: path.join(__dirname, '..', '..'), from, text }); return { told: true, id: r.row ? r.row.id : null, duplicate: !!r.duplicate }; } catch (e) { return { told: false, why: e.message }; } }
+  if (fs.existsSync(notice)) { try { const r = require(notice).send({ kind: 'fyi', root: path.join(__dirname, '..', '..'), from, text, technical }); return { told: true, id: r.row ? r.row.id : null, duplicate: !!r.duplicate }; } catch (e) { return { told: false, why: e.message }; } }
   if (!fs.existsSync(mod)) return { told: false, why: 'owner-inbox.js not present' };
   try { const row = require(mod).send({ from, text }); return { told: true, id: row && row.id }; } catch (e) { return { told: false, why: e.message }; }
 }
@@ -420,7 +421,8 @@ function cmdInstall(id, by) {
     return { code: 1, out: { ok: false, error: 'install failed and was rolled back: ' + err.message } };
   }
   const st = status(id);
-  const told = tellOwner('Capability pack ' + id + ' installed (' + st.status + '). Limits are closed until you open them in company/state/packs/installed/' + id + '/limits/.', 'pack.js');
+  const told = tellOwner('The add-on “' + plainTitle(pack.title || id) + '” is installed. Its limits start closed, so it cannot act on its own yet.', 'The crew',
+    'Capability pack ' + id + ' installed (' + st.status + '). Limits are closed until the owner opens them in company/state/packs/installed/' + id + '/limits/.');
   return { code: st.status === 'conformant' ? 0 : 1, out: { ok: st.status === 'conformant', status: st.status, id, findings: st.findings, told, change: record({ op: 'install', id, by: 'owner', digest: d, status: st.status }) } };
 }
 function undoPlacement(id, pack) {

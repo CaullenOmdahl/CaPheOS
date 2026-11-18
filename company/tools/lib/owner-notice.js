@@ -12,8 +12,12 @@
  *       fyi     everything else: one row in company/owner/digest.jsonl, folded into the day's single message.
  *     The plain check (lib/owner-scope.js plainScore, sentence by sentence): a bracketed or quoted technical bit (an id,
  *     a path, a command) is cut out of its sentence; a sentence that is still technical, or very long, moves whole into
- *     `technical`, which the console shows collapsed as "Technical details (for the crew)". Nothing is refused: a
- *     notice the owner needs always goes out, in plain words.
+ *     `technical`, which the console shows collapsed as "Technical details (for the crew)". The patterns are the owner
+ *     card's (lib/owner-scope.js wordsProblems). An fyi with no plain sentence left is kept for the crew only (crewOnly:
+ *     never on Today, never in the day message) and recorded in company/state/owner-notice-lint.jsonl; with
+ *     CAPHEOS_NOTICE_STRICT=1 (tests) a text that is not plain throws NOT_PLAIN instead, so a template is fixed, not hidden.
+ *     asks: true marks a line that points at something waiting on Today; action: {kind:'undo-decision', decisionId} a
+ *     console control on the line (ACTIONS).
  *     key: the same key (default: the sender and the plain text) is sent at most once per company day for an fyi. An
  *     urgent notice is never held back for the day: the same urgent key is a repeat only within URGENT_REPEAT_MIN minutes
  *     (one event reported twice), so a second outage or a second pause later the same day reaches the owner.
@@ -71,7 +75,9 @@ const hourOf = ms => co.localParts(new Date(ms)).hour;
 const EXTRA = [/\b[\w-]+:[\w-]+:[\w.-]+/, /(?:^|\s)--[a-z][\w-]*/, /<[a-z][\w -]*>/i, /\bnode\s+\S+/];
 // a console link's target ([Open Today](console:#/today)) is a button, not words the owner reads
 const unlinked = s => String(s).replace(/\]\((?:console:|https?:\/\/)[^)\s]*\)/g, ']');
-const technicalBit = s => { const t = unlinked(s); return scope.plainScore(t).jargon.length > 0 || EXTRA.some(re => re.test(t)); };
+// the SAME patterns an owner card's plain parts are checked against (lib/owner-scope.js wordsProblems: the jargon words,
+// paths, ids, clock times, hashes, settings, identifiers, model ids, commands, flags, clock specs, setting names, diffs)
+const technicalBit = s => { const t = unlinked(s); return scope.wordsProblems(t).length > 0 || EXTRA.some(re => re.test(t)); };
 // a sentence that lost its object to a cut ("Resume with .") no longer reads: it moves whole
 const DANGLING = /\b(?:with|to|run|use|using|in|at|by|see|try|type|of|from|via|is|are|the|a|an|and|or|named|called)\s*[.!?:]?$/i;
 const sentencesOf = t => String(t || '').trim().split(/(?<=[.!?])\s+(?=[A-Z0-9("'`*\[])/).map(s => s.trim()).filter(Boolean);
@@ -128,9 +134,16 @@ function send(o, opts) {
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const f = files(o);
   const p = plain(raw);
+  // strict (tests, CAPHEOS_NOTICE_STRICT=1): a sender whose text is not plain fails loudly instead of being trimmed, so
+  // a template that needs rewording is found by its test, never hidden from the owner
+  if (process.env.CAPHEOS_NOTICE_STRICT === '1' && (p.technical.length || !p.text)) {
+    throw Object.assign(new Error('owner notice not plain (' + from + '): ' + (p.technical.length ? p.technical.join(' | ') : raw) + ' — say it in everyday words; pass ids, paths, commands and numbers as `technical`'), { code: 'NOT_PLAIN', parts: p.technical });
+  }
   const tech = [].concat(p.technical, o.technical ? [String(o.technical).trim()] : []).filter(Boolean);
-  const lead = p.text || (kind === 'urgent' ? urgentLead(from, raw) : from + ' noted something technical for the crew.');
-  const key = String(o.key || keyOf(from, lead));
+  // an fyi with no plain sentence left is not filler for the owner ("noted something technical"): it is kept for the
+  // crew only (never on Today, never in the day message) and recorded as a template to fix (company/state/owner-notice-lint.jsonl)
+  const lead = p.text || (kind === 'urgent' ? urgentLead(from, raw) : '');
+  const key = String(o.key || keyOf(from, lead || raw));
   const day = dayOf(now);
   const seen = kind === 'urgent'
     ? r => r && r.key === key && r.kind === 'urgent' && Number.isFinite(Date.parse(r.at)) && now - Date.parse(r.at) >= 0 && now - Date.parse(r.at) < URGENT_REPEAT_MIN * 60e3
@@ -145,14 +158,29 @@ function send(o, opts) {
   const oi = require('../owner-inbox.js');
   const row = { id: 'fyi-' + now.toString(36) + '-' + crypto.randomBytes(2).toString('hex'), at: new Date(now).toISOString(), day, kind: 'fyi', from,
     text: oi.redact(lead), key };
-  if (!p.text) row.crewOnly = true;   // nothing plain to say: it rides in the day message's technical part only
+  if (!p.text) {   // nothing plain to say: it rides in the day message's technical part only, and the crew is told to fix it
+    row.crewOnly = true;
+    lint(f, { at: row.at, from, key, raw: oi.redact(raw).slice(0, 600), moved: p.technical.slice(0, 8).map(x => oi.redact(x).slice(0, 200)) });
+  }
   if (technical) row.technical = oi.redact(technical);
   if (o.re) row.re = String(o.re);
+  // asks: the line tells the owner something waits for their answer on Today (the day message then never closes with
+  // "Nothing here needs an answer from you")
+  if (o.asks === true) row.asks = true;
+  // action: a console control the owner can use on this line (only the kinds the console knows; Today draws the button)
+  if (o.action && ACTIONS[o.action.kind] && ACTIONS[o.action.kind](o.action)) row.action = JSON.parse(JSON.stringify(o.action));
   fs.mkdirSync(path.dirname(f.digest), { recursive: true });
   fs.appendFileSync(f.digest, JSON.stringify(row) + '\n');
   return { sent: 'digest', row };
 }
 
+// the console controls a day-message line may carry (console/owner-needs.js digest and Today draw them)
+const ACTIONS = {
+  'undo-decision': a => typeof a.decisionId === 'string' && /^d-[0-9a-f]{12}$/.test(a.decisionId),
+};
+function lint(f, row) {
+  try { const file = path.join(f.root, 'company', 'state', 'owner-notice-lint.jsonl'); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.appendFileSync(file, JSON.stringify(row) + '\n'); } catch (_) {}
+}
 function state(o) { const s = readJson(files(o).state, {}) || {}; s.days = s.days || {}; return s; }
 /* pending(o) — the fyi rows not folded into a daily message yet, oldest first */
 function pending(o) {
@@ -168,7 +196,9 @@ function compose(rows, c) {
   if (items.length > shown.length) lines.push('- And ' + (items.length - shown.length) + ' smaller things.');
   if (!items.length) return null;   // only crew-level notes today: nothing for the owner to read
   const technical = rows.filter(r => r.technical).map(r => (r.from ? r.from + ': ' : '') + r.technical).join('\n');
-  return { text: c.title + ':\n' + lines.join('\n') + '\nNothing here needs an answer from you.', technical };
+  // the closing line never contradicts a line above it that points at something waiting on Today
+  const close = rows.some(r => r.asks && !r.crewOnly) ? 'Only what waits on Today needs an answer from you; the rest is for your information.' : 'Nothing here needs an answer from you.';
+  return { text: c.title + ':\n' + lines.join('\n') + '\n' + close, technical };
 }
 /* digest(o) — fold every pending fyi row into ONE message, once a company day, at or after the evening hour */
 function digest(o) {
@@ -193,4 +223,4 @@ function digest(o) {
   return { sent: true, row, folded: rows.length };
 }
 
-module.exports = { send, digest, pending, plain, config, KINDS, DEFAULTS, URGENT_REPEAT_MIN };
+module.exports = { send, digest, pending, plain, config, KINDS, DEFAULTS, URGENT_REPEAT_MIN, ACTIONS };

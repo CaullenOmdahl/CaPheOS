@@ -107,11 +107,33 @@ const err = (code, error) => ({ ok: false, code, error });
 /* ---------------- owner channel ---------------- */
 // a guardrail is changed only by the owner, so this is the record of their own change: an FYI for the day's message
 // (lib/owner-notice.js); a tree without it falls back to the low-level writer
-function notifyOwner(text) {
-  try { require('./lib/owner-notice').send({ kind: 'fyi', from: 'Safety settings', text }); return true; } catch (e) { if (e && e.code !== 'MODULE_NOT_FOUND') return false; }
+function notifyOwner(text, technical) {
+  try { require('./lib/owner-notice').send({ kind: 'fyi', from: 'Safety settings', text, technical }); return true; } catch (e) { if (e && e.code !== 'MODULE_NOT_FOUND') return false; }
   let oi; try { oi = require('./owner-inbox.js'); } catch (_) { return false; }
   if (!oi || typeof oi.send !== 'function') return false;
   try { oi.send({ from: 'Guardrails (company/tools/guardrails.js)', text }); return true; } catch (_) { return false; }
+}
+
+/* ---------------- the owner's lines: plain words; switch names, commands and paths ride in `technical` ---------------- */
+// the console's names for each switch (console/ui/js/screens/settings/autonomy.js GUARD_NAMES), in a sentence
+const PLAIN_NAMES = { ownerGates: 'owner gates', spendCap: 'spending cap', externalActions: 'check on acting outside the company', harnessSelfEdit: 'review of the crew\'s own rules',
+  defaultBranch: 'protection of the main copy of the code', secrets: 'ban on reading keys', localComputer: 'limit on this computer', privilegedShell: 'block on admin commands',
+  promptInjection: 'flag on suspicious instructions', halt: 'pause switch' };
+const plainName = n => PLAIN_NAMES[n] || 'a safety setting';
+const andList = a => a.length <= 1 ? a.join('') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1];
+const COUNT = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
+function changedNotice(by, changes, offNames, sandbox) {
+  const turned = to => changes.filter(c => c.to === to).map(c => 'the ' + plainName(c.name));
+  const parts = [turned('off').length ? 'turned off ' + andList(turned('off')) : null, turned('on').length ? 'turned on ' + andList(turned('on')) : null].filter(Boolean);
+  const head = String(by) + ' ' + (parts.length ? parts.join(' and ') : 'changed the safety settings') + '.';
+  const n = offNames.length;
+  const now = n ? (n === 1 ? 'One safety setting is now off.' : (COUNT[n] || n) + ' safety settings are now off.') + (sandbox ? '' : ' This computer is not marked as a throwaway machine, so switch them back on when you are done.') : 'Every safety setting is on.';
+  return { text: head + ' ' + now };
+}
+function appliedNotice(results) {
+  const bad = results.filter(r => !r.ok);
+  return { text: bad.length ? 'Some safety settings could not be passed on to the system the crew runs on; the crew has the details and will try again.' : 'The safety settings were passed on to the system the crew runs on.',
+    technical: 'Guardrails applied to the station: ' + results.map(r => r.what + (r.ok ? '' : ' (FAILED: ' + r.error + ')')).join('; ') + '.' };
 }
 
 /* ---------------- record a change ---------------- */
@@ -128,7 +150,8 @@ function record(ctx, by, why, changes, d, event) {
   const station = changes.some(c => MAP[c.name] && MAP[c.name].station) ? ' Station-side switches follow when the owner runs `node company/tools/guardrails.js apply`.' : '';
   const root = changes.some(c => c.name === 'privilegedShell' && c.to === 'off') ? ' The installed sudo gate passes sudo through only after `sudo bash company/tools/sudo-gate/install.sh`.' : '';
   const warn = off.length && !d.sandbox ? ' WARNING: guardrails are off and sandbox is not set; this station is not recorded as isolated.' : '';
-  ctx.notify('Guardrails changed by ' + by + ': ' + what + '. Now off: ' + (off.length ? off.join(', ') : 'none') + '.' + station + root + warn);
+  const n = changedNotice(by, changes, off, d.sandbox);
+  ctx.notify(n.text, 'Guardrails changed by ' + by + ': ' + what + '. Now off: ' + (off.length ? off.join(', ') : 'none') + '.' + station + root + warn);
   return at;
 }
 
@@ -298,7 +321,7 @@ async function apply(ctx, o) {
   if (!fs.existsSync(ctx.files.decisions)) append(ctx.files.decisions, '# Decisions\n\n');
   const lp = co.localParts(new Date(a.at));
   append(ctx.files.decisions, '- ' + lp.date + ' ' + lp.time + ' ' + by + ' (owner) applied guardrails to the station: ' + results.map(r => r.what + (r.ok ? '' : ' (FAILED)')).join('; ') + ' (company/tools/guardrails.js)\n');
-  ctx.notify('Guardrails applied to the station: ' + results.map(r => r.what + (r.ok ? '' : ' (FAILED: ' + r.error + ')')).join('; ') + '.');
+  { const n = appliedNotice(results); ctx.notify(n.text, n.technical); }
   out.results = results; out.ok = results.every(r => r.ok);
   return out;
 }
@@ -358,7 +381,7 @@ async function selftest() {
     assert.strictEqual(state().guards.defaultBranch, false); assert.strictEqual(gr.guardIn(T, 'defaultBranch'), false);
     const L = logRows(); assert.strictEqual(L.length, 1); assert.deepStrictEqual(L[0].changes, [{ name: 'defaultBranch', from: 'on', to: 'off' }]); assert.strictEqual(L[0].why, 'experiment');
     assert.ok(/owner \(owner\) changed guardrails: defaultBranch on -> off — experiment/.test(fs.readFileSync(ctx.files.decisions, 'utf8')));
-    assert.ok(told.length === 1 && /defaultBranch on -> off/.test(told[0]) && /WARNING/.test(told[0]));
+    assert.ok(told.length === 1 && /turned off the protection of the main copy of the code/.test(told[0]) && /not marked as a throwaway machine/.test(told[0]) && !/defaultBranch/.test(told[0]));
     const s = show(ctx); assert.ok(s.banner && /defaultBranch/.test(s.banner));
     assert.ok(!fs.readdirSync(path.dirname(ctx.files.state)).some(f => /\.tmp-/.test(f)), 'no temp file left behind');
   });
@@ -458,4 +481,4 @@ if (require.main === module) {
     } catch (e) { done(err(e.code === 1 ? 1 : 1, String((e && e.message) || e))); }
   })();
 }
-module.exports = { show, setOne, setAll, setSandbox, detect, plan, apply, context, MAP, CONFIRM };
+module.exports = { show, setOne, setAll, setSandbox, detect, plan, apply, context, MAP, CONFIRM, changedNotice, appliedNotice, PLAIN_NAMES };

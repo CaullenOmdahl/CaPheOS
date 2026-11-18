@@ -46,6 +46,10 @@ function perDayUsd(provider, o) {
     return rows.filter(r => r && r.provider === provider).reduce((s, r) => s + (Number(r.usd) || 0), 0) / 7;
   } catch (_) { return 0; }
 }
+// the owner's line: plain words, no figures beyond the days left (the balances are on Spend)
+function lowNotice(name, out) {
+  return name + (out ? '\'s prepaid credit has run out, so the crew members who use it have stopped.' : '\'s prepaid credit is running low: less than ' + (DAYS === 1 ? 'one day' : DAYS + ' days') + ' of use is left.') + ' Top it up to keep them working; the amount is on the Spend page.';
+}
 function record(provider, reading, o) {
   o = o || {};
   const doc = read(o); const prev = doc[provider] || {};
@@ -58,7 +62,7 @@ function record(provider, reading, o) {
   let alerted = false;
   if (low && cur.alertedKey !== low.key) {
     const name = provider === 'deepseek' ? 'DeepSeek' : provider;
-    const text = name + '\'s prepaid credit is running low (' + (reading && reading.available === false ? 'it has run out' : 'under about ' + DAYS + ' days of use') + '). Top it up to keep the seats on it running; the amount is on Spend in the console.';
+    const text = lowNotice(name, reading && reading.available === false);
     try { if (typeof o.notify === 'function') o.notify(text); } catch (_) {}
     cur.alertedKey = low.key; alerted = true;
   }
@@ -67,4 +71,4 @@ function record(provider, reading, o) {
   return { low: !!low, alerted, currencies: low ? low.currencies : [] };
 }
 function status(provider, o) { const d = read(o)[provider]; return d ? { low: !!d.low, key: d.low ? d.low.key : null, currencies: d.low ? d.low.currencies : [], at: d.at } : { low: false, key: null, currencies: [], at: null }; }
-module.exports = { record, read, status, lowLine, parse, FLOOR, DAYS, file };
+module.exports = { lowNotice, record, read, status, lowLine, parse, FLOOR, DAYS, file };

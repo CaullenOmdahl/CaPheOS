@@ -118,6 +118,13 @@ const NAMES = { 'claude-cli': 'Claude', custom: 'MiniMax', deepseek: 'DeepSeek' 
 /* ---------- small helpers ---------- */
 const isNum = v => typeof v === 'number' && Number.isFinite(v);
 const numOr = (v, d, lo, hi) => { const n = typeof v === 'string' && v.trim() === '' ? NaN : Number(v); return Number.isFinite(n) && (lo == null || n >= lo) && (hi == null || n <= hi) ? n : d; };
+/* the owner's line when a crew member changes a subscription cutoff at budget=notify: what it is about, in plain words;
+ * the setting names and numbers ride in `technical`, and the crew's reason only when it reads plainly */
+function limitNotice(by, sub, what, why) {
+  const words = t => { try { return !require('./lib/owner-scope').wordsProblems(t).length; } catch (_) { return false; } };
+  const reason = why && words(why) && String(why).length <= 120 ? ', ' + String(why).trim().replace(/[.!]?$/, '').replace(/^./, c => c.toLowerCase()) : '';
+  return { text: by + ' changed when the crew stops using the ' + sub + ' subscription' + reason + '. You can change it back in Settings › Models and subscriptions.', technical: by + ' set the ' + sub + ' cutoffs: ' + what + ' (' + why + ').' };
+}
 function readJson(f, d) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } }
 function writeJsonAtomic(f, obj) {
   fs.mkdirSync(path.dirname(f), { recursive: true });
@@ -1858,7 +1865,7 @@ async function cli(argv, o) {
     if (no) { print(JSON.stringify({ ok: false, error: no.error }, null, 1)); return no.code; }
     const r = PA.setLimit(root, key, { weekStop: a['week-stop'], useNow: a['use-now'], by, why, via: a.via && a.via !== true ? a.via : 'pacer.js limit' });
     if (r.ok && !/^(owner|commander)$/i.test(by) && by.toLowerCase() !== String((require('./lib/company').config.owner || {}).name || '').toLowerCase()) {
-      try { if (gov.level('budget', Object.assign({ root }, o.govOpts || {})) === 'notify') gov.notify(by + ' set the ' + PA.SUBS[key].name + ' cutoffs: ' + r.what + ' (' + why + ').', { root }); } catch (_) {}
+      try { if (gov.level('budget', Object.assign({ root }, o.govOpts || {})) === 'notify') { const n = limitNotice(by, PA.SUBS[key].name, r.what, why); gov.notify(n.text, { root, technical: n.technical }); } } catch (_) {}
     }
     print(JSON.stringify(r, null, 1)); return r.ok ? 0 : (r.code || 2);
   }
@@ -1866,7 +1873,7 @@ async function cli(argv, o) {
   return 2;
 }
 
-module.exports = { makePacer, dispatchHook, cli, loadPolicy, loadRouting, routingKeyFor, parseMiniMax, handoffsDueToday, minimaxFetch, dayOf, lineFor, nextOpenDay, DEFAULTS, REL };
+module.exports = { limitNotice, makePacer, dispatchHook, cli, loadPolicy, loadRouting, routingKeyFor, parseMiniMax, handoffsDueToday, minimaxFetch, dayOf, lineFor, nextOpenDay, DEFAULTS, REL };
 
 if (require.main === module) {
   cli(process.argv.slice(2)).then(code => { process.exitCode = code; }, e => { console.error('pacer error: ' + e.message); process.exitCode = 1; });

@@ -63,6 +63,8 @@ const PROVIDER_CODES = ['auth', 'quota_exhausted', 'rate_limited', 'provider_err
 const PROVIDER_RE = /\bhttp\s*(40[1238]|429|5\d\d)\b|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|timed? ?out|rate.?limit|overloaded|unavailable|unauthori[sz]ed|invalid api key|insufficient[_ ]balance|quota|usage limit|not connected|no key|credential|network error|upstream/i;
 
 const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } };
+// the owner's line when a crew member falls to the last AI in their list (the chain and the reasons ride in technical)
+function fallbackNotice(name) { return name + ' is working on a backup AI because the usual ones are unavailable right now; they switch back by themselves.'; }
 function writeJson(f, obj) { fs.mkdirSync(path.dirname(f), { recursive: true }); const txt = JSON.stringify(obj, null, 1) + '\n'; const tmp = f + '.tmp-' + process.pid; fs.writeFileSync(tmp, txt); fs.renameSync(tmp, f); try { require('./provenance.js').wrote(f, txt, 'models.js'); } catch (_) {} }   // locked-watch.js: this tool's own write
 const keyOf = e => e.provider + '/' + e.model;
 const label = e => e ? keyOf(e) + (e.effort ? ' (' + e.effort + ')' : '') : 'nothing';
@@ -294,7 +296,7 @@ function makeModels(o) {
       fs.appendFileSync(f, '\n## ' + day + ' from models.js — ' + name + ' is on the last model in their chain\n**Need:** ' + text + ' Check the providers above (connected on the station, subscription open, credit), or change the chain with `node company/tools/models.js chain ' + id + ' ...`. The seat moves back up by itself once its primary can run again.\n**Why:** one more failure leaves ' + name + ' with nothing to run on (StarNet\'s station-wide fallback chain is the only backstop left).\n**Deadline:** ' + day + '\n**Status:** OPEN\n**Evidence:** company/state/model-moves.jsonl; `node company/tools/models.js show --seat ' + id + '`\n');
       return 'handoff to ' + (mgr.name || seat.manager);
     }
-    try { gov.notify(text + ' It moves back up by itself once its primary can run again.', govOpts); } catch (_) {}
+    try { gov.notify(fallbackNotice(name), Object.assign({}, govOpts, { technical: text + ' It moves back up by itself once its primary can run again.' })); } catch (_) {}
     return 'owner notified';
   }
 
@@ -835,6 +837,6 @@ async function main(argv) {
   return 2;
 }
 
-module.exports = { makeModels, tick, hireChain, recordHireChain, putPrimary, chainedSeats, parseEntry, providerError, hostStoppedChild, FAILOVER, REL };
+module.exports = { fallbackNotice, makeModels, tick, hireChain, recordHireChain, putPrimary, chainedSeats, parseEntry, providerError, hostStoppedChild, FAILOVER, REL };
 
 if (require.main === module) main(process.argv.slice(2)).then(c => { process.exitCode = c; }, e => { console.error(JSON.stringify({ ok: false, error: e.message })); process.exitCode = 1; });

@@ -297,7 +297,7 @@ async function ask(o) {
     const why = ruling && ruling.effect === 'crew-decides' ? 'the owner\'s standing rule ' + ruling.id + ' ("' + ruling.text + '") lets the crew decide' : 'self-governance ' + category + ' is at ' + (tri ? 'triage (' + tri.why + ')' : lv) + ', so no owner approval is needed';
     const a = audit(author(from), from + ' goes ahead: ' + summary + ' (' + why + '; params ' + actionDigestOf(category, from, params).slice(0, 19) + '…)');
     // notify: one plain line in the owner's daily digest (lib/governance.js fyi); the governance internals stay technical
-    let told = null; if (lv === 'notify') told = gov.fyi({ from, text: gov.plainDecided(from, category, summary) + ' Reply if you want it undone.',
+    let told = null; if (lv === 'notify') told = gov.fyi({ from, text: gov.plainDecided(from, category, summary) + ' If you want it undone, say so in Chat.',
       technical: 'Self-governance: ' + category + ' is set to ' + (tri ? 'triage (' + tri.why + ')' : 'notify') + ', so this was done without waiting for the owner. Audit ' + a.id + '.', key: 'approval:' + actionDigestOf(category, from, params) }, S.govOpts);
     return Object.assign({ ok: true, minted: false, level: lv, allowed: true, audit: a.id, told: !!told }, ruling && ruling.effect === 'crew-decides' ? { ruling: { id: ruling.id, text: ruling.text } } : {});
   }

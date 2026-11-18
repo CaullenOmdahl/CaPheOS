@@ -81,7 +81,7 @@ const S = {
   ownerShell: () => require('./lib/owner').shell(),   // the one owner rule (lib/owner.js)
   ownerName: () => (co.config.owner && co.config.owner.name) || 'Owner',
   peakCfg: () => require('./offpeak-hold.js').peakConfig(),
-  notify: text => require('./lib/owner-notice').send({ kind: 'fyi', from: co.nameOf(co.ceo()), text }),   // an FYI: tempo changes wait for the day's message
+  notify: (text, technical) => require('./lib/owner-notice').send({ kind: 'fyi', from: co.nameOf(co.ceo()), text, technical }),   // an FYI: tempo changes wait for the day's message
   now: () => Date.now(),
   onboardingFile: co.p('company', 'state', 'onboarding-state.json'),
   budgetFile: co.p('company', 'work', 'finance', 'dispatch-budget.json'),
@@ -276,6 +276,16 @@ function setSprintConfig(o = {}) {
   return { ok: true, sprint: sprintOf(load(), S.now()) };
 }
 const hhmmOf = ms => { const lp = co.localParts(new Date(ms)); return lp.date + ' ' + String(lp.time || '').slice(0, 5); };
+/* the owner's lines (plain words; the numbers and commands ride in `technical`) */
+function endNotice(v, c, st) {
+  const why = v.ended.reason === 'budget' ? 'it spent its start-up budget' : v.ended.reason === 'certified' ? 'the company finished its start-up checks' : 'its time was up';
+  return { text: 'Sprint ended by itself because ' + why + ', so the crew is back to its normal pace. You can turn Sprint on again in Settings › Tempo and routines.', technical: endMessage(v, c, st) };
+}
+const NUM = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
+function cadenceNotice(by, done) {
+  const n = done.length;
+  return { text: (by || 'The crew') + ' changed how often ' + (n === 1 ? 'one part' : (NUM[n] || n) + ' parts') + ' of the crew\'s work runs, as your settings allow.', technical: 'Cadence changed' + (by ? ' by ' + by : '') + ': ' + done.join('; ') + '.' };
+}
 function endMessage(v, c, st) {
   const b = c.bounds || {};
   const head = v.ended.reason === 'budget' ? 'Sprint (start-up) ended by itself: it spent its budget ($' + (v.spent ? v.spent.usd.toFixed(2) : '?') + ' of $' + v.budgetUsd.toFixed(2) + ' metered since ' + (v.since ? hhmmOf(Date.parse(v.since)) : 'it began') + ').'
@@ -306,7 +316,8 @@ function sprintTick(o) {
   saveSprint(d2, s2, 'dispatcher', 'Sprint ended by itself (' + v.ended.reason + ')', null);
   const message = endMessage(v, c, st);
   log('SPRINT ENDED: ' + message);
-  try { notify(message); } catch (e) { log('SPRINT ENDED: the owner message failed: ' + e.message); }
+  const n = endNotice(v, c, st);
+  try { notify(n.text, n.technical); } catch (e) { log('SPRINT ENDED: the owner message failed: ' + e.message); }
   return { on: false, ended: true, reason: v.ended.reason, message };
 }
 /* sprintStatus() -> how the Sprint is going: idle-wake ratio, items done, spend per item, Sprint spend vs budget,
@@ -723,12 +734,12 @@ async function apply({ dry, approvedRef, by } = {}) {
   if (done.length) {
     const cc = load(); cc.appliedAt = iso(S.now()); if (by) cc.appliedBy = by;
     const raw = co.readJson(S.file, null); if (raw) { raw.appliedAt = cc.appliedAt; if (by) raw.appliedBy = by; save(raw); } else save(cc);
-    if (level === 'notify') { try { S.notify('Cadence changed' + (by ? ' by ' + by : '') + ': ' + done.join('; ') + '.'); } catch (e) { plan.errors.push('owner notice failed: ' + e.message); } }
+    if (level === 'notify') { try { const n = cadenceNotice(by, done); S.notify(n.text, n.technical); } catch (e) { plan.errors.push('owner notice failed: ' + e.message); } }
   }
   return { ok: !plan.errors.length, gate: level, applied: done, errors: plan.errors, warnings: plan.warnings };
 }
 
-module.exports = { S, BUILTIN, DEFAULT_BOUNDS, DEFAULT_TEMPO, load, view, effective, dutiesFloor, tempoAllows, sprintOf, setSprint, setSprintConfig, sprintTick, sprintStatus, sprintSpent, wakeCounts, inQuiet, peakFindings, proposal, parseEvery, sameSchedule, setDefault, setSeat, setBounds, endTemporary, apply, isOwner };
+module.exports = { endNotice, cadenceNotice, S, BUILTIN, DEFAULT_BOUNDS, DEFAULT_TEMPO, load, view, effective, dutiesFloor, tempoAllows, sprintOf, setSprint, setSprintConfig, sprintTick, sprintStatus, sprintSpent, wakeCounts, inQuiet, peakFindings, proposal, parseEvery, sameSchedule, setDefault, setSeat, setBounds, endTemporary, apply, isOwner };
 
 async function selftest() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadence-selftest-'));
@@ -867,7 +878,7 @@ async function selftest() {
     const ups = calls.filter(x => x[1] === '/api/cron/update');
     check('apply updates only the routine whose schedule changed', ups.length === 1 && ups[0][2].id === 'j2' && ups[0][2].patch.schedule === 'every 45m');
     check('apply never touches a timer; it says to migrate an old one', /setup-station\.sh/.test((r.warnings || []).join(' ')) && /OnUnitActiveSec=10min/.test(fs.readFileSync(path.join(dir, 'test-station-dispatch.timer'), 'utf8')));
-    check('notify level tells the owner', told.length === 1 && /Cadence changed/.test(told[0]));
+    check('notify level tells the owner, in plain words (the routine and clock only in technical)', told.length === 1 && /changed how often/.test(told[0]) && !/\*\/|->/.test(told[0]));
     const again = await apply({ by: 'Alex' });
     check('a second apply changes nothing', again.applied.length === 0 && calls.filter(x => x[1] === '/api/cron/update').length === 1, JSON.stringify(again));
     const raw = JSON.parse(fs.readFileSync(S.file, 'utf8'));
@@ -897,7 +908,7 @@ async function selftest() {
     now += 2 * 3600e3 + 1000;
     check('at its end time Sprint stops counting (effective is the base again)', effective().source !== 'sprint');
     const t1s = sprintTick({ log: l => lines.push(l), notify: t => told.push(t) });
-    check('the end is written and the owner told in plain words, once', t1s.ended && t1s.reason === 'time' && load().tempo.sprint.on === false && load().tempo.sprint.endedBy === 'itself' && told.length === told0 + 1 && /^Sprint \(start-up\) ended by itself at .*back on its normal tempo: the dispatcher checks every \d+ min/.test(told[told.length - 1]) && lines.some(l => /^SPRINT ENDED: /.test(l)), JSON.stringify([t1s, told.slice(-1), lines]));
+    check('the end is written and the owner told in plain words, once', t1s.ended && t1s.reason === 'time' && load().tempo.sprint.on === false && load().tempo.sprint.endedBy === 'itself' && told.length === told0 + 1 && /^Sprint ended by itself because its time was up, so the crew is back to its normal pace\./.test(told[told.length - 1]) && lines.some(l => /back on its normal tempo: the dispatcher checks every \d+ min/.test(l)) && lines.some(l => /^SPRINT ENDED: /.test(l)), JSON.stringify([t1s, told.slice(-1), lines]));
     check('a second sprintTick says nothing more', !sprintTick({ notify: t => told.push(t) }).ended && told.length === told0 + 1);
     // the budget: metered spend since the start ends it; Claude (subscription) spend does not count
     setSprint(true, { by: 'Pat', budgetUsd: 1 });
@@ -907,7 +918,7 @@ async function selftest() {
     fs.appendFileSync(S.runsFile, JSON.stringify({ runId: 'c', agentId: 'agent', provider: 'deepseek', usd: 0.7, startedAt: now, endedAt: now + 1 }) + '\n');
     now += 1000;
     const tb = sprintTick({ notify: t => told.push(t) });
-    check('a spent Sprint budget ends Sprint and says so', tb.ended && tb.reason === 'budget' && /spent its budget \(\$1\.10 of \$1\.00/.test(told[told.length - 1]) && load().tempo.sprint.endedWhy === 'budget', JSON.stringify([tb, told.slice(-1)]));
+    check('a spent Sprint budget ends Sprint and says so', tb.ended && tb.reason === 'budget' && /because it spent its start-up budget/.test(told[told.length - 1]) && load().tempo.sprint.endedWhy === 'budget', JSON.stringify([tb, told.slice(-1)]));
     // the founding default: on, until certified + 24 h
     const rd = JSON.parse(fs.readFileSync(S.file, 'utf8')); rd.tempo.sprint = { on: true, since: null, until: null, by: 'founding', afterCertifiedH: 24 }; fs.writeFileSync(S.file, JSON.stringify(rd));
     sprintTick({ notify: t => told.push(t) });
@@ -919,7 +930,7 @@ async function selftest() {
     check('once certified it runs until certified + 24 h', sv.active && sv.until === iso(now + 14 * 3600e3), JSON.stringify(sv));
     now += 14 * 3600e3 + 1000;
     const tc = sprintTick({ notify: t => told.push(t) });
-    check('certified + 24 h ends it, in plain words', tc.ended && tc.reason === 'certified' && /the company was certified, and Sprint was set to run until 24 h after that/.test(told[told.length - 1]));
+    check('certified + 24 h ends it, in plain words', tc.ended && tc.reason === 'certified' && /because the company finished its start-up checks/.test(told[told.length - 1]));
     // the proposal path: an agent proposes ON through the schedules review; it starts when the loop first sees it
     check('a proposal may not switch Sprint off', throwsWith(() => proposal(load(), { '/tempo/sprint/on': false }), /only be proposed as true/) === true);
     const prp = proposal(JSON.parse(fs.readFileSync(S.file, 'utf8')), { '/tempo/sprint/on': true, '/tempo/sprint/hours': 24 });

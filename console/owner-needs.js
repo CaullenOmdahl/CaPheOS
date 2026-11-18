@@ -254,9 +254,11 @@ function make(deps) {
     const byKey = new Map(); let n = 0;
     for (const l of lines) {
       let r; try { r = JSON.parse(l); } catch (_) { continue; }
-      if (!r || r._retention || (r.kind && r.kind !== 'fyi') || typeof r.text !== 'string' || !r.text.trim()) continue;
+      // a crew-only row (nothing plain to say: lib/owner-notice.js) is never a line on Today
+      if (!r || r._retention || r.crewOnly || (r.kind && r.kind !== 'fyi') || typeof r.text !== 'string' || !r.text.trim()) continue;
       const at = Date.parse(r.at || ''); if (!Number.isFinite(at) || at < since) continue;
-      byKey.set(r.key ? 'k:' + r.key : 'n:' + (n++), { at: new Date(at).toISOString(), from: r.from || null, text: String(r.text).slice(0, 600), technical: r.technical ? String(r.technical).slice(0, 4000) : null });
+      const action = r.action && r.action.kind === 'undo-decision' && /^d-[0-9a-f]{12}$/.test(String(r.action.decisionId || '')) ? { kind: 'undo-decision', decisionId: r.action.decisionId, label: 'Undo this' } : null;
+      byKey.set(r.key ? 'k:' + r.key : 'n:' + (n++), Object.assign({ at: new Date(at).toISOString(), from: r.from || null, text: String(r.text).slice(0, 600), technical: r.technical ? String(r.technical).slice(0, 4000) : null }, action ? { action } : {}, r.asks ? { asks: true } : {}));
     }
     const items = [...byKey.values()].sort((a, b) => a.at.localeCompare(b.at));
     return { ok: true, title: 'What the crew did today', items, since: new Date(since).toISOString() };

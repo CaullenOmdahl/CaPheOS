@@ -498,7 +498,7 @@ const PLAIN_ACT = { message: 'send a message outside the company', publish: 'pub
   form: 'send a form to an outside company', spend: 'spend money outside the company', network: 'connect to a new website' };
 function plainClearedLine(clearedBy, r) {
   let who = r.agent; try { who = co.nameOf(r.agent) || r.agent; } catch (_) {}
-  return String(clearedBy) + ' let ' + who + ' ' + (PLAIN_ACT[r.category] || 'act outside the company') + '. Reply if you want it stopped.';
+  return String(clearedBy) + ' let ' + who + ' ' + (PLAIN_ACT[r.category] || 'act outside the company') + '. If you want it stopped, say so in Chat.';
 }
 
 /* Only two clearers: the owner (the word "owner", or the owner's name from company.json) and the CEO seat by its
@@ -1273,7 +1273,7 @@ function selftest() {
     const rows = (f => fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [])(path.join(froot, 'company', 'owner', 'digest.jsonl'));
     const text = rows.map(r => r.text).join('\n'), tech = rows.map(r => r.technical || '').join('\n');
     const out = (f => fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '')(path.join(froot, 'company', 'owner', 'outbound.jsonl'));
-    const ok = / let sam spend money outside the company\. Reply if you want it stopped\./.test(text) && !/clr-good|stripe:|Self-governance/.test(text) && /clr-good/.test(tech) && !/let sam spend money outside/.test(out);
+    const ok = / let sam spend money outside the company\. If you want it stopped, say so in Chat\./.test(text) && !/clr-good|stripe:|Self-governance/.test(text) && /clr-good/.test(tech) && !/let sam spend money outside/.test(out);
     if (!ok) failures++; lines.push((ok ? 'ok    ' : 'FAIL  ') + 'external at notify: the owner is told in one plain sentence in the day\'s message (no clearance id, target or governance words; those are technical)'); }
   const d4 = expect('external at approve: a CEO row is not enough', req4, 'refuse', { level: 'approve' });
   { const ok = /must name the owner/.test(d4.reason); if (!ok) failures++; lines.push((ok ? 'ok    ' : 'FAIL  ') + 'external at approve: the refusal says the owner must clear it'); }
@@ -1770,7 +1770,7 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { ledgerRows, check, checkClaim, mustPass, recordSent, releaseIdem, IDEM, IDEM_TTL_MS, addClearance, closeClearance, closedReason, selftest, CATEGORIES, CLEARERS, CLEARING_AGENT, OWNER_PIN_FILE, targetMatches, allowedHost, hostOf, validateRow, listState, liveClearingSession, liveJournalRun, _internals: { readJsonl, readRuns, runsFor, runsAround, appendJsonl, LEDGER, LOG, ALLOWLIST, JOURNAL_DIR,
+module.exports = { plainClearedLine, ledgerRows, check, checkClaim, mustPass, recordSent, releaseIdem, IDEM, IDEM_TTL_MS, addClearance, closeClearance, closedReason, selftest, CATEGORIES, CLEARERS, CLEARING_AGENT, OWNER_PIN_FILE, targetMatches, allowedHost, hostOf, validateRow, listState, liveClearingSession, liveJournalRun, _internals: { readJsonl, readRuns, runsFor, runsAround, appendJsonl, LEDGER, LOG, ALLOWLIST, JOURNAL_DIR,
   // In-process only (no CLI surface): lets a probe point the journal reader at a copy of a real journal.
   setJournalDir: (d) => { JOURNAL_DIR_OVERRIDE = d || null; return JOURNAL_DIR_OVERRIDE || JOURNAL_DIR; },
   // In-process only (no CLI surface): lets a probe hold runs.jsonl at an earlier state, so "what did the list say
