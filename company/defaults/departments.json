@@ -1,0 +1,12 @@
+{
+  "_doc": "Departments as data (docs/DEPARTMENTS.md). Copied to company/departments.json at founding (scripts/found-company.sh); a missing file means no departments and every tool behaves as it did before departments existed. The source of truth for who is in which department and who leads it: company/FLOOR_PLAN.md and loops.json are checked against it (company/tools/departments.js check, the departments duty, station-floor.js audit A12), never the other way round. Changed ONLY through company/tools/departments.js (create, set-lead, add-member, remove-member, move): a structural change is a governance decision (category org: the CEO or the people function may propose, the owner or the CEO applies at the level the owner set), recorded in company/work/decisions.md and the department's DECISIONS.md, and its bytes in the provenance log; locked-watch.js (owner: the people function) reports any other write. Fields: leadModelDefault = the model a department lead runs on unless the owner says otherwise. departments[] = { id (lowercase, 2-32), name, lead (a seat id from loops.json, or null: then each member's loops.json manager stands in for the lead), members (seat ids; a seat belongs to at most one department; the lead is a member), defaultClass (the task class an item from this department has when it names none: code, review, research, writing, design, ops, mechanical, general), brief (company/work/departments/<id>/BRIEF.md, written by departments.js create), routes ({ <class>: { provider, model, effort } }: the model a member's item of that class should run on; read only by routing code that ships in shadow first), consult ({ maxPerDay, stuckAfterFailedRuns, stuckAfterRevise, stuckAfterIdleWakes }: when a member's item goes to the lead) }. newDepartment = what departments.js create gives a new department (every number here is config the owner can tune; production scoring is expected to move them). limits.briefMaxChars / digestMaxChars = the size departments.js check holds BRIEF.md and INBOX-DIGEST.md to; limits.proposalsKeep = how many closed proposals company/state/departments-proposals.json keeps.",
+  "version": 1,
+  "leadModelDefault": { "provider": "claude-cli", "model": "claude-opus-5-5", "effort": "medium" },
+  "newDepartment": {
+    "defaultClass": "general",
+    "routes": {},
+    "consult": { "maxPerDay": 12, "stuckAfterFailedRuns": 2, "stuckAfterRevise": 2, "stuckAfterIdleWakes": 2 }
+  },
+  "limits": { "briefMaxChars": 8000, "digestMaxChars": 8000, "proposalsKeep": 50 },
+  "departments": []
+}

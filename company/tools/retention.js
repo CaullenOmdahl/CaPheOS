@@ -352,10 +352,28 @@ function archiveDir(ctx, a, rel) {
 }
 
 /* ---------------- apply ---------------- */
+// '*' matches one name in any segment: company/work/handoffs/archive/*.md, company/work/departments/*/DECISIONS.md.
+// A wildcard folder segment matches folders only (never a dotfolder, never `archive`, where rolled months live).
 function expandPaths(ctx, p) {
   if (!p.includes('*')) return [p];
-  const dir = path.posix.dirname(p), re = new RegExp('^' + path.posix.basename(p).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*') + '$');
-  try { return fs.readdirSync(ctx.P(dir)).filter(n => re.test(n) && fs.statSync(ctx.P(dir + '/' + n)).isFile()).sort().map(n => dir + '/' + n); } catch (_) { return []; }
+  const segs = p.split('/'), reOf = g => new RegExp('^' + g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*') + '$');
+  let cur = [''];
+  segs.forEach((g, i) => {
+    const last = i === segs.length - 1, next = [];
+    for (const base of cur) {
+      const join = n => base ? base + '/' + n : n;
+      if (!g.includes('*')) { next.push(join(g)); continue; }
+      let names = []; try { names = fs.readdirSync(ctx.P(base || '.')); } catch (_) { continue; }
+      const re = reOf(g);
+      for (const n of names.sort()) {
+        if (!re.test(n)) continue;
+        let st; try { st = fs.statSync(ctx.P(join(n))); } catch (_) { continue; }
+        if (last ? st.isFile() : (st.isDirectory() && !n.startsWith('.') && n !== 'archive')) next.push(join(n));
+      }
+    }
+    cur = next;
+  });
+  return cur.filter(r => { try { return fs.statSync(ctx.P(r)).isFile(); } catch (_) { return false; } });
 }
 const ROW_POLICIES = ['roll-monthly', 'keep-N-days', 'keep-last-N'];
 function apply(opt) {

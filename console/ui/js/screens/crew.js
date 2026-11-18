@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
 import { modelPanel } from './crew-model.js';
+import { departmentsSection } from './crew-departments.js';
 import { personName, seatState, modelName, providerName } from '../plain.js';
 import * as hiring from './hiring.js';
 import * as floor from './floor.js';
@@ -51,9 +52,11 @@ function people(root, ctx) {
   const { app } = ctx;
   let selId = ctx.rest[0] || null, tab = ctx.rest[1] === 'model' ? 'model' : 'brief';
   const fnHost = h('div'), listHost = h('div', { style: 'flex:1 1 320px;display:flex;flex-direction:column;border-top:1px solid var(--border-hairline)' }),
-    dossier = h('article', { 'aria-labelledby': 'dossier', class: 'card p28', style: 'flex:2 1 480px;min-width:0;gap:24px' }), errEl = h('div'), side = h('div', { class: 'stack-16' });
+    dossier = h('article', { 'aria-labelledby': 'dossier', class: 'card p28', style: 'flex:2 1 480px;min-width:0;gap:24px' }), errEl = h('div'), side = h('div', { class: 'stack-16' }),
+    deptHost = h('section', { 'aria-labelledby': 'depts', class: 'stack-16', hidden: true });
   fill(root, errEl,
     h('section', { 'aria-labelledby': 'fn', class: 'stack-16' }, h('h2', { id: 'fn', class: 'h4' }, 'Who holds each function'), fnHost),
+    deptHost,
     h('section', { style: 'display:flex;flex-wrap:wrap;gap:32px' }, listHost, dossier), side);
   let data = null, modelView = null;
 
@@ -131,9 +134,11 @@ function people(root, ctx) {
   }
 
   load();
+  const reloadDepts = departmentsSection(deptHost);   // departments, leads and members (console/departments.js)
   const stopPanels = mountPanels(side, 'side:crew', app);
   const off = events.on(['crew', 'now'], load);
-  return () => { off(); stopPanels(); };
+  const offDepts = events.on(['crew'], reloadDepts);
+  return () => { off(); offDepts(); stopPanels(); };
 }
 function kv(k, v) { return h('div', { class: 'stack-8' }, h('span', { class: 'eyebrow-t' }, k), h('p', { class: 'body-s' }, v)); }
 function whenOf(t) { return when(t); }

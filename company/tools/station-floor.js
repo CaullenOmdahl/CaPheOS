@@ -8,7 +8,7 @@
  *    save a broken floor. So every change is PLANNED and APPLIED by StationBuilder (the code BUILD mode and the lead's
  *    station.build use) on a fresh GET inside station-crew.editSave, re-planned on every conflict retry, then read back.
  *  - StarNet's own checks miss things (a desk standing on another desk's seat; an unreachable room is only a warning), so
- *    `audit` adds checks A1-A10 and `apply` refuses any edit that makes A1-A7 worse or that StarNet only warns about.
+ *    `audit` adds checks A1-A12 and `apply` refuses any edit that makes A1-A7 worse or that StarNet only warns about.
  *    --allow-note waives only a StarNet warning; today StarNet warns about exactly two things (a new routing problem, a
  *    room nobody can walk into) and A6 and A5 refuse those anyway, so it matters only for warnings a later StarNet adds.
  *  - An open station page keeps its own copy and merges its next save over ours (its _nid and room order win), so after a
@@ -21,7 +21,8 @@
  *    the last prop of a capability (desks, files, web, memory, terminal, images).
  *
  *   node company/tools/station-floor.js show [--room <room>] [--json]
- *   node company/tools/station-floor.js audit [--strict]                    # A1-A10; exit 1 on a failure (--strict: warnings too)
+ *   node company/tools/station-floor.js audit [--strict]                    # A1-A12; exit 1 on a failure (--strict: warnings too)
+ *     A12 (warn only): FLOOR_PLAN.md departments vs company/departments.json (lib/departments.js drift; docs/DEPARTMENTS.md)
  *   node company/tools/station-floor.js snapshot [--label <label>]          # company/floor_snapshots/<time>-<label>.json
  *   node company/tools/station-floor.js plan (--ops '<json list of refit ops>' | <ops.json>)   # dry run; writes nothing
  *   node company/tools/station-floor.js apply (--ops '<json>' | <ops.json>) --by <name> [--why "<reason>"] [--allow-note <text>] [--wait-idle <min>]
@@ -52,7 +53,7 @@
  * /api/state/snapshot (a missing or broken file is an unreadable run list), STATION_FLOOR_TEST_RELOAD=reloaded|busy|failed
  * for the page reload, STATION_FLOOR_TEST_REVERT=1 makes the reloaded "page" save its stale floor back over the write,
  * STATION_FLOOR_TEST_CONFLICTS=<n> makes the first n writes lose to "another writer". STATION_FLOOR_SNAPSHOTS,
- * STATION_FLOOR_PLAN and STATION_FLOOR_LOOPS move those files.
+ * STATION_FLOOR_PLAN, STATION_FLOOR_LOOPS and STATION_FLOOR_DEPARTMENTS move those files.
  * Owner of this tool: the tools seat (loops.json function `tools`); used by the floor seat (function `floor`).
  */
 'use strict';
@@ -69,6 +70,7 @@ const HERE = TEST_SAVE ? path.dirname(TEST_SAVE) : null;   // test mode keeps ev
 const SNAPS = ENVP('STATION_FLOOR_SNAPSHOTS') || (HERE ? path.join(HERE, 'floor_snapshots') : co.p('company', 'floor_snapshots'));
 const PLAN_MD = ENVP('STATION_FLOOR_PLAN') || (HERE ? path.join(HERE, 'FLOOR_PLAN.md') : co.p('company', 'FLOOR_PLAN.md'));
 const LOOPS = ENVP('STATION_FLOOR_LOOPS') || co.LOOPS_FILE;
+const DEPTS = ENVP('STATION_FLOOR_DEPARTMENTS') || co.p('company', 'departments.json');   // the source of truth A12 compares FLOOR_PLAN.md with
 const NID_GAP = 50;   // ids an open page's own counter cannot reach before it reloads (hire.js:394-396)
 const REQUIRED_CAPS = ['computer', 'cabinet', 'dish', 'notebook', 'workbench', 'studio'];   // desks + the five capability props
 const CORE = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7'];   // an apply may not make any of these worse
@@ -473,6 +475,21 @@ function audit(S, o) {
         it.push({ key: 'floor:' + p.id + ':' + on.floor, warn: true, msg: pname(p) + ' declares floors ' + floors.join(', ') + ' and stands on the ' + on.style + ' floor of ' + on.room + ' (' + on.floor + ')' });
     }
     add('A11', 'a prop whose spec declares its floors stands on one of them', it); }
+  // A12: the departments FLOOR_PLAN.md names (section 1 rooms, section 2's Department column) agree with
+  // company/departments.json, the source of truth (docs/DEPARTMENTS.md). Warn only: it never blocks an apply, and nothing
+  // here rewrites either file (the floor owner fixes the plan, departments.js changes the departments). No departments.json
+  // = the company has no departments = nothing to compare.
+  { const it = [];
+    try {
+      const DL = require('./lib/departments'), L = DL.load({ file: DEPTS });
+      if (L.exists && text) {
+        const T = planTable(text), plan = { sections: departments(text).map(d => ({ room: d.room, department: d.department })), rows: T ? T.rows.map(r => ({ name: r.name, department: r.department })) : [] };
+        const dr = DL.drift({ doc: L.doc, exists: !L.error, crew: loadCrew().agents, plan });
+        if (L.error) it.push({ key: 'depts:file', msg: L.error, warn: true });
+        for (const m of dr.mismatches) if (/^(PLAN_|DEPT_NOT_ON_PLAN)/.test(m.code)) it.push({ key: 'depts:' + m.code + ':' + (m.dept || m.seat || m.ref || 'file'), msg: m.msg, fix: 'node company/tools/departments.js check', warn: true });
+      }
+    } catch (e) { it.push({ key: 'depts:error', msg: 'the departments check could not run: ' + String(e && e.message || e).slice(0, 120), warn: true }); }
+    add('A12', 'FLOOR_PLAN.md departments agree with company/departments.json', it); }
   return { checks, failed: checks.filter(c => c.status === 'fail').map(c => c.id), warned: checks.filter(c => c.status === 'warn').map(c => c.id) };
 }
 // fail keys per check (A6: warnings count too, so a new routing warning is "worse")

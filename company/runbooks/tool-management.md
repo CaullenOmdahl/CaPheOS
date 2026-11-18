@@ -117,6 +117,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/provider-balance.js | finance | `selftest` / `--selftest` |
 | company/tools/default-branch-watch.js | risk | `selftest` |
 | company/tools/delegation.js | ceo | `selftest` / `--selftest` |
+| company/tools/departments.js | people | `--selftest` |
 | company/tools/dispatch.js | tools | `--selftest` |
 | company/tools/dispatcher-loop.js | tools | `selftest` / `--selftest` |
 | company/tools/dossier.js | people | none |
@@ -239,6 +240,7 @@ in §5a instead.
 | `company/tools/delegation.js` | ceo | `node company/tools/delegation.js selftest` |
 | `company/tools/meeting-register.js` | tools | `node company/tools/meeting-register.js selftest` |
 | `company/tools/provider-balance.js` | finance | `node company/tools/provider-balance.js selftest` |
+| `company/tools/departments.js` | people | `node company/tools/departments.js --selftest` (the CLI and its governance: `node --test company/tools/tests/departments.test.js`) |
 | `company/tools/dispatch.js` | tools | `node company/tools/dispatch.js --selftest` |
 | `company/tools/dispatcher-loop.js` | tools | `node company/tools/dispatcher-loop.js selftest` |
 | `company/tools/duties.js` | tools | `node company/tools/duties.js --selftest` |
