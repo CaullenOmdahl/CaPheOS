@@ -6,6 +6,7 @@
 import { h, fill, Button, Tag, errLine, humanError, Setting, Details, empty, when as whenAt } from '../../ui.js';
 import { personName } from '../../plain.js';
 import { api, post } from '../../api.js';
+import { PNAME, heldLine, startBody } from './routing-explain.js';
 
 const MODE_SAY = {
   off: ['Off', 'neutral', 'Nothing is computed; every seat runs on its own model chain.'],
@@ -13,7 +14,6 @@ const MODE_SAY = {
   live: ['Live', 'online', 'The choice runs, for that one run only, and only on a model the seat may use right now.'],
 };
 const STATUS_SAY = { draft: ['Draft', 'neutral'], running: ['Running', 'online'], paused: ['Paused', 'warning'], done: ['Finished', 'neutral'] };
-const PNAME = { 'claude-cli': 'Claude', custom: 'MiniMax', deepseek: 'DeepSeek' };
 const armName = a => (PNAME[a.provider] || a.provider) + ' ' + a.model + (a.effort ? ' at ' + a.effort + ' effort' : '');
 
 export function routingSection(host, app) {
@@ -53,13 +53,14 @@ export function routingSection(host, app) {
     const where = [].concat((t.scope && t.scope.departments || []).map(d => 'the ' + d + ' department'), (t.scope && t.scope.seats || []).map(personName)).join(', ');
     const btn = (op, label, say, ask) => Button(label, { size: 'sm', variant: op === 'start' || op === 'resume' ? 'primary' : undefined, disabled: busy, aria: label + ' trial ' + t.id,
       onClick: async () => { if (ask && !(await confirmed(ask))) return; act('/routing/trials/' + encodeURIComponent(t.id) + '/' + op, {}, say); } });
-    const ops = t.status === 'draft' ? [btn('start', 'Start', 'Trial started', { title: 'Start this trial?', body: 'About ' + Math.round((t.entryShare || 0) * 100) + '% of wakes in ' + (where || 'its scope') + ' are split evenly between its ' + (t.arms || []).length + ' models' + (shadow ? '. Routing is not live, so this is only recorded until you switch routing live.' : '.'), confirm: 'Start' })]
+    const ops = t.status === 'draft' ? [btn('start', 'Start', 'Trial started', { title: 'Start this trial?', body: startBody(t, where, shadow), confirm: 'Start' })]
       : t.status === 'running' ? [btn('pause', 'Pause', 'Trial paused'), btn('stop', 'Stop', 'Trial stopped', { title: 'Stop this trial?', body: 'It finishes for good: no more wakes go to its models. What it measured so far is kept.', confirm: 'Stop', danger: true })]
       : t.status === 'paused' ? [btn('resume', 'Resume', 'Trial resumed'), btn('stop', 'Stop', 'Trial stopped', { title: 'Stop this trial?', body: 'It finishes for good. What it measured so far is kept.', confirm: 'Stop', danger: true })] : [];
     return h('article', { class: 'card p20 stack-12', 'aria-label': 'Trial ' + t.id },
       h('div', { class: 'between-c', style: 'flex-wrap:wrap;gap:8px' }, h('h3', { class: 'h4' }, t.id), Tag(st, { variant: 'status', status: tone })),
       h('p', { class: 'caption muted' }, 'Compares models on ' + t.class + ' work in ' + (where || 'no scope') + ', about ' + Math.round((t.entryShare || 0) * 100) + '% of wakes there.' + (t.createdBy ? ' Drafted by ' + personName(t.createdBy) + '.' : '') + (t.startedAt ? ' Started ' + whenAt(Date.parse(t.startedAt), tz) + '.' : '')),
       arms,
+      h('p', { class: 'caption' + (t.heldGuard && t.heldGuard.missing && t.heldGuard.missing.length ? ' err-line' : ' muted') }, heldLine(t)),
       (t.reasons || []).length ? h('p', { class: 'caption', role: 'status' }, t.reasons.join('. ')) : null,
       t.progress && t.progress.enough ? h('p', { class: 'caption' }, 'Every model has enough items for a fair comparison.') : null,
       ops.length ? h('div', { class: 'row-8' }, ops) : null);

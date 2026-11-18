@@ -71,9 +71,19 @@ node company/tools/routing.js trial start code-cmp --by owner
 - an arm a class rule denies (a **code trial with a `custom` arm**);
 - no scope, an unknown department or seat;
 - an entry share outside (0, `maxEntryShare`];
-- a `pauseWhenHeld` provider that is not allowed.
+- a `pauseWhenHeld` provider that is not allowed;
+- a `--pause-when-held` that leaves out an arm's provider which the pacer meters as a subscription (`claude-cli`,
+  `custom`: lib/pacing-ask.js `SUBS`, the same table pacer.js uses). Without `--pause-when-held`, those providers are
+  added to `trialLimits.defaultPauseWhenHeld` on their own. `status --json` gives each trial a `heldGuard`
+  `{providers, subscriptions, missing}`, and the console's trial card and Start dialog say which plans pause the trial
+  (and warn about a `missing` one in an older trial).
 
 All the problems are reported in one refusal, and nothing is written.
+
+Every change is one read-modify-write under an exclusive lock, `routing-policy.json.lock` (lib/file-lock.js: created
+with O_EXCL, broken after 30 s as stale). The routing-log row and the decisions.md line are written only after the
+policy write succeeded, still under the lock. A writer that cannot get the lock within a few seconds is refused (exit 2)
+and records nothing.
 
 Statuses: `draft` →(start) `running` ⇄(pause / resume) `paused`, and stop (from any of them) → `done`. A trial cannot
 start or resume while another running or paused trial tests the same class in an overlapping scope, so a wake is never

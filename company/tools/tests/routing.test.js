@@ -54,7 +54,7 @@ function fixture(o) {
 function tool(root, argv, o) {
   o = o || {};
   const code = 'const prov = require(' + JSON.stringify(path.join(TOOLS, 'provenance.js')) + '); prov.pinUnderStation(false); prov.pinOwnerShell(' + (o.owner ? 'true' : 'false') + ');' +
-    'const r = require(' + JSON.stringify(path.join(TOOLS, 'routing.js')) + ').run(' + JSON.stringify(argv) + '); process.stdout.write(JSON.stringify(r));';
+    (o.pre || '') + 'const r = require(' + JSON.stringify(path.join(TOOLS, 'routing.js')) + ').run(' + JSON.stringify(argv) + '); process.stdout.write(JSON.stringify(r));';
   const r = spawnSync(process.execPath, ['-e', code], { cwd: root, encoding: 'utf8', timeout: 60000, env: Object.assign({}, process.env, { CAPHEOS_ROOT: root, CAPHEOS_TZ: 'UTC', STARNET_URL: 'http://127.0.0.1:9', CAPHEOS_READONLY: '' }) });
   if (r.status !== 0) throw new Error('child failed: ' + r.stdout + r.stderr);
   return JSON.parse(r.stdout);
@@ -174,6 +174,102 @@ test('status: arm counts from wakes.jsonl route fields (applied and shadow, item
   const bare = fixture();
   const b = tool(bare, ['status', '--json']).out;
   assert.deepEqual([b.source, b.mode, b.tierCaps.mode, b.trials.length], ['default', 'shadow', 'shadow', 0]);
+});
+
+// one child per writer, all started together: each loads its modules, then waits for the same instant before it runs
+function racer(root, argv, o, at) {
+  const pre = ['provenance.js', 'routing.js', 'decision.js', 'lib/owner.js', 'lib/departments.js', 'lib/taskclass.js'].map(f => 'try { require(' + JSON.stringify(path.join(TOOLS, f)) + '); } catch (_) {}').join(' ');
+  const code = pre + ' const prov = require(' + JSON.stringify(path.join(TOOLS, 'provenance.js')) + '); prov.pinUnderStation(false); prov.pinOwnerShell(' + (o.owner ? 'true' : 'false') + ');' +
+    'while (Date.now() < ' + at + ') {} const r = require(' + JSON.stringify(path.join(TOOLS, 'routing.js')) + ').run(' + JSON.stringify(argv) + '); process.stdout.write(JSON.stringify(r));';
+  return new Promise((resolve, reject) => {
+    const c = spawn(process.execPath, ['-e', code], { cwd: root, env: Object.assign({}, process.env, { CAPHEOS_ROOT: root, CAPHEOS_TZ: 'UTC', STARNET_URL: 'http://127.0.0.1:9', CAPHEOS_READONLY: '' }) });
+    let out = '', err = ''; c.stdout.on('data', x => { out += x; }); c.stderr.on('data', x => { err += x; });
+    c.on('exit', st => { try { resolve(Object.assign(JSON.parse(out), { argv })); } catch (e) { reject(new Error('child ' + st + ': ' + out + err)); } });
+  });
+}
+
+test('concurrent writers: 8 trial creates and an owner mode change all land (or fail cleanly), one log row per landed change', async () => {
+  const root = fixture();
+  const ids = ['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8'];
+  const at = Date.now() + 2500;
+  const jobs = ids.map(id => racer(root, ['trial', 'create', id, '--class', 'code', '--arm', 'claude-cli/claude-sonnet-5-5@high', '--arm', 'claude-cli/claude-opus-5-5@medium', '--scope-dept', 'eng', '--by', 'Hal'], {}, at))
+    .concat([racer(root, ['mode', 'live', '--by', 'owner', '--why', 'race'], { owner: true }, at)]);
+  const res = await Promise.all(jobs);
+  const doc = JSON.parse(read(root, POLICY)), log = lines(root, LOG), dec = read(root, 'company/work/decisions.md');
+  const landed = [];
+  for (const r of res) {
+    const id = r.argv[0] === 'trial' ? r.argv[2] : null;
+    const rows = log.filter(x => id ? x.trial === id : x.op === 'mode');
+    if (r.code === 0) {
+      landed.push(r);
+      assert.equal(rows.length, 1, 'one log row for ' + (id || 'the mode change'));
+      if (id) { assert.ok(doc.trials.some(t => t.id === id), id + ' is in the policy (' + doc.trials.map(t => t.id).join(',') + ')'); assert.match(dec, new RegExp('draft trial ' + id + ' for')); }
+      else { assert.equal(doc.mode, 'live', 'the mode change is in the policy'); assert.match(dec, /the routing mode shadow -> live/); }
+    } else {
+      assert.match(r.out.error, /another writer|lock/, 'a writer that lost fails clearly: ' + r.out.error);
+      assert.equal(rows.length, 0, 'and records nothing');
+      if (id) { assert.ok(!doc.trials.some(t => t.id === id)); assert.doesNotMatch(dec, new RegExp('draft trial ' + id + ' for')); }
+    }
+  }
+  assert.equal(log.length, landed.length, 'exactly one routing-log row per change that landed');
+  assert.equal(doc.trials.length, landed.filter(r => r.argv[0] === 'trial').length, 'every landed create is in the file');
+  assert.ok(landed.length >= 1);
+  assert.ok(!fs.existsSync(path.join(root, POLICY + '.lock')), 'the lock is released');
+});
+
+test('a writer that cannot get the policy lock fails clearly and records nothing; a stale lock is broken', () => {
+  const root = fixture();
+  const lock = w(root, POLICY + '.lock', JSON.stringify({ pid: 999999, at: Date.now(), token: 'other' }) + '\n');
+  const quick = { pre: 'require(' + JSON.stringify(path.join(TOOLS, 'routing.js')) + ').S.lockOpts = () => ({ retries: 3, waitMs: 5 });' };
+  let r = tool(root, CREATE.concat(['--by', 'Hal']), quick);
+  assert.equal(r.code, 2); assert.match(r.out.error, /being changed by another writer \(held by process 999999.*nothing was changed or recorded/);
+  r = tool(root, ['mode', 'live', '--by', 'owner'], Object.assign({ owner: true }, quick));
+  assert.equal(r.code, 2);
+  assert.equal(read(root, POLICY), null); assert.equal(read(root, LOG), null);
+  assert.doesNotMatch(read(root, 'company/work/decisions.md'), /Model routing/);
+  assert.ok(fs.existsSync(lock), 'another writer\'s lock is left alone');
+  const old = (Date.now() - 120e3) / 1000; fs.utimesSync(lock, old, old);
+  r = tool(root, CREATE.concat(['--by', 'Hal']), quick);
+  assert.equal(r.code, 0, JSON.stringify(r.out));
+  assert.equal(lines(root, LOG).length, 1); assert.ok(!fs.existsSync(lock), 'the stale lock was broken and this writer\'s own lock released');
+});
+
+test('pauseWhenHeld covers every arm on a subscription the pacer meters (claude-cli, custom)', () => {
+  const root = fixture();
+  const rs = (id, arms, extra) => ['trial', 'create', id, '--class', 'research'].concat(...arms.map(a => ['--arm', a]), ['--scope-seat', 'lee'], extra || [], ['--by', 'Hal']);
+  let r = tool(root, rs('mm-ds', ['deepseek/deepseek-flash', 'custom/MiniMax-M3.1-Pro']));
+  assert.equal(r.code, 0, JSON.stringify(r.out));
+  assert.deepEqual(r.out.trial.pauseWhenHeld.slice().sort(), ['claude-cli', 'custom'], 'the MiniMax arm adds custom to the default');
+  r = tool(root, rs('mm-only', ['deepseek/deepseek-flash', 'custom/MiniMax-M3.1-Pro'], ['--pause-when-held', 'deepseek']));
+  assert.equal(r.code, 2); assert.match(r.out.error, /--pause-when-held.*custom/);
+  r = tool(root, rs('cl-drop', ['claude-cli/haiku', 'custom/MiniMax-M3.1-Flash'], ['--pause-when-held', 'custom']));
+  assert.equal(r.code, 2); assert.match(r.out.error, /--pause-when-held.*claude-cli/);
+  r = tool(root, rs('both', ['claude-cli/haiku', 'custom/MiniMax-M3.1-Flash'], ['--pause-when-held', 'custom,claude-cli']));
+  assert.equal(r.code, 0, JSON.stringify(r.out)); assert.deepEqual(r.out.trial.pauseWhenHeld, ['custom', 'claude-cli']);
+  r = tool(root, rs('ds-only', ['deepseek/deepseek-flash', 'claude-cli/haiku'], ['--pause-when-held', 'deepseek']));
+  assert.equal(r.code, 2, 'dropping the Claude arm\'s subscription is refused');
+  // the file the router reads keeps trials[].pauseWhenHeld
+  const doc = JSON.parse(read(root, POLICY));
+  assert.deepEqual(doc.trials.map(t => [t.id, t.pauseWhenHeld.slice().sort()]), [['mm-ds', ['claude-cli', 'custom']], ['both', ['claude-cli', 'custom']]]);
+  // status (what the console reads) says which subscriptions hold each trial, and names a gap in an older hand-made trial
+  doc.trials.push({ id: 'old-gap', class: 'research', status: 'draft', arms: [{ provider: 'custom', model: 'MiniMax-M3.1-Pro' }, { provider: 'deepseek', model: 'deepseek-flash' }], scope: { seats: ['lee'] }, entryShare: 0.1, minItemsPerArm: 5, pauseWhenHeld: ['claude-cli'] });
+  w(root, POLICY, doc);
+  const s = tool(root, ['status', '--json']).out;
+  const g = id => s.trials.find(t => t.id === id).heldGuard;
+  assert.deepEqual(g('mm-ds'), { providers: ['claude-cli', 'custom'], subscriptions: ['custom'], missing: [] });
+  assert.deepEqual(g('old-gap').missing, ['custom']);
+  assert.deepEqual(s.trialLimits.subscriptionProviders, ['claude-cli', 'custom'], 'the list comes from the pacer, not this tool');
+});
+
+test('the console trial card and Start dialog say which subscriptions pause the trial', async () => {
+  const E = await import(path.join(REPO, 'console', 'ui', 'js', 'screens', 'settings', 'routing-explain.js'));
+  const t = { arms: [{ provider: 'custom' }, { provider: 'deepseek' }], pauseWhenHeld: ['claude-cli', 'custom'], heldGuard: { providers: ['claude-cli', 'custom'], subscriptions: ['custom'], missing: [] } };
+  assert.equal(E.heldLine(t), 'Pauses itself while the pacer holds Claude or MiniMax.');
+  assert.match(E.startBody(t, 'seat Lee', false), /split evenly between its 2 models\. It pauses itself while the pacer holds Claude or MiniMax\.$/);
+  const gap = { arms: [{ provider: 'custom' }], pauseWhenHeld: ['claude-cli'], heldGuard: { providers: ['claude-cli'], subscriptions: ['custom'], missing: ['custom'] } };
+  assert.match(E.heldLine(gap), /does not pause when MiniMax is held/);
+  assert.match(E.startBody(gap, 'x', true), /only recorded.*does not pause when MiniMax is held/);
+  assert.equal(E.heldLine({ arms: [], pauseWhenHeld: [] }), 'Never pauses for the pacer.');
 });
 
 test('the console route runs routing.js as the owner with fixed arguments', async () => {

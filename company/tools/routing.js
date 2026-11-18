@@ -15,11 +15,15 @@
  *   node company/tools/routing.js trial show <id> [--json]
  *   node company/tools/routing.js --selftest
  *
+ * Every change is one read-modify-write under an exclusive lock (company/work/models/routing-policy.json.lock,
+ * lib/file-lock.js): a writer that cannot get the lock within a few seconds fails with exit 2 and records nothing.
  * Every change: company/work/models/routing-policy.json replaced atomically (created from the framework default
  * company/defaults/work/models/routing-policy.json on the first change) and its bytes recorded (provenance.js wrote, so
  * locked-watch.js knows it as this tool's write), one line in company/work/decisions.md (decision.js add), one row in
  * the policy's history file (company/work/models/routing-log.jsonl). A create is checked against company/model-policy.json
- * `allowed`, the policy's classRules (a code trial with a MiniMax-plan arm is refused) and trialLimits.
+ * `allowed`, the policy's classRules (a code trial with a MiniMax-plan arm is refused) and trialLimits; its pauseWhenHeld
+ * always covers every arm whose provider the pacer meters as a subscription (lib/pacing-ask.js SUBS, which pacer.js
+ * uses: claude-cli and custom): they are added to the default, and a --pause-when-held that leaves one out is refused.
  * Owner-only commands go through company/tools/lib/owner.js: --by owner from the owner's own shell or the console.
  * Exit: 0 done (or nothing to change), 1 selftest failed or an unexpected error, 2 usage or refused.
  * Owner of this tool: the people function (the model manager).
@@ -29,6 +33,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const co = require('./lib/company');
+const { withFileLock, LockBusy } = require('./lib/file-lock');
 
 const TOOL = 'routing.js';
 const MODES = ['off', 'shadow', 'live'];
@@ -46,6 +51,9 @@ const S = {   // seams for the tests (company/tools/tests/routing.test.js)
   owner: () => require('./lib/owner'),
   prov: () => require('./provenance.js'),
   decision: o => require('./decision.js').add(o),
+  lockOpts: () => ({}),   // lib/file-lock.js options (staleMs, retries, waitMs)
+  // the providers the pacer meters as flat-fee subscriptions (pacer.js SUBS is built from the same table)
+  subscriptions: () => { try { return Object.values(require('./lib/pacing-ask').SUBS).map(x => String(x.provider)).filter(Boolean); } catch (_) { return ['claude-cli', 'custom']; } },
 };
 const P = (...x) => path.join(S.root(), ...x);
 const REL = 'company/work/models/routing-policy.json';
@@ -125,10 +133,13 @@ function ownerOnly(by, what) {
 /* ---------------- writing ---------------- */
 function commit(L, next, who, row) {
   if (process.env.CAPHEOS_READONLY === '1') throw new Refusal('read-only run (CAPHEOS_READONLY=1): routing.js changes nothing here');
+  if (!L.lock) throw new Error('routing.js: commit outside the policy lock');
   // a company with no copy yet starts from the framework default (its _doc and every rule), with this change on top
   const text = JSON.stringify(next, null, 1) + '\n';
   const file = P(REL);
-  writeAtomic(file, text);
+  L.lock.check();            // still ours: nobody broke it as stale while this change was planned
+  writeAtomic(file, text);   // throws on failure: then no log row and no decision line are written
+  // recorded only now, after the policy write, still under the lock (so the log's order is the file's order)
   try { S.prov().wrote(file, text, TOOL); } catch (_) {}
   const digest = crypto.createHash('sha256').update(text).digest('hex').slice(0, 12);
   const at = S.now();
@@ -140,10 +151,17 @@ function commit(L, next, who, row) {
   return { ok: true, changed: true, summary: row.summary, by: who.label, file: REL, created: L.source !== 'company' || undefined, digest,
     decision: decision && decision.ok ? decision.id : undefined, decisionError: decision && decision.error ? decision.error : undefined };
 }
-function editable() {
+function editable(lock) {
   const L = loadPolicy();
   if (L.error) throw new Refusal(L.error + '; restore it (locked-watch.js revert ' + REL + ' --by <name>) before changing routing');
-  return Object.assign(L, { next: clone(L.doc) });
+  return Object.assign(L, { next: clone(L.doc), lock });
+}
+// change(fn): fn(L) reads, plans and commits one change, all under the policy's exclusive lock. A read-only run takes no
+// lock (it writes nothing: commit refuses). Lock busy -> a Refusal, before anything is read or recorded.
+function change(fn) {
+  if (process.env.CAPHEOS_READONLY === '1') return fn(editable(null));
+  try { return withFileLock(P(REL), lock => fn(editable(lock)), Object.assign({ what: REL }, S.lockOpts())); }
+  catch (e) { if (e instanceof LockBusy) throw new Refusal(e.message); throw e; }
 }
 const whyOf = a => given(a.why) ? clean(a.why, 300) : '';
 
@@ -152,12 +170,14 @@ function setMode(kind, value, a) {
   const v = String(value || '').trim();
   if (!MODES.includes(v)) throw new Refusal(kind + ' takes one of ' + MODES.join(', ') + ' (got "' + v + '")');
   const who = ownerOnly(a.by, 'Changing ' + what);
-  const L = editable(), cur = kind === 'mode' ? modeOf(L.doc) : capModeOf(L.doc);
-  if (cur === v) return { ok: true, changed: false, summary: what + ' is ' + v + ' already' };
-  if (kind === 'mode') L.next.mode = v;
-  else L.next.tierCaps = Object.assign({}, (L.next.tierCaps && typeof L.next.tierCaps === 'object') ? L.next.tierCaps : {}, { mode: v });
-  const summary = what + ' ' + cur + ' -> ' + v + (v === 'live' ? ' (applied only where the seat\'s override allowlist opens the chosen model)' : v === 'shadow' ? ' (recorded on each wake, not applied)' : ' (not computed)');
-  return commit(L, L.next, who, { op: kind === 'mode' ? 'mode' : 'tiercaps', fields: { from: cur, to: v }, why: whyOf(a), summary });
+  return change(L => {
+    const cur = kind === 'mode' ? modeOf(L.doc) : capModeOf(L.doc);
+    if (cur === v) return { ok: true, changed: false, summary: what + ' is ' + v + ' already' };
+    if (kind === 'mode') L.next.mode = v;
+    else L.next.tierCaps = Object.assign({}, (L.next.tierCaps && typeof L.next.tierCaps === 'object') ? L.next.tierCaps : {}, { mode: v });
+    const summary = what + ' ' + cur + ' -> ' + v + (v === 'live' ? ' (applied only where the seat\'s override allowlist opens the chosen model)' : v === 'shadow' ? ' (recorded on each wake, not applied)' : ' (not computed)');
+    return commit(L, L.next, who, { op: kind === 'mode' ? 'mode' : 'tiercaps', fields: { from: cur, to: v }, why: whyOf(a), summary });
+  });
 }
 
 /* ---------------- trials ---------------- */
@@ -179,6 +199,16 @@ function deniedBy(doc, cls, arm) {
   if (Array.isArray(r.denyProviders) && r.denyProviders.map(String).includes(arm.provider)) return 'classRules.' + cls + '.denyProviders';
   if (Array.isArray(r.denyModels) && r.denyModels.map(String).includes(arm.model)) return 'classRules.' + cls + '.denyModels';
   return null;
+}
+// the arms' providers that the pacer meters as subscriptions, in arm order, once each
+function subscriptionArms(arms, subs) {
+  const S2 = new Set((subs || S.subscriptions()).map(String));
+  return (arms || []).map(x => String(x && x.provider || '')).filter((p, i, xs) => S2.has(p) && xs.indexOf(p) === i);
+}
+function heldGuard(t, subs) {
+  const providers = Array.isArray(t.pauseWhenHeld) ? t.pauseWhenHeld.map(String) : [];
+  const subscriptions = subscriptionArms(t.arms, subs);
+  return { providers, subscriptions, missing: subscriptions.filter(p => !providers.includes(p)) };
 }
 /* planTrial(a, doc, ctx) -> the trial object, or a Refusal naming every problem. Pure apart from ctx. */
 function planTrial(a, doc, ctx) {
@@ -213,7 +243,15 @@ function planTrial(a, doc, ctx) {
   if (a['entry-share'] !== undefined) { share = Number(a['entry-share']); if (!(share > 0 && share <= lim.maxEntryShare)) probs.push('--entry-share is a share of the wakes in scope, more than 0 and at most ' + lim.maxEntryShare + ' (trialLimits.maxEntryShare)'); }
   let minItems = lim.defaultMinItemsPerArm;
   if (a['min-items'] !== undefined) { minItems = Number(a['min-items']); if (!(Number.isInteger(minItems) && minItems >= 1 && minItems <= 100000)) probs.push('--min-items is a whole number of items per arm, 1 or more'); }
-  const held = a['pause-when-held'] !== undefined ? list(a['pause-when-held']) : lim.defaultPauseWhenHeld.slice();
+  // every arm on a subscription the pacer meters pauses the trial while that subscription is held
+  const armSubs = subscriptionArms(arms, ctx.subscriptions);
+  let held;
+  if (a['pause-when-held'] !== undefined) {
+    held = list(a['pause-when-held']);
+    if (a['pause-when-held'] === true || !held.length) probs.push('--pause-when-held takes providers, comma separated (got none)');
+    const drop = armSubs.filter(p => !held.includes(p));
+    if (drop.length) probs.push('--pause-when-held ' + (held.join(',') || '(none)') + ' leaves out ' + drop.join(', ') + ': an arm runs on ' + (drop.length > 1 ? 'those subscriptions' : 'that subscription') + ', so the trial must pause while the pacer holds ' + (drop.length > 1 ? 'them' : 'it') + ' (add ' + drop.join(',') + ')');
+  } else held = lim.defaultPauseWhenHeld.concat(armSubs).filter((p, i, xs) => xs.indexOf(p) === i);
   for (const p of held) if (!allowed[p]) probs.push('--pause-when-held ' + p + ' is not an allowed provider');
   if (probs.length) throw new Refusal('refused: ' + probs.join('; '));
   return { id, class: cls, arms, scope: { departments: depts, seats }, entryShare: share, status: 'draft', pauseWhenHeld: held, minItemsPerArm: minItems,
@@ -222,13 +260,14 @@ function planTrial(a, doc, ctx) {
 function createTrial(a) {
   const who = actor(a.by, 'trial');
   if (who.kind !== 'owner' && who.kind !== 'people') throw new Refusal(who.label + ' may not create a trial: the people function (the model manager) or the owner drafts one, and only the owner starts it');
-  const L = editable();
   let departments = [];
   try { const D = require('./lib/departments'); departments = D.list(D.load({ root: S.root() }).doc); } catch (_) {}
-  const t = planTrial(a, L.doc, { modelPolicy: readJson(P('company', 'model-policy.json'), {}), departments, crew: S.crew(), who: who.kind === 'owner' ? 'owner' : who.name });
-  L.next.trials = trialsOf(L.next).concat([t]);
-  const summary = 'draft trial ' + t.id + ' for ' + t.class + ' work: ' + t.arms.map(armLabel).join(' vs ') + ', ' + Math.round(t.entryShare * 100) + '% of wakes in ' + scopeText(t.scope) + ', ' + t.minItemsPerArm + ' items per arm (not started: the owner starts it)';
-  return Object.assign(commit(L, L.next, who, { op: 'trial-create', fields: { trial: t.id, to: 'draft' }, why: whyOf(a), summary }), { trial: t });
+  return change(L => {
+    const t = planTrial(a, L.doc, { modelPolicy: readJson(P('company', 'model-policy.json'), {}), departments, crew: S.crew(), who: who.kind === 'owner' ? 'owner' : who.name, subscriptions: S.subscriptions() });
+    L.next.trials = trialsOf(L.next).concat([t]);
+    const summary = 'draft trial ' + t.id + ' for ' + t.class + ' work: ' + t.arms.map(armLabel).join(' vs ') + ', ' + Math.round(t.entryShare * 100) + '% of wakes in ' + scopeText(t.scope) + ', ' + t.minItemsPerArm + ' items per arm, paused while the pacer holds ' + (t.pauseWhenHeld.join(' or ') || 'nothing') + ' (not started: the owner starts it)';
+    return Object.assign(commit(L, L.next, who, { op: 'trial-create', fields: { trial: t.id, to: 'draft' }, why: whyOf(a), summary }), { trial: t });
+  });
 }
 const scopeText = s => [].concat((s.departments || []).map(d => 'department ' + d), (s.seats || []).map(x => 'seat ' + x)).join(', ') || 'nowhere';
 const FROM = { start: ['draft'], pause: ['running'], resume: ['paused'], stop: ['draft', 'running', 'paused'] };
@@ -236,7 +275,10 @@ const TO = { start: 'running', pause: 'paused', resume: 'running', stop: 'done' 
 const overlaps = (x, y) => (x.departments || []).some(d => (y.departments || []).includes(d)) || (x.seats || []).some(s => (y.seats || []).includes(s));
 function moveTrial(op, id, a) {
   const who = ownerOnly(a.by, (op[0].toUpperCase() + op.slice(1)) + 'ing a trial');
-  const L = editable(), trials = trialsOf(L.next), t = trials.find(x => String(x.id) === String(id));
+  return change(L => moveIn(L, op, id, a, who));
+}
+function moveIn(L, op, id, a, who) {
+  const trials = trialsOf(L.next), t = trials.find(x => String(x.id) === String(id));
   if (!t) throw new Refusal('no trial "' + (id || '') + '" (routing.js status)');
   const cur = STATUSES.includes(t.status) ? t.status : 'draft';
   if (cur === TO[op]) return { ok: true, changed: false, summary: 'trial ' + t.id + ' is ' + cur + ' already' };
@@ -286,7 +328,7 @@ function armIndexOf(t, x) {
   const i = t.arms.findIndex(a => a.provider === x.provider && a.model === x.model && (!a.effort || !x.effort || a.effort === x.effort));
   return i >= 0 ? i : null;
 }
-function trialView(t, rows, log) {
+function trialView(t, rows, log, subs) {
   const arms = (Array.isArray(t.arms) ? t.arms : []).map((a, i) => ({ index: i, provider: a.provider, model: a.model, effort: a.effort || null, label: armLabel(a), wakes: 0, items: 0, shadowWakes: 0, shadowItems: 0 }));
   const seen = arms.map(() => ({ live: new Set(), shadow: new Set() }));
   const since = Date.parse(t.startedAt || t.createdAt || '') || 0;
@@ -320,7 +362,7 @@ function trialView(t, rows, log) {
   const min = Number(t.minItemsPerArm) || 0;
   const n = a => a.items + a.shadowItems;
   return Object.assign(clone(t), { arms, countedSince: since ? iso(since) : null, unknownArm: unknownArm || undefined,
-    hold: t.status === 'running' ? held : null, reasons,
+    hold: t.status === 'running' ? held : null, reasons, heldGuard: heldGuard(t, subs),
     progress: { minItemsPerArm: min, lowestArm: arms.length ? Math.min(...arms.map(n)) : 0, enough: arms.length > 0 && arms.every(a => n(a) >= min) } });
 }
 function status() {
@@ -330,14 +372,16 @@ function status() {
   const rows = starts.length ? wakeRows(Math.min(...starts)) : [];
   const log = logRows(doc, 400);
   const tc = doc.tierCaps && typeof doc.tierCaps === 'object' ? doc.tierCaps : {};
+  const subs = S.subscriptions();
   return { ok: !L.error, error: L.error || undefined, file: REL, source: L.source, mode: modeOf(doc), classRules: doc.classRules || {}, order: doc.order || null,
     tierCaps: { mode: capModeOf(doc), allow: tc.allow || [], heavyEscape: tc.heavyEscape || null, exemptFunctions: tc.exemptFunctions || [], exemptLeads: tc.exemptLeads !== false },
-    trialLimits: limitsOf(doc), trials: trials.map(t => trialView(t, rows, log)), log: log.slice(-20).reverse(), history: historyRel(doc) };
+    trialLimits: Object.assign(limitsOf(doc), { subscriptionProviders: subs }), trials: trials.map(t => trialView(t, rows, log, subs)), log: log.slice(-20).reverse(), history: historyRel(doc) };
 }
 
 /* ---------------- text output ---------------- */
 function trialText(t) {
-  const L = [t.id + ' — ' + t.class + ' work, ' + t.status + ', ' + Math.round((Number(t.entryShare) || 0) * 100) + '% of wakes in ' + scopeText(t.scope || {}) + ', ' + t.minItemsPerArm + ' items per arm'];
+  const g = t.heldGuard || { providers: [], missing: [] };
+  const L = [t.id + ' — ' + t.class + ' work, ' + t.status + ', ' + Math.round((Number(t.entryShare) || 0) * 100) + '% of wakes in ' + scopeText(t.scope || {}) + ', ' + t.minItemsPerArm + ' items per arm, paused while the pacer holds ' + (g.providers.join(' or ') || 'nothing') + (g.missing.length ? ' (NOT ' + g.missing.join(' or ') + ', which an arm runs on)' : '')];
   for (const a of t.arms) L.push('  arm ' + a.index + ' ' + a.label + ': ' + a.items + ' items in ' + a.wakes + ' applied wakes, ' + a.shadowItems + ' items in ' + a.shadowWakes + ' shadow wakes');
   for (const r of t.reasons) L.push('  ' + r);
   return L.join('\n');
@@ -405,6 +449,10 @@ function selftest() {
   ok('a reused id is refused', refuse({ pos: ['trial', 'create', 'old'] }, /exists already/));
   ok('an entry share over the limit is refused', refuse({ 'entry-share': '0.9' }, /entry-share/));
   ok('a scope is required', refuse({ 'scope-dept': undefined }, /scope/));
+  const rs = Object.assign({}, base, { class: 'research', arm: ['deepseek/deepseek-flash', 'custom/MiniMax-M3.1-Pro'] });
+  ok('a MiniMax arm adds custom to the default pauseWhenHeld', JSON.stringify(planTrial(rs, doc, Object.assign({}, ctx, { subscriptions: ['claude-cli', 'custom'] })).pauseWhenHeld) === '["claude-cli","custom"]');
+  ok('a --pause-when-held that drops a subscription arm is refused', (() => { try { planTrial(Object.assign({}, rs, { 'pause-when-held': 'deepseek' }), doc, Object.assign({}, ctx, { subscriptions: ['claude-cli', 'custom'] })); return false; } catch (e) { return /leaves out custom/.test(e.message); } })());
+  ok('the guard names a gap in an older trial', JSON.stringify(heldGuard({ arms: [{ provider: 'custom' }], pauseWhenHeld: ['claude-cli'] }, ['claude-cli', 'custom']).missing) === '["custom"]');
   const tv = trialView({ id: 'cmp', status: 'running', startedAt: '2030-01-01T00:00:00.000Z', minItemsPerArm: 1, arms: t.arms }, [
     { at: Date.parse('2030-01-01T01:00:00Z'), items: [{ id: 'a' }], route: { source: 'trial', trial: 'cmp', arm: 0, applied: true } },
     { at: Date.parse('2030-01-01T02:00:00Z'), items: [{ id: 'b' }, { id: 'c' }], route: { source: 'route', applied: false, wouldApply: { source: 'trial', arm: 'cmp:1' } } },
@@ -414,7 +462,7 @@ function selftest() {
   return bad ? 1 : 0;
 }
 
-module.exports = { run, status, planTrial, parseArm, trialOfRoute, loadPolicy, S, Refusal, REL, DEFAULT_REL };
+module.exports = { run, status, planTrial, parseArm, trialOfRoute, heldGuard, loadPolicy, S, Refusal, REL, DEFAULT_REL };
 if (require.main === module) {
   const argv = process.argv.slice(2);
   if (argv[0] === '--selftest' || argv[0] === 'selftest') process.exit(selftest());
