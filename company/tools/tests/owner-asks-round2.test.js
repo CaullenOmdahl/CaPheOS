@@ -176,3 +176,43 @@ test('S-a: pack.js and module.js are owner-gated (harness-change) and watched (l
     assert.ok(locked.has('company/tools/' + f), f + ' is locked');
   }
 });
+
+/* ---------------- safety N2 / UX N5 and UX N4: background jobs with network ---------------- */
+const SVC_CTX = `
+const S = require(path.join(REPO, 'company/tools/service.js'));
+const calls = [];
+const svcOpts = x => Object.assign({ root: T, unitDir: path.join(T, 'units'), transientDir: path.join(T, 'transient'), systemctl: a => { calls.push(a.join(' ')); return { code: 0, out: '', err: '' }; },
+  journal: () => '', isAgent: () => true, ownerShell: () => false, guard: () => true, halted: () => false, callerConflict: () => null }, x || {});
+const tryIt = fn => { try { return { ok: true, r: fn() }; } catch (e) { return { ok: false, code: e.code, msg: e.message }; } };
+const G = require(path.join(REPO, 'company/tools/lib/pm-inbox-guard.js'));
+const asks = () => G.rows({ file: path.join(T, 'company/pm-inbox.jsonl'), noAlert: true }).filter(x => x.type === 'ask');
+const unit = n => fs.existsSync(path.join(T, 'units', 'oc-svc-' + n + '.service'));
+`;
+test('safety N2: with the guardrail on, an allowlisted website at schedules=auto and external=auto is never installed by the crew; no network still is', () => {
+  const T = company({ levels: { schedules: 'auto', external: 'auto' }, allowlist: ['api.known.example'] });
+  W(T, 'company/work/feed.py', 'print(1)\n');
+  const r = run(T, SVC_CTX + `
+// an agent appends a site to the allowlist, then proposes a job for it
+fs.appendFileSync(path.join(T, 'company/state/external-allowlist.txt'), 'evil.example\\n');
+const net = tryIt(() => S.propose(S.context(svcOpts()), 'feed', { by: 'sam', kind: 'timer', exec: 'python3 company/work/feed.py', every: '1h', why: 'pulls prices for the desk every hour', hosts: 'evil.example' }));
+const quiet = tryIt(() => S.propose(S.context(svcOpts()), 'quiet', { by: 'sam', kind: 'timer', exec: 'python3 company/work/feed.py', every: '1h', why: 'tidies the price files every hour' }));
+const c = asks().find(x => x.effect && x.effect.serviceApprove && x.effect.serviceApprove.name === 'feed') || null;
+out({ net, quiet, feedUnit: unit('feed'), quietUnit: unit('quiet'), card: c && { category: c.gate.category, guardrail: !!c.gate.guardrail, message: c.message } });`);
+  assert.equal(r.net.r.waiting, true, 'waits for the owner: ' + JSON.stringify(r.net));
+  assert.equal(r.feedUnit, false, 'nothing installed');
+  assert.equal(r.card.category, 'localComputer'); assert.equal(r.card.guardrail, true);
+  assert.match(r.card.message, /It connects to the Evil website but nothing stops it reaching others, so company data could leave\./);
+  assert.equal(r.quiet.r.status, 'installed', 'a job with no network is still the crew\'s to install');
+  assert.equal(r.quietUnit, true);
+});
+test('UX N4: a job outside the safe profile for another reason still names the website on its card', () => {
+  const T = company({ levels: { schedules: 'auto', external: 'approve' } });
+  W(T, 'company/work/feed.py', 'print(1)\n');
+  const r = run(T, SVC_CTX + `
+const a = tryIt(() => S.propose(S.context(svcOpts()), 'tape', { by: 'sam', kind: 'service', exec: 'python3 company/work/feed.py', why: 'records the live price tape all day', hosts: 'api.newfeed.example', 'soft-halt': 'keep' }));
+const c = asks().pop() || null;
+out({ a, message: c && c.message, technical: c && c.technical });`);
+  assert.equal(r.a.r.waiting, true, JSON.stringify(r.a));
+  assert.match(r.message, /the Newfeed website, which is new to the crew/, 'the website a yes approves is on the card: ' + r.message);
+  assert.match(r.technical, /--soft-halt keep/, 'and the other reason is in the technical part');
+});

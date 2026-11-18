@@ -86,26 +86,38 @@ out({ a, asks: asks().length, unit: unitText('state-backup') });`);
   assert.match(r.unit || '', /RestrictAddressFamilies=AF_UNIX/, 'the unit has no network');
 });
 
-test('B1: a website on the allowlist at external=auto is not asked; a new one follows the external level', () => {
+test('B1: a job with any network, a named website included, goes to the owner while the guardrail is on; off, the external level decides', () => {
   const T = company({ levels: { schedules: 'auto', external: 'auto' }, allowlist: ['api.kalshi.com'] });
   W(T, 'company/work/feed.py', 'print(1)\n');
   const r = run(T, SVC_CTX + `
-const p = (n, hosts) => tryIt(() => S.propose(S.context(svcOpts()), n, { by: 'sam', kind: 'timer', exec: 'python3 company/work/feed.py', every: '1h', why: 'pulls prices for the desk every hour', hosts }));
+let lcOn = true;
+const p = (n, hosts) => tryIt(() => S.propose(S.context(svcOpts({ guard: nm => nm === 'localComputer' ? lcOn : true })), n, { by: 'sam', kind: 'timer', exec: 'python3 company/work/feed.py', every: '1h', why: 'pulls prices for the desk every hour', hosts }));
 const known = p('bank-freshness', 'api.kalshi.com');
 const fresh = p('seal-nowcast', 'hermes.pyth.network');
+const cardsOn = asks().map(c => ({ category: c.gate.category, guardrail: !!c.gate.guardrail, message: c.message, recommendation: c.recommendation, technical: c.technical }));
+lcOn = false;
+const offKnown = p('bank-fresh2', 'api.kalshi.com');
 const g = JSON.parse(fs.readFileSync(path.join(T, 'company/state/governance.json'), 'utf8')); g.categories.external = 'approve';
 fs.writeFileSync(path.join(T, 'company/state/governance.json'), JSON.stringify(g));
 const ask = p('eia-slot', 'api.eia.gov');
 const card = asks().pop() || null;
-out({ known, fresh, ask, card: card && { category: card.gate.category, guardrail: !!card.gate.guardrail, message: card.message, recommendation: card.recommendation, technical: card.technical } });`);
-  assert.equal(r.known.r.status, 'installed', 'an allowlisted website at external=auto: installed: ' + JSON.stringify(r.known));
-  assert.equal(r.fresh.r.status, 'installed', 'a new website at external=auto: the crew decides: ' + JSON.stringify(r.fresh));
-  assert.equal(r.ask.r.waiting, true, 'a new website at external=approve waits for the owner');
-  assert.ok(r.card, 'one card');
+out({ known, fresh, cardsOn, offKnown, ask, card: card && { category: card.gate.category, guardrail: !!card.gate.guardrail, message: card.message, recommendation: card.recommendation, technical: card.technical } });`);
+  assert.equal(r.known.r.waiting, true, 'an allowlisted website with the guardrail on waits for the owner: ' + JSON.stringify(r.known));
+  assert.equal(r.fresh.r.waiting, true, 'a new website with the guardrail on waits for the owner: ' + JSON.stringify(r.fresh));
+  assert.equal(r.cardsOn.length, 2);
+  for (const c of r.cardsOn) {
+    assert.equal(c.category, 'localComputer'); assert.equal(c.guardrail, true, 'the guardrail asks: no standing rule covers it');
+    assert.match(c.message, /nothing stops it reaching others, so company data could leave\./);
+    assert.match(c.recommendation, /Say yes only if that risk is acceptable to you/);
+    assert.match(c.technical, /declared, not enforced/);
+  }
+  assert.match(r.cardsOn[0].message, /It connects to the Kalshi website but nothing stops/);
+  assert.match(r.cardsOn[1].message, /It connects to the Pyth website, which is new to the crew, but nothing stops/);
+  assert.equal(r.offKnown.r.status, 'installed', 'guardrail off: an allowlisted website at external=auto is installed');
+  assert.equal(r.ask.r.waiting, true, 'guardrail off: a new website at external=approve waits for the owner');
   assert.equal(r.card.category, 'external'); assert.equal(r.card.guardrail, false, 'not a guardrail card: a standing rule can cover it');
-  assert.match(r.card.message, /It connects to the Eia website, which the crew has not used before\./);
-  assert.doesNotMatch(r.card.message + r.card.recommendation, /\bonly\b|any website/, 'never claims the job reaches only some websites');
-  assert.doesNotMatch(r.card.recommendation, /keeps their work running smoothly/, 'no canned reason');
+  assert.match(r.card.message, /It connects to the Eia website, which is new to the crew, but nothing stops it reaching others/);
+  assert.doesNotMatch(r.card.message, /\bonly\b|any website/, 'never claims the job reaches only some websites');
   assert.match(r.card.technical, /declared, not enforced/);
 });
 

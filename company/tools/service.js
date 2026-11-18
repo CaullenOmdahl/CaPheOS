@@ -7,7 +7,8 @@
  *        [--hosts <host>[,<host>] | --network on] [--soft-halt finish|stop|keep] [--wake <seat>[,<seat>]]
  *        [--plain "what it does, for the owner"] [--if-no "what the crew does instead, for the owner"]
  *        No network unless asked: name the websites the job needs with --hosts (a website the company does not use yet is
- *        an `external` decision); --network on (any website) asks the owner while the localComputer guardrail is on.
+ *        an `external` decision). Any network (--hosts or --network on) asks the owner while the localComputer guardrail
+ *        is on: the named websites are declared, not enforced, so the card names them and says nothing stops others.
  *        --wake (a timer only): each run's end is recorded like a watched job (company/tools/notify-when.js wraps the
  *        ExecStart and passes its exit code through) and wakes those seats, a failure too; it also satisfies a
  *        `**Waiting on:** service:<name>` line (company/HANDOFFS.md)
@@ -44,9 +45,9 @@
  * GOVERNANCE. A new service follows the `schedules` self-governance level (auto installs, notify installs and puts one
  * plain line in the owner's daily digest, triage asks the decision model, approve files one owner card), like any other
  * category. With the `localComputer` guardrail ON that holds only for a service in the SAFE PROFILE (safeProfile below:
- * a script and paths in the company folder, which validateArgv already requires; no network, or --hosts; the default
+ * a script and paths in the company folder, which validateArgv already requires; no network at all; the default
  * memory and processor limits; a timer, or a service that restarts only on failure; it finishes or stops in a soft halt).
- * Anything outside it (--network on, raised limits, restart always, runs through a soft halt) asks the owner. A website
+ * Anything outside it (any network, --hosts included, raised limits, restart always, runs through a soft halt) asks the owner. A website
  * in --hosts that is not on the external-gate allowlist is also an `external` decision (auto: the crew decides; notify:
  * one digest line; approve: the owner's card, category external); the stricter of the two levels wins. The owner is asked only through lib/owner-card.js: one card per exact
  * spec (ref service:<name>:<spec key>), plain words up front, the command and limits only under technical, effect
@@ -388,10 +389,17 @@ function allowlist(ctx) {
 const hostAllowed = (list, h) => list.some(e => (e.startsWith('*.') ? (h === e.slice(2) || h.endsWith(e.slice(1))) : (h === e || h.endsWith('.' + e))));
 /* safeProfile(ctx, e) -> {safe, reasons: [{plain, crew}]} — may this service follow the schedules level while the
  * localComputer guardrail is on? validateArgv has already kept the script and every path inside the company folder.
- * Named websites (--hosts) are not a reason here: they are the `external` level's decision (siteDecision below). */
+ * Any network is outside the safe profile: the websites a job names (--hosts) are declared, not enforced (the unit drops
+ * RestrictAddressFamilies and blocks no host), so a named website is no safer than open network. Only a job with no
+ * network stays inside it (the crew installs it at the schedules level). The new websites still go through the
+ * `external` level as well (decision below), so the stricter of the two decides. */
 function safeProfile(ctx, e) {
   const reasons = [];
-  if (e.network && (!e.hosts || !e.hosts.length)) reasons.push({ plain: 'It could connect to any website, which risks company data leaving this computer.', crew: 'network open (--network on, no --hosts)' });
+  if (e.network && e.hosts && e.hosts.length) {
+    const st = sites(ctx, e);
+    reasons.push({ plain: 'It connects to ' + sitesWords(e.hosts) + (st.fresh.length ? ', which is new to the crew,' : '') + ' but nothing stops it reaching others, so company data could leave.',
+      crew: 'network on: websites declared (' + e.hosts.join(', ') + '), not enforced' });
+  } else if (e.network) reasons.push({ plain: 'It could connect to any website, which risks company data leaving this computer.', crew: 'network open (--network on, no --hosts)' });
   if (bytesOf(e.limits && e.limits.memoryMax) > bytesOf(DEFAULT_LIMITS.memoryMax) || parseInt((e.limits && e.limits.cpuQuota) || '0', 10) > parseInt(DEFAULT_LIMITS.cpuQuota, 10))
     reasons.push({ plain: 'It may use more of this computer\'s memory or power than usual, which risks slowing it down.', crew: 'raised limits: MemoryMax=' + e.limits.memoryMax + ' CPUQuota=' + e.limits.cpuQuota });
   if (e.kind === 'service' && e.restart === 'always') reasons.push({ plain: 'It restarts itself whenever it stops, which keeps it going even when something is wrong.', crew: 'Restart=always' });
@@ -459,7 +467,10 @@ function plainLead(ctx, e, who, prof) {
   const when = e.kind === 'timer' ? 'run ' + plainWhen(e.schedule) : 'keep running';
   const first = who.name + ' wants a background job to ' + when + ' on this computer.';
   const what = e.plain && plainOk(e.plain) ? e.plain.replace(/[.!]?$/, '.') : null;
-  const second = prof.reasons.length ? prof.reasons[0].plain : reachWords(ctx, e) || 'It keeps to company files.';
+  // outside the safe profile: its first risk sentence, and the websites it connects to whenever that sentence is not
+  // already the one about them (a yes never approves a website the card did not name)
+  const reach = reachWords(ctx, e);
+  const second = prof.reasons.length ? prof.reasons[0].plain + (e.network && e.hosts && e.hosts.length && !/website/.test(prof.reasons[0].plain) && reach ? ' ' + reach : '') : reach || 'It keeps to company files.';
   return [what ? first + ' ' + what : null, first + ' ' + second, who.name + ' wants a background job on this computer. ' + second].filter(Boolean).find(plainOk) || who.name + ' wants a background job on this computer. ' + second;
 }
 // the digest line after a job was set up without asking: what it does, and what it reaches
@@ -1148,19 +1159,20 @@ function selftest() {
       r = propose(ctx, 'night', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', 'on-calendar': '*-*-* 02:00:00', why: 'banks the closed day every night', network: 'none' });
       ok('guardrail ON + safe profile + schedules auto: installed, no owner card, nothing told', r.ok && r.status === 'installed' && fs.readFileSync(inbox, 'utf8') === rows0 && notice.sent.length === n0 && /schedules auto \(localComputer guardrail on, inside the safe profile\)/.test(read(ctx).services.night.approval.via), r);
       remove(ctx, 'night', { by: 'data' }); }
-    // guardrail ON, schedules=auto: network to a host the crew has not used asks the owner; an allowlisted host does not
+    // guardrail ON, schedules=auto: any network is outside the safe profile (named websites are declared, not enforced),
+    // so the guardrail asks the owner, with the websites named on the card; a new website and an allowlisted one alike
     fs.writeFileSync(path.join(R, 'company/state/external-allowlist.txt'), '# hosts\napi.known.example\n');
     { r = propose(ctx, 'feed', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'pulls the price feed every hour', hosts: 'api.new.example' });
       const fq = JSON.parse(fs.readFileSync(inbox, 'utf8').trim().split('\n').pop());
-      ok('a new website at external=approve asks the owner (an external card, not the guardrail; the host only under technical)', r.waiting && fq.id === r.questionId && fq.gate.category === 'external' && !fq.gate.guardrail && /which the crew has not used before/.test(lastCard().lead) && !/api\.new/.test(lastCard().lead) && /api\.new\.example/.test(fq.technical) && plainCard(lastCard()), { r, lead: lastCard().lead });
+      ok('a named website with the guardrail on asks the owner as the guardrail (the website and the risk on the card; the host only under technical)', r.waiting && fq.id === r.questionId && fq.gate.category === 'localComputer' && fq.gate.guardrail && /It connects to the New website, which is new to the crew, but nothing stops it reaching others/.test(lastCard().lead) && !/api\.new/.test(lastCard().lead) && /api\.new\.example/.test(fq.technical) && /not enforced/.test(fq.technical) && plainCard(lastCard()), { r, lead: lastCard().lead });
       const n1 = fs.readFileSync(inbox, 'utf8').trim().split('\n').length;
       propose(ctx, 'feed', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'pulls the price feed every hour, again', hosts: 'api.new.example' });
       ok('no duplicate card for the same spec', fs.readFileSync(inbox, 'utf8').trim().split('\n').length === n1);
       const oldRef = fq.gate.ref;
       r = propose(ctx, 'feed', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'pulls the price feed every hour', hosts: 'api.known.example' });
-      ok('the same name with a changed spec withdraws the older card; inside the profile at auto it installs', r.ok && r.status === 'installed' && card.openFor(oldRef) === null
+      ok('the same name with a changed spec withdraws the older card; an allowlisted website is still network, so it waits for the owner (never installed by the crew)', r.waiting && card.openFor(oldRef) === null
         && fs.readFileSync(inbox, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)).filter(x => x.type === 'ask' && x.gate && /^service:feed:/.test(x.gate.ref) && !card.openFor(x.gate.ref)).length === 1
-        && /X-CaPheOS-Hosts=api\.known\.example/.test(fs.readFileSync(path.join(U, 'testco-svc-feed.service'), 'utf8')), r);
+        && /It connects to the Known website but nothing stops it reaching others/.test(lastCard().lead) && !fs.existsSync(path.join(U, 'testco-svc-feed.service')), { r, lead: lastCard().lead });
       remove(ctx, 'feed', { by: 'data' }); }
     // B1 (owner-experience review): no network by default; a website goes through the external level
     { const n0 = fs.readFileSync(inbox, 'utf8').trim().split('\n').length;
@@ -1169,20 +1181,29 @@ function selftest() {
       ok('no --network and no --hosts: no network (AF_UNIX), inside the safe profile, installed at schedules=auto with no card', r.ok && r.status === 'installed' && read(ctx).services.quiet.network === false && /RestrictAddressFamilies=AF_UNIX/.test(u) && fs.readFileSync(inbox, 'utf8').trim().split('\n').length === n0, { r, u });
       remove(ctx, 'quiet', { by: 'data' });
       ok('--network takes only on or none', throwsCode(P('python3 company/work/sim/scripts/rec.py', { network: 'yes' }), 2, /--network is none/) === true);
+      // guardrail ON: a named website (allowlisted, at external=auto) is still outside the safe profile: the owner is asked
+      { const g0 = JSON.parse(fs.readFileSync(path.join(R, 'company/state/governance.json'), 'utf8')); g0.categories.external = 'auto'; fs.writeFileSync(path.join(R, 'company/state/governance.json'), JSON.stringify(g0));
+        const x = propose(ctx, 'feed1', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'pulls the price feed every hour', hosts: 'api.known.example' });
+        const xq = JSON.parse(fs.readFileSync(inbox, 'utf8').trim().split('\n').pop());
+        ok('guardrail ON: an allowlisted website at external=auto is not installed by the crew; the guardrail card asks the owner', x.waiting && xq.gate.category === 'localComputer' && xq.gate.guardrail && !fs.existsSync(path.join(U, 'testco-svc-feed1.service')), x);
+        remove(ctx, 'feed1', { by: 'data' }); }
+      // the external level decides the websites while the guardrail is off
+      guardOn = false;
+      const n0b = fs.readFileSync(inbox, 'utf8').trim().split('\n').length;
       const g = JSON.parse(fs.readFileSync(path.join(R, 'company/state/governance.json'), 'utf8')); g.categories.external = 'auto'; fs.writeFileSync(path.join(R, 'company/state/governance.json'), JSON.stringify(g));
       r = propose(ctx, 'feed2', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'pulls the price feed every hour', hosts: 'api.known.example' });
-      ok('an allowlisted website at external=auto: installed, the owner is not asked', r.ok && r.status === 'installed' && fs.readFileSync(inbox, 'utf8').trim().split('\n').length === n0, r);
+      ok('guardrail off: an allowlisted website at external=auto: installed, the owner is not asked', r.ok && r.status === 'installed' && fs.readFileSync(inbox, 'utf8').trim().split('\n').length === n0b, r);
       remove(ctx, 'feed2', { by: 'data' });
       r = propose(ctx, 'feed3', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'pulls another price feed every hour', hosts: 'api.brandnew.example' });
-      ok('a new website at external=auto: the crew decides (installed, no card)', r.ok && r.status === 'installed' && fs.readFileSync(inbox, 'utf8').trim().split('\n').length === n0 && /external auto/.test(read(ctx).services.feed3.approval.via), r);
+      ok('guardrail off: a new website at external=auto: the crew decides (installed, no card)', r.ok && r.status === 'installed' && fs.readFileSync(inbox, 'utf8').trim().split('\n').length === n0b && /external auto/.test(read(ctx).services.feed3.approval.via), r);
       remove(ctx, 'feed3', { by: 'data' });
       g.categories.external = 'notify'; fs.writeFileSync(path.join(R, 'company/state/governance.json'), JSON.stringify(g));
       const s0 = notice.sent.length;
       r = propose(ctx, 'feed4', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'pulls a third price feed every hour', hosts: 'api.other.example', plain: 'It downloads prices once an hour' });
       const told = notice.sent.slice(s0).pop();
-      ok('a new website at external=notify: installed, one plain digest line that names the website and never claims "only"', r.ok && r.status === 'installed' && told && told.text === 'Halima set up a background job to run every hour on this computer. It downloads prices once an hour. It connects to the Other website, which the crew has not used before.' && !/only/.test(told.text) && /declared, not enforced/.test(told.technical), told);
+      ok('guardrail off: a new website at external=notify: installed, one plain digest line that names the website and never claims "only"', r.ok && r.status === 'installed' && told && told.text === 'Halima set up a background job to run every hour on this computer. It downloads prices once an hour. It connects to the Other website, which the crew has not used before.' && !/only/.test(told.text) && /declared, not enforced/.test(told.technical), told);
       remove(ctx, 'feed4', { by: 'data' });
-      g.categories.external = 'approve'; fs.writeFileSync(path.join(R, 'company/state/governance.json'), JSON.stringify(g));
+      guardOn = true; g.categories.external = 'approve'; fs.writeFileSync(path.join(R, 'company/state/governance.json'), JSON.stringify(g));
       // a job installed with the network open before it became opt-in: the same proposal again is "already", not a clash
       const doc = read(ctx); const leg = specOf(ctx, 'legacy', { kind: 'timer', every: '1h', exec: 'bash company/work/sim/scripts/bank.sh', why: 'an old job from before', network: 'on' });
       doc.services.legacy = Object.assign(leg, { specKey: specKey(leg), status: 'installed', by: 'data', byName: 'Halima' }); write(ctx, doc);

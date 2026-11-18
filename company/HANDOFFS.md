@@ -53,9 +53,11 @@ proposed with `service.js propose … --wake <seat>` does the same for every run
 polling loop, and never a guessed Not before.
 
 **A background job that needs a website.** A job proposed with `service.js propose` has no network unless you ask. Name
-each website it needs with `--hosts api.example.com,hermes.example.net` (not `--network on`, which opens every website
-and asks the owner). A website the company already uses (on `company/state/external-allowlist.txt`) is fine; a new one
-follows the owner's `external` level, so at auto it is your call. Say what the job does for the owner with
+each website it needs with `--hosts api.example.com,hermes.example.net` (not `--network on`). The named websites are
+declared, not enforced, so while the owner's "Local computer" guardrail is on any job with network goes to the owner
+on one card that names the websites; a job with no network is yours to install. A new website also follows the
+owner's `external` level. Prefer a job that needs no network (fetch the data in a run, write it to a company file).
+Say what the job does for the owner with
 `--plain "It downloads tomorrow's prices every night"` and what happens without it with `--if-no "prices are updated by
 hand"`; those are the words on their card or in their daily message.
 

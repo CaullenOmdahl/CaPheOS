@@ -206,8 +206,9 @@ test('(d) a background job talking to a new outside host: one plain card; the co
   assert.ok(r.a.waiting && r.b.waiting, JSON.stringify(r));
   const q0 = asks(root);
   assert.equal(q0.length, 1, 'one card, the same spec never twice');
-  // a website the company does not use yet is an `external` decision (the fixture keeps external at approve)
-  assert.equal(q0[0].gate.category, 'external'); assert.deepEqual(q0[0].effect, { serviceApprove: { name: 'feed' } });
+  // any network is outside the safe profile while the localComputer guardrail is on (the named websites are declared,
+  // not enforced): the guardrail asks the owner, and the card names the website
+  assert.equal(q0[0].gate.category, 'localComputer'); assert.match(q0[0].message, /It connects to the New website, which is new to the crew, but nothing stops it reaching others/); assert.deepEqual(q0[0].effect, { serviceApprove: { name: 'feed' } });
   assert.equal(JSON.parse(read(root, 'company/state/services.json')).services.feed.status, 'proposed');
   await consoleOn(root, async (call, err) => {
     const q = await call('GET', '/api/questions');
