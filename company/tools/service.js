@@ -425,10 +425,12 @@ function plainLead(ctx, e, who, prof) {
   return [what ? first + ' ' + what : null, first + ' ' + second, who.name + ' wants a background job on this computer. ' + second].filter(Boolean).find(plainOk) || who.name + ' wants a background job on this computer. ' + second;
 }
 /* askOwner(ctx, e, who, ref, category, prof) -> what lib/owner-card.js file() returned ({filed, id} or {filed:false, route}) */
+// the card's technical part: the exact spec and whether it is inside the safe profile (ownerApprove compares it again)
+const cardTechnical = (ctx, e, who, category, prof) => factsOf(ctx, e, who) + '\n' + (prof.reasons.length ? '**Outside the safe profile:** ' + prof.reasons.map(r => r.crew).join('; ') : '**Inside the safe profile**; asked because self-governance has ' + category + ' at approve.');
 function askOwner(ctx, e, who, ref, category, prof) {
   const C = ctx.cards();
   if (!C) return { filed: false, route: 'missing', reason: 'lib/owner-card.js is not installed' };
-  const technical = factsOf(ctx, e, who) + '\n' + (prof.reasons.length ? '**Outside the safe profile:** ' + prof.reasons.map(r => r.crew).join('; ') : '**Inside the safe profile**; asked because self-governance has ' + category + ' at approve.');
+  const technical = cardTechnical(ctx, e, who, category, prof);
   try {
     return C.file({ asker: who.seat || who.name, category, ref, lead: plainLead(ctx, e, who, prof),
       consequence: 'If you say yes, the crew sets it up and you keep the power to stop it in Settings. If you say no, nothing is installed.',
@@ -540,9 +542,29 @@ function ownerApprove(name, opts) {
   if (!e) throw err('no registered service "' + name + '"', 2);
   if (e.status === 'installed') return { ok: true, already: true, name, status: e.status };
   if (e.status !== 'proposed' || !e.specKey) return { ok: false, name, status: e.status, text: '"' + name + '" is ' + e.status + '; nothing to install' };
+  // services.json is reported, never undone, when someone else edits it: nothing in the entry is trusted as written.
+  // The spec is checked again exactly as propose checks it, and its key must be the key of what it holds now.
+  const refuse = why => { logRow(ctx, { event: 'owner-approve-refused', name, why }); return { ok: false, refused: true, name, text: 'not installed: ' + why }; };
+  try {
+    const argv = validateArgv(ctx, e.argv);
+    if (JSON.stringify(argv) !== JSON.stringify(e.argv)) return refuse('the command in the registry is not the one propose would write');
+    const lim = limitsOf({ memory: e.limits && e.limits.memoryMax, cpu: e.limits && e.limits.cpuQuota });
+    if (JSON.stringify(lim) !== JSON.stringify(e.limits)) return refuse('the limits in the registry are not ones propose allows');
+    if (e.unit !== unitOf(ctx, name) || e.name !== name || !['service', 'timer'].includes(e.kind)) return refuse('the registry entry names another unit');
+  } catch (x) { return refuse(x.message); }
+  if (specKey(e) !== e.specKey) return refuse('the registry entry was changed after it was proposed (its key does not match what it holds)');
   const ref = 'service:' + name + ':' + e.specKey;
   if (gov.approved(ref, ctx.gov) !== true) return { ok: false, waiting: true, name, text: 'no owner yes to the card for this version of "' + name + '" yet' };
   const q = gov.questionFor(ref, ctx.gov);
+  // the owner said yes to service.js's own card, and that card described exactly this spec and safe profile
+  if (!ourCard(q, name)) return refuse('the owner\'s yes is to a card service.js did not file');
+  {
+    const crew = ctx.crew(); const who = { seat: e.by, name: e.byName || (crew[e.by] && crew[e.by].name) || e.by };
+    const prof = safeProfile(ctx, e);
+    const cat = (q.gate && (q.gate.governanceCategory || q.gate.category)) || 'schedules';
+    if (prof.reasons.length && cat !== 'localComputer' && ctx.guard('localComputer')) return refuse('the job is outside the safe profile, but the card said it was inside');
+    if ((q.technical || '') !== cardTechnical(ctx, e, who, cat, prof) || q.message !== plainLead(ctx, e, who, prof)) return refuse('the card the owner saw does not describe this job as it is now');
+  }
   e.approval = Object.assign({}, e.approval || {}, { level: 'approve', questionId: q ? q.id : null, via: 'the owner said yes to ' + (q ? q.id : ref) + ' on Today', at: new Date(ctx.now()).toISOString() });
   install(ctx, e, doc); write(ctx, doc);
   logRow(ctx, { event: 'installed', name, unit: e.unit, by: e.by, via: e.approval.via, argv: e.argv, schedule: e.schedule });
