@@ -105,6 +105,29 @@ test('a missing company/departments.json is fine (no routes); a department route
   fs.rmSync(path.join(T, 'company/departments.json'));
 });
 
+test('a routing policy: running trial arms and live tier-cap entries are listed for in-scope seats; class rules drop a denied route or arm', async () => {
+  const pol = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'defaults', 'work', 'models', 'routing-policy.json'), 'utf8'));
+  pol.mode = 'shadow'; pol.tierCaps.mode = 'live';
+  pol.trials = [
+    { id: 'opus-code', class: 'code', arms: [{ provider: 'claude-cli', model: 'claude-opus-5-5', effort: 'medium' }, { provider: 'claude-cli', model: 'claude-sonnet-5-5', effort: 'high' }], scope: { seats: ['kim'] }, entryShare: 0.1, status: 'running' },
+    { id: 'mm-code', class: 'code', arms: [{ provider: 'custom', model: 'MiniMax-M3.1-Flash' }], scope: { seats: ['kim'] }, entryShare: 1, status: 'running' },
+    { id: 'drafted', class: 'writing', arms: [{ provider: 'deepseek', model: 'deepseek-flash' }], scope: { seats: ['kim'] }, entryShare: 1, status: 'draft' }];
+  W('company/work/models/routing-policy.json', pol);
+  W('company/departments.json', { version: 1, departments: [{ id: 'eng', name: 'Engineering', lead: 'jo', members: ['jo', 'kim'], routes: { code: { provider: 'custom', model: 'MiniMax-M3.1-Flash' } } }] });
+  try {
+    clock += 60e3;
+    await OA.write({ root: T, call, now, jobs: [], m: gate(true, true, true) });
+    const doc = R(FILE);
+    assert.deepStrictEqual(doc.agents.kim, [{ provider: 'claude-cli', model: 'claude-opus-5-5' }, { provider: 'claude-cli', model: 'claude-sonnet-5-5' }],
+      'the running trial\'s arms; not the MiniMax code route nor the MiniMax trial arm (class rules), not the draft trial');
+    assert.deepStrictEqual(doc.agents.sam, [{ provider: 'custom', model: 'MiniMax-M3.1-Flash' }], 'its own chain only: in no trial, no department');
+    assert.deepStrictEqual(OA.departmentRoutes('kim', { root: T }), [], 'the denied route is never listed');
+    // without the policy the wave-1 behaviour: the route is listed as it is
+    fs.rmSync(path.join(T, 'company/work/models/routing-policy.json'));
+    assert.deepStrictEqual(OA.departmentRoutes('kim', { root: T }), [{ provider: 'custom', model: 'MiniMax-M3.1-Flash' }]);
+  } finally { fs.rmSync(path.join(T, 'company/departments.json'), { force: true }); fs.rmSync(path.join(T, 'company/work/models/routing-policy.json'), { force: true }); }
+});
+
 test('a provider not connected on the station is not listed', async () => {
   providers.deepseek = false;
   try {

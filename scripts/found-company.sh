@@ -6,7 +6,9 @@
 #   scripts/found-company.sh --check [--name .. --owner ..]    # preflight + what is founded already; writes nothing
 #
 # Writes company/company.json, copies the framework defaults (company/defaults/) into company/work and company/state
-# (and company/defaults/departments.json, an empty department list, to company/departments.json; docs/DEPARTMENTS.md),
+# (and company/defaults/departments.json, an empty department list, to company/departments.json; docs/DEPARTMENTS.md;
+# company/defaults/work/models/ranking-policy.json and routing-policy.json to company/work/models/, docs/RANKING.md and
+# docs/ROUTING.md: routing starts in shadow, recorded and never applied until the owner switches it live),
 # seats the Founder (company/roles/agent.md from the founder template), and creates the empty inboxes and logs the
 # tools expect. It never touches the station; run scripts/setup-station.sh after. Re-running with the same name and owner
 # resumes (fills in what is missing, never overwrites a file); a different name or owner needs --force. The step is

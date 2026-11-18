@@ -49,7 +49,7 @@ const S = {   // seams: the tests point these at a temp company and the mock sta
   root: () => co.ROOT,
   now: () => Date.now() + (Number(process.env.LANES_CLOCK_SKEW_MIN) || 0) * 60000,   // the skew: tests only (a lane's time limit)
   call: (method, p, body, timeoutMs) => httpCall(method, p, body, timeoutMs),
-  fire: jobId => fireRun(jobId),
+  fire: (jobId, override) => fireRun(jobId, override),
 };
 const rel = (...a) => path.join(S.root(), ...a);
 const stateFile = () => rel('company', 'state', 'lanes.json');
@@ -76,7 +76,7 @@ function httpCall(method, p, body, timeoutMs) {
 }
 // POST /api/cron/run {detach:true}: admitted on a 200, the run keeps going after the socket closes. Read up to 4 s of
 // the run's opening lines for its runId (cron.fire / agent.run.start), then let go.
-function fireRun(jobId) {
+function fireRun(jobId, override) {
   return new Promise(resolve => {
     let token; try { token = co.stationToken(); } catch (e) { resolve({ status: 0, body: e.message }); return; }
     const u = new URL(co.STATION_URL + '/api/cron/run');
@@ -90,7 +90,7 @@ function fireRun(jobId) {
     });
     req.setTimeout(15000, finish);
     req.on('error', e => { d = e.message; finish(); });
-    req.write(JSON.stringify({ id: jobId, detach: true }));
+    req.write(JSON.stringify(override ? Object.assign({ id: jobId, detach: true }, override) : { id: jobId, detach: true }));   // a one-run override only when the router applied one
     req.end();
   });
 }
@@ -387,7 +387,7 @@ async function hook(a) {
         const lock = SP.makePathLock(lockFile()).acquire(laneId, it.touches);
         if (!lock.ok) { out.held.push(id + ': ' + it.touches.join(', ') + ' is held by lane ' + lock.holder); continue; }   // a conflict waits
         try {
-          const r = await start({ id, n, laneId, c, job, it, cfg });
+          const r = await start({ id, n, laneId, c, job, it, cfg, routing: a.routing || null, log });
           st.lanes.push(r); out.started.push(laneId); held.push(...it.touches);
           log('LANE START ' + laneId + ' (' + (c.name || id) + ', run ' + String(r.runId || '?').slice(0, 12) + ', ' + r.kind + (r.branch ? ' ' + r.branch : '') + ', ' + job.provider + '/' + job.model + '): "' + it.heading.slice(0, 100) + '" touches ' + it.touches.join(', '));
         } catch (e) {
@@ -428,7 +428,7 @@ async function hook(a) {
   if (!a.dry && snap() !== before) save(st);
   return out;
 }
-async function start({ id, n, laneId, c, job, it, cfg }) {
+async function start({ id, n, laneId, c, job, it, cfg, routing, log }) {
   const place = placeOf(c, it.touches);
   const p = prepare(id, n, place);
   const b = j(await S.call('POST', '/api/projects/bless', { path: p.dir })) || {};
@@ -450,8 +450,22 @@ async function start({ id, n, laneId, c, job, it, cfg }) {
   name = made.name; const cr = { job: made.job };
   const firedAt = S.now();
   const tk = A.admit({ door: 'lane', kind: 'run', seat: id, jobId: cr.job.id, why: 'lane ' + laneId + ': ' + it.heading });   // phase 1: always allow, recorded
-  const f = await S.fire(cr.job.id);
+  // the router (lib/routing.js), exactly as for a wake: decided and recorded with a policy, applied only when live and open
+  const W = require('./lib/wakes'), RT = require('./lib/routing');
+  const wakeId = W.newWakeId(S.now());
+  const route = routing ? RT.forWake(routing, { seat: id, wakeId, job: Object.assign({}, job, cr.job), items: [{ text: it.text || '' }] }) : null;
+  { const rl = RT.line(id, route); if (rl && log) log(rl + ' [lane ' + laneId + ']'); }
+  let f = await S.fire(cr.job.id, RT.overrideOf(route));
+  if (route && route.applied && f.status === 403) {   // the station's gate refused it: the lane runs on the seat's model, as without one
+    route.reasons.push('the station refused the override (HTTP 403 ' + String(f.body).slice(0, 120) + '); ran on the chain');
+    route.wouldApply = { source: route.source, provider: route.provider, model: route.model }; route.applied = false; route.source = 'chain';
+    route.provider = job.provider || null; route.model = job.model || null; delete route.effort; delete route.trial; delete route.arm;
+    f = await S.fire(cr.job.id);
+  }
   A.started(tk, f);
+  if (route) RT.record(routing, { wakeId, seat: id, door: 'lane', jobId: cr.job.id, runId: f.runId || null, status: f.status, route });
+  // run-to-item link (lib/wakes.js): a lane is one wake for one item
+  if (f.status === 200) W.record({ wakeId, seat: id, runId: f.runId || null, admitId: tk.id, jobId: cr.job.id, door: 'lane', items: [{ file: c.inbox, id: W.itemId(c.inbox, it.heading, it.id), title: it.heading, due: null }], why: 'lane ' + laneId, route: route || undefined }, { file: rel('company', 'state', 'wakes.jsonl') });
   if (f.status !== 200) { await ST.cron(S.call, 'POST', '/api/cron/remove', { id: cr.job.id }, 'remove lane routine'); if (place.kind === 'worktree') { try { git(place.repo, ['worktree', 'remove', '--force', p.dir]); git(place.repo, ['branch', '-D', p.branch]); } catch (_) {} } throw new Error('the station refused the run: HTTP ' + f.status + ' ' + String(f.body).slice(0, 120)); }
   const lane = { id: laneId, seat: id, n, heading: it.heading, inbox: c.inbox, touches: it.touches, jobId: cr.job.id, jobName: name, runId: f.runId || null,
     firedAt: iso(firedAt), startedAt: iso(firedAt), timeoutMin: cfg.timeoutMin, dir: p.dir, kind: place.kind, why: place.why || null, repo: p.repo, branch: p.branch, base: p.base,

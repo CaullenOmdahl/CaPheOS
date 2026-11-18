@@ -47,6 +47,10 @@
  * schedule) under every rule a wake passes, keeps the crew's loop routines paused on the station (a loop found enabled is
  * paused again) and keeps the watchdog routine there; "station" (the default) = the station's scheduler fires the loops
  * and this tick wakes seats with work only, as before.
+ * Router (lib/routing.js, docs/ROUTING.md): with a routing policy each wake's model decision (class rules, trial arm,
+ * department route, tier cap, chain) is recorded on its wakes.jsonl row (route) and in routing-log.jsonl; it is passed as
+ * the one-run override on POST /api/cron/run only when its mode is live and company/state/override-allow.json opens the
+ * pair for the seat (a 403 from the station's gate re-runs it on the chain). No policy: the body is {id, detach}, as before.
  */
 'use strict';
 const fs = require('fs'), path = require('path'), http = require('http');
@@ -76,6 +80,7 @@ const A = require('./lib/admit');
 const G = require('./lib/gates');
 const CMP = require('./lib/completions');
 const W = require('./lib/wakes');      // run-to-item links (company/state/wakes.jsonl): measurement only
+const RT = require('./lib/routing');   // which model one wake runs on (company/work/models/routing-policy.json; none = the chain, as before)
 const FAM = require('./lib/family');   // a lead run and its delegated child runs are one family (spend, busy seats)
 const SCHED = require('./lib/scheduler');
 const SCHED_MODE = SCHED.mode();
@@ -698,7 +703,7 @@ function runsOnlyByAgent() {
 // POST /api/cron/run with detach:true — the run is admitted on a 200 and then keeps going after we close the
 // socket (the sidecar only wires `res close -> abort` when detach is false). We resolve on the first byte of a
 // 200 (admitted) or the full short body of a refusal, so a long loop never blocks or gets cancelled by this tick.
-function fireRun(jobId) {
+function fireRun(jobId, override) {
   return new Promise((resolve) => {
     const u = new URL(HOST + '/api/cron/run');
     let done = false;
@@ -715,7 +720,8 @@ function fireRun(jobId) {
     });
     req.setTimeout(15000, () => finish({ status: 0, body: 'no response in 15s (run may still be detached-live)' }));
     req.on('error', e => finish({ status: 0, body: e.message }));
-    req.write(JSON.stringify({ id: jobId, detach: true }));
+    // a one-run override (StarNet patch 0017) only when the router applied one (lib/routing.js); else the body is as before
+    req.write(JSON.stringify(override ? Object.assign({ id: jobId, detach: true }, override) : { id: jobId, detach: true }));
     req.end();
   });
 }
@@ -875,6 +881,7 @@ function lastRunTail(job) {
   const NAMES = Object.fromEntries(Object.entries(CREW || {}).map(([id, c]) => [id, (c && c.name) || id]));
   const itemsOf = {}, waitsOf = {}, stalledSeats = [];
   const wakeItemsOf = {};   // agentId -> the OPEN items that are work now, for the wake's wakes.jsonl row (lib/wakes.js)
+  const wakeTextOf = {};    // agentId -> heading -> its block text, for the router's task class (lib/routing.js)
   // progress evidence for the stall check (lib/stall.js): the seats' recent runs, and every inbox's text (blocks sent)
   const STALL = require('./lib/stall');
   const stallRuns = runsSince(Date.now() - 48 * 3600e3);
@@ -986,6 +993,7 @@ function lastRunTail(job) {
     const dkey = [...nb.deferred.keys()].sort().join('|');
     if (dkey !== (st.nbKey || '')) { st.nbKey = dkey; if (dkey) log('WAITING handoffs ' + inbox + ' (' + agentId + '): ' + nb.deferred.size + ' OPEN set aside by their own Not before (nearest ' + [...nb.deferred.values()].sort()[0] + '): not woken, not counted as stalled'); }
     const due = deadlineOrder(openSecs, lpNow.date);
+    wakeTextOf[agentId] = openSecs;
     wakeItemsOf[agentId] = byDue(open, due.due).map(h => { const it = its.find(i => i.heading === h) || {}; return { file: inbox, id: W.itemId(inbox, h, it.id), title: h, due: due.due.get(h) || null }; });
     st.nextDue = byDue(open, due.due).map(h => due.due.get(h)).find(Boolean) || null;   // the wake order across seats (soonest first)
     const dueNote = open.length ? [due.overdue.filter(h => open.includes(h)).length ? due.overdue.filter(h => open.includes(h)).length + ' overdue' : '', st.nextDue ? 'next due ' + st.nextDue : ''].filter(Boolean).join(', ') : '';
@@ -1255,7 +1263,9 @@ function lastRunTail(job) {
   // Sprint lanes (company/tools/lanes.js, fail-safe, after the pacer so it sees what the pacer held and the models it set):
   // ends finished, timed-out or cut-off lanes, starts lanes for seats with independent OPEN items within the same money
   // and tempo rules as a wake, and takes a seat out of `order` when live lanes own all its open items
-  try { await require('./lanes.js').dispatchHook({ dry: DRY, log, jobs, work, reason, order, ownerWake, hiringWake, modes, allowAsk: ALLOW_ASK, state, sprint: SPRINT, metrics: SM, budget: { capOn: CAP_ON, capped, dailyUsd: DAILY_USD, perAgentUsd: PER_AGENT_USD, byAgent, spent, lastHourMetered, hoursLeft, spread: !!(SPRINT && SPRINT.spreadDailyCap), unmetered: UNMETERED_PROVIDERS } }); } catch (e) { log('LANES ERROR: ' + String(e.message).slice(0, 200)); }
+  // the router (lib/routing.js): one context per tick; null without a routing policy (every wake on its chain, as before)
+  const ROUTING = await RT.prepare({ root: ROOT, jobs, log, dry: DRY });
+  try { await require('./lanes.js').dispatchHook({ routing: ROUTING, dry: DRY, log, jobs, work, reason, order, ownerWake, hiringWake, modes, allowAsk: ALLOW_ASK, state, sprint: SPRINT, metrics: SM, budget: { capOn: CAP_ON, capped, dailyUsd: DAILY_USD, perAgentUsd: PER_AGENT_USD, byAgent, spent, lastHourMetered, hoursLeft, spread: !!(SPRINT && SPRINT.spreadDailyCap), unmetered: UNMETERED_PROVIDERS } }); } catch (e) { log('LANES ERROR: ' + String(e.message).slice(0, 200)); }
   const deferred = [];
   for (const agentId of order) {
     const qs = work[agentId];
@@ -1307,15 +1317,27 @@ function lastRunTail(job) {
       const wh = appendHandoff(inboxOf(agentId), (n.failed ? 'FAILED: ' : '') + n.words.slice(0, 140), { Need: n.failed ? 'the job failed. Read its output tail (`node company/tools/notify-when.js show ' + n.id + '`; the whole log under scratch/jobs/), fix or re-run it (through notify-when.js again), then set this DONE.' : 'carry on with the work that waited for it. Its output tail: `node company/tools/notify-when.js show ' + n.id + '`.', Why: 'you asked to be woken when it ended (company/tools/notify-when.js)', Deadline: 'today', Status: n.failed ? 'OPEN' : 'DONE — a notice, nothing to close', Evidence: 'company/state/completions.jsonl ' + n.id });
       if (n.failed) wroteItems.push(wh);
     }
-    const r = await fireRun(job.id);
+    // the router's decision for this wake: recorded always (with a policy), applied as a one-run override only when live and open
+    const wakeId = W.newWakeId(Date.now());
+    const route = ROUTING ? RT.forWake(ROUTING, { seat: agentId, wakeId, job, items: viaInbox ? (wakeItemsOf[agentId] || []).map(i => ({ text: (wakeTextOf[agentId] && wakeTextOf[agentId].get(i.title)) || '' })) : [] }) : null;
+    { const rl = RT.line(agentId, route); if (rl) log(rl); }
+    let r = await fireRun(job.id, RT.overrideOf(route));
+    if (route && route.applied && r.status === 403) {   // the station's gate refused the override: run on the chain, as without one
+      route.reasons.push('the station refused the override (HTTP 403 ' + String(r.body).slice(0, 120) + '); ran on the chain');
+      route.applied = false; route.wouldApply = { source: route.source, provider: route.provider, model: route.model }; route.source = 'chain';
+      const cp = (job.wire && job.wire.provider) || job.provider, cm = (job.wire && job.wire.model) || job.model; route.provider = cp || null; route.model = cm || null; delete route.effort; delete route.trial; delete route.arm;
+      log('ROUTE ' + agentId + ': the station refused the override; running on the chain');
+      r = await fireRun(job.id);
+    }
     const runId = r.status === 200 ? W.runIdOf(r.body) : null;
+    if (route) RT.record(ROUTING, { wakeId, seat: agentId, door: 'dispatch', jobId: job.id, runId, status: r.status, route });
     A.started(tk, Object.assign({}, r, { runId }));
     say(agentId, r.status === 200 ? { state: 'started', why: names } : { state: 'held', why: 'has work; the station refused the start (HTTP ' + r.status + ')' });
     if (r.status === 200) {
       // run-to-item link (measurement only): which handoff items this run is for
       { const ib = inboxOf(agentId); const items = viaInbox ? (wakeItemsOf[agentId] || []).slice() : [];   // inbox items only when the inbox is why it woke
         for (const h of wroteItems) if (ib && h) items.push({ file: ib, id: W.itemId(ib, h), title: h, due: today() });
-        W.record({ seat: agentId, runId, admitId: tk.id, jobId: job.id, door: 'dispatch', items, why: names }); }
+        W.record({ wakeId, seat: agentId, runId, admitId: tk.id, jobId: job.id, door: 'dispatch', items, why: names, route: route || undefined }); }
       for (const q of qs) { if (q.duty) state.duties[q.skey].count++; else state.quests[q.id].count++; }
       for (const qid of (artifactWakes[agentId] || [])) state.artifactWait[qid].wakes++;   // a real start is a wake
       if (viaInbox) { state.agents[agentId].count++; state.agents[agentId].wakes = (state.agents[agentId].wakes || 0) + 1; }
@@ -1329,6 +1351,7 @@ function lastRunTail(job) {
     }
   }
   if (!DRY) fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
+  RT.finish(ROUTING);   // the trial pause state, when it changed
   if (SM && !DRY) { SM.updatedAt = new Date().toISOString(); try { fs.mkdirSync(path.dirname(SPRINT_METRICS), { recursive: true }); fs.writeFileSync(SPRINT_METRICS, JSON.stringify(SM, null, 1) + '\n'); } catch (_) {} }
   if (spreadHeld.length) log('SPRINT SPREAD: metered loop(s) held so the daily cap lasts the day: ' + spreadHeld.join('; '));
   // A money hold for more than one tick is the owner's decision: ONE question on Today (lib/money-hold.js), then every

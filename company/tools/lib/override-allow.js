@@ -11,6 +11,9 @@
  * The dispatcher writes it at the end of every tick (company/tools/dispatch.js). For each crew seat (company/tools/loops.json):
  *   - the entries of its chain (company/model-policy.json seats.<id>.chain), and
  *   - if company/departments.json exists, the route models of the seat's department (routes values, docs/DEPARTMENTS.md),
+ *   - with a routing policy (company/work/models/routing-policy.json, lib/routing.js): the arms of every running trial the
+ *     seat is in scope of (mode not off), and its capped chain entries while tierCaps.mode is live (non-exempt seats);
+ *     a route or trial arm the policy's classRules deny for its class (code on provider custom) is never listed,
  * kept only when models.js evaluate() says the entry can run NOW for that seat (on the allowed list, connected, the pacer
  * gate open incl. the owner's subscription stops, no quota closure, no refusal block, no budget or provider-error hold).
  * Nothing outside those is ever listed; a seat with nothing runnable gets []. Effort is not listed (the station leaves it
@@ -36,24 +39,34 @@ const WRITER = 'lib/override-allow.js';   // the provenance writer name locked-w
 const fileOf = root => path.join(path.resolve(root || co.ROOT), REL);
 const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } };
 
-/* The seat's department route models (company/departments.json; a missing or broken file means none). */
+/* The seat's department route models (company/departments.json; a missing or broken file means none). With a routing policy
+   (lib/routing.js), a route its class rules deny for its own class (code on provider custom) is left out. */
 function departmentRoutes(seatId, o) {
   const doc = readJson(path.join(path.resolve((o && o.root) || co.ROOT), 'company', 'departments.json'), null);
   const list = doc && Array.isArray(doc.departments) ? doc.departments.filter(d => d && typeof d === 'object') : [];
   const s = String(seatId || '');
   const d = list.find(x => Array.isArray(x.members) && x.members.map(String).includes(s)) || list.find(x => x.lead && String(x.lead) === s);
   if (!d || !d.routes || typeof d.routes !== 'object') return [];
-  return Object.values(d.routes).filter(r => r && typeof r === 'object' && r.provider && r.model)
-    .map(r => Object.assign({ provider: String(r.provider), model: String(r.model) }, r.effort ? { effort: String(r.effort) } : {}));
+  const K = o && o.K !== undefined ? o.K : routingKnobs(o && o.root);
+  return Object.entries(d.routes).filter(([c, r]) => r && typeof r === 'object' && r.provider && r.model && require('./routing').routeAllowed(c, { provider: String(r.provider), model: String(r.model) }, K))
+    .map(([, r]) => Object.assign({ provider: String(r.provider), model: String(r.model) }, r.effort ? { effort: String(r.effort) } : {}));
 }
+/* the routing policy's knobs (lib/routing.js; none = null: no class rules, no trial arms, no tier-cap entries) */
+function routingKnobs(root) { try { const R = require('./routing'); const L = R.loadPolicy(path.resolve(root || co.ROOT)); return L ? R.knobs(L.policy) : null; } catch (_) { return null; } }
 
 async function build(o) {
   o = o || {};
   const root = path.resolve(o.root || co.ROOT);
   const M = require('../models.js').makeModels({ root, call: o.call, now: o.now, quiet: true, dry: true });
+  const K = routingKnobs(root);
+  const deps = K ? require('./departments').load({ root }).doc : null;
+  const crew = K ? ((readJson(path.join(root, 'company', 'tools', 'loops.json'), {}) || {}).agents || {}) : null;
+  const R = require('./routing');
   const r = await M.runnableNow({
     jobs: o.jobs, m: o.m, providers: o.providers, blocks: o.blocks,
-    entriesFor: (id, seat) => ((seat && seat.chain) || []).concat(departmentRoutes(id, { root }))
+    // chain + department routes + (with a routing policy) running trial arms and live tier-cap entries for in-scope seats;
+    // every one still has to pass evaluate() (runnableNow) to be listed
+    entriesFor: (id, seat) => ((seat && seat.chain) || []).concat(departmentRoutes(id, { root, K })).concat(K ? R.extraEntries(id, { root, K, departments: deps, crew, chain: (seat && seat.chain) || [] }) : [])
   });
   const at = typeof o.now === 'function' ? o.now() : Date.now();
   return { doc: { v: 1, at, by: 'dispatcher', agents: r.seats || {} }, ok: r.ok, why: r.why || null };

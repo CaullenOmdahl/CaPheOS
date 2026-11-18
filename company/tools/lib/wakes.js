@@ -3,7 +3,8 @@
  *
  * Measurement only: nothing here decides a wake. Each time dispatch.js starts a run for a seat (HTTP 200) it appends ONE
  * row to company/state/wakes.jsonl:
- *   { at, wakeId, seat, runId (when the station's answer named it), admitId, jobId, door, items: [{file, id, title, due}], why }
+ *   { at, wakeId, seat, runId (when the station's answer named it), admitId, jobId, door, items: [{file, id, title, due}], why,
+ *     route? }   route: the router's decision for the wake (lib/routing.js decide(); only when a routing policy exists)
  * items = the handoff blocks that made the wake due: the seat's OPEN items that were work now (not waiting on anyone, not
  * set aside by Not before), plus a block the dispatcher wrote into the inbox for this wake (a duty, a failed watched job).
  * A wake with no item (a scheduled loop, an owner message, a quest step, a hiring pick) lists none; `why` says what it was.
@@ -14,6 +15,7 @@
  *
  *   const W = require('./lib/wakes');
  *   W.itemId(file, heading, explicitId)       the stable id above
+ *   W.newWakeId(now)                           a fresh wakeId (the router assigns trials by it before the run starts)
  *   W.record(row, { file?, dry? })             append one row (file null: write nothing); returns the row
  *   W.rows({ sinceMs, file? })                 the rows since then, read from the end (lib/bounded.js)
  *   W.runIdOf(body)                            the runId a POST /api/cron/run answer names, or null
@@ -49,6 +51,7 @@ function record(row, o) {
     why: clip(row && row.why, 300) };
   if (row && row.admitId) r.admitId = clip(row.admitId, 80);
   if (row && row.jobId) r.jobId = clip(row.jobId, 80);
+  if (row && row.route && typeof row.route === 'object') r.route = row.route;   // lib/routing.js decide(): which model, and why (absent without a routing policy)
   if (o.dry || o.file === null) return r;
   const f = FILE(o);
   try { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, JSON.stringify(r) + '\n'); } catch (_) { /* measurement never breaks a wake */ }
@@ -158,4 +161,4 @@ function report(o) {
   return Object.assign({ sinceMs, untilMs: now, hours }, linkItems(list, done, { attributed }));
 }
 
-module.exports = { TARGET, FILE, itemId, record, rows, runIdOf, closedAtOf, closeBoundsOf, closedItems, doneItems, linkItems, report };
+module.exports = { TARGET, FILE, newWakeId, itemId, record, rows, runIdOf, closedAtOf, closeBoundsOf, closedItems, doneItems, linkItems, report };

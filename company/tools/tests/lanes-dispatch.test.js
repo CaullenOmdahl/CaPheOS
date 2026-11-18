@@ -139,6 +139,12 @@ test('a lane is its own run: the seat\'s agent and current model, its own worktr
   const m = c.json('company/state/sprint-metrics.json');
   assert.equal(m.lanes.sam.max, 2); assert.equal(m.lanes.sam.live.length, 1); assert.equal(m.lanes.sam.live[0].handoff, '2026-11-17 from Alex — write the API docs');
   assert.match(r.log, /LANE START sam\/1 \(Sam, run run-\d+, worktree lane\/sam-1-\S+, claude-cli\/claude-sonnet-5-5\)/);
+  // no routing policy: the lane's run body is exactly {id, detach}; its wake row (door lane) names its one item, no route
+  const laneRun = r.mine.find(x => x.path === '/api/cron/run' && x.body.id === laneJob.id);
+  assert.equal(JSON.stringify(laneRun.body), JSON.stringify({ id: laneJob.id, detach: true }));
+  const laneWake = c.r('company/state/wakes.jsonl').trim().split('\n').map(l => JSON.parse(l)).find(x => x.door === 'lane');
+  assert.ok(laneWake && laneWake.seat === 'sam' && laneWake.runId === lane.runId && laneWake.jobId === laneJob.id && !('route' in laneWake), JSON.stringify(laneWake));
+  assert.deepEqual(laneWake.items.map(i => i.title), ['2026-11-17 from Alex — write the API docs']);
 
   // next tick, the lane still running: not restarted, the lock still held; the main loop's item 1 is done, so the main
   // loop is NOT woken for the lane's item
@@ -292,4 +298,29 @@ test('locked-watch: a lane routine with its seat\'s own grants is the seat\'s; o
   `], { env: Object.assign({}, process.env, { CAPHEOS_ROOT: T }), encoding: 'utf8' });
   assert.deepEqual(JSON.parse(p.stdout.trim()), [true, false, false, false], p.stderr);
   assert.ok(L.CAPABILITY === 'workspace-lease-per-folder');
+});
+
+test('a lane is routed like a wake: live + an open pair passes the one-run override, recorded on its wake row (door lane)', async () => {
+  const c = await company({ hold: ['Lane '], handoffs: { 'to-sam.md': block('build the intake form', 'src/intake/') + block('write the API docs', 'docs/api.md').replace('**Need:**', '**Class:** writing\n**Need:**') } });
+  const pol = JSON.parse(fs.readFileSync(path.join(REPO, 'company', 'defaults', 'work', 'models', 'routing-policy.json'), 'utf8'));
+  pol.mode = 'live'; pol.tierCaps.mode = 'off';
+  c.w('company/work/models/routing-policy.json', pol);
+  c.w('company/departments.json', { version: 1, departments: [{ id: 'eng', name: 'Engineering', lead: null, members: ['sam'], defaultClass: 'code', routes: { writing: { provider: 'claude-cli', model: 'claude-sonnet-5-5', effort: 'high' } } }] });
+  c.w('company/state/override-allow.json', { v: 1, at: Date.now(), by: 'dispatcher', agents: { sam: [{ provider: 'claude-cli', model: 'claude-sonnet-5-5' }] } });
+  const r = c.tick();
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.laneCreates.length, 1, r.log);
+  const laneJob = (await c.cron()).find(j => j.name === r.laneCreates[0].body.name);
+  const laneRun = r.mine.find(x => x.path === '/api/cron/run' && x.body.id === laneJob.id);
+  assert.deepEqual(laneRun.body, { id: laneJob.id, detach: true, provider: 'claude-cli', model: 'claude-sonnet-5-5', effort: 'high' });
+  const rows = c.r('company/state/wakes.jsonl').trim().split('\n').map(l => JSON.parse(l));
+  const lw = rows.find(x => x.door === 'lane');
+  assert.deepEqual([lw.route.applied, lw.route.source, lw.route.class], [true, 'route', 'writing']);
+  // the main loop's item names no class: the department default (code) has no route here, so it runs on its chain
+  const mainRun = r.mine.find(x => x.path === '/api/cron/run' && x.body.id === c.ids.sam);
+  assert.deepEqual(Object.keys(mainRun.body).sort(), ['detach', 'id']);
+  const mw = rows.find(x => x.door === 'dispatch' && x.seat === 'sam');
+  assert.equal(mw.route.class, 'code'); assert.equal(mw.route.applied, false);
+  const log = c.r('company/work/models/routing-log.jsonl').trim().split('\n').map(l => JSON.parse(l));
+  assert.ok(log.some(x => x.door === 'lane' && x.wakeId === lw.wakeId) && log.some(x => x.door === 'dispatch' && x.wakeId === mw.wakeId), JSON.stringify(log));
 });
