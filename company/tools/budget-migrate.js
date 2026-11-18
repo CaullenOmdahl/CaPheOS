@@ -68,9 +68,13 @@ async function plan(o) {
   const cur = SCHED.mode(cfg);
   const blockers = [];
   if (to === 'dispatcher') for (const f of [SCHED.WATCHDOG.script, 'company/tools/lib/admit.js', 'company/tools/lib/scheduler.js']) if (!fs.existsSync(co.p(f))) blockers.push(f + ' is not in this company yet: update its framework first');
-  return { root: co.ROOT, from: cur, to, source, blockers, flag: cur !== to, jobsRead: jobs ? jobs.length : 0, pause: p.pause, resume: p.resume, createWatchdog: p.createWatchdog, removeWatchdog: p.removeWatchdog, keep: p.keep, missing: p.missing, owned: p.owned, state: st, cfg };
+  // routines the dispatcher will own that company/state/scheduler.json does not record yet: a company already on the
+  // dispatcher gets crew loop routines later (a move from another station, a restore), and only a recorded routine can
+  // be started by the dispatcher or switched with --seat. Recording them is a change even when the flag is unchanged.
+  const adopt = to === 'dispatcher' ? Object.keys(p.owned || {}).filter(id => !((st && st.owned) || {})[id]).map(id => Object.assign({ id }, p.owned[id])) : [];
+  return { root: co.ROOT, from: cur, to, source, blockers, flag: cur !== to, jobsRead: jobs ? jobs.length : 0, pause: p.pause, resume: p.resume, createWatchdog: p.createWatchdog, removeWatchdog: p.removeWatchdog, keep: p.keep, missing: p.missing, owned: p.owned, adopt, state: st, cfg };
 }
-const nothing = p => !p.flag && !p.pause.length && !p.resume.length && !p.createWatchdog && !p.removeWatchdog.length;
+const nothing = p => !p.flag && !p.pause.length && !p.resume.length && !p.createWatchdog && !p.removeWatchdog.length && !(p.adopt || []).length;
 function describe(p) {
   const L = [];
   L.push('company: ' + p.root);
@@ -82,6 +86,7 @@ function describe(p) {
   for (const x of p.removeWatchdog) L.push('  remove  "' + x.name + '"');
   for (const x of p.keep) L.push('  keep    "' + x.name + '" (' + x.seat + '): ' + x.why);
   for (const x of p.missing) L.push('  note    no routine matches loop "' + x.loop + '" for ' + x.seat + ' (nothing to do for it)');
+  for (const x of p.adopt || []) L.push('  record  "' + x.name + '" (' + x.seat + '): the dispatcher owns it from now on (' + (x.on === false ? 'off: switch it on with --seat ' + x.seat + ' --on' : 'on') + ')');
   for (const b of p.blockers || []) L.push('  BLOCKED ' + b);
   if (nothing(p)) L.push('nothing to change: the company is already on the ' + p.to + ' scheduler.');
   L.push('money rules: unchanged (phase 1 changes no cap, share, spread or budget value).');
@@ -147,6 +152,16 @@ async function selftest() {
   ok('dry-run wrote nothing', fs.readdirSync(T, { recursive: true }).sort().join('|') === before);
   const r2 = require('child_process').spawnSync(process.execPath, ['-e', 'process.argv.push("--dry-run");require(' + JSON.stringify(__filename) + ')._readOnly(async()=>require("fs").writeFileSync(' + JSON.stringify(path.join(T, 'x')) + ',"x")).then(()=>process.exit(0),e=>{console.log(e.message);process.exit(3)})'], { encoding: 'utf8' });
   ok('a write inside the dry-run guard throws', r2.status === 3 && /read-only/.test(r2.stdout) && !fs.existsSync(path.join(T, 'x')), r2.stdout + r2.stderr);
+  // already on the dispatcher, but crew loop routines arrived later (a company moved from another station): they are
+  // recorded as owned (switched off ones stay off), so the dispatcher can start them and --seat can switch them
+  w('company/company.json', { name: 'M', owner: { name: 'Pat' }, timezone: 'UTC', station: { port: 1 }, runtime: { scheduler: 'dispatcher', schedulerSetBy: 'found-company.sh' } });
+  w('company/state/scheduler.json', { mode: 'dispatcher', owned: { j1: { seat: 'agent', name: 'Founder loop', on: true } } });
+  const r3 = require('child_process').spawnSync(process.execPath, [__filename, '--root', T, '--dry-run', '--json'], { encoding: 'utf8', env: Object.assign({}, process.env, { STARNET_URL: 'http://127.0.0.1:1' }) });
+  let j3 = null; try { j3 = JSON.parse(r3.stdout); } catch (_) {}
+  const ad = j3 && (j3.adopt || []);
+  ok('already on the dispatcher: routines it does not record yet are adopted (a change, not "nothing to change")', j3 && !j3.flag && ad.length >= 1 && !ad.some(x => x.id === 'j1') && ad.some(x => x.seat === 'kim' && x.on === false), r3.stdout + r3.stderr);
+  const r4 = require('child_process').spawnSync(process.execPath, [__filename, '--root', T, '--dry-run'], { encoding: 'utf8', env: Object.assign({}, process.env, { STARNET_URL: 'http://127.0.0.1:1' }) });
+  ok('the dry run lists each adopted routine and how to switch an off one on', /record  "Kim loop" \(kim\): the dispatcher owns it from now on \(off: switch it on with --seat kim --on\)/.test(r4.stdout) && !/nothing to change/.test(r4.stdout), r4.stdout + r4.stderr);
   try { fs.rmSync(T, { recursive: true, force: true }); } catch (_) {}
   console.log(bad ? 'BUDGET-MIGRATE SELFTEST FAILED: ' + bad : 'BUDGET-MIGRATE SELFTEST PASSED');
   return bad ? 1 : 0;
