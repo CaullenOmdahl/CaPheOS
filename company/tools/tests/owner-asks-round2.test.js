@@ -1,0 +1,97 @@
+#!/usr/bin/env node
+/* owner-asks-round2.test.js — regression tests for the round-2 re-reviews of the owner-asks work (2026-11-19): the
+ * safety re-review (N1, N2, S-a, S-b, S-c, the push note) and the experience re-review (N1 to N5 and the wording list).
+ * Each case runs the real tools in a throwaway company (child processes, so each has its own CAPHEOS_ROOT); nothing
+ * reaches a station, systemd or a network port (the console runs on a loopback port with a fake station).
+ *
+ *   node --test company/tools/tests/owner-asks-round2.test.js
+ */
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs'), path = require('path'), os = require('os'), http = require('http');
+const { spawn, spawnSync } = require('child_process');
+
+const REPO = path.resolve(__dirname, '..', '..', '..');
+const SCRIPTS = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-r2-scripts-'));
+const roots = [SCRIPTS];
+test.after(() => { for (const r of roots) try { fs.rmSync(r, { recursive: true, force: true }); } catch (_) {} });
+const W = (root, rel, v) => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof v === 'string' ? v : JSON.stringify(v, null, 1) + '\n'); return f; };
+const STATION_ENV = ['STARNET_USER_CONTROL_MODE', 'STARNET_COMPUTER_DRIVER', 'STARNET_MCP_STDIO', 'STARNET_AGENT_ID', 'OWNER_DIR', 'PM_INBOX_FILE', 'GOVERNANCE_ROOT', 'CONSOLE_PORT', 'CAPHEOS_NOTICE_STRICT'];
+function envFor(T, extra) { const e = Object.assign({}, process.env, { REPO, T, CAPHEOS_ROOT: T, PROVENANCE_ROOT: T, CAPHEOS_TZ: 'UTC', STARNET_URL: 'http://127.0.0.1:9' }, extra || {}); for (const k of STATION_ENV) if (!(extra && k in extra)) delete e[k]; return e; }
+let nScript = 0;
+function run(T, code, o) {
+  const f = path.join(SCRIPTS, 's' + (++nScript) + '.js');
+  fs.writeFileSync(f, "'use strict';\nconst fs = require('fs'), path = require('path');\nconst REPO = process.env.REPO, T = process.env.T;\nconst out = o => console.log(JSON.stringify(o));\n" +
+    "try { require(path.join(REPO, 'company/tools/provenance.js')).pinUnderStation(false); } catch (_) {}\n" + code);
+  const r = spawnSync(process.execPath, [f], { env: envFor(T, o && o.env), encoding: 'utf8', timeout: 180000 });
+  assert.equal(r.status, 0, 'script failed: ' + r.stderr + r.stdout);
+  const last = r.stdout.trim().split('\n').pop();
+  try { return JSON.parse(last); } catch (_) { throw new Error('no JSON from the script: ' + r.stdout + r.stderr); }
+}
+function company(o) {
+  o = o || {};
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-r2-')); roots.push(T);
+  W(T, 'company/company.json', { name: 'OC', slug: 'oc', owner: { name: 'Pat Owner' }, timezone: 'UTC', station: { url: 'http://127.0.0.1:9' } });
+  W(T, 'company/tools/loops.json', { agents: o.agents || {
+    agent: { name: 'Alex', manager: null, functions: ['ceo'], inbox: 'to-alex.md' },
+    engineer: { name: 'Max', manager: 'agent', functions: ['tools'], inbox: 'to-max.md' },
+    auditor: { name: 'Riley', manager: 'agent', functions: ['risk'], inbox: 'to-riley.md' },
+    people: { name: 'Nadia Farrell', manager: 'agent', functions: ['people'], inbox: 'to-nadia.md' },
+    sam: { name: 'Sam Lee', manager: 'agent', inbox: 'to-sam.md' } } });
+  fs.mkdirSync(path.join(T, 'company', 'work', 'handoffs'), { recursive: true });
+  const g = JSON.parse(fs.readFileSync(path.join(REPO, 'company/defaults/state/governance.json'), 'utf8'));
+  Object.assign(g.categories, o.levels || {});
+  W(T, 'company/defaults/state/governance.json', g); W(T, 'company/state/governance.json', g);
+  W(T, 'company/defaults/state/guardrails.json', fs.readFileSync(path.join(REPO, 'company/defaults/state/guardrails.json'), 'utf8'));
+  if (o.allowlist) W(T, 'company/state/external-allowlist.txt', o.allowlist.join('\n') + '\n');
+  return T;
+}
+// a full copy of the framework (company/ and console/), for the console's own modules and the tools' own paths
+function fixture(o) {
+  o = o || {};
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-r2-fx-')); roots.push(root);
+  fs.cpSync(path.join(REPO, 'company'), path.join(root, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
+  fs.cpSync(path.join(REPO, 'console'), path.join(root, 'console'), { recursive: true });
+  if (o.modules) fs.cpSync(path.join(REPO, 'modules'), path.join(root, 'modules'), { recursive: true });
+  W(root, 'secrets/station-token', 'fake-token\n');
+  for (const f of ['company/state/locked/provenance.jsonl', 'company/pm-inbox.jsonl', 'company/state/governance.json', 'company/state/owner-rulings.json', 'company/owner/digest.jsonl']) try { fs.rmSync(path.join(root, f)); } catch (_) {}
+  W(root, 'company/company.json', { name: 'Fixture Co', slug: 'fixture-co', timezone: 'UTC', owner: { name: 'Olive' }, station: { url: 'http://127.0.0.1:9' } });
+  W(root, 'company/tools/loops.json', { agents: o.agents || { boss: { name: 'Boss', functions: ['ceo'], manager: null, inbox: 'to-boss.md' }, hal: { name: 'Hal', functions: ['people'], manager: 'boss', inbox: 'to-hal.md' },
+    riley: { name: 'Riley', functions: ['risk'], manager: 'boss', inbox: 'to-riley.md' }, data: { name: 'Halima', manager: 'boss', inbox: 'to-halima.md' } } });
+  const g = JSON.parse(fs.readFileSync(path.join(REPO, 'company/defaults/state/governance.json'), 'utf8')); Object.assign(g.categories, o.levels || {});
+  W(root, 'company/state/governance.json', g);
+  return root;
+}
+async function consoleOn(root, fn) {
+  const fake = http.createServer((req, res) => { res.writeHead(404, { 'content-type': 'application/json' }); res.end('{"error":"fake"}'); });
+  await new Promise(r => fake.listen(0, '127.0.0.1', r));
+  const env = Object.assign({}, process.env, { CAPHEOS_ROOT: root, STARNET_URL: 'http://127.0.0.1:' + fake.address().port, CAPHEOS_TZ: 'UTC' });
+  for (const k of STATION_ENV.concat(['CAPHEOS_READONLY'])) delete env[k];
+  const child = spawn(process.execPath, [path.join(root, 'console', 'server.js'), '--port', '0', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let errText = ''; child.stderr.on('data', x => { errText += x; });
+  try {
+    const port = await new Promise((resolve, reject) => { let buf = ''; child.stdout.on('data', x => { buf += x; const m = buf.match(/\{"port":(\d+)\}/); if (m) resolve(Number(m[1])); }); child.on('exit', c => reject(new Error('server exited ' + c + ': ' + errText))); setTimeout(() => reject(new Error('server did not start: ' + errText)), 15000); });
+    const token = fs.readFileSync(path.join(root, 'secrets', 'console-token'), 'utf8').trim();
+    const call = (method, p, body) => new Promise((resolve, reject) => {
+      const data = body === undefined ? null : JSON.stringify(body);
+      const req = http.request({ host: '127.0.0.1', port, path: p, method, headers: Object.assign({ 'x-console-token': token }, data ? { 'content-type': 'application/json' } : {}) }, res => {
+        let x = ''; res.on('data', c => { x += c; }); res.on('end', () => { let j = null; try { j = JSON.parse(x); } catch (_) {} resolve({ status: res.statusCode, json: j }); });
+      });
+      req.setTimeout(120000, () => req.destroy(new Error('timeout ' + p))); req.on('error', reject); if (data) req.write(data); req.end();
+    });
+    await fn(call, () => errText);
+  } finally { child.kill(); fake.close(); }
+}
+const PLAIN_RE = /node |--[a-z]|\.js\b|\.json\b|sha256|company\/|\b[a-z]+[A-Z][a-zA-Z]+\b|\bq-\d+|\bhc-\d+/;
+
+/* ---------------- safety S-a: the add-on tools that run as the owner are owner-gated and locked ---------------- */
+test('S-a: pack.js and module.js are owner-gated (harness-change) and watched (locked-watch)', () => {
+  const H = require(path.join(REPO, 'company/tools/harness-change.js'));
+  const L = require(path.join(REPO, 'company/tools/locked-watch.js'));
+  const locked = new Set(L.MANIFEST.map(m => m.p));
+  for (const f of ['pack.js', 'module.js']) {
+    assert.ok(H.OWNER_GATE_TOOLS['company/tools/' + f], f + ' is owner-gated');
+    assert.ok(locked.has('company/tools/' + f), f + ' is locked');
+  }
+});

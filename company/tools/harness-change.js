@@ -159,7 +159,9 @@ const OWNER_GATE_TOOLS = Object.assign(
     'lib/governance.js', 'governance.js', 'guardrails.js', 'lib/guardrails.js', 'delegation.js', 'merge-gate.js', 'default-branch-watch.js',
     // what reaches the owner and what their yes does: the plain check and the "not now" backoff, urgent delivery, the
     // owner's outbound channel, the liveness alert, and the background-service gate (its card carries an owner effect)
-    'lib/owner-notice.js', 'lib/owner-scope.js', 'owner-inbox.js', 'watchdog.js', 'service.js'].map(f => ['company/tools/' + f, 'access'])),
+    'lib/owner-notice.js', 'lib/owner-scope.js', 'owner-inbox.js', 'watchdog.js', 'service.js',
+    // the add-on install and switch-on: the console runs them as the owner on a yes (packInstall, moduleEnable)
+    'pack.js', 'module.js'].map(f => ['company/tools/' + f, 'access'])),
   { 'company/tools/external-gate.js': 'commitments' },
   Object.fromEntries(['budget.js', 'money-hold.js', 'lib/money-hold.js'].map(f => ['company/tools/' + f, 'spendBeyondCap'])));
 // what a change is about, in words the owner knows (the card's lead and the digest line; never a file name)
