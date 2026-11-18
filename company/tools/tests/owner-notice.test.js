@@ -70,9 +70,10 @@ test('the digest folds N fyi rows into ONE plain message, once a day, at the eve
   assert.equal(d.sent, true); assert.equal(d.folded, 1);
   assert.equal(rows('company/owner/outbound.jsonl').length, 2);
   assert.equal(N.digest({ now: at('2026-11-20T19:00:00Z') }).why, 'nothing to tell', 'a quiet day sends nothing');
-  // a note with nothing plain in it never becomes a line the owner reads
+  // a note with nothing plain in it reaches the owner as one plain line by kind, its words only in the technical part
   N.send({ kind: 'fyi', from: 'Kim', text: 'systemctl --user daemon-reload done', now: at('2026-11-21T10:00:00Z') });
-  assert.equal(N.digest({ now: at('2026-11-21T19:00:00Z') }).why, 'nothing to tell');
+  d = N.digest({ now: at('2026-11-21T19:00:00Z') });
+  assert.equal(d.sent, true); assert.match(d.row.text, /Kim noted a change to the crew's background jobs\./); assert.doesNotMatch(d.row.text, /systemctl/);
 });
 
 test('the evening hour comes from company/work/ops/owner-notices.json over the defaults', () => {

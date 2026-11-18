@@ -237,7 +237,7 @@ out(Object.fromEntries(Object.entries(lines).map(([k, t]) => [k, { t, plain: N.p
   }
 });
 
-test('B3: nothing is swallowed: a technical-only notice fails a test (strict), is kept for the crew and recorded, and Today never shows filler', () => {
+test('B3: nothing is swallowed: a technical-only notice fails a test (strict), reaches the owner as a plain line by kind and is recorded, and Today never shows filler', () => {
   const T = fixture();
   const strict = run(T, `
 const N = require(path.join(T, 'company/tools/lib/owner-notice.js'));
@@ -250,9 +250,10 @@ const a = N.send({ kind: 'fyi', from: 'Dave', text: 'hc-0042 applied: company/to
 N.send({ kind: 'fyi', from: 'Pat', text: 'Pat answered a hiring question for you.' }, { root: T });
 const lint = fs.readFileSync(path.join(T, 'company/state/owner-notice-lint.jsonl'), 'utf8');
 out({ row: a.row, items: NEEDS.digest().items, lint, day: N.digest({ root: T, force: true, dry: true }) });`);
-  assert.equal(r.row.crewOnly, true);
-  assert.doesNotMatch(JSON.stringify(r.items), /noted something technical|hc-0042/, 'Today shows no filler: ' + JSON.stringify(r.items));
-  assert.equal(r.items.length, 1); assert.match(r.items[0].text, /^Pat answered/);
+  // nothing plain was left: a plain line by what it is about reaches the owner (S-c of the round-2 review), never filler
+  assert.equal(r.row.fallback, true); assert.equal(r.row.crewOnly, undefined);
+  assert.doesNotMatch(JSON.stringify(r.items.map(x => x.text)), /noted something technical|hc-0042/, 'Today shows no filler: ' + JSON.stringify(r.items));
+  assert.equal(r.items.length, 2); assert.match(r.items[0].text, /^Dave noted a change to how the crew spends money\./); assert.match(r.items[1].text, /^Pat answered/);
   assert.match(r.lint, /hc-0042/, 'the crew is told which template to fix');
   assert.doesNotMatch(r.day.text, /noted something technical/);
 });

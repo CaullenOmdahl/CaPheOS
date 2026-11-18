@@ -235,3 +235,21 @@ out({
   assert.equal(r.hold.why, 'fyi'); assert.equal(r.hold.needsOwner, false);
   assert.equal(r.pace.why, 'fyi'); assert.equal(r.pace.needsOwner, false);
 });
+
+/* ---------------- safety S-c: a daily-message note with nothing plain left still reaches the owner ---------------- */
+test('S-c: an fyi with nothing plain left gets a plain line by kind in the day message (and the sender is recorded to fix)', () => {
+  const T = company();
+  const r = run(T, `
+const N = require(path.join(REPO, 'company/tools/lib/owner-notice.js'));
+const a = N.send({ kind: 'fyi', from: 'Max', text: 'cadence.json /tick 4 -> 2' }, { root: T });
+const b = N.send({ kind: 'fyi', from: 'Max', text: 'hc-0042 applied to company/tools/routing.js' }, { root: T });
+const c = N.send({ kind: 'fyi', from: 'Sam Lee', text: 'q-123456 sha256:ab12cd34ef', asks: true }, { root: T });
+const d = N.send({ kind: 'fyi', from: 'Max', text: 'hc-0043 applied to company/tools/routing.js' }, { root: T });
+out({ a: a.row, b: b.row, c: c.row, d: d.row || d, day: N.digest({ root: T, force: true, dry: true }) });`);
+  assert.equal(r.a.text, 'Max noted a change to when the crew works. The details are for the crew; nothing here needs you.');
+  assert.equal(r.b.text, 'Max noted a change to which AI the crew uses. The details are for the crew; nothing here needs you.');
+  assert.equal(r.c.text, 'Sam Lee noted a change to the crew\'s work. It waits for your answer on Today.');
+  assert.ok(r.d && r.d.text, 'a second technical note of the same kind is its own line, not dropped as a repeat: ' + JSON.stringify(r.d));
+  for (const x of [r.a, r.b, r.c]) { assert.ok(!x.crewOnly, 'not hidden from the owner'); assert.ok(x.technical, 'the detail stays for the crew'); }
+  assert.match(r.day.text, /Max noted a change to when the crew works/);
+});

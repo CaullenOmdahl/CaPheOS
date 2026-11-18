@@ -13,8 +13,9 @@
  *     The plain check (lib/owner-scope.js plainScore, sentence by sentence): a bracketed or quoted technical bit (an id,
  *     a path, a command) is cut out of its sentence; a sentence that is still technical, or very long, moves whole into
  *     `technical`, which the console shows collapsed as "Technical details (for the crew)". The patterns are the owner
- *     card's (lib/owner-scope.js wordsProblems). An fyi with no plain sentence left is kept for the crew only (crewOnly:
- *     never on Today, never in the day message) and recorded in company/state/owner-notice-lint.jsonl; with
+ *     card's (lib/owner-scope.js wordsProblems). An fyi with no plain sentence left gets a plain line by what it is about
+ *     (fyiLead: "Dave noted a change to when the crew works."), never vanishes and never says "something technical"; it
+ *     is also recorded in company/state/owner-notice-lint.jsonl so the crew rewords the sender; with
  *     CAPHEOS_NOTICE_STRICT=1 (tests) a text that is not plain throws NOT_PLAIN instead, so a template is fixed, not hidden.
  *     asks: true marks a line that points at something waiting on Today; action: {kind:'undo-decision', decisionId} a
  *     console control on the line (ACTIONS).
@@ -135,6 +136,23 @@ function urgentLead(from, raw) {
   return from + ' reports ' + what + '. The full message is in the details below; the crew is on it and will tell you if you need to act.';
 }
 
+/* fyiLead(from, raw, asks): an fyi whose every sentence was technical still reaches the owner as one plain line saying
+ * what it is about, by kind (the first match below), and whether anything waits for them */
+const FYI_KINDS = [
+  [/\b(security|forged|tamper|quarantin|leak|unverified)/i, 'the company\'s safety checks'],
+  [/\b(money|budget|spend|pacer|pacing|balance|credit|billing|payment|cap)\b|\$\d/i, 'how the crew spends money'],
+  [/\b(key|token|password|account|sign[- ]?in|login|credential)s?\b/i, 'the company\'s accounts and keys'],
+  [/\b(schedule|timer|tick|cadence|tempo|wake|cron|calendar)/i, 'when the crew works'],
+  [/\b(model|minimax|claude|deepseek|openrouter|routing|gpt)/i, 'which AI the crew uses'],
+  [/\b(hire|hiring|seat|department|release|roster|loops\.json)/i, 'who is on the crew'],
+  [/\b(service|background job|systemd|systemctl|daemon(-reload)?|unit)\b/i, 'the crew\'s background jobs'],
+  [/\b(tool|script|code|harness|patch|commit|hc-\d+)|\.js\b/i, 'the crew\'s own tools'],
+];
+function fyiLead(from, raw, asks) {
+  const what = (FYI_KINDS.find(([re]) => re.test(String(raw || ''))) || [null, 'the crew\'s work'])[1];
+  return from + ' noted a change to ' + what + '. ' + (asks ? 'It waits for your answer on Today.' : 'The details are for the crew; nothing here needs you.');
+}
+
 /* send(o) — one notice: urgent now (plain), fyi into the day's message. */
 function send(o, opts) {
   o = withRoot(o, opts);
@@ -152,10 +170,10 @@ function send(o, opts) {
     throw Object.assign(new Error('owner notice not plain (' + from + '): ' + (p.technical.length ? p.technical.join(' | ') : raw) + ' — say it in everyday words; pass ids, paths, commands and numbers as `technical`'), { code: 'NOT_PLAIN', parts: p.technical });
   }
   const tech = [].concat(p.technical, o.technical ? [String(o.technical).trim()] : []).filter(Boolean);
-  // an fyi with no plain sentence left is not filler for the owner ("noted something technical"): it is kept for the
-  // crew only (never on Today, never in the day message) and recorded as a template to fix (company/state/owner-notice-lint.jsonl)
-  const lead = properNames(p.text || (kind === 'urgent' ? urgentLead(from, raw) : ''), f.root);
-  const key = String(o.key || keyOf(from, lead || raw));
+  // a notice with no plain sentence left still reaches the owner: a plain line by what it is about (urgentLead, fyiLead),
+  // never filler and never nothing; the sender is recorded as a template to fix (company/state/owner-notice-lint.jsonl)
+  const lead = properNames(p.text || (kind === 'urgent' ? urgentLead(from, raw) : fyiLead(from, raw, o.asks === true)), f.root);
+  const key = String(o.key || keyOf(from, p.text ? lead : raw));
   const day = dayOf(now);
   const seen = kind === 'urgent'
     ? r => r && r.key === key && r.kind === 'urgent' && Number.isFinite(Date.parse(r.at)) && now - Date.parse(r.at) >= 0 && now - Date.parse(r.at) < URGENT_REPEAT_MIN * 60e3
@@ -170,8 +188,8 @@ function send(o, opts) {
   const oi = require('../owner-inbox.js');
   const row = { id: 'fyi-' + now.toString(36) + '-' + crypto.randomBytes(2).toString('hex'), at: new Date(now).toISOString(), day, kind: 'fyi', from,
     text: oi.redact(lead), key };
-  if (!p.text) {   // nothing plain to say: it rides in the day message's technical part only, and the crew is told to fix it
-    row.crewOnly = true;
+  if (!p.text) {   // nothing plain was left: the line is the plain fallback, and the crew is told to fix the sender
+    row.fallback = true;
     lint(f, { at: row.at, from, key, raw: oi.redact(raw).slice(0, 600), moved: p.technical.slice(0, 8).map(x => oi.redact(x).slice(0, 200)) });
   }
   if (technical) row.technical = oi.redact(technical);
