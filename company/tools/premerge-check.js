@@ -71,7 +71,7 @@ if (!pr && !a.selftest) { console.log('usage: premerge-check.js --pr <number> [-
 
 function gh(argv) { return execFileSync('gh', argv, { encoding: 'utf8', timeout: 60000, maxBuffer: 32 * 1024 * 1024 }).trim(); }
 let d;
-try { d = JSON.parse(gh(['pr', 'view', pr, '--repo', repo, '--json', 'number,title,body,state,isDraft,baseRefName,headRefName,author,reviews,comments,files,mergeable,headRefOid,baseRefOid'])); }
+try { d = JSON.parse(gh(['pr', 'view', pr, '--repo', repo, '--json', 'number,title,body,state,isDraft,baseRefName,headRefName,author,reviews,comments,files,mergeable,headRefOid,baseRefOid,changedFiles'])); }
 catch (e) { console.log('API error: ' + String(e.message).slice(0, 200)); process.exit(2); }
 
 const checks = [];
@@ -173,13 +173,32 @@ function evaluateDeletion(files, body) {
 // widen this in one line if the company ever needs to, and can narrow it by removing a file from the
 // whitelist. This helper is called by the PR path AND by the selftest, so deleting the rule from the PR
 // path while leaving the helper cannot keep the selftest green.
-function linkedIssueRule(title, filePaths) {
+function linkedIssueRule(title, filePaths, changedFiles) {
   const m = String(title || '').match(/^(feat|fix|docs|chore|refactor|test|perf|build|ci|revert)(\([^)]+\))?!?: /);
   const type = m ? m[1] : '';
   const files = Array.isArray(filePaths) ? filePaths.filter(p => typeof p === 'string' && p) : [];
+  // An entry the gate could not read is UNKNOWN, not "the readable remainder": never exempt.
+  const allReadable = Array.isArray(filePaths) && files.length === filePaths.length;
+  // The file list must be COMPLETE. When the PR's own changedFiles count is supplied it must equal the list length; a
+  // capped or paginated list (or a missing count) is UNKNOWN. A caller that passes no count skips only this half.
+  const complete = changedFiles === undefined || (Number.isInteger(changedFiles) && changedFiles === files.length);
   const BUILD_CONTEXT = /(^|\/)\.dockerignore$/;
-  const exempt = type === 'chore' && files.length > 0 && files.every(p => BUILD_CONTEXT.test(p));
+  const exempt = type === 'chore' && allReadable && complete && files.length > 0 && files.every(p => BUILD_CONTEXT.test(p));
   return { type: type, exempt: exempt, files: files };
+}
+
+// The merge-act decision, extracted so the selftest can exercise it with all the answers the external gate can give,
+// including the PASSING one (a gate only ever proved against a refusal cannot be told from a broken gate).
+//   res: the external gate's answer for { category: 'publish', act: 'merge' } on this PR, or null; err: why it could not be asked.
+//   a row the gate ACCEPTS -> pass; a row that EXISTS and is refused -> block; no row at all -> warn;
+//   the gate unreachable -> block (an unknown authorisation is not an authorisation).
+function mergeActVerdict(res, err) {
+  if (err) return { level: 'block', detail: 'the external gate could not be consulted (' + String(err).slice(0, 160) + ') — an unknown authorisation is not an authorisation' };
+  if (res && res.allow) return { level: 'pass', detail: 'cleared by ' + (res.clearanceId || 'a clearance row') + ' (' + (res.clearedBy || 'unknown') + ')' };
+  if (res && /candidates rejected/.test(String(res.reason || ''))) {
+    return { level: 'block', detail: 'a clearance row names this PR and the external gate refuses it: ' + String(res.reason || '').slice(0, 240) };
+  }
+  return { level: 'warn', detail: 'no clearance row names this PR — the merge act is not authorised by a row (it needs a publish row with act merge naming this PR)' };
 }
 
 function runDeletionSelftest() {
@@ -272,7 +291,12 @@ function runDeletionSelftest() {
     { n: 'chore + an empty file list -> NOT exempt (UNKNOWN is not a pass)', ok: !linkedIssueRule('chore: add a root .dockerignore', []).exempt },
     { n: 'chore + a null file list -> NOT exempt', ok: !linkedIssueRule('chore: add a root .dockerignore', null).exempt },
     { n: 'a title that is not conventional-commit -> NOT exempt', ok: !linkedIssueRule('update the dockerignore', ['.dockerignore']).exempt },
-    { n: 'chore + .dockerignore + .gitignore -> NOT exempt (.gitignore is not whitelisted)', ok: !linkedIssueRule('chore: ignore files', ['.dockerignore', '.gitignore']).exempt }
+    { n: 'chore + .dockerignore + .gitignore -> NOT exempt (.gitignore is not whitelisted)', ok: !linkedIssueRule('chore: ignore files', ['.dockerignore', '.gitignore']).exempt },
+    { n: 'complete list: chore + .dockerignore + an unreadable (null) entry -> NOT exempt', ok: !linkedIssueRule('chore: x', ['.dockerignore', null]).exempt },
+    { n: 'complete list: chore + .dockerignore + an empty-path entry -> NOT exempt', ok: !linkedIssueRule('chore: x', ['.dockerignore', '']).exempt },
+    { n: 'complete list: changedFiles 1 matches a 1-entry list -> exempt', ok: linkedIssueRule('chore: x', ['.dockerignore'], 1).exempt },
+    { n: 'complete list: changedFiles 150 but the list holds 1 .dockerignore -> NOT exempt (capped list)', ok: !linkedIssueRule('chore: x', ['.dockerignore'], 150).exempt },
+    { n: 'complete list: changedFiles missing (null from the PR view) -> NOT exempt', ok: !linkedIssueRule('chore: x', ['.dockerignore'], null).exempt }
   ];
   for (const c of choreCases) {
     if (!c.ok) bad++;
@@ -324,6 +348,26 @@ function runDeletionSelftest() {
     if (!c.ok) bad++;
     console.log((c.ok ? '  PASS  ' : '  FAIL  ') + c.n);
   }
+  // Merge-act authorisation cases: the answers the external gate can give.
+  const ALLOW = { allow: true, reason: '', clearanceId: 'clr-test-0001', clearedBy: 'Alex' };
+  const REFUSE_ROW = { allow: false, reason: 'no clearance row (candidates rejected — clr-x: no CEO run covers 2026-01-01T00:04:34.490Z — the row was not written inside a CEO run) — action refused' };
+  const NO_ROW = { allow: false, reason: 'no clearance row — action refused' };
+  const mergeAuthCases = [
+    { n: 'merge act: a row the external gate ACCEPTS is a PASS (the green path, proved on a fixture)', ok: mergeActVerdict(ALLOW, null).level === 'pass' },
+    { n: 'merge act: the PASS names the clearance row and who cleared it', ok: /clr-test-0001 \(Alex\)/.test(mergeActVerdict(ALLOW, null).detail) },
+    { n: 'merge act: a row the gate REFUSES is a BLOCK', ok: mergeActVerdict(REFUSE_ROW, null).level === 'block' },
+    { n: 'merge act: the BLOCK quotes the refusal reason', ok: /no CEO run covers/.test(mergeActVerdict(REFUSE_ROW, null).detail) },
+    { n: 'merge act: no row at all is a WARN, never a block (a PR with no merge slot is not a broken PR)', ok: mergeActVerdict(NO_ROW, null).level === 'warn' },
+    { n: 'merge act: the gate failing to answer is a BLOCK (unknown is not an authorisation)', ok: mergeActVerdict(null, 'ENOENT').level === 'block' },
+    { n: 'merge act: the PR path asks the gate for a publish row with act merge, and a block fails the check', ok: (() => {
+      const src = fs.readFileSync(__filename, 'utf8');
+      return /category: 'publish', target: 'github:' \+ repo \+ '#' \+ pr,[\s\S]{0,160}act: 'merge'/.test(src) && /if \(mergeAct\.level === 'block'\) add\('The merge act is authorised', false/.test(src);
+    })() }
+  ];
+  for (const c of mergeAuthCases) {
+    if (!c.ok) bad++;
+    console.log((c.ok ? '  PASS  ' : '  FAIL  ') + c.n);
+  }
   const guardCases = [
     { n: 'guardrail defaultBranch ON: a blocked PR exits 1', ok: verdictExit(2, true) === 1 },
     { n: 'guardrail defaultBranch OFF: a blocked PR exits 0 (the FAIL is still recorded)', ok: verdictExit(2, false) === 0 },
@@ -334,7 +378,7 @@ function runDeletionSelftest() {
     if (!c.ok) bad++;
     console.log((c.ok ? '  PASS  ' : '  FAIL  ') + c.n);
   }
-  const total = cases.length + gateCases.length + qaCases.length + choreCases.length + reviewCases.length + guardCases.length;
+  const total = cases.length + gateCases.length + qaCases.length + choreCases.length + reviewCases.length + mergeAuthCases.length + guardCases.length;
   console.log(bad ? 'SELFTEST FAILED: ' + bad + ' case(s) wrong' : 'selftest: ' + total + ' cases ok');
   process.exit(bad ? 1 : 0);
 }
@@ -350,7 +394,7 @@ add('Conventional-commit title', /^(feat|fix|docs|chore|refactor|test|perf|build
 // down, so it is computed once, here.
 const filePaths = (d.files || []).map(f => f.path || '');
 const linked = (d.title + '\n' + (d.body || '') + '\n' + (d.headRefName || '')).match(/#\d+/);
-const linkedRule = linkedIssueRule(d.title, filePaths);
+const linkedRule = linkedIssueRule(d.title, filePaths, d.changedFiles === undefined ? null : d.changedFiles);
 add('Linked issue', !!linked || linkedRule.exempt,
   linked ? linked[0]
     : (linkedRule.exempt
@@ -427,6 +471,26 @@ const ceoName = co.nameOf(co.ceo()) || 'the CEO';
 add('PR classified for merge authority', true,
   docsOnly ? 'docs-only (' + filePaths.length + ' file(s) under docs/)'
   : 'not docs-only — PM merge line');
+
+// --- the merge ACT must be authorised ---------------------------------------------------------------------
+// This is the last place a merge can be stopped before a train or an agent merges what this gate answers PASS on. The
+// external gate is asked for a publish clearance with act merge on this PR: a row it ACCEPTS is a PASS; a row that
+// EXISTS and is refused is a BLOCK (a merge must not run on a row the gate rejects); a PR with NO row is only a WARN (it
+// is not scheduled to merge); the gate failing to answer is a BLOCK. The gate is consulted as a MODULE with logging off
+// (opts.log === null), so reading it appends nothing to the external-actions log.
+const mergeAuth = (() => {
+  let res = null, err = null;
+  try {
+    const ext = require(path.join(__dirname, 'external-gate.js'));
+    res = ext.check({ category: 'publish', target: 'github:' + repo + '#' + pr,
+      agent: String(process.env.STARNET_AGENT_ID || 'unknown'), act: 'merge' }, { log: null });
+  } catch (e) { err = String((e && e.message) || e); }
+  return { res: res, err: err };
+})();
+const mergeAct = mergeActVerdict(mergeAuth.res, mergeAuth.err);
+if (mergeAct.level === 'block') add('The merge act is authorised', false, mergeAct.detail);
+else if (mergeAct.level === 'pass') add('The merge act is authorised', true, mergeAct.detail);
+else console.log('  WARN   ' + mergeAct.detail);
 
 // Stale-branch / silent-revert detector. A PR can revert several earlier merges — a hundred files — simply
 // because its branch was cut before those merged and the merge took the branch's version of every file. Nothing in this chain would have named it. Cheap pre-merge version:
