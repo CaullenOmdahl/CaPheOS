@@ -40,6 +40,8 @@
       "bound": { "days": 93, "bytes": 24000000 }, "readers": "people reading why a wake ran on a model (one row per routed wake and per trial pause or resume, written by lib/routing.js); every decision is also on its wakes.jsonl row" },
     { "id": "routing-state", "path": "company/state/routing-state.json", "policy": "never",
       "reason": "one small file rewritten whole by lib/routing.js: each running trial's pause state (bounded by the number of trials in routing-policy.json)" },
+    { "id": "routing-policy", "path": "company/work/models/routing-policy.json", "policy": "never",
+      "reason": "one small file rewritten whole by routing.js; its size is bounded by the trials in it (a finished trial stays as the record of what was tested)" },
     { "id": "house-ranking", "path": "company/work/models/house-ranking.json", "policy": "never",
       "reason": "one file (with its .md), replaced whole by model-rank.js refresh when the ranking changes; its size is bounded by the number of cells (task classes x models x efforts)" },
     { "id": "meeting-events", "path": "company/state/meetings/events/*.jsonl", "policy": "roll-monthly", "format": "jsonl", "keepDays": 90, "maxLiveBytes": 8000000,

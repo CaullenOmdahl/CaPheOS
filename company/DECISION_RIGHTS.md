@@ -109,7 +109,7 @@ Categories and where they are enforced:
 | release | releasing or replacing a crew member (and a candidate from a round that hired nobody) | `hire.js fire`, `hire.js release` |
 | budget | the metered cap, per-agent shares, pacing numbers, a hand-started pacing emergency | `harness-change.js apply` (pacing-policy.json, dispatch-budget.json), `pacer.js emergency on` |
 | spend | new spend inside the approved cap, a new paid tool | the seat's own judgement today (no tool spends) |
-| models | which model a seat or routine runs | `hire.js remodel`, `harness-change.js apply` (kind model) |
+| models | which model a seat or routine runs | `hire.js remodel`, `harness-change.js apply` (kind model). Not here: routing modes, tier caps and starting a model trial are the owner's own at every level; the people function only drafts a trial (`routing.js`, docs/ROUTING.md) |
 | tools | shared tools, house rules, other policy numbers | `harness-change.js apply` (kinds tool, house-rule, policy) |
 | schedules | routine clocks, dispatcher tick, cadence — inside the owner's tempo bounds only (docs/TEMPO.md) | `harness-change.js apply` (kind schedule), `cadence.js set-default` / `set` |
 | external | anything that leaves the company | `external-gate.js`: auto = the CEO's clearance suffices; notify = the CEO's clearance and the owner is told; approve = the clearance row must name the owner |

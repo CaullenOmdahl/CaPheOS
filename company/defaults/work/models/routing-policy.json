@@ -1,40 +1,72 @@
 {
  "_doc": "Which model one wake runs on, beyond the seat's own chain (docs/ROUTING.md). Read by company/tools/lib/routing.js decide() for every run the dispatcher (company/tools/dispatch.js) and the Sprint lanes (company/tools/lanes.js) start. Copied to company/work/models/routing-policy.json at founding; the company's copy is the one read (else this default; neither = no routing at all, every wake runs on its chain exactly as before). Every rule, threshold and weight is here, not in code: routing is tuned in production. A key left out is read as off / empty, never as a hidden default. Every decision is recorded on the wake's company/state/wakes.jsonl row (field route) and in the history file; it changes the run's model only when its step's mode is live AND the station's override allowlist (company/state/override-allow.json, lib/override-allow.js) opens that pair for the seat now; otherwise the seat runs on its chain and the record says what would have run (wouldApply) and why not (reasons). Owner: the people function (the model manager); the mode switches are the owner's.",
  "version": 1,
-
  "mode": "shadow",
  "_mode": "off | shadow | live, for department routes (company/departments.json routes.<class>) and trials. off: not computed. shadow: decided and recorded (wouldApply), never applied. live: applied when the override allowlist opens the pair. The owner flips it.",
-
- "classRules": { "code": { "denyProviders": ["custom"] } },
+ "classRules": {
+  "code": {
+   "denyProviders": [
+    "custom"
+   ]
+  }
+ },
  "_classRules": "<class>: { denyProviders: [provider ids], denyModels: [model ids] }. A pair a rule denies is never chosen for a wake with an item of that class: not from a route, a trial arm, the tier cap or the router's chain choice. Owner ruling: code is never written on the MiniMax plan (provider custom).",
  "classRulesApply": "always",
  "_classRulesApply": "always: when a wake's chain pair is denied for its class, the router picks the seat's first allowed chain entry and applies it in every mode (shadow and off included) whenever the allowlist opens it. mode: the chain fix follows mode like a route. Either way a denied pair is never offered as a choice.",
-
- "order": ["classRules", "trial", "route", "tierCap", "chain"],
+ "order": [
+  "classRules",
+  "trial",
+  "route",
+  "tierCap",
+  "chain"
+ ],
  "_order": "the steps, first choice wins. classRules filters every step. trial: a running trial's arm. route: the department's route for the class. tierCap: the cap below. chain: the seat's own chain (changed only by the class rules). The applied choice is the first live step whose pair the override allowlist opens (a live pair that is not open is recorded and the walk goes on); the recorded wouldApply is the first step whose mode is shadow or live. The class rules always hold: a wake whose own pair they deny and no allowed chain entry is open is held, never started on it.",
-
  "tierCaps": {
   "mode": "shadow",
   "allow": [
-   { "provider": "claude-cli", "model": "haiku" },
-   { "provider": "claude-cli", "model": "claude-haiku-4-5-20251001" },
-   { "provider": "claude-cli", "model": "claude-sonnet-5-5" },
-   { "provider": "claude-cli", "model": "sonnet" },
-   { "provider": "deepseek" }
+   {
+    "provider": "claude-cli",
+    "model": "haiku"
+   },
+   {
+    "provider": "claude-cli",
+    "model": "claude-haiku-4-5-20251001"
+   },
+   {
+    "provider": "claude-cli",
+    "model": "claude-sonnet-5-5"
+   },
+   {
+    "provider": "claude-cli",
+    "model": "sonnet"
+   },
+   {
+    "provider": "deepseek"
+   }
   ],
   "heavyEscape": "heavy",
-  "exemptFunctions": ["ceo"],
+  "exemptFunctions": [
+   "ceo"
+  ],
   "exemptLeads": true,
   "itemlessWakes": true
  },
  "_tierCaps": "executor tier caps (docs/MODEL_POLICY.md: routines run on Haiku or Sonnet). mode: off | shadow | live, its own switch. For a seat that holds none of exemptFunctions and (exemptLeads) leads no department, a wake with no item marked `**Effort:** <heavyEscape>` may only run on an allow entry ({provider} alone matches every model of that provider; model aliases are listed one by one): when the seat's current pair is not one, the cap picks the seat's first chain entry that is; with none it records 'no capped entry' and leaves the chain. itemlessWakes: whether a wake with no handoff item (a scheduled loop, an owner message) is capped too.",
-
+ "trialLimits": {
+  "minArms": 2,
+  "maxArms": 4,
+  "maxEntryShare": 0.5,
+  "defaultEntryShare": 0.1,
+  "defaultMinItemsPerArm": 30,
+  "defaultPauseWhenHeld": [
+   "claude-cli"
+  ]
+ },
+ "_trialLimits": "what routing.js trial create accepts: arms per trial (a trial compares at least minArms), the largest entryShare, and the defaults for --entry-share, --min-items and pauseWhenHeld",
  "trials": [],
  "_trials": "the framework defines none: a trial runs only where a company's own policy lists one. Each: { id, class, arms: [{provider, model, effort}], scope: {departments: [ids], seats: [ids]} (a seat in neither list is out of scope; both empty = nobody), entryShare (0-1: the share of in-scope wakes of that class that enter), status: draft | running | paused | done (only running assigns), pauseWhenHeld: [provider ids] (while the pacer holds any of them the trial assigns nothing and records why; it resumes by itself), minItemsPerArm (the sample each arm needs before the trial is read; reported, never acted on here), startedAt, startedBy }. Assignment is deterministic: sha256(trial id + wakeId) picks entry and an arm by even split. An arm that cannot run (not open, held) is recorded as such and the wake runs its chain; the trial never switches a wake to another arm. A trial with an arm the class rules deny is skipped whole.",
-
  "allowMaxAgeMin": 30,
  "_allowMaxAgeMin": "an override allowlist older than this counts as none (the station refuses it from 30 minutes)",
-
  "history": "company/work/models/routing-log.jsonl",
  "_history": "one row per decision (and per trial pause or resume); rolled monthly (company/defaults/work/ops/retention.json routing-log)"
 }

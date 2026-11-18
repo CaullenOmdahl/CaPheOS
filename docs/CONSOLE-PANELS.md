@@ -118,7 +118,7 @@ A panel can never name a command, a URL or an arbitrary path.
 - Runs `node company/tools/<argv>` exactly as listed under `tool` in `sources.json`: no shell, no extra arguments, a
   timeout, `CAPHEOS_READONLY=1` in the environment. Output must be JSON.
 - Shipped ids: `handoffs-due` (`handoff-status.js --due --json`), `owner-messages-new`, `owner-questions`,
-  `ask-owners`. A company adds one by proposing a `sources.json` change through `harness-change.js` (category `tools`,
+  `ask-owners`, `routing` (`routing.js status --json`, docs/ROUTING.md). A company adds one by proposing a `sources.json` change through `harness-change.js` (category `tools`,
   owned by the tools function, reviewed by risk). Only read-only commands that print JSON may be listed.
 
 **`station`**: `{ "type": "station", "id": "<allowlist id>", "select?": "..." }`

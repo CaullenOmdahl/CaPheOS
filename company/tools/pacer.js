@@ -111,7 +111,8 @@ const DEFAULTS = {
   throughput: { boostedMaxPerTick: 3, boostWhenShareLeftAbove: 0.5 },
 };
 const ROUTINE_TIERS = ['light', 'standard'];   // Haiku and Sonnet; Opus (heavy) and Fable (top) never run routines
-const SUBS = ['claude-cli', 'custom'];         // the flat-fee subscriptions
+// the flat-fee subscriptions (claude-cli, custom): one table, lib/pacing-ask.js SUBS, which routing.js also reads
+const SUBS = Object.values(require('./lib/pacing-ask.js').SUBS).map(x => x.provider);
 const NAMES = { 'claude-cli': 'Claude', custom: 'MiniMax', deepseek: 'DeepSeek' };
 
 /* ---------- small helpers ---------- */
