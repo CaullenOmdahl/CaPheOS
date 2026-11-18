@@ -13,7 +13,8 @@ s6-overlay as PID 1; the root filesystem is read-only; the company's data lives 
 ## Status
 
 **Target skeleton.** It builds today; it starts when `server/index.js` lands (backend P1,
-`docs/BACKEND.md` §8). Until then the service exits with a clear message instead of pretending to run.
+`docs/BACKEND.md` §8). Until then the service prints one line saying so, holds the container open and
+lets the health check report unhealthy — no crash loop.
 
 The backend rewrite changes what the image runs — not the shape:
 
@@ -36,7 +37,8 @@ from another machine (`docs/DEPLOY-SERVER.md`).
 ## Rules this image keeps
 
 - **One process, one port.** No sidecar service, no proxy inside the container, no Docker socket.
-- **Read-only root.** `/run` and `/tmp` are tmpfs; the company is `/data`; nothing else is written.
+- **Read-only root.** `/run` is a tmpfs mounted `exec` (s6-overlay needs it) and `/tmp` is tmpfs; the
+  company is `/data`; nothing else is written.
 - **No ambient authority.** `cap_drop: ALL`, `no-new-privileges`, and the process drops to uid 10001
   before it runs the company.
 - **The updater never runs in the app.** It is a host-side service with a pin-only API

@@ -16,7 +16,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 # Certificates (providers), timezone data (the company's clock), and the supervision tree.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tzdata \
+ && apt-get install -y --no-install-recommends ca-certificates tzdata xz-utils \
  && rm -rf /var/lib/apt/lists/*
 
 ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_VERSION}/s6-overlay-noarch.tar.xz /tmp/s6-noarch.tar.xz

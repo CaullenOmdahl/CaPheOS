@@ -6,7 +6,9 @@ set -eu
 if [ ! -f /app/server/index.js ]; then
   echo "capheos: server/index.js is missing — the backend rewrite (P1) has not landed yet" >&2
   echo "capheos: see container/README.md and docs/BACKEND.md §8" >&2
-  exit 78
+  # Hold the container open instead of crash-looping: the health check reports unhealthy, and the
+  # reason is in the log once. This branch disappears when server/index.js exists (P1).
+  exec sleep infinity
 fi
 
 exec s6-setuidgid capheos node /app/server/index.js

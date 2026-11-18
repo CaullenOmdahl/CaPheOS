@@ -12,7 +12,7 @@ services:
     restart: unless-stopped
     read_only: true
     tmpfs:
-      - /run
+      - /run:exec
       - /tmp
     cap_drop:
       - ALL
