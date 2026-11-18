@@ -623,6 +623,12 @@ function propose(ctx, name, o) {
       return { ok: true, already: true, name, unit: old.unit, status: old.status, note: 'installed with the network open (before --network became opt-in); remove and propose again to close it' };
     throw err('"' + name + '" is already installed with a different command or schedule; remove it first, or propose a new name', 2);
   }
+  // a proposal already holds an owner question for a different spec (the owner may even have said yes to it): asking again
+  // would put the same question to the owner twice, and the yes would never be found, because the question is keyed by the spec
+  if (old && old.status === 'proposed' && old.specKey !== key && old.approval && old.approval.questionId) {
+    const changed = ['kind', 'argv', 'schedule', 'restart', 'softHalt', 'network', 'limits', 'timeout', 'successExit', 'wake'].filter(f => JSON.stringify(old[f] == null ? null : old[f]) !== JSON.stringify(spec[f] == null ? null : spec[f]));
+    throw err('"' + name + '" already has an owner question (' + old.approval.questionId + ') for a different spec (' + (changed.join(', ') || 'unknown field') + ' differ); propose the same spec again to use that answer, or run service.js remove ' + name + ' to ask afresh', 2);
+  }
   const ref = 'service:' + name + ':' + key;
   // the same name proposed again with a different spec: the owner's card for the older spec goes, never a second card
   if (old && old.status === 'proposed' && old.specKey && old.specKey !== key) {
@@ -1174,6 +1180,18 @@ function selftest() {
     ok('a rerun before the answer does not ask twice', r.waiting && fs.readFileSync(inbox, 'utf8').trim().split('\n').length === 1);
     answer(q.id, 'yes');
     r = propose(ctx, 'depth', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', why: 'records order-book depth between agent runs', network: 'on' });
+    // the 2026-11-18 log-archive case: a re-run with a different spec while a question is out must not mint a second one
+    {
+      const sp = { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1d', why: 'daily copy of the ledger outside rotation' };
+            const a1 = propose(ctx, 'dupe', sp);
+      ok('dupe: first propose asks once', a1.waiting && a1.asked !== false);
+      answer(a1.questionId, 'yes');
+      let msg = ''; const code = (() => { try { propose(ctx, 'dupe', Object.assign({}, sp, { network: 'none' })); return 0; } catch (e) { msg = e.message; return e.code; } })();
+      ok('dupe: changed spec after a yes is refused, naming the old question and the field', code === 2 && msg.includes(a1.questionId) && /network/.test(msg), msg);
+      ok('dupe: no second owner question was minted', fs.readFileSync(inbox, 'utf8').split('\n').filter(l => /"type":"ask"/.test(l) && /service:dupe/.test(l)).length === 1);
+      const done = propose(ctx, 'dupe', sp);
+      ok('dupe: the same spec still finds the yes and installs', done.ok && done.status === 'installed', done);
+    }
     const unit = fs.readFileSync(path.join(U, 'testco-svc-depth.service'), 'utf8');
     ok('after yes: installed, enabled and started', r.ok && r.status === 'installed' && fake.active['testco-svc-depth.service'] && fake.calls.includes('daemon-reload'), r);
     ok('unit: company-scoped name, WorkingDirectory=ROOT, Restart, limits, no network rule', /WorkingDirectory=/.test(unit) && unit.includes('WorkingDirectory=' + R + '\n') && /Restart=on-failure/.test(unit)
