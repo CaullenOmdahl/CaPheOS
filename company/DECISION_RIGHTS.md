@@ -114,13 +114,14 @@ Categories and where they are enforced:
 | schedules | routine clocks, dispatcher tick, cadence — inside the owner's tempo bounds only (docs/TEMPO.md) | `harness-change.js apply` (kind schedule), `cadence.js set-default` / `set` |
 | external | anything that leaves the company | `external-gate.js`: auto = the CEO's clearance suffices; notify = the CEO's clearance and the owner is told; approve = the clearance row must name the owner |
 | dashboard | agents adding or changing console panels | the console panel tools (wired with the console) |
+| org | the company's structure: creating a department, setting its lead, moving a seat between departments (docs/DEPARTMENTS.md) | `departments.js create`, `set-lead`, `add-member`, `remove-member`, `move`, `apply` (the CEO applies at this level; the people function only proposes; the owner always may) |
 | packs | approving a capability pack (a new line of business); install is always the owner's | `pack.js approve` (approve = owner only; notify/auto = the CEO seat may approve, notify tells the owner); `pack.js install` is owner-only at every level. `approve` in every preset (docs/PACKS-SPEC.md) |
 
 **Presets** (`node company/tools/governance.js preset <id> --by <owner>`):
 
 - **Approve everything** (`approve-everything`): every category is approve.
-- **Gate money and people** (`gate-money-people`, the default): hiring, release, budget, spend and external are approve; models, tools, schedules and dashboard are notify.
-- **Gate money** (`gate-money`): budget and spend are approve; hiring, release and external are notify; the rest auto.
+- **Gate money and people** (`gate-money-people`, the default): hiring, release, budget, spend, external and org are approve; models, tools, schedules and dashboard are notify.
+- **Gate money** (`gate-money`): budget and spend are approve; hiring, release, external and org are notify; the rest auto.
 - **Autonomous** (`autonomous`): the company hires and budgets on its own; release is notify; everything else auto except packs.
 
 Every preset keeps **packs** at approve: a new line of business is the owner's call. No preset uses **triage**: the

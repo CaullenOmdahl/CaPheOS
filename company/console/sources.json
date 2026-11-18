@@ -37,6 +37,11 @@
       "argv": ["duty-status.js", "--json"],
       "description": "Every duty check and what it says now (docs/DUTIES.md): [{id, route, owner, state ok|due|broken|stale|off, checkedAt, reason, history}]; the state is computed by the tool, never by the view",
       "timeoutMs": 10000
+    },
+    "departments": {
+      "argv": ["departments.js", "list", "--json"],
+      "description": "The departments (docs/DEPARTMENTS.md): {departments: [{id, name, lead, leadName, members: [{id, name, isLead, escalatesTo}], defaultClass, briefChars}], unassigned, drift: {ok, mismatches, notes}, proposals}",
+      "timeoutMs": 10000
     }
   },
 

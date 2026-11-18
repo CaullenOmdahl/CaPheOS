@@ -239,6 +239,17 @@ Per-seat model chains (company/tools/models.js; every write runs it as the owner
 - `POST /api/models/seat/<id>/chain` `{ chain: [{ provider, model, effort? }, …] }` (1–8) → the whole ordered chain.
   A changed primary (or a current model that left the chain) is applied at once to the roster and the routines.
 
+## Departments (console/departments.js)
+
+Departments, leads and members (company/tools/departments.js; every write runs it as the owner; docs/DEPARTMENTS.md).
+Drawn in Crew › People under "Departments" once the company has one.
+- `GET /api/departments` → `departments.js list --json`: `{ exists, departments: [{ id, name, lead, leadName, members:
+  [{ id, name, isLead, onCrew, manager, escalatesTo }], defaultClass, briefChars, routes, consult }], unassigned, drift:
+  { ok, mismatches, notes }, proposals, limits, leadModelDefault, classes }`.
+- `POST /api/departments/<id>/lead` `{ seat }` → `set-lead <id> <seat|none> --by <owner>` (an empty seat clears the lead).
+- `POST /api/departments/move` `{ seat, to }` → `move <seat> <id|none> --by <owner>`.
+  An inconsistent change (unknown seat, a seat in two departments) is refused for the owner too (400).
+
 ## Station proxy
 
 `/api/station/<path>` → `<station url>/api/<path>` with the station token added. GET is passed through. POST is passed

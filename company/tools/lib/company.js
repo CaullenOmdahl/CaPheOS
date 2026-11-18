@@ -16,6 +16,10 @@
  *   co.seatFor('people')     station id of whoever holds a function; falls back to the CEO seat
  *   co.nameOf(id)            display name of a seat holder
  *   co.ceo()                 station id of the CEO (the seat with manager null)
+ *   co.departmentsOf()       company/departments.json .departments ([] when the file is missing: no departments)
+ *   co.deptOf(seat)          the department a seat is a member (or the lead) of, or null (lib/departments.js)
+ *   co.leadOf(seat)          the seat's department lead; the seat's manager when its department has no lead; null when
+ *                            the seat is in no department (docs/DEPARTMENTS.md)
  *
  * Functions (loops.json seat.functions): ceo, people, tools, risk, floor, finance. A seat may hold several; the founder
  * holds all of them until the company hires. Legacy flags hr:true / toolsOwner:true are read as people / tools.
@@ -79,6 +83,13 @@ function seatFor(fn) {
   return id || ceo();
 }
 function nameOf(id) { const s = crew()[id]; return (s && s.name) || id; }
+
+/* Departments (company/departments.json, written only by company/tools/departments.js; docs/DEPARTMENTS.md). Read fresh on
+ * every call, like crew(). A missing file = no departments: deptOf and leadOf are null and every tool behaves as before. */
+const depts = () => require('./departments');
+function departmentsOf() { return depts().list(depts().load({ root: ROOT }).doc); }
+function deptOf(seat) { return depts().deptOf(seat, depts().load({ root: ROOT }).doc); }
+function leadOf(seat) { return depts().leadOf(seat, depts().load({ root: ROOT }).doc, crew()); }
 
 /* Local wall-clock pieces in the company timezone, for tools that reason about "today" or office hours. */
 function localParts(date) {
@@ -153,7 +164,7 @@ function guard(name) {
 }
 
 module.exports = { ROOT, p, config, readJson, TZ, SECRETS_DIR, secret, stationToken, LOOPS_FILE, crew,
-  holds, ceo, seatFor, nameOf, localParts, GOV_FILE, LEVELS, governance, gate, HALT_FILE, haltState, halted,
+  holds, ceo, seatFor, nameOf, departmentsOf, deptOf, leadOf, localParts, GOV_FILE, LEVELS, governance, gate, HALT_FILE, haltState, halted,
   RESTART_HOLD_FILE, restartHold, startsHeld, restartHoldExpired, restartHoldNote,
   GUARD_FILE, guardrails, guard };
 

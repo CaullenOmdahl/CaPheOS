@@ -760,6 +760,7 @@ const MME_same = (a, b) => require(path.join(__dirname, '..', 'company', 'tools'
 const SETUP = require(path.join(__dirname, 'setup.js'))({ co, run, runApi, stationGet, stationPost, owner: () => OWNER, setOwner: n => { OWNER = n || OWNER; }, bad, HttpError, tool, emit: t => emit(t) });
 for (const [mth, re, fn] of SETUP.routes) route(mth, re, fn);
 require(path.join(__dirname, 'models.js')).mount(route, { co, runApi, stationGet, bad, owner: () => OWNER });   // per-seat model chains (console/models.js)
+require(path.join(__dirname, 'departments.js')).mount(route, { runApi, bad, owner: () => OWNER });   // departments, leads, members (console/departments.js)
 // the owner's server chores without a terminal: flags, scheduler, services, modules, restarts, framework update, access
 const OPS = require(path.join(__dirname, 'owner-ops.js')).mount(route, { co, run, runApi, bad, owner: () => OWNER, tool, busy: () => CHAT.runs.busy(), emit: t => emit(t) });
 route('GET', /^\/api\/locked$/, () => runApi('locked-watch.js', ['status']));
@@ -781,6 +782,7 @@ const WATCHES = [
   ['panels', ['company', 'console', 'pages'], () => true],
   ['dispatch', ['company', 'work'], f => f === 'dispatch-log.md' || f === 'dispatch-state.json'],
   ['crew', ['company', 'tools'], f => f === 'loops.json'],
+  ['crew', ['company'], f => f === 'departments.json'],
   ['charter', ['company'], f => f === 'CHARTER.md' || /^CHARTER\.md\.tmp/.test(f)],
   ['activity', ['company', 'work'], f => f === 'decisions.md' || f === 'dispatch-log.md'],
   ['activity', ['company', 'owner'], () => true],
