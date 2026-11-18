@@ -8,6 +8,13 @@
  *
  *   commandAsk(text) -> null | { command, action: { label, href } | null }
  *
+ * It is a PRE-DELIVERY check (console/chat.js send): a finished reply that hands the owner a command is not delivered;
+ * it goes back to the agent once with recheckNote(hit) — the owner uses the console only, so offer a button or do it
+ * yourself — and the owner sees the second reply. Only a second reply that still hands over a command is delivered, with
+ * the notice. recheckNote's text starts with CHECK_PREFIX, so the chat history never shows it as the owner's words.
+ *
+ *   recheckNote(hit) -> the message the agent gets       CHECK_PREFIX = '[Console check, not from the owner:'
+ *
  * The detector is the composer's own (inbox.js shellAsk): the whole reply in its evidence mode (a command counts only
  * next to words that hand it over: "in your terminal", "run this", "on your side", a $ prompt or a fenced command
  * line), and each sentence in its strict mode when the sentence tells the reader to run, type or paste it ("run:"
@@ -108,9 +115,21 @@ function commandAsk(text) {
   let full = hit;
   const tick = prose.match(/`([^`\n]+)`/g) || [];
   const spans = tick.map(x => x.slice(1, -1));
-  const m = spans.find(x => x.includes(hit)) || spans.find(x => x.length > 12 && hit.includes(x.slice(0, 20)));
+  // the hit is the words that hand it over ("in your terminal"): the command is the backticked span in that sentence
+  const sent = joined.split(/(?<=[.!?])\s+|\n+/).find(x => x.includes(hit)) || '';
+  const inSent = (sent.match(/`([^`\n]+)`/g) || []).map(x => x.slice(1, -1));
+  const m = spans.find(x => x.includes(hit)) || spans.find(x => x.length > 12 && hit.includes(x.slice(0, 20))) || inSent[0];
   if (m) full = m;
   return { command: full.trim().slice(0, 160), action: actionFor(full) };
+}
+
+const CHECK_PREFIX = '[Console check, not from the owner:';
+function recheckNote(hit) {
+  const a = hit && hit.action;
+  return CHECK_PREFIX + ' your reply was NOT shown to the owner, because it asked them to run a command' + (hit && hit.command ? ' (' + String(hit.command).slice(0, 160) + ')' : '') +
+    '. The owner uses the console only and never opens a terminal. Do it yourself with your tools, or offer the console control that does it' +
+    (a ? ' ([' + a.label + '](console:' + a.href + '))' : ' (a [label](console:#/route) link, or an ```actions block)') +
+    ', or hand it to the tools seat in a handoff; if agents are refused the command, say so and route it. Write your reply to the owner again, in plain words, without the command.]';
 }
 
 function selftest() {
@@ -127,6 +146,8 @@ function selftest() {
   for (const [txt, what] of [['Please run `sudo apt install jq` and tell me when it is done.', 'sudo'], ['You can run npm install in the repo and I will pick it up.', 'npm install'],
     ['Type `pip install pyyaml` in your shell.', 'pip install'], ['Could you run `git push origin main` for me?', 'git push'], ['Run this:\n```\nnode company/tools/onboard.js --certify\n```', 'a fenced command after "Run this"'],
     ['To restart it, run `systemctl --user restart capheos-station.service`.', 'systemctl restart']]) ok('flags an instruction: ' + what, !!commandAsk(txt), txt);
+  r = commandAsk('Please run `sudo apt install jq` in your terminal and tell me when it is done.');
+  ok('the command is the backticked span next to "in your terminal", not the hand-over words', r && r.command === 'sudo apt install jq', r);
   r = commandAsk('Could you run `git push origin main` for me?');
   ok('no console action for git push: the page says to tell the agent to use one', r && r.action === null, r);
   r = commandAsk('To restart it, run `systemctl --user restart capheos-station.service`.');
@@ -134,6 +155,11 @@ function selftest() {
   for (const [txt, what] of [['I ran `git push` on the branch and opened a pull request.', 'a report of what the agent ran'], ['Done: I wrote company/CHARTER.md and ran `node company/tools/onboard.js --certify`, which passed.', 'a report with a backticked command'],
     ['The dispatcher checks in every 10 minutes; nothing for you to do.', 'plain prose'], ['The service is stopped. You can start it again from Background services.', 'a pointer to a console place'],
     ['Agents run `systemctl --user status` to read the timer; nothing changed.', 'what agents run']]) ok('does not flag ' + what, commandAsk(txt) === null, { txt, got: commandAsk(txt) });
+  // the pre-delivery check's note to the agent: the reason, the console action when there is one, and the prefix the chat hides
+  let rn = recheckNote(commandAsk(CAPTURED_1));
+  ok('recheck note: starts with the check prefix, says the owner uses the console only, offers the console action', rn.startsWith(CHECK_PREFIX) && /console only/.test(rn) && /#\/settings\/system\/alarm/.test(rn) && /do it yourself/i.test(rn), rn);
+  rn = recheckNote(commandAsk('Could you run `git push origin main` for me?'));
+  ok('recheck note without a console action: asks for a button or doing it', /actions block/.test(rn) && /git push origin main/.test(rn), rn);
   // the owner-scope lint: crew work put to the owner in chat
   let oa = ownerAsk('The recorder now has its own watchdog. Could you add a healthchecks check named recorder, period 5, grace 15, and paste its ping URL?');
   ok('owner scope: a health-check request in chat is flagged as the crew\'s, routed to the risk seat', oa && oa.kind === 'crew-scope' && oa.route === 'risk' && /healthchecks/.test(oa.words.join()), oa);
@@ -153,7 +179,7 @@ function selftest() {
   return fails ? 1 : 0;
 }
 
-module.exports = { commandAsk, ownerAsk, observeAsk, actionFor };
+module.exports = { commandAsk, ownerAsk, observeAsk, actionFor, recheckNote, CHECK_PREFIX };
 if (require.main === module) {
   if (process.argv.includes('--selftest')) process.exit(selftest());
   console.error('usage: node console/command-ask.js --selftest'); process.exit(2);

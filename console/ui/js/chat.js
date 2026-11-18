@@ -209,6 +209,9 @@ export function liveChat(host, opts) {
         case 'console.user': if (!L.userShown) { body.insertBefore(mine(p.text), card); L.userShown = true; } break;
         case 'console.run': card.dataset.model = p.provider + '/' + p.model; say(name() + ' is thinking… (' + p.provider + ' · ' + p.model + ')'); break;
         case 'console.note': card.insertBefore(h('p', { class: 'caption muted' }, p.message), reply); break;
+        // the console's pre-delivery check held the first reply back (it asked the owner to run a command): it is not shown,
+        // and the second reply streams into the same card (console/chat.js)
+        case 'console.recheck': L.text = ''; L.finalP = null; L.lead = null; if (L.raf) { cancelAnimationFrame(L.raf); L.raf = 0; } fill(reply); fill(steps); note('recheck', p.message); say(name() + ' is answering again…'); break;
         case 'console.error': fail(p); break;
         case 'console.gap': note('gap', 'The console restarted while ' + name() + ' was writing, so part of the live view is missing. The whole reply appears here when ' + name() + ' finishes.'); break;
         case 'console.gone': L.gone = true; break;

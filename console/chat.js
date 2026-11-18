@@ -18,7 +18,7 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
-const { commandAsk, ownerAsk } = require(path.join(__dirname, 'command-ask.js'));
+const { commandAsk, ownerAsk, recheckNote, CHECK_PREFIX } = require(path.join(__dirname, 'command-ask.js'));
 // a reply that tells the owner to run a command: the page shows a notice under it (console/command-ask.js)
 const cmdAsk = text => { try { return commandAsk(text); } catch (_) { return null; } };
 // the run's last reply line, with that check added (console/chat-runs.js journals it as written)
@@ -125,6 +125,10 @@ module.exports = function chat(deps) {
       .map(t => {
         const o = { role: t.role, content: t.role === "user" ? String(t.content).replace(/^\[Console context, not from the owner:[\s\S]*?\]\n\n/, "") : t.content, at: t.at || t.ts || null };
         const rid = t.sourceRunId || t.runId || null;
+        // the console's pre-delivery check (a reply that handed the owner a command went back to the agent once): neither
+        // the check note nor the reply it sent back is the owner's conversation
+        if (t.role === 'user' && String(t.content).startsWith(CHECK_PREFIX)) return null;
+        if (t.role === 'assistant' && rid && RUNS.runOf(rid) && RUNS.runOf(rid).superseded) return null;
         if (rid) o.runId = rid;
         // a reply the station kept from a run that did not finish (stopped, cancelled by a dropped connection, failed)
         const mine = rid ? RUNS.runOf(rid) : null;
@@ -132,7 +136,7 @@ module.exports = function chat(deps) {
         if (t.role === 'assistant' && why && CUT.test(why)) o.cut = why;
         if (t.role === 'assistant') { const ca = cmdAsk(t.content); if (ca) o.commandAsk = ca; const oa = scopeAsk(t.content); if (oa) o.ownerAsk = oa; }
         return o;
-      });
+      }).filter(Boolean);
     return { ok: true, turns };
   }
   /* the reply as the station's transcript recorded it, for console.final: the turn this run wrote (sourceRunId), else the
@@ -239,10 +243,14 @@ module.exports = function chat(deps) {
     res.on('close', () => { closed = true; });
     // one run on one model; a refusal (the model declined it) is retried ONCE on the seat's next model, the same turn,
     // and the owner is told in one plain line (lib/refusal.js); every entry declining is reported plainly, never an error
-    const launch = (m, attempt, lead, tried) => {
+    /* PRE-DELIVERY COMMAND CHECK (console/command-ask.js): a finished reply that tells the owner to run a command or open a
+       terminal is not delivered; it goes back to the agent ONCE with the reason ("the owner uses the console only; offer a
+       button or do it yourself"), and the page shows the second reply instead. Only a second reply that still hands over
+       a command is delivered, with the notice under it. `check` = {messages} for that second run. */
+    const launch = (m, attempt, lead, tried, check) => {
     const opening = lead.slice();
     const payload = { agentId: id, model: m.model, provider: m.provider, rosterSystem: true, isTask: true, streamId: STREAM(id),
-      messages, projectRoot: co.ROOT, placed: PLACED };
+      messages: check ? check.messages : messages, projectRoot: co.ROOT, placed: PLACED };
     // the one gate (company/tools/lib/admit.js, door chat): an owner chat is always allowed and always counted
     let tk = null; try { tk = require(co.p('company', 'tools', 'lib', 'admit.js')).admit({ door: 'chat', kind: 'run', seat: id, why: body.brief ? 'console brief ' + body.brief : 'owner chat' }); } catch (_) {}
     for (const l of lead) if (attempt > 0) line(l.name, l.payload);
@@ -251,7 +259,7 @@ module.exports = function chat(deps) {
     if (prep.source === 'observe') payload.detach = true;
     const u = new URL(co.STATION_URL.replace(/\/+$/, '') + '/api/run');
     const data = JSON.stringify(payload);
-    let runId = null, off = null, upEnded = false, sawEnd = false, retrying = null;
+    let runId = null, off = null, upEnded = false, sawEnd = false, retrying = null, rechecking = null;
     const watch = rid => {   // the run is known: from here the browser reads its journal
       if (runId || closed) return; runId = rid;
       line('console.attached', { runId: rid });
@@ -265,11 +273,23 @@ module.exports = function chat(deps) {
           try { REF.record({ root: co.ROOT, seat: id, door: 'chat', runId: rid, from: m, to: null }); } catch (_) {}
           return;
         }
+        if (l.name === 'console.final' && !check && l.payload && l.payload.complete && l.payload.commandAsk && String(l.payload.text || '').trim()) {
+          rechecking = { text: String(l.payload.text), hit: l.payload.commandAsk };   // held back: this run's end starts the check run
+          try { const r0 = RUNS.runOf(rid); if (r0) { r0.superseded = true; r0.recheck = { command: l.payload.commandAsk.command }; } } catch (_) {}
+          return;
+        }
+        if (l.name === 'console.end' && rechecking) {
+          const rc = rechecking; rechecking = null; if (off) off();
+          const note = recheckNote(rc.hit);
+          line('console.recheck', { message: s.name + '\'s first reply asked you to run a command, so it went back to ' + s.name + ' to offer a button or do it instead.', command: rc.hit.command });
+          return launch(m, attempt, [{ name: 'console.run', payload: { agentId: id, name: s.name, model: m.model, provider: m.provider, from: 'the console\'s check: the first reply asked you to run a command' } }], tried,
+            { messages: messages.concat([{ role: 'assistant', content: rc.text }, { role: 'user', content: note }]) });
+        }
         if (l.name === 'console.end' && retrying) {
           const next = retrying; retrying = null; if (off) off();
           try { REF.record({ root: co.ROOT, seat: id, door: 'chat', runId: rid, from: m, to: next }); } catch (_) {}
           const note = { message: REF.plainLine(m, next).replace('answered instead.', 'is answering instead.'), refusal: { from: REF.keyOf(m), to: REF.keyOf(next) } };
-          return launch(next, 1, [{ name: 'console.note', payload: note }, { name: 'console.run', payload: { agentId: id, name: s.name, model: next.model, provider: next.provider, from: 'the next model in ' + s.name + '\'s chain (the first one declined)' } }], tried.concat([m]));
+          return launch(next, 1, [{ name: 'console.note', payload: note }, { name: 'console.run', payload: { agentId: id, name: s.name, model: next.model, provider: next.provider, from: 'the next model in ' + s.name + '\'s chain (the first one declined)' } }], tried.concat([m]), check);
         }
         line(l.name, l.payload);
         if (l.name === 'console.end') { closed = true; if (off) off(); res.end(); }

@@ -15,7 +15,7 @@ export async function render(host, ctx) {
   const chains = h('div'), cutoffs = h('div'), providers = h('div'), routing = h('div', { class: 'stack-16' });
   fill(host,
     Block({ id: 'chains', title: 'Who runs on what', lede: 'Each crew member\'s primary model and the fallbacks it moves to when the primary cannot run. Open a name to change it.' }, chains),
-    Block({ id: 'routing', title: 'Routing and trials', lede: 'Whether the company may pick a different model for one piece of work: a department\'s preferred model for that kind of work, a cheaper model for routine work, or a trial that compares models on real work. Each starts as recording only; you make it live.' }, routing),
+    Block({ id: 'routing', title: 'Cheaper models', lede: 'Whether the crew may use a cheaper model for a piece of work where that does not hurt quality, and trials that compare models on real work. Each starts as watching only; you switch it on.' }, routing),
     Block({ id: 'cutoffs', title: 'Subscription cutoffs', lede: 'How much of each subscription\'s week routines may use, and how evenly. The pacer asks on Today when a cutoff is holding the crew back.' }, cutoffs),
     Block({ id: 'providers', title: 'Providers and the pay-per-token cap', lede: 'Where the crew\'s AI comes from, and the most it may spend a day on providers that bill per token.' }, providers));
   chainsTable(chains);
