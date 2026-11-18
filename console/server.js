@@ -197,7 +197,9 @@ function questions() {
   const byId = {}; for (const g of gates) byId[g.id] = g;
   let rec = {}; try { rec = tool('approvals.js').records(); } catch (_) {}   // approvals: reminded (the Needs-you highlight)
   const st = inbox.state();
-  return inbox.openQuestions().map(q => SERVICE_KEYS.markSaved(q)).map(q => Object.assign({}, q, { askerSeat: seatOf(q.from) }, byId[q.id] ? { gate: { category: byId[q.id].category, ref: byId[q.id].ref, by: byId[q.id].by, summary: byId[q.id].summary, fixedGate: (st[q.id] && st[q.id].gate && st[q.id].gate.fixedGate) || undefined } } : {},
+  // M3: the crew's names as people write them, in what the owner reads (the stored card is unchanged: its cardDigest holds)
+  const named = q => Object.assign({}, q, ['message', 'details', 'q', 'from'].reduce((o, k) => { if (typeof q[k] === 'string') o[k] = NEEDS.properNames(q[k]); return o; }, {}));
+  return inbox.openQuestions().map(q => SERVICE_KEYS.markSaved(q)).map(named).map(q => Object.assign({}, q, { askerSeat: seatOf(q.from) }, byId[q.id] ? { gate: { category: byId[q.id].category, ref: byId[q.id].ref, by: byId[q.id].by, summary: byId[q.id].summary, fixedGate: (st[q.id] && st[q.id].gate && st[q.id].gate.fixedGate) || undefined } } : {},
     q.approval ? { approval: Object.assign({}, q.approval, { reminded: !!(rec[q.id] && rec[q.id].reminded), fixed: !!(rec[q.id] && rec[q.id].fixed) }) } : {}, cardParts(st[q.id])));
 }
 // an owner card's plain parts (company/tools/lib/owner-card.js: consequence, recommendation, the collapsed technical
@@ -205,7 +207,7 @@ function questions() {
 function cardParts(row) {
   if (!row) return {};
   const o = {};
-  for (const k of ['consequence', 'recommendation', 'technical']) if (typeof row[k] === 'string' && row[k].trim()) o[k] = row[k].trim().slice(0, k === 'technical' ? 8000 : 600);
+  for (const k of ['consequence', 'recommendation', 'technical']) if (typeof row[k] === 'string' && row[k].trim()) o[k] = (k === 'technical' ? row[k] : NEEDS.properNames(row[k])).trim().slice(0, k === 'technical' ? 8000 : 600);
   if (row.effect) { o.effectSays = NEEDS.describeEffect(row.effect); o.effectKind = NEEDS.effectKind(row.effect) || 'unknown'; }
   if (row.effect || row.card) o.cardDigest = NEEDS.cardDigest(row);   // sent back with the answer: a yes applies only what was shown
   return o;

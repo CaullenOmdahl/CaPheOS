@@ -99,12 +99,15 @@ test('governance: a crew-decides ruling lets decide() go ahead without a card; a
   const n = asks().length;
   const d = gov.decide('hiring', { by: 'Sam Lee', summary: 'hire Ana as designer', ref: 'hiring:ana' });
   assert.equal(d.allowed, true); assert.equal(d.ruling.effect, 'crew-decides'); assert.equal(asks().length, n);
-  const q = gov.decide('budget', { by: 'Sam Lee', summary: 'raise the cap in company/work/finance/budget.json to $40', recommendation: 'yes', ref: 'budget:x1' });
+  // a summary that does not read plainly is never sent as an empty "a decision about the budget" card (owner-experience review)
+  const np = gov.decide('budget', { by: 'Sam Lee', summary: 'raise the cap in company/work/finance/budget.json to $40', recommendation: 'yes', ref: 'budget:x0' });
+  assert.equal(np.allowed, false); assert.equal(np.notPlain, true); assert.equal(asks().length, n);
+  const q = gov.decide('budget', { by: 'Sam Lee', summary: 'raise the daily budget to $40', recommendation: 'yes', ref: 'budget:x1', technical: 'company/work/finance/budget.json dailyUsd 20 -> 40' });
   assert.equal(q.allowed, false); assert.ok(q.questionId);
   const row = asks().find(x => x.id === q.questionId);
   assert.ok(card.plain(row.message), row.message); assert.ok(card.plain(row.consequence), row.consequence);
-  assert.match(row.message, /^May Sam Lee go ahead with a decision about the budget\?$/);
-  assert.match(row.technical, /Summary as written: raise the cap in company\/work\/finance\/budget\.json/);
+  assert.match(row.message, /^May Sam Lee go ahead and raise the daily budget to \$40\?$/);
+  assert.match(row.technical, /company\/work\/finance\/budget\.json dailyUsd 20 -> 40/);
   assert.equal(row.recommendation, 'Recommendation from Sam Lee: yes.');
 });
 

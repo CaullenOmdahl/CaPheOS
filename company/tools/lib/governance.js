@@ -156,10 +156,13 @@ function fileQuestion(category, o, opts) {
   const by0 = String(o.by || '').trim(); const by = by0 && card.plain(by0) && by0.length <= 60 ? by0 : 'the crew';
   const words = CATEGORY_WORDS[category] || 'a decision the crew cannot make alone';
   const summ = plainOr(o.summary, card); const rec = plainOr(o.recommendation, card); const def = plainOr(o.default, card);
-  const lead = summ ? 'May ' + by + ' go ahead and ' + summ.replace(/^./, c => c.toLowerCase()) + '?' : 'May ' + by + ' go ahead with a decision about ' + words + '?';
+  // a card that would say nothing ("a decision about the crew's own tools") is not sent: the caller is told to say it
+  // plainly (the owner never gets an empty question)
+  if (!summ) return { filed: false, route: 'not-plain', reason: 'not asked: the summary does not read plainly for the owner ("' + String(o.summary || '').slice(0, 80) + '"); say what is decided in everyday words' };
+  const lead = 'May ' + by + ' go ahead and ' + summ.replace(/^./, c => c.toLowerCase()) + '?';
   const consequence = 'If you say yes, ' + by + ' goes ahead. If you say no or do not answer, ' + (def ? def.replace(/^./, c => c.toLowerCase()) : 'nothing happens and the crew waits for you') + '.';
   const recWords = o.recommendation ? (rec ? 'Recommendation from ' + by + ': ' + rec + '.'
-    : /^\s*yes\b/i.test(o.recommendation) ? by + ' recommends yes.' : /^\s*no\b/i.test(o.recommendation) ? by + ' recommends no.' : by + '\'s reasons are under the technical details; no is the safe default.') : null;
+    : /^\s*yes\b/i.test(o.recommendation) ? by + ' recommends yes.' : /^\s*no\b/i.test(o.recommendation) ? by + ' recommends no.' : null) : null;
   const technical = [
     'Self-governance: ' + category + ' is at "' + (o.triage ? 'triage' : 'approve') + '"' + (fixed ? ' (a fixed owner gate)' : '') + ' (company/tools/governance.js).',
     'Decision ref: ' + o.ref,
@@ -303,7 +306,7 @@ function decide(category, o, opts) {
   if (lv === 'notify') {
     const who = o.by || 'The company';
     const sentence = plainDecided(who, category, o.summary) + ' If you want it undone, say so in Chat.';
-    const technical = 'Self-governance: ' + category + ' is set to notify, so this is done without waiting for the owner. Ref: ' + ref + (o.summary ? '. Summary: ' + String(o.summary).trim() : '');
+    const technical = 'Self-governance: ' + category + ' is set to notify, so this is done without waiting for the owner. Ref: ' + ref + (o.summary ? '. Summary: ' + String(o.summary).trim() : '') + (o.technical ? '. ' + String(o.technical) : '');
     let noted = null; try { noted = fyi({ from: o.by, text: sentence, technical, key: ref }, opts); } catch (_) {}
     return { level: lv, allowed: true, noted: !!noted };
   }
@@ -324,6 +327,7 @@ function approveFlow(category, o, ref, opts, tri) {
     // answered with neither yes nor no, or closed: ask again
   }
   const res = fileQuestion(category, Object.assign({}, o, { ref, triage: tri ? tri.why : null }), opts);
+  if (res.route === 'not-plain') return { level: lv, allowed: false, notPlain: true, reason: res.reason };
   if (res.filed) return { level: lv, allowed: false, questionId: res.id, reason: 'asked the owner: ' + res.id };
   if (res.route === 'duplicate') return { level: lv, allowed: false, questionId: res.id, reason: 'waiting for the owner on ' + res.id };
   if (res.route === 'ruling' && res.ruling && res.ruling.effect === 'crew-decides') return { level: lv, allowed: true, ruling: res.ruling, approvedBy: 'the owner\'s standing rule ' + res.ruling.id };
@@ -336,6 +340,7 @@ function approveFlow(category, o, ref, opts, tri) {
 /* The refusal text a tool prints when decide() says not now. */
 function refusal(category, d) {
   const lv = d.level === 'triage' ? 'triage (escalated)' : 'approve';
+  if (d.notPlain) return 'self-governance: ' + d.reason;
   if (d.ruling && !d.allowed) return 'self-governance: the owner\'s standing rule ' + d.ruling.id + ' ("' + d.ruling.text + '") says not to ask, so this is not done';
   if (d.backoff) return 'self-governance: the owner answered this "not now" (' + d.backoff.id + '); ask again only when something material changed';
   if (d.denied) return 'self-governance: the owner said no (' + d.questionId + '); ' + category + ' is at ' + lv + ', so this is not done';

@@ -430,3 +430,61 @@ out({ withAsk, lead: q.message, fyiPrefix: /text: 'FYI: '/.test(src) });`);
   const ap = fs.readFileSync(path.join(REPO, 'company/tools/approvals.js'), 'utf8');
   assert.match(ap, /asks: true, key: 'approval-reminder:/, 'the approval reminder marks itself as pointing at Today');
 });
+
+/* ---------------- the jargon list and the M-items ---------------- */
+test('jargon: a governance card that would say nothing is not sent; no "reasons are under the technical details"', () => {
+  const T = company({ levels: { tools: 'approve' } });
+  const r = run(T, `
+const gov = require(path.join(REPO, 'company/tools/lib/governance.js'));
+const d = gov.decide('tools', { by: 'Sharon', summary: 'apply hc-0008, a policy change to company/work/finance/pacing-policy.json (/minimax/fiveHourCloseBelowLeftPct: 0 -> 35)', recommendation: 'per the hc-0008 review', ref: 'harness:hc-0008' }, { root: T });
+const ok = gov.decide('tools', { by: 'Sharon', summary: 'change how work is handed out', recommendation: 'yes', ref: 'harness:hc-0009' }, { root: T });
+const asks = require(path.join(REPO, 'company/tools/lib/pm-inbox-guard.js')).rows({ file: path.join(T, 'company/pm-inbox.jsonl'), noAlert: true }).filter(x => x.type === 'ask');
+out({ d, refusal: gov.refusal('tools', d), asks: asks.map(a => ({ message: a.message, recommendation: a.recommendation })) });`);
+  assert.equal(r.d.allowed, false); assert.equal(r.d.notPlain, true, JSON.stringify(r.d));
+  assert.match(r.refusal, /does not read plainly/);
+  assert.equal(r.asks.length, 1, 'only the plain one reaches the owner: ' + JSON.stringify(r.asks));
+  assert.equal(r.asks[0].message, 'May Sharon go ahead and change how work is handed out?');
+  assert.doesNotMatch(JSON.stringify(r.asks), /reasons are under the technical details|a decision about/);
+});
+
+test('jargon: change cards have no canned reason and say a makers-only change leaves the company as it is; M1 a makers-only change is not a card', () => {
+  const T = company({ levels: { tools: 'approve' } });
+  const g = p => spawnSync('git', p, { cwd: T, encoding: 'utf8' });
+  W(T, 'company/tools/fw.js', 'x\n'); W(T, 'company/work/.founded', ''); W(T, 'company/tools/mine.js', 'y\n');
+  W(T, 'company/work/changes/hc-0001/change.diff', '--- a/company/tools/fw.js\n+++ b/company/tools/fw.js\n@@ -1 +1 @@\n-x\n+y\n');
+  g(['init', '-q']); g(['add', 'company/tools/fw.js']);
+  const r = run(T, `
+const hc = require(path.join(REPO, 'company/tools/harness-change.js'));
+const ctx = hc.context({ root: T, now: Date.now() });
+const base = { kind: 'tool', by: 'Kwame Asante', byId: 'engineer', why: 'tighten the check', change: { mode: 'patch', payload: 'company/work/changes/hc-0001/change.diff' }, status: 'approved',
+  reviewers: [{ id: 'auditor', name: 'Riley' }, { id: 'agent', name: 'Alex' }], approvals: [{ id: 'auditor', name: 'Riley' }, { id: 'agent', name: 'Alex' }] };
+const up = hc.ownerCard(ctx, Object.assign({ id: 'hc-0001', target: { type: 'file', file: 'company/tools/fw.js' } }, base), 'apply');
+const own = hc.ownerCard(ctx, Object.assign({ id: 'hc-0002', target: { type: 'file', file: 'company/tools/mine.js' } }, base), 'apply');
+const review = hc.ownerCard(ctx, Object.assign({ id: 'hc-0003', target: { type: 'file', file: 'company/tools/fw.js' } }, base, { reviewers: [{ id: 'owner', name: 'owner' }], approvals: [] }), 'review');
+const asks = require(path.join(REPO, 'company/tools/lib/pm-inbox-guard.js')).rows({ file: path.join(T, 'company/pm-inbox.jsonl'), noAlert: true }).filter(x => x.type === 'ask');
+out({ up, own, review, asks: asks.map(a => ({ ref: a.gate.ref, message: a.message, recommendation: a.recommendation })) });`);
+  assert.equal(r.up.filed, false); assert.equal(r.up.route, 'crew', 'M1: a makers-only change is not a card: ' + JSON.stringify(r.up));
+  assert.equal(r.own.filed, true, 'a change in this company still is: ' + JSON.stringify(r.own));
+  const own = r.asks.find(a => a.ref === 'harness-review:hc-0002');
+  assert.doesNotMatch(own.recommendation, /keeps their work running smoothly/);
+  const rv = r.asks.find(a => a.ref === 'harness-review:hc-0003');
+  assert.ok(rv, 'the owner reviewing a framework change still gets its card');
+  assert.match(rv.message, /nothing changes in your company/);
+  assert.doesNotMatch(JSON.stringify(r.asks), /keeps this company as it is/);
+});
+
+test('M2: the word API alone does not make a key only the owner can get the crew\'s job', () => {
+  const scope = require(path.join(REPO, 'company/tools/lib/owner-scope.js'));
+  const c = scope.classify({ message: 'Paste your Pyth Hermes API key here, please.' });
+  assert.equal(c.scope, 'owner', JSON.stringify(c)); assert.ok(c.owner.includes('account'));
+  const k = scope.check({ from: 'Founder', message: 'Paste your Pyth Hermes API key here, please.' }, { rows: [], govOpts: { level: 'auto' } });
+  assert.notEqual(k && k.code, 'crew-scope', 'never refused as the crew\'s job: ' + JSON.stringify(k));
+  assert.equal(scope.classify({ message: 'Our API client needs a retry on timeouts.' }).scope, 'crew', 'crew tooling is still the crew\'s');
+});
+
+test('M3: a crew member\'s name reads as people write it on Today', () => {
+  const T = fixture();
+  W(T, 'company/tools/loops.json', { agents: { boss: { name: 'Boss', functions: ['ceo'], manager: null, inbox: 'to-boss.md' }, people: { name: 'nadia farrell', functions: ['people'], manager: 'boss', inbox: 'to-nadia.md' } } });
+  const r = run(T, NEEDS_CTX + `out({ t: NEEDS.properNames('nadia farrell wants to change one of the safeguards.') });`);
+  assert.equal(r.t, 'Nadia Farrell wants to change one of the safeguards.');
+});

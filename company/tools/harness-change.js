@@ -748,7 +748,9 @@ async function applyChange(ctx, id, o) {
   // something they should know, so it is one line in the day's message (owner-notice fyi), never a card or a message
   else if (lv === 'auto' && rec0.kind === 'tool' && rec0.target && rec0.target.locked) tellAfter = true;
   else if (lv === 'triage') {
-    const gd = gov.decide(govCat, { by: p.name, ref: 'harness:' + rec0.id, summary: 'apply ' + rec0.id + ', a ' + rec0.kind + ' change to ' + targetLabel(rec0) + ' (' + summaryLine(rec0) + ')',
+    // the summary the owner may read (a digest line, or a card's lead): the area in plain words; the id, file and
+    // diff ride in the recommendation and technical parts
+    const gd = gov.decide(govCat, { by: p.name, ref: 'harness:' + rec0.id, summary: 'change ' + plainArea(rec0), technical: rec0.id + ': a ' + rec0.kind + ' change to ' + targetLabel(rec0) + ' (' + summaryLine(rec0) + ')',
       recommendation: 'yes: reviewed and approved by ' + ((rec0.approvals || []).map(x => x.name).join(' and ') || 'its reviewers') + '; why: ' + rec0.why, default: 'the change stays approved but not applied' }, { root: ctx.root });
     if (!gd.allowed) throw E(gov.refusal(govCat, gd), 'refused');
   } else if (lv === 'approve') {
@@ -965,18 +967,28 @@ function tellOwner(ctx, o) {
 function ownerCard(ctx, rec, stage) {
   const C = ctx.cards();
   rec.ownerRef = rec.ownerRef || 'harness-review:' + rec.id;
+  // M1: a reviewed change to a framework file only becomes a suggestion to the makers (frameworkRequest): nothing changes
+  // in this company, so the owner is not asked to approve each one; they read one line when it is sent. A change that
+  // keeps a fixed owner gate, and a protected tool the guardrail requires the owner to review, still get their card.
+  const upstreamOnly = stage === 'apply' && !rec.fixedGate && !guardrailForced(ctx, rec, stage) && !!(rec.target && rec.target.file && ['tool', 'house-rule', 'policy'].includes(rec.kind) && isFrameworkFile(ctx, rec.target.file));
+  if (upstreamOnly) {
+    appendLog(ctx, { event: 'owner-card-not-filed', id: rec.id, stage, route: 'crew', reason: 'a suggestion to the makers only: nothing changes in this company', by: TOOL_NAME });
+    return { filed: false, route: 'crew', reason: 'a suggestion to the makers of the company software only: nothing changes in this company, so the owner reads one line when it is sent' };
+  }
   if (!C) { appendLog(ctx, { event: 'owner-card-missing', id: rec.id, by: TOOL_NAME }); return { filed: false, route: 'missing', reason: 'lib/owner-card.js is not installed' }; }
   let payload = ''; try { payload = rec.change && rec.change.payload ? fs.readFileSync(ctx.P(rec.change.payload), 'utf8') : ''; } catch (_) {}
   const upstream = !!(rec.target && rec.target.file && ['tool', 'house-rule', 'policy'].includes(rec.kind) && isFrameworkFile(ctx, rec.target.file));
   const first = rec.by + ' wants to change ' + plainArea(rec) + ', and ' + reviewedWords(rec) + '.';
   // the proposer's own plain sentence (--plain) when it reads plainly; the owner always hears what they keep (a backup)
-  const fallback = upstream ? 'It would go to the makers of the company software, which keeps this company as it is.' : 'It keeps a backup, so it can be undone.';
+  const fallback = upstream ? 'It is a suggestion to the makers of the company software; nothing changes in your company.' : 'It keeps a backup, so it can be undone.';
   const mine = rec.plain ? String(rec.plain).trim().replace(/[.!]?$/, '') : null;
   const short = rec.by + ' wants to change ' + plainArea(rec) + '.';   // a long name or area can push the first sentence over the limit
   const lead = [mine ? first + ' ' + mine + '.' : null, mine ? first + ' ' + mine + ', and it keeps a backup.' : null, first + ' ' + fallback, short + ' ' + fallback].filter(Boolean).find(plainOk) || short + ' ' + fallback;
   const consequence = upstream ? 'If you say yes, the crew sends it to the makers, which lets them fix it for every company. If you say no, nothing is sent.'
     : 'If you say yes, the crew makes the change and keeps a backup to undo it. If you say no, nothing changes.';
-  const recommendation = 'The crew recommends yes, because it keeps their work running smoothly. If you do not answer, nothing changes.';
+  // the crew's advice in its own words (--plain, already in the lead), never a canned reason
+  const why = upstream ? 'it lets the makers fix it for every company' : 'it keeps a backup, so it can be undone';
+  const recommendation = ((rec.approvals || []).some(a => a.id !== 'owner') ? 'The colleagues who reviewed it recommend yes; ' : rec.by + ' recommends yes; ') + why + '. If you do not answer, nothing changes.';
   const technical = [rec.id + ' (' + rec.kind + ': ' + targetLabel(rec) + ') proposed by ' + rec.by + '; reviewers ' + rec.reviewers.map(r => r.name).join(', ') + '; approved by ' + ((rec.approvals || []).map(a => a.name).join(', ') || 'nobody yet'),
     stage === 'apply' ? 'Asked because self-governance has ' + governanceCategory(rec) + ' at approve.' : rec.fixedGate ? 'Asked because it edits, in this company, code that keeps a fixed owner gate (' + rec.fixedGate + ').' : 'Asked because fewer than two crew seats could review it.',
     'Why: ' + rec.why, rec.expect ? 'Expected effect: ' + rec.expect : null, summaryLine(rec), 'Record: company/work/changes/' + rec.id + '.json',

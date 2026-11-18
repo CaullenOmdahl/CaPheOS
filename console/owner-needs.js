@@ -292,6 +292,18 @@ function make(deps) {
     return { kind: k, applied: false, said: 'Your answer is recorded.' };
   }
 
+  /* M3: a crew member's name as people write it ("Nadia farrell" in the crew list reads "Nadia Farrell"): for what the
+   * owner reads only; the stored card (and its digest) keep the tool's own words */
+  function properNames(text) {
+    let t = String(text == null ? '' : text); if (!t) return t;
+    let crew = {}; try { crew = co.crew() || {}; } catch (_) {}
+    for (const c of Object.values(crew)) {
+      const n = String((c && c.name) || '').trim(); if (!n || !/\s/.test(n)) continue;
+      const fixed = n.split(/(\s+|-)/).map(w => /^[a-z]/.test(w) ? w.charAt(0).toUpperCase() + w.slice(1) : w).join('');
+      if (fixed !== n) t = t.split(n).join(fixed);
+    }
+    return t;
+  }
   /* ---------- the digest ---------- */
   function digest(o) {
     o = o || {};
@@ -304,12 +316,12 @@ function make(deps) {
       if (!r || r._retention || r.crewOnly || (r.kind && r.kind !== 'fyi') || typeof r.text !== 'string' || !r.text.trim()) continue;
       const at = Date.parse(r.at || ''); if (!Number.isFinite(at) || at < since) continue;
       const action = r.action && r.action.kind === 'undo-decision' && /^d-[0-9a-f]{12}$/.test(String(r.action.decisionId || '')) ? { kind: 'undo-decision', decisionId: r.action.decisionId, label: 'Undo this' } : null;
-      byKey.set(r.key ? 'k:' + r.key : 'n:' + (n++), Object.assign({ at: new Date(at).toISOString(), from: r.from || null, text: String(r.text).slice(0, 600), technical: r.technical ? String(r.technical).slice(0, 4000) : null }, action ? { action } : {}, r.asks ? { asks: true } : {}));
+      byKey.set(r.key ? 'k:' + r.key : 'n:' + (n++), Object.assign({ at: new Date(at).toISOString(), from: r.from ? properNames(r.from) : null, text: properNames(String(r.text).slice(0, 600)), technical: r.technical ? String(r.technical).slice(0, 4000) : null }, action ? { action } : {}, r.asks ? { asks: true } : {}));
     }
     const items = [...byKey.values()].sort((a, b) => a.at.localeCompare(b.at));
     return { ok: true, title: 'What the crew did today', items, since: new Date(since).toISOString() };
   }
 
-  return { classify, split, ruleOffer, rulings, addRuling, removeRuling, rulingFor, effectKind, describeEffect, cardDigest, applyEffect, digest, plainLead, LEVEL_SAY, CAT_SAY, catSay };
+  return { properNames, classify, split, ruleOffer, rulings, addRuling, removeRuling, rulingFor, effectKind, describeEffect, cardDigest, applyEffect, digest, plainLead, LEVEL_SAY, CAT_SAY, catSay };
 }
 module.exports = { make, LEVEL_SAY, CAT_SAY, EFFECTS, RULING_EFFECTS };
