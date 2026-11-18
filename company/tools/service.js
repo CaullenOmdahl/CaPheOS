@@ -4,7 +4,10 @@
  *
  *   node company/tools/service.js propose <name> --kind service|timer --exec "<argv>" [--every 60s|5min|1h | --on-calendar "<spec>"]
  *        --why "..." --by <seat> [--restart on-failure|always] [--timeout 1h] [--success-exit "3"] [--memory 512M] [--cpu 50%]
- *        [--network none | --hosts <host>[,<host>]] [--soft-halt finish|stop|keep] [--wake <seat>[,<seat>]] [--plain "what it does, for the owner"]
+ *        [--hosts <host>[,<host>] | --network on] [--soft-halt finish|stop|keep] [--wake <seat>[,<seat>]]
+ *        [--plain "what it does, for the owner"] [--if-no "what the crew does instead, for the owner"]
+ *        No network unless asked: name the websites the job needs with --hosts (a website the company does not use yet is
+ *        an `external` decision); --network on (any website) asks the owner while the localComputer guardrail is on.
  *        --wake (a timer only): each run's end is recorded like a watched job (company/tools/notify-when.js wraps the
  *        ExecStart and passes its exit code through) and wakes those seats, a failure too; it also satisfies a
  *        `**Waiting on:** service:<name>` line (company/HANDOFFS.md)
@@ -33,16 +36,19 @@
  * .sh). Every later word that is a path (starts with /, or holds a .. segment) must be inside the company folder.
  * THE TEMPLATE. WorkingDirectory=the company folder; Restart=on-failure (or always, declared) with a start limit;
  * MemoryMax (default 512M, at most 4G), CPUQuota (default 50%, at most 200%), TasksMax=64, Nice=10, NoNewPrivileges.
- * Network is open unless the proposal declares --network none (RestrictAddressFamilies=AF_UNIX). A timer runs its service
+ * There is no network unless the proposal asks for it (RestrictAddressFamilies=AF_UNIX): --hosts <host>[,<host>] names the
+ * websites it needs (recorded, not enforced by the unit: the owner is told which websites it connects to, never that it
+ * reaches only those), --network on opens every website. A timer runs its service
  * as a oneshot. The unit files carry X-CaPheOS-* lines naming the company, the folder and the service.
  *
  * GOVERNANCE. A new service follows the `schedules` self-governance level (auto installs, notify installs and puts one
  * plain line in the owner's daily digest, triage asks the decision model, approve files one owner card), like any other
  * category. With the `localComputer` guardrail ON that holds only for a service in the SAFE PROFILE (safeProfile below:
- * a script and paths in the company folder, which validateArgv already requires; --network none or --hosts naming only
- * hosts on the external-gate allowlist; the default memory and processor limits; a timer, or a service that restarts only
- * on failure; it finishes or stops in a soft halt). Anything outside it (open network, a new host, raised limits, restart
- * always, runs through a soft halt) asks the owner. The owner is asked only through lib/owner-card.js: one card per exact
+ * a script and paths in the company folder, which validateArgv already requires; no network, or --hosts; the default
+ * memory and processor limits; a timer, or a service that restarts only on failure; it finishes or stops in a soft halt).
+ * Anything outside it (--network on, raised limits, restart always, runs through a soft halt) asks the owner. A website
+ * in --hosts that is not on the external-gate allowlist is also an `external` decision (auto: the crew decides; notify:
+ * one digest line; approve: the owner's card, category external); the stricter of the two levels wins. The owner is asked only through lib/owner-card.js: one card per exact
  * spec (ref service:<name>:<spec key>), plain words up front, the command and limits only under technical, effect
  * {serviceApprove:{name}} (ownerApprove below); a changed spec withdraws the older card. `propose` is idempotent: run it
  * again after the owner answers and it installs. Start and stop of an approved service belong to the seat that asked for
@@ -264,11 +270,17 @@ function specOf(ctx, name, o, opts) {
   const restart = String(o.restart || 'on-failure'); if (!['on-failure', 'always'].includes(restart)) throw err('--restart is on-failure or always');
   const softHalt = String(o['soft-halt'] || 'finish'); if (!['finish', 'stop', 'keep'].includes(softHalt)) throw err('--soft-halt is finish, stop or keep');
   if (kind === 'timer' && softHalt === 'keep') throw err('--soft-halt keep is for a long-running service; a timer stops firing in a soft halt');
-  const network = o.network == null || o.network === 'on' ? true : o.network === 'none' ? false : (() => { throw err('--network is none (no network) or left out'); })();
-  // --hosts: the only places it talks to (declared and recorded; a host off the external-gate allowlist asks the owner)
+  // no network unless the proposal asks for it: --hosts names the websites it needs (each one a decision at the
+  // `external` self-governance level unless it is already on the external-gate allowlist); --network on opens every
+  // website (outside the safe profile). Left out, the unit gets RestrictAddressFamilies=AF_UNIX: nothing leaves.
+  const wantsHosts = o.hosts != null && o.hosts !== false;
+  if (o.network != null && !['on', 'none'].includes(o.network)) throw err('--network is none (the default: no network) or on (any website; asks the owner while the localComputer guardrail is on). To reach named websites, give --hosts instead');
+  const network = o.network === 'on' ? true : o.network === 'none' ? false : wantsHosts;
+  // --hosts: the websites it needs (declared and recorded; the computer does not block other websites, so the owner is
+  // never told it "only" talks to them)
   let hosts = null;
-  if (o.hosts != null && o.hosts !== false) {
-    if (!network) throw err('--hosts and --network none contradict each other');
+  if (wantsHosts) {
+    if (o.network === 'none') throw err('--hosts and --network none contradict each other');
     hosts = [...new Set(String(o.hosts).split(',').map(h => h.trim().toLowerCase()).filter(Boolean))];
     if (!hosts.length || hosts.some(h => !/^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/.test(h))) throw err('--hosts is a comma-separated list of host names, e.g. api.example.com');
   }
@@ -287,7 +299,8 @@ function specOf(ctx, name, o, opts) {
     if (!wake.length) throw err('--wake names the seats to wake, e.g. --wake rohan');
   }
   return Object.assign({ name, unit: unitOf(ctx, name), kind, argv, schedule: scheduleOf(kind, o), why: why.slice(0, 400), restart, softHalt, network, limits: limitsOf(o), timeout, successExit }, wake ? { wake } : {}, hosts ? { hosts } : {},
-    o.plain && o.plain !== true ? { plain: String(o.plain).replace(/\s+/g, ' ').trim().slice(0, 200) } : {});
+    o.plain && o.plain !== true ? { plain: String(o.plain).replace(/\s+/g, ' ').trim().slice(0, 200) } : {},
+    o['if-no'] && o['if-no'] !== true ? { ifNo: String(o['if-no']).replace(/\s+/g, ' ').trim().slice(0, 160) } : {});
 }
 // the exact spec the owner (or the governance level) agrees to; a field added later joins only when set, so the key of an
 // installed service stays what it was
@@ -374,21 +387,38 @@ function allowlist(ctx) {
 // the same matching as the external gate (lib/governance.js allowlisted): a host, a parent domain, or a *.domain entry
 const hostAllowed = (list, h) => list.some(e => (e.startsWith('*.') ? (h === e.slice(2) || h.endsWith(e.slice(1))) : (h === e || h.endsWith('.' + e))));
 /* safeProfile(ctx, e) -> {safe, reasons: [{plain, crew}]} — may this service follow the schedules level while the
- * localComputer guardrail is on? validateArgv has already kept the script and every path inside the company folder. */
+ * localComputer guardrail is on? validateArgv has already kept the script and every path inside the company folder.
+ * Named websites (--hosts) are not a reason here: they are the `external` level's decision (siteDecision below). */
 function safeProfile(ctx, e) {
   const reasons = [];
-  if (e.network) {
-    if (!e.hosts || !e.hosts.length) reasons.push({ plain: 'It could connect to any website, which risks company data leaving this computer.', crew: 'network open (no --network none, no --hosts)' });
-    else {
-      const list = allowlist(ctx); const fresh = e.hosts.filter(h => !hostAllowed(list, h.replace(/^\*\./, '')));
-      if (fresh.length) reasons.push({ plain: 'It would connect to a website the crew has not used before, which risks company data leaving this computer.', crew: 'hosts not on the external-gate allowlist: ' + fresh.join(', ') });
-    }
-  }
+  if (e.network && (!e.hosts || !e.hosts.length)) reasons.push({ plain: 'It could connect to any website, which risks company data leaving this computer.', crew: 'network open (--network on, no --hosts)' });
   if (bytesOf(e.limits && e.limits.memoryMax) > bytesOf(DEFAULT_LIMITS.memoryMax) || parseInt((e.limits && e.limits.cpuQuota) || '0', 10) > parseInt(DEFAULT_LIMITS.cpuQuota, 10))
     reasons.push({ plain: 'It may use more of this computer\'s memory or power than usual, which risks slowing it down.', crew: 'raised limits: MemoryMax=' + e.limits.memoryMax + ' CPUQuota=' + e.limits.cpuQuota });
   if (e.kind === 'service' && e.restart === 'always') reasons.push({ plain: 'It restarts itself whenever it stops, which keeps it going even when something is wrong.', crew: 'Restart=always' });
   if (e.softHalt === 'keep') reasons.push({ plain: 'It keeps running even when you pause the company.', crew: '--soft-halt keep' });
   return { safe: !reasons.length, reasons };
+}
+/* the websites a job declared, and which of them are new: a host on the external-gate allowlist is one the company
+ * already uses (the owner's own list, or an add-on the owner installed); any other host is an `external` decision */
+function sites(ctx, e) {
+  const hosts = (e && e.network && e.hosts) || [];
+  const list = allowlist(ctx);
+  return { hosts, fresh: hosts.filter(h => !hostAllowed(list, h.replace(/^\*\./, ''))) };
+}
+// a website by the name people know it by: api.elections.kalshi.com -> Kalshi
+function siteName(h) {
+  const parts = String(h || '').replace(/^\*\./, '').toLowerCase().split('.').filter(Boolean);
+  if (parts.length < 2) return null;
+  const sld = parts.length >= 3 && /^(co|com|org|net|gov|ac)$/.test(parts[parts.length - 2]) && parts[parts.length - 1].length === 2 ? parts[parts.length - 3] : parts[parts.length - 2];
+  return /^[a-z][a-z0-9-]{1,30}$/.test(sld) ? sld.replace(/-/g, ' ').replace(/(^|\s)\S/g, c => c.toUpperCase()) : null;
+}
+// "the Kalshi website" / "the Kalshi and Pyth websites" / "3 websites"
+function sitesWords(hosts) {
+  const names = [...new Set((hosts || []).map(siteName))];
+  if (!names.length || names.some(n => !n)) return (hosts || []).length === 1 ? 'one website' : (hosts || []).length + ' websites';
+  if (names.length === 1) return 'the ' + names[0] + ' website';
+  if (names.length === 2) return 'the ' + names[0] + ' and ' + names[1] + ' websites';
+  return names.length + ' websites';
 }
 // when it runs, in everyday words (a calendar spec the words cannot follow becomes "on a set schedule")
 function plainWhen(sched) {
@@ -412,21 +442,48 @@ function factsOf(ctx, e, who) {
   const cmd = e.argv.map(a => a.startsWith(ctx.root + '/') ? a.slice(ctx.root.length + 1) : a).join(' ');
   return ['**Name:** ' + e.name + ' (the computer calls it ' + e.unit + ')', '**What it runs:** `' + cmd + '`', '**When:** ' + scheduleWords(e.schedule),
     '**Why:** ' + e.why, '**Asked by:** ' + who.name, '**Limits:** at most ' + e.limits.memoryMax + ' of memory and ' + e.limits.cpuQuota + ' of one processor; '
-      + (e.network ? (e.hosts && e.hosts.length ? 'network to ' + e.hosts.join(', ') + ' only (declared)' : 'it may use the network') : 'no network') + '; it restarts ' + (e.kind === 'timer' ? 'never (it runs once per turn)' : e.restart === 'always' ? 'whenever it stops' : 'if it fails'),
+      + (e.network ? (e.hosts && e.hosts.length ? 'network, declared for ' + e.hosts.join(', ') + ' (declared, not enforced: the unit does not block other hosts)' : 'it may use the network (any host)') : 'no network (RestrictAddressFamilies=AF_UNIX)') + '; it restarts ' + (e.kind === 'timer' ? 'never (it runs once per turn)' : e.restart === 'always' ? 'whenever it stops' : 'if it fails'),
     '**In a soft halt:** ' + (e.kind === 'timer' ? 'it stops firing; a run in progress finishes' : e.softHalt === 'keep' ? 'it keeps running (a hard halt stops it)' : 'it is asked to finish and stop'),
     '**You can stop or remove it any time** in Settings › System › Background services.'].join('\n');
+}
+// what the job reaches, in words that are true: no network is enforced (RestrictAddressFamilies), named websites are
+// declared, not enforced, so the owner is told which websites it connects to, never that it reaches "only" those
+function reachWords(ctx, e) {
+  if (!e.network) return 'It keeps to company files and cannot reach the internet.';
+  if (!e.hosts || !e.hosts.length) return null;
+  const s = sites(ctx, e);
+  return 'It connects to ' + sitesWords(e.hosts) + (s.fresh.length ? ', which the crew has not used before.' : ', which the crew already uses.');
 }
 // "Halima wants a background job to run every night at 2 am on this computer." + what it touches, or why it needs a yes
 function plainLead(ctx, e, who, prof) {
   const when = e.kind === 'timer' ? 'run ' + plainWhen(e.schedule) : 'keep running';
   const first = who.name + ' wants a background job to ' + when + ' on this computer.';
-  const what = e.plain && plainOk(e.plain) ? e.plain : null;
-  const second = prof.reasons.length ? prof.reasons[0].plain : e.network ? 'It keeps to company files and talks only to websites the crew already uses.' : 'It keeps to company files and sends nothing out.';
+  const what = e.plain && plainOk(e.plain) ? e.plain.replace(/[.!]?$/, '.') : null;
+  const second = prof.reasons.length ? prof.reasons[0].plain : reachWords(ctx, e) || 'It keeps to company files.';
   return [what ? first + ' ' + what : null, first + ' ' + second, who.name + ' wants a background job on this computer. ' + second].filter(Boolean).find(plainOk) || who.name + ' wants a background job on this computer. ' + second;
+}
+// the digest line after a job was set up without asking: what it does, and what it reaches
+function plainDone(ctx, e, who) {
+  const when = e.kind === 'timer' ? 'to run ' + plainWhen(e.schedule) : 'that keeps running';
+  const first = who.name + ' set up a background job ' + when + ' on this computer.';
+  // a notice, not a question: the card's word check (no jargon, ids, paths), not the ask's "what you get" rule
+  const words = t => { try { return require('./lib/owner-card').plain(t); } catch (_) { return false; } };
+  const what = e.plain && words(e.plain) ? e.plain.replace(/[.!]?$/, '.') : null;
+  const reach = reachWords(ctx, e) || 'It can reach any website.';
+  return [what ? first + ' ' + what + ' ' + reach : null, first + ' ' + reach].filter(Boolean).find(t => !require('./lib/owner-scope').wordsProblems(t).length) || who.name + ' set up a background job on this computer. ' + reach;
+}
+// the crew's advice, never a canned reason: the proposer's own plain sentence (--plain) is in the lead; a job outside the
+// safe profile is never "recommended" over its own risk sentence
+function plainRecommendation(e, who, prof) {
+  if (prof.reasons.length) return 'Say yes only if that risk is acceptable to you. If you say no or do not answer, nothing is installed.';
+  const ifNo = e.ifNo && plainOk('If you say no, ' + e.ifNo.replace(/[.!]?$/, '.')) ? e.ifNo.replace(/^./, c => c.toLowerCase()).replace(/[.!]?$/, '.') : null;
+  const t = ifNo ? who.name + ' recommends yes. If you say no, ' + ifNo : null;
+  return t && plainOk(t) ? t : who.name + ' recommends yes, because it keeps that work going between the crew\'s sessions. If you say no or do not answer, nothing is installed.';
 }
 /* askOwner(ctx, e, who, ref, category, prof) -> what lib/owner-card.js file() returned ({filed, id} or {filed:false, route}) */
 // the card's technical part: the exact spec and whether it is inside the safe profile (ownerApprove compares it again)
-const cardTechnical = (ctx, e, who, category, prof) => factsOf(ctx, e, who) + '\n' + (prof.reasons.length ? '**Outside the safe profile:** ' + prof.reasons.map(r => r.crew).join('; ') : '**Inside the safe profile**; asked because self-governance has ' + category + ' at approve.');
+const cardTechnical = (ctx, e, who, category, prof) => { const st = sites(ctx, e); return factsOf(ctx, e, who) + '\n' + (prof.reasons.length ? '**Outside the safe profile:** ' + prof.reasons.map(r => r.crew).join('; ') : '**Inside the safe profile**; asked because self-governance has ' + category + ' at approve.')
+  + (st.fresh.length ? '\n**Websites not on the external-gate allowlist:** ' + st.fresh.join(', ') + ' (an `external` decision).' : ''); };
 function askOwner(ctx, e, who, ref, category, prof) {
   const C = ctx.cards();
   if (!C) return { filed: false, route: 'missing', reason: 'lib/owner-card.js is not installed' };
@@ -436,7 +493,7 @@ function askOwner(ctx, e, who, ref, category, prof) {
     // standing ruling or governance level hands it to the crew (guardrail:true)
     return C.file({ asker: who.seat || who.name, category, ref, lead: plainLead(ctx, e, who, prof), guardrail: category === 'localComputer' || undefined,
       consequence: 'If you say yes, the crew sets it up and you keep the power to stop it in Settings. If you say no, nothing is installed.',
-      recommendation: 'The crew recommends yes, because it keeps their work going between sessions. If you do not answer, nothing is installed.',
+      recommendation: plainRecommendation(e, who, prof),
       technical, effect: { serviceApprove: { name: e.name } } }, { root: ctx.root }) || { filed: false, route: 'failed' };
   } catch (x) { logRow(ctx, { event: 'owner-card-failed', name: e.name, code: x.code || null, error: String(x.message).slice(0, 300) }); return { filed: false, route: 'failed', reason: x.message }; }
 }
@@ -455,20 +512,31 @@ function tellOwner(ctx, o) {
   } catch (x) { logRow(ctx, { event: 'owner-notice-failed', key: o.key, error: String(x.message).slice(0, 200) }); return null; }
 }
 // may this proposal go ahead? -> {allowed, waiting?, denied?, questionId?, level, via, tell?}
+// Two decisions, the stricter one wins: the job itself (the `schedules` level, or the owner while the localComputer
+// guardrail is on and it is outside the safe profile) and the websites it declares that the company does not use yet
+// (the `external` level; a website on the external-gate allowlist is not asked about again).
+const RANK = { auto: 0, notify: 1, triage: 2, approve: 3 };
 function decision(ctx, e, who, ref) {
   const gov = require('./lib/governance');
   if (who.owner) return { allowed: true, level: 'owner', via: 'owner' };
   const lcOn = ctx.guard('localComputer');
   const prof = safeProfile(ctx, e);
   const outside = lcOn && !prof.safe;
-  const level = outside ? 'approve' : gov.level('schedules', Object.assign({ triage: true }, ctx.gov));
-  const via = outside ? 'localComputer guardrail on, outside the safe profile (' + prof.reasons.map(r => r.crew).join('; ') + ')' : 'schedules ' + level + (lcOn ? ' (localComputer guardrail on, inside the safe profile)' : ' (localComputer guardrail off)');
+  const st = sites(ctx, e);
+  const jobLevel = outside ? 'approve' : gov.level('schedules', Object.assign({ triage: true }, ctx.gov));
+  // a new website: the external level (triage there reads as approve: the triage model is the schedules question's)
+  const siteLevel = st.fresh.length || (!lcOn && e.network && !(e.hosts && e.hosts.length)) ? gov.level('external', Object.assign({}, ctx.gov, { level: undefined })) : 'auto';   // a test's level override is the schedules one
+  const level = RANK[siteLevel] > RANK[jobLevel] ? siteLevel : jobLevel;
+  // the card's category: the guardrail's, the websites' when only they need the owner, else the job's
+  const category = outside ? 'localComputer' : RANK[siteLevel] > RANK[jobLevel] && siteLevel === 'approve' ? 'external' : 'schedules';
+  const via = (outside ? 'localComputer guardrail on, outside the safe profile (' + prof.reasons.map(r => r.crew).join('; ') + ')' : 'schedules ' + jobLevel + (lcOn ? ' (localComputer guardrail on, inside the safe profile)' : ' (localComputer guardrail off)'))
+    + (st.fresh.length ? '; new websites ' + st.fresh.join(', ') + ': external ' + siteLevel : st.hosts.length ? '; websites on the allowlist: ' + st.hosts.join(', ') : '');
   if (level === 'auto') return { allowed: true, level, via };
   if (level === 'notify') return { allowed: true, level, via, tell: true };
   if (level === 'triage') {
     const d = gov.decide('schedules', { by: who.name, summary: 'run the background service ' + e.name + ' (' + scheduleWords(e.schedule) + '): ' + e.why.slice(0, 120), ref,
       recommendation: 'yes', default: 'nothing is installed' }, ctx.gov);
-    return { allowed: !!d.allowed, waiting: !d.allowed && !d.denied, denied: !!d.denied, questionId: d.questionId || null, level: d.level, via: 'schedules ' + d.level + (lcOn ? ' (inside the safe profile)' : ' (localComputer guardrail off)') };
+    return { allowed: !!d.allowed, waiting: !d.allowed && !d.denied, denied: !!d.denied, questionId: d.questionId || null, level: d.level, via: 'schedules ' + d.level + (lcOn ? ' (inside the safe profile)' : ' (localComputer guardrail off)'), tell: !!d.allowed && d.level !== 'auto' };
   }
   const q = gov.questionFor(ref, ctx.gov);
   if (q) {
@@ -479,7 +547,7 @@ function decision(ctx, e, who, ref) {
     const closed = gov.inboxRows(ctx.gov).some(r => r.id === q.id && ['close', 'reclassify', 'withdraw'].includes(r.type));
     if (!closed) return { allowed: false, waiting: true, level: 'approve', questionId: q.id };
   }
-  const r = askOwner(ctx, e, who, ref, outside ? 'localComputer' : 'schedules', prof);
+  const r = askOwner(ctx, e, who, ref, category, prof);
   if (refusedByOwner(r)) return { allowed: false, denied: true, level: 'approve', questionId: (r.backoff && r.backoff.id) || null, refused: r.reason || r.route };
   if (coveredByCrew(r)) return { allowed: true, level: 'approve', via: via + '; not asked: ' + (r.reason || r.route) };
   if (r.filed || r.route === 'duplicate') return { allowed: false, waiting: true, level: 'approve', questionId: r.id || null, asked: !!r.filed };
@@ -506,6 +574,9 @@ function propose(ctx, name, o) {
   const key = specKey(spec);
   if (old && old.status === 'installed') {
     if (old.specKey === key) return { ok: true, already: true, name, unit: old.unit, status: old.status };
+    // installed before network became opt-in: the same proposal without --network/--hosts is the job as it was installed
+    if (o.network == null && !(o.hosts != null && o.hosts !== false) && old.network === true && old.specKey === specKey(Object.assign({}, spec, { network: true })))
+      return { ok: true, already: true, name, unit: old.unit, status: old.status, note: 'installed with the network open (before --network became opt-in); remove and propose again to close it' };
     throw err('"' + name + '" is already installed with a different command or schedule; remove it first, or propose a new name', 2);
   }
   const ref = 'service:' + name + ':' + key;
@@ -530,7 +601,7 @@ function propose(ctx, name, o) {
   install(ctx, e, doc);
   write(ctx, doc);
   logRow(ctx, { event: 'installed', name, unit: e.unit, by: e.by, via: e.approval.via, argv: e.argv, schedule: e.schedule });
-  if (d.tell) tellOwner(ctx, { from: who.name, key: ref, text: plainLead(ctx, e, who, { reasons: [] }).replace(' wants a background job to ', ' set up a background job to ').replace(' wants a background job on ', ' set up a background job on '),
+  if (d.tell) tellOwner(ctx, { from: who.name, key: ref, text: plainDone(ctx, e, who),
     technical: factsOf(ctx, e, who) + '\nInstalled without asking: ' + e.approval.via + '.' });
   return { ok: !e.lastError, name, unit: e.unit, status: e.status, halted: !!e.halt, error: e.lastError || undefined };
 }
@@ -714,7 +785,9 @@ function adopt(ctx, unit, o) {
   const toSec = v => { const m = String(v || '').match(/^(\d+)\s*(s|sec|min|m|h|d)?$/); return m ? m[1] + (m[2] ? m[2].replace(/^m$/, 'min') : 's') : null; };
   const spec = specOf(ctx, name, { kind, argv: words, why, restart, every: schedule && schedule.every ? toSec(schedule.every) : undefined, 'on-calendar': schedule && schedule.onCalendar,
     timeout: kind === 'timer' && one(u, 'Service.TimeoutStartSec') ? toSec(one(u, 'Service.TimeoutStartSec')) : undefined, 'success-exit': one(u, 'Service.SuccessExitStatus') || undefined,
-    'soft-halt': o['soft-halt'], memory: o.memory, cpu: o.cpu, network: o.network });
+    'soft-halt': o['soft-halt'], memory: o.memory, cpu: o.cpu,
+    // the unit keeps the network it had (an adopted unit was made outside this tool, often with the network open)
+    network: o.network || (one(u, 'Service.RestrictAddressFamilies') ? 'none' : 'on'), hosts: o.hosts });
   const e = Object.assign(spec, { specKey: specKey(spec), by: seat || 'owner', byName: seat ? (ctx.crew()[seat] || {}).name || seat : 'Owner', proposedAt: now,
     approval: { level: 'owner', via: (via || 'adopted by the owner') + ' from ' + base, at: now, questionId: g.questionId || null }, adopted: { from: base, at: now, by: byWord, renamed: true, wasRunning, wasEnabled } });
   // the old unit goes first: disabled, stopped, its files kept under company/state/services-adopted/
@@ -921,7 +994,7 @@ function checkCommand(ctx, which, args) {
   if (!ctx.guard('localComputer')) { logRow(ctx, { event: 'unguarded', what }); return { refuse: false, unguarded: require('./lib/guardrails').unguarded('localComputer', what) }; }
   logRow(ctx, { event: 'refused', what });
   return { refuse: true, why: 'refused (guardrail localComputer is ON): `' + what + '` changes background units on this computer. A service the company needs between runs goes through '
-    + 'node company/tools/service.js propose <name> --kind service|timer --exec "python3 company/work/.../script.py ..." --why "..." --by <your seat> (the owner approves it; start/stop are then yours with service.js start|stop).' };
+    + 'node company/tools/service.js propose <name> --kind service|timer --exec "python3 company/work/.../script.py ..." --why "..." --by <your seat> [--hosts <the websites it needs>] [--plain "what it does, in everyday words"] (no network unless you name the websites with --hosts; start/stop are then yours with service.js start|stop).' };
 }
 
 /* ---------------- CLI ---------------- */
@@ -966,7 +1039,7 @@ function main(argv) {
   console.error('usage: service.js propose|list|status|stop|start|remove|adopt|owner-approve|--duty|selftest (header of company/tools/service.js)'); return 2;
 }
 
-module.exports = { context, propose, ownerApprove, safeProfile, plainWhen, startStop, remove, adopt, onHalt, list, findings, duty, checkCommand, validateArgv, splitWords, render, specOf, unitOf, _internals: { frameworkUnits } };
+module.exports = { context, propose, ownerApprove, safeProfile, sites, siteName, sitesWords, plainLead, plainDone, plainRecommendation, decision, plainWhen, startStop, remove, adopt, onHalt, list, findings, duty, checkCommand, validateArgv, splitWords, render, specOf, unitOf, _internals: { frameworkUnits } };
 
 /* ---------------- selftest: temp company, fake systemctl, no real user manager ---------------- */
 function selftest() {
@@ -1044,17 +1117,17 @@ function selftest() {
     }
 
     // ---- propose -> owner question (guardrail ON) -> approval -> unit rendered
-    let r = propose(ctx, 'depth', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', why: 'records order-book depth between agent runs', 'soft-halt': 'finish' });
+    let r = propose(ctx, 'depth', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', why: 'records order-book depth between agent runs', 'soft-halt': 'finish', network: 'on' });
     const q = JSON.parse(fs.readFileSync(inbox, 'utf8').trim().split('\n').pop());
-    ok('guardrail ON, open network (outside the safe profile): propose waits for the owner with one card', r.waiting && q.id === r.questionId && q.gate.category === 'localComputer' && q.effect && q.effect.serviceApprove && q.effect.serviceApprove.name === 'depth', r);
+    ok('guardrail ON, --network on (outside the safe profile): propose waits for the owner with one card', r.waiting && q.id === r.questionId && q.gate.category === 'localComputer' && q.effect && q.effect.serviceApprove && q.effect.serviceApprove.name === 'depth', r);
     ok('the card is plain up front; name, command, schedule and why only under technical', plainCard(lastCard()) && lastCard().lead === 'Halima wants a background job to keep running on this computer. It could connect to any website, which risks company data leaving this computer.'
       && !/depth|rec\.py|testco|python/.test(lastCard().lead + lastCard().consequence + lastCard().recommendation)
-      && /depth/.test(q.technical) && /rec\.py --hz 1/.test(q.technical) && /runs all the time/.test(q.technical) && /order-book depth/.test(q.technical) && /network open/.test(q.technical), lastCard());
+      && /depth/.test(q.technical) && /rec\.py --hz 1/.test(q.technical) && /runs all the time/.test(q.technical) && /order-book depth/.test(q.technical) && /network open/.test(q.technical) && /^Say yes only if that risk is acceptable/.test(lastCard().recommendation), lastCard());
     ok('nothing installed before the answer', !fs.existsSync(path.join(U, 'testco-svc-depth.service')) && !fake.calls.some(c => /^(enable|start)/.test(c)));
-    r = propose(ctx, 'depth', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', why: 'records order-book depth between agent runs' });
+    r = propose(ctx, 'depth', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', why: 'records order-book depth between agent runs', network: 'on' });
     ok('a rerun before the answer does not ask twice', r.waiting && fs.readFileSync(inbox, 'utf8').trim().split('\n').length === 1);
     answer(q.id, 'yes');
-    r = propose(ctx, 'depth', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', why: 'records order-book depth between agent runs' });
+    r = propose(ctx, 'depth', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', why: 'records order-book depth between agent runs', network: 'on' });
     const unit = fs.readFileSync(path.join(U, 'testco-svc-depth.service'), 'utf8');
     ok('after yes: installed, enabled and started', r.ok && r.status === 'installed' && fake.active['testco-svc-depth.service'] && fake.calls.includes('daemon-reload'), r);
     ok('unit: company-scoped name, WorkingDirectory=ROOT, Restart, limits, no network rule', /WorkingDirectory=/.test(unit) && unit.includes('WorkingDirectory=' + R + '\n') && /Restart=on-failure/.test(unit)
@@ -1066,7 +1139,7 @@ function selftest() {
     setLevel('approve');
     r = propose(ctx, 'tape', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', 'on-calendar': '*-*-* 18:00:00 UTC', why: 'banks the trade tape once a day', network: 'none' });
     const q2 = JSON.parse(fs.readFileSync(inbox, 'utf8').trim().split('\n').pop());
-    ok('a safe-profile timer at schedules=approve: one plain card in the schedules category', q2.gate.category === 'schedules' && lastCard().lead === 'Halima wants a background job to run every evening at 6 pm on this computer. It keeps to company files and sends nothing out.' && plainCard(lastCard()), lastCard());
+    ok('a safe-profile timer at schedules=approve: one plain card in the schedules category', q2.gate.category === 'schedules' && lastCard().lead === 'Halima wants a background job to run every evening at 6 pm on this computer. It keeps to company files and cannot reach the internet.' && plainCard(lastCard()), lastCard());
     answer(q2.id, 'no');
     ok('a no is final: refused with exit code 3', throwsCode(() => propose(ctx, 'tape', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', 'on-calendar': '*-*-* 18:00:00 UTC', why: 'banks the trade tape once a day', network: 'none' }), 3, /said no/) === true);
     // guardrail ON, schedules=auto: a safe-profile timer installs with no card and nothing in the digest
@@ -1079,7 +1152,7 @@ function selftest() {
     fs.writeFileSync(path.join(R, 'company/state/external-allowlist.txt'), '# hosts\napi.known.example\n');
     { r = propose(ctx, 'feed', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'pulls the price feed every hour', hosts: 'api.new.example' });
       const fq = JSON.parse(fs.readFileSync(inbox, 'utf8').trim().split('\n').pop());
-      ok('a new host asks the owner (localComputer card, the host only under technical)', r.waiting && fq.id === r.questionId && fq.gate.category === 'localComputer' && /website the crew has not used before/.test(lastCard().lead) && !/api\.new/.test(lastCard().lead) && /api\.new\.example/.test(fq.technical) && plainCard(lastCard()), { r, lead: lastCard().lead });
+      ok('a new website at external=approve asks the owner (an external card, not the guardrail; the host only under technical)', r.waiting && fq.id === r.questionId && fq.gate.category === 'external' && !fq.gate.guardrail && /which the crew has not used before/.test(lastCard().lead) && !/api\.new/.test(lastCard().lead) && /api\.new\.example/.test(fq.technical) && plainCard(lastCard()), { r, lead: lastCard().lead });
       const n1 = fs.readFileSync(inbox, 'utf8').trim().split('\n').length;
       propose(ctx, 'feed', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'pulls the price feed every hour, again', hosts: 'api.new.example' });
       ok('no duplicate card for the same spec', fs.readFileSync(inbox, 'utf8').trim().split('\n').length === n1);
@@ -1089,6 +1162,34 @@ function selftest() {
         && fs.readFileSync(inbox, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)).filter(x => x.type === 'ask' && x.gate && /^service:feed:/.test(x.gate.ref) && !card.openFor(x.gate.ref)).length === 1
         && /X-CaPheOS-Hosts=api\.known\.example/.test(fs.readFileSync(path.join(U, 'testco-svc-feed.service'), 'utf8')), r);
       remove(ctx, 'feed', { by: 'data' }); }
+    // B1 (owner-experience review): no network by default; a website goes through the external level
+    { const n0 = fs.readFileSync(inbox, 'utf8').trim().split('\n').length;
+      r = propose(ctx, 'quiet', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'banks the closed day every hour' });
+      const u = fs.readFileSync(path.join(U, 'testco-svc-quiet.service'), 'utf8');
+      ok('no --network and no --hosts: no network (AF_UNIX), inside the safe profile, installed at schedules=auto with no card', r.ok && r.status === 'installed' && read(ctx).services.quiet.network === false && /RestrictAddressFamilies=AF_UNIX/.test(u) && fs.readFileSync(inbox, 'utf8').trim().split('\n').length === n0, { r, u });
+      remove(ctx, 'quiet', { by: 'data' });
+      ok('--network takes only on or none', throwsCode(P('python3 company/work/sim/scripts/rec.py', { network: 'yes' }), 2, /--network is none/) === true);
+      const g = JSON.parse(fs.readFileSync(path.join(R, 'company/state/governance.json'), 'utf8')); g.categories.external = 'auto'; fs.writeFileSync(path.join(R, 'company/state/governance.json'), JSON.stringify(g));
+      r = propose(ctx, 'feed2', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'pulls the price feed every hour', hosts: 'api.known.example' });
+      ok('an allowlisted website at external=auto: installed, the owner is not asked', r.ok && r.status === 'installed' && fs.readFileSync(inbox, 'utf8').trim().split('\n').length === n0, r);
+      remove(ctx, 'feed2', { by: 'data' });
+      r = propose(ctx, 'feed3', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'pulls another price feed every hour', hosts: 'api.brandnew.example' });
+      ok('a new website at external=auto: the crew decides (installed, no card)', r.ok && r.status === 'installed' && fs.readFileSync(inbox, 'utf8').trim().split('\n').length === n0 && /external auto/.test(read(ctx).services.feed3.approval.via), r);
+      remove(ctx, 'feed3', { by: 'data' });
+      g.categories.external = 'notify'; fs.writeFileSync(path.join(R, 'company/state/governance.json'), JSON.stringify(g));
+      const s0 = notice.sent.length;
+      r = propose(ctx, 'feed4', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'pulls a third price feed every hour', hosts: 'api.other.example', plain: 'It downloads prices once an hour' });
+      const told = notice.sent.slice(s0).pop();
+      ok('a new website at external=notify: installed, one plain digest line that names the website and never claims "only"', r.ok && r.status === 'installed' && told && told.text === 'Halima set up a background job to run every hour on this computer. It downloads prices once an hour. It connects to the Other website, which the crew has not used before.' && !/only/.test(told.text) && /declared, not enforced/.test(told.technical), told);
+      remove(ctx, 'feed4', { by: 'data' });
+      g.categories.external = 'approve'; fs.writeFileSync(path.join(R, 'company/state/governance.json'), JSON.stringify(g));
+      // a job installed with the network open before it became opt-in: the same proposal again is "already", not a clash
+      const doc = read(ctx); const leg = specOf(ctx, 'legacy', { kind: 'timer', every: '1h', exec: 'bash company/work/sim/scripts/bank.sh', why: 'an old job from before', network: 'on' });
+      doc.services.legacy = Object.assign(leg, { specKey: specKey(leg), status: 'installed', by: 'data', byName: 'Halima' }); write(ctx, doc);
+      r = propose(ctx, 'legacy', { by: 'data', kind: 'timer', every: '1h', exec: 'bash company/work/sim/scripts/bank.sh', why: 'an old job from before' });
+      ok('an installed open-network job proposed again the same way is already installed (not refused)', r.ok && r.already, r);
+      delete doc.services.legacy; write(ctx, doc);
+      ok('website names in plain words', sitesWords(['api.elections.kalshi.com']) === 'the Kalshi website' && sitesWords(['hermes.pyth.network', 'api.kalshi.com']) === 'the Pyth and Kalshi websites' && sitesWords(['a.example.co.uk']) === 'the Example website'); }
     // ownerApprove: the console's serviceApprove effect installs only after the owner's yes to that exact card
     { r = propose(ctx, 'wide', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --wide', why: 'a recorder that needs more memory', network: 'none', memory: '2G' });
       ok('raised limits ask the owner', r.waiting && /more of this computer's memory or power/.test(lastCard().lead), lastCard().lead);
@@ -1104,7 +1205,7 @@ function selftest() {
     const tm = fs.readFileSync(path.join(U, 'testco-svc-bank.timer'), 'utf8'); const ts1 = fs.readFileSync(path.join(U, 'testco-svc-bank.service'), 'utf8');
     { const fyi = notice.sent.filter(x => /^service:bank:/.test(x.key || ''));
       ok('guardrail OFF + schedules notify: installed without a question, one plain digest line (no owner message)', r.ok && r.status === 'installed' && fyi.length === 1 && fyi[0].kind === 'fyi'
-        && fyi[0].text === 'Halima set up a background job to run every hour on this computer. It keeps to company files and sends nothing out.' && !fs.existsSync(path.join(R, 'company/owner/outbound.jsonl')), { r, fyi }); }
+        && fyi[0].text === 'Halima set up a background job to run every hour on this computer. It keeps to company files and cannot reach the internet.' && !fs.existsSync(path.join(R, 'company/owner/outbound.jsonl')), { r, fyi }); }
     ok('timer rendered: OnUnitActiveSec, oneshot service, no network', /OnUnitActiveSec=1h/.test(tm) && /Unit=testco-svc-bank.service/.test(tm) && /Type=oneshot/.test(ts1) && /RestrictAddressFamilies=AF_UNIX/.test(ts1) && fake.active['testco-svc-bank.timer']);
     // start limit: a timer must not rate-limit itself to half its schedule; a long-running service keeps the guard
     const minuteSvc = render(ctx, specOf(ctx, 'minute', { kind: 'timer', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', every: '1min', why: 'one pass every minute' }, { resolve: false }))['testco-svc-minute.service'];

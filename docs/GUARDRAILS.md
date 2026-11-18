@@ -101,11 +101,17 @@ did not show them, and nothing recorded who made them.
   --why … --by <seat>`. The argv must be a company script (python3, node, bash or sh on a file under `company/work/` or
   `company/tools/`) with no shell syntax and no sudo. The unit is `<slug>-svc-<name>` and is built from a fixed template
   (WorkingDirectory = the company folder, a restart policy, MemoryMax/CPUQuota). It is recorded in
-  `company/state/services.json` (locked-watch policy tier). A service in the **safe profile** (no network, or only hosts
-  already on the external-gate allowlist via `--hosts`; the default memory and processor limits; a timer, or a service
-  that restarts only on failure; it stops in a soft halt) follows the `schedules` self-governance level like any other
-  category. Anything outside it (open network, a new host, raised limits, restart always, runs through a soft halt) needs
-  the owner's yes on one plain card (lib/owner-card.js), with the command, limits and why under its technical details.
+  `company/state/services.json` (locked-watch policy tier). A job has **no network unless it asks** (the unit gets
+  `RestrictAddressFamilies=AF_UNIX`). `--hosts api.example.com[,…]` names the websites it needs: a website already on
+  the external-gate allowlist is not asked about again, and any other one is an `external` decision (auto: the crew
+  decides; notify: one line in the owner's daily message; approve: one owner card, category external). Declared websites
+  are recorded, not enforced by the unit, so the owner is told which websites the job connects to, never that it reaches
+  only those. A service in the **safe profile** (no network or `--hosts`; the default memory and processor limits; a
+  timer, or a service that restarts only on failure; it stops in a soft halt) follows the `schedules` self-governance
+  level like any other category. Anything outside it (`--network on`, which opens every website; raised limits; restart
+  always; runs through a soft halt) needs the owner's yes on one plain card (lib/owner-card.js), with the command,
+  limits and why under its technical details. Give the owner your own words with `--plain "what it does"` and
+  `--if-no "what happens instead"`.
   Soft and hard halt stop these units, and they are listed in Settings › System › Background services.
 - **Refused:** `company/tools/shims/systemctl` and `shims/systemd-run` come first on the station's PATH
   (`scripts/setup-station.sh` writes that PATH into the station env file). For an agent's run they refuse every

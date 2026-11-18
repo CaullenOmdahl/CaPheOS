@@ -52,6 +52,13 @@ wakes the seats it names with its exit code, duration and output tail (`notify-w
 proposed with `service.js propose … --wake <seat>` does the same for every run. Never a bare background shell and a
 polling loop, and never a guessed Not before.
 
+**A background job that needs a website.** A job proposed with `service.js propose` has no network unless you ask. Name
+each website it needs with `--hosts api.example.com,hermes.example.net` (not `--network on`, which opens every website
+and asks the owner). A website the company already uses (on `company/state/external-allowlist.txt`) is fine; a new one
+follows the owner's `external` level, so at auto it is your call. Say what the job does for the owner with
+`--plain "It downloads tomorrow's prices every night"` and what happens without it with `--if-no "prices are updated by
+hand"`; those are the words on their card or in their daily message.
+
 **Not before:** is for a genuine wall-clock reason only: a market opens, a provider's daily data release, a time
 someone outside the company named. Put the date first (`YYYY-MM-DD` or `YYYY-MM-DD HH:MM`, company time) and a short
 reason after it. Caps, counted from when the dispatcher first saw the line: at most 24 h ahead without such a reason,

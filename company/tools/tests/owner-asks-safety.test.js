@@ -110,7 +110,7 @@ test('B1: a declined service re-proposed with a small change, or covered by a ne
   W(T, 'company/work/job.py', 'print(1)\n');
   const r = run(T, SVC_CTX + `
 require(path.join(REPO, 'company/tools/provenance.js')).pinUnderStation(false);
-const spec = x => Object.assign({ by: 'sam', kind: 'timer', exec: 'python3 company/work/job.py', every: '1h', why: 'collects the shop numbers each hour' }, x || {});
+const spec = x => Object.assign({ by: 'sam', kind: 'timer', exec: 'python3 company/work/job.py', every: '1h', why: 'collects the shop numbers each hour', network: 'on' }, x || {});
 // outside the safe profile (it may use any website): the owner is asked, and says no
 const a = tryIt(() => S.propose(S.context(svcOpts()), 'nightly', spec()));
 ownerSays(a.r.questionId, 'no');
@@ -349,7 +349,7 @@ test('S2: a loose "the crew decides about the website" ruling cannot hand an out
 require(path.join(REPO, 'company/tools/provenance.js')).pinUnderStation(false);
 const R = require(path.join(REPO, 'company/tools/lib/owner-rulings.js'));
 R.add({ by: 'owner', text: 'The crew decides about the website.', effect: 'crew-decides', scope: { topics: ['website'] } }, { root: T, shell: () => true });
-const a = tryIt(() => S.propose(S.context(svcOpts()), 'feed', { by: 'sam', kind: 'timer', exec: 'python3 company/work/job.py', every: '1h', why: 'collects the shop numbers each hour' }));
+const a = tryIt(() => S.propose(S.context(svcOpts()), 'feed', { by: 'sam', kind: 'timer', exec: 'python3 company/work/job.py', every: '1h', why: 'collects the shop numbers each hour', network: 'on' }));
 const ask = G.rows({ file: INBOX, noAlert: true }).find(x => x.type === 'ask');
 out({ a, card: ask ? { guardrail: ask.gate.guardrail, message: ask.message } : null, units: units() });`);
   assert.equal(r.a.ok, true, JSON.stringify(r.a)); assert.equal(r.a.r.waiting, true, 'it waits for the owner: ' + JSON.stringify(r.a));

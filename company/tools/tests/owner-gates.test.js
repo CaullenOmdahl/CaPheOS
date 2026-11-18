@@ -82,7 +82,8 @@ test('localComputer on: a safe-profile timer at schedules=auto installs with no 
     assert.equal(r.status, 'installed'); assert.equal(c.asks().length, 0); assert.equal(c.notice.sent.length, 0);
     const o = { by: 'data', kind: 'timer', exec: 'bash company/work/jobs/report.sh', every: '1h', why: 'pulls the price feed every hour', hosts: 'api.new.example' };
     const w = SV.propose(ctx, 'feed', o);
-    assert.ok(w.waiting); assert.equal(c.asks().length, 1); assert.equal(c.asks()[0].gate.category, 'localComputer');
+    // a website the company does not use yet is an `external` decision (the default keeps external at approve)
+    assert.ok(w.waiting); assert.equal(c.asks().length, 1); assert.equal(c.asks()[0].gate.category, 'external');
     assert.deepEqual(c.asks()[0].effect, { serviceApprove: { name: 'feed' } }); assert.ok(plain(c.card.calls.find(x => x.op === 'file').card));
     SV.propose(ctx, 'feed', o);
     assert.equal(c.asks().length, 1, 'no duplicate card for the same spec');
