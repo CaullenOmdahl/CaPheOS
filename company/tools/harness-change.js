@@ -7,6 +7,7 @@
  * checked three days later against the runs before it. Plain-words guide: company/work/people/LATITUDE.md.
  *
  *   propose --kind schedule|tool|house-rule|model|policy --target <…> --why "…" --change <file or JSON> --by <Name> [--expect "…"]
+ *           [--replaces hc-NNNN] [--plain "one plain sentence for the owner, if they are asked"]
  *       schedule    target = routine name or id;  change = "0 9 * * *" or {"expr":"…","tz":"<IANA zone>"} (default: the company timezone)
  *                   target = cadence.json (the company tempo, docs/TEMPO.md);  change = {"/bounds/tickMin":[3,30], "/dispatcherTickMin":4, …}
  *       tool        target = a shared file (company/tools, company/skills, company/runbooks, company/standards);
@@ -26,22 +27,29 @@
  *
  * Reviewers are found by function in company/tools/loops.json (seat.functions; lib/company.js). Nobody reviews their own
  * proposal; when every eligible seat is the proposer (a one-seat company), the owner reviews — on Today, never by a command.
- * OWNER REVIEWS: whenever the owner is a reviewer, propose files ONE owner question (gate ref harness-review:<id>) with the
- * diff; the dispatcher's tick reads the answer: Approve records the owner's review and applies the change at once (a
- * framework file in a company checkout becomes a framework request carrying the diff), Decline rejects it.
+ * THE OWNER is asked only through lib/owner-card.js (one card per change, ref harness-review:<id>, plain words up front,
+ * the diff only under "Technical details (for the crew)", effect {harnessApply:{id}}), and only when (a) the self-governance
+ * level of the change's category is approve, (b) fewer than two crew seats could review a locked tool, or (c) the change
+ * would edit, in this company, the code that keeps the fixed owner gates (OWNER_GATE_TOOLS). The card is filed once the
+ * crew's reviews are in; owner-card itself sends it back to the crew when governance or a standing owner ruling already
+ * covers it. The dispatcher's tick (or the console applying the card's effect, ownerApply) reads the answer: yes records
+ * the owner's review and applies the change at once (a framework file in a company checkout becomes a framework request
+ * carrying the diff), no rejects it. withdraw also withdraws the card; propose --replaces <id> (or a "Replaces hc-NNNN"
+ * line in --why) withdraws the old change first; the same change proposed again by the same person updates the open record.
  *   schedule   the routine owner's manager; the people holder when that manager is the CEO; the CEO for the people
  *              holder's own; the people holder for the CEO's own. cadence.json: the finance, risk AND people holders (the
  *              CEO in for whichever of them proposes), applied by any of them
  *   tool       the tools holder; the risk holder when the tools holder proposes. Tools that measure, limit or protect are locked:
- *              the OWNER alone approves them (on Today) and this tool applies them; no crew seat reviews or applies them
+ *              the risk AND tools holders review them (the CEO in for whichever of them proposes), any of them applies
  *   house-rule the tools holder AND the CEO (the risk holder in for whichever of them proposes)
  *   model      the people holder AND the CEO (the routing table is the people holder's); applied by the people holder
  *   policy     pacing/budget: the finance holder (the CEO when they propose), applied by them; corrections, model performance:
  *              the people holder (the CEO when they propose), applied by them; competence: the people AND finance holders
  *              (the CEO in for people, the risk holder for finance)
  * Self-governance at apply time (company/state/governance.json, lib/governance.js): schedule = schedules, model = models,
- *   policy on pacing-policy.json or dispatch-budget.json = budget, every other kind = tools. At approve the apply waits for
- *   one owner question to be answered yes; at notify the owner is told.
+ *   policy on pacing-policy.json or dispatch-budget.json = budget, every other kind = tools. At auto it applies after the
+ *   crew's review; at notify it applies and the owner gets one line in the daily digest (lib/owner-notice.js); at approve
+ *   one owner card waits for a yes; triage asks the decision model (lib/governance.js decide).
  * Files: company/work/changes/<id>.json (the record), company/work/changes/<id>/ (the change, the backup), CHANGES.md (summary),
  *        company/work/people/harness-log.jsonl (every event). --by is a claim, recorded as unverified; locked-watch.js checks
  *        agent runs' transcripts for the matching command. Owned by the tools function.
@@ -88,7 +96,13 @@ function context(opts) {
     call: opts.call || ((...a) => require('./station-crew.js').call(...a)),
     underStation: typeof opts.underStation === 'boolean' ? opts.underStation : (() => { try { return require('./provenance.js').underStation(); } catch (_) { return false; } })(),
     ownerShell: typeof opts.ownerShell === 'boolean' ? opts.ownerShell : require('./lib/owner').shell(),   // the one owner rule (lib/owner.js)
-    skipSelftest: !!opts.skipSelftest };
+    skipSelftest: !!opts.skipSelftest,
+    // the owner's two doors (lib/owner-card.js, lib/owner-notice.js); a selftest hands in stand-ins with the same contract
+    cards: () => opts.ownerCard || optional('./lib/owner-card'), notices: () => opts.ownerNotice || optional('./lib/owner-notice') };
+}
+// a module that may not be installed yet: null when it is missing, every other load error is real
+function optional(name) {
+  try { return require(name); } catch (e) { if (e && e.code === 'MODULE_NOT_FOUND' && String(e.message).includes(path.basename(name))) return null; throw e; }
 }
 const prov = () => { try { return require('./provenance.js'); } catch (_) { return null; } };
 const E = (msg, code) => Object.assign(new Error(msg), { code: code || 'refused' });
@@ -133,6 +147,35 @@ function seats(ctx, want, proposer, standIns) {
 
 /* ---------------- locked targets (from locked-watch.js) ---------------- */
 function classify(ctx, rel) { try { return require('./locked-watch.js').classify(rel, { root: ctx.root }); } catch (_) { return null; } }
+// The code that keeps the four fixed owner gates and the owner's own identity (who may answer as the owner, what counts as
+// an owner answer, the external gate, the spending cap, the default-branch rule). A change that would edit one of these
+// in THIS company always reaches the owner, whatever the governance level, because the crew cannot vouch for the rule
+// that limits the crew. A change that becomes a framework request (a framework file in a company checkout) is reviewed by
+// the crew only: nothing changes here, and the framework reviews it before any company gets it.
+const OWNER_GATE_TOOLS = Object.assign(
+  Object.fromEntries(['harness-change.js', 'locked-watch.js', 'provenance.js', 'lib/pm-inbox-guard.js', 'lib/owner-channel.js', 'lib/owner.js', 'lib/owner-card.js',
+    'lib/governance.js', 'governance.js', 'guardrails.js', 'lib/guardrails.js', 'delegation.js', 'merge-gate.js', 'default-branch-watch.js'].map(f => ['company/tools/' + f, 'access'])),
+  { 'company/tools/external-gate.js': 'commitments' },
+  Object.fromEntries(['budget.js', 'money-hold.js', 'lib/money-hold.js'].map(f => ['company/tools/' + f, 'spendBeyondCap'])));
+// what a change is about, in words the owner knows (the card's lead and the digest line; never a file name)
+const PLAIN_AREAS = [
+  [/(^|\/)(pacer|cap-numerator|budget|budget-migrate|money-hold|models-money)\.js$/, 'how the crew\'s spending is paced and capped'],
+  [/(^|\/)(competence|performance|model-stats|corrections|my-section|completions)\.js$/, 'how the crew\'s work is measured'],
+  [/(^|\/)(dispatch|dispatcher-loop|lanes|admit|scheduler|cadence|duties|duty-status|duty-runner|duty-env|notify-when|seat-status|handoff-archive|retention|watchdog|restart-station|station-crew)\.js$/, 'how work is handed out and kept running'],
+  [/(^|\/)(hire|departments)\.js$/, 'how the crew is organised'],
+  [/(^|\/)(routing|override-allow|models|providers)\.js$/, 'which AI models do which work'],
+  [/(^|\/)routine-rules\.js$/, 'the crew\'s house rules'],
+  [/(^|\/)(harness-change|locked-watch|provenance|decision|pm-inbox-guard|owner-channel|owner|owner-card|governance|guardrails|delegation|external-gate|merge-gate|premerge-check|connector-scope|default-branch-watch|deps|gates)\.js$/, 'one of the safeguards that keep the crew inside its limits'],
+];
+function plainArea(rec) {
+  if (rec.kind === 'schedule') return rec.target && rec.target.type === 'json' ? 'how often the crew works' : 'when one of the crew\'s routines runs';
+  if (rec.kind === 'model') return 'which AI model one of the crew\'s routines uses';
+  if (rec.kind === 'house-rule') return 'the crew\'s house rules';
+  if (rec.kind === 'policy') return rec.target && BUDGET_FILES.includes(rec.target.file) ? 'a spending or pacing limit' : 'one of the crew\'s working rules';
+  const f = String((rec.target && rec.target.file) || '');
+  const hit = PLAIN_AREAS.find(([re]) => re.test(f));
+  return hit ? hit[1] : 'one of the crew\'s shared tools';
+}
 const POLICY_FILES = {
   'company/work/finance/pacing-policy.json': { owner: 'finance', reviewers: ['finance'] },
   'company/work/finance/dispatch-budget.json': { owner: 'finance', reviewers: ['finance'] },
@@ -199,12 +242,12 @@ function handoff(ctx, p, heading, fields, dry) {
   if (!dry) { const f = path.join(ctx.paths.handoffs, inbox); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, block); }
   return inbox;
 }
-// the owner has no handoff file: their copy goes down the owner channel (company/owner/outbound.jsonl, one JSON per line)
+// the owner has no handoff file: a crew handoff meant for them (a change they proposed was applied, rejected or is due a
+// results check) becomes one plain line in their daily digest, the crew's wording under technical
 function toOwner(ctx, heading, fields, dry) {
-  const text = flat(heading) + ' — ' + Object.entries(fields).filter(([k]) => k !== 'Status').map(([k, v]) => k + ': ' + flat(v)).join(' | ');
-  const line = JSON.stringify({ id: 'hc-' + ctx.now.toString(36) + '-' + crypto.randomBytes(3).toString('hex'), at: local(ctx.now), from: TOOL_NAME, text }) + '\n';
-  if (!dry) { const f = ctx.P('company/owner/outbound.jsonl'); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, line); }
-  return 'owner:outbound';
+  const technical = flat(heading) + ' — ' + Object.entries(fields).filter(([k]) => k !== 'Status').map(([k, v]) => k + ': ' + flat(v)).join(' | ');
+  if (!dry) tellOwner(ctx, { from: TOOL_NAME, text: 'There is news on a change you asked the crew to make.', technical, key: 'harness-owner:' + sha(technical).slice(7, 23) });
+  return 'owner:digest';
 }
 // flip OPEN -> DONE on this tool's own handoffs whose heading names `needle` (never anyone else's block); onlyFor = one person's inbox
 function closeHandoffs(ctx, needle, note, onlyFor) {
@@ -366,12 +409,15 @@ async function describe(ctx, kind, target, changeArg, proposer) {
     const cls = classify(ctx, r2);
     let reviewers;
     const T = ctx.crew.tools, S = ctx.crew.risk;
+    let fixedGate = null;
     if (cls && cls.area === 'tool') {
       // a tool that measures, limits or protects the crew (the gates, the pacer, competence, the dispatcher, the latitude
-      // tools themselves) is LOCKED: no crew seat reviews or applies a change to it. The OWNER does, in the console: one
-      // owner question on Today shows the diff; Approve, and this tool applies exactly that change (or, for a framework
-      // file in a company checkout, sends the framework the request with the diff). The owner never runs a command.
-      reviewers = [OWNER];
+      // tools themselves) is LOCKED: two crew seats review it, the risk and the tools holders (never the proposer; the CEO
+      // stands in). The owner reviews only when fewer than two crew seats can, or when the change would edit, here, the
+      // code that keeps the fixed owner gates. Governance at apply time still decides whether the owner is asked at all.
+      reviewers = seats(ctx, [S, T], proposer, [ctx.crew.ceo, ctx.crew.ceo]).filter(r => r.id !== 'owner');
+      if (OWNER_GATE_TOOLS[r2] && !isFrameworkFile(ctx, r2)) fixedGate = OWNER_GATE_TOOLS[r2];
+      if (reviewers.length < 2 || fixedGate) reviewers.push(OWNER);
     } else if (cls) {
       // a policy number, a record, the crew list: each has its own route (a policy/model kind, its own tool)
       throw E(r2 + ' is locked (' + cls.why + '): it is owner-only and cannot be changed through a proposal' +
@@ -383,7 +429,7 @@ async function describe(ctx, kind, target, changeArg, proposer) {
     const next = mode === 'patch' ? patchText(cur, c.text) : c.text;
     if (next === cur) throw E('the change leaves the file as it is', 'input');
     const bad = syntaxCheck(file, next); if (bad) throw E('the changed file does not pass its syntax check: ' + bad, 'input');
-    return { target: { type: 'file', file: r2, locked: !!cls }, ownerGated: !!cls || undefined, change: { mode, from: c.from, bytes: Buffer.byteLength(next) }, before: { sha256: exists ? sha(cur) : null, exists }, after: { sha256: sha(next) }, reviewers, applier: null, payload: { name: mode === 'patch' ? 'change.diff' : 'change.new', text: c.text } };
+    return { target: { type: 'file', file: r2, locked: !!cls }, fixedGate: fixedGate || undefined, change: { mode, from: c.from, bytes: Buffer.byteLength(next) }, before: { sha256: exists ? sha(cur) : null, exists }, after: { sha256: sha(next) }, reviewers, applier: null, payload: { name: mode === 'patch' ? 'change.diff' : 'change.new', text: c.text } };
   }
   if (kind === 'house-rule') {
     const t = c.text.trim(); const op = t.startsWith('{') ? asJson(t, '--change') : { add: t };
@@ -459,29 +505,87 @@ function summaryLine(r) {
 }
 
 /* ---------------- commands ---------------- */
+// what makes two proposals the same change: the kind, the target and the exact change (the payload's bytes for a file)
+function changeKeyOf(kind, d) {
+  const c = Object.assign({}, d.change); delete c.from;
+  return sha(JSON.stringify([kind, d.target, c, d.after || null, d.payload ? sha(d.payload.text) : null]));
+}
+const REPLACES_LINE = /\breplaces\s+(hc-\d{4,6})\b/i;
 async function propose(ctx, o) {
   const proposer = needBy(ctx, o.by);
   const kind = String(o.kind || ''); if (!KINDS.includes(kind)) throw E('--kind must be one of ' + KINDS.join(', '), 'input');
   const why = flat(o.why).trim(); if (why.length < 20) throw E('--why must say why, in at least 20 characters', 'input');
   if (kind !== 'house-rule' && (o.target == null || o.target === true)) throw E('--target is required', 'input');
+  const plain = o.plain && o.plain !== true ? flat(o.plain).trim().slice(0, 300) : null;
   const d = await describe(ctx, kind, o.target, o.change, proposer);
+  const changeKey = changeKeyOf(kind, d);
+  // the same change from the same person, still open: update that record, never a second one (and never a second card)
+  const again = allRecs(ctx).find(r => r.byId === proposer.id && r.changeKey === changeKey && ['proposed', 'approved'].includes(r.status));
+  if (again) {
+    return withLock(ctx, () => {
+      const rec = loadRec(ctx, again.id);
+      if (rec.status === 'proposed') { rec.why = why; if (o.expect) rec.expect = flat(o.expect).slice(0, 300); if (plain) rec.plain = plain; }
+      hist(ctx, rec, 'proposed again', proposer.name); saveRec(ctx, rec);
+      appendLog(ctx, { event: 'proposed-again', id: rec.id, by: proposer.name, claim: 'unverified', underStation: ctx.underStation });
+      renderSummary(ctx);
+      return Object.assign(rec, { again: true });
+    });
+  }
+  // --replaces hc-NNNN (or a "Replaces hc-NNNN" line in --why): the old change and its owner card are withdrawn first
+  const asked = o.replaces && o.replaces !== true ? String(o.replaces).trim() : null;
+  const fromWhy = !asked && REPLACES_LINE.exec(why);
+  const replaces = asked || (fromWhy ? fromWhy[1] : null);
+  if (replaces) {
+    const old = readJson(recFile(ctx, replaces), null);
+    if (!old && asked) throw E('--replaces ' + replaces + ': no such change', 'input');
+    if (old && ['proposed', 'approved'].includes(old.status)) {
+      if (old.byId !== proposer.id) { if (asked) throw E('--replaces ' + replaces + ': only ' + old.by + ' may withdraw it', 'who'); }
+      else withdraw(ctx, replaces, { by: o.by, why: 'replaced by a new proposal' });
+    }
+  }
   return withLock(ctx, () => {
     const id = nextId(ctx);
-    const rec = Object.assign({ v: 1, id, kind, why, expect: o.expect ? flat(o.expect).slice(0, 300) : null, by: proposer.name, byId: proposer.id, claim: 'unverified', underStation: ctx.underStation,
+    const rec = Object.assign({ v: 1, id, kind, why, expect: o.expect ? flat(o.expect).slice(0, 300) : null, plain: plain || undefined, replaces: replaces || undefined, changeKey,
+      by: proposer.name, byId: proposer.id, claim: 'unverified', underStation: ctx.underStation,
       proposedAt: local(ctx.now), status: 'proposed', approvals: [], rejections: [], history: [] }, d);
     delete rec.payload;
     if (d.payload) { const pf = path.join(ctx.paths.dir, id, d.payload.name); writeAtomic(pf, d.payload.text); rec.change.payload = relOf(ctx, pf); }
     hist(ctx, rec, 'proposed', proposer.name);
     if (rec.reviewers.some(r => r.id === 'owner')) rec.ownerRef = 'harness-review:' + id;
     saveRec(ctx, rec);
-    appendLog(ctx, { event: 'proposed', id, kind, target: targetLabel(rec), by: proposer.name, claim: 'unverified', underStation: ctx.underStation, reviewers: rec.reviewers.map(p => p.name) });
-    for (const p of rec.reviewers) if (p.id === 'owner') ownerQuestion(ctx, rec); else handoff(ctx, p, 'review ' + id + ' (' + kind + ': ' + targetLabel(rec) + ') proposed by ' + proposer.name, {
+    appendLog(ctx, { event: 'proposed', id, kind, target: targetLabel(rec), by: proposer.name, claim: 'unverified', underStation: ctx.underStation, reviewers: rec.reviewers.map(p => p.name), replaces: replaces || undefined });
+    for (const p of rec.reviewers) if (p.id !== 'owner') handoff(ctx, p, 'review ' + id + ' (' + kind + ': ' + targetLabel(rec) + ') proposed by ' + proposer.name, {
       Need: 'review this change and decide: ' + cmdFor('approve', rec, p, ' --note "…"') + ' or ' + cmdFor('reject', rec, p, ' --note "why not"') + '. See it with `node company/tools/harness-change.js show ' + id + '`.',
       Why: why + (rec.expect ? ' Expected effect: ' + rec.expect : ''), Deadline: local(ctx.now + 2 * 86400e3).slice(0, 10), Status: 'OPEN',
       Evidence: summaryLine(rec) + ' — `company/work/changes/' + id + '.json`' });
+    // the owner is the only reviewer (nobody else on the crew can review): their card goes out now; otherwise it waits
+    // for the crew's reviews, so the owner sees what colleagues already checked
+    if (rec.reviewers.every(r => r.id === 'owner')) { ownerTurn(ctx, rec, 'review'); saveRec(ctx, rec); }
     renderSummary(ctx);
     return rec;
   });
+}
+/* ownerTurn(ctx, rec, stage) — the crew's part is done and the owner is next: file the card. When owner-card hands it
+ * back (governance or a standing owner ruling lets the crew decide), the owner's seat is dropped from the reviewers and
+ * the record says why; at stage 'apply' the change may then be applied. Mutates rec; the caller saves it. */
+function ownerTurn(ctx, rec, stage) {
+  const r = ownerCard(ctx, rec, stage);
+  if (!coveredByCrew(r)) return r;
+  rec.ownerWaived = { stage, route: r.route, reason: r.reason || null, at: local(ctx.now) };
+  hist(ctx, rec, 'owner not asked', TOOL_NAME, (r.reason || r.route) + ': the crew decides');
+  if (stage === 'review') {
+    rec.reviewers = rec.reviewers.filter(x => x.id !== 'owner');
+    // nobody else on the crew could review: the proposer applies, under the level the owner set (recorded, unreviewed)
+    if (!rec.reviewers.length) { rec.applier = pickName(person(ctx, rec.by)); rec.unreviewed = true; }
+    if (rec.reviewers.every(x => rec.approvals.some(a => a.id === x.id))) {
+      rec.status = 'approved'; rec.approvedAt = local(ctx.now);
+      if (rec.target.type === 'json' || rec.target.type === 'file') rec.approvedSha = fileSha(ctx.P(rec.target.file));
+      if (rec.target.type === 'json') { try { rec.approvedDoc = JSON.parse(fs.readFileSync(ctx.P(rec.target.file), 'utf8')); } catch (_) { rec.approvedDoc = null; } }
+      const doer = rec.applier ? person(ctx, rec.applier.name) : person(ctx, rec.reviewers[rec.reviewers.length - 1].name);
+      if (doer) handoff(ctx, doer, 'apply ' + rec.id + ' (' + rec.kind + ': ' + targetLabel(rec) + ')', { Need: 'apply it: ' + cmdFor('apply', rec, doer) + ' (the owner\'s self-governance lets the crew decide this one).', Why: rec.why, Deadline: local(ctx.now + 2 * 86400e3).slice(0, 10), Status: 'OPEN', Evidence: summaryLine(rec) + ' — `company/work/changes/' + rec.id + '.json`' });
+    }
+  }
+  return r;
 }
 function review(ctx, id, o, verdict) {
   return withLock(ctx, () => {
@@ -506,13 +610,21 @@ function review(ctx, id, o, verdict) {
       // edit that rode in with it (the watcher accepts only the approved-only content, never the whole file blind).
       if (rec.target.type === 'json') { try { rec.approvedDoc = JSON.parse(fs.readFileSync(ctx.P(rec.target.file), 'utf8')); } catch (_) { rec.approvedDoc = null; } }
       closeHandoffs(ctx, 'review ' + id + ' ', 'approved by ' + rec.approvals.map(a => a.name).join(', ') + ' ' + stamp(ctx.now));
+      // reviewed: when the change's category is at approve and the owner has not said yes to this very change, the owner
+      // is next (one card, filed now); the dispatcher applies it after their yes, so nobody is handed an apply to run
+      const waitsForOwner = !ownerSaidYesTo(ctx, rec) && gov.level(governanceCategory(rec), { root: ctx.root }) === 'approve' && !coveredByCrew(ownerTurn(ctx, rec, 'apply'));
       const doer = rec.applier ? person(ctx, rec.applier.name) : p;
       // the owner approved on Today: ownerDecisions() applies it now, nobody is asked to run anything
-      const how = o.viaConsole ? null : rec.applier
+      const how = o.viaConsole || waitsForOwner ? null : rec.applier
         ? 'apply it: make the approved edit in `' + rec.target.file + '` yourself and then run ' + cmdFor('apply', rec, doer) + ' to record it, or just run that command and the tool makes exactly the approved edit for you'
         : 'apply it: ' + cmdFor('apply', rec, doer) + ' (any reviewer may apply)';
       if (how) handoff(ctx, doer, 'apply ' + id + ' (' + rec.kind + ': ' + targetLabel(rec) + ')', { Need: how + '.', Why: rec.why, Deadline: local(ctx.now + 2 * 86400e3).slice(0, 10), Status: 'OPEN', Evidence: summaryLine(rec) + ' — `company/work/changes/' + id + '.json`' });
-    } else closeHandoffs(ctx, 'review ' + id + ' (', 'approved by ' + p.name + ' ' + stamp(ctx.now) + '; waiting for the other reviewer', p);
+    } else {
+      closeHandoffs(ctx, 'review ' + id + ' (', 'approved by ' + p.name + ' ' + stamp(ctx.now) + '; waiting for the other reviewer', p);
+      // every crew review is in and only the owner's is left: the owner's card goes out now (once)
+      const crewDone = rec.reviewers.filter(r => r.id !== 'owner').every(r => rec.approvals.some(a => a.id === r.id));
+      if (verdict === 'approve' && crewDone && rec.reviewers.some(r => r.id === 'owner') && !(rec.ownerCard && rec.ownerCard.filed)) ownerTurn(ctx, rec, 'review');
+    }
     saveRec(ctx, rec);
     appendLog(ctx, { event: verdict === 'approve' ? 'approved' : 'rejected', id, by: p.name, claim: 'unverified', underStation: ctx.underStation, status: rec.status });
     renderSummary(ctx);
@@ -524,8 +636,9 @@ function withdraw(ctx, id, o) {
     const rec = loadRec(ctx, id); const p = needBy(ctx, o.by);
     if (p.id !== rec.byId && p.id !== 'owner') throw E('only ' + rec.by + ' may withdraw ' + id, 'who');
     if (!['proposed', 'approved'].includes(rec.status)) throw E(id + ' is ' + rec.status, 'state');
-    rec.status = 'withdrawn'; hist(ctx, rec, 'withdrawn', p.name);
+    rec.status = 'withdrawn'; hist(ctx, rec, 'withdrawn', p.name, o.why && o.why !== true ? flat(o.why).slice(0, 200) : undefined);
     closeHandoffs(ctx, id + ' ', 'withdrawn by ' + p.name + ' ' + stamp(ctx.now));
+    withdrawCard(ctx, rec, p.id, (o.why && o.why !== true ? flat(o.why) : 'withdrawn by ' + p.name).slice(0, 200));   // the owner's card goes too
     saveRec(ctx, rec); appendLog(ctx, { event: 'withdrawn', id, by: p.name, claim: 'unverified', underStation: ctx.underStation }); renderSummary(ctx);
     return rec;
   });
@@ -554,15 +667,19 @@ function requestPayload(ctx, rec) {
 }
 // one sequence with lib/framework-edits.js (fr-0007.md and a hand-written fr-0007-title.md count alike)
 function nextFrameworkRequestId(dir) { return require('./lib/framework-edits').nextRequestId(dir); }
-function frameworkRequest(ctx, rec, p) {
-  const file = rec && rec.target && rec.target.file;
-  if (!file || !['tool', 'house-rule', 'policy'].includes(rec.kind) || OWNED_FILES.has(file)) return null;
-  if (!fs.existsSync(path.join(ctx.root, 'company', 'work', '.founded'))) return null;   // the framework checkout applies its own changes
+// true when `file` is a framework file of a founded company checkout: a change to it is sent upstream, never applied here
+function isFrameworkFile(ctx, file) {
+  if (!file || OWNED_FILES.has(file)) return false;
+  if (!fs.existsSync(path.join(ctx.root, 'company', 'work', '.founded'))) return false;   // the framework checkout applies its own changes
   const cpx = require('child_process');
   const top = cpx.spawnSync('git', ['-C', ctx.root, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
   let real = ctx.root; try { real = fs.realpathSync(ctx.root); } catch (_) {}
-  if (top.status !== 0 || top.stdout.trim() !== real) return null;   // not its own checkout (e.g. a test copy inside another repo)
-  if (cpx.spawnSync('git', ['-C', ctx.root, 'ls-files', '--error-unmatch', '--', file], { stdio: 'ignore' }).status !== 0) return null;   // a company-only file
+  if (top.status !== 0 || top.stdout.trim() !== real) return false;   // not its own checkout (e.g. a test copy inside another repo)
+  return cpx.spawnSync('git', ['-C', ctx.root, 'ls-files', '--error-unmatch', '--', file], { stdio: 'ignore' }).status === 0;   // else a company-only file
+}
+function frameworkRequest(ctx, rec, p) {
+  const file = rec && rec.target && rec.target.file;
+  if (!file || !['tool', 'house-rule', 'policy'].includes(rec.kind) || !isFrameworkFile(ctx, file)) return null;
   const dir = path.join(ctx.root, 'company', 'work', 'framework-requests'); fs.mkdirSync(dir, { recursive: true });
   // framework requests have their own sequence (fr-0001, ...): the company's hc ids are per company and would collide in
   // the framework's queue; each request names the company change it came from
@@ -574,9 +691,10 @@ function frameworkRequest(ctx, rec, p) {
   fs.writeFileSync(out, '# Framework change request ' + frId + '\n\n- Company change: ' + rec.id + ' (company/work/changes/' + rec.id + '.json)\n- File: `' + file + '`\n- Proposed by: ' + rec.by + '; reviewed by: ' + ((rec.approvals || []).map(a => a.name).join(', ') || '-') + '\n- Why: ' + rec.why + '\n\nThis file belongs to the CaPheOS framework, so the change was not applied in this company. Forward it to the framework (it reaches this company with the next update).\n\n```diff\n' + payload.slice(0, 60000) + '\n```\n');
   rec.status = 'upstream'; rec.upstreamAt = new Date(ctx.now).toISOString(); rec.frameworkRequest = frId; saveRec(ctx, rec);
   appendLog(ctx, { event: 'upstream', id: rec.id, frameworkRequest: frId, by: p.name, file, request: path.relative(ctx.root, out) });
-  // only the real company's owner hears of it: a selftest or fixture tree (ctx.root elsewhere) never writes the owner channel
-  let realRoot = false; try { realRoot = fs.realpathSync(ctx.root) === fs.realpathSync(co.ROOT); } catch (_) {}
-  if (realRoot) try { require('./owner-inbox.js').send({ from: 'harness-change.js', text: 'The crew wants to change a framework file (' + file + '): ' + rec.why + ' It was approved but not applied here, because framework files change only through framework updates. The full request is in ' + path.relative(ctx.root, out) + '.' }); } catch (_) {}
+  // the owner hears of it once, in the daily digest, in plain words; the file and the request are for the crew
+  tellOwner(ctx, { from: rec.by, key: 'harness-upstream:' + rec.id,
+    text: rec.by + ' sent the makers of the company software an improvement to ' + plainArea(rec) + ', ' + afterWords(rec) + '.',
+    technical: rec.id + ': ' + file + ' — ' + rec.why + ' Request: ' + path.relative(ctx.root, out) + ' (framework files change only through framework updates).' });
   return Object.assign({}, rec, { applied: false, upstream: path.relative(ctx.root, out) });
 }
 
@@ -592,10 +710,24 @@ async function applyChange(ctx, id, o) {
   // self-governance, at apply time (company/state/governance.json, lib/governance.js): the reviewed change still needs
   // the owner when its category is at approve, and the owner is told when it is at notify
   const govCat = governanceCategory(rec0);
-  const ownerSaidYes = (rec0.approvals || []).some(a => a.id === 'owner');   // the owner approved this very change: no second question
-  const gd = ownerSaidYes ? { allowed: true } : gov.decide(govCat, { by: p.name, ref: 'harness:' + rec0.id, summary: 'apply ' + rec0.id + ', a ' + rec0.kind + ' change to ' + targetLabel(rec0) + ' (' + summaryLine(rec0) + ')',
-    recommendation: 'yes: reviewed and approved by ' + ((rec0.approvals || []).map(x => x.name).join(' and ') || 'its reviewers') + '; why: ' + rec0.why, default: 'the change stays approved but not applied' }, { root: ctx.root });
-  if (!gd.allowed) throw E(gov.refusal(govCat, gd), 'refused');
+  const ownerSaidYes = ownerSaidYesTo(ctx, rec0);   // the owner said yes to this very change: no second question
+  const lv = ownerSaidYes ? 'owner' : gov.level(govCat, { root: ctx.root, triage: true });
+  let tellAfter = false;
+  if (lv === 'notify') tellAfter = true;
+  else if (lv === 'triage') {
+    const gd = gov.decide(govCat, { by: p.name, ref: 'harness:' + rec0.id, summary: 'apply ' + rec0.id + ', a ' + rec0.kind + ' change to ' + targetLabel(rec0) + ' (' + summaryLine(rec0) + ')',
+      recommendation: 'yes: reviewed and approved by ' + ((rec0.approvals || []).map(x => x.name).join(' and ') || 'its reviewers') + '; why: ' + rec0.why, default: 'the change stays approved but not applied' }, { root: ctx.root });
+    if (!gd.allowed) throw E(gov.refusal(govCat, gd), 'refused');
+  } else if (lv === 'approve') {
+    // one owner card for this change (filed at the last review; filed now when the level was raised since): the apply
+    // waits for the owner's yes, which the dispatcher acts on; a no rejects it there
+    const said = rec0.ownerRef ? gov.approved(rec0.ownerRef, { root: ctx.root }) : null;
+    if (said === false) throw E('the owner said no to ' + rec0.id + '; it is not applied', 'refused');
+    if (!(rec0.ownerWaived && rec0.ownerWaived.stage === 'apply')) {
+      const r = withLock(ctx, () => { const rec = loadRec(ctx, id); const x = ownerTurn(ctx, rec, 'apply'); saveRec(ctx, rec); return x; });
+      if (!coveredByCrew(r)) throw E('self-governance: ' + govCat + ' is at approve, so ' + rec0.id + ' waits for the owner' + (r.filed || r.route === 'duplicate' ? ' (their card is on Today; it is applied after their yes, nobody needs to run apply again)' : ' (the owner card could not be filed: ' + (r.reason || r.route) + ')'), 'refused');
+    }
+  }
   // In a company checkout (founded), a change to a FRAMEWORK file (tracked in git, not one of the files a company owns)
   // is not applied in place: it would collide with every framework update and differ from every other company. It
   // becomes an upstream request the owner forwards to the framework; company-only tools and company files apply as usual.
@@ -666,6 +798,8 @@ async function applyChange(ctx, id, o) {
     saveRec(ctx, rec);
     appendLog(ctx, { event: 'applied', id, kind: rec.kind, target: targetLabel(rec), by: p.name, claim: 'unverified', underStation: ctx.underStation, sha256: result.sha256 || undefined });
     closeHandoffs(ctx, 'apply ' + id + ' ', 'applied by ' + p.name + ' ' + stamp(ctx.now));
+    if (tellAfter) tellOwner(ctx, { from: rec.by, key: 'harness-applied:' + rec.id, text: rec.by + ' changed ' + plainArea(rec) + ', ' + afterWords(rec) + '.',
+      technical: rec.id + ' (' + rec.kind + ': ' + targetLabel(rec) + ') applied by ' + p.name + ': ' + summaryLine(rec) + '. Why: ' + rec.why + ' Self-governance has ' + govCat + ' at notify.' });
     if (rec.byId !== p.id) handoff(ctx, person(ctx, rec.by), id + ' applied (' + rec.kind + ': ' + targetLabel(rec) + ')', { Need: 'nothing; the results are checked on ' + rec.judgeAfter.slice(0, 10) + '.', Why: rec.why, Deadline: 'none', Status: 'DONE — FYI', Evidence: summaryLine(rec) });
     if (rec.kind === 'schedule' && rec.after.firesPerDay != null && rec.before.firesPerDay != null && rec.after.firesPerDay > rec.before.firesPerDay && ctx.crew.finance)
       handoff(ctx, ctx.crew.finance, 'FYI: ' + rec.target.jobName + ' now runs more often (' + rec.before.firesPerDay + ' -> ' + rec.after.firesPerDay + ' a day), ' + id, { Need: 'nothing unless the usage pacing needs it.', Why: rec.why, Deadline: 'none', Status: 'DONE — FYI', Evidence: '`company/work/changes/' + id + '.json`' });
@@ -770,48 +904,149 @@ function dueList(ctx) {
   for (const r of runs) r._routine = names[r.cronJobId] || '';
   return allRecs(ctx).filter(r => r.status === 'applied' && ctx.now >= (Number(r.appliedAtMs) || Date.parse(r.appliedAt)) + RESULTS_AFTER_DAYS * 86400e3).map(r => ({ rec: r, res: results(ctx, r, runs) }));
 }
-/* ownerQuestion(ctx, rec) — the owner's review of a change only they may approve (a locked tool, or a one-seat
- * company where nobody else can review): one Approve/Decline question on Today, with the diff. No command anywhere. */
-function ownerQuestion(ctx, rec) {
-  const file = ctx.P('company/pm-inbox.jsonl');
-  const ref = 'harness-review:' + rec.id;
-  try { if (fs.readFileSync(file, 'utf8').split('\n').some(l => l.includes('"' + ref + '"'))) return null; } catch (_) {}
-  let payload = ''; try { payload = rec.change && rec.change.payload ? fs.readFileSync(ctx.P(rec.change.payload), 'utf8') : ''; } catch (_) {}
-  const what = targetLabel(rec);
-  const fw = rec.target && rec.target.file ? ' If it is a framework file, Approve sends the framework the change with its diff instead of editing it here.' : '';
-  const message = (rec.by + ' wants to change ' + what + (rec.target && rec.target.locked ? ', which only you may approve' : '') + ': ' + rec.why.replace(/\.$/, '') + '. Approve and the change is applied exactly as shown, with a backup.' + fw + ' Decline and nothing changes.').slice(0, 1200);
-  const details = [summaryLine(rec), rec.expect ? 'Expected effect: ' + rec.expect : null, 'Record: company/work/changes/' + rec.id + '.json',
-    payload ? '```diff\n' + payload.slice(0, 12000) + (payload.length > 12000 ? '\n… (' + payload.length + ' bytes; the record has all of it)' : '') + '\n```' : null].filter(Boolean).join('\n\n');
-  const used = new Set(); try { for (const l of fs.readFileSync(file, 'utf8').split('\n')) { const m = /"id":"(q-\d+)"/.exec(l); if (m) used.add(m[1]); } } catch (_) {}
-  let n = Number(String(ctx.now).slice(-6)); let qid = 'q-' + String(n).padStart(6, '0'); while (used.has(qid)) { n = (n + 1) % 1e6; qid = 'q-' + String(n).padStart(6, '0'); }
-  const row = { type: 'ask', id: qid, at: new Date(ctx.now).toISOString(), from: rec.by, about: 'harness change ' + rec.id, q: message + '\n\n' + details, message, details, blocking: false,
-    batch: 'gate', gate: { category: 'tools', ref, by: rec.by, summary: 'apply ' + rec.id + ' to ' + what } };
-  require('./lib/pm-inbox-guard').append(file, row, 'harness-change.js');   // recorded first, so every reader trusts it
-  appendLog(ctx, { event: 'owner-question', id: rec.id, question: qid, by: TOOL_NAME });
-  return qid;
+/* ---------------- the owner's two doors: one card (lib/owner-card.js) and the daily digest (lib/owner-notice.js) ---------------- */
+const NUM_WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six'];
+// "two colleagues reviewed it" — the crew reviews in, counted (the owner's own review is not a colleague's)
+function reviewedWords(rec) {
+  const n = (rec.approvals || []).filter(a => a.id !== 'owner').length;
+  if (!n) return 'nobody else on the crew could review it';
+  return (NUM_WORDS[n] || String(n)) + (n === 1 ? ' colleague' : ' colleagues') + ' reviewed it';
 }
-/* ownerDecisions(ctx) — read the owner's answers to those questions: Approve records the owner's review and applies the
- * change at once (harness-change applies, never the owner); Decline rejects it. Each answer is acted on once. */
+const afterWords = rec => ((rec.approvals || []).some(a => a.id !== 'owner') ? 'after ' + reviewedWords(rec) : 'on their own, as your settings allow');
+const plainOk = t => { try { return require('./lib/owner-scope').plainScore(t, { approval: true }).ok; } catch (_) { return false; } };
+/* tellOwner(ctx, {from, text, technical, key}) -> what owner-notice returned: one line for the daily digest. Without
+ * lib/owner-notice.js (not installed yet) the line goes down the owner channel once (lib/governance.js notify). */
+function tellOwner(ctx, o) {
+  const N = ctx.notices ? ctx.notices() : null;
+  try {
+    if (N) return N.send({ kind: 'fyi', from: o.from || TOOL_NAME, text: o.text, technical: o.technical || undefined, key: o.key || undefined }, { root: ctx.root });
+    return gov.notify(o.text, { root: ctx.root, from: o.from || TOOL_NAME });
+  } catch (e) { appendLog(ctx, { event: 'owner-notice-failed', key: o.key || null, error: String(e.message).slice(0, 200), by: TOOL_NAME }); return null; }
+}
+/* ownerCard(ctx, rec, stage) -> {filed, id?, route?, reason?} — ONE card asking the owner about this change (ref
+ * harness-review:<id>; a second call updates the open card instead of adding one). stage 'review': the owner is a reviewer;
+ * 'apply': the reviewed change waits for the owner because its category is at approve. Plain words up front; the diff, the
+ * file and the reasons in the crew's words only under technical. owner-card may send it back (route crew, digest or ruling:
+ * governance or a standing owner ruling already covers it). Never throws: a failure is logged and the change waits. */
+function ownerCard(ctx, rec, stage) {
+  const C = ctx.cards();
+  rec.ownerRef = rec.ownerRef || 'harness-review:' + rec.id;
+  if (!C) { appendLog(ctx, { event: 'owner-card-missing', id: rec.id, by: TOOL_NAME }); return { filed: false, route: 'missing', reason: 'lib/owner-card.js is not installed' }; }
+  let payload = ''; try { payload = rec.change && rec.change.payload ? fs.readFileSync(ctx.P(rec.change.payload), 'utf8') : ''; } catch (_) {}
+  const upstream = !!(rec.target && rec.target.file && ['tool', 'house-rule', 'policy'].includes(rec.kind) && isFrameworkFile(ctx, rec.target.file));
+  const first = rec.by + ' wants to change ' + plainArea(rec) + ', and ' + reviewedWords(rec) + '.';
+  // the proposer's own plain sentence (--plain) when it reads plainly; the owner always hears what they keep (a backup)
+  const fallback = upstream ? 'It would go to the makers of the company software, which keeps this company as it is.' : 'It keeps a backup, so it can be undone.';
+  const mine = rec.plain ? String(rec.plain).trim().replace(/[.!]?$/, '') : null;
+  const short = rec.by + ' wants to change ' + plainArea(rec) + '.';   // a long name or area can push the first sentence over the limit
+  const lead = [mine ? first + ' ' + mine + '.' : null, mine ? first + ' ' + mine + ', and it keeps a backup.' : null, first + ' ' + fallback, short + ' ' + fallback].filter(Boolean).find(plainOk) || short + ' ' + fallback;
+  const consequence = upstream ? 'If you say yes, the crew sends it to the makers, which lets them fix it for every company. If you say no, nothing is sent.'
+    : 'If you say yes, the crew makes the change and keeps a backup to undo it. If you say no, nothing changes.';
+  const recommendation = 'The crew recommends yes, because it keeps their work running smoothly. If you do not answer, nothing changes.';
+  const technical = [rec.id + ' (' + rec.kind + ': ' + targetLabel(rec) + ') proposed by ' + rec.by + '; reviewers ' + rec.reviewers.map(r => r.name).join(', ') + '; approved by ' + ((rec.approvals || []).map(a => a.name).join(', ') || 'nobody yet'),
+    stage === 'apply' ? 'Asked because self-governance has ' + governanceCategory(rec) + ' at approve.' : rec.fixedGate ? 'Asked because it edits, in this company, code that keeps a fixed owner gate (' + rec.fixedGate + ').' : 'Asked because fewer than two crew seats could review it.',
+    'Why: ' + rec.why, rec.expect ? 'Expected effect: ' + rec.expect : null, summaryLine(rec), 'Record: company/work/changes/' + rec.id + '.json',
+    upstream ? 'A framework file: yes writes a framework request with the diff instead of editing it here.' : null,
+    payload ? '```diff\n' + payload.slice(0, 12000) + (payload.length > 12000 ? '\n… (' + payload.length + ' bytes; the record has all of it)' : '') + '\n```' : null].filter(Boolean).join('\n\n');
+  let r;
+  try {
+    r = C.file({ asker: rec.byId || rec.by, category: governanceCategory(rec), fixedGate: rec.fixedGate || undefined, ref: rec.ownerRef, lead, consequence, recommendation, technical,
+      effect: { harnessApply: { id: rec.id } } }, { root: ctx.root });
+  } catch (e) {
+    appendLog(ctx, { event: 'owner-card-failed', id: rec.id, code: e.code || null, error: String(e.message).slice(0, 300), by: TOOL_NAME });
+    return { filed: false, route: 'failed', reason: e.message };
+  }
+  r = r || { filed: false, route: 'failed' };
+  rec.ownerCard = { stage, at: local(ctx.now), filed: !!r.filed, id: r.id || null, route: r.route || null };
+  appendLog(ctx, { event: r.filed ? 'owner-card' : 'owner-card-not-filed', id: rec.id, stage, card: r.id || null, route: r.route || null, reason: r.reason || undefined, by: TOOL_NAME });
+  return r;
+}
+// a not-filed card that means "the crew may decide" (governance or a standing ruling covers it): crew, digest, ruling
+const coveredByCrew = r => !!r && !r.filed && ['crew', 'digest', 'ruling'].includes(r.route);
+// the owner's own card for this change is answered yes (a verified owner answer; never a crew claim)
+const ownerSaidYesTo = (ctx, rec) => (rec.approvals || []).some(a => a.id === 'owner') || (!!rec.ownerRef && gov.approved(rec.ownerRef, { root: ctx.root }) === true);
+function withdrawCard(ctx, rec, by, why) {
+  if (!rec.ownerRef) return null;
+  const C = ctx.cards(); if (!C || typeof C.withdraw !== 'function') return null;
+  try { return C.withdraw({ ref: rec.ownerRef, by: rec.byId || by, why }, { root: ctx.root }); }
+  catch (e) { appendLog(ctx, { event: 'owner-card-withdraw-failed', id: rec.id, error: String(e.message).slice(0, 200), by: TOOL_NAME }); return null; }
+}
+/* ownerDecisions(ctx, opts) -> how many answers were acted on. Reads the owner's answers to this tool's cards: yes records
+ * the owner's review (a change the owner reviews) or the owner's go-ahead (a reviewed change waiting at approve) and
+ * applies it at once (harness-change applies, never the owner); no rejects it. Each answer is acted on once. opts.only =
+ * one change id (ownerApply, the console's harnessApply effect). */
 async function ownerDecisions(ctx, opts) {
-  const log = (opts && opts.log) || (() => {}); let n = 0;
-  for (const rec of allRecs(ctx).filter(r => r.status === 'proposed' && r.ownerRef)) {
+  opts = opts || {};
+  const log = opts.log || (() => {}); let n = 0;
+  for (const rec of allRecs(ctx).filter(r => r.ownerRef && ['proposed', 'approved'].includes(r.status) && !r.ownerApplyFailedAt && (!opts.only || r.id === opts.only))) {
     const v = gov.approved(rec.ownerRef, { root: ctx.root });
     if (v === null) continue;
-    if (opts && opts.dry) { log('WOULD ' + (v ? 'APPLY' : 'REJECT') + ' ' + rec.id + ' (the owner answered on Today)'); continue; }
+    if (opts.dry) { log('WOULD ' + (v ? 'APPLY' : 'REJECT') + ' ' + rec.id + ' (the owner answered on Today)'); continue; }
     const q = gov.questionFor(rec.ownerRef, { root: ctx.root });
-    if (v === false) { review(ctx, rec.id, { viaConsole: true, note: 'declined by the owner on Today (' + (q && q.id) + ')' }, 'reject'); log('HARNESS CHANGE ' + rec.id + ' declined by the owner'); n++; continue; }
-    review(ctx, rec.id, { viaConsole: true, note: 'approved by the owner on Today (' + (q && q.id) + ')' }, 'approve');
-    try { const r = await applyChange(ctx, rec.id, { viaConsole: true }); log('HARNESS CHANGE ' + rec.id + (r.upstream ? ' sent to the framework (' + r.upstream + ')' : ' applied') + ' after the owner\'s Approve'); }
-    catch (e) { log('HARNESS CHANGE ' + rec.id + ' approved by the owner but not applied: ' + e.message); try { handoff(ctx, ctx.crew.tools, 'apply ' + rec.id + ' failed after the owner approved it', { Need: 'see why and propose it again: ' + flat(e.message).slice(0, 300), Why: rec.why, Deadline: local(ctx.now + 86400e3).slice(0, 10), Status: 'OPEN', Evidence: '`company/work/changes/' + rec.id + '.json`' }); } catch (_) {} }
+    const ownerReviews = rec.status === 'proposed' && rec.reviewers.some(r => r.id === 'owner');
+    if (v === false) {
+      if (rec.status === 'proposed') review(ctx, rec.id, { viaConsole: true, note: 'declined by the owner on Today (' + (q && q.id) + ')' }, 'reject');
+      else withLock(ctx, () => { const r = loadRec(ctx, rec.id); r.status = 'rejected'; hist(ctx, r, 'rejected', 'owner', 'declined on Today (' + (q && q.id) + ')'); saveRec(ctx, r); appendLog(ctx, { event: 'rejected', id: r.id, by: 'owner', via: 'owner card', status: 'rejected' }); renderSummary(ctx); });
+      log('HARNESS CHANGE ' + rec.id + ' declined by the owner'); n++; continue;
+    }
+    if (ownerReviews) review(ctx, rec.id, { viaConsole: true, note: 'approved by the owner on Today (' + (q && q.id) + ')' }, 'approve');
+    if (loadRec(ctx, rec.id).status !== 'approved') { n++; continue; }   // other reviews still to come
+    try { const r = await applyChange(ctx, rec.id, { viaConsole: true }); log('HARNESS CHANGE ' + rec.id + (r.upstream ? ' sent to the framework (' + r.upstream + ')' : ' applied') + ' after the owner\'s yes'); }
+    catch (e) {
+      log('HARNESS CHANGE ' + rec.id + ' approved by the owner but not applied: ' + e.message);
+      // tried once: the tools seat gets one handoff, not one per tick (a fresh proposal is the way forward)
+      try { withLock(ctx, () => { const r = loadRec(ctx, rec.id); r.ownerApplyFailedAt = local(ctx.now); r.ownerApplyError = flat(e.message).slice(0, 300); saveRec(ctx, r); }); } catch (_) {}
+      try { handoff(ctx, ctx.crew.tools, 'apply ' + rec.id + ' failed after the owner approved it', { Need: 'see why and propose it again: ' + flat(e.message).slice(0, 300), Why: rec.why, Deadline: local(ctx.now + 86400e3).slice(0, 10), Status: 'OPEN', Evidence: '`company/work/changes/' + rec.id + '.json`' }); } catch (_) {}
+    }
     n++;
   }
   return n;
+}
+/* rerouteOwnerOnly(ctx, opts) -> how many open changes were handed back to the crew. A locked-tool change proposed while
+ * the owner alone reviewed locked tools still waits on an owner card; when two crew seats can review it now and it does
+ * not edit the code of a fixed owner gate here, its card is withdrawn and the risk and tools seats review it instead. */
+function rerouteOwnerOnly(ctx, opts) {
+  const log = (opts && opts.log) || (() => {}); let n = 0;
+  for (const r0 of allRecs(ctx)) {
+    if (r0.status !== 'proposed' || r0.kind !== 'tool' || !(r0.target && r0.target.locked) || r0.rerouted || !(r0.reviewers || []).length || !r0.reviewers.every(x => x.id === 'owner')) continue;
+    if (r0.ownerRef && gov.approved(r0.ownerRef, { root: ctx.root }) !== null) continue;   // the owner already answered: ownerDecisions acts on it
+    const proposer = person(ctx, r0.by); if (!proposer) continue;
+    const crew = seats(ctx, [ctx.crew.risk, ctx.crew.tools], proposer, [ctx.crew.ceo, ctx.crew.ceo]).filter(x => x.id !== 'owner');
+    if (crew.length < 2 || (OWNER_GATE_TOOLS[r0.target.file] && !isFrameworkFile(ctx, r0.target.file))) continue;
+    if (opts && opts.dry) { log('WOULD REROUTE ' + r0.id + ' to ' + crew.map(x => x.name).join(' and ')); continue; }
+    withLock(ctx, () => {
+      const rec = loadRec(ctx, r0.id);
+      withdrawCard(ctx, rec, rec.byId, 'two colleagues review this change now; the owner is asked only if the governance level needs them');
+      rec.reviewers = crew; rec.rerouted = local(ctx.now); hist(ctx, rec, 'rerouted', TOOL_NAME, 'reviewed by ' + crew.map(x => x.name).join(' and ') + ' instead of the owner');
+      saveRec(ctx, rec);
+      appendLog(ctx, { event: 'rerouted', id: rec.id, reviewers: crew.map(x => x.name), by: TOOL_NAME });
+      for (const p of crew) handoff(ctx, p, 'review ' + rec.id + ' (' + rec.kind + ': ' + targetLabel(rec) + ') proposed by ' + rec.by, {
+        Need: 'review this change and decide: ' + cmdFor('approve', rec, p, ' --note "…"') + ' or ' + cmdFor('reject', rec, p, ' --note "why not"') + '. See it with `node company/tools/harness-change.js show ' + rec.id + '`.',
+        Why: rec.why, Deadline: local(ctx.now + 2 * 86400e3).slice(0, 10), Status: 'OPEN', Evidence: summaryLine(rec) + ' — `company/work/changes/' + rec.id + '.json`' });
+    });
+    log('HARNESS CHANGE ' + r0.id + ' handed back to ' + crew.map(x => x.name).join(' and ') + ' for review (no longer the owner\'s)'); n++;
+  }
+  if (n) renderSummary(ctx);
+  return n;
+}
+/* ownerApply(id, opts) -> {applied|upstream|already|waiting} — the console's {harnessApply:{id}} card effect, run on the
+ * owner's answer. It acts only on a verified owner yes to this change's own card (lib/governance.js approved), so calling
+ * it never stands in for the owner; it is idempotent with the dispatcher's tick. */
+async function ownerApply(id, opts) {
+  const ctx = context(opts || {});
+  const rec = loadRec(ctx, id);
+  if (!['proposed', 'approved'].includes(rec.status)) return { id, already: true, status: rec.status };
+  if (!rec.ownerRef || gov.approved(rec.ownerRef, { root: ctx.root }) !== true) return { id, waiting: true, status: rec.status, note: 'no owner yes to ' + (rec.ownerRef || 'a card for this change') + ' yet' };
+  await ownerDecisions(ctx, { only: id, log: (opts && opts.log) || (() => {}) });
+  const after = loadRec(ctx, id);
+  return { id, status: after.status, applied: after.status === 'applied', upstream: after.status === 'upstream' };
 }
 // the dispatcher's hook: open one results-check handoff per change that is due (once), and keep CHANGES.md current
 async function tick(opts) {
   opts = opts || {}; const log = opts.log || console.log;
   const ctx = context(opts);
   if (!fs.existsSync(ctx.paths.dir)) return { due: 0, opened: 0 };
+  const rerouted = rerouteOwnerOnly(ctx, opts);
   const decided = await ownerDecisions(ctx, opts);
   const due = dueList(ctx); let opened = 0;
   for (const { rec, res } of due) {
@@ -829,10 +1064,10 @@ async function tick(opts) {
     });
     opened++; log('HARNESS CHANGE results check ' + rec.id + ' opened for ' + (who ? who.name : '?') + ': looks ' + res.verdict);
   }
-  return { due: due.length, opened, decided };
+  return { due: due.length, opened, decided, rerouted };
 }
 
-module.exports = { tick, ownerDecisions, ownerQuestion, propose, review, applyChange, revertChange, keepChange, withdraw, dueList, context, editRules, KINDS, POLICY_FILES,
+module.exports = { tick, ownerDecisions, ownerApply, rerouteOwnerOnly, ownerCard, ownerQuestion: (ctx, rec) => ownerCard(ctx, rec, 'review'), plainArea, OWNER_GATE_TOOLS, propose, review, applyChange, revertChange, keepChange, withdraw, dueList, context, editRules, KINDS, POLICY_FILES,
   // for locked-watch.js: the files a recorded change made, and the approved changes still waiting for their apply record.
   // opts.trust(recRelPath, recFileSha) decides whether a change record may be believed: the watcher passes one that is true
   // only for a record it already accepted or one carrying a trusted harness-change.js write row, so a hand-forged hc-*.json
@@ -893,7 +1128,14 @@ async function selftest() {
   const posts = [];
   const call = async (m, p, body) => { if (m === 'GET') return { status: 200, body: JSON.stringify({ jobs: [job] }) }; posts.push(body); job.schedule = { kind: 'cron', expr: body.patch.schedule, tz: body.patch.timezone || job.schedule.tz }; return { status: 200, body: JSON.stringify({ ok: true, job }) }; };
   let now = Date.parse('2026-11-15T10:00:00Z');
-  const C = (x) => context(Object.assign({ root: T, call, now, underStation: true }, x || {}));
+  // the owner's two doors, as stand-ins with the shared contract (tests/helpers/owner-stubs.js): a card is filed only when
+  // the contract says so, and every lead, consequence and recommendation must pass the plain-words check
+  const stubs = require('./tests/helpers/owner-stubs.js');
+  const notice = stubs.makeOwnerNotice(); const card = stubs.makeOwnerCard(T, { notice });
+  const C = (x) => context(Object.assign({ root: T, call, now, underStation: true, ownerCard: card, ownerNotice: notice }, x || {}));
+  const asksFor = ref => { try { return R('company/pm-inbox.jsonl').trim().split('\n').filter(Boolean).map(JSON.parse).filter(x => x.type === 'ask' && x.gate && x.gate.ref === ref); } catch (_) { return []; } };
+  const ownerAnswer = (qid, yes) => require('./lib/pm-inbox-guard').append(path.join(T, 'company/pm-inbox.jsonl'), { type: 'answer', id: qid, a: yes ? 'yes' : 'no', answer: { verdict: yes ? 'yes' : 'no', action: yes ? 'approve' : 'decline', values: {} }, by: 'Commander' }, 'selftest');
+  const plainCheck = c => ['lead', 'consequence', 'recommendation'].every(k => require('./lib/owner-scope').plainScore(c[k], { approval: true }).ok);
   const inbox = n => { try { return R('company/work/handoffs/to-' + n + '.md'); } catch (_) { return ''; } };
   const openIn = (n, needle) => inbox(n).split(/^(?=## )/m).filter(s => s.includes(needle) && /^\*\*Status:\*\*\s*OPEN/m.test(s)).length;
   let sch;
@@ -1016,31 +1258,90 @@ async function selftest() {
     await revertChange(C(), r.id, { by: 'Pat' });
     assert.ok(!('weekendMarginPct' in JSON.parse(R('company/work/finance/pacing-policy.json'))), 'the added key is gone after revert');
   });
-  await t('locked tools: only the OWNER approves, on Today (one question with the diff); Approve and harness-change applies it, Decline rejects it; never a command for the owner', async () => {
+  const lw = (() => { try { return require('./locked-watch.js'); } catch (_) { return null; } })();
+  if (!lw) skip('locked tools (locked-watch.js not installed)');
+  else await t('locked tools: the risk and tools holders review (never the proposer, the CEO stands in); at tools=auto it never reaches the owner', async () => {
     W('company/tools/pacer.js', "'use strict';\nmodule.exports = {};\n");
-    W('company/tools/external-gate.js', "'use strict';\nmodule.exports = {};\n");
-    const lw = (() => { try { return require('./locked-watch.js'); } catch (_) { return null; } })();
-    if (!lw) return;   // locked-watch.js not installed yet: classification is skipped
-    const inboxRows = () => R('company/pm-inbox.jsonl').trim().split('\n').map(JSON.parse);
+    const n0 = card.calls.length;
     const r = await propose(C(), { kind: 'tool', target: 'company/tools/pacer.js', why: 'a comment for the next reader of the pacer', change: "'use strict';\n// pacer\nmodule.exports = {};\n", by: 'Jo' });
-    assert.deepStrictEqual(r.reviewers.map(x => x.id), ['owner']); assert.strictEqual(r.ownerRef, 'harness-review:' + r.id); assert.ok(r.target.locked);
-    assert.throws(() => review(C(), r.id, { by: 'Max' }, 'approve'), /not a reviewer/);   // no crew seat reviews a locked tool
-    const q = inboxRows().filter(x => x.type === 'ask' && x.gate && x.gate.ref === r.ownerRef);
-    assert.strictEqual(q.length, 1); assert.ok(/only you may approve/.test(q[0].message) && /```diff|\/\/ pacer/.test(q[0].details), q[0].details);
-    assert.ok(!/node company\/tools|patch -p|your shell/.test(q[0].message + q[0].details), 'the owner question carries no command');
-    assert.strictEqual(require('./inbox.js').shellAsk(q[0].message), null);
-    assert.strictEqual(await ownerDecisions(C()), 0);   // no answer yet: nothing happens
-    require('./lib/pm-inbox-guard').append(path.join(T, 'company/pm-inbox.jsonl'), { type: 'answer', id: q[0].id, a: 'yes', answer: { verdict: 'yes', action: 'approve', values: {} }, by: 'Commander' }, 'selftest');
-    assert.strictEqual(await ownerDecisions(C()), 1);
-    const done = loadRec(C(), r.id); assert.strictEqual(done.status, 'applied'); assert.strictEqual(done.approvals[0].id, 'owner'); assert.ok(R('company/tools/pacer.js').includes('// pacer'));
-    assert.strictEqual(await ownerDecisions(C()), 0);   // acted on once
-    const r2 = await propose(C(), { kind: 'tool', target: 'company/tools/external-gate.js', why: 'open the external gate a crack for my sends', change: "'use strict';\n// open\nmodule.exports = {};\n", by: 'Jo' });
-    const q2 = inboxRows().find(x => x.type === 'ask' && x.gate && x.gate.ref === r2.ownerRef);
-    require('./lib/pm-inbox-guard').append(path.join(T, 'company/pm-inbox.jsonl'), { type: 'answer', id: q2.id, a: 'no', answer: { verdict: 'no', action: 'decline', values: {} }, by: 'Commander' }, 'selftest');
-    await ownerDecisions(C()); assert.strictEqual(loadRec(C(), r2.id).status, 'rejected'); assert.ok(!R('company/tools/external-gate.js').includes('// open'));
-    // the crew list and records keep their own routes
+    assert.deepStrictEqual(r.reviewers.map(x => x.name), ['Riley', 'Max']); assert.ok(r.target.locked); assert.ok(!r.ownerRef);
+    const own = await propose(C(), { kind: 'tool', target: 'company/tools/pacer.js', why: 'Max documents the pacer for the next reader', change: "'use strict';\n// max\nmodule.exports = {};\n", by: 'Max' });
+    assert.deepStrictEqual(own.reviewers.map(x => x.name), ['Riley', 'Alex']); withdraw(C(), own.id, { by: 'Max' });
+    review(C(), r.id, { by: 'Riley' }, 'approve'); assert.strictEqual(loadRec(C(), r.id).status, 'proposed');
+    review(C(), r.id, { by: 'Max' }, 'approve');
+    const a = await applyChange(C(), r.id, { by: 'Max' });
+    assert.strictEqual(a.status, 'applied'); assert.ok(R('company/tools/pacer.js').includes('// pacer'));
+    assert.strictEqual(card.calls.length, n0, 'no owner card was even tried'); assert.strictEqual(asksFor('harness-review:' + r.id).length, 0);
+    assert.ok(!notice.sent.some(x => String(x.key || '').includes(r.id)), 'nothing in the digest at auto');
+  });
+  if (lw) await t('locked tools at tools=approve: ONE plain owner card after the two reviews (the diff only under technical); yes applies it, no rejects it', async () => {
+    setGov('tools', 'approve');
+    const r = await propose(C(), { kind: 'tool', target: 'company/tools/pacer.js', why: 'count a report only once in the pacer totals', change: "'use strict';\n// pacer once\nmodule.exports = {};\n", by: 'Jo', plain: 'It only changes how a report is counted.' });
+    assert.strictEqual(asksFor('harness-review:' + r.id).length, 0, 'no card before the crew has reviewed');
+    review(C(), r.id, { by: 'Riley' }, 'approve'); review(C(), r.id, { by: 'Max' }, 'approve');
+    const qs = asksFor('harness-review:' + r.id); assert.strictEqual(qs.length, 1);
+    const c = card.calls.filter(x => x.op === 'file' && x.card.ref === 'harness-review:' + r.id).pop().card;
+    assert.strictEqual(c.lead, 'Jo wants to change how the crew\'s spending is paced and capped, and two colleagues reviewed it. It only changes how a report is counted, and it keeps a backup.');
+    assert.ok(plainCheck(c), 'lead, consequence and recommendation read plainly');
+    assert.ok(!/pacer|\.js|hc-\d|@@|company\//.test(c.lead + c.consequence + c.recommendation), 'no file, id or diff up front');
+    assert.ok(/pacer once/.test(c.technical) && /company\/tools\/pacer\.js/.test(c.technical), 'the diff and the file are under technical');
+    assert.deepStrictEqual(c.effect, { harnessApply: { id: r.id } }); assert.strictEqual(c.category, 'tools'); assert.strictEqual(c.fixedGate, undefined);
+    assert.strictEqual(openIn('max', 'apply ' + r.id), 0, 'nobody is handed an apply while the owner decides');
+    await assert.rejects(applyChange(C(), r.id, { by: 'Max' }), /waits for the owner/);
+    await assert.rejects(applyChange(C(), r.id, { by: 'Max' }), /waits for the owner/);
+    assert.strictEqual(asksFor('harness-review:' + r.id).length, 1, 'a retry files no second card');
+    assert.deepStrictEqual(await ownerApply(r.id, { root: T, now, call, underStation: true, ownerCard: card, ownerNotice: notice }).then(x => x.waiting), true, 'no yes yet: the effect does nothing');
+    ownerAnswer(qs[0].id, true);
+    const done = await ownerApply(r.id, { root: T, now, call, underStation: true, ownerCard: card, ownerNotice: notice });
+    assert.ok(done.applied, JSON.stringify(done)); assert.ok(R('company/tools/pacer.js').includes('// pacer once'));
+    assert.strictEqual(await ownerDecisions(C()), 0, 'acted on once (the tick after the console finds nothing to do)');
+    const r2 = await propose(C(), { kind: 'tool', target: 'company/tools/pacer.js', why: 'drop the pacer comment again later on', change: "'use strict';\nmodule.exports = {};\n", by: 'Jo' });
+    review(C(), r2.id, { by: 'Riley' }, 'approve'); review(C(), r2.id, { by: 'Max' }, 'approve');
+    ownerAnswer(asksFor('harness-review:' + r2.id)[0].id, false);
+    await ownerDecisions(C()); assert.strictEqual(loadRec(C(), r2.id).status, 'rejected'); assert.ok(R('company/tools/pacer.js').includes('// pacer once'));
+    setGov('tools', 'auto');
+  });
+  if (lw) await t('the code that keeps a fixed owner gate: the crew reviews, then the owner (one card naming the gate); withdraw closes the card; records and the crew list keep their own routes', async () => {
+    W('company/tools/external-gate.js', "'use strict';\nmodule.exports = {};\n");
+    const r = await propose(C(), { kind: 'tool', target: 'company/tools/external-gate.js', why: 'open the external gate a crack for my sends', change: "'use strict';\n// open\nmodule.exports = {};\n", by: 'Jo' });
+    assert.deepStrictEqual(r.reviewers.map(x => x.id), ['auditor', 'engineer', 'owner']); assert.strictEqual(r.fixedGate, 'commitments');
+    review(C(), r.id, { by: 'Riley' }, 'approve'); assert.strictEqual(asksFor(r.ownerRef).length, 0);
+    review(C(), r.id, { by: 'Max' }, 'approve');
+    const q = asksFor(r.ownerRef); assert.strictEqual(q.length, 1); assert.strictEqual(q[0].gate.fixedGate, 'commitments');
+    assert.strictEqual(loadRec(C(), r.id).status, 'proposed', 'still the owner\'s review to come');
+    assert.ok(card.openFor(r.ownerRef));
+    withdraw(C(), r.id, { by: 'Jo', why: 'not needed after all' });
+    assert.strictEqual(card.openFor(r.ownerRef), null, 'the card is withdrawn with the change');
+    assert.strictEqual(await ownerDecisions(C()), 0);
     await assert.rejects(propose(C(), { kind: 'tool', target: 'company/tools/loops.json', why: 'give myself a different manager quietly', change: '{"agents":{}}', by: 'Jo' }), /locked/);
     await assert.rejects(propose(C(), { kind: 'tool', target: 'company/work/people/competence-events.jsonl', why: 'tidy the competence ledger by hand', change: 'x', by: 'Jo' }), /shared file/);
+  });
+  if (lw) await t('an open locked-tool change from before (the owner its only reviewer) is handed back to the risk and tools seats by the tick, and its card withdrawn', async () => {
+    const r = await propose(C(), { kind: 'tool', target: 'company/tools/pacer.js', why: 'an older change the owner alone was to review', change: "'use strict';\n// old route\nmodule.exports = {};\n", by: 'Jo' });
+    closeHandoffs(C(), 'review ' + r.id + ' ', 'an older record had no crew review');   // as it was: the owner alone, no crew handoff
+    const rec = loadRec(C(), r.id); rec.reviewers = [{ id: 'owner', name: 'owner' }]; rec.ownerRef = 'harness-review:' + r.id;
+    setGov('tools', 'approve'); ownerCard(C(), rec, 'review'); setGov('tools', 'auto'); saveRec(C(), rec);
+    assert.ok(card.openFor(rec.ownerRef));
+    const t1 = await tick({ root: T, now, log: () => {}, call, underStation: true, ownerCard: card, ownerNotice: notice });
+    assert.strictEqual(t1.rerouted, 1); const after = loadRec(C(), r.id);
+    assert.deepStrictEqual(after.reviewers.map(x => x.name), ['Riley', 'Max']); assert.strictEqual(card.openFor(rec.ownerRef), null);
+    assert.strictEqual(openIn('riley', 'review ' + r.id), 1);
+    assert.strictEqual((await tick({ root: T, now, log: () => {}, call, underStation: true, ownerCard: card, ownerNotice: notice })).rerouted, 0, 'once');
+    withdraw(C(), r.id, { by: 'Jo' });
+  });
+  if (lw) await t('a re-proposal: --replaces (or a "Replaces hc-NNNN" line) withdraws the old change and its card; the same change again updates the open record', async () => {
+    const v1 = await propose(C(), { kind: 'tool', target: 'company/tools/external-gate.js', why: 'tidy the external gate header comment', change: "'use strict';\n// v1\nmodule.exports = {};\n", by: 'Jo' });
+    review(C(), v1.id, { by: 'Riley' }, 'approve'); review(C(), v1.id, { by: 'Max' }, 'approve');
+    assert.ok(card.openFor(v1.ownerRef));
+    const v2 = await propose(C(), { kind: 'tool', target: 'company/tools/external-gate.js', why: 'Replaces ' + v1.id + ': tidy the header comment better', change: "'use strict';\n// v2\nmodule.exports = {};\n", by: 'Jo' });
+    assert.strictEqual(loadRec(C(), v1.id).status, 'withdrawn'); assert.strictEqual(card.openFor(v1.ownerRef), null); assert.strictEqual(v2.replaces, v1.id);
+    const v3 = await propose(C(), { kind: 'tool', target: 'company/tools/external-gate.js', why: 'tidy the header comment, now with the right words', change: "'use strict';\n// v3\nmodule.exports = {};\n", by: 'Jo', replaces: v2.id });
+    assert.strictEqual(loadRec(C(), v2.id).status, 'withdrawn');
+    await assert.rejects(propose(C(), { kind: 'tool', target: 'company/tools/external-gate.js', why: 'Max tries to withdraw what Jo proposed', change: "'use strict';\n// v4\nmodule.exports = {};\n", by: 'Max', replaces: v3.id }), /only Jo may withdraw/);
+    const same = await propose(C(), { kind: 'tool', target: 'company/tools/external-gate.js', why: 'the same change again, better worded this time', change: "'use strict';\n// v3\nmodule.exports = {};\n", by: 'Jo' });
+    assert.strictEqual(same.id, v3.id); assert.ok(same.again); assert.strictEqual(loadRec(C(), v3.id).why, 'the same change again, better worded this time');
+    assert.strictEqual(allRecs(C()).filter(x => x.target.file === 'company/tools/external-gate.js' && x.status === 'proposed').length, 1);
+    withdraw(C(), v3.id, { by: 'Jo' });
   });
   await t('review-due: after 3 days the change is due with before/after numbers; tick opens one results-check handoff, once', async () => {
     const runs = [];
@@ -1053,18 +1354,26 @@ async function selftest() {
     now += 4 * 86400e3;
     const due = dueList(C()); const d = due.find(x => x.rec.id === tool.id);
     assert.ok(d, 'due'); assert.strictEqual(d.res.before.finishRate, 100); assert.strictEqual(d.res.after.finishRate, 50); assert.strictEqual(d.res.verdict, 'worse');
-    const r1 = await tick({ root: T, now, log: () => {}, call, underStation: true }); const r2 = await tick({ root: T, now, log: () => {}, call, underStation: true });
+    const r1 = await tick({ root: T, now, log: () => {}, call, underStation: true, ownerCard: card, ownerNotice: notice }); const r2 = await tick({ root: T, now, log: () => {}, call, underStation: true, ownerCard: card, ownerNotice: notice });
     assert.ok(r1.opened >= 1); assert.strictEqual(r2.opened, 0); assert.strictEqual(openIn('max', 'results check ' + tool.id), 1);
     keepChange(C(), tool.id, { by: 'Max', note: 'the drop is from the hand edit, not the change' }); assert.strictEqual(openIn('max', 'results check ' + tool.id), 0);
   });
-  await t('one seat holding every function: nobody reviews their own, so the owner reviews (owner channel), from their own shell only', async () => {
+  await t('one seat holding every function: nobody reviews their own; at tools=auto the crew decides (no card), at approve the owner gets one card and reviews from Today or their own shell only', async () => {
     const T2 = path.join(T, 'solo'); const W2 = (rel, v) => { fs.mkdirSync(path.dirname(path.join(T2, rel)), { recursive: true }); fs.writeFileSync(path.join(T2, rel), typeof v === 'string' ? v : JSON.stringify(v, null, 1) + '\n'); };
     W2('company/tools/loops.json', { agents: { agent: { name: 'Alex', manager: null, functions: ['ceo', 'people', 'tools', 'risk', 'floor', 'finance'], inbox: 'to-alex.md' } } });
     W2('company/tools/sample.js', R('company/tools/sample.js'));
-    const C2 = x => context(Object.assign({ root: T2, call, now, underStation: true }, x || {}));
+    const gd = JSON.parse(JSON.stringify(govDoc)); gd.categories.tools = 'auto'; W2('company/state/governance.json', gd);
+    const card2 = stubs.makeOwnerCard(T2, { notice });
+    const C2 = x => context(Object.assign({ root: T2, call, now, underStation: true, ownerCard: card2, ownerNotice: notice }, x || {}));
+    const r0 = await propose(C2(), { kind: 'tool', target: 'company/tools/sample.js', why: 'the founder documents a constant at auto', change: R('company/tools/sample.js').replace('const N = 1;', 'const N = 1; // auto'), by: 'Alex' });
+    assert.strictEqual(r0.status, 'approved'); assert.deepStrictEqual(r0.reviewers, []); assert.strictEqual(r0.applier.name, 'Alex'); assert.ok(r0.ownerWaived && r0.unreviewed);
+    assert.ok(!fs.existsSync(path.join(T2, 'company/pm-inbox.jsonl')) || !fs.readFileSync(path.join(T2, 'company/pm-inbox.jsonl'), 'utf8').includes('"harness-review:' + r0.id + '"'));
+    assert.strictEqual((await applyChange(C2(), r0.id, { by: 'Alex' })).status, 'applied');
+    gd.categories.tools = 'approve'; W2('company/state/governance.json', gd);
     const r = await propose(C2(), { kind: 'tool', target: 'company/tools/sample.js', why: 'the founder documents a constant for the next reader', change: R('company/tools/sample.js').replace('const N = 1;', 'const N = 1; // solo'), by: 'Alex' });
     assert.deepStrictEqual(r.reviewers.map(x => x.id), ['owner']);
-    // the owner reviews on Today (an owner question with the diff), not from a command sent down the owner channel
+    const c = card2.calls.filter(x => x.op === 'file').pop().card;
+    assert.ok(/^Alex wants to change one of the crew's shared tools, and nobody else on the crew could review it\./.test(c.lead), c.lead); assert.ok(plainCheck(c));
     assert.ok(fs.readFileSync(path.join(T2, 'company/pm-inbox.jsonl'), 'utf8').includes('"harness-review:' + r.id + '"'));
     assert.ok(!fs.existsSync(path.join(T2, 'company/owner/outbound.jsonl')) || !fs.readFileSync(path.join(T2, 'company/owner/outbound.jsonl'), 'utf8').includes('harness-change.js approve'));
     assert.throws(() => review(C2(), r.id, { by: 'Alex' }, 'approve'), /own proposal/);
@@ -1076,24 +1385,30 @@ async function selftest() {
     assert.ok(log.every(e => e.tool === 'harness-change')); assert.ok(log.some(e => e.event === 'applied' && e.claim === 'unverified' && e.underStation === true));
     const sum = R('company/work/changes/CHANGES.md'); for (const r of allRecs(C())) assert.ok(sum.includes('| ' + r.id + ' |'));
   });
-  await t('self-governance at apply: budget at approve waits for the owner (one question), then applies after a yes', async () => {
+  await t('self-governance at apply: budget at approve files one owner card at the last review, then applies after a yes', async () => {
     setGov('budget', 'approve');
     const r = await propose(C(), { kind: 'policy', target: 'pacing-policy.json', why: 'a slightly wider margin for the month end', change: '{"/marginPct": 7}', by: 'Jo' });
     review(C(), r.id, { by: 'Pat' }, 'approve');
+    assert.strictEqual(openIn('pat', 'apply ' + r.id), 0, 'nobody is handed an apply while the owner decides');
     await assert.rejects(applyChange(C(), r.id, { by: 'Pat' }), /budget is at approve/);
     await assert.rejects(applyChange(C(), r.id, { by: 'Pat' }), /budget is at approve/);
-    const asks = R('company/pm-inbox.jsonl').trim().split('\n').map(JSON.parse).filter(x => x.type === 'ask' && x.gate && x.gate.ref === 'harness:' + r.id);
+    const asks = asksFor('harness-review:' + r.id);
     assert.strictEqual(asks.length, 1); assert.strictEqual(JSON.parse(R('company/work/finance/pacing-policy.json')).marginPct !== 7, true);
-    require('./lib/pm-inbox-guard').append(path.join(T, 'company/pm-inbox.jsonl'), { type: 'answer', id: asks[0].id, a: 'yes', by: 'Commander' }, 'selftest');
+    const c = card.calls.filter(x => x.op === 'file' && x.card.ref === 'harness-review:' + r.id).pop().card;
+    assert.ok(/^Jo wants to change a spending or pacing limit, and one colleague reviewed it\./.test(c.lead), c.lead); assert.ok(plainCheck(c)); assert.ok(/marginPct/.test(c.technical) && !/marginPct/.test(c.lead));
+    ownerAnswer(asks[0].id, true);
     const a = await applyChange(C(), r.id, { by: 'Pat' }); assert.strictEqual(a.status, 'applied'); assert.strictEqual(JSON.parse(R('company/work/finance/pacing-policy.json')).marginPct, 7);
   });
-  await t('self-governance at apply: tools at notify applies and tells the owner; schedules/models/tools map from the kind', async () => {
+  await t('self-governance at apply: tools at notify applies and puts one plain line in the digest (never a message); schedules/models/tools map from the kind', async () => {
     setGov('tools', 'notify');
+    const before = fs.existsSync(path.join(T, 'company/owner/outbound.jsonl')) ? R('company/owner/outbound.jsonl') : '';
     const r = await propose(C(), { kind: 'tool', target: 'company/tools/sample.js', why: 'another note for the next reader of it', change: R('company/tools/sample.js').replace('const N = 1;', 'const N = 1; // notify'), by: 'Jo' });
     review(C(), r.id, { by: 'Max' }, 'approve'); const a = await applyChange(C(), r.id, { by: 'Max' }); assert.strictEqual(a.status, 'applied');
-    // the owner's plain digest line (lib/governance.js fyi): no change id or file path, those stay technical
-    const told = ['company/owner/digest.jsonl', 'company/owner/outbound.jsonl'].map(f => { try { return R(f); } catch (_) { return ''; } }).join('\n');
-    assert.ok(/Max made a decision about the crew's own tools and rules/.test(told) && !told.includes(r.id), told);
+    const fyi = notice.sent.filter(x => x.key === 'harness-applied:' + r.id);
+    assert.strictEqual(fyi.length, 1); assert.strictEqual(fyi[0].kind, 'fyi');
+    assert.strictEqual(fyi[0].text, 'Jo changed one of the crew\'s shared tools, after one colleague reviewed it.'); assert.ok(/sample\.js/.test(fyi[0].technical));
+    assert.strictEqual(fs.existsSync(path.join(T, 'company/owner/outbound.jsonl')) ? R('company/owner/outbound.jsonl') : '', before, 'no owner message');
+    assert.strictEqual(asksFor('harness-review:' + r.id).length, 0);
     assert.deepStrictEqual(['schedule', 'model', 'house-rule'].map(k => governanceCategory({ kind: k })), ['schedules', 'models', 'tools']);
     assert.strictEqual(governanceCategory({ kind: 'policy', target: { file: 'company/model-policy.json' } }), 'tools');
     setGov('tools', 'auto'); setGov('budget', 'auto');
@@ -1125,8 +1440,8 @@ async function selftest() {
 
 /* ---------------- CLI ---------------- */
 const CLI = {
-  propose: { pos: 0, val: ['kind', 'target', 'why', 'change', 'by', 'expect'] }, approve: { pos: 1, val: ['by', 'note'] }, reject: { pos: 1, val: ['by', 'note'] },
-  withdraw: { pos: 1, val: ['by'] }, apply: { pos: 1, val: ['by'] }, revert: { pos: 1, val: ['by', 'why'] }, keep: { pos: 1, val: ['by', 'note'] },
+  propose: { pos: 0, val: ['kind', 'target', 'why', 'change', 'by', 'expect', 'replaces', 'plain'] }, approve: { pos: 1, val: ['by', 'note'] }, reject: { pos: 1, val: ['by', 'note'] },
+  withdraw: { pos: 1, val: ['by', 'why'] }, apply: { pos: 1, val: ['by'] }, revert: { pos: 1, val: ['by', 'why'] }, keep: { pos: 1, val: ['by', 'note'] },
   'review-due': { pos: 0, val: [] }, list: { pos: 0, val: [], bool: ['all'] }, show: { pos: 1, val: [] }, tick: { pos: 0, val: [], bool: ['dry-run'] }, selftest: { pos: 0, val: [] },
 };
 function parseArgs(cmd, rest) {
@@ -1162,7 +1477,7 @@ if (require.main === module) {
       return;
     }
     let r;
-    if (cmd === 'propose') { r = await propose(ctx, o); console.log('proposed ' + r.id + ' (claimed by ' + r.by + '; --by is not cryptographically verified). Review handoff sent to ' + r.reviewers.map(p => p.name).join(' and ') + '.'); print(r); return; }
+    if (cmd === 'propose') { r = await propose(ctx, o); if (r.again) { console.log('already proposed as ' + r.id + ' (the same change by the same person): the open record was updated, nothing new was filed'); print(r); return; } console.log('proposed ' + r.id + ' (claimed by ' + r.by + '; --by is not cryptographically verified). Review handoff sent to ' + r.reviewers.map(p => p.name).join(' and ') + '.'); print(r); return; }
     if (cmd === 'approve' || cmd === 'reject') { r = review(ctx, id, o, cmd); console.log((cmd === 'reject' ? 'rejected ' : 'approved ') + r.id + ' — now ' + r.status + (r.status === 'approved' ? '; apply handoff sent to ' + (r.applier ? r.applier.name : 'the reviewer') : '')); return; }
     if (cmd === 'withdraw') { r = withdraw(ctx, id, o); console.log('withdrew ' + r.id); return; }
     if (cmd === 'apply') { r = await applyChange(ctx, id, o); console.log('applied ' + r.id + (r.applied && r.applied.how ? ' (' + r.applied.how + ')' : '') + (r.judgeAfter ? '; results check due ' + r.judgeAfter.slice(0, 10) : (r.upstream ? '; not applied here, sent upstream as ' + r.upstream : ''))); return; }

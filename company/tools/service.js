@@ -4,7 +4,7 @@
  *
  *   node company/tools/service.js propose <name> --kind service|timer --exec "<argv>" [--every 60s|5min|1h | --on-calendar "<spec>"]
  *        --why "..." --by <seat> [--restart on-failure|always] [--timeout 1h] [--success-exit "3"] [--memory 512M] [--cpu 50%]
- *        [--network none] [--soft-halt finish|stop|keep] [--wake <seat>[,<seat>]]
+ *        [--network none | --hosts <host>[,<host>]] [--soft-halt finish|stop|keep] [--wake <seat>[,<seat>]] [--plain "what it does, for the owner"]
  *        --wake (a timer only): each run's end is recorded like a watched job (company/tools/notify-when.js wraps the
  *        ExecStart and passes its exit code through) and wakes those seats, a failure too; it also satisfies a
  *        `**Waiting on:** service:<name>` line (company/HANDOFFS.md)
@@ -35,11 +35,18 @@
  * Network is open unless the proposal declares --network none (RestrictAddressFamilies=AF_UNIX). A timer runs its service
  * as a oneshot. The unit files carry X-CaPheOS-* lines naming the company, the folder and the service.
  *
- * GOVERNANCE. A new service is a `localComputer` decision. With that guardrail ON it always waits for the owner: a typed
- * owner question (Approve / Decline) showing the name, the command, the schedule, the limits and why. With it OFF it follows
- * the `schedules` self-governance level (auto, notify, triage or approve). `propose` is idempotent: run it again after the
- * owner answers and it installs. Start and stop of an approved service belong to the seat that asked for it (and the
- * owner); a --by claim made from somebody else's run is refused (provenance.js callerConflict). adopt is the owner's.
+ * GOVERNANCE. A new service follows the `schedules` self-governance level (auto installs, notify installs and puts one
+ * plain line in the owner's daily digest, triage asks the decision model, approve files one owner card), like any other
+ * category. With the `localComputer` guardrail ON that holds only for a service in the SAFE PROFILE (safeProfile below:
+ * a script and paths in the company folder, which validateArgv already requires; --network none or --hosts naming only
+ * hosts on the external-gate allowlist; the default memory and processor limits; a timer, or a service that restarts only
+ * on failure; it finishes or stops in a soft halt). Anything outside it (open network, a new host, raised limits, restart
+ * always, runs through a soft halt) asks the owner. The owner is asked only through lib/owner-card.js: one card per exact
+ * spec (ref service:<name>:<spec key>), plain words up front, the command and limits only under technical, effect
+ * {serviceApprove:{name}} (ownerApprove below); a changed spec withdraws the older card. `propose` is idempotent: run it
+ * again after the owner answers and it installs. Start and stop of an approved service belong to the seat that asked for
+ * it (and the owner); a --by claim made from somebody else's run is refused (provenance.js callerConflict). adopt is the
+ * owner's: a seat's adopt asks through one owner card.
  *
  * HALT (company/tools/halt.js calls onHalt() whenever it writes halt.json). Soft: timers stop firing new jobs, a run in
  * progress finishes; a long-running service is stopped gracefully (SIGTERM, 90 s to finish its step) unless it declared
@@ -108,7 +115,13 @@ function context(o) {
     gov: o.gov || { root },
     callerConflict: o.callerConflict || ((parts, id) => { try { return require('./provenance.js').callerConflict(root, parts, id); } catch (_) { return null; } }),
     crew: o.crew || (() => (co.readJson(P('company', 'tools', 'loops.json'), {}) || {}).agents || {}),
+    // the owner's two doors (lib/owner-card.js, lib/owner-notice.js); a selftest hands in stand-ins with the same contract
+    cards: () => o.ownerCard || optional('./lib/owner-card'), notices: () => o.ownerNotice || optional('./lib/owner-notice'),
   };
+}
+// a module that may not be installed yet: null when it is missing, every other load error is real
+function optional(name) {
+  try { return require(name); } catch (e) { if (e && e.code === 'MODULE_NOT_FOUND' && String(e.message).includes(path.basename(name))) return null; throw e; }
 }
 // the real systemctl, by absolute path (never the shim on PATH); returns {code, out}
 function realSystemctl(args) {
@@ -251,6 +264,13 @@ function specOf(ctx, name, o, opts) {
   const softHalt = String(o['soft-halt'] || 'finish'); if (!['finish', 'stop', 'keep'].includes(softHalt)) throw err('--soft-halt is finish, stop or keep');
   if (kind === 'timer' && softHalt === 'keep') throw err('--soft-halt keep is for a long-running service; a timer stops firing in a soft halt');
   const network = o.network == null || o.network === 'on' ? true : o.network === 'none' ? false : (() => { throw err('--network is none (no network) or left out'); })();
+  // --hosts: the only places it talks to (declared and recorded; a host off the external-gate allowlist asks the owner)
+  let hosts = null;
+  if (o.hosts != null && o.hosts !== false) {
+    if (!network) throw err('--hosts and --network none contradict each other');
+    hosts = [...new Set(String(o.hosts).split(',').map(h => h.trim().toLowerCase()).filter(Boolean))];
+    if (!hosts.length || hosts.some(h => !/^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/.test(h))) throw err('--hosts is a comma-separated list of host names, e.g. api.example.com');
+  }
   const timeout = o.timeout ? secs(duration(o.timeout, '--timeout', 10, 6 * 3600)) : null;
   const successExit = o['success-exit'] ? String(o['success-exit']).trim() : null;
   if (successExit && !/^\d{1,3}( \d{1,3}){0,7}$/.test(successExit)) throw err('--success-exit is exit codes separated by spaces, e.g. "3"');
@@ -265,9 +285,12 @@ function specOf(ctx, name, o, opts) {
     }
     if (!wake.length) throw err('--wake names the seats to wake, e.g. --wake rohan');
   }
-  return Object.assign({ name, unit: unitOf(ctx, name), kind, argv, schedule: scheduleOf(kind, o), why: why.slice(0, 400), restart, softHalt, network, limits: limitsOf(o), timeout, successExit }, wake ? { wake } : {});
+  return Object.assign({ name, unit: unitOf(ctx, name), kind, argv, schedule: scheduleOf(kind, o), why: why.slice(0, 400), restart, softHalt, network, limits: limitsOf(o), timeout, successExit }, wake ? { wake } : {}, hosts ? { hosts } : {},
+    o.plain && o.plain !== true ? { plain: String(o.plain).replace(/\s+/g, ' ').trim().slice(0, 200) } : {});
 }
-const specKey = s => sha(JSON.stringify([s.kind, s.argv, s.schedule, s.restart, s.softHalt, s.network, s.limits, s.timeout, s.successExit].concat(s.wake && s.wake.length ? [s.wake] : [])));
+// the exact spec the owner (or the governance level) agrees to; a field added later joins only when set, so the key of an
+// installed service stays what it was
+const specKey = s => sha(JSON.stringify([s.kind, s.argv, s.schedule, s.restart, s.softHalt, s.network, s.limits, s.timeout, s.successExit].concat(s.wake && s.wake.length ? [s.wake] : [], s.hosts && s.hosts.length ? [['hosts', s.hosts]] : [])));
 // a timer with --wake runs through notify-when.js (company/tools), which records the run's end and passes its exit code on
 const execArgv = (ctx, e) => e.wake && e.wake.length ? [which('node') || process.execPath, path.join(ctx.root, 'company', 'tools', 'notify-when.js'), '--service-run', e.name, '--seat', e.wake.join(','), '--'].concat(e.argv) : e.argv;
 const scheduleWords = s => !s ? 'runs all the time' : s.every ? 'every ' + s.every : 'on the calendar ' + s.onCalendar;
@@ -281,7 +304,7 @@ const scheduleWords = s => !s ? 'runs all the time' : s.every ? 'every ' + s.eve
 const startLimit = e => e.kind === 'timer' ? 'StartLimitIntervalSec=0\n' : 'StartLimitIntervalSec=10min\nStartLimitBurst=5\n';
 function render(ctx, e) {
   const head = '# Written by company/tools/service.js for ' + (ctx.config.name || ctx.slug) + '. Change it with service.js, not by hand: a hand edit is flagged.\n';
-  const x = 'X-CaPheOS-Company=' + ctx.slug + '\nX-CaPheOS-Root=' + ctx.root + '\nX-CaPheOS-Service=' + e.name + '\n';
+  const x = 'X-CaPheOS-Company=' + ctx.slug + '\nX-CaPheOS-Root=' + ctx.root + '\nX-CaPheOS-Service=' + e.name + '\n' + (e.hosts && e.hosts.length ? 'X-CaPheOS-Hosts=' + e.hosts.join(',') + '\n' : '');
   const svc = head + '[Unit]\nDescription=' + (ctx.config.name || ctx.slug) + ' background service ' + e.name + '\n'
     + 'Documentation=file:' + path.join(ctx.root, 'company', 'state', 'services.json') + '\n'
     + startLimit(e) + x + '\n[Service]\n'
@@ -341,57 +364,113 @@ function actor(ctx, by, cmd, name) {
   return { owner: false, seat, name: (ctx.crew()[seat] || {}).name || seat };
 }
 
-/* ---------------- the owner question (typed) ---------------- */
-function newQid(ctx) {
-  const gov = require('./lib/governance');
-  const used = new Set(gov.readLines(gov.files(ctx.gov).inbox).map(r => r.id));
-  let n = Number(String(ctx.now()).slice(-6)); let id;
-  do { id = 'q-' + String(n).padStart(6, '0'); n = (n + 1) % 1e6; } while (used.has(id));
-  return id;
+/* ---------------- the safe profile, and the owner's card ---------------- */
+const DEFAULT_LIMITS = { memoryMax: '512M', cpuQuota: '50%' };
+const bytesOf = m => { const x = String(m || '').toUpperCase().match(/^(\d+)(K|M|G)$/); return x ? Number(x[1]) * ({ K: 1024, M: 1024 ** 2, G: 1024 ** 3 })[x[2]] : Infinity; };
+function allowlist(ctx) {
+  try { return fs.readFileSync(ctx.P('company', 'state', 'external-allowlist.txt'), 'utf8').split('\n').map(l => l.trim().toLowerCase()).filter(l => l && !l.startsWith('#')); } catch (_) { return []; }
 }
-function askOwner(ctx, e, who, ref, why) {
-  const gov = require('./lib/governance');
-  const { normalizeForm } = require('./inbox.js');
-  const sched = scheduleWords(e.schedule);
+// the same matching as the external gate (lib/governance.js allowlisted): a host, a parent domain, or a *.domain entry
+const hostAllowed = (list, h) => list.some(e => (e.startsWith('*.') ? (h === e.slice(2) || h.endsWith(e.slice(1))) : (h === e || h.endsWith('.' + e))));
+/* safeProfile(ctx, e) -> {safe, reasons: [{plain, crew}]} — may this service follow the schedules level while the
+ * localComputer guardrail is on? validateArgv has already kept the script and every path inside the company folder. */
+function safeProfile(ctx, e) {
+  const reasons = [];
+  if (e.network) {
+    if (!e.hosts || !e.hosts.length) reasons.push({ plain: 'It could connect to any website, which risks company data leaving this computer.', crew: 'network open (no --network none, no --hosts)' });
+    else {
+      const list = allowlist(ctx); const fresh = e.hosts.filter(h => !hostAllowed(list, h.replace(/^\*\./, '')));
+      if (fresh.length) reasons.push({ plain: 'It would connect to a website the crew has not used before, which risks company data leaving this computer.', crew: 'hosts not on the external-gate allowlist: ' + fresh.join(', ') });
+    }
+  }
+  if (bytesOf(e.limits && e.limits.memoryMax) > bytesOf(DEFAULT_LIMITS.memoryMax) || parseInt((e.limits && e.limits.cpuQuota) || '0', 10) > parseInt(DEFAULT_LIMITS.cpuQuota, 10))
+    reasons.push({ plain: 'It may use more of this computer\'s memory or power than usual, which risks slowing it down.', crew: 'raised limits: MemoryMax=' + e.limits.memoryMax + ' CPUQuota=' + e.limits.cpuQuota });
+  if (e.kind === 'service' && e.restart === 'always') reasons.push({ plain: 'It restarts itself whenever it stops, which keeps it going even when something is wrong.', crew: 'Restart=always' });
+  if (e.softHalt === 'keep') reasons.push({ plain: 'It keeps running even when you pause the company.', crew: '--soft-halt keep' });
+  return { safe: !reasons.length, reasons };
+}
+// when it runs, in everyday words (a calendar spec the words cannot follow becomes "on a set schedule")
+function plainWhen(sched) {
+  if (!sched) return null;
+  if (sched.every) {
+    const m = String(sched.every).match(/^(\d+)(d|h|min|s)$/); if (!m) return 'on a set schedule';
+    const n = Number(m[1]); const unit = { d: 'day', h: 'hour', min: 'minute', s: 'second' }[m[2]];
+    if (n === 1) return m[2] === 'd' ? 'once a day' : 'every ' + unit;
+    return 'every ' + n + ' ' + unit + 's';
+  }
+  const c = String(sched.onCalendar || '').trim().match(/^(?:(?:\*-\*-\*|daily)\s+)?(\d{1,2}):(\d{2})(?::\d{2})?(?:\s+\S+)?$/i);
+  if (!c) return 'on a set schedule';
+  const h = Number(c[1]), mi = Number(c[2]); if (h > 23 || mi > 59) return 'on a set schedule';
+  const part = h < 6 ? 'night' : h < 12 ? 'morning' : h < 18 ? 'afternoon' : h < 22 ? 'evening' : 'night';
+  const h12 = (h % 12) || 12, ap = h < 12 ? 'am' : 'pm';
+  return 'every ' + part + (mi === 0 ? ' at ' : ' a little after ') + h12 + ' ' + ap;
+}
+const plainOk = t => { try { return require('./lib/owner-scope').plainScore(t, { approval: true }).ok; } catch (_) { return false; } };
+// the crew's facts about the service: the card's technical part, never its lead
+function factsOf(ctx, e, who) {
   const cmd = e.argv.map(a => a.startsWith(ctx.root + '/') ? a.slice(ctx.root.length + 1) : a).join(' ');
-  const facts = ['**Name:** ' + e.name + ' (the computer calls it ' + e.unit + ')', '**What it runs:** `' + cmd + '`', '**When:** ' + sched,
+  return ['**Name:** ' + e.name + ' (the computer calls it ' + e.unit + ')', '**What it runs:** `' + cmd + '`', '**When:** ' + scheduleWords(e.schedule),
     '**Why:** ' + e.why, '**Asked by:** ' + who.name, '**Limits:** at most ' + e.limits.memoryMax + ' of memory and ' + e.limits.cpuQuota + ' of one processor; '
-      + (e.network ? 'it may use the network' : 'no network') + '; it restarts ' + (e.kind === 'timer' ? 'never (it runs once per turn)' : e.restart === 'always' ? 'whenever it stops' : 'if it fails'),
+      + (e.network ? (e.hosts && e.hosts.length ? 'network to ' + e.hosts.join(', ') + ' only (declared)' : 'it may use the network') : 'no network') + '; it restarts ' + (e.kind === 'timer' ? 'never (it runs once per turn)' : e.restart === 'always' ? 'whenever it stops' : 'if it fails'),
     '**In a soft halt:** ' + (e.kind === 'timer' ? 'it stops firing; a run in progress finishes' : e.softHalt === 'keep' ? 'it keeps running (a hard halt stops it)' : 'it is asked to finish and stop'),
     '**You can stop or remove it any time** in Settings › System › Background services.'].join('\n');
-  const form = normalizeForm({ fields: [{ id: 'facts', type: 'info', text: facts }, { id: 'reason', type: 'text', multiline: true, label: 'Reason (optional)', required: false }],
-    actions: [{ id: 'approve', label: 'Approve', verdict: 'yes', primary: true }, { id: 'decline', label: 'Decline', verdict: 'no' }] });
-  const id = newQid(ctx);
-  const message = (who.name + ' wants to run "' + e.name + '" in the background on this computer, ' + sched + ', so it keeps going between their working sessions. '
-    + 'It is limited to the company folder and can be stopped from Settings. If you decline or do not answer, nothing is installed.').slice(0, 600);
-  const row = { type: 'ask', id, at: new Date(ctx.now()).toISOString(), from: who.name, about: 'service:' + e.name, kind: 'form', form, message, details: facts,
-    q: message + '\n\n' + facts, blocking: false, batch: 'gate',
-    gate: { category: why, ref, by: who.seat || 'owner', summary: 'run the background service ' + e.name + ' (' + sched + ')', recommendation: null, default: 'nothing is installed' } };
-  // recorded in the provenance log first (lib/pm-inbox-guard.js), so every reader trusts the question
-  require('./lib/pm-inbox-guard').append(gov.files(ctx.gov).inbox, row, 'service.js');
-  return row;
 }
-// may this proposal go ahead? -> {allowed, waiting?, denied?, questionId?, level, via}
+// "Halima wants a background job to run every night at 2 am on this computer." + what it touches, or why it needs a yes
+function plainLead(ctx, e, who, prof) {
+  const when = e.kind === 'timer' ? 'run ' + plainWhen(e.schedule) : 'keep running';
+  const first = who.name + ' wants a background job to ' + when + ' on this computer.';
+  const what = e.plain && plainOk(e.plain) ? e.plain : null;
+  const second = prof.reasons.length ? prof.reasons[0].plain : e.network ? 'It keeps to company files and talks only to websites the crew already uses.' : 'It keeps to company files and sends nothing out.';
+  return [what ? first + ' ' + what : null, first + ' ' + second, who.name + ' wants a background job on this computer. ' + second].filter(Boolean).find(plainOk) || who.name + ' wants a background job on this computer. ' + second;
+}
+/* askOwner(ctx, e, who, ref, category, prof) -> what lib/owner-card.js file() returned ({filed, id} or {filed:false, route}) */
+function askOwner(ctx, e, who, ref, category, prof) {
+  const C = ctx.cards();
+  if (!C) return { filed: false, route: 'missing', reason: 'lib/owner-card.js is not installed' };
+  const technical = factsOf(ctx, e, who) + '\n' + (prof.reasons.length ? '**Outside the safe profile:** ' + prof.reasons.map(r => r.crew).join('; ') : '**Inside the safe profile**; asked because self-governance has ' + category + ' at approve.');
+  try {
+    return C.file({ asker: who.seat || who.name, category, ref, lead: plainLead(ctx, e, who, prof),
+      consequence: 'If you say yes, the crew sets it up and you keep the power to stop it in Settings. If you say no, nothing is installed.',
+      recommendation: 'The crew recommends yes, because it keeps their work going between sessions. If you do not answer, nothing is installed.',
+      technical, effect: { serviceApprove: { name: e.name } } }, { root: ctx.root }) || { filed: false, route: 'failed' };
+  } catch (x) { logRow(ctx, { event: 'owner-card-failed', name: e.name, code: x.code || null, error: String(x.message).slice(0, 300) }); return { filed: false, route: 'failed', reason: x.message }; }
+}
+const coveredByCrew = r => !!r && !r.filed && ['crew', 'digest', 'ruling'].includes(r.route);
+function tellOwner(ctx, o) {
+  try {
+    const N = ctx.notices();
+    if (N) return N.send({ kind: 'fyi', from: o.from, text: o.text, technical: o.technical, key: o.key }, { root: ctx.root });
+    return require('./lib/governance').notify(o.text, Object.assign({}, ctx.gov, { from: o.from }));
+  } catch (x) { logRow(ctx, { event: 'owner-notice-failed', key: o.key, error: String(x.message).slice(0, 200) }); return null; }
+}
+// may this proposal go ahead? -> {allowed, waiting?, denied?, questionId?, level, via, tell?}
 function decision(ctx, e, who, ref) {
   const gov = require('./lib/governance');
   if (who.owner) return { allowed: true, level: 'owner', via: 'owner' };
   const lcOn = ctx.guard('localComputer');
-  const level = lcOn ? 'approve' : gov.level('schedules', Object.assign({ triage: true }, ctx.gov));
-  if (!lcOn && level !== 'approve') {
+  const prof = safeProfile(ctx, e);
+  const outside = lcOn && !prof.safe;
+  const level = outside ? 'approve' : gov.level('schedules', Object.assign({ triage: true }, ctx.gov));
+  const via = outside ? 'localComputer guardrail on, outside the safe profile (' + prof.reasons.map(r => r.crew).join('; ') + ')' : 'schedules ' + level + (lcOn ? ' (localComputer guardrail on, inside the safe profile)' : ' (localComputer guardrail off)');
+  if (level === 'auto') return { allowed: true, level, via };
+  if (level === 'notify') return { allowed: true, level, via, tell: true };
+  if (level === 'triage') {
     const d = gov.decide('schedules', { by: who.name, summary: 'run the background service ' + e.name + ' (' + scheduleWords(e.schedule) + '): ' + e.why.slice(0, 120), ref,
       recommendation: 'yes', default: 'nothing is installed' }, ctx.gov);
-    return { allowed: !!d.allowed, waiting: !d.allowed && !d.denied, denied: !!d.denied, questionId: d.questionId || null, level: d.level, via: 'schedules ' + d.level + ' (localComputer guardrail off)' };
+    return { allowed: !!d.allowed, waiting: !d.allowed && !d.denied, denied: !!d.denied, questionId: d.questionId || null, level: d.level, via: 'schedules ' + d.level + (lcOn ? ' (inside the safe profile)' : ' (localComputer guardrail off)') };
   }
   const q = gov.questionFor(ref, ctx.gov);
   if (q) {
     const a = gov.approved(ref, ctx.gov);
-    if (a === true) return { allowed: true, level: 'approve', questionId: q.id, via: (lcOn ? 'localComputer guardrail on' : 'schedules approve') + ': owner said yes to ' + q.id };
+    if (a === true) return { allowed: true, level: 'approve', questionId: q.id, via: via + ': owner said yes to ' + q.id };
     if (a === false) return { allowed: false, denied: true, level: 'approve', questionId: q.id };
-    const closed = gov.inboxRows(ctx.gov).some(r => r.id === q.id && (r.type === 'close' || r.type === 'reclassify'));
+    const closed = gov.inboxRows(ctx.gov).some(r => r.id === q.id && ['close', 'reclassify', 'withdraw'].includes(r.type));
     if (!closed) return { allowed: false, waiting: true, level: 'approve', questionId: q.id };
   }
-  const row = askOwner(ctx, e, who, ref, lcOn ? 'localComputer' : 'schedules');
-  return { allowed: false, waiting: true, level: 'approve', questionId: row.id, asked: true };
+  const r = askOwner(ctx, e, who, ref, outside ? 'localComputer' : 'schedules', prof);
+  if (coveredByCrew(r)) return { allowed: true, level: 'approve', via: via + '; not asked: ' + (r.reason || r.route) };
+  if (r.filed || r.route === 'duplicate') return { allowed: false, waiting: true, level: 'approve', questionId: r.id || null, asked: !!r.filed };
+  return { allowed: false, waiting: true, level: 'approve', questionId: null, error: 'the owner could not be asked (' + (r.reason || r.route) + '); nothing is installed' };
 }
 
 /* ---------------- install / start / stop ---------------- */
@@ -417,6 +496,12 @@ function propose(ctx, name, o) {
     throw err('"' + name + '" is already installed with a different command or schedule; remove it first, or propose a new name', 2);
   }
   const ref = 'service:' + name + ':' + key;
+  // the same name proposed again with a different spec: the owner's card for the older spec goes, never a second card
+  if (old && old.status === 'proposed' && old.specKey && old.specKey !== key) {
+    const C = ctx.cards();
+    if (C && typeof C.withdraw === 'function') { try { C.withdraw({ ref: 'service:' + name + ':' + old.specKey, by: who.seat || who.name, why: 'replaced by a newer proposal for ' + name }, { root: ctx.root }); } catch (x) { logRow(ctx, { event: 'owner-card-withdraw-failed', name, error: String(x.message).slice(0, 200) }); } }
+    logRow(ctx, { event: 'replaced', name, by: who.seat || 'owner', oldKey: old.specKey, newKey: key });
+  }
   const d = decision(ctx, spec, who, ref);
   const e = Object.assign({}, spec, { specKey: key, by: who.seat || 'owner', byName: who.name, proposedAt: (old && old.specKey === key && old.proposedAt) || new Date(ctx.now()).toISOString(),
     approval: { level: d.level, questionId: d.questionId || null, via: d.via || null, guardrail: ctx.guard('localComputer') ? 'on' : 'off' } });
@@ -425,13 +510,34 @@ function propose(ctx, name, o) {
   if (!d.allowed) {
     e.status = 'proposed'; doc.services[name] = e; write(ctx, doc);
     if (d.asked) logRow(ctx, { event: 'proposed', name, by: e.by, questionId: d.questionId, argv: e.argv, schedule: e.schedule });
-    return { ok: true, waiting: true, name, unit: e.unit, questionId: d.questionId, text: 'Asked the owner (' + d.questionId + '). Run the same propose again after they answer yes; it then installs.' };
+    if (d.error) return { ok: false, waiting: true, name, unit: e.unit, questionId: null, text: d.error };
+    return { ok: true, waiting: true, name, unit: e.unit, questionId: d.questionId, text: 'Asked the owner (' + d.questionId + '). Run the same propose again after they answer yes; it then installs (or the console installs it on their yes).' };
   }
   e.approval.at = new Date(ctx.now()).toISOString();
   install(ctx, e, doc);
   write(ctx, doc);
   logRow(ctx, { event: 'installed', name, unit: e.unit, by: e.by, via: e.approval.via, argv: e.argv, schedule: e.schedule });
+  if (d.tell) tellOwner(ctx, { from: who.name, key: ref, text: plainLead(ctx, e, who, { reasons: [] }).replace(' wants a background job to ', ' set up a background job to ').replace(' wants a background job on ', ' set up a background job on '),
+    technical: factsOf(ctx, e, who) + '\nInstalled without asking: ' + e.approval.via + '.' });
   return { ok: !e.lastError, name, unit: e.unit, status: e.status, halted: !!e.halt, error: e.lastError || undefined };
+}
+/* ownerApprove(name, opts) -> {ok, installed|already|waiting} — the console's {serviceApprove:{name}} card effect, run on
+ * the owner's answer. It installs only the exact spec the owner's card was about, and only on a verified owner yes to that
+ * card (lib/governance.js approved): calling it never stands in for the owner. Idempotent with the seat's own re-propose. */
+function ownerApprove(name, opts) {
+  const ctx = opts && opts.ctx ? opts.ctx : context(opts);
+  const gov = require('./lib/governance');
+  const doc = read(ctx); const e = doc.services[name];
+  if (!e) throw err('no registered service "' + name + '"', 2);
+  if (e.status === 'installed') return { ok: true, already: true, name, status: e.status };
+  if (e.status !== 'proposed' || !e.specKey) return { ok: false, name, status: e.status, text: '"' + name + '" is ' + e.status + '; nothing to install' };
+  const ref = 'service:' + name + ':' + e.specKey;
+  if (gov.approved(ref, ctx.gov) !== true) return { ok: false, waiting: true, name, text: 'no owner yes to the card for this version of "' + name + '" yet' };
+  const q = gov.questionFor(ref, ctx.gov);
+  e.approval = Object.assign({}, e.approval || {}, { level: 'approve', questionId: q ? q.id : null, via: 'the owner said yes to ' + (q ? q.id : ref) + ' on Today', at: new Date(ctx.now()).toISOString() });
+  install(ctx, e, doc); write(ctx, doc);
+  logRow(ctx, { event: 'installed', name, unit: e.unit, by: e.by, via: e.approval.via, argv: e.argv, schedule: e.schedule });
+  return { ok: !e.lastError, installed: true, name, unit: e.unit, status: e.status, halted: !!e.halt, error: e.lastError || undefined };
 }
 function mayControl(ctx, e, by, cmd) {
   const who = actor(ctx, by, cmd, e.name);
@@ -522,20 +628,22 @@ function adoptGate(ctx, base, o, words) {
     if (a === false) throw err('the owner declined adopting ' + base + ' (' + q.id + ')', 3);
     return { waiting: true, questionId: q.id };
   }
-  const { normalizeForm } = require('./inbox.js');
   const cmd = words.map(a => a.startsWith(ctx.root + '/') ? a.slice(ctx.root.length + 1) : a).join(' ');
   const facts = ['**Program:** ' + base, '**What it runs:** `' + cmd + '`', '**Name it would get:** ' + (o.as || base + ' (unchanged)'), '**Owner seat:** ' + (o.seat || who.name),
-    '**Why:** ' + String(o.why || 'not given'), '**Asked by:** ' + who.name].join('\n');
-  const form = normalizeForm({ fields: [{ id: 'facts', type: 'info', text: facts }, { id: 'reason', type: 'text', multiline: true, label: 'Reason (optional)', required: false }],
-    actions: [{ id: 'approve', label: 'Approve', verdict: 'yes', primary: true }, { id: 'decline', label: 'Decline', verdict: 'no' }] });
-  const id = newQid(ctx);
-  const message = (who.name + ' wants to adopt "' + base + '", a background program already running from the company folder that nobody registered, so it runs under the company\'s rules'
-    + (o.as ? ' as "' + o.as + '"' : '') + '. If you decline or do not answer, it stays as it is and keeps being reported.').slice(0, 600);
-  const row = { type: 'ask', id, at: new Date(ctx.now()).toISOString(), from: who.name, about: 'service-adopt:' + base, kind: 'form', form, message, details: facts,
-    q: message + '\n\n' + facts, blocking: false, batch: 'gate',
-    gate: { category: 'localComputer', ref, by: who.seat, summary: 'adopt the background program ' + base + (o.as ? ' as ' + o.as : ''), recommendation: null, default: 'nothing changes' } };
-  require('./lib/pm-inbox-guard').append(gov.files(ctx.gov).inbox, row, 'service.js');
-  return { waiting: true, asked: true, questionId: id };
+    '**Why:** ' + String(o.why || 'not given'), '**Asked by:** ' + who.name, '**On a yes:** ' + who.name + '\'s next run adopts it (service.js adopt, recorded with the card).'].join('\n');
+  const C = ctx.cards();
+  if (!C) return { waiting: true, questionId: null, error: 'the owner could not be asked (lib/owner-card.js is not installed)' };
+  let r;
+  try {
+    r = C.file({ asker: who.seat || who.name, category: 'localComputer', ref,
+      lead: who.name + ' found a background job on this computer that the crew never set up properly, and wants to take it over. That keeps it easy to see and stop.',
+      consequence: 'If you say yes, it runs under the company\'s rules and you keep the power to stop it in Settings. If you say no, it stays as it is.',
+      recommendation: 'The crew recommends yes, because it keeps every background job in one place. If you do not answer, nothing changes.',
+      technical: facts, effect: { none: true } }, { root: ctx.root }) || { filed: false, route: 'failed' };
+  } catch (x) { logRow(ctx, { event: 'owner-card-failed', name: base, code: x.code || null, error: String(x.message).slice(0, 300) }); r = { filed: false, route: 'failed', reason: x.message }; }
+  if (coveredByCrew(r)) return { approved: true, questionId: null, who, via: 'not asked: ' + (r.reason || r.route) };
+  if (r.filed || r.route === 'duplicate') return { waiting: true, asked: !!r.filed, questionId: r.id || null };
+  return { waiting: true, questionId: null, error: 'the owner could not be asked (' + (r.reason || r.route) + ')' };
 }
 function adopt(ctx, unit, o) {
   const base = String(unit || '').replace(/\.(service|timer)$/, '');
@@ -546,9 +654,9 @@ function adopt(ctx, unit, o) {
   const u = parseUnit(svcText), t = tmrText ? parseUnit(tmrText) : null;
   const words = splitWords(String(one(u, 'Service.ExecStart') || '').replace(/^[-@:+!]+/, ''));
   const g = adoptGate(ctx, base, o, words);
-  if (g.waiting) return { ok: false, waiting: true, questionId: g.questionId, asked: !!g.asked, note: 'the owner decides on Today or in chat; run this again after the answer' };
-  const via = g.approved ? 'adopted after the owner approved ' + g.questionId + ' (asked by ' + g.who.name + ')' : null;
-  const byWord = g.approved ? 'owner (' + g.questionId + ')' : 'owner';
+  if (g.waiting) return { ok: false, waiting: true, questionId: g.questionId, asked: !!g.asked, note: g.error || 'the owner decides on Today or in chat; run this again after the answer' };
+  const via = g.approved ? (g.questionId ? 'adopted after the owner approved ' + g.questionId : 'adopted, ' + g.via) + ' (asked by ' + g.who.name + ')' : null;
+  const byWord = g.approved ? (g.questionId ? 'owner (' + g.questionId + ')' : g.who.seat + ' (' + g.via + ')') : 'owner';
   const doc = read(ctx);
   const seat = o.seat ? seatOf(ctx, o.seat) : null;
   if (o.seat && !seat) throw err('--seat ' + o.seat + ' is not a seat in loops.json');
@@ -823,7 +931,7 @@ function main(argv) {
   console.error('usage: service.js propose|list|status|stop|start|remove|adopt|--duty|selftest (header of company/tools/service.js)'); return 2;
 }
 
-module.exports = { context, propose, startStop, remove, adopt, onHalt, list, findings, duty, checkCommand, validateArgv, splitWords, render, specOf, unitOf, _internals: { frameworkUnits } };
+module.exports = { context, propose, ownerApprove, safeProfile, plainWhen, startStop, remove, adopt, onHalt, list, findings, duty, checkCommand, validateArgv, splitWords, render, specOf, unitOf, _internals: { frameworkUnits } };
 
 /* ---------------- selftest: temp company, fake systemctl, no real user manager ---------------- */
 function selftest() {
@@ -861,10 +969,16 @@ function selftest() {
       return { code: 0, out: '' };
     };
     let halted = false, agent = true, guardOn = true, govLevel = null, conflict = null;
+    // the owner's two doors as stand-ins with the shared contract; the stand-in reads the level from governance.json, so
+    // the cases below that set govLevel write it there too
+    const stubs = require('./tests/helpers/owner-stubs.js'); const notice = stubs.makeOwnerNotice(); const card = stubs.makeOwnerCard(R, { notice });
+    const setLevel = lv => { govLevel = lv; const g = JSON.parse(fs.readFileSync(path.join(R, 'company/defaults/state/governance.json'), 'utf8')); if (lv) g.categories.schedules = lv; fs.writeFileSync(path.join(R, 'company/state/governance.json'), JSON.stringify(g)); };
+    const lastCard = () => card.calls.filter(c => c.op === 'file').pop().card;
+    const plainCard = c => ['lead', 'consequence', 'recommendation'].every(k => require('./lib/owner-scope').plainScore(c[k], { approval: true }).ok);
     const journal = {};
     const ctx = context({ root: R, unitDir: U, transientDir: TR, systemctl, journal: u => journal[u] || '', now: () => Date.parse('2026-11-17T10:00:00Z'), isAgent: () => agent, ownerShell: () => !agent,
       guard: nm => nm === 'localComputer' ? guardOn : true, halted: () => halted, callerConflict: () => conflict,
-      gov: { root: R, get level() { return govLevel || undefined; } } });
+      gov: { root: R, get level() { return govLevel || undefined; } }, ownerCard: card, ownerNotice: notice });
     const inbox = path.join(R, 'company', 'pm-inbox.jsonl');
     const answer = (qid, verdict) => require('./lib/pm-inbox-guard').append(inbox, { type: 'answer', id: qid, a: verdict === 'yes' ? 'yes' : 'no', answer: { verdict }, by: 'Pat' }, 'selftest');
 
@@ -897,8 +1011,10 @@ function selftest() {
     // ---- propose -> owner question (guardrail ON) -> approval -> unit rendered
     let r = propose(ctx, 'depth', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', why: 'records order-book depth between agent runs', 'soft-halt': 'finish' });
     const q = JSON.parse(fs.readFileSync(inbox, 'utf8').trim().split('\n').pop());
-    ok('guardrail ON: propose waits for the owner with a typed question', r.waiting && q.id === r.questionId && q.kind === 'form' && q.gate.category === 'localComputer', r);
-    ok('the question shows name, command, schedule and why', /depth/.test(q.details) && /rec\.py --hz 1/.test(q.details) && /runs all the time/.test(q.details) && /order-book depth/.test(q.details) && q.form.actions.some(a => a.verdict === 'yes'));
+    ok('guardrail ON, open network (outside the safe profile): propose waits for the owner with one card', r.waiting && q.id === r.questionId && q.gate.category === 'localComputer' && q.effect && q.effect.serviceApprove && q.effect.serviceApprove.name === 'depth', r);
+    ok('the card is plain up front; name, command, schedule and why only under technical', plainCard(lastCard()) && lastCard().lead === 'Halima wants a background job to keep running on this computer. It could connect to any website, which risks company data leaving this computer.'
+      && !/depth|rec\.py|testco|python/.test(lastCard().lead + lastCard().consequence + lastCard().recommendation)
+      && /depth/.test(q.technical) && /rec\.py --hz 1/.test(q.technical) && /runs all the time/.test(q.technical) && /order-book depth/.test(q.technical) && /network open/.test(q.technical), lastCard());
     ok('nothing installed before the answer', !fs.existsSync(path.join(U, 'testco-svc-depth.service')) && !fake.calls.some(c => /^(enable|start)/.test(c)));
     r = propose(ctx, 'depth', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', why: 'records order-book depth between agent runs' });
     ok('a rerun before the answer does not ask twice', r.waiting && fs.readFileSync(inbox, 'utf8').trim().split('\n').length === 1);
@@ -911,16 +1027,49 @@ function selftest() {
     ok('unit ExecStart is quoted absolute argv', /ExecStart="[^"]*python3" "[^"]*rec\.py" "--hz" "1"/.test(unit), unit);
     const reg = read(ctx).services.depth;
     ok('services.json records who, why, approval and the unit hash', reg.by === 'data' && /order-book/.test(reg.why) && reg.approval.questionId === q.id && reg.files['testco-svc-depth.service']);
-    // a declined one
+    // a declined one: a safe-profile timer while schedules is at approve gets a card too (category schedules)
+    setLevel('approve');
     r = propose(ctx, 'tape', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', 'on-calendar': '*-*-* 18:00:00 UTC', why: 'banks the trade tape once a day', network: 'none' });
     const q2 = JSON.parse(fs.readFileSync(inbox, 'utf8').trim().split('\n').pop());
+    ok('a safe-profile timer at schedules=approve: one plain card in the schedules category', q2.gate.category === 'schedules' && lastCard().lead === 'Halima wants a background job to run every evening at 6 pm on this computer. It keeps to company files and sends nothing out.' && plainCard(lastCard()), lastCard());
     answer(q2.id, 'no');
     ok('a no is final: refused with exit code 3', throwsCode(() => propose(ctx, 'tape', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', 'on-calendar': '*-*-* 18:00:00 UTC', why: 'banks the trade tape once a day', network: 'none' }), 3, /said no/) === true);
-    // guardrail OFF follows the schedules level: notify installs at once and tells the owner
-    guardOn = false; govLevel = 'notify';
+    // guardrail ON, schedules=auto: a safe-profile timer installs with no card and nothing in the digest
+    setLevel('auto');
+    { const rows0 = fs.readFileSync(inbox, 'utf8'); const n0 = notice.sent.length;
+      r = propose(ctx, 'night', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', 'on-calendar': '*-*-* 02:00:00', why: 'banks the closed day every night', network: 'none' });
+      ok('guardrail ON + safe profile + schedules auto: installed, no owner card, nothing told', r.ok && r.status === 'installed' && fs.readFileSync(inbox, 'utf8') === rows0 && notice.sent.length === n0 && /schedules auto \(localComputer guardrail on, inside the safe profile\)/.test(read(ctx).services.night.approval.via), r);
+      remove(ctx, 'night', { by: 'data' }); }
+    // guardrail ON, schedules=auto: network to a host the crew has not used asks the owner; an allowlisted host does not
+    fs.writeFileSync(path.join(R, 'company/state/external-allowlist.txt'), '# hosts\napi.known.example\n');
+    { r = propose(ctx, 'feed', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'pulls the price feed every hour', hosts: 'api.new.example' });
+      const fq = JSON.parse(fs.readFileSync(inbox, 'utf8').trim().split('\n').pop());
+      ok('a new host asks the owner (localComputer card, the host only under technical)', r.waiting && fq.id === r.questionId && fq.gate.category === 'localComputer' && /website the crew has not used before/.test(lastCard().lead) && !/api\.new/.test(lastCard().lead) && /api\.new\.example/.test(fq.technical) && plainCard(lastCard()), { r, lead: lastCard().lead });
+      const n1 = fs.readFileSync(inbox, 'utf8').trim().split('\n').length;
+      propose(ctx, 'feed', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'pulls the price feed every hour, again', hosts: 'api.new.example' });
+      ok('no duplicate card for the same spec', fs.readFileSync(inbox, 'utf8').trim().split('\n').length === n1);
+      const oldRef = fq.gate.ref;
+      r = propose(ctx, 'feed', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'pulls the price feed every hour', hosts: 'api.known.example' });
+      ok('the same name with a changed spec withdraws the older card; inside the profile at auto it installs', r.ok && r.status === 'installed' && card.openFor(oldRef) === null
+        && fs.readFileSync(inbox, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)).filter(x => x.type === 'ask' && x.gate && /^service:feed:/.test(x.gate.ref) && !card.openFor(x.gate.ref)).length === 1
+        && /X-CaPheOS-Hosts=api\.known\.example/.test(fs.readFileSync(path.join(U, 'testco-svc-feed.service'), 'utf8')), r);
+      remove(ctx, 'feed', { by: 'data' }); }
+    // ownerApprove: the console's serviceApprove effect installs only after the owner's yes to that exact card
+    { r = propose(ctx, 'wide', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --wide', why: 'a recorder that needs more memory', network: 'none', memory: '2G' });
+      ok('raised limits ask the owner', r.waiting && /more of this computer's memory or power/.test(lastCard().lead), lastCard().lead);
+      ok('ownerApprove before a yes installs nothing', ownerApprove('wide', { ctx }).waiting === true && !fs.existsSync(path.join(U, 'testco-svc-wide.service')));
+      answer(r.questionId, 'yes');
+      const oa = ownerApprove('wide', { ctx });
+      ok('ownerApprove after the yes installs that spec; a second call is a no-op', oa.installed && read(ctx).services.wide.status === 'installed' && /the owner said yes/.test(read(ctx).services.wide.approval.via) && ownerApprove('wide', { ctx }).already, oa);
+      remove(ctx, 'wide', { by: 'data' }); }
+    ok('plain schedule words', plainWhen({ onCalendar: '*-*-* 02:00:00' }) === 'every night at 2 am' && plainWhen({ every: '1d' }) === 'once a day' && plainWhen({ every: '5min' }) === 'every 5 minutes' && plainWhen({ onCalendar: 'Mon *-*-* 09:00' }) === 'on a set schedule');
+    // guardrail OFF follows the schedules level: notify installs at once and puts one plain line in the digest
+    guardOn = false; setLevel('notify');
     r = propose(ctx, 'bank', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'banks the closed day every hour', network: 'none' });
     const tm = fs.readFileSync(path.join(U, 'testco-svc-bank.timer'), 'utf8'); const ts1 = fs.readFileSync(path.join(U, 'testco-svc-bank.service'), 'utf8');
-    ok('guardrail OFF + schedules notify: installed without a question, owner told', r.ok && r.status === 'installed' && fs.existsSync(path.join(R, 'company/owner/outbound.jsonl')), r);
+    { const fyi = notice.sent.filter(x => /^service:bank:/.test(x.key || ''));
+      ok('guardrail OFF + schedules notify: installed without a question, one plain digest line (no owner message)', r.ok && r.status === 'installed' && fyi.length === 1 && fyi[0].kind === 'fyi'
+        && fyi[0].text === 'Halima set up a background job to run every hour on this computer. It keeps to company files and sends nothing out.' && !fs.existsSync(path.join(R, 'company/owner/outbound.jsonl')), { r, fyi }); }
     ok('timer rendered: OnUnitActiveSec, oneshot service, no network', /OnUnitActiveSec=1h/.test(tm) && /Unit=testco-svc-bank.service/.test(tm) && /Type=oneshot/.test(ts1) && /RestrictAddressFamilies=AF_UNIX/.test(ts1) && fake.active['testco-svc-bank.timer']);
     // start limit: a timer must not rate-limit itself to half its schedule; a long-running service keeps the guard
     const minuteSvc = render(ctx, specOf(ctx, 'minute', { kind: 'timer', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', every: '1min', why: 'one pass every minute' }, { resolve: false }))['testco-svc-minute.service'];
@@ -940,7 +1089,7 @@ function selftest() {
       ok('rerender with nothing out of date changes nothing', rerender(ctx, { by: 'Pat' }).rerendered.length === 0);
       agent = was;
     }
-    guardOn = true; govLevel = null;
+    guardOn = true; setLevel(null);
     // start/stop/remove rights
     ok('stop by another seat is refused', throwsCode(() => startStop(ctx, 'stop', 'depth', { by: 'agent' }), 3, /belongs to/) === true);
     conflict = { agentId: 'agent' };
@@ -975,7 +1124,7 @@ function selftest() {
     h = onHalt({ mode: 'running', at: 'T4' }, { ctx });
     ok('resume after hard starts only what was running (the stopped timer stays stopped)', fake.active['testco-svc-depth.service'] === true && fake.active['testco-svc-keeper.service'] === true && !fake.active['testco-svc-bank.timer'], fake.active);
     halted = 'hard';
-    r = (() => { guardOn = false; govLevel = 'auto'; const x = propose(ctx, 'late', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --late', why: 'proposed during a halt' }); guardOn = true; govLevel = null; return x; })();
+    r = (() => { guardOn = false; setLevel('auto'); const x = propose(ctx, 'late', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --late', why: 'proposed during a halt' }); guardOn = true; setLevel(null); return x; })();
     ok('a service installed during a halt is not started; resume starts it', r.halted && !fake.active['testco-svc-late.service'] && (onHalt({ mode: 'running', at: 'T5' }, { ctx }), fake.active['testco-svc-late.service'] === true));
     halted = false;
 

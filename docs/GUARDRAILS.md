@@ -101,9 +101,12 @@ did not show them, and nothing recorded who made them.
   --why … --by <seat>`. The argv must be a company script (python3, node, bash or sh on a file under `company/work/` or
   `company/tools/`) with no shell syntax and no sudo. The unit is `<slug>-svc-<name>` and is built from a fixed template
   (WorkingDirectory = the company folder, a restart policy, MemoryMax/CPUQuota). It is recorded in
-  `company/state/services.json` (locked-watch policy tier). Each new service needs the owner's Approve on a typed
-  question showing its name, command, schedule and why. Soft and hard halt stop these units, and they are listed in
-  Settings › System › Background services.
+  `company/state/services.json` (locked-watch policy tier). A service in the **safe profile** (no network, or only hosts
+  already on the external-gate allowlist via `--hosts`; the default memory and processor limits; a timer, or a service
+  that restarts only on failure; it stops in a soft halt) follows the `schedules` self-governance level like any other
+  category. Anything outside it (open network, a new host, raised limits, restart always, runs through a soft halt) needs
+  the owner's yes on one plain card (lib/owner-card.js), with the command, limits and why under its technical details.
+  Soft and hard halt stop these units, and they are listed in Settings › System › Background services.
 - **Refused:** `company/tools/shims/systemctl` and `shims/systemd-run` come first on the station's PATH
   (`scripts/setup-station.sh` writes that PATH into the station env file). For an agent's run they refuse every
   `systemctl --user` verb that changes units (`enable`, `start`, `restart`, `daemon-reload`, `link`, `edit`, `mask`,
