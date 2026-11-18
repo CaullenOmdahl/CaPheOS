@@ -11,7 +11,9 @@
  *   - a metered provider (DeepSeek, any pay-per-use provider) is not near the station's daily rail and has credit;
  *   - the seat's last run on it was not held by a budget cap (runs.jsonl reason "budget"), and the seat's last
  *     `errorsInARow` runs on it were not all provider errors (runs.jsonl reason "error" with a provider-side code or
- *     message). An error or budget hold lasts `errorHoldMin`, then the entry is tried again.
+ *     message). An error or budget hold lasts `errorHoldMin`, then the entry is tried again. A delegated worker run
+ *     (parentRunId) that the host stopped (its dispatch slice ran out, its lead was cancelled, it stalled: reason
+ *     "cancelled") is left out of both; a worker run that hit a real provider error counts like any other run.
  * Moving DOWN off an entry that cannot run happens at the next tick. Moving back UP waits until the better entry has
  * been able to run for `recoverAfterMin` and the seat has not moved for `upAtMostEveryMin` (hysteresis). A seat in a
  * run is never switched until the run ends. Numbers: model-policy.json `failover` (defaults below); mode "shadow" logs
@@ -85,6 +87,18 @@ const parseList = s => String(s || '').split(',').map(x => x.trim()).filter(Bool
 function providerError(r) {
   if (!r || r.reason !== 'error') return false;
   return PROVIDER_CODES.includes(String(r.failureCode || '')) || PROVIDER_RE.test(String(r.error || ''));
+}
+// a delegated worker run (runs.jsonl parentRunId set: the station's team dispatch started it for a lead) that the HOST
+// stopped: its slice of the lead's dispatch wall clock ran out, the lead was cancelled, or the liveness check saw it
+// stall. The station records that as reason "cancelled" (outcome "stopped", failureCode "", often `cancelledWhile`),
+// whichever of the three it was. It says nothing about the worker's provider, so it is no evidence for or against the
+// worker's chain entry: left out of every judgement of it. A child that ended on a real provider error is not this and
+// counts exactly as a top-level run does; a top-level run the owner or a routine cancelled keeps its old meaning.
+const HOST_STOP_REASONS = ['cancelled', 'canceled', 'stopped', 'stalled', 'timeout'];
+function hostStoppedChild(r) {
+  if (!r || !r.parentRunId) return false;
+  if (providerError(r)) return false;
+  return HOST_STOP_REASONS.includes(String(r.reason || '')) || r.outcome === 'stopped' || !!r.cancelledWhile;
 }
 
 // one station call: (method, path, body) -> { status, body }; the token goes only in the header
@@ -177,7 +191,10 @@ function makeModels(o) {
     let rows = []; try { rows = require('./lib/bounded').jsonlWindow(P('runs'), { sinceMs: since, maxBytes: 32 << 20 }).rows; } catch (_) { return {}; }
     for (const r of rows) {
       const end = Number(r.endedAt || r.ts || r.startedAt) || 0; if (end < since || !r.agentId) continue;
-      (out[r.agentId] = out[r.agentId] || []).push({ provider: r.provider, model: r.model, reason: r.reason, failureCode: r.failureCode || '', error: String(r.error || '').slice(0, 160), at: end });
+      // a worker run its lead's dispatch stopped is not evidence about the provider (hostStoppedChild): left out here, the
+      // one place evaluate()'s budget hold and provider-error streak read run outcomes from, so both treat it the same
+      if (hostStoppedChild(r)) continue;
+      (out[r.agentId] = out[r.agentId] || []).push({ provider: r.provider, model: r.model, reason: r.reason, failureCode: r.failureCode || '', error: String(r.error || '').slice(0, 160), at: end, parentRunId: r.parentRunId || undefined });
     }
     for (const k of Object.keys(out)) out[k].sort((a, b) => a.at - b.at);
     return out;
@@ -218,7 +235,8 @@ function makeModels(o) {
       if (e.provider === 'deepseek' && m.deepseek && !m.deepseek.open) return { ok: false, why: 'DeepSeek is closed: ' + m.deepseek.why, connected };
       if (metered && m.rail && m.rail.pressure) return { ok: false, why: 'metered: the station\'s daily spend rail is at ' + Math.round(m.rail.pct) + '% (holds from ' + m.rail.holdAtPct + '%)', connected };
     }
-    const mine = (ctx.runs[id] || []).filter(r => r.provider === e.provider && (!r.model || r.model === e.model));
+    // hostStoppedChild() again here, so a caller that hands evaluate() raw run rows gets the same rule as seatRuns()
+    const mine = (ctx.runs[id] || []).filter(r => r.provider === e.provider && (!r.model || r.model === e.model) && !hostStoppedChild(r));
     const last = mine[mine.length - 1];
     if (last && last.reason === 'budget' && t - last.at < F.errorHoldMin * MIN) return { ok: false, why: 'a budget cap held this seat\'s run at ' + hm(last.at) + ' (retried after ' + F.errorHoldMin + ' min)', connected };
     let n = 0; for (let i = mine.length - 1; i >= 0 && providerError(mine[i]); i--) n++;
@@ -696,6 +714,39 @@ async function selftest() {
       r = await M().tick({ m: openM });
       assert.strictEqual(S.jobs[1].provider, 'claude-cli', JSON.stringify(r)); assert.strictEqual(S.jobs[1].model, 'haiku'); assert.ok(/back to/.test(r.moves[0].why), JSON.stringify(r));
     });
+    await t('delegated worker runs: a dispatch-slice stop leaves the chain alone; a real provider error on one counts', async () => {
+      // eng runs claude-cli/haiku (index 0) after the Sprint case; its next entry is deepseek/deepseek-flash
+      const cur = () => S.jobs[1].provider + '/' + S.jobs[1].model, key = 'claude-cli/haiku';
+      assert.strictEqual(cur(), key);
+      const chainBefore = JSON.stringify(readJson(path.join(root, REL.policy)).seats.eng.chain);
+      // the station's row for a worker its lead's dispatch wall-clock slice cut off (runs.jsonl, team.dispatch child)
+      const child = (i, extra) => JSON.stringify(Object.assign({ runId: 'c' + i, parentRunId: 'lead' + i, delegatedBy: 'agent', wireSource: 'agent', agentId: 'eng', provider: 'claude-cli', model: 'haiku',
+        reason: 'cancelled', outcome: 'stopped', failureCode: '', failureStage: '', cancelledWhile: { phase: 'first_byte', waitedMs: 400 }, endedAt: T - (4 - i) * MIN }, extra || {}));
+      w(REL.runs, [1, 2, 3].map(i => child(i)).join('\n') + '\n');
+      T += MIN; let r = await M().tick({ m: openM });
+      assert.strictEqual(r.moves.length, 0, JSON.stringify(r)); assert.strictEqual(cur(), key, 'three slice-stopped worker runs moved the seat: ' + JSON.stringify(r));
+      assert.strictEqual(S.roster.eng.provider, 'claude-cli'); assert.strictEqual(JSON.stringify(readJson(path.join(root, REL.policy)).seats.eng.chain), chainBefore, 'chain changed');
+      const sh = await M().show({ noPacer: true, seat: 'eng' }); const jo = sh.seats.find(x => x.id === 'eng'); assert.strictEqual(jo.now.index, 0, JSON.stringify(jo.now));
+      // a slice stop between real errors neither counts nor breaks the streak: E, E, stop, E is three in a row
+      const ev = (rows, x) => M().evaluate('eng', { provider: 'claude-cli', model: 'haiku' }, { pol, F: FAILOVER, t: T, m: openM, providers: { 'claude-cli': { configured: true } }, runs: { eng: rows } });
+      const E = (i, child) => Object.assign({ provider: 'claude-cli', model: 'haiku', reason: 'error', failureCode: 'rate_limited', at: T - (10 - i) * MIN }, child ? { parentRunId: 'lead' } : {});
+      const stop = (i, top) => Object.assign({ provider: 'claude-cli', model: 'haiku', reason: 'cancelled', failureCode: '', at: T - (10 - i) * MIN }, top ? {} : { parentRunId: 'lead' });
+      assert.ok(!ev([E(1, 1), E(2, 1), stop(3), E(4, 1)]).ok, 'a host stop broke the error streak');
+      // a budget hold is still the last word when a slice stop came after it
+      assert.ok(!ev([Object.assign(E(1), { reason: 'budget', failureCode: '' }), stop(2)]).ok, 'a slice stop hid a budget hold');
+      // TODAY'S RULE, KEPT for a top-level run: "cancelled" is not a provider error, so three of them leave the entry able to
+      // run, and one between errors ends the streak (E, E, cancelled, E is one error in a row, not three)
+      assert.ok(ev([stop(1, 1), stop(2, 1), stop(3, 1)]).ok, 'top-level cancelled runs now count as failures');
+      assert.ok(ev([E(1), E(2), stop(3, 1), E(4)]).ok, 'a top-level cancel no longer ends the error streak');
+      assert.ok(!hostStoppedChild({ parentRunId: 'x', reason: 'error', failureCode: 'quota_exhausted' }) && !hostStoppedChild({ reason: 'cancelled' }) && hostStoppedChild({ parentRunId: 'x', reason: 'cancelled' }));
+      // three real provider errors on worker runs move the seat down at once, exactly as three on top-level runs do
+      const codes = [{ failureCode: 'rate_limited', error: 'HTTP 429 rate limit' }, { failureCode: 'overloaded', error: 'overloaded' }, { failureCode: '', error: 'usage limit reached' }];
+      w(REL.runs, [1, 2, 3].map(i => child(i, Object.assign({ reason: 'error', outcome: 'failed', cancelledWhile: undefined, endedAt: T - (4 - i) * 10e3 }, codes[i - 1]))).join('\n') + '\n');
+      r = await M().tick({ m: openM });
+      assert.strictEqual(r.moves.length, 1, JSON.stringify(r)); assert.strictEqual(r.moves[0].direction, 'down'); assert.strictEqual(cur(), 'deepseek/deepseek-flash', JSON.stringify(r));
+      assert.ok(/3 provider errors in a row/.test(r.moves[0].why), r.moves[0].why);
+      w(REL.runs, '');
+    });
     await t('hire default chain: interviewed, candidateDefault, a connected subscription', async () => {
       const ch = hireChain({ provider: 'deepseek', model: 'deepseek-flash', effort: 'high' }, [{ id: 'claude-cli', configured: true }], pol);
       assert.deepStrictEqual(ch.map(keyOf), ['deepseek/deepseek-flash', 'claude-cli/claude-sonnet-5-5']);
@@ -753,6 +804,6 @@ async function main(argv) {
   return 2;
 }
 
-module.exports = { makeModels, tick, hireChain, recordHireChain, putPrimary, chainedSeats, parseEntry, providerError, FAILOVER, REL };
+module.exports = { makeModels, tick, hireChain, recordHireChain, putPrimary, chainedSeats, parseEntry, providerError, hostStoppedChild, FAILOVER, REL };
 
 if (require.main === module) main(process.argv.slice(2)).then(c => { process.exitCode = c; }, e => { console.error(JSON.stringify({ ok: false, error: e.message })); process.exitCode = 1; });
