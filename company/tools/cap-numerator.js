@@ -130,6 +130,19 @@ function load(opts) {
 function compute(opts) {
   const st = load(opts);
   const perAgent = {};
+  // opts.family (dispatch.js): a delegated child run's spend is booked to its LEAD's seat (lib/family.js), never to the
+  // worker's own share; `delegated` lists it per lead and worker. The totals do not change, only whose share it is.
+  const fam = opts && opts.family ? require('./lib/family') : null;
+  const famMap = fam ? fam.leads(st.runs) : null;
+  const delegated = {};
+  const bookTo = (runId, agent, usd) => {
+    if (!fam) return agent;
+    const f = famMap.get(String(runId));
+    if (!f || !f.child) return agent;
+    const lead = f.seat || fam.UNKNOWN; const d = delegated[lead] = delegated[lead] || {};
+    d[agent] = (d[agent] || 0) + usd;
+    return lead;
+  };
   const perProvider = {};        // every billed row by provider, capped or not (the owner's Spend screen)
   const provOf = row => String((row && row.provider) || providerOfModel(row && row.model) || 'unknown');
   const addProv = (row, usd, capped) => { const k = provOf(row); const x = perProvider[k] || (perProvider[k] = { usd: 0, capped }); x.usd += usd; };
@@ -161,7 +174,7 @@ function compute(opts) {
     addProv(row, usd, isCapped(row, st.providers));
     if (isCapped(row, st.providers)) {
       cappedBilled += usd;
-      const agent = row.agentId || (st.inWindow.get(base) || {}).agentId || '(no agent)';
+      const agent = bookTo(base, row.agentId || (st.inWindow.get(base) || {}).agentId || '(no agent)', usd);
       perAgent[agent] = (perAgent[agent] || 0) + usd;
       if (noRunRow) cappedNoRunUsd += usd;
     } else {
@@ -180,7 +193,7 @@ function compute(opts) {
     inFlightMetered += usd;
     inFlightRuns++;
     addProv(r, usd, true);
-    const a = r.agentId || '(no agent)';
+    const a = bookTo(id, r.agentId || '(no agent)', usd);
     perAgent[a] = (perAgent[a] || 0) + usd;
   }
 
@@ -201,6 +214,7 @@ function compute(opts) {
     runsPath: st.runsPath,
     ledgerPath: st.ledgerPath,
     byAgent: perAgent,
+    ...(fam ? { delegated } : {}),
     byProvider: perProvider,
   };
 }
@@ -319,6 +333,18 @@ function selftest() {
     ]);
     const by = spentByAgent({ runsPath: runs, ledgerPath: ledger, now });
     return near(by.x, 1.0) && near(by.y, 0.30) ? null : JSON.stringify(by);
+  });
+  add('family: a delegated child run is booked to its lead\'s share, never the worker\'s; the total is unchanged', () => {
+    const runs = write('r6f.jsonl', [
+      { runId: 'K', parentRunId: 'L', delegatedBy: 'lead', agentId: 'worker', provider: 'openrouter', startedAt: t + 1, usd: 0.25 },
+      { runId: 'L', agentId: 'lead', provider: 'openrouter', startedAt: t, usd: 0.5 },
+      { runId: 'W', agentId: 'worker', provider: 'openrouter', startedAt: t, usd: 0.125 },
+    ]);
+    const ledger = write('l6f.jsonl', [{ runId: 'K', agentId: 'worker', ts: t + 2, usd: 0.25, model: 'gpt-x' }]);
+    const plain = compute({ runsPath: runs, ledgerPath: ledger, now }), fam = compute({ runsPath: runs, ledgerPath: ledger, now, family: true });
+    const sum = o => Object.values(o).reduce((a, b) => a + b, 0);
+    return near(fam.byAgent.lead, 0.75) && near(fam.byAgent.worker, 0.125) && near(fam.delegated.lead.worker, 0.25) && near(plain.byAgent.worker, 0.375)
+      && near(fam.metered, plain.metered) && near(sum(fam.byAgent), fam.metered) ? null : JSON.stringify({ fam: fam.byAgent, plain: plain.byAgent, d: fam.delegated });
   });
   add('a row that says nothing about billing or model counts as capped (under-counting is the defect)', () => {
     const runs = write('r7.jsonl', []);

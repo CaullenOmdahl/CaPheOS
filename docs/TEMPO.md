@@ -60,6 +60,16 @@ at once; nothing needs a reload. Ticks never overlap, a lock file keeps a second
 Before each wake, `dispatch.js` asks `cadence.js tempoAllows(seatId, now)`: during quiet hours, or once the wakes in
 the last hour or 24 hours reach the caps, the wake is held. A wake for an owner message is never held (it still counts).
 
+**Run-to-item links (measurement only).** Each run the dispatcher starts writes one row to `company/state/wakes.jsonl`
+(`lib/wakes.js`): `{at, wakeId, seat, runId, admitId, jobId, door, items: [{file, id, title, due}], why}`. `items` are the
+handoff blocks that made the wake due: the seat's OPEN items that were work now (soonest due first), plus any block the
+dispatcher wrote for this wake (a duty, a failed watched job). A wake with no item (a scheduled loop, an owner message,
+a quest step) lists none. An item's id is its `**Id:**` line when it has one, else `<inbox>#<first 6 hex of
+sha256(heading)>` (the id `handoff-status.js` gives a block): re-wording a heading changes a derived id, so give a block
+whose heading will change an `**Id:**`. `node company/tools/dispatch.js --wake-links [--hours 168] [--json]` (offline: no
+station call, no model run) reports the share of items closed DONE in the window that have at least one linked run
+(target 90%) and lists the unlinked ones. The file rolls monthly and keeps 30 days (`retention.json` "wakes").
+
 Heartbeats are unchanged: `dispatch.js` still runs the liveness tick every iteration. The watcher allows three ticks,
 using the longer of the base and the effective tick.
 

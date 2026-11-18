@@ -19,6 +19,10 @@
  * Hiring: each tick runs hire.js advance --all (the mechanical steps of every open round, within the cap) and wakes the
  * seat that must pick once per round, past its cooldown; a seat hired this tick gets its first run in the same tick.
  *   node company/tools/dispatch.js --selftest # offline fixtures for the handoff reader
+ *   node company/tools/dispatch.js --wake-links [--hours 168] [--json]   # offline: the share of DONE handoff items with a
+ *     linked run (company/state/wakes.jsonl, one row per run this tick starts: seat, runId, door, the items it is for)
+ * Delegation (lib/family.js): a child run a lead's team.dispatch started is the lead's family: its spend counts toward the
+ * LEAD's per-agent share, never the worker's, and a worker with a child run in flight is busy (not woken, no lane).
  * Sprint (start-up, cadence.js tempo.sprint; docs/TEMPO.md): while it is on, a seat whose open work CHANGED since its
  * last wake (a new handoff or review, an owner message, quest progress) rests only the cooldown floor; unchanged work
  * keeps the normal cooldown and the stall rule, so nobody is woken for nothing. Every seat may wake in one tick and
@@ -71,6 +75,8 @@ const SS = require('./lib/seat-status');
 const A = require('./lib/admit');
 const G = require('./lib/gates');
 const CMP = require('./lib/completions');
+const W = require('./lib/wakes');      // run-to-item links (company/state/wakes.jsonl): measurement only
+const FAM = require('./lib/family');   // a lead run and its delegated child runs are one family (spend, busy seats)
 const SCHED = require('./lib/scheduler');
 const SCHED_MODE = SCHED.mode();
 // Sprint (cadence.js effective().sprint): null when off. Fail-safe: an unreadable cadence means no Sprint.
@@ -357,6 +363,18 @@ function selftestOpenHandoffs() {
   console.log(bad.length ? 'DISPATCH SELFTEST FAILED: ' + bad.length + ' of ' + cases.length : 'DISPATCH SELFTEST PASSED: ' + cases.length + ' cases');
   return bad.length ? 1 : 0;
 }
+/* `--wake-links [--hours N] [--json]` (default 168 h): run-to-item links, offline (no station call, no tick, no model run).
+ * Of the handoff items closed DONE in the window, the share with at least one run the dispatcher started for them
+ * (company/state/wakes.jsonl, lib/wakes.js linkItems); the target is 90%. Prints the unlinked items. Always exit 0. */
+function wakeLinksReport(argv) {
+  const i = argv.indexOf('--hours'); const hours = i >= 0 && Number(argv[i + 1]) > 0 ? Number(argv[i + 1]) : 168;
+  const r = W.report({ hours });
+  if (argv.includes('--json')) { console.log(JSON.stringify(r, null, 1)); return 0; }
+  const pct = r.share == null ? 'n/a' : (Math.round(r.share * 1000) / 10) + '%';
+  console.log('run-to-item links, last ' + hours + ' h: ' + r.linked + ' of ' + r.total + ' DONE item(s) have a linked run (' + pct + '; target ' + Math.round(r.target * 100) + '%' + (r.met == null ? '' : r.met ? ', met' : ', NOT met') + ')' + (r.wakeOnly ? '; ' + r.wakeOnly + ' with a wake but no known run id' : ''));
+  for (const x of r.items.filter(y => !y.linked).slice(0, 20)) console.log('  unlinked: ' + x.file + ' ' + x.id + ' "' + String(x.title).slice(0, 90) + '"');
+  return 0;
+}
 /* ---- QUEST CLOSER: quests close on evidence, not on the owner's click ----
  * Every company quest minted so far uses StarNet's 'attest' contract, which only the Commander's confirm can close,
  * so finished work piles up waiting for a click. With the owner's delegation of that confirm, for an attest quest
@@ -424,8 +442,10 @@ function today() { return co.localParts().date; }
 function appendHandoff(inbox, heading, fields) {
   const f = path.join(ROOT, 'company', 'work', 'handoffs', inbox);
   // a "today" deadline is written as the date: handoff-status.js (and the console's due list) leaves "today" undated on purpose
-  const block = '\n## ' + today() + ' from Dispatcher — ' + heading + '\n' + Object.entries(fields).map(([k, v]) => '**' + k + ':** ' + (k === 'Deadline' && v === 'today' ? today() : v)).join('\n') + '\n';
+  const head = today() + ' from Dispatcher — ' + heading;
+  const block = '\n## ' + head + '\n' + Object.entries(fields).map(([k, v]) => '**' + k + ':** ' + (k === 'Deadline' && v === 'today' ? today() : v)).join('\n') + '\n';
   if (!DRY) fs.appendFileSync(f, block);
+  return head.trim();   // the block's heading, as parseItems reads it (its wakes.jsonl item id)
 }
 // a broken or stale duty, flagged once per change to the tools owner (the default-branch-watch pattern)
 function dutyFlag({ d, state: s, why }) {
@@ -660,15 +680,18 @@ function runsOnlySplit() {
   return { metered, ownerPaid };
 }
 function spentToday() { return spendSplit().metered; }
-// agentId -> metered USD that agent's runs cost in the last 24h. Unmetered providers are skipped for the same reason
-// spentToday() skips them: an owner-paid run must never use up an agent's share of the company's cap.
+// seat -> metered USD that seat's FAMILY cost in the last 24h: its own runs plus the child runs its team.dispatch delegated
+// (lib/family.js: a child runs on the worker's agentId, but the work and the money are the lead's; the worker's own share
+// is never used up by it). Unmetered providers are skipped for the same reason spentToday() skips them: an owner-paid run
+// must never use up a seat's share of the company's cap. The company total is unchanged: only whose share a dollar is.
 function spentByAgent() {
-  if (CAPNUM && typeof CAPNUM.spentByAgent === 'function') return CAPNUM.spentByAgent();
+  if (CAPNUM && typeof CAPNUM.spentByAgent === 'function') return CAPNUM.spentByAgent({ family: true });
   return runsOnlyByAgent();
 }
 function runsOnlyByAgent() {
   const since = Date.now() - 24 * 3600 * 1000; const out = {};
-  for (const r of runsSince(since)) if (r.startedAt >= since && r.agentId && !UNMETERED_PROVIDERS.includes(String(r.provider || ''))) out[r.agentId] = (out[r.agentId] || 0) + (Number(r.usd) || 0);
+  const rows = runsSince(since); const fam = FAM.leads(rows);
+  for (const r of rows) if (r.startedAt >= since && r.agentId && !UNMETERED_PROVIDERS.includes(String(r.provider || ''))) { const k = FAM.seatOf(fam, r.runId, r.agentId); out[k] = (out[k] || 0) + (Number(r.usd) || 0); }
   return out;
 }
 
@@ -709,6 +732,7 @@ function lastRunTail(job) {
 
 (async () => {
   if (process.argv.includes('--selftest')) process.exit(selftestOpenHandoffs());
+  if (process.argv.includes('--wake-links')) process.exit(wakeLinksReport(process.argv));
   // Halt first (company/tools/halt.js, fail-safe): it watches a soft halt settle and escalates only if told to. Then,
   // halted or not, the halt file decides: a halted company wakes nobody.
   try { await require('./halt.js').tick({ dry: DRY, log }); } catch (e) { log('HALT TICK ERROR: ' + String(e.message).slice(0, 200)); }
@@ -847,6 +871,7 @@ function lastRunTail(job) {
   // work for its holder: it neither wakes the seat nor counts in its signature or stall key (lib/sprint.js waitingOn).
   const NAMES = Object.fromEntries(Object.entries(CREW || {}).map(([id, c]) => [id, (c && c.name) || id]));
   const itemsOf = {}, waitsOf = {}, stalledSeats = [];
+  const wakeItemsOf = {};   // agentId -> the OPEN items that are work now, for the wake's wakes.jsonl row (lib/wakes.js)
   // progress evidence for the stall check (lib/stall.js): the seats' recent runs, and every inbox's text (blocks sent)
   const STALL = require('./lib/stall');
   const stallRuns = runsSince(Date.now() - 48 * 3600e3);
@@ -958,6 +983,7 @@ function lastRunTail(job) {
     const dkey = [...nb.deferred.keys()].sort().join('|');
     if (dkey !== (st.nbKey || '')) { st.nbKey = dkey; if (dkey) log('WAITING handoffs ' + inbox + ' (' + agentId + '): ' + nb.deferred.size + ' OPEN set aside by their own Not before (nearest ' + [...nb.deferred.values()].sort()[0] + '): not woken, not counted as stalled'); }
     const due = deadlineOrder(openSecs, lpNow.date);
+    wakeItemsOf[agentId] = byDue(open, due.due).map(h => { const it = its.find(i => i.heading === h) || {}; return { file: inbox, id: W.itemId(inbox, h, it.id), title: h, due: due.due.get(h) || null }; });
     st.nextDue = byDue(open, due.due).map(h => due.due.get(h)).find(Boolean) || null;   // the wake order across seats (soonest first)
     const dueNote = open.length ? [due.overdue.filter(h => open.includes(h)).length ? due.overdue.filter(h => open.includes(h)).length + ' overdue' : '', st.nextDue ? 'next due ' + st.nextDue : ''].filter(Boolean).join(', ') : '';
     // stalled = no PROGRESS across STALL_AFTER wakes (lib/stall.js), never "the set of OPEN headings is the same": a seat
@@ -1213,6 +1239,15 @@ function lastRunTail(job) {
   { const inMeeting = []; try { const MT = require('./lib/meetings'); for (const id of order) if (MT.busy(id)) inMeeting.push(id); } catch (_) {}
     for (const id of inMeeting) { order.splice(order.indexOf(id), 1); say(id, { state: 'held', why: 'in the owner\'s meeting' }); }
     if (inMeeting.length) log('MEETING HOLD: ' + inMeeting.map(id => (CREW[id] || {}).name || id).join(', ') + ' (in the owner\'s meeting; woken after the round)'); }
+  // a seat working a child run its lead delegated (team.dispatch: the worker's own agentId, its loop routine idle) is busy:
+  // no wake and no lane on top of it this tick (lib/family.js). From the station's run table (GET
+  // /api/state/snapshot); an unreadable table holds nobody (as before). One log line per change.
+  { let liveKids = new Map();
+    try { const sr = await call('GET', '/api/state/snapshot'); if (sr.status === 200) liveKids = FAM.liveChildSeats((JSON.parse(sr.body) || {}).runs); } catch (_) {}
+    const busy = order.filter(id => liveKids.has(id));
+    for (const id of busy) { order.splice(order.indexOf(id), 1); say(id, { state: 'working' }); }
+    const bk = busy.map(id => id + ':' + liveKids.get(id).join('+')).sort().join(',');
+    if (bk !== (state.delegatedBusy || '')) { state.delegatedBusy = bk; if (busy.length) log('DELEGATED BUSY: ' + busy.map(id => ((CREW[id] || {}).name || id) + ' (child run ' + liveKids.get(id).map(x => String(x).slice(0, 12)).join(', ') + ')').join('; ') + ': working a task its lead delegated; not woken on top of it'); } }
   let fired = 0; try { const pace = await require('./pacer.js').dispatchHook({ dry: DRY, log, jobs, order, ownerWake, maxPerTick: MAX_PER_TICK }); fired = -Math.max(0, Math.min(2, Number(pace && pace.extra) || 0)); } catch (e) { fired = 0; log('PACER ERROR: ' + e.message); }   // pacer.js (fail-safe): may drop metered wakes held near the station rail from `order`, and lends extra per-tick slots by starting `fired` below 0
   // Sprint lanes (company/tools/lanes.js, fail-safe, after the pacer so it sees what the pacer held and the models it set):
   // ends finished, timed-out or cut-off lanes, starts lanes for seats with independent OPEN items within the same money
@@ -1258,19 +1293,26 @@ function lastRunTail(job) {
     log('RUN ' + job.name + ' for ' + agentId + ' (' + names + ')' + (rest.fast ? ' [Sprint: new work; rest ' + SPRINT.cooldownFloorMin + ' min]' : ''));
     fired++;
     // a duty wake hands the agent its reason: one OPEN handoff in its inbox, ids and counts only (dedup reads it next tick)
-    for (const q of qs) if (q.duty && inboxOf(agentId)) appendHandoff(inboxOf(agentId), 'duty ' + q.duty.id + ': ' + q.why.slice(0, 160), { Need: (q.duty.why ? q.duty.why + '. ' : '') + 'The check says: ' + q.why + '. Fix the cause or hand it to whoever can; the duty clears this by itself once the check passes. See it again: `node ' + (q.duty.source === 'company/tools/duties.js' ? 'company/tools/' : q.duty.source.replace(/module\.json$/, '')) + q.duty.tool + ' --duty`.', Why: 'a read-only duty check found it (docs/DUTIES.md); the dispatcher woke you for it.', Duty: q.duty.id + ' key ' + q.key + (q.items.length ? ' items ' + q.items.join(', ') : ''), Deadline: 'today', Status: 'OPEN' });
+    const wroteItems = [];   // blocks this wake writes into the inbox: they are what it is for, too (wakes.jsonl)
+    for (const q of qs) if (q.duty && inboxOf(agentId)) wroteItems.push(appendHandoff(inboxOf(agentId), 'duty ' + q.duty.id + ': ' + q.why.slice(0, 160), { Need: (q.duty.why ? q.duty.why + '. ' : '') + 'The check says: ' + q.why + '. Fix the cause or hand it to whoever can; the duty clears this by itself once the check passes. See it again: `node ' + (q.duty.source === 'company/tools/duties.js' ? 'company/tools/' : q.duty.source.replace(/module\.json$/, '')) + q.duty.tool + ' --duty`.', Why: 'a read-only duty check found it (docs/DUTIES.md); the dispatcher woke you for it.', Duty: q.duty.id + ' key ' + q.key + (q.items.length ? ' items ' + q.items.join(', ') : ''), Deadline: 'today', Status: 'OPEN' }));
     // Fire detached: the run is admitted on a 200 and then keeps going after we close the socket, so a long
     // loop can never be cancelled by this tick's own hold (a run tied to the request socket dies with it).
     // Only a 200 counts toward the stall budget — a refused start (409/400) is not a run.
     // a watched job's end hands the seat its context: one notice in its inbox (a failure is OPEN work; a success is DONE, a note)
     for (const n of (urgent.get(agentId) || [])) if (n.kind === 'completion' && !n.written && inboxOf(agentId)) {
       n.written = true;
-      appendHandoff(inboxOf(agentId), (n.failed ? 'FAILED: ' : '') + n.words.slice(0, 140), { Need: n.failed ? 'the job failed. Read its output tail (`node company/tools/notify-when.js show ' + n.id + '`; the whole log under scratch/jobs/), fix or re-run it (through notify-when.js again), then set this DONE.' : 'carry on with the work that waited for it. Its output tail: `node company/tools/notify-when.js show ' + n.id + '`.', Why: 'you asked to be woken when it ended (company/tools/notify-when.js)', Deadline: 'today', Status: n.failed ? 'OPEN' : 'DONE — a notice, nothing to close', Evidence: 'company/state/completions.jsonl ' + n.id });
+      const wh = appendHandoff(inboxOf(agentId), (n.failed ? 'FAILED: ' : '') + n.words.slice(0, 140), { Need: n.failed ? 'the job failed. Read its output tail (`node company/tools/notify-when.js show ' + n.id + '`; the whole log under scratch/jobs/), fix or re-run it (through notify-when.js again), then set this DONE.' : 'carry on with the work that waited for it. Its output tail: `node company/tools/notify-when.js show ' + n.id + '`.', Why: 'you asked to be woken when it ended (company/tools/notify-when.js)', Deadline: 'today', Status: n.failed ? 'OPEN' : 'DONE — a notice, nothing to close', Evidence: 'company/state/completions.jsonl ' + n.id });
+      if (n.failed) wroteItems.push(wh);
     }
     const r = await fireRun(job.id);
-    A.started(tk, r);
+    const runId = r.status === 200 ? W.runIdOf(r.body) : null;
+    A.started(tk, Object.assign({}, r, { runId }));
     say(agentId, r.status === 200 ? { state: 'started', why: names } : { state: 'held', why: 'has work; the station refused the start (HTTP ' + r.status + ')' });
     if (r.status === 200) {
+      // run-to-item link (measurement only): which handoff items this run is for
+      { const ib = inboxOf(agentId); const items = viaInbox ? (wakeItemsOf[agentId] || []).slice() : [];   // inbox items only when the inbox is why it woke
+        for (const h of wroteItems) if (ib && h) items.push({ file: ib, id: W.itemId(ib, h), title: h, due: today() });
+        W.record({ seat: agentId, runId, admitId: tk.id, jobId: job.id, door: 'dispatch', items, why: names }); }
       for (const q of qs) { if (q.duty) state.duties[q.skey].count++; else state.quests[q.id].count++; }
       for (const qid of (artifactWakes[agentId] || [])) state.artifactWait[qid].wakes++;   // a real start is a wake
       if (viaInbox) { state.agents[agentId].count++; state.agents[agentId].wakes = (state.agents[agentId].wakes || 0) + 1; }

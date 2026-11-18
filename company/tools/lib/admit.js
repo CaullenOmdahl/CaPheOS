@@ -22,7 +22,8 @@
  * (the owner's Run now / run from the console), act (an external-gate spend act), watchdog (the station's one routine),
  * halt (a soft halt's shutdown routine), onboard (the kickoff run), pacer (a re-fire after a refusal), schedule (a run the
  * station's own schedule started: recorded by attribution, never through a door — it is the bypass the dispatcher-owned
- * schedule removes).
+ * schedule removes), delegate (a child run a lead's team.dispatch started inside its own run: the station starts it, so it
+ * never passes admit() either; recorded by attribution with its parent run and its lead, lib/family.js).
  * Kinds: run (starts a model run), act (an outbound act, e.g. a spend), watchdog (the liveness check: starts nothing),
  * meeting-turn (a turn of the owner's meeting, console/meeting.js: a zero-token permission and routing check, no budget:
  * refused unless the owner opened the meeting (req.owner true), held under a hard halt or a refusal block on the provider).
@@ -33,7 +34,7 @@ const path = require('path');
 const co = require('./company');
 
 const PHASE = 1;
-const DOORS = ['dispatch', 'lane', 'hire', 'chat', 'meeting', 'health', 'console', 'act', 'watchdog', 'halt', 'onboard', 'pacer', 'schedule'];
+const DOORS = ['dispatch', 'lane', 'hire', 'chat', 'meeting', 'health', 'console', 'act', 'watchdog', 'halt', 'onboard', 'pacer', 'schedule', 'delegate'];
 const KINDS = ['run', 'act', 'watchdog', 'meeting-turn'];
 const PHASE1_REASON = 'phase 1 counts, it does not decide: allowed and recorded; the door\'s own rules (cap, share, spread, pacer, halt) decided as before';
 const logFile = o => (o && o.file) || process.env.ADMIT_LOG || co.p('company', 'state', 'admit-log.jsonl');
@@ -121,8 +122,10 @@ function counts(o) {
 /* attribute(runs, rows, {windowMs}) -> [{ runId, agentId, startedAt, door, via: 'admit'|'inferred'|null, admitId }]
  * A run is the admitted start it follows: same runId when the door got it, else the same seat (and routine, when both
  * name one) admitted at most windowMs (default 15 min) before it started (or 10 s after: clocks), each start used once.
- * A child run (parentRunId) carries its parent's door. What no admit row covers is inferred: a routine run is the
- * station's own schedule (door 'schedule'), a health-check stream is 'health'; anything else has no door. */
+ * A child run (parentRunId: a team.dispatch worker) is door 'delegate', with parentRunId, its lead (the seat at the top of
+ * its chain, else the row's delegatedBy) and parentDoor (the door that started the family, when its run is known); its
+ * spend is the lead's family's (lib/family.js), never unattributed. What no admit row covers is inferred: a routine run is
+ * the station's own schedule (door 'schedule'), a health-check stream is 'health'; anything else has no door. */
 function attribute(runs, list, o) {
   o = o || {};
   const win = Number(o.windowMs) > 0 ? Number(o.windowMs) : 15 * 60e3;
@@ -131,11 +134,20 @@ function attribute(runs, list, o) {
   const usable = admits.filter(a => a.kind !== 'act' && (!outcome.has(a.id) || outcome.get(a.id).outcome === 'started')).sort((a, b) => a.at - b.at);
   const used = new Set(), byRun = new Map(), out = [];
   const byRunId = new Map(); for (const a of usable) { const oc = outcome.get(a.id); if (oc && oc.runId) byRunId.set(oc.runId, a); }
-  const sorted = (runs || []).filter(r => r && r.runId).slice().sort((a, b) => (Number(a.startedAt) || 0) - (Number(b.startedAt) || 0));
+  // a side row runs.jsonl keeps under a run's id ({runId, kind: 'dispatch-delivery', ts}: a team.dispatch delivery) is not a
+  // run: it is neither attributed nor unattributed
+  const sorted = (runs || []).filter(r => r && r.runId && !(r.kind && !r.agentId && !r.parentRunId)).slice().sort((a, b) => (Number(a.startedAt) || 0) - (Number(b.startedAt) || 0));
   for (const r of sorted) {
     const at = Number(r.startedAt) || Number(r.ts) || 0;
     let hit = null;
-    if (r.parentRunId && byRun.has(r.parentRunId)) { const p = byRun.get(r.parentRunId); out.push(Object.assign({ runId: r.runId, agentId: r.agentId, startedAt: at, child: true }, { door: p.door, via: p.via, admitId: p.admitId })); byRun.set(r.runId, p); continue; }
+    if (r.parentRunId) {   // a delegated child: door 'delegate', in its lead's family (its parent's door stays visible)
+      const p = byRun.get(r.parentRunId) || null;
+      const lead = p ? p.lead : (r.delegatedBy || null);
+      const parentDoor = p ? p.familyDoor : null;
+      byRun.set(r.runId, { lead, familyDoor: parentDoor });
+      out.push({ runId: r.runId, agentId: r.agentId || null, startedAt: at, cronJobId: r.cronJobId || null, usd: Number(r.usd) || 0, child: true, door: 'delegate', via: 'parent', admitId: null, parentRunId: r.parentRunId, lead, parentDoor });
+      continue;
+    }
     if (byRunId.has(r.runId) && !used.has(byRunId.get(r.runId).id)) hit = byRunId.get(r.runId);
     if (!hit) {
       let best = null;
@@ -154,7 +166,7 @@ function attribute(runs, list, o) {
     else if (HEALTH_STREAM.test(String(r.streamId || ''))) e = { door: 'health', via: 'inferred', admitId: null };
     else if (r.cronJobId || /^cron-/.test(String(r.streamId || '')) || r.source === 'cron' || r.wireSource === 'routine') e = { door: 'schedule', via: 'inferred', admitId: null };
     else e = { door: null, via: null, admitId: null };
-    byRun.set(r.runId, e);
+    byRun.set(r.runId, { lead: r.agentId || null, familyDoor: e.door });
     out.push(Object.assign({ runId: r.runId, agentId: r.agentId || null, startedAt: at, cronJobId: r.cronJobId || null, usd: Number(r.usd) || 0 }, e));
   }
   return out;
