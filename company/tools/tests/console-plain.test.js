@@ -130,6 +130,18 @@ test('one time format: 24 h in the company timezone, "today 14:22", "tomorrow 14
 test('model names in plain words, never the raw provider/model id', async () => {
   const P = await import(path.join(UI, 'plain.js'));
   assert.equal(P.modelName('deepseek/deepseek-flash'), 'DeepSeek Flash');
+  assert.equal(P.modelName('claude-fable-5-2[1m]'), 'Claude Fable 5.2');   // a run setting is not part of the name
+  assert.equal(P.modelName('claude-cli/claude-sonnet-5-5@high'), 'Claude Sonnet 5.5');
+  // live chat tool steps: plain words, file names not paths, never JSON (the arguments arrive cut off)
+  assert.equal(P.toolStep('search', '{"query":"lead-lag|latency|news","path":"company/work","re'), 'searching for “lead-lag, latency, news” in the company’s files');
+  assert.equal(P.toolStep('read', '{"path":"company/work/path-to-live.md"}'), 'reading path-to-live.md');
+  assert.equal(P.toolStep('list', '{"path":"company/work/research"}'), 'looking through the research folder');
+  assert.equal(P.toolStep('write', '{"path":"company/work/handoffs/to-rohan-iyer.md","content":"\\n\\n## 2026'), 'writing a note for Rohan Iyer');
+  assert.equal(P.toolStep('code.run', 'node company/tools/halt.js status'), 'using the halt tool');
+  assert.equal(P.toolStepResult('752 matches across 94 file(s)', true), '752 matches across 94 files');
+  assert.equal(P.toolStepResult('52.4 KB read; characters 0-24000 of 53437', true), '');
+  assert.equal(P.toolStepResult('exit 0 (28ms)', true), '');
+  assert.equal(P.toolStepResult('workspace-busy', false), 'did not work');
   assert.equal(P.modelName('deepseek-flash', 'deepseek'), 'DeepSeek Flash');
   assert.equal(P.modelName('claude-cli/claude-sonnet-5-5'), 'Claude Sonnet 5.5');
   assert.equal(P.modelName('MiniMax-M3.1-Flash', 'custom'), 'MiniMax M3.1 Flash');
