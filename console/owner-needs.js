@@ -227,6 +227,9 @@ function make(deps) {
     const nm = String(name || '').replace(/[^a-z0-9-]/g, '');
     const e = ((readJson(co.p('company', 'state', 'services.json'), {}) || {}).services || {})[nm] || null;
     let when = null; try { when = e ? (e.kind === 'timer' ? 'runs ' + require(path.join(TOOLS, 'service.js')).plainWhen(e.schedule) : 'keeps running') : null; } catch (_) { when = null; }
+    // its name only when it reads as a word, never an id-like one ("station-art-0006"): then who asked for it says which
+    let nameOk = false; try { nameOk = !/\d/.test(nm) && nm.length <= 30 && require(path.join(TOOLS, 'lib', 'owner-card.js')).plain('the job called “' + nm + '”'); } catch (_) {}
+    if (!nameOk) return 'the background job' + (e && e.byName ? ' ' + e.byName + ' asked for' : ' the crew asked for') + (when ? ', which ' + when : '');
     return 'the background job called “' + nm + '”' + (when ? ', which ' + when : '') + (e && e.byName ? ', asked for by ' + e.byName : '');
   }
   /* what yes does, in the console's own words (never the asker's), naming every parameter */

@@ -725,7 +725,7 @@ function frameworkRequest(ctx, rec, p) {
   appendLog(ctx, { event: 'upstream', id: rec.id, frameworkRequest: frId, by: p.name, file, request: path.relative(ctx.root, out) });
   // the owner hears of it once, in the daily digest, in plain words; the file and the request are for the crew
   tellOwner(ctx, { from: rec.by, key: 'harness-upstream:' + rec.id,
-    text: rec.by + ' sent the makers of the company software a suggestion for ' + plainArea(rec) + ', ' + afterWords(rec) + '. Nothing changes in your company.',
+    text: rec.by + ' wrote down a suggestion for the makers of the company software about ' + plainArea(rec) + ', ' + afterWords(rec) + '. It is kept for them to collect; nothing changes in your company.',
     technical: rec.id + ': ' + file + ' — ' + rec.why + ' Request: ' + path.relative(ctx.root, out) + ' (framework files change only through framework updates).' });
   return Object.assign({}, rec, { applied: false, upstream: path.relative(ctx.root, out) });
 }

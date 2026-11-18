@@ -6,6 +6,9 @@ import { h, fill, Button, Tag, errLine, empty, table, rel, Details, Setting, Blo
 import { api, post } from '../../api.js';
 import * as events from '../../events.js';
 import { rulingsSection, projectsSection } from './rulings.js';
+// "20 November" (the date part as written, so the day never shifts with the viewer's time zone), as the owner's notice says it
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const untilWords = iso => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || '')); return m && MONTHS[Number(m[2]) - 1] ? Number(m[3]) + ' ' + MONTHS[Number(m[2]) - 1] + (Number(m[1]) !== new Date().getFullYear() ? ' ' + m[1] : '') : 'the date you set'; };
 
 export const PRESET_WHAT = {
   'approve-everything': 'Every decision waits for you',
@@ -17,11 +20,11 @@ const PRESET_UNLOCKS = {
   autonomous: 'The crew may open roles and hire, release crew members, set its own budgets and pacing, change models, tools and schedules, and act outside the company, all without asking you. The four owner gates (access, ownership, commitments, spend beyond the cap) and every guardrail still hold.',
 };
 const CAT_NAMES = { hiring: 'Hiring', release: 'Releasing someone', budget: 'Budgeting', spend: 'Spend inside the cap', models: 'Model changes',
-  tools: 'Tool and policy changes', schedules: 'Schedules and ticks', external: 'Acting outside', dashboard: 'Console pages', packs: 'Capability packs' };
-const CAT_WHAT = { hiring: 'Opening a role and picking the hire.', release: 'Releasing or replacing a crew member.', budget: 'Setting the pay-per-token cap, each member\'s share and the pacing.',
+  tools: 'Tool and policy changes', schedules: 'When the crew works', external: 'Acting outside', dashboard: 'Console pages', packs: 'Add-ons' };
+const CAT_WHAT = { hiring: 'Opening a role and picking the hire.', release: 'Releasing or replacing a crew member.', budget: 'Setting the daily cap for AI that is paid by use, each member\'s share, and how the subscriptions are paced.',
   spend: 'New spend inside the approved cap, including a new paid tool.', models: 'Changing which AI a seat or routine runs on.', tools: 'Shared changes to tools, house rules and policies.',
-  schedules: 'Routine clocks, the dispatcher tick and per-seat wake times.', external: 'Anything that leaves the company: messages, publishing, forms, network calls.',
-  dashboard: 'Adding or changing panels and pages in this console.', packs: 'Approving a capability pack, a new line of business. Installing one is always yours.' };
+  schedules: 'How often the crew picks up work and when each member\'s routines run.', external: 'Anything that leaves the company: messages, publishing, forms, network calls.',
+  dashboard: 'Adding or changing panels and pages in this console.', packs: 'Approving an add-on, a new line of business. Installing one is always yours.' };
 const CAT_SEAT = { hiring: 'People', release: 'People', budget: 'Finance', spend: 'Finance', models: 'People', tools: 'Tools', schedules: 'Tools', external: 'CEO', dashboard: 'Tools', packs: 'CEO' };
 const LEVELS = [['auto', 'Crew decides'], ['notify', 'Decides, tells you'], ['triage', 'A tested check decides'], ['approve', 'You approve']];
 export const GUARD_NAMES = { ownerGates: 'Owner gates', spendCap: 'Spend cap', externalActions: 'External actions', harnessSelfEdit: 'Review of the crew\'s own rules',
@@ -150,8 +153,8 @@ export async function render(host, ctx) {
       const d = await api('/station/autonomy');
       const cur = String(d.posture || d.mode || d.level || (d.autonomy && (d.autonomy.posture || d.autonomy.mode)) || '').toLowerCase();
       if (!cur) return fill(posture);
-      fill(posture, Block({ id: 'posture', title: 'Station autonomy', lede: 'How freely the station lets a run act before asking. Shown from the station; it is changed on the station.' },
-        h('div', { role: 'radiogroup', 'aria-label': 'Station autonomy', class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(min(170px,100%),1fr));gap:10px' },
+      fill(posture, Block({ id: 'posture', title: 'How freely a run may act', lede: 'How freely the system the crew runs on lets a run act before asking. Shown from the station; it is changed on the station.' },
+        h('div', { role: 'radiogroup', 'aria-label': 'How freely a run may act', class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(min(170px,100%),1fr));gap:10px' },
           POSTURE.map(([id, name, what]) => h('div', { role: 'radio', 'aria-checked': cur.startsWith(id) ? 'true' : 'false', 'aria-disabled': 'true', class: 'choice', style: 'min-height:72px;cursor:default' },
             h('span', { class: 'label' }, name), h('span', { class: 'caption' }, what))))));
     } catch (_) { fill(posture); }
@@ -174,7 +177,7 @@ export async function render(host, ctx) {
         h('td', { class: 'num' }, String(m.cases || 0)), h('td', { class: 'num' }, String(m.evaluations || 0)),
         h('td', { class: 'caption muted' }, m.lastAt ? rel(m.lastAt) : '—'),
         h('td', null, m.valid === false ? null : m.mode === 'live' ? Button('Back to practice', { variant: 'ghost', size: 'sm', onClick: () => setMode(m, 'shadow') }) : Button('Turn on', { variant: 'secondary', size: 'sm', onClick: () => setMode(m, 'live') })))), { minWidth: 640 }),
-      Details('Details', h('p', { class: 'caption' }, 'Turning a rule on uses its newest tested version; its test cases must pass first. Thresholds are set by the crew\'s risk seat and shown here.'),
+      Details('Details', h('p', { class: 'caption' }, 'Turning a rule on uses its newest tested version; its test cases must pass first. Thresholds are set by the crew member who looks after risk, and shown here.'),
         h('ul', { class: 'plain caption mono-s' }, rows.map(m => h('li', null, m.id + ' v' + (m.active || '?') + ' · ' + Object.entries(m.params || {}).map(([k, v]) => k + ' ' + v).join(', ')))))));
   }
 
@@ -190,7 +193,7 @@ export async function render(host, ctx) {
     };
     fill(delegs, Block({ id: 'delegations', title: 'Permission to answer for you', lede: 'Someone you named answers some of your questions while you are away. Their answers count as yours until the date shown.' },
       h('ul', { class: 'plain' }, act.map(x => h('li', { class: 'sys-row', style: 'align-items:flex-start' },
-        h('span', { class: 'stack-4' }, h('span', { class: 'strong' }, x.to), h('span', { class: 'caption muted' }, (x.categories || []).map(c => (CAT_NAMES[c] || c).toLowerCase()).join(', ') + ' · until ' + String(x.until || '').slice(0, 10))),
+        h('span', { class: 'stack-4' }, h('span', { class: 'strong' }, x.to), h('span', { class: 'caption muted' }, (x.categories || []).map(c => (CAT_NAMES[c] || c).toLowerCase()).join(', ') + ' · until ' + untilWords(x.until))),
         Button('Take it back', { variant: 'secondary', size: 'sm', onClick: () => back(x) }))))));
   }
 

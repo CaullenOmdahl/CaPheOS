@@ -48,7 +48,7 @@ function perDayUsd(provider, o) {
 }
 // the owner's line: plain words, no figures beyond the days left (the balances are on Spend)
 function lowNotice(name, out) {
-  return name + (out ? '\'s prepaid credit has run out, so the crew members who use it have stopped.' : '\'s prepaid credit is running low: less than ' + (DAYS === 1 ? 'one day' : DAYS + ' days') + ' of use is left.') + ' Top it up to keep them working; the amount is on the Spend page.';
+  return name + (out ? '\'s prepaid credit has run out, so the crew members who use it have stopped.' : '\'s prepaid credit is running low: less than ' + (DAYS === 1 ? 'one day' : DAYS + ' days') + ' of use is left.') + ' Top it up so those crew members can keep working; the amount is on the Spend page.';
 }
 function record(provider, reading, o) {
   o = o || {};

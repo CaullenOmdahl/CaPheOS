@@ -122,8 +122,8 @@ const numOr = (v, d, lo, hi) => { const n = typeof v === 'string' && v.trim() ==
  * the setting names and numbers ride in `technical`, and the crew's reason only when it reads plainly */
 function limitNotice(by, sub, what, why) {
   const words = t => { try { return !require('./lib/owner-scope').wordsProblems(t).length; } catch (_) { return false; } };
-  const reason = why && words(why) && String(why).length <= 120 ? ', ' + String(why).trim().replace(/[.!]?$/, '').replace(/^./, c => c.toLowerCase()) : '';
-  return { text: by + ' changed when the crew stops using the ' + sub + ' subscription' + reason + '. You can change it back in Settings › Models and subscriptions.', technical: by + ' set the ' + sub + ' cutoffs: ' + what + ' (' + why + ').' };
+  const reason = why && words(why) && String(why).length <= 120 ? ' ' + by + '\'s reason: ' + String(why).trim().replace(/[.!]?$/, '').replace(/^./, c => c.toLowerCase()) + '.' : '';
+  return { text: by + ' changed when the crew stops using the ' + sub + ' subscription.' + reason + ' You can change it back in Settings › Models and subscriptions.', technical: by + ' set the ' + sub + ' cutoffs: ' + what + ' (' + why + ').' };
 }
 function readJson(f, d) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } }
 function writeJsonAtomic(f, obj) {

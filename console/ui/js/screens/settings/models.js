@@ -17,7 +17,7 @@ export async function render(host, ctx) {
     Block({ id: 'chains', title: 'Who runs on what', lede: 'Each crew member\'s primary model and the fallbacks it moves to when the primary cannot run. Open a name to change it.' }, chains),
     Block({ id: 'routing', title: 'Cheaper models', lede: 'Whether the crew may use a cheaper model for a piece of work where that does not hurt quality, and trials that compare models on real work. Each starts as watching only; you switch it on.' }, routing),
     Block({ id: 'cutoffs', title: 'Subscription cutoffs', lede: 'How much of each subscription\'s week routines may use, and how evenly. The pacer asks on Today when a cutoff is holding the crew back.' }, cutoffs),
-    Block({ id: 'providers', title: 'Providers and the pay-per-token cap', lede: 'Where the crew\'s AI comes from, and the most it may spend a day on providers that bill per token.' }, providers));
+    Block({ id: 'providers', title: 'Providers and the daily cap', lede: 'Where the crew\'s AI comes from, and the most it may spend a day on providers that bill per token.' }, providers));
   chainsTable(chains);
   const reloadRouting = routingSection(routing, app);   // routing modes and trials (console/routing.js)
   const offRouting = events.on('routing', reloadRouting);

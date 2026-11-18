@@ -451,7 +451,7 @@ function demoteNotice(id, version, why, opts) {
   let title = null; try { const L = load(id, version, opts); title = L && L.model && L.model.title; } catch (_) {}
   const words = t => { try { return require('./owner-card').plain(t); } catch (_) { return false; } };
   const name = title && words(title) && String(title).length <= 60 ? '“' + String(title).replace(/[\u201c\u201d"]/g, '') + '”' : 'that decides routine questions';
-  return { text: 'The tested check ' + name + ' went back to practice mode after too many bad calls, so its questions come to you again. You can turn it back on in Settings › Autonomy.',
+  return { text: 'The tested check ' + name + ' went back to practice mode after too many bad calls, so its questions come to you again. The crew recommends leaving it off until it is fixed and passes its tests again; you can turn it back on in Settings › Autonomy.',
     technical: 'Decision model ' + id + ' v' + version + ' is back in shadow mode: ' + why + '. Promote: node company/tools/decide.js promote ' + id + ' ' + version + ' --mode live --by owner (or Settings › Autonomy › Decision rules).' };
 }
 function demote(id, version, why, opts) {

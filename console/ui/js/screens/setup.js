@@ -326,7 +326,7 @@ export async function render(root, ctx) {
         !c.ok && FIX[c.id] ? fixLink(d, FIX[c.id]) : null,
         !c.ok ? Details('Details', h('span', { class: 'caption' }, c.id + ': ' + (c.missing || 'failed')), cmdOf(c.missing) ? copyable(cmdOf(c.missing)) : null) : null),
       Tag(c.ok ? 'Passed' : 'Failed', { variant: 'status', status: c.ok ? 'online' : 'danger' })))) : h('p', { class: 'body-s muted' }, 'Not run yet.');
-    return [h('p', { class: 'body-s muted' }, 'Eleven checks that prove the company can actually run: the station answers, the dispatcher ticks, guardrails are applied, secrets are in place, backups verify, the charter is filled, the Founder loop is in place, and so on.'),
+    return [h('p', { class: 'body-s muted' }, 'Eleven checks that prove the company can actually run: the station answers, work is handed out on time, guardrails are applied, secrets are in place, backups verify, the charter is filled, the Founder loop is in place, and so on.'),
       h('div', { class: 'row-8', style: 'align-items:center' }, runB, note), rows, err];
   }
 

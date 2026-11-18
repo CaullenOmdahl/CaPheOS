@@ -134,7 +134,7 @@ function normEffect(effect, opts) {
 function describeEffect(effect) {
   const e = effect || {}; const k = Object.keys(e)[0]; const v = e[k] || {};
   switch (k) {
-    case 'serviceApprove': return 'Yes sets up the background job called “' + v.name + '”, exactly as described.';
+    case 'serviceApprove': return 'Yes sets up the background job exactly as described.';
     case 'harnessApply': return 'Yes makes the crew\'s change number ' + String(v.id).replace(/^hc-0*/, '') + ', exactly as described.';
     case 'packInstall': return 'Yes installs the add-on exactly as it was proposed.';
     case 'moduleEnable': return 'Yes switches the add-on on.';

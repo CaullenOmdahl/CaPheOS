@@ -112,7 +112,7 @@ export async function render(host, ctx) {
       Setting({ id: 'set-mode', title: 'Who may speed things up', value: tp.mode === 'fixed' ? 'Only you' : 'The crew, inside bounds', what: 'Whether the crew may make a temporary change to the tempo when work piles up.',
         flip: tp.mode === 'fixed' ? 'Letting the crew do it: a speed-up lasts ' + (tp.autoExpireMin ?? 30) + ' min, at most one per ' + (tp.minChangeIntervalMin ?? 15) + ' min, then your values return.' : 'Only you: the tempo never changes unless you change it here.',
         control: mode }),
-      Setting({ id: 'set-tick-bounds', title: 'Tick range', value: (b.tickMin || []).join('–') + ' min', what: 'How short or long the crew may make the dispatcher tick.', control: range('tickMin', 'Tick range') }),
+      Setting({ id: 'set-tick-bounds', title: 'Tick range', value: (b.tickMin || []).join('–') + ' min', what: 'The shortest and longest wait the crew may set between two rounds of handing out work.', control: range('tickMin', 'Tick range') }),
       Setting({ id: 'set-cool-bounds', title: 'Cooldown range', value: (b.cooldownMin || []).join('–') + ' min', what: 'How short or long the crew may make a member\'s cooldown.', control: range('cooldownMin', 'Cooldown range') }),
       Setting(Object.assign({ id: 'set-wakes', title: 'Wake caps' }, ov('wakeCaps', (b.maxWakesPerHour ?? '—') + ' an hour · ' + (b.maxWakesPerDay ?? '—') + ' a day'), {
         flip: 'Higher lets a busy day run on; lower caps the day\'s activity.',

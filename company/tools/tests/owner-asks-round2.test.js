@@ -344,3 +344,43 @@ out({ told, liveness: src.match(/function downNotice[\\s\\S]*?\\n}\\n/)[0] });`)
   for (const t of [r.told[0].text, r.liveness]) assert.doesNotMatch(t, /whoever looks after|details below are for/i);
   assert.match(r.liveness, /You will get a message here as soon as the work starts again/);
 });
+
+/* ---------------- the experience re-review's wording list ---------------- */
+test('wording: guardrail names match the console, sentences start with a capital, no job id in what yes does, plain pacer and balance lines, an honest framework line, a recommendation on demotion, console labels', () => {
+  const T = company();
+  const r = run(T, `
+const tools = f => require(path.join(REPO, 'company/tools', f));
+const co = require(path.join(REPO, 'company/tools/lib/company.js'));
+const N = require(path.join(REPO, 'console/owner-needs.js')).make({ co });
+out({
+  src: fs.readFileSync(path.join(REPO, 'company/tools/guardrails.js'), 'utf8'),
+  pacer: tools('pacer.js').limitNotice('Sharon', 'MiniMax', 'fiveHourCloseBelowLeftPct 0 -> 35', 'keep a margin for the evening').text,
+  balance: fs.readFileSync(path.join(REPO, 'company/tools/lib/provider-balance.js'), 'utf8'),
+  upstream: fs.readFileSync(path.join(REPO, 'company/tools/harness-change.js'), 'utf8'),
+  demote: fs.readFileSync(path.join(REPO, 'company/tools/lib/decision.js'), 'utf8'),
+  yesJob: N.describeEffect({ serviceApprove: { name: 'station-art-0006' } }),
+  autonomy: fs.readFileSync(path.join(REPO, 'console/ui/js/screens/settings/autonomy.js'), 'utf8'),
+});`);
+  // guardrails: the console's names, quoted; a count that starts a sentence is capitalised
+  const consoleNames = r.autonomy.match(/export const GUARD_NAMES = \{([\s\S]*?)\};/)[1];
+  for (const n of ['Local computer', 'Secrets', 'Spend cap']) { assert.match(consoleNames, new RegExp("'" + n + "'")); assert.match(r.src, new RegExp("'" + n + "'"), n + ' in guardrails.js'); }
+  assert.doesNotMatch(r.src, /limit on this computer|ban on reading keys/);
+  assert.match(r.src, /COUNT_CAP\[n\] \|\| n\) \+ ' safety settings are now off/);
+  assert.equal(r.pacer, 'Sharon changed when the crew stops using the MiniMax subscription. Sharon\'s reason: keep a margin for the evening. You can change it back in Settings › Models and subscriptions.');
+  assert.match(r.balance, /Top it up so those crew members can keep working/);
+  assert.doesNotMatch(r.upstream, /sent the makers/); assert.match(r.upstream, /wrote down a suggestion for the makers of the company software/);
+  assert.match(r.demote, /The crew recommends leaving it off until it is fixed and passes its tests again/);
+  assert.equal(r.yesJob, 'If you say yes, the background job the crew asked for is set up and started now, exactly as described.');
+  for (const old of ['Schedules and ticks', "'Capability packs'", 'pay-per-token cap', 'dispatcher tick', "'Station autonomy'", "crew\\'s risk seat", "String(x.until || '').slice(0, 10)"]) assert.ok(!r.autonomy.includes(old), 'autonomy.js still shows ' + old);
+  assert.match(r.autonomy, /untilWords\(x\.until\)/);
+});
+
+test('wording: a guardrail change notice starts each sentence with a capital and uses the console names', () => {
+  const T = company();
+  const r = run(T, `
+const src = fs.readFileSync(path.join(REPO, 'company/tools/guardrails.js'), 'utf8');
+const m = src.match(/const PLAIN_NAMES[\\s\\S]*?\\nfunction changedNotice[\\s\\S]*?\\n}\\n/)[0];
+const f = new Function(m + '; return changedNotice;')();
+out({ two: f('Pat', [{ name: 'localComputer', to: 'off' }, { name: 'secrets', to: 'off' }], ['localComputer', 'secrets'], false).text });`);
+  assert.match(r.two, /^Pat turned off the “Local computer” setting and the “Secrets” setting\. Two safety settings are now off\./, r.two);
+});

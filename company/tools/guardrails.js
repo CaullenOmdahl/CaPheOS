@@ -115,19 +115,21 @@ function notifyOwner(text, technical) {
 }
 
 /* ---------------- the owner's lines: plain words; switch names, commands and paths ride in `technical` ---------------- */
-// the console's names for each switch (console/ui/js/screens/settings/autonomy.js GUARD_NAMES), in a sentence
-const PLAIN_NAMES = { ownerGates: 'owner gates', spendCap: 'spending cap', externalActions: 'check on acting outside the company', harnessSelfEdit: 'review of the crew\'s own rules',
-  defaultBranch: 'protection of the main copy of the code', secrets: 'ban on reading keys', localComputer: 'limit on this computer', privilegedShell: 'block on admin commands',
-  promptInjection: 'flag on suspicious instructions', halt: 'pause switch' };
-const plainName = n => PLAIN_NAMES[n] || 'a safety setting';
+// the console's names for each switch (console/ui/js/screens/settings/autonomy.js GUARD_NAMES), quoted as the owner
+// sees them on Settings › Autonomy › Guardrails
+const PLAIN_NAMES = { ownerGates: 'Owner gates', spendCap: 'Spend cap', externalActions: 'External actions', harnessSelfEdit: 'Review of the crew\'s own rules',
+  defaultBranch: 'Main copy of the code is protected', secrets: 'Secrets', localComputer: 'Local computer', privilegedShell: 'Admin commands blocked',
+  promptInjection: 'Suspicious instructions are flagged', halt: 'Halt' };
+const plainName = n => PLAIN_NAMES[n] ? '“' + PLAIN_NAMES[n] + '” setting' : 'a safety setting';
 const andList = a => a.length <= 1 ? a.join('') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1];
 const COUNT = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
+const COUNT_CAP = COUNT.map(w => w.replace(/^./, c => c.toUpperCase()));   // a count that starts a sentence
 function changedNotice(by, changes, offNames, sandbox) {
-  const turned = to => changes.filter(c => c.to === to).map(c => 'the ' + plainName(c.name));
+  const turned = to => changes.filter(c => c.to === to).map(c => PLAIN_NAMES[c.name] ? 'the ' + plainName(c.name) : plainName(c.name));
   const parts = [turned('off').length ? 'turned off ' + andList(turned('off')) : null, turned('on').length ? 'turned on ' + andList(turned('on')) : null].filter(Boolean);
   const head = String(by) + ' ' + (parts.length ? parts.join(' and ') : 'changed the safety settings') + '.';
   const n = offNames.length;
-  const now = n ? (n === 1 ? 'One safety setting is now off.' : (COUNT[n] || n) + ' safety settings are now off.') + (sandbox ? '' : ' This computer is not marked as a throwaway machine, so switch them back on when you are done.') : 'Every safety setting is on.';
+  const now = n ? (n === 1 ? 'One safety setting is now off.' : (COUNT_CAP[n] || n) + ' safety settings are now off.') + (sandbox ? '' : ' This computer is not marked as a throwaway machine, so switch them back on when you are done.') : 'Every safety setting is on.';
   return { text: head + ' ' + now };
 }
 function appliedNotice(results) {
@@ -381,7 +383,7 @@ async function selftest() {
     assert.strictEqual(state().guards.defaultBranch, false); assert.strictEqual(gr.guardIn(T, 'defaultBranch'), false);
     const L = logRows(); assert.strictEqual(L.length, 1); assert.deepStrictEqual(L[0].changes, [{ name: 'defaultBranch', from: 'on', to: 'off' }]); assert.strictEqual(L[0].why, 'experiment');
     assert.ok(/owner \(owner\) changed guardrails: defaultBranch on -> off — experiment/.test(fs.readFileSync(ctx.files.decisions, 'utf8')));
-    assert.ok(told.length === 1 && /turned off the protection of the main copy of the code/.test(told[0]) && /not marked as a throwaway machine/.test(told[0]) && !/defaultBranch/.test(told[0]));
+    assert.ok(told.length === 1 && /turned off the “Main copy of the code is protected” setting/.test(told[0]) && /not marked as a throwaway machine/.test(told[0]) && !/defaultBranch/.test(told[0]));
     const s = show(ctx); assert.ok(s.banner && /defaultBranch/.test(s.banner));
     assert.ok(!fs.readdirSync(path.dirname(ctx.files.state)).some(f => /\.tmp-/.test(f)), 'no temp file left behind');
   });
