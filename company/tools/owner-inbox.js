@@ -96,10 +96,11 @@ function redact(t) {
 /* send(o) — the LOW-LEVEL writer: one row in outbound.jsonl. Only lib/owner-notice.js calls it (the plain check, the
  * urgent/fyi split and the daily message live there). o.dir: the owner folder (owner-notice passes it for scratch
  * companies); o.technical: the part the console shows collapsed; o.kind/key/day/title/folds are kept on the row. */
-function send({ from, text, re, priority, technical, kind, key, day, title, folds, dir } = {}) {
+function send({ from, text, re, priority, technical, kind, key, day, title, folds, dir, at } = {}) {
   const body = redact(String(text || '').trim());
   if (!body) throw new Error('send: text is required');
-  const row = { id: 'out-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6), at: new Date().toISOString(),
+  // at: the sender's clock (owner-notice passes its own `now`, so its repeat window reads the same clock)
+  const row = { id: 'out-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6), at: Number.isFinite(at) ? new Date(at).toISOString() : new Date().toISOString(),
     from: String(from || co.nameOf(co.ceo()) || 'company'), text: body };
   if (re) row.re = String(re);
   if (priority === 'top') row.priority = 'top';   // a liveness alert (watchdog.js): the console shows it first

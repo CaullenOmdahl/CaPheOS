@@ -96,7 +96,7 @@ test('urgent goes out at once and passes the plain check, or the offending part 
   for (const bit of ['dispatch-state.json', 'systemctl', 'watchdog.js --check']) assert.ok(row.technical.includes(bit), bit + ' is in the technical part');
   // nothing plain left: a plain lead is written, the whole text is technical
   const t = N.send({ kind: 'urgent', from: 'Alex', text: 'systemctl restart capheos-station.service failed: exit 1', key: 'x' });
-  assert.match(t.row.text, /^Alex has an urgent note for the crew/); assert.match(t.row.technical, /systemctl restart/);
+  assert.match(t.row.text, /^Alex reports the company has stopped working\. The full message is in the details below/); assert.match(t.row.technical, /systemctl restart/);
   // a key never leaks, in the words or in the technical part
   const k = N.send({ kind: 'urgent', from: 'Alex', text: 'The bank needs you now.', technical: 'token sk-abcdefghijklmnopqrstuvwxyz123456' });
   assert.ok(!JSON.stringify(k.row).includes('sk-abcdefghijklmnopqrstuvwxyz123456'));

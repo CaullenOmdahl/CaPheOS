@@ -358,6 +358,25 @@ out({ a, card: ask ? { guardrail: ask.gate.guardrail, message: ask.message } : n
 });
 
 /* ---------------- S3 ---------------- */
+test('S3: a second identical urgent notice later the same day still reaches the owner', () => {
+  const T = company();
+  const r = run(T, `
+const N = require(path.join(REPO, 'company/tools/lib/owner-notice.js'));
+const t0 = Date.parse('2026-11-18T08:00:00Z');
+const text = 'The company is paused: everything has stopped until you resume it.';
+const a = N.send({ kind: 'urgent', from: 'Alex', text, now: t0 }, { root: T });
+const b = N.send({ kind: 'urgent', from: 'Alex', text, now: t0 + 2 * 3600e3 }, { root: T });
+const c = N.send({ kind: 'urgent', from: 'Alex', text, now: t0 + 2 * 3600e3 + 60e3 }, { root: T });
+const tech = N.send({ kind: 'urgent', from: 'Alex', text: 'unverified pm-inbox row ignored at company/pm-inbox.jsonl offset 12', now: t0 + 5 * 3600e3 }, { root: T });
+out({ a: a.sent, b: b.sent || b, c: !!c.duplicate, tech: tech.row && tech.row.text });`);
+  assert.equal(r.a, 'outbound'); assert.equal(r.b, 'outbound', 'the second pause is told: ' + JSON.stringify(r.b));
+  assert.equal(r.c, true, 'the same event twice within minutes is one notice');
+  assert.match(r.tech, /possible security problem/, 'an all-technical urgent notice still says what kind of trouble it is: ' + r.tech);
+  const scope = require(path.join(REPO, 'company/tools/lib/owner-scope.js'));
+  for (const s of r.tech.split(/(?<=\.)\s+/)) assert.equal(scope.plainScore(s).jargon.length, 0, s);
+});
+
+/* ---------------- S4 ---------------- */
 test('S5: a one-seat company at tools=auto with harnessSelfEdit on never applies a protected tool unreviewed', () => {
   const T = company({ levels: { tools: 'auto' }, fixture: true, agents: { agent: { name: 'Alex', manager: null, functions: ['ceo', 'tools', 'risk'], inbox: 'to-alex.md' } } });
   W(T, 'company/tools/pacer.js', "'use strict';\nmodule.exports = { N: 1 };\n");

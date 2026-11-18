@@ -14,7 +14,11 @@
  *     a path, a command) is cut out of its sentence; a sentence that is still technical, or very long, moves whole into
  *     `technical`, which the console shows collapsed as "Technical details (for the crew)". Nothing is refused: a
  *     notice the owner needs always goes out, in plain words.
- *     key: the same key (default: the sender and the plain text) is sent at most once per company day.
+ *     key: the same key (default: the sender and the plain text) is sent at most once per company day for an fyi. An
+ *     urgent notice is never held back for the day: the same urgent key is a repeat only within URGENT_REPEAT_MIN minutes
+ *     (one event reported twice), so a second outage or a second pause later the same day reaches the owner.
+ *     An urgent notice with no plain sentence left still says what kind of trouble it is (urgentLead), never only
+ *     "an urgent note for the crew".
  *   N.digest({ root?, now?, force?, dry? }) -> { sent: false, why } | { sent: true, row, folded }
  *     At or after the evening hour (company/work/ops/owner-notices.json, defaults in company/defaults/work/ops/), once a
  *     company day: every fyi row not folded yet becomes one message titled "What the crew did today". The dispatcher
@@ -32,6 +36,7 @@ const co = require('./company');
 const scope = require('./owner-scope');
 
 const KINDS = ['urgent', 'fyi'];
+const URGENT_REPEAT_MIN = 10;
 const MAX_WORDS = 40;
 const DEFAULTS = { eveningHour: 18, maxItems: 12, title: 'What the crew did today' };
 
@@ -100,6 +105,19 @@ function plain(text) {
 const withRoot = (o, opts) => { o = Object.assign({}, o || {}); if (!o.root && opts && opts.root) o.root = opts.root; if (o.now === undefined && opts && Number.isFinite(opts.now)) o.now = opts.now; return o; };
 const keyOf = (from, text) => crypto.createHash('sha256').update(String(from || '') + '\n' + String(text || '')).digest('hex').slice(0, 16);
 
+/* urgentLead(from, raw): an urgent notice whose every sentence was technical still tells the owner what kind of trouble
+ * it is, in plain words, and that the crew has the details */
+const URGENT_KINDS = [
+  [/\b(security|unverified|forged|tamper|quarantin|intru|leak)/i, 'a possible security problem'],
+  [/\b(halt|paused|stopped|silent|down|crash|not (?:come|coming) back|restart|unreachable)/i, 'the company has stopped working'],
+  [/\b(money|budget|spend|balance|credit|billing|payment|\$\d)/i, 'money the crew needs now'],
+  [/\b(key|token|password|account|sign[- ]?in|login|credential)/i, 'an account or key the crew needs'],
+];
+function urgentLead(from, raw) {
+  const what = (URGENT_KINDS.find(([re]) => re.test(String(raw || ''))) || [null, 'something that cannot wait'])[1];
+  return from + ' reports ' + what + '. The full message is in the details below; the crew is on it and will tell you if you need to act.';
+}
+
 /* send(o) — one notice: urgent now (plain), fyi into the day's message. */
 function send(o, opts) {
   o = withRoot(o, opts);
@@ -111,17 +129,17 @@ function send(o, opts) {
   const f = files(o);
   const p = plain(raw);
   const tech = [].concat(p.technical, o.technical ? [String(o.technical).trim()] : []).filter(Boolean);
-  const lead = p.text || (kind === 'urgent'
-    ? from + ' has an urgent note for the crew; the details are below.'
-    : from + ' noted something technical for the crew.');
+  const lead = p.text || (kind === 'urgent' ? urgentLead(from, raw) : from + ' noted something technical for the crew.');
   const key = String(o.key || keyOf(from, lead));
   const day = dayOf(now);
-  const seen = r => r && r.key === key && (r.day || (r.at && dayOf(Date.parse(r.at)))) === day;
+  const seen = kind === 'urgent'
+    ? r => r && r.key === key && r.kind === 'urgent' && Number.isFinite(Date.parse(r.at)) && now - Date.parse(r.at) >= 0 && now - Date.parse(r.at) < URGENT_REPEAT_MIN * 60e3
+    : r => r && r.key === key && (r.day || (r.at && dayOf(Date.parse(r.at)))) === day;
   if (readRows(f.digest).some(seen) || readRows(f.outbound).some(seen)) return { duplicate: true, key };
   const technical = tech.length ? tech.join('\n') : undefined;
   if (kind === 'urgent') {
     const oi = require('../owner-inbox.js');
-    const row = oi.send({ from, text: lead, re: o.re, priority: o.priority, technical, key, day, kind: 'urgent', dir: f.ownerDir });
+    const row = oi.send({ from, text: lead, re: o.re, priority: o.priority, technical, key, day, kind: 'urgent', dir: f.ownerDir, at: now });
     return { sent: 'outbound', row };
   }
   const oi = require('../owner-inbox.js');
@@ -175,4 +193,4 @@ function digest(o) {
   return { sent: true, row, folded: rows.length };
 }
 
-module.exports = { send, digest, pending, plain, config, KINDS, DEFAULTS };
+module.exports = { send, digest, pending, plain, config, KINDS, DEFAULTS, URGENT_REPEAT_MIN };
