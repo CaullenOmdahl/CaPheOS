@@ -704,7 +704,7 @@ function ownerScopeCheck(o) {
 }
 
 /* listItems({open?, from?}) — the rows `inbox.js list` prints. A question its asker withdrew whole is not open: before
- * 2026-11-18 `list` printed it with status "open" (and `--open` kept it), so a withdrawn ask read as a live card. */
+ * `list` used to print it with status "open" (and `--open` kept it); a question withdrawn whole is not open. */
 function listItems(a) {
   a = a || {}; const now = Date.now();
   const rows = Object.values(state()).filter(x => x.type === 'ask' && (!a.open || (!x.a && !x.reclassified && !x.withdrawnAll)) && (!a.from || String(x.from).toLowerCase() === String(a.from).toLowerCase()));
@@ -1223,6 +1223,10 @@ function selftest() {
     append({ type: 'answer', id: g1.questionId, at: new Date().toISOString(), a: 'yes (via needs-you)', answer: { verdict: 'yes', action: 'approve', values: {} }, by: 'Commander', surface: 'needs-you' });
     append({ type: 'answer', id: g2.questionId, at: new Date().toISOString(), a: 'no (via needs-you)', answer: { verdict: 'no', action: 'decline', values: {} }, by: 'Commander', surface: 'needs-you' });
     t('governance approved(): structured yes is true, no is false', gov.approved('st:r1', { root: T }) === true && gov.approved('st:r2', { root: T }) === false);
+    // out() must write the whole reply to a pipe: process.exit straight after console.log cut piped output at 64KB
+    const outSrc = (fs.readFileSync(__filename, 'utf8').match(/function out\(code, obj\) \{[\s\S]*?\n\}\n/) || [''])[0];
+    const pipeRun = require('child_process').spawnSync('sh', ['-c', '"$0" -e "$CHILD_SRC" | cat', process.execPath], { maxBuffer: 1 << 22, env: Object.assign({}, process.env, { CHILD_SRC: 'const fs = require("fs");' + outSrc + 'out(0, { x: "a".repeat(200000) });' }) });   // a shell pipeline is where the cut showed
+    t('out() writes a reply larger than 64KB to a pipe in full', outSrc.length > 0 && pipeRun.stdout.length > 200000, { got: pipeRun.stdout && pipeRun.stdout.length });
   } catch (e) { t('selftest ran to the end', false, e.stack); }
   finally { try { fs.rmSync(T, { recursive: true, force: true }); } catch (_) {} }
   const bad = cases.filter(c => !c).length;
