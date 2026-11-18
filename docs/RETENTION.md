@@ -75,6 +75,7 @@ The archive of a file that already lives in an `archive/` folder (the handoff ar
 | `company/work/handoffs/archive/*.md` | 30 days (monthly) or 200 KB per file | agents looking for an older thread (`retention.js find to-<name>`) |
 | `company/state/wakes.jsonl` | 30 days (monthly) | dispatch.js --wake-links (the window plus 7 days, from the end) |
 | `company/work/models/house-ranking-history.jsonl`, `company/work/models/routing-proposals.jsonl` | 90 / 180 days (monthly) | model-rank.js verify (the live file; the chain restarts after a roll), refresh and --duty (the last 4 MB) |
+| `company/work/models/routing-evaluation.json`, `company/work/models/trials/<id>.md` | replaced whole when the numbers change, no history; one file per trial | model-rank.js refresh, --duty, trials |
 | `company/state/model-moves.jsonl`, `company/state/pacer-log.jsonl`, `company/work/security/locked-changes.jsonl` | 90 / 30 / 90 days | their tools |
 | `company/state/override-allow.json` | rewritten whole every dispatcher tick, no history (only the current list counts; the station refuses it once 30 minutes old) | the station (StarNet patch 0017) |
 | `company/state/locked/provenance.jsonl` | 14 days | locked-watch.js (from its byte offset), default-branch-watch.js (4 MB tail) |
