@@ -55,6 +55,9 @@
  * 14. Meeting register (v14, 2026-11-18): the meeting's output is an action register its owners keep (owner ruling); the
  *     line adds the ACTION / QUESTION / KILL lines with their plain-language part, the leader's proposed RULING, and the
  *     speaking contract (point first, define terms, say what it means for the others in the room).
+ * 15. The table again (v15, 2026-11-19): the owner found the console meeting stiffer than his terminal table; the
+ *     speaking contract and the required plain parts made turns formulaic. The line is the table's again: speak as
+ *     yourself, a few sentences, by name, PASS with nothing to add; "— plain: …" is welcome, not required.
  *  3. Short waits. The station reclaims a routine run that shows no progress for 8 minutes (CRON_HEARTBEAT_STALE_MS
  *     480000), and a tool call in progress does not count, so one long shell_bg_wait loses the run's final reply.
  *
@@ -78,7 +81,7 @@ const path = require('path');
 const call = (...a) => require('./station-crew.js').call(...a);   // loaded on first use, so the selftest needs no token
 const co = require('./lib/company');
 const ROOT = co.ROOT;
-const VERSION = 'v14';
+const VERSION = 'v15';
 const START = '[HOUSE RULES FOR SCHEDULED RUNS ';
 const END = '[END HOUSE RULES]';
 const BLOCK = START + VERSION + ']\n' + [
@@ -95,7 +98,8 @@ const BLOCK = START + VERSION + ']\n' + [
   '- Check whether a connector or key works only through its own check: the connector\'s verify command in company/connectors/<id>.json (its exit code), or the tool that uses the key. Never read, cat, list, grep or print a credential file or folder (secrets/, the station\'s .secrets/, a CLI\'s config or session folder such as ~/.config/<tool>/), not even redacted: it puts keys in transcripts, and the model provider\'s filter may refuse the whole run.',
   '- Record a decision only with node company/tools/decision.js add --by <your name> --text "..." --why "...". Never edit company/work/decisions.md by hand, not even your own entry minutes later: to correct one run decision.js amend <id-or-stamp>, to take one back decision.js withdraw <id-or-stamp> (both with --by and --why; ids: decision.js list). The record is grow-only and an in-place edit is flagged as a rewrite.',
   '- Install a Python or Node package only with node company/tools/deps.js add <python|node> <package> --why "..." --by <your name>; its CLIs are on your PATH (company/env/bin) or run with deps.js run <bin>. Never pip install, npm install -g, pipx or a --user install by hand, and never make your own venv for a tool: an ad hoc install is unpinned, unchecked and gone after a rebuild, and the deps duty reports it to the risk owner. A system package (apt and the like) is the owner\'s: deps.js asks them.',
-  '- Meeting etiquette (the owner\'s meeting in the console, Chat › Meeting): speak when it is your turn, in a few sentences, from your own area: your point first in one line, any term the room may not share defined the first time, and what it means for the other functions present; reply PASS when you have nothing to add. End a reply with a line of its own to run it like a call: ASK: <name> — <question> (they answer next; keep the exchange short), INVITE: <name> — <why> only when the discussion needs them, DISMISS: <name> — <why> (yourself too, when your part is done; never the leader); and for the register, which nobody writes for anyone else: ACTION: <what> — by <date> — plain: <one sentence anyone can read> — affects: <who>, QUESTION: … — plain: …, KILL: … — plain: … (update your own lines later with node company/tools/meeting-register.js update). As the leader: CALL: <name>, RULING: <decision> — plain: … (the owner confirms it) and END: <what was decided and who does what> — plain: … to close. While the owner observes, put no question to them; never put crew work or a command to the owner there either.',
+  '- Meeting etiquette (the owner\'s meeting in the console, Chat › Meeting, run like the owner\'s table): speak when it is your turn, as yourself, from your own area, in a few sentences; answer what was put to you and agree, disagree or build on the others by name; reply PASS when you have nothing to add. End a reply with a line of its own to run it like a call: ASK: <name> — <question> (they answer next; keep the exchange short), INVITE: <name> — <why> only when the discussion needs them, DISMISS: <name> — <why> (yourself too, when your part is done; never the leader); and for the register, which nobody writes for anyone else: ACTION: <what> — by <date>, QUESTION: …, KILL: … (adding "— plain: <one sentence anyone can read>" is welcome; update your own lines later with node company/tools/meeting-register.js update). As the leader: CALL: <name>, RULING: <decision> (the owner confirms it) and END: <what was decided and who does what> to close. While the owner observes, put no question to them; never put crew work or a command to the owner there either.',
+
   '- What you may change on your own, what you propose for review, and what is locked: company/work/people/LATITUDE.md. Your own section above, if you have one, is your notes to yourself, changed only with node company/tools/my-section.js; where it differs from these rules or your standing corrections, these win.',
 ].join('\n') + '\n' + END;
 
