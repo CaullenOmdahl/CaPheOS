@@ -1,0 +1,561 @@
+# 0016 — the run row says which model SERVED the run (servedModel)
+# Why: a run row's `model` is the model the run ASKED for. The Claude CLI accepts a Fable request on an account without
+# Fable and serves another model (claude-cli.js MODELS note), so model rankings built on `model` can credit Fable with
+# another model's work. Every provider's own response names the model it served; StarNet read none of them. With this
+# record each adapter reads it and puts it on its usage / done events as servedModel:
+#   - claude-cli: the stream-json lines (the API's message_start and assistant message.model, which outrank the result
+#     line's modelUsage, keyed by every model the turn used, helper models included: the one with the most output wins,
+#     which outranks the system/init model the session was set to); persistent children keep their init model per child;
+#   - anthropic: message_start message.model;   - openai-compatible and openrouter: a chunk's `model`.
+# The loop keeps the last served model of the run and every distinct one when it changed mid-run (a failover, a router);
+# the run row in runs.jsonl gains servedModel (string) and servedModels (array, only when more than one). A response that
+# names no model adds nothing: such a row's model is "claimed" (unverified) to a reader. Additive: every other row and
+# event is byte-identical. Test: test/served-model.test.js (a Fable request served by Fable, one served by another model,
+# one that names none; each adapter, the loop and the row).
+# Apply:  git -C starnet apply --3way company/patches/0016-served-model.diff ; then restart the station.
+# Revert: git -C starnet apply -R company/patches/0016-served-model.diff ; then restart the station (rows already written
+#         keep their servedModel field; readers treat a row without it as claimed).
+diff --git a/sidecar/index.js b/sidecar/index.js
+index 2d074050..859e4d69 100644
+--- a/sidecar/index.js
++++ b/sidecar/index.js
+@@ -26481,7 +26481,7 @@ async function runOnceCore(o) {
+       }
+       try { if (o.streamId && kinds.directiveKind !== 'station') { const files = TurnDelivery.fileRows(transcriptStore, { streamId: o.streamId, agentId, runId, turnId: runStartExtra.turnId, root: o.projectRoot || '', artifacts: execution.artifactList(), note: deliverableNotes.get(runId), quotes: execution.quotes(), taint: execution.rowTaint() || (typeof o.connectorAuthority?.taintedBy === 'function' ? o.connectorAuthority.taintedBy() : null) }); if (files.skipped.length) failNote('turn.files.skipped', new Error(files.skipped.length + ' artifact(s) not published as file rows: ' + files.skipped.map(s => s.why).join(','))); } } catch (e) { failNote('turn.files', e); }   // the run's files, as rows of their own (turn identity commit 10): get, never take, and a failure here skips nothing below (runStore.record, the final drain)
+       const runEndedAt = entryEndedAt === null ? Date.now() : entryEndedAt;
+-      runStore.record({ runId, parentRunId: o.parentRunId || '', delegatedBy: o.delegatedBy || '', agentId, provider: activeProviderId, wireSource: runWire.source, reason: ((result && result.reason) || 'error'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, cachedTokens: finalCachedTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, dispatchDelivery: o.dispatchDelivery, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort: internalEffortRan() || reasoningEffort, unmetered: mediaFlags.unmetered, unpriced: mediaFlags.unpriced, usageMissing, spendUnknown: cutSpendUnknown, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), cancelledWhile: (result && result.cancelledWhile) || null, completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, ownerDirective, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, stepTest: o.stepTest === true, lineId: o.lineId || '', dockId: o.dockId || '', cronJobId: isRoutineTrigger(trigger) ? String(o.cronJobId || '') : '', pageClosed: pageClosedRuns.get(runId) || null, steerNotes: steerBufs.ledgerOf(runId), wordless: TurnDirective.labelOnly(directive), taintedBy: execution.taintedBy() || '', rowTaintedBy: execution.rowTaint() || '' });   // wordless: the directive was only the label of its files. taintedBy stays the FIRST source (the relay, the refusal wording); rowTaintedBy is the stamp that durable rows written after the run carry (dispatch-delivery). Execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
++      runStore.record({ runId, parentRunId: o.parentRunId || '', delegatedBy: o.delegatedBy || '', agentId, provider: activeProviderId, wireSource: runWire.source, reason: ((result && result.reason) || 'error'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, cachedTokens: finalCachedTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, dispatchDelivery: o.dispatchDelivery, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, servedModel: (result && result.servedModel) || '', servedModels: (result && result.servedModels) || null, reasoningEffort: internalEffortRan() || reasoningEffort, unmetered: mediaFlags.unmetered, unpriced: mediaFlags.unpriced, usageMissing, spendUnknown: cutSpendUnknown, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), cancelledWhile: (result && result.cancelledWhile) || null, completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, ownerDirective, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, stepTest: o.stepTest === true, lineId: o.lineId || '', dockId: o.dockId || '', cronJobId: isRoutineTrigger(trigger) ? String(o.cronJobId || '') : '', pageClosed: pageClosedRuns.get(runId) || null, steerNotes: steerBufs.ledgerOf(runId), wordless: TurnDirective.labelOnly(directive), taintedBy: execution.taintedBy() || '', rowTaintedBy: execution.rowTaint() || '' });   // wordless: the directive was only the label of its files. taintedBy stays the FIRST source (the relay, the refusal wording); rowTaintedBy is the stamp that durable rows written after the run carry (dispatch-delivery). Execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
+ 
+       // P0.1/H1.1: persist the full DIALOGUE (not just the outcome) — a durable server-side transcript for EVERY
+       // run, incl. headless ones (cron/Telegram/delegated). Append the triggering user directive, then EVERY new
+diff --git a/sidecar/loop.js b/sidecar/loop.js
+index e4ef7311..2e8109e0 100644
+--- a/sidecar/loop.js
++++ b/sidecar/loop.js
+@@ -1032,6 +1032,18 @@
+     let billingClassOf = typeof o.billingClassOf === 'function' ? o.billingClassOf : null;
+     let nextBillingClassOf = null;
+     const billingClasses = [];   // what this run's attempts were (result.billingClasses: the host books its row from them)
++    /* SERVED MODEL (CA PHE DIGITAL, company/patches/0016): the model the provider SAID it served, from its own stream
++       (an adapter puts it on its usage / done events as servedModel). `model` stays the one asked for. Every distinct
++       name in the order first seen, so a run whose provider switched model mid-run says so; the last one seen is the
++       run's servedModel. Bounded: a handful of names at most. */
++    const servedModels = [];
++    let servedModelLast = '';
++    const noteServed = ev => {
++      const m = ev && typeof ev.servedModel === 'string' ? ev.servedModel.trim().slice(0, 120) : '';
++      if (!m) return;
++      servedModelLast = m;
++      if (servedModels.indexOf(m) < 0 && servedModels.length < 16) servedModels.push(m);
++    };
+     const signal = o.signal || { aborted: false };
+     const clock = o.clock;
+     let cost = o.cost;   // swappable: a cross-provider fallback entry can carry its own cost engine (fb.cost) so
+@@ -1689,6 +1701,7 @@
+       const terminalText = tail && tail.role === 'assistant' && !tail.tool_calls ? String(tail.content == null ? '' : tail.content) : '';
+       const out = { reason, messages, text: terminalText, usd: spentUsd, turns, tokens: spentTokens, cachedTokens: spentCachedTokens, model, unpricedUsage: unpricedUsage.slice(), ...generationReceipt.fields() };
+       if (cut) out.finishReason = cut;
++      if (servedModelLast) { out.servedModel = servedModelLast; if (servedModels.length > 1) out.servedModels = servedModels.slice(); }   // 0016: what the provider served
+       if (subscriptionTokens > 0) out.subscriptionUsed = true;   // a nested loop's aux row names the $0 route it drew on (issue #105)
+       if (typeof o.billingClassOf === 'function') out.billingClasses = billingClasses.slice();   // the host's row says what the attempts were
+       if (endPayload.budgetScope) { out.budgetScope = endPayload.budgetScope; if (endPayload.budgetCapUsd != null) out.budgetCapUsd = endPayload.budgetCapUsd; if (endPayload.budgetProjected) out.budgetProjected = true; }
+@@ -2368,8 +2381,8 @@
+             else if (ev.type === 'reasoning') { if (ev.block) acc.reasoning.push(ev.block); }
+             else if (ev.type === 'tool_start') { acc.toolCalls[ev.index] = { id: ev.id, name: ev.name, args: '' }; waiting.resume('streaming'); }
+             else if (ev.type === 'tool_args') { if (acc.toolCalls[ev.index]) acc.toolCalls[ev.index].args += (ev.chunk || ''); waiting.resume('streaming'); }
+-            else if (ev.type === 'usage') { usage = ev.usage; noteGeneration(usage && usage.generation_id); if (cost) emit('cost.estimate', Object.assign({ agentId, runId }, cost.estimate(usage, model))); }
+-            else if (ev.type === 'done') { lastFinishReason = ev.finishReason; sawTruncation = !!ev.truncated; }   // A3: remember WHY the turn stopped
++            else if (ev.type === 'usage') { noteServed(ev); usage = ev.usage; noteGeneration(usage && usage.generation_id); if (cost) emit('cost.estimate', Object.assign({ agentId, runId }, cost.estimate(usage, model))); }
++            else if (ev.type === 'done') { noteServed(ev); lastFinishReason = ev.finishReason; sawTruncation = !!ev.truncated; }   // A3: remember WHY the turn stopped
+             // 'tool_done' needs no action here
+           }
+           streamClosed = !signal.aborted;
+diff --git a/sidecar/providers/anthropic.js b/sidecar/providers/anthropic.js
+index 5ad6e2bf..bfbf7a7c 100644
+--- a/sidecar/providers/anthropic.js
++++ b/sidecar/providers/anthropic.js
+@@ -696,7 +696,11 @@
+         try { return { json: JSON.parse(data) }; } catch (_) { return null; }
+       }
+       // additive field on the terminal event; absent when nothing was dropped (byte-identical otherwise)
+-      function withDrops(ev) { if (droppedThinking > 0) ev.thinkingDropped = droppedThinking; return ev; }
++      function withDrops(ev) { if (droppedThinking > 0) ev.thinkingDropped = droppedThinking; return served(ev); }
++      // SERVED MODEL (CA PHE DIGITAL, company/patches/0016): message_start's message.model is the model the API says served
++      // this call; it rides the usage and done events as servedModel (absent when the response named none)
++      let servedModel = '';
++      function served(ev) { if (servedModel) ev.servedModel = servedModel; return ev; }
+       let generationId = '';
+       function withGeneration(usage) { return generationId ? Object.assign({}, usage, { generation_id: generationId }) : usage; }
+       function* emitFrom(ev) {
+@@ -711,6 +715,7 @@
+           case 'message_start': {
+             if (!generationId) { generationId = provider.generationId(ev.message && ev.message.id); if (generationId) yield { type: 'generation', id: generationId }; }
+             baseUsage = Object.assign({}, (ev.message && ev.message.usage) || {});
++            if (ev.message && typeof ev.message.model === 'string' && ev.message.model.trim()) servedModel = ev.message.model.trim().slice(0, 120);
+             const tx = ev.message && ev.message.input_transformations;
+             if (Array.isArray(tx) && tx.length) {
+               const reasons = {};
+@@ -721,7 +726,7 @@
+               }
+               failNote('providers.anthropic.thinking_dropped', 'the API dropped ' + droppedThinking + ' replayed thinking block(s) on ' + String(body.model || '') + ' (' + Object.keys(reasons).map(k => k + ' x' + reasons[k]).join(', ') + ')');
+             }
+-            if (ev.message && ev.message.usage) yield { type: 'usage', usage: withGeneration(normalizeUsage(ev.message.usage)) };
++            if (ev.message && ev.message.usage) yield served({ type: 'usage', usage: withGeneration(normalizeUsage(ev.message.usage)) });
+             return;
+           }
+           case 'content_block_start': {
+@@ -781,7 +786,7 @@
+           case 'message_delta': {
+             const d = ev.delta || {};
+             if (d.stop_reason) lastStopReason = d.stop_reason;
+-            if (ev.usage) yield { type: 'usage', usage: withGeneration(normalizeUsage(Object.assign({}, baseUsage, ev.usage))) };
++            if (ev.usage) yield served({ type: 'usage', usage: withGeneration(normalizeUsage(Object.assign({}, baseUsage, ev.usage))) });
+             if (d.stop_reason && !doneEmitted) {
+               doneEmitted = true;
+               yield withDrops({ type: 'done', finishReason: normalizeFinish(d.stop_reason) });
+diff --git a/sidecar/providers/claude-cli.js b/sidecar/providers/claude-cli.js
+index 48c93f5f..da83e1da 100644
+--- a/sidecar/providers/claude-cli.js
++++ b/sidecar/providers/claude-cli.js
+@@ -531,6 +531,31 @@
+     };
+   }
+ 
++  /* SERVED MODEL (CA PHE DIGITAL, company/patches/0016). The CLI's stream-json names the model on four lines: the
++     system/init line (the model the session was set to), the API's message_start event and each assistant line
++     (message.model: what the API says served the call), and the result line's modelUsage (keyed by every model the
++     turn drew on, a helper model included). Returns { model, rank } (3 = the API's message, 2 = modelUsage, the key
++     with the most output tokens, 1 = init) or null when the line names none. */
++  function servedModelOf(j) {
++    if (!j || typeof j !== 'object') return null;
++    const name = v => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 120) : '');
++    if (j.type === 'stream_event' && j.event && j.event.type === 'message_start' && j.event.message) {
++      const m = name(j.event.message.model); return m ? { model: m, rank: 3 } : null;
++    }
++    if (j.type === 'assistant' && j.message) { const m = name(j.message.model); return m ? { model: m, rank: 3 } : null; }
++    if (j.type === 'result' && j.modelUsage && typeof j.modelUsage === 'object') {
++      let best = '', most = -1;
++      for (const k of Object.keys(j.modelUsage)) {
++        const u = j.modelUsage[k] || {};
++        const n = Number(u.outputTokens != null ? u.outputTokens : u.output_tokens) || 0;
++        if (name(k) && n > most) { best = name(k); most = n; }
++      }
++      return best ? { model: best, rank: 2 } : null;
++    }
++    if (j.type === 'system' && j.subtype === 'init') { const m = name(j.model); return m ? { model: m, rank: 1 } : null; }
++    return null;
++  }
++
+   function parseCall(body) {
+     const raw = String(body || '').trim();
+     let j = null;
+@@ -828,7 +853,15 @@
+         raw: '',       // every text delta exactly as the CLI streamed it: what a persistent child keeps as this reply
+         rest: '',      // what the model wrote past its call block inside the delta that ended it
+         shown: '', calls: [],   // what this turn handed the loop (its text, its calls): the reply the loop records
+-        compacted: false        // the CLI folded its own history: a persistent child no longer holds StarNet's
++        compacted: false,       // the CLI folded its own history: a persistent child no longer holds StarNet's
++        served: '', servedRank: 0   // the model the CLI said served this turn (servedModelOf; company/patches/0016)
++      };
++      // SERVED MODEL (CA PHE DIGITAL, company/patches/0016): what the CLI's stream says served the turn. The API's own
++      // message (message_start / assistant message.model) outranks the result line's modelUsage (which can also list a
++      // helper model the CLI used on the side), which outranks the init line (the model the session was set to).
++      t.noteServed = function (j) {
++        const got = servedModelOf(j);
++        if (got && got.rank >= t.servedRank) { t.served = got.model; t.servedRank = got.rank; }
+       };
+       function emitSplit(part, out) {
+         for (const it of part.items) {
+@@ -853,6 +886,7 @@
+       }
+       t.line = function (j) {
+         const out = [];
++        t.noteServed(j);
+         if (j.type === 'system' && j.subtype === 'init') t.apiKeySource = j.apiKeySource == null ? null : String(j.apiKeySource);
+         else if (j.type === 'system' && j.subtype === 'compact_boundary') t.compacted = true;
+         else if (j.type === 'stream_event' && j.event && j.event.type === 'content_block_delta' && j.event.delta && j.event.delta.type === 'text_delta') {
+@@ -969,6 +1003,8 @@
+           const u = ev.usage, d = u.prompt_tokens_details || {};
+           plog('usage ' + (persistent ? 'persistent' : 'one-shot') + ': in=' + u.prompt_tokens + ' cache_read=' + (d.cached_tokens || 0) + ' cache_write=' + (d.cache_creation_tokens || 0) + ' out=' + u.completion_tokens + (u.subscription ? ' subscription' : ''));
+         }
++        // 0016: the served model rides the turn's usage and done events (the loop keeps it for the run row)
++        if (ev && (ev.type === 'usage' || ev.type === 'done') && box.turn && box.turn.served && !ev.servedModel) { yield Object.assign({}, ev, { servedModel: box.turn.served }); continue; }
+         yield ev;
+       }
+     }
+@@ -1141,8 +1177,10 @@
+             // Initialization belongs to this exact child, including a warm child before any turn has a sink.
+             let metadata;
+             try { metadata = JSON.parse(line); } catch (_) { metadata = null; }
+-            if (metadata && metadata.type === 'system' && metadata.subtype === 'init')
++            if (metadata && metadata.type === 'system' && metadata.subtype === 'init') {
+               s.apiKeySource = metadata.apiKeySource == null ? null : String(metadata.apiKeySource);
++              s.initLine = { type: 'system', subtype: 'init', model: metadata.model };   // 0016: the session's model, for every turn
++            }
+             if (s.sink) s.sink(line);
+           }
+         }
+@@ -1288,6 +1326,7 @@
+       const turn = ++seq;
+       const T = makeTurn(req, turn);
+       T.apiKeySource = s.apiKeySource;   // init is session-scoped, not repeated for every user turn
++      if (s.initLine) T.noteServed(s.initLine);   // 0016: so is its model (a message's own model outranks it)
+       if (box) box.turn = T;
+       const queue = [];
+       let wake = null, failure = null, clean = false, finished = false, idleTimer = null;
+@@ -1366,6 +1405,7 @@
+               if (line === null) { if (signal && signal.aborted) return; if (failure) break; continue; }
+               let j;
+               try { j = JSON.parse(line); } catch (_) { continue; }
++              T.noteServed(j);
+               if (j.type === 'stream_event' && j.event && j.event.type === 'content_block_delta' && j.event.delta) {
+                 const d = j.event.delta.type === 'text_delta' ? String(j.event.delta.text || '') : '\u0001';   // any other delta: still generating
+                 if (j.event.delta.type === 'text_delta') { T.raw += d; T.outChars += d.length; }
+@@ -1470,5 +1510,5 @@
+     };
+   }
+ 
+-  return { makeClaudeCliProvider, makeCliHost, _internals: { buildPrompt, makeCallSplitter, parseCall, invokeCall, estimateUsd, toolsPrompt, MODELS } };
++  return { makeClaudeCliProvider, makeCliHost, _internals: { buildPrompt, makeCallSplitter, parseCall, servedModelOf, invokeCall, estimateUsd, toolsPrompt, MODELS } };
+ });
+diff --git a/sidecar/providers/openai-compatible.js b/sidecar/providers/openai-compatible.js
+index 374a6c0e..b8ceaafb 100644
+--- a/sidecar/providers/openai-compatible.js
++++ b/sidecar/providers/openai-compatible.js
+@@ -1024,15 +1024,20 @@
+         yield { type: 'reasoning', block };
+       }
+       let generationId = '';
++      // SERVED MODEL (CA PHE DIGITAL, company/patches/0016): a chunk's `model` is the model the endpoint says served the
++      // call (a router names the one it picked); it rides the usage and done events as servedModel, absent when none named one
++      let servedModel = '';
++      const served = ev => { if (servedModel) ev.servedModel = servedModel; return ev; };
+       function* emitFrom(j) {
+         if (!generationId) { generationId = provider.generationId(j && j.id); if (generationId) yield { type: 'generation', id: generationId }; }
++        if (j && typeof j.model === 'string' && j.model.trim()) servedModel = j.model.trim().slice(0, 120);
+         if (j.error) {
+           const err = new Error((j.error && (j.error.message || j.error.code)) || 'provider stream error');
+           err.body = j;   // the structured error (code/type) — errorClass reads it
+           err.ownMessage = true;
+           throw localMemoryError(err);
+         }
+-        if (j.usage) yield { type: 'usage', usage: generationId ? Object.assign({}, j.usage, { generation_id: generationId }) : j.usage };
++        if (j.usage) yield served({ type: 'usage', usage: generationId ? Object.assign({}, j.usage, { generation_id: generationId }) : j.usage });
+         const choice = j.choices && j.choices[0];
+         if (!choice) return;
+         const d = choice.delta || choice.message || {};
+@@ -1058,7 +1063,7 @@
+         if (choice.finish_reason && !doneEmitted) {
+           yield* flushReasoning();
+           doneEmitted = true;
+-          yield { type: 'done', finishReason: normalizeFinish(choice.finish_reason), truncated: false };
++          yield served({ type: 'done', finishReason: normalizeFinish(choice.finish_reason), truncated: false });
+         }
+       }
+ 
+@@ -1097,7 +1102,7 @@
+         // cannot otherwise tell it apart from a finished answer — so it shipped the fragment as a completed,
+         // $0 delivery. Requiring only ONE of the two signals keeps this correct for the local OpenAI-compatible
+         // servers (Ollama, LM Studio) that send a finish_reason but omit the sentinel.
+-        if (!doneEmitted) { yield* flushReasoning(); yield { type: 'done', finishReason: null, truncated: !sawSentinel }; }
++        if (!doneEmitted) { yield* flushReasoning(); yield served({ type: 'done', finishReason: null, truncated: !sawSentinel }); }
+       } catch (e) {
+         if (isAbort(e, req.signal)) return;
+         // LOCAL SILENCE: the idle watchdog fired on a local /v1 server with no other StarNet call open there — one request, then
+diff --git a/sidecar/providers/openrouter.js b/sidecar/providers/openrouter.js
+index 59261598..a3c01d66 100644
+--- a/sidecar/providers/openrouter.js
++++ b/sidecar/providers/openrouter.js
+@@ -371,8 +371,13 @@
+       }
+       // one decoded chunk -> 0..n normalized HarnessEvents (shared by the loop + end-of-stream flush)
+       let generationId = '';
++      // SERVED MODEL (CA PHE DIGITAL, company/patches/0016): a chunk's `model` is the model OpenRouter routed the call to
++      // (an auto/fallback route names the one it picked); it rides the usage and done events as servedModel, absent when none named one
++      let servedModel = '';
++      const served = ev => { if (servedModel) ev.servedModel = servedModel; return ev; };
+       function* emitFrom(j) {
+         if (!generationId) { generationId = provider.generationId(j && j.id); if (generationId) yield { type: 'generation', id: generationId }; }
++        if (j && typeof j.model === 'string' && j.model.trim()) servedModel = j.model.trim().slice(0, 120);
+         if (j.error) {
+           /* IN-BAND ERROR. OpenRouter has already answered 200 (its keep-alives precede the upstream), so a numeric
+              error.code here IS the HTTP-equivalent status: say so in the adapter's own sentence, which classifyApiError
+@@ -407,10 +412,10 @@
+             }
+           }
+         }
+-        if (j.usage) yield { type: 'usage', usage: generationId ? Object.assign({}, j.usage, { generation_id: generationId }) : j.usage };
++        if (j.usage) yield served({ type: 'usage', usage: generationId ? Object.assign({}, j.usage, { generation_id: generationId }) : j.usage });
+         if (choice && choice.finish_reason && !doneEmitted) {
+           doneEmitted = true;
+-          yield { type: 'done', finishReason: normalizeFinish(choice.finish_reason), truncated: false };
++          yield served({ type: 'done', finishReason: normalizeFinish(choice.finish_reason), truncated: false });
+         }
+       }
+ 
+@@ -443,7 +448,7 @@
+         // finish_reason, a `[DONE]` sentinel, or both; a clean mid-generation FIN carries NEITHER, and the loop
+         // cannot otherwise tell it apart from a finished answer — so it shipped the fragment as a completed,
+         // $0 delivery. Requiring only ONE of the two signals keeps upstreams that send just one reading complete.
+-        if (!doneEmitted) yield { type: 'done', finishReason: null, truncated: !sawSentinel };
++        if (!doneEmitted) yield served({ type: 'done', finishReason: null, truncated: !sawSentinel });
+       } catch (e) {
+         if (isAbort(e, req.signal)) return;   // cancellation: end the stream cleanly so the loop reports 'cancelled'
+         throw e;
+diff --git a/sidecar/runstore.js b/sidecar/runstore.js
+index 35074280..a45e8dc4 100644
+--- a/sidecar/runstore.js
++++ b/sidecar/runstore.js
+@@ -506,6 +506,16 @@
+       // one filter away (GET /api/cron/history). Present only on scheduled runs; every other row stays byte-identical.
+       const cronJobId = str(e.cronJobId).slice(0, 100);
+       if (cronJobId) entry.cronJobId = cronJobId;
++      // SERVED MODEL (CA PHE DIGITAL, company/patches/0016; additive): `model` is the model the run ASKED for; servedModel is
++      // the one the provider's own response named (the Claude CLI's stream, an Anthropic message, an OpenAI-compatible
++      // or OpenRouter chunk), and servedModels every distinct one when it changed mid-run. Absent when no response named a model, so
++      // a reader treats such a row's model as claimed, not verified. Every other row stays byte-identical.
++      const servedModel = str(e.servedModel).trim().slice(0, 120);
++      if (servedModel) {
++        entry.servedModel = servedModel;
++        const many = Array.isArray(e.servedModels) ? e.servedModels.map(m => str(m).trim().slice(0, 120)).filter(Boolean).slice(0, 16) : [];
++        if (many.length > 1) entry.servedModels = many;
++      }
+       // untrusted-content taint the run ended with (additive; absent on a clean run) — sec-taint 09-25
+       const taintedBy = str(e.taintedBy).replace(/\s+/g, ' ').trim().slice(0, 200);
+       if (taintedBy) entry.taintedBy = taintedBy;
+diff --git a/test/served-model.test.js b/test/served-model.test.js
+new file mode 100644
+index 00000000..0ddee1fd
+--- /dev/null
++++ b/test/served-model.test.js
+@@ -0,0 +1,230 @@
++/* node test/served-model.test.js — THE RUN ROW SAYS WHICH MODEL SERVED IT (CA PHE DIGITAL, company/patches/0016).
++
++   `model` on a run row is the model the run ASKED for. The Claude CLI accepts a Fable request on an account without
++   Fable and serves another model, so the asked-for name is a claim, not a fact. Each adapter now reads the model its
++   provider's own response names (the CLI's stream-json, an Anthropic message_start, an OpenAI-compatible chunk) and
++   puts it on its usage / done events as servedModel; the loop keeps the last one (and every distinct one when it
++   changed mid-run); the run row carries servedModel / servedModels. A response that names no model adds nothing. */
++'use strict';
++const A = require('./_assert.js');
++const { EventEmitter } = require('events');
++const { makeClaudeCliProvider, _internals } = require('../sidecar/providers/claude-cli.js');
++const { makeAnthropicProvider } = require('../sidecar/providers/anthropic.js');
++const { makeOpenAICompatibleProvider } = require('../sidecar/providers/openai-compatible.js');
++const { makeOpenRouterProvider } = require('../sidecar/providers/openrouter.js');
++const { runAgentLoop } = require('../sidecar/loop.js');
++const { makeCostEngine } = require('../sidecar/cost.js');
++const { makeRunStore } = require('../sidecar/runstore.js');
++
++// A fake `claude` child that replays stream-json lines (the shape test/provider.claude-cli.test.js uses).
++function fakeSpawn(script) {
++  function spawn(file, args) {
++    const child = new EventEmitter();
++    const stream = () => { const s = new EventEmitter(); s.setEncoding = () => {}; return s; };
++    child.stdout = stream(); child.stderr = stream();
++    child.pid = 4343; child.exitCode = null;
++    const exit = code => { if (child.exitCode != null) return; child.exitCode = code; child.emit('exit', code); child.emit('close', code); };
++    child.kill = () => exit(null);
++    child.stdin = { on() {}, write() {}, end() { setImmediate(run); } };
++    function run() {
++      for (const l of script.lines || []) child.stdout.emit('data', JSON.stringify(l) + '\n');
++      exit(0);
++    }
++    if (args.indexOf('auth') >= 0) setImmediate(run);
++    return child;
++  }
++  return spawn;
++}
++const fakeFs = { statSync() { return { isFile: () => true }; }, writeFileSync() {}, unlinkSync() {} };
++const cli = lines => makeClaudeCliProvider({ spawn: fakeSpawn({ lines }), fs: fakeFs, bin: 'claude', env: { PATH: '', STARNET_CLAUDE_CLI_PERSIST: '0' }, platform: 'linux' });
++async function collect(p, req) { const out = []; for await (const e of p.stream(req)) out.push(e); return out; }
++const init = model => Object.assign({ type: 'system', subtype: 'init', apiKeySource: 'none', tools: [] }, model ? { model } : {});
++const msgStart = model => ({ type: 'stream_event', event: { type: 'message_start', message: Object.assign({ usage: { input_tokens: 4 } }, model ? { model } : {}) } });
++const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } });
++const assistant = model => ({ type: 'assistant', message: Object.assign({ role: 'assistant', content: [{ type: 'text', text: 'ok' }] }, model ? { model } : {}) });
++const result = modelUsage => Object.assign({ type: 'result', subtype: 'success', is_error: false, result: 'ok', stop_reason: 'end_turn', total_cost_usd: 0,
++  usage: { input_tokens: 4, output_tokens: 1 } }, modelUsage ? { modelUsage } : {});
++const req = { model: 'claude-fable-5-2', messages: [{ role: 'user', content: 'hi' }] };
++const servedOn = evs => evs.filter(e => e.type === 'usage' || e.type === 'done').map(e => e.servedModel);
++
++(async () => {
++  // A. Claude CLI: a Fable request served by Fable — every source on the stream names it, usage and done carry it.
++  {
++    const evs = await collect(cli([init('claude-fable-5-2'), msgStart('claude-fable-5-2'), delta('ok'), assistant('claude-fable-5-2'),
++      result({ 'claude-fable-5-2': { inputTokens: 4, outputTokens: 1 } })]), req);
++    A.eq(servedOn(evs), ['claude-fable-5-2', 'claude-fable-5-2'], 'CLI: a Fable request served by Fable says so on its usage and done');
++  }
++  // B. Claude CLI: a Fable request served by another model. The session was SET to Fable (init); the API's own
++  //    message names Opus 4.8, and that wins (modelUsage also lists a helper model the CLI used on the side).
++  {
++    const evs = await collect(cli([init('claude-fable-5-2'), msgStart('claude-opus-4-8'), delta('ok'), assistant('claude-opus-4-8'),
++      result({ 'claude-haiku-4-5': { inputTokens: 900, outputTokens: 40 }, 'claude-opus-4-8': { inputTokens: 4, outputTokens: 1 } })]), req);
++    A.eq(servedOn(evs), ['claude-opus-4-8', 'claude-opus-4-8'], 'CLI: the model the API served, not the one asked for or the init line');
++  }
++  // C. Claude CLI: only the result line names models — the one with the most output is the served one.
++  {
++    const evs = await collect(cli([init(''), delta('ok'), result({ 'claude-haiku-4-5': { outputTokens: 3 }, 'claude-opus-4-8': { outputTokens: 90 } })]), req);
++    A.eq(servedOn(evs), ['claude-opus-4-8', 'claude-opus-4-8'], 'CLI: modelUsage fallback picks the model that wrote the reply');
++  }
++  // D. Claude CLI: a stream that names no model adds no field (the row stays "claimed").
++  {
++    const evs = await collect(cli([init(''), delta('ok'), result(null)]), req);
++    A.eq(servedOn(evs), [undefined, undefined], 'CLI: no model named -> no servedModel');
++    A.ok(evs.every(e => !('servedModel' in e)), 'CLI: the events stay byte-identical when no model is named');
++  }
++  // E. servedModelOf ranks: message > modelUsage > init; unknown lines name none.
++  {
++    const f = _internals.servedModelOf;
++    A.eq(f(init('x')), { model: 'x', rank: 1 }, 'init ranks 1');
++    A.eq(f(result({ y: { outputTokens: 1 } })), { model: 'y', rank: 2 }, 'modelUsage ranks 2');
++    A.eq(f(assistant('z')), { model: 'z', rank: 3 }, 'assistant message ranks 3');
++    A.eq(f(msgStart('w')), { model: 'w', rank: 3 }, 'message_start ranks 3');
++    A.eq(f(delta('t')), null, 'a text delta names none');
++    A.eq(f(null), null, 'null is safe');
++  }
++
++  // F. Anthropic adapter: message_start's message.model rides usage and done; absent when the response names none.
++  {
++    const line = obj => 'data: ' + JSON.stringify(obj);
++    const sse = model => [
++      line({ type: 'message_start', message: Object.assign({ usage: { input_tokens: 3, output_tokens: 0 } }, model ? { model } : {}) }),
++      line({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
++      line({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hi' } }),
++      line({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } }),
++      line({ type: 'message_stop' }), ''
++    ].join('\n');
++    const run = async model => collect(makeAnthropicProvider({ key: 'k', fetch: async () => new Response(sse(model), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }) }),
++      { model: 'claude-fable-5-2', messages: [{ role: 'user', content: 'hi' }] });
++    A.eq(servedOn(await run('claude-fable-5-2')), ['claude-fable-5-2', 'claude-fable-5-2', 'claude-fable-5-2'], 'Anthropic: Fable served by Fable');
++    A.eq(servedOn(await run('claude-opus-4-8')), ['claude-opus-4-8', 'claude-opus-4-8', 'claude-opus-4-8'], 'Anthropic: served by another model');
++    const none = await run('');
++    A.ok(none.every(e => !('servedModel' in e)), 'Anthropic: no model named -> no servedModel');
++  }
++
++  // G. OpenAI-compatible adapter: a chunk's `model` rides usage and done; absent when no chunk names one.
++  {
++    const line = obj => 'data: ' + JSON.stringify(obj);
++    const body = model => [
++      line(Object.assign({ id: 'g1', choices: [{ index: 0, delta: { content: 'Hi' } }] }, model ? { model } : {})),
++      line(Object.assign({ id: 'g1', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 } }, model ? { model } : {})),
++      'data: [DONE]', ''
++    ].join('\n');
++    const run = async model => collect(makeOpenAICompatibleProvider({ key: 'fixture-only', baseUrl: 'https://router.example.test/v1',
++      fetch: async (url) => url.endsWith('/chat/completions') ? new Response(body(model), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }) : new Response('{"data":[]}') }),
++      { model: 'some/auto', messages: [{ role: 'user', content: 'hi' }] });
++    A.eq(servedOn(await run('vendor/picked-model')), ['vendor/picked-model', 'vendor/picked-model'], 'OpenAI-compatible: the model the endpoint named');
++    const none = await run('');
++    A.ok(none.every(e => !('servedModel' in e)), 'OpenAI-compatible: no model named -> no servedModel');
++  }
++
++  // G2. OpenRouter adapter (its own stream reader): the chunk's `model` is the model the route picked.
++  {
++    const line = obj => 'data: ' + JSON.stringify(obj);
++    const body = model => [
++      line(Object.assign({ id: 'gen-1', choices: [{ index: 0, delta: { content: 'Hi' } }] }, model ? { model } : {})),
++      line(Object.assign({ id: 'gen-1', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 } }, model ? { model } : {})),
++      'data: [DONE]', ''
++    ].join('\n');
++    const run = async model => collect(makeOpenRouterProvider({ key: 'k', fetch: async () => new Response(body(model), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }) }),
++      { model: 'openrouter/auto', messages: [{ role: 'user', content: 'hi' }] });
++    A.eq(servedOn(await run('anthropic/claude-sonnet-5-5')), ['anthropic/claude-sonnet-5-5', 'anthropic/claude-sonnet-5-5'], 'OpenRouter: the model the route picked');
++    const none = await run('');
++    A.ok(none.every(e => !('servedModel' in e)), 'OpenRouter: no model named -> no servedModel');
++  }
++
++  // H. The loop keeps the last served model of the run, and every distinct one when it changed mid-run.
++  const loopRun = async served => {
++    let calls = 0;
++    const provider = { async *stream() {
++      const m = served[calls++];
++      const tag = m ? { servedModel: m } : {};
++      if (calls < served.length) {
++        yield { type: 'tool_start', index: 0, id: 'c' + calls, name: 'fs_read' };
++        yield { type: 'tool_args', index: 0, chunk: '{"path":"a.txt"}' };
++        yield { type: 'tool_done', index: 0 };
++        yield Object.assign({ type: 'usage', usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } }, tag);
++        yield Object.assign({ type: 'done', finishReason: 'tool_calls' }, tag);
++      } else {
++        yield { type: 'text', delta: 'done.' };
++        yield Object.assign({ type: 'usage', usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } }, tag);
++        yield Object.assign({ type: 'done', finishReason: 'stop' }, tag);
++      }
++    } };
++    return runAgentLoop({
++      messages: [{ role: 'user', content: 'read a.txt' }], provider, emit: () => {}, cost: makeCostEngine(), model: 'claude-fable-5-2',
++      agentId: 'a', runId: 'r', signal: new AbortController().signal, limits: { maxIters: 6 },
++      capCtx: { canRun: () => true, canUse: () => ({ ok: true }), agentId: 'a' },
++      dispatch: async () => ({ ok: true, content: 'alpha', summary: 'read' })
++    });
++  };
++  {
++    const same = await loopRun(['claude-fable-5-2', 'claude-fable-5-2']);
++    A.eq([same.model, same.servedModel, same.servedModels], ['claude-fable-5-2', 'claude-fable-5-2', undefined], 'loop: one served model -> servedModel only');
++    const changed = await loopRun(['claude-fable-5-2', 'claude-opus-4-8']);
++    A.eq([changed.servedModel, changed.servedModels], ['claude-opus-4-8', ['claude-fable-5-2', 'claude-opus-4-8']], 'loop: a mid-run change keeps the last and lists both');
++    const none = await loopRun([null, null]);
++    A.ok(!('servedModel' in none) && !('servedModels' in none), 'loop: no model named -> no field');
++  }
++
++  // I. The run row: servedModel (and servedModels only when more than one); absent when none was named.
++  {
++    const lines = [];
++    const s = makeRunStore({ io: { readAll: () => [], append: e => lines.push(e) }, clock: { now: () => 1 } });
++    const a = s.record({ runId: 'r1', agentId: 'a', reason: 'done', model: 'claude-fable-5-2', servedModel: 'claude-opus-4-8', servedModels: ['claude-opus-4-8'] });
++    A.eq([a.model, a.servedModel, 'servedModels' in a], ['claude-fable-5-2', 'claude-opus-4-8', false], 'row: requested model kept, served model added');
++    const b = s.record({ runId: 'r2', agentId: 'a', reason: 'done', model: 'x', servedModel: 'y', servedModels: ['x', 'y'] });
++    A.eq(b.servedModels, ['x', 'y'], 'row: every distinct served model when it changed');
++    const c = s.record({ runId: 'r3', agentId: 'a', reason: 'done', model: 'x', servedModel: '', servedModels: null });
++    A.ok(!('servedModel' in c) && !('servedModels' in c), 'row: no served model -> no field (the reader marks it claimed)');
++    A.eq(lines.length, 3, 'rows persisted');
++  }
++
++  // J. Claude CLI persistent child (an agent-loop turn with tools): init comes once per child, each turn's own message
++  //    names its model; the second turn on the same child still says what served it.
++  {
++    const served = ['claude-fable-5-2', 'claude-opus-4-8'];
++    let child = null, total = 0, spawns = 0;
++    const spawn = (file, args) => {
++      const c = new EventEmitter();
++      const pipe = () => { const s = new EventEmitter(); s.setEncoding = () => {}; return s; };
++      c.stdout = pipe(); c.stderr = pipe(); c.pid = 5151; c.exitCode = null;
++      const exit = code => { if (c.exitCode != null) return; c.exitCode = code; c.emit('exit', code); c.emit('close', code); };
++      c.kill = () => exit(null);
++      if (args.indexOf('auth') >= 0) { setImmediate(() => exit(0)); return c; }
++      let n = 0; spawns++;
++      const emit = l => c.stdout.emit('data', JSON.stringify(l) + '\n');
++      c.stdin = { on() {}, end() { setImmediate(() => exit(0)); }, write() {
++        const first = n++ === 0, turn = total++;
++        setImmediate(() => {
++          if (first) emit(init('claude-fable-5-2'));
++          const text = turn === 0 ? '<function_calls>\n<invoke name="fs_read">\n<parameter name="path">a.txt</parameter>\n</invoke>\n</function_calls>' : 'Read it.';
++          emit(msgStart(served[turn])); emit(delta(text)); emit(assistant(served[turn]));
++          emit(Object.assign(result(null), { result: text }));
++        });
++        return true;
++      } };
++      child = c;
++      return c;
++    };
++    const p = makeClaudeCliProvider({ spawn, fs: fakeFs, bin: 'claude', env: { PATH: '' }, platform: 'linux', persistEndGraceMs: 100 });
++    const TOOLS = [{ type: 'function', function: { name: 'fs_read', description: 'read a file', parameters: { type: 'object', properties: { path: { type: 'string' } } } } }];
++    const SYS = { role: 'system', content: 'You are the test agent.' };
++    const t1 = await collect(p, { model: 'claude-fable-5-2', runId: 'pr1', tools: TOOLS, messages: [SYS, { role: 'user', content: 'read a.txt' }] });
++    A.eq(servedOn(t1), ['claude-fable-5-2', 'claude-fable-5-2'], 'persistent CLI: turn 1 names its served model');
++    const r1 = { role: 'assistant', content: t1.filter(e => e.type === 'text').map(e => e.delta).join('') };
++    const tc = {};
++    for (const e of t1) {
++      if (e.type === 'tool_start') tc[e.index] = { id: e.id, type: 'function', function: { name: e.name, arguments: '' } };
++      else if (e.type === 'tool_args') tc[e.index].function.arguments += e.chunk;
++    }
++    r1.tool_calls = Object.keys(tc).sort((x, y) => x - y).map(k => tc[k]);
++    const t2 = await collect(p, { model: 'claude-fable-5-2', runId: 'pr1', tools: TOOLS, messages: [SYS, { role: 'user', content: 'read a.txt' }, r1,
++      ...r1.tool_calls.map(c => ({ role: 'tool', tool_call_id: c.id, content: 'alpha' }))] });
++    A.eq(servedOn(t2), ['claude-opus-4-8', 'claude-opus-4-8'], 'persistent CLI: a later turn on the same child names its own served model');
++    A.eq(spawns, 1, 'persistent CLI: both turns rode ONE child (its init line came once)');
++    if (typeof p.release === 'function') p.release('pr1');
++    if (child) child.kill();
++  }
++
++  A.report('served-model');
++})().catch(e => { console.error(e); process.exit(1); });

@@ -414,6 +414,37 @@ function makeModels(o) {
       seats: rows };
   }
 
+  /* ---- runnableNow: for every crew seat, which of its candidate entries can run NOW ----
+     The station's one-run override allowlist (lib/override-allow.js, StarNet patch 0017) is built from this: the SAME
+     evaluate() the failover tick uses (allowed list, connected, pacer gates incl. the owner's subscription stops, quota
+     closures, the metered rail, refusal blocks, budget and provider-error holds). entriesFor(id, seat) names a seat's
+     candidates (default: its chain). Fail closed: without a pacer measurement nothing is open (evaluate() would skip the
+     subscription gates), and settling providers count as closed (a copy of the settling state, never saved). */
+  async function runnableNow(a) {
+    a = a || {};
+    const pol = policy(), seats = seatChains(pol), c = crew(), F = Object.assign({}, FAILOVER, pol.failover || {}), t = now();
+    const pv = a.providers !== undefined ? a.providers : await providers();
+    let all = a.jobs; if (!Array.isArray(all)) all = await jobs();
+    let m = a.m || null;
+    if (!m) { try { const PZ = require('./pacer.js').makePacer({ root, readOnly: true, quiet: true }); const pst = PZ.loadState(); m = await PZ.measure(pst, all, { fetch: false }); } catch (_) { m = null; } }
+    const ids = Object.keys(c);
+    if (!m || !m.claude || !m.minimax) return { ok: false, why: 'no pacer measurement: nothing is open', seats: Object.fromEntries(ids.map(id => [id, []])) };
+    const runs = seatRuns(t), settling = Object.assign({}, loadState().settling || {});
+    const out = {};
+    for (const id of ids) {
+      const s = seats[id] || null;
+      const cand = (typeof a.entriesFor === 'function' ? a.entriesFor(id, s) : (s ? s.chain : [])) || [];
+      const ctx = { pol, F, t, m, providers: pv, runs, settling: Object.assign({}, settling), refusalBlocks: { [id]: REF.blockedForSeat(seatJobs(all, id).map(j => j.id), { root, now: t, blocks: a.blocks }) }, reserve: !!s && (s.claudeReserve === true || (s.claudeReserve !== false && id === ceoId())) };
+      const open = [];
+      for (const x of cand) {
+        const e = parseEntry(x); if (!e || open.some(o2 => keyOf(o2) === keyOf(e))) continue;
+        if (evaluate(id, e, ctx).ok) open.push({ provider: e.provider, model: e.model });
+      }
+      out[id] = open;
+    }
+    return { ok: true, at: t, seats: out };
+  }
+
   /* ---- check: every chain entry allowed, connected, and a routine-safe tier ---- */
   async function check() {
     const pol = policy(), seats = seatChains(pol), c = crew(), pv = await providers(), problems = [], notes = [];
@@ -516,7 +547,7 @@ function makeModels(o) {
     return change(id, chain, a, 'set the model chain');
   }
 
-  return { root, policy, seatChains, resolveSeat, evaluate, tick, show, check, setPrimary, editChain, change, moves, providers, applyEntry, current, loadState };
+  return { root, policy, seatChains, resolveSeat, evaluate, runnableNow, tick, show, check, setPrimary, editChain, change, moves, providers, applyEntry, current, loadState };
 }
 
 /* The default chain for a new hire: [the interviewed model, candidateDefault, a subscription model if one is connected]
