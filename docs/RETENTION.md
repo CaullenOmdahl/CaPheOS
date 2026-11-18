@@ -73,6 +73,7 @@ The archive of a file that already lives in an `archive/` folder (the handoff ar
 | `company/work/external-actions.jsonl` | 90 days | evidence.js |
 | `company/state/external-clearances.jsonl` | 90 days + every live clearance | external-gate.js check |
 | `company/work/handoffs/archive/*.md` | 30 days (monthly) or 200 KB per file | agents looking for an older thread (`retention.js find to-<name>`) |
+| `company/state/wakes.jsonl` | 30 days (monthly) | dispatch.js --wake-links (the window plus 7 days, from the end) |
 | `company/state/model-moves.jsonl`, `company/state/pacer-log.jsonl`, `company/work/security/locked-changes.jsonl` | 90 / 30 / 90 days | their tools |
 | `company/state/locked/provenance.jsonl` | 14 days | locked-watch.js (from its byte offset), default-branch-watch.js (4 MB tail) |
 | `.starnet-data/station.log` | 50 MB, 5 gzipped copies | people |

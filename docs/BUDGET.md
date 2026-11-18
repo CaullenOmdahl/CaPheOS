@@ -48,6 +48,7 @@ station actually started it (`started`, HTTP 200) or refused it.
 | `act` | an external-gate `spend` act, with its amount | the clearance row, as before |
 | `watchdog` | the station's one remaining routine (below) | starts nothing |
 | `halt`, `onboard`, `pacer` | a soft halt's shutdown routine, the kickoff run, a pacer re-fire after a refusal | their own rules |
+| `delegate` | **not a door either**: a child run a lead's `team.dispatch` started inside its own run (a row with `parentRunId`). The station starts it, so it never passes `admit()`; `budget.js doors` names it `delegate`, with its parent run, its lead and the door that started the family (`parentDoor`), and never counts it unattributed. | the lead's run's rules; its spend is the lead's (below) |
 | `schedule` | **not a door**: a run the station's own schedule started. No code calls it; `budget.js doors` names a run so when no admitted start explains it. With the dispatcher owning the schedule there should be none, and the budget-drift duty flags any. |
 
 The log is `company/state/admit-log.jsonl` (one row per call: `door, kind, seat, decision, reason`, plus the routine,
@@ -59,6 +60,21 @@ node company/tools/budget.js doors          # the last 24 h of station runs, by 
 node company/tools/budget.js coverage       # the same; exits 1 and names any run no door explains
 node company/tools/budget.js status         # what the station caps should be, and admit() counts by door
 ```
+
+### Delegated runs are the lead's family
+
+A lead's `team.dispatch` starts each worker's child run on the WORKER's own agentId and model, and the lead waits for
+it. The work and the money are the lead's, so (`lib/family.js`):
+
+- **Spend.** The per-agent share the dispatcher holds a seat at, and the per-seat spend it hands to the lanes, count a
+  child run's spend toward the LEAD's seat (the seat at the top of its `parentRunId` chain; while the lead's own run is
+  still going, its `delegatedBy`), never toward the worker's own share (`cap-numerator.js compute({ family: true })`,
+  which also lists it as `delegated: { lead: { worker: usd } }`). A child whose lead cannot be told is booked to
+  `(delegated: lead unknown)`, not to the worker. The company total and the daily cap's numerator do not change: only
+  whose share a dollar is.
+- **Busy.** A seat with a child run in flight (the station's run table, `GET /api/state/snapshot`, lists it as source
+  `delegated` or `subagent`) is busy: the dispatcher does not wake it and no lane starts on it until the child ends (`DELEGATED BUSY` in the dispatch log, once per change). An unreadable run table holds
+  nobody.
 
 ## Who starts scheduled loops: `runtime.scheduler`
 
@@ -196,6 +212,9 @@ mock station): the 16-run bypass reproduced and gone (24 h of station ticks star
 `lanes.js`; the same `admit()` answer for a blocking seat), dispatcher outage (one top-priority alert, zero work runs),
 drift (both numbers named; apply fixes it), reversibility (back to `station`: routines, schedules and old behaviour
 intact; idempotent both ways). Selftests: `budget.js`, `budget-migrate.js` (the dry run writes nothing), `watchdog.js`.
+`company/tools/tests/delegation.test.js`: a family fixture whose per-family and per-seat sums equal the runs.jsonl total;
+a child run is door `delegate`; a seat with a live child run is not woken (the real dispatch.js on the mock station);
+a wake writes one `wakes.jsonl` row with its items; `linkItems` reports the linked share.
 
 ## Plans and prepaid credit (owner ruling 2026-11-18)
 

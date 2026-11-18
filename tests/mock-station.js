@@ -122,11 +122,13 @@ function observe(name, payload) {
   ring.push({ seq: obsSeq, f }); while (ring.length > 512) ring.shift();
   for (const w of watchers) { try { w.write(f); } catch (_) {} }
 }
-// POST /__live {agentId, routine?, steps?: [[tool, args]], usd?, text?}: a fake in-flight run, announced on the observer feed
+// POST /__live {agentId, routine?, steps?: [[tool, args]], usd?, text?, parentRunId?}: a fake in-flight run, announced on the
+// observer feed. With parentRunId it is a delegated child (a lead's team.dispatch worker): on the worker's agentId, its loop
+// routine untouched, listed in GET /api/state/snapshot as source "delegated" (the station's run table names it so)
 function startLive(B) {
   const runId = 'live-' + (S.runSeq++);
-  const job = S.cron.jobs.find(j => j.agentId === (B.agentId || 'agent') && (!B.routine || j.name === B.routine));
-  const r = { runId, agentId: B.agentId || 'agent', startedAt: Date.now() - (Number(B.ageSec) || 0) * 1000, source: 'cron', streamId: 'cron-' + runId };
+  const job = B.parentRunId ? null : S.cron.jobs.find(j => j.agentId === (B.agentId || 'agent') && (!B.routine || j.name === B.routine));
+  const r = { runId, agentId: B.agentId || 'agent', startedAt: Date.now() - (Number(B.ageSec) || 0) * 1000, source: B.parentRunId ? 'delegated' : 'cron', streamId: (B.parentRunId ? 'team-' : 'cron-') + runId };
   S.live.push(r); if (job) { job.inFlight = true; job.lastRunId = runId; }
   observe('agent.run.start', { runId, agentId: r.agentId, model: job ? job.model : '', trigger: 'cron', streamId: r.streamId });
   (B.steps || [['fs_read', 'company/CHARTER.md']]).forEach(([n, a], i) => { observe('agent.tool_call', { runId, agentId: r.agentId, callId: 'c' + i, name: n, argsSummary: a }); observe('agent.tool_result', { runId, callId: 'c' + i, ok: true, summary: 'ok' }); });

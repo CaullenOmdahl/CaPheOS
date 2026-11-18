@@ -190,7 +190,10 @@ test('2 coverage: 100% of the runs in a 24 h fixture carry a door; one unattribu
   assert.equal(j.runs.length, runs.length); assert.ok(j.runs.every(r => r.door), 'every run has a door');
   assert.equal(j.byDoor.schedule, undefined, 'no run is the station schedule\'s: ' + JSON.stringify(j.runs.filter(r => r.door === 'schedule')));
   for (const d of Object.keys(seat)) assert.equal(j.byDoor[d] >= 23, true, d + ': ' + j.byDoor[d]);
-  assert.ok(j.runs.filter(r => r.child).every(r => r.door === 'dispatch'), 'a child run carries its parent\'s door');
+  const kids = j.runs.filter(r => r.child);
+  assert.ok(kids.length > 0 && kids.every(r => r.door === 'delegate' && r.parentDoor === 'dispatch' && r.lead === 'agent' && /^r-/.test(r.parentRunId)), 'a child run is door "delegate", with its parent run, its lead and the family\'s door: ' + JSON.stringify(kids[0]));
+  assert.equal(j.byDoor.delegate, kids.length, 'budget.js doors reports the delegate door');
+  assert.ok(!j.unattributed.some(r => r.child), 'no child run is unattributed');
   // one run nobody admitted
   fs.appendFileSync(path.join(c.T, '.starnet-data/workspaces/runs.jsonl'), JSON.stringify({ runId: 'ghost-1', agentId: 'mystery', startedAt: now - 30 * MIN, endedAt: now - 29 * MIN, usd: 0.2 }) + '\n');
   p = c.node([path.join(TOOLS, 'budget.js'), 'coverage']);
