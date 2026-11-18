@@ -47,8 +47,16 @@ case "${1:-backup}" in
     stamp="$(date -u +%Y%m%dT%H%M%SZ)"; n=0; while [[ -e "$DIR/$stamp.tar.gz" ]]; do n=$((n+1)); stamp="$(date -u +%Y%m%dT%H%M%SZ)_$n"; done; out="$DIR/$stamp"
     mapfile -t P < <(paths)
     [[ ${#P[@]} -gt 0 ]] || { echo "nothing to back up (not founded?)"; exit 1; }
-    tar -czf "$out.tar.gz" "${P[@]}"
-    { find "${P[@]}" -type f -print0 | sort -z | xargs -0 sha256sum; echo "$(sha256sum "$out.tar.gz" | cut -d' ' -f1)  ARCHIVE"; } > "$out.sha256"
+    # The company keeps working while this runs: a seat may write or remove a file under company/work mid-read. GNU tar
+    # then exits 1 ("file changed as we read it") with a complete, readable archive; 2 or more is a real failure. The
+    # digests are taken FROM THE ARCHIVE, never from the live tree afterwards, so a file that changed between the read
+    # and the hash can no longer leave an archive that fails its own verify (or, under set -e, no digest at all).
+    rc=0; ( umask 077; tar -czf "$out.tar.gz" "${P[@]}" ) || rc=$?
+    if [[ $rc -gt 1 ]]; then rm -f "$out.tar.gz"; echo "FAIL tar exited $rc; nothing was kept" >&2; exit 1; fi
+    [[ $rc = 1 ]] && echo "note: files changed while they were read; the snapshot holds what was read, and its digests match it" >&2
+    tmpd="$(mktemp -d)"; tar -xzf "$out.tar.gz" -C "$tmpd"
+    { ( cd "$tmpd" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sed 's#  \./#  #' ); echo "$(sha256sum "$out.tar.gz" | cut -d' ' -f1)  ARCHIVE"; } > "$out.sha256"
+    rm -rf "$tmpd"
     chmod 600 "$out.tar.gz" "$out.sha256"
     verify "$out.tar.gz" >/dev/null && echo "backup $out.tar.gz ($(du -h "$out.tar.gz" | cut -f1))" ;;
   list) ls -1 "$DIR"/*.tar.gz 2>/dev/null | sort | while read -r f; do echo "$(basename "$f" .tar.gz)  $(du -h "$f" | cut -f1)"; done ;;
