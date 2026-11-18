@@ -29,7 +29,8 @@
  *   node company/tools/hire.js pick      --round <r> --agent <id> --by <name> --why "<totals and why>" [--title ..] [--functions ..] [--template ..] [--access ask] [--name ..]
  *        the deciding seat's pick, recorded (scorecard.md, decisions.md, round log; the pick handoff closed); the hire
  *        (desk, loop, inbox, dossier, releases, the new seat's first-session handoff) follows at once under the hiring level
- *   node company/tools/hire.js open ... [--functions a,b] [--template <seat>] [--title ".."] [--pick-rule scores [--min 3.5]]
+ *   node company/tools/hire.js open ... [--functions a,b] [--template <seat>] [--title ".."] [--pick-rule scores [--min 3.5]] [--schedule "<cron>"]
+ *        (--schedule: the hire's loop cadence, used when the pick is finished into the hire; default every 2 hours)
  *   node company/tools/hire.js hire      --round <r> --agent <id> --title "Sales Lead" --by <name> --approved "<who decided>, <where and when>" [--access full|ask]
  *                                        [--schedule "<cron expression>"] [--name <office name>]   (default: every 2 hours)
  *                                        [--template <seat>]   start the charter from company/roles/templates/<seat>.md
@@ -672,6 +673,7 @@ async function finishHire(dir, slug) {
   const args = { round: slug, agent: p.agentId, title: p.title || round.role, by: p.by, approved: p.approved };
   if (p.functions) args.functions = String(p.functions);
   if (p.template) args.template = String(p.template);
+  if (round.schedule) args.schedule = String(round.schedule);   // open --schedule
   if (p.access) args.access = String(p.access);
   if (p.officeName) args.name = String(p.officeName);
   const r = await soft(() => hire(args));
@@ -1314,6 +1316,8 @@ async function selftest() {
     const round = { slug, role: need(a, 'role'), manager, openedBy: need(a, 'by'), openedAt: new Date().toISOString(), request: a.request ? String(a.request).slice(0, 1000) : null, candidates: [], hired: null };
     // what the hire takes (used when the pick is recorded) and an optional scorecard rule that picks without a turn
     for (const k of ['functions', 'template', 'title']) if (a[k] && a[k] !== true) round[k] = String(a[k]);
+    // the hire's loop cadence (else every 2 hours): an idea seat that reads the web twice a day need not wake twelve times
+    if (a.schedule && a.schedule !== true) { if (String(a.schedule).trim().split(/\s+/).length !== 5) out(2, { ok: false, error: '--schedule is a five-field cron expression, for example "30 7,19 * * *"' }); round.schedule = String(a.schedule).trim(); }
     if (a['pick-rule'] === 'scores') round.pickRule = { type: 'scores', file: 'scores.json', min: Number.isFinite(Number(a.min)) ? Number(a.min) : 3.5, setBy: round.openedBy };
     saveRound(dir, round);
     fs.writeFileSync(path.join(dir, 'log.md'), '# Hiring round ' + slug + ': ' + round.role + '\n\n');

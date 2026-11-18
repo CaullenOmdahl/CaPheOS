@@ -10,6 +10,8 @@
      test or a kill. The combiner never promotes its own idea.
      Reading outside pages locks a run out of the terminal for the rest of that run (StarNet's outside-content lock):
      run the terminal steps (inbox, verdicts) first, read the web second, write the cards last.
+     Open the round with --schedule (for example "30 7,19 * * *", twice a day): the default loop is every 2 hours, which a
+     reading seat does not need and which burns tokens.
      Hire with node company/tools/hire.js ... --template idea-combiner. Write the person from how inventive traders,
      designers and researchers really find angles, not from a listing's adjectives. -->
 

@@ -125,3 +125,10 @@ test('crew mix: a crew of careful seats with nobody proposing is noted, a mixed 
   const mixed = profile.crewMix([['dry', 'tester'], ['upbeat', 'scout'], ['warm', 'combiner'], ['composed', 'builder'], ['blunt', 'contrarian']].map(([p, a]) => ({ preset: p, archetype: a })));
   assert.deepEqual(mixed.notes, []);
 });
+
+test('hire.js: open --schedule is stored on the round and used when the pick is finished into the hire', () => {
+  const src = fs.readFileSync(path.join(REPO, 'company', 'tools', 'hire.js'), 'utf8');
+  assert.match(src, /round\.schedule = String\(a\.schedule\)\.trim\(\)/);
+  assert.match(src, /if \(round\.schedule\) args\.schedule = String\(round\.schedule\)/);
+  assert.match(src, /schedule: String\(a\.schedule \|\| '0 \*\/2 \* \* \*'\)/, 'hire() still reads args.schedule, default every 2 hours');
+});

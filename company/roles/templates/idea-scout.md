@@ -9,6 +9,8 @@
      picks a cheap test or kills the card. The scout never promotes its own idea.
      Reading outside pages locks the run out of the terminal for the rest of that run (StarNet's outside-content lock).
      That is expected: a scout's run reads and writes cards; the counterpart tests in its own run.
+     Open the round with --schedule (for example "30 7,19 * * *", twice a day): the default loop is every 2 hours, which a
+     reading seat does not need and which burns tokens.
      Hire with node company/tools/hire.js ... --template idea-scout. The people owner fills the person from how the best
      idea people in this domain really work (traders who post their process, community researchers, growth hackers),
      not from a job listing's adjectives; Scope and KPIs below may be tightened from listings. -->
