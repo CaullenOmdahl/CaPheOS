@@ -518,15 +518,17 @@ test('a seat in the middle of a routine run still speaks, talk only for that tur
   assert.ok(/_\d\d:\d\d: Sharon is in the middle of a routine run/.test(R('company/work/meetings/meeting-' + co.localParts(new Date()).date + '.md')), 'one dim line in the minutes');
 });
 
-test('workspace-busy: a routine that took the company folder mid-turn gets one dim line, and the turn carries on', async () => {
+test('a turn\'s tool steps are kept on its entry (the page\'s "· Name: …" lines); workspace-busy gets one dim line and the turn carries on', async () => {
   const { M, runner } = fresh({ seats: ['dave'], leader: 'dave' });
   const wait0 = runner.wait;
-  runner.wait = async (runId, onEvent) => { if (onEvent) { onEvent({ name: 'agent.tool_result', payload: { ok: false, summary: 'workspace-busy' } }); onEvent({ name: 'agent.tool_result', payload: { ok: false, summary: 'workspace-busy' } }); } return wait0(runId, onEvent); };
+  runner.wait = async (runId, onEvent) => { if (onEvent) { onEvent({ name: 'agent.tool_call', payload: { name: 'fs_read', argsSummary: 'company/CHARTER.md' } }); onEvent({ name: 'agent.tool_call', payload: { name: 'fs_write', argsSummary: 'company/work/x.md' } }); onEvent({ name: 'agent.tool_result', payload: { ok: false, summary: 'workspace-busy' } }); onEvent({ name: 'agent.tool_result', payload: { ok: false, summary: 'workspace-busy' } }); } return wait0(runId, onEvent); };
   runner.script({ dave: 'Answered without writing.' });
   await M.say({ text: 'Go.' }); await idle(M);
   const n = kinds(M, 'note').filter(e => /routine is using the company folder; Dave answers without changing files/.test(e.text));
   assert.strictEqual(n.length, 1, 'once per turn');
-  assert.ok(kinds(M, 'say').some(e => e.who === 'dave' && e.text === 'Answered without writing.'));
+  const say = kinds(M, 'say').find(e => e.who === 'dave' && e.text === 'Answered without writing.');
+  assert.deepStrictEqual(say && say.tools, [{ name: 'fs_read', args: 'company/CHARTER.md' }, { name: 'fs_write', args: 'company/work/x.md' }], 'the steps, in order');
+  assert.ok(!/fs_read/.test(R('company/work/meetings/meeting-' + co.localParts(new Date()).date + '.md')), 'not in the minutes (every word said, as at the table)');
 });
 
 test('state: under company/state/meetings, mode 600, read bounded, covered by retention', async () => {
