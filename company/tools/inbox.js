@@ -28,6 +28,11 @@
  * must pass the plain-language check (code plain, with a `suggestion`): at most two short sentences, no jargon, ids,
  * paths or stray figures, what the owner gets or risks, and what happens if they skip it.
  *
+ * A STORED KEY IS NOT ASKED AGAIN: an ask with a secret field whose secrets/<name> already holds a key is refused (code
+ * secret-exists) unless --changed says what is different (it stopped working, it was rotated); an old row that reads as
+ * a key request gets no key field when that key is stored, and an approval or gate card never gets one.
+ * `--technical "..."` is kept on the row and shown collapsed as "Technical details (for the crew)".
+ *
  * HOW A QUESTION READS. `--message` is what the owner sees first: two short conversational sentences — what you need, what they get,
  * what happens if they say no. Evidence, numbers, alternatives and ids go in `--details`, shown collapsed under "More
  * detail". `ask` warns (field `warnings`) when there is no message, or it is long (> 400 chars) or dense with jargon.
@@ -414,8 +419,14 @@ function asksForCredential(text) {
 }
 /* secretHint(row) — an old question that asks for a key, token or credential (and has no secret field) gets a secure
  * field as an extra option, with a suggested file name. null when the text does not ask for one. */
+// the company's key folder (env INBOX_SECRETS_DIR: tests only)
+const secretsDir = () => process.env.INBOX_SECRETS_DIR || co.SECRETS_DIR;
+/* secretStored(name) -> true when secrets/<name> already holds a key (a non-empty file) */
+function secretStored(name) { try { return safeSecretName(name) && fs.statSync(path.join(secretsDir(), String(name))).size > 0; } catch (_) { return false; } }
 function secretHint(q) {
   if (!q || (q.form && (q.form.fields || []).some(f => f.type === 'secret'))) return null;
+  // never on an approval or gate card (it asks for a decision, not a key)
+  if (isApprovalRow(q)) return null;
   const t = String(q.q || '') + ' ' + String(q.message || '');
   if (!asksForCredential(t)) return null;
   const skip = new Set(['a', 'an', 'the', 'free', 'read', 'only', 'read-only', 'new', 'second', 'first', 'our', 'your', 'own', 'one', 'paid', 'live', 'gate', 'api', 'no', 'its', 'their']);
@@ -425,7 +436,10 @@ function secretHint(q) {
   if (m) { const words = m[1].trim().split(/\s+/).filter(w => !skip.has(w.toLowerCase().replace(/[^a-z-]/g, ''))); base = (words.pop() || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); }
   const kindWord = /private key/i.test(t) && !/api key/i.test(t) ? 'private-key' : /token/i.test((m && m[0]) || '') ? 'api-token' : 'api-key';
   const name = base && base.length <= 30 ? base + '-' + kindWord : 'key-' + String(q.id || 'x').replace(/^q-/, '');
-  return { name: safeSecretName(name) ? name : 'key-' + String(q.id || 'x').replace(/[^a-z0-9]/gi, '') };
+  const hint = { name: safeSecretName(name) ? name : 'key-' + String(q.id || 'x').replace(/[^a-z0-9]/gi, '') };
+  // the key is already stored: no second key field, unless the asker said what changed (it stopped working, rotated)
+  if (secretStored(hint.name) && !String(q.changed || '').trim()) return null;
+  return hint;
 }
 /* formOf(row) — the form a question is answered with: its own, or (an old row) Approve/Decline + reason. A row that
  * asks for a key without a secret field gets an optional secret field `key` beside Approve/Decline. There is no
@@ -693,6 +707,9 @@ function openQuestions() {
       if (x.snoozedUntil && Date.parse(x.snoozedUntil) > now) o.snoozedUntil = x.snoozedUntil;
       const hint = secretHint(x); if (hint) o.secretHint = hint;
       if (x.stored) o.stored = x.stored;
+      // an owner card (lib/owner-card.js): the plain parts, the collapsed technical part, the typed effect
+      if (x.technical) o.technical = x.technical;
+      if (x.card) { o.card = true; o.consequence = x.consequence || null; o.recommendation = x.recommendation || null; o.effect = x.effect || null; if (x.expiresAt) o.expiresAt = x.expiresAt; }
       if (x.approval) o.approval = { category: x.approval.category, actionDigest: x.approval.actionDigest || null, expiresAt: x.approval.expiresAt || null, default: 'deny' };
       o.secretOnly = secretOnly(o.form);
       const qo = questionsOf(x);
@@ -727,6 +744,12 @@ function ask(o) {
   if (rawQs) { questions = normalizeQuestions(rawQs); kind = 'multi'; }
   else if (rawForm) { form = normalizeForm(rawForm); kind = 'form'; }
   else { form = normalizeForm(expandKind(kind || 'approve', o.spec)); kind = kind || 'approve'; }
+  // a key that is already stored is not asked for again, unless --changed says why (it stopped working, it was rotated)
+  if (!String(o.changed || '').trim()) {
+    const secretNames = [].concat(form ? form.fields : [], ...(questions || []).map(x => (x.form && x.form.fields) || [])).filter(f => f && f.type === 'secret' && f.name).map(f => f.name);
+    const have = secretNames.filter(secretStored);
+    if (have.length) throw Object.assign(new Error('Not asked: the key ' + have.map(n => 'secrets/' + n).join(', ') + ' is already stored. Use it (read it with co.secret(\'' + have[0] + '\') in a tool); if it stopped working or must be replaced, ask again with --changed "<what is different now>".'), { code: 'secret-exists', stored: have });
+  }
   if (!o.scopeExempt) { const sc = ownerScopeCheck({ from: o.from, about: o.about, message, details, q, questions: rawQs, approval: o.approval, gate: o.gate, fixedGate: o.fixedGate, changed: o.changed }); if (sc) throw Object.assign(new Error(sc.error), { code: sc.code, suggestion: sc.suggestion, route: sc.route, prior: sc.prior }); }
   // one decision per question: a single Approve/Decline that bundles several decisions is refused, with the split ready
   if (kind === 'approve' && !o.gate && !o.oneDecision) {
@@ -741,6 +764,7 @@ function ask(o) {
   if (o.batch) row.batch = o.batch; if (o.gate) row.gate = o.gate;
   if (o.changed && String(o.changed).trim()) row.changed = String(o.changed).replace(/\s+/g, ' ').trim().slice(0, 300);   // asked again after a "not now": what changed
   if (o.approval) row.approval = o.approval;   // approvals.js: category, canonical params, actionDigest, expiresAt, dependsOn
+  if (o.technical && String(o.technical).trim()) row.technical = String(o.technical).trim().slice(0, LIMITS.details);   // shown collapsed: Technical details (for the crew)
   append(row);
   return { row, warnings: styleWarnings(message, details) };
 }
@@ -962,7 +986,7 @@ function out(code, obj) { console.log(JSON.stringify(obj, null, 1)); process.exi
 
 module.exports = { withdraw, withdrawnSince, reclassify, callerSeat, plainFieldKinds, secretOnly, storeOnlyAction, normalizeQuestions, decisionItems, inferQuestions, followUpOf, questionsOf, computeParts, answerParts, recordStored,
   shellAsk, composerCheck, ownerScopeCheck, viaFramework, routeAdvice, asksForCredential, openQuestions, state, readAll, ask, answer, snooze, normalizeForm, expandKind, formOf, checkAnswer, plainAnswer, secretHint, sliderWords,
-  messageParts, styleWarnings, safeSecretName, KINDS, FIELD_TYPES, VERDICTS, FILE, deliver, isOwner };
+  messageParts, styleWarnings, safeSecretName, secretStored, KINDS, FIELD_TYPES, VERDICTS, FILE, deliver, isOwner };
 
 /* ---- selftest: a scratch inbox, owner dir and governance root ---- */
 function selftest() {
@@ -970,6 +994,7 @@ function selftest() {
   const T = fs.mkdtempSync(path.join(os.tmpdir(), 'inbox-selftest-'));
   process.env.PM_INBOX_FILE = path.join(T, 'company', 'pm-inbox.jsonl'); process.env.OWNER_DIR = path.join(T, 'company', 'owner');
   process.env.PROVENANCE_ROOT = T; require('./provenance.js').pinUnderStation(false);   // the owner channel's provenance (lib/owner-channel.js) is this fixture's
+  process.env.INBOX_SECRETS_DIR = path.join(T, 'secrets');   // the fixture's own key folder (a stored key is not asked again)
   const cases = []; const t = (n, c, info) => { cases.push(!!c); console.log((c ? 'ok   ' : 'FAIL ') + n + (c || info === undefined ? '' : '  ' + JSON.stringify(info).slice(0, 300))); };
   const throws = f => { try { f(); return null; } catch (e) { return e.message; } };
   // the fixtures below test the form, answer and message machinery, not the owner-scope rule (its own cases are at the end)
@@ -1183,7 +1208,7 @@ if (a.cmd === 'ask') {
   try {
     let questions = null;
     if (a.questions && a.questions !== true) { try { questions = JSON.parse(a.questions); } catch (e) { out(2, { ok: false, error: '--questions is not JSON: ' + e.message }); } }
-    const { row, warnings } = ask({ from: a.from, about: a.about, message: a.message, details: a.details, q: a.q, blocking: a.blocking, kind: a.kind || spec.kind, spec, form, questions, oneDecision: !!a['one-decision'], scopeExempt: a.via && viaFramework(a.via) ? 'framework' : undefined, changed: a.changed && a.changed !== true ? a.changed : undefined });
+    const { row, warnings } = ask({ from: a.from, about: a.about, message: a.message, details: a.details, q: a.q, blocking: a.blocking, kind: a.kind || spec.kind, spec, form, questions, oneDecision: !!a['one-decision'], technical: a.technical && a.technical !== true ? a.technical : undefined, scopeExempt: a.via && viaFramework(a.via) ? 'framework' : undefined, changed: a.changed && a.changed !== true ? a.changed : undefined });
     out(0, Object.assign({ ok: true, id: row.id, kind: row.kind || 'approve', status: 'open', note: 'the owner answers on Today in the console' + (row.questions ? ', one question at a time; each answer' : '; the answer') + ' comes back to you as an owner message naming ' + row.id }, warnings.length ? { warnings } : {}));
   } catch (e) { out(2, Object.assign({ ok: false, error: e.message }, e.code === 'bundled' || e.code === 'plain' ? { suggestion: e.suggestion } : {}, e.route ? { route: e.route } : {}, e.prior ? { prior: e.prior } : {}, e.code ? { code: e.code } : {})); }
 }

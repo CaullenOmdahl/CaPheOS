@@ -282,8 +282,11 @@ test('R-B: governance first: auto acts and logs, notify acts, logs and tells (no
   assert.equal(jsonl(T, 'company/pm-inbox.jsonl').filter(r => r.type === 'ask').length, 1, 'one record: the approve one');
   assert.equal(decisionsHas(T, /Sam goes ahead: Rename the helper/).length, 1, 'auto logs');
   assert.equal(decisionsHas(T, /Sam goes ahead: Move the research seat/).length, 1, 'notify logs');
-  assert.equal(jsonl(T, 'company/owner/outbound.jsonl').filter(r => /Sam decided to Move the research seat/.test(r.text)).length, 1, 'notify tells');
-  assert.ok(!jsonl(T, 'company/owner/outbound.jsonl').some(r => /Rename the helper/.test(r.text)), 'auto does not tell');
+  // notify tells in the owner's digest (lib/owner-notice.js when it is in the tree, else the owner channel), in plain words
+  const told = ['company/owner/digest.jsonl', 'company/owner/outbound.jsonl'].filter(f => fs.existsSync(path.join(T, f))).flatMap(f => jsonl(T, f));
+  assert.equal(told.filter(r => /Sam decided to move the research seat/i.test(r.text)).length, 1, 'notify tells');
+  assert.ok(!told.some(r => /Self-governance|is set to notify/.test(r.text)), 'the governance internals stay out of the owner\'s line');
+  assert.ok(!told.some(r => /Rename the helper/.test(r.text)), 'auto does not tell');
   assert.deepEqual(run(T, 'return I.openQuestions().map(q => q.id);'), [appr.id], 'the badge counts only the approve record');
   const t0 = Date.parse(run(T, 'return A.get(' + JSON.stringify(appr.id) + ').askedAt;'));
   assert.deepEqual(run(T, 'A._S.now = () => ' + (t0 + 16 * 60e3) + '; return A.remind().then(r => r.ids);'), [appr.id], 'reminders cover only the record');

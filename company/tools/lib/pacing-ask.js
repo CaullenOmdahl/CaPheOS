@@ -18,8 +18,11 @@
  *     situation changes materially (the cause moves from today's line to the weekly stop, or the week rises by
  *     MATERIAL_PTS points since the last ask or answer). One open pacer question at a time.
  *  3. Self-governance (company/state/governance.json, category "budget"): at auto or notify the company decides pacing
- *     alone, so the question is a non-blocking FYI (the pacer keeps its current cutoffs) plus one owner sentence; at
- *     approve (or triage) it is a blocking question and the cutoffs stay as they are until the owner answers.
+ *     alone, so the question is a non-blocking FYI (the pacer keeps its current cutoffs) plus one plain line in the
+ *     owner's daily digest (lib/governance.js fyi); at approve (or triage) it is a blocking question and the cutoffs stay
+ *     as they are until the owner answers.
+ * The owner reads plain words only; the file, tool and settings page it is recorded in are under "Technical details
+ * (for the crew)".
  *
  * setLimit() is the only writer of these keys: an atomic write, a provenance record (locked-watch.js accepts it as
  * pacer.js's own write) and a dispatch-log line.
@@ -130,9 +133,11 @@ function questionFor(sit, fyi) {
     : sit.name + ' is ' + used + '% used this week and resets ' + reset + '. ' + paused + ' How much of this week\'s ' + sit.name + ' may routines use?';
   const who = sit.held.length ? 'Waiting for ' + sit.name + ': ' + sit.held.join(', ') + '.' : '';
   const off = sit.moved.length ? 'Moved off ' + sit.name + ': ' + sit.moved.join(', ') + '.' : '';
-  const details = ['Week used: ' + f1(sit.usedPct) + '%. Today\'s line: ' + f1(sit.line) + '% (' + (sit.useNow ? sit.useNow + '% of the way to using it now' : 'spread evenly over the week') + '). Weekly stop: ' + sit.weekCap + '%. Resets ' + reset + '.',
-    who, off, '"Use another model meanwhile" asks the people seat to give these seats a fallback in their model chain (Settings › Models and subscriptions: console:#/settings/models).',
-    'The answer is recorded in company/work/finance/pacing-policy.json through pacer.js limit and takes effect on the next dispatcher tick.'].filter(Boolean).join('\n');
+  const details = ['Used this week: ' + Math.round(sit.usedPct) + '%. Allowed by today: ' + Math.round(sit.line) + '%. Weekly stop: ' + sit.weekCap + '%. It resets ' + reset + '.',
+    who, off, '"Use another model meanwhile" asks the crew to let these seats work on another AI until ' + sit.name + ' is free again.'].filter(Boolean).join('\n');
+  const technical = ['Week used: ' + f1(sit.usedPct) + '%. Today\'s line: ' + f1(sit.line) + '% (' + (sit.useNow ? sit.useNow + '% of the way to using it now' : 'spread evenly over the week') + '). Weekly stop: ' + sit.weekCap + '%. Cause: ' + (sit.cause === 'stop' ? 'the weekly stop' : 'today\'s line') + '.',
+    '"Use another model meanwhile" hands the people seat a fallback link for each seat\'s model chain (Settings › Models and subscriptions: console:#/settings/models).',
+    'The answer is recorded in ' + POLICY_REL + ' through pacer.js limit and takes effect on the next dispatcher tick.'].join('\n');
   const min = Math.min(100, Math.max(1, Math.ceil(sit.usedPct)));
   const stop = Math.min(100, Math.max(min, Math.round(sit.weekCap)));
   const form = { fields: [
@@ -145,7 +150,7 @@ function questionFor(sit, fyi) {
     { id: 'keep', label: 'Keep paused', verdict: 'no', needs: 'none' },
     { id: 'other', label: 'Use another model meanwhile', verdict: 'done', needs: 'none' },
   ] };
-  return { message, details, form };
+  return { message, details, technical, form };
 }
 
 function openPacerQuestion(root) {
@@ -213,11 +218,11 @@ function tick(a) {
     if (prev && prev.weekStart === sit.weekStart && !material(prev, sit)) continue;   // asked this week; nothing changed
     const fyi = companyDecides(govLevel(root, a.govOpts));
     const q = questionFor(sit, fyi);
-    const r = withInbox(root, ib => ib.ask({ scopeExempt: 'framework', from: 'Pacer', about: ABOUT(key), message: q.message, details: q.details, blocking: !fyi, form: q.form, batch: fyi ? 'fyi' : null }));
+    const r = withInbox(root, ib => ib.ask({ scopeExempt: 'framework', from: 'Pacer', about: ABOUT(key), message: q.message, details: q.details, technical: q.technical, blocking: !fyi, form: q.form, batch: fyi ? 'fyi' : null }));
     st.limitAsks[key] = { qid: r.row.id, status: 'open', at: new Date().toISOString(), weekStart: sit.weekStart, usedPct: sit.usedPct, cause: sit.cause, fyi,
       situation: { name: sit.name, held: sit.held, moved: sit.moved, usedPct: sit.usedPct, cause: sit.cause, weekStart: sit.weekStart } };
     if (fyi) {
-      try { require('./governance.js').notify('FYI: ' + sit.name + ' is ' + Math.round(sit.usedPct) + '% used this week, so the pacer paused routines on it under the current cutoffs. You can change them on Today (' + r.row.id + ').', { root, from: 'Pacer' }); } catch (_) {}
+      try { require('./governance.js').fyi({ from: 'Pacer', text: 'FYI: ' + sit.name + ' is ' + Math.round(sit.usedPct) + '% used this week, so routines are paused on it under the current limits. You can change them on Today.', technical: 'Pacer question ' + r.row.id + ' (non-blocking: budget is the company\'s in self-governance).', key: ABOUT(key) + ':' + sit.weekStart }, { root }); } catch (_) {}
     }
     log('PACER ASK ' + r.row.id + (fyi ? ' (FYI: budget is the company\'s)' : ' (waits for the owner)') + ': ' + sit.name + ' ' + f1(sit.usedPct) + '% used, cause ' + (sit.cause === 'stop' ? 'the weekly stop' : 'today\'s line') + '; ' + (sit.held.length + sit.moved.length) + ' seat(s) affected');
     out.asked = r.row.id; out.fyi = fyi;

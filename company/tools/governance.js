@@ -160,8 +160,10 @@ function selftest() {
     set('hiring', 'notify', owner, opts);
     const d = gov.decide('hiring', { by: 'Sam', summary: 'open the sales-lead-1 round', ref: 'hiring:open:sales-lead-1' }, opts);
     gov.decide('hiring', { by: 'Sam', summary: 'open the sales-lead-1 round', ref: 'hiring:open:sales-lead-1' }, opts);
-    const sent = fs.readFileSync(path.join(F.ownerDir, 'outbound.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    // the owner's plain lines: the digest (lib/owner-notice.js) when it is in the tree, else the owner channel
+    const sent = ['digest.jsonl', 'outbound.jsonl'].map(n => path.join(F.ownerDir, n)).filter(fs.existsSync).map(f => fs.readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse))[0] || [];
     assert.ok(d.allowed && d.noted); assert.strictEqual(sent.length, 1); assert.ok(/^Sam decided to open the sales-lead-1 round\./.test(sent[0].text));
+    assert.ok(!/Self-governance|notify/.test(sent[0].text), 'the governance internals are not in the owner\'s line: ' + sent[0].text);
   });
   t('decide at approve: refused, one question (not two), then allowed after the owner says yes; no denies', () => {
     set('hiring', 'approve', owner, opts);
@@ -225,11 +227,14 @@ function selftest() {
     assert.strictEqual(n.allowed, false); assert.ok(n.triage.distrusted.includes('seatHistoryOk'), JSON.stringify(n.triage));
     const last = dm.logRows('gate-triage', opts).pop(); assert.strictEqual(last.claimed.seatHistoryOk, true); assert.ok(/actor/.test(last.provenance.seatHistoryOk.rejected));
   });
-  t('triage live: proceed-notify goes ahead and the owner sentence names the model, version, rule and decision; escalate files a question', () => {
-    const d = gov.decide('tools', { by: 'Sam', summary: 'apply tool change c-2', ref: 'harness:c-2', facts }, opts);
+  t('triage live: proceed-notify goes ahead; the owner gets a plain digest line, the technical part names the model, version, rule and decision; escalate files a question', () => {
+    const seen = [];
+    const d = gov.decide('tools', { by: 'Sam', summary: 'apply tool change c-2', ref: 'harness:c-2', facts }, Object.assign({ notice: n => { seen.push(n); return n; } }, opts));
     assert.ok(d.allowed && d.noted, JSON.stringify(d));
-    const sent = fs.readFileSync(path.join(F.ownerDir, 'outbound.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-    assert.ok(/set to triage, and decision model gate-triage v2 let this through: routine-change.*Decision d-[0-9a-f]{12}/.test(sent[sent.length - 1].text), sent[sent.length - 1].text);
+    const n = seen[seen.length - 1];
+    assert.strictEqual(n.kind, 'fyi'); assert.strictEqual(n.text, 'Sam decided to apply tool change c-2. Reply "undo" if you want it undone.');
+    assert.ok(/set to triage, and decision model gate-triage v2 let this through: routine-change.*Decision d-[0-9a-f]{12}/.test(n.technical), n.technical);
+    assert.strictEqual(n.key, d.triage.decisionId);
     const e = gov.decide('tools', { by: 'Lee', summary: 'apply tool change c-3', ref: 'harness:c-3', facts }, opts);   // Lee has an open S1
     assert.strictEqual(e.allowed, false); assert.ok(e.questionId); assert.strictEqual(e.triage.wouldBe, 'escalate');
   });

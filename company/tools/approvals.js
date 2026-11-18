@@ -22,6 +22,11 @@
  * `notify` acts, logs and tells (one owner-channel sentence via governance notify; no record, not in the badge, never
  * reminded); `triage` runs the gate-triage model and mints only when it escalates; `approve` and every FIXED owner gate
  * (governance.json `fixed`, the single source; gate-triage's fixed-gate rule must list the same set) mint a record.
+ * A standing owner ruling (lib/owner-rulings.js) comes first, never for a fixed gate: crew-decides acts as at auto,
+ * never-ask refuses (code ruling: the default, deny, stands), ask mints a record even at auto or notify. The notify
+ * line goes to the owner's daily digest in plain words (lib/governance.js fyi); the governance internals stay technical.
+ * A record's `level` is what governance said when it was minted; an older gate question reads the level as it is now
+ * (`levelNow` is always the level now).
  *
  * A RECORD: an inbox.js ask (kind approve) with row.approval = {category, level (approve | triage: what governance said
  * when it was minted), params (canonical), actionDigest (sha256 over the canonical {category, from, params}, computed
@@ -177,7 +182,9 @@ function records() {
     if (x.withdrawnAll) status = 'withdrawn';
     else if (x.answer || x.a) status = x.surface === 'expiry' ? 'expired' : (x.answer && x.answer.verdict === 'yes') ? 'approved' : 'denied';
     else if (x.type === 'close' || x.reclassified) status = 'closed';
-    out[x.id] = { id: x.id, from: x.from, message: inbox.messageParts(x).message, askedAt: x.askedAt || x.at, category, fixed: isFixed(category), level: ap.level || 'approve',
+    // the level the record was minted at; an older gate question has none, so it reads the category's level as it is now
+    const lvNow = category ? levelNow(category) : 'approve';
+    out[x.id] = { id: x.id, from: x.from, message: inbox.messageParts(x).message, askedAt: x.askedAt || x.at, category, fixed: isFixed(category), level: ap.level || (isFixed(category) ? 'approve' : lvNow === 'triage' ? 'approve' : lvNow), levelNow: isFixed(category) ? 'approve' : lvNow,
       params: am ? am.params : ap.params || null, actionDigest: am ? am.actionDigest : ap.actionDigest || null, auditId: ap.auditId || null,
       expiresAt: ap.expiresAt || null, default: 'deny', blocking: !!(ap.blocking || x.blocking && x.approval), dependsOn: ap.dependsOn || [], handoff: ap.handoff || null,
       status, answer: status === 'pending' || status === 'closed' ? null : x.withdrawnAll ? { by: x.withdrawnAll.by, at: x.withdrawnAll.at, why: x.withdrawnAll.why } : { by: x.by, surface: x.surface || 'needs-you', at: x.answeredAt || x.at, a: x.a, appliedBy: x.appliedBy || null },
@@ -278,12 +285,21 @@ async function ask(o) {
   const summary = message.replace(/\s+/g, ' ').slice(0, 200);
   let lv = isFixed(category) ? 'approve' : gov.level(category, Object.assign({}, S.govOpts, { triage: true }));
   let tri = null;
+  // a standing owner ruling (lib/owner-rulings.js) covers it: crew-decides = the company decides (as at auto), never-ask
+  // = not asked and the default (deny) stands. Never for a fixed gate.
+  let ruling = null;
+  if (!isFixed(category)) { try { ruling = require('./lib/owner-rulings').match({ category, about: 'approval:' + category, text: message }, S.govOpts); } catch (_) { ruling = null; } }
+  if (ruling && ruling.effect === 'never-ask') return refuse('ruling', 'Not asked: the owner\'s standing rule ' + ruling.id + ' ("' + ruling.text + '") says not to ask about this, so the default (deny) stands.', { ruling: { id: ruling.id, text: ruling.text, effect: ruling.effect } });
+  if (ruling && ruling.effect === 'crew-decides') lv = 'auto';
+  if (ruling && ruling.effect === 'ask' && (lv === 'auto' || lv === 'notify')) lv = 'approve';
   if (lv === 'triage') { tri = gov.triage(category, { by: from, summary }, S.govOpts); if (!tri.escalate) lv = 'notify'; }
   if (lv === 'auto' || lv === 'notify') {
-    const why = 'self-governance ' + category + ' is at ' + (tri ? 'triage (' + tri.why + ')' : lv) + ', so no owner approval is needed';
+    const why = ruling && ruling.effect === 'crew-decides' ? 'the owner\'s standing rule ' + ruling.id + ' ("' + ruling.text + '") lets the crew decide' : 'self-governance ' + category + ' is at ' + (tri ? 'triage (' + tri.why + ')' : lv) + ', so no owner approval is needed';
     const a = audit(author(from), from + ' goes ahead: ' + summary + ' (' + why + '; params ' + actionDigestOf(category, from, params).slice(0, 19) + '…)');
-    let told = null; if (lv === 'notify') told = gov.notify(from + ' decided to ' + summary.replace(/\.$/, '') + '. (Self-governance: ' + category + ' is set to ' + (tri ? 'triage' : 'notify') + ', so this is done without waiting for you; reply if you want it undone.)', S.govOpts);
-    return { ok: true, minted: false, level: lv, allowed: true, audit: a.id, told: !!told };
+    // notify: one plain line in the owner's daily digest (lib/governance.js fyi); the governance internals stay technical
+    let told = null; if (lv === 'notify') told = gov.fyi({ from, text: gov.plainDecided(from, category, summary) + ' Reply if you want it undone.',
+      technical: 'Self-governance: ' + category + ' is set to ' + (tri ? 'triage (' + tri.why + ')' : 'notify') + ', so this was done without waiting for the owner. Audit ' + a.id + '.', key: 'approval:' + actionDigestOf(category, from, params) }, S.govOpts);
+    return Object.assign({ ok: true, minted: false, level: lv, allowed: true, audit: a.id, told: !!told }, ruling && ruling.effect === 'crew-decides' ? { ruling: { id: ruling.id, text: ruling.text } } : {});
   }
   const actionDigest = actionDigestOf(category, from, params);
   // the owner-scope rule (lib/owner-scope.js via inbox.js): plain words, not a topic the owner said "not now" to this week

@@ -1101,7 +1101,8 @@ test('emergency by hand at notify starts at once and tells the owner', async () 
   const fx = fixture({ feedPct: 29, budgetLevel: 'notify' }), jobs = crewJobs();
   const h = make(fx, station(jobs));
   assert.equal(h.p.emergencyOn({ why: 'production API down (S0)', by: 'Max', hours: 4 }).ok, true);
-  assert.match(fs.readFileSync(path.join(fx.root, 'company/owner/outbound.jsonl'), 'utf8'), /Max decided to lift the subscription pacing lines/);
+  const told = ['company/owner/digest.jsonl', 'company/owner/outbound.jsonl'].map(f => path.join(fx.root, f)).filter(fs.existsSync).map(f => fs.readFileSync(f, 'utf8')).join('\n');
+  assert.match(told, /Max decided to lift the subscription pacing lines/);
 });
 // Per-seat model chains (company/tools/models.js): the pacer leaves a chained seat's routines alone, and its hook
 // tick hands its measurement to models.js, which moves the seat down its chain when a link closes.
@@ -1246,7 +1247,10 @@ test('cutoffs: at Autonomous (budget auto) the pacer decides alone, files a non-
   assert.ok(q && q.blocking === false && q.batch === 'fyi', JSON.stringify(q));
   assert.match(q.message, /You let the company decide pacing, so it keeps its current cutoffs/);
   assert.equal(q.form.fields[0].type, 'slider'); assert.deepEqual(q.form.actions.map(a => a.id), ['set', 'keep', 'other']);
-  assert.match(fs.readFileSync(path.join(fx.root, 'company/owner/outbound.jsonl'), 'utf8'), /FYI: Claude is 28% used this week/);
+  // the owner's plain line: the daily digest (lib/owner-notice.js) when it is in the tree, else the owner channel; no question id in it
+  const told = ['company/owner/digest.jsonl', 'company/owner/outbound.jsonl'].map(f => path.join(fx.root, f)).filter(fs.existsSync).map(f => fs.readFileSync(f, 'utf8')).join('\n');
+  assert.match(told, /FYI: Claude is 28% used this week/); assert.doesNotMatch(told, /q-\d{6}/);
+  assert.doesNotMatch(q.details, /pacing-policy\.json|pacer\.js|console:#/); assert.match(q.technical, /pacer\.js limit/);
   assert.ok(h.lines.some(l => /PACER ASK q-\d+ \(FYI/.test(l)), h.lines.join('\n'));
   assert.ok(r && typeof r.extra === 'number', 'the tick returns at once');
 });

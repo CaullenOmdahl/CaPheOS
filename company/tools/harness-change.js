@@ -1091,7 +1091,9 @@ async function selftest() {
     setGov('tools', 'notify');
     const r = await propose(C(), { kind: 'tool', target: 'company/tools/sample.js', why: 'another note for the next reader of it', change: R('company/tools/sample.js').replace('const N = 1;', 'const N = 1; // notify'), by: 'Jo' });
     review(C(), r.id, { by: 'Max' }, 'approve'); const a = await applyChange(C(), r.id, { by: 'Max' }); assert.strictEqual(a.status, 'applied');
-    assert.ok(R('company/owner/outbound.jsonl').includes('Max decided to apply ' + r.id));
+    // the owner's plain digest line (lib/governance.js fyi): no change id or file path, those stay technical
+    const told = ['company/owner/digest.jsonl', 'company/owner/outbound.jsonl'].map(f => { try { return R(f); } catch (_) { return ''; } }).join('\n');
+    assert.ok(/Max made a decision about the crew's own tools and rules/.test(told) && !told.includes(r.id), told);
     assert.deepStrictEqual(['schedule', 'model', 'house-rule'].map(k => governanceCategory({ kind: k })), ['schedules', 'models', 'tools']);
     assert.strictEqual(governanceCategory({ kind: 'policy', target: { file: 'company/model-policy.json' } }), 'tools');
     setGov('tools', 'auto'); setGov('budget', 'auto');
