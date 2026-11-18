@@ -146,6 +146,8 @@ export function providerName(p) { const s = String(p || '').trim(); return BRAND
 export function modelName(id, provider) {
   let s = String(id || '').trim(); if (!s) return '';
   if (s.includes('/')) { const [pv, rest] = [s.slice(0, s.indexOf('/')), s.slice(s.indexOf('/') + 1)]; provider = provider || pv; s = rest; }
+  // run settings are not part of the name: "claude-fable-5-2[1m]" (long-memory mode), "sonnet@high" (effort)
+  s = s.replace(/\[[^\]]*\]\s*$/, '').replace(/@[\w-]+\s*$/, '').trim();
   const words = s.split(/[-_\s]+/).filter(Boolean);
   const out = [];
   for (let i = 0; i < words.length; i++) {
@@ -163,3 +165,38 @@ export function modelName(id, provider) {
 }
 // "Runs on DeepSeek" / "Runs on Claude" for a chat header or crew card
 export function runsOn(provider, model) { const b = providerName(provider) || (model ? modelName(model).split(' ')[0] : ''); return b ? 'Runs on ' + b : ''; }
+
+// one tool step of a live chat run in plain words ("reading path-to-live.md", "searching for “news, latency”"), from the
+// station's tool name and its (often cut-off) JSON arguments. File names, never full paths; no JSON reaches the owner.
+const baseName = p => String(p || '').replace(/\/+$/, '').split('/').pop();
+function looseArgs(a) {
+  const o = {}; let m; const re = /"(\w+)"\s*:\s*"((?:[^"\\]|\\.)*)"?/g;
+  while ((m = re.exec(a))) o[m[1]] = m[2].replace(/\\n/g, ' ').replace(/\\(.)/g, '$1');
+  return o;
+}
+export function toolStep(name, args) {
+  const raw = String(args || '').replace(/\s+/g, ' ').trim();
+  const n = String(name || '');
+  const cmd = /node\s+company\/tools\/([\w.-]+)\.js/.exec(raw);
+  if (cmd) return 'using the ' + cmd[1].replace(/[-_]/g, ' ') + ' tool';
+  const o = raw.startsWith('{') ? looseArgs(raw) : {};
+  const file = o.path || o.file || o.file_path || '';
+  const to = /handoffs\/to-([\w-]+)\.md$/.exec(file);
+  const fileWords = to ? 'a note for ' + to[1].split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') : baseName(file);
+  const terms = o.query ? '“' + o.query.replace(/\\./g, '').replace(/[|*]+/g, ', ').replace(/[\^$()[\]{}?+]/g, '').replace(/(,\s*)+/g, ', ').replace(/^,\s*|,\s*$/g, '').slice(0, 60) + '”' : '';
+  if (/web.?search/i.test(n)) return 'searching the web' + (terms ? ' for ' + terms : '');
+  if (/fetch/i.test(n)) return 'reading a web page' + (o.url ? ' (' + String(o.url).replace(/^https?:\/\//, '').split('/')[0] + ')' : '');
+  if (/search|grep|find|glob/i.test(n)) return (o.target === 'files' ? 'looking for files named ' : 'searching for ') + (terms || 'something') + (file ? ' in ' + (/^(\.\/)?company(\/work)?\/?$/.test(file) ? 'the company’s files' : baseName(file)) : '');
+  if (/read/i.test(n)) return 'reading ' + (fileWords || 'a file');
+  if (/list/i.test(n)) return 'looking through ' + (file ? 'the ' + baseName(file) + ' folder' : 'a folder');
+  if (/write|append|edit|patch/i.test(n)) return (to ? 'writing ' : 'writing to ') + (fileWords || 'a file');
+  if (/code\.run|shell|terminal|bash/i.test(n)) return 'running a command';
+  return n.replace(/[_.]/g, ' ').trim() || 'using a tool';
+}
+// a tool step's result line, kept only when it says something an owner can use ("752 matches across 94 files")
+export function toolStepResult(summary, ok) {
+  const s = String(summary || '').trim();
+  if (!ok) return 'did not work';
+  if (!s || /characters \d|KB read|\bexit \d|\d+ms\b|^\{|appended|\(\+[\d.]+ ?KB\)/i.test(s)) return '';
+  return s.replace(/\(s\)/g, 's').slice(0, 80);
+}

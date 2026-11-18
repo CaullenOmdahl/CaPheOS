@@ -9,20 +9,10 @@ import { api, post } from './api.js';
 import { md, mdBlock } from './md.js';
 import { actionsBlock } from './chat-actions.js';
 import { blockStates, parseActionReply } from './actions-schema.js';
-import { personName, modelName } from './plain.js';
+import { personName, modelName, toolStep, toolStepResult } from './plain.js';
 import { leakedToolCalls } from './leaked-tools.js';
 
-const stepWords = (name, args) => {
-  const a = String(args || '').replace(/\s+/g, ' ').trim().slice(0, 100);
-  const m = /node\s+(company\/tools\/[\w.-]+\.js)(\s+[\w-]+)?/.exec(a);
-  if (m) return 'running ' + m[1].replace('company/tools/', '') + (m[2] || '');
-  if (/read/i.test(name)) return 'reading ' + a;
-  if (/list/i.test(name)) return 'looking through ' + (a || 'a folder');
-  if (/write|append|edit|patch/i.test(name)) return 'writing ' + a;
-  if (/web|search|fetch/i.test(name)) return 'searching' + (a ? ': ' + a : '');
-  if (/code\.run|shell|terminal/i.test(name)) return 'running ' + (a || 'a command');
-  return String(name || 'a tool').replace(/[_.]/g, ' ') + (a ? ' ' + a : '');
-};
+const stepWords = toolStep;
 
 // liveChat(host, { agentId, app, tz, onUpdate }) -> { load, send, sendBrief, stop, destroy, ta }
 export function liveChat(host, opts) {
@@ -169,11 +159,13 @@ export function liveChat(host, opts) {
     pinned = true;
     const meBox = shownText ? mine(shownText) : null; if (meBox) body.appendChild(meBox);
     const steps = h('ul', { class: 'chat-steps plain' });
+    // the steps show while the reply is written, then fold away under one line the owner can open
+    const stepsBox = h('details', { class: 'chat-steps-box', open: true }, h('summary', { class: 'caption muted' }, 'Working…'), steps);
     const reply = h('div', { class: 'md msg-them' });
     const meta = h('span', { class: 'msg-meta' }, '');
-    const card = h('div', { class: 'stack-4 msg-them-wrap live' }, h('span', { class: 'chat-who caption' }, h('span', { class: 'pulse', 'aria-hidden': 'true' }), ' ' + name() + ' is thinking…'), steps, reply, meta);
+    const card = h('div', { class: 'stack-4 msg-them-wrap live' }, h('span', { class: 'chat-who caption' }, h('span', { class: 'pulse', 'aria-hidden': 'true' }), ' ' + name() + ' is thinking…'), stepsBox, reply, meta);
     body.appendChild(card); scrollEnd();
-    return { card, steps, reply, meta, who: card.firstChild, userShown: !!meBox, text: '', lead: null, sawEnd: false, failed: null, raf: 0, consentHost: null,
+    return { card, steps, stepsBox, reply, meta, who: card.firstChild, userShown: !!meBox, text: '', lead: null, sawEnd: false, failed: null, raf: 0, consentHost: null,
       final: false, attached: false, count: 0, gotEnd: false, finalP: null, userStop: false, noted: {} };
   }
   async function stream(payload, shownText) {
@@ -217,9 +209,9 @@ export function liveChat(host, opts) {
         case 'agent.run.start': if (!L.lead) { L.lead = p.runId; runId = p.runId; } break;
         case 'agent.token': if (L.lead && p.runId && p.runId !== L.lead) break; L.text += p.delta || ''; say(name() + ' is writing…'); if (!L.raf) L.raf = requestAnimationFrame(render); break;
         case 'agent.tool_call': { if (L.lead && p.runId !== L.lead && p.runId) break; const w = stepWords(p.name, p.argsSummary);
-          steps.appendChild(h('li', { class: 'chat-step', 'data-call': p.callId || '' }, h('span', { class: 'step-dot', 'aria-hidden': 'true' }), h('span', { class: 'mono-s' }, w)));
+          steps.appendChild(h('li', { class: 'chat-step', 'data-call': p.callId || '' }, h('span', { class: 'step-dot', 'aria-hidden': 'true' }), h('span', null, w)));
           say(name() + ' is ' + w + '…'); scrollEnd(); break; }
-        case 'agent.tool_result': { const li = [...steps.children].find(x => x.dataset.call === String(p.callId || '')); if (li) { li.classList.add(p.ok && !p.isError ? 'ok' : 'bad'); if (p.summary) li.appendChild(h('span', { class: 'caption muted' }, ' — ' + String(p.summary).slice(0, 120))); } break; }
+        case 'agent.tool_result': { const li = [...steps.children].find(x => x.dataset.call === String(p.callId || '')); if (li) { const ok = p.ok && !p.isError; li.classList.add(ok ? 'ok' : 'bad'); const rs = toolStepResult(p.summary, ok); if (rs) li.appendChild(h('span', { class: 'caption muted' }, ' — ' + rs)); } break; }
         case 'permission.prompt': L.consentHost = consentCard(p, card); break;
         case 'permission.response': { const c = card.querySelector('[data-prompt="' + (p.promptId || '') + '"]'); if (c) c.replaceWith(h('p', { class: 'caption muted' }, 'Approval: ' + (p.decision || 'answered') + (p.expired ? ' (no answer in time)' : ''))); break; }
         case 'agent.run.error': if (!L.lead || !p.runId || p.runId === L.lead) fail({ message: name() + ' hit an error: ' + (p.message || 'the run failed'), fix: /budget|cap|quota|limit/i.test(p.message || '') ? 'Check the budget in Setup.' : /key|auth|401|403|credential/i.test(p.message || '') ? 'Check the AI provider in Setup.' : null, link: /budget|cap/i.test(p.message || '') ? '#/setup/budget' : /key|auth|401|403|credential/i.test(p.message || '') ? '#/setup/provider' : null }); break;
@@ -277,6 +269,7 @@ export function liveChat(host, opts) {
       else fail({ message: /Failed to fetch|NetworkError/.test(e.message) ? 'The console server is not reachable.' : 'Not sent: ' + humanError(e), fix: e.status === 404 ? 'This crew member is not on the crew any more.' : null });
     } finally {
       who.remove(); card.classList.remove('live');
+      if (L.stepsBox) { const n = L.steps.children.length; if (!n) L.stepsBox.remove(); else { L.stepsBox.open = false; L.stepsBox.firstChild.textContent = 'What ' + name() + ' looked at (' + n + ' step' + (n === 1 ? '' : 's') + ')'; } }
       busy = false; runId = null; ctrl = null; sendBtn.disabled = false; stopBtn.hidden = true;
       setState(L.failed ? 'Not answered: see above.' : '', L.failed ? 'danger' : 'muted');
       if (L.consentHost && L.consentHost.isConnected) L.consentHost.remove();
