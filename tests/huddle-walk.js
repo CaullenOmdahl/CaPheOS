@@ -9,6 +9,7 @@
  *   4. while Sharon is in the chat, POST /api/chat/<host>/send goes to everyone (host first), not to a 1:1 run
  *   5. the owner's × sends Sharon back out: the chat is 1:1 again, the minutes are written, and the host's next 1:1
  *      message carries the recap
+ *   4b. the page (headless Chrome, SKIP without): the strip, the guest's reply in the same window, the ASK as a dim line
  *   6. a plain 1:1 run writes live.json while it runs (the dispatcher holds the seat), and removes it at the end */
 'use strict';
 const { spawn, spawnSync } = require('child_process'); const path = require('path'); const os = require('os'); const fs = require('fs');
@@ -98,6 +99,39 @@ W('company/work/finance/dispatch-budget.json', { dailyUsd: 5 });
   await idle();
   rs = (await runs()).slice(n0);
   t('4. the host first, then the guest; no 1:1 run', rs.map(x => x.streamId).join() === 'huddle-agent-agent,huddle-agent-cfo', rs.map(x => x.streamId));
+
+  // 4b. the page (headless Chrome; SKIP without it): the strip with Sharon, her reply in the same window in her colour,
+  // the host's ASK line as a dim line, a message from the composer going to everyone
+  const bin = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'].find(b => spawnSync('which', [b]).status === 0);
+  if (!bin) console.log('SKIP 4b. the page: no Chrome');
+  else {
+    const udd = fs.mkdtempSync(path.join(os.tmpdir(), 'huddle-walk-chrome-'));
+    const cdpPort = await freePort();
+    const chrome = spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--user-data-dir=' + udd, '--remote-debugging-port=' + cdpPort, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore' }); kids.add(chrome);
+    process.on('exit', () => { try { fs.rmSync(udd, { recursive: true, force: true }); } catch (_) {} });
+    const tab = await waitFor(async () => (await (await fetch('http://127.0.0.1:' + cdpPort + '/json')).json()).find(x => x.type === 'page'), 15000);
+    const ws = new WebSocket(tab.webSocketDebuggerUrl); await new Promise(r2 => ws.onopen = r2);
+    let id = 0; const pend = {}; ws.onmessage = mm => { const j = JSON.parse(mm.data); if (j.id && pend[j.id]) { pend[j.id](j); delete pend[j.id]; } };
+    const cmd = (method, params) => new Promise(r2 => { const i = ++id; pend[i] = r2; ws.send(JSON.stringify({ id: i, method, params })); });
+    const ev = async expr => ((await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true })).result || {}).result?.value;
+    const C = 'http://127.0.0.1:' + cp;
+    await cmd('Page.navigate', { url: C + '/login' });
+    await waitFor(() => ev('(()=>{const i=document.getElementById("secret");if(!i)return 0;i.value=' + JSON.stringify(ctoken) + ';i.form.submit();return 1})()'), 10000);
+    await sleep(800);
+    await cmd('Page.navigate', { url: C + '/#/chat/agent' });
+    const pg = await waitFor(() => ev('(()=>{const g=document.querySelector(".hud-bar .hud-seat[data-seat=\'cfo\']");const a=document.querySelector(".chat-body .hud-area");if(!g||!a||!a.querySelector("[data-who=cfo]"))return null;return {x:!!g.querySelector("[data-act=dismiss]"),reply:a.querySelector("[data-who=cfo]").textContent,colour:[...a.querySelector("[data-who=cfo]").classList].some(c=>/^mtg-c\\d$/.test(c)),asks:[...document.querySelectorAll(".chat-body .mtg-ev")].map(x=>x.textContent),raw:[...document.querySelectorAll(".chat-body .msg-them")].some(x=>/ASK:/.test(x.textContent))}})()'), 15000);
+    t('4b. the page: Sharon in the strip with ×, her reply in the same window in her colour', pg && pg.x && /five dollars/.test(pg.reply) && pg.colour, pg);
+    t('4b. the page: the host\'s ASK line is a dim line, never raw text', pg && !pg.raw && pg.asks.some(x => /asks Sharon: is the daily budget set\?/.test(x)), pg);
+    await st('/__meeting', { replies: { agent: 'From the page: noted.', cfo: 'PASS' } });
+    const n1 = (await runs()).length;
+    await ev('(()=>{const t=document.getElementById("msg");t.value="One more thing from the page.";t.form.requestSubmit();return 1})()');
+    const sent = await waitFor(async () => (await runs()).slice(n1).some(x => x.streamId === 'huddle-agent-agent'), 10000);
+    t('4b. the page: a message from the composer goes to everyone in the chat (the host answers in the chat)', !!sent);
+    await idle();
+    const shown = await waitFor(() => ev('(()=>{const a=document.querySelector(".chat-body .hud-area");return a&&/From the page: noted\./.test(a.textContent)&&/One more thing from the page\./.test(a.textContent)&&/Sharon passes/.test(a.textContent)})()'), 10000);
+    t('4b. the page: the owner\'s message, the host\'s answer and Sharon\'s pass, in order', !!shown);
+    ws.close();
+  }
 
   // 5. the owner's ×
   r = await api('/huddle/agent/seats', { remove: ['cfo'] });

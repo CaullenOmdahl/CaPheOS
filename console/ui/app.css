@@ -282,6 +282,16 @@ dl.kv dt { color: var(--text-muted); } dl.kv dd { margin: 0; color: var(--text-s
 .nav-item.working > span:first-child::after { content: ""; display: inline-block; width: 7px; height: 7px; margin-left: 8px; border-radius: var(--radius-pill); background: var(--status-online); vertical-align: middle; animation: cap-pulse 1.6s ease-out infinite; }
 .chat-live { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .chat-banner { display: flex; flex-direction: column; gap: 10px; padding: 0 32px; }
+/* colleagues in a live chat (console/ui/js/chat.js): who is in it, + Colleague, × to send one back out */
+.hud-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px var(--chat-gutter, 32px) 0; min-width: 0; }
+.hud-bar:empty { display: none; }
+.hud-seat { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 12px; border-radius: var(--radius-pill); background: var(--bg-sunken); min-height: 32px; max-width: 100%; }
+.hud-seat.lead { padding-right: 12px; }
+.hud-seat > .mtg-who { color: var(--mtg-who, var(--text-strong)); }
+.hud-add { margin-left: auto; flex-wrap: wrap; min-width: 0; }
+.hud-pick { max-width: 260px; min-width: 0; }
+.hud-area, .hud-past { border-left: 2px solid var(--border-subtle, var(--bg-sunken)); padding-left: 12px; }
+@media (max-width: 600px) { .hud-bar { padding-left: 16px; padding-right: 16px; } .hud-add { margin-left: 0; } .hud-pick { max-width: 100%; } }
 .chat-banner:not(:empty) { padding-top: 16px; }
 .alertbox.chat-problem { margin: 4px 0; }
 .chat-who { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); }

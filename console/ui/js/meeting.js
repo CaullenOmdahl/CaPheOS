@@ -20,11 +20,11 @@ export const ACTIONS = {   // the controls and the API action each one calls (te
   round: '/meeting/round', hand: '/meeting/hand', continue: '/meeting/continue', stop: '/meeting/stop', observe: '/meeting/observe',
   next: '/meeting/next', talkOnly: '/meeting/talkonly', register: '/meeting/register', explain: '/meeting/explain', glossary: '/meeting/glossary', pace: '/meeting/pace', hold: '/meeting/hold', catchup: '/meeting/catchup', newMeeting: '/meeting/new', agenda: '/meeting/agenda', close: '/meeting/close', resume: '/meeting/resume', lead: '/meeting/lead', seats: '/meeting/seats', say: '/meeting/say',
 };
-const maybePass = t => String(t).trim().length <= 8 && 'PASS'.startsWith(String(t).toUpperCase().replace(/[^A-Z]/g, ''));
+export const maybePass = t => String(t).trim().length <= 8 && 'PASS'.startsWith(String(t).toUpperCase().replace(/[^A-Z]/g, ''));
 // each person keeps one colour, from their seat id (the table's fixed colours): the chart palette, themed for dark too
 export const COLORS = 6;
 // a tool step in plain words (plain.js toolStep); a bare path as its summary reads as that file
-const stepOf = (n, a) => { const raw = String(a || '').trim(); return toolStep(n, raw && !raw.startsWith('{') && /^[\w./-]{1,200}$/.test(raw) ? JSON.stringify({ path: raw }) : raw); };
+export const stepOf = (n, a) => { const raw = String(a || '').trim(); return toolStep(n, raw && !raw.startsWith('{') && /^[\w./-]{1,200}$/.test(raw) ? JSON.stringify({ path: raw }) : raw); };
 export function colorOf(id) { let x = 0; for (const c of String(id || '')) x = (x * 31 + c.charCodeAt(0)) >>> 0; return x % COLORS; }
 
 export function meetingPane(host, opts) {
@@ -244,40 +244,7 @@ export function meetingPane(host, opts) {
   const nameOfId = id => ((v && v.roster) || []).concat({ id: 'owner', name: v && v.owner }).find(r => r.id === id)?.name || id;
 
   /* ---------- the messages ---------- */
-  // one dim line, as the table printed what happened between turns: "(Phil passes)", "(Sharon raises a hand: …)"
-  const ev = (e, kind, text, extra) => h('p', { class: 'caption muted mtg-ev', 'data-kind': kind, 'data-i': e.i, title: e.at ? when(e.at, tz) : '' }, '(' + text + ')', extra || null);
-  const who = e => nm(e.name);
-  // the turn's tool steps, as the table printed them: "· Sharon: reading CHARTER.md"
-  const toolLines = e => e.tools && e.tools.length ? h('div', { class: 'stack-2 mtg-tools' }, e.tools.map(x => h('p', { class: 'caption muted mtg-tool', 'data-tool': x.name || '' }, '· ' + nm(e.name) + ': ' + stepOf(x.name, x.args)))) : null;
-  function entryEl(e) {
-    const t = e.at ? when(e.at, tz) : '';
-    if (e.kind === 'say' && e.who === 'owner') return h('div', { class: 'stack-4', style: 'align-self:flex-end;align-items:flex-end', 'data-i': e.i, 'data-kind': 'say' }, h('div', { class: 'msg-me' }, e.text), h('span', { class: 'msg-meta' }, 'You · ' + t));
-    if (e.kind === 'say') {
-      const meta = [t, e.model, e.explains ? 'explaining for the room' : null, e.src === 'chat' ? 'in the chat' : null].filter(Boolean).join(' · ');
-      const ex = e.explains ? null : h('button', { type: 'button', class: 'btn btn-ghost btn-sm mtg-explain', 'data-act': 'explain', 'data-i': null, 'aria-label': 'Ask ' + nm(e.name) + ' to explain this for the room, in plain words',
-        onclick: async evt => { evt.currentTarget.disabled = true; await act(ACTIONS.explain, { i: e.i }); } }, 'Explain for the room');
-      const lead = e.to ? h('p', { class: 'caption muted mtg-ev mtg-ev-lead' }, '(' + nm(e.name) + ' answers ' + nm(e.toName) + ')') : e.interject ? h('p', { class: 'caption muted mtg-ev mtg-ev-lead' }, '(' + nm(e.name) + ' has the floor)') : null;
-      return h('div', { class: 'stack-4 msg-them-wrap mtg-c' + colorOf(e.who), 'data-i': e.i, 'data-who': e.who, 'data-kind': 'say' }, lead, toolLines(e), h('span', { class: 'label strong mtg-who' }, nm(e.name)), mdBlock(e.text, 'msg-them'), e.lint ? lintNotice(e) : null, h('span', { class: 'row-8', style: 'align-items:center' }, h('span', { class: 'msg-meta' }, meta), ex));
-    }
-    if (e.kind === 'pass') return e.tools && e.tools.length ? h('div', { class: 'stack-2 mtg-c' + colorOf(e.who), 'data-i': e.i, 'data-kind': 'pass', 'data-who': e.who }, toolLines(e), h('p', { class: 'caption muted mtg-ev', 'data-kind': 'pass' }, '(' + who(e) + ' passes)')) : ev(e, 'pass', who(e) + ' passes');
-    if (e.kind === 'join') return ev(e, 'join', who(e) + ' joins' + (e.by ? ', invited by ' + nm(e.byName) : '') + (e.why ? ': ' + e.why : ''));
-    if (e.kind === 'leave') return ev(e, 'leave', who(e) + ' leaves' + (e.by && e.by !== e.who ? ', dismissed by ' + nm(e.byName) : '') + (e.why ? ': ' + e.why : ''));
-    if (e.kind === 'ask') return ev(e, 'ask', who(e) + ' asks ' + nm(e.toName) + ': ' + e.text);
-    if (e.kind === 'hand') return ev(e, 'hand', who(e) + ' raises a hand' + (e.why ? ': ' + e.why : ''));
-    if (e.kind === 'call') return ev(e, e.later ? 'later' : 'call', e.to === 'owner' ? who(e) + ' gives you the floor' : e.later ? who(e) + ' will take ' + nm(e.toName) + ' once the exchange is done' : who(e) + ' calls on ' + nm(e.toName));
-    if (e.kind === 'lower') return ev(e, 'lower', who(e) + ' lowers ' + nm(e.toName) + '\'s hand');
-    if (e.kind === 'end') return h('p', { class: 'mtg-ev mtg-ev-end body-s', 'data-kind': 'end', 'data-i': e.i, role: 'note', title: t }, h('strong', {}, '(' + who(e) + ' closes the discussion'), (e.text ? ': ' + e.text : '') + (e.plain ? ' — in plain words: ' + e.plain : '') + ')');
-    if (e.kind === 'ruling') return ev(e, 'ruling', e.who === 'owner' ? 'You ruled: ' + e.text : who(e) + ' proposes a ruling for you to confirm: ' + e.text + (e.plain ? ' — in plain words: ' + e.plain : ''),
-      e.who === 'owner' ? null : h('button', { type: 'button', class: 'btn btn-ghost btn-sm mtg-ev-btn', 'data-act': 'open-register', onclick: () => openRegister() }, 'Confirm in the register'));
-    if (e.kind === 'register') return ev(e, 'register', who(e) + ' adds ' + ({ actions: 'an action', questions: 'an open question', kills: 'a kill condition' }[e.section] || 'a line') + ': ' + e.text + (e.date ? ' · by ' + e.date : '') + (e.plain ? ' — in plain words: ' + e.plain : '') + (e.affects ? ' · affects ' + e.affects : ''));
-    if (e.kind === 'parse') return h('p', { class: 'caption mtg-ev mtg-parse', 'data-kind': 'parse', 'data-i': e.i, role: 'status' }, '(The console could not read ' + who(e) + '\'s line "' + e.line + '": ' + e.why + '. Nothing was done with it; ' + who(e) + ' is told on their next turn.)');
-    if (e.kind === 'close') return h('div', { class: 'mtg-end mtg-closed', 'data-i': e.i, 'data-kind': 'close', role: 'note' }, h('span', { class: 'mtg-chip-k' }, e.state === 'interrupted' ? 'INTERRUPTED' : 'CLOSED'), h('span', { class: 'body-s' }, (e.line || '') + ' · ' + t));
-    if (e.kind === 'catchup') return h('div', { class: 'mtg-end mtg-catchup', 'data-i': e.i, 'data-kind': 'catchup', role: 'note' }, h('span', { class: 'mtg-chip-k' }, 'FOR YOU'), h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, 'Catch-up by ' + nm(e.name) + ' (only you see this)'), mdBlock(e.text, 'body-s'), h('span', { class: 'caption muted' }, t)));
-    if (e.kind === 'consent') return ev(e, 'consent', e.op === 'asked' ? who(e) + ' asks to use ' + (e.tool || 'a tool') + '; paused until you answer it on Today' : who(e) + ' · ' + (e.tool || 'a tool') + ': ' + (e.decision === 'once' ? 'allowed' : e.decision === 'deny' ? 'declined' : e.decision) + '; the meeting carries on',
-      e.op === 'asked' ? h('a', { href: '#/today', class: 'mtg-ev-btn' }, ' Answer it on Today') : null);
-    if (e.kind === 'open') return h('p', { class: 'caption muted mtg-line', 'data-i': e.i, 'data-kind': 'open' }, 'The meeting opened · ' + t);
-    return h('p', { class: 'caption muted mtg-line', 'data-i': e.i, 'data-kind': e.kind }, (e.line || e.text || '') + (t ? ' · ' + t : ''));
-  }
+  const entryEl = e => renderEntry(e, { tz, onExplain: x => act(ACTIONS.explain, { i: x.i }), onRegister: () => openRegister(), lintNotice });
   // the owner-scope lint (console/command-ask.js, the chat's): plain words and what to do
   function lintNotice(e) {
     const L = e.lint; const who = nm(e.name);
@@ -574,4 +541,42 @@ export function meetingPane(host, opts) {
   const offLive = events.onLive(['meeting'], liveUpdate);
   const offSeats = events.on(['meeting', 'crew'], seatUpdate);
   return { load, ta, destroy: () => { destroyed = true; if (S) { try { S.ctrl.abort(); } catch (_) {} S = null; } offLive(); offSeats(); document.removeEventListener('pointerdown', onOutside); clearInterval(beatTimer); document.removeEventListener('keydown', onKey); document.removeEventListener('visibilitychange', onVis); document.title = baseTitle; }, _view: () => v };
+}
+
+/* one entry of a meeting (or of a live chat with colleagues in it) as the page shows it, the way the table printed it:
+   a say under its speaker's name and colour with its tool steps as "· Name: …" lines; what happened between turns as one
+   dim line ("(Phil passes)", "(Sharon raises a hand: …)"). ctx: { tz, noun, onExplain(e), onRegister(), lintNotice(e) } */
+export function renderEntry(e, ctx) {
+  ctx = ctx || {};
+  const tz = ctx.tz, nm = n => personName(n) || n, noun = ctx.noun || 'meeting';
+  const ev = (e, kind, text, extra) => h('p', { class: 'caption muted mtg-ev', 'data-kind': kind, 'data-i': e.i, title: e.at ? when(e.at, tz) : '' }, '(' + text + ')', extra || null);
+  const who = e => nm(e.name);
+  const toolLines = e => e.tools && e.tools.length ? h('div', { class: 'stack-2 mtg-tools' }, e.tools.map(x => h('p', { class: 'caption muted mtg-tool', 'data-tool': x.name || '' }, '· ' + nm(e.name) + ': ' + stepOf(x.name, x.args)))) : null;
+  const t = e.at ? when(e.at, tz) : '';
+  if (e.kind === 'say' && e.who === 'owner') return h('div', { class: 'stack-4', style: 'align-self:flex-end;align-items:flex-end', 'data-i': e.i, 'data-kind': 'say' }, h('div', { class: 'msg-me' }, e.text), h('span', { class: 'msg-meta' }, 'You · ' + t));
+  if (e.kind === 'say') {
+    const meta = [t, e.model, e.explains ? 'explaining for the room' : null, e.src === 'chat' ? 'in the chat' : null].filter(Boolean).join(' · ');
+    const ex = e.explains || !ctx.onExplain ? null : h('button', { type: 'button', class: 'btn btn-ghost btn-sm mtg-explain', 'data-act': 'explain', 'data-i': null, 'aria-label': 'Ask ' + nm(e.name) + ' to explain this for the room, in plain words',
+      onclick: async evt => { evt.currentTarget.disabled = true; await ctx.onExplain(e); } }, 'Explain for the room');
+    const lead = e.to ? h('p', { class: 'caption muted mtg-ev mtg-ev-lead' }, '(' + nm(e.name) + ' answers ' + nm(e.toName) + ')') : e.interject ? h('p', { class: 'caption muted mtg-ev mtg-ev-lead' }, '(' + nm(e.name) + ' has the floor)') : null;
+    return h('div', { class: 'stack-4 msg-them-wrap mtg-c' + colorOf(e.who), 'data-i': e.i, 'data-who': e.who, 'data-kind': 'say' }, lead, toolLines(e), h('span', { class: 'label strong mtg-who' }, nm(e.name)), mdBlock(e.text, 'msg-them'), e.lint && ctx.lintNotice ? ctx.lintNotice(e) : null, h('span', { class: 'row-8', style: 'align-items:center' }, h('span', { class: 'msg-meta' }, meta), ex));
+  }
+  if (e.kind === 'pass') return e.tools && e.tools.length ? h('div', { class: 'stack-2 mtg-c' + colorOf(e.who), 'data-i': e.i, 'data-kind': 'pass', 'data-who': e.who }, toolLines(e), h('p', { class: 'caption muted mtg-ev', 'data-kind': 'pass' }, '(' + who(e) + ' passes)')) : ev(e, 'pass', who(e) + ' passes');
+  if (e.kind === 'join') return ev(e, 'join', who(e) + ' joins' + (e.by ? ', invited by ' + nm(e.byName) : '') + (e.why ? ': ' + e.why : ''));
+  if (e.kind === 'leave') return ev(e, 'leave', who(e) + ' leaves' + (e.by && e.by !== e.who ? ', dismissed by ' + nm(e.byName) : '') + (e.why ? ': ' + e.why : ''));
+  if (e.kind === 'ask') return ev(e, 'ask', who(e) + ' asks ' + nm(e.toName) + ': ' + e.text);
+  if (e.kind === 'hand') return ev(e, 'hand', who(e) + ' raises a hand' + (e.why ? ': ' + e.why : ''));
+  if (e.kind === 'call') return ev(e, e.later ? 'later' : 'call', e.to === 'owner' ? who(e) + ' gives you the floor' : e.later ? who(e) + ' will take ' + nm(e.toName) + ' once the exchange is done' : who(e) + ' calls on ' + nm(e.toName));
+  if (e.kind === 'lower') return ev(e, 'lower', who(e) + ' lowers ' + nm(e.toName) + '\'s hand');
+  if (e.kind === 'end') return h('p', { class: 'mtg-ev mtg-ev-end body-s', 'data-kind': 'end', 'data-i': e.i, role: 'note', title: t }, h('strong', {}, '(' + who(e) + ' closes the discussion'), (e.text ? ': ' + e.text : '') + (e.plain ? ' — in plain words: ' + e.plain : '') + ')');
+  if (e.kind === 'ruling') return ev(e, 'ruling', e.who === 'owner' ? 'You ruled: ' + e.text : who(e) + ' proposes a ruling for you to confirm: ' + e.text + (e.plain ? ' — in plain words: ' + e.plain : ''),
+    e.who === 'owner' || !ctx.onRegister ? null : h('button', { type: 'button', class: 'btn btn-ghost btn-sm mtg-ev-btn', 'data-act': 'open-register', onclick: () => ctx.onRegister() }, 'Confirm in the register'));
+  if (e.kind === 'register') return ev(e, 'register', who(e) + ' adds ' + ({ actions: 'an action', questions: 'an open question', kills: 'a kill condition' }[e.section] || 'a line') + ': ' + e.text + (e.date ? ' · by ' + e.date : '') + (e.plain ? ' — in plain words: ' + e.plain : '') + (e.affects ? ' · affects ' + e.affects : ''));
+  if (e.kind === 'parse') return h('p', { class: 'caption mtg-ev mtg-parse', 'data-kind': 'parse', 'data-i': e.i, role: 'status' }, '(The console could not read ' + who(e) + '\'s line "' + e.line + '": ' + e.why + '. Nothing was done with it; ' + who(e) + ' is told on their next turn.)');
+  if (e.kind === 'close') return h('div', { class: 'mtg-end mtg-closed', 'data-i': e.i, 'data-kind': 'close', role: 'note' }, h('span', { class: 'mtg-chip-k' }, e.state === 'interrupted' ? 'INTERRUPTED' : 'CLOSED'), h('span', { class: 'body-s' }, (e.line || '') + ' · ' + t));
+  if (e.kind === 'catchup') return h('div', { class: 'mtg-end mtg-catchup', 'data-i': e.i, 'data-kind': 'catchup', role: 'note' }, h('span', { class: 'mtg-chip-k' }, 'FOR YOU'), h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, 'Catch-up by ' + nm(e.name) + ' (only you see this)'), mdBlock(e.text, 'body-s'), h('span', { class: 'caption muted' }, t)));
+  if (e.kind === 'consent') return ev(e, 'consent', e.op === 'asked' ? who(e) + ' asks to use ' + (e.tool || 'a tool') + '; paused until you answer it on Today' : who(e) + ' · ' + (e.tool || 'a tool') + ': ' + (e.decision === 'once' ? 'allowed' : e.decision === 'deny' ? 'declined' : e.decision) + '; the meeting carries on',
+    e.op === 'asked' ? h('a', { href: '#/today', class: 'mtg-ev-btn' }, ' Answer it on Today') : null);
+  if (e.kind === 'open') return h('p', { class: 'caption muted mtg-line', 'data-i': e.i, 'data-kind': 'open' }, 'The ' + noun + ' opened · ' + t);
+  return h('p', { class: 'caption muted mtg-line', 'data-i': e.i, 'data-kind': e.kind }, (e.line || e.text || '') + (t ? ' · ' + t : ''));
 }

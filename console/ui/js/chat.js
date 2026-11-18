@@ -3,6 +3,11 @@
 // arrives token by token under a visible "thinking… / writing… / using a tool" state, tool steps are listed compactly,
 // Stop cancels the run, approvals the run asks for are answered inline, and every failure says what happened and how to
 // fix it. Never silence.
+// Colleagues (docs/CONSOLE-API.md "Colleagues in a live chat"): + Colleague brings someone from the crew into this chat,
+// and a reply that ends with ASK: / INVITE: does the same by itself; while they are here, the strip above the messages
+// shows who is in it (the host with a crown, each guest with × to send them back out), their turns stream in the same
+// window in each person's colour, with the same dim lines as the meeting, and every message goes to everyone in it.
+// When the last one leaves, it is the 1:1 chat again; earlier chats with colleagues stay in the conversation, in order.
 import { composerKeys, COMPOSER_HINT } from './keys.js';
 import { h, fill, Button, errLine, empty, when, humanError } from './ui.js';
 import { api, post } from './api.js';
@@ -11,8 +16,17 @@ import { actionsBlock } from './chat-actions.js';
 import { blockStates, parseActionReply } from './actions-schema.js';
 import { personName, modelName, toolStep, toolStepResult } from './plain.js';
 import { leakedToolCalls } from './leaked-tools.js';
+import { renderEntry, colorOf, maybePass, stepOf } from './meeting.js';
+import * as events from './events.js';
 
 const stepWords = toolStep;
+// the lines of a reply that bring a colleague in or send one out: kept out of the text, shown as dim lines
+const PULL = /^[ \t>*_-]*(ASK|INVITE|DISMISS)\b[*_]*\s*:\s*(.+?)\s*$/gim;
+export function pullLines(text) {
+  const lines = [];
+  const body = String(text || '').replace(PULL, (l, k, rest) => { const [n, ...why] = String(rest).split(/\s+[—–-]+\s+|:\s+/); lines.push({ kind: k.toUpperCase(), name: n.replace(/^[@*_`\s]+|[*_`.,:;\s]+$/g, ''), why: why.join(' ').trim() }); return ''; }).replace(/\n{3,}/g, '\n\n').trim();
+  return { body, lines };
+}
 
 // liveChat(host, { agentId, app, tz, onUpdate }) -> { load, send, sendBrief, stop, destroy, ta }
 export function liveChat(host, opts) {
@@ -53,9 +67,18 @@ export function liveChat(host, opts) {
   const form = h('form', { 'aria-label': 'Message', class: 'composer', onsubmit: e => { e.preventDefault(); send(ta.value); } },
     h('label', { for: 'msg', class: 'caption muted' }, COMPOSER_HINT),
     ta, h('div', { class: 'between-c', style: 'flex-wrap:wrap;gap:8px' }, h('span', { class: 'row-8', style: 'align-items:center' }, stateEl, sendErr), h('span', { class: 'row-8' }, stopBtn, sendBtn)));
-  composerKeys(ta, () => send(ta.value), () => { if (busy) stop(); });
+  composerKeys(ta, () => send(ta.value), () => { if (busy || hudRunning()) stop(); });
   const bodyWrap = h('div', { class: 'chat-scroll' }, body, jump);
-  fill(host, banner, bodyWrap, form);
+  /* ---------- colleagues in this chat (console/huddle.js) ---------- */
+  let hud = null, hudWas = false, HS = null, offHud = null, offHudBar = null;
+  const hudBar = h('div', { class: 'hud-bar', role: 'group', 'aria-label': 'Who is in this chat' });
+  const hudArea = h('div', { class: 'hud-area stack-12', 'data-huddle': 'live' });
+  const hudLive = h('div', { class: 'mtg-liveturn', hidden: true });
+  const hudNote = h('p', { class: 'caption muted mtg-ev', hidden: true, role: 'status' });
+  const HU = p => '/huddle/' + encodeURIComponent(agentId) + (p || '');
+  const hudOpen = () => !!(hud && hud.open);
+  const hudRunning = () => !!(hud && hud.open && hud.live && hud.live.phase && hud.live.phase !== 'idle');
+  fill(host, banner, hudBar, bodyWrap, form);
 
   const name = () => personName(info && info.agent && info.agent.name) || agentId;
   // a brief a console button sent (the charter) shows as its first line, the full text one click away
@@ -71,9 +94,11 @@ export function liveChat(host, opts) {
     }
     return h('div', { class: 'stack-4', style: 'align-self:flex-end;align-items:flex-end' }, h('div', { class: 'msg-me' }, t));
   }
+  function pullNotes(lines) { return lines.map(d => h('p', { class: 'caption muted mtg-ev', 'data-kind': d.kind.toLowerCase() }, '(' + name() + (d.kind === 'ASK' ? ' asks ' + d.name + (d.why ? ': ' + d.why : '') : d.kind === 'INVITE' ? ' invites ' + d.name + (d.why ? ': ' + d.why : '') : ' sends ' + d.name + ' back out' + (d.why ? ': ' + d.why : '')) + ')')); }
   function theirs(text, meta, opts) {
     const lk = leakedToolCalls(text);
-    return h('div', { class: 'stack-4 msg-them-wrap' }, lk ? h('div', { class: 'msg-them' }, leakNode(lk)) : mdBlock(text, 'msg-them', opts),
+    const pl = lk ? { body: text, lines: [] } : pullLines(text); text = pl.body;
+    return h('div', { class: 'stack-4 msg-them-wrap' }, lk ? h('div', { class: 'msg-them' }, leakNode(lk)) : mdBlock(text, 'msg-them', opts), pullNotes(pl.lines),
       opts && opts.cut ? h('p', { class: 'caption muted chat-cut' }, 'This reply was cut off before ' + name() + ' finished (' + opts.cut + ').') : null,
       opts && opts.commandAsk ? commandNotice(opts.commandAsk) : null,
       opts && opts.ownerAsk && !opts.commandAsk ? scopeNotice(opts.ownerAsk) : null,
@@ -103,7 +128,7 @@ export function liveChat(host, opts) {
       Button(oa.kind === 'crew-scope' ? 'Tell them to handle it' : 'Ask for plain words', { variant: 'secondary', size: 'sm', onClick: () => { if (busy) { app.toast(name() + ' is still answering. Press Stop first.', true); return; } send(msg); } }));
   }
   // a reply as the page shows it: markdown, or (tool calls written out as text) the leak card, never markdown
-  function replyNodes(text, o) { const lk = leakedToolCalls(text); return lk ? leakNode(lk, o && o.live) : md(text, o); }
+  function replyNodes(text, o) { const lk = leakedToolCalls(text); if (lk) return leakNode(lk, o && o.live); const pl = pullLines(text); return [md(pl.body, o)].concat(o && o.live ? [] : pullNotes(pl.lines)); }
   function leakNode(lk, live) {
     const n = lk.count;
     return h('div', { class: 'leaked-tools stack-8' },
@@ -136,16 +161,120 @@ export function liveChat(host, opts) {
     states = blockStates(turns); registry.clear();
     older = turns.slice(0, Math.max(0, turns.length - PAGE));
     const recent = turns.slice(-PAGE); const off = older.length;
-    fill(body, turns.length ? [older.length ? earlierBtn : null].concat(recent.map((t, k) => turnEl(t, off + k))).filter(Boolean)
-      : empty('No messages yet. Write below; ' + name() + ' answers here, live.'));
+    // the earlier chats with colleagues, where they happened in the conversation
+    const els = recent.map((t, k) => ({ at: Date.parse(t.at || '') || null, el: turnEl(t, off + k) }));
+    const firstAt = els.length && older.length ? els[0].at : null;
+    for (const hd of info.huddles || []) {
+      const at = Date.parse(hd.startedAt || '') || 0; if (firstAt && at < firstAt) continue;
+      const k = els.findIndex(x => x.at && x.at > at);
+      const blk = { at, el: pastHuddle(hd) };
+      if (k < 0) els.push(blk); else els.splice(k, 0, blk);
+    }
+    fill(body, els.length ? [older.length ? earlierBtn : null].concat(els.map(x => x.el)).filter(Boolean)
+      : empty('No messages yet. Write below; ' + name() + ' answers here, live. To bring a colleague in, pick one above.'));
     pinned = true;
     if (info.transcriptError) body.prepend(h('p', { class: 'caption muted' }, 'Earlier messages could not be loaded (' + info.transcriptError + ').'));
     scrollEnd();
     if (opts.onUpdate) opts.onUpdate(info);
     // a reply still being written (a reload, or the console restarted under this page): follow it again
     if (info.inflight) resume(info.inflight);
+    refreshHud(true);
     return info;
   }
+  function pastHuddle(hd) {
+    const ents = (hd.entries || []).map(e => renderEntry(e, { tz, noun: 'chat' }));
+    return h('div', { class: 'hud-past stack-8', 'data-huddle': hd.id },
+      h('p', { class: 'caption muted mtg-ev' }, '(' + (hd.guests || []).join(', ') + ' joined this chat' + (hd.startedAt ? ' · ' + when(hd.startedAt, tz) : '') + ')'), ents);
+  }
+
+  /* the chat with colleagues: the strip, the entries since it opened, the turn in flight streamed (GET /api/huddle/<id>/attach) */
+  function drawHud() {
+    if (!hud) { fill(hudBar); return; }
+    const seats = hud.open ? (hud.seats || []) : [];
+    const guests = seats.filter(x => x.guest);
+    const max = (hud.limits && hud.limits.guests) || 3;
+    const free = (hud.roster || []).filter(r => !seats.some(x => x.id === r.id));
+    const pick = h('select', { class: 'select hud-pick', id: 'hud-pick', 'aria-label': 'A colleague to bring into this chat' },
+      h('option', { value: '' }, free.length ? 'Bring in a colleague…' : 'Everyone is here'), free.map(r => h('option', { value: r.id }, personName(r.name) + (r.title ? ' · ' + r.title : ''))));
+    pick.disabled = !free.length || guests.length >= max;
+    const add = Button('+ Colleague', { variant: 'secondary', size: 'sm', aria: 'Bring the colleague picked into this chat: they see the conversation and answer here', onClick: async () => {
+      if (!pick.value) { pick.focus(); return; }
+      if (busy) { app.toast(name() + ' is still answering. Wait for the reply, or press Stop.', true); return; }
+      const who = pick.selectedOptions[0] ? pick.selectedOptions[0].textContent.split(' · ')[0] : pick.value;
+      try { hud = await post(HU('/seats'), { add: [pick.value] }); app.toast(who + ' joins this chat. Write to everyone below.'); drawHud(); refreshHud(false); } catch (e) { app.toast(humanError(e), true); }
+    } });
+    add.dataset.act = 'colleague'; add.disabled = pick.disabled;
+    const chip = (x, lead) => h('span', { class: 'hud-seat mtg-c' + colorOf(x.id) + (lead ? ' lead' : ''), 'data-seat': x.id, title: personName(x.name) + (x.model ? ' · ' + x.model.label : '') },
+      h('span', { class: 'label mtg-who' }, (lead ? '♛ ' : '') + personName(x.name)),
+      lead ? null : h('button', { type: 'button', class: 'mtg-rm', 'data-act': 'dismiss', 'data-seat': x.id, 'aria-label': 'Send ' + personName(x.name) + ' back out of this chat', title: 'Send back out',
+        onclick: async () => { try { hud = await post(HU('/seats'), { remove: [x.id] }); app.toast(personName(x.name) + ' went back to their work.'); drawHud(); refreshHud(false); } catch (e) { app.toast(humanError(e), true); } } }, '×'));
+    fill(hudBar, hud.open ? h('span', { class: 'caption muted' }, 'In this chat:') : null,
+      hud.open ? seats.filter(x => x.leader).map(x => chip(x, true)) : null, guests.map(x => chip(x, false)),
+      h('span', { class: 'row-8 hud-add' }, pick, add));
+  }
+  function liveLine() {
+    if (!hudRunning()) { if (!busy) setState(''); return; }
+    const L = hud.live;
+    setState(L.speaking ? personName(L.speaking.name) + ' is ' + (L.speaking.kind === 'ask' ? 'answering' : 'writing') + '…' : L.checking ? 'Asking ' + L.checking.names.map(personName).join(', ') + ' whether they want to come in…' : 'The chat moves on…');
+    const chk = L.checking && L.checking.kind === 'hands' ? '(hands? ' + L.checking.names.map(personName).join(', ') + '…)' : '';
+    hudNote.textContent = chk; hudNote.hidden = !chk;
+  }
+  async function refreshHud(bar) {
+    try { hud = await api(HU()); } catch (_) { return; }
+    if (bar !== false) drawHud();
+    if (!hud.open) {
+      hudEnd(); if (hudArea.isConnected) hudArea.remove();
+      stopBtn.hidden = !busy;
+      if (hudWas) { hudWas = false; load(); }
+      return;
+    }
+    hudWas = true;
+    let d; try { d = await api(HU('/entries?limit=200')); } catch (_) { return; }
+    const ents = (d.entries || []).filter(e => e.src !== 'chat' && e.kind !== 'open' && e.kind !== 'nudge');
+    const stick = atBottom();
+    fill(hudArea, ents.map(e => renderEntry(e, { tz, noun: 'chat' })), hudLive, hudNote);
+    if (!hudArea.isConnected) { const em = body.querySelector('.empty'); if (em) em.remove(); body.appendChild(hudArea); }
+    ta.placeholder = 'Write to everyone in this chat, or start with @name…';
+    stopBtn.hidden = !hudRunning() && !busy; stopBtn.disabled = false;
+    liveLine(); hudFollow();
+    if (stick) toBottom(); else jump.hidden = false;
+  }
+  function hudFollow() {
+    const sp = hudRunning() && hud.live.speaking && hud.live.speaking.runId ? hud.live.speaking : null;
+    if (HS && (!sp || sp.runId !== HS.runId)) hudEnd();
+    if (sp && !HS) hudStream(sp);
+  }
+  function hudEnd() { const st = HS; HS = null; if (!st) return; try { st.ctrl.abort(); } catch (_) {} fill(hudLive); hudLive.hidden = true; }
+  async function hudStream(sp) {
+    const st = HS = { runId: sp.runId, seat: sp.id, name: sp.name, ctrl: new AbortController(), count: 0, ended: false, held: '', live: false, seg: null };
+    const head = () => { if (!hudLive.hidden) return; fill(hudLive, h('span', { class: 'label strong mtg-who' }, personName(st.name))); hudLive.className = 'mtg-liveturn stack-4 mtg-c' + colorOf(st.seat); hudLive.hidden = false; };
+    const show = t => { head(); if (!st.seg) { st.seg = h('div', { class: 'msg-them mtg-stream' }); hudLive.appendChild(st.seg); t = t.replace(/^\s+/, ''); } st.seg.appendChild(document.createTextNode(t)); };
+    for (let tries = 0; HS === st && !st.ended && tries < 30; tries++) {
+      try {
+        const r = await fetch('/api' + HU('/attach') + '?runId=' + encodeURIComponent(st.runId) + '&from=' + st.count, { credentials: 'same-origin', signal: st.ctrl.signal, headers: { Accept: 'application/x-ndjson' } });
+        if (!r.ok || !r.body) throw new Error('attach ' + r.status);
+        const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = '';
+        for (;;) {
+          const { value, done } = await reader.read(); if (done) break;
+          buf += dec.decode(value, { stream: true }); let i;
+          while ((i = buf.indexOf('\n')) >= 0) {
+            const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!l || HS !== st) continue;
+            let x; try { x = JSON.parse(l); } catch (_) { continue; }
+            if (x.name === 'console.gone') { st.ended = true; continue; }
+            st.count++; const p = x.payload || {}; const stick = atBottom();
+            if (x.name === 'agent.token' && typeof p.delta === 'string') { if (st.live) show(p.delta); else { st.held += p.delta; if (!maybePass(st.held)) { st.live = true; const t = st.held; st.held = ''; show(t); } } }
+            else if (x.name === 'agent.tool_call') { if (st.held.trim()) show(st.held); st.held = ''; st.live = false; st.seg = null; head(); hudLive.appendChild(h('p', { class: 'caption muted mtg-tool', 'data-tool': p.name || '' }, '· ' + personName(st.name) + ': ' + stepOf(p.name, p.argsSummary))); }
+            else if (x.name === 'console.end') st.ended = true;
+            if (stick) toBottom();
+          }
+        }
+      } catch (e) { if (e && e.name === 'AbortError') return; }
+      if (HS !== st || st.ended) return;
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+  offHud = events.onLive(['huddle'], () => refreshHud(false));
+  offHudBar = events.on(['huddle', 'crew'], () => { if (hud) api(HU()).then(x => { hud = x; drawHud(); }).catch(() => {}); });
 
   function setState(t, cls) { stateEl.textContent = t; stateEl.className = 'chat-state caption ' + (cls || 'muted'); }
 
@@ -204,6 +333,7 @@ export function liveChat(host, opts) {
         case 'console.error': fail(p); break;
         case 'console.gap': note('gap', 'The console restarted while ' + name() + ' was writing, so part of the live view is missing. The whole reply appears here when ' + name() + ' finishes.'); break;
         case 'console.gone': L.gone = true; break;
+        case 'console.huddle': L.huddle = p; break;
         case 'console.final': L.finalP = p; if (typeof p.text === 'string') L.text = p.text; break;
         case 'console.end': L.gotEnd = true; break;
         case 'agent.run.start': if (!L.lead) { L.lead = p.runId; runId = p.runId; } break;
@@ -274,6 +404,7 @@ export function liveChat(host, opts) {
       setState(L.failed ? 'Not answered: see above.' : '', L.failed ? 'danger' : 'muted');
       if (L.consentHost && L.consentHost.isConnected) L.consentHost.remove();
       scrollEnd();
+      if (L.huddle) refreshHud(true);   // the reply brought a colleague in: they answer below
     }
   }
   function consentCard(p, card) {
@@ -291,6 +422,7 @@ export function liveChat(host, opts) {
   // Stop cancels the run at the station; the reply then ends with its console.final (not complete), and the page says so.
   // Without a run id yet (it has not started), the request itself is dropped.
   async function stop() {
+    if (!busy && hudRunning()) { try { hud = await post(HU('/stop'), {}); app.toast('Stopped.'); } catch (e) { app.toast(humanError(e), true); } return; }
     stopBtn.disabled = true;
     if (curL) curL.userStop = true;
     if (runId) { try { await post('/station/cancel', { runId }); return; } catch (e) { app.toast('Stop: ' + humanError(e), true); } }
@@ -298,8 +430,15 @@ export function liveChat(host, opts) {
   }
   function send(raw) {
     const text = String(raw || '').trim(); if (!text) return;
+    if (hudOpen()) return sayHud(text);
     ta.value = '';
     return stream({ text }, text);
+  }
+  // while colleagues are here: the message goes to everyone in the chat, the host first
+  async function sayHud(text) {
+    sendErr.textContent = '';
+    try { const r = await post(HU('/say'), { text }); ta.value = ''; if (r && r.note && r.note !== 'sent') app.toast(r.note); hud = r; refreshHud(false); }
+    catch (e) { sendErr.textContent = 'Not sent: ' + humanError(e); }
   }
   function sendBrief(brief, notes) { return stream({ brief, notes: notes || {} }, null); }
   // a chat action's reply: the owner's next message (the visible line + the actionReply line); false when not sent
@@ -307,5 +446,5 @@ export function liveChat(host, opts) {
     if (busy) { app.toast(name() + ' is still answering. Press Stop first, then choose again.', true); return false; }
     stream({ text }, text); return true;
   }
-  return { load, send, sendBrief, stop, ta, isBusy: () => busy, destroy: () => { if (ctrl) ctrl.abort(); } };
+  return { load, send, sendBrief, stop, ta, isBusy: () => busy, huddle: () => hud, destroy: () => { if (ctrl) ctrl.abort(); hudEnd(); if (offHud) offHud(); if (offHudBar) offHudBar(); } };
 }

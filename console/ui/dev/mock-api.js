@@ -551,6 +551,26 @@ async function apiRoute(req, res, p, q) {
       problems: STATION_DOWN ? [{ code: 'station-down', message: 'The station is not answering, so ' + seat.name + ' cannot answer.', fix: 'Start it on the station machine.', link: '#/settings/system' }] : [] });
   }
   if (M === 'POST' && (m = /^\/api\/chat\/([A-Za-z0-9_-]+)\/send$/.exec(p))) return chatSend(req, res, m[1], B);
+  // colleagues in a live chat (console/huddle.js): who is in it, + Colleague, ×; no turns are run here
+  if ((m = /^\/api\/huddle\/([A-Za-z0-9_-]+)(\/[a-z]+)?$/.exec(p))) {
+    const host = S.seats.find(x => x.id === m[1]); if (!host) return J(res, 404, { ok: false, error: 'no crew member ' + m[1] });
+    const hd = (S.huddles = S.huddles || {})[host.id] = S.huddles[host.id] || { guests: [], log: [] };
+    const seatRow = (s, lead) => ({ id: s.id, name: s.name, title: s.title, leader: lead, guest: !lead, model: { label: 'Claude Sonnet' } });
+    const hv = () => ({ host: { id: host.id, name: host.name }, open: hd.guests.length > 0, limits: { guests: 3 }, live: { phase: 'idle' }, meeting: { id: 'm-mock1', state: hd.guests.length ? 'open' : 'closed' },
+      seats: hd.guests.length ? [seatRow(host, true)].concat(hd.guests.map(g => seatRow(S.seats.find(x => x.id === g), false))) : [],
+      roster: S.seats.filter(x => x.id !== host.id).map(x => ({ id: x.id, name: x.name, title: x.title, seated: hd.guests.includes(x.id) })) });
+    const sub = m[2] || '';
+    if (M === 'GET' && !sub) return ok(hv());
+    if (M === 'GET' && sub === '/entries') return ok({ entries: hd.log });
+    if (M === 'GET' && sub === '/history') return ok({ huddles: [] });
+    if (M === 'POST' && sub === '/seats') {
+      for (const id of B.add || []) if (!hd.guests.includes(id)) { hd.guests.push(id); const g = S.seats.find(x => x.id === id); hd.log.push({ i: hd.log.length + 1, kind: 'join', who: id, name: g ? g.name : id, by: 'owner', byName: 'Sam Owner', at: now() }); }
+      for (const id of B.remove || []) if (hd.guests.includes(id)) { hd.guests = hd.guests.filter(x => x !== id); const g = S.seats.find(x => x.id === id); hd.log.push({ i: hd.log.length + 1, kind: 'leave', who: id, name: g ? g.name : id, by: 'owner', byName: 'Sam Owner', at: now() }); }
+      if (!hd.guests.length) hd.log = [];
+      emit('huddle'); return ok(hv());
+    }
+    if (M === 'POST' && sub === '/say') { hd.log.push({ i: hd.log.length + 1, kind: 'say', who: 'owner', name: 'Sam Owner', text: String(B.text || ''), at: now() }); emit('huddle'); return ok(hv()); }
+  }
   // chat actions and approvals (console/server.js): the key store keeps only the name and length; approvals as approvals.js
   if (M === 'POST' && p === '/api/chat-actions/secret') {
     if (!INBOX.safeSecretName(B.name)) return J(res, 400, { ok: false, error: 'bad secret name' });

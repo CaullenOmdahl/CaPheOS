@@ -2,7 +2,7 @@
 /* Chat is a rolling window, not an endless page: headless Chrome against the dev mock with a 120-message conversation.
  * Checks (desktop 1280x900): the page is no taller than the window, the message list scrolls on its own, the composer is
  * on screen, the newest message is in view on open, only the last 40 messages render until you scroll up, scrolling to
- * the top loads 40 more and keeps your place. SKIP without Chrome. */
+ * the top loads 40 more and keeps your place; + Colleague, its picker and the guest strip with ×. SKIP without Chrome. */
 'use strict';
 const { spawn, spawnSync } = require('child_process'); const path = require('path'); const os = require('os'); const fs = require('fs');
 const bin = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'].find(b => spawnSync('which', [b]).status === 0);
@@ -75,5 +75,16 @@ async function waitFor(fn, ms) { const end = Date.now() + ms; for (;;) { try { c
   await ev('document.querySelector("dialog.keys-dialog").close()');
   await key('g', 'KeyG', 0, 'g'); await key('t', 'KeyT', 0, 't');
   t('g then t goes to Today', await waitFor(() => ev('location.hash === "#/today"'), 3000));
+  // colleagues: + Colleague and its picker (the crew but the host), the strip with × once one joins, back to 1:1 after ×
+  await cmd('Page.navigate', { url: 'http://127.0.0.1:' + mockPort + '/#/chat/agent' });
+  const pk = await waitFor(() => ev('(()=>{const p=document.getElementById("hud-pick"),b=document.querySelector(".hud-bar [data-act=colleague]");return p&&b?{opts:[...p.options].map(o=>o.value).filter(Boolean),btn:b.textContent}:null})()'), 15000);
+  t('colleagues: a + Colleague button with a picker of the crew, the host left out', pk && pk.btn === '+ Colleague' && pk.opts.length > 1 && !pk.opts.includes('agent'), pk);
+  const guest = pk && pk.opts[0];
+  await ev('(()=>{const p=document.getElementById("hud-pick");p.value=' + JSON.stringify(guest) + ';document.querySelector(".hud-bar [data-act=colleague]").click();return 1})()');
+  const strip = await waitFor(() => ev('(()=>{const g=document.querySelector(".hud-bar .hud-seat[data-seat=\'' + guest + '\']");const l=document.querySelector(".hud-bar .hud-seat.lead");return g&&l?{x:!!g.querySelector("[data-act=dismiss]"),hostX:!!l.querySelector("[data-act=dismiss]"),join:!!document.querySelector(".chat-body .hud-area [data-kind=join]"),ph:document.getElementById("msg").placeholder,hs:document.documentElement.scrollWidth>innerWidth+1}:null})()'), 8000);
+  t('colleagues: once one joins, the strip shows the host (no ×) and the guest with ×, the join as a dim line, the composer writes to everyone', strip && strip.x && !strip.hostX && strip.join && /everyone in this chat/.test(strip.ph) && !strip.hs, strip);
+  await ev('document.querySelector(".hud-bar .hud-seat [data-act=dismiss]").click()');
+  const back = await waitFor(() => ev('(!document.querySelector(".hud-bar .hud-seat") && !document.querySelector(".chat-body .hud-area")) || null'), 8000);
+  t('colleagues: × sends the guest back out, and the chat is 1:1 again', !!back);
   ws.close(); console.log(fails ? 'CHAT WINDOW WALK: FAIL' : 'CHAT WINDOW WALK: PASS'); done(fails ? 1 : 0);
 })().catch(e => { console.log('FAIL ' + e.message); done(1); });
