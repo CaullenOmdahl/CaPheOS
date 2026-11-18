@@ -8,7 +8,7 @@ import * as events from './events.js';
 export function meetingStrip(host) {
   async function draw() {
     let d = null; try { d = await api('/meeting/status'); } catch (_) { fill(host); return; }
-    const m = d && d.live && d.live[0];
+    const m = d && d.live && d.live.find(x => !x.kind || x.kind === 'meeting');   // the meeting, not a live chat
     if (!m) { fill(host); return; }
     const kind = (m.type || 'decision').charAt(0).toUpperCase() + (m.type || 'decision').slice(1);
     const what = m.state === 'interrupted' ? 'Meeting interrupted' : m.running ? 'Meeting in progress' : 'Meeting open';

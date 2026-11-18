@@ -1248,9 +1248,12 @@ function lastRunTail(job) {
   const hoursLeft = (() => { const lp = co.localParts(); return Math.max(1, 24 - (Number(lp.hour) || 0) - (Number(lp.minute) || 0) / 60); })();
   // seats in the owner's meeting while a round runs (lib/meetings.js) are neither idle nor wakable: no wake, no lane, no
   // re-fire for them this tick (no double runs); the next tick after the round wakes them as usual
-  { const inMeeting = []; try { const MT = require('./lib/meetings'); for (const id of order) if (MT.busy(id)) inMeeting.push(id); } catch (_) {}
+  // the same for a live chat with the owner (a reply being written, or colleagues brought into it while a round runs)
+  { const inMeeting = [], inChat = []; try { const MT = require('./lib/meetings'); for (const id of order) { const b = MT.busy(id); if (b) (b.kind === 'huddle' || b.kind === 'chat' ? inChat : inMeeting).push(id); } } catch (_) {}
     for (const id of inMeeting) { order.splice(order.indexOf(id), 1); say(id, { state: 'held', why: 'in the owner\'s meeting' }); }
-    if (inMeeting.length) log('MEETING HOLD: ' + inMeeting.map(id => (CREW[id] || {}).name || id).join(', ') + ' (in the owner\'s meeting; woken after the round)'); }
+    for (const id of inChat) { order.splice(order.indexOf(id), 1); say(id, { state: 'held', why: 'in a live chat with the owner' }); }
+    if (inMeeting.length) log('MEETING HOLD: ' + inMeeting.map(id => (CREW[id] || {}).name || id).join(', ') + ' (in the owner\'s meeting; woken after the round)');
+    if (inChat.length) log('MEETING HOLD: ' + inChat.map(id => (CREW[id] || {}).name || id).join(', ') + ' (in a live chat with the owner; woken after it)'); }
   // a seat working a child run its lead delegated (team.dispatch: the worker's own agentId, its loop routine idle) is busy:
   // no wake and no lane on top of it this tick (lib/family.js). From the station's run table (GET
   // /api/state/snapshot); an unreadable table holds nobody (as before). One log line per change.

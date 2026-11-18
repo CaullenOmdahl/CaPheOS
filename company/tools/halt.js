@@ -213,7 +213,8 @@ async function soft({ by, why, deadlineMin, escalate } = {}) {
   const lw = meetingWork(); if (lw.length) st.liveWork = lw;
   write(st);
   const cm = cv && cv.count ? ' Open commitments: ' + cv.count + (cv.unowned && cv.unowned.length ? ' (' + cv.unowned.length + ' unowned — reassign them before the halt can settle: node company/tools/continuity.js unowned)' : '') + '.' : '';
-  const mw = lw.length ? ' Your meeting' + (lw[0].title ? ' "' + lw[0].title + '"' : '') + ' is live work: ' + (lw[0].running ? 'the turn in progress finishes, then it is interrupted and its minutes are written.' : 'it is interrupted; resume it after the halt.') : '';
+  const lm = lw.filter(x => x.kind === 'meeting');
+  const mw = lm.length ? ' Your meeting' + (lm[0].title ? ' "' + lm[0].title + '"' : '') + ' is live work: ' + (lm[0].running ? 'the turn in progress finishes, then it is interrupted and its minutes are written.' : 'it is interrupted; resume it after the halt.') : '';
   const sd = st.shutdowns.length ? ' Shutdown routines: ' + st.shutdowns.map(x => x.seat + ' ' + x.status).join(', ') + '.' : '';
   tell('Soft halt by ' + by + (why ? ' (' + why + ')' : '') + ': nothing new starts; running work finishes by ' + st.deadline
     + (st.escalate ? ' or the company goes to a hard halt' : '') + '.' + sd + cm + mw + (st.cronError ? ' Scheduler NOT disarmed: ' + st.cronError + '.' : '') + ' I will tell you when it is fully stopped.');

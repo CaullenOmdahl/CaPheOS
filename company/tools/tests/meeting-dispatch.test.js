@@ -66,7 +66,18 @@ async function company() {
     const fired = reqs().slice(n).filter(r => r.path === '/api/cron/run' && r.method === 'POST').map(r => r.body.id);
     return { code: p.status, out: (p.stdout || '') + (p.stderr || ''), firedSeats: Object.keys(ids).filter(k => fired.includes(ids[k])).sort(), log: (() => { try { return fs.readFileSync(path.join(T, 'company/work/dispatch-log.md'), 'utf8'); } catch (_) { return ''; } })() };
   };
-  return { T, ids, meeting, tick, reset: async id => st('POST', '/api/cron/update', { id: ids[id], patch: { lastRunAt: new Date(Date.now() - 50 * MIN).toISOString(), inFlight: false } }) };
+  // a colleague brought into the owner's live chat with Alex (console/huddle.js): Sam is the guest
+  const huddle = running => {
+    w('company/state/huddles/agent/seats.json', { seats: ['agent'], leader: 'agent' });
+    w('company/state/huddles/agent/current.json', { id: 'm-hud1' });
+    w('company/state/huddles/agent/m/m-hud1.json', { id: 'm-hud1', type: 'decision', state: 'open', opened: true, guests: ['sam'], excused: [], run: running ? { round: {}, current: { seat: 'sam' } } : null });
+  };
+  // a plain 1:1 reply being written (console/chat.js live.json, checked against the chat runs)
+  const liveChat = status => {
+    w('company/state/huddles/kim/live.json', { seat: 'kim', runId: 'run-live1', at: new Date().toISOString() });
+    w('company/state/chat-runs.json', { runs: { 'run-live1': { seat: 'kim', status, streamId: 'console-kim' } } });
+  };
+  return { T, ids, meeting, huddle, liveChat, tick, reset: async id => st('POST', '/api/cron/update', { id: ids[id], patch: { lastRunAt: new Date(Date.now() - 50 * MIN).toISOString(), inFlight: false } }) };
 }
 
 test('a seat in a running meeting round is not woken; a seat outside it is', async () => {
@@ -86,4 +97,21 @@ test('once the round is over (the meeting open but idle, or closed), the seat is
   assert.equal(r.code, 0, r.out);
   assert.ok(r.firedSeats.includes('sam'), 'no round running: Sam is woken (' + r.firedSeats + ')');
   assert.doesNotMatch(r.log, /MEETING HOLD/);
+});
+
+test('a live chat with colleagues in a round holds the host and the guests; an idle one holds no one; a 1:1 reply being written holds that seat', async () => {
+  const c = await company();
+  c.huddle(true); c.liveChat('running');
+  let r = c.tick();
+  assert.equal(r.code, 0, r.out);
+  assert.ok(!r.firedSeats.includes('sam') && !r.firedSeats.includes('kim'), 'Sam is in the chat round, Kim is answering the owner: ' + r.firedSeats);
+  assert.match(r.log, /MEETING HOLD: [^\n]*Sam[^\n]*\(in a live chat with the owner; woken after it\)/);
+  assert.match(r.log, /MEETING HOLD: [^\n]*Kim[^\n]*\(in a live chat with the owner/);
+  for (const id of ['agent', 'sam', 'kim']) await c.reset(id);
+  c.huddle(false); c.liveChat('done');
+  const before = r.log.length;
+  r = c.tick();
+  assert.equal(r.code, 0, r.out);
+  assert.ok(r.firedSeats.includes('sam') && r.firedSeats.includes('kim'), 'idle chat, finished reply: woken as usual (' + r.firedSeats + ')');
+  assert.doesNotMatch(r.log.slice(before), /MEETING HOLD/, 'no hold on the second tick');
 });
