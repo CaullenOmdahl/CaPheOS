@@ -12,8 +12,10 @@
  *                                        [--provider <p> --model <model>] [--effort high]   (no model given: model-policy.json candidateDefault; the hire keeps the interviewed model)
  *        The profile is that candidate's personality written as an ideal candidate for the role, in the charter's
  *        headings (company/roles/templates/_charter-template.md: Personality, Backstory and motivation, Voice, Persona
- *        preset). The hired candidate's profile becomes part of their charter.
- *                                        [--skin <skin>] [--persona composed|warm|blunt|dry|upbeat]
+ *        preset, Archetype, Convictions, Will not do, Takes care of unprompted, Where you look, Counterpart, Blind spots, Signature
+ *        habits). The hired candidate's profile becomes part of their charter, every section it wrote.
+ *                                        [--skin <skin>] [--persona composed|warm|blunt|dry|upbeat]   (no --persona: the profile's
+ *                                        preset, else its ## Archetype's: scout upbeat, combiner warm, contrarian blunt, tester dry ...)
  *        (no --skin: a free company candidate skin <slug>_candidate_*, else the station's default body DATA.DEFAULT_SKIN)
  *   node company/tools/hire.js interview --round <r> --questions company/hiring/<r>/interview.md [--agent <id>] [--background] [--redo] [--parallel 3]
  *                                        (all candidates at once, at most --parallel; skips candidates already interviewed or being
@@ -27,7 +29,8 @@
  *   node company/tools/hire.js pick      --round <r> --agent <id> --by <name> --why "<totals and why>" [--title ..] [--functions ..] [--template ..] [--access ask] [--name ..]
  *        the deciding seat's pick, recorded (scorecard.md, decisions.md, round log; the pick handoff closed); the hire
  *        (desk, loop, inbox, dossier, releases, the new seat's first-session handoff) follows at once under the hiring level
- *   node company/tools/hire.js open ... [--functions a,b] [--template <seat>] [--title ".."] [--pick-rule scores [--min 3.5]]
+ *   node company/tools/hire.js open ... [--functions a,b] [--template <seat>] [--title ".."] [--pick-rule scores [--min 3.5]] [--schedule "<cron>"]
+ *        (--schedule: the hire's loop cadence, used when the pick is finished into the hire; default every 2 hours)
  *   node company/tools/hire.js hire      --round <r> --agent <id> --title "Sales Lead" --by <name> --approved "<who decided>, <where and when>" [--access full|ask]
  *                                        [--schedule "<cron expression>"] [--name <office name>]   (default: every 2 hours)
  *                                        [--template <seat>]   start the charter from company/roles/templates/<seat>.md
@@ -187,6 +190,26 @@ function approverOk(text, allowed) {
 // Self-governance (company/state/governance.json via lib/governance.js): hiring for open/hire, release for fire and for
 // releasing a candidate from a round that hired nobody, models for remodel. At approve the act waits for the owner: the
 // first call files one owner question (keyed by `ref`), and the same command run again after the owner says yes goes on.
+/* ASKS: what each governed act says to the owner (lib/governance.js decide): a plain summary, recommendation and default;
+ * the ids, models, versions and the --approved reference go in `technical`. Exported so a test files each at approve. */
+const plainWhy = t => { const x = t && t !== true ? gov.plainPart(String(t).replace(/\s+/g, ' ').trim().replace(/[.!]$/, '').slice(0, 200)) : null; return x ? x.replace(/^./, c => c.toLowerCase()) : null; };
+const ASKS = {
+  hire: ({ name, title, provider, model, round, agentId, approved }) => ({ summary: 'hire ' + name + (gov.plainPart('as ' + title) ? ' as ' + title : ' for the open job'),
+    recommendation: 'yes', default: 'nobody is hired and the candidates wait',
+    technical: 'Candidate ' + agentId + ' (' + provider + '/' + model + ') from hiring round ' + round + ', as ' + title + '. Approved: ' + approved }),
+  remodel: ({ name, agentId, provider, model, reason, approved }) => ({ summary: 'change which AI ' + name + ' works with',
+    recommendation: 'yes' + (plainWhy(reason) ? ': ' + plainWhy(reason) : ''), default: name + ' keeps the AI they use now',
+    technical: 'Move ' + agentId + ' to the model ' + provider + '/' + model + (reason && reason !== true ? ' (' + String(reason).slice(0, 160) + ')' : '') + '. Approved: ' + approved }),
+  fire: ({ name, title, agentId, reason, replace, approved }) => ({ summary: 'let ' + name + ' go' + (replace ? ' and look for someone to replace them' : ''),
+    recommendation: 'yes' + (plainWhy(reason) ? ': ' + plainWhy(reason) : ''), default: name + ' stays on the crew',
+    technical: 'Release ' + agentId + ' (' + title + ')' + (replace ? ' and open a replacement round' : '') + ': ' + String(reason).slice(0, 200) + '. Approved: ' + approved }),
+  releaseCandidate: ({ name, role, round, agentId, reason }) => ({ summary: 'turn down ' + name + (gov.plainPart('for the ' + role + ' job') ? ' for the ' + role + ' job' : '') + ' before anyone is hired',
+    recommendation: plainWhy(reason) ? 'yes: ' + plainWhy(reason) : null, default: name + ' stays a candidate',
+    technical: 'Release candidate ' + agentId + ' from hiring round ' + round + ' (nobody hired yet): ' + String(reason).slice(0, 160) }),
+  open: ({ role, slug, request }) => ({ summary: 'start looking for ' + (gov.plainPart('a new ' + role) ? 'a new ' + role : 'a new crew member'),
+    recommendation: 'yes' + (plainWhy(request) ? ': ' + plainWhy(request) : ''), default: 'nobody new is looked for',
+    technical: 'Open hiring round ' + slug + ' for a ' + role + (request && request !== true ? ': ' + String(request).slice(0, 200) : '') }),
+};
 function governanceCheck(category, o, gopts) {
   const d = gov.decide(category, o, gopts);
   return d.allowed ? { ok: true, d } : { ok: false, d, error: gov.refusal(category, d) };
@@ -286,8 +309,11 @@ function runTurn(agentId, model, provider, messages, streamId) {
 }
 
 const sec = (txt, h) => { const m = String(txt).match(new RegExp('## ' + h + '[^\\n]*\\n([\\s\\S]*?)(?=\\n## |$)')); return m ? m[1].replace(/<!--[\s\S]*?-->/g, '').trim() : ''; };
+// the person in a profile (Personality to Signature habits): company/tools/lib/profile.js, shared with dossier.js
+const profileLib = require('./lib/profile');
 function candidateDocs(name, role, spec, profile) {
-  const who = [sec(profile, 'Personality') && 'Your personality: ' + sec(profile, 'Personality'), sec(profile, 'Backstory') && 'Your background: ' + sec(profile, 'Backstory'), sec(profile, 'Voice') && 'How you speak and write: ' + sec(profile, 'Voice')].filter(Boolean).join('\n\n');
+  const who = [sec(profile, 'Personality') && 'Your personality: ' + sec(profile, 'Personality'), sec(profile, 'Backstory') && 'Your background: ' + sec(profile, 'Backstory'), sec(profile, 'Voice') && 'How you speak and write: ' + sec(profile, 'Voice')]
+    .concat(profileLib.interviewLines(profile)).filter(Boolean).join('\n\n');
   return {
     identity: 'You are ' + name + ', a candidate interviewing for the role of ' + role + ' at ' + companyName() + ', an AI-run company owned by ' + ownerName() + '. ' + co.nameOf(peopleId()) + ', who runs hiring, is interviewing you. Answer as the professional you would be in this job: concrete, honest about what you do not know, and specific to this company and its customers. You have no tools in this interview; work from what you know and say when something would need checking.' + (who ? '\n\n' + who : ''),
     purpose: 'The role you are interviewing for, as written by the company:\n\n' + (spec || '(no role spec yet)').slice(0, 5000),
@@ -313,7 +339,7 @@ async function createCandidate(a) {
   const issue = AgentId.nameIssue(name); if (issue) out(2, { ok: false, error: 'name: ' + issue });
   const profile = a.profile && a.profile !== true ? readIf(path.resolve(ROOT, String(a.profile)), 8000) : '';
   if (a.profile && !profile.trim()) out(2, { ok: false, error: 'cannot read --profile ' + a.profile });
-  const presetFromProfile = sec(profile, 'Persona preset').toLowerCase().split(/\s+/)[0];
+  const presetFromProfile = profileLib.presetFor(profile);   // the profile's preset, else its archetype's (lib/profile.js)
   const persona = a.persona && M.Personas.exists(String(a.persona)) ? String(a.persona) : (presetFromProfile && M.Personas.exists(presetFromProfile) ? presetFromProfile : 'composed');
   let created = null;
   await C.editSave(doc => {
@@ -647,6 +673,7 @@ async function finishHire(dir, slug) {
   const args = { round: slug, agent: p.agentId, title: p.title || round.role, by: p.by, approved: p.approved };
   if (p.functions) args.functions = String(p.functions);
   if (p.template) args.template = String(p.template);
+  if (round.schedule) args.schedule = String(round.schedule);   // open --schedule
   if (p.access) args.access = String(p.access);
   if (p.officeName) args.name = String(p.officeName);
   const r = await soft(() => hire(args));
@@ -759,7 +786,7 @@ async function advanceRound(slug, o) {
     if (claim) {
       const day = stamp().slice(0, 10);
       appendInbox(fnInbox('people'), '\n## ' + day + ' from hire.js — write the files for the ' + round.role + ' round (' + slug + ')\n' +
-        '**Need:** in company/hiring/' + slug + '/ write research.md, role-spec.md, model-fit.md, interview.md (one question per "## " heading), scorecard.md, and one profiles/<name>.md per candidate (up to three; the charter headings, optional "## Model" line `provider/model`). That is all: the round then advances on its own (candidates, parallel interviews, scorecard inputs) and the pick comes back to you as a handoff. Do not run interviews yourself.\n' +
+        '**Need:** in company/hiring/' + slug + '/ write research.md, role-spec.md, model-fit.md, interview.md (one question per "## " heading), scorecard.md, and one profiles/<name>.md per candidate (up to three; the charter headings from Archetype to Signature habits, optional "## Model" line `provider/model`). Archetype is one of ' + Object.keys(profileLib.ARCHETYPES).join(', ') + '. Listings scope the job; write the person from how the best people in it really work and where they get their edge, not from the adjectives in a listing, and give the three candidates different temperaments. An eager seat names its conservative counterpart (## Counterpart). That is all: the round then advances on its own (candidates, parallel interviews, scorecard inputs) and the pick comes back to you as a handoff. Do not run interviews yourself.\n' +
         '**Why:** ' + s.label + '.\n**Deadline:** ' + day + '\n**Status:** OPEN\n**Evidence:** `company/hiring/' + slug + '/round.json`\n');
       did.push('asked ' + co.nameOf(peopleId()) + ' for the round files');
     }
@@ -878,8 +905,7 @@ async function hire(a) {
   }
   if (!readIf(path.join(dir, 'scorecard.md')).trim()) out(2, { ok: false, error: 'write the scorecard (company/hiring/' + round.slug + '/scorecard.md) before hiring' });
   const access = a.access === 'ask' ? 'ask' : 'full';
-  mustGovern('hiring', { by, ref: 'hiring:hire:' + round.slug + ':' + agentId, summary: 'hire ' + cand.name + ' (' + cand.provider + '/' + cand.model + ') as ' + title + ' from hiring round ' + round.slug,
-    recommendation: 'hire ' + cand.name + ': ' + approved, default: 'nobody is hired; the candidates stay on the station until released' });
+  mustGovern('hiring', Object.assign({ by, ref: 'hiring:hire:' + round.slug + ':' + agentId }, ASKS.hire({ name: cand.name, title, provider: cand.provider, model: cand.model, round: round.slug, agentId, approved })));
   // validate --functions and --template before anything is changed on the station
   if (a.functions && a.functions !== true) { const t = moveFunctions({ agents: {} }, agentId, a.functions); if (t.error) out(2, { ok: false, error: t.error }); }
   else if (a.functions === true) out(2, { ok: false, error: '--functions needs a list, e.g. --functions people,tools' });
@@ -921,15 +947,14 @@ async function hire(a) {
       txt = /^\*\*Reports to:\*\*.*$/m.test(txt) ? txt.replace(/^\*\*Reports to:\*\*.*$/m, '**Reports to:** ' + reportsTo) : txt.replace(/^(# .*\n)/, '$1\n**Reports to:** ' + reportsTo + '\n');
       txt = /^\*\*Last scoped:\*\*.*$/m.test(txt) ? txt.replace(/^\*\*Last scoped:\*\*.*$/m, '**Last scoped:** ' + scoped) : txt.replace(/^(\*\*Reports to:\*\*.*\n)/m, '$1**Last scoped:** ' + scoped + '\n');
       if (!/^# /.test(txt)) txt = '# ' + display + ' — ' + title + '\n\n' + txt;
-      for (const h of ['Personality', 'Backstory and motivation', 'Voice', 'Persona preset']) if (sec(prof, h)) txt = setSection(txt, h, sec(prof, h));
+      txt = profileLib.carryProfile(txt, prof, setSection);
       txt = setSection(txt, 'Your autonomous loop', loopBody);
       txt = setSection(txt, 'Handoffs', handoffBody);
       txt = setSection(txt, 'Role spec from hiring round ' + round.slug, spec.replace(/^# .*\n/, '').trim() || '(no role spec)');
       if (srcs && !/https?:\/\//.test(sec(txt, 'Sources'))) txt = setSection(txt, 'Sources', srcs);
     } else {
-      const keep = h => sec(prof, h) ? '## ' + h + '\n' + sec(prof, h) + '\n\n' : '';
       txt = '# ' + display + ' — ' + title + '\n\n**Reports to:** ' + reportsTo + '\n**Last scoped:** ' + scoped + '\n\n' +
-        spec.replace(/^# .*\n/, '') + '\n\n' + keep('Personality') + keep('Backstory and motivation') + keep('Voice') + keep('Persona preset') +
+        spec.replace(/^# .*\n/, '') + '\n\n' + profileLib.profileBlock(prof) +
         '## Your autonomous loop\n' + loopBody + '\n\n## Handoffs\n' + handoffBody + '\n\n' +
         (/^## Sources/m.test(spec) ? '' : '## Sources\n' + (srcs || 'company/hiring/' + round.slug + '/research.md') + '\n');
     }
@@ -1052,8 +1077,7 @@ async function remodel(a) {
       out(2, { ok: false, error: 'a move to ' + model + ' also needs the CEO (' + ceoName() + '): say where they approved it in --approved' }); }
   const bad = policyCheck(provider, model); if (bad) out(2, { ok: false, error: bad });
   const effort = a.effort && a.effort !== true ? String(a.effort) : 'high';
-  mustGovern('models', { by, ref: 'models:remodel:' + agentId + ':' + provider + '/' + model, summary: 'move ' + crew[agentId].name + ' to the model ' + provider + '/' + model + (a.reason && a.reason !== true ? ' (' + String(a.reason).slice(0, 160) + ')' : ''),
-    recommendation: 'yes: ' + approved, default: crew[agentId].name + ' stays on the current model' });
+  mustGovern('models', Object.assign({ by, ref: 'models:remodel:' + agentId + ':' + provider + '/' + model }, ASKS.remodel({ name: crew[agentId].name, agentId, provider, model, reason: a.reason, approved })));
   let before = null, prevRow = null;
   await C.editSave(doc => {
     let hit = false;
@@ -1086,8 +1110,7 @@ async function fire(a) {
   const heldFns = FUNCTIONS.filter(f => co.holds(c, f));   // anything else they held falls back to the CEO seat (co.seatFor)
   const approved = need(a, 'approved');
   { const allowed = c.manager && c.manager !== ceoId() ? [nameOf(c.manager)] : deciders(ceoId()); if (!approverOk(approved, allowed)) out(2, { ok: false, error: '--approved must start with who decided: ' + allowed.join(' or ') + ' (their manager; the people owner when the manager is the CEO)' }); }
-  mustGovern('release', { by, ref: 'release:fire:' + agentId, summary: 'release ' + c.name + ' (' + c.title + ')' + (a.replace ? ' and open a replacement round' : '') + ': ' + reason.slice(0, 200),
-    recommendation: 'yes: ' + approved, default: c.name + ' stays on the crew' });
+  mustGovern('release', Object.assign({ by, ref: 'release:fire:' + agentId }, ASKS.fire({ name: c.name, title: c.title, agentId, reason, replace: !!a.replace, approved })));
   const base = String(c.name).toLowerCase().replace(/[^a-z0-9]+/g, '-');
   const charter = (() => { try { return require('./dossier.js').charterFile(c, agentId); } catch (_) { return path.join(ROLES, base + '.md'); } })();
   const inboxFile = path.join(HANDOFFS, c.inbox);
@@ -1147,8 +1170,7 @@ async function release(a) {
   if (!cand) out(2, { ok: false, error: agentId + ' is not an active candidate of this round' });
   // releasing the candidates a round did not pick follows from the hire (already decided under hiring); a release from a
   // round that hired nobody is its own decision
-  if (!round.hired) mustGovern('release', { by, ref: 'release:candidate:' + round.slug + ':' + agentId, summary: 'release candidate ' + cand.name + ' from hiring round ' + round.slug + ' (nobody hired yet): ' + reason.slice(0, 160),
-    default: cand.name + ' stays on the station as a candidate' });
+  if (!round.hired) mustGovern('release', Object.assign({ by, ref: 'release:candidate:' + round.slug + ':' + agentId }, ASKS.releaseCandidate({ name: cand.name, role: round.role, round: round.slug, agentId, reason })));
   const r = await C.call('POST', '/api/agent/delete', { agentId });
   const rj = (() => { try { return JSON.parse(r.body); } catch (_) { return {}; } })();
   if (r.status === 409) out(1, { ok: false, error: 'candidate has a run in progress; retry when it ends' });
@@ -1196,7 +1218,7 @@ async function selftest() {
   t('hiring at auto: allowed, nothing sent', () => { setLevel('hiring', 'auto'); const r = governanceCheck('hiring', o, g); assert.ok(r.ok); assert.ok(!fs.existsSync(path.join(T, 'company', 'owner', 'outbound.jsonl'))); });
   t('hiring at notify: allowed, the owner is told in one sentence', () => {
     setLevel('hiring', 'notify'); const r = governanceCheck('hiring', o, g); assert.ok(r.ok);
-    assert.ok(/^Sam decided to hire Lee as QA Lead/.test(JSON.parse(fs.readFileSync(path.join(T, 'company', 'owner', 'outbound.jsonl'), 'utf8').trim()).text));
+    assert.ok(/^Sam decided to hire Lee as QA Lead/.test(JSON.parse(fs.readFileSync(path.join(T, 'company', 'owner', 'digest.jsonl'), 'utf8').trim()).text));   // an FYI: the day's single message
   });
   t('hiring at approve: refused with an owner question; goes on after the owner says yes', () => {
     setLevel('hiring', 'approve'); const r = governanceCheck('hiring', o, g); assert.ok(!r.ok && r.d.questionId); assert.ok(/waits for the owner/.test(r.error));
@@ -1289,12 +1311,13 @@ async function selftest() {
     const crew0 = co.crew();
     const manager = a.manager && a.manager !== true ? String(a.manager) : ceoId();
     if (!manager || !crew0[manager]) out(2, { ok: false, error: '--manager must be a station id from company/tools/loops.json (one of: ' + Object.keys(crew0).join(', ') + ')' });
-    mustGovern('hiring', { by: need(a, 'by'), ref: 'hiring:open:' + slug, summary: 'open a hiring round (' + slug + ') for a ' + need(a, 'role') + (a.request && a.request !== true ? ': ' + String(a.request).slice(0, 200) : ''),
-      recommendation: 'open it' + (a.request && a.request !== true ? ' (' + String(a.request).slice(0, 120) + ')' : ''), default: 'no round is opened' });
+    mustGovern('hiring', Object.assign({ by: need(a, 'by'), ref: 'hiring:open:' + slug }, ASKS.open({ role: need(a, 'role'), slug, request: a.request })));
     fs.mkdirSync(path.join(dir, 'interviews'), { recursive: true });
     const round = { slug, role: need(a, 'role'), manager, openedBy: need(a, 'by'), openedAt: new Date().toISOString(), request: a.request ? String(a.request).slice(0, 1000) : null, candidates: [], hired: null };
     // what the hire takes (used when the pick is recorded) and an optional scorecard rule that picks without a turn
     for (const k of ['functions', 'template', 'title']) if (a[k] && a[k] !== true) round[k] = String(a[k]);
+    // the hire's loop cadence (else every 2 hours): an idea seat that reads the web twice a day need not wake twelve times
+    if (a.schedule && a.schedule !== true) { if (String(a.schedule).trim().split(/\s+/).length !== 5) out(2, { ok: false, error: '--schedule is a five-field cron expression, for example "30 7,19 * * *"' }); round.schedule = String(a.schedule).trim(); }
     if (a['pick-rule'] === 'scores') round.pickRule = { type: 'scores', file: 'scores.json', min: Number.isFinite(Number(a.min)) ? Number(a.min) : 3.5, setBy: round.openedBy };
     saveRound(dir, round);
     fs.writeFileSync(path.join(dir, 'log.md'), '# Hiring round ' + slug + ': ' + round.role + '\n\n');
@@ -1314,4 +1337,4 @@ async function selftest() {
   out(2, { ok: false, error: 'commands: open, candidate, interview, advance, pick, hire, release, remodel, fire, status, models, selftest' });
 })().catch(e => out(1, { ok: false, error: e.message }));
 
-module.exports = { answerTurn, selftest, roundStage, pickSeats, advanceRound, rulePick, profileName, profileModel, pool, soft, openRounds, independenceRules, independenceConflicts, governanceCheck, budgetState, assertBudget, candidateSkin, deskHandoff, writeJson, moveFunctions, setSection, deciders, approverOk, companyModel };   // test seam only; hire.js is run as a script everywhere else
+module.exports = { ASKS, answerTurn, selftest, roundStage, pickSeats, advanceRound, rulePick, profileName, profileModel, pool, soft, openRounds, independenceRules, independenceConflicts, governanceCheck, budgetState, assertBudget, candidateSkin, deskHandoff, writeJson, moveFunctions, setSection, deciders, approverOk, companyModel };   // test seam only; hire.js is run as a script everywhere else

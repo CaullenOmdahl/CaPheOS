@@ -265,6 +265,20 @@ function fyiRisk(title, lines) {
 }
 
 /* ---------------- governance ---------------- */
+/* ASKS: what each governed act says to the owner (lib/governance.js decide): plain words up front, the ecosystem,
+ * package, version and licence only in `technical`. Exported so a test files each at approve. */
+const plainWhy = t => { const g = require('./lib/governance'); const x = t ? g.plainPart(String(t).replace(/\s+/g, ' ').trim().replace(/[.!]$/, '').slice(0, 200)) : null; return x ? x.replace(/^./, c => c.toLowerCase()) : null; };
+const ASKS = {
+  add: ({ eco, name, version, licence, why }) => ({ summary: 'add a free software library the crew needs',
+    recommendation: plainWhy(why) ? 'yes: ' + plainWhy(why) : 'yes', default: 'it is not installed',
+    technical: 'Add the ' + eco + ' package ' + name + ' ' + version + ' (licence ' + (licence || 'unknown') + ') for: ' + String(why || '').slice(0, 200) }),
+  agpl: ({ eco, name, version, why }) => ({ summary: 'use a software library whose licence can oblige the company to publish its own code',
+    recommendation: plainWhy(why) ? 'yes, if that is acceptable for the product: ' + plainWhy(why) : null, default: 'it is not installed',
+    technical: 'Use the ' + eco + ' package ' + name + ' ' + version + ', which is AGPL-family licensed (network copyleft)' + (why ? '. Why: ' + String(why).slice(0, 200) : '') }),
+};
+// the crew's refusal when the owner was not asked (a summary that is not plain, a ruling, a "not now"): the real reason,
+// never "question undefined"
+const waitText = (gov, d) => d.questionId ? 'self-governance: deps is at approve, so this waits for the owner (question ' + d.questionId + ', an Approve button on Today).' : gov.refusal('deps', d);
 function depsLevel() {
   const gov = require('./lib/governance');
   const d = gov.doc();
@@ -486,8 +500,8 @@ function apply(E, m, reg, pins, ctx) {
       if (p.kind === 'agpl') {
         const gov = require('./lib/governance');
         const ref = 'deps:agpl:' + E.id + ':' + p.d.name + '==' + p.d.version;
-        const d = gov.decide('deps', { by: ctx.seat.name, summary: 'use the ' + E.id + ' package ' + p.d.name + ' ' + p.d.version + ', which is AGPL-family licensed (network copyleft)', recommendation: ctx.why ? 'yes, if this is acceptable for the product: ' + ctx.why : null, default: 'it is not installed', ref }, { level: 'approve' });
-        if (!d.allowed) open.push(Object.assign({}, p, { why: p.why + ' (owner question ' + d.questionId + (d.denied ? ': the owner said no' : '') + ')' }));
+        const d = gov.decide('deps', Object.assign({ by: ctx.seat.name, ref }, ASKS.agpl({ eco: E.id, name: p.d.name, version: p.d.version, why: ctx.why })), { level: 'approve' });
+        if (!d.allowed) open.push(Object.assign({}, p, { why: p.why + (d.questionId ? ' (owner question ' + d.questionId + (d.denied ? ': the owner said no' : '') + ')' : ' (' + gov.refusal('deps', d) + ')') }));
         continue;
       }
       if (p.kind === 'scripts' && scriptsAllowed(m, E.id).includes(p.d.name)) continue;
@@ -597,17 +611,17 @@ function add(eco, spec, o) {
     const pins = directPins(m, eco).filter(p => p.name !== name).concat([{ name, version }]);
     const lv = depsLevel();
     const ref = 'deps:add:' + eco + ':' + name + '==' + version;
-    const summary = 'add the ' + eco + ' package ' + name + ' ' + version + ' (licence ' + (meta.licence || 'unknown') + ') for: ' + String(o.why).slice(0, 140);
     const govern = () => {
       if (lv !== 'approve' && lv !== 'triage') return null;
       const gov = require('./lib/governance');
-      const d = gov.decide('deps', { by: seat.name, summary, recommendation: 'yes: ' + String(o.why).slice(0, 200), default: 'it is not installed', ref });
+      const d = gov.decide('deps', Object.assign({ by: seat.name, ref }, ASKS.add({ eco, name, version, licence: meta.licence, why: o.why })));
       if (d.allowed) return null;
       if (d.denied) { delete m.pending[ref]; save(m); throw new Refusal(gov.refusal('deps', d)); }
+      if (!d.questionId) throw new Refusal(waitText(gov, d));
       m.pending[ref] = { ecosystem: eco, name, version, by: seat.name, byId: seat.id, why: String(o.why), questionId: d.questionId, at: (m.pending[ref] && m.pending[ref].at) || nowIso() };
       save(m);
       logRow({ act: 'waiting', ecosystem: eco, name, version, by: seat.name, questionId: d.questionId });
-      throw new Refusal('self-governance: deps is at approve, so this waits for the owner (question ' + d.questionId + ', an Approve button on Today). Once approved, the next deps.js verify installs it; the deps duty wakes ' + seat.name + '.');
+      throw new Refusal(waitText(gov, d) + ' Once approved, the next deps.js verify installs it; the deps duty wakes ' + seat.name + '.');
     };
     const r = apply(E, m, reg, pins, { seat, why: String(o.why), name, govern });
     if (r && r.ok) {
@@ -853,7 +867,7 @@ function main(argv) {
   return cmd ? 2 : 0;
 }
 
-module.exports = { adhocPackage, openAdhoc, dutyReason, classifyLicence, typoOf, isAdhoc, ADHOC_INSTALL, pyLicenceText, REGISTRIES, ECOSYSTEMS, distance };
+module.exports = { ASKS, adhocPackage, openAdhoc, dutyReason, classifyLicence, typoOf, isAdhoc, ADHOC_INSTALL, pyLicenceText, REGISTRIES, ECOSYSTEMS, distance };
 
 if (require.main === module) {
   let code;

@@ -107,6 +107,15 @@ function check(q, by, at, opts) {
   const d = load(opts).delegations.find(x => norm(x.to) === norm(by) && (x.categories || []).includes(cat) && isActive(x, at));
   return d ? { delegation: d } : { why: 'no active delegation from the owner to ' + by + ' for ' + cat };
 }
+/* the owner's line: who answered what kind of question for them, until when, and where to take the permission back
+ * (Settings › Autonomy › Permission to answer for you); the question id, the answer and the delegation id are technical */
+const KIND_WORDS = { hiring: 'a hiring', release: 'a question about letting someone go', budget: 'a budget', spend: 'a spending', models: 'a question about which AI the crew uses', tools: 'a question about the crew\'s tools',
+  schedules: 'a timing', external: 'a question about acting outside the company', dashboard: 'a question about the console', deps: 'a software', org: 'a question about how the team is organised' };
+function answeredNotice(by, category, until) {
+  const kind = KIND_WORDS[category] || 'one'; const q = /question/.test(kind) ? kind : kind + ' question';
+  let day = String(until || '').slice(0, 10); try { day = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', timeZone: co.TZ || undefined }).format(new Date(until)); } catch (_) {}
+  return { text: by + ' answered ' + q + ' for you, using the permission you gave them until ' + day + '. You can take that permission back in Settings › Autonomy.' };
+}
 function answer(qid, o, opts) {
   o = o || {};
   const by = String(o.by || '').trim(); const text = String(o.a || '').trim();
@@ -121,7 +130,7 @@ function answer(qid, o, opts) {
   logRow(row, opts);
   decisionsLine(by + ' (delegate ' + c.delegation.id + ' for the owner) answered ' + qid + ' (' + q.gate.category + ': ' + String(q.gate.summary || q.gate.ref).slice(0, 120) + '): ' + text.slice(0, 120), opts);
   let told = null;
-  try { told = G.notify(by + ' answered ' + qid + ' for you (' + q.gate.category + ': ' + String(q.gate.summary || q.gate.ref).slice(0, 160) + '): "' + text.slice(0, 200) + '". They hold your delegation ' + c.delegation.id + ' until ' + c.delegation.until + '; revoke it with node company/tools/delegation.js revoke ' + c.delegation.id + ' --by owner.', gopts); } catch (_) {}
+  try { const n = answeredNotice(by, q.gate.category, c.delegation.until); told = G.notify(n.text, Object.assign({}, gopts, { technical: by + ' answered ' + qid + ' for you (' + q.gate.category + ': ' + String(q.gate.summary || q.gate.ref).slice(0, 160) + '): "' + text.slice(0, 200) + '". Delegation ' + c.delegation.id + ' until ' + c.delegation.until + '.' })); } catch (_) {}
   return { ok: true, answer: row, ownerTold: !!told };
 }
 /* Read side for lib/governance.answerOf: the delegate's answer to q, if one was valid when given. */
@@ -183,7 +192,7 @@ function selftest() {
     const d1 = gov('spend', o); assert.strictEqual(d1.allowed, false);
     const r = answer(d1.questionId, { by: 'Pat', a: 'yes, go' }, opts); assert.ok(r.ok && r.ownerTold, JSON.stringify(r));
     const d2 = gov('spend', o); assert.ok(d2.allowed); assert.strictEqual(d2.approvedBy, 'delegate Pat for owner');
-    const sent = fs.readFileSync(path.join(T, 'company', 'owner', 'outbound.jsonl'), 'utf8'); assert.ok(/Pat answered q-\d+ for you/.test(sent));
+    const sent = fs.readFileSync(path.join(T, 'company', 'owner', 'digest.jsonl'), 'utf8');   // an FYI (lib/owner-notice.js) assert.ok(/Pat answered q-\d+ for you/.test(sent));
     assert.ok(rows(opts).some(x => x.op === 'answer' && x.delegation === dg.id));
     assert.strictEqual(answer(d1.questionId, { by: 'Pat', a: 'no' }, opts).code, 2);   // already answered
   });
@@ -217,7 +226,7 @@ function selftest() {
   return bad ? 1 : 0;
 }
 
-module.exports = { grant, revoke, list, answer, answerFor, check, register, files, NEVER, MAX_DAYS, LOCKED };
+module.exports = { answeredNotice, grant, revoke, list, answer, answerFor, check, register, files, NEVER, MAX_DAYS, LOCKED };
 
 if (require.main === module) {
   const a = process.argv.slice(2); const cmd = a[0];

@@ -231,7 +231,7 @@ test('4 dispatcher outage: the watchdog alerts once, top priority, and zero work
   assert.equal(w1.stdout.trim().split('\n').pop(), '{"wakeAgent":false}', 'the station never wakes an agent for it');
   assert.deepEqual(reqs().slice(n0).filter(r => !r.path.startsWith('/__')).map(r => r.method + ' ' + r.path), [], 'the watchdog makes no station call');
   const out = c.r('company/owner/outbound.jsonl').split('\n').filter(Boolean).map(l => JSON.parse(l));
-  assert.equal(out.length, 1, 'one alert per outage'); assert.equal(out[0].priority, 'top'); assert.match(out[0].text, /^TOP PRIORITY: the dispatcher has been silent for 18\d minutes/);
+  assert.equal(out.length, 1, 'one alert per outage'); assert.equal(out[0].priority, 'top'); assert.match(out[0].text, /^The crew's work has stopped: nothing new has started for 18\d minutes/); assert.match(out[0].technical, /^TOP PRIORITY: the dispatcher has been silent for 18\d minutes/);
   // the station's own schedule for 6 hours: only the watchdog, and no work starts although Sam has an OPEN item
   const firedAll = []; for (let i = 1; i <= 24; i++) firedAll.push(...(await c.stTick(Date.now() + i * 15 * MIN)).fired);
   assert.ok(firedAll.length > 0 && firedAll.every(f => f.noAgent), JSON.stringify(firedAll));

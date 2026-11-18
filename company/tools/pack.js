@@ -86,10 +86,34 @@ function record(row) {
   fs.appendFileSync(P.log, JSON.stringify(line) + '\n');
   return line;
 }
-function tellOwner(text, from) {
-  const mod = path.join(__dirname, 'owner-inbox.js');
+// an FYI for the owner's day message (lib/owner-notice.js: technical words move under the collapsed details); a tree
+// without it (an older framework copy) falls back to the owner channel's low-level writer
+const plainTitle = t => String(t || 'untitled').replace(/[\u201c\u201d"]/g, '').slice(0, 60);
+function tellOwner(text, from, technical) {
+  const notice = path.join(__dirname, 'lib', 'owner-notice.js'), mod = path.join(__dirname, 'owner-inbox.js');
+  if (fs.existsSync(notice)) { try { const r = require(notice).send({ kind: 'fyi', root: path.join(__dirname, '..', '..'), from, text, technical }); return { told: true, id: r.row ? r.row.id : null, duplicate: !!r.duplicate }; } catch (e) { return { told: false, why: e.message }; } }
   if (!fs.existsSync(mod)) return { told: false, why: 'owner-inbox.js not present' };
   try { const row = require(mod).send({ from, text }); return { told: true, id: row && row.id }; } catch (e) { return { told: false, why: e.message }; }
+}
+/* ownerCard(pack, who, d, stage) -> what lib/owner-card.js file() returned: ONE card for the owner, whose yes installs
+ * exactly this proposed copy (effect packInstall {id, digest}; the console runs approve --digest and install as the
+ * owner). Installing is always the owner's own act (ownerAct: filed whatever the packs level). stage 'propose': the
+ * owner approves and installs in one yes; 'approved': the CEO approved it at packs=notify and only the install is left. */
+function ownerCard(pack, who, d, stage) {
+  let C; try { C = require('./lib/owner-card'); } catch (_) { return { filed: false, route: 'missing' }; }
+  const title = plainTitle(pack.title || pack.id);
+  const summary = String(pack.summary || '').replace(/\s+/g, ' ').trim();
+  const words = t => { try { return C.plain(t); } catch (_) { return false; } };
+  const what = summary && summary.length <= 160 && words(summary) ? ' ' + summary.replace(/[.!]?$/, '.') : '';
+  const leads = stage === 'approved'
+    ? [who + ' approved the add-on “' + title + '”, and only you can install it.' + what, who + ' approved the add-on “' + title + '”, and only you can install it.']
+    : [who + ' wants to add the add-on “' + title + '” to the company.' + what, who + ' wants to add the add-on “' + title + '” to the company.'];
+  const lead = leads.find(words) || leads[leads.length - 1];
+  return C.file({ asker: who, category: 'packs', ref: 'pack:' + pack.id + ':' + d, ownerAct: true, lead,
+    consequence: 'If you say yes, it is installed now with its limits closed, so it cannot act on its own yet. If you say no, nothing is installed.',
+    recommendation: who + ' recommends yes. If you do not answer, nothing is installed.',
+    technical: 'Capability pack ' + pack.id + ' (digest ' + d + '), proposed at ' + rel(path.join(P.proposed, pack.id)) + '. Needs: ' + JSON.stringify(pack.requires || {}) + '. Docs and limits: review docs/ and limits/ in the proposed copy.',
+    effect: { packInstall: { id: pack.id, digest: d } } }, { root: R });
 }
 function askOwner(q, from) {
   const tool = path.join(__dirname, 'inbox.js');
@@ -328,10 +352,14 @@ function cmdPropose(dirArg, by) {
   const q = who + ' proposes capability pack "' + pack.title + '" (' + pack.id + '): ' + pack.summary
     + ' Needs: ' + JSON.stringify(pack.requires || {}) + '. Recommendation: review docs/ and limits/. Default if unanswered: not installed.'
     + ' Approve: node company/tools/pack.js approve ' + pack.id + ' --by owner; then install ' + pack.id + ' --by owner';
-  const asked = owner ? null : (gate === 'approve' ? askOwner(q, who) : tellOwner(q, who));
+  // packs=approve: one owner card whose yes approves and installs this exact copy; otherwise the CEO approves first and
+  // the owner's card comes then (cmdApprove)
+  let asked = null;
+  if (!owner && gate === 'approve') { try { const c = ownerCard(pack, who, d, 'propose'); asked = { asked: !!c.filed, id: c.id || null, route: c.route || null }; } catch (e) { asked = { asked: false, why: e.message }; } }
+  else if (!owner) asked = tellOwner(who + ' proposed the add-on “' + plainTitle(pack.title || pack.id) + '”; the crew\'s lead decides whether to approve it, and only you can install it.', who, q);
   return { code: 0, out: { ok: true, status: 'proposed', id: pack.id, gate, dir: rel(dest), digest: d, asked, change: record({ op: 'propose', id: pack.id, by: who, gate, digest: d }) } };
 }
-function cmdApprove(id, by, reject, note) {
+function cmdApprove(id, by, reject, note, wantDigest) {
   const src = path.join(P.proposed, String(id || ''));
   if (!id || !fs.existsSync(path.join(src, 'pack.json'))) return { code: 1, out: { ok: false, error: 'no proposed pack ' + id } };
   const gate = co.gate('packs');
@@ -348,9 +376,14 @@ function cmdApprove(id, by, reject, note) {
   const { findings } = checkStatic(src);
   if (findings.length) return { code: 1, out: { ok: false, findings } };
   const d = digest(src);
+  // the owner's card named one exact copy: a different copy is never approved on that yes
+  if (wantDigest && wantDigest !== true && String(wantDigest) !== d) return { code: 1, out: { ok: false, error: 'the proposed copy changed since the card was filed (card ' + wantDigest + ', now ' + d + '); nothing approved' } };
+  if (reg.approved[id] && reg.approved[id].digest === d && who === 'owner' && wantDigest) return { code: 0, out: { ok: true, status: 'approved', id, digest: d, already: true } };
   reg.approved[id] = { by: who, at: new Date().toISOString(), digest: d, gate };
   writeJson(P.registry, reg);
-  const told = gate === 'notify' && who !== 'owner' ? tellOwner(who + ' approved capability pack ' + id + ' (digest ' + d + '). Only you install it: node company/tools/pack.js install ' + id + ' --by owner', who) : null;
+  // the CEO approved it: only the owner installs, so the owner gets one card with an Install button (never a command)
+  let told = null;
+  if (who !== 'owner') { try { const pk = readJson(path.join(src, 'pack.json'), {}) || {}; const c = ownerCard(Object.assign({ id }, pk), who, d, 'approved'); told = { asked: !!c.filed, id: c.id || null, route: c.route || null }; } catch (e) { told = { asked: false, why: e.message }; } }
   return { code: 0, out: { ok: true, status: 'approved', id, digest: d, told, next: 'node company/tools/pack.js install ' + id + ' --by owner', change: record({ op: 'approve', id, by: who, gate, digest: d }) } };
 }
 function lockedEntries(pack) {
@@ -417,7 +450,8 @@ function cmdInstall(id, by) {
     return { code: 1, out: { ok: false, error: 'install failed and was rolled back: ' + err.message } };
   }
   const st = status(id);
-  const told = tellOwner('Capability pack ' + id + ' installed (' + st.status + '). Limits are closed until you open them in company/state/packs/installed/' + id + '/limits/.', 'pack.js');
+  const told = tellOwner('The add-on “' + plainTitle(pack.title || id) + '” is installed. Its limits start closed, so it cannot act on its own yet.', 'The crew',
+    'Capability pack ' + id + ' installed (' + st.status + '). Limits are closed until the owner opens them in company/state/packs/installed/' + id + '/limits/.');
   return { code: st.status === 'conformant' ? 0 : 1, out: { ok: st.status === 'conformant', status: st.status, id, findings: st.findings, told, change: record({ op: 'install', id, by: 'owner', digest: d, status: st.status }) } };
 }
 function undoPlacement(id, pack) {
@@ -566,7 +600,7 @@ function selftest() {
 }
 
 // shared with module.js (core modules use the same scaffold rules)
-module.exports = { status, doctor, list, checkStatic, checkRequires, openParts, digest, schemaCheck, walk, copyDir, sha, isOwner, findSeat, ownerOnly, underStation, tellOwner, askOwner, inside, EXT_CATS, FUNCTIONS, SCHEMA: P.schema };
+module.exports = { ownerCard, status, doctor, list, checkStatic, checkRequires, openParts, digest, schemaCheck, walk, copyDir, sha, isOwner, findSeat, ownerOnly, underStation, tellOwner, askOwner, inside, EXT_CATS, FUNCTIONS, SCHEMA: P.schema };
 if (require.main !== module) return;
 
 function args(argv) {
@@ -595,7 +629,7 @@ if (cmd === 'list') {
 if (cmd === 'status') { if (!A._[1]) { console.error('status <id>'); process.exit(2); } const s = status(A._[1]); if (A.json) console.log(JSON.stringify(s, null, 1)); else { console.log(s.status); for (const f of s.findings || []) console.log('  ' + f); } process.exit(0); }
 if (cmd === 'doctor') emit(doctor(A.all ? true : A._[1] || true));
 if (cmd === 'propose') emit(cmdPropose(A._[1], A.by));
-if (cmd === 'approve') emit(cmdApprove(A._[1], A.by));
+if (cmd === 'approve') emit(cmdApprove(A._[1], A.by, false, null, A.digest));
 if (cmd === 'reject') emit(cmdApprove(A._[1], A.by, true, A.note));
 if (cmd === 'install') emit(cmdInstall(A._[1], A.by));
 if (cmd === 'uninstall') emit(cmdUninstall(A._[1], A.by));

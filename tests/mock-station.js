@@ -246,7 +246,10 @@ function handle(method, p, q, body, res) {
       const mt = /^(meeting|huddle)-/.test(B.streamId) ? meetingReply(B) : /^console-/.test(B.streamId) && (S.meeting.queues[B.agentId + ':chat'] || []).length ? ((q1) => (q1 && typeof q1 === 'object' ? { text: String(q1.text), refused: false, step: Number(q1.stepMs) || 5, chat: true } : { text: String(q1), refused: false, step: 5, chat: true }))(S.meeting.queues[B.agentId + ':chat'].shift()) : null;
       if (mt && mt.chat) S.meeting.runs.push({ agentId: B.agentId, kind: 'chat', streamId: B.streamId, isTask: B.isTask, placed: B.placed || null, provider: B.provider, model: B.model, last: String(last).slice(-2000), count: msgs.length, at: Date.now() });
       const leak = !mt && /\[leak\]/.test(last) ? fs.readFileSync(path.join(__dirname, 'fixtures', 'leaked-tool-calls.txt'), 'utf8') : null;
-      const reply = mt ? mt.text : /\[fail\]/.test(last) ? null : leak ? leak : /charter/i.test(last)
+      // "[cmd]": the reply tells the owner to run a command (the console's pre-delivery check sends it back once);
+      // "[cmd-always]" anywhere in the conversation: every reply does (the check delivers the second one with the notice)
+      const cmdReply = !mt && (/\[cmd\]/.test(last) || msgs.some(x => /\[cmd-always\]/.test(String((x && x.content) || '')))) ? 'Please run `sudo apt install jq` in your terminal and tell me when it is done.' : null;
+      const reply = mt ? mt.text : cmdReply ? cmdReply : /\[fail\]/.test(last) ? null : leak ? leak : /charter/i.test(last)
         ? 'Happy to. Three quick questions: what does the company do, for whom, and what will it never do? I have drafted company/CHARTER.md from what you told me so far. [Review it in Setup](console:#/setup/charter)'
         : /\[slow\]/.test(last) ? 'Got it. ' + CANNED + ' That is the whole plan, start to finish.' : 'Got it. ' + CANNED;
       const t = S.transcripts[B.streamId] = S.transcripts[B.streamId] || [];

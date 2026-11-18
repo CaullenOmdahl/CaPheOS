@@ -196,8 +196,26 @@ function questions() {
   let gates = []; try { gates = require(path.join(TOOLS, 'lib', 'governance.js')).pendingGates(); } catch (_) {}
   const byId = {}; for (const g of gates) byId[g.id] = g;
   let rec = {}; try { rec = tool('approvals.js').records(); } catch (_) {}   // approvals: reminded (the Needs-you highlight)
-  return inbox.openQuestions().map(q => SERVICE_KEYS.markSaved(q)).map(q => Object.assign({}, q, { askerSeat: seatOf(q.from) }, byId[q.id] ? { gate: { category: byId[q.id].category, ref: byId[q.id].ref, by: byId[q.id].by, summary: byId[q.id].summary } } : {},
-    q.approval ? { approval: Object.assign({}, q.approval, { reminded: !!(rec[q.id] && rec[q.id].reminded), fixed: !!(rec[q.id] && rec[q.id].fixed) }) } : {}));
+  const st = inbox.state();
+  // M3: the crew's names as people write them, in what the owner reads (the stored card is unchanged: its cardDigest holds)
+  const named = q => Object.assign({}, q, ['message', 'details', 'q', 'from'].reduce((o, k) => { if (typeof q[k] === 'string') o[k] = NEEDS.properNames(q[k]); return o; }, {}));
+  return inbox.openQuestions().map(q => SERVICE_KEYS.markSaved(q)).map(named).map(q => Object.assign({}, q, { askerSeat: seatOf(q.from) }, byId[q.id] ? { gate: { category: byId[q.id].category, ref: byId[q.id].ref, by: byId[q.id].by, summary: byId[q.id].summary, fixedGate: (st[q.id] && st[q.id].gate && st[q.id].gate.fixedGate) || undefined } } : {},
+    q.approval ? { approval: Object.assign({}, q.approval, { reminded: !!(rec[q.id] && rec[q.id].reminded), fixed: !!(rec[q.id] && rec[q.id].fixed) }) } : {}, cardParts(st[q.id])));
+}
+// an owner card's plain parts (company/tools/lib/owner-card.js: consequence, recommendation, the collapsed technical
+// detail) and what yes does, in the console's own words (console/owner-needs.js describeEffect)
+function cardParts(row) {
+  if (!row) return {};
+  const o = {};
+  for (const k of ['consequence', 'recommendation', 'technical']) if (typeof row[k] === 'string' && row[k].trim()) o[k] = (k === 'technical' ? row[k] : NEEDS.properNames(row[k])).trim().slice(0, k === 'technical' ? 8000 : 600);
+  if (row.effect) { o.effectSays = NEEDS.describeEffect(row.effect); o.effectKind = NEEDS.effectKind(row.effect) || 'unknown'; }
+  if (row.effect || row.card) o.cardDigest = NEEDS.cardDigest(row);   // sent back with the answer: a yes applies only what was shown
+  return o;
+}
+/* Needs you: only what still needs the owner (console/owner-needs.js classify); the rest is "The crew is handling" */
+function ownerQuestions() {
+  const all = questions(); let st = {}; try { st = tool('inbox.js').state(); } catch (_) {}
+  return NEEDS.split(all, st);
 }
 // the crew seat id of a question's asker (by full or first name), for Discuss; null for a tool (onboard.js) or a stranger
 function seatOf(from) {
@@ -274,9 +292,54 @@ async function writePending(pending, values) {
     values[p.f.id] = Object.assign({ stored: 'secrets/' + p.name, chars: p.value.length, validated }, validateError ? { validateError } : {});
   }
 }
+/* the owner's answer, then what it asks for: a card's typed effect on yes (console/owner-needs.js applyEffect) and, when
+ * the owner ticked "Make this a standing rule", the ruling (company/state/owner-rulings.json) */
 async function answerQuestion(id, b) {
-  const inbox = tool('inbox.js');
+  b = b && typeof b === 'object' ? b : {};
   const q = questions().find(x => x.id === id); if (!q) bad('no open question ' + id, 404);
+  const row = tool('inbox.js').state()[id] || {};
+  const rule = b.rule && typeof b.rule === 'object' ? b.rule : (b.rule === true ? {} : null);
+  let ruleDraft = null;
+  if (rule) {   // checked before the answer is recorded, so a refused rule never leaves a half-done answer
+    const words = String(rule.text || b.text || b.note || (b.values && (b.values.reason || b.values.answer)) || '').trim();
+    // the same check that decides whether Today offers the tick (console/owner-needs.js ruleOffer): never a rule that
+    // cannot work, and never an internal name in what the owner reads
+    const offer = NEEDS.ruleOffer(q, row, []);
+    if (!offer.ok) bad(offer.why + ' Your answer was not recorded; answer it without the rule.');
+    if (words.length < 3) bad('Write the rule in your own words first (for example: “you decide these yourselves”).');
+    ruleDraft = { text: words, effect: rule.effect, scope: offer.scope, fromCard: id };
+  }
+  const yes = (() => {
+    if (b.parts || b.store) return false;
+    if (b.verdict === 'yes' && !b.action) return true;
+    const act = b.action ? (q.form.actions || []).find(a => a.id === String(b.action)) : null;
+    return !!(act && act.verdict === 'yes');
+  })();
+  // a free-text reply that makes a standing rule on an approval card: the rule is saved and the card stays open (an
+  // approval takes only Approve or Deny); the crew now has it, under "The crew is handling", where the owner can still decide
+  if (ruleDraft && (row.approval || row.gate) && b.verdict === 'reply') {
+    const ruling = NEEDS.addRuling(ruleDraft, bad);
+    return { ok: true, id, state: 'open', ruling, rulingSaid: 'Saved as a standing rule: “' + ruling.text + '”. Questions like this one are now the crew\'s to decide; this one is under “The crew is handling”, where you can still decide it.' };
+  }
+  // a card whose yes does something: the answer must be to the card as the owner saw it (the page sends its cardDigest);
+  // a card the asker updated since is refused before anything is recorded
+  const acts = row.effect && NEEDS.effectKind(row.effect) && NEEDS.effectKind(row.effect) !== 'none';
+  if (acts && yes && b.cardDigest !== NEEDS.cardDigest(row)) throw new HttpError(409, 'This card changed while you were reading it, so your answer was not recorded. Read it again, then answer.', { code: 'card-changed' });
+  const r = await answerOne(id, b, q);
+  const out = Object.assign({}, r);
+  if (ruleDraft) { try { out.ruling = NEEDS.addRuling(ruleDraft, bad); out.rulingSaid = 'Saved as a standing rule: “' + out.ruling.text + '”. You can remove it in Settings › Autonomy.'; } catch (e) { out.rulingSaid = 'Your answer is recorded, but the standing rule was not saved: ' + e.message; } }
+  if (row.effect && r && r.ok !== false && String(r.state || 'answered') !== 'open') {
+    // the card still is what the owner saw (no update slipped in between their click and now), and its effect is the same
+    const now = tool('inbox.js').state()[id] || {};
+    if (yes && acts && NEEDS.cardDigest(now) !== b.cardDigest) { out.applied = { kind: NEEDS.effectKind(row.effect), applied: false, said: 'Your answer is recorded, but the card changed while you answered, so nothing was changed. The crew will ask again.' }; out.said = out.applied.said; }
+    else if (yes) { out.applied = await NEEDS.applyEffect(row.effect, { runApi, owner: () => OWNER, id, card: q }); out.said = out.applied.said; }
+    else out.said = 'Your answer is recorded. Nothing was changed.';
+    try { emit('governance'); } catch (_) {}
+  }
+  return out;
+}
+async function answerOne(id, b, q) {
+  const inbox = tool('inbox.js');
   const keyRefusal = 'this looks like a key or a private key. Put it in the secure field instead' + (q.form.fields.some(f => f.type === 'secret') ? '' : ' ("Store the key securely")') + ': it is stored as a file and never written into a message.';
   const row = inbox.state()[id];
   // an approval record (approvals.js, or an older gate question) is answered ONLY through the approval API, as the
@@ -483,13 +546,13 @@ async function usage() { try { return await runApi('pacer.js', ['status', '--jso
 function panelsList() { return tool('console-panel.js').listPanels(); }
 async function today() {
   const since = Date.now() - 24 * 3600e3;
-  const qs = questions();
+  const sp = ownerQuestions(); const qs = sp.needs;
   let unread = []; try { unread = tool('owner-inbox.js').unacked(); } catch (_) {}
   const outbound = (() => { try { return tool('owner-inbox.js').sent().filter(m => Date.parse(m.at) >= since); } catch (_) { return []; } })();
   const [crew, use] = await Promise.all([crewView(), usage()]);
   let panels = []; try { panels = panelsList().filter(p => p.status === 'installed' && !p.hidden && /^today/.test(String(p.placement || ''))).map(p => p.id); } catch (_) {}
-  return { ok: true, company: companyInfo(), needsYou: { questions: qs, count: qs.length, blocking: qs.filter(q => q.blocking).length },
-    crew, usage: use, overnight: { fromCompany: outbound, unreadByCompany: unread.length, dispatch: tailLines(co.p('company', 'work', 'dispatch-log.md'), 20) },
+  return { ok: true, company: companyInfo(), needsYou: { questions: qs, count: qs.length, blocking: qs.filter(q => q.blocking).length }, crewHandling: sp.handling.map(x => Object.assign({}, x, { question: undefined })),
+    digest: NEEDS.digest(), crew, usage: use, overnight: { fromCompany: outbound, unreadByCompany: unread.length, dispatch: tailLines(co.p('company', 'work', 'dispatch-log.md'), 20) },
     halt: co.haltState(), panels, onboarding: onboardingBrief() };
 }
 function onboardingBrief() {
@@ -515,6 +578,7 @@ const str = (v, name) => { if (v === undefined || v === null || v === '') return
 const routes = [];
 const route = (method, re, fn) => routes.push({ method, re, fn });
 const SERVICE_KEYS = require(path.join(__dirname, 'service-keys.js'))({ co, bad, HttpError, tool, writeSecret, normalizeSecret, owner: () => OWNER });
+const NEEDS = require(path.join(__dirname, 'owner-needs.js')).make({ co });   // Needs you vs the crew is handling, rulings, effects, the digest
 const CHAT = require(path.join(__dirname, 'chat.js'))({ co, stationGet, bad, HttpError, tool, owner: () => OWNER, huddle: () => HUD });
 /* a meeting seat's model: the seat's current chain entry (the loop routine's pair models.js keeps on it, else its roster
    row, else the company default: console/chat.js modelFor), with the routines read once a few seconds for all seats;
@@ -540,7 +604,26 @@ const ACT = require(path.join(__dirname, 'activity.js'))({ co, stationGet, emit:
 
 route('GET', /^\/api\/company$/, () => Object.assign({ ok: true }, companyInfo()));
 route('GET', /^\/api\/today$/, today);
-route('GET', /^\/api\/questions$/, () => ({ ok: true, questions: questions() }));
+// questions: only the cards that still need the owner (the badge counts these); crewHandling: the rest, read only
+route('GET', /^\/api\/questions$/, () => { const sp = ownerQuestions(); return { ok: true, questions: sp.needs, crewHandling: sp.handling }; });
+route('GET', /^\/api\/digest$/, (m, q) => NEEDS.digest({ hours: Math.min(72, Math.max(1, Number(q.get('hours')) || 24)) }));
+// the Undo button on a digest line (lib/owner-notice.js action undo-decision): only for a line that carries it; the owner's
+// "undo" goes to the crew as the owner's own message naming the decision (decision.js join() records it against the model)
+route('POST', /^\/api\/digest\/undo$/, (m, q, b) => {
+  const did = String((b && b.decisionId) || '');
+  if (!/^d-[0-9a-f]{12}$/.test(did)) bad('which decision to undo?');
+  const item = NEEDS.digest({ hours: 72 }).items.find(x => x.action && x.action.kind === 'undo-decision' && x.action.decisionId === did);
+  if (!item) bad('That line has no undo any more (it is older than three days, or it was never one the crew can undo).', 404);
+  const r = postOwnerMessage({ text: 'Please undo this decision: ' + item.text.replace(/\s*You can undo it on Today\.?$/, '') + ' (' + did + ')', re: did });
+  try { emit('owner'); } catch (_) {}
+  return { ok: true, said: 'Sent: the crew has your request to undo it, and the check that let it through is marked as wrong.', message: r.message };
+});
+route('GET', /^\/api\/rulings$/, () => ({ ok: true, rulings: NEEDS.rulings().map(r => Object.assign({}, r, { covers: ((r.scope && r.scope.categories) || []).map(NEEDS.catSay).concat((r.scope && r.scope.topics) || []) })) }));
+route('POST', /^\/api\/rulings$/, (m, q, b) => ({ ok: true, ruling: NEEDS.addRuling({ text: b.text, effect: b.effect, scope: b.scope }, bad) }));
+route('POST', /^\/api\/rulings\/(rule-[a-z0-9]+-[0-9a-f]{4}|r-[a-z0-9]{4,20})\/remove$/, m => NEEDS.removeRuling(m[1], bad));
+// projects the crew asked to take over (company/tools/project.js): only the owner approves or revokes one
+route('GET', /^\/api\/projects$/, () => runApi('project.js', ['list']));
+route('POST', /^\/api\/projects\/([a-z0-9][a-z0-9-]{0,63})\/(approve|revoke)$/, (m, q, b) => runApi('project.js', [m[2], '--id', m[1], '--by', OWNER]));
 route('GET', /^\/api\/questions\/answered$/, (m, q) => ({ ok: true, answered: answered(q.get('since')) }));
 route('POST', /^\/api\/questions\/(q-\d+)\/answer$/, (m, q, b) => answerQuestion(m[1], b));
 route('POST', /^\/api\/questions\/(q-\d+)\/snooze$/, (m, q, b) => {
@@ -756,6 +839,20 @@ route('POST', /^\/api\/panels\/([a-z0-9-]+)\/(hide|unhide|approve|reject|remove)
 });
 route('GET', /^\/api\/governance-log$/, (m, q) => { const p = filePage(co.p('company', 'state', 'governance-log.jsonl'), q, 200); const entries = []; for (const l of p.lines) { try { const r = JSON.parse(l); if (r && !r._retention) entries.push(r); } catch (_) {} } return { ok: true, entries, cursor: p.cursor, more: p.more }; });
 route('GET', /^\/api\/decision-models$/, () => runApi('decide.js', ['list', '--json']));
+// Settings › Autonomy › Decision rules: turn a tested check on (live) or back to practice (shadow), as the owner; the
+// version is the model's active one (decide.js promote checks its cases)
+route('POST', /^\/api\/decision-models\/([a-z][a-z0-9-]{1,40})\/mode$/, async (m, q, b) => {
+  const mode = b && b.mode === 'live' ? 'live' : b && b.mode === 'shadow' ? 'shadow' : bad('mode is live or shadow');
+  const list = await runApi('decide.js', ['list', '--json']);
+  const model = ((list && (list.models || list.items)) || []).find(x => x.id === m[1]);
+  if (!model) bad('no such rule', 404);
+  const v = String(model.active || model.version || '');
+  if (!/^[0-9A-Za-z._-]{1,20}$/.test(v)) bad('that rule has no version to turn on');
+  return runApi('decide.js', ['promote', m[1], v, '--mode', mode, '--by', OWNER], { timeout: 60000 });
+});
+// Settings › Autonomy › Permission to answer for you: the owner's delegations, and taking one back
+route('GET', /^\/api\/delegations$/, () => runApi('delegation.js', ['list', '--json']));
+route('POST', /^\/api\/delegations\/(dg-[0-9a-z-]{1,40})\/revoke$/, (m) => runApi('delegation.js', ['revoke', m[1], '--by', OWNER, '--why', 'taken back by the owner in the console']));
 // onboarding (company/tools/onboard.js): provisioning steps + the last certification; POST certify re-runs the 9 checks
 route('GET', /^\/api\/onboarding$/, () => runApi('onboard.js', ['--check', '--json']));
 route('POST', /^\/api\/onboarding\/certify$/, async () => { const r = await run('onboard.js', ['--certify', '--json'], { timeout: 300000 }); return Object.assign({}, r.data, { ok: true, certified: !!(r.data && r.data.certified) }); });
@@ -775,6 +872,9 @@ route('GET', /^\/api\/external$/, () => runApi('external-gate.js', ['list']));
 const clients = new Set();
 const WATCHES = [
   ['questions', ['company'], f => f === 'pm-inbox.jsonl' || f === 'asks.jsonl'],
+  // a level or a standing rule decides what is in Needs you (console/owner-needs.js), so either change redraws it
+  ['questions', ['company', 'state'], f => f === 'governance.json' || f === 'owner-rulings.json'],
+  ['rulings', ['company', 'state'], f => f === 'owner-rulings.json'],
   ['owner', ['company', 'owner'], () => true],
   ['handoffs', ['company', 'work', 'handoffs'], () => true],
   ['halt', ['company', 'state'], f => f === 'halt.json'],
@@ -1216,7 +1316,10 @@ async function selftest() {
       r = await call('POST', '/api/service-keys', { service: 'nope', value: 'x-123456789' });
       check('service keys: an unknown service is refused', r.status === 400, r.json);
       // Today: a crew request for a key that is already saved says so
-      const kq4 = await askCli(['--message', 'The Pyth key, please.', '--kind', 'secret', '--name', 'pyth-api-key', '--label', 'Pyth API key']);
+      // a key that is already saved is not asked for again (inbox.js code secret-exists), unless the asker says what changed
+      const kq4no = await askCli(['--message', 'The Pyth key, please.', '--kind', 'secret', '--name', 'pyth-api-key', '--label', 'Pyth API key']);
+      check('Today: a crew request for a key that is already saved is refused unless it says what changed', kq4no.ok === false && kq4no.code === 'secret-exists', kq4no);
+      const kq4 = await askCli(['--message', 'The Pyth key, please.', '--kind', 'secret', '--name', 'pyth-api-key', '--label', 'Pyth API key', '--changed', 'the stored key stopped working this morning']);
       const kq5 = await askCli(['--message', 'A Synpath key, please.', '--kind', 'secret', '--name', 'synpath-api-key', '--label', 'Synpath key']);
       r = await call('GET', '/api/questions'); const q4 = (r.json.questions || []).find(x => x.id === kq4.id), q5 = (r.json.questions || []).find(x => x.id === kq5.id);
       check('Today: a request for a key that is already saved carries saved.at; one for a new key does not', q4 && q4.form.fields[0].saved && !isNaN(Date.parse(q4.form.fields[0].saved.at)) && q5 && !q5.form.fields[0].saved && !r.text.includes(PYTH2), { q4: q4 && q4.form, q5: q5 && q5.form });

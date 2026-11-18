@@ -118,6 +118,13 @@ const NAMES = { 'claude-cli': 'Claude', custom: 'MiniMax', deepseek: 'DeepSeek' 
 /* ---------- small helpers ---------- */
 const isNum = v => typeof v === 'number' && Number.isFinite(v);
 const numOr = (v, d, lo, hi) => { const n = typeof v === 'string' && v.trim() === '' ? NaN : Number(v); return Number.isFinite(n) && (lo == null || n >= lo) && (hi == null || n <= hi) ? n : d; };
+/* the owner's line when a crew member changes a subscription cutoff at budget=notify: what it is about, in plain words;
+ * the setting names and numbers ride in `technical`, and the crew's reason only when it reads plainly */
+function limitNotice(by, sub, what, why) {
+  const words = t => { try { return !require('./lib/owner-scope').wordsProblems(t).length; } catch (_) { return false; } };
+  const reason = why && words(why) && String(why).length <= 120 ? ' ' + by + '\'s reason: ' + String(why).trim().replace(/[.!]?$/, '').replace(/^./, c => c.toLowerCase()) + '.' : '';
+  return { text: by + ' changed when the crew stops using the ' + sub + ' subscription.' + reason + ' You can change it back in Settings › Models and subscriptions.', technical: by + ' set the ' + sub + ' cutoffs: ' + what + ' (' + why + ').' };
+}
 function readJson(f, d) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } }
 function writeJsonAtomic(f, obj) {
   fs.mkdirSync(path.dirname(f), { recursive: true });
@@ -402,6 +409,17 @@ function deepseekFetch(root, url) {
 }
 
 /* ---------- the pacer ---------- */
+/* ASKS: what a governed pacer change says to the owner (lib/governance.js decide): plain words up front, the
+ * percentages and the setting in `technical`. Exported so a test files it at approve. */
+const ASKS = {
+  emergency: ({ ceilingPct, hours, why }) => {
+    const gov = require('./lib/governance');
+    const w = why ? gov.plainPart(String(why).replace(/\s+/g, ' ').trim().replace(/[.!]$/, '').slice(0, 200)) : null;
+    return { summary: 'let the crew use more of its AI subscriptions than usual for the next ' + (Number(hours) === 1 ? 'hour' : hours + ' hours'),
+      recommendation: w ? 'yes, for the emergency: ' + w.replace(/^./, c => c.toLowerCase()) : 'yes, for the emergency the crew named', default: 'the crew keeps to its usual daily share',
+      technical: 'Emergency: lift the subscription pacing lines to ' + ceilingPct + '% for ' + hours + ' hours: ' + String(why || '').slice(0, 200) };
+  },
+};
 function makePacer(o) {
   o = o || {};
   const root = o.root || DEFAULT_ROOT;
@@ -1288,9 +1306,8 @@ function makePacer(o) {
     // a hand-started emergency lifts the pacing lines, which is a budget decision (self-governance category budget); the
     // automatic one for a confirmed serious flag is standing policy (emergency.autoOnSerious) and is not asked again
     if (!a.auto) {
-      const gd = gov.decide('budget', { by, ref: 'budget:emergency:' + by.toLowerCase() + ':' + hours + ':' + why.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60),
-        summary: 'lift the subscription pacing lines to ' + policy.emergency.ceilingPct + '% for ' + hours + ' hours (an emergency): ' + why.slice(0, 200),
-        recommendation: 'yes, for the emergency named', default: 'no emergency; routines stay on today\'s pacing line' }, govOpts);
+      const gd = gov.decide('budget', Object.assign({ by, ref: 'budget:emergency:' + by.toLowerCase() + ':' + hours + ':' + why.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60) },
+        ASKS.emergency({ ceilingPct: policy.emergency.ceilingPct, hours, why })), govOpts);
       if (!gd.allowed) return { ok: false, error: gov.refusal('budget', gd), governance: { level: gd.level, questionId: gd.questionId || null } };
     }
     const cur = readEmergency(t);
@@ -1858,7 +1875,7 @@ async function cli(argv, o) {
     if (no) { print(JSON.stringify({ ok: false, error: no.error }, null, 1)); return no.code; }
     const r = PA.setLimit(root, key, { weekStop: a['week-stop'], useNow: a['use-now'], by, why, via: a.via && a.via !== true ? a.via : 'pacer.js limit' });
     if (r.ok && !/^(owner|commander)$/i.test(by) && by.toLowerCase() !== String((require('./lib/company').config.owner || {}).name || '').toLowerCase()) {
-      try { if (gov.level('budget', Object.assign({ root }, o.govOpts || {})) === 'notify') gov.notify(by + ' set the ' + PA.SUBS[key].name + ' cutoffs: ' + r.what + ' (' + why + ').', { root }); } catch (_) {}
+      try { if (gov.level('budget', Object.assign({ root }, o.govOpts || {})) === 'notify') { const n = limitNotice(by, PA.SUBS[key].name, r.what, why); gov.notify(n.text, { root, technical: n.technical }); } } catch (_) {}
     }
     print(JSON.stringify(r, null, 1)); return r.ok ? 0 : (r.code || 2);
   }
@@ -1866,7 +1883,7 @@ async function cli(argv, o) {
   return 2;
 }
 
-module.exports = { makePacer, dispatchHook, cli, loadPolicy, loadRouting, routingKeyFor, parseMiniMax, handoffsDueToday, minimaxFetch, dayOf, lineFor, nextOpenDay, DEFAULTS, REL };
+module.exports = { ASKS, limitNotice, makePacer, dispatchHook, cli, loadPolicy, loadRouting, routingKeyFor, parseMiniMax, handoffsDueToday, minimaxFetch, dayOf, lineFor, nextOpenDay, DEFAULTS, REL };
 
 if (require.main === module) {
   cli(process.argv.slice(2)).then(code => { process.exitCode = code; }, e => { console.error('pacer error: ' + e.message); process.exitCode = 1; });

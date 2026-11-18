@@ -592,7 +592,13 @@ function copyPanel(src, dest) {
   fs.mkdirSync(dest, { recursive: true });
   for (const f of ['panel.json', 'page.json', 'view.html', 'README.md']) if (fs.existsSync(path.join(src, f))) fs.copyFileSync(path.join(src, f), path.join(dest, f));
 }
-function tellOwner(text, from, r) {
+// an FYI for the owner's day message (lib/owner-notice.js); a tree without it falls back to the low-level writer
+// the owner's lines: what changed on their console and where they can hide it (Settings › Console pages); ids are technical
+const plainTitle = t => String(t || 'untitled').replace(/[\u201c\u201d"]/g, '').slice(0, 60);
+function panelNotice(who, existing, page, panel) { return who + ' ' + (existing ? 'changed' : 'added') + ' the ' + (page ? 'page' : 'panel') + ' “' + plainTitle(panel.title) + '” in the console. You can hide it in Settings › Console pages.'; }
+function tellOwner(text, from, r, technical) {
+  const notice = path.join(paths(r).tools, 'lib', 'owner-notice.js');
+  if (fs.existsSync(notice)) { try { const n = require(notice).send({ kind: 'fyi', root: paths(r).root, from, text, technical }); return { told: true, id: n.row ? n.row.id : null, duplicate: !!n.duplicate }; } catch (e) { return { told: false, why: e.message }; } }
   const mod = path.join(paths(r).tools, 'owner-inbox.js');
   if (!fs.existsSync(mod)) return { told: false, why: 'owner-inbox.js not present' };
   try { const row = require(mod).send({ from, text }); return { told: true, id: row && row.id }; } catch (e) { return { told: false, why: e.message }; }
@@ -628,15 +634,17 @@ function cmdAdd(dirArg, by, r) {
   const what = (existing ? 'changed' : 'added') + ' ' + what0 + ' "' + panel.title + '" (' + panel.id + ', ' + placementKey(panel.placement) + ', owner ' + panel.owner + ')';
   if (gate === 'approve') {
     copyPanel(dir, path.join(P.proposed, panel.id));
-    const q = who + ' proposes a ' + what0 + ': "' + panel.title + '" (' + placementKey(panel.placement) + '). Why: ' + panel.why
-      + ' Recommendation: approve. Default if unanswered: not installed. Approve: node company/tools/console-panel.js approve ' + panel.id + ' --by owner';
+    // the owner's words: what it is and where they decide (Settings › Console pages has Approve and Reject); the
+    // placement, id and command are the crew's detail
+    const q = who + ' wants to add the ' + (page ? 'page' : 'panel') + ' “' + plainTitle(panel.title) + '” to your console, which lets you see it at a glance. Approve or reject it in Settings › Console pages; until then it is not added.'
+      + '\n\nTechnical details (for the crew): ' + what0 + ' ' + panel.id + ' (' + placementKey(panel.placement) + '). Why: ' + panel.why + ' Approve: node company/tools/console-panel.js approve ' + panel.id + ' --by owner';
     const asked = askOwner(q, who, r);
     const line = record({ op: 'propose', id: panel.id, type: page ? 'page' : 'panel', by: who, gate, from, digest: digest(dir), question: asked.id || null }, r);
     return { code: 0, out: { ok: true, status: 'proposed', id: panel.id, dir: rel(path.join(P.proposed, panel.id), r), asked, change: line } };
   }
   copyPanel(dir, path.join(home, panel.id));
   const line = record({ op: existing ? 'change' : 'add', id: panel.id, type: page ? 'page' : 'panel', by: who, gate, from, digest: digest(dir) }, r);
-  const told = gate === 'notify' ? tellOwner(who + ' ' + what + '. Why: ' + panel.why + ' Hide it any time: console-panel.js hide ' + panel.id + ' --by owner', who, r) : null;
+  const told = gate === 'notify' ? tellOwner(panelNotice(who, existing, page, panel), who, r, what + '. Why: ' + panel.why + ' Hide it: console-panel.js hide ' + panel.id + ' --by owner') : null;
   const hidden = !!consoleState(r).hidden[panel.id];
   return { code: 0, out: { ok: true, status: 'installed', id: panel.id, type: page ? 'page' : 'panel', gate, hidden, told, change: line } };
 }
@@ -666,7 +674,7 @@ function cmdRemove(id, by, r) {
   fs.rmSync(dir, { recursive: true, force: true });
   const gate = owner ? 'owner' : gateFor('dashboard', r);
   const line = record({ op: 'remove', id, by: who, gate, digest: d }, r);
-  const told = gate === 'notify' || gate === 'approve' ? tellOwner(who + ' removed console ' + (dir === pdir ? 'page' : 'panel') + ' "' + panel.title + '" (' + id + ').', who, r) : null;
+  const told = gate === 'notify' || gate === 'approve' ? tellOwner(who + ' removed the ' + (dir === pdir ? 'page' : 'panel') + ' “' + plainTitle(panel.title) + '” from the console.', who, r, 'removed ' + id) : null;
   return { code: 0, out: { ok: true, status: 'removed', id, told, change: line } };
 }
 function cmdHide(id, by, r, unhide) {
@@ -916,7 +924,7 @@ function selftest() {
       setGov('notify');
       res = cmdAdd(path.join(work, 'trading-positions'), 'Alex', tmp);
       const outb = fs.readFileSync(path.join(tmp, 'company', 'owner', 'outbound.jsonl'), 'utf8');
-      t('notify gate installs and tells the owner', res.out.status === 'installed' && res.out.told && res.out.told.told && /trading-positions/.test(outb), res.out);
+      t('notify gate installs and tells the owner', res.out.status === 'installed' && res.out.told && res.out.told.told && /You can hide it in Settings › Console pages/.test(outb) && !/console-panel\.js/.test(outb), res.out);
 
       // unknown seat refused
       t('unknown --by refused', cmdAdd(path.join(work, 'open-handoffs'), 'Nobody', tmp).code === 1);
@@ -1068,7 +1076,7 @@ function selftest() {
   })();
 }
 
-module.exports = { render, validatePanel, validatePage, validateView, validateDir, listPanels, listScaffolds, cmdScaffold, cmdTokens, tokenTable, sampleTimes, loadSources, gateFor, resolveFileSource, lintViewHtml, checkGlob, paths, companyTz };
+module.exports = { panelNotice, render, validatePanel, validatePage, validateView, validateDir, listPanels, listScaffolds, cmdScaffold, cmdTokens, tokenTable, sampleTimes, loadSources, gateFor, resolveFileSource, lintViewHtml, checkGlob, paths, companyTz };
 
 if (require.main !== module) return;
 

@@ -14,8 +14,12 @@
  *     today's budget" and "Keep spreading" ("Keep it paused" for the cap). One open money question at a time; per kind
  *     it asks at most once a company day, and not at all after the owner answered that kind today.
  *  3. self-governance (company/state/governance.json, category "budget"): at auto or notify the company decides, so the
- *     question is a non-blocking FYI (the hold stays as it is) plus one owner sentence; at approve (or triage) it is a
- *     blocking question and the hold stays until the owner answers.
+ *     question is a non-blocking FYI (the hold stays as it is) plus one plain line in the owner's daily digest (lib/
+ *     governance.js fyi); at approve (or triage) it is a blocking question and the hold stays until the owner answers.
+ *  4. an open money question is withdrawn as soon as today's budget is decided some other way (Settings, the CLI, a
+ *     raised daily budget): the owner is never left with a question that no longer matters.
+ * The owner reads plain words only: who is paused, who waits on them, what each button does. The numbers that explain
+ * it (ticks, the hour's allowance, the file and tool it is recorded in) are under "Technical details (for the crew)".
  *
  * The owner's answer: "Let it run now" goes through `cadence.js sprint config --spread today` (setSprintConfig: the
  * spread is off until local midnight, recorded in cadence.json like every Sprint setting); "Raise today's budget" lives
@@ -53,6 +57,8 @@ function withInbox(root, fn) {
 }
 const usd = n => '$' + (Math.round(Number(n) * 100) / 100).toFixed(2).replace(/\.00$/, '');
 const list = a => a.length <= 1 ? a.join('') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1];
+// who, in a lead the owner can read: up to three names, else how many
+const whoList = (names, all) => names.length <= 3 ? list(names) : (all ? 'All ' : '') + names.length + ' crew members';
 
 /* authorize(root, by) -> null (may set) or {code, error}: the owner (not from an agent's run); the CEO or finance seat
  * only while self-governance gives budget to the company. */
@@ -107,28 +113,32 @@ function set(root, o) {
 
 /* the question: plain message first, numbers in the details, a slider for today's budget, three buttons */
 function questionFor(sit, fyi) {
-  const who = sit.waiting && sit.waiting.length ? ' ' + list(sit.waiting) + (sit.waiting.length > 1 ? ' are' : ' is') + ' waiting on ' + (sit.names.length > 1 ? 'them' : 'it') + '.' : '';
-  const names = list(sit.names);
+  const who = sit.waiting && sit.waiting.length ? ' ' + whoList(sit.waiting) + (sit.waiting.length > 1 ? ' are' : ' is') + ' waiting on ' + (sit.names.length > 1 ? 'them' : 'it') + '.' : '';
+  const names = whoList(sit.names, sit.all);
   const head = sit.kind === 'spread'
     ? names + (sit.names.length > 1 ? ' are' : ' is') + ' paused so today\'s ' + usd(sit.cap) + ' lasts until midnight.'
-    : names + (sit.names.length > 1 ? ' are' : ' is') + ' paused: the company has spent today\'s ' + usd(sit.cap) + ' metered budget.';
+    : names + (sit.names.length > 1 ? ' are' : ' is') + ' paused: the company has spent today\'s ' + usd(sit.cap) + ' pay-as-you-go budget.';
   const message = head + who + (fyi ? ' You let the company decide budget, so it keeps it this way; pick something else if you want.' : '');
   const details = [
+    'Spent so far today: ' + usd(sit.spent) + ' of ' + usd(sit.cap) + '. Work on the Claude and MiniMax subscriptions is not affected.',
+    (sit.kind === 'spread' ? '"Let it run now" stops spreading the money for today only. ' : '') + '"Raise today\'s budget" lets the company spend up to the slider today only; your usual daily budget in Settings stays as it is.',
+  ].join('\n');
+  const technical = [
     'Metered spend in the last 24 h: ' + usd(sit.spent) + ' of ' + usd(sit.cap) + (sit.kind === 'spread' ? '. Last hour: ' + usd(sit.lastHour) + ', allowance ' + usd(sit.allowance) + ' (Sprint spreads what is left over the hours left today).' : '.'),
-    'Held for ' + sit.ticks + ' ticks in a row' + (sit.since ? ' since ' + String(co.localParts(new Date(sit.since)).time) : '') + '. Subscription seats (Claude, MiniMax) are not affected.',
-    '"Let it run now" turns the spread off for today only; "Raise today\'s budget" sets today\'s metered budget to the slider (today only; your daily number in Settings stays). Recorded in ' + TODAY_REL + ' through money-hold.js set; it takes effect on the next dispatcher tick.',
+    'Held for ' + sit.ticks + ' ticks in a row' + (sit.since ? ' since ' + String(co.localParts(new Date(sit.since)).time) : '') + '.',
+    'Recorded in ' + TODAY_REL + ' through money-hold.js set; it takes effect on the next dispatcher tick.',
   ].join('\n');
   const min = Math.max(0, Math.ceil(Number(sit.cap) || 0));
   const max = Math.max(min + 5, Math.ceil((Number(sit.cap) || 1) * 4));
   const value = Math.min(max, Math.max(min, Math.ceil(Math.max(Number(sit.cap) * 1.5, Number(sit.spent) + Number(sit.cap) / 2))));
   const form = { fields: [
-    { id: 'budget', type: 'slider', label: 'Today\'s metered budget', min, max, step: 1, value, unit: '$', say: 'Let the company spend up to ${value} metered today',
+    { id: 'budget', type: 'slider', label: 'Today\'s pay-as-you-go budget', min, max, step: 1, value, unit: '$', say: 'Let the company spend up to ${value} pay-as-you-go today',
       minLabel: 'Today\'s budget now (' + usd(min) + ')', maxLabel: usd(max), required: false },
   ], actions: (sit.kind === 'spread' ? [{ id: 'run', label: 'Let it run now', verdict: 'yes', primary: true, needs: 'none' }] : []).concat([
     { id: 'raise', label: 'Raise today\'s budget', verdict: 'submit', primary: sit.kind !== 'spread', needs: ['budget'] },
     { id: 'keep', label: sit.kind === 'spread' ? 'Keep spreading' : 'Keep it paused', verdict: 'no', needs: 'none' },
   ]) };
-  return { message, details, form };
+  return { message, details, technical, form };
 }
 
 function openMoneyQuestion(root) { return withInbox(root, ib => ib.openQuestions().find(q => String(q.about || '').startsWith('money-hold:')) || null); }
@@ -167,7 +177,18 @@ function tick(a) {
       const row = withInbox(root, ib => ib.state()[rec.qid]);
       if (!row) { rec.status = 'gone'; continue; }
       if (row.reclassified || (row.type === 'close' && !row.a)) { rec.status = 'closed'; continue; }
-      if (!row.a) { for (const s of rec.seats || []) out.open[s] = rec.qid; continue; }
+      if (!row.a && !row.withdrawnAll) {
+        // decided some other way since it was asked (Settings, the CLI, a raised daily budget): the question is withdrawn
+        const t = readToday(root, now);
+        const elsewhere = t && t.at && Date.parse(t.at) > Date.parse(rec.at) && t.via !== rec.qid ? 'today\'s budget was set by ' + (t.by || 'someone') + ' (' + (t.via || 'another path') + ')'
+          : Number.isFinite(Number(rec.cap)) && Number(a.cap) > Number(rec.cap) ? 'the daily budget was raised from ' + usd(rec.cap) + ' to ' + usd(a.cap) : null;
+        if (elsewhere) {
+          try { withInbox(root, ib => ib.withdraw({ id: rec.qid, by: 'Dispatcher', why: 'no longer needed: ' + elsewhere })); rec.status = 'settled'; rec.settledBy = elsewhere; log('MONEY HOLD withdrew ' + rec.qid + ': ' + elsewhere); continue; }
+          catch (e) { log('MONEY HOLD could not withdraw ' + rec.qid + ': ' + String(e && e.message || e).slice(0, 160)); }
+        }
+        for (const s of rec.seats || []) out.open[s] = rec.qid; continue;
+      }
+      if (row.withdrawnAll && !row.a) { rec.status = 'withdrawn'; continue; }
       const line = applyAnswer(root, rec, row); rec.status = 'answered'; rec.answeredAt = new Date(now).toISOString();
       out.applied.push(rec.qid); log(line);
     }
@@ -186,10 +207,10 @@ function tick(a) {
       const sit = { kind, names: hs.map(h => h.name), waiting, cap: a.cap, spent: a.spent, lastHour: a.lastHour, allowance: a.allowance, ticks: first.ticks, since: first.since };
       const fyi = companyDecides(govLevel(root, a.govOpts));
       const q = questionFor(sit, fyi);
-      const r = withInbox(root, ib => ib.ask({ scopeExempt: 'framework', from: 'Dispatcher', about: ABOUT(kind), message: q.message, details: q.details, blocking: !fyi, form: q.form, batch: fyi ? 'fyi' : null }));
-      st.moneyAsks[key] = { qid: r.row.id, status: 'open', at: new Date(now).toISOString(), day, kind, fyi, seats: hs.map(h => h.seat) };
+      const r = withInbox(root, ib => ib.ask({ scopeExempt: 'framework', from: 'Dispatcher', about: ABOUT(kind), message: q.message, details: q.details, technical: q.technical, blocking: !fyi, form: q.form, batch: fyi ? 'fyi' : null }));
+      st.moneyAsks[key] = { qid: r.row.id, status: 'open', at: new Date(now).toISOString(), day, kind, fyi, cap: Number(a.cap), seats: hs.map(h => h.seat) };
       for (const h of hs) out.open[h.seat] = r.row.id;
-      if (fyi) { try { require('./governance.js').notify('FYI: ' + q.message.replace(/ You let the company.*$/, '') + ' The company keeps it this way; you can change it on Today (' + r.row.id + ').', { root, from: 'Dispatcher' }); } catch (_) {} }
+      if (fyi) { try { require('./governance.js').fyi({ from: 'The crew', text: q.message.replace(/ You let the company.*$/, '') + ' The crew keeps it this way, as your settings allow; you can change it on Today.', technical: 'Money question ' + r.row.id + ' (non-blocking: budget is the company\'s in self-governance).', key: ABOUT(kind) + ':' + day }, { root }); } catch (_) {} }
       log('MONEY HOLD ASK ' + r.row.id + (fyi ? ' (FYI: budget is the company\'s)' : ' (waits for the owner)') + ': ' + list(sit.names) + ' held by ' + KINDS[kind] + ' for ' + sit.ticks + ' ticks' + (waiting.length ? '; waiting on them: ' + list(waiting) : ''));
       out.asked = r.row.id; out.fyi = fyi;
       break;   // one question at a time

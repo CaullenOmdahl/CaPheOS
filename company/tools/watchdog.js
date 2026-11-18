@@ -60,10 +60,18 @@ function judge(o) {
   return { silent: silentMin > limitMin, silentMin, limitMin };
 }
 
+// the owner's line: what it means for them and what happens next, in plain words (there is no console control that
+// starts the dispatcher, and the owner has nobody to hand it to); the service name and the commands are `technical`
+function silentNotice(v) {
+  const next = ' This check runs again every 15 minutes and tells you here as soon as the work starts' + (v.never ? '.' : ' again.');
+  return v.never ? 'The crew\'s work has not started yet, so no one is woken.' + next
+    : 'The crew\'s work has stopped: nothing new has started for ' + v.silentMin + ' minutes, so no one is woken.' + next;
+}
 function check(o) {
   o = o || {};
   const t = Number.isFinite(o.now) ? o.now : now();
-  const notify = o.notify || (text => require('./owner-inbox.js').send({ from: 'Watchdog', text, priority: 'top' }));
+  // urgent (lib/owner-notice.js): the company cannot work; shown first in the console (priority top)
+  const notify = o.notify || ((text, technical) => require('./lib/owner-notice').send({ kind: 'urgent', from: 'Watchdog', text, technical, priority: 'top' }));
   let ticket = null; try { ticket = require('./lib/admit').admit({ door: 'watchdog', kind: 'watchdog', seat: null, why: 'station schedule: the liveness check (starts no work)' }, { now: t }); } catch (_) {}
   const st = readJson(F.state(), {}) || {};
   const lastAt = lastHeard();
@@ -73,14 +81,15 @@ function check(o) {
   if (v.silent) {
     if (!st.outage) st.outage = { since: lastAt ? new Date(lastAt).toISOString() : null, detectedAt: out.at };
     if (!st.outage.alertedAt) {
-      const text = 'TOP PRIORITY: the dispatcher has been silent for ' + (v.never ? 'as long as this company has a record (it never ran)' : v.silentMin + ' minutes (last heard ' + local(lastAt) + ')') + '. While it is down NOTHING in the company starts: no seat is woken, no scheduled loop runs, no work happens (the station\'s own schedule runs only this watchdog). Start it again: `systemctl --user restart ' + svc + '` and look at `journalctl --user -u ' + svc + ' -n 50`.';
-      try { const row = notify(text); st.outage.alertId = (row && row.id) || null; } catch (e) { st.outage.alertError = String(e.message || e).slice(0, 200); }
+      const technical = 'TOP PRIORITY: the dispatcher has been silent for ' + (v.never ? 'as long as this company has a record (it never ran)' : v.silentMin + ' minutes (last heard ' + local(lastAt) + ')') + '. While it is down NOTHING in the company starts: no seat is woken, no scheduled loop runs, no work happens (the station\'s own schedule runs only this watchdog). Start it again: `systemctl --user restart ' + svc + '` and look at `journalctl --user -u ' + svc + ' -n 50`.';
+      const text = silentNotice(v);
+      try { const r = notify(text, technical); st.outage.alertId = (r && ((r.row && r.row.id) || r.id)) || null; }  /* owner-notice send returns {sent, row} */ catch (e) { st.outage.alertError = String(e.message || e).slice(0, 200); }
       st.outage.alertedAt = out.at; out.alerted = true;
       try { fs.mkdirSync(path.dirname(F.alerts()), { recursive: true }); fs.appendFileSync(F.alerts(), JSON.stringify({ at: out.at, kind: 'dispatcher-silent', priority: 'top', silentMin: v.silentMin, limitMin: v.limitMin, lastHeard: out.lastHeard }) + '\n'); } catch (_) {}
     }
   } else if (st.outage) {
     if (st.outage.alertedAt) {
-      try { notify('The dispatcher is running again (heard ' + local(lastAt) + '; it was silent from ' + (st.outage.since ? local(Date.parse(st.outage.since)) : 'the start') + '). The crew is woken as usual.'); } catch (_) {}
+      try { notify('The crew\'s work is running again after a stop; everyone is woken as usual.', 'The dispatcher is running again (heard ' + local(lastAt) + '; it was silent from ' + (st.outage.since ? local(Date.parse(st.outage.since)) : 'the start') + ').'); } catch (_) {}
       try { fs.appendFileSync(F.alerts(), JSON.stringify({ at: out.at, kind: 'dispatcher-recovered', priority: 'info', since: st.outage.since }) + '\n'); } catch (_) {}
       out.recovered = true;
     }
@@ -108,9 +117,9 @@ function selftest() {
     for (const k of Object.keys(F)) { const rel = path.relative(save.root, F[k]()); F[k] = () => P(rel); }
     process.env.ADMIT_LOG = P('company', 'state', 'admit-log.jsonl');
     writeJson(P('company', 'state', 'dispatcher-loop.json'), { lastTickEndAt: new Date(Date.now() - 2 * 3600e3).toISOString() });
-    const told = []; const n = text => { told.push(text); return { id: 'out-' + told.length }; };
+    const told = []; const n = (text, technical) => { told.push(text); return { id: 'out-' + told.length }; };
     const a = check({ now: Date.now(), notify: n }), b = check({ now: Date.now() + 60e3, notify: n });
-    ok('a silent dispatcher: one top-priority alert, not two', a.alerted && !b.alerted && told.length === 1 && /^TOP PRIORITY/.test(told[0]), JSON.stringify(told));
+    ok('a silent dispatcher: one top-priority alert, not two, in plain words', a.alerted && !b.alerted && told.length === 1 && /^The crew's work has stopped/.test(told[0]) && !/systemctl|dispatcher/.test(told[0]), JSON.stringify(told));
     ok('the check is admitted and counted (door watchdog)', fs.readFileSync(process.env.ADMIT_LOG, 'utf8').split('\n').filter(l => /"door":"watchdog"/.test(l)).length === 2);
     writeJson(P('company', 'state', 'dispatcher-loop.json'), { lastTickEndAt: new Date().toISOString() });
     const c = check({ now: Date.now() + 120e3, notify: n });
@@ -120,7 +129,7 @@ function selftest() {
   return bad ? 1 : 0;
 }
 
-module.exports = { check, judge, lastHeard, F };
+module.exports = { check, judge, lastHeard, silentNotice, F };
 if (require.main === module) {
   const a = process.argv.slice(2);
   if (a.includes('--selftest') || a[0] === 'selftest') process.exit(selftest());

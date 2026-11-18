@@ -53,7 +53,8 @@ const S = {
   now: () => Date.now(),
   call: (method, p, body) => require('./station-crew.js').call(method, p, body, 20000),
   fire: fireRun,
-  notify: text => require('./owner-inbox.js').send({ from: co.nameOf(co.ceo()), text }),
+  // urgent: the company stopped or started again (lib/owner-notice.js); the detail rides along collapsed, for the crew
+  notify: (text, technical) => require('./lib/owner-notice').send({ kind: 'urgent', from: co.nameOf(co.ceo()), text, technical }),
   services: st => require('./service.js').onHalt(st),
 };
 
@@ -91,7 +92,10 @@ function write(st) {
   return st;
 }
 function seats() { return (co.readJson(S.loopsFile, {}) || {}).agents || {}; }
-function tell(text) { try { S.notify(text); return true; } catch (e) { return 'owner channel failed: ' + e.message; } }
+/* tell(text, technical) — one plain message to the owner: no commands, no raw errors (those go in `technical`) */
+function tell(text, technical) { try { S.notify(text, technical || undefined); return true; } catch (e) { return 'owner channel failed: ' + e.message; } }
+const RESUME_LINK = ' [Start it again from the console](console:#/halt) when you are ready.';
+const reasonOf = why => (why ? ' Reason given: ' + String(why).replace(/\s+/g, ' ').trim().replace(/[.]$/, '') + '.' : '');
 function matchJob(jobs, prefix) {
   const hits = jobs.filter(x => x && x.name && (x.name === prefix || x.name.startsWith(prefix)));
   return hits.length === 1 ? hits[0] : null;
@@ -154,7 +158,9 @@ async function hard({ by, why, auto } = {}) {
   // handoff told), even if the station did not answer the E-STOP
   try { const cut = await require('./lanes.js').cutOff({}); if (cut && cut.cut) st.lanesCut = cut.cut; } catch (e) { st.lanesError = String(e.message).slice(0, 160); }
   write(st);
-  if (!auto) tell('Hard halt by ' + by + (why ? ' (' + why + ')' : '') + ': the station E-STOP ' + (st.station.ok ? 'stopped every run' : 'did NOT answer (' + (st.station.error || 'HTTP ' + st.station.status) + '); the dispatcher still wakes nobody') + '. Resume with `node company/tools/halt.js resume --by <name>`.');
+  if (!auto) tell('The company is paused: ' + by + ' stopped all work at once.' + reasonOf(why)
+    + (st.station.ok ? '' : ' Work that was already running may not have stopped yet, but nothing new will start.') + RESUME_LINK,
+    'Hard halt by ' + by + ': the station E-STOP ' + (st.station.ok ? 'stopped every run' : 'did NOT answer (' + (st.station.error || 'HTTP ' + st.station.status) + '); the dispatcher still wakes nobody') + '. CLI: node company/tools/halt.js resume --by <name>.');
   return st;
 }
 
@@ -216,8 +222,11 @@ async function soft({ by, why, deadlineMin, escalate } = {}) {
   const lm = lw.filter(x => x.kind === 'meeting');
   const mw = lm.length ? ' Your meeting' + (lm[0].title ? ' "' + lm[0].title + '"' : '') + ' is live work: ' + (lm[0].running ? 'the turn in progress finishes, then it is interrupted and its minutes are written.' : 'it is interrupted; resume it after the halt.') : '';
   const sd = st.shutdowns.length ? ' Shutdown routines: ' + st.shutdowns.map(x => x.seat + ' ' + x.status).join(', ') + '.' : '';
-  tell('Soft halt by ' + by + (why ? ' (' + why + ')' : '') + ': nothing new starts; running work finishes by ' + st.deadline
-    + (st.escalate ? ' or the company goes to a hard halt' : '') + '.' + sd + cm + mw + (st.cronError ? ' Scheduler NOT disarmed: ' + st.cronError + '.' : '') + ' I will tell you when it is fully stopped.');
+  tell('The company is pausing: ' + by + ' asked it to stop, so nothing new starts and work in progress is finishing.' + reasonOf(why)
+    + (st.escalate ? ' Anything still running at the deadline is stopped at once.' : '') + (mw ? ' Your meeting is interrupted; you can pick it up after the pause.' : '')
+    + (cv && cv.unowned && cv.unowned.length ? ' Some promises to outside people have nobody on them yet; the crew must hand them over before the pause completes.' : '')
+    + ' I will tell you when everything has stopped.',
+    'Soft halt by ' + by + ': running work finishes by ' + st.deadline + (st.escalate ? ' or it escalates to a hard halt' : '') + '.' + sd + cm + mw + (st.cronError ? ' Scheduler NOT disarmed: ' + st.cronError + '.' : ''));
   return st;
 }
 
@@ -263,7 +272,8 @@ async function tick({ log, dry } = {}) {
     st.settledAt = iso(S.now());
     write(st);
     const sd = (st.shutdowns || []).length ? ' Shutdown routines: ' + st.shutdowns.map(x => x.seat + ' ' + (x.done ? 'done' + (x.lastStatus ? ' (' + x.lastStatus + ')' : '') : x.status)).join(', ') + '.' : '';
-    tell('The soft halt is complete: nothing is running.' + sd + (w.owner.length ? ' Still open in your station tab: ' + w.owner.join(', ') + '.' : '') + ' Resume with `node company/tools/halt.js resume --by <name>`.');
+    tell('The company is paused: everything has stopped and nothing is running.' + (w.owner.length ? ' Work you started yourself is still open.' : '') + RESUME_LINK,
+      'Soft halt settled.' + sd + (w.owner.length ? ' Still open in the owner\'s station tab: ' + w.owner.join(', ') + '.' : '') + ' CLI: node company/tools/halt.js resume --by <name>.');
     say('HALT: soft halt complete, nothing in flight');
     return { mode: 'soft', action: 'settled', settledAt: st.settledAt };
   }
@@ -272,13 +282,15 @@ async function tick({ log, dry } = {}) {
     st.leftAtDeadline = left;
     write(st);
     if (st.escalate) {
-      tell('The soft halt deadline passed with work still running (' + left.join(', ') + '). It was started with escalate on, so I am pressing the hard halt now.');
+      tell('Some work was still running when the pause deadline came, so I am stopping it all at once now, as you asked.', 'Soft halt deadline passed; escalate was on; still running: ' + left.join(', ') + '.');
       const h = await hard({ by: 'halt.js (soft-halt deadline)', why: 'soft halt deadline ' + st.deadline + ' passed; escalate was on', auto: true });
-      tell('Hard halt ' + (h.station && h.station.ok ? 'done: every run was stopped.' : 'attempted, but the station did not confirm (' + JSON.stringify(h.station) + ').'));
+      tell(h.station && h.station.ok ? 'The company is paused: all work has stopped.' + RESUME_LINK : 'The company is paused, but some work that was running may not have stopped yet; nothing new will start.' + RESUME_LINK,
+        'Hard halt after the soft-halt deadline: station reply ' + JSON.stringify(h.station) + '.');
       say('HALT: soft deadline passed, escalated to hard');
       return { mode: 'hard', action: 'escalated', left };
     }
-    tell('The soft halt deadline passed with work still running: ' + left.join(', ') + '. I am not escalating on my own; say the word and it is `node company/tools/halt.js hard --by <name>`, or leave it to finish.');
+    tell('The pause deadline has passed, but ' + (left.length === 1 ? 'one piece of work is' : left.length + ' pieces of work are') + ' still finishing. I will let ' + (left.length === 1 ? 'it' : 'them') + ' finish; if you want everything stopped now, use [Stop everything now](console:#/halt?mode=hard).',
+      'Soft halt deadline passed with work still running: ' + left.join(', ') + '. Not escalating (escalate off). CLI: node company/tools/halt.js hard --by <name>.');
     say('HALT: soft deadline passed, owner told, still waiting on ' + left.length);
     return { mode: 'soft', action: 'deadline', left };
   }
@@ -309,7 +321,8 @@ async function resume({ by } = {}) {
     catch (e) { notes.push('goal loop ' + id + ' NOT resumed (' + e.message + ')'); }
   }
   write(out);
-  tell('The company is running again (resumed by ' + by + ' from a ' + prev.mode + ' halt): ' + (notes.join('; ') || 'nothing to undo on the station') + '.');
+  tell('The company is running again: ' + by + ' started it, and the crew picks up where it left off.',
+    'Resumed from a ' + prev.mode + ' halt: ' + (notes.join('; ') || 'nothing to undo on the station') + '.');
   return Object.assign(out, { notes });
 }
 
@@ -324,6 +337,7 @@ async function selftest() {
   const check = (name, cond, detail) => cases.push({ name, pass: !!cond, detail: detail || '' });
   let clock = Date.parse('2026-01-05T10:00:00Z');
   const told = [];
+  const techs = [];
   const svc = [];
   const station = {};
   const calls = [];
@@ -347,7 +361,7 @@ async function selftest() {
   };
   Object.assign(S, {
     haltFile: path.join(dir, 'halt.json'), loopsFile: path.join(dir, 'loops.json'), now: () => clock,
-    call: fake, fire: id => fake('POST', '/api/cron/run', { id }), notify: t => { told.push(t); }, services: st => { svc.push(st.mode); },
+    call: fake, fire: id => fake('POST', '/api/cron/run', { id }), notify: (t, tech) => { told.push(t); techs.push(tech || ''); }, services: st => { svc.push(st.mode); },
   });
   fs.writeFileSync(S.loopsFile, JSON.stringify({ agents: {
     agent: { name: 'Alex', loop: 'Founder loop', manager: null },
@@ -360,7 +374,7 @@ async function selftest() {
     check('soft writes mode soft with a deadline', st.mode === 'soft' && st.deadline === iso(clock + 30 * 60000));
     check('soft records the prior arm state and disarms', st.cronWasEnabled === true && station.enabled === false);
     check('soft fires only the seat shutdown routine', calls.filter(c => c === 'POST /api/cron/run').length === 1 && station.jobs[2].inFlight === true && !station.jobs[0].inFlight);
-    check('soft tells the owner', told.length === 1 && /Soft halt/.test(told[0]));
+    check('soft tells the owner', told.length === 1 && /The company is pausing/.test(told[0]));
     check('soft pauses an idle goal loop and leaves a running pass alone', station.loops[0].state === 'paused' && station.loops[1].state === 'running' && !station.loops[1].cut && read().loops.waiting.includes('L2'));
     let t = await tick({});
     check('tick waits while a loop and the shutdown run', t.action === 'waiting' && t.left.some(x => /Desk loop/.test(x)) && t.left.some(x => /shutdown desk/.test(x)), JSON.stringify(t));
@@ -371,12 +385,14 @@ async function selftest() {
     clock += 10 * 60000;
     t = await tick({});
     check('tick settles when idle (owner tab run does not hold it)', t.action === 'settled' && read().mode === 'soft' && read().settledAt, JSON.stringify(t));
-    check('settle tells the owner', /soft halt is complete/.test(told[told.length - 1]));
+    check('settle tells the owner', /everything has stopped/.test(told[told.length - 1]));
+    check('settle names no command; the command is in the technical part', !/node |halt\.js|`|--by/.test(told[told.length - 1]) && /halt\.js resume/.test(techs[techs.length - 1]));
     check('a settled soft halt ticks to none', (await tick({})).action === 'none');
     let r = await resume({ by: 'Alex' });
     check('the finished loop pass was paused, never cut, and resume restarts only the loops the halt paused', station.loops[0].state === 'idle' && station.loops[1].state === 'idle' && !station.loops[1].cut && station.loops[2].state === 'paused');
     check('resume from soft re-arms to the prior state', r.mode === 'running' && station.enabled === true && station.resumes === 0);
-    check('resume tells the owner', /running again/.test(told[told.length - 1]));
+    check('resume tells the owner', /^The company is running again/.test(told[told.length - 1]));
+    check('every message to the owner is plain: no command, no path, no raw error', told.every(t => !/node |\.js\b|`|--[a-z]|HTTP|E-STOP|\{/.test(t)), told);
     check('every halt.json write hands the state to service.js (soft, then running)', svc[0] === 'soft' && svc[svc.length - 1] === 'running', svc);
 
     // deadline without escalate
@@ -384,9 +400,9 @@ async function selftest() {
     await soft({ by: 'Alex', deadlineMin: 5 });
     clock += 6 * 60000;
     t = await tick({});
-    check('deadline without escalate: owner told, stays soft, no E-STOP', t.action === 'deadline' && read().mode === 'soft' && station.estops === 0 && /not escalating/.test(told[told.length - 1]));
+    check('deadline without escalate: owner told, stays soft, no E-STOP', t.action === 'deadline' && read().mode === 'soft' && station.estops === 0 && /still finishing/.test(told[told.length - 1]) && !/halt\.js/.test(told[told.length - 1]));
     t = await tick({});
-    check('deadline is told once', t.action === 'waiting' && told.filter(x => /deadline passed/.test(x)).length === 1);
+    check('deadline is told once', t.action === 'waiting' && told.filter(x => /deadline has passed/.test(x)).length === 1);
     await resume({ by: 'Alex' });
 
     // deadline with escalate
@@ -394,7 +410,7 @@ async function selftest() {
     await soft({ by: 'Alex', deadlineMin: 5, escalate: true });
     clock += 6 * 60000;
     t = await tick({});
-    check('deadline with escalate goes hard and says so', t.action === 'escalated' && read().mode === 'hard' && station.estops === 1 && told.some(x => /pressing the hard halt/.test(x)));
+    check('deadline with escalate goes hard and says so', t.action === 'escalated' && read().mode === 'hard' && station.estops === 1 && told.some(x => /stopping it all at once/.test(x)));
     check('escalated hard keeps the prior arm state', read().cronWasEnabled === true);
     r = await resume({ by: 'Alex' });
     check('resume from hard lifts the E-STOP with confirm and re-arms', station.resumes === 1 && station.enabled === true && r.mode === 'running');
@@ -403,6 +419,7 @@ async function selftest() {
     reset(); told.length = 0; station.enabled = false;
     st = await hard({ by: 'Alex', why: 'stop now' });
     check('hard posts /api/halt and records it', st.mode === 'hard' && station.estops === 1 && st.station.ok && st.cronWasEnabled === false);
+    check('hard tells the owner plainly: the company is paused, no command', /^The company is paused/.test(told[told.length - 1]) && !/node |halt\.js|`|E-STOP/.test(told[told.length - 1]) && /E-STOP/.test(techs[techs.length - 1]));
     check('hard reaches service.js before the station is called', svc.includes('hard'));
     let threw = null; try { await soft({ by: 'Alex' }); } catch (e) { threw = e.message; }
     check('soft is refused while hard-halted', threw && /hard-halted/.test(threw));

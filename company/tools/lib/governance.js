@@ -3,7 +3,8 @@
  *
  * The owner sets one level per category in company/state/governance.json (company/tools/governance.js set|preset):
  *   auto     the accountable seat decides; nothing else happens
- *   notify   it decides, and the owner gets one plain sentence in company/owner/outbound.jsonl (owner-inbox.js send)
+ *   notify   it decides, and the owner gets one plain sentence in the daily digest (fyi() below: lib/owner-notice.js
+ *            send kind 'fyi' when that module is in the tree; the technical part stays under "Technical details")
  *   triage   a decision model (company/decision-models/gate-triage, lib/decision.js) decides: proceed-notify behaves like
  *            notify (the owner sentence names the model, version, rule and decisionId), escalate behaves like approve. A
  *            model in shadow mode always escalates and logs what it would have done. Never used for the fixed owner gates.
@@ -19,9 +20,11 @@
  *            The caller's own `facts` pass only for non-safety fields; a safety claim is logged as a rejected claim. A
  *            triage model with no safety inputs (gate-triage v1) takes facts on the actor's word, so it always escalates.
  *            Before each triage the model's outcomes are joined and a live version over its bad-outcome limit is demoted.
- *   approve  it proposes and waits: an owner question goes into the owner inbox (company/pm-inbox.jsonl, the file
- *            company/tools/inbox.js reads), with a recommendation and what happens if nobody answers. The tool stops now
- *            and goes ahead on a later run, once the owner has answered yes to that question.
+ *   approve  it proposes and waits: an owner card (lib/owner-card.js file: plain lead, consequence and recommendation,
+ *            the technical part collapsed, an optional typed effect) goes into the owner inbox (company/pm-inbox.jsonl,
+ *            the file company/tools/inbox.js reads). The tool stops now and goes ahead on a later run, once the owner has
+ *            answered yes to that card. A standing owner ruling (lib/owner-rulings.js) may cover it instead: crew-decides
+ *            = allowed without asking, never-ask = not done (the default). Never for the fixed gates.
  *
  *   const gov = require('./lib/governance');
  *   const d = gov.decide('hiring', { by: 'Sam', summary: 'open a Sales Lead round', recommendation: 'yes: ...',
@@ -29,7 +32,8 @@
  *                                    amountUsd?, vendor?, recipient?, facts? });   // triage: see FACT PROVENANCE
  *   d -> { level, allowed, questionId?, denied?, noted? }
  *   gov.approved(ref) -> true (the owner said yes) | false (said no) | null (no answer yet, or no question)
- *   gov.level(category)  gov.guard(name)  gov.notify(text)  gov.pendingGates()
+ *   gov.level(category)  gov.guard(name)  gov.notify(text)  gov.fyi({from, text, technical, key})  gov.pendingGates()
+ *   decide() also takes o.effect (the typed effect the console applies on the owner's yes, lib/owner-card.js)
  *
  * `ref` names the decision, so a retry of the same act finds the same question instead of filing a second one. One owner
  * yes answers every later call with that ref. Unknown category, unreadable file => approve (fail closed); the four fixed
@@ -133,42 +137,83 @@ function pendingGates(opts) {
   return gateAsks(opts).filter(q => !answerOf(q.id, opts) && !closedOrReclassified(q.id, opts))
     .map(q => ({ id: q.id, askedAt: q.at, category: q.gate.category, ref: q.gate.ref, by: q.gate.by, summary: q.gate.summary, q: q.q }));
 }
-function newId(opts) {
-  const used = new Set(readLines(files(opts).inbox).map(r => r.id));   // every id in the file, trusted or not: never reuse one
-  let n = Number(String(Date.now()).slice(-6));
-  let id = 'q-' + String(n).padStart(6, '0');
-  while (used.has(id)) { n = (n + 1) % 1e6; id = 'q-' + String(n).padStart(6, '0'); }
-  return id;
+/* the plain words for a category, for an owner card whose own summary is not plain */
+const CATEGORY_WORDS = { hiring: 'hiring someone', release: 'letting a crew member go', budget: 'the budget', spend: 'spending money',
+  models: 'which AI the crew uses', tools: 'the crew\'s own tools and rules', schedules: 'when the crew\'s routines run',
+  external: 'something that leaves the company', dashboard: 'the console screens', packs: 'a new line of business',
+  deps: 'adding software to the company', org: 'how the company is organised', access: 'access to an account or key',
+  ownership: 'who owns what', commitment: 'a promise to someone outside the company', spendBeyondCap: 'spending beyond the budget' };
+// the text when it reads plainly as a whole, else null: never a first clause cut from a technical summary (that made
+// cards like "May Nadia go ahead and engineer?"); a tool writes a plain summary and puts ids, models and versions in
+// `technical`
+const plainOr = (t, card) => {
+  const x = String(t || '').trim().replace(/\.$/, ''); if (!x) return null;
+  return card.plain(x) ? x : null;
+};
+// lower-case the first letter to continue a sentence, unless the text starts with a name (a crew member, the owner, the
+// company) or an abbreviation: "halima keeps the current chain" never
+function continueWith(t, opts) {
+  const x = String(t || ''); const w = (x.match(/^[A-Za-z][\w'’-]*/) || [''])[0];
+  if (!w || w === w.toLowerCase()) return x;
+  if (/^[A-Z]{2,}/.test(w)) return x;
+  let names = [];
+  try { const agents = co.readJson(path.join(rootOf(opts), 'company', 'tools', 'loops.json'), {}).agents || {}; names = Object.values(agents).map(c => String((c && c.name) || '').split(/\s+/)[0]); } catch (_) {}
+  names.push(String((co.config.owner && co.config.owner.name) || '').split(/\s+/)[0], String(co.config.name || '').split(/\s+/)[0]);
+  if (names.some(n => n && n.toLowerCase() === w.toLowerCase())) return x.replace(/^./, c => c.toUpperCase());
+  // an everyday word that only starts the sentence is lowered; a full name ("Lee Park") or any other capitalised word
+  // (a candidate, a person outside the crew) keeps its capital
+  if (/^[A-Z][a-z]+\s+[A-Z][a-z]/.test(x)) return x;
+  return COMMON_START.has(w.toLowerCase()) ? x.replace(/^./, c => c.toLowerCase()) : x;
 }
+const COMMON_START = new Set(('the a an no nobody nothing none it its this that these those each every all any some they we you our your their there ' +
+  'routines work everything one only if when then so but and or keep keeps stay stays wait waits leave leaves open start hire add change use let make move ' +
+  'run set turn take have look raise lift give send pay buy approve apply switch publish sign spend release fire create remove put write ask tell').split(' '));
+/* fileQuestion(category, o, opts) -> the owner card's result (lib/owner-card.js file): {filed, id?, route?, reason?} */
 function fileQuestion(category, o, opts) {
-  const f = files(opts);
-  const id = newId(opts);
-  const lines = [
-    'Approval needed (' + category + '): ' + String(o.summary || 'an act in ' + category).trim().replace(/\.$/, '') + '.',
-    o.recommendation ? 'Recommendation from ' + (o.by || 'the company') + ': ' + String(o.recommendation).trim() : null,
-    'If you do not answer: ' + String(o.default || 'nothing happens; the company waits for you').trim(),
+  const card = require('./owner-card');
+  const g = doc(opts); const fixed = !!(g.fixed && g.fixed[category]);
+  const by0 = String(o.by || '').trim(); const by = by0 && card.plain(by0) && by0.length <= 60 ? by0 : 'the crew';
+  const words = CATEGORY_WORDS[category] || 'a decision the crew cannot make alone';
+  const summ = plainOr(o.summary, card); const rec = plainOr(o.recommendation, card); const def = plainOr(o.default, card);
+  // a card that would say nothing ("a decision about the crew's own tools") is not sent: the caller is told to say it
+  // plainly (the owner never gets an empty question)
+  if (!summ) return { filed: false, route: 'not-plain', reason: 'not asked: the summary does not read plainly for the owner ("' + String(o.summary || '').slice(0, 80) + '"); say what is decided in everyday words' };
+  const lead = 'May ' + by + ' go ahead and ' + continueWith(summ, opts) + '?';
+  const consequence = 'If you say yes, ' + by + ' goes ahead. If you say no or do not answer, ' + (def ? continueWith(def, opts) : 'nothing happens and the crew waits for you') + '.';
+  const recWords = o.recommendation ? (rec && /^(yes|no)$/i.test(rec.trim()) ? by + ' recommends ' + rec.trim().toLowerCase() + '.'
+    : rec && /^(yes|no)\b[,:]\s*\S/i.test(rec) ? by + ' recommends ' + rec.replace(/^(yes|no)\b([,:])\s*/i, (m, v, p) => v.toLowerCase() + p + ' ') + '.'
+    : rec ? 'Recommendation from ' + by + ': ' + rec + '.'
+    : /^\s*yes\b/i.test(o.recommendation) ? by + ' recommends yes.' : /^\s*no\b/i.test(o.recommendation) ? by + ' recommends no.' : null) : null;
+  const technical = [
+    'Self-governance: ' + category + ' is at "' + (o.triage ? 'triage' : 'approve') + '"' + (fixed ? ' (a fixed owner gate)' : '') + ' (company/tools/governance.js).',
+    'Decision ref: ' + o.ref,
+    o.summary ? 'Summary as written: ' + String(o.summary).trim() : null,
+    o.recommendation ? 'Recommendation as written: ' + String(o.recommendation).trim() : null,
+    o.default ? 'Default as written: ' + String(o.default).trim() : null,
     o.triage ? 'The triage model escalated this: ' + o.triage + '.' : null,
-    'Reply yes or no and name ' + id + '. You set this through self-governance: ' + category + ' is at "' + (o.triage ? 'triage' : 'approve') + '" (company/tools/governance.js).',
-  ].filter(Boolean);
-  // the plain message the owner reads first (inbox.js messageParts); the lines above stay as the detail
-  const summ = String(o.summary || 'an act in ' + category).trim().replace(/\.$/, '');
-  const message = ('May ' + (o.by || 'we') + ' go ahead: ' + summ + '? ' + (o.recommendation ? 'The recommendation is ' + String(o.recommendation).trim().replace(/\.$/, '') + '. ' : '') +
-    'If you say no or do not answer, ' + String(o.default || 'nothing happens and the company waits for you').trim().replace(/\.$/, '').replace(/^./, c => c.toLowerCase()) + '.').slice(0, 600);
-  const row = { type: 'ask', id, at: new Date().toISOString(), from: co.nameOf(co.ceo()) || 'company', about: 'governance:' + category, q: lines.join('\n'), message, details: lines.slice(1).join('\n'), blocking: true,
-    batch: 'gate', gate: { category, ref: o.ref, by: o.by || null, summary: o.summary || null, recommendation: o.recommendation || null, default: o.default || null } };
-  // recorded in the provenance log first (lib/pm-inbox-guard.js), so every reader trusts the question
-  require('./pm-inbox-guard').append(f.inbox, row, 'governance');
-  return row;
+    o.technical ? String(o.technical) : null,
+  ].filter(Boolean).join('\n');
+  return card.file({ asker: co.nameOf(co.ceo()) || 'company', by: o.by || null, category, fixedGate: fixed ? category : undefined, ref: o.ref, about: 'governance:' + category,
+    lead, consequence, recommendation: recWords, technical, summary: o.summary || null, effect: o.effect || { none: true }, changed: o.changed }, opts);
 }
 
-/* One plain sentence to the owner (company/owner/outbound.jsonl through owner-inbox.js send). The same sentence is sent once. */
+/* notify(text, opts): one plain sentence for the owner, as an FYI in the day's single message (lib/owner-notice.js,
+ * company/owner/digest.jsonl), never its own message. The same sentence goes in once a company day (owner-notice's key). */
 function notify(text, opts) {
-  const f = files(opts); const body = String(text || '').trim(); if (!body) return null;
-  if (readLines(path.join(f.ownerDir, 'outbound.jsonl')).some(r => String(r.text || '') === body)) return { duplicate: true };
-  const prev = process.env.OWNER_DIR;
-  if (!isLive(opts)) process.env.OWNER_DIR = f.ownerDir;
-  try { return require('../owner-inbox.js').send({ from: (opts && opts.from) || co.nameOf(co.ceo()) || 'company', text: body }); }
-  finally { if (!isLive(opts)) { if (prev === undefined) delete process.env.OWNER_DIR; else process.env.OWNER_DIR = prev; } }
+  const body = String(text || '').trim(); if (!body) return null;
+  return fyi({ text: body, from: opts && opts.from, technical: opts && opts.technical, key: opts && opts.key }, Object.assign({}, opts, { notice: undefined, technical: undefined }));
+}
+
+/* fyi({from, text, technical, key}, opts): one plain line for the owner's daily digest, never its own message, through
+ * lib/owner-notice.js send kind 'fyi' (its plain check moves anything technical into `technical`).
+ * opts.notice: a function standing in for the digest writer (tests). Returns the digest row, or {duplicate:true}. */
+function fyi(o, opts) {
+  o = o || {}; const text = String(o.text || '').trim(); if (!text) return null;
+  const from = o.from || (opts && opts.from) || co.nameOf(co.ceo()) || 'company';
+  if (opts && typeof opts.notice === 'function') return opts.notice({ kind: 'fyi', from, text, technical: o.technical, key: o.key, action: o.action });
+  const f = files(opts);
+  const r = require('./owner-notice').send({ kind: 'fyi', root: f.root, from, text, technical: o.technical || undefined, key: o.key || undefined, action: o.action || undefined, asks: o.asks === true || undefined });
+  return r && r.duplicate ? { duplicate: true } : (r && r.row) || r;
 }
 
 /* ---- triage facts from records (never the actor's word for a safety fact) ---- */
@@ -253,6 +298,11 @@ function triage(category, o, opts) {
   return { escalate: r.action !== 'proceed-notify', wouldBe: r.action, rule: r.rule, model: m, mode: r.mode, reason: r.reason, decisionId: r.decisionId, distrusted: r.distrusted, why: tag + ' said ' + r.action + ' (' + r.reason + dist + ')' };
 }
 
+/* "<who> decided to <summary>." in plain words, or a plain sentence about the category when the summary is not plain */
+function plainDecided(who, category, summary) {
+  const card = require('./owner-card'); const summ = plainOr(summary, card);
+  return summ ? who + ' decided to ' + continueWith(summ) + '.' : who + ' made a decision about ' + (CATEGORY_WORDS[category] || 'the company') + ', as your settings allow.';
+}
 /* decide(category, {by, summary, recommendation, default, ref, facts?}, opts) -> {level, allowed, questionId?, denied?, noted?, triage?} */
 function decide(category, o, opts) {
   o = o || {};
@@ -265,15 +315,20 @@ function decide(category, o, opts) {
     if (!tri.escalate) {
       const who = o.by || 'The company';
       const m = tri.model;
-      const sentence = who + ' decided to ' + String(o.summary || 'act on ' + category).trim().replace(/\.$/, '') + '. (Self-governance: ' + category + ' is set to triage, and decision model ' + m.id + ' v' + m.version + ' let this through: ' + tri.reason + '. Decision ' + (tri.decisionId || '?') + '; reply "undo ' + (tri.decisionId || '') + '" if you want it undone.)';
-      let noted = null; try { noted = notify(sentence, opts); } catch (_) {}
+      // the owner's line carries an Undo button on Today (lib/owner-notice.js action undo-decision): pressing it sends the
+      // crew the owner's "undo" for this decision, which decision.js join() also records against the model
+      const did = /^d-[0-9a-f]{12}$/.test(String(tri.decisionId || '')) ? tri.decisionId : null;
+      const sentence = plainDecided(who, category, o.summary) + (did ? ' You can undo it on Today.' : ' If you want it undone, say so in Chat.');
+      const technical = 'Self-governance: ' + category + ' is set to triage, and decision model ' + m.id + ' v' + m.version + ' let this through: ' + tri.reason + '. Decision ' + (tri.decisionId || '?') + '; the owner undoes it with the Undo button on Today (an owner message naming ' + (tri.decisionId || 'the decision') + ').' + (o.summary ? ' Summary: ' + String(o.summary).trim() : '');
+      let noted = null; try { noted = fyi({ from: o.by, text: sentence, technical, key: tri.decisionId || ref, action: did ? { kind: 'undo-decision', decisionId: did } : undefined }, opts); } catch (_) {}
       return { level: lv, allowed: true, noted: !!noted, triage: tri };
     }
   }
   if (lv === 'notify') {
     const who = o.by || 'The company';
-    const sentence = who + ' decided to ' + String(o.summary || 'act on ' + category).trim().replace(/\.$/, '') + '. (Self-governance: ' + category + ' is set to notify, so this is done without waiting for you; reply if you want it undone.)';
-    let noted = null; try { noted = notify(sentence, opts); } catch (_) {}
+    const sentence = plainDecided(who, category, o.summary) + ' If you want it undone, say so in Chat.';
+    const technical = 'Self-governance: ' + category + ' is set to notify, so this is done without waiting for the owner. Ref: ' + ref + (o.summary ? '. Summary: ' + String(o.summary).trim() : '') + (o.technical ? '. ' + String(o.technical) : '');
+    let noted = null; try { noted = fyi({ from: o.by, text: sentence, technical, key: ref }, opts); } catch (_) {}
     return { level: lv, allowed: true, noted: !!noted };
   }
   // approve, or triage that escalated
@@ -292,14 +347,28 @@ function approveFlow(category, o, ref, opts, tri) {
     if (!a && !closedOrReclassified(q.id, opts)) return { level: lv, allowed: false, questionId: q.id, reason: 'waiting for the owner on ' + q.id };
     // answered with neither yes nor no, or closed: ask again
   }
-  const row = fileQuestion(category, Object.assign({}, o, { ref, triage: tri ? tri.why : null }), opts);
-  return { level: lv, allowed: false, questionId: row.id, reason: 'asked the owner: ' + row.id };
+  const res = fileQuestion(category, Object.assign({}, o, { ref, triage: tri ? tri.why : null }), opts);
+  if (res.route === 'not-plain') return { level: lv, allowed: false, notPlain: true, reason: res.reason };
+  if (res.filed) return { level: lv, allowed: false, questionId: res.id, reason: 'asked the owner: ' + res.id };
+  if (res.route === 'duplicate') return { level: lv, allowed: false, questionId: res.id, reason: 'waiting for the owner on ' + res.id };
+  if (res.route === 'ruling' && res.ruling && res.ruling.effect === 'crew-decides') return { level: lv, allowed: true, ruling: res.ruling, approvedBy: 'the owner\'s standing rule ' + res.ruling.id };
+  if (res.route === 'ruling' || res.route === 'declined') return { level: lv, allowed: false, denied: true, ruling: res.ruling || null, backoff: res.backoff || null, reason: res.reason };
+  // the card found the category at a lower level than this caller read (crew or digest): the crew decides
+  if (require('./owner-card').coveredByCrew(res)) return { level: lv, allowed: true, noted: res.route === 'digest', reason: res.reason };
+  // anything else (a route nobody declared) is never a go-ahead
+  return { level: lv, allowed: false, reason: res.reason || 'the owner could not be asked (' + res.route + ')' };
 }
 /* The refusal text a tool prints when decide() says not now. */
 function refusal(category, d) {
   const lv = d.level === 'triage' ? 'triage (escalated)' : 'approve';
+  if (d.notPlain) return 'self-governance: ' + d.reason;
+  if (d.ruling && !d.allowed) return 'self-governance: the owner\'s standing rule ' + d.ruling.id + ' ("' + d.ruling.text + '") says not to ask, so this is not done';
+  if (d.backoff) return 'self-governance: the owner answered this "not now" (' + d.backoff.id + '); ask again only when something material changed';
   if (d.denied) return 'self-governance: the owner said no (' + d.questionId + '); ' + category + ' is at ' + lv + ', so this is not done';
   return 'self-governance: ' + category + ' is at ' + lv + ', so this waits for the owner. Question ' + d.questionId + ' is in the owner inbox (company/pm-inbox.jsonl); run the same command again after the owner answers yes';
 }
 
-module.exports = { LEVELS, TRIAGE_MODEL, triage, triageFacts, gateAsks, inboxRows, readLines, level, guard, decide, approved, pendingGates, notify, refusal, isOwnerName, files, doc, questionFor, answerOf, verdict };
+/* plainPart(text) -> the text when it reads plainly for the owner as a whole, else null (a tool building a summary from
+ * the crew's words keeps a plain reason and moves anything else to `technical`) */
+const plainPart = t => plainOr(t, require('./owner-card'));
+module.exports = { plainPart, continueWith, LEVELS, TRIAGE_MODEL, CATEGORY_WORDS, triage, triageFacts, gateAsks, inboxRows, readLines, level, guard, decide, approved, pendingGates, notify, fyi, plainDecided, refusal, isOwnerName, files, doc, questionFor, answerOf, verdict };

@@ -10,7 +10,8 @@
  *   node company/tools/locked-watch.js tick [--dry-run]        compare every locked file with its last-known-good, act, report
  *   node company/tools/locked-watch.js status [--json]         what is watched, open flags (--json: the flags as rows, for the console)
  *   node company/tools/locked-watch.js revert <path> --by <Name>                put the last-known-good copy back (flagged files)
- *   node company/tools/locked-watch.js accept <path> --by <Name> --why "…"      take the change as the new last-known-good
+ *   node company/tools/locked-watch.js accept <path> --by <Name> --why "…" [--expect-sha <sha256>]   take the change as the new last-known-good
+ *   node company/tools/locked-watch.js ask-accept <path> --by <Name> --why "…" --plain "…" [--if-no "…"]  only the owner may keep it: one card on Today with an Accept button (never for a fixed-gate file)
  *   node company/tools/locked-watch.js undo <event id> --by <Name>              undo one of the watcher's own automatic reverts
  *   node company/tools/locked-watch.js baseline [--force]                       (re)build the baseline (the first tick does it)
  *   node company/tools/locked-watch.js selftest
@@ -130,9 +131,10 @@ const MANIFEST = [
   { p: 'company/work/ops/duty-policy.json', cls: 'F', writers: ['harness-change.js'], owner: 'tools', area: 'policy', why: 'the duty policy: which read-only duty checks run and how often (an unrecorded edit is flagged, and while it is flagged the dispatcher uses the last-known-good copy; docs/DUTIES.md)' },
   { p: 'company/work/ops/cadence.json', cls: 'F', writers: ['cadence.js', 'harness-change.js'], owner: 'risk', area: 'policy', why: 'the company tempo: the owner\'s base cadence, the bounds the crew moves inside and any temporary speed-up (only through cadence.js or a reviewed harness change)' },
   { p: 'company/state/governance.json', cls: 'F', writers: ['governance.js'], owner: 'risk', area: 'policy', why: 'self-governance: how much the company decides without the owner (only the owner changes it, through governance.js)' },
+  { p: 'company/state/owner-rulings.json', cls: 'F', writers: ['lib/owner-rulings.js'], owner: 'risk', area: 'policy', why: 'the owner\'s standing rules about what they are asked (only the owner changes them, from the console or lib/owner-rulings.js); a hand edit makes every reader ignore the file' },
   // alwaysWatched: still reported while the harnessSelfEdit guardrail is off, because it is the switch itself
   { p: 'company/state/guardrails.json', cls: 'F', writers: ['guardrails.js'], owner: 'risk', area: 'policy', alwaysWatched: true, why: 'the guardrail switches (only the owner changes them, through guardrails.js)' },
-  ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'notify-when.js', 'lib/completions.js', 'lib/gates.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'decision.js', 'restart-station.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js', 'retention.js', 'duties.js', 'duty-status.js', 'lib/duty-runner.js', 'lib/duty-env.js', 'money-hold.js', 'lib/money-hold.js', 'lib/seat-status.js', 'lanes.js', 'lib/admit.js', 'lib/scheduler.js', 'budget.js', 'budget-migrate.js', 'watchdog.js', 'lib/owner-channel.js', 'lib/pm-inbox-guard.js', 'departments.js', 'lib/departments.js', 'lib/override-allow.js', 'lib/routing.js']
+  ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'notify-when.js', 'lib/completions.js', 'lib/gates.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'decision.js', 'restart-station.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js', 'retention.js', 'duties.js', 'duty-status.js', 'lib/duty-runner.js', 'lib/duty-env.js', 'money-hold.js', 'lib/money-hold.js', 'lib/seat-status.js', 'lanes.js', 'lib/admit.js', 'lib/scheduler.js', 'budget.js', 'budget-migrate.js', 'watchdog.js', 'lib/owner-channel.js', 'lib/pm-inbox-guard.js', 'lib/owner-card.js', 'lib/owner-rulings.js', 'lib/owner-notice.js', 'lib/owner-scope.js', 'owner-inbox.js', 'service.js', 'departments.js', 'lib/departments.js', 'lib/override-allow.js', 'lib/routing.js', 'pack.js', 'module.js']
     .map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'tools', area: 'tool', why: 'a tool that measures or limits the crew, or that these tools depend on' })),
   ...['merge-gate.js', 'premerge-check.js', 'external-gate.js', 'connector-scope.js', 'default-branch-watch.js', 'providers.js', 'deps.js'].map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'risk', area: 'tool', why: 'a gate or the evidence it reads' })),
   { p: 'company/work/engineering/evidence/*.json', cls: 'F', writers: ['test-substrate.sh'], owner: 'risk', area: 'gate', why: 'test-substrate verdicts (a hand-made pass opens the merge gate): flagged, never auto-removed, so a real evidence file never blocks a merge' },
@@ -1235,10 +1237,90 @@ function acceptCmd(ctx, key, o) {
     const self = selfWrite(ctx, p.id, key, ctx.now - 2 * 3600e3);
     if (self) throw new Error(p.name + '\'s own run wrote ' + key + ' (' + self + '): someone else must accept it, or the owner');
   }
-  const s = stateOf(ctx, key); accept(ctx, base, key, m, s); saveBaseline(ctx, base);
+  const s = stateOf(ctx, key);
+  // the owner's yes on a card (lib/owner-card.js lockedAccept): keep only the content the card described
+  if (o.expectSha && o.expectSha !== true && s.sha256 !== String(o.expectSha)) throw new Error(key + ' changed since the card was filed (its content is not the one the owner saw); nothing kept');
+  accept(ctx, base, key, m, s); saveBaseline(ctx, base);
   logEvent(ctx, { id: evId(ctx), at: local(ctx.now), key, cls: m.cls, kind: 'accepted', why: why + ' (accepted by ' + p.name + ')', owner: m.owner, area: m.area });
   tellRisk(ctx, 'accepted', key, p, why);
   return 'accepted ' + key + ' as the new last-known-good';
+}
+/* askAcceptCmd(ctx, key, {by, why, plain, ifNo}) — only the owner may keep some changes (a file only a tool writes, or a
+ * flagged one nobody else on the crew may sign off): ONE card on Today whose yes keeps exactly the content on disk now
+ * (effect lockedAccept {key, sha}; the console runs `accept --by <owner> --expect-sha`). Never a command the owner types.
+ *   REFUSED for a file that holds one of the four fixed owner gates (FIXED_GATE_FILES, harness-change.js OWNER_GATE_TOOLS,
+ *   and every key, access or gate entry): a hand edit there is put back (revert) and proposed with harness-change.js, which
+ *   gets two reviews and tells the owner plainly that it touches a fixed gate. One click never keeps such an edit.
+ *   Otherwise the card says what changed in the crew's own plain words (--plain), the values that changed (old -> new) when
+ *   the file is a settings file, why (--why) and what happens on no (--if-no), all plain-checked. --by is checked against
+ *   the run that typed it (verifyRan), must be the area's owner or the risk seat, and must not be the one who made the edit:
+ *   the editor is never the only one recommending it. */
+const AREA_WORDS = { record: 'one of the records that measure the crew\'s work', policy: 'one of the limits the crew works within', tool: 'one of the tools that keep the crew inside its limits',
+  key: 'a key or a sign-in the company holds', access: 'who may do what in the company', starnet: 'the system the crew runs on', prompt: 'the instructions one of the crew\'s routines follows',
+  state: 'one of the records a tool keeps' };
+// the files that keep a fixed owner gate (spending and the cap, outside commitments, access and who answers as the owner)
+const FIXED_GATE_FILES = {
+  'company/work/finance/dispatch-budget.json': 'spendBeyondCap', 'company/work/finance/pacing-policy.json': 'spendBeyondCap', 'company/work/finance/today-budget.json': 'spendBeyondCap',
+  'company/state/governance.json': 'access', 'company/state/guardrails.json': 'access', 'company/state/owner-rulings.json': 'access', 'company/state/delegations.json': 'access',
+  'company/owner/inbound.jsonl': 'access', 'company/pm-inbox.jsonl': 'access', 'company/state/locked-extra.json': 'access', 'company/state/packs.json': 'access',
+  'company/state/modules.json': 'access', 'company/state/services.json': 'access', 'company/tools/loops.json': 'access',
+  'company/tools/pack.js': 'access', 'company/tools/module.js': 'access',
+};
+function fixedGateFile(key, m) {
+  if (FIXED_GATE_FILES[key]) return FIXED_GATE_FILES[key];
+  let tools = {}; try { tools = require('./harness-change.js').OWNER_GATE_TOOLS || {}; } catch (_) {}
+  if (tools[key]) return tools[key];
+  if (/^company\/(tools\/external-gate\.js|state\/external-)/.test(key) || /^company\/work\/external-/.test(key)) return 'commitments';
+  if (m && (m.cls === 'K' || ['key', 'access', 'gate'].includes(m.area))) return 'access';
+  return null;
+}
+const GATE_WORDS = { spendBeyondCap: 'spending and the budget', commitments: 'what the company does or promises outside', commitment: 'what the company does or promises outside', access: 'who may act for you and what reaches you' };
+// the values a settings (JSON) change moved, in plain words ("5 to 5000"), or null when there is none to show plainly
+function plainValues(oldBuf, newBuf, C) {
+  let a, b; try { a = JSON.parse(oldBuf.toString('utf8')); b = JSON.parse(newBuf.toString('utf8')); } catch (_) { return null; }
+  const out = []; let hidden = 0;
+  const show = v => v === undefined ? 'nothing' : typeof v === 'number' || typeof v === 'boolean' ? String(v) : typeof v === 'string' && v.length <= 40 && C.plain(v) ? '“' + v + '”' : null;
+  (function walk(x, y) {
+    if (JSON.stringify(x) === JSON.stringify(y)) return;
+    if (x && y && typeof x === 'object' && typeof y === 'object' && !Array.isArray(x) && !Array.isArray(y)) { for (const k of new Set(Object.keys(x).concat(Object.keys(y)))) walk(x[k], y[k]); return; }
+    const f = show(x), t = show(y); if (f && t && out.length < 3) out.push(f + ' to ' + t); else hidden++;
+  })(a, b);
+  if (!out.length) return null;
+  return (out.length === 1 ? 'One value changes from ' : 'Values change from ') + out.join(', ') + (hidden ? ', and ' + hidden + ' more' : '') + '.';
+}
+const sentence = t => { const x = String(t || '').replace(/\s+/g, ' ').trim().replace(/[.!]?$/, '.'); return x === '.' ? '' : x; };
+function askAcceptCmd(ctx, key, o) {
+  const base = loadBaseline(ctx); if (!base) throw new Error('no baseline yet (run tick)');
+  const why = String(o.why || '').replace(/\s+/g, ' ').trim(); if (why.length < 10) throw new Error('--why must say why the change is meant');
+  const m = entryFor(ctx, key); if (!m) throw new Error(key + ' is not a locked file');
+  const gate = fixedGateFile(key, m);
+  if (gate) throw new Error(key + ' keeps one of the owner\'s fixed gates (' + (GATE_WORDS[gate] || gate) + '), so a hand edit to it is never kept with one click: put it back (node company/tools/locked-watch.js revert ' + key + ' --by <Name>) and propose the change with node company/tools/harness-change.js propose, which gets two reviews and tells the owner plainly that it touches a fixed gate');
+  const b = base.files[key]; if (!b || !b.flagged) throw new Error('nothing flagged for ' + key + ': there is no change to keep');
+  const p = needPerson(ctx, o.by, key, m, true);
+  if (p.id === 'owner') throw new Error('the owner keeps a change with accept, not with a card');
+  verifyRan(ctx, p, ['locked-watch.js', 'ask-accept', key, p.name]);
+  // the one who made the edit is never the only one recommending it
+  if ((b.flagged.by || []).includes(p.id)) throw new Error('the change came from ' + p.name + '\'s own run, so ' + p.name + ' cannot be the one recommending it: ask ' + [ownerOf(ctx, m.owner), ownerOf(ctx, 'risk')].filter(x => x && x.id !== p.id).map(x => x.name).filter((x, i, a) => a.indexOf(x) === i).join(' or ') + ' to look at it and ask the owner');
+  const self = selfWrite(ctx, p.id, key, ctx.now - 2 * 3600e3);
+  if (self) throw new Error(p.name + '\'s own run wrote ' + key + ' (' + self + '): someone else must look at it and ask the owner');
+  const s = stateOf(ctx, key); if (!s.exists || !s.sha256) throw new Error(key + ' is not on disk as a whole file; a card can only keep a file\'s content');
+  const C = require('./lib/owner-card');
+  const plain = sentence(o.plain && o.plain !== true ? o.plain : '');
+  if (!plain) throw new Error('--plain must say what the change does, in everyday words for the owner (for example "the crew\'s weekly report now also counts late handoffs")');
+  const ifNo = sentence(o.ifNo && o.ifNo !== true ? o.ifNo : '');
+  const bad = [['--plain', plain], ['--why', sentence(why)], ['--if-no', ifNo]].filter(([, v]) => v && !C.plain(v)).map(([k, v]) => k + ': ' + C.plainProblems(v).join(', '));
+  if (bad.length) throw new Error('not plain for the owner (' + bad.join('; ') + '): say it in everyday words; paths, ids and settings stay out of the card');
+  const lkg = readLkg(ctx, key, b); const vals = Buffer.isBuffer(lkg) ? plainValues(lkg, s.buf || fs.readFileSync(abs(ctx, key)), C) : null;
+  const area = AREA_WORDS[m.area] || 'one of the crew\'s protected files';
+  const lc = x => x.replace(/^./, c => c.toLowerCase());
+  const lead = p.name + ' asks you to keep a change to ' + area + ': ' + lc(plain) + (vals ? ' ' + vals : '');
+  const r = C.file({ asker: p.id, category: 'tools', ref: 'locked-accept:' + key + ':' + s.sha256.slice(0, 16), ownerAct: true,
+    lead: C.plain(lead) ? lead : p.name + ' asks you to keep a change to ' + area + ': ' + lc(plain),
+    consequence: 'If you say yes, the change is kept. If you say no or do not answer, ' + (ifNo ? lc(ifNo) : 'nothing is kept and the crew can put the old version back.'),
+    recommendation: p.name + ' recommends yes: ' + lc(sentence(why)),
+    technical: 'Locked file ' + key + ' (class ' + m.cls + ', ' + (m.why || m.area) + '), flagged ' + (b.flagged.at || '?') + ' (' + (b.flagged.eventId || '?') + ')' + ((b.flagged.by || []).length ? ', edited in the run of ' + b.flagged.by.map(x => nameOf(ctx, x)).join(', ') : '') + '. Content now: ' + s.sha256 + ' (' + s.bytes + ' bytes).' + (Buffer.isBuffer(lkg) ? ' Change: ' + diffSummary(lkg, s.buf || fs.readFileSync(abs(ctx, key)), m) + '.' : '') + ' Asked by ' + p.name + ' (checked against the run that asked).',
+    effect: { lockedAccept: { key, sha: s.sha256 } } }, { root: ctx.root || co.ROOT });
+  return r.filed ? 'asked the owner: ' + r.id + ' (a card on Today with an Accept button)' : r.route === 'duplicate' ? 'already waiting for the owner: ' + r.id : 'not asked: ' + (r.reason || r.route);
 }
 /* A false name must come off an EXISTING flag without rebuilding the
  * baseline. `baseline --force` is not that — it erases the flag and its record with it. What this does, and all it
@@ -1333,7 +1415,7 @@ function rebaseProvenance(opts, fn) {
   saveBaseline(ctx, base);
   return { result: r, provOffset: base.provOffset };
 }
-module.exports = { tick, classify, lockedNames, MANIFEST, connectorEntries, STATION_STATUS, context, withWatchLock, rebaseProvenance, _internals: { tile, decide, decideRolled, unroll, unwind, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
+module.exports = { askAcceptCmd, fixedGateFile, FIXED_GATE_FILES, acceptCmd, tick, classify, lockedNames, MANIFEST, connectorEntries, STATION_STATUS, context, withWatchLock, rebaseProvenance, _internals: { tile, decide, decideRolled, unroll, unwind, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
 
 /* ---------------- selftest ---------------- */
 async function selftest() {
@@ -1864,8 +1946,8 @@ function flagsList(ctx) {
 if (require.main === module) {
   const a = process.argv.slice(2); const cmd = a[0];
   const opt = k => { const i = a.indexOf('--' + k); return i >= 0 ? (a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true) : null; };
-  const known = { tick: ['dry-run'], status: ['json'], accept: ['by', 'why'], 'clear-name': ['by', 'why', 'name'], revert: ['by'], undo: ['by'], baseline: ['force'], selftest: [] };
-  if (!known[cmd]) { console.log('usage: locked-watch.js tick [--dry-run] | status | accept <path> --by <Name> --why "…" | clear-name <path> --name <Name> --by <Name> --why "…" | revert <path> --by <Name> | undo <event id> --by <Name> | baseline [--force] | selftest'); process.exit(2); }
+  const known = { tick: ['dry-run'], status: ['json'], accept: ['by', 'why', 'expect-sha'], 'ask-accept': ['by', 'why', 'plain', 'if-no'], 'clear-name': ['by', 'why', 'name'], revert: ['by'], undo: ['by'], baseline: ['force'], selftest: [] };
+  if (!known[cmd]) { console.log('usage: locked-watch.js tick [--dry-run] | status | accept <path> --by <Name> --why "…" [--expect-sha <sha>] | ask-accept <path> --by <Name> --why "…" --plain "…" [--if-no "…"] | clear-name <path> --name <Name> --by <Name> --why "…" | revert <path> --by <Name> | undo <event id> --by <Name> | baseline [--force] | selftest'); process.exit(2); }
   for (const x of a.slice(1)) if (x.startsWith('--') && !known[cmd].includes(x.slice(2))) { console.error('locked-watch: unknown option ' + x + ' for ' + cmd + '; nothing was done'); process.exit(2); }
   (async () => {
     if (cmd === 'selftest') { const { out, bad } = await selftest(); for (const l of out) console.log(l); console.log(bad ? bad + ' FAILED' : 'all ' + out.length + ' checks passed'); process.exit(bad ? 1 : 0); }
@@ -1889,7 +1971,8 @@ if (require.main === module) {
       console.log('baseline rebuilt' + (keys.length ? '; key(s) whose hash changed in the rebuild (logged): ' + keys.join(', ') : '')); return;
     }
     const key = a[1]; if (!key || key.startsWith('--')) throw new Error(cmd + ' needs a path or an event id');
-    if (cmd === 'accept') console.log(acceptCmd(ctx, key, { by: opt('by'), why: opt('why') }));
+    if (cmd === 'accept') console.log(acceptCmd(ctx, key, { by: opt('by'), why: opt('why'), expectSha: opt('expect-sha') }));
+    if (cmd === 'ask-accept') console.log(askAcceptCmd(ctx, key, { by: opt('by'), why: opt('why'), plain: opt('plain'), ifNo: opt('if-no') }));
     if (cmd === 'clear-name') console.log(clearNameCmd(ctx, key, { by: opt('by'), why: opt('why'), name: opt('name') }));
     if (cmd === 'revert') console.log(revertCmd(ctx, key, { by: opt('by') }));
     if (cmd === 'undo') console.log(undoCmd(ctx, key, { by: opt('by') }));

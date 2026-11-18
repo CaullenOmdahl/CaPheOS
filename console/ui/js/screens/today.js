@@ -1,5 +1,6 @@
-// Today (Main.dc.html): Now (who is running, the current step, Watch, Stop; each seat's next wake), Needs you (live),
-// crew, AI usage, company panels, recent activity, and the box that opens a live chat with the Founder.
+// Today (Main.dc.html): Now (who is running, the current step, Watch, Stop; each seat's next wake), Needs you (live: only
+// what still needs the owner, console/owner-needs.js), The crew is handling (read only), What the crew did today (the
+// daily digest), crew, AI usage, company panels, recent activity, and the box that opens a live chat with the Founder.
 import { h, fill, Button, Tag, Eyebrow, errLine, empty, initial, rel, when, statusOf, isSetupQuestion, humanError, Details } from '../ui.js';
 import { category, personName, usageLine, railLine, sprintSummary, seatState, leadLine } from '../plain.js';
 import { api, post } from '../api.js';
@@ -59,6 +60,8 @@ export async function render(root, ctx) {
   const allClear = h('div');
   const answeredEl = h('div');
   const snoozedEl = h('div');
+  const handlingEl = h('div');   // The crew is handling: open cards the owner's settings or rulings leave to the crew (read only)
+  const digestEl = h('section', { class: 'stack-12', 'aria-labelledby': 'digest-h' });
   const crewEl = h('div'); const usageEl = h('div'); const panelsEl = h('div', { class: 'stack-24' }); const overnightEl = h('div');
 
   fill(root,
@@ -71,7 +74,8 @@ export async function render(root, ctx) {
       h('div', { class: 'between', style: 'gap:16px' },
         h('div', { class: 'row-8', style: 'align-items:center;gap:12px' }, h('h2', { id: 'needs', class: 'h3' }, 'Needs you'), liveDot),
         h('span', { class: 'caption muted' }, 'Questions land here the moment they are asked. Your self-governance settings decide which ones come to you.')),
-      needsErr, allClear, gatesEl, snoozedEl, answeredEl),
+      needsErr, allClear, gatesEl, snoozedEl, answeredEl, handlingEl),
+    digestEl,
     h('section', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:32px' },
       h('div', { class: 'stack-16' }, h('div', { class: 'between' }, h('h2', { class: 'h3' }, 'Crew right now'), h('a', { href: '#/crew', class: 'body-s' }, 'All crew →')), crewEl),
       h('div', { class: 'stack-16' }, h('div', { class: 'between' }, h('h2', { class: 'h3' }, 'AI usage today'), h('a', { href: '#/spend', class: 'body-s' }, 'Spend →')), usageEl)),
@@ -99,12 +103,13 @@ export async function render(root, ctx) {
 
   /* ---- Needs you: each question is a form its asker composed (company/tools/inbox.js) ---- */
   const replying = new Set(); const drafts = {}; const picks = {};   // picks: a request's chosen-but-unsent answers
-  let lastQs = []; let snoozedQs = [];
+  let lastQs = []; let snoozedQs = []; let handling = [];
   async function loadNeeds() {
     let d;
     try { d = await api('/questions'); fill(needsErr); }
     catch (e) { fill(needsErr, errLine(e, 'Questions')); return; }
     const all = (d.questions || []).filter(q => !isSetupQuestion(q));
+    handling = (d.crewHandling || []).filter(x => !isSetupQuestion(x.question || x));
     const now = Date.now();
     const qs = all.filter(q => !(q.snoozedUntil && Date.parse(q.snoozedUntil) > now));
     snoozedQs = all.filter(q => q.snoozedUntil && Date.parse(q.snoozedUntil) > now);
@@ -124,6 +129,14 @@ export async function render(root, ctx) {
       h('summary', { class: 'label muted', style: 'min-height:32px' }, 'Snoozed (' + snoozedQs.length + ')'),
       h('ul', { class: 'plain stack-8', style: 'margin-top:8px' }, snoozedQs.map(q => h('li', { class: 'between body-s', 'data-snoozed': q.id },
         h('span', { class: 'strong' }, questionText(q).message.slice(0, 120)), h('span', { class: 'mono muted' }, 'back ' + whenLabel(q.snoozedUntil, co.timezone)))))) : null);
+    // read only: who has it and one plain line; the card itself (to decide anyway) sits behind "Decide it yourself"
+    fill(handlingEl, handling.length ? h('details', { class: 'hair-top crew-handling', style: 'padding-top:12px' },
+      h('summary', { class: 'label muted', style: 'min-height:32px' }, 'The crew is handling (' + handling.length + ')'),
+      h('p', { class: 'caption muted' }, 'Open questions your settings leave to the crew. Nothing here needs you.'),
+      h('ul', { class: 'plain stack-12', style: 'margin-top:8px' }, handling.map(x => h('li', { class: 'stack-4', 'data-handling': x.id },
+        h('span', { class: 'body-s' }, h('span', { class: 'strong' }, personName(x.from) || 'The crew'), ' · ' + x.lead),
+        h('span', { class: 'caption muted' }, x.line),
+        x.question ? Details('Decide it yourself', gateCard(Object.assign({}, x.question, { handled: true }), false)) : null)))) : null);
   }
   function gateCard(q, fresh) {
     if (q.questions && q.questions.length) return requestCard(q, fresh, { fieldControl, post, app, reload: loadNeeds, picks, freshIds, seat: q.askerSeat || ceoId, questionText, parseQuestion, looksLikeKeyText, snoozeUntil, whenLabel, tz: co.timezone, moreMenu, cardMeta, cardDetails, approveSays, leadLine });
@@ -146,7 +159,8 @@ export async function render(root, ctx) {
       try {
         const r = await post('/questions/' + encodeURIComponent(q.id) + '/answer', body);
         controls.forEach(c => c.clear && c.clear());
-        replying.delete(q.id); delete drafts[q.id]; freshIds.delete(q.id); app.toast(okText || 'Answer recorded.'); loadNeeds(); return r;
+        // what the answer did, in the console's words (a typed effect applied, a standing rule saved)
+        replying.delete(q.id); delete drafts[q.id]; freshIds.delete(q.id); app.toast([r && r.said, r && r.rulingSaid].filter(Boolean).join(' ') || okText || 'Answer recorded.', !!(r && r.applied && r.applied.kind && !r.applied.applied && r.applied.technical)); loadNeeds(); return r;
       } catch (e) {
         controls.forEach(c => c.onError && c.onError(e));
         errEl.textContent = 'Not recorded: ' + humanError(e); busy(false);
@@ -164,9 +178,11 @@ export async function render(root, ctx) {
       if (a.needs === 'none') for (const c of controls) if (c.f.type === 'secret') delete values[c.f.id];
       const body = { action: a.id, values };
       if (q.approval && q.approval.actionDigest) body.shownDigest = q.approval.actionDigest;   // approvals.js: refused if the record changed since
+      if (q.cardDigest) body.cardDigest = q.cardDigest;   // an owner card: its yes applies only the card as shown here
       if (Object.keys(replace).length) body.replace = replace;
       if (Object.keys(endpoints).length) body.endpoints = endpoints;
       if (Object.keys(secretNames).length) body.secretNames = secretNames;
+      const rl = ruleBody(a.verdict); if (rl === false) return; if (rl) body.rule = rl;
       const stores = controls.some(c => c.f.type === 'secret' && values[c.f.id] !== undefined);
       send(body, stores ? 'Key stored securely. Answer recorded.' : 'Answer recorded.');
     };
@@ -177,8 +193,24 @@ export async function render(root, ctx) {
     const sendReply = () => {
       const text = ta.value.trim(); if (!text) { errEl.textContent = 'Write a reply first.'; return; }
       if (looksLikeKeyText(text)) { errEl.textContent = 'This looks like a key. Use the secure field instead, so it is stored as a file and never written into a message.'; return; }
-      send({ verdict: 'reply', text });
+      const rl = ruleBody('reply', text); if (rl === false) return;
+      send(Object.assign({ verdict: 'reply', text }, rl ? { rule: rl } : {}));
     };
+    // "Make this a standing rule": the owner's own words become a rule the crew follows from now on (never on a fixed gate)
+    // offered only where a rule can work (the server's ruleOffer: never a fixed gate, a guardrail's card, a key, or the money hold)
+    const canRule = q.canRule === true && q.needsWhy !== 'fixed-gate' && !(q.approval && q.approval.fixed) && !q.questions;
+    const ruleTick = h('input', { type: 'checkbox', id: 'rule-' + q.id });
+    const ruleText = h('input', { type: 'text', class: 'input', id: 'rule-t-' + q.id, maxlength: '500', placeholder: 'In your words, e.g. “You decide these yourselves.”', hidden: true, 'aria-label': 'Your standing rule, in your own words' });
+    ruleTick.addEventListener('change', () => { ruleText.hidden = !ruleTick.checked; if (ruleTick.checked) ruleText.focus(); });
+    // on a free-text answer: the reply itself is the rule's wording unless the owner writes a shorter one
+    const ruleEl = canRule ? h('div', { class: 'stack-4 q-rule' }, h('label', { class: 'check caption', for: 'rule-' + q.id }, ruleTick, 'Make this a standing rule, so the crew does not ask me about this again'), ruleText) : null;
+    ruleText.placeholder = 'The rule in a few words (optional; your reply is used otherwise)';
+    function ruleBody(verdict, replyText) {
+      if (!canRule || !ruleTick.checked) return null;
+      const t = ruleText.value.trim() || String(replyText || '').trim();
+      if (t.length < 3) { errEl.textContent = 'Write the rule in your own words first.'; ruleText.hidden = false; ruleText.focus(); return false; }
+      return { text: t, effect: verdict === 'no' ? 'never-ask' : 'crew-decides' };
+    }
     const more = moreMenu(q, {
       onReply: () => { replying.add(q.id); redraw(); const t = gatesEl.querySelector('[data-id="' + CSS.escape(q.id) + '"] textarea[aria-label^="Your reply"]'); if (t) t.focus(); },
       onSnooze: async k => {
@@ -195,9 +227,12 @@ export async function render(root, ctx) {
       titled && qt.message.replace(/\.$/, '') === p.title.replace(/\.$/, '') ? null : h('div', titled ? { class: 'q-message' } : { id: 'g-' + q.id, class: 'q-message' }, mdBlock(qt.message, 'body q-msg')),
       qt.details ? h('details', { class: 'q-details' }, h('summary', { class: 'caption muted' }, 'More detail'), mdBlock(qt.details, 'body-s q-body')) : null,
       controls.length ? h('div', { class: 'stack-12 q-form' }, controls.map(c => c.el)) : null,
-      isReplying ? h('div', { class: 'stack-6 q-reply' }, h('label', { class: 'caption muted', for: 'rp-' + q.id }, 'Your reply goes to ' + (personName(q.from) || 'the asker') + ' in your own words.'), Object.assign(ta, { id: 'rp-' + q.id }),
+      isReplying ? h('div', { class: 'stack-6 q-reply' }, h('label', { class: 'caption muted', for: 'rp-' + q.id }, 'Your reply goes to ' + (personName(q.from) || 'the asker') + ' in your own words.'), Object.assign(ta, { id: 'rp-' + q.id }), ruleEl,
         h('div', { class: 'row-8' }, Button('Send reply', { variant: 'primary', size: 'sm', onClick: sendReply }), Button('Cancel', { variant: 'ghost', size: 'sm', onClick: () => { replying.delete(q.id); redraw(); } }))) : null,
-      approveSays(q, form),
+      q.consequence ? h('p', { class: 'body-s q-consequence' }, q.consequence) : null,
+      q.recommendation ? h('p', { class: 'body-s q-recommendation' }, h('span', { class: 'strong' }, 'The crew recommends: '), q.recommendation) : null,
+      q.effectSays ? h('p', { class: 'caption q-effect', 'data-effect': q.effectKind || '' }, q.effectSays) : approveSays(q, form),
+      q.technical ? h('details', { class: 'q-technical' }, h('summary', { class: 'caption muted' }, 'Technical details (for the crew)'), h('pre', { class: 'mono-s q-tech', style: 'white-space:pre-wrap' }, q.technical)) : null,
       h('div', { class: 'row-8 q-actions' },
         form.actions.map(a => Button(a.label, { variant: a.primary ? 'primary' : 'secondary', size: 'sm', onClick: () => act(a) })),
         more.el),
@@ -358,9 +393,26 @@ export async function render(root, ctx) {
     } catch (e) { fill(overnightEl, errLine(e, 'Recent activity')); }
   }
 
-  loadNeeds(); loadCrew(); loadUsage(); loadOvernight(); loadNow();
+  /* ---- What the crew did today: the one plain digest (company/owner/digest.jsonl, GET /api/digest) ---- */
+  async function loadDigest() {
+    let d; try { d = await api('/digest'); } catch (_) { fill(digestEl); return; }
+    const items = d.items || [];
+    if (!items.length) return fill(digestEl);
+    fill(digestEl, h('h2', { id: 'digest-h', class: 'h3' }, d.title || 'What the crew did today'),
+      h('article', { class: 'card p20 stack-12 digest-card' },
+        h('p', { class: 'caption muted' }, items.some(x => x.asks) ? 'Things you may want to know. Only what waits under Needs you needs an answer.' : 'Things you may want to know. Nothing here needs an answer.'),
+        h('ul', { class: 'plain stack-8' }, items.map(x => h('li', { class: 'stack-4 digest-item' },
+          h('span', { class: 'body-s' }, x.from ? h('span', { class: 'strong' }, personName(x.from) + ': ') : null, x.text, h('span', { class: 'caption muted' }, ' · ' + when(x.at, co.timezone))),
+          // a line the owner can act on from here (an Undo button: POST /api/digest/undo)
+          x.action && x.action.kind === 'undo-decision' ? h('div', { class: 'row-8' }, Button(x.action.label || 'Undo this', { variant: 'secondary', size: 'sm', onClick: async () => {
+            try { const r = await post('/digest/undo', { decisionId: x.action.decisionId }); app.toast(r.said || 'Sent to the crew.'); }
+            catch (e) { app.toast('Not sent: ' + humanError(e), true); }
+          } })) : null,
+          x.technical ? h('details', { class: 'q-technical' }, h('summary', { class: 'caption muted' }, 'Technical details (for the crew)'), h('pre', { class: 'mono-s', style: 'white-space:pre-wrap' }, x.technical)) : null)))));
+  }
+  loadNeeds(); loadCrew(); loadUsage(); loadOvernight(); loadNow(); loadDigest();
   const stopPanels = mountPanels(panelsEl, 'today', app);
-  const offs = [events.on('questions', () => { loadNeeds(); loadOnboarding(); }), events.on('crew', loadCrew), events.on(['dispatch', 'activity', 'owner'], loadOvernight),
+  const offs = [events.on('questions', () => { loadNeeds(); loadOnboarding(); }), events.on('crew', loadCrew), events.on(['dispatch', 'activity', 'owner'], () => { loadOvernight(); loadDigest(); }),
     events.on(['now', 'crew', 'dispatch'], () => { loadNow(); loadCrew(); }), events.on('handoffs', loadNow),
   ];
   // elapsed time ticks while something runs; a slow poll keeps "Now" honest when SSE is down

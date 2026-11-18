@@ -17,7 +17,7 @@ const LEDE = {
   company: 'Who the company is, what it is for, and whether it is ready to run.',
   autonomy: 'How much the crew decides alone, and the hard stops it can never get past.',
   tempo: 'How often the crew wakes, and the routines that run on a clock.',
-  models: 'Which AI each crew member runs on, how much of each subscription routines may use, and the pay-per-token cap.',
+  models: 'Which AI each crew member runs on, how much of each subscription routines may use, and the daily cap for AI that is paid by use.',
   connections: 'What the crew can reach: connected services, skills, channels and keys.',
   pages: 'Panels and pages the crew added to this console. Hide or remove any of them.',
   system: 'Health, certification, backups, background services, sign-in and access, flags, modules, restarts, framework updates, and how to stop the company.',

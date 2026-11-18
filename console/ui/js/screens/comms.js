@@ -163,7 +163,9 @@ export async function render(root, ctx) {
     const turns = msgs.map(m => ({ role: m.dir === 'out' ? 'assistant' : 'user', content: String(m.text || m.body || ''), at: m.at }));
     const states = blockStates(turns); const registry = new Map(); const idx = new Map(msgs.map((m, i) => [m, i]));
     const sendAction = async text => { try { await post('/owner/messages', { text }); loadThread(); return true; } catch (e) { sendErr.textContent = 'Not sent: ' + humanError(e); return false; } };
-    const reply = m => h('div', { class: 'stack-4 msg-them-wrap' }, mdBlock(m.text || m.body || '', 'msg-them', { actions: block => actionsBlock(block, { state: (states.get(idx.get(m)) || new Map()).get(block.id), at: m.at, who: personName(m.from) || 'the company', tz, app, registry, send: sendAction }) }), h('span', { class: 'msg-meta' }, (personName(m.from) || 'Company') + ' · ' + when(m.at, tz)));
+    // a company message's technical part (lib/owner-notice.js) is for the crew: collapsed, never in the words the owner reads
+    const techOf = m => m.technical ? h('details', { class: 'caption muted' }, h('summary', {}, 'Technical details (for the crew)'), h('div', { style: 'white-space:pre-wrap;word-break:break-word' }, String(m.technical))) : null;
+    const reply = m => h('div', { class: 'stack-4 msg-them-wrap' }, mdBlock(m.text || m.body || '', 'msg-them', { actions: block => actionsBlock(block, { state: (states.get(idx.get(m)) || new Map()).get(block.id), at: m.at, who: personName(m.from) || 'the company', tz, app, registry, send: sendAction }) }), techOf(m), h('span', { class: 'msg-meta' }, (personName(m.from) || 'Company') + ' · ' + when(m.at, tz)));
     const rows = [];
     for (const m of msgs) {
       if (m.dir === 'out') { if (!threaded.has(m.id)) rows.push(reply(m)); continue; }

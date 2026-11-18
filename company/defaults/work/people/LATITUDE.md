@@ -12,7 +12,7 @@ limits them.**
 |---|---|---|---|
 | 1. Free | Your own space: your notes, your scripts, your own section of your routine prompts | You | Just do it |
 | 2. Propose, review, apply | Things the crew shares: routine schedules, shared tools, house rules, the model a routine runs on, policy numbers | The owner of that area, never you | `harness-change.js propose`, then the area owner reviews it, it is applied with a backup, and its results are checked after 3 days |
-| 3. Locked | Anything that measures, limits or protects: the pacer and its policy, the routing table, the competence ledger and its policy, performance and correction records, the merge and external gates, keys and access, StarNet's own code | Nobody changes these by hand | A watcher checks them every 10 minutes. It puts back what only a tool may write, and reports everything else |
+| 3. Locked | Anything that measures, limits or protects: the pacer and its policy, the routing table, the competence ledger and its policy, performance and correction records, the merge and external gates, keys and access, StarNet's own code | Nobody changes these by hand. A locked tool changes only through `harness-change.js propose`, reviewed by the risk owner **and** the tools owner (the CEO stands in for whichever proposed); the owner is asked only when the self-governance level for tools is approve, when fewer than two of you can review, or when it edits the code of a fixed owner gate in this company | A watcher checks them every 10 minutes. It puts back what only a tool may write, and reports everything else |
 
 ## Tier 1: your own space (free)
 

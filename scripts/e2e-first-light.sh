@@ -355,7 +355,7 @@ check "hire.js pick refuses a seat that does not decide the round" bash -c "! no
 node "$TOOLS/hire.js" pick --round data-analyst-1 --agent "$BEN" --by "$HNAME" --why "Ben 4.2 vs Ada 3.9: checks his own work" > "$T/pick.out" 2>&1
 check "$HNAME's pick: hired in the same call (notify: the owner is told), the pick handoff closed" bash -c "
   node -e 'const o=JSON.parse(require(\"fs\").readFileSync(\"$T/pick.out\",\"utf8\")); const r=require(\"$R/company/hiring/data-analyst-1/round.json\"); if(!o.ok||!o.hired||r.hired!==\"$BEN\"||r.candidates.filter(c=>c.status===\"released\").length!==1){console.error(JSON.stringify(o).slice(0,400));process.exit(1)}' &&
-  grep -q 'decided to hire BEN RUIZ' company/owner/outbound.jsonl && grep -q 'picked \*\*BEN RUIZ\*\*' company/work/decisions.md &&
+  grep -qi 'decided to hire BEN RUIZ' company/owner/digest.jsonl && grep -q 'picked \*\*BEN RUIZ\*\*' company/work/decisions.md &&
   ! grep -A6 'pick the Data Analyst (data-analyst-1)' company/work/handoffs/*.md | grep -q '^.*Status:\*\* OPEN'" || tail -5 "$T/pick.out"
 check "Crew shows the new seats with their hire and first run" bash -c "curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/crew | node -e '
   let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const o=JSON.parse(d);const a=o.seats.find(s=>s.id===\"$QA_ID\"),b=o.seats.find(s=>s.id===\"$BEN\");

@@ -1,0 +1,6 @@
+{
+  "_doc": "How the company tells the owner things (company/tools/lib/owner-notice.js; copied to company/work/ops/owner-notices.json at founding, where the owner may change it). Urgent notices (the company stopped or cannot work, money or an account is needed now, a security event, the CEO's own reply) go out at once; every other notice waits for ONE plain message a day. eveningHour = the hour (0-23, company timezone) from which that day's message is sent, once; maxItems = how many things it lists before it says 'and N smaller things'; title = its first line.",
+  "eveningHour": 18,
+  "maxItems": 12,
+  "title": "What the crew did today"
+}

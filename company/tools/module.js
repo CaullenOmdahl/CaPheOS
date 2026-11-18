@@ -11,6 +11,7 @@
  *   node company/tools/module.js status <id> [--json]
  *   node company/tools/module.js doctor [<id>|--all] [--json]   # fail closed; exit 0 only when every ENABLED module is conformant
  *   node company/tools/module.js enable <id> --by <owner>       # owner only, governance category 'packs'
+ *   node company/tools/module.js ask <id> --by <seat> --why "…" # a seat asks the owner: one card on Today whose yes switches it on
  *   node company/tools/module.js disable <id> --by <owner>      # tools, rows and registrations out; meter records kept
  *   node company/tools/module.js limits <id> [show]             # shipped (closed) vs opened limits
  *   node company/tools/module.js limits <id> set <file> <key.path> <number> --by <owner>   # open (or close with 0) a limit:
@@ -353,6 +354,35 @@ function dependents(id) {
 }
 
 /* ---------- enable / disable ---------- */
+/* cmdAsk(id, by, why): a crew member asks the owner to switch a module on: ONE card on Today whose yes switches it on
+ * (effect moduleEnable {id}; the console runs `enable --by <owner>`). Switching a module on is always the owner's
+ * (ownerAct: filed whatever the levels say). */
+// a module by a name the owner knows: its title when that reads plainly, else a plain name for the ones whose title is
+// a technical word, else "an add-on"
+const PLAIN_TITLES = { liveness: 'the outside alarm that tells you when the company stops' };
+function plainTitle(id, mod) {
+  const t = String((mod && mod.title) || '').replace(/[\u201c\u201d"]/g, '').trim().slice(0, 60);
+  let ok = false; try { ok = !!t && require('./lib/owner-card').plain(t); } catch (_) {}
+  return ok ? '“' + t + '”' : PLAIN_TITLES[id] || 'an add-on';
+}
+function cmdAsk(id, by, why) {
+  if (!ID_RE.test(String(id || ''))) return { code: 2, out: { ok: false, error: 'ask <id> --by <seat> --why "..."' } };
+  const seat = pk.findSeat(by); if (!seat) return { code: 2, out: { ok: false, error: '--by <seat> is required (a crew member)' } };
+  const w = String(why || '').replace(/\s+/g, ' ').trim(); if (w.length < 10) return { code: 2, out: { ok: false, error: '--why must say what it is for' } };
+  if (mods.state().enabled[id]) return { code: 0, out: { ok: true, already: true, id } };
+  const mod = readJson(path.join(srcDir(id), 'module.json'), null); if (!mod) return { code: 1, out: { ok: false, error: 'no module modules/' + id + '/' } };
+  const C = require('./lib/owner-card');
+  const who = seat.seat.name || seat.id; const title = plainTitle(id, mod);
+  const what = mod.enableWhen && C.plain(String(mod.enableWhen)) && String(mod.enableWhen).length <= 160 ? ' ' + String(mod.enableWhen).trim().replace(/[.!]?$/, '.') : '';
+  const name = /^“/.test(title) ? 'the add-on ' + title : title;
+  const lead = [who + ' wants to switch on ' + name + '.' + what, who + ' wants to switch on ' + name + '.', who + ' wants to switch on an add-on.'].find(t => C.plain(t));
+  const r = C.file({ asker: seat.id, category: 'packs', ref: 'module:' + id, ownerAct: true, lead,
+    consequence: 'If you say yes, it is switched on now and you can switch it off again in Settings › System. If you say no, nothing changes.',
+    recommendation: who + ' recommends yes. If you do not answer, it stays off.',
+    technical: 'Core module ' + id + ' (' + (mod.layer || '?') + '). Why: ' + w + (((mod.requires || {}).secrets || []).length ? ' Needs: ' + mod.requires.secrets.map(x => 'secrets/' + x).join(', ') + '.' : ''),
+    effect: { moduleEnable: { id } } }, { root: co.ROOT });
+  return { code: r.filed || r.route === 'duplicate' ? 0 : 1, out: Object.assign({ ok: !!(r.filed || r.route === 'duplicate') }, r) };
+}
 function cmdEnable(id, by) {
   const e = pk.ownerOnly(by, 'enables a core module'); if (e) return { code: 1, out: { ok: false, error: e } };
   if (!ID_RE.test(String(id || ''))) return { code: 2, out: { ok: false, error: 'enable <id>' } };
@@ -395,7 +425,11 @@ function cmdEnable(id, by) {
     return { code: 1, out: { ok: false, error: 'enable failed and was rolled back: ' + err.message } };
   }
   const s = status(id);
-  const told = pk.tellOwner('Core module ' + id + ' (' + mod.title + ') enabled: ' + s.status + '.' + ((mod.requires || {}).secrets || []).map(x => ' Needs secrets/' + x + '.').join(''), 'module.js');
+  // the owner's line: which add-on is on, and whether the crew still needs a key for it (they ask on Today); the id,
+  // status and file names are the crew's detail
+  const needs = ((mod.requires || {}).secrets || []).length;
+  const told = pk.tellOwner((t => /^“/.test(t) ? 'The add-on ' + t : t.replace(/^./, c => c.toUpperCase()))(plainTitle(id, mod)) + ' is switched on.' + (needs ? ' It needs ' + (needs === 1 ? 'a key' : needs + ' keys') + ' to work; the crew asks you for ' + (needs === 1 ? 'it' : 'them') + ' on Today.' : ''), 'module.js',
+    'Core module ' + id + ' (' + mod.title + ') enabled: ' + s.status + '.' + ((mod.requires || {}).secrets || []).map(x => ' Needs secrets/' + x + '.').join(''));
   // a running company's copied tools and inventory rows must never reach the framework repo (scripts/instance-guard.sh)
   try { const g = path.join(co.ROOT, 'scripts', 'instance-guard.sh'); if (fs.existsSync(g) && fs.existsSync(co.p('company', 'work', '.founded'))) require('child_process').execFileSync('bash', [g], { cwd: co.ROOT, stdio: 'ignore', timeout: 30000 }); } catch (_) {}
   return { code: s.status === 'conformant' ? 0 : 1, out: { ok: s.status === 'conformant', id, status: s.status, findings: s.findings, told, change: record({ op: 'enable', id, by: 'owner', gate, status: s.status }) } };
@@ -547,7 +581,7 @@ function selftest() {
       t('migrate-rows: a second run moves nothing', run('migrate-rows').j.moved === 0 && run('migrate-rows', '--check').code === 0);
       fs.writeFileSync(locF, keep);
     }
-    t('enable: owner told', /Core module demo/.test(fs.readFileSync(path.join(tmp, 'company', 'owner', 'outbound.jsonl'), 'utf8')));
+    t('enable: owner told', / is switched on\./.test(fs.readFileSync(path.join(tmp, 'company', 'owner', 'outbound.jsonl'), 'utf8')));
     const tk2 = js("require('./company/tools/lib/modules').runTicks({log:console.log}).then(r=>console.log(JSON.stringify(r)))");
     t('tick hook runs the enabled module', fs.existsSync(path.join(md, 'ticked')) && /DEMO TICK/.test(tk2.stdout), tk2.stdout + tk2.stderr);
     fs.rmSync(path.join(md, 'ticked'));
@@ -608,7 +642,7 @@ function selftest() {
   return fails ? 1 : 0;
 }
 
-module.exports = { status, doctor, list, gates, checkStatic, moduleSchema, LAYERS, dutyResult, refreshPending };
+module.exports = { cmdAsk, plainTitle, status, doctor, list, gates, checkStatic, moduleSchema, LAYERS, dutyResult, refreshPending };
 if (require.main !== module) return;
 
 const A = (() => { const o = { _: [] }; const a = process.argv.slice(2); for (let i = 0; i < a.length; i++) { if (a[i].startsWith('--')) { const k = a[i].slice(2); o[k] = a[i + 1] !== undefined && !a[i + 1].startsWith('--') ? a[++i] : true; } else o._.push(a[i]); } return o; })();
@@ -624,9 +658,10 @@ if (cmd === 'list') { const rows = list(); if (A.json) console.log(JSON.stringif
 if (cmd === 'status') { if (!A._[1]) { console.error('status <id>'); process.exit(2); } const s = status(A._[1]); if (A.json) console.log(JSON.stringify(s, null, 1)); else { console.log(s.status); for (const f of s.findings || []) console.log('  ' + f); } process.exit(0); }
 if (cmd === 'doctor') emit(doctor(A.all ? true : A._[1] || true));
 if (cmd === 'enable') emit(cmdEnable(A._[1], A.by));
+if (cmd === 'ask') emit(cmdAsk(A._[1], A.by, A.why));
 if (cmd === 'disable') emit(cmdDisable(A._[1], A.by));
 if (cmd === 'limits') emit(cmdLimits(A._[1], A._[2], A._[3], A._[4], A._[5], A.by));
 if (cmd === 'migrate-rows') emit(migrateRows(!!A.check));
 if (cmd === 'gates') { const g = gates(); console.log(JSON.stringify(A.json ? g : { ok: true, gates: g }, null, 1)); process.exit(0); }
-console.error('usage: module.js list | status <id> | doctor [<id>|--all] | enable|disable <id> --by <owner> | limits <id> [set <file> <key> <n> --by owner] | gates | migrate-rows [--check] | selftest   [--json]');
+console.error('usage: module.js list | status <id> | doctor [<id>|--all] | enable|disable <id> --by <owner> | ask <id> --by <seat> --why "..." | limits <id> [set <file> <key> <n> --by owner] | gates | migrate-rows [--check] | selftest   [--json]');
 process.exit(2);

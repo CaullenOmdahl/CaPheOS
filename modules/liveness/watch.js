@@ -59,9 +59,18 @@ function watchMin() { const n = Number(process.env.LIVENESS_WATCH_MIN); return N
 const ageMs = rec => rec && rec.at && Date.parse(rec.at) ? now() - Date.parse(rec.at) : null;
 
 function note(row) { try { fs.mkdirSync(path.dirname(F.log()), { recursive: true }); fs.appendFileSync(F.log(), JSON.stringify(Object.assign({ at: iso(now()) }, row)) + '\n'); } catch (_) {} }
-function tellOwner(text) {
-  try { require(co.p('company', 'tools', 'owner-inbox.js')).send({ from: 'liveness', text }); return true; } catch (e) { return 'owner channel failed: ' + e.message; }
+function tellOwner(text, technical) {
+  // urgent (lib/owner-notice.js): the company may have stopped; a tree without it falls back to the low-level writer
+  const notice = co.p('company', 'tools', 'lib', 'owner-notice.js');
+  try { if (fs.existsSync(notice)) require(notice).send({ kind: 'urgent', from: 'The alarm', text, technical, priority: 'top' }); else require(co.p('company', 'tools', 'owner-inbox.js')).send({ from: 'liveness', text: text + (technical ? '\n' + technical : '') }); return true; } catch (e) { return 'owner channel failed: ' + e.message; }
 }
+/* the owner's lines: what it means for them and what happens next, in plain words (no console control starts these
+ * units, and the owner has nobody to hand it to); the unit names and commands are `technical` */
+function downNotice(kind, ageMin) {
+  return kind === 'dispatcher' ? 'The crew\'s work has stopped: nothing new has started' + (ageMin == null ? '' : ' for ' + Math.round(ageMin) + ' minutes') + ', so no one is woken. You will get a message here as soon as the work starts again.'
+    : 'The alarm that tells you when the company stops is not being checked right now, so a stop might not reach you. You will get a message here when it is checked again.';
+}
+const upNotice = kind => kind === 'dispatcher' ? 'The crew\'s work is running again after a stop.' : 'The alarm that tells you when the company stops is being checked again.';
 /* optional push: secrets/liveness-ping-url, only through external-gate (category network) */
 function push(text) {
   const url = co.secret('liveness-ping-url');
@@ -95,8 +104,8 @@ function heartbeat() {
     req.end();
   });
 }
-async function alert(kind, text) {
-  const told = tellOwner(text);
+async function alert(kind, text, technical) {
+  const told = tellOwner(text, technical);
   // the outage push never goes to a dead-man heartbeat URL: a POST there would mark the check alive during the outage
   const same = (co.secret('liveness-ping-url') || '').trim() && (co.secret('liveness-ping-url') || '').trim() === (co.secret('liveness-heartbeat-url') || '').trim();
   const p = same ? { sent: false, why: 'liveness-ping-url is the heartbeat URL: an outage is reported by silence there, not by a push' } : await push(text);
@@ -111,10 +120,10 @@ async function judge({ rec, limitMs, label, st, kind }) {
   const out = { label, ageMin: age === null ? null : Math.round(age / 6000) / 10, limitMin: limitMs / 60000, stale };
   if (stale && !st.down) {
     st.down = true; st.since = iso(now());
-    const r = await alert(kind + '-down', 'Liveness: the ' + label + ' has not checked in ' + (age === null ? '(no heartbeat on record)' : 'for ' + out.ageMin + ' min') + ' (limit ' + out.limitMin + ' min). ' + (kind === 'dispatcher' ? 'Nothing is being woken. Check the dispatcher loop: systemctl --user status <station>-dispatch.service' : 'The dead-man\'s switch is not watching. Check: systemctl --user status <station>-liveness.timer'));
+    const r = await alert(kind + '-down', downNotice(kind, out.ageMin), 'Liveness: the ' + label + ' has not checked in ' + (age === null ? '(no heartbeat on record)' : 'for ' + out.ageMin + ' min') + ' (limit ' + out.limitMin + ' min). ' + (kind === 'dispatcher' ? 'Nothing is being woken. Check the dispatcher loop: systemctl --user status <station>-dispatch.service' : 'The dead-man\'s switch is not watching. Check: systemctl --user status <station>-liveness.timer'));
     st.alertedAt = iso(now()); out.alerted = r;
   } else if (!stale && st.down) {
-    await alert(kind + '-up', 'Liveness: the ' + label + ' is checking in again (it was down since ' + st.since + ').');
+    await alert(kind + '-up', upNotice(kind), 'Liveness: the ' + label + ' is checking in again (it was down since ' + st.since + ').');
     st.down = false; st.recoveredAt = iso(now()); out.recovered = true;
   }
   return out;
@@ -192,7 +201,7 @@ async function beat({ dry, halted } = {}) {
   return res;
 }
 async function ping() {
-  const r = await alert('ping', 'Liveness test ping from ' + (co.config.name || 'the company') + ': if you can read this, the dead-man\'s switch can reach you.');
+  const r = await alert('ping', 'This is a test from ' + (co.config.name || 'the company') + ': if you can read this, the company\'s alarm can reach you.');
   const w = readJson(F.watch(), {}) || {};
   w.pingedAt = iso(now()); w.ping = { told: r.told === true, push: r.push };
   writeJson(F.watch(), w);
@@ -282,7 +291,7 @@ async function selftest() {
     tick(T0 + 60 * 60000);
     t('the dispatcher notices a missing watcher heartbeat (each watches the other)', /liveness watcher has not checked in/.test(outbound()), outbound());
     r = run(T0 + 61 * 60000, 'ping');
-    t('ping reaches the owner and records pingedAt', r.code === 0 && /test ping/.test(outbound()) && readJson(path.join(tmp, 'company', 'state', 'liveness-watch.json'), {}).pingedAt, r.out);
+    t('ping reaches the owner and records pingedAt', r.code === 0 && /This is a test from .*the company's alarm can reach you/.test(outbound()) && readJson(path.join(tmp, 'company', 'state', 'liveness-watch.json'), {}).pingedAt, r.out);
     r = run(T0 + 61 * 60000, 'status');
     t('status reports both heartbeats', r.j && r.j.heartbeat && r.j.watcher && r.j.enabled === true && r.j.pingEqualsHeartbeat === false, r.out);
   } catch (e) { t('selftest crashed', false, e.stack); }
@@ -291,7 +300,7 @@ async function selftest() {
   return fails ? 1 : 0;
 }
 
-module.exports = { check, beat, ping, status, heartbeatRun, heartbeatNow, lastPingAt, tickMin, watchMin, enabled, F };
+module.exports = { downNotice, upNotice, check, beat, ping, status, heartbeatRun, heartbeatNow, lastPingAt, tickMin, watchMin, enabled, F };
 if (require.main === module) {
   const a = process.argv.slice(2);
   (async () => {

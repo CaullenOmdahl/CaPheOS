@@ -445,6 +445,15 @@ function join(opts) {
   for (const j of found) { const r = outcome(j.did, { result: 'bad', by: j.by, note: j.note, source: j.source, ref: String(j.ref || ''), noHealth: true }, opts); if (r.ok) rec.push(r.outcome); }
   return { ok: true, recorded: rec };
 }
+/* the owner's line when a tested check goes back to practice mode: what it means for them, and the one control that
+ * turns it on again (Settings › Autonomy › Decision rules); the model id, version and the command are technical */
+function demoteNotice(id, version, why, opts) {
+  let title = null; try { const L = load(id, version, opts); title = L && L.model && L.model.title; } catch (_) {}
+  const words = t => { try { return require('./owner-card').plain(t); } catch (_) { return false; } };
+  const name = title && words(title) && String(title).length <= 60 ? '“' + String(title).replace(/[\u201c\u201d"]/g, '') + '”' : 'that decides routine questions';
+  return { text: 'The tested check ' + name + ' went back to practice mode after too many bad calls, so its questions come to you again. The crew recommends leaving it off until it is fixed and passes its tests again; you can turn it back on in Settings › Autonomy.',
+    technical: 'Decision model ' + id + ' v' + version + ' is back in shadow mode: ' + why + '. Promote: node company/tools/decide.js promote ' + id + ' ' + version + ' --mode live --by owner (or Settings › Autonomy › Decision rules).' };
+}
 function demote(id, version, why, opts) {
   const s = state(opts); const pr = s.models[id];
   if (!pr || String(pr.version) !== String(version) || pr.mode !== 'live') return null;
@@ -453,7 +462,8 @@ function demote(id, version, why, opts) {
   const text = 'demoted decision model ' + id + ' v' + version + ' from live to shadow: ' + why;
   recordOwner(opts, 'decide.js (automatic)', { op: 'demote', id, version, why, text }, s, true);
   try {
-    require('./governance').notify('Decision model ' + id + ' v' + version + ' is back in shadow mode: ' + why + '. Until you promote it again (node company/tools/decide.js promote ' + id + ' ' + version + ' --mode live --by owner), every ' + id + ' question comes to you.', { root: rootOf(opts) });
+    const n = demoteNotice(id, version, why, opts);
+    require('./governance').notify(n.text, { root: rootOf(opts), technical: n.technical, key: 'decision-demoted:' + id + ':' + version + ':' + at.slice(0, 10) });
   } catch (_) {}
   return { id, version, why };
 }
@@ -490,4 +500,4 @@ function health(opts) {
 }
 function params(id, opts) { const L = load(id, null, opts); return L.model && !L.error ? paramsFor(L.model, opts) : {}; }
 
-module.exports = { outcome, outcomes, join, health, demote, findDecision, params, unwrap, ACTOR_SOURCES, OPS, MODES, files, ids, versions, activeVersion, load, validate, evaluate, run, replay, test: runCases, cases, promote, setParam, register, list, logRows, state, LOCKED, canon };
+module.exports = { demoteNotice, outcome, outcomes, join, health, demote, findDecision, params, unwrap, ACTOR_SOURCES, OPS, MODES, files, ids, versions, activeVersion, load, validate, evaluate, run, replay, test: runCases, cases, promote, setParam, register, list, logRows, state, LOCKED, canon };

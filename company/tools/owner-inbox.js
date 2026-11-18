@@ -16,9 +16,18 @@
  *   node company/tools/owner-inbox.js count            # how many are unacknowledged (prints a number)
  *   node company/tools/owner-inbox.js ack --id <messageId> --by <name> --note "what was done with it"
  *   node company/tools/owner-inbox.js ack --all --by <name> --note "..."
- *   node company/tools/owner-inbox.js send --by <name> --text "..." [--re <id>]   # append to outbound.jsonl
+ *   node company/tools/owner-inbox.js send --by <name> --text "..." [--re <id>] [--kind urgent|fyi] [--technical "..."]
+ *       a crew message to the owner, through lib/owner-notice.js: a reply to an owner message (--re) or the CEO's own
+ *       words go out now (urgent); anything else from the crew goes into the day's single message (fyi). Technical
+ *       words are moved under "Technical details (for the crew)", never shown in the lead.
+ *   node company/tools/owner-inbox.js digest [--force] [--dry]   # fold the day's FYIs into one plain message (the
+ *       dispatcher runs this every tick; it sends at most once a company day, at or after the evening hour in
+ *       company/work/ops/owner-notices.json; --force ignores the hour, never the once-a-day rule)
  *   node company/tools/owner-inbox.js say --text "..." [--re <id>]   # the OWNER writes to the company (owner's shell only)
- *   (module: send({from, text, re?, priority?}); priority 'top' marks a liveness alert, e.g. watchdog.js: the dispatcher is silent)
+ *   (module: send({from, text, re?, priority?, technical?, dir?}) is the LOW-LEVEL writer, used only by lib/owner-notice.js;
+ *    priority 'top' marks a liveness alert, e.g. watchdog.js: the dispatcher is silent)
+ *   company/owner/digest.jsonl   the crew's FYIs waiting for the day's message (lib/owner-notice.js; retention row
+ *                                "owner-digest", docs/RETENTION.md)
  *   node company/tools/owner-inbox.js log              # the acknowledgement history
  *   node company/tools/owner-inbox.js --selftest       # offline fixtures
  *
@@ -84,15 +93,26 @@ function redact(t) {
   try { for (const f of fs.readdirSync(co.SECRETS_DIR)) { if (f === 'README.md') continue; const v = (co.secret(f) || '').trim(); if (v.length >= 12) out = out.split(v).join('[secret ' + f + ']'); } } catch (_) {}
   return out.replace(/\b(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abp]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b/g, '[redacted key]');
 }
-function send({ from, text, re, priority } = {}) {
+/* send(o) — the LOW-LEVEL writer: one row in outbound.jsonl. Only lib/owner-notice.js calls it (the plain check, the
+ * urgent/fyi split and the daily message live there). o.dir: the owner folder (owner-notice passes it for scratch
+ * companies); o.technical: the part the console shows collapsed; o.kind/key/day/title/folds are kept on the row. */
+function send({ from, text, re, priority, technical, kind, key, day, title, folds, dir, at } = {}) {
   const body = redact(String(text || '').trim());
   if (!body) throw new Error('send: text is required');
-  const row = { id: 'out-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6), at: new Date().toISOString(),
+  // at: the sender's clock (owner-notice passes its own `now`, so its repeat window reads the same clock)
+  const row = { id: 'out-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6), at: Number.isFinite(at) ? new Date(at).toISOString() : new Date().toISOString(),
     from: String(from || co.nameOf(co.ceo()) || 'company'), text: body };
   if (re) row.re = String(re);
   if (priority === 'top') row.priority = 'top';   // a liveness alert (watchdog.js): the console shows it first
-  fs.mkdirSync(path.dirname(OUTBOUND()), { recursive: true });
-  fs.appendFileSync(OUTBOUND(), JSON.stringify(row) + '\n');
+  if (technical && String(technical).trim()) row.technical = redact(String(technical).trim());
+  if (kind) row.kind = String(kind);
+  if (key) row.key = String(key);
+  if (day) row.day = String(day);
+  if (title) row.title = String(title);
+  if (Number.isFinite(folds)) row.folds = folds;
+  const file = dir ? path.join(dir, 'outbound.jsonl') : OUTBOUND();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, JSON.stringify(row) + '\n');
   return row;
 }
 function sent() { return readLines(OUTBOUND()); }
@@ -137,7 +157,21 @@ if (require.main === module) {
   if (a.cmd === 'count') { console.log(String(unacked().length)); process.exit(0); }
   if (a.cmd === 'log') { print({ ok: true, acked: state().acked }); process.exit(0); }
   if (a.cmd === 'send') {
-    try { const r = send({ from: a.by, text: a.text, re: a.re }); print({ ok: true, id: r.id, file: path.relative(co.ROOT, OUTBOUND()) }); process.exit(0); }
+    try {
+      const N = require('./lib/owner-notice');
+      const by = a.by && a.by !== true ? String(a.by) : '';
+      const ceo = [co.nameOf(co.ceo()), co.ceo()].filter(Boolean).map(x => String(x).toLowerCase());
+      const isCeo = by && ceo.some(c => c === by.toLowerCase() || c.split(/\s+/)[0] === by.toLowerCase());
+      const kind = N.KINDS.includes(a.kind) ? a.kind : ((a.re && a.re !== true) || isCeo ? 'urgent' : 'fyi');
+      const r = N.send({ kind, from: by || undefined, text: a.text === true ? '' : a.text, re: a.re === true ? undefined : a.re, technical: a.technical === true ? undefined : a.technical });
+      if (r.duplicate) { print({ ok: true, duplicate: true, key: r.key, note: 'the same message was already sent today' }); process.exit(0); }
+      print({ ok: true, id: r.row.id, kind, file: path.relative(co.ROOT, r.sent === 'outbound' ? OUTBOUND() : path.join(OWNER_DIR(), 'digest.jsonl')),
+        plain: r.row.text, movedToTechnical: !!r.row.technical });
+      process.exit(0);
+    } catch (e) { print({ ok: false, error: e.message }); process.exit(2); }
+  }
+  if (a.cmd === 'digest') {
+    try { const r = require('./lib/owner-notice').digest({ force: !!a.force, dry: !!a.dry }); print(Object.assign({ ok: true }, r)); process.exit(0); }
     catch (e) { print({ ok: false, error: e.message }); process.exit(2); }
   }
   if (a.cmd === 'say') {
@@ -156,5 +190,5 @@ if (require.main === module) {
     fs.writeFileSync(STATE(), JSON.stringify(s, null, 1) + '\n');
     print({ ok: true, acked: ids.length, remaining: unacked().length }); process.exit(0);
   }
-  print({ ok: false, error: 'unknown command', commands: ['new', 'count', 'ack', 'send', 'say', 'log', '--selftest'] }); process.exit(2);
+  print({ ok: false, error: 'unknown command', commands: ['new', 'count', 'ack', 'send', 'digest', 'say', 'log', '--selftest'] }); process.exit(2);
 }
