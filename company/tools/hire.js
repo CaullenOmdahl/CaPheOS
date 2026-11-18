@@ -12,7 +12,8 @@
  *                                        [--provider <p> --model <model>] [--effort high]   (no model given: model-policy.json candidateDefault; the hire keeps the interviewed model)
  *        The profile is that candidate's personality written as an ideal candidate for the role, in the charter's
  *        headings (company/roles/templates/_charter-template.md: Personality, Backstory and motivation, Voice, Persona
- *        preset). The hired candidate's profile becomes part of their charter.
+ *        preset, Convictions, Will not do, Takes care of unprompted, Where you look, Counterpart, Blind spots, Signature
+ *        habits). The hired candidate's profile becomes part of their charter, every section it wrote.
  *                                        [--skin <skin>] [--persona composed|warm|blunt|dry|upbeat]
  *        (no --skin: a free company candidate skin <slug>_candidate_*, else the station's default body DATA.DEFAULT_SKIN)
  *   node company/tools/hire.js interview --round <r> --questions company/hiring/<r>/interview.md [--agent <id>] [--background] [--redo] [--parallel 3]
@@ -306,8 +307,18 @@ function runTurn(agentId, model, provider, messages, streamId) {
 }
 
 const sec = (txt, h) => { const m = String(txt).match(new RegExp('## ' + h + '[^\\n]*\\n([\\s\\S]*?)(?=\\n## |$)')); return m ? m[1].replace(/<!--[\s\S]*?-->/g, '').trim() : ''; };
+// The person in a profile, in the charter's headings (company/roles/templates/_charter-template.md). A hire's charter
+// carries every one the profile wrote; company/tools/dossier.js injects them into the seat's identity.
+const PROFILE_SECTIONS = ['Personality', 'Backstory and motivation', 'Voice', 'Persona preset', 'Convictions', 'Will not do', 'Takes care of unprompted', 'Where you look', 'Counterpart', 'Blind spots', 'Signature habits'];
+// what the candidate is told about themselves in the interview, beyond Personality, Backstory and Voice
+const PROFILE_LEADS = { 'Convictions': 'What you believe, from experience', 'Will not do': 'What you refuse to do', 'Where you look': 'Where you look first for ideas and evidence', 'Counterpart': 'Who checks your work' };
+// a template-started charter: every profile section the profile wrote replaces (or is added after) the template's
+function carryProfile(txt, prof) { for (const h of PROFILE_SECTIONS) if (sec(prof, h)) txt = setSection(txt, h, sec(prof, h)); return txt; }
+// a charter with no template: the profile's sections, in the template's order
+function profileBlock(prof) { return PROFILE_SECTIONS.map(h => sec(prof, h) ? '## ' + h + '\n' + sec(prof, h) + '\n\n' : '').join(''); }
 function candidateDocs(name, role, spec, profile) {
-  const who = [sec(profile, 'Personality') && 'Your personality: ' + sec(profile, 'Personality'), sec(profile, 'Backstory') && 'Your background: ' + sec(profile, 'Backstory'), sec(profile, 'Voice') && 'How you speak and write: ' + sec(profile, 'Voice')].filter(Boolean).join('\n\n');
+  const who = [sec(profile, 'Personality') && 'Your personality: ' + sec(profile, 'Personality'), sec(profile, 'Backstory') && 'Your background: ' + sec(profile, 'Backstory'), sec(profile, 'Voice') && 'How you speak and write: ' + sec(profile, 'Voice')]
+    .concat(Object.keys(PROFILE_LEADS).map(h => sec(profile, h) && PROFILE_LEADS[h] + ': ' + sec(profile, h))).filter(Boolean).join('\n\n');
   return {
     identity: 'You are ' + name + ', a candidate interviewing for the role of ' + role + ' at ' + companyName() + ', an AI-run company owned by ' + ownerName() + '. ' + co.nameOf(peopleId()) + ', who runs hiring, is interviewing you. Answer as the professional you would be in this job: concrete, honest about what you do not know, and specific to this company and its customers. You have no tools in this interview; work from what you know and say when something would need checking.' + (who ? '\n\n' + who : ''),
     purpose: 'The role you are interviewing for, as written by the company:\n\n' + (spec || '(no role spec yet)').slice(0, 5000),
@@ -779,7 +790,7 @@ async function advanceRound(slug, o) {
     if (claim) {
       const day = stamp().slice(0, 10);
       appendInbox(fnInbox('people'), '\n## ' + day + ' from hire.js — write the files for the ' + round.role + ' round (' + slug + ')\n' +
-        '**Need:** in company/hiring/' + slug + '/ write research.md, role-spec.md, model-fit.md, interview.md (one question per "## " heading), scorecard.md, and one profiles/<name>.md per candidate (up to three; the charter headings, optional "## Model" line `provider/model`). That is all: the round then advances on its own (candidates, parallel interviews, scorecard inputs) and the pick comes back to you as a handoff. Do not run interviews yourself.\n' +
+        '**Need:** in company/hiring/' + slug + '/ write research.md, role-spec.md, model-fit.md, interview.md (one question per "## " heading), scorecard.md, and one profiles/<name>.md per candidate (up to three; the charter headings from Personality to Signature habits, optional "## Model" line `provider/model`). Listings scope the job; write the person from how the best people in it really work and where they get their edge, not from the adjectives in a listing, and give the three candidates different temperaments. An eager seat names its conservative counterpart (## Counterpart). That is all: the round then advances on its own (candidates, parallel interviews, scorecard inputs) and the pick comes back to you as a handoff. Do not run interviews yourself.\n' +
         '**Why:** ' + s.label + '.\n**Deadline:** ' + day + '\n**Status:** OPEN\n**Evidence:** `company/hiring/' + slug + '/round.json`\n');
       did.push('asked ' + co.nameOf(peopleId()) + ' for the round files');
     }
@@ -940,15 +951,14 @@ async function hire(a) {
       txt = /^\*\*Reports to:\*\*.*$/m.test(txt) ? txt.replace(/^\*\*Reports to:\*\*.*$/m, '**Reports to:** ' + reportsTo) : txt.replace(/^(# .*\n)/, '$1\n**Reports to:** ' + reportsTo + '\n');
       txt = /^\*\*Last scoped:\*\*.*$/m.test(txt) ? txt.replace(/^\*\*Last scoped:\*\*.*$/m, '**Last scoped:** ' + scoped) : txt.replace(/^(\*\*Reports to:\*\*.*\n)/m, '$1**Last scoped:** ' + scoped + '\n');
       if (!/^# /.test(txt)) txt = '# ' + display + ' — ' + title + '\n\n' + txt;
-      for (const h of ['Personality', 'Backstory and motivation', 'Voice', 'Persona preset']) if (sec(prof, h)) txt = setSection(txt, h, sec(prof, h));
+      txt = carryProfile(txt, prof);
       txt = setSection(txt, 'Your autonomous loop', loopBody);
       txt = setSection(txt, 'Handoffs', handoffBody);
       txt = setSection(txt, 'Role spec from hiring round ' + round.slug, spec.replace(/^# .*\n/, '').trim() || '(no role spec)');
       if (srcs && !/https?:\/\//.test(sec(txt, 'Sources'))) txt = setSection(txt, 'Sources', srcs);
     } else {
-      const keep = h => sec(prof, h) ? '## ' + h + '\n' + sec(prof, h) + '\n\n' : '';
       txt = '# ' + display + ' — ' + title + '\n\n**Reports to:** ' + reportsTo + '\n**Last scoped:** ' + scoped + '\n\n' +
-        spec.replace(/^# .*\n/, '') + '\n\n' + keep('Personality') + keep('Backstory and motivation') + keep('Voice') + keep('Persona preset') +
+        spec.replace(/^# .*\n/, '') + '\n\n' + profileBlock(prof) +
         '## Your autonomous loop\n' + loopBody + '\n\n## Handoffs\n' + handoffBody + '\n\n' +
         (/^## Sources/m.test(spec) ? '' : '## Sources\n' + (srcs || 'company/hiring/' + round.slug + '/research.md') + '\n');
     }

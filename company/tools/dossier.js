@@ -32,8 +32,20 @@ const ceoLabel = () => ceoName() + ' (CEO)';
 const peopleOwner = () => co.nameOf(co.seatFor('people'));
 
 const readJson = (p, fb) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return fb; } };
-const section = (txt, h) => { const m = String(txt).match(new RegExp('## ' + h + '[^\\n]*\\n([\\s\\S]*?)(?=\\n## |$)')); return m ? m[1].replace(/<!--[\s\S]*?-->/g, '').trim().replace(/\s+/g, ' ') : ''; };
-const sectionRaw = (txt, h) => { const m = String(txt).match(new RegExp('## ' + h + '[^\\n]*\\n([\\s\\S]*?)(?=\\n## |$)')); return m ? m[1].trim() : ''; };
+// A template placeholder still standing in a charter ("<Plausible history.>", "- <trait ...>") is not content: it is
+// dropped before anything reaches an agent's prompt. It fills a line (after an optional bullet) and has a space in it,
+// so an inline `to-<name>.md` or a bare `<name>` is kept.
+const PLACEHOLDER = /(^|\n)[ \t]*(?:[-*][ \t]+|\d+\.[ \t]+)?<[A-Za-z][^<>]*\s[^<>]*>[ \t]*(?=\n|$)/g;
+const unplaceheld = b => b.replace(/<!--[\s\S]*?-->/g, '').replace(PLACEHOLDER, '$1').trim();
+const isPlaceholder = (txt, h) => { const m = String(txt).match(new RegExp('## ' + h + '[^\\n]*\\n([\\s\\S]*?)(?=\\n## |$)')); return !!m && !!m[1].trim() && !unplaceheld(m[1]); };
+const section = (txt, h) => { const m = String(txt).match(new RegExp('## ' + h + '[^\\n]*\\n([\\s\\S]*?)(?=\\n## |$)')); return m ? unplaceheld(m[1]).replace(/\s+/g, ' ') : ''; };
+const sectionRaw = (txt, h) => { const m = String(txt).match(new RegExp('## ' + h + '[^\\n]*\\n([\\s\\S]*?)(?=\\n## |$)')); return m ? unplaceheld(m[1]) : ''; };
+// The person beyond Personality and Backstory (company/roles/templates/_charter-template.md), each with the line that
+// introduces it in the seat's identity. A charter without them is still valid; what it has rides every run.
+const PERSON = [['Convictions', 'What you believe, from experience'], ['Will not do', 'What you refuse to do'],
+  ['Takes care of unprompted', 'What you take care of without being asked'], ['Where you look', 'Where you look first for ideas and evidence, and what you skip'],
+  ['Counterpart', 'Who checks your work, and what needs their sign-off'], ['Blind spots', 'Your known blind spots'], ['Signature habits', 'Your habits']];
+const personLines = ch => PERSON.map(([h, lead]) => { const b = sectionRaw(ch, h); return b ? lead + ':\n' + b : ''; });
 const field = (txt, label) => { const m = String(txt).match(new RegExp('\\*\\*' + label + ':\\*\\*\\s*([^\\n]+)')); return m ? m[1].trim() : ''; };
 const PERSONAS = ['composed', 'warm', 'blunt', 'dry', 'upbeat'];
 // a charter counts as scoped from the market when its Sources list at least three real public listings (URLs)
@@ -73,6 +85,7 @@ function build(id, c, rec) {
     'You are ' + name + ', ' + c.title + ' at ' + companyLine() + '. The station calls the owner "Commander". You report to ' + boss + '.',
     personality ? 'Your personality: ' + personality : '',
     story ? 'Who you are: ' + story : '',
+    ...personLines(ch),
     traits ? 'What makes you good at this job:\n' + traits : '',
     'How you work: you own ' + (scope ? scope.replace(/^[A-Z](?=[a-z])/, m => m.toLowerCase()) : 'your area') + '. ' + (out ? 'You hand off ' + out.replace(/^[A-Z]/, m => m.toLowerCase()) + '. ' : '') + 'You decide everything inside your scope yourself, finish what you start, and move work to its owner by handoff. Anything only the owner can decide goes up your chain of command to the CEO, ' + ceoName() + '.',
     'Your workstation on the company\'s StarNet station gives you real tools: files, a terminal, the web and memory. Use them to do the work and to check what is true. If a job needs a tool you do not have, say so plainly. Never claim work you have not verified.',
@@ -117,6 +130,7 @@ function buildCeoIdentity(rec) {
     'You are ' + String((rec && rec.name) || seat.name || 'the CEO').toUpperCase() + ', ' + (seat.title || 'CEO') + ' of ' + companyLine() + '. The station calls the owner "Commander", and so may you.',
     section(ch, 'Personality') ? 'Your personality: ' + section(ch, 'Personality') : '',
     section(ch, 'Backstory') ? 'Who you are: ' + section(ch, 'Backstory') : '',
+    ...personLines(ch),
     sectionRaw(ch, 'Success traits') ? 'What makes you good at this job:\n' + sectionRaw(ch, 'Success traits') : '',
     'You decide, delegate and unblock; a specialist\'s job goes to the seat that owns it. Only you write to the owner, through the owner channel, as one person to another.',
     'Your workstation grants you real tools: reading files, a terminal for the company\'s own tools, and web search. Never claim work you have not checked.',
@@ -140,6 +154,7 @@ function problems(id, rec, M) {
   else {
     if (!scopedFromListings(ch)) out.push('charter not yet scoped from real public listings (Sources needs 3+ listing URLs): ' + peopleOwner());
     for (const h of ['Personality', 'Voice', 'Persona preset', 'Success traits', 'KPIs']) if (!section(ch, h)) out.push('charter has no "' + h + '" section: ' + peopleOwner());
+    for (const h of ['Personality', 'Backstory'].concat(PERSON.map(x => x[0]))) if (isPlaceholder(ch, h)) out.push('charter section "' + h + '" is still the template placeholder: ' + peopleOwner());
   }
   return [...new Set(out)];
 }
@@ -204,5 +219,5 @@ async function main() {
   }
   throw new Error('commands: check, sync');
 }
-module.exports = { build, charterFile };
+module.exports = { build, charterFile, section, sectionRaw, isPlaceholder, PERSON };
 if (require.main === module) main().catch(e => { console.error(JSON.stringify({ ok: false, error: e.message })); process.exit(2); });
