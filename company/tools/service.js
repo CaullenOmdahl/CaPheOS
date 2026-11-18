@@ -432,7 +432,9 @@ function askOwner(ctx, e, who, ref, category, prof) {
   if (!C) return { filed: false, route: 'missing', reason: 'lib/owner-card.js is not installed' };
   const technical = cardTechnical(ctx, e, who, category, prof);
   try {
-    return C.file({ asker: who.seat || who.name, category, ref, lead: plainLead(ctx, e, who, prof),
+    // outside the safe profile with the localComputer guardrail on, the GUARDRAIL asks the owner: like a fixed gate, no
+    // standing ruling or governance level hands it to the crew (guardrail:true)
+    return C.file({ asker: who.seat || who.name, category, ref, lead: plainLead(ctx, e, who, prof), guardrail: category === 'localComputer' || undefined,
       consequence: 'If you say yes, the crew sets it up and you keep the power to stop it in Settings. If you say no, nothing is installed.',
       recommendation: 'The crew recommends yes, because it keeps their work going between sessions. If you do not answer, nothing is installed.',
       technical, effect: { serviceApprove: { name: e.name } } }, { root: ctx.root }) || { filed: false, route: 'failed' };

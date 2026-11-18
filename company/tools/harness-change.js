@@ -98,7 +98,9 @@ function context(opts) {
     ownerShell: typeof opts.ownerShell === 'boolean' ? opts.ownerShell : require('./lib/owner').shell(),   // the one owner rule (lib/owner.js)
     skipSelftest: !!opts.skipSelftest,
     // the owner's two doors (lib/owner-card.js, lib/owner-notice.js); a selftest hands in stand-ins with the same contract
-    cards: () => opts.ownerCard || optional('./lib/owner-card'), notices: () => opts.ownerNotice || optional('./lib/owner-notice') };
+    cards: () => opts.ownerCard || optional('./lib/owner-card'), notices: () => opts.ownerNotice || optional('./lib/owner-notice'),
+    // a guardrail switch of THIS company (a selftest's temp copy has its own guardrails.json)
+    guard: typeof opts.guard === 'function' ? opts.guard : (name => { try { return require('./lib/guardrails').guardIn(root, name); } catch (_) { return true; } }) };
 }
 // a module that may not be installed yet: null when it is missing, every other load error is real
 function optional(name) {
@@ -966,7 +968,7 @@ function ownerCard(ctx, rec, stage) {
   let r;
   try {
     r = C.file({ asker: rec.byId || rec.by, category: governanceCategory(rec), fixedGate: rec.fixedGate || undefined, ref: rec.ownerRef, lead, consequence, recommendation, technical,
-      effect: { harnessApply: { id: rec.id } } }, { root: ctx.root });
+      guardrail: guardrailForced(ctx, rec, stage) || undefined, effect: { harnessApply: { id: rec.id } } }, { root: ctx.root });
   } catch (e) {
     appendLog(ctx, { event: 'owner-card-failed', id: rec.id, code: e.code || null, error: String(e.message).slice(0, 300), by: TOOL_NAME });
     return { filed: false, route: 'failed', reason: e.message };

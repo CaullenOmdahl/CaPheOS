@@ -575,6 +575,7 @@ function stillNeedsOwner(q, o) {
   const cat = categoryOf(q);
   const fixedName = (q.gate && q.gate.fixedGate) || (cat && FIXED_GATES.has(cat) ? cat : null);
   if (fixedName) return true;   // the four fixed owner gates are never handed to the crew
+  if (q.gate && q.gate.guardrail) return true;   // nor a card a guardrail requires (lib/owner-card.js guardrail)
   if (!cat) return true;        // not a governance card: inbox.js ask already held it to the owner's scope
   // standing owner rulings: lib/owner-rulings.js (the reader that ignores a hand-edited file, and the matcher
   // lib/owner-card.js and the console use), never a raw read of the file

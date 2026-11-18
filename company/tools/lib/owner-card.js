@@ -190,16 +190,17 @@ function file(o, opts) {
   const effect = normEffect(o.effect, opts);
   const from = nameOf(o.asker, opts);
   const fixed = !!fixedGate || isFixed(category, opts);
+  const guardrail = o.guardrail === true;   // a guardrail requires the owner: treated like a fixed gate below
   const technical = o.technical ? String(o.technical).slice(0, 20000) : '';
 
   // 1. a standing owner ruling (never for a fixed gate)
-  const ruling = fixed ? null : RULINGS().match({ category, ref, about: o.about, text: lead }, opts);
+  const ruling = fixed || guardrail ? null : RULINGS().match({ category, ref, about: o.about, text: lead }, opts);
   if (ruling && (ruling.effect === 'crew-decides' || ruling.effect === 'never-ask'))
     return { filed: false, route: 'ruling', ruling: { id: ruling.id, text: ruling.text, effect: ruling.effect },
       reason: 'the owner\'s standing rule "' + ruling.text + '" covers this: ' + (ruling.effect === 'crew-decides' ? 'the crew decides' : 'the owner is not asked and the default (no) stands') };
   // 2. the real governance level
-  const level = fixed ? 'approve' : levelOf(category, opts);
-  const forced = !!(ruling && ruling.effect === 'ask');
+  const level = fixed || guardrail ? 'approve' : levelOf(category, opts);
+  const forced = guardrail || !!(ruling && ruling.effect === 'ask');
   if (!fixed && !forced && level === 'auto') return { filed: false, route: 'crew', level, reason: 'self-governance has ' + category + ' at auto: the crew decides, nobody asks the owner' };
   if (!fixed && !forced && level === 'notify') {
     const text = o.fyi ? String(o.fyi).trim() : from + ' decided this, as your settings allow: ' + lead.replace(/\?$/, '.');
@@ -228,7 +229,7 @@ function file(o, opts) {
   const row = { type: 'ask', id: cur ? cur.id : newId(f), at: cur ? cur.at : at, from, about: String(o.about || 'card:' + ref).slice(0, 200), q,
     message: lead, details: [consequence, recommendation].filter(Boolean).join('\n'), consequence, recommendation: recommendation || null,
     blocking: o.blocking !== false, batch: 'gate', card: 1,
-    gate: { ref, category: fixedGate || category, fixedGate: fixedGate || (fixed ? category : null), governanceCategory: category, by: o.by ? String(o.by) : from, summary: o.summary ? String(o.summary).slice(0, 300) : lead,
+    gate: { ref, category: fixedGate || category, fixedGate: fixedGate || (fixed ? category : null), governanceCategory: category, guardrail: guardrail || undefined, by: o.by ? String(o.by) : from, summary: o.summary ? String(o.summary).slice(0, 300) : lead,
       recommendation: recommendation || null, default: consequence },
     effect };
   if (technical) row.technical = technical;

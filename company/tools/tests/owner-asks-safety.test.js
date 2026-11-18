@@ -342,3 +342,40 @@ out({ added: added.ok, rulings: R.list({ root: T }).length, res });`);
 });
 
 /* ---------------- S2 ---------------- */
+test('S2: a loose "the crew decides about the website" ruling cannot hand an outside-the-safe-profile job to the crew', () => {
+  const T = company({ levels: { schedules: 'approve' } });
+  W(T, 'company/work/job.py', 'print(1)\n');
+  const r = run(T, SVC_CTX + `
+require(path.join(REPO, 'company/tools/provenance.js')).pinUnderStation(false);
+const R = require(path.join(REPO, 'company/tools/lib/owner-rulings.js'));
+R.add({ by: 'owner', text: 'The crew decides about the website.', effect: 'crew-decides', scope: { topics: ['website'] } }, { root: T, shell: () => true });
+const a = tryIt(() => S.propose(S.context(svcOpts()), 'feed', { by: 'sam', kind: 'timer', exec: 'python3 company/work/job.py', every: '1h', why: 'collects the shop numbers each hour' }));
+const ask = G.rows({ file: INBOX, noAlert: true }).find(x => x.type === 'ask');
+out({ a, card: ask ? { guardrail: ask.gate.guardrail, message: ask.message } : null, units: units() });`);
+  assert.equal(r.a.ok, true, JSON.stringify(r.a)); assert.equal(r.a.r.waiting, true, 'it waits for the owner: ' + JSON.stringify(r.a));
+  assert.ok(r.card, 'one card for the owner'); assert.match(r.card.message, /any website/); assert.equal(r.card.guardrail, true);
+  assert.deepEqual(r.units, []);
+});
+
+/* ---------------- S3 ---------------- */
+test('S5: a one-seat company at tools=auto with harnessSelfEdit on never applies a protected tool unreviewed', () => {
+  const T = company({ levels: { tools: 'auto' }, fixture: true, agents: { agent: { name: 'Alex', manager: null, functions: ['ceo', 'tools', 'risk'], inbox: 'to-alex.md' } } });
+  W(T, 'company/tools/pacer.js', "'use strict';\nmodule.exports = { N: 1 };\n");
+  const r = run(T, `
+require(path.join(REPO, 'company/tools/provenance.js')).pinUnderStation(false);
+const H = require(path.join(REPO, 'company/tools/harness-change.js'));
+const G = require(path.join(REPO, 'company/tools/lib/pm-inbox-guard.js'));
+const C = () => H.context({ root: T, underStation: true, ownerShell: false, skipSelftest: true, guard: () => true, call: async () => ({ status: 200, body: '{}' }) });
+(async () => {
+  const rec = await H.propose(C(), { kind: 'tool', target: 'company/tools/pacer.js', why: 'pace the crew a little faster in the mornings', change: "'use strict';\\nmodule.exports = { N: 2 };\\n", by: 'Alex' });
+  const saved = JSON.parse(fs.readFileSync(path.join(T, 'company/work/changes', rec.id + '.json'), 'utf8'));
+  const cards = G.rows({ file: path.join(T, 'company/pm-inbox.jsonl'), noAlert: true }).filter(x => x.type === 'ask' && x.gate && x.gate.ref === 'harness-review:' + rec.id);
+  let applied = null; try { await H.applyChange(C(), rec.id, { by: 'Alex' }); applied = true; } catch (e) { applied = e.message; }
+  out({ status: saved.status, unreviewed: !!saved.unreviewed, reviewers: saved.reviewers.map(x => x.id), cards: cards.length, guardrail: cards[0] && cards[0].gate.guardrail, applied, n: fs.readFileSync(path.join(T, 'company/tools/pacer.js'), 'utf8') });
+})().catch(e => { console.error(e); process.exit(1); });`);
+  assert.equal(r.unreviewed, false, JSON.stringify(r)); assert.equal(r.status, 'proposed');
+  assert.deepEqual(r.reviewers, ['owner']); assert.equal(r.cards, 1, 'the owner is asked'); assert.equal(r.guardrail, true);
+  assert.notEqual(r.applied, true); assert.match(r.n, /N: 1/);
+});
+
+/* ---------------- S6 and the watchdog ---------------- */
