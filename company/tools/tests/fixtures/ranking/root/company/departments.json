@@ -1,0 +1,35 @@
+{
+ "_doc": "fixture",
+ "leadModelDefault": {
+  "provider": "claude-cli",
+  "model": "claude-opus-5-5",
+  "effort": "medium"
+ },
+ "departments": [
+  {
+   "id": "eng",
+   "name": "Engineering",
+   "lead": "lee",
+   "members": [
+    "sam",
+    "kim",
+    "ria"
+   ],
+   "defaultClass": "code",
+   "brief": "company/work/departments/eng/BRIEF.md",
+   "routes": {
+    "code": {
+     "provider": "claude-cli",
+     "model": "claude-fable-5-2[1m]",
+     "effort": "medium"
+    }
+   },
+   "consult": {
+    "maxPerDay": 12,
+    "stuckAfterFailedRuns": 2,
+    "stuckAfterRevise": 2,
+    "stuckAfterIdleWakes": 2
+   }
+  }
+ ]
+}

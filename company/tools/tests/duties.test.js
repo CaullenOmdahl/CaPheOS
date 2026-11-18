@@ -113,7 +113,7 @@ test('every registered duty runs against a fixture tree and changes no file', ()
     (async () => { const out = {}; const env = dutyEnv({ root: process.env.CAPHEOS_ROOT, base: Object.assign({}, process.env, { CAPHEOS_BACKUP_DIR: process.env.CAPHEOS_ROOT + '/no-backups' }) }).env;
       for (const d of R.registry()) { const r = await R.runOne(d, { env, cwd: process.env.CAPHEOS_ROOT, remainingMs: 60000 }); out[d.id] = { result: r.result, error: r.error || null, items: (r.items || []).map(i => i.id), reason: r.reason || null }; }
       console.log(JSON.stringify(out)); })();`);
-  assert.deepEqual(Object.keys(res).sort(), ['backup-freshness', 'budget-drift', 'commitments-due', 'connector-scope', 'deps-verify', 'handoff-status', 'liveness-watcher', 'module-doctor', 'provider-balance', 'tool-parse', 'unregistered-services']);
+  assert.deepEqual(Object.keys(res).sort(), ['backup-freshness', 'budget-drift', 'commitments-due', 'connector-scope', 'deps-verify', 'handoff-status', 'house-ranking', 'liveness-watcher', 'module-doctor', 'provider-balance', 'tool-parse', 'unregistered-services']);
   for (const [id, r] of Object.entries(res)) assert.notEqual(r.result, 'broken', id + ': ' + r.error);
   for (const id of ['handoff-status', 'commitments-due', 'liveness-watcher', 'connector-scope', 'backup-freshness']) assert.equal(res[id].result, 'due', id + ' should find its fixture: ' + JSON.stringify(res[id]));
   assert.deepEqual(res['commitments-due'].items, ['c-202001010000-abcdef']);
@@ -197,7 +197,7 @@ async function company(o) {
   w(T, 'company/state/modules.json', { enabled: { dutytest: { at: 'x' } } });
   w(T, 'fake-mode.json', o.modes || {});
   // the company duties are switched off here (they have their own tests above), except where a case wants one
-  w(T, 'company/work/ops/duty-policy.json', Object.assign({ tickCapMs: 20000, duties: Object.fromEntries(['handoff-status', 'tool-parse', 'connector-scope', 'backup-freshness', 'module-doctor', 'unregistered-services', 'budget-drift', 'deps-verify', 'provider-balance'].map(id => [id, { enabled: false }])) }, o.policy || {}));
+  w(T, 'company/work/ops/duty-policy.json', Object.assign({ tickCapMs: 20000, duties: Object.fromEntries(['handoff-status', 'tool-parse', 'connector-scope', 'backup-freshness', 'module-doctor', 'unregistered-services', 'budget-drift', 'deps-verify', 'provider-balance', 'house-ranking'].map(id => [id, { enabled: false }])) }, o.policy || {}));
   for (const [inbox, text] of Object.entries(Object.assign({ 'to-founder.md': '', 'to-kim.md': '', 'to-riley.md': '' }, o.handoffs || {}))) w(T, 'company/work/handoffs/' + inbox, '# Handoffs\n' + text);
   const agents = JSON.parse(JSON.stringify(SEATS)); const ids = {};
   for (const [id, s] of Object.entries(agents)) {

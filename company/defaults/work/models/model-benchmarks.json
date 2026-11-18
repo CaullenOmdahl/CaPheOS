@@ -1,0 +1,762 @@
+{
+ "_doc": "The public benchmark book: how each model the company may run scores on other people's tests (company/tools/check-benchmarks.py checks it against its contract). Copied to company/work/models/model-benchmarks.json at founding; the people function (the model manager, or whoever it hands the research to) keeps the company's copy current. It is a PRIOR: the house ranking (company/work/models/house-ranking.md, company/tools/model-rank.js) is what routing follows once a cell has enough data. Shown beside the ranking, never mixed into its score.",
+ "asOf": "2026-11-18",
+ "readOn": "2026-11-18",
+ "owner": "people",
+ "policyFile": "company/model-policy.json",
+ "houseBenchmarks": "company/work/models/house-benchmarks.md",
+ "houseRanking": "company/work/models/house-ranking.md",
+ "_format": "One row per model x benchmark. measuredBy: independent (a lab that ran its own evaluations) | vendor (the model maker's own claim) | house (the company's own runtime). A fact that could not be read is in unreadable[]; a fact nobody publishes is in notPublished[]. Never fill a gap with a guess.",
+ "aliasMap": {
+  "_doc": "company/model-policy.json allows some models under a short alias. Each alias resolves to the canonical id used in rows[]. The Claude CLI's own catalog (~/.claude/cache/model-catalog/<id>.json, catalog.config.provider_alias_targets) says what an alias really resolves to; check-benchmarks.py compares against it when the catalog is on the machine.",
+  "haiku": "claude-haiku-5-5",
+  "sonnet": "claude-sonnet-5-5",
+  "opus": "claude-opus-5-5"
+ },
+ "policyModels": [
+  "deepseek-flash",
+  "MiniMax-M3.1-Pro",
+  "MiniMax-M3.1-Flash",
+  "claude-haiku-4-5-20251001",
+  "haiku",
+  "claude-sonnet-5-5",
+  "sonnet",
+  "claude-opus-5-5",
+  "opus",
+  "claude-fable-5-2[1m]"
+ ],
+ "benchmarkComposition": {
+  "Artificial Analysis Intelligence Index v5.0.1": {
+   "components": [
+    "AA-Briefcase v1.1",
+    "AutomationBench-AA",
+    "Terminal-Bench 4.0",
+    "FrontierCode-AA 2.0",
+    "AA-Omniscience v1.1",
+    "GDP.pdf",
+    "HLE-Diamond",
+    "CritPt v2 (Hard Subset)",
+    "Terminal-Bench-Science 0.1"
+   ],
+   "source": "https://artificialanalysis.ai/evaluations/artificial-analysis-intelligence-index",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  }
+ },
+ "rows": [
+  {
+   "modelId": "claude-fable-5-2[1m]",
+   "modelName": "Claude Fable 5.2 (max, default fallback)",
+   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
+   "score": 65,
+   "unit": "index points (rank 1 of 80)",
+   "source": "https://artificialanalysis.ai/models/claude-fable-5-2",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "reasoning+agentic composite"
+  },
+  {
+   "modelId": "claude-fable-5-2[1m]",
+   "modelName": "Claude Fable 5.2 (max)",
+   "benchmark": "Price input",
+   "score": 8.0,
+   "unit": "USD per 1M input tokens",
+   "source": "https://artificialanalysis.ai/models/claude-fable-5-2",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-fable-5-2[1m]",
+   "modelName": "Claude Fable 5.2 (max)",
+   "benchmark": "Price output",
+   "score": 40.0,
+   "unit": "USD per 1M output tokens",
+   "source": "https://artificialanalysis.ai/models/claude-fable-5-2",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-fable-5-2[1m]",
+   "modelName": "Claude Fable 5.2 (max)",
+   "benchmark": "Cost per Intelligence Index task",
+   "score": 26.54,
+   "unit": "USD per task",
+   "source": "https://artificialanalysis.ai/models/claude-fable-5-2",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-fable-5-2[1m]",
+   "modelName": "Claude Fable 5.2 (max)",
+   "benchmark": "Time per Intelligence Index task",
+   "score": 41.1,
+   "unit": "minutes per task",
+   "source": "https://artificialanalysis.ai/models/claude-fable-5-2",
+   "date": "2026-11-18",
+   "measuredBy": "independent",
+   "note": "Re-read 2026-11-18: AA's own sentence reads 'At 41.1 minutes per Intelligence Index task, Claude Fable 5.2 (Max, Default Fallback) is notably slow compared with the median of 11.5 minutes for comparable models (lower is better).' The 2026-11-15 reading said 44.5. AA re-runs these evaluations, so this figure decays - treat it as a moving target, not a constant."
+  },
+  {
+   "modelId": "claude-fable-5-2[1m]",
+   "modelName": "Claude Fable 5.2 (max)",
+   "benchmark": "Context window",
+   "score": 1000000,
+   "unit": "tokens",
+   "source": "https://artificialanalysis.ai/models/claude-fable-5-2",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-opus-5-5",
+   "modelName": "Claude Opus 5.5 (max, default fallback)",
+   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
+   "score": 59,
+   "unit": "index points",
+   "source": "https://artificialanalysis.ai/leaderboards/models",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "reasoning+agentic composite"
+  },
+  {
+   "modelId": "claude-opus-5-5",
+   "modelName": "Claude Opus 5.5 (max)",
+   "benchmark": "Terminal-Bench 4.0",
+   "score": 59.6,
+   "unit": "percent tasks solved",
+   "source": "https://artificialanalysis.ai/articles/claude-opus-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "agentic coding and terminal",
+   "contested": "The 2026-09-28 Sonnet launch article reports Opus 5.5 at 60% on the same benchmark."
+  },
+  {
+   "modelId": "claude-opus-5-5",
+   "modelName": "Claude Opus 5.5 (max)",
+   "benchmark": "Humanity's Last Exam (HLE-Diamond)",
+   "score": 61.4,
+   "unit": "percent correct",
+   "source": "https://artificialanalysis.ai/articles/claude-opus-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "reasoning and knowledge"
+  },
+  {
+   "modelId": "claude-opus-5-5",
+   "modelName": "Claude Opus 5.5 (max)",
+   "benchmark": "SciCode",
+   "score": 66.9,
+   "unit": "percent",
+   "source": "https://artificialanalysis.ai/articles/claude-opus-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "reasoning and knowledge"
+  },
+  {
+   "modelId": "claude-opus-5-5",
+   "modelName": "Claude Opus 5.5 (max)",
+   "benchmark": "AA-Briefcase v1.1",
+   "score": 1822,
+   "unit": "Elo",
+   "source": "https://artificialanalysis.ai/articles/claude-opus-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "agentic knowledge work"
+  },
+  {
+   "modelId": "claude-opus-5-5",
+   "modelName": "Claude Opus 5.5 (max)",
+   "benchmark": "GDPval-AA v2.1",
+   "score": 1846,
+   "unit": "Elo",
+   "source": "https://artificialanalysis.ai/articles/claude-opus-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "economic value / knowledge work"
+  },
+  {
+   "modelId": "claude-opus-5-5",
+   "modelName": "Claude Opus 5.5 (max)",
+   "benchmark": "AutomationBench-AA",
+   "score": 70,
+   "unit": "percent of task objectives completed without guardrail violations",
+   "source": "https://artificialanalysis.ai/articles/claude-sonnet-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "tool use and long multi-step tasks"
+  },
+  {
+   "modelId": "claude-opus-5-5",
+   "modelName": "Claude Opus 5.5 (max)",
+   "benchmark": "AA-Omniscience v1.1 - factual accuracy",
+   "score": 66,
+   "unit": "percent",
+   "source": "https://artificialanalysis.ai/articles/claude-sonnet-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "knowledge / hallucination"
+  },
+  {
+   "modelId": "claude-opus-5-5",
+   "modelName": "Claude Opus 5.5 (max)",
+   "benchmark": "AA-Omniscience v1.1 - hallucination rate",
+   "score": 59,
+   "unit": "percent",
+   "source": "https://artificialanalysis.ai/articles/claude-sonnet-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "hallucination"
+  },
+  {
+   "modelId": "claude-opus-5-5",
+   "modelName": "Claude Opus 5.5 (max)",
+   "benchmark": "MMMU-Pro",
+   "score": 88,
+   "unit": "percent (3rd on board; leader Gemini 4 Carbon 89%)",
+   "source": "https://artificialanalysis.ai/evaluations/mmmu-pro",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "vision"
+  },
+  {
+   "modelId": "claude-opus-5-5",
+   "modelName": "Claude Opus 5.5 (max)",
+   "benchmark": "Price input",
+   "score": 4.0,
+   "unit": "USD per 1M input tokens",
+   "source": "https://artificialanalysis.ai/articles/claude-opus-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-opus-5-5",
+   "modelName": "Claude Opus 5.5 (max)",
+   "benchmark": "Price output",
+   "score": 20.0,
+   "unit": "USD per 1M output tokens",
+   "source": "https://artificialanalysis.ai/articles/claude-opus-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-opus-5-5",
+   "modelName": "Claude Opus 5.5 (max)",
+   "benchmark": "Cost per Intelligence Index task",
+   "score": 10.04,
+   "unit": "USD per task",
+   "source": "https://artificialanalysis.ai/leaderboards/models",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-opus-5-5",
+   "modelName": "Claude Opus 5.5 (max)",
+   "benchmark": "Time per Intelligence Index task",
+   "score": 25.4,
+   "unit": "minutes per task",
+   "source": "https://artificialanalysis.ai/leaderboards/models",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-opus-5-5",
+   "modelName": "Claude Opus 5.5 (max)",
+   "benchmark": "Context window",
+   "score": 1000000,
+   "unit": "tokens",
+   "source": "https://artificialanalysis.ai/articles/claude-opus-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-sonnet-5-5",
+   "modelName": "Claude Sonnet 5.5 (max, default fallback)",
+   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
+   "score": 55,
+   "unit": "index points",
+   "source": "https://artificialanalysis.ai/leaderboards/models",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "reasoning+agentic composite",
+   "contested": "The 2026-09-28 launch article states 56; the live leaderboard and model page state 55. Live figure used."
+  },
+  {
+   "modelId": "claude-sonnet-5-5",
+   "modelName": "Claude Sonnet 5.5 (max)",
+   "benchmark": "Terminal-Bench 4.0",
+   "score": 64,
+   "unit": "percent tasks solved",
+   "source": "https://artificialanalysis.ai/articles/claude-sonnet-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "agentic coding and terminal"
+  },
+  {
+   "modelId": "claude-sonnet-5-5",
+   "modelName": "Claude Sonnet 5.5 (max)",
+   "benchmark": "Terminal-Bench-Science 0.1",
+   "score": 53,
+   "unit": "percent",
+   "source": "https://artificialanalysis.ai/articles/claude-sonnet-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "agentic terminal, scientific workflows"
+  },
+  {
+   "modelId": "claude-sonnet-5-5",
+   "modelName": "Claude Sonnet 5.5 (max)",
+   "benchmark": "AutomationBench-AA",
+   "score": 71,
+   "unit": "percent of task objectives completed without guardrail violations",
+   "source": "https://artificialanalysis.ai/articles/claude-sonnet-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "tool use and long multi-step tasks"
+  },
+  {
+   "modelId": "claude-sonnet-5-5",
+   "modelName": "Claude Sonnet 5.5 (max)",
+   "benchmark": "AA-Briefcase v1.1",
+   "score": 1811,
+   "unit": "Elo",
+   "source": "https://artificialanalysis.ai/articles/claude-sonnet-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "agentic knowledge work"
+  },
+  {
+   "modelId": "claude-sonnet-5-5",
+   "modelName": "Claude Sonnet 5.5 (max)",
+   "benchmark": "AA-Omniscience v1.1 - factual accuracy",
+   "score": 54,
+   "unit": "percent",
+   "source": "https://artificialanalysis.ai/articles/claude-sonnet-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "knowledge / hallucination"
+  },
+  {
+   "modelId": "claude-sonnet-5-5",
+   "modelName": "Claude Sonnet 5.5 (max)",
+   "benchmark": "AA-Omniscience v1.1 - hallucination rate",
+   "score": 47,
+   "unit": "percent",
+   "source": "https://artificialanalysis.ai/articles/claude-sonnet-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "hallucination"
+  },
+  {
+   "modelId": "claude-sonnet-5-5",
+   "modelName": "Claude Sonnet 5.5 (max)",
+   "benchmark": "Output tokens per Intelligence Index task",
+   "score": 193000,
+   "unit": "tokens per task (highest AA has measured)",
+   "source": "https://artificialanalysis.ai/articles/claude-sonnet-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "verbosity / token budget risk"
+  },
+  {
+   "modelId": "claude-sonnet-5-5",
+   "modelName": "Claude Sonnet 5.5 (max)",
+   "benchmark": "Price input",
+   "score": 2.0,
+   "unit": "USD per 1M input tokens",
+   "source": "https://artificialanalysis.ai/models/claude-sonnet-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-sonnet-5-5",
+   "modelName": "Claude Sonnet 5.5 (max)",
+   "benchmark": "Price output",
+   "score": 10.0,
+   "unit": "USD per 1M output tokens",
+   "source": "https://artificialanalysis.ai/models/claude-sonnet-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-sonnet-5-5",
+   "modelName": "Claude Sonnet 5.5 (max)",
+   "benchmark": "Cost per Intelligence Index task",
+   "score": 10.02,
+   "unit": "USD per task",
+   "source": "https://artificialanalysis.ai/models/claude-sonnet-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-sonnet-5-5",
+   "modelName": "Claude Sonnet 5.5 (max)",
+   "benchmark": "Time per Intelligence Index task",
+   "score": 33.3,
+   "unit": "minutes per task",
+   "source": "https://artificialanalysis.ai/models/claude-sonnet-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-sonnet-5-5",
+   "modelName": "Claude Sonnet 5.5 (max)",
+   "benchmark": "Context window",
+   "score": 1000000,
+   "unit": "tokens",
+   "source": "https://artificialanalysis.ai/models/claude-sonnet-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "deepseek-flash",
+   "modelName": "DeepSeek V4.1 Flash 1017 (max)",
+   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
+   "score": 33,
+   "unit": "index points (rank 2 of 29 open-weights)",
+   "source": "https://artificialanalysis.ai/models/deepseek-v4-1-flash-1017",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "reasoning+agentic composite"
+  },
+  {
+   "modelId": "deepseek-flash",
+   "modelName": "DeepSeek V4.1 Flash 1017 (max)",
+   "benchmark": "Price input",
+   "score": 0.3,
+   "unit": "USD per 1M input tokens",
+   "source": "https://artificialanalysis.ai/models/deepseek-v4-1-flash-1017",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "deepseek-flash",
+   "modelName": "DeepSeek V4.1 Flash 1017 (max)",
+   "benchmark": "Price output",
+   "score": 1.2,
+   "unit": "USD per 1M output tokens",
+   "source": "https://artificialanalysis.ai/models/deepseek-v4-1-flash-1017",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "deepseek-flash",
+   "modelName": "DeepSeek V4.1 Flash 1017 (max)",
+   "benchmark": "Cost per Intelligence Index task",
+   "score": 0.6,
+   "unit": "USD per task",
+   "source": "https://artificialanalysis.ai/models/deepseek-v4-1-flash-1017",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "deepseek-flash",
+   "modelName": "DeepSeek V4.1 Flash 1017 (max)",
+   "benchmark": "Time per Intelligence Index task",
+   "score": 13.5,
+   "unit": "minutes per task",
+   "source": "https://artificialanalysis.ai/models/deepseek-v4-1-flash-1017",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "deepseek-flash",
+   "modelName": "DeepSeek V4.1 Flash 1017 (max)",
+   "benchmark": "Context window",
+   "score": 1000000,
+   "unit": "tokens",
+   "source": "https://artificialanalysis.ai/models/deepseek-v4-1-flash-1017",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "note": "MIT licence, 552B total / 16B active parameters."
+  },
+  {
+   "modelId": "MiniMax-M3.1-Flash",
+   "modelName": "MiniMax-M3.1-Flash",
+   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
+   "score": 29,
+   "unit": "index points",
+   "source": "https://artificialanalysis.ai/models/minimax-m3-1-flash",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "reasoning+agentic composite",
+   "note": "AA calls it very verbose: 161M output tokens vs a 104M class median."
+  },
+  {
+   "modelId": "MiniMax-M3.1-Flash",
+   "modelName": "MiniMax-M3.1-Flash",
+   "benchmark": "Price input",
+   "score": 0.15,
+   "unit": "USD per 1M input tokens",
+   "source": "https://artificialanalysis.ai/models/minimax-m3-1-flash",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "MiniMax-M3.1-Flash",
+   "modelName": "MiniMax-M3.1-Flash",
+   "benchmark": "Price output",
+   "score": 0.6,
+   "unit": "USD per 1M output tokens",
+   "source": "https://artificialanalysis.ai/models/minimax-m3-1-flash",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "MiniMax-M3.1-Flash",
+   "modelName": "MiniMax-M3.1-Flash",
+   "benchmark": "Cost per Intelligence Index task",
+   "score": 0.49,
+   "unit": "USD per task",
+   "source": "https://artificialanalysis.ai/models/minimax-m3-1-flash",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "MiniMax-M3.1-Flash",
+   "modelName": "MiniMax-M3.1-Flash",
+   "benchmark": "Time per Intelligence Index task",
+   "score": 17.5,
+   "unit": "minutes per task",
+   "source": "https://artificialanalysis.ai/models/minimax-m3-1-flash",
+   "date": "2026-11-18",
+   "measuredBy": "independent",
+   "note": "Re-read 2026-11-18: 17.5 min/task on AA's model page and the same 17.5 on AA's MiniMax provider page (two AA pages, same reading). AA's class median for comparable models is 13.6 min, so the model is now slower than the median; the 2026-11-15 reading said 15.7."
+  },
+  {
+   "modelId": "MiniMax-M3.1-Flash",
+   "modelName": "MiniMax-M3.1-Flash",
+   "benchmark": "Context window",
+   "score": 1000000,
+   "unit": "tokens",
+   "source": "https://artificialanalysis.ai/models/minimax-m3-1-flash",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "note": "Open weights, MINIMAX COMMUNITY LICENSE, 428B total / 23B active."
+  },
+  {
+   "modelId": "claude-haiku-4-5-20251001",
+   "modelName": "Claude 4.5 Haiku (reasoning)",
+   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
+   "score": 7,
+   "unit": "index points (rank 79 of 80)",
+   "source": "https://artificialanalysis.ai/models/claude-4-5-haiku-reasoning",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "reasoning+agentic composite",
+   "note": "Model is deprecated upstream; AA now benchmarks it every 18 hours. Claude Haiku 5.5 scores 36."
+  },
+  {
+   "modelId": "claude-haiku-4-5-20251001",
+   "modelName": "Claude 4.5 Haiku (reasoning)",
+   "benchmark": "Price input",
+   "score": 1.0,
+   "unit": "USD per 1M input tokens",
+   "source": "https://artificialanalysis.ai/models/claude-4-5-haiku-reasoning",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-haiku-4-5-20251001",
+   "modelName": "Claude 4.5 Haiku (reasoning)",
+   "benchmark": "Price output",
+   "score": 5.0,
+   "unit": "USD per 1M output tokens",
+   "source": "https://artificialanalysis.ai/models/claude-4-5-haiku-reasoning",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-haiku-4-5-20251001",
+   "modelName": "Claude 4.5 Haiku (reasoning)",
+   "benchmark": "Cost per Intelligence Index task",
+   "score": 0.53,
+   "unit": "USD per task",
+   "source": "https://artificialanalysis.ai/models/claude-4-5-haiku-reasoning",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-haiku-4-5-20251001",
+   "modelName": "Claude 4.5 Haiku (reasoning)",
+   "benchmark": "Time per Intelligence Index task",
+   "score": 3.8,
+   "unit": "minutes per task (fastest of the seven)",
+   "source": "https://artificialanalysis.ai/models/claude-4-5-haiku-reasoning",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-haiku-4-5-20251001",
+   "modelName": "Claude 4.5 Haiku (reasoning)",
+   "benchmark": "Context window",
+   "score": 200000,
+   "unit": "tokens",
+   "source": "https://artificialanalysis.ai/models/claude-4-5-haiku-reasoning",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "MiniMax-M3.1-Pro",
+   "modelName": "MiniMax-M3.1-Pro",
+   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
+   "score": null,
+   "unit": "not published",
+   "source": "https://artificialanalysis.ai/providers/minimax",
+   "date": "2026-11-18",
+   "measuredBy": "n/a"
+  },
+  {
+   "modelId": "claude-haiku-5-5",
+   "modelName": "Claude Haiku 5.5 (Max)",
+   "benchmark": "Artificial Analysis Intelligence Index v5.0.1",
+   "score": 36,
+   "unit": "index points (rank 1 of 36 in its comparison class)",
+   "source": "https://artificialanalysis.ai/models/claude-haiku-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "reasoning+agentic composite"
+  },
+  {
+   "modelId": "claude-haiku-5-5",
+   "modelName": "Claude Haiku 5.5 (Max)",
+   "benchmark": "Price input",
+   "score": 0.1,
+   "unit": "USD per 1M input tokens",
+   "source": "https://artificialanalysis.ai/models/claude-haiku-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-haiku-5-5",
+   "modelName": "Claude Haiku 5.5 (Max)",
+   "benchmark": "Price output",
+   "score": 0.5,
+   "unit": "USD per 1M output tokens",
+   "source": "https://artificialanalysis.ai/models/claude-haiku-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-haiku-5-5",
+   "modelName": "Claude Haiku 5.5 (Max)",
+   "benchmark": "Cost per Intelligence Index task",
+   "score": 0.41,
+   "unit": "USD per task",
+   "source": "https://artificialanalysis.ai/models/claude-haiku-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-haiku-5-5",
+   "modelName": "Claude Haiku 5.5 (Max)",
+   "benchmark": "Time per Intelligence Index task",
+   "score": 14.8,
+   "unit": "minutes per task (slower than the 7.3-minute class median)",
+   "source": "https://artificialanalysis.ai/models/claude-haiku-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent"
+  },
+  {
+   "modelId": "claude-haiku-5-5",
+   "modelName": "Claude Haiku 5.5 (Max)",
+   "benchmark": "Context window",
+   "score": 1000000,
+   "unit": "tokens",
+   "source": "https://artificialanalysis.ai/models/claude-haiku-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "note": "1M, not 200k. Corroborated locally, not just published: the Claude CLI's own catalog (~/.claude/cache/model-catalog/<id>.json, read 2026-11-15) sets provider_alias_targets.haiku = 'claude-haiku-5-5' and files claude-haiku-4-5-20251001 under 'overflow' with max_input_tokens 200000 — so the 200k figure belongs to a model nothing routes to."
+  },
+  {
+   "modelId": "claude-haiku-5-5",
+   "modelName": "Claude Haiku 5.5 (Max)",
+   "benchmark": "Output tokens on the Intelligence Index (verbosity)",
+   "score": 298000000,
+   "unit": "output tokens (298M vs a 107M class median; AA ranks it 36 of 36 on verbosity)",
+   "source": "https://artificialanalysis.ai/models/claude-haiku-5-5",
+   "date": "2026-11-15",
+   "measuredBy": "independent",
+   "category": "verbosity"
+  },
+  {
+   "modelId": "claude-fable-5-2[1m]",
+   "modelName": "Claude Fable 5.2 (max)",
+   "benchmark": "Output tokens on the Intelligence Index (verbosity)",
+   "score": 275000000,
+   "unit": "output tokens (275M vs a 65.1M class median; AA calls it very verbose)",
+   "source": "https://artificialanalysis.ai/models/claude-fable-5-2",
+   "date": "2026-11-18",
+   "measuredBy": "independent",
+   "category": "verbosity / token budget risk",
+   "note": "AA's words: 'it generated 275M tokens, which is very verbose in comparison to the median of 65.1M'. Same failure mode AA flags for Haiku 5.5 and MiniMax."
+  },
+  {
+   "modelId": "claude-opus-5-5",
+   "modelName": "Claude Opus 5.5 (High)",
+   "benchmark": "LMArena Text Arena (overall)",
+   "score": 1507,
+   "unit": "arena score (rank 4 of 421, rank spread 3-10, +/-6; 15,793 votes; $0.08 median cost per vote)",
+   "source": "https://lmarena.ai/leaderboard/text",
+   "date": "2026-11-18",
+   "measuredBy": "independent",
+   "category": "crowd preference on text-to-text prompts"
+  },
+  {
+   "modelId": "claude-sonnet-5-5",
+   "modelName": "Claude Sonnet 5.5 (xHigh)",
+   "benchmark": "LMArena Text Arena (overall)",
+   "score": 1473,
+   "unit": "arena score (rank 47 of 421, rank spread 25-61, +/-6; 14,355 votes; $0.04 median cost per vote)",
+   "source": "https://lmarena.ai/leaderboard/text",
+   "date": "2026-11-18",
+   "measuredBy": "independent",
+   "category": "crowd preference on text-to-text prompts"
+  },
+  {
+   "modelId": "deepseek-flash",
+   "modelName": "DeepSeek-V4.1-Flash-20260910 (Max)",
+   "benchmark": "LMArena Text Arena (overall)",
+   "score": 1475,
+   "unit": "arena score (rank 38 of 421, rank spread 23-57, +/-6; 13,547 votes; $0.01 median cost per vote)",
+   "source": "https://lmarena.ai/leaderboard/text",
+   "date": "2026-11-18",
+   "measuredBy": "independent",
+   "category": "crowd preference on text-to-text prompts"
+  }
+ ],
+ "house": [],
+ "_house": "Rows measured on the company's own runtime (measuredBy 'house', score = a run count) may be added here by the model manager; a new company has none. The full house view is company/work/models/house-benchmarks.md (company/tools/model-stats.js) and the ranking per task class company/work/models/house-ranking.md.",
+ "notPublished": [
+  "IFEval for any of the seven models",
+  "RULER / MRCR for any of the seven models",
+  "Per-model Terminal-Bench 4.0 beyond Claude Opus 5.5 and Sonnet 5.5",
+  "Per-model AutomationBench-AA beyond Opus 5.5 and Sonnet 5.5",
+  "Per-model MMMU-Pro beyond Opus 5.5",
+  "Per-model AA-Omniscience hallucination rate beyond Opus 5.5 and Sonnet 5.5",
+  "Any independent score for MiniMax-M3.1-Pro",
+  "Any over-refusal rate for any model (no public board measures it)",
+  "LMArena Text Arena for MiniMax-M3.1-Flash - no entry in the rendered board (the page rendered ranks 1-127 of 421 on 2026-11-18); that is 'not visible in the read', not proof the model is absent",
+  "LMArena creative-writing and instruction-following category ranks - the ?category=creative-writing view did not render a category table on 2026-11-18"
+ ],
+ "unreadable": [
+  {
+   "url": "https://artificialanalysis.ai/evaluations/aa-lcr",
+   "result": "HTTP 404 - re-checked 2026-11-18, still 404",
+   "date": "2026-11-18",
+   "wouldHaveAdded": "Per-model long-context reasoning (AA-LCR v1.1)"
+  },
+  {
+   "url": "https://artificialanalysis.ai/evaluations/terminal-bench-4-0",
+   "result": "HTTP 404 (the evaluation exists; its own page has moved) - re-checked 2026-11-18, still 404",
+   "date": "2026-11-18",
+   "wouldHaveAdded": "Per-model Terminal-Bench 4.0"
+  },
+  {
+   "url": "https://artificialanalysis.ai/models/minimax-m3-1-pro",
+   "result": "HTTP 404 - re-checked 2026-11-18, still 404. AA catalogues two MiniMax models and Pro is not one of them: the model is not released, so there is nothing for a lab to measure.",
+   "date": "2026-11-18",
+   "wouldHaveAdded": "Any independent number for MiniMax-M3.1-Pro: none can exist yet, because the model has not been released (vendor, 2026-10-19)."
+  }
+ ],
+ "contested": [],
+ "_contested": "A figure two sources disagree on, or a house reading the model manager has set aside: {about, state, detail, source, date}. state names where it stands ('void', 'open', 'settled'), never only the topic."
+}

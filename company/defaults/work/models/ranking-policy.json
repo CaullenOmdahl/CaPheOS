@@ -1,0 +1,80 @@
+{
+ "_doc": "How company/tools/model-rank.js ranks models on this company's own work (docs/RANKING.md). Copied to company/work/models/ranking-policy.json at founding; the company's copy is the one read (else this default). Every rule, threshold and weight of the ranking is here, not in code: the scoring is tuned in production. A change bumps version; the ranking records a digest of the policy it used, so a policy change shows as a new ranking even when no work changed. Owner: the people function (the model manager).",
+ "version": 1,
+
+ "refreshMinutes": 60,
+ "_refreshMinutes": "how often the dispatcher recomputes the ranking (clamped to 60-1440: at most hourly). Files are rewritten only when the computed body changed.",
+
+ "windowDays": 30,
+ "_windowDays": "items closed (DONE) in the last N days are ranked",
+ "oneShotWindowDays": 7,
+ "_oneShotWindowDays": "an item is one-shot only if nothing undid it (reopen, revert, fix-forward) within N days of its close",
+ "countUnsettled": false,
+ "_countUnsettled": "false: an item closed less than oneShotWindowDays ago is 'settling' and not scored yet (it would look one-shot only because nothing has had time to undo it)",
+ "minItems": 20,
+ "_minItems": "a cell needs at least this many scored items before it may steer anything; below it the cell says 'not enough data'",
+ "interval": { "method": "wilson", "confidence": 0.8 },
+ "_interval": "the one-shot rate is read as the LOWER bound of this two-sided interval (Wilson score interval), so a small lucky sample does not outrank a large steady one",
+
+ "score": { "cost": "listUsd", "per": "item" },
+ "_score": "score = interval lower bound / cost per scored item. cost: 'listUsd' (metered runs at their real usd, subscription runs priced from cost.listPrices), 'usd' (metered usd only: subscription runs cost 0, so do not score on it while any cell is on a subscription) or 'windowTokens' (subscription window share, estimated). per: 'item' or 'change' (cost per accepted change: a PR, else the item itself)",
+
+ "signals": { "revise": true, "reopen": true, "revert": true, "fixForward": true, "defects": true, "premerge": true, "ownerCorrections": true },
+ "_signals": "switch a signal off to leave it out of the ranking entirely (it is then neither shown nor counted)",
+ "oneShot": { "failOn": ["revise", "reopen", "revert", "fixForward"] },
+ "_oneShot": "the signals that make an item not one-shot. Others that may be added: defect, ownerCorrection, premergeFail",
+
+ "verdicts": {
+  "fail": ["REVISE", "CHANGES-REQUESTED", "REQUEST-CHANGES", "REJECT", "TAKE-OVER"],
+  "pass": ["APPROVE", "APPROVED"],
+  "requireCheck": true
+ },
+ "_verdicts": "a `**Verdict:**` (or `**Review:**`) line in the item's block, or in any handoff block whose `**Item:**` line names the item. Format: `**Verdict:** REVISE by <seat> — check: <the acceptance check run> — <findings>`. requireCheck: a verdict that cites no check (no 'check:') is ignored. A verdict by the item's author (the seat and every seat with a run linked to it) is always ignored",
+ "weights": { "leadOnOwnReport": 0.5, "other": 1 },
+ "_weights": "how much one verdict counts. leadOnOwnReport: a verdict by the seat's department lead, or its manager, on that seat's work (the lead is judged by its reports' results, so its verdicts on them count less)",
+
+ "defects": { "signals": ["defect.confirmed", "flaw.in-review"], "severity": { "S0": 8, "S1": 4, "S2": 2, "S3": 1 } },
+ "_defects": "competence ledger demerits (company/work/people/competence-events.jsonl) counted as defects against the item whose run (or PR) they trace to, weighted by severity. A row a corroborated ruling voided is left out",
+ "rework": { "revert": ["pr.reverted"], "fixForward": ["pr.fix-forward"] },
+ "_rework": "the competence ledger signals that mean the item's change was reverted or needed a fix-forward",
+ "ownerCorrections": { "ledgerSignals": ["owner.correction"], "handoffLine": "Owner correction" },
+ "_ownerCorrections": "an owner correction counts against an item when a ledger row of these signals names one of its runs or its id, or the block carries a `**Owner correction:**` line",
+
+ "exclude": { "runKinds": ["providerError", "sliceCut"] },
+ "_exclude": "runs that are not the model's fault are left out, never counted as failures: providerError (the provider failed), sliceCut (a delegated child stopped by the dispatch wall-clock slice). An item whose every run is excluded is not scored. Their cost is reported apart (excludedListUsd)",
+
+ "_cost": "how a run's cost is counted: metered runs at the usd the station recorded, subscription runs priced from listPrices, and the subscription window share estimated as its own column",
+ "cost": {
+  "listPrices": {
+   "_doc": "USD per 1M tokens, the provider's list price, used only to price SUBSCRIPTION runs (unmetered: the station records usd 0) so cells on a subscription and cells on a metered provider compare on one scale. Matched by the longest key that the run's model starts with (a [..] suffix is ignored). Metered runs use the usd the station recorded. Update when a provider changes its prices.",
+   "asOf": "2026-11-03",
+   "claude-fable-5-2": { "input": 8, "cachedRead": 0.2, "output": 40 },
+   "claude-fable-5-1": { "input": 10, "cachedRead": 1, "output": 50 },
+   "claude-fable-5": { "input": 10, "cachedRead": 1, "output": 50 },
+   "claude-opus-5-5": { "input": 4, "cachedRead": 0.2, "output": 20 },
+   "claude-opus-5": { "input": 5, "cachedRead": 0.5, "output": 25 },
+   "claude-opus-4-8": { "input": 5, "cachedRead": 0.5, "output": 25 },
+   "claude-opus-4-7": { "input": 5, "cachedRead": 0.5, "output": 25 },
+   "claude-sonnet-5-5": { "input": 2, "cachedRead": 0.1, "output": 10 },
+   "claude-sonnet-5": { "input": 2, "cachedRead": 0.2, "output": 10 },
+   "claude-haiku-5-5": { "input": 0.1, "cachedRead": 0.01, "output": 0.5 },
+   "claude-haiku-4-5": { "input": 1, "cachedRead": 0.1, "output": 5 }
+  },
+  "outputShare": 0,
+  "_outputShare": "the station records one token count per run (input and output together). This share of the uncached tokens is priced at the output price; 0 prices them all as input (an underestimate on output-heavy work). An assumption to tune",
+  "window": { "providers": ["claude-cli"], "cachedWeight": 0.1 },
+  "_window": "subscription window share, reported as its own column until the pacer gives real readings: estimated window tokens = uncached tokens + cachedWeight x cached tokens, for runs of these providers"
+ },
+
+ "tail": { "percentile": 0.9, "hardestShare": 0.1 },
+ "_tail": "tail cost per cell: the cost at this percentile of items, and the mean cost of the most expensive share of items",
+
+ "graders": { "driftPoints": 25, "minVerdicts": 10 },
+ "_graders": "a grader whose approval rate differs from the hard one-shot rate of the items it approved or rejected by more than driftPoints (once it has minVerdicts counted verdicts) is flagged",
+
+ "proposals": { "mode": "shadow", "margin": 0.15, "requireRouteData": true, "allowClaimed": false },
+ "_proposals": "a routing proposal is written when a cell with enough data beats a department's current route (company/departments.json routes.<class>) for that class by more than margin (0.15 = 15% higher score). mode shadow: proposals are records only, nothing is applied (applying is a later, owner-switched step). requireRouteData: no proposal while the route's own cell lacks data. allowClaimed: whether a cell whose model the provider did not confirm (no servedModel) may be proposed",
+
+ "readBounds": { "runsMaxBytes": 67108864, "handoffMaxBytes": 8388608, "ledgerMaxBytes": 16777216, "correctionsMaxBytes": 4194304, "evidenceMaxFiles": 2000 },
+ "_readBounds": "every input is read from its end, inside these bounds (docs/RETENTION.md)"
+}

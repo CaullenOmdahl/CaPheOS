@@ -1,0 +1,15 @@
+{
+ "v": 1,
+ "tool": "company/tools/premerge-check.js",
+ "repo": "acme/web",
+ "pr": 12,
+ "sha": "aaaa1111",
+ "verdict": "PASS",
+ "at": "2030-01-09T14:00:00.000Z",
+ "history": [
+  {
+   "verdict": "FAIL",
+   "at": "2030-01-09T12:00:00.000Z"
+  }
+ ]
+}

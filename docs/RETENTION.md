@@ -74,6 +74,7 @@ The archive of a file that already lives in an `archive/` folder (the handoff ar
 | `company/state/external-clearances.jsonl` | 90 days + every live clearance | external-gate.js check |
 | `company/work/handoffs/archive/*.md` | 30 days (monthly) or 200 KB per file | agents looking for an older thread (`retention.js find to-<name>`) |
 | `company/state/wakes.jsonl` | 30 days (monthly) | dispatch.js --wake-links (the window plus 7 days, from the end) |
+| `company/work/models/house-ranking-history.jsonl`, `company/work/models/routing-proposals.jsonl` | 90 / 180 days (monthly) | model-rank.js verify (the live file; the chain restarts after a roll), refresh and --duty (the last 4 MB) |
 | `company/state/model-moves.jsonl`, `company/state/pacer-log.jsonl`, `company/work/security/locked-changes.jsonl` | 90 / 30 / 90 days | their tools |
 | `company/state/locked/provenance.jsonl` | 14 days | locked-watch.js (from its byte offset), default-branch-watch.js (4 MB tail) |
 | `.starnet-data/station.log` | 50 MB, 5 gzipped copies | people |
@@ -143,7 +144,7 @@ not prune them; StarNet owns their retention. Every CaPheOS reader takes a bound
 | external-gate.js | the last 72 h from the end (cached per process while the file is unchanged); a clearance written earlier is matched by a binary search for the runs that ended around its moment (8 MB at most) |
 | competence.js | the station's paged `/api/runs` |
 | corrections.js, harness-change.js | the last 60 days, from the end |
-| performance.js, hire.js, cap-numerator.js, model-stats.js, routine-length.js | their own window (hours or days), from the end |
+| performance.js, hire.js, cap-numerator.js, model-stats.js, routine-length.js, model-rank.js | their own window (hours or days), from the end (model-rank.js: windowDays plus 8 days, at most readBounds.runsMaxBytes) |
 | locked-watch.js | runs: the last 3000 lines (32 MB at most); integrity: incremental (below); transcripts: the segments whose manifest range reaches the window |
 | dispatch.js (spend sums), pacer.js (24 h spend, 48 h refusals and limits, 7 days of DeepSeek runs), models.js (72 h per seat) | that window, from the end (`lib/bounded.js jsonlWindow`) |
 | default-branch-watch.js | a 6 MB tail |

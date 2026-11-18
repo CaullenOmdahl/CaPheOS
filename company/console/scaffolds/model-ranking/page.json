@@ -1,0 +1,55 @@
+{
+  "$schema": "../../../schemas/console-panel.schema.json",
+  "version": 1,
+  "kind": "page",
+  "id": "model-ranking",
+  "title": "Model ranking",
+  "description": "Which model and effort does each kind of the company's work best for the money, from the company's own finished items, and the routing proposals that follow from it.",
+  "owner": "people",
+  "why": "Model choice is the largest lever on what the company spends; the owner sees which models hold up on real work, where the data is still too thin to judge, and every routing change the ranking proposes before anything is applied.",
+  "placement": { "area": "screen", "nav": "Ranking", "order": 10 },
+  "refresh": 900,
+  "sources": {
+    "ranking": { "type": "file", "glob": "{{data}}/house-ranking.json" },
+    "notes": { "type": "file", "glob": "{{data}}/house-ranking.md" }
+  },
+  "units": [
+    { "id": "headline", "span": 12, "view": { "kind": "stat-row", "items": [
+      { "source": "ranking", "value": "totals.scored", "label": "Items scored", "format": "integer" },
+      { "source": "ranking", "value": "totals.settling", "label": "Items still settling", "format": "integer" },
+      { "source": "ranking", "value": "cells.length", "label": "Model cells", "format": "integer" },
+      { "source": "ranking", "value": "proposals.length", "label": "Routing proposals (shadow)", "format": "integer", "goodWhen": "zero" } ] } },
+    { "id": "cells", "title": "Models by task class", "note": "A cell needs enough items before it may steer anything; below that it says not enough data.", "span": 12, "rows": 3,
+      "view": { "kind": "table", "source": "ranking", "rows": "cells",
+        "columns": [
+          { "key": "class", "label": "Class" },
+          { "key": "model", "label": "Model", "width": "wide", "flag": "claimed" },
+          { "key": "effort", "label": "Effort" },
+          { "key": "items", "label": "Items", "format": "integer" },
+          { "key": "oneShotRate", "label": "One-shot", "format": "percent" },
+          { "key": "lower", "label": "Lower bound", "format": "percent" },
+          { "key": "costPerItem", "label": "Cost per item (USD)", "format": "number" },
+          { "key": "score", "label": "Score", "format": "number" },
+          { "key": "tailCost", "label": "Tail cost (USD)", "format": "number" },
+          { "key": "windowTokensPerItem", "label": "Window tokens per item", "format": "integer" },
+          { "key": "status", "label": "Status" } ],
+        "limit": 60, "empty": "No finished work has been linked to a run yet; the ranking fills in as items close." } },
+    { "id": "proposals", "title": "Routing proposals (shadow)", "note": "Records only: nothing is applied.", "span": 12, "rows": 2, "actions": ["ask-proposal"],
+      "view": { "kind": "table", "source": "ranking", "rows": "proposals",
+        "columns": [
+          { "key": "department", "label": "Department" },
+          { "key": "class", "label": "Class" },
+          { "key": "fromModel", "label": "Current route", "width": "wide" },
+          { "key": "toModel", "label": "Proposed", "width": "wide" },
+          { "key": "gain", "label": "Score gain", "format": "percent" },
+          { "key": "id", "label": "Id" } ],
+        "limit": 20, "empty": "No proposal: no cell with enough data beats a current route by the margin." } },
+    { "id": "notes", "title": "The ranking in words", "span": 12, "rows": 3, "view": { "kind": "markdown", "source": "notes" } }
+  ],
+  "actions": [
+    { "id": "ask-proposal", "label": "Ask about this proposal", "kind": "handoff", "to": "people", "scope": "row",
+      "text": "Owner asks about routing proposal {{row.id}} ({{row.department}} / {{row.class}}: {{row.fromModel}} to {{row.toModel}}): what does the data say, and what would you do?" },
+    { "id": "ask-ranking", "label": "Ask what the ranking means", "kind": "ask-ceo", "scope": "panel",
+      "text": "Please explain {{panel.title}} in plain words: which models hold up on our work, where the data is too thin, and whether any routing change is worth making." }
+  ]
+}

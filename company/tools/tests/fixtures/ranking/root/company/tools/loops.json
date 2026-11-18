@@ -1,0 +1,32 @@
+{
+ "agents": {
+  "lee": {
+   "name": "Lee",
+   "functions": [
+    "ceo",
+    "people",
+    "tools",
+    "risk",
+    "floor",
+    "finance"
+   ],
+   "inbox": "to-lee.md",
+   "manager": null
+  },
+  "sam": {
+   "name": "Sam",
+   "inbox": "to-sam.md",
+   "manager": "lee"
+  },
+  "kim": {
+   "name": "Kim",
+   "inbox": "to-kim.md",
+   "manager": "lee"
+  },
+  "ria": {
+   "name": "Ria",
+   "inbox": "to-ria.md",
+   "manager": "lee"
+  }
+ }
+}

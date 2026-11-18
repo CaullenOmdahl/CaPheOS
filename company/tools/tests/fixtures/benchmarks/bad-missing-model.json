@@ -1,0 +1,45 @@
+{
+ "_doc": "negative fixture: a model the policy allows has no row",
+ "expect": "has no row in the book",
+ "book": {
+  "_doc": "fixture: a book that keeps the contract",
+  "aliasMap": {
+   "_doc": "fixture",
+   "haiku": "claude-haiku-5-5"
+  },
+  "rows": [
+   {
+    "modelId": "claude-sonnet-5-5",
+    "benchmark": "Index",
+    "score": 55,
+    "unit": "index points",
+    "source": "https://example.org/sonnet",
+    "date": "2030-01-01",
+    "measuredBy": "independent"
+   },
+   {
+    "modelId": "claude-haiku-5-5",
+    "benchmark": "Index",
+    "score": 36,
+    "unit": "index points",
+    "source": "https://example.org/haiku",
+    "date": "2030-01-01",
+    "measuredBy": "independent"
+   }
+  ],
+  "house": [],
+  "notPublished": [],
+  "unreadable": [
+   {
+    "url": "https://example.org/gone",
+    "result": "HTTP 404"
+   }
+  ],
+  "contested": [
+   {
+    "about": "a figure",
+    "state": "open"
+   }
+  ]
+ }
+}

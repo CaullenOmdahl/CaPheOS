@@ -1,0 +1,76 @@
+{
+ "_doc": "negative fixture: an alias pointed at another model than the one the CLI serves",
+ "expect": "Claude CLI catalog resolves it",
+ "cliTargets": {
+  "haiku": "claude-haiku-5-5"
+ },
+ "book": {
+  "_doc": "fixture: a book that keeps the contract",
+  "aliasMap": {
+   "_doc": "fixture",
+   "haiku": "claude-haiku-4-5-20251001"
+  },
+  "rows": [
+   {
+    "modelId": "claude-sonnet-5-5",
+    "benchmark": "Index",
+    "score": 55,
+    "unit": "index points",
+    "source": "https://example.org/sonnet",
+    "date": "2030-01-01",
+    "measuredBy": "independent"
+   },
+   {
+    "modelId": "claude-haiku-5-5",
+    "benchmark": "Index",
+    "score": 36,
+    "unit": "index points",
+    "source": "https://example.org/haiku",
+    "date": "2030-01-01",
+    "measuredBy": "independent"
+   },
+   {
+    "modelId": "deepseek-flash",
+    "benchmark": "Index",
+    "score": 50,
+    "unit": "index points",
+    "source": "https://example.org/flash",
+    "date": "2030-01-01",
+    "measuredBy": "independent"
+   },
+   {
+    "modelId": "deepseek-flash",
+    "benchmark": "Terminal-Bench",
+    "score": null,
+    "unit": "not published",
+    "source": "https://example.org/tb",
+    "date": "2030-01-01",
+    "measuredBy": "independent"
+   }
+  ],
+  "house": [
+   {
+    "modelId": "deepseek-flash",
+    "benchmark": "Runs (14 days)",
+    "score": 12,
+    "unit": "runs",
+    "source": "company/work/models/house-benchmarks.md",
+    "date": "2030-01-01",
+    "measuredBy": "house"
+   }
+  ],
+  "notPublished": [],
+  "unreadable": [
+   {
+    "url": "https://example.org/gone",
+    "result": "HTTP 404"
+   }
+  ],
+  "contested": [
+   {
+    "about": "a figure",
+    "state": "open"
+   }
+  ]
+ }
+}
