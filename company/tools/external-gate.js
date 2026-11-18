@@ -21,7 +21,8 @@
  *   node company/tools/external-gate.js check  --category message --target owner:file --agent <ceo-station-id>
  *   node company/tools/external-gate.js guard  --category publish --target github:<owner>/<repo>#<branch> --agent <id>
  *   node company/tools/external-gate.js clear  --by <owner or CEO name> --category publish --target github:<owner>/<repo>#<ref> \
- *                                              --until <ISO instant> --justification company/work/...md --note "..."
+ *                                              --until <ISO instant> --justification company/work/...md --note "..." \
+                                              --acts push,comment | --own-act merge|deploy|publish|release   # a publish row names what it clears
  *   node company/tools/external-gate.js close --id <row> --by <owner or CEO name> --why "<what act consumed it>"
  *                                              # end a spent row: it records the close, never deletes the line
  *   node company/tools/external-gate.js list           # every row: state valid | pending | invalid | closed
@@ -143,6 +144,89 @@ function schedulerAgents() {
 // The station names each journal `sha256(runId).jsonl`, so requiring that name is free and it costs a fabricator a second lie: a hand-written journal under an arbitrary name
 // is skipped, and a correctly named forgery names a runId that never appears in runs.jsonl once the "run" closes.
 function sha256Hex(s) { return require('crypto').createHash('sha256').update(String(s)).digest('hex'); }
+
+/* ---- LEGACY ROWS: company data, not code ----
+ * Two rules below (the prefix stamp and the own-act rule) cannot judge a row that was written before they existed. A
+ * company that adopts this gate on a ledger that already holds such rows lists their ids in
+ * `company/state/external-gate-legacy.json` (a locked state file: locked-watch.js reports any edit to it):
+ *   { "unstamped": ["<id>", ...],           // rows written before the prefix stamp: accepted without a stamp
+ *     "publishWithoutActs": ["<id>", ...] } // publish rows written before acts/ownAct: still answer, flagged unnarrowed
+ * A missing, unreadable or malformed file is the neutral default: both lists empty, so nothing is exempt. An id cannot be
+ * added by the row itself, only by editing that file, so the exemption is a decision with a diff, not a field a writer types.
+ * Delete an id once its row has expired. */
+const LEGACY_FILE = path.join(ROOT, 'company', 'state', 'external-gate-legacy.json');
+let LEGACY_OVERRIDE = null;               // selftest points this at a throwaway legacy list
+function legacyIds() {
+  const j = LEGACY_OVERRIDE || co.readJson(LEGACY_FILE, null);
+  const list = v => new Set(Array.isArray(v) ? v.filter(x => typeof x === 'string' && x) : []);
+  return { unstamped: list(j && j.unstamped), publishWithoutActs: list(j && j.publishWithoutActs) };
+}
+
+/* ---- ORDER RULE ----
+ * A row's `at` is whatever its writer typed (every agent shares the ledger's uid), so provenance bound to `at` alone
+ * lets a row appended NOW but dated inside a past CEO run pass. The ledger is append-only, so file order is the only
+ * write-time evidence there is: a row dated EARLIER than a row above it, or later than now, was not written when it says.
+ * `orderViolations(rows, now)` returns {index: reason}. A violating row never raises the high-water mark, so one forged
+ * row cannot make every legitimate row after it look backdated. ORDER_SKEW_MS absorbs two writers racing by seconds.
+ * LIMIT, stated not fixed: a forged row dated AFTER the newest real row (inside a recent run), or the first row of an
+ * empty ledger, has nothing above it to contradict it; those ride on the live-session check, not on this rule. */
+const ORDER_SKEW_MS = 2 * 60 * 1000;
+function orderViolations(rows, now) {
+  const out = {};
+  let high = -Infinity;
+  (rows || []).forEach((row, i) => {
+    const t = Date.parse(String(row && row.at || ''));
+    if (!Number.isFinite(t)) return;               // validateRow already refuses a row with no usable timestamp
+    if (t > now + ORDER_SKEW_MS) { out[i] = 'dated ' + new Date(t).toISOString() + ', in the future — a row cannot be written before it exists'; return; }
+    if (t < high - ORDER_SKEW_MS) { out[i] = 'dated ' + new Date(t).toISOString() + ' but sits below a row dated ' + new Date(high).toISOString() + ' — backdated, not written when it says'; return; }
+    if (t > high) high = t;
+  });
+  return out;
+}
+
+/* ---- PREFIX STAMP ----
+ * The order rule cannot see a forged row when the ledger holds one row, or when it is dated after the newest real row:
+ * there is nothing above it to contradict it. So `addClearance` stamps each row it writes with `prefixSha`: sha256 over
+ * the canonical bytes of every line ABOVE it (clearances and close records alike) plus the row's own
+ * id|at|category|target|agent. `check()` recomputes it. A row that was appended by hand later, moved, re-dated (the
+ * row's `at` is inside its own stamp), or written above lines that were edited or inserted, no longer matches. A close is
+ * an appended line (it never rewrites a row), so closing a row does not disturb the stamps below it. NOT mtime: `touch`
+ * and any rewrite set mtime, so it proves nothing.
+ * A row with NO stamp is accepted only if its id is in the `unstamped` list of the legacy file (above). There is no
+ * "unstamped but dated just now" arm: it would leave a typed row valid for the skew window inside a live CEO run.
+ * LIMIT, stated not fixed: every agent shares the ledger's uid, so someone who reads this function can compute a
+ * matching stamp. The stamp turns a one-line edit into a deliberate act that a reader of the ledger can recompute and a
+ * diff of this file shows; it does not make the ledger tamper-proof. A retention roll (company/tools/retention.js) that
+ * removes lines above a live row changes that row's prefix: the row then needs to be re-cleared. */
+function canonRow(row) { return JSON.stringify(row); }
+function stampFor(rowsAbove, row) {
+  const prefix = sha256Hex((rowsAbove || []).map(canonRow).join('\n'));
+  return sha256Hex(prefix + '|' + [row.id, row.at, row.category, row.target, row.agent].join('|'));
+}
+function stampViolations(rows, now) {
+  const out = {};
+  const legacy = legacyIds().unstamped;
+  (rows || []).forEach((row, i) => {
+    if (!row || typeof row !== 'object' || row.type === 'close') return;
+    if (typeof row.prefixSha === 'string' && row.prefixSha) {
+      if (stampFor(rows.slice(0, i), row) !== row.prefixSha) out[i] = 'prefix stamp does not match: the ledger above this row, or the row\'s own id/at/target, is not what it was when `clear` wrote it';
+      return;
+    }
+    if (legacy.has(row.id)) return;
+    const t = Date.parse(String(row.at || ''));
+    out[i] = 'unstamped row, not in the legacy list: only `clear` writes a row that lasts (no prefix stamp, dated ' + (Number.isFinite(t) ? new Date(t).toISOString() : 'nothing usable') + ')';
+  });
+  return out;
+}
+let LEGACY_ALL = false;   // selftest only: the pre-rule cases run as legacy rows (no stamp needed, no act needed); the new-rule cases turn it off
+// Order and stamp verdicts for the ledger's lines, aligned with the clearance rows ledgerRows() returns (close records
+// are lines of the ledger but not clearances, so they take no slot in the result).
+function ledgerVerdicts(all, now) {
+  const ob = orderViolations(all, now), sb = LEGACY_ALL ? {} : stampViolations(all, now);
+  const out = [];
+  (all || []).forEach((r, i) => { if (!(r && r.type === 'close')) out.push(ob[i] || sb[i] || null); });
+  return out;
+}
 
 /* runs.jsonl is StarNet's and only grows (docs/RETENTION.md: StarNet owns its retention), so a check never parses all of
  * it. readRuns() is the last RUNS_WINDOW_MS of it, read from the end (lib/bounded.js jsonlWindow: the file is appended as
@@ -372,6 +456,26 @@ function actsWhy(row) {
   }
   return null;
 }
+/* ---- OWN ACT ----
+ * A publish row with no acts answered for EVERY act in the category: a row written for a comment cleared a merge. A
+ * publish row therefore says what it clears: `acts` (narrow acts) OR `ownAct` (one of merge, deploy, publish, release),
+ * never both, and a publish REQUEST must name its act. Rows that predate the rule are the `publishWithoutActs` list of
+ * the legacy file, keyed by id and not by `at`: `at` is whatever the writer typed, so a date cutover is beaten by dating a
+ * row earlier. They stay unnarrowed and are still reported as such by `list`. */
+const isLegacy = (id) => LEGACY_ALL || legacyIds().publishWithoutActs.has(id);
+function narrowWhy(row) {
+  const hasActs = !!row && row.acts !== undefined && row.acts !== null;
+  const hasOwn = !!row && row.ownAct !== undefined && row.ownAct !== null;
+  if (hasActs && hasOwn) return 'a row carries acts or ownAct, never both';
+  if (hasOwn) {
+    if (typeof row.ownAct !== 'string') return 'ownAct must be one string, not a list: ' + ACTS_OWN_ROW.join(', ');
+    if (!ACTS_OWN_ROW.includes(norm(row.ownAct))) return 'unknown ownAct "' + row.ownAct + '" — it must be one of: ' + ACTS_OWN_ROW.join(', ');
+  }
+  if (!hasActs && !hasOwn && norm(row && row.category) === 'publish' && !isLegacy(row && row.id)) {
+    return 'a publish row must name what it clears: acts [' + ACTS_NARROW.join(', ') + '] or ownAct (' + ACTS_OWN_ROW.join(', ') + ')';
+  }
+  return null;
+}
 // An unrelated file cannot clear an action (a forgery class): the justifying document must name what it justifies.
 function justificationSupports(abs, target) {
   const stem = targetStem(target);
@@ -517,8 +621,9 @@ function allowedHost(host, list) {
 /* The ledger is append-only (locked-watch holds it so): a close is its own line, {type: 'close', id, closedAt, closedBy,
  * closedByAgent, closedWhy, closedSession}, appended after the row. ledgerRows() reads the clearance rows with their
  * first close folded in; the row's own line is never rewritten. */
-function ledgerRows(file) {
-  const all = readJsonl(file); const closes = new Map();
+function ledgerRows(file) { return mergeClosed(readJsonl(file)); }
+function mergeClosed(all) {
+  const closes = new Map();
   for (const r of all) if (r && r.type === 'close' && r.id && !closes.has(String(r.id))) closes.set(String(r.id), r);
   return all.filter(r => !(r && r.type === 'close')).map(r => {
     const c = r && r.id != null && closes.get(String(r.id));
@@ -548,10 +653,12 @@ function validateRow(row, req, at) {
   const scopeWhy = publishScopeOk(row.target, 'row');
   if (scopeWhy) return scopeWhy;
   const aw = actsWhy(row); if (aw) return 'malformed row: ' + aw;
+  const nw = narrowWhy(row); if (nw) return 'malformed row: ' + nw;
   if (!targetMatches(row.target, req.target)) return 'target mismatch';
   const agent = norm(row.agent || 'any');
   if (agent !== 'any' && agent !== norm(req.agent || 'unknown')) return 'agent mismatch';
   if (Array.isArray(row.acts) && req.act && !row.acts.map(norm).includes(norm(req.act))) return 'act mismatch: the row covers ' + row.acts.join(', ') + ', not "' + req.act + '"';
+  if (row.ownAct && req.act && norm(row.ownAct) !== norm(req.act)) return 'act mismatch: the row covers only ' + row.ownAct + ', not "' + req.act + '"';
   const clearee = norm(row.clearedBy);
   if (!CLEARERS.includes(clearee)) return 'clearedBy is not ' + CLEARER_WORDS;
   if (!targetStemOk(row.target)) return 'target "' + String(row.target || '') + '" has no literal part — a wildcard that clears everything is not a clearance';
@@ -705,14 +812,22 @@ function checkInner(req, opts) {
     return { allow: true, reason: 'host is on the company allowlist', clearanceId: null, clearedBy: 'allowlist', allowlistSha: allowlistDigest(allowlist) };
   }
 
-  const rows = ledgerRows(ledger);
+  const allLines = readJsonl(ledger);
+  const rows = mergeClosed(allLines);
+  const verdicts = ledgerVerdicts(allLines, at);      // order and prefix stamp, per clearance row
   const problems = [];
-  for (const row of rows) {
-    let why = validateRow(row, r, at);
+  for (let ri = 0; ri < rows.length; ri++) {
+    const row = rows[ri];
+    let why = verdicts[ri] || validateRow(row, r, at);
     if (!why && govLevel === 'approve' && !ownerCleared(row)) why = 'self-governance: external is at approve, so a clearance must name the owner (' + OWNER_NAME + '), not ' + row.clearedBy;
     if (why) { if (targetMatches(row && row.target, r.target) && norm(row && row.category) === r.category) problems.push((row && row.id) + ': ' + why); continue; }
     if (govLevel === 'notify' && !ownerCleared(row)) {
       try { gov.notify(String(row.clearedBy) + ' cleared ' + r.agent + ' to ' + r.category + ' ' + r.target + ' (clearance ' + (row.id || '?') + ', until ' + row.until + '). Self-governance: external is set to notify; reply if you want it stopped.', govOpts); } catch (_) {}
+    }
+    // A publish request names its act, and an ownAct row answers only for that act (a legacy row is exempt, see above).
+    if (r.category === 'publish' && !isLegacy(row.id)) {
+      if (!r.act) { problems.push(row.id + ': the request names no act — a publish request must say which act it is (--act <' + ACTS_NARROW.concat(ACTS_OWN_ROW).join('|') + '>)'); continue; }
+      if (row.ownAct && norm(row.ownAct) !== r.act) { problems.push(row.id + ': act mismatch: the row covers only ' + row.ownAct + ', not "' + r.act + '"'); continue; }
     }
     // A request that NAMES its act, cleared by a row that names none, is an allow wider than the row's words. It is
     // still an allow — the row predates narrowing or was written without acts — but the log entry and the answer say
@@ -878,6 +993,8 @@ function addClearance(row, opts) {
     justification: String(r.justification || ''),
     note: String(r.note || '').slice(0, 500),
   };
+  if (r.acts !== undefined && r.acts !== null) rec.acts = r.acts;
+  if (r.ownAct !== undefined && r.ownAct !== null) rec.ownAct = r.ownAct;
   // Only the CEO session writes a clearance row. These three refusals are what make `--by <CEO name>` mean something:
   // a worker agent cannot record a row at all, and the row may only be written while the CEO's own run exists.
   if (!CLEARERS.includes(norm(rec.clearedBy))) return { ok: false, error: 'clearedBy must be ' + CLEARER_WORDS + ' ("' + rec.clearedBy + '" is neither) — an agent cannot clear an action' };
@@ -910,6 +1027,7 @@ function addClearance(row, opts) {
     why = validateRow(rec, { category: rec.category, target: rec.target, agent: rec.agent === 'any' ? (r.probeAgent || 'probe') : rec.agent }, at);
   } finally { RUNS_OVERRIDE = savedOverride; }
   if (why) return { ok: false, error: why };
+  rec.prefixSha = stampFor(readJsonl(ledger), rec);   // binds this row to the bytes above it; check() recomputes
   appendJsonl(ledger, rec);
   return { ok: true, row: rec };
 }
@@ -995,6 +1113,7 @@ function selftest() {
   const opts = { ledger: ledger, log: log, allowlist: allow, now: at, level: 'auto', guards: { externalActions: true }, govRoot: froot };
   let failures = 0;
   const lines = [];
+  LEGACY_ALL = true;      // the cases below that predate the stamp and own-act rules run as legacy rows; sections 5b/5c turn it off
   const expect = (label, req, want, o) => {
     const d = check(req, Object.assign({}, opts, o || {}));
     const ok = want === 'refuse' ? d.allow === false : d.allow === true;
@@ -1384,6 +1503,122 @@ function selftest() {
     lines.push((ok ? 'ok    ' : 'FAIL  ') + label + ' → ' + (d.allow ? 'ALLOWED' : 'REFUSED') + ' (' + d.reason + ')');
   }
 
+  /* 5b. LEDGER ORDER, PREFIX STAMP AND OWN ACT. Each negative case is paired with a control that differs only in the
+     one thing under test, so a refusal cannot come from some other rule. Rows the gate wrote itself (addClearance) carry
+     a stamp; rows typed into the ledger by hand do not, which is exactly what the stamp cases tamper with. */
+  {
+    const bRun = (id, a, b) => ({ runId: id, agentId: CEO_ID, startedAt: a, endedAt: b });
+    const savedRuns = RUNS_OVERRIDE;
+    RUNS_OVERRIDE = savedRuns.concat([bRun('run-selftest-past', at - 3 * 3600000, at - 2 * 3600000 + 600000), bRun('run-selftest-later', at + 3300000, at + 3900000)]);
+    const savedLegacy = LEGACY_OVERRIDE;
+    const iso = ms => new Date(ms).toISOString();
+    const spend = (over) => Object.assign({ clearedBy: CEO, category: 'spend', target: 'stripe:charge-*', agent: 'jordan', until: '2026-12-01T00:00:00Z', justification: fixture }, over);
+    const sReq = (agent) => ({ category: 'spend', target: 'stripe:charge-100usd', agent: agent });
+    const reasonOf = (req) => check(req, opts).reason;
+    const has = (label, req, re) => { const r = reasonOf(req); const ok = re.test(r); if (!ok) failures++; lines.push((ok ? 'ok    ' : 'FAIL  ') + label + ' → ' + r.slice(0, 160)); };
+
+    // ORDER (stamp off, so only the order rule can refuse)
+    LEGACY_ALL = true;
+    write([spend({ id: 'clr-o-a', agent: 'jordan', at: iso(at) }), spend({ id: 'clr-o-b', agent: 'casey', at: iso(at + 30000) })]);
+    expect('O0 control: two rows in date order both answer', sReq('casey'), 'allow');
+    write([spend({ id: 'clr-o-a', agent: 'jordan', at: iso(at) }), spend({ id: 'clr-o-b', agent: 'casey', at: iso(at + 3600000) })]);
+    expect('O1 a row dated an hour in the future is refused', sReq('casey'), 'refuse');
+    has('O1b the refusal says the row is dated in the future', sReq('casey'), /in the future/);
+    expect('O1c the row above it still answers (a forged row does not poison the rest)', sReq('jordan'), 'allow');
+    write([spend({ id: 'clr-o-a', agent: 'jordan', at: iso(at) }), spend({ id: 'clr-o-b', agent: 'casey', at: iso(at - 3600000) })]);
+    expect('O2 a row dated earlier than the row above it is refused', sReq('casey'), 'refuse');
+    has('O2b the refusal says the row is backdated', sReq('casey'), /backdated/);
+    expect('O2c the row above it still answers', sReq('jordan'), 'allow');
+
+    // PREFIX STAMP (rows from the real addClearance / closeClearance path; tamper cases edit the file by hand)
+    LEGACY_ALL = false;
+    const sSession = { live: true, inFlight: true, runId: 'run-selftest-ceo', startedAt: at - 60000, source: 'run-journal' };
+    const sNew = (agent, atMs) => addClearance({ by: CEO, clearedByAgent: CEO_ID, category: 'spend', target: 'stripe:charge-*', agent: agent, until: '2026-12-01T00:00:00Z', justification: fixture }, { ledger: ledger, now: atMs, session: sSession });
+    const sLines = () => fs.readFileSync(ledger, 'utf8').split('\n').filter(Boolean);
+    const sSave = (ls) => fs.writeFileSync(ledger, ls.join('\n') + '\n');
+    LEGACY_OVERRIDE = {};
+    fs.writeFileSync(ledger, '');
+    const r1 = sNew('jordan', at), r2 = sNew('casey', at + 1000);
+    const stamped = r1.ok && r2.ok && !!r1.row.prefixSha && !!r2.row.prefixSha && r1.row.prefixSha !== r2.row.prefixSha;
+    if (!stamped) failures++;
+    lines.push((stamped ? 'ok    ' : 'FAIL  ') + 'S0 clear stamps every row it writes with a distinct prefixSha');
+    expect('S1 stamped row 1 (written by clear) answers', sReq('jordan'), 'allow');
+    expect('S1b stamped row 2 answers', sReq('casey'), 'allow');
+    const cl = closeClearance({ id: r1.row.id, by: CEO, why: closeWhy, closedByAgent: CEO_ID }, { ledger: ledger, now: at + 2000, session: closeSession });
+    if (!cl.ok) { failures++; lines.push('FAIL  S2 setup: close failed: ' + cl.error); }
+    expect('S2 closing row 1 appends a close line; row 2\'s stamp still holds', sReq('casey'), 'allow');
+    expect('S2b the closed row stops clearing', sReq('jordan'), 'refuse');
+    const r3 = sNew('morgan', at + 3000);
+    expect('S2c a row written after a close line is stamped over it and answers (stamps stay aligned with the rows)', sReq('morgan'), r3.ok ? 'allow' : 'refuse');
+    { const ls = sLines(); const o = JSON.parse(ls[1]); o.at = iso(at); ls[1] = JSON.stringify(o); sSave(ls); }
+    expect('S3 an earlier row\'s `at` edited by one second: its stamp no longer matches', sReq('casey'), 'refuse');
+    has('S3b the refusal names the stamp', sReq('casey'), /prefix stamp does not match/);
+    fs.writeFileSync(ledger, ''); sNew('jordan', at); sNew('casey', at + 1000);
+    { const ls = sLines(); ls.splice(1, 0, JSON.stringify(Object.assign({ at: iso(at), clearedByAgent: CEO_ID, id: 'clr-hand' }, spend({ target: 'stripe:other-*', agent: 'any' })))); sSave(ls); }
+    expect('S4 a row inserted ABOVE a stamped row: the stamped row\'s prefix changed', sReq('casey'), 'refuse');
+    const lone = (over) => fs.writeFileSync(ledger, JSON.stringify(Object.assign({ at: iso(at - 2.5 * 3600000), clearedByAgent: CEO_ID, id: 'clr-lone' }, spend({ agent: 'jordan' }), over)) + '\n');
+    lone({});
+    expect('S5 LONE row hand-appended, dated inside a past CEO run, no stamp, not in the legacy list', sReq('jordan'), 'refuse');
+    has('S5b the refusal says the row is unstamped', sReq('jordan'), /unstamped row/);
+    lone({ at: iso(at) });
+    expect('S6 the same lone unstamped row dated NOW is refused (there is no fresh-unstamped arm)', sReq('jordan'), 'refuse');
+    fs.writeFileSync(ledger, ''); sNew('jordan', at);
+    expect('S6b control: a lone row written through addClearance, dated now, answers', sReq('jordan'), 'allow');
+    lone({});
+    LEGACY_OVERRIDE = { unstamped: ['clr-lone'] };
+    expect('S7 control: the same unstamped row, its id in the legacy list, answers', sReq('jordan'), 'allow');
+    LEGACY_OVERRIDE = { unstamped: 'clr-lone' };
+    expect('S8 a malformed legacy file is the neutral default: nothing is exempt', sReq('jordan'), 'refuse');
+    LEGACY_OVERRIDE = {};
+    { const l = legacyIds(); const okEmpty = l.unstamped.size === 0 && l.publishWithoutActs.size === 0;
+      if (!okEmpty) failures++; lines.push((okEmpty ? 'ok    ' : 'FAIL  ') + 'S9 the default legacy lists are empty'); }
+
+    // OWN ACT
+    const W = REPO + '#fix/a';
+    const wRow = (over) => Object.assign({ id: 'clr-w-new', clearedBy: CEO, category: 'publish', target: W, agent: 'jordan', until: '2026-12-01T00:00:00Z', justification: fixture }, over);
+    // rows are STAMPED the way `clear` writes them, otherwise every refusal below would be "unstamped" and the acts / ownAct checks would never be reached
+    const wWrite = (rows) => { const out = []; rows.forEach(r => { const full = Object.assign({}, rowBase, r); full.prefixSha = stampFor(out, full); out.push(full); }); fs.writeFileSync(ledger, out.map(r => JSON.stringify(r)).join('\n') + '\n'); };
+    const wReq = (act) => Object.assign({ category: 'publish', target: W, agent: 'jordan' }, act ? { act: act } : {});
+    wWrite([wRow({})]);
+    expect('W1 publish row naming no acts and no ownAct, request MERGE', wReq('merge'), 'refuse');
+    has('W1b the refusal says a publish row must name what it clears', wReq('merge'), /must name what it clears/);
+    expect('W2 publish row naming no acts, request names no act', wReq(null), 'refuse');
+    wWrite([wRow({ ownAct: 'merge' })]);
+    expect('W3 control: ownAct merge row, request MERGE', wReq('merge'), 'allow');
+    expect('W4 ownAct merge row, request PUSH', wReq('push'), 'refuse');
+    expect('W5 ownAct merge row, request names no act', wReq(null), 'refuse');
+    wWrite([wRow({ acts: ['push'] })]);
+    expect('W6 control: acts [push] row, request PUSH', wReq('push'), 'allow');
+    expect('W6b acts [push] row, request MERGE', wReq('merge'), 'refuse');
+    expect('W7 acts [push] row, request names no act (publish)', wReq(null), 'refuse');
+    wWrite([wRow({ acts: ['push'], ownAct: 'merge' })]);
+    expect('W8 row carrying both acts and ownAct', wReq('merge'), 'refuse');
+    wWrite([wRow({ ownAct: 'push' })]);
+    expect('W9 ownAct that is a narrow act, not an own-row act', wReq('push'), 'refuse');
+    wWrite([wRow({ ownAct: ['merge'] })]);
+    expect('W10 ownAct as a list', wReq('merge'), 'refuse');
+    wWrite([wRow({})]);
+    LEGACY_OVERRIDE = { publishWithoutActs: ['clr-w-new'] };
+    const w11 = expect('W11 a no-acts publish row whose id is in the legacy list still answers, and is flagged unnarrowed', wReq('merge'), 'allow');
+    if (!w11.unnarrowed) { failures++; lines.push('FAIL  W11b the legacy no-acts answer is not flagged unnarrowed'); } else lines.push('ok    W11b the legacy answer carries unnarrowed:true');
+    LEGACY_OVERRIDE = { publishWithoutActs: ['clr-someone-else'] };
+    expect('W12 the same row with another id in the list gets no pass', wReq('merge'), 'refuse');
+    LEGACY_OVERRIDE = {};
+    fs.writeFileSync(ledger, '');
+    const wa = addClearance({ by: CEO, clearedByAgent: CEO_ID, category: 'publish', target: W, agent: 'jordan', until: '2026-12-01T00:00:00Z', justification: fixture }, { ledger: ledger, now: at, session: sSession });
+    const okWa = !wa.ok && /must name what it clears/.test(wa.error || '');
+    if (!okWa) failures++; lines.push((okWa ? 'ok    ' : 'FAIL  ') + 'W13 clear refuses to write a publish row that names no acts and no ownAct (' + (wa.error || 'written') + ')');
+    const wb = addClearance({ by: CEO, clearedByAgent: CEO_ID, category: 'publish', target: W, agent: 'jordan', until: '2026-12-01T00:00:00Z', justification: fixture, ownAct: 'merge' }, { ledger: ledger, now: at, session: sSession });
+    if (!wb.ok) { failures++; lines.push('FAIL  W14 setup: clear refused an ownAct row: ' + wb.error); }
+    expect('W14 control: a row written by clear with ownAct merge answers MERGE', wReq('merge'), 'allow');
+    expect('W14b ... and answers nothing else', wReq('push'), 'refuse');
+
+    RUNS_OVERRIDE = savedRuns;
+    LEGACY_OVERRIDE = savedLegacy;
+    LEGACY_ALL = true;
+    fs.writeFileSync(ledger, '');
+  }
+
   // 6. idempotency: the same side effect never goes out twice
   {
     const idemFile = path.join(dir, 'idem.jsonl');
@@ -1453,7 +1688,8 @@ function main() {
   }
   if (cmd === 'clear') {
     const r = addClearance({ by: a.by, clearedByAgent: a['cleared-by-agent'] || process.env.STARNET_AGENT_ID || null,
-      category: a.category, target: a.target, agent: a.agent, until: a.until, justification: a.justification, note: a.note });
+      category: a.category, target: a.target, agent: a.agent, until: a.until, justification: a.justification, note: a.note,
+      acts: a.acts ? String(a.acts).split(',').map(x => x.trim()).filter(Boolean) : undefined, ownAct: a['own-act'] === true ? '' : a['own-act'] });
     console.log(JSON.stringify(r));
     process.exit(r.ok ? 0 : 2);
   }
@@ -1472,8 +1708,10 @@ function main() {
     process.exit(r.ok ? 0 : 2);
   }
   if (cmd === 'list') {
-    const rows = ledgerRows(LEDGER);
+    const allLines = readJsonl(LEDGER);
+    const rows = mergeClosed(allLines);
     const at = nowMs();
+    const verdicts = ledgerVerdicts(allLines, at);
     // the recent window, plus the runs around each older row's moment (bounded reads; never the whole runs.jsonl)
     const runs = readRuns().slice(); const seenRuns = new Set(runs.map(r => r.runId));
     for (const r of rows) { const t = Date.parse(String((r && r.at) || '')); if (Number.isFinite(t)) for (const x of runsFor(t)) if (!seenRuns.has(x.runId)) { seenRuns.add(x.runId); runs.push(x); } }
@@ -1481,11 +1719,12 @@ function main() {
     try { const s = liveClearingSession(); if (s && s.live) liveRunId = s.runId || null; } catch (_) {}
     // ACT NARROWING AS A NUMBER: a row that lists no `acts` answers for EVERY act in its category — a row written for
     // "push" clears a merge. Every row reports `unnarrowed`, and the summary counts them, so the monthly read is "x of y rows name their acts" instead of a sentence in a note.
-    const out = rows.map(r => {
-      const st = listState(r, at, runs, liveRunId);
-      const unnarrowed = !Array.isArray(r.acts) || !r.acts.length;
+    const out = rows.map((r, ri) => {
+      let st = listState(r, at, runs, liveRunId);
+      if (verdicts[ri] && st.state !== 'closed') st = { valid: false, state: 'invalid', reason: verdicts[ri] };
+      const unnarrowed = (!Array.isArray(r.acts) || !r.acts.length) && !r.ownAct;
       return Object.assign({}, r, st, { unnarrowed: unnarrowed,
-        reach: unnarrowed ? 'no acts listed — answers for any act in category "' + r.category + '" on this target' : 'limited to: ' + r.acts.join(', ') });
+        reach: unnarrowed ? 'no acts listed — answers for any act in category "' + r.category + '" on this target' : (r.ownAct ? 'limited to its own act: ' + r.ownAct : 'limited to: ' + r.acts.join(', ')) });
     });
     const counts = { valid: 0, pending: 0, invalid: 0, closed: 0 };
     for (const r of out) counts[r.state] = (counts[r.state] || 0) + 1;
