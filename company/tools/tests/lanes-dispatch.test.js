@@ -324,3 +324,34 @@ test('a lane is routed like a wake: live + an open pair passes the one-run overr
   const log = c.r('company/work/models/routing-decisions.jsonl').trim().split('\n').map(l => JSON.parse(l));
   assert.ok(log.some(x => x.door === 'lane' && x.wakeId === lw.wakeId) && log.some(x => x.door === 'dispatch' && x.wakeId === mw.wakeId), JSON.stringify(log));
 });
+
+test('a refused code lane is never re-run on MiniMax: the retry asks the router, which holds it, and the item goes back to the main loop', async () => {
+  const code = h => h.replace('**Need:**', '**Class:** code\n**Need:**');
+  const c = await company({ hold: ['Lane '], handoffs: { 'to-sam.md': code(block('build the intake form', 'src/intake/')) + code(block('write the API docs', 'docs/api.md')) } });
+  c.w('company/model-policy.json', { seats: { sam: { chain: [{ provider: 'claude-cli', model: 'claude-sonnet-5-5' }, { provider: 'custom', model: 'MiniMax-M3.1-Flash' }] } } });
+  await st('POST', '/api/cron/update', { id: c.ids.sam, patch: { model: 'claude-sonnet-5-5' } });
+  const pol = JSON.parse(fs.readFileSync(path.join(REPO, 'company', 'defaults', 'work', 'models', 'routing-policy.json'), 'utf8'));
+  c.w('company/work/models/routing-policy.json', pol);   // the framework default: shadow, the class rules always on
+  c.w('company/state/override-allow.json', { v: 1, at: Date.now(), by: 'dispatcher', agents: { sam: [{ provider: 'claude-cli', model: 'claude-sonnet-5-5' }, { provider: 'custom', model: 'MiniMax-M3.1-Flash' }] } });
+  c.tick();
+  const lane = c.lanes().lanes[0]; assert.ok(lane && lane.runId && lane.provider === 'claude-cli');
+  const runsF = path.join(c.T, '.starnet-data', 'workspaces', 'runs.jsonl');
+  fs.appendFileSync(runsF, JSON.stringify({ runId: lane.runId, cronJobId: 'x', agentId: 'sam', provider: 'claude-cli', model: 'claude-sonnet-5-5', outcome: 'refused', failureCode: 'content_policy_blocked', reason: 'refused', startedAt: Date.now() - 60000, endedAt: Date.now() - 1000, ts: Date.now() - 1000 }) + '\n');
+  await st('POST', '/__finish', { id: lane.jobId, status: 'error' });
+  await c.lastRun('sam', 1);
+  c.w('company/state/override-allow.json', { v: 1, at: Date.now(), by: 'dispatcher', agents: { sam: [{ provider: 'claude-cli', model: 'claude-sonnet-5-5' }, { provider: 'custom', model: 'MiniMax-M3.1-Flash' }] } });
+  const r2 = c.tick();
+  // the retry was routed: whatever the lane routine's saved model, no RUN goes out on MiniMax — every lane run carries an
+  // override to an allowed pair (the class rule's chain fix), or the retry is held and the item returns to the main loop
+  const created = r2.laneCreates.map(x => x.body.name);
+  const jobsNow = await c.cron();
+  const laneRuns = r2.mine.filter(x => x.path === '/api/cron/run' && jobsNow.some(j => j.id === x.body.id && created.includes(j.name)));
+  for (const run of laneRuns) {
+    const j = jobsNow.find(x => x.id === run.body.id);
+    const pair = run.body.provider ? run.body.provider : (j.provider || '');
+    assert.notEqual(pair, 'custom', 'a lane run went out on MiniMax: ' + JSON.stringify(run.body) + ' saved ' + j.provider + '/' + j.model);
+  }
+  const dec = c.r('company/work/models/routing-decisions.jsonl').trim().split('\n').map(l => JSON.parse(l));
+  const retry = dec.filter(x => x.door === 'lane').slice(-1)[0];
+  assert.ok(retry && (retry.status === 'held' || (retry.route && retry.route.applied && retry.route.provider !== 'custom')), 'the retry was decided by the router: ' + JSON.stringify(retry));
+});

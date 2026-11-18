@@ -279,7 +279,9 @@ async function refused(st, lane, jobs, ctx) {
   try {
     const lock = SP.makePathLock(lockFile()).acquire(laneId, lane.touches);
     if (lock && lock.ok === false) throw new Error('its paths are held by another lane');
-    const r = await start({ id: lane.seat, n, laneId, c, job: Object.assign({}, loop, { model: next.model, provider: next.provider }), it: { heading: lane.heading, text: sec, touches: lane.touches }, cfg: { timeoutMin: lane.timeoutMin } });
+    // the retry asks the router like any lane start: the class rules hold (a code item is never re-run on a denied pair;
+    // a hold throws, and the catch below hands the item back to the seat's main loop, where the router holds it too)
+    const r = await start({ id: lane.seat, n, laneId, c, job: Object.assign({}, loop, { model: next.model, provider: next.provider }), it: { heading: lane.heading, text: sec, touches: lane.touches }, cfg: { timeoutMin: lane.timeoutMin } , routing: ctx && ctx.routing, log: say });
     r.retryOf = lane.runId; r.tried = [REF.keyOf(from)];
     st.lanes.push(r);
     REF.record({ root: S.root(), seat: lane.seat, door: 'lane', runId: lane.runId, retryRunId: r.runId, from, to: next });
