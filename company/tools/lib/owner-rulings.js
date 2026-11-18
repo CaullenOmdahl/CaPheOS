@@ -23,8 +23,11 @@
  *   node company/tools/lib/owner-rulings.js remove --by owner --id r-...
  *
  * WHO WRITES: only the owner, from the owner's own shell or the console (lib/owner.js refusal; an agent's run is
- * refused with code 3). Each write is atomic and recorded in the provenance log (provenance.js wrote). A reader ignores
- * the file when the newest recorded write of it does not match what is on disk (a hand edit after the owner's write).
+ * refused with code 3). Each write is atomic and recorded in the provenance log (provenance.js wrote). A reader trusts
+ * the file ONLY when the newest recorded write of it (the live log and its archive) matches what is on disk AND came
+ * from the owner's side: outside an agent's run, not tainted, from the console or this tool's own CLI. No recorded
+ * write, a hand edit, or a write from an agent's run (even one that called provenance itself) = no rulings at all.
+ * In a throwaway company under the OS temp dir (selftests) only the program check is off (lib/pm-inbox-guard.js).
  * opts.root: a scratch company (tests); opts.shell: a function standing in for the owner-shell check (tests).
  */
 const fs = require('fs');
@@ -39,23 +42,30 @@ const fileOf = opts => path.join(rootOf(opts), REL);
 const sha = t => 'sha256:' + require('crypto').createHash('sha256').update(t).digest('hex');
 const low = s => String(s == null ? '' : s).trim().toLowerCase();
 
-/* the newest provenance row for the file, or null (the log keeps 14 days; no row = nothing to compare) */
-function lastRecorded(file) {
+/* the newest provenance write row for the file (live log and archive), or null */
+function lastRecorded(opts) {
   try {
-    const prov = require('../provenance.js');
-    const root = path.resolve(process.env.PROVENANCE_ROOT || co.ROOT);
-    const rel = path.relative(root, file).split(path.sep).join('/');
-    if (rel.startsWith('..')) return null;
-    let last = null; for (const r of prov.readFrom(0, root).rows) if (r.file === rel && r.kind === 'write') last = r;
+    const rows = require('./owner-channel')._lib.provRows(rootOf(opts), REL, true);
+    let last = null; for (const r of rows) if (r.kind === 'write') last = r;
     return last;
   } catch (_) { return null; }
+}
+const OWNER_WRITERS = ['console/server.js', 'company/tools/lib/owner-rulings.js'];
+/* is the newest recorded write the owner's own (see the header)? */
+function ownersWrite(rec, txt, opts) {
+  const G = require('./pm-inbox-guard');
+  const loose = G.throwaway(rootOf(opts));
+  if (!rec) return loose;   // nothing recorded: only a selftest's throwaway company reads it as written
+  if (!rec.sha256 || rec.sha256 !== sha(txt)) return false;   // changed after the recorded write
+  if (rec.underStation !== false) return false;              // an agent's run wrote it
+  if (loose) return true;
+  return rec.tainted !== true && OWNER_WRITERS.includes(G.mainRel(rec.main));
 }
 /* the rulings readers may use: the file as the owner's tool wrote it */
 function list(opts) {
   const f = fileOf(opts);
   let txt; try { txt = fs.readFileSync(f, 'utf8'); } catch (_) { return []; }
-  const rec = lastRecorded(f);
-  if (rec && rec.sha256 && rec.sha256 !== sha(txt)) return [];   // changed after the owner's own write: not the owner's
+  if (!ownersWrite(lastRecorded(opts), txt, opts)) return [];
   let d; try { d = JSON.parse(txt); } catch (_) { return []; }
   return (Array.isArray(d && d.rulings) ? d.rulings : []).filter(r => r && r.id && EFFECTS.includes(r.effect) && r.by === 'owner');
 }
