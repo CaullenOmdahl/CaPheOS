@@ -1019,3 +1019,26 @@ test('no turn timeout: a soft nudge after a while, and only a run stalled with n
   assert.ok(kinds(M, 'note').some(e => /^Sharon's turn stalled: nothing came from it for/.test(e.text)));
   assert.ok(!kinds(M, 'note').some(e => /Sharon could not answer/.test(e.text)), 'one line, not two');
 });
+
+test('stay in the room: every turn says what was said since that seat last spoke and which questions are answered; no draft-ahead', async () => {
+  const { M, runner } = fresh({ seats: ['dave', 'sharon', 'phil'], leader: null });
+  runner.script({ dave: 'Ship Friday.\nASK: Sharon — is the budget set?', sharon: ['Budget is set at 40.', 'Agree with Phil.'], phil: ['Friday works.', 'PASS'], });
+  await M.say({ text: 'When do we ship?' }); await idle(M);
+  const t = runner.turns();
+  // runs start one at a time, only when it is that seat's turn: never two turns in flight
+  assert.strictEqual(runner.maxLive, 1, 'no draft-ahead: one turn run at a time');
+  const first = t[0];
+  assert.ok(/Since you last spoke: Caullen \(owner\): When do we ship\?/.test(first.last), 'the first speaker sees the owner\'s message');
+  assert.ok(/Reply to where the discussion is now: build on or disagree with the latest; do not re-answer\./.test(first.last));
+  assert.ok(!/Questions already answered/.test(first.last), 'nothing answered yet');
+  const phil = t.find(c => c.seat === 'phil');
+  assert.ok(/Since you last spoke: Caullen \(owner\): When do we ship\? \| Dave: Ship Friday \| Sharon \(answering Dave\): Budget is set at 40\. /.test(phil.last), phil.last);
+  assert.ok(/Questions already answered: Caullen's "When do we ship\?": answered by Dave, Sharon; Dave asked Sharon "is the budget set\?": Sharon answered it\. /.test(phil.last), phil.last);
+  // every turn carries it, an ASK answer too
+  assert.ok(t.every(c => /do not re-answer\.\]/.test(c.last)), 'all turns');
+  // a seat that spoke before only sees what came after its own reply
+  await M.say({ text: 'Anything else?' }); await idle(M);
+  const sharon2 = runner.turns().filter(c => c.seat === 'sharon').pop();
+  assert.ok(!/Ship Friday/.test(sharon2.last.split('Since you last spoke:')[1] || ''), 'only what is new since Sharon last spoke');
+  assert.ok(/Since you last spoke: Phil: Friday works \| Caullen \(owner\): Anything else\?/.test(sharon2.last), sharon2.last);
+});

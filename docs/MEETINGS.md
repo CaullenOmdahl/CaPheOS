@@ -78,7 +78,7 @@ up); the owner is not technical (crew matters are settled or routed, never put t
 lines below; observe rules; invite only when needed. Then the seat's own point of view, when the console has one
 (`deps.seatVoice(seat)`, for the per-seat profiles), then who they are. Each turn ends with the table's turn note:
 whose turn and why, who leads, hands up, who is at the table and who is not (may be invited), talk only when it is, the
-company's language. **Seat frames** (each other seat's function and what it needs, from `loops.json` functions and
+company's language, and where the discussion is now (see "Staying in the room"). **Seat frames** (each other seat's function and what it needs, from `loops.json` functions and
 `company/defaults/work/meetings/frames.json`) are off by default; `/api/meeting/frames {on}` switches them on. A seat
 in the middle of a routine run still speaks, talk only for that turn, told so ("you have no tools this turn: say what
 you know"), with one dim line in the minutes.
@@ -183,6 +183,58 @@ carry a short meeting-etiquette line, and every turn carries the table's rules.
 
 Tests: `company/tools/tests/meeting.test.js` (the protocol, with a scripted runner), `tests/meeting-walk.js` (the real
 console and the mock station), `tests/meeting-ui-walk.js` (headless Chrome).
+
+## Staying in the room
+
+The owner (2026-11-19): "they don't start drafting a reply until it's their turn, and then they can draft a reply built
+on the culmination of the previous turns". Drafting early makes a meeting regress: people re-answer a question someone
+already answered.
+
+**What runs today.** No draft-ahead: a turn's run starts only when it is that seat's turn, from the whole log as it is
+then (one turn run at a time; only the talk-only hand checks run side by side, at Light). Every turn, in the meeting and
+in a live chat, ends with the "since you last spoke" note (`sinceNote`):
+
+> [Since you last spoke: Caullen (owner): When do we ship? | Dave: Ship Friday | Sharon (answering Dave): Budget is set
+> at 40. Questions already answered: Caullen's "When do we ship?": answered by Dave, Sharon; Dave asked Sharon "is the
+> budget set?": Sharon answered it. Reply to where the discussion is now: build on or disagree with the latest; do not
+> re-answer.]
+
+It lists what others said (each clipped to one line, the last 8) and who joined or left since that seat's own last
+reply (since the meeting opened for one who has not spoken), and which questions in that stretch are answered: the
+owner's message once anyone else replied to it, and a direct `ASK` once its seat replied. The last sentence is on
+every turn. Hand checks stay the per-exchange moment when everyone takes in what was said (Light).
+
+**One run per seat that waits for its turn: not built.** The spec's design is one station run per seat per meeting with
+a "wait for my turn" tool, so a seat keeps its own reasoning between turns. Findings from the station source the
+companies run (`starnet/sidecar`, with the records in `company/patches`), 2026-11-19:
+
+- *A tool that blocks until the console answers.* Possible, but only as a new station record. Connectors (MCP) cap one
+  call at 10 minutes (`mcp/manager.js`, clamped 1 s to 10 min), so a connector tool would have to return "not yet" and
+  be called again, a model turn each time. A builtin tool could block on the run's steer buffer (`steer-buffer.js`,
+  `POST /api/run/steer`: the console already posts there) and return the notes as its result; the run asks for the tool
+  with an opt-in field on `POST /api/run`, like `detach` (0014).
+- *What makes it not clean.* (1) A waiting run stays in flight for the whole meeting: it holds the seat's place in the
+  station's concurrency gate (`concurrency.js`, `MAX_CONCURRENT_AGENTS`), and after any write tool it holds the seat's
+  workspace lease until the run ends (`index.js`, "held until run end"), so that seat's routines could not write in the
+  company folder for the meeting. Releasing both while waiting means changing run admission and the lease in
+  `index.js`, not one small record. (2) Claude, most seats' first family, runs through the Claude CLI
+  (`providers/claude-cli.js`): StarNet's tool calls are text blocks, and the station transcript keeps no Claude thinking.
+  The reasoning lives only in the CLI's persistent child, which closes after 5 minutes parked
+  (`STARNET_CLAUDE_CLI_PERSIST_IDLE_MS`, station-wide) and on any model, effort or prompt change; a longer wait starts
+  a fresh child from the transcript, without the reasoning. (3) None of it can be proven without real model runs.
+- *Reasoning across tool calls in one run.* MiniMax on the Anthropic wire (0015): kept, signed thinking blocks replayed
+  verbatim. MiniMax on `/v1` (0007): kept, `reasoning_content` replayed. DeepSeek: kept within the station process
+  (`replayReasoningContent`, required by DeepSeek with tools); after a station restart the history carries an empty
+  `reasoning_content`. Claude (CLI): kept only while the persistent child lives (above).
+- *Prompt cache.* Claude CLI on a subscription sign-in writes the 1-hour cache by default (probed in `claude-cli.js`).
+  The Anthropic adapter (Anthropic API, MiniMax `/anthropic`) uses the 5-minute tier unless the station env has
+  `SKYNET_ANTHROPIC_CACHE_TTL=1h` (station-wide; a 1-hour write costs 2x instead of 1.25x; whether MiniMax honours the
+  `ttl` is unproven). DeepSeek caches on its own, with no setting. OpenRouter sends the 5-minute marker only.
+
+So meetings keep fresh turns, built at the moment of the turn from the whole log, with the note above. The waiting run
+needs, in one new record: the opt-in tool on the steer buffer, the lease and concurrency place given up while waiting
+and taken back after, and a per-run idle limit for the CLI child; then a live check that each family really keeps its
+reasoning, before a meeting setting turns it on.
 
 ## One engine, other rooms
 

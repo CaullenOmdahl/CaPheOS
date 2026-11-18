@@ -407,7 +407,7 @@ module.exports = function meeting(deps) {
     const up = upList.length ? upList.map(([c, why]) => nameOf(c) + (why ? ' (' + why + ')' : '')).join('; ') : '';
     const lead = isLead ? ' You lead this ' + NOUN + '.' + (up ? ' Hands up: ' + up + '; end your reply with CALL: <name> to give one the floor.' : '')
       + (observing() ? ' Move it to a result; when the discussion is complete, end your reply with END: <what was decided and who does what>.' : '') : '';
-    const tail = (noTools ? BUSY_NOTE : '') + lintLine(id) + roomLine(id) + localeLine();
+    const tail = sinceNote(id) + (noTools ? BUSY_NOTE : '') + lintLine(id) + roomLine(id) + localeLine();
     const ctx = context(noTools);
     if (item.kind === 'ask') return '[' + nameOf(item.from) + ' asked you directly: ' + item.text + ' Answer ' + nameOf(item.from) + ', ' + n + '; you may ASK back.' + lead + ' ' + ctx + ']' + tail;
     if (item.kind === 'hand') return '[' + (item.calledBy ? nameOf(item.calledBy) + ' called on you' : 'You raised your hand') + (item.why ? ' (' + item.why + ')' : '')
@@ -442,6 +442,32 @@ module.exports = function meeting(deps) {
     out[0] = { role: 'user', content: PRE() + (voice ? '\n' + voice : '') + '\n[You are ' + nameOf(id) + (titleOf(id) ? ', ' + titleOf(id) : '') + '. The company folder is your project root; company tools run as `node company/tools/<tool>.js`.]\n\n'
       + (fit.dropped ? '[The earliest part of this ' + NOUN + ' is left out here; it is long. The full minutes are in company/work/meetings/.]\n\n' : '') + out[0].content };
     return out;
+  }
+  /* STAY IN THE ROOM (owner, 2026-11-19): every turn ends with where the discussion is now, so a speaker builds on the
+     latest instead of re-answering. Runs start only when it is that seat's turn (no draft-ahead), from the whole log;
+     this note says what changed since the seat last spoke and which questions are already answered. */
+  const SINCE_MAX = 8;
+  function sinceNote(id) {
+    let from = 0;
+    for (let i = LOG.length - 1; i >= 0; i--) { const e = LOG[i]; if (e.who === id && (e.kind === 'say' || e.kind === 'pass')) { from = i + 1; break; } }
+    const win = LOG.slice(from), said = [], answered = [];
+    for (let i = 0; i < win.length; i++) {
+      const e = win[i];
+      if (e.kind === 'say' && e.who !== id) said.push(nameOf(e.who) + (e.who === 'owner' ? ' (owner)' : '') + (e.to ? ' (answering ' + nameOf(e.to) + ')' : '') + ': ' + clip(String(e.text || '').replace(/\s+/g, ' ').trim(), 140).replace(/\.+$/, ''));
+      else if ((e.kind === 'join' || e.kind === 'leave') && e.who !== id) said.push('[' + TEXTS[e.kind](e) + ']');
+      if (e.kind === 'ask' && e.to && e.to !== id) {
+        const by = win.slice(i + 1).find(x => x.kind === 'say' && x.who === e.to);
+        if (by) answered.push(nameOf(e.who) + ' asked ' + nameOf(e.to) + ' "' + clip(e.text, 100) + '": ' + firstName(e.to) + ' answered it');
+      }
+      if (e.kind === 'say' && e.who === 'owner') {
+        const by = []; for (const x of win.slice(i + 1)) { if (x.kind === 'say' && x.who === 'owner') break; if (x.kind === 'say' && x.who !== id && !by.includes(x.who)) by.push(x.who); }
+        if (by.length) answered.push(owner() + '\'s "' + clip(String(e.text || '').replace(/\s+/g, ' ').trim(), 100) + '": answered by ' + by.map(nameOf).join(', '));
+      }
+    }
+    const list = said.length > SINCE_MAX ? ['(' + (said.length - SINCE_MAX) + ' earlier, above)'].concat(said.slice(-SINCE_MAX)) : said;
+    return ' [' + (list.length ? 'Since you last spoke: ' + list.join(' | ') + '. ' : '')
+      + (answered.length ? 'Questions already answered: ' + answered.join('; ') + '. ' : '')
+      + 'Reply to where the discussion is now: build on or disagree with the latest; do not re-answer.]';
   }
   function hasNewFor(id) {
     for (let i = LOG.length - 1; i >= 0; i--) {
