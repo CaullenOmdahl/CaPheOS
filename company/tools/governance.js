@@ -233,7 +233,7 @@ function selftest() {
     const d = gov.decide('tools', { by: 'Sam', summary: 'apply tool change c-2', ref: 'harness:c-2', facts }, Object.assign({ notice: n => { seen.push(n); return n; } }, opts));
     assert.ok(d.allowed && d.noted, JSON.stringify(d));
     const n = seen[seen.length - 1];
-    assert.strictEqual(n.kind, 'fyi'); assert.strictEqual(n.text, 'Sam decided to apply tool change c-2. Reply "undo" if you want it undone.');
+    assert.strictEqual(n.kind, 'fyi'); assert.strictEqual(n.text, 'Sam decided to apply tool change c-2. You can undo it on Today.'); assert.ok(n.action && n.action.kind === 'undo-decision' && /^d-[0-9a-f]{12}$/.test(n.action.decisionId), 'the line carries its Undo button');
     assert.ok(/set to triage, and decision model gate-triage v2 let this through: routine-change.*Decision d-[0-9a-f]{12}/.test(n.technical), n.technical);
     assert.strictEqual(n.key, d.triage.decisionId);
     const e = gov.decide('tools', { by: 'Lee', summary: 'apply tool change c-3', ref: 'harness:c-3', facts }, opts);   // Lee has an open S1
