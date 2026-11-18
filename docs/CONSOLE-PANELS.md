@@ -284,7 +284,7 @@ The grid is 12 columns; below about 760 px of content width short units go half 
 a phone every unit is full width, and wide content scrolls inside its unit, never the page.
 
 **Scaffolds** (`company/console/scaffolds/<name>/`: page.json, README.md, sample/) are ready pages to copy and
-customise: `trading-desk`, `noc-health`, `production-board`, `calendar`, `client-portfolio`. `scaffold <name> --as <id>
+customise: `trading-desk`, `noc-health`, `production-board`, `calendar`, `client-portfolio`, and the framework's own `duties` (docs/DUTIES.md) and `model-ranking` (docs/RANKING.md). `scaffold <name> --as <id>
 --by <seat>` writes the page into `company/work/<seat>/pages/<id>/` and its sample data (times made current, in the
 company timezone) into `company/work/<seat>/page-data/<id>/`, with the source globs pointing there; then the normal
 validate, preview, add path.

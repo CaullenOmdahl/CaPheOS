@@ -1,0 +1,2 @@
+{"schema":1,"kind":"credit","id":"ev-credit-f08","signal":"work.reviewed","agent":"kim","bucket":"build","at":"2030-01-10T16:00:00.000Z","authorCorroboratedBy":"run-F08-0034"}
+{"schema":1,"kind":"demerit","id":"ev-defect-f08","signal":"defect.confirmed","agent":"kim","bucket":"build","at":"2030-01-13T00:00:00.000Z","severity":"S1","reach":"R2","caught":"after","links":{"parent":"ev-credit-f08"}}

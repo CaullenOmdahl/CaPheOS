@@ -107,6 +107,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/build-inventory.js | people | `--selftest` |
 | company/tools/cadence.js | tools | `selftest` / `--selftest` |
 | company/tools/cap-numerator.js | finance | `--selftest` |
+| company/tools/check-benchmarks.py | people | `--selftest` |
 | company/tools/competence.js | people | `selftest` |
 | company/tools/connector-scope.js | risk | `--selftest` |
 | company/tools/console-panel.js | tools | `selftest` |
@@ -144,6 +145,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/merge-gate.js | risk | `selftest` |
 | company/tools/model-drift.js | people | `--selftest` |
 | company/tools/model-stats.js | people | none |
+| company/tools/model-rank.js | people | `--selftest` |
 | company/tools/models.js | people | `selftest` |
 | company/tools/module.js | ceo | `selftest` / `--selftest` |
 | company/tools/my-section.js | people | `selftest` |
@@ -245,6 +247,8 @@ in §5a instead.
 | `company/tools/dispatcher-loop.js` | tools | `node company/tools/dispatcher-loop.js selftest` |
 | `company/tools/duties.js` | tools | `node company/tools/duties.js --selftest` |
 | `company/tools/duty-status.js` | tools | `node company/tools/duty-status.js --selftest` |
+| `company/tools/model-rank.js` | people | `node company/tools/model-rank.js --selftest` |
+| `company/tools/check-benchmarks.py` | people | `python3 company/tools/check-benchmarks.py --selftest` |
 | `company/tools/external-gate.js` | risk | `node company/tools/external-gate.js --selftest` |
 | `company/tools/founder-loop.js` | ceo | `node company/tools/founder-loop.js --selftest` |
 | `company/tools/framework-update.js` | tools | `node company/tools/framework-update.js selftest` |

@@ -40,6 +40,8 @@ const DUTIES = [
     why: 'a package environment missing or different from its lock (to tools), a dependency lock or manifest edited outside deps.js or an ad hoc pip/npm install seen in a transcript (to risk), an owner answer on a pending dependency (to the asker)' },
   { id: 'departments', tool: 'departments.js', route: 'people', everyMin: 60, timeoutMs: 10000, whileHalted: false, enabledByDefault: true,
     why: 'company/departments.json, loops.json and FLOOR_PLAN.md disagree, or a department brief is missing or over its size limit (to people); a department change the people function proposed waits for the CEO (to ceo). Reports, never fixes; nothing is due while the company has no departments' },
+  { id: 'house-ranking', tool: 'model-rank.js', route: 'people', everyMin: 60, timeoutMs: 30000, whileHalted: false, enabledByDefault: true,
+    why: 'a routing proposal is open: a model cell with enough data beats a department\'s current route for its task class in the house ranking (shadow: nothing is applied; docs/RANKING.md)' },
 ];
 
 const ID_RE = /^[a-z][a-z0-9-]{1,39}$/;

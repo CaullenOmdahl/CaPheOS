@@ -848,6 +848,9 @@ function lastRunTail(job) {
     const age = fs.existsSync(hb) ? Date.now() - fs.statSync(hb).mtimeMs : Infinity;
     if (!DRY && age > 3600e3) require('child_process').execFileSync('node', [path.join(__dirname, 'model-stats.js')], { timeout: 60000, stdio: 'ignore' });
   } catch (e) { log('HOUSE BENCHMARK ERROR: ' + e.message); }
+  // house ranking (company/tools/model-rank.js, docs/RANKING.md): at most every refreshMinutes (default hourly), in its own
+  // process; files and the one log line only when the ranking changed. Measurement only: proposals are shadow records
+  try { if (!DRY && require('./model-rank.js').refreshDue()) { const out = String(require('child_process').execFileSync(process.execPath, [path.join(__dirname, 'model-rank.js'), 'refresh'], { cwd: ROOT, timeout: 120000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })).trim(); if (/: changed \((?!0 cells)/.test(out)) log('HOUSE RANKING: ' + out.replace(/^house ranking: changed /, '').slice(0, 240)); } } catch (e) { log('HOUSE RANKING ERROR: ' + String(e.message).slice(0, 200)); }
   try { if (await performanceFlags(state, jobs) && !DRY) fs.writeFileSync(STATE, JSON.stringify(state, null, 1)); } catch (e) { log('PERFORMANCE ERROR: ' + e.message); }
   const work = {};   // agentId -> open quests with steps still to do
   for (const q of quests) {

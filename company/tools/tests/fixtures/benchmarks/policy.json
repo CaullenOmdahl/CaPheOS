@@ -1,0 +1,16 @@
+{
+ "_doc": "fixture: the model policy shape check-benchmarks.py reads (allowed.<provider>.models)",
+ "allowed": {
+  "claude-cli": {
+   "models": [
+    "claude-sonnet-5-5",
+    "haiku"
+   ]
+  },
+  "deepseek": {
+   "models": [
+    "deepseek-flash"
+   ]
+  }
+ }
+}
