@@ -493,6 +493,14 @@ const CATEGORIES = {
   network: 'an HTTP request from a company tool to a domain that is not on the company allowlist',
 };
 
+/* the owner's plain line for an act the CEO cleared while external is at notify: who, whom, what kind of act */
+const PLAIN_ACT = { message: 'send a message outside the company', publish: 'publish something outside the company', account: 'open an account for the company',
+  form: 'send a form to an outside company', spend: 'spend money outside the company', network: 'connect to a new website' };
+function plainClearedLine(clearedBy, r) {
+  let who = r.agent; try { who = co.nameOf(r.agent) || r.agent; } catch (_) {}
+  return String(clearedBy) + ' let ' + who + ' ' + (PLAIN_ACT[r.category] || 'act outside the company') + '. Reply if you want it stopped.';
+}
+
 /* Only two clearers: the owner (the word "owner", or the owner's name from company.json) and the CEO seat by its
  * display name, read at runtime. "CEO" is a title, not an identity, so it is not accepted (lowercase compare). */
 const CLEARERS = Array.from(new Set(['owner', norm(OWNER_NAME), norm(CEO_NAME)].filter(x => x && x !== 'ceo')));
@@ -822,7 +830,9 @@ function checkInner(req, opts) {
     if (!why && govLevel === 'approve' && !ownerCleared(row)) why = 'self-governance: external is at approve, so a clearance must name the owner (' + OWNER_NAME + '), not ' + row.clearedBy;
     if (why) { if (targetMatches(row && row.target, r.target) && norm(row && row.category) === r.category) problems.push((row && row.id) + ': ' + why); continue; }
     if (govLevel === 'notify' && !ownerCleared(row)) {
-      try { gov.notify(String(row.clearedBy) + ' cleared ' + r.agent + ' to ' + r.category + ' ' + r.target + ' (clearance ' + (row.id || '?') + ', until ' + row.until + '). Self-governance: external is set to notify; reply if you want it stopped.', govOpts); } catch (_) {}
+      // one plain line for the owner's daily digest; the clearance, target and governance level are the crew's detail
+      try { gov.fyi({ from: String(row.clearedBy), text: plainClearedLine(row.clearedBy, r), key: 'external:' + (row.id || r.target),
+        technical: String(row.clearedBy) + ' cleared ' + r.agent + ' to ' + r.category + ' ' + r.target + ' (clearance ' + (row.id || '?') + ', until ' + row.until + '). Self-governance: external is set to notify.' }, govOpts); } catch (_) {}
     }
     // A publish request names its act, and an ownAct row answers only for that act (a legacy row is exempt, see above).
     if (r.category === 'publish' && !isLegacy(row.id)) {
@@ -1259,9 +1269,10 @@ function selftest() {
   const req4 = { category: 'spend', target: 'stripe:charge-100usd', agent: 'sam' };
   const outbound = path.join(froot, 'company', 'owner', 'outbound.jsonl');
   expect('external at notify: the CEO row still clears', req4, 'allow', { level: 'notify' });
-  { const sent = fs.existsSync(outbound) ? fs.readFileSync(outbound, 'utf8') : '';
-    const ok = /cleared sam to spend stripe:charge-100usd \(clearance clr-good/.test(sent);
-    if (!ok) failures++; lines.push((ok ? 'ok    ' : 'FAIL  ') + 'external at notify: the owner is told in one sentence (company/owner/outbound.jsonl)'); }
+  { // the owner's digest (lib/owner-notice.js when it is in the tree) or, until then, the owner channel
+    const sent = [path.join(froot, 'company', 'owner', 'digest.jsonl'), outbound].filter(f => fs.existsSync(f)).map(f => fs.readFileSync(f, 'utf8')).join('\n');
+    const ok = / let sam spend money outside the company\. Reply if you want it stopped\./.test(sent) && !/clr-good|stripe:|Self-governance/.test(sent);
+    if (!ok) failures++; lines.push((ok ? 'ok    ' : 'FAIL  ') + 'external at notify: the owner is told in one plain sentence, no clearance id, target or governance words'); }
   const d4 = expect('external at approve: a CEO row is not enough', req4, 'refuse', { level: 'approve' });
   { const ok = /must name the owner/.test(d4.reason); if (!ok) failures++; lines.push((ok ? 'ok    ' : 'FAIL  ') + 'external at approve: the refusal says the owner must clear it'); }
   write([{ id: 'clr-owner', clearedBy: OWNER_NAME, category: 'spend', target: 'stripe:charge-*', agent: 'sam', until: '2026-12-01T00:00:00Z', justification: fixture }]);

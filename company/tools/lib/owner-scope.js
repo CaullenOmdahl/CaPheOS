@@ -16,7 +16,11 @@
  * Everything else — infrastructure, monitoring, health checks, tooling, service registers, timers, framework bugs,
  * internal process — is the CREW's: the risk, tools or floor seat, or a framework request (harness-change.js propose).
  *
- *   classify({message, details, about, category, level, fixed}) -> {scope: 'owner'|'crew', owner: [topic], crew: [{area, hit}], why}
+ *   classify({message, details, about, category, level, fixed}, ctx) -> {scope: 'owner'|'crew', owner: [topic], crew: [{area, hit}], why, level?, route?}
+ *       a category is the owner's only at its REAL governance level (lib/governance.js level(), unless o.level says
+ *       which level the caller already read): approve (or triage, which reads as approve) = the owner decides; auto =
+ *       the crew decides (route 'crew'); notify = the crew decides and the owner hears of it in the daily digest (route
+ *       'digest'). A fixed owner gate is always the owner's.
  *   plainScore(text, {approval}) -> {ok, score, sentences, words, longest, jargon, numbers, gain, fallback, problems}
  *       at most 2 sentences of at most 25 words and 300 characters; no jargon word, code span, path, file or tool name,
  *       id, clock time, hash or setting; at most 2 figures besides money; it says what the owner gets or risks and what
@@ -24,9 +28,14 @@
  *       (nothing is spent); an approval record states its own default (deny).
  *   suggestPlain(text, cls) -> a plain two-sentence version (a template where words are missing)
  *   routeFor(cls, from, seats) -> {to, line}: where a crew-scope ask goes instead
- *   backoff({about, message, approvalDigest, changed}, rows, now) -> null | {id, at, answer}: the same topic answered
+ *   backoff({about, ref, message, approvalDigest, changed}, rows, now) -> null | {id, at, answer}: the same topic answered
  *       "not now" within 7 days (refused unless `changed` says what is materially different)
- *   check(o, {rows, now, seats}) -> null | {code: 'crew-scope'|'backoff'|'plain', error, suggestion?}
+ *   check(o, {rows, now, seats, govOpts, rulings}) -> null | {code: 'crew-scope'|'ruling'|'backoff'|'plain', error, suggestion?}
+ *       'ruling': a standing owner ruling (lib/owner-rulings.js) covers it: crew-decides or never-ask, so it is not
+ *       asked; an 'ask' ruling keeps a category the governance level gives the crew with the owner. The fixed gates
+ *       always reach the owner, whatever a ruling says.
+ *   wordsProblems(text) -> [offending word] : the jargon, paths, ids, commands, model ids and clock specs in a text
+ *       (what lib/owner-card.js refuses in an owner card's plain parts)
  * Everything here is deterministic (regexes and counts); nothing calls a model. */
 'use strict';
 
@@ -67,7 +76,13 @@ function hitsOf(text, list) { const out = []; for (const re of list) { const m =
 
 /* classify(o) — the owner topics and crew areas the ask touches, and which scope it is. The lead (o.message, else the
  * first sentences of o.q) decides; details only add crew signals. */
-function classify(o) {
+/* the governance level of a category as it is now (o.level when the caller read it already); fails closed */
+function levelOf(cat, o, ctx) {
+  if (o && o.level) return String(o.level);
+  try { return require('./governance').level(cat, Object.assign({}, (ctx && ctx.govOpts) || {})); } catch (_) { return 'approve'; }
+}
+function classify(o, ctx) {
+  o = o || {};
   const lead = String(o.message || o.q || '');
   const all = lead + '\n' + String(o.details || '') + '\n' + String(o.about || '');
   const owner = [];
@@ -76,12 +91,19 @@ function classify(o) {
   for (const [topic, res] of Object.entries(OWNER)) if (hitsOf(lead, res).length && !owner.includes(topic)) owner.push(topic);
   const crew = [];
   for (const [area, seat, re] of CREW) { const m = all.match(new RegExp(re.source, 'gi')); if (m) for (const h of new Set(m.map(x => x.toLowerCase()))) crew.push({ area, seat, hit: h }); }
-  let scope, why;
-  if (cat) { scope = 'owner'; why = o.fixed ? 'a fixed owner gate (' + cat + ')' : 'governance has ' + cat + ' at ' + (o.level || 'approve') + ', so the owner decides'; }
+  let scope, why, level, route;
+  if (cat && !o.fixed) level = levelOf(cat, o, ctx);
+  if (cat && !o.fixed && (level === 'auto' || level === 'notify') && !o.ownerAsks) {
+    scope = 'crew'; route = level === 'notify' ? 'digest' : 'crew';
+    why = 'self-governance has ' + cat + ' at ' + level + ', so the crew decides' + (level === 'notify' ? ' and the owner hears of it in the daily digest' : '');
+  }
+  else if (cat) { scope = 'owner'; why = o.fixed ? 'a fixed owner gate (' + cat + ')' : 'governance has ' + cat + ' at ' + (level === 'triage' ? 'triage (escalated)' : level || 'approve') + ', so the owner decides'; }
   else if (owner.length) { scope = 'owner'; why = 'it asks the owner about ' + owner.join(', '); }
   else if (crew.length) { scope = 'crew'; why = 'it is ' + [...new Set(crew.map(c => c.area))].join(' and ') + ' (' + [...new Set(crew.map(c => c.hit))].slice(0, 6).join(', ') + '), which is the crew\'s job'; }
   else { scope = 'owner'; why = 'no crew signal: a plain question for the owner'; }
-  return { scope, owner, crew, why };
+  const out = { scope, owner, crew, why };
+  if (level) out.level = level; if (route) out.route = route;
+  return out;
 }
 
 /* ---- the plain-language scorer ---- */
@@ -103,6 +125,23 @@ const PATTERNS = [
   ['a setting', /\b\w+=\S+/g],
   ['an identifier', /\b[a-z]+[A-Z][A-Za-z]+\b/g],
 ];
+// what an owner card's plain parts must not carry beyond the patterns above (lib/owner-card.js)
+const CARD_PATTERNS = [
+  ['a model id', /\b(?:claude|gpt|o\d|minimax|gemini|llama|mistral|qwen|deepseek|sonnet|opus|haiku|abab)[-_.]?[\w.]*\d[\w.-]*\b/gi],
+  ['a command', /(?:^|[\s(])(?:node|npm|npx|pip|git|sudo|systemctl|bash|sh|curl|wget|cd|ls|rm|mv|cp|chmod|docker|python3?)\s+[\w./~-]+/g],
+  ['a command flag', /(?:^|\s)--?[a-z][\w-]*(?==|\s|$)/g],
+  ['a clock spec', /\*\/\d+|\bOnCalendar\b|(?:^|\s)(?:[\d*]+\s+){4}[\d*]+(?:\s|$)|\bevery\s+\d+\s*(?:s|m|ms|min)\b/g],
+  ['a setting name', /\b[a-z]+(?:_[a-z0-9]+)+\b/g],
+  ['a diff', /^[+-]{3}\s|^@@\s/gm],
+];
+/* wordsProblems(text) -> the words of `text` a non-technical owner would not follow (empty = plain) */
+function wordsProblems(text) {
+  const t = String(text || '');
+  const out = [];
+  for (const m of t.match(JARGON_RE) || []) out.push(m);
+  for (const [what, re] of PATTERNS.concat(CARD_PATTERNS)) for (const m of t.match(re) || []) out.push(String(m).trim() + ' (' + what + ')');
+  return [...new Set(out)];
+}
 const MONEY = /\$\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?(?:usd|eur|gbp|dollars?|euros?|pounds)\b/gi;
 const GAIN = /\b(?:lets?|let us|unblocks?|unlocks?|enables?|opens? up|speeds? up|covers?|pays? for|buys? us|so (?:we|you|that|the|it)|gets?|gives?|means|saves?|costs?|risks?|protects?|allows?|helps?|keeps?|you(?:'ll| will| would| get| keep)|we(?:'ll| will| would| can| could)|in return|which (?:lets|means|gives)|to (?:test|start|try|reach|sell|launch|protect|keep|grow|earn|save|avoid|hire|pay|cover|run|finish|ship))\b/i;
 const FALLBACK = /\b(?:if (?:you )?(?:skip|say no|decline|don't|do not|would rather not|pass|ignore|leave it|say not now|say later|wait)|if not\b|otherwise|without (?:it|this|that|one|them|your)|by default|default|until then|unless you|if you'd rather|if there(?:'s| is) no answer|no answer)/i;
@@ -205,8 +244,9 @@ function backoff(o, rows, now) {
     const qa = String(q.about || '').trim().toLowerCase();
     const sameDigest = o.approvalDigest && q.approval && q.approval.actionDigest === o.approvalDigest;
     const sameAbout = about && qa && !/^approval:/.test(about) && about === qa;
+    const sameRef = o.ref && q.gate && q.gate.ref && String(q.gate.ref) === String(o.ref);   // an owner card's dedupe key (lib/owner-card.js)
     const ov = overlap(mine, topicWords(aboutWords(q.about) + ' ' + (q.message || q.q || '')));
-    if (sameDigest || sameAbout || (ov.n >= 3 && ov.r >= 0.5)) return { id: q.id, at: r.at, answer: String(r.a || '').slice(0, 200) };
+    if (sameDigest || sameAbout || sameRef || (ov.n >= 3 && ov.r >= 0.5)) return { id: q.id, at: r.at, answer: String(r.a || '').slice(0, 200) };
   }
   return null;
 }
@@ -217,7 +257,20 @@ function check(o, ctx) {
   ctx = ctx || {};
   const lead = String(o.message || '').trim() || sentencesOf(String(o.q || '').split('\n')[0]).slice(0, 2).join(' ');
   const prompts = [lead].concat((o.questions || []).map(x => x && (x.prompt || x.message)).filter(Boolean));
-  const cls = classify(Object.assign({}, o, { message: prompts.join(' ') }));
+  // a standing owner ruling (lib/owner-rulings.js): never for a fixed gate
+  let ruling = null;
+  if (!o.fixed) { try { ruling = require('./owner-rulings').match({ category: o.category, about: o.about, ref: o.ref, text: prompts.join(' ') }, Object.assign({}, ctx.govOpts || {}, ctx.rulings ? { rulings: ctx.rulings } : {})); } catch (_) { ruling = null; } }
+  if (ruling && (ruling.effect === 'crew-decides' || ruling.effect === 'never-ask')) {
+    return { code: 'ruling', ruling: { id: ruling.id, text: ruling.text, effect: ruling.effect }, route: ruling.effect === 'crew-decides' ? 'crew' : 'ruling',
+      error: 'Not asked: the owner made a standing rule (' + ruling.id + ', ' + String(ruling.at || '').slice(0, 10) + '): "' + ruling.text + '". ' +
+        (ruling.effect === 'crew-decides' ? 'The crew decides this itself; do it within the company\'s limits and record it as usual.' : 'The owner does not want to be asked about this: the default (no) stands.') };
+  }
+  const cls = classify(Object.assign({}, o, { message: prompts.join(' '), ownerAsks: !!(ruling && ruling.effect === 'ask') }), ctx);
+  if (cls.route === 'crew' || cls.route === 'digest') {
+    return { code: 'crew-scope', classification: cls, route: cls.route, level: cls.level,
+      error: 'Not asked: ' + cls.why + '. The owner set that level themselves, so this is not their decision: the accountable seat decides and records it' +
+        (cls.route === 'digest' ? ' (the owner reads it in the daily digest, not as a question).' : '.') };
+  }
   const WHO = 'The owner is a busy non-technical person, asked only for: money beyond the company\'s own limits; accounts or identity in their own name (a sign-up, a sign-in, a key only they can get); legal, ownership or commitment decisions; company direction and priorities; risk the governance level reserves for them; the fixed gates.';
   if (cls.scope === 'crew') {
     const r = routeFor(cls, o.from, ctx.seats);
@@ -240,4 +293,4 @@ function check(o, ctx) {
   return null;
 }
 
-module.exports = { classify, plainScore, suggestPlain, routeFor, backoff, saidNotNow, check, BACKOFF_DAYS, JARGON_WORDS };
+module.exports = { classify, plainScore, suggestPlain, routeFor, backoff, saidNotNow, check, wordsProblems, BACKOFF_DAYS, JARGON_WORDS };
