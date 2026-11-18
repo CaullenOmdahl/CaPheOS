@@ -152,13 +152,16 @@ module.exports = function huddle(deps) {
   async function pullFrom(host, o) {
     checkHost(host); o = o || {};
     const list = pullLines(host, o.text); if (!list.length) return null;
-    let E;
+    const h = co.halted(); if (h) fail('the company is under a ' + h + ' halt, so nobody can speak: resume it on the Halt screen first', 409);
+    let E, seed = [];
     if (isOpen(host)) { E = engine(host); if (running(E)) return null; }
-    else { E = await freshRoom(host); E.seed(await seedOf(host, o.runId)); }
-    // the reply that brought them in (its lines are the ask): as the host said it, unless the seed already has it
+    else { E = await freshRoom(host); seed = await seedOf(host, o.runId); }
+    /* the chat so far goes in with the ask itself (E.pullIn records it only once its own checks pass), so a pull-in that
+       is refused leaves no room opened and no minutes: just the reply that brought them in (its lines are the ask), as
+       the host said it, unless the seed or the room already ends with it */
     const body = meetingLib.directives(String(o.text || '')).body;
-    const LOG = E._state().LOG; const last = LOG[LOG.length - 1];
-    const seed = body && !(last && last.kind === 'say' && last.who === host && last.text === body) ? [{ who: host, text: body }] : [];
+    const LOG = E._state().LOG; const last = seed.length ? seed[seed.length - 1] : LOG[LOG.length - 1];
+    if (body && !(last && (last.kind === undefined || last.kind === 'say') && last.who === host && last.text === body)) seed.push({ who: host, text: body });
     await E.pullIn({ by: host, seed, directives: list });
     return { host, id: E._state().M.id };
   }

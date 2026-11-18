@@ -189,3 +189,24 @@ test('a hard halt refuses; an idle chat closes after 2 hours', async () => {
   await H.sweep();
   assert.ok(!H.isOpen('dave') && LOG(H).some(e => e.kind === 'close' && /nobody wrote for/.test(e.why || '')), 'closed when idle');
 });
+
+test('a pull-in refused (a halt) leaves no empty chat behind: nothing opened, no minutes; the next one opens cleanly', async () => {
+  const { H, runner } = fresh();
+  const mins = path.join(T, 'company/work/meetings/chat-dave-' + co.localParts(new Date()).date + '.md');
+  fs.rmSync(mins, { force: true });
+  W('company/state/halt.json', { mode: 'soft', by: 'Caullen' });
+  await assert.rejects(() => H.pullFrom('dave', { text: CHAT_TURNS[1].content, runId: 'run-1' }), /soft halt/);
+  fs.unlinkSync(path.join(T, 'company/state/halt.json'));
+  const st = H.engine('dave')._state();
+  assert.ok(!st.M.opened && !st.LOG.length && !H.isOpen('dave'), 'no room was opened');
+  assert.ok(!fs.existsSync(mins), 'no minutes holding only the chat so far');
+  assert.ok(!runner.turns().length);
+  runner.script({ nadia: 'The deploy is green.', dave: 'Green, Caullen.' });
+  await H.pullFrom('dave', { text: CHAT_TURNS[1].content, runId: 'run-1' }); await idle(H);
+  const text = fs.readFileSync(mins, 'utf8');
+  assert.strictEqual((text.match(/the meeting opens/g) || []).length, 1, 'one chat in the minutes');
+  assert.ok(!/closes|closed/.test(text), 'no empty chat closed before it');
+  const said = LOG(H).filter(e => e.kind === 'say' && e.src === 'chat');
+  assert.deepStrictEqual(said.map(e => e.who), ['owner', 'dave'], 'the chat so far once, the host\'s ask once');
+  assert.ok(said[1].text === 'Let me check with Nadia.');
+});
