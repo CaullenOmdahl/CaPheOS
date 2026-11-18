@@ -13,7 +13,7 @@ const { spawnSync, execFileSync } = require('child_process');
 const REPO = path.resolve(__dirname, '..', '..', '..');
 const REAL_TAR = execFileSync('bash', ['-c', 'command -v tar']).toString().trim();
 
-function scratch(tarExit) {
+function scratch(tarExit, complaint) {
   const T = fs.mkdtempSync(path.join(os.tmpdir(), 'backup-snapshot-'));
   fs.mkdirSync(path.join(T, 'scripts'));
   fs.copyFileSync(path.join(REPO, 'scripts', 'backup.sh'), path.join(T, 'scripts', 'backup.sh'));
@@ -26,7 +26,7 @@ function scratch(tarExit) {
   const bin = path.join(T, 'bin'); fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, 'tar'), `#!/usr/bin/env bash
 "${REAL_TAR}" "$@"; rc=$?
-case "$1" in -czf) echo "after" >> company/work/notes.md; rm -f company/work/gone.md; exit ${tarExit};; esac
+case "$1" in -czf) echo "after" >> company/work/notes.md; rm -f company/work/gone.md; echo "${complaint || 'tar: company/work/notes.md: file changed as we read it'}" >&2; exit ${tarExit};; esac
 exit $rc
 `, { mode: 0o755 });
   const dir = path.join(T, 'snaps');
@@ -41,7 +41,8 @@ test('a file that changes during the read: tar exit 1 still gives a snapshot tha
     const r = s.run([]);
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.match(r.stdout, /^backup .*\.tar\.gz/m);
-    assert.match(r.stderr, /changed while they were read/);
+    assert.match(r.stderr, /tolerated .*file changed as we read it/);
+    assert.deepEqual(fs.readdirSync(s.dir).filter(f => f.startsWith('.wip-')), [], 'the work folder is gone');
     const snaps = fs.readdirSync(s.dir).filter(f => f.endsWith('.tar.gz'));
     assert.equal(snaps.length, 1);
     assert.ok(fs.existsSync(path.join(s.dir, snaps[0].replace(/\.tar\.gz$/, '.sha256'))), 'the digest file is written');
@@ -61,5 +62,15 @@ test('a real tar failure (exit 2) fails the backup and keeps nothing', () => {
     assert.notEqual(r.status, 0);
     assert.match(r.stderr, /FAIL tar exited 2/);
     assert.deepEqual(fs.readdirSync(s.dir).filter(f => /\.(tar\.gz|sha256)$/.test(f)), []);
+  } finally { s.done(); }
+});
+
+test('exit 1 with any other complaint (not "file changed" / "File removed") fails and keeps nothing', () => {
+  const s = scratch(1, 'tar: company/work/secret.md: Cannot open: Permission denied');
+  try {
+    const r = s.run([]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /Permission denied/); assert.match(r.stderr, /FAIL tar exited 1/);
+    assert.deepEqual(fs.readdirSync(s.dir).filter(f => /\.(tar\.gz|sha256)$/.test(f) || f.startsWith('.wip-')), []);
   } finally { s.done(); }
 });

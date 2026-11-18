@@ -48,17 +48,29 @@ case "${1:-backup}" in
     mapfile -t P < <(paths)
     [[ ${#P[@]} -gt 0 ]] || { echo "nothing to back up (not founded?)"; exit 1; }
     # The company keeps working while this runs: a seat may write or remove a file under company/work mid-read. GNU tar
-    # then exits 1 ("file changed as we read it") with a complete, readable archive; 2 or more is a real failure. The
-    # digests are taken FROM THE ARCHIVE, never from the live tree afterwards, so a file that changed between the read
-    # and the hash can no longer leave an archive that fails its own verify (or, under set -e, no digest at all).
-    rc=0; ( umask 077; tar -czf "$out.tar.gz" "${P[@]}" ) || rc=$?
-    if [[ $rc -gt 1 ]]; then rm -f "$out.tar.gz"; echo "FAIL tar exited $rc; nothing was kept" >&2; exit 1; fi
-    [[ $rc = 1 ]] && echo "note: files changed while they were read; the snapshot holds what was read, and its digests match it" >&2
-    tmpd="$(mktemp -d)"; tar -xzf "$out.tar.gz" -C "$tmpd"
-    { ( cd "$tmpd" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sed 's#  \./#  #' ); echo "$(sha256sum "$out.tar.gz" | cut -d' ' -f1)  ARCHIVE"; } > "$out.sha256"
-    rm -rf "$tmpd"
-    chmod 600 "$out.tar.gz" "$out.sha256"
-    verify "$out.tar.gz" >/dev/null && echo "backup $out.tar.gz ($(du -h "$out.tar.gz" | cut -f1))" ;;
+    # then exits 1 ("file changed as we read it" / "File removed before we read it") with a complete, readable archive.
+    # That is accepted only when EVERY complaint is one of those two; any other complaint, or exit 2+, fails the run.
+    # The digests are taken FROM THE ARCHIVE, never from the live tree afterwards, so a file that changed between the read
+    # and the hash cannot leave an archive that fails its own verify. A failed run leaves nothing that looks like a
+    # snapshot: it is built and verified in a hidden work folder, then moved into place (digest first).
+    # (Design from a crew framework request: a risk seat's fix for its own failing backup timer.)
+    umask 077
+    find "$DIR" -maxdepth 1 -type d -name '.wip-*' -mmin +120 -exec rm -rf {} + 2>/dev/null || true   # left by a killed run
+    wip="$(mktemp -d "$DIR/.wip-XXXXXX")"; trap 'rm -rf "$wip"' EXIT
+    rc=0; tar -czf "$wip/$stamp.tar.gz" "${P[@]}" 2>"$wip/tar.err" || rc=$?
+    if [[ $rc -ne 0 ]]; then
+      if [[ $rc -eq 1 && -s "$wip/tar.err" ]] && ! grep -vE ': (file changed as we read it|File removed before we read it)$' "$wip/tar.err" | grep -q .; then
+        sed 's/^/note: tolerated (the snapshot holds what was read, and its digests match it): /' "$wip/tar.err" >&2
+      else
+        cat "$wip/tar.err" >&2; echo "FAIL tar exited $rc; nothing was kept" >&2; exit 1
+      fi
+    fi
+    mkdir "$wip/x"; tar -xzf "$wip/$stamp.tar.gz" -C "$wip/x" || { echo "FAIL the archive does not extract; nothing was kept" >&2; exit 1; }
+    { ( cd "$wip/x" && find . -type f -print0 | sort -z | xargs -0 -r sha256sum | sed 's#  \./#  #' ); echo "$(sha256sum "$wip/$stamp.tar.gz" | cut -d' ' -f1)  ARCHIVE"; } > "$wip/$stamp.sha256"
+    rm -rf "$wip/x"
+    verify "$wip/$stamp.tar.gz" >/dev/null || { echo "FAIL the snapshot did not verify; nothing was kept" >&2; exit 1; }
+    chmod 600 "$wip/$stamp.tar.gz" "$wip/$stamp.sha256"
+    mv "$wip/$stamp.sha256" "$out.sha256" && mv "$wip/$stamp.tar.gz" "$out.tar.gz" && echo "backup $out.tar.gz ($(du -h "$out.tar.gz" | cut -f1))" ;;
   list) ls -1 "$DIR"/*.tar.gz 2>/dev/null | sort | while read -r f; do echo "$(basename "$f" .tar.gz)  $(du -h "$f" | cut -f1)"; done ;;
   verify) verify "$(snap_of "${2:-$(newest)}")" ;;
   restore)
