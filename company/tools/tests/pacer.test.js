@@ -1454,3 +1454,11 @@ test('no MiniMax Credits recorded: no per-run token ceiling is not a go-live ite
     assert.equal(/no per-run token ceiling/.test(h.p.statusText(r.m)), warned, 'credits ' + credits);
   }
 });
+
+test('MiniMax: an empty 5-hour window is closed even when fiveHourCloseBelowLeftPct is 0 ("use it to the end")', async () => {
+  const jobs = crewJobs();
+  let r = await measurePlan(make(fixture({ policy: { minimax: { paceBy: 'fiveHour', fiveHourCloseBelowLeftPct: 0 } } }), station(jobs), { mm: mmBody(60, 0) }), jobs);
+  assert.equal(r.m.minimax.open, false); assert.equal(r.m.minimax.hard, true); assert.match(r.m.minimax.why, /used up/);
+  r = await measurePlan(make(fixture({ policy: { minimax: { paceBy: 'fiveHour', fiveHourCloseBelowLeftPct: 0 } } }), station(jobs), { mm: mmBody(60, 3) }), jobs);
+  assert.equal(r.m.minimax.open, true, 'with 3% left and threshold 0 it still runs');
+});

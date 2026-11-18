@@ -877,8 +877,10 @@ function makePacer(o) {
     if (claudeR && claudeR.fiveHour && claudeR.fiveHour.usedPct >= policy.claude.fiveHourCloseAtUsedPct && !(claudeR.fiveHour.resetsAt && claudeR.fiveHour.resetsAt <= t))
       claudeExtra.push('the 5-hour window is ' + f1(claudeR.fiveHour.usedPct) + '% used (closes at ' + policy.claude.fiveHourCloseAtUsedPct + '%)' + (claudeR.fiveHour.resetsAt ? '; it resets ' + hm(claudeR.fiveHour.resetsAt) : ''));
     const mmExtra = [];
-    if (mmR && !mmR.none && isNum(mmR.fiveHourLeftPct) && mmR.fiveHourLeftPct < policy.minimax.fiveHourCloseBelowLeftPct && !(mmR.fiveHourEnd && mmR.fiveHourEnd <= t))
-      mmExtra.push('the 5-hour window has ' + f1(mmR.fiveHourLeftPct) + '% left (closes under ' + policy.minimax.fiveHourCloseBelowLeftPct + '%); it resets ' + hm(mmR.fiveHourEnd));
+    // an EMPTY window is closed whatever the threshold: fiveHourCloseBelowLeftPct 0 means "use it to the end", and with
+    // "left < 0" alone a window at 0% stayed open, so every start failed quota_exhausted at the provider
+    if (mmR && !mmR.none && isNum(mmR.fiveHourLeftPct) && (mmR.fiveHourLeftPct <= 0 || mmR.fiveHourLeftPct < policy.minimax.fiveHourCloseBelowLeftPct) && !(mmR.fiveHourEnd && mmR.fiveHourEnd <= t))
+      mmExtra.push('the 5-hour window has ' + f1(mmR.fiveHourLeftPct) + '% left (' + (mmR.fiveHourLeftPct <= 0 ? 'it is used up' : 'closes under ' + policy.minimax.fiveHourCloseBelowLeftPct + '%') + '); it resets ' + hm(mmR.fiveHourEnd));
     const claude = gate('claude', 'Claude Max', claudeR, t, em, st, claudeExtra);
     const minimax = gate('minimax', 'MiniMax', mmR, t, em, st, mmExtra);
     // The spendCap guardrail (company/state/guardrails.json): while it is off, no pacing line or weekly stop holds a
