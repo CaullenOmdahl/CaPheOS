@@ -261,15 +261,23 @@ test('pauseWhenHeld covers every arm on a subscription the pacer meters (claude-
   assert.deepEqual(s.trialLimits.subscriptionProviders, ['claude-cli', 'custom'], 'the list comes from the pacer, not this tool');
 });
 
-test('the console trial card and Start dialog say which subscriptions pause the trial', async () => {
+test('the console trial card and Start dialog say plainly what a trial compares and which plans pause it', async () => {
   const E = await import(path.join(REPO, 'console', 'ui', 'js', 'screens', 'settings', 'routing-explain.js'));
   const t = { arms: [{ provider: 'custom' }, { provider: 'deepseek' }], pauseWhenHeld: ['claude-cli', 'custom'], heldGuard: { providers: ['claude-cli', 'custom'], subscriptions: ['custom'], missing: [] } };
-  assert.equal(E.heldLine(t), 'Pauses itself while the pacer holds Claude or MiniMax.');
-  assert.match(E.startBody(t, 'seat Lee', false), /split evenly between its 2 models\. It pauses itself while the pacer holds Claude or MiniMax\.$/);
+  assert.equal(E.heldLine(t), 'Pauses itself while the Claude or MiniMax plan is at its limit.');
+  assert.match(E.startBody(t, 'seat Lee', false), /shared out evenly between the two models being compared.*It pauses itself while the Claude or MiniMax plan is at its limit\.$/);
   const gap = { arms: [{ provider: 'custom' }], pauseWhenHeld: ['claude-cli'], heldGuard: { providers: ['claude-cli'], subscriptions: ['custom'], missing: ['custom'] } };
-  assert.match(E.heldLine(gap), /does not pause when MiniMax is held/);
-  assert.match(E.startBody(gap, 'x', true), /only recorded.*does not pause when MiniMax is held/);
-  assert.equal(E.heldLine({ arms: [], pauseWhenHeld: [] }), 'Never pauses for the pacer.');
+  assert.match(E.heldLine(gap), /keeps going when the MiniMax plan is at its limit/);
+  assert.match(E.startBody(gap, 'x', true), /watching only.*keeps going when the MiniMax plan is at its limit/);
+  assert.equal(E.heldLine({ arms: [], pauseWhenHeld: [] }), 'Never pauses for a plan limit.');
+  // a non-technical owner's words: what it compares and how far it got; the ids only in the technical lines
+  const three = { id: 'code-claude', class: 'code', entryShare: 0.1, minItemsPerArm: 30, progress: { minItemsPerArm: 30 }, arms: [{ provider: 'claude-cli', model: 'haiku', items: 1 }, { provider: 'claude-cli', model: 'claude-sonnet-5-5', items: 1, shadowItems: 0 }, { provider: 'claude-cli', model: 'claude-opus-5-5', items: 0 }] };
+  assert.equal(E.trialTitle(three), 'Comparing three Claude models on coding work');
+  assert.equal(E.progressLine(three), '2 of 90 results so far');
+  assert.equal(E.trialTitle({ class: 'writing', arms: [{ provider: 'claude-cli' }, { provider: 'custom' }] }), 'Comparing Claude and MiniMax models on writing work');
+  for (const line of [E.trialTitle(three), E.progressLine(three), E.heldLine(three), E.startBody(three, 'the eng team', true)])
+    assert.doesNotMatch(line, /claude-|MiniMax-|deepseek-|haiku|\barms?\b|entry share|shadow|tier cap|allowlist|pacer/i, line);
+  assert.ok(E.technicalLines(three).some(l => /claude-cli\/claude-opus-5-5/.test(l)) && E.technicalLines(three).some(l => /entry share 10%/.test(l)), 'the ids are kept for the crew');
 });
 
 test('the console route runs routing.js as the owner with fixed arguments', async () => {

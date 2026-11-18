@@ -5,6 +5,7 @@
 import { h, fill, Button, Tag, errLine, empty, table, rel, Details, Setting, Block, humanError } from '../../ui.js';
 import { api, post } from '../../api.js';
 import * as events from '../../events.js';
+import { rulingsSection, projectsSection } from './rulings.js';
 
 export const PRESET_WHAT = {
   'approve-everything': 'Every decision waits for you',
@@ -43,9 +44,11 @@ const POSTURE = [['wait', 'Wait', 'Ask before every action'], ['suggest', 'Sugge
 
 export async function render(host, ctx) {
   const { app } = ctx;
-  const presets = h('div'), guards = h('div'), gates = h('div'), ext = h('div'), posture = h('div'), dmodels = h('div'), changes = h('div');
+  const presets = h('div'), guards = h('div'), gates = h('div'), ext = h('div'), posture = h('div'), dmodels = h('div'), changes = h('div'), rules = h('div'), projects = h('div');
   fill(host,
     Block({ id: 'presets', title: 'Self-governance', lede: 'How often the crew asks before it acts. Pick a preset, then fine-tune any kind of decision.' }, presets),
+    Block({ id: 'rules', title: 'Standing rules', lede: 'Your own rules, in your words. A question a rule covers is left to the crew instead of coming to you. The four owner gates below always come to you.' }, rules),
+    Block({ id: 'projects', title: 'Projects to take over', lede: 'A product the crew asked to take over. Access is not ownership: only you approve it.' }, projects),
     Block({ id: 'guardrails', title: 'Guardrails', lede: 'Hard stops the crew cannot get past, whatever it decides. They start on; leave them on unless you know why.' }, guards),
     Block({ id: 'gates', title: 'Owner gates', lede: 'Four decisions that are always yours while the Owner gates guardrail is on.' }, gates),
     Block({ id: 'gate', title: 'External-action gate', lede: 'Every message, post, account, form, payment or network call that leaves the company needs a clearance naming you or the CEO. The default is no.' }, ext),
@@ -194,8 +197,10 @@ export async function render(host, ctx) {
     drawExternal(); drawChanges();
   }
   load(); drawPosture(); drawDecisionModels();
+  const reloadRules = rulingsSection(rules, app); projectsSection(projects, app);
   const off = events.on(['governance', 'guardrails'], load);
-  return () => off();
+  const offR = events.on('rulings', reloadRules);
+  return () => { off(); offR(); };
 }
 function onPart(b) { return String(b || '').split(' Off:')[0].replace(/\s*\([^)]*\.(js|json|py|sh)[^)]*\)/g, '').replace(/^./, c => c.toUpperCase()); }
 function offPart(b) { return (String(b || '').split('Off:')[1] || '').trim(); }

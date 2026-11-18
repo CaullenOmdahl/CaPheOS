@@ -185,6 +185,23 @@ async function startMock(env) {
     check('Settings › Models: plain model names, no raw ids, no "no chain", no routing-table jargon', mx && /DeepSeek Flash/.test(mt) && /Claude Sonnet 5\.5/.test(mt) && !/deepseek\/|claude-cli|no chain|routing table|sign-in/.test(mx.vis), mt);
     check('Settings › Models: "Nadia Farrell" title-cased; seats without a chain show "—" and "Set up fallbacks"', mx && /Nadia Farrell/.test(mt) && !/Nadia farrell/.test(mx.vis) && mx.setUp === 2, mx && { setUp: mx.setUp, mt });
     check('Settings › Models: a Why only when something is unusual, from the current state', mx && mx.rows.filter(r => r.why).length === 1 && /moves back up/.test(mx.rows.find(r => r.id === 'people1').why), mx && mx.rows);
+    // Settings › Models › Cheaper models (owner direction 2026-11-18, for a non-technical owner): plain words; model ids,
+    // arms, the entry share, "shadow", tier caps and the allowlist only under "Technical details (for the crew)"
+    await go('#/settings/models/routing');
+    const rx = await until(() => js(`(() => { const box = document.querySelector('#set-routing'); if (!box || !box.querySelector('.routing-trial')) return null; const c = box.cloneNode(true); c.querySelectorAll('details').forEach(d => d.remove());
+      return { vis: c.innerText, title: box.querySelector('.routing-trial h3').textContent, tech: [...box.querySelectorAll('details > summary')].map(x => x.textContent), techText: [...box.querySelectorAll('details')].map(d => d.textContent).join(' ') }; })()`), 6000);
+    check('Settings › Models › Cheaper models: "Comparing three Claude models on coding work — 2 of 90 results so far", Off / Watching only / On, "Keep routine work on lighter models"',
+      rx && rx.title === 'Comparing three Claude models on coding work' && /2 of 90 results so far/.test(rx.vis) && /Cheaper models where quality holds/.test(rx.vis) && /Watching only/.test(rx.vis) && /Keep routine work on lighter models/.test(rx.vis), rx);
+    check('Settings › Models › Cheaper models: no model id, arm, entry share, shadow, tier cap or allowlist outside Technical details', rx && !/claude-|haiku|MiniMax-|deepseek|\barms?\b|entry share|shadow|tier cap|allowlist|pacer|\bwakes?\b/i.test(rx.vis)
+      && rx.tech.includes('Technical details (for the crew)') && /claude-cli\/claude-opus-5-5/.test(rx.techText) && /entry share 10%/.test(rx.techText), rx && { vis: rx.vis, tech: rx.tech });
+    // Today: only what still needs the owner is in Needs you and the badge; the rest is "The crew is handling" (read
+    // only, who and a plain line); "What the crew did today" is one digest card with the technical part collapsed
+    await go('#/today');
+    const tq = await until(() => js(`(() => { const hd = document.querySelector('.crew-handling'); const dg = document.querySelector('.digest-card'); if (!hd || !dg) return null; const li = hd.querySelector('[data-handling="q-000301"]');
+      return { sum: hd.querySelector('summary').textContent, line: li && [...li.children].filter(x => x.tagName === "SPAN").map(x => x.textContent).join(" | "), inNeeds: !!document.querySelector('.gates > .gate[data-id="q-000301"]'), cards: document.querySelectorAll('.gates > .gate').length,
+        badge: (document.querySelector('.nav-item[href="#/today"] .n, .side .n') || {}).textContent, digest: dg.innerText, digestTech: [...dg.querySelectorAll('details')].every(d => !d.open), techSummary: (dg.querySelector('details > summary') || {}).textContent }; })()`), 8000);
+    check('Today: a notify-level card is not in Needs you, it is under "The crew is handling" with who and a plain line', tq && !tq.inNeeds && /^The crew is handling \(1\)$/.test(tq.sum) && /Mira/.test(tq.line) && /Your settings let the crew decide changes to the crew's own tools and tell you afterwards\./.test(tq.line) && !/hc-0008|\.js/.test(tq.line), tq);
+    check('Today: "What the crew did today" is one digest card, its technical part collapsed', tq && /The weekly report went out/.test(tq.digest) && /Mira fixed the broken sign-up link/.test(tq.digest) && tq.digestTech && tq.techSummary === 'Technical details (for the crew)', tq);
     // one time format (walk2): 24 h, never AM/PM, on Crew and Settings
     for (const sc of ['#/crew', '#/settings/models', '#/settings/tempo', '#/settings/system']) { await go(sc); await sleep(500); const tx = await js(VISIBLE); check(sc + ': 24-hour times, no AM/PM', !/\b\d{1,2}:\d\d\s?(AM|PM)\b/i.test(tx || ''), (tx || '').match(/.{0,30}\d:\d\d\s?(AM|PM).{0,10}/i)); }
     // Crew: the status words Today uses; lanes only while a seat runs more than one thing, never for the CEO

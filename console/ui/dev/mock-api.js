@@ -146,6 +146,12 @@ const S = {
   halt: { mode: 'running' },
   services: null,
   governance: null, guardrails: null,
+  // console/owner-needs.js: an open card the owner's settings leave to the crew (read only on Today), the day's digest,
+  // standing rules and a project waiting for the owner
+  crewHandling: [{ id: 'q-000301', from: 'Mira', askerSeat: null, askedAt: ago(30), category: 'tools', level: 'notify', ruling: null, lead: 'A question about changes to the crew\'s own tools.', line: 'Your settings let the crew decide changes to the crew\'s own tools and tell you afterwards.',
+    question: { id: 'q-000301', from: 'Mira', about: 'governance:tools', blocking: false, askedAt: ago(30), batch: 'gate', kind: 'approve', q: 'May I change the report tool?', message: 'May I change the report tool? It lets us ship faster; if you skip it, we keep the old one.', gate: { category: 'tools', ref: 'harness-review:hc-0008', summary: 'change the report tool' }, technical: 'harness-change.js hc-0008: company/tools/report.js (+12 -3)', needsOwner: false } }],
+  digest: [{ at: ago(120), from: 'Founder', text: 'The weekly report went out to the two pilot customers.' }, { at: ago(45), from: 'Mira', text: 'Mira fixed the broken sign-up link.', technical: 'site/signup.html: href fixed (commit 1a2b3c4)' }],
+  rulings: [], projects: [{ id: 'shop-app', name: 'Shop App', state: 'requested', scope: 'the shop front', root: '/srv/shop' }],
   cadence: { dispatcherTickMin: 10, defaultCooldownMin: 40, maxPerTick: 4, file: 'company/work/ops/cadence.json', unknownSeats: [],
     sprint: { on: true, active: true, since: new Date(Date.now() - 3 * 3600e3).toISOString(), until: null, untilWhy: 'until the company is certified, then 24 h more', by: 'founding', budgetUsd: 4, budgetIsDefault: true, config: { cooldownFloorMin: 2, lanes: 2, fallbackTickMin: 5 } },
     seats: { agent: { name: 'Founder', loop: 'Founder loop', cooldownMin: { value: 10, from: 'cadence' }, priority: { value: 100, from: 'loops' }, wakeOnInbox: { value: true }, wakeOnOwnerMessage: { value: true } },
@@ -404,15 +410,24 @@ async function apiRoute(req, res, p, q) {
   }
   // routing modes and trials (Settings › Models › Routing): console/routing.js -> company/tools/routing.js
   if (!S.routing) S.routing = { ok: true, source: 'default', mode: 'shadow', tierCaps: { mode: 'shadow', allow: [], exemptFunctions: ['ceo'], exemptLeads: true }, log: [],
-    trials: [{ id: 'code-sonnet-vs-opus', class: 'code', status: 'draft', entryShare: 0.1, minItemsPerArm: 30, createdBy: 'Mira', scope: { departments: ['eng'], seats: [] }, reasons: [], progress: { minItemsPerArm: 30, lowestArm: 0, enough: false },
-      arms: [{ index: 0, provider: 'claude-cli', model: 'claude-sonnet-5-5', effort: 'high', items: 0, wakes: 0, shadowItems: 0, shadowWakes: 0 }, { index: 1, provider: 'claude-cli', model: 'claude-opus-5-5', effort: 'medium', items: 0, wakes: 0, shadowItems: 0, shadowWakes: 0 }] }] };
+    trials: [{ id: 'code-claude-three', class: 'code', status: 'running', entryShare: 0.1, minItemsPerArm: 30, createdBy: 'Mira', scope: { departments: ['eng'], seats: [] }, reasons: ['held: claude-cli held by the pacer (since 2026-11-18 09:00)'], hold: null, progress: { minItemsPerArm: 30, lowestArm: 0, enough: false },
+      heldGuard: { providers: ['claude-cli'], subscriptions: ['claude-cli'], missing: [] },
+      arms: [{ index: 0, provider: 'claude-cli', model: 'haiku', effort: 'low', items: 1, wakes: 1, shadowItems: 0, shadowWakes: 0 }, { index: 1, provider: 'claude-cli', model: 'claude-sonnet-5-5', effort: 'high', items: 0, wakes: 0, shadowItems: 1, shadowWakes: 1 }, { index: 2, provider: 'claude-cli', model: 'claude-opus-5-5', effort: 'medium', items: 0, wakes: 0, shadowItems: 0, shadowWakes: 0 }] }] };
   if (M === 'GET' && p === '/api/routing') return ok(S.routing);
   const rtm = p.match(/^\/api\/routing\/(mode|tiercaps)$/), rtt = p.match(/^\/api\/routing\/trials\/([a-z][a-z0-9-]{1,39})\/(start|pause|resume|stop)$/);
   if (M === 'POST' && rtm) { if (!['off', 'shadow', 'live'].includes(B.mode)) return J(res, 400, { ok: false, error: 'mode is one of off, shadow, live' }); if (rtm[1] === 'mode') S.routing.mode = B.mode; else S.routing.tierCaps.mode = B.mode; S.routing.log.unshift({ at: Date.now(), op: rtm[1], to: B.mode, by: 'owner' }); emit('routing'); return ok({ changed: true, summary: rtm[1] + ' -> ' + B.mode }); }
   if (M === 'POST' && rtt) { const t = S.routing.trials.find(x => x.id === rtt[1]); if (!t) return J(res, 400, { ok: false, error: 'no trial' }); t.status = { start: 'running', pause: 'paused', resume: 'running', stop: 'done' }[rtt[2]]; S.routing.log.unshift({ at: Date.now(), op: 'trial-' + rtt[2], trial: t.id, to: t.status, by: 'owner' }); emit('routing'); return ok({ changed: true, summary: rtt[2] + ' trial ' + t.id }); }
+  const rlm = p.match(/^\/api\/rulings\/(rule-[a-z0-9]+-[0-9a-f]{4})\/remove$/), pjm = p.match(/^\/api\/projects\/([a-z0-9-]+)\/(approve|revoke)$/);
+  if (M === 'POST' && rlm) { S.rulings = S.rulings.filter(r => r.id !== rlm[1]); emit('rulings'); return ok({ removed: rlm[1] }); }
+  if (M === 'POST' && pjm) { const pj = S.projects.find(x => x.id === pjm[1]); if (!pj) return J(res, 400, { ok: false, error: 'no project' }); pj.state = pjm[2] === 'approve' ? 'approved' : 'revoked'; return ok({ project: pj }); }
   switch (M + ' ' + p) {
     case 'GET /api/company': return J(res, 200, S.company);
-    case 'GET /api/questions': return ok({ questions: S.questions.map(present) });
+    // Needs you vs The crew is handling (console/owner-needs.js): the mock's handled card sits apart from S.questions
+    case 'GET /api/questions': return ok({ questions: S.questions.map(present), crewHandling: S.crewHandling });
+    case 'GET /api/digest': return ok({ title: 'What the crew did today', items: S.digest });
+    case 'GET /api/rulings': return ok({ rulings: S.rulings });
+    case 'POST /api/rulings': { const r = { id: 'rule-' + Date.now().toString(36) + '-abcd', at: now(), by: 'owner', text: String(B.text || ''), scope: B.scope || {}, effect: B.effect || 'crew-decides', covers: (B.scope && B.scope.categories) || [] }; S.rulings.push(r); emit('rulings'); return ok({ ruling: r }); }
+    case 'GET /api/projects': return ok({ projects: S.projects });
     case 'GET /api/questions/answered': return ok({ answered: S.answered });
     case 'GET /api/owner/messages': return ok(ownerView());
     case 'POST /api/owner/messages': { if (!B.text) return J(res, 400, { ok: false, error: 'text is required' }); const m = { dir: 'in', id: 'in-' + Date.now(), at: now(), from: 'Sam Owner', text: (B.to ? B.to + ', ' : '') + B.text }; S.messages.push(m); emit('owner'); return ok({ message: ownerView().messages.find(x => x.id === m.id) }); }
@@ -542,7 +557,7 @@ async function apiRoute(req, res, p, q) {
     case 'GET /api/governance-log': return ok({ entries: [{ at: ago(600), by: 'Sam Owner', event: 'preset', preset: 'gate-money-people' }] });
     case 'GET /api/locked': return ok({ text: 'locked-watch: 14 files watched, 0 drifted (mock)' });
     case 'GET /api/external': return ok({ text: 'external-gate: 1 clearance\n  message  owner channel (file adapter)  pinned (mock)' });
-    case 'GET /api/today': return ok({ company: S.company, needsYou: { questions: S.questions.map(present), count: S.questions.length }, halt: S.halt });
+    case 'GET /api/today': return ok({ company: S.company, needsYou: { questions: S.questions.map(present), count: S.questions.length }, crewHandling: S.crewHandling, digest: { items: S.digest }, halt: S.halt });
   }
   let m;
   if (M === 'GET' && (m = /^\/api\/chat\/([A-Za-z0-9_-]+)$/.exec(p))) {
