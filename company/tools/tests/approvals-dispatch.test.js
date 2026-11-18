@@ -76,7 +76,13 @@ async function company() {
     return { code: p.status, out: (p.stdout || '') + (p.stderr || ''), fired, log: c.r('company/work/dispatch-log.md') };
   };
   c.rest = async () => { for (const id of Object.values(ids)) await st('POST', '/api/cron/update', { id, patch: { lastRunAt: new Date(Date.now() - 600 * MIN).toISOString(), inFlight: false } }); };
-  c.ap = code => { const r = spawnSync(process.execPath, ['-e', 'const A = require(' + JSON.stringify(AP) + '); Promise.resolve((() => {' + code + '})()).then(v => console.log(JSON.stringify(v === undefined ? null : v)));'], { cwd: T, env, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return JSON.parse(r.stdout.trim().split('\n').pop()); };
+  // The owner channel trusts an appended line only when the running program is one of its writers (lib/owner-channel.js
+  // WRITERS: the console, company/tools/approvals.js, ...). In the product the owner answers through the console or
+  // approvals.js itself; a node -e helper is neither, so locked-watch rightly stripped the answer's owner message — and
+  // the test failed or passed by the wall clock. So the helper runs as a program at company/tools/approvals.js (inside
+  // the test company) that loads the real approvals.js: the same program identity a real answer has.
+  const apMain = path.join(T, 'company', 'tools', 'approvals.js'); let apN = 0;
+  c.ap = code => { const f = apMain; fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, '// test harness: runs one call through the real approvals.js (' + (apN++) + ')\nconst A = require(' + JSON.stringify(AP) + '); Promise.resolve((() => {' + code + '})()).then(v => console.log(JSON.stringify(v === undefined ? null : v)));\n'); const r = spawnSync(process.execPath, [f], { cwd: T, env, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return JSON.parse(r.stdout.trim().split('\n').pop()); };
   return c;
 }
 // a blocking approval Sam asked for 20 minutes ago (so one reminder is due), minted the way approvals.js ask mints it
