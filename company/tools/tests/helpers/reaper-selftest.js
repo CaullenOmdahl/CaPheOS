@@ -208,7 +208,14 @@ async function selftest() {
       W(path.join(co, 'secrets', 'station-token'), 'tok123');
       const cfg = JSON.parse(fs.readFileSync(path.join(co, 'company', 'company.json'), 'utf8')); cfg.station.url = 'http://127.0.0.1:' + port; W(path.join(co, 'company', 'company.json'), JSON.stringify(cfg));
       const p = base({ noNetwork: false, meminfo: 'MemTotal: 8388608 kB\nMemAvailable: 102400 kB\n' });
-      const r = await RP.run(p, { only: ['temp', 'pressure'] });
+      // STARNET_URL wins over company.json (as in lib/company.js): scripts/test.sh points it at a closed port, so this
+      // case first checks that, then clears it to reach the mock
+      const savedUrl = process.env.STARNET_URL;
+      process.env.STARNET_URL = 'http://127.0.0.1:1';
+      const viaEnv = await RP.run(base({ noNetwork: false, meminfo: 'MemTotal: 8388608 kB\nMemAvailable: 102400 kB\n' }), { only: ['pressure'] });
+      assert.ok(viaEnv.pressureStep && viaEnv.pressureStep.short && viaEnv.pressureStep.closed === null && calls.length === 0, 'STARNET_URL is used: the mock was not called ' + JSON.stringify(viaEnv.pressureStep));
+      delete process.env.STARNET_URL;
+      let r; try { r = await RP.run(p, { only: ['temp', 'pressure'] }); } finally { if (savedUrl === undefined) delete process.env.STARNET_URL; else process.env.STARNET_URL = savedUrl; }
       srv.close();
       assert.ok(r.pressure.short, JSON.stringify(r.pressure));
       assert.deepStrictEqual(calls, ['GET /api/browser/view tok123', 'POST /api/browser/view/close tok123']);

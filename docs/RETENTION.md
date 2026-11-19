@@ -246,11 +246,11 @@ the station's browser is headless and closes itself when unused; a window never 
 
 | Machine | profile | keep free | station High / Max | console | dispatcher | private browsers / idle close |
 |---|---|---|---|---|---|---|
-| 2 GB | low | 0 | 896 / 1152 MB | 160 / 300 | 128 / 640 | 1 / 5 min |
-| 4 GB | low | 0 | 1984 / 2560 | 160 / 300 | 128 / 640 | 1 / 5 min |
-| 8 GB | normal | 0 | 3584 / 4992 | 256 / 512 | 256 / 1024 | 3 / 15 min |
-| 16 GB | normal | 6 GB | 4608 / 6400 | 256 / 512 | 256 / 1024 | 3 / 15 min |
-| 62 GB | normal | 16 GB | 23040 / 32256 | 256 / 512 | 256 / 1024 | 3 / 15 min |
+| 2 GB | low | 0 | 896 / 1152 MB | 160 / 300 | 512 / 768 | 1 / 5 min |
+| 4 GB | low | 0 | 1984 / 2560 | 160 / 300 | 512 / 768 | 1 / 5 min |
+| 8 GB | normal | 0 | 3584 / 4992 | 256 / 512 | 768 / 1024 | 3 / 15 min |
+| 16 GB | normal | 6 GB | 4608 / 6400 | 256 / 512 | 768 / 1024 | 3 / 15 min |
+| 62 GB | normal | 16 GB | 23040 / 32256 | 256 / 512 | 768 / 1024 | 3 / 15 min |
 
 Under low also: Node heaps 384 / 128 / 160 MB, at most 2 agents at once, background services 256M by default and 1G at
 most (512M / 4G otherwise), Chrome's low-memory flags. `memory.js apply` (run by `scripts/setup-station.sh`; by the owner
@@ -261,5 +261,10 @@ and shell settings for StarNet patch 0020, ignored by a station without it). It 
 `systemctl --user set-property --runtime` and never restarts anything; a changed heap or memory.env is printed with the
 safe restart that waits until nothing runs. The station unit has no `ManagedOOMMemoryPressure=kill` on purpose
 (systemd-oomd would kill every run in it): the kernel picks inside the unit, the sidecar at `OOMScoreAdjust=100`, agent
-commands at 500 (patch 0020), console and dispatcher at 200 with oomd's kill (they restart by themselves). The console's
+commands at 500 (patch 0020), console and dispatcher at 200 with oomd's kill (they restart by themselves; under low the
+dispatcher has no oomd kill, so it is not ended mid-tick over and over). The station has `OOMPolicy=continue` (template
+and drop-in): with the host default `stop`, the kernel ending one build at MemoryMax would make systemd stop the whole
+station and every live run. `apply` sets limits live only when that cannot stop a unit: the station already runs with
+`OOMPolicy=continue` (after the daemon-reload) and no unit already uses more than its new MemoryHigh; otherwise it warns
+and the limits wait for the unit's next start. The console's
 Settings › System › Health shows a Memory row (Fine, Tight, Short) and the plain line from `memory.js status`.

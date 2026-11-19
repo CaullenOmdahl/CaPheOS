@@ -19,7 +19,10 @@ function fakeProc() {
   const put = (pid, o) => {
     const d = path.join(proc, String(pid)); fs.mkdirSync(d);
     fs.writeFileSync(path.join(d, 'cmdline'), o.cmd.join('\0') + '\0');
-    fs.writeFileSync(path.join(d, 'stat'), pid + ' (' + (o.comm || 'x') + ') S ' + (o.ppid || 1) + ' ' + (o.pgid || pid) + ' 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 ' + (o.start || 100) + ' 0');
+    // after "(comm) ": state, ppid, pgid, ... utime at [11], stime at [12], starttime at [19] (proc(5) fields 3..)
+    const rest = ['S', o.ppid || 1, o.pgid || pid]; while (rest.length < 22) rest.push(0);
+    rest[11] = o.ticks || 0; rest[19] = o.start || 100;
+    fs.writeFileSync(path.join(d, 'stat'), pid + ' (' + (o.comm || 'x') + ') ' + rest.join(' '));
     fs.writeFileSync(path.join(d, 'status'), 'Name:\t' + (o.comm || 'x') + '\nUid:\t' + (o.uid == null ? UID : o.uid) + '\t0\t0\t0\nVmRSS:\t  20480 kB\n');
     if (o.cwd) fs.symlinkSync(o.cwd, path.join(d, 'cwd'));
     if (o.env) fs.writeFileSync(path.join(d, 'environ'), o.env.join('\0') + '\0');
@@ -105,4 +108,96 @@ test('browsers: parent kind and idle state; strays: handed to init, outside the 
   assert.strictEqual(S[52].kind, null, 'an unknown kind is listed, not ended');
   assert.ok(!S[53], 'inside the company\'s unit: that unit\'s life, not a stray');
   assert.ok(!S[40], 'the live station is never a stray');
+});
+
+test('a receipt matched by command line needs its startedAt: without it a reused pid running a similar command is not claimed', () => {
+  const f = fakeProc();
+  f.put(25, { cmd: ['bash', '-c', 'npm run build --watch'] });
+  const c = ctxOf(f, { ledger: [{ pid: 25, cmd: 'bash -c npm run build', kind: 'shell.bg' }] });
+  assert.strictEqual(O.proof(O.scan(c).get(25), c), null, 'no startedAt, no created: no proof');
+  const c2 = ctxOf(f, { ledger: [{ pid: 25, cmd: 'bash -c npm run build', kind: 'shell.bg', startedAt: Date.now() }] });
+  assert.strictEqual(O.proof(O.scan(c2).get(25), c2).how, 'ledger');
+  const c3 = ctxOf(f, { ledger: [{ pid: 25, cmd: 'bash -c npm run build', kind: 'shell.bg', startedAt: Date.now() - 20 * 3600e3 }] });
+  assert.strictEqual(O.proof(O.scan(c3).get(25), c3), null, 'it started after the receipt was written: a reused pid');
+});
+
+test('a driven Chrome with no --user-data-dir runs on the owner\'s default profile: never touchable, never listed', () => {
+  const f = fakeProc();
+  f.put(1058, { cmd: ['/usr/lib/systemd/systemd', '--user'], comm: 'systemd' });
+  f.put(36, { cmd: ['/opt/google/chrome/chrome', '--remote-debugging-port=9222'], comm: 'chrome', ppid: 1058, cwd: f.root });
+  const c = ctxOf(f); const all = O.scan(c);
+  assert.ok(O.proof(all.get(36), c), 'its working folder is in the company');
+  assert.strictEqual(O.touchable(all.get(36), c), false, 'but it is the owner\'s Chrome');
+  assert.ok(!O.browsers(c).some(b => b.pid === 36));
+});
+
+test('naming: only Chrome processes naming the profile exactly; a sibling sharing its prefix and a crew command are left alone', () => {
+  const f = fakeProc();
+  const p = f.root + '/.browser-profile';
+  f.put(60, { cmd: ['/opt/google/chrome/chrome', '--type=renderer', '--user-data-dir=' + p], comm: 'chrome' });
+  f.put(61, { cmd: ['/opt/google/chrome/chrome_crashpad_handler', '--database=' + p + '/Crashpad', '--monitor-self'], comm: 'chrome_crashpad' });
+  f.put(62, { cmd: ['/opt/google/chrome/chrome', '--headless', '--user-data-dir=' + p + '-2'], comm: 'chrome' });
+  f.put(63, { cmd: ['/opt/google/chrome/chrome_crashpad_handler', '--database=' + p + '-2/Crashpad'], comm: 'chrome_crashpad' });
+  f.put(64, { cmd: ['du', '-sh', p] , comm: 'du' });
+  f.put(65, { cmd: ['/opt/google/chrome/chrome', '--user-data-dir=' + p + 'x'], comm: 'chrome' });
+  const c = ctxOf(f);
+  assert.deepStrictEqual(O.naming(c, p).sort((a, b) => a - b), [60, 61]);
+  assert.ok(O.namesPath('--user-data-dir=' + p, p) && O.namesPath(p + '/Default', p) && !O.namesPath(p + '-2', p) && !O.namesPath('/elsewhere' + p, p));
+});
+
+test('strays: a Gradle daemon is ended only after its idle time without CPU, with a polite TERM first; never for its age alone', () => {
+  const f = fakeProc();
+  const RP = require('../reaper');
+  f.put(1058, { cmd: ['/usr/lib/systemd/systemd', '--user'], comm: 'systemd' });
+  const gd = { cmd: ['/usr/lib/jvm/bin/java', '-Xmx2g', 'org.gradle.launcher.daemon.bootstrap.GradleDaemon', '8.7'], comm: 'java', ppid: 1058, cwd: f.root + '/scratch/phil-app', ticks: 500 };
+  f.put(70, gd);
+  f.put(71, { cmd: ['/home/u/flutter/bin/cache/artifacts/engine/linux-x64/flutter_tester'], comm: 'flutter_tester', ppid: 1058, cwd: f.root + '/scratch/phil-app' });
+  fs.mkdirSync(path.join(f.root, 'company', 'state'), { recursive: true });
+  const kills = [];
+  const at = t => RP.context({ root: f.root, proc: f.proc, supervisor: 'none', cgroupOf: () => '', home: path.join(f.T, 'home'), now: t, minAgeS: 0, idleS: 3 * 3600, graceMs: 10, daemonGraceMs: 10,
+    kill: (pid, sig) => { kills.push(pid + ' ' + sig); return true; }, alive: pid => pid === 70 && !kills.includes('70 SIGKILL'), noNetwork: true });   // the daemon ignores TERM here: KILL after the grace
+  const t0 = Date.now();
+  let ctx = at(t0); let r = RP.stepStrays(ctx);
+  assert.ok(kills.some(k => k === '71 SIGTERM' || k === '-71 SIGTERM'), 'flutter_tester ended at once: ' + kills.join());
+  assert.ok(!kills.some(k => /^-?70 /.test(k)), 'first sighting of the daemon: its clock starts');
+  assert.match(r.list.find(x => x.pid === 70).decision, /^in use/);
+  const save = c => fs.writeFileSync(path.join(f.root, 'company', 'state', 'reaper.json'), JSON.stringify(c.state));
+  save(ctx);
+  // 2 h later it used CPU (a build): the clock starts again
+  fs.rmSync(path.join(f.proc, '70'), { recursive: true }); f.put(70, Object.assign({}, gd, { ticks: 900 }));
+  kills.length = 0; ctx = at(t0 + 2 * 3600e3); r = RP.stepStrays(ctx); save(ctx);
+  assert.ok(!kills.some(k => /^-?70 /.test(k)), 'used CPU: kept');
+  // 4 h after that, no CPU used since: idle 4 h (over 3), ended with TERM to the pid alone, then KILL
+  kills.length = 0; ctx = at(t0 + 6 * 3600e3); r = RP.stepStrays(ctx);
+  assert.strictEqual(r.list.find(x => x.pid === 70).decision, 'end');
+  assert.ok(kills.indexOf('70 SIGTERM') >= 0 && kills.indexOf('70 SIGTERM') < kills.indexOf('70 SIGKILL') && !kills.includes('-70 SIGTERM'), 'TERM to the daemon alone first: ' + kills.join());
+  const row = fs.readFileSync(path.join(f.root, 'company', 'state', 'reaper.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).find(x => x.pid === 70);
+  assert.match(row.plain, /^Ended a left-behind gradle daemon from Phil's work \(\d+ h old, unused for 4 h, \d+ MB\)\.$/);
+});
+
+test('retention: a yes on a report-only folder hands its removal to the tools seat (the reaper never deletes it), until it is gone', () => {
+  const f = fakeProc();
+  const RP = require('../reaper');
+  const W = (p, t) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, t); };
+  W(path.join(f.root, 'company', 'work', 'ops', 'retention.json'), JSON.stringify({ artifacts: [
+    { id: 'old-rehearsal', path: '.starnet-data/rehearsal', policy: 'report-only', warnBytes: 1, enforce: false, plain: 'The old rehearsal copy' }] }));
+  W(path.join(f.root, '.starnet-data', 'rehearsal', 'f'), 'x'.repeat(8192)); fs.mkdirSync(path.join(f.root, 'company', 'state'), { recursive: true });
+  const cards = []; let yes = false;
+  const at = t => { const c = RP.context({ root: f.root, proc: f.proc, supervisor: 'none', now: t, noNetwork: true, halted: false,
+    card: { file: o => { cards.push(o); return { filed: true, id: 'q-1' }; } }, answerOf: ref => yes && ref === 'retention:old-rehearsal' ? { yes: true, id: 'q-1' } : null }); c.forceRetention = true; c.due = []; c.rows = []; return c; };
+  const t0 = Date.parse('2026-11-19T12:00:00Z');
+  let c = at(t0); RP.stepRetention(c); fs.writeFileSync(path.join(f.root, 'company', 'state', 'reaper.json'), JSON.stringify(c.state));
+  assert.strictEqual(cards.length, 1);
+  assert.match(cards[0].consequence, /^Yes: the crew checks nothing still uses it, removes it and tells you when it is gone\./);
+  yes = true;
+  c = at(t0 + 86400e3); let r = RP.stepRetention(c); fs.writeFileSync(path.join(f.root, 'company', 'state', 'reaper.json'), JSON.stringify(c.state));
+  assert.ok(fs.existsSync(path.join(f.root, '.starnet-data', 'rehearsal', 'f')), 'the reaper never deletes a report-only folder');
+  assert.deepStrictEqual(r.handedOver, ['old-rehearsal']);
+  assert.ok(c.due.some(d => d.id === 'retention-yes:old-rehearsal' && /The owner agreed that the old rehearsal copy/.test(d.reason)), JSON.stringify(c.due));
+  c = at(t0 + 2 * 86400e3); r = RP.stepRetention(c); fs.writeFileSync(path.join(f.root, 'company', 'state', 'reaper.json'), JSON.stringify(c.state));
+  assert.strictEqual(c.due.length, 0, 'once a week, not every day');
+  fs.rmSync(path.join(f.root, '.starnet-data', 'rehearsal'), { recursive: true });
+  c = at(t0 + 9 * 86400e3); r = RP.stepRetention(c);
+  assert.strictEqual(c.due.length, 0, 'gone: nothing more to hand over');
+  assert.ok(c.state.retention['old-rehearsal'].done, 'and the row is marked done');
 });

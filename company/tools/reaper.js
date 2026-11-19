@@ -29,14 +29,17 @@
  *                station runs is the station's (patch 0020 closes it when idle): never killed; idle past 3 x the idle
  *                time it is reported (broken idle close).
  *   2 strays     this company's processes handed to init, outside its units, older than 6 h (3 under low): known kinds
- *                (flutter_tester, dart frontend/analysis servers, Gradle and Kotlin daemons, esbuild --service, a mock
- *                station or test walk, an orphaned test station, pytest) are ended; any other kind is reported once.
+ *                (flutter_tester, dart frontend/analysis servers, esbuild --service, a mock station or test walk, an
+ *                orphaned test station, pytest) are ended; Gradle and Kotlin daemons only after 3 h without using any
+ *                CPU (measured across runs), with TERM and 20 s to stop by themselves first; any other kind is
+ *                reported once.
  *   3 temp       company/tools/tmp-sweep.js, scope own: the private temp dir (older than 24 h and not in use; 6 h under
  *                memory pressure) and, in the shared /tmp, only the framework's test names and leftovers of this
  *                company's own station pids. A file pattern that keeps leaking (200 entries or 1 GB a day, 2 days) is
  *                reported once a week. Only in a set-up company (its private temp dir exists; CAPHEOS_TMP_SWEEP=0: off).
  *   4 retention  the folder rules (retention.js dirPolicies), at most once a company day, never while halted: measured;
- *                past a row's warnBytes the owner is asked once (an owner card); deleted only after their yes.
+ *                past a row's warnBytes the owner is asked once (an owner card); deleted only after their yes. A
+ *                report-only row is never deleted here: the yes becomes a due item for the tools seat until it is gone.
  *   5 sample     memory.js sample; a unit growing for 48 h without a restart is reported once a week (never restarted).
  *   6 pressure   free memory under keepFreeMB + 256 MB (under low also under 300 MB): asks the station to close its
  *                browser when no run drives it, halves the temp ages, writes company/state/memory-pressure.json;
@@ -87,6 +90,8 @@ function context(o) {
     alive: o.alive || alive,
     graceMs: Number.isFinite(o.graceMs) ? o.graceMs : 3000,
     minAgeS: Number.isFinite(o.minAgeS) ? o.minAgeS : null,      // test only (--min-age): browsers and strays
+    idleS: Number.isFinite(o.idleS) ? o.idleS : null,            // test only: a build daemon's idle time (else its kind's idleH)
+    daemonGraceMs: Number.isFinite(o.daemonGraceMs) ? o.daemonGraceMs : 20000,   // a build daemon's time to stop on TERM
     tempDirs: o.tempDirs || null, forceTemp: !!o.forceTemp,
     meminfo: o.meminfo || null,
     halted: o.halted !== undefined ? o.halted : haltedOf(root, now),
@@ -167,10 +172,10 @@ function seatOf(ctx, p) {
   return { id, name: (agents[id] && agents[id].name) || id.charAt(0).toUpperCase() + id.slice(1) };
 }
 // TERM to the group (when it leads one) or the pid, wait up to graceMs, KILL to what is left (and to `naming`)
-function endAll(ctx, targets, naming) {
+function endAll(ctx, targets, naming, graceMs) {
   if (ctx.dry || !targets.length) return;
   for (const t of targets) ctx.kill(t.pgid === t.pid ? -t.pid : t.pid, 'SIGTERM');
-  const until = Date.now() + ctx.graceMs;
+  const until = Date.now() + (Number.isFinite(graceMs) ? graceMs : ctx.graceMs);
   const live = () => targets.some(t => (t.pids || [t.pid]).some(p => ctx.alive(p)));
   while (live() && Date.now() < until) pause(100);
   for (const t of targets) { if (t.pgid === t.pid) ctx.kill(-t.pid, 'SIGKILL'); for (const p of t.pids || [t.pid]) if (ctx.alive(p)) ctx.kill(p, 'SIGKILL'); }
@@ -214,13 +219,33 @@ function stepStrays(ctx) {
   const p = planOf(ctx); const c = owned(ctx);
   const minAgeS = ctx.minAgeS != null ? ctx.minAgeS : p.reaper.strayMinAgeH * 3600;
   const list = O.strays(c, { minAgeS });
-  const known = list.filter(s => s.kind);
-  // a known kind's group may hold the company's other strays: end each one alone unless it leads its own group
-  endAll(ctx, known.map(s => Object.assign({}, s, { pids: [s.pid] })), false);
+  // a build daemon (Gradle, Kotlin: its kind has idleH) is ended only after idleH hours without using any CPU, measured
+  // across runs in reaper.json strayCpu {"<pid>:<start>": {ticks, since}}; its first sighting starts the clock. Never by
+  // its age alone: an old daemon may be serving a build right now.
+  const cpu = ctx.state.strayCpu = ctx.state.strayCpu || {}; const seenCpu = new Set();
+  for (const s of list) {
+    if (!s.kind || !s.idleH) continue;
+    const key = s.pid + ':' + (s.startMs || 0); seenCpu.add(key);
+    const prev = cpu[key];
+    if (!prev || prev.ticks !== s.cpuTicks) { cpu[key] = { ticks: s.cpuTicks, since: new Date(ctx.now).toISOString() }; s.decision = 'in use (used CPU since the last look)'; continue; }
+    const idleFor = (ctx.now - Date.parse(prev.since)) / 1000;
+    const need = ctx.idleS != null ? ctx.idleS : s.idleH * 3600;
+    s.decision = idleFor >= need ? 'end' : 'in use (idle ' + fmtAge(Math.round(idleFor)).replace(/ old$/, '') + ')';
+    s.idleS = Math.round(idleFor);
+  }
+  for (const k of Object.keys(cpu)) if (!seenCpu.has(k)) delete cpu[k];
+  const known = list.filter(s => s.kind && (!s.idleH || s.decision === 'end'));
+  const daemons = known.filter(s => s.idleH), quick = known.filter(s => !s.idleH);
+  // a known kind's group may hold the company's other strays: end each one alone unless it leads its own group.
+  // A build daemon gets TERM and daemonGraceMs to stop by itself first (the JVM's own shutdown: what `gradle --stop`
+  // asks of it). Not `gradle --stop` itself: that stops every daemon of that Gradle version for this user, also ones
+  // that are not provably this company's.
+  endAll(ctx, quick.map(s => Object.assign({}, s, { pids: [s.pid] })), false);
+  endAll(ctx, daemons.map(s => Object.assign({}, s, { pgid: 0, pids: [s.pid] })), false, Math.max(ctx.graceMs, ctx.daemonGraceMs));
   for (const s of known) {
     const who = seatOf(ctx, s.cwd);
     record(ctx, { kind: 'stray', what: s.kind + ' pid ' + s.pid + ' (' + s.proof.how + ': ' + s.proof.detail + ')', pid: s.pid, seat: who ? who.id : undefined, freedMB: s.rssMB,
-      plain: 'Ended a left-behind ' + s.kind + ' from ' + (who ? who.name + '\'s work' : 'a test or build') + ' (' + fmtAge(s.ageS) + ', ' + fmt(s.rssMB) + ').' });
+      plain: 'Ended a left-behind ' + s.kind + ' from ' + (who ? who.name + '\'s work' : 'a test or build') + ' (' + fmtAge(s.ageS) + (s.idleH ? ', unused for ' + fmtAge(s.idleS).replace(/ old$/, '') : '') + ', ' + fmt(s.rssMB) + ').' });
   }
   for (const s of list.filter(x => !x.kind)) {
     if (!firstTime(ctx, 'stray:' + s.pid + ':' + isoWeek(ctx.now))) continue;
@@ -287,8 +312,17 @@ function stepRetention(ctx) {
   const enforced = new Set(Object.entries(st).filter(([, x]) => x.enforce).map(([id]) => id));
   const res = R.dirPolicies({ root: ctx.root, now: ctx.now, dry: ctx.dry, halted: !!ctx.halted, enforced });
   const cutover = fs.existsSync(ctx.P('company', 'state', 'migration-cutover.json'));
-  const out = { removed: 0, asked: [] };
+  const out = { removed: 0, asked: [], handedOver: [] };
   for (const r of res.results) {
+    // report-only: the reaper never deletes such a folder itself (another program may own it). The owner's yes hands the
+    // removal to the tools seat, once a week until the folder is gone; then the row is marked done.
+    if (r.policy === 'report-only' && st[r.id] && st[r.id].enforce && !st[r.id].done) {
+      if (!r.exists) { st[r.id].done = new Date(ctx.now).toISOString(); }
+      else if (firstTime(ctx, 'retention-yes:' + r.id + ':' + isoWeek(ctx.now))) {
+        due(ctx, { id: 'retention-yes:' + r.id, reason: 'The owner agreed that ' + lc(r.plain || r.id) + ' (' + r.path + ', ' + fmt(r.bytes / 1048576) + ') may be removed. The reaper does not remove report-only folders itself: check nothing still uses it, remove it, and tell the owner it is gone' });
+        out.handedOver.push(r.id);
+      }
+    }
     if (r.removed.length) {
       out.removed += r.removed.length;
       const oldest = r.removed.map(x => x.ageDays).sort((a, b) => b - a)[0];
@@ -305,9 +339,11 @@ function stepRetention(ctx) {
       : lc(r.plain || 'Old company files', true) + ' take ' + fmt(r.bytes / 1048576) + ' of disk. Remove them automatically from now on' + (r.policy === 'keep-newest-dirs' && r.kept.length ? ', always keeping the newest ' + r.kept.length : '') + '?';
     try {
       const f = C.file({ asker: 'reaper', category: 'tools', ownerAct: true, ref: 'retention:' + r.id, lead,
-        consequence: 'Yes: the oldest ones are removed once a day and you are told what went. No: they stay, and you are not asked again.',
+        consequence: r.policy === 'report-only'
+          ? 'Yes: the crew checks nothing still uses it, removes it and tells you when it is gone. No: it stays, and you are not asked again.'
+          : 'Yes: the oldest ones are removed once a day and you are told what went. No: they stay, and you are not asked again.',
         recommendation: 'Yes, unless you keep these copies for a reason of your own.',
-        technical: 'company/tools/reaper.js asks for retention row ' + r.id + ' (' + r.policy + ' ' + r.path + '); ' + r.candidates.length + ' candidates, ' + Math.round(r.bytes / 1048576) + ' MB. On yes the reaper records enforce for this row in company/state/reaper.json (or set "enforce": true on the row in company/work/ops/retention.json).',
+        technical: 'company/tools/reaper.js asks for retention row ' + r.id + ' (' + r.policy + ' ' + r.path + '); ' + r.candidates.length + ' candidates, ' + Math.round(r.bytes / 1048576) + ' MB. On yes the reaper records enforce for this row in company/state/reaper.json (or set "enforce": true on the row in company/work/ops/retention.json)' + (r.policy === 'report-only' ? '; a report-only row is never deleted by the reaper: the yes becomes a due item for the tools seat (retention-yes:' + r.id + ') until the folder is gone.' : '.'),
         effect: { none: true } }, { root: ctx.root });
       if (f && (f.filed || f.route === 'duplicate')) { st[r.id] = { asked: new Date(ctx.now).toISOString(), questionId: f.id || null }; out.asked.push(r.id); }
     } catch (e) { record(ctx, { kind: 'retention-error', what: 'owner card for ' + r.id + ': ' + String(e.message).slice(0, 200), plain: 'Could not ask you about ' + lc(r.plain || r.id) + '; the crew will look.' }); }
@@ -336,7 +372,7 @@ async function stationCall(ctx, method, p, body) {
   if (ctx.stationApi) return ctx.stationApi(method, p, body);
   if (ctx.noNetwork) throw new Error('no network in this run');
   const port = ctx.config.station && ctx.config.station.port;
-  const base = (ctx.config.station && ctx.config.station.url) || (port ? 'http://127.0.0.1:' + port : null);
+  const base = process.env.STARNET_URL || (ctx.config.station && ctx.config.station.url) || (port ? 'http://127.0.0.1:' + port : null);   // STARNET_URL wins, as in lib/company.js
   if (!base || !/^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\/?$/.test(base)) throw new Error('the station is not on this machine');
   let tok = ''; try { tok = fs.readFileSync(ctx.P('secrets', 'station-token'), 'utf8').trim(); } catch (_) {}
   if (!tok) throw new Error('no station token');

@@ -40,6 +40,15 @@ function naming(needle) {
   }
   return out;
 }
+// the top-level entries of `dir` that a browser uses: where its profile's Singleton* links point, and any open file of
+// its processes (pids). Used instead of counting the shared temp dir, which other browsers on the machine change too.
+function chromeTmpUse(prof, pids, dir) {
+  const out = new Set(); const pre = path.resolve(dir) + path.sep;
+  const top = t => { if (t && t.startsWith(pre)) out.add(t.slice(pre.length).split(path.sep)[0]); };
+  for (const n of ['SingletonSocket', 'SingletonCookie', 'SingletonLock']) { try { top(path.resolve(prof, fs.readlinkSync(path.join(prof, n)))); } catch (_) {} }
+  for (const pid of pids) { let fds = []; try { fds = fs.readdirSync('/proc/' + pid + '/fd'); } catch (_) {} for (const fd of fds) { try { top(fs.readlinkSync('/proc/' + pid + '/fd/' + fd)); } catch (_) {} } }
+  return [...out].sort();
+}
 function findChrome() {
   for (const c of [process.env.STARNET_CHROME, '/opt/google/chrome/chrome', '/usr/bin/google-chrome-stable', '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].filter(Boolean)) {
     try { fs.accessSync(c, fs.constants.X_OK); return c; } catch (_) {}
@@ -168,7 +177,7 @@ async function tcase(name, fn) {
   await tcase('browser: STARNET_BROWSER_OWN_GROUP=1 — Chrome stays in this cgroup, keeps its temp files in the profile, and close leaves nothing', async () => {
     if (!chrome) return noChrome;
     return withEnv({ STARNET_BROWSER_OWN_GROUP: '1' }, async () => {
-      const before = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('com.google.Chrome.')).length;
+      const before = new Set(fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('com.google.Chrome.')));
       const { d, pid, prof } = await launch();
       try {
         const cg = fs.readFileSync('/proc/' + pid + '/cgroup', 'utf8');
@@ -177,8 +186,11 @@ async function tcase(name, fn) {
         assert.strictEqual(Number(fs.readFileSync('/proc/' + pid + '/stat', 'utf8').split(') ')[1].split(' ')[2]), pid, 'Chrome leads its own process group');
         const inside = fs.existsSync(path.join(prof, '.tmp')) ? fs.readdirSync(path.join(prof, '.tmp')).filter(n => n.startsWith('com.google.Chrome.')) : [];
         assert.ok(inside.length >= 1, 'its com.google.Chrome.* temp entries are inside the profile');
-        const after = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('com.google.Chrome.')).length;
-        assert.ok(after <= before, 'no new com.google.Chrome.* entry in the shared temp dir (' + before + ' -> ' + after + ')');
+        // other Chromes on this machine may add entries meanwhile: only entries THIS browser uses count (by name, not a count)
+        const fresh = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('com.google.Chrome.') && !before.has(n));
+        const mine = chromeTmpUse(prof, naming(prof), os.tmpdir()).filter(n => n.startsWith('com.google.Chrome.'));
+        assert.deepStrictEqual(mine, [], 'this browser uses no com.google.Chrome.* entry in the shared temp dir (' + mine.join(',') + ')');
+        assert.ok(!fresh.some(n => mine.includes(n)), 'no new shared entry of its own');
       } finally { await d.close(); }
       const left = await waitFor(() => naming(prof).length === 0, 4000);
       assert.ok(left, 'close leaves 0 processes naming the profile (left: ' + naming(prof).join(',') + ')');

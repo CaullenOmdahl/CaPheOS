@@ -22,6 +22,9 @@ TimeoutStopSec=20
 # agent commands at 500 (StarNet patch 0020), so a runaway build goes before the station.
 MemoryAccounting=yes
 OOMScoreAdjust=100
+# When the kernel ends one process here at the unit's MemoryMax (a build, at 500, before the sidecar), the station goes
+# on: OOMPolicy=stop (the default on many hosts, DefaultOOMPolicy=stop) would stop the whole unit, every live run in it.
+OOMPolicy=continue
 # The station writes straight to a file opened O_APPEND, not to journald, so journald's rate limits
 # (LogRateLimitIntervalSec / LogRateLimitBurst) never apply here and are deliberately not set. The file's bound is
 # company/tools/retention.js: past 50 MB it is copied to station.log.1.gz (5 kept) and cut back in place (copytruncate;

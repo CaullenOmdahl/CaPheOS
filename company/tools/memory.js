@@ -97,6 +97,10 @@ function dropins(ctx, p) {
     const name = svc(ctx) + u.suffix + '.service';
     let t = '# written by company/tools/memory.js apply (profile ' + p.profile + ', ' + fmtGB(p.totalMB) + ' machine, keep free ' + p.keepFreeMB + ' MB). Edit runtime.memory, not this file.\n[Service]\n'
       + 'MemoryHigh=' + lim.highMB + 'M\nMemoryMax=' + lim.maxMB + 'M\n' + (lim.swapMaxMB ? 'MemorySwapMax=' + lim.swapMaxMB + 'M\n' : '');
+    // the station: a process the kernel ends at MemoryMax (a build) must not stop the whole unit (OOMPolicy=stop is the
+    // default on many hosts); the console and dispatcher keep stop, they hold no runs and Restart= brings them back
+    if (u.role === 'station') t += 'OOMPolicy=continue\n';
+    if (lim.oomdKill === false) t += 'ManagedOOMMemoryPressure=auto\n';
     if (exec) t += 'ExecStart=\nExecStart=' + withHeap(exec, lim.heapMB) + '\n';
     out[name] = { role: u.role, file: path.join(ctx.unitDir, name + '.d', DROPIN), text: t, heapMB: lim.heapMB, props: ['MemoryHigh=' + lim.highMB + 'M', 'MemoryMax=' + lim.maxMB + 'M'].concat(lim.swapMaxMB ? ['MemorySwapMax=' + lim.swapMaxMB + 'M'] : []) };
   }
@@ -148,9 +152,27 @@ function apply(ctx, o) {
       for (const [unit, x] of Object.entries(d)) {
         const a = ctx.systemctl(['is-active', unit]);
         if (String(a.out || '').trim() !== 'active') continue;
+        if (heapChanged.includes(unit) && !result.restartNeeded.includes(unit)) result.restartNeeded.push(unit);
+        // live limits only when they cannot stop the unit: the station must already run with OOMPolicy=continue (the
+        // drop-in, after daemon-reload), and no unit may already use more than its new MemoryHigh. Otherwise the limits
+        // wait for its next start (an empty unit), and the warning says so.
+        const now = M.parseShow(ctx.systemctl(['show', '-p', 'OOMPolicy', '-p', 'MemoryCurrent', unit]).out)[0] || {};
+        const curMB = /^\d+$/.test(String(now.MemoryCurrent || '')) ? Math.round(Number(now.MemoryCurrent) / 1048576) : null;
+        const lim = p[x.role];
+        if (x.role === 'station' && now.OOMPolicy && now.OOMPolicy !== 'continue') {
+          calls.push(['set-property', unit, 'skipped: OOMPolicy ' + now.OOMPolicy]);
+          result.warnings.push('the new limits on ' + unit + ' wait for its next start: it still runs with OOMPolicy=' + now.OOMPolicy + ', so reaching the limit now would stop every run in it');
+          if (!result.restartNeeded.includes(unit)) result.restartNeeded.push(unit);
+          continue;
+        }
+        if (curMB != null && curMB >= lim.highMB) {
+          calls.push(['set-property', unit, 'skipped: uses ' + curMB + ' MB']);
+          result.warnings.push(unit + ' uses ' + fmtGB(curMB) + ' now, more than its new limit (' + fmtGB(lim.highMB) + ' soft, ' + fmtGB(lim.maxMB) + ' hard); not set now, it applies at its next start');
+          if (!result.restartNeeded.includes(unit)) result.restartNeeded.push(unit);
+          continue;
+        }
         const r = ctx.systemctl(['set-property', '--runtime', unit].concat(x.props)); calls.push(['set-property', unit, r.code]);
         if (r.code !== 0) result.warnings.push('could not set the limits on ' + unit + ' now: ' + String(r.err || '').slice(0, 120) + ' (they apply at its next start)');
-        if (heapChanged.includes(unit) && !result.restartNeeded.includes(unit)) result.restartNeeded.push(unit);
       }
       if (!fs.existsSync(path.join(ctx.unitDir, svc(ctx) + '.service'))) result.restartNeeded = result.restartNeeded.filter(u => u !== svc(ctx) + '.service');
     } else for (const u of heapChanged) if (!result.restartNeeded.includes(u)) result.restartNeeded.push(u);
@@ -286,7 +308,11 @@ function selftest() {
     const con = fs.readFileSync(path.join(unitDir, 'testco-station-console.service.d', DROPIN), 'utf8');
     assert.ok(con.includes('ExecStart=/usr/bin/env node --max-old-space-size=128 ' + root + '/console/server.js\n') && /MemoryMax=300M/.test(con), con);
     const dis = fs.readFileSync(path.join(unitDir, 'testco-station-dispatch.service.d', DROPIN), 'utf8');
-    assert.ok(/MemoryHigh=128M\nMemoryMax=640M/.test(dis) && dis.includes('node --max-old-space-size=160 ' + root + '/company/tools/dispatcher-loop.js'), dis);
+    assert.ok(/MemoryHigh=512M\nMemoryMax=768M/.test(dis) && dis.includes('node --max-old-space-size=160 ' + root + '/company/tools/dispatcher-loop.js'), 'low: the dispatcher\'s High is above its heap and its ticks\' children: ' + dis);
+    assert.ok(/\nManagedOOMMemoryPressure=auto\n/.test(dis), 'low: systemd-oomd does not kill the dispatcher mid-tick');
+    assert.ok(/\nOOMPolicy=continue\n/.test(st), 'the station goes on when the kernel ends a build in it: ' + st);
+    assert.ok(!/OOMPolicy/.test(con) && !/OOMPolicy/.test(dis) && !/ManagedOOM/.test(con), 'console and dispatcher keep the host\'s OOM policy and oomd');
+    assert.ok(/^OOMPolicy=continue$/m.test(fs.readFileSync(path.join(root, 'systemd', 'capheos-station.service.in'), 'utf8')), 'the template says so too');
     const env = path.join(root, '.starnet-data', 'memory.env');
     assert.strictEqual(fs.statSync(env).mode & 0o777, 0o600);
     const et = fs.readFileSync(env, 'utf8');
@@ -298,6 +324,22 @@ function selftest() {
     assert.ok(!calls.some(c => /restart/.test(c)), 'never restarts');
     assert.ok(r.restartNeeded.includes('testco-station.service') && /restart-station\.sh --when-idle/.test(r.restartCommand), JSON.stringify(r.restartNeeded));
     assert.ok(accepted.some(a => /memory\.env$/.test(a)) && accepted.length === 4, accepted.join());
+  });
+  ok('apply never sets live limits that could stop a unit: the station on OOMPolicy=stop, a unit already over its new limit', () => {
+    setMem({ profile: 'low', keepFreeMB: 1 });   // a changed plan, so the drop-ins are rewritten
+    const show = { 'testco-station.service': 'OOMPolicy=stop\nMemoryCurrent=104857600\n', 'testco-station-console.service': 'OOMPolicy=stop\nMemoryCurrent=' + (400 * 1048576) + '\n', 'testco-station-dispatch.service': 'OOMPolicy=stop\nMemoryCurrent=' + (50 * 1048576) + '\n' };
+    const sc = args => { calls.push(args.join(' ')); if (args[0] === 'is-active') return { code: 0, out: 'active\n' }; if (args[0] === 'show') return { code: 0, out: show[args[args.length - 1]] || '' }; return { code: 0, out: '' }; };
+    calls.length = 0;
+    const r = apply(mk(2048, { systemctl: sc }), {});
+    assert.ok(!calls.some(c => /^set-property --runtime testco-station\.service /.test(c)), 'station on OOMPolicy=stop: not set live: ' + calls.join('|'));
+    assert.ok(!calls.some(c => /^set-property --runtime testco-station-console\.service /.test(c)), 'console uses 400 MB, over its new 160 MB High: not set live');
+    assert.ok(calls.some(c => /^set-property --runtime testco-station-dispatch\.service /.test(c)), 'the dispatcher (50 MB, keeps OOMPolicy=stop) is set live');
+    assert.ok(r.warnings.some(w => /testco-station\.service.*OOMPolicy=stop/.test(w)) && r.warnings.some(w => /testco-station-console\.service uses 400 MB now/.test(w)), r.warnings.join('|'));
+    assert.ok(r.restartNeeded.includes('testco-station.service') && r.restartNeeded.includes('testco-station-console.service'), JSON.stringify(r.restartNeeded));
+    show['testco-station.service'] = 'OOMPolicy=continue\nMemoryCurrent=104857600\n';
+    setMem({ profile: 'low' }); calls.length = 0; apply(mk(2048, { systemctl: sc }), {});
+    assert.ok(calls.some(c => /^set-property --runtime testco-station\.service MemoryHigh=896M/.test(c)), 'on OOMPolicy=continue and under the limit: set live: ' + calls.join('|'));
+    setMem({});
   });
   ok('apply again changes nothing and needs no restart', () => {
     calls.length = 0; const r = apply(mk(2048), {});

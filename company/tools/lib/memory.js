@@ -102,7 +102,10 @@ function plan(o) {
     profile, totalMB, keepFreeMB, osReserve, budget, warnings,
     station: { heapMB: low ? 384 : 1024, highMB: sHigh, maxMB: sMax, swapMaxMB: floor64(sMax * 0.5) },
     console: { heapMB: low ? 128 : 192, highMB: low ? 160 : 256, maxMB: low ? 300 : 512 },
-    dispatcher: { heapMB: low ? 160 : 192, highMB: low ? 128 : 256, maxMB: low ? 640 : 1024 },
+    // the dispatcher's own heap plus the tools each tick runs as children (about 600 MB at their peak): High is above
+    // that, or it is throttled every tick; under low systemd-oomd does not kill it (the drop-in turns it off), the kernel
+    // still ends it before the station (OOMScoreAdjust 200 against 100)
+    dispatcher: { heapMB: low ? 160 : 192, highMB: low ? 512 : 768, maxMB: low ? 768 : 1024, oomdKill: !low },
     services: { defaultMax: low ? '256M' : '512M', ceiling: low ? '1G' : '4G' },
     browsers: { privateMax: low ? 1 : 3, idleMin: low ? 5 : 15, lowMemFlags: low },
     agents: { maxConcurrent: low ? 2 : 0 },

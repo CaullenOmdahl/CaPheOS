@@ -8,10 +8,12 @@
  *   unit        its /proc/<pid>/cgroup names one of this company's units (<svc>.service, <svc>-*.service, <slug>-svc-*)
  *   station-pid its pid is one of this company's recorded station pids (company/state/reaper.json stationPids)
  *   ledger      it is a receipt in .starnet-data/workspaces/proc-ledger.json, matched by pid AND identity (its creation
- *               time when the receipt has one, else its command line); a reused pid never matches
+ *               time when the receipt has one, else its command line AND the receipt's startedAt: a receipt with
+ *               neither proves nothing); a reused pid never matches
  * Never this company's to touch, whatever else holds: another uid; a process in a unit or scope this company does not own
  * (an app scope Chrome put itself in is allowed for a driven browser whose profile is ours); the owner's own Chrome (not
- * driven: no --headless / --remote-debugging-*; or a profile under ~/.config); the live station, console or dispatcher
+ * driven: no --headless / --remote-debugging-*; or no --user-data-dir, the default profile; or a profile under
+ * ~/.config); the live station, console or dispatcher
  * (their MainPID); anything matched by name only.
  *
  *   const O = require('./lib/owned');
@@ -70,9 +72,10 @@ function info(c, pid) {
   if (cmd.length === 1 && / --/.test(cmd[0])) cmd = cmd[0].split(' ').filter(Boolean);   // Chrome rewrites its argv into one title
   const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
   const startTicks = Number(rest[19]) || 0;
+  const cpuTicks = (Number(rest[11]) || 0) + (Number(rest[12]) || 0);   // utime + stime: CPU it has used so far
   const startMs = c.btime ? (c.btime + startTicks / c.hz) * 1000 : null;
   return { pid: Number(pid), ppid: Number(rest[1]), pgid: Number(rest[2]), cmd, comm: (/Name:\s+(\S+)/.exec(status) || [])[1] || '',
-    uid: Number((/Uid:\s+(\d+)/.exec(status) || [])[1]), rssKB: Number((/VmRSS:\s+(\d+)/.exec(status) || [])[1] || 0), startMs,
+    uid: Number((/Uid:\s+(\d+)/.exec(status) || [])[1]), rssKB: Number((/VmRSS:\s+(\d+)/.exec(status) || [])[1] || 0), startMs, cpuTicks,
     ageS: startMs ? Math.max(0, Math.round((c.now - startMs) / 1000)) : null };
 }
 function scan(c) {
@@ -122,9 +125,12 @@ function proof(i, c) {
   for (const r of c.ledger) {
     if (Number(r.pid) !== i.pid) continue;
     if (Number(r.created) > 0 && i.startMs) { if (Math.abs(Number(r.created) - i.startMs) <= 2000) return { how: 'ledger', detail: (r.kind || 'proc') + ' receipt' }; continue; }
+    // by command line only with a time to check it against: a receipt without startedAt (or a process whose start time
+    // is unknown) proves nothing, since a reused pid may run a command that starts the same way
     const rec = String(r.cmd || '').trim(); const live = i.cmd.join(' ');
+    if (!(Number(r.startedAt) > 0) || !i.startMs) continue;
     if (rec && (live === rec || live.startsWith(rec) || (rec.length >= 24 && live.includes(rec.slice(0, 200))))) {
-      if (!r.startedAt || !i.startMs || i.startMs <= Number(r.startedAt) + 5000) return { how: 'ledger', detail: (r.kind || 'proc') + ' receipt' };
+      if (i.startMs <= Number(r.startedAt) + 5000) return { how: 'ledger', detail: (r.kind || 'proc') + ' receipt' };
     }
   }
   return null;
@@ -135,7 +141,8 @@ function ownersChrome(i, c) {
   if (!isChrome(i)) return false;
   if (!driven(i)) return true;
   const udd = uddOf(i);
-  return !!udd && inside(real(udd), real(path.join(c.home, '.config')));
+  if (!udd) return true;   // no --user-data-dir: Chrome runs on the default profile under ~/.config, the owner's own
+  return inside(real(udd), real(path.join(c.home, '.config')));
 }
 function foreign(i, c) {
   const u = unitOf(c, i.pid);
@@ -209,9 +216,10 @@ const KINDS = [
   { kind: 'mock station', re: /node.*(mock-api\.js|-walk\.js)(\s|$)/ },
   { kind: 'pytest', re: /(^|[\s\/])(py\.test|pytest)(\s|$)|-m pytest/ },
 ];
+function kindInfo(i) { const line = i.cmd.join(' '); return KINDS.find(k => k.re.test(line)) || null; }
 function kindOf(i, c) {
+  const k = kindInfo(i); if (k) return k.kind;
   const line = i.cmd.join(' ');
-  for (const k of KINDS) if (k.re.test(line)) return k.kind;
   if (/sidecar[\/\\]index\.js(\s|$)/.test(line)) {
     const cwd = cwdOf(c, i.pid) || '';
     if (/ \(deleted\)$/.test(cwd) || /[\/\\](scratch|tmp)[\/\\]/.test(cwd)) return 'test station';
@@ -232,12 +240,27 @@ function strays(c, opts) {
     if (i.pid === c.stationMain || c.stationPids.has(i.pid)) continue;   // the station itself (now or a recorded one) is never a stray
     const pr = proof(i, c); if (!pr || pr.how === 'unit') continue;
     if (i.ageS != null && i.ageS < minAgeS) continue;
-    out.push({ pid: i.pid, pgid: i.pgid, comm: i.comm, cmd: i.cmd.join(' ').slice(0, 300), ageS: i.ageS, rssMB: Math.round(i.rssKB / 1024), kind: kindOf(i, c), proof: pr, cwd: (cwdOf(c, i.pid) || '') || null });
+    const k = kindInfo(i);
+    // idleH: a daemon that serves builds (Gradle, Kotlin) is ended only after that long without using any CPU (the
+    // reaper keeps cpuTicks between runs), never for its age alone: a long-lived daemon may be serving a build right now
+    out.push({ pid: i.pid, pgid: i.pgid, comm: i.comm, cmd: i.cmd.join(' ').slice(0, 300), ageS: i.ageS, startMs: i.startMs, cpuTicks: i.cpuTicks, rssMB: Math.round(i.rssKB / 1024), kind: kindOf(i, c), idleH: k && k.idleH || null, proof: pr, cwd: (cwdOf(c, i.pid) || '') || null });
   }
   return out;
 }
-// processes (other than this one) whose command line names `p` (a profile path: every helper of that browser), that this
-// company may touch (same uid, not a live main, not in a unit or scope it does not own)
-function naming(c, p) { return [...scan(c).values()].filter(i => i.pid !== process.pid && (c.uid === null || i.uid === c.uid) && !c.mainPids.has(i.pid) && !foreign(i, c) && i.cmd.some(a => a.includes(p))).map(i => i.pid); }
+// an argument names the path `p` exactly: --user-data-dir=<p>, or <p> as a whole path (start of the argument or after
+// '=', then the end or a separator), so /x/.browser-profile never matches /x/.browser-profile-2
+function namesPath(a, p) {
+  if (!p) return false;
+  if (a === '--user-data-dir=' + p) return true;
+  for (let i = a.indexOf(p); i >= 0; i = a.indexOf(p, i + 1)) {
+    const before = i === 0 ? '' : a.charAt(i - 1); const after = a.charAt(i + p.length);
+    if ((before === '' || before === '=') && (after === '' || after === '/' || after === path.sep)) return true;
+  }
+  return false;
+}
+// Chrome processes (other than this one) whose arguments name the profile `p` exactly (every helper of that browser:
+// crashpad's --database=<p>/Crashpad among them), that this company may touch (same uid, not a live main, not in a
+// unit or scope it does not own). Only Chrome: a crew command that names the path is never one of a browser's helpers.
+function naming(c, p) { return [...scan(c).values()].filter(i => i.pid !== process.pid && isChrome(i) && (c.uid === null || i.uid === c.uid) && !c.mainPids.has(i.pid) && !foreign(i, c) && i.cmd.some(a => namesPath(a, p))).map(i => i.pid); }
 
-module.exports = { context, scan, proof, foreign, touchable, browsers, strays, naming, unitOf, ourUnit, inside, real, clientOnPort, portOf, kindOf, isChrome, driven, uddOf, KINDS, readStationPids };
+module.exports = { context, scan, proof, foreign, touchable, browsers, strays, naming, namesPath, unitOf, ourUnit, inside, real, clientOnPort, portOf, kindOf, isChrome, driven, uddOf, KINDS, readStationPids };
