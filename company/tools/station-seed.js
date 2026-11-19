@@ -276,7 +276,7 @@ async function selftest() {
   const variants = [{ label: 'stub', starnet: STUB, copy: true }];
   if (fs.existsSync(real) && fs.existsSync(path.join(ROOT, 'starnet', 'frontend', 'app', 'worldmodel.js'))) variants.push({ label: 'real StarNet modules', starnet: path.join(ROOT, 'starnet'), copy: false });
   for (const v of variants) {
-    const T = fs.mkdtempSync(path.join(os.tmpdir(), 'station-seed-selftest-'));
+    const T = require('./lib/temp-life').tmpDir('station-seed-selftest-');
     const mk = (rel, body) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof body === 'string' ? body : JSON.stringify(body, null, 1)); };
     let mock = null;
     try {

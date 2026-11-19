@@ -23,7 +23,7 @@ function rows(v) {
 
 function selftest() {
   let bad = 0; const ok = (n, c, d) => { console.log((c ? 'ok   ' : 'FAIL ') + n + (c ? '' : '  [' + (d || '') + ']')); if (!c) bad++; };
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'duty-status-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('duty-status-selftest-');
   try {
     const w = (rel, o) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(o)); };
     w('company/company.json', { name: 'T', timezone: 'UTC' });

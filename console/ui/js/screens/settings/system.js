@@ -1,4 +1,4 @@
-// Settings › System (#/settings/system[/health|certification|backups|services|alarm|signin|flags|modules|scheduler|restarts|update|halt|map]): health and diagnostics, certification,
+// Settings › System (#/settings/system[/health|certification|backups|services|alarm|signin|flags|modules|scheduler|memory|restarts|update|halt|map]): health and diagnostics, certification,
 // backups, the crew's background services (company/tools/service.js), the outside alarm test (alarm-test.js), sign-in and the owner's server chores (system-ops.js), the two ways to stop the company, and "Where did it
 // go?" (the old feature map, was #/map and System).
 import { h, fill, Button, Tag, errLine, table, Details, Block, humanError, rel, statusOf, when } from '../../ui.js';
@@ -54,7 +54,7 @@ export async function render(host, ctx) {
       row('Company', mode === 'soft' ? 'Soft halt' : mode === 'hard' ? 'Hard halt' : mode === 'running' ? 'Running' : 'Unknown', mode === 'running' ? 'online' : mode ? 'warning' : 'neutral', '#/halt'),
       row('Dispatcher', last ? 'Last check ' + rel(last) : 'No check recorded', last && Date.now() - Date.parse(last) < 3600e3 ? 'online' : 'warning', '#/settings/tempo'),
       row('Guardrails', off == null ? 'Unknown' : off ? off + ' off' : 'All on', off ? 'danger' : off === 0 ? 'online' : 'neutral', '#/settings/autonomy/guardrails'),
-      row('Memory', m ? m.verdict : 'Unknown', memTone),
+      row('Memory', m ? m.verdict : 'Unknown', memTone, '#/settings/system/memory'),
       row('Live updates', document.querySelector('.live-dot.off') ? 'Checking every 15 s' : 'Live', 'online')),
       m ? h('p', { class: 'caption muted', 'data-memory-line': '' }, m.line + (freedDay ? ' ' + freedDay : '')) : null,
       Details('Details', h('dl', { class: 'kv' }, h('dt', null, 'Station address'), h('dd', { class: 'mono-s' }, co.station && co.station.url || '—'),

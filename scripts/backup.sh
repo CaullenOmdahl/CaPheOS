@@ -17,6 +17,10 @@
 # <UTC stamp>.tar.gz plus <stamp>.sha256 (one digest per file inside, sha256sum format) and the archive's own digest.
 # Run it hourly from a timer if you like:  systemd-run --user --on-calendar=hourly <repo>/scripts/backup.sh
 set -euo pipefail
+# every temp dir this run makes is removed when it ends, also when tar or a digest check fails under set -e
+TMPS=()
+cleanup_tmps() { local d; for d in "${TMPS[@]}"; do rm -rf "$d"; done; }
+trap cleanup_tmps EXIT
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 SLUG="$(node -e "process.stdout.write(String(require('./company/company.json').slug||'company'))")"
@@ -37,7 +41,7 @@ verify() {
   [[ -f "$base.sha256" ]] || { echo "FAIL no digest file for $(basename "$tgz")"; return 1; }
   grep -q "  ARCHIVE$" "$base.sha256" && [[ "$(sha256sum "$tgz" | cut -d' ' -f1)" == "$(grep '  ARCHIVE$' "$base.sha256" | cut -d' ' -f1)" ]] \
     || { echo "FAIL archive digest mismatch: $(basename "$tgz")"; return 1; }
-  tmp="$(mktemp -d)"; tar -xzf "$tgz" -C "$tmp"
+  tmp="$(mktemp -d)"; TMPS+=("$tmp"); tar -xzf "$tgz" -C "$tmp"
   ( cd "$tmp" && grep -v '  ARCHIVE$' "$base.sha256" | sha256sum --quiet -c - ) || { rm -rf "$tmp"; echo "FAIL file digests: $(basename "$tgz")"; return 1; }
   rm -rf "$tmp"; echo "ok $(basename "$tgz") ($(grep -vc '  ARCHIVE$' "$base.sha256") files)"
 }
@@ -56,7 +60,7 @@ case "${1:-backup}" in
     # (Design from a crew framework request: a risk seat's fix for its own failing backup timer.)
     umask 077
     find "$DIR" -maxdepth 1 -type d -name '.wip-*' -mmin +120 -exec rm -rf {} + 2>/dev/null || true   # left by a killed run
-    wip="$(mktemp -d "$DIR/.wip-XXXXXX")"; trap 'rm -rf "$wip"' EXIT
+    wip="$(mktemp -d "$DIR/.wip-XXXXXX")"; TMPS+=("$wip")
     rc=0; tar -czf "$wip/$stamp.tar.gz" "${P[@]}" 2>"$wip/tar.err" || rc=$?
     if [[ $rc -ne 0 ]]; then
       if [[ $rc -eq 1 && -s "$wip/tar.err" ]] && ! grep -vE ': (file changed as we read it|File removed before we read it)$' "$wip/tar.err" | grep -q .; then
@@ -79,7 +83,7 @@ case "${1:-backup}" in
     if [[ "${3:-}" != "--force" && -n "$(ls -A company/work 2>/dev/null | grep -v '^.gitkeep$' || true)" ]]; then
       echo "company/work is not empty; this replaces it. Halt the company first (node company/tools/halt.js soft --by <owner>), then rerun with --force."; exit 1
     fi
-    tmpx="$(mktemp -d)"; tar -xzf "$tgz" -C "$tmpx"   # read it before taking the safety copy, so nothing can replace it
+    tmpx="$(mktemp -d)"; TMPS+=("$tmpx"); tar -xzf "$tgz" -C "$tmpx"   # read it before taking the safety copy, so nothing can replace it
     "$0" backup >/dev/null && echo "current state saved first: $(basename "$(newest)")"
     # the snapshot is the whole truth for the folders it holds: replace them, don't merge into them
     for d in work state owner hiring console; do [[ -d "$tmpx/company/$d" ]] && rm -rf "company/$d"; done
@@ -92,7 +96,7 @@ case "${1:-backup}" in
   drill)
     # A backup nobody has restored is a hope. Restore the snapshot into a throwaway copy of the repo, verify every
     # digest, check the company's own tools still read the restored state, and record how long it took.
-    tgz="$(snap_of "${2:-$(newest)}")"; t0=$(date +%s.%N); tmp="$(mktemp -d)"; ok=1; notes=()
+    tgz="$(snap_of "${2:-$(newest)}")"; t0=$(date +%s.%N); tmp="$(mktemp -d)"; TMPS+=("$tmp"); ok=1; notes=()
     verify "$tgz" >/dev/null || { ok=0; notes+=("digest check failed"); }
     tar -C "$ROOT" --exclude=.git --exclude=starnet --exclude=.starnet-data --exclude=secrets -cf - . | tar -C "$tmp" -xf -
     for d in work state owner hiring console; do rm -rf "$tmp/company/$d"; done

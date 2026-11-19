@@ -96,7 +96,7 @@ function chainWhy(s) {
 /* ---------- selftest ---------- */
 async function selftest() {
   const REPO = path.resolve(process.env.CAPHEOS_ROOT || path.join(__dirname, '..'));
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'console-models-selftest-'));
+  const tmp = require('../company/tools/lib/temp-life').tmpDir('console-models-selftest-');
   fs.cpSync(path.join(REPO, 'company'), path.join(tmp, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
   fs.cpSync(path.join(REPO, 'console'), path.join(tmp, 'console'), { recursive: true });
   const w = (rel, d) => { const f = path.join(tmp, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof d === 'string' ? d : JSON.stringify(d, null, 1)); };

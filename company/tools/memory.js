@@ -58,6 +58,8 @@ function context(o) {
       try { execFileSync(process.execPath, [path.join(root, 'company', 'tools', 'locked-watch.js'), 'accept', rel, '--by', 'owner', '--why', 'memory settings (memory.js apply)'], { cwd: root, stdio: 'ignore', timeout: 30000 }); } catch (_) {}
     }),
     usageOpts: o.usageOpts || {},
+    stationApi: o.stationApi || null,
+    noNetwork: o.noNetwork !== undefined ? o.noNetwork : process.env.CAPHEOS_NO_NETWORK === '1',
     now: Number.isFinite(o.now) ? o.now : Date.now(),
   };
 }
@@ -105,7 +107,7 @@ function memEnv(ctx, p, sup) {
   const lines = ['# written by company/tools/memory.js apply (profile ' + p.profile + '). Edit runtime.memory in company/company.json, not this file.'];
   if (!s.visibleBrowser) lines.push('STARNET_BROWSER_HEADLESS=1');
   lines.push('STARNET_BROWSER_IDLE_MIN=' + p.browsers.idleMin, 'STARNET_BROWSER_LOWMEM=' + (p.browsers.lowMemFlags ? 1 : 0), 'STARNET_PRIVATE_BROWSERS_MAX=' + p.browsers.privateMax,
-    'STARNET_SHELL_OOM_ADJ=500', 'STARNET_SHELL_REAP_GROUP=1');
+    'STARNET_SHELL_OOM_ADJ=500', 'STARNET_SHELL_REAP_GROUP=1', 'STARNET_BROWSER_OWN_GROUP=1');
   if (p.agents.maxConcurrent > 0) lines.push('STARNET_MAX_CONCURRENT_AGENTS=' + p.agents.maxConcurrent);
   if (sup === 'container') lines.push('CAPHEOS_STATION_HEAP=' + p.station.heapMB, 'CAPHEOS_CONSOLE_HEAP=' + p.console.heapMB, 'CAPHEOS_DISPATCH_HEAP=' + p.dispatcher.heapMB);
   return lines.join('\n') + '\n';
@@ -229,6 +231,33 @@ function status(ctx) {
     reaper: reaper ? { lastRun: reaper.lastRun || null, lastSummary: reaper.lastSummary || null } : null, warnings: p.warnings };
 }
 
+/* The station browser right now (StarNet GET /api/browser/view, this machine's station only, 4 s at most):
+   { open, driver, mode, visible } or { unknown: why }. Patch 0020 closes it after runtime.memory's idle minutes. */
+async function stationBrowser(ctx) {
+  const api = ctx.stationApi || (async (m, p) => {
+    // this machine's station only (the same rule as reaper.js stationCall), 4 s at most
+    if (ctx.noNetwork) throw new Error('no network in this run');
+    const st = ctx.config.station || {};
+    const base = process.env.STARNET_URL || st.url || (st.port ? 'http://127.0.0.1:' + st.port : null);   // STARNET_URL wins, as in lib/company.js
+    if (!base || !/^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\/?$/.test(base)) throw new Error('the station is not on this machine');
+    let tok = ''; try { tok = fs.readFileSync(path.join(ctx.root, 'secrets', 'station-token'), 'utf8').trim(); } catch (_) {}
+    if (!tok) throw new Error('no station token');
+    const r = await fetch(base.replace(/\/$/, '') + p, { method: m, headers: { 'x-starnet-token': tok }, signal: AbortSignal.timeout(4000) });
+    return r.json();
+  });
+  try {
+    const v = await api('GET', '/api/browser/view');
+    const st = v && v.station;
+    if (!st) return { unknown: 'the station did not say' };
+    return { open: !!st.open, driver: st.driver ? (st.driver.agentId || 'a run') : null, mode: st.mode || null, visible: !!st.visible };
+  } catch (e) { return { unknown: String(e && e.message || e).slice(0, 120) }; }
+}
+async function statusWithStation(ctx) {
+  const r = status(ctx);
+  r.station = { browser: await stationBrowser(ctx) };
+  return r;
+}
+
 /* ---------------- selftest ---------------- */
 function selftest() {
   const assert = require('assert');
@@ -261,7 +290,7 @@ function selftest() {
     const env = path.join(root, '.starnet-data', 'memory.env');
     assert.strictEqual(fs.statSync(env).mode & 0o777, 0o600);
     const et = fs.readFileSync(env, 'utf8');
-    for (const k of ['STARNET_BROWSER_HEADLESS=1', 'STARNET_BROWSER_IDLE_MIN=5', 'STARNET_BROWSER_LOWMEM=1', 'STARNET_PRIVATE_BROWSERS_MAX=1', 'STARNET_SHELL_OOM_ADJ=500', 'STARNET_SHELL_REAP_GROUP=1', 'STARNET_MAX_CONCURRENT_AGENTS=2']) assert.ok(et.includes(k + '\n'), k);
+    for (const k of ['STARNET_BROWSER_HEADLESS=1', 'STARNET_BROWSER_IDLE_MIN=5', 'STARNET_BROWSER_LOWMEM=1', 'STARNET_PRIVATE_BROWSERS_MAX=1', 'STARNET_SHELL_OOM_ADJ=500', 'STARNET_SHELL_REAP_GROUP=1', 'STARNET_BROWSER_OWN_GROUP=1', 'STARNET_MAX_CONCURRENT_AGENTS=2']) assert.ok(et.includes(k + '\n'), k);
     assert.ok(!/CAPHEOS_STATION_HEAP/.test(et));
     assert.ok(calls.includes('daemon-reload'), calls.join('|'));
     assert.ok(calls.includes('set-property --runtime testco-station.service MemoryHigh=896M MemoryMax=1152M MemorySwapMax=576M'), calls.join('|'));
@@ -341,10 +370,13 @@ function main(argv) {
   if (cmd === 'selftest' || cmd === '--selftest') return selftest();
   const ctx = context();
   if (cmd === 'status') {
-    const r = status(ctx);
-    print(r, s => [s.line, 'profile ' + s.profile + (s.settings.profile === 'auto' ? ' (automatic)' : '') + ' · machine ' + fmtGB(s.host.totalMB) + ' · swap used ' + fmtGB(s.host.swapUsedMB) + (s.host.tmpfsTmp ? ' · /tmp (RAM) ' + fmtGB(s.host.tmpfsTmp.usedMB) + ' used' : ''),
+    return statusWithStation(ctx).then(r => {
+    const b = r.station.browser;
+    const bl = b.unknown ? 'station browser: not known (' + b.unknown + ')' : 'station browser: ' + (b.open ? 'open' + (b.driver ? ', used by ' + b.driver : ', nobody using it') + (b.visible ? ', a window on this computer' : '') : 'closed');
+    print(r, s => [s.line, bl, 'profile ' + s.profile + (s.settings.profile === 'auto' ? ' (automatic)' : '') + ' · machine ' + fmtGB(s.host.totalMB) + ' · swap used ' + fmtGB(s.host.swapUsedMB) + (s.host.tmpfsTmp ? ' · /tmp (RAM) ' + fmtGB(s.host.tmpfsTmp.usedMB) + ' used' : ''),
       'freed by the reaper: ' + fmtGB(s.freed.day.mb) + ' in the last day, ' + fmtGB(s.freed.week.mb) + ' in the last week'].concat(s.freed.last.map(x => '  ' + x.at.slice(0, 16) + ' ' + x.plain)).concat(s.warnings.map(w => 'warning: ' + w)).join('\n'));
     return 0;
+    });
   }
   if (cmd === 'plan') {
     const over = {}; if (val('total')) over.totalMB = Number(val('total'));
@@ -375,5 +407,5 @@ function main(argv) {
   console.error('usage: memory.js status|plan|set|apply|sample|selftest (header of company/tools/memory.js)');
   return 2;
 }
-module.exports = { context, planFor, planLine, apply, set, status, dropins, memEnv, withHeap, templateExec, DROPIN };
-if (require.main === module) process.exitCode = main(process.argv.slice(2));
+module.exports = { context, planFor, planLine, apply, set, status, statusWithStation, stationBrowser, dropins, memEnv, withHeap, templateExec, DROPIN };
+if (require.main === module) Promise.resolve(main(process.argv.slice(2))).then(c => { process.exitCode = c; }, e => { console.error(e && e.stack || e); process.exitCode = 2; });

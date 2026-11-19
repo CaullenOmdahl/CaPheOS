@@ -1,5 +1,5 @@
 // Settings › System: the owner's server chores, from the browser (console/owner-ops.js, console/auth.js).
-// Sign-in and access, change-watcher flags, modules, the scheduler, safe restarts and the framework update. Every button
+// Sign-in and access, change-watcher flags, modules, the scheduler, memory, safe restarts and the framework update. Every button
 // acts as the owner and is recorded; nothing here needs a terminal. docs/DEPLOY-SERVER.md.
 import { h, fill, Button, Tag, errLine, Details, Block, humanError, rel, when } from '../../ui.js';
 import { api, post } from '../../api.js';
@@ -16,19 +16,20 @@ const secretBox = (label, value, note) => h('div', { class: 'card p18 stack-8', 
 
 export function opsBlocks(ctx) {
   const { app } = ctx;
-  const signin = box(), flags = box(), services = box(), modules = box(), sched = box(), restarts = box(), update = box();
+  const signin = box(), flags = box(), services = box(), modules = box(), sched = box(), memory = box(), restarts = box(), update = box();
   const blocks = [
     Block({ id: 'signin', title: 'Sign-in and access', lede: 'How you sign in to this console from any browser, and who can reach it.' }, signin),
     Block({ id: 'flags', title: 'Change-watcher flags', lede: 'Changes to what limits or protects the crew that nobody recorded. Take each one as meant, or put the old version back.' }, flags),
     Block({ id: 'services-adopt', title: 'Background programs nobody registered', lede: 'Programs running from the company folder that were started outside the company\'s service list. Adopt one to keep it running under the same rules as the rest, or leave it to the risk owner.' }, services),
     Block({ id: 'modules', title: 'Modules', lede: 'Building blocks the company can switch on when it needs them.' }, modules),
     Block({ id: 'scheduler', title: 'Who starts the crew\'s routines', lede: 'The dispatcher (one gate that counts every start) or the station\'s own clock. You can switch back any time.' }, sched),
+    Block({ id: 'memory', title: 'Memory', lede: 'What the company uses on this computer, what it cleaned up, and how much it leaves for other programs, like a local AI model.' }, memory),
     Block({ id: 'restarts', title: 'Restarts', lede: 'Restart the station or this console without cutting off any work: each one waits until nothing is running.' }, restarts),
     Block({ id: 'update', title: 'Framework update', lede: 'Take a newer version of the framework. You see exactly what changes first; your company\'s own settings are kept.' }, update),
   ];
-  const loaders = [() => loadSignin(signin, app), () => loadFlags(flags, app), () => loadServices(services, app), () => loadModules(modules, app), () => loadSched(sched, app), () => loadRestarts(restarts, app), () => loadUpdate(update, app)];
+  const loaders = [() => loadSignin(signin, app), () => loadFlags(flags, app), () => loadServices(services, app), () => loadModules(modules, app), () => loadSched(sched, app), () => loadMemory(memory, app), () => loadRestarts(restarts, app), () => loadUpdate(update, app)];
   loaders.forEach(f => f());
-  const off = events.on(['ops'], () => { loadFlags(flags, app); loadRestarts(restarts, app); loadUpdate(update, app, true); });
+  const off = events.on(['ops'], () => { loadFlags(flags, app); loadRestarts(restarts, app); loadUpdate(update, app, true); });   // the memory block reloads with the page
   return { blocks, dispose: off };
 }
 
@@ -175,6 +176,80 @@ async function loadSched(host, app) {
       const b = ev.currentTarget; b.disabled = true; err.textContent = '';
       try { await post('/ops/scheduler', { to, confirm: true }); app.toast('Switched.'); loadSched(host, app); } catch (e) { err.textContent = humanError(e); b.disabled = false; }
     } })), err);
+}
+
+/* ---------- memory (company/tools/memory.js, the reaper chore; docs/DEPLOY-SERVER.md "Memory") ---------- */
+const gb = mb => { const n = Number(mb) || 0; return n >= 1024 ? (n / 1024).toFixed(1).replace(/\.0$/, '') + ' GB' : Math.round(n) + ' MB'; };
+const KIND_WORDS = { browser: ['left-behind browser', 'left-behind browsers'], stray: ['stray program', 'stray programs'], temp: null, retention: null, 'host-temp': null };
+function freedText(label, w) {
+  const by = (w && w.byKind) || {};
+  const parts = [];
+  for (const [k, v] of Object.entries(by)) {
+    if (!v || !v.n) continue;
+    if (KIND_WORDS[k]) parts.push(v.n + ' ' + KIND_WORDS[k][v.n === 1 ? 0 : 1]);
+    else if (k === 'temp' || k === 'host-temp') parts.push(gb(v.mb) + ' of old temp files');
+    else if (k === 'retention') parts.push(gb(v.mb) + ' of old folders');
+  }
+  return label + ': ' + gb(w && w.mb) + (parts.length ? ' (' + parts.join(', ') + ')' : '');
+}
+async function loadMemory(host, app) {
+  let d; try { d = await api('/ops/memory'); } catch (e) { fill(host, errLine(e, 'Memory')); return; }
+  const err = errP(), out = h('div', { class: 'stack-8' }), shared = h('p', { class: 'caption muted', 'data-memory-shared': '' }, 'Checking the shared temp folder…');
+  const s = d.settings || {};
+  let profile = s.profile || 'auto';
+  const choices = [['auto', 'Automatic', 'Low memory on 4 GB or less'], ['normal', 'Normal', 'The usual limits'], ['low', 'Low memory', 'Fewer browsers at once, browsers close sooner, smaller limits; work may be slower']];
+  const group = h('div', { role: 'radiogroup', 'aria-label': 'Memory profile', class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(min(170px,100%),1fr));gap:10px' });
+  const drawChoices = () => fill(group, choices.map(([id, name, what]) => h('button', { type: 'button', role: 'radio', 'aria-checked': id === profile ? 'true' : 'false', class: 'choice', 'data-profile': id,
+    onclick: () => { profile = id; drawChoices(); } }, h('span', { class: 'label' }, name), h('span', { class: 'caption' }, what))));
+  drawChoices();
+  const keep = input({ type: 'number', min: '0', step: '0.5', inputmode: 'decimal', value: String(Math.round(((s.keepFreeMB || 0) / 1024) * 10) / 10), 'aria-label': 'Keep free for other programs, in GB', style: 'max-width:120px' });
+  const warn = h('p', { class: 'caption', style: 'color:var(--status-warning)', role: 'status' });
+  const total = (d.host && d.host.totalMB) || 0;
+  const check = () => { const mb = Number(keep.value) * 1024; warn.textContent = total && Number.isFinite(mb) && total - mb < 1024 + 1024 ? 'This leaves the company less than 1 GB of this ' + gb(total) + ' computer; it may run short.' : ''; };
+  keep.addEventListener('input', check); check();
+  const vis = h('input', { type: 'checkbox', id: 'memory-visible-browser', checked: !!s.visibleBrowser });
+  const freed = d.freed || {};
+  const lastLines = (freed.last || []).slice(0, 5);
+  const b = (d.station && d.station.browser) || null;
+  fill(host,
+    h('p', { class: 'body-s', 'data-memory-usage': '' }, d.line || ''),
+    b && !b.unknown ? h('p', { class: 'caption muted' }, 'The station\'s browser is ' + (b.open ? 'open' + (b.driver ? ', in use by ' + b.driver : ', nobody is using it') : 'closed') + '.') : null,
+    h('p', { class: 'caption', 'data-memory-freed': 'day' }, freedText('Freed in the last day', freed.day)),
+    h('p', { class: 'caption', 'data-memory-freed': 'week' }, freedText('Freed in the last week', freed.week)),
+    lastLines.length ? Details('What it cleaned up lately', h('ul', { class: 'plain caption' }, lastLines.map(x => h('li', null, rel(x.at) + ' · ' + x.plain)))) : null,
+    h('div', { class: 'stack-8' }, h('p', { class: 'label strong' }, 'Profile'), group),
+    h('div', { class: 'stack-4' }, h('label', { class: 'label strong', for: 'memory-keep-free' }, 'Keep free for other programs'),
+      h('div', { class: 'row-8', style: 'align-items:center' }, Object.assign(keep, { id: 'memory-keep-free' }), h('span', { class: 'caption' }, 'GB')),
+      h('p', { class: 'caption muted' }, 'For a local AI model, its size plus 1 GB.'), warn),
+    h('div', { class: 'stack-4' }, h('label', { class: 'row-8', style: 'align-items:center', for: 'memory-visible-browser' }, vis, h('span', { class: 'strong' }, 'Show the station\'s browser as a window on this computer')),
+      h('p', { class: 'caption muted' }, 'Only useful when you sit at this computer. A window never closes by itself.')),
+    h('div', { class: 'row-8', style: 'flex-wrap:wrap' },
+      Button('Save', { variant: 'primary', size: 'sm', onClick: async ev => {
+        const btn = ev.currentTarget; btn.disabled = true; err.textContent = ''; fill(out);
+        const mb = Math.round(Number(keep.value) * 1024);
+        if (!Number.isFinite(mb) || mb < 0) { err.textContent = 'Keep free is a number of GB, 0 or more.'; btn.disabled = false; return; }
+        try {
+          const r = await post('/ops/memory', { profile, keepFreeMB: mb, visibleBrowser: !!vis.checked });
+          app.toast('Saved: ' + (r.changed || []).join(', ') + '.');
+          fill(out, r.line ? h('p', { class: 'caption' }, r.line) : null, (r.warnings || []).map(w => h('p', { class: 'caption', style: 'color:var(--status-warning)' }, w)),
+            r.restartNeeded ? h('div', { class: 'stack-4' }, h('p', { class: 'caption' }, 'The rest takes effect when the station restarts.'),
+              Button('Restart the station when nothing is running', { size: 'sm', onClick: async e2 => { const b2 = e2.currentTarget; b2.disabled = true; try { const x = await post('/ops/restart/station', { reason: 'memory settings, asked by the owner in the console' }); app.toast(x.note || 'The station restarts as soon as nothing is running.'); } catch (e) { err.textContent = humanError(e); b2.disabled = false; } } })) : null);
+        } catch (e) { err.textContent = humanError(e); }
+        finally { btn.disabled = false; }
+      } }),
+      Button('Clean up now', { variant: 'ghost', size: 'sm', onClick: async ev => {
+        const btn = ev.currentTarget; btn.disabled = true; err.textContent = '';
+        try { await post('/ops/memory/clean', { what: 'now' }); app.toast('Cleaning up. The lines above update when it is done.'); } catch (e) { err.textContent = humanError(e); } finally { btn.disabled = false; }
+      } })),
+    shared, err, out);
+  let sh = null; try { sh = await api('/ops/memory/shared'); } catch (_) {}
+  if (!sh || !sh.wouldGo) { fill(shared, sh ? 'The shared temp folder holds no leftovers nobody can vouch for.' : 'The shared temp folder could not be checked.'); return; }
+  fill(shared, 'Other leftovers in the shared temp folder: ' + gb(sh.bytes / 1048576) + ' (' + sh.wouldGo + ' items). ',
+    Button('Clear them…', { variant: 'secondary', size: 'sm', onClick: async ev => {
+      if (!(await app.confirmDialog({ title: 'Clear the shared leftovers?', body: 'This removes ' + sh.wouldGo + ' old, unused leftovers in the shared temp folder that no company can prove are its own: Python temp folders, build folders and browser temp files (' + gb(sh.bytes / 1048576) + '). Anything in use, anything newer than a few hours, your own programs\' open files and other companies\' folders are never touched.', confirm: 'Clear them' }))) return;
+      const btn = ev.currentTarget; btn.disabled = true; err.textContent = '';
+      try { await post('/ops/memory/clean', { what: 'shared-temp' }); app.toast('Clearing. This takes a moment.'); } catch (e) { err.textContent = humanError(e); btn.disabled = false; }
+    } }));
 }
 
 /* ---------- restarts ---------- */

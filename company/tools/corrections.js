@@ -918,7 +918,7 @@ module.exports = { tick, blockFor, renderBlock, detect, context, addManual, edit
 async function selftest() {
   const os = require('os');
   const assert = require('assert');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'corrections-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('corrections-selftest-');
   const W = rel => path.join(T, rel);
   const put = (rel, v) => { fs.mkdirSync(path.dirname(W(rel)), { recursive: true }); fs.writeFileSync(W(rel), typeof v === 'string' ? v : JSON.stringify(v, null, 1)); };
   const results = []; let failed = 0;

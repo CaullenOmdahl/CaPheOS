@@ -34,8 +34,8 @@ const git = (cwd, ...a) => execFileSync('git', ['-C', cwd, ...a], { encoding: 'u
 let mock = null, port = 0;
 const roots = [];
 test.before(async () => {
-  const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lanes-mock-')), 'req.jsonl'); roots.push(path.dirname(log));
-  mock = spawn(process.execPath, [MOCK, '--port', '0', '--token', TOKEN, '--log', log], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const log = path.join(require('../lib/temp-life').tmpDir('lanes-mock-'), 'req.jsonl'); roots.push(path.dirname(log));
+  mock = require('../lib/temp-life').track(spawn(process.execPath, [MOCK, '--port', '0', '--token', TOKEN, '--log', log], { stdio: ['ignore', 'pipe', 'inherit'] }));
   port = await new Promise((res, rej) => { let d = ''; mock.stdout.on('data', c => { d += c; const m = /"port":(\d+)/.exec(d); if (m) res(Number(m[1])); }); mock.on('exit', c => rej(new Error('mock exited ' + c))); });
   assert.notEqual(port, 8800); assert.notEqual(port, 8810);
   mock.logFile = log;
@@ -52,7 +52,7 @@ async function company(o) {
   o = o || {};
   await st('POST', '/__caps', { caps: o.caps === false ? [] : ['workspace-lease-per-folder'] });
   await st('POST', '/__hold', { names: o.hold || [] });
-  const T = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lanes-co-'))); roots.push(T);
+  const T = fs.realpathSync(require('../lib/temp-life').tmpDir('lanes-co-')); roots.push(T);
   const tag = path.basename(T);
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };
   // the company checkout is a git repo with the product code tracked; company/work and company/state are not
@@ -285,7 +285,7 @@ test('a lane that hangs is stopped at its time limit and its lock released', asy
 test('locked-watch: a lane routine with its seat\'s own grants is the seat\'s; one with more grants is not', async () => {
   const L = require('../lanes.js');
   const loops = { agents: { sam: SEATS.sam } };
-  const T = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lanes-lw-'))); roots.push(T);
+  const T = fs.realpathSync(require('../lib/temp-life').tmpDir('lanes-lw-')); roots.push(T);
   fs.mkdirSync(path.join(T, 'company', 'tools'), { recursive: true }); fs.writeFileSync(path.join(T, 'company', 'tools', 'loops.json'), JSON.stringify(loops));
   const p = spawnSync(process.execPath, ['-e', `
     const L = require(${JSON.stringify(path.join(REPO, 'company', 'tools', 'lanes.js'))});

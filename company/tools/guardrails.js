@@ -352,7 +352,7 @@ function fakeStation(init) {
 }
 async function selftest() {
   const os = require('os'), assert = require('assert');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'guardrails-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('guardrails-selftest-');
   const prevProv = process.env.PROVENANCE_ROOT; process.env.PROVENANCE_ROOT = T;
   fs.mkdirSync(path.join(T, 'company', 'defaults', 'state'), { recursive: true });
   fs.copyFileSync(co.p('company', 'defaults', 'state', 'guardrails.json'), path.join(T, 'company', 'defaults', 'state', 'guardrails.json'));

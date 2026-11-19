@@ -25,7 +25,7 @@ test('migration: no providers.minimax (or none at all) is Global; a broken entry
   }
   const bad = M.fromConfig({ providers: { minimax: { region: 'custom', baseUrl: 'ftp://x.minimax.io' } } });
   assert.equal(bad.region, 'global'); assert.match(bad.problem, /Global is used/);
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mme-test-'));
+  const root = require('../lib/temp-life').tmpDir('mme-test-');
   try { assert.equal(M.read(root).region, 'global', 'a missing company.json is Global too'); } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

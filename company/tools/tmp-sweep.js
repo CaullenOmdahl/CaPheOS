@@ -277,7 +277,7 @@ async function selftest() {
   const cp = require('child_process');
   let fails = 0;
   const check = async (name, fn) => { try { await fn(); console.log('ok   ' + name); } catch (e) { fails++; console.log('FAIL ' + name + ': ' + (e && e.stack || e)); } };
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'tmp-sweep-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('tmp-sweep-selftest-');
   const shared = path.join(T, 'shared'); const root = path.join(T, 'co'); const priv = privateDir(root);
   fs.mkdirSync(shared, { recursive: true }); fs.mkdirSync(priv, { recursive: true });
   const old = Date.now() / 1000 - 30 * H;

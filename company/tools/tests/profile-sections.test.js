@@ -60,7 +60,7 @@ test('hire.js: the interviewed candidate is told its convictions, refusals, sour
 });
 
 test('dossier.js: the person sections ride the identity; placeholders never do', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-sections-selftest-'));
+  const dir = require('../lib/temp-life').tmpDir('profile-sections-selftest-');
   try {
     const tpl = fs.readFileSync(path.join(TEMPLATES, 'idea-scout.md'), 'utf8').replace(/<!--[\s\S]*?-->\n?/g, '');
     const charter = profile.carryProfile(tpl.replace(/<Name>/g, 'Jo Vega').replace(/<Title>/g, 'Idea Scout'), PROFILE, hire.setSection);
@@ -104,7 +104,7 @@ test('archetypes: a profile with no preset takes its archetype\'s; an explicit p
 });
 
 test('archetypes: the seat is told what kind of contributor it is; an eager seat must name a counterpart', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-sections-selftest-'));
+  const dir = require('../lib/temp-life').tmpDir('profile-sections-selftest-');
   try {
     const tpl = fs.readFileSync(path.join(TEMPLATES, 'idea-combiner.md'), 'utf8').replace(/<!--[\s\S]*?-->\n?/g, '');
     const file = path.join(dir, 'kit.md'); fs.writeFileSync(file, tpl.replace(/<Name>/g, 'Kit').replace(/<Title>/g, 'Combiner'));

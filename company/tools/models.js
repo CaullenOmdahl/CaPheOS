@@ -613,7 +613,7 @@ async function tick(a) {
 /* ---------- selftest: a temp company and a fake station ---------- */
 async function selftest() {
   const os = require('os'); const assert = require('assert');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'models-selftest-'));
+  const root = require('./lib/temp-life').tmpDir('models-selftest-');
   const w = (rel, d) => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof d === 'string' ? d : JSON.stringify(d, null, 1)); };
   const pol = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'model-policy.json'), 'utf8'));
   delete pol.seats;

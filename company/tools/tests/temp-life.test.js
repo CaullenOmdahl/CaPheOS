@@ -60,17 +60,29 @@ for (const [how, signal, want] of [['exit', null, 0], ['throw', null, 1], ['wait
   });
 }
 
+test('chromeEnv(): temp files in the profile, no session bus; tmpDirSync(): a short path right under os.tmpdir()', () => {
+  const life = require(LIB);
+  const e = life.chromeEnv('/x/prof', { A: '1', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1/bus' });
+  assert.deepStrictEqual(e, { A: '1', TMPDIR: '/x/prof', DBUS_SESSION_BUS_ADDRESS: 'disabled:' });
+  const d = life.tmpDirSync('a-very-long-selftest-prefix-that-goes-on-and-on-');
+  assert.strictEqual(path.dirname(d), os.tmpdir());
+  assert.ok(path.basename(d).length <= 32 + 6, path.basename(d));
+  assert.ok(life.registered().dirs.includes(d));
+  life.cleanup();
+  assert.ok(!fs.existsSync(d));
+});
+
 test('chrome(): a fresh registered profile, --user-data-dir added, TMPDIR inside it', () => {
   const life = require(LIB);
-  const fake = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'temp-life-selftest-')), 'fake-chrome.sh');
-  fs.writeFileSync(fake, '#!/bin/sh\necho "$TMPDIR|$*"\n'); fs.chmodSync(fake, 0o755);
+  const fake = path.join(life.tmpDir('temp-life-selftest-'), 'fake-chrome.sh');
+  fs.writeFileSync(fake, '#!/bin/sh\necho "$TMPDIR|$DBUS_SESSION_BUS_ADDRESS|$*"\n'); fs.chmodSync(fake, 0o755);
   const { proc, dir } = life.chrome(fake, ['--headless=new'], { prefix: 'temp-life-chrome-', spawnOpts: { stdio: ['ignore', 'pipe', 'ignore'] } });
   assert.ok(life.registered().dirs.includes(dir));
   return new Promise((resolve, reject) => {
     let out = ''; proc.stdout.on('data', x => { out += x; });
     proc.on('close', () => {
-      try { assert.strictEqual(out.trim(), dir + '|--headless=new --user-data-dir=' + dir); life.cleanup(); assert.ok(!fs.existsSync(dir)); resolve(); } catch (e) { reject(e); }
-      finally { fs.rmSync(path.dirname(fake), { recursive: true, force: true }); }
+      try { assert.strictEqual(out.trim(), dir + '|disabled:|--headless=new --user-data-dir=' + dir); life.cleanup(); assert.ok(!fs.existsSync(dir)); resolve(); } catch (e) { reject(e); }
+      finally { life.cleanup(); }
     });
   });
 });

@@ -103,7 +103,7 @@ function run(H) {
     eq('Casey build competence', B(r, 'deployer', 'build').competence, Math.round(1000 * (0.8 * 1.5 + 1.5) / (0.8 * 1.5 + 2.25 + 3)) / 10, 1.0);   // 41.9 before a few days of decay
     eq('serious list has it', r.serious.map(s => s.severity).join(), 'S1');
     eq('Sam paid what Casey lost: the charge 12 x his verification 0.8 (not the raw 45; a planted flaw never pays the pair)', B(r, 'drafter', 'review').xp, 9.6);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'competence-selftest-'));
+    const dir = require('../../../lib/temp-life').tmpDir('competence-selftest-');
     const saved = Object.assign({}, H.FILES);
     try {
       H.FILES.handoffs = dir;
@@ -282,7 +282,7 @@ function run(H) {
 
   console.log('T16 the ledger: deterministic ids, a lock, a tamper-evident chain, anchors');
   {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'competence-selftest-'));
+    const dir = require('../../../lib/temp-life').tmpDir('competence-selftest-');
     try {
       const ledger = path.join(dir, 'l.jsonl'), lock = path.join(dir, 'l.lock');
       const rows = [1, 2, 3].map(i => ({ schema: 1, kind: 'credit', signal: 'pr.merged', agent: 'engineer', at: at(i), id: H.mkId('pr.merged', 'gh#' + i, 'engineer', 'build', 'credit', ''), recordedAt: at(i) }));
@@ -311,7 +311,7 @@ function run(H) {
 
   console.log('T17 an amendment needs the people owner, a reason, and is never about yourself');
   {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'competence-selftest-'));
+    const dir = require('../../../lib/temp-life').tmpDir('competence-selftest-');
     const saved = Object.assign({}, H.FILES);
     try {
       H.FILES.ledger = path.join(dir, 'l.jsonl'); H.FILES.lock = path.join(dir, 'l.lock'); H.FILES.loops = path.join(dir, 'loops.json'); H.FILES.policy = POLICY;
@@ -355,7 +355,7 @@ function run(H) {
     r = C([pend, onPend], at(2));
     eq('an S1 on work whose author is not verified: flagged, naming the declared author', r.serious.map(s => s.agent + '/' + s.attribution).join(), 'engineer/work-unverified');
     eq('...but nobody is charged yet', r.samples.length, 0);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'competence-selftest-'));
+    const dir = require('../../../lib/temp-life').tmpDir('competence-selftest-');
     const saved = Object.assign({}, H.FILES);
     try {
       H.FILES.handoffs = dir;
@@ -498,7 +498,7 @@ function run(H) {
 
   console.log('T31 a huge row never blocks the collect; collector versions; late-appearing runs');
   {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'competence-selftest-'));
+    const dir = require('../../../lib/temp-life').tmpDir('competence-selftest-');
     try {
       const ledger = path.join(dir, 'l.jsonl'), lock = path.join(dir, 'l.lock');
       const huge = { schema: 1, kind: 'credit', signal: 'pr.merged', agent: 'engineer', at: at(0), id: 'ev_huge', files: Array.from({ length: 400 }, (_, i) => 'api/src/some/long/path/file' + i + '.ts'), verifiers: Array.from({ length: 50 }, (_, i) => ({ agent: 'x' + i, note: 'y'.repeat(60) })) };

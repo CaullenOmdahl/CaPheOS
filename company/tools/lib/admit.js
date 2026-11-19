@@ -54,6 +54,48 @@ function append(row, o) {
   try { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, JSON.stringify(row) + '\n'); } catch (_) { /* never breaks a door */ }
 }
 
+/* THE MEMORY GATE (docs/BUDGET.md "Memory"): room for other programs, like a local AI model (runtime.memory.keepFreeMB).
+ * While the computer is short of memory, a new start that can wait is held: a dispatcher wake or scheduled loop, a Sprint
+ * lane, a pacer re-fire. The owner's chat, meeting, health checks, Run now, hiring and onboarding, the liveness check and
+ * a halt always pass, and so does a dispatcher wake for something the owner wrote (req.owner); a run already going is
+ * never stopped. Short = the reaper's company/state/memory-pressure.json is
+ * open and younger than 20 minutes, or a fresh /proc/meminfo read (cheap, every call) shows MemAvailable under the
+ * plan's line (keepFreeMB + 256 MB; 300 MB at least on the low profile). The hold lifts only once more than
+ * keepFreeMB + 768 MB is free, so it does not flap; company/state/memory-hold.json holds it meanwhile. With nothing kept
+ * free it holds only when the machine is nearly out (under 256 MB). Fail open: what cannot be read never holds. */
+const MEMORY_WAITS = new Set(['dispatch', 'lane', 'pacer']);
+const PRESSURE_FRESH_MS = 20 * 60e3;
+function memoryGate(door, kind, req, opts, now) {
+  if (kind !== 'run' || !MEMORY_WAITS.has(door) || opts.memory === false || req.owner === true) return null;   // owner: a wake for what the owner wrote
+  if (opts.file === null && opts.meminfo == null) return null;   // a caller's selftest: judged on its own rules only
+  const root = opts.root || co.ROOT;
+  const state = f => path.join(root, 'company', 'state', f);
+  const readJson = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return null; } };
+  let M; try { M = require('./memory'); } catch (_) { return null; }
+  const mi = typeof opts.meminfo === 'function' ? opts.meminfo() : opts.meminfo != null ? opts.meminfo : (() => { try { return fs.readFileSync('/proc/meminfo', 'utf8'); } catch (_) { return null; } })();
+  if (!mi) return null;
+  const h = M.parseMeminfo(mi);
+  if (!(h.totalMB > 0)) return null;
+  const s = M.settings(opts.config || readJson(path.join(root, 'company', 'company.json')) || {});
+  const p = M.plan({ totalMB: h.totalMB, profile: M.profileOf(s, h), keepFreeMB: s.keepFreeMB });
+  const below = p.pressure.belowMB, lift = s.keepFreeMB + 768;
+  const holdFile = state('memory-hold.json');
+  const held = readJson(holdFile);
+  const pr = readJson(state('memory-pressure.json'));
+  const pressureOpen = !!(pr && pr.since && !pr.endedAt && Number.isFinite(Date.parse(pr.at || pr.since)) && now - Date.parse(pr.at || pr.since) < PRESSURE_FRESH_MS);
+  const write = v => { if (opts.dry) return; try { fs.mkdirSync(path.dirname(holdFile), { recursive: true }); if (v) fs.writeFileSync(holdFile, JSON.stringify(v) + '\n'); else fs.rmSync(holdFile, { force: true }); } catch (_) {} };
+  if (held && held.since) {
+    if (h.availableMB > lift && !pressureOpen) { write(null); return { edge: 'lift', availableMB: h.availableMB, since: held.since }; }
+    return { hold: true, availableMB: h.availableMB, keepFreeMB: s.keepFreeMB, since: held.since };
+  }
+  if (h.availableMB < below || pressureOpen) {
+    const since = new Date(now).toISOString();
+    write({ since, availableMB: h.availableMB, keepFreeMB: s.keepFreeMB, why: h.availableMB < below ? 'available ' + h.availableMB + ' MB < ' + below + ' MB' : 'the reaper reports memory pressure' });
+    return { hold: true, edge: 'start', availableMB: h.availableMB, keepFreeMB: s.keepFreeMB, since };
+  }
+  return null;
+}
+
 /* admit(req, opts) — phase 1: allow, logged. A bad door or kind is a programming error and throws (tests catch it). */
 function admit(req, opts) {
   req = req || {}; opts = opts || {};
@@ -62,9 +104,13 @@ function admit(req, opts) {
   if (!KINDS.includes(kind)) throw new TypeError('admit: unknown kind "' + kind + '" (one of ' + KINDS.join(', ') + ')');
   const now = Number.isFinite(opts.now) ? opts.now : Date.now();
   const t = { decision: 'allow', reason: PHASE1_REASON, id: newId(), door, kind, seat: req.seat != null ? clip(req.seat, 80) : null };
+  const mem = memoryGate(door, kind, req, opts, now);
+  if (mem && mem.hold) Object.assign(t, { decision: 'hold', reason: 'memory: ' + mem.availableMB + ' MB free' + (mem.keepFreeMB ? ', ' + mem.keepFreeMB + ' MB kept for other programs' : '') + ' (held since ' + mem.since + ')', memory: true,
+    plain: 'Holding new work: the computer is short of memory' });
+  if (mem && mem.edge) t.memoryEdge = mem.edge;
   // the one rule that decides already in phase 1: a routine is never started on a provider that refused it and is still
   // blocked for it (the pacer's refusal block, lib/refusal.js). The door holds the start; models.js moves the seat.
-  if (kind === 'run' && req.jobId && req.provider) {
+  if (t.decision === 'allow' && kind === 'run' && req.jobId && req.provider) {
     let b = null; try { b = require('./refusal').blockFor(String(req.jobId), String(req.provider), { now, root: opts.root }); } catch (_) {}
     if (b) Object.assign(t, { decision: 'hold', reason: 'refusal block: ' + req.provider + ' refused this routine at ' + new Date(b.at).toISOString() + ' and is blocked for it until ' + new Date(b.until).toISOString() + ' (it runs on the next model meanwhile)' });
     // models.js judged that nothing in this seat's chain can run (every entry closed, blocked or at the spend rail): a

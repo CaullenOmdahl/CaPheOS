@@ -12,7 +12,7 @@ const fs = require('fs'), os = require('os'), path = require('path');
 const REPO = path.resolve(__dirname, '..', '..', '..');
 
 // one throwaway company for the whole file: every tool reads it through CAPHEOS_ROOT (set before any require)
-const T = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-card-test-'));
+const T = require('../lib/temp-life').tmpDir('owner-card-test-');
 const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); return f; };
 fs.writeFileSync(path.join(T, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: the owner checks pass here (and only here)
 w('company/company.json', { name: 'OC', owner: { name: 'Pat' }, timezone: 'UTC' });

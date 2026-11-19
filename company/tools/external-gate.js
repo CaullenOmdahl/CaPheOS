@@ -1099,7 +1099,7 @@ function closeClearance(row, opts) {
  * and that the two allowed routes still work. Exit 1 if ANY category can act without a row. */
 function selftest() {
   const os = require('os');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'extgate-'));
+  const dir = require('./lib/temp-life').tmpDir('extgate-');
   const ledger = path.join(dir, 'clearances.jsonl');
   const log = path.join(dir, 'actions.jsonl');
   const allow = path.join(dir, 'allowlist.txt');

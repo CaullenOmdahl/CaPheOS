@@ -122,7 +122,7 @@ fs.writeFileSync(path.join(HERE, 'now.json'), JSON.stringify({ now: NOW, iso: ne
 
 if (process.argv.includes('--expected')) {
   const os = require('os'); const { spawnSync } = require('child_process');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'rank-build-'));
+  const T = require('../../../lib/temp-life').tmpDir('rank-build-');
   fs.cpSync(ROOT, T, { recursive: true });
   const r = spawnSync(process.execPath, [path.join(HERE, '..', '..', '..', 'model-rank.js'), 'refresh', '--force', '--now', String(NOW)], { encoding: 'utf8', env: Object.assign({}, process.env, { CAPHEOS_ROOT: T, CAPHEOS_TZ: 'UTC' }) });
   if (r.status !== 0) { console.error(r.stdout + r.stderr); process.exit(1); }

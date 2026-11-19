@@ -1164,7 +1164,7 @@ module.exports = { ownerNewsLine, tick, ownerDecisions, ownerApply, rerouteOwner
 /* ---------------- selftest ---------------- */
 async function selftest() {
   const assert = require('assert'); const os = require('os');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-change-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('harness-change-selftest-');
   const prevProv = process.env.PROVENANCE_ROOT; process.env.PROVENANCE_ROOT = T;
   const out = []; let bad = 0;
   const skip = name => out.push('skip ' + name);
@@ -1482,7 +1482,7 @@ async function selftest() {
     setGov('tools', 'auto'); setGov('budget', 'auto');
   });
   await t('a framework request carries the diff of a patch-mode change, and refuses to be written empty', async () => {
-    const cpx = require('child_process'); const G = fs.mkdtempSync(path.join(os.tmpdir(), 'hc-fw-'));
+    const cpx = require('child_process'); const G = require('./lib/temp-life').tmpDir('hc-fw-');
     try {
       const gw = (rel, v) => { fs.mkdirSync(path.dirname(path.join(G, rel)), { recursive: true }); fs.writeFileSync(path.join(G, rel), v); };
       gw('company/work/.founded', ''); gw('company/tools/fw.js', 'x\n'); gw('company/work/changes/hc-0001/change.diff', '--- a/company/tools/fw.js\n+++ b/company/tools/fw.js\n@@ -1 +1 @@\n-x\n+y\n');

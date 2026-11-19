@@ -893,7 +893,7 @@ function selftest() {
   ok('a price is matched by the longest key, a [..] suffix ignored', priceOf({ 'claude-opus-5': { input: 5 }, 'claude-opus-5-5': { input: 4 } }, 'claude-opus-5-5[1m]').input === 4);
   ok('PR refs: a URL and a PR line', prRefs('**PR:** acme/web#12\nsee https://github.com/acme/api/pull/7').join(',') === 'api#7,web#12');
   const FIX = path.join(__dirname, 'tests', 'fixtures', 'ranking');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'model-rank-'));
+  const T = require('./lib/temp-life').tmpDir('model-rank-');
   try {
     fs.cpSync(path.join(FIX, 'root'), T, { recursive: true });
     const now = String(readJson(path.join(FIX, 'now.json'), {}).now);

@@ -57,7 +57,7 @@ function assertPlain(text, what) {
 }
 
 function fixture(levels) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-asks-e2e-')); roots.push(root);
+  const root = require('../lib/temp-life').tmpDir('owner-asks-e2e-'); roots.push(root);
   fs.cpSync(path.join(REPO, 'company'), path.join(root, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
   fs.cpSync(path.join(REPO, 'console'), path.join(root, 'console'), { recursive: true });
   for (const f of ['company/state/locked', 'company/pm-inbox.jsonl', 'company/state/governance.json', 'company/state/owner-rulings.json', 'company/owner',
@@ -105,7 +105,7 @@ async function consoleOn(root, fn) {
   const fake = http.createServer((req, res) => { res.writeHead(404, { 'content-type': 'application/json' }); res.end('{"error":"fake"}'); });
   await new Promise(r => fake.listen(0, '127.0.0.1', r));
   const env = envFor(root, { STARNET_URL: 'http://127.0.0.1:' + fake.address().port });
-  const child = spawn(process.execPath, [path.join(root, 'console', 'server.js'), '--port', '0', '--host', '127.0.0.1', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = require('../lib/temp-life').track(spawn(process.execPath, [path.join(root, 'console', 'server.js'), '--port', '0', '--host', '127.0.0.1', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] }));
   let errText = ''; child.stderr.on('data', x => { errText += x; });
   try {
     const port = await new Promise((resolve, reject) => { let buf = ''; child.stdout.on('data', x => { buf += x; const m = buf.match(/\{"port":(\d+)\}/); if (m) resolve(Number(m[1])); }); child.on('exit', c => reject(new Error('server exited ' + c + ': ' + errText))); setTimeout(() => reject(new Error('server did not start: ' + errText)), 20000); });

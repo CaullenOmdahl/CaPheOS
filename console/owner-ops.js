@@ -30,6 +30,10 @@
  *   POST /api/ops/access {host, trustProxy, publicUrl, sessionHours, confirm}   company.json console.* (restart needed)
  *   GET  /api/ops/memory                          memory.js status --json: what the company uses of this computer's memory,
  *                                                 its profile and limits, what the reaper freed (the Health row's Memory line)
+ *   GET  /api/ops/memory/shared                   reaper.js host-sweep --json: leftovers in the shared temp folder no company
+ *                                                 can vouch for (listed, nothing removed)
+ *   POST /api/ops/memory {profile, keepFreeMB, visibleBrowser}   memory.js set --by owner: {changed, restartNeeded, line}
+ *   POST /api/ops/memory/clean {what: 'now'|'shared-temp'}       reaper.js run / host-sweep --apply --by owner, as a job
  *   GET  /api/ops/jobs[/<id>]                     the detached jobs and their output
  *   GET  /api/ops/log                             the owner-ops rows, newest first
  */
@@ -234,6 +238,27 @@ function mount(route, deps) {
 
   /* ---------- memory (company/tools/memory.js; the reaper chore frees it) ---------- */
   route('GET', /^\/api\/ops\/memory$/, () => runApi('memory.js', ['status', '--json'], { timeout: 30000 }));
+  // the shared temp folder's leftovers no company can vouch for (a listing, nothing removed)
+  route('GET', /^\/api\/ops\/memory\/shared$/, () => runApi('reaper.js', ['host-sweep', '--json'], { timeout: 60000 }));
+  route('POST', /^\/api\/ops\/memory$/, (m, q, b) => {
+    const args = ['set', '--by', owner(), '--json'], changed = [];
+    if (b.profile !== undefined) { if (!['auto', 'low', 'normal'].includes(b.profile)) bad('profile is auto, low or normal'); args.push('--profile', b.profile); changed.push('profile ' + b.profile); }
+    if (b.keepFreeMB !== undefined) { const n = Number(b.keepFreeMB); if (!(Number.isFinite(n) && n >= 0 && n <= 1048576)) bad('keepFreeMB is a number of MB, 0 or more'); args.push('--keep-free', String(Math.round(n))); changed.push('keep free ' + Math.round(n) + ' MB'); }
+    if (b.visibleBrowser !== undefined) { if (typeof b.visibleBrowser !== 'boolean') bad('visibleBrowser is true or false'); args.push('--visible-browser', b.visibleBrowser ? 'on' : 'off'); changed.push('station browser window ' + (b.visibleBrowser ? 'on' : 'off')); }
+    if (!changed.length) bad('nothing to set');
+    return act('memory.set', changed.join(', '), null, async () => {
+      const r = await runApi('memory.js', args, { timeout: 120000 });
+      if (r && r.ok === false) bad(r.error || 'not set', r.refused ? 403 : 400);
+      return { changed: r.changed || changed, restartNeeded: !!r.restartNeeded, line: r.apply && r.apply.line || null, warnings: r.warnings || [] };
+    });
+  });
+  // what: 'now' (the reaper's run, now rather than at its next turn) or 'shared-temp' (the owner's host sweep); both detached
+  route('POST', /^\/api\/ops\/memory\/clean$/, (m, q, b) => {
+    const R = co.p('company', 'tools', 'reaper.js');
+    if (b.what === 'now') return act('memory.clean', 'now', null, () => ({ job: startJob('memory-clean', [process.execPath, R, 'run'], { label: 'Clean up now' }) }));
+    if (b.what === 'shared-temp') return act('memory.clean', 'shared-temp', null, () => ({ job: startJob('memory-clean', [process.execPath, R, 'host-sweep', '--apply', '--by', owner()], { label: 'Clear other leftovers in the shared temp folder' }) }));
+    bad("what is 'now' or 'shared-temp'");
+  });
 
   /* ---------- jobs and the log ---------- */
   route('GET', /^\/api\/ops\/jobs$/, () => ({ ok: true, jobs: listJobs() }));

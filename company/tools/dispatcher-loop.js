@@ -175,7 +175,7 @@ function runLoop(opts) {
 
 /* ---------------- selftest ---------------- */
 async function selftest() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatcher-loop-selftest-'));
+  const dir = require('./lib/temp-life').tmpDir('dispatcher-loop-selftest-');
   const cases = [];
   const check = (name, cond, detail) => cases.push({ name, pass: !!cond, detail: detail || '' });
   const marks = path.join(dir, 'marks.txt');

@@ -6,42 +6,71 @@
 # Nothing here reaches a station: STARNET_URL points at a closed port, and every selftest runs against a temp copy of
 # the repo (CAPHEOS_ROOT, honoured by company/tools/lib/company.js), so no test can dirty the checkout. TMPDIR is left
 # alone on purpose: some selftests size text by their fixture path, and a deep private temp dir makes them fail. Every step runs even after a failure, so one run reports all of them.
+# Nothing is left behind either (/tmp is RAM on most Linux hosts):
+#   - before the copy and again at the end, the test walks' leftovers nobody uses any more are swept
+#     (company/tools/tmp-sweep.js, class test, older than 2 minutes: a parallel run's live ones stay);
+#   - each step runs in a session of its own (setsid), and when it ends, passed or failed, whatever is left in its
+#     process group gets SIGTERM, then SIGKILL a second later;
+#   - every process of this run carries CAPHEOS_TEST_RUN=<work dir>; the last step, "no processes left behind", lists
+#     any that are still running (scripts/test-leftovers.js), ends them, and fails the run if there were any.
 # Env: TEST_TIMEOUT (seconds per step, default 180); TEST_TRACKED_ONLY=1 copies only tracked files (what CI sees),
-# leaving out untracked work in progress.
+# leaving out untracked work in progress; CAPHEOS_TEST_FIXTURE=<script> runs only that script as one step, then the
+# leftover check (tests/test-sh-hygiene.sh tests the runner itself this way); CAPHEOS_STARNET_SRC=<starnet checkout>
+# for company/patches/tests/*.test.js (default: ./starnet when this is a company's checkout).
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 TIMEOUT="${TEST_TIMEOUT:-180}"
 SYS_TMP="${TMPDIR:-/tmp}"
+FIXTURE="${CAPHEOS_TEST_FIXTURE:-}"
+# every test walk's leftover nobody uses any more (Chrome profiles, per-run dirs; a parallel run's live ones are in use or
+# younger than two minutes, so they stay): company/tools/tmp-sweep.js, class test. Before this run starts, and at its end.
+sweep_walks() { CAPHEOS_TMP_SWEEP=1 node "$REPO/company/tools/tmp-sweep.js" apply --dir "$SYS_TMP" --class test --min-age 120 >/dev/null 2>&1; }
+sweep_walks
 START_MARK="$(mktemp "$SYS_TMP/capheos-test-start.XXXXXX")"   # its mtime is the run start
 WORK="$(mktemp -d "$SYS_TMP/capheos-test-XXXXXX")"
 COPY="$WORK/repo"; LOGS="$WORK/logs"
 mkdir -p "$COPY" "$LOGS"
 
+# end what is left of a finished step's process group (its id is the pid the step's session started with)
+reap_group() {
+  local pg; pg="$(cat "$1" 2>/dev/null)"; [[ "$pg" =~ ^[0-9]+$ ]] && [ "$pg" -gt 1 ] || return 0
+  kill -0 -- "-$pg" 2>/dev/null || return 0
+  kill -TERM -- "-$pg" 2>/dev/null; sleep 1; kill -KILL -- "-$pg" 2>/dev/null
+  return 0
+}
+CUR_PGF=""
 cleanup() {
+  # an interrupted run (Ctrl-C, a CI cancel): the step that was running goes, and anything else of this run
+  [ -n "$CUR_PGF" ] && reap_group "$CUR_PGF"
+  node "$REPO/scripts/test-leftovers.js" "$WORK" --kill >/dev/null 2>&1
   # leftovers of earlier runs' selftests in the system temp dir (only ones older than this run, so a parallel run's
   # live fixtures are never touched), then this run's own work dir
-  find "$SYS_TMP" -maxdepth 1 -name '*-selftest-*' -user "$(id -u)" ! -newer "$START_MARK" -exec rm -rf {} + 2>/dev/null
-  # then every test walk's leftover nobody uses any more (Chrome profiles, per-run dirs; a parallel run's live ones are in
-  # use or younger than two minutes, so they stay): company/tools/tmp-sweep.js, class test
-  CAPHEOS_TMP_SWEEP=1 node "$REPO/company/tools/tmp-sweep.js" apply --dir "$SYS_TMP" --class test --min-age 120 >/dev/null 2>&1
+  [ -n "$FIXTURE" ] || find "$SYS_TMP" -maxdepth 1 -name '*-selftest-*' -user "$(id -u)" ! -newer "$START_MARK" -exec rm -rf {} + 2>/dev/null
+  sweep_walks
   rm -rf "$WORK" "$START_MARK"
 }
 trap cleanup EXIT
+trap 'exit 130' INT TERM HUP   # through the EXIT trap above
 
-# The copy: tracked files plus untracked-but-not-ignored ones (work in progress), or tracked only.
+# The copy: tracked files plus untracked-but-not-ignored ones (work in progress), or tracked only. A fixture run needs none.
 LS_OPTS=(-co --exclude-standard); [ "${TEST_TRACKED_ONLY:-}" = 1 ] && LS_OPTS=(-c)
-( cd "$REPO" && git ls-files -z "${LS_OPTS[@]}" | tar --null --ignore-failed-read -T - -cf - 2>/dev/null ) | tar -xf - -C "$COPY"
+[ -n "$FIXTURE" ] || ( cd "$REPO" && git ls-files -z "${LS_OPTS[@]}" | tar --null --ignore-failed-read -T - -cf - 2>/dev/null ) | tar -xf - -C "$COPY"
 
 # CAPHEOS_SECWATCH_OFFLINE: the security watch (company/tools/security-watch.js) makes no live advisory lookup from any test
-export STARNET_URL="http://127.0.0.1:1" CAPHEOS_ROOT="$COPY" PYTHONDONTWRITEBYTECODE=1 CAPHEOS_SECWATCH_OFFLINE=1 CAPHEOS_TMP_SWEEP=0
+# CAPHEOS_TEST_RUN: every process this run starts inherits it, which is how the last step finds what was left behind
+export STARNET_URL="http://127.0.0.1:1" CAPHEOS_ROOT="$COPY" PYTHONDONTWRITEBYTECODE=1 CAPHEOS_SECWATCH_OFFLINE=1 CAPHEOS_TMP_SWEEP=0 CAPHEOS_TEST_RUN="$WORK"
 
 NAMES=(); RESULTS=(); TIMES=(); FAILED=0
-# step <label> <cmd...> — run in the copy, with a timeout; output goes to a log, shown on failure
+# step <label> <cmd...> — run in the copy, with a timeout, in a session of its own; output goes to a log, shown on
+# failure. timeout still answers 124 when the step ran out of time (it signals the step's leader; reap_group the rest).
 step() {
   local label="$1"; shift
-  local log="$LOGS/$(printf '%03d' "${#NAMES[@]}").log" t0=$SECONDS rc
-  ( cd "$COPY" && timeout --kill-after=10 "$TIMEOUT" "$@" ) >"$log" 2>&1; rc=$?
+  local n; n="$(printf '%03d' "${#NAMES[@]}")"
+  local log="$LOGS/$n.log" pgf="$LOGS/$n.pgid" t0=$SECONDS rc
+  CUR_PGF="$pgf"
+  ( cd "$COPY" && exec timeout --kill-after=10 "$TIMEOUT" setsid --wait bash -c 'echo $$ > "$0"; exec "$@"' "$pgf" "$@" ) >"$log" 2>&1; rc=$?
+  reap_group "$pgf"; CUR_PGF=""
   NAMES+=("$label"); TIMES+=("$((SECONDS - t0))s")
   if [ "$rc" = 0 ]; then RESULTS+=("PASS"); printf '  PASS  %s\n' "$label"
   else
@@ -52,11 +81,33 @@ step() {
 }
 skip() { NAMES+=("$1"); RESULTS+=("SKIP"); TIMES+=("-"); printf '  SKIP  %s — %s\n' "$1" "$2"; }
 
+# the end: anything of this run still running is listed, ended, and fails the run; then the summary
+finish() {
+  echo "== leftovers"
+  step "no processes left behind (scripts/test-leftovers.js)" node "$REPO/scripts/test-leftovers.js" "$WORK" --kill
+  echo
+  printf '%-62s %-10s %s\n' "STEP" "RESULT" "TIME"
+  for i in "${!NAMES[@]}"; do printf '%-62s %-10s %s\n' "${NAMES[$i]:0:62}" "${RESULTS[$i]}" "${TIMES[$i]}"; done
+  echo
+  if [ "$FAILED" -gt 0 ]; then echo "FAILED: $FAILED of ${#NAMES[@]} steps"; exit 1; fi
+  echo "ALL PASSED (${#NAMES[@]} steps)"
+  exit 0
+}
+
+if [ -n "$FIXTURE" ]; then
+  echo "CaPheOS test runner, fixture $FIXTURE (timeout ${TIMEOUT}s/step)"
+  step "fixture $(basename "$FIXTURE")" bash "$FIXTURE"
+  finish
+fi
+
 echo "CaPheOS tests (copy: $COPY, station: $STARNET_URL, timeout ${TIMEOUT}s/step)"
 
 echo "== parse and inventory"
 step "tool-parse.js" node company/tools/tool-parse.js
 step "tool-inventory-check.js" node company/tools/tool-inventory-check.js
+step "check-temp-hygiene.js (every test cleans up its temp files and helpers)" node scripts/check-temp-hygiene.js
+step "check-temp-hygiene.js --selftest" node scripts/check-temp-hygiene.js --selftest
+step "tests/test-sh-hygiene.sh (this runner leaves no process behind)" bash tests/test-sh-hygiene.sh
 step "check-clean-tree.sh (no company data tracked)" bash scripts/check-clean-tree.sh
 step "instance-update-test.sh (founded clone + module enable, then a clean framework pull)" bash scripts/instance-update-test.sh
 
@@ -133,10 +184,16 @@ if [ -f "$COPY/company/tools/pack.js" ]; then step "pack.js doctor --all" node c
 else skip "company/tools/pack.js doctor --all" "not present"; fi
 if [ -f "$COPY/company/tools/module.js" ]; then step "module.js doctor --all" node company/tools/module.js doctor --all
 else skip "company/tools/module.js doctor --all" "not present"; fi
+# StarNet patch tests: they copy the StarNet checkout into a temp dir and apply the record there (never to ./starnet)
+STARNET_SRC="${CAPHEOS_STARNET_SRC:-$REPO/starnet}"
+for t in "$COPY"/company/patches/tests/*.test.js; do
+  [ -f "$t" ] || continue
+  if [ -f "$STARNET_SRC/sidecar/index.js" ] && [ -d "$STARNET_SRC/node_modules" ]; then
+    step "${t#"$COPY"/}" env CAPHEOS_STARNET_SRC="$STARNET_SRC" node "${t#"$COPY"/}"
+  else skip "${t#"$COPY"/}" "no StarNet checkout (set CAPHEOS_STARNET_SRC)"; fi
+done
+if [ -f "$STARNET_SRC/sidecar/index.js" ] && [ -d "$STARNET_SRC/node_modules" ]; then
+  step "tests/memory-walk.js (scratch station: its browser closes after the idle minute; slow, real time)" env CAPHEOS_STARNET_SRC="$STARNET_SRC" node tests/memory-walk.js
+else skip "tests/memory-walk.js" "no StarNet checkout (set CAPHEOS_STARNET_SRC)"; fi
 
-echo
-printf '%-62s %-10s %s\n' "STEP" "RESULT" "TIME"
-for i in "${!NAMES[@]}"; do printf '%-62s %-10s %s\n' "${NAMES[$i]:0:62}" "${RESULTS[$i]}" "${TIMES[$i]}"; done
-echo
-if [ "$FAILED" -gt 0 ]; then echo "FAILED: $FAILED of ${#NAMES[@]} steps"; exit 1; fi
-echo "ALL PASSED (${#NAMES[@]} steps)"
+finish

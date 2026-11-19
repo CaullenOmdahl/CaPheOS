@@ -54,7 +54,7 @@ const mmBody = (weeklyLeft, intervalLeft) => ({ model_remains: [
 const roots = [];
 function fixture(o) {
   o = o || {};
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pacer-test-'));
+  const root = require('../lib/temp-life').tmpDir('pacer-test-');
   roots.push(root);
   const home = path.join(root, 'home');
   const w = (rel, data) => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };

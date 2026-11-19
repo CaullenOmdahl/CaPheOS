@@ -49,7 +49,7 @@ const REDIRECTS = [
 ];
 // every owner-facing screen (the halt screen included)
 const SCREENS = ['#/today', '#/chat/owner', '#/chat/agent:agent', '#/chat/group:g1', '#/crew', '#/crew/agent/model', '#/crew/hiring', '#/crew/floor', '#/work/quests', '#/work/handoffs', '#/work/decisions', '#/work/projects',
-  '#/spend', '#/settings/company', '#/settings/autonomy', '#/settings/tempo', '#/settings/models', '#/settings/connections', '#/settings/security', '#/settings/pages', '#/settings/system', '#/halt'];
+  '#/spend', '#/settings/company', '#/settings/autonomy', '#/settings/tempo', '#/settings/models', '#/settings/connections', '#/settings/security', '#/settings/pages', '#/settings/system', '#/settings/system/memory', '#/halt'];
 // file paths, tool names, API routes, and the raw ids, tags and counters the owner should never read outside Details:
 // question ids, candidate seat ids, governance/pacing tags, tool-call markup, lane counters, the pacer's jargon
 const LEAK = /company\/|\.js\b|\/api\/|\bq-\d{4,}\b|\bcand-[a-z]|\b(governance|pacing):|<parameter|<invoke|parameter name=|lanes? running|days' share|% did nothing|\/item\b|proposals\/h|spend rail|\(owner-only|mode 0600/;

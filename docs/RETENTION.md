@@ -189,7 +189,19 @@ lean enough to share a small machine with a local model:
 - **Tests clean up however they end.** `company/tools/lib/temp-life.js` registers a test's temp dirs and helper
   processes (Chrome, the mock station, a console) and removes / ends them on exit, on an error and on SIGINT / SIGTERM
   (the signal `scripts/test.sh`'s per-step timeout sends). Chrome is started with `TMPDIR` inside its profile, so its own
-  `com.google.Chrome.*` entries go with the profile. `scripts/test.sh` sweeps the test class once more when it ends.
+  `com.google.Chrome.*` entries go with the profile, and without the session bus, so it cannot move itself into a
+  desktop scope out of the test's reach. `scripts/check-temp-hygiene.js` (a `test.sh` step) fails the suite when a test,
+  walk or selftest makes temp files or starts a browser without it; a runtime use that is not a test is listed in
+  `scripts/temp-hygiene-allow.json` with its reason. Python tests use `tempfile.TemporaryDirectory()` (or `addCleanup`),
+  shell scripts a `trap … EXIT`.
+- **The test runner leaves nothing behind.** `scripts/test.sh` sweeps the test class before the run and after it, runs
+  each step in a session of its own and ends what is left of its process group when the step ends (passed or failed),
+  and fails a last step, "no processes left behind", when any process of the run still runs (`scripts/test-leftovers.js`
+  finds them by `CAPHEOS_TEST_RUN`, lists them and ends them). `tests/test-sh-hygiene.sh` tests the runner itself.
+- **The station's own processes.** StarNet patch 0020 (company/patches/README.md): what an agent's command leaves in
+  the background ends with the command; a browser the station starts stays in the station's unit, keeps its temp files
+  in its profile and ends with the station; the shared browser closes after the profile's idle minutes; at most 3 private
+  browsers at once (1 on the low profile).
 
 ## The reaper (company/tools/reaper.js)
 

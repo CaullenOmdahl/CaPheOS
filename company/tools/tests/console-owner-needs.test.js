@@ -18,7 +18,7 @@ const w = (root, rel, data) => { const f = path.join(root, rel); fs.mkdirSync(pa
 const CREW = { boss: { name: 'Boss', title: 'CEO', functions: ['ceo'], manager: null, inbox: 'to-boss.md' }, hal: { name: 'Hal', title: 'People', functions: ['people'], manager: 'boss', inbox: 'to-hal.md' } };
 
 function fixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-needs-test-')); roots.push(root);
+  const root = require('../lib/temp-life').tmpDir('owner-needs-test-'); roots.push(root);
   fs.cpSync(path.join(REPO, 'company'), path.join(root, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
   fs.cpSync(path.join(REPO, 'console'), path.join(root, 'console'), { recursive: true });
   for (const f of ['company/state/locked/provenance.jsonl', 'company/pm-inbox.jsonl', 'company/state/governance.json', 'company/state/owner-rulings.json', 'company/owner/digest.jsonl']) try { fs.rmSync(path.join(root, f)); } catch (_) {}
@@ -46,7 +46,7 @@ async function consoleOn(root, fn) {
   await new Promise(r => fake.listen(0, '127.0.0.1', r));
   const env = Object.assign({}, process.env, { CAPHEOS_ROOT: root, STARNET_URL: 'http://127.0.0.1:' + fake.address().port, CAPHEOS_TZ: 'UTC' });
   delete env.CONSOLE_PORT; delete env.CAPHEOS_READONLY;
-  const child = spawn(process.execPath, [path.join(root, 'console', 'server.js'), '--port', '0', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = require('../lib/temp-life').track(spawn(process.execPath, [path.join(root, 'console', 'server.js'), '--port', '0', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] }));
   let errText = ''; child.stderr.on('data', x => { errText += x; });
   try {
     const port = await new Promise((resolve, reject) => { let buf = ''; child.stdout.on('data', x => { buf += x; const m = buf.match(/\{"port":(\d+)\}/); if (m) resolve(Number(m[1])); }); child.on('exit', c => reject(new Error('server exited ' + c + ': ' + errText))); setTimeout(() => reject(new Error('server did not start: ' + errText)), 15000); });

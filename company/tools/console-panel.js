@@ -861,7 +861,7 @@ function cmdTokens(write, r) {
 function selftest() {
   const os = require('os');
   const FIX = path.join(__dirname, 'tests', 'fixtures', 'console');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'console-panel-'));
+  const tmp = require('./lib/temp-life').tmpDir('console-panel-');
   fs.cpSync(path.join(FIX, 'root'), tmp, { recursive: true });
   fs.mkdirSync(path.join(tmp, 'company', 'console'), { recursive: true });
   fs.copyFileSync(path.join(__dirname, '..', 'console', 'sources.json'), path.join(tmp, 'company', 'console', 'sources.json'));

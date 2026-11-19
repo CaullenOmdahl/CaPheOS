@@ -5,7 +5,7 @@
 const fs = require('fs'); const os = require('os'); const path = require('path');
 const test = require('node:test'); const assert = require('assert');
 
-const T = fs.mkdtempSync(path.join(os.tmpdir(), 'routing-test-'));
+const T = require('../lib/temp-life').tmpDir('routing-test-');
 process.env.CAPHEOS_ROOT = T; process.env.PROVENANCE_ROOT = T;
 const W = (rel, v) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof v === 'string' ? v : JSON.stringify(v)); };
 W('company/company.json', { name: 'Routing Test', owner: { name: 'Pat' }, timezone: 'UTC', station: { port: 1 } });

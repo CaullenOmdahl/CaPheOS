@@ -31,8 +31,8 @@ const SEATS = {
 
 let mock = null, port = 0; const roots = [];
 test.before(async () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'budget-gate-mock-')); roots.push(d);
-  mock = spawn(process.execPath, [MOCK, '--port', '0', '--token', TOKEN, '--log', path.join(d, 'req.jsonl')], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const d = require('../lib/temp-life').tmpDir('budget-gate-mock-'); roots.push(d);
+  mock = require('../lib/temp-life').track(spawn(process.execPath, [MOCK, '--port', '0', '--token', TOKEN, '--log', path.join(d, 'req.jsonl')], { stdio: ['ignore', 'pipe', 'inherit'] }));
   port = await new Promise((res, rej) => { let s = ''; mock.stdout.on('data', c => { s += c; const m = /"port":(\d+)/.exec(s); if (m) res(Number(m[1])); }); mock.on('exit', c => rej(new Error('mock exited ' + c))); });
   assert.notEqual(port, 8800); assert.notEqual(port, 8810);
   mock.logFile = path.join(d, 'req.jsonl');
@@ -47,7 +47,7 @@ const reqs = () => fs.readFileSync(mock.logFile, 'utf8').split('\n').filter(Bool
 /* a company on the mock. o.scheduler (absent = station), o.dailyUsd, o.handoffs {inbox: text} */
 async function company(o) {
   o = o || {};
-  const T = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'budget-gate-co-'))); roots.push(T);
+  const T = fs.realpathSync(require('../lib/temp-life').tmpDir('budget-gate-co-')); roots.push(T);
   const tag = path.basename(T);
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };
   const cfg = { name: 'Gate Test ' + tag, owner: { name: 'Pat' }, timezone: 'UTC', station: { port, serviceName: 'gate-test' } };
@@ -97,7 +97,7 @@ async function company(o) {
 /* ---------------- units ---------------- */
 test('admit(): phase 1 always allows, and every call is one logged row {door, seat, kind, decision, reason} (I2)', () => {
   const A = require('../lib/admit');
-  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'budget-gate-admit-')), 'log.jsonl'); roots.push(path.dirname(f));
+  const f = path.join(require('../lib/temp-life').tmpDir('budget-gate-admit-'), 'log.jsonl'); roots.push(path.dirname(f));
   for (const door of A.DOORS) { const t = A.admit({ door, kind: door === 'act' ? 'act' : door === 'watchdog' ? 'watchdog' : 'run', seat: 's1', amountUsd: door === 'act' ? 250 : undefined }, { file: f }); assert.equal(t.decision, 'allow'); }
   const rows = fs.readFileSync(f, 'utf8').trim().split('\n').map(l => JSON.parse(l));
   assert.equal(rows.length, A.DOORS.length);
@@ -209,7 +209,7 @@ test('3 lane parity: no money check is left in lanes.js, and lanes and the dispa
   const dispatch = fs.readFileSync(path.join(TOOLS, 'dispatch.js'), 'utf8');
   assert.ok(!/SP\.spreadHold\(/.test(dispatch), 'the dispatcher has no copy of the spread either'); assert.match(dispatch, /A\.admit\(\{ door: 'dispatch'/);
   const A = require('../lib/admit');
-  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'budget-gate-parity-')), 'log.jsonl'); roots.push(path.dirname(f));
+  const f = path.join(require('../lib/temp-life').tmpDir('budget-gate-parity-'), 'log.jsonl'); roots.push(path.dirname(f));
   const d = A.admit({ door: 'dispatch', kind: 'run', seat: 'mo', priority: 'blocking' }, { file: f }), l = A.admit({ door: 'lane', kind: 'run', seat: 'mo', priority: 'blocking' }, { file: f });
   assert.deepEqual([d.decision, d.reason, d.seat], [l.decision, l.reason, l.seat]);
   for (const b of [{ capped: true }, { share: { usd: 1, spent: 2 } }, { spread: { on: true, cap: 4, spent24h: 3, spentLastHour: 3, hoursLeft: 4 } }, {}]) {

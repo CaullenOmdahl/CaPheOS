@@ -224,7 +224,7 @@ function status() {
 async function selftest() {
   const os = require('os');
   const { spawnSync } = require('child_process');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'liveness-selftest-'));
+  const tmp = require('../../company/tools/lib/temp-life').tmpDir('liveness-selftest-');
   let fails = 0, n = 0;
   const t = (name, ok, x) => { n++; if (!ok) fails++; console.log((ok ? 'ok   ' : 'FAIL ') + name + (ok || x === undefined ? '' : ' :: ' + String(x).slice(0, 500))); };
   try {

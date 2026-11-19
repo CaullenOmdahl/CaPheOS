@@ -182,7 +182,7 @@ function selftest() {
     ['duty: nothing saved, nothing flagged -> not due', () => String(dutyResult({}, {})), 'null'],
     ['duty: a saved header that is not "true" is due, by id only', () => { const r = dutyResult({ github: false }, {}); return r && r.items.map(i => i.id).join(',') + '|' + /never|token/.test(JSON.stringify(r)); }, 'connector:github|false'],
     ['duty: a drift locked-watch flagged is due until it clears', () => { const r = dutyResult({ github: true }, { 'servicekey:github': { flagged: 'abc' }, github: { flagged: 'def' } }); return r && r.items.map(i => i.id).join(','); }, 'connector:github,servicekey:github'],
-    ['saved header value is read as a yes/no only', () => { const os = require('os'); const d = fs.mkdtempSync(path.join(os.tmpdir(), 'cscope-')); const f = path.join(d, 'state.json');
+    ['saved header value is read as a yes/no only', () => { const os = require('os'); const d = require('./lib/temp-life').tmpDir('cscope-'); const f = path.join(d, 'state.json');
       fs.writeFileSync(f, JSON.stringify({ version: 2, configs: [{ id: 'github', headers: { 'x-mcp-readonly': 'TRUE' }, token: 'never-read' }], oauth: { byId: { github: { accessToken: 'never-read' } } } }));
       const a = savedHeaderValues(f); fs.writeFileSync(f, JSON.stringify({ version: 2, configs: [{ id: 'github', headers: { 'X-MCP-Readonly': 'false' } }] })); const b = savedHeaderValues(f);
       fs.writeFileSync(f, JSON.stringify({ format: 'sealed-v1', data: 'x' })); const c = savedHeaderValues(f); fs.rmSync(d, { recursive: true, force: true });

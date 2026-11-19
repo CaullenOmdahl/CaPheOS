@@ -274,7 +274,7 @@ function selftest() {
   const hmZ = ms => { const p = mm.zoneParts(ms, FIXTURE_TZ); return p.day * 10000 + p.hour * 100 + p.minute; };
 
   // a fixture company root: merge-train.sh, clearances, loops, inboxes, policy with an empty must-not-move list
-  const fx = fs.mkdtempSync(path.join(os.tmpdir(), 'offpeak-hold-selftest-'));
+  const fx = require('./lib/temp-life').tmpDir('offpeak-hold-selftest-');
   const w = (rel, txt) => { const f = path.join(fx, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, txt); return f; };
   w(REL.mergeTrain, '#!/bin/sh\nWINDOW_START=2300\nWINDOW_STOP=0530\n');
   w(mm.POLICY_REL, JSON.stringify({ offpeakHold: { enabled: true, mustNotMove: ['Daily standup', 'Ops loop'] }, peakPricing: { deepseek: FIXTURE_PEAK } }));
@@ -327,7 +327,7 @@ function selftest() {
   check('inside the block, a must-not-move loop is not deferred', d({ loop: 'Ops loop — run the company', at: tNine }).spare, 'must-not-move');
   check('a loop that is not on the list is deferred', d({ loop: 'Research loop', at: tNine }).defer, true);
   check('the must-not-move list is read from the policy file', mustNotMove('Daily standup', fx) && !mustNotMove('Research loop', fx), true);
-  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'offpeak-hold-empty-'));
+  const empty = require('./lib/temp-life').tmpDir('offpeak-hold-empty-');
   fs.mkdirSync(path.join(empty, path.dirname(mm.POLICY_REL)), { recursive: true });
   fs.writeFileSync(path.join(empty, mm.POLICY_REL), JSON.stringify({ offpeakHold: { mustNotMove: [] } }));
   check('an empty must-not-move list exempts nothing', mustNotMove('Ops loop', empty), false);

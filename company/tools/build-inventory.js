@@ -11,7 +11,7 @@ if (process.argv.includes('--selftest')) process.exit(selftest());
 function selftest() {
   const cp = require('child_process');
   const os = require('os');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-selftest-'));
+  const tmp = require('./lib/temp-life').tmpDir('inv-selftest-');
   let pass = 0, fail = 0;
   const ok = (name, cond, extra) => { if (cond) { pass++; console.log('ok    ' + name); } else { fail++; console.log('FAIL  ' + name + (extra ? ' — ' + extra : '')); } };
   const run = (providersJson, out) => cp.spawnSync(process.execPath, [__filename], { encoding: 'utf8',

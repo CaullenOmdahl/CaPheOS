@@ -78,3 +78,20 @@ test('units: the three company units and the installed registered services', () 
   fs.writeFileSync(path.join(T, 'company', 'state', 'services.json'), JSON.stringify({ services: { rec: { name: 'rec', unit: 'co-svc-rec', status: 'installed' }, old: { name: 'old', unit: 'co-svc-old', status: 'removed' } } }));
   assert.deepStrictEqual(M.units({ station: { serviceName: 'co-station' } }, T).map(u => u.name), ['co-station.service', 'co-station-console.service', 'co-station-dispatch.service', 'co-svc-rec.service']);
 });
+
+test('status reads the station browser (GET /api/browser/view) and never fails without a station', async () => {
+  const T = life.tmpDir('memory-station-test-');
+  fs.mkdirSync(path.join(T, 'company', 'state'), { recursive: true });
+  fs.writeFileSync(path.join(T, 'company', 'company.json'), JSON.stringify({ name: 'S', slug: 's', station: { serviceName: 's-station', port: 1 } }));
+  const MJ = require('../memory');
+  const seen = [];
+  const base = { root: T, supervisor: 'none', host: { totalMB: 8192, availableMB: 4096, swapTotalMB: 0, swapUsedMB: 0 }, systemctl: () => ({ code: 1, out: '' }) };
+  const open = await MJ.statusWithStation(MJ.context(Object.assign({}, base, { stationApi: async (m, p) => { seen.push(m + ' ' + p); return { ok: true, station: { open: true, mode: 'builtin', visible: false, driver: null } }; } })));
+  assert.deepStrictEqual(seen, ['GET /api/browser/view']);
+  assert.deepStrictEqual(open.station.browser, { open: true, driver: null, mode: 'builtin', visible: false });
+  const driven = await MJ.stationBrowser(MJ.context(Object.assign({}, base, { stationApi: async () => ({ station: { open: true, driver: { agentId: 'phil', runId: 'r1' } } }) })));
+  assert.strictEqual(driven.driver, 'phil');
+  const off = await MJ.stationBrowser(MJ.context(Object.assign({}, base, { noNetwork: true })));
+  assert.ok(off.unknown && /no network/.test(off.unknown), JSON.stringify(off));
+  life.cleanup();
+});

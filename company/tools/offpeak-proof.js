@@ -231,7 +231,7 @@ function selftest() {
   const TZ = 'Etc/GMT-7';
   const fx = { cfg: mm.normalisePeak('deepseek', { timezone: 'Asia/Shanghai', days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], blocks: [['09:00', '12:00'], ['14:00', '18:00']], marginMin: 10 }), tz: TZ };
   const named = [{ name: 'Tool health check', now: '11:40' }, { name: 'Security sweep', now: '12:05' }, { name: 'Floor loop', now: '11:20' }, { name: 'Hiring loop', now: '12:20' }, { name: 'Research loop', now: '12:40' }];
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'offpeak-proof-selftest-'));
+  const tmp = require('./lib/temp-life').tmpDir('offpeak-proof-selftest-');
   fs.mkdirSync(path.join(tmp, path.dirname(mm.POLICY_REL)), { recursive: true });
   fs.writeFileSync(path.join(tmp, mm.POLICY_REL), JSON.stringify({ offpeakHold: { mustNotMove: ['Ops loop'] } }));
   fx.root = tmp;

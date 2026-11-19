@@ -1,0 +1,368 @@
+# 0020 — memory lifecycle: what the station starts ends with it, and costs as little memory as the host asked for.
+# Status: APPLIED by setup-station.sh. Every change is off until its STARNET_* variable is set; company/tools/memory.js
+# apply writes them into <root>/.starnet-data/memory.env (the station unit reads it after its own env file).
+# Why (2026-11-19, owner: "everything that uses RAM gets a lifecycle"; this machine's audit): a probe's `chrome … &` or
+# `sleep … &` outlived the shell.exec call that started it (only a timeout or an abort killed the group); Chrome 157
+# moves itself into app-com.google.Chrome-<pid>.scope over the session bus, outside the station's unit, so neither the
+# unit's MemoryMax nor stopping the unit reached it (8 orphaned browsers, reparented to systemd --user, found today);
+# its com.google.Chrome.* temp dirs piled up in the shared /tmp (2,600 of them, /tmp is RAM here); every concurrent run
+# got its own Chrome (about 105 MB idle, 200-500 MB in use) with no cap; a station exiting through process.exit left
+# its browsers running.
+# What it changes (sidecar/memory-lifecycle.js holds the logic; the hooks in existing files are one or two lines each):
+#   STARNET_SHELL_REAP_GROUP=1       shell.exec on this host's POSIX shell: when the command finishes, what is left of its
+#                                    process group gets SIGTERM, then SIGKILL 1.5 s later (shell.js runCommand and
+#                                    environment.js runProcess, the production route). Never a command that opens a window
+#                                    for the person (opensVisibleWindow); shell.bg (shellbg.js spawns on its own) is not
+#                                    touched. The tool description then says to use background:true for long-lived work.
+#   STARNET_SHELL_OOM_ADJ=<0-1000>   the command's first line raises its own oom_score_adj (Linux, local backend only), so
+#                                    the kernel ends a build before the station (the unit runs at 100).
+#   STARNET_BROWSER_OWN_GROUP=1      a launched Chrome leads its own process group (detached), keeps its temp files in
+#                                    <profile>/.tmp (emptied at each launch; skipped when the socket path would pass 104
+#                                    bytes, where Chrome aborts), and a TEMPORARY headless profile gets
+#                                    DBUS_SESSION_BUS_ADDRESS=disabled: so it stays in the station's cgroup. The durable
+#                                    station profile keeps the session bus: Chrome holds its cookie key in the desktop
+#                                    keyring through it (os_crypt portal), and losing it would sign the station out of
+#                                    every site. close() ends the whole group, also a helper that outlived the browser; a
+#                                    synchronous process 'exit' handler ends every browser this process launched and has
+#                                    not seen exit (gracefulShutdown already closed them on SIGTERM; the proc ledger's
+#                                    boot sweep still covers a force-kill).
+#   STARNET_BROWSER_LOWMEM=1         --enable-low-end-device-mode --js-flags=--max-old-space-size=256
+#                                    --disk-cache-size=33554432 --disable-extensions --disable-background-networking
+#                                    --disable-component-update --disable-sync --disable-default-apps --no-first-run and
+#                                    Translate,MediaRouter,OptimizationHints merged into one --disable-features, each once.
+#   STARNET_BROWSER_RENDERER_LIMIT=n --renderer-process-limit=n. Weakens site isolation: unset by default and no memory
+#                                    profile sets it until the risk function has reviewed it.
+#   STARNET_BROWSER_IDLE_MIN=n       the station browser closes after n idle minutes (browser-view.js stationIdleMs; a
+#                                    visible window keeps its never-idle rule).
+#   STARNET_PRIVATE_BROWSERS_MAX=n   at most n per-run browsers at once (the station browser is not counted). The next
+#                                    launch waits for a slot, up to 10 minutes, then the tool call fails with "No browser
+#                                    is free on this station right now (n in use). Try again later or work without the
+#                                    browser."; a run closed while waiting gives its place back and starts nothing.
+# Tests: company/patches/tests/0020.test.js (applies this record to a temporary copy of ./starnet, runs StarNet's shell,
+# browser-view, browser-close-cleanup, procledger and concurrency tests, then real-process cases for each variable).
+# Apply: git -C starnet apply --3way ../company/patches/0020-memory-lifecycle.diff, then node company/tools/memory.js
+# apply and scripts/restart-station.sh --when-idle --reason "patch 0020".
+# Revert: git -C starnet apply -R ../company/patches/0020-memory-lifecycle.diff
+diff --git a/sidecar/environment.js b/sidecar/environment.js
+index 30717ba..c5d25ce 100644
+--- a/sidecar/environment.js
++++ b/sidecar/environment.js
+@@ -261,6 +261,7 @@
+         clearTimeout(timer);
+         if (sig) { try { sig.removeEventListener('abort', onAbort); } catch (_) {} }
+         receipt.done();
++        if (opts.reapGroup && group && child) require('./memory-lifecycle.js').reapGroup(child.pid);   // CaPheOS 0020: the finished command's leftovers
+         resolve({
+           exitCode: (typeof code === 'number' && !timedOut && !aborted) ? code : -1,
+           out: out,
+@@ -386,7 +387,8 @@
+           isWin: isWin,
+           // F2: the foreground child is receipted for the next boot's orphan sweep while it runs (REDACTED command)
+           ledger: ledger,
+-          ledgerCmd: opts.ledgerCmd != null ? String(opts.ledgerCmd) : redactFn(String(opts.cmd || ''))
++          ledgerCmd: opts.ledgerCmd != null ? String(opts.ledgerCmd) : redactFn(String(opts.cmd || '')),
++          reapGroup: opts.reapGroup === true   // CaPheOS 0020 (shell.js decides; off unless STARNET_SHELL_REAP_GROUP=1)
+         });
+       },
+       startBackground: function (opts) {
+diff --git a/sidecar/index.js b/sidecar/index.js
+index e8f09c1..21469ad 100644
+--- a/sidecar/index.js
++++ b/sidecar/index.js
+@@ -6137,6 +6137,7 @@ function readBrowserMode() { try { const v = fs.existsSync(BROWSER_SETTINGS_FILE
+ function writeBrowserMode(mode) { saveResilient(BROWSER_SETTINGS_FILE, { mode: String(mode) }); }
+ const browserViews = makeBrowserViews({
+   now: () => Date.now(),
++  stationIdleMs: require('./memory-lifecycle.js').stationIdleMs(),   // CaPheOS 0020: STARNET_BROWSER_IDLE_MIN; unset = browser-view.js's own
+   readMode: readBrowserMode,
+   writeMode: writeBrowserMode,
+   chromeAvailable: () => false,   // YOUR CHROME needs the StarNet extension (its own lane): until then a window
+@@ -23482,6 +23483,8 @@ async function runOnceCore(o) {
+     // Chromium owns an ephemeral CDP port and a unique profile per run. Never attach to a
+     // process-wide endpoint where another agent (or the user's browser) may be listening.
+     cdpPort: 0,
++    // CaPheOS 0020: STARNET_PRIVATE_BROWSERS_MAX per-run browsers at once; the next waits for a slot (or a plain error)
++    launchSlot: (() => { const slots = require('./memory-lifecycle.js').privateBrowserSlots(); return slots ? () => slots.acquire() : undefined; })(),
+     profileDir: path.join(os.tmpdir(), 'starnet-browser-' + process.pid + '-' + String(runId || crypto.randomUUID()).replace(/[^A-Za-z0-9_-]/g, '')),
+     cleanupProfile: true,
+     // Durable signed-in browsing: every run TRIES the station profile (leased; ephemeral fallback above when
+diff --git a/sidecar/memory-lifecycle.js b/sidecar/memory-lifecycle.js
+new file mode 100644
+index 0000000..a521a5f
+--- /dev/null
++++ b/sidecar/memory-lifecycle.js
+@@ -0,0 +1,171 @@
++/* sidecar/memory-lifecycle.js — CaPheOS patch 0020: what the station starts ends with it, and costs as little memory as
++   the host asked for. Every helper reads one env var and, with that var unset, changes nothing (today's behaviour).
++
++     STARNET_SHELL_REAP_GROUP=1      a finished foreground shell.exec takes its whole process group with it (a probe's
++                                     `chrome … &` or `sleep 300 >/dev/null &` no longer outlives the call). Long-lived
++                                     processes belong to the background shell tool (shell.bg), which is not touched.
++     STARNET_SHELL_OOM_ADJ=<0-1000>  each foreground command raises its own oom_score_adj (a raise only, which an
++                                     unprivileged process may do), so under memory pressure the kernel ends a build
++                                     before the station. Linux only.
++     STARNET_BROWSER_OWN_GROUP=1     a launched Chrome leads its own process group, keeps its temp files in
++                                     <profile>/.tmp, and (a temporary profile only) is cut off from the session bus so
++                                     it cannot move itself into an app-com.google.Chrome-*.scope outside the station's
++                                     unit. close() ends the whole group; the station's exit ends every browser left.
++                                     The durable station profile keeps the session bus: Chrome keeps its cookie
++                                     encryption key in the desktop keyring through it, and cutting it off would sign
++                                     the station out of every site.
++     STARNET_BROWSER_LOWMEM=1        low-memory Chrome flags (below). --renderer-process-limit is NOT one of them: it
++                                     weakens site isolation and sits behind its own STARNET_BROWSER_RENDERER_LIMIT.
++     STARNET_BROWSER_IDLE_MIN=<n>    the station browser closes after n idle minutes (default: browser-view.js's own).
++     STARNET_PRIVATE_BROWSERS_MAX=<n> at most n per-run browsers at once; the next waits up to 10 minutes for a slot,
++                                     then gets a plain tool error. 0 or unset = no limit. */
++'use strict';
++const path = require('node:path');
++const fs = require('node:fs');
++
++const on = (env, k) => /^(1|true|yes|on)$/i.test(String((env || process.env)[k] || ''));
++const num = (env, k) => { const raw = (env || process.env)[k]; if (raw == null || String(raw).trim() === '') return NaN; return Number(raw); };
++
++// ---- shell ----
++function reapGroupEnabled(env) { return String((env || process.env).STARNET_SHELL_REAP_GROUP || '') === '1'; }
++/* End what is left of a finished command's process group: SIGTERM now, SIGKILL after graceMs to whatever is still there.
++   The leader (the shell) has exited, but its group id stays taken while any member lives, so -pid reaches exactly the
++   command's leftovers. pid > 1 always: kill(-1) would signal every process this user owns. */
++function reapGroup(pid, opts) {
++  const o = opts || {};
++  const kill = o.kill || ((p, s) => process.kill(p, s));
++  if (!Number.isInteger(pid) || pid <= 1) return false;
++  try { kill(-pid, 0); } catch (_) { return false; }   // nothing left in the group
++  try { kill(-pid, 'SIGTERM'); } catch (_) { return false; }
++  const later = (o.setTimeout || setTimeout)(() => { try { kill(-pid, 0); kill(-pid, 'SIGKILL'); } catch (_) {} }, o.graceMs == null ? 1500 : o.graceMs);
++  if (later && typeof later.unref === 'function') later.unref();
++  return true;
++}
++// a first line for a POSIX shell command that raises its own (and so its children's) out-of-memory score
++function oomPrefix(env, platform) {
++  if ((platform || process.platform) !== 'linux') return '';
++  const n = num(env, 'STARNET_SHELL_OOM_ADJ');
++  if (!Number.isInteger(n) || n < 0 || n > 1000) return '';
++  return '{ echo ' + n + ' > /proc/self/oom_score_adj; } 2>/dev/null\n';
++}
++
++// ---- browser ----
++const LOWMEM_FLAGS = ['--enable-low-end-device-mode', '--js-flags=--max-old-space-size=256', '--disk-cache-size=33554432',
++  '--disable-extensions', '--disable-background-networking', '--disable-component-update', '--disable-sync',
++  '--disable-default-apps', '--no-first-run'];
++const LOWMEM_DISABLED_FEATURES = ['Translate', 'MediaRouter', 'OptimizationHints'];
++function ownGroupEnabled(env, platform) { return (platform || process.platform) !== 'win32' && on(env, 'STARNET_BROWSER_OWN_GROUP'); }
++/* The launch arguments with the low-memory flags added (each once; --disable-features merged into one), and the renderer
++   limit when its own var asks. Unchanged without the vars. */
++function browserArgs(args, env) {
++  let out = (args || []).slice();
++  if (on(env, 'STARNET_BROWSER_LOWMEM')) {
++    const tail = out.length && !/^--/.test(out[out.length - 1]) ? [out.pop()] : [];   // the start URL stays last
++    for (const f of LOWMEM_FLAGS) { const key = f.split('=')[0]; if (!out.some(a => a === f || a.split('=')[0] === key)) out.push(f); }
++    const feat = [];
++    out = out.filter(a => { if (a.indexOf('--disable-features=') === 0) { feat.push(...a.slice(19).split(',').filter(Boolean)); return false; } return true; });
++    for (const f of LOWMEM_DISABLED_FEATURES) if (feat.indexOf(f) < 0) feat.push(f);
++    out.push('--disable-features=' + feat.join(','));
++    out = out.concat(tail);
++  }
++  const lim = num(env, 'STARNET_BROWSER_RENDERER_LIMIT');
++  if (Number.isInteger(lim) && lim > 0 && !out.some(a => a.indexOf('--renderer-process-limit=') === 0)) {
++    const tail = out.length && !/^--/.test(out[out.length - 1]) ? [out.pop()] : [];
++    out.push('--renderer-process-limit=' + lim);
++    out = out.concat(tail);
++  }
++  return out;
++}
++/* Chrome's singleton socket lives at $TMPDIR/com.google.Chrome.XXXXXX/SingletonSocket and a Unix socket path may be at
++   most 107 bytes: Chrome aborts at start when it is longer (measured, Chrome 157). A profile too deep for that keeps
++   the inherited TMPDIR. */
++const SOCKET_TAIL = '/com.google.Chrome.XXXXXX/SingletonSocket'.length;
++function profileTmpFits(dir) { return Buffer.byteLength(String(dir)) + SOCKET_TAIL <= 104; }
++/* Spawn options for a browser on `profileDir`: { env?, detached? } to merge into the spawn call. Nothing without
++   STARNET_BROWSER_OWN_GROUP. The profile's .tmp is emptied first (no browser runs on the profile at launch). */
++function browserSpawnOptions(o) {
++  const env = o.env || process.env;
++  if (!ownGroupEnabled(env, o.platform) || !o.profileDir) return {};
++  const out = { detached: true };
++  const childEnv = Object.assign({}, process.env);
++  const tmp = path.join(String(o.profileDir), '.tmp');
++  if (profileTmpFits(tmp)) {
++    try { fs.rmSync(tmp, { recursive: true, force: true }); fs.mkdirSync(tmp, { recursive: true }); childEnv.TMPDIR = tmp; } catch (_) {}
++  }
++  // an inherited TMPDIR that deep (a company's private temp dir under a long root) would abort Chrome: the system one then
++  if (childEnv.TMPDIR !== tmp && childEnv.TMPDIR && !profileTmpFits(childEnv.TMPDIR)) childEnv.TMPDIR = '/tmp';
++  if (!o.persistent && !o.headed) childEnv.DBUS_SESSION_BUS_ADDRESS = 'disabled:';
++  out.env = childEnv;
++  return out;
++}
++// every browser this process launched and has not seen exit: ended (the whole group) when the process exits
++const liveBrowsers = new Set();
++let exitHooked = false;
++function killGroupNow(pid) {
++  if (!Number.isInteger(pid) || pid <= 1) return;
++  try { process.kill(-pid, 'SIGKILL'); } catch (_) { try { process.kill(pid, 'SIGKILL'); } catch (_) {} }
++}
++function trackBrowser(child, env) {
++  if (!child || !child.pid || !ownGroupEnabled(env)) return child;
++  liveBrowsers.add(child);
++  if (typeof child.once === 'function') child.once('close', () => liveBrowsers.delete(child));
++  if (!exitHooked) {
++    exitHooked = true;
++    // synchronous, as an 'exit' handler must be. A child we have not reaped cannot have had its pid reused.
++    process.on('exit', () => { for (const c of liveBrowsers) if (c.exitCode === null && c.signalCode === null) killGroupNow(c.pid); });
++  }
++  return child;
++}
++// close(): the whole group when the browser leads one, else the main process as before
++function killBrowser(child, env) {
++  if (!child) return;
++  if (ownGroupEnabled(env) && Number.isInteger(child.pid) && child.pid > 1) { try { process.kill(-child.pid, 'SIGKILL'); return; } catch (_) {} }
++  child.kill('SIGKILL');
++}
++// after the browser itself has exited: any member of its group still alive (a helper) is ended
++function endGroup(child, env) {
++  if (!child || !ownGroupEnabled(env) || !Number.isInteger(child.pid) || child.pid <= 1) return;
++  try { process.kill(-child.pid, 'SIGKILL'); } catch (_) {}
++}
++function stationIdleMs(env) { const m = num(env, 'STARNET_BROWSER_IDLE_MIN'); return m > 0 ? Math.round(m * 60000) : undefined; }
++
++// ---- a cap on per-run browsers ----
++function makeSlots(o) {
++  const max = o.max, waitMs = o.waitMs == null ? 600000 : o.waitMs;
++  const setT = o.setTimeout || setTimeout, clearT = o.clearTimeout || clearTimeout;
++  let used = 0;
++  const queue = [];
++  function grant() {
++    used++;
++    let released = false;
++    return () => {
++      if (released) return; released = true; used--;
++      while (queue.length && used < max) { const w = queue.shift(); clearT(w.timer); w.resolve(grant()); }
++    };
++  }
++  function acquire() {
++    if (used < max) return Promise.resolve(grant());
++    return new Promise((resolve, reject) => {
++      const w = { resolve, timer: null };
++      w.timer = setT(() => {
++        const i = queue.indexOf(w); if (i >= 0) queue.splice(i, 1);
++        const err = new Error('No browser is free on this station right now (' + used + ' in use). Try again later or work without the browser.');
++        err.code = 'BROWSER_SLOTS_FULL';
++        reject(err);
++      }, waitMs);
++      queue.push(w);
++    });
++  }
++  return { acquire, inUse: () => used, waiting: () => queue.length, max };
++}
++let privateSlots = null;
++// the station's one per-run browser cap, or null (no limit)
++function privateBrowserSlots(env) {
++  const n = num(env, 'STARNET_PRIVATE_BROWSERS_MAX');
++  if (!Number.isInteger(n) || n <= 0) return null;
++  if (!privateSlots || privateSlots.max !== n) privateSlots = makeSlots({ max: n });
++  return privateSlots;
++}
++
++module.exports = { reapGroupEnabled, reapGroup, oomPrefix, browserArgs, browserSpawnOptions, profileTmpFits, trackBrowser, killBrowser, endGroup,
++  stationIdleMs, makeSlots, privateBrowserSlots, ownGroupEnabled, LOWMEM_FLAGS };
+diff --git a/sidecar/tools/builtin/browser.js b/sidecar/tools/builtin/browser.js
+index 4045a6e..3701fce 100644
+--- a/sidecar/tools/builtin/browser.js
++++ b/sidecar/tools/builtin/browser.js
+@@ -901,6 +901,9 @@
+     let headed = wantHeaded && !binIsHeadlessOnly;
+ 
+     let proc = null, procExited = false, procError = null, procClosePromise = null, cdp = null, consoleLog = [], dialog = null, attachedPort = null;
++    // 0020: a per-run browser cap (deps.launchSlot -> Promise<release>); the slot is given back when the browser has exited
++    let slotRelease = null, closeAsked = false;
++    function releaseSlot() { const r = slotRelease; slotRelease = null; if (r) { try { r(); } catch (_) {} } }
+     let networkProxy = null, proxyFailed = false;
+     const proxyCloseResults = new WeakMap();   // retain each proxy's pending/failed cleanup across close callers
+     // true once tab 0's target went away and no other tab was left to take its place (see openerLost)
+@@ -1399,7 +1402,19 @@
+         args.push('--headless=new', '--hide-scrollbars', '--mute-audio');
+       }
+       args.push('about:blank');
+-      proc = spawn(chromePath, args, { stdio: 'ignore', windowsHide: !headed });
++      // CaPheOS 0020 (sidecar/memory-lifecycle.js): low-memory flags, own process group, temp files in the profile, a
++      // per-run browser cap. Each only when its STARNET_* var asks; without them this is the launch it always was.
++      const ML = require('../../memory-lifecycle.js');
++      if (typeof deps.launchSlot === 'function' && !slotRelease) {
++        slotRelease = await deps.launchSlot();
++        if (closeAsked) { releaseSlot(); throw new Error('the browser was closed while it waited for a free slot'); }   // its run is over
++      }
++      try {
++        proc = spawn(chromePath, ML.browserArgs(args), Object.assign({ stdio: 'ignore', windowsHide: !headed },
++          spawn === CP.spawn ? ML.browserSpawnOptions({ profileDir, persistent: onPersistent(), headed }) : {}));
++      } catch (e) { releaseSlot(); throw e; }
++      if (spawn === CP.spawn) ML.trackBrowser(proc);
++      if (proc && proc.on) proc.on('close', releaseSlot); else releaseSlot();
+       procClosePromise = new Promise(resolve => {
+         // how it exited rides the launch error (procError): "exited before CDP ownership" alone never said why (user report, 10-28)
+         const child = proc;
+@@ -2868,6 +2883,7 @@
+     // Raise the station browser's window (the Commander asked to see it).
+     async function bringToFront() { const c = await page(); await c.send('Page.bringToFront'); return true; }
+     async function close(opts) {
++      closeAsked = true;   // 0020: a launch still waiting for a browser slot gives it back instead of starting
+       const owned = proc, waitForClose = procClosePromise;
+       async function exitedWithin(ms) {
+         if (!waitForClose) return false;
+@@ -2889,7 +2905,7 @@
+         }
+         try { cdp && cdp.close(); } catch (_) {}
+         // only a process that has NOT exited is still ours to kill: an exited one's id may already be someone else's
+-        if (owned && !exited && !procExited) { if (process.platform === 'win32' && owned.pid && spawn === CP.spawn) await killTree(owned.pid); else { try { owned.kill('SIGKILL'); } catch (e) { failNote('browser.close.kill', e); } } }
++        if (owned && !exited && !procExited) { if (process.platform === 'win32' && owned.pid && spawn === CP.spawn) await killTree(owned.pid); else { try { if (spawn === CP.spawn) require('../../memory-lifecycle.js').killBrowser(owned); else owned.kill('SIGKILL'); } catch (e) { failNote('browser.close.kill', e); } } }   // 0020: the whole group when it leads one
+         cdp = null;
+         if (owned && waitForClose && !exited) {
+           // a force-killed process can take seconds to leave on a busy Windows box (antivirus holding a freshly unpacked
+@@ -2899,6 +2915,8 @@
+           exited = await exitedWithin(closeExitWaitMs);
+           if (!exited) throw new Error('owned Chromium did not exit after synthetic test session closed');
+         }
++        // 0020: a helper that outlived its browser (the group is ours while any member lives) goes with it
++        if (owned && spawn === CP.spawn && process.platform !== 'win32') require('../../memory-lifecycle.js').endGroup(owned);
+         // Retain ownership after a failed close: a later close must still prove exit before deleting the profile.
+         proc = null;
+       } catch (e) {
+diff --git a/sidecar/tools/builtin/shell.js b/sidecar/tools/builtin/shell.js
+index 5bfa6d9..da25a0d 100644
+--- a/sidecar/tools/builtin/shell.js
++++ b/sidecar/tools/builtin/shell.js
+@@ -1543,6 +1543,7 @@
+         clearTimeout(timer);
+         if (sig) { try { sig.removeEventListener('abort', onAbort); } catch (_) {} }
+         receipt.done();
++        if (opts.reapGroup && group && child) require('../../memory-lifecycle.js').reapGroup(child.pid);   // CaPheOS 0020
+         // Stripped HERE, at the single exit of the shared primitive, so shell.exec and the background tail
+         // (shellbg.js reads r.out) are both covered by one strip that cannot drift into two.
+         resolve({ exitCode: (typeof code === 'number') ? code : -1, out: stripAnsi(out), fullOut: full.value(stripAnsi), fullOutElided: full.elided(), ms: Math.max(0, now() - t0), truncated: truncated, timedOut: timedOut, aborted: aborted });
+@@ -1629,7 +1630,8 @@
+         + 'in restricted modes; Full Power may run any host command the current OS user can run. '
+         + 'timeoutMs: default 30s, max 10 min (timeout_ms works too). background:true returns a handle '
+         + 'at once for long-running processes (dev servers): check shell.bg.status, read its log with '
+-        + 'shell.bg.read, answer its prompts with shell.bg.write, stop it with shell.bg.kill.',
++        + 'shell.bg.read, answer its prompts with shell.bg.write, stop it with shell.bg.kill.'
++        + (require('../../memory-lifecycle.js').reapGroupEnabled() ? ' A process this command leaves running ends when the command finishes: start anything that must keep running with background:true.' : ''),   // CaPheOS 0020
+       schema: { type: 'object', required: ['cmd'], properties: { cmd: { type: 'string' }, cwd: { type: 'string' }, timeoutMs: { type: 'number' }, timeout_ms: { type: 'number' }, background: { type: 'boolean' } } },
+       run: function (args, ctx) {
+         ctx = ctx || {};
+@@ -1704,10 +1706,17 @@
+            never closes what it opened. Every other command stays the station's and ends with it. */
+         const forPerson = isWin && remoteOwner && (!environment || environmentBackendId === 'local') && !!opensVisibleWindow(cmd, shellDialect);
+         const nonce = markerNonce();   // S1: this call's marker token — printed content cannot forge the cwd or exit code (code the command runs could; it already has shell reach)
++        /* CaPheOS 0020 (sidecar/memory-lifecycle.js): on this host's own POSIX shell, a finished command's leftovers end with
++           it (STARNET_SHELL_REAP_GROUP=1; never a command that opens something on the person's screen) and the command
++           raises its own out-of-memory score (STARNET_SHELL_OOM_ADJ). Both are off with the vars unset. */
++        const ML = require('../../memory-lifecycle.js');
++        const hostPosix = !markerIsWin && (!environment || environmentBackendId === 'local');
++        const reapGroup = hostPosix && ML.reapGroupEnabled() && !opensVisibleWindow(cmd, shellDialect);
++        const oomLine = hostPosix ? ML.oomPrefix() : '';
+         const run = checkpoint.then(function () {
+           return environment && typeof environment.execute === 'function'
+-            ? environment.execute({ agentId: aid, cmd: buildMarkedCmd(cmd, markerIsWin, nonce), cwd: cwd, timeoutMs: timeoutMs, maxBytes: MAX_BYTES, signal: ctx.signal, clock: { now: now }, surface: ctx.surface, ledgerCmd: redact(cmd), breakaway: forPerson })
+-            : runCommand({ spawn: forPerson ? breakaway.spawnVia(spawn) : spawn, cmd: buildMarkedCmd(cmd, isWin, nonce), cwd: cwd, timeoutMs: timeoutMs, maxBytes: MAX_BYTES, signal: ctx.signal, clock: { now: now }, isWin: isWin, ledger: ledger, ledgerCmd: ledger ? redact(cmd) : '', env: ownEnv || undefined });
++            ? environment.execute({ agentId: aid, cmd: oomLine + buildMarkedCmd(cmd, markerIsWin, nonce), cwd: cwd, timeoutMs: timeoutMs, maxBytes: MAX_BYTES, signal: ctx.signal, clock: { now: now }, surface: ctx.surface, ledgerCmd: redact(cmd), breakaway: forPerson, reapGroup: reapGroup })
++            : runCommand({ spawn: forPerson ? breakaway.spawnVia(spawn) : spawn, cmd: oomLine + buildMarkedCmd(cmd, isWin, nonce), cwd: cwd, timeoutMs: timeoutMs, maxBytes: MAX_BYTES, signal: ctx.signal, clock: { now: now }, isWin: isWin, ledger: ledger, ledgerCmd: ledger ? redact(cmd) : '', env: ownEnv || undefined, reapGroup: reapGroup });
+         });
+         return run.then(function (res) {
+           // recover the final cwd + the REAL exit code from THIS call's marker; keep the cwd only inside the allowed envelope.

@@ -15,7 +15,7 @@ const co = require('../lib/company');
 const SIDECAR = process.env.STARNET_SIDECAR || co.p('starnet', 'sidecar');   // env: test against another StarNet checkout
 if (!fs.existsSync(SIDECAR)) { console.log('SKIP: no StarNet sidecar at ' + SIDECAR + ' (set STARNET_SIDECAR)'); process.exit(0); }
 const FILES = ['context.js', 'failopen.js', 'mcp/client.js', 'mcp/manager.js', 'mcp/oauth-target.js', 'mcp/translate.js', 'tools/fence.js'];
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'connector-scope-test-'));
+const TMP = require('../lib/temp-life').tmpDir('connector-scope-test-');
 for (const f of FILES) { fs.mkdirSync(path.dirname(path.join(TMP, f)), { recursive: true }); fs.copyFileSync(path.join(SIDECAR, f), path.join(TMP, f)); }
 let makeConnectorManager, sameEndpoint;
 try {

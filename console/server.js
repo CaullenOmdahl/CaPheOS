@@ -1093,7 +1093,7 @@ async function selftest() {
   const snap = () => ['state', 'owner', 'work'].map(d => { try { return d + ':' + fs.readdirSync(co.p('company', d)).map(f => f + '@' + fs.statSync(co.p('company', d, f)).mtimeMs).join(','); } catch (_) { return d + ':-'; } })
     .concat([co.p('company', 'pm-inbox.jsonl')].map(f => { try { return fs.statSync(f).mtimeMs; } catch (_) { return '-'; } })).join('|');
   const before = snap();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'console-selftest-'));
+  const tmp = require('../company/tools/lib/temp-life').tmpDir('console-selftest-');
   fs.cpSync(co.p('company'), path.join(tmp, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
   fs.mkdirSync(path.join(tmp, 'secrets'), { recursive: true });
   fs.writeFileSync(path.join(tmp, 'secrets', 'station-token'), 'selftest-fake-station-token\n', { mode: 0o600 });

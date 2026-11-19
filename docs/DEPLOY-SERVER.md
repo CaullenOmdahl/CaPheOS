@@ -249,6 +249,18 @@ Flutter-size build (several GB) needs a bigger machine whatever the profile.
   and clears its old temp files every 15 minutes. Leftovers in the shared `/tmp` that no company can prove are its own
   (Python temp folders, build trees, Chrome's temp files) are cleared only by the owner:
   `node company/tools/reaper.js host-sweep` lists them, `--apply --by owner` clears them.
+- **Browsers, one per company plus a few for runs.** Each station has one shared browser; a run that cannot use it gets
+  a private one of its own, at most 3 at once (1 on the low profile). A run past that limit waits for a free one, up
+  to 10 minutes, and is then told plainly that no browser is free. The shared browser closes after 15 minutes unused
+  (5 on the low profile) and starts again on the next use, sign-ins kept. Every browser the station starts stays in
+  the station's memory limit and ends with it; StarNet patch 0020 does this (company/patches/README.md), and
+  `memory.js status` shows whether the station's browser is open right now. What an agent's command leaves running in
+  the background ends with the command, unless the agent started it as a background process on purpose.
+- **Builds go first.** Under memory pressure the kernel ends an agent's build or test before the station itself
+  (agent commands run at a higher out-of-memory score), so the company keeps running and the crew sees the failed build.
+- **Two cleanup buttons, both optional**: clear the company's own old temp files now (`reaper.js run`), and clear the
+  shared leftovers no company can vouch for (`reaper.js host-sweep --apply --by owner`). Neither is needed for normal
+  running: the reaper clears the company's own every 15 minutes.
 
 ## 11. Containers (planned)
 

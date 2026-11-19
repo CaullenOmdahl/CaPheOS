@@ -613,7 +613,7 @@ function find(opt, artifact, text, limit) {
 async function selftest() {
   const assert = require('assert');
   const os = require('os');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'retention-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('retention-selftest-');
   const H = path.join(T, '_home');
   const W = (rel, txt) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, txt); return f; };
   const R = rel => fs.readFileSync(path.join(T, rel), 'utf8');

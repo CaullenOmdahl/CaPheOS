@@ -25,7 +25,7 @@ const { spawn, spawnSync } = require('child_process');
 const http = require('http');
 
 const REPO = path.resolve(__dirname, '..', '..', '..');
-const SCRIPTS = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-exp-scripts-'));
+const SCRIPTS = require('../lib/temp-life').tmpDir('owner-exp-scripts-');
 const roots = [SCRIPTS];
 test.after(() => { for (const r of roots) try { fs.rmSync(r, { recursive: true, force: true }); } catch (_) {} });
 const W = (root, rel, v) => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof v === 'string' ? v : JSON.stringify(v, null, 1) + '\n'); return f; };
@@ -44,7 +44,7 @@ function run(T, code, o) {
 }
 function company(o) {
   o = o || {};
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-exp-')); roots.push(T);
+  const T = require('../lib/temp-life').tmpDir('owner-exp-'); roots.push(T);
   W(T, 'company/company.json', { name: 'OC', slug: 'oc', owner: { name: 'Pat Owner' }, timezone: 'UTC', station: { url: 'http://127.0.0.1:9' } });
   W(T, 'company/tools/loops.json', { agents: o.agents || {
     agent: { name: 'Alex', manager: null, functions: ['ceo'], inbox: 'to-alex.md' },
@@ -134,7 +134,7 @@ test('B1: crew guidance tells agents how to declare the websites a job needs', (
 // a full copy of the framework (company/ and console/), for the console's own modules
 function fixture(o) {
   o = o || {};
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-exp-fx-')); roots.push(root);
+  const root = require('../lib/temp-life').tmpDir('owner-exp-fx-'); roots.push(root);
   fs.cpSync(path.join(REPO, 'company'), path.join(root, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
   fs.cpSync(path.join(REPO, 'console'), path.join(root, 'console'), { recursive: true });
   if (o.modules) fs.cpSync(path.join(REPO, 'modules'), path.join(root, 'modules'), { recursive: true });
@@ -265,7 +265,7 @@ async function consoleOn(root, fn) {
   await new Promise(r => fake.listen(0, '127.0.0.1', r));
   const env = Object.assign({}, process.env, { CAPHEOS_ROOT: root, STARNET_URL: 'http://127.0.0.1:' + fake.address().port, CAPHEOS_TZ: 'UTC' });
   for (const k of STATION_ENV.concat(['CAPHEOS_READONLY'])) delete env[k];
-  const child = spawn(process.execPath, [path.join(root, 'console', 'server.js'), '--port', '0', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = require('../lib/temp-life').track(spawn(process.execPath, [path.join(root, 'console', 'server.js'), '--port', '0', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] }));
   let errText = ''; child.stderr.on('data', x => { errText += x; });
   try {
     const port = await new Promise((resolve, reject) => { let buf = ''; child.stdout.on('data', x => { buf += x; const m = buf.match(/\{"port":(\d+)\}/); if (m) resolve(Number(m[1])); }); child.on('exit', c => reject(new Error('server exited ' + c + ': ' + errText))); setTimeout(() => reject(new Error('server did not start: ' + errText)), 15000); });

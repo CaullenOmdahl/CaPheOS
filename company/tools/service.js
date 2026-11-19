@@ -1079,7 +1079,7 @@ function selftest() {
   // owner-answer guard would refuse the fixture's own answer. Pin it for the test (provenance.js:122), restore after.
   try { const P = require('./provenance.js'); P.pinUnderStation(false); P.pinOwnerShell(true); } catch (_) {}
   const { spawnSync } = require('child_process');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'service-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('service-selftest-');
   let bad = 0, n = 0;
   const ok = (name, cond, detail) => { n++; console.log((cond ? 'ok   ' : 'FAIL ') + name + (cond ? '' : '  [' + String(detail === undefined ? '' : typeof detail === 'string' ? detail : JSON.stringify(detail)).slice(0, 400) + ']')); if (!cond) bad++; };
   const throwsCode = (fn, code, re) => { try { fn(); return false; } catch (e) { return e.code === code && (!re || re.test(e.message)) ? true : e.code + ' ' + e.message; } };

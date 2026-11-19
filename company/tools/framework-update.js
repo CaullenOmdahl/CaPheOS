@@ -190,7 +190,7 @@ function apply(opts) {
  * new company.json key ---------------- */
 function selftest() {
   const os = require('os'); const assert = require('assert');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'framework-update-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('framework-update-selftest-');
   const G = (cwd, ...a) => { const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'init.defaultBranch=main', '-C', cwd, ...a], { encoding: 'utf8', env: Object.assign({}, process.env, { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }) }); if (r.status !== 0) throw new Error('git ' + a.join(' ') + ': ' + r.stderr); return r.stdout.trim(); };
   let n = 0; const ok = (c, m) => { assert.ok(c, m); n++; console.log('ok   ' + m); };
   const saveEnv = Object.assign({}, process.env);

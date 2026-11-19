@@ -6,6 +6,8 @@
  *
  *   const life = require('../company/tools/lib/temp-life');
  *   const dir = life.tmpDir('console-walk-');          // fs.mkdtempSync under os.tmpdir(), removed at exit
+ *   const d2 = life.tmpDir('x-', { base: dir });       // the same under another base
+ *   const d3 = life.tmpDirSync('my-selftest-');        // always os.tmpdir() + a prefix of at most 32 characters
  *   const kid = life.track(spawn(...));                 // killed at exit (SIGTERM, then SIGKILL after a grace)
  *   const { proc, dir: udd } = life.chrome(bin, args, { prefix: 'chatwin-' })
  *                                                       // a fresh profile, --user-data-dir added, Chrome's own temp files
@@ -26,7 +28,7 @@ const path = require('path');
 const dirs = new Set();
 const kids = new Set();
 let installed = false;
-let cleaned = false;
+let cleaning = false;
 let graceMs = 1500;
 
 const pause = ms => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms)); } catch (_) {} };
@@ -55,9 +57,13 @@ function namingPids(list) {
   return out;
 }
 
+// idempotent, and again later for what was registered since (a test that cleans up between cases keeps the exit net)
 function cleanup() {
-  if (cleaned) return;
-  cleaned = true;
+  if (cleaning) return;
+  cleaning = true;
+  try { cleanupNow(); } finally { cleaning = false; }
+}
+function cleanupNow() {
   const live = [...kids].filter(c => !exited(c));
   for (const c of live) signal(c, 'SIGTERM');
   const until = Date.now() + graceMs;
@@ -94,7 +100,10 @@ function tmpDir(prefix, opts) {
   dirs.add(d);
   return d;
 }
-// an existing dir to remove at exit (one a test made itself)
+/* tmpDir for a selftest that sizes text by its fixture path: always directly under os.tmpdir(), prefix cut to 32
+   characters, so the path stays short and the same length on every run */
+function tmpDirSync(prefix) { return tmpDir(String(prefix || 'capheos-').slice(0, 32)); }
+// an existing dir (or file) to remove at exit (one a test made itself)
 function own(d) { install(); if (d) dirs.add(path.resolve(d)); return d; }
 // a child process to end at exit; { group: true } when it was spawned detached (its own process group)
 function track(child, opts) {
@@ -102,9 +111,13 @@ function track(child, opts) {
   if (child) { if (opts && opts.group) child.__lifeGroup = true; kids.add(child); if (child.once) child.once('exit', () => kids.delete(child)); }
   return child;
 }
-// the environment for a browser whose profile is `dir`: its temp files go inside the profile, removed with it
-function chromeEnv(dir, env) { return Object.assign({}, env || process.env, { TMPDIR: dir }); }
-// start Chrome on a fresh, registered profile; opts.prefix names the profile dir, opts.spawnOpts are passed through
+/* the environment for a browser whose profile is `dir`: its temp files go inside the profile, removed with it, and no
+   session bus: over it Chrome 157 moves itself into an app-com.google.Chrome-<pid>.scope, out of the test's control
+   group (a stopped unit or a killed step then no longer reaches it). A throwaway profile has no keyring secrets to lose. */
+function chromeEnv(dir, env) { return Object.assign({}, env || process.env, { TMPDIR: dir, DBUS_SESSION_BUS_ADDRESS: 'disabled:' }); }
+/* start Chrome on a fresh, registered profile; opts.prefix names the profile dir, opts.spawnOpts are passed through.
+   Not detached on purpose: it stays in the caller's process group, so scripts/test.sh's per-step group kill reaches it
+   even when this process was SIGKILLed before its exit handler ran; the cleanup here still ends its helpers by profile. */
 function chrome(bin, args, opts) {
   const o = opts || {};
   const dir = tmpDir(o.prefix || 'capheos-chrome-');
@@ -116,4 +129,4 @@ function chrome(bin, args, opts) {
 function setGrace(ms) { if (Number.isFinite(ms) && ms >= 0) graceMs = ms; }
 function registered() { return { dirs: [...dirs], pids: [...kids].map(c => c.pid) }; }
 
-module.exports = { tmpDir, own, track, chrome, chromeEnv, cleanup, setGrace, registered };
+module.exports = { tmpDir, tmpDirSync, own, track, chrome, chromeEnv, cleanup, setGrace, registered };

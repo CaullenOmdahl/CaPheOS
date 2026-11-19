@@ -1420,7 +1420,7 @@ module.exports = { askAcceptCmd, fixedGateFile, FIXED_GATE_FILES, acceptCmd, tic
 /* ---------------- selftest ---------------- */
 async function selftest() {
   const assert = require('assert');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'locked-watch-selftest-')); const H = path.join(T, 'home');
+  const T = require('./lib/temp-life').tmpDir('locked-watch-selftest-'); const H = path.join(T, 'home');
   const prevProv = process.env.PROVENANCE_ROOT; process.env.PROVENANCE_ROOT = T;
   const P = require('./provenance.js');
   // ... and pin "not under the station" so a run by an agent measures the watcher instead of its own environment

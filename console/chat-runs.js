@@ -102,7 +102,7 @@ module.exports = function chatRuns(deps) {
     r.status = ended ? 'done' : 'cut'; r.endedAt = Date.now(); r.reason = how.reason || null;
     save();
     append(runId, { name: 'console.end', payload: { runId, status: r.status } });
-    listeners.delete(runId); lastAt.delete(runId); lastSeq.delete(runId);
+    listeners.delete(runId); lastAt.delete(runId); lastSeq.delete(runId); counts.delete(runId);   // countOf reads a finished run's journal again
     if (!running().length) stopFeed();
   }
 
@@ -208,7 +208,8 @@ module.exports = function chatRuns(deps) {
   // attach(runId, from, fn) -> unsubscribe | null (unknown run). Replays journal lines from `from`, then live ones.
   function attach(runId, from, fn) {
     const r = load().runs[runId]; if (!r) return null;
-    const have = lines(runId); counts.set(runId, have.length);
+    const have = lines(runId);
+    if (r.status === 'running' || r.status === 'finishing') counts.set(runId, have.length);   // only a live run's count is kept
     for (const l of have.slice(Math.max(0, Number(from) || 0))) fn(l);
     if (r.status !== 'running' && r.status !== 'finishing') return () => {};
     if (!listeners.has(runId)) listeners.set(runId, new Set());
@@ -228,7 +229,7 @@ module.exports = function chatRuns(deps) {
       if (r.status === 'finishing') { r.status = 'running'; save1 = true; }
       if (r.status !== 'running') continue;
       const ls = lines(id); counts.set(id, ls.length);
-      if (ls.some(l => l.name === 'console.end')) { r.status = (ls.find(l => l.name === 'console.end').payload || {}).status || 'done'; save1 = true; continue; }
+      if (ls.some(l => l.name === 'console.end')) { r.status = (ls.find(l => l.name === 'console.end').payload || {}).status || 'done'; save1 = true; counts.delete(id); continue; }
       const last = [...ls].reverse().find(l => l.c); if (last) lastSeq.set(id, seqOf(last.c));
       lastAt.set(id, Date.now());
       if (r.source === 'observe') {
@@ -250,5 +251,5 @@ module.exports = function chatRuns(deps) {
     setTimeout(sweep, 500).unref();
   }
   const journal = (id, name, payload) => append(id, { name, payload });
-  return { track, ingest, finish, attach, prepare, canDetach, inflight, runOf, busy: running, start, lines, countOf, journal, _state: load };
+  return { track, ingest, finish, attach, prepare, canDetach, inflight, runOf, busy: running, start, lines, countOf, journal, _state: load, _counted: () => counts.size };
 };

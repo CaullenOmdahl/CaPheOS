@@ -8,7 +8,7 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('fs'), path = require('path'), os = require('os'), { spawnSync } = require('child_process');
 
-const T = fs.mkdtempSync(path.join(os.tmpdir(), 'connectors-selftest-'));
+const T = require('../lib/temp-life').tmpDir('connectors-selftest-');
 const H = path.join(T, 'home');
 fs.mkdirSync(H, { recursive: true });
 fs.writeFileSync(path.join(T, '.capheos-selftest-fixture'), '');

@@ -27,7 +27,7 @@ const fs = require('fs'), path = require('path'), os = require('os'), http = req
 const { spawn, spawnSync } = require('child_process');
 
 const REPO = path.resolve(__dirname, '..', '..', '..');
-const SCRIPTS = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-asks-safety-scripts-'));   // helpers live outside every company
+const SCRIPTS = require('../lib/temp-life').tmpDir('owner-asks-safety-scripts-');   // helpers live outside every company
 const roots = [SCRIPTS];
 test.after(() => { for (const r of roots) try { fs.rmSync(r, { recursive: true, force: true }); } catch (_) {} });
 const W = (root, rel, v) => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof v === 'string' ? v : JSON.stringify(v, null, 1) + '\n'); return f; };
@@ -46,7 +46,7 @@ function run(T, code, o) {
 }
 function company(o) {
   o = o || {};
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-asks-safety-')); roots.push(T);
+  const T = require('../lib/temp-life').tmpDir('owner-asks-safety-'); roots.push(T);
   W(T, 'company/company.json', { name: 'OC', slug: 'oc', owner: { name: 'Pat Owner' }, timezone: 'UTC', station: { url: 'http://127.0.0.1:9' } });
   W(T, 'company/tools/loops.json', { agents: o.agents || {
     agent: { name: 'Alex', manager: null, functions: ['ceo'], inbox: 'to-alex.md' },
@@ -145,7 +145,7 @@ test('B1: only crew, digest or a crew-decides ruling is covered; a "not now" and
 /* ---------------- B2 ---------------- */
 test('B2: a card from an agent\'s own script (outside or inside the root) keeps its words but not its effect; no-producer kinds are refused (poc1)', () => {
   const T = company({ strict: true });
-  const E = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-asks-safety-evil-')); roots.push(E);
+  const E = require('../lib/temp-life').tmpDir('owner-asks-safety-evil-'); roots.push(E);
   const evil = `
 const P = require(path.join(REPO, 'company/tools/provenance.js')); P.pinUnderStation(true);
 const card = require(path.join(REPO, 'company/tools/lib/owner-card.js'));
@@ -229,7 +229,7 @@ out({ a, b, effects: rows.map(x => x.effect) });`);
 });
 
 test('B2: a yes on Today applies the effect only to the card as shown; an update in between is refused (console server)', async () => {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-asks-safety-console-')); roots.push(T);
+  const T = require('../lib/temp-life').tmpDir('owner-asks-safety-console-'); roots.push(T);
   fs.cpSync(path.join(REPO, 'company'), path.join(T, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
   fs.cpSync(path.join(REPO, 'console'), path.join(T, 'console'), { recursive: true });
   for (const f of ['company/state/locked', 'company/pm-inbox.jsonl', 'company/state/governance.json', 'company/state/owner-rulings.json', 'company/owner', 'company/state/services.json']) fs.rmSync(path.join(T, f), { recursive: true, force: true });
@@ -244,7 +244,7 @@ out(card.file({ asker: 'sam', category: 'localComputer', guardrail: true, ref: '
   const fake = http.createServer((q, s) => { s.writeHead(404); s.end('{}'); });
   await new Promise(r => fake.listen(0, '127.0.0.1', r));
   const env = envFor(T, { STARNET_URL: 'http://127.0.0.1:' + fake.address().port });
-  const child = spawn(process.execPath, [path.join(T, 'console', 'server.js'), '--port', '0', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = require('../lib/temp-life').track(spawn(process.execPath, [path.join(T, 'console', 'server.js'), '--port', '0', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] }));
   let errText = ''; child.stderr.on('data', x => { errText += x; });
   try {
     const port = await new Promise((res, rej) => { let b = ''; child.stdout.on('data', d => { b += d; const m = b.match(/\{"port":(\d+)\}/); if (m) res(Number(m[1])); }); child.on('exit', c => rej(new Error('console exited ' + c + errText))); setTimeout(() => rej(new Error('no console ' + errText)), 20000); });

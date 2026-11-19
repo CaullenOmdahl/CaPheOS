@@ -87,7 +87,7 @@ function appendHandoff(seatId, heading, fields, from) {
 }
 
 function selftestRoot(name) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), name + '-selftest-'));
+  const root = require('./temp-life').tmpDir(name + '-selftest-');
   const loops = { agents: {
     ceo1: { name: 'Alex', functions: ['ceo', 'people', 'risk', 'floor', 'finance'], inbox: 'to-alex.md', manager: null },
     lead1: { name: 'Sam', functions: ['tools'], inbox: 'to-sam.md', manager: 'ceo1' },

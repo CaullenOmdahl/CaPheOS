@@ -279,7 +279,7 @@ function main() {
 
 /* ---- selftest: each case is a failure this file exists for, run through the real function ---- */
 function selftest() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cap-numerator-'));
+  const dir = require('./lib/temp-life').tmpDir('cap-numerator-');
   const write = (name, rows) => { const p = path.join(dir, name); fs.writeFileSync(p, rows.map(r => JSON.stringify(r)).join('\n') + '\n'); return p; };
   const now = Date.now();
   const t = now - 3600 * 1000;

@@ -23,7 +23,7 @@ const MOCK = path.join(REPO, 'tests', 'mock-station.js');
 const MIN = 60e3;
 const TOKEN = 'duties-test-token';
 const roots = [];
-const tmp = p => { const d = fs.mkdtempSync(path.join(os.tmpdir(), p)); roots.push(d); return d; };
+const tmp = p => { const d = require('../lib/temp-life').tmpDir(p); roots.push(d); return d; };
 test.after(() => { for (const r of roots) try { fs.rmSync(r, { recursive: true, force: true }); } catch (_) {} });
 
 const w = (root, rel, data) => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); return f; };
@@ -148,7 +148,7 @@ let mock = null, port = 0;
 async function startMock() {
   if (mock) return;
   const log = path.join(tmp('duties-mock-'), 'req.jsonl');
-  mock = spawn(process.execPath, [MOCK, '--port', '0', '--token', TOKEN, '--log', log], { stdio: ['ignore', 'pipe', 'inherit'] });
+  mock = require('../lib/temp-life').track(spawn(process.execPath, [MOCK, '--port', '0', '--token', TOKEN, '--log', log], { stdio: ['ignore', 'pipe', 'inherit'] }));
   port = await new Promise((res, rej) => { let d = ''; mock.stdout.on('data', c => { d += c; const m = /"port":(\d+)/.exec(d); if (m) res(Number(m[1])); }); mock.on('exit', c => rej(new Error('mock exited ' + c))); });
   assert.notEqual(port, 8800);
   mock.logFile = log;

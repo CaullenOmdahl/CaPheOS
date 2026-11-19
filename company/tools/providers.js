@@ -168,7 +168,7 @@ function liveDeps() {
 async function selftest() {
   const assert = require('assert'); const os = require('os');
   const MME = require('./lib/minimax-endpoint.js');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'providers-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('providers-selftest-');
   const w = (rel, v) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof v === 'string' ? v : JSON.stringify(v)); return f; };
   w('company/company.json', { name: 'Test Co' });
   w('secrets/minimax-key', 'sk-test-key-123456');
