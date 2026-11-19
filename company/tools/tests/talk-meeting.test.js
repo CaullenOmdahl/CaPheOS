@@ -1,4 +1,5 @@
 'use strict';
+const __LIFE = require('../lib/temp-life');   // temp dirs and helpers end with the process (check-temp-hygiene)
 // talk-meeting.test.js — how the owner wants to hear from the crew, in the owner's meeting (console/meeting.js with
 // console/talk.js meetingHooks; docs/TALK.md "In meetings and huddles"), with a scripted runner in place of the station:
 //   - the rules carry the owner's level once they picked one, and nothing before
@@ -8,7 +9,7 @@
 const fs = require('fs'); const os = require('os'); const path = require('path');
 const test = require('node:test'); const assert = require('assert');
 
-const T = fs.mkdtempSync(path.join(os.tmpdir(), 'talk-meeting-selftest-'));
+const T = __LIFE.tmpDir('talk-meeting-selftest-');
 const W = (rel, v) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof v === 'string' ? v : JSON.stringify(v, null, 1)); };
 const R = rel => { try { return fs.readFileSync(path.join(T, rel), 'utf8'); } catch (_) { return ''; } };
 W('company/company.json', { name: 'Talk Test', owner: { name: 'Caullen' }, timezone: 'UTC', station: { port: 1 } });

@@ -8,6 +8,7 @@
  *   node --test company/tools/tests/profile.test.js
  */
 'use strict';
+const __LIFE = require('../lib/temp-life');   // temp dirs and helpers end with the process (check-temp-hygiene)
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -29,7 +30,7 @@ const CHARTER = ['# Benny — Idea Scout', '', '## Scope', '- idea cards', '', '
   '## Counterpart', 'Rohan tests or kills every card.', '', '## Example exchanges', '- With Rohan: "One lucky week." — You: "Cheap to check; I drop it if it fails." (pushes back)', '', '## KPIs', '- five cards a week', ''].join('\n');
 function fixture(o) {
   o = o || {};
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-test-')); roots.push(T);
+  const T = __LIFE.tmpDir('profile-test-'); roots.push(T);
   const w = (rel, d) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof d === 'string' ? d : JSON.stringify(d, null, 1)); };
   w('company/company.json', { name: 'Fixture Co', owner: { name: 'Olive' }, timezone: 'UTC', station: { url: 'http://127.0.0.1:9' } });
   w('company/tools/loops.json', { agents: CREW });

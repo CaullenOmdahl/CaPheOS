@@ -11,6 +11,7 @@
  *   node --test company/tools/tests/accountable.test.js
  */
 'use strict';
+const __LIFE = require('../lib/temp-life');   // temp dirs and helpers end with the process (check-temp-hygiene)
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -38,7 +39,7 @@ const ITEM = (id, from, head, extra) => '\n## 2026-11-19 from ' + from + ' — '
 
 function fixture(o) {
   o = o || {};
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'accountable-test-')); roots.push(T);
+  const T = __LIFE.tmpDir('accountable-test-'); roots.push(T);
   const w = (rel, d) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof d === 'string' ? d : JSON.stringify(d, null, 1)); };
   w('company/company.json', { name: 'Accountable Co', slug: 'acc-co', owner: { name: 'Olive' }, timezone: 'UTC', station: { url: 'http://127.0.0.1:9' } });
   w('company/tools/loops.json', { agents: CREW });

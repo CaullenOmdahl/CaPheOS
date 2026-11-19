@@ -8,6 +8,7 @@
  *   node --test company/tools/tests/hire-profile.test.js
  */
 'use strict';
+const __LIFE = require('../lib/temp-life');   // temp dirs and helpers end with the process (check-temp-hygiene)
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -29,7 +30,7 @@ const PROFILE = cp => ['# Candidate profile — Jo Vega', '', '## Archetype', 's
   '## Flaws', '- Loses interest once a test is boring.', '', '## Relationships', '- Rohan — trusts his kills, argues every one.', '',
   '## Example exchanges', '- With Rohan: "One lucky week." — You: "Cheap to check; I drop it if it fails." (pushes back)', '- With the owner: "Any news?" — You: "Two cards, one weird."', '- With Rohan: "Killed." — You: "Fair. Next."', ''].join('\n');
 function fixture() {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'hire-profile-')); roots.push(T);
+  const T = __LIFE.tmpDir('hire-profile-'); roots.push(T);
   const w = (rel, d) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof d === 'string' ? d : JSON.stringify(d, null, 1)); };
   w('company/company.json', { name: 'Fixture Co', owner: { name: 'Olive' }, timezone: 'UTC', station: { url: 'http://127.0.0.1:9' } });
   w('company/tools/loops.json', { agents: CREW });

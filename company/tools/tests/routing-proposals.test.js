@@ -12,6 +12,7 @@
  *   node --test company/tools/tests/routing-proposals.test.js
  */
 'use strict';
+const __LIFE = require('../lib/temp-life');   // temp dirs and helpers end with the process (check-temp-hygiene)
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -46,7 +47,7 @@ function sug(id, dept, cls, from, to, n, o) {
 }
 function fixture(o) {
   o = o || {};
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'proposals-test-')); roots.push(root);
+  const root = __LIFE.tmpDir('proposals-test-'); roots.push(root);
   w(root, 'company/company.json', { name: 'Fixture Co', slug: 'fixture-co', timezone: 'UTC', owner: { name: 'Olive' }, station: { url: 'http://127.0.0.1:9' } });
   w(root, 'company/tools/loops.json', { agents: CREW });
   for (const f of ['company/defaults/departments.json', 'company/defaults/state/governance.json', 'company/defaults/state/guardrails.json', 'company/defaults/work/models/routing-policy.json', 'company/model-policy.json'])

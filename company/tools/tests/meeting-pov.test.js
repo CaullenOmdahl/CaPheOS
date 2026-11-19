@@ -1,4 +1,5 @@
 'use strict';
+const __LIFE = require('../lib/temp-life');   // temp dirs and helpers end with the process (check-temp-hygiene)
 // meeting-pov.test.js — point of view in the owner's meeting (console/meeting.js, docs/MEETINGS.md "Point of view";
 // docs/PROFILES.md), with a scripted runner in place of the station. Crew: Dave (CEO, leads), Benny (scout; his profile
 // names Rohan as the counterpart who signs off promote), Rohan (tester).
@@ -14,7 +15,7 @@
 const fs = require('fs'); const os = require('os'); const path = require('path');
 const test = require('node:test'); const assert = require('assert');
 
-const T = fs.mkdtempSync(path.join(os.tmpdir(), 'meeting-pov-selftest-'));
+const T = __LIFE.tmpDir('meeting-pov-selftest-');
 const W = (rel, v) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof v === 'string' ? v : JSON.stringify(v, null, 1)); };
 const R = rel => { try { return fs.readFileSync(path.join(T, rel), 'utf8'); } catch (_) { return ''; } };
 W('company/company.json', { name: 'Pov Test', owner: { name: 'Caullen' }, timezone: 'UTC', station: { port: 1 } });

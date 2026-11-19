@@ -10,6 +10,7 @@
  *   node --test company/tools/tests/consult.test.js
  */
 'use strict';
+const __LIFE = require('../lib/temp-life');   // temp dirs and helpers end with the process (check-temp-hygiene)
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -39,7 +40,7 @@ const item = (id, head) => '\n## 2026-11-20 from Boss — ' + head + '\n**Id:** 
 
 function fixture(o) {
   o = o || {};
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'consult-test-')); roots.push(root);
+  const root = __LIFE.tmpDir('consult-test-'); roots.push(root);
   w(root, 'company/company.json', { name: 'Fixture Co', slug: 'fixture-co', timezone: 'UTC', owner: { name: 'Olive' }, station: { url: 'http://127.0.0.1:9' } });
   w(root, 'company/tools/loops.json', { agents: CREW });
   for (const f of ['company/defaults/departments.json', 'company/defaults/state/governance.json', 'company/defaults/state/guardrails.json', 'company/defaults/work/departments/advise-prompt.md', 'company/defaults/work/models/ranking-policy.json'])
@@ -282,7 +283,7 @@ test('departments.js brief / digest / note: the lead\'s own files, inside their 
 
 test('premerge-check: the lead\'s advice is one advisory row; a lead REVISE on an otherwise green PR still passes (exit 0)', () => {
   const root = fixture();
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'consult-gh-')); roots.push(bin);
+  const bin = __LIFE.tmpDir('consult-gh-'); roots.push(bin);
   const PR = { number: 7, title: 'docs: explain the parser', body: 'Author: Ben\nRefs #3', state: 'OPEN', isDraft: false, baseRefName: 'main', headRefName: 'ben/docs', author: { login: 'x' },
     reviews: [], comments: [{ createdAt: '2026-11-20T10:00:00Z', author: { login: 'x' }, body: 'Reviewer: Cat — APPROVE\nfine' }], files: [{ path: 'docs/parser.md', additions: 3, deletions: 0 }], mergeable: 'MERGEABLE', headRefOid: 'a1b2c3d4e5f6a7b8', baseRefOid: 'ffff0000eeee1111', changedFiles: 1 };
   w(bin, 'pr.json', PR);

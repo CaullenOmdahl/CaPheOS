@@ -11,6 +11,7 @@
  *   node --test company/tools/tests/profile-inject.test.js
  */
 'use strict';
+const __LIFE = require('../lib/temp-life');   // temp dirs and helpers end with the process (check-temp-hygiene)
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -32,7 +33,7 @@ function benny() {
   p.reminder = 'You are Benny, the scout. Reply only as Benny.'; p.hash = P.hashOf(p); return p;
 }
 function fixture(policy) {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-inject-')); roots.push(T);
+  const T = __LIFE.tmpDir('profile-inject-'); roots.push(T);
   const w = (rel, d) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof d === 'string' ? d : JSON.stringify(d, null, 1)); };
   w('company/company.json', { name: 'Fixture Co', owner: { name: 'Olive' }, timezone: 'UTC', station: { url: 'http://127.0.0.1:9' } });
   w('company/tools/loops.json', { agents: CREW });

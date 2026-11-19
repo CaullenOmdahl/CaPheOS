@@ -12,6 +12,7 @@
  *   node --test company/tools/tests/profile-migrate.test.js
  */
 'use strict';
+const __LIFE = require('../lib/temp-life');   // temp dirs and helpers end with the process (check-temp-hygiene)
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -46,7 +47,7 @@ const HALIMA = ['# Halima Cisse — Data Scientist', '', '## Archetype', 'tester
 const MARISOL = ['# Marisol Vance — People', '', '## Archetype', 'connector', '', '## Temperament', '- Risk: 1', '- Pace — 3', '- rigour: 2', '- candour: 4', '- independence: 1', ''].join('\n');
 
 function fixture() {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-migrate-test-')); roots.push(T);
+  const T = __LIFE.tmpDir('profile-migrate-test-'); roots.push(T);
   const w = (rel, d) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof d === 'string' ? d : JSON.stringify(d, null, 1)); };
   w('company/company.json', { name: 'Fixture Co', owner: { name: 'Olive' }, timezone: 'UTC', station: { url: 'http://127.0.0.1:9' } });
   w('company/tools/loops.json', { agents: CREW });

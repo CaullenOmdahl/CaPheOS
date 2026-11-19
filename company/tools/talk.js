@@ -18,6 +18,7 @@
  * Owner: the tools function (this file); the setting itself is the owner's.
  */
 'use strict';
+const __LIFE = require('./lib/temp-life');   // temp dirs and helpers end with the process (check-temp-hygiene)
 const fs = require('fs');
 const path = require('path');
 const T = require('./lib/talk');
@@ -115,7 +116,7 @@ function human(r) {
 function selftest() {
   const os = require('os');
   let bad = 0; const ok = (n, c, d) => { console.log((c ? 'ok   ' : 'FAIL ') + n + (c ? '' : '  [' + String(d || '').slice(0, 400) + ']')); if (!c) bad++; };
-  const R = fs.mkdtempSync(path.join(os.tmpdir(), 'talk-selftest-'));
+  const R = __LIFE.tmpDir('talk-selftest-');
   const w = (rel, d) => { const f = path.join(R, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof d === 'string' ? d : JSON.stringify(d)); };
   w('company/company.json', { name: 'Fixture', owner: { name: 'Olive' } });
   const REPO = path.resolve(__dirname, '..', '..');

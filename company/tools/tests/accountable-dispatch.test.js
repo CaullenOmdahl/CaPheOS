@@ -9,6 +9,7 @@
  *   node --test company/tools/tests/accountable-dispatch.test.js
  */
 'use strict';
+const __LIFE = require('../lib/temp-life');   // temp dirs and helpers end with the process (check-temp-hygiene)
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -36,7 +37,7 @@ const DIFF = 'diff --git a/src/parse.js b/src/parse.js\n--- a/src/parse.js\n+++ 
 let mock = null, port = 0;
 const roots = [];
 test.before(async () => {
-  const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'accountable-mock-')), 'req.jsonl'); roots.push(path.dirname(log));
+  const log = path.join(__LIFE.tmpDir('accountable-mock-'), 'req.jsonl'); roots.push(path.dirname(log));
   mock = spawn(process.execPath, [MOCK, '--port', '0', '--token', TOKEN, '--log', log], { stdio: ['ignore', 'pipe', 'inherit'] });
   port = await new Promise((res, rej) => { let d = ''; mock.stdout.on('data', c => { d += c; const m = /"port":(\d+)/.exec(d); if (m) res(Number(m[1])); }); mock.on('exit', c => rej(new Error('mock exited ' + c))); });
   for (const bad of [8800, 8810, 8900, 8910]) assert.notEqual(port, bad);
@@ -50,7 +51,7 @@ async function st(method, p, body) {
 const reqs = () => fs.readFileSync(mock.logFile, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
 
 async function company(acc) {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'accountable-co-')); roots.push(T);
+  const T = __LIFE.tmpDir('accountable-co-'); roots.push(T);
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };
   w('company/company.json', { name: 'Accountable Test ' + path.basename(T), owner: { name: 'Pat' }, timezone: TZ, station: { port, serviceName: 'accountable-test' } });
   w('secrets/station-token', TOKEN + '\n');

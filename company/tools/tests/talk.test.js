@@ -12,12 +12,13 @@
  *   node --test company/tools/tests/talk.test.js
  */
 'use strict';
+const __LIFE = require('../lib/temp-life');   // temp dirs and helpers end with the process (check-temp-hygiene)
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs'), path = require('path'), os = require('os');
 
 const REPO = path.resolve(__dirname, '..', '..', '..');
-const T = fs.mkdtempSync(path.join(os.tmpdir(), 'talk-test-'));
+const T = __LIFE.tmpDir('talk-test-');
 const W = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); return f; };
 const R = rel => { try { return fs.readFileSync(path.join(T, rel), 'utf8'); } catch (_) { return ''; } };
 const rows = rel => R(rel).split('\n').filter(Boolean).map(l => JSON.parse(l));

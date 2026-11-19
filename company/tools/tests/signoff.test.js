@@ -7,6 +7,7 @@
  *   node --test company/tools/tests/signoff.test.js
  */
 'use strict';
+const __LIFE = require('../lib/temp-life');   // temp dirs and helpers end with the process (check-temp-hygiene)
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -45,7 +46,7 @@ test('refs: a PR URL and pr:<owner>/<repo>#<n> are one ref; other refs are kept 
 });
 
 function fixture() {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'signoff-lib-')); roots.push(T);
+  const T = __LIFE.tmpDir('signoff-lib-'); roots.push(T);
   const w = (rel, d) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof d === 'string' ? d : JSON.stringify(d, null, 1)); };
   w('company/company.json', { name: 'F', owner: { name: 'Olive' }, timezone: 'UTC' });
   w('company/tools/loops.json', { agents: { boss: { name: 'Alex', functions: ['ceo'], manager: null, inbox: 'to-alex.md' }, ben: { name: 'Benny', manager: 'boss', inbox: 'to-benny.md' }, ro: { name: 'Rohan', manager: 'boss', inbox: 'to-rohan.md' }, dave: { name: 'Dave', manager: 'boss', inbox: 'to-dave.md' } } });

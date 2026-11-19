@@ -19,6 +19,7 @@
  *   node --test company/tools/tests/delegation-fanout.test.js
  */
 'use strict';
+const __LIFE = require('../lib/temp-life');   // temp dirs and helpers end with the process (check-temp-hygiene)
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -57,7 +58,7 @@ const PIECES = ['the parser — files: src/parse.js — check: npm test -- parse
 
 function fixture(o) {
   o = o || {};
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fanout-test-')); roots.push(root);
+  const root = __LIFE.tmpDir('fanout-test-'); roots.push(root);
   w(root, 'company/company.json', { name: 'Fixture Co', slug: 'fixture-co', timezone: 'UTC', owner: { name: 'Olive' }, station: { url: 'http://127.0.0.1:9' } });
   w(root, 'company/tools/loops.json', { agents: CREW });
   for (const f of ['company/defaults/departments.json', 'company/defaults/state/governance.json', 'company/defaults/state/guardrails.json', 'company/defaults/work/departments/advise-prompt.md', 'company/defaults/work/models/ranking-policy.json', 'company/defaults/work/models/routing-policy.json', 'company/model-policy.json'])
@@ -365,7 +366,7 @@ const TZ = (() => { const h = new Date().getUTCHours(); const off = ((2 - h + 36
 let mock = null, port = 0;
 async function startMock() {
   if (mock) return;
-  const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fanout-mock-')), 'req.jsonl'); roots.push(path.dirname(log));
+  const log = path.join(__LIFE.tmpDir('fanout-mock-'), 'req.jsonl'); roots.push(path.dirname(log));
   mock = spawn(process.execPath, [MOCK, '--port', '0', '--token', TOKEN, '--log', log], { stdio: ['ignore', 'pipe', 'inherit'] });
   port = await new Promise((res, rej) => { let d = ''; mock.stdout.on('data', c => { d += c; const m = /"port":(\d+)/.exec(d); if (m) res(Number(m[1])); }); mock.on('exit', c => rej(new Error('mock exited ' + c))); });
   assert.ok(![8800, 8810, 8900, 8910].includes(port));

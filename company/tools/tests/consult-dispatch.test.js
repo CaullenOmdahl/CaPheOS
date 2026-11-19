@@ -12,6 +12,7 @@
  *   node --test company/tools/tests/consult-dispatch.test.js
  */
 'use strict';
+const __LIFE = require('../lib/temp-life');   // temp dirs and helpers end with the process (check-temp-hygiene)
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -41,7 +42,7 @@ const depts = advisor => ({ version: 1, leadModelDefault: LEAD, departments: [{ 
 let mock = null, port = 0;
 const roots = [];
 test.before(async () => {
-  const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'consult-mock-')), 'req.jsonl'); roots.push(path.dirname(log));
+  const log = path.join(__LIFE.tmpDir('consult-mock-'), 'req.jsonl'); roots.push(path.dirname(log));
   mock = spawn(process.execPath, [MOCK, '--port', '0', '--token', TOKEN, '--log', log], { stdio: ['ignore', 'pipe', 'inherit'] });
   port = await new Promise((res, rej) => { let d = ''; mock.stdout.on('data', c => { d += c; const m = /"port":(\d+)/.exec(d); if (m) res(Number(m[1])); }); mock.on('exit', c => rej(new Error('mock exited ' + c))); });
   assert.notEqual(port, 8800); assert.notEqual(port, 8810); assert.notEqual(port, 8900); assert.notEqual(port, 8910);
@@ -57,7 +58,7 @@ const reqs = () => fs.readFileSync(mock.logFile, 'utf8').split('\n').filter(Bool
 
 async function company(o) {
   o = o || {};
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'consult-co-')); roots.push(T);
+  const T = __LIFE.tmpDir('consult-co-'); roots.push(T);
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };
   w('company/company.json', { name: 'Consult Test ' + path.basename(T), owner: { name: 'Pat' }, timezone: TZ, station: { port, serviceName: 'consult-test' } });
   w('secrets/station-token', TOKEN + '\n');

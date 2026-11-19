@@ -12,13 +12,14 @@
  *      command is still sent back once with today's words (golden)
  *   6. POST /api/settings/talk without the owner's sign-in is refused */
 'use strict';
+const __LIFE = require('../company/tools/lib/temp-life');   // temp dirs and helpers end with the process (check-temp-hygiene)
 const { spawn } = require('child_process'); const path = require('path'); const os = require('os'); const fs = require('fs'); const http = require('http');
 const REPO = path.join(__dirname, '..');
 const TOKEN = 'mock-talkcheck-token';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let fails = 0; const t = (name, cond, info) => { console.log((cond ? 'PASS ' : 'FAIL ') + name + (cond ? '' : ' — ' + JSON.stringify(info).slice(0, 900))); if (!cond) fails++; };
 const kids = new Set();
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-talkcheck-selftest-'));
+const tmp = __LIFE.tmpDir('chat-talkcheck-selftest-');
 process.on('exit', () => { for (const k of kids) { try { k.kill('SIGKILL'); } catch (_) {} } try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
 async function waitFor(fn, ms) { const end = Date.now() + ms; for (;;) { try { const v = await fn(); if (v) return v; } catch (_) {} if (Date.now() > end) return null; await sleep(150); } }
 const freePort = () => new Promise(r => { const s = require('net').createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });

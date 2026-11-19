@@ -8,6 +8,7 @@
  *   node --test company/tools/tests/advisor-eval.test.js
  */
 'use strict';
+const __LIFE = require('../lib/temp-life');   // temp dirs and helpers end with the process (check-temp-hygiene)
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -84,7 +85,7 @@ test('no department with advice on: no advisor report', () => {
 });
 
 test('auto-pause: once per evaluation hash, recorded as auto, one plain line to the owner; only the owner resumes', () => {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'advisor-pause-')); roots.push(T);
+  const T = __LIFE.tmpDir('advisor-pause-'); roots.push(T);
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };
   w('company/company.json', { name: 'Pause Co', timezone: 'UTC', owner: { name: 'Olive' }, station: { url: 'http://127.0.0.1:9' } });
   w('company/tools/loops.json', { agents: { boss: { name: 'Boss', functions: ['ceo'], inbox: 'to-boss.md' }, kwa: { name: 'Kwame', manager: 'boss', inbox: 'to-kwame.md' }, ben: { name: 'Ben', manager: 'kwa', inbox: 'to-ben.md' }, cat: { name: 'Cat', manager: 'kwa', inbox: 'to-cat.md' } } });
