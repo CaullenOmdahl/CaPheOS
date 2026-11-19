@@ -260,7 +260,7 @@ function block(p, o) {
   const c = p.counterpart;
   if (c && c.seat) {
     const ks = kindsWords(c.signOff);
-    out.push('Who checks your work: ' + nm(crew, c.seat) + '.' + (ks.length ? ' Before you ' + joinOr(ks) + ', ' + first(nm(crew, c.seat)) + ' has to agree: write **Needs sign-off:** <' + c.signOff.join('|') + '> on that handoff, and the dispatcher holds it until ' + first(nm(crew, c.seat)) + ' signs off.' : '') + (c.why ? ' Why: ' + c.why.trim() : ''));
+    out.push('Who checks your work: ' + nm(crew, c.seat) + '.' + (ks.length ? ' Before you ' + joinOr(ks) + ', ' + first(nm(crew, c.seat)) + ' has to agree. Every handoff you write to anyone but ' + first(nm(crew, c.seat)) + ' is held until ' + first(nm(crew, c.seat)) + ' signs off, unless it is only for information (start it with **FYI:**); name the kind with **Needs sign-off:** <' + c.signOff.join('|') + '>.' : '') + (c.why ? ' Why: ' + c.why.trim() : ''));
   }
   const checks = Object.values(o.profiles || {}).filter(x => x && x.seat !== p.seat && x.counterpart && x.counterpart.seat === p.seat).sort((a, b) => (a.seat < b.seat ? -1 : 1));
   for (const x of checks) {
