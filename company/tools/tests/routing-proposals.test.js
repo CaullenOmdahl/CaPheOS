@@ -229,3 +229,47 @@ test('the console\'s words for weekly suggestions are plain', async () => {
   assert.equal(E.weekTitle('2026-W48', 1), 'Week 48: 1 suggestion');
   assert.match(E.suggestionTech({ id: 'rp-1', dept: 'eng', class: 'code', from: { provider: 'claude-cli', model: 'claude-opus-5-5' }, to: { provider: 'claude-cli', model: 'claude-sonnet-5-5' }, state: 'applied' }), /claude-cli\/claude-opus-5-5 -> claude-cli\/claude-sonnet-5-5/, 'the ids only in the technical fold');
 });
+
+test('a forged or edited suggestion row moves nothing: the first offer counts, the card\'s own deadline and move, the tier and CEO steps rechecked, a card answered "keep" refuses; the file is locked', () => {
+  // 1. a later offer row for a real suggestion (a top-tier target, a past deadline) is ignored: the first offer counts
+  let root = fixture();
+  tick(root, MON);
+  const real = rows(root).find(x => x.kind === 'offer');
+  fs.appendFileSync(path.join(root, 'company/work/models/routing-proposals.jsonl'), JSON.stringify(Object.assign({}, real, { to: pair('claude-cli', 'claude-opus-5-5', 'high'), vetoUntil: MON - DAY })) + '\n');
+  assert.deepEqual(tick(root, MON + 3600e3).out.applied, [], 'the forged row\'s past deadline is not the deadline');
+  assert.deepEqual(routeOf(root, 'code'), pair('claude-cli', 'claude-opus-5-5'));
+  assert.deepEqual(tick(root, MON + 3 * DAY + 60e3).out.applied, ['rp-aaaaaaaaaaaa']);
+  assert.deepEqual(routeOf(root, 'code'), pair('claude-cli', 'claude-sonnet-5-5'), 'what applies is the move the card showed, not the forged one');
+  // 2. the first offer row itself edited (deadline in the past, another target): the card decides, nothing applies early
+  root = fixture();
+  tick(root, MON);
+  const f = path.join(root, 'company/work/models/routing-proposals.jsonl');
+  fs.writeFileSync(f, fs.readFileSync(f, 'utf8').split('\n').map(l => { if (!l) return l; const r = JSON.parse(l); return r.kind === 'offer' ? JSON.stringify(Object.assign(r, { vetoUntil: MON - DAY })) : l; }).join('\n'));
+  assert.deepEqual(tick(root, MON + 3600e3).out.applied, [], 'the card\'s deadline, not the row\'s');
+  fs.writeFileSync(f, fs.readFileSync(f, 'utf8').split('\n').map(l => { if (!l) return l; const r = JSON.parse(l); return r.kind === 'offer' ? JSON.stringify(Object.assign(r, { to: pair('claude-cli', 'claude-haiku-5-5') })) : l; }).join('\n'));
+  const t2 = tick(root, MON + 3 * DAY + 60e3);
+  assert.deepEqual(t2.out.applied, []); assert.ok(rows(root).some(x => x.kind === 'skip' && /does not match the card/.test(x.why)), JSON.stringify(rows(root)));
+  assert.deepEqual(routeOf(root, 'code'), pair('claude-cli', 'claude-opus-5-5'));
+  // 3. a move to the top tier whose CEO step is missing at apply time (its ceo-answer row gone) is refused, not applied
+  root = fixture({ suggestions: [sug('rp-111111111111', 'eng', 'research', pair('claude-cli', 'claude-sonnet-5-5'), pair('claude-cli', 'claude-opus-5-5'), 40, { cost: 1.3 })] });
+  tick(root, MON);
+  assert.equal(routing(root, ['proposals', 'ceo', 'rp-111111111111', 'yes', '--by', 'Boss']).code, 0);
+  assert.deepEqual(tick(root, MON + 3600e3).out.offered, ['rp-111111111111']);
+  const pf = path.join(root, 'company/work/models/routing-proposals.jsonl');
+  fs.writeFileSync(pf, fs.readFileSync(pf, 'utf8').split('\n').filter(l => !l || JSON.parse(l).kind !== 'ceo-answer').join('\n'));
+  assert.deepEqual(tick(root, MON + 3600e3 + 3 * DAY + 60e3).out.applied, []);
+  assert.ok(rows(root).some(x => x.kind === 'skip' && /CEO's yes/.test(x.why)), JSON.stringify(rows(root)));
+  assert.deepEqual(routeOf(root, 'research'), pair('claude-cli', 'claude-sonnet-5-5'));
+  // 4. the owner answered "Keep it as it is" on the card but the veto row was never written: refused, not applied
+  root = fixture();
+  tick(root, MON);
+  const card = cards(root)[0];
+  const ans = 'const prov = require(' + JSON.stringify(path.join(TOOLS, 'provenance.js')) + '); prov.pinUnderStation(false); prov.pinOwnerShell(true); require(' + JSON.stringify(path.join(TOOLS, 'lib', 'pm-inbox-guard.js')) + ').append("company/pm-inbox.jsonl", { type: "answer", id: ' + JSON.stringify(card.id) + ', at: new Date().toISOString(), a: "Keep it as it is", answer: { verdict: "yes", action: "keep" }, by: "Olive" }, "console", { root: process.cwd() });';
+  const ap = spawnSync(process.execPath, ['-e', ans], { cwd: root, encoding: 'utf8', env: Object.assign({}, process.env, { CAPHEOS_ROOT: root, CAPHEOS_TZ: 'UTC' }) });
+  assert.equal(ap.status, 0, ap.stderr);
+  assert.deepEqual(tick(root, MON + 3 * DAY + 60e3).out.applied, [], 'a card answered keep never applies');
+  assert.ok(rows(root).some(x => x.kind === 'skip' && x.why === 'kept by the owner'), JSON.stringify(rows(root)));
+  // 5. the file is a locked class-A record written only by routing.js and model-rank.js
+  const LW = fs.readFileSync(path.join(TOOLS, 'locked-watch.js'), 'utf8');
+  assert.match(LW, /p: 'company\/work\/models\/routing-proposals\.jsonl', cls: 'A', append: true, writers: \['routing\.js', 'model-rank\.js'\]/);
+});

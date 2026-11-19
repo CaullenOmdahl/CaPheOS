@@ -100,6 +100,10 @@ const MANIFEST = [
   // pacer's trial holds). The router's per-wake decisions (routing-decisions.jsonl) are a per-wake record like wakes.jsonl
   // and are not locked.
   { p: 'company/work/models/routing-log.jsonl', cls: 'A', append: true, writers: ['lib/routing.js', 'routing.js'], owner: 'people', area: 'record', why: 'the routing log: every routing change (routing.js) and every trial hold by the pacer (lib/routing.js); only those two append, each row recorded' },
+  // the weekly routing suggestions (routing.js proposals, docs/ROUTING.md): a forged offer, ceo-answer or apply row would
+  // move a route without the owner's veto window or the CEO's step; only model-rank.js (proposal and decision rows) and
+  // routing.js (offer, ceo-ask, ceo-answer, veto, apply, skip, week) append, each row recorded
+  { p: 'company/work/models/routing-proposals.jsonl', cls: 'A', append: true, writers: ['routing.js', 'model-rank.js'], owner: 'people', area: 'record', why: 'the weekly routing suggestions and what happened to each (only routing.js and model-rank.js append, each row recorded)' },
   // advisor leads (lib/consult.js, docs/DEPARTMENTS.md §5): the consult ledger (a forged verdict row would read as the lead's
   // advice, and its open rows hold a member's item) and the dispatcher's consult state
   { p: 'company/state/consults.jsonl', cls: 'A', append: true, writers: ['lib/consult.js'], owner: 'tools', area: 'record', why: 'the consult ledger: every consult opened, dropped, advised and answered (only lib/consult.js appends, each row recorded)' },

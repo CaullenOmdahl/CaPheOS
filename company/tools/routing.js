@@ -487,18 +487,20 @@ function logEvent(op, fields) {
   const hist = P(historyRel(L.doc || {})), line = JSON.stringify(row) + '\n';
   try { fs.mkdirSync(path.dirname(hist), { recursive: true }); fs.appendFileSync(hist, line); try { S.prov().appended(hist, line, TOOL, { root: S.root() }); } catch (_) {} } catch (_) {}
 }
-/* the life of every suggestion: id -> { proposal (model-rank's row), offer, ceoAsk, ceoAnswer, veto, apply, skip, state } */
+/* the life of every suggestion: id -> { proposal (model-rank's row), offer, ceoAsk, ceoAnswer, veto, apply, skip, state }.
+   The FIRST row of each kind counts (a later row of the same kind never replaces it: a row appended after the fact cannot
+   move a deadline or a target); a ceo-answer counts only after its ceo-ask. */
 function lifeOf(rows) {
   const m = new Map(); const get = id => { if (!m.has(id)) m.set(id, { id }); return m.get(id); };
   for (const r of rows || []) {
     if (!r || !r.id || !r.kind) continue;
     const x = get(String(r.id));
-    if (r.kind === 'proposal') x.proposal = r;
-    else if (r.kind === 'offer') x.offer = r;
-    else if (r.kind === 'ceo-ask') x.ceoAsk = r;
-    else if (r.kind === 'ceo-answer' && !x.ceoAnswer) x.ceoAnswer = r;
+    if (r.kind === 'proposal') { if (!x.proposal) x.proposal = r; }
+    else if (r.kind === 'offer') { if (!x.offer) x.offer = r; }
+    else if (r.kind === 'ceo-ask') { if (!x.ceoAsk) x.ceoAsk = r; }
+    else if (r.kind === 'ceo-answer' && !x.ceoAnswer && x.ceoAsk) x.ceoAnswer = r;
     else if (r.kind === 'veto' && !x.veto) x.veto = r;
-    else if (r.kind === 'apply') x.apply = r;
+    else if (r.kind === 'apply') { if (!x.apply) x.apply = r; }
     else if (r.kind === 'skip' && !x.skip) x.skip = r;
     else if (r.kind === 'decision') x.decision = r;
   }
@@ -535,6 +537,41 @@ function fileVetoCard(x, deptName, vetoUntil) {
   return S.card().file({ asker: 'Dispatcher', category: 'models', ref: 'routing-proposal:' + x.id, lead: w.lead, consequence: w.consequence, recommendation: w.recommendation,
     technical: cardTechnical(x), veto: { until: new Date(vetoUntil).toISOString(), defaultLabel: 'Fine, go ahead', vetoLabel: 'Keep it as it is' }, effect: { routeVeto: { proposalId: x.id } }, about: 'routing-proposal:' + x.dept + ':' + x.class }, { root: S.root() });
 }
+/* the filed veto card of an offer (the owner's card, written through lib/pm-inbox-guard.js by this tool: its effect survives
+   only when its recorded writer is routing.js): { row, until, to, from, answeredKeep } or null */
+function cardOf(cardId, id) {
+  let rows = []; try { rows = require('./lib/pm-inbox-guard').rows({ file: P('company', 'pm-inbox.jsonl'), noAlert: true }); } catch (_) { return null; }
+  const ref = 'routing-proposal:' + id;
+  const row = rows.find(r => r && r.type === 'ask' && r.id === cardId && r.gate && r.gate.ref === ref && r.effect && r.effect.routeVeto && r.effect.routeVeto.proposalId === id);
+  if (!row) return null;
+  const until = Date.parse((row.veto && row.veto.until) || (row.gate.veto && row.gate.veto.until) || '');
+  // the move the owner was shown (cardTechnical): "...: <from> -> <to>. Evidence: ..."
+  const mv = String(row.technical || '').match(/: ([\w.-]+)\/([^\s@]+?)(?:@(\w+))? -> ([\w.-]+)\/([^\s@]+?)(?:@(\w+))?\. Evidence:/);
+  const pair = (p, m, e) => Object.assign({ provider: p, model: m }, e ? { effort: e } : {});
+  let gateRows = []; try { gateRows = require('./lib/pm-inbox-guard').rows({ file: P('company', 'pm-inbox.jsonl'), noAlert: true, gate: true }); } catch (_) { gateRows = []; }
+  const answeredKeep = gateRows.some(r => r && r.type === 'answer' && r.id === cardId && ((r.answer && (r.answer.verdict === 'yes' || r.answer.action === 'keep')) || /keep it as it is/i.test(String(r.a || ''))));
+  return { row, until: Number.isFinite(until) ? until : null, from: mv ? pair(mv[1], mv[2], mv[3]) : null, to: mv ? pair(mv[4], mv[5], mv[6]) : null, answeredKeep };
+}
+/* offerCheck(x, K, mp, now) -> null when the offered move may apply now, else why not. Everything is taken again from what
+   cannot be appended to after the fact: the deadline and the move from the filed card (not the offer row), the one-tier step
+   and the CEO's step for a top-tier move rechecked here, and a card the owner answered "Keep it as it is" refuses (in case
+   the console's veto handler did not get to record it). */
+function offerCheck(x, K, mp, now) {
+  const o = x && x.offer; if (!o) return 'no offered suggestion';
+  if (!o.cardId) return 'no owner card was filed for it';
+  const card = cardOf(o.cardId, x.id);
+  if (!card) return 'no owner card was filed for it';
+  if (card.answeredKeep) return 'the owner kept the route as it is';
+  if (card.until == null || !(now >= card.until)) return 'its veto window is open until ' + (card.until == null ? 'the card says' : iso(card.until));
+  if (!card.to || !sameRoute(card.to, o.to) || (card.from && !sameRoute(card.from, o.from))) return 'the offer does not match the card the owner was shown';
+  if (x.proposal && x.proposal.to && !sameRoute(pairOf(x.proposal.to), o.to)) return 'the offer does not match the ranking\'s suggestion';
+  if (Math.abs(tierOf(o.to, mp) - tierOf(o.from, mp)) > K.maxTierStep) return 'tier step';
+  if (topTier(o.to, K) && !topTier(o.from, K)) {
+    const ceoName = (() => { try { const c = S.crew()[S.ceo()]; return c && c.name; } catch (_) { return null; } })();
+    if (!x.ceoAsk || !x.ceoAnswer || x.ceoAnswer.verdict !== 'yes' || !o.ceo || (ceoName && x.ceoAnswer.by !== ceoName) || String(x.ceoAnswer.at) < String(x.ceoAsk.at)) return 'a move to the top tier needs the CEO\'s yes first';
+  }
+  return null;
+}
 /* proposalReady(id, want) -> null when departments.js set-route --by routing-proposal may apply it now, else why not */
 function proposalReady(id, want) {
   const L = loadPolicy(); const K = proposalKnobs(L.doc || {});
@@ -544,15 +581,11 @@ function proposalReady(id, want) {
   if (x.apply) return 'it was applied already';
   if (x.skip) return 'it was skipped (' + x.skip.why + ')';
   if (K.mode !== 'live') return 'weekly suggestions are ' + K.mode;
-  if (!(S.now() >= Number(x.offer.vetoUntil))) return 'its veto window is open until ' + iso(Number(x.offer.vetoUntil));
   if (want && (String(want.dept) !== String(x.offer.dept) || String(want.class) !== String(x.offer.class) || !sameRoute(want.to, x.offer.to))) return 'it does not move that route';
-  // the card was really put in front of the owner: an owner card with this suggestion's ref, filed by this tool
-  if (!x.offer.cardId || !hasCard(x.offer.cardId, 'routing-proposal:' + x.id)) return 'no owner card was filed for it';
-  return null;
+  const mp = readJson(P('company', 'model-policy.json'), {}) || {};
+  return offerCheck(x, K, mp, S.now());
 }
-function hasCard(cardId, ref) {
-  try { const rows = require('./lib/pm-inbox-guard').rows({ file: P('company', 'pm-inbox.jsonl'), noAlert: true }); return rows.some(r => r && r.type === 'ask' && r.id === cardId && r.gate && r.gate.ref === ref && r.effect && r.effect.routeVeto && r.effect.routeVeto.proposalId === ref.slice('routing-proposal:'.length)); } catch (_) { return false; }
-}
+function hasCard(cardId, ref) { return !!cardOf(cardId, String(ref || '').slice('routing-proposal:'.length)); }
 function rankingNow() { return readJson(P('company', 'work', 'models', 'house-ranking.json'), null); }
 /* the candidates this week: the ranking's proposals still in today's ranking, checked; -> { take: [x], skip: [{x, why}] } */
 function weeklyCandidates(K, life, doc, mp) {
@@ -607,6 +640,9 @@ function proposalsTick(o) {
     if (now < Number(x.offer.vetoUntil)) continue;
     const ox = x.offer;
     if (K.mode !== 'live') { skipRow(ox, 'mode shadow'); continue; }
+    { const why = offerCheck(x, K, mp, now);
+      if (why && /veto window is open/.test(why)) continue;   // the card's own deadline has not passed: wait
+      if (why) { skipRow(ox, why === 'the owner kept the route as it is' ? 'kept by the owner' : why); log('ROUTING SUGGESTION ' + x.id + ' NOT APPLIED: ' + why); try { S.card().withdraw({ ref: 'routing-proposal:' + x.id, by: 'Dispatcher', why: 'it no longer applies as offered' }, { root: S.root() }); } catch (_) {} continue; } }
     if (!sameRoute(routeNow(doc, ox.dept, ox.class), ox.from)) { skipRow(ox, 'route changed'); try { S.card().withdraw({ ref: 'routing-proposal:' + x.id, by: 'Dispatcher', why: 'the route changed in the meantime, so the suggestion no longer applies' }, { root: S.root() }); } catch (_) {} continue; }
     const r = S.departments(['set-route', ox.dept, ox.class, ox.to.provider + '/' + ox.to.model + (ox.to.effort ? '@' + ox.to.effort : ''), '--by', 'routing-proposal', '--proposal', x.id]);
     if (r.code !== 0) { log('ROUTING SUGGESTION APPLY ERROR ' + x.id + ': ' + String((r.out && r.out.error) || 'failed').slice(0, 200)); continue; }
@@ -807,7 +843,7 @@ function selftest() {
   return bad ? 1 : 0;
 }
 
-module.exports = { proposalsTick, proposalsDue, proposalReady, proposalsStatus, proposalKnobs, cardWords, isoWeek, tierOf, lifeOf, PROPOSAL_DEFAULTS, PROPOSAL_OPS, run, status, planTrial, parseArm, trialOfRoute, heldGuard, loadPolicy, S, Refusal, REL, DEFAULT_REL, LOG_DEFAULT, CHANGE_OPS, EVENT_OPS };
+module.exports = { offerCheck, cardOf, proposalsTick, proposalsDue, proposalReady, proposalsStatus, proposalKnobs, cardWords, isoWeek, tierOf, lifeOf, PROPOSAL_DEFAULTS, PROPOSAL_OPS, run, status, planTrial, parseArm, trialOfRoute, heldGuard, loadPolicy, S, Refusal, REL, DEFAULT_REL, LOG_DEFAULT, CHANGE_OPS, EVENT_OPS };
 if (require.main === module) {
   const argv = process.argv.slice(2);
   if (argv[0] === '--selftest' || argv[0] === 'selftest') process.exit(selftest());
