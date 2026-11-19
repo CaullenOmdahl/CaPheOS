@@ -225,7 +225,9 @@ test('the owner hears it in plain words through the real owner notice (strict): 
     await SW.refresh(Object.assign({}, t.opts, { force: true }));
     const rows = () => fs.readFileSync(path.join(t.opts.root, 'company', 'owner', 'digest.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
     assert.equal(rows().length, 1);
-    assert.match(rows()[0].text, /^Riley found 2 known security holes in parts we use \(.+\) and is fixing them now\. Nothing is needed from you\.$/);
+    // one of the two (Node) needs the machine's administrator: the line never says 'nothing is needed' beside that ask
+    assert.match(rows()[0].text, /^Riley found 2 known security holes in parts we use \(.+\) and is fixing one now\. The other needs an update on this machine that only its administrator can install; a separate message asks you for it\.$/);
+    assert.doesNotMatch(rows()[0].text, /Nothing is needed/);
     assert.match(rows()[0].technical, /sharp 0\.35\.4, GHSA-wq5f-xc86-pv6w/);
     fs.writeFileSync(path.join(t.opts.root, 'starnet', 'node_modules', 'sharp', 'package.json'), JSON.stringify({ name: 'sharp', version: '0.35.5' }));
     await SW.refresh(Object.assign({}, t.opts, { force: true }));
@@ -254,4 +256,222 @@ test('deps.js fast track: only the exact first fixed release of an open P0 here'
   assert.equal(SW.fastTrack('python', 'sharp', '0.35.5', t.opts), null);
   assert.equal(SW.fastTrack('node', 'fast-uri', '3.1.9', t.opts), null, 'P2: no fast track');
   assert.match(fs.readFileSync(path.join(REPO, 'company', 'tools', 'deps.js'), 'utf8'), /p\.kind === 'age'\) \{ const ft = securityFix\(/);
+});
+
+/* ---------------- review round 1 (2026-11-19): partial checks, runtime ids, lockfile coverage, wakes, words ---------------- */
+const withNet = (t, over) => { const base = t.opts.net; t.opts.net = { json: async (url, opt) => { const r = over(url, opt); if (r !== undefined) return r instanceof Error ? Promise.reject(r) : r; return base.json(url, opt); } }; };
+const byName = (t, n) => Object.values(SW.readState(t.ctx).findings).find(x => x.name === n);
+const later = h => Date.now() + h * 3600e3;
+
+test('B1: a Node or Chrome feed that fails never marks its finding fixed, and nothing tells the owner so', async () => {
+  const t = fixture({ runtimes: [{ name: 'node', label: 'Node 22.23.5', version: '22.23.5' }, { name: 'chrome', label: 'Chrome 157.0.8103.78', version: '157.0.8103.78' }] });
+  await SW.refresh(Object.assign({}, t.opts, { force: true }));
+  assert.equal(byName(t, 'node').state, 'open'); assert.equal(byName(t, 'chrome').state, 'open');
+  const n0 = t.notices.length;
+  withNet(t, url => /dist\/index\.json|versionhistory/.test(url) ? new Error('getaddrinfo ENOTFOUND') : undefined);
+  const r = await SW.refresh(Object.assign({}, at(t, later(1)), { force: true }));
+  assert.equal(byName(t, 'node').state, 'open', 'node feed down: still open'); assert.equal(byName(t, 'chrome').state, 'open');
+  assert.ok(r.partial && r.partial.some(x => /node release feed/.test(x)), JSON.stringify(r.partial));
+  assert.equal(t.notices.length, n0, 'no "fixed" line'); assert.equal(t.notices.filter(n => /is fixed/.test(n.text)).length, 0);
+  const S = SW.readState(t.ctx); assert.ok(S.lastScanAt && S.lastOkAt !== S.lastScanAt, 'a partial check is not a success');
+});
+
+test('B1: OSV down and npm audit clean (or out of time) never clears an OSV finding; the check counts as failed', async () => {
+  const t = fixture();
+  await SW.refresh(Object.assign({}, t.opts, { force: true }));
+  const okAt = SW.readState(t.ctx).lastOkAt;
+  withNet(t, url => /querybatch|\/v1\/vulns\//.test(url) ? Object.assign(new Error('out of time for this tick'), { budget: true }) : undefined);
+  t.opts.npmAudit = () => ({ status: 0, stdout: JSON.stringify({ auditReportVersion: 2, vulnerabilities: {}, metadata: { vulnerabilities: { total: 0 } } }) });
+  const r = await SW.refresh(Object.assign({}, at(t, later(7)), { force: true }));
+  assert.equal(byName(t, 'sharp').state, 'open'); assert.equal(byName(t, 'sharp').level, 'P0');
+  assert.ok(r.partial && r.partial.includes('npm'), JSON.stringify(r));
+  assert.equal(SW.readState(t.ctx).lastOkAt, okAt, 'lastOkAt does not move on a partial check');
+  assert.equal(t.notices.filter(n => /is fixed/.test(n.text)).length, 0);
+  // still partial 13 h later: the duty says the check is not succeeding (never silently green)
+  assert.ok(SW.duty(at(t, later(13))).out.items.some(i => /^sec-stale-/.test(i.id)));
+});
+
+test('B1: an advisory record that cannot be read (no cache) keeps its finding open', async () => {
+  const t = fixture();
+  await SW.refresh(Object.assign({}, t.opts, { force: true }));
+  fs.rmSync(t.ctx.P.osv, { recursive: true, force: true });
+  withNet(t, (url) => /\/v1\/vulns\/GHSA-wq5f/.test(url) ? new Error('HTTP 503') : undefined);
+  const r = await SW.refresh(Object.assign({}, at(t, later(1)), { force: true }));
+  assert.equal(byName(t, 'sharp').state, 'open'); assert.ok(r.kept.length >= 1, JSON.stringify(r));
+  assert.ok(r.partial.some(x => /advisory record/.test(x)));
+});
+
+test('B1: a hole that comes back after it was fixed is told to the owner again', async () => {
+  const t = fixture();
+  await SW.refresh(Object.assign({}, t.opts, { force: true }));
+  const pj = path.join(t.opts.root, 'starnet', 'node_modules', 'sharp', 'package.json');
+  fs.writeFileSync(pj, JSON.stringify({ name: 'sharp', version: '0.35.5' }));
+  await SW.refresh(Object.assign({}, t.opts, { force: true }));
+  assert.equal(byName(t, 'sharp').state, 'fixed');
+  fs.writeFileSync(pj, JSON.stringify({ name: 'sharp', version: '0.35.4' }));   // rolled back
+  const r = await SW.refresh(Object.assign({}, t.opts, { force: true }));
+  assert.equal(byName(t, 'sharp').state, 'open'); assert.deepEqual(r.reopened, [byName(t, 'sharp').id]);
+  assert.equal(t.notices.filter(n => /^Riley found/.test(n.text) && /the program the crew works in/.test(n.text)).length, 2, JSON.stringify(t.notices.map(n => n.text)));
+});
+
+test('B2: one finding per runtime: a new upstream release moves its target, never a false fixed + a new found + a new ask', async () => {
+  const t = fixture({ runtimes: [{ name: 'chrome', label: 'Chrome 157.0.8103.78', version: '157.0.8103.78' }] });
+  let stable = '157.0.8103.90';
+  withNet(t, url => /versionhistory/.test(url) ? { versions: [{ version: stable }, { version: '156.0.1.1' }] } : undefined);
+  await SW.refresh(Object.assign({}, t.opts, { force: true }));
+  const c1 = byName(t, 'chrome'); assert.equal(c1.fixed, '157.0.8103.90'); assert.equal(c1.advisory, 'RUNTIME-CHROME');
+  stable = '157.0.8103.120';
+  await SW.refresh(Object.assign({}, t.opts, { force: true }));
+  const all = Object.values(SW.readState(t.ctx).findings).filter(x => x.eco === 'runtime:chrome');
+  assert.equal(all.length, 1, 'still one Chrome finding'); assert.equal(all[0].id, c1.id); assert.equal(all[0].fixed, '157.0.8103.120'); assert.equal(all[0].state, 'open');
+  assert.equal(t.asks.length, 1, 'asked once'); assert.equal(t.notices.filter(n => /is fixed/.test(n.text)).length, 0);
+  t.opts.runtimes = [{ name: 'chrome', label: 'Chrome 157.0.8103.90', version: '157.0.8103.90' }];   // updated, but not to the target
+  await SW.refresh(Object.assign({}, t.opts, { force: true }));
+  assert.equal(byName(t, 'chrome').state, 'open', 'below the target: still open');
+  t.opts.runtimes = [{ name: 'chrome', label: 'Chrome 157.0.8103.120', version: '157.0.8103.120' }];
+  await SW.refresh(Object.assign({}, t.opts, { force: true }));
+  assert.equal(byName(t, 'chrome').state, 'fixed');
+  // Node: a later release that is not a security release does not move anything
+  const n = fixture();
+  await SW.refresh(Object.assign({}, n.opts, { force: true }));
+  const nid = byName(n, 'node').id, nfix = byName(n, 'node').fixed;
+  withNet(n, url => /dist\/index\.json/.test(url) ? JSON.parse(fs.readFileSync(path.join(FX, 'node-index.json'), 'utf8')).concat([{ version: 'v22.99.0', security: false }]) : undefined);
+  await SW.refresh(Object.assign({}, n.opts, { force: true }));
+  assert.equal(byName(n, 'node').id, nid); assert.equal(byName(n, 'node').fixed, nfix);
+  assert.equal(Object.values(SW.readState(n.ctx).findings).filter(x => x.eco === 'runtime:node').length, 1);
+});
+
+test('B3 + should-fix 6/7: pnpm, go.sum and pubspec.lock are read; other lockfiles, loose pins and private packages are listed as not covered', () => {
+  const t = fixture({ projectRemotes: { app: 'https://github.com/example/app.git' } });
+  const R = path.join(t.opts.root, 'company', 'repos', 'app');
+  const w = (rel, body) => { const f = path.join(R, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, body); };
+  w('apps/brand-book/pnpm-lock.yaml', "lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      next:\n        specifier: ^15\n        version: 15.1.0(react@19.0.0)\n\npackages:\n\n  '@alloc/quick-lru@5.2.0':\n    resolution: {integrity: sha512-x}\n\n  next@15.1.0:\n    resolution: {integrity: sha512-y}\n\n  '@acme/private@1.0.0':\n    resolution: {tarball: https://npm.acme.example/@acme/private/-/private-1.0.0.tgz}\n\nsnapshots:\n\n  next@15.1.0(react@19.0.0):\n    dependencies:\n      react: 19.0.0\n");
+  w('old/pnpm-lock.yaml', "lockfileVersion: '6.0'\n\npackages:\n\n  /lodash@4.17.20:\n    resolution: {integrity: sha512-z}\n    dev: true\n\n  /@scope/pkg@2.0.0(react@18.0.0):\n    resolution: {integrity: sha512-w}\n    dev: false\n");
+  w('apps/agents/go.sum', 'golang.org/x/net v0.17.0 h1:abc=\ngolang.org/x/net v0.17.0/go.mod h1:def=\ngolang.org/x/text v0.3.0/go.mod h1:ghi=\n');
+  w('apps/baarista-employee/_packages/baarista_core/pubspec.lock', '# Generated by pub\npackages:\n  async:\n    dependency: transitive\n    description:\n      name: async\n      url: "https://pub.dev"\n    source: hosted\n    version: "2.11.0"\n  flutter:\n    dependency: "direct main"\n    description: flutter\n    source: sdk\n    version: "0.0.0"\n  mytool:\n    dependency: "direct dev"\n    description:\n      path: "../mytool"\n    source: path\n    version: "1.0.0"\n  lints:\n    dependency: "direct dev"\n    description:\n      name: lints\n      url: "https://pub.dev"\n    source: hosted\n    version: "3.0.0"\nsdks:\n  dart: ">=3.0.0"\n');
+  w('apps/baarista-employee/ios/Podfile.lock', 'PODS:\n  - Flutter (1.0.0)\n');
+  w('api/scripts/photo/requirements.txt', 'pillow==10.0.0\nrequests>=2.31\nnumpy\n');
+  w('api/package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: { '': { name: 'api' }, 'node_modules/express': { version: '4.18.0', resolved: 'https://registry.npmjs.org/express/-/express-4.18.0.tgz' }, 'node_modules/@company/secret-sdk': { version: '1.2.3', resolved: 'https://npm.pkg.github.com/download/@company/secret-sdk/1.2.3/abc' } } }));
+  const inv = SW.inventory(t.ctx);
+  const got = (eco, file) => inv.components.filter(x => x.eco === eco && x.where.file.includes(file)).map(x => x.name + '@' + x.version + (x.dev ? ':dev' : '')).sort();
+  assert.deepEqual(got('npm', 'brand-book/pnpm-lock'), ['@alloc/quick-lru@5.2.0', 'next@15.1.0']);
+  assert.deepEqual(got('npm', 'old/pnpm-lock'), ['@scope/pkg@2.0.0', 'lodash@4.17.20:dev']);
+  assert.deepEqual(got('Go', 'go.sum'), ['golang.org/x/net@0.17.0'], 'a /go.mod-only line is not built in');
+  assert.deepEqual(got('Pub', 'pubspec.lock'), ['async@2.11.0', 'lints@3.0.0:dev'], 'depth 5, hosted only');
+  assert.deepEqual(got('npm', 'api/package-lock'), ['express@4.18.0'], 'a private package never goes to the public database');
+  assert.ok(!JSON.stringify(inv.components).includes('secret-sdk') && !JSON.stringify(inv.components).includes('@acme/private'));
+  const um = inv.unmatched.map(u => u.label + ' :: ' + u.why).join('\n');
+  assert.match(um, /Podfile\.lock :: this kind of lockfile is not read yet/);
+  assert.match(um, /requirements\.txt :: 2 line\(s\) not pinned to one version \(requests>=2\.31, numpy\)/);
+  assert.match(um, /api\/package-lock\.json :: 1 package\(s\) from a private source/);
+  assert.match(um, /brand-book\/pnpm-lock\.yaml :: 1 package\(s\) from a private source/);
+  assert.match(um, /pubspec\.lock :: 1 package\(s\) from a private source/);
+  assert.deepEqual(SW.parseGoSum('bad line\n').length, 0);
+});
+
+test('should-fix 1: a new P0 asks for the security-watch duty to run now, and the duty runner runs it first, past its cadence', async () => {
+  const t = fixture();
+  const marker = path.join(t.opts.root, 'company', 'state', 'duty-run-now.json');
+  const r = await SW.refresh(Object.assign({}, t.opts, { force: true }));
+  assert.equal(r.runNow, true); assert.ok(JSON.parse(fs.readFileSync(marker, 'utf8')).ids['security-watch']);
+  fs.unlinkSync(marker);
+  const r2 = await SW.refresh(Object.assign({}, t.opts, { force: true }));
+  assert.ok(!r2.runNow && !fs.existsSync(marker), 'no new P0: no early run');
+  // the runner (its own process: co.ROOT is fixed at load): ran a minute ago, cadence 15 min, but asked to run now
+  const root = t.opts.root;
+  fs.mkdirSync(path.join(root, 'company', 'work', 'ops'), { recursive: true });
+  const R = require(path.join(REPO, 'company', 'tools', 'lib', 'duty-runner.js'));
+  const ids = R.registry().map(d => d.id);
+  fs.writeFileSync(path.join(root, 'company', 'work', 'ops', 'duty-policy.json'), JSON.stringify({ tickCapMs: 20000, duties: Object.fromEntries(ids.filter(i => i !== 'security-watch').map(i => [i, { enabled: false }])) }));
+  fs.writeFileSync(path.join(root, 'company', 'state', 'duties.json'), JSON.stringify({ duties: { 'security-watch': { lastRun: new Date(Date.now() - 60e3).toISOString(), lastResult: 'ok' } } }));
+  const run = () => spawnSync(process.execPath, ['-e', "const R = require(process.argv[1]); R.tick({}).then(o => console.log(JSON.stringify({ ran: o.ran, runNow: o.runNow })))", path.join(REPO, 'company', 'tools', 'lib', 'duty-runner.js')], { cwd: root, encoding: 'utf8', timeout: 60000, env: { PATH: process.env.PATH, HOME: root, CAPHEOS_ROOT: root, TZ: 'UTC' } });
+  let o = JSON.parse(run().stdout.trim().split('\n').pop());
+  assert.deepEqual(o.ran, [], 'inside its cadence: not run');
+  fs.writeFileSync(marker, JSON.stringify({ ids: { 'security-watch': { at: new Date().toISOString(), why: 'new P0' } } }));
+  o = JSON.parse(run().stdout.trim().split('\n').pop());
+  assert.deepEqual(o.ran, ['security-watch']); assert.deepEqual(o.runNow, ['security-watch']);
+  assert.deepEqual(JSON.parse(fs.readFileSync(marker, 'utf8')).ids, {}, 'spent');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'company', 'state', 'duties.json'), 'utf8')).duties['security-watch'].priority, 'P0');
+});
+
+test('should-fix 2: a host-only P0 the owner was asked about is the owner\'s, not the seat\'s; a P2 with no fix is never due', async () => {
+  const t = fixture();
+  await SW.refresh(Object.assign({}, t.opts, { force: true }));
+  const node = byName(t, 'node'), sharp = byName(t, 'sharp');
+  assert.equal(node.hostOnly, true); assert.equal(sharp.hostOnly, false);
+  assert.equal(t.asks.length, 1);
+  const d = SW.duty(t.opts);
+  assert.ok(d.out.items.some(i => i.id === sharp.id)); assert.ok(!d.out.items.some(i => i.id === node.id), 'the seat is not woken for what only the administrator can do');
+  const row = SW.view(t.opts).rows.find(r => r.id === node.id);
+  assert.match(row.status, /^Waiting for this machine to be updated \(you were asked on /); assert.equal(row.tone, 'warning');
+  // the long-open reminder for a host-only P0 repeats the ask, it never says the crew is on it
+  await SW.refresh(Object.assign({}, at(t, later(80)), { force: true }));
+  const late = t.notices.find(n => n.key === 'secwatch:late:' + node.id);
+  assert.match(late.text, /still needs the security update you were asked about \d+ days ago\. Please update it/);
+  // a P2 with no fixed release: listed, never due
+  const S = SW.readState(t.ctx); const D = { [sharp.id]: { hold: { until: new Date(later(24)).toISOString() }, mitigation: { how: 'x' } } };
+  const p2 = Object.assign({}, sharp, { id: 'sec-p2nofix0', level: 'P2', action: 'watch', name: 'x' });
+  fs.writeFileSync(t.ctx.P.watch, JSON.stringify(Object.assign({}, S, { findings: { [p2.id]: p2 } })));
+  assert.equal(SW.duty(t.opts).code, 0, JSON.stringify(SW.duty(t.opts)));
+  fs.writeFileSync(t.ctx.P.watch, JSON.stringify(Object.assign({}, S, { findings: { [p2.id]: Object.assign({}, p2, { action: 'fix', fixed: '9.9.9' }) } })));
+  assert.ok(SW.duty(t.opts).out.items.some(i => /^sec-p2-/.test(i.id)));
+  void D;
+});
+
+test('should-fix 3: exploited in the wild is P0 whatever the label; a missing label is looked up on the CVE alias', async () => {
+  const t = fixture();
+  const inv = SW.inventory(t.ctx);
+  const rec = { id: 'PYSEC-0000-1', aliases: ['CVE-2026-777'], summary: 'no label', severity: [{ type: 'CVSS_V4', score: 'CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N' }], affected: [{ package: { ecosystem: 'npm', name: 'kokoro-js' }, ranges: [{ type: 'SEMVER', events: [{ introduced: '0' }] }] }] };
+  assert.equal(SW.severityOf(rec), 'UNKNOWN');
+  const hits = new Map(); for (const x of inv.components.filter(x => x.name === 'kokoro-js')) hits.set(x.eco + '|' + x.name + '|' + x.version, [{ id: rec.id }]);
+  const kevOnly = SW.buildFindings(t.ctx, SW.policy(t.ctx), inv, { hits, recs: { [rec.id]: rec } }, [], new Set(['CVE-2026-777']));
+  assert.equal(kevOnly.find(x => x.name === 'kokoro-js').level, 'P0');
+  assert.equal(kevOnly.find(x => x.name === 'kokoro-js').action, 'mitigate');
+  // the alias lookup, through osvMatch with a fake service
+  const cve = { id: 'CVE-2026-777', modified: '2026-11-01T00:00:00Z', severity: [{ type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H' }] };
+  const net = { json: async (url, opt) => { if (/querybatch$/.test(url)) return { results: opt.body.queries.map(q => q.package.name === 'kokoro-js' ? { vulns: [{ id: rec.id, modified: '2026-11-01T00:00:00Z' }] } : {}) }; if (/PYSEC-0000-1$/.test(url)) return Object.assign({ modified: '2026-11-01T00:00:00Z' }, rec); if (/CVE-2026-777$/.test(url)) return cve; throw new Error('404'); } };
+  const m = await SW.osvMatch(t.ctx, SW.policy(t.ctx), net, inv.components);
+  assert.equal(m.aliasSev[rec.id], 'CRITICAL'); assert.ok(m.ecos.has('npm')); assert.equal(m.uncertain.size, 0);
+  const withAlias = SW.buildFindings(t.ctx, SW.policy(t.ctx), inv, m, [], new Set());
+  assert.equal(withAlias.find(x => x.name === 'kokoro-js').severity, 'CRITICAL');
+});
+
+test('should-fix 4: a single host-only find tells the owner a separate message asks them, never "nothing is needed"', async () => {
+  const t = fixture();
+  withNet(t, url => /querybatch$/.test(url) ? undefined : undefined);
+  fs.writeFileSync(path.join(t.opts.root, 'starnet', 'node_modules', 'sharp', 'package.json'), JSON.stringify({ name: 'sharp', version: '0.35.5' }));
+  await SW.refresh(Object.assign({}, t.opts, { force: true }));
+  const found = t.notices.filter(n => /found/.test(n.text));
+  assert.equal(found.length, 1);
+  assert.match(found[0].text, /^Riley found a known security hole in the engine the company's programs run on\. It needs an update on this machine that only its administrator can install; a separate message asks you for it\.$/);
+  assert.equal(t.asks.length, 1);
+});
+
+test('should-fix 5: the search index lags; the plain P0-label listing still finds the other company\'s issue by token or exact title', async () => {
+  const a = fixture(), b = fixture();
+  await SW.refresh(Object.assign({}, a.opts, { force: true }));
+  assert.equal(a.gh.created.length, 1);
+  a.searchLag = true;   // the issue a just filed is not in the search index yet
+  b.opts.gh = (args) => { b.gh.calls.push(args); if (args[1] === 'list') return a.opts.gh(args); if (args[1] === 'create') { b.gh.created.push(args.join(' ')); return { status: 0, stdout: 'https://github.com/example/framework/issues/99\n' }; } return { status: 0, stdout: '' }; };
+  b.ctx = SW.ctxOf(b.opts);
+  await SW.refresh(Object.assign({}, b.opts, { force: true }));
+  assert.equal(b.gh.created.length, 0);
+  assert.ok(b.gh.calls.some(c => c[1] === 'list' && c.includes('--label') && c.includes('P0') && !c.includes('--search')));
+  // only the title matches (the body was edited by a maintainer): still the same issue
+  a.issues[0].body = 'edited';
+  const c = fixture(); c.opts.gh = (args) => { if (args[1] === 'list') return a.opts.gh(args); if (args[1] === 'create') { c.gh.created.push(1); return { status: 0, stdout: '' }; } return { status: 0, stdout: '' }; }; c.ctx = SW.ctxOf(c.opts);
+  await SW.refresh(Object.assign({}, c.opts, { force: true }));
+  assert.equal(c.gh.created.length, 0);
+});
+
+test('rollout switch: enabled false in the company policy holds the watch and its duty off; a hand dry run still checks and writes no findings', async () => {
+  const t = fixture();
+  fs.mkdirSync(t.ctx.P.work, { recursive: true }); fs.writeFileSync(t.ctx.P.policy, JSON.stringify({ enabled: false }));
+  const r = await SW.refresh(t.opts); assert.equal(r.ran, false); assert.match(r.off, /enabled: false/);
+  assert.equal(SW.duty(t.opts).code, 0);
+  assert.equal(SW.view(t.opts).headline, 'The security check is switched off for now.');
+  const d = await SW.refresh(Object.assign({}, t.opts, { force: true, dry: true, dryScan: true }));
+  assert.equal(d.ran, true); assert.ok(d.findings.some(f => f.name === 'sharp' && f.level === 'P0'));
+  assert.equal(fs.existsSync(t.ctx.P.watch), false, 'a dry run records nothing'); assert.equal(t.gh.created.length, 0); assert.equal(t.notices.length, 0); assert.equal(t.asks.length, 0);
+  assert.equal(fs.existsSync(path.join(t.opts.root, 'company', 'state', 'duty-run-now.json')), false, 'and asks for no wake');
 });

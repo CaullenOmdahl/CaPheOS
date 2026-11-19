@@ -27,18 +27,23 @@
  *
  * What is checked (inventory): the framework's tracked lockfiles; the station checkout (starnet/package-lock.json, each
  * entry confirmed in node_modules); the crew's own packages (deps.js locks); the company's projects (company/projects.json
- * roots and company/repos clones: package-lock.json, requirements*.txt); Node, Chrome and Python on this machine; the
+ * roots and company/repos clones, 5 deep: package-lock.json, pnpm-lock.yaml, go.sum, pubspec.lock, requirements*.txt; any
+ * other lockfile, a loose requirements pin and a private-source package are listed as not covered, never sent or dropped
+ * in silence); Node, Chrome and Python on this machine; the
  * system packages when they are readable and in the advisory database (Debian/Ubuntu dpkg, Alpine apk: inside the
  * container that is the container image itself). Matching: OSV (api.osv.dev querybatch + vuln records, cached under
  * company/state/security/osv/), `npm audit` as the fallback for npm lockfiles when OSV cannot be reached, the CISA
  * known-exploited list for "exploit known", nodejs.org's release index for Node, Google's version history for Chrome.
  * Offline: the last results stand, marked with when they were last confirmed; a check that fails retries in 30 min.
+ * Fixed means checked: a finding is marked fixed only when every place it was found was answered for in that scan (its
+ * OSV ecosystem in full, its runtime feed, its record); a partial check keeps it open and is not a good check.
  *
  * Levels (policy company/work/security/security-watch.json over company/defaults/work/security/security-watch.json):
- *   P0  critical/high, the part is really in use here, and a fix exists or the hole is exploited in the wild
- *       (or critical with no fix: mitigate now). Wakes the security seat at once; owner told in plain words, once.
+ *   P0  the part is really in use here, and: exploited in the wild (any severity), or critical/high with a fix, or
+ *       critical with no fix (mitigate now). Wakes the security seat at once (the duty runs in the same tick); owner told
+ *       in plain words, once. A fix only the machine's administrator can install is the owner's once they are asked.
  *   P1  high with no fix: a mitigation item and a watch (it becomes P0 the scan a fix appears).
- *   P2  medium/low, or only used while building/testing: listed, one weekly item.
+ *   P2  medium/low, or only used while building/testing: listed, one weekly item while one has a fixed release.
  *   P3  not installed on this machine (another platform's optional package): listed only.
  *
  * State: company/state/security/{watch.json,inventory.json,kev.json,runtimes.json,osv/}, company/work/security/
@@ -157,15 +162,21 @@ const pyNorm = n => String(n || '').toLowerCase().replace(/[-_.]+/g, '-');
 const sameName = (eco, a, b) => eco === 'PyPI' ? pyNorm(a) === pyNorm(b) : String(a) === String(b);
 
 /* ---------------- inventory ---------------- */
+// a package from anywhere but the public registry (a private registry, git, a file path): its name may identify the company,
+// so it never goes to the public advisory database; it is listed as not covered instead (o.gaps)
+const PUBLIC_NPM = /^https:\/\/registry\.(npmjs\.org|yarnpkg\.com)\//;
+const privateNote = (n, what) => n + ' ' + what + ' from a private source (not the public registry): not checked, so their names never leave the company';
 function parseNpmLock(text, o) {
   o = o || {};
-  let j; try { j = JSON.parse(text); } catch (_) { return []; }
+  let j; try { j = JSON.parse(text); } catch (_) { if (o.gaps) o.gaps.push('the lockfile could not be read'); return []; }
+  let priv = 0;
   const out = [];
   const platOk = v => (!Array.isArray(v.os) || !v.os.length || v.os.some(x => x === (o.platform || process.platform) || (x.startsWith('!') && x.slice(1) !== (o.platform || process.platform))) && !v.os.includes('!' + (o.platform || process.platform)))
     && (!Array.isArray(v.cpu) || !v.cpu.length || v.cpu.some(x => x === (o.arch || process.arch) || (x.startsWith('!') && x.slice(1) !== (o.arch || process.arch))) && !v.cpu.includes('!' + (o.arch || process.arch)));
   if (j && j.packages && typeof j.packages === 'object') {
     for (const [k, v] of Object.entries(j.packages)) {
       if (!k || !v || v.link || !v.version) continue;
+      if (v.resolved && !PUBLIC_NPM.test(String(v.resolved))) { priv++; continue; }
       const name = v.name || k.slice(k.lastIndexOf('node_modules/') + 13);
       const parent = k.lastIndexOf('/node_modules/') > 0 ? k.slice(0, k.lastIndexOf('/node_modules/')).replace(/^.*node_modules\//, '') : null;
       out.push({ eco: 'npm', name, version: v.version, path: k, dev: !!(v.dev || v.devOptional), optional: !!v.optional, platformOnly: !platOk(v), via: parent });
@@ -174,15 +185,77 @@ function parseNpmLock(text, o) {
     const walk = (deps, pfx, parent) => { for (const [name, v] of Object.entries(deps || {})) { if (!v || !v.version) continue; const k = pfx + 'node_modules/' + name; out.push({ eco: 'npm', name, version: v.version, path: k, dev: !!v.dev, optional: !!v.optional, platformOnly: false, via: parent }); walk(v.dependencies, k + '/', name); } };
     walk(j.dependencies, '', null);
   }
+  if (priv && o.gaps) o.gaps.push(privateNote(priv, 'package(s)'));
   return out;
 }
-function parsePyReq(text) {
-  const out = [];
+// exact pins only (== / ===): a loose line (foo>=1.2, a bare name, a URL) has no one version to check, so it is listed as
+// not covered (o.gaps) rather than dropped in silence
+function parsePyReq(text, o) {
+  o = o || {};
+  const out = [], loose = [];
   for (const raw of String(text || '').split('\n')) {
-    const l = raw.replace(/#.*$/, '').trim(); if (!l || l.startsWith('-')) continue;
+    const l = raw.replace(/(^|\s)#.*$/, '').trim(); if (!l || l.startsWith('-')) continue;
     const m = l.match(/^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*===?\s*([A-Za-z0-9.!+_-]+)/);
     if (m) out.push({ eco: 'PyPI', name: m[1], version: m[2], path: m[1], dev: false, optional: false, platformOnly: false });
+    else loose.push(clean(l.split(/\s+--/)[0], 60).replace(/[`*_#[\]|]/g, ''));
   }
+  if (loose.length && o.gaps) o.gaps.push(loose.length + ' line(s) not pinned to one version (' + loose.slice(0, 4).join(', ') + (loose.length > 4 ? ', ...' : '') + '): not checked; pin them with == to cover them');
+  return out;
+}
+// pnpm-lock.yaml (v5 /name/1.0.0, v6 /name@1.0.0(peer), v9 name@1.0.0): the packages: section, line by line (no YAML
+// library); a tarball or git resolution is a private source; v6's dev: true marks build-only parts (v9 does not say)
+function parsePnpmLock(text, o) {
+  o = o || {};
+  const out = []; let inPk = false, cur = null, priv = 0;
+  const done = () => { if (!cur) return; if (cur.private) priv++; else out.push({ eco: 'npm', name: cur.name, version: cur.version, path: cur.name + '@' + cur.version, dev: !!cur.dev, optional: !!cur.optional, platformOnly: false, via: null }); cur = null; };
+  for (const line of String(text || '').split('\n')) {
+    if (/^\S/.test(line)) { done(); inPk = /^packages:\s*$/.test(line); continue; }
+    if (!inPk) continue;
+    const k = line.match(/^ {2}(\S.*?):\s*$/);
+    if (k) {
+      done();
+      let key = k[1].replace(/^['"]|['"]$/g, '').replace(/^\//, '').replace(/\(.*$/, '');
+      let name, version; const at = key.lastIndexOf('@');
+      if (at > 0) { name = key.slice(0, at); version = key.slice(at + 1); }
+      else { const sl = key.lastIndexOf('/'); if (sl > 0) { name = key.slice(0, sl); version = key.slice(sl + 1).replace(/_.*$/, ''); } }
+      if (name && version && /^\d/.test(version)) cur = { name, version };
+      continue;
+    }
+    if (!cur) continue;
+    if (/^ {4}resolution:/.test(line) && /tarball:|repo:|directory:|commit:/.test(line)) cur.private = true;
+    if (/^ {4}dev:\s*true/.test(line)) cur.dev = true;
+    if (/^ {4}optional:\s*true/.test(line)) cur.optional = true;
+  }
+  done();
+  if (!out.length && !priv && !/packages:/.test(String(text || '')) && o.gaps) o.gaps.push('the lockfile could not be read');
+  if (priv && o.gaps) o.gaps.push(privateNote(priv, 'package(s)'));
+  return out;
+}
+// go.sum: module version h1:hash; a version that appears only as /go.mod is not built in, so it is left out
+function parseGoSum(text) {
+  const seen = new Map();
+  for (const line of String(text || '').split('\n')) {
+    const m = line.trim().match(/^(\S+)\s+(v[^\s/]+)(\/go\.mod)?\s+h1:/); if (!m) continue;
+    const key = m[1] + '@' + m[2];
+    if (!m[3]) seen.set(key, { eco: 'Go', name: m[1], version: m[2].replace(/^v/, ''), path: m[1], dev: false, optional: false, platformOnly: false });
+  }
+  return [...seen.values()];
+}
+// pubspec.lock (Dart/Flutter): hosted packages from pub.dev only; sdk/git/path ones are not in the public database
+function parsePubLock(text, o) {
+  o = o || {};
+  const out = []; let inPk = false, cur = null, priv = 0;
+  const done = () => { if (!cur) return; if (cur.source === 'hosted' && (!cur.url || /^https:\/\/pub\.(dev|dartlang\.org)\/?$/.test(cur.url)) && cur.version) out.push({ eco: 'Pub', name: cur.name, version: cur.version, path: cur.name, dev: /dev/.test(cur.dep || ''), optional: false, platformOnly: false }); else if (cur.source === 'git' || cur.source === 'path' || (cur.source === 'hosted' && cur.url)) priv++; cur = null; };
+  for (const line of String(text || '').split('\n')) {
+    if (/^\S/.test(line)) { done(); inPk = /^packages:\s*$/.test(line); continue; }
+    if (!inPk) continue;
+    const k = line.match(/^ {2}([A-Za-z0-9_]+):\s*$/); if (k) { done(); cur = { name: k[1] }; continue; }
+    if (!cur) continue;
+    const v = line.match(/^ {4}(dependency|source|version):\s*"?([^"]*)"?\s*$/); if (v) cur[v[1] === 'dependency' ? 'dep' : v[1]] = v[2];
+    const u = line.match(/^ {6}url:\s*"?([^"]*)"?\s*$/); if (u) cur.url = u[1];
+  }
+  done();
+  if (priv && o.gaps) o.gaps.push(privateNote(priv, 'package(s)'));
   return out;
 }
 function osRelease(text) {
@@ -214,16 +287,24 @@ function walkFiles(dir, names, depth, skip) {
     let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; }
     for (const e of ents) {
       const f = path.join(d, e.name);
-      if (e.isDirectory()) { if (n > 0 && !['node_modules', '.git', '.venv', 'venv', '__pycache__', 'dist', 'build'].includes(e.name) && !(skip || []).includes(f)) go(f, n - 1); }
+      if (e.isDirectory()) { if (n > 0 && !SKIP_DIRS.includes(e.name) && !(skip || []).includes(f)) go(f, n - 1); }
       else if (e.isFile() && names.some(x => x instanceof RegExp ? x.test(e.name) : x === e.name)) out.push(f);
     }
   };
   go(dir, depth); return out;
 }
-const LOCK_NAMES = ['package-lock.json', /^requirements[\w.-]*\.txt$/];
-function lockComponents(file) {
-  const t = readText(file); if (t == null) return [];
-  return path.basename(file) === 'package-lock.json' ? parseNpmLock(t) : parsePyReq(t);
+const SKIP_DIRS = ['node_modules', '.git', '.venv', 'venv', '__pycache__', 'dist', 'build', '.dart_tool', 'Pods', '.next', '.turbo', 'target', '.gradle', '.pub-cache'];
+const LOCK_NAMES = ['package-lock.json', 'pnpm-lock.yaml', 'go.sum', 'pubspec.lock', /^requirements[\w.-]*\.txt$/];
+// lockfiles the watch finds but does not read yet: listed as not covered, so the view never shows a false all-clear
+const OTHER_LOCKS = ['yarn.lock', 'Podfile.lock', 'Cargo.lock', 'Gemfile.lock', 'composer.lock', 'poetry.lock', 'Pipfile.lock', 'uv.lock', 'pdm.lock', 'bun.lock', 'bun.lockb', 'Package.resolved', 'packages.lock.json', 'gradle.lockfile', 'mix.lock'];
+const PROJECT_DEPTH = 5;
+// -> { list, gaps: [plain reasons some of it is not checked] }
+function lockComponents(file, o) {
+  const t = readText(file); const gaps = [];
+  if (t == null) return { list: [], gaps: ['the lockfile could not be read'] };
+  const b = path.basename(file); const opt = Object.assign({}, o || {}, { gaps });
+  const list = b === 'package-lock.json' ? parseNpmLock(t, opt) : b === 'pnpm-lock.yaml' ? parsePnpmLock(t, opt) : b === 'go.sum' ? parseGoSum(t) : b === 'pubspec.lock' ? parsePubLock(t, opt) : parsePyReq(t, opt);
+  return { list, gaps };
 }
 function gitRemote(dir) {
   try { const r = cp.spawnSync('git', ['-C', dir, 'remote', 'get-url', 'origin'], { encoding: 'utf8', timeout: 5000, env: { PATH: process.env.PATH || '/usr/bin:/bin', HOME: os.tmpdir(), GIT_CONFIG_NOSYSTEM: '1' } }); return r.status === 0 ? r.stdout.trim() : null; } catch (_) { return null; }
@@ -243,26 +324,33 @@ function inventory(o) {
   const sources = [], components = [], unmatched = [], stamp = [];
   // the fingerprint is WHAT is installed (each source's parts and versions), not file times: an npm install that leaves
   // the lockfile alone but changes node_modules is a change, a touched file with the same contents is not
+  const gap = (where, gaps) => { for (const why of gaps || []) unmatched.push({ kind: where.kind, label: where.label, file: where.file, why }); };
+  const addLock = (where, lc) => { add(where, lc.list); gap(where, lc.gaps); };
   const add = (where, list) => { sources.push(Object.assign({ count: list.length }, where)); for (const x of list) { components.push(Object.assign({}, x, { where })); stamp.push(where.file + '|' + x.path + '|' + x.version + '|' + (x.installed === false ? 0 : 1)); } };
   const frameworkRepo = githubRepo(o.frameworkRemote !== undefined ? o.frameworkRemote : gitRemote(c.root));
   // 1. the framework's own tracked lockfiles
   let fw = o.frameworkFiles;
-  if (!fw) { try { const r = cp.spawnSync('git', ['-C', c.root, 'ls-files', '-z', '--', '*package-lock.json', '*requirements*.txt'], { encoding: 'utf8', timeout: 8000 }); fw = r.status === 0 ? r.stdout.split('\0').filter(Boolean) : []; } catch (_) { fw = []; } }
-  for (const f of fw.filter(x => !/^(starnet|company\/repos|company\/env|scratch)\//.test(x))) add({ kind: 'framework', label: 'framework ' + f, file: f, repo: frameworkRepo }, lockComponents(path.join(c.root, f)));
+  if (!fw) { try { const r = cp.spawnSync('git', ['-C', c.root, 'ls-files', '-z', '--', '*package-lock.json', '*requirements*.txt', '*pnpm-lock.yaml', '*go.sum', '*pubspec.lock'].concat(OTHER_LOCKS.map(n => '*' + n)), { encoding: 'utf8', timeout: 8000 }); fw = r.status === 0 ? r.stdout.split('\0').filter(Boolean) : []; } catch (_) { fw = []; } }
+  for (const f of fw.filter(x => !/^(starnet|company\/repos|company\/env|scratch)\//.test(x))) {
+    const where = { kind: 'framework', label: 'framework ' + f, file: f, repo: frameworkRepo };
+    if (OTHER_LOCKS.includes(path.basename(f))) gap(where, ['this kind of lockfile is not read yet: its parts are not checked']);
+    else addLock(where, lockComponents(path.join(c.root, f)));
+  }
   // 2. the station checkout, every entry confirmed on disk
   const stLock = path.join(c.P.station, 'package-lock.json');
   if (fs.existsSync(stLock)) {
-    const list = parseNpmLock(readText(stLock), o).map(x => {
+    const stGaps = [];
+    const list = parseNpmLock(readText(stLock), Object.assign({}, o, { gaps: stGaps })).map(x => {
       if (x.platformOnly) return Object.assign(x, { installed: false });
       const pj = readJson(path.join(c.P.station, x.path, 'package.json'), null);
       return Object.assign(x, { installed: !!pj, installedVersion: pj ? pj.version : null, version: pj && pj.version ? pj.version : x.version });
     });
     const ref = (String(readText(c.P.setupStation) || '').match(/STARNET_REF:-([0-9a-f]{7,40})/) || [])[1] || null;
-    add({ kind: 'station', label: 'station checkout (pinned by scripts/setup-station.sh' + (ref ? ' STARNET_REF ' + ref.slice(0, 12) : '') + ')', file: rel(stLock), repo: frameworkRepo, stationRef: ref }, list);
+    addLock({ kind: 'station', label: 'station checkout (pinned by scripts/setup-station.sh' + (ref ? ' STARNET_REF ' + ref.slice(0, 12) : '') + ')', file: rel(stLock), repo: frameworkRepo, stationRef: ref }, { list, gaps: stGaps });
   }
   // 3. the crew's own packages (deps.js)
-  if (fs.existsSync(c.P.depsNodeLock)) add({ kind: 'company-deps', label: 'crew packages (node, deps.js)', file: rel(c.P.depsNodeLock), installed: fs.existsSync(c.P.depsEnvNode) }, parseNpmLock(readText(c.P.depsNodeLock), o));
-  if (fs.existsSync(c.P.depsPyLock)) add({ kind: 'company-deps', label: 'crew packages (python, deps.js)', file: rel(c.P.depsPyLock), installed: fs.existsSync(c.P.depsEnvPy) }, parsePyReq(readText(c.P.depsPyLock)));
+  if (fs.existsSync(c.P.depsNodeLock)) addLock({ kind: 'company-deps', label: 'crew packages (node, deps.js)', file: rel(c.P.depsNodeLock), installed: fs.existsSync(c.P.depsEnvNode) }, lockComponents(c.P.depsNodeLock, o));
+  if (fs.existsSync(c.P.depsPyLock)) { const g = []; addLock({ kind: 'company-deps', label: 'crew packages (python, deps.js)', file: rel(c.P.depsPyLock), installed: fs.existsSync(c.P.depsEnvPy) }, { list: parsePyReq(readText(c.P.depsPyLock), { gaps: g }), gaps: g }); }
   // 4. the company's projects: projects.json roots (approved/active) and company/repos clones
   const roots = new Map();
   const pj = readJson(c.P.projects, null);
@@ -276,7 +364,11 @@ function inventory(o) {
   for (const [r, p] of roots) {
     const repo = githubRepo(o.projectRemotes ? o.projectRemotes[p.id] : gitRemote(r));
     if (repo && frameworkRepo && repo.toLowerCase() === frameworkRepo.toLowerCase()) continue;   // a clone of the framework: covered as framework
-    for (const f of walkFiles(r, LOCK_NAMES, 3)) add({ kind: 'project', label: 'project ' + p.name + ': ' + path.relative(r, f), file: r.startsWith(c.root) ? rel(f) : f, project: p.id, projectName: p.name, repo }, lockComponents(f));
+    for (const f of walkFiles(r, LOCK_NAMES.concat(OTHER_LOCKS), PROJECT_DEPTH)) {
+      const where = { kind: 'project', label: 'project ' + p.name + ': ' + path.relative(r, f), file: r.startsWith(c.root) ? rel(f) : f, project: p.id, projectName: p.name, repo };
+      if (OTHER_LOCKS.includes(path.basename(f))) gap(where, ['this kind of lockfile is not read yet: its parts are not checked']);
+      else addLock(where, lockComponents(f, o));
+    }
   }
   // 5. runtimes on this machine (probed at most once per runtimeHours; the probe runs only in refresh/inventory, never --duty)
   const rts = o.runtimes || probeRuntimes(c);
@@ -397,54 +489,84 @@ function makeNet(c, pol, deadline) {
 
 /* ---------------- matching ---------------- */
 const compKey = x => x.eco + '|' + x.name + '|' + x.version;
+// a part whose answer this scan is not known (its advisory record could not be read): never marked fixed from this scan
+const nameKey = (eco, name) => eco + '|' + (eco === 'PyPI' ? pyNorm(name) : name);
+/* osvMatch -> { hits, recs, aliasSev, ecos (checked in full), failedEcos, uncertain (nameKey), error }. Never throws: one
+ * ecosystem per batch, so one the service refuses or that runs out of time leaves the others checked. */
 async function osvMatch(c, pol, net, comps) {
-  const uniq = new Map(); for (const x of comps) if (!/^runtime:/.test(x.eco)) uniq.set(compKey(x), x);
-  const list = [...uniq.values()]; const hits = new Map();
-  for (let i = 0; i < list.length; i += 1000) {
-    const chunk = list.slice(i, i + 1000);
-    const res = await net.json(URLS.batch(pol.hosts.osv), { method: 'POST', body: { queries: chunk.map(x => ({ package: { ecosystem: x.eco, name: x.name }, version: x.version })) } });
-    const rs = (res && res.results) || [];
-    if (rs.length !== chunk.length) throw new Error('the advisory service answered ' + rs.length + ' results for ' + chunk.length + ' questions');
-    rs.forEach((r, j) => { const ids = ((r && r.vulns) || []).map(v => ({ id: String(v.id), modified: v.modified || null })); if (ids.length) hits.set(compKey(chunk[j]), ids); });
+  const groups = new Map();
+  for (const x of comps) { if (/^runtime:/.test(x.eco)) continue; const g = groups.get(x.eco) || new Map(); g.set(compKey(x), x); groups.set(x.eco, g); }
+  const hits = new Map(), ecos = new Set(), failedEcos = new Set(), uncertain = new Set(); let error = null;
+  for (const [eco, g] of groups) {
+    const list = [...g.values()]; const found = [];
+    try {
+      for (let i = 0; i < list.length; i += 1000) {
+        const chunk = list.slice(i, i + 1000);
+        const res = await net.json(URLS.batch(pol.hosts.osv), { method: 'POST', body: { queries: chunk.map(x => ({ package: { ecosystem: x.eco, name: x.name }, version: x.version })) } });
+        const rs = (res && res.results) || [];
+        if (rs.length !== chunk.length) throw new Error('the advisory service answered ' + rs.length + ' results for ' + chunk.length + ' questions');
+        rs.forEach((r, j) => { const ids = ((r && r.vulns) || []).map(v => ({ id: String(v.id), modified: v.modified || null })); if (ids.length) found.push([compKey(chunk[j]), ids, chunk[j]]); });
+      }
+      for (const [k, ids] of found) hits.set(k, ids);
+      ecos.add(eco);
+    } catch (e) { failedEcos.add(eco); error = error || oneLine(e.message, 200); }
   }
-  // the records, cached by id and refreshed only when OSV says they changed
+  // the records, cached by id and refreshed only when OSV says they changed; a record that cannot be read leaves its
+  // part's answer unknown this scan (uncertain), never 'no hole'
   fs.mkdirSync(c.P.osv, { recursive: true });
   const need = new Map(); for (const ids of hits.values()) for (const v of ids) need.set(v.id, v.modified);
   const recs = {};
-  for (const [id, modified] of need) {
-    if (!/^[A-Za-z0-9._:-]{3,80}$/.test(id)) continue;
+  const getRec = async (id, modified) => {
+    if (!/^[A-Za-z0-9._:-]{3,80}$/.test(id)) return null;
     const f = path.join(c.P.osv, id.replace(/:/g, '_') + '.json');
     const cached = readJson(f, null);
-    if (cached && (!modified || cached.modified === modified || Date.parse(cached.modified) >= Date.parse(modified))) { recs[id] = cached; continue; }
-    try { const v = await net.json(URLS.vuln(pol.hosts.osv, id)); if (v && v.id) { writeJson(f, v); recs[id] = v; } }
-    catch (e) { if (cached) recs[id] = cached; else if (e.budget) throw e; }
+    if (cached && (!modified || cached.modified === modified || Date.parse(cached.modified) >= Date.parse(modified))) return cached;
+    try { const v = await net.json(URLS.vuln(pol.hosts.osv, id)); if (v && v.id) { writeJson(f, v); return v; } } catch (_) {}
+    return cached || null;
+  };
+  for (const [id, modified] of need) { const v = await getRec(id, modified); if (v) recs[id] = v; }
+  for (const [k, ids] of hits) if (ids.some(v => !recs[v.id])) { const [eco, name] = k.split('|'); uncertain.add(nameKey(eco, name)); }
+  // no severity label (CVSS v4 only, most PyPI and distro records): the CVE alias's record may carry one
+  const aliasSev = {};
+  for (const v of Object.values(recs)) {
+    if (severityOf(v) !== 'UNKNOWN') continue;
+    for (const cve of cvesOf(v).filter(x => x !== v.id).slice(0, 2)) { const a = await getRec(cve, null); const sv = a ? severityOf(a) : 'UNKNOWN'; if (sv !== 'UNKNOWN') { aliasSev[v.id] = sv; break; } }
   }
-  return { hits, recs, via: 'osv' };
+  return { hits, recs, aliasSev, ecos, failedEcos, uncertain, error, via: 'osv' };
 }
-// npm audit (registry.npmjs.org) for each npm lockfile source, when OSV cannot be reached
-async function npmAuditMatch(c, pol, inv) {
-  const run = c.o.npmAudit || ((dir) => cp.spawnSync('npm', ['audit', '--json', '--package-lock-only', '--no-fund'], { cwd: dir, encoding: 'utf8', timeout: 60000, maxBuffer: 32 * 1024 * 1024, env: { PATH: process.env.PATH || '/usr/bin:/bin', HOME: dir, npm_config_cache: path.join(dir, '.npm'), npm_config_update_notifier: 'false' } }));
+// npm audit (registry.npmjs.org) for each npm lockfile source, when OSV could not answer for npm. -> { hits, recs, files }:
+// only the lockfiles audited in full count as checked
+async function npmAuditMatch(c, pol, inv, deadline) {
+  const run = c.o.npmAudit || ((dir, s, ms) => cp.spawnSync('npm', ['audit', '--json', '--package-lock-only', '--no-fund'], { cwd: dir, encoding: 'utf8', timeout: ms, maxBuffer: 32 * 1024 * 1024, env: { PATH: process.env.PATH || '/usr/bin:/bin', HOME: dir, npm_config_cache: path.join(dir, '.npm'), npm_config_update_notifier: 'false' } }));
   if (!c.o.npmAudit) { const g = require(path.join(__dirname, 'external-gate.js')).check({ category: 'network', target: 'https://' + pol.hosts.npm + '/', agent: (seatFor(c, 'risk') || {}).id || 'security-watch', note: 'security-watch.js npm audit fallback' }); if (!g.allow) { (c.refused || (c.refused = new Set())).add(pol.hosts.npm); throw new Error('the external gate refused ' + pol.hosts.npm); } }
-  const hits = new Map(), recs = {};
+  const hits = new Map(), recs = {}, files = new Set(), failed = [];
   for (const s of inv.sources.filter(x => /package-lock\.json$/.test(x.file))) {
+    const left = (deadline || Infinity) - Date.now();
+    if (left < 3000) { failed.push(s.file + ': out of time'); continue; }
     const abs = path.isAbsolute(s.file) ? s.file : path.join(c.root, s.file);
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secwatch-audit-'));
     try {
       fs.copyFileSync(abs, path.join(tmp, 'package-lock.json'));
       const pkg = path.join(path.dirname(abs), 'package.json'); fs.writeFileSync(path.join(tmp, 'package.json'), readText(pkg) || '{"name":"x","version":"0.0.0"}');
-      const r = run(tmp, s); let j; try { j = JSON.parse(r.stdout || ''); } catch (_) { throw new Error('npm audit did not answer JSON'); }
+      const r = run(tmp, s, Math.max(3000, Math.min(60000, left))); let j; try { j = JSON.parse(r.stdout || ''); } catch (_) { throw new Error('npm audit did not answer JSON'); }
+      if (!j || typeof j !== 'object' || (!j.vulnerabilities && !j.metadata) || j.error) throw new Error('npm audit answered an error');
+      const fileHits = new Map(), fileRecs = {};
       for (const [name, v] of Object.entries((j && j.vulnerabilities) || {})) {
         for (const via of v.via || []) {
           if (!via || typeof via !== 'object') continue;
           const id = (String(via.url || '').match(/GHSA-[a-z0-9-]+/i) || [])[0] || 'NPM-' + via.source;
           const fixed = (String(via.range || '').match(/<\s*([0-9][^ ]*)$/) || [])[1] || null;
-          recs[id] = recs[id] || { id, summary: via.title, aliases: [], database_specific: { severity: String(via.severity || '').toUpperCase() }, affected: fixed ? [{ package: { ecosystem: 'npm', name }, ranges: [{ type: 'SEMVER', events: [{ introduced: '0' }, { fixed }] }] }] : [], references: via.url ? [{ type: 'ADVISORY', url: via.url }] : [], fromAudit: true };
-          for (const node of v.nodes || []) { const comp = inv.components.find(x => x.where.file === s.file && x.path === node); if (comp) { const k = compKey(comp); hits.set(k, (hits.get(k) || []).concat([{ id }])); } }
+          fileRecs[id] = recs[id] || fileRecs[id] || { id, summary: via.title, aliases: [], database_specific: { severity: String(via.severity || '').toUpperCase() }, affected: fixed ? [{ package: { ecosystem: 'npm', name }, ranges: [{ type: 'SEMVER', events: [{ introduced: '0' }, { fixed }] }] }] : [], references: via.url ? [{ type: 'ADVISORY', url: via.url }] : [], fromAudit: true };
+          for (const node of v.nodes || []) { const comp = inv.components.find(x => x.where.file === s.file && x.path === node); if (comp) { const k = compKey(comp); fileHits.set(k, (fileHits.get(k) || []).concat([{ id }])); } }
         }
       }
-    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+      Object.assign(recs, fileRecs); for (const [k, v] of fileHits) hits.set(k, (hits.get(k) || []).concat(v));
+      files.add(s.file);
+    } catch (e) { failed.push(s.file + ': ' + oneLine(e.message, 80)); }
+    finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   }
-  return { hits, recs, via: 'npm-audit' };
+  if (!files.size && failed.length) throw new Error('npm audit failed (' + failed.slice(0, 2).join('; ') + ')');
+  return { hits, recs, files, failed, via: 'npm-audit' };
 }
 async function kevSet(c, pol, net, state) {
   const cache = readJson(c.P.kev, null);
@@ -453,18 +575,23 @@ async function kevSet(c, pol, net, state) {
   catch (e) { state.notes.push('known-exploited list not refreshed: ' + oneLine(e.message, 120)); return new Set((cache && cache.ids) || []); }
 }
 // runtimes: Node from nodejs.org's index (a newer release in the same major line marked security), Chrome from Google's
-// stable channel (a stable build newer than ours: Chrome's stable updates carry security fixes)
+// stable channel (a stable build newer than ours: Chrome's stable updates carry security fixes). ONE finding per runtime
+// (RUNTIME-NODE, RUNTIME-CHROME: the id never names an upstream release, so a new release moves the target on the same
+// finding, never a false 'fixed' plus a new 'found'); it is fixed when the installed version reaches the target.
+// state.feeds: the runtimes whose feed answered this scan (only those can mark their finding fixed).
 async function runtimeFindings(c, pol, net, comps, state) {
-  const out = [];
+  const out = []; state.feeds = state.feeds || new Set();
   const node = comps.find(x => x.eco === 'runtime:node');
   if (node) {
     try {
       const idx = await net.json(URLS.node(pol.hosts.node));
+      if (!Array.isArray(idx) || !idx.length) throw new Error('the Node release index was empty');
       const major = node.version.split('.')[0];
-      const line = (idx || []).filter(r => r && r.version && String(r.version).replace(/^v/, '').split('.')[0] === major);
-      const newer = line.filter(r => cmpVer(String(r.version).replace(/^v/, ''), node.version) > 0);
-      const sec = newer.filter(r => r.security === true);
-      if (sec.length) { const latest = newer.map(r => String(r.version).replace(/^v/, '')).sort(cmpVer).pop(); out.push({ comp: node, vuln: { id: 'NODE-SECURITY-' + major + '-' + latest, summary: 'Node ' + node.version + ' is behind a security release of the ' + major + '.x line (latest ' + latest + ')', aliases: [], database_specific: { severity: 'HIGH' }, references: [{ type: 'ADVISORY', url: 'https://nodejs.org/en/blog/vulnerability' }] }, fixed: latest }); }
+      const line = idx.filter(r => r && r.version && String(r.version).replace(/^v/, '').split('.')[0] === major);
+      const sec = line.filter(r => r.security === true && cmpVer(String(r.version).replace(/^v/, ''), node.version) > 0).map(r => String(r.version).replace(/^v/, '')).sort(cmpVer);
+      const target = sec.pop();
+      if (target) out.push({ comp: node, vuln: { id: 'RUNTIME-NODE', summary: 'Node ' + node.version + ' is behind security release ' + target + ' of the ' + major + '.x line', aliases: [], database_specific: { severity: 'HIGH' }, references: [{ type: 'ADVISORY', url: 'https://nodejs.org/en/blog/vulnerability' }] }, fixed: target });
+      state.feeds.add('node');
     } catch (e) { state.notes.push('Node release index not read: ' + oneLine(e.message, 120)); }
   }
   const chrome = comps.find(x => x.eco === 'runtime:chrome');
@@ -473,7 +600,9 @@ async function runtimeFindings(c, pol, net, comps, state) {
       const j = await net.json(URLS.chrome(pol.hosts.chrome));
       const vs = ((j && j.versions) || []).map(x => String(x.version)).filter(Boolean).sort(cmpVer);
       const stable = vs.pop();
-      if (stable && cmpVer(stable, chrome.version) > 0) out.push({ comp: chrome, vuln: { id: 'CHROME-STABLE-' + stable, summary: 'Chrome ' + chrome.version + ' is older than the current stable ' + stable + ' (stable updates carry security fixes)', aliases: [], database_specific: { severity: 'HIGH' }, references: [{ type: 'ADVISORY', url: 'https://chromereleases.googleblog.com/' }] }, fixed: stable });
+      if (!stable) throw new Error('the Chrome version history was empty');
+      if (cmpVer(stable, chrome.version) > 0) out.push({ comp: chrome, vuln: { id: 'RUNTIME-CHROME', summary: 'Chrome ' + chrome.version + ' is older than the current stable ' + stable + ' (stable updates carry security fixes)', aliases: [], database_specific: { severity: 'HIGH' }, references: [{ type: 'ADVISORY', url: 'https://chromereleases.googleblog.com/' }] }, fixed: stable });
+      state.feeds.add('chrome');
     } catch (e) { state.notes.push('Chrome version history not read: ' + oneLine(e.message, 120)); }
   }
   return out;
@@ -494,7 +623,8 @@ function buildFindings(c, pol, inv, match, extra, kev) {
     const id = 'sec-' + sha(canon + '|' + comp.eco.split(':')[0] + '|' + (comp.eco === 'PyPI' ? pyNorm(comp.name) : comp.name)).slice(0, 8);
     const f = by.get(id) || { id, advisory: canon, ids: [], aliases: [], eco: comp.eco, name: comp.name, summary: oneLine(v.summary || (v.details || '').split('\n')[0] || canon, 200), severity: 'UNKNOWN', kev: false, refs: [], locations: [], mitigation: null };
     for (const x of [v.id].concat(v.aliases || [])) if (x && !f.ids.includes(x)) f.ids.push(String(x));
-    const sev = severityOf(v); if (SEV_ORDER[sev] > SEV_ORDER[f.severity]) f.severity = sev;
+    let sev = severityOf(v); if (sev === 'UNKNOWN' && match.aliasSev && match.aliasSev[v.id]) sev = match.aliasSev[v.id];
+    if (SEV_ORDER[sev] > SEV_ORDER[f.severity]) f.severity = sev;
     if (cvesOf(v).some(x => kev.has(x))) f.kev = true;
     for (const r of (v.references || [])) { const u = String(r && r.url || ''); if (/^https:\/\/(github\.com\/[^/]+\/[^/]+\/security\/advisories|github\.com\/advisories|osv\.dev|nvd\.nist\.gov|www\.cve\.org|nodejs\.org|chromereleases\.googleblog\.com)\b/.test(u) && !f.refs.includes(u) && f.refs.length < 6) f.refs.push(u); }
     if (!f.refs.length && /^GHSA-/.test(canon)) f.refs.push('https://github.com/advisories/' + canon);
@@ -514,7 +644,8 @@ function buildFindings(c, pol, inv, match, extra, kev) {
     f.fixed = (live.concat(build).map(l => l.fixed).filter(Boolean).sort(cmpVer)[0]) || null;
     const hot = pol.p0Severities.includes(f.severity);
     if (live.length) {
-      if (hot && (hasFix || f.kev)) { f.level = 'P0'; f.action = hasFix ? 'fix' : 'mitigate'; }
+      // exploited in the wild (CISA KEV) is P0 whatever the label says: most distro and PyPI records carry no label at all
+      if (f.kev || (hot && hasFix)) { f.level = 'P0'; f.action = hasFix ? 'fix' : 'mitigate'; }
       else if (f.severity === 'CRITICAL') { f.level = 'P0'; f.action = 'mitigate'; }
       else if (hot) { f.level = 'P1'; f.action = 'mitigate'; }
       else { f.level = 'P2'; f.action = f.fixed ? 'fix' : 'watch'; }
@@ -522,12 +653,15 @@ function buildFindings(c, pol, inv, match, extra, kev) {
     else { f.level = 'P3'; f.action = 'watch'; }
     f.where = [...new Set(f.locations.filter(l => l.reachable).map(l => l.kind))];
     f.issueRepos = f.level === 'P0' ? issueTargets(f) : [];
-    f.hostFix = f.level === 'P0' && f.locations.some(l => l.reachable === true && (l.kind === 'runtime' || l.kind === 'os'));
+    f.hostFix = f.level === 'P0' && f.locations.some(l => l.reachable === true && HOST_KINDS.includes(l.kind));
+    // every live place needs the machine's administrator: once the owner is asked, the owner owes it, not the seat
+    f.hostOnly = f.hostFix && f.locations.filter(l => l.reachable === true).every(l => HOST_KINDS.includes(l.kind));
   }
   return [...by.values()].sort((a, b) => LEVELS.indexOf(a.level) - LEVELS.indexOf(b.level) || SEV_ORDER[b.severity] - SEV_ORDER[a.severity] || a.name.localeCompare(b.name));
 }
 // a P0 in a part the framework ships or pins goes to the framework's repository; one in a company project to that project's
 const CORE_KINDS = ['framework', 'station', 'container'];
+const HOST_KINDS = ['runtime', 'os'];
 function issueTargets(f) {
   const out = new Set();
   for (const l of f.locations) { if (l.reachable === true && l.repo && (CORE_KINDS.includes(l.kind) || l.kind === 'project')) out.add(l.repo); }
@@ -544,26 +678,43 @@ function decisions(c) {
 }
 const live = (r, now) => r && (!r.until || Date.parse(r.until) > now);
 // what is still owed on a finding: null = nothing (fixed, set aside, or mitigated where that is enough)
-function owed(f, d, now) {
+function owed(f, d, now, n) {
   if (!f || f.state === 'fixed' || !['P0', 'P1'].includes(f.level)) return null;
+  if (f.hostOnly && n && n.asked) return null;   // only the machine's administrator can install it: the owner was asked
   if (d && live(d.hold, now) && (f.level !== 'P0' || live(d.mitigation, now))) return null;
   if (f.action === 'mitigate' && d && live(d.mitigation, now)) return null;
   return f.level;
 }
-// merge a new scan into the kept state: firstSeen stays, a finding gone from the scan is fixed (not deleted)
-function merge(c, prev, findings) {
-  const out = {}; const seen = new Set();
+// was this place really looked at in this scan? (scope: what answered.) A place whose lockfile or runtime is gone is
+// looked at: it is not there any more. The npm audit fallback can add a finding but never clear one: it covers npm
+// lockfiles only and answers from another database, so only the advisory database itself confirms a hole is gone.
+function placeChecked(f, l, scope) {
+  if (l.kind === 'runtime') { const rt = String(f.eco).replace(/^runtime:/, ''); return !scope.runtimes.has(rt) || scope.feeds.has(rt); }
+  if (!scope.sources.has(l.file)) return true;
+  if (scope.uncertain.has(nameKey(f.eco, f.name))) return false;
+  return scope.ecos.has(f.eco);
+}
+// merge a new scan into the kept state: firstSeen stays; a finding gone from the scan is fixed (not deleted) ONLY when
+// every place it was found was checked in this scan (a feed that failed, a fallback that covers npm only, a record that
+// could not be read or a time budget that ran out never turns an open hole into 'fixed'); a hole that comes back after it
+// was fixed is told again (its noticed marks are cleared)
+function merge(c, prev, findings, scope) {
+  const out = {}; const seen = new Set(); const kept = [], reopened = [];
+  prev.noticed = prev.noticed || {};
   for (const f of findings) {
     const p = prev.findings[f.id];
+    if (p && p.state === 'fixed') { delete prev.noticed[f.id]; reopened.push(f.id); }
     out[f.id] = Object.assign({}, f, { state: 'open', firstSeen: (p && p.state !== 'fixed' && p.firstSeen) || iso(c.now), lastSeen: iso(c.now), p0Since: f.level === 'P0' ? ((p && p.level === 'P0' && p.state !== 'fixed' && p.p0Since) || iso(c.now)) : null });
     seen.add(f.id);
   }
   for (const [id, p] of Object.entries(prev.findings || {})) {
     if (seen.has(id)) continue;
     if (p.state === 'fixed') { if (c.now - (msOf(p.fixedAt || p.lastSeen) || 0) < 30 * DAY) out[id] = p; continue; }
+    if (scope && !(p.locations || []).every(l => placeChecked(p, l, scope))) { out[id] = Object.assign({}, p, { unconfirmedAt: iso(c.now) }); kept.push(id); continue; }
     out[id] = Object.assign({}, p, { state: 'fixed', fixedAt: iso(c.now) });
+    delete out[id].unconfirmedAt;
   }
-  return out;
+  return { findings: out, kept, reopened };
 }
 
 /* ---------------- refresh: the dispatcher's step ---------------- */
@@ -572,6 +723,8 @@ async function refresh(o) {
   const say = o.log || (() => {});
   const pol = policy(c);
   if (pol.source === 'none' && !o.force) return { ran: false, off: 'no policy (company/work/security/security-watch.json or its default)' };
+  // a company's own policy may hold the watch off (the rollout: a dry run first, by hand, with --dry-run --force)
+  if (pol.enabled === false && !o.force) return { ran: false, off: 'switched off in company/work/security/security-watch.json (enabled: false)' };
   // the duty flag, and the test suite's own switch (scripts/test.sh): no live lookups unless a test injects its own network
   if ((process.env.CAPHEOS_NO_NETWORK === '1' || process.env.CAPHEOS_SECWATCH_OFFLINE === '1') && !o.net) return { ran: false, off: 'network off (CAPHEOS_NO_NETWORK / CAPHEOS_SECWATCH_OFFLINE)' };
   const S = readState(c);
@@ -587,12 +740,23 @@ async function refresh(o) {
   const net = makeNet(c, pol, deadline);
   const state = { notes: [] };
   let match = null, error = null;
-  try { match = await osvMatch(c, pol, net, inv.components); }
-  catch (e) {
-    error = oneLine(e.message, 200);
-    try { match = await npmAuditMatch(c, pol, inv); state.notes.push('the advisory database could not be reached (' + error + '); npm audit was used for the npm lockfiles'); }
-    catch (e2) { state.notes.push('npm audit fallback failed: ' + oneLine(e2.message, 160)); match = null; }
+  const om = await osvMatch(c, pol, net, inv.components);
+  error = om.error;
+  if (om.failedEcos.size) state.notes.push('the advisory database did not answer for ' + [...om.failedEcos].join(', ') + ' (' + error + ')');
+  const scope = { ecos: om.ecos, files: new Set(), feeds: new Set(), uncertain: om.uncertain, sources: new Set(inv.sources.map(s => s.file)), runtimes: new Set(inv.runtimes.map(r => r.name)) };
+  match = om;
+  if (om.failedEcos.has('npm')) {
+    try {
+      const am = await npmAuditMatch(c, pol, inv, deadline);
+      for (const [k, v] of am.hits) om.hits.set(k, (om.hits.get(k) || []).concat(v));
+      for (const [id, v] of Object.entries(am.recs)) if (!om.recs[id]) om.recs[id] = v;
+      scope.files = am.files; match.via = om.ecos.size ? 'osv+npm-audit' : 'npm-audit';
+      state.notes.push('npm audit was used for the npm lockfiles' + (am.failed.length ? ' (not for ' + am.failed.length + ': ' + am.failed.slice(0, 2).join('; ') + ')' : ''));
+    } catch (e2) { state.notes.push('npm audit fallback failed: ' + oneLine(e2.message, 160)); }
   }
+  const anyChecked = scope.ecos.size || scope.files.size;
+  const wanted = inv.components.some(x => !/^runtime:/.test(x.eco));
+  if (wanted && !anyChecked) match = null;
   S.lastTryAt = iso(c.now); S.firstTryAt = S.firstTryAt || S.lastTryAt; res.ran = true;
   if (c.refused && c.refused.size && !o.dry) askRows(c, 'network', [...c.refused].map(h => 'https://' + h + '/*'));
   if (!match) {
@@ -603,15 +767,30 @@ async function refresh(o) {
   }
   const kev = await kevSet(c, pol, net, state);
   const extra = await runtimeFindings(c, pol, net, inv.components, state);
+  scope.feeds = state.feeds;
   const findings = buildFindings(c, pol, inv, match, extra, kev);
-  S.findings = merge(c, S, findings);
-  Object.assign(S, { version: 1, lastOkAt: iso(c.now), lastError: error, via: match.via, notes: state.notes, fingerprint: inv.fingerprint, counts: countOf(S.findings), inventory: { sources: inv.sources.map(s => ({ kind: s.kind, label: s.label, file: s.file, count: s.count })), runtimes: inv.runtimes.map(r => ({ name: r.name, version: r.version })), unmatched: inv.unmatched, components: inv.components.length } });
-  res.counts = S.counts; res.via = match.via;
+  const prevFindings = S.findings || {};
+  const m = merge(c, S, findings, scope);
+  S.findings = m.findings;
+  if (m.kept.length) state.notes.push(m.kept.length + ' earlier finding(s) could not be re-checked this time and stay open');
+  // a check is complete only when every part had an answer; a partial one keeps the results it has but does not count as
+  // a success (it is retried every retryMin, and after 2 x rescanHours the duty says the check is not succeeding)
+  const missing = [...om.failedEcos]
+    .concat([...scope.runtimes].filter(r => ['node', 'chrome'].includes(r) && !scope.feeds.has(r)).map(r => r + ' release feed'))
+    .concat(scope.uncertain.size ? [scope.uncertain.size + ' advisory record(s)'] : []);
+  const complete = !missing.length;
+  S.lastScanAt = iso(c.now); S.partial = complete ? null : missing.slice(0, 8);
+  if (!complete) state.notes.push('this check was partial (no answer for ' + missing.slice(0, 4).join(', ') + '); it is tried again in ' + pol.retryMin + ' min');
+  Object.assign(S, { version: 1, lastOkAt: complete ? iso(c.now) : (S.lastOkAt || null), lastError: complete ? null : (error || 'partial check'), via: match.via, notes: state.notes, fingerprint: inv.fingerprint, counts: countOf(S.findings), inventory: { sources: inv.sources.map(s => ({ kind: s.kind, label: s.label, file: s.file, count: s.count })), runtimes: inv.runtimes.map(r => ({ name: r.name, version: r.version })), unmatched: inv.unmatched, components: inv.components.length } });
+  res.counts = S.counts; res.via = match.via; res.partial = S.partial; res.kept = m.kept; res.reopened = m.reopened;
   if (o.dry) { res.findings = findings; return res; }
   if (c.refused && c.refused.size) askRows(c, 'network', [...c.refused].map(h => 'https://' + h + '/*'));
   writeJson(c.P.inventory, { at: inv.at, fingerprint: inv.fingerprint, sources: inv.sources, runtimes: inv.runtimes, unmatched: inv.unmatched });
   if (checkNow) { try { fs.unlinkSync(c.P.checkNow); } catch (_) {} }
-  const newP0 = findings.filter(f => f.level === 'P0' && !(readState(c).findings[f.id] || {}).p0Since);
+  const newP0 = findings.filter(f => f.level === 'P0' && !((prevFindings[f.id] || {}).state !== 'fixed' && (prevFindings[f.id] || {}).p0Since));
+  // a new P0 the crew can act on runs the security-watch duty in this same tick, ahead of the per-tick cap and its 15-minute
+  // cadence (the dispatcher calls refresh just before the duties), so the seat is woken now, not at the next cadence
+  if (newP0.some(f => !f.hostOnly)) { try { require(path.join(LIB, 'duty-runner')).requestRun('security-watch', { root: c.root, now: c.now, why: 'new P0' }); res.runNow = true; } catch (e) { say('SECURITY WATCH: could not ask for an immediate duty run: ' + oneLine(e.message, 120)); } }
   appendJsonl(c.P.log, { at: iso(c.now), act: 'scan', via: match.via, components: inv.components.length, counts: S.counts, fingerprint: inv.fingerprint, notes: state.notes });
   say('SECURITY WATCH: checked ' + inv.components.length + ' parts (' + match.via + '): ' + LEVELS.map(l => (S.counts[l] || 0) + ' ' + l).join(', ') + (newP0.length ? '; new P0: ' + newP0.map(f => f.name + ' ' + f.advisory).join(', ') : ''));
   await afterScan(c, pol, S, res, say);
@@ -692,12 +871,20 @@ async function fileIssues(c, pol, S, D, say) {
       const found = gh(['issue', 'list', '-R', repo, '--state', 'all', '--search', token + ' in:body', '--json', 'number,state,url', '--limit', '5']);
       if (found.status !== 0) { rec.error = oneLine(found.stderr, 160); rec.retryAt = iso(c.now + pol.retryMin * 60e3); continue; }
       let list = []; try { list = JSON.parse(found.stdout || '[]'); } catch (_) {}
+      const title = 'P0 security: ' + f.name + ' ' + (f.fixed ? 'below ' + f.fixed : '(no fix yet)') + ' — ' + f.advisory + ' (' + f.severity.toLowerCase() + ')';
+      // GitHub's search index lags by seconds to minutes and both companies act on the same feed update: also list the
+      // newest issues with the P0 label (a plain listing, not a search) and match the token or the exact title locally
+      if (!list.length) {
+        const recent = gh(['issue', 'list', '-R', repo, '--state', 'all', '--label', pol.issueLabels[0] || 'P0', '--json', 'number,state,url,title,body', '--limit', '100']);
+        if (recent.status !== 0 && !/not found|could not find|no labels/i.test(recent.stderr || '')) { rec.error = oneLine(recent.stderr, 160); rec.retryAt = iso(c.now + pol.retryMin * 60e3); continue; }
+        let rl = []; try { rl = JSON.parse(recent.stdout || '[]'); } catch (_) {}
+        list = (Array.isArray(rl) ? rl : []).filter(i => i && (String(i.body || '').includes(token) || String(i.title || '') === title.slice(0, 200)));
+      }
       if (list.length) { Object.assign(rec, { number: list[0].number, url: list[0].url, state: list[0].state, by: 'found', at: iso(c.now) }); delete rec.error; out.push({ token, repo, found: list[0].number }); continue; }
       // 2. the gate: an issue on a repository is an external act (publish, act issue_create); one standing row covers it
       const gate = c.o.gate || (r => require(path.join(__dirname, 'external-gate.js')).check(r));
       const g = gate({ category: 'publish', target: 'github:' + repo + '#issues', act: 'issue_create', agent: (seatFor(c, 'risk') || {}).id || 'security-watch', note: 'security-watch.js P0 ' + f.advisory });
       if (!g.allow) { rec.error = 'gate: ' + oneLine(g.reason, 160); rec.retryAt = iso(c.now + pol.retryMin * 60e3); askRows(c, 'publish', ['github:' + repo + '#issues']); continue; }
-      const title = 'P0 security: ' + f.name + ' ' + (f.fixed ? 'below ' + f.fixed : '(no fix yet)') + ' — ' + f.advisory + ' (' + f.severity.toLowerCase() + ')';
       const body = issueBody(f, repo, token);
       let r = gh(['issue', 'create', '-R', repo, '--title', title.slice(0, 200), '--body', body].concat(...pol.issueLabels.map(l => ['--label', l])));
       if (r.status !== 0 && /label/i.test(r.stderr)) {
@@ -746,8 +933,15 @@ function notices(c, pol, S, D, say) {
   // one plain line per check for everything newly found, one for everything newly fixed (never one line per advisory)
   const found = all.filter(f => f.level === 'P0' && f.state !== 'fixed' && !(S.noticed[f.id] || {}).found);
   if (found.length) {
-    const text = found.length === 1 ? who + ' found a known security hole in a part we use (' + parts(found) + ') and is fixing it now. Nothing is needed from you.'
-      : who + ' found ' + found.length + ' known security holes in parts we use (' + parts(found) + ') and is fixing them now. Nothing is needed from you.';
+    // a fix only the machine's administrator can install is asked for in its own message: this line never also says
+    // 'nothing is needed from you'
+    const host = found.filter(f => f.hostOnly), crew = found.filter(f => !f.hostOnly);
+    const holes = n => n === 1 ? 'a known security hole' : n + ' known security holes';
+    const hostLine = (host.length === 1 ? (crew.length === 1 ? 'The other needs' : 'One of them needs') : host.length + ' of them need') + ' an update on this machine that only its administrator can install; a separate message asks you for it.';
+    const text = !host.length ? (found.length === 1 ? who + ' found a known security hole in a part we use (' + parts(found) + ') and is fixing it now. Nothing is needed from you.'
+      : who + ' found ' + found.length + ' known security holes in parts we use (' + parts(found) + ') and is fixing them now. Nothing is needed from you.')
+      : !crew.length ? who + ' found ' + holes(host.length) + ' in ' + parts(host) + '. ' + (host.length === 1 ? 'It needs' : 'They need') + ' an update on this machine that only its administrator can install; a separate message asks you for it.'
+      : who + ' found ' + found.length + ' known security holes in parts we use (' + parts(found) + ') and is fixing ' + (crew.length === 1 ? 'one' : crew.length) + ' now. ' + hostLine;
     N({ kind: 'fyi', from: who, text, technical: found.map(techOf).join('; '), key: 'secwatch:found:' + found.map(f => f.id).sort().join(',') });
     for (const f of found) S.noticed[f.id] = Object.assign(S.noticed[f.id] || {}, { found: iso(c.now) });
     out.push({ sent: 'found', ids: found.map(f => f.id) });
@@ -762,7 +956,8 @@ function notices(c, pol, S, D, say) {
     const n = S.noticed[f.id]; if (!n) continue;
     // still open long after it was found, with no workaround: the owner hears it once, still with nothing to do
     if (f.level === 'P0' && f.state !== 'fixed' && n.found && !n.late && c.now - Date.parse(f.p0Since || n.found) > pol.ownerUrgentHours * HOUR && !(D[f.id] && live(D[f.id].mitigation, c.now))) {
-      N({ kind: 'urgent', from: who, text: 'A security hole ' + who + ' found ' + Math.round((c.now - Date.parse(f.p0Since || n.found)) / DAY) + ' days ago is still open. The crew is still on it and its manager has been told. Nothing is needed from you.', technical: techOf(f) + ' (open past ' + pol.ownerUrgentHours + ' h, no mitigation recorded)', key: 'secwatch:late:' + f.id });
+      if (f.hostOnly) N({ kind: 'urgent', from: who, text: plainPart(f).replace(/^the /, 'The ') + ' still needs the security update you were asked about ' + Math.round((c.now - Date.parse(f.p0Since || n.found)) / DAY) + ' days ago. Please update it, or pass this to whoever looks after the machine.', technical: techOf(f) + ' (open past ' + pol.ownerUrgentHours + ' h)', key: 'secwatch:late:' + f.id });
+      else N({ kind: 'urgent', from: who, text: 'A security hole ' + who + ' found ' + Math.round((c.now - Date.parse(f.p0Since || n.found)) / DAY) + ' days ago is still open. The crew is still on it and its manager has been told. Nothing is needed from you.', technical: techOf(f) + ' (open past ' + pol.ownerUrgentHours + ' h, no mitigation recorded)', key: 'secwatch:late:' + f.id });
       n.late = iso(c.now); out.push({ sent: 'late', ids: [f.id] });
     }
     // a fix that needs the machine's administrator (Chrome, Node, system packages on the host): the one thing the owner
@@ -782,16 +977,18 @@ function notices(c, pol, S, D, say) {
 /* ---------------- the duty (read-only, no network) ---------------- */
 function duty(o) {
   const c = ctxOf(o); const pol = policy(c);
+  if (pol.enabled === false) return { code: 0 };   // held off on purpose (rollout); the console says so
   const S = readState(c); const D = decisions(c);
   const items = []; let p0 = 0; const parts = [];
   for (const f of Object.values(S.findings || {}).sort((a, b) => LEVELS.indexOf(a.level) - LEVELS.indexOf(b.level))) {
-    const lv = owed(f, D[f.id], c.now); if (!lv) continue;
+    const lv = owed(f, D[f.id], c.now, (S.noticed || {})[f.id]); if (!lv) continue;
     if (lv === 'P0') p0++;
     items.push({ id: f.id, route: 'risk' });
     parts.push(lv + ' ' + f.name + ' ' + ((f.locations.find(l => l.reachable === true) || f.locations[0] || {}).version || '') + ' in ' + (f.where || []).join('+') + ' — ' + f.advisory + ' ' + f.severity.toLowerCase() + (f.fixed ? ', fixed in ' + f.fixed : ', no fix yet: mitigate'));
   }
   // a week's smaller holes: one non-urgent item per ISO week while any is open
-  const small = Object.values(S.findings || {}).filter(f => f.state !== 'fixed' && f.level === 'P2' && !(D[f.id] && live(D[f.id].hold, c.now)));
+  // (a P2 with no fixed release has nothing to do: it is listed, and becomes due the scan a fix appears)
+  const small = Object.values(S.findings || {}).filter(f => f.state !== 'fixed' && f.level === 'P2' && f.action === 'fix' && !(D[f.id] && live(D[f.id].hold, c.now)));
   if (small.length) { const wk = isoWeek(c.now); items.push({ id: 'sec-p2-' + wk, route: 'risk' }); parts.push(small.length + ' smaller known hole(s) (P2): fix when convenient, or hold them'); }
   // the watch itself not checking is a finding too (offline or refused by the gate): never silently green
   // (a company that never checked yet gets the same grace from its first try: the CEO's standing rows may be on their way)
@@ -822,9 +1019,10 @@ function view(o) {
   const who = riskName(c);
   const day = s => s ? new Date(s).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: (c.co && c.co.TZ) || 'UTC' }) : '';
   const rows = Object.values(S.findings || {}).filter(f => f.level !== 'P3').sort((a, b) => (a.state === 'fixed') - (b.state === 'fixed') || LEVELS.indexOf(a.level) - LEVELS.indexOf(b.level)).slice(0, 60).map(f => {
-    const d = D[f.id] || {}; const lv = owed(f, d, c.now);
-    const status = f.state === 'fixed' ? 'Fixed on ' + day(f.fixedAt) : lv === 'P0' ? who + ' is fixing it now (since ' + day(f.p0Since || f.firstSeen) + ')' : lv === 'P1' ? who + ' is putting a workaround in place' : live(d.mitigation, c.now) ? 'Kept safe by a workaround until a fix exists' : live(d.hold, c.now) ? 'Set aside by ' + who + ' until ' + day(d.hold.until) : 'Small: fixed when convenient';
-    const tone = f.state === 'fixed' ? 'online' : lv === 'P0' ? 'danger' : lv === 'P1' ? 'warning' : 'neutral';
+    const d = D[f.id] || {}; const n = (S.noticed || {})[f.id] || {}; const lv = owed(f, d, c.now, n);
+    const waitHost = f.state !== 'fixed' && f.hostOnly && n.asked;
+    const status = f.state === 'fixed' ? 'Fixed on ' + day(f.fixedAt) : waitHost ? 'Waiting for this machine to be updated (you were asked on ' + day(n.asked) + ')' : lv === 'P0' ? who + ' is fixing it now (since ' + day(f.p0Since || f.firstSeen) + ')' : lv === 'P1' ? who + ' is putting a workaround in place' : live(d.mitigation, c.now) ? 'Kept safe by a workaround until a fix exists' : live(d.hold, c.now) ? 'Set aside by ' + who + ' until ' + day(d.hold.until) : 'Small: fixed when convenient';
+    const tone = f.state === 'fixed' ? 'online' : waitHost ? 'warning' : lv === 'P0' ? 'danger' : lv === 'P1' ? 'warning' : 'neutral';
     const issue = Object.values(S.issues || {}).find(i => i.finding === f.id && i.url);
     return { id: f.id, level: f.level, state: f.state, tone, part: plainPart(f), how: f.level === 'P0' ? (f.action === 'fix' ? 'A serious hole with a fix available.' : 'A serious hole with no fix yet; a workaround keeps it safe.') : f.level === 'P1' ? 'A serious hole with no fix yet; a workaround keeps it safe meanwhile.' : 'A smaller hole.', status,
       technical: { advisory: f.advisory, ids: f.ids.slice(0, 6), package: f.eco.split(':')[0] + ' ' + f.name, versions: [...new Set(f.locations.map(l => l.version))].slice(0, 4), fixed: f.fixed, severity: f.severity, kev: f.kev, where: f.locations.filter(l => l.reachable).map(l => l.label + ' (' + l.path + ')').slice(0, 6), mitigation: f.mitigation ? f.mitigation.how : null, issue: issue ? issue.url : null } };
@@ -832,8 +1030,11 @@ function view(o) {
   const open = rows.filter(r => r.state !== 'fixed' && ['P0', 'P1'].includes(r.level)).length;
   const lastOk = msOf(S.lastOkAt) || 0;
   const stale = c.now - lastOk > 2 * pol.rescanHours * HOUR;
-  const headline = !S.lastOkAt ? 'The first security check has not run yet.' : open ? (open === 1 ? 'One known security hole in a part we use is being handled by ' + who + '.' : open + ' known security holes in parts we use are being handled by ' + who + '.') : 'No known security holes that need fixing in the parts we use.';
-  return { ok: true, headline, who, checkedAt: S.lastOkAt || null, stale, offline: !!S.lastError, checkNowPending: fs.existsSync(c.P.checkNow), everyHours: pol.rescanHours,
+  const gaps = ((S.inventory && S.inventory.unmatched) || []).filter(u => u.kind === 'project' || u.kind === 'framework' || u.kind === 'station' || u.kind === 'company-deps').length;
+  // never a bare all-clear: parts it could not read, or a check that was only partial, are said in the headline
+  const caveat = (S.partial ? ' The last check could not reach every list; it is tried again soon.' : '') + (gaps ? ' Some parts could not be checked; the crew sees which.' : '');
+  const headline = !S.lastOkAt && !S.lastScanAt ? 'The first security check has not run yet.' : (open ? (open === 1 ? 'One known security hole in a part we use is being handled by ' + who + '.' : open + ' known security holes in parts we use are being handled by ' + who + '.') : 'No known security holes that need fixing in the parts we checked.') + caveat;
+  return { ok: true, headline: pol.enabled === false ? 'The security check is switched off for now.' : headline, off: pol.enabled === false, who, checkedAt: S.lastOkAt || null, stale, offline: !!S.lastError, checkNowPending: fs.existsSync(c.P.checkNow), everyHours: pol.rescanHours,
     explain: 'Software sometimes has mistakes that could let a stranger in. When one is found, a public warning is published. Every ' + pol.rescanHours + ' hours, and whenever a part changes, the company checks every part it uses against those warnings. A serious one goes straight to ' + who + ', who fixes it the same day. You are only asked when something needs you.',
     counts: S.counts || {}, parts: S.inventory ? S.inventory.components : 0, rows, unmatched: ((S.inventory && S.inventory.unmatched) || []).map(u => u.label + ': ' + u.why) };
 }
@@ -866,7 +1067,7 @@ async function main(argv) {
   const J = x => console.log(JSON.stringify(x, null, 1));
   if (cmd === 'refresh') { const r = await refresh({ dry: !!a['dry-run'], dryScan: !!a['dry-run'], force: !!a.force, log: a.json ? null : s => console.log(s) }); if (a.json) J(r); return r.error ? 1 : 0; }
   if (cmd === 'inventory') { const inv = inventory(c); if (a.json) J(inv); else { for (const s of inv.sources) console.log(s.kind.padEnd(13) + String(s.count).padStart(5) + '  ' + s.label + '  ' + s.file); for (const r of inv.runtimes) console.log('runtime'.padEnd(13) + '      ' + r.label); for (const u of inv.unmatched) console.log('unmatched'.padEnd(13) + '      ' + u.label + ' — ' + u.why); console.log('fingerprint ' + inv.fingerprint + ', ' + inv.components.length + ' parts'); } return 0; }
-  if (cmd === 'list') { const S = readState(c); const D = decisions(c); const rows = Object.values(S.findings).filter(f => a.all || (f.state !== 'fixed' && f.level !== 'P3')); if (a.json) J(rows); else { console.log('last check ' + (S.lastOkAt || 'never') + (S.lastError ? ' (last try failed: ' + S.lastError + ')' : '')); for (const f of rows) console.log(f.id + '  ' + f.level + (owed(f, D[f.id], c.now) ? '*' : ' ') + ' ' + f.severity.padEnd(8) + ' ' + (f.name + ' ' + (f.locations[0] || {}).version).padEnd(36) + ' ' + f.advisory + (f.fixed ? ' fixed ' + f.fixed : ' no fix') + ' [' + (f.where || []).join(',') + ']' + (f.state === 'fixed' ? ' FIXED' : '')); } return 0; }
+  if (cmd === 'list') { const S = readState(c); const D = decisions(c); const rows = Object.values(S.findings).filter(f => a.all || (f.state !== 'fixed' && f.level !== 'P3')); if (a.json) J(rows); else { console.log('last check ' + (S.lastOkAt || 'never') + (S.lastError ? ' (last try failed: ' + S.lastError + ')' : '')); for (const f of rows) console.log(f.id + '  ' + f.level + (owed(f, D[f.id], c.now, (S.noticed || {})[f.id]) ? '*' : ' ') + ' ' + f.severity.padEnd(8) + ' ' + (f.name + ' ' + (f.locations[0] || {}).version).padEnd(36) + ' ' + f.advisory + (f.fixed ? ' fixed ' + f.fixed : ' no fix') + ' [' + (f.where || []).join(',') + ']' + (f.state === 'fixed' ? ' FIXED' : '')); } return 0; }
   if (cmd === 'show') { const S = readState(c); const f = S.findings[a._[1]]; if (!f) { console.error('no finding ' + a._[1]); return 1; } console.log(findingText(f, decisions(c)[f.id], c.now)); return 0; }
   if (cmd === 'view') { J(view()); return 0; }
   if (['mitigate', 'hold', 'reopen'].includes(cmd)) { try { J(record(c, cmd, a)); return 0; } catch (e) { console.error('refused: ' + e.message); return 3; } }
@@ -893,7 +1094,7 @@ async function selftest() {
     ok('sharp/librsvg is P0 with fix 0.35.5 and the SVG mitigation', f && f.level === 'P0' && f.fixed === '0.35.5' && /VipsForeignLoadSvg/.test(f.mitigation && f.mitigation.how || ''), f);
     ok('fast-uri (moderate) is P2, not a wake', Object.values(S.findings).some(x => x.name === 'fast-uri' && x.level === 'P2'));
     ok('one P0 issue filed on the framework repo, label P0, no company data', t.gh.created.length === 1 && t.gh.created[0].includes('--label') && t.gh.created[0].includes('P0') && !t.gh.created.join(' ').includes('Fixture Co') && !t.gh.created.join(' ').includes(tmp), t.gh.created);
-    ok('the owner is told once, in one plain line for the whole check', t.notices.length === 1 && /security hole/.test(t.notices[0].text) && /Nothing is needed from you/.test(t.notices[0].text) && !/sharp|GHSA|0\.35/.test(t.notices[0].text) && /sharp/.test(t.notices[0].technical), t.notices);
+    ok('the owner is told once, in one plain line for the whole check (no "nothing is needed" beside a machine update)', t.notices.length === 1 && /security hole/.test(t.notices[0].text) && !/Nothing is needed from you/.test(t.notices[0].text) && /separate message asks you/.test(t.notices[0].text) && !/sharp|GHSA|0\.35/.test(t.notices[0].text) && /sharp/.test(t.notices[0].technical), t.notices);
     ok('a host-level fix (Node behind a security release) asks the owner once, in plain words', t.asks.length === 1 && /security update/.test(t.asks[0].message) && !/node|22\./i.test(t.asks[0].message), t.asks);
     const d = duty(t.opts);
     ok('the duty is due, P0, routed to risk, with the report as evidence', d.code === 1 && d.out.priority === 'P0' && d.out.route === 'risk' && d.out.evidence === REPORT_REL && d.out.items.some(i => i.id === f.id), d);
@@ -906,7 +1107,7 @@ async function selftest() {
     await refresh(Object.assign({}, t.opts, { force: true }));
     const f2 = readState(t.ctx).findings[f.id];
     ok('after the bump the finding is fixed and the owner hears it once', f2 && f2.state === 'fixed' && t.notices.filter(n => /is fixed/.test(n.text)).length === 1, { f2, n: t.notices });
-    ok('the duty still names the open Node item, no longer sharp', (d2 => d2.code === 1 && !d2.out.items.some(i => i.id === f.id))(duty(t.opts)));
+    ok('the duty no longer names sharp, nor the Node update the owner was asked for', (d2 => !(d2.out || { items: [] }).items.some(i => i.id === f.id || /^sec-/.test(i.id) && (readState(t.ctx).findings[i.id] || {}).hostOnly))(duty(t.opts)));
   } catch (e) { ok('selftest ran', false, e.stack); }
   finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   console.log(bad ? 'SECURITY-WATCH SELFTEST FAILED: ' + bad : 'SECURITY-WATCH SELFTEST PASSED');
@@ -933,7 +1134,12 @@ function buildFixtureRoot(tmp, FX) {
     throw new Error('unexpected url ' + url);
   } };
   const issues = [];
-  const gh = args => { t.gh.calls.push(args); if (args[0] === 'issue' && args[1] === 'list') { const tok = args[args.indexOf('--search') + 1].split(' ')[0]; return { status: 0, stdout: JSON.stringify(issues.filter(i => i.body.includes(tok)).map(i => ({ number: i.n, state: 'OPEN', url: 'https://github.com/example/framework/issues/' + i.n }))) }; } if (args[0] === 'issue' && args[1] === 'create') { t.gh.created.push(args.join(' ')); const n = issues.length + 1; issues.push({ n, body: args[args.indexOf('--body') + 1] }); return { status: 0, stdout: 'https://github.com/example/framework/issues/' + n + '\n' }; } return { status: 0, stdout: '' }; };
+  // a fake gh: --search matches the token (t.searchLag: the search index has not caught up, so it finds nothing); a plain
+  // --label listing returns the newest issues with title and body
+  const gh = args => { t.gh.calls.push(args); if (args[0] === 'issue' && args[1] === 'list') { const si = args.indexOf('--search'); const row = i => ({ number: i.n, state: 'OPEN', url: 'https://github.com/example/framework/issues/' + i.n, title: i.title, body: i.body });
+    if (si >= 0) { const tok = args[si + 1].split(' ')[0]; return { status: 0, stdout: JSON.stringify(t.searchLag ? [] : issues.filter(i => i.body.includes(tok)).map(row)) }; }
+    return { status: 0, stdout: JSON.stringify(issues.slice().reverse().map(row)) }; }
+    if (args[0] === 'issue' && args[1] === 'create') { t.gh.created.push(args.join(' ')); const n = issues.length + 1; issues.push({ n, title: args[args.indexOf('--title') + 1], body: args[args.indexOf('--body') + 1] }); return { status: 0, stdout: 'https://github.com/example/framework/issues/' + n + '\n' }; } return { status: 0, stdout: '' }; };
   t.issues = issues;
   t.opts = { root: tmp, net, gh, gate: () => ({ allow: true }), notice: n => { t.notices.push(n); return { sent: 'digest' }; }, ask: x => t.asks.push(x), frameworkFiles: [], frameworkRemote: 'https://github.com/example/framework.git', runtimes: [{ name: 'node', label: 'Node 22.23.5', version: '22.23.5' }], osRoot: path.join(tmp, 'no-os'), co: { ROOT: tmp, config: { owner: { name: 'Pat Owner' } }, TZ: 'UTC' } };
   t.ctx = ctxOf(t.opts);
@@ -941,4 +1147,4 @@ function buildFixtureRoot(tmp, FX) {
 }
 
 if (require.main === module) main(process.argv.slice(2)).then(code => process.exit(code), e => { console.error('security-watch.js: ' + e.message); process.exit(1); });
-module.exports = { refresh, inventory, duty, view, fastTrack, decisions, readState, policy, buildFindings, fixedFor, severityOf, cvss3Score, labelOf, cmpVer, parseNpmLock, parsePyReq, parseDpkg, parseApk, osRelease, canonicalId, issueToken, issueBody, owed, record, ctxOf, buildFixtureRoot, selftest, LEVELS, DEFAULT_POLICY, REPORT_REL };
+module.exports = { refresh, inventory, osvMatch, merge, placeChecked, parsePnpmLock, parseGoSum, parsePubLock, lockComponents, duty, view, fastTrack, decisions, readState, policy, buildFindings, fixedFor, severityOf, cvss3Score, labelOf, cmpVer, parseNpmLock, parsePyReq, parseDpkg, parseApk, osRelease, canonicalId, issueToken, issueBody, owed, record, ctxOf, buildFixtureRoot, selftest, LEVELS, DEFAULT_POLICY, REPORT_REL };
