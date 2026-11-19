@@ -13,7 +13,7 @@
  *   node company/tools/accountable.js audit <ac-id> --verdict ACCEPT|REVISE --check "<what I checked>" [--finding ".."]... --by <lead>
  *        binding: ACCEPT makes the item DONE and lets its merge (at the handed-back commit) go ahead; REVISE (with at
  *        least one finding) sends it back to the member. The first verdict decides.
- *   node company/tools/accountable.js pass <inbox>#<item> [--escalation cross-department|"owner: money|access|ownership|commitment"] --by <lead>
+ *   node company/tools/accountable.js pass <inbox>#<item> [--block <fp>] [--escalation cross-department|"owner: money|access|ownership|commitment"] --by <lead>
  *   node company/tools/accountable.js pass <inbox>#<item> --return --why ".." --by <lead>      a held onward handoff
  *   node company/tools/accountable.js drop <inbox>#<item> --why ".." --by <lead>              the item is not needed (not done);
  *        its open audit closes. The CEO may drop (or audit) only a job whose check the dispatcher recorded as waiting too long
@@ -69,7 +69,7 @@ function main(argv) {
   if (cmd === 'handback') return res(AC.handback({ by, item: a.pos[1], note: str(a.note), tests: str(a.tests) || undefined, testCmds: many(a, 'test-cmd'), cwd: str(a.cwd) || undefined, base: str(a.base) || undefined,
     diffFile: str(a['diff-file']) || undefined, noDiff: str(a['no-diff']) || (a['no-diff'] === true ? 'not given' : undefined), pr: str(a.pr) || undefined, sha: str(a.sha) || undefined }));
   if (cmd === 'audit') return res(AC.audit({ id: a.pos[1], verdict: str(a.verdict), check: str(a.check), findings: many(a, 'finding'), by }));
-  if (cmd === 'pass') return res(AC.pass({ ref: a.pos[1], by, escalation: str(a.escalation), ret: a.return === true, why: str(a.why) }));
+  if (cmd === 'pass') return res(AC.pass({ ref: a.pos[1], by, escalation: str(a.escalation), ret: a.return === true, why: str(a.why), block: str(a.block) || undefined }));
   if (cmd === 'drop') return res(AC.drop({ ref: a.pos[1], by, why: str(a.why) }));
   if (cmd === 'escape') return res(AC.escape({ id: a.pos[1], by, why: str(a.why) }));
   if (cmd === 'spot') return res(AC.spot({ id: a.pos[1], by, result: str(a.result), why: str(a.why) }));

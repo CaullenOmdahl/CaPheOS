@@ -905,7 +905,8 @@ function targets(ctx, flags) {
   put('risk', flags, flags.some(f => !NOTE_ONLY.has(f.kind)) ? 'open' : 'fyi'); put('ceo', flags.filter(f => TO_CEO.has(f.kind)), 'ceo');
   return out;
 }
-function appendHandoff(ctx, inbox, text) { fs.mkdirSync(ctx.paths.handoffs, { recursive: true }); fs.appendFileSync(path.join(ctx.paths.handoffs, inbox), text); }
+// recorded (lib/tool-blocks.js): a block this tool wrote is known as a tool's by provenance, never held as a member's message
+function appendHandoff(ctx, inbox, text) { fs.mkdirSync(ctx.paths.handoffs, { recursive: true }); require('./lib/tool-blocks').append(path.join(ctx.paths.handoffs, inbox), text); }
 // the report file first (its failure is itself flagged), then the handoffs, which never depend on it
 function report(ctx, flags, rows) {
   const md = flags.map(f => row(ctx, f.repo, f.branch, f.label + (f.unguarded ? ' (guardrail off)' : f.quiet ? ' (owner, probably)' : ''), f.title + ' — ' + f.detail, f.links)).join('') + rows.join('');

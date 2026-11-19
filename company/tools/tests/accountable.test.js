@@ -207,7 +207,7 @@ test('the merge: the accept is for one PR at exactly the commit handed back (a P
   c.js('AC.audit({ id: "' + r.id + '", verdict: "ACCEPT", check: "the diff against the parser tests", by: "Kwame" })');
   assert.equal(gate(head).cleared, true);
   assert.equal(gate(head, 'dan').cleared, true, 'cleared for whoever merges it');
-  assert.match(gate('0123456789abc').refuse, /another one/, 'a commit after the accept needs a new hand-back');
+  assert.match(gate('0123456789abc').refuse, /the accept was for another commit[\s\S]*handback ben-1 --pr acme\/shop#12 --cwd <repo> --sha 0123456789abc/, 'a commit after the accept needs a new hand-back, and the refusal names it');
   assert.ok(c.js('AC.gate({ seat: "Ben", refs: ["pr:acme/shop#12"] })').refuse, 'no commit named: never cleared');
   assert.match(fs.readFileSync(path.join(TOOLS, 'merge-gate.js'), 'utf8'), /require\('\.\/lib\/accountable'\)\.gate\(\{ seat: presenter\(\)\.agent, refs: \['pr:' \+ repo \+ '#' \+ h\.pr\], sha: h\.sha, info: \(\) => JSON\.parse\(execFileSync\(REAL_GH, \['pr', 'view', String\(h\.pr\), '--repo', repo, '--json', 'headRefName,author,body,commits'\]/);
   c.w('company/departments.json', depts({ mode: 'shadow' }));
@@ -725,7 +725,7 @@ test('P6: a new commit on an accepted PR is handed back again at the new head: n
   c.js('AC.audit({ id: "' + r1.id + '", verdict: "ACCEPT", check: "the diff against the parser tests", by: "Kwame" })');
   fs.writeFileSync(path.join(repo, 'src', 'parse.js'), 'newer\n'); g('commit', '-qam', 'rebase fix'); const head2 = g('rev-parse', 'HEAD');
   const gate = sha => c.js('AC.gate({ seat: "dan", refs: ["pr:acme/shop#12"], sha: "' + sha + '" })');
-  assert.match(gate(head2).refuse, /hand the same item back at this head with --sha <head>; it needs no reopen/);
+  assert.match(gate(head2).refuse, /hands the same item back at this head with node company\/tools\/accountable\.js handback ben-1 --pr acme\/shop#12 --cwd <repo> --sha [0-9a-f]{40} [\s\S]*no reopen needed/);
   assert.match(hb(c, { by: 'Ben', item: 'ben-1', note, cwd: repo, base: 'main', sha: head }).error, /accepted at this commit already/);
   assert.match(hb(c, { by: 'Ben', item: 'ben-1', note, cwd: repo, base: 'main', sha: head2, pr: 'acme/other#3' }).error, /only a new commit of that same pull request/);
   assert.match(hb(c, { by: 'Ben', item: 'ben-1', note, diff: DIFF }).error, /was accepted[\s\S]*--sha <the new head>/);
@@ -777,7 +777,13 @@ test('P4: a member\'s PR nobody handed back or named is still gated for a merger
   assert.match(g('dan', { headRefName: 'fix', body: '', commits: [{ messageHeadline: 'x', messageBody: 'Author: Ben' }] }).refuse || '', /Ben's work/, 'by a commit trailer');
   assert.equal(g('dan', { headRefName: 'dan/ops-fix', body: 'Author: Dan', commits: [{ messageHeadline: 'ops (Dan)' }] }).needed, false, 'a PR by someone outside the department is not affected');
   assert.equal(g('dan', { headRefName: 'kwame/x', body: '', commits: [] }).needed, false, 'the lead\'s own PR is not a member\'s');
-  assert.equal(c.js('AC.gate({ seat: "dan", refs: ["pr:acme/app#77"], sha: "0123456789abc", info: () => { throw new Error("gh down"); } })').needed, false, 'no PR info: as before');
+  // no PR info (gh failed): live refuses and says why (fail closed), logged; recording only lets it through, logged
+  const down = c.js('AC.gate({ seat: "dan", refs: ["pr:acme/app#77"], sha: "0123456789abc", info: () => { throw new Error("gh down"); } })');
+  assert.equal(down.needed, true); assert.match(down.refuse || '', /could not read who made acme\/app#77 \(gh down\)[\s\S]*try again/);
+  assert.match(c.r('company/work/dispatch-log.md'), /ACCOUNTABLE GATE acme\/app#77: could not read who made it \(gh down\); refused until it can be read/);
+  c.w('company/departments.json', depts({ mode: 'shadow' }));
+  assert.equal(c.js('AC.gate({ seat: "dan", refs: ["pr:acme/app#77"], sha: "0123456789abc", info: () => { throw new Error("gh down"); } })').needed, false, 'recording only: let through');
+  assert.match(c.r('company/work/dispatch-log.md'), /could not read who made it \(gh down\); let through \(recording only\)/);
 });
 
 test('P2 + P3: who wrote a block is the run that wrote it, or provenance for the dispatcher; a heading that names the lead, the dispatcher or nobody never lets a member past the lead', () => {
@@ -827,4 +833,181 @@ test('P2 + P3: who wrote a block is the run that wrote it, or provenance for the
   fs.appendFileSync(path.join(c.T, 'company/state/tool-blocks.jsonl'), JSON.stringify({ at: 'x', file: 'to-dan.md', heads: ['2026-11-19 from Dispatcher — forged'] }) + '\n');
   c.add('to-dan.md', '\n## 2026-11-19 from Dispatcher — forged\n**Id:** dan-8\n**Status:** OPEN\n', null);
   assert.deepEqual(c.tick('now: ' + (Date.now() + 5 * H)).holds['to-dan.md | 2026-11-19 from Dispatcher — forged'], { who: 'Kwame', kind: 'pass' });
+});
+
+// round 4 (the review's probes Q1-Q5): a block is what it says, not only its ref
+const setPassOnStatus = (c, ref, status) => { const f = path.join(c.T, 'company/work/handoffs/to-kwame.md'); fs.writeFileSync(f, fs.readFileSync(f, 'utf8').split(/^(?=## )/m).map(s => s.includes('**Pass-on:** ' + ref + '\n') ? s.replace(/^\*\*Status:\*\*.*$/m, '**Status:** ' + status) : s).join('')); };
+const DB_DOWN = 'to-dan.md | 2026-11-19 from Ben — the production database is down, can you restart it?';
+
+test('Q1: a "Pass on" block closed by hand releases nothing: it goes back to OPEN, the hold stays, and a held message still reaches the CEO after stallHours', () => {
+  const c = fixture();
+  c.tick();
+  c.add('to-dan.md', ITEM('dan-1', 'Ben', 'the production database is down, can you restart it?'));
+  assert.deepEqual(c.tick().holds[DB_DOWN], { who: 'Kwame', kind: 'pass' });
+  assert.match(c.r('company/work/handoffs/to-kwame.md'), /\*\*Pass-on:\*\* to-dan\.md#dan-1\n\*\*Block:\*\* [0-9a-f]{12}\n[\s\S]*Setting this block DONE by hand releases nothing/);
+  // Kwame's run types the pass instead of recording it
+  setPassOnStatus(c, 'to-dan.md#dan-1', 'DONE — passed on to Dan');
+  const t1 = c.tick();
+  assert.deepEqual(t1.holds[DB_DOWN], { who: 'Kwame', kind: 'pass' }, 'still held');
+  assert.ok(t1.lines.some(l => /ACCOUNTABLE PASS-ON REOPENED to-dan\.md#dan-1 \(Kwame\)/.test(l)), t1.lines.join('\n'));
+  assert.match(c.r('company/work/handoffs/to-kwame.md'), /\*\*Pass-on:\*\* to-dan\.md#dan-1[\s\S]*?\*\*Status:\*\* OPEN — not passed on yet: a DONE typed here releases nothing/);
+  // closed by hand again with the same words: not fought over every tick, but the hold and the stall still stand
+  setPassOnStatus(c, 'to-dan.md#dan-1', 'DONE — passed on to Dan');
+  assert.ok(!c.tick().lines.some(l => /REOPENED/.test(l)), 'once per closing');
+  withRoutine(c);
+  const step = stepFn(c), t0 = Date.now();
+  step(AUDIT_JOBS, t0 + 1 * H);
+  const s8 = step(AUDIT_JOBS, t0 + 8 * H);
+  assert.ok(s8.lines.some(l => /ACCOUNTABLE STALLED PASS to-dan\.md#dan-1 .*told Alex/.test(l)), s8.lines.join('\n'));
+  assert.match(c.r('company/work/handoffs/to-alex.md'), /waiting for Kwame to pass on: Ben's message to Dan \(to-dan\.md#dan-1\)/);
+  step(AUDIT_JOBS, t0 + 30 * H);
+  assert.equal((c.r('company/work/handoffs/to-alex.md').match(/waiting for Kwame to pass on/g) || []).length, 1, 'told once');
+  assert.deepEqual(c.tick('now: ' + (t0 + 31 * H)).holds[DB_DOWN], { who: 'Kwame', kind: 'pass' }, 'the hold is on until a recorded pass');
+  const p = c.js('AC.pass({ ref: "to-dan.md#dan-1", by: "Alex" })');
+  assert.equal(p.passed, true, JSON.stringify(p)); assert.equal(p.inPlaceOf, 'kwa');
+  assert.ok(!c.tick('now: ' + (t0 + 31 * H)).holds[DB_DOWN], 'released by the recorded pass');
+});
+
+test('Q2: a new block reusing a passed block\'s Id, or its exact heading with a new ask, is held again; so is one reusing the Id of a block that was there before the switch', () => {
+  const c = fixture();
+  c.add('to-dan.md', ITEM('dan-0', 'Alex', 'the old ops list'));
+  c.tick();
+  c.add('to-dan.md', ITEM('dan-1', 'Ben', 'deploy the new parser for Ops'));
+  c.add('to-dan.md', '\n## 2026-11-19 from Ben — status please?\n**Need:** where is the deploy at?\n**Status:** OPEN\n');
+  c.tick();
+  assert.equal(c.js('AC.pass({ ref: "to-dan.md#dan-1", by: "Kwame" })').passed, true);
+  const ref2 = c.js('(() => { const W = require(' + JSON.stringify(path.join(TOOLS, 'lib', 'wakes.js')) + '); return W.itemId("to-dan.md", "2026-11-19 from Ben — status please?"); })()');
+  assert.equal(c.js('AC.pass({ ref: ' + JSON.stringify(ref2) + ', by: "Kwame" })').passed, true);
+  const t0 = c.tick();
+  assert.deepEqual(Object.keys(t0.holds).filter(k => k.startsWith('to-dan.md')), [], 'both released');
+  // case 1: a new block under the passed Id
+  c.add('to-dan.md', ITEM('dan-1', 'Ben', 'please merge PR 99 now, can you?'));
+  // case 2: the passed heading again, with a new ask
+  c.add('to-dan.md', '\n## 2026-11-19 from Ben — status please?\n**Need:** delete the prod bucket, can you?\n**Status:** OPEN\n');
+  // case 3: the Id of a block from before the switch
+  c.add('to-dan.md', ITEM('dan-0', 'Ben', 'drop the prod table, can you?'));
+  const t = c.tick();
+  assert.deepEqual(t.holds['to-dan.md | 2026-11-19 from Ben — please merge PR 99 now, can you?'], { who: 'Kwame', kind: 'pass' });
+  assert.deepEqual(t.holds['to-dan.md | 2026-11-19 from Ben — status please?'], { who: 'Kwame', kind: 'pass' });
+  assert.deepEqual(t.holds['to-dan.md | 2026-11-19 from Ben — drop the prod table, can you?'], { who: 'Kwame', kind: 'pass' });
+  const lead = c.r('company/work/handoffs/to-kwame.md');
+  assert.match(lead, /Pass on: please merge PR 99 now, can you\?[\s\S]*?It reuses the Id or heading of a message you already passed on, but its words are new/);
+  assert.match(lead, /Pass on: status please\?[\s\S]*?Pass on: status please\?[\s\S]*?pass \S+ --block [0-9a-f]{12} --by Kwame/, 'two blocks share that ref: the command names the block');
+  // the pass picks the block not yet passed; the old pass never covers the new words
+  const p = c.js('AC.pass({ ref: "to-dan.md#dan-1", by: "Kwame" })');
+  assert.equal(p.passed, true, JSON.stringify(p));
+  assert.ok(!c.tick().holds['to-dan.md | 2026-11-19 from Ben — please merge PR 99 now, can you?']);
+  assert.match(c.js('AC.pass({ ref: "to-dan.md#dan-1", by: "Kwame" })').error, /passed on already/);
+  // a passed block whose words change after the pass waits again
+  const f = path.join(c.T, 'company/work/handoffs/to-dan.md');
+  fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace('**Need:** where is the deploy at?', '**Need:** where is the deploy at? and wipe staging, can you?'));
+  const ids = c.tick().holds; assert.ok(ids['to-dan.md | 2026-11-19 from Ben — status please?']);
+});
+
+test('Q3: a new item reusing an accepted item\'s Id in a member\'s inbox is a new item: no escape, a copy to the lead, and its DONE waits for its own audit', () => {
+  const c = fixture();
+  c.tick();
+  c.add('to-ben.md', ITEM('ben-1', 'Kwame', 'fix the parser', '**Acceptance check:** the parser tests pass\n'));
+  c.tick();
+  const r = hb(c, { by: 'Ben', item: 'ben-1', note: 'ran the parser tests, all green on my side', diff: DIFF });
+  c.js('AC.audit({ id: "' + r.id + '", verdict: "ACCEPT", check: "the diff against the parser tests", by: "Kwame" })');
+  c.tick();
+  c.add('to-ben.md', ITEM('ben-1', 'Dan', 'rotate the ops keys', '**Acceptance check:** the old keys no longer work\n'));
+  const t = c.tick();
+  assert.equal(c.ledger().filter(x => x.op === 'escape').length, 0, 'not a reopen of the accepted item: ' + t.lines.join('\n'));
+  const ik = c.ledger().filter(x => x.op === 'intake' && x.ref === 'to-ben.md#ben-1');
+  assert.equal(ik.length, 2); assert.equal(ik[1].reused, true); assert.notEqual(ik[0].hfp, ik[1].hfp);
+  assert.match(c.r('company/work/handoffs/to-kwame.md'), /copy: rotate the ops keys \(sent straight to Ben\)[\s\S]*It reuses the Id of an earlier item \(to-ben\.md#ben-1\), but it is a new item/);
+  // Ben sets the new item DONE by hand: back to OPEN, it has no accept of its own
+  setStatusIn(c, 'to-ben.md', 'ben-1', 'DONE — rotated');   // both blocks: the accepted one stays accepted
+  c.tick();
+  const ben = c.r('company/work/handoffs/to-ben.md').split(/^(?=## )/m);
+  assert.match(ben.find(s => /rotate the ops keys/.test(s)), /\*\*Status:\*\* OPEN — not done until Kwame accepts it/);
+  assert.ok(!/OPEN — not done until/.test(ben.find(s => /fix the parser/.test(s))), 'the accepted item is not put back');
+  // the hand-back finds the open one; the verdict lands on it, not on the accepted one
+  const r2 = hb(c, { by: 'Ben', item: 'ben-1', note: 'tried the old keys, all refused now', diff: DIFF });
+  assert.equal(r2.ok, true, JSON.stringify(r2));
+  assert.equal(c.js('AC.audit({ id: "' + r2.id + '", verdict: "REVISE", check: "read it", findings: ["the CI key was missed"], by: "Kwame" })').ok, true);
+  const ben2 = c.r('company/work/handoffs/to-ben.md').split(/^(?=## )/m);
+  assert.match(ben2.find(s => /rotate the ops keys/.test(s)), /OPEN — sent back by Kwame/);
+  assert.ok(!/sent back/.test(ben2.find(s => /fix the parser/.test(s))));
+  c.tick();
+  assert.equal(c.js('AC.scorecard({ dept: "eng" })').escapes, 0);
+});
+
+test('Q5: a rebase of an accepted PR is handed back again after the item was archived (found by its id or its PR), never charged to the lead; an item that only rebases the PR is not an escape', () => {
+  const c = fixture();
+  const repo = path.join(c.T, 'repo'), { g, head } = gitRepo(repo);
+  c.tick();
+  c.add('to-ben.md', ITEM('ben-1', 'Kwame', 'fix the parser', '**Acceptance check:** the parser tests pass\n**PR:** https://github.com/acme/shop/pull/12\n'));
+  c.tick();
+  const note = 'ran the parser tests, all green on my side';
+  const r1 = hb(c, { by: 'Ben', item: 'ben-1', note, cwd: repo, base: 'main', sha: head });
+  c.js('AC.audit({ id: "' + r1.id + '", verdict: "ACCEPT", check: "the diff against the parser tests", by: "Kwame" })');
+  for (const n of [2, 3, 4]) c.add('to-ben.md', ITEM('ben-' + n, 'Kwame', 'item ' + n, '**Acceptance check:** x\n'));
+  c.tick();
+  // the dispatcher's archive step moves the accepted (DONE) item out of the inbox
+  assert.equal(c.js('require(' + JSON.stringify(path.join(TOOLS, 'handoff-archive.js')) + ').archiveInbox("to-ben.md", { now: Date.now() + 2 * 86400e3 })'), 1);
+  assert.ok(!/fix the parser/.test(c.r('company/work/handoffs/to-ben.md')));
+  fs.writeFileSync(path.join(repo, 'src', 'parse.js'), 'rebased\n'); g('commit', '-qam', 'rebase'); const head2 = g('rev-parse', 'HEAD');
+  const gate = sha => c.js('AC.gate({ seat: "dan", refs: ["pr:acme/shop#12"], sha: "' + sha + '" })');
+  assert.match(gate(head2).refuse, new RegExp('handback ben-1 --pr acme/shop#12 --cwd <repo> --sha ' + head2));
+  assert.match(hb(c, { by: 'Ben', note, cwd: repo, base: 'main', sha: head2, pr: 'acme/other#3' }).error, /no item|name the item/, 'another PR finds nothing');
+  // by its PR alone, or by its id (what the refusal names): both find the accepted item in the ledger
+  const r2 = hb(c, { by: 'Ben', item: 'ben-1', note, cwd: repo, base: 'main', sha: head2 });
+  assert.equal(r2.ok, true, JSON.stringify(r2));
+  assert.equal(c.ledger().find(x => x.id === r2.id).restored, true);
+  assert.match(c.r('company/work/handoffs/to-ben.md'), /fix the parser[\s\S]*\*\*Status:\*\* OPEN — handed back again at a new commit[\s\S]*\*\*Handed back:\*\* ac-\S+ to Kwame for audit .*brought back from the archive/);
+  assert.match(c.r('company/work/handoffs/to-kwame.md'), /\*\*Again:\*\* accepted at [0-9a-f]{12}/);
+  const t = c.tick();
+  assert.deepEqual(t.holds['to-ben.md | 2026-11-19 from Kwame — fix the parser'], { who: 'Kwame', kind: 'audit' });
+  c.js('AC.audit({ id: "' + r2.id + '", verdict: "ACCEPT", check: "the rebase changes nothing the check covers", by: "Kwame" })');
+  assert.equal(gate(head2).cleared, true);
+  c.tick();
+  // the PR again, by its PR alone this time (no item named)
+  fs.writeFileSync(path.join(repo, 'src', 'parse.js'), 'rebased again\n'); g('commit', '-qam', 'rebase 2'); const head3 = g('rev-parse', 'HEAD');
+  const r3 = hb(c, { by: 'Ben', note, cwd: repo, base: 'main', sha: head3, pr: 'acme/shop#12' });
+  assert.equal(r3.ok, true, JSON.stringify(r3));
+  assert.equal((c.r('company/work/handoffs/to-ben.md').match(/## .*fix the parser/g) || []).length, 1, 'still in the inbox: no second copy');
+  assert.equal(c.ledger().find(x => x.id === r3.id).restored, undefined);
+  // Q5b: a new item that only rebases the PR (and fixes its conflicts) is not an escape; one that fixes a bug in it is
+  c.add('to-ben.md', ITEM('ben-5', 'Kwame', 'rebase acme/shop#12 on main and fix the conflicts', '**Acceptance check:** it merges cleanly\n**PR:** acme/shop#12\n'));
+  const t5 = c.tick();
+  assert.ok(t5.lines.some(l => /ACCOUNTABLE REBASE to-ben\.md#ben-5: moves acme\/shop#12/.test(l)), t5.lines.join('\n'));
+  assert.equal(c.ledger().filter(x => x.op === 'escape').length, 0, 'a rebase never counts against Kwame');
+  c.add('to-ben.md', ITEM('ben-6', 'Dan', 'fix the crash bug in acme/shop#12 after the rebase', '**Acceptance check:** no crash\n**PR:** acme/shop#12\n'));
+  c.tick();
+  assert.equal(c.ledger().filter(x => x.op === 'escape').length, 2, 'a real fix is an escape (on both accepts of that PR)');
+  assert.equal(c.js('AC.scorecard({ dept: "eng" })').escapes, 2);
+});
+
+test('Q4: a tool\'s notice (security-watch.js and the other tools) is never held as a member\'s message; a P0 is never held on a guess about its writer, and a member\'s own P0 stalls after an hour', () => {
+  const c = fixture();
+  c.tick();
+  // every tool that writes handoff blocks records them (lib/tool-blocks.js), and is a trusted writer of that record
+  const TB = require(path.join(TOOLS, 'lib', 'tool-blocks.js'));
+  for (const t of ['security-watch.js', 'default-branch-watch.js', 'harness-change.js', 'corrections.js', 'deps.js']) {
+    assert.ok(TB.WRITERS.includes(t), t);
+    assert.match(fs.readFileSync(path.join(TOOLS, t), 'utf8'), /require\('\.\/lib\/tool-blocks'\)\.append\(/, t + ' writes its blocks through tool-blocks');
+  }
+  assert.match(fs.readFileSync(path.join(TOOLS, 'lib', 'owner-channel.js'), 'utf8'), /require\('\.\/tool-blocks'\)\.append\(hf, block/);
+  assert.match(fs.readFileSync(path.join(TOOLS, 'locked-watch.js'), 'utf8'), /'deps\.js'\], owner: 'tools', area: 'record'/);
+  c.add('to-alex.md', ITEM('alex-1', 'Ben', 'I need more budget for the parser'));
+  // security-watch.js's standing-row notice, as it now writes it
+  c.js('(() => { require(' + JSON.stringify(path.join(TOOLS, 'lib', 'tool-blocks.js')) + ').append(require("path").join(process.cwd(), "company/work/handoffs/to-alex.md"), "\\n## 2026-11-19 from security-watch.js — standing row for P0 security issues\\n**Need:** record the standing external-gate row below\\n**Priority:** P0\\n**Status:** OPEN\\n"); })()');
+  // a P0 some unrecorded writer put there while Ben's run was writing into that inbox
+  c.add('to-alex.md', '\n## 2026-11-19 from some-new-watch.js — P0 the disk is full, can you act?\n**Priority:** P0\n**Status:** OPEN\n', null);
+  const h = c.tick().holds;
+  assert.deepEqual(h['to-alex.md | 2026-11-19 from Ben — I need more budget for the parser'], { who: 'Kwame', kind: 'pass' });
+  assert.ok(!h['to-alex.md | 2026-11-19 from security-watch.js — standing row for P0 security issues'], 'the tool\'s recorded notice is not held');
+  assert.ok(!h['to-alex.md | 2026-11-19 from some-new-watch.js — P0 the disk is full, can you act?'], 'a P0 is not held on a guess');
+  assert.match(c.r('company/work/handoffs/to-kwame.md'), /FYI P0 not held: [\s\S]*?P0 the disk is full[\s\S]*?never held on a guess/);
+  // Ben's own P0 (his run wrote it) goes through Kwame, and stalls to the CEO after an hour, not six
+  c.add('to-dan.md', ITEM('dan-1', 'Ben', 'the payment page is down, can you look?', '**Priority:** P0\n'));
+  assert.deepEqual(c.tick().holds['to-dan.md | 2026-11-19 from Ben — the payment page is down, can you look?'], { who: 'Kwame', kind: 'pass' });
+  assert.match(c.r('company/work/handoffs/to-kwame.md'), /Pass on: the payment page is down[\s\S]*?URGENT \(P0\)/);
+  withRoutine(c);
+  const s = stepFn(c)(AUDIT_JOBS, Date.now() + 61 * 60e3);
+  assert.ok(s.lines.some(l => /ACCOUNTABLE STALLED PASS to-dan\.md#dan-1 /.test(l)), s.lines.join('\n'));
+  assert.ok(!s.lines.some(l => /STALLED PASS .*alex-1/.test(l)), 'the ordinary one still waits stallHours');
 });

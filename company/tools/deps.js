@@ -259,7 +259,7 @@ function askForRegistryRow() {
   appendHandoff(ceo.inbox, '## ' + nowIso() + ' from deps.js — standing network rows for the package registries\n**Need:** record the three standing external-gate rows below (one per registry host) from your own run, so the crew can install packages through deps.js.\n' +
     '**Why:** deps.js asks the external gate before it reaches a registry; with no row it refuses every install.\n**Deadline:** today\n**Status:** OPEN\n**Evidence:** ' + rel(F.justification) + '\n' + cmds + '\n\n');
 }
-function appendHandoff(inbox, text) { const f = P('company', 'work', 'handoffs', inbox); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, text); }
+function appendHandoff(inbox, text) { const f = P('company', 'work', 'handoffs', inbox); fs.mkdirSync(path.dirname(f), { recursive: true }); require('./lib/tool-blocks').append(f, text); }   // recorded (lib/tool-blocks.js)
 function fyiRisk(title, lines) {
   const r = riskSeat(); if (!r || !r.inbox) return;
   appendHandoff(r.inbox, '## ' + nowIso() + ' from deps.js — FYI: ' + title + '\n**Need:** nothing unless it was not meant.\n' + (lines || []).map(l => l + '\n').join('') + '**Deadline:** none\n**Status:** DONE — FYI\n**Evidence:** company/state/deps.json\n\n');

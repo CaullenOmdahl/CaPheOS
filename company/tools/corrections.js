@@ -614,7 +614,7 @@ function handoffText(ctx, heading, fields) {
 function writeHandoff(ctx, inbox, text) {
   const f = path.join(ctx.paths.handoffs, inbox);
   if (!path.resolve(f).startsWith(path.resolve(ctx.paths.handoffs) + path.sep)) throw new Error('bad inbox ' + inbox);
-  fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, text);
+  fs.mkdirSync(path.dirname(f), { recursive: true }); require('./lib/tool-blocks').append(f, text);   // recorded (lib/tool-blocks.js)
 }
 const ruleLine = c => fullLine(c).slice(2);
 const evidenceList = (list, n) => list.slice(0, n).map(e => e.ref).join('; ') + (list.length > n ? '; +' + (list.length - n) + ' more' : '');

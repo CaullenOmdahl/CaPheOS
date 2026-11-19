@@ -400,7 +400,12 @@ the recorded sha is git's full one, and the packet's diff is git's `<base>...<sh
 in. The PR must name its repository (`owner/repo#12` or the PR's URL); a bare `#12` is read in `--cwd`'s GitHub `origin`,
 and refused when there is none, so the accept always matches the PR the merge gate sees. An item already accepted for a
 PR is handed back again when that PR gets a new commit (a rebase, a conflict fix): same PR, a different `--sha`, no reopen
-and no escape; the packet says `**Again:**` with the commit it was accepted at. The packet shows the lead what the member chose: the folder the checks ran in (`--cwd`), and any change to the
+and no escape; the packet says `**Again:**` with the commit it was accepted at. This works also once the item has been
+archived (`handoff-archive.js` moves a DONE section out after 3 hours): `handback <item id> --pr .. --cwd .. --sha <new head>`,
+or `--pr` alone, finds the accepted hand-back in the ledger, brings the section back into the inbox (from the archive, or
+rebuilt from the ledger) and audits the new commit. A new item that only moves the same PR to a new commit (it names the
+PR and asks to rebase it or fix its merge conflicts, with no `**Fixes:**` line and no other fix words) is not an escape;
+one that fixes a bug in it is. The packet shows the lead what the member chose: the folder the checks ran in (`--cwd`), and any change to the
 item's check command or acceptance check since it came in (the `intake` row).
 
 **4. The binding audit.** A passing hand-back puts one `## Audit:` block in the lead's inbox (at most `packetMaxChars`, the
@@ -419,8 +424,10 @@ holds, in live:
   in the PR or a commit; a `(Ben)` commit subject; a commit's git author name; the author's login when loops.json gives the
   seat a `github`). The CEO, a seat in another department or the lead merging it changes nothing. It merges only with an
   ACCEPT whose hand-back named that PR at exactly that head commit; a merge with no commit named, or a later commit, needs
-  a new hand-back of the same item at the new head. A PR that names no member anywhere is not recognised as a member's.
-  Recording only allows and says it would refuse.
+  a new hand-back of the same item at the new head (the refusal names the exact `handback` command). A PR that names no
+  member anywhere is not recognised as a member's. When the PR cannot be read (`gh pr view` failed), a department in live
+  refuses the merge until it can be (fail closed) and the dispatch log says `ACCOUNTABLE GATE … could not read who made it`;
+  recording only lets it through with the same log line. Recording only allows and says it would refuse.
 - **the onward handoff** (5, below).
 
 **Which model audits.** Routine audits run on `accountable.audit.routine`, risky ones on `accountable.audit.risky`; `null`
@@ -475,6 +482,21 @@ is in a member's inbox), and a block that names nobody is held when a member's r
 it appeared. A held block that waits `stallHours` goes to the CEO like a waiting audit (`stalled` row with `kind: pass`,
 and the owner when the cause is the owner's); the CEO may then pass it on or return it in the lead's place
 (`pass <ref> [--return --why ..] --by <CEO>`, recorded `inPlaceOf`), never before.
+A pass or return is for the block's words, not only its ref (the `**Id:**` line, or a hash of the heading, which anyone can
+reuse): the `pass` and `return` rows carry `fp`, a fingerprint of the block less its status and the lines the tools add. A
+new block under a passed Id or heading, and a passed block whose words changed since, are held again (the lead's `Pass on:`
+block says so, and names the block with `--block <fp>` when two share the ref). The stall is worked out from the holds the
+dispatcher recorded, not from the lead's `Pass on:` block: a `Pass on:` block set DONE by hand with no recorded pass or
+return goes back to OPEN once per closing (`ACCOUNTABLE PASS-ON REOPENED`), and a held message reaches the CEO after
+`stallHours` even if that block was closed or deleted. The same holds in a member's inbox: the intake, the hand-back and the
+audit carry the item's heading fingerprint (`hfp`), so a new item under an accepted item's Id is a new item (its own intake,
+copy and audit), never a reopen charged to the lead.
+The company's tools that write handoff blocks (the dispatcher and its tools, `security-watch.js`, `default-branch-watch.js`,
+`harness-change.js`, `corrections.js`, `deps.js`, the owner channel check) record them in `tool-blocks.jsonl`, so their
+notices are never held as a member's message. A **P0** block (`**Priority:** P0`) is never held on a guess about its writer
+(a heading's claim, or a member's run writing into that inbox at the time): it goes through and the lead gets an FYI. A P0
+that a member's run is seen writing is held for the lead like any other, and goes to the CEO after one hour, not
+`stallHours`.
 
 **6. The scorecard on the lead.** `accountable.js status [--dept <id>] [--json]`, the department card ("How the team is
 doing", `GET /api/departments/<id>/scorecard`) and the people function's review of the lead read the same numbers over

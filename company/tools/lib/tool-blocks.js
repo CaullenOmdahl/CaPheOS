@@ -16,7 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const WRITERS = ['dispatch.js', 'accountable.js', 'approvals.js', 'competence.js', 'routing.js', 'consult.js', 'departments.js', 'settle.js', 'dispatcher-loop.js'];
+const WRITERS = ['dispatch.js', 'accountable.js', 'approvals.js', 'competence.js', 'routing.js', 'consult.js', 'departments.js', 'settle.js', 'dispatcher-loop.js', 'security-watch.js', 'default-branch-watch.js', 'harness-change.js', 'corrections.js', 'deps.js'];
 const ledgerOf = root => path.join(root, 'company', 'state', 'tool-blocks.jsonl');
 const rootOfInbox = file => path.resolve(path.dirname(path.resolve(file)), '..', '..', '..');
 // the provenance writer name: the running tool when it is one of ours, else the dispatcher (a tool's library in its process)

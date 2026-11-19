@@ -246,7 +246,7 @@ function handoff(ctx, p, heading, fields, dry) {
   const inbox = inboxOf(ctx, p); if (!inbox) return null;
   const block = '\n## ' + stamp(ctx.now) + ' from ' + TOOL_NAME + ' (company/tools/harness-change.js) — ' + flat(heading) + '\n' +
     Object.entries(fields).map(([k, v]) => '**' + k + ':** ' + flat(v)).join('\n') + '\n';
-  if (!dry) { const f = path.join(ctx.paths.handoffs, inbox); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, block); }
+  if (!dry) { const f = path.join(ctx.paths.handoffs, inbox); fs.mkdirSync(path.dirname(f), { recursive: true }); require('./lib/tool-blocks').append(f, block); }   // recorded (lib/tool-blocks.js)
   return inbox;
 }
 // the owner has no handoff file: a crew handoff meant for them (a change they proposed was applied, rejected or is due a
