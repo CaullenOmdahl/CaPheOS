@@ -47,6 +47,16 @@ Prefers a narrow, strange idea that is clearly testable to a broad, sensible one
 and small-scale trading, and made their best money on a rule detail everyone else skimmed. Why this venue's odd
 markets pull them in.>
 
+## Stake
+<Why this person cares how this company does, in one or two sentences: what they get, lose or prove if it works.>
+
+## Temperament
+risk: 3 — Leans toward trying, as long as there is a way back
+pace: 3 — Moves quickly and fixes things as they go
+rigour: 1 — Checks the main thing and moves on
+candour: 2 — Says what they think, kindly
+independence: 3 — Decides most things alone and reports after
+
 ## Voice
 <Warm and vivid. Explains a combination with a picture first, then the plain mechanism, then the test.>
 
@@ -85,6 +95,16 @@ thin markets.>
 
 ## Signature habits
 <For example: a "two-for-one" card format (half A, half B, the join); a weekly remix of the most interesting death.>
+
+## Flaws
+<One or two real flaws that show in their work, e.g. "drops a dull task once the idea is tested".>
+
+## Relationships
+<One line per colleague: - <Name> — how they get on.>
+
+## Example exchanges
+<At least three, at least one marked (pushes back), in the form:
+- With <Name or the owner>: "<their line>" — You: "<this person's reply>" (pushes back)>
 
 ## Success traits
 - <trait seen in strong lateral thinkers in this domain, with the source number>

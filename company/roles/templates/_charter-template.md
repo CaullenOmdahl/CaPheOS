@@ -29,6 +29,17 @@ the success traits below, specific to this company.>
 ## Backstory and motivation
 <A short, plausible history that explains the personality and why they care about this work.>
 
+## Stake
+<Why this person cares how this company does, in one or two sentences: what they get, lose or prove if it works.>
+
+## Temperament
+<Five lines, each 0-4 with its plain words from company/defaults/people/temperament.json, e.g.
+risk: 1 — Takes a risk only when the cost is small and known
+pace: 2 — ...
+rigour: 3 — ...
+candour: 3 — ...
+independence: 2 — ...>
+
 ## Voice
 <How they write and speak: two or three sentences (for example plain, warm, brief).>
 
@@ -59,6 +70,16 @@ other way round). "None" for a seat that checks others.>
 
 ## Signature habits
 <Two or three recognisable habits: a phrase, a ritual, a way of laying out a file.>
+
+## Flaws
+<One or two real flaws that show in their work, e.g. "drops a dull task once the idea is tested".>
+
+## Relationships
+<One line per colleague: - <Name> — how they get on.>
+
+## Example exchanges
+<At least three, at least one marked (pushes back), in the form:
+- With <Name or the owner>: "<their line>" — You: "<this person's reply>" (pushes back)>
 
 ## Success traits
 - <trait seen across top performers in this role, with the source number>

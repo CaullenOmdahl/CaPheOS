@@ -12,8 +12,13 @@
  *                                        [--provider <p> --model <model>] [--effort high]   (no model given: model-policy.json candidateDefault; the hire keeps the interviewed model)
  *        The profile is that candidate's personality written as an ideal candidate for the role, in the charter's
  *        headings (company/roles/templates/_charter-template.md: Personality, Backstory and motivation, Voice, Persona
- *        preset, Archetype, Convictions, Will not do, Takes care of unprompted, Where you look, Counterpart, Blind spots, Signature
- *        habits). The hired candidate's profile becomes part of their charter, every section it wrote.
+ *        preset, Archetype, Stake, Temperament (five lines "risk: 0-4 — <plain words>"), Convictions, Will not do, Takes care of
+ *        unprompted, Where you look, Counterpart, Blind spots, Signature habits, Flaws, Relationships, Example exchanges (at
+ *        least 3, one marked "(pushes back)")). The hired candidate's profile becomes part of their charter, every section it
+ *        wrote, and their full profile (company/people/profiles/<id>.json, version 1, written through profile.js;
+ *        docs/PROFILES.md). An eager candidate (scout, combiner, contrarian) whose ## Counterpart names nobody on the crew
+ *        is refused at pick; a pick that would put half the crew or more on one persona preset gets a mix warning in the
+ *        scorecard (open warns the same for its --template).
  *                                        [--skin <skin>] [--persona composed|warm|blunt|dry|upbeat]   (no --persona: the profile's
  *                                        preset, else its ## Archetype's: scout upbeat, combiner warm, contrarian blunt, tester dry ...)
  *        (no --skin: a free company candidate skin <slug>_candidate_*, else the station's default body DATA.DEFAULT_SKIN)
@@ -648,13 +653,19 @@ function recordPick(dir, slug, p) {
   const cand = (round.candidates || []).find(c => c.agentId === p.agentId && c.status === 'candidate');
   if (!cand) out(2, { ok: false, error: p.agentId + ' is not an active candidate in ' + slug + ' (one of: ' + (round.candidates || []).filter(c => c.status === 'candidate').map(c => c.agentId).join(', ') + ')' });
   if (!isInterviewed(dir, cand)) out(2, { ok: false, error: cand.name + ' has not finished the interview' });
+  // an eager hire (scout, combiner, contrarian) is gated by a conservative counterpart already on the crew: its profile must
+  // name one (## Counterpart), or the pick is refused and the people function writes it first (docs/PROFILES.md)
+  const profTxt = cand.profile ? readIf(path.resolve(ROOT, cand.profile), 20000) : '';
+  { const cpe = counterpartProblem(profTxt, cand.name); if (cpe) out(2, { ok: false, error: cpe }); }
+  const mixWarn = mixWarning(profileLib.presetFor(profTxt) || cand.persona || '');
   const at = new Date().toISOString();
   const pick = { agentId: p.agentId, name: cand.name, by: p.by, why: String(p.why || '').slice(0, 1000), at, via: p.via || 'hire.js pick',
     title: p.title || round.title || round.role, functions: p.functions || round.functions || null, template: p.template || round.template || null, access: p.access || null, officeName: p.name || null,
     approved: p.by + ', ' + (p.via || 'hire.js pick') + ' ' + stamp() + ' (company/hiring/' + slug + '/scorecard.md)' };
   mutateRound(dir, r => { r.pick = Object.assign({}, r.pick && r.pick.agentId === p.agentId ? r.pick : {}, pick); delete r.pick.waitingOwner; });
   const card = path.join(dir, 'scorecard.md');
-  fs.appendFileSync(card, (fs.existsSync(card) ? '\n' : '# Scorecard — ' + round.role + '\n') + '\n## Pick ' + stamp() + '\n\n' + p.by + ' picked **' + cand.name + '** (`' + p.agentId + '`): ' + (pick.why || '(no reason given)') + '\n');
+  fs.appendFileSync(card, (fs.existsSync(card) ? '\n' : '# Scorecard — ' + round.role + '\n') + '\n## Pick ' + stamp() + '\n\n' + p.by + ' picked **' + cand.name + '** (`' + p.agentId + '`): ' + (pick.why || '(no reason given)') + '\n' + (mixWarn ? '\n**Crew mix warning:** ' + mixWarn + '\n' : ''));
+  if (mixWarn) logLine(dir, 'MIX WARNING: ' + mixWarn);
   const dec = co.p('company', 'work', 'decisions.md');
   try { if (!fs.existsSync(dec)) fs.writeFileSync(dec, '# Decisions\n\n'); fs.appendFileSync(dec, '- ' + stamp() + ' ' + p.by + ' picked **' + cand.name + '** as **' + pick.title + '** (round `' + slug + '`, ' + pick.via + '): ' + (pick.why || 'see the scorecard').replace(/\s+/g, ' ').slice(0, 400) + '\n'); } catch (_) {}
   logLine(dir, 'PICK ' + cand.name + ' (' + p.agentId + ') by ' + p.by + ' via ' + pick.via + ': ' + (pick.why || '').replace(/\s+/g, ' ').slice(0, 200));
@@ -662,6 +673,24 @@ function recordPick(dir, slug, p) {
   return pick;
 }
 
+// an eager profile (archetype scout, combiner or contrarian) must name a counterpart on the crew in ## Counterpart; null when fine
+function counterpartProblem(profTxt, candName) {
+  const a = profileLib.archetypeOf(profTxt); if (!a || !profileLib.ARCHETYPES[a].eager) return null;
+  const crew = co.crew(), cp = sec(profTxt, 'Counterpart').replace(/<[^>]*>/g, '').trim();
+  const seat = cp ? profileLib.seatByName(cp, crew, null) : null;
+  if (seat) return null;
+  const people = nameOf(co.seatFor('people')) || 'the people function';
+  return (candName || 'This candidate') + ' is an eager seat (' + a + ') and their profile ' + (cp ? 'names nobody on the crew' : 'names no counterpart') + ' to check them: ' + people + ' writes ## Counterpart (a crew member, ideally a careful tester or steward) into the profile before the pick';
+}
+// the crew's temperament mix with one more seat of this preset: the warning when 50% or more would share one preset
+function mixWarning(preset) {
+  if (!preset) return null;
+  const crew = co.crew(), D = (() => { try { return require('./dossier.js'); } catch (_) { return null; } })();
+  const seats = Object.keys(crew).map(id => { let ch = ''; try { const f = D ? D.charterFile(crew[id], id) : null; ch = f && fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : ''; } catch (_) {} return { preset: profileLib.presetFor(ch), archetype: profileLib.archetypeOf(ch) }; });
+  seats.push({ preset, archetype: '' });
+  const n = seats.length, same = seats.filter(x => x.preset === preset).length;
+  return n >= 4 && same / n >= 0.5 ? 'with this hire ' + same + ' of ' + n + ' seats share the "' + preset + '" preset: the next hire should have a different temperament' : null;
+}
 // finish a recorded pick: hire (desk, loop routine with the company folder blessed + workbench grant + workdir, inbox,
 // dossier, under the hiring governance level), release the others, give the new seat its first OPEN handoff so the
 // dispatcher's inbox wake starts its first run in the same tick
@@ -998,6 +1027,11 @@ async function hire(a) {
   let moved = null;
   if (a.functions && a.functions !== true) moved = moveFunctions(loops, agentId, a.functions);
   writeJson(LOOPS, loops);
+  // the seat's full profile (company/people/profiles/<id>.json, docs/PROFILES.md), written through profile.js from the
+  // candidate's profile md: version 1, by hire.js; its counterpart from ## Counterpart, its examples from ## Example exchanges
+  let profile = null;
+  try { const prof = cand.profile ? readIf(path.resolve(ROOT, cand.profile), 20000) : ''; profile = require('./profile.js').fromHire({ seat: agentId, md: prof, by, round: round.slug, decision: false }); }
+  catch (e) { profile = { error: e.message }; staffLog('PROFILE not written for ' + display + ' (' + agentId + '): ' + e.message); }
   if (moved && moved.take.length) {
     const fromTxt = Object.entries(moved.from).map(([id, fs_]) => (nameOf(id) || id) + ': ' + fs_.join(', ')).join('; ') || 'nobody held them';
     staffLog('FUNCTIONS ' + moved.take.join(', ') + ' moved to ' + display + ' (' + agentId + ') from ' + fromTxt + ' by ' + by + ' (approved: ' + approved + ')');
@@ -1045,7 +1079,7 @@ async function hire(a) {
   try { const F = require('./station-floor.js'); deskCheck = F.checkDesk(F.env(doc).WorldModel.deserialize(doc.station), agentId, { rows: C.rows(doc), name: display, title }); }
   catch (e) { deskCheck = { ok: false, desk: null, problems: [{ code: 'CHECK_FAILED', msg: 'The desk check could not run (' + String(e.message).slice(0, 160) + '); run `node company/tools/station-floor.js audit`.' }] }; }
   fs.appendFileSync(path.join(HANDOFFS, fnInbox('floor')), deskHandoff(deskCheck, { title, display, roomId: desk && desk.roomId, slug: round.slug }));
-  return { ok: true, agentId, name: officeName, title, access, modelChain: chain ? chain.map(e => e.provider + '/' + e.model) : null, desk: desk && desk.ok ? desk.roomId : null, deskCheck: deskCheck.ok ? 'ok' : deskCheck.problems.map(p => p.code).join(','), loop: jj.ok ? (jj.job && jj.job.id) : ('failed: ' + job.body.slice(0, 160)), role: path.relative(ROOT, roleFile), inbox: path.relative(ROOT, inboxFile), functions: moved ? moved.take : [], functionsFrom: moved ? moved.from : {},
+  return { ok: true, agentId, name: officeName, title, access, profile: profile || undefined, modelChain: chain ? chain.map(e => e.provider + '/' + e.model) : null, desk: desk && desk.ok ? desk.roomId : null, deskCheck: deskCheck.ok ? 'ok' : deskCheck.problems.map(p => p.code).join(','), loop: jj.ok ? (jj.job && jj.job.id) : ('failed: ' + job.body.slice(0, 160)), role: path.relative(ROOT, roleFile), inbox: path.relative(ROOT, inboxFile), functions: moved ? moved.take : [], functionsFrom: moved ? moved.from : {},
     stationPage: pageOpen ? (reloaded === 'reloaded' ? 'was open; reloaded so it shows the hire' : reloaded === 'busy' ? 'is open with a conversation in progress; it shows the hire after its next reload' : 'is open and could not be reloaded') : 'closed; prompts updated directly', promptsSynced: synced.filter(x => !/via:page/.test(String(x))) };
 }
 
@@ -1319,9 +1353,12 @@ async function selftest() {
     // the hire's loop cadence (else every 2 hours): an idea seat that reads the web twice a day need not wake twelve times
     if (a.schedule && a.schedule !== true) { if (String(a.schedule).trim().split(/\s+/).length !== 5) out(2, { ok: false, error: '--schedule is a five-field cron expression, for example "30 7,19 * * *"' }); round.schedule = String(a.schedule).trim(); }
     if (a['pick-rule'] === 'scores') round.pickRule = { type: 'scores', file: 'scores.json', min: Number.isFinite(Number(a.min)) ? Number(a.min) : 3.5, setBy: round.openedBy };
+    // the crew's mix: a template whose preset would make half the crew one temperament is warned about now and in the scorecard
+    { const tp = round.template ? profileLib.presetFor(readIf(path.join(TEMPLATES, round.template.replace(/\.md$/, '') + '.md'), 60000)) : ''; const mw = mixWarning(tp); if (mw) round.mixWarning = mw; }
     saveRound(dir, round);
     fs.writeFileSync(path.join(dir, 'log.md'), '# Hiring round ' + slug + ': ' + round.role + '\n\n');
     logLine(dir, 'OPENED by ' + round.openedBy + (round.request ? ': ' + round.request : ''));
+    if (round.mixWarning) { logLine(dir, 'MIX WARNING: ' + round.mixWarning); fs.writeFileSync(path.join(dir, 'scorecard.md'), '# Scorecard — ' + round.role + '\n\n**Crew mix warning:** ' + round.mixWarning + '\n', { flag: 'a' }); }
     out(0, { ok: true, round: slug, dir: path.relative(ROOT, dir), next: ['research.md', 'role-spec.md', 'model-fit.md', 'interview.md', 'scorecard.md', 'profiles/<name>.md for up to three candidates', 'then the round advances on its own (hire.js advance, run by the dispatcher each tick); the pick comes back to ' + pickSeats(round).map(co.nameOf).join(' and ') + ' as a handoff'] });
   }
   if (a.cmd === 'candidate') out(0, await createCandidate(a));
