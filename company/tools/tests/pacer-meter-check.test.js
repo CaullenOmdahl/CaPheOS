@@ -189,6 +189,20 @@ test('no check when it would be pointless or not allowed: disabled, a real usage
   assert.equal(st2.runs.length, 1);
 });
 
+test('the 95% stop: no check while the last reading is at the stop and its week has not reset; after the reset, one check', async () => {
+  const atStop = [{ id: 'seven_day', label: 'week', usedPct: 96, resetsAt: CLAUDE_RESET, status: 'allowed_warning' }, INCIDENT_WINDOWS[1]];
+  let fx = fixture({ windows: atStop }), clock = { t: T0 }, st = station(fx, clock), h = make(fx, st, clock);
+  let m = await tick(h);
+  assert.equal(st.runs.length, 0, 'the weekly meter only rises: a check could not reopen it, so none is spent past the stop');
+  assert.equal(m.claude.open, false);
+  clock.t = CLAUDE_RESET + 5 * MIN; await tick(h);
+  assert.equal(st.runs.length, 1, 'a new week: the old reading says nothing, so one check');
+  // with the spendCap guardrail off the stop holds nothing: the check runs
+  fx = fixture({ windows: atStop }); clock = { t: T0 }; st = station(fx, clock); h = make(fx, st, clock, { guards: { spendCap: false } });
+  await tick(h);
+  assert.equal(st.runs.length, 1, 'spendCap off: checked');
+});
+
 test('MiniMax: a stale reading heals through its own plan poll (no owner step), and a failing poll is retried each poll period', async () => {
   const fx = fixture({ seenAt: T0 - 5 * MIN });
   const reading = { at: T0 - 3 * HOUR, usedPct: 40, weekStart: T0 - 2 * DAY, weekEnd: T0 + 5 * DAY, fiveHourLeftPct: 80, fiveHourEnd: T0 + HOUR };

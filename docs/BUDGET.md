@@ -247,7 +247,9 @@ Now the pacer gets out of it by itself (`pacing-policy.json` `claude.meterCheck`
   sees a fresh reading.
 - **At most once per `staleAfterMin`**, one at a time, in a detached child (`pacer.js meter-check`) so it never holds the
   tick. Not under a halt, not while a usage-limit closure still holds (its reset reopens Claude), not after the owner
-  reopened Claude (the runs refresh it), never from `status`/`plan` (they only look). It runs in shadow mode too: it
+  reopened Claude (the runs refresh it), never from `status`/`plan` (they only look), and not while the last reading
+  is at the weekly stop (`weekCloseAtUsedPct`) before its week resets: the weekly meter only rises, so a check could
+  not reopen Claude and would only spend a run past the owner's stop (with the spendCap guardrail off it checks). It runs in shadow mode too: it
   measures, it changes nothing.
 - **While it runs Claude stays closed** ("a meter check is under way"). A check **refused for usage** is a real reading:
   "rejected" (source `meter check`), Claude stays closed, and it is checked again after `staleAfterMin`. A check that

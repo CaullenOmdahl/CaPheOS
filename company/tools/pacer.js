@@ -619,6 +619,9 @@ function makePacer(o) {
     if (mc && isNum(mc.at) && t - mc.at < policy.claude.staleAfterMin * MIN) return out;    // at most once per staleAfterMin
     const cl = st.closures && st.closures.claude; if (cl && cl.until > t) return out;       // closed by a real limit: its reset reopens it
     const ro = st.reopened && st.reopened.claude; if (r && ro && Number(ro.at) > Number(r.at)) return out;   // the owner reopened it: runs refresh it
+    // at the week's stop: the weekly meter only rises, so before its reset a check could only say "still closed" and would
+    // spend a run past the owner's stop for nothing. (With the spendCap guardrail off the stop holds nothing: check.)
+    if (r && isNum(r.usedPct) && r.usedPct >= policy.claude.weekCloseAtUsedPct && isNum(r.resetsAt) && r.resetsAt > t && gov.guard('spendCap', govOpts)) return out;
     if (haltedHere()) return out;                                                           // a halt starts nothing, this neither
     if (!r && !(await claudeConnected())) return out;                                       // never read: only with Claude signed in
     const spec = { at: t, status: 'pending', model: policy.claude.meterCheck.model, seat: probeSeat(), why: r ? 'the last Claude reading is ' + age(r.at, t) + ' old' : 'there is no Claude reading yet' };
