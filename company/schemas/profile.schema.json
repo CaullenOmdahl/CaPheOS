@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "capheos/profile.schema.json",
+  "title": "A crew member's profile (company/people/profiles/<seat>.json)",
+  "description": "One file per seat, written only by company/tools/profile.js (docs/PROFILES.md). lib/profile.js validate() is the check every tool runs; this schema documents the same shape. The charter's person sections and the seat's injected identity are generated from it.",
+  "type": "object",
+  "required": ["v", "seat", "version", "identity", "temperament", "voice", "boundaries"],
+  "properties": {
+    "v": { "const": 1 },
+    "seat": { "type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,80}$" },
+    "version": { "type": "integer", "minimum": 1 },
+    "hash": { "type": "string", "pattern": "^[0-9a-f]{12}$" },
+    "identity": { "type": "object", "properties": {
+      "name": { "type": "string" }, "title": { "type": "string" },
+      "archetype": { "enum": ["", "scout", "combiner", "contrarian", "tester", "builder", "steward", "connector", "lead"] },
+      "personality": { "type": "string" }, "background": { "type": "string" }, "stake": { "type": "string" } } },
+    "temperament": { "type": "object", "properties": {
+      "risk": { "type": "integer", "minimum": 0, "maximum": 4 }, "pace": { "type": "integer", "minimum": 0, "maximum": 4 },
+      "rigour": { "type": "integer", "minimum": 0, "maximum": 4 }, "candour": { "type": "integer", "minimum": 0, "maximum": 4 },
+      "independence": { "type": "integer", "minimum": 0, "maximum": 4 }, "changesMind": { "type": "string" } } },
+    "convictions": { "type": "array", "items": { "type": "string" } },
+    "willNotDo": { "type": "array", "items": { "type": "string" } },
+    "unprompted": { "type": "array", "items": { "type": "string" } },
+    "whereYouLook": { "type": "array", "items": { "type": "string" } },
+    "flaws": { "type": "array", "items": { "type": "string" } },
+    "strengths": { "type": "array", "items": { "type": "string" } },
+    "blindSpots": { "type": "array", "items": { "type": "string" } },
+    "habits": { "type": "array", "items": { "type": "string" } },
+    "relationships": { "type": "array", "items": { "type": "object", "required": ["seat", "note"], "properties": { "seat": { "type": "string" }, "note": { "type": "string" } } } },
+    "voice": { "type": "object", "properties": { "preset": { "enum": ["", "composed", "warm", "blunt", "dry", "upbeat"] }, "toOwner": { "type": "string" }, "words": { "type": "string" }, "avoid": { "type": "array", "items": { "type": "string" } } } },
+    "examples": { "type": "array", "items": { "type": "object", "required": ["with", "they", "you"], "properties": { "with": { "type": "string" }, "they": { "type": "string" }, "you": { "type": "string" }, "pushback": { "type": "boolean" } } } },
+    "reminder": { "type": "string", "maxLength": 200 },
+    "counterpart": { "type": ["object", "null"], "properties": { "seat": { "type": "string" }, "signOff": { "type": "array", "items": { "enum": ["promote", "commit", "external", "merge", "plan", "trade"] } }, "why": { "type": "string" } } },
+    "model": { "type": ["object", "null"], "description": "read only here: refreshed from the model chain on render" },
+    "boundaries": { "type": "array", "items": { "type": "string" }, "description": "always holds the four fixed rules (lib/profile.js FIXED_BOUNDARIES)" },
+    "experiences": { "type": "array", "items": { "type": "object", "required": ["at", "text"], "properties": { "at": { "type": "string" }, "text": { "type": "string" }, "source": { "type": "string" }, "addedBy": { "type": "string" }, "version": { "type": "integer" } } } },
+    "ownerNotes": { "type": "string", "description": "the owner's own notes, never injected" },
+    "trial": { "type": ["object", "null"], "properties": { "from": { "type": "integer" }, "until": { "type": "string" }, "startedBy": { "type": "string" }, "kind": { "type": "string" } } }
+  }
+}

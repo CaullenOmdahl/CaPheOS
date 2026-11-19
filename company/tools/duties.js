@@ -44,6 +44,8 @@ const DUTIES = [
     why: 'a routing proposal is open: a model cell with enough data beats a department\'s current route for its task class in the house ranking (shadow: nothing is applied; docs/RANKING.md); a running model trial reached a decision or has had no items for trials.stuckDays; live tier caps whose evaluation says roll back (docs/RANKING.md §10)' },
   { id: 'consults', tool: 'consult.js', route: 'people', everyMin: 30, timeoutMs: 10000, whileHalted: false, enabledByDefault: true,
     why: 'a department whose lead gives advice has a consult open longer than three times its batch wait: the lead\'s advise run did not come or did not answer (docs/DEPARTMENTS.md §5). Nothing is due while no department\'s advice is on' },
+  { id: 'profiles', tool: 'profile.js', route: 'people', everyMin: 240, timeoutMs: 10000, whileHalted: false, enabledByDefault: true,
+    why: 'a decision, owner ruling, correction or incident from the last week names a crew member who has a profile, and no experience or proposal cites it yet: the people function considers proposing an experience line (docs/PROFILES.md). Nothing is due while no seat has a profile' },
 ];
 
 const ID_RE = /^[a-z][a-z0-9-]{1,39}$/;

@@ -128,6 +128,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/dispatch.js | tools | `--selftest` |
 | company/tools/dispatcher-loop.js | tools | `selftest` / `--selftest` |
 | company/tools/dossier.js | people | none |
+| company/tools/profile.js | people | `--selftest` |
 | company/tools/duties.js | tools | `--selftest` |
 | company/tools/duty-status.js | tools | `--selftest` |
 | company/tools/escalate.js | ceo | none |

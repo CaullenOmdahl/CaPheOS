@@ -110,7 +110,7 @@ function check(q, by, at, opts) {
 /* the owner's line: who answered what kind of question for them, until when, and where to take the permission back
  * (Settings › Autonomy › Permission to answer for you); the question id, the answer and the delegation id are technical */
 const KIND_WORDS = { hiring: 'a hiring', release: 'a question about letting someone go', budget: 'a budget', spend: 'a spending', models: 'a question about which AI the crew uses', tools: 'a question about the crew\'s tools',
-  schedules: 'a timing', external: 'a question about acting outside the company', dashboard: 'a question about the console', deps: 'a software', org: 'a question about how the team is organised' };
+  schedules: 'a timing', external: 'a question about acting outside the company', dashboard: 'a question about the console', deps: 'a software', org: 'a question about how the team is organised', profiles: 'a question about a crew member\'s profile' };
 function answeredNotice(by, category, until) {
   const kind = KIND_WORDS[category] || 'one'; const q = /question/.test(kind) ? kind : kind + ' question';
   let day = String(until || '').slice(0, 10); try { day = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', timeZone: co.TZ || undefined }).format(new Date(until)); } catch (_) {}

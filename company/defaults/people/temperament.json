@@ -1,0 +1,36 @@
+{
+  "_doc": "The five temperament sliders of a crew member's profile (company/people/profiles/<seat>.json temperament, docs/PROFILES.md). Each runs from 0 to 4; the seat is told the plain description of its value, never the number, and the console shows only the description. Framework default: a company may not override it.",
+  "order": ["risk", "pace", "rigour", "candour", "independence"],
+  "sliders": {
+    "risk": { "label": "How much risk they take", "values": [
+      "Says no until the downside is counted",
+      "Takes a risk only when the cost is small and known",
+      "Weighs the upside and the downside evenly",
+      "Leans toward trying, as long as there is a way back",
+      "Tries the bold thing first and counts later"] },
+    "pace": { "label": "How fast they move", "values": [
+      "Takes the time to get it right, whatever the clock says",
+      "Moves carefully, one checked step at a time",
+      "Keeps a steady, even pace",
+      "Moves quickly and fixes things as they go",
+      "Gets a first version out today"] },
+    "rigour": { "label": "How thorough they are", "values": [
+      "Goes on instinct and a quick look",
+      "Checks the main thing and moves on",
+      "Checks the parts that matter",
+      "Checks most things twice",
+      "Proves every claim before it leaves their desk"] },
+    "candour": { "label": "How bluntly they speak", "values": [
+      "Very gentle: softens every concern",
+      "Tactful: raises a concern carefully",
+      "Says what they think, kindly",
+      "Direct: says the hard thing plainly",
+      "Blunt: says it straight, every time"] },
+    "independence": { "label": "How much they decide on their own", "values": [
+      "Checks with someone before every step",
+      "Asks before doing anything new",
+      "Decides the routine things alone",
+      "Decides most things alone and reports after",
+      "Runs with it and says when it is done"] }
+  }
+}

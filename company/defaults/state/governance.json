@@ -13,7 +13,8 @@
     "dashboard": "notify",
     "packs": "approve",
     "deps": "notify",
-    "org": "approve"
+    "org": "approve",
+    "profiles": "approve"
   },
   "fixed": {
     "access": "approve",
@@ -33,12 +34,13 @@
     "dashboard": "agents adding or changing console panels",
     "deps": "adding a Python or Node package to the company environment (company/tools/deps.js): notify = install, then a one-line FYI to the risk seat; approve = an owner question with an Approve button first. Licence, age, install-script and typo exceptions are the risk seat's (AGPL the owner's) at every level.",
     "org": "the company's structure: creating a department, setting or changing its lead, moving a seat between departments (company/tools/departments.js; the CEO or the people function proposes, the CEO applies at this level, the owner always may). A company founded before this line existed reads the framework default.",
+    "profiles": "changes to a crew member's profile proposed by the people function (company/tools/profile.js propose / decide): approve = the owner decides each on the Profile tab; notify / auto = the CEO may apply it (notify tells the owner). The owner's own edits are always immediate, whatever the level; temperament and counterpart changes always go through a trial. A company founded before this line existed reads the framework default.",
     "packs": "approving a capability pack (a new line of business: tools, seats, limits, meters); installing one is always the owner's (pack.js install). Approve in every preset."
   },
   "presets": {
-    "approve-everything": { "label": "Approve everything", "categories": { "hiring": "approve", "release": "approve", "budget": "approve", "spend": "approve", "models": "approve", "tools": "approve", "schedules": "approve", "external": "approve", "dashboard": "approve", "packs": "approve", "deps": "approve", "org": "approve" } },
-    "gate-money-people": { "label": "Gate money and people", "categories": { "hiring": "approve", "release": "approve", "budget": "approve", "spend": "approve", "models": "notify", "tools": "notify", "schedules": "notify", "external": "approve", "dashboard": "notify", "packs": "approve", "deps": "notify", "org": "approve" } },
-    "gate-money": { "label": "Gate money", "categories": { "hiring": "notify", "release": "notify", "budget": "approve", "spend": "approve", "models": "auto", "tools": "auto", "schedules": "auto", "external": "notify", "dashboard": "auto", "packs": "approve", "deps": "notify", "org": "notify" } },
-    "autonomous": { "label": "Autonomous", "categories": { "hiring": "auto", "release": "notify", "budget": "auto", "spend": "auto", "models": "auto", "tools": "auto", "schedules": "auto", "external": "auto", "dashboard": "auto", "packs": "approve", "deps": "auto", "org": "auto" } }
+    "approve-everything": { "label": "Approve everything", "categories": { "hiring": "approve", "release": "approve", "budget": "approve", "spend": "approve", "models": "approve", "tools": "approve", "schedules": "approve", "external": "approve", "dashboard": "approve", "packs": "approve", "deps": "approve", "org": "approve", "profiles": "approve" } },
+    "gate-money-people": { "label": "Gate money and people", "categories": { "hiring": "approve", "release": "approve", "budget": "approve", "spend": "approve", "models": "notify", "tools": "notify", "schedules": "notify", "external": "approve", "dashboard": "notify", "packs": "approve", "deps": "notify", "org": "approve", "profiles": "approve" } },
+    "gate-money": { "label": "Gate money", "categories": { "hiring": "notify", "release": "notify", "budget": "approve", "spend": "approve", "models": "auto", "tools": "auto", "schedules": "auto", "external": "notify", "dashboard": "auto", "packs": "approve", "deps": "notify", "org": "notify", "profiles": "notify" } },
+    "autonomous": { "label": "Autonomous", "categories": { "hiring": "auto", "release": "notify", "budget": "auto", "spend": "auto", "models": "auto", "tools": "auto", "schedules": "auto", "external": "auto", "dashboard": "auto", "packs": "approve", "deps": "auto", "org": "auto", "profiles": "notify" } }
   }
 }

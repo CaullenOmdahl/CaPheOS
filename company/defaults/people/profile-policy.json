@@ -1,0 +1,10 @@
+{
+  "_doc": "How a company uses crew profiles (docs/PROFILES.md). The company's own copy is company/people/profile-policy.json, changed only by the owner (node company/tools/profile.js policy ... --by owner, or Crew › Profile's \"Use profiles for this company\" switch); each field missing there reads this default. inject: charter = each run's identity is built from the charter as before; profile = from the profile file (a stable block at the start of every run). reminder: the profile's short reminder ends every loop prompt and meeting turn (with inject profile). pov: meetings show each seat the transcript from its own point of view, ask for a STANCE line and give a gatekeeper a private first take. signoff.mode: off | shadow (would-holds recorded, nothing held) | live (the dispatcher holds an eager seat's handoff until its counterpart signs off); holdMaxHours: after this long with no answer the counterpart's manager hears once; ceoOverride: the CEO may override a sign-off with a recorded reason. trial: how long a temperament or counterpart change is tried before it reverts on its own (days), and the fewest wakes a trial report needs. experienceDuty: how often the people function is told about events that may deserve an experience line. familyCheck: note = an opposed pair on the same kind of model is a note to the people function (never a failure); off = not checked.",
+  "inject": "charter",
+  "reminder": true,
+  "pov": false,
+  "signoff": { "mode": "shadow", "holdMaxHours": 24, "ceoOverride": true },
+  "trial": { "days": 7, "minWakes": 10 },
+  "experienceDuty": { "everyMin": 240, "sources": ["decisions", "rulings", "corrections", "incidents", "meeting-rulings"] },
+  "familyCheck": "note"
+}

@@ -141,7 +141,7 @@ function pendingGates(opts) {
 const CATEGORY_WORDS = { hiring: 'hiring someone', release: 'letting a crew member go', budget: 'the budget', spend: 'spending money',
   models: 'which AI the crew uses', tools: 'the crew\'s own tools and rules', schedules: 'when the crew\'s routines run',
   external: 'something that leaves the company', dashboard: 'the console screens', packs: 'a new line of business',
-  deps: 'adding software to the company', org: 'how the company is organised', access: 'access to an account or key',
+  deps: 'adding software to the company', org: 'how the company is organised', profiles: 'a crew member\'s profile', access: 'access to an account or key',
   ownership: 'who owns what', commitment: 'a promise to someone outside the company', spendBeyondCap: 'spending beyond the budget' };
 // the text when it reads plainly as a whole, else null: never a first clause cut from a technical summary (that made
 // cards like "May Nadia go ahead and engineer?"); a tool writes a plain summary and puts ids, models and versions in

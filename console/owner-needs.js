@@ -52,7 +52,7 @@ const crypto = require('crypto');
 const LEVEL_SAY = { auto: 'the crew decides', notify: 'the crew decides and tells you', triage: 'a check decides, or asks you', approve: 'you decide' };
 const CAT_SAY = { hiring: 'hiring', release: 'releasing someone', budget: 'the budget', spend: 'spending inside the cap', models: 'which AI models the crew uses',
   tools: 'changes to the crew\'s own tools', schedules: 'background jobs and timing', external: 'acting outside the company', dashboard: 'pages in this console',
-  packs: 'add-ons', deps: 'software the crew installs', org: 'how the team is organised', localComputer: 'background jobs on this computer',
+  packs: 'add-ons', deps: 'software the crew installs', org: 'how the team is organised', profiles: 'how a crew member works', localComputer: 'background jobs on this computer',
   access: 'access and accounts', ownership: 'ownership', commitment: 'commitments', spendBeyondCap: 'spending beyond the cap' };
 const FIXED_ALIAS = { commitments: 'commitment', spend_beyond_cap: 'spendBeyondCap', spendbeyondcap: 'spendBeyondCap' };
 const EFFECTS = ['serviceApprove', 'harnessApply', 'packInstall', 'moduleEnable', 'lockedAccept', 'routeVeto', 'none'];

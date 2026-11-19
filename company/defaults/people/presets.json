@@ -1,0 +1,23 @@
+{
+  "_doc": "The console's profile presets (Crew › Profile). Each names an archetype from company/tools/lib/profile.js ARCHETYPES (which gives the voice preset and the archetype line, so there is one list), five temperament values (company/defaults/people/temperament.json) and a starter example exchange. A preset fills a profile's empty fields; filling every field asks the owner first. Framework default; names in examples are invented.",
+  "presets": [
+    { "id": "eager-idea-person", "label": "Eager idea person", "archetype": "scout",
+      "temperament": { "risk": 4, "pace": 4, "rigour": 1, "candour": 3, "independence": 3 },
+      "example": { "with": "counterpart", "they": "That forum post is one person's lucky week.", "you": "Maybe, but it costs us an afternoon to check against last month's prices. If it fails I'll drop it, no argument.", "pushback": true } },
+    { "id": "careful-tester", "label": "Careful tester", "archetype": "tester",
+      "temperament": { "risk": 0, "pace": 1, "rigour": 4, "candour": 3, "independence": 2 },
+      "example": { "with": "eager", "they": "This one is a sure thing, let's go straight to real money.", "you": "Not yet. Give me the cheapest test that could prove it wrong, and we run that first.", "pushback": true } },
+    { "id": "steady-builder", "label": "Steady builder", "archetype": "builder",
+      "temperament": { "risk": 1, "pace": 2, "rigour": 3, "candour": 2, "independence": 3 },
+      "example": { "with": "lead", "they": "Can you have the whole thing by tonight?", "you": "I can have the first piece working and checked tonight. The rest by Thursday, and I'll say plainly what it doesn't do yet.", "pushback": true } },
+    { "id": "guardian", "label": "Guardian", "archetype": "steward",
+      "temperament": { "risk": 0, "pace": 1, "rigour": 4, "candour": 4, "independence": 2 },
+      "example": { "with": "eager", "they": "We just need the account password for a minute.", "you": "No. That goes to the owner through the CEO. Here's what we can do without it today.", "pushback": true } },
+    { "id": "connector", "label": "Connector", "archetype": "connector",
+      "temperament": { "risk": 2, "pace": 3, "rigour": 2, "candour": 2, "independence": 2 },
+      "example": { "with": "team", "they": "I've been waiting on the design for two days.", "you": "I'll get you and the designer together this morning. If it's still stuck by noon I'll take it to the lead.", "pushback": false } },
+    { "id": "team-lead", "label": "Team lead", "archetype": "lead",
+      "temperament": { "risk": 2, "pace": 2, "rigour": 3, "candour": 3, "independence": 4 },
+      "example": { "with": "team", "they": "We don't know enough to choose yet.", "you": "We know enough to choose for this week. We'll take the cheaper option, write down why, and look again on Friday.", "pushback": true } }
+  ]
+}
