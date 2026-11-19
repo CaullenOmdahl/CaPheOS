@@ -37,9 +37,12 @@ rule). The controls are Today's own (`screens/today.js` fieldControl, sliderCont
   option, label, prompt, help or placeholder is a shell command (`systemctl …`, `sudo …`, `npm`/`pip install`, `git push`,
   `node …/x.js`, `a && b`, or one in backticks) is invalid (`shellValue` in `actions-schema.js`): the owner never runs
   commands, so a block links the console route that does the thing, or the agent routes it (approval, handoff).
-- Prose is linted, never blocked: a chat reply that tells the owner to run a command gets a notice under it ("This asks
-  you to run a command. You don't need a terminal for this: …") with the matching console action, from
-  `console/command-ask.js` (the Today composer's detector, `inbox.js shellAsk`).
+- Prose is checked before delivery, ONE combined check (`console/chat.js`; docs/TALK.md): a finished chat reply that
+  tells the owner to run a command (`console/command-ask.js`, the Today composer's detector, `inbox.js shellAsk`) or,
+  with the owner's check on, is more technical than the owner's level (`company/tools/lib/talk.js`) goes back to the
+  seat ONCE, with one note naming both. A second reply that still hands over a command is delivered with a notice
+  ("This asks you to run a command. You don't need a terminal for this: …") and the matching console action; at Plain a
+  second reply still technical is delivered masked, the originals under "Technical details (for the crew)".
 
 State: an answered block locks and shows the answer; on reload a block with a reply after it (the transcript's
 `[actionReply]` with its id) renders locked; a block older than 24 hours (`MAX_AGE_HOURS`) or followed by a newer

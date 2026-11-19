@@ -91,6 +91,14 @@ closes; Register › Terms defines one (`/api/meeting/glossary`).
 hands line with the turn's runId, the cost so far); `GET /api/meeting/entries?limit=&before=|from=` pages the messages,
 passes included. Live updates arrive as the `meeting` topic on `/api/events`.
 
+## How the owner wants to hear from the crew (docs/TALK.md)
+
+Once the owner picks a level (Settings › How the crew talks to you), the rules carry one line of it (`deps.ownerTalk`,
+wired by `console/talk.js`). The check runs in shadow here, never re-running a turn: a turn more technical than the
+owner's level is recorded and, with the check on, noted on the seat's next turn through the lint line
+(`deps.ownerTalkLint`, the page shows "This was more technical than you asked for."); a Plain owner sees paths and
+commands masked in the shown text (`deps.ownerShown`, display only; the minutes keep every word).
+
 ## Point of view (full profiles, docs/PROFILES.md)
 
 On when `seats.json pov` says so (`POST /api/meeting/pov {on: true|false|null}`; null follows the company's

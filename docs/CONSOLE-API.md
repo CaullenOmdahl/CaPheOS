@@ -360,6 +360,21 @@ Crew › <person> › Profile (company/tools/profile.js; every write runs it as 
 
 `POST /api/meeting/pov { on }`: point of view in the meeting (docs/MEETINGS.md).
 
+## How the crew talks to you (console/talk.js)
+
+Settings › How the crew talks to you (company/tools/talk.js; every write runs it as the owner; docs/TALK.md).
+
+- `GET /api/settings/talk` → `talk.js show --console`: `{ prefs { level, length, often, check, source, limits }, picked,
+  summary, checks { days, rows, delivered, sent-back, masked, shadow, wouldSendBack }, examples { messages, technicalIds } }`.
+- `POST /api/settings/talk { level?, length?, often? }` → `talk.js set … --by <owner>`: `{ changed, prefs, said }`. A value
+  that is not an option is 400; outside the owner's console or shell 403 (behind the sign-in and CSRF, as every /api).
+
+The live chat's pre-delivery check at the owner's level (docs/TALK.md): `console.recheck` carries `talk: [kinds]` when
+the reply went back for its words (and `command` when for a command); a Plain owner's `console.final` may carry
+`talkMasked: true`, `technical: [the parts left out]` and `notice`, and `agent.token` lines then arrive with an empty
+`delta` and `held: true`. `GET /api/chat/:seat` turns carry the same `talkMasked`, `technical` and `notice`. A meeting
+entry (`GET /api/meeting/entries`) may carry them too (display only).
+
 ## Routing (console/routing.js)
 
 Model routing modes and trials (company/tools/routing.js; every write runs it as the owner; docs/ROUTING.md). Drawn in
