@@ -53,6 +53,21 @@ const DUTIES = [
     why: 'a department whose lead gives advice has a consult open longer than three times its batch wait: the lead\'s advise run did not come or did not answer (docs/DEPARTMENTS.md §5). Nothing is due while no department\'s advice is on' },
   { id: 'profiles', tool: 'profile.js', route: 'people', everyMin: 240, timeoutMs: 10000, whileHalted: false, enabledByDefault: true,
     why: 'a decision, owner ruling, correction or incident from the last week names a crew member who has a profile, and no experience or proposal cites it yet: the people function considers proposing an experience line (docs/PROFILES.md). Nothing is due while no seat has a profile' },
+  // the improvement engine (docs/IMPROVE.md, lib/improve.js): plain-code generators that file work items; the platform
+  // department's lead when the company has one, else the tools function. Off by default: platform-setup.js apply (or a
+  // recorded duty-policy edit) switches them on per company
+  { id: 'improve-health', tool: 'improve-health.js', route: 'tools', everyMin: 30, timeoutMs: 20000, whileHalted: false, enabledByDefault: false,
+    why: 'the last 2 hours of the dispatch log (config errors, no loop, stalls, no model, failed jobs, locked-watch flags), failed runs and tool errors, station restarts, the instance guard, framework files changed in place: one item per finding' },
+  { id: 'improve-efficiency', tool: 'improve-efficiency.js', route: 'tools', everyMin: 360, timeoutMs: 30000, whileHalted: false, enabledByDefault: false,
+    why: 'the last day of runs: seats with runs over 1M fresh tokens, seats whose wakes mostly changed nothing, a seat using 3x its last-week daily tokens' },
+  { id: 'improve-owner', tool: 'improve-owner.js', route: 'tools', everyMin: 360, timeoutMs: 15000, whileHalted: false, enabledByDefault: false,
+    why: 'hard words in what the owner was sent in the last day (outbound, digest; owner-scope words check), owner asks sent back as not owner matters (to the product seat)' },
+  { id: 'improve-fr', tool: 'improve-framework-requests.js', route: 'tools', everyMin: 60, timeoutMs: 10000, whileHalted: false, enabledByDefault: false,
+    why: 'a framework request (company/work/framework-requests/fr-*.md) with no State line: the platform lead turns it into a PR or a recorded no. Quiet without a platform department' },
+  { id: 'improve-research', tool: 'improve-research.js', route: 'tools', everyMin: 720, timeoutMs: 10000, whileHalted: false, enabledByDefault: false,
+    why: 'the weekly market and competition research item for the research seat, until company/work/research/ideas-<week>.md exists. Quiet without a research seat' },
+  { id: 'improve-retro', tool: 'improve-retro.js', route: 'ceo', everyMin: 720, timeoutMs: 10000, whileHalted: false, enabledByDefault: false,
+    why: 'the weekly retro item for the CEO, Friday onward, until company/work/retro/retro-<week>.md exists' },
   // the one chore (acts: true): memory and temp-file clean-up that runs even while the company is halted (docs/RETENTION.md "The reaper")
   { id: 'reaper', tool: 'reaper.js', route: 'tools', everyMin: 15, timeoutMs: 60000, whileHalted: true, enabledByDefault: true, acts: true,
     why: 'closes this company\'s left-behind browsers and stray test or build processes, clears its old unused temp files, keeps growing folders inside their rules, and records memory use; due only when the crew must fix something (a test that keeps leaking, a stray it may not end, memory still short after cleanup, a part of the company whose memory keeps growing)' },
