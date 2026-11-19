@@ -17,7 +17,8 @@ test('dispatch.js asks the tempo caps without recording, and records only just b
 
 test('recordWake counts; tempoAllows without record does not', () => {
   const C = require(path.join(REPO, 'company', 'tools', 'cadence.js'));
-  const tmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'tempo-count-'));
+  const life = require(path.join(REPO, 'company', 'tools', 'lib', 'temp-life.js'));
+  const tmp = life.tmpDir('tempo-count-');
   const saved = C.S.wakesFile;
   try {
     C.S.wakesFile = path.join(tmp, 'tempo-wakes.json');
@@ -26,5 +27,5 @@ test('recordWake counts; tempoAllows without record does not', () => {
     assert.equal(C.wakeCounts(now + 2).day, 0, 'asking never counts');
     C.recordWake('desk', now + 3);
     assert.equal(C.wakeCounts(now + 4).day, 1, 'a started wake counts');
-  } finally { C.S.wakesFile = saved; fs.rmSync(tmp, { recursive: true, force: true }); }
+  } finally { C.S.wakesFile = saved; life.cleanup(); }
 });

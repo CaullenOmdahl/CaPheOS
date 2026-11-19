@@ -33,9 +33,11 @@
  * parent; the owner's own Chrome has no temp profile; neither is ever listed. --apply sends SIGTERM, then SIGKILL to every
  * process still naming that profile.
  *
- * Scope: each class is 'own' (test, private; starnet leftovers of THIS company's recorded station pids) or 'host' (build,
- * chrome, pytmp, starnet of an unknown pid: names any program on the machine makes, the owner's and another company's
- * too). The automatic sweep (`tick`, which company/tools/reaper.js runs) takes the 'own' scope only; the 'host' classes
+ * Scope: each class is 'own' (anything in the private dir; starnet leftovers of THIS company's recorded station pids) or
+ * 'host' (in a shared dir: test, build, chrome, pytmp, starnet of an unknown pid: names any program on the machine makes,
+ * the owner's own checkout and another company's too; this company's own runs keep TMPDIR in its private dir). The
+ * private dir counts only when it is a real folder of this company (privateCheck: never a symlink, resolved inside the
+ * root); otherwise it is not swept at all. The automatic sweep (`tick`, which company/tools/reaper.js runs) takes the 'own' scope only; the 'host' classes
  * are cleared only by the owner (reaper.js host-sweep --apply --by owner, or this CLI by hand). `tick` runs at most once
  * an hour, in a company scripts/setup-station.sh set up (its private temp dir exists; CAPHEOS_TMP_SWEEP=0 turns it off).
  * State: company/state/tmp-sweep.json (the last run, what it freed). Browsers: the reaper ends left-behind ones, with proof
@@ -52,7 +54,10 @@ const H = 3600;
 // dir is the company's); 'host' = names any program makes (the owner's own Python, Chrome and builds, another company's):
 // only an owner action clears those (reaper.js host-sweep --apply --by owner), never the automatic sweep.
 const CLASSES = {
-  test: { scope: 'own', minAge: 2 * H, re: [/^(console|today|routes|alarm|services|service-keys|connect|mm|page-kit|huddle)-walk-/, /^(chatwin|chatact|chatres)-/,
+  // test: 'host' in a shared dir. A set-up company's own runs (the station, its agents' shells, the dispatcher, the
+  // console) have TMPDIR in its private dir, so their test walks land there (own); one in the shared /tmp was made by
+  // something else: the owner's own checkout, another company on this machine. scripts/test.sh clears its own by name.
+  test: { scope: 'host', minAge: 2 * H, re: [/^(console|today|routes|alarm|services|service-keys|connect|mm|page-kit|huddle)-walk-/, /^(chatwin|chatact|chatres)-/,
     /-chrome-[A-Za-z0-9]{6}$/, /-selftest-[A-Za-z0-9]{6}$/, /^capheos-test-/, /^capheos-test-start\./, /^meeting-ui-/, /^page-preview-/] },
   build: { scope: 'host', minAge: 6 * H, re: [/^bs-/, /^flutter_tools\./, /^initialize_from\.dill/] },
   chrome: { scope: 'host', minAge: 12 * H, re: [/^\.?com\.google\.Chrome\./, /^\.org\.chromium\.Chromium\./] },
@@ -65,6 +70,22 @@ const PID_TAGGED = /^starnet-(?:browser|claude-cli)-(\d+)(?:$|-)/;
 const WALK_CAP = 3000;
 
 function privateDir(root) { return path.join(root, '.starnet-data', 'tmp'); }
+/* the private dir, only when it really is the company's own folder: .starnet-data and tmp are real directories (never a
+   symlink), and resolved it is <realpath root>/.starnet-data/tmp. Otherwise null and why: a symlink there could lead the
+   'private' class (anything, 24 h) into the owner's home. */
+function privateCheck(root) {
+  if (!root) return { real: null, why: 'no company root' };
+  const p = path.resolve(privateDir(root));
+  for (const q of [path.dirname(p), p]) {
+    let st; try { st = fs.lstatSync(q); } catch (_) { return { real: null, path: p, why: 'missing' }; }
+    if (st.isSymbolicLink()) return { real: null, path: p, why: q + ' is a symlink' };
+    if (!st.isDirectory()) return { real: null, path: p, why: q + ' is not a folder' };
+  }
+  let rr, rp; try { rr = fs.realpathSync(root); rp = fs.realpathSync(p); } catch (_) { return { real: null, path: p, why: 'cannot be resolved' }; }
+  if (rp !== path.join(rr, '.starnet-data', 'tmp')) return { real: null, path: p, why: 'resolves to ' + rp + ', outside the company' };
+  return { real: rp, path: p, why: null };
+}
+const realOf = d => { try { return fs.realpathSync(d); } catch (_) { return path.resolve(d); } };
 function defaultDirs(root) {
   const out = [os.tmpdir(), '/tmp'];
   if (root) out.push(privateDir(root));
@@ -139,30 +160,37 @@ function heldNames(dirs, o) {
 function scan(opt) {
   const o = opt || {};
   const root = o.root === undefined ? safeRoot() : o.root;
-  const dirs = (o.dirs && o.dirs.length ? o.dirs : defaultDirs(root)).map(d => path.resolve(d));
-  const priv = root ? path.resolve(privateDir(root)) : null;
+  const pc = privateCheck(root);
+  const refusedDirs = [];
+  // a dir that is (or resolves to) the private dir while that one is not provably the company's is not swept at all
+  const dirs = (o.dirs && o.dirs.length ? o.dirs : defaultDirs(root)).map(d => path.resolve(d)).filter(d => {
+    if (!pc.real && pc.path && (d === pc.path || realOf(d) === realOf(pc.path))) { refusedDirs.push({ dir: d, why: 'the private temp folder ' + pc.why }); return false; }
+    return true;
+  });
+  const priv = pc.real;
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const uid = typeof process.getuid === 'function' ? process.getuid() : null;
   const only = o.classes ? new Set(o.classes) : null;
   const inUse = o.held || heldNames(dirs, o);
   const items = [];
+  const isPriv = d => !!priv && realOf(d) === priv;
   for (const d of dirs) {
     let names = []; try { names = fs.readdirSync(d); } catch (_) { continue; }
     for (const name of names) {
       const p = path.join(d, name);
       let st; try { st = fs.lstatSync(p); } catch (_) { continue; }
       if (uid !== null && st.uid !== uid) continue;
-      const c = classify(name, st.isDirectory(), d === priv, o);
+      const c = classify(name, st.isDirectory(), isPriv(d), o);
       if (!c || (only && !only.has(c.cls)) || (o.scope && c.scope !== o.scope)) continue;
       const m = measure(p);
       const ageS = Math.max(0, (now - m.newest) / 1000);
-      const minAge = Number.isFinite(o.minAge) ? Math.min(o.minAge, c.minAge) : d === priv && Number.isFinite(o.privateMinAge) ? Math.min(o.privateMinAge, c.minAge) : c.minAge;
+      const minAge = Number.isFinite(o.minAge) ? Math.min(o.minAge, c.minAge) : isPriv(d) && Number.isFinite(o.privateMinAge) ? Math.min(o.privateMinAge, c.minAge) : c.minAge;
       const busy = inUse.held.get(d) && inUse.held.get(d).has(name);
       const go = !busy && ageS >= minAge;
       items.push({ dir: d, name, cls: c.cls, scope: c.scope, bytes: m.bytes, ageS: Math.round(ageS), minAge, busy: !!busy, go, why: busy ? 'in use' : go ? (c.why || 'older than ' + fmtAge(minAge)) : 'touched ' + fmtAge(ageS) + ' ago' });
     }
   }
-  return { dirs, items, known: inUse.known };
+  return { dirs, items, known: inUse.known, refusedDirs };
 }
 
 function safeRoot() { try { return require('./lib/company').ROOT; } catch (_) { return null; } }
@@ -247,8 +275,7 @@ function tick(opt) {
   // unit test that runs a dispatcher tick never touches the host's /tmp. CAPHEOS_TMP_SWEEP=0 turns it off (scripts/test.sh).
   if (process.env.CAPHEOS_TMP_SWEEP === '0' && !o.force) return { skipped: 'CAPHEOS_TMP_SWEEP=0' };
   if (!o.dirs && !(root && fs.existsSync(privateDir(root)))) return { skipped: 'no ' + (root ? privateDir(root) : 'company root') + ' (not a set-up company)' };
-  // own scope only: the private dir and, in the shared dirs, the framework's test names and this company's own station
-  // leftovers. Left-behind browsers are the reaper's (reaper.js: proof that a browser is this company's, not a temp profile)
+  // own scope only: the private dir and, in the shared dirs, this company's own station leftovers. Left-behind browsers are the reaper's (reaper.js: proof that a browser is this company's, not a temp profile)
   const ended = [];
   const r = apply(Object.assign({}, o, { root, scope: 'own' }));
   const byCls = {};
@@ -364,27 +391,46 @@ async function selftest() {
       assert.deepStrictEqual(sent, ['2000:SIGTERM', '2000:SIGKILL', '2001:SIGKILL']);
       assert.strictEqual(r.browsers.find(b => b.pid === 2000).rss, 2 * 1024 * 1024);
     });
-    await check('scope: own is the private dir, framework test names and this company\'s station pids; host is the rest', () => {
+    await check('scope: own is the private dir and this company\'s station pids; host is the rest, a test walk in the shared dir too', () => {
       mk(shared, 'starnet-browser-999998-mine'); mk(shared, 'starnet-claude-cli-999997-other'); mk(shared, 'bs-scope-1'); mk(shared, 'tmpscope123'); mk(shared, 'com.google.Chrome.scope1'); mk(shared, 'services-walk-Scope1');
       mk(priv, 'tmpprivate12'); mk(priv, 'bs-in-private');
       const s = scan({ dirs: [shared, priv], root, stationPids: new Set([999998]) });
       const by = Object.fromEntries(s.items.map(i => [i.name, i]));
-      for (const n of ['starnet-browser-999998-mine', 'services-walk-Scope1', 'tmpprivate12', 'bs-in-private']) assert.strictEqual(by[n].scope, 'own', n);
-      for (const n of ['starnet-claude-cli-999997-other', 'bs-scope-1', 'tmpscope123', 'com.google.Chrome.scope1']) assert.strictEqual(by[n].scope, 'host', n);
+      for (const n of ['starnet-browser-999998-mine', 'tmpprivate12', 'bs-in-private']) assert.strictEqual(by[n].scope, 'own', n);
+      for (const n of ['starnet-claude-cli-999997-other', 'bs-scope-1', 'tmpscope123', 'com.google.Chrome.scope1', 'services-walk-Scope1']) assert.strictEqual(by[n].scope, 'host', n + (n === 'services-walk-Scope1' ? ': a test walk in the shared dir may be another company\'s' : ''));
       const own = scan({ dirs: [shared, priv], root, stationPids: new Set([999998]), scope: 'own' }).items.map(i => i.name);
       assert.ok(own.includes('starnet-browser-999998-mine') && !own.includes('bs-scope-1') && !own.includes('tmpscope123'), own.join());
       for (const c of Object.values(CLASSES)) assert.ok(c.scope === 'own' || c.scope === 'host');
     });
     await check('tick: own scope only, once an hour, one log line, state written', () => {
-      mk(shared, 'bs-tick-1'); mk(shared, 'huddle-walk-Tick01');
+      mk(shared, 'bs-tick-1'); mk(shared, 'huddle-walk-Tick01'); mk(shared, 'starnet-browser-999996-tick'); mk(priv, 'huddle-walk-Tick02');
       const lines = [];
-      const a = tick({ dirs: [shared], root, log: l => lines.push(l), force: true });
-      assert.ok(a.removed >= 1, JSON.stringify(a)); assert.ok(/^TMP SWEEP: /.test(lines[0]), lines[0]);
-      assert.ok(!fs.existsSync(path.join(shared, 'huddle-walk-Tick01')) && fs.existsSync(path.join(shared, 'bs-tick-1')), 'a build leftover in the shared dir is the host\'s: kept');
+      const a = tick({ dirs: [shared, priv], root, log: l => lines.push(l), force: true, stationPids: new Set([999996]) });
+      assert.ok(a.removed >= 2, JSON.stringify(a)); assert.ok(/^TMP SWEEP: /.test(lines[0]), lines[0]);
+      assert.ok(!fs.existsSync(path.join(shared, 'starnet-browser-999996-tick')) && !fs.existsSync(path.join(priv, 'huddle-walk-Tick02')), 'this company\'s station leftover and a walk in its private dir go');
+      assert.ok(fs.existsSync(path.join(shared, 'bs-tick-1')), 'a build leftover in the shared dir is the host\'s: kept');
+      assert.ok(fs.existsSync(path.join(shared, 'huddle-walk-Tick01')), 'a test walk in the shared dir may be another company\'s (or the owner\'s checkout): kept');
       const b = tick({ dirs: [shared], root, log: l => lines.push(l) });
       assert.ok(b.skipped, JSON.stringify(b));
       const st = JSON.parse(fs.readFileSync(path.join(root, 'company', 'state', 'tmp-sweep.json'), 'utf8'));
       assert.ok(st.lastRun && st.removed >= 1);
+    });
+    await check('a private temp folder that is a symlink (or resolves outside the company) is never swept, nor what it points to', () => {
+      const home = path.join(T, 'owner-home'); fs.mkdirSync(home); mk(home, 'precious-notes');
+      const r2 = path.join(T, 'co-link'); fs.mkdirSync(path.join(r2, '.starnet-data'), { recursive: true });
+      fs.symlinkSync(home, privateDir(r2));
+      assert.ok(!privateCheck(r2).real && /symlink/.test(privateCheck(r2).why));
+      const s1 = scan({ dirs: [privateDir(r2)], root: r2 });
+      assert.strictEqual(s1.items.length, 0, JSON.stringify(s1.items)); assert.ok(/symlink/.test(s1.refusedDirs[0].why));
+      apply({ dirs: [privateDir(r2), shared], root: r2, minAge: 0 });
+      assert.ok(fs.existsSync(path.join(home, 'precious-notes', 'f')), 'the target is untouched');
+      // .starnet-data itself a symlink: the same
+      const r3 = path.join(T, 'co-link2'); fs.mkdirSync(r3); const sd = path.join(T, 'elsewhere-data'); fs.mkdirSync(path.join(sd, 'tmp'), { recursive: true }); mk(path.join(sd, 'tmp'), 'not-ours');
+      fs.symlinkSync(sd, path.join(r3, '.starnet-data'));
+      assert.ok(!privateCheck(r3).real);
+      apply({ dirs: [privateDir(r3)], root: r3, minAge: 0 });
+      assert.ok(fs.existsSync(path.join(sd, 'tmp', 'not-ours', 'f')));
+      assert.ok(privateCheck(root).real, 'the real private dir passes');
     });
   } finally {
     for (const k of kids) { try { k.kill('SIGKILL'); } catch (_) {} }
@@ -425,5 +471,5 @@ function main(argv) {
   process.exit(2);
 }
 
-module.exports = { scan, apply, browsers, tick, classify, measure, heldNames, defaultDirs, fmtMB, CLASSES, privateDir };
+module.exports = { scan, apply, browsers, tick, classify, measure, heldNames, defaultDirs, fmtMB, CLASSES, privateDir, privateCheck };
 if (require.main === module) main(process.argv.slice(2));

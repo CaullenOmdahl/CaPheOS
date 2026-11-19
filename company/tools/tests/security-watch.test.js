@@ -19,9 +19,10 @@ const { spawnSync } = require('child_process');
 const REPO = path.resolve(__dirname, '..', '..', '..');
 const SW = require(path.join(REPO, 'company', 'tools', 'security-watch.js'));
 const FX = path.join(__dirname, 'fixtures', 'security-watch');
-const roots = [];
-const tmp = p => { const d = fs.mkdtempSync(path.join(os.tmpdir(), p)); roots.push(d); return d; };
-test.after(() => { for (const r of roots) try { fs.rmSync(r, { recursive: true, force: true }); } catch (_) {} });
+// temp dirs go with company/tools/lib/temp-life.js: removed however the run ends (also on the runner's timeout)
+const life = require(path.join(REPO, 'company', 'tools', 'lib', 'temp-life.js'));
+const tmp = p => life.tmpDir(p);
+test.after(() => life.cleanup());
 const fixture = (extra) => { const t = SW.buildFixtureRoot(tmp('secwatch-test-'), FX); Object.assign(t.opts, extra || {}); t.ctx = SW.ctxOf(t.opts); return t; };
 const at = (t, ms) => Object.assign({}, t.opts, { now: ms });
 

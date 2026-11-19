@@ -181,10 +181,12 @@ lean enough to share a small machine with a local model:
   (`TMPDIR=/data/tmp`, a 64 MB `/tmp`).
 - **The sweeper.** `company/tools/tmp-sweep.js` removes temp entries that are old enough and that no running process
   uses (an open file, a working directory, a mapped file, a socket, or a command line naming it). Each class has a scope:
-  **own** (everything in the company's private temp dir; in a shared temp dir only the framework's own test names and
-  station leftovers of one of THIS company's recorded station pids) or **host** (Python tempfile dirs, build trees,
-  Chrome's temp entries, station leftovers of an unknown pid: names the owner's own programs and another company make
-  too). The automatic sweep (the reaper, below) takes the own scope only; the host scope is the owner's button
+  **own** (everything in the company's private temp dir; in a shared temp dir only station leftovers of one of THIS
+  company's recorded station pids) or **host** (in a shared temp dir: test walks, Python tempfile dirs, build trees,
+  Chrome's temp entries, station leftovers of an unknown pid: names the owner's own checkout and another company on this
+  machine make too; this company's own runs keep `TMPDIR` in its private dir, so its tests land there). The private dir
+  counts only when it is a real folder of the company: never a symlink, and resolved it is `<root>/.starnet-data/tmp`;
+  otherwise it is not swept at all. The automatic sweep (the reaper, below) takes the own scope only; the host scope is the owner's button
   (`reaper.js host-sweep --apply --by owner`). `status` shows what would go.
 - **Tests clean up however they end.** `company/tools/lib/temp-life.js` registers a test's temp dirs and helper
   processes (Chrome, the mock station, a console) and removes / ends them on exit, on an error and on SIGINT / SIGTERM
@@ -220,9 +222,9 @@ or dispatcher, a registered background service, anything matched by name only, a
 
 | Step | What | Halted |
 |---|---|---|
-| browsers | a driven Chrome of the company whose parent is gone, with no client on its debugging port, older than 30 min (10 under low): ended (TERM to its group, 3 s, KILL to all naming its profile), a temp profile removed. The station's own browser is never killed (StarNet patch 0020 closes it when idle); idle past 3 x the idle time it is reported | runs |
+| browsers | a driven Chrome of the company whose parent is gone, older than 30 min (10 under low) and with no client on its debugging port for that long, measured across runs (a client seen at any run starts the clock again, so a browser an agent reconnects to between tool calls stays); one inside the station's own unit is spared while the station runs anything (a station that does not answer counts as busy): ended (TERM to its group, 3 s, KILL to all naming its profile), a temp profile removed. The station's own browser is never killed (StarNet patch 0020 closes it when idle); idle past 3 x the idle time it is reported | runs |
 | strays | the company's processes handed to init, outside its units, older than 6 h (3 under low): flutter_tester, dart frontend/analysis servers, Gradle / Kotlin daemons, esbuild --service, a mock station or test walk, an orphaned test station, pytest are ended; any other kind is reported once a week | runs |
-| temp | tmp-sweep own scope: the private temp dir (older than 24 h and unused; 6 h under memory pressure), the framework's test names and the company's station leftovers in `/tmp`. A name pattern leaking 200 entries or 1 GB a day for 2 days is reported once a week | runs |
+| temp | tmp-sweep own scope: the private temp dir (older than 24 h and unused; 6 h under memory pressure), the company's station leftovers in `/tmp` (a test walk there may be another company's: the owner's button). A name pattern leaking 200 entries or 1 GB a day for 2 days is reported once a week | runs |
 | retention | the folder rules below, once a company day | skipped |
 | sample | `memory.js sample` into `company/state/memory-samples.jsonl` (kept 14 days); a unit growing for 48 h without a restart (+50 % and +150 MB, same pid) is reported once a week. Nothing is ever restarted | runs |
 | pressure | free memory under keep-free + 256 MB (under low also under 300 MB): the station's browser is closed when no run drives it, temp ages are halved, `company/state/memory-pressure.json` is written; still short after 3 runs: reported | runs |
@@ -242,7 +244,11 @@ cutover is recorded (`company/state/migration-cutover.json`).
 `company.json` `runtime.memory` (unset = automatic): `profile` `auto` | `low` | `normal` (auto: low on 4.5 GB or less),
 `keepFreeMB` (memory the company never plans to use: for a local AI model, its size plus 1 GB), `visibleBrowser` (off:
 the station's browser is headless and closes itself when unused; a window never does). `memory.js plan` shows the numbers
-(`--total MB` for another machine); every value is rounded down to 64 MB:
+(`--total MB` for another machine, `--companies N` for N companies on it); every value is rounded down to 64 MB. With
+two or more companies on one machine (`lib/memory.js share`: every other enabled station unit in the user's unit dir whose
+folder holds `company/company.json`), the budget is the machine minus what is kept free (the largest `keepFreeMB` any of
+them asks for) and the system's share, split evenly; `memory.js status` warns when the limits in force were planned for
+another number of companies. The table is one company alone:
 
 | Machine | profile | keep free | station High / Max | console | dispatcher | private browsers / idle close |
 |---|---|---|---|---|---|---|
@@ -260,7 +266,11 @@ unit (MemoryHigh, MemoryMax, MemorySwapMax, and the template's own ExecStart wit
 and shell settings for StarNet patch 0020, ignored by a station without it). It applies the limits live with
 `systemctl --user set-property --runtime` and never restarts anything; a changed heap or memory.env is printed with the
 safe restart that waits until nothing runs. The station unit has no `ManagedOOMMemoryPressure=kill` on purpose
-(systemd-oomd would kill every run in it): the kernel picks inside the unit, the sidecar at `OOMScoreAdjust=100`, agent
+(systemd-oomd would kill every run in it), and it has `ManagedOOMPreference=omit` (template and drop-in; the dispatcher's
+drop-in too under low): host slice defaults such as `/usr/lib/systemd/user/slice.d/10-oomd-per-slice-defaults.conf` put
+`ManagedOOMMemoryPressure=kill` on `app.slice` where the station runs, and a build holding the station at MemoryHigh reads
+as pressure; omit takes the station out of oomd's choice (oomd's swap rule honours the preference only for root-owned
+cgroups, so `MemorySwapMax` bounds the station's swap instead). The kernel picks inside the unit, the sidecar at `OOMScoreAdjust=100`, agent
 commands at 500 (patch 0020), console and dispatcher at 200 with oomd's kill (they restart by themselves; under low the
 dispatcher has no oomd kill, so it is not ended mid-tick over and over). The station has `OOMPolicy=continue` (template
 and drop-in): with the host default `stop`, the kernel ending one build at MemoryMax would make systemd stop the whole

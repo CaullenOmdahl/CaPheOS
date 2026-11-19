@@ -1080,7 +1080,8 @@ async function main(argv) {
 async function selftest() {
   let bad = 0; const ok = (name, cond, detail) => { console.log((cond ? 'ok   ' : 'FAIL ') + name + (cond ? '' : '  [' + (typeof detail === 'string' ? detail : JSON.stringify(detail)).slice(0, 400) + ']')); if (!cond) bad++; };
   const FX = path.join(__dirname, 'tests', 'fixtures', 'security-watch');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secwatch-selftest-'));
+  const life = require('./lib/temp-life');
+  const tmp = life.tmpDir('secwatch-selftest-');
   try {
     const t = buildFixtureRoot(tmp, FX);
     ok('cmpVer orders releases and prereleases', cmpVer('0.35.4', '0.35.5') < 0 && cmpVer('0.35.5-rc.1', '0.35.5') < 0 && cmpVer('1.10.0', '1.9.9') > 0 && cmpVer('2:1.0', '1:9.9') > 0);
@@ -1109,7 +1110,7 @@ async function selftest() {
     ok('after the bump the finding is fixed and the owner hears it once', f2 && f2.state === 'fixed' && t.notices.filter(n => /is fixed/.test(n.text)).length === 1, { f2, n: t.notices });
     ok('the duty no longer names sharp, nor the Node update the owner was asked for', (d2 => !(d2.out || { items: [] }).items.some(i => i.id === f.id || /^sec-/.test(i.id) && (readState(t.ctx).findings[i.id] || {}).hostOnly))(duty(t.opts)));
   } catch (e) { ok('selftest ran', false, e.stack); }
-  finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  finally { life.cleanup(); }
   console.log(bad ? 'SECURITY-WATCH SELFTEST FAILED: ' + bad : 'SECURITY-WATCH SELFTEST PASSED');
   return bad ? 1 : 0;
 }

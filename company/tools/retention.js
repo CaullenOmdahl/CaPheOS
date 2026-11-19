@@ -537,6 +537,17 @@ function worktreeVerdict(wt, keepDays, now) {
   if (now - w.newest < keepDays * DAY) return { ok: false, why: 'changed in the last ' + keepDays + ' days' };
   return { ok: true, common, base };
 }
+// a candidate is removed only when it is really inside the company: its own path and every folder above it resolved
+// (realpath), so a symlinked .starnet-data, scratch or row path never leads a delete outside; a symlink itself is left alone
+function notContained(ctx, abs) {
+  let rr; try { rr = fs.realpathSync(ctx.root); } catch (_) { return 'the company folder cannot be resolved'; }
+  const inRoot = q => q.startsWith(rr + path.sep);
+  let st; try { st = fs.lstatSync(abs); } catch (_) { return 'gone'; }
+  if (st.isSymbolicLink()) return 'a symlink, left alone';
+  let real; try { real = fs.realpathSync(abs); } catch (_) { return 'cannot be resolved'; }
+  if (!inRoot(real)) return 'outside the company';
+  return null;
+}
 function dirPolicies(opt) {
   opt = opt || {};
   const ctx = ctxOf(opt); const pol = loadPolicy(ctx); const out = [];
@@ -570,7 +581,7 @@ function dirPolicies(opt) {
       if (r.enforce && a.policy !== 'report-only' && !opt.halted && !ctx.dry) {
         for (const x of r.candidates) {
           const abs = ctx.P(x.rel);
-          if (!path.resolve(abs).startsWith(ctx.root + path.sep)) { r.errors.push(x.rel + ': outside the company'); continue; }
+          const why = notContained(ctx, abs); if (why) { r.errors.push(x.rel + ': ' + why); continue; }
           if (a.policy === 'merged-worktrees') {
             const g = gitOut(['--git-dir', x.common, 'worktree', 'remove', abs], ctx.root);
             if (!g.ok) { r.errors.push(x.rel + ': git worktree remove: ' + g.err); continue; }
@@ -818,7 +829,7 @@ async function selftest() {
   process.exit(fails ? 1 : 0);
 }
 
-module.exports = { clearanceLive, apply, status, audit, daily, find, dirPolicies, worktreeVerdict, DIR_POLICIES, overLiveBytes, parse, rollFile, sizeRotate, runJournal, archiveDir, loadPolicy, archiveDirOf, POINTER_MARK };
+module.exports = { clearanceLive, apply, status, audit, daily, find, dirPolicies, notContained, worktreeVerdict, DIR_POLICIES, overLiveBytes, parse, rollFile, sizeRotate, runJournal, archiveDir, loadPolicy, archiveDirOf, POINTER_MARK };
 if (require.main === module) {
   const a = process.argv.slice(2); const cmd = a[0];
   const json = a.includes('--json'); const dry = a.includes('--dry-run');

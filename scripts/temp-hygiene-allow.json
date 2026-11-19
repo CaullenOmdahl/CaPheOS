@@ -8,6 +8,7 @@
     "company/tools/lib/page-preview.js": "screenshot() starts one headless Chrome on a fresh profile with TMPDIR inside it, kills it after 45 s at most and removes the profile when Chrome exits",
     "company/tools/reaper.js": "the reaper reads the temp dirs to clean them (company/tools/tmp-sweep.js rules); it makes nothing there",
     "company/tools/station-view.js": "the owner's station viewer: its Chrome profile is removed when the viewer ends, and sweepProfiles() removes any a killed viewer left",
-    "console/connectors.js": "the Connect flow's browser shim: a 0700 dir the console removes when the sign-in ends or times out"
+    "console/connectors.js": "the Connect flow's browser shim: a 0700 dir the console removes when the sign-in ends or times out",
+    "company/tools/security-watch.js": "the npm audit fallback copies one lockfile into a fresh dir for npm audit --package-lock-only and removes it in a finally; its selftest uses temp-life"
   }
 }
