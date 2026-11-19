@@ -17,9 +17,12 @@
  *       two-sentence limit: length is the owner's word cap. technical: only commandAsk (today's check). some: commands
  *       and paths always; any other technical word only when the same sentence does not explain it ("which means",
  *       "that is", "in other words", a parenthesis). plain: every kind.
- *   mask(text) -> { text, technical: [the parts taken out] }: each code block, code span, path, command, id, tool and
- *       model name and technical word becomes "(a technical detail the crew handles)"; a sentence still technical after
- *       that becomes the placeholder whole. The result passes check() at plain (bar its length).
+ *   mask(text, {wordsOnly?, ownerAimed?}) -> { text, technical: [the parts taken out] }: each code block, code span, path,
+ *       command, id, tool and model name and technical word becomes "(a technical detail the crew handles)"; a sentence
+ *       still technical after that becomes the placeholder whole, EXCEPT with wordsOnly (an urgent notice, an ask: no
+ *       sentence goes whole) or ownerAimed and a sentence aimed at the owner (you/your, money, a deadline, a question:
+ *       OWNER_AIMED; lib/owner-notice.js): those keep their words, only the technical ones masked. Otherwise the result
+ *       passes check() at plain (bar its length).
  *   recheckNote(problems, level, {command, owner}) -> the note the seat gets with a reply sent back (starts with
  *       CHECK_PREFIX, so the chat history never shows it as the owner's words). With `command` (a commandAsk hit) the
  *       note is console/command-ask.js recheckNote's, with the plain-words part added: one note, one recheck.
@@ -199,7 +202,13 @@ const MASK_RES = () => {
     EXTRA_RE,
   ];
 };
-function mask(text) {
+// a sentence meant for the owner: it speaks to them (you, your), about money or a deadline, or asks them something. Such a
+// sentence is never replaced whole: only its technical words are masked (the owner must still read what is asked of them)
+const OWNER_AIMED = /\b(?:you|your|yours|yourself)\b|[$€£]\s?\d|\b(?:usd|dollars?|euros?|money|pay|paid|payment|cost|costs|budget|spend|spent|invoice|refund|deadline|due|today|tonight|tomorrow|this week|by (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|noon|tonight|tomorrow)|urgent|asap|right away|now)\b|\?\s*$/i;
+// mask(text, { wordsOnly?, ownerAimed? }): wordsOnly (an urgent notice, an ask) never replaces a whole sentence; otherwise
+// a sentence still technical after its words are masked goes whole, unless ownerAimed and it is aimed at the owner
+function mask(text, mo) {
+  mo = mo || {};
   const technical = [];
   const keep = [];
   let t = String(text || '');
@@ -223,6 +232,7 @@ function mask(text) {
       const probe = sn.split(PLACEHOLDER).join(' ').replace(/\u0001\d+\u0001/g, ' ');
       const c = check(probe, 'plain', 'full');
       if (c.ok) return sn;
+      if (mo.wordsOnly || (mo.ownerAimed && OWNER_AIMED.test(probe))) return sn;   // meant for the owner: keep it, its technical words already masked
       if (!technical.includes(sn.trim())) technical.push(sn.trim());
       return PLACEHOLDER + (/[.!?]$/.test(sn.trim()) ? '.' : '');
     });
@@ -289,4 +299,4 @@ function examples(o) {
   return readJ(f.examples, null) || readJ(path.join(REPO, 'company', 'defaults', 'owner', 'talk-examples.json'), { messages: [] });
 }
 
-module.exports = { prefs, block, check, mask, recheckNote, record, stats, examples, files, capOf, LEVELS, LENGTHS, OFTEN, CHECKS, MISSING, LIMITS, PLACEHOLDER, MASKED_NOTICE, TECH_TITLE };
+module.exports = { OWNER_AIMED, prefs, block, check, mask, recheckNote, record, stats, examples, files, capOf, LEVELS, LENGTHS, OFTEN, CHECKS, MISSING, LIMITS, PLACEHOLDER, MASKED_NOTICE, TECH_TITLE };

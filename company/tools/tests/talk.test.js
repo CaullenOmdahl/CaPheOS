@@ -160,4 +160,22 @@ test('a Plain owner\'s notice: what the plain check let through but the talk che
   setTalk(null);
 });
 
+test('a Plain owner\'s urgent notice, an ask and a sentence aimed at the owner are never masked whole: only their technical words', () => {
+  reset(); setTalk({});
+  const u = N.send({ kind: 'urgent', from: 'Kim', text: 'Urgent: someone may have your password; please change it in your terminal now.', now: at('2026-11-18T09:00:00Z') });
+  const text = u.row.text;
+  assert.match(text, /someone may have your password/, 'the owner still reads what is wrong: ' + text);
+  assert.ok(text.replace(TK.PLACEHOLDER, '').trim() !== '' && !/^\(a technical detail the crew handles\)\.?$/.test(text.trim()), text);
+  reset();
+  const ask = N.send({ kind: 'fyi', asks: true, from: 'Kim', text: 'Can you approve the hosting change before the weekend? The cron job config needs it.', now: at('2026-11-18T09:00:00Z') });
+  assert.match(ask.row.text, /Can you approve the hosting change before the weekend\?/, ask.row.text);
+  reset();
+  const money = N.send({ kind: 'fyi', from: 'Kim', text: 'Please pay the $40 invoice from the hosting vendor by Friday, or the backend goes down.', now: at('2026-11-18T09:00:00Z') });
+  assert.match(money.row.text, /pay the \$40 invoice/, 'a sentence about money and a deadline keeps its words: ' + money.row.text);
+  assert.doesNotMatch(money.row.text, /backend/, '...its technical word is masked');
+  // the chat's masking is unchanged: without ownerAimed a technical sentence still goes whole
+  assert.equal(TK.mask('Run it in your terminal with the sidecar flag.').text.includes('your terminal'), TK.mask('Run it in your terminal with the sidecar flag.', { ownerAimed: false }).text.includes('your terminal'));
+  setTalk(null);
+});
+
 test.after(() => { try { fs.rmSync(T, { recursive: true, force: true }); } catch (_) {} });

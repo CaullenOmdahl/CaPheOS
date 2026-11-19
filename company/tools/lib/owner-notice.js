@@ -31,7 +31,9 @@
  *   N.pending({ root? }) -> the fyi rows waiting for the next message (the console's Today card).
  *   HOW THE OWNER WANTS TO HEAR (company/owner/talk.json, lib/talk.js; docs/TALK.md):
  *     level plain: after the plain check, a lead that still has a lib/talk.js check problem (a command, a technical
- *       word the card list does not carry) is masked, the original under `technical`.
+ *       word the card list does not carry) has those words masked, the original under `technical`. An urgent notice or an
+ *       ask is never masked whole, a sentence aimed at the owner (you/your, money, a deadline, a question) keeps its words,
+ *       and a lead that would be only the placeholder is sent as the plain check left it.
  *     often needed: fyi rows fold into ONE weekly summary instead (weeklyDay at the evening hour, owner-notices.json;
  *       "What the crew did this week"); daily: the day's message, as before (also the reading with no talk.json);
  *       asItHappens: each fyi also goes out at once as its own owner-channel message (the digest row is kept for
@@ -189,7 +191,13 @@ function send(o, opts) {
   if (tp.level === 'plain') {
     try {
       const T = require('./talk');
-      if (!T.check(lead, 'plain', 'full').ok) { const mk = T.mask(lead); if (mk.text) { lead = mk.text; tech.push(...mk.technical); } }
+      // an urgent notice or an ask is never masked whole, and a sentence aimed at the owner keeps its words (lib/talk.js
+      // mask): only the technical words in it are taken out; a lead that would be nothing but the placeholder stays as is
+      if (!T.check(lead, 'plain', 'full').ok) {
+        const mk = T.mask(lead, { wordsOnly: kind === 'urgent' || o.asks === true, ownerAimed: true });
+        const empty = !mk.text || !mk.text.split(T.PLACEHOLDER).join('').replace(/[\s.,;:!?()-]+/g, '');
+        if (!empty) { lead = mk.text; tech.push(...mk.technical); }
+      }
     } catch (_) {}
   }
   const key = String(o.key || keyOf(from, p.text ? lead : raw));
