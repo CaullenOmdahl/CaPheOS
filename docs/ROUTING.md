@@ -280,6 +280,13 @@ unvetoed, whose owner card really was filed), records kind `apply` (with the dep
 route then follows the routing `mode` (shadow until the owner switches routing live). A route that changed in the
 meantime is skipped (`route changed`).
 
+**When it applies, and what cannot move it.** At the deadline a suggestion applies only when everything is checked
+again from what cannot be appended to after the fact: the first offer row counts (a later one never replaces it); the
+deadline and the move come from the owner's filed card, not the row; the one-tier step and, for a move into the top
+tier, the CEO's yes are rechecked; and a card the owner answered "Keep it as it is" refuses even if the veto row was
+never written. `company/work/models/routing-proposals.jsonl` is a locked class-A record (`locked-watch.js`): only
+`routing.js` and `model-rank.js` append to it.
+
 **Where to see it.** `routing.js proposals status [--json]`; Settings › Models › Routing › Weekly suggestions (Off ·
 Recording only · On, and the last 8 weeks with what happened to each). Rows (`company/work/models/routing-proposals.jsonl`,
 appended by `routing.js` with provenance): `offer`, `ceo-ask`, `ceo-answer`, `veto`, `apply`, `skip`, `week`.

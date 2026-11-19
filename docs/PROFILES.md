@@ -89,29 +89,41 @@ Every applied change writes a hash-chained history row, a provenance record, and
 
 ## Sign-off (the counterpart, enforced)
 
-An eager seat's handoff that needs its counterpart's yes is held for its receiver, the way `**Waiting on:**` holds an
-item. A handoff needs a yes when it carries `**Needs sign-off:** <kind>`, or when it reads unmistakably as a kind the
-profile lists ("move this idea to a test", "merge this PR"). The dispatcher (`lib/signoff.js scanTick`, every tick)
-then:
+An eager seat's handoffs are **held by default**: every open handoff it writes to anyone but its counterpart is held for
+its receiver, the way `**Waiting on:**` holds an item, until the counterpart says yes. Wording does not decide it, so an
+eager seat cannot dodge the gate by how it phrases a handoff. Not held:
+- a handoff to the counterpart itself;
+- one clearly marked as information only: a `**FYI:**` line, `**Needs sign-off:** none`, or a heading that starts "FYI".
+
+Its kind is the one `**Needs sign-off:** <kind>` names, else the one its text reads as (a merge, an order, an outside
+act; any mention of an idea card is `promote`), else the first of `commit`, `plan`, `promote` the profile lists (asking
+another seat to do work commits their time). The writer is the seat whose run wrote the block, from the agents'
+transcripts (`provenance.recentCalls`); only when no transcript shows it does the name in the heading count, so a
+heading that names someone else does not move the hold. The dispatcher (`lib/signoff.js scanTick`, every tick) then:
 - writes one ask row and one `Sign-off:` item in the counterpart's inbox;
 - once `holdMaxHours` has passed with no answer, tells the counterpart's manager once (the block stays held);
 - in shadow, holds nothing, logs `WOULD HOLD sign-off …` once per block and counts it.
 
 `node company/tools/approvals.js signoff …`:
-- `ask --kind <k> --ref <ref> --by <seat>`;
-- `answer <so-id> --verdict yes|no --check ".." [--reasons ".."] --by <counterpart>`. Only the named counterpart may
-  answer, never the asker. A no needs reasons, which go to the asker's inbox. A yes releases the block on the next tick;
-- `override <so-id> --by <CEO> --why ".."` (recorded, shown on the asker's profile history);
+- `ask --kind <k> --ref <ref> --by <seat> [--sha <commit>]`;
+- `answer <so-id> --verdict yes|no --check ".." [--reasons ".."] [--sha <commit>] --by <counterpart>`. Only the named
+  counterpart may answer, never the asker. A no needs reasons, which go to the asker's inbox. A yes releases the block on
+  the next tick. A yes to a pull request (`pr:<owner>/<repo>#<n>`) names the commit that was checked (`--sha`); a commit
+  pushed after it needs a new yes;
+- `override <so-id> --by <CEO> --why ".."` (recorded, shown on the asker's profile history). The CEO never overrides a
+  sign-off the CEO asked for;
 - `list [--open]`.
 
 These are crew-only records. They are never owner questions and never reach Today. Answers use the consult rule for
 `--by`: inside an agent's run it must be that run's seat.
 
 The gates add a check and replace none:
-- `external-gate.js check` refuses an act by a seat whose profile lists `external` with no yes for `ext:<target>` (or
-  the `--signoff <so-id>` it names);
-- `merge-gate.js` (gh pr merge) refuses one that lists `merge` with no yes for `pr:<owner>/<repo>#<n>`. A PR URL is the
-  same ref.
+- `external-gate.js check` refuses an act by a seat whose profile lists `external` with no yes for `ext:<target>`. A
+  `--signoff <so-id>` is looked up by its id and counts only when its own ref is `ext:<target>`: a yes for another target
+  never clears this one. Inside an agent's run the acting seat is always the run's own (`STARNET_AGENT_ID`); `--agent`
+  counts only from a shell outside the station;
+- `merge-gate.js` (gh pr merge) refuses one that lists `merge` with no yes for `pr:<owner>/<repo>#<n>` at the PR's head
+  commit. A PR URL is the same ref.
 
 In shadow both record the would-refuse in `signoff-gates.jsonl`. An unreadable profile adds nothing. The owner's Start
 now still releases a held item.
@@ -120,6 +132,28 @@ now still releases a held item.
 
 See `docs/MEETINGS.md` "Point of view": each seat's own transcript, the STANCE line, the gatekeeper's private first take,
 the reminder, the echo stats.
+
+## Size
+
+The injected block (`lib/profile.js block`) is carried by every run of the seat, so it is capped: the newest 8
+experiences, 5 example exchanges (a pushing-back one always kept), 8 relationships, 400 characters a line, and about
+1,500 tokens (6,000 characters) in all. Past that the oldest experiences go first, then the examples; the fixed rules
+are never cut. The profile file itself keeps everything.
+
+## Migrating from a charter
+
+`profile.js migrate` reads each charter's person sections. In `## Counterpart`:
+- "the counterpart **of** X", "you check X" mean this seat checks X: nothing is recorded as its checker (X's own
+  charter names its checker);
+- a section that opens with a crew member's name, "X checks you", "checked by X", "your counterpart is X", "cards are
+  handed to X" mean X checks this seat;
+- a name not on the roster (not hired yet) is ignored, never replaced by someone else;
+- the why keeps whole sentences.
+
+A bullet that wraps onto a second line stays one item. Without a `## Temperament` section the sliders come from the
+archetype's preset, and migrate says so. Migrate's `problems` list, for the people seat's fill-in round, carries what one
+charter cannot show: a pairing the wrong way round, two seats each named the other's checker, a line broken in two, and
+two seats with the same sliders.
 
 ## Checks and notes
 

@@ -101,6 +101,11 @@ one (each `agent.token` reaches the page with an empty `delta` and `held: true`,
 the finished reply is shown after the check, and the chat history (`GET /api/chat/:seat`) is masked the same way. The
 model's own history keeps every word.
 
+**For the owner's release note** (plain words, for the owner): "When you pick Plain, a reply now appears all at once
+when it is ready instead of word by word, so you only see 'is writing…' for a little longer. If a reply needs rewording,
+the crew member writes it once more before you see it, which costs one extra reply now and then." The extra run is the
+one recheck above; in the charter chat it shows as one more run for the same message.
+
 Every outcome is one row in `company/state/talk-checks.jsonl` (rolled monthly, 90 days):
 
 ```
@@ -133,6 +138,11 @@ Rewriting a meeting turn costs too much, so the check runs in **shadow** there (
   under `technical`.
 
 Owner cards (`approvals.js ask`, `lib/owner-card.js`) are unchanged: they already hold the stricter card rule.
+
+**A Plain owner's notices.** Only the technical words of a notice are masked, never the owner matter: an urgent
+notice or an ask is never masked whole, and a sentence aimed at the owner (you or your, money, a deadline, a question)
+keeps its words. "Urgent: someone may have your password; please change it in your terminal now." still says that
+someone may have the password. A notice that would be nothing but the placeholder goes out as the plain check left it.
 
 ## The settings screen
 

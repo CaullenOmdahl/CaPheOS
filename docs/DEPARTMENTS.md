@@ -207,7 +207,11 @@ waited `batch.maxWaitMin` (10) minutes, and the last advise run was at least `ba
 while the lead's own loop runs, and the lead's loop is not woken while an advise run is in flight. It goes through
 `admit()` (door `consult`, docs/BUDGET.md) on the department's `leadModelDefault` as a one-run override (patch 0017;
 `lib/override-allow.js` opens that pair for a live lead), and its `wakes.jsonl` row (door `consult`) lists the consulted
-items, so the ranking books its cost to them.
+items, so the ranking books its cost to them. It passes the same checks as any wake, for the model it will really use:
+the lead's approval mode ("ask" cannot save unattended), the money check (the daily metered cap, the per-agent share,
+the Sprint budget and spread, with the dispatcher's numbers) and the pacer (the pair open in this tick's override list).
+When the lead model is shut, or the station answers 403, it runs on the routine's own model only when that passes the
+same checks; otherwise it waits for a later tick (`ADVISE HOLD`).
 
 **Verdicts.** The lead answers each consult with `consult.js answer <cs-id> --verdict APPROVE|REVISE|ESCALATE-TIER|
 TAKE-OVER|ESCALATE --check ".." [--finding ".."]... [--tier p/m@e] --by <lead>`. Only the department's lead may answer
@@ -307,6 +311,22 @@ then the owner may switch it on from the department card ("Splitting big jobs: O
 
 Not part of this: more than one item at a time per lead, nested delegation (workers delegating), delegation across
 departments, a lead changing its own department's routes.
+
+**What the station enforces under the list (StarNet patch 0018).** A listed worker runs only on a model the list names
+for it, each allowed for the item's class: the lead's one-run model must be one of them, a worker dispatched with no
+model runs on the list's first (its own pair when that is allowed), and a worker the list names no model for does not
+run. So code never reaches the MiniMax plan through a worker's own model or the station default. The item is code work
+when the split says so or any piece lists a code file (`.js`, `.ts`, `.py`, …), whatever its words. The whole lead run
+starts at most the split's piece count of workers over all its `team.dispatch` calls, and once a split's workers have
+started (a live child run, or a run row with the item's id) the split is used and not listed again; a new split is. A
+halted company empties the list at once, and a worker on a live child run counts as busy.
+
+**What the list does not bind (a known gap).** The list names the lead, the item, the workers and the models, but not
+the words of the lead's prompt to each worker: a listed lead could hand a worker a prompt about something other than
+the listed item, within the same team, models, limits and time. The worker's run row carries the item's id, the lead's
+run is in the transcript, and the house ranking's fan-out evaluation counts only accepted items, so such a run shows up
+as cost without an accepted result; nothing stops it at the station. Keep splitting on recording only (shadow) wherever
+this matters.
 
 ## 7. What is not here yet
 
