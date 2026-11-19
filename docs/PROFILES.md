@@ -12,14 +12,27 @@ The tool is `company/tools/profile.js`, the only writer. The shape and the pure 
 
 | File | Class | Writer | What |
 |---|---|---|---|
-| `company/people/profiles/<seat>.json` | F | profile.js | the profile (schema: `company/schemas/profile.schema.json`) |
+| `company/people/profiles/<seat>.json` | A | profile.js | the profile (schema: `company/schemas/profile.schema.json`) |
 | `company/people/profiles/<seat>.history.jsonl` | A | profile.js | every version: who, what, why, the full body; hash-chained |
-| `company/people/profile-proposals.json` | F | profile.js | the people function's proposals and what was decided |
-| `company/people/profile-policy.json` | F | profile.js (owner) | this company's switches; each missing field reads `company/defaults/people/profile-policy.json` |
+| `company/people/profile-proposals.json` | A | profile.js | the people function's proposals and what was decided |
+| `company/people/profile-policy.json` | A | profile.js (owner) | this company's switches; each missing field reads `company/defaults/people/profile-policy.json` |
+| `company/people/profile-policy.history.jsonl` | A | profile.js (owner) | every policy change with its whole body |
 | `company/state/signoffs.jsonl` | A | approvals.js | the sign-off records: ask, answer, override |
 | `company/state/signoff-state.json` | — | lib/signoff.js | the dispatcher's memory: what it logged and told |
 | `company/state/signoff-gates.jsonl` | — | lib/signoff.js | the gates' would-refuse rows while sign-off is in shadow |
 | `company/work/meetings/stats.jsonl` | — | console/meeting.js | the echo stats of each meeting (point of view on) |
+
+**Read only as recorded.** These files are class A: a hand edit is put back on locked-watch's next tick. The readers
+also never act on one in between (the 2026-11-19 safety re-review: a seat that wrote its own profile with `counterpart:
+null`, or the policy with `signoff.mode: off`, was out of its sign-off at once):
+- a profile is read as profile.js last wrote it (its bytes match profile.js's newest recorded write in the provenance
+  log, `lib/recorded.js`), else as the body of its newest history row profile.js recorded: a hand edit, an older version
+  put back or a deleted file changes nothing. With neither left, no profile is read and the live sign-off gate refuses
+  for that seat until the owner sets the profile again. `profile.js check` reports each of these;
+- the policy likewise, from `profile-policy.history.jsonl`; with nothing recorded it fails closed (sign-off live);
+- sign-off rows and weekly routing suggestion rows count only when their bytes match a recorded append by their own
+  tool (`approvals.js`; `routing.js` / `model-rank.js`), with locked-watch's trust rule: never from `node -e` or a
+  preload, and from an agent's run only when the program is that tool itself.
 
 Framework defaults hold only shapes and invented names: `company/defaults/people/temperament.json` (the five
 sliders and their plain words), `presets.json` (the console presets), `profile-policy.json`.
@@ -79,7 +92,8 @@ background. `sync --if-changed` also watches the profiles.
 - **Deciding** (`profile.js decide <pp-id> apply|decline|try`): the owner always may. The CEO may only at its
   governance level for the category `profiles`: approve-everything and gate-money-people are `approve` (the owner
   decides), gate-money and autonomous are `notify` (the CEO applies it and the owner hears). Temperament and counterpart
-  proposals always go to a trial.
+  proposals always go to a trial. The CEO never approves a proposal it made itself (when it also holds the people
+  function): the owner decides those.
 - **Experiences grow from events.** The duty `profiles` (`profile.js --duty`, to the people function) lists last week's
   decisions, owner rulings, corrections and incidents that name a seat with a profile. It is quiet once an experience or
   a proposal cites that source. Nothing applies without the owner or the governance level.
@@ -107,9 +121,10 @@ heading that names someone else does not move the hold. The dispatcher (`lib/sig
 `node company/tools/approvals.js signoff …`:
 - `ask --kind <k> --ref <ref> --by <seat> [--sha <commit>]`;
 - `answer <so-id> --verdict yes|no --check ".." [--reasons ".."] [--sha <commit>] --by <counterpart>`. Only the named
-  counterpart may answer, never the asker. A no needs reasons, which go to the asker's inbox. A yes releases the block on
-  the next tick. A yes to a pull request (`pr:<owner>/<repo>#<n>`) names the commit that was checked (`--sha`); a commit
-  pushed after it needs a new yes;
+  counterpart may answer, never the asker, and only once: the first answer decides and is never replaced. A no needs
+  reasons, which go to the asker's inbox. A yes releases the block on the next tick. A yes to a pull request
+  (`pr:<owner>/<repo>#<n>`) names the commit that was checked (`--sha`); a commit pushed after it needs a new yes, so
+  `ask --sha <the new commit>` opens a new sign-off;
 - `override <so-id> --by <CEO> --why ".."` (recorded, shown on the asker's profile history). The CEO never overrides a
   sign-off the CEO asked for;
 - `list [--open]`.
@@ -137,8 +152,15 @@ the reminder, the echo stats.
 
 The injected block (`lib/profile.js block`) is carried by every run of the seat, so it is capped: the newest 8
 experiences, 5 example exchanges (a pushing-back one always kept), 8 relationships, 400 characters a line, and about
-1,500 tokens (6,000 characters) in all. Past that the oldest experiences go first, then the examples; the fixed rules
-are never cut. The profile file itself keeps everything.
+1,500 tokens (6,000 characters) in all. Past that, in order and only as far as needed: the oldest experiences; the
+examples beyond the first and the pushing-back one; the long lists, last line first and down to one line each (where
+you look first, strengths, blind spots, what you take care of unasked, the people around you, flaws, beliefs, what you
+refuse, habits); then shorter lines. Never cut: who the person is, the counterpart lines, how they sound, with the owner,
+the pushing-back example and the fixed rules. The profile file itself keeps everything.
+
+The one-line reminder ends with one thing of the person's own (the shortest habit, belief or refusal that fits in its
+200 characters). `check` and migrate add a note for the people seat when a profile's personality, background, stake,
+reasons or voice is written about the person ("he", "she" or their own name) instead of to them.
 
 ## Migrating from a charter
 

@@ -321,6 +321,8 @@ function decide(a) {
   if (!pp) throw new Refusal('no proposal ' + id);
   if (pp.status !== 'open') throw new Refusal(id + ' is already ' + pp.status);
   if (who.id === pp.seat) throw new Refusal('no seat decides on its own profile');
+  // the CEO never approves what it proposed itself (when it also holds the people function): the owner decides those
+  if (who.kind === 'ceo' && pp.by && pp.by === who.id) throw new Refusal('the CEO proposed this change, so the CEO cannot also approve it: the owner decides it on ' + nameOf(S.crew(), pp.seat) + '\'s Profile tab', 3, { waiting: 'owner' });
   let lv = 'owner';
   if (who.kind === 'ceo') { lv = govLevel(); if (lv === 'approve' || lv === 'triage') throw new Refusal('profile changes are at "approve": the owner decides this one on ' + nameOf(S.crew(), pp.seat) + '\'s Profile tab', 3, { waiting: 'owner' }); }
   const crew = S.crew(), decidedBy = who.kind === 'owner' ? 'owner' : who.id, byName = who.kind === 'owner' ? 'owner' : who.name;
@@ -389,7 +391,8 @@ function policyCmd(a) {
   const pf = P.paths(O()).policy;
   if (!sub || sub === 'show') return { code: 0, out: Object.assign({ ok: true, file: path.relative(S.root(), pf) }, P.policy(O())) };
   ownerOnly(a, 'policy', null);
-  const val = str(a.pos[2]); const cur = co.readJson(pf, null) || {};
+  // the policy as it was last recorded (lib/profile.js policy: a hand edit of the file is not built on)
+  const val = str(a.pos[2]); const cur = Object.assign({}, P.companyPolicy(O()).doc || {}); delete cur._doc;
   let summary;
   if (sub === 'inject') { if (!['charter', 'profile'].includes(val)) throw new Refusal('policy inject charter|profile'); cur.inject = val; summary = 'profiles ' + (val === 'profile' ? 'now shape every run' : 'no longer shape runs (the charter does, as before)'); }
   else if (sub === 'pov') { if (!['on', 'off'].includes(val)) throw new Refusal('policy pov on|off'); cur.pov = val === 'on'; summary = 'meetings ' + (val === 'on' ? 'now show each seat its own point of view' : 'are back to one transcript for everyone'); }
@@ -397,6 +400,9 @@ function policyCmd(a) {
   else throw new Refusal('policy [show] | inject charter|profile | pov on|off | signoff off|shadow|live --by owner');
   const text = JSON.stringify(Object.assign({ _doc: 'this company\'s profile policy (docs/PROFILES.md); each missing field reads company/defaults/people/profile-policy.json; changed only through profile.js policy --by owner' }, cur), null, 1) + '\n';
   writeAtomic(pf, text); try { prov().wrote(pf, text, TOOL); } catch (_) {}
+  // its history (lib/profile.js policy reads the newest recorded row when the file was changed by hand)
+  { const hf = P.paths(O()).policyHistory, line = JSON.stringify({ at: new Date(S.now()).toISOString(), by: 'owner', sub, value: val, body: JSON.parse(text) }) + '\n';
+    fs.mkdirSync(path.dirname(hf), { recursive: true }); fs.appendFileSync(hf, line); try { prov().appended(hf, line, TOOL); } catch (_) {} }
   const charters = [];
   if (sub === 'inject' && val === 'profile') for (const p of Object.values(P.loadAll(O()))) { try { const c = renderCharterFile(p); if (c) charters.push(c); } catch (_) {} }
   const dec = decisionLine('owner', 'Profiles: ' + summary + '.', a.why ? clean(a.why) : undefined);
@@ -449,12 +455,28 @@ function familyNotes(all) {
 }
 // the block as a Plain owner may see it (docs/TALK.md: a command or a file path never reaches a Plain owner): the crew's
 // commands, file paths and handoff markup are named in words; the crew's own text is unchanged everywhere else
+// the full text as a Plain or Some detail owner reads it (2026-11-19 experience re-review): no command, no file path (in
+// backticks or not), the fixed rules in the same plain words as the tab's "Fixed rules" list, no model or tool names, and
+// the blank lines between sections kept
+const OWNER_WORDS = [
+  [/\*\*FYI:\*\*/g, 'a for-information mark'],
+  [/\bdefault branch(es)?\b/gi, 'main copy'], [/\bpre-merge check\b/gi, 'check before a change goes in'], [/\bmerge gate\b/gi, 'final check'],
+  [/\bpull requests?\b/gi, 'change'], [/\bMiniMax\b/g, 'the cheap setup'], [/\b(?:Claude|Opus|Sonnet|Haiku)\b/g, 'the coding setup'],
+  [/\bsign-off item\b/gi, 'sign-off request'], [/\binbox\b/gi, 'to-do list'],
+];
 function ownerView(text) {
-  return String(text || '')
+  let t = String(text || '');
+  for (const b of P.FIXED_BOUNDARIES) t = t.split(b.text).join(b.plain);
+  t = t
     .replace(/\bnode\s+(?:company\/tools\/)?[\w\/.-]+\.js\b(?:\s+(?:[^\s.]|\.(?=\S))+)*/g, '(the crew\'s sign-off step)')
     .replace(/\*\*Needs sign-off:\*\*\s*<[^>]*>/g, 'a sign-off line')
+    // a span in backticks: a path or a file name is a crew file; any other span loses its backticks
+    .replace(/`([^`\n]*)`/g, (m, x) => /\/|\.[A-Za-z0-9]{1,5}$/.test(x.trim()) ? '(a crew file)' : x)
     .replace(/(?:^|(?<=[\s("']))(?:\.\/)?(?:company|modules|console|scripts|docs)\/[\w\/.-]*[\w\/-]/g, '(a crew file)')
-    .replace(/\s{2,}/g, ' ').replace(/ \n/g, '\n');
+    // any other path: a word with a slash that ends in / or a file extension, or has two slashes
+    .replace(/(?<![\w:\/])(?:\.{0,2}\/)?[\w.-]+\/(?:[\w.-]+\/)*(?:[\w-]+\.[A-Za-z0-9]{1,5})?(?![\w\/])/g, m => (/\/$/.test(m) || /\.[A-Za-z0-9]{1,5}$/.test(m) || (m.match(/\//g) || []).length >= 2) ? '(a crew file)' : m);
+  for (const [re, w] of OWNER_WORDS) t = t.replace(re, w);
+  return t.replace(/\*\*([^*\n]+)\*\*/g, '$1').replace(/[ \t]{2,}/g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
 }
 function preview(p) {
   const c = ctxO(); const ex = (p.examples || []).find(e => e.pushback) || (p.examples || [])[0] || null;
@@ -519,10 +541,13 @@ function check(a) {
   const report = [];
   for (const s of seats) {
     const p = all[s]; const fails = [], notes = [];
+    if (!p && P.loadState(s, O()).state === 'tampered') { fails.push('the profile and its history were changed outside profile.js, and no recorded version is left to read: the seat runs with no profile and its sign-off gate refuses until the owner sets the profile again'); report.push({ seat: s, failures: fails, notes }); continue; }
     if (!p) { notes.push('no profile yet (profile.js migrate --seat ' + s + ')'); report.push({ seat: s, failures: fails, notes }); continue; }
     const v = P.validate(p, { crew }); fails.push(...v.problems); notes.push(...v.notes);
     const ch = verifyChain(s); if (!ch.rows) fails.push('no history rows'); fails.push(...ch.problems);
-    const last = history(s).filter(r => !r._bad).pop(); if (last && Number(last.version) !== p.version) fails.push('the profile is at version ' + p.version + ' but its history ends at ' + last.version + ' (written by something other than profile.js?)');
+    const ls = P.loadState(s, O());
+    if (ls.state === 'restored') fails.push('the profile file was changed outside profile.js (it reads version ' + (ls.fileVersion == null ? '?' : ls.fileVersion) + '); every run uses the last recorded version, ' + ls.version + ', and the next change through profile.js writes it again');
+    const last = history(s).filter(r => !r._bad).pop(); if (ls.state !== 'restored' && last && Number(last.version) !== p.version) fails.push('the profile is at version ' + p.version + ' but its history ends at ' + last.version + ' (written by something other than profile.js?)');
     if (pol.inject === 'profile') { const f = charterFor(s); if (f && fs.existsSync(f)) { const d = P.charterDrift(fs.readFileSync(f, 'utf8'), p, ctxO()); if (!d.markers) notes.push('the charter has no profile markers yet (the next change renders them)'); else if (d.drift) fails.push('the charter\'s profile section was edited by hand; the next render overwrites it (change the profile instead)'); } }
     report.push({ seat: s, version: p.version, failures: fails, notes });
   }

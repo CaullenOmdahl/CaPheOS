@@ -107,7 +107,7 @@ function paths(o) {
   const r = rootOf(o), J = (...a) => path_.join(r, ...a);
   const dir = J('company', 'people', 'profiles');
   return { root: r, dir, file: s => path_.join(dir, String(s) + '.json'), history: s => path_.join(dir, String(s) + '.history.jsonl'),
-    proposals: J('company', 'people', 'profile-proposals.json'), policy: J('company', 'people', 'profile-policy.json'),
+    proposals: J('company', 'people', 'profile-proposals.json'), policy: J('company', 'people', 'profile-policy.json'), policyHistory: J('company', 'people', 'profile-policy.history.jsonl'),
     policyDefault: [J('company', 'defaults', 'people', 'profile-policy.json'), path_.join(FRAMEWORK, 'company', 'defaults', 'people', 'profile-policy.json')],
     temperament: [J('company', 'defaults', 'people', 'temperament.json'), path_.join(FRAMEWORK, 'company', 'defaults', 'people', 'temperament.json')],
     presets: [J('company', 'defaults', 'people', 'presets.json'), path_.join(FRAMEWORK, 'company', 'defaults', 'people', 'presets.json')],
@@ -139,19 +139,67 @@ const LIST_FIELDS = ['convictions', 'willNotDo', 'unprompted', 'whereYouLook', '
 const REMINDER_MAX = 200;   // ~50 tokens at 4 characters a token
 
 /* ---------- reading ---------- */
-function load(seat, o) { if (!SEAT_RE.test(String(seat || ''))) return null; const j = readJ(paths(o).file(seat), null); return j && typeof j === 'object' && !Array.isArray(j) ? j : null; }
+/* A profile is read as profile.js last wrote it, never as the file happens to be (the 2026-11-19 safety re-review: a seat
+ * that wrote its own profile file with counterpart null was out of its sign-off at once, before locked-watch's tick):
+ *   recorded   the file's bytes are profile.js's newest recorded write (provenance): the file as it is
+ *   restored   anything else (a hand edit, an older version put back, the file deleted): the body of the newest history
+ *              row profile.js recorded (lib/recorded.js), so the last recorded version keeps deciding
+ *   unrecorded no provenance row names the file and there is no recorded history (a company from before provenance, a test
+ *              fixture): the file as it is
+ *   tampered   rows name the file but neither the file nor any history row is recorded: no profile is read (null), and
+ *              the sign-off gate refuses for this seat in live mode (lib/signoff.js)
+ * o.raw: the file as it is, unchecked (profile.js check compares the two). */
+const WRITER = 'profile.js';
+// the programs that write a profile through profile.js: itself, and hire.js (a new hire's version 1, in process)
+const PROFILE_WRITERS = [WRITER, 'hire.js'];
+function loadState(seat, o) {
+  if (!SEAT_RE.test(String(seat || ''))) return { profile: null, state: 'none' };
+  const f = paths(o).file(seat);
+  let buf = null, raw = null; try { buf = fs_.readFileSync(f); } catch (_) {}
+  if (buf) { try { const j = JSON.parse(buf.toString('utf8')); if (j && typeof j === 'object' && !Array.isArray(j)) raw = j; } catch (_) {} }
+  if (o && o.raw) return { profile: raw, state: 'raw' };
+  const RC = require('./recorded'), ro = { root: rootOf(o) };
+  const w = RC.newestWrite(f, PROFILE_WRITERS, ro);
+  if (buf && raw && w.sha && w.sha === RC.sha(buf)) return { profile: raw, state: 'recorded' };
+  const hf = paths(o).history(seat);
+  const hist = RC.lines(hf, PROFILE_WRITERS, ro).map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(r => r && r.body && typeof r.body === 'object' && r.body.seat === String(seat));
+  const last = hist[hist.length - 1];
+  if (last) return { profile: JSON.parse(JSON.stringify(last.body)), state: 'restored', version: last.version, fileVersion: raw ? raw.version : null };
+  let histExists = false; try { histExists = fs_.statSync(hf).size > 0; } catch (_) {}
+  if (!w.any && !histExists && !RC.newestWrite(hf, PROFILE_WRITERS, ro).any) return { profile: raw, state: raw ? 'unrecorded' : 'none' };
+  return { profile: null, state: 'tampered' };
+}
+function load(seat, o) { return loadState(seat, o).profile; }
 function loadAll(o) {
   const out = {}; let names = []; try { names = fs_.readdirSync(paths(o).dir); } catch (_) { return out; }
-  for (const f of names.sort()) { if (!/\.json$/.test(f)) continue; const s = f.slice(0, -5); const p = load(s, o); if (p && p.seat === s) out[s] = p; }
+  const seats = new Set(); for (const f of names) { const m = f.match(/^(.+?)(?:\.history\.jsonl|\.json)$/); if (m) seats.add(m[1]); }
+  for (const s of [...seats].sort()) { const p = load(s, o); if (p && p.seat === s) out[s] = p; }
   return out;
 }
 const merge1 = (d, c) => { const out = Object.assign({}, d); for (const [k, v] of Object.entries(c || {})) { if (k.startsWith('_')) continue; out[k] = v && typeof v === 'object' && !Array.isArray(v) && d[k] && typeof d[k] === 'object' && !Array.isArray(d[k]) ? Object.assign({}, d[k], v) : v; } return out; };
 // the company's policy laid over the framework default one field at a time (a missing file reads the default: inject charter)
+// The company's file counts only as profile.js policy last wrote it (lib/recorded.js): a hand edit (signoff.mode off, say)
+// is not obeyed even before locked-watch's tick. Then the newest recorded row of profile-policy.history.jsonl decides; with
+// none, the defaults with the sign-off live (it fails closed). source: company | recorded | defaults | unrecorded-edit.
+function companyPolicy(o) {
+  const P = paths(o);
+  let buf = null, c = null; try { buf = fs_.readFileSync(P.policy); } catch (_) {}
+  if (buf) { try { c = JSON.parse(buf.toString('utf8')); } catch (_) {} }
+  const RC = require('./recorded'), ro = { root: rootOf(o) };
+  const w = RC.newestWrite(P.policy, [WRITER], ro);
+  if (buf && w.sha && w.sha === RC.sha(buf)) return { doc: c, source: 'company' };
+  const histAny = (() => { try { return fs_.statSync(P.policyHistory).size > 0; } catch (_) { return false; } })() || RC.newestWrite(P.policyHistory, [WRITER], ro).any;
+  if (!w.any && !histAny) return buf ? { doc: c, source: 'company' } : { doc: null, source: 'defaults' };   // never written by profile.js (from before provenance, or a fixture)
+  const hist = RC.lines(P.policyHistory, [WRITER], ro).map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(r => r && r.body && typeof r.body === 'object');
+  if (hist.length) return { doc: hist[hist.length - 1].body, source: 'recorded', unrecordedEdit: true };
+  return { doc: { signoff: { mode: 'live' } }, source: 'unrecorded-edit', unrecordedEdit: true };
+}
 function policy(o) {
   const P = paths(o);
   const d = firstOf(P.policyDefault, { inject: 'charter', reminder: true, pov: false, signoff: { mode: 'shadow', holdMaxHours: 24, ceoOverride: true }, trial: { days: 7, minWakes: 10 }, experienceDuty: { everyMin: 240 }, familyCheck: 'note' });
-  const c = readJ(P.policy, null);
+  const cp = companyPolicy(o), c = cp.doc;
   const out = merge1(d, c && typeof c === 'object' ? c : {}); delete out._doc;
+  if (cp.unrecordedEdit) out.unrecordedEdit = true;
   if (!['charter', 'profile'].includes(out.inject)) out.inject = 'charter';
   if (!out.signoff || !['off', 'shadow', 'live'].includes(out.signoff.mode)) out.signoff = Object.assign({}, out.signoff || {}, { mode: 'shadow' });
   out.exists = !!c;
@@ -242,67 +290,78 @@ const cap = (t, n) => { const x = String(t == null ? '' : t).replace(/\s+/g, ' '
 const kindsWords = (ks, field) => (ks || []).filter(k => SIGNOFF_KINDS[k]).map(k => SIGNOFF_KINDS[k][field || 'words']);
 const joinOr = a => a.length <= 1 ? (a[0] || '') : a.slice(0, -1).join(', ') + ' or ' + a[a.length - 1];
 // o: { crew (loops.json agents), profiles (every seat's, for "whose work you check"), temperament (defs) }
+// Over BLOCK_MAX_CHARS (about 1,500 tokens) it is trimmed in this order, and only as far as needed (2026-11-19 experience
+// re-review: a cut from the end took Benny's and Rohan's voice, the part that makes them sound like themselves):
+//   1. the oldest experiences; 2. the examples beyond the first and the pushing-back one;
+//   3. the long lists, the last line first, down to one line each: where you look first, strengths, blind spots, what you
+//      take care of unasked, the people around you, flaws, beliefs, what you refuse, habits (TRIM_ORDER);
+//   4. the long lines of those lists and of personality/background, shortened;
+// and never: who you are, the counterpart lines, how you sound, with the owner, the pushing-back example, the fixed rules.
+const TRIM_ORDER = ['whereYouLook', 'strengths', 'blindSpots', 'unprompted', 'relationships', 'flaws', 'convictions', 'willNotDo', 'habits'];
+const LIST_LEADS = { convictions: 'What you believe, from experience:', willNotDo: 'What you refuse to do:', unprompted: 'What you take care of without being asked:', whereYouLook: 'Where you look first, and what you skip:',
+  strengths: 'Your strengths:', blindSpots: 'Your blind spots:', habits: 'Your habits:', flaws: 'Your flaws (they show in your work; know them):' };
 function block(p, o) {
   o = o || {};
   const crew = o.crew || {}, T = o.temperament || temperament(o), id = p.identity || {};
   const name = id.name || nm(crew, p.seat), me = first(name);
   const arch = id.archetype && ARCHETYPES[id.archetype] ? ARCHETYPES[id.archetype].line : '';
-  const out = ['YOUR PROFILE (who you are; it changes only when your profile does)'];
-  out.push('You are ' + name + (id.title ? ', ' + id.title : '') + '.' + (arch ? ' ' + arch : ''));
-  if (id.personality) out.push('Your personality: ' + id.personality.trim());
-  if (id.background) out.push('Where you come from: ' + id.background.trim());
-  if (id.stake) out.push('Why you care how this company does: ' + id.stake.trim());
-  const tm = p.temperament || {};
-  const tl = TEMPER_KEYS.map(k => { const w = temperWords(k, tm[k], T); return w ? '- ' + TEMPER_LEAD[k] + ': ' + w + '.' : ''; }).filter(Boolean);
-  if (tl.length) out.push('Your temperament:\n' + tl.join('\n'));
-  if (tm.changesMind) out.push('What it takes to change your mind: ' + tm.changesMind.trim());
-  for (const [lead, k] of [['What you believe, from experience:', 'convictions'], ['What you refuse to do:', 'willNotDo'], ['What you take care of without being asked:', 'unprompted'], ['Where you look first, and what you skip:', 'whereYouLook']]) { const b = bulletList(lead, p[k]); if (b) out.push(b); }
-  const c = p.counterpart;
-  if (c && c.seat) {
-    const ks = kindsWords(c.signOff);
-    out.push('Who checks your work: ' + nm(crew, c.seat) + '.' + (ks.length ? ' Before you ' + joinOr(ks) + ', ' + first(nm(crew, c.seat)) + ' has to agree. Every handoff you write to anyone but ' + first(nm(crew, c.seat)) + ' is held until ' + first(nm(crew, c.seat)) + ' signs off, unless it is only for information (start it with **FYI:**); name the kind with **Needs sign-off:** <' + c.signOff.join('|') + '>.' : '') + (c.why ? ' Why: ' + c.why.trim() : ''));
-  }
-  const checks = Object.values(o.profiles || {}).filter(x => x && x.seat !== p.seat && x.counterpart && x.counterpart.seat === p.seat).sort((a, b) => (a.seat < b.seat ? -1 : 1));
-  for (const x of checks) {
-    const ks = kindsWords(x.counterpart.signOff);
-    out.push('Whose work you check: ' + nm(crew, x.seat) + '.' + (ks.length ? ' Before ' + first(nm(crew, x.seat)) + ' can ' + joinOr(ks) + ', you have to agree: answer each sign-off item in your inbox with node company/tools/approvals.js signoff answer <id> --verdict yes|no --check "<what you checked>" --by ' + me + '. Say no with a reason and what would make it a yes.' : ''));
-  }
-  for (const [lead, k] of [['Your strengths:', 'strengths'], ['Your blind spots:', 'blindSpots'], ['Your habits:', 'habits'], ['Your flaws (they show in your work; know them):', 'flaws']]) { const b = bulletList(lead, p[k]); if (b) out.push(b); }
-  const rel = (Array.isArray(p.relationships) ? p.relationships : []).filter(r => r && r.seat && r.note).slice(0, BLOCK_CAPS.relationships);
-  if (rel.length) out.push('The people around you:\n' + rel.map(r => '- ' + nm(crew, r.seat) + ': ' + cap(r.note, BLOCK_CAPS.line)).join('\n'));
+  const L = {}; for (const k of Object.keys(LIST_LEADS)) L[k] = lines(p[k]);
+  L.relationships = (Array.isArray(p.relationships) ? p.relationships : []).filter(r => r && r.seat && r.note).slice(0, BLOCK_CAPS.relationships).map(r => nm(crew, r.seat) + ': ' + cap(r.note, BLOCK_CAPS.line));
+  let lineMax = Infinity;
+  const bl = k => { const l = L[k].map(x => cap(x, lineMax)); return l.length ? (k === 'relationships' ? 'The people around you:' : LIST_LEADS[k]) + '\n' + l.map(x => '- ' + x).join('\n') : ''; };
   // the newest experiences only (the list keeps growing; every run of the seat carries this block)
-  const exp = (Array.isArray(p.experiences) ? p.experiences : []).filter(e => e && e.text).slice(-BLOCK_CAPS.experiences);
-  const expAt = out.length;
-  if (exp.length) out.push(expBlock(exp));
-  const v = p.voice || {};
-  if (v.words || (v.avoid || []).length) out.push('How you sound: ' + (v.words ? v.words.trim() : '') + ((v.avoid || []).length ? (v.words ? ' ' : '') + 'You never say: ' + lines(v.avoid).map(a => '"' + a + '"').join(', ') + '.' : ''));
-  if (v.toOwner) out.push('With the owner: ' + v.toOwner.trim());
+  let exp = (Array.isArray(p.experiences) ? p.experiences : []).filter(e => e && e.text).slice(-BLOCK_CAPS.experiences);
   const exAll = (Array.isArray(p.examples) ? p.examples : []).filter(e => e && e.they && e.you);
   // at most BLOCK_CAPS.examples, keeping a pushing-back one
   let ex = exAll.slice(0, BLOCK_CAPS.examples); const pb = exAll.find(e => e.pushback);
   if (pb && !ex.includes(pb)) ex = ex.slice(0, -1).concat([pb]);
   const exLines = e => '- ' + (e.with === 'owner' ? 'The owner' : nm(crew, e.with)) + ': "' + cap(e.they, BLOCK_CAPS.line) + '"\n  You' + (e.pushback ? ' (pushing back)' : '') + ': "' + cap(e.you, BLOCK_CAPS.line) + '"';
-  const exAt = out.length;
-  if (ex.length) out.push('How you answer, in your own voice:\n' + ex.map(exLines).join('\n'));
   const bnd = lines(p.boundaries);
-  if (bnd.length) out.push('Fixed rules (no profile overrides these):\n' + bnd.map(b => '- ' + b).join('\n'));
-  // the whole block stays under BLOCK_MAX_CHARS (about 1,500 tokens): the oldest experiences go first, then the examples
-  // beyond the pushing-back one; the fixed rules are never cut
-  const total = () => out.join('\n\n').length;
-  let e2 = exp.slice();
-  while (total() > BLOCK_MAX_CHARS && e2.length) { e2 = e2.slice(1); out[expAt] = e2.length ? expBlock(e2) : ''; }
-  let x2 = ex.slice();
-  while (total() > BLOCK_MAX_CHARS && x2.length > 1) {
-    const drop = x2.map((e, i) => i).reverse().find(i => !x2[i].pushback); if (drop == null) break;
-    x2.splice(drop, 1); out[exAt] = 'How you answer, in your own voice:\n' + x2.map(exLines).join('\n');
+  const tm = p.temperament || {};
+  const tl = TEMPER_KEYS.map(k => { const w = temperWords(k, tm[k], T); return w ? '- ' + TEMPER_LEAD[k] + ': ' + w + '.' : ''; }).filter(Boolean);
+  const c = p.counterpart;
+  const checks = Object.values(o.profiles || {}).filter(x => x && x.seat !== p.seat && x.counterpart && x.counterpart.seat === p.seat).sort((a, b) => (a.seat < b.seat ? -1 : 1));
+  const v = p.voice || {};
+  let proseMax = Infinity;
+  const prose = t => cap(String(t).trim(), proseMax);
+  const build = () => {
+    const out = ['YOUR PROFILE (who you are; it changes only when your profile does)'];
+    out.push('You are ' + name + (id.title ? ', ' + id.title : '') + '.' + (arch ? ' ' + arch : ''));
+    if (id.personality) out.push('Your personality: ' + prose(id.personality));
+    if (id.background) out.push('Where you come from: ' + prose(id.background));
+    if (id.stake) out.push('Why you care how this company does: ' + id.stake.trim());
+    if (tl.length) out.push('Your temperament:\n' + tl.join('\n'));
+    if (tm.changesMind) out.push('What it takes to change your mind: ' + tm.changesMind.trim());
+    for (const k of ['convictions', 'willNotDo', 'unprompted', 'whereYouLook']) out.push(bl(k));
+    if (c && c.seat) {
+      const ks = kindsWords(c.signOff);
+      out.push('Who checks your work: ' + nm(crew, c.seat) + '.' + (ks.length ? ' Before you ' + joinOr(ks) + ', ' + first(nm(crew, c.seat)) + ' has to agree. Every handoff you write to anyone but ' + first(nm(crew, c.seat)) + ' is held until ' + first(nm(crew, c.seat)) + ' signs off, unless it is only for information (start it with **FYI:**); name the kind with **Needs sign-off:** <' + c.signOff.join('|') + '>.' : '') + (c.why ? ' Why: ' + c.why.trim() : ''));
+    }
+    for (const x of checks) {
+      const ks = kindsWords(x.counterpart.signOff);
+      out.push('Whose work you check: ' + nm(crew, x.seat) + '.' + (ks.length ? ' Before ' + first(nm(crew, x.seat)) + ' can ' + joinOr(ks) + ', you have to agree: answer each sign-off item in your inbox with node company/tools/approvals.js signoff answer <id> --verdict yes|no --check "<what you checked>" --by ' + me + '. Say no with a reason and what would make it a yes.' : ''));
+    }
+    for (const k of ['strengths', 'blindSpots', 'habits', 'flaws', 'relationships']) out.push(bl(k));
+    if (exp.length) out.push(expBlock(exp));
+    if (v.words || (v.avoid || []).length) out.push('How you sound: ' + (v.words ? v.words.trim() : '') + ((v.avoid || []).length ? (v.words ? ' ' : '') + 'You never say: ' + lines(v.avoid).map(a => '"' + a + '"').join(', ') + '.' : ''));
+    if (v.toOwner) out.push('With the owner: ' + v.toOwner.trim());
+    if (ex.length) out.push('How you answer, in your own voice:\n' + ex.map(exLines).join('\n'));
+    if (bnd.length) out.push('Fixed rules (no profile overrides these):\n' + bnd.map(b => '- ' + b).join('\n'));
+    return out.filter(Boolean).join('\n\n');
+  };
+  let txt = build();
+  // 1. the oldest experiences
+  while (txt.length > BLOCK_MAX_CHARS && exp.length) { exp = exp.slice(1); txt = build(); }
+  // 2. the examples beyond the first one and the pushing-back one
+  while (txt.length > BLOCK_MAX_CHARS && ex.length > 1) {
+    const drop = ex.map((e, i) => i).reverse().find(i => i > 0 && !ex[i].pushback); if (drop == null) break;
+    ex.splice(drop, 1); txt = build();
   }
-  let txt = out.filter(Boolean).join('\n\n');
-  if (txt.length > BLOCK_MAX_CHARS) {
-    // still too long (very long lists): cut the middle sections' lines, never the first lines or the fixed rules
-    const tail = bnd.length ? '\n\nFixed rules (no profile overrides these):\n' + bnd.map(b => '- ' + b).join('\n') : '';
-    const head = txt.slice(0, txt.length - tail.length);
-    txt = head.slice(0, Math.max(0, BLOCK_MAX_CHARS - tail.length - 2)).replace(/\n[^\n]*$/, '') + '\n…' + tail;
-  }
+  // 3. the long lists, the last line first, down to one line each
+  for (const k of TRIM_ORDER) { while (txt.length > BLOCK_MAX_CHARS && L[k].length > 1) { L[k] = L[k].slice(0, -1); txt = build(); } }
+  // 4. shorter lines (lists, then personality and background), never below 120 characters
+  while (txt.length > BLOCK_MAX_CHARS && lineMax > 120) { lineMax = Math.min(lineMax, BLOCK_CAPS.line + 40) - 40; txt = build(); }
+  while (txt.length > BLOCK_MAX_CHARS && proseMax > 200) { proseMax = Math.min(proseMax, 800) - 100; txt = build(); }
   return txt;
 }
 const expBlock = exp => 'What has happened to you here, and what you took from it:\n' + exp.map(e => '- ' + cap(e.text, BLOCK_CAPS.line)).join('\n');
@@ -312,7 +371,16 @@ function reminder(p, o) {
   const id = (p && p.identity) || {}, n = first(id.name || nm(o && o.crew, p && p.seat));
   const what = id.archetype ? 'the ' + id.archetype : (id.title ? 'the ' + id.title : 'yourself');
   const c = p && p.counterpart && p.counterpart.seat ? ' ' + first(nm(o && o.crew, p.counterpart.seat)) + ' checks you.' : '';
-  return ('You are ' + n + ', ' + what + '. Reply only as ' + n + ', in your own voice.' + c).slice(0, REMINDER_MAX);
+  const base = 'You are ' + n + ', ' + what + '. Reply only as ' + n + ', in your own voice.' + c;
+  // one thing only this person holds (2026-11-19 experience re-review: every reminder was the same sentence): the shortest
+  // habit, belief or refusal that fits whole, else the first belief shortened to the room left
+  const room = REMINDER_MAX - base.length - 1;
+  const tag = (lead, a) => lines(a).map(x => lead + x.replace(/^[-*]\s*/, ''));
+  const own = [].concat(tag('Your habit: ', p && p.habits), tag('You believe: ', p && p.convictions), tag('You never: ', p && p.willNotDo));
+  const fits = own.filter(x => x.length <= room).sort((a, b) => a.length - b.length)[0];
+  const lead = own.find(x => x.startsWith('You believe: ')) || own[0];
+  const extra = fits || (lead && room >= 50 ? cap(lead, room) : '');
+  return (extra ? base + ' ' + extra : base).slice(0, REMINDER_MAX);
 }
 
 /* ---------- the charter's person sections ---------- */
@@ -495,6 +563,15 @@ function crewChecks(all, o) {
       }
     }
   }
+  // text written about the person instead of to them ("He reads twenty threads", "Benny runs on ...") under "You are":
+  // a note for the people seat to rewrite it as "you" (2026-11-19 experience re-review)
+  for (const p of list) {
+    const id = p.identity || {}, me = first(id.name || name(p.seat));
+    const own = new RegExp('(?:^|[.!?]\\s+)' + me.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:\'s)?\\s+[a-z]', '');
+    const fields = [['personality', id.personality], ['background', id.background], ['stake', id.stake], ['why they are checked', p.counterpart && p.counterpart.why], ['voice', (p.voice || {}).words], ['with the owner', (p.voice || {}).toOwner], ['what changes their mind', (p.temperament || {}).changesMind]];
+    const third = fields.filter(([, t]) => t && (/\b(?:he|she|his|him|himself|herself)\b/i.test(t) || (me && own.test(String(t))))).map(([k]) => k);
+    if (third.length) notes.push({ seat: p.seat, text: name(p.seat) + '\'s ' + joinOr(third) + ' ' + (third.length > 1 ? 'are' : 'is') + ' written about ' + me + ' ("he", "she" or the name), not to ' + me + ': rewrite it as "you" (the profile speaks to the person)' });
+  }
   const key = p => TEMPER_KEYS.map(k => (p.temperament || {})[k]).join(',');
   for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) if (key(list[i]) === key(list[j])) notes.push({ seat: list[j].seat, text: 'same sliders as ' + name(list[i].seat) + ': ' + name(list[j].seat) + ' and ' + name(list[i].seat) + ' have identical temperaments; give each their own' });
   return { failures, notes };
@@ -549,5 +626,5 @@ function reminderFor(seat, o) {
 }
 
 module.exports = { PERSON, PROFILE_SECTIONS, PRESETS, ARCHETYPES, carryProfile, profileBlock, interviewLines, archetypeOf, archetypeLine, presetFor, needsCounterpart, crewMix,
-  TEMPER_KEYS, SIGNOFF_KINDS, FIXED_BOUNDARIES, FIXED_TEXTS, REMINDER_MAX, BLOCK_MAX_CHARS, BLOCK_CAPS, crewChecks, SEAT_RE, paths, load, loadAll, policy, temperament, temperWords, presets, sortKeys, canonical, hashOf,
+  TEMPER_KEYS, SIGNOFF_KINDS, FIXED_BOUNDARIES, FIXED_TEXTS, REMINDER_MAX, BLOCK_MAX_CHARS, BLOCK_CAPS, crewChecks, SEAT_RE, paths, load, loadState, loadAll, policy, companyPolicy, temperament, temperWords, presets, sortKeys, canonical, hashOf,
   blank, validate, block, reminder, charterSection, renderCharter, charterDrift, fromCharter, seatByName, counterpartOf, bulletsOf, sentencesUpTo, familyOf, pairCheck, modelOf, wakeStamp, voiceFor, reminderFor };

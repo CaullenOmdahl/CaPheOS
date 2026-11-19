@@ -98,6 +98,11 @@ test('splitOk: two pieces, a piece with no check and two pieces sharing a file a
   assert.match(C.splitOk(pieceBlock([PIECES[0], PIECES[1], 'more parser — files: src/parse.js — check: npm test'])).why, /pieces 1 and 3 both touch src\/parse\.js/);
   assert.match(C.splitOk(pieceBlock([PIECES[0], PIECES[1], 'all of src — files: src — check: npm test'])).why, /both touch/, 'a folder overlaps the files under it');
   assert.equal(C.splitOk(pieceBlock(PIECES), { minPieces: 4 }).ok, false, 'minPieces is config');
+  // at most maxPieces (default 6): a lead's own split of many pieces is refused, so one run's workers stay bounded
+  const many = n => Array.from({ length: n }, (_, i) => 'part ' + (i + 1) + ' — files: src/p' + (i + 1) + '.js — check: npm test');
+  assert.equal(C.splitOk(pieceBlock(many(6))).ok, true);
+  assert.match(C.splitOk(pieceBlock(many(7))).why, /7 pieces; a split has at most 6/);
+  assert.match(C.splitOk(pieceBlock(many(30)), { maxPieces: 12 }).why, /at most 12/);
 });
 
 test('a SPLIT answer: live writes the pieces into the member\'s item and records the split; recording only keeps the item with the member; off refuses', () => {
@@ -233,6 +238,21 @@ test('delegate-allow: code files make a code item, a worker\'s own pair is liste
   assert.equal(g.doc.leads.kwa.class, 'code');
   for (const w of g.doc.leads.kwa.workers) assert.ok(g.doc.leads.kwa.models[w].length && g.doc.leads.kwa.models[w].every(m => m.provider !== 'custom'), 'every listed model is allowed for code: ' + w);
   assert.equal(DA.classOf({ class: 'general', pieces: [{ files: ['docs/a.md'] }] }), 'general');
+  // a piece is code unless every file is plainly not code (2026-11-19 re-review: .html, .css, .json, .yml, a Dockerfile,
+  // an .astro page or a bare folder slipped past a list of code extensions and could be listed for MiniMax workers)
+  for (const f of ['site/index.html', 'web/app.css', 'config/app.json', '.github/workflows/ci.yml', 'Dockerfile', 'src/pages/a.astro', 'src/app/', 'src'])
+    assert.equal(DA.classOf({ class: 'ops', pieces: [{ files: ['docs/a.md'] }, { files: [f] }] }), 'code', f);
+  for (const f of ['docs/a.md', 'notes/b.txt', 'report.pdf', 'brief.docx', 'data/table.csv'])
+    assert.equal(DA.classOf({ class: 'research', pieces: [{ files: [f] }] }), 'research', f);
+  assert.equal(DA.classOf({ class: 'general', pieces: [{ files: [] }] }, { defaultClass: 'code' }), 'code', 'no files in a code department');
+  const html = run({ candidates: [cand({ class: 'ops', pieces: tsPieces.map(p => Object.assign({}, p, { files: ['site/' + p.n + '.html'] })) })] });
+  assert.equal(html.doc.leads.kwa.class, 'code');
+  for (const w of html.doc.leads.kwa.workers) assert.ok(html.doc.leads.kwa.models[w].every(m => m.provider !== 'custom'), 'no MiniMax for html pieces: ' + w);
+  // more pieces than delegation.maxPieces: not listed; at the limit: the whole run is capped at it
+  const big = n => Array.from({ length: n }, (_, i) => ({ n: i + 1, title: 'p' + i, files: ['src/p' + i + '.ts'], check: 'x' }));
+  const over = run({ candidates: [cand({ pieces: big(7) })] });
+  assert.ok(!over.doc.leads.kwa, JSON.stringify(over.doc)); assert.ok(over.notes.some(n => /7 pieces, more than the 6/.test(n.why)), JSON.stringify(over.notes));
+  assert.equal(run({ candidates: [cand({ pieces: big(6) })] }).doc.leads.kwa.runWorkers, 6);
   // the whole run: at most the piece count, and never more per call than pieces
   assert.equal(g.doc.leads.kwa.runWorkers, 3); assert.ok(g.doc.leads.kwa.maxWorkers <= 3);
   // research: the worker's own pair first (what it runs on when the lead names none)

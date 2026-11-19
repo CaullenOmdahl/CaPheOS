@@ -470,8 +470,14 @@ function isoWeek(date) {
 function tierOf(pair, mp) { const t = ((((mp || {}).allowed || {})[pair && pair.provider] || {}).tiers || {})[pair && pair.model]; const i = TIER_ORDER.indexOf(t); return i >= 0 ? i : 0; }
 const topTier = (pair, K) => K.topTierNeedsCeo.some(x => String(pair && pair.model || '').toLowerCase().includes(String(x).toLowerCase()));
 const pairOf = x => Object.assign({ provider: String(x.provider), model: String(x.model) }, x.effort && x.effort !== 'default' ? { effort: String(x.effort) } : {});
+// only rows routing.js or model-rank.js recorded (lib/recorded.js, locked-watch's trust rule): a ceo-answer, offer or apply
+// row appended by hand is never read, even in the same tick before locked-watch strips it
+const PROPOSAL_WRITERS = [TOOL, 'model-rank.js'];
 function proposalRows() {
-  try { return require('./lib/bounded').tailLines(P(PROPOSALS_REL), 20000, { maxBytes: 8 * 1048576 }).map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(r => r && typeof r === 'object' && !r._retention); } catch (_) { return []; }
+  try {
+    const f = P(PROPOSALS_REL); const txt = require('./lib/bounded').tailText(f, 8 * 1048576);
+    return require('./lib/recorded').lines(f, PROPOSAL_WRITERS, { root: S.root(), text: txt }).slice(-20000).map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(r => r && typeof r === 'object' && !r._retention);
+  } catch (_) { return []; }
 }
 function appendProposalRow(row) {
   if (process.env.CAPHEOS_READONLY === '1') return row;

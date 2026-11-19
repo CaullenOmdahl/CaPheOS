@@ -12,18 +12,18 @@
       "Takes the time to get it right, whatever the clock says",
       "Moves carefully, one checked step at a time",
       "Keeps a steady, even pace",
-      "Moves quickly and fixes things as they go",
+      "Moves quickly and fixes things along the way",
       "Gets a first version out today"] },
     "rigour": { "label": "How thorough they are", "values": [
       "Goes on instinct and a quick look",
       "Checks the main thing and moves on",
       "Checks the parts that matter",
       "Checks most things twice",
-      "Proves every claim before it leaves their desk"] },
+      "Proves every claim before passing it on"] },
     "candour": { "label": "How bluntly they speak", "values": [
       "Very gentle: softens every concern",
       "Tactful: raises a concern carefully",
-      "Says what they think, kindly",
+      "Honest, and kind about it",
       "Direct: says the hard thing plainly",
       "Blunt: says it straight, every time"] },
     "independence": { "label": "How much they decide on their own", "values": [

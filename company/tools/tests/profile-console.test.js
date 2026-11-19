@@ -31,12 +31,15 @@ function fixture() {
   return T;
 }
 class HttpError extends Error { constructor(status, msg, data) { super(msg); this.status = status; this.data = data; } }
+let RUNS = 0;
 function mount(T) {
   const routes = [];
   const run = (name, args) => new Promise(resolve => {
     const code = 'const prov = require(' + JSON.stringify(path.join(TOOLS, 'provenance.js')) + '); prov.pinUnderStation(false); prov.pinOwnerShell(true); process.argv = [process.argv[0], "x"].concat(' + JSON.stringify(args) + ');' +
       'const r = require(' + JSON.stringify(path.join(TOOLS, name)) + ').run(' + JSON.stringify(args) + '); process.stdout.write(JSON.stringify(r.out)); process.exitCode = r.code;';
-    execFile(process.execPath, ['-e', code], { cwd: T, env: Object.assign({}, process.env, { CAPHEOS_ROOT: T, CAPHEOS_TZ: 'UTC', PROFILE_NO_SYNC: '1' }) }, (err, out) => {
+    // a script file, not node -e: a profile is read only as an untainted profile.js recorded it (lib/recorded.js)
+    const sf = path.join(T, '.run-' + (++RUNS) + '.js'); fs.writeFileSync(sf, code);
+    execFile(process.execPath, [sf], { cwd: T, env: Object.assign({}, process.env, { CAPHEOS_ROOT: T, CAPHEOS_TZ: 'UTC', PROFILE_NO_SYNC: '1' }) }, (err, out) => {
       let data = null; try { data = JSON.parse(out); } catch (_) { data = { text: out }; }
       resolve({ code: err ? err.code || 1 : 0, data });
     });
@@ -106,6 +109,14 @@ test('a Plain owner\'s preview shows the crew\'s words without commands or file 
   assert.ok(!/node |company\/|--verdict|\*\*Needs sign-off/.test(v.preview.blockOwner), 'the Plain view has no command, path or markup: ' + v.preview.blockOwner);
   const pv = await call('POST', '/api/profile/ro/preview', { set: { '/convictions': ['Cards live in company/work/ideas/ and I read them all.'] } });
   assert.ok(!/company\/work/.test(pv.blockOwner) && /Cards live in/.test(pv.blockOwner));
+  // 2026-11-19 re-review: paths in backticks and short ones (sim/), the blank lines between sections, the technical words
+  const pv2 = await call('POST', '/api/profile/ro/preview', { set: { '/convictions': ['Cards live in `company/work/ideas/` and runs in `sim/`.'], '/whereYouLook': ['The fills in `company/work/sim/out/` first.', 'Never merges to the default branch; the pre-merge check and the merge gate first (**FYI:** on Claude, not MiniMax).'] } });
+  const bo = pv2.blockOwner;
+  assert.ok(!/`|company\/|sim\/|\bsim\b\//.test(bo), 'no path, in backticks or not: ' + bo);
+  assert.ok(/Cards live in \(a crew file\)/.test(bo), bo);
+  for (const w of ['default branch', 'pre-merge check', 'merge gate', 'Claude', 'MiniMax', '**FYI:**', '**']) assert.ok(!bo.includes(w), 'no "' + w + '" for a Plain owner: ' + bo);
+  assert.ok(/\n\nWhose work you check:|\n\nWho checks your work:/.test(bo) && /\n\nFixed rules/.test(bo), 'sections keep their blank lines');
+  assert.ok(bo.includes('Never changes the main copy of a project directly'), 'the fixed rules in the tab\'s plain words');
   // the screen: the example fields, the pushes-back box, the With picker and the sign-off boxes all refresh the save area
   const src = fs.readFileSync(path.join(REPO, 'console', 'ui', 'js', 'screens', 'crew-profile.js'), 'utf8');
   const ex = src.slice(src.indexOf('function exampleRow'), src.indexOf('function counterpartPicker'));

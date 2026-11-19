@@ -50,7 +50,10 @@ function tool(T, argv, o) {
     'const r = ' + (o.fn ? o.fn : 't.run(' + JSON.stringify(argv) + ')') + '; process.stdout.write(JSON.stringify(r));';
   const env = Object.assign({}, process.env, { CAPHEOS_ROOT: T, CAPHEOS_TZ: 'UTC', STARNET_URL: 'http://127.0.0.1:9', PROFILE_NO_SYNC: '1' });
   if (o.agent) env.STARNET_AGENT_ID = o.agent; else delete env.STARNET_AGENT_ID;
-  const p = spawnSync(process.execPath, ['-e', code], { cwd: T, encoding: 'utf8', env });
+  // run as a script at the tool's own path in the fixture, not node -e: lib/profile.js reads a profile only as profile.js
+  // recorded it, and a recorded write counts only from an untainted program that is the tool itself (lib/recorded.js)
+  const sf = path.join(T, 'company', 'tools', 'profile.js'); fs.mkdirSync(path.dirname(sf), { recursive: true }); fs.writeFileSync(sf, code);
+  const p = spawnSync(process.execPath, [sf], { cwd: T, encoding: 'utf8', env });
   if (p.status !== 0) throw new Error('child failed: ' + p.stdout + p.stderr);
   return JSON.parse(p.stdout);
 }
@@ -204,4 +207,61 @@ test('policy: owner only; inject profile renders the charter\'s person sections 
   assert.match(JSON.stringify(tool(c.T, ['check', '--seat', 'ben', '--json']).out), /edited by hand/);
   tool(c.T, ['edit', 'ben', '--set', '/identity/stake="His name is on the cards."', '--base', '1', '--by', 'owner'], own);
   assert.match(c.r('company/roles/benny.md'), /<!-- profile:begin v=2 -->[\s\S]*## Archetype\nscout[\s\S]*## Stake\nHis name is on the cards\./, 'the next render overwrites the hand edit');
+});
+
+test('a hand edit of a profile or the policy is not read: the last recorded version decides at once, so a seat cannot drop its own sign-off', () => {
+  const c = migrated();
+  const SO = require(path.join(TOOLS, 'lib', 'signoff.js'));
+  const o = { root: c.T, crew: CREW, ceo: 'boss' };
+  assert.equal(tool(c.T, ['policy', 'signoff', 'live', '--by', 'owner'], own).code, 0);
+  const ben = load(c, 'ben');
+  assert.equal(ben.counterpart.seat, 'ro', JSON.stringify(ben.counterpart));
+  const kind = ben.counterpart.signOff[0];
+  assert.ok(kind, 'migrate gave Benny sign-off kinds');
+  const gate = () => SO.gate({ seat: 'ben', kind, refs: ['ext:wire-money'] }, o);
+  assert.equal(gate().cleared, false); assert.ok(gate().refuse, 'live: refused without a yes');
+  assert.equal(P.loadState('ben', o).state, 'recorded');
+  // the reproduction from the review: the profile written by hand with no counterpart, the policy with the sign-off off
+  const f = path.join(c.T, 'company/people/profiles/ben.json');
+  const forged = Object.assign({}, ben, { counterpart: null }); forged.hash = P.hashOf(forged);
+  fs.writeFileSync(f, JSON.stringify(forged, null, 1) + '\n');
+  fs.writeFileSync(path.join(c.T, 'company/people/profile-policy.json'), JSON.stringify({ signoff: { mode: 'off' } }));
+  assert.equal(P.loadState('ben', o).state, 'restored');
+  assert.equal(P.load('ben', o).counterpart.seat, 'ro', 'the recorded version is read');
+  assert.equal(P.policy(o).signoff.mode, 'live', 'the recorded policy is read');
+  assert.ok(gate().refuse, 'still refused');
+  assert.match(JSON.stringify(tool(c.T, ['check', '--seat', 'ben', '--json']).out), /changed outside profile\.js/);
+  // a forged history row (a valid chain hash is easy to compute) is not read either
+  const hf = path.join(c.T, 'company/people/profiles/ben.history.jsonl');
+  const last = hist(c, 'ben').pop();
+  fs.appendFileSync(hf, JSON.stringify(Object.assign({}, last, { version: last.version + 1, body: forged, prevHash: last.rowHash })) + '\n');
+  assert.equal(P.load('ben', o).counterpart.seat, 'ro');
+  // the file deleted: the recorded version still decides
+  fs.rmSync(f);
+  assert.equal(P.load('ben', o).counterpart.seat, 'ro'); assert.ok(P.loadAll(o).ben, 'loadAll still lists the seat');
+  // an older genuine version put back is not the newest recorded write
+  const v1 = fs.readFileSync(path.join(c.T, 'company/people/profiles/ro.json'));
+  assert.equal(tool(c.T, ['edit', 'ro', '--set', '/voice/words="Dry and exact."', '--base', '1', '--by', 'owner'], own).code, 0);
+  fs.writeFileSync(path.join(c.T, 'company/people/profiles/ro.json'), v1);
+  assert.equal(P.load('ro', o).voice.words, 'Dry and exact.');
+  // a change through profile.js builds on the recorded version and is read as it is again
+  assert.equal(tool(c.T, ['policy', 'pov', 'on', '--by', 'owner'], own).code, 0);
+  assert.equal(P.policy(o).signoff.mode, 'live', 'the hand-made "off" was not built on'); assert.equal(P.policy(o).pov, true);
+  // profile and history both gone or forged: no profile is read and the live gate refuses
+  fs.writeFileSync(hf, JSON.stringify({ forged: true }) + '\n'); fs.writeFileSync(f, JSON.stringify(forged));
+  assert.equal(P.loadState('ben', o).state, 'tampered');
+  assert.match(gate().refuse || '', /changed outside profile\.js/);
+});
+
+test('a CEO that also holds the people function never approves its own proposal, even at notify', () => {
+  const c = migrated({ gov: { categories: { profiles: 'notify' } } });
+  c.w('company/tools/loops.json', { agents: Object.assign({}, CREW, { boss: Object.assign({}, CREW.boss, { functions: ['ceo', 'people'] }) }) });
+  const p = tool(c.T, ['propose', 'ben', '--kind', 'experience', '--text', 'A weather card cost two days and taught him to check the fee first', '--source', 'd-0123456789ab', '--why', 'the weather card', '--by', 'Alex']);
+  assert.equal(p.code, 0, JSON.stringify(p));
+  const d = tool(c.T, ['decide', p.out.id, 'apply', '--by', 'Alex']);
+  assert.equal(d.code, 3, JSON.stringify(d)); assert.match(d.out.error, /the CEO proposed this change/);
+  assert.equal(tool(c.T, ['decide', p.out.id, 'apply', '--by', 'owner'], own).code, 0, 'the owner decides it');
+  // Marisol's proposal: the CEO may still apply it at notify
+  const q = tool(c.T, ['propose', 'ro', '--kind', 'experience', '--text', 'A clean backtest hid a fee bug for a week', '--source', 'd-0123456789ab', '--why', 'the fee bug', '--by', 'Marisol']);
+  assert.equal(tool(c.T, ['decide', q.out.id, 'apply', '--by', 'Alex']).code, 0);
 });

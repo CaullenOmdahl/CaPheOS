@@ -57,17 +57,22 @@ function normRef(ref) {
 const itemRef = (inbox, it) => { const id = require('./wakes').itemId(inbox, it.heading, it.id); return id.includes('#') ? id : inbox + '#' + id; };
 
 /* ---------- the records ---------- */
+// only the rows approvals.js (or the dispatcher through this file) recorded: a line appended by hand is never read, even
+// in the minutes before locked-watch.js strips it (lib/recorded.js, the same trust rule as locked-watch's)
 function rows(o) {
-  let t = ''; try { t = require('./bounded').tailText(files(o).log, 8 << 20); } catch (_) { try { t = fs.readFileSync(files(o).log, 'utf8'); } catch (__) { t = ''; } }
-  const out = []; for (const l of t.split('\n')) { if (!l.trim()) continue; try { const r = JSON.parse(l); if (r && r.id && r.op) out.push(r); } catch (_) {} } return out;
+  const f = files(o).log;
+  let t = ''; try { t = require('./bounded').tailText(f, 8 << 20); } catch (_) { try { t = fs.readFileSync(f, 'utf8'); } catch (__) { t = ''; } }
+  const out = []; for (const l of require('./recorded').lines(f, [WRITER], { root: rootOf(o), text: t })) { try { const r = JSON.parse(l); if (r && r.id && r.op) out.push(r); } catch (_) {} } return out;
 }
+// the FIRST answer decides a sign-off (a later answer row never replaces it; approvals.js refuses a second one), and a
+// CEO override, once made, stands
 function records(o) {
   const m = new Map();
   for (const r of (o && o.rows) || rows(o)) {
     if (r.op === 'ask') { if (!m.has(r.id)) m.set(r.id, { id: r.id, ask: r, answers: [], override: null, status: 'open' }); continue; }
     const x = m.get(r.id); if (!x) continue;
-    if (r.op === 'answer') { x.answers.push(r); if (x.status !== 'overridden') { x.status = r.verdict === 'yes' ? 'yes' : 'no'; x.sha = r.verdict === 'yes' ? (r.sha || x.ask.sha || null) : null; } }
-    else if (r.op === 'override') { x.override = r; x.status = 'overridden'; }
+    if (r.op === 'answer') { x.answers.push(r); if (x.answers.length === 1 && x.status !== 'overridden') { x.status = r.verdict === 'yes' ? 'yes' : 'no'; x.sha = r.verdict === 'yes' ? (r.sha || x.ask.sha || null) : null; } }
+    else if (r.op === 'override') { if (!x.override) { x.override = r; x.status = 'overridden'; } }
   }
   return m;
 }
@@ -129,9 +134,11 @@ function ask(a, o) {
   if (!ref) throw new Refusal('--ref names what is signed off: <inbox>#<item id>, pr:<owner>/<repo>#<n>, or ext:<target>');
   const cp = needs(from, kind, o);
   if (!cp) throw new Refusal(nameOf(crew, from) + '\'s profile names no counterpart who signs off "' + kind + '", so nothing is needed');
-  const recs = records(o), have = latestFor(recs, ref, kind);
-  if (have && have.status !== 'no') return { ok: true, id: have.id, duplicate: true, status: have.status, counterpart: cp };
   const sha = String(a.sha || '').trim().toLowerCase(); if (sha && !/^[0-9a-f]{7,64}$/.test(sha)) throw new Refusal('--sha takes a commit hash');
+  const recs = records(o), have = latestFor(recs, ref, kind);
+  // a yes for an earlier commit of a pull request does not cover a new one: asking with the new commit opens a new sign-off
+  const staleYes = have && have.status === 'yes' && sha && have.sha && !(sha.startsWith(have.sha) || have.sha.startsWith(sha));
+  if (have && have.status !== 'no' && !staleYes) return { ok: true, id: have.id, duplicate: true, status: have.status, counterpart: cp };
   const row = append(Object.assign({ at: at(o), op: 'ask', id: newId(), from, counterpart: cp, kind, ref, digest: clean(a.digest, 120) || null, why: clean(a.why, 400) || null, via: a.via || 'approvals.js' }, sha ? { sha } : {}), o);
   return { ok: true, id: row.id, counterpart: cp, kind, ref };
 }
@@ -142,6 +149,7 @@ function answer(a, o) {
   if (by === x.ask.from) throw new Refusal('the seat that asked cannot sign off its own request; ' + nameOf(crew, x.ask.counterpart) + ' answers it');
   if (by !== x.ask.counterpart) throw new Refusal('only ' + nameOf(crew, x.ask.counterpart) + ' (the counterpart named in ' + nameOf(crew, x.ask.from) + '\'s profile) answers this sign-off');
   if (x.status === 'overridden') throw new Refusal('the CEO already overrode this sign-off');
+  if (x.answers.length) throw new Refusal('sign-off ' + x.id + ' is already answered (' + x.status + '); an answer is never changed: ' + nameOf(crew, x.ask.from) + ' asks again for a new one');
   const verdict = String(a.verdict || '').toLowerCase(); if (!['yes', 'no'].includes(verdict)) throw new Refusal('--verdict yes|no');
   const check = clean(a.check, 300); if (!check) throw new Refusal('--check "<what you checked>" is required');
   const reasons = clean(a.reasons, 600) || null;
@@ -289,6 +297,16 @@ function gate(a, o) {
   const seat = String(a.seat || ''), kind = String(a.kind || '');
   let mode = 'off'; try { mode = P.policy(o).signoff.mode; } catch (_) { return { needed: false }; }
   if (mode === 'off' || !seat) return { needed: false, mode };
+  // a profile changed outside profile.js with no recorded version left to read (lib/profile.js loadState): nobody can
+  // tell whose yes it needs, so live refuses until the owner sets the profile again
+  if (!(o && o.profile)) {
+    let st = 'none'; try { st = P.loadState(seat, o).state; } catch (_) {}
+    if (st === 'tampered') {
+      const why = nameOf(crewOf(o), seat) + '\'s profile was changed outside profile.js and no recorded version is left, so whose sign-off it needs cannot be read: the owner sets the profile again before this goes ahead (Crew › <person> › Profile)';
+      if (mode === 'live') return { needed: true, cleared: false, mode, counterpart: null, refuse: why };
+      return { needed: true, cleared: false, mode, counterpart: null, would: true, why };
+    }
+  }
   const cp = needs(seat, kind, o); if (!cp) return { needed: false, mode };
   const refs = (a.refs || []).map(normRef).filter(Boolean);
   const recs = records(o);
@@ -301,7 +319,7 @@ function gate(a, o) {
   if (!hit) for (const r of refs) { const x = latestFor(recs, r, kind); if (ok(x)) { hit = true; break; } if (x && x.status === 'yes' && !shaOk(x)) stale = true; }
   if (hit) return { needed: true, cleared: true, mode, counterpart: cp };
   const crew = crewOf(o);
-  const why = nameOf(crew, seat) + '\'s profile says ' + nameOf(crew, cp) + ' signs off before they ' + P.SIGNOFF_KINDS[kind].words + ', and there is no yes for ' + (refs[0] || 'this act') + (stale ? ' at this commit (the yes was for an earlier one; ask again)' : '') + ': ask with node company/tools/approvals.js signoff ask --kind ' + kind + ' --ref ' + (refs[0] || '<ref>') + ' --by ' + nameOf(crew, seat) + ', then act once ' + firstName(nameOf(crew, cp)) + ' says yes';
+  const why = nameOf(crew, seat) + '\'s profile says ' + nameOf(crew, cp) + ' signs off before they ' + P.SIGNOFF_KINDS[kind].words + ', and there is no yes for ' + (refs[0] || 'this act') + (stale ? ' at this commit (the yes was for an earlier one; ask again)' : '') + ': ask with node company/tools/approvals.js signoff ask --kind ' + kind + ' --ref ' + (refs[0] || '<ref>') + (stale && sha ? ' --sha ' + sha : '') + ' --by ' + nameOf(crew, seat) + ', then act once ' + firstName(nameOf(crew, cp)) + ' says yes';
   if (mode === 'live') return { needed: true, cleared: false, mode, counterpart: cp, refuse: why };
   try { const f = files(o).gates; fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, JSON.stringify({ at: at(o), seat, kind, refs, counterpart: cp, via: a.via || null, would: 'refuse' }) + '\n'); } catch (_) {}
   return { needed: true, cleared: false, mode, counterpart: cp, would: true, why };

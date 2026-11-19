@@ -131,7 +131,7 @@ function report(o) {
       members: D.members(d).map(s => ({ id: s, name: nameOf(crew, s), onCrew: !!crew[s], manager: (crew[s] && crew[s].manager) || null, isLead: s === d.lead, escalatesTo: D.leadOf(s, doc, crew) })),
       defaultClass: d.defaultClass || null, brief: d.brief || null, briefChars: b == null ? null : b.length, routes: d.routes || {}, consult: d.consult || {},
       advisor: (({ mode, effective, paused, since, by, batch, autoPause }) => ({ mode, effective, paused, since, by, batch, autoPause }))(D.advisorOf(d, st)), consultLimits: D.consultOf(d, st),
-      delegation: (({ mode, effective, workers, maxWorkers, workerTimeoutMin, minPieces, prefer, since, by, withdrawn }) => ({ mode, effective, workers, maxWorkers, workerTimeoutMin, minPieces, prefer, since, by, withdrawn }))(D.delegationOf(d, st)),
+      delegation: (({ mode, effective, workers, maxWorkers, workerTimeoutMin, minPieces, maxPieces, prefer, since, by, withdrawn }) => ({ mode, effective, workers, maxWorkers, workerTimeoutMin, minPieces, maxPieces, prefer, since, by, withdrawn }))(D.delegationOf(d, st)),
       briefText: o && o.brief ? b : undefined };
   });
   const unassigned = Object.keys(crew).filter(id => !D.deptOf(id, doc)).map(id => ({ id, name: nameOf(crew, id), isCeo: id === S.ceo() }));

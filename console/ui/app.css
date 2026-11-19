@@ -173,6 +173,7 @@ details > summary { cursor: pointer; }
 .choice { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-height: 76px; padding: 14px 16px; text-align: left; cursor: pointer; border-radius: var(--radius-lg); font-family: var(--font-sans); border: 1px solid var(--border-default); background: var(--surface-card); color: var(--text-strong); }
 .choice[aria-checked="true"] { border-color: var(--accent); background: var(--accent); color: var(--text-on-accent); }
 .choice .caption { opacity: .85; }
+.choice[aria-checked="true"] .muted { color: inherit; opacity: .9; }   /* a muted caption on a selected card (the accent background) stays readable: "Example:" in How the crew talks to you */
 .level-btn { width: 44px; height: 44px; border: 0; background: none; cursor: pointer; font: 18px/1 var(--font-sans); color: var(--ink-300); }
 .level-btn[aria-pressed="true"] { color: var(--accent); }
 

@@ -219,3 +219,16 @@ test('an advise run passes the money and pacer checks like any wake: the daily c
   assert.match(src, /ctx\.modes && ctx\.modes\[lead\] === 'ask' && !ctx\.allowAsk/);
   assert.match(fs.readFileSync(path.join(TOOLS, 'dispatch.js'), 'utf8'), /consultStep\(\{ dry: DRY, log, jobs, order, say, call, fireRun, modes, allowAsk: ALLOW_ASK, budget: \{/);
 });
+
+test('in a code department an advise run never runs on MiniMax: the lead model and the routine\'s own model face the code rule too', async () => {
+  const c = await company();
+  const d = JSON.parse(c.r('company/departments.json')); d.leadModelDefault = { provider: 'custom', model: 'MiniMax-M3.1-Pro', effort: 'medium' };
+  c.w('company/departments.json', d);
+  [c.ask('Ben', 'ben-1'), c.ask('Cat', 'cat-1'), c.ask('Dan', 'dan-1')].forEach(x => assert.equal(x.code, 0, JSON.stringify(x)));
+  const r = c.tick({ open: { kwa: [{ provider: 'custom', model: 'MiniMax-M3.1-Pro' }] } });
+  const job = ((await st('GET', '/api/cron')).jobs || []).find(j => /^Kwame advise/.test(j.name) && j.workdir === c.T);
+  assert.ok(job, r.log);
+  assert.equal(r.runs.filter(b => b.id === job.id && b.override && b.override.provider === 'custom').length, 0, 'never on MiniMax: ' + r.log);
+  assert.ok(!r.runs.some(b => b.id === job.id && (b.provider === 'custom' || (b.override && b.override.provider === 'custom'))), r.log);
+  assert.match(r.log, /ADVISE HOLD Kwame advise\S* for Kwame: .*code is never on the MiniMax plan/);
+});

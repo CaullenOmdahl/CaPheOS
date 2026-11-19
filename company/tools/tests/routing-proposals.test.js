@@ -23,6 +23,8 @@ const R = require(path.join(TOOLS, 'routing.js'));
 const roots = [];
 test.after(() => { for (const r of roots) try { fs.rmSync(r, { recursive: true, force: true }); } catch (_) {} });
 const w = (root, rel, data) => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); return f; };
+const PROV = require(path.join(TOOLS, 'provenance.js'));
+const appendRecorded = (root, rel, line, writer) => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, line); PROV.appended(f, line, writer, { root }); };
 const read = (root, rel) => { try { return fs.readFileSync(path.join(root, rel), 'utf8'); } catch (_) { return null; } };
 const jsonl = (root, rel) => (read(root, rel) || '').split('\n').filter(Boolean).map(l => JSON.parse(l));
 const DAY = 86400e3;
@@ -60,7 +62,8 @@ function fixture(o) {
   for (const c of Object.values(CREW)) w(root, 'company/work/handoffs/' + c.inbox, '# Handoffs\n');
   const list = o.suggestions || [sug('rp-aaaaaaaaaaaa', 'eng', 'code', pair('claude-cli', 'claude-opus-5-5'), pair('claude-cli', 'claude-sonnet-5-5'), 40)];
   w(root, 'company/work/models/house-ranking.json', { computedAt: new Date(MON - DAY).toISOString(), proposals: list.map(x => x.p), cells: list.flatMap(x => x.cells) });
-  w(root, 'company/work/models/routing-proposals.jsonl', list.map(x => JSON.stringify(Object.assign({ kind: 'proposal', at: new Date(MON - DAY).toISOString() }, x.p))).join('\n') + '\n');
+  // model-rank.js's proposal rows, each recorded as model-rank.js does (routing.js reads only recorded rows)
+  for (const x of list) appendRecorded(root, 'company/work/models/routing-proposals.jsonl', JSON.stringify(Object.assign({ kind: 'proposal', at: new Date(MON - DAY).toISOString() }, x.p)) + '\n', 'model-rank.js');
   if (o.strict) w(root, '.pm-inbox-guard-strict', '');
   return root;
 }
@@ -68,7 +71,9 @@ function routing(root, argv, o) {
   o = o || {};
   const code = 'const prov = require(' + JSON.stringify(path.join(TOOLS, 'provenance.js')) + '); prov.pinUnderStation(' + (o.station ? 'true' : 'false') + '); prov.pinOwnerShell(' + (o.owner ? 'true' : 'false') + ');' +
     'const r = require(' + JSON.stringify(path.join(TOOLS, 'routing.js')) + ').run(' + JSON.stringify(argv) + '); process.stdout.write(JSON.stringify(r));';
-  const r = spawnSync(process.execPath, ['-e', code], { cwd: root, encoding: 'utf8', timeout: 60000, env: Object.assign({}, process.env, { CAPHEOS_ROOT: root, CAPHEOS_TZ: 'UTC', STARNET_URL: 'http://127.0.0.1:9' }) });
+  // a script at the tool's own path in the fixture, not node -e: routing.js reads only rows an untainted routing.js recorded
+  const sf = path.join(root, 'company', 'tools', 'routing.js'); fs.mkdirSync(path.dirname(sf), { recursive: true }); fs.writeFileSync(sf, code);
+  const r = spawnSync(process.execPath, [sf], { cwd: root, encoding: 'utf8', timeout: 60000, env: Object.assign({}, process.env, { CAPHEOS_ROOT: root, CAPHEOS_TZ: 'UTC', STARNET_URL: 'http://127.0.0.1:9' }) });
   if (r.status !== 0) throw new Error('child failed: ' + r.stdout + r.stderr);
   return JSON.parse(r.stdout);
 }
@@ -248,7 +253,8 @@ test('a forged or edited suggestion row moves nothing: the first offer counts, t
   assert.deepEqual(tick(root, MON + 3600e3).out.applied, [], 'the card\'s deadline, not the row\'s');
   fs.writeFileSync(f, fs.readFileSync(f, 'utf8').split('\n').map(l => { if (!l) return l; const r = JSON.parse(l); return r.kind === 'offer' ? JSON.stringify(Object.assign(r, { to: pair('claude-cli', 'claude-haiku-5-5') })) : l; }).join('\n'));
   const t2 = tick(root, MON + 3 * DAY + 60e3);
-  assert.deepEqual(t2.out.applied, []); assert.ok(rows(root).some(x => x.kind === 'skip' && /does not match the card/.test(x.why)), JSON.stringify(rows(root)));
+  // an edited row is no longer the bytes routing.js recorded, so it is not read at all (lib/recorded.js): nothing applies
+  assert.deepEqual(t2.out.applied, []); assert.ok(!rows(root).some(x => x.kind === 'apply'), JSON.stringify(rows(root)));
   assert.deepEqual(routeOf(root, 'code'), pair('claude-cli', 'claude-opus-5-5'));
   // 3. a move to the top tier whose CEO step is missing at apply time (its ceo-answer row gone) is refused, not applied
   root = fixture({ suggestions: [sug('rp-111111111111', 'eng', 'research', pair('claude-cli', 'claude-sonnet-5-5'), pair('claude-cli', 'claude-opus-5-5'), 40, { cost: 1.3 })] });
@@ -272,4 +278,18 @@ test('a forged or edited suggestion row moves nothing: the first offer counts, t
   // 5. the file is a locked class-A record written only by routing.js and model-rank.js
   const LW = fs.readFileSync(path.join(TOOLS, 'locked-watch.js'), 'utf8');
   assert.match(LW, /p: 'company\/work\/models\/routing-proposals\.jsonl', cls: 'A', append: true, writers: \['routing\.js', 'model-rank\.js'\]/);
+});
+
+test('a ceo-answer yes appended by hand between locked-watch and the suggestions step is not the CEO\'s yes (only recorded rows are read)', () => {
+  const root = fixture({ suggestions: [sug('rp-222222222222', 'eng', 'research', pair('claude-cli', 'claude-sonnet-5-5'), pair('claude-cli', 'claude-opus-5-5'), 40, { cost: 1.3 })] });
+  tick(root, MON);
+  assert.ok(rows(root).some(x => x.kind === 'ceo-ask' && x.id === 'rp-222222222222'), 'the CEO is asked first');
+  // the reproduction from the review: a ceo-answer yes by the CEO's name, appended by hand (no provenance row)
+  fs.appendFileSync(path.join(root, 'company/work/models/routing-proposals.jsonl'), JSON.stringify({ kind: 'ceo-answer', id: 'rp-222222222222', at: new Date(MON + 60e3).toISOString(), verdict: 'yes', by: 'Boss' }) + '\n');
+  const t = tick(root, MON + 3600e3);
+  assert.deepEqual(t.out.offered || [], [], JSON.stringify(t.out));
+  assert.equal(cards(root).length, 0, 'no owner card is filed with the CEO step marked done');
+  // the CEO's own answer through routing.js counts
+  assert.equal(routing(root, ['proposals', 'ceo', 'rp-222222222222', 'yes', '--by', 'Boss']).code, 0);
+  assert.deepEqual(tick(root, MON + 2 * 3600e3).out.offered, ['rp-222222222222']);
 });

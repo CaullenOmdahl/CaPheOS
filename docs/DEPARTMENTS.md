@@ -211,7 +211,10 @@ items, so the ranking books its cost to them. It passes the same checks as any w
 the lead's approval mode ("ask" cannot save unattended), the money check (the daily metered cap, the per-agent share,
 the Sprint budget and spread, with the dispatcher's numbers) and the pacer (the pair open in this tick's override list).
 When the lead model is shut, or the station answers 403, it runs on the routine's own model only when that passes the
-same checks; otherwise it waits for a later tick (`ADVISE HOLD`).
+same checks; otherwise it waits for a later tick (`ADVISE HOLD`). Both models also face the class rules for review AND
+for the department's default class: an advise run may TAKE OVER with workbench tools, so in a code department it never
+runs on the MiniMax plan. A department starts at most `consult.maxPerDay` consults a day (12 by default), each answered
+in a batched advise run on the lead model (Opus by default): bounded, but the lead model's cost.
 
 **Verdicts.** The lead answers each consult with `consult.js answer <cs-id> --verdict APPROVE|REVISE|ESCALATE-TIER|
 TAKE-OVER|ESCALATE --check ".." [--finding ".."]... [--tier p/m@e] --by <lead>`. Only the department's lead may answer
@@ -253,14 +256,14 @@ handoffs); replaying earlier conversation into the lead; any change to how a mem
 ## 6. Splitting big jobs (narrow fan-out)
 
 The middle-management plan's P5. A lead may hand the pieces of ONE item to people on its own team, and only when the item
-really splits: 3 or more pieces (`delegation.minPieces`), each touching its own files and each with a written acceptance
+really splits: 3 to 6 pieces (`delegation.minPieces`, `delegation.maxPieces`), each touching its own files and each with a written acceptance
 check. Everything else stays one seat's work.
 
 **The data.** Per department, `delegation` (absent = `delegationDefaults`, mode `off`):
 
 ```json
 "delegation": { "mode": "off|shadow|live", "workers": ["<seat>"], "maxWorkers": 3, "workerTimeoutMin": 20, "minPieces": 3,
-                "prefer": "lanes", "since": null, "by": null, "withdrawn": null }
+                "maxPieces": 6, "prefer": "lanes", "since": null, "by": null, "withdrawn": null }
 ```
 
 `workers` is the allowlist; a seat outside the lead's reports in `loops.json` (its manager chain) is refused by
@@ -275,7 +278,7 @@ evaluationHash}`; while set, the department acts as recording only.
   check: <check>" ... [--fanout lanes|dispatch] --by <lead>`;
 - on an item in its own inbox: `consult.js split <item id> --piece ".." ... [--fanout lanes|dispatch] --by <lead>`.
 
-`lib/consult.js splitOk` checks the pieces (pure): at least `minPieces`, each with `files:` and `check:`, no file (or
+`lib/consult.js splitOk` checks the pieces (pure): at least `minPieces` and at most `maxPieces` (2 to 12, default 6), each with `files:` and `check:`, no file (or
 folder above it) in two pieces. While splitting is live the item's block gets
 
 ```markdown
@@ -298,7 +301,9 @@ item gets `**Piece n lane:**` while it runs and `**Piece n result (...):**` afte
 free workers in `company/state/delegate-allow.json` every tick, and StarNet patch 0018 gives the lead's routine run
 `team.dispatch` only then: listed workers only, at most `maxWorkers`, each worker on its own clock, the item id on each
 child run. A lead is listed only when the money check and the pacer are open for every listed worker's provider, and a
-code item never lists a worker on the MiniMax plan.
+code item never lists a worker on the MiniMax plan. Money is checked when the list is written, on every dispatcher
+tick; the station re-reads the list on every call, so a lead whose money check fails loses its entry from the next tick
+on. Between two ticks a run is bounded by `maxPieces` workers of `workerTimeoutMin` each.
 
 **Withdrawn when it does not pay.** `model-rank.js fanoutEvaluation` compares the department's delegated items with its
 single-seat items of the same class, by the cost per accepted item (a child run's cost is its lead's family's). Over at
@@ -316,8 +321,10 @@ departments, a lead changing its own department's routes.
 for it, each allowed for the item's class: the lead's one-run model must be one of them, a worker dispatched with no
 model runs on the list's first (its own pair when that is allowed), and a worker the list names no model for does not
 run. So code never reaches the MiniMax plan through a worker's own model or the station default. The item is code work
-when the split says so or any piece lists a code file (`.js`, `.ts`, `.py`, …), whatever its words. The whole lead run
-starts at most the split's piece count of workers over all its `team.dispatch` calls, and once a split's workers have
+when the split says so or any piece names a file that is not plainly a document (`.md`, `.txt`, `.pdf`, `.docx`, `.csv`,
+pictures): `.html`, `.css`, `.json`, `.yml`, a `Dockerfile`, an `.astro` page or a bare folder all make it code, whatever
+its words or its `**Class:**` line. The whole lead run starts at most the split's piece count of workers (never more than
+`maxPieces`; a split with more pieces is not listed) over all its `team.dispatch` calls, and once a split's workers have
 started (a live child run, or a run row with the item's id) the split is used and not listed again; a new split is. A
 halted company empties the list at once, and a worker on a live child run counts as busy.
 

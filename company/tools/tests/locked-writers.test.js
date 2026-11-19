@@ -25,3 +25,14 @@ test('every unit the framework installs counts as a framework unit', () => {
   for (const u of ['acme-station-liveness-heartbeat.timer', 'acme-station-liveness-heartbeat.service', 'acme-station-console.service', 'acme-station.service'])
     assert.ok(set.has(u), u);
 });
+
+// A hand edit of a profile, the profile policy or the profile proposals is put back, not only reported (2026-11-19 safety
+// re-review: a seat that wrote its own profile with counterpart null dropped its sign-off); the readers also read only what
+// profile.js recorded (lib/profile.js loadState, companyPolicy)
+test('the profile files are restored on a hand edit (class A, written only by profile.js)', () => {
+  for (const p of ['company/people/profiles/*.json', 'company/people/profile-policy.json', 'company/people/profile-proposals.json', 'company/people/profile-policy.history.jsonl', 'company/state/signoffs.jsonl', 'company/work/models/routing-proposals.jsonl']) {
+    const e = LW.MANIFEST.find(m => m.p === p);
+    assert.ok(e, p); assert.equal(e.cls, 'A', p);
+  }
+  assert.ok(LW.MANIFEST.find(m => m.p === 'company/people/profile-policy.history.jsonl').append);
+});

@@ -52,9 +52,9 @@ markets pull them in.>
 
 ## Temperament
 risk: 3 — Leans toward trying, as long as there is a way back
-pace: 3 — Moves quickly and fixes things as they go
+pace: 3 — Moves quickly and fixes things along the way
 rigour: 1 — Checks the main thing and moves on
-candour: 2 — Says what they think, kindly
+candour: 2 — Honest, and kind about it
 independence: 3 — Decides most things alone and reports after
 
 ## Voice

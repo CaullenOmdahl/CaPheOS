@@ -9,7 +9,8 @@
  * and puts back anything else.
  *
  *   const prov = require('./provenance.js');
- *   prov.wrote(file, text, 'corrections.js')        after a whole-file write (atomic rename) of `text`
+ *   prov.wrote(file, text, 'corrections.js')        after a whole-file write (atomic rename) of `text` (o.root: another
+ *                                                   company root, as appended() takes)
  *   prov.appended(file, chunk, 'pacer.js')          after appending `chunk` to an append-only log
  *   prov.noted(file, { kind: 'cutover', bytes, sha256 }, 'owner-channel')   a marker, not a write (lib/owner-channel.js,
  *                                                   lib/pm-inbox-guard.js)
@@ -172,9 +173,9 @@ function append(row, root) {
   fs.appendFileSync(f, JSON.stringify(row) + '\n');   // one short line: a single O_APPEND write
 }
 function common(root, writer) { const m = mainInfo(root); return { writer: String(writer || '?'), pid: process.pid, underStation: underStation(), main: m.main, tainted: m.tainted }; }
-function wrote(file, data, writer) {
+function wrote(file, data, writer, o) {
   try {
-    const root = rootOf(), rel = relOf(file, root, { home: /^console\b/.test(String(writer || '')) }); if (!rel) return false;
+    const root = o && o.root ? path.resolve(o.root) : rootOf(), rel = relOf(file, root, { home: /^console\b/.test(String(writer || '')) }); if (!rel) return false;
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(String(data));
     append(Object.assign({ at: new Date().toISOString(), file: rel, kind: 'write', sha256: sha(buf), bytes: buf.length }, common(root, writer)), root);
     return true;

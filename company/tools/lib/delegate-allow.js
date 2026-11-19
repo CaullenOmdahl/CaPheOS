@@ -64,9 +64,13 @@ function pairOf(id, crew, jobs, open) {
   return o[0] ? { provider: String(o[0].provider), model: String(o[0].model) } : null;
 }
 
-// a piece's file that is code: the item is code work whatever its words say (taskclass reads the text only)
-const CODE_FILE = /\.(?:[cm]?js|jsx|tsx?|py|go|rs|java|kt|rb|php|swift|c|cc|cpp|h|hpp|cs|sh|bash|sql|lua|scala|vue|svelte)$/i;
-const classOf = c => (c && (c.class === 'code' || (c.pieces || []).some(p => (p.files || []).some(f => CODE_FILE.test(String(f).trim()))))) ? 'code' : String((c && c.class) || 'general');
+// A piece is code work unless every file it names is plainly not code (documents, text, pictures): .html, .css, .json, .yml,
+// a Dockerfile, an .astro page or a bare folder like src/app/ all count as code (2026-11-19 safety re-review: a list of
+// code extensions missed them, so such an item could be listed for MiniMax workers). A piece that names no file is code
+// when its department's default class is code. The item is then code whatever its words or its **Class:** line say.
+const NONCODE_FILE = /\.(?:md|markdown|mdx?|txt|text|rst|adoc|org|pdf|docx?|odt|rtf|csv|tsv|xlsx?|ods|pptx?|odp|png|jpe?g|gif|webp)$/i;
+const pieceIsCode = (p, d) => { const fs_ = (p && p.files || []).map(f => String(f).trim()).filter(Boolean); return fs_.length ? fs_.some(f => !NONCODE_FILE.test(f)) : !!(d && d.defaultClass === 'code'); };
+const classOf = (c, d) => (c && (c.class === 'code' || (c.pieces || []).some(p => pieceIsCode(p, d)))) ? 'code' : String((c && c.class) || 'general');
 /* compute(o) -> { doc, notes: [{ lead, item, why }] }: pure (see the header) */
 function compute(o) {
   o = o || {};
@@ -78,10 +82,10 @@ function compute(o) {
   const leads = {}, notes = [];
   const used = o.used instanceof Set ? o.used : new Set(o.used || []);
   for (const c0 of (o.candidates || []).filter(x => x && x.fanout === 'dispatch')) {
-    const c = Object.assign({}, c0, { class: classOf(c0) });
+    const d = D.list(o.doc || {}).find(x => String(x.id) === String(c0.dept));
+    const c = Object.assign({}, c0, { class: classOf(c0, d) });
     if (c.split && used.has(String(c.split))) { notes.push({ lead: c.lead, item: c.item, why: 'this split was dispatched already (its workers started); a new split is listed again' }); continue; }
     if (leads[c.lead]) { notes.push({ lead: c.lead, item: c.item, why: 'one item at a time per lead (' + leads[c.lead].items[0] + ' is listed)' }); continue; }
-    const d = D.list(o.doc || {}).find(x => String(x.id) === String(c.dept));
     if (!d || String(d.lead) !== String(c.lead)) { notes.push({ lead: c.lead, item: c.item, why: 'not the department\'s lead now' }); continue; }
     const g = D.delegationOf(d, o.st);
     if (g.effective !== 'live') { notes.push({ lead: c.lead, item: c.item, why: 'splitting is ' + g.effective }); continue; }
@@ -106,8 +110,11 @@ function compute(o) {
     if (held) { notes.push({ lead: c.lead, item: c.item, why: 'not listed: ' + held }); continue; }
     if (!out.length) { notes.push({ lead: c.lead, item: c.item, why: 'not listed: no free worker on the team' }); continue; }
     const pieces = (c.pieces || []).length || 0;
+    const maxP = Math.max(Number(g.maxPieces) || 6, Number(g.minPieces) || 2);
+    if (pieces > maxP) { notes.push({ lead: c.lead, item: c.item, why: 'not listed: ' + pieces + ' pieces, more than the ' + maxP + ' one split may have (delegation.maxPieces)' }); continue; }
     const maxW = Math.min(g.maxWorkers, out.length, pieces || Infinity);
-    leads[c.lead] = { items: [c.item], workers: out.map(x => x.w), maxWorkers: maxW, workerTimeoutMin: g.workerTimeoutMin, runWorkers: pieces || maxW,
+    // the whole lead run starts at most one worker per piece, and never more than maxPieces (the station caps it at 50)
+    leads[c.lead] = { items: [c.item], workers: out.map(x => x.w), maxWorkers: maxW, workerTimeoutMin: g.workerTimeoutMin, runWorkers: Math.min(pieces || maxW, maxP),
       models: Object.fromEntries(out.map(x => [x.w, x.models])), dept: String(c.dept), split: c.split || null, class: c.class };
   }
   const at = Number.isFinite(o.now) ? o.now : Date.now();

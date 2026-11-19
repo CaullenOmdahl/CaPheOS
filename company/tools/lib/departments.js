@@ -45,8 +45,10 @@ const CONSULT_KEYS = ['maxPerDay', 'stuckAfterFailedRuns', 'stuckAfterRevise', '
 const ADVISOR_MODES = ['off', 'shadow', 'live'];
 const DELEGATION_MODES = ['off', 'shadow', 'live'];
 // the framework's own fallback for delegationDefaults (docs/DEPARTMENTS.md §6): off, at most 3 workers, 20 minutes each
-const DELEGATION_FALLBACK = { mode: 'off', workers: [], maxWorkers: 3, workerTimeoutMin: 20, minPieces: 3, prefer: 'lanes' };
-const DELEGATION_NUMS = { maxWorkers: [1, 8], workerTimeoutMin: [5, 240], minPieces: [2, 12] };
+// maxPieces: the most pieces one split may have (2026-11-19 safety re-review: with no limit a lead's own split of up to 99
+// pieces let one run start 50 metered workers over hours); it also caps the workers one lead run may start over all its calls
+const DELEGATION_FALLBACK = { mode: 'off', workers: [], maxWorkers: 3, workerTimeoutMin: 20, minPieces: 3, maxPieces: 6, prefer: 'lanes' };
+const DELEGATION_NUMS = { maxWorkers: [1, 8], workerTimeoutMin: [5, 240], minPieces: [2, 12], maxPieces: [2, 12] };
 // the framework's own fallback for advisorDefaults when neither the company file nor company/defaults/departments.json has it
 const ADVISOR_FALLBACK = { mode: 'off', routine: 'advise', batch: { minGapMin: 5, maxWaitMin: 10, startAt: 3 }, packetMaxChars: 4000, premerge: 'advisory',
   autoPause: { enabled: false, minItems: 20, minDays: 14, consultRate: [0.10, 0.40], cachedShareMin: 0.85, oneShotGainPoints: 10, reworkCutShare: 0.20 } };

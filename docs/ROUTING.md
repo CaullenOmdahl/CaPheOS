@@ -289,7 +289,10 @@ never written. `company/work/models/routing-proposals.jsonl` is a locked class-A
 
 **Where to see it.** `routing.js proposals status [--json]`; Settings › Models › Routing › Weekly suggestions (Off ·
 Recording only · On, and the last 8 weeks with what happened to each). Rows (`company/work/models/routing-proposals.jsonl`,
-appended by `routing.js` with provenance): `offer`, `ceo-ask`, `ceo-answer`, `veto`, `apply`, `skip`, `week`.
+appended by `routing.js` with provenance): `offer`, `ceo-ask`, `ceo-answer`, `veto`, `apply`, `skip`, `week`. Only a row
+whose bytes match a recorded append by `routing.js` or `model-rank.js` is read (`lib/recorded.js`, locked-watch's trust
+rule), so a row appended by hand (a `ceo-answer` yes in the CEO's name, an edited offer) counts for nothing, even in the
+same tick before locked-watch strips it.
 
 Not part of this: applying a suggestion straight to live routing, suggestions that change tier caps, trials or class
 rules, and a lead changing its own department's routes. Tests: `company/tools/tests/routing-proposals.test.js`.

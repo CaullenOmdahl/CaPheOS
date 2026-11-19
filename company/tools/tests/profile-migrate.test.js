@@ -55,14 +55,18 @@ function fixture() {
   w('company/work/decisions.md', '# Decisions\n\nNewest first.\n\n');
   w('company/roles/benny.md', BENNY); w('company/roles/rohan.md', ROHAN); w('company/roles/halima.md', HALIMA); w('company/roles/marisol.md', MARISOL);
   for (const s of Object.values(CREW)) w('company/work/handoffs/' + s.inbox, '# Handoffs\n');
-  return { T, w, r: rel => { try { return fs.readFileSync(path.join(T, rel), 'utf8'); } catch (_) { return null; } } };
+  // a profile written as profile.js writes it (recorded), for a scenario the tool itself would refuse to make
+  const wp = (rel, d) => { const f = path.join(T, rel), text = JSON.stringify(d, null, 1) + '\n'; fs.writeFileSync(f, text); require(path.join(TOOLS, 'provenance.js')).wrote(f, text, 'profile.js', { root: T }); };
+  return { T, w, wp, r: rel => { try { return fs.readFileSync(path.join(T, rel), 'utf8'); } catch (_) { return null; } } };
 }
 function tool(T, argv, o) {
   o = o || {};
   const code = 'const prov = require(' + JSON.stringify(path.join(TOOLS, 'provenance.js')) + '); prov.pinUnderStation(false); prov.pinOwnerShell(' + (o.owner ? 'true' : 'false') + ');' +
     'const t = require(' + JSON.stringify(path.join(TOOLS, 'profile.js')) + '); const r = t.run(' + JSON.stringify(argv) + '); process.stdout.write(JSON.stringify(r));';
   const env = Object.assign({}, process.env, { CAPHEOS_ROOT: T, CAPHEOS_TZ: 'UTC', STARNET_URL: 'http://127.0.0.1:9', PROFILE_NO_SYNC: '1' }); delete env.STARNET_AGENT_ID;
-  const p = spawnSync(process.execPath, ['-e', code], { cwd: T, encoding: 'utf8', env });
+  // a script at the tool's own path in the fixture, not node -e: a profile is read only as an untainted profile.js recorded it
+  const sf = path.join(T, 'company', 'tools', 'profile.js'); fs.mkdirSync(path.dirname(sf), { recursive: true }); fs.writeFileSync(sf, code);
+  const p = spawnSync(process.execPath, [sf], { cwd: T, encoding: 'utf8', env });
   if (p.status !== 0) throw new Error('child failed: ' + p.stdout + p.stderr);
   return JSON.parse(p.stdout);
 }
@@ -109,7 +113,7 @@ test('check: a reversed pairing, a mutual pairing and a broken line fail; identi
   // and through the tool
   const c = fixture(); tool(c.T, ['migrate', '--all', '--by', 'owner'], { owner: true });
   const ro = load(c, 'ro'); ro.counterpart = { seat: 'ben', signOff: [], why: '' }; delete ro.hash;
-  ro.hash = P.hashOf(ro); c.w('company/people/profiles/ro.json', ro);
+  ro.hash = P.hashOf(ro); c.wp('company/people/profiles/ro.json', ro);
   const ch = tool(c.T, ['check', '--all']);
   assert.equal(ch.code, 1); assert.ok(ch.out.seats.find(s => s.seat === 'ro').failures.some(f => /wrong way round/.test(f)), JSON.stringify(ch.out.seats));
 });
@@ -128,13 +132,60 @@ test('the injected block stays under its limit: the newest experiences, a pushin
   assert.ok((b.match(/^- Rohan: note/mg) || []).length <= P.BLOCK_CAPS.relationships);
 });
 
+test('over the limit the long lists are trimmed first: how a person sounds, with the owner and the pushing-back example are never cut', () => {
+  const p = P.blank('ben', { name: 'Benny Tran' });
+  p.identity.archetype = 'scout'; p.identity.personality = 'Restless, quick and loud about what he finds. '.repeat(8); p.identity.background = 'Ran a trading forum and blew up an account once. '.repeat(8);
+  p.counterpart = { seat: 'ro', signOff: ['promote', 'commit'], why: 'Rohan tests every card before anyone builds on it.' };
+  const long = (w, n) => Array.from({ length: n }, (_, i) => w + ' ' + (i + 1) + ': ' + 'a careful sentence about where the edge shows up first and why. '.repeat(3));
+  for (const k of ['convictions', 'willNotDo', 'unprompted', 'whereYouLook', 'strengths', 'blindSpots', 'flaws']) p[k] = long(k, 8);
+  p.habits = ['Posts the raw thread before the summary.', 'Says "cheap to check" when he means "I like it".'];
+  p.voice = { preset: 'upbeat', words: 'Fast, plain and a little loud; short sentences, numbers first.', avoid: ['circle back'], toOwner: 'Leads with the one card worth the owner\'s time, then the cost.' };
+  p.examples = [{ with: 'ro', they: 'One lucky week.', you: 'Cheap to check; I drop it if it fails.', pushback: true }, { with: 'owner', they: 'Anything new?', you: 'Two cards, one worth a look.' }, { with: 'ro', they: 'Killed it.', you: 'Fair. Next one.' }];
+  const crew = { ben: { name: 'Benny Tran' }, ro: { name: 'Rohan Iyer' } };
+  const b = P.block(p, { crew });
+  assert.ok(b.length <= P.BLOCK_MAX_CHARS, b.length + ' characters');
+  for (const t of ['How you sound: Fast, plain and a little loud', 'You never say: "circle back"', 'With the owner: Leads with the one card', 'You (pushing back): "Cheap to check; I drop it if it fails."', 'Posts the raw thread before the summary.', 'Says "cheap to check" when he means']) assert.ok(b.includes(t), 'kept: ' + t);
+  for (const t of P.FIXED_TEXTS) assert.ok(b.includes(t), 'a fixed rule is never cut: ' + t);
+  assert.ok(!/\n…\n|\n…$/.test(b), 'no bare cut-off line');
+  // where you look first and the strengths go before the beliefs and what you refuse
+  const count = k => (b.split(/\n\n/).find(x => x.startsWith(k)) || '').split('\n- ').length - 1;
+  assert.ok(count('Where you look first') < 8 && count('Your strengths') < 8, 'the long lists are trimmed');
+  assert.ok(count('Where you look first') >= 1 && count('Your strengths') >= 1, 'down to one line each, not gone');
+  assert.ok(count('What you believe') >= count('Where you look first'), 'beliefs are trimmed after where you look');
+  // a profile under the limit is untouched (the same block as before any trimming)
+  const small = Object.assign({}, p, { whereYouLook: p.whereYouLook.slice(0, 1), strengths: p.strengths.slice(0, 1), blindSpots: [], flaws: [], unprompted: [], convictions: p.convictions.slice(0, 2), willNotDo: p.willNotDo.slice(0, 1) });
+  const sb = P.block(small, { crew }); assert.ok(sb.length < P.BLOCK_MAX_CHARS); assert.ok(sb.includes(p.convictions[1].trim()), 'whole lines when it fits');
+});
+
 test('the console credits the owner for a build the owner ran; an experience shows a name, not an id', () => {
   const c = fixture();
   tool(c.T, ['migrate', '--all', '--by', 'owner'], { owner: true });
   const v = tool(c.T, ['show', 'ben', '--console']).out;
   assert.equal(v.history[0].by, 'You', JSON.stringify(v.history[0]));
   const ben = load(c, 'ben'); ben.experiences = [{ at: '2026-11-18', text: 'A lesson.', source: 'd-1', addedBy: 'cand-people-manager-1-marisol-va', version: 1 }, { at: '2026-11-18', text: 'Another.', source: 'd-2', addedBy: 'mar', version: 1 }];
-  delete ben.hash; ben.hash = P.hashOf(ben); c.w('company/people/profiles/ben.json', ben);
+  delete ben.hash; ben.hash = P.hashOf(ben); c.wp('company/people/profiles/ben.json', ben);
   const v2 = tool(c.T, ['show', 'ben', '--console']).out;
   assert.deepEqual(v2.experiences.map(e => e.addedByName), ['Marisol', 'Marisol']);
+});
+
+test('each reminder carries one thing of the person\'s own; text written about the person ("he", the name) is a note for the people seat', () => {
+  const crew = { ben: { name: 'Benny Tran' }, ro: { name: 'Rohan Iyer' } };
+  const ben = P.blank('ben', { name: 'Benny Tran' }); ben.identity.archetype = 'scout'; ben.counterpart = { seat: 'ro', signOff: ['promote'], why: 'Benny runs on the cheap setup, so Rohan checks.' };
+  ben.identity.personality = 'He reads twenty threads before breakfast.'; ben.habits = ['Posts the raw thread before the summary.'];
+  const ro = P.blank('ro', { name: 'Rohan Iyer' }); ro.identity.archetype = 'tester'; ro.convictions = ['I would want to see it on a day it lost.']; ro.identity.personality = 'You distrust a clean curve.';
+  const rb = P.reminder(ben, { crew }), rr = P.reminder(ro, { crew });
+  assert.ok(rb.length <= P.REMINDER_MAX && rr.length <= P.REMINDER_MAX);
+  assert.match(rb, /Your habit: Posts the raw thread/); assert.match(rr, /You believe: I would want to see it on a day it lost\./);
+  assert.notEqual(rb.replace(/Benny|Rohan|scout|tester/g, ''), rr.replace(/Benny|Rohan|scout|tester/g, ''), 'not the same sentence with a name swapped');
+  const long = Object.assign({}, ro, { convictions: ['x '.repeat(150).trim()] }); assert.ok(P.reminder(long, { crew }).length <= P.REMINDER_MAX);
+  const notes = P.crewChecks({ ben, ro }, { crew }).notes.map(n => n.text);
+  assert.ok(notes.some(t => /Benny Tran's personality or why they are checked are written about Benny/.test(t)), JSON.stringify(notes));
+  assert.ok(!notes.some(t => /Rohan Iyer's .* written about/.test(t)), 'a profile in "you" is not flagged');
+});
+
+test('the temperament sentences in a "you" profile do not say "they" or "their"; a muted caption on a selected talk card stays readable', () => {
+  const T = JSON.parse(fs.readFileSync(path.join(REPO, 'company/defaults/people/temperament.json'), 'utf8'));
+  for (const [k, s] of Object.entries(T.sliders)) for (const v of s.values) assert.ok(!/\b(?:they|their|them)\b/i.test(v), k + ': ' + v);
+  const css = fs.readFileSync(path.join(REPO, 'console/ui/app.css'), 'utf8');
+  assert.match(css, /\.choice\[aria-checked="true"\] \.muted \{ color: inherit;/);
 });

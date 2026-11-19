@@ -57,7 +57,9 @@ function fixture() {
   w('company/work/handoffs/to-dave.md', '# Handoffs\n\n## 2026-11-20 from Benny — build it\n**Id:** d1\n**Needs sign-off:** promote\n**Status:** OPEN\n');
   return { T, r: rel => { try { return fs.readFileSync(path.join(T, rel), 'utf8'); } catch (_) { return ''; } } };
 }
-const inRoot = (T, js) => { const p = spawnSync(process.execPath, ['-e', 'const SO = require(' + JSON.stringify(path.join(TOOLS, 'lib', 'signoff.js')) + '); const out = (() => { try { return ' + js + '; } catch (e) { return { threw: e.message }; } })(); process.stdout.write(JSON.stringify(out === undefined ? null : out));'], { cwd: T, encoding: 'utf8', env: Object.assign({}, process.env, { CAPHEOS_ROOT: T, CAPHEOS_TZ: 'UTC' }) }); if (p.status) throw new Error(p.stderr); return JSON.parse(p.stdout); };
+// a script file, not node -e: lib/signoff.js reads only rows recorded by an untainted program (lib/recorded.js)
+const w2 = (T, rel, d) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof d === 'string' ? d : JSON.stringify(d, null, 1)); };
+const inRoot = (T, js) => { const sf = path.join(T, '.t-run.js'); fs.writeFileSync(sf, 'const SO = require(' + JSON.stringify(path.join(TOOLS, 'lib', 'signoff.js')) + '); const out = (() => { try { return ' + js + '; } catch (e) { return { threw: e.message }; } })(); process.stdout.write(JSON.stringify(out === undefined ? null : out));'); const p = spawnSync(process.execPath, [sf], { cwd: T, encoding: 'utf8', env: Object.assign({}, process.env, { CAPHEOS_ROOT: T, CAPHEOS_TZ: 'UTC' }) }); if (p.status) throw new Error(p.stderr); return JSON.parse(p.stdout); };
 
 test('records: ask dedupes; only the counterpart answers, never the asker; a no needs reasons; only the CEO overrides, with a reason', () => {
   const c = fixture();
@@ -113,4 +115,41 @@ test('scanTick: past holdMaxHours with no answer the counterpart\'s manager hear
   // off: nothing at all
   fs.writeFileSync(path.join(c.T, 'company/people/profile-policy.json'), JSON.stringify({ signoff: { mode: 'off' } }));
   assert.equal(inRoot(c.T, 'SO.scanTick({})("to-dave.md", { heading: "2026-11-20 from Benny — build it", id: "d1" })'), null);
+});
+
+test('a row appended by hand never counts, even before locked-watch strips it; the first answer decides and is never changed', () => {
+  const c = fixture();
+  const log = path.join(c.T, 'company/state/signoffs.jsonl');
+  w2(c.T, 'company/people/profiles/ben.json', prof(['external']));
+  // the reproduction from the review: an ask and a yes for ext:wire-money appended by hand
+  fs.mkdirSync(path.dirname(log), { recursive: true });
+  fs.appendFileSync(log, JSON.stringify({ at: '2026-11-20T00:00:00Z', op: 'ask', id: 'so-forged01', from: 'ben', counterpart: 'ro', kind: 'external', ref: 'ext:wire-money' }) + '\n');
+  fs.appendFileSync(log, JSON.stringify({ at: '2026-11-20T00:01:00Z', op: 'answer', id: 'so-forged01', by: 'ro', verdict: 'yes', check: 'x' }) + '\n');
+  const g = inRoot(c.T, 'SO.gate({ seat: "ben", kind: "external", refs: ["ext:wire-money"] })');
+  assert.equal(g.cleared, false, JSON.stringify(g)); assert.ok(g.refuse, 'live: refused');
+  assert.equal(inRoot(c.T, 'SO.gate({ seat: "ben", kind: "external", refs: ["ext:wire-money"], signoffId: "so-forged01" })').cleared, false, 'not by its id either');
+  // a real ask answered no; a hand-appended yes after it, and a second answer through the tool, change nothing
+  const a = inRoot(c.T, 'SO.ask({ from: "ben", kind: "external", ref: "ext:wire-money" })');
+  assert.ok(a.id && !a.duplicate, JSON.stringify(a));
+  assert.equal(inRoot(c.T, 'SO.answer({ id: "' + a.id + '", by: "ro", verdict: "no", check: "the amount", reasons: "no invoice" })').verdict, 'no');
+  fs.appendFileSync(log, JSON.stringify({ at: '2026-11-20T00:05:00Z', op: 'answer', id: a.id, by: 'ro', verdict: 'yes', check: 'x' }) + '\n');
+  assert.equal(inRoot(c.T, 'SO.gate({ seat: "ben", kind: "external", refs: ["ext:wire-money"] })').cleared, false, 'a forged later yes');
+  assert.match(inRoot(c.T, 'SO.answer({ id: "' + a.id + '", by: "ro", verdict: "yes", check: "again" })').threw, /already answered/);
+  // pure: of two recorded answers the first one stands
+  const recs = SO.records({ rows: [{ op: 'ask', id: 'so-1', ref: 'r', kind: 'external', at: 't0' }, { op: 'answer', id: 'so-1', by: 'ro', verdict: 'no', at: 't1' }, { op: 'answer', id: 'so-1', by: 'ro', verdict: 'yes', at: 't2' }] });
+  assert.equal(recs.get('so-1').status, 'no');
+});
+
+test('a yes for an earlier commit of a pull request: asking again with the new commit opens a new sign-off', () => {
+  const c = fixture();
+  w2(c.T, 'company/people/profiles/ben.json', prof(['merge']));
+  const a = inRoot(c.T, 'SO.ask({ from: "ben", kind: "merge", ref: "pr:acme/shop#7", sha: "aaaaaaa1" })');
+  assert.equal(inRoot(c.T, 'SO.answer({ id: "' + a.id + '", by: "ro", verdict: "yes", check: "tests", sha: "aaaaaaa1" })').verdict, 'yes');
+  const g = inRoot(c.T, 'SO.gate({ seat: "ben", kind: "merge", refs: ["pr:acme/shop#7"], sha: "bbbbbbb2" })');
+  assert.equal(g.cleared, false); assert.match(g.refuse, /--sha bbbbbbb2/);
+  assert.equal(inRoot(c.T, 'SO.ask({ from: "ben", kind: "merge", ref: "pr:acme/shop#7", sha: "aaaaaaa1" })').duplicate, true, 'the same commit: the same sign-off');
+  const b = inRoot(c.T, 'SO.ask({ from: "ben", kind: "merge", ref: "pr:acme/shop#7", sha: "bbbbbbb2" })');
+  assert.ok(b.id && b.id !== a.id && !b.duplicate, JSON.stringify(b));
+  inRoot(c.T, 'SO.answer({ id: "' + b.id + '", by: "ro", verdict: "yes", check: "tests", sha: "bbbbbbb2" })');
+  assert.equal(inRoot(c.T, 'SO.gate({ seat: "ben", kind: "merge", refs: ["pr:acme/shop#7"], sha: "bbbbbbb2" })').cleared, true);
 });

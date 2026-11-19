@@ -40,7 +40,7 @@
  * consult with SPLIT or on its own item (consult.js split). Both are recorded as a `split` row in the ledger; a Pieces
  * block someone wrote into a handoff by hand is never delegated.
  *   C.parsePieces(block)                             the **Pieces:** list and **Fan-out:** of one block (pure)
- *   C.splitOk(block, {minPieces})                    pure: {ok, pieces, fanout, why}: ok only with at least minPieces
+ *   C.splitOk(block, {minPieces, maxPieces})         pure: {ok, pieces, fanout, why}: ok only with minPieces to maxPieces
  *                                                    pieces, each naming files: and check:, no file in two pieces
  *   C.renderPieces(pieces, fanout)                   the block's Pieces and Fan-out lines
  *   C.split({item, pieces, fanout, check, by, root, now})   the lead's own split of an item it owns (consult.js split)
@@ -312,7 +312,7 @@ function answer(o) {
     const g = D.delegationOf(x.d, ds.st);
     if (g.effective === 'off') return bad('splitting big jobs is off for ' + (x.d.name || x.d.id) + ' (departments.js delegation ' + x.d.id + ' shadow|live --by owner)');
     const block = renderPieces([].concat(o.pieces || []).map(t => parsePieceLine(String(t))).filter(Boolean), o.fanout);
-    const chk = splitOk(block, { minPieces: g.minPieces });
+    const chk = splitOk(block, { minPieces: g.minPieces, maxPieces: g.maxPieces });
     if (![].concat(o.pieces || []).length) return bad('SPLIT needs the pieces: --piece "<title> — files: a, b — check: <acceptance check>" (at least ' + g.minPieces + ')');
     if (!chk.ok) return bad('SPLIT refused: ' + chk.why);
     sp = { pieces: chk.pieces, fanout: chk.fanout, block, live: g.effective === 'live' };
@@ -365,11 +365,13 @@ function parsePieces(block) {
 }
 function splitOk(block, o) {
   const min = Math.max(2, Number((o && o.minPieces) || 3) || 3);
+  const max = Math.max(min, Number((o && o.maxPieces) || 6) || 6);
   const P = parsePieces(block);
   const fail = why => ({ ok: false, pieces: P.pieces, fanout: P.fanout, why });
   if (!P.found) return fail('no **Pieces:** list');
   if (P.fanout == null) return fail('**Fan-out:** must be lanes or dispatch (got "' + P.fanoutRaw + '")');
   if (P.pieces.length < min) return fail(P.pieces.length + ' piece' + (P.pieces.length === 1 ? '' : 's') + '; a split needs at least ' + min);
+  if (P.pieces.length > max) return fail(P.pieces.length + ' pieces; a split has at most ' + max + ' (delegation.maxPieces): group them into fewer, bigger pieces');
   const noFiles = P.pieces.filter(p => !p.files.length), noCheck = P.pieces.filter(p => !p.check);
   if (noFiles.length) return fail('piece ' + noFiles.map(p => p.n || '?').join(', ') + ' names no files (— files: a, b)');
   if (noCheck.length) return fail('piece ' + noCheck.map(p => p.n || '?').join(', ') + ' has no acceptance check (— check: ..)');
@@ -416,7 +418,7 @@ function split(o) {
   for (let i = 0; i < parts.length; i++) { if (!parts[i].startsWith('## ')) continue; const p = SP.parseItems(parts[i])[0]; if (p && p.open && (W.itemId(ib, p.heading, p.id) === String(o.item) || p.id === String(o.item))) { hit = i; it = p; break; } }
   if (hit < 0) return bad('no OPEN item ' + o.item + ' in your inbox (' + ib + ')');
   const block = renderPieces([].concat(o.pieces || []).map(t2 => parsePieceLine(String(t2))).filter(Boolean), o.fanout);
-  const chk = splitOk(block, { minPieces: g.minPieces });
+  const chk = splitOk(block, { minPieces: g.minPieces, maxPieces: g.maxPieces });
   if (!chk.ok) return bad('split refused: ' + chk.why);
   const live = g.effective === 'live', itemId = W.itemId(ib, it.heading, it.id);
   if (live && !o.dry) { const m = /\n*$/.exec(parts[hit]); parts[hit] = stripPieces(parts[hit].slice(0, m.index)) + '\n' + block + (m[0] || '\n'); writeAtomic(file, parts.join('')); }
@@ -442,7 +444,7 @@ function splitCandidates(o) {
     for (const sec of sections(texts.get(r.file))) {
       if (!sec.startsWith('## ')) continue;
       const it = SP.parseItems(sec)[0]; if (!it || !it.open || W.itemId(r.file, it.heading, it.id) !== r.item) continue;
-      const chk = splitOk(sec, { minPieces: v.g.minPieces });
+      const chk = splitOk(sec, { minPieces: v.g.minPieces, maxPieces: v.g.maxPieces });
       if (!chk.ok || piecesHash(chk.pieces, chk.fanout) !== r.hash) break;   // edited since the split: not delegated
       out.push({ split: r.id, dept: String(r.dept), lead: String(r.lead), leadName: (crew[r.lead] || {}).name || r.lead, item: r.item, file: r.file, heading: it.heading, text: sec, seat: r.seat, class: r.class || 'general', pieces: chk.pieces, fanout: chk.fanout, delegation: v.g });
       break;
@@ -637,11 +639,14 @@ async function consultStep(ctx) {
       if (ctx.modes && ctx.modes[lead] === 'ask' && !ctx.allowAsk) { log('ADVISE HOLD ' + job.name + ' for ' + leadName + ': its approval mode is "ask", so an unattended run could not save anything'); continue; }
       const moneyWhy = require('./delegate-allow').moneyFn(ctx.budget);
       const OA = require('./override-allow');
-      const usable = (p, viaOverride) => { const sh = OA.openFor(lead, p, { root: o.root }); if (sh) return (viaOverride ? 'the lead model is ' : 'its own model is ') + sh; const m = moneyWhy(lead, p.provider); return m ? m : null; };
+      // the class rules for review AND for the department's own default class: an advise run may TAKE OVER with workbench
+      // tools, so in a code department it is code work and never runs on MiniMax (2026-11-19 safety re-review)
+      const classes = ['review'].concat(e.d.defaultClass && e.d.defaultClass !== 'review' ? [String(e.d.defaultClass)] : []);
+      const classDeny = p => { if (classes.includes('code') && String(p.provider) === 'custom') return 'code is never on the MiniMax plan'; try { const R = require('./routing'); const L = R.loadPolicy(o.root); if (L) for (const c of classes) if (!R.routeAllowed(c, { provider: p.provider, model: p.model }, R.knobs(L.policy))) return 'the class rules deny it for ' + c + ' work'; } catch (_) {} return null; };
+      const usable = (p, viaOverride) => { const cd = classDeny(p); if (cd) return (viaOverride ? 'the lead model: ' : 'its own model: ') + cd; const sh = OA.openFor(lead, p, { root: o.root }); if (sh) return (viaOverride ? 'the lead model is ' : 'its own model is ') + sh; const m = moneyWhy(lead, p.provider); return m ? m : null; };
       let override = null, note = '', held = null;
       if (pair && pair.provider && pair.model) {
-        let allowed = true; try { const R = require('./routing'); const L = R.loadPolicy(o.root); if (L) allowed = R.routeAllowed('review', { provider: pair.provider, model: pair.model }, R.knobs(L.policy)); } catch (_) {}
-        const shut = allowed ? usable(pair, true) : 'the class rules deny the lead model';
+        const shut = usable(pair, true);
         if (!shut) override = Object.assign({ provider: pair.provider, model: pair.model }, pair.effort ? { effort: pair.effort } : {});
         else note = ' (on its own model: ' + shut + ')';
       }
