@@ -32,6 +32,12 @@ which holds new starts, waits until no run is in flight and never cuts one off.
 Numbers 0003 and 0006 are missing on purpose: they were art overlays specific to the company CaPheOS was extracted
 from, and were not carried over. Keep the gaps; new records take the next free number.
 
+Numbers 0018 and 0019 are taken elsewhere, not free: the wave 3 branch (agent profiles) uses 0018, and Ca Phe Digital's
+crew wrote its own 0018 and 0019 in that company's `company/patches/`, untracked by this framework. That is why the
+memory lifecycle is 0020. If either of the company's records is adopted into the framework, it is renumbered above 0020
+(the next free number then), never merged under its old number: `setup-station.sh` applies records in number order and
+two records with one number would apply in an order nobody chose.
+
 ## Rules
 
 - The tools function owns these records; the risk function reviews any record that changes network exposure,
