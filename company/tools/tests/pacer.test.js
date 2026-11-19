@@ -1259,7 +1259,8 @@ test('cutoffs: pacer.js limit is the recorded write; the owner always, the CEO o
   const out = []; const print = s => out.push(s);
   const owner = (require('../lib/company').config.owner || {}).name || 'owner';
   const P = require('../provenance.js'); const pin = P.underStation(); P.pinUnderStation(false);   // measure the tool, not the caller
-  t.after(() => P.pinUnderStation(pin));
+  P.pinOwnerShell(true);   // the owner's own shell, also when CI or an agent runs the suite (no tty, no owner shell there)
+  t.after(() => { P.pinUnderStation(pin); P.pinOwnerShell(null); });
   assert.equal(await pacer.cli(['limit', 'claude', '--week-stop', '80', '--by', 'Alex', '--why', 'more room'], { root: fx.root, print }), 3);
   assert.match(JSON.parse(out.pop()).error, /budget is at "approve"/);
   assert.equal(await pacer.cli(['limit', 'claude', '--week-stop', '180', '--by', owner, '--why', 'x'], { root: fx.root, print }), 2);
