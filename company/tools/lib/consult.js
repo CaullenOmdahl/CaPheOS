@@ -36,6 +36,16 @@
  *   C.premergeAdvice(o)                              premerge-check.js: the lead's advisory verdict on a PR (opens a
  *                                                    premerge consult once per PR head when none is there)
  *   C.status({root, dept, now})                      per department: mode, pause, consults today, next and last advice
+ * Narrow fan-out (docs/DEPARTMENTS.md §6, the plan's P5): a lead splits one big item into pieces, either answering a
+ * consult with SPLIT or on its own item (consult.js split). Both are recorded as a `split` row in the ledger; a Pieces
+ * block someone wrote into a handoff by hand is never delegated.
+ *   C.parsePieces(block)                             the **Pieces:** list and **Fan-out:** of one block (pure)
+ *   C.splitOk(block, {minPieces})                    pure: {ok, pieces, fanout, why}: ok only with at least minPieces
+ *                                                    pieces, each naming files: and check:, no file in two pieces
+ *   C.renderPieces(pieces, fanout)                   the block's Pieces and Fan-out lines
+ *   C.split({item, pieces, fanout, check, by, root, now})   the lead's own split of an item it owns (consult.js split)
+ *   C.splitCandidates({root, crew, now})             the recorded, still valid splits of live departments, for
+ *                                                    lib/delegate-allow.js (Fan-out dispatch) and lanes.js (lanes)
  * Files: company/state/consults.jsonl (class A, appended only here, each row recorded with provenance appended),
  * company/state/consult-state.json (rewritten whole here: stuck counters, the last advise per department, the advise
  * routines). Every number is config (departments.json advisorDefaults / consult). Owner: the tools function.
@@ -49,7 +59,9 @@ const W = require('./wakes');
 
 const WRITER = 'lib/consult.js';
 const KINDS = ['ask', 'stuck', 'plan', 'premerge'];
-const VERDICTS = ['APPROVE', 'REVISE', 'ESCALATE-TIER', 'TAKE-OVER', 'ESCALATE'];
+// SPLIT (P5): the lead splits the item into pieces for its team; like ESCALATE it neither passes nor fails in the ranking
+const VERDICTS = ['APPROVE', 'REVISE', 'ESCALATE-TIER', 'TAKE-OVER', 'ESCALATE', 'SPLIT'];
+const FANOUTS = ['lanes', 'dispatch'];
 const DROP_WHY = ['daily cap', 'duplicate', 'too long', 'mode off'];
 const MIN = 60e3, DAY = 86400e3;
 const CONSULT_LINE = 'Open consults for you:';
@@ -292,9 +304,21 @@ function answer(o) {
   if (!one(o.check)) return bad('--check "<the acceptance check you ran or read>" is required');
   let tier = null;
   if (verdict === 'ESCALATE-TIER') { tier = parseTier(o.tier); if (!tier) return bad('ESCALATE-TIER needs --tier <provider>/<model>@<effort>'); }
-  const findings = [].concat(o.findings || []).map(f => one(f, 300)).filter(Boolean).slice(0, 12);
+  let findings = [].concat(o.findings || []).map(f => one(f, 300)).filter(Boolean).slice(0, 12);
   const leadName = (crew[x.d.lead] || {}).name || x.d.lead;
-  const line = verdictLine({ verdict, by: leadName, check: o.check, findings, tier });
+  // SPLIT: the pieces, checked like the lead's own split; recording only while the department's delegation is shadow
+  let sp = null;
+  if (verdict === 'SPLIT') {
+    const g = D.delegationOf(x.d, ds.st);
+    if (g.effective === 'off') return bad('splitting big jobs is off for ' + (x.d.name || x.d.id) + ' (departments.js delegation ' + x.d.id + ' shadow|live --by owner)');
+    const block = renderPieces([].concat(o.pieces || []).map(t => parsePieceLine(String(t))).filter(Boolean), o.fanout);
+    const chk = splitOk(block, { minPieces: g.minPieces });
+    if (![].concat(o.pieces || []).length) return bad('SPLIT needs the pieces: --piece "<title> — files: a, b — check: <acceptance check>" (at least ' + g.minPieces + ')');
+    if (!chk.ok) return bad('SPLIT refused: ' + chk.why);
+    sp = { pieces: chk.pieces, fanout: chk.fanout, block, live: g.effective === 'live' };
+    findings = chk.pieces.map(p => p.title).slice(0, 12);
+  }
+  const line = verdictLine({ verdict, by: leadName, check: o.check, findings, tier }) + (sp && !sp.live ? ' — recorded only: splitting is in recording-only mode, so the item stays with ' + ((crew[c.open.fromSeat] || {}).name || c.open.fromSeat || 'its holder') : '');
   const wrote = [];
   const edit = (inbox, fn) => { if (!inbox) return; const f = inboxPath(o, inbox); const t = readText(f); if (t == null) return; const n = fn(t); if (n != null && n !== t) { if (!o.dry) writeAtomic(f, n); wrote.push('company/work/handoffs/' + inbox); } };
   // the consult block in the lead's inbox: the verdict, then DONE
@@ -302,11 +326,129 @@ function answer(o) {
   // the member's item block: the same line at its end, where model-rank.js reads verdicts
   if (c.open.file) edit(c.open.file, t => {
     const SP = require('./sprint'); const parts = sections(t);
-    for (let i = 0; i < parts.length; i++) { if (!parts[i].startsWith('## ')) continue; const it = SP.parseItems(parts[i])[0]; if (it && W.itemId(c.open.file, it.heading, it.id) === c.open.item) { const m = /\n*$/.exec(parts[i]); parts[i] = parts[i].slice(0, m.index) + '\n' + line + (m[0] || '\n'); return parts.join(''); } }
+    for (let i = 0; i < parts.length; i++) { if (!parts[i].startsWith('## ')) continue; const it = SP.parseItems(parts[i])[0]; if (it && W.itemId(c.open.file, it.heading, it.id) === c.open.item) { const m = /\n*$/.exec(parts[i]); const body = sp && sp.live ? stripPieces(parts[i].slice(0, m.index)) : parts[i].slice(0, m.index); parts[i] = body + '\n' + (sp && sp.live ? sp.block + '\n' : '') + line + (m[0] || '\n'); return parts.join(''); } }
     return null;
   });
-  append({ op: 'verdict', at: now, ts: new Date(now).toISOString(), id: c.id, dept: c.open.dept, item: c.open.item, verdict, by: String(x.d.lead), check: one(o.check, 300), findings: findings.length ? findings : undefined, tier: tier || undefined, runId: process.env.STARNET_RUN_ID ? one(process.env.STARNET_RUN_ID, 80) : null }, o);
-  return { ok: true, id: c.id, verdict, line, wrote };
+  const runId = process.env.STARNET_RUN_ID ? one(process.env.STARNET_RUN_ID, 80) : null;
+  append({ op: 'verdict', at: now, ts: new Date(now).toISOString(), id: c.id, dept: c.open.dept, item: c.open.item, verdict, by: String(x.d.lead), check: one(o.check, 300), findings: findings.length ? findings : undefined, tier: tier || undefined, runId }, o);
+  if (sp) append(Object.assign({ op: 'split', at: now, ts: new Date(now).toISOString(), id: 'sp-' + Number(now).toString(36) + '-' + crypto.randomBytes(2).toString('hex'), consult: c.id, dept: c.open.dept, lead: String(x.d.lead), item: c.open.item, file: c.open.file || null,
+    title: c.open.title, seat: c.open.fromSeat || null, pieces: sp.pieces, fanout: sp.fanout, hash: piecesHash(sp.pieces, sp.fanout), class: c.open.class, runId }, sp.live ? {} : { shadow: true }), o);
+  if (sp && !sp.live) wouldDelegateLog(o, c.open, sp);
+  return { ok: true, id: c.id, verdict, line, wrote, split: sp ? { live: sp.live, pieces: sp.pieces.length, fanout: sp.fanout, wouldDelegate: !sp.live || undefined } : undefined };
+}
+
+/* ---------------- narrow fan-out: pieces (pure) ----------------
+ * In the item's block (the lead writes it, through consult.js answer --verdict SPLIT or consult.js split):
+ *   **Pieces:**
+ *   1. <title> — files: api/a.ts, api/b.ts — check: <acceptance check>
+ *   **Fan-out:** lanes | dispatch        (lanes when absent) */
+// one piece line: "<n>. <title> — files: a, b — check: <check>" (the parts after the title in either order; — – or -)
+function parsePieceLine(l, n) {
+  const raw = String(l || '').trim(); if (!raw) return null;
+  const m = /^(\d{1,2})[.)]\s+([\s\S]*)$/.exec(raw);
+  const num = m ? Number(m[1]) : (n || 1), rest = m ? m[2] : raw;
+  const parts = rest.split(/\s+[—–]{1,2}\s+|\s+-{1,2}\s+(?=(?:files?|check):)/i);
+  const out = { n: num, title: one(parts[0], 160), files: [], check: '' };
+  for (const p of parts.slice(1)) {
+    const f = /^files?:\s*(.*)$/i.exec(p.trim()), c = /^check:\s*(.*)$/i.exec(p.trim());
+    if (f) out.files = f[1].split(/[,;]\s*|\s+and\s+/).map(x => x.replace(/[`*]/g, '').trim().replace(/^\.\//, '')).filter(Boolean);
+    else if (c) out.check = one(c[1], 300);
+    else out.title = one(out.title + ' — ' + p, 160);
+  }
+  return out.title ? out : null;
+}
+function parsePieces(block) {
+  const L = String(block || '').split('\n'); const pieces = []; let i = L.findIndex(l => /^\*\*Pieces:\*\*\s*$/i.test(l.trim()) || /^\*\*Pieces:\*\*/i.test(l));
+  if (i >= 0) for (let k = i + 1; k < L.length; k++) { if (!/^\s*\d{1,2}[.)]\s/.test(L[k])) break; const p = parsePieceLine(L[k]); if (p) pieces.push(p); }
+  const f = String(field(block, 'Fan-out') || '').replace(/[`*]/g, '').trim().toLowerCase();
+  return { found: i >= 0, pieces, fanout: FANOUTS.includes(f) ? f : f ? null : 'lanes', fanoutRaw: f || null };
+}
+function splitOk(block, o) {
+  const min = Math.max(2, Number((o && o.minPieces) || 3) || 3);
+  const P = parsePieces(block);
+  const fail = why => ({ ok: false, pieces: P.pieces, fanout: P.fanout, why });
+  if (!P.found) return fail('no **Pieces:** list');
+  if (P.fanout == null) return fail('**Fan-out:** must be lanes or dispatch (got "' + P.fanoutRaw + '")');
+  if (P.pieces.length < min) return fail(P.pieces.length + ' piece' + (P.pieces.length === 1 ? '' : 's') + '; a split needs at least ' + min);
+  const noFiles = P.pieces.filter(p => !p.files.length), noCheck = P.pieces.filter(p => !p.check);
+  if (noFiles.length) return fail('piece ' + noFiles.map(p => p.n || '?').join(', ') + ' names no files (— files: a, b)');
+  if (noCheck.length) return fail('piece ' + noCheck.map(p => p.n || '?').join(', ') + ' has no acceptance check (— check: ..)');
+  const SP = require('./sprint');
+  for (let a = 0; a < P.pieces.length; a++) for (let b = a + 1; b < P.pieces.length; b++) {
+    const hit = P.pieces[a].files.find(x => P.pieces[b].files.some(y => SP.pathOverlap(x, y)));
+    if (hit) return fail('pieces ' + P.pieces[a].n + ' and ' + P.pieces[b].n + ' both touch ' + hit + ' (each piece works on its own files)');
+  }
+  return { ok: true, pieces: P.pieces.map((p, i) => ({ n: i + 1, title: p.title, files: p.files, check: p.check })), fanout: P.fanout, why: P.pieces.length + ' pieces on separate files, each with a check' };
+}
+function renderPieces(pieces, fanout) {
+  const f = FANOUTS.includes(String(fanout || '')) ? String(fanout) : 'lanes';
+  return '**Pieces:**\n' + (pieces || []).map((p, i) => (i + 1) + '. ' + one(p.title, 160) + ' — files: ' + (p.files || []).join(', ') + ' — check: ' + one(p.check, 300)).join('\n') + '\n**Fan-out:** ' + f;
+}
+// an older Pieces list and Fan-out line in a block (a new split replaces them)
+function stripPieces(text) {
+  const L = String(text).split('\n'); const out = []; let skip = false;
+  for (const l of L) {
+    if (/^\*\*Pieces:\*\*/i.test(l)) { skip = true; continue; }
+    if (skip && /^\s*\d{1,2}[.)]\s/.test(l)) continue;
+    skip = false;
+    if (/^\*\*Fan-out:\*\*/i.test(l)) continue;
+    out.push(l);
+  }
+  return out.join('\n').replace(/\n+$/, '');
+}
+const piecesHash = (pieces, fanout) => 'sha256:' + crypto.createHash('sha256').update(JSON.stringify([(pieces || []).map(p => [p.title, p.files, p.check]), fanout || 'lanes'])).digest('hex').slice(0, 16);
+function wouldDelegateLog(o, open, sp) {
+  if (o.dry) return;
+  try { const f = path.join(rootOf(o), 'company', 'work', 'dispatch-log.md'); fs.appendFileSync(f, '- ' + new Date(nowOf(o)).toISOString().slice(0, 16).replace('T', ' ') + ' WOULD DELEGATE ' + open.item + ' (' + open.dept + '): ' + sp.pieces.length + ' pieces by ' + sp.fanout + ' (splitting is recording only)\n'); } catch (_) {}
+}
+/* the lead's own split of an item in its own inbox (consult.js split <item> --piece .. --by <lead>) */
+function split(o) {
+  const now = nowOf(o), crew = crewOf(o);
+  const bad = (error, code) => ({ ok: false, code: code || 2, error });
+  const ds = deptState(o), x = ds.list.find(e => e.d.lead && String(e.d.lead) === String(o.by));
+  if (!x) return bad('only a department lead splits an item (' + ((crew[o.by] || {}).name || o.by) + ' leads no department)');
+  if (String(x.d.lead) === String(o.ceo || co.ceo())) return bad('the CEO is never a department lead');
+  const g = D.delegationOf(x.d, ds.st);
+  if (g.effective === 'off') return bad('splitting big jobs is off for ' + (x.d.name || x.d.id) + ' (departments.js delegation ' + x.d.id + ' shadow|live --by owner)');
+  const ib = (crew[x.d.lead] || {}).inbox; if (!ib) return bad('the lead has no inbox (loops.json)');
+  const file = inboxPath(o, ib), t = readText(file) || '';
+  const SP = require('./sprint'); const parts = sections(t); let hit = -1, it = null;
+  for (let i = 0; i < parts.length; i++) { if (!parts[i].startsWith('## ')) continue; const p = SP.parseItems(parts[i])[0]; if (p && p.open && (W.itemId(ib, p.heading, p.id) === String(o.item) || p.id === String(o.item))) { hit = i; it = p; break; } }
+  if (hit < 0) return bad('no OPEN item ' + o.item + ' in your inbox (' + ib + ')');
+  const block = renderPieces([].concat(o.pieces || []).map(t2 => parsePieceLine(String(t2))).filter(Boolean), o.fanout);
+  const chk = splitOk(block, { minPieces: g.minPieces });
+  if (!chk.ok) return bad('split refused: ' + chk.why);
+  const live = g.effective === 'live', itemId = W.itemId(ib, it.heading, it.id);
+  if (live && !o.dry) { const m = /\n*$/.exec(parts[hit]); parts[hit] = stripPieces(parts[hit].slice(0, m.index)) + '\n' + block + (m[0] || '\n'); writeAtomic(file, parts.join('')); }
+  const cls = require('./taskclass').classOf({ text: parts[hit], effort: it.effort }, String(x.d.lead), { departments: { departments: [x.d] } });
+  const row = append(Object.assign({ op: 'split', at: now, ts: new Date(now).toISOString(), id: 'sp-' + Number(now).toString(36) + '-' + crypto.randomBytes(2).toString('hex'), consult: null, dept: String(x.d.id), lead: String(x.d.lead), item: itemId, file: ib,
+    title: one(it.heading, 160), seat: String(x.d.lead), pieces: chk.pieces, fanout: chk.fanout, hash: piecesHash(chk.pieces, chk.fanout), class: cls, runId: process.env.STARNET_RUN_ID ? one(process.env.STARNET_RUN_ID, 80) : null }, live ? {} : { shadow: true }), o);
+  if (!live) wouldDelegateLog(o, { item: itemId, dept: String(x.d.id) }, chk);
+  return { ok: true, id: row.id, item: itemId, live, pieces: chk.pieces.length, fanout: chk.fanout, wouldDelegate: !live || undefined, next: live ? (chk.fanout === 'dispatch' ? 'the dispatcher lists you for team.dispatch to your team for this item on its next tick' : 'the dispatcher offers each piece to a free worker on your team as a lane') : 'recorded only: splitting is in recording-only mode, so you keep the item' };
+}
+/* the recorded splits that are still work: the department's delegation live (not withdrawn), its lead unchanged, the
+ * item still OPEN in its file with exactly the recorded pieces (hash), one per item (the newest split row wins) */
+function splitCandidates(o) {
+  o = o || {}; const crew = crewOf(o), ceo = co.ceo();
+  let ds; try { ds = deptState(o); } catch (_) { return []; }
+  const live = new Map(ds.list.map(e => [String(e.d.id), { e, g: D.delegationOf(e.d, ds.st) }]).filter(([, v]) => v.g.effective === 'live' && leadOk(v.e.d, ceo)));
+  if (!live.size) return [];
+  const newest = new Map();
+  for (const r of ledger(o)) if (r.op === 'split' && !r.shadow && r.item && r.file) newest.set(r.file + '\n' + r.item, r);
+  const SP = require('./sprint'), out = [], texts = new Map();
+  for (const r of newest.values()) {
+    const v = live.get(String(r.dept)); if (!v || String(v.e.d.lead) !== String(r.lead)) continue;
+    if (!texts.has(r.file)) texts.set(r.file, readText(inboxPath(o, r.file)) || '');
+    for (const sec of sections(texts.get(r.file))) {
+      if (!sec.startsWith('## ')) continue;
+      const it = SP.parseItems(sec)[0]; if (!it || !it.open || W.itemId(r.file, it.heading, it.id) !== r.item) continue;
+      const chk = splitOk(sec, { minPieces: v.g.minPieces });
+      if (!chk.ok || piecesHash(chk.pieces, chk.fanout) !== r.hash) break;   // edited since the split: not delegated
+      out.push({ split: r.id, dept: String(r.dept), lead: String(r.lead), leadName: (crew[r.lead] || {}).name || r.lead, item: r.item, file: r.file, heading: it.heading, text: sec, seat: r.seat, class: r.class || 'general', pieces: chk.pieces, fanout: chk.fanout, delegation: v.g });
+      break;
+    }
+  }
+  return out.sort((a, b) => (a.dept + a.item < b.dept + b.item ? -1 : 1));
 }
 
 /* ---------------- the advise prompt ---------------- */
@@ -590,5 +732,5 @@ function status(o) {
   return { ok: true, at: new Date(now).toISOString(), departments: out };
 }
 
-module.exports = { WRITER, KINDS, VERDICTS, DROP_WHY, CONSULT_LINE, paths, renderPacket, parsePacket, isPacketHeading, ledger, consults, writePacket, stuckScan, runKindOf, batchDue,
+module.exports = { FANOUTS, parsePieces, parsePieceLine, splitOk, renderPieces, stripPieces, piecesHash, split, splitCandidates, WRITER, KINDS, VERDICTS, DROP_WHY, CONSULT_LINE, paths, renderPacket, parsePacket, isPacketHeading, ledger, consults, writePacket, stuckScan, runKindOf, batchDue,
   verdictLine, parseTier, answer, template, advisePrompt, consultLine, withOwnText, holdFn, leadEntries, deptItems, readState, writeState, consultStep, premergeAdvice, status, pausedWords };

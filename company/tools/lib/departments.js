@@ -25,6 +25,10 @@
  *                                         'off' | 'shadow' | 'live' (a paused department acts as 'shadow')
  *   D.consultOf(dept, st)                 the department's consult numbers over newDepartment.consult (stuckOnReopen
  *                                         defaults to true)
+ *   D.delegationOf(dept, st)              the department's narrow fan-out settings (docs/DEPARTMENTS.md §6): its own
+ *                                         `delegation` over settings().delegationDefaults, field by field, plus
+ *                                         `effective`: 'off' | 'shadow' | 'live' (a withdrawn department acts as 'shadow')
+ *   D.subtree(lead, crew)                 the seats under a lead in the loops.json manager chain (the lead itself left out)
  *
  * Every rule a reader might want to tune lives in the file (limits, newDepartment, leadModelDefault); nothing here
  * hardcodes a seat, a name or a company. Owner: the people function (co.seatFor('people')).
@@ -39,6 +43,10 @@ const CLASSES = (() => { try { const t = require('./taskclass'); if (Array.isArr
 const ID_RE = /^[a-z][a-z0-9-]{1,31}$/;
 const CONSULT_KEYS = ['maxPerDay', 'stuckAfterFailedRuns', 'stuckAfterRevise', 'stuckAfterIdleWakes'];
 const ADVISOR_MODES = ['off', 'shadow', 'live'];
+const DELEGATION_MODES = ['off', 'shadow', 'live'];
+// the framework's own fallback for delegationDefaults (docs/DEPARTMENTS.md §6): off, at most 3 workers, 20 minutes each
+const DELEGATION_FALLBACK = { mode: 'off', workers: [], maxWorkers: 3, workerTimeoutMin: 20, minPieces: 3, prefer: 'lanes' };
+const DELEGATION_NUMS = { maxWorkers: [1, 8], workerTimeoutMin: [5, 240], minPieces: [2, 12] };
 // the framework's own fallback for advisorDefaults when neither the company file nor company/defaults/departments.json has it
 const ADVISOR_FALLBACK = { mode: 'off', routine: 'advise', batch: { minGapMin: 5, maxWaitMin: 10, startAt: 3 }, packetMaxChars: 4000, premerge: 'advisory',
   autoPause: { enabled: false, minItems: 20, minDays: 14, consultRate: [0.10, 0.40], cachedShareMin: 0.85, oneShotGainPoints: 10, reworkCutShare: 0.20 } };
@@ -70,6 +78,7 @@ function settings(doc, o) {
     newDepartment: nd,
     limits: Object.assign({ briefMaxChars: 8000, digestMaxChars: 8000, proposalsKeep: 50 }, d.limits || {}, c.limits || {}),
     advisorDefaults: mergeAdvisor(mergeAdvisor(ADVISOR_FALLBACK, d.advisorDefaults), c.advisorDefaults),
+    delegationDefaults: Object.assign({}, DELEGATION_FALLBACK, isObj(d.delegationDefaults) ? d.delegationDefaults : {}, isObj(c.delegationDefaults) ? c.delegationDefaults : {}),
   };
 }
 const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -90,6 +99,32 @@ function advisorOf(dept, st) {
   a.since = own.since || null; a.by = own.by || null;
   a.effective = a.mode === 'off' ? 'off' : a.paused ? 'shadow' : a.mode;
   return a;
+}
+/* the department's delegation settings over the defaults; effective: what the tools act on (withdrawn = shadow; an
+   unknown mode reads as off; a number outside its range reads as the default) */
+function delegationOf(dept, st) {
+  const s = st || settings({});
+  const base = Object.assign({}, DELEGATION_FALLBACK, (s && s.delegationDefaults) || {});
+  const own = dept && isObj(dept.delegation) ? dept.delegation : {};
+  const a = Object.assign({}, base, own);
+  a.mode = DELEGATION_MODES.includes(String(own.mode || '')) ? String(own.mode) : 'off';
+  for (const [k, [lo, hi]] of Object.entries(DELEGATION_NUMS)) { const n = Number(a[k]); a[k] = Number.isInteger(n) && n >= lo && n <= hi ? n : DELEGATION_FALLBACK[k]; }
+  a.workers = Array.isArray(own.workers) ? [...new Set(own.workers.map(String))] : [];
+  a.prefer = a.prefer === 'dispatch' ? 'dispatch' : 'lanes';
+  a.withdrawn = isObj(own.withdrawn) ? own.withdrawn : null;
+  a.since = own.since || null; a.by = own.by || null;
+  a.effective = a.mode === 'off' ? 'off' : a.withdrawn ? 'shadow' : a.mode;
+  return a;
+}
+/* the seats under a lead in the loops.json manager chain (reports, their reports, ...), the lead itself left out */
+function subtree(lead, crew) {
+  const c = crew || {}, out = new Set(), L = String(lead || '');
+  if (!L) return out;
+  for (const id of Object.keys(c)) {
+    let m = c[id] && c[id].manager, d = 0;
+    while (m && d++ < 32) { if (String(m) === L) { if (id !== L) out.add(id); break; } m = c[m] && c[m].manager; }
+  }
+  return out;
 }
 function consultOf(dept, st) {
   const s = st || settings({});
@@ -160,6 +195,16 @@ function validate(doc, crew) {
       if (!isObj(d.advisor)) P('BAD_ADVISOR', 'department ' + id + ': advisor must be an object', { dept: id });
       else if (d.advisor.mode != null && !ADVISOR_MODES.includes(String(d.advisor.mode))) P('BAD_ADVISOR', 'department ' + id + ': advisor.mode must be one of ' + ADVISOR_MODES.join(', '), { dept: id });
     }
+    if (d.delegation != null) {
+      const g = d.delegation;
+      if (!isObj(g)) P('BAD_DELEGATION', 'department ' + id + ': delegation must be an object', { dept: id });
+      else {
+        if (g.mode != null && !DELEGATION_MODES.includes(String(g.mode))) P('BAD_DELEGATION', 'department ' + id + ': delegation.mode must be one of ' + DELEGATION_MODES.join(', '), { dept: id });
+        if (g.workers != null && !(Array.isArray(g.workers) && g.workers.every(x => typeof x === 'string' && x))) P('BAD_DELEGATION', 'department ' + id + ': delegation.workers must be a list of seat ids', { dept: id });
+        for (const [k, [lo, hi]] of Object.entries(DELEGATION_NUMS)) if (g[k] != null && !(Number.isInteger(g[k]) && g[k] >= lo && g[k] <= hi)) P('BAD_DELEGATION', 'department ' + id + ': delegation.' + k + ' must be a whole number from ' + lo + ' to ' + hi, { dept: id });
+        if (g.prefer != null && !['lanes', 'dispatch'].includes(String(g.prefer))) P('BAD_DELEGATION', 'department ' + id + ': delegation.prefer must be lanes or dispatch', { dept: id });
+      }
+    }
   }
   return out;
 }
@@ -227,4 +272,4 @@ function drift(o) {
   return { ok: !mismatches.length, mismatches, notes };
 }
 
-module.exports = { CLASSES, CONTRACT_CLASSES, ID_RE, CONSULT_KEYS, ADVISOR_MODES, ADVISOR_FALLBACK, advisorOf, consultOf, mergeAdvisor, load, settings, frameworkDefault, list, members, deptOf, leadOf, validate, parsePlan, drift, decided, fileOf };
+module.exports = { CLASSES, CONTRACT_CLASSES, ID_RE, CONSULT_KEYS, ADVISOR_MODES, ADVISOR_FALLBACK, DELEGATION_MODES, DELEGATION_FALLBACK, DELEGATION_NUMS, delegationOf, subtree, advisorOf, consultOf, mergeAdvisor, load, settings, frameworkDefault, list, members, deptOf, leadOf, validate, parsePlan, drift, decided, fileOf };

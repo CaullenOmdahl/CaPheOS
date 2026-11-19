@@ -8,6 +8,13 @@
  *   node company/tools/consult.js answer <cs-id> --verdict APPROVE|REVISE|ESCALATE-TIER|TAKE-OVER|ESCALATE --check ".." [--finding ".."]... [--tier <provider>/<model>@<effort>] --by <lead>
  *        only the department's lead answers. The verdict line goes into the consult block and the member's item block, and
  *        the consult is closed (**Status:** DONE).
+ *        --verdict SPLIT --piece "<title> — files: a, b — check: <acceptance check>" (3 or more, delegation.minPieces)
+ *        [--fanout lanes|dispatch]: split the member's item into pieces for the lead's team (docs/DEPARTMENTS.md §6). The
+ *        pieces go into the item's block (**Pieces:**, **Fan-out:**) when the department's splitting is on; while it is
+ *        recording only, the split is recorded (WOULD DELEGATE) and the item stays with the member.
+ *   node company/tools/consult.js split <item id> --piece ".." --piece ".." --piece ".." [--fanout lanes|dispatch] --by <lead>
+ *        the lead splits an OPEN item in its own inbox the same way. Only a recorded split is ever delegated: a Pieces
+ *        list written into a handoff by hand is not.
  *   node company/tools/consult.js list [--dept <id>] [--open] [--json]
  *   node company/tools/consult.js status [--dept <id>] [--json]   per department: the mode, the pause and why, consults today
  *                                                                  of the daily limit, the next and the last advice, the
@@ -32,11 +39,11 @@ const TOOL = 'consult.js';
 class Refusal extends Error { constructor(msg, code, extra) { super(msg); this.code = code || 2; this.extra = extra || {}; } }
 
 function args(argv) {
-  const o = { pos: [], finding: [] };
+  const o = { pos: [], finding: [], piece: [] };
   for (let i = 0; i < argv.length; i++) {
     if (!argv[i].startsWith('--')) { o.pos.push(argv[i]); continue; }
     const k = argv[i].slice(2), v = (argv[i + 1] !== undefined && !argv[i + 1].startsWith('--')) ? argv[++i] : true;
-    if (k === 'finding') { if (v !== true) o.finding.push(v); } else o[k] = v;
+    if (k === 'finding' || k === 'piece') { if (v !== true) o[k].push(v); } else o[k] = v;
   }
   return o;
 }
@@ -92,7 +99,14 @@ function ask(a) {
 function answer(a) {
   const id = str(a.pos[1]).trim(); if (!/^cs-/.test(id)) throw new Refusal('answer <cs-id> --verdict .. --check .. --by <lead>');
   const by = seatOf(a.by, 'answer');
-  const r = C.answer({ id, verdict: str(a.verdict), check: str(a.check), findings: a.finding, tier: str(a.tier), by });
+  const r = C.answer({ id, verdict: str(a.verdict), check: str(a.check), findings: a.finding, tier: str(a.tier), pieces: a.piece, fanout: str(a.fanout) || undefined, by });
+  if (!r.ok) throw new Refusal(r.error, r.code || 2);
+  return { code: 0, out: r };
+}
+function split(a) {
+  const item = str(a.pos[1]).trim(); if (!item) throw new Refusal('split <item id> --piece ".." (3 or more) [--fanout lanes|dispatch] --by <lead>');
+  const by = seatOf(a.by, 'split');
+  const r = C.split({ item, pieces: a.piece, fanout: str(a.fanout) || undefined, by });
   if (!r.ok) throw new Refusal(r.error, r.code || 2);
   return { code: 0, out: r };
 }
@@ -134,9 +148,10 @@ function main(argv) {
   if (argv.length === 1 && argv[0] === '--duty') return duty();
   if (cmd === 'ask') return ask(a);
   if (cmd === 'answer') return answer(a);
+  if (cmd === 'split') return split(a);
   if (cmd === 'list') return list(a);
   if (cmd === 'status') { const s = C.status({ dept: str(a.dept) || null }); return { code: 0, out: a.json ? s : statusText(s) }; }
-  throw new Refusal('usage: consult.js ask --item <id> --question ".." [--kind ask|plan|premerge] [--check ".."] [--pr <url>] --by <seat> | answer <cs-id> --verdict <V> --check ".." [--finding ".."]... [--tier p/m@e] --by <lead> | list [--dept d] [--open] [--json] | status [--dept d] [--json] | --duty | --selftest');
+  throw new Refusal('usage: consult.js ask --item <id> --question ".." [--kind ask|plan|premerge] [--check ".."] [--pr <url>] --by <seat> | answer <cs-id> --verdict <V> --check ".." [--finding ".."]... [--tier p/m@e] [--piece ".."]... [--fanout lanes|dispatch] --by <lead> | split <item id> --piece ".."... [--fanout lanes|dispatch] --by <lead> | list [--dept d] [--open] [--json] | status [--dept d] [--json] | --duty | --selftest');
 }
 function run(argv) {
   try { return main(argv); }
@@ -169,6 +184,12 @@ function selftest() {
   const t2 = C.advisePrompt({ template: 'You are {{LEAD}} of {{DEPT_NAME}}.\n\nOpen consults for you: (none)\n', lead: 'Kwame', deptId: 'eng', deptName: 'Engineering', ids: ['cs-b', 'cs-c'] });
   const pre = t1.slice(0, t1.indexOf(C.CONSULT_LINE));
   ok('advise prompt: the same bytes up to the consult line', pre.length > 10 && t2.startsWith(pre) && t1 !== t2);
+  const pk = n => '**Pieces:**\n' + Array.from({ length: n }, (_, i) => (i + 1) + '. part ' + i + ' — files: src/p' + i + '.js — check: npm test').join('\n');
+  ok('splitOk: three pieces on separate files, each with a check, fan-out lanes by default', C.splitOk(pk(3)).ok && C.splitOk(pk(3)).fanout === 'lanes');
+  ok('splitOk: two pieces are refused', !C.splitOk(pk(2)).ok && /at least 3/.test(C.splitOk(pk(2)).why));
+  ok('splitOk: a piece with no check is refused', !C.splitOk(pk(3).replace(/ — check: npm test$/, '')).ok);
+  ok('splitOk: two pieces sharing a file are refused', /both touch/.test(C.splitOk(pk(3).replace('src/p2.js', 'src/p1.js')).why));
+  ok('splitOk: a fan-out that is not lanes or dispatch is refused', !C.splitOk(pk(3) + '\n**Fan-out:** everyone').ok && C.splitOk(pk(3) + '\n**Fan-out:** dispatch').fanout === 'dispatch');
   ok('verdict line: the shape model-rank.js reads', C.verdictLine({ verdict: 'REVISE', by: 'Kwame', check: 'npm test', findings: ['a', 'b'] }) === '**Verdict:** REVISE by Kwame — check: npm test — 1. a 2. b');
   console.log(bad ? 'CONSULT SELFTEST FAILED: ' + bad : 'CONSULT SELFTEST PASSED');
   return bad ? 1 : 0;

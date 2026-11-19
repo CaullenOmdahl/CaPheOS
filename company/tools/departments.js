@@ -23,6 +23,19 @@
  *   node company/tools/departments.js digest <id> --file <path> --by <lead>           replace INBOX-DIGEST.md (digestMaxChars)
  *   node company/tools/departments.js note <id> --text ".." --by <lead>               one line at the top of DECISIONS.md
  *   node company/tools/departments.js show <id> --json --brief                        the department with its brief's text
+ *   node company/tools/departments.js delegation <id> off|shadow|live --by owner       whether the lead may split big jobs (§6)
+ *   node company/tools/departments.js delegation <id> workers <seat,seat> --by <CEO|owner>   who the lead may hand pieces to
+ *                                                                          (only seats under the lead in loops.json; org)
+ *   node company/tools/departments.js delegation <id> withdraw --by dispatcher --auto --why ".." [--hash h]   (or --by owner):
+ *                                                                          the house ranking said splitting does not save money
+ *   node company/tools/departments.js delegation <id> resume --by owner                only the owner resumes
+ *   node company/tools/departments.js set-route <id> <class> <provider/model[@effort]> --by <owner|CEO|routing-proposal> [--proposal <rp-id>]
+ *                                                                          the ONE writer of a department's routes: the class
+ *                                                                          rules first (code never on the MiniMax plan, for the
+ *                                                                          owner too); the CEO at the owner's models level; the
+ *                                                                          weekly suggestion only from the dispatcher's own
+ *                                                                          process, after its veto window passed with no veto
+ *   node company/tools/departments.js set-route <id> <class> none --by <owner|CEO>      drop the route (the class runs on each seat's chain)
  *   node company/tools/departments.js --duty                              read-only duty (docs/DUTIES.md)
  *   node company/tools/departments.js --selftest
  *
@@ -60,6 +73,8 @@ const S = {   // seams for the tests (company/tools/tests/departments.test.js)
   prov: () => require('./provenance.js'),
   gov: () => require('./lib/governance'),
   decision: o => require('./decision.js').add(o),
+  // the weekly routing suggestion's readiness (routing.js proposalReady): null when it may be applied now, else why not
+  proposalReady: (id, want) => require('./routing.js').proposalReady(id, want),
 };
 const P = (...x) => path.join(S.root(), ...x);
 const prov = () => S.prov();
@@ -102,6 +117,13 @@ function report(o) {
     if (!d.lead) dr.mismatches.push({ code: 'ADVISOR_NO_LEAD', dept: d.id, msg: 'department ' + (d.name || d.id) + ' has the lead\'s advice ' + ad.mode + ' but no lead (departments.js set-lead, or advisor ' + d.id + ' off)' });
     else if (String(d.lead) === String(S.ceo())) dr.mismatches.push({ code: 'ADVISOR_CEO_LEAD', dept: d.id, seat: d.lead, msg: 'department ' + (d.name || d.id) + ' names the CEO as its lead while its advice is ' + ad.mode + '; the CEO is never a lead (set another lead, or advisor ' + d.id + ' off)' });
   }
+  // narrow fan-out (§6): splitting on with no lead (or the CEO as lead), and an allowlisted worker outside the lead's reports
+  for (const d of D.list(doc)) {
+    const g = D.delegationOf(d, st);
+    if (g.mode !== 'off' && (!d.lead || String(d.lead) === String(S.ceo()))) dr.mismatches.push({ code: 'DELEGATE_NO_LEAD', dept: d.id, msg: 'department ' + (d.name || d.id) + ' has splitting ' + g.mode + ' but ' + (d.lead ? 'the CEO as its lead' : 'no lead') + ' (set a lead, or delegation ' + d.id + ' off)' });
+    const under = d.lead ? D.subtree(d.lead, crew) : new Set();
+    for (const w of g.workers) if (!crew[w] || !under.has(w)) dr.mismatches.push({ code: 'DELEGATE_OUTSIDE_SUBTREE', dept: d.id, seat: w, msg: 'department ' + (d.name || d.id) + ' lists ' + w + ' as a worker for its lead, but ' + (crew[w] ? w + ' does not report to ' + (d.lead ? nameOf(crew, d.lead) : 'a lead') + ' in loops.json' : w + ' is not on the crew') });
+  }
   dr.ok = !dr.mismatches.length;
   const departments = D.list(doc).map(d => {
     const b = readIf(path.join(deptDir(String(d.id)), 'BRIEF.md'));
@@ -109,6 +131,7 @@ function report(o) {
       members: D.members(d).map(s => ({ id: s, name: nameOf(crew, s), onCrew: !!crew[s], manager: (crew[s] && crew[s].manager) || null, isLead: s === d.lead, escalatesTo: D.leadOf(s, doc, crew) })),
       defaultClass: d.defaultClass || null, brief: d.brief || null, briefChars: b == null ? null : b.length, routes: d.routes || {}, consult: d.consult || {},
       advisor: (({ mode, effective, paused, since, by, batch, autoPause }) => ({ mode, effective, paused, since, by, batch, autoPause }))(D.advisorOf(d, st)), consultLimits: D.consultOf(d, st),
+      delegation: (({ mode, effective, workers, maxWorkers, workerTimeoutMin, minPieces, prefer, since, by, withdrawn }) => ({ mode, effective, workers, maxWorkers, workerTimeoutMin, minPieces, prefer, since, by, withdrawn }))(D.delegationOf(d, st)),
       briefText: o && o.brief ? b : undefined };
   });
   const unassigned = Object.keys(crew).filter(id => !D.deptOf(id, doc)).map(id => ({ id, name: nameOf(crew, id), isCeo: id === S.ceo() }));
@@ -308,10 +331,10 @@ function ASK(p, a) {
   return { summary: p.plain || 'change how the crew is organised into departments', recommendation: why ? 'yes: ' + why.replace(/^./, c => c.toLowerCase()) : 'yes',
     default: 'the departments stay as they are', technical: 'departments: ' + p.summary + (a && a.why && a.why !== true ? '. Why: ' + clean(a.why, 300) : '') };
 }
-function governed(op, a, p, who, extra) {
-  const gov = S.gov();
-  const d = gov.decide('org', Object.assign({ by: who.name, ref: refOf(op, a) }, ASK(p, a)), orgOpts());
-  if (!d.allowed) throw new Refusal(gov.refusal('org', d), d.denied ? 2 : 3, { governance: { category: 'org', level: d.level, questionId: d.questionId || null, denied: !!d.denied } });
+function governed(op, a, p, who, extra, category) {
+  const gov = S.gov(), cat = category || 'org';
+  const d = gov.decide(cat, Object.assign({ by: who.name, ref: refOf(op, a) }, ASK(p, a)), cat === 'org' ? orgOpts() : {});
+  if (!d.allowed) throw new Refusal(gov.refusal(cat, d), d.denied ? 2 : 3, { governance: { category: cat, level: d.level, questionId: d.questionId || null, denied: !!d.denied } });
   return commit(p, who, a, Object.assign({}, extra, d.level === 'approve' ? { note: [extra && extra.note, 'owner approved ' + d.questionId].filter(Boolean).join('; ') } : {}));
 }
 function applyProposal(pid, a) {
@@ -386,6 +409,126 @@ function advisorCmd(a) {
   const p = { doc: setAdvisor(d, next), summary, plain, touched: [String(d.id)] };
   return Object.assign(commit(p, who, a), { advisor: (({ mode, paused, since }) => ({ mode, paused, since }))(D.advisorOf(Object.assign({}, d, { advisor: next }), st)) });
 }
+/* ---------------- narrow fan-out (docs/DEPARTMENTS.md §6) ----------------
+ * delegation <id> off|shadow|live   the owner only; shadow or live needs a lead who is not the CEO
+ * delegation <id> workers a,b       the CEO (at the owner's org level) or the owner; every seat under the lead in loops.json
+ * delegation <id> withdraw          the dispatcher with --auto (the house ranking's fan-out evaluation said it does not
+ *                                   save money; once per evaluation hash), or the owner; a withdrawn department records only
+ * delegation <id> resume            the owner only */
+function setDelegation(d, next) { const L = state(); const doc = clone(L.doc); const x = D.list(doc).find(y => String(y.id) === String(d.id)); x.delegation = next; return doc; }
+function delegationCmd(a) {
+  const id = String(a.pos[1] || ''), op = String(a.pos[2] || '');
+  const L = state(), st = D.settings(L.doc, { root: S.root() }), d = needDept(L.doc, id), cur = D.delegationOf(d, st), crew = S.crew();
+  const own = d.delegation && typeof d.delegation === 'object' ? clone(d.delegation) : {};
+  const nowIso = new Date(S.now()).toISOString(), leadName = d.lead ? nameOf(crew, d.lead) : null, dn = d.name || d.id;
+  let who, next, summary, plain = null, governedOp = null;
+  if (['off', 'shadow', 'live'].includes(op)) {
+    who = actor(a.by, 'delegation');
+    if (who.kind !== 'owner') throw new Refusal('only the owner switches whether a lead may split big jobs (delegation ' + id + ' ' + op + ' --by owner)');
+    if (op !== 'off' && !d.lead) throw new Refusal(dn + ' has no lead: set one first (set-lead ' + id + ' <seat>)', 2, { problem: 'DELEGATE_NO_LEAD' });
+    if (op !== 'off' && String(d.lead) === String(S.ceo())) throw new Refusal('the CEO is never a department lead: set another lead for ' + dn + ' first', 2, { problem: 'DELEGATE_NO_LEAD' });
+    if (cur.mode === op) return { ok: true, changed: false, summary: 'splitting big jobs for ' + dn + ' is ' + op + ' already' };
+    next = Object.assign(own, { mode: op, since: op === 'live' ? nowIso : (own.since || null), by: 'owner', withdrawn: op === 'off' ? null : (own.withdrawn || null) });
+    summary = 'splitting big jobs for ' + dn + ' (' + (leadName || 'no lead') + '): ' + cur.mode + ' -> ' + op;
+  } else if (op === 'workers') {
+    who = actor(a.by, 'delegation');
+    if (who.kind !== 'owner' && who.kind !== 'ceo') throw new Refusal('only the CEO or the owner sets who a lead may hand pieces to');
+    if (!d.lead) throw new Refusal(dn + ' has no lead: set one first', 2, { problem: 'DELEGATE_NO_LEAD' });
+    const list = [...new Set(String(a.pos[3] || '').split(',').map(x => x.trim()).filter(x => x && x !== 'none'))];
+    const under = D.subtree(d.lead, crew);
+    const bad = list.filter(w => !crew[w] || !under.has(w));
+    if (bad.length) throw new Refusal('refused: ' + bad.map(w => crew[w] ? nameOf(crew, w) + ' (' + w + ') does not report to ' + leadName + ' in loops.json' : w + ' is not on the crew').join('; ') + ': a lead hands pieces only to its own team', 2, { problem: 'DELEGATE_OUTSIDE_SUBTREE' });
+    if (JSON.stringify(cur.workers) === JSON.stringify(list)) return { ok: true, changed: false, summary: dn + '\'s workers are ' + (list.join(', ') || 'none') + ' already' };
+    next = Object.assign(own, { workers: list });
+    summary = 'the workers ' + leadName + ' may hand pieces of a big job to in ' + dn + ': ' + (list.map(w => nameOf(crew, w)).join(', ') || 'none');
+    plain = 'let ' + leadName + ' hand parts of a big job to ' + (list.length ? list.map(w => nameOf(crew, w)).join(', ') : 'nobody') + ' in ' + deptWords(d.name);
+    governedOp = 'delegation-workers';
+  } else if (op === 'withdraw') {
+    const why = a.why && a.why !== true ? clean(a.why, 300) : '';
+    if (!why) throw new Refusal('withdraw needs --why ".." (what the evaluation found)');
+    if (String(a.by || '').trim().toLowerCase() === 'dispatcher') {
+      if (a.auto !== true) throw new Refusal('the dispatcher withdraws only with --auto (the house ranking\'s fan-out evaluation)');
+      let pv = null; try { pv = prov(); } catch (_) {}
+      if (pv && pv.underStation()) throw new Refusal('--by dispatcher is the dispatcher\'s own tick, never an agent\'s run');
+      const ceo = S.ceo(); who = { kind: 'dispatcher', name: (crew[ceo] && crew[ceo].name) || 'owner', label: 'the dispatcher (automatic)' };
+    } else {
+      who = actor(a.by, 'delegation');
+      if (who.kind !== 'owner') throw new Refusal('only the owner withdraws splitting by hand (the dispatcher withdraws it with --auto when it does not save money)');
+    }
+    if (cur.mode === 'off') throw new Refusal('splitting big jobs for ' + dn + ' is off: there is nothing to withdraw');
+    if (cur.withdrawn) return { ok: true, changed: false, summary: dn + '\'s splitting is withdrawn already (' + (cur.withdrawn.why || '') + ')' };
+    next = Object.assign(own, { withdrawn: Object.assign({ at: nowIso, by: who.kind === 'dispatcher' ? 'auto' : 'owner', why }, a.hash && a.hash !== true ? { evaluationHash: clean(a.hash, 80) } : {}) });
+    summary = 'withdraw splitting big jobs for ' + dn + ' (' + (leadName || 'no lead') + '): ' + why;
+  } else if (op === 'resume') {
+    if (String(a.by || '').trim().toLowerCase() === 'dispatcher') throw new Refusal('only the owner resumes splitting');
+    who = actor(a.by, 'delegation');
+    if (who.kind !== 'owner') throw new Refusal('only the owner resumes splitting');
+    if (!cur.withdrawn) return { ok: true, changed: false, summary: dn + '\'s splitting is not withdrawn' };
+    next = Object.assign(own, { withdrawn: null, since: nowIso });
+    summary = 'resume splitting big jobs for ' + dn + ' (' + (leadName || 'no lead') + '); measured again from today';
+  } else throw new Refusal('delegation <id> off|shadow|live|workers <seat,seat>|withdraw|resume --by <name>');
+  const p = { doc: setDelegation(d, next), summary, plain, touched: [String(d.id)] };
+  const res = who.kind === 'ceo' && governedOp ? governed(governedOp, a, p, who) : commit(p, who, a);
+  return Object.assign(res, { delegation: (({ mode, effective, workers, withdrawn, since }) => ({ mode, effective, workers, withdrawn, since }))(D.delegationOf(Object.assign({}, d, { delegation: next }), st)) });
+}
+
+/* set-route <id> <class> <provider/model[@effort]|none>: the one writer of a department's routes. */
+const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+function parsePair(raw) {
+  const t = String(raw || '').trim(), sl = t.indexOf('/');
+  if (sl <= 0) return null;
+  const provider = t.slice(0, sl), rest = t.slice(sl + 1), at = rest.lastIndexOf('@');
+  const model = at > 0 ? rest.slice(0, at) : rest, effort = at > 0 ? rest.slice(at + 1) : null;
+  if (!/^[a-z0-9_.-]+$/.test(provider) || !model || !/^[A-Za-z0-9_.:\[\]-]+$/.test(model) || (effort && !EFFORTS.includes(effort))) return null;
+  return Object.assign({ provider, model }, effort ? { effort } : {});
+}
+// the class rules (routing-policy.json classRules, else the framework default's); the owner ruling "code is never on the
+// MiniMax plan" holds even with no policy at all
+function routeDenied(cls, pair) {
+  if (cls === 'code' && pair.provider === 'custom') return 'code is never written on the MiniMax plan (owner ruling)';
+  try {
+    const R = require('./lib/routing'); const L = R.loadPolicy(S.root());
+    if (L && !R.routeAllowed(cls, pair, R.knobs(L.policy))) return 'the class rules deny ' + pair.provider + '/' + pair.model + ' for ' + cls + ' work (routing-policy.json classRules)';
+  } catch (_) {}
+  return null;
+}
+const routeLabel = r => r ? r.provider + '/' + r.model + (r.effort ? '@' + r.effort : '') : 'none';
+function setRoute(a) {
+  const id = String(a.pos[1] || ''), cls = String(a.pos[2] || ''), raw = String(a.pos[3] || '');
+  const L = state(), d = needDept(L.doc, id), dn = d.name || d.id;
+  if (!D.CLASSES.includes(cls)) throw new Refusal('set-route <id> <class> <provider/model[@effort]|none>: class must be one of ' + D.CLASSES.join(', '));
+  const pair = raw === 'none' ? null : parsePair(raw);
+  if (raw !== 'none' && !pair) throw new Refusal('the route is provider/model[@effort] (got "' + raw + '")');
+  if (pair) {
+    const deny = routeDenied(cls, pair); if (deny) throw new Refusal('refused: ' + deny + ' — for everyone, the owner included', 2, { problem: 'CLASS_RULE' });
+    const allowed = ((co.readJson(P('company', 'model-policy.json'), {}) || {}).allowed || {})[pair.provider];
+    if (!allowed || !Array.isArray(allowed.models) || !allowed.models.includes(pair.model)) throw new Refusal('refused: ' + pair.provider + '/' + pair.model + ' is not on the company\'s allowed list (company/model-policy.json allowed)');
+  }
+  const crew = S.crew(), by = String(a.by || '').trim().toLowerCase();
+  let who;
+  if (by === 'routing-proposal') {
+    let pv = null; try { pv = prov(); } catch (_) {}
+    if (pv && pv.underStation()) throw new Refusal('--by routing-proposal is the dispatcher\'s weekly suggestion, never an agent\'s run');
+    const pid = a.proposal && a.proposal !== true ? String(a.proposal) : '';
+    if (!pid) throw new Refusal('--by routing-proposal needs --proposal <id>');
+    if (!pair) throw new Refusal('a weekly suggestion moves a route, it never drops one');
+    let why = null; try { why = S.proposalReady(pid, { dept: String(d.id), class: cls, to: pair }); } catch (e) { why = e.message; }
+    if (why) throw new Refusal('refused: suggestion ' + pid + ' is not ready to apply: ' + why);
+    const ceo = S.ceo(); who = { kind: 'routing-proposal', name: (crew[ceo] && crew[ceo].name) || 'owner', label: 'the weekly routing suggestion (automatic, not vetoed)' };
+  } else {
+    who = actor(a.by, 'set-route');
+    if (who.kind !== 'owner' && who.kind !== 'ceo') throw new Refusal('only the owner or the CEO changes a department\'s route (the weekly suggestion does it after the owner\'s veto window)');
+  }
+  const cur = (d.routes && d.routes[cls]) || null;
+  if (routeLabel(cur) === routeLabel(pair)) return { ok: true, changed: false, summary: dn + '\'s ' + cls + ' route is ' + routeLabel(pair) + ' already' };
+  const doc = clone(L.doc), x = D.list(doc).find(y => String(y.id) === String(d.id));
+  x.routes = Object.assign({}, x.routes || {}); if (pair) x.routes[cls] = pair; else delete x.routes[cls];
+  const summary = 'the ' + cls + ' route of ' + dn + ': ' + routeLabel(cur) + ' -> ' + routeLabel(pair) + (who.kind === 'routing-proposal' ? ' (weekly suggestion ' + a.proposal + ', not vetoed)' : '');
+  const p = { doc, summary, plain: 'change which AI setup does ' + cls + ' work in ' + deptWords(d.name), touched: [String(d.id)] };
+  const res = who.kind === 'ceo' ? governed('set-route', a, p, who, null, 'models') : commit(p, who, a, who.kind === 'routing-proposal' ? { note: 'proposal ' + a.proposal } : null);
+  return Object.assign(res, { route: { dept: String(d.id), class: cls, from: cur, to: pair } });
+}
+
 /* brief / digest / note: the lead's own department files (the owner may too). brief and digest are replaced whole, inside
    their size limits; a note is one line at the top of DECISIONS.md (newest first, append-only). */
 function leadOnly(a, cmd, d) {
@@ -468,8 +611,10 @@ function main(argv) {
   if (cmd === 'reject') return { code: 0, out: rejectProposal(String(a.pos[1] || ''), a) };
   if (['create', 'set-lead', 'add-member', 'remove-member', 'move'].includes(cmd)) return { code: 0, out: change(cmd, a) };
   if (cmd === 'advisor') return { code: 0, out: advisorCmd(a) };
+  if (cmd === 'delegation') return { code: 0, out: delegationCmd(a) };
+  if (cmd === 'set-route') return { code: 0, out: setRoute(a) };
   if (['brief', 'digest', 'note'].includes(cmd)) return { code: 0, out: deptFile(a, cmd) };
-  throw new Refusal('usage: departments.js list|show <id>|check|create <id> --name ..|set-lead <id> <seat|none>|add-member <id> <seat>|remove-member <id> <seat>|move <seat> <id|none>|proposals|apply <pid>|reject <pid>|advisor <id> off|shadow|live|pause|resume|brief <id> --file f|digest <id> --file f|note <id> --text ".." (--by <name> on every change) | --duty | --selftest');
+  throw new Refusal('usage: departments.js list|show <id>|check|create <id> --name ..|set-lead <id> <seat|none>|add-member <id> <seat>|remove-member <id> <seat>|move <seat> <id|none>|proposals|apply <pid>|reject <pid>|advisor <id> off|shadow|live|pause|resume|delegation <id> off|shadow|live|workers <s,s>|withdraw|resume|set-route <id> <class> <p/m@e|none>|brief <id> --file f|digest <id> --file f|note <id> --text ".." (--by <name> on every change) | --duty | --selftest');
 }
 function run(argv) {
   try { return main(argv); }
