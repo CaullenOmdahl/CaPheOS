@@ -6,8 +6,16 @@
  *   M.host(o)                 { totalMB, availableMB, swapTotalMB, swapUsedMB, zram, tmpfsTmp: {sizeMB, usedMB}|null, oomd }
  *   M.settings(config)        company.json runtime.memory with its defaults { profile: auto|low|normal, keepFreeMB, visibleBrowser }
  *   M.profileOf(settings, host)   'low' | 'normal' (auto: low on a machine of 4.5 GB or less)
- *   M.plan({ totalMB, profile, keepFreeMB })   every limit the company sets, from the machine's size (pure; MB, rounded
- *                             down to 64 MB where the spec says so). The table in docs/RETENTION.md is asserted by memory.js selftest.
+ *   M.plan({ totalMB, profile, keepFreeMB, companies })   every limit the company sets, from the machine's size (pure;
+ *                             MB, rounded down to 64 MB where the spec says so): the machine minus what is kept free and
+ *                             the system's share, split evenly across the companies on it (companies, default 1). The
+ *                             table in docs/RETENTION.md is asserted by memory.test.js.
+ *   M.companies({ root, config, unitDir })   the companies set up on this machine: this one, and every other whose station
+ *                             unit (ExecStart sidecar/index.js, WorkingDirectory <root>/starnet) is enabled in the user's
+ *                             unit dir and whose root holds company/company.json; each with its keepFreeMB (read only)
+ *   M.share({ root, config, unitDir, supervisor })   { n, keepFreeMB, others }: under systemd the companies above and the
+ *                             largest keepFreeMB any of them asks for (memory kept free is the machine's, not one
+ *                             company's); in a container or without a supervisor this company alone
  *   M.units(config, root)     the unit names: <svc>, <svc>-console, <svc>-dispatch and the registered services
  *   M.usage(o)                per unit {currentMB, peakMB, highMB, maxMB, pid}, the company's browsers, its private temp dir
  *   M.sample(o)               one line in company/state/memory-samples.jsonl
@@ -89,17 +97,18 @@ function plan(o) {
   o = o || {};
   const totalMB = Math.max(0, Number(o.totalMB) || 0);
   const keepFreeMB = Math.max(0, Number(o.keepFreeMB) || 0);
+  const companies = Math.max(1, Math.min(32, Math.floor(Number(o.companies) || 1)));
   const profile = o.profile === 'low' || o.profile === 'normal' ? o.profile : profileOf({ profile: 'auto' }, { totalMB });
   const low = profile === 'low';
   const osReserve = low ? 400 : 1024;
-  const raw = totalMB - keepFreeMB - osReserve;
+  const raw = Math.floor((totalMB - keepFreeMB - osReserve) / companies);
   const budget = Math.max(1024, raw);
   const warnings = [];
-  if (raw < 1024) warnings.push('what is kept free leaves the company less than 1 GB; it plans with 1 GB, so the computer may run short');
+  if (raw < 1024) warnings.push((companies > 1 ? 'shared with ' + (companies - 1) + ' other compan' + (companies > 2 ? 'ies' : 'y') + ' on this computer, ' : '') + 'what is kept free leaves the company less than 1 GB; it plans with 1 GB, so the computer may run short');
   const sHigh = floor64(low ? Math.max(700, 0.55 * budget) : 0.50 * budget);
   const sMax = floor64(low ? Math.max(900, 0.70 * budget) : 0.70 * budget);
   return {
-    profile, totalMB, keepFreeMB, osReserve, budget, warnings,
+    profile, totalMB, keepFreeMB, companies, osReserve, budget, warnings,
     station: { heapMB: low ? 384 : 1024, highMB: sHigh, maxMB: sMax, swapMaxMB: floor64(sMax * 0.5) },
     console: { heapMB: low ? 128 : 192, highMB: low ? 160 : 256, maxMB: low ? 300 : 512 },
     // the dispatcher's own heap plus the tools each tick runs as children (about 600 MB at their peak): High is above
@@ -114,6 +123,36 @@ function plan(o) {
   };
 }
 
+/* the companies on this machine (read only: unit files and each one's company.json) */
+const realOr = p => { try { return fs.realpathSync(p); } catch (_) { return path.resolve(p); } };
+function companies(o) {
+  o = o || {};
+  const out = new Map();
+  const self = o.root ? realOr(o.root) : null;
+  if (self) out.set(self, { root: self, svc: svcOf(o.config), self: true, keepFreeMB: settings(o.config).keepFreeMB });
+  const dir = o.unitDir; let names = [];
+  if (dir) { try { names = fs.readdirSync(dir); } catch (_) {} }
+  for (const n of names) {
+    if (!/\.service$/.test(n)) continue;
+    const f = path.join(dir, n); let t;
+    try { const st = fs.statSync(f); if (!st.isFile() || st.size > 65536) continue; t = fs.readFileSync(f, 'utf8'); } catch (_) { continue; }
+    if (!/^ExecStart=.*\bsidecar\/index\.js\b/m.test(t)) continue;
+    const wd = /^WorkingDirectory=(\/.+)\/starnet\/?\s*$/m.exec(t); if (!wd) continue;
+    const r = realOr(wd[1]); if (out.has(r)) continue;
+    if (!fs.existsSync(path.join(dir, 'default.target.wants', n))) continue;   // installed but not enabled: not running here
+    let cfg = null; try { cfg = JSON.parse(fs.readFileSync(path.join(r, 'company', 'company.json'), 'utf8')); } catch (_) { continue; }
+    out.set(r, { root: r, svc: n.replace(/\.service$/, ''), self: false, name: cfg && cfg.name ? String(cfg.name).slice(0, 80) : null, keepFreeMB: settings(cfg).keepFreeMB });
+  }
+  return [...out.values()];
+}
+function share(o) {
+  o = o || {};
+  const own = settings(o.config).keepFreeMB;
+  if (o.supervisor !== 'systemd') return { n: 1, keepFreeMB: own, others: [] };
+  const list = companies(o);
+  const others = list.filter(c => !c.self);
+  return { n: Math.max(1, list.length), keepFreeMB: Math.max(own, ...list.map(c => c.keepFreeMB || 0)), others: others.map(c => ({ root: c.root, svc: c.svc, name: c.name, keepFreeMB: c.keepFreeMB })) };
+}
 function svcOf(config) { return String((config && config.station && config.station.serviceName) || 'capheos-station'); }
 function slugOf(config) { return String((config && (config.slug || config.shortName)) || 'company').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'company'; }
 function units(config, root) {
@@ -172,7 +211,7 @@ function usage(o) {
   if (root && o.browsers !== false) {
     try {
       const own = require('./owned');
-      const b = own.browsers(Object.assign({ root, config }, o.ownedOpts || {}));
+      const b = own.browsers(own.context(Object.assign({ root, config }, o.ownedOpts || {})));   // a context, not bare options
       out.browsers = { count: b.length, mb: Math.round(b.reduce((s, x) => s + (x.pssMB || 0), 0)), outside: b.filter(x => !x.inUnit).length };
       // a browser outside every company unit is not in a unit's MemoryCurrent: add it to the total
       out.totalMB += Math.round(b.filter(x => !x.inUnit).reduce((s, x) => s + (x.pssMB || 0), 0));
@@ -224,4 +263,4 @@ function growth(samples, now) {
   return out.filter(x => x.growing);
 }
 
-module.exports = { host, settings, profileOf, plan, units, usage, sample, readSamples, growth, parseMeminfo, parseSwaps, parseShow, bytesMB, dirSize, floor64, realSystemctl, svcOf, slugOf, LOW_AT_MB, sampleFile };
+module.exports = { companies, share, host, settings, profileOf, plan, units, usage, sample, readSamples, growth, parseMeminfo, parseSwaps, parseShow, bytesMB, dirSize, floor64, realSystemctl, svcOf, slugOf, LOW_AT_MB, sampleFile };

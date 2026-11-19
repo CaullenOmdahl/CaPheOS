@@ -17,11 +17,16 @@ RestartSec=3
 KillMode=mixed
 TimeoutStopSec=20
 # memory: the limits (MemoryHigh, MemoryMax, MemorySwapMax) and the Node heap are in the drop-in memory.js apply writes
-# (<unit>.service.d/50-capheos-memory.conf), from company.json runtime.memory. No ManagedOOMMemoryPressure=kill here:
-# systemd-oomd kills a whole unit, every run in it too. Instead the kernel picks inside the unit: the sidecar at 100,
+# (<unit>.service.d/50-capheos-memory.conf), from company.json runtime.memory. systemd-oomd kills a whole unit, every
+# run in it too, so it must never pick this one: many hosts' slice defaults (/usr/lib/systemd/user/slice.d/
+# 10-oomd-per-slice-defaults.conf) put ManagedOOMMemoryPressure=kill on app.slice, where this unit runs, and a build
+# holding the station at MemoryHigh reads as pressure. ManagedOOMPreference=omit takes it out of oomd's choice for
+# memory pressure (oomd honours it for a user unit; for its swap rule only on root-owned cgroups, so MemorySwapMax in the
+# drop-in bounds the swap this unit can hold). Instead the kernel picks inside the unit at MemoryMax: the sidecar at 100,
 # agent commands at 500 (StarNet patch 0020), so a runaway build goes before the station.
 MemoryAccounting=yes
 OOMScoreAdjust=100
+ManagedOOMPreference=omit
 # When the kernel ends one process here at the unit's MemoryMax (a build, at 500, before the sidecar), the station goes
 # on: OOMPolicy=stop (the default on many hosts, DefaultOOMPolicy=stop) would stop the whole unit, every live run in it.
 OOMPolicy=continue

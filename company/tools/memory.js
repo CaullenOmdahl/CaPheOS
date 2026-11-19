@@ -4,8 +4,9 @@
  *
  *   node company/tools/memory.js status [--json]       the machine, the profile, the plan, what each part uses now, what the
  *                                                       reaper freed in the last day and week; one plain line on top
- *   node company/tools/memory.js plan [--total MB] [--profile auto|low|normal] [--keep-free MB] [--json]
- *                                                       what would be set (this machine's size unless --total)
+ *   node company/tools/memory.js plan [--total MB] [--profile auto|low|normal] [--keep-free MB] [--companies N] [--json]
+ *                                                       what would be set (this machine's size and the companies on it
+ *                                                       unless --total / --companies)
  *   node company/tools/memory.js set [--profile auto|low|normal] [--keep-free MB] [--visible-browser on|off] --by owner [--json]
  *                                                       owner only: company.json runtime.memory, then apply
  *   node company/tools/memory.js apply [--dry-run] [--json]
@@ -16,6 +17,9 @@
  * Settings (company.json runtime.memory; unset = auto): profile auto|low|normal (auto: low on 4.5 GB or less),
  * keepFreeMB (memory the company never plans to use: kept for other programs, like a local AI model), visibleBrowser
  * (the station's browser as a window on this computer; off: headless, and it closes itself when unused).
+ * Two or more companies on one machine (lib/memory.js share: every other enabled station unit in the user's unit dir):
+ * the machine minus what is kept free (the largest keepFreeMB any of them asks for) and the system's share is split
+ * evenly, so together they fit; status says when the limits in force were planned for another number of companies.
  *
  * apply writes ONLY its own files, never the main units or the env file that holds the station token:
  *   ~/.config/systemd/user/<unit>.service.d/50-capheos-memory.conf   station, console, dispatcher: MemoryHigh, MemoryMax,
@@ -64,16 +68,24 @@ function context(o) {
   };
 }
 const hostOf = ctx => ctx.host || (ctx.host = M.host());
+// the companies sharing this machine and the memory kept free on it (lib/memory.js share): never cached across a set
+const shareOf = ctx => ctx.share || (ctx.share = M.share({ root: ctx.root, config: ctx.config, unitDir: ctx.unitDir, supervisor: ctx.supervisor }));
 function planFor(ctx, over) {
   over = over || {};
   const s = Object.assign(M.settings(ctx.config), over.settings || {});
   const h = hostOf(ctx);
+  const sh = shareOf(ctx);
   const totalMB = Number(over.totalMB) || h.totalMB;
   const profile = M.profileOf(s, { totalMB });
-  return Object.assign(M.plan({ totalMB, profile, keepFreeMB: over.keepFreeMB != null ? over.keepFreeMB : s.keepFreeMB }), { settings: s });
+  // kept free: this company's own setting, or more when another company on this machine keeps more free (a local AI
+  // model is the machine's, not one company's); --keep-free on plan shows one value
+  const keepFreeMB = over.keepFreeMB != null ? over.keepFreeMB : Math.max(s.keepFreeMB, sh.keepFreeMB);
+  const companies = Number(over.companies) || sh.n;
+  return Object.assign(M.plan({ totalMB, profile, keepFreeMB, companies }), { settings: s, others: over.companies ? [] : sh.others });
 }
 function planLine(p) {
-  return 'Memory: ' + p.profile + ' profile for this ' + fmtGB(p.totalMB) + ' machine; the station may use up to ' + fmtGB(p.station.maxMB) + '; ' + fmtGB(p.keepFreeMB) + ' kept free for other programs.';
+  const n = p.companies || 1;
+  return 'Memory: ' + p.profile + ' profile for this ' + fmtGB(p.totalMB) + ' machine' + (n > 1 ? ', shared evenly with ' + (n - 1) + ' other compan' + (n > 2 ? 'ies' : 'y') + ' on it' : '') + '; the station may use up to ' + fmtGB(p.station.maxMB) + '; ' + fmtGB(p.keepFreeMB) + ' kept free for other programs.';
 }
 
 /* ---------------- what apply writes ---------------- */
@@ -95,14 +107,21 @@ function dropins(ctx, p) {
   for (const u of UNITS) {
     const lim = p[u.role]; const exec = templateExec(ctx, u.tpl);
     const name = svc(ctx) + u.suffix + '.service';
-    let t = '# written by company/tools/memory.js apply (profile ' + p.profile + ', ' + fmtGB(p.totalMB) + ' machine, keep free ' + p.keepFreeMB + ' MB). Edit runtime.memory, not this file.\n[Service]\n'
+    let t = '# written by company/tools/memory.js apply (profile ' + p.profile + ', ' + fmtGB(p.totalMB) + ' machine, keep free ' + p.keepFreeMB + ' MB, companies ' + (p.companies || 1) + '). Edit runtime.memory, not this file.\n[Service]\n'
       + 'MemoryHigh=' + lim.highMB + 'M\nMemoryMax=' + lim.maxMB + 'M\n' + (lim.swapMaxMB ? 'MemorySwapMax=' + lim.swapMaxMB + 'M\n' : '');
     // the station: a process the kernel ends at MemoryMax (a build) must not stop the whole unit (OOMPolicy=stop is the
     // default on many hosts); the console and dispatcher keep stop, they hold no runs and Restart= brings them back
     if (u.role === 'station') t += 'OOMPolicy=continue\n';
+    // systemd-oomd: the host's slice defaults (/usr/lib/systemd/user/slice.d/10-oomd-per-slice-defaults.conf on Fedora,
+    // CachyOS, ...) put ManagedOOMMemoryPressure=kill on every user slice, app.slice included, so a build holding the
+    // station at its MemoryHigh reads as pressure and oomd would end the station's whole cgroup, every live run in it.
+    // omit: oomd never picks this unit for memory pressure (its MemoryMax still bounds it; the kernel then ends the
+    // build inside it, OOMScoreAdjust 500, not the sidecar). The dispatcher under low: the same, so a tick is never cut.
+    const omit = u.role === 'station' || lim.oomdKill === false;
     if (lim.oomdKill === false) t += 'ManagedOOMMemoryPressure=auto\n';
+    if (omit) t += 'ManagedOOMPreference=omit\n';
     if (exec) t += 'ExecStart=\nExecStart=' + withHeap(exec, lim.heapMB) + '\n';
-    out[name] = { role: u.role, file: path.join(ctx.unitDir, name + '.d', DROPIN), text: t, heapMB: lim.heapMB, props: ['MemoryHigh=' + lim.highMB + 'M', 'MemoryMax=' + lim.maxMB + 'M'].concat(lim.swapMaxMB ? ['MemorySwapMax=' + lim.swapMaxMB + 'M'] : []) };
+    out[name] = { role: u.role, file: path.join(ctx.unitDir, name + '.d', DROPIN), text: t, heapMB: lim.heapMB, props: ['MemoryHigh=' + lim.highMB + 'M', 'MemoryMax=' + lim.maxMB + 'M'].concat(lim.swapMaxMB ? ['MemorySwapMax=' + lim.swapMaxMB + 'M'] : []).concat(omit ? ['ManagedOOMPreference=omit'] : []) };
   }
   return out;
 }
@@ -200,7 +219,7 @@ function set(ctx, o) {
   const text = JSON.stringify(cfg, null, 2) + '\n';
   const t = f + '.tmp-' + process.pid; fs.writeFileSync(t, text); fs.renameSync(t, f);
   try { require('./provenance.js').wrote(f, text, 'memory.js set (owner)'); } catch (_) {}
-  ctx.config = cfg;
+  ctx.config = cfg; ctx.share = null;
   const a = apply(ctx, {});
   const total = hostOf(ctx).totalMB;
   if (a.plan.budget <= 1024 && total - (m.keepFreeMB || 0) < 2048) a.warnings.push('this leaves the company very little memory; work may be slow or fail');
@@ -247,10 +266,19 @@ function status(ctx) {
   const pressureNow = !!(pressure && pressure.since && !pressure.endedAt);
   const recent = !!(pressure && (pressureNow || (pressure.endedAt && ctx.now - Date.parse(pressure.endedAt) < 3600e3)));
   const verdict = pressureNow ? 'Short' : recent ? 'Tight' : 'Fine';
+  // the limits in force were planned for another number of companies (one was added or removed since): say so plainly
+  const warnings = p.warnings.slice();
+  if (u.supervisor === 'systemd') {
+    const own = readText(path.join(ctx.unitDir, svc(ctx) + '.service.d', DROPIN));
+    const m = own && /companies (\d+)\)/.exec(own);
+    const was = m ? Number(m[1]) : own ? 1 : null;
+    if (was != null && was !== (p.companies || 1)) warnings.push('the memory limits were set when ' + (was === 1 ? 'this was the only company' : was + ' companies shared') + ' this computer; ' + ((p.companies || 1) === 1 ? 'it is the only one now' : (p.companies || 1) + ' share it now') + '. Save the memory settings again (Settings › System › Memory) to share it fairly.');
+  }
   const line = 'The company uses ' + fmtGB(u.totalMB) + (parts.length ? ' (' + parts.join(', ') + ')' : '') + '. ' + fmtGB(h.availableMB) + ' free' + (p.keepFreeMB ? '; ' + fmtGB(p.keepFreeMB) + ' kept for other programs' : '') + '.'
     + (model ? ' Local AI model: ' + fmtGB(model.mb) + '.' : '');
   return { ok: true, at: new Date(ctx.now).toISOString(), line, verdict, host: h, settings: p.settings, profile: p.profile, plan: p, usage: u, freed, pressure, localModel: model,
-    reaper: reaper ? { lastRun: reaper.lastRun || null, lastSummary: reaper.lastSummary || null } : null, warnings: p.warnings };
+    reaper: reaper ? { lastRun: reaper.lastRun || null, lastSummary: reaper.lastSummary || null } : null, warnings, planLine: planLine(p),
+    sharing: { companies: p.companies || 1, others: (p.others || []).map(c => c.name || c.svc) } };
 }
 
 /* The station browser right now (StarNet GET /api/browser/view, this machine's station only, 4 s at most):
@@ -309,9 +337,13 @@ function selftest() {
     assert.ok(con.includes('ExecStart=/usr/bin/env node --max-old-space-size=128 ' + root + '/console/server.js\n') && /MemoryMax=300M/.test(con), con);
     const dis = fs.readFileSync(path.join(unitDir, 'testco-station-dispatch.service.d', DROPIN), 'utf8');
     assert.ok(/MemoryHigh=512M\nMemoryMax=768M/.test(dis) && dis.includes('node --max-old-space-size=160 ' + root + '/company/tools/dispatcher-loop.js'), 'low: the dispatcher\'s High is above its heap and its ticks\' children: ' + dis);
-    assert.ok(/\nManagedOOMMemoryPressure=auto\n/.test(dis), 'low: systemd-oomd does not kill the dispatcher mid-tick');
+    assert.ok(/\nManagedOOMMemoryPressure=auto\n/.test(dis) && /\nManagedOOMPreference=omit\n/.test(dis), 'low: systemd-oomd does not kill the dispatcher mid-tick (the slice\'s kill rule skips it too)');
+    assert.ok(/\nManagedOOMPreference=omit\n/.test(st), 'the slice\'s oomd kill rule never picks the station: ' + st);
+    assert.ok(/^ManagedOOMPreference=omit$/m.test(fs.readFileSync(path.join(root, 'systemd', 'capheos-station.service.in'), 'utf8')), 'the station template says so too');
     assert.ok(/\nOOMPolicy=continue\n/.test(st), 'the station goes on when the kernel ends a build in it: ' + st);
     assert.ok(!/OOMPolicy/.test(con) && !/OOMPolicy/.test(dis) && !/ManagedOOM/.test(con), 'console and dispatcher keep the host\'s OOM policy and oomd');
+    const normal = dropins(mk(16384), planFor(mk(16384), { settings: { profile: 'normal' } }));
+    assert.ok(!/ManagedOOM/.test(normal['testco-station-dispatch.service'].text) && /ManagedOOMPreference=omit/.test(normal['testco-station.service'].text), 'normal: the dispatcher keeps oomd, the station never');
     assert.ok(/^OOMPolicy=continue$/m.test(fs.readFileSync(path.join(root, 'systemd', 'capheos-station.service.in'), 'utf8')), 'the template says so too');
     const env = path.join(root, '.starnet-data', 'memory.env');
     assert.strictEqual(fs.statSync(env).mode & 0o777, 0o600);
@@ -319,7 +351,7 @@ function selftest() {
     for (const k of ['STARNET_BROWSER_HEADLESS=1', 'STARNET_BROWSER_IDLE_MIN=5', 'STARNET_BROWSER_LOWMEM=1', 'STARNET_PRIVATE_BROWSERS_MAX=1', 'STARNET_SHELL_OOM_ADJ=500', 'STARNET_SHELL_REAP_GROUP=1', 'STARNET_BROWSER_OWN_GROUP=1', 'STARNET_MAX_CONCURRENT_AGENTS=2']) assert.ok(et.includes(k + '\n'), k);
     assert.ok(!/CAPHEOS_STATION_HEAP/.test(et));
     assert.ok(calls.includes('daemon-reload'), calls.join('|'));
-    assert.ok(calls.includes('set-property --runtime testco-station.service MemoryHigh=896M MemoryMax=1152M MemorySwapMax=576M'), calls.join('|'));
+    assert.ok(calls.includes('set-property --runtime testco-station.service MemoryHigh=896M MemoryMax=1152M MemorySwapMax=576M ManagedOOMPreference=omit'), calls.join('|'));
     assert.ok(calls.includes('set-property --runtime testco-station-console.service MemoryHigh=160M MemoryMax=300M'), calls.join('|'));
     assert.ok(!calls.some(c => /restart/.test(c)), 'never restarts');
     assert.ok(r.restartNeeded.includes('testco-station.service') && /restart-station\.sh --when-idle/.test(r.restartCommand), JSON.stringify(r.restartNeeded));
@@ -398,6 +430,25 @@ function selftest() {
     const lines = fs.readFileSync(M.sampleFile(root), 'utf8').trim().split('\n');
     assert.strictEqual(lines.length, 1); assert.deepStrictEqual(JSON.parse(lines[0]).units, row.units);
   });
+  ok('a second company on this machine: an even share, one plain line, status says the limits in force were set for one', () => {
+    setMem({});
+    apply(mk(63488), {});   // written for one company
+    const other = path.join(T, 'other'); fs.mkdirSync(path.join(other, 'company'), { recursive: true });
+    fs.writeFileSync(path.join(other, 'company', 'company.json'), JSON.stringify({ name: 'Other Co', station: { serviceName: 'other-station' }, runtime: { memory: { keepFreeMB: 4096 } } }));
+    const u = path.join(unitDir, 'other-station.service'); fs.writeFileSync(u, '[Service]\nWorkingDirectory=' + other + '/starnet\nExecStart=/usr/bin/env node sidecar/index.js\n');
+    fs.mkdirSync(path.join(unitDir, 'default.target.wants'), { recursive: true }); fs.symlinkSync(u, path.join(unitDir, 'default.target.wants', 'other-station.service'));
+    const show = 'Id=testco-station.service\nMemoryCurrent=104857600\nMainPID=1\nActiveState=active\n';
+    const s = status(mk(63488, { systemctl: () => ({ code: 0, out: show }), usageOpts: { browsers: false } }));
+    assert.strictEqual(s.plan.companies, 2); assert.strictEqual(s.plan.keepFreeMB, 4096, 'the other company keeps 4 GB free for the machine');
+    assert.strictEqual(s.planLine, 'Memory: normal profile for this 62 GB machine, shared evenly with 1 other company on it; the station may use up to ' + fmtGB(s.plan.station.maxMB) + '; 4 GB kept free for other programs.');
+    assert.deepStrictEqual(s.sharing, { companies: 2, others: ['Other Co'] });
+    assert.ok(s.warnings.some(w => /set when this was the only company this computer; 2 share it now\. Save the memory settings again/.test(w)), s.warnings.join('|'));
+    const r = apply(mk(63488), {});
+    assert.ok(/companies 2\)/.test(fs.readFileSync(path.join(unitDir, 'testco-station.service.d', DROPIN), 'utf8')) && r.plan.station.maxMB === M.floor64(0.7 * Math.floor((63488 - 4096 - 1024) / 2)), JSON.stringify(r.plan.station));
+    const s2 = status(mk(63488, { systemctl: () => ({ code: 0, out: show }), usageOpts: { browsers: false } }));
+    assert.ok(!s2.warnings.some(w => /share it now/.test(w)), 'applied again: no warning');
+    fs.rmSync(path.join(unitDir, 'default.target.wants'), { recursive: true }); fs.rmSync(u);
+  });
   life.cleanup();
   console.log(bad ? 'MEMORY SELFTEST FAILED: ' + bad : 'MEMORY SELFTEST PASSED');
   return bad ? 1 : 0;
@@ -424,6 +475,7 @@ function main(argv) {
     const over = {}; if (val('total')) over.totalMB = Number(val('total'));
     if (val('profile')) over.settings = { profile: val('profile') };
     if (val('keep-free') !== undefined) over.keepFreeMB = Number(val('keep-free'));
+    if (val('companies') !== undefined) over.companies = Number(val('companies'));
     const p = planFor(ctx, over);
     print(p, x => [planLine(x), 'station   heap ' + x.station.heapMB + ' MB, high ' + x.station.highMB + ' MB, max ' + x.station.maxMB + ' MB, swap ' + x.station.swapMaxMB + ' MB',
       'console   heap ' + x.console.heapMB + ' MB, high ' + x.console.highMB + ' MB, max ' + x.console.maxMB + ' MB', 'dispatcher heap ' + x.dispatcher.heapMB + ' MB, high ' + x.dispatcher.highMB + ' MB, max ' + x.dispatcher.maxMB + ' MB',

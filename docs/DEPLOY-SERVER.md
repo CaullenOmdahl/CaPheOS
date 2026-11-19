@@ -241,6 +241,16 @@ Flutter-size build (several GB) needs a bigger machine whatever the profile.
 - **Keep memory free for a local AI model**: `node company/tools/memory.js set --keep-free <MB> --by owner` (its size plus
   about 1 GB). The company then plans without that memory, and clears its own leftovers sooner when free memory drops
   under it. `memory.js plan --keep-free <MB>` shows the effect first.
+- **Two or more companies on one machine** share it evenly: each finds the others' enabled station units and plans with
+  its share of the memory after what is kept free (the largest amount any of them keeps free: a local model is the
+  machine's), so together they fit. Settings › System › Memory says so in one line, and says when the limits in force were
+  planned for another number of companies (save the memory settings again after adding or removing one).
+- **The station is never the one systemd-oomd ends.** Many hosts (Fedora, CachyOS) tell systemd-oomd to end the busiest
+  unit of a user slice under memory pressure; the station's whole unit would take every live run with it. Its unit says
+  `ManagedOOMPreference=omit`, so oomd passes it over; its own memory limit still holds, and the kernel ends the build
+  inside it, not the station.
+- **Owner jobs run on their own.** A framework update, a restart or a clean-up started in the console runs as its own
+  short-lived unit, not inside the console, so the console's memory limit or a console restart never cuts it off halfway.
 - **The station's browser is headless** on a server (nobody sees a window there, and a window never closes by itself).
   At the desk: `memory.js set --visible-browser on --by owner`.
 - Limits apply at once without a restart; a changed heap needs the safe station restart (Settings › System › Restarts),

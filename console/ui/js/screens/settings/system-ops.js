@@ -192,6 +192,13 @@ function freedText(label, w) {
   }
   return label + ': ' + gb(w && w.mb) + (parts.length ? ' (' + parts.join(', ') + ')' : '');
 }
+// two or more companies on this computer: each plans with an even share (lib/memory.js share), said in one plain line
+function sharingLine(d) {
+  const sh = d && d.sharing; if (!sh || !(sh.companies > 1)) return null;
+  const names = (sh.others || []).filter(Boolean);
+  const who = names.length === 1 ? names[0] : names.length ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] : (sh.companies - 1) + ' other compan' + (sh.companies > 2 ? 'ies' : 'y');
+  return h('p', { class: 'caption', 'data-memory-sharing': String(sh.companies) }, 'This computer also runs ' + who + '. Each company plans with an even share of its memory, after what is kept free, so together they fit.');
+}
 async function loadMemory(host, app) {
   let d; try { d = await api('/ops/memory'); } catch (e) { fill(host, errLine(e, 'Memory')); return; }
   const err = errP(), out = h('div', { class: 'stack-8' }), shared = h('p', { class: 'caption muted', 'data-memory-shared': '' }, 'Checking the shared temp folder…');
@@ -213,6 +220,8 @@ async function loadMemory(host, app) {
   const b = (d.station && d.station.browser) || null;
   fill(host,
     h('p', { class: 'body-s', 'data-memory-usage': '' }, d.line || ''),
+    sharingLine(d),
+    (d.warnings || []).length ? h('div', { class: 'stack-4' }, d.warnings.map(w => h('p', { class: 'caption', style: 'color:var(--status-warning)', 'data-memory-warning': '' }, w))) : null,
     b && !b.unknown ? h('p', { class: 'caption muted' }, 'The station\'s browser is ' + (b.open ? 'open' + (b.driver ? ', in use by ' + b.driver : ', nobody is using it') : 'closed') + '.') : null,
     h('p', { class: 'caption', 'data-memory-freed': 'day' }, freedText('Freed in the last day', freed.day)),
     h('p', { class: 'caption', 'data-memory-freed': 'week' }, freedText('Freed in the last week', freed.week)),
@@ -220,7 +229,7 @@ async function loadMemory(host, app) {
     h('div', { class: 'stack-8' }, h('p', { class: 'label strong' }, 'Profile'), group),
     h('div', { class: 'stack-4' }, h('label', { class: 'label strong', for: 'memory-keep-free' }, 'Keep free for other programs'),
       h('div', { class: 'row-8', style: 'align-items:center' }, Object.assign(keep, { id: 'memory-keep-free' }), h('span', { class: 'caption' }, 'GB')),
-      h('p', { class: 'caption muted' }, 'For a local AI model, its size plus 1 GB.'), warn),
+      h('p', { class: 'caption muted' }, 'For a local AI model, its size plus 1 GB.' + (d.sharing && d.sharing.companies > 1 ? ' It counts for the whole computer: every company on it leaves that much free.' : '')), warn),
     h('div', { class: 'stack-4' }, h('label', { class: 'row-8', style: 'align-items:center', for: 'memory-visible-browser' }, vis, h('span', { class: 'strong' }, 'Show the station\'s browser as a window on this computer')),
       h('p', { class: 'caption muted' }, 'Only useful when you sit at this computer. A window never closes by itself.')),
     h('div', { class: 'row-8', style: 'flex-wrap:wrap' },

@@ -96,3 +96,52 @@ test('status reads the station browser (GET /api/browser/view) and never fails w
   assert.ok(off.unknown && /no network/.test(off.unknown), JSON.stringify(off));
   life.cleanup();
 });
+
+test('two companies on one machine: each plans with an even share after what is kept free; together they fit', () => {
+  const one = M.plan({ totalMB: 63488, profile: 'normal', keepFreeMB: 0 });
+  const two = M.plan({ totalMB: 63488, profile: 'normal', keepFreeMB: 0, companies: 2 });
+  assert.strictEqual(one.companies, 1); assert.strictEqual(two.companies, 2);
+  assert.strictEqual(two.budget, Math.floor((63488 - 1024) / 2));
+  const fixed = p => p.console.maxMB + p.dispatcher.maxMB;
+  assert.ok(2 * (two.station.maxMB + fixed(two)) <= 63488 - two.osReserve, 'both stations at their hard limit still fit: ' + two.station.maxMB);
+  assert.ok(one.station.maxMB + fixed(one) > (63488 - 1024) / 2, 'alone, one company may use more than half');
+  const kept = M.plan({ totalMB: 63488, profile: 'normal', keepFreeMB: 16384, companies: 2 });
+  assert.strictEqual(kept.budget, Math.floor((63488 - 16384 - 1024) / 2));
+  assert.ok(/shared with 1 other company/.test(M.plan({ totalMB: 4096, profile: 'normal', companies: 2, keepFreeMB: 2048 }).warnings[0] || ''));
+});
+
+test('companies on this machine: enabled station units with a company folder; share takes the largest keep-free', () => {
+  const T = life.tmpDir('memory-test-selftest-');
+  const U = path.join(T, 'units'); fs.mkdirSync(path.join(U, 'default.target.wants'), { recursive: true });
+  const co = (name, keep) => { const r = path.join(T, name); fs.mkdirSync(path.join(r, 'company'), { recursive: true }); fs.writeFileSync(path.join(r, 'company', 'company.json'), JSON.stringify({ name: name.toUpperCase(), station: { serviceName: name + '-station' }, runtime: keep ? { memory: { keepFreeMB: keep } } : {} })); return r; };
+  const unit = (svc, r, enabled) => { const f = path.join(U, svc + '.service'); fs.writeFileSync(f, '[Unit]\nDescription=StarNet station — x\n[Service]\nWorkingDirectory=' + r + '/starnet\nExecStart=/usr/bin/env node sidecar/index.js\n'); if (enabled) fs.symlinkSync(f, path.join(U, 'default.target.wants', svc + '.service')); };
+  const a = co('aa'), b = co('bb', 8192), c = co('cc', 30000), gone = path.join(T, 'old');
+  unit('aa-station', a, true); unit('bb-station', b, true); unit('cc-station', c, false); unit('old-station', gone, true);
+  fs.writeFileSync(path.join(U, 'aa-station-console.service'), '[Service]\nWorkingDirectory=' + a + '\nExecStart=/usr/bin/env node ' + a + '/console/server.js\n');
+  fs.symlinkSync(path.join(U, 'aa-station-console.service'), path.join(U, 'default.target.wants', 'aa-station-console.service'));
+  const cfgA = JSON.parse(fs.readFileSync(path.join(a, 'company', 'company.json'), 'utf8'));
+  const list = M.companies({ root: a, config: cfgA, unitDir: U });
+  assert.deepStrictEqual(list.map(x => path.basename(x.root)).sort(), ['aa', 'bb'], 'cc is not enabled; old has no company folder; a console unit is not a station');
+  const sh = M.share({ root: a, config: cfgA, unitDir: U, supervisor: 'systemd' });
+  assert.strictEqual(sh.n, 2); assert.strictEqual(sh.keepFreeMB, 8192, 'the machine keeps free what any company on it asks for'); assert.deepStrictEqual(sh.others.map(o => o.name), ['BB']);
+  assert.deepStrictEqual(M.share({ root: a, config: cfgA, unitDir: U, supervisor: 'container' }), { n: 1, keepFreeMB: 0, others: [] }, 'a container is one company');
+  assert.strictEqual(M.companies({ root: a, config: cfgA, unitDir: path.join(T, 'none') }).length, 1, 'no unit dir: this company alone');
+  life.cleanup();
+});
+
+test('usage counts the company\'s browsers (lib/owned.js on a fake /proc), outside a unit added to the total', () => {
+  const T = life.tmpDir('memory-usage-selftest-');
+  const root = path.join(T, 'co'), proc = path.join(T, 'proc');
+  fs.mkdirSync(path.join(root, 'company'), { recursive: true }); fs.mkdirSync(proc);
+  fs.writeFileSync(path.join(root, 'company', 'company.json'), JSON.stringify({ slug: 'co', station: { serviceName: 'co-station' } }));
+  fs.writeFileSync(path.join(proc, 'stat'), 'cpu 0\nbtime ' + Math.floor(Date.now() / 1000 - 3600) + '\n');
+  const put = (pid, ppid, comm, cmd) => { const d = path.join(proc, String(pid)); fs.mkdirSync(d); fs.writeFileSync(path.join(d, 'cmdline'), cmd.join('\0') + '\0');
+    fs.writeFileSync(path.join(d, 'stat'), pid + ' (' + comm + ') S ' + ppid + ' ' + pid + ' 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 100 0');
+    fs.writeFileSync(path.join(d, 'status'), 'Name:\t' + comm + '\nUid:\t' + process.getuid() + '\t0\t0\t0\nVmRSS:\t  102400 kB\n'); };
+  put(1058, 1, 'systemd', ['/usr/lib/systemd/systemd', '--user']);
+  put(70, 1058, 'chrome', ['/opt/google/chrome/chrome', '--headless', '--remote-debugging-port=9700', '--user-data-dir=' + root + '/.starnet-data/tmp/p']);
+  const u = M.usage({ root, config: {}, supervisor: 'none', ownedOpts: { proc, cgroupOf: () => '', netTcp: '' } });
+  assert.deepStrictEqual(u.browsers, { count: 1, mb: 100, outside: 1 });
+  assert.strictEqual(u.totalMB, 100, 'a browser outside every unit adds to the total');
+  life.cleanup();
+});
