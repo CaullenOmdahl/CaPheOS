@@ -566,6 +566,16 @@ function check(a) {
   return { code: bad.length ? 1 : 0, out };
 }
 
+/* a company-time "YYYY-MM-DD HH:MM" (decisions.md) as epoch ms, in the company's time zone */
+function localMs(d, t) {
+  const guess = Date.parse(d + 'T' + (t.length === 5 ? t + ':00' : t) + 'Z'); if (!Number.isFinite(guess)) return NaN;
+  try {
+    const f = new Intl.DateTimeFormat('en-US', { timeZone: co.TZ || 'UTC', hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const p = Object.fromEntries(f.formatToParts(new Date(guess)).map(x => [x.type, x.value]));
+    const asLocal = Date.parse(p.year + '-' + p.month + '-' + p.day + 'T' + p.hour + ':' + p.minute + ':' + p.second + 'Z');
+    return guess - (asLocal - guess);
+  } catch (_) { return guess; }
+}
 /* ---------------- the duty: experiences worth proposing ---------------- */
 function duty() {
   const crew = S.crew(), all = P.loadAll(O()); if (!Object.keys(all).length) return { code: 0 };
@@ -574,22 +584,26 @@ function duty() {
   for (const x of proposals()) if (x.source) used.add(String(x.source));
   const names = Object.fromEntries(Object.keys(all).map(s => [s, [nameOf(crew, s), firstName(nameOf(crew, s))].map(n => new RegExp('\\b' + String(n).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i'))]));
   const naming = t => Object.keys(names).filter(s => names[s].some(re => re.test(t)));
-  const add = (src, text, seats) => { if (used.has(src)) return; for (const s of seats) items.push({ id: 'experience:' + s + ':' + src, route: 'people', text: 'consider an experience for ' + nameOf(crew, s) + ': ' + clean(text, 160) }); };
+  // only events after the seat's profile was first written: the backlog from before is already in the migrated profile
+  // (2026-11-19 switching profiles on flagged 63 week-old events and woke the people seat every tick)
+  const born = {}; for (const s of Object.keys(all)) { let h = []; try { h = history(s); } catch (_) {} const t = h.length ? Date.parse(h[0].at || '') : NaN; born[s] = Number.isFinite(t) ? t : 0; }
+  const add = (src, text, seats, at) => { if (used.has(src)) return; seats = seats.filter(s => !(Number(at) < born[s])); for (const s of seats) items.push({ id: 'experience:' + s + ':' + src, route: 'people', text: 'consider an experience for ' + nameOf(crew, s) + ': ' + clean(text, 160) }); };
   let dec = ''; try { dec = fs.readFileSync(path.join(S.root(), 'company', 'work', 'decisions.md'), 'utf8'); } catch (_) {}
   for (const l of dec.split('\n')) {
-    const m = l.match(/^- (\d{4}-\d{2}-\d{2})[ T][\d:]+ (.+?) \[(d-[0-9a-f]+)\] (.+)$/); if (!m || Date.parse(m[1] + 'T23:59:59Z') < since) continue;
-    if (/^Profile of /.test(m[4])) continue;   // profile changes themselves are not experiences
-    const who = naming(m[4]).filter(s => !names[s].some(re => re.test(m[2]))); if (who.length) add(m[3], m[4], who);
+    const m = l.match(/^- (\d{4}-\d{2}-\d{2})[ T]([\d:]+) (.+?) \[(d-[0-9a-f]+)\] (.+)$/); if (!m || Date.parse(m[1] + 'T23:59:59Z') < since) continue;
+    const atMs = localMs(m[1], m[2]);
+    if (/^Profile of /.test(m[5])) continue;   // profile changes themselves are not experiences
+    const who = naming(m[5]).filter(s => !names[s].some(re => re.test(m[3]))); if (who.length) add(m[4], m[5], who, atMs);
   }
   let corr = ''; try { corr = fs.readFileSync(path.join(S.root(), 'company', 'work', 'people', 'corrections-log.jsonl'), 'utf8'); } catch (_) {}
-  for (const l of corr.split('\n')) { let r = null; try { r = JSON.parse(l); } catch (_) { continue; } if (!r || r.event !== 'added' || !all[r.agentId] || Date.parse(String(r.at).replace(' ', 'T')) < since) continue; add('correction:' + r.id, 'a correction: ' + (r.title || r.issueClass || ''), [r.agentId]); }
+  for (const l of corr.split('\n')) { let r = null; try { r = JSON.parse(l); } catch (_) { continue; } if (!r || r.event !== 'added' || !all[r.agentId] || Date.parse(String(r.at).replace(' ', 'T')) < since) continue; add('correction:' + r.id, 'a correction: ' + (r.title || r.issueClass || ''), [r.agentId], Date.parse(String(r.at).replace(' ', 'T'))); }
   const rul = co.readJson(path.join(S.root(), 'company', 'state', 'owner-rulings.json'), {}) || {};
-  for (const r of Array.isArray(rul.rulings) ? rul.rulings : []) { if (!r || !r.id || Date.parse(r.at || '') < since) continue; add('ruling:' + r.id, 'an owner ruling: ' + r.text, naming(String(r.text || ''))); }
+  for (const r of Array.isArray(rul.rulings) ? rul.rulings : []) { if (!r || !r.id || Date.parse(r.at || '') < since) continue; add('ruling:' + r.id, 'an owner ruling: ' + r.text, naming(String(r.text || '')), Date.parse(r.at || '')); }
   let inc = []; try { inc = fs.readdirSync(path.join(S.root(), 'company', 'work', 'incidents')).filter(f => /\.md$/.test(f)); } catch (_) {}
-  for (const f of inc) { const fp = path.join(S.root(), 'company', 'work', 'incidents', f); let st; try { st = fs.statSync(fp); } catch (_) { continue; } if (st.mtimeMs < since) continue; const t = fs.readFileSync(fp, 'utf8').slice(0, 20000); add('incident:' + f, 'an incident: ' + (t.match(/^# (.+)$/m) || [, f])[1], naming(t)); }
+  for (const f of inc) { const fp = path.join(S.root(), 'company', 'work', 'incidents', f); let st; try { st = fs.statSync(fp); } catch (_) { continue; } if (st.mtimeMs < since) continue; const t = fs.readFileSync(fp, 'utf8').slice(0, 20000); add('incident:' + f, 'an incident: ' + (t.match(/^# (.+)$/m) || [, f])[1], naming(t), st.mtimeMs); }
   if (!items.length) return { code: 0 };
   const key = crypto.createHash('sha256').update(items.map(i => i.id).sort().join('\n')).digest('hex').slice(0, 16);
-  return { code: 1, out: { due: true, route: 'people', key, items: items.slice(0, 40), reason: (items.length + ' recent event(s) name a crew member and may deserve an experience line in their profile: propose one with profile.js propose <seat> --kind experience --text ".." --source <the id> --why ".." (or skip it; the item is gone once a proposal or an experience cites that source)').slice(0, 300) } };
+  return { code: 1, out: { due: true, route: 'people', key, items: items.slice(0, 5), reason: (items.length + ' recent event(s) name a crew member and may deserve an experience line in their profile: propose one with profile.js propose <seat> --kind experience --text ".." --source <the id> --why ".." (or skip it; the item is gone once a proposal or an experience cites that source)').slice(0, 300) } };
 }
 
 /* ---------------- main ---------------- */

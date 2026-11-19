@@ -185,10 +185,15 @@ test('proposals: the people function proposes an experience; the owner adds it; 
 test('the experience duty: a decision naming a seat is due for the people function; quiet once a proposal cites it', () => {
   const c = migrated();
   const today = new Date().toISOString().slice(0, 10);
-  fs.appendFileSync(path.join(c.T, 'company/work/decisions.md'), '- ' + today + ' 09:00 Alex [d-00aa11bb22cc] Benny\'s weather card was killed: the fees ate the edge. (decision.js)\n');
+  const yday = new Date(Date.now() - 86400e3).toISOString().slice(0, 10);
+  // an event from before the profile existed is already in the migrated profile: not due (2026-11-19, 63 old events)
+  fs.appendFileSync(path.join(c.T, 'company/work/decisions.md'), '- ' + yday + ' 09:00 Alex [d-0011ffee0011] Benny\'s old card. (decision.js)\n');
+  fs.appendFileSync(path.join(c.T, 'company/work/decisions.md'), '- ' + today + ' 23:59 Alex [d-00aa11bb22cc] Benny\'s weather card was killed: the fees ate the edge. (decision.js)\n');
   const d = tool(c.T, ['--duty']);
   assert.equal(d.code, 1); assert.equal(d.out.route, 'people');
   assert.ok(d.out.items.some(i => i.id === 'experience:ben:d-00aa11bb22cc'), JSON.stringify(d.out.items));
+  assert.ok(!d.out.items.some(i => /d-0011ffee0011/.test(i.id)), 'an event before the profile began is not due');
+  assert.ok(d.out.items.length <= 5, 'a small batch per wake');
   tool(c.T, ['propose', 'ben', '--kind', 'experience', '--text', 'Fees ate the weather edge', '--source', 'd-00aa11bb22cc', '--why', 'x', '--by', 'Marisol']);
   const d2 = tool(c.T, ['--duty']);
   assert.ok(d2.code === 0 || !d2.out.items.some(i => /d-00aa11bb22cc/.test(i.id)));
