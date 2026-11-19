@@ -1,6 +1,7 @@
 // CaPheOS owner console: shell, sidebar and hash router. No build step.
 import './js/csrf.js';   // first: every write carries the CSRF token; a 401 goes to the login page
 import { h, fill, Logo, Tag, Button, rel, isSetupQuestion } from './js/ui.js';
+import { icon } from './js/icons.js';
 import { api } from './js/api.js';
 import * as events from './js/events.js';
 import { globalKeys } from './js/keys.js';
@@ -52,7 +53,7 @@ async function loadCompanyNav() {
     const list = (d.panels || []).filter(p => p.status === 'installed' && !p.hidden && p.valid !== false && p.placement === 'screen').slice(0, 8);
     companyGroup.hidden = !list.length;
     fill(companyGroup, h('span', { class: 'nav-label' }, 'Company'), list.map(p => {
-      const a = h('a', { href: '#/p/' + encodeURIComponent(p.id), class: 'nav-item', 'aria-current': 'false' }, h('span', null, p.nav || p.title || p.id), h('span', { class: 'n' }, ''));
+      const a = h('a', { href: '#/p/' + encodeURIComponent(p.id), class: 'nav-item', 'aria-current': 'false', title: p.nav || p.title || p.id }, icon('panel'), h('span', { class: 'nav-text' }, p.nav || p.title || p.id), h('span', { class: 'n' }, ''));
       navLinks['p/' + p.id] = { a, n: a.lastChild };
       return a;
     }));
@@ -60,14 +61,26 @@ async function loadCompanyNav() {
 }
 let collapsed = window.matchMedia('(max-width: 860px)').matches;
 
+/* the sidebar folds down to icons on a desktop window (remembered; not chosen yet: folded under 1200 px wide), so the
+   screen gets the width (owner, 2026-11-19: "fold the sidebar down to icons too") */
+const lsGet = k => { try { return localStorage.getItem(k); } catch (_) { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} };
+function setRail(on) {
+  document.documentElement.classList.toggle('side-rail', on);
+  const b = document.querySelector('.side-fold'); if (!b) return;
+  fill(b, icon(on ? 'unfold' : 'fold', 18));
+  b.title = on ? 'Show the menu with names' : 'Fold the menu down to icons';
+  b.setAttribute('aria-label', b.title); b.setAttribute('aria-expanded', String(!on));
+}
 function buildSidebar() {
+  const fold = h('button', { type: 'button', class: 'side-fold', onclick: () => { const on = !document.documentElement.classList.contains('side-rail'); setRail(on); lsSet('capheos.sideRail', on ? '1' : '0'); } });
   const toggle = Button('Menu', { variant: 'ghost', size: 'sm', class: 'side-toggle', onClick: () => { collapsed = !collapsed; nav.classList.toggle('collapsed', collapsed); toggle.setAttribute('aria-expanded', String(!collapsed)); } });
   toggle.setAttribute('aria-expanded', String(!collapsed));
   const nav = h('nav', { 'aria-label': 'Console', class: 'side' + (collapsed ? ' collapsed' : '') },
     h('div', { class: 'brand' }, Logo(28),
       h('div', { class: 'stack-4', style: 'gap:2px' }, h('span', { class: 'brand-name' }, 'CaPheOS'), coName),
-      toggle),
-    h('a', { href: '#/today', class: 'needs-link' }, h('span', null, 'Needs you'), needsN),
+      toggle, fold),
+    h('a', { href: '#/today', class: 'needs-link', title: 'Needs you' }, icon('needs'), h('span', { class: 'nav-text' }, 'Needs you'), needsN),
     h('div', { class: 'nav-group' }, NAV.map(navItem)),
     companyGroup,
     h('div', { class: 'nav-group nav-bottom' }, navItem(['settings', 'Settings'])),
@@ -76,12 +89,15 @@ function buildSidebar() {
       stationLine,
       h('div', { class: 'halt-btns' },
         h('a', { href: '#/halt?mode=soft', class: 'halt-soft' }, 'Soft halt'),
-        h('a', { href: '#/halt?mode=hard', class: 'halt-hard' }, 'Hard halt'))));
+        h('a', { href: '#/halt?mode=hard', class: 'halt-hard' }, 'Hard halt')),
+      h('a', { href: '#/halt?mode=soft', class: 'rail-halt', title: 'Halt the company (soft or hard)', 'aria-label': 'Halt the company' }, icon('halt', 18))));
   fill(sideEl, nav);
+  const pref = lsGet('capheos.sideRail');
+  setRail(pref === '1' || (pref !== '0' && window.innerWidth < 1200));
 }
 function navItem([id, text]) {
   const n = h('span', { class: 'n' }, '');
-  const a = h('a', { href: '#/' + id, class: 'nav-item', 'aria-current': 'false' }, h('span', null, text), n);
+  const a = h('a', { href: '#/' + id, class: 'nav-item', 'aria-current': 'false', title: text }, icon(id), h('span', { class: 'nav-text' }, text), n);
   navLinks[id] = { a, n };
   return a;
 }

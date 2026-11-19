@@ -233,7 +233,7 @@ const killed = c => new Promise(r => { if (c.exitCode !== null) return r(); c.on
     t('9. ' + W + ' px: the column is 70% of the chat area within 680-1200 px (' + m.w + ' of ' + m.area + '), centred, no horizontal scroll',
       m && Math.abs(m.w - want) <= 18 && Math.abs(m.center) <= 10 && !m.hscroll, m);
     t('9. ' + W + ' px: owner bubbles at most 75% of the column at its right edge; agent text from its left edge', m && m.meMax <= 0.75 * m.w + 2 && m.meRight <= 2 && m.themLeft <= 2, m);
-    t('9. ' + W + ' px: the composer box starts at the column\'s left edge, with Send beside it on the right', m && Math.abs(m.ta.l) <= 2 && m.ta.r <= 16 && m.ta.r >= -160, m && m.ta);
+    t('9. ' + W + ' px: the composer box starts at the column\'s left edge (inside its floating card), with Send beside it on the right', m && Math.abs(m.ta.l) <= 24 && m.ta.r <= 16 && m.ta.r >= -160, m && m.ta);
     if (shots) { const s = await cmd('Page.captureScreenshot', { format: 'png' }); if (s.result) fs.writeFileSync(path.join(shots, 'chat-' + W + '.png'), Buffer.from(s.result.data, 'base64')); }
   }
   await cmd('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });

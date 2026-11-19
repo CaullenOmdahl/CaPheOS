@@ -580,3 +580,44 @@ kbd { display: inline-block; min-width: 1.6em; padding: 2px 6px; border: 1px sol
 .comms .composer .textarea { height: 48px; min-height: 44px; resize: vertical; }
 @media (max-width: 600px) { .comms .chat-head { flex-wrap: wrap; } }
 .mtg-more-panel .select { width: auto; max-width: 100%; height: 36px; font: var(--type-body-s); }
+
+/* ---- the sidebar folded to icons (app.js setRail; desktop only) ---- */
+.ico { display: inline-flex; flex: none; align-items: center; justify-content: center; }
+.nav-item, .needs-link { gap: 10px; justify-content: flex-start; }
+.nav-item .n, .needs-link .n { margin-left: auto; }
+.side-fold { display: none; }
+.rail-halt { display: none; }
+@media (min-width: 861px) {
+  .side-fold { display: inline-flex; align-items: center; justify-content: center; margin-left: auto; width: 32px; height: 32px; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--text-muted); cursor: pointer; flex: none; }
+  .side-fold:hover { background: var(--accent-tint); color: var(--text-accent); }
+  .side-rail .shell-side { flex-basis: 68px; }
+  .side-rail .side { padding: 18px 10px 16px; gap: 16px; align-items: center; }
+  .side-rail .side .brand { flex-direction: column; gap: 8px; }
+  .side-rail .side .brand > .stack-4 { display: none; }
+  .side-rail .side .side-fold { margin-left: 0; }
+  .side-rail .side .nav-text, .side-rail .side .nav-label, .side-rail .side .station-box > *:not(.rail-halt):not(.between-c) { display: none; }
+  .side-rail .side .nav-group { align-items: center; width: 100%; }
+  .side-rail .side .nav-item, .side-rail .side .needs-link { position: relative; justify-content: center; padding: 0; width: 44px; height: 44px; min-height: 44px; }
+  .side-rail .side .nav-item .n, .side-rail .side .needs-link .n { position: absolute; top: 2px; right: 0; margin: 0; font-size: 10px; }
+  .side-rail .side .nav-item .n:empty { display: none; }
+  .side-rail .side .station-box { padding: 8px 4px; align-items: center; border: 0; background: transparent; gap: 8px; }
+  .side-rail .side .station-box > .between-c > .label { display: none; }
+  .side-rail .side .rail-halt { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: var(--radius-md); color: var(--status-danger); border: 1px solid var(--border-strong); }
+}
+
+/* ---- the composer floats over the bottom of the conversation, as in other AI chat apps (owner, 2026-11-19: "the chat
+   box doesn't need to exist in its own separate box, I would make it float") ---- */
+@media (min-width: 601px) {
+  .comms :has(> .composer) { position: relative; }
+  .comms .composer { position: absolute; z-index: 4; left: var(--chat-gutter, 32px); right: var(--chat-gutter, 32px); bottom: 14px;
+    border: 1px solid var(--border-default); border-top: 1px solid var(--border-default); border-radius: 18px; background: var(--surface-card);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, .14), 0 1px 3px rgba(0, 0, 0, .08); padding: 8px 8px 8px 16px; row-gap: 2px; }
+  .comms .composer > label { padding-top: 2px; opacity: .8; }
+  .comms .composer .textarea { border: 0; background: transparent; box-shadow: none; padding: 8px 0; height: 44px; resize: none; outline: none; }
+  .comms .composer .textarea:focus { outline: none; box-shadow: none; }
+  .comms .composer:focus-within { border-color: var(--accent); }
+  .comms .composer .btn-primary { border-radius: 12px; }
+  /* the conversation scrolls under it: room at the end so the last message is never hidden */
+  .comms .chat-scroll > .chat-body, .comms .chat > .chat-body { padding-bottom: 128px; }
+  .comms .chat-jump { bottom: 118px; }
+}
