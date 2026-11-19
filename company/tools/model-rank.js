@@ -429,7 +429,9 @@ function analyze(inp) {
     if (K.failOn.has('revise')) fail = Math.max(fail, failW);
     for (const [s, hit] of [['reopen', reopened], ['revert', reverted], ['fixForward', fixForward], ['defect', defects > 0], ['ownerCorrection', ownerCorrections > 0], ['premergeFail', premergeFirstPass === false]]) if (K.failOn.has(s) && hit) fail = 1;
     const hard = !(reopened || reverted || fixForward);
-    items.push(Object.assign(base, { excluded: false, excludedRuns, settled, closedAt, oneShot: clamp(1 - fail, 0, 1), hard, reviseRounds, extraRuns, otherRuns: good.length - ownTops.length,
+    // narrow fan-out (fanoutEvaluation): a delegated child run under the item's runs, or a piece lane of a recorded split
+    const delegated = all.length > tops.length || ws.some(w => w && w.split && typeof w.split === 'object');
+    items.push(Object.assign(base, { excluded: false, excludedRuns, settled, closedAt, delegated, oneShot: clamp(1 - fail, 0, 1), hard, reviseRounds, extraRuns, otherRuns: good.length - ownTops.length,
       reopened, reverted, fixForward, defects, defectPoints, ownerCorrections, premergeFirstPass, changes: prs.length ? prs : [li.id], verdicts: counted }));
   }
 
@@ -561,6 +563,7 @@ function evalKnobs(P) {
       cheaperThan: g(T.decision, 'cheaperThan') === 'bestOther' ? 'bestOther' : 'every', stuckDays: Math.max(1, num(T.stuckDays, 3)),
       confidence: clamp(num(g(T.interval, 'confidence', g(P.interval, 'confidence', 0.8)), 0.8), 0.5, 0.999) } : null,
     advisor: P && P.advisorEvaluation && typeof P.advisorEvaluation === 'object' ? Object.assign({ minItems: 20, minDays: 14, consultRate: [0.10, 0.40], cachedShareMin: 0.85, oneShotGainPoints: 10, reworkCutShare: 0.20 }, P.advisorEvaluation) : null,
+    fanout: P && P.fanoutEvaluation && typeof P.fanoutEvaluation === 'object' ? { minItems: Math.max(1, num(P.fanoutEvaluation.minItems, 10)) } : null,
     tierCaps: C ? { minItems: Math.max(1, num(C.minItems, 20)), windowCut: clamp(num(C.windowCut, 0.3), 0, 1), reworkMaxRatio: Math.max(1, num(C.reworkMaxRatio, 1.25)),
       baseline: C.baseline === 'uncapped' ? 'uncapped' : 'wouldApply', rates: (Array.isArray(C.rates) ? C.rates : ['revise', 'reopen']).filter(x => x === 'revise' || x === 'reopen'),
       rollBackDutyModes: Array.isArray(C.dutyWhenModes) ? C.dutyWhenModes.map(String) : ['live'] } : null,
@@ -697,7 +700,50 @@ function evaluate(inp, an) {
       verdict: rollBack.length ? 'roll back' : keep.length && keep.length === classes.length ? 'keep' : keep.length ? 'keep (some classes not enough data)' : 'not enough data', rollBack, keep };
   }
   if (E.advisor) { const a = advisorEvaluation(inp, an, K, E.advisor, scoredOf); if (a) res.advisor = a; }
+  if (E.fanout) { const f = fanoutEvaluation(inp, an, K, E.fanout, scoredOf); if (f) res.fanout = f; }
   return res;
+}
+/* fanoutEvaluation (docs/RANKING.md §6/§10, the middle-management plan's P5): per department whose delegation is not off,
+ * its members' scored delegated items (a delegated child run, or piece lanes of a recorded split: item.delegated) against
+ * its single-seat items of the same class. Cost per accepted item = the items' cost (score.cost; a child's cost is in its
+ * lead's family, lib/family.js) over their one-shot sum. Per class the two are compared, then weighted by the delegated
+ * items of each class: ratio < 1 keeps, >= 1 over at least minItems delegated items withdraws (the dispatcher withdraws
+ * the department's splitting once per hash, lib/delegate-allow.js withdrawStep), else not enough data. Deterministic: the
+ * same items give the same entry and hash. No department with splitting on: no fan-out report (the file is unchanged). */
+function fanoutEvaluation(inp, an, K, base, scoredOf) {
+  const deps = (inp.departments && Array.isArray(inp.departments.departments)) ? inp.departments.departments : [];
+  let DL = null; try { DL = require('./lib/departments'); } catch (_) { return null; }
+  const st = inp.deptSettings || DL.settings(inp.departments || {}, {});
+  const on = deps.filter(d => d && DL.delegationOf(d, st).mode !== 'off').sort((a, b) => (String(a.id) < String(b.id) ? -1 : 1));
+  if (!on.length) return null;
+  const metric = it => num(it.cost[K.scoreCost], 0);
+  const side = list => { const n = list.length, acc = list.reduce((x, i) => x + i.oneShot, 0), cost = list.reduce((x, i) => x + metric(i), 0);
+    return { items: n, accepted: rnd(acc, 4), cost: rnd(cost), costPerAccepted: acc > 0 ? rnd(cost / acc) : null }; };
+  const out = [];
+  for (const d of on) {
+    const g = DL.delegationOf(d, st), dept = String(d.id), members = new Set(DL.members(d).concat(d.lead ? [String(d.lead)] : []));
+    const scored = an.items.filter(it => scoredOf(it) && members.has(String(it.seat)));
+    const del = scored.filter(it => it.delegated), single = scored.filter(it => !it.delegated);
+    const classes = [...new Set(del.map(it => it.cell.class))].sort();
+    const per = classes.map(cls => { const a = side(del.filter(it => it.cell.class === cls)), b = side(single.filter(it => it.cell.class === cls));
+      return { class: cls, delegated: a, single: b, ratio: a.costPerAccepted != null && b.costPerAccepted ? rnd(a.costPerAccepted / b.costPerAccepted, 4) : null }; });
+    const usable = per.filter(c => c.ratio != null);
+    const w = usable.reduce((x, c) => x + c.delegated.items, 0);
+    const ratio = w ? rnd(usable.reduce((x, c) => x + c.ratio * c.delegated.items, 0) / w, 4) : null;
+    const entry = { dept, lead: d.lead || null, mode: g.mode, withdrawn: g.withdrawn ? { by: g.withdrawn.by, at: g.withdrawn.at } : null, minItems: base.minItems, costUnit: K.scoreCost,
+      delegated: side(del), single: side(single), classes: per, ratio };
+    const reasons = [];
+    if (del.length < base.minItems) reasons.push('delegated items ' + del.length + ' of ' + base.minItems);
+    if (ratio == null) reasons.push('no single-seat item of the same class with an accepted result to compare with');
+    let verdict;
+    if (reasons.length) verdict = 'not enough data';
+    else if (ratio >= 1) { verdict = 'withdraw'; reasons.push('splitting cost ' + Math.round(100 * ratio) + '% of doing the same kind of item in one go per accepted item, over ' + del.length + ' delegated items: not lower'); }
+    else { verdict = 'keep'; reasons.push('splitting cost ' + Math.round(100 * ratio) + '% of doing the same kind of item in one go per accepted item, over ' + del.length + ' delegated items'); }
+    Object.assign(entry, { verdict, reasons });
+    entry.hash = bodyHash(entry);
+    out.push(entry);
+  }
+  return { departments: out };
 }
 /* advisorEvaluation (docs/RANKING.md §10, the middle-management plan's P4 bars): per department whose lead gives advice
  * (departments.json advisor.mode live), over its members' scored items closed since advisor.since against the same
@@ -834,7 +880,7 @@ const trialFile = id => (/^[A-Za-z0-9_.-]{1,64}$/.test(id) && !/^\.+$/.test(id) 
 // write the evaluation files that changed: routing-evaluation.json and trials/<id>.md (each compared with what is on disk)
 function writeEvaluation(root, ev, digest, dry) {
   const R = routingPaths(root), wrote = [];
-  if (!ev.trials && !ev.tierCaps && !ev.advisor) return wrote;
+  if (!ev.trials && !ev.tierCaps && !ev.advisor && !ev.fanout) return wrote;
   const want = [[R.evaluation, JSON.stringify(Object.assign({ hash: bodyHash(ev) }, sortKeys(ev)), null, 1) + '\n']];
   for (const t of ev.trials || []) want.push([path.join(R.trialsDir, trialFile(t.id)), renderTrialMd(t, digest)]);
   for (const r of (ev.advisor && ev.advisor.departments) || []) if (/^[a-z][a-z0-9-]{1,31}$/.test(r.dept)) want.push([path.join(root, 'company', 'work', 'models', 'advisor-' + r.dept + '.md'), renderAdvisorMd(r)]);
@@ -909,7 +955,8 @@ function verifyChain(file) {
   return { ok: !problems.length, rows: n, problems };
 }
 function proposalRows(file) { return readRows(file, 4 * B.MB).filter(r => r && !r._bad && !r._retention); }
-function decidedIds(file) { return new Set(proposalRows(file).filter(r => r.kind === 'decision').map(r => r.id)); }
+// a proposal the weekly suggestions (routing.js proposals) offered, applied, skipped or the owner vetoed is handled too
+function decidedIds(file) { return new Set(proposalRows(file).filter(r => ['decision', 'offer', 'ceo-ask', 'apply', 'skip', 'veto'].includes(r.kind)).map(r => r.id)); }
 
 function writeAtomic(file, text) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -1052,5 +1099,5 @@ function main() {
   process.exit(2);
 }
 
-module.exports = { rank, analyze, evaluate, advisorEvaluation, renderAdvisorMd, evalKnobs, trialDecision, renderTrialMd, writeEvaluation, evaluationDuty, loadRouting, wilsonBounds, armKeyOf, load, loadPolicy, knobs, refresh, refreshDue, duty, decide, verifyChain, historyRow, fileText, renderMd, bodyHash, wilsonLower, zOf, prRefs, verdictsIn, runKind, runCost, priceOf, paths, sortKeys };
+module.exports = { rank, analyze, evaluate, advisorEvaluation, fanoutEvaluation, renderAdvisorMd, evalKnobs, trialDecision, renderTrialMd, writeEvaluation, evaluationDuty, loadRouting, wilsonBounds, armKeyOf, load, loadPolicy, knobs, refresh, refreshDue, duty, decide, verifyChain, historyRow, fileText, renderMd, bodyHash, wilsonLower, zOf, prRefs, verdictsIn, runKind, runCost, priceOf, paths, sortKeys };
 if (require.main === module) main();
