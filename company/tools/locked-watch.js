@@ -784,7 +784,7 @@ function runTick(ctx) {
     const changedPatches = Object.keys(pt).filter(n => pt[n] !== (base.patches || {})[n]);
     // a new `<record>.diff.applied` marker (setup-station applied a record already on disk) covers the files of its record
     const patchText = changedPatches.map(n => n.endsWith('.applied') ? n.slice(0, -'.applied'.length) : n).map(n => { try { return fs.readFileSync(path.join(ctx.paths.patches, n), 'utf8'); } catch (_) { return ''; } }).join('\n');
-    const covers = rel => patchText.includes('a/' + rel + ' ');
+    const covers = rel => patchCovers(patchText, rel);
     for (const rel of new Set([...Object.keys(sn), ...Object.keys(base.starnet)])) {
       const now = sn[rel] || 'clean', was = base.starnet[rel] || 'clean';
       if (now === was) continue;
@@ -1452,7 +1452,12 @@ function rebaseProvenance(opts, fn) {
   saveBaseline(ctx, base);
   return { result: r, provOffset: base.provOffset };
 }
-module.exports = { askAcceptCmd, fixedGateFile, FIXED_GATE_FILES, acceptCmd, tick, classify, lockedNames, MANIFEST, connectorEntries, STATION_STATUS, context, withWatchLock, rebaseProvenance, _internals: { tile, decide, decideRolled, unroll, unwind, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
+/* does a patch record's text change StarNet file `rel`? A record names its files as `diff --git a/<rel> b/<rel>` or only
+   as `--- a/<rel>` (a plain diff, where the path ends the line); a longer path that starts the same is not a match */
+function patchCovers(patchText, rel) {
+  return new RegExp('(^|\\s)a/' + String(rel).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(\\s|$)', 'm').test(String(patchText || ''));
+}
+module.exports = { patchCovers, askAcceptCmd, fixedGateFile, FIXED_GATE_FILES, acceptCmd, tick, classify, lockedNames, MANIFEST, connectorEntries, STATION_STATUS, context, withWatchLock, rebaseProvenance, _internals: { tile, decide, decideRolled, unroll, unwind, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
 
 /* ---------------- selftest ---------------- */
 async function selftest() {
