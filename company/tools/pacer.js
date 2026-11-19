@@ -658,7 +658,16 @@ function makePacer(o) {
     const body = { agentId: spec.seat, provider: 'claude-cli', model: spec.model, internal: true, isTask: false, streamId: 'pacer-meter-check', reasoningEffort: 'low',
       system: 'This is an automatic connection check. Reply with the single word OK and nothing else.', messages: [{ role: 'user', content: 'OK?' }] };
     let r;
-    try { r = await call('POST', '/api/run', body, policy.claude.meterCheck.timeoutSec * 1000); }
+    try {
+      r = await call('POST', '/api/run', body, policy.claude.meterCheck.timeoutSec * 1000);
+      // the station's Claude sign-in check answers from a cache it only starts filling on the first ask: right after a
+      // restart (every seat held on a stale meter, so this check IS the first ask) it refuses "missing key/model" with
+      // no run and no usage. Ask once more after the cache filled, or the company stays closed another staleAfterMin.
+      if (r && r.status === 400 && /missing key\/model/i.test(String(r.body || ''))) {
+        await new Promise(res => setTimeout(res, Number(o.meterRetryMs) >= 0 ? Number(o.meterRetryMs) : 5000));
+        r = await call('POST', '/api/run', body, policy.claude.meterCheck.timeoutSec * 1000);
+      }
+    }
     catch (e) { try { A.started(tk, { status: 0 }, aOpts); } catch (_) {} return finish({ outcome: 'error', why: 'the station did not answer (' + String((e && e.message) || e).slice(0, 100) + ')' }); }
     const txt = String((r && r.body) || '');
     if (!r || r.status !== 200) {

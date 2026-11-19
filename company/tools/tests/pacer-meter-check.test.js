@@ -65,6 +65,7 @@ function station(fx, clock, o) {
     if (method === 'GET' && p === '/api/providers') return { status: 200, body: JSON.stringify({ providers: [{ id: 'claude-cli', configured: o.connected !== false }] }) };
     if (method === 'POST' && p === '/api/run') {
       runs.push(body);
+      if (o.coldAsks > 0) { o.coldAsks--; return { status: 400, body: 'missing key/model — checking local sign-in for Claude Code' }; }
       const id = 'run-mc-' + runs.length;
       const lines = [{ name: 'agent.run.start', payload: { runId: id } }];
       if (o.refuse) lines.push({ name: 'agent.run.error', payload: { runId: id, message: 'You\'ve hit your weekly limit', failureCode: 'quota_exhausted' } }, { name: 'agent.run.end', payload: { runId: id, reason: 'error', failureCode: 'quota_exhausted' } });
@@ -108,6 +109,22 @@ test('deadlock: an 8-hour-old Claude reading is refreshed by the pacer itself, a
   assert.equal(m.claude.usedPct, 81);
   assert.ok(h.lines.some(l => /CLAUDE METER CHECK: Claude answered at .*the meter reads 81% of the week/.test(l)), h.lines.join('\n'));
   assert.equal(st.runs.length, 1, 'a fresh reading: no second check');
+});
+
+test('right after a station restart: the first ask is refused "missing key/model" (sign-in cache cold), one retry reads the meter', async () => {
+  // 2026-11-20: after a reboot every seat was held on a stale meter, so the check was the station's first Claude ask; its
+  // sign-in cache was still empty, it refused with no run, and the company stayed closed until the next check 90 min on
+  const fx = fixture(), clock = { t: T0 }, st = station(fx, clock, { coldAsks: 1 }), h = make(fx, st, clock, { meterRetryMs: 0 });
+  await tick(h);
+  assert.equal(st.runs.length, 2, 'refused once, asked once more');
+  assert.equal(checkFile(fx).outcome !== 'error', true, JSON.stringify(checkFile(fx)));
+  clock.t += 5 * MIN;
+  const m = await tick(h);
+  assert.equal(m.claude.open, true, m.claude.why);
+  const fx2 = fixture(), clock2 = { t: T0 }, st2 = station(fx2, clock2, { coldAsks: 5 }), h2 = make(fx2, st2, clock2, { meterRetryMs: 0 });
+  await tick(h2);
+  assert.equal(st2.runs.length, 2, 'only one retry: a sign-in that is really missing stays an error');
+  assert.equal(checkFile(fx2).outcome, 'error');
 });
 
 test('at most one check per staleAfterMin; closed while one is pending; a check that never answers is retried later', async () => {
