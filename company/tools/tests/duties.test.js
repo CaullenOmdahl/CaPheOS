@@ -341,3 +341,15 @@ test('dispatcher: an unrecorded edit to the duty policy is flagged by locked-wat
   // and the tools owner is told about the edit (locked-watch's report), while the duty kept running on the good copy
   assert.match(c.r('company/work/handoffs/to-founder.md'), /duty-policy\.json/);
 });
+
+test('dispatcher: a due finding is checked again within 30 minutes, not only after a long cadence, so a cleared one stops waking', async () => {
+  const c = await company({ modes: { 'fake-due': DUE() }, dutyCfg: { 'fake-due': { everyMin: 360 } } });
+  let t = c.tick();
+  assert.equal(c.json('company/state/duties.json').duties['fake-due'].lastResult, 'due', t.out);
+  c.w('fake-mode.json', { 'fake-due': { exit: 0 } });   // the problem is fixed
+  const back = mins => { const s = c.json('company/state/duties.json'); s.duties['fake-due'].lastRun = new Date(Date.now() - mins * MIN).toISOString(); c.w('company/state/duties.json', s); };
+  back(10); t = c.tick();
+  assert.equal(c.json('company/state/duties.json').duties['fake-due'].lastResult, 'due', 'inside 30 minutes it is not re-run');
+  back(31); t = c.tick();
+  assert.equal(c.json('company/state/duties.json').duties['fake-due'].lastResult, 'ok', 'after 30 minutes the due finding is re-checked (cadence 360): ' + t.out.slice(-400));
+});
