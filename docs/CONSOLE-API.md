@@ -324,6 +324,15 @@ Drawn in Crew › People under "Departments" once the company has one.
 - `POST /api/departments/<id>/lead` `{ seat }` → `set-lead <id> <seat|none> --by <owner>` (an empty seat clears the lead).
 - `POST /api/departments/move` `{ seat, to }` → `move <seat> <id|none> --by <owner>`.
   An inconsistent change (unknown seat, a seat in two departments) is refused for the owner too (400).
+- `GET /api/departments/<id>/lead-desk` → `{ dept, desk, brief, advisor, consultLimits }`: `desk` is `consult.js status
+  --json --dept <id>` (`mode, effective, paused, since, today, maxPerDay, open, lastAdviceAt, nextAdvice, nextWhy,
+  evaluation` — the house ranking's advisor evaluation), `brief` the BRIEF.md text (`departments.js show <id> --json
+  --brief`). docs/DEPARTMENTS.md §5.
+- `POST /api/departments/<id>/advisor` `{ mode: off|shadow|live }` | `{ pause: true, why? }` | `{ resume: true }` →
+  `departments.js advisor <id> <mode|pause|resume> --by <owner>`. On without a lead, or with the CEO as lead, is refused
+  (400).
+- Every list row of `GET /api/departments` also carries `advisor: { mode, effective, paused, since, by, batch,
+  autoPause }` and `consultLimits`.
 
 ## Routing (console/routing.js)
 

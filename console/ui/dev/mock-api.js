@@ -408,6 +408,24 @@ async function apiRoute(req, res, p, q) {
     else sv.state = svm[2] === 'stop' ? 'stopped' : sv.kind === 'timer' ? 'scheduled' : 'running';
     emit('services'); return ok({ name: sv.name, done: svm[2] });
   }
+  // departments and the lead's advice (Crew › People › Departments): console/departments.js -> company/tools/departments.js,
+  // consult.js status (docs/DEPARTMENTS.md §5)
+  if (!S.departments) S.departments = { exists: true, unassigned: [{ id: 'agent', name: 'Founder', isCeo: true }, { id: 'people1', name: 'Mira', isCeo: false }], drift: { ok: true, mismatches: [], notes: [] }, proposals: [],
+    departments: [{ id: 'eng', name: 'Engineering', lead: 'tools1', leadName: 'Teo', defaultClass: 'code', members: [{ id: 'tools1', name: 'Teo', isLead: true, onCrew: true }, { id: 'cand-tools-backtest-engineer-1-n', name: 'Nadia Farrell', isLead: false, onCrew: true }],
+      advisor: { mode: 'live', effective: 'live', paused: null, since: ago(3 * 86400e3 / 60e3), by: 'owner' }, consultLimits: { maxPerDay: 12 } }] };
+  if (M === 'GET' && p === '/api/departments') return ok(S.departments);
+  const dlm = p.match(/^\/api\/departments\/([a-z][a-z0-9-]{1,31})\/(lead-desk|advisor)$/);
+  if (dlm) {
+    const d = S.departments.departments.find(x => x.id === dlm[1]); if (!d) return J(res, 400, { ok: false, error: 'no department "' + dlm[1] + '"' });
+    if (M === 'GET' && dlm[2] === 'lead-desk') return ok({ dept: d.id, advisor: d.advisor, consultLimits: d.consultLimits, brief: '# Engineering\n\nThis week: the new parser, then the slow report.',
+      desk: { dept: d.id, mode: d.advisor.mode, effective: d.advisor.effective, paused: d.advisor.paused, today: 4, maxPerDay: 12, open: 1, lastAdviceAt: ago(42), nextAdvice: null, nextWhy: '1 open consult(s), fewer than 3', evaluation: { verdict: 'not enough data', failed: [] } } });
+    if (M === 'POST' && dlm[2] === 'advisor') {
+      const a = d.advisor;
+      if (B && B.resume) a.paused = null; else if (B && B.pause) a.paused = { at: new Date().toISOString(), by: 'owner', why: B.why || 'the owner paused it' }; else if (B && ['off', 'shadow', 'live'].includes(B.mode)) a.mode = B.mode;
+      a.effective = a.mode === 'off' ? 'off' : a.paused ? 'shadow' : a.mode;
+      emit('crew'); return ok({ changed: true, summary: 'advice ' + a.mode, advisor: a });
+    }
+  }
   // routing modes and trials (Settings › Models › Routing): console/routing.js -> company/tools/routing.js
   if (!S.routing) S.routing = { ok: true, source: 'default', mode: 'shadow', tierCaps: { mode: 'shadow', allow: [], exemptFunctions: ['ceo'], exemptLeads: true }, log: [],
     trials: [{ id: 'code-claude-three', class: 'code', status: 'running', entryShare: 0.1, minItemsPerArm: 30, createdBy: 'Mira', scope: { departments: ['eng'], seats: [] }, reasons: ['held: claude-cli held by the pacer (since 2026-11-18 09:00)'], hold: null, progress: { minItemsPerArm: 30, lowestArm: 0, enough: false },

@@ -196,6 +196,27 @@ verdict reads only that class's items, whatever class the wake was routed under)
   `reworkMaxRatio` (default 1.25) of the baseline; **roll back** (that class) otherwise, with the reason; **not enough
   data** while either side has fewer than `minItems` (default 20). A baseline rate of 0 allows only 0.
 
+**Advisor leads** (`advisorEvaluation`, the plan's P4 bars; docs/DEPARTMENTS.md §5), per department whose advisor
+mode is live: its members' scored items closed since `advisor.since` against its items closed in as many days before.
+
+| Field | What |
+|---|---|
+| consultRate | the share of items since with at least one consult (`company/state/consults.jsonl`, recorded-only ones aside) |
+| cachedShare, adviseRuns | the lead's advise runs (wakes of door `consult`): input tokens read from cache over all input tokens |
+| after, before | items, one-shot rate with its Wilson range, cost per item (`score.cost`; advise runs are in the consulted items' cost), rework per item (extra runs + REVISE rounds) |
+| oneShotPoints, reworkCut | the change in one-shot points, and the share rework fell |
+| leadCalibration | the lead's grader drift (§4) |
+| verdict | `keep`, `pause` (with `failed`: the bars that failed) or `not enough data` (under `minItems` items on either side, or `minDays` days) |
+| hash | of the rest of the entry: the dispatcher pauses once per hash |
+
+Bars: the consult rate inside `consultRate` (10-40%), the cached share at least `cachedShareMin` (85%, checked once advise
+runs have token counts), and cost per item not higher with one-shot up `oneShotGainPoints` (10) points or rework down
+`reworkCutShare` (20%). A department's `advisor.autoPause` numbers win over the policy's. The report is in
+`routing-evaluation.json` (`advisor`) and `company/work/models/advisor-<dept>.md`; with no live advisor department
+there is no advisor report at all. With `autoPause.enabled`, a `pause` makes the dispatcher pause the advice
+(`departments.js advisor <id> pause --by dispatcher --auto`) and tell the owner in one plain line; only the owner
+resumes.
+
 **Duty.** The `house-ranking` duty (§6) is also due when a running or paused trial reached a decision (item
 `trial:<id>:decided:<arm>`), when a running trial has had no routed wake for `trials.stuckDays` (default 3; item
 `trial:<id>:stuck:<since>`; a pacer hold that pauses the trial shows here too), and when the tier caps are in one of

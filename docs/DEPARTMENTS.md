@@ -1,14 +1,15 @@
 # Departments
 
 A department is a group of seats with one lead. The lead is who the members go to when an item is stuck, who reviews
-their plans, and who keeps the department's brief. This page covers the data, the tool, the checks and the console view.
-What a lead actually does (consults, brief updates, routing by task class) is a later step. It will read what is
-described here and ship in shadow first.
+their plans, and who keeps the department's brief. This page covers the data, the tool, the checks, the console view and
+(§5) what a lead does when its department's advice is on.
 
 Code: `company/departments.json` (the data), `company/tools/lib/departments.js` (reading and checks),
 `company/tools/lib/company.js` (`co.deptOf`, `co.leadOf`, `co.departmentsOf`), `company/tools/departments.js` (the only
-writer), `console/departments.js` and `console/ui/js/screens/crew-departments.js` (the owner's view). Tests:
-`node company/tools/departments.js --selftest` and `node --test company/tools/tests/departments.test.js`.
+writer), `console/departments.js` and `console/ui/js/screens/crew-departments.js` (the owner's view). Advisor leads:
+`company/tools/lib/consult.js` and `company/tools/consult.js`. Tests: `node company/tools/departments.js --selftest`,
+`node company/tools/consult.js --selftest` and `node --test company/tools/tests/departments.test.js
+company/tools/tests/consult.test.js company/tools/tests/consult-dispatch.test.js company/tools/tests/advisor-eval.test.js`.
 
 ## 1. The data: company/departments.json
 
@@ -28,7 +29,9 @@ default). That default has **no departments**. **A missing file means no departm
     { "id": "eng", "name": "Engineering", "lead": "<seat id>", "members": ["<seat id>", "..."],
       "defaultClass": "code", "brief": "company/work/departments/eng/BRIEF.md",
       "routes": { "code": { "provider": "...", "model": "...", "effort": "..." } },
-      "consult": { "maxPerDay": 12, "stuckAfterFailedRuns": 2, "stuckAfterRevise": 2, "stuckAfterIdleWakes": 2 } }
+      "consult": { "maxPerDay": 12, "stuckAfterFailedRuns": 2, "stuckAfterRevise": 2, "stuckAfterIdleWakes": 2,
+                   "stuckOnReopen": true },
+      "advisor": { "mode": "live", "since": "2026-11-20T09:00:00.000Z", "by": "owner", "paused": null } }
   ]
 }
 ```
@@ -42,7 +45,9 @@ default). That default has **no departments**. **A missing file means no departm
 | `defaultClass` | the task class of a member's item when the item names none: `code`, `review`, `research`, `writing`, `design`, `ops`, `mechanical`, `general` (`lib/taskclass.js` owns this list) |
 | `brief` | the path of the department's brief, written by `create` |
 | `routes` | per task class, the model a member's item of that class should run on. Only routing code reads it, and that code ships in shadow first. |
-| `consult` | when a member's item goes to the lead: at most `maxPerDay` consults a day; an item is stuck after `stuckAfterFailedRuns` failed runs, `stuckAfterRevise` REVISE rounds or `stuckAfterIdleWakes` wakes without progress |
+| `consult` | when a member's item goes to the lead: at most `maxPerDay` consults a day; an item is stuck after `stuckAfterFailedRuns` failed runs, `stuckAfterRevise` REVISE rounds or `stuckAfterIdleWakes` wakes without progress, or when it is reopened (`stuckOnReopen`, default true); 0 switches a trigger off |
+| `advisor` | whether the lead gives advice (§5): `mode` `off` / `shadow` / `live`, `since` (when it went live: the measurement starts there), `by`, `paused` (`null` or `{at, by: owner\|auto, why, evaluationHash}`). Absent = `advisorDefaults` (mode `off`). Written only by `departments.js advisor`. |
+| `advisorDefaults` (top level) | what every department's advisor reads unless its own `advisor` says otherwise: `batch { minGapMin, maxWaitMin, startAt }`, `packetMaxChars` (4000), `premerge` (`advisory`), `autoPause { enabled, minItems, minDays, consultRate, cachedShareMin, oneShotGainPoints, reworkCutShare }` |
 
 **Every number is config, not code.** The scoring is done in production, so these numbers will move:
 `newDepartment` (what `create` gives a new department), `limits` and each department's `consult` and `routes`.
@@ -72,6 +77,14 @@ node company/tools/departments.js move <seat> <id|none> --by <name> [--why ".."]
 node company/tools/departments.js proposals [--json]
 node company/tools/departments.js apply <proposal id> --by <CEO|owner>
 node company/tools/departments.js reject <proposal id> --by <CEO|owner> [--why ".."]
+# advisor leads (§5): not structure, so not a governance decision
+node company/tools/departments.js advisor <id> off|shadow|live --by owner
+node company/tools/departments.js advisor <id> pause --by owner --why ".."      # or --by dispatcher --auto (the dispatcher)
+node company/tools/departments.js advisor <id> resume --by owner
+node company/tools/departments.js brief <id> --file <path> --by <lead>
+node company/tools/departments.js digest <id> --file <path> --by <lead>
+node company/tools/departments.js note <id> --text ".." --by <lead>
+node company/tools/departments.js show <id> --json --brief
 ```
 
 A change to the structure is a **governance decision** in category `org` (`company/state/governance.json`; the
@@ -144,12 +157,94 @@ move a seat to another department (or out of all of them). Each button calls `co
 the change. A refused change shows the tool's reason. The crew can also put the same data on a console page through
 the `departments` tool source in `company/console/sources.json`.
 
-## 5. What is not here yet
+## 5. What a lead does (advisor leads)
 
-- What a lead does: consult packets, the advise routine, stuck triggers, brief updates and routing by `routes`. That
-  comes in a later step. Anything that changes routing records what it would do (shadow) behind an owner switch first.
+The middle-management plan's P4: a lead **advises**; it rarely does a member's work. One department at a time, starting
+in the sandbox's Engineering department. Per department `advisor.mode`:
+
+| Mode | What happens |
+|---|---|
+| `off` (the default everywhere) | nothing is computed; no consult file, no routine, no log line |
+| `shadow` ("Recording only") | consults are accepted and recorded in the ledger; stuck triggers are evaluated and recorded; the advise run that would start is logged (`WOULD ADVISE`). No packet is delivered, no run starts, nobody waits. |
+| `live` ("On") | all of it |
+
+A **paused** department (`advisor.paused`) acts as `shadow`. The owner switches the mode (`departments.js advisor <id>
+off|shadow|live --by owner`, or the department card). On needs a lead, and the lead is never the CEO; `departments.js
+check` reports `ADVISOR_NO_LEAD` and `ADVISOR_CEO_LEAD` for a hand edit. The dispatcher pauses the advice by itself
+when the house ranking says it does not pay (below); **only the owner resumes** (`advisor <id> resume --by owner`), and
+the measurement starts again from that day.
+
+**Consults.** A member asks with `consult.js ask --item <id> --question ".." [--kind ask|plan|premerge] [--check ".."]
+[--pr <url>] --by <seat>` (plan and premerge need the acceptance check). The consult is one block in the lead's inbox,
+at most `packetMaxChars` (4000) characters with its heading: `## Consult: <title> (<date>)`, `**Id:** cs-…`, `**Item:**`,
+`**From:**`, `**Kind:**`, `**Trigger:**`, `**Class:**`, `**PR:**` (premerge), `**Status:** OPEN`, then Question, What was
+tried, Acceptance check. A longer one is refused; a second open consult on the same item and kind is dropped as a
+duplicate; past `consult.maxPerDay` in a company day it is dropped and the member's manager gets one FYI line. Nothing is
+lost silently: every open, drop, advise run and verdict is a row in `company/state/consults.jsonl` (written only by
+`lib/consult.js`, locked-watched). While a consult is open the dispatcher does not wake the member for that item (it
+waits for the lead, as with `Waiting on`); its other items are work as usual.
+
+**Stuck triggers.** Each tick the dispatcher (`lib/consult.js consultStep`) opens a consult on a member's behalf
+(`**From:** dispatcher on behalf of <seat>`, its last runs under What was tried, clipped to fit) when an item crosses
+`stuckAfterFailedRuns` failed runs (provider errors and dispatch time-limit cuts are not failures: the ranking's
+`exclude.runKinds`), `stuckAfterRevise` REVISE rounds, `stuckAfterIdleWakes` runs that finished and changed nothing, or
+is reopened. One trigger opens exactly one consult: a counter stays quiet until progress (the block's text changed,
+verdict lines aside) or the lead's answer resets it. The counters are in `company/state/consult-state.json`.
+
+**The advise run.** One station routine per live lead, `<Lead name> advise`, created and removed by the dispatcher and
+never scheduled by the station. Its prompt is `company/defaults/work/departments/advise-prompt.md` (a company copy at
+`company/work/departments/advise-prompt.md` wins): it points at BRIEF.md, DECISIONS.md and INBOX-DIGEST.md and never
+copies their text, so the prompt is byte-identical between runs up to its last line, `Open consults for you: cs-…, cs-…
+(in your inbox).` (the cache). The dispatcher starts it when `batch.startAt` (3) consults are open, or the oldest has
+waited `batch.maxWaitMin` (10) minutes, and the last advise run was at least `batch.minGapMin` (5) minutes ago; never
+while the lead's own loop runs, and the lead's loop is not woken while an advise run is in flight. It goes through
+`admit()` (door `consult`, docs/BUDGET.md) on the department's `leadModelDefault` as a one-run override (patch 0017;
+`lib/override-allow.js` opens that pair for a live lead), and its `wakes.jsonl` row (door `consult`) lists the consulted
+items, so the ranking books its cost to them.
+
+**Verdicts.** The lead answers each consult with `consult.js answer <cs-id> --verdict APPROVE|REVISE|ESCALATE-TIER|
+TAKE-OVER|ESCALATE --check ".." [--finding ".."]... [--tier p/m@e] --by <lead>`. Only the department's lead may answer
+(anyone else: exit 2). The line `**Verdict:** REVISE by <lead> — check: <check> — 1. <finding> …` goes into the consult
+(which becomes DONE) and into the member's item block, where model-rank.js reads it like any verdict: once, at half
+weight (`weights.leadOnOwnReport`), and the advise run is not counted as authorship. ESCALATE-TIER records a proposal;
+the lead never changes a model chain or a route.
+
+**The lead's files.** `departments.js brief <id> --file f --by <lead>` replaces BRIEF.md (inside `limits.briefMaxChars`);
+`digest <id> --file f` replaces INBOX-DIGEST.md (`digestMaxChars`); `note <id> --text ".."` puts one line at the top of
+DECISIONS.md. The owner reads the brief on the department card, so it is written in plain words.
+
+**Before a merge.** When a PR's author is in a live advisor department, `premerge-check.js` opens a premerge consult once
+per PR head and shows the lead's latest verdict as one row, "Lead's advice (advisory)", and writes it as `lead` in the
+evidence record. **The row never changes pass, fail or the exit code**; it stays advisory until the lead's calibration
+data shows its approvals predict fewer defects (a later decision).
+
+**Does it pay?** `model-rank.js` `advisorEvaluation` (docs/RANKING.md §10) compares the department's items since
+`advisor.since` with as many days before it: the consult rate (10-40%), the advise runs' cached share (at least 85%),
+cost per accepted item (no higher) with one-shot up at least 10 points or rework down at least 20%. Under 20 items a side
+or 14 days it says `not enough data`. With `advisor.autoPause.enabled`, a `pause` verdict makes the dispatcher pause the
+advice once per evaluation (`--by dispatcher --auto`), record why, and tell the owner in one plain line of the day's
+message. The `consults` duty (`consult.js --duty`) is due when a live department's consult has waited three times the
+batch wait (an advise run that never came).
+
+**Rollout.** Every other company: no `advisor` key, so `off`. The sandbox: the owner (or the CEO, with `set-lead`)
+names the lead first; the recommendation is the tools seat, on `leadModelDefault`. Then the owner turns it on from the
+Engineering card, with `autoPause.enabled` on.
+
+**The console.** Each department card with a lead shows the lead's line, the switch "Lead gives advice: Off · Recording
+only · On" (On asks first), Pause or Resume, "Asked the lead today: n of 12 allowed.", the last advice, and the brief,
+folded, under "What the team is working on" (`GET /api/departments/<id>/lead-desk`, `POST /api/departments/<id>/advisor`,
+docs/CONSOLE-API.md).
+
+Not part of this: the premerge verdict as a gate; a lead for more than one department or for the CEO's seat; a lead
+changing routes or chains (it writes a proposal line in DECISIONS.md); live calls between runs (consults are file
+handoffs); replaying earlier conversation into the lead; any change to how a member's own loop is scheduled.
+
+## 6. What is not here yet
+
+- Narrow delegation (a lead splitting one item between workers) and weekly routing proposals: the plan's P5, after this.
+
 - Hiring into a department. `hire.js` seats a new hire in no department, and the people function or the owner adds
   them with `add-member`.
-- Editing `routes`, `consult` or `limits` with a command or from the console. For now they are config in the file.
+- Editing `routes`, `consult`, `advisorDefaults` or `limits` with a command or from the console. For now they are config in the file.
   A hand edit is reported by locked-watch, and the owner takes it as the new version under Settings › System › change
   flags (`locked-watch.js accept company/departments.json --by owner --why "..."`).

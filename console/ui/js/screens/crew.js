@@ -134,7 +134,7 @@ function people(root, ctx) {
   }
 
   load();
-  const reloadDepts = departmentsSection(deptHost);   // departments, leads and members (console/departments.js)
+  const reloadDepts = departmentsSection(deptHost, app);   // departments, leads and members (console/departments.js)
   const stopPanels = mountPanels(side, 'side:crew', app);
   const off = events.on(['crew', 'now'], load);
   const offDepts = events.on(['crew'], reloadDepts);
