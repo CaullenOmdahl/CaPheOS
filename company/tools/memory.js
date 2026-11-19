@@ -376,7 +376,7 @@ function selftest() {
     calls.length = 0;
     const r = apply(mk(2048), {});
     const st = fs.readFileSync(path.join(unitDir, 'testco-station.service.d', DROPIN), 'utf8');
-    assert.ok(/MemoryHigh=896M\nMemoryMax=1152M\nMemorySwapMax=576M\n/.test(st), st);
+    assert.ok(/MemoryHigh=1152M\nMemoryMax=1152M\nMemorySwapMax=128M\n/.test(st), st);
     const tplExec = /^ExecStart=(.*)$/m.exec(fs.readFileSync(path.join(root, 'systemd', 'capheos-station.service.in'), 'utf8'))[1];
     assert.ok(st.includes('ExecStart=\nExecStart=' + tplExec.replace('node ', 'node --max-old-space-size=384 ') + '\n'), 'station ExecStart = template + heap: ' + st);
     const con = fs.readFileSync(path.join(unitDir, 'testco-station-console.service.d', DROPIN), 'utf8');
@@ -397,7 +397,7 @@ function selftest() {
     for (const k of ['STARNET_BROWSER_HEADLESS=1', 'STARNET_BROWSER_IDLE_MIN=5', 'STARNET_BROWSER_LOWMEM=1', 'STARNET_PRIVATE_BROWSERS_MAX=1', 'STARNET_SHELL_OOM_ADJ=500', 'STARNET_SHELL_REAP_GROUP=1', 'STARNET_BROWSER_OWN_GROUP=1', 'STARNET_MAX_CONCURRENT_AGENTS=2']) assert.ok(et.includes(k + '\n'), k);
     assert.ok(!/CAPHEOS_STATION_HEAP/.test(et));
     assert.ok(calls.includes('daemon-reload'), calls.join('|'));
-    assert.ok(calls.includes('set-property --runtime testco-station.service MemoryHigh=896M MemoryMax=1152M MemorySwapMax=576M ManagedOOMPreference=omit'), calls.join('|'));
+    assert.ok(calls.includes('set-property --runtime testco-station.service MemoryHigh=1152M MemoryMax=1152M MemorySwapMax=128M ManagedOOMPreference=omit'), calls.join('|'));
     assert.ok(calls.includes('set-property --runtime testco-station-console.service MemoryHigh=160M MemoryMax=300M'), calls.join('|'));
     assert.ok(!calls.some(c => /restart/.test(c)), 'never restarts');
     assert.ok(r.restartNeeded.includes('testco-station.service') && /restart-station\.sh --when-idle/.test(r.restartCommand), JSON.stringify(r.restartNeeded));
@@ -420,7 +420,7 @@ function selftest() {
     assert.ok(r.restartNeeded.includes('testco-station.service') && r.restartNeeded.includes('testco-station-console.service'), JSON.stringify(r.restartNeeded));
     show['testco-station.service'] = 'OOMPolicy=continue\nMemoryCurrent=104857600\n';
     setMem({ profile: 'low' }); calls.length = 0; apply(mk(2048, { systemctl: sc }), {});
-    assert.ok(calls.some(c => /^set-property --runtime testco-station\.service MemoryHigh=896M/.test(c)), 'on OOMPolicy=continue and under the limit: set live: ' + calls.join('|'));
+    assert.ok(calls.some(c => /^set-property --runtime testco-station\.service MemoryHigh=1152M/.test(c)), 'on OOMPolicy=continue and under the limit: set live: ' + calls.join('|'));
     setMem({});
   });
   ok('apply: a running unit still outside the slice moves at its next restart (never restarted here)', () => {
@@ -442,7 +442,7 @@ function selftest() {
     setMem({ keepFreeMB: 16384, visibleBrowser: true });
     const r = apply(mk(63488), {});
     const st = fs.readFileSync(path.join(unitDir, 'testco-station.service.d', DROPIN), 'utf8');
-    assert.ok(/MemoryHigh=23040M\nMemoryMax=32256M\nMemorySwapMax=16128M/.test(st) && /--max-old-space-size=1024 /.test(st), st);
+    assert.ok(/MemoryHigh=32256M\nMemoryMax=32256M\nMemorySwapMax=4032M/.test(st) && /--max-old-space-size=1024 /.test(st), st);
     const et = fs.readFileSync(path.join(root, '.starnet-data', 'memory.env'), 'utf8');
     assert.ok(!/HEADLESS/.test(et) && /IDLE_MIN=15/.test(et) && /LOWMEM=0/.test(et) && /BROWSERS_MAX=3/.test(et) && !/MAX_CONCURRENT_AGENTS/.test(et), et);
     assert.ok(r.restartNeeded.includes('testco-station.service'), 'heap and env changed');
@@ -473,7 +473,7 @@ function selftest() {
     assert.ok(r.ok && r.memory.keepFreeMB === 4096 && r.memory.profile === 'normal', JSON.stringify(r));
     const c = JSON.parse(fs.readFileSync(path.join(root, 'company', 'company.json'), 'utf8'));
     assert.strictEqual(c.runtime.memory.keepFreeMB, 4096); assert.strictEqual(c.name, 'Test Co', 'the rest of company.json is kept');
-    assert.ok(/MemoryHigh=1536M\nMemoryMax=2112M\n/.test(fs.readFileSync(path.join(unitDir, 'testco-station.service.d', DROPIN), 'utf8')), '8 GB with 4 GB kept: budget 3072 MB, high 1536, max 2112');
+    assert.ok(/MemoryHigh=2112M\nMemoryMax=2112M\n/.test(fs.readFileSync(path.join(unitDir, 'testco-station.service.d', DROPIN), 'utf8')), '8 GB with 4 GB kept: budget 3072 MB, high = max 2112');
   });
   ok('status: one plain line, the reaper\'s freed totals, a container\'s cgroup', () => {
     fs.writeFileSync(path.join(root, 'company', 'state', 'reaper.jsonl'), [

@@ -106,11 +106,14 @@ function plan(o) {
   const budget = Math.max(1024, raw);
   const warnings = [];
   if (raw < 1024) warnings.push((companies > 1 ? 'shared with ' + (companies - 1) + ' other compan' + (companies > 2 ? 'ies' : 'y') + ' on this computer, ' : '') + 'what is kept free leaves the company less than 1 GB; it plans with 1 GB, so the computer may run short');
-  const sHigh = floor64(low ? Math.max(700, 0.55 * budget) : 0.50 * budget);
+  // the station is never throttled below its hard limit: a MemoryHigh under MemoryMax holds a runaway script in reclaim,
+  // and that stall counts as memory pressure for the owner's whole session, so systemd-oomd ended the owner's terminals,
+  // browser and desktop (2026-11-20, a 17.7 GB script on a 63 GB machine). At MemoryMax the kernel ends the script itself.
   const sMax = floor64(low ? Math.max(900, 0.70 * budget) : 0.70 * budget);
+  const sHigh = sMax;
   return {
     profile, totalMB, keepFreeMB, companies, osReserve, budget, warnings,
-    station: { heapMB: low ? 384 : 1024, highMB: sHigh, maxMB: sMax, swapMaxMB: floor64(sMax * 0.5) },
+    station: { heapMB: low ? 384 : 1024, highMB: sHigh, maxMB: sMax, swapMaxMB: floor64(sMax * 0.125) },
     console: { heapMB: low ? 128 : 192, highMB: low ? 160 : 256, maxMB: low ? 300 : 512 },
     // the dispatcher's own heap plus the tools each tick runs as children (about 600 MB at their peak): High is above
     // that, or it is throttled every tick; under low systemd-oomd does not kill it (the drop-in turns it off), the kernel

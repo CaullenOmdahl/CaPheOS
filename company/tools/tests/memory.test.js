@@ -12,13 +12,13 @@ const M = require('../lib/memory');
 const row = (totalMB, profile, keepFreeMB) => { const p = M.plan({ totalMB, profile, keepFreeMB }); return [p.station.highMB, p.station.maxMB, p.console.highMB, p.console.maxMB, p.dispatcher.highMB, p.dispatcher.maxMB, p.browsers.privateMax, p.browsers.idleMin]; };
 
 test('the plan table: MemoryHigh / MemoryMax per unit, browsers at once and idle minutes', () => {
-  assert.deepStrictEqual(row(2048, 'low', 0), [896, 1152, 160, 300, 512, 768, 1, 5]);
-  assert.deepStrictEqual(row(4096, 'low', 0), [1984, 2560, 160, 300, 512, 768, 1, 5]);
-  assert.deepStrictEqual(row(8192, 'normal', 0), [3584, 4992, 256, 512, 768, 1024, 3, 15]);
-  assert.deepStrictEqual(row(16384, 'normal', 6144), [4608, 6400, 256, 512, 768, 1024, 3, 15]);
-  assert.deepStrictEqual(row(63488, 'normal', 16384), [23040, 32256, 256, 512, 768, 1024, 3, 15]);
+  assert.deepStrictEqual(row(2048, 'low', 0), [1152, 1152, 160, 300, 512, 768, 1, 5]);
+  assert.deepStrictEqual(row(4096, 'low', 0), [2560, 2560, 160, 300, 512, 768, 1, 5]);
+  assert.deepStrictEqual(row(8192, 'normal', 0), [4992, 4992, 256, 512, 768, 1024, 3, 15]);
+  assert.deepStrictEqual(row(16384, 'normal', 6144), [6400, 6400, 256, 512, 768, 1024, 3, 15]);
+  assert.deepStrictEqual(row(63488, 'normal', 16384), [32256, 32256, 256, 512, 768, 1024, 3, 15]);
   const low = M.plan({ totalMB: 2048, profile: 'low' });
-  assert.strictEqual(low.station.heapMB, 384); assert.strictEqual(low.station.swapMaxMB, 576);
+  assert.strictEqual(low.station.heapMB, 384); assert.strictEqual(low.station.swapMaxMB, 128);
   assert.strictEqual(low.services.defaultMax, '256M'); assert.strictEqual(low.services.ceiling, '1G');
   assert.strictEqual(low.agents.maxConcurrent, 2); assert.strictEqual(low.reaper.everyMin, 10); assert.strictEqual(low.browsers.lowMemFlags, true);
   const n = M.plan({ totalMB: 63488, profile: 'normal' });
