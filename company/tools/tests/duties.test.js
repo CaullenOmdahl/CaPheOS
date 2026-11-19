@@ -104,7 +104,10 @@ function fixtureCompany() {
   return T;
 }
 
-test('every registered duty runs against a fixture tree and changes no file', () => {
+// a chore (duties.js CHORES, acts: true) records its own state; that is all it may change in a tree with nothing to clean
+const CHORE_FILES = /^company\/state\/(reaper\.json|reaper\.jsonl|memory-samples\.jsonl|memory-pressure\.json)$/;
+const withoutChores = t => Object.fromEntries(Object.entries(t).filter(([k]) => !CHORE_FILES.test(k)));
+test('every registered duty runs against a fixture tree and changes no file (a chore only its own state)', () => {
   const T = fixtureCompany();
   const before = treeHash(T);
   const res = inRoot(T, `
@@ -113,12 +116,14 @@ test('every registered duty runs against a fixture tree and changes no file', ()
     (async () => { const out = {}; const env = dutyEnv({ root: process.env.CAPHEOS_ROOT, base: Object.assign({}, process.env, { CAPHEOS_BACKUP_DIR: process.env.CAPHEOS_ROOT + '/no-backups' }) }).env;
       for (const d of R.registry()) { const r = await R.runOne(d, { env, cwd: process.env.CAPHEOS_ROOT, remainingMs: 60000 }); out[d.id] = { result: r.result, error: r.error || null, items: (r.items || []).map(i => i.id), reason: r.reason || null }; }
       console.log(JSON.stringify(out)); })();`);
-  assert.deepEqual(Object.keys(res).sort(), ['backup-freshness', 'budget-drift', 'commitments-due', 'connector-scope', 'departments', 'deps-verify', 'handoff-status', 'house-ranking', 'liveness-watcher', 'module-doctor', 'provider-balance', 'security-watch', 'tool-parse', 'unregistered-services']);
+  assert.deepEqual(Object.keys(res).sort(), ['backup-freshness', 'budget-drift', 'commitments-due', 'connector-scope', 'departments', 'deps-verify', 'handoff-status', 'house-ranking', 'liveness-watcher', 'module-doctor', 'provider-balance', 'reaper', 'security-watch', 'tool-parse', 'unregistered-services']);
   for (const [id, r] of Object.entries(res)) assert.notEqual(r.result, 'broken', id + ': ' + r.error);
   for (const id of ['handoff-status', 'commitments-due', 'liveness-watcher', 'connector-scope', 'backup-freshness']) assert.equal(res[id].result, 'due', id + ' should find its fixture: ' + JSON.stringify(res[id]));
   assert.deepEqual(res['commitments-due'].items, ['c-202001010000-abcdef']);
   assert.ok(!JSON.stringify(res).includes('secret title') && !JSON.stringify(res).includes('late one'), 'reasons carry ids and counts, never content');
-  assert.deepEqual(treeHash(T), before, 'a duty changed a file');
+  const after = treeHash(T);
+  assert.deepEqual(withoutChores(after), withoutChores(before), 'a duty changed a file');
+  assert.ok(Object.keys(after).some(k => k === 'company/state/reaper.json'), 'the reaper ran as a chore (it records its state)');
 });
 
 test('no registered duty loads a network module or calls fetch', () => {
@@ -197,7 +202,7 @@ async function company(o) {
   w(T, 'company/state/modules.json', { enabled: { dutytest: { at: 'x' } } });
   w(T, 'fake-mode.json', o.modes || {});
   // the company duties are switched off here (they have their own tests above), except where a case wants one
-  w(T, 'company/work/ops/duty-policy.json', Object.assign({ tickCapMs: 20000, duties: Object.fromEntries(['handoff-status', 'tool-parse', 'connector-scope', 'backup-freshness', 'module-doctor', 'unregistered-services', 'budget-drift', 'deps-verify', 'provider-balance', 'departments', 'house-ranking', 'security-watch'].map(id => [id, { enabled: false }])) }, o.policy || {}));
+  w(T, 'company/work/ops/duty-policy.json', Object.assign({ tickCapMs: 20000, duties: Object.fromEntries(['handoff-status', 'tool-parse', 'connector-scope', 'backup-freshness', 'module-doctor', 'unregistered-services', 'budget-drift', 'deps-verify', 'provider-balance', 'departments', 'house-ranking', 'security-watch', 'reaper'].map(id => [id, { enabled: false }])) }, o.policy || {}));
   for (const [inbox, text] of Object.entries(Object.assign({ 'to-founder.md': '', 'to-kim.md': '', 'to-riley.md': '' }, o.handoffs || {}))) w(T, 'company/work/handoffs/' + inbox, '# Handoffs\n' + text);
   const agents = JSON.parse(JSON.stringify(SEATS)); const ids = {};
   for (const [id, s] of Object.entries(agents)) {

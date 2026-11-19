@@ -138,6 +138,9 @@ if [[ -f "$UNITDIR/$SVC-dispatch.timer" ]]; then
   echo "retired $SVC-dispatch.timer (the dispatcher is now the self-paced $SVC-dispatch.service)"
 fi
 systemctl --user daemon-reload
+# memory limits from company.json runtime.memory (company/tools/memory.js): a drop-in per unit and .starnet-data/memory.env,
+# applied live to running units, never a restart; the first line says what was chosen for this machine
+node company/tools/memory.js apply || echo "memory.js apply did not run (see above); the units keep their built-in defaults"
 # registered background services (company/tools/service.js): units an older template wrote are written again from the
 # current one, so a template fix (e.g. the start limit of a fast timer) reaches what is already installed
 [[ -f company/state/services.json ]] && { node company/tools/service.js rerender --by owner || echo "service.js rerender did not run (see above)"; }

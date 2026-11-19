@@ -36,8 +36,8 @@ export async function render(host, ctx) {
 
   async function load() {
     const co = app.company || {};
-    const [hl, halt, disp, gr, onb] = await Promise.allSettled([fetch('/api/station/health', { credentials: 'same-origin' }).then(async r => ({ ok: r.ok, text: (await r.text()).slice(0, 200) })),
-      api('/halt'), api('/dispatch'), api('/guardrails'), api('/onboarding')]);
+    const [hl, halt, disp, gr, onb, mem] = await Promise.allSettled([fetch('/api/station/health', { credentials: 'same-origin' }).then(async r => ({ ok: r.ok, text: (await r.text()).slice(0, 200) })),
+      api('/halt'), api('/dispatch'), api('/guardrails'), api('/onboarding'), api('/ops/memory')]);
     Object.assign(diag, { at: new Date().toISOString(), company: co, health: hl.value || String(hl.reason), halt: halt.value || String(halt.reason), guardrails: gr.value ? { off: gr.value.off, sandbox: gr.value.sandbox } : String(gr.reason) });
     const row = (label, value, tone, href) => h('li', { class: 'sys-row', style: 'align-items:center' }, href ? h('a', { href, class: 'strong' }, label) : h('span', { class: 'strong' }, label), Tag(value, { variant: 'status', status: tone }));
     const up = hl.value && hl.value.ok;
@@ -45,12 +45,18 @@ export async function render(host, ctx) {
     const s = disp.value && disp.value.state || {};
     const last = s.lastTick || s.at || s.lastRun;
     const off = gr.value ? (gr.value.off || []).length : null;
+    // memory (company/tools/memory.js): Fine, Tight (short in the last hour) or Short (now), and one plain line
+    const m = mem.value || null;
+    const memTone = !m ? 'neutral' : m.verdict === 'Short' ? 'danger' : m.verdict === 'Tight' ? 'warning' : 'online';
+    const freedDay = m && m.freed && m.freed.day && m.freed.day.mb ? 'Freed in the last day: ' + (m.freed.day.mb >= 1024 ? (m.freed.day.mb / 1024).toFixed(1) + ' GB' : m.freed.day.mb + ' MB') + ' (left-behind browsers and old temp files).' : '';
     fill(health, h('ul', { class: 'plain' },
       row('Station', up ? 'Running' : 'Not running', up ? 'online' : 'danger'),
       row('Company', mode === 'soft' ? 'Soft halt' : mode === 'hard' ? 'Hard halt' : mode === 'running' ? 'Running' : 'Unknown', mode === 'running' ? 'online' : mode ? 'warning' : 'neutral', '#/halt'),
       row('Dispatcher', last ? 'Last check ' + rel(last) : 'No check recorded', last && Date.now() - Date.parse(last) < 3600e3 ? 'online' : 'warning', '#/settings/tempo'),
       row('Guardrails', off == null ? 'Unknown' : off ? off + ' off' : 'All on', off ? 'danger' : off === 0 ? 'online' : 'neutral', '#/settings/autonomy/guardrails'),
+      row('Memory', m ? m.verdict : 'Unknown', memTone),
       row('Live updates', document.querySelector('.live-dot.off') ? 'Checking every 15 s' : 'Live', 'online')),
+      m ? h('p', { class: 'caption muted', 'data-memory-line': '' }, m.line + (freedDay ? ' ' + freedDay : '')) : null,
       Details('Details', h('dl', { class: 'kv' }, h('dt', null, 'Station address'), h('dd', { class: 'mono-s' }, co.station && co.station.url || '—'),
         h('dt', null, 'Station answer'), h('dd', { class: 'mono-s' }, hl.value ? hl.value.text : String(hl.reason)))));
     if (onb.status !== 'fulfilled') { fill(cert, errLine(onb.reason, 'Certification')); fill(backups, h('p', { class: 'body-s muted' }, 'Backups are checked as part of certification.')); return; }

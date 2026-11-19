@@ -14,4 +14,14 @@ fi
 # the company's temp dir on the data volume (TMPDIR in capheos.yml), swept by company/tools/tmp-sweep.js
 if [ -n "${TMPDIR:-}" ] && [ "${TMPDIR#/data/}" != "$TMPDIR" ]; then install -d -m 700 -o capheos -g capheos "$TMPDIR"; fi
 
-exec s6-setuidgid capheos node /app/server/index.js
+# memory settings company/tools/memory.js apply writes on the data volume (runtime.memory in company.json): the station's
+# browser and shell settings, and the heap. The heap goes on the command line, never NODE_OPTIONS (an agent's own node
+# builds would inherit it). One process here, so it takes the station's heap.
+HEAP=""
+if [ -r /data/.starnet-data/memory.env ]; then
+  set -a; . /data/.starnet-data/memory.env; set +a
+  [ -n "${CAPHEOS_STATION_HEAP:-}" ] && HEAP="--max-old-space-size=$CAPHEOS_STATION_HEAP"
+fi
+
+# shellcheck disable=SC2086
+exec s6-setuidgid capheos node $HEAP /app/server/index.js

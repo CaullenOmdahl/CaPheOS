@@ -6,6 +6,9 @@ After=network.target
 Type=simple
 WorkingDirectory=@ROOT@/starnet
 EnvironmentFile=@ENVFILE@
+# memory settings (browser idle close, private browsers at once, shell clean-up): company/tools/memory.js apply writes it;
+# its own file, so changing the profile never rewrites the file above that holds the station token
+EnvironmentFile=-@ROOT@/.starnet-data/memory.env
 # TMPDIR (in the environment file) is the company's own temp dir; made here too in case it was removed
 ExecStartPre=/bin/mkdir -p -m 700 @ROOT@/.starnet-data/tmp
 ExecStart=/usr/bin/env node sidecar/index.js
@@ -13,6 +16,12 @@ Restart=always
 RestartSec=3
 KillMode=mixed
 TimeoutStopSec=20
+# memory: the limits (MemoryHigh, MemoryMax, MemorySwapMax) and the Node heap are in the drop-in memory.js apply writes
+# (<unit>.service.d/50-capheos-memory.conf), from company.json runtime.memory. No ManagedOOMMemoryPressure=kill here:
+# systemd-oomd kills a whole unit, every run in it too. Instead the kernel picks inside the unit: the sidecar at 100,
+# agent commands at 500 (StarNet patch 0020), so a runaway build goes before the station.
+MemoryAccounting=yes
+OOMScoreAdjust=100
 # The station writes straight to a file opened O_APPEND, not to journald, so journald's rate limits
 # (LogRateLimitIntervalSec / LogRateLimitBurst) never apply here and are deliberately not set. The file's bound is
 # company/tools/retention.js: past 50 MB it is copied to station.log.1.gz (5 kept) and cut back in place (copytruncate;

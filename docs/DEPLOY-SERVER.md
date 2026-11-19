@@ -230,6 +230,26 @@ shows it.
 - Sign-in attempts: 5 per client per 15 minutes, 30 overall; then 429.
 - `tests/remote-access-test.js` checks all of this, and that no secret reaches an address or the console's output.
 
+## 10a. Memory: a small machine, and room for a local AI model
+
+The company sizes its limits to the machine (`company/tools/memory.js`, docs/RETENTION.md "Memory"). `scripts/setup-station.sh`
+writes them and prints one line, e.g. "Memory: low profile for this 2 GB machine; the station may use up to 1.1 GB; 0 MB
+kept free for other programs." On 4.5 GB or less the low profile applies by itself: one private browser at a time, the
+station's browser closes after 5 minutes unused, at most 2 agents at once, smaller limits (work may be slower). A
+Flutter-size build (several GB) needs a bigger machine whatever the profile.
+
+- **Keep memory free for a local AI model**: `node company/tools/memory.js set --keep-free <MB> --by owner` (its size plus
+  about 1 GB). The company then plans without that memory, and clears its own leftovers sooner when free memory drops
+  under it. `memory.js plan --keep-free <MB>` shows the effect first.
+- **The station's browser is headless** on a server (nobody sees a window there, and a window never closes by itself).
+  At the desk: `memory.js set --visible-browser on --by owner`.
+- Limits apply at once without a restart; a changed heap needs the safe station restart (Settings › System › Restarts),
+  which waits until nothing runs.
+- The reaper chore (docs/RETENTION.md "The reaper") ends this company's left-behind browsers and test or build processes
+  and clears its old temp files every 15 minutes. Leftovers in the shared `/tmp` that no company can prove are its own
+  (Python temp folders, build trees, Chrome's temp files) are cleared only by the owner:
+  `node company/tools/reaper.js host-sweep` lists them, `--apply --by owner` clears them.
+
 ## 11. Containers (planned)
 
 Not built yet. What would map, so nothing here has to change for it:

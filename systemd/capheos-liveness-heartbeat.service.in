@@ -5,4 +5,5 @@ Description=@NAME@ off-box heartbeat — ping the outside dead-man check (paused
 Type=oneshot
 WorkingDirectory=@ROOT@
 ExecStart=/usr/bin/env node @ROOT@/modules/liveness/watch.js heartbeat
+MemoryMax=128M
 TimeoutStartSec=60

@@ -33,9 +33,13 @@
  * parent; the owner's own Chrome has no temp profile; neither is ever listed. --apply sends SIGTERM, then SIGKILL to every
  * process still naming that profile.
  *
- * The dispatcher runs `tick` (apply + browsers --apply) at most once an hour, in a company scripts/setup-station.sh set up
- * (its private temp dir exists; CAPHEOS_TMP_SWEEP=0 turns it off); each run that removed something is one line
- * in the dispatch log. State: company/state/tmp-sweep.json (the last run, what it freed).
+ * Scope: each class is 'own' (test, private; starnet leftovers of THIS company's recorded station pids) or 'host' (build,
+ * chrome, pytmp, starnet of an unknown pid: names any program on the machine makes, the owner's and another company's
+ * too). The automatic sweep (`tick`, which company/tools/reaper.js runs) takes the 'own' scope only; the 'host' classes
+ * are cleared only by the owner (reaper.js host-sweep --apply --by owner, or this CLI by hand). `tick` runs at most once
+ * an hour, in a company scripts/setup-station.sh set up (its private temp dir exists; CAPHEOS_TMP_SWEEP=0 turns it off).
+ * State: company/state/tmp-sweep.json (the last run, what it freed). Browsers: the reaper ends left-behind ones, with proof
+ * that they are this company's (lib/owned.js); `browsers` here stays an owner CLI.
  * Owner of this tool: the tools function (co.seatFor('tools')).
  */
 'use strict';
@@ -44,14 +48,17 @@ const os = require('os');
 const path = require('path');
 
 const H = 3600;
+// scope: 'own' = provably this company's or the framework's own (framework test names are unique to CaPheOS; the private
+// dir is the company's); 'host' = names any program makes (the owner's own Python, Chrome and builds, another company's):
+// only an owner action clears those (reaper.js host-sweep --apply --by owner), never the automatic sweep.
 const CLASSES = {
-  test: { minAge: 2 * H, re: [/^(console|today|routes|alarm|services|service-keys|connect|mm|page-kit|huddle)-walk-/, /^(chatwin|chatact|chatres)-/,
+  test: { scope: 'own', minAge: 2 * H, re: [/^(console|today|routes|alarm|services|service-keys|connect|mm|page-kit|huddle)-walk-/, /^(chatwin|chatact|chatres)-/,
     /-chrome-[A-Za-z0-9]{6}$/, /-selftest-[A-Za-z0-9]{6}$/, /^capheos-test-/, /^capheos-test-start\./, /^meeting-ui-/, /^page-preview-/] },
-  build: { minAge: 6 * H, re: [/^bs-/, /^flutter_tools\./, /^initialize_from\.dill/] },
-  chrome: { minAge: 12 * H, re: [/^\.?com\.google\.Chrome\./, /^\.org\.chromium\.Chromium\./] },
-  pytmp: { minAge: 12 * H, re: [/^tmp[a-z0-9_]{8}$/], dirOnly: true },
-  starnet: { minAge: 24 * H, re: [/^starnet-.*-[A-Za-z0-9]{6}$/, /^starnet-.*\.recovery-owner\.json\.generations$/] },
-  private: { minAge: 24 * H, re: [/./] },
+  build: { scope: 'host', minAge: 6 * H, re: [/^bs-/, /^flutter_tools\./, /^initialize_from\.dill/] },
+  chrome: { scope: 'host', minAge: 12 * H, re: [/^\.?com\.google\.Chrome\./, /^\.org\.chromium\.Chromium\./] },
+  pytmp: { scope: 'host', minAge: 12 * H, re: [/^tmp[a-z0-9_]{8}$/], dirOnly: true },
+  starnet: { scope: 'host', minAge: 24 * H, re: [/^starnet-.*-[A-Za-z0-9]{6}$/, /^starnet-.*\.recovery-owner\.json\.generations$/] },
+  private: { scope: 'own', minAge: 24 * H, re: [/./] },
 };
 const NEVER = [/^starnet-upload-staging-/, /^claude-/, /^systemd-private-/, /^\.X11-unix$/, /^\.ICE-unix$/, /^tmux-/, /^ssh-/];
 const PID_TAGGED = /^starnet-(?:browser|claude-cli)-(\d+)(?:$|-)/;
@@ -66,16 +73,22 @@ function defaultDirs(root) {
 const pidAlive = pid => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 
 // the class of one entry, or null when it is not ours to remove
+// o.stationPids: this company's recorded station pids (reaper.json): a pid-tagged station leftover is the company's own only
+// when its pid is one of them; any other ended pid is the host's (another company's station, a StarNet test run)
 function classify(name, isDir, isPrivate, o) {
   if (NEVER.some(r => r.test(name))) return null;
   const tagged = PID_TAGGED.exec(name);
-  if (tagged) return (o.alive || pidAlive)(Number(tagged[1])) ? null : { cls: 'starnet', minAge: 0, why: 'its process ' + tagged[1] + ' has ended' };
+  if (tagged) {
+    if ((o.alive || pidAlive)(Number(tagged[1]))) return null;
+    const mine = isPrivate || !!(o.stationPids && o.stationPids.has(Number(tagged[1])));
+    return { cls: 'starnet', scope: mine ? 'own' : 'host', minAge: 0, why: 'its process ' + tagged[1] + ' has ended' + (mine && !isPrivate ? ' (one of this company\'s stations)' : '') };
+  }
   for (const [cls, c] of Object.entries(CLASSES)) {
     if (cls === 'private') continue;
     if (c.dirOnly && !isDir) continue;
-    if (c.re.some(r => r.test(name))) return { cls, minAge: c.minAge };
+    if (c.re.some(r => r.test(name))) return { cls, scope: isPrivate ? 'own' : c.scope, minAge: c.minAge };
   }
-  if (isPrivate) return { cls: 'private', minAge: CLASSES.private.minAge };
+  if (isPrivate) return { cls: 'private', scope: 'own', minAge: CLASSES.private.minAge };
   return null;
 }
 
@@ -140,13 +153,13 @@ function scan(opt) {
       let st; try { st = fs.lstatSync(p); } catch (_) { continue; }
       if (uid !== null && st.uid !== uid) continue;
       const c = classify(name, st.isDirectory(), d === priv, o);
-      if (!c || (only && !only.has(c.cls))) continue;
+      if (!c || (only && !only.has(c.cls)) || (o.scope && c.scope !== o.scope)) continue;
       const m = measure(p);
       const ageS = Math.max(0, (now - m.newest) / 1000);
-      const minAge = Number.isFinite(o.minAge) ? Math.min(o.minAge, c.minAge) : c.minAge;
+      const minAge = Number.isFinite(o.minAge) ? Math.min(o.minAge, c.minAge) : d === priv && Number.isFinite(o.privateMinAge) ? Math.min(o.privateMinAge, c.minAge) : c.minAge;
       const busy = inUse.held.get(d) && inUse.held.get(d).has(name);
       const go = !busy && ageS >= minAge;
-      items.push({ dir: d, name, cls: c.cls, bytes: m.bytes, ageS: Math.round(ageS), minAge, busy: !!busy, go, why: busy ? 'in use' : go ? (c.why || 'older than ' + fmtAge(minAge)) : 'touched ' + fmtAge(ageS) + ' ago' });
+      items.push({ dir: d, name, cls: c.cls, scope: c.scope, bytes: m.bytes, ageS: Math.round(ageS), minAge, busy: !!busy, go, why: busy ? 'in use' : go ? (c.why || 'older than ' + fmtAge(minAge)) : 'touched ' + fmtAge(ageS) + ' ago' });
     }
   }
   return { dirs, items, known: inUse.known };
@@ -221,7 +234,7 @@ function browsers(opt) {
   return { dirs, browsers: out };
 }
 
-/* ---------------- the dispatcher's hook ---------------- */
+/* ---------------- the automatic sweep (reaper.js runs it; scope own) ---------------- */
 function tick(opt) {
   const o = opt || {};
   const root = o.root === undefined ? safeRoot() : o.root;
@@ -234,9 +247,10 @@ function tick(opt) {
   // unit test that runs a dispatcher tick never touches the host's /tmp. CAPHEOS_TMP_SWEEP=0 turns it off (scripts/test.sh).
   if (process.env.CAPHEOS_TMP_SWEEP === '0' && !o.force) return { skipped: 'CAPHEOS_TMP_SWEEP=0' };
   if (!o.dirs && !(root && fs.existsSync(privateDir(root)))) return { skipped: 'no ' + (root ? privateDir(root) : 'company root') + ' (not a set-up company)' };
-  const b = browsers(Object.assign({}, o, { root, apply: !o.dry }));
-  const ended = b.browsers.filter(x => x.go);
-  const r = apply(Object.assign({}, o, { root }));
+  // own scope only: the private dir and, in the shared dirs, the framework's test names and this company's own station
+  // leftovers. Left-behind browsers are the reaper's (reaper.js: proof that a browser is this company's, not a temp profile)
+  const ended = [];
+  const r = apply(Object.assign({}, o, { root, scope: 'own' }));
   const byCls = {};
   for (const it of r.removed) byCls[it.cls] = (byCls[it.cls] || 0) + it.bytes;
   if (r.removed.length || ended.length) {
@@ -350,11 +364,23 @@ async function selftest() {
       assert.deepStrictEqual(sent, ['2000:SIGTERM', '2000:SIGKILL', '2001:SIGKILL']);
       assert.strictEqual(r.browsers.find(b => b.pid === 2000).rss, 2 * 1024 * 1024);
     });
-    await check('tick: once an hour, one log line, state written', () => {
-      mk(shared, 'bs-tick-1');
+    await check('scope: own is the private dir, framework test names and this company\'s station pids; host is the rest', () => {
+      mk(shared, 'starnet-browser-999998-mine'); mk(shared, 'starnet-claude-cli-999997-other'); mk(shared, 'bs-scope-1'); mk(shared, 'tmpscope123'); mk(shared, 'com.google.Chrome.scope1'); mk(shared, 'services-walk-Scope1');
+      mk(priv, 'tmpprivate12'); mk(priv, 'bs-in-private');
+      const s = scan({ dirs: [shared, priv], root, stationPids: new Set([999998]) });
+      const by = Object.fromEntries(s.items.map(i => [i.name, i]));
+      for (const n of ['starnet-browser-999998-mine', 'services-walk-Scope1', 'tmpprivate12', 'bs-in-private']) assert.strictEqual(by[n].scope, 'own', n);
+      for (const n of ['starnet-claude-cli-999997-other', 'bs-scope-1', 'tmpscope123', 'com.google.Chrome.scope1']) assert.strictEqual(by[n].scope, 'host', n);
+      const own = scan({ dirs: [shared, priv], root, stationPids: new Set([999998]), scope: 'own' }).items.map(i => i.name);
+      assert.ok(own.includes('starnet-browser-999998-mine') && !own.includes('bs-scope-1') && !own.includes('tmpscope123'), own.join());
+      for (const c of Object.values(CLASSES)) assert.ok(c.scope === 'own' || c.scope === 'host');
+    });
+    await check('tick: own scope only, once an hour, one log line, state written', () => {
+      mk(shared, 'bs-tick-1'); mk(shared, 'huddle-walk-Tick01');
       const lines = [];
-      const a = tick({ dirs: [shared], root, log: l => lines.push(l), browserProc: path.join(T, 'no-such-proc'), force: true });
+      const a = tick({ dirs: [shared], root, log: l => lines.push(l), force: true });
       assert.ok(a.removed >= 1, JSON.stringify(a)); assert.ok(/^TMP SWEEP: /.test(lines[0]), lines[0]);
+      assert.ok(!fs.existsSync(path.join(shared, 'huddle-walk-Tick01')) && fs.existsSync(path.join(shared, 'bs-tick-1')), 'a build leftover in the shared dir is the host\'s: kept');
       const b = tick({ dirs: [shared], root, log: l => lines.push(l) });
       assert.ok(b.skipped, JSON.stringify(b));
       const st = JSON.parse(fs.readFileSync(path.join(root, 'company', 'state', 'tmp-sweep.json'), 'utf8'));
@@ -399,5 +425,5 @@ function main(argv) {
   process.exit(2);
 }
 
-module.exports = { scan, apply, browsers, tick, classify, CLASSES, privateDir };
+module.exports = { scan, apply, browsers, tick, classify, measure, heldNames, defaultDirs, fmtMB, CLASSES, privateDir };
 if (require.main === module) main(process.argv.slice(2));

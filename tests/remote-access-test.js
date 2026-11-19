@@ -140,6 +140,10 @@ const opsRows = root => { try { return fs.readFileSync(path.join(root, 'company'
     }
     const mod = await req(A.port, 'GET', '/api/ops/modules', { headers: H });
     check('modules list reads', mod.status === 200 && Array.isArray(mod.json.items), mod.json);
+    const mem = await req(A.port, 'GET', '/api/ops/memory', { headers: H });
+    check('memory reads (memory.js status --json): a plain line, a verdict, the plan', mem.status === 200 && /^The company uses /.test(mem.json.line) && ['Fine', 'Tight', 'Short'].includes(mem.json.verdict) && mem.json.plan && mem.json.plan.station.maxMB > 0, mem.json);
+    const memOut = await req(A.port, 'GET', '/api/ops/memory', { headers: { cookie: '' } });
+    check('memory is behind the owner sign-in', memOut.status === 401, memOut.status);
     const fl = await req(A.port, 'GET', '/api/ops/flags', { headers: H });
     check('flags list reads (locked-watch status --json)', fl.status === 200 && Array.isArray(fl.json.flags), fl.json);
     await until(async () => fs.existsSync(path.join(root, 'restarts.log')), 5000);

@@ -40,7 +40,8 @@ A tool with a duty mode is invoked exactly as `node company/tools/<tool> --duty`
 
 ## 2. The registry is code; the policy is the only data
 
-Each entry: `{id, tool, route, everyMin, timeoutMs, whileHalted, enabledByDefault}` (plus an optional `why`).
+Each entry: `{id, tool, route, everyMin, timeoutMs, whileHalted, enabledByDefault}` (plus an optional `why`, and `acts`
+for a chore, below).
 
 - Company tools: `company/tools/duties.js`, a reviewed tool file (a change is a `harness-change.js` change; locked-watch
   watches it like the dispatcher).
@@ -91,7 +92,13 @@ brokenSince, error, lastFlaggedKey, waits, history}` (last 12 results).
 - **Absence never renders green.** A duty is `ok` only if it ran inside 2 × its cadence and its last result was ok.
   Never run, too old, waiting, no policy: stale. This rule is computed in `lib/duty-runner.js` (`stateOf`) and tested in
   `duty-status.js --selftest` and `duties.test.js`; no view decides it.
-- **Halt**: while halted only `whileHalted: true` duties run (liveness). They record their state; nobody is woken and
+- **Chores**: a duty is read-only detection, with one exception: an entry with `acts: true` whose id is on the code-level
+  `CHORES` list in `company/tools/duties.js` (today only `reaper`, docs/RETENTION.md "The reaper"). `check()` refuses
+  `acts` on any other entry, a module's included. A chore runs without `CAPHEOS_READONLY` / `CAPHEOS_NO_NETWORK` (still no
+  secret; plus `XDG_RUNTIME_DIR` for `systemctl --user`), acts quietly and exits 0 (its `{"acted": "..."}` line goes to
+  the dispatch log), and exits 1 only for what the crew must fix. Its cadence follows the memory profile unless the
+  policy sets one.
+- **Halt**: while halted only `whileHalted: true` duties run (liveness, and the reaper chore: clean-up frees memory). They record their state; nobody is woken and
   nothing is flagged until the company runs again.
 
 ## 5. The duties that ship
@@ -109,6 +116,7 @@ brokenSince, error, lastFlaggedKey, waits, history}` (last 12 results).
 | `security-watch` | `security-watch.js` | risk | 15 min | an open P0 (a known security hole, critical/high, in a part really used here, with a fixed release or exploited in the wild, or critical with no fix) or P1 (high, no fix, no workaround recorded), except a machine-only fix the owner was already asked to install; one weekly item for the smaller ones that have a fixed release; the check itself not succeeding in 2 x its rescan time. A P0 result carries `priority: 'P0'`: the seat is woken at once, past its rest, and the handoff says **Priority:** P0 (docs/SECURITY-WATCH.md) | **no network**: reads what `security-watch.js refresh` (run by the dispatcher tick) recorded in `company/state/security/watch.json` and the decisions log; item ids `sec-<8 hex>`, `sec-p2-<week>`, `sec-stale-<date>`; evidence `company/work/security/security-watch.md` |
 | `departments` | `departments.js` | people (proposals: ceo) | 60 min | `company/departments.json`, `loops.json` and `FLOOR_PLAN.md` disagree, a department brief is missing or over `limits.briefMaxChars`; a department change the people function proposed waits for the CEO | the same report `departments.js check` prints, no write; item ids `departments:<code>:<dept or seat id or a 6-hex digest of a name only FLOOR_PLAN.md has>`, `departments-proposal:<id>`; quiet while the company has no departments |
 | `house-ranking` | `model-rank.js` | people | 60 min | a routing proposal is open: a model cell with enough data beats a department's current route for its task class (shadow; docs/RANKING.md); a running (or paused) model trial reached a decision, or a running one has had no routed item for `trials.stuckDays`; tier caps live whose evaluation says roll back (docs/RANKING.md §10) | the ranking and the trial and tier-cap evaluation computed in memory from bounded reads; item ids = the proposal ids, `trial:<id>:decided:<arm>`, `trial:<id>:stuck:<since>`, `tiercap:<class>`; quiet once each proposal is decided (`model-rank.js decide`), the trial is marked done (or gets items again) and the caps are rolled back or kept off live |
+| `reaper` (**chore**, acts) | `reaper.js` | tools | 15 min (10 under the low memory profile), **whileHalted** | a stray process of the company it may not end, a test or build pattern that keeps leaking temp files, the station's browser not closing itself, memory still short after 3 clean-up runs, a unit whose memory kept growing for 48 h; it ends the company's left-behind browsers and known strays, clears its unused temp files and samples memory on every run without waking anyone (docs/RETENTION.md "The reaper") | a chore, not read-only: only what lib/owned.js proves is this company's; under `CAPHEOS_READONLY=1` a dry run; item ids `stray:<pid>`, `leak:<pattern>`, `idle-close:<pid>`, `pressure`, `growth:<unit>` |
 | `liveness-watcher` | `modules/liveness/tools/liveness.js` | risk | 10 min, **whileHalted** | the watcher's own heartbeat missing or older than 3 of its intervals (the dead-man's switch is blind) | `watch.js status()` |
 
 ## 6. Slower routine loops

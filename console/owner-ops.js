@@ -28,6 +28,8 @@
  *   POST /api/ops/update/apply   {expect}         framework-update.js apply --expect <sha> (detached)
  *   GET  /api/ops/access                          bind address, proxy, cookies, this machine's addresses
  *   POST /api/ops/access {host, trustProxy, publicUrl, sessionHours, confirm}   company.json console.* (restart needed)
+ *   GET  /api/ops/memory                          memory.js status --json: what the company uses of this computer's memory,
+ *                                                 its profile and limits, what the reaper freed (the Health row's Memory line)
  *   GET  /api/ops/jobs[/<id>]                     the detached jobs and their output
  *   GET  /api/ops/log                             the owner-ops rows, newest first
  */
@@ -229,6 +231,9 @@ function mount(route, deps) {
       return { saved: c, restartNeeded: true, note: 'Saved. It takes effect when the console restarts (Restart the console, below).' };
     });
   });
+
+  /* ---------- memory (company/tools/memory.js; the reaper chore frees it) ---------- */
+  route('GET', /^\/api\/ops\/memory$/, () => runApi('memory.js', ['status', '--json'], { timeout: 30000 }));
 
   /* ---------- jobs and the log ---------- */
   route('GET', /^\/api\/ops\/jobs$/, () => ({ ok: true, jobs: listJobs() }));

@@ -5,4 +5,5 @@ Description=@NAME@ liveness watcher — alert the owner when the dispatcher stop
 Type=oneshot
 WorkingDirectory=@ROOT@
 ExecStart=/usr/bin/env node @ROOT@/modules/liveness/watch.js
+MemoryMax=128M
 TimeoutStartSec=120
