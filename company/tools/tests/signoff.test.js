@@ -27,7 +27,8 @@ test('holdFor: an explicit line, or a cue for a kind the profile lists; nothing 
   assert.equal(SO.holdFor(block, 'ben', { profile: prof(['merge']) }).hold, false, 'a kind the profile does not list');
   assert.equal(SO.holdFor(block, 'ben', { profile: P.blank('ben') }).hold, false, 'no counterpart');
   assert.equal(SO.holdFor('## x\nPlease move this idea to a test this week.\n', 'ben', { profile: prof(['promote']) }).kind, 'promote', 'the cue');
-  assert.equal(SO.holdFor('## x\nPlease look at this idea.\n', 'ben', { profile: prof(['promote']) }).hold, false);
+  // held by default: a handoff from an eager seat to anyone but its counterpart, whatever its words
+  assert.equal(SO.holdFor('## x\nPlease look at this idea.\n', 'ben', { profile: prof(['promote']) }).hold, true, 'no wording is needed to be held');
   assert.equal(SO.holdFor('## x\n**Needs sign-off:** plan\nmove this idea to a test\n', 'ben', { profile: prof(['promote']) }).hold, false, 'an explicit line of another kind wins over a cue');
   const recs = SO.records({ rows: [{ op: 'ask', id: 'so-1', ref: 'to-dave.md#d1', kind: 'promote', at: '2026-11-20T00:00:00Z' }, { op: 'answer', id: 'so-1', by: 'ro', verdict: 'yes', at: '2026-11-20T01:00:00Z' }] });
   assert.equal(SO.holdFor(block, 'ben', { profile: prof(['promote']), records: recs, ref: 'to-dave.md#d1' }).hold, false);
@@ -51,6 +52,7 @@ function fixture() {
   w('company/defaults/people/profile-policy.json', fs.readFileSync(path.join(REPO, 'company/defaults/people/profile-policy.json'), 'utf8'));
   w('company/people/profile-policy.json', { signoff: { mode: 'live', holdMaxHours: 2 } });
   w('company/people/profiles/ben.json', prof(['promote']));
+  w('company/people/profiles/boss.json', Object.assign(P.blank('boss', { name: 'Alex' }), { counterpart: { seat: 'ro', signOff: ['promote'], why: '' } }));
   for (const n of ['alex', 'benny', 'rohan']) w('company/work/handoffs/to-' + n + '.md', '# Handoffs\n');
   w('company/work/handoffs/to-dave.md', '# Handoffs\n\n## 2026-11-20 from Benny — build it\n**Id:** d1\n**Needs sign-off:** promote\n**Status:** OPEN\n');
   return { T, r: rel => { try { return fs.readFileSync(path.join(T, rel), 'utf8'); } catch (_) { return ''; } } };
@@ -67,10 +69,33 @@ test('records: ask dedupes; only the counterpart answers, never the asker; a no 
   assert.match(inRoot(c.T, 'SO.answer({ id: "' + a.id + '", by: "dave", verdict: "yes", check: "x" })').threw, /only Rohan/);
   assert.match(inRoot(c.T, 'SO.answer({ id: "' + a.id + '", by: "ro", verdict: "no", check: "x" })').threw, /needs --reasons/);
   assert.match(inRoot(c.T, 'SO.override({ id: "' + a.id + '", by: "ro", why: "because I say so" })').threw, /only the CEO/);
+  const own = inRoot(c.T, 'SO.ask({ from: "boss", kind: "promote", ref: "to-dave.md#d9" })');
+  assert.ok(own.id, JSON.stringify(own)); assert.match(inRoot(c.T, 'SO.override({ id: "' + own.id + '", by: "boss", why: "I want it now" })').threw, /cannot override it/, 'the CEO never overrides its own sign-off');
   assert.equal(inRoot(c.T, 'SO.override({ id: "' + a.id + '", by: "boss", why: "the owner asked for it" })').overridden, true);
   assert.equal(inRoot(c.T, 'SO.cleared("to-dave.md#d1")'), true);
   const lines = c.r('company/state/signoffs.jsonl').split('\n').filter(Boolean).map(l => JSON.parse(l));
-  assert.deepEqual(lines.map(l => l.op), ['ask', 'override'], 'refused answers write nothing');
+  assert.deepEqual(lines.filter(l => l.ref !== 'to-dave.md#d9').map(l => l.op), ['ask', 'override'], 'refused answers write nothing');
+  assert.ok(!lines.some(l => l.op === 'override' && l.by === 'boss' && lines.find(x => x.op === 'ask' && x.id === l.id && x.from === 'boss')));
+});
+
+test('hold by default: any handoff to someone other than the counterpart, unless marked as information only; an idea card is promote', () => {
+  const p = prof(['promote', 'commit']);
+  const b = SO.holdFor('## 2026-11-20 from Benny — build a scanner\nKwame, please build a scanner for the weather signal.\n**Status:** OPEN\n', 'ben', { profile: p, receiver: 'kw' });
+  assert.deepEqual([b.hold, b.kind], [true, 'commit'], 'asking another seat to build something commits their time');
+  assert.equal(SO.holdFor('## x\nBuild a scanner from card W-12.\n', 'ben', { profile: p, receiver: 'kw' }).kind, 'promote', 'a handoff that names an idea card is promote');
+  assert.equal(SO.holdFor('## x\nBuild it.\n', 'ben', { profile: p, receiver: 'ro' }).hold, false, 'a handoff to the counterpart itself is never held');
+  assert.equal(SO.holdFor('## x\n**FYI:** the venue changed its fees.\n', 'ben', { profile: p, receiver: 'kw' }).hold, false, 'marked as information only');
+  assert.equal(SO.holdFor('## x\n**Needs sign-off:** none\nA note.\n', 'ben', { profile: p, receiver: 'kw' }).hold, false);
+  assert.equal(SO.holdFor('## y\nthe fee table.\n', 'ben', { profile: p, receiver: 'kw', heading: '2026-11-20 from Benny — FYI the fee table' }).hold, false, 'an FYI heading');
+});
+
+test('the writer is the seat whose run wrote the block (a heading naming someone else does not dodge the hold)', () => {
+  const crew = { ben: { name: 'Benny Tran' }, ro: { name: 'Rohan Iyer' }, dave: { name: 'Dave' } };
+  const heading = '2026-11-20 from Dave — build the weather scanner now';
+  const calls = [{ agentId: 'ben', raw: JSON.stringify({ path: 'company/work/handoffs/to-kwame.md', content: '## ' + heading + '\nDo it.' }) }];
+  assert.equal(SO.writerFor(heading, crew, calls), 'ben', 'the transcript shows Benny wrote it');
+  assert.equal(SO.writerFor(heading, crew, []), 'dave', 'no transcript: the heading');
+  assert.equal(SO.writerFor('2026-11-20 — build the weather scanner now', crew, calls.map(c => Object.assign({}, c, { raw: c.raw.replace('from Dave ', '') }))), 'ben', 'no "from" in the heading at all: still Benny');
 });
 
 test('scanTick: past holdMaxHours with no answer the counterpart\'s manager hears once; the block stays held', () => {

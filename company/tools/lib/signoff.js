@@ -3,9 +3,14 @@
  * seat is gated by a conservative one, and the gate is the dispatcher's, not a line in a charter).
  *
  * An eager seat's profile names its counterpart and the kinds of decision that need the counterpart's yes
- * (counterpart.signOff, lib/profile.js SIGNOFF_KINDS). A handoff that seat writes carrying `**Needs sign-off:** <kind>`,
- * or one whose text reads as a kind its profile lists (KIND_CUES), is held for its receiver, like `**Waiting on:**`,
- * until the counterpart answers yes. Records are crew-only: they never become owner questions and never reach Today.
+ * (counterpart.signOff, lib/profile.js SIGNOFF_KINDS). HOLD BY DEFAULT: every open handoff that seat writes to anyone but
+ * its counterpart is held for its receiver, like `**Waiting on:**`, until the counterpart answers yes, unless it is
+ * clearly marked as information only (`**FYI:**`, `**Needs sign-off:** none`, or a heading that starts "FYI"). Its kind is
+ * the one `**Needs sign-off:**` names, else the one its text reads as (KIND_CUES: an idea card is promote), else the first
+ * of commit, plan, promote the profile lists (asking another seat to do work commits their time). The writer is the seat
+ * whose run wrote the block (the agents' transcripts, provenance.recentCalls), and only when no transcript shows it the
+ * name in the heading; a heading that names someone else does not move the hold. Records are crew-only: they never
+ * become owner questions and never reach Today.
  *
  *   const SO = require('./lib/signoff');
  *   SO.needs(seat, kind, o)           the counterpart whose yes `seat` needs for `kind`, or null
@@ -17,7 +22,9 @@
  *   SO.scanTick(o)                    the dispatcher's step (dispatch.js, once a tick): opens one sign-off item in the
  *                                     counterpart's inbox per held block, writes the would-holds in shadow, tells the
  *                                     counterpart's manager once after holdMaxHours; returns (inbox, item) -> hold | null
- *   SO.gate({seat, kind, refs}, o)    external-gate.js and merge-gate.js: { needed, cleared, refuse?, would? }
+ *   SO.gate({seat, kind, refs, signoffId?, sha?}, o)   external-gate.js and merge-gate.js: { needed, cleared, refuse?, would? }
+ *                                     a yes counts only for its own ref (ext:<target>, pr:<repo>#<n>): a sign-off id is
+ *                                     looked up by id and must name one of `refs`; a merge yes is for one commit (sha)
  * Files: company/state/signoffs.jsonl (class A, append only: ask, answer and override rows, each recorded with
  * provenance), company/state/signoff-state.json (the dispatcher's memory: what it logged and told), and
  * company/state/signoff-gates.jsonl (the gates' would-refuse rows in shadow; a measurement, not locked).
@@ -59,7 +66,7 @@ function records(o) {
   for (const r of (o && o.rows) || rows(o)) {
     if (r.op === 'ask') { if (!m.has(r.id)) m.set(r.id, { id: r.id, ask: r, answers: [], override: null, status: 'open' }); continue; }
     const x = m.get(r.id); if (!x) continue;
-    if (r.op === 'answer') { x.answers.push(r); if (x.status !== 'overridden') x.status = r.verdict === 'yes' ? 'yes' : 'no'; }
+    if (r.op === 'answer') { x.answers.push(r); if (x.status !== 'overridden') { x.status = r.verdict === 'yes' ? 'yes' : 'no'; x.sha = r.verdict === 'yes' ? (r.sha || x.ask.sha || null) : null; } }
     else if (r.op === 'override') { x.override = r; x.status = 'overridden'; }
   }
   return m;
@@ -85,16 +92,27 @@ const at = o => new Date(Number.isFinite(o && o.now) ? o.now : Date.now()).toISO
 // the kinds a block can read as without an explicit line: only the unmistakable ones (a handoff that promotes a card to a
 // test or a build; one that asks for a PR to be merged). Everything else needs **Needs sign-off:**.
 const KIND_CUES = {
-  promote: /\b(?:promot(?:e|es|ing)\s+(?:this|the|my)?\s*(?:idea|card)|move\s+(?:this|the|my)\s+(?:idea|card)\s+(?:to|into)\s+(?:a\s+)?(?:test|build))\b/i,
-  merge: /\b(?:gh pr merge|merge\s+(?:this|the|my)\s+(?:PR|pull request))\b/i,
+  merge: /\b(?:gh pr merge|merge\s+(?:this|the|my|that)\s+(?:PR|pull request))\b/i,
+  trade: /\b(?:place|send|submit)\s+(?:an?|the|this)?\s*(?:order|trade)\b/i,
+  external: /\b(?:external-gate\.js|post\s+(?:it|this)\s+(?:to|on)|email\s+(?:the|a)\s+(?:customer|vendor|client))\b/i,
+  promote: /\b(?:promot(?:e|es|ing)\s+(?:this|the|my)?\s*(?:idea|card)|move\s+(?:this|the|my)\s+(?:idea|card)\s+(?:to|into)\s+(?:a\s+)?(?:test|build)|idea\s+cards?|from\s+card\b|company\/work\/ideas\/|\bcard\s+[A-Z0-9][\w-]*\b)/i,
+  plan: /\b(?:(?:[4-9]|\d{2,})[- ]days?|(?:a|one|two|three|\d+)[- ]weeks?)\s+(?:plan|project|build|effort)\b/i,
 };
+// the default kind of a held handoff with no explicit line and no cue: asking another seat to do work commits their time
+const DEFAULT_KINDS = ['commit', 'plan', 'promote'];
+const FYI_RE = /^\*\*(?:FYI|For information|Information only)\b[^*]*:\*\*|^\*\*Needs sign-off:\*\*\s*(?:none|no|n\/a)\b/mi;
+const isFyi = (block, heading) => FYI_RE.test(String(block || '')) || /^(?:\S+\s+from\s+[^—–-]+[—–-]\s*)?FYI\b/i.test(String(heading || ''));
 const explicitKinds = block => { const m = String(block || '').match(/^\*\*Needs sign-off:\*\*\s*(.+)$/mi); return m ? m[1].split(/[\s,;|]+/).map(x => x.replace(/[`*<>]/g, '').toLowerCase()).filter(k => P.SIGNOFF_KINDS[k]) : []; };
+// o.receiver: the seat whose inbox holds the block (a block to the counterpart itself is never held); o.heading
 function holdFor(block, seat, o) {
   o = o || {};
   const prof = o.profile; const c = prof && prof.counterpart;
   if (!c || !c.seat || !Array.isArray(c.signOff) || !c.signOff.length || c.seat === seat) return { hold: false };
+  if (o.receiver && o.receiver === c.seat) return { hold: false };
+  if (isFyi(block, o.heading)) return { hold: false, fyi: true };
   const ex = explicitKinds(block);
-  const kind = ex.find(k => c.signOff.includes(k)) || (ex.length ? null : Object.keys(KIND_CUES).find(k => c.signOff.includes(k) && KIND_CUES[k].test(String(block || ''))));
+  const kind = ex.find(k => c.signOff.includes(k)) || (ex.length ? null : Object.keys(KIND_CUES).find(k => c.signOff.includes(k) && KIND_CUES[k].test(String(block || ''))))
+    || (ex.length ? null : DEFAULT_KINDS.find(k => c.signOff.includes(k)) || c.signOff[0]);
   if (!kind) return { hold: false };
   const rec = o.ref && o.records ? latestFor(o.records, normRef(o.ref), kind) : null;
   if (rec && (rec.status === 'yes' || rec.status === 'overridden')) return { hold: false, cleared: true, kind, counterpart: c.seat, id: rec.id, status: rec.status };
@@ -113,7 +131,8 @@ function ask(a, o) {
   if (!cp) throw new Refusal(nameOf(crew, from) + '\'s profile names no counterpart who signs off "' + kind + '", so nothing is needed');
   const recs = records(o), have = latestFor(recs, ref, kind);
   if (have && have.status !== 'no') return { ok: true, id: have.id, duplicate: true, status: have.status, counterpart: cp };
-  const row = append({ at: at(o), op: 'ask', id: newId(), from, counterpart: cp, kind, ref, digest: clean(a.digest, 120) || null, why: clean(a.why, 400) || null, via: a.via || 'approvals.js' }, o);
+  const sha = String(a.sha || '').trim().toLowerCase(); if (sha && !/^[0-9a-f]{7,64}$/.test(sha)) throw new Refusal('--sha takes a commit hash');
+  const row = append(Object.assign({ at: at(o), op: 'ask', id: newId(), from, counterpart: cp, kind, ref, digest: clean(a.digest, 120) || null, why: clean(a.why, 400) || null, via: a.via || 'approvals.js' }, sha ? { sha } : {}), o);
   return { ok: true, id: row.id, counterpart: cp, kind, ref };
 }
 function answer(a, o) {
@@ -127,7 +146,11 @@ function answer(a, o) {
   const check = clean(a.check, 300); if (!check) throw new Refusal('--check "<what you checked>" is required');
   const reasons = clean(a.reasons, 600) || null;
   if (verdict === 'no' && !reasons) throw new Refusal('a no needs --reasons "<why, and what would make it a yes>"');
-  append({ at: at(o), op: 'answer', id: x.id, by, verdict, check, reasons }, o);
+  // a yes to a pull request is a yes to the commit that was checked: more commits after it need a new yes
+  const sha = String(a.sha || x.ask.sha || '').trim().toLowerCase();
+  if (sha && !/^[0-9a-f]{7,64}$/.test(sha)) throw new Refusal('--sha takes the commit hash you checked');
+  if (verdict === 'yes' && /^pr:/.test(x.ask.ref) && !sha) throw new Refusal('a yes to a pull request names the commit you checked: add --sha <its head commit> (gh pr view <n> --json headRefOid)');
+  append(Object.assign({ at: at(o), op: 'answer', id: x.id, by, verdict, check, reasons }, sha ? { sha } : {}), o);
   closeItem(x.id, 'answered ' + verdict + ' by ' + nameOf(crew, by) + ': ' + check, o);
   if (verdict === 'no') tellAsker(x, by, check, reasons, o);
   return { ok: true, id: x.id, verdict, ref: x.ask.ref, next: verdict === 'yes' ? 'the held handoff is released on the next dispatcher tick' : nameOf(crew, x.ask.from) + ' has the reasons in their inbox; the handoff stays held' };
@@ -138,6 +161,7 @@ function override(a, o) {
   if (!x) throw new Refusal('no sign-off ' + a.id);
   const ceo = o.ceo || co.ceo();
   if (by !== ceo) throw new Refusal('only the CEO overrides a sign-off');
+  if (by === x.ask.from) throw new Refusal('the CEO asked for this sign-off, so the CEO cannot override it: ' + nameOf(crew, x.ask.counterpart) + ' answers it');
   if (P.policy(o).signoff.ceoOverride === false) throw new Refusal('this company\'s profile policy does not let the CEO override a sign-off');
   const why = clean(a.why, 400); if (why.length < 8) throw new Refusal('--why "<why the CEO overrides it>" is required');
   append({ at: at(o), op: 'override', id: x.id, by, why }, o);
@@ -187,6 +211,16 @@ function writerOf(heading, crew) {
   const n = m[1].trim().toLowerCase();
   return Object.keys(crew).find(id => String((crew[id] || {}).name || '').toLowerCase() === n) || Object.keys(crew).find(id => firstName(String((crew[id] || {}).name || '')).toLowerCase() === n) || null;
 }
+// the seat whose run wrote a block: an agent's recent tool call (provenance.recentCalls rows { agentId, raw }) that carries
+// the heading's own words; null when no transcript shows it. calls: injected (tests) or read once per tick
+const headWords = heading => String(heading || '').replace(/^\S+\s+from\s+[^—–-]+[—–-]\s*/, '').trim();
+function transcriptWriter(heading, calls, crew) {
+  const w = headWords(heading); if (w.length < 12) return null;
+  const probe = JSON.stringify(w.slice(0, 60)).slice(1, -1);
+  const hits = (calls || []).filter(c => c && c.agentId && crew[c.agentId] && String(c.raw || '').includes(probe));
+  return hits.length ? String(hits[hits.length - 1].agentId) : null;
+}
+function writerFor(heading, crew, calls) { return transcriptWriter(heading, calls, crew) || writerOf(heading, crew); }
 function scanTick(o) {
   o = o || {};
   const log = typeof o.log === 'function' ? o.log : () => {};
@@ -199,15 +233,16 @@ function scanTick(o) {
   const st = readJ(F.state, null) || {}; st.would = st.would || {}; st.held = st.held || {}; st.told = st.told || {}; st.items = st.items || {}; st.counts = st.counts || { wouldHold: 0, held: 0 };
   let recs = records(o); const holds = new Map(); let dirty = false;
   const SP = require('./sprint');
+  let calls = o.calls; if (!Array.isArray(calls)) { try { calls = require('../provenance.js').recentCalls(rootOf(o), now - 7 * 24 * HOUR); } catch (_) { calls = []; } }
   for (const [rid, c] of Object.entries(crew)) {
     if (!c || !c.inbox) continue;
     let t = ''; try { t = fs.readFileSync(path.join(F.handoffs, c.inbox), 'utf8'); } catch (_) { continue; }
     const secs = new Map(t.split(/^## /m).slice(1).map(s => [s.split('\n')[0].trim(), s]));
     for (const it of SP.parseItems(t).filter(i => i.open)) {
-      const writer = writerOf(it.heading, crew); if (!writer || writer === rid) continue;
+      const writer = writerFor(it.heading, crew, calls); if (!writer || writer === rid) continue;
       const prof = profiles[writer]; if (!prof || !prof.counterpart || prof.counterpart.seat === rid) continue;
       const ref = itemRef(c.inbox, it);
-      const h = holdFor(secs.get(it.heading) || '', writer, { profile: prof, records: recs, ref });
+      const h = holdFor(secs.get(it.heading) || '', writer, { profile: prof, records: recs, ref, receiver: rid, heading: it.heading });
       if (!h.hold) continue;
       const key = ref + ':' + h.kind, cpName = nameOf(crew, h.counterpart);
       if (mode === 'shadow') {
@@ -257,12 +292,19 @@ function gate(a, o) {
   const cp = needs(seat, kind, o); if (!cp) return { needed: false, mode };
   const refs = (a.refs || []).map(normRef).filter(Boolean);
   const recs = records(o);
-  if (refs.some(r => cleared(r, { records: recs }, kind))) return { needed: true, cleared: true, mode, counterpart: cp };
+  const sha = String(a.sha || '').trim().toLowerCase();
+  // a yes clears only its own ref and kind; a merge yes only for the commit it was given on
+  const shaOk = x => !sha || (!!x.sha && (sha.startsWith(x.sha) || x.sha.startsWith(sha)) && Math.min(sha.length, x.sha.length) >= 7);
+  const ok = x => !!x && (x.status === 'yes' || x.status === 'overridden') && x.ask.kind === kind && refs.includes(normRef(x.ask.ref)) && (x.status === 'overridden' || shaOk(x));
+  let hit = false, stale = false;
+  if (a.signoffId) { const x = recs.get(String(a.signoffId).trim()); if (ok(x)) hit = true; else if (x && refs.includes(normRef(x.ask.ref)) && x.status === 'yes' && !shaOk(x)) stale = true; }
+  if (!hit) for (const r of refs) { const x = latestFor(recs, r, kind); if (ok(x)) { hit = true; break; } if (x && x.status === 'yes' && !shaOk(x)) stale = true; }
+  if (hit) return { needed: true, cleared: true, mode, counterpart: cp };
   const crew = crewOf(o);
-  const why = nameOf(crew, seat) + '\'s profile says ' + nameOf(crew, cp) + ' signs off before they ' + P.SIGNOFF_KINDS[kind].words + ', and there is no yes for ' + (refs[0] || 'this act') + ': ask with node company/tools/approvals.js signoff ask --kind ' + kind + ' --ref ' + (refs[0] || '<ref>') + ' --by ' + nameOf(crew, seat) + ', then act once ' + firstName(nameOf(crew, cp)) + ' says yes';
+  const why = nameOf(crew, seat) + '\'s profile says ' + nameOf(crew, cp) + ' signs off before they ' + P.SIGNOFF_KINDS[kind].words + ', and there is no yes for ' + (refs[0] || 'this act') + (stale ? ' at this commit (the yes was for an earlier one; ask again)' : '') + ': ask with node company/tools/approvals.js signoff ask --kind ' + kind + ' --ref ' + (refs[0] || '<ref>') + ' --by ' + nameOf(crew, seat) + ', then act once ' + firstName(nameOf(crew, cp)) + ' says yes';
   if (mode === 'live') return { needed: true, cleared: false, mode, counterpart: cp, refuse: why };
   try { const f = files(o).gates; fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, JSON.stringify({ at: at(o), seat, kind, refs, counterpart: cp, via: a.via || null, would: 'refuse' }) + '\n'); } catch (_) {}
   return { needed: true, cleared: false, mode, counterpart: cp, would: true, why };
 }
 
-module.exports = { WRITER, KIND_CUES, Refusal, files, normRef, itemRef, rows, records, pending, cleared, needs, holdFor, explicitKinds, ask, answer, override, list, scanTick, gate, writerOf };
+module.exports = { WRITER, KIND_CUES, DEFAULT_KINDS, isFyi, transcriptWriter, writerFor, Refusal, files, normRef, itemRef, rows, records, pending, cleared, needs, holdFor, explicitKinds, ask, answer, override, list, scanTick, gate, writerOf };

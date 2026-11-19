@@ -789,7 +789,7 @@ if (cmd === 'check-gh') {
     // counterpart sign-off (lib/signoff.js, docs/PROFILES.md), in addition to the PASS above: a seat whose profile lists
     // `merge` needs its counterpart's yes for pr:<repo>#<n> (live refuses; shadow records the would-refuse). Required here,
     // lazily, so a broken or missing library never turns into a refusal (the exit-code contract above)
-    { let so = null; try { so = require('./lib/signoff').gate({ seat: presenter().agent, kind: 'merge', refs: ['pr:' + repo + '#' + h.pr], via: 'merge-gate.js' }); } catch (_) { so = null; }
+    { let so = null; try { so = require('./lib/signoff').gate({ seat: presenter().agent, kind: 'merge', refs: ['pr:' + repo + '#' + h.pr], sha: h.sha, via: 'merge-gate.js' }); /* a yes is for this head commit only */ } catch (_) { so = null; }
       if (so && so.refuse) refuse(repo + ' #' + h.pr + ': ' + so.refuse + '.'); }
     log('ALLOWED ' + repo + ' #' + h.pr + ' head ' + h.sha.slice(0, 8));
     process.exit(0);

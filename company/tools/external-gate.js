@@ -38,7 +38,7 @@
  *                                              # idempotent act: a key that already went out is answered duplicate
  *   node company/tools/external-gate.js idem list | sent --attempt <id> | release --category <c> --key <k> --by owner --why ".."
  *   node company/tools/external-gate.js check ... [--signoff <so-id>]   # a seat whose profile lists `external` among what its
- *                                              counterpart signs off needs a yes for ext:<target> or this sign-off (docs/PROFILES.md)
+ *                                              counterpart signs off needs a yes for ext:<target> (or this sign-off, when its own ref is ext:<target>; docs/PROFILES.md)
  *
  * Exit codes: 0 allowed, 3 refused (and logged), 4 duplicate (an idempotency key that already went out; NOT sent
  * again — the answer names the prior attempt id), 2 bad usage.
@@ -905,7 +905,9 @@ function idemFind(file, category, key, at) {
  * with no such profile line is not affected. An unreadable profile adds nothing (the clearance rules still fail closed). */
 function signoffCheck(req, opts) {
   const agent = norm((req && req.agent) || ''); if (!agent || agent === 'unknown') return null;
-  let g = null; try { g = require('./lib/signoff').gate({ seat: agent, kind: 'external', refs: ['ext:' + String((req && req.target) || ''), req && req.signoff ? String(req.signoff) : ''], via: 'external-gate.js' }); } catch (_) { return null; }
+  // the yes must be for THIS target: refs is ext:<target> only, and a sign-off id the request names is looked up by id and
+  // counts only when its own ref is ext:<target> (a yes for another target never clears this one)
+  let g = null; try { g = require('./lib/signoff').gate({ seat: agent, kind: 'external', refs: ['ext:' + String((req && req.target) || '')], signoffId: req && req.signoff ? String(req.signoff) : '', via: 'external-gate.js' }); } catch (_) { return null; }
   if (!g || !g.refuse) return null;
   const at = Number.isFinite(opts && opts.now) ? opts.now : nowMs();
   const logFile = opts && opts.log === null ? null : ((opts && opts.log) || LOG);
@@ -1701,6 +1703,14 @@ function cliArgs() {
   return o;
 }
 
+/* who is acting: inside an agent's run always the station's own STARNET_AGENT_ID (a run cannot name another seat with
+   --agent to skip that seat's rules); --agent only from a shell outside the station */
+function actingAgent(claimed, env) {
+  const e = env || process.env;
+  if (e.STARNET_AGENT_ID) return String(e.STARNET_AGENT_ID);
+  let under = false; try { under = require('./provenance.js').underStation(); } catch (_) { under = false; }
+  return under ? 'unknown' : (claimed && claimed !== true ? String(claimed) : undefined);
+}
 function main() {
   const a = cliArgs();
   if (a.selftest) process.exit(selftest());
@@ -1708,7 +1718,7 @@ function main() {
   if (cmd === 'check' || cmd === 'guard') {
     // `--act` used to be silently dropped here: check() supports acts and the CLI never passed one, so a person could
     // not ask the gate the question the acts field exists to answer ("is this PUSH covered by a row that says push?").
-    const d = check({ category: a.category, target: a.target, agent: a.agent || process.env.STARNET_AGENT_ID, act: a.act, note: a.note, signoff: a.signoff, idem: a.idem, amountUsd: a['amount-usd'] != null ? Number(a['amount-usd']) : undefined, idemTtlMs: a['idem-ttl'] === 'forever' ? 'forever' : (a['idem-ttl'] ? Number(a['idem-ttl']) * 1000 : undefined) });
+    const d = check({ category: a.category, target: a.target, agent: actingAgent(a.agent), act: a.act, note: a.note, signoff: a.signoff, idem: a.idem, amountUsd: a['amount-usd'] != null ? Number(a['amount-usd']) : undefined, idemTtlMs: a['idem-ttl'] === 'forever' ? 'forever' : (a['idem-ttl'] ? Number(a['idem-ttl']) * 1000 : undefined) });
     console.log(JSON.stringify(d));
     process.exit(d.allow ? 0 : d.duplicate ? 4 : 3);
   }

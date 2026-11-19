@@ -509,7 +509,8 @@ module.exports = { ask, amend, withdraw, answer, list, get, records, blockingSea
 
 /* ---------------- counterpart sign-offs (crew-only records, lib/signoff.js; docs/PROFILES.md) ----------------
  *   approvals.js signoff ask --kind <promote|commit|external|merge|plan|trade> --ref <inbox#item | pr:<owner>/<repo>#<n> | ext:<target>> --by <seat> [--why ..]
- *   approvals.js signoff answer <so-id> --verdict yes|no --check ".." [--reasons ".."] --by <counterpart>
+ *   approvals.js signoff answer <so-id> --verdict yes|no --check ".." [--reasons ".."] [--sha <commit>] --by <counterpart>
+ *       (a yes to a pull request names the commit that was checked: --sha; a later commit needs a new yes)
  *   approvals.js signoff override <so-id> --by <CEO> --why ".."
  *   approvals.js signoff list [--open] [--json]
  * A sign-off is not an owner question: these rows go to company/state/signoffs.jsonl, never to the pm inbox or Today.
@@ -532,8 +533,8 @@ function signoffSeat(by, cmd) {
 function signoffCmd(a) {
   const SO = require('./lib/signoff'); const sub = a._[1];
   try {
-    if (sub === 'ask') return { code: 0, out: SO.ask({ from: signoffSeat(a.by, 'ask'), kind: a.kind, ref: a.ref, why: a.why, digest: a.digest }) };
-    if (sub === 'answer') return { code: 0, out: SO.answer({ id: a._[2], by: signoffSeat(a.by, 'answer'), verdict: a.verdict, check: a.check === true ? '' : a.check, reasons: a.reasons === true ? '' : a.reasons }) };
+    if (sub === 'ask') return { code: 0, out: SO.ask({ from: signoffSeat(a.by, 'ask'), kind: a.kind, ref: a.ref, why: a.why, digest: a.digest, sha: a.sha === true ? '' : a.sha }) };
+    if (sub === 'answer') return { code: 0, out: SO.answer({ id: a._[2], by: signoffSeat(a.by, 'answer'), verdict: a.verdict, check: a.check === true ? '' : a.check, reasons: a.reasons === true ? '' : a.reasons, sha: a.sha === true ? '' : a.sha }) };
     if (sub === 'override') return { code: 0, out: SO.override({ id: a._[2], by: signoffSeat(a.by, 'override'), why: a.why === true ? '' : a.why }) };
     if (sub === 'list') { const l = SO.list({ open: !!a.open }); return { code: 0, out: a.json ? { ok: true, signoffs: l } : { ok: true, signoffs: l } }; }
     return { code: 2, out: { ok: false, error: 'usage: approvals.js signoff ask|answer|override|list' } };

@@ -174,6 +174,18 @@ test('gates: external-gate refuses Benny\'s act in live without a yes, acts afte
   assert.equal(ask.code, 0, ask.raw);
   assert.equal(c.cli(['signoff', 'answer', ask.out.id, '--verdict', 'yes', '--check', 'the message is plain and true', '--by', 'Rohan']).code, 0);
   assert.equal(check().code, 0, 'acts after the yes');
+  // the yes is for that target only: naming it (by id or by ref) never clears another target; the id form works
+  const wire = (extra, env) => spawnSync(process.execPath, [path.join(TOOLS, 'external-gate.js'), 'check', '--category', 'message', '--target', 'wire-money-to-vendor'].concat(extra), { cwd: c.T, encoding: 'utf8', env: env || c.env });
+  assert.equal(wire(['--agent', 'ben', '--signoff', 'ext:email:someone@example.com']).status, 3, 'a yes for another target named as --signoff does not clear this one');
+  assert.equal(wire(['--agent', 'ben', '--signoff', ask.out.id]).status, 3, 'a sign-off id for another target does not clear this one');
+  const wa = c.cli(['signoff', 'ask', '--kind', 'external', '--ref', 'ext:wire-money-to-vendor', '--by', 'Benny']);
+  c.cli(['signoff', 'answer', wa.out.id, '--verdict', 'yes', '--check', 'the invoice matches the order', '--by', 'Rohan']);
+  assert.equal(wire(['--agent', 'ben', '--signoff', wa.out.id]).status, 0, 'the documented form --signoff so-<id> works for its own target');
+  // inside an agent's run --agent cannot name another seat: the station's own id decides
+  const c2 = c.cli(['signoff', 'ask', '--kind', 'external', '--ref', 'ext:post-blog-draft', '--by', 'Benny']);
+  const blog = env => spawnSync(process.execPath, [path.join(TOOLS, 'external-gate.js'), 'check', '--category', 'message', '--target', 'post-to-forum', '--agent', 'dave'], { cwd: c.T, encoding: 'utf8', env });
+  assert.equal(blog(Object.assign({}, c.env, { STARNET_AGENT_ID: 'ben' })).status, 3, 'Benny\'s run passing --agent dave is still checked as Benny');
+  assert.ok(c2.out.id);
   // shadow: allowed, the would-refuse recorded
   c.w('company/people/profile-policy.json', { signoff: { mode: 'shadow' } });
   const sh = spawnSync(process.execPath, [path.join(TOOLS, 'external-gate.js'), 'check', '--category', 'message', '--target', 'email:else@example.com', '--agent', 'ben'], { cwd: c.T, encoding: 'utf8', env: c.env });
@@ -181,12 +193,16 @@ test('gates: external-gate refuses Benny\'s act in live without a yes, acts afte
   assert.ok(c.jsonl('company/state/signoff-gates.jsonl').some(x => x.seat === 'ben' && x.kind === 'external' && x.would === 'refuse'));
   // merge: the gate's call (merge-gate.js runs gh, so its decision is checked through the same library call it makes)
   const src = fs.readFileSync(path.join(TOOLS, 'merge-gate.js'), 'utf8');
-  assert.match(src, /require\('\.\/lib\/signoff'\)\.gate\(\{ seat: presenter\(\)\.agent, kind: 'merge', refs: \['pr:' \+ repo \+ '#' \+ h\.pr\]/);
+  assert.match(src, /require\('\.\/lib\/signoff'\)\.gate\(\{ seat: presenter\(\)\.agent, kind: 'merge', refs: \['pr:' \+ repo \+ '#' \+ h\.pr\], sha: h\.sha/);
   c.w('company/people/profiles/ben.json', Object.assign(profile('ben', 'Benny', 'scout', 'rohan'), { counterpart: { seat: 'rohan', signOff: ['merge'], why: 'x' } }));
   c.w('company/people/profile-policy.json', { signoff: { mode: 'live' } });
-  const gate = () => JSON.parse(spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(require(' + JSON.stringify(path.join(TOOLS, 'lib', 'signoff.js')) + ').gate({ seat: "ben", kind: "merge", refs: ["https://github.com/acme/shop/pull/12"] })))'], { cwd: c.T, encoding: 'utf8', env: c.env }).stdout);
-  assert.ok(gate().refuse, 'live: no yes for the PR refuses');
+  const gate = sha => JSON.parse(spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(require(' + JSON.stringify(path.join(TOOLS, 'lib', 'signoff.js')) + ').gate({ seat: "ben", kind: "merge", refs: ["https://github.com/acme/shop/pull/12"], sha: ' + JSON.stringify(sha || '') + ' })))'], { cwd: c.T, encoding: 'utf8', env: c.env }).stdout);
+  assert.ok(gate('abcdef1234567').refuse, 'live: no yes for the PR refuses');
   const a2 = c.cli(['signoff', 'ask', '--kind', 'merge', '--ref', 'pr:acme/shop#12', '--by', 'Benny']);
-  c.cli(['signoff', 'answer', a2.out.id, '--verdict', 'yes', '--check', 'premerge passed and I read the diff', '--by', 'Rohan']);
-  assert.equal(gate().cleared, true, 'the yes for pr:acme/shop#12 clears the URL form of the same PR');
+  const noSha = c.cli(['signoff', 'answer', a2.out.id, '--verdict', 'yes', '--check', 'premerge passed and I read the diff', '--by', 'Rohan']);
+  assert.equal(noSha.code, 2, 'a yes to a pull request names the commit it checked'); assert.match(noSha.raw, /--sha/);
+  c.cli(['signoff', 'answer', a2.out.id, '--verdict', 'yes', '--check', 'premerge passed and I read the diff', '--sha', 'abcdef1234567', '--by', 'Rohan']);
+  assert.equal(gate('abcdef1234567890').cleared, true, 'the yes for pr:acme/shop#12 at that commit clears the URL form of the same PR');
+  const later = gate('0123456789abcdef');
+  assert.ok(later.refuse && /earlier one/.test(later.refuse), 'a commit pushed after the yes needs a new yes: ' + JSON.stringify(later));
 });
