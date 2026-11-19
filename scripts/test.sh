@@ -93,6 +93,8 @@ step "tests/remote-access-test.js (login form, sessions, CSRF, rate limit, proxy
 step "tests/today-questions-walk.js (headless Chrome: Today renders each question kind; SKIP without Chrome)" node tests/today-questions-walk.js
 step "tests/chat-actions-walk.js (headless Chrome: chat actions and approvals in chat on the mock; SKIP without Chrome)" node tests/chat-actions-walk.js
 step "tests/chat-resilience-walk.js (console + mock station: a chat run survives a console restart and a reload; busy + restart-console.sh; leaked tool calls; page checks SKIP without Chrome)" node tests/chat-resilience-walk.js
+step "tests/chat-command-check-test.js (console + mock station: a reply that hands the owner a command goes back once; the second is delivered)" node tests/chat-command-check-test.js
+step "tests/chat-talk-check-test.js (console + mock station: the combined pre-delivery check at the owner's level: one recheck, masking at Plain, recording only, today's behaviour with no choice)" node tests/chat-talk-check-test.js
 step "tests/chat-refusal-test.js (console + mock station: a chat turn the first model refuses is answered by the next model, said in one plain line; every model refusing is reported plainly)" node tests/chat-refusal-test.js
 step "tests/meeting-walk.js (console + mock station: the meeting's turns as station runs, isTask/talk only, admit, refusal fallback, END to decisions, restart re-attach, halt, owner-only)" node tests/meeting-walk.js
 step "tests/huddle-walk.js (console + mock station: a live chat reply that asks a colleague brings them in, their turns as station runs, attach, owner messages to everyone, the owner's × closes it, the recap, live.json)" node tests/huddle-walk.js
