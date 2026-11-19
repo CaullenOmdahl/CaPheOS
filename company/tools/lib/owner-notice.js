@@ -29,6 +29,13 @@
  *     company day: every fyi row not folded yet becomes one message titled "What the crew did today". The dispatcher
  *     calls it every tick; `owner-inbox.js digest` runs it by hand (--force: ignore the hour, not the once-a-day rule).
  *   N.pending({ root? }) -> the fyi rows waiting for the next message (the console's Today card).
+ *   HOW THE OWNER WANTS TO HEAR (company/owner/talk.json, lib/talk.js; docs/TALK.md):
+ *     level plain: after the plain check, a lead that still has a lib/talk.js check problem (a command, a technical
+ *       word the card list does not carry) is masked, the original under `technical`.
+ *     often needed: fyi rows fold into ONE weekly summary instead (weeklyDay at the evening hour, owner-notices.json;
+ *       "What the crew did this week"); daily: the day's message, as before (also the reading with no talk.json);
+ *       asItHappens: each fyi also goes out at once as its own owner-channel message (the digest row is kept for
+ *       Today, marked sentNow, and never folded again). Urgent is always immediate.
  *   N.plain(text) -> { text, technical: [parts moved out] }
  *
  * State: company/state/owner-digest.json { foldedThrough: <iso of the newest folded row>, days: { <date>: {at, id, rows} } }.
@@ -43,7 +50,9 @@ const scope = require('./owner-scope');
 const KINDS = ['urgent', 'fyi'];
 const URGENT_REPEAT_MIN = 10;
 const MAX_WORDS = 40;
-const DEFAULTS = { eveningHour: 18, maxItems: 12, title: 'What the crew did today' };
+const DEFAULTS = { eveningHour: 18, maxItems: 12, title: 'What the crew did today', weeklyDay: 5, weeklyTitle: 'What the crew did this week' };
+// the owner's choice of how to hear from the crew (lib/talk.js); a broken or missing lib reads as today's behaviour
+const talkPrefs = r => { try { return require('./talk').prefs({ root: r }); } catch (_) { return { level: 'technical', often: 'daily', source: 'default' }; } };
 
 const rootOf = o => path.resolve((o && o.root) || co.ROOT);
 const isLive = o => rootOf(o) === path.resolve(co.ROOT);
@@ -66,10 +75,12 @@ function config(o) {
   const c = Object.assign({}, DEFAULTS, readJson(f.configDefault, {}) || {}, readJson(f.config, {}) || {});
   const h = Number(c.eveningHour); c.eveningHour = Number.isInteger(h) && h >= 0 && h <= 23 ? h : DEFAULTS.eveningHour;
   c.maxItems = Math.max(1, Number(c.maxItems) || DEFAULTS.maxItems);
+  const wd = Number(c.weeklyDay); c.weeklyDay = Number.isInteger(wd) && wd >= 0 && wd <= 6 ? wd : DEFAULTS.weeklyDay;
   return c;
 }
 const dayOf = ms => co.localParts(new Date(ms)).date;
 const hourOf = ms => co.localParts(new Date(ms)).hour;
+const weekdayOf = ms => new Date(dayOf(ms) + 'T12:00:00Z').getUTCDay();   // 0 Sunday … 6 Saturday, in the company's timezone
 
 /* ---- the plain check ---- */
 // owner-scope's jargon list, plus what only a notice carries: a colon reference (hiring:open:x), a command flag, a <placeholder>
@@ -172,7 +183,15 @@ function send(o, opts) {
   const tech = [].concat(p.technical, o.technical ? [String(o.technical).trim()] : []).filter(Boolean);
   // a notice with no plain sentence left still reaches the owner: a plain line by what it is about (urgentLead, fyiLead),
   // never filler and never nothing; the sender is recorded as a template to fix (company/state/owner-notice-lint.jsonl)
-  const lead = properNames(p.text || (kind === 'urgent' ? urgentLead(from, raw) : fyiLead(from, raw, o.asks === true)), f.root);
+  let lead = properNames(p.text || (kind === 'urgent' ? urgentLead(from, raw) : fyiLead(from, raw, o.asks === true)), f.root);
+  // a Plain owner (lib/talk.js): what the plain check let through but the talk check does not is masked, kept under technical
+  const tp = talkPrefs(f.root);
+  if (tp.level === 'plain') {
+    try {
+      const T = require('./talk');
+      if (!T.check(lead, 'plain', 'full').ok) { const mk = T.mask(lead); if (mk.text) { lead = mk.text; tech.push(...mk.technical); } }
+    } catch (_) {}
+  }
   const key = String(o.key || keyOf(from, p.text ? lead : raw));
   const day = dayOf(now);
   const seen = kind === 'urgent'
@@ -199,9 +218,16 @@ function send(o, opts) {
   if (o.asks === true) row.asks = true;
   // action: a console control the owner can use on this line (only the kinds the console knows; Today draws the button)
   if (o.action && ACTIONS[o.action.kind] && ACTIONS[o.action.kind](o.action)) row.action = JSON.parse(JSON.stringify(o.action));
+  // as things happen (talk.json often asItHappens): the line goes out now as its own message; the digest row stays for
+  // Today, marked sentNow so no later message folds it again
+  let now1 = null;
+  if (tp.often === 'asItHappens') {
+    now1 = oi.send({ from, text: row.text, technical: row.technical, key, day, kind: 'fyi', re: o.re, dir: f.ownerDir, at: now });
+    row.sentNow = now1.id;
+  }
   fs.mkdirSync(path.dirname(f.digest), { recursive: true });
   fs.appendFileSync(f.digest, JSON.stringify(row) + '\n');
-  return { sent: 'digest', row };
+  return now1 ? { sent: 'outbound', row: now1, digestRow: row } : { sent: 'digest', row };
 }
 
 // the console controls a day-message line may carry (console/owner-needs.js digest and Today draw them)
@@ -215,7 +241,7 @@ function state(o) { const s = readJson(files(o).state, {}) || {}; s.days = s.day
 /* pending(o) — the fyi rows not folded into a daily message yet, oldest first */
 function pending(o) {
   const s = state(o); const cut = s.foldedThrough ? Date.parse(s.foldedThrough) : -Infinity;
-  return readRows(files(o).digest).filter(r => r.kind === 'fyi' && Date.parse(r.at) > cut).sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  return readRows(files(o).digest).filter(r => r.kind === 'fyi' && !r.sentNow && Date.parse(r.at) > cut).sort((a, b) => String(a.at).localeCompare(String(b.at)));
 }
 /* the one plain message for a day's rows: what each crew member did, in their own (already plain) sentence */
 function compose(rows, c) {
@@ -236,17 +262,26 @@ function digest(o) {
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const c = config(o); const f = files(o); const s = state(o); const day = dayOf(now);
   if (s.days[day]) return { sent: false, why: 'already sent today (' + s.days[day].at + ')' };
+  // only when they need you (talk.json often needed): one summary a week, on weeklyDay at the evening hour
+  const weekly = talkPrefs(f.root).often === 'needed';
+  if (weekly) {
+    const last = s.lastWeekly ? Date.parse(s.lastWeekly) : NaN;
+    if (Number.isFinite(last) && now - last < 6 * 86400e3) return { sent: false, why: 'the weekly summary went out on ' + dayOf(last) };
+    if (!o.force && weekdayOf(now) !== c.weeklyDay) return { sent: false, why: 'the owner hears only when needed, plus a weekly summary (day ' + c.weeklyDay + ')' };
+  }
   if (!o.force && hourOf(now) < c.eveningHour) return { sent: false, why: 'before the evening hour (' + c.eveningHour + ')' };
   const rows = pending(o).filter(r => Date.parse(r.at) <= now);
   if (!rows.length) return { sent: false, why: 'nothing to tell' };
-  const m = compose(rows, c);
+  const cc = weekly ? Object.assign({}, c, { title: c.weeklyTitle || DEFAULTS.weeklyTitle, maxItems: c.maxItems * 2 }) : c;
+  const m = compose(rows, cc);
   if (!m) return { sent: false, why: 'nothing to tell' };
   if (o.dry) return { sent: false, why: 'dry run', text: m.text, folded: rows.length };
   const oi = require('../owner-inbox.js');
-  const row = oi.send({ from: 'The crew', text: m.text, technical: m.technical || undefined, kind: 'digest', title: c.title, day,
-    folds: rows.length, key: 'digest:' + day, dir: f.ownerDir });
+  const row = oi.send({ from: 'The crew', text: m.text, technical: m.technical || undefined, kind: 'digest', title: cc.title, day,
+    folds: rows.length, key: (weekly ? 'weekly:' : 'digest:') + day, dir: f.ownerDir });
   s.foldedThrough = rows[rows.length - 1].at;
   s.days[day] = { at: new Date(now).toISOString(), id: row.id, rows: rows.length };
+  if (weekly) { s.lastWeekly = new Date(now).toISOString(); s.days[day].weekly = true; }
   const keys = Object.keys(s.days).sort(); while (keys.length > 60) delete s.days[keys.shift()];   // the file stays small
   fs.mkdirSync(path.dirname(f.state), { recursive: true });
   const tmp = f.state + '.tmp-' + process.pid; fs.writeFileSync(tmp, JSON.stringify(s, null, 1) + '\n'); fs.renameSync(tmp, f.state);

@@ -1,6 +1,8 @@
 {
-  "_doc": "How the company tells the owner things (company/tools/lib/owner-notice.js; copied to company/work/ops/owner-notices.json at founding, where the owner may change it). Urgent notices (the company stopped or cannot work, money or an account is needed now, a security event, the CEO's own reply) go out at once; every other notice waits for ONE plain message a day. eveningHour = the hour (0-23, company timezone) from which that day's message is sent, once; maxItems = how many things it lists before it says 'and N smaller things'; title = its first line.",
+  "_doc": "How the company tells the owner things (company/tools/lib/owner-notice.js; copied to company/work/ops/owner-notices.json at founding, where the owner may change it). Urgent notices (the company stopped or cannot work, money or an account is needed now, a security event, the CEO's own reply) go out at once; every other notice waits for ONE plain message a day. eveningHour = the hour (0-23, company timezone) from which that day's message is sent, once; maxItems = how many things it lists before it says 'and N smaller things'; title = its first line. When the owner chose to hear only when needed (company/owner/talk.json often: needed, docs/TALK.md), the notices fold into one weekly summary instead: weeklyDay = the day it goes (0 Sunday … 6 Saturday, company timezone, at eveningHour), weeklyTitle = its first line.",
   "eveningHour": 18,
   "maxItems": 12,
-  "title": "What the crew did today"
+  "title": "What the crew did today",
+  "weeklyDay": 5,
+  "weeklyTitle": "What the crew did this week"
 }
