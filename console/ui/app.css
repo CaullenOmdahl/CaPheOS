@@ -621,3 +621,9 @@ kbd { display: inline-block; min-width: 1.6em; padding: 2px 6px; border: 1px sol
   .comms .chat-scroll > .chat-body, .comms .chat > .chat-body { padding-bottom: 128px; }
   .comms .chat-jump { bottom: 118px; }
 }
+@media (min-width: 861px) {
+  /* folded: the station shows only its status dot (the word on hover), the halt icon under it */
+  .side-rail .side .station-box > .between-c { justify-content: center; }
+  .side-rail .side .station-box .tag { font-size: 0; gap: 0; padding: 6px; background: transparent; }
+  .side-rail .side .station-box .tag-dot { width: 10px; height: 10px; }
+}

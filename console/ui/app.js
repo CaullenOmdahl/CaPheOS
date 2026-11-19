@@ -85,7 +85,7 @@ function buildSidebar() {
     companyGroup,
     h('div', { class: 'nav-group nav-bottom' }, navItem(['settings', 'Settings'])),
     h('div', { class: 'station-box' },
-      h('div', { class: 'between-c' }, h('span', { class: 'label strong' }, 'Station'), stationTag),
+      h('div', { class: 'between-c', title: 'Station' }, h('span', { class: 'label strong' }, 'Station'), stationTag),
       stationLine,
       h('div', { class: 'halt-btns' },
         h('a', { href: '#/halt?mode=soft', class: 'halt-soft' }, 'Soft halt'),
