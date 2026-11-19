@@ -1,10 +1,11 @@
 // Crew (#/crew): People (who holds each function, the seats, one seat's dossier), Hiring and, when the station has a
-// floor plan, Floor. Routes: #/crew, #/crew/<seat id>[/model], #/crew/hiring, #/crew/floor.
+// floor plan, Floor. Routes: #/crew, #/crew/<seat id>[/model|/profile], #/crew/hiring, #/crew/floor.
 import { h, fill, Button, Tag, errLine, empty, tabs, screenHead, initial, statusOf, Details, when } from '../ui.js';
 import { api } from '../api.js';
 import * as events from '../events.js';
 import { mountPanels } from '../panels.js';
 import { modelPanel } from './crew-model.js';
+import { profilePanel } from './crew-profile.js';
 import { departmentsSection } from './crew-departments.js';
 import { personName, seatState, modelName, providerName } from '../plain.js';
 import * as hiring from './hiring.js';
@@ -50,7 +51,7 @@ export async function render(root, ctx) {
 /* ---------- People ---------- */
 function people(root, ctx) {
   const { app } = ctx;
-  let selId = ctx.rest[0] || null, tab = ctx.rest[1] === 'model' ? 'model' : 'brief';
+  let selId = ctx.rest[0] || null, tab = ctx.rest[1] === 'model' ? 'model' : ctx.rest[1] === 'profile' ? 'profile' : 'brief';
   const fnHost = h('div'), listHost = h('div', { style: 'flex:1 1 320px;display:flex;flex-direction:column;border-top:1px solid var(--border-hairline)' }),
     dossier = h('article', { 'aria-labelledby': 'dossier', class: 'card p28', style: 'flex:2 1 480px;min-width:0;gap:24px' }), errEl = h('div'), side = h('div', { class: 'stack-16' }),
     deptHost = h('section', { 'aria-labelledby': 'depts', class: 'stack-16', hidden: true });
@@ -58,7 +59,7 @@ function people(root, ctx) {
     h('section', { 'aria-labelledby': 'fn', class: 'stack-16' }, h('h2', { id: 'fn', class: 'h4' }, 'Who holds each function'), fnHost),
     deptHost,
     h('section', { style: 'display:flex;flex-wrap:wrap;gap:32px' }, listHost, dossier), side);
-  let data = null, modelView = null;
+  let data = null, modelView = null, profileView = null;
 
   async function load() {
     try { data = await api('/crew'); fill(errEl, data.station === 'down' ? h('p', { class: 'err-line' }, 'The station is not running, so live status is unavailable.') : null); }
@@ -78,7 +79,7 @@ function people(root, ctx) {
       const st = s.station || {}; const run = now && (now.runs || []).find(r => r.agentId === s.id); const nx = now && (now.seats || []).find(x => x.id === s.id);
       const ss = seatState({ run, seat: nx, station: st, stationDown: data.station === 'down', isCeo: s.id === ceo });
       const state = ss.word;
-      return h('button', { type: 'button', class: 'crew-item', 'data-seat': s.id, 'aria-current': s.id === selId ? 'true' : 'false', onclick: () => { selId = s.id; history.replaceState(null, '', '#/crew/' + encodeURIComponent(s.id) + (tab === 'model' ? '/model' : '')); load(); } },
+      return h('button', { type: 'button', class: 'crew-item', 'data-seat': s.id, 'aria-current': s.id === selId ? 'true' : 'false', onclick: () => { selId = s.id; history.replaceState(null, '', '#/crew/' + encodeURIComponent(s.id) + (tab !== 'brief' ? '/' + tab : '')); load(); } },
         h('span', { class: 'avatar lg', 'aria-hidden': 'true' }, initial(s.name)),
         h('span', { class: 'stack-4', style: 'gap:3px;min-width:0' }, h('span', { class: 'label strong' }, s.name || s.id),
           h('span', { class: 'body-s muted' }, (s.title || '') + ' · reports to ' + (s.manager ? nameOf(seats, s.manager) : 'you')),
@@ -97,12 +98,12 @@ function people(root, ctx) {
   }
 
   function drawDossier(s, seats) {
-    const defs = [['brief', 'Brief'], ['model', 'Model']];
+    const defs = [['brief', 'Brief'], ['profile', 'Profile'], ['model', 'Model']];
     const st = s.station || {};
     const tabHost = h('div');
     const pane = h('div', { class: 'stack-24' });
     const drawPane = () => {
-      fill(tabHost, tabs(defs, tab, id => { tab = id; history.replaceState(null, '', '#/crew/' + encodeURIComponent(s.id) + (id === 'model' ? '/model' : '')); drawPane(); }, 'Dossier'));
+      fill(tabHost, tabs(defs, tab, id => { tab = id; history.replaceState(null, '', '#/crew/' + encodeURIComponent(s.id) + (id === 'brief' ? '' : '/' + id)); drawPane(); }, 'Dossier'));
       if (tab === 'brief') fill(pane,
         h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:24px' },
           kv('Functions', (s.functions || []).map(f => FN_LABEL[f] || f).join(', ') || 'None'),
@@ -118,6 +119,11 @@ function people(root, ctx) {
           s.inbox ? [h('dt', null, 'Handoff inbox'), h('dd', { class: 'mono-s' }, s.inbox)] : null,
           s.log ? [h('dt', null, 'Work log'), h('dd', { class: 'mono-s' }, s.log)] : null,
           s.loop ? [h('dt', null, 'Routine'), h('dd', { class: 'mono-s' }, s.loop)] : null)));
+      else if (tab === 'profile') {
+        // kept across the crew screen's live reloads, so an edit in progress is not wiped
+        if (!profileView || profileView.id !== s.id) { profileView = { id: s.id, el: h('div') }; profilePanel(profileView.el, s.id); }
+        fill(pane, profileView.el);
+      }
       else {
         // kept across the crew screen's live reloads, so a choice being made in the picker is not wiped
         if (!modelView || modelView.id !== s.id) { modelView = { id: s.id, el: h('div') }; modelPanel(modelView.el, s.id); }

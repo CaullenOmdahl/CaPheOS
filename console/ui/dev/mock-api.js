@@ -408,6 +408,37 @@ async function apiRoute(req, res, p, q) {
     else sv.state = svm[2] === 'stop' ? 'stopped' : sv.kind === 'timer' ? 'scheduled' : 'running';
     emit('services'); return ok({ name: sv.name, done: svm[2] });
   }
+  // full profiles (Crew › <person> › Profile): console/profile.js -> company/tools/profile.js (docs/PROFILES.md); the
+  // preview is the real lib/profile.js block of the fixture
+  if (p.startsWith('/api/profile')) {
+    const PL = require('../../../company/tools/lib/profile.js');
+    if (!S.profiles) {
+      const b = PL.blank('agent', { name: 'Founder', title: 'Founder' });
+      Object.assign(b.identity, { archetype: 'lead', background: 'Started the company to see whether a small crew could run a shop on its own.', stake: 'Their name is on the company.' });
+      b.temperament = { risk: 2, pace: 3, rigour: 3, candour: 3, independence: 4, changesMind: 'A number from a test the crew ran.' };
+      b.convictions = ['A decision written down beats a perfect one in your head.']; b.counterpart = { seat: 'people1', signOff: ['plan', 'commit'], why: 'Mira asks who pays for a long plan.' };
+      b.examples = [{ with: 'owner', they: 'Can we go faster?', you: 'Yes, on the small things. The launch stays on Friday so we can check it.', pushback: true }, { with: 'people1', they: 'We need two more people.', you: 'Show me the work that is waiting, then we decide.', pushback: true }, { with: 'tools1', they: 'It is done.', you: 'Good. What did the test say?' }];
+      b.voice = { preset: 'composed', words: 'Short sentences; decides out loud.', toOwner: 'Plain and brief.', avoid: [] };
+      b.version = 3; b.hash = PL.hashOf(b);
+      S.profiles = { agent: b, proposals: [{ id: 'pp-0a1b2c3d', seat: 'agent', by: 'people1', kind: 'experience', status: 'open', why: 'the first launch', changes: { '/experiences/-': { at: '2026-11-18', text: 'The first launch slipped a day and taught them to check the payment page first', addedBy: 'Mira' } } }] };
+    }
+    const crewNames = [{ id: 'people1', name: 'Mira' }, { id: 'tools1', name: 'Teo' }];
+    const view = () => { const pr = S.profiles.agent; const crew = { agent: { name: 'Founder' }, people1: { name: 'Mira' }, tools1: { name: 'Teo' } };
+      return { ok: true, seat: 'agent', profile: pr, history: [{ at: '2026-11-18T09:00:00Z', version: 3, by: 'You', op: 'edit', kind: 'voice', why: null }, { at: '2026-11-17T09:00:00Z', version: 2, by: 'Mira', op: 'proposal-apply', kind: 'experience', why: 'the first week' }, { at: '2026-11-16T09:00:00Z', version: 1, by: 'The crew', op: 'edit', kind: 'content', why: 'built from the charter' }],
+        proposals: S.profiles.proposals.filter(x => x.status === 'open'), preview: { block: PL.block(pr, { crew }), reminder: PL.reminder(pr, { crew }), example: { who: 'You', they: pr.examples[0].they, you: pr.examples[0].you, pushback: true, name: 'Founder' } },
+        words: { counterpart: '**Who checks Founder:** Mira. Before Founder can **start a plan longer than three days** or **commit someone else\'s time**, Mira has to agree.', model: 'Runs on: the everyday setup', boundaries: PL.FIXED_BOUNDARIES.map(x => x.plain), family: [],
+          proposals: S.profiles.proposals.filter(x => x.status === 'open').map(x => ({ id: x.id, kind: x.kind, text: 'Mira suggests adding to Founder\'s experience: \'' + x.changes['/experiences/-'].text + '.\' Add it · Not this one · Try it.' })) },
+        policy: { inject: 'profile', pov: true, signoff: { mode: 'live' } }, temperament: PL.temperament(), signoffKinds: Object.fromEntries(Object.entries(PL.SIGNOFF_KINDS).map(([k, v]) => [k, v.owner])), crew: crewNames, check: { ok: true, problems: [], notes: [] } }; };
+    if (M === 'GET' && p === '/api/profile/presets') return ok({ presets: PL.presets() });
+    if (M === 'GET' && p === '/api/profile/agent') return ok(view());
+    if (M === 'POST' && p === '/api/profile/agent/preview') return ok(view().preview);
+    const ppm = p.match(/^\/api\/profile\/proposals\/(pp-[0-9a-f]{8})\/(apply|decline|try)$/);
+    if (M === 'POST' && ppm) { const x = S.profiles.proposals.find(y => y.id === ppm[1]); if (!x) return J(res, 400, { ok: false, error: 'no proposal' }); x.status = ppm[2] === 'decline' ? 'declined' : 'applied'; if (ppm[2] !== 'decline') S.profiles.agent.experiences = (S.profiles.agent.experiences || []).concat([x.changes['/experiences/-']]); emit('crew'); return ok({}); }
+    if (M === 'POST' && p === '/api/profile/agent') { if (Number(B.base) !== S.profiles.agent.version) return J(res, 409, { ok: false, error: 'Someone changed this profile while you were editing it. Reload to see the latest version, then make your change again.' }); for (const [k, v] of Object.entries(B.set || {})) { const t = k.slice(1).split('/'); let o = S.profiles.agent; for (const x of t.slice(0, -1)) o = o[x] = o[x] || {}; o[t[t.length - 1]] = v; } S.profiles.agent.version++; return ok({ version: S.profiles.agent.version }); }
+    if (M === 'POST' && /^\/api\/profile\/agent\/(try|undo|trial\/keep|trial\/stop|migrate)$/.test(p)) { S.profiles.agent.version++; return ok({ version: S.profiles.agent.version }); }
+    if (M === 'POST' && p === '/api/profile/policy') return ok({ policy: { inject: B.inject } });
+    if (M === 'GET') return ok({ seat: p.split('/').pop(), profile: null, name: p.split('/').pop(), canMigrate: true, policy: { inject: 'charter' } });
+  }
   // departments and the lead's advice (Crew › People › Departments): console/departments.js -> company/tools/departments.js,
   // consult.js status (docs/DEPARTMENTS.md §5)
   if (!S.departments) S.departments = { exists: true, unassigned: [{ id: 'agent', name: 'Founder', isCeo: true }, { id: 'people1', name: 'Mira', isCeo: false }], drift: { ok: true, mismatches: [], notes: [] }, proposals: [],

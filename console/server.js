@@ -606,7 +606,9 @@ async function meetingEfforts(provider, model) {
 // model picked for everyone still meets the $0 cap on a metered model (modelHold) and the station's override list
 const MEET_DEPS = { co, HttpError, owner: () => OWNER, emit: t => emit(t), stationPost, runs: CHAT.runs, effortsFor: meetingEfforts,
   modelHold: (id, m) => { const h = CHAT.meteredHold(CHAT.seatOf(id), m); return h ? h.message : null; },
-  run: (name, args) => run(name, args, { timeout: 30000 }), modelFor: meetingModel, seatJobs: id => meetJobs.jobs.filter(j => j && j.agentId === id).map(j => j.id),
+  run: (name, args) => run(name, args, { timeout: 30000 }), modelFor: meetingModel,
+  // full profiles (docs/PROFILES.md): each seat's profile block after the table's rules, when the company injects profiles
+  seatVoice: id => { try { return require(path.join(TOOLS, 'lib', 'profile.js')).voiceFor(id, { root: co.ROOT }); } catch (_) { return ''; } }, seatJobs: id => meetJobs.jobs.filter(j => j && j.agentId === id).map(j => j.id),
   // a seat mid-routine speaks talk only that turn (the station's routines, read fresh: a turn never doubles a running loop's hold on the folder)
   seatBusy: async id => { const cr = await stationGet('cron', 3000); const jobs = cr.ok && cr.data && Array.isArray(cr.data.jobs) ? cr.data.jobs : []; return jobs.some(j => j && j.agentId === id && j.noAgent !== true && (j.inFlight || j.state === 'running')); } };
 const MEET = require(path.join(__dirname, 'meeting.js'))(MEET_DEPS);
@@ -875,6 +877,7 @@ for (const [mth, re, fn] of SETUP.routes) route(mth, re, fn);
 require(path.join(__dirname, 'models.js')).mount(route, { co, runApi, stationGet, bad, owner: () => OWNER });   // per-seat model chains (console/models.js)
 require(path.join(__dirname, 'departments.js')).mount(route, { runApi, bad, owner: () => OWNER });   // departments, leads, members (console/departments.js)
 require(path.join(__dirname, 'routing.js')).mount(route, { runApi, bad, owner: () => OWNER });   // routing modes and trials (console/routing.js)
+require(path.join(__dirname, 'profile.js')).mount(route, { run, runApi, bad, HttpError, owner: () => OWNER });   // Crew › Profile (console/profile.js)
 // the owner's server chores without a terminal: flags, scheduler, services, modules, restarts, framework update, access
 const OPS = require(path.join(__dirname, 'owner-ops.js')).mount(route, { co, run, runApi, bad, owner: () => OWNER, tool, busy: () => CHAT.runs.busy(), emit: t => emit(t) });
 route('GET', /^\/api\/locked$/, () => runApi('locked-watch.js', ['status']));

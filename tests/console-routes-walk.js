@@ -47,7 +47,7 @@ const REDIRECTS = [
   ['#/setup/budget', '#/settings/models/budget'], ['#/setup/guard', '#/settings/autonomy/guardrails'], ['#/setup/certify', '#/settings/company/certify'],
 ];
 // every owner-facing screen (the halt screen included)
-const SCREENS = ['#/today', '#/chat/owner', '#/chat/agent:agent', '#/chat/group:g1', '#/crew', '#/crew/agent/model', '#/crew/hiring', '#/crew/floor', '#/work/quests', '#/work/handoffs', '#/work/decisions', '#/work/projects',
+const SCREENS = ['#/today', '#/chat/owner', '#/chat/agent:agent', '#/chat/group:g1', '#/crew', '#/crew/agent/model', '#/crew/agent/profile', '#/crew/hiring', '#/crew/floor', '#/work/quests', '#/work/handoffs', '#/work/decisions', '#/work/projects',
   '#/spend', '#/settings/company', '#/settings/autonomy', '#/settings/tempo', '#/settings/models', '#/settings/connections', '#/settings/pages', '#/settings/system', '#/halt'];
 // file paths, tool names, API routes, and the raw ids, tags and counters the owner should never read outside Details:
 // question ids, candidate seat ids, governance/pacing tags, tool-call markup, lane counters, the pacer's jargon
