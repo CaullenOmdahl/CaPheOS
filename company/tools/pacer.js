@@ -10,8 +10,11 @@
  *    emergency ceiling; nothing passes the subscription's hard weekly stop (weekCloseAtUsedPct).
  *  - The Claude meter is the whole account (any other use of it counts), so routines get Claude only while the meter
  *    is under the line. Of the station's reading and an optional status-line feed, the highest fresh reading for the
- *    current week is used; a stale reading is unknown, and unknown means closed. A usage-limit error closes Claude
- *    until the window that ran out resets (5 hours when the meters do not say which).
+ *    current week is used; a stale reading is unknown, and unknown means closed. So that this never deadlocks (closed,
+ *    so no Claude run, so no new reading), a stale meter is refreshed by the pacer itself: one tiny internal check run on
+ *    the cheapest Claude model, at most once per staleAfterMin (claude.meterCheck; `pacer.js meter-check`, docs/BUDGET.md).
+ *    A usage-limit error closes Claude until the window that ran out resets (5 hours when the meters do not say which).
+ *    The overage window (seven_day_overage_included "rejected": extra usage off) never closes Claude.
  *  - MiniMax closes on its own limits (5-hour window, week); Claude also when its 5-hour window is too far used or the
  *    account answers "rejected". Once closed, a subscription reopens only reopenBandPct under the line (no flapping).
  *  - Routines run on Haiku or Sonnet at most, never Opus or Fable. Each routine names a scope in
@@ -41,6 +44,7 @@
  *   node company/tools/pacer.js restore             put every routine the pacer moved back on its earlier model and lift its pauses
  *   node company/tools/pacer.js emergency on --why "..." --by <name> --hours 4     (emergency.allowedBy; at most maxHours)
  *   node company/tools/pacer.js emergency off --by <name> [--why "..."]
+ *   node company/tools/pacer.js meter-check [--at <ms>]  run the pending Claude meter check (a tick starts it detached)
  *   node company/tools/pacer.js limits [--json]     per subscription: usage, reset, weekly stop, use-now, affected seats
  *   node company/tools/pacer.js limit claude|minimax [--week-stop N] [--use-now N] --by <name> --why "..."
  *        the recorded way to set a subscription cutoff (provenance, changes[], dispatch log): the owner always; the CEO or
@@ -89,6 +93,8 @@ const REL = {
   ledger: '.starnet-data/workspaces/ledger.jsonl',
   knobs: '.starnet-data/workspaces/runtime.knobs.json',
   token: 'secrets/station-token',
+  meterCheck: 'company/state/claude-meter-check.json',
+  halt: 'company/state/halt.json',
 };
 // Used when company/work/finance/pacing-policy.json is missing or a number in it is unusable. A missing file means shadow.
 const DEFAULTS = {
@@ -97,7 +103,10 @@ const DEFAULTS = {
   marginPct: 1,
   reopenBandPct: 1,
   shareOfAccount: 1,
-  claude: { feedFile: '', staleAfterMin: 90, fiveHourCloseAtUsedPct: 70 },
+  // meterCheck: when the Claude reading goes stale, one tiny internal run (cheapest model, a few words, no tools) makes
+  // the station read the meter again, at most once per staleAfterMin; without it a stale meter closed Claude, nothing
+  // could start, and nothing refreshed it (2026-11-19: 8 hours closed in both companies until the owner reopened it)
+  claude: { feedFile: '', staleAfterMin: 90, fiveHourCloseAtUsedPct: 70, meterCheck: { enabled: true, model: '', timeoutSec: 180 } },
   // url '' = from the company's MiniMax endpoint (company.json providers.minimax, lib/minimax-endpoint.js)
   minimax: { url: '', modelName: 'general', pollEveryMin: 10, staleAfterMin: 45, fiveHourCloseBelowLeftPct: 20 },
   emergency: { ceilingPct: 90, maxHours: 12, allowedBy: ['ceo', 'risk'], autoOnSerious: true, autoHours: 6 },
@@ -195,6 +204,11 @@ function loadPolicy(root, override) {
   p.reopenBandPct = numOr(p.reopenBandPct, 1, 0, 20);
   p.claude.staleAfterMin = numOr(p.claude.staleAfterMin, 90, 1, 24 * 60);
   p.claude.fiveHourCloseAtUsedPct = numOr(p.claude.fiveHourCloseAtUsedPct, 70, 0, 100);
+  // the stale-meter check (meterCheck): on unless set false; the model is the routing table's cheapest Claude (haiku)
+  const mcIn = p.claude.meterCheck === false ? { enabled: false } : isObj(p.claude.meterCheck) ? p.claude.meterCheck : {};
+  let mcModel = typeof mcIn.model === 'string' && mcIn.model.trim() ? mcIn.model.trim() : '';
+  if (!mcModel) { try { const rm = ((readJson(path.join(root, REL.modelPolicy), {}) || {}).routing || {}).models || {}; if (rm.haiku && rm.haiku.provider === 'claude-cli' && rm.haiku.model) mcModel = String(rm.haiku.model); } catch (_) {} }
+  p.claude.meterCheck = { enabled: mcIn.enabled !== false, model: mcModel || 'haiku', timeoutSec: numOr(mcIn.timeoutSec, 180, 30, 900) };
   // the usage URL follows the company's MiniMax region unless pacing-policy.json names its own (not a built-in default)
   const mmUse = MME.usageUrlFor(p.minimax.url, MME.read(root));
   p.minimax.url = mmUse.url; p.minimax.urlFrom = mmUse.from;
@@ -502,15 +516,33 @@ function makePacer(o) {
   // its session is idle and its numbers are frozen, so the newest reading can be an old, lower number. The weekly
   // meter only rises within a week, so the pacer also never reads lower than what it itself saw for this week within
   // the same freshness window. With no fresh reading, the newest is returned and gate() calls it unknown (closed).
+  // Which windows decide: the account's own week (seven_day) and 5-hour window (five_hour). A "rejected" there means
+  // runs are refused. An OVERAGE window (seven_day_overage_included, with overage.status "rejected" and a reason such
+  // as org_level_disabled: seen 2026-11-19 at 100% "rejected" while seven_day was 79% "allowed_warning") is the
+  // pay-as-you-go extra usage past the plan, which is switched off for the account: runs inside the plan still go on,
+  // so it never closes Claude. A per-model week (seven_day_opus, seven_day_sonnet) refuses only that model: it is shown,
+  // and a run it really refuses closes Claude through its usage-limit error, as any refused run does.
   function readClaude(t, st) {
     const cands = [];
     const subs = readJson(P('subs'), null);
     const prim = subs && subs.providers && subs.providers['claude-cli'] && subs.providers['claude-cli'].primary;
+    let notes = { overage: null, modelWeeks: [] };
     if (prim && Array.isArray(prim.windows)) {
       const w = prim.windows.find(x => x && x.id === 'seven_day'), fh = prim.windows.find(x => x && x.id === 'five_hour');
+      const ov = prim.windows.find(x => x && /overage/.test(String(x.id || '')));
+      if (ov || (prim.overage && prim.overage.status)) notes.overage = { status: String((ov && ov.status) || (prim.overage && prim.overage.status) || ''), why: String((prim.overage && prim.overage.why) || ''), using: !!(prim.overage && prim.overage.using) };
+      notes.modelWeeks = prim.windows.filter(x => x && /^seven_day_(?!overage)/.test(String(x.id || ''))).map(x => ({ id: String(x.id), model: String(x.id).replace(/^seven_day_/, ''), usedPct: Number.isFinite(Number(x.usedPct)) && x.usedPct != null ? Number(x.usedPct) : null, status: String(x.status || '') }));
+      const rejected = [w, fh].some(x => x && x.status === 'rejected');
       if (w && w.usedPct != null && Number.isFinite(Number(w.usedPct)))
-        cands.push({ source: 'station', at: Number(prim.seenAt) || 0, usedPct: Number(w.usedPct), resetsAt: toMs(w.resetsAt), status: w.status || null,
+        cands.push({ source: 'station', at: Number(prim.seenAt) || 0, usedPct: Number(w.usedPct), resetsAt: toMs(w.resetsAt), status: rejected ? 'rejected' : (w.status || null),
           fiveHour: fh && fh.usedPct != null && Number.isFinite(Number(fh.usedPct)) ? { usedPct: Number(fh.usedPct), resetsAt: toMs(fh.resetsAt) } : null });
+      else if (rejected && Number(prim.seenAt)) cands.push({ source: 'station', at: Number(prim.seenAt), usedPct: 100, resetsAt: toMs([w, fh].find(x => x && x.status === 'rejected').resetsAt), status: 'rejected', fiveHour: null });   // an older CLI: the binding window only, no number
+    }
+    // the pacer's own meter check (meterCheck) refused for usage IS a reading: the account said no at that time
+    const mc = readJson(P('meterCheck'), null);
+    if (mc && mc.status === 'done' && mc.outcome === 'usage-limit' && isNum(mc.endedAt) && !cands.some(c => c.at > mc.endedAt)) {
+      const prev = cands.slice().sort((a, b) => b.at - a.at)[0];
+      cands.push({ source: 'meter check', at: mc.endedAt, usedPct: prev ? Math.max(prev.usedPct, 0) : 100, resetsAt: prev && prev.resetsAt && prev.resetsAt > t ? prev.resetsAt : null, status: 'rejected', fiveHour: null });
     }
     const feed = feedFile ? readJson(feedFile, null) : null;
     const wk = feed && feed.seven_day;
@@ -543,7 +575,108 @@ function makePacer(o) {
     best.weekEnd = best.resetsAt || null;
     best.weekStart = best.resetsAt ? best.resetsAt - 7 * DAY : null;
     best.others = cands.filter(c => c.source !== best.source).map(c => ({ source: c.source, at: c.at, usedPct: c.usedPct }));
+    best.stale = !pool.length;
+    best.overage = notes.overage; best.modelWeeks = notes.modelWeeks;
     return best;
+  }
+
+  /* ---- the stale-meter check (claude.meterCheck) ---- */
+  // A stale Claude reading is unknown, and unknown is closed. Only a Claude run refreshes the meter (the station reads it
+  // off the run's rate_limit_event), and a closed Claude starts none: a deadlock until the owner reopened it (2026-11-19,
+  // 8 hours in both companies). So the pacer refreshes it itself: one internal run on the cheapest Claude model (a few
+  // words, no tools, not crew work: lib/admit.js door "pacer", stream pacer-meter-check), at most once per staleAfterMin,
+  // in a detached child (`pacer.js meter-check`) so a slow start never holds the dispatcher's tick. The next tick sees the
+  // fresh reading. While the check runs Claude stays closed; a check refused for usage is a reading ("rejected", readClaude).
+  const mcTimeoutMs = () => (policy.claude.meterCheck.timeoutSec + 60) * 1000;
+  const readMeterCheck = () => readJson(P('meterCheck'), null);
+  const meterCheckPending = (mc, t) => !!(mc && mc.status === 'pending' && isNum(mc.at) && t - mc.at < mcTimeoutMs());
+  function haltedHere() { const h = readJson(P('halt'), null); return h && (h.mode === 'soft' || h.mode === 'hard') ? h.mode : false; }
+  function probeSeat() { const crew = crewLoops(), ids = Object.keys(crew); return ids.find(id => co.holds(crew[id], 'ceo')) || ids.find(id => crew[id] && crew[id].manager == null) || 'agent'; }
+  async function claudeConnected() {
+    try {
+      const r = await call('GET', '/api/providers', null, 8000); const j = JSON.parse(r.body);
+      const list = Array.isArray(j && j.providers) ? j.providers : Object.values((j && j.providers) || {});
+      const c = list.find(x => x && x.id === 'claude-cli'); return !!(c && c.configured);
+    } catch (_) { return false; }
+  }
+  function meterCheckWords(mc, r) {
+    if (mc.outcome === 'usage-limit') return 'CLAUDE METER CHECK: Claude refused the check for usage at ' + hm(mc.endedAt) + ' (the account is at its limit); that counts as a reading, Claude stays closed, and the pacer checks again after ' + policy.claude.staleAfterMin + ' min';
+    if (mc.outcome === 'ok') return 'CLAUDE METER CHECK: Claude answered at ' + hm(mc.endedAt) + (r && !r.stale && r.at >= mc.at - MIN ? '; the meter reads ' + f1(r.usedPct) + '% of the week' : '; the station has no new meter reading from it, so Claude stays closed and the pacer checks again after ' + policy.claude.staleAfterMin + ' min');
+    return 'CLAUDE METER CHECK: the check sent at ' + hm(mc.at) + ' failed (' + (mc.why || 'no answer') + '); Claude stays closed and the pacer tries again after ' + policy.claude.staleAfterMin + ' min';
+  }
+  // the tick's part: say once what a finished check found, and start a new one when the meter is stale
+  async function meterCheckTick(st, t, r, allow) {
+    const mc = readMeterCheck();
+    const out = { pending: meterCheckPending(mc, t), last: mc || null, started: false };
+    if (!readOnly && !dry && mc && isNum(mc.at)) {
+      const mcs = st.meterCheck = Object.assign({}, st.meterCheck || {});
+      if (mcs.reported !== mc.at && mc.status === 'done') { mcs.reported = mc.at; note(meterCheckWords(mc, r)); journal('meter-check', { outcome: mc.outcome, runId: mc.runId || null, why: mc.why || null }); }
+      else if (mcs.reported !== mc.at && mc.status === 'pending' && !out.pending) { mcs.reported = mc.at; note('CLAUDE METER CHECK: the check sent at ' + hm(mc.at) + ' did not answer within ' + policy.claude.meterCheck.timeoutSec + ' s; Claude stays closed and the pacer tries again after ' + policy.claude.staleAfterMin + ' min'); }
+    }
+    if (!allow || !policy.claude.meterCheck.enabled || readOnly || dry) return out;
+    if (r && !r.stale) return out;                                                          // a fresh reading: nothing to check
+    if (out.pending) return out;                                                            // one check at a time
+    if (mc && isNum(mc.at) && t - mc.at < policy.claude.staleAfterMin * MIN) return out;    // at most once per staleAfterMin
+    const cl = st.closures && st.closures.claude; if (cl && cl.until > t) return out;       // closed by a real limit: its reset reopens it
+    const ro = st.reopened && st.reopened.claude; if (r && ro && Number(ro.at) > Number(r.at)) return out;   // the owner reopened it: runs refresh it
+    if (haltedHere()) return out;                                                           // a halt starts nothing, this neither
+    if (!r && !(await claudeConnected())) return out;                                       // never read: only with Claude signed in
+    const spec = { at: t, status: 'pending', model: policy.claude.meterCheck.model, seat: probeSeat(), why: r ? 'the last Claude reading is ' + age(r.at, t) + ' old' : 'there is no Claude reading yet' };
+    writeJsonAtomic(P('meterCheck'), spec);
+    note('CLAUDE METER CHECK: ' + spec.why + ', so the pacer sent Claude one tiny check (' + spec.model + ', a few words, no tools, not crew work) to read the meter again; Claude stays closed to routines until it answers');
+    journal('meter-check-start', { model: spec.model, seat: spec.seat, why: spec.why });
+    try { startMeterCheck(spec); out.started = true; out.pending = true; }
+    catch (e) { writeJsonAtomic(P('meterCheck'), Object.assign({}, spec, { status: 'done', endedAt: t, outcome: 'error', why: 'could not start the check: ' + String((e && e.message) || e).slice(0, 120) })); out.pending = false; }
+    out.last = readMeterCheck();
+    return out;
+  }
+  let meterCheckP = null;
+  function startMeterCheck(spec) {
+    if (typeof o.startMeterCheck === 'function') return o.startMeterCheck(spec);   // test seam
+    if (o.call) { meterCheckP = meterCheckRun(spec.at).catch(() => null); return; }  // a caller's own station function: in this process
+    const cp = require('child_process').spawn(process.execPath, [__filename, 'meter-check', '--at', String(spec.at)], { cwd: root, detached: true, stdio: 'ignore',
+      env: Object.assign({}, process.env, { CAPHEOS_ROOT: root }, o.host ? { STARNET_URL: o.host } : {}) });
+    cp.on('error', () => {});
+    cp.unref();
+  }
+  // the check itself (`pacer.js meter-check --at <ms>`, or in process): one internal talk-only run, its answer written to
+  // company/state/claude-meter-check.json. Runs only the pending check it was started for.
+  async function meterCheckRun(at) {
+    const spec = readMeterCheck();
+    if (!spec || spec.status !== 'pending' || (at && spec.at !== at)) return { skipped: true, why: 'no pending check' + (at ? ' sent at ' + at : '') };
+    const finish = res => {
+      const cur = readMeterCheck();
+      const done = Object.assign({}, spec, { status: 'done', endedAt: now() }, res);
+      if (!cur || cur.at === spec.at) writeJsonAtomic(P('meterCheck'), done);
+      return done;
+    };
+    const A = require('./lib/admit'), aOpts = { root, file: path.join(root, 'company', 'state', 'admit-log.jsonl') };
+    let tk = null; try { tk = A.admit({ door: 'pacer', kind: 'run', seat: spec.seat, provider: 'claude-cli', why: 'Claude meter check: ' + spec.why + ' (internal, a few words, not crew work)' }, aOpts); } catch (_) {}
+    const body = { agentId: spec.seat, provider: 'claude-cli', model: spec.model, internal: true, isTask: false, streamId: 'pacer-meter-check', reasoningEffort: 'low',
+      system: 'This is an automatic connection check. Reply with the single word OK and nothing else.', messages: [{ role: 'user', content: 'OK?' }] };
+    let r;
+    try { r = await call('POST', '/api/run', body, policy.claude.meterCheck.timeoutSec * 1000); }
+    catch (e) { try { A.started(tk, { status: 0 }, aOpts); } catch (_) {} return finish({ outcome: 'error', why: 'the station did not answer (' + String((e && e.message) || e).slice(0, 100) + ')' }); }
+    const txt = String((r && r.body) || '');
+    if (!r || r.status !== 200) {
+      try { A.started(tk, { status: r ? r.status : 0 }, aOpts); } catch (_) {}
+      return finish({ outcome: isUsageLimit({ error: txt }) ? 'usage-limit' : 'error', why: 'the station answered HTTP ' + (r ? r.status : 0) + (txt.trim() ? ': ' + txt.trim().slice(0, 120) : '') });
+    }
+    let runId = null, end = null, err = null;
+    for (const line of txt.split('\n')) {
+      if (!line.trim()) continue;
+      let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
+      const p = (ev && ev.payload) || {};
+      if (ev.name === 'agent.run.start' && !runId) runId = p.runId || null;
+      const mine = !runId || !p.runId || p.runId === runId;
+      if (ev.name === 'agent.run.error' && mine) err = { message: String(p.message || ''), failureCode: String(p.failureCode || '') };
+      if (ev.name === 'agent.run.end' && mine) end = p;
+    }
+    try { A.started(tk, { status: 200, runId }, aOpts); } catch (_) {}
+    const fc = String((end && end.failureCode) || (err && err.failureCode) || ''), msg = String((err && err.message) || (end && end.error) || '');
+    if (isUsageLimit({ failureCode: fc, error: msg })) return finish({ outcome: 'usage-limit', runId, why: (fc || 'usage limit') + (msg ? ': ' + msg.slice(0, 120) : '') });
+    if (end && (end.reason === 'done' || end.outcome === 'succeeded')) return finish({ outcome: 'ok', runId });
+    return finish({ outcome: 'error', runId, why: end ? 'the run ended ' + (end.reason || end.outcome || 'without a result') + (msg ? ': ' + msg.slice(0, 120) : '') : 'the run never ended' });
   }
 
   async function readMiniMax(st, t, allowFetch) {
@@ -837,6 +970,7 @@ function makePacer(o) {
     for (const k of Object.keys(st.keys)) if (k.startsWith('refire:') && !st.pendingRefires.some(p => 'refire:' + p.runId === k)) delete st.keys[k];
 
     const claudeR = readClaude(t, st);
+    const meterCheck = await meterCheckTick(st, t, claudeR, opts.fetch !== false);
     const mmR = await readMiniMax(st, t, opts.fetch !== false);
     const deepseek = await readDeepSeek(st, t, jobs, opts.fetch !== false);
     const rail = await readRail(st, t);
@@ -902,6 +1036,10 @@ function makePacer(o) {
       mmExtra.push('the 5-hour window has ' + f1(mmR.fiveHourLeftPct) + '% left (' + (mmR.fiveHourLeftPct <= 0 ? 'it is used up' : 'closes under ' + policy.minimax.fiveHourCloseBelowLeftPct + '%') + '); it resets ' + hm(mmR.fiveHourEnd));
     const claude = gate('claude', 'Claude Max', claudeR, t, em, st, claudeExtra);
     const minimax = gate('minimax', 'MiniMax', mmR, t, em, st, mmExtra);
+    if (!claude.known && !claude.open && meterCheck.pending && meterCheck.last) claude.why += '; a meter check is under way (sent ' + hm(meterCheck.last.at) + '), so it stays closed until it answers';
+    claude.meterCheck = meterCheck.last ? { at: meterCheck.last.at, status: meterCheck.last.status, outcome: meterCheck.last.outcome || null, endedAt: meterCheck.last.endedAt || null, why: meterCheck.last.why || null, pending: meterCheck.pending } : null;
+    claude.overage = claudeR ? claudeR.overage || null : null;
+    claude.modelWeeks = claudeR ? claudeR.modelWeeks || [] : [];
     // The spendCap guardrail (company/state/guardrails.json): while it is off, no pacing line or weekly stop holds a
     // subscription. A provider's own refusal (a usage-limit error, a closed 5-hour window, "rejected") still does: that is
     // the provider saying no, not the company's cap. Each change of state is logged once, with what would have happened.
@@ -1563,6 +1701,9 @@ function makePacer(o) {
       if (g.source) L.push('  reading: ' + g.source + ', ' + age(g.at, m.at) + ' old' + (g.picked ? ' (' + g.picked + ')' : '') + (g.raised ? '; raised from ' + f1(g.raised.from) + '% to the ' + f1(g.usedPct) + '% the pacer saw at ' + hm(g.raised.at) + ' (the weekly meter only rises)' : '')
         + (g.key === 'claude' && g.others && g.others.length ? '; also ' + g.others.map(o => o.source + ' ' + f1(o.usedPct) + '% (' + age(o.at, m.at) + ' old)').join(', ') : ''));
       if (g.key === 'claude') L.push('  5-hour window: ' + (g.fiveHour ? f1(g.fiveHour.usedPct) + '% used (closes at ' + policy.claude.fiveHourCloseAtUsedPct + '%)' : 'not reported'));
+      if (g.key === 'claude' && g.overage && g.overage.status === 'rejected') L.push('  extra usage past the plan: off' + (g.overage.why ? ' (' + g.overage.why + ')' : '') + '; runs inside the plan are not affected');
+      if (g.key === 'claude' && g.modelWeeks && g.modelWeeks.length) L.push('  per-model weeks: ' + g.modelWeeks.map(w => w.model + ' ' + (w.usedPct == null ? '?' : f1(w.usedPct) + '%') + (w.status === 'rejected' ? ' (refused: that model only)' : '')).join(', '));
+      if (g.key === 'claude' && g.meterCheck) L.push('  meter check: ' + (g.meterCheck.pending ? 'sent ' + hm(g.meterCheck.at) + ', waiting for the answer' : 'last sent ' + hm(g.meterCheck.at) + ', ' + (g.meterCheck.outcome === 'ok' ? 'answered' : g.meterCheck.outcome === 'usage-limit' ? 'refused for usage' : 'failed' + (g.meterCheck.why ? ' (' + g.meterCheck.why + ')' : ''))));
       if (g.key === 'minimax') L.push('  5-hour window: ' + (isNum(g.fiveHourLeftPct) ? f1(g.fiveHourLeftPct) + '% left, resets ' + hm(g.fiveHourEnd) : 'unknown') + (g.lastError ? '; last call: ' + g.lastError : ''));
     }
     L.push('');
@@ -1693,7 +1834,7 @@ function makePacer(o) {
   }
 
   return { policy, live, dry, readOnly, root, loadState, saveState, saveMiniMax, withLock, getJobs, measure, plan, apply, restore, hook, emergencyOn, emergencyOff, emergencyHousekeeping,
-    writeReport, statusText, planText, readClaude, readEmergency, readJournal };
+    writeReport, statusText, planText, readClaude, readEmergency, readJournal, meterCheckRun, meterCheckDone: () => meterCheckP };
 }
 
 /* ---------- the dispatcher hook: fail-safe ---------- */
@@ -1733,6 +1874,11 @@ async function cli(argv, o) {
   // MiniMax reading they may fetch is saved so the 10-minute call limit holds. apply and restore act, under the lock.
   const looking = cmd === 'status' || cmd === 'plan' || cmd === 'report' || cmd === 'limits';
   const pz = makePacer(Object.assign({}, o, { dry: false, readOnly: looking }));
+  if (cmd === 'meter-check') {
+    // meter-check [--at <ms>]: the pacer's own stale-meter check, started detached by a tick (meterCheckTick); runs the
+    // pending check once and writes its answer to company/state/claude-meter-check.json
+    const r = await pz.meterCheckRun(Number(a.at) || null); print(JSON.stringify(r)); return 0;
+  }
   const readJobs = async () => { try { return await pz.getJobs(); } catch (e) { print('(could not read routines from the station: ' + e.message + ')'); return []; } };
   if (looking) {
     const jobs = await readJobs();
@@ -1879,7 +2025,7 @@ async function cli(argv, o) {
     }
     print(JSON.stringify(r, null, 1)); return r.ok ? 0 : (r.code || 2);
   }
-  print('commands: status [--json], plan [--json], report, limits [--json], apply, restore, emergency on|off, mode live|shadow --by --why, limit claude|minimax --week-stop N --use-now N --by --why, unblock <seat|routine> --by owner [--why]');
+  print('commands: status [--json], plan [--json], report, limits [--json], apply, restore, meter-check, emergency on|off, mode live|shadow --by --why, limit claude|minimax --week-stop N --use-now N --by --why, unblock <seat|routine> --by owner [--why]');
   return 2;
 }
 

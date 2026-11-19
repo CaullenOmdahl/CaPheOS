@@ -9,7 +9,9 @@
  * read-only odds and ends (GET /api/version, with --caps a,b or POST /__caps {caps} for its capabilities; POST /__hold {names}
  * keeps a routine whose name contains one in flight on /api/cron/run until POST /__finish {id|name, status}, /api/cancel or
  * /api/halt; GET /api/providers from a provider map; POST /__providers {id: true|false} connects or
- * disconnects one, and POST /api/agent/model refuses a disconnected one as the station does). Every request needs header x-starnet-token (401 otherwise, like the station).
+ * disconnects one, and POST /api/agent/model refuses a disconnected one as the station does). A claude-cli POST /api/run
+ * reports usage windows as Claude Code does (POST /__claude-usage {windows, overage?, refuse?}; with --root it writes
+ * .starnet-data/workspaces/.usage/subscriptions.json; refuse:true = a usage-limit error); GET /__state .claudeRuns lists them. Every request needs header x-starnet-token (401 otherwise, like the station).
  * Restarts (scripts/restart-station.sh tests): POST /__live/end {runId} ends a POST /__live run normally (as it would finish
  * on its own); POST /__restart is the test's stand-in for `systemctl restart`: it records {at, inFlight: [runIds live or
  * leased at that moment]} in S.restarts (GET /__state), drops every in-flight run as a real restart would, and answers
@@ -70,6 +72,8 @@ const S = {
   roster: [],
   groups: [],
   providers: { deepseek: true },   // GET /api/providers; POST /__providers changes it (models.js failover tests)
+  claudeUsage: { windows: null, refuse: false },   // POST /__claude-usage: what a claude-cli run reports (pacer meter check)
+  claudeRuns: [],        // every claude-cli /api/run body's shape {at, agentId, model, internal, isTask, streamId}
   save: {
     revision: 1,
     doc: {
@@ -297,6 +301,21 @@ function handle(method, p, q, body, res) {
       tick();
       return 200;
     }
+    // a claude-cli run reports the account's usage windows, as Claude Code's rate_limit_event does; with --root the
+    // station's store is written (<root>/.starnet-data/workspaces/.usage/subscriptions.json, seenAt now). POST
+    // /__claude-usage {windows, refuse}: refuse:true answers the run with a usage-limit error (quota_exhausted).
+    if (B.provider === 'claude-cli') {
+      S.claudeRuns.push({ at: Date.now(), agentId: B.agentId, model: B.model, internal: B.internal === true, isTask: B.isTask === true, streamId: B.streamId || null, effort: B.reasoningEffort || null });
+      if (S.claudeUsage.refuse) return ndjson(res, [
+        { name: 'agent.run.start', payload: { runId, agentId: B.agentId } },
+        { name: 'agent.run.error', payload: { runId, message: 'Claude Code: You\'ve hit your weekly limit (usage_limit_reached)', failureCode: 'quota_exhausted' } },
+        { name: 'agent.run.end', payload: { runId, reason: 'error', outcome: 'failed', failureCode: 'quota_exhausted', usd: 0 } },
+      ]);
+      if (ROOT && Array.isArray(S.claudeUsage.windows)) {
+        const f = path.join(ROOT, '.starnet-data', 'workspaces', '.usage', 'subscriptions.json');
+        try { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify({ v: 1, providers: { 'claude-cli': { primary: Object.assign({ windows: S.claudeUsage.windows, seenAt: Date.now() }, S.claudeUsage.overage ? { overage: S.claudeUsage.overage } : {}) } } })); } catch (_) {}
+      }
+    }
     return ndjson(res, [
       { name: 'agent.run.start', payload: { runId, agentId: B.agentId } },
       { name: 'agent.token', payload: { runId, delta: CANNED } },
@@ -460,6 +479,7 @@ const server = http.createServer((req, res) => {
     // test seam: POST /__providers { "claude-cli": false, ... } connects or disconnects providers (GET /api/providers)
     if (u.pathname === '/__providers' && req.method === 'POST') { for (const [k, v] of Object.entries(body || {})) S.providers[k] = v === true; row.status = send(res, 200, { ok: true, providers: S.providers }); return logReq(row); }
     if (u.pathname === '/__meeting' && req.method === 'POST') { const b = body || {}; if (b.reset) S.meeting = { queues: {}, runs: [] }; for (const [k, v] of Object.entries(b.replies || {})) (S.meeting.queues[k] = S.meeting.queues[k] || []).push(...[].concat(v)); row.status = send(res, 200, { ok: true, queues: S.meeting.queues }); return logReq(row); }
+    if (u.pathname === '/__claude-usage' && req.method === 'POST') { const b = body || {}; S.claudeUsage = { windows: Array.isArray(b.windows) ? b.windows : null, refuse: b.refuse === true, overage: b.overage || null }; row.status = send(res, 200, { ok: true, claudeUsage: S.claudeUsage }); return logReq(row); }
     if (u.pathname === '/__hold' && req.method === 'POST') { S.holds = Array.isArray((body || {}).names) ? body.names.map(String) : []; row.status = send(res, 200, { ok: true, holds: S.holds }); return logReq(row); }
     if (u.pathname === '/__finish' && req.method === 'POST') { const jb = findJob((body || {}).id) || S.cron.jobs.find(x => x.inFlightRunId && (body || {}).name && x.name.includes(body.name)); finishHeld(jb, (body || {}).status); row.status = send(res, 200, { ok: !!jb }); return logReq(row); }
     // test seam: POST /__tick {now?, cronDue?:[jobId], only?:[jobId]} is one pass of the station's OWN scheduler: while it is armed and not

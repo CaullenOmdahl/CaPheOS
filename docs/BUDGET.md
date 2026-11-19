@@ -47,7 +47,7 @@ station actually started it (`started`, HTTP 200) or refused it.
 | `console` | a run or Run now you start from the console | always allowed, always counted |
 | `act` | an external-gate `spend` act, with its amount | the clearance row, as before |
 | `watchdog` | the station's one remaining routine (below) | starts nothing |
-| `halt`, `onboard`, `pacer` | a soft halt's shutdown routine, the kickoff run, a pacer re-fire after a refusal | their own rules |
+| `halt`, `onboard`, `pacer` | a soft halt's shutdown routine, the kickoff run, a pacer re-fire after a refusal, the pacer's Claude meter check (below) | their own rules |
 | `delegate` | **not a door either**: a child run a lead's `team.dispatch` started inside its own run (a row with `parentRunId`). The station starts it, so it never passes `admit()`; `budget.js doors` names it `delegate`, with its parent run, its lead and the door that started the family (`parentDoor`), and never counts it unattributed. | the lead's run's rules; its spend is the lead's (below) |
 | `schedule` | **not a door**: a run the station's own schedule started. No code calls it; `budget.js doors` names a run so when no admitted start explains it. With the dispatcher owning the schedule there should be none, and the budget-drift duty flags any. |
 
@@ -229,3 +229,42 @@ a wake writes one `wakes.jsonl` row with its items; `linkItems` reports the link
 - **Low balance**: below about 3 days of the last 7 days' use (at least $2, or ¥15), the owner is told once per drop
   (a notice with no amount), before calls fail with HTTP 402; the `provider-balance` duty routes it to the finance seat
   (again with no amount) while it lasts.
+
+## A stale Claude meter refreshes itself (2026-11-19)
+
+The pacer reads Claude's weekly meter from the station (`.starnet-data/workspaces/.usage/subscriptions.json`, written
+off every Claude run) or an optional status-line feed. A reading older than `claude.staleAfterMin` (90 min) is unknown,
+and unknown is closed. Before this fix that was a deadlock: Claude closed, so no Claude run started, so nothing read the
+meter again. On 2026-11-19 both companies sat 8 hours with every Claude seat on NO MODEL HOLD until the owner ran
+`pacer.js reopen claude`.
+
+Now the pacer gets out of it by itself (`pacing-policy.json` `claude.meterCheck`, on by default):
+
+- When the reading is stale (or there is none yet and Claude is signed in on the station), one dispatcher tick sends
+  Claude **one tiny check**: an internal, talk-only run on the cheapest Claude model in the routing table (`haiku`),
+  low effort, a one-line prompt and a one-word answer, no tools. It is not crew work: it goes through `admit()` at the
+  `pacer` door, on stream `pacer-meter-check`. The station reads the meter off it as off any run, and the next tick
+  sees a fresh reading.
+- **At most once per `staleAfterMin`**, one at a time, in a detached child (`pacer.js meter-check`) so it never holds the
+  tick. Not under a halt, not while a usage-limit closure still holds (its reset reopens Claude), not after the owner
+  reopened Claude (the runs refresh it), never from `status`/`plan` (they only look). It runs in shadow mode too: it
+  measures, it changes nothing.
+- **While it runs Claude stays closed** ("a meter check is under way"). A check **refused for usage** is a real reading:
+  "rejected" (source `meter check`), Claude stays closed, and it is checked again after `staleAfterMin`. A check that
+  fails another way or never answers (`timeoutSec`, 180) is said once and tried again after `staleAfterMin`.
+- Every step is one plain line in the dispatch log (`PACE CLAUDE METER CHECK: ...`); the answer is in
+  `company/state/claude-meter-check.json`; `pacer.js status` shows the last check.
+- `claude.meterCheck: { "enabled": false }` turns it off; `model` names another model; `timeoutSec` 30 to 900.
+
+Which Claude windows close it: the week (`seven_day`) and the 5-hour window answering "rejected". The window
+`seven_day_overage_included` at 100% "rejected", with `overage.status` "rejected" and a reason such as
+`org_level_disabled` (what both companies showed on 2026-11-19, next to the week at 79% "allowed_warning"), is the
+pay-as-you-go **extra usage past the plan**, switched off for the account. It refuses no model and no run inside the
+plan, so it never closes Claude; `pacer.js status` shows "extra usage past the plan: off". A per-model week
+(`seven_day_opus`, `seven_day_sonnet`) "rejected" refuses only that model: it is shown, and a run it really refuses
+closes Claude through its usage-limit error, as any refused run does.
+
+MiniMax needs no such check: the pacer polls its plan API itself (`minimax.pollEveryMin`, every tick that is due), so a
+stale MiniMax reading heals on the next answered poll. Tests: `company/tools/tests/pacer-meter-check.test.js` (the
+deadlock reproduced on a fake station and on `tests/mock-station.js` with the real detached child; fails before the
+fix, passes after).
