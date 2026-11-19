@@ -115,8 +115,13 @@ test('a Plain owner\'s preview shows the crew\'s words without commands or file 
   assert.ok(!/`|company\/|sim\/|\bsim\b\//.test(bo), 'no path, in backticks or not: ' + bo);
   assert.ok(/Cards live in \(a crew file\)/.test(bo), bo);
   for (const w of ['default branch', 'pre-merge check', 'merge gate', 'Claude', 'MiniMax', '**FYI:**', '**']) assert.ok(!bo.includes(w), 'no "' + w + '" for a Plain owner: ' + bo);
+  // re-verify: a backticked span with no slash that ends in a word, and a bare file name, are crew files too; "e.g." stays
+  const pv3 = await call('POST', '/api/profile/ro/preview', { set: { '/habits': ['Ships with `station-floor.js audit` clean, and FLOOR_PLAN.md matching the station, e.g. 3.5 checks a day.'] } });
+  assert.ok(!/station-floor|FLOOR_PLAN|\.js\b|\.md\b/.test(pv3.blockOwner), pv3.blockOwner);
+  assert.ok(/e\.g\. 3\.5 checks/.test(pv3.blockOwner), pv3.blockOwner);
   assert.ok(/\n\nWhose work you check:|\n\nWho checks your work:/.test(bo) && /\n\nFixed rules/.test(bo), 'sections keep their blank lines');
   assert.ok(bo.includes('Never changes the main copy of a project directly'), 'the fixed rules in the tab\'s plain words');
+  for (const b of P.FIXED_BOUNDARIES) assert.ok(!/\btheir\b/.test(b.plain), 'a fixed rule\'s plain words never say "their" in a "you" profile: ' + b.plain);
   // the screen: the example fields, the pushes-back box, the With picker and the sign-off boxes all refresh the save area
   const src = fs.readFileSync(path.join(REPO, 'console', 'ui', 'js', 'screens', 'crew-profile.js'), 'utf8');
   const ex = src.slice(src.indexOf('function exampleRow'), src.indexOf('function counterpartPicker'));

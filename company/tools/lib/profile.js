@@ -130,7 +130,7 @@ const SIGNOFF_KINDS = {
 const FIXED_BOUNDARIES = [
   { id: 'default-branch', text: 'Never push to a default branch: every change goes through a branch, the pre-merge check and the merge gate.', plain: 'Never changes the main copy of a project directly: every change is checked first.' },
   { id: 'owner-gates', text: 'Owner gates stay the owner\'s: what only the owner can decide goes up your chain of command to the CEO.', plain: 'What only you can decide stays yours.' },
-  { id: 'no-self-edit', text: 'Never edit your own profile: the people function proposes changes and the owner decides.', plain: 'Never changes their own profile.' },
+  { id: 'no-self-edit', text: 'Never edit your own profile: the people function proposes changes and the owner decides.', plain: 'A profile is never changed by the person it describes: changes are proposed, and you decide.' },
   { id: 'code-on-claude', text: 'Code is written only on Claude, never on another model.', plain: 'Code is written only on the company\'s coding setup.' },
 ];
 const FIXED_TEXTS = FIXED_BOUNDARIES.map(b => b.text);
@@ -145,7 +145,11 @@ const REMINDER_MAX = 200;   // ~50 tokens at 4 characters a token
  *   restored   anything else (a hand edit, an older version put back, the file deleted): the body of the newest history
  *              row profile.js recorded (lib/recorded.js), so the last recorded version keeps deciding
  *   unrecorded no provenance row names the file and there is no recorded history (a company from before provenance, a test
- *              fixture): the file as it is
+ *              fixture), and the provenance log is healthy (lib/recorded.js health: it still matches the watcher's
+ *              baseline): the file as it is
+ *   lastgood   the same, but the provenance log is not healthy (emptied, deleted, cut, rewritten, or flagged by locked-watch
+ *              as written by an agent; the 2026-11-19 re-verify: emptying the log and deleting the history made a forged
+ *              profile count): locked-watch's last-known-good copy (RC.lastGood), never the raw file; none known: tampered
  *   tampered   rows name the file but neither the file nor any history row is recorded: no profile is read (null), and
  *              the sign-off gate refuses for this seat in live mode (lib/signoff.js)
  * o.raw: the file as it is, unchecked (profile.js check compares the two). */
@@ -166,8 +170,20 @@ function loadState(seat, o) {
   const last = hist[hist.length - 1];
   if (last) return { profile: JSON.parse(JSON.stringify(last.body)), state: 'restored', version: last.version, fileVersion: raw ? raw.version : null };
   let histExists = false; try { histExists = fs_.statSync(hf).size > 0; } catch (_) {}
-  if (!w.any && !histExists && !RC.newestWrite(hf, PROFILE_WRITERS, ro).any) return { profile: raw, state: raw ? 'unrecorded' : 'none' };
-  return { profile: null, state: 'tampered' };
+  if (!w.any && !histExists && !RC.newestWrite(hf, PROFILE_WRITERS, ro).any) {
+    const H = RC.health(ro);
+    if (H.ok) return { profile: raw, state: raw ? 'unrecorded' : 'none' };
+    return fromLastGood(f, seat, ro, H);
+  }
+  const H = RC.health(ro);
+  return H.ok ? { profile: null, state: 'tampered' } : fromLastGood(f, seat, ro, H);
+}
+// the provenance log cannot be trusted: the watcher's last-known-good copy decides (fail closed when there is none)
+function fromLastGood(f, seat, ro, H) {
+  const RC = require('./recorded'), g = RC.lastGood(f, ro);
+  if (g.known && !g.exists) return { profile: null, state: 'none', why: H.why };
+  if (g.known && g.buf) { try { const j = JSON.parse(g.buf.toString('utf8')); if (j && typeof j === 'object' && j.seat === String(seat)) return { profile: j, state: 'lastgood', why: H.why }; } catch (_) {} }
+  return { profile: null, state: 'tampered', why: H.why };
 }
 function load(seat, o) { return loadState(seat, o).profile; }
 function loadAll(o) {
@@ -180,7 +196,9 @@ const merge1 = (d, c) => { const out = Object.assign({}, d); for (const [k, v] o
 // the company's policy laid over the framework default one field at a time (a missing file reads the default: inject charter)
 // The company's file counts only as profile.js policy last wrote it (lib/recorded.js): a hand edit (signoff.mode off, say)
 // is not obeyed even before locked-watch's tick. Then the newest recorded row of profile-policy.history.jsonl decides; with
-// none, the defaults with the sign-off live (it fails closed). source: company | recorded | defaults | unrecorded-edit.
+// none, the defaults with the sign-off live (it fails closed). When the provenance log itself is not healthy (emptied,
+// deleted, rewritten: lib/recorded.js health), the file is never trusted as it is: locked-watch's last-known-good copy,
+// else the sign-off live. source: company | recorded | lastgood | defaults | unrecorded-edit.
 function companyPolicy(o) {
   const P = paths(o);
   let buf = null, c = null; try { buf = fs_.readFileSync(P.policy); } catch (_) {}
@@ -189,9 +207,16 @@ function companyPolicy(o) {
   const w = RC.newestWrite(P.policy, [WRITER], ro);
   if (buf && w.sha && w.sha === RC.sha(buf)) return { doc: c, source: 'company' };
   const histAny = (() => { try { return fs_.statSync(P.policyHistory).size > 0; } catch (_) { return false; } })() || RC.newestWrite(P.policyHistory, [WRITER], ro).any;
-  if (!w.any && !histAny) return buf ? { doc: c, source: 'company' } : { doc: null, source: 'defaults' };   // never written by profile.js (from before provenance, or a fixture)
+  const H = RC.health(ro);
+  // never written by profile.js (from before provenance, or a fixture), and the provenance log is healthy: the file as it is
+  if (!w.any && !histAny && H.ok) return buf ? { doc: c, source: 'company' } : { doc: null, source: 'defaults' };
   const hist = RC.lines(P.policyHistory, [WRITER], ro).map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(r => r && r.body && typeof r.body === 'object');
   if (hist.length) return { doc: hist[hist.length - 1].body, source: 'recorded', unrecordedEdit: true };
+  if (!H.ok) {   // the log cannot be trusted and no trusted history row is left: the watcher's last-known-good copy, else live
+    const g = RC.lastGood(P.policy, ro);
+    if (g.known && !g.exists) return { doc: null, source: 'defaults', unrecordedEdit: !!buf };
+    if (g.known && g.buf) { try { return { doc: JSON.parse(g.buf.toString('utf8')), source: 'lastgood', unrecordedEdit: true }; } catch (_) {} }
+  }
   return { doc: { signoff: { mode: 'live' } }, source: 'unrecorded-edit', unrecordedEdit: true };
 }
 function policy(o) {
@@ -532,7 +557,42 @@ function fromCharter(md, o) {
   for (const [k, ok] of [['identity.background', p.identity.background], ['identity.stake', p.identity.stake], ['convictions', p.convictions.length], ['willNotDo', p.willNotDo.length], ['unprompted', p.unprompted.length],
     ['flaws', p.flaws.length], ['relationships', p.relationships.length], ['examples (at least 3, one pushing back)', p.examples.length >= 3 && p.examples.some(e => e.pushback)], ['temperament', !!temp], ['voice.words', p.voice.words]]) if (!ok) missing.push(k);
   if (p.identity.archetype && ARCHETYPES[p.identity.archetype].eager && !p.counterpart) missing.push('counterpart (an eager seat needs one)');
-  return { profile: p, missing, checks, temperFromCharter: !!temp };
+  // a charter written about the person ("He reads twenty threads", "Benny runs on ..."): the profile speaks to them
+  const me = String(p.identity.name || '').trim().split(/\s+/)[0] || '', rewritten = [];
+  const fix = (label, get, set) => { const v = get(); if (!v) return; const w = Array.isArray(v) ? v.map(x => secondPerson(x, me)) : secondPerson(v, me); if (JSON.stringify(w) !== JSON.stringify(v)) { set(w); rewritten.push(label); } };
+  for (const k of ['personality', 'background', 'stake']) fix(k, () => p.identity[k], v => { p.identity[k] = v; });
+  fix('voice', () => p.voice.words, v => { p.voice.words = v; }); fix('with the owner', () => p.voice.toOwner, v => { p.voice.toOwner = v; });
+  fix('what changes your mind', () => p.temperament.changesMind, v => { p.temperament.changesMind = v; });
+  if (p.counterpart) fix('why you are checked', () => p.counterpart.why, v => { p.counterpart.why = v; });
+  for (const k of LIST_FIELDS) fix(k, () => p[k], v => { p[k] = v; });
+  return { profile: p, missing, checks, rewritten, temperFromCharter: !!temp };
+}
+/* secondPerson(text, firstName): text written about the person, rewritten to them. Only the plain cases: "he"/"she" (and
+ * the name at the start of a sentence) as the subject, its verb put in the "you" form (reads -> read, is -> are, tries ->
+ * try), "his"/"him"/"himself" and "her"/"herself". Anything else stays, and profile.js check still notes it. */
+const ADVERBS = 'never|always|often|usually|rarely|still|also|only|just|really|already|sometimes|first|then';
+const IRREG = { is: 'are', was: 'were', has: 'have', does: 'do', goes: 'go', "isn't": "aren't", "wasn't": "weren't", "doesn't": "don't", "hasn't": "haven't" };
+function youVerb(w) {
+  const l = w.toLowerCase(); if (IRREG[l]) return IRREG[l];
+  if (/(?:ss|sh|ch|x|z|o)es$/.test(l)) return w.slice(0, -2);
+  if (/[^aeiou]ies$/.test(l)) return w.slice(0, -3) + 'y';
+  if (/[^s]s$/.test(l) && l.length > 2) return w.slice(0, -1);
+  return w;
+}
+const capFirst = (x, like) => /^[A-Z]/.test(like) ? x.charAt(0).toUpperCase() + x.slice(1) : x;
+const NOT_NOUN = new RegExp('^(?:and|or|to|a|an|the|that|with|for|in|on|at|about|from|of|if|when|but|so|than|as|by|up|out|off|down|back|again|is|was|has|now|later|today|directly|before|after|here|there|what|how|why|who|whether|it|this|these|those|know|' + ADVERBS + ')$', 'i');
+function secondPerson(text, me) {
+  let t = String(text || ''); if (!t) return t;
+  const subj = (re) => { t = t.replace(re, (m, lead, who, adv, verb) => (lead || '') + capFirst('you', who) + ' ' + (adv || '') + youVerb(verb)); };
+  subj(new RegExp('(^|[^\\w\'’])(he|she)\\s+((?:(?:' + ADVERBS + ')\\s+)?)([a-z’\']+)', 'gi'));
+  if (me && /^[A-Z][\w'’-]*$/.test(me)) {
+    const n = me.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    t = t.replace(new RegExp('(^|[.!?]\\s+)' + n + '[\'’]s\\s+', 'g'), (m, lead) => lead + 'Your ');
+    t = t.replace(new RegExp('(^|[.!?]\\s+)' + n + '\\s+((?:(?:' + ADVERBS + ')\\s+)?)([a-z’\']+s|is|was|has|does)\\b', 'g'), (m, lead, adv, verb) => lead + 'You ' + adv + youVerb(verb));
+  }
+  t = t.replace(/\b(him|her)self\b/gi, m => capFirst('yourself', m)).replace(/\bhis\b/gi, m => capFirst('your', m)).replace(/\bhim\b/gi, m => capFirst('you', m))
+    .replace(/\bher\b(\s+([A-Za-z’']+))?/gi, (m, sp, nx) => capFirst(nx && !NOT_NOUN.test(nx) ? 'your' : 'you', m) + (sp || ''));
+  return t;
 }
 
 /* ---------- checks across the crew (profile.js check, migrate) ---------- */
@@ -625,6 +685,6 @@ function reminderFor(seat, o) {
   const p = load(seat, o); return p ? reminder(p, { crew: coLib().crew() }) : '';
 }
 
-module.exports = { PERSON, PROFILE_SECTIONS, PRESETS, ARCHETYPES, carryProfile, profileBlock, interviewLines, archetypeOf, archetypeLine, presetFor, needsCounterpart, crewMix,
+module.exports = { secondPerson, PERSON, PROFILE_SECTIONS, PRESETS, ARCHETYPES, carryProfile, profileBlock, interviewLines, archetypeOf, archetypeLine, presetFor, needsCounterpart, crewMix,
   TEMPER_KEYS, SIGNOFF_KINDS, FIXED_BOUNDARIES, FIXED_TEXTS, REMINDER_MAX, BLOCK_MAX_CHARS, BLOCK_CAPS, crewChecks, SEAT_RE, paths, load, loadState, loadAll, policy, companyPolicy, temperament, temperWords, presets, sortKeys, canonical, hashOf,
   blank, validate, block, reminder, charterSection, renderCharter, charterDrift, fromCharter, seatByName, counterpartOf, bulletsOf, sentencesUpTo, familyOf, pairCheck, modelOf, wakeStamp, voiceFor, reminderFor };

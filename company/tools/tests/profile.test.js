@@ -265,3 +265,101 @@ test('a CEO that also holds the people function never approves its own proposal,
   const q = tool(c.T, ['propose', 'ro', '--kind', 'experience', '--text', 'A clean backtest hid a fee bug for a week', '--source', 'd-0123456789ab', '--why', 'the fee bug', '--by', 'Marisol']);
   assert.equal(tool(c.T, ['decide', q.out.id, 'apply', '--by', 'Alex']).code, 0);
 });
+
+// locked-watch's baseline for the fixture, built by the watcher itself in a child (CAPHEOS_ROOT at the fixture, its mirror
+// under H), so lib/recorded.js health() has something real to compare the provenance log with
+function lwTick(T, H) {
+  const code = 'const LW = require(' + JSON.stringify(path.join(TOOLS, 'locked-watch.js')) + '); LW.tick({ root: ' + JSON.stringify(T) + ', home: ' + JSON.stringify(H) + ', connectors: null, jobs: [], underStation: false, ownerShell: true, log: () => {} }).then(r => process.stdout.write(JSON.stringify({ ok: true, flagOnly: !!(r && r.flagOnly) })));';
+  const p = spawnSync(process.execPath, ['-e', code], { cwd: T, encoding: 'utf8', env: Object.assign({}, process.env, { CAPHEOS_ROOT: T, LOCKED_WATCH_HOME: H, STARNET_URL: 'http://127.0.0.1:9', CAPHEOS_TZ: 'UTC' }) });
+  if (p.status !== 0) throw new Error('locked-watch failed: ' + p.stdout + p.stderr);
+  return JSON.parse(p.stdout);
+}
+
+test('emptying or deleting the write record and the history never makes a hand edit count: the watcher\'s last-known-good copy decides (re-verify A)', () => {
+  const c = migrated();
+  const H = path.join(c.T, 'home'); const prevHome = process.env.LOCKED_WATCH_HOME; process.env.LOCKED_WATCH_HOME = H;
+  try {
+    const RC = require(path.join(TOOLS, 'lib', 'recorded.js'));
+    const SO = require(path.join(TOOLS, 'lib', 'signoff.js'));
+    const o = { root: c.T, crew: CREW, ceo: 'boss' };
+    assert.equal(tool(c.T, ['policy', 'signoff', 'live', '--by', 'owner'], own).code, 0);
+    lwTick(c.T, H); lwTick(c.T, H);   // the first builds the baseline, the second takes the recorded writes since
+    RC._clearCache();
+    assert.equal(RC.health({ root: c.T }).ok, true, JSON.stringify(RC.health({ root: c.T })));
+    const ben = load(c, 'ben'); const kind = ben.counterpart.signOff[0];
+    const gate = () => SO.gate({ seat: 'ben', kind, refs: ['ext:wire-money'] }, o);
+    assert.ok(gate().refuse, 'live: refused without a yes');
+    const prov = path.join(c.T, 'company/state/locked/provenance.jsonl');
+    const forged = Object.assign({}, ben, { counterpart: null }); forged.hash = P.hashOf(forged);
+    const forge = () => {
+      for (const f of ['company/people/profiles/ben.history.jsonl', 'company/people/profile-policy.history.jsonl']) fs.rmSync(path.join(c.T, f), { force: true });
+      fs.writeFileSync(path.join(c.T, 'company/people/profiles/ben.json'), JSON.stringify(forged, null, 1) + '\n');
+      fs.writeFileSync(path.join(c.T, 'company/people/profile-policy.json'), JSON.stringify({ signoff: { mode: 'off' } }));
+    };
+    const saved = fs.readFileSync(prov);
+    // 1. the reproduction: the log emptied, the history deleted, the profile and the policy written by hand
+    fs.writeFileSync(prov, ''); forge();
+    assert.equal(RC.health({ root: c.T }).ok, false); assert.match(RC.health({ root: c.T }).why, /shorter/);
+    assert.equal(P.loadState('ben', o).state, 'lastgood');
+    assert.equal(P.load('ben', o).counterpart.seat, 'ro', 'the last-known-good copy is read, not the forged file');
+    assert.equal(P.policy(o).signoff.mode, 'live', 'the hand-made "off" is not obeyed');
+    assert.ok(gate().needed && gate().refuse, JSON.stringify(gate()));
+    assert.match(JSON.stringify(tool(c.T, ['check', '--seat', 'ben', '--json']).out), /last-known-good/);
+    // 2. the log deleted outright: the same
+    fs.rmSync(prov);
+    assert.equal(P.loadState('ben', o).state, 'lastgood'); assert.equal(P.policy(o).signoff.mode, 'live'); assert.ok(gate().refuse);
+    // 3. the log rewritten before the point the watcher read (same length, one byte changed)
+    const bad = Buffer.from(saved); bad[10] = bad[10] === 0x41 ? 0x42 : 0x41; fs.writeFileSync(prov, bad);
+    assert.match(RC.health({ root: c.T }).why, /rewritten/); assert.equal(P.loadState('ben', o).state, 'lastgood');
+    // 4. no last-known-good copy to read (the lkg copy changed too): no profile, the live gate refuses
+    fs.writeFileSync(prov, '');
+    fs.writeFileSync(path.join(c.T, 'company/state/locked/lkg/company/people/profiles/ben.json'), JSON.stringify(forged));
+    assert.equal(P.loadState('ben', o).state, 'tampered'); assert.ok(gate().refuse);
+    // 5. the baseline deleted while its mirror is there: never "nothing recorded, trust the file"
+    fs.rmSync(path.join(c.T, 'company/state/locked/baseline.json'));
+    assert.equal(RC.health({ root: c.T }).ok, false); assert.equal(P.loadState('ben', o).state, 'tampered'); assert.equal(P.policy(o).signoff.mode, 'live');
+  } finally { if (prevHome === undefined) delete process.env.LOCKED_WATCH_HOME; else process.env.LOCKED_WATCH_HOME = prevHome; }
+});
+
+test('rows written after locked-watch flagged an agent writing to the write record do not count (re-verify A/B residual)', () => {
+  const c = migrated();
+  const H = path.join(c.T, 'home'); const prevHome = process.env.LOCKED_WATCH_HOME; process.env.LOCKED_WATCH_HOME = H;
+  try {
+    const RC = require(path.join(TOOLS, 'lib', 'recorded.js'));
+    const o = { root: c.T, crew: CREW, ceo: 'boss' };
+    assert.equal(tool(c.T, ['policy', 'signoff', 'live', '--by', 'owner'], own).code, 0);
+    lwTick(c.T, H); lwTick(c.T, H); RC._clearCache();
+    const prov = path.join(c.T, 'company/state/locked/provenance.jsonl');
+    const ben = load(c, 'ben'); const forged = Object.assign({}, ben, { counterpart: null }); forged.hash = P.hashOf(forged);
+    const body = JSON.stringify(forged, null, 1) + '\n';
+    const at = fs.statSync(prov).size;
+    fs.writeFileSync(path.join(c.T, 'company/people/profiles/ben.json'), body);
+    fs.appendFileSync(prov, JSON.stringify({ at: '2026-11-19 10:00', file: 'company/people/profiles/ben.json', kind: 'write', sha256: RC.sha(body), bytes: body.length, writer: 'profile.js', pid: 1, underStation: false, main: 'company/tools/profile.js', tainted: false }) + '\n');
+    assert.equal(P.loadState('ben', o).state, 'recorded', 'before the watcher\'s flag a careful forgery still reads as recorded (documented as not proof)');
+    // the watcher's flag (what locked-watch writes when a transcript shows an agent writing to provenance.jsonl)
+    const bf = path.join(c.T, 'company/state/locked/baseline.json'); const b = JSON.parse(fs.readFileSync(bf, 'utf8'));
+    b.provFlagged = { run: 'r-1', trustedTo: at }; const txt = JSON.stringify(b, null, 1) + '\n'; fs.writeFileSync(bf, txt);
+    const mf = fs.readdirSync(path.join(H, '.local/share/capheos-guard')).map(d => path.join(H, '.local/share/capheos-guard', d, 'locked-baseline.sha256'))[0];
+    fs.writeFileSync(mf, RC.sha(txt) + '\n');
+    const h = RC.health({ root: c.T }); assert.equal(h.ok, false); assert.equal(h.trustedTo, at);
+    assert.notEqual(P.loadState('ben', o).state, 'recorded');
+    assert.equal(P.load('ben', o).counterpart.seat, 'ro', 'the forged row is not read; the recorded history decides');
+    // the same for an append-only record (a forged sign-off "yes" with a matching hand-written append row)
+    const sf = path.join(c.T, 'company/state/signoffs.jsonl'); const line = JSON.stringify({ id: 'so-x', op: 'answer', verdict: 'yes' }) + '\n';
+    fs.appendFileSync(sf, line);
+    fs.appendFileSync(prov, JSON.stringify({ at: '2026-11-19 10:01', file: 'company/state/signoffs.jsonl', kind: 'append', chunkSha: RC.sha(line), bytes: line.length, writer: 'approvals.js', pid: 1, underStation: false, main: 'company/tools/approvals.js', tainted: false }) + '\n');
+    assert.deepEqual(RC.lines(sf, ['approvals.js'], { root: c.T }).filter(l => /so-x/.test(l)), [], 'a forged append after the flag is not read');
+  } finally { if (prevHome === undefined) delete process.env.LOCKED_WATCH_HOME; else process.env.LOCKED_WATCH_HOME = prevHome; }
+});
+
+test('migrate rewrites a charter written about the person ("He reads", "Benny runs", "she can count") so the profile speaks to them', () => {
+  const c = fixture();
+  c.w('company/roles/benny.md', CHARTER.replace('Restless and quick.', 'Restless and quick. He reads twenty threads before lunch and his notes are short. Benny runs on the cheap setup.')
+    .replace('## Convictions', '## Will not do\n- Estimate a number she can count.\n- Ask her first when he is unsure.\n\n## Convictions'));
+  const r = tool(c.T, ['migrate', '--all', '--by', 'owner'], own); assert.equal(r.code, 0, JSON.stringify(r));
+  const b = load(c, 'ben');
+  assert.equal(b.identity.personality, 'Restless and quick. You read twenty threads before lunch and your notes are short. You run on the cheap setup.');
+  assert.deepEqual(b.willNotDo, ['Estimate a number you can count.', 'Ask you first when you are unsure.']);
+  assert.match(r.out.made.find(m => m.seat === "ben").rewritten, /now to them \("you"\): personality, willNotDo/);
+  assert.ok(!/\b(?:he|she|his|her)\b/i.test(P.reminder(b)), P.reminder(b));
+});

@@ -240,7 +240,7 @@ test('delegate-allow: code files make a code item, a worker\'s own pair is liste
   assert.equal(DA.classOf({ class: 'general', pieces: [{ files: ['docs/a.md'] }] }), 'general');
   // a piece is code unless every file is plainly not code (2026-11-19 re-review: .html, .css, .json, .yml, a Dockerfile,
   // an .astro page or a bare folder slipped past a list of code extensions and could be listed for MiniMax workers)
-  for (const f of ['site/index.html', 'web/app.css', 'config/app.json', '.github/workflows/ci.yml', 'Dockerfile', 'src/pages/a.astro', 'src/app/', 'src'])
+  for (const f of ['site/index.html', 'web/app.css', 'config/app.json', '.github/workflows/ci.yml', 'Dockerfile', 'src/pages/a.astro', 'src/app/', 'src', 'docs/page.mdx'])
     assert.equal(DA.classOf({ class: 'ops', pieces: [{ files: ['docs/a.md'] }, { files: [f] }] }), 'code', f);
   for (const f of ['docs/a.md', 'notes/b.txt', 'report.pdf', 'brief.docx', 'data/table.csv'])
     assert.equal(DA.classOf({ class: 'research', pieces: [{ files: [f] }] }), 'research', f);

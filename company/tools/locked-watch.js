@@ -377,6 +377,9 @@ function saveBaseline(ctx, b) {
   const txt = JSON.stringify(b, null, 1) + '\n';
   writeAtomic(ctx.paths.baseline, txt, 0o600);
   writeAtomic(ctx.paths.mirror, sha(txt) + '\n', 0o600);
+  // which company this mirror belongs to (the slug can repeat across checkouts): lib/recorded.js health() only treats a
+  // missing baseline as tampering when the mirror is this root's
+  try { const rf = ctx.paths.mirror.replace(/\.sha256$/, '.root'); if ((() => { try { return fs.readFileSync(rf, 'utf8').trim(); } catch (_) { return null; } })() !== ctx.root) writeAtomic(rf, ctx.root + '\n', 0o600); } catch (_) {}
 }
 function starnetState(ctx) {
   if (!fs.existsSync(path.join(ctx.paths.starnet, '.git'))) return null;
@@ -881,8 +884,12 @@ function runTick(ctx) {
   if (provWrites.length) {
     flagOnly = true; notes.push('an agent wrote to the provenance log');
     const last = provWrites[provWrites.length - 1];
-    if ((base.provFlagged || {}).run !== last.runId) {
-      (base.provFlagged = base.provFlagged || {}).run = last.runId;
+    // lib/recorded.js reads the flag: live rows from trustedTo on (the byte the last check read up to) do not count for any
+    // reader (a profile, the sign-off records, the routing proposals) until the owner rebuilds the baseline
+    const pf = (base.provFlagged = base.provFlagged || {}), was = Number(base.provOffset) || 0;
+    pf.trustedTo = Number.isFinite(Number(pf.trustedTo)) ? Math.min(Number(pf.trustedTo), was) : was;
+    if (pf.run !== last.runId) {
+      pf.run = last.runId;
       events.push({ id: evId(ctx), at: local(ctx.now), key: 'company/state/locked/provenance.jsonl', cls: 'F', area: 'gate', owner: 'tools', kind: 'flagged', why: 'an agent wrote directly to the tools\' write-record log, which only the tools append to through company/tools/provenance.js; automatic reverts are off this tick and provenance rows are not trusted until the owner checks it', who: who('company/state/locked/provenance.jsonl') || null, undo: 'review the foreign rows in company/state/locked/provenance.jsonl and rebuild the baseline (`node company/tools/locked-watch.js baseline --force`)' });
     }
   }
@@ -1436,6 +1443,7 @@ function rebaseProvenance(opts, fn) {
   const r = fn({ maxCut: off });
   if (!r || !r.cut) return { result: r };
   base.provOffset = Math.max(0, off - r.cut + (r.pointer || 0));
+  if (base.provFlagged && Number.isFinite(Number(base.provFlagged.trustedTo))) base.provFlagged.trustedTo = Math.max(0, Number(base.provFlagged.trustedTo) - r.cut + (r.pointer || 0));
   ctx.now = Date.now();
   accept(ctx, base, key, entryFor(ctx, key) || { cls: 'F' }, stateOf(ctx, key));
   saveBaseline(ctx, base);

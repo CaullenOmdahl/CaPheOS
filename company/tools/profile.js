@@ -383,7 +383,7 @@ function migrate(a) {
   // of a seat that checks it, broken lines, identical sliders; for the people seat's fill-in round
   const cc = P.crewChecks(P.loadAll(O()), { crew });
   const forPeople = cc.failures.concat(cc.notes).filter(x => made.some(m => m.seat === x.seat) || ids.includes(x.seat)).map(x => x.text);
-  for (const m of made) { const r2 = reads[m.seat]; if (r2 && r2.checks.length) m.checks = r2.checks; if (r2 && !r2.temperFromCharter) m.temperament = 'filled from the ' + (r2.profile.identity.archetype || 'role') + ' preset: the charter has no ## Temperament section'; }
+  for (const m of made) { const r2 = reads[m.seat]; if (r2 && r2.checks.length) m.checks = r2.checks; if (r2 && r2.rewritten && r2.rewritten.length) m.rewritten = 'written about the person in the charter, now to them ("you"): ' + r2.rewritten.join(', '); if (r2 && !r2.temperFromCharter) m.temperament = 'filled from the ' + (r2.profile.identity.archetype || 'role') + ' preset: the charter has no ## Temperament section'; }
   return { code: 0, out: { ok: true, made, skipped, problems: forPeople.length ? forPeople : undefined, next: made.length ? 'the people function fills what is still empty from each seat\'s own history (profile.js propose)' + (forPeople.length ? ', and fixes the problems listed' : '') : undefined } };
 }
 function policyCmd(a) {
@@ -464,14 +464,18 @@ const OWNER_WORDS = [
   [/\bpull requests?\b/gi, 'change'], [/\bMiniMax\b/g, 'the cheap setup'], [/\b(?:Claude|Opus|Sonnet|Haiku)\b/g, 'the coding setup'],
   [/\bsign-off item\b/gi, 'sign-off request'], [/\binbox\b/gi, 'to-do list'],
 ];
+const FILE_NAME = /(?<![\w\/.-])[\w-]+(?:\.[\w-]+)*\.(?:js|mjs|cjs|ts|tsx|jsx|json|jsonl|md|mdx|py|sh|ya?ml|toml|txt|csv|html|css|sql|lock)(?![\w\/-])/;
 function ownerView(text) {
   let t = String(text || '');
   for (const b of P.FIXED_BOUNDARIES) t = t.split(b.text).join(b.plain);
   t = t
     .replace(/\bnode\s+(?:company\/tools\/)?[\w\/.-]+\.js\b(?:\s+(?:[^\s.]|\.(?=\S))+)*/g, '(the crew\'s sign-off step)')
     .replace(/\*\*Needs sign-off:\*\*\s*<[^>]*>/g, 'a sign-off line')
-    // a span in backticks: a path or a file name is a crew file; any other span loses its backticks
-    .replace(/`([^`\n]*)`/g, (m, x) => /\/|\.[A-Za-z0-9]{1,5}$/.test(x.trim()) ? '(a crew file)' : x)
+    // a span in backticks: one naming a path or a file anywhere in it (`station-floor.js audit`) is a crew file; any other
+    // span loses its backticks
+    .replace(/`([^`\n]*)`/g, (m, x) => /\/|\.[A-Za-z0-9]{1,5}$/.test(x.trim()) || FILE_NAME.test(x) ? '(a crew file)' : x)
+    // a bare file name (FLOOR_PLAN.md, station-floor.js): a known file kind only, so "e.g." or "3.5" stay
+    .replace(new RegExp(FILE_NAME.source, 'g'), '(a crew file)')
     .replace(/(?:^|(?<=[\s("']))(?:\.\/)?(?:company|modules|console|scripts|docs)\/[\w\/.-]*[\w\/-]/g, '(a crew file)')
     // any other path: a word with a slash that ends in / or a file extension, or has two slashes
     .replace(/(?<![\w:\/])(?:\.{0,2}\/)?[\w.-]+\/(?:[\w.-]+\/)*(?:[\w-]+\.[A-Za-z0-9]{1,5})?(?![\w\/])/g, m => (/\/$/.test(m) || /\.[A-Za-z0-9]{1,5}$/.test(m) || (m.match(/\//g) || []).length >= 2) ? '(a crew file)' : m);
@@ -547,7 +551,8 @@ function check(a) {
     const ch = verifyChain(s); if (!ch.rows) fails.push('no history rows'); fails.push(...ch.problems);
     const ls = P.loadState(s, O());
     if (ls.state === 'restored') fails.push('the profile file was changed outside profile.js (it reads version ' + (ls.fileVersion == null ? '?' : ls.fileVersion) + '); every run uses the last recorded version, ' + ls.version + ', and the next change through profile.js writes it again');
-    const last = history(s).filter(r => !r._bad).pop(); if (ls.state !== 'restored' && last && Number(last.version) !== p.version) fails.push('the profile is at version ' + p.version + ' but its history ends at ' + last.version + ' (written by something other than profile.js?)');
+    if (ls.state === 'lastgood') fails.push('the tools\' write record cannot be trusted right now (' + (ls.why || 'provenance log') + '), so every run uses the watcher\'s last-known-good copy of this profile until the owner rebuilds the baseline');
+    const last = history(s).filter(r => !r._bad).pop(); if (!['restored', 'lastgood'].includes(ls.state) && last && Number(last.version) !== p.version) fails.push('the profile is at version ' + p.version + ' but its history ends at ' + last.version + ' (written by something other than profile.js?)');
     if (pol.inject === 'profile') { const f = charterFor(s); if (f && fs.existsSync(f)) { const d = P.charterDrift(fs.readFileSync(f, 'utf8'), p, ctxO()); if (!d.markers) notes.push('the charter has no profile markers yet (the next change renders them)'); else if (d.drift) fails.push('the charter\'s profile section was edited by hand; the next render overwrites it (change the profile instead)'); } }
     report.push({ seat: s, version: p.version, failures: fails, notes });
   }

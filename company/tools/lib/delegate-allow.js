@@ -68,7 +68,7 @@ function pairOf(id, crew, jobs, open) {
 // a Dockerfile, an .astro page or a bare folder like src/app/ all count as code (2026-11-19 safety re-review: a list of
 // code extensions missed them, so such an item could be listed for MiniMax workers). A piece that names no file is code
 // when its department's default class is code. The item is then code whatever its words or its **Class:** line say.
-const NONCODE_FILE = /\.(?:md|markdown|mdx?|txt|text|rst|adoc|org|pdf|docx?|odt|rtf|csv|tsv|xlsx?|ods|pptx?|odp|png|jpe?g|gif|webp)$/i;
+const NONCODE_FILE = /\.(?:md|markdown|txt|text|rst|adoc|org|pdf|docx?|odt|rtf|csv|tsv|xlsx?|ods|pptx?|odp|png|jpe?g|gif|webp)$/i;
 const pieceIsCode = (p, d) => { const fs_ = (p && p.files || []).map(f => String(f).trim()).filter(Boolean); return fs_.length ? fs_.some(f => !NONCODE_FILE.test(f)) : !!(d && d.defaultClass === 'code'); };
 const classOf = (c, d) => (c && (c.class === 'code' || (c.pieces || []).some(p => pieceIsCode(p, d)))) ? 'code' : String((c && c.class) || 'general');
 /* compute(o) -> { doc, notes: [{ lead, item, why }] }: pure (see the header) */
