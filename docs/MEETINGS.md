@@ -49,10 +49,10 @@ Take part** and **More**. Everything else is in the **More** panel (it stays ope
   journal from line N, then live; `console.gone` for a run this meeting did not start). Text is held back while it
   could still turn out to be PASS, at the start and after each tool step. A reload or a console restart re-attaches.
 - **One colour per person**: their avatar, their name and their turns (from the seat id, on the chart palette).
-- **Dim lines between turns, in order**: "(Phil passes)", "(Nadia answers Dave)", "(hands? Sharon, Phil…)" while the
-  hand check runs, "(Sharon raises a hand: …)", "(Rachel calls on Nadia)", "(Omar joins, invited by Dave: why)",
-  "(Dave asks Sharon: …)", "(Dave proposes a ruling for you to confirm: …)", "(Dave closes the discussion: …)".
-- **Tool steps** as "· Sharon: reading CHARTER.md" lines, in plain words. Each turn's steps are kept on its entry
+- **Dim lines between turns, in order**: "(Paul passes)", "(Nora answers Dana)", "(hands? Zoe, Paul…)" while the
+  hand check runs, "(Zoe raises a hand: …)", "(Reba calls on Nora)", "(Owen joins, invited by Dana: why)",
+  "(Dana asks Zoe: …)", "(Dana proposes a ruling for you to confirm: …)", "(Dana closes the discussion: …)".
+- **Tool steps** as "· Zoe: reading CHARTER.md" lines, in plain words. Each turn's steps are kept on its entry
   (`tools`), so they stay after the turn; they are not in the minutes, which keep every word said.
 - Nothing scrolls by itself unless you are already at the latest; a pill counts what is new below, and the meeting
   opens where you left off ("You left off here").
@@ -116,7 +116,7 @@ On when `seats.json pov` says so (`POST /api/meeting/pov {on: true|false|null}`;
   first gets a talk-only run (purpose `draft`, admitted as a meeting turn, counted in the cost line). This applies for
   any sign-off kind in decision and planning meetings, promote, merge or plan in review meetings, and never in incident
   meetings. The run holds only the owner's message, the agenda item and its own profile: "Write your own position before
-  you read anyone else". The result is a private `draft` event, shown to the owner folded ("Rohan's first take, before
+  you read anyone else". The result is a private `draft` event, shown to the owner folded ("Ravi's first take, before
   hearing the others."), in the minutes as a `<details>` block, and in nobody else's history. On its real turn the seat
   gets "Your first take, before you read the others: … Has anything said since given you new evidence? Say which, or
   hold your position."
@@ -213,8 +213,8 @@ carry a short meeting-etiquette line, and every turn carries the table's rules.
 - **The dispatcher.** While a round runs, the seated seats are neither idle nor wakable (`dispatch.js`: no wake, lane or
   re-fire; MEETING HOLD in the log). A seat already in the middle of a routine run speaks talk only, so its turn makes no
   change in the company folder and cannot clash with the routine's hold on it; if a routine takes the folder mid-turn,
-  the station answers the write with `workspace-busy` and the meeting adds one dim line ("Nadia's routine is using the
-  company folder; Nadia answers without changing files"). The meeting is the owner's:
+  the station answers the write with `workspace-busy` and the meeting adds one dim line ("Nora's routine is using the
+  company folder; Nora answers without changing files"). The meeting is the owner's:
   every route is behind the console sign-in, and a console inside an agent's run refuses it (`lib/owner.js`).
 - The chat's owner-scope lint (`console/command-ask.js`) runs on every reply: crew work or a command put to the owner is
   flagged under the reply and the agent is told on its next turn; while you observe, any question to you is.
@@ -236,15 +236,15 @@ already answered.
 then (one turn run at a time; only the talk-only hand checks run side by side, at Light). Every turn, in the meeting and
 in a live chat, ends with the "since you last spoke" note (`sinceNote`):
 
-> [Since you last spoke: Caullen (owner): When do we ship? | Dave: Ship Friday | Sharon (answering Dave): Budget is set
-> at 40. Questions already answered: Caullen's "When do we ship?": answered by Dave, Sharon; Dave asked Sharon "is the
-> budget set?": Sharon answered it. Reply to where the discussion is now: build on or disagree with the latest; do not
+> [Since you last spoke: Avery (owner): When do we ship? | Dana: Ship Friday | Zoe (answering Dana): Budget is set
+> at 40. Questions already answered: Avery's "When do we ship?": answered by Dana, Zoe; Dana asked Zoe "is the
+> budget set?": Zoe answered it. Reply to where the discussion is now: build on or disagree with the latest; do not
 > re-answer.]
 
 It lists what others said (each clipped to one line, the last 8) and who joined or left since that seat's own last
 reply (since the meeting opened for one who has not spoken), and which questions in that stretch are answered: the
 owner's message once anyone else replied to it, and a direct `ASK` once its seat replied. A message the owner put to
-this seat by name (`@Dave @Nadia ...`, kept as `only` on the owner's event) is never "already answered" for it: the note
+this seat by name (`@Dana @Nora ...`, kept as `only` on the owner's event) is never "already answered" for it: the note
 says who answered it already and asks for its own answer, adding only what is new. The last sentence is on
 every turn. Hand checks stay the per-exchange moment when everyone takes in what was said (Light).
 

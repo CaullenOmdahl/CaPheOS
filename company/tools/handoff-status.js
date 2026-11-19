@@ -521,12 +521,12 @@ function selftest() {
   // WAITING ON / NOT BEFORE lint (gateFindings): told to the writer
   {
     const gdir = require('./lib/temp-life').tmpDir('handoff-gates-selftest-');
-    fs.writeFileSync(path.join(gdir, 'to-nadia.md'), '# H\n## 2026-11-17 10:00 from R — the gold backfill\n**Status:** OPEN\n');
-    const gcrew = { nad: { name: 'Nadia Farrell', inbox: 'to-nadia.md' } };
+    fs.writeFileSync(path.join(gdir, 'to-nora.md'), '# H\n## 2026-11-17 10:00 from R — the gold backfill\n**Status:** OPEN\n');
+    const gcrew = { nad: { name: 'Nora Field', inbox: 'to-nora.md' } };
     const gnow = localToEpoch('2026-11-17', '23:00');
     const gb = (line, head) => HEAD + '## ' + (head || '2026-11-17 22:24') + ' from Founder — the recompute\n**Need:** x\n' + line + '\n**Status:** OPEN\n';
     const gf = (line, o) => gateFindings(gb(line, o && o.head), Object.assign({ nowMs: gnow, dir: gdir, crew: gcrew, services: { 'bank-day': {} }, jobs: ['gb-1'] }, o || {}));
-    ok('Waiting on: resolvable references and "nothing" are no finding', gf('**Waiting on:** nothing — it rides inside the ranking work').length === 0 && gf('**Waiting on:** to-nadia.md#gold backfill; seat: Nadia — gold backfill; service: bank-day; job: gb-1; file: company/work/x.md; q:8 step rank').length === 0);
+    ok('Waiting on: resolvable references and "nothing" are no finding', gf('**Waiting on:** nothing — it rides inside the ranking work').length === 0 && gf('**Waiting on:** to-nora.md#gold backfill; seat: Nora — gold backfill; service: bank-day; job: gb-1; file: company/work/x.md; q:8 step rank').length === 0);
     const un = gf('**Waiting on:** to-nobody.md#x; seat: Zed — y; service: nope; job: never; somebody else');
     ok('Waiting on: each unresolvable reference is named, and the item is said to be work now', un.length === 1 && /to-nobody\.md#x": no such inbox/.test(un[0].detail) && /nobody holds a seat called "Zed"/.test(un[0].detail) && /no registered service "nope"/.test(un[0].detail) && /no job "never"/.test(un[0].detail) && /not a form the dispatcher reads/.test(un[0].detail) && /work now/.test(un[0].detail), JSON.stringify(un));
     const dep = gf('**Not before:** 2026-11-18 01:00    (set 2026-11-17 22:24 by Founder: the recompute needs the finished gold backfill)');

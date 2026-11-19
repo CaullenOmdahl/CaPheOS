@@ -2,7 +2,7 @@
  * "Service keys".
  *
  * The owner's own view of secrets/: every key file the company has (never the station or console token, never this
- * folder's README), in plain words ("Pyth", "Kalshi private key", "Heartbeat address (healthchecks.io)"), set or not,
+ * folder's README), in plain words ("Quotely", "Tradex private key", "Heartbeat address (healthchecks.io)"), set or not,
  * when it last changed and which tools read it (a cached grep of co.secret('<name>') in company/tools, company/work,
  * modules and packs). Add and Replace go through the console's one secret writer (console/server.js writeSecret: a
  * validated name, 0600, atomic, recorded with company/tools/provenance.js as the owner's change so locked-watch.js
@@ -17,12 +17,12 @@ const path = require('path');
 // web address (a ping URL), labelled "address", never "key". `names` are the file names this entry describes. `connector`:
 // the same service's sign-in in company/connectors/<id>.json (console/connectors.js), the way to get it without pasting.
 const KNOWN = [
-  { id: 'pyth', label: 'Pyth', name: 'pyth-api-key', names: ['pyth-api-key', 'pyth-key', 'pyth-token'], kind: 'key', offer: true,
-    where: 'Sign in at Pyth, open API keys and create one; copy the key it shows.', url: 'https://app.pyth.com' },
-  { id: 'kalshi', label: 'Kalshi API key', name: 'kalshi-api-key', names: ['kalshi-api-key', 'kalshi-key', 'kalshi-key-id'], kind: 'key', offer: true,
-    where: 'Kalshi › Account › API keys: create a key. Its Key ID goes here; the private key file it downloads goes in "Kalshi private key".', url: 'https://kalshi.com/account/profile' },
-  { id: 'kalshi-private', label: 'Kalshi private key', name: 'kalshi-private-key', names: ['kalshi-private-key', 'kalshi-private-key.pem', 'kalshi-key.pem'], kind: 'key', multiline: true, offer: true,
-    where: 'The private key file Kalshi downloaded when you created the API key: open it and paste all of it, BEGIN and END lines included.', url: 'https://kalshi.com/account/profile' },
+  { id: 'quotely', label: 'Quotely', name: 'quotely-api-key', names: ['quotely-api-key', 'quotely-key', 'quotely-token'], kind: 'key', offer: true,
+    where: 'Sign in at Quotely, open API keys and create one; copy the key it shows.', url: 'https://app.quotely.com' },
+  { id: 'tradex', label: 'Tradex API key', name: 'tradex-api-key', names: ['tradex-api-key', 'tradex-key', 'tradex-key-id'], kind: 'key', offer: true,
+    where: 'Tradex › Account › API keys: create a key. Its Key ID goes here; the private key file it downloads goes in "Tradex private key".', url: 'https://tradex.com/account/profile' },
+  { id: 'tradex-private', label: 'Tradex private key', name: 'tradex-private-key', names: ['tradex-private-key', 'tradex-private-key.pem', 'tradex-key.pem'], kind: 'key', multiline: true, offer: true,
+    where: 'The private key file Tradex downloaded when you created the API key: open it and paste all of it, BEGIN and END lines included.', url: 'https://tradex.com/account/profile' },
   { id: 'synpath', label: 'Synpath', name: 'synpath-api-key', names: ['synpath-api-key', 'synpath-key', 'synpath-token'], kind: 'key', offer: true,
     where: 'Easiest: Sign-ins above › Synpath › Connect (you sign in with Google; the station keeps the key it creates). Or sign in at synpath.dev and copy an API key from its API settings.', url: 'https://www.synpath.dev/tick-data', connector: 'synpath' },
   { id: 'healthchecks', label: 'Heartbeat address (healthchecks.io)', name: 'liveness-heartbeat-url', names: ['liveness-heartbeat-url', 'healthchecks-url', 'healthchecks-ping-url'], kind: 'address', offer: true,

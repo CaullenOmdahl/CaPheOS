@@ -1,25 +1,25 @@
 # Porting rules: StarnetOS tools → CaPheOS framework
 
-CaPheOS is the company-agnostic framework that was grown inside StarnetOS (Ca Phe Digital, a running agent company
-on the StarNet station). These rules apply to every file in `company/tools/`, `company/*.md`, `company/skills/` and
+CaPheOS is the company-agnostic framework that was grown inside a running agent company on the StarNet station. These rules apply to every file in `company/tools/`, `company/*.md`, `company/skills/` and
 `company/defaults/`.
 
 ## The rules
 
-1. **No company content.** No crew names (Dave, Sharon, Phil, Rachel, Marcus, Nadia, Omar, Priya, Leo, Rosa, Tuan,
-   Vy, Minh, Linh), no "Ca Phe Digital"/`cpd`, no owner name, no products or customers (Black Sheep,
-   BlackSheepApp, Baarista, PavComms, POS, cafe), no incident ids, quest ids, q-numbers, PR numbers, dated rulings
-   ("Dave 2026-11-16 03:05"), measured numbers from the live company, or Vietnam-specific rules (Asia/Saigon, ICT,
-   VND, vi/en). Comments that only tell the history of Ca Phe Digital go; comments that explain *why the code works
-   the way it does* stay, rewritten without the names and dates.
+1. **No company content.** Nothing from a company that runs on this framework: no crew or owner names, no company
+   names, no products, customers or the markets they trade, no machine paths or account names, no incident ids, quest
+   ids, q-numbers, PR numbers, dated rulings or measured numbers from a live company, no country-specific rules. Use
+   neutral examples (Alex, Jo, Sam; "a data provider"). A comment that only tells a company's history goes; a comment
+   that explains *why the code works the way it does* stays, rewritten without the names and dates.
+   `scripts/check-deployment-leaks.js` enforces the names part: it reads the companies on the machine it runs on
+   (their crew, owner and company names) and refuses a change that adds any of them. The list never enters the repo.
 2. **Route by function, never by name.** Seats are found with `company/tools/lib/company.js`:
    `co.ceo()`, `co.seatFor('people'|'tools'|'risk'|'floor'|'finance')`, `co.nameOf(id)`. Functions:
    - `ceo` — strategy, opens roles, the only seat that talks to the owner
-   - `people` — hiring, HR, performance, model changes (was Rachel, `hr:true`)
-   - `tools` — tool builder / harness owner (was Nadia, `toolsOwner:true`)
-   - `risk` — security, access, audit, locked-file reports (was Phil)
-   - `floor` — the station floor plan and desks (was Rosa)
-   - `finance` — budgets, pacing numbers, spend (was Sharon)
+   - `people` — hiring, HR, performance, model changes (`hr:true` in older crews)
+   - `tools` — tool builder / harness owner (`toolsOwner:true` in older crews)
+   - `risk` — security, access, audit, locked-file reports
+   - `floor` — the station floor plan and desks
+   - `finance` — budgets, pacing numbers, spend
    The founder holds all six on day one. Text shown to agents names the function ("the people owner"), or fills the
    name in at runtime via `co.nameOf(co.seatFor(...))`.
 3. **No hardcoded paths, ports, timezones or secrets.** Use `co.ROOT` / `co.p(...)`, `co.STATION_URL`, `co.TZ`,
@@ -27,8 +27,8 @@ on the StarNet station). These rules apply to every file in `company/tools/`, `c
    `station-token`, `minimax-key`, `openrouter-key`, `openrouter-mgmt-key`, `deepseek-key`. Root dotfiles such as
    `.api-token` are gone. The company name and owner come from `co.config` (`company/company.json`).
 4. **The owner channel is the file adapter.** Owner → company messages are `company/owner/inbound.jsonl`; company →
-   owner is `company/owner/outbound.jsonl` (one JSON object per line: `{id, at, from, text, re?}`). No Baarista, no
-   chat-app API. Anything that called `pm-account.js`, `pm-bridge`, or sent to `baarista:<id>` now tells the owner
+   owner is `company/owner/outbound.jsonl` (one JSON object per line: `{id, at, from, text, re?}`). No chat-app
+   API. Anything that called `pm-account.js`, `pm-bridge`, or sent to a chat app's id now tells the owner
    through `company/tools/lib/owner-notice.js` `send({kind, from, text, technical?, key?})`, never by appending to the
    outbound file or calling `owner-inbox.js` `send()` (the low-level writer only owner-notice uses): `urgent` (the
    company stopped or cannot work, money or an account is needed now, a security event, the CEO's own reply) goes out
@@ -50,7 +50,7 @@ on the StarNet station). These rules apply to every file in `company/tools/`, `c
 6. **Keep it working.** Every ported JS file must pass `node --check`. Keep existing `--selftest` modes and tests, and
    make them pass without a live station (fixtures may use invented names like `Alex`/`Sam` — never the old crew).
    Do not delete behaviour that is generic just because it was written for one incident; do delete code paths that
-   only exist for a Ca Phe Digital product (Railway, Black Sheep repos, Android, the cafe's POS).
+   only exist for one company's own products.
 7. **Stay inside your files.** Only edit the files you were assigned. If you need a helper every tool would use, add
    it to `company/tools/lib/` in a new file named for your group (`lib/<group>.js`) and say so in your report; do not
    rewrite `lib/company.js` (report what you'd add instead).
@@ -66,7 +66,7 @@ on the StarNet station). These rules apply to every file in `company/tools/`, `c
 
 ```
 cd <your framework checkout>
-grep -nEi "dave|sharon|phil\b|rachel|marcus|nadia|omar|priya|\bleo\b|rosa|tuan|\bvy\b|ca phe digital|\bcpd\b|baarista|black ?sheep|saigon|\bICT\b|VND|railway|/home/[a-z]+/|8800|\.api-token" <your files>
+node scripts/check-deployment-leaks.js <your files>      # the names of the companies on this machine
 for f in <your .js files>; do node --check "$f"; done
 ```
-The grep must come back empty (or only with hits you explain in the report).
+The check must come back clean (or only with hits you explain in the report).

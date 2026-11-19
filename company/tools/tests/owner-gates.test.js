@@ -18,9 +18,9 @@ function company(levels) {
   const T = require('../lib/temp-life').tmpDir('owner-gates-');
   const W = (rel, v) => { fs.mkdirSync(path.dirname(path.join(T, rel)), { recursive: true }); fs.writeFileSync(path.join(T, rel), typeof v === 'string' ? v : JSON.stringify(v, null, 1) + '\n'); };
   W('company/tools/loops.json', { agents: {
-    agent: { name: 'Alex', manager: null, functions: ['ceo'], inbox: 'to-alex.md' }, people: { name: 'Kwame', manager: 'agent', functions: ['people'], inbox: 'to-kwame.md' },
+    agent: { name: 'Alex', manager: null, functions: ['ceo'], inbox: 'to-alex.md' }, people: { name: 'Kofi', manager: 'agent', functions: ['people'], inbox: 'to-kofi.md' },
     engineer: { name: 'Max', manager: 'agent', functions: ['tools'], inbox: 'to-max.md' }, auditor: { name: 'Riley', manager: 'agent', functions: ['risk'], inbox: 'to-riley.md' },
-    data: { name: 'Halima', manager: 'agent', inbox: 'to-halima.md' } } });
+    data: { name: 'Hollis', manager: 'agent', inbox: 'to-hollis.md' } } });
   const gov = JSON.parse(fs.readFileSync(path.join(TOOLS, '..', 'defaults', 'state', 'governance.json'), 'utf8'));
   Object.assign(gov.categories, levels || {});
   W('company/state/governance.json', gov);
@@ -39,7 +39,7 @@ const withProv = fn => async () => { const prev = process.env.PROVENANCE_ROOT; c
 test('a locked tool change at tools=auto is reviewed by the risk and tools seats, never asks the owner, and is one digest line', withProv(async () => {
   const c = company({ tools: 'auto' });
   try {
-    const r = await HC.propose(c.C(), { kind: 'tool', target: 'company/tools/competence.js', why: 'count a report only once in the totals', change: diff, by: 'Kwame' });
+    const r = await HC.propose(c.C(), { kind: 'tool', target: 'company/tools/competence.js', why: 'count a report only once in the totals', change: diff, by: 'Kofi' });
     assert.deepEqual(r.reviewers.map(x => x.name), ['Riley', 'Max']);
     HC.review(c.C(), r.id, { by: 'Riley' }, 'approve'); HC.review(c.C(), r.id, { by: 'Max' }, 'approve');
     const a = await HC.applyChange(c.C(), r.id, { by: 'Max' });
@@ -47,21 +47,21 @@ test('a locked tool change at tools=auto is reviewed by the risk and tools seats
     assert.equal(c.asks().length, 0); assert.equal(c.card.calls.length, 0);
     // a locked tool is something the owner should know about: one plain line in the day's message, never a card
     assert.equal(c.notice.sent.length, 1); assert.equal(c.notice.sent[0].kind, 'fyi');
-    assert.equal(c.notice.sent[0].text, 'Kwame changed how the crew\'s work is measured, after two colleagues reviewed it.');
+    assert.equal(c.notice.sent[0].text, 'Kofi changed how the crew\'s work is measured, after two colleagues reviewed it.');
   } finally { c.done(); }
 }));
 
 test('at tools=approve: one plain card after the two reviews (diff under technical, effect harnessApply); withdraw closes it', withProv(async () => {
   const c = company({ tools: 'approve' });
   try {
-    const r = await HC.propose(c.C(), { kind: 'tool', target: 'company/tools/competence.js', why: 'count a report only once in the totals', change: diff, by: 'Kwame', plain: 'It only changes how a report is counted.' });
+    const r = await HC.propose(c.C(), { kind: 'tool', target: 'company/tools/competence.js', why: 'count a report only once in the totals', change: diff, by: 'Kofi', plain: 'It only changes how a report is counted.' });
     HC.review(c.C(), r.id, { by: 'Riley' }, 'approve'); HC.review(c.C(), r.id, { by: 'Max' }, 'approve');
     await assert.rejects(HC.applyChange(c.C(), r.id, { by: 'Max' }), /waits for the owner/);
     const q = c.asks(); assert.equal(q.length, 1);
     const card = c.card.calls.find(x => x.op === 'file').card;
-    assert.equal(card.lead, 'Kwame wants to change how the crew\'s work is measured, and two colleagues reviewed it. It only changes how a report is counted, and it keeps a backup.');
+    assert.equal(card.lead, 'Kofi wants to change how the crew\'s work is measured, and two colleagues reviewed it. It only changes how a report is counted, and it keeps a backup.');
     assert.ok(plain(card)); assert.ok(/count a report once/.test(card.technical)); assert.deepEqual(card.effect, { harnessApply: { id: r.id } });
-    HC.withdraw(c.C(), r.id, { by: 'Kwame' });
+    HC.withdraw(c.C(), r.id, { by: 'Kofi' });
     assert.equal(c.card.openFor('harness-review:' + r.id), null);
   } finally { c.done(); }
 }));

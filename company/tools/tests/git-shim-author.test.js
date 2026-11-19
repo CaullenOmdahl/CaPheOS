@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* git-shim-author.test.js — a commit made from a crew seat's run names that seat as its author (company/tools/shims/git).
  *
- * 2026-11-20, owner: "Nadia logged that she wrote it. I like that. We should do that." The shim sets the author to
+ * 2026-11-20, owner: "Nora logged that she wrote it. I like that. We should do that." The shim sets the author to
  * "<name> (<company>)" <first@capheos.invalid> when STARNET_AGENT_ID names a seat in loops.json and no author is set;
  * the committer, the owner's own commits and an author a seat chose itself are left alone.
  *
@@ -19,7 +19,7 @@ test('a seat\'s commit is authored by the seat; the owner and a chosen author ar
     fs.mkdirSync(path.join(root, 'company', 'tools', 'shims'), { recursive: true });
     fs.copyFileSync(SHIM, path.join(root, 'company', 'tools', 'shims', 'git'));
     fs.writeFileSync(path.join(root, 'company', 'company.json'), JSON.stringify({ name: 'Test Co' }));
-    fs.writeFileSync(path.join(root, 'company', 'tools', 'loops.json'), JSON.stringify({ agents: { 'seat-x': { name: 'Nadia Farrell' } } }));
+    fs.writeFileSync(path.join(root, 'company', 'tools', 'loops.json'), JSON.stringify({ agents: { 'seat-x': { name: 'Nora Field' } } }));
     const repo = path.join(root, 'repo'); fs.mkdirSync(repo);
     const base = Object.assign({}, process.env, { GIT_COMMITTER_NAME: 'Owner', GIT_COMMITTER_EMAIL: 'o@x', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' });
     delete base.STARNET_AGENT_ID; delete base.GIT_AUTHOR_NAME; delete base.GIT_AUTHOR_EMAIL;
@@ -34,7 +34,7 @@ test('a seat\'s commit is authored by the seat; the owner and a chosen author ar
     assert.deepEqual(log, [
       'unknown seat|Owner|o@x|Owner',
       'chosen|Chosen|c@x|Owner',
-      'seat|Nadia Farrell (Test Co)|nadia@capheos.invalid|Owner',
+      'seat|Nora Field (Test Co)|nora@capheos.invalid|Owner',
       'owner|Owner|o@x|Owner',
     ]);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }

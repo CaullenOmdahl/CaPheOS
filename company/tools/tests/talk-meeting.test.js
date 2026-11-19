@@ -12,8 +12,8 @@ const test = require('node:test'); const assert = require('assert');
 const T = __LIFE.tmpDir('talk-meeting-selftest-');
 const W = (rel, v) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof v === 'string' ? v : JSON.stringify(v, null, 1)); };
 const R = rel => { try { return fs.readFileSync(path.join(T, rel), 'utf8'); } catch (_) { return ''; } };
-W('company/company.json', { name: 'Talk Test', owner: { name: 'Caullen' }, timezone: 'UTC', station: { port: 1 } });
-W('company/tools/loops.json', { agents: { dave: { name: 'Dave', title: 'CEO', functions: ['ceo'], manager: null }, kim: { name: 'Kim', title: 'Builder', manager: 'dave' } } });
+W('company/company.json', { name: 'Talk Test', owner: { name: 'Avery' }, timezone: 'UTC', station: { port: 1 } });
+W('company/tools/loops.json', { agents: { dana: { name: 'Dana', title: 'CEO', functions: ['ceo'], manager: null }, kim: { name: 'Kim', title: 'Builder', manager: 'dana' } } });
 W('company/work/decisions.md', '# Decisions\n\n');
 process.env.CAPHEOS_ROOT = T; process.env.STARNET_URL = 'http://127.0.0.1:1';
 const REPO = path.join(__dirname, '..', '..', '..');
@@ -41,9 +41,9 @@ function makeRunner() {
 function fresh() {
   fs.rmSync(path.join(T, 'company/state/meetings'), { recursive: true, force: true });
   const runner = makeRunner();
-  const M = meetingLib(Object.assign({ co, owner: () => 'Caullen', runner, run: async () => ({ code: 0, data: {} }), speedMs: { fast: 1, normal: 1, slow: 1 }, seatBusy: async () => false,
+  const M = meetingLib(Object.assign({ co, owner: () => 'Avery', runner, run: async () => ({ code: 0, data: {} }), speedMs: { fast: 1, normal: 1, slow: 1 }, seatBusy: async () => false,
     modelFor: async () => ({ provider: 'claude-cli', model: 'claude-sonnet-5-5' }), profileOf: () => null, pov: false }, hooks));
-  M.seatsChange({ add: ['dave', 'kim'] }); M.setLeader({ seat: 'dave' });
+  M.seatsChange({ add: ['dana', 'kim'] }); M.setLeader({ seat: 'dana' });
   return { M, runner };
 }
 async function idle(M) { for (let i = 0; i < 400; i++) { if (M.idle()) return; await new Promise(r => setTimeout(r, 10)); } throw new Error('the meeting did not settle'); }
@@ -54,7 +54,7 @@ test('no choice yet: the rules are today\'s, nothing is noted or masked', async 
   const { M, runner } = fresh();
   runner.script({ kim: 'I fixed company/state/x.json and the cron.' });
   await M.say({ text: 'How is the shop page?' }); await idle(M);
-  assert.ok(!/wants to hear from you/.test(runner.turns('dave')[0].all));
+  assert.ok(!/wants to hear from you/.test(runner.turns('dana')[0].all));
   const said = M._state().LOG.find(e => e.kind === 'say' && e.who === 'kim');
   assert.ok(said && !said.lint, 'no note');
   assert.ok(M.entries(new URLSearchParams()).entries.find(e => e.who === 'kim').text.includes('company/state/x.json'));
@@ -65,7 +65,7 @@ test('Plain, check on: the rules carry it, a technical turn is noted on the next
   const { M, runner } = fresh();
   runner.script({ kim: ['I fixed company/state/x.json and the cron; `node company/tools/x.js` shows it.', 'The shop page is fixed. Nothing for you to do.'] });
   await M.say({ text: 'How is the shop page?' }); await idle(M);
-  assert.ok(/- \[How Caullen wants to hear from you\] Caullen chose plain words/.test(runner.turns('kim')[0].all), 'the rules carry the owner\'s level');
+  assert.ok(/- \[How Avery wants to hear from you\] Avery chose plain words/.test(runner.turns('kim')[0].all), 'the rules carry the owner\'s level');
   assert.strictEqual(runner.turns('kim').length, 1, 'nothing is re-run');
   const said = M._state().LOG.find(e => e.kind === 'say' && e.who === 'kim');
   assert.strictEqual(said.lint.kind, 'talk');
@@ -77,7 +77,7 @@ test('Plain, check on: the rules carry it, a technical turn is noted on the next
   assert.ok(shown.talkMasked && !/company\/|node /.test(shown.text) && shown.technical.includes('company/state/x.json'), JSON.stringify(shown));
   await M.say({ text: 'And the prices?' }); await idle(M);
   const next = runner.turns('kim')[1];
-  assert.ok(/\[Console note on your last reply: it was more technical than Caullen asked for \(/.test(next.last) && /Caullen chose plain words: say what it means for them/.test(next.last), next.last);
+  assert.ok(/\[Console note on your last reply: it was more technical than Avery asked for \(/.test(next.last) && /Avery chose plain words: say what it means for them/.test(next.last), next.last);
   const plainSay = M._state().LOG.filter(e => e.kind === 'say' && e.who === 'kim')[1];
   assert.ok(plainSay && !plainSay.lint, 'a plain reply is not noted');
 });

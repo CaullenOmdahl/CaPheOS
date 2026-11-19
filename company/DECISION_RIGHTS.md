@@ -65,17 +65,17 @@ handoff to the tools seat. Details: skill `owner-questions`.
 owner says no. Evidence, numbers, ids, file paths and alternatives go in `--details`, which the console folds under
 "More detail". `ask` warns when the message is missing, over 400 characters, or reads like a report.
 
-- Good: `--message "Could you make a free Pyth account and paste its API key? It lets us test our main idea about
-  commodity prices. If you say no, that idea waits and nothing else changes." --details "Pyth answers 401 without a
+- Good: `--message "Could you make a free Quotely account and paste its API key? It lets us test our main idea about
+  commodity prices. If you say no, that idea waits and nothing else changes." --details "Quotely answers 401 without a
   key; 200 ms gold, 50 ms WTI; ..."`
-- Bad: `--q "Access gate (gate 2), no payment, second key: a free Pyth API key. Pyth's discovery endpoint answers us
+- Bad: `--q "Access gate (gate 2), no payment, second key: a free Quotely API key. Quotely's discovery endpoint answers us
   anonymously (200 ms gold, 50 ms WTI) but the price stream is 401, so ..."` (a report, with the ask buried in it)
 
 **Give the owner the right control.** A question is a form: pick a shortcut with `--kind`, or compose your own with
 `--form` (fields: info, text, secret, choice, link, number, date, checkbox; and your own named actions such as
 "Approve", "Not now", "Use the free tier instead", each mapping to a verdict).
 
-- A key, token or password: `--kind secret --name <file>` (e.g. `kalshi-api-key`). The owner pastes it into a password
+- A key, token or password: `--kind secret --name <file>` (e.g. `tradex-api-key`). The owner pastes it into a password
   field; the console stores it as `secrets/<name>` (0600) and you get back only "stored at secrets/<name> (N chars,
   validated: yes/no)". **Never ask the owner to paste a key in a message or in chat**, and never ask for one in a text
   field (refused). Your tools read it with `co.secret('<name>')`, under the secrets guardrail; never print it.

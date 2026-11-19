@@ -22,15 +22,15 @@ const TOOLS = path.join(REPO, 'company', 'tools');
 const P = require(path.join(TOOLS, 'lib', 'profile.js'));
 const roots = [];
 test.after(() => { for (const r of roots) try { fs.rmSync(r, { recursive: true, force: true }); } catch (_) {} });
-const CREW = { boss: { name: 'Alex', title: 'CEO', functions: ['ceo', 'people'], manager: null, inbox: 'to-alex.md' }, ben: { name: 'Benny', title: 'Idea Scout', manager: 'boss', inbox: 'to-benny.md', role: 'company/roles/benny.md' }, ro: { name: 'Rohan', title: 'Data Scientist', manager: 'boss', inbox: 'to-rohan.md' } };
-function benny() {
-  const p = P.blank('ben', { name: 'Benny Tran', title: 'Idea Scout' });
+const CREW = { boss: { name: 'Alex', title: 'CEO', functions: ['ceo', 'people'], manager: null, inbox: 'to-alex.md' }, ben: { name: 'Noah', title: 'Idea Scout', manager: 'boss', inbox: 'to-noah.md', role: 'company/roles/noah.md' }, ro: { name: 'Ravi', title: 'Data Scientist', manager: 'boss', inbox: 'to-ravi.md' } };
+function noah() {
+  const p = P.blank('ben', { name: 'Noah Tate', title: 'Idea Scout' });
   Object.assign(p.identity, { archetype: 'scout', background: 'Ran a trading Discord for three years.', stake: 'His cards are his name.' });
   p.convictions = ['The edge was in a forum before it was in a paper.']; p.voice = { preset: 'upbeat', words: 'Fast and plain.', toOwner: 'Short and cheerful.', avoid: ['synergy'] };
-  p.counterpart = { seat: 'ro', signOff: ['promote'], why: 'Rohan tests or kills every card.' };
+  p.counterpart = { seat: 'ro', signOff: ['promote'], why: 'Ravi tests or kills every card.' };
   p.examples = [{ with: 'ro', they: 'One lucky week.', you: 'Cheap to check.', pushback: true }, { with: 'owner', they: 'Any news?', you: 'Two cards.' }, { with: 'ro', they: 'Killed.', you: 'Next one.' }];
-  p.experiences = [{ at: '2026-11-18', text: 'The forum tip cost two days.', source: 'd-1', addedBy: 'Marisol', version: 2 }];
-  p.reminder = 'You are Benny, the scout. Reply only as Benny.'; p.hash = P.hashOf(p); return p;
+  p.experiences = [{ at: '2026-11-18', text: 'The forum tip cost two days.', source: 'd-1', addedBy: 'Mara', version: 2 }];
+  p.reminder = 'You are Noah, the scout. Reply only as Noah.'; p.hash = P.hashOf(p); return p;
 }
 function fixture(policy) {
   const T = __LIFE.tmpDir('profile-inject-'); roots.push(T);
@@ -39,8 +39,8 @@ function fixture(policy) {
   w('company/tools/loops.json', { agents: CREW });
   for (const f of ['company/defaults/people/profile-policy.json', 'company/defaults/people/temperament.json', 'company/defaults/people/presets.json']) w(f, fs.readFileSync(path.join(REPO, f), 'utf8'));
   if (policy) w('company/people/profile-policy.json', policy);
-  w('company/people/profiles/ben.json', benny());
-  w('company/roles/benny.md', '# Benny\n\n## Scope\n- cards\n\n## Personality\nRestless.\n\n## Backstory and motivation\nA charter backstory.\n\n## Voice\nCharter voice.\n\n## Persona preset\ndry\n');
+  w('company/people/profiles/ben.json', noah());
+  w('company/roles/noah.md', '# Noah\n\n## Scope\n- cards\n\n## Personality\nRestless.\n\n## Backstory and motivation\nA charter backstory.\n\n## Voice\nCharter voice.\n\n## Persona preset\ndry\n');
   w('company/model-policy.json', { allowed: { 'claude-cli': { tiers: { 'claude-sonnet-5-5': 'standard' } } }, seats: { ben: { chain: [{ provider: 'deepseek', model: 'deepseek-flash' }] }, ro: { chain: [{ provider: 'deepseek', model: 'deepseek-pro' }] } } });
   return { T, w };
 }
@@ -52,15 +52,15 @@ test('block: byte-identical across days and timezones; owner notes, version, tri
   const a = inRoot(c.T, 'Date.now = () => Date.parse("2026-11-20T08:00:00Z"); const P = require(' + LIB + '); return P.block(P.load("ben"), { crew: require(' + JSON.stringify(path.join(TOOLS, 'lib', 'company.js')) + ').crew() });', { TZ: 'UTC' });
   const b = inRoot(c.T, 'Date.now = () => Date.parse("2027-03-01T23:00:00Z"); const P = require(' + LIB + '); return P.block(P.load("ben"), { crew: require(' + JSON.stringify(path.join(TOOLS, 'lib', 'company.js')) + ').crew() });', { TZ: 'Asia/Tokyo' });
   assert.equal(a, b);
-  const p = benny(), crew = CREW, base = P.block(p, { crew });
+  const p = noah(), crew = CREW, base = P.block(p, { crew });
   for (const [k, v] of [['ownerNotes', 'private: thinking of moving him'], ['version', 41], ['trial', { from: 40, until: '2027-01-01T00:00:00Z' }], ['model', { provider: 'custom', model: 'x' }]]) assert.equal(P.block(Object.assign({}, p, { [k]: v }), { crew }), base, k);
   assert.ok(!/private|2026-11-18|version/i.test(base.replace(/its profile does|your profile does/g, '')), 'no owner notes, dates or versions in the block');
-  for (const s of ['Benny Tran, Idea Scout', 'crew\'s scout', 'Thoroughness: Checks the parts that matter', 'The edge was in a forum', 'Who checks your work: Rohan', '**Needs sign-off:** <promote>', 'The forum tip cost two days.', 'You never say: "synergy"', 'Rohan: "One lucky week."\n  You (pushing back): "Cheap to check."', 'Code is written only on Claude']) assert.ok(base.includes(s), s);
+  for (const s of ['Noah Tate, Idea Scout', 'crew\'s scout', 'Thoroughness: Checks the parts that matter', 'The edge was in a forum', 'Who checks your work: Ravi', '**Needs sign-off:** <promote>', 'The forum tip cost two days.', 'You never say: "synergy"', 'Ravi: "One lucky week."\n  You (pushing back): "Cheap to check."', 'Code is written only on Claude']) assert.ok(base.includes(s), s);
   // order: identity, temperament, convictions, counterpart, flaws..., examples, boundaries
   const at = s => base.indexOf(s);
-  assert.ok(at('You are Benny') < at('Your temperament') && at('Your temperament') < at('What you believe') && at('What you believe') < at('Who checks your work') && at('Who checks your work') < at('How you answer') && at('How you answer') < at('Fixed rules'));
-  const ro = P.block(Object.assign(P.blank('ro', { name: 'Rohan' }), { hash: '' }), { crew, profiles: { ben: p } });
-  assert.match(ro, /Whose work you check: Benny\. Before Benny can move an idea or card to a test or a build, you have to agree/);
+  assert.ok(at('You are Noah') < at('Your temperament') && at('Your temperament') < at('What you believe') && at('What you believe') < at('Who checks your work') && at('Who checks your work') < at('How you answer') && at('How you answer') < at('Fixed rules'));
+  const ro = P.block(Object.assign(P.blank('ro', { name: 'Ravi' }), { hash: '' }), { crew, profiles: { ben: p } });
+  assert.match(ro, /Whose work you check: Noah\. Before Noah can move an idea or card to a test or a build, you have to agree/);
 });
 
 test('dossier.js: inject profile puts the block in the identity and the voice preset; absent policy (charter) is today\'s identity', () => {
@@ -77,7 +77,7 @@ test('dossier.js: inject profile puts the block in the identity and the voice pr
   // problems(): a valid profile adds nothing; an invalid one is reported for the people function
   const probs = T => inRoot(T, 'const D = require(' + D + '); return D.problems("ben", { docs: { identity: "x", purpose: "x", context: "x", manual: "## House rules" } }, { composer: { identity: () => "" } });');
   assert.ok(!probs(prof.T).some(x => /^profile:/.test(x)));
-  const bad = benny(); bad.boundaries = []; bad.hash = '';
+  const bad = noah(); bad.boundaries = []; bad.hash = '';
   prof.w('company/people/profiles/ben.json', bad);
   assert.ok(probs(prof.T).some(x => /^profile: a fixed rule is missing/.test(x)));
 });
@@ -97,24 +97,24 @@ test('dossier.js CEO: inject profile and a CEO profile on file build the CEO ide
 
 test('chat: the context note ends with the reminder under inject profile; nothing with the policy absent', () => {
   const note = T => inRoot(T, 'const co = require(' + JSON.stringify(path.join(TOOLS, 'lib', 'company.js')) + '); return require(' + JSON.stringify(path.join(REPO, 'console', 'chat.js')) + ').contextNote("ben", co.crew().ben, co, "hi", null);');
-  assert.match(note(fixture({ inject: 'profile' }).T), /\nYou are Benny, the scout\. Reply only as Benny\.\]\n\n$/);
-  assert.ok(!/Reply only as Benny/.test(note(fixture(null).T)));
-  assert.ok(!/Reply only as Benny/.test(note(fixture({ inject: 'profile', reminder: false }).T)), 'reminder off');
+  assert.match(note(fixture({ inject: 'profile' }).T), /\nYou are Noah, the scout\. Reply only as Noah\.\]\n\n$/);
+  assert.ok(!/Reply only as Noah/.test(note(fixture(null).T)));
+  assert.ok(!/Reply only as Noah/.test(note(fixture({ inject: 'profile', reminder: false }).T)), 'reminder off');
 });
 
 test('family note: an opposed pair on the same kind of model is a note; a code pair is exempt; a lower-tier checker is a note', () => {
   const c = fixture({ inject: 'profile' });
   const D = JSON.stringify(path.join(TOOLS, 'dossier.js'));
   const notes = () => inRoot(c.T, 'const co = require(' + JSON.stringify(path.join(TOOLS, 'lib', 'company.js')) + '); return require(' + D + ').profileNotes(co.crew());');
-  assert.match(notes().map(n => n.note).join(), /Rohan checks Benny and both run on the same kind of model \(deepseek\)/);
+  assert.match(notes().map(n => n.note).join(), /Ravi checks Noah and both run on the same kind of model \(deepseek\)/);
   c.w('company/departments.json', { version: 1, departments: [{ id: 'eng', name: 'Engineering', lead: null, members: ['ben', 'ro'], defaultClass: 'code' }] });
   assert.equal(notes().filter(n => /same kind/.test(n.note)).length, 0, 'code stays on Claude: a code pair is exempt');
   fs.rmSync(path.join(c.T, 'company/departments.json'));
   c.w('company/model-policy.json', { allowed: { 'claude-cli': { tiers: { 'claude-opus-5-5': 'heavy', 'claude-haiku-4-5': 'light' } } }, seats: { ben: { chain: [{ provider: 'claude-cli', model: 'claude-opus-5-5' }] }, ro: { chain: [{ provider: 'claude-cli', model: 'claude-haiku-4-5' }] } } });
-  assert.match(notes().map(n => n.note).join(), /Rohan checks Benny on a lower tier \(light under heavy\)/);
+  assert.match(notes().map(n => n.note).join(), /Ravi checks Noah on a lower tier \(light under heavy\)/);
   // the owner's words for the same pair: plain
-  const pc = P.pairCheck({ seat: 'ben', name: 'Benny', provider: 'deepseek', model: 'a' }, { seat: 'ro', name: 'Rohan', provider: 'deepseek', model: 'b' });
-  assert.equal(pc.text, 'Rohan checks Benny and both run on the same kind of AI. A different kind tends to argue back better. The crew can change this.');
+  const pc = P.pairCheck({ seat: 'ben', name: 'Noah', provider: 'deepseek', model: 'a' }, { seat: 'ro', name: 'Ravi', provider: 'deepseek', model: 'b' });
+  assert.equal(pc.text, 'Ravi checks Noah and both run on the same kind of AI. A different kind tends to argue back better. The crew can change this.');
   assert.deepEqual(require(path.join(TOOLS, 'lib', 'owner-scope.js')).wordsProblems(pc.text), []);
 });
 
@@ -139,7 +139,7 @@ test('model-rank profileEvaluation: per version, sign-off noes overturned, a tri
   assert.deepEqual(ro.signoff, { answered: 2, noRate: 0.5, noes: 1, overturned: 1 }); assert.equal(ro.meetings.stanceShare, 1);
   const t = a.trials[0];
   assert.equal(t.seat, 'ben'); assert.equal(t.state, 'running'); assert.equal(t.before.items, 5); assert.equal(t.during.items, 5);
-  assert.equal(t.baseline.before.items, 5, 'Rohan did not change: he is the baseline'); assert.equal(t.baseline.oneShotPoints, 0);
+  assert.equal(t.baseline.before.items, 5, 'Ravi did not change: he is the baseline'); assert.equal(t.baseline.oneShotPoints, 0);
   assert.equal(MR.profileEvaluation({ now: t0, wakes: [], profileHistory: {} }, { items: [], wakeById: new Map() }, K, { minItems: 3 }, () => true), null, 'no profiles: no section');
   assert.ok(MR.evalKnobs(JSON.parse(fs.readFileSync(path.join(REPO, 'company/defaults/work/models/ranking-policy.json'), 'utf8'))).profile, 'on in the framework default');
 });

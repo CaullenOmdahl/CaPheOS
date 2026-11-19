@@ -22,7 +22,7 @@ Let me look at my own record before I point you anywhere.
 
 <run_command>cd /home/owner/Companies/example-co && grep -rin "synpath" . --exclude-dir=node_modules --exclude-dir=.git -l 2>/dev/null | head -20</run_command>
 
-<run_command>cd /home/owner/Companies/example-co && ls secrets/ 2>&1 | head -20; echo "---"; grep -rin "pyth\|hermes" company/work/decisions.md 2>/dev/null | tail -20</run_command>
+<run_command>cd /home/owner/Companies/example-co && ls secrets/ 2>&1 | head -20; echo "---"; grep -rin "quotely\|hermes" company/work/decisions.md 2>/dev/null | tail -20</run_command>
 
 <run_command>cd /home/owner/Companies/example-co && node company/tools/inbox.js list --all 2>&1 | tail -30</run_command>
 

@@ -154,7 +154,7 @@ function selftest() {
       boss: { name: 'Bea', functions: ['ceo', 'tools'], manager: null, inbox: 'to-bea.md' },
       ppl: { name: 'Pat', functions: ['people'], manager: 'boss', inbox: 'to-pat.md' },
       lead: { name: 'Lee', manager: 'boss', inbox: 'to-lee.md' },
-      hal: { name: 'Halima', manager: 'lead', inbox: 'to-halima.md' },
+      hal: { name: 'Hollis', manager: 'lead', inbox: 'to-hollis.md' },
       sol: { name: 'Sol', manager: 'boss', inbox: 'to-sol.md' } } }));
     const t0 = Date.parse('2026-11-17T17:00:00Z');
     const row = (agentId, runId, ts, cmd) => JSON.stringify({ streamId: 'cron-' + runId, agentId, role: 'assistant', ts, sourceRunId: runId,
@@ -171,8 +171,8 @@ function selftest() {
     ok('scan: the long sleeper\'s runs are found with their totals; short, old and in-window-only runs are not', j && j.runs.length === 3 && j.runs[0].runId === 'run-hal-1' && Math.round(j.runs[0].seconds) === 2124 && j.runs[0].calls === 9 && !j.runs.some(x => x.runId === 'run-sol' || x.runId === 'run-old'), r.stdout + r.stderr);
     r = run(['tick']);
     const lee = (() => { try { return fs.readFileSync(path.join(T, 'company/work/handoffs/to-lee.md'), 'utf8'); } catch (_) { return ''; } })();
-    ok('tick: one OPEN handoff to the seat\'s manager, with the advice (no commitments tool: the module is off here)', (lee.match(/^## /mg) || []).length === 1 && /Halima's run slept 35 min/.test(lee) && /handoff to themselves/.test(lee) && !/commitments\.js/.test(lee) && /service\.js propose/.test(lee) && /\*\*Status:\*\* OPEN/.test(lee), lee + r.stderr);
-    ok('tick: a stranger to the crew is not flagged, and nothing goes to the seat itself', !fs.existsSync(path.join(T, 'company/work/handoffs/to-halima.md')) && /LONG SLEEP: Halima/.test(r.stdout) && !/stranger/.test(r.stdout), r.stdout);
+    ok('tick: one OPEN handoff to the seat\'s manager, with the advice (no commitments tool: the module is off here)', (lee.match(/^## /mg) || []).length === 1 && /Hollis's run slept 35 min/.test(lee) && /handoff to themselves/.test(lee) && !/commitments\.js/.test(lee) && /service\.js propose/.test(lee) && /\*\*Status:\*\* OPEN/.test(lee), lee + r.stderr);
+    ok('tick: a stranger to the crew is not flagged, and nothing goes to the seat itself', !fs.existsSync(path.join(T, 'company/work/handoffs/to-hollis.md')) && /LONG SLEEP: Hollis/.test(r.stdout) && !/stranger/.test(r.stdout), r.stdout);
     const st = readJson(path.join(T, 'company/state/long-sleep.json'), {});
     ok('tick: the second long run of the same seat inside 24 h is recorded, not flagged again', st.flagged && st.flagged['run-hal-1'] && st.flagged['run-hal-2'] && st.seats.hal, JSON.stringify(st));
     r = run(['tick']);

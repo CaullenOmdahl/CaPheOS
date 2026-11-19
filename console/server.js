@@ -1195,8 +1195,8 @@ async function selftest() {
     const kq = {};
     kq.choice = await askCli(['--message', 'Which plan should we try?', '--kind', 'choice', '--options', 'trial:The free trial,skip:Skip it', '--recommended', 'trial']);
     kq.text = await askCli(['--message', 'What should the newsletter cover?', '--kind', 'text', '--min', '10']);
-    kq.secret = await askCli(['--message', 'Please make a read-only Kalshi key and paste it here.', '--details', 'Kalshi refuses anonymous websockets.', '--kind', 'secret', '--name', 'kalshi-api-key', '--label', 'Kalshi API key']);
-    kq.secret2 = await askCli(['--message', 'And once more, the same Kalshi key file.', '--kind', 'secret', '--name', 'kalshi-api-key']);
+    kq.secret = await askCli(['--message', 'Please make a read-only Tradex key and paste it here.', '--details', 'Tradex refuses anonymous websockets.', '--kind', 'secret', '--name', 'tradex-api-key', '--label', 'Tradex API key']);
+    kq.secret2 = await askCli(['--message', 'And once more, the same Tradex key file.', '--kind', 'secret', '--name', 'tradex-api-key']);
     kq.link = await askCli(['--message', 'Could you sign up at Synpath?', '--kind', 'link', '--url', 'https://synpath.example/signup', '--action', 'Sign in with Google']);
     kq.account = await askCli(['--message', 'Make a free Acme account.', '--kind', 'account', '--url', 'https://healthchecks.io/', '--action', 'Sign up', '--fields', 'email:Sign-in email']);
     kq.number = await askCli(['--message', 'What monthly cap?', '--kind', 'number', '--unit', 'USD', '--min', '0', '--max', '100']);
@@ -1245,10 +1245,10 @@ async function selftest() {
     check('account answered with the field', r.status === 200 && /me@example\.com/.test(r.json.a), r.json);
     // the secret store
     r = await call('POST', '/api/questions/' + kq.secret.id + '/answer', { action: 'store', values: { key: '   ' } });
-    check('secret: an empty key: 400, nothing written', r.status === 400 && !fs.existsSync(path.join(tmp, 'secrets', 'kalshi-api-key')), r.json);
+    check('secret: an empty key: 400, nothing written', r.status === 400 && !fs.existsSync(path.join(tmp, 'secrets', 'tradex-api-key')), r.json);
     r = await call('POST', '/api/questions/' + kq.secret.id + '/answer', { action: 'store', values: { key: '  ' + SECRET + '\n' } });
-    const kfile = path.join(tmp, 'secrets', 'kalshi-api-key');
-    check('secret: stored, the answer names the path and length only', r.status === 200 && r.json.stored[0].stored === 'secrets/kalshi-api-key' && r.json.stored[0].chars === SECRET.length && /secrets\/kalshi-api-key \(36 chars, validated: not checked\)/.test(r.json.a), r.json);
+    const kfile = path.join(tmp, 'secrets', 'tradex-api-key');
+    check('secret: stored, the answer names the path and length only', r.status === 200 && r.json.stored[0].stored === 'secrets/tradex-api-key' && r.json.stored[0].chars === SECRET.length && /secrets\/tradex-api-key \(36 chars, validated: not checked\)/.test(r.json.a), r.json);
     check('secret: the response body never carries the value', !r.text.includes(SECRET));
     check('secret: the file is 0600 and holds the value', fs.existsSync(kfile) && (fs.statSync(kfile).mode & 0o777) === 0o600 && fs.readFileSync(kfile, 'utf8') === SECRET + '\n', fs.existsSync(kfile) && (fs.statSync(kfile).mode & 0o777).toString(8));
     r = await call('POST', '/api/questions/' + kq.secret2.id + '/answer', { action: 'store', values: { key: 'another-value-1234567890' } });
@@ -1295,36 +1295,36 @@ async function selftest() {
     // traversal refused; the owner's change recorded for locked-watch; the CEO told; Today knows a key is already saved
     {
       fs.mkdirSync(path.join(tmp, 'company', 'work', 'research'), { recursive: true });
-      fs.writeFileSync(path.join(tmp, 'company', 'work', 'research', 'feed.js'), "const co = require('../../tools/lib/company');\nconst k = co.secret('pyth-api-key');\n");
-      const PYTH = 'pyth-Value-For-Selftest-9876543210', PYTH2 = 'pyth-Replaced-For-Selftest-111222333';
-      const pfile = path.join(tmp, 'secrets', 'pyth-api-key');
+      fs.writeFileSync(path.join(tmp, 'company', 'work', 'research', 'feed.js'), "const co = require('../../tools/lib/company');\nconst k = co.secret('quotely-api-key');\n");
+      const QUOTELY = 'quotely-Value-For-Selftest-9876543210', QUOTELY2 = 'quotely-Replaced-For-Selftest-111222333';
+      const pfile = path.join(tmp, 'secrets', 'quotely-api-key');
       const loops = JSON.parse(fs.readFileSync(path.join(tmp, 'company', 'tools', 'loops.json'), 'utf8')).agents || {};
       const ceoId = Object.keys(loops).find(k => (loops[k].functions || []).includes('ceo')) || Object.keys(loops).find(k => !loops[k].manager);
       const ceoInbox = () => { try { return fs.readFileSync(path.join(tmp, 'company', 'work', 'handoffs', loops[ceoId].inbox), 'utf8'); } catch (_) { return ''; } };
       r = await call('GET', '/api/service-keys');
-      const kal = r.json.keys && r.json.keys.find(k => k.name === 'kalshi-api-key');
+      const kal = r.json.keys && r.json.keys.find(k => k.name === 'tradex-api-key');
       check('service keys: lists the keys in secrets/ with a friendly name, set and a change date, never a value or the station/console token',
-        r.status === 200 && kal && kal.label === 'Kalshi API key' && kal.set === true && !isNaN(Date.parse(kal.changedAt)) && !r.text.includes(SECRET) && !r.text.includes('another-value') && !r.text.includes('selftest-fake-station-token')
+        r.status === 200 && kal && kal.label === 'Tradex API key' && kal.set === true && !isNaN(Date.parse(kal.changedAt)) && !r.text.includes(SECRET) && !r.text.includes('another-value') && !r.text.includes('selftest-fake-station-token')
         && !r.json.keys.some(k => /^(station-token|console-token|readme\.md)$/i.test(k.name)), r.json);
-      const py0 = r.json.keys.find(k => k.name === 'pyth-api-key');
-      check('service keys: a key a company script reads but nobody saved yet is listed as not set, with who reads it', py0 && py0.set === false && py0.label === 'Pyth' && py0.usedBy.includes('the research work') && py0.files.includes('company/work/research/feed.js'), py0);
-      check('service keys: the Add list offers Pyth, Kalshi, Synpath, healthchecks.io and GitHub, each with where to get it', ['pyth', 'kalshi', 'kalshi-private', 'synpath', 'healthchecks', 'github'].every(id => (r.json.services || []).some(x => x.id === id && x.where)), r.json.services);
-      r = await call('POST', '/api/service-keys', { service: 'pyth', value: '  ' + PYTH + '\n' });
-      check('service keys: add stores secrets/pyth-api-key (0600) and answers with name and length only', r.status === 200 && r.json.name === 'pyth-api-key' && r.json.chars === PYTH.length && r.json.replaced === false && !r.text.includes(PYTH)
-        && fs.readFileSync(pfile, 'utf8') === PYTH + '\n' && (fs.statSync(pfile).mode & 0o777) === 0o600, r.json);
-      const provRows = () => fs.readFileSync(path.join(tmp, 'company', 'state', 'locked', 'provenance.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(x => x.file === 'secrets/pyth-api-key');
+      const py0 = r.json.keys.find(k => k.name === 'quotely-api-key');
+      check('service keys: a key a company script reads but nobody saved yet is listed as not set, with who reads it', py0 && py0.set === false && py0.label === 'Quotely' && py0.usedBy.includes('the research work') && py0.files.includes('company/work/research/feed.js'), py0);
+      check('service keys: the Add list offers Quotely, Tradex, Synpath, healthchecks.io and GitHub, each with where to get it', ['quotely', 'tradex', 'tradex-private', 'synpath', 'healthchecks', 'github'].every(id => (r.json.services || []).some(x => x.id === id && x.where)), r.json.services);
+      r = await call('POST', '/api/service-keys', { service: 'quotely', value: '  ' + QUOTELY + '\n' });
+      check('service keys: add stores secrets/quotely-api-key (0600) and answers with name and length only', r.status === 200 && r.json.name === 'quotely-api-key' && r.json.chars === QUOTELY.length && r.json.replaced === false && !r.text.includes(QUOTELY)
+        && fs.readFileSync(pfile, 'utf8') === QUOTELY + '\n' && (fs.statSync(pfile).mode & 0o777) === 0o600, r.json);
+      const provRows = () => fs.readFileSync(path.join(tmp, 'company', 'state', 'locked', 'provenance.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(x => x.file === 'secrets/quotely-api-key');
       const sha = t => 'sha256:' + crypto.createHash('sha256').update(t).digest('hex');
       let pr = provRows();
       check('service keys: the write is recorded as the owner\'s (provenance: hash of the exact bytes, writer console, not an agent run), so locked-watch stays quiet',
-        pr.length === 1 && pr[0].sha256 === sha(PYTH + '\n') && /^console /.test(pr[0].writer) && pr[0].underStation === false && pr[0].tainted === false && !JSON.stringify(pr).includes(PYTH), pr);
-      check('service keys: the CEO\'s inbox gets "The owner saved Pyth (secrets/pyth-api-key)", never the value', /The owner saved Pyth \(secrets\/pyth-api-key\)/.test(ceoInbox()) && /\*\*Status:\*\* OPEN/.test(ceoInbox()) && !ceoInbox().includes(PYTH), ceoInbox().slice(-600));
-      r = await call('POST', '/api/service-keys', { service: 'pyth', value: PYTH2 });
-      check('service keys: saving over a saved key without replace is 409 and changes nothing', r.status === 409 && r.json.detail && r.json.detail.code === 'exists' && fs.readFileSync(pfile, 'utf8') === PYTH + '\n' && !r.text.includes(PYTH2), r.json);
-      r = await call('POST', '/api/service-keys', { name: 'pyth-api-key', value: PYTH2, replace: true });
-      check('service keys: replace overwrites it, still 0600, recorded again, the CEO told it was replaced', r.status === 200 && r.json.replaced === true && fs.readFileSync(pfile, 'utf8') === PYTH2 + '\n' && (fs.statSync(pfile).mode & 0o777) === 0o600
-        && provRows().some(x => x.sha256 === sha(PYTH2 + '\n')) && /The owner replaced Pyth/.test(ceoInbox()) && !r.text.includes(PYTH2), r.json);
+        pr.length === 1 && pr[0].sha256 === sha(QUOTELY + '\n') && /^console /.test(pr[0].writer) && pr[0].underStation === false && pr[0].tainted === false && !JSON.stringify(pr).includes(QUOTELY), pr);
+      check('service keys: the CEO\'s inbox gets "The owner saved Quotely (secrets/quotely-api-key)", never the value', /The owner saved Quotely \(secrets\/quotely-api-key\)/.test(ceoInbox()) && /\*\*Status:\*\* OPEN/.test(ceoInbox()) && !ceoInbox().includes(QUOTELY), ceoInbox().slice(-600));
+      r = await call('POST', '/api/service-keys', { service: 'quotely', value: QUOTELY2 });
+      check('service keys: saving over a saved key without replace is 409 and changes nothing', r.status === 409 && r.json.detail && r.json.detail.code === 'exists' && fs.readFileSync(pfile, 'utf8') === QUOTELY + '\n' && !r.text.includes(QUOTELY2), r.json);
+      r = await call('POST', '/api/service-keys', { name: 'quotely-api-key', value: QUOTELY2, replace: true });
+      check('service keys: replace overwrites it, still 0600, recorded again, the CEO told it was replaced', r.status === 200 && r.json.replaced === true && fs.readFileSync(pfile, 'utf8') === QUOTELY2 + '\n' && (fs.statSync(pfile).mode & 0o777) === 0o600
+        && provRows().some(x => x.sha256 === sha(QUOTELY2 + '\n')) && /The owner replaced Quotely/.test(ceoInbox()) && !r.text.includes(QUOTELY2), r.json);
       r = await call('GET', '/api/service-keys');
-      check('service keys: the list never carries a value (after add and replace)', r.status === 200 && r.json.keys.find(k => k.name === 'pyth-api-key').set === true && !r.text.includes(PYTH) && !r.text.includes(PYTH2), r.json);
+      check('service keys: the list never carries a value (after add and replace)', r.status === 200 && r.json.keys.find(k => k.name === 'quotely-api-key').set === true && !r.text.includes(QUOTELY) && !r.text.includes(QUOTELY2), r.json);
       const tokBefore = fs.readFileSync(path.join(tmp, 'secrets', 'station-token'), 'utf8');
       for (const nm of ['station-token', 'console-token', 'README.md', 'Station-Token']) {
         r = await call('POST', '/api/service-keys', { name: nm, value: 'overwrite-attempt-123456', replace: true });
@@ -1344,12 +1344,12 @@ async function selftest() {
       check('service keys: an unknown service is refused', r.status === 400, r.json);
       // Today: a crew request for a key that is already saved says so
       // a key that is already saved is not asked for again (inbox.js code secret-exists), unless the asker says what changed
-      const kq4no = await askCli(['--message', 'The Pyth key, please.', '--kind', 'secret', '--name', 'pyth-api-key', '--label', 'Pyth API key']);
+      const kq4no = await askCli(['--message', 'The Quotely key, please.', '--kind', 'secret', '--name', 'quotely-api-key', '--label', 'Quotely API key']);
       check('Today: a crew request for a key that is already saved is refused unless it says what changed', kq4no.ok === false && kq4no.code === 'secret-exists', kq4no);
-      const kq4 = await askCli(['--message', 'The Pyth key, please.', '--kind', 'secret', '--name', 'pyth-api-key', '--label', 'Pyth API key', '--changed', 'the stored key stopped working this morning']);
+      const kq4 = await askCli(['--message', 'The Quotely key, please.', '--kind', 'secret', '--name', 'quotely-api-key', '--label', 'Quotely API key', '--changed', 'the stored key stopped working this morning']);
       const kq5 = await askCli(['--message', 'A Synpath key, please.', '--kind', 'secret', '--name', 'synpath-api-key', '--label', 'Synpath key']);
       r = await call('GET', '/api/questions'); const q4 = (r.json.questions || []).find(x => x.id === kq4.id), q5 = (r.json.questions || []).find(x => x.id === kq5.id);
-      check('Today: a request for a key that is already saved carries saved.at; one for a new key does not', q4 && q4.form.fields[0].saved && !isNaN(Date.parse(q4.form.fields[0].saved.at)) && q5 && !q5.form.fields[0].saved && !r.text.includes(PYTH2), { q4: q4 && q4.form, q5: q5 && q5.form });
+      check('Today: a request for a key that is already saved carries saved.at; one for a new key does not', q4 && q4.form.fields[0].saved && !isNaN(Date.parse(q4.form.fields[0].saved.at)) && q5 && !q5.form.fields[0].saved && !r.text.includes(QUOTELY2), { q4: q4 && q4.form, q5: q5 && q5.form });
       for (const x of [kq4, kq5]) await call('POST', '/api/questions/' + x.id + '/answer', { action: 'skip' }).catch(() => {});
     }
     // the composer refuses an ask that tells the owner to run a command
@@ -1382,7 +1382,7 @@ async function selftest() {
     const leaks = { inbox: inboxText.includes(SECRET), inbound: inboundText.includes(SECRET), answered: answeredNow.text.includes(SECRET), messages: msgsNow.text.includes(SECRET), sse: sseBuf.d.includes(SECRET), serverOut: serverOut.d.includes(SECRET) || errText.includes(SECRET),
       pem: inboxText.includes('MC4CAQAwBQYDK2VwBCIEIAkR') || inboundText.includes('MC4CAQAwBQYDK2VwBCIEIAkR') };
     check('the secret value is in no inbox row, owner message, answered list, SSE event or server log', Object.values(leaks).every(v => !v), leaks);
-    check('answers reach the asker as owner messages naming the question', inboundText.includes('my answer to your question ' + kq.secret.id) && /stored at secrets\/kalshi-api-key/.test(inboundText));
+    check('answers reach the asker as owner messages naming the question', inboundText.includes('my answer to your question ' + kq.secret.id) && /stored at secrets\/tradex-api-key/.test(inboundText));
     sseReq.destroy();
     // owner messages
     r = await call('POST', '/api/owner/messages', { text: 'Hello company' });

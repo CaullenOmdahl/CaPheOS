@@ -37,7 +37,7 @@
  * keeps watching: the hold file stays as a record with `watching: true`, which co.restartHold() ignores, so a second
  * restart is still refused. The next time the station is idle BY ITSELF (the same 3 polls in a row), it holds again,
  * confirms idle under the hold on 3 more polls, and restarts; if something slipped in, the held phase starts over with
- * a fresh cap. The dispatch log and the owner hear it plainly ("Waiting for Halima's run to end; the crew keeps working
+ * a fresh cap. The dispatch log and the owner hear it plainly ("Waiting for Hollis's run to end; the crew keeps working
  * meanwhile"), the owner once. It still never kills a run and still gives up at --max-wait-min.
  *
  * Then: restart the unit (systemctl --user restart <company.json station.serviceName>.service), wait for GET /api/health
@@ -145,7 +145,7 @@ async function inFlight(now) {
 // "patch 0013" -> "load patch 0013"; a reason that already says load ("load the systemctl guard") is not doubled
 const loadWhat = r => { const t = String(r || '').trim(); return /^(to\s+)?load\b/i.test(t) ? t.replace(/^to\s+/i, '') : 'load ' + t; };
 const listOf = items => items.map(i => i.what).join('; ');
-// "Halima's run", "Halima's and Dave's runs", or "the running work" when no item names a person
+// "Hollis's run", "Hollis's and Dana's runs", or "the running work" when no item names a person
 function waitingFor(items) {
   const who = [...new Set(items.map(i => i.who).filter(Boolean))];
   const n = items.filter(i => i.who).length;

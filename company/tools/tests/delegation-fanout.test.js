@@ -42,7 +42,7 @@ const jsonl = (root, rel) => (read(root, rel) || '').split('\n').filter(Boolean)
 const CREW = {
   boss: { name: 'Boss', functions: ['ceo'], manager: null, inbox: 'to-boss.md' },
   hal: { name: 'Hal', functions: ['people'], manager: 'boss', inbox: 'to-hal.md' },
-  kwa: { name: 'Kwame', manager: 'boss', inbox: 'to-kwame.md', loop: 'Kwame loop' },
+  kwa: { name: 'Kofi', manager: 'boss', inbox: 'to-kofi.md', loop: 'Kofi loop' },
   ben: { name: 'Ben', manager: 'kwa', inbox: 'to-ben.md', loop: 'Ben loop' },
   cat: { name: 'Cat', manager: 'kwa', inbox: 'to-cat.md', loop: 'Cat loop' },
   dan: { name: 'Dan', manager: 'ben', inbox: 'to-dan.md', loop: 'Dan loop' },
@@ -69,7 +69,7 @@ function fixture(o) {
   w(root, 'company/work/departments/eng/DECISIONS.md', '# Engineering — decisions\n\nNewest first.\n\n');
   w(root, 'company/work/decisions.md', '# Decisions\n\nNewest first.\n\n');
   w(root, 'company/work/handoffs/to-ben.md', '# Handoffs\n' + item('ben-parser', 'rewrite the parser'));
-  w(root, 'company/work/handoffs/to-kwame.md', '# Handoffs\n' + item('kwa-big', 'the big refactor'));
+  w(root, 'company/work/handoffs/to-kofi.md', '# Handoffs\n' + item('kwa-big', 'the big refactor'));
   for (const s of ['to-cat.md', 'to-boss.md', 'to-hal.md', 'to-dan.md', 'to-zed.md']) w(root, 'company/work/handoffs/' + s, '# Handoffs\n');
   return root;
 }
@@ -111,7 +111,7 @@ test('a SPLIT answer: live writes the pieces into the member\'s item and records
     const root = fixture({ delegation: { mode, workers: ['ben', 'cat'], maxWorkers: 2, workerTimeoutMin: 20 } });
     const ask = consult(root, ['ask', '--item', 'ben-parser', '--question', 'Can this be split?', '--kind', 'plan', '--check', 'npm test', '--by', 'Ben']);
     assert.equal(ask.code, 0, JSON.stringify(ask));
-    const argv = ['answer', ask.out.id, '--verdict', 'SPLIT', '--check', 'read the item', '--fanout', 'lanes', '--by', 'Kwame'];
+    const argv = ['answer', ask.out.id, '--verdict', 'SPLIT', '--check', 'read the item', '--fanout', 'lanes', '--by', 'Kofi'];
     for (const p of PIECES) argv.push('--piece', p);
     const r = consult(root, argv);
     const box = read(root, 'company/work/handoffs/to-ben.md');
@@ -119,7 +119,7 @@ test('a SPLIT answer: live writes the pieces into the member\'s item and records
     assert.equal(r.code, 0, JSON.stringify(r));
     const split = jsonl(root, 'company/state/consults.jsonl').filter(x => x.op === 'split');
     assert.equal(split.length, 1); assert.equal(split[0].item, 'ben-parser'); assert.equal(split[0].pieces.length, 3); assert.equal(split[0].fanout, 'lanes'); assert.equal(split[0].lead, 'kwa');
-    assert.match(box, /\*\*Verdict:\*\* SPLIT by Kwame — check: read the item — 1\. the parser 2\. the lexer 3\. the docs/);
+    assert.match(box, /\*\*Verdict:\*\* SPLIT by Kofi — check: read the item — 1\. the parser 2\. the lexer 3\. the docs/);
     if (mode === 'live') {
       assert.ok(!split[0].shadow);
       assert.match(box, /\*\*Pieces:\*\*\n1\. the parser — files: src\/parse\.js — check: npm test -- parse\n2\. the lexer/);
@@ -137,7 +137,7 @@ test('a SPLIT answer: live writes the pieces into the member\'s item and records
       assert.equal(inRoot(root, 'C.splitCandidates({})').length, 0);
     }
     // SPLIT neither passes nor fails in the ranking
-    const K = MR.knobs(POLICY); assert.deepEqual(MR.verdictsIn('**Verdict:** SPLIT by Kwame — check: x', K, CREW), []);
+    const K = MR.knobs(POLICY); assert.deepEqual(MR.verdictsIn('**Verdict:** SPLIT by Kofi — check: x', K, CREW), []);
   }
 });
 
@@ -145,12 +145,12 @@ test('the lead\'s own split of its item; a member cannot split; too few pieces a
   const root = fixture();
   const argv = (by, list) => ['split', 'kwa-big', '--fanout', 'dispatch', '--by', by].concat(...list.map(p => ['--piece', p]));
   assert.match(consult(root, argv('Ben', PIECES)).out.error, /only a department lead splits/);
-  assert.match(consult(root, argv('Kwame', PIECES.slice(0, 2))).out.error, /split refused: 2 pieces/);
-  const r = consult(root, argv('Kwame', PIECES));
+  assert.match(consult(root, argv('Kofi', PIECES.slice(0, 2))).out.error, /split refused: 2 pieces/);
+  const r = consult(root, argv('Kofi', PIECES));
   assert.equal(r.code, 0, JSON.stringify(r)); assert.equal(r.out.live, true); assert.equal(r.out.fanout, 'dispatch');
-  assert.match(read(root, 'company/work/handoffs/to-kwame.md'), /\*\*Fan-out:\*\* dispatch/);
+  assert.match(read(root, 'company/work/handoffs/to-kofi.md'), /\*\*Fan-out:\*\* dispatch/);
   const c = inRoot(root, 'C.splitCandidates({})');
-  assert.equal(c.length, 1); assert.equal(c[0].fanout, 'dispatch'); assert.equal(c[0].file, 'to-kwame.md');
+  assert.equal(c.length, 1); assert.equal(c[0].fanout, 'dispatch'); assert.equal(c[0].file, 'to-kofi.md');
 });
 
 test('departments.js delegation: the owner\'s switch, workers only from the lead\'s team, check codes, the auto withdraw and the owner-only resume', () => {
@@ -158,9 +158,9 @@ test('departments.js delegation: the owner\'s switch, workers only from the lead
   assert.match(depts(root, ['delegation', 'eng', 'live', '--by', 'Boss']).out.error, /only the owner switches/);
   const on = depts(root, ['delegation', 'eng', 'shadow', '--by', 'owner'], { owner: true });
   assert.equal(on.code, 0, JSON.stringify(on)); assert.equal(on.out.delegation.mode, 'shadow'); assert.equal(on.out.delegation.effective, 'shadow');
-  // workers: Dan reports to Ben who reports to Kwame (in the subtree); Zed reports to the CEO (not)
+  // workers: Dan reports to Ben who reports to Kofi (in the subtree); Zed reports to the CEO (not)
   const bad = depts(root, ['delegation', 'eng', 'workers', 'ben,zed', '--by', 'owner'], { owner: true });
-  assert.equal(bad.code, 2); assert.equal(bad.out.problem, 'DELEGATE_OUTSIDE_SUBTREE'); assert.match(bad.out.error, /Zed \(zed\) does not report to Kwame/);
+  assert.equal(bad.code, 2); assert.equal(bad.out.problem, 'DELEGATE_OUTSIDE_SUBTREE'); assert.match(bad.out.error, /Zed \(zed\) does not report to Kofi/);
   const ok = depts(root, ['delegation', 'eng', 'workers', 'ben,dan', '--by', 'owner'], { owner: true });
   assert.equal(ok.code, 0, JSON.stringify(ok)); assert.deepEqual(ok.out.delegation.workers, ['ben', 'dan']);
   assert.equal(depts(root, ['check', '--json']).code, 0, 'consistent');
@@ -203,7 +203,7 @@ test('set-route: the one writer of routes; the class rules first, for the owner 
 const jobs = [{ name: 'Ben loop', agentId: 'ben', provider: 'claude-cli', model: 'claude-sonnet-5-5' }, { name: 'Cat loop', agentId: 'cat', provider: 'claude-cli', model: 'claude-sonnet-5-5' },
   { name: 'Dan loop', agentId: 'dan', provider: 'custom', model: 'MiniMax-M3.1-Pro' }, { name: 'Zed loop', agentId: 'zed', provider: 'claude-cli', model: 'claude-sonnet-5-5' }];
 const openAll = { ben: [{ provider: 'claude-cli', model: 'claude-sonnet-5-5' }], cat: [{ provider: 'claude-cli', model: 'claude-sonnet-5-5' }, { provider: 'custom', model: 'MiniMax-M3.1-Pro' }], dan: [{ provider: 'custom', model: 'MiniMax-M3.1-Pro' }], zed: [{ provider: 'claude-cli', model: 'claude-sonnet-5-5' }] };
-const cand = o => Object.assign({ split: 'sp-1', dept: 'eng', lead: 'kwa', item: 'kwa-big', file: 'to-kwame.md', class: 'code', fanout: 'dispatch', pieces: [] }, o || {});
+const cand = o => Object.assign({ split: 'sp-1', dept: 'eng', lead: 'kwa', item: 'kwa-big', file: 'to-kofi.md', class: 'code', fanout: 'dispatch', pieces: [] }, o || {});
 function compute(o) {
   o = o || {};
   const doc = deptsDoc(Object.assign({ mode: 'live', workers: ['ben', 'cat', 'zed'], maxWorkers: 3, workerTimeoutMin: 20 }, o.delegation || {}));
@@ -211,7 +211,7 @@ function compute(o) {
 }
 test('delegate-allow compute: the subtree, busy seats, a pacer hold, the class rules, one item per lead', () => {
   const r = compute();
-  assert.deepEqual(r.doc.leads.kwa.workers, ['ben', 'cat'], 'Zed (outside Kwame\'s reports) is never listed');
+  assert.deepEqual(r.doc.leads.kwa.workers, ['ben', 'cat'], 'Zed (outside Kofi\'s reports) is never listed');
   assert.equal(r.doc.leads.kwa.maxWorkers, 2); assert.equal(r.doc.leads.kwa.workerTimeoutMin, 20); assert.deepEqual(r.doc.leads.kwa.items, ['kwa-big']);
   assert.deepEqual(r.doc.leads.kwa.models.cat, [{ provider: 'claude-cli', model: 'claude-sonnet-5-5' }], 'a code item lists no MiniMax-plan pair, even one open for the worker');
   assert.deepEqual(compute({ busy: ['ben'] }).doc.leads.kwa.workers, ['cat'], 'a busy worker is not listed');
@@ -267,7 +267,7 @@ test('delegate-allow: code files make a code item, a worker\'s own pair is liste
 test('delegate-allow: a worker on a live child run is busy; a split whose workers started is marked used; a halt empties the list', () => {
   const root = fixture();
   assert.ok(DA.busySeats(root, CREW, [], new Map([['cat', ['run-1']]])).has('cat'), 'a live child run makes the seat busy');
-  // the previous list named Kwame -> Ben, Cat for sp-9; Cat now runs a child run: sp-9 is used
+  // the previous list named Kofi -> Ben, Cat for sp-9; Cat now runs a child run: sp-9 is used
   w(root, 'company/state/delegate-allow.json', { v: 1, at: Date.now(), by: 'dispatcher', leads: { kwa: { items: ['kwa-big'], workers: ['ben', 'cat'], maxWorkers: 2, workerTimeoutMin: 20, split: 'sp-9' } } });
   const used = inRoot(root, '[...DA.markUsed(process.cwd(), { liveKids: new Map([["cat", ["r1"]]]) })]');
   assert.deepEqual(used, ['sp-9']);
@@ -288,7 +288,7 @@ test('delegate-allow: a worker on a live child run is busy; a split whose worker
 
 test('delegate-allow build/write: a recorded dispatch split, the override list it reads, and fail-closed without money numbers', async () => {
   const root = fixture();
-  const argv = ['split', 'kwa-big', '--fanout', 'dispatch', '--by', 'Kwame'].concat(...PIECES.map(p => ['--piece', p]));
+  const argv = ['split', 'kwa-big', '--fanout', 'dispatch', '--by', 'Kofi'].concat(...PIECES.map(p => ['--piece', p]));
   assert.equal(consult(root, argv).code, 0);
   w(root, 'company/state/override-allow.json', { v: 1, at: Date.now(), by: 'dispatcher', agents: openAll });
   const budget = { capOn: true, capped: false, dailyUsd: 5, perAgentUsd: 0, byAgent: {}, spent: 0, lastHourMetered: 0, hoursLeft: 10, spread: false, unmetered: ['claude-cli'] };
@@ -351,7 +351,7 @@ test('the family books: a delegated child\'s spend is the lead\'s, and the total
   assert.equal(books.total, sum, 'the books total runs.jsonl exactly');
   assert.equal(Object.values(books.bySeat).reduce((t, x) => t + Math.round(x * 1e9), 0) / 1e9, sum);
   const fam = books.byFamily.kwa;
-  assert.equal(Math.round(fam.total * 1e9), Math.round((0.4 + 0.25 + 0.35 + 0.05 + 0.2) * 1e9), 'children and the grandchild are Kwame\'s');
+  assert.equal(Math.round(fam.total * 1e9), Math.round((0.4 + 0.25 + 0.35 + 0.05 + 0.2) * 1e9), 'children and the grandchild are Kofi\'s');
   assert.equal(Math.round(books.byFamily.ben.total * 1e9), Math.round(0.1 * 1e9), 'Ben\'s own run stays Ben\'s');
   // per item: the delegated rows named kwa-big add up to the family's delegated spend of that item
   const perItem = runs.filter(r => r.itemId === 'kwa-big').reduce((t, r) => t + Math.round(r.usd * 1e9), 0);
@@ -381,7 +381,7 @@ test('piece lanes: each piece its own run on a listed worker, at most maxWorkers
   await st('POST', '/__caps', { caps: [] });   // no patch 0012: piece lanes run on other agents, they do not need it
   await st('POST', '/__hold', { names: ['Lane '] });
   const T = fs.realpathSync(fixture()); const tag = path.basename(T);
-  const SEATS = { boss: 'Boss loop', kwa: 'Kwame loop', ben: 'Ben loop', cat: 'Cat loop', dan: 'Dan loop', hal: 'Hal loop', zed: 'Zed loop' };
+  const SEATS = { boss: 'Boss loop', kwa: 'Kofi loop', ben: 'Ben loop', cat: 'Cat loop', dan: 'Dan loop', hal: 'Hal loop', zed: 'Zed loop' };
   const agents = JSON.parse(JSON.stringify(CREW));
   w(T, 'company/company.json', { name: 'Fanout Test ' + tag, owner: { name: 'Pat' }, timezone: TZ, station: { port, serviceName: 'fanout-test' } });
   w(T, 'secrets/station-token', TOKEN + '\n');
@@ -397,7 +397,7 @@ test('piece lanes: each piece its own run on a listed worker, at most maxWorkers
     await st('POST', '/api/cron/update', { id: r.job.id, patch: { lastRunAt: new Date(Date.now() - 50 * 60e3).toISOString(), inFlight: false } });
   }
   w(T, 'company/tools/loops.json', { agents });
-  const argv = ['split', 'kwa-big', '--by', 'Kwame'].concat(...PIECES.map(p => ['--piece', p]));
+  const argv = ['split', 'kwa-big', '--by', 'Kofi'].concat(...PIECES.map(p => ['--piece', p]));
   const sp = consult(T, argv); assert.equal(sp.code, 0, JSON.stringify(sp));
   const env = () => Object.assign({}, process.env, { CAPHEOS_ROOT: T, STARNET_URL: 'http://127.0.0.1:' + port, CAPHEOS_TZ: TZ, DISPATCH_SPRINT_RESOLVE_SEC: '0', DISPATCH_HIRING_TIMEOUT_SEC: '30', DISPATCH_COOLDOWN_MIN: '', DISPATCH_MAX_PER_TICK: '' });
   const tick = () => { const n = reqs().length; const p = spawnSync(process.execPath, [DISPATCH], { cwd: T, encoding: 'utf8', timeout: 170000, env: env() }); const mine = reqs().slice(n);
@@ -408,15 +408,15 @@ test('piece lanes: each piece its own run on a listed worker, at most maxWorkers
   const agentsOf = r.laneCreates.map(x => x.body.agentId).sort();
   assert.deepEqual(agentsOf, ['ben', 'cat'], 'on the listed workers\' own agents');
   const lanes = JSON.parse(read(T, 'company/state/lanes.json')).lanes;
-  assert.deepEqual(lanes.map(l => l.piece).sort(), [1, 2]); assert.ok(lanes.every(l => l.timeoutMin === 20 && l.inbox === 'to-kwame.md' && l.lead === 'kwa'), JSON.stringify(lanes));
+  assert.deepEqual(lanes.map(l => l.piece).sort(), [1, 2]); assert.ok(lanes.every(l => l.timeoutMin === 20 && l.inbox === 'to-kofi.md' && l.lead === 'kwa'), JSON.stringify(lanes));
   const job = (await st('GET', '/api/cron')).jobs.find(j => j.name === r.laneCreates[0].body.name);
-  assert.match(job.prompt, /YOUR PIECE \d of this item: the (parser|lexer)\. Kwame split the item/);
+  assert.match(job.prompt, /YOUR PIECE \d of this item: the (parser|lexer)\. Kofi split the item/);
   assert.match(job.prompt, /ACCEPTANCE CHECK: npm test -- (parse|lex)/);
-  const box = read(T, 'company/work/handoffs/to-kwame.md');
+  const box = read(T, 'company/work/handoffs/to-kofi.md');
   assert.match(box, /\*\*Piece 1 lane:\*\* (Ben|Cat), lane 1, run run-\d+/); assert.match(box, /\*\*Piece 2 lane:\*\*/);
   const wakes = jsonl(T, 'company/state/wakes.jsonl').filter(x => x.door === 'lane');
-  assert.equal(wakes.length, 2); assert.ok(wakes.every(x => x.split && x.split.item === 'kwa-big' && x.split.lead === 'kwa' && x.items[0].file === 'to-kwame.md'), JSON.stringify(wakes));
-  assert.match(r.log, /PIECE LANE START (ben|cat)\/1 \((Ben|Cat), piece \d of "2026-11-20 from Boss — the big refactor", split by Kwame/);
+  assert.equal(wakes.length, 2); assert.ok(wakes.every(x => x.split && x.split.item === 'kwa-big' && x.split.lead === 'kwa' && x.items[0].file === 'to-kofi.md'), JSON.stringify(wakes));
+  assert.match(r.log, /PIECE LANE START (ben|cat)\/1 \((Ben|Cat), piece \d of "2026-11-20 from Boss — the big refactor", split by Kofi/);
   // the dispatcher wrote the delegation list (fail closed here: no pacer measurement, so nothing is open)
   assert.deepEqual(JSON.parse(read(T, 'company/state/delegate-allow.json')).leads, {});
   // piece 1's worker finishes; next tick: its result is in the item, the item stays OPEN, piece 3 starts on that worker
@@ -426,7 +426,7 @@ test('piece lanes: each piece its own run on a listed worker, at most maxWorkers
   await st('POST', '/api/cron/update', { id: ids.kwa, patch: { lastRunAt: new Date(Date.now() - 50 * 60e3).toISOString(), inFlight: false } });
   const r2 = tick();
   assert.equal(r2.code, 0, r2.out);
-  const box2 = read(T, 'company/work/handoffs/to-kwame.md');
+  const box2 = read(T, 'company/work/handoffs/to-kofi.md');
   assert.match(box2, /\*\*Piece 1 result \(lane 1, (Ben|Cat), run run-\d+, [^)]+\):\*\* DONE — parser rewritten/);
   assert.ok(!/\*\*Piece 1 lane:\*\*/.test(box2), 'its lane line is gone');
   assert.match(box2, /the big refactor\n\*\*Id:\*\* kwa-big\n\*\*Need:\*\* do it\n\*\*Status:\*\* OPEN/, 'a piece never closes the item');

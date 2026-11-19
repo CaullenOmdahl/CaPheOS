@@ -78,8 +78,8 @@ function ownerAsk(text) {
 }
 
 /* observeAsk(text, ownerName) — the meeting's observe-mode lint: while the owner observes (console/meeting.js), a reply
- * may not put a question to them at all. A question or request that names the owner ("Caullen, could you …?", "the
- * owner should decide …?", "@owner") is flagged; a question to a seated colleague ("Dave, can you …?") is not.
+ * may not put a question to them at all. A question or request that names the owner ("Avery, could you …?", "the
+ * owner should decide …?", "@owner") is flagged; a question to a seated colleague ("Dana, can you …?") is not.
  *   observeAsk(text, ownerName) -> null | { kind: 'observe-question', question } */
 function observeAsk(text, ownerName) {
   const prose = String(text || '').replace(/```[\s\S]*?```/g, '\n');
@@ -143,10 +143,10 @@ function selftest() {
   let fails = 0, n = 0;
   const ok = (name, cond, x) => { n++; if (!cond) fails++; console.log((cond ? 'ok   ' : 'FAIL ') + name + (cond || x === undefined ? '' : ' :: ' + JSON.stringify(x).slice(0, 400))); };
   // captured 2026-11-17 from the sandbox Founder's chat replies (console-agent stream)
-  const CAPTURED_1 = 'One change from what I said earlier: the stop is yours to run, not mine. The liveness timer is a framework unit that `service.js` deliberately doesn\'t manage (service.js:624), and Ingrid\'s procedure says it\'s stopped by you or the framework, not by a seat. Agents are also refused `systemctl` here. The command is reversible and touches nothing else. No halt, gate or watch changes.\n\nThe steps:\n\n1. Open your check at [healthchecks.io](https://healthchecks.io/) and note its period and grace. Only your account shows them.\n2. In a terminal, run:\n   `systemctl --user stop capheos-sandbox-station-liveness.timer`\n   The last healthy ping went out at 21:20, and the next one was due at 21:25.\n3. Wait for period plus grace. The alert should reach you inside that window.\n4. Then restart it:\n   `systemctl --user start capheos-sandbox-station-liveness.timer`\n   You should get a recovery notice within about 5 minutes.\n\n```actions\n{"id": "hb-test-1", "prompt": "Heartbeat silence test", "items": [{"type": "button", "label": "I stopped the timer", "value": "stopped"}]}\n```';
-  const CAPTURED_2 = 'For tonight, the heartbeat test is ready whenever you are:\n\n1. Note the period and grace on your healthchecks.io check.\n2. Stop the timer by running `systemctl --user stop capheos-sandbox-station-liveness.timer`.\n\nThen tap "I stopped the timer" in the block above, and I\'ll take it from there.';
+  const CAPTURED_1 = 'One change from what I said earlier: the stop is yours to run, not mine. The liveness timer is a framework unit that `service.js` deliberately doesn\'t manage (service.js:624), and Iris\'s procedure says it\'s stopped by you or the framework, not by a seat. Agents are also refused `systemctl` here. The command is reversible and touches nothing else. No halt, gate or watch changes.\n\nThe steps:\n\n1. Open your check at [healthchecks.io](https://healthchecks.io/) and note its period and grace. Only your account shows them.\n2. In a terminal, run:\n   `systemctl --user stop trial-co-station-liveness.timer`\n   The last healthy ping went out at 21:20, and the next one was due at 21:25.\n3. Wait for period plus grace. The alert should reach you inside that window.\n4. Then restart it:\n   `systemctl --user start trial-co-station-liveness.timer`\n   You should get a recovery notice within about 5 minutes.\n\n```actions\n{"id": "hb-test-1", "prompt": "Heartbeat silence test", "items": [{"type": "button", "label": "I stopped the timer", "value": "stopped"}]}\n```';
+  const CAPTURED_2 = 'For tonight, the heartbeat test is ready whenever you are:\n\n1. Note the period and grace on your healthchecks.io check.\n2. Stop the timer by running `systemctl --user stop trial-co-station-liveness.timer`.\n\nThen tap "I stopped the timer" in the block above, and I\'ll take it from there.';
   let r = commandAsk(CAPTURED_1);
-  ok('captured reply 1 ("In a terminal, run:" + the systemctl line) is flagged', r && /systemctl --user stop capheos-sandbox-station-liveness\.timer/.test(r.command), r);
+  ok('captured reply 1 ("In a terminal, run:" + the systemctl line) is flagged', r && /systemctl --user stop trial-co-station-liveness\.timer/.test(r.command), r);
   ok('captured reply 1 links the console action for it: Test the outside alarm', r && r.action && r.action.href === '#/settings/system/alarm', r);
   r = commandAsk(CAPTURED_2);
   ok('captured reply 2 ("Stop the timer by running `systemctl …`") is flagged with the same action', r && /liveness\.timer/.test(r.command) && r.action && r.action.href === '#/settings/system/alarm', r);
@@ -182,10 +182,10 @@ function selftest() {
     ['I fixed the timer and the heartbeat is green again. Nothing for you to do.', 'a report about infrastructure with no question'],
     ['Which market should we focus on first, sports or weather?', 'a direction question']]) ok('owner scope: does not flag ' + what, ownerAsk(txt) === null, { txt, got: ownerAsk(txt) });
   // the meeting's observe-mode lint: no question to the owner at all while they observe
-  for (const [txt, what] of [['Caullen, could you confirm the budget before we go on?', 'a question that names the owner'], ['I think the owner should decide this. Do you agree, Caullen?', 'a question to the owner by name at the end'],
-    ['Should we ask the owner about the price?', 'a question about asking the owner'], ['ASK: Caullen — which market first?', 'an ASK line to the owner']]) ok('observe: flags ' + what, !!observeAsk(txt, 'Caullen Nguyen'), { txt, got: observeAsk(txt, 'Caullen Nguyen') });
-  for (const [txt, what] of [['Dave, can you take the ranked list?', 'a question to a colleague'], ['Caullen asked for this plan, so here it is.', 'a mention of the owner with no question'],
-    ['ASK: Nadia — which items are push items?', 'an ASK line to a colleague']]) ok('observe: does not flag ' + what, observeAsk(txt, 'Caullen Nguyen') === null, { txt, got: observeAsk(txt, 'Caullen Nguyen') });
+  for (const [txt, what] of [['Avery, could you confirm the budget before we go on?', 'a question that names the owner'], ['I think the owner should decide this. Do you agree, Avery?', 'a question to the owner by name at the end'],
+    ['Should we ask the owner about the price?', 'a question about asking the owner'], ['ASK: Avery — which market first?', 'an ASK line to the owner']]) ok('observe: flags ' + what, !!observeAsk(txt, 'Avery Nguyen'), { txt, got: observeAsk(txt, 'Avery Nguyen') });
+  for (const [txt, what] of [['Dana, can you take the ranked list?', 'a question to a colleague'], ['Avery asked for this plan, so here it is.', 'a mention of the owner with no question'],
+    ['ASK: Nora — which items are push items?', 'an ASK line to a colleague']]) ok('observe: does not flag ' + what, observeAsk(txt, 'Avery Nguyen') === null, { txt, got: observeAsk(txt, 'Avery Nguyen') });
   console.log((fails ? 'FAIL ' : 'PASS ') + (n - fails) + '/' + n);
   return fails ? 1 : 0;
 }

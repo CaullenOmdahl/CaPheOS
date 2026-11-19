@@ -36,7 +36,7 @@ export function leadLine(text, max) {
   return first.slice(0, max - 1).replace(/[\s,;:]+\S*$/, '') + '…';
 }
 
-// a display name with each word capitalised ("Nadia farrell" -> "Nadia Farrell", "NADIA FARRELL" -> "Nadia Farrell");
+// a display name with each word capitalised ("Nora field" -> "Nora Field", "NORA FIELD" -> "Nora Field");
 // a word already mixed-case ("McDonald") is left alone. Display only: the roster is not renamed.
 export function personName(n) {
   const s = String(n == null ? '' : n).trim();

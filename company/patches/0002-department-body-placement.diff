@@ -6,7 +6,7 @@ index 2e9570f1..d361ec89 100644
      }
      return footOf(t.x, t.y);
    }
-+  /* DEPARTMENT HOME (Ca Phe Digital floor plan): a summoned agent whose desk sits in another room should stand
++  /* DEPARTMENT HOME (the developing company floor plan): a summoned agent whose desk sits in another room should stand
 +     in THAT room, not ring the spawn room. The spawn room stays the fallback when no desk/room resolves. */
 +  function roomFoot(roomId) {
 +    if (!geo || !roomId) return null;

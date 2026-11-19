@@ -173,11 +173,11 @@ async function startMock(env) {
     check('Spend shows today against the cap, by seat and by provider, and the week\'s subscription use, read-only', await until(() => js(`(() => { const m = document.getElementById('main'); const t = m.innerText; return /of \\$5/.test(t) && /By seat/.test(t) && /By provider/.test(t) && /Subscriptions this week/.test(t) && !m.querySelector('input, select, textarea') && !!m.querySelector('a[href="#/settings/models"]'); })()`), 5000));
     // Spend › By seat: interview candidates in one row that opens to their names; the crew by display name
     const seatsTxt = await js(`(() => { const r = [...document.querySelectorAll('#set-seats tr')].map(t => t.innerText.replace(/\\s+/g, ' ')); const g = document.querySelector('#set-seats [data-candidates]'); return { r, n: g && g.dataset.candidates, names: g && [...g.querySelectorAll('li')].map(l => l.firstChild.textContent) }; })()`);
-    check('Spend › By seat: "Interview candidates (12)" as one row that lists their names; "Nadia Farrell" on her own row; no raw ids', seatsTxt && seatsTxt.n === '12' && seatsTxt.r.some(x => /^Interview candidates \(12\) \$0\.2\d/.test(x)) && seatsTxt.names.includes('Tobias Lin') && seatsTxt.r.some(x => /^Nadia Farrell \$/.test(x)) && !seatsTxt.r.some(x => /cand-/.test(x)), seatsTxt);
+    check('Spend › By seat: "Interview candidates (12)" as one row that lists their names; "Nora Field" on her own row; no raw ids', seatsTxt && seatsTxt.n === '12' && seatsTxt.r.some(x => /^Interview candidates \(12\) \$0\.2\d/.test(x)) && seatsTxt.names.includes('Tobias Lin') && seatsTxt.r.some(x => /^Nora Field \$/.test(x)) && !seatsTxt.r.some(x => /cand-/.test(x)), seatsTxt);
     // Work › Quests: the owner's display name, the quest id only under Details
     await go('#/work/quests');
     const qw = await until(() => js(`(() => { const t = (document.getElementById('main') || {}).innerText || ''; return /Backtest the quote recorder/.test(t) ? t : null; })()`), 5000);
-    check('Work › Quests: owners by display name ("Nadia Farrell"), no "q:8" or raw agent ids in view', qw && /Nadia Farrell/.test(qw) && !/\bq:\d/.test(qw) && !/cand-|tools1/.test(qw), qw && qw.slice(0, 400));
+    check('Work › Quests: owners by display name ("Nora Field"), no "q:8" or raw agent ids in view', qw && /Nora Field/.test(qw) && !/\bq:\d/.test(qw) && !/cand-|tools1/.test(qw), qw && qw.slice(0, 400));
     // Work › Quests (walk2): a done quest is a full bar and says its unticked steps; titles lose "-> file" targets and a
     // dangling arrow, a title the station cut says so; an empty column collapses to a slim header
     const qx = await js(`(() => { const c = id => document.querySelector('[data-quest="' + id + '"]'); const t = id => c(id) && c(id).querySelector('.quest-title').textContent;
@@ -193,7 +193,7 @@ async function startMock(env) {
       return { vis, rows: rows.map(r => ({ id: r.dataset.seat, t: r.innerText.replace(/\\s+/g, ' '), why: r.querySelector('.seat-why').textContent })), setUp: document.querySelectorAll('#set-chains a.set-fallbacks').length }; })()`), 6000);
     const mt = mx ? mx.rows.map(r => r.t).join('\n') : '';
     check('Settings › Models: plain model names, no raw ids, no "no chain", no routing-table jargon', mx && /DeepSeek Flash/.test(mt) && /Claude Sonnet 5\.5/.test(mt) && !/deepseek\/|claude-cli|no chain|routing table|sign-in/.test(mx.vis), mt);
-    check('Settings › Models: "Nadia Farrell" title-cased; seats without a chain show "—" and "Set up fallbacks"', mx && /Nadia Farrell/.test(mt) && !/Nadia farrell/.test(mx.vis) && mx.setUp === 2, mx && { setUp: mx.setUp, mt });
+    check('Settings › Models: "Nora Field" title-cased; seats without a chain show "—" and "Set up fallbacks"', mx && /Nora Field/.test(mt) && !/Nora field/.test(mx.vis) && mx.setUp === 2, mx && { setUp: mx.setUp, mt });
     check('Settings › Models: a Why only when something is unusual, from the current state', mx && mx.rows.filter(r => r.why).length === 1 && /moves back up/.test(mx.rows.find(r => r.id === 'people1').why), mx && mx.rows);
     // Settings › Models › Cheaper models (owner direction 2026-11-18, for a non-technical owner): plain words; model ids,
     // arms, the entry share, "shadow", tier caps and the allowlist only under "Technical details (for the crew)"
@@ -218,7 +218,7 @@ async function startMock(env) {
     await go('#/crew');
     const cw = await until(() => js(`(() => { const r = [...document.querySelectorAll('.crew-item')].map(b => ({ id: b.dataset.seat, t: b.innerText.replace(/\\s+/g, ' ') })); return r.some(x => /Resting/.test(x.t)) ? r : null; })()`), 5000);
     const seat = id => ((cw || []).find(x => x.id === id) || {}).t || '';
-    check('Crew: "Nadia Farrell" Resting with the dispatcher\'s reason (not Idle beside "working"); Teo "Working on 2 things at once"; the Founder shows no lanes', cw && /Nadia Farrell/.test(seat('cand-tools-backtest-engineer-1-n')) && /Resting/.test(seat('cand-tools-backtest-engineer-1-n')) && !/Idle/.test(seat('cand-tools-backtest-engineer-1-n')) && /Working on 2 things at once/.test(seat('tools1')) && !/lane|things at once/i.test(seat('agent')) && !(cw || []).some(x => /Sprint:|lanes? running/.test(x.t)), cw);
+    check('Crew: "Nora Field" Resting with the dispatcher\'s reason (not Idle beside "working"); Teo "Working on 2 things at once"; the Founder shows no lanes', cw && /Nora Field/.test(seat('cand-tools-backtest-engineer-1-n')) && /Resting/.test(seat('cand-tools-backtest-engineer-1-n')) && !/Idle/.test(seat('cand-tools-backtest-engineer-1-n')) && /Working on 2 things at once/.test(seat('tools1')) && !/lane|things at once/i.test(seat('agent')) && !(cw || []).some(x => /Sprint:|lanes? running/.test(x.t)), cw);
 
     // Crew (walk2): plain model names with the ids under Details, "Woken first", a human first-run line
     await js(`document.querySelector('.crew-item[data-seat="agent"]').click(); 1`); await sleep(400);

@@ -157,27 +157,27 @@ function selftest() {
   const os = require('os'); const assert = require('assert');
   const T = require('./lib/temp-life').tmpDir('notify-when-selftest-');
   const w = (rel, s) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, s); };
-  w('company/tools/loops.json', JSON.stringify({ agents: { rohan: { name: 'Rohan Iyer', inbox: 'to-rohan.md' } } }));
-  w('company/company.json', '{"name":"T"}'); w('secrets/pyth-api-key', 'pk_live_supersecretvalue123\n');
+  w('company/tools/loops.json', JSON.stringify({ agents: { ravi: { name: 'Ravi Shah', inbox: 'to-ravi.md' } } }));
+  w('company/company.json', '{"name":"T"}'); w('secrets/quotely-api-key', 'pk_live_supersecretvalue123\n');
   const env = Object.assign({}, process.env, { CAPHEOS_ROOT: T });
   const run = args => require('child_process').spawnSync(process.execPath, [__filename].concat(args), { cwd: T, env, encoding: 'utf8' });
   const rows = () => fs.readFileSync(path.join(T, 'company/state/completions.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
   let n = 0; const ok = (name, fn) => { fn(); n++; console.log('ok   ' + name); };
   try {
-    ok('a wrapped exit 0 is one ok row naming the seat', () => { const r = run(['--seat', 'Rohan', '--why', 'gold backfill', '--id', 'gb', '--foreground', '--', process.execPath, '-e', 'console.log("done 1")']); assert.equal(r.status, 0, r.stderr); const x = rows(); assert.equal(x.length, 1); assert.equal(x[0].status, 'ok'); assert.deepEqual(x[0].seat, ['rohan']); assert.equal(x[0].job, 'gb'); assert.equal(x[0].tail.pop(), 'done 1'); assert.equal(x[0].by, 'notify-when.js'); });
-    ok('a non-zero exit is a failed row and the exit code passes through', () => { const r = run(['--seat', 'rohan', '--why', 'x job', '--foreground', '--', process.execPath, '-e', 'process.exit(3)']); assert.equal(r.status, 3); assert.equal(rows().pop().status, 'failed'); assert.match(C.words(rows().pop()), /FAILED: exit 3/); });
-    ok('the output tail has secrets redacted', () => { run(['--seat', 'rohan', '--why', 'leaky', '--foreground', '--', process.execPath, '-e', 'console.log("key pk_live_supersecretvalue123 token=abcdef123456 sk-abcdefghijklmnopqrstu")']); const t = rows().pop().tail.join('\n'); assert.ok(!/supersecret|abcdef123456|sk-abcdefghij/.test(t), t); assert.match(t, /\[secret pyth-api-key\]/); });
-    ok('a timeout is labelled as one', () => { run(['--seat', 'rohan', '--why', 'slow', '--timeout', '1s', '--foreground', '--', process.execPath, '-e', 'setTimeout(()=>{},60000)']); assert.equal(rows().pop().status, 'timeout'); });
+    ok('a wrapped exit 0 is one ok row naming the seat', () => { const r = run(['--seat', 'Ravi', '--why', 'gold backfill', '--id', 'gb', '--foreground', '--', process.execPath, '-e', 'console.log("done 1")']); assert.equal(r.status, 0, r.stderr); const x = rows(); assert.equal(x.length, 1); assert.equal(x[0].status, 'ok'); assert.deepEqual(x[0].seat, ['ravi']); assert.equal(x[0].job, 'gb'); assert.equal(x[0].tail.pop(), 'done 1'); assert.equal(x[0].by, 'notify-when.js'); });
+    ok('a non-zero exit is a failed row and the exit code passes through', () => { const r = run(['--seat', 'ravi', '--why', 'x job', '--foreground', '--', process.execPath, '-e', 'process.exit(3)']); assert.equal(r.status, 3); assert.equal(rows().pop().status, 'failed'); assert.match(C.words(rows().pop()), /FAILED: exit 3/); });
+    ok('the output tail has secrets redacted', () => { run(['--seat', 'ravi', '--why', 'leaky', '--foreground', '--', process.execPath, '-e', 'console.log("key pk_live_supersecretvalue123 token=abcdef123456 sk-abcdefghijklmnopqrstu")']); const t = rows().pop().tail.join('\n'); assert.ok(!/supersecret|abcdef123456|sk-abcdefghij/.test(t), t); assert.match(t, /\[secret quotely-api-key\]/); });
+    ok('a timeout is labelled as one', () => { run(['--seat', 'ravi', '--why', 'slow', '--timeout', '1s', '--foreground', '--', process.execPath, '-e', 'setTimeout(()=>{},60000)']); assert.equal(rows().pop().status, 'timeout'); });
     ok('provenance: each write is recorded as notify-when.js with the exact bytes on disk', () => { const p = fs.readFileSync(path.join(T, 'company/state/locked/provenance.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).filter(r => r.file === 'company/state/completions.jsonl'); assert.ok(p.length >= 4 && p.every(r => r.writer === 'notify-when.js' && r.kind === 'write' && /notify-when\.js$/.test(r.main))); assert.equal(p[p.length - 1].sha256, 'sha256:' + require('crypto').createHash('sha256').update(fs.readFileSync(path.join(T, 'company/state/completions.jsonl'))).digest('hex')); });
-    ok('usage: an unknown seat or no command is refused (exit 2)', () => { assert.equal(run(['--seat', 'nobody', '--why', 'x y', '--', 'true']).status, 2); assert.equal(run(['--seat', 'rohan', '--why', 'x y']).status, 2); });
+    ok('usage: an unknown seat or no command is refused (exit 2)', () => { assert.equal(run(['--seat', 'nobody', '--why', 'x y', '--', 'true']).status, 2); assert.equal(run(['--seat', 'ravi', '--why', 'x y']).status, 2); });
     ok('bounded: past 400 rows the file keeps the newest 300', () => {
       const f = path.join(T, 'company/state/completions.jsonl'); const prev = process.env.CAPHEOS_ROOT;
-      fs.writeFileSync(f, Array.from({ length: C.MAX_ROWS }, (_, i) => JSON.stringify({ id: 'c-old-' + i, seat: ['rohan'], status: 'ok' })).join('\n') + '\n');
-      C.append(T, { id: 'c-new', seat: ['rohan'], status: 'ok' }); const x = fs.readFileSync(f, 'utf8').trim().split('\n').map(JSON.parse);
+      fs.writeFileSync(f, Array.from({ length: C.MAX_ROWS }, (_, i) => JSON.stringify({ id: 'c-old-' + i, seat: ['ravi'], status: 'ok' })).join('\n') + '\n');
+      C.append(T, { id: 'c-new', seat: ['ravi'], status: 'ok' }); const x = fs.readFileSync(f, 'utf8').trim().split('\n').map(JSON.parse);
       assert.equal(x.length, C.KEEP_ROWS); assert.equal(x[x.length - 1].id, 'c-new'); process.env.CAPHEOS_ROOT = prev;
     });
     ok('detached by default: returns at once with the id, the row lands when the job ends', () => {
-      const before = rows().length; const r = run(['--seat', 'rohan', '--why', 'bg job', '--', process.execPath, '-e', 'setTimeout(()=>console.log("late"),300)']); assert.equal(r.status, 0); assert.match(r.stdout, /started c-/);
+      const before = rows().length; const r = run(['--seat', 'ravi', '--why', 'bg job', '--', process.execPath, '-e', 'setTimeout(()=>console.log("late"),300)']); assert.equal(r.status, 0); assert.match(r.stdout, /started c-/);
       const t0 = Date.now(); while (rows().length === before && Date.now() - t0 < 8000) require('child_process').spawnSync('sleep', ['0.1']);
       assert.equal(rows().length, before + 1); assert.equal(rows().pop().tail.pop(), 'late'); assert.equal(fs.readdirSync(path.join(T, 'company/state/watched-jobs')).length, 0);
     });

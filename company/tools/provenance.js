@@ -316,7 +316,7 @@ if (require.main === module) {
     ok(typeof r[0].main === 'string' && r[0].tainted === false, 'rows say which program wrote them and whether node was started with a preload');
     const end = readFrom(0, T).end; appended(path.join(T, 'company/work/log.jsonl'), 'two\n', 'test');
     ok(readFrom(end, T).rows.length === 1, 'reads on from an offset');
-    ok(wrote(path.join(T, 'secrets/pyth-api-key'), 'k\n', 'console (owner key)') === true && wrote(path.join(T, 'secrets/README.md'), 'x', 'test') === false && wrote(path.join(T, 'secrets/sub/x'), 'x', 'test') === false, 'records a key saved in secrets/ (hash only), never its README or a subfolder');
+    ok(wrote(path.join(T, 'secrets/quotely-api-key'), 'k\n', 'console (owner key)') === true && wrote(path.join(T, 'secrets/README.md'), 'x', 'test') === false && wrote(path.join(T, 'secrets/sub/x'), 'x', 'test') === false, 'records a key saved in secrets/ (hash only), never its README or a subfolder');
     ok(stationEnv({ STARNET_USER_CONTROL_MODE: 'preserve', STARNET_COMPUTER_DRIVER: '0', STARNET_MCP_STDIO: '0', BROWSER: 'none' }) && !stationEnv({ BROWSER: 'none' }), 'recognises the station\'s environment pins');
     // the owner/station rule over injected ancestry (nearest first)
     const wrap = cmd => ['/usr/bin/bash', '-c', 'source snap.sh && eval \'' + cmd + '\' && pwd -P >| /tmp/x'];

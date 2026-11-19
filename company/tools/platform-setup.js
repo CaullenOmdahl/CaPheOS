@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* platform-setup.js — set up the platform department, the crew's dev checkout of the framework and the CaPheOS role notes (docs/IMPROVE.md).
  *
- * The company that develops CaPheOS (Ca Phe Digital) gets a "platform" department whose lead receives the improvement
+ * The company that develops CaPheOS (the developing company) gets a "platform" department whose lead receives the improvement
  * engine's items (lib/improve.js), a dev checkout of the framework repo OUTSIDE its live tree's git (dev/capheos,
  * excluded from the company checkout, with a pre-push hook that refuses main), and a "## CaPheOS" section in each
  * member's charter (text: company/runbooks/capheos-platform-role.md), and switches on the six improve-* duties in
@@ -13,8 +13,8 @@
  *                                               [--skip department,dev,roles,duties]
  *                                               runs them (the department change through departments.js --by owner, so
  *                                               run it from the owner's shell); each step is skipped when already done
- * Defaults: lead engineer (the CEO may move it: departments.js set-lead platform <seat>), members deployer,
- * cand-eng-2026-11-bao, cand-qa-2026-11-vy (seats not on the crew are left out), repo = the framework's GitHub remote.
+ * Defaults: lead engineer (the CEO may move it: departments.js set-lead platform <seat>), no members (name them with
+ * --members; seats not on the crew are left out), repo = this company checkout's own origin remote.
  * Owner: the tools function.
  */
 'use strict';
@@ -23,7 +23,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const IMPROVE_DUTIES = ['improve-health', 'improve-efficiency', 'improve-owner', 'improve-fr', 'improve-research', 'improve-retro'];
-const DEF = { lead: 'engineer', members: ['deployer', 'cand-eng-2026-11-bao', 'cand-qa-2026-11-vy'], repo: 'https://github.com/CaullenOmdahl/CaPheOS.git' };
+const DEF = { lead: 'engineer', members: [], repo: null };
 const HOOK = `#!/usr/bin/env bash
 # platform-setup.js: the crew never pushes to the default branch; changes land by a reviewed pull request.
 while read -r lref lsha rref rsha; do
@@ -40,9 +40,10 @@ function args(argv) {
     else if (k === '--repo') o.repo = argv[++i]; else if (k === '--skip') o.skip = String(argv[++i] || '').split(',');
   }
   o.root = path.resolve(o.root || process.env.CAPHEOS_ROOT || path.join(__dirname, '..', '..'));
-  o.lead = o.lead || DEF.lead; o.members = o.members || DEF.members; o.repo = o.repo || DEF.repo;
+  o.lead = o.lead || DEF.lead; o.members = o.members || DEF.members; o.repo = o.repo || DEF.repo || originUrl(o.root);
   return o;
 }
+const originUrl = root => { try { const r = spawnSync('/usr/bin/git', ['-C', root, 'remote', 'get-url', 'origin'], { encoding: 'utf8', timeout: 5000 }); return String(r.stdout || '').trim() || null; } catch (_) { return null; } };
 const readJson = (f, fb) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return fb; } };
 
 function steps(o) {

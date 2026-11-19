@@ -15,7 +15,7 @@ test('1,000 finished runs leave the count map empty; a finished run still counts
   const cr = chatRuns({ co, stationGet: async () => null });
   for (let i = 0; i < 1000; i++) {
     const id = 'run-' + i;
-    cr.track(id, { seat: 'sharon', streamId: 'console-sharon' });
+    cr.track(id, { seat: 'zoe', streamId: 'console-zoe' });
     cr.ingest(id, 'agent.token', { delta: 'hi' });
     assert.ok(cr._counted() >= 1);
     cr.ingest(id, 'agent.run.end', { reason: 'done', outcome: 'succeeded' });

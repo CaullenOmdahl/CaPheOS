@@ -24,11 +24,11 @@ function fixture() {
   const T = __LIFE.tmpDir('profile-console-'); roots.push(T);
   const w = (rel, d) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof d === 'string' ? d : JSON.stringify(d, null, 1)); };
   w('company/company.json', { name: 'Fixture Co', owner: { name: 'Olive' }, timezone: 'UTC', station: { url: 'http://127.0.0.1:9' } });
-  w('company/tools/loops.json', { agents: { boss: { name: 'Alex', functions: ['ceo'], manager: null, inbox: 'to-alex.md' }, mar: { name: 'Marisol', functions: ['people'], manager: 'boss', inbox: 'to-marisol.md' }, ben: { name: 'Benny', manager: 'boss', inbox: 'to-benny.md', role: 'company/roles/benny.md' }, ro: { name: 'Rohan', manager: 'boss', inbox: 'to-rohan.md' } } });
+  w('company/tools/loops.json', { agents: { boss: { name: 'Alex', functions: ['ceo'], manager: null, inbox: 'to-alex.md' }, mar: { name: 'Mara', functions: ['people'], manager: 'boss', inbox: 'to-mara.md' }, ben: { name: 'Noah', manager: 'boss', inbox: 'to-noah.md', role: 'company/roles/noah.md' }, ro: { name: 'Ravi', manager: 'boss', inbox: 'to-ravi.md' } } });
   for (const f of ['company/defaults/people/profile-policy.json', 'company/defaults/people/temperament.json', 'company/defaults/people/presets.json', 'company/defaults/state/governance.json']) w(f, fs.readFileSync(path.join(REPO, f), 'utf8'));
   w('company/work/decisions.md', '# Decisions\n\n');
   w('company/model-policy.json', { seats: { ben: { chain: [{ provider: 'deepseek', model: 'deepseek-flash' }] }, ro: { chain: [{ provider: 'deepseek', model: 'deepseek-pro' }] } } });
-  w('company/roles/benny.md', '# Benny\n\n## Archetype\nscout\n\n## Counterpart\nRohan tests every card.\nSign-off: promote, commit\n\n## Example exchanges\n- With Rohan: "Lucky week." — You: "Cheap to check." (pushes back)\n- With the owner: "News?" — You: "Two cards."\n- With Rohan: "Killed." — You: "Next."\n');
+  w('company/roles/noah.md', '# Noah\n\n## Archetype\nscout\n\n## Counterpart\nRavi tests every card.\nSign-off: promote, commit\n\n## Example exchanges\n- With Ravi: "Lucky week." — You: "Cheap to check." (pushes back)\n- With the owner: "News?" — You: "Two cards."\n- With Ravi: "Killed." — You: "Next."\n');
   return T;
 }
 class HttpError extends Error { constructor(status, msg, data) { super(msg); this.status = status; this.data = data; } }
@@ -58,9 +58,9 @@ test('the owner\'s words: labels, sentences, the trial banner and proposals are 
   await call('POST', '/api/profile/ro/migrate');
   let v = await call('GET', '/api/profile/ben');
   assert.equal(v.profile.version, 1); assert.ok(v.preview.block.includes('YOUR PROFILE')); assert.ok(v.history.length >= 1);
-  assert.equal(v.words.counterpart, '**Who checks Benny:** Rohan. Before Benny can **move an idea to a test** or **commit someone else\'s time**, Rohan has to agree.');
+  assert.equal(v.words.counterpart, '**Who checks Noah:** Ravi. Before Noah can **move an idea to a test** or **commit someone else\'s time**, Ravi has to agree.');
   assert.equal(v.words.model, 'Runs on: the cheap setup');
-  assert.match(v.words.family[0], /Rohan checks Benny and both run on the same kind of AI/);
+  assert.match(v.words.family[0], /Ravi checks Noah and both run on the same kind of AI/);
   for (const [k, t] of Object.entries(v.words)) for (const x of [].concat(t)) plain('words.' + k, typeof x === 'string' ? x : x.text);
   for (const t of Object.values(v.signoffKinds)) plain('sign-off kind', t);
   for (const s of Object.values(v.temperament.sliders)) { plain('slider', s.label); for (const d of s.values) plain('slider value', d); }
@@ -79,13 +79,13 @@ test('the owner\'s words: labels, sentences, the trial banner and proposals are 
   const tr = await call('POST', '/api/profile/ben/try', { set: { '/temperament': Object.assign({}, v.profile.temperament, { risk: 1, pace: 1 }) }, base: 2, days: 7 });
   assert.equal(tr.trial.from, 2);
   v = await call('GET', '/api/profile/ben');
-  assert.match(v.words.trial, /^You're trying a (more careful|calmer) Benny until \w+day\. Keep it · Go back now\.$/); plain('trial', v.words.trial);
+  assert.match(v.words.trial, /^You're trying a (more careful|calmer) Noah until \w+day\. Keep it · Go back now\.$/); plain('trial', v.words.trial);
   await call('POST', '/api/profile/ben/trial/keep');
   assert.equal((await call('GET', '/api/profile/ben')).profile.trial, null);
   // a proposal in the owner's words, then Add it
-  const pp = await new Promise(res => execFile(process.execPath, [path.join(TOOLS, 'profile.js'), 'propose', 'ben', '--kind', 'experience', '--text', 'The forum tip cost two days and taught him to check the fee first', '--why', 'the weather card', '--by', 'Marisol'], { cwd: T, env: Object.assign({}, process.env, { CAPHEOS_ROOT: T }) }, (e, out) => res(JSON.parse(out))));
+  const pp = await new Promise(res => execFile(process.execPath, [path.join(TOOLS, 'profile.js'), 'propose', 'ben', '--kind', 'experience', '--text', 'The forum tip cost two days and taught him to check the fee first', '--why', 'the weather card', '--by', 'Mara'], { cwd: T, env: Object.assign({}, process.env, { CAPHEOS_ROOT: T }) }, (e, out) => res(JSON.parse(out))));
   v = await call('GET', '/api/profile/ben');
-  assert.equal(v.words.proposals[0].text, 'Marisol suggests adding to Benny\'s experience: \'The forum tip cost two days and taught him to check the fee first.\' Add it · Not this one · Try it.');
+  assert.equal(v.words.proposals[0].text, 'Mara suggests adding to Noah\'s experience: \'The forum tip cost two days and taught him to check the fee first.\' Add it · Not this one · Try it.');
   plain('proposal', v.words.proposals[0].text);
   await call('POST', '/api/profile/proposals/' + pp.id + '/apply');
   assert.equal((await call('GET', '/api/profile/ben')).profile.experiences.length, 1);
@@ -134,5 +134,5 @@ test('a Plain owner\'s preview shows the crew\'s words without commands or file 
   for (const t of ['Fill only empty fields', 'Replace everything', 'Cancel']) assert.ok(src.includes('\'' + t + '\''), t);
   assert.ok(!/: 'owner';\s*$/m.test(pr) && /presetWith\(ex\.with\)/.test(pr), 'a preset example is said by the right person, not by the owner by default');
   assert.ok(/'data-preview': ''[^\n]*position:sticky/.test(src), 'the preview is pinned in view beside the edits');
-  assert.deepEqual(v.relations.checks, ['ben'], 'the screen knows whose work Rohan checks (the preset\'s "eager" example)');
+  assert.deepEqual(v.relations.checks, ['ben'], 'the screen knows whose work Ravi checks (the preset\'s "eager" example)');
 });

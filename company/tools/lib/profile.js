@@ -7,7 +7,7 @@
  *
  * ARCHETYPES (the "## Archetype" section, one id) say what kind of contributor a seat is. Before them every hire was
  * written from job listings and came out careful, dry and analytical: a crew of testers with nobody to give them
- * ideas (CaPheOS Sandbox 2026-11-19: 8 seats, presets dry x4 / composed x3 / blunt x1, no seat that generates ideas,
+ * ideas (the trial company 2026-11-19: 8 seats, presets dry x4 / composed x3 / blunt x1, no seat that generates ideas,
  * 42M tokens on papers and 0 reads of the forums and channels where traders actually talk). An eager archetype
  * (scout, combiner, contrarian) generates and must name a conservative counterpart; a conservative one (tester,
  * steward) checks; the archetype also gives the persona preset when a profile names none.
@@ -316,7 +316,7 @@ const kindsWords = (ks, field) => (ks || []).filter(k => SIGNOFF_KINDS[k]).map(k
 const joinOr = a => a.length <= 1 ? (a[0] || '') : a.slice(0, -1).join(', ') + ' or ' + a[a.length - 1];
 // o: { crew (loops.json agents), profiles (every seat's, for "whose work you check"), temperament (defs) }
 // Over BLOCK_MAX_CHARS (about 1,500 tokens) it is trimmed in this order, and only as far as needed (2026-11-19 experience
-// re-review: a cut from the end took Benny's and Rohan's voice, the part that makes them sound like themselves):
+// re-review: a cut from the end took Noah's and Ravi's voice, the part that makes them sound like themselves):
 //   1. the oldest experiences; 2. the examples beyond the first and the pushing-back one;
 //   3. the long lists, the last line first, down to one line each: where you look first, strengths, blind spots, what you
 //      take care of unasked, the people around you, flaws, beliefs, what you refuse, habits (TRIM_ORDER);
@@ -557,7 +557,7 @@ function fromCharter(md, o) {
   for (const [k, ok] of [['identity.background', p.identity.background], ['identity.stake', p.identity.stake], ['convictions', p.convictions.length], ['willNotDo', p.willNotDo.length], ['unprompted', p.unprompted.length],
     ['flaws', p.flaws.length], ['relationships', p.relationships.length], ['examples (at least 3, one pushing back)', p.examples.length >= 3 && p.examples.some(e => e.pushback)], ['temperament', !!temp], ['voice.words', p.voice.words]]) if (!ok) missing.push(k);
   if (p.identity.archetype && ARCHETYPES[p.identity.archetype].eager && !p.counterpart) missing.push('counterpart (an eager seat needs one)');
-  // a charter written about the person ("He reads twenty threads", "Benny runs on ..."): the profile speaks to them
+  // a charter written about the person ("He reads twenty threads", "Noah runs on ..."): the profile speaks to them
   const me = String(p.identity.name || '').trim().split(/\s+/)[0] || '', rewritten = [];
   const fix = (label, get, set) => { const v = get(); if (!v) return; const w = Array.isArray(v) ? v.map(x => secondPerson(x, me)) : secondPerson(v, me); if (JSON.stringify(w) !== JSON.stringify(v)) { set(w); rewritten.push(label); } };
   for (const k of ['personality', 'background', 'stake']) fix(k, () => p.identity[k], v => { p.identity[k] = v; });
@@ -623,7 +623,7 @@ function crewChecks(all, o) {
       }
     }
   }
-  // text written about the person instead of to them ("He reads twenty threads", "Benny runs on ...") under "You are":
+  // text written about the person instead of to them ("He reads twenty threads", "Noah runs on ...") under "You are":
   // a note for the people seat to rewrite it as "you" (2026-11-19 experience re-review)
   for (const p of list) {
     const id = p.identity || {}, me = first(id.name || name(p.seat));

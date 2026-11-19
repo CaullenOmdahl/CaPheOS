@@ -112,7 +112,7 @@ test('archetypes: the seat is told what kind of contributor it is; an eager seat
     assert.match(b.identity, /You are the crew's combiner/);
     assert.equal(b.personaId, 'warm');
     assert.ok(profile.needsCounterpart(tpl), 'the template\'s counterpart is still a placeholder');
-    assert.ok(!profile.needsCounterpart(tpl.replace(/## Counterpart\n<[^>]*>/, '## Counterpart\nRohan Iyer tests or kills every card.')));
+    assert.ok(!profile.needsCounterpart(tpl.replace(/## Counterpart\n<[^>]*>/, '## Counterpart\nRavi Shah tests or kills every card.')));
     assert.ok(!profile.needsCounterpart('## Archetype\ntester\n'), 'a conservative seat needs none');
     assert.match(profile.interviewLines('## Archetype\nscout\n').join('\n'), /crew's scout/);
     assert.match(b.manual, /Studying what any practitioner already knows .* is not work/);

@@ -62,7 +62,7 @@ test('console/chat.js: the agent\'s next turn is told the message answers its bl
 test('no command for the owner: a block whose value, option, label or prompt is a shell command is refused', () => {
   const B = items => block({ id: 'a', prompt: 'Pick one.', items });
   for (const [items, what] of [
-    [[{ type: 'button', label: 'Stop it', value: 'systemctl --user stop capheos-sandbox-station-liveness.timer' }], 'a button value'],
+    [[{ type: 'button', label: 'Stop it', value: 'systemctl --user stop trial-co-station-liveness.timer' }], 'a button value'],
     [[{ type: 'button', label: 'Run `sudo apt install jq`', value: 'ok' }], 'a backticked command in a label'],
     [[{ type: 'button', label: 'Go', value: 'rm -rf scratch/' }], 'rm -rf as a value'],
     [[{ type: 'choice', id: 'c', label: 'How', options: ['npm install', 'later'] }], 'an option'],
@@ -80,7 +80,7 @@ test('no command for the owner: a block whose value, option, label or prompt is 
 });
 test('the chat lint (console/command-ask.js) is a notice only: it flags, never rewrites, and points at a console route', () => {
   const { commandAsk } = require(path.resolve(__dirname, '..', '..', '..', 'console', 'command-ask.js'));
-  const text = 'For tonight:\n\n2. Stop the timer by running `systemctl --user stop capheos-sandbox-station-liveness.timer`.';
+  const text = 'For tonight:\n\n2. Stop the timer by running `systemctl --user stop trial-co-station-liveness.timer`.';
   const before = text; const r = commandAsk(text);
   assert.equal(text, before);
   assert.ok(r && r.action && /^#\//.test(r.action.href), JSON.stringify(r));

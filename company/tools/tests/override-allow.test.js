@@ -167,7 +167,7 @@ test('openFor: the station\'s own test for a caller that starts a run itself (a 
   // provider is open for the seat now; another provider, or a seat with nothing open, stays closed
   assert.strictEqual(OA.openFor('jo', { provider: 'deepseek', model: 'deepseek-pro' }, { root: T, now, ownerPick: true }), null, 'owner pick, same provider open: open');
   assert.match(OA.openFor('jo', { provider: 'claude-cli', model: 'haiku' }, { root: T, now, ownerPick: true }), /closed for everyone/, 'owner pick, provider open for nobody: closed');
-  assert.strictEqual(OA.openFor('nobody', { provider: 'deepseek', model: 'deepseek-pro' }, { root: T, now, ownerPick: true }), null, 'owner pick, the seat has nothing of that provider but it is open for someone: open (Benny on MiniMax only, Haiku picked)');
+  assert.strictEqual(OA.openFor('nobody', { provider: 'deepseek', model: 'deepseek-pro' }, { root: T, now, ownerPick: true }), null, 'owner pick, the seat has nothing of that provider but it is open for someone: open (Noah on MiniMax only, Haiku picked)');
   assert.match(OA.openFor('nobody', { provider: 'claude-cli', model: 'haiku' }, { root: T, now, ownerPick: true }), /closed for everyone/, 'owner pick, a provider open for nobody: closed');
   W('company/tools/loops.json', { agents: { nobody: { name: 'Nob', loop: 'Nob loop' } } });
   W('company/state/pacer-state.json', { blocks: [{ routineId: 'r1', name: 'Nob loop', provider: 'deepseek', until: now + 3600e3 }] });

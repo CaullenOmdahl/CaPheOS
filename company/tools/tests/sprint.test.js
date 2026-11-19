@@ -111,20 +111,20 @@ test('StarNet: a second run of one agent is admitted, but its first file or shel
 test('spreadHold never holds a seat other seats are waiting on (a blocker); it still holds one nobody waits on', () => {
   const o = { cap: 5, spent24h: 2.39, spentLastHour: 0.95, hoursLeft: 9 };
   assert.match(SP.spreadHold(o), /Sprint spreads the daily cap/);
-  assert.equal(SP.spreadHold(Object.assign({ blocking: ['Rohan', 'Halima'] }, o)), null);
+  assert.equal(SP.spreadHold(Object.assign({ blocking: ['Ravi', 'Hollis'] }, o)), null);
   assert.match(SP.spreadHold(Object.assign({ blocking: [] }, o)), /allowance \$0\.63/);
 });
 
 test('waitingOn: an OPEN item that waits on another seat is not its holder\'s work; blockersOf names who blocks whom', () => {
-  const names = { agent: 'Founder', ing: 'Ingrid Halvorsen', nad: 'Nadia farrell', hal: 'Halima Cisse' };
-  assert.equal(SP.waitingOn('OPEN — fix written and proposed as hc-0008, waiting on Ingrid Halvorsen\'s review', names, 'nad', 'agent'), 'ing');
+  const names = { agent: 'Founder', ing: 'Iris Hale', nad: 'Nora field', hal: 'Hollis Cole' };
+  assert.equal(SP.waitingOn('OPEN — fix written and proposed as hc-0008, waiting on Iris Hale\'s review', names, 'nad', 'agent'), 'ing');
   assert.equal(SP.waitingOn('OPEN', names, 'nad', 'agent'), null);
   assert.equal(SP.waitingOn('OPEN — needs Founder\'s ruling', names, 'nad', 'agent'), 'agent');
   assert.equal(SP.waitingOn('OPEN — waiting for the CEO', names, 'nad', 'agent'), 'agent');
   assert.equal(SP.waitingOn('OPEN — blocked on the owner', names, 'nad', 'agent'), 'owner');
-  assert.equal(SP.waitingOn('OPEN — waiting on Nadia', names, 'nad', 'agent'), null, 'waiting on yourself is your own work');
+  assert.equal(SP.waitingOn('OPEN — waiting on Nora', names, 'nad', 'agent'), null, 'waiting on yourself is your own work');
   assert.equal(SP.waitingOn('OPEN — waiting on the vendor', names, 'nad', 'agent'), 'someone');
-  const b = SP.blockersOf({ items: { nad: [{ open: true, status: 'OPEN — waiting on Ingrid\'s review' }, { open: true, status: 'OPEN' }] }, names, ceo: 'agent', stalled: ['hal', 'roh'] });
+  const b = SP.blockersOf({ items: { nad: [{ open: true, status: 'OPEN — waiting on Iris\'s review' }, { open: true, status: 'OPEN' }] }, names, ceo: 'agent', stalled: ['hal', 'roh'] });
   assert.deepEqual(b, { ing: ['nad'], agent: ['hal', 'roh'] });
 });
 
@@ -144,7 +144,7 @@ test('spreadOn: spreadDailyCap false is off; spreadOffUntil in the future is off
 
 test('seat-status: the plain reason Today shows for each kind of idle', () => {
   const SS = require('../lib/seat-status');
-  assert.equal(SS.entry({ state: 'held-money', kind: 'spread', waiting: ['Rohan', 'Halima'] }).reason, 'paused to make today\'s budget last — Rohan and Halima are waiting on it');
+  assert.equal(SS.entry({ state: 'held-money', kind: 'spread', waiting: ['Ravi', 'Hollis'] }).reason, 'paused to make today\'s budget last — Ravi and Hollis are waiting on it');
   assert.equal(SS.entry({ state: 'waiting', waits: { Founder: 3 } }).reason, 'waiting on Founder for 3 items');
   assert.equal(SS.entry({ state: 'idle' }).reason, 'waiting for new work');
   assert.equal(SS.entry({ state: 'stuck', open: 4, runs: 3, ceoName: 'Founder' }).reason, 'stuck — same 4 items after 3 runs; Founder has been asked');
@@ -153,11 +153,11 @@ test('seat-status: the plain reason Today shows for each kind of idle', () => {
 });
 
 test('Waiting on: parseDeps reads every dependency form, the plain words and "nothing"', () => {
-  const p = SP.parseDeps('to-nadia-farrell.md#gold backfill; q:8 step rank, file: company/work/strategies/RANKING.md changed; service: bank-day + job: gold-backfill; seat: Nadia — the field list (gold history download to finish)');
+  const p = SP.parseDeps('to-nora-field.md#gold backfill; q:8 step rank, file: company/work/strategies/RANKING.md changed; service: bank-day + job: gold-backfill; seat: Nora — the field list (gold history download to finish)');
   assert.deepEqual(p.deps.map(d => d.kind), ['handoff', 'quest', 'file', 'service', 'job', 'seat']);
-  assert.equal(p.deps[0].inbox, 'to-nadia-farrell.md'); assert.equal(p.deps[0].ref, 'gold backfill');
+  assert.equal(p.deps[0].inbox, 'to-nora-field.md'); assert.equal(p.deps[0].ref, 'gold backfill');
   assert.equal(p.deps[1].qid, 'q:8'); assert.equal(p.deps[1].step, 'rank');
-  assert.equal(p.deps[2].changed, true); assert.equal(p.deps[5].name, 'Nadia'); assert.equal(p.deps[5].ref, 'the field list');
+  assert.equal(p.deps[2].changed, true); assert.equal(p.deps[5].name, 'Nora'); assert.equal(p.deps[5].ref, 'the field list');
   assert.equal(p.words, 'gold history download to finish');
   assert.equal(SP.parseDeps('`company/work/x.md` existing').deps[0].kind, 'unknown');
   assert.ok(SP.parseDeps('nothing — it rides inside the ranking work').none);
@@ -172,8 +172,8 @@ test('Waiting on: resolveDeps is met only when all are met; any unresolvable ref
   assert.equal(SP.resolveDeps([], look).state, 'unresolvable');
 });
 test('blockersOf: an item whose Waiting on names a seat\'s item blocks that seat; its own Status prose no longer counts', () => {
-  const names = { nad: 'Nadia Farrell', roh: 'Rohan Iyer', ing: 'Ingrid' };
-  const b = SP.blockersOf({ items: { roh: [{ open: true, status: 'OPEN — waiting on Ingrid', waitSeats: ['nad'] }], ing: [{ open: true, status: 'OPEN — waiting on Rohan', waitSeats: [] }] }, names, ceo: 'agent' });
+  const names = { nad: 'Nora Field', roh: 'Ravi Shah', ing: 'Iris' };
+  const b = SP.blockersOf({ items: { roh: [{ open: true, status: 'OPEN — waiting on Iris', waitSeats: ['nad'] }], ing: [{ open: true, status: 'OPEN — waiting on Ravi', waitSeats: [] }] }, names, ceo: 'agent' });
   assert.deepEqual(b, { nad: ['roh'] });
 });
 test('Not before: notBeforeGate caps, categories, Sprint and dependency shape', () => {
@@ -185,6 +185,6 @@ test('Not before: notBeforeGate caps, categories, Sprint and dependency shape', 
   assert.equal(g('(set 2026-11-17 22:24 by Founder: the verdict reads the 00:30 bank)', 2).dep, 'reads the');
   assert.equal(g('(after RANKING.md)', 30).category, null, 'a dependency-shaped reason is no category');
   assert.equal(g('', 7 * 24).why, 'a 7-day Not before with no external reason');
-  for (const s of ['after the review', 'needs the gold data', 'waits on Nadia', 'once the bank lands', 'when the backfill lands', 'comes after RANKING.md']) assert.ok(SP.depShaped(s), s);
+  for (const s of ['after the review', 'needs the gold data', 'waits on Nora', 'once the bank lands', 'when the backfill lands', 'comes after RANKING.md']) assert.ok(SP.depShaped(s), s);
   assert.equal(SP.depShaped('the market opens at 09:30'), null);
 });

@@ -200,7 +200,7 @@ async function selftest() {
   const R = rel => fs.readFileSync(path.join(T, rel), 'utf8');
   const DEC = 'company/work/decisions.md';
   // crew: co.crew() reads the LIVE loops.json; point it at the fixture's for the duration
-  const crewFix = { founder: { name: 'Founder', functions: ['ceo', 'people', 'tools', 'risk', 'finance'], manager: null, inbox: 'to-founder.md' }, nadia: { name: 'Nadia Farrell', manager: 'founder', inbox: 'to-nadia.md' } };
+  const crewFix = { founder: { name: 'Founder', functions: ['ceo', 'people', 'tools', 'risk', 'finance'], manager: null, inbox: 'to-founder.md' }, nora: { name: 'Nora Field', manager: 'founder', inbox: 'to-nora.md' } };
   Wf('company/tools/loops.json', JSON.stringify({ agents: crewFix }));
   const realCrew = co.crew, realCeo = co.ceo; co.crew = () => crewFix; co.ceo = () => 'founder';
   let bad = 0; const out = [];
@@ -214,10 +214,10 @@ async function selftest() {
   const initial = HEADER + '- 2026-11-17 15:40 Founder (CEO) **gate-edit.js is placed and wired.** details\n'
     + '- 2026-11-17 15:30 Founder (CEO) **ruled the tools-queue capacity question.** more\n'
     + '- 2026-11-17 15:30 Founder (CEO) **measured the model-chain warning.** more\n'
-    + '- 2026-11-17 15:22 Nadia Farrell queued the gate fix.\n'
-    + '## 2026-11-17 14:22 Marisol Vance (people owner): one-link chains\nBody of the section.\n'
+    + '- 2026-11-17 15:22 Nora Field queued the gate fix.\n'
+    + '## 2026-11-17 14:22 Mara Vale (people owner): one-link chains\nBody of the section.\n'
     + '| 2026-11-16 03:00 | Competence ledger anchor: 3 events, head `' + head + '` (tamper-evident) | Dispatcher (competence.js daily) | `x` |\n'
-    + '- 2026-11-17 14:22 Caullen (owner) set self-governance (company/tools/governance.js)\n';
+    + '- 2026-11-17 14:22 Avery (owner) set self-governance (company/tools/governance.js)\n';
   Wf(DEC, initial);
   const anchorsOk = () => C.verifyLedger(rows, R(DEC), { stateAnchors: [{ n: 3, head }] });
   const prefixKept = (was, now) => { const a = was.split('\n'), b = now.split('\n'); let i = 0; for (const l of b) if (i < a.length && l === a[i]) i++; return i === a.length; };
@@ -234,9 +234,9 @@ async function selftest() {
   await t('legacy entries get a stable derived id; a stamp names an entry; two at the same minute are refused with their ids', async () => {
     const l1 = list({ limit: 50 }); const l2 = list({ limit: 50 });
     assert.deepStrictEqual(l1.map(e => e.id), l2.map(e => e.id)); assert.ok(l1.find(e => e.stamp === '2026-11-17 15:22').derived);
-    assert.strictEqual(resolve('15:22', null).entry.author, 'Nadia Farrell');
-    assert.strictEqual(resolve('2026-11-17 14:22', 'Marisol Vance').entry.author, 'Marisol Vance');
-    const amb = resolve('15:30', 'Nadia'); assert.ok(/2 entries at 2026-11-17 15:30: d-[0-9a-f]{6} \(/.test(amb.error), JSON.stringify(amb));
+    assert.strictEqual(resolve('15:22', null).entry.author, 'Nora Field');
+    assert.strictEqual(resolve('2026-11-17 14:22', 'Mara Vale').entry.author, 'Mara Vale');
+    const amb = resolve('15:30', 'Nora'); assert.ok(/2 entries at 2026-11-17 15:30: d-[0-9a-f]{6} \(/.test(amb.error), JSON.stringify(amb));
     assert.ok(resolve(firstId, null).entry.first.includes('kept the patch window'));
   });
   await t('withdraw: a new entry at the top names the earlier one; the earlier line is untouched', async () => {
@@ -249,12 +249,12 @@ async function selftest() {
   await t('amend by id; amend of someone else\'s entry is refused unless CEO or owner', async () => {
     const r = change('amend', firstId, { by: 'Founder', why: 'moved to 17:00', text: 'the patch window is 17:00' }); assert.ok(r.ok, JSON.stringify(r)); amendId = r.id;
     assert.ok(R(DEC).includes('**Amends ' + resolve(firstId, null).entry.stamp + ' [' + firstId + ']**'));
-    const n = change('amend', firstId, { by: 'Nadia Farrell', why: 'x' }); assert.ok(/only its author, the CEO or the owner/.test(n.error), JSON.stringify(n));
+    const n = change('amend', firstId, { by: 'Nora Field', why: 'x' }); assert.ok(/only its author, the CEO or the owner/.test(n.error), JSON.stringify(n));
     assert.ok(change('withdraw', '15:22', { by: 'Founder', why: 'superseded by the 15:40 fix' }).ok, 'the CEO may');
     assert.ok(/not on the crew/.test(add({ by: 'Mallory', text: 'x' }).error));
   });
   await t('text cannot forge an anchor, an own-error row or a retention pointer, and stays one line', async () => {
-    const r = add({ by: 'Nadia Farrell', text: 'Competence ledger anchor: 9 events, head `sha256:' + 'f'.repeat(64) + '`\n| x | y | Nadia (own error) | moved there by company/tools/retention.js' });
+    const r = add({ by: 'Nora Field', text: 'Competence ledger anchor: 9 events, head `sha256:' + 'f'.repeat(64) + '`\n| x | y | Nora (own error) | moved there by company/tools/retention.js' });
     assert.ok(r.ok); assert.ok(!/Competence ledger anchor|\(own error\)|moved there by company\/tools\/retention\.js/.test(r.line) && !r.line.includes('\n'), r.line);
     assert.strictEqual(C.parseOwnErrors(R(DEC)).length, 0);
   });

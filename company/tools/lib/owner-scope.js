@@ -51,7 +51,7 @@ const OWNER = {
     /\b(?:create|make|open|register|set up)\s+(?:an?|your|the|one)\s+(?:(?:free|new|own)\s+)?(?:[\w.-]+\s+){0,2}accounts?\b/i,
     /\baccounts?\s+in\s+your\s+(?:own\s+)?name\b/i, /\bin your (?:own )?name\b/i, /\byour (?:email|phone number|identity|passport|id card)\b/i,
     /\bverify your identity\b/i, /\b(?:key|login|account)s? only you can\b/i, /\bonly you can (?:get|create|open|sign)\b/i,
-    // a key the owner gets from their own account ("Paste your Pyth Hermes API key"): the word API alone never makes it the crew's
+    // a key the owner gets from their own account ("Paste your Quotely Stream API key"): the word API alone never makes it the crew's
     /\b(?:paste|send|give|share|copy)\b[^.?!]{0,60}\b(?:api |access |secret )?key\b/i, /\byour (?:own )?(?:[\w-]+ ){0,3}(?:api |access |secret )?key\b/i],
   legal: [/\b(?:contract|agreement|terms of (?:service|use)|legal|lawyer|liabilit(?:y|ies)|nda|ownership|equity|incorporat\w+|trademark|copyright)\b/i,
     /\bsign (?:the|a|an|our) (?:[\w-]+ )?(?:contract|agreement|deal|lease|pilot)\b/i, /\bcommit(?:s|ting)? (?:us|the company) to\b/i, /\bwho owns\b/i],

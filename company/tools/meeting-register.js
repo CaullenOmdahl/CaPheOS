@@ -57,19 +57,19 @@ function selftest() {
   try {
     const W = (rel, v) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(v)); };
     W('company/company.json', { name: 'Reg Test', owner: { name: 'Pat' }, timezone: 'UTC', station: { port: 1 } });
-    W('company/tools/loops.json', { agents: { dave: { name: 'Dave', functions: ['ceo'], manager: null }, sam: { name: 'Sam', manager: 'dave' } } });
+    W('company/tools/loops.json', { agents: { dana: { name: 'Dana', functions: ['ceo'], manager: null }, sam: { name: 'Sam', manager: 'dana' } } });
     fs.writeFileSync(path.join(T, '.capheos-selftest-fixture'), '');
     const run = (...a) => spawnSync(process.execPath, [__filename, ...a], { encoding: 'utf8', env: Object.assign({}, process.env, { CAPHEOS_ROOT: T }) });
     const code = `const R=require(${JSON.stringify(path.join(__dirname, 'lib', 'meeting-register.js'))});const r=R.load('m-abcd1');
-      R.add(r,'actions',{text:'Price the email options',plain:'Sharon finds what each email option costs',owner:'sam',date:'2026-11-20',affects:'Finance, Risk'},'sam');
+      R.add(r,'actions',{text:'Price the email options',plain:'Zoe finds what each email option costs',owner:'sam',date:'2026-11-20',affects:'Finance, Risk'},'sam');
       let bad=null;try{R.add(r,'actions',{text:'No plain line',owner:'sam',date:'own loop'},'sam')}catch(e){bad=e.code}
-      R.add(r,'rulings',{text:'DeepSeek stays off',plain:'We do not use DeepSeek for now',proposedBy:'dave'},'dave');
+      R.add(r,'rulings',{text:'DeepSeek stays off',plain:'We do not use DeepSeek for now',proposedBy:'dana'},'dana');
       R.save(r);process.stdout.write(JSON.stringify({bad}));`;
     const r0 = spawnSync(process.execPath, ['-e', code], { encoding: 'utf8', env: Object.assign({}, process.env, { CAPHEOS_ROOT: T }) });
     ok('a row without a plain-language line fails validation', JSON.parse(r0.stdout || '{}').bad === 'invalid', r0.stderr);
     const md = fs.readFileSync(fs.readdirSync(path.join(T, 'company/work/meetings')).map(f => path.join(T, 'company/work/meetings', f))[0], 'utf8');
-    ok('the register renders in the table register shape', /## Owner rulings/.test(md) && /\| 1 \| Price the email options \| Sharon finds what each email option costs \| Sam \| 2026-11-20 \| open \| Finance, Risk \|/.test(md) && /## Not recorded here/.test(md) && /not yet confirmed by the owner/.test(md), md);
-    let r = run('update', 'm-abcd1', 'actions', '1', '--by', 'Dave', '--status', 'done');
+    ok('the register renders in the table register shape', /## Owner rulings/.test(md) && /\| 1 \| Price the email options \| Zoe finds what each email option costs \| Sam \| 2026-11-20 \| open \| Finance, Risk \|/.test(md) && /## Not recorded here/.test(md) && /not yet confirmed by the owner/.test(md), md);
+    let r = run('update', 'm-abcd1', 'actions', '1', '--by', 'Dana', '--status', 'done');
     ok('someone else cannot update your line', r.status === 2 && /only sam updates this line/.test(r.stderr), r.stderr);
     r = run('update', 'm-abcd1', 'actions', '1', '--by', 'Sam', '--status', 'done 2026-11-19: priced', '--json');
     ok('the owner of a line updates it', r.status === 0 && JSON.parse(r.stdout).status === 'done 2026-11-19: priced', r.stderr);

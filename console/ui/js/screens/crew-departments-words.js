@@ -61,7 +61,7 @@ export const checkResumeTitle = () => 'Turn the lead\'s checks back on?';
 export const checkResumeConfirm = () => 'The crew will measure it again from today.';
 // every fixed line the screen can show, with sample names, for the plain-words test
 export function samples() {
-  const L = 'Kwame', D = 'Engineering';
+  const L = 'Kofi', D = 'Engineering';
   return [SWITCH_LABEL, BRIEF_TITLE, ADVICE_SAY.off[2], leadLine(L), recordingLine(L), onConfirm(L), onTitle(L), pauseTitle(L), pauseConfirm(), resumeTitle(), resumeConfirm(),
     askedLine(4, 12), lastAdviceLine('yesterday'), lastAdviceLine(null), pausedLine({ by: 'auto' }, L, D), pausedLine({ by: 'owner' }, L, D), noBriefLine(),
     ...Object.values(ADVICE_SAY).map(x => x[0]),

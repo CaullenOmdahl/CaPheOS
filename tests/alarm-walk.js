@@ -48,7 +48,7 @@ async function until(fn, ms) { const end = Date.now() + ms; let v; while (Date.n
       check(label + ': the two command replies each get a notice', n === 2, n);
       const first = await js(`(() => { const c = document.querySelectorAll('.command-ask')[0]; const a = c && c.querySelector('a'); return c ? { text: c.innerText, href: a && a.getAttribute('href'), msg: c.closest('.msg-them-wrap').querySelector('.msg-them').innerText } : null; })()`);
       check(label + ': the notice says no terminal is needed and links Test the outside alarm', first && /This asks you to run a command/.test(first.text) && /don't need a terminal/.test(first.text) && first.href === '#/settings/system/alarm', first);
-      check(label + ': the reply text is shown as written (a notice, never a rewrite)', first && /systemctl --user stop capheos-sandbox-station-liveness\.timer/.test(first.msg), first);
+      check(label + ': the reply text is shown as written (a notice, never a rewrite)', first && /systemctl --user stop trial-co-station-liveness\.timer/.test(first.msg), first);
       const second = await js(`(() => { const c = document.querySelectorAll('.command-ask')[1]; return c ? { text: c.innerText, link: !!c.querySelector('a'), btn: [...c.querySelectorAll('button')].map(b => b.textContent) } : null; })()`);
       check(label + ': with no matching console action, it says to tell the agent to use one', second && /use a console action/.test(second.text) && !second.link && second.btn.includes('Ask for a console action'), second);
       check(label + ': the plain reply gets no notice', await js(`[...document.querySelectorAll('.msg-them-wrap')].filter(x => /one handoff/.test(x.innerText) && x.querySelector('.command-ask')).length === 0`));

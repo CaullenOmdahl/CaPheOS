@@ -37,7 +37,7 @@ function company(o) {
     agent: { name: 'Alex', manager: null, functions: ['ceo'], inbox: 'to-alex.md' },
     engineer: { name: 'Max', manager: 'agent', functions: ['tools'], inbox: 'to-max.md' },
     auditor: { name: 'Riley', manager: 'agent', functions: ['risk'], inbox: 'to-riley.md' },
-    people: { name: 'Nadia Farrell', manager: 'agent', functions: ['people'], inbox: 'to-nadia.md' },
+    people: { name: 'Nora Field', manager: 'agent', functions: ['people'], inbox: 'to-nora.md' },
     sam: { name: 'Sam Lee', manager: 'agent', inbox: 'to-sam.md' } } });
   fs.mkdirSync(path.join(T, 'company', 'work', 'handoffs'), { recursive: true });
   const g = JSON.parse(fs.readFileSync(path.join(REPO, 'company/defaults/state/governance.json'), 'utf8'));
@@ -58,7 +58,7 @@ function fixture(o) {
   for (const f of ['company/state/locked/provenance.jsonl', 'company/pm-inbox.jsonl', 'company/state/governance.json', 'company/state/owner-rulings.json', 'company/owner/digest.jsonl']) try { fs.rmSync(path.join(root, f)); } catch (_) {}
   W(root, 'company/company.json', { name: 'Fixture Co', slug: 'fixture-co', timezone: 'UTC', owner: { name: 'Olive' }, station: { url: 'http://127.0.0.1:9' } });
   W(root, 'company/tools/loops.json', { agents: o.agents || { boss: { name: 'Boss', functions: ['ceo'], manager: null, inbox: 'to-boss.md' }, hal: { name: 'Hal', functions: ['people'], manager: 'boss', inbox: 'to-hal.md' },
-    riley: { name: 'Riley', functions: ['risk'], manager: 'boss', inbox: 'to-riley.md' }, data: { name: 'Halima', manager: 'boss', inbox: 'to-halima.md' } } });
+    riley: { name: 'Riley', functions: ['risk'], manager: 'boss', inbox: 'to-riley.md' }, data: { name: 'Hollis', manager: 'boss', inbox: 'to-hollis.md' } } });
   const g = JSON.parse(fs.readFileSync(path.join(REPO, 'company/defaults/state/governance.json'), 'utf8')); Object.assign(g.categories, o.levels || {});
   W(root, 'company/state/governance.json', g);
   return root;
@@ -144,7 +144,7 @@ const plain = 'late handoffs now count for more in the weekly scores';
 const editor = ask(keys, ${JSON.stringify(key)}, { by: 'Hal', why: 'late handoffs hurt the customers most', plain }, now);
 const noPlain = ask(keys, ${JSON.stringify(key)}, { by: 'Riley', why: 'late handoffs hurt the customers most' }, now);
 const techPlain = ask(keys, ${JSON.stringify(key)}, { by: 'Riley', why: 'late handoffs hurt the customers most', plain: 'raise weights.handoffs in competence-policy.json' }, now);
-const stranger = ask(keys, ${JSON.stringify(key)}, { by: 'Halima', why: 'late handoffs hurt the customers most', plain }, now);
+const stranger = ask(keys, ${JSON.stringify(key)}, { by: 'Hollis', why: 'late handoffs hurt the customers most', plain }, now);
 said('boss', 'shell_exec', { command: 'node company/tools/locked-watch.js ask-accept ${key} --by Riley --why x' }, now - 1000);
 const forged = ask(keys, ${JSON.stringify(key)}, { by: 'Riley', why: 'late handoffs hurt the customers most', plain }, now);
 said('riley', 'shell_exec', { command: 'node company/tools/locked-watch.js ask-accept ${key} --by Riley --why x' }, now - 500);
@@ -155,7 +155,7 @@ out({ flaggedBy, editor, noPlain, techPlain, stranger, forged, ok, card: c && { 
   assert.match(r.editor, /^ERR .*own run.*cannot be the one recommending/, r.editor);
   assert.match(r.noPlain, /^ERR --plain must say/, r.noPlain);
   assert.match(r.techPlain, /^ERR not plain for the owner/, r.techPlain);
-  assert.match(r.stranger, /^ERR Halima may not do this/, r.stranger);
+  assert.match(r.stranger, /^ERR Hollis may not do this/, r.stranger);
   assert.match(r.forged, /^ERR .*ran in Boss's run/, 'a --by typed in someone else\'s run is refused: ' + r.forged);
   assert.match(r.ok, /asked the owner/, r.ok);
   assert.ok(r.card);
@@ -257,10 +257,10 @@ out({ a: a.row, b: b.row, c: c.row, d: d.row || d, day: N.digest({ root: T, forc
 /* ---------------- UX N1: every tool that files a governance ask gives the owner a plain card ---------------- */
 test('UX N1: every caller\'s template, filed at approve, makes one plain card (ids, models and versions only in technical)', () => {
   const T = company({ agents: {
-    agent: { name: 'Dave', manager: null, functions: ['ceo'], inbox: 'to-dave.md' },
-    people: { name: 'Nadia', manager: 'agent', functions: ['people'], inbox: 'to-nadia.md' },
-    data: { name: 'Halima Cisse', manager: 'agent', inbox: 'to-halima.md' },
-    ops: { name: 'Omar', title: 'Ops Lead', manager: 'agent', inbox: 'to-omar.md' } } });
+    agent: { name: 'Dana', manager: null, functions: ['ceo'], inbox: 'to-dana.md' },
+    people: { name: 'Nora', manager: 'agent', functions: ['people'], inbox: 'to-nora.md' },
+    data: { name: 'Hollis Cole', manager: 'agent', inbox: 'to-hollis.md' },
+    ops: { name: 'Owen', title: 'Ops Lead', manager: 'agent', inbox: 'to-owen.md' } } });
   const r = run(T, `
 const gov = require(path.join(REPO, 'company/tools/lib/governance.js'));
 const card = require(path.join(REPO, 'company/tools/lib/owner-card.js'));
@@ -277,51 +277,51 @@ const crew = JSON.parse(fs.readFileSync(path.join(T, 'company/tools/loops.json')
 const st = DL.settings({}, { root: T });
 const dplan = DE.plan('create', { pos: ['create', 'research'], name: 'Research', lead: 'people' }, { departments: [] }, crew, st);
 const cases = [
-  ['hiring', 'hire', H.hire({ name: 'Lee Park', title: 'QA Lead', provider: 'anthropic', model: 'claude-sonnet-4-5', round: 'qa-lead-1', agentId: 'lee-park', approved: 'Nadia, people, 2026-11-19' })],
-  ['models', 'remodel', H.remodel({ name: 'Halima Cisse', agentId: 'data', provider: 'deepseek', model: 'deepseek-chat', reason: 'cheaper for routine work', approved: 'Nadia, people, 2026-11-19' })],
-  ['release', 'fire', H.fire({ name: 'Omar', title: 'Ops Lead', agentId: 'ops', reason: 'keeps missing handoffs', replace: true, approved: 'Dave, 2026-11-19' })],
+  ['hiring', 'hire', H.hire({ name: 'Lee Park', title: 'QA Lead', provider: 'anthropic', model: 'claude-sonnet-4-5', round: 'qa-lead-1', agentId: 'lee-park', approved: 'Nora, people, 2026-11-19' })],
+  ['models', 'remodel', H.remodel({ name: 'Hollis Cole', agentId: 'data', provider: 'deepseek', model: 'deepseek-chat', reason: 'cheaper for routine work', approved: 'Nora, people, 2026-11-19' })],
+  ['release', 'fire', H.fire({ name: 'Owen', title: 'Ops Lead', agentId: 'ops', reason: 'keeps missing handoffs', replace: true, approved: 'Dana, 2026-11-19' })],
   ['release', 'releaseCandidate', H.releaseCandidate({ name: 'Lee Park', role: 'QA Lead', round: 'qa-lead-1', agentId: 'lee-park', reason: 'failed the trial task' })],
   ['hiring', 'open', H.open({ role: 'QA Lead', slug: 'qa-lead-1', request: 'we need someone to test releases' })],
   ['deps', 'deps add', DP.add({ eco: 'npm', name: 'left-pad', version: '1.3.0', licence: 'MIT', why: 'parsing the price feed' })],
   ['deps', 'deps add (technical why)', DP.add({ eco: 'pip', name: 'requests', version: '2.32.3', licence: 'Apache-2.0', why: 'HTTP client for company/work/feed.py' })],
   ['deps', 'deps agpl', DP.agpl({ eco: 'npm', name: 'ghostscript', version: '10.0', why: 'turning reports into PDFs' })],
   ['schedules', 'cadence tempo', CA.tempo({ set: { dispatcherTickMin: 2 }, base: { dispatcherTickMin: 4, defaultCooldownMin: 30 }, minutes: 120, what: 'dispatcherTickMin=2', why: 'the backlog is long' })],
-  ['schedules', 'cadence seat', CA.seat({ name: 'Halima Cisse', seatId: 'data', what: ['loopEvery=30min', 'cooldownMin=20'], why: 'the backlog is long' })],
-  ['org', 'departments', DE.ASK(dplan, { why: 'research work keeps landing on Nadia' })],
-  ['models', 'models chain', MO.chain({ name: 'Halima Cisse', summary: 'set the model chain for Halima Cisse: claude-cli/claude-sonnet-4-5 > deepseek/deepseek-chat', approved: 'Nadia, people, 2026-11-19' })],
+  ['schedules', 'cadence seat', CA.seat({ name: 'Hollis Cole', seatId: 'data', what: ['loopEvery=30min', 'cooldownMin=20'], why: 'the backlog is long' })],
+  ['org', 'departments', DE.ASK(dplan, { why: 'research work keeps landing on Nora' })],
+  ['models', 'models chain', MO.chain({ name: 'Hollis Cole', summary: 'set the model chain for Hollis Cole: claude-cli/claude-sonnet-4-5 > deepseek/deepseek-chat', approved: 'Nora, people, 2026-11-19' })],
   ['budget', 'pacer emergency', PA.emergency({ ceilingPct: 90, hours: 6, why: 'production outage' })],
   ['schedules', 'service triage', SV.triage({ name: 'bank-freshness', kind: 'timer', schedule: { onCalendar: '*-*-* 02:00:00' }, why: 'checks the bank file is fresh', plain: 'It checks the bank file every night' })],
 ];
 const inbox = path.join(T, 'company/pm-inbox.jsonl');
 const res = cases.map(([cat, name, ask], i) => {
-  const d = gov.decide(cat, Object.assign({ by: 'Nadia', ref: 'r2:' + i }, ask), { root: T, level: 'approve' });
+  const d = gov.decide(cat, Object.assign({ by: 'Nora', ref: 'r2:' + i }, ask), { root: T, level: 'approve' });
   const q = G.rows({ file: inbox, noAlert: true }).filter(x => x.type === 'ask' && x.gate && x.gate.ref === 'r2:' + i).pop();
   return { name, d: { allowed: d.allowed, questionId: d.questionId || null, notPlain: !!d.notPlain, reason: d.reason }, card: q ? { message: q.message, consequence: q.consequence, recommendation: q.recommendation, technical: q.technical } : null,
     plain: q ? [q.message, q.consequence, q.recommendation].every(x => card.plain(x || '')) : false };
 });
-// no first-clause fallback: a technical summary is refused, never cut into "May Nadia go ahead and engineer?"
-const cut = gov.decide('schedules', { by: 'Nadia', ref: 'r2:cut', summary: 'engineer: wake every=30min, maxPerHour=4 (the backlog is long)', default: 'the tempo stays as it is' }, { root: T, level: 'approve' });
+// no first-clause fallback: a technical summary is refused, never cut into "May Nora go ahead and engineer?"
+const cut = gov.decide('schedules', { by: 'Nora', ref: 'r2:cut', summary: 'engineer: wake every=30min, maxPerHour=4 (the backlog is long)', default: 'the tempo stays as it is' }, { root: T, level: 'approve' });
 out({ res, cut: { notPlain: !!cut.notPlain, questionId: cut.questionId || null } });`);
   for (const x of r.res) {
     assert.ok(x.card && x.d.questionId, x.name + ': a card is filed at approve: ' + JSON.stringify(x.d));
     assert.ok(x.plain, x.name + ': the card is plain: ' + JSON.stringify(x.card));
     assert.doesNotMatch(x.card.message + ' ' + x.card.consequence + ' ' + (x.card.recommendation || ''), PLAIN_RE, x.name);
     assert.doesNotMatch(x.card.message + ' ' + x.card.consequence + ' ' + (x.card.recommendation || ''), /\b(anthropic|deepseek|claude|npm|pip|AGPL|licen[cs]e [A-Z]|qa-lead-1|dispatcher|tick|pacing line|\d{4}-\d{2}-\d{2})\b/, x.name + ' has no ids, models, versions or dates: ' + x.card.message + ' | ' + x.card.recommendation);
-    assert.match(x.card.message, /^May Nadia go ahead and [a-z]/, x.name + ': ' + x.card.message);
+    assert.match(x.card.message, /^May Nora go ahead and [a-z]/, x.name + ': ' + x.card.message);
     assert.ok(x.card.technical && x.card.technical.length > 20, x.name + ': the detail is kept for the crew');
   }
   const by = Object.fromEntries(r.res.map(x => [x.name, x.card]));
-  assert.equal(by.hire.message, 'May Nadia go ahead and hire Lee Park as QA Lead?');
+  assert.equal(by.hire.message, 'May Nora go ahead and hire Lee Park as QA Lead?');
   assert.match(by.hire.technical, /anthropic\/claude-sonnet-4-5/);
-  assert.equal(by.remodel.message, 'May Nadia go ahead and change which AI Halima Cisse works with?');
+  assert.equal(by.remodel.message, 'May Nora go ahead and change which AI Hollis Cole works with?');
   assert.match(by.remodel.recommendation, /cheaper for routine work/);
-  assert.match(by.remodel.consequence, /Halima Cisse keeps the AI they use now/, 'a name keeps its capital');
-  assert.equal(by['models chain'].recommendation, 'Nadia recommends yes.', 'never "yes: Nadia, people, <date>"');
+  assert.match(by.remodel.consequence, /Hollis Cole keeps the AI they use now/, 'a name keeps its capital');
+  assert.equal(by['models chain'].recommendation, 'Nora recommends yes.', 'never "yes: Nora, people, <date>"');
   assert.match(by.releaseCandidate.consequence, /do not answer, Lee Park stays a candidate\./, 'a name outside the crew keeps its capital too');
   assert.match(by.hire.consequence, /do not answer, nobody is hired/, 'an everyday first word is lowered');
-  assert.equal(by['deps add'].message, 'May Nadia go ahead and add a free software library the crew needs?');
+  assert.equal(by['deps add'].message, 'May Nora go ahead and add a free software library the crew needs?');
   assert.match(by['cadence tempo'].message, /pick up work more often for the next 2 hours/);
-  assert.equal(by.departments.message, 'May Nadia go ahead and start the Research department led by Nadia?');
+  assert.equal(by.departments.message, 'May Nora go ahead and start the Research department led by Nora?');
   assert.match(by['pacer emergency'].message, /use more of its AI subscriptions than usual for the next 6 hours/);
   assert.equal(r.cut.notPlain, true); assert.equal(r.cut.questionId, null);
 });
@@ -356,7 +356,7 @@ const co = require(path.join(REPO, 'company/tools/lib/company.js'));
 const N = require(path.join(REPO, 'console/owner-needs.js')).make({ co });
 out({
   src: fs.readFileSync(path.join(REPO, 'company/tools/guardrails.js'), 'utf8'),
-  pacer: tools('pacer.js').limitNotice('Sharon', 'MiniMax', 'fiveHourCloseBelowLeftPct 0 -> 35', 'keep a margin for the evening').text,
+  pacer: tools('pacer.js').limitNotice('Zoe', 'MiniMax', 'fiveHourCloseBelowLeftPct 0 -> 35', 'keep a margin for the evening').text,
   balance: fs.readFileSync(path.join(REPO, 'company/tools/lib/provider-balance.js'), 'utf8'),
   upstream: fs.readFileSync(path.join(REPO, 'company/tools/harness-change.js'), 'utf8'),
   demote: fs.readFileSync(path.join(REPO, 'company/tools/lib/decision.js'), 'utf8'),
@@ -368,7 +368,7 @@ out({
   for (const n of ['Local computer', 'Secrets', 'Spend cap']) { assert.match(consoleNames, new RegExp("'" + n + "'")); assert.match(r.src, new RegExp("'" + n + "'"), n + ' in guardrails.js'); }
   assert.doesNotMatch(r.src, /limit on this computer|ban on reading keys/);
   assert.match(r.src, /COUNT_CAP\[n\] \|\| n\) \+ ' safety settings are now off/);
-  assert.equal(r.pacer, 'Sharon changed when the crew stops using the MiniMax subscription. Sharon\'s reason: keep a margin for the evening. You can change it back in Settings › Models and subscriptions.');
+  assert.equal(r.pacer, 'Zoe changed when the crew stops using the MiniMax subscription. Zoe\'s reason: keep a margin for the evening. You can change it back in Settings › Models and subscriptions.');
   assert.match(r.balance, /Top it up so those crew members can keep working/);
   assert.doesNotMatch(r.upstream, /sent the makers/); assert.match(r.upstream, /wrote down a suggestion for the makers of the company software/);
   assert.match(r.demote, /The crew recommends leaving it off until it is fixed and passes its tests again/);

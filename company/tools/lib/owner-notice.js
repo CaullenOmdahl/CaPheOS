@@ -14,7 +14,7 @@
  *     a path, a command) is cut out of its sentence; a sentence that is still technical, or very long, moves whole into
  *     `technical`, which the console shows collapsed as "Technical details (for the crew)". The patterns are the owner
  *     card's (lib/owner-scope.js wordsProblems). An fyi with no plain sentence left gets a plain line by what it is about
- *     (fyiLead: "Dave noted a change to when the crew works."), never vanishes and never says "something technical"; it
+ *     (fyiLead: "Dana noted a change to when the crew works."), never vanishes and never says "something technical"; it
  *     is also recorded in company/state/owner-notice-lint.jsonl so the crew rewords the sender; with
  *     CAPHEOS_NOTICE_STRICT=1 (tests) a text that is not plain throws NOT_PLAIN instead, so a template is fixed, not hidden.
  *     asks: true marks a line that points at something waiting on Today; action: {kind:'undo-decision', decisionId} a
@@ -125,7 +125,7 @@ function plain(text) {
 const withRoot = (o, opts) => { o = Object.assign({}, o || {}); if (!o.root && opts && opts.root) o.root = opts.root; if (o.now === undefined && opts && Number.isFinite(opts.now)) o.now = opts.now; return o; };
 const keyOf = (from, text) => crypto.createHash('sha256').update(String(from || '') + '\n' + String(text || '')).digest('hex').slice(0, 16);
 
-/* M3: a crew member's name as people write it ("Nadia farrell" in the crew list reads "Nadia Farrell") */
+/* M3: a crew member's name as people write it ("Nora field" in the crew list reads "Nora Field") */
 function properNames(text, root) {
   let t = String(text || ''); if (!t) return t;
   let crew = {}; try { crew = (JSON.parse(fs.readFileSync(path.join(root, 'company', 'tools', 'loops.json'), 'utf8')) || {}).agents || {}; } catch (_) {}

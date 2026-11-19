@@ -2,7 +2,7 @@
 /* consult.test.js — advisor leads (lib/consult.js, consult.js, departments.js advisor/brief/digest/note, premerge-check.js's
  * advisory row; docs/DEPARTMENTS.md §5), on a fixture company:
  *   boss  the CEO          hal  the people function
- *   kwa   Kwame, the lead of Engineering (eng)      ben, cat  Engineering members (their manager is Kwame)
+ *   kwa   Kofi, the lead of Engineering (eng)      ben, cat  Engineering members (their manager is Kofi)
  * The acceptance bars of the middle-management plan's P4 that need no dispatcher: the stuck triggers (one trigger, one
  * consult), the batch, the packet size and dedupe, the daily cap, the lead-only answer, the verdict line in the item's
  * block read by model-rank.js at half weight, the advise prompt's stable prefix, the pre-merge row that never changes the
@@ -28,7 +28,7 @@ const jsonl = (root, rel) => (read(root, rel) || '').split('\n').filter(Boolean)
 const CREW = {
   boss: { name: 'Boss', functions: ['ceo'], manager: null, inbox: 'to-boss.md' },
   hal: { name: 'Hal', functions: ['people'], manager: 'boss', inbox: 'to-hal.md' },
-  kwa: { name: 'Kwame', manager: 'boss', inbox: 'to-kwame.md', loop: 'Kwame loop' },
+  kwa: { name: 'Kofi', manager: 'boss', inbox: 'to-kofi.md', loop: 'Kofi loop' },
   ben: { name: 'Ben', manager: 'kwa', inbox: 'to-ben.md', loop: 'Ben loop' },
   cat: { name: 'Cat', manager: 'kwa', inbox: 'to-cat.md', loop: 'Cat loop' },
 };
@@ -52,7 +52,7 @@ function fixture(o) {
   w(root, 'company/work/decisions.md', '# Decisions\n\nNewest first.\n\n');
   w(root, 'company/work/handoffs/to-ben.md', '# Handoffs\n' + item('ben-parser', 'fix the parser') + item('ben-lexer', 'fix the lexer'));
   w(root, 'company/work/handoffs/to-cat.md', '# Handoffs\n' + item('cat-docs', 'write the docs'));
-  for (const s of ['to-kwame.md', 'to-boss.md', 'to-hal.md']) w(root, 'company/work/handoffs/' + s, '# Handoffs\n');
+  for (const s of ['to-kofi.md', 'to-boss.md', 'to-hal.md']) w(root, 'company/work/handoffs/' + s, '# Handoffs\n');
   return root;
 }
 // a tool's run(argv) in a child process with CAPHEOS_ROOT at the fixture (lib/company.js reads the root once)
@@ -76,18 +76,18 @@ test('ask: a member asks its lead; the packet lands in the lead\'s inbox, the le
   const root = fixture();
   const r = consult(root, ['ask', '--item', 'ben-parser', '--question', 'Should the parser keep the old grammar?', '--kind', 'plan', '--check', 'npm test passes', '--by', 'Ben']);
   assert.equal(r.code, 0, JSON.stringify(r)); assert.equal(r.out.delivered, true);
-  const box = read(root, 'company/work/handoffs/to-kwame.md');
+  const box = read(root, 'company/work/handoffs/to-kofi.md');
   const p = C.parsePacket(box.slice(box.indexOf('## Consult:')));
   assert.equal(p.id, r.out.id); assert.equal(p.item, 'ben-parser'); assert.equal(p.from, 'Ben'); assert.equal(p.kind, 'plan'); assert.equal(p.status, 'OPEN'); assert.equal(p.check, 'npm test passes');
   const rows = jsonl(root, 'company/state/consults.jsonl');
   assert.equal(rows.length, 1); assert.equal(rows[0].op, 'open'); assert.equal(rows[0].lead, 'kwa'); assert.equal(rows[0].file, 'to-ben.md');
-  const held = inRoot(root, '(() => { const h = C.holdFn({}); return [h("to-ben.md", { heading: "2026-11-20 from Boss — fix the parser", id: "ben-parser" }), h("to-ben.md", { heading: "2026-11-20 from Boss — fix the lexer", id: "ben-lexer" }), h("to-kwame.md", { heading: "Consult: fix the parser (2026-11-20)", id: "' + r.out.id + '" })]; })()');
-  assert.deepEqual(held[0], { who: 'Kwame' }, 'the asking item waits for Kwame');
+  const held = inRoot(root, '(() => { const h = C.holdFn({}); return [h("to-ben.md", { heading: "2026-11-20 from Boss — fix the parser", id: "ben-parser" }), h("to-ben.md", { heading: "2026-11-20 from Boss — fix the lexer", id: "ben-lexer" }), h("to-kofi.md", { heading: "Consult: fix the parser (2026-11-20)", id: "' + r.out.id + '" })]; })()');
+  assert.deepEqual(held[0], { who: 'Kofi' }, 'the asking item waits for Kofi');
   assert.equal(held[1], null, 'another item of the same seat is still work');
   assert.equal(held[2].packet, true, 'the packet is the advise run\'s work, not the lead\'s loop');
   // plan without a check is refused; the lead cannot consult itself; a seat in no department has nobody to ask
   assert.equal(consult(root, ['ask', '--item', 'ben-lexer', '--question', 'q', '--kind', 'plan', '--by', 'Ben']).code, 2);
-  assert.match(consult(root, ['ask', '--item', 'ben-lexer', '--question', 'q', '--by', 'Kwame']).out.error, /does not consult itself/);
+  assert.match(consult(root, ['ask', '--item', 'ben-lexer', '--question', 'q', '--by', 'Kofi']).out.error, /does not consult itself/);
   assert.match(consult(root, ['ask', '--item', 'ben-lexer', '--question', 'q', '--by', 'Hal']).out.error, /in no department/);
 });
 
@@ -95,7 +95,7 @@ test('packets: over 4000 characters refused by ask; a duplicate open consult is 
   const root = fixture();
   const long = consult(root, ['ask', '--item', 'ben-parser', '--question', 'x'.repeat(4100), '--by', 'Ben']);
   assert.equal(long.code, 2); assert.match(long.out.error, /characters; the limit is 4000/);
-  assert.equal(read(root, 'company/work/handoffs/to-kwame.md'), '# Handoffs\n', 'nothing delivered');
+  assert.equal(read(root, 'company/work/handoffs/to-kofi.md'), '# Handoffs\n', 'nothing delivered');
   assert.equal(consult(root, ['ask', '--item', 'ben-parser', '--question', 'first', '--by', 'Ben']).code, 0);
   const dup = consult(root, ['ask', '--item', 'ben-parser', '--question', 'again', '--by', 'Ben']);
   assert.equal(dup.code, 3); assert.equal(dup.out.dropped, 'duplicate');
@@ -113,7 +113,7 @@ test('maxPerDay: enforced per department per company day; the drop is recorded a
   const r = consult(root, ['ask', '--item', 'cat-docs', '--question', 'two', '--by', 'Cat']);
   assert.equal(r.code, 3); assert.equal(r.out.dropped, 'daily cap');
   assert.ok(jsonl(root, 'company/state/consults.jsonl').some(x => x.op === 'dropped' && x.why === 'daily cap' && x.item === 'cat-docs'));
-  const mgr = read(root, 'company/work/handoffs/to-kwame.md');
+  const mgr = read(root, 'company/work/handoffs/to-kofi.md');
   assert.match(mgr, /FYI: Cat's question to the lead was not sent today/); assert.match(mgr, /reached its 1 consults for the day/);
   const st = inRoot(root, 'C.status({})').departments[0];
   assert.equal(st.today, 1); assert.equal(st.maxPerDay, 1); assert.equal(st.dropped, 1);
@@ -124,19 +124,19 @@ test('answer: only the lead (exit 2 otherwise); the verdict line goes into the c
   const id = consult(root, ['ask', '--item', 'ben-parser', '--question', 'ok?', '--by', 'Ben']).out.id;
   const no = consult(root, ['answer', id, '--verdict', 'APPROVE', '--check', 'npm test', '--by', 'Cat']);
   assert.equal(no.code, 2); assert.match(no.out.error, /only the lead of Engineering/);
-  assert.equal(consult(root, ['answer', id, '--verdict', 'MAYBE', '--check', 'x', '--by', 'Kwame']).code, 2);
-  assert.equal(consult(root, ['answer', id, '--verdict', 'REVISE', '--by', 'Kwame']).code, 2, 'a verdict needs its check');
-  const ok = consult(root, ['answer', id, '--verdict', 'REVISE', '--check', 'npm test fails on case 3', '--finding', 'keep the old grammar behind a flag', '--finding', 'add a test for case 3', '--by', 'Kwame']);
+  assert.equal(consult(root, ['answer', id, '--verdict', 'MAYBE', '--check', 'x', '--by', 'Kofi']).code, 2);
+  assert.equal(consult(root, ['answer', id, '--verdict', 'REVISE', '--by', 'Kofi']).code, 2, 'a verdict needs its check');
+  const ok = consult(root, ['answer', id, '--verdict', 'REVISE', '--check', 'npm test fails on case 3', '--finding', 'keep the old grammar behind a flag', '--finding', 'add a test for case 3', '--by', 'Kofi']);
   assert.equal(ok.code, 0, JSON.stringify(ok));
-  const line = '**Verdict:** REVISE by Kwame — check: npm test fails on case 3 — 1. keep the old grammar behind a flag 2. add a test for case 3';
+  const line = '**Verdict:** REVISE by Kofi — check: npm test fails on case 3 — 1. keep the old grammar behind a flag 2. add a test for case 3';
   assert.equal(ok.out.line, line);
   const ben = read(root, 'company/work/handoffs/to-ben.md');
   const parser = ben.split(/^(?=## )/m).find(s => s.includes('fix the parser'));
   assert.ok(parser.includes(line), parser);
   assert.ok(!ben.split(/^(?=## )/m).find(s => s.includes('fix the lexer')).includes('Verdict'), 'only the consulted item');
-  const box = read(root, 'company/work/handoffs/to-kwame.md');
+  const box = read(root, 'company/work/handoffs/to-kofi.md');
   assert.ok(box.includes(line) && /\*\*Status:\*\* DONE — REVISE/.test(box), box);
-  assert.equal(consult(root, ['answer', id, '--verdict', 'APPROVE', '--check', 'x', '--by', 'Kwame']).code, 2, 'answered once');
+  assert.equal(consult(root, ['answer', id, '--verdict', 'APPROVE', '--check', 'x', '--by', 'Kofi']).code, 2, 'answered once');
   assert.equal(inRoot(root, 'C.holdFn({})("to-ben.md", { heading: "2026-11-20 from Boss — fix the parser", id: "ben-parser" })'), null, 'answered: the item is work again');
 });
 
@@ -144,11 +144,11 @@ test('model-rank reads the lead\'s verdict once, at half weight, and the advise 
   const MR = require(path.join(TOOLS, 'model-rank.js'));
   const policy = JSON.parse(fs.readFileSync(path.join(REPO, 'company/defaults/work/models/ranking-policy.json'), 'utf8'));
   const now = Date.parse('2026-11-30T12:00:00Z'), t0 = Date.parse('2026-11-20T09:00:00Z');
-  const line = '**Verdict:** REVISE by Kwame — check: npm test — 1. a test for case 3';
+  const line = '**Verdict:** REVISE by Kofi — check: npm test — 1. a test for case 3';
   const benBlock = '# Handoffs\n\n## 2026-11-20 from Boss — fix the parser\n**Id:** ben-parser\n**Need:** x\n' + line + '\n**Status:** DONE\n**Resolved 2026-11-21 by Ben**\n';
   const kwaBlock = '# Handoffs\n\n## Consult: fix the parser (2026-11-20)\n**Id:** cs-1\n**Item:** ben-parser\n**From:** Ben\n**Kind:** ask\n' + line + '\n**Status:** DONE — REVISE (2026-11-20)\n';
   const inp = { policy, now, crew: CREW, departments: deptsDoc(), consults: [], ledger: [], corrections: [], evidence: [], attributed: [],
-    files: [{ file: 'to-ben.md', text: benBlock }, { file: 'to-kwame.md', text: kwaBlock }],
+    files: [{ file: 'to-ben.md', text: benBlock }, { file: 'to-kofi.md', text: kwaBlock }],
     wakes: [{ at: t0, wakeId: 'w1', seat: 'ben', runId: 'r1', door: 'dispatch', items: [{ file: 'to-ben.md', id: 'ben-parser' }] }, { at: t0 + 3600e3, wakeId: 'w2', seat: 'kwa', runId: 'r2', door: 'consult', items: [{ file: 'to-ben.md', id: 'ben-parser' }] }],
     runs: [{ runId: 'r1', agentId: 'ben', startedAt: t0, endedAt: t0 + 60e3, reason: 'done', provider: 'claude-cli', model: 'claude-sonnet-5-5', tokens: 1000, usd: 0.02 }, { runId: 'r2', agentId: 'kwa', startedAt: t0 + 3600e3, endedAt: t0 + 3700e3, reason: 'done', provider: 'claude-cli', model: 'claude-opus-5-5', tokens: 500, cachedTokens: 450, usd: 0.01 }] };
   const an = MR.analyze(inp);
@@ -211,8 +211,8 @@ test('the advise prompt: a pointer to the brief, never its text; the same bytes 
   const root = fixture();
   w(root, 'company/work/departments/eng/BRIEF.md', '# Engineering\n\nSECRET-PLAN-TEXT\n');
   const t = fs.readFileSync(path.join(REPO, 'company/defaults/work/departments/advise-prompt.md'), 'utf8');
-  const a = C.advisePrompt({ template: t, lead: 'Kwame', deptId: 'eng', deptName: 'Engineering', ids: ['cs-1'] });
-  const b = C.advisePrompt({ template: t, lead: 'Kwame', deptId: 'eng', deptName: 'Engineering', ids: ['cs-2', 'cs-3', 'cs-4'] });
+  const a = C.advisePrompt({ template: t, lead: 'Kofi', deptId: 'eng', deptName: 'Engineering', ids: ['cs-1'] });
+  const b = C.advisePrompt({ template: t, lead: 'Kofi', deptId: 'eng', deptName: 'Engineering', ids: ['cs-2', 'cs-3', 'cs-4'] });
   const n = a.indexOf(C.CONSULT_LINE);
   assert.ok(n > 1500, 'a long stable prefix: ' + n);
   assert.equal(a.slice(0, n), b.slice(0, n), 'byte-identical prefix');
@@ -228,7 +228,7 @@ test('shadow: a consult is recorded and not delivered; the item is not held', ()
   const root = fixture({ advisor: { mode: 'shadow' } });
   const r = consult(root, ['ask', '--item', 'ben-parser', '--question', 'q', '--by', 'Ben']);
   assert.equal(r.code, 0); assert.equal(r.out.delivered, false);
-  assert.equal(read(root, 'company/work/handoffs/to-kwame.md'), '# Handoffs\n');
+  assert.equal(read(root, 'company/work/handoffs/to-kofi.md'), '# Handoffs\n');
   assert.equal(jsonl(root, 'company/state/consults.jsonl')[0].shadow, true);
   assert.equal(inRoot(root, 'C.holdFn({})("to-ben.md", { heading: "x", id: "ben-parser" })'), null);
   const off = fixture({ advisor: null });
@@ -238,12 +238,12 @@ test('shadow: a consult is recorded and not delivered; the item is not held', ()
 
 test('departments.js advisor: owner only; a lead first, never the CEO; the dispatcher pauses with --auto, only the owner resumes', () => {
   const root = fixture({ advisor: null });
-  assert.equal(depts(root, ['advisor', 'eng', 'live', '--by', 'Kwame']).code, 2, 'a lead cannot switch its own advice on');
+  assert.equal(depts(root, ['advisor', 'eng', 'live', '--by', 'Kofi']).code, 2, 'a lead cannot switch its own advice on');
   const on = depts(root, ['advisor', 'eng', 'live', '--by', 'owner'], { owner: true });
   assert.equal(on.code, 0, JSON.stringify(on)); assert.equal(on.out.advisor.mode, 'live'); assert.ok(on.out.advisor.since);
   const doc = JSON.parse(read(root, 'company/departments.json'));
   assert.equal(doc.departments[0].advisor.mode, 'live');
-  assert.match(read(root, 'company/work/decisions.md'), /the lead's advice for Engineering \(Kwame\): off -> live/);
+  assert.match(read(root, 'company/work/decisions.md'), /the lead's advice for Engineering \(Kofi\): off -> live/);
   assert.equal(depts(root, ['advisor', 'eng', 'pause', '--by', 'dispatcher', '--why', 'x']).code, 2, 'the dispatcher pauses only with --auto');
   const p = depts(root, ['advisor', 'eng', 'pause', '--by', 'dispatcher', '--auto', '--why', 'cost per item rose', '--hash', 'sha256:abc']);
   assert.equal(p.code, 0, JSON.stringify(p)); assert.equal(p.out.advisor.paused.by, 'auto');
@@ -251,7 +251,7 @@ test('departments.js advisor: owner only; a lead first, never the CEO; the dispa
   assert.equal(inRoot(root, 'C.status({})').departments[0].effective, 'shadow', 'paused acts as recording only');
   const r1 = depts(root, ['advisor', 'eng', 'resume', '--by', 'dispatcher']);
   assert.equal(r1.code, 2); assert.match(r1.out.error, /only the owner resumes/);
-  assert.equal(depts(root, ['advisor', 'eng', 'resume', '--by', 'Kwame']).code, 2);
+  assert.equal(depts(root, ['advisor', 'eng', 'resume', '--by', 'Kofi']).code, 2);
   const r2 = depts(root, ['advisor', 'eng', 'resume', '--by', 'owner'], { owner: true });
   assert.equal(r2.code, 0); assert.equal(r2.out.advisor.paused, null); assert.notEqual(r2.out.advisor.since, on.out.advisor.since === r2.out.advisor.since ? null : on.out.advisor.since);
   // no lead, or the CEO as lead: refused for the owner too; check reports a hand edit
@@ -270,13 +270,13 @@ test('departments.js brief / digest / note: the lead\'s own files, inside their 
   const root = fixture();
   const f = w(root, 'scratch/brief.md', '# Engineering\n\nWe are fixing the parser this week.\n');
   assert.equal(depts(root, ['brief', 'eng', '--file', f, '--by', 'Ben']).code, 2, 'only the lead');
-  const ok = depts(root, ['brief', 'eng', '--file', f, '--by', 'Kwame']);
+  const ok = depts(root, ['brief', 'eng', '--file', f, '--by', 'Kofi']);
   assert.equal(ok.code, 0, JSON.stringify(ok)); assert.equal(read(root, 'company/work/departments/eng/BRIEF.md'), fs.readFileSync(f, 'utf8'));
   const big = w(root, 'scratch/big.md', 'x'.repeat(8001));
-  assert.match(depts(root, ['brief', 'eng', '--file', big, '--by', 'Kwame']).out.error, /the limit is 8000/);
-  assert.equal(depts(root, ['digest', 'eng', '--file', f, '--by', 'Kwame']).code, 0);
-  assert.equal(depts(root, ['note', 'eng', '--text', 'we keep the old grammar behind a flag', '--by', 'Kwame']).code, 0);
-  assert.match(read(root, 'company/work/departments/eng/DECISIONS.md'), /Kwame: we keep the old grammar behind a flag \(departments\.js note\)/);
+  assert.match(depts(root, ['brief', 'eng', '--file', big, '--by', 'Kofi']).out.error, /the limit is 8000/);
+  assert.equal(depts(root, ['digest', 'eng', '--file', f, '--by', 'Kofi']).code, 0);
+  assert.equal(depts(root, ['note', 'eng', '--text', 'we keep the old grammar behind a flag', '--by', 'Kofi']).code, 0);
+  assert.match(read(root, 'company/work/departments/eng/DECISIONS.md'), /Kofi: we keep the old grammar behind a flag \(departments\.js note\)/);
   const show = depts(root, ['show', 'eng', '--json', '--brief']);
   assert.match(show.out.department.briefText, /fixing the parser/); assert.equal(show.out.department.advisor.mode, 'live');
 });
@@ -298,16 +298,16 @@ test('premerge-check: the lead\'s advice is one advisory row; a lead REVISE on a
     env: Object.assign({}, process.env, { CAPHEOS_ROOT: root, CAPHEOS_TZ: 'UTC', STARNET_URL: 'http://127.0.0.1:9', PATH: bin + path.delimiter + process.env.PATH }) });
   const g1 = gate();
   assert.equal(g1.status, 0, g1.stdout + g1.stderr);
-  assert.match(g1.stdout, /Lead's advice \(advisory\)\s+\[asked Kwame; no answer yet; asked in cs-/);
+  assert.match(g1.stdout, /Lead's advice \(advisory\)\s+\[asked Kofi; no answer yet; asked in cs-/);
   const open = jsonl(root, 'company/state/consults.jsonl').filter(r => r.op === 'open');
   assert.equal(open.length, 1); assert.equal(open[0].kind, 'premerge'); assert.equal(open[0].head, PR.headRefOid);
   assert.equal(gate().status, 0); assert.equal(jsonl(root, 'company/state/consults.jsonl').filter(r => r.op === 'open').length, 1, 'once per PR head');
-  assert.equal(consult(root, ['answer', open[0].id, '--verdict', 'REVISE', '--check', 'read the diff', '--finding', 'name the flag', '--by', 'Kwame']).code, 0);
+  assert.equal(consult(root, ['answer', open[0].id, '--verdict', 'REVISE', '--check', 'read the diff', '--finding', 'name the flag', '--by', 'Kofi']).code, 0);
   const g3 = gate();
   assert.equal(g3.status, 0, 'a lead REVISE never changes the gate\'s exit code: ' + g3.stdout);
-  assert.match(g3.stdout, /PASS — /); assert.match(g3.stdout, /Lead's advice \(advisory\)\s+\[Kwame said REVISE/);
+  assert.match(g3.stdout, /PASS — /); assert.match(g3.stdout, /Lead's advice \(advisory\)\s+\[Kofi said REVISE/);
   const ev = JSON.parse(read(root, 'company/work/evidence/premerge-web-' + PR.headRefOid + '.json'));
-  assert.equal(ev.verdict, 'PASS'); assert.deepEqual(ev.lead, { verdict: 'REVISE', by: 'Kwame', consult: open[0].id, check: 'read the diff', advisory: true });
+  assert.equal(ev.verdict, 'PASS'); assert.deepEqual(ev.lead, { verdict: 'REVISE', by: 'Kofi', consult: open[0].id, check: 'read the diff', advisory: true });
   assert.ok(!ev.checks.some(c => /Lead/.test(c.name)), 'never a check');
   // advice off: no row, no consult, the same exit code
   const off = fixture({ advisor: null });
@@ -318,10 +318,10 @@ test('premerge-check: the lead\'s advice is one advisory row; a lead REVISE on a
 test('owner words: every line of the department card and the auto-pause line are plain', async () => {
   const scope = require(path.join(TOOLS, 'lib', 'owner-scope.js'));
   const WD = await import(path.join(REPO, 'console', 'ui', 'js', 'screens', 'crew-departments-words.js'));
-  const lines = WD.samples().concat([C.pausedWords('Kwame', 'Engineering')]);
+  const lines = WD.samples().concat([C.pausedWords('Kofi', 'Engineering')]);
   for (const t of lines) assert.deepEqual(scope.wordsProblems(t), [], t);
-  assert.equal(C.pausedWords('Kwame', 'Engineering'), 'The crew paused Kwame\'s advice for Engineering: over the last two weeks it cost more than it saved. You can turn it back on from the Engineering card.');
-  assert.equal(WD.onConfirm('Kwame'), 'Kwame will be asked for advice a few times a day. It uses a stronger, more expensive setup, and the crew will check after two weeks whether it pays off.');
+  assert.equal(C.pausedWords('Kofi', 'Engineering'), 'The crew paused Kofi\'s advice for Engineering: over the last two weeks it cost more than it saved. You can turn it back on from the Engineering card.');
+  assert.equal(WD.onConfirm('Kofi'), 'Kofi will be asked for advice a few times a day. It uses a stronger, more expensive setup, and the crew will check after two weeks whether it pays off.');
   assert.equal(WD.askedLine(4, 12), 'Asked the lead today: 4 of 12 allowed.');
   assert.equal(WD.resumeConfirm(), 'Turn the lead\'s advice back on? The crew will measure it again from today.');
   assert.deepEqual(['off', 'shadow', 'live'].map(m => WD.ADVICE_SAY[m][0]), ['Off', 'Recording only', 'On']);

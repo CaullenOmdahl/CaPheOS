@@ -9,7 +9,7 @@ Append a block to `company/work/handoffs/to-<name>.md` (the `inbox` field of the
 **Need:** what exactly you need back
 **Why:** why it matters now
 **Deadline:** 2026-11-18            (when it must be DONE: a plain YYYY-MM-DD first, or the word today)
-**Waiting on:** to-nadia-farrell.md#gold backfill   (optional: what it waits for; see below)
+**Waiting on:** to-nora-field.md#gold backfill   (optional: what it waits for; see below)
 **Not before:** 2026-11-20 09:00 — the exchange opens   (optional, rare: a real clock time, with its reason)
 **Quest:** q:N step <key> (optional)
 **Status:** OPEN
@@ -30,8 +30,8 @@ Never park work to look busy-free or to avoid stall checks.** The owner's ruling
 **Waiting on:** names what the block waits for, one or more dependencies separated by `;`, with optional plain words
 in brackets at the end (the console shows them: "waiting for: gold history download to finish"):
 ```
-**Waiting on:** to-nadia-farrell.md#gold backfill          that handoff closes (heading words or its **Id:**)
-**Waiting on:** seat: Nadia — gold backfill                  that seat's item closes
+**Waiting on:** to-nora-field.md#gold backfill          that handoff closes (heading words or its **Id:**)
+**Waiting on:** seat: Nora — gold backfill                  that seat's item closes
 **Waiting on:** q:13 step rank                               that quest step is ticked (q:13 alone: the quest closes)
 **Waiting on:** file: company/work/strategies/RANKING.md     the file appears (add `changed` to wait for a change)
 **Waiting on:** service: bank-day                            the background service's next successful run
@@ -39,10 +39,10 @@ in brackets at the end (the console shows them: "waiting for: gold history downl
 ```
 The dispatcher resolves every dependency on every tick: until all are met the holder is not woken for it, it is not
 counted toward STALLED, and the seats it names count as blocking it; the tick they are all met the holder is woken at
-once, past its cooldown ("Rohan: gold history download to finish — done; starting the recompute"). A reference the
+once, past its cooldown ("Ravi: gold history download to finish — done; starting the recompute"). A reference the
 dispatcher cannot resolve (an inbox, item, seat, service or job that does not exist) is a lint warning, and the item is
 treated as work now: a typo never parks work. `**Waiting on:** nothing` says it is your own work. Waiting on a person's
-decision can still be said in the Status (`**Status:** OPEN — waiting on Ingrid's review`); a Waiting on line, when
+decision can still be said in the Status (`**Status:** OPEN — waiting on Iris's review`); a Waiting on line, when
 present, governs instead of the Status prose.
 
 **A long job: start it, hand off, and you'll be woken when it ends.** Start it through

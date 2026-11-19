@@ -57,7 +57,7 @@ const VISIBLE = `(() => { const host = document.getElementById('set-services'); 
       const leaks = String(text || '').split('\n').filter(l => LEAK.test(l));
       check(label + ': Background services lists every service, no paths or tool names outside Details', ready && !leaks.length && !errors.length, { leaks, errors });
       const rec = await js(`(${card('depth-recorder')} || {}).innerText`);
-      check(label + ': a service shows its status, schedule, last run, who asked and why in plain words', /Running/.test(rec) && /Runs all the time/.test(rec) && /Last ran/.test(rec) && /Asked by Halima/.test(rec) && /order book/.test(rec), rec);
+      check(label + ': a service shows its status, schedule, last run, who asked and why in plain words', /Running/.test(rec) && /Runs all the time/.test(rec) && /Last ran/.test(rec) && /Asked by Hollis/.test(rec) && /order book/.test(rec), rec);
       const bank = await js(`(${card('bank-day')} || {}).innerText`);
       check(label + ': a timer shows its schedule and next run', /On schedule/.test(bank) && /Runs on the schedule/.test(bank) && /Next run/.test(bank), bank);
       check(label + ': the command is in Details, not on the card face', await js(`(() => { const d = ${card('depth-recorder')}.querySelector('details'); return !!d && /record_depth\\.py/.test(d.textContent) && !d.open; })()`));

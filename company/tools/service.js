@@ -309,7 +309,7 @@ function specOf(ctx, name, o, opts) {
       if (!id) throw err('--wake: no seat "' + w + '" in company/tools/loops.json');
       if (!wake.includes(id)) wake.push(id);
     }
-    if (!wake.length) throw err('--wake names the seats to wake, e.g. --wake rohan');
+    if (!wake.length) throw err('--wake names the seats to wake, e.g. --wake ravi');
   }
   return Object.assign({ name, unit: unitOf(ctx, name), kind, argv, schedule: scheduleOf(kind, o), why: why.slice(0, 400), restart, softHalt, network, limits: limitsOf(o, ctx), timeout, successExit }, wake ? { wake } : {}, hosts ? { hosts } : {},
     o.plain && o.plain !== true ? { plain: String(o.plain).replace(/\s+/g, ' ').trim().slice(0, 200) } : {},
@@ -432,14 +432,14 @@ function sites(ctx, e) {
   const list = allowlist(ctx);
   return { hosts, fresh: hosts.filter(h => !hostAllowed(list, h.replace(/^\*\./, ''))) };
 }
-// a website by the name people know it by: api.elections.kalshi.com -> Kalshi
+// a website by the name people know it by: api.elections.tradex.com -> Tradex
 function siteName(h) {
   const parts = String(h || '').replace(/^\*\./, '').toLowerCase().split('.').filter(Boolean);
   if (parts.length < 2) return null;
   const sld = parts.length >= 3 && /^(co|com|org|net|gov|ac)$/.test(parts[parts.length - 2]) && parts[parts.length - 1].length === 2 ? parts[parts.length - 3] : parts[parts.length - 2];
   return /^[a-z][a-z0-9-]{1,30}$/.test(sld) ? sld.replace(/-/g, ' ').replace(/(^|\s)\S/g, c => c.toUpperCase()) : null;
 }
-// "the Kalshi website" / "the Kalshi and Pyth websites" / "3 websites"
+// "the Tradex website" / "the Tradex and Quotely websites" / "3 websites"
 function sitesWords(hosts) {
   const names = [...new Set((hosts || []).map(siteName))];
   if (!names.length || names.some(n => !n)) return (hosts || []).length === 1 ? 'one website' : (hosts || []).length + ' websites';
@@ -481,7 +481,7 @@ function reachWords(ctx, e) {
   const s = sites(ctx, e);
   return 'It connects to ' + sitesWords(e.hosts) + (s.fresh.length ? ', which the crew has not used before.' : ', which the crew already uses.');
 }
-// "Halima wants a background job to run every night at 2 am on this computer." + what it touches, or why it needs a yes
+// "Hollis wants a background job to run every night at 2 am on this computer." + what it touches, or why it needs a yes
 function plainLead(ctx, e, who, prof) {
   const when = e.kind === 'timer' ? 'run ' + plainWhen(e.schedule) : 'keep running';
   const first = who.name + ' wants a background job to ' + when + ' on this computer.';
@@ -1094,7 +1094,7 @@ function selftest() {
     for (const d of ['company/state', 'company/tools', 'company/work/sim/scripts', 'company/defaults/state', 'company/owner']) fs.mkdirSync(path.join(R, d), { recursive: true });
     fs.mkdirSync(U); fs.mkdirSync(TR);
     fs.writeFileSync(path.join(R, 'company/company.json'), JSON.stringify({ name: 'Test Co', slug: 'testco', owner: { name: 'Pat' }, station: { serviceName: 'testco-station' } }));
-    fs.writeFileSync(path.join(R, 'company/tools/loops.json'), JSON.stringify({ agents: { agent: { name: 'Alex' }, data: { name: 'Halima' } } }));
+    fs.writeFileSync(path.join(R, 'company/tools/loops.json'), JSON.stringify({ agents: { agent: { name: 'Alex' }, data: { name: 'Hollis' } } }));
     fs.copyFileSync(path.join(__dirname, '..', 'defaults', 'state', 'governance.json'), path.join(R, 'company/defaults/state/governance.json'));
     fs.writeFileSync(path.join(R, 'company/work/sim/scripts/rec.py'), 'print(1)\n');
     fs.writeFileSync(path.join(R, 'company/work/sim/scripts/bank.sh'), 'echo 1\n');
@@ -1147,7 +1147,7 @@ function selftest() {
     const good = specOf(ctx, 'depth', { kind: 'service', exec: 'python3 -u company/work/sim/scripts/rec.py --out ' + path.join(R, 'scratch/d') + ' --hz 1', why: 'records depth between runs' }, { resolve: false });
     ok('accepted: python3 -u <company script> with in-tree args, made absolute', good.argv[0] === '/usr/bin/python3' && good.argv[2] === path.join(R, 'company/work/sim/scripts/rec.py') && good.unit === 'testco-svc-depth', good);
     {   // --wake: a timer's ExecStart goes through notify-when.js, which records the run and wakes the seats
-      const wk = specOf(ctx, 'bank', { kind: 'timer', every: '1h', exec: 'bash company/work/sim/scripts/bank.sh', why: 'banks the day between runs', wake: 'Halima' }, { resolve: false });
+      const wk = specOf(ctx, 'bank', { kind: 'timer', every: '1h', exec: 'bash company/work/sim/scripts/bank.sh', why: 'banks the day between runs', wake: 'Hollis' }, { resolve: false });
       const svc = render(ctx, wk)[wk.unit + '.service'];
       ok('--wake: the seat is resolved and the ExecStart is wrapped by notify-when.js --service-run (exit code passed through)', JSON.stringify(wk.wake) === '["data"]' && new RegExp('ExecStart="[^"]*node" "' + R.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/company/tools/notify-when\\.js" "--service-run" "bank" "--seat" "data" "--" "[^"]*bash" "').test(svc), svc);
       ok('--wake: refused for a long-running service and for an unknown seat', throwsCode(P('python3 company/work/sim/scripts/rec.py', { wake: 'data' }), 2, /--wake is for a timer/) === true && throwsCode(() => specOf(ctx, 'bank', { kind: 'timer', every: '1h', exec: 'bash company/work/sim/scripts/bank.sh', why: 'banks the day between runs', wake: 'zed' }, { resolve: false }), 2, /no seat "zed"/) === true);
@@ -1158,7 +1158,7 @@ function selftest() {
     let r = propose(ctx, 'depth', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', why: 'records order-book depth between agent runs', 'soft-halt': 'finish', network: 'on' });
     const q = JSON.parse(fs.readFileSync(inbox, 'utf8').trim().split('\n').pop());
     ok('guardrail ON, --network on (outside the safe profile): propose waits for the owner with one card', r.waiting && q.id === r.questionId && q.gate.category === 'localComputer' && q.effect && q.effect.serviceApprove && q.effect.serviceApprove.name === 'depth', r);
-    ok('the card is plain up front; name, command, schedule and why only under technical', plainCard(lastCard()) && lastCard().lead === 'Halima wants a background job to keep running on this computer. It could connect to any website, which risks company data leaving this computer.'
+    ok('the card is plain up front; name, command, schedule and why only under technical', plainCard(lastCard()) && lastCard().lead === 'Hollis wants a background job to keep running on this computer. It could connect to any website, which risks company data leaving this computer.'
       && !/depth|rec\.py|testco|python/.test(lastCard().lead + lastCard().consequence + lastCard().recommendation)
       && /depth/.test(q.technical) && /rec\.py --hz 1/.test(q.technical) && /runs all the time/.test(q.technical) && /order-book depth/.test(q.technical) && /network open/.test(q.technical) && /^Say yes only if that risk is acceptable/.test(lastCard().recommendation), lastCard());
     ok('nothing installed before the answer', !fs.existsSync(path.join(U, 'testco-svc-depth.service')) && !fake.calls.some(c => /^(enable|start)/.test(c)));
@@ -1186,7 +1186,7 @@ function selftest() {
     setLevel('approve');
     r = propose(ctx, 'tape', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', 'on-calendar': '*-*-* 18:00:00 UTC', why: 'banks the trade tape once a day', network: 'none' });
     const q2 = JSON.parse(fs.readFileSync(inbox, 'utf8').trim().split('\n').pop());
-    ok('a safe-profile timer at schedules=approve: one plain card in the schedules category', q2.gate.category === 'schedules' && lastCard().lead === 'Halima wants a background job to run every evening at 6 pm on this computer. It keeps to company files and cannot reach the internet.' && plainCard(lastCard()), lastCard());
+    ok('a safe-profile timer at schedules=approve: one plain card in the schedules category', q2.gate.category === 'schedules' && lastCard().lead === 'Hollis wants a background job to run every evening at 6 pm on this computer. It keeps to company files and cannot reach the internet.' && plainCard(lastCard()), lastCard());
     answer(q2.id, 'no');
     ok('a no is final: refused with exit code 3', throwsCode(() => propose(ctx, 'tape', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', 'on-calendar': '*-*-* 18:00:00 UTC', why: 'banks the trade tape once a day', network: 'none' }), 3, /said no/) === true);
     // guardrail ON, schedules=auto: a safe-profile timer installs with no card and nothing in the digest
@@ -1237,16 +1237,16 @@ function selftest() {
       const s0 = notice.sent.length;
       r = propose(ctx, 'feed4', { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1h', why: 'pulls a third price feed every hour', hosts: 'api.other.example', plain: 'It downloads prices once an hour' });
       const told = notice.sent.slice(s0).pop();
-      ok('guardrail off: a new website at external=notify: installed, one plain digest line that names the website and never claims "only"', r.ok && r.status === 'installed' && told && told.text === 'Halima set up a background job to run every hour on this computer. It downloads prices once an hour. It connects to the Other website, which the crew has not used before.' && !/only/.test(told.text) && /declared, not enforced/.test(told.technical), told);
+      ok('guardrail off: a new website at external=notify: installed, one plain digest line that names the website and never claims "only"', r.ok && r.status === 'installed' && told && told.text === 'Hollis set up a background job to run every hour on this computer. It downloads prices once an hour. It connects to the Other website, which the crew has not used before.' && !/only/.test(told.text) && /declared, not enforced/.test(told.technical), told);
       remove(ctx, 'feed4', { by: 'data' });
       guardOn = true; g.categories.external = 'approve'; fs.writeFileSync(path.join(R, 'company/state/governance.json'), JSON.stringify(g));
       // a job installed with the network open before it became opt-in: the same proposal again is "already", not a clash
       const doc = read(ctx); const leg = specOf(ctx, 'legacy', { kind: 'timer', every: '1h', exec: 'bash company/work/sim/scripts/bank.sh', why: 'an old job from before', network: 'on' });
-      doc.services.legacy = Object.assign(leg, { specKey: specKey(leg), status: 'installed', by: 'data', byName: 'Halima' }); write(ctx, doc);
+      doc.services.legacy = Object.assign(leg, { specKey: specKey(leg), status: 'installed', by: 'data', byName: 'Hollis' }); write(ctx, doc);
       r = propose(ctx, 'legacy', { by: 'data', kind: 'timer', every: '1h', exec: 'bash company/work/sim/scripts/bank.sh', why: 'an old job from before' });
       ok('an installed open-network job proposed again the same way is already installed (not refused)', r.ok && r.already, r);
       delete doc.services.legacy; write(ctx, doc);
-      ok('website names in plain words', sitesWords(['api.elections.kalshi.com']) === 'the Kalshi website' && sitesWords(['hermes.pyth.network', 'api.kalshi.com']) === 'the Pyth and Kalshi websites' && sitesWords(['a.example.co.uk']) === 'the Example website'); }
+      ok('website names in plain words', sitesWords(['api.elections.tradex.com']) === 'the Tradex website' && sitesWords(['hermes.quotely.network', 'api.tradex.com']) === 'the Quotely and Tradex websites' && sitesWords(['a.example.co.uk']) === 'the Example website'); }
     // ownerApprove: the console's serviceApprove effect installs only after the owner's yes to that exact card
     { r = propose(ctx, 'wide', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --wide', why: 'a recorder that needs more memory', network: 'none', memory: '2G' });
       ok('raised limits ask the owner', r.waiting && /more of this computer's memory or power/.test(lastCard().lead), lastCard().lead);
@@ -1262,7 +1262,7 @@ function selftest() {
     const tm = fs.readFileSync(path.join(U, 'testco-svc-bank.timer'), 'utf8'); const ts1 = fs.readFileSync(path.join(U, 'testco-svc-bank.service'), 'utf8');
     { const fyi = notice.sent.filter(x => /^service:bank:/.test(x.key || ''));
       ok('guardrail OFF + schedules notify: installed without a question, one plain digest line (no owner message)', r.ok && r.status === 'installed' && fyi.length === 1 && fyi[0].kind === 'fyi'
-        && fyi[0].text === 'Halima set up a background job to run every hour on this computer. It keeps to company files and cannot reach the internet.' && !fs.existsSync(path.join(R, 'company/owner/outbound.jsonl')), { r, fyi }); }
+        && fyi[0].text === 'Hollis set up a background job to run every hour on this computer. It keeps to company files and cannot reach the internet.' && !fs.existsSync(path.join(R, 'company/owner/outbound.jsonl')), { r, fyi }); }
     ok('timer rendered: OnUnitActiveSec, oneshot service, no network', /OnUnitActiveSec=1h/.test(tm) && /Unit=testco-svc-bank.service/.test(tm) && /Type=oneshot/.test(ts1) && /RestrictAddressFamilies=AF_UNIX/.test(ts1) && fake.active['testco-svc-bank.timer']);
     // start limit: a timer must not rate-limit itself to half its schedule; a long-running service keeps the guard
     const minuteSvc = render(ctx, specOf(ctx, 'minute', { kind: 'timer', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', every: '1min', why: 'one pass every minute' }, { resolve: false }))['testco-svc-minute.service'];
@@ -1401,7 +1401,7 @@ function selftest() {
     // ---- list (the console reads it)
     const L = list(ctx);
     const dep = L.services.find(s => s.name === 'depth');
-    ok('list: status, schedule, last run, who asked and why', dep && dep.state === 'running' && dep.scheduleWords === 'runs all the time' && dep.lastRun && dep.byName === 'Halima' && /order-book/.test(dep.why) && dep.scoped, dep);
+    ok('list: status, schedule, last run, who asked and why', dep && dep.state === 'running' && dep.scheduleWords === 'runs all the time' && dep.lastRun && dep.byName === 'Hollis' && /order-book/.test(dep.why) && dep.scoped, dep);
 
     // ---- the shims refuse systemctl --user enable/start/daemon-reload for an agent while localComputer is ON
     const C = c => checkCommand(ctx, 'systemctl', c.split(' '));

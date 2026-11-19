@@ -16,7 +16,7 @@
  *   (f) a standing rule "the crew decides models" hides a models card, and never a fixed-gate card
  *   (g) a card filed while its category was at approve, open after the owner moved it to notify: under "The crew is
  *       handling", not Needs you
- *   (h) the old-shape cards of a real company (capheos-sandbox's latest ask row of each shape, values redacted:
+ *   (h) the old-shape cards of a real company (trial-co's latest ask row of each shape, values redacted:
  *       tests/fixtures/owner-asks/sandbox-old-cards.jsonl) still render and can be answered
  *
  * Real modules throughout (no stand-ins): a temp copy of company/ and console/, the crew's steps as child processes
@@ -41,10 +41,10 @@ const jsonl = (root, rel) => read(root, rel).split('\n').filter(Boolean).map(l =
 const asks = root => jsonl(root, 'company/pm-inbox.jsonl').filter(r => r.type === 'ask');
 const CREW = {
   ceo: { name: 'Alex', title: 'CEO', manager: null, functions: ['ceo'], inbox: 'to-alex.md' },
-  people: { name: 'Kwame', title: 'People', manager: 'ceo', functions: ['people'], inbox: 'to-kwame.md' },
+  people: { name: 'Kofi', title: 'People', manager: 'ceo', functions: ['people'], inbox: 'to-kofi.md' },
   engineer: { name: 'Max', title: 'Engineer', manager: 'ceo', functions: ['tools'], inbox: 'to-max.md' },
   auditor: { name: 'Riley', title: 'Auditor', manager: 'ceo', functions: ['risk'], inbox: 'to-riley.md' },
-  data: { name: 'Halima', title: 'Data', manager: 'ceo', inbox: 'to-halima.md' },
+  data: { name: 'Hollis', title: 'Data', manager: 'ceo', inbox: 'to-hollis.md' },
 };
 
 /* plain for the owner: nothing a non-technical person trips on (owner-scope's jargon list, and the obvious tells) */
@@ -126,7 +126,7 @@ test('(a) a locked tool changed at tools=auto: no owner card, no owner message, 
   const root = fixture({ tools: 'auto' });
   const r = crew(root, `
     const HC = T('harness-change.js'); const C = () => ${HC_CTX};
-    const r = await HC.propose(C(), { kind: 'tool', target: 'company/tools/competence.js', why: 'count a report only once in the totals', change: ${JSON.stringify(NEW_TOOL)}, by: 'Kwame' });
+    const r = await HC.propose(C(), { kind: 'tool', target: 'company/tools/competence.js', why: 'count a report only once in the totals', change: ${JSON.stringify(NEW_TOOL)}, by: 'Kofi' });
     HC.review(C(), r.id, { by: 'Riley' }, 'approve'); HC.review(C(), r.id, { by: 'Max' }, 'approve');
     const a = await HC.applyChange(C(), r.id, { by: 'Max' });
     return { id: r.id, locked: r.target.locked, reviewers: r.reviewers.map(x => x.name), status: a.status };`);
@@ -139,7 +139,7 @@ test('(a) a locked tool changed at tools=auto: no owner card, no owner message, 
   const d = jsonl(root, 'company/owner/digest.jsonl');
   assert.equal(d.length, 1, 'one digest line: ' + JSON.stringify(d));
   assert.equal(d[0].kind, 'fyi');
-  assert.equal(d[0].text, 'Kwame changed how the crew\'s work is measured, after two colleagues reviewed it.');
+  assert.equal(d[0].text, 'Kofi changed how the crew\'s work is measured, after two colleagues reviewed it.');
   assertPlain(d[0].text, 'the digest line');
   assert.match(d[0].technical, /competence\.js/, 'the file is for the crew, in the technical part');
 });
@@ -148,7 +148,7 @@ test('(b) at tools=approve: exactly one plain card in Needs you, technical detai
   const root = fixture({ tools: 'approve' });
   const r = crew(root, `
     const HC = T('harness-change.js'); const C = () => ${HC_CTX};
-    const r = await HC.propose(C(), { kind: 'tool', target: 'company/tools/competence.js', why: 'count a report only once in the totals', change: ${JSON.stringify(NEW_TOOL)}, by: 'Kwame', plain: 'It only changes how a report is counted.' });
+    const r = await HC.propose(C(), { kind: 'tool', target: 'company/tools/competence.js', why: 'count a report only once in the totals', change: ${JSON.stringify(NEW_TOOL)}, by: 'Kofi', plain: 'It only changes how a report is counted.' });
     HC.review(C(), r.id, { by: 'Riley' }, 'approve'); HC.review(C(), r.id, { by: 'Max' }, 'approve');
     let refused = null; try { await HC.applyChange(C(), r.id, { by: 'Max' }); } catch (e) { refused = e.message; }
     return { id: r.id, refused };`);
@@ -192,7 +192,7 @@ test('(c) a safe-profile background job at schedules=notify: installed, one dige
   assert.equal(read(root, 'company/owner/outbound.jsonl'), '', 'no owner message');
   const d = jsonl(root, 'company/owner/digest.jsonl');
   assert.equal(d.length, 1, 'one digest line: ' + JSON.stringify(d));
-  assert.equal(d[0].kind, 'fyi'); assert.match(d[0].text, /^Halima set up a background job/);
+  assert.equal(d[0].kind, 'fyi'); assert.match(d[0].text, /^Hollis set up a background job/);
   assertPlain(d[0].text, 'the digest line');
 });
 
@@ -278,7 +278,7 @@ test('(f) a standing rule "the crew decides models" hides a models card, never a
 test('(g) a card filed at approve, open after the owner moved its category to notify: under The crew is handling, not Needs you', async () => {
   const root = fixture({ hiring: 'approve' });
   const filed = crew(root, `
-    return T('lib/owner-card.js').file({ asker: 'people', category: 'hiring', ref: 'hiring:writer-1', lead: 'Kwame wants to hire a part-time writer for the blog, so posts go out every week.',
+    return T('lib/owner-card.js').file({ asker: 'people', category: 'hiring', ref: 'hiring:writer-1', lead: 'Kofi wants to hire a part-time writer for the blog, so posts go out every week.',
       consequence: 'If you say yes, the writer starts next week. If you say no, nobody is hired.', recommendation: 'The crew recommends yes.' });`);
   assert.ok(filed.filed, JSON.stringify(filed));
   setLevel(root, 'hiring', 'notify');

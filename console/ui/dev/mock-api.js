@@ -63,7 +63,7 @@ function typedFixtures() {
         actions: [{ id: 'go', label: 'Here you go', verdict: 'done' }, { id: 'other', label: 'Use another free service instead', verdict: 'no' }] } }),
     // the pacer's cutoff question (company/tools/lib/pacing-ask.js): two sliders and three buttons
     mk('q-000119', 15, { from: 'Pacer', about: 'pacing:claude', message: 'Claude is 70% used this week and resets Thursday 18:00. The company\'s routines are paused on Claude for today. How much of this week\'s Claude may routines use?',
-      details: 'Today\'s line is 41.9% (spread evenly over the week). Held: Ingrid Halvorsen, Marisol Vance, Halima Cisse.',
+      details: 'Today\'s line is 41.9% (spread evenly over the week). Held: Iris Hale, Mara Vale, Hollis Cole.',
       form: { fields: [{ id: 'weekstop', type: 'slider', label: 'Weekly stop', min: 70, max: 100, step: 1, value: 95, unit: '%', say: 'Let routines use up to {value}% of this week\'s Claude', minLabel: 'What is used now (70%)', maxLabel: 'All of it (100%)', marks: [{ value: 95, label: 'now 95%' }] },
         { id: 'usenow', type: 'slider', label: 'Spread evenly or use it now', min: 0, max: 100, step: 10, value: 0, unit: '%', say: '{value}% of the way from an even share each day to using it all now', sayAt: { 0: 'Spread evenly: an even share of the week each day', 100: 'Use it now: routines may go up to the weekly stop today' }, minLabel: 'Spread evenly', maxLabel: 'Use it now', required: false }],
         actions: [{ id: 'set', label: 'Set', verdict: 'submit', primary: true }, { id: 'keep', label: 'Keep paused', verdict: 'no', needs: 'none' }, { id: 'other', label: 'Use another model meanwhile', verdict: 'done', needs: 'none' }] } }),
@@ -110,7 +110,7 @@ const placeholderSecrets = (form, values, b) => { const out = Object.assign({}, 
 
 const S = {
   limits: { level: 'approve',
-    claude: { name: 'Claude', known: true, open: false, why: 'week 70% used is over today\'s line of 41.9%', usedPct: 70, line: 41.9, normalLine: 41.9, resetsAt: Date.now() + 2 * 86400e3, weekStop: 95, useNow: 0, paceBy: 'week', affected: ['Ingrid Halvorsen', 'Marisol Vance', 'Halima Cisse'], ownerSet: null },
+    claude: { name: 'Claude', known: true, open: false, why: 'week 70% used is over today\'s line of 41.9%', usedPct: 70, line: 41.9, normalLine: 41.9, resetsAt: Date.now() + 2 * 86400e3, weekStop: 95, useNow: 0, paceBy: 'week', affected: ['Iris Hale', 'Mara Vale', 'Hollis Cole'], ownerSet: null },
     minimax: { name: 'MiniMax', known: true, open: true, why: 'paced by its own limits', usedPct: 24, line: 100, normalLine: 100, resetsAt: Date.now() + 4 * 86400e3, weekStop: 100, useNow: 0, paceBy: 'fiveHour', affected: [], ownerSet: null } },
   company: { ok: true, name: 'Example Co', shortName: 'example', owner: { name: 'Sam Owner' }, timezone: 'America/Chicago', station: { url: 'http://127.0.0.1:8802' }, ownerChannel: { adapter: 'file' } },
   questions: [
@@ -136,7 +136,7 @@ const S = {
   seats: [
     { id: 'agent', name: 'Founder', title: 'Founder and CEO', seat: 'founder', role: 'agent.md', functions: ['ceo', 'risk', 'floor', 'finance'], loop: 'Founder loop', priority: 100, inbox: 'to-founder.md', log: 'founder-log.md', wakeOnInbox: true, manager: null, station: { agentId: 'agent', model: 'deepseek-flash', provider: 'deepseek', status: 'working' } },
     { id: 'people1', name: 'Mira', title: 'People Manager', seat: 'people', role: 'people-manager.md', functions: ['people'], loop: 'People loop', priority: 50, manager: 'agent', station: { agentId: 'people1', model: 'example-model-medium', status: 'idle' } },
-    { id: 'cand-tools-backtest-engineer-1-n', name: 'Nadia farrell', title: 'Tools & Backtest Engineer', seat: 'specialist', role: 'nadia-farrell.md', functions: [], loop: 'Nadia farrell loop', priority: 40, manager: 'agent', hiredIn: 'tools-backtest-engineer-1', hire: { at: ago(900) }, firstRun: { at: ago(895), outcome: 'stopped' }, station: { agentId: 'cand-tools-backtest-engineer-1-n', model: 'claude-sonnet-5-5', provider: 'claude-cli', status: 'idle' } },
+    { id: 'cand-tools-backtest-engineer-1-n', name: 'Nora field', title: 'Tools & Backtest Engineer', seat: 'specialist', role: 'nora-field.md', functions: [], loop: 'Nora field loop', priority: 40, manager: 'agent', hiredIn: 'tools-backtest-engineer-1', hire: { at: ago(900) }, firstRun: { at: ago(895), outcome: 'stopped' }, station: { agentId: 'cand-tools-backtest-engineer-1-n', model: 'claude-sonnet-5-5', provider: 'claude-cli', status: 'idle' } },
     { id: 'tools1', name: 'Teo', title: 'Tool Builder', seat: 'tools', role: 'tool-builder.md', functions: ['tools'], loop: 'Tools loop', priority: 60, manager: 'agent', station: { agentId: 'tools1', status: 'blocked' } },
   ],
   handoffs: [
@@ -180,7 +180,7 @@ const IDLE = {
 S.chats = { agent: [{ role: 'user', content: 'What is on today?', at: ago(30) }, { role: 'assistant', content: 'Two quests and **one handoff** due at 17:00. See [the handoffs](console:#/work/handoffs).', at: ago(29) }] };
 // MOCK_CHAT_TURNS=N: a long conversation with the Founder (the chat's rolling window and backscroll)
 // a reply that tells the owner to run a command (the captured 2026-11-17 one), with the server's lint (console/command-ask.js)
-if (process.env.MOCK_COMMAND_ASK) for (const content of ['For tonight, the heartbeat test is ready:\n\n1. Note the period and grace on your check.\n2. Stop the timer by running `systemctl --user stop capheos-sandbox-station-liveness.timer`.',
+if (process.env.MOCK_COMMAND_ASK) for (const content of ['For tonight, the heartbeat test is ready:\n\n1. Note the period and grace on your check.\n2. Stop the timer by running `systemctl --user stop trial-co-station-liveness.timer`.',
   'One more: please run `git push origin main` so the branch is up.']) S.chats.agent.push({ role: 'assistant', content, at: ago(28), commandAsk: require(path.join(__dirname, '..', '..', 'command-ask.js')).commandAsk(content) });
 if (Number(process.env.MOCK_CHAT_TURNS) > 0) for (let k = Number(process.env.MOCK_CHAT_TURNS); k > 0; k--) S.chats.agent.unshift({ role: k % 2 ? 'assistant' : 'user', content: 'Message ' + k + ' of the earlier conversation.', at: ago(30 + k) });
 if (Number(process.env.MOCK_CHAT_TURNS) > 0) for (let k = Number(process.env.MOCK_CHAT_TURNS); k > 0; k--) S.messages.unshift({ dir: 'out', id: 'out-mock-' + k, at: ago(30 + k), from: 'Founder', text: 'Owner channel message ' + k + '.' });
@@ -217,9 +217,9 @@ if (MOCK_ACTIONS) {
 S.mockActions = { stored: [], answers: [] };
 // secrets/ as Settings › Service keys sees it: name -> {at, chars, files} (a value is never kept); files = who reads it
 S.serviceKeys = {
-  'kalshi-api-key': { at: ago(60 * 24 * 3), chars: 36, files: ['company/work/markets/kalshi_feed.py'] },
-  'kalshi-private-key': { at: ago(60 * 24 * 3), chars: 1704, files: ['company/work/markets/kalshi_feed.py'] },
-  'pyth-api-key': { at: null, files: ['company/work/research/pyth_prices.py'] },
+  'tradex-api-key': { at: ago(60 * 24 * 3), chars: 36, files: ['company/work/markets/tradex_feed.py'] },
+  'tradex-private-key': { at: ago(60 * 24 * 3), chars: 1704, files: ['company/work/markets/tradex_feed.py'] },
+  'quotely-api-key': { at: null, files: ['company/work/research/quotely_prices.py'] },
   'liveness-heartbeat-url': { at: null, files: ['modules/liveness/watch.js'] },
 };
 S.mockActions.serviceKeys = [];
@@ -271,10 +271,10 @@ function setPreset(p) { S.governance = { preset: p, presetLabel: PRESETS[p] || '
 setPreset('gate-money-people');
 S.services = [
   { name: 'depth-recorder', unit: 'company-svc-depth-recorder', kind: 'service', status: 'installed', state: 'running', schedule: null, scheduleWords: 'runs all the time', lastRun: ago(300),
-    by: 'data1', byName: 'Halima', why: 'Records the order book once a second, so the back-tests have depth data that cannot be fetched later.', command: '/usr/bin/python3 company/work/sim/scripts/record_depth.py --hz 1',
+    by: 'data1', byName: 'Hollis', why: 'Records the order book once a second, so the back-tests have depth data that cannot be fetched later.', command: '/usr/bin/python3 company/work/sim/scripts/record_depth.py --hz 1',
     limits: { memoryMax: '512M', cpuQuota: '50%' }, network: true, softHalt: 'keep', approval: { level: 'approve', via: 'owner said yes to q-104511', at: ago(600) }, scoped: true, managed: true, halt: null },
   { name: 'bank-day', unit: 'company-svc-bank-day', kind: 'timer', status: 'installed', state: 'scheduled', schedule: { onCalendar: '*-*-* 17:30:00 UTC' }, scheduleWords: 'on the calendar *-*-* 17:30:00 UTC',
-    lastRun: ago(900), nextRun: new Date(Date.now() + 6 * 3600e3).toISOString(), by: 'data1', byName: 'Halima', why: 'Banks the day that just closed, every night after midnight company time.',
+    lastRun: ago(900), nextRun: new Date(Date.now() + 6 * 3600e3).toISOString(), by: 'data1', byName: 'Hollis', why: 'Banks the day that just closed, every night after midnight company time.',
     command: '/bin/sh company/work/sim/scripts/bank_yesterday.sh', limits: { memoryMax: '512M', cpuQuota: '50%' }, network: true, softHalt: 'finish', approval: { level: 'owner', via: 'adopted by the owner', at: ago(700) }, scoped: true, managed: true, halt: null },
   { name: 'tape-check', unit: 'company-svc-tape-check', kind: 'timer', status: 'proposed', state: 'proposed', schedule: { every: '1h' }, scheduleWords: 'every 1h', lastRun: null,
     by: 'tools1', byName: 'Teo', why: 'Checks every hour that yesterday\'s trade tape is complete.', command: '/usr/bin/node company/work/sim/tape-check.js', limits: { memoryMax: '256M', cpuQuota: '25%' },
@@ -446,7 +446,7 @@ async function apiRoute(req, res, p, q) {
   // departments and the lead's advice (Crew › People › Departments): console/departments.js -> company/tools/departments.js,
   // consult.js status (docs/DEPARTMENTS.md §5)
   if (!S.departments) S.departments = { exists: true, unassigned: [{ id: 'agent', name: 'Founder', isCeo: true }, { id: 'people1', name: 'Mira', isCeo: false }], drift: { ok: true, mismatches: [], notes: [] }, proposals: [],
-    departments: [{ id: 'eng', name: 'Engineering', lead: 'tools1', leadName: 'Teo', defaultClass: 'code', members: [{ id: 'tools1', name: 'Teo', isLead: true, onCrew: true }, { id: 'cand-tools-backtest-engineer-1-n', name: 'Nadia Farrell', isLead: false, onCrew: true }],
+    departments: [{ id: 'eng', name: 'Engineering', lead: 'tools1', leadName: 'Teo', defaultClass: 'code', members: [{ id: 'tools1', name: 'Teo', isLead: true, onCrew: true }, { id: 'cand-tools-backtest-engineer-1-n', name: 'Nora Field', isLead: false, onCrew: true }],
       advisor: { mode: 'live', effective: 'live', paused: null, since: ago(3 * 86400e3 / 60e3), by: 'owner' }, consultLimits: { maxPerDay: 12 },
       delegation: { mode: 'shadow', effective: 'shadow', workers: ['cand-tools-backtest-engineer-1-n'], maxWorkers: 3, workerTimeoutMin: 20, minPieces: 3, prefer: 'lanes', since: null, by: 'owner', withdrawn: null } }] };
   const ddm = p.match(/^\/api\/departments\/([a-z][a-z0-9-]{1,31})\/delegation$/);
@@ -516,8 +516,8 @@ async function apiRoute(req, res, p, q) {
       const row = (id, name, cur, chain, plain) => ({ id, name, hasChain: !!chain, primary: chain ? chain[0] : null, chain: chain || [], now: { model: cur, index: chain ? chain.findIndex(x => x.key === cur.provider + '/' + cur.model) : -1, why: chain ? 'fallback 1 of 2: claude-cli/claude-sonnet-5-5 cannot run (checking local sign-in)' : 'no chain of its own: on ' + cur.provider + '/' + cur.model + ', where the pacer\'s routing table or the last hand change put it', plain: plain || null }, history: [] });
       return ok({ failover: { mode: 'live' }, backstop: 'StarNet\'s station-wide fallback chain still catches a single run whose model fails mid-run.', seats: [
         row('agent', 'Founder', { provider: 'deepseek', model: 'deepseek-flash' }, null),
-        row('cand-tools-backtest-engineer-1-n', 'Nadia farrell', { provider: 'claude-cli', model: 'claude-sonnet-5-5' }, null),
-        row('people1', 'Priya Raman', { provider: 'deepseek', model: 'deepseek-flash' }, [e('claude-cli', 'claude-sonnet-5-5', true), e('deepseek', 'deepseek-flash', true), e('custom', 'MiniMax-M3.1-Flash', true)], 'On a fallback for now. Claude can run again, so it moves back up shortly.')] });
+        row('cand-tools-backtest-engineer-1-n', 'Nora field', { provider: 'claude-cli', model: 'claude-sonnet-5-5' }, null),
+        row('people1', 'Petra Rhodes', { provider: 'deepseek', model: 'deepseek-flash' }, [e('claude-cli', 'claude-sonnet-5-5', true), e('deepseek', 'deepseek-flash', true), e('custom', 'MiniMax-M3.1-Flash', true)], 'On a fallback for now. Claude can run again, so it moves back up shortly.')] });
     }
     case 'GET /api/crew': return ok({ seats: S.seats, station: STATION_DOWN ? 'down' : 'up' });
     case 'GET /api/handoffs': return ok({ items: S.handoffs });
@@ -531,8 +531,8 @@ async function apiRoute(req, res, p, q) {
     case 'GET /api/dispatch': return ok({ state: { lastTick: ago(4) }, log: ['- 06:40 Dispatcher closed quest q:31 on checked evidence.', '- 04:12 woke Mira (handoff to-people.md)', '- 02:05 held 0, woke Teo (quest q:35)', '- 00:15 Pacer moved two routines off the large model'] });
     case 'GET /api/hiring': return ok({ rounds: [{ id: 'analyst-2026-11', title: 'Analyst', openedBy: 'Founder', template: 'specialist', at: ago(2000), candidates: [{ agentId: 'c1', name: 'Candidate A', provider: 'claude', model: 'example-medium', status: 'candidate', interviewedAt: ago(100) }, { agentId: 'c2', name: 'Candidate B', provider: 'minimax', model: 'example-m', status: 'candidate' }] }], templates: ['people-manager', 'tool-builder', 'risk-manager', 'finance-manager', 'floor-manager', 'specialist'] });
     case 'GET /api/spend': return ok({ windowHours: 24, known: true, today: { usd: 1.37, ownerPaidUsd: 0, capUsd: 5, perSeatCapUsd: 2, inFlightRuns: 1 },
-      bySeat: [{ id: 'agent', name: 'Founder', usd: 0.92 }, { id: 'tools1', name: 'Teo', usd: 0.45 }, { id: 'cand-tools-backtest-engineer-1-n', name: 'Nadia farrell', candidate: false, usd: 0.22 }].concat(
-        ['tobias-lin:Tobias Lin', 'oskar-:Oskar Berg', 'imani-okafo:Imani Okafor', 'tomas-fe:Tomas Ferreira', 'junko-:Junko Sato', 'priya-raghun:Priya Raghunathan', 's:Sven Ek', 'r:Ruth Adeyemi', 'clara-vo:Clara Vogel', 'marc-delacro:Marc Delacroix', 'tomas-weiss:Tomas Weiss', 'aisha-bell:Aisha Bello']
+      bySeat: [{ id: 'agent', name: 'Founder', usd: 0.92 }, { id: 'tools1', name: 'Teo', usd: 0.45 }, { id: 'cand-tools-backtest-engineer-1-n', name: 'Nora field', candidate: false, usd: 0.22 }].concat(
+        ['tobias-lin:Tobias Lin', 'oskar-:Oskar Berg', 'imani-okafo:Imani Okafor', 'tomas-fe:Tomas Ferreira', 'junko-:Junko Sato', 'petra-raghun:Petra Raghunathan', 's:Sven Ek', 'r:Ruth Adeyemi', 'clara-vo:Clara Vogel', 'marc-delacro:Marc Delacroix', 'tomas-weiss:Tomas Weiss', 'aisha-bell:Aisha Bello']
           .map((x, i) => { const [slug, name] = x.split(':'); return { id: 'cand-example-role-1-' + slug, name, candidate: true, round: 'example-role-1', usd: Math.round((0.0206 - i * 0.0005) * 10000) / 10000 }; })), byProvider: [{ id: 'deepseek', usd: 1.37, capped: true }, { id: 'claude-cli', usd: 0, capped: false }],
       subscriptions: Object.keys(S.limits).filter(k => S.limits[k] && S.limits[k].name).map(k => ({ id: k, name: S.limits[k].name, usedPct: S.limits[k].usedPct, weekStop: S.limits[k].weekStop, line: S.limits[k].line, resetsAt: S.limits[k].resetsAt, open: S.limits[k].open, paceBy: S.limits[k].paceBy, why: S.limits[k].why })),
       pacer: { mode: 'shadow', live: false, emergency: null, boost: null, rail: null, problems: [] } });

@@ -2,8 +2,8 @@
 // shown the way the owner's terminal table showed it. Everyone seated answers in turn, the leader first, and turns flow
 // on by themselves; the turn in flight streams word by word under the speaker's name, in a colour that stays that
 // person's, with each tool step as a dim "· Name: what they are doing" line. What happens between turns is one dim line
-// each, in order: "(Phil passes)", "(Nadia answers Dave)", "(hands? Sharon, Phil…)", "(Sharon raises a hand: …)",
-// "(Rachel calls on Nadia)", "(Omar joins, invited by Dave: …)". In view: the seat strip (crown = leader, × = remove,
+// each, in order: "(Paul passes)", "(Nora answers Dana)", "(hands? Zoe, Paul…)", "(Zoe raises a hand: …)",
+// "(Reba calls on Nora)", "(Owen joins, invited by Dana: …)". In view: the seat strip (crown = leader, × = remove,
 // hover or tap an avatar for its model, + Add), Round, Raise hand / Continue, Stop, Observe (rounds) / Take part; the
 // rest (Talk only, how hard they think and on which model, Pause, pace, agenda, register, minutes, catch-up, a new
 // meeting, close) is under More. Esc raises a hand while they talk (only that: nobody is cut off). Stop is "stop after
@@ -589,7 +589,7 @@ export function meetingPane(host, opts) {
 
 /* one entry of a meeting (or of a live chat with colleagues in it) as the page shows it, the way the table printed it:
    a say under its speaker's name and colour with its tool steps as "· Name: …" lines; what happened between turns as one
-   dim line ("(Phil passes)", "(Sharon raises a hand: …)"). ctx: { tz, noun, onExplain(e), onRegister(), lintNotice(e) } */
+   dim line ("(Paul passes)", "(Zoe raises a hand: …)"). ctx: { tz, noun, onExplain(e), onRegister(), lintNotice(e) } */
 export function renderEntry(e, ctx) {
   ctx = ctx || {};
   const tz = ctx.tz, nm = n => personName(n) || n, noun = ctx.noun || 'meeting';

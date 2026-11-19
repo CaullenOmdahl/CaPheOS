@@ -32,7 +32,7 @@ if [ "$slow" = 1 ] && [ -n "$NODE" ] && [ -f "$GATE" ]; then
   env -u NODE_OPTIONS -u NODE_PATH "$NODE" "$GATE" check-git "$@"
   [ "$?" = 3 ] && exit 1
 fi
-# who wrote it (owner, 2026-11-20: "Nadia logged that she wrote it. I like that."): a commit made from a crew seat's run
+# who wrote it (owner, 2026-11-20: "Nora logged that she wrote it. I like that."): a commit made from a crew seat's run
 # names that seat as its author, "<name> (<company>)" <first-name@capheos.invalid>; the committer stays whatever git is
 # configured with (the owner's account, which pushes it). Only when the seat set no author itself, only for commands
 # that write commits. STARNET_AGENT_ID is set by the station in every run's shell (station patch 0021).

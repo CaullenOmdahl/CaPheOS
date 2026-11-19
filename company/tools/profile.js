@@ -623,8 +623,8 @@ function run(argv) {
 /* ---------------- selftest: the pure parts (the CLI: tests/profile*.test.js) ---------------- */
 function selftest() {
   let bad = 0; const ok = (n, c, d) => { console.log((c ? 'ok   ' : 'FAIL ') + n + (c ? '' : '  [' + String(d || '').slice(0, 300) + ']')); if (!c) bad++; };
-  const crew = { ben: { name: 'Benny Tran' }, ro: { name: 'Rohan Iyer' } };
-  const p = P.blank('ben', { name: 'Benny Tran', title: 'Idea Scout' }); p.identity.archetype = 'scout'; p.counterpart = { seat: 'ro', signOff: ['promote'], why: 'tests every card' };
+  const crew = { ben: { name: 'Noah Tate' }, ro: { name: 'Ravi Shah' } };
+  const p = P.blank('ben', { name: 'Noah Tate', title: 'Idea Scout' }); p.identity.archetype = 'scout'; p.counterpart = { seat: 'ro', signOff: ['promote'], why: 'tests every card' };
   p.examples = [{ with: 'ro', they: 'a', you: 'b', pushback: true }, { with: 'owner', they: 'c', you: 'd' }, { with: 'ro', they: 'e', you: 'f' }]; p.hash = P.hashOf(p);
   ok('a full blank profile with a counterpart validates', P.validate(p, { crew }).ok, JSON.stringify(P.validate(p, { crew })));
   const b1 = P.block(p, { crew }), q = clone(p); q.ownerNotes = 'private'; q.version = 9; q.trial = { from: 8, until: '2027-01-01T00:00:00Z' };

@@ -62,13 +62,13 @@ function selftest() {
   const ib = () => { process.env.PM_INBOX_FILE = path.join(T, 'company', 'pm-inbox.jsonl'); return require('./inbox.js'); };
   let pass = 0, fail = 0; const check = (name, ok, extra) => { if (ok) pass++; else fail++; console.log((ok ? 'ok   ' : 'FAIL ') + name + (ok || !extra ? '' : '  ' + extra)); };
   const st = {}; const logs = []; const log = l => logs.push(l);
-  const holds = [{ seat: 'agent', name: 'Founder', kind: 'spread', waiting: ['Rohan', 'Halima'] }];
+  const holds = [{ seat: 'agent', name: 'Founder', kind: 'spread', waiting: ['Ravi', 'Hollis'] }];
   const base = { root: T, holds, st, cap: 5, spent: 2.39, lastHour: 0.95, allowance: 0.63, live: true, log, govOpts: { level: 'approve' } };
   let r = MH.tick(base);
   check('one held tick asks nothing', !r.asked && st.moneyHolds.agent.ticks === 1);
   r = MH.tick(base);
   const q = r.asked && ib().state()[r.asked];
-  check('the second held tick asks the owner once, blocking at approve', !!q && q.blocking === true && /Founder is paused so today's \$5 lasts until midnight\. Rohan and Halima are waiting on it\./.test(q.message || q.q), JSON.stringify(q));
+  check('the second held tick asks the owner once, blocking at approve', !!q && q.blocking === true && /Founder is paused so today's \$5 lasts until midnight\. Ravi and Hollis are waiting on it\./.test(q.message || q.q), JSON.stringify(q));
   check('it has a slider for today\'s budget and the three buttons', q && q.form && q.form.fields[0].type === 'slider' && q.form.actions.map(a => a.label).join('|') === 'Let it run now|Raise today\'s budget|Keep spreading', JSON.stringify(q && q.form));
   r = MH.tick(base);
   check('deduped: no second question while one is open', !r.asked && ib().openQuestions().filter(x => String(x.about).startsWith('money-hold:')).length === 1 && r.open.agent === q.id);
@@ -87,7 +87,7 @@ function selftest() {
   const r2 = MH.tick(Object.assign({}, base, { st: st2, holds: [{ seat: 'agent', name: 'Founder', kind: 'cap', waiting: [] }], govOpts: { level: 'notify' } }));
   const q2 = r2.asked && ib().state()[r2.asked];
   check('at notify it is a non-blocking FYI (and the owner is told in a sentence)', !!q2 && q2.blocking === false && r2.fyi === true && q2.form.actions.map(a => a.label).join('|') === 'Raise today\'s budget|Keep it paused', JSON.stringify(q2));
-  check('an agent may not answer for the owner', MH.authorize(T, 'Rohan') && MH.authorize(T, 'Rohan').code === 3);
+  check('an agent may not answer for the owner', MH.authorize(T, 'Ravi') && MH.authorize(T, 'Ravi').code === 3);
   console.log('\nmoney-hold selftest: ' + pass + '/' + (pass + fail));
   try { fs.rmSync(T, { recursive: true, force: true }); } catch (_) {}
   return fail ? 1 : 0;

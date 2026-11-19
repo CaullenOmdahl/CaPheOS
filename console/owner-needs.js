@@ -309,7 +309,7 @@ function make(deps) {
     return { kind: k, applied: false, said: 'Your answer is recorded.' };
   }
 
-  /* M3: a crew member's name as people write it ("Nadia farrell" in the crew list reads "Nadia Farrell"): for what the
+  /* M3: a crew member's name as people write it ("Nora field" in the crew list reads "Nora Field"): for what the
    * owner reads only; the stored card (and its digest) keep the tool's own words */
   function properNames(text) {
     let t = String(text == null ? '' : text); if (!t) return t;

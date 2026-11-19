@@ -1,7 +1,7 @@
 # Deployment plan (v2)
 
 **Source:** `deploy-plan-v2.md`, from the StarnetOS scratchpad
-(`/tmp/claude-1000/-home-caullen-Projects-StarnetOS/2961f761-…/scratchpad/`), pasted by the owner on 2026-11-17.
+(`/tmp/claude-1000/-home-avery-Projects-StarnetOS/2961f761-…/scratchpad/`), pasted by the owner on 2026-11-17.
 Preserved here because that path is temporary.
 
 **Status:** the owner's plan, written before the backend rewrite. Its names are StarNet-era (`station`,

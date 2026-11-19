@@ -1,6 +1,6 @@
 'use strict';
 /* The tempo caps count wakes that really started, not wakes held afterwards by a model, quota, refusal or route hold
- * (2026-11-19: Ca Phe Digital recorded 1,511 "wakes" for ~370 runs and froze on its own 120-a-day cap). */
+ * (2026-11-19: the developing company recorded 1,511 "wakes" for ~370 runs and froze on its own 120-a-day cap). */
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs'), path = require('path');

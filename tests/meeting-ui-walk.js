@@ -34,9 +34,9 @@ for (const d of ['console', 'modules', 'scripts']) fs.cpSync(path.join(REPO, d),
 fs.rmSync(path.join(tmp, 'company', 'state', 'meetings'), { recursive: true, force: true });
 W('secrets/station-token', TOKEN + '\n'); fs.chmodSync(path.join(tmp, 'secrets', 'station-token'), 0o600);
 const loops = JSON.parse(R('company/tools/loops.json'));
-loops.agents.cfo = { name: 'Sharon', title: 'CFO', manager: 'agent' };
-loops.agents.sec = { name: 'Phil', title: 'IT Admin and Security', manager: 'agent' };
-loops.agents.hr = { name: 'Rachel', title: 'Hiring Manager', manager: 'agent' };
+loops.agents.cfo = { name: 'Zoe', title: 'CFO', manager: 'agent' };
+loops.agents.sec = { name: 'Paul', title: 'IT Admin and Security', manager: 'agent' };
+loops.agents.hr = { name: 'Reba', title: 'Hiring Manager', manager: 'agent' };
 W('company/tools/loops.json', loops);
 W('.starnet-data/workspaces/agent.roster.json', { agents: ['agent', 'cfo', 'sec', 'hr'].map(id => ({ agentId: id, name: loops.agents[id].name, model: 'claude-sonnet-5-5', provider: 'claude-cli' })) });
 W('company/work/finance/dispatch-budget.json', { dailyUsd: 5 });
@@ -117,28 +117,28 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
 
   // @name autocomplete, then Shift+Enter sends
   await ev('(()=>{const t=document.getElementById("msg");t.focus();t.value="";return 1})()');
-  await cmd('Input.insertText', { text: '@sh' });
+  await cmd('Input.insertText', { text: '@zo' });
   const acShown = await waitFor(() => ev('(()=>{const a=document.getElementById("mtg-ac");return a&&!a.hidden?[...a.querySelectorAll("li")].map(x=>x.textContent).join("|"):null})()'), 3000);
-  t('@name autocomplete suggests the seated person', acShown && /@Sharon/.test(acShown), acShown);
+  t('@name autocomplete suggests the seated person', acShown && /@Zoe/.test(acShown), acShown);
   await key('Tab', 'Tab', 0, '', 9);
-  t('Tab completes the name', (await ev('document.getElementById("msg").value')) === '@sharon ', await ev('document.getElementById("msg").value'));
+  t('Tab completes the name', (await ev('document.getElementById("msg").value')) === '@zoe ', await ev('document.getElementById("msg").value'));
   await cmd('Input.insertText', { text: 'what is the budget?' });
-  await st('/__meeting', { reset: true, replies: { cfo: 'The budget is fine.\nASK: Phil — any risk?', sec: 'No risk.\nINVITE: Rachel — hiring view', hr: 'PASS' } });
+  await st('/__meeting', { reset: true, replies: { cfo: 'The budget is fine.\nASK: Paul — any risk?', sec: 'No risk.\nINVITE: Reba — hiring view', hr: 'PASS' } });
   const n0 = await ev('window.__posts.length');
   await key('Enter', 'Enter', 8, '\r', 13);
   const sent = await waitFor(async () => (await ev('window.__posts.length')) > n0 ? lastPost() : null, 4000);
-  t('control → action: Shift+Enter sends the message', sent && sent.path === '/meeting/say' && sent.body.text === '@sharon what is the budget?', sent);
+  t('control → action: Shift+Enter sends the message', sent && sent.path === '/meeting/say' && sent.body.text === '@zoe what is the budget?', sent);
   const lines = await waitFor(() => ev('(()=>{const k=[...document.querySelectorAll(".chat-body .mtg-ev[data-kind]")].map(x=>x.dataset.kind);return k.includes("ask")&&k.includes("join")&&k.includes("pass")?[...document.querySelectorAll(".chat-body .mtg-ev[data-kind]")].map(x=>x.textContent):null})()'), 15000);
-  t('asks, joins and passes are dim lines in order, as at the table', lines && lines.some(x => x === '(Sharon asks Phil: any risk?)') && lines.some(x => x === '(Rachel joins, invited by Phil: hiring view)') && lines.some(x => x === '(Rachel passes)') && lines.findIndex(x => /Sharon asks Phil/.test(x)) < lines.findIndex(x => /Rachel joins/.test(x)) && lines.findIndex(x => /Rachel joins/.test(x)) < lines.findIndex(x => /Rachel passes/.test(x)), lines);
+  t('asks, joins and passes are dim lines in order, as at the table', lines && lines.some(x => x === '(Zoe asks Paul: any risk?)') && lines.some(x => x === '(Reba joins, invited by Paul: hiring view)') && lines.some(x => x === '(Reba passes)') && lines.findIndex(x => /Zoe asks Paul/.test(x)) < lines.findIndex(x => /Reba joins/.test(x)) && lines.findIndex(x => /Reba joins/.test(x)) < lines.findIndex(x => /Reba passes/.test(x)), lines);
   t('...and the protocol lines are not shown as raw text', !(await ev('/ASK:|INVITE:/.test(document.querySelector(".chat-body").innerText)')));
-  t('the answer is introduced as at the table: (Phil answers Sharon)', await ev('[...document.querySelectorAll(".chat-body .msg-them-wrap[data-who=sec] .mtg-ev-lead")].some(x=>x.textContent==="(Phil answers Sharon)")'));
-  t('tool steps stay in the flow as "· Name: …" lines (tools are on)', await waitFor(() => ev('[...document.querySelectorAll(".chat-body .msg-them-wrap[data-who=cfo] .mtg-tool")].some(x=>/^· Sharon: reading CHARTER\.md$/.test(x.textContent))'), 5000), await ev('[...document.querySelectorAll(".chat-body .mtg-tool")].map(x=>x.textContent)'));
+  t('the answer is introduced as at the table: (Paul answers Zoe)', await ev('[...document.querySelectorAll(".chat-body .msg-them-wrap[data-who=sec] .mtg-ev-lead")].some(x=>x.textContent==="(Paul answers Zoe)")'));
+  t('tool steps stay in the flow as "· Name: …" lines (tools are on)', await waitFor(() => ev('[...document.querySelectorAll(".chat-body .msg-them-wrap[data-who=cfo] .mtg-tool")].some(x=>/^· Zoe: reading CHARTER\.md$/.test(x.textContent))'), 5000), await ev('[...document.querySelectorAll(".chat-body .mtg-tool")].map(x=>x.textContent)'));
   t('each person keeps one colour: their avatar, their name and their turns', await ev('(()=>{const c=el=>[...el.classList].find(k=>/^mtg-c\d$/.test(k));const av=c(document.querySelector(".mtg-seat[data-seat=cfo] .mtg-av"));const turns=[...document.querySelectorAll(".chat-body .msg-them-wrap[data-who=cfo]")].map(c);const other=c(document.querySelector(".mtg-seat[data-seat=sec] .mtg-av"));return !!av&&turns.length>0&&turns.every(x=>x===av)&&getComputedStyle(document.querySelector(".chat-body .msg-them-wrap[data-who=cfo] .mtg-who")).color!==getComputedStyle(document.querySelector(".chat-body .msg-them-wrap[data-who=sec] .mtg-who")).color||av===other})()'));
   await waitFor(() => ev('document.querySelector("[data-act=round]") && !document.querySelector("[data-act=round]").disabled'), 10000);
   { const n = await ev('window.__posts.length'); const i = await ev('(()=>{const b=document.querySelector(".chat-body .mtg-explain");if(!b)return null;const i=Number(b.closest("[data-i]").dataset.i);b.click();return i})()');
     const p = await waitFor(async () => (await ev('window.__posts.length')) > n ? lastPost() : null, 4000);
     t('control → action: Explain for the room', p && p.path === '/meeting/explain' && p.body.i === i, { p, i }); }
-  t('a pass is never shown as a turn: no PASS text, no turn for Rachel', !(await ev('/PASS/.test(document.querySelector(".chat-body").innerText)')) && !(await ev('!!document.querySelector(".chat-body .msg-them-wrap[data-who=hr]")')));
+  t('a pass is never shown as a turn: no PASS text, no turn for Reba', !(await ev('/PASS/.test(document.querySelector(".chat-body").innerText)')) && !(await ev('!!document.querySelector(".chat-body .msg-them-wrap[data-who=hr]")')));
   t('the cost line counts the turns and never shows $0.00 for a subscription', await ev('(()=>{const t=document.querySelector(".mtg-cost").textContent;return /^This meeting so far: [1-9]\\d* turns? · Claude: /.test(t)&&!/\\$0\\.00/.test(t)})()'), await ev('document.querySelector(".mtg-cost").textContent'));
 
   // Round, the speaking-now line, Raise hand, Continue, Esc, Stop round
@@ -224,7 +224,7 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   })());
   t('the timeline lists the moments to scrub to', await ev('(async()=>{const d=document.querySelector(".mtg-timeline");d.open=true;d.dispatchEvent(new Event("toggle"));await new Promise(r=>setTimeout(r,800));return d.querySelectorAll("li button").length>0})()'));
   // the dropdown is held during live events; the controls still follow
-  await api('/meeting/seats', { remove: ['hr'] });   // Rachel came in as a guest: unseat her, so the picker has someone
+  await api('/meeting/seats', { remove: ['hr'] });   // Reba came in as a guest: unseat her, so the picker has someone
   await waitFor(() => ev('!document.getElementById("mtg-pick").disabled'), 4000);
   await ev('document.querySelector(".mtg-setup").open = true');   // the seats fold away; the owner opens them to add someone
   const f0 = await ev('(()=>{const s=document.getElementById("mtg-pick");s.__mark=1;s.focus();return document.activeElement===s})()');
@@ -239,10 +239,10 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
 
   // observe to END: the END card
   await api('/meeting/observe', { on: true, rounds: 3 });
-  await st('/__meeting', { reset: true, replies: { agent: 'We agree.\nEND: ship it, Sharon writes it up', cfo: 'Agreed.' } });
+  await st('/__meeting', { reset: true, replies: { agent: 'We agree.\nEND: ship it, Zoe writes it up', cfo: 'Agreed.' } });
   await api('/meeting/say', { text: 'Settle it.' });
   const endCard = await waitFor(() => ev('(()=>{const e=[...document.querySelectorAll(".chat-body .mtg-ev-end")].find(x=>/closes the discussion/.test(x.textContent));return e?e.textContent:null})()'), 15000);
-  t('the END summary is its own line, as at the table', endCard === '(Founder closes the discussion: ship it, Sharon writes it up)', endCard);
+  t('the END summary is its own line, as at the table', endCard === '(Founder closes the discussion: ship it, Zoe writes it up)', endCard);
   await api('/meeting/observe', { on: false });
   // Open minutes
   // the Register: the leader's proposed ruling, confirmed by the owner

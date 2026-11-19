@@ -33,10 +33,10 @@ plain version to start from (`suggestion`).
 Good:
 
 ```bash
-node company/tools/inbox.js ask --from <YOU> --kind secret --name pyth-api-key --label "Pyth key" \
-  --provider "pyth.network > Developers > API keys (free)" \
-  --message "Could you make a free Pyth account and paste its key here? It lets us test our main idea about prices; if you skip it, that idea waits and nothing else changes." \
-  --details "Pyth's price stream answers 401 without a key. Grain: 200 ms gold, 50 ms WTI. Alternatives considered: ..."
+node company/tools/inbox.js ask --from <YOU> --kind secret --name quotely-api-key --label "Quotely key" \
+  --provider "quotely.network > Developers > API keys (free)" \
+  --message "Could you make a free Quotely account and paste its key here? It lets us test our main idea about prices; if you skip it, that idea waits and nothing else changes." \
+  --details "Quotely's price stream answers 401 without a key. Grain: 200 ms gold, 50 ms WTI. Alternatives considered: ..."
 ```
 
 Refused as crew scope (the crew sets up its own monitoring; hand it to the risk seat):
@@ -48,7 +48,7 @@ node company/tools/inbox.js ask --from <YOU> --message "One more healthchecks ch
 Bad (a report with the ask buried in it, and the key would come back in a message):
 
 ```bash
-node company/tools/inbox.js ask --from <YOU> --q "Access gate (gate 2), no payment, second key: a free Pyth API key. Pyth's discovery endpoint answers us anonymously ... Please paste the key in your reply."
+node company/tools/inbox.js ask --from <YOU> --q "Access gate (gate 2), no payment, second key: a free Quotely API key. Quotely's discovery endpoint answers us anonymously ... Please paste the key in your reply."
 ```
 
 ## 2. The right control

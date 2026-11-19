@@ -3,7 +3,7 @@
 What is planned for CaPheOS, in order, owned by the crew that develops it (the platform department). Each item says
 what and why, where its spec is, and a **Done when** line that can be checked. Update the **State** when an item moves;
 add rows for new work. The owner's decisions behind these items are in `docs/OWNER-RULES.md` and are not reopened
-here. Specs are in `docs/specs/` (copied 2026-11-20; names of crew members in them refer to the first company's seats).
+here. Specs live in the developing company's own records (`company/work/platform/specs/`), not in this repo: they describe that company's seats and incidents.
 
 ## Where things stand (owner asks of 2026-11-19, by tracker number)
 
@@ -37,8 +37,8 @@ here. Specs are in `docs/specs/` (copied 2026-11-20; names of crew members in th
 
 ## R1. The pipeline: from a found problem to a deployed fix without the owner
 
-Spec: `docs/specs/self-improvement-final.md` Part F (as changed by its "OWNER DECISION 2026-11-19" section: no GitHub
-Pro, no app, gates only), `docs/specs/self-improvement-survey.md` (blockers B2-B9). The pieces, smallest first:
+Spec: `company/work/platform/specs/self-improvement-final.md` Part F (as changed by its "OWNER DECISION 2026-11-19" section: no GitHub
+Pro, no app, gates only), `company/work/platform/specs/self-improvement-survey.md` (blockers B2-B9). The pieces, smallest first:
 (a) per-company git/gh wrappers and a pre-push hook on every CaPheOS checkout that refuse pushes to main, force pushes
 and ungated merges; (b) CI green again and `scripts/test.sh` as the merge gate; (c) one merge tool (premerge check,
 local CI record, lead ACCEPT, risk sign-off for gate changes) and a 5-minute check on main that reverts anything that
@@ -54,7 +54,7 @@ main company clean with no orchestrator or owner action, and nothing reached mai
 
 ## R2. The improvement engine (generators, backlog, scorecard)
 
-Spec: `docs/specs/self-improvement-final.md` Part G, `docs/IMPROVE.md` (what is built). Built: six read-only duties
+Spec: `company/work/platform/specs/self-improvement-final.md` Part G, `docs/IMPROVE.md` (what is built). Built: six read-only duties
 (health, efficiency, owner experience, framework requests, weekly research, weekly retro) that file items to the right
 seat. Next: one backlog file with ranking by outcome (re-measure 7 days after release; generators that over-guess
 lose weight), WIP limits, a CI generator (bisect a red main, flakes, slow steps), upstream review of every instance's
@@ -68,7 +68,7 @@ and the owner saw zero jargon for a week.
 
 ## R3. Handover: the crew owns this roadmap
 
-Spec: `docs/specs/self-improvement-final.md` Part H. The crew updates this file, `docs/OWNER-RULES.md` and
+Spec: `company/work/platform/specs/self-improvement-final.md` Part H. The crew updates this file, `docs/OWNER-RULES.md` and
 `docs/USER.md` stay the owner's words, and the orchestrator steps back to a weekly read.
 **Done when:** over 5 consecutive days: planted-fault detection ≥ 80% within 24 h, ≥ 15 PRs merged through the
 pipeline, 0 problems that reached the main company, ≥ 1 automatic rollback drill in the sandbox, main green every day,
@@ -76,7 +76,7 @@ owner asks ≤ 3 a week with 0 jargon, idle wakes < 10%.
 
 ## R4. Accountable leads: live mode
 
-Spec: `docs/specs/accountable-leads.md`. Wave 3 shipped the recording-only path. Left: the binding audit holding the
+Spec: `company/work/platform/specs/accountable-leads.md`. Wave 3 shipped the recording-only path. Left: the binding audit holding the
 onward handoff, merge and DONE until the lead ACCEPTs; audit packets (diff + acceptance check + self-check note);
 mid-tier audits for routine items; the department scorecard on the lead (on time, sent back, cost per accepted item,
 escapes) on the console's department card; the measured saving against the lead working alone; the sandbox naming its
@@ -87,7 +87,7 @@ mode and the owner is told plainly.
 
 ## R5. Push wakes: a seat runs only when it has work
 
-Spec: `docs/specs/push-wakes-spec.md`. Remove the standing-queue wake, the seat crons and the idle check-in; an
+Spec: `company/work/platform/specs/push-wakes-spec.md`. Remove the standing-queue wake, the seat crons and the idle check-in; an
 event-driven dispatcher (inbox and state file watches plus a timer wheel) wakes a seat only for an unhandled item, and
 the wake carries exactly those items with a per-run budget. Scheduled work comes from generators, watching from
 monitors (the improvement duties are the first). Stalls by item age.
@@ -95,7 +95,7 @@ monitors (the improvement duties are the first). Stalls by item age.
 
 ## R6. Automatic model choice
 
-Spec: `docs/specs/autonomous-mode-spec.md` with the required amendments in `docs/specs/autonomous-mode-critique.md`.
+Spec: `company/work/platform/specs/autonomous-mode-spec.md` with the required amendments in `company/work/platform/specs/autonomous-mode-critique.md`.
 Plain-code job grading, a scoreboard module fed by the leads' audits, a tokenless router (Manual / Suggest /
 Automatic; manual pins always win), free OpenRouter models by owner opt-in, an opt-in shared score registry. Must fix
 first: cost as real spend (subscriptions are already paid up to the stop), a quality bar that is fair for thin and long
@@ -106,7 +106,7 @@ sent-back work; Automatic is offered to the owner only after that.
 
 ## R7. Memory (RAM) follow-ups
 
-Spec: `docs/specs/ram-spec.md`. Left: browsers started by agents and the hiring interview runs escape the company's
+Spec: `company/work/platform/specs/ram-spec.md`. Left: browsers started by agents and the hiring interview runs escape the company's
 memory slice and must be started inside it; when the local AI model is installed, keep its memory free (a setting the
 owner sees in plain words, shared by every company on the machine).
 **Done when:** every Chrome and interview process on the machine is inside its company's slice, and the reaper reports
@@ -114,7 +114,7 @@ no stray for 3 days.
 
 ## R8. Security follow-ups
 
-Spec: `docs/specs/security-watch-spec.md`. Left: the CEO records the standing gate rows for checking the public
+Spec: `company/work/platform/specs/security-watch-spec.md`. Left: the CEO records the standing gate rows for checking the public
 vulnerability lists and for filing issues on the CaPheOS repository; the station's image library hole: move to the
 fixed sharp release (0.35.5, the station pins 0.35.4) and block the SVG loader in the station's local voice and image
 tools until then, as a station patch; the issue on the repository filed once; the owner told in plain words.
@@ -152,5 +152,5 @@ company-local ones or upstream them, and make the patch tool refuse a clash.
 
 ## R13. Parked
 
-- Full "stay in the room" persistent runs for meetings (spec: `docs/specs/table-followups.md` §3); the turn note shipped.
+- Full "stay in the room" persistent runs for meetings (spec: `company/work/platform/specs/table-followups.md` §3); the turn note shipped.
 - Console upload and the old harness backlog: through R1 as ordinary items.

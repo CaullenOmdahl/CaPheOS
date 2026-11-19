@@ -46,7 +46,7 @@ async function waitFor(fn, ms) { const end = Date.now() + ms; for (;;) { try { c
   const head = await ev('(()=>({sub:document.querySelector(".chat-head .caption").textContent,btns:[...document.querySelectorAll(".chat-head button")].map(b=>b.textContent),label:document.querySelector(".composer label").textContent,list:[...document.querySelectorAll(".conv-list .thread .label")].map(x=>x.textContent)}))()');
   t('walk 2: the header says where it runs in plain words, no raw model id, no bare Reload', head && /Runs on Claude/.test(head.sub) && !/claude-cli|example-model|·\s*deepseek/.test(head.sub) && !head.btns.includes('Reload') && head.btns.includes('Refresh conversation'), head);
   t('walk 2: the composer label is just the shortcut hint', head && /^Shift\+Enter to send/.test(head.label) && !/Live chat/.test(head.label), head && head.label);
-  t('walk 2: the conversation list title-cases names ("Nadia Farrell")', head && head.list.includes('Nadia Farrell') && !head.list.includes('Nadia farrell'), head && head.list);
+  t('walk 2: the conversation list title-cases names ("Nora Field")', head && head.list.includes('Nora Field') && !head.list.includes('Nora field'), head && head.list);
   await cmd('Emulation.clearDeviceMetricsOverride', {});
   await new Promise(r => setTimeout(r, 300));
   const n = await ev('(()=>{const b=document.querySelector(".chat-body");const first=b.children[1];const top0=first.getBoundingClientRect().top;b.scrollTop=0;b.dispatchEvent(new Event("scroll"));return {items:b.children.length,shift:Math.abs(first.getBoundingClientRect().top-top0),scrollTop:b.scrollTop}})()');

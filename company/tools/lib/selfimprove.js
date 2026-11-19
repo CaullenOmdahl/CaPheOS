@@ -6,8 +6,8 @@
  * Settings: company/state/selfimprove.json (absent = defaults, everything off):
  *   { "enabled": false,            the tripwire ticks and the crew may apply framework updates
  *     "requireMergeTool": false,   an agent's `gh pr merge` is refused unless the merge tool runs it (merge-gate.js check-gh)
- *     "repo": "CaullenOmdahl/CaPheOS",
- *     "sandboxRoot": "~/Companies/capheos-sandbox",   the company that takes an update first
+ *     "repo": "<owner>/<name>",    the framework's GitHub repo; absent = read from the company checkout's origin remote
+ *     "sandboxRoot": "~/Companies/<the trial company>",   the company that takes an update first; absent = none
  *     "soakMin": 30, "watchMin": 30, "watchEveryMin": 5, "mergeLogs": [] }   extra capheos-merges.jsonl files to trust
  * Merge records: company/state/capheos-merges.jsonl, one row per merge the tool made, plus `baseline` rows (a commit the
  * owner took as known-good). The tripwire and the staged update read the rows of every company under ~/Companies (they
@@ -21,7 +21,7 @@ const co = require('./company');
 
 const REAL_GH = '/usr/bin/gh';
 const REAL_GIT = '/usr/bin/git';
-const DEFAULTS = { enabled: false, requireMergeTool: false, repo: 'CaullenOmdahl/CaPheOS', sandboxRoot: path.join(os.homedir(), 'Companies', 'capheos-sandbox'), soakMin: 30, watchMin: 30, watchEveryMin: 5, mergeLogs: [] };
+const DEFAULTS = { enabled: false, requireMergeTool: false, repo: null, sandboxRoot: null, soakMin: 30, watchMin: 30, watchEveryMin: 5, mergeLogs: [] };
 const TOKEN_ENV = 'CAPHEOS_MERGE_TOOL_TOKEN';
 
 const rootOf = r => path.resolve(r || co.ROOT);
@@ -33,11 +33,20 @@ const expand = p => String(p || '').replace(/^~(?=\/|$)/, os.homedir());
 
 function config(root) {
   const c = Object.assign({}, DEFAULTS, readJ(P(root, 'company', 'state', 'selfimprove.json'), {}) || {});
-  c.sandboxRoot = path.resolve(expand(c.sandboxRoot));
+  c.sandboxRoot = c.sandboxRoot ? path.resolve(expand(c.sandboxRoot)) : null;
+  if (!c.repo) c.repo = repoFromRemote(rootOf(root));
   return c;
 }
+/* "<owner>/<name>" of the checkout's origin on GitHub (https or ssh), or null: no deployment's repo is written in code */
+function repoFromRemote(root) {
+  try {
+    const r = spawnSync(REAL_GIT, ['-C', root, 'remote', 'get-url', 'origin'], { encoding: 'utf8', timeout: 5000 });
+    const m = String(r.stdout || '').trim().match(/github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/);
+    return m ? m[1] + '/' + m[2] : null;
+  } catch (_) { return null; }
+}
 const real = p => { try { return fs.realpathSync(p); } catch (_) { return path.resolve(p); } };
-const isSandbox = root => real(rootOf(root)) === real(config(root).sandboxRoot);
+const isSandbox = root => { const sb = config(root).sandboxRoot; return !!sb && real(rootOf(root)) === real(sb); };
 
 const MERGES_REL = ['company', 'state', 'capheos-merges.jsonl'];
 const mergesFile = root => P(root, ...MERGES_REL);

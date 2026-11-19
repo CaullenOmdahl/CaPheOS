@@ -180,8 +180,8 @@ function selftest() {
   add(wk(4, 'error')); r = C.stuckScan(Object.assign({ items, state: s, now: now + 5 * M, settings }, acc));
   ok('stuck: a provider error is not a failed run', r.state.items['to-ben.md#abc123'].failedRuns === 3, JSON.stringify(r.state.items));
   ok('packet: rendered and parsed back', (() => { const p = C.parsePacket(C.renderPacket({ id: 'cs-x-1', item: 'i', from: 'Ben', kind: 'plan', title: 'T', question: 'Q?', check: 'npm test', now }).slice(1)); return p && p.id === 'cs-x-1' && p.kind === 'plan' && p.question === 'Q?' && p.check === 'npm test'; })());
-  const t1 = C.advisePrompt({ template: 'You are {{LEAD}} of {{DEPT_NAME}}.\n\nOpen consults for you: (none)\n', lead: 'Kwame', deptId: 'eng', deptName: 'Engineering', ids: ['cs-a'] });
-  const t2 = C.advisePrompt({ template: 'You are {{LEAD}} of {{DEPT_NAME}}.\n\nOpen consults for you: (none)\n', lead: 'Kwame', deptId: 'eng', deptName: 'Engineering', ids: ['cs-b', 'cs-c'] });
+  const t1 = C.advisePrompt({ template: 'You are {{LEAD}} of {{DEPT_NAME}}.\n\nOpen consults for you: (none)\n', lead: 'Kofi', deptId: 'eng', deptName: 'Engineering', ids: ['cs-a'] });
+  const t2 = C.advisePrompt({ template: 'You are {{LEAD}} of {{DEPT_NAME}}.\n\nOpen consults for you: (none)\n', lead: 'Kofi', deptId: 'eng', deptName: 'Engineering', ids: ['cs-b', 'cs-c'] });
   const pre = t1.slice(0, t1.indexOf(C.CONSULT_LINE));
   ok('advise prompt: the same bytes up to the consult line', pre.length > 10 && t2.startsWith(pre) && t1 !== t2);
   const pk = n => '**Pieces:**\n' + Array.from({ length: n }, (_, i) => (i + 1) + '. part ' + i + ' — files: src/p' + i + '.js — check: npm test').join('\n');
@@ -190,7 +190,7 @@ function selftest() {
   ok('splitOk: a piece with no check is refused', !C.splitOk(pk(3).replace(/ — check: npm test$/, '')).ok);
   ok('splitOk: two pieces sharing a file are refused', /both touch/.test(C.splitOk(pk(3).replace('src/p2.js', 'src/p1.js')).why));
   ok('splitOk: a fan-out that is not lanes or dispatch is refused', !C.splitOk(pk(3) + '\n**Fan-out:** everyone').ok && C.splitOk(pk(3) + '\n**Fan-out:** dispatch').fanout === 'dispatch');
-  ok('verdict line: the shape model-rank.js reads', C.verdictLine({ verdict: 'REVISE', by: 'Kwame', check: 'npm test', findings: ['a', 'b'] }) === '**Verdict:** REVISE by Kwame — check: npm test — 1. a 2. b');
+  ok('verdict line: the shape model-rank.js reads', C.verdictLine({ verdict: 'REVISE', by: 'Kofi', check: 'npm test', findings: ['a', 'b'] }) === '**Verdict:** REVISE by Kofi — check: npm test — 1. a 2. b');
   console.log(bad ? 'CONSULT SELFTEST FAILED: ' + bad : 'CONSULT SELFTEST PASSED');
   return bad ? 1 : 0;
 }

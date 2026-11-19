@@ -452,7 +452,7 @@ per tier when `batch.startAt` (2) audits wait or the oldest has waited `batch.ma
 the two audit pairs for a live lead). The pair must pass the class rules, the pacer (the override list), the money check
 and the lead's approval mode; if it does not, or the station refuses it, or the routine is missing, the audit WAITS
 (`AUDIT HOLD`). It is never moved to another model. **An audit that waits `stallHours` (6)** is recorded once (`stalled`
-row; also when the audit routine could not be made), and the CEO gets one block in plain words ("Ben's job has waited 7 hours for Kwame's check: Kwame's model is closed
+row; also when the audit routine could not be made), and the CEO gets one block in plain words ("Ben's job has waited 7 hours for Kofi's check: Kofi's model is closed
 right now."); the owner gets the same line as a notice (at most one a day per department) when the cause is one the owner
 controls (the model, the class rules, the money cap, the lead's approval mode, a station 403). The CEO may then answer the
 audit in the lead's place (`audit … --by <CEO>`, recorded `inPlaceOf`) or drop the item (`drop … --by <CEO>`); before it has
@@ -538,8 +538,8 @@ typed into an inbox), and the cost side counts every handed-back item, also thos
 over the items the lead accepted. Under
 `scorecard.fallbackBelowCut` (25%) over `scorecard.minItems` (10) accepted items it says `fall back`: the dispatcher
 withdraws the department to recording only once per evaluation hash (`accountable <id> withdraw --by dispatcher --auto`)
-and tells the owner in one line ("The crew stopped having Kwame check every finished job in Engineering: it did not cost
-less than Kwame doing the work alone. You can turn it back on from the Engineering card."). The
+and tells the owner in one line ("The crew stopped having Kofi check every finished job in Engineering: it did not cost
+less than Kofi doing the work alone. You can turn it back on from the Engineering card."). The
 owner's expectation, `scorecard.expectedCut` (75%), is reported beside the measured cut. The lead's advice (§5) is
 unchanged. Only the owner resumes.
 
@@ -552,7 +552,7 @@ each department was in at the last tick). A lead drops an item that is no longer
 the saving).
 
 **Rollout.** Every company: absent (`off`). The sandbox: Engineering in recording only first. The crew sets it up
-itself: the Founder (CEO) sets the lead and Marisol (the people seat) the reporting lines, as the owner asked; the owner
+itself: the Founder (CEO) sets the lead and Mara (the people seat) the reporting lines, as the owner asked; the owner
 only flips the switch, and chooses a cheaper pair for routine audits if it wants the saving to show. After a week of
 recording-only rows the owner may switch it on from the card.
 

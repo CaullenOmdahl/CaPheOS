@@ -36,7 +36,7 @@ async function selftest() {
   for (const d of [shared, priv, path.join(co2, '.starnet-data', 'tmp'), path.join(co, 'company', 'state'), path.join(co, 'scratch'), path.join(co, 'home', '.config')]) fs.mkdirSync(d, { recursive: true });
   W(path.join(co, 'company', 'company.json'), JSON.stringify({ name: 'Test Co', slug: 'testco', station: { serviceName: 'testco-station' } }));
   W(path.join(co2, 'company', 'company.json'), JSON.stringify({ name: 'Other Co', slug: 'otherco', station: { serviceName: 'otherco-station' } }));
-  W(path.join(co, 'company', 'tools', 'loops.json'), JSON.stringify({ agents: { phil: { name: 'Phil' } } }));
+  W(path.join(co, 'company', 'tools', 'loops.json'), JSON.stringify({ agents: { paul: { name: 'Paul' } } }));
   const DEAD1 = 3999991, DEAD2 = 3999992;
   W(path.join(co, 'company', 'state', 'reaper.json'), JSON.stringify({ v: 1, stationPids: [{ pid: DEAD1, firstSeen: new Date().toISOString() }] }));
   const orphans = [];   // pids of every double-forked helper, ended in finally whatever happened
@@ -82,7 +82,7 @@ async function selftest() {
     let A = null, B = null, C = null, D = null, E = null;
     if (chrome) {
       const pA = path.join(priv, 'walk-chrome-AAAAAA'); fs.mkdirSync(pA); life.own(pA);
-      const cwdA = path.join(co, 'scratch', 'phil-walk'); fs.mkdirSync(cwdA);
+      const cwdA = path.join(co, 'scratch', 'paul-walk'); fs.mkdirSync(cwdA);
       A = { profile: pA, pid: await orphan([chrome].concat(chromeArgs(pA)), { cwd: cwdA, env: chromeEnv(pA) }) };
       const pB = path.join(priv, 'live-chrome-BBBBBB'); fs.mkdirSync(pB); life.own(pB);
       B = { profile: pB, proc: life.track(cp.spawn(chrome, chromeArgs(pB), { cwd: co, env: chromeEnv(pB), stdio: 'ignore' })) }; B.pid = B.proc.pid;
@@ -99,7 +99,7 @@ async function selftest() {
     }
 
     /* ---------- strays ---------- */
-    const sDir = path.join(co, 'scratch', 'phil-stray'); fs.mkdirSync(sDir);
+    const sDir = path.join(co, 'scratch', 'paul-stray'); fs.mkdirSync(sDir);
     const sleepBin = cp.execFileSync('sh', ['-c', 'command -v sleep'], { encoding: 'utf8' }).trim();
     const unknownPid = await orphan([sleepBin, '300'], { cwd: sDir });
     const ft = path.join(co, 'bin', 'flutter_tester'); fs.mkdirSync(path.dirname(ft)); fs.copyFileSync(sleepBin, ft); fs.chmodSync(ft, 0o755);
@@ -124,9 +124,9 @@ async function selftest() {
     let haveGit = true;
     try {
       fs.mkdirSync(repo); git(['init', '-q']); W(path.join(repo, 'a.txt'), 'a'); git(['add', '-A']); git(['commit', '-qm', 'one']);
-      git(['worktree', 'add', '-q', '-b', 'done', path.join(co, 'scratch', 'phil-done')]);
-      git(['worktree', 'add', '-q', '-b', 'dirty', path.join(co, 'scratch', 'phil-dirty')]); W(path.join(co, 'scratch', 'phil-dirty', 'new.txt'), 'n');
-      ageTree(path.join(co, 'scratch', 'phil-done'), 20 * 86400); ageTree(path.join(co, 'scratch', 'phil-dirty'), 20 * 86400);
+      git(['worktree', 'add', '-q', '-b', 'done', path.join(co, 'scratch', 'paul-done')]);
+      git(['worktree', 'add', '-q', '-b', 'dirty', path.join(co, 'scratch', 'paul-dirty')]); W(path.join(co, 'scratch', 'paul-dirty', 'new.txt'), 'n');
+      ageTree(path.join(co, 'scratch', 'paul-done'), 20 * 86400); ageTree(path.join(co, 'scratch', 'paul-dirty'), 20 * 86400);
     } catch (e) { haveGit = false; }
     W(path.join(co, 'company', 'work', 'ops', 'retention.json'), JSON.stringify({ artifacts: [
       { id: 'workspace-backups', path: '.starnet-data/workspaces.backup-*', policy: 'keep-newest-dirs', keep: 3, keepDays: 0, warnBytes: 1, enforce: false, plain: 'Old copies of the workspace backups' },
@@ -151,7 +151,7 @@ async function selftest() {
       assert.ok(!alive(A.pid), 'A ended');
       assert.ok(!fs.existsSync(A.profile), 'its profile is gone');
       const l = lines().find(r => r.kind === 'browser' && r.pid === A.pid);
-      assert.ok(l && /^Closed a browser left running by Phil's work \(\d+ min old, \d+ MB\)\.$/.test(l.plain), JSON.stringify(l));
+      assert.ok(l && /^Closed a browser left running by Paul's work \(\d+ min old, \d+ MB\)\.$/.test(l.plain), JSON.stringify(l));
     });
     await check('browsers: one with a live parent, one with a client on its port, one of the other company, one on a ~/.config profile: all kept', async () => {
       if (!chrome) return { skip: 'no Chrome on this machine' };
@@ -165,7 +165,7 @@ async function selftest() {
       await sleep(200);
       assert.ok(!alive(flutterPid), 'flutter_tester ended');
       assert.ok(alive(unknownPid), 'sleep kept');
-      assert.ok(lines().some(r => r.kind === 'stray' && r.pid === flutterPid && /^Ended a left-behind flutter_tester from Phil's work/.test(r.plain)));
+      assert.ok(lines().some(r => r.kind === 'stray' && r.pid === flutterPid && /^Ended a left-behind flutter_tester from Paul's work/.test(r.plain)));
       assert.ok(res.due.some(d => d.id === 'stray:' + unknownPid && /not a kind the reaper may end/.test(d.reason)), JSON.stringify(res.due));
     });
     await check('temp: private old goes; held and young stay; shared: only this company\'s station pids', async () => {
@@ -179,7 +179,7 @@ async function selftest() {
     await check('host-sweep lists the shared leftovers it cannot trace; --apply only for the owner', async () => {
       const r = RP.hostSweep({ root: co, dirs: [shared] });
       assert.ok(r.wouldGo >= 1 && r.byClass.pytmp && !r.applied, JSON.stringify(r));
-      assert.ok(/owner/.test(RP.hostSweep({ root: co, dirs: [shared], apply: true, by: 'phil' }).refused));
+      assert.ok(/owner/.test(RP.hostSweep({ root: co, dirs: [shared], apply: true, by: 'paul' }).refused));
       assert.ok(fs.existsSync(path.join(shared, 'tmpabcdefgh')));
       const a = RP.hostSweep({ root: co, dirs: [shared], apply: true, by: 'owner', ownerShell: () => true });
       assert.ok(a.applied && !fs.existsSync(path.join(shared, 'tmpabcdefgh')) && fs.existsSync(path.join(shared, 'starnet-browser-' + DEAD2 + '-y')) === false, JSON.stringify(a));
@@ -203,9 +203,9 @@ async function selftest() {
     });
     await check('retention: a merged, clean worktree is removed with git worktree remove; a dirty one is kept', async () => {
       if (!haveGit) return { skip: 'git did not set up the fixture' };
-      assert.ok(!fs.existsSync(path.join(co, 'scratch', 'phil-done')), 'merged one removed');
-      assert.ok(fs.existsSync(path.join(co, 'scratch', 'phil-dirty', 'new.txt')), 'dirty one kept');
-      assert.ok(!/phil-done/.test(git(['worktree', 'list'])), 'git knows it is gone (not rm)');
+      assert.ok(!fs.existsSync(path.join(co, 'scratch', 'paul-done')), 'merged one removed');
+      assert.ok(fs.existsSync(path.join(co, 'scratch', 'paul-dirty', 'new.txt')), 'dirty one kept');
+      assert.ok(!/paul-done/.test(git(['worktree', 'list'])), 'git knows it is gone (not rm)');
     });
     await check('pressure: short memory asks the mock station to close its unused browser, halves the temp ages, records it', async () => {
       const calls = [];

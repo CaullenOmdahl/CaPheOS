@@ -36,7 +36,7 @@ test('proof by path: profile, working folder (also a deleted one) and TMPDIR ins
   const f = fakeProc();
   f.put(10, { cmd: ['/opt/google/chrome/chrome', '--headless=new', '--user-data-dir=' + f.root + '/.starnet-data/tmp/p1'], comm: 'chrome' });
   f.put(11, { cmd: ['/opt/google/chrome/chrome', '--headless=new', '--user-data-dir=' + f.other + '/.starnet-data/tmp/p1'], comm: 'chrome' });
-  f.put(12, { cmd: ['node', 'x.js'], cwd: f.root + '/scratch/phil-gone (deleted)' });
+  f.put(12, { cmd: ['node', 'x.js'], cwd: f.root + '/scratch/paul-gone (deleted)' });
   f.put(13, { cmd: ['node', 'x.js'], env: ['HOME=/h', 'TMPDIR=' + f.root + '/.starnet-data/tmp'] });
   f.put(14, { cmd: ['node', 'x.js'], cwd: f.other });
   const c = ctxOf(f); const all = O.scan(c);
@@ -90,7 +90,7 @@ test('browsers: parent kind and idle state; strays: handed to init, outside the 
   f.put(42, { cmd: ['/opt/google/chrome/chrome', '--type=renderer', '--user-data-dir=' + prof('a')], comm: 'chrome', ppid: 41 });
   f.put(43, { cmd: ['/opt/google/chrome/chrome', '--headless', '--remote-debugging-port=9444', '--user-data-dir=' + prof('b')], comm: 'chrome', ppid: 40 });
   f.put(44, { cmd: ['/opt/google/chrome/chrome', '--headless', '--remote-debugging-port=9555', '--user-data-dir=' + prof('c')], comm: 'chrome', ppid: 1058 });
-  f.put(50, { cmd: ['/home/u/flutter/bin/cache/artifacts/engine/linux-x64/flutter_tester', '--packages=x'], comm: 'flutter_tester', ppid: 1058, cwd: f.root + '/scratch/phil-ui (deleted)' });
+  f.put(50, { cmd: ['/home/u/flutter/bin/cache/artifacts/engine/linux-x64/flutter_tester', '--packages=x'], comm: 'flutter_tester', ppid: 1058, cwd: f.root + '/scratch/paul-ui (deleted)' });
   f.put(51, { cmd: ['node', 'sidecar/index.js', '--port', '0'], ppid: 1058, cwd: f.root + '/scratch/sn-fresh (deleted)' });
   f.put(52, { cmd: ['sleep', '300'], ppid: 1058, cwd: f.root });
   f.put(53, { cmd: ['sleep', '300'], ppid: 1058, cwd: f.root, cgroup: '0::/user.slice/user@1000.service/app.slice/co-station.service' });
@@ -149,9 +149,9 @@ test('strays: a Gradle daemon is ended only after its idle time without CPU, wit
   const f = fakeProc();
   const RP = require('../reaper');
   f.put(1058, { cmd: ['/usr/lib/systemd/systemd', '--user'], comm: 'systemd' });
-  const gd = { cmd: ['/usr/lib/jvm/bin/java', '-Xmx2g', 'org.gradle.launcher.daemon.bootstrap.GradleDaemon', '8.7'], comm: 'java', ppid: 1058, cwd: f.root + '/scratch/phil-app', ticks: 500 };
+  const gd = { cmd: ['/usr/lib/jvm/bin/java', '-Xmx2g', 'org.gradle.launcher.daemon.bootstrap.GradleDaemon', '8.7'], comm: 'java', ppid: 1058, cwd: f.root + '/scratch/paul-app', ticks: 500 };
   f.put(70, gd);
-  f.put(71, { cmd: ['/home/u/flutter/bin/cache/artifacts/engine/linux-x64/flutter_tester'], comm: 'flutter_tester', ppid: 1058, cwd: f.root + '/scratch/phil-app' });
+  f.put(71, { cmd: ['/home/u/flutter/bin/cache/artifacts/engine/linux-x64/flutter_tester'], comm: 'flutter_tester', ppid: 1058, cwd: f.root + '/scratch/paul-app' });
   fs.mkdirSync(path.join(f.root, 'company', 'state'), { recursive: true });
   const kills = [];
   const at = t => RP.context({ root: f.root, proc: f.proc, supervisor: 'none', cgroupOf: () => '', home: path.join(f.T, 'home'), now: t, minAgeS: 0, idleS: 3 * 3600, graceMs: 10, daemonGraceMs: 10,
@@ -172,7 +172,7 @@ test('strays: a Gradle daemon is ended only after its idle time without CPU, wit
   assert.strictEqual(r.list.find(x => x.pid === 70).decision, 'end');
   assert.ok(kills.indexOf('70 SIGTERM') >= 0 && kills.indexOf('70 SIGTERM') < kills.indexOf('70 SIGKILL') && !kills.includes('-70 SIGTERM'), 'TERM to the daemon alone first: ' + kills.join());
   const row = fs.readFileSync(path.join(f.root, 'company', 'state', 'reaper.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).find(x => x.pid === 70);
-  assert.match(row.plain, /^Ended a left-behind gradle daemon from Phil's work \(\d+ h old, unused for 4 h, \d+ MB\)\.$/);
+  assert.match(row.plain, /^Ended a left-behind gradle daemon from Paul's work \(\d+ h old, unused for 4 h, \d+ MB\)\.$/);
 });
 
 test('retention: a yes on a report-only folder hands its removal to the tools seat (the reaper never deletes it), until it is gone', () => {

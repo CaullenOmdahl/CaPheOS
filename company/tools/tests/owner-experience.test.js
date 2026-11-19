@@ -51,7 +51,7 @@ function company(o) {
     agent: { name: 'Alex', manager: null, functions: ['ceo'], inbox: 'to-alex.md' },
     engineer: { name: 'Max', manager: 'agent', functions: ['tools'], inbox: 'to-max.md' },
     auditor: { name: 'Riley', manager: 'agent', functions: ['risk'], inbox: 'to-riley.md' },
-    people: { name: 'nadia farrell', manager: 'agent', functions: ['people'], inbox: 'to-nadia.md' },
+    people: { name: 'nora field', manager: 'agent', functions: ['people'], inbox: 'to-nora.md' },
     sam: { name: 'Sam Lee', manager: 'agent', inbox: 'to-sam.md' } } });
   fs.mkdirSync(path.join(T, 'company', 'work', 'handoffs'), { recursive: true });
   const g = JSON.parse(fs.readFileSync(path.join(REPO, 'company/defaults/state/governance.json'), 'utf8'));
@@ -88,16 +88,16 @@ out({ a, asks: asks().length, unit: unitText('state-backup') });`);
 });
 
 test('B1: a job with any network, a named website included, goes to the owner while the guardrail is on; off, the external level decides', () => {
-  const T = company({ levels: { schedules: 'auto', external: 'auto' }, allowlist: ['api.kalshi.com'] });
+  const T = company({ levels: { schedules: 'auto', external: 'auto' }, allowlist: ['api.tradex.com'] });
   W(T, 'company/work/feed.py', 'print(1)\n');
   const r = run(T, SVC_CTX + `
 let lcOn = true;
 const p = (n, hosts) => tryIt(() => S.propose(S.context(svcOpts({ guard: nm => nm === 'localComputer' ? lcOn : true })), n, { by: 'sam', kind: 'timer', exec: 'python3 company/work/feed.py', every: '1h', why: 'pulls prices for the desk every hour', hosts }));
-const known = p('bank-freshness', 'api.kalshi.com');
-const fresh = p('seal-nowcast', 'hermes.pyth.network');
+const known = p('bank-freshness', 'api.tradex.com');
+const fresh = p('seal-nowcast', 'hermes.quotely.network');
 const cardsOn = asks().map(c => ({ category: c.gate.category, guardrail: !!c.gate.guardrail, message: c.message, recommendation: c.recommendation, technical: c.technical }));
 lcOn = false;
-const offKnown = p('bank-fresh2', 'api.kalshi.com');
+const offKnown = p('bank-fresh2', 'api.tradex.com');
 const g = JSON.parse(fs.readFileSync(path.join(T, 'company/state/governance.json'), 'utf8')); g.categories.external = 'approve';
 fs.writeFileSync(path.join(T, 'company/state/governance.json'), JSON.stringify(g));
 const ask = p('eia-slot', 'api.eia.gov');
@@ -112,8 +112,8 @@ out({ known, fresh, cardsOn, offKnown, ask, card: card && { category: card.gate.
     assert.match(c.recommendation, /Say yes only if that risk is acceptable to you/);
     assert.match(c.technical, /declared, not enforced/);
   }
-  assert.match(r.cardsOn[0].message, /It connects to the Kalshi website but nothing stops/);
-  assert.match(r.cardsOn[1].message, /It connects to the Pyth website, which is new to the crew, but nothing stops/);
+  assert.match(r.cardsOn[0].message, /It connects to the Tradex website but nothing stops/);
+  assert.match(r.cardsOn[1].message, /It connects to the Quotely website, which is new to the crew, but nothing stops/);
   assert.equal(r.offKnown.r.status, 'installed', 'guardrail off: an allowlisted website at external=auto is installed');
   assert.equal(r.ask.r.waiting, true, 'guardrail off: a new website at external=approve waits for the owner');
   assert.equal(r.card.category, 'external'); assert.equal(r.card.guardrail, false, 'not a guardrail card: a standing rule can cover it');
@@ -143,7 +143,7 @@ function fixture(o) {
   W(root, 'secrets/station-token', 'fake-token\n');
   for (const f of ['company/state/locked/provenance.jsonl', 'company/pm-inbox.jsonl', 'company/state/governance.json', 'company/state/owner-rulings.json', 'company/owner/digest.jsonl']) try { fs.rmSync(path.join(root, f)); } catch (_) {}
   W(root, 'company/company.json', { name: 'Fixture Co', slug: 'fixture-co', timezone: 'UTC', owner: { name: 'Olive' }, station: { url: 'http://127.0.0.1:9' } });
-  W(root, 'company/tools/loops.json', { agents: { boss: { name: 'Boss', functions: ['ceo'], manager: null, inbox: 'to-boss.md' }, hal: { name: 'Hal', functions: ['people'], manager: 'boss', inbox: 'to-hal.md' }, data: { name: 'Halima', manager: 'boss', inbox: 'to-halima.md' } } });
+  W(root, 'company/tools/loops.json', { agents: { boss: { name: 'Boss', functions: ['ceo'], manager: null, inbox: 'to-boss.md' }, hal: { name: 'Hal', functions: ['people'], manager: 'boss', inbox: 'to-hal.md' }, data: { name: 'Hollis', manager: 'boss', inbox: 'to-hollis.md' } } });
   const g = JSON.parse(fs.readFileSync(path.join(REPO, 'company/defaults/state/governance.json'), 'utf8')); Object.assign(g.categories, o.levels || {});
   W(root, 'company/state/governance.json', g);
   return root;
@@ -151,14 +151,14 @@ function fixture(o) {
 const NEEDS_CTX = `
 const co = require(path.join(T, 'company/tools/lib/company.js'));
 const NEEDS = require(path.join(T, 'console/owner-needs.js')).make({ co });
-const card = (about, gate, x) => Object.assign({ type: 'ask', id: 'q-' + Math.random().toString().slice(2, 8), from: 'Halima', about, message: 'Halima wants a background job to run every hour on this computer. It keeps to company files and cannot reach the internet.', gate }, x || {});
+const card = (about, gate, x) => Object.assign({ type: 'ask', id: 'q-' + Math.random().toString().slice(2, 8), from: 'Hollis', about, message: 'Hollis wants a background job to run every hour on this computer. It keeps to company files and cannot reach the internet.', gate }, x || {});
 `;
 test('B2: a standing rule is offered on a background-job card and covers the next one; never where it cannot work, and never with an internal name', () => {
   const T = fixture({ levels: { schedules: 'approve' } });
   const r = run(T, NEEDS_CTX + `
 const job = card('card:service:feed:k1', { ref: 'service:feed:k1', category: 'schedules', governanceCategory: 'schedules' });
 const guard = card('card:service:depth:k2', { ref: 'service:depth:k2', category: 'localComputer', governanceCategory: 'localComputer', guardrail: true });
-const money = card('money-hold:cap', null, { message: 'Halima is paused: the company has spent today\\'s budget.', blocking: true });
+const money = card('money-hold:cap', null, { message: 'Hollis is paused: the company has spent today\\'s budget.', blocking: true });
 const o = { job: NEEDS.ruleOffer(job, job, []), guard: NEEDS.ruleOffer(guard, guard, []), money: NEEDS.ruleOffer(money, money, []) };
 let refused = null; try { NEEDS.addRuling({ text: 'You decide these.', scope: { categories: ['localComputer'] } }, (m, c) => { throw new Error(m); }); } catch (e) { refused = e.message; }
 out({ o, refused });`);
@@ -185,7 +185,7 @@ test('B3: the notice plain check uses the card check\'s patterns (clock specs, m
   const T = company();
   const r = run(T, `
 const N = require(path.join(REPO, 'company/tools/lib/owner-notice.js'));
-const ins = ['Cadence changed by Nadia: routine "seal-nowcast": */15 * * * * -> */30 * * * *.', 'Sam switched the coding seat to claude-sonnet-4-5 for a week.', 'Sharon set fiveHourCloseBelowLeftPct to 35 for the evening.', 'Run it again with --force to finish.'];
+const ins = ['Cadence changed by Nora: routine "seal-nowcast": */15 * * * * -> */30 * * * *.', 'Sam switched the coding seat to claude-sonnet-4-5 for a week.', 'Zoe set fiveHourCloseBelowLeftPct to 35 for the evening.', 'Run it again with --force to finish.'];
 out(ins.map(t => N.plain(t)));`);
   for (const p of r) {
     assert.ok(p.technical.length > 0, 'something moved to technical: ' + JSON.stringify(p));
@@ -198,31 +198,31 @@ const TEMPLATES = `
 const tools = p => require(path.join(REPO, 'company/tools', p));
 const lines = {};
 const cad = tools('cadence.js');
-lines.cadence = cad.cadenceNotice('Nadia', ['routine "seal-nowcast": */15 * * * * -> */30 * * * *', 'dispatcher tick 4 -> 6 min']).text;
+lines.cadence = cad.cadenceNotice('Nora', ['routine "seal-nowcast": */15 * * * * -> */30 * * * *', 'dispatcher tick 4 -> 6 min']).text;
 lines.sprintEnd = cad.endNotice({ ended: { reason: 'budget', at: Date.now() }, spent: { usd: 1.1 }, budgetUsd: 1, since: new Date().toISOString() }, { bounds: { maxWakesPerHour: 100 }, dispatcherTickMin: 12, defaultCooldownMin: 40 }, null).text;
 const gr = tools('guardrails.js');
-lines.guardrails = gr.changedNotice('Caullen', [{ name: 'localComputer', from: 'on', to: 'off' }], ['localComputer', 'harnessSelfEdit'], false).text;
+lines.guardrails = gr.changedNotice('Avery', [{ name: 'localComputer', from: 'on', to: 'off' }], ['localComputer', 'harnessSelfEdit'], false).text;
 lines.guardrailsApplied = gr.appliedNotice([{ what: 'computer control', ok: true }, { what: 'sudo gate', ok: false, error: 'ECONNREFUSED' }]).text;
-lines.pacer = tools('pacer.js').limitNotice('Sharon', 'MiniMax', 'fiveHourCloseBelowLeftPct 0 -> 35', 'keep a margin for the evening').text;
-lines.pacerOddWhy = tools('pacer.js').limitNotice('Sharon', 'MiniMax', 'x', 'set /minimax/fiveHourCloseBelowLeftPct per hc-0008').text;
+lines.pacer = tools('pacer.js').limitNotice('Zoe', 'MiniMax', 'fiveHourCloseBelowLeftPct 0 -> 35', 'keep a margin for the evening').text;
+lines.pacerOddWhy = tools('pacer.js').limitNotice('Zoe', 'MiniMax', 'x', 'set /minimax/fiveHourCloseBelowLeftPct per hc-0008').text;
 lines.balance = tools('lib/provider-balance.js').lowNotice('DeepSeek', false);
 lines.balanceOut = tools('lib/provider-balance.js').lowNotice('DeepSeek', true);
-lines.fallback = tools('models.js').fallbackNotice('Halima');
+lines.fallback = tools('models.js').fallbackNotice('Hollis');
 lines.watchdog = tools('watchdog.js').silentNotice({ silentMin: 45 });
 lines.watchdogNever = tools('watchdog.js').silentNotice({ never: true });
 const lv = require(path.join(REPO, 'modules/liveness/watch.js'));
 lines.livenessDown = lv.downNotice('dispatcher', 61); lines.livenessWatcher = lv.downNotice('watcher', null); lines.livenessUp = lv.upNotice('dispatcher');
 const hc = tools('harness-change.js'); const hctx = { paths: { dir: path.join(T, 'nowhere') } };
 lines.harnessApplied = hc.ownerNewsLine(hctx, 'hc-0008 applied (tool: company/tools/pacer.js)');
-lines.harnessRejected = hc.ownerNewsLine(hctx, 'hc-0008 rejected by Kwame Asante');
+lines.harnessRejected = hc.ownerNewsLine(hctx, 'hc-0008 rejected by Kofi Mensah');
 lines.harnessResults = hc.ownerNewsLine(hctx, 'results check hc-0008 (tool: company/tools/pacer.js): looks better');
 lines.panel = tools('console-panel.js').panelNotice('Alex', false, false, { title: 'Trading positions' });
 lines.external = tools('external-gate.js').plainClearedLine('Alex', { agent: 'sam', category: 'spend' });
-lines.decided = tools('lib/governance.js').plainDecided('Sharon', 'budget', 'apply hc-0008, a policy change to company/work/finance/pacing-policy.json (/minimax/fiveHourCloseBelowLeftPct: 0 -> 35)');
+lines.decided = tools('lib/governance.js').plainDecided('Zoe', 'budget', 'apply hc-0008, a policy change to company/work/finance/pacing-policy.json (/minimax/fiveHourCloseBelowLeftPct: 0 -> 35)');
 const S = tools('service.js'); const ctx = S.context({ root: T });
 fs.mkdirSync(path.join(T, 'company/work'), { recursive: true }); fs.writeFileSync(path.join(T, 'company/work/feed.py'), 'print(1)\\n');
-const e = S.specOf(ctx, 'feed', { kind: 'timer', every: '1h', exec: 'python3 company/work/feed.py', why: 'pulls prices every hour', hosts: 'api.kalshi.com' }, { resolve: false });
-lines.serviceDone = S.plainDone(ctx, e, { name: 'Halima' });
+const e = S.specOf(ctx, 'feed', { kind: 'timer', every: '1h', exec: 'python3 company/work/feed.py', why: 'pulls prices every hour', hosts: 'api.tradex.com' }, { resolve: false });
+lines.serviceDone = S.plainDone(ctx, e, { name: 'Hollis' });
 lines.delegation = tools('delegation.js').answeredNotice('Pat', 'hiring', '2026-11-20T00:00:00Z').text;
 lines.demoted = tools('lib/decision.js').demoteNotice('gate-triage', '2', '3 bad outcomes in 14 days over the limit of 2', { root: T }).text;
 `;
@@ -243,19 +243,19 @@ test('B3: nothing is swallowed: a technical-only notice fails a test (strict), r
   const T = fixture();
   const strict = run(T, `
 const N = require(path.join(T, 'company/tools/lib/owner-notice.js'));
-let thrown = null; try { N.send({ kind: 'fyi', from: 'Dave', text: 'hc-0042 applied: company/tools/pacer.js sha256:ab12cd34ef' }, { root: T }); } catch (e) { thrown = e.code; }
+let thrown = null; try { N.send({ kind: 'fyi', from: 'Dana', text: 'hc-0042 applied: company/tools/pacer.js sha256:ab12cd34ef' }, { root: T }); } catch (e) { thrown = e.code; }
 out({ thrown });`, { env: { CAPHEOS_NOTICE_STRICT: '1' } });
   assert.equal(strict.thrown, 'NOT_PLAIN', 'a test sees the template that needs rewording');
   const r = run(T, NEEDS_CTX + `
 const N = require(path.join(T, 'company/tools/lib/owner-notice.js'));
-const a = N.send({ kind: 'fyi', from: 'Dave', text: 'hc-0042 applied: company/tools/pacer.js sha256:ab12cd34ef' }, { root: T });
+const a = N.send({ kind: 'fyi', from: 'Dana', text: 'hc-0042 applied: company/tools/pacer.js sha256:ab12cd34ef' }, { root: T });
 N.send({ kind: 'fyi', from: 'Pat', text: 'Pat answered a hiring question for you.' }, { root: T });
 const lint = fs.readFileSync(path.join(T, 'company/state/owner-notice-lint.jsonl'), 'utf8');
 out({ row: a.row, items: NEEDS.digest().items, lint, day: N.digest({ root: T, force: true, dry: true }) });`);
   // nothing plain was left: a plain line by what it is about reaches the owner (S-c of the round-2 review), never filler
   assert.equal(r.row.fallback, true); assert.equal(r.row.crewOnly, undefined);
   assert.doesNotMatch(JSON.stringify(r.items.map(x => x.text)), /noted something technical|hc-0042/, 'Today shows no filler: ' + JSON.stringify(r.items));
-  assert.equal(r.items.length, 2); assert.match(r.items[0].text, /^Dave noted a change to how the crew spends money\./); assert.match(r.items[1].text, /^Pat answered/);
+  assert.equal(r.items.length, 2); assert.match(r.items[0].text, /^Dana noted a change to how the crew spends money\./); assert.match(r.items[1].text, /^Pat answered/);
   assert.match(r.lint, /hc-0042/, 'the crew is told which template to fix');
   assert.doesNotMatch(r.day.text, /noted something technical/);
 });
@@ -288,7 +288,7 @@ test('B4: a decision the crew made by a tested check has an Undo button on Today
   const T = fixture();
   run(T, `
 const N = require(path.join(T, 'company/tools/lib/owner-notice.js'));
-N.send({ kind: 'fyi', from: 'Sharon', text: 'Sharon decided to raise the ad budget to $40. You can undo it on Today.', key: 'd-0123456789ab', action: { kind: 'undo-decision', decisionId: 'd-0123456789ab' } }, { root: T });
+N.send({ kind: 'fyi', from: 'Zoe', text: 'Zoe decided to raise the ad budget to $40. You can undo it on Today.', key: 'd-0123456789ab', action: { kind: 'undo-decision', decisionId: 'd-0123456789ab' } }, { root: T });
 out({});`);
   await consoleOn(T, async (call, err) => {
     const d = await call('GET', '/api/digest');
@@ -416,7 +416,7 @@ test('B4: Settings › Autonomy turns a tested check on or back to practice, and
 test('B5: an FYI card never lands in Needs you; a blocking money hold still does', () => {
   const T = fixture({ levels: { budget: 'auto' } });
   const r = run(T, NEEDS_CTX + `
-const fyi = { id: 'q-000501', from: 'Dispatcher', about: 'money-hold:cap', message: 'Halima is paused: the company has spent today\\'s $5 pay-as-you-go budget.', blocking: false, batch: 'fyi', kind: 'form' };
+const fyi = { id: 'q-000501', from: 'Dispatcher', about: 'money-hold:cap', message: 'Hollis is paused: the company has spent today\\'s $5 pay-as-you-go budget.', blocking: false, batch: 'fyi', kind: 'form' };
 const hold = Object.assign({}, fyi, { id: 'q-000502', blocking: true, batch: null });
 const s = NEEDS.split([fyi, hold], {});
 out({ needs: s.needs.map(x => x.id), handling: s.handling.map(x => ({ id: x.id, line: x.line })) });`);
@@ -451,14 +451,14 @@ test('jargon: a governance card that would say nothing is not sent; no "reasons 
   const T = company({ levels: { tools: 'approve' } });
   const r = run(T, `
 const gov = require(path.join(REPO, 'company/tools/lib/governance.js'));
-const d = gov.decide('tools', { by: 'Sharon', summary: 'apply hc-0008, a policy change to company/work/finance/pacing-policy.json (/minimax/fiveHourCloseBelowLeftPct: 0 -> 35)', recommendation: 'per the hc-0008 review', ref: 'harness:hc-0008' }, { root: T });
-const ok = gov.decide('tools', { by: 'Sharon', summary: 'change how work is handed out', recommendation: 'yes', ref: 'harness:hc-0009' }, { root: T });
+const d = gov.decide('tools', { by: 'Zoe', summary: 'apply hc-0008, a policy change to company/work/finance/pacing-policy.json (/minimax/fiveHourCloseBelowLeftPct: 0 -> 35)', recommendation: 'per the hc-0008 review', ref: 'harness:hc-0008' }, { root: T });
+const ok = gov.decide('tools', { by: 'Zoe', summary: 'change how work is handed out', recommendation: 'yes', ref: 'harness:hc-0009' }, { root: T });
 const asks = require(path.join(REPO, 'company/tools/lib/pm-inbox-guard.js')).rows({ file: path.join(T, 'company/pm-inbox.jsonl'), noAlert: true }).filter(x => x.type === 'ask');
 out({ d, refusal: gov.refusal('tools', d), asks: asks.map(a => ({ message: a.message, recommendation: a.recommendation })) });`);
   assert.equal(r.d.allowed, false); assert.equal(r.d.notPlain, true, JSON.stringify(r.d));
   assert.match(r.refusal, /does not read plainly/);
   assert.equal(r.asks.length, 1, 'only the plain one reaches the owner: ' + JSON.stringify(r.asks));
-  assert.equal(r.asks[0].message, 'May Sharon go ahead and change how work is handed out?');
+  assert.equal(r.asks[0].message, 'May Zoe go ahead and change how work is handed out?');
   assert.doesNotMatch(JSON.stringify(r.asks), /reasons are under the technical details|a decision about/);
 });
 
@@ -471,7 +471,7 @@ test('jargon: change cards have no canned reason and say a makers-only change le
   const r = run(T, `
 const hc = require(path.join(REPO, 'company/tools/harness-change.js'));
 const ctx = hc.context({ root: T, now: Date.now() });
-const base = { kind: 'tool', by: 'Kwame Asante', byId: 'engineer', why: 'tighten the check', change: { mode: 'patch', payload: 'company/work/changes/hc-0001/change.diff' }, status: 'approved',
+const base = { kind: 'tool', by: 'Kofi Mensah', byId: 'engineer', why: 'tighten the check', change: { mode: 'patch', payload: 'company/work/changes/hc-0001/change.diff' }, status: 'approved',
   reviewers: [{ id: 'auditor', name: 'Riley' }, { id: 'agent', name: 'Alex' }], approvals: [{ id: 'auditor', name: 'Riley' }, { id: 'agent', name: 'Alex' }] };
 const up = hc.ownerCard(ctx, Object.assign({ id: 'hc-0001', target: { type: 'file', file: 'company/tools/fw.js' } }, base), 'apply');
 const own = hc.ownerCard(ctx, Object.assign({ id: 'hc-0002', target: { type: 'file', file: 'company/tools/mine.js' } }, base), 'apply');
@@ -490,20 +490,20 @@ out({ up, own, review, asks: asks.map(a => ({ ref: a.gate.ref, message: a.messag
 
 test('M2: the word API alone does not make a key only the owner can get the crew\'s job', () => {
   const scope = require(path.join(REPO, 'company/tools/lib/owner-scope.js'));
-  const c = scope.classify({ message: 'Paste your Pyth Hermes API key here, please.' });
+  const c = scope.classify({ message: 'Paste your Quotely Stream API key here, please.' });
   assert.equal(c.scope, 'owner', JSON.stringify(c)); assert.ok(c.owner.includes('account'));
-  const k = scope.check({ from: 'Founder', message: 'Paste your Pyth Hermes API key here, please.' }, { rows: [], govOpts: { level: 'auto' } });
+  const k = scope.check({ from: 'Founder', message: 'Paste your Quotely Stream API key here, please.' }, { rows: [], govOpts: { level: 'auto' } });
   assert.notEqual(k && k.code, 'crew-scope', 'never refused as the crew\'s job: ' + JSON.stringify(k));
   assert.equal(scope.classify({ message: 'Our API client needs a retry on timeouts.' }).scope, 'crew', 'crew tooling is still the crew\'s');
 });
 
 test('M3: a crew member\'s name reads as people write it on Today', () => {
   const T = fixture();
-  W(T, 'company/tools/loops.json', { agents: { boss: { name: 'Boss', functions: ['ceo'], manager: null, inbox: 'to-boss.md' }, people: { name: 'nadia farrell', functions: ['people'], manager: 'boss', inbox: 'to-nadia.md' } } });
+  W(T, 'company/tools/loops.json', { agents: { boss: { name: 'Boss', functions: ['ceo'], manager: null, inbox: 'to-boss.md' }, people: { name: 'nora field', functions: ['people'], manager: 'boss', inbox: 'to-nora.md' } } });
   const r = run(T, NEEDS_CTX + `
 const N = require(path.join(T, 'company/tools/lib/owner-notice.js'));
-const s = N.send({ kind: 'fyi', from: 'nadia farrell', text: 'nadia farrell sent the makers a suggestion. Nothing changes in your company.' }, { root: T });
-out({ t: NEEDS.properNames('nadia farrell wants to change one of the safeguards.'), row: s.row });`);
-  assert.equal(r.t, 'Nadia Farrell wants to change one of the safeguards.');
-  assert.equal(r.row.from, 'Nadia Farrell'); assert.match(r.row.text, /^Nadia Farrell sent the makers/, 'the day message too');
+const s = N.send({ kind: 'fyi', from: 'nora field', text: 'nora field sent the makers a suggestion. Nothing changes in your company.' }, { root: T });
+out({ t: NEEDS.properNames('nora field wants to change one of the safeguards.'), row: s.row });`);
+  assert.equal(r.t, 'Nora Field wants to change one of the safeguards.');
+  assert.equal(r.row.from, 'Nora Field'); assert.match(r.row.text, /^Nora Field sent the makers/, 'the day message too');
 });

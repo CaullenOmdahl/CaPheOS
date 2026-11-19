@@ -46,10 +46,10 @@ test('walk 2: one time format, 24 h in the company timezone, relative day', asyn
 
 test('display names: title-cased for display, ids left alone, a candidate id named from its slug', async () => {
   const P = await import(path.join(UI, 'plain.js'));
-  assert.equal(P.personName('Nadia farrell'), 'Nadia Farrell');
-  assert.equal(P.personName('NADIA FARRELL'), 'Nadia Farrell');
+  assert.equal(P.personName('Nora field'), 'Nora Field');
+  assert.equal(P.personName('NORA FIELD'), 'Nora Field');
   assert.equal(P.personName('Anne-marie McDonald'), 'Anne-Marie McDonald');
-  assert.equal(P.personName('cand-quant-researcher-1-rohan-iy'), 'cand-quant-researcher-1-rohan-iy');
+  assert.equal(P.personName('cand-quant-researcher-1-ravi-iy'), 'cand-quant-researcher-1-ravi-iy');
   assert.equal(P.nameFromId('cand-people-manager-1-tobias-lin'), 'Tobias Lin');
 });
 
@@ -85,9 +85,9 @@ test('seat status: the dispatcher\'s reason; lanes only while more than one thin
 
 test('Spend › By seat: interview candidates fold into one row with their names', async () => {
   const P = await import(path.join(UI, 'plain.js'));
-  const g = P.groupSeats([{ id: 'agent', name: 'Founder', usd: 1 }, { id: 'cand-x-1-nadia', name: 'Nadia farrell', candidate: false, usd: 0.2 },
+  const g = P.groupSeats([{ id: 'agent', name: 'Founder', usd: 1 }, { id: 'cand-x-1-nora', name: 'Nora field', candidate: false, usd: 0.2 },
     { id: 'cand-people-manager-1-tobias-lin', name: 'cand-people-manager-1-tobias-lin', usd: 0.02 }, { id: 'cand-r-1-aisha', name: 'Aisha Bello', candidate: true, usd: 0.01 }]);
-  assert.deepEqual(g.seats.map(s => s.name), ['Founder', 'Nadia Farrell']);
+  assert.deepEqual(g.seats.map(s => s.name), ['Founder', 'Nora Field']);
   assert.equal(g.candidates.n, 2); assert.equal(g.candidates.usd, 0.03);
   assert.deepEqual(g.candidates.rows.map(r => r.name), ['Tobias Lin', 'Aisha Bello']);
 });
@@ -136,7 +136,7 @@ test('model names in plain words, never the raw provider/model id', async () => 
   assert.equal(P.toolStep('search', '{"query":"lead-lag|latency|news","path":"company/work","re'), 'searching for “lead-lag, latency, news” in the company’s files');
   assert.equal(P.toolStep('read', '{"path":"company/work/path-to-live.md"}'), 'reading path-to-live.md');
   assert.equal(P.toolStep('list', '{"path":"company/work/research"}'), 'looking through the research folder');
-  assert.equal(P.toolStep('write', '{"path":"company/work/handoffs/to-rohan-iyer.md","content":"\\n\\n## 2026'), 'writing a note for Rohan Iyer');
+  assert.equal(P.toolStep('write', '{"path":"company/work/handoffs/to-ravi-shah.md","content":"\\n\\n## 2026'), 'writing a note for Ravi Shah');
   assert.equal(P.toolStep('code.run', 'node company/tools/halt.js status'), 'using the halt tool');
   assert.equal(P.toolStepResult('752 matches across 94 file(s)', true), '752 matches across 94 files');
   assert.equal(P.toolStepResult('52.4 KB read; characters 0-24000 of 53437', true), '');

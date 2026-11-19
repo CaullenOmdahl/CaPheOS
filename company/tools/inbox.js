@@ -267,7 +267,7 @@ function normalizeForm(form) {
     if (type === 'url') { o.placeholder = str(x.placeholder, 200, 'field ' + id + ' placeholder'); if (x.allowHttp) o.allowHttp = true; }
     if (type === 'secret') {
       o.name = String(x.name || '').trim();
-      if (!safeSecretName(o.name)) throw new Error('secret field ' + id + ' needs name: a plain file name under secrets/ (letters, digits, . _ -; not station-token or console-token), e.g. kalshi-api-key');
+      if (!safeSecretName(o.name)) throw new Error('secret field ' + id + ' needs name: a plain file name under secrets/ (letters, digits, . _ -; not station-token or console-token), e.g. tradex-api-key');
       if (secretNames.has(o.name)) throw new Error('two secret fields write secrets/' + o.name); secretNames.add(o.name);
       o.provider = str(x.provider, 300, 'field ' + id + ' provider');
       if (x.validate) { o.validate = String(x.validate).trim(); if (!/^[a-z0-9_-]{1,40}$/i.test(o.validate)) throw new Error('field ' + id + ': validate is a station provider id, e.g. deepseek'); }
@@ -1015,7 +1015,7 @@ function selftest() {
   const open = id => openQuestions().find(q => q.id === id);
   try {
     // messages
-    const dense = 'Access gate (gate 2), no payment: a read-only Kalshi API key, from an account you create in your own name. Why it is the binding one: Kalshi\'s websocket rejects anonymous connections (HTTP/1.1 401 measured from this station today), so sub-second book is closed to us. A key buys about 1 Hz quotes.';
+    const dense = 'Access gate (gate 2), no payment: a read-only Tradex API key, from an account you create in your own name. Why it is the binding one: Tradex\'s websocket rejects anonymous connections (HTTP/1.1 401 measured from this station today), so sub-second book is closed to us. A key buys about 1 Hz quotes.';
     const legacy = ask({ from: 'Founder', q: dense });
     t('an old-style --q ask warns that there is no message', legacy.warnings.length === 1 && /no --message/.test(legacy.warnings[0]));
     const lq = open(legacy.row.id);
@@ -1026,8 +1026,8 @@ function selftest() {
     t('a long message warns', long.warnings.some(w => /characters/.test(w)));
     const jar = ask({ from: 'Founder', message: 'Edit `company/tools/x.js` so q-123456 exits 0 (HTTP 401 at 50 ms).' });
     t('a jargon-dense message warns', jar.warnings.some(w => /reads like a report/.test(w)), jar.warnings);
-    const good = ask({ from: 'Founder', message: 'Could you make us a free Pyth account and paste its API key? It lets us test our main idea about commodity prices. If you say no, that idea waits.', details: 'Pyth answers 401 without a key; 200 ms gold, 50 ms WTI.', kind: 'secret', spec: { name: 'pyth-api-key', label: 'Pyth API key', provider: 'pyth.network > Developers' } });
-    t('a plain message with details: no warnings; q keeps both for old readers', good.warnings.length === 0 && /\n\nPyth answers 401/.test(good.row.q) && open(good.row.id).details.startsWith('Pyth'));
+    const good = ask({ from: 'Founder', message: 'Could you make us a free Quotely account and paste its API key? It lets us test our main idea about commodity prices. If you say no, that idea waits.', details: 'Quotely answers 401 without a key; 200 ms gold, 50 ms WTI.', kind: 'secret', spec: { name: 'quotely-api-key', label: 'Quotely API key', provider: 'quotely.network > Developers' } });
+    t('a plain message with details: no warnings; q keeps both for old readers', good.warnings.length === 0 && /\n\nQuotely answers 401/.test(good.row.q) && open(good.row.id).details.startsWith('Quotely'));
     require('./lib/pm-inbox-guard').append(FILE(), { type: 'ask', id: 'q-000001', at: new Date().toISOString(), from: 'Founder', q: 'Old row. May we go?' }, 'selftest');
     t('an old row with no kind reads as approve', open('q-000001').kind === 'approve' && open('q-000001').form.actions[0].verdict === 'yes' && !open('q-000001').secretHint);
     // shortcuts and validation
@@ -1083,15 +1083,15 @@ function selftest() {
     t('slider answer: off a step refused; not a number refused', /between steps/.test(throws(() => answer({ id: sl.row.id, by, answer: { action: 'set', values: { value: 80.5 } } }))) && /a number from/.test(throws(() => answer({ id: sl.row.id, by, answer: { action: 'set', values: { value: 'lots' } } }))));
     r = answer({ id: sl.row.id, by, answer: { action: 'set', values: { value: '80' } }, quiet: true });
     t('slider answer: a number, said in the asker\'s plain words', r.answer.values.value === 80 && /Let routines use up to 80% of this week's Claude\./.test(r.a), r.a);
-    const sec = ask({ from: 'Founder', message: 'The Kalshi key, please.', kind: 'secret', spec: { name: 'kalshi-api-key' } });
+    const sec = ask({ from: 'Founder', message: 'The Tradex key, please.', kind: 'secret', spec: { name: 'tradex-api-key' } });
     r = answer({ id: sec.row.id, by, answer: { action: 'decline', note: 'not this week' } });
     t('secret: declining needs no key', r.answer.verdict === 'declined' && /will not provide/.test(r.a));
     r = answer({ id: 'q-000001', by, text: 'yes: go ahead' });
     t('a legacy text answer becomes {verdict: yes, reason}', r.answer.verdict === 'yes' && r.answer.values.reason === 'go ahead' && r.a === 'yes. go ahead');
     // legacy key question: a secure field as an extra option
-    const kq = ask({ from: 'Founder', q: 'Access gate (gate 2), no payment: a read-only Kalshi API key, from an account you create in your own name.' });
-    t('legacy key question: secretHint kalshi-api-key, a key question in the request, no store-key action', (open(kq.row.id).secretHint || {}).name === 'kalshi-api-key' && open(kq.row.id).questions.some(p => p.id === 'key' && p.form.fields[0].name === 'kalshi-api-key') && !open(kq.row.id).form.actions.some(a => a.id === 'store-key'));
-    t('legacy: "a free Pyth API key" -> pyth-api-key', (secretHint({ q: 'Access gate (gate 2), no payment, second key: a free Pyth API key.' }) || {}).name === 'pyth-api-key');
+    const kq = ask({ from: 'Founder', q: 'Access gate (gate 2), no payment: a read-only Tradex API key, from an account you create in your own name.' });
+    t('legacy key question: secretHint tradex-api-key, a key question in the request, no store-key action', (open(kq.row.id).secretHint || {}).name === 'tradex-api-key' && open(kq.row.id).questions.some(p => p.id === 'key' && p.form.fields[0].name === 'tradex-api-key') && !open(kq.row.id).form.actions.some(a => a.id === 'store-key'));
+    t('legacy: "a free Quotely API key" -> quotely-api-key', (secretHint({ q: 'Access gate (gate 2), no payment, second key: a free Quotely API key.' }) || {}).name === 'quotely-api-key');
     { // a key stored BEFORE the question was asked is not asked again; one stored after it (the owner answering it) keeps the field
       const sd = path.join(T, 'secrets'); fs.mkdirSync(sd, { recursive: true }); const kf = path.join(sd, 'zeta-api-key'); fs.writeFileSync(kf, 'k\n');
       const old = new Date(Date.now() - 3600e3); fs.utimesSync(kf, old, old);
@@ -1104,12 +1104,12 @@ function selftest() {
     const mq = ask({ from: 'Founder', q: 'Four one-file patches are ready. Two close blind spots, and the provider key is a symlink the watcher cannot see. Do you approve them?' });
     t('approve that only mentions a key: no hint, Approve/Decline only', !open(mq.row.id).secretHint && open(mq.row.id).form.actions.map(a => a.id).join() === 'approve,decline', JSON.stringify(open(mq.row.id).form.actions.map(a => a.id)));
     t('a plain approve row refuses store-key (no store-key action on it)', throws(() => answer({ id: mq.row.id, by, answer: { action: 'store-key', values: { key: { stored: 'secrets/x', chars: 5 } } } })) !== null);
-    t('asksForCredential: asks vs mentions', asksForCredential('Could you create an account and paste its API key?') && asksForCredential('Gate 2: a free Pyth API key.') && !asksForCredential('The key is a symlink the watcher cannot see.') && !asksForCredential('Reads the password policy and approves.') && asksForCredential('We need a read-only exchange API key.'));
+    t('asksForCredential: asks vs mentions', asksForCredential('Could you create an account and paste its API key?') && asksForCredential('Gate 2: a free Quotely API key.') && !asksForCredential('The key is a symlink the watcher cannot see.') && !asksForCredential('Reads the password policy and approves.') && asksForCredential('We need a read-only exchange API key.'));
     t('the key question needs the key', /paste the key/.test(throws(() => answer({ id: kq.row.id, by, parts: { key: { action: 'store' } } }))));
-    r = answer({ id: kq.row.id, by, parts: { key: { action: 'store', values: { key: { stored: 'secrets/kalshi-api-key', chars: 40 } } } } });
+    r = answer({ id: kq.row.id, by, parts: { key: { action: 'store', values: { key: { stored: 'secrets/tradex-api-key', chars: 40 } } } } });
     t('storing the key answers only the key question: the request stays open, 1 of 2', r.state === 'open' && r.answered === 1 && open(kq.row.id) && open(kq.row.id).progress.answered === 1 && open(kq.row.id).questions[1].answered, r);
     r = answer({ id: kq.row.id, by, parts: { decision: { action: 'approve' } } });
-    t('approving closes it; the answer has both (approve + {stored, chars})', r.state === 'answered' && !open(kq.row.id) && r.answer.verdict === 'parts' && r.answer.parts.decision.verdict === 'yes' && r.answer.parts.key.values.key.stored === 'secrets/kalshi-api-key' && r.answer.parts.key.values.key.chars === 40 && /stored at secrets\/kalshi-api-key \(40 chars, validated: not checked\)/.test(r.a), r);
+    t('approving closes it; the answer has both (approve + {stored, chars})', r.state === 'answered' && !open(kq.row.id) && r.answer.verdict === 'parts' && r.answer.parts.decision.verdict === 'yes' && r.answer.parts.key.values.key.stored === 'secrets/tradex-api-key' && r.answer.parts.key.values.key.chars === 40 && /stored at secrets\/tradex-api-key \(40 chars, validated: not checked\)/.test(r.a), r);
     // several questions in one request: each answered on its own, partial sends, the request open until all are done
     const three = ask({ from: 'Founder', message: 'Three things for the recorder this week.', questions: [
       { id: 'trial', prompt: 'Start the free trial?', kind: 'approve' },
@@ -1153,8 +1153,8 @@ function selftest() {
     r = answer({ id: stuck.row.id, by, parts: { 'item-4': { action: 'approve' } } });
     t('recovery: finished, the record has every item and the key', r.state === 'answered' && r.answer.parts['item-3'].verdict === 'no' && r.answer.parts.key.values.key.stored === 'secrets/minimax-api-key', r.answer);
     t('recovery: never twice', !open(stuck.row.id) && !followUpOf(state()[stuck.row.id]));
-    const kOnly = ask({ from: 'Founder', q: 'Gate 2: a free Pyth API key, please.' });
-    require('./lib/pm-inbox-guard').append(FILE(), { type: 'answer', id: kOnly.row.id, at: new Date().toISOString(), a: 'stored', answer: { verdict: 'done', action: 'store-key', values: { key: { stored: 'secrets/pyth-api-key', chars: 30 } } }, by: 'Commander' }, 'selftest');
+    const kOnly = ask({ from: 'Founder', q: 'Gate 2: a free Quotely API key, please.' });
+    require('./lib/pm-inbox-guard').append(FILE(), { type: 'answer', id: kOnly.row.id, at: new Date().toISOString(), a: 'stored', answer: { verdict: 'done', action: 'store-key', values: { key: { stored: 'secrets/quotely-api-key', chars: 30 } } }, by: 'Commander' }, 'selftest');
     t('recovery: a key-only question answered by its key stays answered', !open(kOnly.row.id));
     // snooze
     const sz = ask({ from: 'Founder', message: 'Later is fine.' });

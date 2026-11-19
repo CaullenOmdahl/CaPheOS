@@ -5,7 +5,7 @@ it needs itself, with no terminal step for the owner, and the result is pinned, 
 rebuildable on a fresh server or container from the lock alone.
 
 ```
-node company/tools/deps.js add python synpath==0.11.0 --why "Synpath CLI: Kalshi depth history for the fill rule" --by "Nadia Farrell"
+node company/tools/deps.js add python synpath==0.11.0 --why "Synpath CLI: Tradex depth history for the fill rule" --by "Nora Field"
 node company/tools/deps.js add node some-cli --why "..." --by <seat>      # no version: latest, pinned exactly at add time
 node company/tools/deps.js run synpath --help                             # or just `synpath`: company/env/bin is on the station's PATH
 node company/tools/deps.js list [--json]

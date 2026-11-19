@@ -11,10 +11,10 @@ const SS = require('../lib/seat-status');
 
 test('Today: each idle seat says why, in the dispatcher\'s words', async () => {
   const { idleLine } = await import(path.join(UI, 'idle-line.js'));
-  assert.equal(idleLine({ name: 'Founder', idle: SS.entry({ state: 'held-money', kind: 'spread', waiting: ['Rohan', 'Halima'] }) }), 'Founder: paused to make today\'s budget last — Rohan and Halima are waiting on it.');
-  assert.equal(idleLine({ name: 'Nadia', idle: SS.entry({ state: 'waiting', waits: { Founder: 3 } }) }), 'Nadia: waiting on Founder for 3 items.');
-  assert.equal(idleLine({ name: 'Ingrid', idle: SS.entry({ state: 'idle' }) }), 'Ingrid: waiting for new work.');
-  assert.equal(idleLine({ name: 'Halima', idle: SS.entry({ state: 'stuck', open: 4, runs: 3, ceoName: 'Founder' }) }), 'Halima: stuck — same 4 items after 3 runs; Founder has been asked.');
+  assert.equal(idleLine({ name: 'Founder', idle: SS.entry({ state: 'held-money', kind: 'spread', waiting: ['Ravi', 'Hollis'] }) }), 'Founder: paused to make today\'s budget last — Ravi and Hollis are waiting on it.');
+  assert.equal(idleLine({ name: 'Nora', idle: SS.entry({ state: 'waiting', waits: { Founder: 3 } }) }), 'Nora: waiting on Founder for 3 items.');
+  assert.equal(idleLine({ name: 'Iris', idle: SS.entry({ state: 'idle' }) }), 'Iris: waiting for new work.');
+  assert.equal(idleLine({ name: 'Hollis', idle: SS.entry({ state: 'stuck', open: 4, runs: 3, ceoName: 'Founder' }) }), 'Hollis: stuck — same 4 items after 3 runs; Founder has been asked.');
 });
 
 test('Settings › Tempo: with Sprint on, the base values it overrides say so, until when and with what', async () => {

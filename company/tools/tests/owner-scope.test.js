@@ -11,7 +11,7 @@ const { spawnSync } = require('child_process');
 const REPO = path.resolve(__dirname, '..', '..', '..');
 const S = require(path.join(REPO, 'company', 'tools', 'lib', 'owner-scope.js'));
 
-// the sandbox Founder's three owner questions of 2026-11-17 (capheos-sandbox company/pm-inbox.jsonl), as asked
+// the sandbox Founder's three owner questions of 2026-11-17 (trial-co company/pm-inbox.jsonl), as asked
 const REAL = {
   'q-559031': { from: 'Founder', about: 'kill switch duty, commitments tool, recorder heartbeat',
     message: 'Three things only you can do, all access rather than policy, and each is safe to decline. The kill switch that decides whether trading halts only watched 25 of the last 46 minutes because of a systemd start limit, and the staged repair needs one daemon-reload that agents are refused. Our own house rules send every seat to a commitments tool that is switched off here, and only you can switch a module on. And the outside heartbeat you approved this morning needs its ping address from an account in your name. Recommendations: yes to all three; none of them changes what anyone may spend, access or decide.',
@@ -20,9 +20,9 @@ const REAL = {
     q: 'One more healthchecks check, please: name it recorder, period 5 minutes, grace 15, and paste its ping URL. It lets the order-book recorder page you if it dies, separately from the agents. If you skip it, the recorder stays covered only by the local watchdog.' },
   'q-766259': { from: 'Founder', about: '',
     message: 'The healthy-ping timer your setup run installed at 21:55 is working (HTTP 200 at 22:00:36) but is not on the service register, so a duty flags it every run. Adopting only records it: nothing new runs and there is no new egress.',
-    details: 'Units: capheos-sandbox-station-liveness-heartbeat.service and .timer, oneshot, node modules/liveness/watch.js heartbeat, every 5 min. Certified by Ingrid Halvorsen in company/work/security/egress-heartbeat-2026-11-17.md, lapses 2026-11-24.' },
+    details: 'Units: trial-co-station-liveness-heartbeat.service and .timer, oneshot, node modules/liveness/watch.js heartbeat, every 5 min. Certified by Iris Hale in company/work/security/egress-heartbeat-2026-11-17.md, lapses 2026-11-24.' },
 };
-const SEATS = { risk: 'Ingrid Halvorsen', tools: 'Tomas Berg', floor: 'Marisol Vance' };
+const SEATS = { risk: 'Iris Hale', tools: 'Tomas Berg', floor: 'Mara Vale' };
 
 test('classifier: the two health-check plumbing asks are crew scope; the mixed one is owner scope only for its account part', () => {
   const a = S.classify(REAL['q-623640']);
@@ -54,7 +54,7 @@ test('crew scope is refused with the routing hint in plain words: the seat by na
   const r = S.check(REAL['q-623640'], { seats: SEATS });
   assert.equal(r.code, 'crew-scope'); assert.equal(r.route, 'risk');
   assert.match(r.error, /^Not asked: this is the crew's job, not the owner's/);
-  assert.match(r.error, /hand it to Ingrid Halvorsen \(the risk seat\) in a handoff/);
+  assert.match(r.error, /hand it to Iris Hale \(the risk seat\) in a handoff/);
   assert.match(r.error, /money beyond the company's own limits; accounts or identity in their own name/);
   const own = S.check(REAL['q-623640'], { seats: Object.assign({}, SEATS, { risk: 'Founder' }) });
   assert.match(own.error, /you hold the risk seat, so it is yours/);
@@ -65,7 +65,7 @@ test('crew scope is refused with the routing hint in plain words: the seat by na
 });
 
 test('the plain-language scorer: sentences, sentence length, jargon, ids and paths, numbers, the gain and the default', () => {
-  const good = S.plainScore('Could you make a free Pyth account and paste its key here? It lets us test our main idea; if you skip it, that idea waits.');
+  const good = S.plainScore('Could you make a free Quotely account and paste its key here? It lets us test our main idea; if you skip it, that idea waits.');
   assert.equal(good.ok, true, JSON.stringify(good)); assert.ok(good.score >= 90);
   const jar = S.plainScore('Please add a check with period 5 and grace 15 and paste its ping URL. It protects us; if you skip it, nothing changes.');
   assert.equal(jar.ok, false); for (const w of ['period', 'grace', 'ping', 'URL']) assert.ok(jar.jargon.includes(w), w + ' ' + JSON.stringify(jar.jargon));
@@ -98,7 +98,7 @@ function company() {
   const T = require('../lib/temp-life').tmpDir('owner-scope-selftest-'); roots.push(T);
   w(T, 'company/company.json', { name: 'Example', owner: { name: 'Olive Owner', title: 'Owner' }, timezone: 'UTC' });
   w(T, 'company/tools/loops.json', { agents: { agent: { name: 'Founder', manager: null, functions: ['ceo', 'people', 'floor', 'finance'], inbox: 'to-founder.md' },
-    ing: { name: 'Ingrid', manager: 'agent', functions: ['risk'], inbox: 'to-ingrid.md' }, tom: { name: 'Tomas', manager: 'agent', functions: ['tools'], inbox: 'to-tomas.md' } } });
+    ing: { name: 'Iris', manager: 'agent', functions: ['risk'], inbox: 'to-iris.md' }, tom: { name: 'Tomas', manager: 'agent', functions: ['tools'], inbox: 'to-tomas.md' } } });
   for (const f of ['company/defaults/state/governance.json', 'company/defaults/state/guardrails.json', 'company/defaults/state/approvals-policy.json', 'company/competence-policy.json'])
     fs.mkdirSync(path.dirname(path.join(T, f)), { recursive: true }), fs.copyFileSync(path.join(REPO, f), path.join(T, f));
   fs.cpSync(path.join(REPO, 'company', 'decision-models'), path.join(T, 'company', 'decision-models'), { recursive: true });
@@ -120,7 +120,7 @@ test('inbox.js ask: the real questions are refused (crew scope names the real se
   const r = run(T, 'return [' + Object.values(REAL).map(q => 'tryAsk(' + JSON.stringify(q) + ')').join(',') + '];');
   assert.ok(r.every(x => !x.ok), JSON.stringify(r));
   assert.deepEqual(r.map(x => x.code), ['shell', 'crew-scope', 'crew-scope'], 'q-559031 hands the owner a daemon-reload, so the older command rule refuses it first');
-  assert.match(r[1].error, /hand it to Ingrid \(the risk seat\)/);
+  assert.match(r[1].error, /hand it to Iris \(the risk seat\)/);
   const ok = run(T, 'return tryAsk({ from: "Founder", message: "May I spend $40 on X?" });');
   assert.equal(ok.ok, true, JSON.stringify(ok));
   const bad = run(T, 'return A.ask({ from: "Founder", category: "spend", message: "Approve PO-1234 for the ingest endpoint and webhook config.", params: { amountUsd: 40 } });');

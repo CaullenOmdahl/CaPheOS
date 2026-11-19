@@ -10,7 +10,7 @@
  *   restMs(o)                   how long a seat rests before the dispatcher may wake it again
  *   spreadHold(o)               Sprint spreads the daily metered cap over the day: hold a wake that would spend it early
  *                               (never a seat other seats are waiting on: o.blocking)
- *   waitingOn(status, names, self)  the seat an OPEN item's Status says it waits on ("waiting on Ingrid's review"), or null
+ *   waitingOn(status, names, self)  the seat an OPEN item's Status says it waits on ("waiting on Iris's review"), or null
  *   blockersOf(o)               seat -> the seats waiting on it (items that name it, STALLED seats that need the CEO, and
  *                               items whose **Waiting on:** names that seat's open item: it.waitSeats)
  *   parseDeps(value)            the dependencies a **Waiting on:** line names (handoff, quest step, file, service, job, seat)
@@ -95,7 +95,7 @@ function spreadHold(o) {
 
 /* ---------- who waits on whom ---------- */
 /* waitingOn(status, names, self, ceo) -> the seat id an OPEN item waits on, 'owner', or null (the item is the holder's own work)
- * status: the item's first Status line ("OPEN — fix written, waiting on Ingrid Halvorsen's review"); names: {seatId: name};
+ * status: the item's first Status line ("OPEN — fix written, waiting on Iris Hale's review"); names: {seatId: name};
  * self: the holder's id (waiting on yourself is not waiting); ceo: the CEO's id ("waiting for the CEO"). "waiting on/for", "blocked on/by", "held for", "needs <name>"
  * and "with <name> for review" all count; a phrase that names nobody we know waits on 'someone' (still not the holder's). */
 function waitingOn(status, names, self, ceo) {
@@ -129,12 +129,12 @@ function blockersOf(o) {
 }
 /* ---------- Waiting on: event-driven dependencies (company/HANDOFFS.md) ----------
  * `**Waiting on:** <dep>[; <dep>…] (plain words)` names what an OPEN item waits for. Each dependency is one of:
- *   to-nadia-farrell.md#gold backfill   (or `handoff: to-x.md — <heading words or **Id:**>`)  that handoff is closed
+ *   to-nora-field.md#gold backfill   (or `handoff: to-x.md — <heading words or **Id:**>`)  that handoff is closed
  *   q:13 step rank                      (or `q:13`)                                            that quest step is ticked (the quest closed)
  *   file: company/work/strategies/RANKING.md [changed]                                         the file exists (or changed since)
  *   service: bank-day                   a registered background service's next successful run (company/tools/service.js)
  *   job: gold-backfill                  a job started with company/tools/notify-when.js --id gold-backfill has ended
- *   seat: Nadia — gold backfill         that seat's open item (the words of its heading or its **Id:**) is closed
+ *   seat: Nora — gold backfill         that seat's open item (the words of its heading or its **Id:**) is closed
  * A trailing "(…)" is the plain words the console shows ("waiting for: gold history download to finish"). The dispatcher
  * resolves every dependency on every tick and wakes the holder the tick they are all met; a reference it cannot resolve
  * (no such inbox, item, quest, step, service or job) is a lint warning, and the item is work now (fail open). */

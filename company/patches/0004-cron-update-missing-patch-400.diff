@@ -13,7 +13,7 @@ index 0f21215b..93d48d13 100644
      if (!cronStore.getJob(cronJobs, id)) return json(404, { error: 'no such routine' });
 -    const patch = Object.assign({}, body.patch || {});
 +    // A wrong-shaped edit must not read as success: a missing/empty `patch` changes nothing while answering
-+    // ok:true (bug-sweep, Dave loop 4). `patch:{}` stays valid ONLY for addGrants (the ▣ ALLOW IMAGES row).
++    // ok:true (bug-sweep, Dana loop 4). `patch:{}` stays valid ONLY for addGrants (the ▣ ALLOW IMAGES row).
 +    const hasAddGrants = Array.isArray(body.addGrants) && body.addGrants.some(g => g != null && String(g).trim());
 +    const patch = (body.patch && typeof body.patch === 'object' && !Array.isArray(body.patch)) ? Object.assign({}, body.patch) : {};
 +    if (!Object.keys(patch).length && !hasAddGrants) return json(400, { error: 'missing patch' });

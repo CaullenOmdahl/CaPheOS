@@ -938,7 +938,7 @@ function lastRunTail(job) {
   state.agents = state.agents || {};
   const reason = {};   // agentId -> label for the log
   for (const [agentId, qs] of Object.entries(work)) reason[agentId] = qs.map(q => q.id).join(',');
-  // An OPEN item whose Status says it waits on another seat ("waiting on Ingrid's review", "blocked on the owner") is not
+  // An OPEN item whose Status says it waits on another seat ("waiting on Iris's review", "blocked on the owner") is not
   // work for its holder: it neither wakes the seat nor counts in its signature or stall key (lib/sprint.js waitingOn).
   const NAMES = Object.fromEntries(Object.entries(CREW || {}).map(([id, c]) => [id, (c && c.name) || id]));
   const itemsOf = {}, waitsOf = {}, stalledSeats = [];
@@ -1074,7 +1074,7 @@ function lastRunTail(job) {
     const sigs = {}; for (const h of open) sigs[h] = STALL.bodySig(secAll.get(h) || '');
     const closedN = SP.parseItems(txt).filter(i => !i.open && i.status).length;
     // a start that never got to work (the provider refused it at its usage limit, a refusal, an outage) is not a run that
-    // made no progress: give that wake back, so a quota outage never pages a seat as stuck (2026-11-18 03:03, Marisol)
+    // made no progress: give that wake back, so a quota outage never pages a seat as stuck (2026-11-18 03:03, Mara)
     { const from = st.progAt || Date.now() - 48 * 3600e3;
       const lost = stallRuns.filter(r => r.agentId === agentId && Number(r.endedAt) > from && r.reason !== 'done' && /quota|rate_limit|usage|overloaded|provider|content_policy|auth/.test(String(r.failureCode || ''))).length;
       if (lost) st.count = Math.max(0, (st.count || 0) - lost); }

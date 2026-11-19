@@ -1,6 +1,6 @@
 # 0021 — a run's shell knows which seat and which run it belongs to (STARNET_AGENT_ID, STARNET_RUN_ID).
 # Status: APPLIED by setup-station.sh.
-# Why (2026-11-20, fr-0085 from the sandbox crew: Halima Cisse found it, Kwame Asante built it): since wave 3 the
+# Why (2026-11-20, fr-0085 from the sandbox crew: Hollis Cole found it, Kofi Mensah built it): since wave 3 the
 # external gate checks an in-run call as the station's own STARNET_AGENT_ID and never trusts --agent from a run, but the
 # station never put that variable in a run's shell, so every in-run check read as agent `unknown` and only `agent: any`
 # clearance rows matched. inbox.js, accountable.js, approvals.js, merge-gate.js, premerge-check.js, profile.js,

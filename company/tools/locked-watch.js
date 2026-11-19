@@ -1678,21 +1678,21 @@ async function selftest() {
     assert.ok(!inbox('jordan').includes('secret-token-value'));
   });
   await t('a key the owner saved through the console (recorded) is accepted quietly; the same file changed with no record, or a record from an agent run, is flagged', async () => {
-    now += 60000; const kf = path.join(T, 'secrets/pyth-api-key');
-    fs.writeFileSync(kf, 'pyth-owner-value-123456\n', { mode: 0o600 }); P.wrote(kf, 'pyth-owner-value-123456\n', 'console (owner key)');
-    let r = await tick(C({ now })); assert.ok(!r.events.some(x => x.key === 'secrets/pyth-api-key'), 'new key, recorded: ' + JSON.stringify(r.events));
+    now += 60000; const kf = path.join(T, 'secrets/quotely-api-key');
+    fs.writeFileSync(kf, 'quotely-owner-value-123456\n', { mode: 0o600 }); P.wrote(kf, 'quotely-owner-value-123456\n', 'console (owner key)');
+    let r = await tick(C({ now })); assert.ok(!r.events.some(x => x.key === 'secrets/quotely-api-key'), 'new key, recorded: ' + JSON.stringify(r.events));
     const rowsFor = k => R('company/work/security/locked-changes.jsonl').split('\n').filter(Boolean).map(l => JSON.parse(l)).filter(x => x.key === k);
-    assert.ok(rowsFor('secrets/pyth-api-key').some(x => x.kind === 'accepted' && /written by console/.test(x.why) && !/owner-value/.test(JSON.stringify(x))), 'a recorded key write still leaves a row: ' + JSON.stringify(rowsFor('secrets/pyth-api-key')));
-    now += 60000; fs.writeFileSync(kf, 'pyth-replaced-value-654321\n', { mode: 0o600 }); P.wrote(kf, 'pyth-replaced-value-654321\n', 'console (owner key)');
-    r = await tick(C({ now })); assert.ok(!r.events.some(x => x.key === 'secrets/pyth-api-key'), 'replaced, recorded: ' + JSON.stringify(r.events));
-    now += 60000; fs.writeFileSync(kf, 'pyth-hand-edit-000000\n', { mode: 0o600 });
-    r = await tick(C({ now })); assert.ok(r.events.some(x => x.key === 'secrets/pyth-api-key' && /a key or credential changed/.test(x.why)), 'unrecorded: ' + JSON.stringify(r.events));
-    acceptCmd(context(C({ now, underStation: false })), 'secrets/pyth-api-key', { by: 'owner', why: 'test: that key change was mine' });
-    now += 60000; const forged = 'pyth-forged-111111\n'; fs.writeFileSync(kf, forged, { mode: 0o600 });
-    fs.appendFileSync(path.join(T, 'company/state/locked/provenance.jsonl'), JSON.stringify({ at: local(now), file: 'secrets/pyth-api-key', kind: 'write', sha256: P.sha(forged), bytes: forged.length, writer: 'console (owner key)', pid: 999, underStation: true, main: 'scratch/x.js', tainted: false }) + '\n');
-    r = await tick(C({ now })); assert.ok(r.events.some(x => x.key === 'secrets/pyth-api-key'), 'a console record from an agent run is not trusted: ' + JSON.stringify(r.events));
+    assert.ok(rowsFor('secrets/quotely-api-key').some(x => x.kind === 'accepted' && /written by console/.test(x.why) && !/owner-value/.test(JSON.stringify(x))), 'a recorded key write still leaves a row: ' + JSON.stringify(rowsFor('secrets/quotely-api-key')));
+    now += 60000; fs.writeFileSync(kf, 'quotely-replaced-value-654321\n', { mode: 0o600 }); P.wrote(kf, 'quotely-replaced-value-654321\n', 'console (owner key)');
+    r = await tick(C({ now })); assert.ok(!r.events.some(x => x.key === 'secrets/quotely-api-key'), 'replaced, recorded: ' + JSON.stringify(r.events));
+    now += 60000; fs.writeFileSync(kf, 'quotely-hand-edit-000000\n', { mode: 0o600 });
+    r = await tick(C({ now })); assert.ok(r.events.some(x => x.key === 'secrets/quotely-api-key' && /a key or credential changed/.test(x.why)), 'unrecorded: ' + JSON.stringify(r.events));
+    acceptCmd(context(C({ now, underStation: false })), 'secrets/quotely-api-key', { by: 'owner', why: 'test: that key change was mine' });
+    now += 60000; const forged = 'quotely-forged-111111\n'; fs.writeFileSync(kf, forged, { mode: 0o600 });
+    fs.appendFileSync(path.join(T, 'company/state/locked/provenance.jsonl'), JSON.stringify({ at: local(now), file: 'secrets/quotely-api-key', kind: 'write', sha256: P.sha(forged), bytes: forged.length, writer: 'console (owner key)', pid: 999, underStation: true, main: 'scratch/x.js', tainted: false }) + '\n');
+    r = await tick(C({ now })); assert.ok(r.events.some(x => x.key === 'secrets/quotely-api-key'), 'a console record from an agent run is not trusted: ' + JSON.stringify(r.events));
     assert.ok(!/owner-value|replaced-value|hand-edit|forged-111/.test(inbox('jordan')), 'no key value in any report');
-    acceptCmd(context(C({ now, underStation: false })), 'secrets/pyth-api-key', { by: 'owner', why: 'test: that key change was mine' });
+    acceptCmd(context(C({ now, underStation: false })), 'secrets/quotely-api-key', { by: 'owner', why: 'test: that key change was mine' });
   });
   await t('a baseline from before links were recorded learns an unchanged link\'s target once, without a report', async () => {
     const old = JSON.parse(R('company/state/locked/baseline.json')); delete old.seededLinks; delete old.files['secrets/alias-key'].link;

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* accountable-dispatch.test.js — accountable leads through the real dispatch.js, against tests/mock-station.js (the
  * harness of consult-dispatch.test.js). It proves the dispatcher's side of lib/accountable.js:
- *   live     a member's handed-back item is not woken; the lead's audit routine ("Kwame lead audit", never scheduled by
+ *   live     a member's handed-back item is not woken; the lead's audit routine ("Kofi lead audit", never scheduled by
  *            the station) runs once on the department's fixed audit model as a one-run override, door audit in admit-log,
  *            a wakes.jsonl row (door audit) of the audited item; a member's handoff out of the department is held (its
  *            receiver is not woken) until the lead passes it on; a DONE without the lead's accept goes back to OPEN
@@ -27,7 +27,7 @@ const MID = { provider: 'claude-cli', model: 'claude-sonnet-4-6', effort: 'low' 
 
 const SEATS = {
   agent: { name: 'Alex', functions: ['ceo', 'people'], loop: 'Founder loop', inbox: 'to-founder.md', wakeOnInbox: true, priority: 100, manager: null },
-  kwa: { name: 'Kwame', loop: 'Kwame loop', inbox: 'to-kwame.md', manager: 'agent' },
+  kwa: { name: 'Kofi', loop: 'Kofi loop', inbox: 'to-kofi.md', manager: 'agent' },
   ben: { name: 'Ben', loop: 'Ben loop', inbox: 'to-ben.md', manager: 'kwa' },
   dan: { name: 'Dan', loop: 'Dan loop', inbox: 'to-dan.md', manager: 'agent' },
 };
@@ -101,29 +101,29 @@ test('live: the handed-back item waits for the lead\'s audit run on the fixed au
   const c = await company({ mode: 'live', since: '2026-11-01T00:00:00Z', by: 'owner', audit: { routine: MID, risky: null }, batch: { startAt: 1, minGapMin: 5, maxWaitMin: 15 } });
   const r0 = await c.tick();   // the first sight: the work already there is left alone; the audit routine is made
   assert.equal(r0.code, 0, r0.out);
-  const spec = r0.created.find(b => /^Kwame lead audit/.test(b.name));
+  const spec = r0.created.find(b => /^Kofi lead audit/.test(b.name));
   assert.ok(spec && spec.enabled === false && spec.agentId === 'kwa', 'the audit routine, never scheduled by the station: ' + JSON.stringify(r0.created));
-  c.add('to-ben.md', '\n## 2026-11-19 from Kwame — fix the parser\n**Id:** ben-1\n**Need:** fix it\n**Acceptance check:** the parser tests pass\n**Check command:** `true`\n**Status:** OPEN\n');
+  c.add('to-ben.md', '\n## 2026-11-19 from Kofi — fix the parser\n**Id:** ben-1\n**Need:** fix it\n**Acceptance check:** the parser tests pass\n**Check command:** `true`\n**Status:** OPEN\n');
   c.add('to-dan.md', '\n## 2026-11-19 from Ben — deploy the new parser\n**Id:** dan-1\n**Need:** deploy it on Ops\n**Status:** OPEN\n');
-  await st('POST', '/__hold', { names: ['Kwame lead audit'] });
+  await st('POST', '/__hold', { names: ['Kofi lead audit'] });
   try {
     const r1 = await c.tick();
     assert.equal(r1.code, 0, r1.out);
     assert.ok(r1.bySeat.ben, 'Ben is woken for his new item: ' + r1.log.slice(-1500));
     assert.ok(!r1.bySeat.dan, 'Dan is not woken for a block Ben sent out of the department: ' + r1.log.slice(-1500));
-    assert.match(r1.log, /ACCOUNTABLE PASS HELD to-dan\.md#dan-1 \(Ben -> Dan\): waits for Kwame/);
+    assert.match(r1.log, /ACCOUNTABLE PASS HELD to-dan\.md#dan-1 \(Ben -> Dan\): waits for Kofi/);
     const parked = JSON.parse(c.r('company/state/parked.json')).items;
-    assert.ok(parked.some(x => x.seat === 'dan' && x.kind === 'audit' && /Kwame to pass it on/.test(x.words)), JSON.stringify(parked));
-    // the lead's "Pass on" block is the audit run's work (routine tier), not a wake of Kwame's own loop on the top tier
-    assert.match(r1.log, /AUDIT Kwame lead audit[^\n]* for Kwame \(routine on claude-cli\/claude-sonnet-4-6@low\): pass:to-dan\.md#dan-1/);
-    assert.ok(!r1.bySeat.kwa, 'Kwame\'s loop is not woken for the pass-on block: ' + r1.log.slice(-1200));
-    await st('POST', '/__finish', { name: 'Kwame lead audit' });
+    assert.ok(parked.some(x => x.seat === 'dan' && x.kind === 'audit' && /Kofi to pass it on/.test(x.words)), JSON.stringify(parked));
+    // the lead's "Pass on" block is the audit run's work (routine tier), not a wake of Kofi's own loop on the top tier
+    assert.match(r1.log, /AUDIT Kofi lead audit[^\n]* for Kofi \(routine on claude-cli\/claude-sonnet-4-6@low\): pass:to-dan\.md#dan-1/);
+    assert.ok(!r1.bySeat.kwa, 'Kofi\'s loop is not woken for the pass-on block: ' + r1.log.slice(-1200));
+    await st('POST', '/__finish', { name: 'Kofi lead audit' });
     c.w('company/state/accountable-state.json', Object.assign(JSON.parse(c.r('company/state/accountable-state.json')), { lastAudit: {} }));
     fs.writeFileSync(path.join(c.T, 'diff.txt'), DIFF);
     const hb = c.cli(['handback', 'ben-1', '--note', 'ran the parser tests, all green on my side', '--diff-file', path.join(c.T, 'diff.txt'), '--by', 'Ben']);
     assert.equal(hb.code, 0, JSON.stringify(hb)); assert.equal(hb.out.tier, 'routine');
     const r2 = await c.tick();
-    assert.ok(!r2.bySeat.ben, 'Ben is not woken for the item while Kwame audits it');
+    assert.ok(!r2.bySeat.ben, 'Ben is not woken for the item while Kofi audits it');
     const job = ((await st('GET', '/api/cron')).jobs || []).find(j => j.name === spec.name && j.workdir === c.T);
     const aud = r2.runs.filter(b => b.id === job.id);
     assert.equal(aud.length, 1, 'one audit run: ' + r2.log.slice(-1500));
@@ -136,13 +136,13 @@ test('live: the handed-back item waits for the lead\'s audit run on the fixed au
     const t = c.r('company/work/handoffs/to-ben.md'); fs.writeFileSync(path.join(c.T, 'company/work/handoffs/to-ben.md'), t.replace(/^\*\*Status:\*\* OPEN$/m, '**Status:** DONE — finished'));
     const r3 = await c.tick();
     assert.match(r3.log, /ACCOUNTABLE DONE HELD to-ben\.md#ben-1/);
-    assert.match(c.r('company/work/handoffs/to-ben.md'), /\*\*Status:\*\* OPEN — not done until Kwame accepts it/);
+    assert.match(c.r('company/work/handoffs/to-ben.md'), /\*\*Status:\*\* OPEN — not done until Kofi accepts it/);
     // the lead accepts and passes the onward handoff on: Dan is woken
-    assert.equal(c.cli(['audit', hb.out.id, '--verdict', 'ACCEPT', '--check', 'the diff against the parser tests', '--by', 'Kwame']).code, 0);
-    assert.equal(c.cli(['pass', 'to-dan.md#dan-1', '--by', 'Kwame']).code, 0);
+    assert.equal(c.cli(['audit', hb.out.id, '--verdict', 'ACCEPT', '--check', 'the diff against the parser tests', '--by', 'Kofi']).code, 0);
+    assert.equal(c.cli(['pass', 'to-dan.md#dan-1', '--by', 'Kofi']).code, 0);
     const r4 = await c.tick();
     assert.ok(r4.bySeat.dan, 'passed on: Dan is woken: ' + r4.log.slice(-1200));
-    assert.match(c.r('company/work/handoffs/to-ben.md'), /\*\*Status:\*\* DONE — accepted by Kwame/);
+    assert.match(c.r('company/work/handoffs/to-ben.md'), /\*\*Status:\*\* DONE — accepted by Kofi/);
   } finally { await st('POST', '/__hold', { names: [] }); }
 });
 
@@ -153,6 +153,6 @@ test('recording only: nothing is held, the receiver is woken, the WOULD lines ar
   const r = await c.tick();
   assert.equal(r.code, 0, r.out);
   assert.ok(r.bySeat.dan, 'recording only holds nothing');
-  assert.match(r.log, /WOULD HOLD to-dan\.md#dan-1 \(Ben -> Dan\) for Kwame to pass on \(recording only\)/);
+  assert.match(r.log, /WOULD HOLD to-dan\.md#dan-1 \(Ben -> Dan\) for Kofi to pass on \(recording only\)/);
   assert.ok(!r.created.some(b => /lead audit/.test(b.name)), 'no audit routine in recording only');
 });

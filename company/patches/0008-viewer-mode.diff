@@ -37,7 +37,7 @@ index 00000000..c51ca88e
 --- /dev/null
 +++ b/frontend/app/viewer.js
 @@ -0,0 +1,173 @@
-+/* viewer.js — VIEWER MODE: a StarNet page that only LOOKS (Ca Phe Digital company patch 0008, company/patches/).
++/* viewer.js — VIEWER MODE: a StarNet page that only LOOKS (the developing company company patch 0008, company/patches/).
 +
 +   Open the station as http://127.0.0.1:<port>/?viewer=1 and this page shows the live floor exactly as the Commander's
 +   page does, but it cannot change anything:

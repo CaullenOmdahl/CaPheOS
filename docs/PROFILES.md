@@ -195,7 +195,7 @@ its charter markers. Its notes cover the crew mix (`crewMix`) and the family not
 `dossier.js check` reports invalid profiles as problems for the people function. It also gives two notes, never
 failures:
 - **the family note**: an opposed pair on the same kind of model, unless either seat does code work (code stays on
-  Claude, so a code pair is exempt). In the owner's words: "Rohan checks Benny and both run on the same kind of AI. A
+  Claude, so a code pair is exempt). In the owner's words: "Ravi checks Noah and both run on the same kind of AI. A
   different kind tends to argue back better. The crew can change this.";
 - a checker on a lower tier than the seat it checks.
 

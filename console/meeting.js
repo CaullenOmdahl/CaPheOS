@@ -564,7 +564,7 @@ module.exports = function meeting(deps) {
     }
     return false;
   }
-  // "@sharon @phil ..." at the START of a message puts it to those seats only (@all: everyone)
+  // "@zoe @paul ..." at the START of a message puts it to those seats only (@all: everyone)
   function mentions(text) {
     const at = [], missing = [], unknown = [];
     const lead = String(text).match(/^\s*((?:@[A-Za-z][\w-]*[\s,:;]*)+)/);

@@ -56,6 +56,13 @@ function merge() {
     let g = null; try { g = require(lib).gate(args); } catch (_) { g = null; }
     if (g && g.refuse) die(repo + ' #' + pr + ': ' + g.refuse, 3);
   }
+  // no company's own names in what the PR adds (docs/PORTING.md rule 1; the words come from the companies on this machine)
+  let leaks = [];
+  try {
+    const df = require('child_process').spawnSync('/usr/bin/gh', ['pr', 'diff', String(pr), '--repo', repo], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 60000 });
+    if (df.status === 0) leaks = require('../../scripts/check-deployment-leaks.js').scanDiff(df.stdout);
+  } catch (_) { leaks = []; }
+  if (leaks.length) die(repo + ' #' + pr + ' adds a company\'s own words (crew, owner or company names) on ' + leaks.length + ' line(s): ' + leaks.slice(0, 5).map(h => h.file + ':' + h.line).join(', ') + ' — use neutral examples (docs/PORTING.md rule 1), then push again', 3);
   if (opt('dry-run')) { console.log(JSON.stringify({ ok: true, dryRun: true, repo, pr: Number(pr), head, rule })); return; }
   // the PASS record merge-gate.js and default-branch-watch.js read, so the gated merge is a known one to both
   const evDir = co.p('company', 'work', 'evidence'); fs.mkdirSync(evDir, { recursive: true });

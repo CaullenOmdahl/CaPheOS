@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* profile.test.js — company/tools/profile.js, the only writer of crew profiles (docs/PROFILES.md), on a fixture company:
- *   boss Alex (CEO)   mar Marisol (people)   ben Benny (scout)   ro Rohan (tester)
+ *   boss Alex (CEO)   mar Mara (people)   ben Noah (scout)   ro Ravi (tester)
  * The schema and its fixed boundaries, the 200-character reminder, compare-and-swap edits, no self-edit, temperament only
  * through a trial, undo to the exact body, the hash-chained history (a removed row is reported), trials that revert on
  * their own and trials kept, the people function's proposals and the CEO's governance level, migrate from a charter, the
@@ -21,13 +21,13 @@ const roots = [];
 test.after(() => { for (const r of roots) try { fs.rmSync(r, { recursive: true, force: true }); } catch (_) {} });
 const CREW = {
   boss: { name: 'Alex', functions: ['ceo'], manager: null, inbox: 'to-alex.md', title: 'CEO' },
-  mar: { name: 'Marisol', functions: ['people'], manager: 'boss', inbox: 'to-marisol.md', title: 'People' },
-  ben: { name: 'Benny', manager: 'boss', inbox: 'to-benny.md', title: 'Idea Scout', role: 'company/roles/benny.md' },
-  ro: { name: 'Rohan', manager: 'boss', inbox: 'to-rohan.md', title: 'Data Scientist', role: 'company/roles/rohan.md' },
+  mar: { name: 'Mara', functions: ['people'], manager: 'boss', inbox: 'to-mara.md', title: 'People' },
+  ben: { name: 'Noah', manager: 'boss', inbox: 'to-noah.md', title: 'Idea Scout', role: 'company/roles/noah.md' },
+  ro: { name: 'Ravi', manager: 'boss', inbox: 'to-ravi.md', title: 'Data Scientist', role: 'company/roles/ravi.md' },
 };
-const CHARTER = ['# Benny — Idea Scout', '', '## Scope', '- idea cards', '', '## Archetype', 'scout', '', '## Personality (the ideal candidate)', 'Restless and quick.', '',
+const CHARTER = ['# Noah — Idea Scout', '', '## Scope', '- idea cards', '', '## Archetype', 'scout', '', '## Personality (the ideal candidate)', 'Restless and quick.', '',
   '## Backstory and motivation', 'Ran a trading Discord.', '', '## Voice', 'Fast and plain.', '', '## Persona preset', 'upbeat', '', '## Convictions', '- The edge was in a forum first.', '',
-  '## Counterpart', 'Rohan tests or kills every card.', '', '## Example exchanges', '- With Rohan: "One lucky week." — You: "Cheap to check; I drop it if it fails." (pushes back)', '', '## KPIs', '- five cards a week', ''].join('\n');
+  '## Counterpart', 'Ravi tests or kills every card.', '', '## Example exchanges', '- With Ravi: "One lucky week." — You: "Cheap to check; I drop it if it fails." (pushes back)', '', '## KPIs', '- five cards a week', ''].join('\n');
 function fixture(o) {
   o = o || {};
   const T = __LIFE.tmpDir('profile-test-'); roots.push(T);
@@ -37,8 +37,8 @@ function fixture(o) {
   for (const f of ['company/defaults/people/profile-policy.json', 'company/defaults/people/temperament.json', 'company/defaults/people/presets.json', 'company/defaults/state/governance.json']) w(f, fs.readFileSync(path.join(REPO, f), 'utf8'));
   w('company/state/governance.json', o.gov || JSON.parse(fs.readFileSync(path.join(REPO, 'company/defaults/state/governance.json'), 'utf8')));
   w('company/work/decisions.md', '# Decisions\n\nNewest first.\n\n');
-  w('company/roles/benny.md', CHARTER);
-  w('company/roles/rohan.md', '# Rohan\n\n## Archetype\ntester\n\n## Voice\nDry.\n');
+  w('company/roles/noah.md', CHARTER);
+  w('company/roles/ravi.md', '# Ravi\n\n## Archetype\ntester\n\n## Voice\nDry.\n');
   if (o.policy) w('company/people/profile-policy.json', o.policy);
   for (const s of Object.values(CREW)) w('company/work/handoffs/' + s.inbox, '# Handoffs\n');
   return { T, w, r: rel => { try { return fs.readFileSync(path.join(T, rel), 'utf8'); } catch (_) { return null; } } };
@@ -64,7 +64,7 @@ const hist = (c, s) => c.r('company/people/profiles/' + s + '.history.jsonl').sp
 function migrated(o) { const c = fixture(o); const r = tool(c.T, ['migrate', '--all', '--by', 'owner'], own); assert.equal(r.code, 0, JSON.stringify(r)); return c; }
 
 test('schema: a blank profile validates; a missing fixed rule, a reminder over 200 characters and a bad slider are refused; examples are a note for migrate', () => {
-  const p = P.blank('ben', { name: 'Benny' }); p.examples = [{ with: 'owner', they: 'a', you: 'b', pushback: true }, { with: 'owner', they: 'c', you: 'd' }, { with: 'owner', they: 'e', you: 'f' }];
+  const p = P.blank('ben', { name: 'Noah' }); p.examples = [{ with: 'owner', they: 'a', you: 'b', pushback: true }, { with: 'owner', they: 'c', you: 'd' }, { with: 'owner', they: 'e', you: 'f' }];
   assert.ok(P.validate(p).ok, JSON.stringify(P.validate(p)));
   for (const k of ['risk', 'pace', 'rigour', 'candour', 'independence']) { const q = JSON.parse(JSON.stringify(p)); q.temperament[k] = 5; assert.ok(!P.validate(q).ok, k); }
   const nb = JSON.parse(JSON.stringify(p)); nb.boundaries = nb.boundaries.filter(b => !/Claude/.test(b)); assert.match(P.validate(nb).problems.join(), /fixed rule is missing/);
@@ -79,7 +79,7 @@ test('schema: a blank profile validates; a missing fixed rule, a reminder over 2
 
 test('migrate: profiles from the charters, version 1, by migrate; the counterpart and examples read back; missing fields listed; a second migrate skips', () => {
   const c = fixture();
-  const r = tool(c.T, ['migrate', '--all', '--by', 'Marisol']);
+  const r = tool(c.T, ['migrate', '--all', '--by', 'Mara']);
   assert.equal(r.code, 0, JSON.stringify(r));
   const ben = load(c, 'ben');
   assert.equal(ben.version, 1); assert.equal(ben.identity.archetype, 'scout'); assert.equal(ben.counterpart.seat, 'ro'); assert.deepEqual(ben.counterpart.signOff, ['promote']);
@@ -88,15 +88,15 @@ test('migrate: profiles from the charters, version 1, by migrate; the counterpar
   assert.ok(r.out.made.find(m => m.seat === 'ben').missing.includes('identity.stake'));
   assert.equal(hist(c, 'ben')[0].by, 'migrate');
   assert.ok(P.reminder(ben).length <= 200);
-  assert.equal(tool(c.T, ['migrate', '--all', '--by', 'Marisol']).out.made.length, 0);
-  assert.equal(tool(c.T, ['migrate', '--all', '--by', 'Benny']).code, 2, 'only the people function or the owner migrates');
+  assert.equal(tool(c.T, ['migrate', '--all', '--by', 'Mara']).out.made.length, 0);
+  assert.equal(tool(c.T, ['migrate', '--all', '--by', 'Noah']).code, 2, 'only the people function or the owner migrates');
   const ch = tool(c.T, ['check', '--all', '--json']);
   assert.equal(ch.code, 1, 'fewer than 3 examples fails check'); assert.match(JSON.stringify(ch.out.seats), /at least 3/);
 });
 
 test('edit: owner only, compare-and-swap on the version; a stale base is exit 4; voice applies now; temperament only through try or --now', () => {
   const c = migrated();
-  assert.equal(tool(c.T, ['edit', 'ben', '--set', '/voice/words="Quick and cheerful."', '--base', '1', '--by', 'Marisol']).code, 2, 'the people function proposes; it does not edit');
+  assert.equal(tool(c.T, ['edit', 'ben', '--set', '/voice/words="Quick and cheerful."', '--base', '1', '--by', 'Mara']).code, 2, 'the people function proposes; it does not edit');
   const r = tool(c.T, ['edit', 'ben', '--set', '/voice/words="Quick and cheerful."', '--base', '1', '--by', 'owner'], own);
   assert.equal(r.code, 0, JSON.stringify(r)); assert.equal(r.out.version, 2); assert.equal(r.out.kind, 'voice');
   assert.equal(load(c, 'ben').voice.words, 'Quick and cheerful.');
@@ -108,18 +108,18 @@ test('edit: owner only, compare-and-swap on the version; a stale base is exit 4;
   assert.equal(tool(c.T, ['edit', 'ben', '--set', '/model/provider="custom"', '--base', '3', '--by', 'owner'], own).code, 2, 'the model block is not edited here');
   const nb = tool(c.T, ['edit', 'ben', '--set', '/boundaries=[]', '--base', '3', '--by', 'owner'], own);
   assert.equal(nb.code, 2); assert.match(nb.out.error, /fixed rule/);
-  assert.match(c.r('company/work/decisions.md'), /Profile of Benny: the owner changed \/voice\/words/);
+  assert.match(c.r('company/work/decisions.md'), /Profile of Noah: the owner changed \/voice\/words/);
 });
 
 test('no self-edit: an agent run naming its own seat cannot edit or propose for itself', () => {
   const c = migrated();
-  const e = tool(c.T, ['edit', 'ben', '--set', '/voice/words="me"', '--base', '1', '--by', 'Benny'], { agent: 'ben' });
+  const e = tool(c.T, ['edit', 'ben', '--set', '/voice/words="me"', '--base', '1', '--by', 'Noah'], { agent: 'ben' });
   assert.equal(e.code, 2); assert.match(e.out.error, /no seat edits its own profile/);
   const ownerClaim = tool(c.T, ['edit', 'ben', '--set', '/voice/words="me"', '--base', '1', '--by', 'owner'], { agent: 'ben' });
   assert.equal(ownerClaim.code, 2, 'an agent run cannot claim the owner');
-  const p = tool(c.T, ['propose', 'mar', '--kind', 'voice', '--set', '/voice/words="Warm."', '--why', 'mine', '--by', 'Marisol'], { agent: 'mar' });
+  const p = tool(c.T, ['propose', 'mar', '--kind', 'voice', '--set', '/voice/words="Warm."', '--why', 'mine', '--by', 'Mara'], { agent: 'mar' });
   assert.equal(p.code, 2); assert.match(p.out.error, /own profile/);
-  assert.equal(tool(c.T, ['propose', 'ro', '--kind', 'voice', '--set', '/voice/words="Dry."', '--why', 'x', '--by', 'Benny']).code, 2, 'only the people function proposes');
+  assert.equal(tool(c.T, ['propose', 'ro', '--kind', 'voice', '--set', '/voice/words="Dry."', '--why', 'x', '--by', 'Noah']).code, 2, 'only the people function proposes');
 });
 
 test('undo: the exact earlier body comes back (hash match) as a new version; the history chain verifies and a removed row is reported', () => {
@@ -163,20 +163,20 @@ test('trial: try applies N+1 with a trial; at the end with no answer tick revert
 
 test('proposals: the people function proposes an experience; the owner adds it; the CEO decides only at its governance level; temperament goes to a trial', () => {
   const c = migrated();
-  const p = tool(c.T, ['propose', 'ben', '--kind', 'experience', '--text', 'The forum tip about weather markets cost two days and taught him to check the fee first', '--source', 'd-0123456789ab', '--why', 'the weather card', '--by', 'Marisol']);
+  const p = tool(c.T, ['propose', 'ben', '--kind', 'experience', '--text', 'The forum tip about weather markets cost two days and taught him to check the fee first', '--source', 'd-0123456789ab', '--why', 'the weather card', '--by', 'Mara']);
   assert.equal(p.code, 0, JSON.stringify(p));
   const words = tool(c.T, ['show', 'ben', '--console']).out.words.proposals[0].text;
-  assert.equal(words, 'Marisol suggests adding to Benny\'s experience: \'The forum tip about weather markets cost two days and taught him to check the fee first.\' Add it · Not this one · Try it.');
+  assert.equal(words, 'Mara suggests adding to Noah\'s experience: \'The forum tip about weather markets cost two days and taught him to check the fee first.\' Add it · Not this one · Try it.');
   // CEO at approve (the default preset): refused, waits for the owner
   const ceo = tool(c.T, ['decide', p.out.id, 'apply', '--by', 'Alex']);
   assert.equal(ceo.code, 3); assert.match(ceo.out.error, /the owner decides/);
   const a = tool(c.T, ['decide', p.out.id, 'apply', '--by', 'owner'], own);
   assert.equal(a.code, 0, JSON.stringify(a));
-  const ben = load(c, 'ben'); assert.equal(ben.experiences.length, 1); assert.equal(ben.experiences[0].addedBy, 'Marisol'); assert.equal(ben.experiences[0].source, 'd-0123456789ab');
+  const ben = load(c, 'ben'); assert.equal(ben.experiences.length, 1); assert.equal(ben.experiences[0].addedBy, 'Mara'); assert.equal(ben.experiences[0].source, 'd-0123456789ab');
   assert.equal(hist(c, 'ben').pop().op, 'proposal-apply');
   // at notify the CEO may apply; a temperament proposal becomes a trial
   const c2 = migrated({ gov: { categories: { profiles: 'notify' } } });
-  const tp = tool(c2.T, ['propose', 'ben', '--kind', 'temperament', '--set', '/temperament/rigour=2', '--why', 'too many untestable cards', '--by', 'Marisol']);
+  const tp = tool(c2.T, ['propose', 'ben', '--kind', 'temperament', '--set', '/temperament/rigour=2', '--why', 'too many untestable cards', '--by', 'Mara']);
   const d = tool(c2.T, ['decide', tp.out.id, 'apply', '--by', 'Alex']);
   assert.equal(d.code, 0, JSON.stringify(d)); assert.ok(load(c2, 'ben').trial, 'a temperament proposal goes to a trial');
   assert.equal(tool(c2.T, ['decide', tp.out.id, 'apply', '--by', 'Alex']).code, 2, 'decided once');
@@ -187,32 +187,32 @@ test('the experience duty: a decision naming a seat is due for the people functi
   const today = new Date().toISOString().slice(0, 10);
   const yday = new Date(Date.now() - 86400e3).toISOString().slice(0, 10);
   // an event from before the profile existed is already in the migrated profile: not due (2026-11-19, 63 old events)
-  fs.appendFileSync(path.join(c.T, 'company/work/decisions.md'), '- ' + yday + ' 09:00 Alex [d-0011ffee0011] Benny\'s old card. (decision.js)\n');
-  fs.appendFileSync(path.join(c.T, 'company/work/decisions.md'), '- ' + today + ' 23:59 Alex [d-00aa11bb22cc] Benny\'s weather card was killed: the fees ate the edge. (decision.js)\n');
+  fs.appendFileSync(path.join(c.T, 'company/work/decisions.md'), '- ' + yday + ' 09:00 Alex [d-0011ffee0011] Noah\'s old card. (decision.js)\n');
+  fs.appendFileSync(path.join(c.T, 'company/work/decisions.md'), '- ' + today + ' 23:59 Alex [d-00aa11bb22cc] Noah\'s weather card was killed: the fees ate the edge. (decision.js)\n');
   const d = tool(c.T, ['--duty']);
   assert.equal(d.code, 1); assert.equal(d.out.route, 'people');
   assert.ok(d.out.items.some(i => i.id === 'experience:ben:d-00aa11bb22cc'), JSON.stringify(d.out.items));
   assert.ok(!d.out.items.some(i => /d-0011ffee0011/.test(i.id)), 'an event before the profile began is not due');
   assert.ok(d.out.items.length <= 5, 'a small batch per wake');
-  tool(c.T, ['propose', 'ben', '--kind', 'experience', '--text', 'Fees ate the weather edge', '--source', 'd-00aa11bb22cc', '--why', 'x', '--by', 'Marisol']);
+  tool(c.T, ['propose', 'ben', '--kind', 'experience', '--text', 'Fees ate the weather edge', '--source', 'd-00aa11bb22cc', '--why', 'x', '--by', 'Mara']);
   const d2 = tool(c.T, ['--duty']);
   assert.ok(d2.code === 0 || !d2.out.items.some(i => /d-00aa11bb22cc/.test(i.id)));
 });
 
 test('policy: owner only; inject profile renders the charter\'s person sections between the markers and leaves the rest', () => {
   const c = migrated();
-  assert.equal(tool(c.T, ['policy', 'inject', 'profile', '--by', 'Marisol']).code, 2);
+  assert.equal(tool(c.T, ['policy', 'inject', 'profile', '--by', 'Mara']).code, 2);
   assert.equal(tool(c.T, ['policy', 'show']).out.inject, 'charter', 'absent reads charter');
   const r = tool(c.T, ['policy', 'inject', 'profile', '--by', 'owner'], own);
-  assert.equal(r.code, 0, JSON.stringify(r)); assert.ok(r.out.charters.includes('company/roles/benny.md'));
-  const ch = c.r('company/roles/benny.md');
-  assert.match(ch, /<!-- profile:begin v=1 -->[\s\S]*## Counterpart\nRohan[\s\S]*<!-- profile:end -->/);
+  assert.equal(r.code, 0, JSON.stringify(r)); assert.ok(r.out.charters.includes('company/roles/noah.md'));
+  const ch = c.r('company/roles/noah.md');
+  assert.match(ch, /<!-- profile:begin v=1 -->[\s\S]*## Counterpart\nRavi[\s\S]*<!-- profile:end -->/);
   assert.match(ch, /## Scope\n- idea cards/); assert.match(ch, /## KPIs\n- five cards a week/);
   assert.equal((ch.match(/^## Convictions/gm) || []).length, 1, 'moved, not duplicated');
-  c.w('company/roles/benny.md', ch.replace('## Archetype\nscout', '## Archetype\nlead'));
+  c.w('company/roles/noah.md', ch.replace('## Archetype\nscout', '## Archetype\nlead'));
   assert.match(JSON.stringify(tool(c.T, ['check', '--seat', 'ben', '--json']).out), /edited by hand/);
   tool(c.T, ['edit', 'ben', '--set', '/identity/stake="His name is on the cards."', '--base', '1', '--by', 'owner'], own);
-  assert.match(c.r('company/roles/benny.md'), /<!-- profile:begin v=2 -->[\s\S]*## Archetype\nscout[\s\S]*## Stake\nHis name is on the cards\./, 'the next render overwrites the hand edit');
+  assert.match(c.r('company/roles/noah.md'), /<!-- profile:begin v=2 -->[\s\S]*## Archetype\nscout[\s\S]*## Stake\nHis name is on the cards\./, 'the next render overwrites the hand edit');
 });
 
 test('a hand edit of a profile or the policy is not read: the last recorded version decides at once, so a seat cannot drop its own sign-off', () => {
@@ -223,7 +223,7 @@ test('a hand edit of a profile or the policy is not read: the last recorded vers
   const ben = load(c, 'ben');
   assert.equal(ben.counterpart.seat, 'ro', JSON.stringify(ben.counterpart));
   const kind = ben.counterpart.signOff[0];
-  assert.ok(kind, 'migrate gave Benny sign-off kinds');
+  assert.ok(kind, 'migrate gave Noah sign-off kinds');
   const gate = () => SO.gate({ seat: 'ben', kind, refs: ['ext:wire-money'] }, o);
   assert.equal(gate().cleared, false); assert.ok(gate().refuse, 'live: refused without a yes');
   assert.equal(P.loadState('ben', o).state, 'recorded');
@@ -267,8 +267,8 @@ test('a CEO that also holds the people function never approves its own proposal,
   const d = tool(c.T, ['decide', p.out.id, 'apply', '--by', 'Alex']);
   assert.equal(d.code, 3, JSON.stringify(d)); assert.match(d.out.error, /the CEO proposed this change/);
   assert.equal(tool(c.T, ['decide', p.out.id, 'apply', '--by', 'owner'], own).code, 0, 'the owner decides it');
-  // Marisol's proposal: the CEO may still apply it at notify
-  const q = tool(c.T, ['propose', 'ro', '--kind', 'experience', '--text', 'A clean backtest hid a fee bug for a week', '--source', 'd-0123456789ab', '--why', 'the fee bug', '--by', 'Marisol']);
+  // Mara's proposal: the CEO may still apply it at notify
+  const q = tool(c.T, ['propose', 'ro', '--kind', 'experience', '--text', 'A clean backtest hid a fee bug for a week', '--source', 'd-0123456789ab', '--why', 'the fee bug', '--by', 'Mara']);
   assert.equal(tool(c.T, ['decide', q.out.id, 'apply', '--by', 'Alex']).code, 0);
 });
 
@@ -358,9 +358,9 @@ test('rows written after locked-watch flagged an agent writing to the write reco
   } finally { if (prevHome === undefined) delete process.env.LOCKED_WATCH_HOME; else process.env.LOCKED_WATCH_HOME = prevHome; }
 });
 
-test('migrate rewrites a charter written about the person ("He reads", "Benny runs", "she can count") so the profile speaks to them', () => {
+test('migrate rewrites a charter written about the person ("He reads", "Noah runs", "she can count") so the profile speaks to them', () => {
   const c = fixture();
-  c.w('company/roles/benny.md', CHARTER.replace('Restless and quick.', 'Restless and quick. He reads twenty threads before lunch and his notes are short. Benny runs on the cheap setup.')
+  c.w('company/roles/noah.md', CHARTER.replace('Restless and quick.', 'Restless and quick. He reads twenty threads before lunch and his notes are short. Noah runs on the cheap setup.')
     .replace('## Convictions', '## Will not do\n- Estimate a number she can count.\n- Ask her first when he is unsure.\n\n## Convictions'));
   const r = tool(c.T, ['migrate', '--all', '--by', 'owner'], own); assert.equal(r.code, 0, JSON.stringify(r));
   const b = load(c, 'ben');

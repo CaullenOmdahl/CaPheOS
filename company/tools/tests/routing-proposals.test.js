@@ -34,7 +34,7 @@ const MON = Date.parse('2026-11-23T09:10:00Z');   // a Monday, 09:10 company tim
 const CREW = {
   boss: { name: 'Boss', functions: ['ceo'], manager: null, inbox: 'to-boss.md' },
   hal: { name: 'Hal', functions: ['people'], manager: 'boss', inbox: 'to-hal.md' },
-  kwa: { name: 'Kwame', manager: 'boss', inbox: 'to-kwame.md' },
+  kwa: { name: 'Kofi', manager: 'boss', inbox: 'to-kofi.md' },
   ben: { name: 'Ben', manager: 'kwa', inbox: 'to-ben.md' },
 };
 const pair = (p, m, e) => ({ provider: p, model: m, effort: e || 'medium' });
@@ -171,7 +171,7 @@ test('a move to the top tier asks the CEO first: no gives a skip and no owner ca
     const r = tick(root, MON);
     assert.deepEqual(r.out.asked, ['rp-111111111111']); assert.equal(cards(root).length, 0, 'no owner card before the CEO');
     assert.match(read(root, 'company/work/handoffs/to-boss.md'), /weekly routing suggestion rp-111111111111 needs your approval first[\s\S]*routing\.js proposals ceo rp-111111111111 yes\|no/);
-    assert.match(routing(root, ['proposals', 'ceo', 'rp-111111111111', verdict, '--by', 'Kwame']).out.error, /only the CEO/);
+    assert.match(routing(root, ['proposals', 'ceo', 'rp-111111111111', verdict, '--by', 'Kofi']).out.error, /only the CEO/);
     assert.match(routing(root, ['proposals', 'ceo', 'rp-111111111111', verdict, '--by', 'owner'], { owner: true }).out.error, /the CEO's/);
     assert.equal(routing(root, ['proposals', 'ceo', 'rp-111111111111', verdict, '--by', 'Boss']).code, 0);
     const r2 = tick(root, MON + 3600e3);

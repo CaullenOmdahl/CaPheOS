@@ -2,7 +2,7 @@
 
 A company running CaPheOS finds its own problems without anyone looking for them: plain code reads the company's own
 records (the dispatch log, the run records, what the owner was sent, the framework requests) and files a work item for
-the right seat. No model decides when that happens. The company that develops CaPheOS (Ca Phe Digital) has a
+the right seat. No model decides when that happens. The company that develops CaPheOS (the developing company) has a
 **platform** department whose lead takes these items, turns them into pull requests on the framework repo and ships
 them through the gates (tests, the lead's audit, risk sign-off, sandbox first, automatic rollback).
 

@@ -20,10 +20,10 @@ const P = require(path.join(TOOLS, 'lib', 'profile.js'));
 const roots = [];
 test.after(() => { for (const r of roots) try { fs.rmSync(r, { recursive: true, force: true }); } catch (_) {} });
 
-const prof = (kinds) => { const p = P.blank('ben', { name: 'Benny' }); p.counterpart = { seat: 'ro', signOff: kinds, why: '' }; return p; };
+const prof = (kinds) => { const p = P.blank('ben', { name: 'Noah' }); p.counterpart = { seat: 'ro', signOff: kinds, why: '' }; return p; };
 
 test('holdFor: an explicit line, or a cue for a kind the profile lists; nothing for other kinds or without a counterpart; a yes clears it', () => {
-  const block = '## x from Benny — build it\n**Needs sign-off:** promote\n**Status:** OPEN\n';
+  const block = '## x from Noah — build it\n**Needs sign-off:** promote\n**Status:** OPEN\n';
   assert.deepEqual(SO.holdFor(block, 'ben', { profile: prof(['promote']) }), { hold: true, kind: 'promote', counterpart: 'ro', id: null, status: 'none' });
   assert.equal(SO.holdFor(block, 'ben', { profile: prof(['merge']) }).hold, false, 'a kind the profile does not list');
   assert.equal(SO.holdFor(block, 'ben', { profile: P.blank('ben') }).hold, false, 'no counterpart');
@@ -31,31 +31,31 @@ test('holdFor: an explicit line, or a cue for a kind the profile lists; nothing 
   // held by default: a handoff from an eager seat to anyone but its counterpart, whatever its words
   assert.equal(SO.holdFor('## x\nPlease look at this idea.\n', 'ben', { profile: prof(['promote']) }).hold, true, 'no wording is needed to be held');
   assert.equal(SO.holdFor('## x\n**Needs sign-off:** plan\nmove this idea to a test\n', 'ben', { profile: prof(['promote']) }).hold, false, 'an explicit line of another kind wins over a cue');
-  const recs = SO.records({ rows: [{ op: 'ask', id: 'so-1', ref: 'to-dave.md#d1', kind: 'promote', at: '2026-11-20T00:00:00Z' }, { op: 'answer', id: 'so-1', by: 'ro', verdict: 'yes', at: '2026-11-20T01:00:00Z' }] });
-  assert.equal(SO.holdFor(block, 'ben', { profile: prof(['promote']), records: recs, ref: 'to-dave.md#d1' }).hold, false);
-  const no = SO.records({ rows: [{ op: 'ask', id: 'so-2', ref: 'to-dave.md#d1', kind: 'promote', at: '2026-11-20T00:00:00Z' }, { op: 'answer', id: 'so-2', by: 'ro', verdict: 'no', at: '2026-11-20T01:00:00Z' }] });
-  assert.equal(SO.holdFor(block, 'ben', { profile: prof(['promote']), records: no, ref: 'to-dave.md#d1' }).status, 'no');
+  const recs = SO.records({ rows: [{ op: 'ask', id: 'so-1', ref: 'to-dana.md#d1', kind: 'promote', at: '2026-11-20T00:00:00Z' }, { op: 'answer', id: 'so-1', by: 'ro', verdict: 'yes', at: '2026-11-20T01:00:00Z' }] });
+  assert.equal(SO.holdFor(block, 'ben', { profile: prof(['promote']), records: recs, ref: 'to-dana.md#d1' }).hold, false);
+  const no = SO.records({ rows: [{ op: 'ask', id: 'so-2', ref: 'to-dana.md#d1', kind: 'promote', at: '2026-11-20T00:00:00Z' }, { op: 'answer', id: 'so-2', by: 'ro', verdict: 'no', at: '2026-11-20T01:00:00Z' }] });
+  assert.equal(SO.holdFor(block, 'ben', { profile: prof(['promote']), records: no, ref: 'to-dana.md#d1' }).status, 'no');
 });
 
 test('refs: a PR URL and pr:<owner>/<repo>#<n> are one ref; other refs are kept as written', () => {
   assert.equal(SO.normRef('https://github.com/Acme/Shop/pull/12'), 'pr:acme/shop#12');
   assert.equal(SO.normRef('pr:acme/shop#12'), 'pr:acme/shop#12');
-  assert.equal(SO.normRef(' to-dave.md#d1 '), 'to-dave.md#d1');
-  assert.equal(SO.writerOf('2026-11-20 from Benny — x', { ben: { name: 'Benny Tran' } }), 'ben');
-  assert.equal(SO.writerOf('2026-11-20 from Dispatcher — x', { ben: { name: 'Benny Tran' } }), null);
+  assert.equal(SO.normRef(' to-dana.md#d1 '), 'to-dana.md#d1');
+  assert.equal(SO.writerOf('2026-11-20 from Noah — x', { ben: { name: 'Noah Tate' } }), 'ben');
+  assert.equal(SO.writerOf('2026-11-20 from Dispatcher — x', { ben: { name: 'Noah Tate' } }), null);
 });
 
 function fixture() {
   const T = __LIFE.tmpDir('signoff-lib-'); roots.push(T);
   const w = (rel, d) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof d === 'string' ? d : JSON.stringify(d, null, 1)); };
   w('company/company.json', { name: 'F', owner: { name: 'Olive' }, timezone: 'UTC' });
-  w('company/tools/loops.json', { agents: { boss: { name: 'Alex', functions: ['ceo'], manager: null, inbox: 'to-alex.md' }, ben: { name: 'Benny', manager: 'boss', inbox: 'to-benny.md' }, ro: { name: 'Rohan', manager: 'boss', inbox: 'to-rohan.md' }, dave: { name: 'Dave', manager: 'boss', inbox: 'to-dave.md' } } });
+  w('company/tools/loops.json', { agents: { boss: { name: 'Alex', functions: ['ceo'], manager: null, inbox: 'to-alex.md' }, ben: { name: 'Noah', manager: 'boss', inbox: 'to-noah.md' }, ro: { name: 'Ravi', manager: 'boss', inbox: 'to-ravi.md' }, dana: { name: 'Dana', manager: 'boss', inbox: 'to-dana.md' } } });
   w('company/defaults/people/profile-policy.json', fs.readFileSync(path.join(REPO, 'company/defaults/people/profile-policy.json'), 'utf8'));
   w('company/people/profile-policy.json', { signoff: { mode: 'live', holdMaxHours: 2 } });
   w('company/people/profiles/ben.json', prof(['promote']));
   w('company/people/profiles/boss.json', Object.assign(P.blank('boss', { name: 'Alex' }), { counterpart: { seat: 'ro', signOff: ['promote'], why: '' } }));
-  for (const n of ['alex', 'benny', 'rohan']) w('company/work/handoffs/to-' + n + '.md', '# Handoffs\n');
-  w('company/work/handoffs/to-dave.md', '# Handoffs\n\n## 2026-11-20 from Benny — build it\n**Id:** d1\n**Needs sign-off:** promote\n**Status:** OPEN\n');
+  for (const n of ['alex', 'noah', 'ravi']) w('company/work/handoffs/to-' + n + '.md', '# Handoffs\n');
+  w('company/work/handoffs/to-dana.md', '# Handoffs\n\n## 2026-11-20 from Noah — build it\n**Id:** d1\n**Needs sign-off:** promote\n**Status:** OPEN\n');
   return { T, r: rel => { try { return fs.readFileSync(path.join(T, rel), 'utf8'); } catch (_) { return ''; } } };
 }
 // a script file, not node -e: lib/signoff.js reads only rows recorded by an untainted program (lib/recorded.js)
@@ -64,58 +64,58 @@ const inRoot = (T, js) => { const sf = path.join(T, '.t-run.js'); fs.writeFileSy
 
 test('records: ask dedupes; only the counterpart answers, never the asker; a no needs reasons; only the CEO overrides, with a reason', () => {
   const c = fixture();
-  const a = inRoot(c.T, 'SO.ask({ from: "ben", kind: "promote", ref: "to-dave.md#d1" })');
+  const a = inRoot(c.T, 'SO.ask({ from: "ben", kind: "promote", ref: "to-dana.md#d1" })');
   assert.ok(/^so-[0-9a-f]{8}$/.test(a.id)); assert.equal(a.counterpart, 'ro');
-  assert.equal(inRoot(c.T, 'SO.ask({ from: "ben", kind: "promote", ref: "to-dave.md#d1" })').duplicate, true);
+  assert.equal(inRoot(c.T, 'SO.ask({ from: "ben", kind: "promote", ref: "to-dana.md#d1" })').duplicate, true);
   assert.match(inRoot(c.T, 'SO.ask({ from: "ben", kind: "trade", ref: "x" })').threw, /names no counterpart/);
   assert.match(inRoot(c.T, 'SO.answer({ id: "' + a.id + '", by: "ben", verdict: "yes", check: "x" })').threw, /cannot sign off its own/);
-  assert.match(inRoot(c.T, 'SO.answer({ id: "' + a.id + '", by: "dave", verdict: "yes", check: "x" })').threw, /only Rohan/);
+  assert.match(inRoot(c.T, 'SO.answer({ id: "' + a.id + '", by: "dana", verdict: "yes", check: "x" })').threw, /only Ravi/);
   assert.match(inRoot(c.T, 'SO.answer({ id: "' + a.id + '", by: "ro", verdict: "no", check: "x" })').threw, /needs --reasons/);
   assert.match(inRoot(c.T, 'SO.override({ id: "' + a.id + '", by: "ro", why: "because I say so" })').threw, /only the CEO/);
-  const own = inRoot(c.T, 'SO.ask({ from: "boss", kind: "promote", ref: "to-dave.md#d9" })');
+  const own = inRoot(c.T, 'SO.ask({ from: "boss", kind: "promote", ref: "to-dana.md#d9" })');
   assert.ok(own.id, JSON.stringify(own)); assert.match(inRoot(c.T, 'SO.override({ id: "' + own.id + '", by: "boss", why: "I want it now" })').threw, /cannot override it/, 'the CEO never overrides its own sign-off');
   assert.equal(inRoot(c.T, 'SO.override({ id: "' + a.id + '", by: "boss", why: "the owner asked for it" })').overridden, true);
-  assert.equal(inRoot(c.T, 'SO.cleared("to-dave.md#d1")'), true);
+  assert.equal(inRoot(c.T, 'SO.cleared("to-dana.md#d1")'), true);
   const lines = c.r('company/state/signoffs.jsonl').split('\n').filter(Boolean).map(l => JSON.parse(l));
-  assert.deepEqual(lines.filter(l => l.ref !== 'to-dave.md#d9').map(l => l.op), ['ask', 'override'], 'refused answers write nothing');
+  assert.deepEqual(lines.filter(l => l.ref !== 'to-dana.md#d9').map(l => l.op), ['ask', 'override'], 'refused answers write nothing');
   assert.ok(!lines.some(l => l.op === 'override' && l.by === 'boss' && lines.find(x => x.op === 'ask' && x.id === l.id && x.from === 'boss')));
 });
 
 test('hold by default: any handoff to someone other than the counterpart, unless marked as information only; an idea card is promote', () => {
   const p = prof(['promote', 'commit']);
-  const b = SO.holdFor('## 2026-11-20 from Benny — build a scanner\nKwame, please build a scanner for the weather signal.\n**Status:** OPEN\n', 'ben', { profile: p, receiver: 'kw' });
+  const b = SO.holdFor('## 2026-11-20 from Noah — build a scanner\nKofi, please build a scanner for the weather signal.\n**Status:** OPEN\n', 'ben', { profile: p, receiver: 'kw' });
   assert.deepEqual([b.hold, b.kind], [true, 'commit'], 'asking another seat to build something commits their time');
   assert.equal(SO.holdFor('## x\nBuild a scanner from card W-12.\n', 'ben', { profile: p, receiver: 'kw' }).kind, 'promote', 'a handoff that names an idea card is promote');
   assert.equal(SO.holdFor('## x\nBuild it.\n', 'ben', { profile: p, receiver: 'ro' }).hold, false, 'a handoff to the counterpart itself is never held');
   assert.equal(SO.holdFor('## x\n**FYI:** the venue changed its fees.\n', 'ben', { profile: p, receiver: 'kw' }).hold, false, 'marked as information only');
   assert.equal(SO.holdFor('## x\n**Needs sign-off:** none\nA note.\n', 'ben', { profile: p, receiver: 'kw' }).hold, false);
-  assert.equal(SO.holdFor('## y\nthe fee table.\n', 'ben', { profile: p, receiver: 'kw', heading: '2026-11-20 from Benny — FYI the fee table' }).hold, false, 'an FYI heading');
+  assert.equal(SO.holdFor('## y\nthe fee table.\n', 'ben', { profile: p, receiver: 'kw', heading: '2026-11-20 from Noah — FYI the fee table' }).hold, false, 'an FYI heading');
 });
 
 test('the writer is the seat whose run wrote the block (a heading naming someone else does not dodge the hold)', () => {
-  const crew = { ben: { name: 'Benny Tran' }, ro: { name: 'Rohan Iyer' }, dave: { name: 'Dave' } };
-  const heading = '2026-11-20 from Dave — build the weather scanner now';
-  const calls = [{ agentId: 'ben', raw: JSON.stringify({ path: 'company/work/handoffs/to-kwame.md', content: '## ' + heading + '\nDo it.' }) }];
-  assert.equal(SO.writerFor(heading, crew, calls), 'ben', 'the transcript shows Benny wrote it');
-  assert.equal(SO.writerFor(heading, crew, []), 'dave', 'no transcript: the heading');
-  assert.equal(SO.writerFor('2026-11-20 — build the weather scanner now', crew, calls.map(c => Object.assign({}, c, { raw: c.raw.replace('from Dave ', '') }))), 'ben', 'no "from" in the heading at all: still Benny');
+  const crew = { ben: { name: 'Noah Tate' }, ro: { name: 'Ravi Shah' }, dana: { name: 'Dana' } };
+  const heading = '2026-11-20 from Dana — build the weather scanner now';
+  const calls = [{ agentId: 'ben', raw: JSON.stringify({ path: 'company/work/handoffs/to-kofi.md', content: '## ' + heading + '\nDo it.' }) }];
+  assert.equal(SO.writerFor(heading, crew, calls), 'ben', 'the transcript shows Noah wrote it');
+  assert.equal(SO.writerFor(heading, crew, []), 'dana', 'no transcript: the heading');
+  assert.equal(SO.writerFor('2026-11-20 — build the weather scanner now', crew, calls.map(c => Object.assign({}, c, { raw: c.raw.replace('from Dana ', '') }))), 'ben', 'no "from" in the heading at all: still Noah');
 });
 
 test('scanTick: past holdMaxHours with no answer the counterpart\'s manager hears once; the block stays held', () => {
   const c = fixture();
   const t0 = Date.parse('2026-11-20T10:00:00Z');
-  const h1 = inRoot(c.T, '(() => { const f = SO.scanTick({ now: ' + t0 + ' }); return f("to-dave.md", { heading: "2026-11-20 from Benny — build it", id: "d1" }); })()');
-  assert.equal(h1.kind, 'promote'); assert.equal(h1.who, 'Rohan');
-  assert.equal((c.r('company/work/handoffs/to-rohan.md').match(/Sign-off: build it/g) || []).length, 1);
+  const h1 = inRoot(c.T, '(() => { const f = SO.scanTick({ now: ' + t0 + ' }); return f("to-dana.md", { heading: "2026-11-20 from Noah — build it", id: "d1" }); })()');
+  assert.equal(h1.kind, 'promote'); assert.equal(h1.who, 'Ravi');
+  assert.equal((c.r('company/work/handoffs/to-ravi.md').match(/Sign-off: build it/g) || []).length, 1);
   inRoot(c.T, 'SO.scanTick({ now: ' + (t0 + 3600e3) + ' }) && null');
   assert.ok(!/sign-off waiting on/.test(c.r('company/work/handoffs/to-alex.md')), 'not before holdMaxHours');
-  const h3 = inRoot(c.T, '(() => { const f = SO.scanTick({ now: ' + (t0 + 3 * 3600e3) + ' }); return f("to-dave.md", { heading: "2026-11-20 from Benny — build it", id: "d1" }); })()');
+  const h3 = inRoot(c.T, '(() => { const f = SO.scanTick({ now: ' + (t0 + 3 * 3600e3) + ' }); return f("to-dana.md", { heading: "2026-11-20 from Noah — build it", id: "d1" }); })()');
   assert.ok(h3, 'still held');
   inRoot(c.T, 'SO.scanTick({ now: ' + (t0 + 5 * 3600e3) + ' }) && null');
-  assert.equal((c.r('company/work/handoffs/to-alex.md').match(/sign-off waiting on Rohan/g) || []).length, 1, 'the manager hears once');
+  assert.equal((c.r('company/work/handoffs/to-alex.md').match(/sign-off waiting on Ravi/g) || []).length, 1, 'the manager hears once');
   // off: nothing at all
   fs.writeFileSync(path.join(c.T, 'company/people/profile-policy.json'), JSON.stringify({ signoff: { mode: 'off' } }));
-  assert.equal(inRoot(c.T, 'SO.scanTick({})("to-dave.md", { heading: "2026-11-20 from Benny — build it", id: "d1" })'), null);
+  assert.equal(inRoot(c.T, 'SO.scanTick({})("to-dana.md", { heading: "2026-11-20 from Noah — build it", id: "d1" })'), null);
 });
 
 test('a row appended by hand never counts, even before locked-watch strips it; the first answer decides and is never changed', () => {

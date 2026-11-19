@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* consult-dispatch.test.js — advisor leads through the real dispatch.js, against tests/mock-station.js (the harness of
  * routing-dispatch.test.js). It proves the dispatcher's side of lib/consult.js:
- *   live     three consults start ONE advise run of the lead: its routine is created ("Kwame advise", never scheduled by
+ *   live     three consults start ONE advise run of the lead: its routine is created ("Kofi advise", never scheduled by
  *            the station), it runs on the lead model as a one-run override, door consult in admit-log, a wakes.jsonl row
  *            (door consult) lists the consulted items; the members are not woken for their held items; the lead's own loop
  *            is not woken while the advise run is in flight, and is again after; the family books add up
@@ -29,7 +29,7 @@ const LEAD = { provider: 'claude-cli', model: 'claude-opus-5-5', effort: 'medium
 
 const SEATS = {
   agent: { name: 'Alex', functions: ['ceo'], loop: 'Founder loop', inbox: 'to-founder.md', wakeOnInbox: true, priority: 100, manager: null },
-  kwa: { name: 'Kwame', loop: 'Kwame loop', inbox: 'to-kwame.md', manager: 'agent' },
+  kwa: { name: 'Kofi', loop: 'Kofi loop', inbox: 'to-kofi.md', manager: 'agent' },
   ben: { name: 'Ben', loop: 'Ben loop', inbox: 'to-ben.md', manager: 'kwa' },
   cat: { name: 'Cat', loop: 'Cat loop', inbox: 'to-cat.md', manager: 'kwa' },
   dan: { name: 'Dan', loop: 'Dan loop', inbox: 'to-dan.md', manager: 'kwa' },
@@ -104,13 +104,13 @@ async function company(o) {
 }
 
 test('live: three consults start one advise run on the lead model (door consult, a wakes row of the items); the lead\'s loop waits while it runs', async () => {
-  const c = await company({ handoffs: { 'to-kwame.md': block('kwa-1', 'plan the release') } });
+  const c = await company({ handoffs: { 'to-kofi.md': block('kwa-1', 'plan the release') } });
   const ids = [c.ask('Ben', 'ben-1'), c.ask('Cat', 'cat-1'), c.ask('Dan', 'dan-1')].map(r => { assert.equal(r.code, 0, JSON.stringify(r)); return r.out.id; });
-  await st('POST', '/__hold', { names: ['Kwame advise'] });
+  await st('POST', '/__hold', { names: ['Kofi advise'] });
   try {
     const r = c.tick();
     assert.equal(r.code, 0, r.out);
-    const spec = r.created.find(b => /^Kwame advise/.test(b.name));
+    const spec = r.created.find(b => /^Kofi advise/.test(b.name));
     assert.ok(spec, 'the advise routine is created: ' + JSON.stringify(r.created));
     assert.equal(spec.enabled, false, 'never scheduled by the station'); assert.equal(spec.agentId, 'kwa');
     const job = ((await st('GET', '/api/cron')).jobs || []).find(j => j.name === spec.name && j.workdir === c.T);
@@ -130,7 +130,7 @@ test('live: three consults start one advise run on the lead model (door consult,
     assert.match(wk[0].why, /^advise cs-/);
     const led = c.jsonl('company/state/consults.jsonl').filter(x => x.op === 'advise');
     assert.equal(led.length, 1); assert.deepEqual(led[0].ids.sort(), ids.slice().sort()); assert.equal(led[0].runId, wk[0].runId);
-    assert.match(r.log, /ADVISE ROUTINE created "Kwame advise/); assert.match(r.log, /ADVISE Kwame advise\S* for Kwame: .*one-run override/);
+    assert.match(r.log, /ADVISE ROUTINE created "Kofi advise/); assert.match(r.log, /ADVISE Kofi advise\S* for Kofi: .*one-run override/);
     // a second tick while the advise run is in flight: no second advise run, and the lead's loop still waits
     const r2 = c.tick();
     assert.equal(r2.runs.filter(b => b.id === job.id).length, 0); assert.ok(!r2.bySeat.kwa, 'not woken while advising');
@@ -151,10 +151,10 @@ test('shadow: WOULD ADVISE is logged, no routine and no advise run; the members 
   for (const advisor of [{ mode: 'shadow' }, { mode: 'live', since: '2026-11-01T00:00:00Z', paused: { at: '2026-11-19T00:00:00Z', by: 'auto', why: 'cost per item rose' } }]) {
     const c = await company({ advisor });
     for (const [s, i] of [['Ben', 'ben-1'], ['Cat', 'cat-1'], ['Dan', 'dan-1']]) assert.equal(c.ask(s, i).code, 0);
-    assert.equal(c.r('company/work/handoffs/to-kwame.md'), '# Handoffs\n', 'no packet delivered');
+    assert.equal(c.r('company/work/handoffs/to-kofi.md'), '# Handoffs\n', 'no packet delivered');
     const r = c.tick();
     assert.equal(r.code, 0, r.out);
-    assert.match(r.log, advisor.paused ? /WOULD ADVISE Kwame \(Engineering, paused\): cs-/ : /WOULD ADVISE Kwame \(Engineering, recording only\): cs-/);
+    assert.match(r.log, advisor.paused ? /WOULD ADVISE Kofi \(Engineering, paused\): cs-/ : /WOULD ADVISE Kofi \(Engineering, recording only\): cs-/);
     const jobs = (await st('GET', '/api/cron')).jobs.filter(j => j.workdir === c.T && /advise/.test(j.name));
     assert.equal(r.runs.filter(b => jobs.some(j => j.id === b.id)).length, 0, 'no advise run');
     if (!advisor.paused) assert.equal(jobs.length, 0, 'recording only: no routine');
@@ -177,10 +177,10 @@ test('stuck: two failed runs on an item open exactly one consult, delivered to t
   await new Promise(res => setTimeout(res, 1100));
   const r = c.tick();
   assert.equal(r.code, 0, r.out);
-  assert.match(r.log, /CONSULT OPENED cs-\S+ for Ben "[^"]*fix the parser" \(failed-runs:2\) -> Kwame/);
+  assert.match(r.log, /CONSULT OPENED cs-\S+ for Ben "[^"]*fix the parser" \(failed-runs:2\) -> Kofi/);
   const open = c.jsonl('company/state/consults.jsonl').filter(x => x.op === 'open');
   assert.equal(open.length, 1); assert.equal(open[0].trigger, 'failed-runs:2'); assert.equal(open[0].kind, 'stuck');
-  assert.match(c.r('company/work/handoffs/to-kwame.md'), /\*\*From:\*\* dispatcher on behalf of Ben[\s\S]*- run run-f1: max_iters/);
+  assert.match(c.r('company/work/handoffs/to-kofi.md'), /\*\*From:\*\* dispatcher on behalf of Ben[\s\S]*- run run-f1: max_iters/);
   assert.equal(c.jsonl('company/state/consults.jsonl').filter(x => x.op === 'open').length, 1);
   c.tick();
   assert.equal(c.jsonl('company/state/consults.jsonl').filter(x => x.op === 'open').length, 1, 'one trigger, one consult');
@@ -201,17 +201,17 @@ test('an advise run passes the money and pacer checks like any wake: the daily c
   let c = await company({ metered: true, spent: 5 });
   [c.ask('Ben', 'ben-1'), c.ask('Cat', 'cat-1'), c.ask('Dan', 'dan-1')].forEach(r => assert.equal(r.code, 0, JSON.stringify(r)));
   let r = c.tick();
-  let job = ((await st('GET', '/api/cron')).jobs || []).find(j => /^Kwame advise/.test(j.name) && j.workdir === c.T);
+  let job = ((await st('GET', '/api/cron')).jobs || []).find(j => /^Kofi advise/.test(j.name) && j.workdir === c.T);
   assert.ok(job, 'the routine exists: ' + r.log);
   assert.equal(r.runs.filter(b => b.id === job.id).length, 0, 'no advise run past the daily cap');
-  assert.match(r.log, /ADVISE HOLD Kwame advise\S* for Kwame: .*daily metered cap/);
+  assert.match(r.log, /ADVISE HOLD Kofi advise\S* for Kofi: .*daily metered cap/);
   // the lead model is shut by the pacer and the routine's own model is not open either: held, never "on its own model anyway"
   c = await company();
   [c.ask('Ben', 'ben-1'), c.ask('Cat', 'cat-1'), c.ask('Dan', 'dan-1')].forEach(x => assert.equal(x.code, 0));
   r = c.tick({ open: { kwa: [] } });
-  job = ((await st('GET', '/api/cron')).jobs || []).find(j => /^Kwame advise/.test(j.name) && j.workdir === c.T);
+  job = ((await st('GET', '/api/cron')).jobs || []).find(j => /^Kofi advise/.test(j.name) && j.workdir === c.T);
   assert.equal(r.runs.filter(b => b.id === job.id).length, 0, 'no advise run on a model nobody opened: ' + r.log);
-  assert.match(r.log, /ADVISE HOLD Kwame advise\S* for Kwame: .*lead model is .*its own model is /);
+  assert.match(r.log, /ADVISE HOLD Kofi advise\S* for Kofi: .*lead model is .*its own model is /);
   // its model open (the advise routine is created on the lead model): it runs
   r = c.tick({ open: { kwa: [{ provider: job.provider, model: job.model }] } });
   assert.equal(r.runs.filter(b => b.id === job.id).length, 1, r.log);
@@ -227,9 +227,9 @@ test('in a code department an advise run never runs on MiniMax: the lead model a
   c.w('company/departments.json', d);
   [c.ask('Ben', 'ben-1'), c.ask('Cat', 'cat-1'), c.ask('Dan', 'dan-1')].forEach(x => assert.equal(x.code, 0, JSON.stringify(x)));
   const r = c.tick({ open: { kwa: [{ provider: 'custom', model: 'MiniMax-M3.1-Pro' }] } });
-  const job = ((await st('GET', '/api/cron')).jobs || []).find(j => /^Kwame advise/.test(j.name) && j.workdir === c.T);
+  const job = ((await st('GET', '/api/cron')).jobs || []).find(j => /^Kofi advise/.test(j.name) && j.workdir === c.T);
   assert.ok(job, r.log);
   assert.equal(r.runs.filter(b => b.id === job.id && b.override && b.override.provider === 'custom').length, 0, 'never on MiniMax: ' + r.log);
   assert.ok(!r.runs.some(b => b.id === job.id && (b.provider === 'custom' || (b.override && b.override.provider === 'custom'))), r.log);
-  assert.match(r.log, /ADVISE HOLD Kwame advise\S* for Kwame: .*code is never on the MiniMax plan/);
+  assert.match(r.log, /ADVISE HOLD Kofi advise\S* for Kofi: .*code is never on the MiniMax plan/);
 });

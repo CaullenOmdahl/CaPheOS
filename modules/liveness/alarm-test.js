@@ -177,7 +177,7 @@ async function selftest() {
     fs.writeFileSync(path.join(tmp, 'company', 'tools', 'external-gate.js'), "module.exports={check:({target})=>target.startsWith('http://127.0.0.1')?{allow:true}:({allow:false,reason:'not on the allowlist'})};\n");
     fs.writeFileSync(path.join(tmp, 'company', 'company.json'), JSON.stringify({ name: 'Test Co', owner: { name: 'Alex' }, timezone: 'UTC' }));
     fs.writeFileSync(path.join(tmp, 'company', 'work', 'ops', 'cadence.json'), JSON.stringify({ dispatcherTickMin: 10 }));
-    fs.writeFileSync(path.join(tmp, 'company', 'tools', 'loops.json'), JSON.stringify({ agents: { ceo1: { name: 'Fran Founder', functions: ['ceo'], inbox: 'to-fran.md' }, r1: { name: 'Ingrid Risk', functions: ['risk'], inbox: 'to-ingrid.md' } } }));
+    fs.writeFileSync(path.join(tmp, 'company', 'tools', 'loops.json'), JSON.stringify({ agents: { ceo1: { name: 'Fran Founder', functions: ['ceo'], inbox: 'to-fran.md' }, r1: { name: 'Iris Risk', functions: ['risk'], inbox: 'to-iris.md' } } }));
     fs.writeFileSync(path.join(tmp, 'company', 'state', 'modules.json'), JSON.stringify({ enabled: { liveness: { at: 'x' } } }));
     await new Promise(r => srv.listen(0, '127.0.0.1', r));
     fs.writeFileSync(path.join(tmp, 'secrets', 'liveness-heartbeat-url'), 'http://127.0.0.1:' + srv.address().port + '/ping/abc\n', { mode: 0o600 });
@@ -195,7 +195,7 @@ async function selftest() {
     const tick = at => node(at, "require('./modules/liveness/tick.js').tick({}).then(r=>console.log(JSON.stringify(r)))");
     const outbound = () => { try { return fs.readFileSync(path.join(tmp, 'company', 'owner', 'outbound.jsonl'), 'utf8'); } catch (_) { return ''; } };
     const log = () => { try { return fs.readFileSync(path.join(tmp, 'company', 'work', 'security', 'heartbeat-tests.jsonl'), 'utf8').split('\n').filter(Boolean).map(JSON.parse); } catch (_) { return []; } };
-    const risk = () => { try { return fs.readFileSync(path.join(tmp, 'company', 'work', 'handoffs', 'to-ingrid.md'), 'utf8'); } catch (_) { return ''; } };
+    const risk = () => { try { return fs.readFileSync(path.join(tmp, 'company', 'work', 'handoffs', 'to-iris.md'), 'utf8'); } catch (_) { return ''; } };
     const pauseFile = path.join(tmp, 'company', 'state', 'liveness-heartbeat-pause.json');
 
     await tick(T0); let r = await hbeat(T0 + 1 * M);

@@ -88,28 +88,28 @@ test('auto-pause: once per evaluation hash, recorded as auto, one plain line to 
   const T = __LIFE.tmpDir('advisor-pause-'); roots.push(T);
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };
   w('company/company.json', { name: 'Pause Co', timezone: 'UTC', owner: { name: 'Olive' }, station: { url: 'http://127.0.0.1:9' } });
-  w('company/tools/loops.json', { agents: { boss: { name: 'Boss', functions: ['ceo'], inbox: 'to-boss.md' }, kwa: { name: 'Kwame', manager: 'boss', inbox: 'to-kwame.md' }, ben: { name: 'Ben', manager: 'kwa', inbox: 'to-ben.md' }, cat: { name: 'Cat', manager: 'kwa', inbox: 'to-cat.md' } } });
+  w('company/tools/loops.json', { agents: { boss: { name: 'Boss', functions: ['ceo'], inbox: 'to-boss.md' }, kwa: { name: 'Kofi', manager: 'boss', inbox: 'to-kofi.md' }, ben: { name: 'Ben', manager: 'kwa', inbox: 'to-ben.md' }, cat: { name: 'Cat', manager: 'kwa', inbox: 'to-cat.md' } } });
   for (const f of ['company/defaults/departments.json', 'company/defaults/work/departments/advise-prompt.md', 'company/defaults/state/governance.json']) w(f, fs.readFileSync(path.join(REPO, f), 'utf8'));
   const d = dept({ autoPause: { enabled: true } }); d.version = 1;
   w('company/departments.json', d);
-  for (const f of ['to-boss.md', 'to-kwame.md', 'to-ben.md', 'to-cat.md']) w('company/work/handoffs/' + f, '# Handoffs\n');
+  for (const f of ['to-boss.md', 'to-kofi.md', 'to-ben.md', 'to-cat.md']) w('company/work/handoffs/' + f, '# Handoffs\n');
   w('company/work/departments/eng/DECISIONS.md', '# Engineering — decisions\n\n');
   w('company/work/decisions.md', '# Decisions\n\n');
   w('company/work/models/routing-evaluation.json', { advisor: { departments: [{ dept: 'eng', verdict: 'pause', failed: ['cost per item rose from 1 to 1.2 (listUsd)'], reasons: [], hash: 'sha256:aaa' }] } });
   const step = () => {
     const code = 'const prov = require(' + JSON.stringify(path.join(TOOLS, 'provenance.js')) + '); prov.pinUnderStation(false); prov.pinOwnerShell(false);' +
-      'const logs = []; require(' + JSON.stringify(path.join(TOOLS, 'lib', 'consult.js')) + ').consultStep({ log: l => logs.push(l), jobs: [], order: [], call: async () => ({ status: 200, body: JSON.stringify({ ok: true, job: { id: "job-x", name: "Kwame advise" }, jobs: [{ id: "job-x", name: "Kwame advise" }] }) }), fireRun: async () => ({ status: 200, body: "{}" }) }).then(r => process.stdout.write(JSON.stringify({ r, logs })));';
+      'const logs = []; require(' + JSON.stringify(path.join(TOOLS, 'lib', 'consult.js')) + ').consultStep({ log: l => logs.push(l), jobs: [], order: [], call: async () => ({ status: 200, body: JSON.stringify({ ok: true, job: { id: "job-x", name: "Kofi advise" }, jobs: [{ id: "job-x", name: "Kofi advise" }] }) }), fireRun: async () => ({ status: 200, body: "{}" }) }).then(r => process.stdout.write(JSON.stringify({ r, logs })));';
     const p = spawnSync(process.execPath, ['-e', code], { cwd: T, encoding: 'utf8', env: Object.assign({}, process.env, { CAPHEOS_ROOT: T, CAPHEOS_TZ: 'UTC', STARNET_URL: 'http://127.0.0.1:9' }) });
     if (p.status !== 0) throw new Error(p.stderr);
     return JSON.parse(p.stdout);
   };
   const s1 = step();
   assert.deepEqual(s1.r.paused, ['eng'], JSON.stringify(s1));
-  assert.ok(s1.logs.some(l => /^ADVISOR PAUSED eng \(Kwame\): cost per item rose/.test(l)), s1.logs.join('\n'));
+  assert.ok(s1.logs.some(l => /^ADVISOR PAUSED eng \(Kofi\): cost per item rose/.test(l)), s1.logs.join('\n'));
   const doc = JSON.parse(fs.readFileSync(path.join(T, 'company/departments.json'), 'utf8'));
   assert.deepEqual([doc.departments[0].advisor.paused.by, doc.departments[0].advisor.paused.evaluationHash], ['auto', 'sha256:aaa']);
   const digest = fs.readFileSync(path.join(T, 'company/owner/digest.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  assert.equal(digest.length, 1); assert.match(JSON.stringify(digest[0]), /The crew paused Kwame's advice for Engineering: over the last two weeks it cost more than it saved/);
+  assert.equal(digest.length, 1); assert.match(JSON.stringify(digest[0]), /The crew paused Kofi's advice for Engineering: over the last two weeks it cost more than it saved/);
   assert.match(fs.readFileSync(path.join(T, 'company/work/departments/eng/DECISIONS.md'), 'utf8'), /the dispatcher \(automatic\): pause the lead's advice for Engineering/);
   // the same hash again (after the owner resumed): not paused a second time
   doc.departments[0].advisor.paused = null; fs.writeFileSync(path.join(T, 'company/departments.json'), JSON.stringify(doc));

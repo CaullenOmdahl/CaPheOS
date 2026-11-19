@@ -6,7 +6,7 @@
  *
  * Checks, at desktop and phone widths: every key row shows a friendly name, Set / Not set, the change date and who reads
  * it, with no file path, tool name or API route outside Details (the secrets/ path sits in Details); an address is
- * labelled an address; no sideways scroll on a phone. Then: Replace saves through a masked field, Add a key picks Pyth
+ * labelled an address; no sideways scroll on a phone. Then: Replace saves through a masked field, Add a key picks Quotely
  * (where to get it and the link) and saves it, Other takes a typed name, a framework name is refused, no typed value is
  * ever in the page afterwards, and a Today request for a key that is now saved says "Already saved — replace?" and
  * points at Settings. Starts the mock on a free port (never 8800). Exits 0 with "SKIP" when no Chrome is installed or
@@ -60,35 +60,35 @@ const VISIBLE = `(() => { const host = document.getElementById('set-service-keys
       const text = await js(VISIBLE);
       const leaks = String(text || '').split('\n').filter(l => LEAK.test(l));
       check(label + ': Service keys lists every key, no file paths or tool names outside Details', ready && !leaks.length && !errors.length, { leaks, errors, text: String(text).slice(0, 300) });
-      const kal = await js(`(${row('kalshi-api-key')} || {}).innerText`);
-      check(label + ': a saved key shows its friendly name, Set, when it changed, who reads it and Replace', /Kalshi API key/.test(kal) && /\bSet\b/.test(kal) && /Saved .*\d\d:\d\d/.test(kal) && /Used by the markets work/.test(kal) && /Replace/.test(kal) && !/kalshi-api-key/.test(kal), kal);
-      const py = await js(`(${row('pyth-api-key')} || {}).innerText`);
-      check(label + ': a key a tool reads but nobody saved says Not set, where to get it, who needs it', /^Pyth/.test(py) && /Not set/.test(py) && /API keys/.test(py) && /Used by the research work/.test(py) && await js(`!!${row('pyth-api-key')}.querySelector('a[href="https://app.pyth.com"]')`), py);
+      const kal = await js(`(${row('tradex-api-key')} || {}).innerText`);
+      check(label + ': a saved key shows its friendly name, Set, when it changed, who reads it and Replace', /Tradex API key/.test(kal) && /\bSet\b/.test(kal) && /Saved .*\d\d:\d\d/.test(kal) && /Used by the markets work/.test(kal) && /Replace/.test(kal) && !/tradex-api-key/.test(kal), kal);
+      const py = await js(`(${row('quotely-api-key')} || {}).innerText`);
+      check(label + ': a key a tool reads but nobody saved says Not set, where to get it, who needs it', /^Quotely/.test(py) && /Not set/.test(py) && /API keys/.test(py) && /Used by the research work/.test(py) && await js(`!!${row('quotely-api-key')}.querySelector('a[href="https://app.quotely.com"]')`), py);
       const hb = await js(`(${row('liveness-heartbeat-url')} || {}).innerText`);
       check(label + ': the healthchecks.io heartbeat is labelled an address, not a key', /Heartbeat address \(healthchecks\.io\)/.test(hb) && !/\bkey\b/i.test(hb) && /liveness module/.test(hb), hb);
-      check(label + ': the file name sits in Details', await js(`(() => { const d = ${row('kalshi-api-key')}.querySelector('details'); return !!d && d.textContent.includes("secrets/kalshi-api-key") && !d.open; })()`));
+      check(label + ': the file name sits in Details', await js(`(() => { const d = ${row('tradex-api-key')}.querySelector('details'); return !!d && d.textContent.includes("secrets/tradex-api-key") && !d.open; })()`));
       if (w < 600) check('phone: no sideways scroll', await js(`document.documentElement.scrollWidth <= window.innerWidth + 1`));
     }
     await width(1280, 900);
     // Replace a saved key through its masked field
-    const V1 = 'walk-replaced-kalshi-value-000111', V2 = 'walk-pyth-value-222333', V3 = 'walk-exchange-value-444555';
-    await js(`${btn(row('kalshi-api-key'), 'Replace')}.click(); 1`);
-    const masked = await js(`(() => { const i = ${row('kalshi-api-key')}.querySelector('input.secret-input'); return i && !i.closest('[hidden]') ? i.type : null; })()`);
+    const V1 = 'walk-replaced-tradex-value-000111', V2 = 'walk-quotely-value-222333', V3 = 'walk-exchange-value-444555';
+    await js(`${btn(row('tradex-api-key'), 'Replace')}.click(); 1`);
+    const masked = await js(`(() => { const i = ${row('tradex-api-key')}.querySelector('input.secret-input'); return i && !i.closest('[hidden]') ? i.type : null; })()`);
     check('Replace opens a masked field', masked === 'password', masked);
-    await js(`${row('kalshi-api-key')}.querySelector('input.secret-input').value = ${JSON.stringify(V1)}; ${btn(row('kalshi-api-key'), 'Save new key')}.click(); 1`);
+    await js(`${row('tradex-api-key')}.querySelector('input.secret-input').value = ${JSON.stringify(V1)}; ${btn(row('tradex-api-key'), 'Save new key')}.click(); 1`);
     const acts = async () => (await getJson('http://127.0.0.1:' + port + '/api/__mock/actions')).serviceKeys || [];
-    check('Replace saves it as a replacement', await until(async () => (await acts()).some(a => a.name === 'kalshi-api-key' && a.replaced), 5000), await acts());
-    // Add a key: Pyth from the list
+    check('Replace saves it as a replacement', await until(async () => (await acts()).some(a => a.name === 'tradex-api-key' && a.replaced), 5000), await acts());
+    // Add a key: Quotely from the list
     await until(() => js(`!!${btn("document.getElementById('set-service-keys')", 'Add a key')}`), 5000);
     await js(`${btn("document.getElementById('set-service-keys')", 'Add a key')}.click(); 1`);
     const addBox = `document.querySelector('#set-service-keys [data-skey-add]')`;
     const opts = await js(`[...${addBox}.querySelectorAll('select option')].map(o => o.textContent)`);
-    check('Add a key offers Pyth, Kalshi, Synpath, healthchecks.io, GitHub and Other', ['Pyth', 'Kalshi API key', 'Kalshi private key', 'Synpath', 'Heartbeat address (healthchecks.io)', 'GitHub token'].every(x => (opts || []).includes(x)) && (opts || []).some(x => /^Other/.test(x)), opts);
-    await js(`(() => { const s = ${addBox}.querySelector('select'); s.value = 'pyth'; s.dispatchEvent(new Event('change')); })(); 1`);
+    check('Add a key offers Quotely, Tradex, Synpath, healthchecks.io, GitHub and Other', ['Quotely', 'Tradex API key', 'Tradex private key', 'Synpath', 'Heartbeat address (healthchecks.io)', 'GitHub token'].every(x => (opts || []).includes(x)) && (opts || []).some(x => /^Other/.test(x)), opts);
+    await js(`(() => { const s = ${addBox}.querySelector('select'); s.value = 'quotely'; s.dispatchEvent(new Event('change')); })(); 1`);
     const addTxt = await js(`${addBox}.innerText`);
-    check('picking Pyth says where to get it, with the link, and a masked field', /API keys/.test(addTxt) && await js(`(() => { const a = ${addBox}.querySelector('a[href="https://app.pyth.com"]'); return !!a && !a.hidden; })()`) && await js(`${addBox}.querySelector('input.secret-input').type === 'password'`), addTxt);
+    check('picking Quotely says where to get it, with the link, and a masked field', /API keys/.test(addTxt) && await js(`(() => { const a = ${addBox}.querySelector('a[href="https://app.quotely.com"]'); return !!a && !a.hidden; })()`) && await js(`${addBox}.querySelector('input.secret-input').type === 'password'`), addTxt);
     await js(`${addBox}.querySelector('input.secret-input').value = ${JSON.stringify(V2)}; ${btn(addBox, 'Save key')}.click(); 1`);
-    check('Add saves Pyth and its row now says Set', await until(() => js(`!!${row('pyth-api-key')} && /\\bSet\\b/.test(${row('pyth-api-key')}.innerText) && !/Not set/.test(${row('pyth-api-key')}.innerText)`), 5000), await js(`(${row('pyth-api-key')} || {}).innerText`));
+    check('Add saves Quotely and its row now says Set', await until(() => js(`!!${row('quotely-api-key')} && /\\bSet\\b/.test(${row('quotely-api-key')}.innerText) && !/Not set/.test(${row('quotely-api-key')}.innerText)`), 5000), await js(`(${row('quotely-api-key')} || {}).innerText`));
     // Other: a typed name; a framework name refused
     const addOther = async (name, value) => {
       await js(`${btn("document.getElementById('set-service-keys')", 'Add a key')}.click(); 1`);

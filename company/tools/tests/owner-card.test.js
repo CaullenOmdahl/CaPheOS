@@ -184,18 +184,18 @@ test('approvals: an older gate record without a level reads the category\'s leve
 
 test('a key that is already stored is not asked for again; an approval card never offers a key field', () => {
   const ask = o => inbox.ask(Object.assign({ scopeExempt: true, from: 'Sam Lee' }, o));
-  const spec = { name: 'pyth-api-key', label: 'Pyth API key' };
-  const msg = 'Could you make a free Pyth account and paste its API key? It lets us test prices; if you skip it, that idea waits.';
-  w('secrets/pyth-api-key', 'k-123456789012345');
+  const spec = { name: 'quotely-api-key', label: 'Quotely API key' };
+  const msg = 'Could you make a free Quotely account and paste its API key? It lets us test prices; if you skip it, that idea waits.';
+  w('secrets/quotely-api-key', 'k-123456789012345');
   assert.throws(() => ask({ message: msg, kind: 'secret', spec }), e => e.code === 'secret-exists' && /already stored/.test(e.message));
   assert.ok(ask({ message: msg, kind: 'secret', spec, changed: 'the old key stopped working this morning' }).row.id, 'asked again with what changed');
   // an old untyped row that reads as a key request: no key field once the key is stored
-  G.append(INBOX, { type: 'ask', id: 'q-990002', at: new Date().toISOString(), from: 'Sam Lee', q: 'Please paste a free Pyth API key here.' }, 'test');
+  G.append(INBOX, { type: 'ask', id: 'q-990002', at: new Date().toISOString(), from: 'Sam Lee', q: 'Please paste a free Quotely API key here.' }, 'test');
   assert.equal(inbox.secretHint(inbox.state()['q-990002']), null);
-  fs.unlinkSync(path.join(T, 'secrets', 'pyth-api-key'));
-  assert.equal((inbox.secretHint(inbox.state()['q-990002']) || {}).name, 'pyth-api-key', 'missing key: the field is offered');
-  assert.equal(inbox.secretHint({ id: 'q-1', q: 'Please paste the Pyth API key.', gate: { ref: 'x' } }), null, 'never on a gate card');
-  assert.equal(inbox.secretHint({ id: 'q-2', q: 'Please paste the Pyth API key.', approval: { category: 'access' } }), null, 'never on an approval');
+  fs.unlinkSync(path.join(T, 'secrets', 'quotely-api-key'));
+  assert.equal((inbox.secretHint(inbox.state()['q-990002']) || {}).name, 'quotely-api-key', 'missing key: the field is offered');
+  assert.equal(inbox.secretHint({ id: 'q-1', q: 'Please paste the Quotely API key.', gate: { ref: 'x' } }), null, 'never on a gate card');
+  assert.equal(inbox.secretHint({ id: 'q-2', q: 'Please paste the Quotely API key.', approval: { category: 'access' } }), null, 'never on an approval');
 });
 
 test('money: an open money question is withdrawn when today\'s budget is set some other way', () => {

@@ -181,8 +181,8 @@ function deciders(managerId) {
   return (!managerId || managerId === ceoId()) ? [hrName] : [...new Set([nameOf(managerId), hrName].filter(Boolean))];
 }
 // --approved must START with the name of someone allowed to decide (e.g. "Sam, decisions.md 2026-01-02 10:00")
-// Names may be several words ("Marisol Vance"): the text must start with the full name, or with its first word followed
-// by a separator (so "Marisol, …" still counts) — never just a prefix of another name ("Mari" is not "Marisol Vance").
+// Names may be several words ("Mara Vale"): the text must start with the full name, or with its first word followed
+// by a separator (so "Mara, …" still counts) — never just a prefix of another name ("Mari" is not "Mara Vale").
 function approverOk(text, allowed) {
   const t = String(text || '').trim().toLowerCase();
   return (allowed || []).some(n => {
@@ -523,7 +523,7 @@ function roundFiles(dir) {
   return { spec: !!readIf(path.join(dir, 'role-spec.md')).trim(), questions: !!readIf(path.join(dir, 'interview.md')).trim(),
     profiles: lsMd(path.join(dir, 'profiles')), scorecard: !!readIf(path.join(dir, 'scorecard.md')).trim() };
 }
-// "# Candidate profile — Nadia Farrell" -> Nadia Farrell; a heading that names no one -> the file name
+// "# Candidate profile — Nora Field" -> Nora Field; a heading that names no one -> the file name
 function profileName(file, txt) {
   const head = ((String(txt || '').match(/^#\s+(.+)$/m) || [])[1] || '').trim();
   let n = head.split(/\s+[—–-]\s+|:\s*/).pop().trim();
@@ -951,7 +951,7 @@ async function hire(a) {
   const spec = readIf(path.join(dir, 'role-spec.md'), 6000);
   const AgentId = require(path.join(ROOT, 'starnet', 'frontend', 'app', 'agentid.js'));
   const officeName = a.name ? AgentId.normalizeName(String(a.name)) : cand.name;
-  const display = officeName.split(/(\s+|-)/).map(w => /^[A-Za-z]/.test(w) ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w).join('');   // NADIA FARRELL -> Nadia Farrell
+  const display = officeName.split(/(\s+|-)/).map(w => /^[A-Za-z]/.test(w) ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w).join('');   // NORA FIELD -> Nora Field
   const fileBase = display.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   const inbox = 'to-' + fileBase + '.md';
   const loopName = display + ' loop';

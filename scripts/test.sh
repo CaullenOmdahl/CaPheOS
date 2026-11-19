@@ -105,6 +105,7 @@ echo "CaPheOS tests (copy: $COPY, station: $STARNET_URL, timeout ${TIMEOUT}s/ste
 echo "== parse and inventory"
 step "tool-parse.js" node company/tools/tool-parse.js
 step "tool-inventory-check.js" node company/tools/tool-inventory-check.js
+step "check-deployment-leaks.js (no company's own names in what this checkout adds; docs/PORTING.md rule 1)" node scripts/check-deployment-leaks.js
 step "check-temp-hygiene.js (every test cleans up its temp files and helpers)" node scripts/check-temp-hygiene.js
 step "check-temp-hygiene.js --selftest" node scripts/check-temp-hygiene.js --selftest
 step "tests/test-sh-hygiene.sh (this runner leaves no process behind)" bash tests/test-sh-hygiene.sh
