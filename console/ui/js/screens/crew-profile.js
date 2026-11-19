@@ -1,7 +1,7 @@
 // Crew › <person> › Profile (#/crew/<seat>/profile; console/profile.js endpoints, docs/PROFILES.md): who they are, how
-// they lean, what they believe and refuse, how they sound, who checks them, and what has happened to them here. The right
-// column shows the live preview (what they are told, built with no AI call), the history with "Go back to this version",
-// and "Try this change". Presets fill empty fields (every field after a confirm). Every write goes through the tool.
+// they lean, what they believe and refuse, how they sound, who checks them, and what has happened to them here. The
+// live preview (what they are told, built with no AI call) is pinned at the top while the owner edits; the history with
+// "Go back to this version" sits beside the fields. Presets fill only the empty fields or replace everything (the owner picks). Every write goes through the tool.
 import { h, fill, Button, Tag, errLine, humanError, when } from '../ui.js';
 import { api, post } from '../api.js';
 
@@ -16,7 +16,7 @@ const linesOf = t => String(t || '').split('\n').map(x => x.trim()).filter(Boole
 const bold = t => String(t || '').split(/\*\*/).map((x, i) => i % 2 ? h('strong', {}, x) : x);
 
 export function profilePanel(host, seatId) {
-  let data = null, draft = null, presets = [], msg = null, busy = false, previewTimer = null, onEdit = () => {};
+  let data = null, draft = null, presets = [], msg = null, busy = false, previewTimer = null, onEdit = () => {}, presetAsk = null;
   const prevHost = h('div', { class: 'stack-12' });
 
   async function load() {
@@ -59,8 +59,9 @@ export function profilePanel(host, seatId) {
       pv.example ? h('div', { class: 'card stack-6', style: 'padding:12px', 'data-preview-example': '' },
         h('span', { class: 'caption muted' }, 'An example in ' + name() + '\'s own voice' + (pv.example.pushback ? ', pushing back' : '')),
         h('p', { class: 'body-s' }, pv.example.who + ': "' + pv.example.they + '"'), h('p', { class: 'body-s strong' }, name() + ': "' + pv.example.you + '"')) : null,
-      h('details', {}, h('summary', { class: 'caption' }, 'The full text'), h('pre', { class: 'mono-s', style: 'white-space:pre-wrap;max-height:420px;overflow:auto', 'data-preview-block': '' }, pv.block || '')));
+      h('details', {}, h('summary', { class: 'caption' }, 'The full text, in the crew\'s own words'), h('pre', { class: 'mono-s', style: 'white-space:pre-wrap;max-height:420px;overflow:auto', 'data-preview-block': '' }, (pv.ownerLevel && pv.ownerLevel !== 'technical' ? pv.blockOwner : pv.block) || '')));
   }
+  const addedBy = (e, i) => { const v = ((data.experiences || [])[i] || {}).addedByName || (e.addedBy === 'owner' ? 'You' : ((data.crew || []).find(c => c.id === e.addedBy) || {}).name || 'the crew'); return v === 'You' ? 'you' : v; };
   function area(value, onInput, rows, label) { return h('textarea', { class: 'input', rows: rows || 3, 'aria-label': label, value: value || '', oninput: e => { onInput(e.target.value); onEdit(); } }); }
   function section(title, ...kids) { return h('section', { class: 'stack-8', 'data-section': title }, h('h3', { class: 'h4' }, title), kids); }
 
@@ -84,7 +85,12 @@ export function profilePanel(host, seatId) {
       Button('Use profiles for this company', { size: 'sm', disabled: busy, onClick: () => { if (confirm('From now on every crew member works from their profile. You can switch back here at any time.')) act(() => post('/profile/policy', { inject: 'profile' }), 'The crew now works from their profiles.'); } })));
     for (const f of w.family || []) top.push(h('p', { class: 'caption', 'data-family': '' }, f));
     // presets
-    const presetRow = presets.length ? h('div', { class: 'row-8', style: 'flex-wrap:wrap', 'data-presets': '' }, h('span', { class: 'caption muted' }, 'Start from a preset:'), presets.map(pr => Button(pr.label, { size: 'sm', variant: 'ghost', onClick: () => applyPreset(pr) }))) : null;
+    const presetRow = presets.length ? h('div', { class: 'stack-6' }, h('div', { class: 'row-8', style: 'flex-wrap:wrap', 'data-presets': '' }, h('span', { class: 'caption muted' }, 'Start from a preset:'), presets.map(pr => Button(pr.label, { size: 'sm', variant: presetAsk === pr ? 'primary' : 'ghost', onClick: () => { presetAsk = pr; draw(); } }))),
+      presetAsk ? h('div', { class: 'card stack-6', role: 'group', 'aria-label': 'Use the preset', 'data-preset-ask': '', style: 'padding:12px' }, h('p', { class: 'body-s' }, 'Use "' + presetAsk.label + '" for ' + name() + '?'),
+        h('div', { class: 'row-8', style: 'flex-wrap:wrap' },
+          Button('Fill only empty fields', { size: 'sm', variant: 'primary', onClick: () => { const pr = presetAsk; presetAsk = null; applyPreset(pr, false); } }),
+          Button('Replace everything', { size: 'sm', onClick: () => { const pr = presetAsk; presetAsk = null; applyPreset(pr, true); } }),
+          Button('Cancel', { size: 'sm', variant: 'ghost', onClick: () => { presetAsk = null; draw(); } }))) : null) : null;
     const id = draft.identity;
     fill(left,
       top, presetRow,
@@ -105,9 +111,9 @@ export function profilePanel(host, seatId) {
       section('Who checks them', h('p', { class: 'body-s', 'data-counterpart': '' }, bold(w.counterpart || '')), w.checks ? h('p', { class: 'caption muted' }, w.checks) : null, counterpartPicker()),
       LISTS2.map(([k, t]) => section(t, area((draft[k] || []).join('\n'), v => { draft[k] = linesOf(v); drawSave(); }, 3, t))),
       section('Relationships', (draft.relationships || []).map((r, i) => h('div', { class: 'row-8', style: 'align-items:center' }, personSelect(r.seat, v => { r.seat = v; drawSave(); }, false),
-        h('input', { class: 'input', value: r.note, 'aria-label': 'How they get on', oninput: e => { r.note = e.target.value; drawSave(); schedulePreview(); } }), Button('Remove', { size: 'sm', variant: 'ghost', onClick: () => { draft.relationships.splice(i, 1); draw(); } }))),
+        h('input', { class: 'input', value: r.note, 'aria-label': 'How they get on', oninput: e => { r.note = e.target.value; drawSave(); } }), Button('Remove', { size: 'sm', variant: 'ghost', onClick: () => { draft.relationships.splice(i, 1); draw(); } }))),
         (data.crew || []).length ? Button('Add a relationship', { size: 'sm', variant: 'ghost', onClick: () => { draft.relationships = (draft.relationships || []).concat([{ seat: data.crew[0].id, note: '' }]); draw(); } }) : null),
-      section('Experiences', (draft.experiences || []).length ? h('ul', { class: 'plain stack-4' }, draft.experiences.map(e => h('li', { class: 'body-s' }, e.text, h('span', { class: 'caption muted' }, ' · added by ' + (e.addedBy === 'owner' ? 'you' : e.addedBy) + (e.at ? ', ' + e.at : ''))))) : h('p', { class: 'caption muted' }, 'Nothing yet. The people team suggests additions after things happen.'),
+      section('Experiences', (draft.experiences || []).length ? h('ul', { class: 'plain stack-4' }, draft.experiences.map((e, i) => h('li', { class: 'body-s' }, e.text, h('span', { class: 'caption muted' }, ' · added by ' + addedBy(e, i) + (e.at ? ', ' + e.at : ''))))) : h('p', { class: 'caption muted' }, 'Nothing yet. The people team suggests additions after things happen.'),
         (w.proposals || []).map(pp => h('div', { class: 'card stack-6', style: 'padding:12px', 'data-proposal': pp.id }, h('p', { class: 'body-s' }, pp.text.replace(/ Add it · Not this one · Try it\.$/, '')),
           h('div', { class: 'row-8' }, Button('Add it', { size: 'sm', variant: 'primary', disabled: busy, onClick: () => act(() => post('/profile/proposals/' + pp.id + '/apply', {}), 'Added.') }),
             Button('Not this one', { size: 'sm', disabled: busy, onClick: () => act(() => post('/profile/proposals/' + pp.id + '/decline', {}), 'Left out.') }),
@@ -132,8 +138,10 @@ export function profilePanel(host, seatId) {
       (data.history || []).length ? h('ol', { class: 'plain stack-6' }, data.history.map(r => h('li', { class: 'stack-2' },
         h('span', { class: 'body-s' }, (OPS[r.op] || 'Changed') + ' · ' + r.by + (r.at ? ' · ' + when(r.at) : '')), r.why ? h('span', { class: 'caption muted' }, r.why) : null,
         r.version && r.version < data.profile.version && r.op !== 'sign-off override' ? Button('Go back to this version', { size: 'sm', variant: 'ghost', disabled: busy, onClick: () => { if (confirm('Go back to how ' + name() + ' was at this point? You can undo this too.')) act(() => post('/profile/' + encodeURIComponent(seatId) + '/undo', { to: r.version }), 'Back to that version.'); } }) : null))) : h('p', { class: 'caption muted' }, 'No changes yet.'));
-    fill(right, prevHost, hist);
-    fill(host, h('div', { style: 'display:flex;flex-wrap:wrap;gap:32px' }, h('div', { class: 'stack-16', style: 'flex:2 1 420px;min-width:0' }, left, saveHost), right));
+    fill(right, hist);
+    // the live preview stays in view while the owner edits: pinned at the top of the panel (sticky), above the fields
+    const pinned = h('div', { class: 'card', 'data-preview': '', style: 'position:sticky;top:0;z-index:2;padding:12px;max-height:45vh;overflow:auto' }, prevHost);
+    fill(host, h('div', { class: 'stack-16' }, pinned, h('div', { style: 'display:flex;flex-wrap:wrap;gap:32px' }, h('div', { class: 'stack-16', style: 'flex:2 1 420px;min-width:0' }, left, saveHost), right)));
     onEdit = drawSave;
     drawSave(); drawPreview();
   }
@@ -143,11 +151,11 @@ export function profilePanel(host, seatId) {
   }
   function exampleRow(e, i) {
     return h('div', { class: 'card stack-6', style: 'padding:12px', 'data-example': String(i) },
-      h('div', { class: 'row-8', style: 'align-items:center' }, h('span', { class: 'caption' }, 'With'), personSelect(e.with, v => { e.with = v; }, true),
-        h('label', { class: 'caption row-4' }, h('input', { type: 'checkbox', checked: !!e.pushback, onchange: ev => { e.pushback = ev.target.checked; schedulePreview(); } }), 'pushes back'),
+      h('div', { class: 'row-8', style: 'align-items:center' }, h('span', { class: 'caption' }, 'With'), personSelect(e.with, v => { e.with = v; onEdit(); }, true),
+        h('label', { class: 'caption row-4' }, h('input', { type: 'checkbox', checked: !!e.pushback, onchange: ev => { e.pushback = ev.target.checked; onEdit(); } }), 'pushes back'),
         Button('Remove', { size: 'sm', variant: 'ghost', onClick: () => { draft.examples.splice(i, 1); draw(); } })),
-      h('input', { class: 'input', value: e.they, placeholder: 'What the other person says', 'aria-label': 'What the other person says', oninput: ev => { e.they = ev.target.value; schedulePreview(); } }),
-      h('input', { class: 'input', value: e.you, placeholder: 'How ' + name() + ' answers', 'aria-label': 'How they answer', oninput: ev => { e.you = ev.target.value; schedulePreview(); } }));
+      h('input', { class: 'input', value: e.they, placeholder: 'What the other person says', 'aria-label': 'What the other person says', oninput: ev => { e.they = ev.target.value; onEdit(); } }),
+      h('input', { class: 'input', value: e.you, placeholder: 'How ' + name() + ' answers', 'aria-label': 'How they answer', oninput: ev => { e.you = ev.target.value; onEdit(); } }));
   }
   function counterpartPicker() {
     const c = draft.counterpart || { seat: '', signOff: [], why: '' };
@@ -155,16 +163,25 @@ export function profilePanel(host, seatId) {
     const sel = h('select', { class: 'select', 'aria-label': 'Who checks them', onchange: e => { draft.counterpart = e.target.value ? Object.assign({}, c, { seat: e.target.value, signOff: c.signOff || [] }) : null; draw(); schedulePreview(); } },
       h('option', { value: '', selected: !c.seat }, 'Nobody'), (data.crew || []).map(o => h('option', { value: o.id, selected: o.id === c.seat }, o.name)));
     return h('div', { class: 'stack-6' }, sel, c.seat ? h('div', { class: 'stack-4' }, h('span', { class: 'caption muted' }, 'They have to agree before ' + name() + ' can:'),
-      kinds.map(([k, words]) => h('label', { class: 'body-s row-4' }, h('input', { type: 'checkbox', checked: (c.signOff || []).includes(k), onchange: e => { const s = new Set(draft.counterpart.signOff || []); if (e.target.checked) s.add(k); else s.delete(k); draft.counterpart.signOff = kinds.map(x => x[0]).filter(x => s.has(x)); schedulePreview(); } }), words))) : null);
+      kinds.map(([k, words]) => h('label', { class: 'body-s row-4' }, h('input', { type: 'checkbox', checked: (c.signOff || []).includes(k), onchange: e => { const s = new Set(draft.counterpart.signOff || []); if (e.target.checked) s.add(k); else s.delete(k); draft.counterpart.signOff = kinds.map(x => x[0]).filter(x => s.has(x)); onEdit(); } }), words))) : null);
   }
-  function applyPreset(pr) {
-    const all = confirm('Fill every field from "' + pr.label + '"? Choose Cancel to fill only the empty ones.');
+  // who a preset example is with: the counterpart, a seat this one checks, its lead, its team, or the owner; never the owner
+  // by default (a careful tester's "let's go straight to real money" is said by the eager seat, not by you)
+  function presetWith(w) {
+    const rel = data.relations || {}, crew = (data.crew || []).map(c => c.id), pick = a => (a || []).find(x => crew.includes(x)) || null;
+    if (w === 'owner') return 'owner';
+    if (w === 'counterpart') return (draft.counterpart && draft.counterpart.seat) || pick(rel.checks) || crew[0] || 'owner';
+    if (w === 'eager') return pick(rel.checks) || (draft.counterpart && draft.counterpart.seat) || crew[0] || 'owner';
+    if (w === 'lead') return (rel.manager && crew.includes(rel.manager) ? rel.manager : null) || crew[0] || 'owner';
+    return pick(rel.reports) || (rel.manager && crew.includes(rel.manager) ? rel.manager : null) || crew[0] || 'owner';
+  }
+  function applyPreset(pr, all) {
     const empty = v => v == null || v === '' || (Array.isArray(v) && !v.length);
     if (all || empty(draft.identity.archetype)) draft.identity.archetype = pr.archetype;
     if (all) draft.temperament = Object.assign({}, draft.temperament, pr.temperament);
     if (all || empty(draft.voice.preset)) draft.voice.preset = pr.voicePreset;
     if (all || (draft.examples || []).length < 3) {
-      const ex = pr.example || {}; const w = ex.with === 'counterpart' && draft.counterpart ? draft.counterpart.seat : 'owner';
+      const ex = pr.example || {}; const w = presetWith(ex.with);
       draft.examples = (all ? [] : draft.examples || []).concat([{ with: w, they: ex.they || '', you: ex.you || '', pushback: !!ex.pushback }]);
     }
     draw(); schedulePreview();

@@ -94,3 +94,28 @@ test('the owner\'s words: labels, sentences, the trial banner and proposals are 
   await assert.rejects(call('POST', '/api/profile/ben', { set: { 'bad pointer': 1 }, base: 1 }), e => e.status === 400);
   assert.deepEqual(P.FIXED_BOUNDARIES.flatMap(b => wordsProblems(b.plain)), []);
 });
+
+test('a Plain owner\'s preview shows the crew\'s words without commands or file paths; every edit wakes the save area; presets ask three ways', async () => {
+  const T = fixture(); const call = mount(T);
+  await call('POST', '/api/profile/ben/migrate'); await call('POST', '/api/profile/ro/migrate');
+  fs.mkdirSync(path.join(T, 'company', 'owner'), { recursive: true });
+  fs.writeFileSync(path.join(T, 'company', 'owner', 'talk.json'), JSON.stringify({ v: 1, level: 'plain', length: 'medium', often: 'daily', check: 'live', setBy: 'owner', at: '2026-11-18T00:00:00Z' }));
+  const v = await call('GET', '/api/profile/ro');
+  assert.equal(v.preview.ownerLevel, 'plain');
+  assert.ok(/node company\/tools\/approvals\.js/.test(v.preview.block), 'the crew\'s own block keeps its command (agents stay technical)');
+  assert.ok(!/node |company\/|--verdict|\*\*Needs sign-off/.test(v.preview.blockOwner), 'the Plain view has no command, path or markup: ' + v.preview.blockOwner);
+  const pv = await call('POST', '/api/profile/ro/preview', { set: { '/convictions': ['Cards live in company/work/ideas/ and I read them all.'] } });
+  assert.ok(!/company\/work/.test(pv.blockOwner) && /Cards live in/.test(pv.blockOwner));
+  // the screen: the example fields, the pushes-back box, the With picker and the sign-off boxes all refresh the save area
+  const src = fs.readFileSync(path.join(REPO, 'console', 'ui', 'js', 'screens', 'crew-profile.js'), 'utf8');
+  const ex = src.slice(src.indexOf('function exampleRow'), src.indexOf('function counterpartPicker'));
+  assert.equal((ex.match(/onEdit\(\)/g) || []).length, 4, 'they, you, pushes back and With each call onEdit()');
+  const cp = src.slice(src.indexOf('function counterpartPicker'), src.indexOf('function presetWith'));
+  assert.ok(/signOff = kinds[^\n]*onEdit\(\)/.test(cp), 'a sign-off box refreshes the save area');
+  const pr = src.slice(src.indexOf('function applyPreset'), src.indexOf('load();', src.indexOf('function applyPreset')));
+  assert.ok(!/confirm\(/.test(pr), 'the preset choice is not a two-button confirm');
+  for (const t of ['Fill only empty fields', 'Replace everything', 'Cancel']) assert.ok(src.includes('\'' + t + '\''), t);
+  assert.ok(!/: 'owner';\s*$/m.test(pr) && /presetWith\(ex\.with\)/.test(pr), 'a preset example is said by the right person, not by the owner by default');
+  assert.ok(/'data-preview': ''[^\n]*position:sticky/.test(src), 'the preview is pinned in view beside the edits');
+  assert.deepEqual(v.relations.checks, ['ben'], 'the screen knows whose work Rohan checks (the preset\'s "eager" example)');
+});
