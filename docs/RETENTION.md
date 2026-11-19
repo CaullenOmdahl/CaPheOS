@@ -168,3 +168,23 @@ then kept in the new one. The selftests run each reader over a 48–96 MB file a
 Add a row to `company/defaults/work/ops/retention.json` (framework) or `company/work/ops/retention.json` (one company:
 a row with the same `id` replaces the default). Give it a `bound` (`bytes`, `rows`, `days`), the `readers`, and run
 `retention.js apply --dry-run` then `status`.
+
+## Temp files, headless browsers and RAM
+
+Files are not the only thing that grows. On most Linux hosts `/tmp` is a tmpfs, so every byte left there is memory (and
+swap once memory is full), and a headless browser nobody closes holds 0.8-1 GB. Three parts keep a long-running company
+lean enough to share a small machine with a local model:
+
+- **The company's own temp dir.** `scripts/setup-station.sh` makes `.starnet-data/tmp` (mode 0700) and runs the station,
+  the dispatcher and the console with `TMPDIR` there. Agents' Python tempfiles, Flutter / web build trees, the station's
+  browser profiles and Claude CLI prompt files land on disk, under the company, not in RAM. The container does the same
+  (`TMPDIR=/data/tmp`, a 64 MB `/tmp`).
+- **The sweeper.** `company/tools/tmp-sweep.js` removes temp entries that are old enough and that no running process
+  uses (an open file, a working directory, a mapped file, a socket, or a command line naming it), and ends headless
+  browsers left running on a temp profile after whatever started them died. Only its known classes in a shared temp dir
+  (test walks, build leftovers, Chrome's temp entries, Python tempfile dirs, station leftovers of an ended process);
+  everything in the company's own temp dir. The dispatcher runs it at most hourly; `status` shows what would go.
+- **Tests clean up however they end.** `company/tools/lib/temp-life.js` registers a test's temp dirs and helper
+  processes (Chrome, the mock station, a console) and removes / ends them on exit, on an error and on SIGINT / SIGTERM
+  (the signal `scripts/test.sh`'s per-step timeout sends). Chrome is started with `TMPDIR` inside its profile, so its own
+  `com.google.Chrome.*` entries go with the profile. `scripts/test.sh` sweeps the test class once more when it ends.

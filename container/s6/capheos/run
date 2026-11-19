@@ -11,4 +11,7 @@ if [ ! -f /app/server/index.js ]; then
   exec sleep infinity
 fi
 
+# the company's temp dir on the data volume (TMPDIR in capheos.yml), swept by company/tools/tmp-sweep.js
+if [ -n "${TMPDIR:-}" ] && [ "${TMPDIR#/data/}" != "$TMPDIR" ]; then install -d -m 700 -o capheos -g capheos "$TMPDIR"; fi
+
 exec s6-setuidgid capheos node /app/server/index.js

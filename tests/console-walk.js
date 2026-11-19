@@ -11,6 +11,7 @@
  * Prints one line per check and exits 1 on any failure; exits 0 with "SKIP" when no Chrome is installed.
  */
 'use strict';
+const life = require('../company/tools/lib/temp-life');   // temp dirs and helper processes end with the walk, on a kill too
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs'); const os = require('os'); const path = require('path'); const http = require('http');
 const argv = process.argv.slice(2);
@@ -24,9 +25,9 @@ const ROUTES = ['#/today', '#/setup', '#/setup/charter', '#/setup/provider', '#/
   '#/settings/pages', '#/settings/system', '#/settings/system/map', '#/halt',
   // old routes agents still link to: each redirects to its new home and renders (tests/console-routes-walk.js checks where)
   '#/comms/owner', '#/hiring', '#/controls/gov', '#/automate', '#/governance', '#/usage', '#/system', '#/map'];
-const udd = fs.mkdtempSync(path.join(os.tmpdir(), 'console-walk-'));
+const udd = life.tmpDir('console-walk-');
 const port = 9500 + Math.floor(Math.random() * 400);
-const chrome = spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--user-data-dir=' + udd, '--remote-debugging-port=' + port, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore' });
+const chrome = life.track(spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--user-data-dir=' + udd, '--remote-debugging-port=' + port, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore', env: life.chromeEnv(udd) }));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const getJson = u => new Promise((res, rej) => http.get(u, r => { let d = ''; r.on('data', c => d += c); r.on('end', () => { try { res(JSON.parse(d)); } catch (e) { rej(e); } }); }).on('error', rej));
 let fails = 0;

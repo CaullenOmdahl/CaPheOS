@@ -13,7 +13,7 @@ services:
     read_only: true
     tmpfs:
       - /run:exec
-      - /tmp
+      - /tmp:size=64m        # bounded: the company's temp files live on the data volume (TMPDIR below), not in RAM
     cap_drop:
       - ALL
     security_opt:
@@ -24,6 +24,7 @@ services:
       TZ: ${TZ:-UTC}
       CAPHEOS_ROOT: /app
       CAPHEOS_DATA: /data
+      TMPDIR: /data/tmp
       CONSOLE_HOST: 0.0.0.0
       CONSOLE_PORT: "8901"
     volumes:

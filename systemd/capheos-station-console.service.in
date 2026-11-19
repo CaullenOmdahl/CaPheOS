@@ -5,6 +5,9 @@ After=@SVC@.service
 [Service]
 Type=simple
 WorkingDirectory=@ROOT@
+# the company's own temp dir, not the host's /tmp (RAM on most hosts); scripts/setup-station.sh
+Environment=TMPDIR=@ROOT@/.starnet-data/tmp
+ExecStartPre=/bin/mkdir -p -m 700 @ROOT@/.starnet-data/tmp
 ExecStart=/usr/bin/env node @ROOT@/console/server.js
 Restart=always
 RestartSec=3

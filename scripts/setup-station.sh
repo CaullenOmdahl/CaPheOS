@@ -88,6 +88,10 @@ done
 
 # 3. Secrets and env
 mkdir -p secrets .starnet-data/workspaces
+# the company's own temp dir, on disk: the station, the dispatcher and the console run with TMPDIR here, so what agents,
+# their builds and tests leave behind is not held in RAM (/tmp is a tmpfs on most hosts) and company/tools/tmp-sweep.js
+# can clear it without judging anyone else's files. Its presence is also what turns that hourly sweep on.
+mkdir -p .starnet-data/tmp && chmod 700 .starnet-data/tmp
 chmod 700 secrets
 if [[ ! -s secrets/station-token ]]; then
   ( umask 077; node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))" > secrets/station-token )
@@ -112,6 +116,7 @@ STARNET_API_TOKEN=$(cat secrets/station-token)
 STARNET_HOST=127.0.0.1
 STARNET_HEADLESS=1
 STARNET_OVERRIDE_ALLOW=$ROOT/company/state/override-allow.json
+TMPDIR=$ROOT/.starnet-data/tmp
 TZ=$ZONE
 EOF
 )

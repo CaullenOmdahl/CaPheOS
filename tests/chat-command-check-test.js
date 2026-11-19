@@ -8,13 +8,14 @@
  *   2. the chat history shows neither the check note nor the reply that was sent back
  *   3. "[cmd-always]": exactly one check run, then the second reply is delivered with the command notice (commandAsk) */
 'use strict';
+const life = require('../company/tools/lib/temp-life');   // temp dirs and helper processes end with the walk, on a kill too
 const { spawn } = require('child_process'); const path = require('path'); const os = require('os'); const fs = require('fs'); const http = require('http');
 const REPO = path.join(__dirname, '..');
 const TOKEN = 'mock-cmdcheck-token';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let fails = 0; const t = (name, cond, info) => { console.log((cond ? 'PASS ' : 'FAIL ') + name + (cond ? '' : ' — ' + JSON.stringify(info).slice(0, 800))); if (!cond) fails++; };
 const kids = new Set();
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-cmdcheck-selftest-'));
+const tmp = life.tmpDir('chat-cmdcheck-selftest-');
 process.on('exit', () => { for (const k of kids) { try { k.kill('SIGKILL'); } catch (_) {} } try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
 async function waitFor(fn, ms) { const end = Date.now() + ms; for (;;) { try { const v = await fn(); if (v) return v; } catch (_) {} if (Date.now() > end) return null; await sleep(150); } }
 const freePort = () => new Promise(r => { const s = require('net').createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
@@ -33,11 +34,11 @@ fs.writeFileSync(polF, JSON.stringify(pol, null, 1));
 
 (async () => {
   const sp = await freePort(), cp = await freePort();
-  const m = spawn(process.execPath, [path.join(__dirname, 'mock-station.js'), '--port', String(sp), '--token', TOKEN, '--root', tmp, '--caps', 'run-detach'], { stdio: ['ignore', 'pipe', 'inherit'] }); kids.add(m);
+  const m = life.track(spawn(process.execPath, [path.join(__dirname, 'mock-station.js'), '--port', String(sp), '--token', TOKEN, '--root', tmp, '--caps', 'run-detach'], { stdio: ['ignore', 'pipe', 'inherit'] })); kids.add(m);
   await waitFor(async () => (await fetch('http://127.0.0.1:' + sp + '/api/health', { headers: { 'x-starnet-token': TOKEN } })).status < 500, 10000);
   let err = '';
   const env = Object.assign({}, process.env, { CAPHEOS_ROOT: tmp, STARNET_URL: 'http://127.0.0.1:' + sp, CHAT_RUN_QUIET_MS: '3000' }); delete env.CONSOLE_PORT;
-  const c = spawn(process.execPath, [path.join(tmp, 'console', 'server.js'), '--port', String(cp), '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] }); kids.add(c);
+  const c = life.track(spawn(process.execPath, [path.join(tmp, 'console', 'server.js'), '--port', String(cp), '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] })); kids.add(c);
   c.stderr.on('data', d => { err += d; });
   await new Promise((resolve, reject) => { let b = ''; c.stdout.on('data', d => { b += d; if (/\{"port":\d+\}/.test(b)) resolve(); }); setTimeout(() => reject(new Error('console did not start: ' + err)), 20000); });
   const ctoken = fs.readFileSync(path.join(tmp, 'secrets', 'console-token'), 'utf8').trim();

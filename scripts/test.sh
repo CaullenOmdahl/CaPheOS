@@ -22,6 +22,9 @@ cleanup() {
   # leftovers of earlier runs' selftests in the system temp dir (only ones older than this run, so a parallel run's
   # live fixtures are never touched), then this run's own work dir
   find "$SYS_TMP" -maxdepth 1 -name '*-selftest-*' -user "$(id -u)" ! -newer "$START_MARK" -exec rm -rf {} + 2>/dev/null
+  # then every test walk's leftover nobody uses any more (Chrome profiles, per-run dirs; a parallel run's live ones are in
+  # use or younger than two minutes, so they stay): company/tools/tmp-sweep.js, class test
+  CAPHEOS_TMP_SWEEP=1 node "$REPO/company/tools/tmp-sweep.js" apply --dir "$SYS_TMP" --class test --min-age 120 >/dev/null 2>&1
   rm -rf "$WORK" "$START_MARK"
 }
 trap cleanup EXIT
@@ -31,7 +34,7 @@ LS_OPTS=(-co --exclude-standard); [ "${TEST_TRACKED_ONLY:-}" = 1 ] && LS_OPTS=(-
 ( cd "$REPO" && git ls-files -z "${LS_OPTS[@]}" | tar --null --ignore-failed-read -T - -cf - 2>/dev/null ) | tar -xf - -C "$COPY"
 
 # CAPHEOS_SECWATCH_OFFLINE: the security watch (company/tools/security-watch.js) makes no live advisory lookup from any test
-export STARNET_URL="http://127.0.0.1:1" CAPHEOS_ROOT="$COPY" PYTHONDONTWRITEBYTECODE=1 CAPHEOS_SECWATCH_OFFLINE=1
+export STARNET_URL="http://127.0.0.1:1" CAPHEOS_ROOT="$COPY" PYTHONDONTWRITEBYTECODE=1 CAPHEOS_SECWATCH_OFFLINE=1 CAPHEOS_TMP_SWEEP=0
 
 NAMES=(); RESULTS=(); TIMES=(); FAILED=0
 # step <label> <cmd...> — run in the copy, with a timeout; output goes to a log, shown on failure

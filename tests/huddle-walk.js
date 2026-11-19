@@ -14,13 +14,14 @@
  *   7. Stop mid-reply: a cut-off reply brings nobody in, even with an ASK line in its text
  *   8. a console restart mid-reply: the new console re-attaches the run and still acts on its ASK line */
 'use strict';
+const life = require('../company/tools/lib/temp-life');   // temp dirs and helper processes end with the walk, on a kill too
 const { spawn, spawnSync } = require('child_process'); const path = require('path'); const os = require('os'); const fs = require('fs');
 const REPO = path.join(__dirname, '..');
 const TOKEN = 'mock-huddle-token';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let fails = 0; const t = (name, cond, info) => { console.log((cond ? 'PASS ' : 'FAIL ') + name + (cond ? '' : ' — ' + String(JSON.stringify(info)).slice(0, 900))); if (!cond) fails++; };
 const kids = new Set();
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'huddle-walk-selftest-'));
+const tmp = life.tmpDir('huddle-walk-selftest-');
 process.on('exit', () => { for (const k of kids) { try { k.kill('SIGKILL'); } catch (_) {} } try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
 async function waitFor(fn, ms) { const end = Date.now() + ms; for (;;) { try { const v = await fn(); if (v) return v; } catch (_) {} if (Date.now() > end) return null; await sleep(120); } }
 const freePort = () => new Promise(r => { const s = require('net').createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
@@ -41,14 +42,14 @@ W('company/work/finance/dispatch-budget.json', { dailyUsd: 5 });
 
 (async () => {
   const sp = await freePort();
-  const m = spawn(process.execPath, [path.join(__dirname, 'mock-station.js'), '--port', String(sp), '--token', TOKEN, '--root', tmp, '--caps', 'run-detach'], { stdio: ['ignore', 'pipe', 'inherit'] }); kids.add(m);
+  const m = life.track(spawn(process.execPath, [path.join(__dirname, 'mock-station.js'), '--port', String(sp), '--token', TOKEN, '--root', tmp, '--caps', 'run-detach'], { stdio: ['ignore', 'pipe', 'inherit'] })); kids.add(m);
   const st = (p, b) => fetch('http://127.0.0.1:' + sp + p, { method: b ? 'POST' : 'GET', headers: { 'x-starnet-token': TOKEN, 'content-type': 'application/json' }, body: b ? JSON.stringify(b) : undefined }).then(r => r.json());
   await waitFor(async () => (await fetch('http://127.0.0.1:' + sp + '/api/health', { headers: { 'x-starnet-token': TOKEN } })).status < 500, 10000);
   let cp = 0, c = null, err = '', ctoken = '';
   const env = Object.assign({}, process.env, { CAPHEOS_ROOT: tmp, STARNET_URL: 'http://127.0.0.1:' + sp, CHAT_RUN_QUIET_MS: '3000' }); delete env.CONSOLE_PORT;
   const startConsole = async () => {
     cp = await freePort();
-    c = spawn(process.execPath, [path.join(tmp, 'console', 'server.js'), '--port', String(cp), '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] }); kids.add(c);
+    c = life.track(spawn(process.execPath, [path.join(tmp, 'console', 'server.js'), '--port', String(cp), '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] })); kids.add(c);
     c.stderr.on('data', d => { err += d; });
     await new Promise((resolve, reject) => { let b = ''; c.stdout.on('data', d => { b += d; if (/\{"port":\d+\}/.test(b)) resolve(); }); setTimeout(() => reject(new Error('console did not start: ' + err)), 20000); });
     ctoken = fs.readFileSync(path.join(tmp, 'secrets', 'console-token'), 'utf8').trim();
@@ -118,9 +119,9 @@ W('company/work/finance/dispatch-budget.json', { dailyUsd: 5 });
   const bin = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'].find(b => spawnSync('which', [b]).status === 0);
   if (!bin) console.log('SKIP 4b. the page: no Chrome');
   else {
-    const udd = fs.mkdtempSync(path.join(os.tmpdir(), 'huddle-walk-chrome-'));
+    const udd = life.tmpDir('huddle-walk-chrome-');
     const cdpPort = await freePort();
-    const chrome = spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--user-data-dir=' + udd, '--remote-debugging-port=' + cdpPort, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore' }); kids.add(chrome);
+    const chrome = life.track(spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--user-data-dir=' + udd, '--remote-debugging-port=' + cdpPort, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore', env: life.chromeEnv(udd) })); kids.add(chrome);
     process.on('exit', () => { try { fs.rmSync(udd, { recursive: true, force: true }); } catch (_) {} });
     const tab = await waitFor(async () => (await (await fetch('http://127.0.0.1:' + cdpPort + '/json')).json()).find(x => x.type === 'page'), 15000);
     const ws = new WebSocket(tab.webSocketDebuggerUrl); await new Promise(r2 => ws.onopen = r2);

@@ -6,6 +6,8 @@ After=network.target
 Type=simple
 WorkingDirectory=@ROOT@/starnet
 EnvironmentFile=@ENVFILE@
+# TMPDIR (in the environment file) is the company's own temp dir; made here too in case it was removed
+ExecStartPre=/bin/mkdir -p -m 700 @ROOT@/.starnet-data/tmp
 ExecStart=/usr/bin/env node sidecar/index.js
 Restart=always
 RestartSec=3

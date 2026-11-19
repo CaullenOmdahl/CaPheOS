@@ -12,6 +12,7 @@
  *   - phone width: no horizontal scroll
  * SKIP without Chrome. */
 'use strict';
+const life = require('../company/tools/lib/temp-life');   // temp dirs and helper processes end with the walk, on a kill too
 const { spawn, spawnSync } = require('child_process'); const path = require('path'); const os = require('os'); const fs = require('fs');
 const bin = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'].find(b => spawnSync('which', [b]).status === 0);
 if (!bin) { console.log('SKIP meeting-ui-walk: no Chrome'); process.exit(0); }
@@ -20,8 +21,8 @@ const TOKEN = 'mock-meeting-ui-token';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let fails = 0; const t = (name, cond, info) => { console.log((cond ? 'PASS ' : 'FAIL ') + name + (cond ? '' : ' — ' + String(JSON.stringify(info)).slice(0, 900))); if (!cond) fails++; };
 const kids = new Set();
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'meeting-ui-selftest-'));
-const udd = fs.mkdtempSync(path.join(os.tmpdir(), 'meeting-ui-chrome-'));
+const tmp = life.tmpDir('meeting-ui-selftest-');
+const udd = life.tmpDir('meeting-ui-chrome-');
 process.on('exit', () => { for (const k of kids) { try { k.kill('SIGKILL'); } catch (_) {} } for (const d of [tmp, udd]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {} } });
 async function waitFor(fn, ms, step) { const end = Date.now() + ms; for (;;) { try { const v = await fn(); if (v) return v; } catch (_) {} if (Date.now() > end) return null; await sleep(step || 150); } }
 const freePort = () => new Promise(r => { const s = require('net').createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
@@ -43,12 +44,12 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
 
 (async () => {
   const sp = await freePort(), cp = await freePort();
-  const m = spawn(process.execPath, [path.join(__dirname, 'mock-station.js'), '--port', String(sp), '--token', TOKEN, '--root', tmp, '--caps', 'run-detach'], { stdio: ['ignore', 'pipe', 'inherit'] }); kids.add(m);
+  const m = life.track(spawn(process.execPath, [path.join(__dirname, 'mock-station.js'), '--port', String(sp), '--token', TOKEN, '--root', tmp, '--caps', 'run-detach'], { stdio: ['ignore', 'pipe', 'inherit'] })); kids.add(m);
   const st = (p, b) => fetch('http://127.0.0.1:' + sp + p, { method: b ? 'POST' : 'GET', headers: { 'x-starnet-token': TOKEN, 'content-type': 'application/json' }, body: b ? JSON.stringify(b) : undefined }).then(r => r.json());
   await waitFor(async () => (await fetch('http://127.0.0.1:' + sp + '/api/health', { headers: { 'x-starnet-token': TOKEN } })).status < 500, 10000);
   let err = '';
   const env = Object.assign({}, process.env, { CAPHEOS_ROOT: tmp, STARNET_URL: 'http://127.0.0.1:' + sp }); delete env.CONSOLE_PORT;
-  const c = spawn(process.execPath, [path.join(tmp, 'console', 'server.js'), '--port', String(cp), '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] }); kids.add(c);
+  const c = life.track(spawn(process.execPath, [path.join(tmp, 'console', 'server.js'), '--port', String(cp), '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] })); kids.add(c);
   c.stderr.on('data', d => { err += d; });
   await new Promise((resolve, reject) => { let b = ''; c.stdout.on('data', d => { b += d; if (/\{"port":\d+\}/.test(b)) resolve(); }); setTimeout(() => reject(new Error('console did not start: ' + err)), 20000); });
   const ctoken = fs.readFileSync(path.join(tmp, 'secrets', 'console-token'), 'utf8').trim();
@@ -56,7 +57,7 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   const api = async (p, b) => { const r = await fetch(C + '/api' + p, { method: b ? 'POST' : 'GET', headers: { 'content-type': 'application/json', 'x-console-token': ctoken }, body: b ? JSON.stringify(b) : undefined }); return r.json(); };
 
   const cdpPort = await freePort();
-  const chrome = spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--user-data-dir=' + udd, '--remote-debugging-port=' + cdpPort, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore' }); kids.add(chrome);
+  const chrome = life.track(spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--user-data-dir=' + udd, '--remote-debugging-port=' + cdpPort, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore', env: life.chromeEnv(udd) })); kids.add(chrome);
   const tab = await waitFor(async () => (await (await fetch('http://127.0.0.1:' + cdpPort + '/json')).json()).find(x => x.type === 'page'), 15000);
   if (!tab) { t('chrome started', false); process.exit(1); }
   const ws = new WebSocket(tab.webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);

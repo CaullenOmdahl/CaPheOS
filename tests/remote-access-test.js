@@ -18,6 +18,7 @@
  * Exit 1 on any failed check.
  */
 'use strict';
+const life = require('../company/tools/lib/temp-life');   // temp dirs and helper processes end with the walk, on a kill too
 const fs = require('fs'); const os = require('os'); const path = require('path'); const http = require('http'); const net = require('net');
 const { spawn, spawnSync } = require('child_process');
 const REPO = path.join(__dirname, '..');
@@ -44,7 +45,7 @@ const pair = c => c ? c.split(';')[0] : '';
 
 /* a temp company root: company/ copied, secrets/, a dead station, stand-in restart scripts */
 function makeRoot() {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-access-selftest-'));
+  const tmp = life.tmpDir('remote-access-selftest-');
   fs.cpSync(path.join(REPO, 'company'), path.join(tmp, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
   fs.cpSync(path.join(REPO, 'modules'), path.join(tmp, 'modules'), { recursive: true });
   fs.mkdirSync(path.join(tmp, 'secrets'), { recursive: true, mode: 0o700 });
@@ -60,7 +61,7 @@ async function startConsole(root, env, args) {
   const port = await freePort(); const dead = await freePort();
   const e = Object.assign({}, process.env, { CAPHEOS_ROOT: root, STARNET_URL: 'http://127.0.0.1:' + dead, SERVICE_UNIT_DIR: path.join(root, 'units'), SERVICE_SYSTEMCTL: '/bin/true', CAPHEOS_SUPERVISOR: 'none' }, env || {});
   delete e.CONSOLE_PORT; if (!env || !('CONSOLE_HOST' in env)) delete e.CONSOLE_HOST;
-  const child = spawn(process.execPath, [SERVER, '--port', String(port)].concat(args || []), { env: e, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = life.track(spawn(process.execPath, [SERVER, '--port', String(port)].concat(args || []), { env: e, stdio: ['ignore', 'pipe', 'pipe'] }));
   const out = { text: '' }; child.stdout.on('data', d => { out.text += d; }); child.stderr.on('data', d => { out.text += d; });
   const up = await until(async () => { try { return (await req(port, 'GET', '/api/health', { host: (env && env.TEST_CONNECT) || '127.0.0.1' })).status === 200; } catch (_) { return false; } }, 15000);
   if (!up) throw new Error('console did not start: ' + out.text.slice(-500));
@@ -259,8 +260,8 @@ const opsRows = root => { try { return fs.readFileSync(path.join(root, 'company'
 
     /* ---- crash and restart ---- */
     const sport = await freePort();
-    const sup = spawn(process.execPath, [path.join(REPO, 'scripts', 'supervise.js'), '--name', 'console', '--', process.execPath, SERVER, '--port', String(sport)],
-      { env: Object.assign({}, process.env, { CAPHEOS_ROOT: root, STARNET_URL: 'http://127.0.0.1:1', CAPHEOS_SUPERVISOR: 'supervise' }), stdio: ['ignore', 'pipe', 'pipe'] });
+    const sup = life.track(spawn(process.execPath, [path.join(REPO, 'scripts', 'supervise.js'), '--name', 'console', '--', process.execPath, SERVER, '--port', String(sport)],
+      { env: Object.assign({}, process.env, { CAPHEOS_ROOT: root, STARNET_URL: 'http://127.0.0.1:1', CAPHEOS_SUPERVISOR: 'supervise' }), stdio: ['ignore', 'pipe', 'pipe'] }));
     let supOut = ''; sup.stdout.on('data', d => { supOut += d; }); sup.stderr.on('data', d => { supOut += d; });
     const childPid = () => { try { return Number(fs.readFileSync('/proc/' + sup.pid + '/task/' + sup.pid + '/children', 'utf8').trim().split(/\s+/)[0]) || null; } catch (_) { return null; } };
     const up1 = await until(async () => { try { return (await req(sport, 'GET', '/api/company', { headers: { cookie: S.cookie } })).status === 200; } catch (_) { return false; } }, 15000);

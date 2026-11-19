@@ -20,6 +20,7 @@
  * 1 on any failed check.
  */
 'use strict';
+const life = require('../company/tools/lib/temp-life');   // temp dirs and helper processes end with the walk, on a kill too
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs'); const os = require('os'); const path = require('path'); const http = require('http'); const net = require('net');
 const argv = process.argv.slice(2);
@@ -63,7 +64,7 @@ const VISIBLE = `(() => { const out = []; const w = document.createTreeWalker(do
 
 async function startMock(env) {
   const port = await freePort();
-  const mock = spawn(process.execPath, [path.join(__dirname, '..', 'console', 'ui', 'dev', 'mock-api.js'), String(port)], { env: Object.assign({}, process.env, { MOCK_NO_PUSH: '1' }, env), stdio: ['ignore', 'pipe', 'pipe'] });
+  const mock = life.track(spawn(process.execPath, [path.join(__dirname, '..', 'console', 'ui', 'dev', 'mock-api.js'), String(port)], { env: Object.assign({}, process.env, { MOCK_NO_PUSH: '1' }, env), stdio: ['ignore', 'pipe', 'pipe'] }));
   let out = ''; mock.stdout.on('data', d => { out += d; }); mock.stderr.on('data', d => { out += d; });
   if (!await until(async () => /mock console on/.test(out), 15000)) { mock.kill(); throw new Error('the mock did not start: ' + out.slice(-400)); }
   return { port, kill: () => mock.kill() };
@@ -72,8 +73,8 @@ async function startMock(env) {
 (async () => {
   const mocks = [];
   const cport = await freePort();
-  const udd = fs.mkdtempSync(path.join(os.tmpdir(), 'routes-walk-'));
-  const chrome = spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--user-data-dir=' + udd, '--remote-debugging-port=' + cport, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore' });
+  const udd = life.tmpDir('routes-walk-');
+  const chrome = life.track(spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--user-data-dir=' + udd, '--remote-debugging-port=' + cport, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore', env: life.chromeEnv(udd) }));
   const done = code => { try { chrome.kill(); } catch (_) {} mocks.forEach(m => { try { m.kill(); } catch (_) {} }); try { fs.rmSync(udd, { recursive: true, force: true }); } catch (_) {} setTimeout(() => process.exit(code), 200); };
   try {
     const certified = await startMock({ MOCK_CERTIFIED: '1' }); mocks.push(certified);

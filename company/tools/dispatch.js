@@ -894,6 +894,8 @@ function lastRunTail(job) {
   // happen whether or not the owner has the console open; the console calls the same tick when it lists approvals
   if (!DRY) try { const t = await require('./approvals.js').tick({ actor: 'the dispatcher' }); const n = ((t.expired || []).length || 0); if (n) log('APPROVALS: ' + n + ' expired (default deny applied)'); } catch (e) { log('APPROVALS ERROR: ' + String(e.message).slice(0, 200)); }
   try { require('./retention.js').daily({ dry: DRY, log }); } catch (e) { log('RETENTION ERROR: ' + String(e.message).slice(0, 200)); }   // once a company day (docs/RETENTION.md)
+  // temp files and left-behind headless browsers nobody uses (company/tools/tmp-sweep.js): at most hourly; /tmp is RAM on most hosts
+  try { require('./tmp-sweep.js').tick({ dry: DRY, log }); } catch (e) { log('TMP SWEEP ERROR: ' + String(e.message).slice(0, 200)); }
   // house benchmark (company/tools/model-stats.js): refreshed at most hourly, read by the people owner and the pacer for model pairing
   try {
     const hb = path.join(ROOT, 'company', 'work', 'models', 'house-benchmarks.json');

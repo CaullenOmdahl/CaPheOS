@@ -37,8 +37,8 @@ from another machine (`docs/DEPLOY-SERVER.md`).
 ## Rules this image keeps
 
 - **One process, one port.** No sidecar service, no proxy inside the container, no Docker socket.
-- **Read-only root.** `/run` is a tmpfs mounted `exec` (s6-overlay needs it) and `/tmp` is tmpfs; the
-  company is `/data`; nothing else is written.
+- **Read-only root.** `/run` is a tmpfs mounted `exec` (s6-overlay needs it) and `/tmp` is a 64 MB tmpfs; the
+  company is `/data` (its temp files too: `TMPDIR=/data/tmp`, so they never sit in RAM); nothing else is written.
 - **No ambient authority.** `cap_drop: ALL`, `no-new-privileges`, and the process drops to uid 10001
   before it runs the company.
 - **The updater never runs in the app.** It is a host-side service with a pin-only API

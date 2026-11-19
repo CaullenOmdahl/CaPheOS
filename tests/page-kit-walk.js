@@ -11,6 +11,7 @@
  * Node has no WebSocket; 1 on any failed check.
  */
 'use strict';
+const life = require('../company/tools/lib/temp-life');   // temp dirs and helper processes end with the walk, on a kill too
 const { spawn, spawnSync, execFileSync } = require('child_process');
 const fs = require('fs'); const os = require('os'); const path = require('path'); const http = require('http'); const net = require('net');
 const argv = process.argv.slice(2);
@@ -27,7 +28,7 @@ const check = (name, ok, info) => { if (!ok) fails++; console.log((ok ? 'PASS ' 
 async function until(fn, ms) { const end = Date.now() + ms; let v; while (Date.now() < end) { v = await fn(); if (v) return v; await sleep(150); } return v; }
 
 (async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'page-kit-walk-'));
+  const tmp = life.tmpDir('page-kit-walk-');
   fs.cpSync(path.join(REPO, 'company'), path.join(tmp, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
   fs.mkdirSync(path.join(tmp, 'secrets'), { recursive: true });
   fs.writeFileSync(path.join(tmp, 'secrets', 'station-token'), 'walk-fake-station-token\n', { mode: 0o600 });
@@ -44,15 +45,15 @@ async function until(fn, ms) { const end = Date.now() + ms; let v; while (Date.n
     check('scaffold ' + s.name + ' -> add installs it', add.code === 0 && add.out.status === 'installed' && add.out.type === 'page', add.out);
     if (add.code === 0) pages.push({ id: s.name, units: s.units.length });
   }
-  const server = spawn(process.execPath, [path.join(REPO, 'console', 'server.js'), '--port', '0', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const server = life.track(spawn(process.execPath, [path.join(REPO, 'console', 'server.js'), '--port', '0', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] }));
   let sOut = ''; server.stdout.on('data', d => { sOut += d; }); server.stderr.on('data', d => { sOut += d; });
   const port = await until(async () => { const m = sOut.match(/\{"port":(\d+)\}/); return m && Number(m[1]); }, 15000);
   if (!port) { console.error('page kit walk: the console did not start: ' + sOut.slice(-400)); server.kill(); process.exit(1); }
   const token = fs.readFileSync(path.join(tmp, 'secrets', 'console-token'), 'utf8').trim();
   const base = 'http://127.0.0.1:' + port;
   const cport = await freePort();
-  const udd = fs.mkdtempSync(path.join(os.tmpdir(), 'page-kit-chrome-'));
-  const chrome = spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--user-data-dir=' + udd, '--remote-debugging-port=' + cport, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore' });
+  const udd = life.tmpDir('page-kit-chrome-');
+  const chrome = life.track(spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--user-data-dir=' + udd, '--remote-debugging-port=' + cport, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore', env: life.chromeEnv(udd) }));
   const done = code => { try { chrome.kill(); } catch (_) {} try { server.kill(); } catch (_) {} setTimeout(() => { for (const d of [udd, tmp]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {} } process.exit(code); }, 300); };
   try {
     const page = await until(async () => { try { return (await getJson('http://127.0.0.1:' + cport + '/json')).find(t => t.type === 'page' && t.webSocketDebuggerUrl); } catch (_) { return null; } }, 20000);
