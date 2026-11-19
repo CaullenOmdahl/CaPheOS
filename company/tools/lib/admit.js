@@ -49,8 +49,13 @@ let SEQ = 0;
 const HEALTH_STREAM = /^(aicheck|health)/i;
 const newId = () => 'adm-' + Date.now().toString(36) + '-' + process.pid.toString(36) + '-' + (SEQ++).toString(36);
 
+// A tool started as `<tool>.js selftest` / `--selftest` (often run by the crew from inside a live company) never writes its
+// test admissions into that company's real log: 2026-11-19 both live logs held ~3,300 rows from external-gate's and
+// halt's selftests (seats sam, casey, jordan, desk). Only an explicit file (opts.file or ADMIT_LOG) is written then.
+const SELFTEST = process.argv.slice(2).some(a => a === 'selftest' || a === '--selftest');
 function append(row, o) {
   if (o && o.file === null) return;   // a caller's selftest: nothing is written
+  if (SELFTEST && !(o && o.file) && !process.env.ADMIT_LOG) return;
   const f = logFile(o);
   try { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, JSON.stringify(row) + '\n'); } catch (_) { /* never breaks a door */ }
 }

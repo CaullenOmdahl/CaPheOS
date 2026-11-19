@@ -1,0 +1,14 @@
+{
+  "_doc": "The security watch's policy (company/tools/security-watch.js, docs/SECURITY-WATCH.md). enabled: false in the company's own copy holds the watch off (no checks, no duty; a hand run with refresh --dry-run --force still works). A company may put its own copy at company/work/security/security-watch.json (the risk seat's). rescanHours: how often every part is checked again (a lockfile or runtime change checks at once); retryMin: how soon a failed check is tried again; p0Severities: the advisory severities that make a hole in a part really used here a P0 when a fix exists or it is exploited in the wild; ownerUrgentHours: a P0 still open after this long with no workaround is told to the owner at once (still nothing for them to do); p0HoldMaxDays / holdMaxDays: the longest a finding may be set aside; issues: false stops the P0 issues on the framework or project repository; issueLabels: the labels those issues carry; hosts: the public services the watch reads (each must pass the external gate).",
+  "version": 1,
+  "enabled": true,
+  "rescanHours": 6,
+  "retryMin": 30,
+  "p0Severities": ["CRITICAL", "HIGH"],
+  "ownerUrgentHours": 72,
+  "p0HoldMaxDays": 7,
+  "holdMaxDays": 90,
+  "issues": true,
+  "issueLabels": ["P0", "security"],
+  "hosts": { "osv": "api.osv.dev", "npm": "registry.npmjs.org", "kev": "www.cisa.gov", "node": "nodejs.org", "chrome": "versionhistory.googleapis.com" }
+}

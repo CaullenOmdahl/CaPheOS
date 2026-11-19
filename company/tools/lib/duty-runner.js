@@ -10,9 +10,13 @@ const DUE_RECHECK_MIN = 30;   // see wanted() in tick: a 'due' finding is re-che
  *   R.view({ now, toolsDir })       per duty { id, route, state ok|due|broken|stale|off|paused, checkedAt, reason, history, ... }
  *                                   (paused: stale only because an active restart hold runs whileHalted duties only)
  *   R.sanitize(text, max)           what any reason goes through before a prompt or a log
+ *   R.requestRun(id, { root })      plain code that just recorded urgent work (security-watch.js refresh, a new P0) asks the
+ *                                   next tick to run that duty at once, first, past its cadence; spent when it runs
  *
  * The contract a duty keeps: `node <tool> --duty`, no other argument. Exit 0 = nothing due; exit 1 = due, stdout one
- * JSON object {due:true, reason, route?, key, items?}; anything else, a timeout or more than 16 KB of output = broken.
+ * JSON object {due:true, reason, route?, key, items?, priority?, evidence?}; anything else, a timeout or more than 16 KB of
+ * output = broken. priority 'P0' (the only value) makes the dispatcher wake the routed seat at once, past its rest, and
+ * writes a **Priority:** P0 line; evidence, a path under company/work/, becomes the handoff's **Evidence:** line.
  * Absence never renders green: a duty is ok only if it ran inside 2 x its cadence and its last result was ok.
  */
 const fs = require('fs');
@@ -32,6 +36,7 @@ const P = {
   policyDefault: () => co.p('company', 'defaults', 'work', 'ops', 'duty-policy.json'),
   baseline: () => co.p('company', 'state', 'locked', 'baseline.json'),
   lkg: key => co.p('company', 'state', 'locked', 'lkg', key),
+  runNow: root => root ? path.join(root, 'company', 'state', 'duty-run-now.json') : co.p('company', 'state', 'duty-run-now.json'),
 };
 const POLICY_KEY = 'company/work/ops/duty-policy.json';
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -119,7 +124,8 @@ function parseDue(stdout) {
   if (typeof j.key !== 'string' || !j.key.trim()) return { error: 'due without a key' };
   if (j.route != null && !safeRoute(j.route)) return { error: 'due with a route that is neither a function nor a seat id' };
   const items = Array.isArray(j.items) ? j.items.slice(0, 50).map(x => (x && typeof x === 'object' ? { id: safeId(x.id), route: safeRoute(x.route) || undefined } : { id: safeId(x) })).filter(x => x.id) : [];
-  return { reason: sanitize(j.reason, 300), key: safeId(j.key, 80), route: j.route ? safeRoute(j.route) : null, items };
+  const evidence = typeof j.evidence === 'string' && /^company\/work\/[A-Za-z0-9_./-]{1,160}$/.test(j.evidence) && !j.evidence.split('/').includes('..') ? j.evidence : null;
+  return { reason: sanitize(j.reason, 300), key: safeId(j.key, 80), route: j.route ? safeRoute(j.route) : null, items, priority: j.priority === 'P0' ? 'P0' : null, evidence };
 }
 function runOne(d, opts) {
   const t0 = Date.now();
@@ -157,6 +163,14 @@ function stateOf(d, st, set, now) {
 }
 const sig = s => crypto.createHash('sha256').update(String(s)).digest('hex').slice(0, 12);
 
+/* ---- run now: { ids: { <duty id>: { at, why } } } ---- */
+function readRunNow(root) { const j = co.readJson(P.runNow(root), null); return j && typeof j === 'object' && j.ids && typeof j.ids === 'object' ? j : { ids: {} }; }
+function writeRunNow(j, root) { const f = P.runNow(root); fs.mkdirSync(path.dirname(f), { recursive: true }); const t = f + '.tmp-' + process.pid; fs.writeFileSync(t, JSON.stringify(j, null, 1) + '\n'); fs.renameSync(t, f); }
+function requestRun(id, o) {
+  o = o || {}; const sid = safeId(id, 80); if (!sid) throw new Error('requestRun: no duty id');
+  const j = readRunNow(o.root); j.ids[sid] = { at: iso(o.now || Date.now()), why: sanitize(o.why || '', 80) }; writeRunNow(j, o.root); return j.ids[sid];
+}
+
 /* ---- the tick ---- */
 async function tick(opts) {
   opts = opts || {};
@@ -172,13 +186,16 @@ async function tick(opts) {
   }
   const env = dutyEnv({ root: co.ROOT }).env;
   const t0 = Date.now();
+  const RN = readRunNow(); const runNow = id => Object.prototype.hasOwnProperty.call(RN.ids, id);
   const wanted = reg.map(d => ({ d, set: settings(d, pol), st: S.duties[d.id] || (S.duties[d.id] = {}) }))
     .filter(x => x.set.enabled && (!opts.halted || x.d.whileHalted === true))
     // a duty whose last answer was 'due' (it wakes a seat every tick until it says otherwise) is checked again within
     // DUE_RECHECK_MIN, not only after its own cadence: a finding that cleared stops waking its owner (2026-11-19, a
-    // 6-hour module-doctor finding kept waking the tool seat for hours after the module passed again)
-    .filter(x => !x.st.lastRun || now - Date.parse(x.st.lastRun) >= Math.min(x.set.everyMin, x.st.lastResult === 'due' ? DUE_RECHECK_MIN : Infinity) * 60000)
-    .sort((a, b) => (Date.parse(a.st.lastRun || 0) || 0) - (Date.parse(b.st.lastRun || 0) || 0));   // the longest-waiting first
+    // 6-hour module-doctor finding kept waking the tool seat for hours after the module passed again). A duty asked to
+    // run now (requestRun: security-watch.js on a new P0) runs this tick, first, so the per-tick cap never delays it.
+    .filter(x => runNow(x.d.id) || !x.st.lastRun || now - Date.parse(x.st.lastRun) >= Math.min(x.set.everyMin, x.st.lastResult === 'due' ? DUE_RECHECK_MIN : Infinity) * 60000)
+    .sort((a, b) => (runNow(b.d.id) ? 1 : 0) - (runNow(a.d.id) ? 1 : 0) || (Date.parse(a.st.lastRun || 0) || 0) - (Date.parse(b.st.lastRun || 0) || 0));   // asked-for-now first, then the longest-waiting
+  const spent = [];
   for (const x of wanted) {
     const remainingMs = pol.tickCapMs - (Date.now() - t0);
     if (remainingMs < 500) { x.st.waits = (x.st.waits || 0) + 1; x.st.lastWaitAt = iso(now); out.waited.push(x.d.id); continue; }
@@ -186,8 +203,9 @@ async function tick(opts) {
     if (r.result === 'waited') { x.st.waits = (x.st.waits || 0) + 1; x.st.lastWaitAt = iso(now); out.waited.push(x.d.id); continue; }
     const st = x.st; const prev = st.lastResult;
     st.lastRun = iso(now); st.lastResult = r.result; st.ms = r.ms; st.waits = 0;
-    if (r.result === 'due') { if (prev !== 'due' || !st.dueSince) st.dueSince = iso(now); st.key = r.key; st.reason = r.reason; st.route = r.route || null; st.items = r.items; }
-    else { delete st.dueSince; delete st.reason; delete st.items; delete st.route; if (r.result === 'ok') st.key = null; }
+    if (runNow(x.d.id)) spent.push(x.d.id);
+    if (r.result === 'due') { if (prev !== 'due' || !st.dueSince) st.dueSince = iso(now); st.key = r.key; st.reason = r.reason; st.route = r.route || null; st.items = r.items; if (r.priority) st.priority = r.priority; else delete st.priority; if (r.evidence) st.evidence = r.evidence; else delete st.evidence; }
+    else { delete st.dueSince; delete st.reason; delete st.items; delete st.route; delete st.priority; delete st.evidence; if (r.result === 'ok') st.key = null; }
     if (r.result === 'broken') { st.error = r.error; st.brokenSince = st.brokenSince || iso(now); } else { delete st.error; delete st.brokenSince; }
     st.history = (st.history || []).concat([{ at: iso(now), result: r.result, ms: r.ms, key: r.key || null }]).slice(-HISTORY);
     out.ran.push(x.d.id);
@@ -217,7 +235,8 @@ async function tick(opts) {
   if (key !== S.lastLine) { say('DUTIES ' + (opts.halted ? '(halted: liveness only) ' : '') + out.ran.length + ' run in ' + (ms / 1000).toFixed(1) + ' s — ' + key); S.lastLine = key; }
   S.updatedAt = iso(now); S.policySource = pol.source; S.tickCapMs = pol.tickCapMs;
   if (!opts.dry) writeState(S);
-  out.counts = counts; out.ms = ms;
+  if (spent.length && !opts.dry) { const j = readRunNow(); for (const id of spent) delete j.ids[id]; try { writeRunNow(j); } catch (e) { say('DUTY RUN-NOW ERROR: ' + sanitize(e.message, 120)); } }
+  out.counts = counts; out.ms = ms; out.runNow = spent;
   return out;
 }
 
@@ -237,9 +256,9 @@ function view(opts) {
     if (s === 'stale' && pausedNote && !d.whileHalted) s = 'paused';
     return { id: d.id, source: d.source, tool: d.tool, route: st.route || d.route, owner: routeName(st.route || d.route), state: s, enabled: set.enabled, everyMin: set.everyMin,
       checkedAt: st.lastRun || null, reason: s === 'due' ? st.reason || null : s === 'broken' ? sanitize(d.invalid || st.error || 'broken', 240) : s === 'stale' ? (st.lastRun ? 'last run ' + st.lastRun + ', older than 2 x ' + set.everyMin + ' min' : 'never run') : s === 'paused' ? pausedNote : null,
-      key: st.key || null, items: s === 'due' ? (st.items || []) : [], dueSince: st.dueSince || null, brokenSince: st.brokenSince || null, waits: st.waits || 0, whileHalted: !!d.whileHalted,
+      key: st.key || null, items: s === 'due' ? (st.items || []) : [], priority: s === 'due' ? st.priority || null : null, dueSince: st.dueSince || null, brokenSince: st.brokenSince || null, waits: st.waits || 0, whileHalted: !!d.whileHalted,
       history: (st.history || []).slice(-HISTORY) };
   }) };
 }
 
-module.exports = { registry, policy, settings, tick, view, runOne, parseDue, stateOf, sanitize, safeId, safeRoute, readState, P, OUT_CAP, TICK_CAP_DEFAULT, TICK_CAP_BOUNDS, POLICY_KEY };
+module.exports = { registry, policy, settings, tick, view, runOne, requestRun, readRunNow, parseDue, stateOf, sanitize, safeId, safeRoute, readState, P, OUT_CAP, TICK_CAP_DEFAULT, TICK_CAP_BOUNDS, POLICY_KEY };

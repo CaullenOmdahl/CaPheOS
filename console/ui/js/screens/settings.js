@@ -11,6 +11,7 @@ const MODULES = {
   tempo: () => import('./settings/tempo.js'),
   models: () => import('./settings/models.js'),
   connections: () => import('./settings/connections.js'),
+  security: () => import('./settings/security.js'),
   pages: () => import('./settings/pages.js'),
   system: () => import('./settings/system.js'),
 };
@@ -21,6 +22,7 @@ const LEDE = {
   tempo: 'How often the crew wakes, and the routines that run on a clock.',
   models: 'Which AI each crew member runs on, how much of each subscription routines may use, and the daily cap for AI that is paid by use.',
   connections: 'What the crew can reach: connected services, skills, channels and keys.',
+  security: 'Whether any part the company uses has a known security hole, and who is fixing it. Checked every few hours, automatically.',
   pages: 'Panels and pages the crew added to this console. Hide or remove any of them.',
   system: 'Health, certification, backups, background services, sign-in and access, flags, modules, restarts, framework updates, and how to stop the company.',
 };

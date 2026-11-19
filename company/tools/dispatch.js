@@ -881,6 +881,10 @@ function lastRunTail(job) {
   // write. Then the 3-day results checks of applied harness changes (company/tools/harness-change.js).
   try { await require('./locked-watch.js').tick({ dry: DRY, log, jobs, from: 'dispatch' }); } catch (e) { log('LOCKED WATCH ERROR: ' + String(e.message).slice(0, 200)); }
   try { await require('./harness-change.js').tick({ dry: DRY, log }); } catch (e) { log('HARNESS CHANGE ERROR: ' + String(e.message).slice(0, 200)); }
+  // Security watch (company/tools/security-watch.js, docs/SECURITY-WATCH.md): the inventory and advisory lookup that the
+  // security-watch duty reads (duties open no socket). Real work only when due (rescan time, a lockfile or runtime
+  // change, the owner's Check now); network only through the external gate; time-boxed; plain code, no model.
+  try { await require('./security-watch.js').refresh({ log, dry: DRY }); } catch (e) { log('SECURITY WATCH ERROR: ' + String(e.message).slice(0, 200)); }
   // Duties (docs/DUTIES.md): after the locked-file watch, so an unrecorded policy edit is reported (and not obeyed) before
   // anything runs. Fail-safe: an error here is one line and the tick goes on without duty work.
   const DR = require('./lib/duty-runner');
@@ -1171,6 +1175,7 @@ function lastRunTail(job) {
   // without items, its key) is already in an OPEN handoff to that seat or in its open quest; otherwise the same stall rule
   // as handoffs: the same duty key after STALL_AFTER wakes => flag once and stop.
   state.duties = state.duties || {};
+  const p0Wake = new Set();   // seats with a P0 duty item (docs/SECURITY-WATCH.md): rest 0, ordered right after owner messages
   const seatOfRoute = r => { if (!r) return null; if (CREW && CREW[r]) return r; if (DR.safeRoute(r) && ['ceo', 'people', 'tools', 'risk', 'floor', 'finance'].includes(r)) { const id = co.seatFor(r); return id && CREW && CREW[id] ? id : CEO_ID; } return CEO_ID; };
   for (const { d, st } of (dutyRun && dutyRun.due) || []) {
     const groups = new Map(); const items = Array.isArray(st.items) ? st.items : [];
@@ -1190,8 +1195,9 @@ function lastRunTail(job) {
       if (ds.count >= STALL_AFTER) { if (!ds.flagged) { ds.flagged = true; log('STALLED duty ' + d.id + ' (' + seat + '): still due with key ' + String(st.key) + ' after ' + STALL_AFTER + ' runs — needs ' + CEO_NAME + ' (CEO)' + lastRunTail(findLoop(jobs, seat))); } continue; }
       const why = DR.sanitize(st.reason, 300);
       work[seat] = work[seat] || [];
-      work[seat].push({ id: 'duty:' + d.id, why, duty: d, key: String(st.key), items: its.map(i => i.id), skey });
-      reason[seat] = (reason[seat] ? reason[seat] + '; ' : '') + 'duty:' + d.id + ' (' + why + ')';
+      work[seat].push({ id: 'duty:' + d.id, why, duty: d, key: String(st.key), items: its.map(i => i.id), skey, priority: st.priority === 'P0' ? 'P0' : null, evidence: st.evidence || null });
+      reason[seat] = (reason[seat] ? reason[seat] + '; ' : '') + (st.priority === 'P0' ? 'P0 ' : '') + 'duty:' + d.id + ' (' + why + ')';
+      if (st.priority === 'P0') p0Wake.add(seat);   // a P0 (security-watch): woken at once, past its rest, ahead of other work
     }
   }
   // Watched jobs (the seventh source, company/tools/notify-when.js and service.js --wake): each completion row in
@@ -1257,7 +1263,7 @@ function lastRunTail(job) {
   // the ones the revenue line depends on are the ones that fire.
   const nextDue = id => ((state.agents[id] || {}).nextDue) || '9999';
   const order = Object.keys(work).sort((a, b) =>
-    ((ownerWake.has(b) ? 1 : 0) - (ownerWake.has(a) ? 1 : 0)) || ((hiringWake.has(b) ? 1 : 0) - (hiringWake.has(a) ? 1 : 0)) || ((urgent.has(b) ? 1 : 0) - (urgent.has(a) ? 1 : 0)) || (prio(b) - prio(a)) || nextDue(a).localeCompare(nextDue(b)));
+    ((ownerWake.has(b) ? 1 : 0) - (ownerWake.has(a) ? 1 : 0)) || ((p0Wake.has(b) ? 1 : 0) - (p0Wake.has(a) ? 1 : 0)) || ((hiringWake.has(b) ? 1 : 0) - (hiringWake.has(a) ? 1 : 0)) || ((urgent.has(b) ? 1 : 0) - (urgent.has(a) ? 1 : 0)) || (prio(b) - prio(a)) || nextDue(a).localeCompare(nextDue(b)));
   // ---- Sprint: what each seat has to do now (its signature), the Sprint numbers, effort per seat, lanes ----
   const sigOf = id => SP.workSig([(work[id] || []).map(q => q.id + ':' + (q.duty ? q.key : (state.quests[q.id] || {}).done)), (state.agents[id] || {}).key || '',
     ownerWake.has(id) ? state.owner.key : '', hiringWake.get(id) || [], artifactWakes[id] || [], (urgent.get(id) || []).map(n => n.key)]);
@@ -1353,7 +1359,7 @@ function lastRunTail(job) {
     const ownCooldown = CREW && CREW[agentId] && Number(CREW[agentId].cooldownMin) > 0 ? Number(CREW[agentId].cooldownMin) * 60000 : COOLDOWN_MS;   // per-person rest, loops.json cooldownMin
     // rest: the seat's cooldown (owner message: the short one); in Sprint only the floor when its work changed since its last wake
     const sig = SPRINT ? sigOf(agentId) : null;
-    const rest = (schedWake.get(agentId) || {}).only ? { ms: 0, fast: false } : SP.restMs({ baseMs: ownerWake.has(agentId) ? OWNER_COOLDOWN_MS : ownCooldown, sprint: !!SPRINT, changed: !!SPRINT && state.sprintSig[agentId] !== sig, floorMin: SPRINT && SPRINT.cooldownFloorMin, unchangedMin: SPRINT && SPRINT.unchangedRestMin, hiring: hiringWake.has(agentId) || urgent.has(agentId) });
+    const rest = (schedWake.get(agentId) || {}).only ? { ms: 0, fast: false } : SP.restMs({ baseMs: ownerWake.has(agentId) ? OWNER_COOLDOWN_MS : ownCooldown, sprint: !!SPRINT, changed: !!SPRINT && state.sprintSig[agentId] !== sig, floorMin: SPRINT && SPRINT.cooldownFloorMin, unchangedMin: SPRINT && SPRINT.unchangedRestMin, hiring: hiringWake.has(agentId) || urgent.has(agentId) || p0Wake.has(agentId) });
     if (Date.now() - last < rest.ms) { say(agentId, { state: 'resting', changed: rest.fast || !SPRINT, at: co.localParts(new Date(last + rest.ms)).time, waits: waitsOf[agentId] }); continue; }
     if (!ALLOW_ASK && modes[agentId] === 'ask') { askHeld.push(job.name + ' (' + agentId + ')'); say(agentId, { state: 'held', why: 'has work, but its approval mode is "ask", so an unattended run could not save anything' }); continue; }   // due, but cannot save unattended
     // the global USD cap, then this agent's share (an owner message is never held; a subscription loop is not metered).
@@ -1368,7 +1374,7 @@ function lastRunTail(job) {
       const m = A.money({ capOn: CAP_ON, metered: isMetered(job), ownerWake: ownerWake.has(agentId), spread: { on: !!(SPRINT && SPRINT.spreadDailyCap), cap: DAILY_USD, spent24h: spent, spentLastHour: lastHourMetered, hoursLeft, blocking: waitersOf(agentId) } });
       if (m.verdict === 'spread') { spreadHeld.push(job.name + ' — ' + m.why); moneyHold('spread'); continue; }
     }
-    { const tempo = require('./cadence.js').tempoAllows(agentId, Date.now(), { record: !DRY, ownerWake: ownerWake.has(agentId) }); if (!tempo.ok) { log('TEMPO HOLD ' + job.name + ' for ' + agentId + ': ' + tempo.reason); say(agentId, { state: 'held', why: 'has work, held by the wake limits: ' + tempo.reason }); continue; } }   // wake caps (cadence.json bounds): an owner message is never held but still counts
+    { const tempo = require('./cadence.js').tempoAllows(agentId, Date.now(), { record: false, ownerWake: ownerWake.has(agentId) }); if (!tempo.ok) { log('TEMPO HOLD ' + job.name + ' for ' + agentId + ': ' + tempo.reason); say(agentId, { state: 'held', why: 'has work, held by the wake limits: ' + tempo.reason }); continue; } }   // wake caps (cadence.json bounds): an owner message is never held but still counts
     const names = reason[agentId];
     const viaInbox = names.includes(' OPEN in ');
     if (DRY) { A.admit({ door: 'dispatch', kind: 'run', seat: agentId, jobId: job.id, why: names }, { dry: true }); log('WOULD run ' + job.name + ' for ' + agentId + ' (' + names + ')'); fired++; say(agentId, { state: 'started', why: names }); continue; }
@@ -1386,11 +1392,13 @@ function lastRunTail(job) {
     if (tk.decision === 'hold' && tk.noModel) { log('NO MODEL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'none of its models can run right now (limits or the daily budget); it starts when one opens' }); continue; }
     if (tk.decision === 'hold' && tk.quota) { log('QUOTA HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'its model is at its usage limit; it waits for the limit to reset or its next model' }); continue; }
     if (tk.decision === 'hold') { log('REFUSAL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'its model refused a run; it waits for its next model' }); continue; }
+    // the wake counts toward the tempo caps only now, past every hold (cadence.js recordWake)
+    try { require('./cadence.js').recordWake(agentId, Date.now(), { ownerWake: ownerWake.has(agentId) }); } catch (_) {}
     log('RUN ' + job.name + ' for ' + agentId + ' (' + names + ')' + (rest.fast ? ' [Sprint: new work; rest ' + SPRINT.cooldownFloorMin + ' min]' : ''));
     fired++;
     // a duty wake hands the agent its reason: one OPEN handoff in its inbox, ids and counts only (dedup reads it next tick)
     const wroteItems = [];   // blocks this wake writes into the inbox: they are what it is for, too (wakes.jsonl)
-    for (const q of qs) if (q.duty && inboxOf(agentId)) wroteItems.push(appendHandoff(inboxOf(agentId), 'duty ' + q.duty.id + ': ' + q.why.slice(0, 160), { Need: (q.duty.why ? q.duty.why + '. ' : '') + 'The check says: ' + q.why + '. Fix the cause or hand it to whoever can; the duty clears this by itself once the check passes. See it again: `node ' + (q.duty.source === 'company/tools/duties.js' ? 'company/tools/' : q.duty.source.replace(/module\.json$/, '')) + q.duty.tool + ' --duty`.', Why: 'a read-only duty check found it (docs/DUTIES.md); the dispatcher woke you for it.', Duty: q.duty.id + ' key ' + q.key + (q.items.length ? ' items ' + q.items.join(', ') : ''), Deadline: 'today', Status: 'OPEN' }));
+    for (const q of qs) if (q.duty && inboxOf(agentId)) wroteItems.push(appendHandoff(inboxOf(agentId), (q.priority === 'P0' ? 'P0 ' : '') + 'duty ' + q.duty.id + ': ' + q.why.slice(0, 160), Object.assign({ Need: (q.duty.why ? q.duty.why + '. ' : '') + 'The check says: ' + q.why + '. Fix the cause or hand it to whoever can; the duty clears this by itself once the check passes. See it again: `node ' + (q.duty.source === 'company/tools/duties.js' ? 'company/tools/' : q.duty.source.replace(/module\.json$/, '')) + q.duty.tool + ' --duty`.', Why: 'a read-only duty check found it (docs/DUTIES.md); the dispatcher woke you for it.', Duty: q.duty.id + ' key ' + q.key + (q.items.length ? ' items ' + q.items.join(', ') : ''), Deadline: 'today' }, q.priority === 'P0' ? { Priority: 'P0 — work this before anything else; the owner is told it is being fixed' } : {}, { Status: 'OPEN' }, q.evidence ? { Evidence: q.evidence } : {})));
     // Fire detached: the run is admitted on a 200 and then keeps going after we close the socket, so a long
     // loop can never be cancelled by this tick's own hold (a run tied to the request socket dies with it).
     // Only a 200 counts toward the stall budget — a refused start (409/400) is not a run.

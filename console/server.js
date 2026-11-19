@@ -778,6 +778,9 @@ route('POST', /^\/api\/halt\/resume$/, () => runApi('halt.js', ['resume', '--by'
 // background services (company/tools/service.js): Settings › System › Background services; stop/start/remove as the owner
 route('GET', /^\/api\/services$/, () => runApi('service.js', ['list', '--json']));
 route('POST', /^\/api\/services\/([A-Za-z0-9@_.:-]{2,80})\/(stop|start|remove)$/, m => runApi('service.js', [m[2], m[1], '--by', OWNER], { timeout: 60000 }));
+// the security watch (company/tools/security-watch.js): Settings › Security, plain words first; Check now as the owner
+route('GET', /^\/api\/security$/, () => runApi('security-watch.js', ['view', '--json']));
+route('POST', /^\/api\/security\/check$/, () => runApi('security-watch.js', ['check-now', '--by', 'owner', '--json']));
 route('GET', /^\/api\/cadence$/, () => runApi('cadence.js', ['show', '--json']));
 route('POST', /^\/api\/cadence\/default$/, (m, q, b) => {
   const pos = (v, what) => { const n = Number(v); if (!(Number.isInteger(n) && n > 0)) bad(what + ' must be a whole number above 0'); return String(n); };

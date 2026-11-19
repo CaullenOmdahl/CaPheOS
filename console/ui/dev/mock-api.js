@@ -398,6 +398,10 @@ async function apiRoute(req, res, p, q) {
       A.active = null; A.lastPingAt = now(); return view();
     }
   }
+  // the security watch (Settings › Security): the REAL view (company/tools/security-watch.js) over its offline fixture
+  // company (recorded station lockfile + OSV records, fake gh), built once in a temp folder and removed on exit
+  if (M === 'GET' && p === '/api/security') return ok(await securityView());
+  if (M === 'POST' && p === '/api/security/check') { const sv = await securityView(); SEC.pending = true; return ok({ text: 'The next check starts within a few minutes.', was: sv.checkedAt }); }
   // background services (Settings › System): company/tools/service.js list --json, and stop/start/remove as the owner
   if (M === 'GET' && p === '/api/services') return ok({ company: 'mock', guardrail: 'on', services: S.services });
   const svm = p.match(/^\/api\/services\/([A-Za-z0-9@_.:-]{2,80})\/(stop|start|remove)$/);
@@ -874,6 +878,21 @@ function station(req, res, p, q, B) {
 }
 
 const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.json': 'application/json' };
+const SEC = { opts: null, dir: null, pending: false, building: null };
+async function securityView() {
+  if (!SEC.opts) SEC.building = SEC.building || (async () => {
+    const SW = require(path.join(__dirname, '..', '..', '..', 'company', 'tools', 'security-watch.js'));
+    SEC.dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'mock-secwatch-'));
+    process.on('exit', () => { try { fs.rmSync(SEC.dir, { recursive: true, force: true }); } catch (_) {} });
+    for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => process.exit(0));
+    const t = SW.buildFixtureRoot(SEC.dir, path.join(__dirname, '..', '..', '..', 'company', 'tools', 'tests', 'fixtures', 'security-watch'));
+    await SW.refresh(Object.assign({}, t.opts, { force: true }));
+    SEC.opts = t.opts;
+  })();
+  if (!SEC.opts) await SEC.building;
+  return Object.assign(SW_view(), { checkNowPending: SEC.pending });
+}
+function SW_view() { return require(path.join(__dirname, '..', '..', '..', 'company', 'tools', 'security-watch.js')).view(SEC.opts); }
 http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   if (u.pathname.startsWith('/api/')) return apiRoute(req, res, u.pathname, u.searchParams).catch(e => J(res, 500, { ok: false, error: e.message }));

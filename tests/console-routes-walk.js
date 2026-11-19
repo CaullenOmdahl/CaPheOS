@@ -48,7 +48,7 @@ const REDIRECTS = [
 ];
 // every owner-facing screen (the halt screen included)
 const SCREENS = ['#/today', '#/chat/owner', '#/chat/agent:agent', '#/chat/group:g1', '#/crew', '#/crew/agent/model', '#/crew/agent/profile', '#/crew/hiring', '#/crew/floor', '#/work/quests', '#/work/handoffs', '#/work/decisions', '#/work/projects',
-  '#/spend', '#/settings/company', '#/settings/talk', '#/settings/autonomy', '#/settings/tempo', '#/settings/models', '#/settings/connections', '#/settings/pages', '#/settings/system', '#/halt'];
+  '#/spend', '#/settings/company', '#/settings/talk', '#/settings/autonomy', '#/settings/tempo', '#/settings/models', '#/settings/connections', '#/settings/security', '#/settings/pages', '#/settings/system', '#/halt'];
 // file paths, tool names, API routes, and the raw ids, tags and counters the owner should never read outside Details:
 // question ids, candidate seat ids, governance/pacing tags, tool-call markup, lane counters, the pacer's jargon
 const LEAK = /company\/|\.js\b|\/api\/|\bq-\d{4,}\b|\bcand-[a-z]|\b(governance|pacing):|<parameter|<invoke|parameter name=|lanes? running|days' share|% did nothing|\/item\b|proposals\/h|spend rail|\(owner-only|mode 0600/;
@@ -134,7 +134,7 @@ async function startMock(env) {
     // Settings: one screen, every section listed, the current one marked; tabs on a phone
     await go('#/settings/autonomy');
     const secs = await js(`[...document.querySelectorAll('.settings-nav a')].map(a => a.textContent + (a.getAttribute('aria-current') === 'page' ? '*' : ''))`);
-    check('Settings lists its eight sections and marks the open one', JSON.stringify(secs) === JSON.stringify(['Company and charter', 'How the crew talks to you', 'Autonomy and guardrails*', 'Tempo and routines', 'Models and subscriptions', 'Connections and keys', 'Console pages', 'System']), secs);
+    check('Settings lists its nine sections and marks the open one', JSON.stringify(secs) === JSON.stringify(['Company and charter', 'How the crew talks to you', 'Autonomy and guardrails*', 'Tempo and routines', 'Models and subscriptions', 'Connections and keys', 'Security', 'Console pages', 'System']), secs);
     // How the crew talks to you (docs/TALK.md): three level cards, each with its example; the length re-renders them
     await go('#/settings/talk');
     const tk = await until(() => js(`(() => { const c = [...document.querySelectorAll('.talk-level')]; return c.length === 3 ? { checked: c.map(x => x.getAttribute('aria-checked')), plain: (document.querySelector('.talk-example[data-level=plain]') || {}).textContent } : null; })()`), 6000);

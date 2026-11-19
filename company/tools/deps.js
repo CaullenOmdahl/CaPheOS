@@ -43,7 +43,8 @@
  *   licence   permissive (MIT, BSD, Apache-2.0, ISC, MPL-2.0, PSF, Unlicense, CC0, Zlib, ...) passes; GPL/LGPL and the
  *             like, and anything unknown, need the risk seat's approval; AGPL and SSPL (network copyleft: a commercial
  *             decision for a server product) need the OWNER (an owner question with an Approve button).
- *   age       a version published less than policy.minAgeDays (default 7) days ago needs the risk seat's approval.
+ *   age       a version published less than policy.minAgeDays (default 7) days ago needs the risk seat's approval, except
+ *             the exact first fixed release of an open P0 security finding (security-watch.js fastTrack; logged age-waived).
  *   typo      a name one or two edits from a popular package (reqeusts, lodahs) needs the risk seat's approval.
  *   scripts   above. yanked versions are refused.
  *   registry  only pypi.org/files.pythonhosted.org and registry.npmjs.org (REGISTRIES below). Any other registry (the
@@ -454,6 +455,9 @@ const ECOSYSTEMS = { python: PY, node: NODE };
 const SYSTEM_WORDS = ['system', 'apt', 'apt-get', 'dnf', 'yum', 'pacman', 'apk', 'zypper', 'brew', 'snap', 'port'];
 
 function scriptsAllowed(m, eco) { return [...new Set((m.approvals || []).filter(a => a.kind === 'scripts' && a.ecosystem === eco).map(a => a.name))]; }
+function securityFix(eco, name, version) {
+  try { return require('./security-watch.js').fastTrack(eco === 'python' ? 'PyPI' : 'npm', name, version, { root: ROOT }); } catch (_) { return null; }
+}
 function approvalFor(m, kind, eco, name, version) {
   return (m.approvals || []).find(a => a.kind === kind && a.ecosystem === eco && a.name === name && (!a.version || !version || a.version === version)) || null;
 }
@@ -505,6 +509,9 @@ function apply(E, m, reg, pins, ctx) {
         continue;
       }
       if (p.kind === 'scripts' && scriptsAllowed(m, E.id).includes(p.d.name)) continue;
+      // security fast track (docs/SECURITY-WATCH.md): the exact first fixed release of an open P0 here skips the age wait
+      // (and only that: licence, scripts, typo, integrity and governance still apply); recorded in the deps log
+      if (p.kind === 'age') { const ft = securityFix(E.id, p.d.name, p.d.version); if (ft) { logRow({ act: 'age-waived', ecosystem: E.id, name: p.d.name, version: p.d.version, by: ctx.seat.name, security: ft.advisory, finding: ft.id }); continue; } }
       if (!approvalFor(m, p.kind, E.id, p.d.name, ['licence', 'age'].includes(p.kind) ? p.d.version : null)) open.push(p);
     }
     if (open.length) {
