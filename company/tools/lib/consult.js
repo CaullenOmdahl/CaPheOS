@@ -629,17 +629,34 @@ async function consultStep(ctx) {
       const prompt = withOwnText(job.prompt, advisePrompt({ template: tmpl, lead: leadName, deptId: dept, deptName: e.d.name, ids }));
       if (prompt !== job.prompt) { const u = await ST.cron(ctx.call, 'POST', '/api/cron/update', { id: job.id, patch: { prompt } }, 'update "' + job.name + '"'); if (!u.ok) { log('ADVISE ERROR: ' + u.reason); continue; } job.prompt = prompt; }
       const pair = ds.st.leadModelDefault || null;
-      const tk = A.admit({ door: 'consult', kind: 'run', seat: lead, jobId: job.id, provider: (pair && pair.provider) || job.provider, why: why.slice(0, 200) });
-      if (tk.decision === 'hold') { log('ADVISE HOLD ' + job.name + ' for ' + leadName + ': ' + tk.reason); continue; }
-      let override = null, note = '';
+      // the same rules as any other wake, for the model the run will really use: the approval mode ("ask" cannot save
+      // unattended), the money check (the daily metered cap, the per-agent share, the Sprint budget and spread: lib/admit.js
+      // money() with the dispatcher's numbers; no numbers = held) and the pacer (the override allowlist this tick lists the
+      // pair open for the lead: a stop, a closure or the pacer's hold shuts it). The lead model first, else the routine's
+      // own; neither open = the advise run waits for a later tick.
+      if (ctx.modes && ctx.modes[lead] === 'ask' && !ctx.allowAsk) { log('ADVISE HOLD ' + job.name + ' for ' + leadName + ': its approval mode is "ask", so an unattended run could not save anything'); continue; }
+      const moneyWhy = require('./delegate-allow').moneyFn(ctx.budget);
+      const OA = require('./override-allow');
+      const usable = (p, viaOverride) => { const sh = OA.openFor(lead, p, { root: o.root }); if (sh) return (viaOverride ? 'the lead model is ' : 'its own model is ') + sh; const m = moneyWhy(lead, p.provider); return m ? m : null; };
+      let override = null, note = '', held = null;
       if (pair && pair.provider && pair.model) {
         let allowed = true; try { const R = require('./routing'); const L = R.loadPolicy(o.root); if (L) allowed = R.routeAllowed('review', { provider: pair.provider, model: pair.model }, R.knobs(L.policy)); } catch (_) {}
-        const shut = allowed ? require('./override-allow').openFor(lead, pair, { root: o.root }) : 'the class rules deny it';
+        const shut = allowed ? usable(pair, true) : 'the class rules deny the lead model';
         if (!shut) override = Object.assign({ provider: pair.provider, model: pair.model }, pair.effort ? { effort: pair.effort } : {});
-        else note = ' (on its own model: the lead model is ' + shut + ')';
+        else note = ' (on its own model: ' + shut + ')';
       }
+      const own = { provider: String(job.provider || ''), model: String(job.model || '') };
+      if (!override) { const w2 = own.provider && own.model ? usable(own, false) : 'its routine names no model'; if (w2) held = (note ? note.replace(/^ \(on its own model: |\)$/g, '') + '; ' : '') + w2; }
+      if (held) { log('ADVISE HOLD ' + job.name + ' for ' + leadName + ': ' + held); continue; }
+      const tk = A.admit({ door: 'consult', kind: 'run', seat: lead, jobId: job.id, provider: (override && override.provider) || job.provider, why: why.slice(0, 200) });
+      if (tk.decision === 'hold') { log('ADVISE HOLD ' + job.name + ' for ' + leadName + ': ' + tk.reason); continue; }
       let res = await ctx.fireRun(job.id, override);
-      if (override && res.status === 403) { note = ' (the station refused the lead model; on its own model)'; override = null; res = await ctx.fireRun(job.id); }
+      if (override && res.status === 403) {
+        // the station refused the lead model: the routine's own model only when it passes the same checks
+        const w3 = own.provider && own.model ? usable(own, false) : 'its routine names no model';
+        if (w3) { A.started(tk, Object.assign({}, res, { runId: null })); log('ADVISE HOLD ' + job.name + ' for ' + leadName + ': the station refused the lead model and ' + w3); continue; }
+        note = ' (the station refused the lead model; on its own model)'; override = null; res = await ctx.fireRun(job.id);
+      }
       const runId = res.status === 200 ? W.runIdOf(res.body) : null;
       A.started(tk, Object.assign({}, res, { runId }));
       if (res.status !== 200) { log('ADVISE refused for ' + leadName + ': HTTP ' + res.status + ' ' + String(res.body || '').slice(0, 160)); continue; }

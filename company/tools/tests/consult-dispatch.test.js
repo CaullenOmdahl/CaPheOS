@@ -64,10 +64,10 @@ async function company(o) {
   const cad = JSON.parse(fs.readFileSync(path.join(REPO, 'company', 'defaults', 'work', 'ops', 'cadence.json'), 'utf8'));
   cad.tempo.sprint = { on: false };
   w('company/work/ops/cadence.json', cad);
-  w('company/work/finance/dispatch-budget.json', { dailyUsd: 1, perAgentUsd: 0, unmeteredProviders: ['claude-cli'] });
+  w('company/work/finance/dispatch-budget.json', { dailyUsd: 1, perAgentUsd: 0, unmeteredProviders: o.metered ? ['ollama'] : ['claude-cli'] });
   w('company/state/governance.json', { categories: {} });
   w('company/owner/inbound.jsonl', '');
-  w('.starnet-data/workspaces/runs.jsonl', '');
+  w('.starnet-data/workspaces/runs.jsonl', o.spent ? JSON.stringify({ runId: 'r-spent', agentId: 'ben', provider: 'claude-cli', model: 'haiku', usd: o.spent, startedAt: Date.now() - 5 * MIN, endedAt: Date.now() - 4 * MIN, reason: 'done' }) + '\n' : '');
   for (const f of ['company/defaults/departments.json', 'company/defaults/work/departments/advise-prompt.md']) w(f, fs.readFileSync(path.join(REPO, f), 'utf8'));
   if (o.advisor !== false) w('company/departments.json', depts(o.advisor || { mode: 'live', since: '2026-11-01T00:00:00Z', by: 'owner', paused: null }));
   for (const f of ['BRIEF.md', 'DECISIONS.md', 'INBOX-DIGEST.md']) w('company/work/departments/eng/' + f, '# x\n');
@@ -90,8 +90,8 @@ async function company(o) {
     const p = spawnSync(process.execPath, ['-e', code], { cwd: T, encoding: 'utf8', env });
     return JSON.parse(p.stdout);
   };
-  c.tick = () => {
-    w('company/state/override-allow.json', { v: 1, at: Date.now(), by: 'dispatcher', agents: { kwa: [{ provider: LEAD.provider, model: LEAD.model }] } });
+  c.tick = (t) => {
+    w('company/state/override-allow.json', { v: 1, at: Date.now(), by: 'dispatcher', agents: (t && t.open) || { kwa: [{ provider: LEAD.provider, model: LEAD.model }] } });
     const before = reqs().length;
     const p = spawnSync(process.execPath, [DISPATCH], { cwd: T, encoding: 'utf8', timeout: 170000, env });
     const mine = reqs().slice(before);
@@ -193,4 +193,29 @@ test('off: no departments advice, no consult files, no advise routine, no CONSUL
   assert.equal(c.r('company/state/consults.jsonl'), null); assert.equal(c.r('company/state/consult-state.json'), null);
   assert.doesNotMatch(r.log, /CONSULT|ADVISE/);
   assert.ok(!r.created.some(b => /advise/.test(b.name)));
+});
+
+test('an advise run passes the money and pacer checks like any wake: the daily cap holds it; a shut lead model falls back only to an open own model', async () => {
+  // the daily metered cap is reached and the lead model is metered: no advise run
+  let c = await company({ metered: true, spent: 5 });
+  [c.ask('Ben', 'ben-1'), c.ask('Cat', 'cat-1'), c.ask('Dan', 'dan-1')].forEach(r => assert.equal(r.code, 0, JSON.stringify(r)));
+  let r = c.tick();
+  let job = ((await st('GET', '/api/cron')).jobs || []).find(j => /^Kwame advise/.test(j.name) && j.workdir === c.T);
+  assert.ok(job, 'the routine exists: ' + r.log);
+  assert.equal(r.runs.filter(b => b.id === job.id).length, 0, 'no advise run past the daily cap');
+  assert.match(r.log, /ADVISE HOLD Kwame advise\S* for Kwame: .*daily metered cap/);
+  // the lead model is shut by the pacer and the routine's own model is not open either: held, never "on its own model anyway"
+  c = await company();
+  [c.ask('Ben', 'ben-1'), c.ask('Cat', 'cat-1'), c.ask('Dan', 'dan-1')].forEach(x => assert.equal(x.code, 0));
+  r = c.tick({ open: { kwa: [] } });
+  job = ((await st('GET', '/api/cron')).jobs || []).find(j => /^Kwame advise/.test(j.name) && j.workdir === c.T);
+  assert.equal(r.runs.filter(b => b.id === job.id).length, 0, 'no advise run on a model nobody opened: ' + r.log);
+  assert.match(r.log, /ADVISE HOLD Kwame advise\S* for Kwame: .*lead model is .*its own model is /);
+  // its model open (the advise routine is created on the lead model): it runs
+  r = c.tick({ open: { kwa: [{ provider: job.provider, model: job.model }] } });
+  assert.equal(r.runs.filter(b => b.id === job.id).length, 1, r.log);
+  // the approval mode "ask" holds it too (the source: the same rule as the dispatcher's wakes)
+  const src = fs.readFileSync(path.join(TOOLS, 'lib', 'consult.js'), 'utf8');
+  assert.match(src, /ctx\.modes && ctx\.modes\[lead\] === 'ask' && !ctx\.allowAsk/);
+  assert.match(fs.readFileSync(path.join(TOOLS, 'dispatch.js'), 'utf8'), /consultStep\(\{ dry: DRY, log, jobs, order, say, call, fireRun, modes, allowAsk: ALLOW_ASK, budget: \{/);
 });
