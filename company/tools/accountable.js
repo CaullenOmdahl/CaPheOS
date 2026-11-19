@@ -4,19 +4,25 @@
  * lib/accountable.js.
  *
  *   node company/tools/accountable.js handback <item> --note "<what I checked>" [--tests ".."] [--test-cmd "<cmd>"]...
- *        [--cwd <repo> [--base <ref>] | --diff-file <file> | --no-diff "<why>"] [--pr <url> --sha <head>] --by <member>
+ *        [--cwd <repo> [--base <ref>] | --diff-file <file> | --no-diff "<why>"] [--pr <url> --cwd <repo> --sha <head>] --by <member>
  *        the self-check: the item's acceptance check is required, its **Check command:** and every --test-cmd are run
- *        (exit 3 when one fails: nothing goes to the lead), then the audit packet (the diff, the check, the note) goes to
- *        the lead. In recording-only mode it is recorded, nothing is sent.
+ *        (exit 3 when one fails: nothing goes to the lead; in a code department at least one must exist), then the audit
+ *        packet (the diff, the check, the note) goes to the lead. A PR needs --sha (the accept is for that commit), and
+ *        with --sha the diff is git's <base>...<sha> in --cwd, never one typed in. In recording-only mode it is recorded,
+ *        nothing is sent.
  *   node company/tools/accountable.js audit <ac-id> --verdict ACCEPT|REVISE --check "<what I checked>" [--finding ".."]... --by <lead>
  *        binding: ACCEPT makes the item DONE and lets its merge (at the handed-back commit) go ahead; REVISE (with at
  *        least one finding) sends it back to the member. The first verdict decides.
  *   node company/tools/accountable.js pass <inbox>#<item> [--escalation cross-department|"owner: money|access|ownership|commitment"] --by <lead>
  *   node company/tools/accountable.js pass <inbox>#<item> --return --why ".." --by <lead>      a held onward handoff
- *   node company/tools/accountable.js drop <inbox>#<item> --why ".." --by <lead>              the item is not needed (not done)
+ *   node company/tools/accountable.js drop <inbox>#<item> --why ".." --by <lead>              the item is not needed (not done);
+ *        its open audit closes. The CEO may drop (or audit) only a job whose check the dispatcher recorded as waiting too long
  *   node company/tools/accountable.js escape <ac-id> --why "<what was found>" --by <seat|owner>   a problem found later in
  *        accepted work, charged to the lead's review
  *   node company/tools/accountable.js spot <ac-id> --result agree|disagree --why ".." --by <seat>   a second look
+ *   node company/tools/accountable.js dispute <ac-id> --why "<why it was not a miss>" --by <lead>   the lead disputes an
+ *        escape charged to its review; it does not count until the people seat rules
+ *   node company/tools/accountable.js ruling <ac-id> --result uphold|clear --why ".." --by <people seat>
  *   node company/tools/accountable.js list [--dept <id>] [--open] [--json]
  *   node company/tools/accountable.js status [--dept <id>] [--json]                           the department scorecards
  *   node company/tools/accountable.js --selftest
@@ -56,7 +62,7 @@ function main(argv) {
   const a = args(argv), cmd = a.pos[0] || 'status';
   const by = str(a.by);
   const res = r => ({ code: r.ok ? 0 : (r.code || 2), out: r });
-  if (['handback', 'audit', 'pass', 'drop', 'escape', 'spot'].includes(cmd)) {
+  if (['handback', 'audit', 'pass', 'drop', 'escape', 'spot', 'dispute', 'ruling'].includes(cmd)) {
     if (!by) return { code: 2, out: { ok: false, error: '--by <name> is required' } };
     const cc = callerCheck(by, cmd); if (cc) return { code: 2, out: { ok: false, error: cc } };
   }
@@ -67,6 +73,8 @@ function main(argv) {
   if (cmd === 'drop') return res(AC.drop({ ref: a.pos[1], by, why: str(a.why) }));
   if (cmd === 'escape') return res(AC.escape({ id: a.pos[1], by, why: str(a.why) }));
   if (cmd === 'spot') return res(AC.spot({ id: a.pos[1], by, result: str(a.result), why: str(a.why) }));
+  if (cmd === 'dispute') return res(AC.dispute({ id: a.pos[1], by, why: str(a.why) }));
+  if (cmd === 'ruling') return res(AC.ruling({ id: a.pos[1], by, result: str(a.result), why: str(a.why) }));
   if (cmd === 'list') {
     const all = [...AC.audits(AC.rows()).values()].filter(x => (!a.dept || x.hb.dept === a.dept) && (!a.open || x.status === 'open'));
     const out = all.map(x => ({ id: x.id, status: x.hb.shadow ? 'recorded only' : x.status, item: x.hb.ref, seat: x.hb.seat, lead: x.hb.lead, tier: x.hb.tier, at: x.hb.ts, verdict: x.verdict ? x.verdict.verdict : null, escapes: x.escapes.length }));
@@ -76,7 +84,7 @@ function main(argv) {
     const s = AC.status({ dept: str(a.dept) || undefined });
     return { code: 0, out: a.json ? s : s.departments.map(d => d.name + ' (' + d.mode + (d.withdrawn ? ', withdrawn' : '') + '): ' + d.words.join(' ')).join('\n') || 'No departments.' };
   }
-  return { code: 2, out: { ok: false, error: 'usage: accountable.js handback <item> --note ".." --by <member> | audit <ac-id> --verdict ACCEPT|REVISE --check ".." [--finding ".."] --by <lead> | pass <ref> [--escalation ..|--return --why ..] --by <lead> | drop <ref> --why .. --by <lead> | escape <ac-id> --why .. --by <seat> | spot <ac-id> --result agree|disagree --why .. --by <seat> | list | status | --selftest' } };
+  return { code: 2, out: { ok: false, error: 'usage: accountable.js handback <item> --note ".." --by <member> | audit <ac-id> --verdict ACCEPT|REVISE --check ".." [--finding ".."] --by <lead> | pass <ref> [--escalation ..|--return --why ..] --by <lead> | drop <ref> --why .. --by <lead> | escape <ac-id> --why .. --by <seat> | spot <ac-id> --result agree|disagree --why .. --by <seat> | dispute <ac-id> --why .. --by <lead> | ruling <ac-id> --result uphold|clear --why .. --by <seat> | list | status | --selftest' } };
 }
 function run(argv) { try { return main(argv); } catch (e) { return { code: 1, out: { ok: false, error: String(e && e.stack || e) } }; } }
 
@@ -87,7 +95,9 @@ function selftest() {
   ok('check command in backticks', () => assert.equal(AC.checkCommandOf('**Check command:** `npm test -- parser`'), 'npm test -- parser'));
   ok('risk: a risky path, a big diff, an explicit routine', () => {
     assert.equal(AC.riskOf({ block: '', diff: '+++ b/secrets/x\n+a\n' }).risky, true);
-    assert.equal(AC.riskOf({ block: '**Risk:** routine', diff: '+++ b/secrets/x\n' }).risky, false);
+    assert.equal(AC.riskOf({ block: '**Risk:** routine', diff: '+++ b/secrets/x\n', routineTrusted: true }).risky, true, 'routine never outweighs a risky path');
+    assert.equal(AC.riskOf({ block: '## rotate the payment key\n**Risk:** routine', diff: '+++ b/docs/a.md\n', routineTrusted: true }).risky, false);
+    assert.equal(AC.riskOf({ block: '## rotate the payment key\n**Risk:** routine', diff: '+++ b/docs/a.md\n' }).risky, true, 'a routine mark nobody trusted is ignored');
     assert.equal(AC.riskOf({ block: '## fix the docs', diff: '+++ b/docs/a.md\n+x\n' }).risky, false);
   });
   ok('escalation reasons: cross-department or one of the four owner gates', () => { assert.ok(AC.escalationOk('cross-department').ok); assert.ok(AC.escalationOk('owner: money').ok); assert.ok(!AC.escalationOk('owner: tooling').ok); assert.ok(!AC.escalationOk('').ok); });

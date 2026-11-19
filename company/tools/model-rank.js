@@ -272,12 +272,14 @@ function load(o) {
   // advisor leads (docs/DEPARTMENTS.md §5): the consult ledger and the departments' advisor settings, for advisorEvaluation
   const consults = parse(B.tailText(path.join(root, 'company', 'state', 'consults.jsonl'), 8 * B.MB));
   let deptSettings = null; try { deptSettings = require('./lib/departments').settings(departments, { root }); } catch (_) {}
+  // accountable leads (docs/DEPARTMENTS.md §8): the trusted audit ledger (only rows accountable.js recorded), for accountableEvaluation
+  let accountableRows = []; try { accountableRows = require('./lib/accountable').rows({ root }); } catch (_) {}
   // full profiles (docs/PROFILES.md): sign-off records, meeting echo stats and each seat's profile history (the trials), for profileEvaluation
   const signoffs = parse(B.tailText(path.join(root, 'company', 'state', 'signoffs.jsonl'), 4 * B.MB));
   const meetingStats = parse(B.tailText(path.join(root, 'company', 'work', 'meetings', 'stats.jsonl'), 4 * B.MB));
   const profileHistory = {};
   try { const pd = path.join(root, 'company', 'people', 'profiles'); for (const f of fs.readdirSync(pd).filter(x => /\.history\.jsonl$/.test(x)).sort()) profileHistory[f.replace(/\.history\.jsonl$/, '')] = parse(B.tailText(path.join(pd, f), 2 * B.MB)).map(r => ({ at: r.at, version: r.version, op: r.op, kind: r.kind, trial: r.body && r.body.trial ? { from: r.body.trial.from, until: r.body.trial.until } : null })); } catch (_) {}
-  return { policy: pol.policy, policySource: pol.source, routing: loadRouting(root), now, crew, departments, deptSettings, consults, wakes, runs, attributed, files, ledger, corrections, evidence, signoffs, meetingStats, profileHistory };
+  return { policy: pol.policy, policySource: pol.source, routing: loadRouting(root), now, crew, departments, deptSettings, consults, wakes, runs, attributed, files, ledger, corrections, evidence, signoffs, meetingStats, profileHistory, accountableRows };
 }
 
 /* ---------------- the ranking (pure) ---------------- */
@@ -818,11 +820,13 @@ function fanoutEvaluation(inp, an, K, base, scoredOf) {
 }
 /* accountableEvaluation (docs/RANKING.md §10, docs/DEPARTMENTS.md §8; the owner: "it would still be cheaper for the lead to
  * audit the work rather than having the lead write the work ... around a 75% reduction"): per department whose accountable
- * leads is live, its members' scored items accepted by the lead (a **Verdict:** ACCEPT line by the lead) since
- * accountable.since, against the lead's own scored items of the same class (the same kind of work done by the lead alone).
- * Cost per accepted item = the items' cost (score.cost: the members' runs AND the lead's audit runs, which wakes.jsonl books
- * to the audited items, door audit) over their one-shot sum. Per class the two are compared, then weighted by the accepted
- * items of each class: cut = 1 - ratio. The department's scorecard numbers override this section's (fallbackBelowCut,
+ * leads is live, its members' scored items handed back to the lead since accountable.since, read from the TRUSTED audit
+ * ledger (inp.accountableRows: lib/accountable.js rows, never a **Verdict:** line typed into an inbox), against the lead's
+ * own scored items of the same class closed in the same span (as long before accountable.since as the pathway has run, and
+ * since). Cost per accepted item = the cost of EVERY handed-back item (accepted, or sent back and later dropped or left:
+ * work paid for and not accepted counts too; score.cost: the members' runs AND the lead's audit runs, which wakes.jsonl
+ * books to the audited items, door audit) over the one-shot sum of the items the lead accepted. Per class the two are
+ * compared, then weighted by the accepted items of each class: cut = 1 - ratio. The department's scorecard numbers override this section's (fallbackBelowCut,
  * expectedCut, minItems). fall back when the cut is under fallbackBelowCut over at least minItems accepted items (the
  * dispatcher then withdraws the department to recording only once per hash, lib/accountable.js auditStep, and tells the
  * owner), keep otherwise (with how it compares with the owner's expected cut), not enough data below minItems or with no
@@ -834,25 +838,35 @@ function accountableEvaluation(inp, an, K, base, scoredOf) {
   const live = deps.filter(d => d && d.lead && DL.accountableOf(d, st).mode === 'live').sort((a, b) => (String(a.id) < String(b.id) ? -1 : 1));
   if (!live.length) return null;
   const metric = it => num(it.cost[K.scoreCost], 0);
-  const side = list => { const n = list.length, acc = list.reduce((x, i) => x + i.oneShot, 0), cost = list.reduce((x, i) => x + metric(i), 0);
-    return { items: n, accepted: rnd(acc, 4), cost: rnd(cost), costPerAccepted: acc > 0 ? rnd(cost / acc) : null }; };
+  // acc(i): whether the item's result counts as accepted (the pathway: the lead's recorded ACCEPT; the lead alone: all)
+  const side = (list, acc) => { const ok = list.filter(i => acc(i)), n = list.length, a = ok.reduce((x, i) => x + i.oneShot, 0), cost = list.reduce((x, i) => x + metric(i), 0);
+    return { items: ok.length, notAccepted: n - ok.length, accepted: rnd(a, 4), cost: rnd(cost), costPerAccepted: a > 0 ? rnd(cost / a) : null }; };
+  let AC = null; try { AC = require('./lib/accountable'); } catch (_) {}
+  const ledger = AC && Array.isArray(inp.accountableRows) ? [...AC.audits(inp.accountableRows).values()].filter(x => !x.hb.shadow) : [];
+  const keyOf = (file, id) => String(file) + '\n' + String(id);
+  const end = Number.isFinite(inp.now) ? inp.now : an.items.reduce((x, i) => Math.max(x, num(i.closedAt, 0)), 0);
   const out = [];
   for (const d of live) {
     const a = DL.accountableOf(d, st), T = { minItems: num(a.scorecard.minItems, base.minItems), expectedCut: num(a.scorecard.expectedCut, base.expectedCut), fallbackBelowCut: num(a.scorecard.fallbackBelowCut, base.fallbackBelowCut) };
     const dept = String(d.id), lead = String(d.lead), members = new Set(DL.members(d).filter(x => x !== lead));
     const sinceMs = Date.parse(a.since || '') || 0;
-    const acceptedByLead = it => (it.verdicts || []).some(v => !v.fail && /^ACCEPT/.test(String(v.word || '')) && String(v.by) === lead);
+    const mine = ledger.filter(x => x.hb.dept === dept);
+    const acceptedKeys = new Set(mine.filter(x => x.status === 'accepted' && x.verdict && String(x.verdict.by) === lead).map(x => keyOf(x.hb.file, x.hb.item)));
+    const handedKeys = new Set(mine.map(x => keyOf(x.hb.file, x.hb.item)));
+    const acceptedByLead = it => acceptedKeys.has(keyOf(it.file, it.id));
     const scored = an.items.filter(it => scoredOf(it));
-    const path_ = scored.filter(it => members.has(String(it.seat)) && it.closedAt >= sinceMs && acceptedByLead(it));
-    const alone = scored.filter(it => String(it.seat) === lead);
-    const classes = [...new Set(path_.map(it => it.cell.class))].sort();
-    const per = classes.map(cls => { const p = side(path_.filter(it => it.cell.class === cls)), b = side(alone.filter(it => it.cell.class === cls));
+    const path_ = scored.filter(it => members.has(String(it.seat)) && it.closedAt >= sinceMs && handedKeys.has(keyOf(it.file, it.id)));
+    const span = Math.max(DAY, end - sinceMs);
+    const alone = scored.filter(it => String(it.seat) === lead && (!sinceMs || (it.closedAt >= sinceMs - span && it.closedAt <= end)));
+    const classes = [...new Set(path_.filter(acceptedByLead).map(it => it.cell.class))].sort();
+    const per = classes.map(cls => { const p = side(path_.filter(it => it.cell.class === cls), acceptedByLead), b = side(alone.filter(it => it.cell.class === cls), () => true);
       return { class: cls, pathway: p, leadAlone: b, ratio: p.costPerAccepted != null && b.costPerAccepted ? rnd(p.costPerAccepted / b.costPerAccepted, 4) : null }; });
     const usable = per.filter(c => c.ratio != null), w = usable.reduce((x, c) => x + c.pathway.items, 0);
     const ratio = w ? rnd(usable.reduce((x, c) => x + c.ratio * c.pathway.items, 0) / w, 4) : null, cut = ratio == null ? null : rnd(1 - ratio, 4);
-    const entry = { dept, lead, since: a.since || null, withdrawn: a.withdrawn ? { by: a.withdrawn.by, at: a.withdrawn.at } : null, thresholds: sortKeys(T), costUnit: K.scoreCost, pathway: side(path_), leadAlone: side(alone), classes: per, ratio, cut };
+    const P_ = side(path_, acceptedByLead);
+    const entry = { dept, lead, since: a.since || null, withdrawn: a.withdrawn ? { by: a.withdrawn.by, at: a.withdrawn.at } : null, thresholds: sortKeys(T), costUnit: K.scoreCost, pathway: P_, leadAlone: side(alone, () => true), classes: per, ratio, cut };
     const reasons = [];
-    if (path_.length < T.minItems) reasons.push('accepted items ' + path_.length + ' of ' + T.minItems);
+    if (P_.items < T.minItems) reasons.push('accepted items ' + P_.items + ' of ' + T.minItems);
     if (ratio == null) reasons.push('no item of the same class the lead did alone, with an accepted result, to compare with');
     let verdict;
     if (reasons.length) verdict = 'not enough data';

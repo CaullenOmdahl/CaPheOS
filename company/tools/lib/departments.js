@@ -63,7 +63,7 @@ const ADVISOR_FALLBACK = { mode: 'off', routine: 'advise', batch: { minGapMin: 5
 const ACCOUNTABLE_MODES = ['off', 'shadow', 'live'];
 const ACCOUNTABLE_FALLBACK = { mode: 'off', routine: 'lead audit', audit: { routine: null, risky: null },
   risk: { classes: [], paths: ['secrets/', '.github/', 'company/tools/', 'company/state/', 'Dockerfile', 'container/'], minDiffLines: 400, words: ['money', 'payment', 'credential', 'password', 'secret', 'migration', 'delete', 'production', 'trade', 'order'] },
-  selfCheck: { timeoutSec: 600, noteMinChars: 20 }, packetMaxChars: 12000,
+  selfCheck: { timeoutSec: 600, noteMinChars: 20 }, packetMaxChars: 12000, stallHours: 6,
   batch: { minGapMin: 5, maxWaitMin: 15, startAt: 2 },
   scorecard: { days: 28, spotCheckEvery: 10, minItems: 10, expectedCut: 0.75, fallbackBelowCut: 0.25 } };
 const ACCOUNTABLE_DEEP = ['audit', 'risk', 'selfCheck', 'batch', 'scorecard'];

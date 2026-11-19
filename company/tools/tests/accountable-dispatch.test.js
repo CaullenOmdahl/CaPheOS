@@ -102,7 +102,7 @@ test('live: the handed-back item waits for the lead\'s audit run on the fixed au
   assert.equal(r0.code, 0, r0.out);
   const spec = r0.created.find(b => /^Kwame lead audit/.test(b.name));
   assert.ok(spec && spec.enabled === false && spec.agentId === 'kwa', 'the audit routine, never scheduled by the station: ' + JSON.stringify(r0.created));
-  c.add('to-ben.md', '\n## 2026-11-19 from Kwame — fix the parser\n**Id:** ben-1\n**Need:** fix it\n**Acceptance check:** the parser tests pass\n**Status:** OPEN\n');
+  c.add('to-ben.md', '\n## 2026-11-19 from Kwame — fix the parser\n**Id:** ben-1\n**Need:** fix it\n**Acceptance check:** the parser tests pass\n**Check command:** `true`\n**Status:** OPEN\n');
   c.add('to-dan.md', '\n## 2026-11-19 from Ben — deploy the new parser\n**Id:** dan-1\n**Need:** deploy it on Ops\n**Status:** OPEN\n');
   await st('POST', '/__hold', { names: ['Kwame lead audit'] });
   try {
@@ -113,6 +113,11 @@ test('live: the handed-back item waits for the lead\'s audit run on the fixed au
     assert.match(r1.log, /ACCOUNTABLE PASS HELD to-dan\.md#dan-1 \(Ben -> Dan\): waits for Kwame/);
     const parked = JSON.parse(c.r('company/state/parked.json')).items;
     assert.ok(parked.some(x => x.seat === 'dan' && x.kind === 'audit' && /Kwame to pass it on/.test(x.words)), JSON.stringify(parked));
+    // the lead's "Pass on" block is the audit run's work (routine tier), not a wake of Kwame's own loop on the top tier
+    assert.match(r1.log, /AUDIT Kwame lead audit[^\n]* for Kwame \(routine on claude-cli\/claude-sonnet-4-6@low\): pass:to-dan\.md#dan-1/);
+    assert.ok(!r1.bySeat.kwa, 'Kwame\'s loop is not woken for the pass-on block: ' + r1.log.slice(-1200));
+    await st('POST', '/__finish', { name: 'Kwame lead audit' });
+    c.w('company/state/accountable-state.json', Object.assign(JSON.parse(c.r('company/state/accountable-state.json')), { lastAudit: {} }));
     fs.writeFileSync(path.join(c.T, 'diff.txt'), DIFF);
     const hb = c.cli(['handback', 'ben-1', '--note', 'ran the parser tests, all green on my side', '--diff-file', path.join(c.T, 'diff.txt'), '--by', 'Ben']);
     assert.equal(hb.code, 0, JSON.stringify(hb)); assert.equal(hb.out.tier, 'routine');
@@ -125,7 +130,7 @@ test('live: the handed-back item waits for the lead\'s audit run on the fixed au
     assert.match(job.prompt, new RegExp('Open audits for you: ' + hb.out.id + ' \\(in your inbox\\)\\.'));
     assert.ok(c.jsonl('company/state/admit-log.jsonl').some(x => x.door === 'audit' && x.seat === 'kwa'));
     const wk = c.jsonl('company/state/wakes.jsonl').filter(x => x.door === 'audit');
-    assert.equal(wk.length, 1); assert.deepEqual(wk[0].items.map(i => i.id), ['ben-1']);
+    assert.equal(wk.length, 2, 'the pass-on run, then the audit'); assert.deepEqual(wk.map(w => w.items.map(i => i.id)), [['to-dan.md#dan-1'], ['ben-1']]);
     // Ben sets it DONE himself before the verdict: back to OPEN
     const t = c.r('company/work/handoffs/to-ben.md'); fs.writeFileSync(path.join(c.T, 'company/work/handoffs/to-ben.md'), t.replace(/^\*\*Status:\*\* OPEN$/m, '**Status:** DONE — finished'));
     const r3 = await c.tick();

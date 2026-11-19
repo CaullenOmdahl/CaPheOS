@@ -368,13 +368,21 @@ every finished item of its team. One switch per department, `accountable.mode` (
 
 A **withdrawn** department (`accountable.withdrawn`) acts as recording only. The owner switches it (`departments.js
 accountable <id> off|shadow|live --by owner`, or the department card, "Lead checks every finished job: Off · Recording only ·
-On"); it needs a lead who is not the CEO (`ACCOUNTABLE_NO_LEAD` in `check`). The first tick a department is on, the work
-already open is noted as from before and left alone (no copies, no holds on it).
+On"); it needs a lead who is not the CEO (`ACCOUNTABLE_NO_LEAD` in `check`). The first tick a department is on, and again each
+time it becomes `live` (from recording only or a withdrawal) or comes back from `off`, the work already there is noted as
+from before and left alone (no copies, no holds, nothing reopened): work handled while the department was not live is
+never reopened or locked by the switch. A recording-only hand-back is a record only: it is never waited for, and it never
+stops a later live hand-back of the same item.
 
 **1. Intake through the lead.** Work for the department goes to its lead, who assigns it to a member (a handoff from the
-lead into the member's inbox) or does it when no member fits. Work someone else sends straight to a member is recorded as
-the lead's (an `intake` row, `via: direct`) and copied to the lead's inbox as a DONE block for the record, which wakes
-nobody. Each assigned or copied item gets a `**Hand back:**` line that tells the member how it comes back.
+lead into the member's inbox) or does it when no member fits. Every other item in a member's inbox is recorded as the
+lead's too and copied to the lead's inbox as a DONE block for the record, which wakes nobody: work someone else sent
+straight to the member (`via: direct`), work whose writer nobody can tell (the console, a script, a heading that names
+nobody: `direct` with no writer, never let past the lead) and the member's own items (`via: own`). An item that first
+appears already DONE is held like any other. Each item gets a `**Hand back:**` line that tells the member how it comes
+back. The `intake` row keeps the item's check command, acceptance check and `**Risk:**` as they were when it came in.
+An open item with no acceptance check cannot be handed back: after `stallHours` (6) the lead gets one block asking for it
+(or a drop), and after twice that the CEO gets one.
 
 **2. Workers on the lower tier.** The members run on their own chains and routes (routing classes and tier caps: §6,
 docs/ROUTING.md; code never on the MiniMax plan). The lead mainly reads: its audit runs see a packet, not the work's
@@ -382,10 +390,15 @@ history.
 
 **3. The self-check.** Before handing back, the member runs
 `accountable.js handback <item> --note "<what I checked>" [--tests ".."] [--test-cmd "<cmd>"]... [--cwd <repo> [--base
-<ref>] | --diff-file <file> | --no-diff "<why>"] [--pr <url> --sha <head>] --by <member>`. It refuses an item with no
-acceptance check (`**Acceptance check:**`, `**Check:**` or an `### Acceptance check` section: the lead adds one), a note
-under `selfCheck.noteMinChars`, and code work with no diff. It RUNS the item's `**Check command:**` and every `--test-cmd`
-(each within `selfCheck.timeoutSec`): one failure is a `selfcheck` row, exit 3, and nothing reaches the lead.
+<ref>] | --diff-file <file> | --no-diff "<why>"] [--pr <url> --cwd <repo> --sha <head>] --by <member>`. It refuses an item
+with no acceptance check (`**Acceptance check:**`, `**Check:**` or an `### Acceptance check` section: the lead adds one), a
+note under `selfCheck.noteMinChars`, code work with no diff, and, in a code department (or for code work), a hand-back
+with no command to run: a note alone is not a self-check there. It RUNS the item's `**Check command:**` and every
+`--test-cmd` (each within `selfCheck.timeoutSec`): one failure is a `selfcheck` row, exit 3, and nothing reaches the lead.
+Work with a PR (`--pr`, or the item's own `**PR:**`) needs `--sha <head>` and `--cwd <repo>`: the commit must exist there,
+the recorded sha is git's full one, and the packet's diff is git's `<base>...<sha>`, never a `--diff`/`--diff-file` typed
+in. The packet shows the lead what the member chose: the folder the checks ran in (`--cwd`), and any change to the
+item's check command or acceptance check since it came in (the `intake` row).
 
 **4. The binding audit.** A passing hand-back puts one `## Audit:` block in the lead's inbox (at most `packetMaxChars`, the
 diff clipped first): the acceptance check, the self-check (the note, the commands that passed, the tests named) and the
@@ -397,16 +410,21 @@ holds, in live:
 - **the item's DONE**: the member is not woken for a handed-back item (parked "waiting for <lead> to check it"), and a
   DONE set without the lead's accept is put back to OPEN once per closing (`done-held` row, `ACCOUNTABLE DONE HELD`).
   ACCEPT sets it DONE; REVISE sets it OPEN with the findings, and the member is woken to fix it.
-- **the merge**: `merge-gate.js` asks `gate()`: a member's PR merges only with an ACCEPT whose hand-back named that PR at
-  that head commit (`--pr`, `--sha`); later commits need a new hand-back. Recording only allows and says it would refuse.
+- **the merge**: `merge-gate.js` asks `gate()`. Whether a PR needs the lead's accept is decided by the PR, not by who
+  merges it: a PR a member of an accountable department handed back, one a member's item names (`**PR:**`), or any PR a
+  member presents. The CEO, a seat in another department or the lead merging it changes nothing. It merges only with an
+  ACCEPT whose hand-back named that PR at exactly that head commit; a merge with no commit named, or a later commit, needs
+  a new hand-back. Recording only allows and says it would refuse.
 - **the onward handoff** (5, below).
 
 **Which model audits.** Routine audits run on `accountable.audit.routine`, risky ones on `accountable.audit.risky`; `null`
 reads `leadModelDefault` (the lead's top tier). An audit is risky when the department lists its class in `risk.classes`,
 it touches a path in `risk.paths` (secrets, CI, the tools, company state, containers by default), its diff has at least
 `risk.minDiffLines` changed lines, its heading or Need names a word in `risk.words` (money, credential, migration,
-production, trade, ...), it asks to merge, act outside or trade (the sign-off cues), or it says `**Risk:** high`;
-`**Risk:** routine` marks it routine. The pairs are set ONLY by the owner (`departments.js accountable <id> audit-model
+production, trade, ...), it asks to merge, act outside or trade (the sign-off cues), or it says `**Risk:** high`.
+`**Risk:** routine` counts only when the lead or whoever assigned the item wrote it (it is unchanged since the intake row
+and the writer was not the member), and even then it only sets aside the classes, words and cues: a risky path, the diff
+size or `**Risk:** high` keep it risky. The pairs are set ONLY by the owner (`departments.js accountable <id> audit-model
 routine|risky <provider/model[@effort]|none> --by owner`): the CEO, the dispatcher, the weekly routing suggestion and the
 ranking are refused, `set-route` has no audit class, and no router picks it. The class rules for review and for the
 department's default class apply first (a code department's audit never on the MiniMax plan, for the owner too).
@@ -419,16 +437,30 @@ per tier when `batch.startAt` (2) audits wait or the oldest has waited `batch.ma
 `batch.minGapMin` (5) after the last one, never while the lead's loop runs; one run per department per tick, through
 `admit()` (door `audit`, docs/BUDGET.md) on that tier's pair as a one-run override (`lib/override-allow.js` lists exactly
 the two audit pairs for a live lead). The pair must pass the class rules, the pacer (the override list), the money check
-and the lead's approval mode; if it does not, or the station refuses it, the audit WAITS (`AUDIT HOLD`). It is never moved
-to another model. Its `wakes.jsonl` row (door `audit`) lists the audited items, so their cost includes the audit; the
-ranking does not count the audit run as authorship. The audit packets in a live lead's inbox are the audit run's work,
-not its loop's. No second top-tier opinion is asked by default.
+and the lead's approval mode; if it does not, or the station refuses it, or the routine is missing, the audit WAITS
+(`AUDIT HOLD`). It is never moved to another model. **An audit that waits `stallHours` (6)** is recorded once (`stalled`
+row), and the CEO gets one block in plain words ("Ben's job has waited 7 hours for Kwame's check: Kwame's model is closed
+right now."); the owner gets the same line as a notice (at most one a day per department) when the cause is one the owner
+controls (the model, the class rules, the money cap, the lead's approval mode, a station 403). The CEO may then answer the
+audit in the lead's place (`audit … --by <CEO>`, recorded `inPlaceOf`) or drop the item (`drop … --by <CEO>`); before it has
+stalled the CEO cannot. Its `wakes.jsonl` row (door `audit`) lists the audited items, so their cost includes the audit; the
+ranking does not count the audit run as authorship. The audit packets and the `Pass on:` blocks in a live lead's inbox
+are the audit run's work (pass-ons on the routine pair), not its loop's, so neither wakes the lead's top tier on its own.
+No second top-tier opinion is asked by default.
 
-**5. The lead passes accepted work on.** A member's OPEN handoff to anyone outside the department (not marked FYI) is held
-for its receiver ("waiting for <lead> to pass it on") and the lead gets one `Pass on:` block. The lead passes it with
-`accountable.js pass <inbox>#<item> --by <lead>` (it gets `**Passed on by:** <lead> (lead of <dept>, accountable for it)`) or
-returns it (`--return --why ".."`, which closes it). Inside the department, handoffs move freely. The receiver deals with one
-accountable person.
+**What the audits cost at first.** With both audit pairs unset (the default) every audit, routine or risky, runs on the
+lead's own top model, so the cost per item stays near the lead's own price and the expected cut cannot show until the
+owner chooses a cheaper pair for routine audits. The department card says so in plain words while `audit.routine` is
+unset.
+
+**5. The lead passes accepted work on.** A member's OPEN handoff to anyone outside the department is held for its receiver
+("waiting for <lead> to pass it on") and the lead gets one `Pass on:` block. Only the lead's recorded `pass` (or `return`)
+row releases it: a `**Passed on by:**` line typed into the block counts for nothing. An FYI that asks for something (a
+`**Need:**`, `**Ask:**` or `**Decision:**` line, or a heading that asks) is held like any other block; only an FYI that asks
+for nothing goes straight. Not held: a block to the people seat, so a member can raise a matter about its own lead without
+the lead holding or returning it. The lead passes it with `accountable.js pass <inbox>#<item> --by <lead>` (it gets
+`**Passed on by:** <lead> (lead of <dept>, accountable for it)`) or returns it (`--return --why ".."`, which closes it).
+Inside the department, handoffs move freely. The receiver deals with one accountable person.
 
 **6. The scorecard on the lead.** `accountable.js status [--dept <id>] [--json]`, the department card ("How the team is
 doing", `GET /api/departments/<id>/scorecard`) and the people function's review of the lead read the same numbers over
@@ -436,8 +468,13 @@ doing", `GET /api/departments/<id>/scorecard`) and the people function's review 
 item's `**Deadline:**`, of those with one), cost per accepted item (the runs `wakes.jsonl` books to the items, the audit's
 share shown apart), self-check failures, **escapes** (a problem found later in accepted work, charged to the lead's review:
 `accountable.js escape <ac-id> --why ".." --by <seat|owner>`, never by the lead itself, and recorded by the dispatcher when
-an accepted item is reopened) and **spot checks**: every `scorecard.spotCheckEvery`th accept (10; 0 = none) goes to the
-people function (or the lead's manager) for a second, cheap look (`accountable.js spot <ac-id> --result agree|disagree --why
+an accepted item is reopened, or when a new item asks for a fix and names the accepted item, its audit id or its PR, for
+example `**Fixes:** ben-1`). The lead may dispute an escape (`accountable.js dispute <ac-id> --why ".." --by <lead>`): the
+people seat (or the CEO when there is none) gets one block and rules (`accountable.js ruling <ac-id> --result uphold|clear
+--why ".." --by <seat>`); a disputed escape does not count until it is upheld, and the card says how many wait. **Spot
+checks**: about 1 in `scorecard.spotCheckEvery` accepts (10; 0 = none), picked by a hash of the audit's own id (random, so
+the lead cannot tell which ones; never the one who accepted it or the member), goes to the people function (or the lead's
+manager) for a second, cheap look (`accountable.js spot <ac-id> --result agree|disagree --why
 ".." --by <seat>`), so rubber-stamping shows; a lead that has sent nothing back after five audits gets a line saying so, beside its spot
 checks. The lead's own grader drift is in the house ranking (docs/RANKING.md §10). The words on the
 card pass `lib/owner-scope.js wordsProblems`.
@@ -445,11 +482,15 @@ card pass `lib/owner-scope.js wordsProblems`.
 **7. Escalation one level at a time.** Member to lead; lead to CEO only when it crosses departments or is one of the four
 owner gates. A member's block to the CEO is outside the department, so it waits for the lead; the lead passes it to the CEO
 only with `--escalation cross-department` or `--escalation "owner: money|access|ownership|commitment"`. The lead's own
-block to the CEO that reads as an escalation (its heading says so, or it has an `**Escalation:**` line) is held until its
+block to the CEO that reads as an escalation (its heading says so, it has an `**Escalation:**` line, or it asks for anything:
+a Need, an Ask, a decision, a question; an FYI that asks for nothing is a report and goes) is held until its
 `**Escalation:**` line names one of those reasons, and the lead is told once.
 
 **8. Does it pay?** `model-rank.js accountableEvaluation` (docs/RANKING.md §10) compares the cost per accepted item of the
-members' accepted work since `accountable.since` with the same class of work the lead did alone. Under
+members' work since `accountable.since` with the same class of work the lead did alone over the same span (as long before
+`since` as the pathway has run, and since). It reads who accepted what from the trusted ledger only (never a verdict line
+typed into an inbox), and the cost side counts every handed-back item, also those sent back and later dropped or left,
+over the items the lead accepted. Under
 `scorecard.fallbackBelowCut` (25%) over `scorecard.minItems` (10) accepted items it says `fall back`: the dispatcher
 withdraws the department to recording only once per evaluation hash (`accountable <id> withdraw --by dispatcher --auto`)
 and tells the owner in one line ("The crew stopped having Kwame check every finished job in Engineering: it did not cost
@@ -459,15 +500,21 @@ unchanged. Only the owner resumes.
 
 **The records.** `company/state/accountable.jsonl` (class A, appended only by lib/accountable.js; every row recorded with
 provenance as `accountable.js`, and read only as recorded, lib/recorded.js: a hand-written ACCEPT is never read):
-`intake`, `selfcheck`, `handback`, `verdict`, `auditrun`, `done-held`, `pass`, `return`, `drop`, `escape`, `spot`.
-`company/state/accountable-state.json` is the dispatcher's memory (class A). A lead drops an item that is no longer
-needed with `accountable.js drop <ref> --why ".." --by <lead>` (it counts neither way).
+`intake`, `selfcheck`, `handback`, `verdict`, `auditrun`, `done-held`, `pass`, `return`, `drop`, `escape`, `spot`,
+`dispute`, `ruling`, `stalled`. `company/state/accountable-state.json` is the dispatcher's memory (class A, with the mode
+each department was in at the last tick). A lead drops an item that is no longer needed with `accountable.js drop <ref>
+--why ".." --by <lead>`: its open audit closes, the item is DONE as dropped and counts neither way (its cost still counts in
+the saving).
 
-**Rollout.** Every company: absent (`off`). The sandbox: Engineering in recording only first, with its lead set and the
-audit models chosen by the owner; after a week of recording-only rows the owner may switch it on from the card.
+**Rollout.** Every company: absent (`off`). The sandbox: Engineering in recording only first. The crew sets it up
+itself: the Founder (CEO) sets the lead and Marisol (the people seat) the reporting lines, as the owner asked; the owner
+only flips the switch, and chooses a cheaper pair for routine audits if it wants the saving to show. After a week of
+recording-only rows the owner may switch it on from the card.
 
 **Known limits.** The self-check runs in the member's own run, so it is as honest as the item's check command: the lead
-reads the diff against the acceptance check either way. A held onward handoff is told apart by its writer the way the
+reads the diff against the acceptance check either way, and sees when the command was changed since the item came in.
+A member who runs `accountable.js audit … --by <lead>` with the command name disguised so the transcript check does not
+recognise it can still forge an ACCEPT: the same "takes deliberate steps" protection as elsewhere. A held onward handoff is told apart by its writer the way the
 sign-off hold does (the agents' transcripts, else the heading's name). Workers' models come from their own chains and
 routes; this section does not move them. Sprint lanes skip an item that is with its lead for audit.
 

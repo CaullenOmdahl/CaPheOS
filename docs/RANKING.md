@@ -250,9 +250,12 @@ written to `routing-evaluation.json` under `fanout`.
 
 `accountableEvaluation` (policy key `accountableEvaluation: { minItems: 10, expectedCut: 0.75, fallbackBelowCut: 0.25 }`,
 each overridden by the department's `accountable.scorecard`; delete it to switch the report off; docs/DEPARTMENTS.md §8),
-per department whose accountable leads is live: its members' items the lead accepted (a `**Verdict:** ACCEPT` line by the
-lead; ACCEPT and ACCEPTED are pass words) since `accountable.since`, against the items of the same class the lead did
-alone. Cost per accepted item = the items' `score.cost` over their one-shot sum; the lead's audit runs (wakes of door
+per department whose accountable leads is live: its members' items handed back to the lead since `accountable.since`,
+read from the trusted audit ledger (`company/state/accountable.jsonl` as `accountable.js` recorded it; a `**Verdict:**
+ACCEPT` line typed into an inbox does not count here), against the items of the same class the lead did alone over the
+same span (as long before `since` as the pathway has run, and since). Cost per accepted item = the `score.cost` of every
+handed-back item, also those sent back and later dropped or left, over the one-shot sum of the items the lead accepted
+(`pathway.notAccepted` counts the others); the lead's audit runs (wakes of door
 `audit`) are booked to the audited items, and like advise runs they are not authorship, so the lead's verdict is not a
 self-grade. `cut = 1 - pathway / lead alone`. `fall back` when the cut is under `fallbackBelowCut` over at least
 `minItems` accepted items: the dispatcher withdraws the department to recording only once per hash (`lib/accountable.js
