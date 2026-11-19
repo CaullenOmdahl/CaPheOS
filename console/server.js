@@ -210,6 +210,7 @@ function cardParts(row) {
   for (const k of ['consequence', 'recommendation', 'technical']) if (typeof row[k] === 'string' && row[k].trim()) o[k] = (k === 'technical' ? row[k] : NEEDS.properNames(row[k])).trim().slice(0, k === 'technical' ? 8000 : 600);
   if (row.effect) { o.effectSays = NEEDS.describeEffect(row.effect); o.effectKind = NEEDS.effectKind(row.effect) || 'unknown'; }
   if (row.effect || row.card) o.cardDigest = NEEDS.cardDigest(row);   // sent back with the answer: a yes applies only what was shown
+  if (row.veto && typeof row.veto === 'object') o.veto = { until: row.veto.until, defaultLabel: row.veto.defaultLabel, vetoLabel: row.veto.vetoLabel };   // a veto card: it goes ahead at `until` unless kept
   return o;
 }
 /* Needs you: only what still needs the owner (console/owner-needs.js classify); the rest is "The crew is handling" */
@@ -333,7 +334,7 @@ async function answerQuestion(id, b) {
     const now = tool('inbox.js').state()[id] || {};
     if (yes && acts && NEEDS.cardDigest(now) !== b.cardDigest) { out.applied = { kind: NEEDS.effectKind(row.effect), applied: false, said: 'Your answer is recorded, but the card changed while you answered, so nothing was changed. The crew will ask again.' }; out.said = out.applied.said; }
     else if (yes) { out.applied = await NEEDS.applyEffect(row.effect, { runApi, owner: () => OWNER, id, card: q }); out.said = out.applied.said; }
-    else out.said = 'Your answer is recorded. Nothing was changed.';
+    else out.said = row.veto ? 'Fine: it goes ahead as planned.' : 'Your answer is recorded. Nothing was changed.';
     try { emit('governance'); } catch (_) {}
   }
   return out;

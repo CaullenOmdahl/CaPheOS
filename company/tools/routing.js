@@ -14,7 +14,35 @@
  *                                                           a DRAFT trial; by the people function or the owner
  *   node company/tools/routing.js trial start|pause|resume|stop <id> --by owner [--why ".."]   (owner only)
  *   node company/tools/routing.js trial show <id> [--json]
+ *   node company/tools/routing.js proposals status [--json]     the weekly routing suggestions: the mode, the last 8 weeks
+ *                                                           and what happened to each suggestion
+ *   node company/tools/routing.js proposals mode off|shadow|live --by owner [--why ".."]   (owner only)
+ *   node company/tools/routing.js proposals veto <rp-id> --by owner [--why ".."]           the owner keeps the route as it is
+ *   node company/tools/routing.js proposals ceo <rp-id> yes|no --by <CEO> [--why ".."]     the CEO's approval of a move to the
+ *                                                           top tier (policy proposals.topTierNeedsCeo), before the owner's card
+ *   node company/tools/routing.js proposals tick [--now <ms>]   the dispatcher's hourly step (dispatch.js runs it in its own
+ *                                                           process when proposalsDue() says so)
  *   node company/tools/routing.js --selftest
+ *
+ * WEEKLY SUGGESTIONS (docs/ROUTING.md "Weekly suggestions", the middle-management plan's P5). Once a week (policy
+ * proposals.weekday at proposals.hourLocal, company time; at most once per ISO week), the tick takes the house ranking's
+ * open routing proposals (model-rank.js: kind proposal rows in company/work/models/routing-proposals.jsonl) that are still
+ * in today's ranking (house-ranking.json), drops any whose department route changed, that the class rules deny, that move
+ * more than maxTierStep tiers (company/model-policy.json allowed.<provider>.tiers: light, standard, heavy, top; a model
+ * with no tier reads as light) or whose cell has fewer than minItems items, keeps one per department and class and at
+ * most maxPerWeek, and then:
+ *   mode shadow  records each as kind skip, why "mode shadow" (no card, nothing applied)
+ *   mode live    files ONE owner veto card per suggestion (lib/owner-card.js veto: the default is to apply; doing nothing
+ *                applies it after vetoDays; "Keep it as it is" vetoes it), recorded as kind offer {id, dept, class, from,
+ *                to, evidence, cardId, vetoUntil}. A move INTO a topTierNeedsCeo model first asks the CEO (kind ceo-ask,
+ *                one handoff in the CEO's inbox): only `proposals ceo <id> yes|no --by <CEO>` answers it (never the
+ *                owner card, never anyone else); yes files the card, no records skip "ceo declined".
+ * At the veto deadline with no veto, the tick runs `departments.js set-route <dept> <class> <to> --by routing-proposal
+ * --proposal <id>` (accepted only from this process, for an offer whose window passed unvetoed), records kind apply and a
+ * routing-log row, and withdraws the card as answered by default. The applied route still runs in shadow until the
+ * routing mode is live (the owner's separate switch). A veto card is filed whatever the governance level for models: the
+ * owner sees, and may stop, every routing move. Rows here: offer, ceo-ask, ceo-answer, veto, apply, skip, week (each
+ * appended with provenance as routing.js).
  *
  * Every change is one read-modify-write under an exclusive lock (company/work/models/routing-policy.json.lock,
  * lib/file-lock.js): a writer that cannot get the lock within a few seconds fails with exit 2 and records nothing.
@@ -46,9 +74,10 @@ const STATUSES = ['draft', 'running', 'paused', 'done'];
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];   // models.js EFFORTS
 const TRIAL_ID = /^[a-z][a-z0-9-]{1,39}$/;
 const LOG_DEFAULT = 'company/work/models/routing-log.jsonl';
-const CHANGE_OPS = ['mode', 'tiercaps', 'trial-create', 'trial-start', 'trial-pause', 'trial-resume', 'trial-stop'];
+const CHANGE_OPS = ['mode', 'tiercaps', 'trial-create', 'trial-start', 'trial-pause', 'trial-resume', 'trial-stop', 'proposals-mode'];
+const PROPOSAL_OPS = ['proposal-offer', 'proposal-apply', 'proposal-veto', 'proposal-skip'];   // the weekly suggestions' events
 const EVENT_OPS = ['trial-held', 'trial-unheld'];   // written by lib/routing.js (the dispatcher), read here
-const LOG_OPS = CHANGE_OPS.concat(EVENT_OPS);
+const LOG_OPS = CHANGE_OPS.concat(EVENT_OPS, PROPOSAL_OPS);
 const LIMIT_DEFAULTS = { minArms: 2, maxArms: 4, maxEntryShare: 0.5, defaultEntryShare: 0.1, defaultMinItemsPerArm: 30, defaultPauseWhenHeld: ['claude-cli'] };
 
 const S = {   // seams for the tests (company/tools/tests/routing-controls.test.js)
@@ -65,6 +94,10 @@ const S = {   // seams for the tests (company/tools/tests/routing-controls.test.
   lockOpts: () => ({}),   // lib/file-lock.js options (staleMs, retries, waitMs)
   // the providers the pacer meters as flat-fee subscriptions (pacer.js SUBS is built from the same table)
   subscriptions: () => { try { return Object.values(require('./lib/pacing-ask').SUBS).map(x => String(x.provider)).filter(Boolean); } catch (_) { return ['claude-cli', 'custom']; } },
+  // the weekly suggestions' seams (tests/routing-proposals.test.js)
+  card: () => require('./lib/owner-card'),
+  departments: argv => require('./departments.js').run(argv),
+  ceoInbox: (heading, fields) => { const crew = S.crew(), ceo = S.ceo(), ib = crew[ceo] && crew[ceo].inbox; if (!ib) return null; const f = P('company', 'work', 'handoffs', ib); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, '\n## ' + co.localParts(new Date(S.now())).date + ' from Dispatcher — ' + heading + '\n' + Object.entries(fields).map(([k, v]) => '**' + k + ':** ' + v).join('\n') + '\n'); return ib; },
 };
 const P = (...x) => path.join(S.root(), ...x);
 const REL = 'company/work/models/routing-policy.json';
@@ -411,6 +444,267 @@ function status() {
     trialLimits: Object.assign(limitsOf(doc), { subscriptionProviders: subs }), trials: trials.map(t => trialView(t, rows, log, subs)), log: log.slice(-20).reverse(), history: historyRel(doc) };
 }
 
+
+/* ---------------- weekly routing suggestions (see the header) ---------------- */
+const PROPOSALS_REL = 'company/work/models/routing-proposals.jsonl';
+const PROPOSAL_DEFAULTS = { mode: 'shadow', weekday: 1, hourLocal: 9, vetoDays: 3, maxPerWeek: 3, maxTierStep: 1, topTierNeedsCeo: ['claude-opus-5-5', 'fable'], minItems: 20 };
+const TIER_ORDER = ['light', 'standard', 'heavy', 'top'];
+const WEEKDAYS = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
+const DAY_NAMES = [null, 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const CLASS_WORDS = { code: 'coding work', review: 'review work', research: 'research', writing: 'writing', design: 'design work', ops: 'operations work', mechanical: 'routine chores', general: 'general work' };
+function proposalKnobs(doc) {
+  const p = Object.assign({}, PROPOSAL_DEFAULTS, doc && doc.proposals && typeof doc.proposals === 'object' ? doc.proposals : {});
+  const int = (v, d, lo, hi) => (Number.isInteger(Number(v)) && Number(v) >= lo && Number(v) <= hi) ? Number(v) : d;
+  return { mode: MODES.includes(p.mode) ? p.mode : 'shadow', weekday: int(p.weekday, 1, 1, 7), hourLocal: int(p.hourLocal, 9, 0, 23), vetoDays: int(p.vetoDays, 3, 1, 14),
+    maxPerWeek: int(p.maxPerWeek, 3, 0, 20), maxTierStep: int(p.maxTierStep, 1, 0, 3), minItems: int(p.minItems, 20, 1, 100000),
+    topTierNeedsCeo: Array.isArray(p.topTierNeedsCeo) ? p.topTierNeedsCeo.map(String).filter(Boolean) : PROPOSAL_DEFAULTS.topTierNeedsCeo };
+}
+// the ISO week of a company-local date (YYYY-MM-DD) -> "2026-W47"
+function isoWeek(date) {
+  const [y, m, d] = String(date).split('-').map(Number); const t = new Date(Date.UTC(y, m - 1, d));
+  const wd = t.getUTCDay() || 7; t.setUTCDate(t.getUTCDate() + 4 - wd);
+  const y0 = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  return t.getUTCFullYear() + '-W' + String(Math.ceil(((t - y0) / 86400e3 + 1) / 7)).padStart(2, '0');
+}
+// the tier of a pair (models.js tierOf: company/model-policy.json allowed.<provider>.tiers); a model with none reads as light
+function tierOf(pair, mp) { const t = ((((mp || {}).allowed || {})[pair && pair.provider] || {}).tiers || {})[pair && pair.model]; const i = TIER_ORDER.indexOf(t); return i >= 0 ? i : 0; }
+const topTier = (pair, K) => K.topTierNeedsCeo.some(x => String(pair && pair.model || '').toLowerCase().includes(String(x).toLowerCase()));
+const pairOf = x => Object.assign({ provider: String(x.provider), model: String(x.model) }, x.effort && x.effort !== 'default' ? { effort: String(x.effort) } : {});
+function proposalRows() {
+  try { return require('./lib/bounded').tailLines(P(PROPOSALS_REL), 20000, { maxBytes: 8 * 1048576 }).map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(r => r && typeof r === 'object' && !r._retention); } catch (_) { return []; }
+}
+function appendProposalRow(row) {
+  if (process.env.CAPHEOS_READONLY === '1') return row;
+  const f = P(PROPOSALS_REL), line = JSON.stringify(row) + '\n';
+  fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, line);
+  try { S.prov().appended(f, line, TOOL, { root: S.root() }); } catch (_) {}
+  return row;
+}
+function logEvent(op, fields) {
+  if (process.env.CAPHEOS_READONLY === '1') return;
+  const L = loadPolicy(); const at = S.now();
+  const row = Object.assign({ at, ts: iso(at), op, by: 'routing-proposal' }, fields || {});
+  const hist = P(historyRel(L.doc || {})), line = JSON.stringify(row) + '\n';
+  try { fs.mkdirSync(path.dirname(hist), { recursive: true }); fs.appendFileSync(hist, line); try { S.prov().appended(hist, line, TOOL, { root: S.root() }); } catch (_) {} } catch (_) {}
+}
+/* the life of every suggestion: id -> { proposal (model-rank's row), offer, ceoAsk, ceoAnswer, veto, apply, skip, state } */
+function lifeOf(rows) {
+  const m = new Map(); const get = id => { if (!m.has(id)) m.set(id, { id }); return m.get(id); };
+  for (const r of rows || []) {
+    if (!r || !r.id || !r.kind) continue;
+    const x = get(String(r.id));
+    if (r.kind === 'proposal') x.proposal = r;
+    else if (r.kind === 'offer') x.offer = r;
+    else if (r.kind === 'ceo-ask') x.ceoAsk = r;
+    else if (r.kind === 'ceo-answer' && !x.ceoAnswer) x.ceoAnswer = r;
+    else if (r.kind === 'veto' && !x.veto) x.veto = r;
+    else if (r.kind === 'apply') x.apply = r;
+    else if (r.kind === 'skip' && !x.skip) x.skip = r;
+    else if (r.kind === 'decision') x.decision = r;
+  }
+  for (const x of m.values()) x.state = x.apply ? 'applied' : x.veto ? 'vetoed' : x.skip ? 'skipped' : x.offer ? 'waiting for the veto window' : x.ceoAsk ? (x.ceoAnswer ? 'answered by the CEO' : 'waiting for the CEO') : x.decision ? 'decided (' + x.decision.verdict + ')' : 'open';
+  return m;
+}
+const departmentsDoc = () => { try { return require('./lib/departments').load({ root: S.root() }).doc; } catch (_) { return { departments: [] }; } };
+const routeNow = (doc, dept, cls) => { const d = (doc.departments || []).find(x => String(x.id) === String(dept)); return d && d.routes && d.routes[cls] ? d.routes[cls] : null; };
+const sameRoute = (r, x) => !!r && !!x && String(r.provider) === String(x.provider) && String(r.model) === String(x.model) && String(r.effort || 'default') === String(x.effort || 'default');
+function classDenied(cls, pair) {
+  if (cls === 'code' && pair.provider === 'custom') return 'code is never on the MiniMax plan';
+  try { const R = require('./lib/routing'); const L = R.loadPolicy(S.root()); if (L && !R.routeAllowed(cls, pair, R.knobs(L.policy))) return 'the class rules deny it'; } catch (_) {}
+  return null;
+}
+/* the veto card's words (docs/ROUTING.md; plain, checked by lib/owner-card.js) */
+function cardWords(x, deptName, vetoUntil) {
+  const cw = CLASS_WORDS[x.class] || 'work';
+  const n = x.evidence && x.evidence.items ? x.evidence.items : null;
+  const cheaper = x.evidence && x.evidence.costRatio != null && x.evidence.costRatio < 1;
+  const dn = String(deptName || 'one department').replace(/\s+department$/i, '');
+  const day = DAY_NAMES[(WEEKDAYS[co.localParts(new Date(vetoUntil)).weekday] || 1)] || 'the deadline';
+  return {
+    lead: 'Each week the crew checks which setup does each kind of work best for the money. This week they want ' + dn + '\'s ' + cw + ' on ' + (cheaper ? 'a cheaper setup that did just as well' : 'a setup that did more for the money') + (n ? ' on the last ' + n + ' jobs.' : '.'),
+    consequence: 'If you do nothing, it changes on ' + day + ' and the crew keeps measuring; if you keep it as it is, nothing changes.',
+    recommendation: 'The crew suggests letting it go ahead, which is what happens if you do nothing.',
+  };
+}
+function cardTechnical(x) {
+  const l = r => r.provider + '/' + r.model + (r.effort ? '@' + r.effort : '');
+  return 'Weekly routing suggestion ' + x.id + ' (routing.js proposals): department ' + x.dept + ', class ' + x.class + ': ' + l(x.from) + ' -> ' + l(x.to) + '. Evidence: ' + JSON.stringify(x.evidence || {}) + '. Applied with departments.js set-route --by routing-proposal at the veto deadline; the routing mode stays the owner\'s separate switch.';
+}
+function fileVetoCard(x, deptName, vetoUntil) {
+  const w = cardWords(x, deptName, vetoUntil);
+  return S.card().file({ asker: 'Dispatcher', category: 'models', ref: 'routing-proposal:' + x.id, lead: w.lead, consequence: w.consequence, recommendation: w.recommendation,
+    technical: cardTechnical(x), veto: { until: new Date(vetoUntil).toISOString(), defaultLabel: 'Fine, go ahead', vetoLabel: 'Keep it as it is' }, effect: { routeVeto: { proposalId: x.id } }, about: 'routing-proposal:' + x.dept + ':' + x.class }, { root: S.root() });
+}
+/* proposalReady(id, want) -> null when departments.js set-route --by routing-proposal may apply it now, else why not */
+function proposalReady(id, want) {
+  const L = loadPolicy(); const K = proposalKnobs(L.doc || {});
+  const x = lifeOf(proposalRows()).get(String(id || ''));
+  if (!x || !x.offer) return 'no offered suggestion ' + id;
+  if (x.veto) return 'the owner kept the route as it is';
+  if (x.apply) return 'it was applied already';
+  if (x.skip) return 'it was skipped (' + x.skip.why + ')';
+  if (K.mode !== 'live') return 'weekly suggestions are ' + K.mode;
+  if (!(S.now() >= Number(x.offer.vetoUntil))) return 'its veto window is open until ' + iso(Number(x.offer.vetoUntil));
+  if (want && (String(want.dept) !== String(x.offer.dept) || String(want.class) !== String(x.offer.class) || !sameRoute(want.to, x.offer.to))) return 'it does not move that route';
+  // the card was really put in front of the owner: an owner card with this suggestion's ref, filed by this tool
+  if (!x.offer.cardId || !hasCard(x.offer.cardId, 'routing-proposal:' + x.id)) return 'no owner card was filed for it';
+  return null;
+}
+function hasCard(cardId, ref) {
+  try { const rows = require('./lib/pm-inbox-guard').rows({ file: P('company', 'pm-inbox.jsonl'), noAlert: true }); return rows.some(r => r && r.type === 'ask' && r.id === cardId && r.gate && r.gate.ref === ref && r.effect && r.effect.routeVeto && r.effect.routeVeto.proposalId === ref.slice('routing-proposal:'.length)); } catch (_) { return false; }
+}
+function rankingNow() { return readJson(P('company', 'work', 'models', 'house-ranking.json'), null); }
+/* the candidates this week: the ranking's proposals still in today's ranking, checked; -> { take: [x], skip: [{x, why}] } */
+function weeklyCandidates(K, life, doc, mp) {
+  const body = rankingNow(); const now = (body && Array.isArray(body.proposals)) ? body.proposals : [];
+  const cells = new Map(((body && body.cells) || []).map(c => [c.id, c]));
+  const take = [], skip = [], seen = new Set();
+  const handled = x => x && (x.offer || x.ceoAsk || x.skip || x.apply || x.veto || (x.decision && x.decision.verdict === 'declined'));
+  for (const p of now.slice().sort((a, b) => (Number(b.gain) || 0) - (Number(a.gain) || 0) || (a.id < b.id ? -1 : 1))) {
+    if (handled(life.get(p.id))) continue;
+    const from = pairOf(p.from), to = pairOf(p.to), cell = cells.get(p.to.cell) || {}, fromCell = cells.get(p.from.cell) || {};
+    const x = { id: p.id, dept: String(p.department), class: String(p.class), from, to, evidence: { items: cell.items || 0, lower: cell.lower == null ? null : cell.lower, costPerItem: cell.costPerItem == null ? null : cell.costPerItem, fromCostPerItem: fromCell.costPerItem == null ? null : fromCell.costPerItem, costRatio: cell.costPerItem != null && fromCell.costPerItem ? Math.round(1e4 * cell.costPerItem / fromCell.costPerItem) / 1e4 : null, gain: p.gain == null ? null : p.gain } };
+    const cur = routeNow(doc, x.dept, x.class);
+    let why = null;
+    if (!sameRoute(cur, x.from)) why = 'route changed';
+    else if (classDenied(x.class, x.to)) why = 'class rules';
+    else if (Math.abs(tierOf(x.to, mp) - tierOf(x.from, mp)) > K.maxTierStep) why = 'tier step';
+    else if ((x.evidence.items || 0) < K.minItems) why = 'not enough items';
+    else if (seen.has(x.dept + '|' + x.class)) why = 'one move per department and class a week';
+    else if (take.length >= K.maxPerWeek) why = 'over the weekly limit';
+    if (why) { skip.push({ x, why }); continue; }
+    seen.add(x.dept + '|' + x.class); take.push(x);
+  }
+  return { take, skip };
+}
+/* proposalsDue({now}) -> true when the hourly tick has something to do (cheap: the policy and one state file) */
+function proposalsDue(o) {
+  const L = loadPolicy(); const K = proposalKnobs(L.doc || {});
+  if (K.mode === 'off') return false;
+  const now = o && Number.isFinite(o.now) ? o.now : S.now();
+  const st = readJson(P('company', 'state', 'routing-proposals-tick.json'), null);
+  return !st || !Number.isFinite(st.at) || now - st.at >= 55 * 60e3;
+}
+function proposalsTick(o) {
+  o = o || {}; const now = S.now(); const log = typeof o.log === 'function' ? o.log : () => {};
+  const L = loadPolicy(); const K = proposalKnobs(L.doc || {});
+  const out = { mode: K.mode, applied: [], skipped: [], offered: [], asked: [], week: null };
+  if (K.mode === 'off') return out;
+  let life = lifeOf(proposalRows()); const doc = departmentsDoc(); const mp = readJson(P('company', 'model-policy.json'), {}) || {};
+  const nameOf2 = id => { const d = (doc.departments || []).find(x => String(x.id) === String(id)); return d ? d.name || d.id : id; };
+  const skipRow = (x, why) => { appendProposalRow({ kind: 'skip', id: x.id, at: iso(now), why, dept: x.dept, class: x.class, from: x.from, to: x.to }); logEvent('proposal-skip', { proposal: x.id, dept: x.dept, class: x.class, why }); out.skipped.push(x.id + ' (' + why + ')'); };
+  const offer = (x, ceo) => {
+    const vetoUntil = now + K.vetoDays * 86400e3;
+    let r; try { r = fileVetoCard(x, nameOf2(x.dept), vetoUntil); } catch (e) { log('ROUTING SUGGESTION CARD ERROR ' + x.id + ': ' + String(e.message).slice(0, 200)); return; }
+    if (!r || !r.filed) { log('ROUTING SUGGESTION ' + x.id + ' not filed: ' + ((r && r.reason) || 'no card')); if (r && r.route === 'declined') skipRow(x, 'superseded'); return; }
+    appendProposalRow(Object.assign({ kind: 'offer', id: x.id, at: iso(now), week: isoWeek(co.localParts(new Date(now)).date), dept: x.dept, class: x.class, from: x.from, to: x.to, evidence: x.evidence, cardId: r.id, vetoUntil }, ceo ? { ceo } : {}));
+    logEvent('proposal-offer', { proposal: x.id, dept: x.dept, class: x.class, card: r.id, vetoUntil: iso(vetoUntil) });
+    out.offered.push(x.id);
+  };
+  // 1. offers whose veto window passed: applied (the route is still what was offered from), else skipped
+  for (const x of life.values()) {
+    if (!x.offer || x.veto || x.apply || x.skip) continue;
+    if (now < Number(x.offer.vetoUntil)) continue;
+    const ox = x.offer;
+    if (K.mode !== 'live') { skipRow(ox, 'mode shadow'); continue; }
+    if (!sameRoute(routeNow(doc, ox.dept, ox.class), ox.from)) { skipRow(ox, 'route changed'); try { S.card().withdraw({ ref: 'routing-proposal:' + x.id, by: 'Dispatcher', why: 'the route changed in the meantime, so the suggestion no longer applies' }, { root: S.root() }); } catch (_) {} continue; }
+    const r = S.departments(['set-route', ox.dept, ox.class, ox.to.provider + '/' + ox.to.model + (ox.to.effort ? '@' + ox.to.effort : ''), '--by', 'routing-proposal', '--proposal', x.id]);
+    if (r.code !== 0) { log('ROUTING SUGGESTION APPLY ERROR ' + x.id + ': ' + String((r.out && r.out.error) || 'failed').slice(0, 200)); continue; }
+    const dd = (() => { try { return 'sha256:' + crypto.createHash('sha256').update(fs.readFileSync(P('company', 'departments.json'))).digest('hex').slice(0, 16); } catch (_) { return null; } })();
+    appendProposalRow({ kind: 'apply', id: x.id, at: iso(now), by: 'routing-proposal', departmentsDigest: dd, dept: ox.dept, class: ox.class, to: ox.to, decision: r.out && r.out.decision });
+    logEvent('proposal-apply', { proposal: x.id, dept: ox.dept, class: ox.class, to: ox.to.provider + '/' + ox.to.model, departmentsDigest: dd });
+    try { S.card().withdraw({ ref: 'routing-proposal:' + x.id, by: 'Dispatcher', why: 'answered by default: nobody kept it as it was, so it changed as planned' }, { root: S.root() }); } catch (_) {}
+    out.applied.push(x.id);
+    log('ROUTING SUGGESTION APPLIED ' + x.id + ' (' + ox.dept + '/' + ox.class + ' -> ' + ox.to.provider + '/' + ox.to.model + '; routing mode ' + modeOf(L.doc || {}) + ')');
+  }
+  // 2. the CEO's answers on top-tier moves
+  for (const x of life.values()) {
+    if (!x.ceoAsk || x.offer || x.skip || x.veto || !x.ceoAnswer) continue;
+    if (x.ceoAnswer.verdict !== 'yes') { skipRow(x.ceoAsk, 'ceo declined'); continue; }
+    if (K.mode !== 'live') { skipRow(x.ceoAsk, 'mode shadow'); continue; }
+    offer(x.ceoAsk, { ask: x.ceoAsk.askRef || null, verdict: 'yes', by: x.ceoAnswer.by });
+  }
+  // 3. the weekly pass: on the policy weekday and hour, once per ISO week
+  const lp = co.localParts(new Date(now)), week = isoWeek(lp.date);
+  life = lifeOf(proposalRows());
+  const done = proposalRows().some(r => r.kind === 'week' && r.week === week);
+  if (!done && (WEEKDAYS[lp.weekday] || 0) === K.weekday && lp.hour === K.hourLocal) {
+    out.week = week;
+    // a top-tier ask from an earlier week the CEO never answered is superseded by this week's look
+    for (const x of life.values()) if (x.ceoAsk && !x.ceoAnswer && !x.offer && !x.skip && x.ceoAsk.week !== week) skipRow(x.ceoAsk, 'superseded');
+    const c = weeklyCandidates(K, life, doc, mp);
+    for (const { x, why } of c.skip) skipRow(x, why);
+    for (const x of c.take) {
+      if (K.mode !== 'live') { skipRow(x, 'mode shadow'); continue; }
+      if (topTier(x.to, K) && !topTier(x.from, K)) {
+        const ib = S.ceoInbox('weekly routing suggestion ' + x.id + ' needs your approval first', { Need: 'yes or no: move ' + nameOf2(x.dept) + '\'s ' + x.class + ' route from ' + x.from.provider + '/' + x.from.model + ' to ' + x.to.provider + '/' + x.to.model + ' (a top-tier model). Answer with `node company/tools/routing.js proposals ceo ' + x.id + ' yes|no --by <your name>`; on yes the owner gets the usual veto card.', Why: 'a move to the top tier needs the CEO\'s approval before the owner is asked (routing-policy.json proposals.topTierNeedsCeo).', Deadline: 'before next week\'s suggestions', Status: 'OPEN', Evidence: 'company/work/models/routing-proposals.jsonl ' + x.id + '; ' + JSON.stringify(x.evidence) });
+        appendProposalRow({ kind: 'ceo-ask', id: x.id, at: iso(now), week, dept: x.dept, class: x.class, from: x.from, to: x.to, evidence: x.evidence, askRef: ib ? 'handoff:' + ib : null });
+        out.asked.push(x.id); continue;
+      }
+      offer(x, null);
+    }
+    appendProposalRow({ kind: 'week', week, at: iso(now), mode: K.mode, offered: out.offered.slice(), asked: out.asked.slice(), skipped: out.skipped.slice() });
+    if (out.offered.length || out.asked.length || out.skipped.length) log('ROUTING SUGGESTIONS ' + week + ' (' + K.mode + '): ' + [out.offered.length + ' offered', out.asked.length + ' to the CEO', out.skipped.length + ' skipped'].join(', '));
+  }
+  try { if (process.env.CAPHEOS_READONLY !== '1') { const f = P('company', 'state', 'routing-proposals-tick.json'); writeAtomic(f, JSON.stringify({ at: now, week }) + '\n'); } } catch (_) {}
+  return out;
+}
+function proposalVeto(id, a) {
+  const who = ownerOnly(a.by, 'Keeping a route as it is');
+  const x = lifeOf(proposalRows()).get(String(id || ''));
+  if (!x || !(x.offer || x.ceoAsk)) throw new Refusal('no suggestion ' + id + ' waiting for the owner (routing.js proposals status)');
+  if (x.veto) return { ok: true, changed: false, summary: 'suggestion ' + id + ' was vetoed already' };
+  if (x.apply) throw new Refusal('suggestion ' + id + ' was applied already: change the route back with departments.js set-route --by owner');
+  if (x.skip) return { ok: true, changed: false, summary: 'suggestion ' + id + ' was skipped already (' + x.skip.why + ')' };
+  appendProposalRow({ kind: 'veto', id: x.id, by: 'owner', at: iso(S.now()), why: whyOf(a) || undefined });
+  logEvent('proposal-veto', { proposal: x.id, by: 'owner' });
+  try { S.card().withdraw({ ref: 'routing-proposal:' + x.id, by: 'owner', why: 'the owner kept it as it is' }, { root: S.root() }); } catch (_) {}
+  let decision = null; const o = x.offer || x.ceoAsk;
+  try { decision = S.decision({ by: 'owner', text: 'Model routing: the owner kept ' + o.dept + '\'s ' + o.class + ' route as it is (weekly suggestion ' + x.id + ' vetoed).', why: whyOf(a) || undefined }); } catch (_) {}
+  return { ok: true, changed: true, vetoed: x.id, by: who.label, decision: decision && decision.ok ? decision.id : undefined };
+}
+function proposalCeo(id, verdict, a) {
+  const v = String(verdict || '').toLowerCase(); if (!['yes', 'no'].includes(v)) throw new Refusal('proposals ceo <id> yes|no --by <CEO>');
+  if (S.owner().isOwnerName(String(a.by || ''))) throw new Refusal('this step is the CEO\'s: the owner decides on the card that follows a yes');
+  const who = actor(a.by, 'proposals');
+  if (who.id !== S.ceo()) throw new Refusal('only the CEO approves a move to the top tier before the owner is asked');
+  const x = lifeOf(proposalRows()).get(String(id || ''));
+  if (!x || !x.ceoAsk) throw new Refusal('no suggestion ' + id + ' waiting for the CEO');
+  if (x.ceoAnswer) return { ok: true, changed: false, summary: 'the CEO answered ' + id + ' already (' + x.ceoAnswer.verdict + ')' };
+  if (x.skip) return { ok: true, changed: false, summary: id + ' was skipped already (' + x.skip.why + ')' };
+  appendProposalRow({ kind: 'ceo-answer', id: x.id, at: iso(S.now()), verdict: v, by: who.name, why: whyOf(a) || undefined });
+  return { ok: true, changed: true, id: x.id, verdict: v, next: v === 'yes' ? 'the next hourly tick files the owner\'s veto card' : 'recorded as skipped (ceo declined) on the next tick' };
+}
+function setProposalsMode(value, a) {
+  const v = String(value || '').trim();
+  if (!MODES.includes(v)) throw new Refusal('proposals mode takes one of ' + MODES.join(', ') + ' (got "' + v + '")');
+  const who = ownerOnly(a.by, 'Changing the weekly routing suggestions');
+  return change(L => {
+    const cur = proposalKnobs(L.doc).mode;
+    if (cur === v && L.doc.proposals && L.doc.proposals.mode === v) return { ok: true, changed: false, summary: 'weekly routing suggestions are ' + v + ' already' };
+    L.next.proposals = Object.assign({}, PROPOSAL_DEFAULTS, (L.next.proposals && typeof L.next.proposals === 'object') ? L.next.proposals : {}, { mode: v });
+    const summary = 'weekly routing suggestions ' + cur + ' -> ' + v + (v === 'live' ? ' (one owner card per suggestion; it applies unless the owner keeps it as it is)' : v === 'shadow' ? ' (recorded, no card, nothing applied)' : ' (not computed)');
+    return commit(L, L.next, who, { op: 'proposals-mode', fields: { from: cur, to: v }, why: whyOf(a), summary });
+  });
+}
+/* the last weeks for status and the console: week rows newest first, each suggestion with what happened to it */
+function proposalsStatus(o) {
+  const L = loadPolicy(); const K = proposalKnobs(L.doc || {}); const rows = proposalRows(); const life = lifeOf(rows);
+  const weeks = [...new Set(rows.filter(r => ['week', 'offer', 'skip', 'ceo-ask'].includes(r.kind) && r.week).map(r => r.week).concat(rows.filter(r => r.kind === 'week').map(r => r.week)))].sort().reverse().slice(0, (o && o.weeks) || 8);
+  const doc = departmentsDoc(); const dname = id => { const d = (doc.departments || []).find(x => String(x.id) === String(id)); return d ? d.name || d.id : id; };
+  const byWeek = weeks.map(w => {
+    const ids = [...new Set(rows.filter(r => (r.week === w && ['offer', 'ceo-ask', 'skip'].includes(r.kind)) || (r.kind === 'skip' && !r.week && r.at && isoWeek(String(r.at).slice(0, 10)) === w)).map(r => r.id))];
+    return { week: w, suggestions: ids.map(id => { const x = life.get(id) || { id }; const b = x.offer || x.ceoAsk || x.skip || {}; return { id, dept: b.dept, deptName: dname(b.dept), class: b.class, classWords: CLASS_WORDS[b.class] || b.class, from: b.from, to: b.to, state: x.state, why: x.skip ? x.skip.why : null, vetoUntil: x.offer ? iso(Number(x.offer.vetoUntil)) : null, evidence: (x.offer || x.ceoAsk || {}).evidence || null }; }) };
+  });
+  return { ok: true, mode: K.mode, policy: K, weeks: byWeek, waiting: [...life.values()].filter(x => x.offer && !x.veto && !x.apply && !x.skip).map(x => ({ id: x.id, dept: x.offer.dept, class: x.offer.class, vetoUntil: iso(Number(x.offer.vetoUntil)) })) };
+}
+function proposalsText(s) {
+  const L = ['Weekly routing suggestions: ' + s.mode + ' (' + DAY_NAMES[s.policy.weekday] + 's at ' + String(s.policy.hourLocal).padStart(2, '0') + ':00, veto window ' + s.policy.vetoDays + ' days, at most ' + s.policy.maxPerWeek + ' a week).'];
+  if (!s.weeks.length) L.push('No weeks yet.');
+  for (const w of s.weeks) { L.push(w.week + ':' + (w.suggestions.length ? '' : ' nothing to suggest')); for (const x of w.suggestions) L.push('  ' + x.id + ' ' + (x.dept || '?') + '/' + (x.class || '?') + ' ' + (x.from ? x.from.provider + '/' + x.from.model : '?') + ' -> ' + (x.to ? x.to.provider + '/' + x.to.model : '?') + ': ' + x.state + (x.why ? ' (' + x.why + ')' : '')); }
+  return L.join('\n');
+}
+
 /* ---------------- text output ---------------- */
 function trialText(t) {
   const g = t.heldGuard || { providers: [], missing: [] };
@@ -441,11 +735,19 @@ function args(argv) {
   }
   return o;
 }
-const USAGE = 'usage: routing.js status [--json] | mode off|shadow|live --by owner | tiercaps off|shadow|live --by owner | trial create <id> --class <c> --arm provider/model[@effort] ... (--scope-dept <id> | --scope-seat <seat>) [--entry-share 0.1] [--min-items 30] --by <name> | trial start|pause|resume|stop <id> --by owner | trial show <id> [--json] | --selftest';
+const USAGE = 'usage: routing.js status [--json] | proposals status [--json] | proposals mode off|shadow|live --by owner | proposals veto <id> --by owner | proposals ceo <id> yes|no --by <CEO> | proposals tick | mode off|shadow|live --by owner | tiercaps off|shadow|live --by owner | trial create <id> --class <c> --arm provider/model[@effort] ... (--scope-dept <id> | --scope-seat <seat>) [--entry-share 0.1] [--min-items 30] --by <name> | trial start|pause|resume|stop <id> --by owner | trial show <id> [--json] | --selftest';
 function main(argv) {
   const a = args(argv), cmd = a.pos[0] || 'status';
   if (cmd === 'status') { const s = status(); return { code: s.error ? 1 : 0, out: a.json ? s : statusText(s) }; }
   if (cmd === 'mode' || cmd === 'tiercaps') return { code: 0, out: setMode(cmd, a.pos[1], a) };
+  if (cmd === 'proposals') {
+    const sub = a.pos[1] || 'status';
+    if (sub === 'status') { const st = proposalsStatus(); return { code: 0, out: a.json ? st : proposalsText(st) }; }
+    if (sub === 'mode') return { code: 0, out: setProposalsMode(a.pos[2], a) };
+    if (sub === 'veto') return { code: 0, out: proposalVeto(a.pos[2], a) };
+    if (sub === 'ceo') return { code: 0, out: proposalCeo(a.pos[2], a.pos[3], a) };
+    if (sub === 'tick') { if (given(a.now)) { const n = Number(a.now); S.now = () => n; } return { code: 0, out: proposalsTick({ log: l => console.error(l) }) }; }
+  }
   if (cmd === 'trial') {
     const sub = a.pos[1];
     if (sub === 'create') return { code: 0, out: createTrial(a) };
@@ -497,11 +799,15 @@ function selftest() {
   const th = trialView({ id: 'cmp', status: 'running', startedAt: '2030-01-01T00:00:00.000Z', arms: t.arms }, [], [
     { at: Date.parse('2030-01-01T01:00:00Z'), op: 'trial-held', by: 'dispatcher', trial: 'cmp', providers: ['claude-cli'], why: 'claude-cli held by the pacer' }]);
   ok('a trial-held row in the routing log shows the trial held, with the reason', th.hold && th.hold.why === 'claude-cli held by the pacer' && /held: claude-cli held by the pacer/.test(th.reasons.join(' ')));
+  ok('weekly suggestions: the ISO week of a company date', isoWeek('2026-11-23') === '2026-W48' && isoWeek('2027-01-01') === '2026-W53');
+  ok('weekly suggestions: tiers from the model policy, a model with none reads as light', tierOf({ provider: 'claude-cli', model: 'opus' }, { allowed: { 'claude-cli': { tiers: { opus: 'heavy' } } } }) === 2 && tierOf({ provider: 'deepseek', model: 'x' }, {}) === 0);
+  ok('weekly suggestions: the defaults are recording only, Mondays at 09:00, a 3-day veto window', JSON.stringify(proposalKnobs({})) === JSON.stringify({ mode: 'shadow', weekday: 1, hourLocal: 9, vetoDays: 3, maxPerWeek: 3, maxTierStep: 1, minItems: 20, topTierNeedsCeo: ['claude-opus-5-5', 'fable'] }));
+  ok('weekly suggestions: the card words are plain', (() => { const OC = require('./lib/owner-card'); const w = cardWords({ class: 'code', evidence: { items: 40, costRatio: 0.5 } }, 'Engineering', Date.parse('2026-11-26T09:00:00Z')); return OC.plain(w.lead) && OC.plain(w.consequence) && OC.plain(w.recommendation); })());
   console.log(bad ? 'ROUTING SELFTEST FAILED: ' + bad : 'ROUTING SELFTEST PASSED');
   return bad ? 1 : 0;
 }
 
-module.exports = { run, status, planTrial, parseArm, trialOfRoute, heldGuard, loadPolicy, S, Refusal, REL, DEFAULT_REL, LOG_DEFAULT, CHANGE_OPS, EVENT_OPS };
+module.exports = { proposalsTick, proposalsDue, proposalReady, proposalsStatus, proposalKnobs, cardWords, isoWeek, tierOf, lifeOf, PROPOSAL_DEFAULTS, PROPOSAL_OPS, run, status, planTrial, parseArm, trialOfRoute, heldGuard, loadPolicy, S, Refusal, REL, DEFAULT_REL, LOG_DEFAULT, CHANGE_OPS, EVENT_OPS };
 if (require.main === module) {
   const argv = process.argv.slice(2);
   if (argv[0] === '--selftest' || argv[0] === 'selftest') process.exit(selftest());

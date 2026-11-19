@@ -30,6 +30,12 @@
  *        options    form actions (default Approve / Decline); effect: what the console applies on yes (below)
  *        fyi        plain sentence for the digest when the level is notify (default: built from the lead)
  *        changed    what is materially different since the owner said "not now" (lifts the 7-day backoff)
+ *        veto       { until, defaultLabel, vetoLabel }: a VETO CARD (routing.js weekly suggestions). Doing nothing means the
+ *               change goes ahead: the card has two buttons, the default first (defaultLabel, it records the answer and
+ *               changes nothing now) and the veto (vetoLabel, it applies the effect, which must be routeVeto). It never
+ *               expires to a deny: no expiresAt is set, and at `until` the asker applies the default and withdraws the
+ *               card. The recommendation must name the default. Filed whatever the governance level of its category:
+ *               the owner sees, and may stop, every such change (a ruling or a "not now" never hides one either).
  *   card.withdraw({ ref, by, why }, opts) -> { withdrawn: [id] }   the asker's (or the owner's) withdraw of the open card
  *   card.openCard(ref, opts) -> the open card row with that ref, or null
  *   card.describeEffect(effect) -> what pressing yes does, in plain words
@@ -41,7 +47,8 @@
  * EFFECTS (applied ONLY by the console's owner answer handler, an owner path; this module only checks their shape):
  *   {serviceApprove:{name}}  filed only by service.js      {harnessApply:{id}}  filed only by harness-change.js
  *   {packInstall:{id,digest}} filed only by pack.js        {moduleEnable:{id}}  filed only by module.js
- *   {lockedAccept:{key,sha}} filed only by locked-watch.js  {none:true}
+ *   {lockedAccept:{key,sha}} filed only by locked-watch.js  {routeVeto:{proposalId}} filed only by routing.js (veto cards)
+ *   {none:true}
  * Each effect has exactly one producing tool (EFFECT_PRODUCERS); lib/pm-inbox-guard.js drops the effect of a card whose
  * recorded writer is any other program, so a card an agent's own script files can never carry owner authority. Effect
  * kinds with no producer (governance, clearance, projectApprove, budgetToday) are refused.
@@ -108,6 +115,8 @@ const EFFECT_SHAPES = {
   moduleEnable: e => e && typeof e.id === 'string' && /^[a-z][a-z0-9-]{1,39}$/.test(e.id),
   // a protected file's change the owner keeps: that path, at exactly the content the card described (its sha256)
   lockedAccept: e => e && typeof e.key === 'string' && e.key.length <= 300 && /^[A-Za-z0-9_.~\/:@+-]+$/.test(e.key) && !e.key.startsWith('-') && !/(^|\/)\.\.(\/|$)/.test(e.key) && typeof e.sha === 'string' && /^(?:sha256:)?[0-9a-f]{64}$/.test(e.sha),
+  // a weekly routing suggestion the owner keeps as it is (the veto button of a veto card): routing.js proposals veto
+  routeVeto: e => e && typeof e.proposalId === 'string' && /^rp-[0-9a-f]{12}$/.test(e.proposalId),
   none: e => e === true,
 };
 // the one program that may file each effect (a path relative to the company root; lib/pm-inbox-guard.js checks the
@@ -118,6 +127,7 @@ const EFFECT_PRODUCERS = {
   packInstall: ['company/tools/pack.js'],
   moduleEnable: ['company/tools/module.js'],
   lockedAccept: ['company/tools/locked-watch.js'],
+  routeVeto: ['company/tools/routing.js'],
   none: null,   // anyone
 };
 const NO_PRODUCER = ['governance', 'clearance', 'projectApprove', 'budgetToday'];
@@ -139,6 +149,7 @@ function describeEffect(effect) {
     case 'packInstall': return 'Yes installs the add-on exactly as it was proposed.';
     case 'moduleEnable': return 'Yes switches the add-on on.';
     case 'lockedAccept': return 'Yes keeps the change to that protected file, exactly as it is now.';
+    case 'routeVeto': return 'Keeping it as it is stops this change; nothing else changes and the crew keeps measuring.';
     case 'none': return 'Yes tells the crew to go ahead.';
     default: return 'Your answer is recorded; nothing is changed automatically.';
   }
@@ -210,15 +221,27 @@ function file(o, opts) {
   // change): like a guardrail, no ruling, level or backoff hands it to the crew
   const ownerAct = o.ownerAct === true;
   const technical = o.technical ? String(o.technical).slice(0, 20000) : '';
+  // a veto card (see the header): its default is to go ahead, its veto applies the effect, it never expires to a deny
+  let veto = null;
+  if (o.veto) {
+    const v = o.veto, until = Date.parse(v.until || '');
+    const dl = String(v.defaultLabel || '').replace(/\s+/g, ' ').trim(), vl = String(v.vetoLabel || '').replace(/\s+/g, ' ').trim();
+    if (!Number.isFinite(until) || !dl || !vl) throw Object.assign(new Error('a veto card needs veto.until (a date), veto.defaultLabel and veto.vetoLabel'), { code: 'USAGE' });
+    if (!effect.routeVeto) throw Object.assign(new Error('a veto card\'s veto applies a routeVeto effect'), { code: 'BAD_EFFECT' });
+    if (!recommendation || !/do nothing|default|if you do not answer/i.test(recommendation)) throw Object.assign(new Error('a veto card\'s recommendation must name the default (what happens if the owner does nothing)'), { code: 'NOT_PLAIN' });
+    assertPlain({ defaultLabel: dl, vetoLabel: vl });
+    if (o.expiresAt) throw Object.assign(new Error('a veto card never expires to a deny: it has veto.until, not expiresAt'), { code: 'USAGE' });
+    veto = { until: new Date(until).toISOString(), defaultLabel: dl.slice(0, 80), vetoLabel: vl.slice(0, 80) };
+  }
 
   // 1. a standing owner ruling (never for a fixed gate)
-  const ruling = fixed || guardrail || ownerAct ? null : RULINGS().match({ category, ref, about: o.about, text: lead }, opts);
+  const ruling = fixed || guardrail || ownerAct || veto ? null : RULINGS().match({ category, ref, about: o.about, text: lead }, opts);
   if (ruling && (ruling.effect === 'crew-decides' || ruling.effect === 'never-ask'))
     return { filed: false, route: 'ruling', ruling: { id: ruling.id, text: ruling.text, effect: ruling.effect },
       reason: 'the owner\'s standing rule "' + ruling.text + '" covers this: ' + (ruling.effect === 'crew-decides' ? 'the crew decides' : 'the owner is not asked and the default (no) stands') };
   // 2. the real governance level
   const level = fixed || guardrail || ownerAct ? 'approve' : levelOf(category, opts);
-  const forced = guardrail || ownerAct || !!(ruling && ruling.effect === 'ask');
+  const forced = guardrail || ownerAct || !!veto || !!(ruling && ruling.effect === 'ask');
   if (!fixed && !forced && level === 'auto') return { filed: false, route: 'crew', level, reason: 'self-governance has ' + category + ' at auto: the crew decides, nobody asks the owner' };
   if (!fixed && !forced && level === 'notify') {
     const text = o.fyi ? String(o.fyi).trim() : from + ' decided this, as your settings allow: ' + lead.replace(/\?$/, '.');
@@ -237,7 +260,7 @@ function file(o, opts) {
     if (JSON.stringify(cur.effect || { none: true }) !== JSON.stringify(effect)) return { filed: false, route: 'duplicate', id: cur.id, reason: 'an open card with this ref is waiting (' + cur.id + ') and what its yes does cannot change: withdraw it and file a new card' };
   }
   // 4. the owner said "not now" to this within the backoff window
-  if (!cur && String(o.changed || '').trim().length < 15) {
+  if (!cur && !veto && String(o.changed || '').trim().length < 15) {
     const prior = SCOPE().backoff({ about: o.about || 'card:' + ref, ref, message: lead }, rows, opts.now || Date.now());
     // the owner's "no" stands (a fixed gate too): never a go-ahead for the crew (refusedByOwner)
     if (prior) return { filed: false, route: 'declined', backoff: prior, reason: 'the owner answered this "not now" on ' + String(prior.at).slice(0, 10) + '; their no stands; ask again only when something material changed (changed: "...")' };
@@ -254,7 +277,11 @@ function file(o, opts) {
   if (cur) row.updatedAt = at;
   if (o.changed && String(o.changed).trim()) row.changed = String(o.changed).replace(/\s+/g, ' ').trim().slice(0, 300);
   if (o.expiresAt) { const t = Date.parse(o.expiresAt); if (Number.isFinite(t)) { row.expiresAt = new Date(t).toISOString(); row.gate.expiresAt = row.expiresAt; } }
-  if (Array.isArray(o.options) && o.options.length) {
+  if (veto) {
+    // the default first: it records the answer and changes nothing now; the veto applies the effect (the console's yes)
+    row.veto = veto; row.gate.veto = veto; row.kind = 'form';
+    row.form = require('../inbox.js').normalizeForm({ fields: [], actions: [{ id: 'go-ahead', label: veto.defaultLabel, verdict: 'no' }, { id: 'keep', label: veto.vetoLabel, verdict: 'yes' }] });
+  } else if (Array.isArray(o.options) && o.options.length) {
     row.kind = 'form';
     row.form = require('../inbox.js').normalizeForm({ fields: Array.isArray(o.fields) ? o.fields : [], actions: o.options });
   }

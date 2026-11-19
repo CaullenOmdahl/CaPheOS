@@ -33,6 +33,8 @@
  *   {packInstall:{id,digest}} pack.js approve --digest + install (filed only by pack.js)
  *   {moduleEnable:{id}}      module.js enable (filed only by module.js)
  *   {lockedAccept:{key,sha}} locked-watch.js accept --expect-sha (filed only by locked-watch.js)
+ *   {routeVeto:{proposalId}} routing.js proposals veto --by owner (filed only by routing.js, on a VETO card: its "yes" is the
+ *                            veto button "Keep it as it is"; its other button, the default, changes nothing now)
  *   {none:true}              nothing
  * lib/pm-inbox-guard.js drops the effect of a card whose recorded writer is not the tool that owns it, and every other
  * effect kind has no producer and is never applied. The card shows what yes does in the console's own words
@@ -53,7 +55,7 @@ const CAT_SAY = { hiring: 'hiring', release: 'releasing someone', budget: 'the b
   packs: 'add-ons', deps: 'software the crew installs', org: 'how the team is organised', localComputer: 'background jobs on this computer',
   access: 'access and accounts', ownership: 'ownership', commitment: 'commitments', spendBeyondCap: 'spending beyond the cap' };
 const FIXED_ALIAS = { commitments: 'commitment', spend_beyond_cap: 'spendBeyondCap', spendbeyondcap: 'spendBeyondCap' };
-const EFFECTS = ['serviceApprove', 'harnessApply', 'packInstall', 'moduleEnable', 'lockedAccept', 'none'];
+const EFFECTS = ['serviceApprove', 'harnessApply', 'packInstall', 'moduleEnable', 'lockedAccept', 'routeVeto', 'none'];
 const RULING_EFFECTS = ['crew-decides', 'never-ask', 'ask'];
 
 function make(deps) {
@@ -132,6 +134,8 @@ function make(deps) {
     if ((row.gate && row.gate.guardrail) || (q.gate && q.gate.guardrail)) return { needsOwner: true, why: 'guardrail', category };
     // an act only the owner may do (install an add-on, switch one on, keep a protected file's change: lib/owner-card.js ownerAct)
     if ((row.gate && row.gate.ownerAct) || (q.gate && q.gate.ownerAct)) return { needsOwner: true, why: 'owner-act', category };
+    // a veto card (a weekly routing suggestion): the owner sees every such change, whatever the level (lib/owner-card.js veto)
+    if ((row.gate && row.gate.veto) || (q.gate && q.gate.veto) || row.veto) return { needsOwner: true, why: 'veto', category };
     if (asksKey(q) || asksKey(row)) return { needsOwner: true, why: 'access', category };
     // an FYI card (non-blocking, batch "fyi": the money hold or the pacer at a budget level the crew decides) tells the
     // owner what the crew keeps doing; its buttons stay usable under "The crew is handling", but it is never in Needs you
@@ -160,6 +164,7 @@ function make(deps) {
     if (c.why === 'guardrail') return { ok: false, why: 'This one always comes to you while the safety setting for it is on (Settings › Autonomy › Guardrails), so a standing rule cannot cover it.' };
     if (c.why === 'access') return { ok: false, why: 'A key or an account in your name always needs you, so it cannot become a standing rule.' };
     if (c.why === 'owner-act') return { ok: false, why: 'Only you can do this, so a standing rule cannot cover it.' };
+    if (c.why === 'veto') return { ok: false, why: 'This goes ahead on its own unless you stop it, so a standing rule cannot answer it.' };
     if (c.why === 'money-now' || /^money-hold:/.test(String(q.about || row.about || ''))) return { ok: false, why: 'The crew stays paused until you choose on this card, so a standing rule cannot answer it.' };
     if (q.questions) return { ok: false, why: 'A question with several parts cannot become one standing rule.' };
     const known = Object.keys(govDoc().categories || {});
@@ -242,6 +247,7 @@ function make(deps) {
       case 'packInstall': return 'If you say yes, ' + packWords(v.id) + ' is installed now, exactly as it was proposed. Its limits start closed.';
       case 'moduleEnable': return 'If you say yes, ' + moduleWords(v.id) + ' is switched on now. You can switch it off again in Settings › System.';
       case 'lockedAccept': return 'If you say yes, the change to that protected file is kept as it is now. If the file changes again before you answer, nothing is kept.';
+      case 'routeVeto': return 'If you keep it as it is, this change does not happen and nothing else changes. If you do nothing, it goes ahead on the day the card names.';
       case 'none': return null;
     }
     return null;
@@ -286,6 +292,12 @@ function make(deps) {
         await ctx.runApi('locked-watch.js', ['accept', S(v.key), '--by', ctx.owner(), '--why', 'kept by the owner on Today (' + (ctx.id || 'a card') + ')', '--expect-sha', S(v.sha)], { timeout: 60000 });
         return { kind: k, applied: true, said: 'Done: the change is kept as the accepted version.' };
       }
+      if (k === 'routeVeto') {
+        // routing.js records the owner's veto (an owner-only command) and withdraws nothing else
+        const r = await ctx.runApi('routing.js', ['proposals', 'veto', S(v.proposalId), '--by', ctx.owner(), '--why', 'kept as it is on Today (' + (ctx.id || 'a card') + ')'], { timeout: 60000 });
+        if (r && r.changed === false) return { kind: k, applied: false, said: 'Your answer is recorded. That suggestion was already settled, so nothing more changed.' };
+        return { kind: k, applied: true, said: 'Done: it stays as it is. The crew keeps measuring.' };
+      }
       if (k === 'serviceApprove') {
         // service.js owner-approve installs only the exact spec the owner's card was about, on the owner's recorded yes
         const r = await ctx.runApi('service.js', ['owner-approve', S(v.name)], { timeout: 120000 });
@@ -293,7 +305,7 @@ function make(deps) {
         if (!r || !r.installed) return fail(new Error((r && (r.text || r.error)) || 'not installed'), 'starting the job');
         return { kind: k, applied: true, said: 'Done: the background job is set up and running.' };
       }
-    } catch (err) { return fail(err, { harnessApply: 'making the change', serviceApprove: 'starting the job', packInstall: 'installing the add-on', moduleEnable: 'switching the add-on on', lockedAccept: 'keeping the change' }[k] || 'the change'); }
+    } catch (err) { return fail(err, { harnessApply: 'making the change', serviceApprove: 'starting the job', packInstall: 'installing the add-on', moduleEnable: 'switching the add-on on', lockedAccept: 'keeping the change', routeVeto: 'keeping it as it is' }[k] || 'the change'); }
     return { kind: k, applied: false, said: 'Your answer is recorded.' };
   }
 
