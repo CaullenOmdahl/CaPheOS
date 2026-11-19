@@ -510,6 +510,17 @@ kbd { display: inline-block; min-width: 1.6em; padding: 2px 6px; border: 1px sol
 .mtg-parse .mtg-chip-k { background: var(--status-warning); color: #FFFFFF; }
 .mtg-closed { border-left-color: var(--border-strong); } .mtg-closed .mtg-chip-k { background: var(--bg-inverse); color: var(--text-on-inverse); }
 @media (max-width: 600px) { .mtg-agenda, .mtg-state { padding-left: 16px; padding-right: 16px; } }
+.mtg-setup { padding: 8px 32px 0; padding-left: var(--chat-gutter, 32px); padding-right: var(--chat-gutter, 32px); }
+.mtg-setup > summary { cursor: pointer; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtg-setup > .mtg-seats, .mtg-setup > .mtg-readbar { padding-left: 0; padding-right: 0; }
+.mtg-cost { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+@media (min-width: 861px) and (max-height: 760px) {
+  .mtg .chat-head { padding-top: 10px; padding-bottom: 10px; }
+  .mtg .chat-head h1 { font-size: 22px; line-height: 1.2; }
+  .mtg-controls { padding-top: 6px; }
+  .mtg-composer { padding-top: 8px; padding-bottom: 10px; gap: 6px; }
+  .mtg-composer .textarea { height: 56px; min-height: 44px; }
+}
 .mtg-readbar { align-items: center; justify-content: space-between; padding: 10px 32px 0; padding-left: var(--chat-gutter, 32px); padding-right: var(--chat-gutter, 32px); }
 .mtg-modes { flex: 0 1 auto; } .mtg-modes > button { border: 0; background: transparent; cursor: pointer; padding: 6px 10px; }
 .mtg-modes > button.on { background: var(--surface-card); color: var(--text-strong); }

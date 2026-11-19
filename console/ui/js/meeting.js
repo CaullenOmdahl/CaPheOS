@@ -84,7 +84,13 @@ export function meetingPane(host, opts) {
     h('label', { for: 'msg', class: 'caption muted' }, COMPOSER_HINT + ' · @name to ask particular people · Esc raises your hand while they talk'),
     h('div', { class: 'mtg-ta-wrap' }, ta, ac),
     h('div', { class: 'between-c', style: 'flex-wrap:wrap;gap:8px' }, sendErr, sendBtn));
-  fill(host, head, stateHost, seatsHost, ctrlHost, liveLine, errHost, h('div', { class: 'row-8 mtg-readbar' }, null), h('div', { class: 'chat-scroll' }, body, jump), form);
+  // the seats and the reading aids fold under one line (closed by default, remembered; open while nobody is seated) so
+  // the conversation keeps the height (owner, 2026-11-19: "Same issue here with cramping space")
+  const setupSum = h('summary', { class: 'caption mtg-setup-sum' }, 'Seats');
+  const setup = h('details', { class: 'mtg-setup' }, setupSum, seatsHost, h('div', { class: 'row-8 mtg-readbar' }, null));
+  setup.open = (() => { try { return localStorage.getItem('capheos.meeting.setupOpen') === '1'; } catch (_) { return false; } })();
+  setup.addEventListener('toggle', () => { try { localStorage.setItem('capheos.meeting.setupOpen', setup.open ? '1' : ''); } catch (_) {} });
+  fill(host, head, stateHost, setup, ctrlHost, liveLine, errHost, h('div', { class: 'chat-scroll' }, body, jump), form);
 
   /* ---------- actions ---------- */
   async function act(path, b, okMsg) {
@@ -133,6 +139,9 @@ export function meetingPane(host, opts) {
     if (noLead) noLead.dataset.act = 'no-leader';
     seatsHost.title = seats.length ? 'Who is at the table, in speaking order: ' + seats.map(s => nm(s.name) + (s.leader ? ' (leads)' : '') + ' on ' + (s.model ? s.model.label : (s.modelError || 'no model'))).join('; ') : '';
     fill(seatsHost, items.length ? items : h('span', { class: 'caption muted' }, 'Nobody is seated yet.'), h('div', { class: 'row-8 mtg-add' }, pick, addBtn, noLead));
+    const leadSeat = seats.find(s => s.leader);
+    setupSum.textContent = seats.length ? 'Seats (' + seats.length + '): ' + seats.map(s => nm(s.name).split(' ')[0] + (s.leader ? ' (leads)' : '')).join(', ') + (leadSeat ? '' : ' · no leader') + ' · reading: ' + ({ all: 'everything', speaker: 'by speaker', skim: 'skim' }[mode] || mode) : 'Seats: nobody yet, open to add people';
+    if (!seats.length) setup.open = true;
   }
   function drawAgenda() {
     if (!v) return;
@@ -233,6 +242,7 @@ export function meetingPane(host, opts) {
     subEl.textContent = [lead ? nm(lead.name) + ' leads' : 'No leader', M.observer ? 'you are observing (up to ' + M.observeRounds + ' rounds at a time)' : null, M.toolsOn ? 'tools on' : 'talk only', M.speed && M.speed !== 'instant' ? 'pace: ' + ({ manual: 'you press Next', fast: 'fast', normal: 'normal', slow: 'slow' }[M.speed] || M.speed) : null].filter(Boolean).join(' · ');
     drawState();
     costEl.textContent = [M.costLine || ('This meeting so far: ' + M.cost.turns + ' turn' + (M.cost.turns === 1 ? '' : 's')), M.estimateLine || ''].filter(Boolean).join(' · ');
+    costEl.title = costEl.textContent;   // one line on screen (cut with …), the whole of it on hover
   }
   function drawLive() {
     if (!v) return;
