@@ -30,6 +30,15 @@
  *   node company/tools/lanes.js status [--json]        live lanes, the last ended ones, what the station allows
  *   node company/tools/lanes.js end <seat>/<n> --by <name> [--why "…"]    stop one lane now (its result is reported as usual)
  *
+ * PIECE LANES (narrow fan-out, docs/DEPARTMENTS.md §6): a department lead's RECORDED split (lib/consult.js
+ * splitCandidates: a SPLIT answer or the lead's consult.js split, **Fan-out:** lanes, the department's delegation live) is
+ * offered to the lead's allowlisted workers (departments.json delegation.workers, inside the lead's reports in loops.json,
+ * not busy), ONE piece per lane and at most delegation.maxWorkers at once. A piece lane runs on the WORKER's agent and
+ * model, touches only the piece's files, has its own time limit (delegation.workerTimeoutMin) and the same money, tempo,
+ * class-rule and pacer checks as any lane; Sprint need not be on. The item's block gets `**Piece n lane:**` while it runs
+ * and `**Piece n result (...):**` when it ends; the item itself is never closed by a piece (its holder or the lead closes it).
+ * Its wakes.jsonl row carries split {item, piece, lead}, which model-rank.js fanoutEvaluation reads.
+ *
  * State: company/state/lanes.json (recorded with provenance.js). It is never trusted to name a routine: a lane's routine is
  * cancelled or removed only when the station shows it is one (isLaneJob). Owner: the tools seat.
  */
@@ -138,6 +147,18 @@ function editSection(file, heading, fn) {
   return hit;
 }
 const LANE_LINE = /^\*\*Lane:\*\*.*\n?/m;
+const pieceLine = n => new RegExp('^\\*\\*Piece ' + Number(n) + ' lane:\\*\\*.*\\n?', 'm');
+const ANY_PIECE_LINE = /^\*\*Piece (\d+) lane:\*\*.*$/gm;
+function markPiece(file, heading, n, line) {
+  return editSection(file, heading, sec => { const s = sec.replace(pieceLine(n), ''); return s.replace(/\s*$/, '') + '\n**Piece ' + n + ' lane:** ' + line + '\n' + (/\n\n$/.test(sec) ? '\n' : ''); });
+}
+function reportPiece(file, heading, o) {
+  return editSection(file, heading, sec => {
+    const s = sec.replace(pieceLine(o.piece), '');
+    const note = '**Piece ' + o.piece + ' result (lane ' + o.n + ', ' + o.who + ', run ' + String(o.runId || '?').slice(0, 12) + ', ' + o.when + '):** ' + o.text;
+    return s.replace(/\s*$/, '') + '\n' + note.replace(/\n+/g, ' ') + '\n' + (/\n\n$/.test(sec) ? '\n' : '');
+  });
+}
 function markLane(file, heading, line) {
   return editSection(file, heading, sec => {
     const s = sec.replace(LANE_LINE, '');
@@ -197,13 +218,14 @@ function promptFor(o) {
     '<<<', String(o.text || '').replace(/^\*\*Lane:\*\*.*$/m, '').trim().slice(0, 3000), '>>>',
     'Do NOT edit the inbox file: the lane tool reports your result into it when you finish.',
     '',
-    'TOUCH ONLY THESE PATHS: ' + o.touches.join(', ') + '. If the work needs anything else, do not change it: say so in your result, and your main loop picks it up.',
+    o.piece ? 'YOUR PIECE ' + o.piece.n + ' of this item: ' + o.piece.title + '. ' + (o.lead || 'Your lead') + ' split the item and handed this piece to you; the other pieces go to other people, so do only yours. ACCEPTANCE CHECK: ' + o.piece.check : null,
+    'TOUCH ONLY THESE PATHS: ' + o.touches.join(', ') + '. If the work needs anything else, do not change it: say so in your result, and ' + (o.piece ? (o.lead || 'your lead') + ' picks it up.' : 'your main loop picks it up.'),
     o.kind === 'worktree'
       ? 'YOUR FOLDER: ' + o.dir + ' is a git worktree of ' + o.repo + ' on branch ' + o.branch + '. Work there with relative paths and commit your changes on this branch (git add + git commit). Never push, never switch or merge branches; the seat\'s normal review flow merges it.'
       : 'YOUR FOLDER: ' + o.dir + ' is a scratch folder for notes and drafts. Your declared paths are in the company folder ' + S.root() + ': write them there.',
     '',
     'WHEN YOU FINISH, write LANE-RESULT.md in your folder. First line: `Status: DONE — <one line>` or `Status: BLOCKED — <why>` or `Status: OPEN — <what is left>`. Then a few lines: what you changed (files, commits), what you checked. Then stop: take no other work.',
-  ];
+  ].filter(l => l !== null);
   return lines.join('\n');
 }
 
@@ -248,7 +270,8 @@ async function finish(st, lane, how, ctx) {
   const text = (how.why === 'ended' ? '' : 'the lane was ' + (how.why === 'timeout' ? 'stopped after its ' + lane.timeoutMin + ' min limit' : how.why === 'halt' ? 'cut off by a hard halt' : how.why === 'lost' ? 'never seen running on the station' : 'stopped (' + how.why + ')') + '. ')
     + (status ? status + (summary ? ' — ' + summary : '') : result ? summary : 'it wrote no LANE-RESULT.md') + (branchNote ? '; ' + branchNote : '') + (status === 'DONE' && !commits ? '' : '. The main loop takes it from here.');
   const done = status === 'DONE' && !commits && how.why === 'ended' ? (summary || 'done by lane ' + lane.n) + ' (lane ' + lane.n + ')' : null;
-  try { reportLane(inboxPath(lane.inbox), lane.heading, { n: lane.n, runId: lane.runId, when: iso(S.now()), text, done }); } catch (_) {}
+  if (lane.piece) { try { reportPiece(inboxPath(lane.inbox), lane.heading, { piece: lane.piece, n: lane.n, who: name, runId: lane.runId, when: iso(S.now()), text: text.replace('. The main loop takes it from here.', '. ' + (lane.leadName || 'The lead') + ' takes it from here.') }); } catch (_) {} }
+  else try { reportLane(inboxPath(lane.inbox), lane.heading, { n: lane.n, runId: lane.runId, when: iso(S.now()), text, done }); } catch (_) {}
   st.lanes = st.lanes.filter(x => x.id !== lane.id);
   st.history.push(Object.assign({}, lane, { endedAt: iso(S.now()), outcome, commits, summary: summary || null }));
   if (ctx && ctx.state && ctx.state.sprintSig) delete ctx.state.sprintSig[lane.seat];   // the seat's main loop sees the result at its next tick
@@ -303,13 +326,15 @@ async function reconcile(st, jobs, ctx) {
     else if (!live && now - Date.parse(lane.firedAt) > 3 * 60000) await finish(st, lane, { why: 'lost', cancel: true }, ctx);
   }
   // a Lane line no live lane owns (a crash between marking and recording) is taken off, so the main loop takes the item
-  const owned = new Set(st.lanes.map(l => l.inbox + '\u0000' + l.heading));
+  const owned = new Set(st.lanes.filter(l => !l.piece).map(l => l.inbox + '\u0000' + l.heading));
+  const ownedPiece = new Set(st.lanes.filter(l => l.piece).map(l => l.inbox + '\u0000' + l.heading + '\u0000' + l.piece));
   for (const c of Object.values(co.crew() || {})) {
     if (!c || !c.inbox) continue;
     for (const sec of sections(inboxPath(c.inbox)).parts) {
-      if (!sec.startsWith('## ') || !LANE_LINE.test(sec)) continue;
+      if (!sec.startsWith('## ')) continue;
       const h = sec.split('\n')[0].slice(3).trim();
-      if (!owned.has(c.inbox + '\u0000' + h)) { try { editSection(inboxPath(c.inbox), h, s => s.replace(LANE_LINE, '')); } catch (_) {} }
+      if (LANE_LINE.test(sec) && !owned.has(c.inbox + '\u0000' + h)) { try { editSection(inboxPath(c.inbox), h, s => s.replace(LANE_LINE, '')); } catch (_) {} }
+      for (const m of sec.matchAll(ANY_PIECE_LINE)) if (!ownedPiece.has(c.inbox + '\u0000' + h + '\u0000' + Number(m[1]))) { try { editSection(inboxPath(c.inbox), h, s => s.replace(pieceLine(m[1]), '')); } catch (_) {} }
     }
   }
 }
@@ -351,7 +376,7 @@ async function hook(a) {
       const c = crew[id]; if (!c || !c.inbox) continue;
       const isCeo = id === ceo;
       const { parts } = sections(inboxPath(c.inbox));
-      const mine = new Set(st.lanes.filter(l => l.seat === id).map(l => l.heading));
+      const mine = new Set(st.lanes.filter(l => l.inbox === c.inbox).map(l => l.heading));   // its own lanes and piece lanes on its items
       const names = Object.fromEntries(Object.entries(crew).map(([k, v]) => [k, (v && v.name) || k]));
       const items = [];
       const notYet = new Set(String((((a.state || {}).agents || {})[id] || {}).deferred || '').split('|').filter(Boolean));
@@ -407,10 +432,12 @@ async function hook(a) {
     if (hk && st.notes.held !== hk) log('SPRINT LANES held: ' + hk);
     if (hk) st.notes.held = hk; else delete st.notes.held;
   }
+  // narrow fan-out: the pieces of a lead's recorded split, one per lane, to its free workers (see the header)
+  if (!co.halted()) { try { await pieceLanes(st, jobs, a, out, log, cfg); } catch (e) { log('PIECE LANES ERROR: ' + String((e && e.message) || e).slice(0, 200)); } }
   // the main loop is not woken for items only live lanes own
   for (const id of Object.keys(crew)) {
     const c = crew[id]; if (!c || !c.inbox || !a.order || !a.order.includes(id)) continue;
-    const mine = new Set(st.lanes.filter(l => l.seat === id).map(l => l.heading)); if (!mine.size) continue;
+    const mine = new Set(st.lanes.filter(l => l.inbox === c.inbox).map(l => l.heading)); if (!mine.size) continue;
     const open = SP.parseItems(sections(inboxPath(c.inbox)).txt || '').filter(i => i.open);
     const other = open.filter(i => !mine.has(i.heading));
     const why = String((a.reason || {})[id] || '');
@@ -430,7 +457,60 @@ async function hook(a) {
   if (!a.dry && snap() !== before) save(st);
   return out;
 }
-async function start({ id, n, laneId, c, job, it, cfg, routing, log }) {
+/* the piece lanes (see the header): one tick's offers. Every check a lane has, plus the worker's own: on the lead's
+   allowlist and team, free, its loop routine found and not paused or on "ask", its model allowed for the item's class. */
+async function pieceLanes(st, jobs, a, out, log, cfg) {
+  const C = require('./lib/consult'), D = require('./lib/departments');
+  const cands = C.splitCandidates({ root: S.root() }).filter(x => x.fanout === 'lanes');
+  if (!cands.length) return;
+  const crew = co.crew() || {};
+  const loopOf = id => { const c = crew[id]; if (!c || !c.loop) return null; const hits = jobs.filter(x => x && (x.name === c.loop || String(x.name).startsWith(c.loop))); return hits.length === 1 ? hits[0] : null; };
+  let M = null; try { M = require('./lib/meetings'); } catch (_) {}
+  const denied = (() => { let K = null; try { const R = require('./lib/routing'); const L = R.loadPolicy(S.root()); K = L ? R.knobs(L.policy) : null; } catch (_) {} return (cls, j) => (cls === 'code' && String(j.provider) === 'custom') || (K ? !require('./lib/routing').routeAllowed(cls, { provider: String(j.provider || ''), model: String(j.model || '') }, K) : false); })();
+  for (const cand of cands) {
+    const g = cand.delegation;
+    const live = st.lanes.filter(l => l.piece && l.inbox === cand.file && l.heading === cand.heading);
+    const done = new Set(st.history.filter(h => h.piece && h.inbox === cand.file && h.heading === cand.heading).map(h => h.piece));
+    const todo = cand.pieces.filter(p => !live.some(l => l.piece === p.n) && !done.has(p.n));
+    if (!todo.length) continue;
+    const under = D.subtree(cand.lead, crew);
+    const free = g.workers.filter(w => {
+      if (!crew[w] || !under.has(w) || w === cand.lead) return false;
+      if (st.lanes.some(l => l.seat === w)) return false;
+      const j = loopOf(w); if (!j || j.inFlight || j.state === 'running' || j.enabled === false) return false;
+      if ((a.modes || {})[w] === 'ask' && !a.allowAsk) return false;
+      if (M && M.busy(w)) return false;
+      return !denied(cand.class, j);
+    });
+    let room = Math.max(0, g.maxWorkers - live.length);
+    for (const piece of todo) {
+      if (!room || !free.length) break;
+      if (st.lanes.length >= cfg.maxLanesTotal) { out.held.push(cand.lead + ': the company is at its ' + cfg.maxLanesTotal + ' lanes'); return; }
+      const w = free[0], c = crew[w], job = loopOf(w);
+      const money = moneyHold(job, a.budget, w);
+      if (money) { out.held.push(w + ': ' + money); free.shift(); continue; }
+      if (a.dry) { log('WOULD start piece ' + piece.n + ' of "' + cand.heading.slice(0, 80) + '" for ' + (c.name || w) + ' (split by ' + cand.leadName + ')'); free.shift(); room--; continue; }
+      const tempo = require('./cadence.js').tempoAllows(w, S.now(), { record: true });
+      if (!tempo.ok) { out.held.push(w + ': ' + tempo.reason); free.shift(); continue; }
+      const n = [1, 2, 3, 4, 5, 6, 7, 8, 9].find(x => !st.lanes.some(l => l.seat === w && l.n === x));
+      const laneId = w + '/' + n;
+      const lock = SP.makePathLock(lockFile()).acquire(laneId, piece.files);
+      if (!lock.ok) { out.held.push(w + ': ' + piece.files.join(', ') + ' is held by lane ' + lock.holder); continue; }
+      try {
+        const r = await start({ id: w, n, laneId, c, job, it: { heading: cand.heading, id: cand.item, text: cand.text, touches: piece.files }, cfg: { timeoutMin: g.workerTimeoutMin }, routing: a.routing || null, log,
+          piece, inbox: cand.file, lead: cand.leadName, split: { lead: cand.lead, split: cand.split } });
+        st.lanes.push(r); out.started.push(laneId); free.shift(); room--;
+        log('PIECE LANE START ' + laneId + ' (' + (c.name || w) + ', piece ' + piece.n + ' of "' + cand.heading.slice(0, 80) + '", split by ' + cand.leadName + ', ' + job.provider + '/' + job.model + ', ' + g.workerTimeoutMin + ' min): touches ' + piece.files.join(', '));
+      } catch (e) {
+        SP.makePathLock(lockFile()).release(laneId);
+        log('PIECE LANE NOT STARTED ' + laneId + ' (' + (c.name || w) + '): ' + String(e.message).slice(0, 200));
+        free.shift();
+      }
+    }
+  }
+}
+async function start({ id, n, laneId, c, job, it, cfg, routing, log, piece, inbox, lead, split }) {
+  const itemInbox = inbox || c.inbox;
   const place = placeOf(c, it.touches);
   const p = prepare(id, n, place);
   const b = j(await S.call('POST', '/api/projects/bless', { path: p.dir })) || {};
@@ -442,7 +522,7 @@ async function start({ id, n, laneId, c, job, it, cfg, routing, log }) {
   // (HTTP 200 {ok:false, declined:true}); lib/station.js suffix() is the same unique-name mechanism the watchdog uses
   const ST = require('./lib/station');
   let name = 'Lane ' + ST.suffix(4);
-  const prompt = promptFor({ name: c.name || id, id: laneId, heading: it.heading, inbox: c.inbox, text: it.text, touches: place.touches || it.touches, kind: place.kind, dir: p.dir, repo: p.repo, branch: p.branch });
+  const prompt = promptFor({ name: c.name || id, id: laneId, heading: it.heading, inbox: itemInbox, text: it.text, touches: place.touches || it.touches, kind: place.kind, dir: p.dir, repo: p.repo, branch: p.branch, piece: piece || null, lead: lead || null });
   const body = { name, agentId: job.agentId || id, prompt, schedule: 'every 24h', enabled: false, workdir: p.dir, deliver: 'local', model: job.model, provider: job.provider,
     unattendedGrants: Array.isArray(job.unattendedGrants) ? job.unattendedGrants.slice() : [] };
   for (const k of ['skills', 'enabledToolsets', 'reasoningEffort']) if (job[k] != null) body[k] = job[k];
@@ -451,7 +531,7 @@ async function start({ id, n, laneId, c, job, it, cfg, routing, log }) {
   if (!made.ok) throw new Error('the lane routine was not created: ' + made.tries.join('; '));
   name = made.name; const cr = { job: made.job };
   const firedAt = S.now();
-  const tk = A.admit({ door: 'lane', kind: 'run', seat: id, jobId: cr.job.id, why: 'lane ' + laneId + ': ' + it.heading });   // phase 1: always allow, recorded
+  const tk = A.admit({ door: 'lane', kind: 'run', seat: id, jobId: cr.job.id, why: 'lane ' + laneId + ': ' + (piece ? 'piece ' + piece.n + ' of ' : '') + it.heading });   // phase 1: always allow, recorded
   // the router (lib/routing.js), exactly as for a wake: decided and recorded with a policy, applied only when live and open
   const W = require('./lib/wakes'), RT = require('./lib/routing');
   const wakeId = W.newWakeId(S.now());
@@ -478,12 +558,16 @@ async function start({ id, n, laneId, c, job, it, cfg, routing, log }) {
   A.started(tk, f);
   if (route) RT.record(routing, { wakeId, seat: id, door: 'lane', jobId: cr.job.id, runId: f.runId || null, status: f.status, route });
   // run-to-item link (lib/wakes.js): a lane is one wake for one item
-  if (f.status === 200) W.record({ wakeId, seat: id, runId: f.runId || null, admitId: tk.id, jobId: cr.job.id, door: 'lane', items: [{ file: c.inbox, id: W.itemId(c.inbox, it.heading, it.id), title: it.heading, due: null }], why: 'lane ' + laneId, route: route || undefined }, { file: rel('company', 'state', 'wakes.jsonl') });
+  if (f.status === 200) W.record({ wakeId, seat: id, runId: f.runId || null, admitId: tk.id, jobId: cr.job.id, door: 'lane', items: [{ file: itemInbox, id: W.itemId(itemInbox, it.heading, it.id), title: it.heading, due: null }], why: 'lane ' + laneId + (piece ? ' piece ' + piece.n : ''), route: route || undefined,
+    split: piece ? { item: W.itemId(itemInbox, it.heading, it.id), piece: piece.n, lead: split && split.lead, split: split && split.split } : undefined }, { file: rel('company', 'state', 'wakes.jsonl') });
   if (f.status !== 200) { await drop(); throw new Error('the station refused the run: HTTP ' + f.status + ' ' + String(f.body).slice(0, 120)); }
-  const lane = { id: laneId, seat: id, n, heading: it.heading, inbox: c.inbox, touches: it.touches, jobId: cr.job.id, jobName: name, runId: f.runId || null,
+  const lane = { id: laneId, seat: id, n, heading: it.heading, inbox: itemInbox, touches: it.touches, jobId: cr.job.id, jobName: name, runId: f.runId || null,
     firedAt: iso(firedAt), startedAt: iso(firedAt), timeoutMin: cfg.timeoutMin, dir: p.dir, kind: place.kind, why: place.why || null, repo: p.repo, branch: p.branch, base: p.base,
     provider: job.provider || null, model: job.model || null };
-  markLane(inboxPath(c.inbox), it.heading, n + ', run ' + (lane.runId || 'starting') + ', since ' + lane.startedAt + ' (a parallel lane owns this item: the main loop does not work or edit it)');
+  if (piece) {
+    Object.assign(lane, { piece: piece.n, pieceTitle: piece.title, lead: split && split.lead, leadName: lead || null, item: W.itemId(itemInbox, it.heading, it.id), split: split && split.split });
+    markPiece(inboxPath(itemInbox), it.heading, piece.n, (c.name || id) + ', lane ' + n + ', run ' + (lane.runId || 'starting') + ', since ' + lane.startedAt + ' (' + piece.title + ')');
+  } else markLane(inboxPath(c.inbox), it.heading, n + ', run ' + (lane.runId || 'starting') + ', since ' + lane.startedAt + ' (a parallel lane owns this item: the main loop does not work or edit it)');
   return lane;
 }
 
@@ -508,7 +592,7 @@ function isLaneJob(job, jobs, root) {
 }
 function view() { const st = load(); return { lanes: st.lanes.map(l => ({ id: l.id, seat: l.seat, n: l.n, handoff: l.heading, since: l.startedAt, runId: l.runId, kind: l.kind, branch: l.branch, timeoutMin: l.timeoutMin })), history: st.history.slice(-10).reverse(), probe: st.notes.probe || null, held: st.notes.held || null }; }
 
-module.exports = { dispatchHook, cutOff, isLaneJob, view, load, config, probe, promptFor, placeOf, writesCode, markLane, reportLane, CAPABILITY, DEFAULTS, S };
+module.exports = { dispatchHook, cutOff, isLaneJob, view, load, config, probe, promptFor, placeOf, writesCode, markLane, reportLane, markPiece, reportPiece, pieceLanes, CAPABILITY, DEFAULTS, S };
 
 if (require.main === module) {
   const a = process.argv.slice(2);

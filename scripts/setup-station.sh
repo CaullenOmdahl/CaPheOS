@@ -101,6 +101,8 @@ mkdir -p "$(dirname "$ENVFILE")"
 # programs it found before.
 # STARNET_OVERRIDE_ALLOW (StarNet patch 0017): the one-run model override allowlist the dispatcher rewrites every tick
 # (company/tools/lib/override-allow.js); without it, or once it is 30 minutes old, the station refuses every override.
+# STARNET_DELEGATE_ALLOW (StarNet patch 0018): the delegation allowlist the dispatcher rewrites every tick
+# (company/tools/lib/delegate-allow.js); without it, or once it is 30 minutes old, no routine run gets team.dispatch.
 UPATH="$(systemctl --user show-environment 2>/dev/null | sed -n 's/^PATH=//p')"; UPATH="${UPATH:-/usr/local/bin:/usr/bin:/bin}"
 ( umask 077; cat > "$ENVFILE" <<EOF
 # $SVC — written by $ROOT/scripts/setup-station.sh. Holds the station token (mode 0600).
@@ -112,6 +114,7 @@ STARNET_API_TOKEN=$(cat secrets/station-token)
 STARNET_HOST=127.0.0.1
 STARNET_HEADLESS=1
 STARNET_OVERRIDE_ALLOW=$ROOT/company/state/override-allow.json
+STARNET_DELEGATE_ALLOW=$ROOT/company/state/delegate-allow.json
 TZ=$ZONE
 EOF
 )
