@@ -20,7 +20,8 @@
  *        unsettled run makes the station refuse every metered run (spend_history_unavailable). A run on an unmetered
  *        provider (dispatch-budget.json unmeteredProviders: a subscription) has no metered charge: --usd defaults to 0
  *        there; any other run needs --usd. apply refuses to switch a cap on while runs are unsettled (--force overrides),
- *        and the budget-drift duty reports them (finding unsettled-spend).
+ *        and the budget-drift duty reports them (finding unsettled-spend). The dispatcher's snapshot books a cut-off run on an
+ *        unmetered provider at $0 by itself (logged by "dispatcher (auto)"); only metered runs wait for the owner.
  *   node company/tools/budget.js --selftest
  *
  * The projection, and why (phase 1: semantics unchanged, only the numbers are copied):
@@ -118,6 +119,26 @@ async function snapshot(o) {
   const call = o.call || S.call;
   let caps = null, err = null, spendHistory = null;
   try { const r = await call('GET', '/api/budget/status'); if (r && r.status === 200) { const st = JSON.parse(r.body) || {}; caps = st.caps || null; spendHistory = spendHistoryOf(st); } else err = 'HTTP ' + (r && r.status); } catch (e) { err = String(e.message || e).slice(0, 160); }
+  // a run cut off mid-way (a crash, a reboot) on an unmetered provider (a subscription) has no metered charge, yet with a
+  // cap on it makes the station refuse every run until someone books it. Book it at $0 here: there is nothing to decide.
+  // A metered run's real charge stays the owner's (budget.js settle --usd). 2026-11-20: one crash-cut Haiku run held the
+  // whole sandbox until the owner's session settled it.
+  if (spendHistory && !spendHistory.complete && spendHistory.unsettled.length && !o.noAutoSettle) {
+    const free = unmeteredProviders();
+    for (const u of spendHistory.unsettled.filter(x => x.runId && x.provider && free.includes(x.provider))) {
+      try {
+        const r = await call('POST', '/api/budget/settle', { runId: u.runId, usd: 0 });
+        if (r && r.status === 200) {
+          fs.mkdirSync(path.dirname(F.log()), { recursive: true });
+          fs.appendFileSync(F.log(), JSON.stringify({ at: new Date(S.now()).toISOString(), by: 'dispatcher (auto)', settled: u.runId, provider: u.provider, usd: 0, why: 'cut off before it settled; ' + u.provider + ' is unmetered (a subscription), so it has no metered charge' }) + '\n');
+          u.autoSettled = true;
+        }
+      } catch (_) {}
+    }
+    if (spendHistory.unsettled.some(u => u.autoSettled)) {
+      try { const r2 = await call('GET', '/api/budget/status'); if (r2 && r2.status === 200) spendHistory = spendHistoryOf(JSON.parse(r2.body) || {}); } catch (_) {}
+    }
+  }
   const jobs = (o.jobs || []).map(j => ({ id: j.id, name: j.name, enabled: j.enabled !== false, noAgent: !!j.noAgent, script: j.script || null, workdir: j.workdir || null }));
   const doc = { _doc: 'The station\'s spending caps and routines as the dispatcher tick last saw them (budget.js snapshot), for the budget-drift duty, which opens no socket.', at: new Date(S.now()).toISOString(), caps, spendHistory, error: err, jobs };
   const f = F.snapshot(); fs.mkdirSync(path.dirname(f), { recursive: true });
