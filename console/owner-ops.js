@@ -11,7 +11,7 @@
  * secret. Long jobs (restarts, a framework update, a clean-up) run detached with their output in
  * company/state/owner-ops/<id>.log, shown in the console as they go.
  * OUTSIDE THE CONSOLE'S LIMITS. Under systemd each job is its own transient unit, <svc>-owner-job-<id>.service
- * (systemd-run --user --collect), never a child in the console's cgroup: the console's MemoryMax (300 / 512 MB),
+ * (systemd-run --user --collect, in the company's own slice), never a child in the console's cgroup: the console's MemoryMax (300 / 512 MB),
  * OOMPolicy=stop and KillMode=control-group would end a framework update (npm install, setup-station.sh) halfway when the
  * console reaches its limit or restarts. The unit gets ManagedOOMPreference=omit (systemd-oomd never picks it),
  * OOMPolicy=continue, the console's working folder and a short list of its environment (never the session secret).
@@ -90,7 +90,9 @@ function mount(route, deps) {
   function jobUnitArgs(unit, log, env) {
     const a = ['--user', '--collect', '--quiet', '--unit=' + unit, '--description=' + 'Owner job ' + unit,
       '-p', 'WorkingDirectory=' + co.ROOT, '-p', 'StandardOutput=append:' + log, '-p', 'StandardError=append:' + log,
-      '-p', 'ManagedOOMPreference=omit', '-p', 'OOMPolicy=continue', '-p', 'KillMode=mixed', '-p', 'TimeoutStopSec=60'];
+      '-p', 'ManagedOOMPreference=omit', '-p', 'OOMPolicy=continue',
+      // the company's own slice, outside app.slice, where systemd-oomd's pressure kill is off (lib/memory.js sliceOf)
+      '--slice=' + sliceName(), '-p', 'KillMode=mixed', '-p', 'TimeoutStopSec=60'];
     for (const [k, v] of Object.entries(env)) if (ENV_KEEP.test(k) && v != null && !/[\n\r\0]/.test(String(v))) a.push('-E', k + '=' + v);
     return a;
   }
@@ -102,6 +104,7 @@ function mount(route, deps) {
     for (const b of ['/usr/bin/systemd-run', '/bin/systemd-run']) if (fs.existsSync(b)) return b;
     return null;
   }
+  const sliceName = () => { let c = {}; try { c = JSON.parse(fs.readFileSync(co.p('company', 'company.json'), 'utf8')); } catch (_) {} return require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'memory.js')).sliceOf(c); };
   const svcName = () => { let c = {}; try { c = JSON.parse(fs.readFileSync(co.p('company', 'company.json'), 'utf8')); } catch (_) {} return String((c.station && c.station.serviceName) || 'capheos-station').replace(/\.service$/, ''); };
   function startJob(kind, argv, opts) {
     opts = opts || {};

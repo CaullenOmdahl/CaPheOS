@@ -268,8 +268,14 @@ and shell settings for StarNet patch 0020, ignored by a station without it). It 
 safe restart that waits until nothing runs. The station unit has no `ManagedOOMMemoryPressure=kill` on purpose
 (systemd-oomd would kill every run in it), and it has `ManagedOOMPreference=omit` (template and drop-in; the dispatcher's
 drop-in too under low): host slice defaults such as `/usr/lib/systemd/user/slice.d/10-oomd-per-slice-defaults.conf` put
-`ManagedOOMMemoryPressure=kill` on `app.slice` where the station runs, and a build holding the station at MemoryHigh reads
-as pressure; omit takes the station out of oomd's choice (oomd's swap rule honours the preference only for root-owned
+`ManagedOOMMemoryPressure=kill` on every user slice (`app.slice` included), and a build holding the station at MemoryHigh
+reads as pressure on the slice it runs in. So every company unit (the templates, service.js units, owner jobs) runs in
+the company's own slice `capheos-<service>.slice` (lib/memory.js `sliceOf`; outside `app.slice`), and `memory.js apply`
+writes `<slice>.slice` plus `<level>.slice.d/50-capheos-memory.conf` with `ManagedOOMMemoryPressure=auto` on it and on
+every level above it (a dash in a slice name is a level; `capheos.slice` is shared and reads the same from every
+company): that pressure never makes oomd end the owner's apps, the owner's Chrome or another company's units. The swap
+rule keeps the host's setting. A running unit moves into the slice at its next restart (`apply` lists them and asks for
+the safe restart; `memory.js status` shows the slice). Omit takes the station out of oomd's choice (oomd's swap rule honours the preference only for root-owned
 cgroups, so `MemorySwapMax` bounds the station's swap instead). The kernel picks inside the unit, the sidecar at `OOMScoreAdjust=100`, agent
 commands at 500 (patch 0020), console and dispatcher at 200 with oomd's kill (they restart by themselves; under low the
 dispatcher has no oomd kill, so it is not ended mid-tick over and over). The station has `OOMPolicy=continue` (template

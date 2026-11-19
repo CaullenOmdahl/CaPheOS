@@ -340,6 +340,10 @@ function render(ctx, e) {
     + startLimit(e) + x + '\n[Service]\n'
     + 'Type=' + (e.kind === 'timer' ? 'oneshot' : 'simple') + '\n'
     + 'WorkingDirectory=' + ctx.root + '\n'
+    // the company's own slice, outside app.slice (lib/memory.js sliceOf; memory.js apply turns systemd-oomd's pressure kill
+    // off there), with the station, console and dispatcher: a service near its MemoryHigh never makes oomd end the
+    // owner's apps or another company's units
+    + 'Slice=' + require('./lib/memory').sliceOf(ctx.config) + '\n'
     + 'ExecStart=' + execLine(execArgv(ctx, e)) + '\n'
     + 'Environment=CAPHEOS_ROOT=' + ctx.root + ' CAPHEOS_SERVICE=' + e.name + '\n'
     + (e.kind === 'timer' ? '' : 'Restart=' + e.restart + '\nRestartSec=10s\n')
@@ -1166,6 +1170,7 @@ function selftest() {
     ok('after yes: installed, enabled and started', r.ok && r.status === 'installed' && fake.active['testco-svc-depth.service'] && fake.calls.includes('daemon-reload'), r);
     ok('unit: company-scoped name, WorkingDirectory=ROOT, Restart, limits, no network rule', /WorkingDirectory=/.test(unit) && unit.includes('WorkingDirectory=' + R + '\n') && /Restart=on-failure/.test(unit)
       && /MemoryMax=512M/.test(unit) && /CPUQuota=50%/.test(unit) && /NoNewPrivileges=yes/.test(unit) && !/RestrictAddressFamilies/.test(unit) && /X-CaPheOS-Company=testco/.test(unit), unit);
+    ok('unit: in the company\'s own slice, outside app.slice', /\nSlice=capheos-testco-station\.slice\n/.test(unit), unit);
     ok('unit: MemoryHigh at 80 % and MemorySwapMax at 50 % of MemoryMax, OOMScoreAdjust 300', /MemoryHigh=409M\nMemoryMax=512M\nMemorySwapMax=256M\nOOMScoreAdjust=300\n/.test(unit), unit);
     { // the low memory profile (a small machine): a smaller default, a lower ceiling
       const low = context({ root: R, unitDir: U, transientDir: TR, systemctl, isAgent: () => false, ownerShell: () => true, guard: () => true, halted: () => false, callerConflict: () => null, gov: { root: R }, ownerCard: card, ownerNotice: notice, memPlan: { defaultMax: '256M', ceiling: '1G' } });

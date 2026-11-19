@@ -16,8 +16,9 @@
  *   M.share({ root, config, unitDir, supervisor })   { n, keepFreeMB, others }: under systemd the companies above and the
  *                             largest keepFreeMB any of them asks for (memory kept free is the machine's, not one
  *                             company's); in a container or without a supervisor this company alone
+ *   M.sliceOf(config), M.sliceChain(slice)   the company's own slice (outside app.slice) and its levels
  *   M.units(config, root)     the unit names: <svc>, <svc>-console, <svc>-dispatch and the registered services
- *   M.usage(o)                per unit {currentMB, peakMB, highMB, maxMB, pid}, the company's browsers, its private temp dir
+ *   M.usage(o)                per unit {currentMB, peakMB, highMB, maxMB, pid, slice}, the company's browsers, its private temp dir
  *   M.sample(o)               one line in company/state/memory-samples.jsonl
  *   M.growth(samples, now)    units whose memory kept growing for 48 h without a restart
  *   M.parseMeminfo / parseSwaps / parseShow    the parsers (fixtures in the selftest)
@@ -154,6 +155,20 @@ function share(o) {
   return { n: Math.max(1, list.length), keepFreeMB: Math.max(own, ...list.map(c => c.keepFreeMB || 0)), others: others.map(c => ({ root: c.root, svc: c.svc, name: c.name, keepFreeMB: c.keepFreeMB })) };
 }
 function svcOf(config) { return String((config && config.station && config.station.serviceName) || 'capheos-station'); }
+/* the company's own systemd slice, outside app.slice: <svc>.slice when the service name starts with capheos-, else
+   capheos-<svc>.slice. Every unit the company runs goes in it (station, console, dispatcher, liveness, registered
+   services, owner jobs), so systemd-oomd's pressure rule on app.slice (host slice defaults) never ends the owner's apps or
+   another company's units because a build here sits at the station's MemoryHigh. A dash in a slice name is a level
+   (capheos-a-b.slice is inside capheos-a.slice, inside capheos.slice), and the host defaults put the kill rule on every
+   slice, so sliceChain lists each level: memory.js apply turns the pressure kill off on all of them. */
+function sliceOf(config) {
+  const s = svcOf(config).replace(/\.service$/, '').replace(/[^A-Za-z0-9_.:-]+/g, '_').replace(/-+/g, '-').replace(/^-+|-+$/g, '') || 'station';
+  return (/^capheos-./.test(s) ? s : 'capheos-' + s) + '.slice';
+}
+function sliceChain(slice) {
+  const parts = String(slice).replace(/\.slice$/, '').split('-').filter(Boolean);
+  return parts.map((_, i) => parts.slice(0, i + 1).join('-') + '.slice');
+}
 function slugOf(config) { return String((config && (config.slug || config.shortName)) || 'company').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'company'; }
 function units(config, root) {
   const svc = svcOf(config);
@@ -198,11 +213,11 @@ function usage(o) {
   } else if (sup === 'systemd') {
     const list = units(config, root);
     const sc = o.systemctl || realSystemctl;
-    const r = sc(['show', '-p', 'Id', '-p', 'MemoryCurrent', '-p', 'MemoryPeak', '-p', 'MemoryHigh', '-p', 'MemoryMax', '-p', 'MainPID', '-p', 'ActiveState'].concat(list.map(u => u.name)));
+    const r = sc(['show', '-p', 'Id', '-p', 'MemoryCurrent', '-p', 'MemoryPeak', '-p', 'MemoryHigh', '-p', 'MemoryMax', '-p', 'MainPID', '-p', 'ActiveState', '-p', 'Slice'].concat(list.map(u => u.name)));
     const blocks = parseShow(r.out);
     list.forEach((u, i) => {
       const b = blocks.find(x => x.Id === u.name) || blocks[i] || {};
-      const row = { role: u.role, active: b.ActiveState === 'active', currentMB: bytesMB(b.MemoryCurrent), peakMB: bytesMB(b.MemoryPeak), highMB: bytesMB(b.MemoryHigh), maxMB: bytesMB(b.MemoryMax), pid: Number(b.MainPID) || null };
+      const row = { role: u.role, active: b.ActiveState === 'active', currentMB: bytesMB(b.MemoryCurrent), peakMB: bytesMB(b.MemoryPeak), highMB: bytesMB(b.MemoryHigh), maxMB: bytesMB(b.MemoryMax), pid: Number(b.MainPID) || null, slice: b.Slice || null };
       if (u.service) row.service = u.service;
       out.units[u.name] = row;
       out.totalMB += row.currentMB || 0;
@@ -263,4 +278,4 @@ function growth(samples, now) {
   return out.filter(x => x.growing);
 }
 
-module.exports = { companies, share, host, settings, profileOf, plan, units, usage, sample, readSamples, growth, parseMeminfo, parseSwaps, parseShow, bytesMB, dirSize, floor64, realSystemctl, svcOf, slugOf, LOW_AT_MB, sampleFile };
+module.exports = { companies, share, host, settings, profileOf, plan, units, usage, sample, readSamples, growth, parseMeminfo, parseSwaps, parseShow, bytesMB, dirSize, floor64, realSystemctl, svcOf, slugOf, sliceOf, sliceChain, LOW_AT_MB, sampleFile };

@@ -25,6 +25,13 @@
  *   ~/.config/systemd/user/<unit>.service.d/50-capheos-memory.conf   station, console, dispatcher: MemoryHigh, MemoryMax,
  *       MemorySwapMax and the ExecStart line of the unit's template with --max-old-space-size (the heap cap goes on the
  *       start command, not NODE_OPTIONS, so an agent's own node builds never inherit it)
+ *   ~/.config/systemd/user/<slice>.slice and <level>.slice.d/50-capheos-memory.conf   the company's own slice
+ *       (lib/memory.js sliceOf: capheos-<svc>.slice, outside app.slice; every unit template and service.js unit says
+ *       Slice=<it>, owner jobs get --slice) with systemd-oomd's memory-pressure kill off on it and on each level above it
+ *       (ManagedOOMMemoryPressure=auto). Why: the host's slice defaults put the kill rule on app.slice, and a build held
+ *       at the station's MemoryHigh raises app.slice's pressure; with the station omitted, oomd would end the owner's
+ *       desktop apps, the owner's Chrome or the other company's units instead. A running unit moves into the slice at its
+ *       next restart (apply says which are still elsewhere; status shows it).
  *   <root>/.starnet-data/memory.env (0600)   the station's browser and shell settings (StarNet patch 0020 reads them;
  *       a station without it ignores them); in a container also the three heap sizes the s6 run script passes on
  * Then `systemctl --user daemon-reload` and, for each running unit, `set-property --runtime` so the limits apply now
@@ -83,6 +90,11 @@ function planFor(ctx, over) {
   const companies = Number(over.companies) || sh.n;
   return Object.assign(M.plan({ totalMB, profile, keepFreeMB, companies }), { settings: s, others: over.companies ? [] : sh.others });
 }
+function sliceLine(sl) {
+  if (!sl) return null;
+  return 'slice: ' + sl.name + (sl.pressureKillOff ? ' (outside app.slice; systemd-oomd\'s pressure kill off)' : ' (not written yet: memory.js apply writes it)')
+    + (sl.elsewhere.length ? ' · still elsewhere until their next restart: ' + sl.elsewhere.map(x => x.unit + ' (' + x.slice + ')').join(', ') : sl.inSlice.length ? ' · every running unit is in it' : '');
+}
 function planLine(p) {
   const n = p.companies || 1;
   return 'Memory: ' + p.profile + ' profile for this ' + fmtGB(p.totalMB) + ' machine' + (n > 1 ? ', shared evenly with ' + (n - 1) + ' other compan' + (n > 2 ? 'ies' : 'y') + ' on it' : '') + '; the station may use up to ' + fmtGB(p.station.maxMB) + '; ' + fmtGB(p.keepFreeMB) + ' kept free for other programs.';
@@ -125,6 +137,20 @@ function dropins(ctx, p) {
   }
   return out;
 }
+// the company's slice: a unit file for it (a name in systemctl) and on it and every level above it (a dash is a level,
+// capheos.slice is shared by the companies on this machine; the text is the same for all) the drop-in that turns
+// systemd-oomd's memory-pressure kill off. 50- sorts after the host's slice.d/10-oomd-per-slice-defaults.conf, so it
+// wins. The swap rule (ManagedOOMSwap) keeps the host's setting: MemorySwapMax bounds the station's swap, and a slice
+// left out of it would only make oomd pick someone else's program when swap runs out.
+const sliceName = ctx => M.sliceOf(ctx.config);
+function sliceFiles(ctx) {
+  const name = sliceName(ctx); const out = {};
+  out[path.join(ctx.unitDir, name)] = '# written by company/tools/memory.js apply. The units of ' + (ctx.config.name || svc(ctx)) + ' run here, outside app.slice.\n'
+    + '[Unit]\nDescription=' + String(ctx.config.name || svc(ctx)).replace(/[\n\r]/g, ' ').slice(0, 80) + ': the station, console, dispatcher, background services and owner jobs\n';
+  for (const lvl of M.sliceChain(name)) out[path.join(ctx.unitDir, lvl + '.d', DROPIN)] = '# written by company/tools/memory.js apply (' + (lvl === name ? 'this company\'s slice' : 'a level of the CaPheOS companies\' slices; the same text from every company') + ').\n'
+    + '# systemd-oomd never ends units here for memory pressure: a build held at the station\'s MemoryHigh is bounded by the\n# station\'s own MemoryMax; the kernel then ends the build, not the station or anyone else\'s program.\n[Slice]\nManagedOOMMemoryPressure=auto\n';
+  return out;
+}
 function memEnv(ctx, p, sup) {
   const s = p.settings || M.settings(ctx.config);
   const lines = ['# written by company/tools/memory.js apply (profile ' + p.profile + '). Edit runtime.memory in company/company.json, not this file.'];
@@ -158,6 +184,12 @@ function apply(ctx, o) {
   if (sup === 'systemd') {
     const d = dropins(ctx, p);
     const heapChanged = [];
+    result.slice = { name: sliceName(ctx), elsewhere: [] };
+    for (const [f, text] of Object.entries(sliceFiles(ctx))) {
+      if (readText(f) === text) { unchanged.push(f); continue; }
+      if (!o.dry) writeAtomic(f, text, 0o644);
+      wrote.push(f);
+    }
     for (const [unit, x] of Object.entries(d)) {
       const before = readText(x.file);
       if (before === x.text) { unchanged.push(x.file); continue; }
@@ -175,7 +207,12 @@ function apply(ctx, o) {
         // live limits only when they cannot stop the unit: the station must already run with OOMPolicy=continue (the
         // drop-in, after daemon-reload), and no unit may already use more than its new MemoryHigh. Otherwise the limits
         // wait for its next start (an empty unit), and the warning says so.
-        const now = M.parseShow(ctx.systemctl(['show', '-p', 'OOMPolicy', '-p', 'MemoryCurrent', unit]).out)[0] || {};
+        const now = M.parseShow(ctx.systemctl(['show', '-p', 'OOMPolicy', '-p', 'MemoryCurrent', '-p', 'Slice', unit]).out)[0] || {};
+        // a running unit keeps its slice until it restarts (systemd never moves a live cgroup)
+        if (now.Slice && now.Slice !== result.slice.name) {
+          result.slice.elsewhere.push({ unit, slice: now.Slice });
+          if (!result.restartNeeded.includes(unit)) result.restartNeeded.push(unit);
+        }
         const curMB = /^\d+$/.test(String(now.MemoryCurrent || '')) ? Math.round(Number(now.MemoryCurrent) / 1048576) : null;
         const lim = p[x.role];
         if (x.role === 'station' && now.OOMPolicy && now.OOMPolicy !== 'continue') {
@@ -274,11 +311,20 @@ function status(ctx) {
     const was = m ? Number(m[1]) : own ? 1 : null;
     if (was != null && was !== (p.companies || 1)) warnings.push('the memory limits were set when ' + (was === 1 ? 'this was the only company' : was + ' companies shared') + ' this computer; ' + ((p.companies || 1) === 1 ? 'it is the only one now' : (p.companies || 1) + ' share it now') + '. Save the memory settings again (Settings › System › Memory) to share it fairly.');
   }
+  // the company's slice (outside app.slice, systemd-oomd's pressure kill off): which units run in it, which still run
+  // elsewhere until their next restart, and whether its drop-ins are there
+  let slice = null;
+  if (u.supervisor === 'systemd') {
+    const name = sliceName(ctx);
+    const rows = Object.entries(u.units).filter(([, x]) => x.active);
+    slice = { name, pressureKillOff: Object.keys(sliceFiles(ctx)).every(f => readText(f) != null),
+      inSlice: rows.filter(([, x]) => x.slice === name).map(([n]) => n), elsewhere: rows.filter(([, x]) => x.slice && x.slice !== name).map(([n, x]) => ({ unit: n, slice: x.slice })) };
+  }
   const line = 'The company uses ' + fmtGB(u.totalMB) + (parts.length ? ' (' + parts.join(', ') + ')' : '') + '. ' + fmtGB(h.availableMB) + ' free' + (p.keepFreeMB ? '; ' + fmtGB(p.keepFreeMB) + ' kept for other programs' : '') + '.'
     + (model ? ' Local AI model: ' + fmtGB(model.mb) + '.' : '');
   return { ok: true, at: new Date(ctx.now).toISOString(), line, verdict, host: h, settings: p.settings, profile: p.profile, plan: p, usage: u, freed, pressure, localModel: model,
     reaper: reaper ? { lastRun: reaper.lastRun || null, lastSummary: reaper.lastSummary || null } : null, warnings, planLine: planLine(p),
-    sharing: { companies: p.companies || 1, others: (p.others || []).map(c => c.name || c.svc) } };
+    sharing: { companies: p.companies || 1, others: (p.others || []).map(c => c.name || c.svc) }, slice };
 }
 
 /* The station browser right now (StarNet GET /api/browser/view, this machine's station only, 4 s at most):
@@ -355,7 +401,11 @@ function selftest() {
     assert.ok(calls.includes('set-property --runtime testco-station-console.service MemoryHigh=160M MemoryMax=300M'), calls.join('|'));
     assert.ok(!calls.some(c => /restart/.test(c)), 'never restarts');
     assert.ok(r.restartNeeded.includes('testco-station.service') && /restart-station\.sh --when-idle/.test(r.restartCommand), JSON.stringify(r.restartNeeded));
-    assert.ok(accepted.some(a => /memory\.env$/.test(a)) && accepted.length === 4, accepted.join());
+    assert.ok(accepted.some(a => /memory\.env$/.test(a)) && accepted.length === 8, 'memory.env, three unit drop-ins, the slice and its three levels\' drop-ins: ' + accepted.join());
+    const sl = fs.readFileSync(path.join(unitDir, 'capheos-testco-station.slice.d', DROPIN), 'utf8');
+    assert.ok(/\[Slice\]\nManagedOOMMemoryPressure=auto\n/.test(sl) && !/ManagedOOMSwap/.test(sl), 'the slice: pressure kill off, swap rule the host\'s: ' + sl);
+    for (const lvl of ['capheos', 'capheos-testco']) assert.ok(/ManagedOOMMemoryPressure=auto/.test(fs.readFileSync(path.join(unitDir, lvl + '.slice.d', DROPIN), 'utf8')), lvl + '.slice: every level above it too');
+    assert.ok(/^Description=Test Co: /m.test(fs.readFileSync(path.join(unitDir, 'capheos-testco-station.slice'), 'utf8')));
   });
   ok('apply never sets live limits that could stop a unit: the station on OOMPolicy=stop, a unit already over its new limit', () => {
     setMem({ profile: 'low', keepFreeMB: 1 });   // a changed plan, so the drop-ins are rewritten
@@ -372,6 +422,17 @@ function selftest() {
     setMem({ profile: 'low' }); calls.length = 0; apply(mk(2048, { systemctl: sc }), {});
     assert.ok(calls.some(c => /^set-property --runtime testco-station\.service MemoryHigh=896M/.test(c)), 'on OOMPolicy=continue and under the limit: set live: ' + calls.join('|'));
     setMem({});
+  });
+  ok('apply: a running unit still outside the slice moves at its next restart (never restarted here)', () => {
+    const sc = args => { calls.push(args.join(' ')); if (args[0] === 'is-active') return { code: 0, out: 'active\n' }; if (args[0] === 'show') return { code: 0, out: 'OOMPolicy=continue\nMemoryCurrent=1048576\nSlice=' + (args[args.length - 1] === 'testco-station.service' ? 'app.slice' : 'capheos-testco-station.slice') + '\n' }; return { code: 0, out: '' }; };
+    calls.length = 0; const r = apply(mk(2048, { systemctl: sc }), {});
+    assert.deepStrictEqual(r.slice, { name: 'capheos-testco-station.slice', elsewhere: [{ unit: 'testco-station.service', slice: 'app.slice' }] });
+    assert.ok(r.restartNeeded.includes('testco-station.service') && !r.restartNeeded.includes('testco-station-console.service') && /restart-station\.sh --when-idle/.test(r.restartCommand), JSON.stringify(r.restartNeeded));
+    assert.ok(!calls.some(c => /restart|stop/.test(c)), calls.join('|'));
+    const show = 'Id=testco-station.service\nMemoryCurrent=1048576\nMainPID=1\nActiveState=active\nSlice=app.slice\n\nId=testco-station-console.service\nMemoryCurrent=1048576\nMainPID=2\nActiveState=active\nSlice=capheos-testco-station.slice\n';
+    const s = status(mk(2048, { systemctl: () => ({ code: 0, out: show }), usageOpts: { browsers: false } }));
+    assert.deepStrictEqual(s.slice, { name: 'capheos-testco-station.slice', pressureKillOff: true, inSlice: ['testco-station-console.service'], elsewhere: [{ unit: 'testco-station.service', slice: 'app.slice' }] });
+    assert.strictEqual(sliceLine(s.slice), 'slice: capheos-testco-station.slice (outside app.slice; systemd-oomd\'s pressure kill off) · still elsewhere until their next restart: testco-station.service (app.slice)');
   });
   ok('apply again changes nothing and needs no restart', () => {
     calls.length = 0; const r = apply(mk(2048), {});
@@ -398,7 +459,8 @@ function selftest() {
     fs.writeFileSync(path.join(croot, 'company', 'company.json'), '{"slug":"c"}');
     const cu = path.join(T, 'cont-units'); calls.length = 0;
     const r = apply(context({ root: croot, unitDir: cu, systemctl: fakeSc, supervisor: 'container', host: { totalMB: 2048 }, accept: () => {} }), {});
-    assert.ok(!fs.existsSync(cu) && !calls.length);
+    assert.ok(!fs.existsSync(cu) && !calls.length, 'no unit dir, no slice, no systemctl in a container');
+    assert.strictEqual(status(context({ root: croot, unitDir: cu, systemctl: fakeSc, supervisor: 'container', host: { totalMB: 2048 }, usageOpts: { browsers: false, cgroup: path.join(T, 'nocg') } })).slice, null);
     const et = fs.readFileSync(path.join(croot, '.starnet-data', 'memory.env'), 'utf8');
     assert.ok(/CAPHEOS_STATION_HEAP=384\nCAPHEOS_CONSOLE_HEAP=128\nCAPHEOS_DISPATCH_HEAP=160\n/.test(et), et);
     assert.deepStrictEqual(r.wrote, [path.join(croot, '.starnet-data', 'memory.env')]);
@@ -466,8 +528,8 @@ function main(argv) {
     return statusWithStation(ctx).then(r => {
     const b = r.station.browser;
     const bl = b.unknown ? 'station browser: not known (' + b.unknown + ')' : 'station browser: ' + (b.open ? 'open' + (b.driver ? ', used by ' + b.driver : ', nobody using it') + (b.visible ? ', a window on this computer' : '') : 'closed');
-    print(r, s => [s.line, bl, 'profile ' + s.profile + (s.settings.profile === 'auto' ? ' (automatic)' : '') + ' · machine ' + fmtGB(s.host.totalMB) + ' · swap used ' + fmtGB(s.host.swapUsedMB) + (s.host.tmpfsTmp ? ' · /tmp (RAM) ' + fmtGB(s.host.tmpfsTmp.usedMB) + ' used' : ''),
-      'freed by the reaper: ' + fmtGB(s.freed.day.mb) + ' in the last day, ' + fmtGB(s.freed.week.mb) + ' in the last week'].concat(s.freed.last.map(x => '  ' + x.at.slice(0, 16) + ' ' + x.plain)).concat(s.warnings.map(w => 'warning: ' + w)).join('\n'));
+    print(r, s => [s.line, bl].concat(s.slice ? [sliceLine(s.slice)] : []).concat(['profile ' + s.profile + (s.settings.profile === 'auto' ? ' (automatic)' : '') + ' · machine ' + fmtGB(s.host.totalMB) + ' · swap used ' + fmtGB(s.host.swapUsedMB) + (s.host.tmpfsTmp ? ' · /tmp (RAM) ' + fmtGB(s.host.tmpfsTmp.usedMB) + ' used' : ''),
+      'freed by the reaper: ' + fmtGB(s.freed.day.mb) + ' in the last day, ' + fmtGB(s.freed.week.mb) + ' in the last week']).concat(s.freed.last.map(x => '  ' + x.at.slice(0, 16) + ' ' + x.plain)).concat(s.warnings.map(w => 'warning: ' + w)).join('\n'));
     return 0;
     });
   }
@@ -494,12 +556,12 @@ function main(argv) {
   }
   if (cmd === 'apply') {
     const r = apply(ctx, { dry: argv.includes('--dry-run') });
-    print(r, x => [x.line].concat(x.wrote.map(f => (x.dry ? 'would write ' : 'wrote ') + f)).concat(x.restartCommand ? ['The station runs with the old settings until it restarts. Not restarted (that would cut off running work). Safe restart: ' + x.restartCommand] : []).concat(x.warnings.map(w => 'warning: ' + w)).join('\n'));
+    print(r, x => [x.line].concat(x.wrote.map(f => (x.dry ? 'would write ' : 'wrote ') + f)).concat(x.slice && x.slice.elsewhere.length ? ['These run outside ' + x.slice.name + ' until their next restart: ' + x.slice.elsewhere.map(e => e.unit + ' (now ' + e.slice + ')').join(', ')] : []).concat(x.restartCommand ? ['The station runs with the old settings until it restarts. Not restarted (that would cut off running work). Safe restart: ' + x.restartCommand] : []).concat(x.warnings.map(w => 'warning: ' + w)).join('\n'));
     return 0;
   }
   if (cmd === 'sample') { const r = M.sample({ root: ctx.root, config: ctx.config, supervisor: ctx.supervisor }); if (json) console.log(JSON.stringify(r)); return 0; }
   console.error('usage: memory.js status|plan|set|apply|sample|selftest (header of company/tools/memory.js)');
   return 2;
 }
-module.exports = { context, planFor, planLine, apply, set, status, statusWithStation, stationBrowser, dropins, memEnv, withHeap, templateExec, DROPIN };
+module.exports = { context, planFor, planLine, sliceLine, sliceFiles, apply, set, status, statusWithStation, stationBrowser, dropins, memEnv, withHeap, templateExec, DROPIN };
 if (require.main === module) Promise.resolve(main(process.argv.slice(2))).then(c => { process.exitCode = c; }, e => { console.error(e && e.stack || e); process.exitCode = 2; });

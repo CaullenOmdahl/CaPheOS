@@ -100,6 +100,8 @@ XDG_RUNTIME_DIR="$T/xdg-run" MEMORY_SYSTEMCTL="$T/fake-systemctl" MEMORY_UNIT_DI
 SVCN="$(node -e 'process.stdout.write(require("./company/company.json").station.serviceName)')"
 check "memory apply after setup: a drop-in per unit and memory.env (0600)" bash -c "[[ -f '$T/units/$SVCN.service.d/50-capheos-memory.conf' && -f '$T/units/$SVCN-console.service.d/50-capheos-memory.conf' && -f '$T/units/$SVCN-dispatch.service.d/50-capheos-memory.conf' ]] && [[ \$(stat -c %a .starnet-data/memory.env) = 600 ]]"
 check "...its ExecStart override is the template's own command with the heap cap" bash -c "grep -qx 'ExecStart=/usr/bin/env node --max-old-space-size=[0-9]* sidecar/index.js' '$T/units/$SVCN.service.d/50-capheos-memory.conf' && grep -q '^ExecStart=/usr/bin/env node sidecar/index.js$' systemd/capheos-station.service.in"
+SLICEN="$(node -e 'process.stdout.write(require("./company/tools/lib/memory.js").sliceOf(require("./company/company.json")))')"
+check "...the company's own slice, outside app.slice, with systemd-oomd's pressure kill off on it and on capheos.slice" bash -c "[[ -f '$T/units/$SLICEN' ]] && grep -qx 'ManagedOOMMemoryPressure=auto' '$T/units/$SLICEN.d/50-capheos-memory.conf' && grep -qx 'ManagedOOMMemoryPressure=auto' '$T/units/capheos.slice.d/50-capheos-memory.conf' && [[ '$SLICEN' != app.slice ]]"
 check "...the limits were set live, never a restart" bash -c "grep -q '^--user set-property --runtime $SVCN.service MemoryHigh=' '$T/systemctl.log' && ! grep -q 'restart' '$T/systemctl.log'"
 check "...and git status stays clean" clean
 

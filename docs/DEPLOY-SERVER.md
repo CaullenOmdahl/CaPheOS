@@ -249,6 +249,13 @@ Flutter-size build (several GB) needs a bigger machine whatever the profile.
   unit of a user slice under memory pressure; the station's whole unit would take every live run with it. Its unit says
   `ManagedOOMPreference=omit`, so oomd passes it over; its own memory limit still holds, and the kernel ends the build
   inside it, not the station.
+- **Nor does the company make systemd-oomd end anyone else's programs.** Every unit the company runs (station, console,
+  dispatcher, liveness, background services, owner jobs) is in the company's own slice, `capheos-<service>.slice`
+  (`<service>.slice` when the service name starts with `capheos-`), outside `app.slice`, and `memory.js apply` turns
+  oomd's memory-pressure kill off on it and on each level above it (`ManagedOOMMemoryPressure=auto`). A build held at
+  the station's soft limit is pressure inside that slice only, so oomd never answers it by ending the owner's desktop
+  apps, the owner's Chrome or another company's units. A running unit moves into the slice at its next restart;
+  `memory.js status` shows the slice and which units are not in it yet. Not systemd (a container): nothing to do.
 - **Owner jobs run on their own.** A framework update, a restart or a clean-up started in the console runs as its own
   short-lived unit, not inside the console, so the console's memory limit or a console restart never cuts it off halfway.
 - **The station's browser is headless** on a server (nobody sees a window there, and a window never closes by itself).

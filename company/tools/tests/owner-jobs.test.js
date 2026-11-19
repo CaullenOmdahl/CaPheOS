@@ -43,7 +43,7 @@ test('an owner job runs as its own transient unit: oomd never picks it, outside 
   assert.match(meta.unit, /^testco-station-owner-job-update-\d{14}-[0-9a-f]{4}\.service$/);
   assert.ok(O.ourUnit(O.context({ root: f.root, proc: f.T }), meta.unit), 'lib/owned.js counts the unit as the company\'s');
   const args = fs.readFileSync(f.argsFile, 'utf8').split('\n');
-  for (const a of ['--user', '--collect', '--unit=' + meta.unit, 'ManagedOOMPreference=omit', 'OOMPolicy=continue', 'WorkingDirectory=' + f.root]) assert.ok(args.includes(a), a + ' in ' + args.join(' '));
+  for (const a of ['--user', '--collect', '--unit=' + meta.unit, 'ManagedOOMPreference=omit', 'OOMPolicy=continue', '--slice=capheos-testco-station.slice', 'WorkingDirectory=' + f.root]) assert.ok(args.includes(a), a + ' in ' + args.join(' '));
   assert.ok(args.some(a => a === 'StandardOutput=append:' + path.join(f.root, 'company', 'state', 'owner-ops', meta.id + '.log')));
   assert.ok(!args.some(a => /CONSOLE_SESSION_SECRET|sekrit/.test(a)), 'the console\'s session secret is never handed on');
   assert.ok(args.includes('CAPHEOS_ROOT=' + process.env.CAPHEOS_ROOT) || !process.env.CAPHEOS_ROOT);

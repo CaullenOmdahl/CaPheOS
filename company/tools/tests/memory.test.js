@@ -145,3 +145,53 @@ test('usage counts the company\'s browsers (lib/owned.js on a fake /proc), outsi
   assert.strictEqual(u.totalMB, 100, 'a browser outside every unit adds to the total');
   life.cleanup();
 });
+
+test('the company\'s own slice: outside app.slice, every level named, pressure kill off on each (generated units)', () => {
+  // the two shapes on this machine: a name that starts with capheos-, and one that does not (with dashes: levels)
+  assert.strictEqual(M.sliceOf({ station: { serviceName: 'capheos-sandbox-station' } }), 'capheos-sandbox-station.slice');
+  assert.strictEqual(M.sliceOf({ station: { serviceName: 'ca-phe-digital-station' } }), 'capheos-ca-phe-digital-station.slice');
+  assert.strictEqual(M.sliceOf({}), 'capheos-station.slice', 'the default service name');
+  assert.strictEqual(M.sliceOf({ station: { serviceName: 'odd name--x.service' } }), 'capheos-odd_name-x.slice', 'no space, no empty level');
+  assert.deepStrictEqual(M.sliceChain('capheos-ca-phe-digital-station.slice'), ['capheos.slice', 'capheos-ca.slice', 'capheos-ca-phe.slice', 'capheos-ca-phe-digital.slice', 'capheos-ca-phe-digital-station.slice']);
+  for (const s of ['capheos-sandbox-station.slice', 'capheos-ca-phe-digital-station.slice']) assert.ok(!M.sliceChain(s).includes('app.slice') && M.sliceChain(s)[0] === 'capheos.slice', 'a top-level slice of its own, never app.slice');
+
+  // memory.js apply's slice files: a unit for the slice, and the drop-in on it and every level above it
+  const T = life.tmpDir('memory-slice-test-');
+  const MJ = require('../memory.js');
+  const ctx = MJ.context({ root: T, unitDir: path.join(T, 'units'), supervisor: 'systemd', host: { totalMB: 8192 }, accept: () => {}, systemctl: () => ({ code: 0, out: '' }) });
+  ctx.config = { name: 'CPD', station: { serviceName: 'ca-phe-digital-station' } };
+  const files = MJ.sliceFiles(ctx);
+  const rel = Object.keys(files).map(f => path.relative(ctx.unitDir, f)).sort();
+  assert.deepStrictEqual(rel, ['capheos-ca-phe-digital-station.slice', 'capheos-ca-phe-digital-station.slice.d/50-capheos-memory.conf', 'capheos-ca-phe-digital.slice.d/50-capheos-memory.conf',
+    'capheos-ca-phe.slice.d/50-capheos-memory.conf', 'capheos-ca.slice.d/50-capheos-memory.conf', 'capheos.slice.d/50-capheos-memory.conf'].sort());
+  for (const [f, t] of Object.entries(files)) {
+    if (/\.d\//.test(f)) assert.ok(/\n\[Slice\]\nManagedOOMMemoryPressure=auto\n$/.test(t) && !/=kill/.test(t), f + ': ' + t);
+    else assert.ok(/^\[Unit\]\nDescription=CPD: /m.test(t) && !/ManagedOOM/.test(t), 'the slice unit only names it; the drop-in (50- sorts after the host\'s 10-) sets it');
+  }
+  // the shared top level reads the same from every company, so two companies never fight over it
+  const ctx2 = Object.assign({}, ctx, { config: { name: 'Sandbox', station: { serviceName: 'capheos-sandbox-station' } } });
+  const top = f => Object.entries(f).find(([k]) => k.endsWith(path.join('capheos.slice.d', '50-capheos-memory.conf')))[1];
+  assert.strictEqual(top(files), top(MJ.sliceFiles(ctx2)));
+
+  // the templates: every service unit says Slice=@SLICE@ in [Service]; rendered the way scripts/setup-station.sh does, no
+  // placeholder is left and the station keeps MemoryHigh-before-MemoryMax (drop-in), OOMPolicy=continue and omit
+  const sysd = path.join(__dirname, '..', '..', '..', 'systemd');
+  const setup = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'scripts', 'setup-station.sh'), 'utf8');
+  assert.ok(/-e "s\|@SLICE@\|\$SLICE\|g"/.test(setup) && /SLICE="\$\(node -e .*sliceOf\(require\('\.\/company\/company\.json'\)\)/.test(setup), 'setup-station.sh fills @SLICE@ from lib/memory.js sliceOf');
+  const subs = { ROOT: '/srv/co', SVC: 'ca-phe-digital-station', NAME: 'CPD', ENVFILE: '/home/u/.config/x.env', TICK: '10', SLICE: M.sliceOf(ctx.config) };
+  const services = fs.readdirSync(sysd).filter(f => /\.service\.in$/.test(f));
+  assert.ok(services.length >= 5, services.join());
+  for (const f of services) {
+    const t = fs.readFileSync(path.join(sysd, f), 'utf8');
+    const svcSec = t.slice(t.indexOf('[Service]'), t.indexOf('[Install]') > 0 ? t.indexOf('[Install]') : undefined);
+    assert.strictEqual((svcSec.match(/^Slice=@SLICE@$/mg) || []).length, 1, f + ': one Slice=@SLICE@ in [Service]');
+    const out = t.replace(/@(\w+)@/g, (m, k) => subs[k] != null ? subs[k] : m);
+    assert.ok(!/@[A-Z]+@/.test(out), f + ': a placeholder setup-station.sh does not fill');
+    assert.ok(/^Slice=capheos-ca-phe-digital-station\.slice$/m.test(out), f);
+  }
+  const st = fs.readFileSync(path.join(sysd, 'capheos-station.service.in'), 'utf8');
+  assert.ok(/^OOMPolicy=continue$/m.test(st) && /^ManagedOOMPreference=omit$/m.test(st));
+  const d = MJ.dropins(Object.assign({}, ctx, { root: path.join(__dirname, '..', '..', '..') }), MJ.planFor(ctx));
+  assert.ok(/\nMemoryHigh=\d+M\nMemoryMax=\d+M\n/.test(d['ca-phe-digital-station.service'].text), 'MemoryHigh before MemoryMax');
+  life.cleanup();
+});
