@@ -110,6 +110,13 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/ask.js | ceo | none |
 | company/tools/backup-freshness.js | risk | `--selftest` |
 | company/tools/budget.js | finance | `selftest` / `--selftest` |
+| company/tools/improve-efficiency.js | tools | via tests/improve.test.js |
+| company/tools/improve-framework-requests.js | tools | via tests/improve.test.js |
+| company/tools/improve-health.js | tools | via tests/improve.test.js |
+| company/tools/improve-owner.js | tools | via tests/improve.test.js |
+| company/tools/improve-research.js | tools | via tests/improve.test.js |
+| company/tools/improve-retro.js | tools | via tests/improve.test.js |
+| company/tools/platform-setup.js | tools | via tests/improve.test.js |
 | company/tools/budget-migrate.js | tools | `selftest` / `--selftest` |
 | company/tools/build-inventory.js | people | `--selftest` |
 | company/tools/cadence.js | tools | `selftest` / `--selftest` |

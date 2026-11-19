@@ -116,7 +116,7 @@ test('every registered duty runs against a fixture tree and changes no file (a c
     (async () => { const out = {}; const env = dutyEnv({ root: process.env.CAPHEOS_ROOT, base: Object.assign({}, process.env, { CAPHEOS_BACKUP_DIR: process.env.CAPHEOS_ROOT + '/no-backups' }) }).env;
       for (const d of R.registry()) { const r = await R.runOne(d, { env, cwd: process.env.CAPHEOS_ROOT, remainingMs: 60000 }); out[d.id] = { result: r.result, error: r.error || null, items: (r.items || []).map(i => i.id), reason: r.reason || null }; }
       console.log(JSON.stringify(out)); })();`);
-  assert.deepEqual(Object.keys(res).sort(), ['backup-freshness', 'budget-drift', 'commitments-due', 'connector-scope', 'consults', 'departments', 'deps-verify', 'handoff-status', 'house-ranking', 'liveness-watcher', 'module-doctor', 'profiles', 'provider-balance', 'reaper', 'security-watch', 'tool-parse', 'unregistered-services']);
+  assert.deepEqual(Object.keys(res).sort(), ['backup-freshness', 'budget-drift', 'commitments-due', 'connector-scope', 'consults', 'departments', 'deps-verify', 'handoff-status', 'house-ranking', 'improve-efficiency', 'improve-fr', 'improve-health', 'improve-owner', 'improve-research', 'improve-retro', 'liveness-watcher', 'module-doctor', 'profiles', 'provider-balance', 'reaper', 'security-watch', 'tool-parse', 'unregistered-services']);
   for (const [id, r] of Object.entries(res)) assert.notEqual(r.result, 'broken', id + ': ' + r.error);
   for (const id of ['handoff-status', 'commitments-due', 'liveness-watcher', 'connector-scope', 'backup-freshness']) assert.equal(res[id].result, 'due', id + ' should find its fixture: ' + JSON.stringify(res[id]));
   assert.deepEqual(res['commitments-due'].items, ['c-202001010000-abcdef']);
