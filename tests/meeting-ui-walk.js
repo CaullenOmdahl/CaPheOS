@@ -263,9 +263,10 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   await maps('Close meeting', '[data-act="close"]', { path: '/meeting/close', body: {} });
   t('the meeting shows as closed, by whom, and offers a new one', await waitFor(() => ev('/closed by/.test(document.querySelector(".mtg-state").textContent) && !!document.querySelector(".chat-body .mtg-closed")'), 5000));
   if (process.env.MEETING_SHOTS) {   // a laptop / remote-desktop window, for a human to look at
-    await ev('(()=>{const d=document.querySelector(".mtg-setup"); if (d) d.open = false; return 1})()');
+    await ev('(()=>{const d=document.querySelector(".mtg-setup"); if (d) d.open = false; const m = document.querySelector(".mtg-more"); if (m && m.open) { m.open = false; m.dataset.reopen = 1; } return 1})()');
     await cmd('Emulation.setDeviceMetricsOverride', { width: 1000, height: 512, deviceScaleFactor: 1, mobile: false }); await sleep(600);
     const s = await cmd('Page.captureScreenshot', { format: 'png' }); if (s.result) fs.writeFileSync(process.env.MEETING_SHOTS, Buffer.from(s.result.data, 'base64'));
+    await ev('(()=>{const m = document.querySelector(".mtg-more"); if (m && m.dataset.reopen) m.open = true; return 1})()');
   }
   // phone width
   await cmd('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });

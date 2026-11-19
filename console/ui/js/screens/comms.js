@@ -40,8 +40,10 @@ export async function render(root, ctx) {
   const listToggle = h('button', { type: 'button', class: 'btn btn-ghost btn-sm conv-toggle', 'data-act': 'conv-toggle' });
   const setList = hidden => { root.classList.toggle('list-hidden', hidden); listToggle.textContent = hidden ? '»' : '«'; listToggle.title = hidden ? 'Show the conversation list' : 'Hide the conversation list';
     listToggle.setAttribute('aria-label', listToggle.title); listToggle.setAttribute('aria-expanded', String(!hidden)); };
-  listToggle.addEventListener('click', () => { const hidden = !root.classList.contains('list-hidden'); setList(hidden); ls.set('capheos.convListHidden', hidden ? '1' : ''); });
-  setList(ls.get('capheos.convListHidden') === '1');
+  listToggle.addEventListener('click', () => { const hidden = !root.classList.contains('list-hidden'); setList(hidden); ls.set('capheos.convListHidden', hidden ? '1' : '0'); });
+  // not chosen yet: hidden on a window narrower than 1400 px, where the list would take a third of the chat's width
+  const pref = ls.get('capheos.convListHidden');
+  setList(pref === '1' || (pref !== '0' && window.innerWidth < 1400));
   fill(root, aside, chat);
   root.appendChild(listToggle);
 
