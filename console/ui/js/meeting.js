@@ -50,7 +50,9 @@ export function meetingPane(host, opts) {
   const moreCtrl = h('div', { class: 'row-8 mtg-more-ctrl', role: 'group', 'aria-label': 'More meeting controls' });
   const moreEl = h('details', { class: 'mtg-more' }, h('summary', { class: 'btn btn-secondary btn-sm', 'data-act': 'more', 'aria-label': 'More: talk only, pause, pace, agenda, register, minutes, a new meeting' }, 'More'),
     h('div', { class: 'mtg-more-panel stack-8' }, moreCtrl, agendaHost));
-  const ctrlHost = h('div', { class: 'mtg-controls' }, btnsHost, moreEl);
+  // the reading modes and the timeline sit in the controls row, never folded away: a reader in Skim must see it
+  const readHost = h('div', { class: 'row-8 mtg-readbar' }, null);
+  const ctrlHost = h('div', { class: 'mtg-controls' }, btnsHost, moreEl, readHost);
   const onOutside = e => { if (moreEl.open && !moreEl.contains(e.target) && !(e.target.closest && e.target.closest('dialog'))) moreEl.open = false; };
   document.addEventListener('pointerdown', onOutside);
   moreEl.addEventListener('keydown', e => { if (e.key === 'Escape' && moreEl.open) { e.preventDefault(); e.stopPropagation(); moreEl.open = false; moreEl.querySelector('summary').focus(); } });
@@ -87,7 +89,7 @@ export function meetingPane(host, opts) {
   // the seats and the reading aids fold under one line (closed by default, remembered; open while nobody is seated) so
   // the conversation keeps the height (owner, 2026-11-19: "Same issue here with cramping space")
   const setupSum = h('summary', { class: 'caption mtg-setup-sum' }, 'Seats');
-  const setup = h('details', { class: 'mtg-setup' }, setupSum, seatsHost, h('div', { class: 'row-8 mtg-readbar' }, null));
+  const setup = h('details', { class: 'mtg-setup' }, setupSum, seatsHost);
   setup.open = (() => { try { return localStorage.getItem('capheos.meeting.setupOpen') === '1'; } catch (_) { return false; } })();
   setup.addEventListener('toggle', () => { try { localStorage.setItem('capheos.meeting.setupOpen', setup.open ? '1' : ''); } catch (_) {} });
   fill(host, head, stateHost, setup, ctrlHost, liveLine, errHost, h('div', { class: 'chat-scroll' }, body, jump), form);
@@ -140,7 +142,7 @@ export function meetingPane(host, opts) {
     seatsHost.title = seats.length ? 'Who is at the table, in speaking order: ' + seats.map(s => nm(s.name) + (s.leader ? ' (leads)' : '') + ' on ' + (s.model ? s.model.label : (s.modelError || 'no model'))).join('; ') : '';
     fill(seatsHost, items.length ? items : h('span', { class: 'caption muted' }, 'Nobody is seated yet.'), h('div', { class: 'row-8 mtg-add' }, pick, addBtn, noLead));
     const leadSeat = seats.find(s => s.leader);
-    setupSum.textContent = seats.length ? 'Seats (' + seats.length + '): ' + seats.map(s => nm(s.name).split(' ')[0] + (s.leader ? ' (leads)' : '')).join(', ') + (leadSeat ? '' : ' · no leader') + ' · reading: ' + ({ all: 'everything', speaker: 'by speaker', skim: 'skim' }[mode] || mode) : 'Seats: nobody yet, open to add people';
+    setupSum.textContent = seats.length ? 'Seats (' + seats.length + '): ' + seats.map(s => nm(s.name).split(' ')[0] + (s.leader ? ' (leads)' : '')).join(', ') + (leadSeat ? '' : ' · no leader') : 'Seats: nobody yet, open to add people';
     if (!seats.length) setup.open = true;
   }
   function drawAgenda() {
@@ -506,8 +508,19 @@ export function meetingPane(host, opts) {
   /* ---------- reading aids: modes, the timeline, your-turn notice, presence ---------- */
   let mode = lsGet('capheos.meeting.mode') || 'all';
   const SKIM = new Set(['end', 'ruling', 'register', 'ask', 'hand', 'call', 'later', 'lower', 'parse', 'close', 'catchup']);
-  const modeBar = h('nav', { class: 'seg mtg-modes', 'aria-label': 'Reading mode' }, ['all', 'speaker', 'skim'].map(m => h('button', { type: 'button', 'data-mode': m, class: m === mode ? 'on' : '', 'aria-pressed': String(m === mode), onclick: () => { mode = m; lsSet('capheos.meeting.mode', m); for (const x of modeBar.children) { x.classList.toggle('on', x.dataset.mode === m); x.setAttribute('aria-pressed', String(x.dataset.mode === m)); } applyMode(); } }, m === 'all' ? 'Everything' : m === 'speaker' ? 'By speaker' : 'Skim: decisions, asks, hands')));
+  const modeBar = h('nav', { class: 'seg mtg-modes', 'aria-label': 'Reading mode' }, ['all', 'speaker', 'skim'].map(m => h('button', { type: 'button', 'data-mode': m, class: m === mode ? 'on' : '', 'aria-pressed': String(m === mode), onclick: () => { mode = m; lsSet('capheos.meeting.mode', m); for (const x of modeBar.children) { x.classList.toggle('on', x.dataset.mode === m); x.setAttribute('aria-pressed', String(x.dataset.mode === m)); } applyMode(); } }, m === 'all' ? 'Everything' : m === 'speaker' ? 'By speaker' : 'Skim')));
+  for (const b of modeBar.children) b.title = { all: 'Everything said', speaker: 'Each reply folded to its first lines', skim: 'Only decisions, questions and raised hands; what people said is hidden' }[b.dataset.mode];
+  // not reading everything: a strip on top of the conversation says what is hidden, with one click back
+  const modeNote = h('div', { class: 'mtg-mode-note caption', role: 'status', hidden: true });
+  function drawModeNote() {
+    if (!modeNote.isConnected && liveLine.isConnected) liveLine.after(modeNote);
+    modeNote.hidden = mode === 'all';
+    if (mode === 'all') return;
+    fill(modeNote, h('span', null, mode === 'skim' ? 'Skim is on: only questions, raised hands and decisions show; what people said is hidden.' : 'By speaker is on: each reply is folded to its first lines.'),
+      h('button', { type: 'button', class: 'btn btn-secondary btn-sm', 'data-act': 'show-all', onclick: () => { const b = modeBar.querySelector('[data-mode="all"]'); if (b) b.click(); } }, 'Show everything'));
+  }
   function applyMode() {
+    drawModeNote();
     for (const el of body.querySelectorAll('[data-i]')) {
       const k = el.dataset.kind || (el.classList.contains('mtg-end') ? (el.classList.contains('mtg-catchup') ? 'catchup' : el.classList.contains('mtg-closed') ? 'close' : 'end') : el.classList.contains('msg-them-wrap') ? 'say' : '');
       el.hidden = mode === 'skim' && !SKIM.has(k);
@@ -556,7 +569,7 @@ export function meetingPane(host, opts) {
   async function load() {
     try { v = await api('/meeting'); } catch (e) { fill(errHost, errLine(e, 'Meeting')); return null; }
     fill(errHost);
-    fill(host.querySelector('.mtg-readbar'), modeBar, tlHost);
+    fill(readHost, modeBar, tlHost);
     beat();
     drawSeats(); drawAgenda(); drawControls(); drawLive(); await refreshEntries(true);
     return v;

@@ -264,6 +264,7 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   t('the meeting shows as closed, by whom, and offers a new one', await waitFor(() => ev('/closed by/.test(document.querySelector(".mtg-state").textContent) && !!document.querySelector(".chat-body .mtg-closed")'), 5000));
   if (process.env.MEETING_SHOTS) {   // a laptop / remote-desktop window, for a human to look at
     await ev('(()=>{const d=document.querySelector(".mtg-setup"); if (d) d.open = false; const m = document.querySelector(".mtg-more"); if (m && m.open) { m.open = false; m.dataset.reopen = 1; } return 1})()');
+    if (process.env.MEETING_SHOTS_SKIM) await ev('(()=>{const b=document.querySelector(".mtg-modes [data-mode=skim]"); if (b) b.click(); const t=document.querySelector(".mtg-timeline"); if (t) t.open=false; return 1})()');
     await cmd('Emulation.setDeviceMetricsOverride', { width: 1000, height: 512, deviceScaleFactor: 1, mobile: false }); await sleep(600);
     const s = await cmd('Page.captureScreenshot', { format: 'png' }); if (s.result) fs.writeFileSync(process.env.MEETING_SHOTS, Buffer.from(s.result.data, 'base64'));
     await ev('(()=>{const m = document.querySelector(".mtg-more"); if (m && m.dataset.reopen) m.open = true; return 1})()');
@@ -271,7 +272,7 @@ W('company/state/meetings/seats.json', { seats: ['agent', 'cfo', 'sec'], leader:
   // phone width
   await cmd('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
   await sleep(500);
-  const phone = await ev('(()=>({w:document.documentElement.scrollWidth,iw:innerWidth,btns:[...document.querySelectorAll(".mtg-controls .btn, .mtg-more-ctrl .btn")].every(b=>b.getBoundingClientRect().right<=innerWidth+1)}))()');
+  const phone = await ev('(()=>({w:document.documentElement.scrollWidth,iw:innerWidth,btns:[...document.querySelectorAll(".mtg-controls .btn, .mtg-more-ctrl .btn")].every(b=>b.getBoundingClientRect().right<=innerWidth+1),off:[...document.querySelectorAll(".mtg-controls .btn, .mtg-more-ctrl .btn")].filter(b=>b.getBoundingClientRect().right>innerWidth+1).map(b=>b.textContent+":"+Math.round(b.getBoundingClientRect().right))}))()');
   t('phone width: no horizontal scroll, every control on screen', phone && phone.w <= phone.iw + 1 && phone.btns, phone);
   await cmd('Emulation.clearDeviceMetricsOverride', {});
 

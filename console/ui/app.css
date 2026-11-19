@@ -627,3 +627,11 @@ kbd { display: inline-block; min-width: 1.6em; padding: 2px 6px; border: 1px sol
   .side-rail .side .station-box .tag { font-size: 0; gap: 0; padding: 6px; background: transparent; }
   .side-rail .side .station-box .tag-dot { width: 10px; height: 10px; }
 }
+.mtg-mode-note { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 8px var(--chat-gutter, 32px) 0; padding: 8px 12px; border-radius: var(--radius-md); background: var(--accent-tint); color: var(--text-strong); }
+.mtg-mode-note[hidden] { display: none; }
+.mtg-controls .mtg-readbar { margin-left: auto; padding: 0; }
+.mtg-controls .mtg-modes > button { padding: 4px 10px; min-height: 32px; font: var(--type-body-s); }
+.mtg-controls .mtg-readbar { flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.mtg-timeline { min-width: 0; max-width: 100%; }
+.mtg-timeline .btn { white-space: normal; text-align: left; height: auto; max-width: 100%; overflow-wrap: anywhere; }
+.mtg-controls .mtg-modes > button { white-space: nowrap; }
