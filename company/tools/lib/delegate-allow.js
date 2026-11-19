@@ -9,7 +9,11 @@
  *
  *   { "v": 1, "at": <epoch ms>, "by": "dispatcher",
  *     "leads": { "<lead agentId>": { "items": ["<item id>"], "workers": ["<agentId>"], "maxWorkers": 3, "workerTimeoutMin": 20,
- *                                    "models": { "<agentId>": [{ "provider": "..", "model": ".." }] } } } }
+ *                                    "runWorkers": <pieces>, "models": { "<agentId>": [{ "provider": "..", "model": ".." }] } } } }
+ * models: the ONLY pairs that worker may run on for this item (the station always runs a listed worker on one of them,
+ * the first when the lead names none, and refuses a worker whose list is empty), each allowed for the item's class; the
+ * worker's own pair first when it is allowed. runWorkers: how many workers the lead may start in the whole run (the
+ * split's piece count): a lead cannot loop team.dispatch call after call.
  *
  * A lead is listed only when ALL hold, for ONE item at a time (the first, in a stable order):
  *   - its department's delegation is live (departments.json delegation.mode live, not withdrawn) and it is the lead;
@@ -17,15 +21,19 @@
  *     own consult.js split, the pieces still exactly as recorded) with **Fan-out:** dispatch;
  *   - its workers = delegation.workers ∩ the lead's reports in loops.json ∩ the crew ∩ not busy (in a meeting or a live
  *     chat, a loop run in flight, a live Sprint lane, a live child run): at least one remains;
- *   - for a code item, no worker whose model is on a provider the class rules deny (the MiniMax plan): such a worker is
- *     left out, and the models listed for each worker are filtered by the same rules;
+ *   - the item's class is code when the split says so OR any piece lists a code file (.js, .ts, .py, ...): for a code item
+ *     no worker whose model is on a provider the class rules deny (the MiniMax plan) is listed, and the models listed for
+ *     each worker are filtered by the same rules;
+ *   - its split was not used yet: once a child run of a listed worker for that split has started (a live child run in the
+ *     station's run table, or a run row with the item's id), the split is used and not listed again (a new split is);
  *   - the money check (lib/admit.js money(): the daily metered cap, the per-agent share, the Sprint budget and spread) and
  *     the pacer (the override allowlist lib/override-allow.js wrote this tick lists an open pair on that provider for the
  *     worker) are open for EVERY listed worker's provider; one held worker lists no workers for that lead.
  * maxWorkers = min(delegation.maxWorkers, the workers listed); workerTimeoutMin = delegation.workerTimeoutMin.
  *
  *   const DA = require('./lib/delegate-allow');
- *   DA.compute({ candidates, doc, st, crew, jobs, busy, open, money, now })  pure -> { doc, notes }
+ *   DA.compute({ candidates, doc, st, crew, jobs, busy, open, money, used, now })  pure -> { doc, notes }
+ *   DA.writeEmpty({ root?, log? })                                         nobody listed (a halted company: dispatch.js)
  *   await DA.write({ root?, jobs?, log?, dry?, budget?, now? })              -> { ok, file, leads, notes }
  *   DA.withdrawStep({ root?, log?, dry? })                                   the auto-withdraw: the house ranking's fan-out
  *                                                                             evaluation said withdraw (once per hash)
@@ -56,6 +64,9 @@ function pairOf(id, crew, jobs, open) {
   return o[0] ? { provider: String(o[0].provider), model: String(o[0].model) } : null;
 }
 
+// a piece's file that is code: the item is code work whatever its words say (taskclass reads the text only)
+const CODE_FILE = /\.(?:[cm]?js|jsx|tsx?|py|go|rs|java|kt|rb|php|swift|c|cc|cpp|h|hpp|cs|sh|bash|sql|lua|scala|vue|svelte)$/i;
+const classOf = c => (c && (c.class === 'code' || (c.pieces || []).some(p => (p.files || []).some(f => CODE_FILE.test(String(f).trim()))))) ? 'code' : String((c && c.class) || 'general');
 /* compute(o) -> { doc, notes: [{ lead, item, why }] }: pure (see the header) */
 function compute(o) {
   o = o || {};
@@ -65,7 +76,10 @@ function compute(o) {
   const denied = typeof o.classDenied === 'function' ? o.classDenied : (cls, pair) => !!(pair && cls === 'code' && pair.provider === 'custom');
   const money = typeof o.money === 'function' ? o.money : () => 'no money check this tick';
   const leads = {}, notes = [];
-  for (const c of (o.candidates || []).filter(x => x && x.fanout === 'dispatch')) {
+  const used = o.used instanceof Set ? o.used : new Set(o.used || []);
+  for (const c0 of (o.candidates || []).filter(x => x && x.fanout === 'dispatch')) {
+    const c = Object.assign({}, c0, { class: classOf(c0) });
+    if (c.split && used.has(String(c.split))) { notes.push({ lead: c.lead, item: c.item, why: 'this split was dispatched already (its workers started); a new split is listed again' }); continue; }
     if (leads[c.lead]) { notes.push({ lead: c.lead, item: c.item, why: 'one item at a time per lead (' + leads[c.lead].items[0] + ' is listed)' }); continue; }
     const d = D.list(o.doc || {}).find(x => String(x.id) === String(c.dept));
     if (!d || String(d.lead) !== String(c.lead)) { notes.push({ lead: c.lead, item: c.item, why: 'not the department\'s lead now' }); continue; }
@@ -83,21 +97,29 @@ function compute(o) {
       if (!openPairs.some(p => String(p.provider) === pair.provider)) { held = held || w + '\'s ' + pair.provider + ' is held now (the pacer, a stop or a closure)'; continue; }
       const why = money(w, pair.provider);
       if (why) { held = held || w + ': ' + why; continue; }
-      out.push({ w, models: openPairs.map(p => ({ provider: String(p.provider), model: String(p.model) })) });
+      // the worker's own pair first (what it runs on when the lead names no model), then the other open pairs
+      const ms = openPairs.map(p => ({ provider: String(p.provider), model: String(p.model) }));
+      ms.sort((a, b) => (b.provider === pair.provider && b.model === pair.model) - (a.provider === pair.provider && a.model === pair.model));
+      if (!ms.length) { notes.push({ lead: c.lead, item: c.item, worker: w, why: 'no model it may run on for ' + c.class + ' work' }); continue; }
+      out.push({ w, models: ms });
     }
     if (held) { notes.push({ lead: c.lead, item: c.item, why: 'not listed: ' + held }); continue; }
     if (!out.length) { notes.push({ lead: c.lead, item: c.item, why: 'not listed: no free worker on the team' }); continue; }
-    leads[c.lead] = { items: [c.item], workers: out.map(x => x.w), maxWorkers: Math.min(g.maxWorkers, out.length), workerTimeoutMin: g.workerTimeoutMin,
-      models: Object.fromEntries(out.map(x => [x.w, x.models])), dept: String(c.dept), split: c.split || null };
+    const pieces = (c.pieces || []).length || 0;
+    const maxW = Math.min(g.maxWorkers, out.length, pieces || Infinity);
+    leads[c.lead] = { items: [c.item], workers: out.map(x => x.w), maxWorkers: maxW, workerTimeoutMin: g.workerTimeoutMin, runWorkers: pieces || maxW,
+      models: Object.fromEntries(out.map(x => [x.w, x.models])), dept: String(c.dept), split: c.split || null, class: c.class };
   }
   const at = Number.isFinite(o.now) ? o.now : Date.now();
   return { doc: { v: 1, at, by: 'dispatcher', leads }, notes };
 }
 
 /* who is busy now: a loop run in flight, a live Sprint lane (lanes.json), a meeting or live chat (lib/meetings.js), a live
-   child run (the routines' inFlight flags cover a lead's own run; a worker on a child run is marked by its job too) */
-function busySeats(root, crew, jobs) {
+   child run (the station's run table: the dispatcher passes FAM.liveChildSeats of its snapshot) */
+function busySeats(root, crew, jobs, liveKids) {
   const out = new Set();
+  // a seat on a live child run (lib/family.js liveChildSeats from the station's run table, the dispatcher's snapshot)
+  for (const id of (liveKids instanceof Map ? liveKids.keys() : Array.isArray(liveKids) ? liveKids : liveKids instanceof Set ? liveKids : [])) out.add(String(id));
   for (const [id, c] of Object.entries(crew || {})) {
     const loop = c && c.loop; if (!loop) continue;
     if ((jobs || []).some(j => j && String(j.name || '').startsWith(loop) && (j.inFlight || j.state === 'running'))) out.add(id);
@@ -122,6 +144,26 @@ function classDeniedFn(root) {
   return (cls, pair) => { if (!pair) return false; if (cls === 'code' && pair.provider === 'custom') return true; try { return K ? !require('./routing').routeAllowed(cls, pair, K) : false; } catch (_) { return false; } };
 }
 
+/* the splits already dispatched: company/state/delegate-allow-state.json used { splitId: at }, kept by markUsed() from what
+   the station shows: a live child run of a worker the previous list named for that lead (o.liveKids, the snapshot), or a
+   run row (runs.jsonl, the tail) whose itemId and delegatedBy are that split's item and lead */
+const stateFile = root => path.join(root, 'company', 'state', 'delegate-allow-state.json');
+function markUsed(root, o) {
+  const prev = readJson(fileOf(root), null), st = readJson(stateFile(root), {}) || {}; st.used = st.used || {};
+  let changed = false;
+  const live = o.liveKids instanceof Map ? o.liveKids : new Map();
+  let runs = []; try { runs = require('./bounded').tailLines(o.runsFile || path.join(root, '.starnet-data', 'workspaces', 'runs.jsonl'), 4000, { maxBytes: 4 << 20 }).map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean); } catch (_) { runs = []; }
+  for (const [lead, e] of Object.entries((prev && prev.leads) || {})) {
+    if (!e || !e.split || st.used[e.split]) continue;
+    const item = (e.items || [])[0];
+    const started = (e.workers || []).some(w => live.has(w)) || runs.some(r => r && r.itemId && String(r.itemId) === String(item) && String(r.delegatedBy || '') === String(lead));
+    if (started) { st.used[e.split] = new Date().toISOString(); changed = true; }
+  }
+  // keep the last 500
+  const ks = Object.keys(st.used); if (ks.length > 500) { for (const k of ks.sort((a, b) => String(st.used[a]).localeCompare(String(st.used[b]))).slice(0, ks.length - 500)) delete st.used[k]; changed = true; }
+  if (changed && !o.dry) { try { fs.mkdirSync(path.dirname(stateFile(root)), { recursive: true }); fs.writeFileSync(stateFile(root), JSON.stringify(st) + '\n'); } catch (_) {} }
+  return new Set(Object.keys(st.used));
+}
 async function build(o) {
   o = o || {};
   const root = path.resolve(o.root || co.ROOT);
@@ -134,8 +176,9 @@ async function build(o) {
   const candidates = C.splitCandidates({ root, crew });
   const oa = readJson(path.join(root, 'company', 'state', 'override-allow.json'), null);
   const fresh = oa && Number(oa.at) > 0 && Date.now() - Number(oa.at) <= MAX_AGE_MS;
-  return compute({ candidates, doc: L.doc, st, crew, jobs: o.jobs || [], busy: busySeats(root, crew, o.jobs || []), open: fresh ? (oa.agents || {}) : {},
-    money: moneyFn(o.budget), classDenied: classDeniedFn(root), now: o.now });
+  const used = markUsed(root, o);
+  return compute({ candidates, doc: L.doc, st, crew, jobs: o.jobs || [], busy: busySeats(root, crew, o.jobs || [], o.liveKids), open: fresh ? (oa.agents || {}) : {},
+    money: moneyFn(o.budget), classDenied: classDeniedFn(root), used, now: o.now });
 }
 
 async function write(o) {
@@ -165,6 +208,22 @@ async function write(o) {
     if (typeof o.log === 'function') o.log('DELEGATE ALLOWLIST ERROR: ' + String((e && e.message) || e).slice(0, 200) + ' (nobody delegates this tick)');
     return { ok: false, file, error: String((e && e.message) || e) };
   }
+}
+
+/* nobody listed, now (a halted company: a lead run already in flight starts no new worker under a list from before the
+   halt; the station refuses team.dispatch for every routine run). Never throws. */
+function writeEmpty(o) {
+  o = o || {}; const file = fileOf(o.root);
+  try {
+    const cur = readJson(file, null);
+    if (cur && cur.v === 1 && cur.leads && !Object.keys(cur.leads).length && Date.now() - Number(cur.at) < 10 * 60e3) return { ok: true, file, leads: 0, unchanged: true };
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const txt = JSON.stringify({ v: 1, at: Date.now(), by: 'dispatcher', leads: {}, halted: true }, null, 1) + '\n', tmp = file + '.tmp-' + process.pid;
+    fs.writeFileSync(tmp, txt); fs.renameSync(tmp, file);
+    try { require('../provenance.js').wrote(file, txt, WRITER); } catch (_) {}
+    if (cur && cur.leads && Object.keys(cur.leads).length && typeof o.log === 'function') o.log('DELEGATE ALLOWLIST: emptied (halted): nobody may team.dispatch');
+    return { ok: true, file, leads: 0 };
+  } catch (e) { return { ok: false, file, error: String((e && e.message) || e) }; }
 }
 
 /* the auto-withdraw: model-rank.js fanoutEvaluation said withdraw for a department (its cost per accepted item was not
@@ -204,7 +263,7 @@ async function step(o) {
   return write(o);
 }
 
-module.exports = { compute, build, write, withdrawStep, step, busySeats, moneyFn, pairOf, withdrawnWords, MAX_AGE_MS, REL, WRITER };
+module.exports = { compute, build, write, writeEmpty, markUsed, withdrawStep, step, busySeats, moneyFn, pairOf, classOf, withdrawnWords, MAX_AGE_MS, REL, WRITER };
 
 // node company/tools/lib/delegate-allow.js [write|show]
 if (require.main === module) {

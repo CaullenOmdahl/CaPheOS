@@ -223,6 +223,48 @@ test('delegate-allow compute: the subtree, busy seats, a pacer hold, the class r
   assert.equal(compute({ delegation: { mode: 'shadow' } }).doc.leads.kwa, undefined, 'recording only: nobody listed');
 });
 
+test('delegate-allow: code files make a code item, a worker\'s own pair is listed first and only allowed pairs, the whole run is capped at the pieces, a used split is not listed again', () => {
+  const doc = deptsDoc({ mode: 'live', workers: ['ben', 'cat', 'dan'], maxWorkers: 3, workerTimeoutMin: 20 });
+  const run = o => DA.compute(Object.assign({ candidates: [cand()], doc, st: D.settings(doc, {}), crew: CREW, jobs, busy: [], open: openAll, money: () => null, now: 1 }, o));
+  // a split that reads as "general" but whose pieces list .ts / .js files is code work: Dan (MiniMax plan) is never listed
+  const tsPieces = [{ n: 1, title: 'a', files: ['src/a.ts'], check: 'x' }, { n: 2, title: 'b', files: ['docs/b.md'], check: 'x' }, { n: 3, title: 'c', files: ['lib/c.js'], check: 'x' }];
+  const g = run({ candidates: [cand({ class: 'general', pieces: tsPieces })] });
+  assert.deepEqual(g.doc.leads.kwa.workers, ['ben', 'cat'], JSON.stringify(g));
+  assert.equal(g.doc.leads.kwa.class, 'code');
+  for (const w of g.doc.leads.kwa.workers) assert.ok(g.doc.leads.kwa.models[w].length && g.doc.leads.kwa.models[w].every(m => m.provider !== 'custom'), 'every listed model is allowed for code: ' + w);
+  assert.equal(DA.classOf({ class: 'general', pieces: [{ files: ['docs/a.md'] }] }), 'general');
+  // the whole run: at most the piece count, and never more per call than pieces
+  assert.equal(g.doc.leads.kwa.runWorkers, 3); assert.ok(g.doc.leads.kwa.maxWorkers <= 3);
+  // research: the worker's own pair first (what it runs on when the lead names none)
+  const r = run({ candidates: [cand({ class: 'research', pieces: tsPieces.map(p => Object.assign({}, p, { files: ['notes/' + p.n + '.md'] })) })], open: Object.assign({}, openAll, { dan: [{ provider: 'claude-cli', model: 'claude-sonnet-5-5' }, { provider: 'custom', model: 'MiniMax-M3.1-Pro' }] }) });
+  assert.deepEqual(r.doc.leads.kwa.models.dan[0], { provider: 'custom', model: 'MiniMax-M3.1-Pro' }, 'Dan\'s own pair first');
+  // a split already dispatched is not listed again
+  const u = run({ candidates: [cand({ pieces: tsPieces })], used: new Set(['sp-1']) });
+  assert.equal(u.doc.leads.kwa, undefined); assert.ok(u.notes.some(n => /dispatched already/.test(n.why)));
+});
+
+test('delegate-allow: a worker on a live child run is busy; a split whose workers started is marked used; a halt empties the list', () => {
+  const root = fixture();
+  assert.ok(DA.busySeats(root, CREW, [], new Map([['cat', ['run-1']]])).has('cat'), 'a live child run makes the seat busy');
+  // the previous list named Kwame -> Ben, Cat for sp-9; Cat now runs a child run: sp-9 is used
+  w(root, 'company/state/delegate-allow.json', { v: 1, at: Date.now(), by: 'dispatcher', leads: { kwa: { items: ['kwa-big'], workers: ['ben', 'cat'], maxWorkers: 2, workerTimeoutMin: 20, split: 'sp-9' } } });
+  const used = inRoot(root, '[...DA.markUsed(process.cwd(), { liveKids: new Map([["cat", ["r1"]]]) })]');
+  assert.deepEqual(used, ['sp-9']);
+  // a run row with the item's id and the lead as delegatedBy marks it too (the child already finished)
+  w(root, 'company/state/delegate-allow.json', { v: 1, at: Date.now(), by: 'dispatcher', leads: { kwa: { items: ['kwa-other'], workers: ['ben'], maxWorkers: 1, workerTimeoutMin: 20, split: 'sp-10' } } });
+  w(root, '.starnet-data/workspaces/runs.jsonl', JSON.stringify({ runId: 'c1', agentId: 'ben', delegatedBy: 'kwa', itemId: 'kwa-other', parentRunId: 'l1' }) + '\n');
+  assert.deepEqual(inRoot(root, '[...DA.markUsed(process.cwd(), {})].sort()'), ['sp-10', 'sp-9']);
+  // halted: nobody listed, at once
+  const e = inRoot(root, 'DA.writeEmpty({}) && JSON.parse(require("fs").readFileSync("company/state/delegate-allow.json", "utf8"))');
+  assert.deepEqual(e.leads, {}); assert.equal(e.halted, true);
+  const src = fs.readFileSync(path.join(TOOLS, 'dispatch.js'), 'utf8');
+  assert.match(src, /if \(halted\) \{ if \(!DRY\) \{ try \{ require\('\.\/lib\/delegate-allow\.js'\)\.writeEmpty\(/, 'the dispatcher empties the list before its halted return');
+  assert.match(src, /delegate-allow\.js'\)\.step\(\{ jobs, log, liveKids: LIVE_KIDS/, 'the dispatcher passes the live child runs');
+  // the station's half (company/patches/0018): a listed worker runs only on a listed model; the run is capped over all calls
+  const patch = fs.readFileSync(path.join(REPO, 'company', 'patches', '0018-team-dispatch-limits.diff'), 'utf8');
+  for (const t of ['has no model on the delegation list for this item', 'wov = Object.assign({ provider: listed[0].provider, model: listed[0].model }', 'the most its delegation list allows', 'runWorkers: rw >= 1', 'no override allowlist: the listed model cannot run']) assert.ok(patch.includes(t), 'patch 0018 carries: ' + t);
+});
+
 test('delegate-allow build/write: a recorded dispatch split, the override list it reads, and fail-closed without money numbers', async () => {
   const root = fixture();
   const argv = ['split', 'kwa-big', '--fanout', 'dispatch', '--by', 'Kwame'].concat(...PIECES.map(p => ['--piece', p]));

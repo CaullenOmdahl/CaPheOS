@@ -645,6 +645,7 @@ function deliverOwnerQuestions() {
 }
 // log the held-questions line once per distinct set, not every tick
 let OTHERS_SEEN = null;
+let LIVE_KIDS = new Map();   // this tick's live child runs by seat (FAM.liveChildSeats of the station's snapshot), for the delegation allowlist
 function state_noteOthers(list) { const k = list.map(q => q.id).sort().join(','); const f = path.join(ROOT, 'company', 'state', 'outbox-held.txt'); let prev = ''; try { prev = fs.readFileSync(f, 'utf8'); } catch (_) {} if (prev === k) return false; if (!DRY) fs.writeFileSync(f, k); return true; }
 /* ---- PERFORMANCE: a person consistently failing at their job reaches the people owner, with the evidence ----
  * company/tools/performance.js reads the run records; this writes company/work/performance.md when it changes and hands
@@ -798,7 +799,9 @@ function lastRunTail(job) {
   const halted = co.halted() || (rhold ? 'soft' : false);
   try { await require('./lib/modules').runTicks({ log, dry: DRY, halted }); } catch (e) { log('MODULE TICKS ERROR: ' + String(e.message).slice(0, 200)); }
   // halted: only the duties marked whileHalted (liveness) run; they record their state and wake nobody, flag nobody
-  if (halted) { try { await require('./lib/duty-runner').tick({ log, dry: DRY, halted }); } catch (e) { log('DUTIES ERROR: ' + String(e.message).slice(0, 200)); } log(rhold ? restartHoldLine(rhold) : haltLine(co.haltState())); return; }
+  // halted: the delegation allowlist is emptied too (lib/delegate-allow.js writeEmpty): a lead run already in flight starts no
+  // new worker under a list written before the halt (the station would otherwise keep it for up to 30 minutes)
+  if (halted) { if (!DRY) { try { require('./lib/delegate-allow.js').writeEmpty({ log }); } catch (e) { log('DELEGATE ALLOWLIST ERROR: ' + String(e.message).slice(0, 200)); } } try { await require('./lib/duty-runner').tick({ log, dry: DRY, halted }); } catch (e) { log('DUTIES ERROR: ' + String(e.message).slice(0, 200)); } log(rhold ? restartHoldLine(rhold) : haltLine(co.haltState())); return; }
   const split = spendSplit();
   const spent = split.metered;
   // Say the numerator out loud when the two records disagree: the cap now reads the ledger, so a tick where it
@@ -1313,6 +1316,7 @@ function lastRunTail(job) {
   // /api/state/snapshot); an unreadable table holds nobody (as before). One log line per change.
   { let liveKids = new Map();
     try { const sr = await call('GET', '/api/state/snapshot'); if (sr.status === 200) liveKids = FAM.liveChildSeats((JSON.parse(sr.body) || {}).runs); } catch (_) {}
+    LIVE_KIDS = liveKids;   // the delegation allowlist reads them too (a worker on a live child run is busy; a split whose workers started is used)
     const busy = order.filter(id => liveKids.has(id));
     for (const id of busy) { order.splice(order.indexOf(id), 1); say(id, { state: 'working' }); }
     const bk = busy.map(id => id + ':' + liveKids.get(id).join('+')).sort().join(',');
@@ -1499,7 +1503,7 @@ function lastRunTail(job) {
   // turns every override off once it is 30 minutes old. Fail-safe.
   if (!DRY) try { await require('./lib/override-allow.js').write({ jobs, log }); } catch (e) { log('OVERRIDE ALLOWLIST ERROR: ' + String(e.message).slice(0, 200)); }
   // narrow fan-out (lib/delegate-allow.js, StarNet patch 0018): the house ranking's auto-withdraw, then the delegation allowlist (who may team.dispatch whom for which item), after the override list it reads. Fail-safe
-  if (!DRY) try { await require('./lib/delegate-allow.js').step({ jobs, log, budget: { capOn: CAP_ON, capped, dailyUsd: DAILY_USD, perAgentUsd: PER_AGENT_USD, byAgent, spent, lastHourMetered, hoursLeft, spread: !!(SPRINT && SPRINT.spreadDailyCap), unmetered: UNMETERED_PROVIDERS } }); } catch (e) { log('DELEGATE ALLOWLIST ERROR: ' + String(e.message).slice(0, 200)); }
+  if (!DRY) try { await require('./lib/delegate-allow.js').step({ jobs, log, liveKids: LIVE_KIDS, budget: { capOn: CAP_ON, capped, dailyUsd: DAILY_USD, perAgentUsd: PER_AGENT_USD, byAgent, spent, lastHourMetered, hoursLeft, spread: !!(SPRINT && SPRINT.spreadDailyCap), unmetered: UNMETERED_PROVIDERS } }); } catch (e) { log('DELEGATE ALLOWLIST ERROR: ' + String(e.message).slice(0, 200)); }
   // profile trials (profile.js tick, docs/PROFILES.md): a trial past its end with no answer from the owner goes back. Fail-safe
   if (!DRY) try { const pt = require('./profile.js').tick(); for (const t of (pt.trials || [])) log(t.error ? 'PROFILE TRIAL ERROR ' + t.seat + ': ' + String(t.error).slice(0, 160) : 'PROFILE TRIAL ENDED ' + t.seat + ': no answer, back to version ' + t.reverted + ' (now ' + t.version + ')'); } catch (e) { log('PROFILE TRIAL ERROR: ' + String(e.message).slice(0, 200)); }
   // weekly routing suggestions (routing.js proposals tick, docs/ROUTING.md): hourly, in its own process (the owner's veto card is filed by routing.js). Fail-safe

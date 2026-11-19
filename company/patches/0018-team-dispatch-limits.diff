@@ -7,7 +7,7 @@
 #   1. sidecar/delegate-allow.js reads the file named by env STARNET_DELEGATE_ALLOW (absolute; re-read per request, cached
 #      by mtime+size; the host injects the clock):
 #        {"v":1, "at":<epoch ms>, "by":"dispatcher", "leads":{"<lead>":{"items":["<item id>"], "workers":["<agentId>"],
-#         "maxWorkers":3, "workerTimeoutMin":20, "models":{"<agentId>":[{"provider":"..","model":".."}]}}}}
+#         "maxWorkers":3, "workerTimeoutMin":20, "runWorkers":3, "models":{"<agentId>":[{"provider":"..","model":".."}]}}}}
 #      Env unset, file missing, unreadable, bad JSON, not v:1, "at" older than 30 minutes or more than a minute ahead, or an
 #      entry with no workers / items -> that lead is not listed (fail closed).
 #   2. a ROUTINE run (trigger schedule|manual; not the Commander's lead, not the owner's DM, not a delegated worker) gets
@@ -16,8 +16,14 @@
 #      execution profile included). Console, owner-DM and group-lead runs keep their current behaviour.
 #   3. under the list (orchestration.js deps.delegateGate, re-read on every call): a worker whose agentId is not on that
 #      lead's list gets an error row "<id> is not on this lead's team for this item" and does not run; a lead the list
-#      stopped naming is refused whole; background:true is refused (each worker needs its own clock); a worker's one-run
-#      model (patch 0017) must also be one the list names for it.
+#      stopped naming is refused whole; background:true is refused (each worker needs its own clock). A listed worker runs
+#      ONLY on a model the list names for it (models[agentId], each allowed for the item's class by the company): the lead's
+#      one-run model (patch 0017) must be one of them, a worker dispatched with no model runs on the list's first (never on
+#      its own model or the station default, which the list did not check: code never lands on the MiniMax plan that way),
+#      and a worker the list names no model for is refused with an error row. The listed model runs as a one-run override,
+#      so the 0017 override allowlist must open it too (fail closed).
+#      The whole lead run starts at most runWorkers workers (the split's piece count; absent = maxWorkers) over ALL its
+#      team.dispatch calls: a lead cannot loop call after call; the rest come back as "NOT RUN" error rows.
 #   4. maxWorkers is passed from index.js into orchestration at last (env DISPATCH_MAX_WORKERS, 0 = no cap; it was
 #      accepted but never passed) and is capped by the list's maxWorkers; the overflow comes back as not-dispatched rows.
 #   5. EACH WORKER GETS ITS OWN WALL CLOCK, workerTimeoutMin, started when it starts: no shared dispatch budget, so a fast
@@ -28,7 +34,8 @@
 # Tests: test/team-dispatch-limits.test.js (mirrors test/orchestration.test.js: the reader's fail-closed cases and the
 # cache, the projection for named / unnamed routine runs and the unchanged owner-DM and desk leads, an unlisted seat
 # refused with an error row, maxWorkers 2 with 3 specs, a fast and a slow worker in parallel and in sequence, a lead no
-# longer named, background, a model not on the list, the registry deadline held and released). test/orchestration.test.js
+# longer named, background, a model not on the list, no model named = the list's first, an empty list refused, no open
+# override list = nothing runs, runWorkers over several calls, the registry deadline held and released). test/orchestration.test.js
 # and test/authority-census.test.js pass unchanged.
 # Needs 0017 first (both touch orchestration.js and index.js). Needs STARNET_DELEGATE_ALLOW in the station env
 # (scripts/setup-station.sh writes it) or no routine run ever delegates.
@@ -71,10 +78,10 @@ index e180062..5a112f6 100644
      for (const g of [
 diff --git a/sidecar/delegate-allow.js b/sidecar/delegate-allow.js
 new file mode 100644
-index 0000000..fa2cefd
+index 0000000..c88f41f
 --- /dev/null
 +++ b/sidecar/delegate-allow.js
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,86 @@
 +/* sidecar/delegate-allow.js — THE DELEGATION ALLOWLIST: which ROUTINE lead may hand which item's pieces to which workers
 +   NOW (CA PHE DIGITAL, company/patches/0018).
 +
@@ -85,14 +92,15 @@ index 0000000..fa2cefd
 +
 +   THE FILE. The absolute path named by env STARNET_DELEGATE_ALLOW, read on each request (cached by path + mtime + size):
 +     { "v": 1, "at": <epoch ms written>, "by": "dispatcher",
-+       "leads": { "<lead agentId>": { "items": ["<item id>"], "workers": ["<agentId>"], "maxWorkers": 3, "workerTimeoutMin": 20,
++       "leads": { "<lead agentId>": { "items": ["<item id>"], "workers": ["<agentId>"], "maxWorkers": 3, "workerTimeoutMin": 20, "runWorkers": 3,
 +                                      "models": { "<agentId>": [ { "provider": "...", "model": "..." } ] } } } }
 +
 +   THE RULE (fail closed).
 +     - env unset or empty, not absolute, file missing, unreadable, not JSON, not v:1, no leads object, "at" older than
 +       MAX_AGE_MS (30 minutes) or more than a minute in the future -> no lead is listed: no routine run gets team.dispatch.
 +     - a lead entry needs at least one worker id, maxWorkers >= 1 and workerTimeoutMin >= 1, else it is not listed.
-+     - leadOf(agentId) -> null | { items, workers, maxWorkers, workerTimeoutMin, workerTimeoutMs, models, itemId }
++     - leadOf(agentId) -> null | { items, workers, maxWorkers, runWorkers, workerTimeoutMin, workerTimeoutMs, models, itemId }
++       runWorkers: the workers the whole lead run may start over all its calls (the file's runWorkers, else maxWorkers)
 +
 +     makeDelegateAllow({ envName?, env?, fs?, now }) -> { leadOf(agentId), read() -> { ok, list } | { ok:false } }
 +       now: the host's clock (index.js injects it); without one nobody is listed
@@ -121,7 +129,9 @@ index 0000000..fa2cefd
 +    const models = Object.create(null);
 +    for (const w of workers) models[w] = (Array.isArray(e.models && e.models[w]) ? e.models[w] : []).filter(r => r && typeof r.provider === 'string' && typeof r.model === 'string')
 +      .map(r => ({ provider: r.provider.trim().toLowerCase(), model: r.model.trim() }));
-+    leads[id] = { items, workers, maxWorkers: Math.min(maxWorkers, workers.length), workerTimeoutMin: mins, workerTimeoutMs: Math.round(mins * 60000), models, itemId: items[0] };
++    // runWorkers: how many workers the whole lead run may start over all its calls (the split's pieces); absent = maxWorkers
++    const cap = Math.min(maxWorkers, workers.length), rw = Math.floor(Number(e.runWorkers));
++    leads[id] = { items, workers, maxWorkers: cap, runWorkers: rw >= 1 ? Math.min(rw, 50) : cap, workerTimeoutMin: mins, workerTimeoutMs: Math.round(mins * 60000), models, itemId: items[0] };
 +  }
 +  return { at, by: String(j.by || ''), leads };
 +}
@@ -234,25 +244,35 @@ index 13c6f14..f83eac5 100644
          // was live, so the station cancelled it (the disconnect law). `waitingOn` names, in plain words, the approvals
          // still open at that moment — the disconnect denied them, so none of them was granted. Set only by the host that
 diff --git a/sidecar/tools/builtin/orchestration.js b/sidecar/tools/builtin/orchestration.js
-index 45ddf18..e5c3b98 100644
+index 45ddf18..741781e 100644
 --- a/sidecar/tools/builtin/orchestration.js
 +++ b/sidecar/tools/builtin/orchestration.js
-@@ -12,6 +12,14 @@
+@@ -12,6 +12,16 @@
       workerMaxIters: optional per-WORKER iteration ceiling (0/omitted = unlimited)
       newId     : () -> a fresh runId for each child (crypto.randomUUID, injected so this UMD stays dep-free)
       maxWorkers: optional cap on workers per dispatch (0/omitted = unlimited)
-+     delegateGate: optional () -> null | { workers, maxWorkers, workerTimeoutMs, itemId, models } (CA PHE DIGITAL,
++     delegateGate: optional () -> null | { workers, maxWorkers, runWorkers, workerTimeoutMs, itemId, models } (CA PHE DIGITAL,
 +                 company/patches/0018): set by the host for a ROUTINE lead the company's delegation allowlist names. When
 +                 set, a dispatch runs only while the list still names this lead (else it is refused whole), a worker not on
 +                 the list is refused with an error row and does not run, the call carries at most min(maxWorkers, the
 +                 list's maxWorkers) workers, and EACH worker gets its OWN wall clock of workerTimeoutMs, started when it
 +                 starts (no shared budget: a fast worker is never cut for a slow one; a worker cut by its own clock comes
 +                 back as reason 'worker-timeout'); the tool's registry deadline is held while the workers run (each is
-+                 bounded by its own clock). Workers' run rows carry the list's itemId.
++                 bounded by its own clock). Workers' run rows carry the list's itemId. Each worker runs ONLY on a model
++                 the list names for it (the first when the lead names none; none listed = refused), and the whole run
++                 starts at most runWorkers workers over all its calls.
  
     Safety (verified against the run host): each worker is a DISTINCT agentId so it takes its own concurrency
     slot + its own ledger/live-budget entry while the lead's slot stays held; ctx.signal is threaded into every
-@@ -1000,17 +1008,24 @@
+@@ -671,6 +681,7 @@
+        beside it without an override runs as before. */
+     const allowOverride = (typeof deps.allowOverride === 'function') ? deps.allowOverride : null;
+     const OVERRIDE_OFF = 'no current override allowlist: overrides are off';
++    let gateStarted = 0;   // 0018: workers this run has started under a delegation list (the factory is made per run)
+     function overrideGate(agentId, pair, ov) {
+       const g = allowOverride ? allowOverride({ agentId: String(agentId || ''), provider: String((pair && pair.provider) || ''), model: String((pair && pair.model) || ''), override: ov }) : { ok: false, error: OVERRIDE_OFF };
+       return (g && g.ok === true) ? null : { error: String((g && g.error) || OVERRIDE_OFF) };
+@@ -1000,17 +1011,24 @@
          // so a 6-worker decomposition became a 4-worker dispatch reporting "4 done" — and the lead then wrote the
          // Commander a confident final answer covering two subtasks that never ran. The overflow now comes BACK as
          // explicit not-dispatched rows (see overflowRows) so the model can see, and re-dispatch, exactly what it lost.
@@ -281,7 +301,7 @@ index 45ddf18..e5c3b98 100644
  
          // forward lifecycle/cost from children onto the lead's bus, and their tool steps as crew.tool_step (see makeChildEmit; never tokens)
          const childEmit = makeChildEmit(ctx);
-@@ -1021,6 +1036,7 @@
+@@ -1021,6 +1039,7 @@
            const session = String((w && w.session) || '').trim().slice(0, 80);
            if (!ID_RE.test(aid)) return { agentId: aid, error: 'invalid agentId' };
            if (aid === leadId) return { agentId: aid, error: 'cannot delegate to yourself' };
@@ -289,16 +309,44 @@ index 45ddf18..e5c3b98 100644
            if (!crew.has(aid)) return { agentId: aid, error: 'no such live worker — summon them first, or check the agentId against YOUR TEAM.' + crewIdsHint(crew, leadId) };
            const contract = resultSchemaOf(w && w.resultSchema);
            if (!contract.ok) return { agentId: aid, error: 'invalid result contract: ' + contract.error };
-@@ -1031,6 +1047,8 @@
+@@ -1031,9 +1050,35 @@
            if (scope.error) return { agentId: aid, error: scope.error };
            const ov = parseOverride({ model: w && w.model, provider: w && w.provider, effort: w && w.effort });   // 0017
            if (!ov || !ov.ok) return { agentId: aid, error: String((ov && ov.error) || 'invalid model override') };
-+          // 0018: a listed worker's one-run model must also be one the delegation list names for it
-+          if (gate && ov.override && ov.override.model && !((gate.models && gate.models[aid]) || []).some(m => m.model === ov.override.model && (!ov.override.provider || m.provider === String(ov.override.provider).toLowerCase()))) return { agentId: aid, error: 'model ' + ov.override.model + ' is not on the delegation list for ' + aid };
++          // 0018: under the list a worker runs ONLY on a model the list names for it: the lead's one-run model must be one of
++          // them, and with none named the worker runs on the list's first (never on its own model or the station default,
++          // which the list did not check for this item's class); a worker the list names no model for is refused
++          let wov = ov.override;
++          if (gate) {
++            const listed = (gate.models && gate.models[aid]) || [];
++            if (!listed.length) return { agentId: aid, error: aid + ' has no model on the delegation list for this item, so it does not run' };
++            if (wov && wov.model) {
++              const hit = listed.find(m => m.model === wov.model && (!wov.provider || m.provider === String(wov.provider).toLowerCase()));
++              if (!hit) return { agentId: aid, error: 'model ' + wov.model + ' is not on the delegation list for ' + aid };
++              wov = Object.assign({}, wov, { provider: hit.provider });
++            } else wov = Object.assign({ provider: listed[0].provider, model: listed[0].model }, wov && wov.effort ? { effort: wov.effort } : {});
++          }
            return Object.assign({ agentId: aid, prompt: String((w && w.prompt) || ''), context: handoffContext(w && w.context), ident: crew.get(aid), session: session, resultSchema: contract.schema, builder, bounded: !!(w && w.bounded === true), onlyHost: scope.host },
-             ov.override ? { override: ov.override } : {});
+-            ov.override ? { override: ov.override } : {});
++            wov ? { override: wov } : {});
          });
-@@ -1103,9 +1121,9 @@
++        // 0018: the whole run starts at most the list's runWorkers (the split's piece count), over every call: a lead cannot
++        // loop team.dispatch call after call; the rest come back as error rows and do not run
++        if (gate) {
++          const runCap = Number(gate.runWorkers) >= 1 ? Math.floor(Number(gate.runWorkers)) : (Number(gate.maxWorkers) >= 1 ? Math.floor(Number(gate.maxWorkers)) : 0);
++          const room = Math.max(0, runCap - gateStarted);
++          let n = 0;
++          for (let i = 0; i < jobs.length; i++) {
++            if (jobs[i].error) continue;
++            if (n < room) { n++; continue; }
++            jobs[i] = { agentId: jobs[i].agentId, error: 'NOT RUN: this run already started ' + gateStarted + ' worker' + (gateStarted === 1 ? '' : 's') + (n ? ' (and ' + n + ' in this call)' : '') + ' for this item, the most its delegation list allows (' + runCap + '). Finish with what you have, or do this part yourself.' };
++          }
++          gateStarted += n;
++        }
+         markBatchQuality(jobs);
+         // WHERE before WHO does the work: an unresolvable session marks its job failed here, so that worker is
+         // never started in the wrong place (see resolveSessions). One bridge round-trip for the whole dispatch.
+@@ -1103,9 +1148,9 @@
            const timeoutRow = (res) => {
              const partial = res ? (lastAssistant(res.messages) || '') : '';
              const row = {
@@ -310,7 +358,7 @@ index 45ddf18..e5c3b98 100644
                  + (partial ? '; the text above is its PARTIAL work' : ' before returning any text')
                  + '. Do not present it as complete: either re-dispatch this subtask ' + (bound ? 'without bounded' : 'alone') + ', or tell the Commander this part is unfinished.]',
                usd: (res && res.usd) || 0,
-@@ -1144,6 +1162,7 @@
+@@ -1144,6 +1189,7 @@
                signal: ac ? ac.signal : parentSignal,   // own controller when this worker has a wall clock (see above)
                runId: workerRunId, trigger: 'directive', surface: 'autonomous',
                parentRunId: ctx && ctx.runId, delegatedBy: (ctx && ctx.agentId) || '',
@@ -318,7 +366,7 @@ index 45ddf18..e5c3b98 100644
                // SESSION TARGETING: the run host files a run under its streamId (runStore.record + the durable
                // transcript) and scopes its working memory to that stream. Absent -> undefined, byte-identical to
                // the pre-2026-07-30 call. This is the DURABLE half; deliverToSession is the visible one.
-@@ -1308,7 +1327,17 @@
+@@ -1308,7 +1354,17 @@
              + 'dispatch this subtask in a follow-up call, and do not report it as done.'
          });
          let out = [];
@@ -336,7 +384,7 @@ index 45ddf18..e5c3b98 100644
            const left = leftAt(w);
            if (left <= 0) { for (const j of waves[w]) out.push(notStartedRow(j)); continue; }
            const share = Math.max(1, Math.floor(left / (waves.length - w)));
-@@ -1323,16 +1352,17 @@
+@@ -1323,16 +1379,17 @@
             retrying it is free. `out` is built in job order, so out[i] pairs with jobs[i] (overflow is appended after). */
          for (let i = 0; i < out.length && i < jobs.length; i++) {
            if (out[i].reason !== 'refused') continue;
@@ -359,10 +407,10 @@ index 45ddf18..e5c3b98 100644
          const fit = await fitAggregate(out, { budget: aggregateBudget(ctx), what: r => 'worker ' + r.agentId + '\'s result', park: workerParker(ctx, 'team.dispatch'), scrub: scrubTextOf(ctx) });
 diff --git a/test/team-dispatch-limits.test.js b/test/team-dispatch-limits.test.js
 new file mode 100644
-index 0000000..7867414
+index 0000000..8656ced
 --- /dev/null
 +++ b/test/team-dispatch-limits.test.js
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,186 @@
 +/* node test/team-dispatch-limits.test.js — CA PHE DIGITAL (company/patches/0018): a ROUTINE lead delegates only under the
 +   company's delegation allowlist (sidecar/delegate-allow.js), and then only to its listed workers, at most maxWorkers per
 +   call, each worker on its OWN clock. Mirrors test/orchestration.test.js: a FAKE runOnce, no key, no network.
@@ -394,7 +442,9 @@ index 0000000..7867414
 +  return fn;
 +}
 +const roster = new Map([['ben', { system: 'B', name: 'BEN', model: 'm' }], ['cat', { system: 'C', name: 'CAT', model: 'm' }], ['dan', { system: 'D', name: 'DAN', model: 'm' }], ['eve', { system: 'E', name: 'EVE', model: 'm' }]]);
-+const gateOf = o => Object.assign({ items: ['to-kwa.md#abc123'], itemId: 'to-kwa.md#abc123', workers: ['ben', 'cat', 'dan'], maxWorkers: 3, workerTimeoutMin: 20, workerTimeoutMs: 20 * 60000, models: { ben: [{ provider: 'anthropic', model: 'claude-sonnet-5-5' }], cat: [], dan: [] } }, o || {});
++const gateOf = o => Object.assign({ items: ['to-kwa.md#abc123'], itemId: 'to-kwa.md#abc123', workers: ['ben', 'cat', 'dan'], maxWorkers: 3, workerTimeoutMin: 20, workerTimeoutMs: 20 * 60000, models: { ben: [{ provider: 'anthropic', model: 'claude-sonnet-5-5' }], cat: [{ provider: 'anthropic', model: 'claude-sonnet-5-5' }], dan: [{ provider: 'anthropic', model: 'claude-haiku-5-5' }] } }, o || {});
++// the 0017 override allowlist stand-in: open (every worker under a list runs on a listed model, as a one-run override)
++const openOv = () => ({ ok: true });
 +const rowsOf = out => JSON.parse(out.content);
 +
 +(async () => {
@@ -451,7 +501,7 @@ index 0000000..7867414
 +{
 +  // an unlisted seat: an error row, never a run
 +  const ro = fakeRunOnce();
-+  const { dispatchTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), now: () => Date.now(), delegateGate: () => gateOf() });
++  const { dispatchTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), now: () => Date.now(), provider: 'anthropic', allowOverride: openOv, delegateGate: () => gateOf() });
 +  const out = await dispatchTool.run({ workers: [{ agentId: 'ben', prompt: 'a' }, { agentId: 'eve', prompt: 'b' }] }, { agentId: 'kwa', runId: 'lead-run' });
 +  const rows = rowsOf(out);
 +  A.eq(ro.calls.length, 1, 'only the listed worker ran');
@@ -465,7 +515,7 @@ index 0000000..7867414
 +{
 +  // maxWorkers 2 with 3 specs: 2 run, 1 is refused
 +  const ro = fakeRunOnce();
-+  const { dispatchTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), now: () => Date.now(), maxWorkers: 8, delegateGate: () => gateOf({ maxWorkers: 2 }) });
++  const { dispatchTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), now: () => Date.now(), maxWorkers: 8, provider: 'anthropic', allowOverride: openOv, delegateGate: () => gateOf({ maxWorkers: 2 }) });
 +  const out = await dispatchTool.run({ workers: [{ agentId: 'ben', prompt: 'a' }, { agentId: 'cat', prompt: 'b' }, { agentId: 'dan', prompt: 'c' }] }, { agentId: 'kwa' });
 +  const rows = rowsOf(out);
 +  A.eq(ro.calls.length, 2, 'two workers ran');
@@ -480,7 +530,7 @@ index 0000000..7867414
 +    return { reason: 'done', messages: [{ role: 'assistant', content: 'fast done' }], usd: 0.1 };
 +  });
 +  let held = 0, released = 0;
-+  const { dispatchTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), now: () => Date.now(), dispatchTimeoutMs: 50, delegateGate: () => gateOf({ workerTimeoutMs: 90 }) });
++  const { dispatchTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), now: () => Date.now(), dispatchTimeoutMs: 50, provider: 'anthropic', allowOverride: openOv, delegateGate: () => gateOf({ workerTimeoutMs: 90 }) });
 +  const out = await dispatchTool.run({ parallel, workers: [{ agentId: 'ben', prompt: 'fast' }, { agentId: 'cat', prompt: 'slow' }] }, { agentId: 'kwa', holdTimeout: () => { held++; return () => { released++; }; } });
 +  const rows = rowsOf(out);
 +  const fast = rows.find(r => r.agentId === 'ben'), slow = rows.find(r => r.agentId === 'cat');
@@ -501,12 +551,40 @@ index 0000000..7867414
 +}
 +{
 +  const ro = fakeRunOnce();
-+  const { dispatchTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), delegateGate: () => gateOf() });
++  const { dispatchTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), provider: 'anthropic', allowOverride: openOv, delegateGate: () => gateOf() });
 +  const bg = await dispatchTool.run({ background: true, workers: [{ agentId: 'ben', prompt: 'a' }] }, { agentId: 'kwa' });
 +  A.eq(ro.calls.length, 0, 'background:true is refused under a delegation list (each worker needs its own clock)');
 +  A.ok(/foreground/.test(bg.content), '...and says to dispatch in the foreground');
 +  const ov = await dispatchTool.run({ workers: [{ agentId: 'cat', prompt: 'a', model: 'claude-opus-5-5', provider: 'anthropic' }] }, { agentId: 'kwa' });
 +  A.ok(/not on the delegation list for cat/.test(rowsOf(ov)[0].result), 'a one-run model the list does not name for that worker is refused');
++}
++{
++  // a worker dispatched with no model runs on the list's first model for it (never its own or the station default); a
++  // worker the list names no model for does not run; without an open override list nothing runs (fail closed)
++  const ro = fakeRunOnce();
++  const { dispatchTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), provider: 'anthropic', allowOverride: openOv, delegateGate: () => gateOf({ models: { ben: [{ provider: 'anthropic', model: 'claude-sonnet-5-5' }], cat: [], dan: [] } }) });
++  const out = await dispatchTool.run({ workers: [{ agentId: 'ben', prompt: 'a' }, { agentId: 'cat', prompt: 'b' }] }, { agentId: 'kwa' });
++  A.eq(ro.calls.length, 1, 'only the worker with a listed model ran');
++  A.eq(ro.calls[0].override && ro.calls[0].override.model, 'claude-sonnet-5-5', '...on the list\'s model, as a one-run override');
++  A.eq(ro.calls[0].override && ro.calls[0].override.provider, 'anthropic', '...and its provider');
++  A.ok(/cat has no model on the delegation list/.test(rowsOf(out).find(r => r.agentId === 'cat').result), 'a worker with an empty list is refused in plain words');
++  const ro2 = fakeRunOnce();
++  const t2 = makeOrchestrationTools({ runOnce: ro2, roster: () => roster, key: 'k', model: 'm', newId: counter(), provider: 'anthropic', delegateGate: () => gateOf() }).dispatchTool;
++  await t2.run({ workers: [{ agentId: 'ben', prompt: 'a' }] }, { agentId: 'kwa' });
++  A.eq(ro2.calls.length, 0, 'no override allowlist: the listed model cannot run, so the worker does not run on anything else');
++}
++{
++  // the whole run starts at most runWorkers workers, over every call
++  const ro = fakeRunOnce();
++  const { dispatchTool } = makeOrchestrationTools({ runOnce: ro, roster: () => roster, key: 'k', model: 'm', newId: counter(), provider: 'anthropic', allowOverride: openOv, delegateGate: () => gateOf({ maxWorkers: 2, runWorkers: 3 }) });
++  await dispatchTool.run({ workers: [{ agentId: 'ben', prompt: 'a' }, { agentId: 'cat', prompt: 'b' }] }, { agentId: 'kwa' });
++  const second = await dispatchTool.run({ workers: [{ agentId: 'dan', prompt: 'c' }, { agentId: 'ben', prompt: 'd' }] }, { agentId: 'kwa' });
++  A.eq(ro.calls.length, 3, 'three workers in the run, not four');
++  A.ok(/the most its delegation list allows \(3\)/.test(rowsOf(second).find(r => r.agentId === 'ben').result), 'the fourth is refused with the reason');
++  const third = await dispatchTool.run({ workers: [{ agentId: 'cat', prompt: 'e' }] }, { agentId: 'kwa' });
++  A.eq(ro.calls.length, 3, 'a further call starts nobody'); A.ok(/NOT RUN/.test(rowsOf(third)[0].result));
++  A.eq(DA.parseList(JSON.stringify({ v: 1, at: 1, leads: { kwa: { items: ['x'], workers: ['ben'], maxWorkers: 1, workerTimeoutMin: 5, runWorkers: 4 } } })).leads.kwa.runWorkers, 4, 'the reader keeps runWorkers');
++  A.eq(DA.parseList(JSON.stringify({ v: 1, at: 1, leads: { kwa: { items: ['x'], workers: ['ben', 'cat'], maxWorkers: 2, workerTimeoutMin: 5 } } })).leads.kwa.runWorkers, 2, '...absent: maxWorkers');
 +}
 +{
 +  // no gate (a Commander-started lead, the owner's DM): today's behaviour, every listed agent may be dispatched
