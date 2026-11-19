@@ -240,7 +240,7 @@ function verdictsIn(text, K, crew) {
     if (!word) continue;
     const byM = line.match(/\bby\s+(.+)$/i);
     const by = byM ? seatByName(byM[1], crew) : null;
-    out.push({ word, fail: word === fail, by, check: /\bcheck:\s*\S/i.test(line) });
+    out.push({ word, fail: word === fail, by, check: /\bcheck:\s*\S/i.test(line), line });
   }
   return out;
 }
@@ -269,7 +269,10 @@ function load(o) {
     const names = fs.readdirSync(P.evidence).filter(f => /^premerge-.*\.json$/.test(f)).sort();
     for (const f of names.slice(-Number(K.rb.evidenceMaxFiles || 2000))) { const j = readJson(path.join(P.evidence, f), null); if (j && typeof j === 'object') evidence.push(j); }
   } catch (_) { evidence = []; }
-  return { policy: pol.policy, policySource: pol.source, routing: loadRouting(root), now, crew, departments, wakes, runs, attributed, files, ledger, corrections, evidence };
+  // advisor leads (docs/DEPARTMENTS.md §5): the consult ledger and the departments' advisor settings, for advisorEvaluation
+  const consults = parse(B.tailText(path.join(root, 'company', 'state', 'consults.jsonl'), 8 * B.MB));
+  let deptSettings = null; try { deptSettings = require('./lib/departments').settings(departments, { root }); } catch (_) {}
+  return { policy: pol.policy, policySource: pol.source, routing: loadRouting(root), now, crew, departments, deptSettings, consults, wakes, runs, attributed, files, ledger, corrections, evidence };
 }
 
 /* ---------------- the ranking (pure) ---------------- */
@@ -281,6 +284,9 @@ function analyze(inp) {
   const crew = inp.crew || {}, deps = inp.departments || { departments: [] };
   const z = zOf(K.confidence);
 
+  // a department lead's advise runs (wakes of door consult, lib/consult.js): their cost is the consulted items' cost, but they
+  // are advice, not authorship, so the lead's verdict on such an item is not a self-grade
+  const adviseRuns = new Set();
   // runs: one row per run (side rows carry the dispatch-slice reason), their families
   const delivery = new Map(), runById = new Map();
   for (const r of inp.runs || []) {
@@ -297,6 +303,7 @@ function analyze(inp) {
   // which items each run was started for (its cost is split evenly between them)
   const runOfAdmit = new Map(); for (const a of inp.attributed || []) if (a && a.admitId && a.runId) runOfAdmit.set(a.admitId, a.runId);
   const wakeRun = w => (w.runId ? String(w.runId) : (w.admitId && runOfAdmit.get(w.admitId)) || null);
+  for (const w of inp.wakes || []) if (w && w.door === 'consult') { const rid = wakeRun(w); if (rid) adviseRuns.add(rid); }
   const runItems = new Map(), wakeById = new Map(), wakesOfItem = new Map();
   for (const w of inp.wakes || []) {
     if (!w) continue; if (w.wakeId) wakeById.set(w.wakeId, w);
@@ -380,12 +387,14 @@ function analyze(inp) {
     if (!primary) { totals.excluded++; items.push(Object.assign(base, { excluded: true, excludedRuns })); continue; }
     const closedAt = d.closedAt || li.closedAt || 0, closedBy = d.closedBy || closedAt;
     const settled = now - closedAt >= settleMs;
-    const authors = new Set([seat].concat(all.map(id => runById.get(id).agentId)).filter(Boolean));
+    const authors = new Set([seat].concat(all.filter(id => !adviseRuns.has(id)).map(id => runById.get(id).agentId)).filter(Boolean));
     const runSet = new Set(all);
     // verdicts on this item (its own block, and blocks that name it)
     const lead = TC.leadOf(seat, deps, crew);
-    let failW = 0, reviseRounds = 0; const counted = [];
+    let failW = 0, reviseRounds = 0; const counted = [], seenLines = new Set();
     if (K.sig('revise')) for (const t of [sec.text].concat(refsTo.get(li.id) || [])) for (const v of verdictsIn(t, K, crew)) {
+      if (seenLines.has(v.line)) continue;   // one verdict written in two blocks (a consult answer: the consult and the item) counts once
+      seenLines.add(v.line);
       if (!v.by) { totals.unattributedIgnored++; continue; }
       if (authors.has(v.by)) { totals.selfGradesIgnored++; continue; }
       if (K.requireCheck && !v.check) { totals.uncitedIgnored++; continue; }
@@ -551,6 +560,7 @@ function evalKnobs(P) {
     trials: T ? { minItemsPerArm: Math.max(1, num(T.minItemsPerArm, 30)), cost: costOf(T.cost), costStat: T.costStat === 'median' ? 'median' : 'mean',
       cheaperThan: g(T.decision, 'cheaperThan') === 'bestOther' ? 'bestOther' : 'every', stuckDays: Math.max(1, num(T.stuckDays, 3)),
       confidence: clamp(num(g(T.interval, 'confidence', g(P.interval, 'confidence', 0.8)), 0.8), 0.5, 0.999) } : null,
+    advisor: P && P.advisorEvaluation && typeof P.advisorEvaluation === 'object' ? Object.assign({ minItems: 20, minDays: 14, consultRate: [0.10, 0.40], cachedShareMin: 0.85, oneShotGainPoints: 10, reworkCutShare: 0.20 }, P.advisorEvaluation) : null,
     tierCaps: C ? { minItems: Math.max(1, num(C.minItems, 20)), windowCut: clamp(num(C.windowCut, 0.3), 0, 1), reworkMaxRatio: Math.max(1, num(C.reworkMaxRatio, 1.25)),
       baseline: C.baseline === 'uncapped' ? 'uncapped' : 'wouldApply', rates: (Array.isArray(C.rates) ? C.rates : ['revise', 'reopen']).filter(x => x === 'revise' || x === 'reopen'),
       rollBackDutyModes: Array.isArray(C.dutyWhenModes) ? C.dutyWhenModes.map(String) : ['live'] } : null,
@@ -686,7 +696,95 @@ function evaluate(inp, an) {
     res.tierCaps = { mode: String(tc.mode || 'off'), baseline: ck.baseline, minItems: ck.minItems, windowCut: ck.windowCut, reworkMaxRatio: ck.reworkMaxRatio, rates: ck.rates, classes,
       verdict: rollBack.length ? 'roll back' : keep.length && keep.length === classes.length ? 'keep' : keep.length ? 'keep (some classes not enough data)' : 'not enough data', rollBack, keep };
   }
+  if (E.advisor) { const a = advisorEvaluation(inp, an, K, E.advisor, scoredOf); if (a) res.advisor = a; }
   return res;
+}
+/* advisorEvaluation (docs/RANKING.md §10, the middle-management plan's P4 bars): per department whose lead gives advice
+ * (departments.json advisor.mode live), over its members' scored items closed since advisor.since against the same
+ * department's items closed in as many days before it:
+ *   consultRate   the share of items with at least one consult (company/state/consults.jsonl, recorded-only ones aside)
+ *   cachedShare   the advise runs' input tokens read from cache (runs.jsonl cachedTokens / tokens; door consult wakes)
+ *   costPerItem   the cost per accepted item (the ranking's score.cost; advise runs are in the consulted items' cost)
+ *   oneShot       the one-shot rate before and after, with Wilson ranges, and the change in points
+ *   rework        extra runs + REVISE rounds per item before and after, and the share it fell
+ *   leadCalibration  the lead's grader drift (the ranking's graders)
+ *   verdict       keep | pause (with the bars that failed) | not enough data (fewer than minItems on a side, or minDays)
+ * Thresholds: this section of the ranking policy, each overridden by the department's advisor autoPause numbers. A
+ * department's entry carries `hash` (of everything else in it): the dispatcher pauses once per hash (lib/consult.js).
+ * No department with advice on: no advisor report at all (the evaluation file is unchanged). */
+function advisorEvaluation(inp, an, K, base, scoredOf) {
+  const deps = (inp.departments && Array.isArray(inp.departments.departments)) ? inp.departments.departments : [];
+  let DL = null; try { DL = require('./lib/departments'); } catch (_) { return null; }
+  const st = inp.deptSettings || DL.settings(inp.departments || {}, {});
+  const z = zOf(K.confidence), now = inp.now;
+  const live = deps.filter(d => d && d.lead && DL.advisorOf(d, st).mode === 'live').sort((a, b) => (String(a.id) < String(b.id) ? -1 : 1));
+  if (!live.length) return null;
+  const consulted = new Set((inp.consults || []).filter(r => r && r.op === 'open' && !r.shadow && r.item).map(r => String(r.dept) + '\n' + String(r.item)));
+  const metric = it => num(it.cost[K.scoreCost], 0);
+  const side = list => {
+    const n = list.length, succ = list.reduce((x, i) => x + i.oneShot, 0), [lo, hi] = wilsonBounds(succ, n, z);
+    return { items: n, oneShotRate: n ? rnd(succ / n, 4) : null, lower: rnd(lo, 4), upper: rnd(hi, 4), costPerItem: n ? rnd(list.reduce((x, i) => x + metric(i), 0) / n) : null,
+      reworkPerItem: n ? rnd(list.reduce((x, i) => x + i.extraRuns + i.reviseRounds, 0) / n, 4) : null };
+  };
+  const out = [];
+  for (const d of live) {
+    const a = DL.advisorOf(d, st), T = Object.assign({}, base, a.autoPause || {});
+    const dept = String(d.id), lead = String(d.lead), members = new Set(DL.members(d).filter(x => x !== lead));
+    const sinceMs = Date.parse(a.since || '') || null;
+    const entry = { dept, lead, since: a.since || null, paused: a.paused ? { by: a.paused.by, at: a.paused.at } : null, thresholds: sortKeys({ minItems: T.minItems, minDays: T.minDays, consultRate: T.consultRate, cachedShareMin: T.cachedShareMin, oneShotGainPoints: T.oneShotGainPoints, reworkCutShare: T.reworkCutShare }) };
+    if (!sinceMs) { Object.assign(entry, { verdict: 'not enough data', failed: [], reasons: ['the advice has no start date (advisor.since)'] }); entry.hash = bodyHash(entry); out.push(entry); continue; }
+    const days = Math.floor((now - sinceMs) / DAY);
+    const scored = an.items.filter(it => scoredOf(it) && members.has(String(it.seat)));
+    const after = scored.filter(it => it.closedAt >= sinceMs), before = scored.filter(it => it.closedAt < sinceMs && it.closedAt >= sinceMs - Math.max(DAY, now - sinceMs));
+    const A = side(after), Bf = side(before);
+    const consultRate = after.length ? rnd(after.filter(it => consulted.has(dept + '\n' + it.id)).length / after.length, 4) : null;
+    let tok = 0, cached = 0, adviseRuns = 0;
+    for (const w of inp.wakes || []) {
+      if (!w || w.door !== 'consult' || (Number(w.at) || 0) < sinceMs || String(w.seat) !== lead) continue;
+      const r = w.runId != null && an.runById ? an.runById.get(String(w.runId)) : null; if (!r) continue;
+      adviseRuns++; const t = Math.max(0, num(r.tokens, 0)); tok += t; cached += clamp(num(r.cachedTokens, 0), 0, t);
+    }
+    const cachedShare = tok ? rnd(cached / tok, 4) : null;
+    const oneShotPoints = A.oneShotRate != null && Bf.oneShotRate != null ? rnd(100 * (A.oneShotRate - Bf.oneShotRate), 2) : null;
+    const reworkCut = Bf.reworkPerItem ? rnd(1 - A.reworkPerItem / Bf.reworkPerItem, 4) : (Bf.reworkPerItem === 0 && A.reworkPerItem === 0 ? 0 : null);
+    const g = (an.body.graders || []).find(x => x.seat === lead) || null;
+    Object.assign(entry, { days, after: A, before: Bf, consultRate, cachedShare, adviseRuns, oneShotPoints, reworkCut, costUnit: K.scoreCost,
+      leadCalibration: g ? { verdicts: g.verdicts, approvalRate: g.approvalRate, hardOneShotRate: g.hardOneShotRate, drift: g.drift, flagged: g.flagged } : null });
+    const reasons = [], failed = [];
+    if (days < T.minDays) reasons.push('the advice has been on ' + days + ' of ' + T.minDays + ' days');
+    if (A.items < T.minItems) reasons.push('items since it started ' + A.items + ' of ' + T.minItems);
+    if (Bf.items < T.minItems) reasons.push('items before it started ' + Bf.items + ' of ' + T.minItems);
+    if (reasons.length) { Object.assign(entry, { verdict: 'not enough data', failed, reasons }); entry.hash = bodyHash(entry); out.push(entry); continue; }
+    const [lo, hi] = Array.isArray(T.consultRate) ? T.consultRate.map(Number) : [0, 1];
+    if (consultRate < lo || consultRate > hi) failed.push('consult rate ' + Math.round(100 * consultRate) + '% is outside ' + Math.round(100 * lo) + '-' + Math.round(100 * hi) + '%');
+    if (cachedShare != null && cachedShare < Number(T.cachedShareMin)) failed.push('advise runs read ' + Math.round(100 * cachedShare) + '% of their input from cache, under ' + Math.round(100 * Number(T.cachedShareMin)) + '%');
+    if (cachedShare == null) reasons.push('no advise run with token counts yet: the cache bar was not checked');
+    if (A.costPerItem > Bf.costPerItem + 1e-12) failed.push('cost per item rose from ' + Bf.costPerItem + ' to ' + A.costPerItem + ' (' + K.scoreCost + ')');
+    else if (!((oneShotPoints != null && oneShotPoints >= Number(T.oneShotGainPoints)) || (reworkCut != null && reworkCut >= Number(T.reworkCutShare))))
+      failed.push('one-shot moved ' + oneShotPoints + ' points (needs +' + T.oneShotGainPoints + ') and rework fell ' + (reworkCut == null ? '–' : Math.round(100 * reworkCut) + '%') + ' (needs ' + Math.round(100 * Number(T.reworkCutShare)) + '%)');
+    if (!failed.length) reasons.push('cost per item ' + A.costPerItem + ' <= ' + Bf.costPerItem + ', one-shot ' + (oneShotPoints >= 0 ? '+' : '') + oneShotPoints + ' points, rework ' + (reworkCut == null ? '–' : Math.round(100 * reworkCut) + '% lower') + ', consult rate ' + Math.round(100 * consultRate) + '%');
+    Object.assign(entry, { verdict: failed.length ? 'pause' : 'keep', failed, reasons });
+    entry.hash = bodyHash(entry);
+    out.push(entry);
+  }
+  return { departments: out };
+}
+function renderAdvisorMd(r) {
+  const pc = v => (v == null ? '–' : Math.round(1000 * v) / 10 + '%'), f = v => (v == null ? '–' : String(v));
+  const L = ['# Advisor evaluation: ' + r.dept, '',
+    'Written by `company/tools/model-rank.js` (docs/RANKING.md §10) for the lead ' + r.lead + ' of department ' + r.dept + ', advice on since ' + f(r.since) + (r.paused ? ' (paused by ' + r.paused.by + ' at ' + r.paused.at + ')' : '') + '. It compares the department\'s items closed since then with its items closed in as many days before. Regenerated when the numbers change; it routes nothing. Evaluation ' + r.hash + '.', ''];
+  if (r.after) {
+    L.push('| | Items | One-shot (range) | Cost/item (' + r.costUnit + ') | Rework/item |', '|---|---|---|---|---|');
+    for (const [k, s] of [['Before', r.before], ['Since', r.after]]) L.push('| ' + k + ' | ' + s.items + ' | ' + (s.items ? pc(s.oneShotRate) + ' (' + pc(s.lower) + '–' + pc(s.upper) + ')' : '–') + ' | ' + f(s.costPerItem) + ' | ' + f(s.reworkPerItem) + ' |');
+    L.push('', '- Consult rate: ' + pc(r.consultRate) + ' (band ' + r.thresholds.consultRate.map(x => Math.round(100 * x) + '%').join('–') + ')', '- Advise runs: ' + r.adviseRuns + ', cached share ' + pc(r.cachedShare) + ' (at least ' + pc(r.thresholds.cachedShareMin) + ')',
+      '- One-shot change: ' + f(r.oneShotPoints) + ' points (needs +' + r.thresholds.oneShotGainPoints + ' unless rework falls ' + pc(r.thresholds.reworkCutShare) + '); rework change: ' + (r.reworkCut == null ? '–' : pc(r.reworkCut) + ' lower'),
+      '- Lead calibration: ' + (r.leadCalibration ? 'approves ' + pc(r.leadCalibration.approvalRate) + ', hard one-shot ' + pc(r.leadCalibration.hardOneShotRate) + ' over ' + r.leadCalibration.verdicts + ' verdicts' + (r.leadCalibration.flagged ? ' (FLAGGED: drift ' + r.leadCalibration.drift + ' points)' : '') : 'no counted verdicts yet'), '');
+  }
+  L.push('## Verdict: ' + r.verdict, '');
+  for (const x of (r.failed || [])) L.push('- FAILED: ' + x);
+  for (const x of (r.reasons || [])) L.push('- ' + x);
+  if (r.verdict === 'pause') L.push('', 'The dispatcher pauses the lead\'s advice for this department once for this evaluation when advisor.autoPause.enabled is on; only the owner resumes it.');
+  return L.join('\n') + '\n';
 }
 /* the decision rule (ranking-policy.json trials): an arm wins when the LOWER bound of its one-shot interval is not below
    the best other arm's point estimate AND its cost per accepted item is lower (than every other arm, or than that best
@@ -736,9 +834,10 @@ const trialFile = id => (/^[A-Za-z0-9_.-]{1,64}$/.test(id) && !/^\.+$/.test(id) 
 // write the evaluation files that changed: routing-evaluation.json and trials/<id>.md (each compared with what is on disk)
 function writeEvaluation(root, ev, digest, dry) {
   const R = routingPaths(root), wrote = [];
-  if (!ev.trials && !ev.tierCaps) return wrote;
+  if (!ev.trials && !ev.tierCaps && !ev.advisor) return wrote;
   const want = [[R.evaluation, JSON.stringify(Object.assign({ hash: bodyHash(ev) }, sortKeys(ev)), null, 1) + '\n']];
   for (const t of ev.trials || []) want.push([path.join(R.trialsDir, trialFile(t.id)), renderTrialMd(t, digest)]);
+  for (const r of (ev.advisor && ev.advisor.departments) || []) if (/^[a-z][a-z0-9-]{1,31}$/.test(r.dept)) want.push([path.join(root, 'company', 'work', 'models', 'advisor-' + r.dept + '.md'), renderAdvisorMd(r)]);
   for (const [f, text] of want) { let cur = null; try { cur = fs.readFileSync(f, 'utf8'); } catch (_) {} if (cur !== text) { if (!dry) writeAtomic(f, text); wrote.push(path.relative(root, f)); } }
   return wrote;
 }
@@ -934,7 +1033,8 @@ function main() {
     const inp = load({ now }); if (!inp) { console.log('no ranking policy'); process.exit(0); }
     const ev = evaluate(inp);
     if (a.includes('--json')) { console.log(JSON.stringify(sortKeys(ev), null, 1)); process.exit(0); }
-    if (!ev.trials && !ev.tierCaps) { console.log('trial and tier-cap evaluation is off (no trials / tierCapEvaluation section in the ranking policy)'); process.exit(0); }
+    if (!ev.trials && !ev.tierCaps && !ev.advisor) { console.log('trial and tier-cap evaluation is off (no trials / tierCapEvaluation section in the ranking policy)'); process.exit(0); }
+    for (const r of (ev.advisor && ev.advisor.departments) || []) process.stdout.write(renderAdvisorMd(r) + '\n');
     for (const t of ev.trials || []) process.stdout.write(renderTrialMd(t, policyDigest(inp.policy)) + '\n');
     if (!(ev.trials || []).length) console.log('No trial defined or seen.\n');
     if (ev.tierCaps) { console.log('Tier caps (' + ev.tierCaps.mode + '): ' + ev.tierCaps.verdict); for (const c of ev.tierCaps.classes) console.log('  ' + c.class + ': ' + c.verdict + ' (capped ' + c.capped.items + ', baseline ' + c.baseline.items + '): ' + c.reasons.join('; ')); }
@@ -952,5 +1052,5 @@ function main() {
   process.exit(2);
 }
 
-module.exports = { rank, analyze, evaluate, evalKnobs, trialDecision, renderTrialMd, writeEvaluation, evaluationDuty, loadRouting, wilsonBounds, armKeyOf, load, loadPolicy, knobs, refresh, refreshDue, duty, decide, verifyChain, historyRow, fileText, renderMd, bodyHash, wilsonLower, zOf, prRefs, verdictsIn, runKind, runCost, priceOf, paths, sortKeys };
+module.exports = { rank, analyze, evaluate, advisorEvaluation, renderAdvisorMd, evalKnobs, trialDecision, renderTrialMd, writeEvaluation, evaluationDuty, loadRouting, wilsonBounds, armKeyOf, load, loadPolicy, knobs, refresh, refreshDue, duty, decide, verifyChain, historyRow, fileText, renderMd, bodyHash, wilsonLower, zOf, prRefs, verdictsIn, runKind, runCost, priceOf, paths, sortKeys };
 if (require.main === module) main();

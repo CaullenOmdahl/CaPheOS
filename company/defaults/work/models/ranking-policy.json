@@ -94,6 +94,16 @@
  },
  "_tierCapEvaluation": "whether executor tier caps pay (docs/RANKING.md §10, the middle-management plan's P3 acceptance), per task class. Capped = scored items whose wake had a tier-cap route applied (route.source tierCap, applied true). baseline 'wouldApply': items whose wake had a tier-cap route recorded but not applied (shadow: the same work, uncapped); 'uncapped': every scored item of the class that no tier-cap route touched. Verdict per class: keep when the estimated claude window tokens per accepted item (cost.window) fell by at least windowCut (0.3 = 30%) AND each rate in rates (revise: share of items with a counted REVISE; reopen: share reopened) is within reworkMaxRatio (1.25x) of the baseline; roll back otherwise; not enough data while either side has fewer than minItems items. dutyWhenModes: the house-ranking duty is due for a roll back while routing-policy.json tierCaps.mode is one of these. Delete this section to switch the evaluation off",
 
+ "advisorEvaluation": {
+  "minItems": 20,
+  "minDays": 14,
+  "consultRate": [0.10, 0.40],
+  "cachedShareMin": 0.85,
+  "oneShotGainPoints": 10,
+  "reworkCutShare": 0.20
+ },
+ "_advisorEvaluation": "whether a department lead's advice pays (docs/RANKING.md §10, the middle-management plan's P4 bars), per department whose advisor mode is live (company/departments.json): its members' scored items closed since advisor.since against its items closed in as many days before. keep when the consult rate (share of items with a consult) is inside consultRate, the advise runs read at least cachedShareMin of their input from cache (checked once advise runs have token counts), and the cost per accepted item (score.cost) did not rise while the one-shot rate rose at least oneShotGainPoints points OR rework (extra runs + REVISE rounds per item) fell at least reworkCutShare; pause otherwise (the dispatcher pauses the advice once per evaluation when the department's advisor.autoPause.enabled is on; only the owner resumes); not enough data under minItems items on either side or minDays days. A department's advisor.autoPause numbers win over these. Writes company/work/models/advisor-<dept>.md and the advisor part of routing-evaluation.json. Delete this section to switch the report off",
+
  "readBounds": { "runsMaxBytes": 67108864, "handoffMaxBytes": 8388608, "ledgerMaxBytes": 16777216, "correctionsMaxBytes": 4194304, "evidenceMaxFiles": 2000 },
  "_readBounds": "every input is read from its end, inside these bounds (docs/RETENTION.md)"
 }
