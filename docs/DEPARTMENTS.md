@@ -85,6 +85,13 @@ node company/tools/departments.js brief <id> --file <path> --by <lead>
 node company/tools/departments.js digest <id> --file <path> --by <lead>
 node company/tools/departments.js note <id> --text ".." --by <lead>
 node company/tools/departments.js show <id> --json --brief
+# narrow fan-out (§6)
+node company/tools/departments.js delegation <id> off|shadow|live --by owner
+node company/tools/departments.js delegation <id> workers <seat,seat> --by <CEO|owner>      # governance org for the CEO
+node company/tools/departments.js delegation <id> withdraw --by dispatcher --auto --why ".." [--hash h]   # or --by owner
+node company/tools/departments.js delegation <id> resume --by owner
+# the one writer of routes (the class rules first, for everyone)
+node company/tools/departments.js set-route <id> <class> <provider/model[@effort]|none> --by <owner|CEO|routing-proposal> [--proposal <rp-id>]
 ```
 
 A change to the structure is a **governance decision** in category `org` (`company/state/governance.json`; the
@@ -239,12 +246,73 @@ Not part of this: the premerge verdict as a gate; a lead for more than one depar
 changing routes or chains (it writes a proposal line in DECISIONS.md); live calls between runs (consults are file
 handoffs); replaying earlier conversation into the lead; any change to how a member's own loop is scheduled.
 
-## 6. What is not here yet
+## 6. Splitting big jobs (narrow fan-out)
 
-- Narrow delegation (a lead splitting one item between workers) and weekly routing proposals: the plan's P5, after this.
+The middle-management plan's P5. A lead may hand the pieces of ONE item to people on its own team, and only when the item
+really splits: 3 or more pieces (`delegation.minPieces`), each touching its own files and each with a written acceptance
+check. Everything else stays one seat's work.
+
+**The data.** Per department, `delegation` (absent = `delegationDefaults`, mode `off`):
+
+```json
+"delegation": { "mode": "off|shadow|live", "workers": ["<seat>"], "maxWorkers": 3, "workerTimeoutMin": 20, "minPieces": 3,
+                "prefer": "lanes", "since": null, "by": null, "withdrawn": null }
+```
+
+`workers` is the allowlist; a seat outside the lead's reports in `loops.json` (its manager chain) is refused by
+`delegation <id> workers` and reported by `check` (`DELEGATE_OUTSIDE_SUBTREE`). Splitting on with no lead or the CEO as
+lead is `DELEGATE_NO_LEAD`; a malformed key is `BAD_DELEGATION`. `withdrawn` is `null` or `{at, by: auto|owner, why,
+evaluationHash}`; while set, the department acts as recording only.
+
+**Splitting.** The lead writes the pieces in two ways, and both are recorded as a `split` row in the consult ledger
+(`company/state/consults.jsonl`):
+
+- answering a member's consult with `consult.js answer <cs-id> --verdict SPLIT --check ".." --piece "<title> — files: a, b —
+  check: <check>" ... [--fanout lanes|dispatch] --by <lead>`;
+- on an item in its own inbox: `consult.js split <item id> --piece ".." ... [--fanout lanes|dispatch] --by <lead>`.
+
+`lib/consult.js splitOk` checks the pieces (pure): at least `minPieces`, each with `files:` and `check:`, no file (or
+folder above it) in two pieces. While splitting is live the item's block gets
+
+```markdown
+**Pieces:**
+1. <title> — files: api/a.ts, api/b.ts — check: <acceptance check>
+**Fan-out:** lanes | dispatch
+```
+
+While it is recording only (`shadow`, or withdrawn), the split is recorded (`WOULD DELEGATE` in the dispatch log), the
+item is not touched and stays with its holder. Splitting off refuses SPLIT. SPLIT neither passes nor fails in the house
+ranking. Only a recorded split is delegated: a Pieces list someone wrote by hand, or one edited after the split, is not
+(`splitCandidates` compares the recorded hash).
+
+**Fan-out: lanes (preferred).** `lanes.js` offers each piece to a free worker on the lead's allowlist as its own lane
+(one piece per lane, at most `maxWorkers` at once): the worker's own agent and model, only the piece's files, its own
+time limit (`workerTimeoutMin`), the same money, tempo, class-rule and pacer checks as any lane, Sprint on or not. The
+item gets `**Piece n lane:**` while it runs and `**Piece n result (...):**` after; a piece never closes the item.
+
+**Fan-out: dispatch.** For a lead whose split says `dispatch`, `lib/delegate-allow.js` lists that lead, that item and its
+free workers in `company/state/delegate-allow.json` every tick, and StarNet patch 0018 gives the lead's routine run
+`team.dispatch` only then: listed workers only, at most `maxWorkers`, each worker on its own clock, the item id on each
+child run. A lead is listed only when the money check and the pacer are open for every listed worker's provider, and a
+code item never lists a worker on the MiniMax plan.
+
+**Withdrawn when it does not pay.** `model-rank.js fanoutEvaluation` compares the department's delegated items with its
+single-seat items of the same class, by the cost per accepted item (a child run's cost is its lead's family's). Over at
+least 10 delegated items, a cost that is not lower is `withdraw`: the dispatcher runs `delegation <id> withdraw --auto`
+once per evaluation hash and tells the owner in one line ("The crew stopped splitting Engineering's bigger jobs between
+several people: doing them in one go was cheaper."). Only the owner resumes.
+
+**Defaults.** Every company: absent (`off`). The sandbox: `eng` in recording only, workers set by the CEO, for one week;
+then the owner may switch it on from the department card ("Splitting big jobs: Off · Recording only · On").
+
+Not part of this: more than one item at a time per lead, nested delegation (workers delegating), delegation across
+departments, a lead changing its own department's routes.
+
+## 7. What is not here yet
 
 - Hiring into a department. `hire.js` seats a new hire in no department, and the people function or the owner adds
   them with `add-member`.
-- Editing `routes`, `consult`, `advisorDefaults` or `limits` with a command or from the console. For now they are config in the file.
+- Editing `consult`, `advisorDefaults`, `delegationDefaults` or `limits` with a command or from the console. For now they are config in the file
+  (`routes` have one writer, `departments.js set-route`, §6 and docs/ROUTING.md §7).
   A hand edit is reported by locked-watch, and the owner takes it as the new version under Settings › System › change
   flags (`locked-watch.js accept company/departments.json --by owner --why "..."`).

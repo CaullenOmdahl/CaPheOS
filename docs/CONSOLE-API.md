@@ -331,8 +331,12 @@ Drawn in Crew › People under "Departments" once the company has one.
 - `POST /api/departments/<id>/advisor` `{ mode: off|shadow|live }` | `{ pause: true, why? }` | `{ resume: true }` →
   `departments.js advisor <id> <mode|pause|resume> --by <owner>`. On without a lead, or with the CEO as lead, is refused
   (400).
+- `POST /api/departments/<id>/delegation` `{ mode: off|shadow|live }` | `{ resume: true }` → `departments.js delegation
+  <id> <mode|resume> --by <owner>` (splitting big jobs, docs/DEPARTMENTS.md §6; who the workers are is the CEO's or the
+  owner's command, not the console's).
 - Every list row of `GET /api/departments` also carries `advisor: { mode, effective, paused, since, by, batch,
-  autoPause }` and `consultLimits`.
+  autoPause }`, `delegation: { mode, effective, workers, maxWorkers, workerTimeoutMin, minPieces, prefer, since, by,
+  withdrawn }` and `consultLimits`.
 
 ## Routing (console/routing.js)
 
@@ -344,6 +348,13 @@ Settings › Models › Routing and trials.
 - `POST /api/routing/mode` `{ mode, why? }` → `mode <off|shadow|live> --by <owner>`.
 - `POST /api/routing/tiercaps` `{ mode, why? }` → `tiercaps <off|shadow|live> --by <owner>`.
 - `POST /api/routing/trials/<id>/<start|pause|resume|stop>` `{ why? }` → `trial <op> <id> --by <owner>`.
+- `GET /api/routing/proposals` → `routing.js proposals status --json`: `{ mode, policy, weeks: [{ week, suggestions: [{ id,
+  dept, deptName, class, from, to, state, why, vetoUntil, evidence }] }], waiting }` (the weekly suggestions, docs/ROUTING.md §7).
+- `POST /api/routing/proposals/mode` `{ mode, why? }` → `proposals mode <off|shadow|live> --by <owner>`.
+- A weekly suggestion's veto is its card on Today: the card's effect `{ routeVeto: { proposalId } }` (filed only by
+  `routing.js`) is applied by the answer handler on "Keep it as it is" as `routing.js proposals veto <id> --by <owner>`;
+  "Fine, go ahead" records the answer and changes nothing now. A question row of a veto card carries `veto: { until,
+  defaultLabel, vetoLabel }`.
   A refused change (a wrong transition, an unknown trial, a clashing running trial) is 400.
 
 ## Station proxy

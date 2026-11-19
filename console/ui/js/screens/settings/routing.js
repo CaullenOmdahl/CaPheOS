@@ -8,7 +8,7 @@
 import { h, fill, Button, Tag, errLine, humanError, Setting, Details, empty, when as whenAt } from '../../ui.js';
 import { personName } from '../../plain.js';
 import { api, post } from '../../api.js';
-import { heldLine, startBody, trialTitle, progressLine, waitingLine, technicalLines } from './routing-explain.js';
+import { heldLine, startBody, trialTitle, progressLine, waitingLine, technicalLines, SUGGEST_SAY, suggestionLine, weekTitle, suggestionTech } from './routing-explain.js';
 
 // the tool's modes off | shadow | live, said plainly
 const MODE_SAY = {
@@ -26,10 +26,11 @@ const TECH = 'Technical details (for the crew)';
 const tech = (...lines) => Details(TECH, h('ul', { class: 'plain stack-4 caption mono-s routing-tech' }, lines.flat().filter(Boolean).map(l => h('li', null, l))));
 
 export function routingSection(host, app) {
-  let data = null, msg = null, busy = false;
+  let data = null, msg = null, busy = false, sugg = null;
   const tz = app && app.company && app.company.timezone;
   async function load() {
     try { data = await api('/routing'); } catch (e) { fill(host, errLine(e, 'Cheaper models')); return; }
+    try { sugg = await api('/routing/proposals'); } catch (_) { sugg = null; }
     draw();
   }
   async function act(path, body, what) {
@@ -83,6 +84,12 @@ export function routingSection(host, app) {
       data.error ? h('p', { class: 'err-line', role: 'status' }, 'These settings cannot be read right now, so nothing can be changed until the crew puts them right.') : null,
       Setting({ id: 'routing-mode', title: 'Cheaper models where quality holds', value: m[0], valueTone: m[1], what: m[2], flip: 'Each team\'s preferred model for each kind of work, and the model trials below.', control: modeControl('mode', data.mode, 'Cheaper models', MODE_SAY) }),
       Setting({ id: 'routing-tiercaps', title: 'Keep routine work on lighter models', value: c[0], valueTone: c[1], what: c[2], flip: 'Saves money on everyday work; leads and the CEO are never moved.', control: modeControl('tiercaps', tc.mode, 'Routine work on lighter models', CAPS_SAY) }),
+      sugg ? Setting({ id: 'routing-suggestions', title: 'Weekly suggestions', value: (SUGGEST_SAY[sugg.mode] || SUGGEST_SAY.off)[0], valueTone: (SUGGEST_SAY[sugg.mode] || SUGGEST_SAY.off)[1], what: (SUGGEST_SAY[sugg.mode] || SUGGEST_SAY.off)[2],
+        flip: 'A change you do not stop goes ahead after a few days; the crew keeps measuring it.', control: modeControl('proposals/mode', sugg.mode, 'Weekly suggestions', SUGGEST_SAY) }) : null,
+      sugg && (sugg.weeks || []).length ? Details('The last ' + Math.min(8, sugg.weeks.length) + (sugg.weeks.length === 1 ? ' week' : ' weeks') + ' of suggestions',
+        h('div', { class: 'stack-8 routing-suggestions' }, sugg.weeks.slice(0, 8).map(w => h('div', { class: 'stack-4' }, h('p', { class: 'body-s' }, weekTitle(w.week, (w.suggestions || []).length)),
+          (w.suggestions || []).length ? h('ul', { class: 'plain stack-4' }, w.suggestions.map(x => h('li', { class: 'caption' }, suggestionLine(x)))) : null)),
+          tech(sugg.weeks.slice(0, 8).flatMap(w => (w.suggestions || []).map(x => w.week + ' ' + suggestionTech(x)))))) : null,
       h('h3', { class: 'h4' }, 'Model trials'),
       trials.length ? h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:16px' }, trials.map(trialCard))
         : empty('No model trials. The crew sets one up when it wants to compare models on real work; you start it here.'),

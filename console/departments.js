@@ -12,6 +12,10 @@
  *                                               brief's text (departments.js show <id> --json --brief)
  *   POST /api/departments/<id>/advisor { mode: off|shadow|live } | { pause: true, why? } | { resume: true }
  *                                               departments.js advisor <id> <mode|pause|resume> --by <owner>
+ *   POST /api/departments/<id>/delegation { mode: off|shadow|live } | { resume: true }
+ *                                               departments.js delegation <id> <mode|resume> --by <owner> (splitting big
+ *                                               jobs, docs/DEPARTMENTS.md §6; who the workers are is the CEO's or the
+ *                                               owner's shell, departments.js delegation <id> workers)
  *
  * Every write runs the same tool the owner would run in a shell, with --by <owner>; the tool accepts the console as the
  * owner (company/tools/lib/owner.js), refuses an inconsistent change for the owner too, and records it (provenance,
@@ -49,6 +53,14 @@ function mount(route, d) {
     const mode = String(b.mode || '');
     if (!['off', 'shadow', 'live'].includes(mode)) bad('mode must be off, shadow or live (or pause / resume)');
     return runApi('departments.js', ['advisor', m[1], mode, '--by', owner()], { timeout: 30000 });
+  });
+  route('POST', /^\/api\/departments\/([a-z][a-z0-9-]{1,31})\/delegation$/, (m, q, b) => {
+    if (!ID.test(m[1])) bad('bad department id');
+    b = b || {};
+    if (b.resume === true) return runApi('departments.js', ['delegation', m[1], 'resume', '--by', owner()], { timeout: 30000 });
+    const mode = String(b.mode || '');
+    if (!['off', 'shadow', 'live'].includes(mode)) bad('mode must be off, shadow or live (or resume)');
+    return runApi('departments.js', ['delegation', m[1], mode, '--by', owner()], { timeout: 30000 });
   });
 }
 module.exports = { mount };

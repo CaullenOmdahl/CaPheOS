@@ -412,7 +412,10 @@ async function apiRoute(req, res, p, q) {
   // consult.js status (docs/DEPARTMENTS.md §5)
   if (!S.departments) S.departments = { exists: true, unassigned: [{ id: 'agent', name: 'Founder', isCeo: true }, { id: 'people1', name: 'Mira', isCeo: false }], drift: { ok: true, mismatches: [], notes: [] }, proposals: [],
     departments: [{ id: 'eng', name: 'Engineering', lead: 'tools1', leadName: 'Teo', defaultClass: 'code', members: [{ id: 'tools1', name: 'Teo', isLead: true, onCrew: true }, { id: 'cand-tools-backtest-engineer-1-n', name: 'Nadia Farrell', isLead: false, onCrew: true }],
-      advisor: { mode: 'live', effective: 'live', paused: null, since: ago(3 * 86400e3 / 60e3), by: 'owner' }, consultLimits: { maxPerDay: 12 } }] };
+      advisor: { mode: 'live', effective: 'live', paused: null, since: ago(3 * 86400e3 / 60e3), by: 'owner' }, consultLimits: { maxPerDay: 12 },
+      delegation: { mode: 'shadow', effective: 'shadow', workers: ['cand-tools-backtest-engineer-1-n'], maxWorkers: 3, workerTimeoutMin: 20, minPieces: 3, prefer: 'lanes', since: null, by: 'owner', withdrawn: null } }] };
+  const ddm = p.match(/^\/api\/departments\/([a-z][a-z0-9-]{1,31})\/delegation$/);
+  if (M === 'POST' && ddm) { const d = S.departments.departments.find(x => x.id === ddm[1]); if (!d) return J(res, 400, { ok: false, error: 'no department' }); const g = d.delegation; if (B.resume) g.withdrawn = null; else if (['off', 'shadow', 'live'].includes(B.mode)) { g.mode = B.mode; g.effective = B.mode; } else return J(res, 400, { ok: false, error: 'mode must be off, shadow or live' }); emit('crew'); return ok({ changed: true, summary: 'splitting ' + g.mode, delegation: g }); }
   if (M === 'GET' && p === '/api/departments') return ok(S.departments);
   const dlm = p.match(/^\/api\/departments\/([a-z][a-z0-9-]{1,31})\/(lead-desk|advisor)$/);
   if (dlm) {
@@ -432,6 +435,12 @@ async function apiRoute(req, res, p, q) {
       heldGuard: { providers: ['claude-cli'], subscriptions: ['claude-cli'], missing: [] },
       arms: [{ index: 0, provider: 'claude-cli', model: 'haiku', effort: 'low', items: 1, wakes: 1, shadowItems: 0, shadowWakes: 0 }, { index: 1, provider: 'claude-cli', model: 'claude-sonnet-5-5', effort: 'high', items: 0, wakes: 0, shadowItems: 1, shadowWakes: 1 }, { index: 2, provider: 'claude-cli', model: 'claude-opus-5-5', effort: 'medium', items: 0, wakes: 0, shadowItems: 0, shadowWakes: 0 }] }] };
   if (M === 'GET' && p === '/api/routing') return ok(S.routing);
+  // the weekly suggestions (Settings › Models › Routing › Weekly suggestions): routing.js proposals status --json
+  if (!S.suggest) S.suggest = { ok: true, mode: 'live', policy: { weekday: 1, hourLocal: 9, vetoDays: 3, maxPerWeek: 3 }, waiting: [],
+    weeks: [{ week: '2026-W47', suggestions: [{ id: 'rp-0a1b2c3d4e5f', dept: 'eng', deptName: 'Engineering', class: 'code', from: { provider: 'claude-cli', model: 'claude-opus-5-5', effort: 'medium' }, to: { provider: 'claude-cli', model: 'claude-sonnet-5-5', effort: 'medium' }, state: 'applied', why: null }] },
+      { week: '2026-W46', suggestions: [{ id: 'rp-9f8e7d6c5b4a', dept: 'eng', deptName: 'Engineering', class: 'review', from: { provider: 'claude-cli', model: 'claude-sonnet-5-5' }, to: { provider: 'deepseek', model: 'deepseek-flash' }, state: 'vetoed', why: null }] }, { week: '2026-W45', suggestions: [] }] };
+  if (M === 'GET' && p === '/api/routing/proposals') return ok(S.suggest);
+  if (M === 'POST' && p === '/api/routing/proposals/mode') { if (!['off', 'shadow', 'live'].includes(B.mode)) return J(res, 400, { ok: false, error: 'mode is one of off, shadow, live' }); S.suggest.mode = B.mode; emit('routing'); return ok({ changed: true, summary: 'weekly suggestions -> ' + B.mode }); }
   const rtm = p.match(/^\/api\/routing\/(mode|tiercaps)$/), rtt = p.match(/^\/api\/routing\/trials\/([a-z][a-z0-9-]{1,39})\/(start|pause|resume|stop)$/);
   if (M === 'POST' && rtm) { if (!['off', 'shadow', 'live'].includes(B.mode)) return J(res, 400, { ok: false, error: 'mode is one of off, shadow, live' }); if (rtm[1] === 'mode') S.routing.mode = B.mode; else S.routing.tierCaps.mode = B.mode; S.routing.log.unshift({ at: Date.now(), op: rtm[1], to: B.mode, by: 'owner' }); emit('routing'); return ok({ changed: true, summary: rtm[1] + ' -> ' + B.mode }); }
   if (M === 'POST' && rtt) { const t = S.routing.trials.find(x => x.id === rtt[1]); if (!t) return J(res, 400, { ok: false, error: 'no trial' }); t.status = { start: 'running', pause: 'paused', resume: 'running', stop: 'done' }[rtt[2]]; S.routing.log.unshift({ at: Date.now(), op: 'trial-' + rtt[2], trial: t.id, to: t.status, by: 'owner' }); emit('routing'); return ok({ changed: true, summary: rtt[2] + ' trial ' + t.id }); }

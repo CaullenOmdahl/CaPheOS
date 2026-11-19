@@ -10,6 +10,10 @@
  *   POST /api/routing/mode       { mode, why? }         routing.js mode <off|shadow|live> --by <owner>
  *   POST /api/routing/tiercaps   { mode, why? }         routing.js tiercaps <off|shadow|live> --by <owner>
  *   POST /api/routing/trials/<id>/<start|pause|resume|stop>  { why? }   routing.js trial <op> <id> --by <owner>
+ *   GET  /api/routing/proposals                         routing.js proposals status --json (the weekly suggestions: the
+ *                                                       mode, the last 8 weeks and what happened to each)
+ *   POST /api/routing/proposals/mode  { mode, why? }    routing.js proposals mode <off|shadow|live> --by <owner>
+ * (A weekly suggestion's veto is the owner's card on Today: console/owner-needs.js applies its routeVeto effect.)
  *
  * Every write runs the same tool the owner would run in a shell, with --by <owner>; the tool accepts the console as the
  * owner (company/tools/lib/owner.js), checks the change and records it (provenance, decisions.md, routing-log.jsonl).
@@ -32,6 +36,8 @@ function mount(route, d) {
   route('GET', /^\/api\/routing$/, () => runApi('routing.js', ['status', '--json'], { timeout: 20000 }));
   route('POST', /^\/api\/routing\/mode$/, (m, q, b) => runApi('routing.js', ['mode', modeArg(b), '--by', owner()].concat(whyArgs(b)), { timeout: 30000 }));
   route('POST', /^\/api\/routing\/tiercaps$/, (m, q, b) => runApi('routing.js', ['tiercaps', modeArg(b), '--by', owner()].concat(whyArgs(b)), { timeout: 30000 }));
+  route('GET', /^\/api\/routing\/proposals$/, () => runApi('routing.js', ['proposals', 'status', '--json'], { timeout: 20000 }));
+  route('POST', /^\/api\/routing\/proposals\/mode$/, (m, q, b) => runApi('routing.js', ['proposals', 'mode', modeArg(b), '--by', owner()].concat(whyArgs(b)), { timeout: 30000 }));
   route('POST', new RegExp('^/api/routing/trials/' + TRIAL + '/(start|pause|resume|stop)$'), (m, q, b) =>
     runApi('routing.js', ['trial', m[2], m[1], '--by', owner()].concat(whyArgs(b)), { timeout: 30000 }));
 }

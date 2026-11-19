@@ -56,3 +56,25 @@ export function startBody(t, where, shadow) {
   return 'Some of the ' + (CLASS_SAY[t && t.class] || '') + ' work in ' + (where || 'its part of the company') + ' is shared out evenly between the ' + (NUM[n] || n) + ' models being compared, so the crew can see which does it best for the money.' +
     (shadow ? ' Cheaper models are set to watching only, so nothing changes until you switch them on.' : '') + ' ' + heldLine(t).replace(/^Pauses itself/, 'It pauses itself').replace(/^Never pauses/, 'It never pauses');
 }
+
+// Weekly suggestions (routing.js proposals, docs/ROUTING.md "Weekly suggestions"): the switch and what happened to each
+// suggestion, in plain words. The provider and model ids stay under "Technical details (for the crew)" (suggestionTech).
+export const SUGGEST_SAY = {
+  off: ['Off', 'neutral', 'The crew does not suggest changes to which setup does each kind of work.'],
+  shadow: ['Recording only', 'warning', 'Each week the crew notes which setup it would suggest for each kind of work, and changes nothing.'],
+  live: ['On', 'online', 'Each week the crew may suggest a cheaper or better setup for one kind of work. You get a card; it goes ahead unless you keep things as they are.'],
+};
+const STATE_SAY = { applied: 'it went ahead', vetoed: 'you kept it as it was', skipped: 'not suggested', 'waiting for the veto window': 'waiting: it goes ahead unless you keep it as it is', 'waiting for the CEO': 'waiting for the CEO first', 'answered by the CEO': 'the CEO answered; your card follows' };
+const SKIP_SAY = { 'mode shadow': 'recording only', 'tier step': 'too big a jump at once', 'ceo declined': 'the CEO said no', superseded: 'replaced by a newer look', 'route changed': 'the setup changed in the meantime', 'class rules': 'that kind of work may not run there', 'not enough items': 'not enough finished jobs yet', 'one move per department and class a week': 'one change a week is enough', 'over the weekly limit': 'over this week\'s limit' };
+// "Engineering's coding work: it went ahead."
+export function suggestionLine(x) {
+  const what = (x.deptName || 'One team') + '\'s ' + (CLASS_SAY[x.class] || 'other') + ' work';
+  const st = STATE_SAY[x.state] || 'noted';
+  return what + ': ' + st + (x.state === 'skipped' && SKIP_SAY[x.why] ? ' (' + SKIP_SAY[x.why] + ')' : '') + '.';
+}
+export const weekTitle = (w, n) => 'Week ' + String(w || '').replace(/^\d{4}-W0?/, '') + ': ' + (n ? n + (n === 1 ? ' suggestion' : ' suggestions') : 'nothing to suggest');
+export const suggestionTech = x => (x.id || '?') + ' ' + (x.dept || '?') + '/' + (x.class || '?') + ': ' + (x.from ? x.from.provider + '/' + x.from.model + (x.from.effort ? '@' + x.from.effort : '') : '?') + ' -> ' + (x.to ? x.to.provider + '/' + x.to.model + (x.to.effort ? '@' + x.to.effort : '') : '?') + ' · ' + x.state + (x.why ? ' (' + x.why + ')' : '');
+export function suggestionSamples() {
+  const base = { deptName: 'Engineering', class: 'code' };
+  return Object.values(SUGGEST_SAY).flatMap(x => [x[0], x[2]]).concat(Object.keys(STATE_SAY).map(state => suggestionLine(Object.assign({ state }, base))), Object.keys(SKIP_SAY).map(why => suggestionLine(Object.assign({ state: 'skipped', why }, base))), [weekTitle('2026-W48', 2), weekTitle('2026-W07', 1), weekTitle('2026-W12', 0)]);
+}

@@ -236,3 +236,53 @@ the wake's `wakes.jsonl` row, which is what the trial counts and `model-rank.js`
 back. `company/state/routing-state.json` (the trials' hold state) is one small file rewritten whole.
 
 `company/tools/lib/routing.js` is a protected tool (locked-watch.js class F, area tool).
+
+## 7. Weekly suggestions
+
+The middle-management plan's P5: once a week the house ranking's routing proposals become owner cards that apply unless
+the owner stops them. `company/tools/routing.js proposals` (policy key `proposals` in `routing-policy.json`):
+
+| Key | Default | What |
+|---|---|---|
+| `mode` | `shadow` | off: nothing. shadow: each suggestion is recorded (kind `skip`, why `mode shadow`), no card, nothing applied. live: one veto card per suggestion |
+| `weekday`, `hourLocal` | 1, 9 | when the week's look happens (company time), at most once per ISO week |
+| `vetoDays` | 3 | how long the owner has to keep things as they are |
+| `maxPerWeek`, `maxTierStep` | 3, 1 | suggestions per week; the most tiers one move jumps (light, standard, heavy, top in `model-policy.json`; a model with no tier reads as light) |
+| `topTierNeedsCeo` | `claude-opus-5-5`, `fable` | a move onto such a model asks the CEO before the owner |
+| `minItems` | 20 | the suggested setup's items |
+
+**The look.** The hourly tick (the dispatcher runs `routing.js proposals tick` in its own process when `proposalsDue()`)
+takes the open `kind: proposal` rows `model-rank.js` wrote that are still in today's ranking, best gain first, and skips
+any whose route changed, that the class rules deny (code is never on the MiniMax plan), that jump too many tiers or have
+too few items, keeping one per department and class and at most `maxPerWeek`.
+
+**The card.** In live mode each suggestion becomes one owner card (`lib/owner-card.js` veto card, category `models`,
+filed whatever the governance level for models: the owner sees every routing move):
+
+> Each week the crew checks which setup does each kind of work best for the money. This week they want Engineering's
+> coding work on a cheaper setup that did just as well on the last 40 jobs.
+> If you do nothing, it changes on Thursday and the crew keeps measuring; if you keep it as it is, nothing changes.
+
+Buttons: **Fine, go ahead** (the default, named first: it records the answer and changes nothing now) and **Keep it as it
+is** (the veto: its effect `{routeVeto: {proposalId}}`, filed only by `routing.js`, runs `routing.js proposals veto <id>
+--by owner`). The card never expires to a deny. The pairs, the cells' numbers and the id are in its technical fold.
+
+**The CEO first for the top tier.** A move onto a `topTierNeedsCeo` model files one handoff in the CEO's inbox (kind
+`ceo-ask`); only `routing.js proposals ceo <id> yes|no --by <CEO>` answers it (seat-checked like every crew `--by`; the
+owner card follows a yes; a no records skip `ceo declined`). An ask the CEO did not answer by the next week's look is
+`superseded`. (approvals.js records are the owner's Needs-you cards and refuse crew answers from the command line, so
+the CEO's step is this one command instead.)
+
+**Applying.** At the veto deadline with no veto, the tick runs `departments.js set-route <dept> <class> <to> --by
+routing-proposal --proposal <id>` (accepted only outside an agent's run, for an offered suggestion whose window passed
+unvetoed, whose owner card really was filed), records kind `apply` (with the departments file's digest) and a
+`proposal-apply` routing-log row, writes the decisions.md line, and withdraws the card as answered by default. The new
+route then follows the routing `mode` (shadow until the owner switches routing live). A route that changed in the
+meantime is skipped (`route changed`).
+
+**Where to see it.** `routing.js proposals status [--json]`; Settings › Models › Routing › Weekly suggestions (Off ·
+Recording only · On, and the last 8 weeks with what happened to each). Rows (`company/work/models/routing-proposals.jsonl`,
+appended by `routing.js` with provenance): `offer`, `ceo-ask`, `ceo-answer`, `veto`, `apply`, `skip`, `week`.
+
+Not part of this: applying a suggestion straight to live routing, suggestions that change tier caps, trials or class
+rules, and a lead changing its own department's routes. Tests: `company/tools/tests/routing-proposals.test.js`.

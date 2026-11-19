@@ -26,11 +26,29 @@ export function pausedLine(paused, lead, dept) {
   return 'You paused ' + lead + '\'s advice for ' + dept + '. You can turn it back on here.';
 }
 export const noBriefLine = () => 'The lead has not written what the team is working on yet.';
+// splitting big jobs (departments.js delegation, docs/DEPARTMENTS.md §6): off | shadow | live, said plainly
+export const SPLIT_LABEL = 'Splitting big jobs';
+export const SPLIT_SAY = { off: ['Off', 'neutral'], shadow: ['Recording only', 'warning'], live: ['On', 'online'] };
+export const splitLine = (lead, n) => lead + ' can hand parts of a big job to up to ' + (Number(n) || 0) + (Number(n) === 1 ? ' person' : ' people') + ' on their team.';
+export const splitNobodyLine = lead => 'Nobody on ' + lead + '\'s team is picked to take parts of a big job yet; the CEO picks them.';
+export const splitRecordingLine = lead => 'Recording only: the crew notes when ' + lead + ' would split a big job, and everyone keeps their own work.';
+export const splitOnTitle = lead => 'Let ' + lead + ' split big jobs?';
+export const splitOnConfirm = lead => lead + ' can hand separate parts of one big job to people on the team, each with its own time limit. The crew checks whether it costs less than doing the job in one go, and stops it if not.';
+export function splitWithdrawnLine(w, dept) {
+  if (!w) return '';
+  const d = String(dept || 'this team').replace(/\s+department$/i, '');
+  if (w.by === 'auto') return 'The crew stopped splitting ' + d + '\'s bigger jobs between several people: doing them in one go was cheaper. You can turn it back on here.';
+  return 'You stopped splitting ' + d + '\'s bigger jobs. You can turn it back on here.';
+}
+export const splitResumeTitle = () => 'Start splitting big jobs again?';
+export const splitResumeConfirm = () => 'The crew will measure it again from today.';
 export const savedLine = what => what + '.';
 // every fixed line the screen can show, with sample names, for the plain-words test
 export function samples() {
   const L = 'Kwame', D = 'Engineering';
   return [SWITCH_LABEL, BRIEF_TITLE, ADVICE_SAY.off[2], leadLine(L), recordingLine(L), onConfirm(L), onTitle(L), pauseTitle(L), pauseConfirm(), resumeTitle(), resumeConfirm(),
     askedLine(4, 12), lastAdviceLine('yesterday'), lastAdviceLine(null), pausedLine({ by: 'auto' }, L, D), pausedLine({ by: 'owner' }, L, D), noBriefLine(),
-    ...Object.values(ADVICE_SAY).map(x => x[0])];
+    ...Object.values(ADVICE_SAY).map(x => x[0]),
+    SPLIT_LABEL, splitLine(L, 3), splitLine(L, 1), splitNobodyLine(L), splitRecordingLine(L), splitOnTitle(L), splitOnConfirm(L), splitWithdrawnLine({ by: 'auto' }, D), splitWithdrawnLine({ by: 'owner' }, D),
+    splitResumeTitle(), splitResumeConfirm(), ...Object.values(SPLIT_SAY).map(x => x[0])];
 }

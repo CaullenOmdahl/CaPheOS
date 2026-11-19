@@ -77,6 +77,13 @@ it. The work and the money are the lead's, so (`lib/family.js`):
   `delegated` or `subagent`) is busy: the dispatcher does not wake it and no lane starts on it until the child ends (`DELEGATED BUSY` in the dispatch log, once per change). An unreadable run table holds
   nobody.
 
+- **Under the delegation allowlist** (StarNet patch 0018, docs/DEPARTMENTS.md §6). A ROUTINE lead's run gets
+  `team.dispatch` only while `company/state/delegate-allow.json` lists it, and the dispatcher lists a lead only when the
+  money check (`lib/admit.js money()`: the daily metered cap, the per-agent share, the Sprint budget and spread) and the
+  pacer are open for every listed worker's provider. The station then caps the call at `maxWorkers` and gives each worker
+  its own `workerTimeoutMin`; the children are still the lead's family, and each run row names the item (`itemId`).
+  Piece lanes (the `lanes` fan-out) are lanes: the same money and tempo checks, on the worker's own seat.
+
 ## Who starts scheduled loops: `runtime.scheduler`
 
 `company/company.json` `runtime.scheduler` picks one of two schedulers. It is a flag, not a rebuild: both stay selectable

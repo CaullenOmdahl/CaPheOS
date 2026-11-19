@@ -109,6 +109,15 @@ A policy change shows as a new ranking even when no work changed (the body carri
   items. It is quiet when there is none. The people seat looks and records what it did:
   `node company/tools/model-rank.js decide <id> --verdict noted|declined --by <seat> [--reason "…"]`.
 
+- **The life of a proposal** (docs/ROUTING.md §7): a `proposal` row is looked at once a week by `routing.js proposals`.
+  It is then `skip`ped (with why: shadow mode, a route that changed, the class rules, a tier jump, too few items, one per
+  department and class), sent to the CEO first (`ceo-ask`, for a move onto the top tier), or `offer`ed to the owner on a
+  veto card; an offer is `veto`ed by the owner or, at the deadline, `apply`ed through `departments.js set-route --by
+  routing-proposal`. A proposal in any of those states no longer makes the duty due.
+- **Fan-out** (docs/DEPARTMENTS.md §6): an item is delegated when a delegated child run is under its runs or piece lanes
+  of a recorded split worked it (`wakes.jsonl` `split`). Its cost is its whole family's. `fanoutEvaluation` (§10) reads
+  those items.
+
 No departments file: nothing is proposed, the ranking is still computed. No policy file: nothing is ranked.
 
 ## 7. The console
@@ -226,3 +235,13 @@ verdict is reported, not due.
 **Limits.** The evaluation sees what the ranking sees: items closed in `windowDays` and wakes inside
 `company/state/wakes.jsonl` retention (30 days). A trial longer than that keeps only its last month in the numbers; the
 decision file of the moment is the record.
+
+### Fan-out: does splitting big jobs pay?
+
+`fanoutEvaluation` (policy key `fanoutEvaluation: { minItems: 10 }`; delete it to switch the report off), per department
+whose delegation is not off: its members' delegated items against its single-seat items of the same class. Cost per
+accepted item = the items' `score.cost` over their one-shot sum, compared class by class and weighted by the delegated
+items of each class. `keep` when splitting is cheaper, `withdraw` when it is not over at least `minItems` delegated items,
+`not enough data` below that or with nothing of the same class to compare. Each entry carries a `hash`; the dispatcher
+withdraws the department's splitting once per hash (`lib/delegate-allow.js withdrawStep`), only the owner resumes. It is
+written to `routing-evaluation.json` under `fanout`.
