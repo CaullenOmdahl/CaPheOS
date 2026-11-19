@@ -32,4 +32,28 @@ if [ "$slow" = 1 ] && [ -n "$NODE" ] && [ -f "$GATE" ]; then
   env -u NODE_OPTIONS -u NODE_PATH "$NODE" "$GATE" check-git "$@"
   [ "$?" = 3 ] && exit 1
 fi
+# who wrote it (owner, 2026-11-20: "Nadia logged that she wrote it. I like that."): a commit made from a crew seat's run
+# names that seat as its author, "<name> (<company>)" <first-name@capheos.invalid>; the committer stays whatever git is
+# configured with (the owner's account, which pushes it). Only when the seat set no author itself, only for commands
+# that write commits. STARNET_AGENT_ID is set by the station in every run's shell (station patch 0021).
+if [ -n "$STARNET_AGENT_ID" ] && [ -z "$GIT_AUTHOR_NAME" ] && [ -n "$NODE" ]; then
+  case "$sub" in
+    commit|merge|revert|cherry-pick|rebase|am|pull|stash|tag)
+      ROOT="$(cd "$(dirname "$GATE")/../.." && pwd)"
+      who="$(env -u NODE_OPTIONS -u NODE_PATH "$NODE" -e '
+        const fs = require("fs"), path = require("path"), root = process.argv[1], id = process.argv[2];
+        const rd = f => { try { return JSON.parse(fs.readFileSync(path.join(root, f), "utf8")); } catch (_) { return {}; } };
+        const a = ((rd("company/tools/loops.json").agents) || {})[id] || {};
+        const co = rd("company/company.json").name || "";
+        const name = String(a.name || "").trim(); if (!name) process.exit(0);
+        const first = name.split(/\s+/)[0].toLowerCase().replace(/[^a-z0-9]/g, "") || "seat";
+        process.stdout.write((co ? name + " (" + co + ")" : name) + "\n" + first + "@capheos.invalid");
+      ' "$ROOT" "$STARNET_AGENT_ID" 2>/dev/null)"
+      if [ -n "$who" ]; then
+        export GIT_AUTHOR_NAME="${who%%$'\n'*}"
+        export GIT_AUTHOR_EMAIL="${who##*$'\n'}"
+      fi
+      ;;
+  esac
+fi
 exec "$REAL" "$@"
