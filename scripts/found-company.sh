@@ -8,7 +8,9 @@
 # Writes company/company.json, copies the framework defaults (company/defaults/) into company/work and company/state
 # (and company/defaults/departments.json, an empty department list, to company/departments.json; docs/DEPARTMENTS.md;
 # company/defaults/work/models/ranking-policy.json and routing-policy.json to company/work/models/, docs/RANKING.md and
-# docs/ROUTING.md: routing starts in shadow, recorded and never applied until the owner switches it live),
+# docs/ROUTING.md: routing starts in shadow, recorded and never applied until the owner switches it live;
+# company/defaults/owner/talk.json to company/owner/talk.json, docs/TALK.md: a new company's crew talks to the owner in
+# plain words, short, with a daily summary and the pre-delivery check on; the example messages stay in defaults),
 # seats the Founder (company/roles/agent.md from the founder template), and creates the empty inboxes and logs the
 # tools expect. It never touches the station; run scripts/setup-station.sh after. Re-running with the same name and owner
 # resumes (fills in what is missing, never overwrites a file); a different name or owner needs --force. The step is
@@ -90,7 +92,10 @@ copy_default() { # src under company/defaults -> same path under company/, never
   mkdir -p "$(dirname "$dst")"
   [[ -e "$dst" ]] || cp "$1" "$dst"
 }
-while IFS= read -r -d '' f; do copy_default "$f"; done < <(find company/defaults -type f -print0)
+while IFS= read -r -d '' f; do
+  case "$f" in company/defaults/owner/talk-examples.json) continue;; esac   # the settings preview reads it from defaults
+  copy_default "$f"
+done < <(find company/defaults -type f -print0)
 
 fill() { sed -e "s/{{COMPANY}}/$(printf '%s' "$NAME" | sed 's/[&/\]/\\&/g')/g" -e "s/{{OWNER}}/$(printf '%s' "$OWNER" | sed 's/[&/\]/\\&/g')/g" "$1"; }
 mkdir -p company/roles company/work/handoffs/archive company/owner company/hiring company/state

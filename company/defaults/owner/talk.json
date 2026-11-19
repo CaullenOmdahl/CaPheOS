@@ -1,0 +1,11 @@
+{
+  "_doc": "How the crew talks to the owner (docs/TALK.md; written only by company/tools/talk.js, the owner's Settings › How the crew talks to you). scripts/found-company.sh copies this file to company/owner/talk.json, so a new company starts on Plain. A company without the file reads level technical, length full, often daily, check shadow (the behaviour before this setting existed). level: plain | some | technical. length: short | medium | full (about limits.shortWords / limits.mediumWords words; full has no cap; a reply over the cap times limits.slack counts as too long). often: needed (only Needs-you cards and urgent notices, plus a weekly summary) | daily (the day's one message) | asItHappens (each note as it happens). check: off | shadow (record what the pre-delivery check would have sent back) | live (send a too-technical chat reply back once).",
+  "v": 1,
+  "level": "plain",
+  "length": "short",
+  "often": "daily",
+  "check": "live",
+  "setBy": "found-company.sh",
+  "at": null,
+  "limits": { "shortWords": 80, "mediumWords": 200, "slack": 1.25 }
+}

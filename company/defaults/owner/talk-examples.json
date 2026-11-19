@@ -1,0 +1,70 @@
+{
+  "_doc": "Fixed example messages for Settings › How the crew talks to you (docs/TALK.md): the same three messages at each level and length, written by hand for an invented crew (Mai on operations, Tomas on money). Shown as the preview of each choice; no model is asked. Every text except the technical ones passes lib/owner-scope.js wordsProblems (company/tools/tests/talk-console.test.js); the technical ones are allowlisted by their id, because they are the preview of that choice.",
+  "v": 1,
+  "technicalIds": ["progress.technical", "problem.technical", "ask.technical"],
+  "messages": [
+    {
+      "id": "progress",
+      "label": "A progress update",
+      "levels": {
+        "plain": {
+          "short": "The price checker is back and has caught up on the morning's prices. Nothing for you to do.",
+          "medium": "The price checker is back and has caught up on the morning's prices. It stopped for about forty minutes after the overnight update, and Mai noticed when the morning numbers looked thin. She started it again, filled in what it missed and checked the totals against yesterday's. Nothing for you to do; the crew will keep an eye on it this week.",
+          "full": "The price checker is back and has caught up on the morning's prices. It stopped for about forty minutes after the overnight update, and Mai noticed when the morning numbers looked thin. She started it again, filled in what it missed and checked the totals against yesterday's.\n\nWhy it matters: the Friday report you read uses these prices, so a gap would have shown up as a dip that never happened. Mai added a warning that reaches the crew within five minutes if it stops again, so next time it is caught before anyone sees thin numbers. No money was lost and nothing went to customers while it was stopped. Nothing for you to do; the crew will keep an eye on it this week."
+        },
+        "some": {
+          "short": "The price checker (the job that saves market prices every minute) restarted and filled the 40 minutes it missed. Nothing for you to do.",
+          "medium": "The price checker (the job that saves market prices every minute) restarted and filled the 40 minutes it missed. It stopped after the overnight update, which means its link to the price feed (where the prices come from) was not opened again. Mai restarted it and checked the totals against yesterday's. Nothing for you to do; the crew will watch it this week.",
+          "full": "The price checker (the job that saves market prices every minute) restarted and filled the 40 minutes it missed. It stopped after the overnight update, which means its link to the price feed (where the prices come from) was not opened again. Mai restarted it and checked the totals against yesterday's.\n\nWhy it matters: the Friday report uses these prices, so a gap would have looked like a dip that never happened. Mai added an alert, that is a message to the crew within five minutes of the checker stopping. No money was lost and nothing went to customers. Nothing for you to do; the crew will watch it this week."
+        },
+        "technical": {
+          "short": "price-recorder.service was down 06:10-06:50 after the 06:00 deploy (the websocket to the feed never reconnected). Mai restarted it and backfilled the 40-minute gap from the REST snapshot; row counts match yesterday's. Nothing for you to do.",
+          "medium": "price-recorder.service was down 06:10-06:50 after the 06:00 deploy: the websocket to the feed never reconnected because the reconnect loop exits on a 1006 close. Mai restarted the unit and backfilled the 40-minute gap from the REST snapshot endpoint; row counts in prices.jsonl match yesterday's within 0.2%. Nothing for you to do; a fix for the reconnect loop is in a pull request.",
+          "full": "price-recorder.service was down 06:10-06:50 after the 06:00 deploy: the websocket to the feed never reconnected because the reconnect loop exits on a 1006 close. Mai restarted the unit and backfilled the 40-minute gap from the REST snapshot endpoint; row counts in prices.jsonl match yesterday's within 0.2%.\n\nImpact: the weekly report reads prices.jsonl, so the gap would have shown as a false dip. Mai added a healthcheck ping every 60 s with a 5-minute grace, alerting the ops seat. No orders were placed during the gap. A fix for the reconnect loop is in a pull request; nothing for you to do."
+        }
+      }
+    },
+    {
+      "id": "problem",
+      "label": "A problem",
+      "levels": {
+        "plain": {
+          "short": "The bank stopped sending us this month's statements, so the money summary is two days behind. Tomas is fixing it; you will hear when it is caught up.",
+          "medium": "The bank stopped sending us this month's statements, so the money summary is two days behind. It happened because the bank changed how it lets us sign in. Tomas is moving us to the bank's new way of connecting and expects it to work by tomorrow. Nothing is wrong with the money itself. You will hear when the summary is caught up.",
+          "full": "The bank stopped sending us this month's statements, so the money summary is two days behind. It happened because the bank changed how it lets us sign in. Tomas is moving us to the bank's new way of connecting and expects it to work by tomorrow.\n\nWhat it means for you: nothing is wrong with the money itself, and no payment was missed. The only thing you might notice is that the spending figure on Today looks lower than it is until the summary catches up. If the bank asks you to confirm anything in your own name, Tomas will ask you on Today first. You will hear when the summary is caught up."
+        },
+        "some": {
+          "short": "The bank's export (the file it lets us download each night) stopped working, so the money summary is two days behind. Tomas is fixing it; you will hear when it is caught up.",
+          "medium": "The bank's export (the file it lets us download each night) stopped working, so the money summary is two days behind. The bank changed its sign-in, which means our saved connection no longer works. Tomas is moving us to the bank's new connection and expects it to work by tomorrow. Nothing is wrong with the money itself. You will hear when it is caught up.",
+          "full": "The bank's export (the file it lets us download each night) stopped working, so the money summary is two days behind. The bank changed its sign-in, which means our saved connection no longer works. Tomas is moving us to the bank's new connection and expects it to work by tomorrow.\n\nWhat it means for you: nothing is wrong with the money itself, and no payment was missed. The spending figure on Today looks lower than it is until the summary catches up. If the bank asks you to confirm anything in your own name, Tomas will ask you on Today first. You will hear when it is caught up."
+        },
+        "technical": {
+          "short": "The bank CSV export has returned HTTP 403 since Nov 17 (they moved to OAuth); ledger sync is 2 days behind. Tomas is switching the job to the new OAuth flow, ETA tomorrow.",
+          "medium": "The bank CSV export has returned HTTP 403 since Nov 17: they moved statement downloads behind OAuth, so the stored session cookie no longer works. The ledger sync is 2 days behind. Tomas is switching the job to the OAuth device flow and storing the refresh token under secrets/, ETA tomorrow. Balances are unaffected; only the summary lags.",
+          "full": "The bank CSV export has returned HTTP 403 since Nov 17: they moved statement downloads behind OAuth, so the stored session cookie no longer works. The ledger sync is 2 days behind.\n\nPlan: Tomas is switching the job to the OAuth device flow and storing the refresh token under secrets/, ETA tomorrow. Balances are unaffected; only the summary and the spend tile on Today lag. If the bank's consent screen needs the account holder, it will come to you as an access card on Today."
+        }
+      }
+    },
+    {
+      "id": "ask",
+      "label": "An ask",
+      "levels": {
+        "plain": {
+          "short": "May we spend $20 a month on a better price feed? It catches prices the free one misses; if you say no, we keep the free one.",
+          "medium": "May we spend $20 a month on a better price feed? The free one misses some prices at the busiest times, and those are the moments that matter most for the weekly report. The paid one does not miss them. If you say no, we keep the free one and fill the gaps as we do now.",
+          "full": "May we spend $20 a month on a better price feed? The free one misses some prices at the busiest times, and those are the moments that matter most for the weekly report. The paid one does not miss them.\n\nWhat you get: steadier numbers in the report and less time spent filling gaps, which frees Mai for other work. What it costs: $20 a month, and you can stop it any month. If you say no, we keep the free one and fill the gaps as we do now."
+        },
+        "some": {
+          "short": "May we spend $20 a month on a paid price feed (a service that sends us market prices)? It fills the gaps the free one leaves; if you say no, we keep the free one.",
+          "medium": "May we spend $20 a month on a paid price feed (a service that sends us market prices)? The free feed drops about 3 in every 100 prices at the busiest times, which means the weekly report has small gaps. The paid one does not drop them. If you say no, we keep the free one and fill the gaps as we do now.",
+          "full": "May we spend $20 a month on a paid price feed (a service that sends us market prices)? The free feed drops about 3 in every 100 prices at the busiest times, which means the weekly report has small gaps. The paid one does not drop them.\n\nWhat you get: steadier numbers and less time spent filling gaps, which frees Mai for other work. What it costs: $20 a month, and you can stop it any month. If you say no, we keep the free one and fill the gaps as we do now."
+        },
+        "technical": {
+          "short": "Requesting $20/mo for the Pro feed: the free endpoint drops ~3% of ticks at peak. If declined, we stay on the free tier and keep the gap-fill job.",
+          "medium": "Requesting $20/mo for the Pro feed: the free endpoint drops ~3% of ticks at peak (measured over 14 days in prices.jsonl), which leaves holes in the weekly report. Pro has no drop at our volume. If declined, we stay on the free tier and keep the gap-fill job running.",
+          "full": "Requesting $20/mo for the Pro feed: the free endpoint drops ~3% of ticks at peak (measured over 14 days in prices.jsonl), which leaves holes in the weekly report. Pro has no drop at our volume and a 99.9% SLA.\n\nCost: $20/mo, cancel any month; the spend fits under the current cap. Benefit: the gap-fill job and its 15-minute cron can be retired, freeing Mai's time. If declined, we stay on the free tier and keep the gap-fill job running."
+        }
+      }
+    }
+  ]
+}

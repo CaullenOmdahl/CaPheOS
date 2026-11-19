@@ -36,6 +36,8 @@ cd "$I"
 
 bash scripts/found-company.sh --name "Update Test Co" --owner "Alex" --tz UTC --port 18871 >/dev/null
 check "founded checkout is clean in git status" clean
+check "a new company talks to the owner in plain words, the check on (company/owner/talk.json, docs/TALK.md)" node -e 'const t=require("./company/owner/talk.json"); process.exit(t.level==="plain"&&t.check==="live"&&t.length==="short"?0:1)'
+check "the example messages are not copied into the company" test ! -e company/owner/talk-examples.json
 check "the company-owned files are hidden up front" bash -c '[[ $(git ls-files -v company/company.json company/CHARTER.md company/ORG.md company/competence-policy.json company/model-policy.json | grep -c "^S") = 5 ]]'
 
 # what console Setup does: the owner picks a provider (model-policy.json); nothing may show in git status
