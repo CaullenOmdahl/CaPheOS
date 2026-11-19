@@ -61,7 +61,7 @@ function gh(args, opts) {
   const r = spawnSync(REAL_GH, args, Object.assign({ encoding: 'utf8', timeout: 60000, maxBuffer: 32 << 20 }, opts || {}));
   return { ok: r.status === 0, out: String(r.stdout || '').trim(), err: String(r.stderr || '').trim() || (r.error ? r.error.message : '') };
 }
-function ghJson(args) { const r = gh(args); if (!r.ok) throw new Error('gh ' + args.slice(0, 3).join(' ') + ': ' + r.err.split('\n')[0]); return JSON.parse(r.out || 'null'); }
+function ghJson(args) { const r = gh(args); if (!r.ok) throw new Error('gh ' + args.slice(0, 3).join(' ') + ': ' + r.err.split('\n')[0]); if (!r.out) return null; try { return JSON.parse(r.out); } catch (_) { return r.out; } }   // a --jq that yields a bare string comes back as the string
 
 /* CI on a commit: { green, pending, failed: [names], runs } from GitHub's check runs (+ legacy statuses) */
 const OK_CONCL = new Set(['success', 'skipped', 'neutral']);

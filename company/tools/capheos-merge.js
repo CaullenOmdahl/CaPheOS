@@ -103,7 +103,7 @@ function hook() {
   console.log('pre-push hook installed: ' + f);
 }
 
-if (cmd === 'merge') merge();
+if (cmd === 'merge') { try { merge(); } catch (e) { die(e.message); } }
 else if (cmd === 'baseline') baseline();
 else if (cmd === 'hook') hook();
 else if (cmd === 'list') { const n = Number(opt('n')) || 20; for (const r of SI.mergeRows().slice(-n)) console.log(JSON.stringify(r)); }
