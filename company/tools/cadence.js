@@ -415,17 +415,24 @@ function tempoAllows(seatId, now, opts) {
     else if (Number(b.maxWakesPerHour) > 0 && n.hour >= b.maxWakesPerHour) Object.assign(out, { ok: false, reason: n.hour + ' wakes in the last hour, cap ' + b.maxWakesPerHour });
     else if (Number(b.maxWakesPerDay) > 0 && n.day >= b.maxWakesPerDay) Object.assign(out, { ok: false, reason: n.day + ' wakes in the last 24 h, cap ' + b.maxWakesPerDay });
   }
-  if (out.ok && opts.record) {
+  if (out.ok && opts.record) recordWake(seatId, now, { ownerWake: opts.ownerWake, wakes, out });
+  return out;
+}
+/* count one wake that really started (dispatch.js calls it only after the model, quota, refusal and route holds passed:
+   2026-11-19 a company held by its models recorded 1,500 "wakes" for ~370 runs and froze on its own daily cap) */
+function recordWake(seatId, now, o) {
+  o = o || {}; now = Number(now) || S.now();
+  const wakes = o.wakes || readWakes(now);
+  {
     try {
-      wakes.push({ at: now, seat: String(seatId || '?'), owner: opts.ownerWake ? true : undefined });
+      wakes.push({ at: now, seat: String(seatId || '?'), owner: o.ownerWake ? true : undefined });
       fs.mkdirSync(path.dirname(S.wakesFile), { recursive: true });
       const tmp = S.wakesFile + '.tmp-' + process.pid;
       fs.writeFileSync(tmp, JSON.stringify({ _doc: 'wakes the dispatcher started, last 24 h (cadence.js tempoAllows); read against bounds.maxWakesPerHour/Day', wakes }) + '\n');
       fs.renameSync(tmp, S.wakesFile);
     } catch (_) {}
-    out.hour++; out.day++;
+    if (o.out) { o.out.hour++; o.out.day++; }
   }
-  return out;
 }
 
 /* ---------------- peak-price clocks (offpeak-clocks.js) ---------------- */
@@ -756,7 +763,7 @@ async function apply({ dry, approvedRef, by } = {}) {
   return { ok: !plan.errors.length, gate: level, applied: done, errors: plan.errors, warnings: plan.warnings };
 }
 
-module.exports = { ASKS, endNotice, cadenceNotice, S, BUILTIN, DEFAULT_BOUNDS, DEFAULT_TEMPO, load, view, effective, dutiesFloor, tempoAllows, sprintOf, setSprint, setSprintConfig, sprintTick, sprintStatus, sprintSpent, wakeCounts, inQuiet, peakFindings, proposal, parseEvery, sameSchedule, setDefault, setSeat, setBounds, endTemporary, apply, isOwner };
+module.exports = { ASKS, endNotice, cadenceNotice, S, BUILTIN, DEFAULT_BOUNDS, DEFAULT_TEMPO, load, view, effective, dutiesFloor, tempoAllows, recordWake, sprintOf, setSprint, setSprintConfig, sprintTick, sprintStatus, sprintSpent, wakeCounts, inQuiet, peakFindings, proposal, parseEvery, sameSchedule, setDefault, setSeat, setBounds, endTemporary, apply, isOwner };
 
 async function selftest() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadence-selftest-'));

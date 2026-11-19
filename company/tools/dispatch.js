@@ -1340,7 +1340,7 @@ function lastRunTail(job) {
       const m = A.money({ capOn: CAP_ON, metered: isMetered(job), ownerWake: ownerWake.has(agentId), spread: { on: !!(SPRINT && SPRINT.spreadDailyCap), cap: DAILY_USD, spent24h: spent, spentLastHour: lastHourMetered, hoursLeft, blocking: waitersOf(agentId) } });
       if (m.verdict === 'spread') { spreadHeld.push(job.name + ' — ' + m.why); moneyHold('spread'); continue; }
     }
-    { const tempo = require('./cadence.js').tempoAllows(agentId, Date.now(), { record: !DRY, ownerWake: ownerWake.has(agentId) }); if (!tempo.ok) { log('TEMPO HOLD ' + job.name + ' for ' + agentId + ': ' + tempo.reason); say(agentId, { state: 'held', why: 'has work, held by the wake limits: ' + tempo.reason }); continue; } }   // wake caps (cadence.json bounds): an owner message is never held but still counts
+    { const tempo = require('./cadence.js').tempoAllows(agentId, Date.now(), { record: false, ownerWake: ownerWake.has(agentId) }); if (!tempo.ok) { log('TEMPO HOLD ' + job.name + ' for ' + agentId + ': ' + tempo.reason); say(agentId, { state: 'held', why: 'has work, held by the wake limits: ' + tempo.reason }); continue; } }   // wake caps (cadence.json bounds): an owner message is never held but still counts
     const names = reason[agentId];
     const viaInbox = names.includes(' OPEN in ');
     if (DRY) { A.admit({ door: 'dispatch', kind: 'run', seat: agentId, jobId: job.id, why: names }, { dry: true }); log('WOULD run ' + job.name + ' for ' + agentId + ' (' + names + ')'); fired++; say(agentId, { state: 'started', why: names }); continue; }
@@ -1358,6 +1358,8 @@ function lastRunTail(job) {
     if (tk.decision === 'hold' && tk.noModel) { log('NO MODEL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'none of its models can run right now (limits or the daily budget); it starts when one opens' }); continue; }
     if (tk.decision === 'hold' && tk.quota) { log('QUOTA HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'its model is at its usage limit; it waits for the limit to reset or its next model' }); continue; }
     if (tk.decision === 'hold') { log('REFUSAL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'its model refused a run; it waits for its next model' }); continue; }
+    // the wake counts toward the tempo caps only now, past every hold (cadence.js recordWake)
+    try { require('./cadence.js').recordWake(agentId, Date.now(), { ownerWake: ownerWake.has(agentId) }); } catch (_) {}
     log('RUN ' + job.name + ' for ' + agentId + ' (' + names + ')' + (rest.fast ? ' [Sprint: new work; rest ' + SPRINT.cooldownFloorMin + ' min]' : ''));
     fired++;
     // a duty wake hands the agent its reason: one OPEN handoff in its inbox, ids and counts only (dedup reads it next tick)
