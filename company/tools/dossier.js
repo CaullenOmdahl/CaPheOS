@@ -76,6 +76,11 @@ const field = (txt, label) => { const m = String(txt).match(new RegExp('\\*\\*' 
 const PERSONAS = ['composed', 'warm', 'blunt', 'dry', 'upbeat'];
 // a charter counts as scoped from the market when its Sources list at least three real public listings (URLs)
 function scopedFromListings(ch) { return (sectionRaw(ch, 'Sources').match(/https?:\/\/\S+/g) || []).length >= 3; }
+// the CEO's hand-written identity is replaced by the charter once the charter is researched (listings) OR carries a
+// written person (any of the person sections: convictions, refusals, counterpart, habits...). Before 2026-11-19 only
+// listings counted, so a CEO profile rewritten in the person shape never reached the CEO's runs.
+const hasPerson = ch => personLines(ch).some(Boolean);
+const ceoCharterUsable = ch => scopedFromListings(ch) || hasPerson(ch);
 // the seat's charter: loops.json `role` (company/roles/<file> or a root-relative path), else roles/<name>.md, else roles/<id>.md
 function charterFile(c, id) {
   const roles = co.p('company', 'roles');
@@ -154,12 +159,14 @@ function buildCeoIdentity(rec) {
   const id = co.ceo(); const seat = co.crew()[id] || {};
   const chf = charterFile(seat, id);
   const ch = fs.existsSync(chf) ? fs.readFileSync(chf, 'utf8') : '';
-  if (!scopedFromListings(ch)) return null;   // only a researched charter replaces the hand-written CEO identity
+  // only a researched or person-shaped charter, or (inject profile) a profile on file, replaces the hand-written CEO identity
+  const prof = profileFor(id);
+  if (!prof && !ceoCharterUsable(ch)) return null;
   const prev = String((rec && rec.docs && rec.docs.identity) || '');
   const orders = prev.includes(CEO_MARK) ? prev.slice(prev.indexOf(CEO_MARK)) : '';
   const parts = [
     'You are ' + String((rec && rec.name) || seat.name || 'the CEO').toUpperCase() + ', ' + (seat.title || 'CEO') + ' of ' + companyLine() + '. The station calls the owner "Commander", and so may you.',
-    ...(profileFor(id) ? [profileFor(id).block] : [
+    ...(prof ? [prof.block] : [
       section(ch, 'Personality') ? 'Your personality: ' + section(ch, 'Personality') : '',
       section(ch, 'Backstory') ? 'Who you are: ' + section(ch, 'Backstory') : '',
       ...personLines(ch)]),
@@ -169,7 +176,8 @@ function buildCeoIdentity(rec) {
     orders,
   ];
   const voice = section(ch, 'Voice'), preset = section(ch, 'Persona preset').toLowerCase().split(/\s+/)[0];
-  return { identity: parts.filter(Boolean).join('\n\n'), personaId: PERSONAS.includes(preset) ? preset : null, customVoice: voice ? voice.slice(0, 600) : null };
+  const pPreset = prof && PERSONAS.includes(prof.preset) ? prof.preset : null, pVoice = prof && prof.voice ? prof.voice : null;
+  return { identity: parts.filter(Boolean).join('\n\n'), personaId: pPreset || (PERSONAS.includes(preset) ? preset : null), customVoice: pVoice ? pVoice.slice(0, 600) : voice ? voice.slice(0, 600) : null };
 }
 
 const profileOk = id => { try { const p = profileLib.load(id); return !!(p && p.counterpart && p.counterpart.seat); } catch (_) { return false; } };
@@ -232,7 +240,7 @@ async function main() {
     const done = [];
     await C.editSave(d => {
       for (const id of ids) {
-        if (id === co.ceo()) {   // the CEO: identity (and voice) only, and only from a researched charter
+        if (id === co.ceo()) {   // the CEO: identity (and voice) only, and only from a researched or person-shaped charter or a profile on file
           for (const h of [d.agent].filter(x => x && x.id === id).concat((d.agents || []).filter(x => x && x.id === id))) {
             const b = buildCeoIdentity(h); if (!b) continue;
             h.docs = Object.assign({}, h.docs || {}, { identity: b.identity });
@@ -266,5 +274,5 @@ async function main() {
   }
   throw new Error('commands: check, sync');
 }
-module.exports = { build, charterFile, section, sectionRaw, isPlaceholder, problems, profileNotes, profileFor, PERSON };
+module.exports = { build, charterFile, section, sectionRaw, isPlaceholder, problems, profileNotes, profileFor, PERSON, ceoCharterUsable, buildCeoIdentity };
 if (require.main === module) main().catch(e => { console.error(JSON.stringify({ ok: false, error: e.message })); process.exit(2); });

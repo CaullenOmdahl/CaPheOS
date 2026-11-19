@@ -1,4 +1,5 @@
 'use strict';
+const DUE_RECHECK_MIN = 30;   // see wanted() in tick: a 'due' finding is re-checked at least this often
 /* duty-runner.js — runs the registered duties and keeps their state (docs/DUTIES.md). Used by dispatch.js (one block per
  * tick, after locked-watch) and by duty-status.js (read only).
  *
@@ -173,7 +174,10 @@ async function tick(opts) {
   const t0 = Date.now();
   const wanted = reg.map(d => ({ d, set: settings(d, pol), st: S.duties[d.id] || (S.duties[d.id] = {}) }))
     .filter(x => x.set.enabled && (!opts.halted || x.d.whileHalted === true))
-    .filter(x => !x.st.lastRun || now - Date.parse(x.st.lastRun) >= x.set.everyMin * 60000)
+    // a duty whose last answer was 'due' (it wakes a seat every tick until it says otherwise) is checked again within
+    // DUE_RECHECK_MIN, not only after its own cadence: a finding that cleared stops waking its owner (2026-11-19, a
+    // 6-hour module-doctor finding kept waking the tool seat for hours after the module passed again)
+    .filter(x => !x.st.lastRun || now - Date.parse(x.st.lastRun) >= Math.min(x.set.everyMin, x.st.lastResult === 'due' ? DUE_RECHECK_MIN : Infinity) * 60000)
     .sort((a, b) => (Date.parse(a.st.lastRun || 0) || 0) - (Date.parse(b.st.lastRun || 0) || 0));   // the longest-waiting first
   for (const x of wanted) {
     const remainingMs = pol.tickCapMs - (Date.now() - t0);

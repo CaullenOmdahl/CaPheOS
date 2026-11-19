@@ -112,6 +112,14 @@ async function write(o) {
 /* is (provider, model) open for this agent now? The station's rule (patch 0017): the file must exist, be less than 30
    minutes old and list the pair for the agent; anything else is closed. -> null when open, else a plain reason */
 const MAX_AGE_MS = 30 * 60e3;
+// a refusal block on this provider for one of the seat's routines (company/state/pacer-state.json blocks, by routine name:
+// the seat's loop in loops.json)
+function refusalBlocked(agentId, provider, root, now) {
+  const r = path.resolve(root || co.ROOT);
+  const seat = ((readJson(path.join(r, 'company', 'tools', 'loops.json'), {}) || {}).agents || {})[String(agentId || '')] || {};
+  const blocks = (readJson(path.join(r, 'company', 'state', 'pacer-state.json'), {}) || {}).blocks || [];
+  return blocks.some(b => b && b.provider === provider && !b.clearedAt && Number(b.until) > now && seat.loop && b.name === seat.loop);
+}
 function openFor(agentId, pair, o) {
   o = o || {};
   const doc = readJson(fileOf(o.root), null);
@@ -127,7 +135,16 @@ function openFor(agentId, pair, o) {
   // gate incl. the owner's subscription stops, no quota closure, no refusal block for the seat, no budget or provider-error
   // hold), and those are per provider, not per model. A provider with nothing open for the seat stays closed.
   if (o.ownerPick && list.some(x => x && x.provider === p.provider)) return null;
-  return o.ownerPick ? 'not open for them right now (' + (list.length ? 'that AI provider is closed for them' : 'no AI is open for them') + ')' : 'not open for them right now';
+  if (o.ownerPick) {
+    // the seat's own chain may not have that provider at all (an idea seat on MiniMax only, owner picks Claude Haiku,
+    // 2026-11-19). The owner's pick still runs when the provider is open for SOMEONE this tick (connected, the pacer
+    // gate and subscription stops, no quota closure: per provider) and this seat has no refusal block on it.
+    const anyOpen = Object.values(doc.agents).some(l => Array.isArray(l) && l.some(x => x && x.provider === p.provider));
+    if (!anyOpen) return 'not open for them right now (that AI is closed for everyone right now)';
+    if (refusalBlocked(agentId, p.provider, o.root, now)) return 'not open for them right now (that AI declined their work recently)';
+    return null;
+  }
+  return 'not open for them right now';
 }
 
 module.exports = { build, write, departmentRoutes, leadModel, openFor, MAX_AGE_MS, REL, WRITER };

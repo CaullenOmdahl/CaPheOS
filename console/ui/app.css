@@ -290,6 +290,34 @@ dl.kv dt { color: var(--text-muted); } dl.kv dd { margin: 0; color: var(--text-s
 .hud-seat > .mtg-who { color: var(--mtg-who, var(--text-strong)); }
 .hud-add { margin-left: auto; flex-wrap: wrap; min-width: 0; }
 .hud-pick { max-width: 260px; min-width: 0; }
+/* the chat-with-colleagues controls stay one compact strip so the conversation keeps the height (owner, 2026-11-19:
+   "I can't see shit"): small selects sized to their text, the cost line small, nothing full width */
+.hud-bar { flex: none; row-gap: 6px; padding-bottom: 8px; border-bottom: 1px solid var(--border-subtle, var(--bg-sunken)); }
+.hud-bar .select { width: auto; height: 32px; padding: 0 28px 0 10px; font: var(--type-body-s); max-width: 240px; }
+.hud-bar .btn { height: 32px; }
+.hud-think-row { flex: 1 1 auto; align-items: center; gap: 6px; }
+.hud-more { flex: 1 1 100%; min-width: 0; }
+.hud-more:not([open]) { flex: 0 1 auto; margin-left: auto; }
+.hud-more > summary { cursor: pointer; color: var(--text-muted); list-style: revert; padding: 2px 0; }
+.hud-more-body { padding-top: 6px; align-items: center; }
+.hud-more .hud-add { margin-left: 0; }
+/* the conversation list folds away (screens/comms.js) */
+.comms { position: relative; }
+.comms.list-hidden > .conv-list { display: none; }
+.conv-toggle { position: absolute; top: 8px; z-index: 2; left: 8px; }
+.comms:not(.list-hidden) > .conv-toggle { left: 248px; }
+.comms.list-hidden > .chat .chat-head { padding-left: 52px; }
+/* a short window (a laptop, a remote desktop): the conversation keeps the height; the head, the strip and the composer shrink */
+@media (min-width: 861px) and (max-height: 760px) {
+  .comms .chat-head { padding-top: 10px; padding-bottom: 10px; gap: 8px; }
+  .comms .chat-head h1, .comms .chat-head .h1, .comms .chat-head .display { font-size: 22px; line-height: 1.2; }
+  .comms .composer { padding-top: 8px; padding-bottom: 10px; gap: 6px; }
+  .comms .composer .textarea { height: 56px; min-height: 44px; }
+  .comms .hud-bar { padding-top: 6px; padding-bottom: 6px; }
+  .comms .hud-seat { min-height: 28px; }
+}
+@media (max-width: 860px) { .comms.list-hidden > .chat .chat-head { padding-left: 16px; } .conv-toggle, .comms:not(.list-hidden) > .conv-toggle { left: auto; right: 8px; } }
+.hud-cost { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .hud-area, .hud-past { border-left: 2px solid var(--border-subtle, var(--bg-sunken)); padding-left: 12px; }
 @media (max-width: 600px) { .hud-bar { padding-left: 16px; padding-right: 16px; } .hud-add { margin-left: 0; } .hud-pick { max-width: 100%; } }
 .chat-banner:not(:empty) { padding-top: 16px; }
@@ -482,6 +510,17 @@ kbd { display: inline-block; min-width: 1.6em; padding: 2px 6px; border: 1px sol
 .mtg-parse .mtg-chip-k { background: var(--status-warning); color: #FFFFFF; }
 .mtg-closed { border-left-color: var(--border-strong); } .mtg-closed .mtg-chip-k { background: var(--bg-inverse); color: var(--text-on-inverse); }
 @media (max-width: 600px) { .mtg-agenda, .mtg-state { padding-left: 16px; padding-right: 16px; } }
+.mtg-setup { padding: 8px 32px 0; padding-left: var(--chat-gutter, 32px); padding-right: var(--chat-gutter, 32px); }
+.mtg-setup > summary { cursor: pointer; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtg-setup > .mtg-seats, .mtg-setup > .mtg-readbar { padding-left: 0; padding-right: 0; }
+.mtg-cost { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+@media (min-width: 861px) and (max-height: 760px) {
+  .mtg .chat-head { padding-top: 10px; padding-bottom: 10px; }
+  .mtg .chat-head h1 { font-size: 22px; line-height: 1.2; }
+  .mtg-controls { padding-top: 6px; }
+  .mtg-composer { padding-top: 8px; padding-bottom: 10px; gap: 6px; }
+  .mtg-composer .textarea { height: 56px; min-height: 44px; }
+}
 .mtg-readbar { align-items: center; justify-content: space-between; padding: 10px 32px 0; padding-left: var(--chat-gutter, 32px); padding-right: var(--chat-gutter, 32px); }
 .mtg-modes { flex: 0 1 auto; } .mtg-modes > button { border: 0; background: transparent; cursor: pointer; padding: 6px 10px; }
 .mtg-modes > button.on { background: var(--surface-card); color: var(--text-strong); }
@@ -526,3 +565,73 @@ kbd { display: inline-block; min-width: 1.6em; padding: 2px 6px; border: 1px sol
 .mtg-more-ctrl { flex-wrap: wrap; align-items: center; }
 @media (max-width: 600px) { .mtg-more-panel { left: 16px; right: 16px; } }
 .chat-body > .mtg-ev + .mtg-ev { margin-top: -12px; }
+
+/* Chat screens (comms): the conversation keeps the height on every window (owner, 2026-11-19: "I still can't see
+   shit"; at 1000x512 the meeting's conversation had 96 of 512 px). The head is one line (the meeting's cost line a
+   second, cut with …), the composer is one row with Send beside the box and the hint a single small line. */
+.comms .chat-head { padding-top: 10px; padding-bottom: 10px; gap: 8px; flex-wrap: nowrap; }
+.comms .chat-head > .stack-4 { flex-direction: row; flex-wrap: wrap; align-items: baseline; column-gap: 12px; row-gap: 2px; min-width: 0; }
+.comms .chat-head h1 { font-size: 22px; line-height: 1.2; }
+.comms .chat-head .mtg-cost { flex-basis: 100%; }
+.comms .composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; row-gap: 4px; align-items: end; padding-top: 8px; padding-bottom: 10px; }
+.comms .composer > label { grid-column: 1 / -1; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.comms .composer > .textarea, .comms .composer > .mtg-ta-wrap { grid-column: 1; min-width: 0; }
+.comms .composer > .between-c { grid-column: 2; flex-wrap: nowrap !important; align-self: end; }
+.comms .composer .textarea { height: 48px; min-height: 44px; resize: vertical; }
+@media (max-width: 600px) { .comms .chat-head { flex-wrap: wrap; } }
+.mtg-more-panel .select { width: auto; max-width: 100%; height: 36px; font: var(--type-body-s); }
+
+/* ---- the sidebar folded to icons (app.js setRail; desktop only) ---- */
+.ico { display: inline-flex; flex: none; align-items: center; justify-content: center; }
+.nav-item, .needs-link { gap: 10px; justify-content: flex-start; }
+.nav-item .n, .needs-link .n { margin-left: auto; }
+.side-fold { display: none; }
+.rail-halt { display: none; }
+@media (min-width: 861px) {
+  .side-fold { display: inline-flex; align-items: center; justify-content: center; margin-left: auto; width: 32px; height: 32px; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--text-muted); cursor: pointer; flex: none; }
+  .side-fold:hover { background: var(--accent-tint); color: var(--text-accent); }
+  .side-rail .shell-side { flex-basis: 68px; }
+  .side-rail .side { padding: 18px 10px 16px; gap: 16px; align-items: center; }
+  .side-rail .side .brand { flex-direction: column; gap: 8px; }
+  .side-rail .side .brand > .stack-4 { display: none; }
+  .side-rail .side .side-fold { margin-left: 0; }
+  .side-rail .side .nav-text, .side-rail .side .nav-label, .side-rail .side .station-box > *:not(.rail-halt):not(.between-c) { display: none; }
+  .side-rail .side .nav-group { align-items: center; width: 100%; }
+  .side-rail .side .nav-item, .side-rail .side .needs-link { position: relative; justify-content: center; padding: 0; width: 44px; height: 44px; min-height: 44px; }
+  .side-rail .side .nav-item .n, .side-rail .side .needs-link .n { position: absolute; top: 2px; right: 0; margin: 0; font-size: 10px; }
+  .side-rail .side .nav-item .n:empty { display: none; }
+  .side-rail .side .station-box { padding: 8px 4px; align-items: center; border: 0; background: transparent; gap: 8px; }
+  .side-rail .side .station-box > .between-c > .label { display: none; }
+  .side-rail .side .rail-halt { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: var(--radius-md); color: var(--status-danger); border: 1px solid var(--border-strong); }
+}
+
+/* ---- the composer floats over the bottom of the conversation, as in other AI chat apps (owner, 2026-11-19: "the chat
+   box doesn't need to exist in its own separate box, I would make it float") ---- */
+@media (min-width: 601px) {
+  .comms :has(> .composer) { position: relative; }
+  .comms .composer { position: absolute; z-index: 4; left: var(--chat-gutter, 32px); right: var(--chat-gutter, 32px); bottom: 14px;
+    border: 1px solid var(--border-default); border-top: 1px solid var(--border-default); border-radius: 18px; background: var(--surface-card);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, .14), 0 1px 3px rgba(0, 0, 0, .08); padding: 8px 8px 8px 16px; row-gap: 2px; }
+  .comms .composer > label { padding-top: 2px; opacity: .8; }
+  .comms .composer .textarea { border: 0; background: transparent; box-shadow: none; padding: 8px 0; height: 44px; resize: none; outline: none; }
+  .comms .composer .textarea:focus { outline: none; box-shadow: none; }
+  .comms .composer:focus-within { border-color: var(--accent); }
+  .comms .composer .btn-primary { border-radius: 12px; }
+  /* the conversation scrolls under it: room at the end so the last message is never hidden */
+  .comms .chat-scroll > .chat-body, .comms .chat > .chat-body { padding-bottom: 128px; }
+  .comms .chat-jump { bottom: 118px; }
+}
+@media (min-width: 861px) {
+  /* folded: the station shows only its status dot (the word on hover), the halt icon under it */
+  .side-rail .side .station-box > .between-c { justify-content: center; }
+  .side-rail .side .station-box .tag { font-size: 0; gap: 0; padding: 6px; background: transparent; }
+  .side-rail .side .station-box .tag-dot { width: 10px; height: 10px; }
+}
+.mtg-mode-note { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 8px var(--chat-gutter, 32px) 0; padding: 8px 12px; border-radius: var(--radius-md); background: var(--accent-tint); color: var(--text-strong); }
+.mtg-mode-note[hidden] { display: none; }
+.mtg-controls .mtg-readbar { margin-left: auto; padding: 0; }
+.mtg-controls .mtg-modes > button { padding: 4px 10px; min-height: 32px; font: var(--type-body-s); }
+.mtg-controls .mtg-readbar { flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.mtg-timeline { min-width: 0; max-width: 100%; }
+.mtg-timeline .btn { white-space: normal; text-align: left; height: auto; max-width: 100%; overflow-wrap: anywhere; }
+.mtg-controls .mtg-modes > button { white-space: nowrap; }

@@ -96,7 +96,7 @@ async function startMock(env) {
     /* ---- a certified company ---- */
     await send('Page.navigate', { url: 'http://127.0.0.1:' + certified.port + '/#/today' });
     await until(() => js(`!!document.querySelector('.nav-item')`), 10000);
-    const nav = await until(() => js(`(() => { const v = [...document.querySelectorAll('nav.side .nav-item')].filter(a => !a.hidden && a.getClientRects().length).map(a => a.firstChild.textContent); return v.includes('Positions') ? v : null; })()`), 6000);
+    const nav = await until(() => js(`(() => { const v = [...document.querySelectorAll('nav.side .nav-item')].filter(a => !a.hidden && a.getClientRects().length).map(a => (a.querySelector('.nav-text') || a).textContent); return v.includes('Positions') ? v : null; })()`), 6000);
     check('the sidebar is Today, Chat, Crew, Work, Spend, then the Company pages, then Settings last (no Setup once certified, no Feature map)', JSON.stringify(nav) === JSON.stringify(['Today', 'Chat', 'Crew', 'Work', 'Spend', 'Positions', 'Settings']), nav);
     check('Settings sits below the Company group, pinned above the station box', await js(`(() => { const s = document.querySelector('.nav-bottom'); return !!s && s.nextElementSibling && s.nextElementSibling.classList.contains('station-box'); })()`));
     for (const [from, to] of REDIRECTS) {
@@ -229,7 +229,7 @@ async function startMock(env) {
     await send('Page.navigate', { url: 'http://127.0.0.1:' + fresh.port + '/' });
     const land = await until(() => js(`location.hash === '' && !!document.querySelector('#step-company') ? 'setup' : null`), 10000);
     check('before certification the landing page is the Setup wizard', land === 'setup', await js('location.hash'));
-    check('the Setup wizard is in the nav before certification', await js(`(() => { const a = [...document.querySelectorAll('.nav-item')].find(x => x.firstChild.textContent === 'Setup'); return !!a && !a.hidden; })()`));
+    check('the Setup wizard is in the nav before certification', await js(`(() => { const a = [...document.querySelectorAll('.nav-item')].find(x => (x.querySelector('.nav-text') || x).textContent === 'Setup'); return !!a && !a.hidden; })()`));
     await go('#/setup/charter');
     check('#/setup/charter stays the wizard (not redirected) before certification', await js(`location.hash`) === '#/setup/charter' && await until(() => js(`!!document.getElementById('step-charter') && document.getElementById('step-charter').open`), 4000));
     await go('#/crew');

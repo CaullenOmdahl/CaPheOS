@@ -35,7 +35,17 @@ export async function render(root, ctx) {
     listErr, listHost,
     h('div', { class: 'row-8' }, Button('New group chat', { variant: 'secondary', size: 'sm', onClick: newGroup })));
   const chat = h('section', { class: 'chat', 'aria-label': 'Chat' });
+  // the conversation list folds away so the chat gets the width (remembered per browser)
+  const ls = { get: k => { try { return localStorage.getItem(k); } catch (_) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} } };
+  const listToggle = h('button', { type: 'button', class: 'btn btn-ghost btn-sm conv-toggle', 'data-act': 'conv-toggle' });
+  const setList = hidden => { root.classList.toggle('list-hidden', hidden); listToggle.textContent = hidden ? '»' : '«'; listToggle.title = hidden ? 'Show the conversation list' : 'Hide the conversation list';
+    listToggle.setAttribute('aria-label', listToggle.title); listToggle.setAttribute('aria-expanded', String(!hidden)); };
+  listToggle.addEventListener('click', () => { const hidden = !root.classList.contains('list-hidden'); setList(hidden); ls.set('capheos.convListHidden', hidden ? '1' : '0'); });
+  // not chosen yet: hidden on a window narrower than 1400 px, where the list would take a third of the chat's width
+  const pref = ls.get('capheos.convListHidden');
+  setList(pref === '1' || (pref !== '0' && window.innerWidth < 1400));
   fill(root, aside, chat);
+  root.appendChild(listToggle);
 
   let seats = [], groups = [];
   const memberNames = g => (g.members || []).map(id => personName((seats.find(s => s.id === id) || {}).name) || id).join(', ');

@@ -41,7 +41,7 @@ async function waitFor(fn, ms) { const end = Date.now() + ms; for (;;) { try { c
   const want = col && Math.min(col.area - 64, Math.min(1200, Math.max(680, 0.7 * col.area)));
   t('walk 2: a centred column of 70% of the chat area (680-1200 px) on a 2000 px screen, no horizontal scroll', col && Math.abs(col.w - want) <= 18 && col.w > 900 && Math.abs(col.center) <= 10 && !col.hscroll, Object.assign({ want }, col));
   t('walk 2: the owner\'s bubbles sit at the column\'s right edge (at most 75% of it), the agent\'s text at its left', col && col.meRight <= 2 && col.meMinLeft >= 0 && col.meMax <= 0.75 * col.w + 2 && col.themLeft <= 2, col);
-  t('walk 2: the composer is the same width as the column (give or take the scrollbar)', col && Math.abs(col.ta.l) <= 2 && Math.abs(col.ta.r) <= 16, col);
+  t('walk 2: the composer box starts at the column left edge (inside its floating card), with Send beside it on the right', col && Math.abs(col.ta.l) <= 24 && col.ta.r <= 16 && col.ta.r >= -160, col);
   const head = await ev('(()=>({sub:document.querySelector(".chat-head .caption").textContent,btns:[...document.querySelectorAll(".chat-head button")].map(b=>b.textContent),label:document.querySelector(".composer label").textContent,list:[...document.querySelectorAll(".conv-list .thread .label")].map(x=>x.textContent)}))()');
   t('walk 2: the header says where it runs in plain words, no raw model id, no bare Reload', head && /Runs on Claude/.test(head.sub) && !/claude-cli|example-model|·\s*deepseek/.test(head.sub) && !head.btns.includes('Reload') && head.btns.includes('Refresh conversation'), head);
   t('walk 2: the composer label is just the shortcut hint', head && /^Shift\+Enter to send/.test(head.label) && !/Live chat/.test(head.label), head && head.label);

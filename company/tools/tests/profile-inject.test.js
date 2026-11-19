@@ -81,6 +81,19 @@ test('dossier.js: inject profile puts the block in the identity and the voice pr
   assert.ok(probs(prof.T).some(x => /^profile: a fixed rule is missing/.test(x)));
 });
 
+test('dossier.js CEO: inject profile and a CEO profile on file build the CEO identity from the block, even from a bare charter', () => {
+  const D = JSON.stringify(path.join(TOOLS, 'dossier.js'));
+  const prof = fixture({ inject: 'profile' }), plain = fixture(null);
+  const alex = Object.assign(P.blank('boss', { name: 'Alex Moreau', title: 'CEO' }), { convictions: ['A loop met twice is the defect.'], voice: { preset: 'warm', words: 'Plain and kind.', toOwner: '', avoid: [] } }); alex.hash = P.hashOf(alex);
+  for (const c of [prof, plain]) { c.w('company/people/profiles/boss.json', alex); c.w('company/roles/alex.md', '# Alex\n\n## Personality\nCalm.\n\n## Sources\n- none yet\n'); }
+  const run = T => inRoot(T, 'const D = require(' + D + '); return D.buildCeoIdentity({ name: "Alex", docs: { identity: "old\\n\\nYOUR STANDING ORDERS AS CEO: keep these" } });');
+  const a = run(prof.T);
+  assert.ok(a && a.identity.includes('YOUR PROFILE') && a.identity.includes('A loop met twice is the defect.'), JSON.stringify(a).slice(0, 300));
+  assert.ok(a.identity.endsWith('YOUR STANDING ORDERS AS CEO: keep these'), 'the standing orders are kept');
+  assert.equal(a.personaId, 'warm'); assert.equal(a.customVoice, 'Plain and kind.');
+  assert.equal(run(plain.T), null, 'inject charter and a bare charter: the hand-written CEO identity stays');
+});
+
 test('chat: the context note ends with the reminder under inject profile; nothing with the policy absent', () => {
   const note = T => inRoot(T, 'const co = require(' + JSON.stringify(path.join(TOOLS, 'lib', 'company.js')) + '); return require(' + JSON.stringify(path.join(REPO, 'console', 'chat.js')) + ').contextNote("ben", co.crew().ben, co, "hi", null);');
   assert.match(note(fixture({ inject: 'profile' }).T), /\nYou are Benny, the scout\. Reply only as Benny\.\]\n\n$/);
