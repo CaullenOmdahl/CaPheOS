@@ -47,6 +47,10 @@
  * schedule) under every rule a wake passes, keeps the crew's loop routines paused on the station (a loop found enabled is
  * paused again) and keeps the watchdog routine there; "station" (the default) = the station's scheduler fires the loops
  * and this tick wakes seats with work only, as before.
+ * Advisor leads (lib/consult.js, docs/DEPARTMENTS.md §5): with a department's advisor mode on, the tick opens a consult for a
+ * member's stuck item (failed runs, REVISE rounds, idle wakes, a reopen), starts the lead's separate advise run for the
+ * batched consults (admit door consult, on the lead model as a one-run override), keeps the item's holder from being woken
+ * for it while its consult is open, and pauses the advice when the house ranking says it does not pay.
  * Router (lib/routing.js, docs/ROUTING.md): with a routing policy each wake's model decision (class rules, trial arm,
  * department route, tier cap, chain) is recorded on its wakes.jsonl row (route) and in routing-decisions.jsonl (a trial held by
  * the pacer: op trial-held / trial-unheld in routing-log.jsonl); it is passed as
@@ -963,6 +967,8 @@ function lastRunTail(job) {
     } catch (_) { return null; }
   };
   const LOOK = G.lookups({ root: ROOT, crew: CREW || {}, quests, serviceLastOk: svcLastOk });
+  // advisor leads (lib/consult.js): an item whose consult is open waits for the lead, and a consult block in a live lead's inbox is its advise run's work, not its loop's
+  const CONSULT_HOLD = (() => { try { return require('./lib/consult').holdFn({ root: ROOT }); } catch (e) { log('CONSULT ERROR: ' + String(e.message).slice(0, 200)); return () => null; } })();
   for (const [agentId, inbox] of Object.entries(INBOX_OF)) {
     let its = [], txt = ''; try { txt = fs.readFileSync(path.join(ROOT, 'company', 'work', 'handoffs', inbox), 'utf8'); its = SP.parseItems(txt).filter(i => i.open); } catch (_) {}
     itemsOf[agentId] = its; waitsOf[agentId] = {};
@@ -975,6 +981,7 @@ function lastRunTail(job) {
         if (!state.releasesDone[rel.id]) { state.releasesDone[rel.id] = new Date().toISOString(); const msg = (NAMES[agentId] || agentId) + ': ' + (rel.by || 'the owner') + ' said Start now — "' + askOf(it.heading).slice(0, 100) + '"'; log('START NOW ' + inbox + ' "' + it.heading.slice(0, 80) + '": released by ' + (rel.by || 'the owner') + ' (' + rel.id + '); waking ' + (NAMES[agentId] || agentId)); note(agentId, { key: 'release:' + rel.id, kind: 'release', text: msg }); }
         continue;
       }
+      { const ch = CONSULT_HOLD(inbox, it); if (ch) { it.waitingOn = 'consult'; if (ch.who) waitsOf[agentId][ch.who] = (waitsOf[agentId][ch.who] || 0) + 1; continue; } }
       if (it.waitingOnLine == null) { const on = SP.waitingOn(it.status, NAMES, agentId, CEO_ID); if (on) { it.waitingOn = on; const n = on === 'owner' ? 'you (the owner)' : NAMES[on] || 'someone else'; waitsOf[agentId][n] = (waitsOf[agentId][n] || 0) + 1; parked.push({ seat: agentId, name: NAMES[agentId] || agentId, inbox, heading: it.heading, kind: 'status', words: 'waiting for: ' + n }); } continue; }
       // **Waiting on:** governs this item (its Status prose does not): resolved on every tick
       const pd = SP.parseDeps(it.waitingOnLine);
@@ -1304,6 +1311,8 @@ function lastRunTail(job) {
     for (const id of busy) { order.splice(order.indexOf(id), 1); say(id, { state: 'working' }); }
     const bk = busy.map(id => id + ':' + liveKids.get(id).join('+')).sort().join(',');
     if (bk !== (state.delegatedBusy || '')) { state.delegatedBusy = bk; if (busy.length) log('DELEGATED BUSY: ' + busy.map(id => ((CREW[id] || {}).name || id) + ' (child run ' + liveKids.get(id).map(x => String(x).slice(0, 12)).join(', ') + ')').join('; ') + ': working a task its lead delegated; not woken on top of it'); } }
+  // advisor leads (lib/consult.js consultStep, fail-safe): stuck consults, each live lead's advise routine and its batched advise run (door consult), the lead kept out of `order` while it advises, the auto-pause
+  try { await require('./lib/consult').consultStep({ dry: DRY, log, jobs, order, say, call, fireRun }); } catch (e) { log('CONSULT ERROR: ' + String(e.message).slice(0, 200)); }
   let fired = 0; try { const pace = await require('./pacer.js').dispatchHook({ dry: DRY, log, jobs, order, ownerWake, maxPerTick: MAX_PER_TICK }); fired = -Math.max(0, Math.min(2, Number(pace && pace.extra) || 0)); } catch (e) { fired = 0; log('PACER ERROR: ' + e.message); }   // pacer.js (fail-safe): may drop metered wakes held near the station rail from `order`, and lends extra per-tick slots by starting `fired` below 0
   // Sprint lanes (company/tools/lanes.js, fail-safe, after the pacer so it sees what the pacer held and the models it set):
   // ends finished, timed-out or cut-off lanes, starts lanes for seats with independent OPEN items within the same money

@@ -26,6 +26,8 @@
       "bound": { "days": 33, "bytes": 32000000 }, "readers": "budget.js doors/coverage and the budget-drift duty (the last 24 h, read from the end)" },
     { "id": "wakes", "path": "company/state/wakes.jsonl", "policy": "roll-monthly", "format": "jsonl", "keepDays": 30,
       "bound": { "days": 33, "bytes": 16000000 }, "readers": "dispatch.js --wake-links and lib/wakes.js report (the window plus 7 days, read from the end)" },
+    { "id": "consults", "path": "company/state/consults.jsonl", "policy": "roll-monthly", "format": "jsonl", "keepDays": 90,
+      "bound": { "days": 93, "bytes": 8000000 }, "readers": "lib/consult.js (the dispatcher's consult step, consult.js, premerge-check.js; the last 8 MB, read from the end) and model-rank.js advisorEvaluation" },
     { "id": "department-decisions", "path": "company/work/departments/*/DECISIONS.md", "policy": "roll-monthly", "format": "md-entries", "keepDays": 90, "maxLiveBytes": 32768,
       "bound": { "days": 93, "bytes": 49152 }, "readers": "the department lead and its members (in full; older entries: retention.js find <path> <text>), departments.js (inserts one line at the top per structural change)" },
     { "id": "department-briefs", "path": "company/work/departments", "policy": "never",

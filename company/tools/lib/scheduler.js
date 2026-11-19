@@ -25,6 +25,10 @@
  *   await S.createWatchdog(call, root, agentId)   create it, read it back, retry once under a new name on a decline
  *   S.ownedOn(jobId) / S.switchedOff(job)   paused only because the dispatcher starts it / off for real
  *   S.plan(mode, { jobs, crew, state })  what the station's routines must become for that mode: { pause, resume, createWatchdog, removeWatchdog, owned }
+ *   S.adviseSpec({ root, agentId, leadName, suffix, prompt, model })  the POST /api/cron body of a department lead's advise
+ *                                        routine ("<Lead name> advise", docs/DEPARTMENTS.md §5): never scheduled by the
+ *                                        station (enabled:false; the dispatcher's consult step starts it, lib/consult.js),
+ *                                        kept while the department's advisor mode is live and removed when it is not
  */
 const fs = require('fs');
 const path = require('path');
@@ -145,6 +149,14 @@ function watchdogSpec(root, agentId, name) {
   return { name: name || require('./station').uniqueName(WATCHDOG.name, 3), agentId: agentId || co.ceo() || 'agent', prompt: WATCHDOG.prompt, schedule: WATCHDOG.schedule, tz: co.TZ,
     script: WATCHDOG.script, noAgent: true, workdir: root || co.ROOT, deliver: 'local', enabled: true, unattendedGrants: ['workbench'], scriptTimeoutMs: 30000 };
 }
+/* a department lead's advise routine: the dispatcher fires it (Run now) when consults are due; the station never schedules
+   it. Its model is the department's leadModelDefault (each run also passes it as a one-run override). */
+function adviseSpec(o) {
+  const spec = { name: String(o.leadName || o.agentId) + ' ' + String(o.suffix || 'advise'), agentId: String(o.agentId), prompt: String(o.prompt || ''), schedule: 'every 24 hours', tz: co.TZ,
+    workdir: o.root || co.ROOT, deliver: 'local', enabled: false, unattendedGrants: ['workbench'] };
+  if (o.model && o.model.provider && o.model.model) Object.assign(spec, { provider: String(o.model.provider), model: String(o.model.model) });
+  return spec;
+}
 // -> { ok, job, name, reason, tries }: a 200 that declines, or a create GET /api/cron does not list, is a failure
 async function createWatchdog(call, root, agentId) {
   const ST = require('./station');
@@ -155,4 +167,4 @@ async function createWatchdog(call, root, agentId) {
 function ownedOn(jobId, root) { if (mode() !== 'dispatcher') return false; const o = readState(root).owned[jobId]; return !!o && o.on !== false; }
 const switchedOff = (job, root) => !!job && job.enabled === false && !ownedOn(job.id, root);   // off for real: the owner, or the pacer's rail pause
 
-module.exports = { WATCHDOG, mode, ownedOn, switchedOff, readState, writeState, stateFile, isWatchdog, ownWatchdogs, crewLoopOf, parseCron, cronMatch, partsIn, lastDue, scheduleOf, schedText, plan, watchdogSpec, createWatchdog };
+module.exports = { WATCHDOG, adviseSpec, mode, ownedOn, switchedOff, readState, writeState, stateFile, isWatchdog, ownWatchdogs, crewLoopOf, parseCron, cronMatch, partsIn, lastDue, scheduleOf, schedText, plan, watchdogSpec, createWatchdog };

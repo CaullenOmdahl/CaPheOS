@@ -11,6 +11,10 @@
  *   - optional evidence string (e.g. strict-green) in the PR discussion
  *   - no unresolved REQUEST CHANGES as the latest verdict
  *   - no UNDECLARED deletion-shaped change (>= 5 files deleted outright, or >= 2000 deleted lines)
+ * and, when the PR's author is in a department whose lead gives advice (departments.json advisor live, lib/consult.js),
+ * one row "Lead's advice (advisory)": the lead's latest verdict on a premerge consult for this PR (a consult is opened once
+ * per PR head when none is there). The row NEVER changes pass or fail or the exit code; it is written as `lead` in the
+ * evidence record.
  *
  *   node company/tools/premerge-check.js --pr <n> [--repo owner/name] [--require-evidence "strict-green"]
  *   (no --repo: the cwd's origin remote; no repo is baked in)
@@ -659,6 +663,9 @@ if (!fs.existsSync(path.join(__dirname, 'qa-sign.js'))) {
 }
 
 const failed = checks.filter(c => !c.ok);
+// The department lead's advice (lib/consult.js premergeAdvice): advisory, never a check, never the exit code. Fail-safe.
+let leadAdvice = null;
+try { leadAdvice = require('./lib/consult').premergeAdvice({ repo, pr: d.number, head: d.headRefOid || '', authorAgent, title: d.title }); } catch (_) { leadAdvice = null; }
 // Evidence record (competence v1, review D "nothing enforces the gate"): every completed run leaves
 // company/work/evidence/premerge-<repo>-<headSha>.json with PASS or FAIL, so the post-merge audit
 // (company/tools/competence.js) can tell a merge that passed this gate from one that skipped it. Silent and
@@ -680,6 +687,7 @@ function writeEvidence(verdict) {
     const history = all.filter((h, i) => (h && String(h.verdict).toUpperCase() === 'PASS') || i >= all.length - 20);
     const rec = { v: 1, tool: 'company/tools/premerge-check.js', repo, pr: d.number, sha, base: d.baseRefName || '', verdict, at: new Date().toISOString(),
       authorAgent, docsOnly, failed: failed.length, checks: checks.map(c => ({ name: c.name, ok: c.ok })), history };
+    if (leadAdvice && leadAdvice.lead) rec.lead = leadAdvice.lead;   // advisory: { verdict: APPROVE|REVISE|null, by, consult, check, advisory: true }
     fs.mkdirSync(dir, { recursive: true });
     const tmp = file + '.tmp-' + process.pid; const txt = JSON.stringify(rec, null, 1) + '\n';
     fs.writeFileSync(tmp, txt); fs.renameSync(tmp, file);
@@ -689,6 +697,7 @@ function writeEvidence(verdict) {
 console.log('PRE-MERGE GATE — ' + repo + ' PR #' + d.number + ' (' + d.headRefName + ' → ' + d.baseRefName + ')');
 console.log('author agent: ' + authorAgent + ' · mergeable: ' + (d.mergeable || 'unknown') + ' · files: ' + ((d.files || []).length));
 for (const c of checks) console.log((c.ok ? '  PASS  ' : '  BLOCK ') + c.name + (c.detail ? '  [' + c.detail + ']' : ''));
+if (leadAdvice) console.log('  INFO  Lead\'s advice (advisory)  [' + leadAdvice.words + (leadAdvice.opened ? '; asked in ' + leadAdvice.opened : '') + '; never blocks]');
 console.log('');
 if (failed.length) {
   console.log('BLOCKED by ' + failed.length + ' check(s). GitHub cannot enforce this repo (Free private): this script is the gate.');

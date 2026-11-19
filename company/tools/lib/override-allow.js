@@ -11,6 +11,8 @@
  * The dispatcher writes it at the end of every tick (company/tools/dispatch.js). For each crew seat (company/tools/loops.json):
  *   - the entries of its chain (company/model-policy.json seats.<id>.chain), and
  *   - if company/departments.json exists, the route models of the seat's department (routes values, docs/DEPARTMENTS.md),
+ *   - for the lead of a department whose advisor mode is live (and not paused), the department's leadModelDefault: the
+ *     lead's advise run goes on it as a one-run override (lib/consult.js leadEntries; the class rules for review apply),
  *   - with a routing policy (company/work/models/routing-policy.json, lib/routing.js): the arms of every running trial the
  *     seat is in scope of (mode not off), and its capped chain entries while tierCaps.mode is live (non-exempt seats);
  *     a route or trial arm the policy's classRules deny for its class (code on provider custom) is never listed,
@@ -55,6 +57,12 @@ function departmentRoutes(seatId, o) {
   return Object.entries(d.routes).filter(([c, r]) => r && typeof r === 'object' && r.provider && r.model && require('./routing').routeAllowed(c, { provider: String(r.provider), model: String(r.model) }, K))
     .map(([, r]) => Object.assign({ provider: String(r.provider), model: String(r.model) }, r.effort ? { effort: String(r.effort) } : {}));
 }
+/* a live advisor lead's model (lib/consult.js leadEntries), unless the routing policy's class rules deny it for review work */
+function leadModel(seatId, o) {
+  let list = []; try { list = require('./consult').leadEntries(seatId, { root: o && o.root }); } catch (_) { return []; }
+  const K = o && o.K !== undefined ? o.K : routingKnobs(o && o.root);
+  return list.filter(p => { try { return require('./routing').routeAllowed('review', { provider: p.provider, model: p.model }, K); } catch (_) { return true; } });
+}
 /* the routing policy's knobs (lib/routing.js; none = null: no class rules, no trial arms, no tier-cap entries) */
 function routingKnobs(root) { try { const R = require('./routing'); const L = R.loadPolicy(path.resolve(root || co.ROOT)); return L ? R.knobs(L.policy) : null; } catch (_) { return null; } }
 
@@ -70,7 +78,7 @@ async function build(o) {
     jobs: o.jobs, m: o.m, providers: o.providers, blocks: o.blocks,
     // chain + department routes + (with a routing policy) running trial arms and live tier-cap entries for in-scope seats;
     // every one still has to pass evaluate() (runnableNow) to be listed
-    entriesFor: (id, seat) => ((seat && seat.chain) || []).concat(departmentRoutes(id, { root, K })).concat(K ? R.extraEntries(id, { root, K, departments: deps, crew, chain: (seat && seat.chain) || [] }) : [])
+    entriesFor: (id, seat) => ((seat && seat.chain) || []).concat(departmentRoutes(id, { root, K })).concat(leadModel(id, { root, K })).concat(K ? R.extraEntries(id, { root, K, departments: deps, crew, chain: (seat && seat.chain) || [] }) : [])
   });
   const at = typeof o.now === 'function' ? o.now() : Date.now();
   return { doc: { v: 1, at, by: 'dispatcher', agents: r.seats || {} }, ok: r.ok, why: r.why || null };
@@ -122,7 +130,7 @@ function openFor(agentId, pair, o) {
   return o.ownerPick ? 'not open for them right now (' + (list.length ? 'that AI provider is closed for them' : 'no AI is open for them') + ')' : 'not open for them right now';
 }
 
-module.exports = { build, write, departmentRoutes, openFor, MAX_AGE_MS, REL, WRITER };
+module.exports = { build, write, departmentRoutes, leadModel, openFor, MAX_AGE_MS, REL, WRITER };
 
 // node company/tools/lib/override-allow.js [write|show]   write: one rewrite now (locked-watch.js regenerates it so);
 // show: print what would be written. Reads the station's routines itself.
