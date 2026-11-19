@@ -963,10 +963,10 @@ function notices(c, pol, S, D, say) {
     // a fix that needs the machine's administrator (Chrome, Node, system packages on the host): the one thing the owner
     // may be asked, in plain words, once per finding (the deps.js system-package precedent)
     if (f.hostFix && f.state !== 'fixed' && !n.asked) {
-      const text = plainPart(f).replace(/^the /, 'The ') + ' is missing a security update. The crew cannot install it, because installing programs on the machine needs its administrator. Please update it, or pass this to whoever looks after the machine.';
+      const text = plainPart(f).replace(/^the /, 'The ') + ' on this computer needs a security update that only you can install. It protects the company from a known security hole; if you skip it, the crew keeps a safety workaround in place.';
       try {
         if (ask) ask({ from: who, message: text, details: techOf(f), about: 'secwatch:host:' + f.id });
-        else { const r = cp.spawnSync(process.execPath, [path.join(__dirname, 'inbox.js'), 'ask', '--from', who, '--message', text, '--details', 'Security watch: ' + techOf(f) + '. The crew applies the workaround meanwhile.', '--about', 'secwatch:host:' + f.id, '--via', 'security-watch.js'], { encoding: 'utf8', timeout: 20000, cwd: c.root, env: Object.assign({}, process.env, { CAPHEOS_ROOT: c.root }) }); if (r.status !== 0) throw new Error(String(r.stderr || '').trim().slice(0, 160)); }
+        else { const r = cp.spawnSync(process.execPath, [path.join(__dirname, 'inbox.js'), 'ask', '--from', who, '--message', text, '--details', 'Security watch: ' + techOf(f) + '. The crew applies the workaround meanwhile.', '--about', 'secwatch:host:' + f.id, '--via', 'security-watch.js'], { encoding: 'utf8', timeout: 20000, cwd: c.root, env: Object.assign({}, process.env, { CAPHEOS_ROOT: c.root }) }); if (r.status !== 0) { let why = String(r.stderr || '').trim(); try { const o = JSON.parse(String(r.stdout || '{}')); if (o && o.error) why = o.error; } catch (_) { if (!why) why = String(r.stdout || '').trim(); } throw new Error((why || 'inbox.js exited ' + r.status).slice(0, 160)); } }
         n.asked = iso(c.now); out.push({ sent: 'asked', ids: [f.id] });
       } catch (e) { say('SECURITY WATCH: could not ask the owner about ' + f.id + ': ' + oneLine(e.message, 160)); }
     }

@@ -325,6 +325,11 @@ test('B2: one finding per runtime: a new upstream release moves its target, neve
   const all = Object.values(SW.readState(t.ctx).findings).filter(x => x.eco === 'runtime:chrome');
   assert.equal(all.length, 1, 'still one Chrome finding'); assert.equal(all[0].id, c1.id); assert.equal(all[0].fixed, '157.0.8103.120'); assert.equal(all[0].state, 'open');
   assert.equal(t.asks.length, 1, 'asked once'); assert.equal(t.notices.filter(n => /is fixed/.test(n.text)).length, 0);
+  // the question passes the owner's plain-words check (2026-11-19 the live watch failed every tick: three sentences, no
+  // "what you get", no "if you skip it")
+  const OS = require(path.join(__dirname, '..', 'lib', 'owner-scope.js'));
+  const sc = OS.plainScore(t.asks[0].message, { approval: false });
+  assert.ok(sc.ok, 'plain: ' + JSON.stringify(sc.problems) + ' — ' + t.asks[0].message);
   t.opts.runtimes = [{ name: 'chrome', label: 'Chrome 157.0.8103.90', version: '157.0.8103.90' }];   // updated, but not to the target
   await SW.refresh(Object.assign({}, t.opts, { force: true }));
   assert.equal(byName(t, 'chrome').state, 'open', 'below the target: still open');
