@@ -15,6 +15,7 @@ import { composerKeys, COMPOSER_HINT } from './keys.js';
 import { h, fill, Button, errLine, empty, when, humanError, initial } from './ui.js';
 import { api, post } from './api.js';
 import { mdBlock, md } from './md.js';
+import { maskedNote } from './talk-note.js';
 import { personName, toolStep } from './plain.js';
 import * as events from './events.js';
 
@@ -267,10 +268,11 @@ export function meetingPane(host, opts) {
   // the owner-scope lint (console/command-ask.js, the chat's): plain words and what to do
   function lintNotice(e) {
     const L = e.lint; const who = nm(e.name);
-    const head = L.kind === 'command' ? 'This asks you to run a command.' : L.kind === 'observe-question' ? 'This puts a question to you while you observe.' : L.kind === 'jargon' ? 'This is hard to follow.' : 'The crew can handle this.';
+    const head = L.kind === 'command' ? 'This asks you to run a command.' : L.kind === 'observe-question' ? 'This puts a question to you while you observe.' : L.kind === 'jargon' ? 'This is hard to follow.' : L.kind === 'talk' ? 'This was more technical than you asked for.' : 'The crew can handle this.';
     const say = L.kind === 'command' ? '@' + firstName(who) + ' I do not use a terminal. Do that with your own tools or a handoff, and tell me only what I need to decide.'
       : L.kind === 'observe-question' ? null
       : L.kind === 'jargon' ? '@' + firstName(who) + ' please say that again in two plain sentences: what you need, what I get, and what happens if I skip it.'
+      : L.kind === 'talk' ? '@' + firstName(who) + ' please say that again in plain words: what it means for me.'
       : '@' + firstName(who) + ' that is crew work, not a question for me: handle it among yourselves or hand it to the right seat.';
     return h('div', { class: 'alertbox command-ask', role: 'status' },
       h('div', { class: 'stack-4' }, h('span', { class: 'label strong' }, head), h('span', { class: 'body-s' }, L.kind === 'observe-question' ? who + ' was told you are observing; the meeting carries on without your answer.' : 'You don\'t need to answer it. ' + who + ' is told on their next turn.')),
@@ -578,7 +580,7 @@ export function renderEntry(e, ctx) {
     const ex = e.explains || !ctx.onExplain ? null : h('button', { type: 'button', class: 'btn btn-ghost btn-sm mtg-explain', 'data-act': 'explain', 'data-i': null, 'aria-label': 'Ask ' + nm(e.name) + ' to explain this for the room, in plain words',
       onclick: async evt => { evt.currentTarget.disabled = true; await ctx.onExplain(e); } }, 'Explain for the room');
     const lead = e.to ? h('p', { class: 'caption muted mtg-ev mtg-ev-lead' }, '(' + nm(e.name) + ' answers ' + nm(e.toName) + ')') : e.interject ? h('p', { class: 'caption muted mtg-ev mtg-ev-lead' }, '(' + nm(e.name) + ' has the floor)') : null;
-    return h('div', { class: 'stack-4 msg-them-wrap mtg-c' + colorOf(e.who), 'data-i': e.i, 'data-who': e.who, 'data-kind': 'say' }, lead, toolLines(e), h('span', { class: 'label strong mtg-who' }, nm(e.name)), e.stance ? h('span', { class: 'caption muted mtg-stance', 'data-kind': 'stance' }, e.stance) : null, mdBlock(e.text, 'msg-them'), e.lint && ctx.lintNotice ? ctx.lintNotice(e) : null, h('span', { class: 'row-8', style: 'align-items:center' }, h('span', { class: 'msg-meta' }, meta), ex));
+    return h('div', { class: 'stack-4 msg-them-wrap mtg-c' + colorOf(e.who), 'data-i': e.i, 'data-who': e.who, 'data-kind': 'say' }, lead, toolLines(e), h('span', { class: 'label strong mtg-who' }, nm(e.name)), e.stance ? h('span', { class: 'caption muted mtg-stance', 'data-kind': 'stance' }, e.stance) : null, mdBlock(e.text, 'msg-them'), e.talkMasked ? maskedNote(e.technical, e.notice) : null, e.lint && ctx.lintNotice ? ctx.lintNotice(e) : null, h('span', { class: 'row-8', style: 'align-items:center' }, h('span', { class: 'msg-meta' }, meta), ex));
   }
   // a gatekeeper's private first take (point of view on): folded, never in another seat's history
   if (e.kind === 'draft') return h('details', { class: 'caption muted mtg-draft mtg-c' + colorOf(e.who), 'data-i': e.i, 'data-kind': 'draft', 'data-who': e.who }, h('summary', {}, nm(e.name).split(/\s+/)[0] + '\'s first take, before hearing the others.'), mdBlock(e.text, 'body-s'));

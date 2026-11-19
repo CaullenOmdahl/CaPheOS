@@ -5,6 +5,7 @@
 // Settings sections, in the order of the section list. The id is the route: #/settings/<id>[/<anchor>].
 export const SETTINGS_SECTIONS = [
   ['company', 'Company and charter'],
+  ['talk', 'How the crew talks to you'],
   ['autonomy', 'Autonomy and guardrails'],
   ['tempo', 'Tempo and routines'],
   ['models', 'Models and subscriptions'],

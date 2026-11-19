@@ -17,6 +17,7 @@ import { blockStates, parseActionReply } from './actions-schema.js';
 import { personName, modelName, toolStep, toolStepResult } from './plain.js';
 import { leakedToolCalls } from './leaked-tools.js';
 import { renderEntry, colorOf, maybePass, stepOf } from './meeting.js';
+import { maskedNote } from './talk-note.js';
 import * as events from './events.js';
 
 const stepWords = toolStep;
@@ -48,7 +49,7 @@ export function liveChat(host, opts) {
   // later block with the same id), and the latest block per id (a newer one expires the older)
   let states = new Map(); const registry = new Map();
   const actionsFor = (i, at) => block => actionsBlock(block, { state: (states.get(i) || new Map()).get(block.id), at, who: name(), tz, app, registry, send: sendAction });
-  function turnEl(t, i) { return t.role === 'user' ? mine(t.content) : theirs(t.content, t.at ? name() + ' · ' + when(t.at, tz) : name(), { actions: actionsFor(i, t.at), cut: t.cut, commandAsk: t.commandAsk, ownerAsk: t.ownerAsk }); }
+  function turnEl(t, i) { return t.role === 'user' ? mine(t.content) : theirs(t.content, t.at ? name() + ' · ' + when(t.at, tz) : name(), { actions: actionsFor(i, t.at), cut: t.cut, commandAsk: t.commandAsk, ownerAsk: t.ownerAsk, talkMasked: t.talkMasked, technical: t.technical, notice: t.notice }); }
   function showEarlier() {
     if (!older.length) return;
     const chunk = older.splice(Math.max(0, older.length - PAGE));
@@ -100,6 +101,7 @@ export function liveChat(host, opts) {
     const lk = leakedToolCalls(text);
     const pl = lk ? { body: text, lines: [] } : pullLines(text); text = pl.body;
     return h('div', { class: 'stack-4 msg-them-wrap' }, lk ? h('div', { class: 'msg-them' }, leakNode(lk)) : mdBlock(text, 'msg-them', opts), pullNotes(pl.lines),
+      opts && opts.talkMasked ? maskedNote(opts.technical, opts.notice) : null,
       opts && opts.cut ? h('p', { class: 'caption muted chat-cut' }, 'This reply was cut off before ' + name() + ' finished (' + opts.cut + ').') : null,
       opts && opts.commandAsk ? commandNotice(opts.commandAsk) : null,
       opts && opts.ownerAsk && !opts.commandAsk ? scopeNotice(opts.ownerAsk) : null,
@@ -357,7 +359,8 @@ export function liveChat(host, opts) {
         case 'console.final': L.finalP = p; if (typeof p.text === 'string') L.text = p.text; break;
         case 'console.end': L.gotEnd = true; break;
         case 'agent.run.start': if (!L.lead) { L.lead = p.runId; runId = p.runId; } break;
-        case 'agent.token': if (L.lead && p.runId && p.runId !== L.lead) break; L.text += p.delta || ''; say(name() + ' is writing…'); if (!L.raf) L.raf = requestAnimationFrame(render); break;
+        // held (a Plain owner with the check on): the words arrive with the finished reply, after the check
+        case 'agent.token': if (L.lead && p.runId && p.runId !== L.lead) break; L.text += p.delta || ''; say(name() + ' is writing…'); if (!L.raf && !p.held) L.raf = requestAnimationFrame(render); break;
         case 'agent.tool_call': { if (L.lead && p.runId !== L.lead && p.runId) break; const w = stepWords(p.name, p.argsSummary);
           steps.appendChild(h('li', { class: 'chat-step', 'data-call': p.callId || '' }, h('span', { class: 'step-dot', 'aria-hidden': 'true' }), h('span', null, w)));
           say(name() + ' is ' + w + '…'); scrollEnd(); break; }
@@ -402,6 +405,8 @@ export function liveChat(host, opts) {
         if (tries > 90) { L.lostView = true; break; }   // about five minutes of a console that does not come back
       }
       if (L.raf) { cancelAnimationFrame(L.raf); } L.final = true; render();
+      // a Plain owner's reply that was still technical after one rewrite: shown masked, the originals folded (docs/TALK.md)
+      if (L.finalP && L.finalP.talkMasked && L.text.trim()) card.insertBefore(maskedNote(L.finalP.technical, L.finalP.notice), meta);
       if (L.finalP && L.finalP.commandAsk && L.text.trim()) card.insertBefore(commandNotice(L.finalP.commandAsk), meta);
       else if (L.finalP && L.finalP.ownerAsk && L.text.trim()) card.insertBefore(scopeNotice(L.finalP.ownerAsk), meta);
       unnote('reconnect');

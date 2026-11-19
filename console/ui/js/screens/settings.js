@@ -6,6 +6,7 @@ import { SETTINGS_SECTIONS } from '../routes.js';
 
 const MODULES = {
   company: () => import('./settings/company.js'),
+  talk: () => import('./settings/talk.js'),
   autonomy: () => import('./settings/autonomy.js'),
   tempo: () => import('./settings/tempo.js'),
   models: () => import('./settings/models.js'),
@@ -15,6 +16,7 @@ const MODULES = {
 };
 const LEDE = {
   company: 'Who the company is, what it is for, and whether it is ready to run.',
+  talk: 'How much detail you get, how long the messages are, and how often you hear from the crew.',
   autonomy: 'How much the crew decides alone, and the hard stops it can never get past.',
   tempo: 'How often the crew wakes, and the routines that run on a clock.',
   models: 'Which AI each crew member runs on, how much of each subscription routines may use, and the daily cap for AI that is paid by use.',
