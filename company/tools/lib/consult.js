@@ -142,7 +142,7 @@ function deptState(o) {
 }
 const leadOk = (d, ceo) => !!(d && d.lead && String(d.lead) !== String(ceo || ''));
 function inboxPath(o, inbox) { return path.join(paths(o).handoffs, inbox); }
-function appendBlock(o, inbox, text) { if (o.dry) return; const f = inboxPath(o, inbox); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, text); }
+function appendBlock(o, inbox, text) { if (o.dry) return; const f = inboxPath(o, inbox); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, text); if (/^## \S+ from Dispatcher\b/m.test(text)) require('./tool-blocks').record(f, text, { root: rootOf(o) }); }
 function managerNote(o, crew, seat, heading, fields) {
   const ceo = o.ceo || co.ceo();
   const mgr = (crew[seat] && crew[seat].manager) || ceo; const ib = mgr && crew[mgr] && crew[mgr].inbox;

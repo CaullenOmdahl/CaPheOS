@@ -472,7 +472,7 @@ function appendHandoff(inbox, heading, fields) {
   // a "today" deadline is written as the date: handoff-status.js (and the console's due list) leaves "today" undated on purpose
   const head = today() + ' from Dispatcher — ' + heading;
   const block = '\n## ' + head + '\n' + Object.entries(fields).map(([k, v]) => '**' + k + ':** ' + (k === 'Deadline' && v === 'today' ? today() : v)).join('\n') + '\n';
-  if (!DRY) fs.appendFileSync(f, block);
+  if (!DRY) require('./lib/tool-blocks').append(f, block);   // recorded: a block typed with this heading is not the dispatcher's
   return head.trim();   // the block's heading, as parseItems reads it (its wakes.jsonl item id)
 }
 // a broken or stale duty, flagged once per change to the tools owner (the default-branch-watch pattern)

@@ -23,9 +23,12 @@
  *   5. the lead passes it on     a member's handoff to anyone outside the department is held until the lead's recorded
  *                                pass (`accountable.js pass`; a typed "Passed on by" line counts for nothing), so the
  *                                receiver deals with one accountable person; an FYI that asks for nothing and a block to the
- *                                people seat are not held
- *   stalls                       an audit (or an item with no acceptance check) waiting stallHours is put to the CEO in one
- *                                plain line, the owner too when the cause is the owner's; the CEO may then answer or drop it
+ *                                people seat are not held. The writer is the run seen writing the block (runWriter) or, for
+ *                                the dispatcher, its own record (lib/tool-blocks.js); a heading's name is only a claim, and a
+ *                                claim of the department or the dispatcher is held too
+ *   stalls                       an audit, a held pass-on (or an item with no acceptance check) waiting stallHours is put to
+ *                                the CEO in one plain line, the owner too when the cause is the owner's; the CEO may then
+ *                                answer or drop the audit, or pass or return the message, in the lead's place
  *   6. the scorecard             on the lead (scorecard()): on time, sent-back rate, cost per accepted item, escapes
  *                                (problems found later in accepted work, charged to the lead's review) and spot-check
  *                                results (1 in scorecard.spotCheckEvery accepts is checked again by the people function, so
@@ -48,8 +51,9 @@
  *   AC.scanTick(o)                          the dispatcher's step: intake, copies, held DONEs, onward and escalation holds,
  *                                           spot-check picks, escapes on reopened accepted items -> (inbox, item) -> hold|null
  *   await AC.auditStep(ctx)                 the dispatcher's audit runs (door audit), the routine, the auto fallback
- *   AC.gate({seat, refs, sha}, o)           merge-gate.js: a PR behind a member's work (whoever merges it) needs an ACCEPT for
- *                                           this PR at exactly this commit
+ *   AC.gate({seat, refs, sha, info?}, o)    merge-gate.js: a PR behind a member's work (whoever merges it) needs an ACCEPT for
+ *                                           this PR at exactly this commit; info() (the PR's branch, author, body, commits) is
+ *                                           read only when no hand-back or item names the PR
  *   AC.leadEntries(seat, o)                 the audit pairs a live lead's audit run may use (lib/override-allow.js)
  *   AC.scorecard({dept, root, now})         the department scorecard (plain words for the card in .words)
  *   AC.status(o)                            per department: mode, open audits, held items, the scorecard
@@ -63,6 +67,7 @@ const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 const co = require('./company');
 const D = require('./departments');
+const TB = require('./tool-blocks');
 const W = require('./wakes');
 
 const WRITER = 'accountable.js';
@@ -96,9 +101,29 @@ const field = (sec, name) => { const m = String(sec).match(new RegExp('^\\*\\*' 
 const newId = (p, now) => p + '-' + Number(now).toString(36) + '-' + crypto.randomBytes(2).toString('hex');
 const itemRef = (inbox, it) => { const id = W.itemId(inbox, it.heading, it.id); return id.includes('#') ? id : inbox + '#' + id; };
 const isDispatcherBlock = h => /^\S+\s+from\s+Dispatcher\b/i.test(String(h || ''));
-// a block headed "from Dispatcher" counts as the dispatcher's only when no crew seat's run is seen writing it
-const dispatcherWrote = (h, crew, calls) => isDispatcherBlock(h) && !require('./signoff').writerFor(h, crew, calls);
 const headWords = h => String(h || '').replace(/^\S+\s+from\s+[^—–-]+[—–-]\s*/, '').trim();
+/* who wrote a block. A tool's block (the dispatcher's) is known only by provenance (lib/tool-blocks.js), never by a
+ * heading that says "from Dispatcher". A crew seat's block is known by its run: an agent's recent tool call (provenance
+ * recentCalls rows) that carries the block's heading line (any length: the date and the "from" are part of it) or its
+ * heading words; a call that writes wins over one that only reads, the earliest over later quotes. The
+ * heading's "from <name>" alone proves nothing: it is only what the block claims (claimOf). */
+const WRITE_TOOL = /write|edit|append|create|insert|replace|patch/i;
+const writesFile = (c, name) => { const raw = String(c.raw || ''); if (!raw.includes(name)) return false; if (c.shell) return /(?:>>?|\btee\b|\bsed\s+-i|\bperl\s+-[a-z]*i|\bmv\b|\bcp\b|writeFile|appendFile)/.test(raw); return WRITE_TOOL.test(String(c.tool || '')); };
+function runWriter(heading, sec, crew, calls) {
+  const probes = [], w = headWords(heading), h = String(heading || '').trim();
+  if (h) probes.push(h.slice(0, 80));
+  if (w.length >= 12) probes.push(w.slice(0, 60));
+  for (const pr of probes) {
+    const probe = JSON.stringify(pr).slice(1, -1);
+    const hits = (calls || []).filter(c => c && c.agentId && crew[c.agentId] && String(c.raw || '').includes(probe));
+    if (!hits.length) continue;
+    const by = (c => Number(c.ts) || 0), writes = hits.filter(c => c.shell || WRITE_TOOL.test(String(c.tool || '')));
+    const pick = (writes.length ? writes : hits).slice().sort((a, b) => by(a) - by(b))[0];
+    return String(pick.agentId);
+  }
+  return null;
+}
+const claimOf = (heading, crew) => require('./signoff').writerOf(heading, crew);
 // a block that asks for something: a Need / Ask / Decision line, or a heading that asks a question or for a decision
 const ASK_RE = /\?|\b(?:please|can you|could you|would you|need (?:you|a|an|your|more|help)|decide|decision|approve|approval|sign[- ]?off|unblock|blocked|help)\b/i;
 const asks = (sec, heading) => ['Need', 'Ask', 'Decision', 'Needs sign-off'].some(k => field(sec, k) != null) || ASK_RE.test(headWords(heading));
@@ -217,6 +242,7 @@ const readsAsEscalation = (heading, block) => /\bescalat/i.test(String(heading |
 function renderPacket(p) {
   const L = ['## Audit: ' + one(p.title, 80) + ' (' + p.date + ')', '**Id:** ' + p.id, '**Item:** ' + one(p.item, 200), '**From:** ' + one(p.from, 120), '**Class:** ' + (p.class || 'general'),
     '**Risk:** ' + (p.risky ? 'risky (' + one(p.riskWhy.join('; '), 200) + '): audited on your top tier' : 'routine'), p.pr ? '**PR:** ' + one(p.pr, 200) + (p.sha ? ' at ' + String(p.sha).slice(0, 12) : '') : null,
+    p.again ? '**Again:** accepted at ' + String(p.again.sha).slice(0, 12) + ' (' + p.again.id + '); this is the same pull request at a new commit (a rebase or a fix): what changed since is git diff ' + String(p.again.sha).slice(0, 12) + '..' + String(p.sha || '').slice(0, 12) : null,
     '**Status:** OPEN', '', '### Acceptance check', String(p.check || '').trim(),
     ...(p.changed || []).map(c => '- **Changed since it was assigned:** the ' + c.what + ' was ' + (c.was ? '`' + one(c.was, 200) + '`' : '(none)') + ' when the item came in; read the change with that in mind'),
     '### Self-check (what ' + firstName(p.from) + ' checked)', String(p.note || '').trim(),
@@ -260,16 +286,20 @@ function handback(o) {
   const f = findItem(o, inbox, o.item);
   if (!f) return bad('no item "' + one(o.item, 80) + '" in your inbox (' + inbox + ')');
   if (f.many) return bad('"' + one(o.item, 80) + '" matches ' + f.many + ' items in your inbox: give its id');
-  if (!f.it.open) return bad('that item is not OPEN');
+  // an accepted item whose PR got a new commit (a rebase, a conflict fix) is handed back again at that commit: no reopen,
+  // no escape (the accept was for the old commit, and the new one gets its own audit)
+  const prev = (() => { const x = latestFor(audits(rows(o)), f.ref); return x && x.status === 'accepted' && x.hb.pr && x.hb.sha ? x : null; })();
+  if (!f.it.open && !prev) return bad('that item is not OPEN');
   const check = acceptanceOf(f.sec);
   if (!check) return bad('the item names no acceptance check (**Acceptance check:**): ask ' + firstName(leadName) + ' to add one; you cannot hand back work nobody can check');
   const note = String(o.note || '').trim();
   if (note.length < (Number(e.a.selfCheck.noteMinChars) || 20)) return bad('--note "<what you checked, and how>" is required (at least ' + (Number(e.a.selfCheck.noteMinChars) || 20) + ' characters): the lead reads it with the diff');
   const rs0 = rows(o), all = audits(rs0), open = latestFor(all, f.ref);
   if (open && open.status === 'open') return bad('this item is with ' + firstName(leadName) + ' for audit already (' + open.id + ')');
+  if (!f.it.open && !o.sha) return bad('that item was accepted (' + prev.id + ' at ' + String(prev.hb.sha).slice(0, 12) + '): a new commit on its pull request is handed back with --pr ' + prev.hb.pr + ' --cwd <repo> --sha <the new head>');
   const cls = (() => { try { return require('./taskclass').classOf({ text: f.sec, effort: f.it.effort }, by, { departments: { departments: [e.d] } }); } catch (_) { return e.d.defaultClass || 'general'; } })();
   const codeDept = cls === 'code' || e.d.defaultClass === 'code';
-  const pr = o.pr || field(f.sec, 'PR') || null;
+  let pr = o.pr || field(f.sec, 'PR') || null;
   let sha = o.sha ? String(o.sha).trim().toLowerCase() : null;
   if (sha && !/^[0-9a-f]{7,64}$/.test(sha)) return bad('--sha takes the head commit');
   // the accept is for one commit of one pull request: a hand-back with a PR names its head commit
@@ -296,6 +326,17 @@ function handback(o) {
     const full = git(['rev-parse', '--verify', '--quiet', sha + '^{commit}']);
     if (full.status !== 0) return bad('commit ' + sha + ' is not in ' + cwd);
     sha = String(full.stdout).trim().toLowerCase();
+    // the PR must say which repository it is in (owner/repo#n or its URL), or --cwd's GitHub remote says it: the merge gate
+    // matches the accept to owner/repo#n, so a bare "#12" would leave the merge stuck, or ungated for another merger
+    if (pr) {
+      const key = prKeyOf(pr, cwd);
+      if (!key) return bad('say which repository the pull request is in: --pr owner/repo#' + (String(pr).match(/\d+/) || ['<n>'])[0] + ' or its URL ("' + one(pr, 80) + '" does not, and ' + cwd + ' has no GitHub remote named origin)');
+      pr = key;
+    }
+    if (prev && !f.it.open) {
+      if (pr !== normPr(prev.hb.pr)) return bad('that item was accepted for ' + prev.hb.pr + ': only a new commit of that same pull request is handed back again (other work is a new item)');
+      if (sha === String(prev.hb.sha)) return bad('that item was accepted at this commit already (' + prev.id + '): nothing to hand back');
+    }
     const g = git(['diff', base + '...' + sha]);
     if (g.status !== 0) return bad('cannot diff ' + base + '...' + sha + ' in ' + cwd + ': give --base <the branch it goes into>');
     diff = g.stdout; diffFrom = 'git';
@@ -316,20 +357,23 @@ function handback(o) {
   const id = newId('ac', now), max = Math.max(2000, Number(e.a.packetMaxChars) || 12000);
   const pk = { id, date: dayOf(now), title: f.it.heading.replace(/^\S+\s+from\s+[^—–-]+[—–-]\s*/, ''), item: f.ref, from: nameOf(crew, by), class: cls, risky: risk.risky, riskWhy: risk.why, pr, sha, check, note, tests: o.tests || '', ran, diff: String(diff || ''), diffFrom, base, changed,
     cwd: ran.length && o.cwd && path.resolve(o.cwd) !== rootOf(o) ? cwd : null, noDiff: o.noDiff, leadName };
+  if (prev && !f.it.open) pk.again = { id: prev.id, sha: prev.hb.sha };
   let text = renderPacket(pk), clipped = false;
   if (text.length > max) { const over = text.length - max + 40; pk.diff = pk.diff.slice(0, Math.max(0, pk.diff.length - over)) + '\n… (clipped: the whole diff is in the branch)'; text = renderPacket(pk); clipped = true; }
   const live = e.a.effective === 'live', leadInbox = (crew[lead] || {}).inbox;
   if (live && !leadInbox) return bad('the lead ' + leadName + ' has no inbox (loops.json)');
-  if (live && !o.dry) {
-    fs.appendFileSync(path.join(paths(o).handoffs, leadInbox), text);
-    const parts = f.parts, m = /\n*$/.exec(parts[f.i]); parts[f.i] = parts[f.i].slice(0, m.index) + '\n**Handed back:** ' + id + ' to ' + leadName + ' for audit (' + dayOf(now) + ')' + (m[0] || '\n');
-    writeAtomic(path.join(paths(o).handoffs, inbox), parts.join(''));
-  }
   const dsha = 'sha256:' + crypto.createHash('sha256').update(String(diff || '')).digest('hex').slice(0, 16);
   append(Object.assign({ op: 'handback', at: now, ts: new Date(now).toISOString(), id, ref: f.ref, item: f.id, file: inbox, title: one(f.it.heading, 160), seat: by, dept: String(e.d.id), lead, class: cls,
     risky: risk.risky, riskWhy: risk.why, tier, check: one(check, 600), note: one(note, 1200), tests: o.tests ? one(o.tests, 400) : undefined, ran: ran.map(r => ({ cmd: one(r.cmd, 300), exit: r.exit })),
     diffSha: dsha, diffFrom, diffLines: diffLines(diff), files: diffFiles(diff).slice(0, 40), pr: pr ? one(pr, 200) : undefined, sha: sha || undefined, changed: changed.length ? changed.map(c => c.what) : undefined, cwd: o.cwd ? one(cwd, 200) : undefined, chars: text.length, clipped: clipped || undefined, deadline: field(f.sec, 'Deadline') || undefined,
-    runId: process.env.STARNET_RUN_ID ? one(process.env.STARNET_RUN_ID, 80) : undefined }, live ? {} : { shadow: true }), o);
+    runId: process.env.STARNET_RUN_ID ? one(process.env.STARNET_RUN_ID, 80) : undefined, again: pk.again ? pk.again.id : undefined }, live ? {} : { shadow: true }), o);
+  // the ledger first, then the inboxes: a tick in between sees the new hand-back, never an accepted item reopened
+  if (live && !o.dry) {
+    fs.appendFileSync(path.join(paths(o).handoffs, leadInbox), text);
+    const parts = f.parts, m = /\n*$/.exec(parts[f.i]); parts[f.i] = parts[f.i].slice(0, m.index) + '\n**Handed back:** ' + id + ' to ' + leadName + ' for audit (' + dayOf(now) + ')' + (pk.again ? ', at a new commit ' + String(sha).slice(0, 12) : '') + (m[0] || '\n');
+    if (pk.again) parts[f.i] = setStatus(parts[f.i], 'OPEN — handed back again at a new commit (' + String(sha).slice(0, 12) + '): with ' + leadName + ' for audit');
+    writeAtomic(path.join(paths(o).handoffs, inbox), parts.join(''));
+  }
   if (!live && !o.dry) logLine(o, 'WOULD AUDIT ' + id + ' ' + f.ref + ' (' + nameOf(crew, by) + ' -> ' + leadName + ', ' + tier + '): recording only, nothing sent');
   return { ok: true, id, delivered: live, risky: risk.risky, tier, riskWhy: risk.why, chars: text.length, next: live ? leadName + ' audits it; you are not woken for this item until then, and it is DONE only when ' + firstName(leadName) + ' accepts it' : 'recorded only (accountable leads is in recording-only mode): carry on as before' };
 }
@@ -384,9 +428,16 @@ function audit(o) {
 function pass(o) {
   o = o || {}; const now = nowOf(o), crew = crewOf(o), ceo = ceoOf(o, crew);
   const bad = (error, code) => ({ ok: false, code: code || 2, error });
-  const by = seatOf(crew, o.by), ds = deptState(o), e = by ? leadDept(by, ds, ceo) : null;
-  if (!e) return bad('only a department lead passes on its team\'s work');
   const ref = String(o.ref || '').trim(), inbox = ref.split('#')[0];
+  const by = seatOf(crew, o.by), ds = deptState(o);
+  let e = by ? leadDept(by, ds, ceo) : null, inPlace = false;
+  // the CEO decides in the lead's place only for a block the dispatcher recorded as waiting too long (auditStep)
+  if (!e && by && by === String(ceo)) {
+    const sr = rows(o).find(r => r.op === 'stalled' && r.kind === 'pass' && r.ref === ref);
+    if (sr) { e = ds.list.find(y => String(y.d.id) === String(sr.dept) && leadOk(y.d, ceo)) || null; inPlace = !!e; }
+    if (!e) return bad('only a department lead passes on its team\'s work (the CEO only a message that has waited too long for its lead, once the dispatcher said so)');
+  }
+  if (!e) return bad('only a department lead passes on its team\'s work');
   const recv = Object.keys(crew).find(k => (crew[k] || {}).inbox === inbox);
   if (!recv) return bad('--ref <inbox>#<item id> names the held block (accountable.js list --held)');
   const SP = require('./sprint'), t = readText(path.join(paths(o).handoffs, inbox)) || '';
@@ -394,25 +445,25 @@ function pass(o) {
   if (!sec) return bad('no block ' + ref);
   const already = rows(o).find(r => (r.op === 'pass' || r.op === 'return') && r.ref === ref);
   if (already) return bad(ref + ' was ' + (already.op === 'pass' ? 'passed on' : 'returned') + ' already');
-  const leadName = nameOf(crew, by);
+  const leadName = nameOf(crew, by) + (inPlace ? ' (in ' + nameOf(crew, e.d.lead) + '\'s place: it waited too long)' : '');
   // the lead's Pass on block for this ref is done once it is passed on or returned
-  const closePassItem = what => { const li = (crew[by] || {}).inbox; if (li) editBlock(o, li, s => String(field(s, 'Pass-on') || '').trim() === ref && /^\*\*Status:\*\*\s*OPEN/m.test(s), s => setStatus(s, 'DONE — ' + what + ' (' + dayOf(now) + ')')); };
+  const closePassItem = what => { const li = (crew[String(e.d.lead)] || {}).inbox; if (li) editBlock(o, li, s => String(field(s, 'Pass-on') || '').trim() === ref && /^\*\*Status:\*\*\s*OPEN/m.test(s), s => setStatus(s, 'DONE — ' + what + ' (' + dayOf(now) + ')')); };
   if (o.ret) {
     const why = one(o.why, 300); if (!why) return bad('--return needs --why "<what the member does instead>"');
-    append({ op: 'return', at: now, ts: new Date(now).toISOString(), ref, by, dept: String(e.d.id), to: recv, why }, o);
-    editBlock(o, inbox, s => s === sec, s => setStatus(addLine(s, '**Returned by:** ' + leadName + ' (lead): ' + why), 'DONE — returned by ' + leadName + ', not passed on'));
+    append({ op: 'return', at: now, ts: new Date(now).toISOString(), ref, by, dept: String(e.d.id), to: recv, why, inPlaceOf: inPlace ? String(e.d.lead) : undefined }, o);
+    editBlock(o, inbox, s => s === sec, s => setStatus(addLine(s, '**Returned by:** ' + leadName + (inPlace ? '' : ' (lead)') + ': ' + why), 'DONE — returned by ' + leadName + ', not passed on'));
     closePassItem('returned');
-    return { ok: true, ref, returned: true };
+    return { ok: true, ref, returned: true, inPlaceOf: inPlace ? String(e.d.lead) : undefined };
   }
   let esc = null;
-  if (recv === String(ceo)) {
+  if (recv === String(ceo) && !inPlace) {
     esc = escalationOk(o.escalation);
     if (!esc.ok) return bad('one level at a time: a lead takes a member\'s matter to the CEO only when it crosses departments or is one of the four owner gates. Add --escalation cross-department or --escalation "owner: money|access|ownership|commitment", or solve it in the department and --return it');
   }
-  append(Object.assign({ op: 'pass', at: now, ts: new Date(now).toISOString(), ref, by, dept: String(e.d.id), to: recv }, esc ? { escalation: esc.kind } : {}), o);
-  editBlock(o, inbox, s => s === sec, s => { const L = s.split('\n'); L.splice(1, 0, '**Passed on by:** ' + leadName + ' (lead of ' + (e.d.name || e.d.id) + ', accountable for it)' + (esc ? '\n**Escalation:** ' + esc.kind : '')); return L.join('\n'); });
+  append(Object.assign({ op: 'pass', at: now, ts: new Date(now).toISOString(), ref, by, dept: String(e.d.id), to: recv }, esc ? { escalation: esc.kind } : {}, inPlace ? { inPlaceOf: String(e.d.lead) } : {}), o);
+  editBlock(o, inbox, s => s === sec, s => { const L = s.split('\n'); L.splice(1, 0, '**Passed on by:** ' + leadName + (inPlace ? ' (the CEO)' : ' (lead of ' + (e.d.name || e.d.id) + ', accountable for it)') + (esc ? '\n**Escalation:** ' + esc.kind : '')); return L.join('\n'); });
   closePassItem('passed on');
-  return { ok: true, ref, passed: true, escalation: esc ? esc.kind : undefined };
+  return { ok: true, ref, passed: true, escalation: esc ? esc.kind : undefined, inPlaceOf: inPlace ? String(e.d.lead) : undefined };
 }
 // the item is not needed: its open audit closes (nothing waits for it), the item is DONE as dropped, a DONE is not put
 // back. The lead drops its team's items; the CEO only an item whose audit the dispatcher recorded as waiting too long
@@ -507,7 +558,7 @@ function appendBlock(o, inbox, heading, fields) {
   if (!inbox || o.dry) return;
   const f = path.join(paths(o).handoffs, inbox);
   fs.mkdirSync(path.dirname(f), { recursive: true }); if (!fs.existsSync(f)) fs.writeFileSync(f, '# Handoffs\n');
-  fs.appendFileSync(f, '\n## ' + dayOf(nowOf(o)) + ' from Dispatcher — ' + heading + '\n' + Object.entries(fields).map(([k, v]) => '**' + k + ':** ' + v).join('\n') + '\n');
+  require('./tool-blocks').append(f, '\n## ' + dayOf(nowOf(o)) + ' from Dispatcher — ' + heading + '\n' + Object.entries(fields).map(([k, v]) => '**' + k + ':** ' + v).join('\n') + '\n', { root: rootOf(o) });
 }
 function scanTick(o) {
   o = o || {}; const log = typeof o.log === 'function' ? o.log : () => {};
@@ -558,8 +609,9 @@ function scanTick(o) {
       for (const m of members) {
         const ib = (crew[m] || {}).inbox; if (!ib) continue;
         const txt = textOf(ib); const secs = new Map(sections(txt).filter(s => s.startsWith('## ')).map(s => [s.slice(3).split('\n')[0].trim(), s]));
-        for (const it of SP.parseItems(txt)) {
-          if (dispatcherWrote(it.heading, crew, calls)) continue;
+        const items = SP.parseItems(txt), tools = TB.picker(rootOf(o), ib)(items);
+        for (const it of items) {
+          if (tools.has(it)) continue;   // the dispatcher's own block (by provenance, never by its heading)
           const ref = itemRef(ib, it), sec = secs.get(it.heading) || '';
           let seen = st.seen[ref];
           const last = latestFor(all, ref);
@@ -567,14 +619,15 @@ function scanTick(o) {
           // straight to the member by someone else, written by the member itself, or by a writer nobody can tell
           // (the console, a script, a heading that names nobody): the last two are never let past the lead
           if (!seen) {
-            const writer = SO.writerFor(it.heading, crew, calls) || null;
+            // the writer is the seat whose run wrote it; a heading's "from <name>" is only a claim (recorded, never trusted)
+            const writer = runWriter(it.heading, sec, crew, calls) || null, claimed = writer ? undefined : (claimOf(it.heading, crew) || (isDispatcherBlock(it.heading) ? 'Dispatcher' : undefined));
             const via = writer === lead ? 'lead' : writer === m ? 'own' : 'direct';
             seen = st.seen[ref] = { via, dept, at: now, writer }; dirty = true;
-            append({ op: 'intake', at: now, ts: new Date(now).toISOString(), ref, file: ib, title: one(it.heading, 160), seat: m, dept, lead, via, writer, checkCmd: checkCommandOf(sec), check: acceptanceOf(sec), risk: String(field(sec, 'Risk') || '').trim(), shadow: live ? undefined : true }, o);
+            append({ op: 'intake', at: now, ts: new Date(now).toISOString(), ref, file: ib, title: one(it.heading, 160), seat: m, dept, lead, via, writer, claimed, checkCmd: checkCommandOf(sec), check: acceptanceOf(sec), risk: String(field(sec, 'Risk') || '').trim(), shadow: live ? undefined : true }, o);
             // the member learns the way back on the item itself: check it, then hand it back to the lead (live)
             if (live && it.open && field(sec, 'Hand back') == null) { editBlock(o, ib, s => s === sec, s => addLine(s, '**Hand back:** to ' + leadName + ' for audit when it is done: check it against its acceptance check, then node company/tools/accountable.js handback ' + (it.id || ref) + ' --note "<what you checked>" --by ' + firstName(nameOf(crew, m)) + ' (it is DONE only when ' + firstName(leadName) + ' accepts it)' + (acceptanceOf(sec) ? '' : '. It has no acceptance check yet: ask ' + firstName(leadName) + ' for one'))); texts.delete(ib); }
             if (via !== 'lead') {
-              const who = writer ? nameOf(crew, writer) : 'Someone the crew could not identify';
+              const who = writer ? nameOf(crew, writer) : 'Someone the crew could not identify' + (claimed ? ' (the heading says ' + (claimed === 'Dispatcher' ? 'the dispatcher' : nameOf(crew, claimed)) + ')' : '');
               const how = via === 'own' ? nameOf(crew, m) + ' wrote this for themselves.' : who + ' sent this straight to ' + nameOf(crew, m) + '.';
               if (live && !st.copied[ref]) {
                 appendBlock(o, leadInbox, 'copy: ' + one(headWords(it.heading), 90) + ' (' + (via === 'own' ? firstName(nameOf(crew, m)) + '\'s own item' : 'sent straight to ' + firstName(nameOf(crew, m))) + ')', {
@@ -640,16 +693,34 @@ function scanTick(o) {
       }
       // 5. onward handoffs: a member's open block to anyone outside the department waits for the lead to pass it on. Not
       // held: a block to the people seat (a member's complaint about its lead goes straight there) and an FYI that asks
-      // for nothing
+      // for nothing. Who wrote it (outWriter): the run that wrote it; else what the heading claims, when it claims the
+      // department (a member, the lead) or the dispatcher (whose real blocks are known by provenance, so a claim is a
+      // forgery); else a member whose run wrote into that inbox around the time the block appeared. A heading's claim is
+      // never let past the lead: the lead passes it, or returns it
+      st.outWho = st.outWho || {}; st.outFirst = st.outFirst || {};
+      const outWriter = (inbox, it, sec, ref) => {
+        if (st.outWho[ref]) return st.outWho[ref];
+        const keep = v => { st.outWho[ref] = v; dirty = true; return v; };
+        const tw = runWriter(it.heading, sec, crew, calls);
+        if (tw) return keep({ writer: tw, sure: true, at: now });
+        const cl = claimOf(it.heading, crew);
+        if (cl && inDept.has(cl)) return { writer: cl, sure: false, claimed: cl };
+        if (isDispatcherBlock(it.heading)) return { writer: null, sure: false, claimed: 'Dispatcher' };
+        const first = Number(st.outFirst[ref]) || now; if (!st.outFirst[ref]) { st.outFirst[ref] = now; dirty = true; }
+        const t = (calls || []).filter(x => x && members.includes(String(x.agentId)) && Number(x.ts) >= first - 3 * HOUR && Number(x.ts) <= first + 30 * MIN && writesFile(x, inbox));
+        if (t.length) return keep({ writer: String(t[t.length - 1].agentId), sure: false, touched: true, at: now });
+        return null;
+      };
       for (const [rid, c] of Object.entries(crew)) {
         if (!c || !c.inbox || inDept.has(rid)) continue;
         const txt = textOf(c.inbox); const secs = new Map(sections(txt).filter(s => s.startsWith('## ')).map(s => [s.slice(3).split('\n')[0].trim(), s]));
-        for (const it of SP.parseItems(txt).filter(i => i.open)) {
-          if (dispatcherWrote(it.heading, crew, calls)) continue;
+        const items = SP.parseItems(txt), tools = TB.picker(rootOf(o), c.inbox)(items);
+        for (const it of items.filter(i => i.open)) {
+          if (tools.has(it)) continue;   // the dispatcher's own block (by provenance)
           const sec = secs.get(it.heading) || '', ref = itemRef(c.inbox, it);
           if (passed.has(ref) || st.seen['out:' + ref]) continue;
-          const writer = SO.writerFor(it.heading, crew, calls);
-          if (writer === lead && rid === String(ceo) && readsAsEscalation(it.heading, sec) && !escalationOk(field(sec, 'Escalation')).ok) {
+          const w = outWriter(c.inbox, it, sec, ref), writer = w ? w.writer : null;
+          if (w && w.sure && writer === lead && rid === String(ceo) && readsAsEscalation(it.heading, sec) && !escalationOk(field(sec, 'Escalation')).ok) {
             // the lead's own escalation to the CEO names no reason that belongs there
             if (live) {
               hold(c.inbox, it.heading, { who: leadName, kind: 'escalation' });
@@ -657,18 +728,22 @@ function scanTick(o) {
             } else would('esc:' + ref, 'WOULD HOLD ESCALATION ' + ref + ' (' + leadName + ' -> CEO): no cross-department or owner-gate reason (recording only)');
             continue;
           }
-          if (!writer || !members.includes(writer) || (people && rid === people) || fyiOnly(sec, it.heading)) continue;
+          if (!w || (w.sure && !members.includes(writer)) || (people && rid === people) || fyiOnly(sec, it.heading)) continue;
+          // who the lead is told wrote it: the member, or what the heading claims when no run shows the writer
+          const whoName = w.sure || w.touched ? nameOf(crew, writer) : w.claimed === 'Dispatcher' ? 'someone (the heading says the dispatcher)' : nameOf(crew, writer);
+          const whoWords = w.sure ? nameOf(crew, writer) : w.touched ? nameOf(crew, writer) + ' (whose run wrote into that inbox then)' : 'A message that says it is from ' + (w.claimed === 'Dispatcher' ? 'the dispatcher' : nameOf(crew, writer)) + ' (the crew cannot confirm who wrote it, so it goes through you)';
+          const short = w.claimed === 'Dispatcher' ? '?' : firstName(nameOf(crew, writer));
           if (live) {
             hold(c.inbox, it.heading, { who: leadName, kind: 'pass' });
             if (!st.passAsked[ref]) {
               const toCeo = rid === String(ceo);
-              appendBlock(o, leadInbox, 'Pass on: ' + one(headWords(it.heading), 80) + ' (' + firstName(nameOf(crew, writer)) + ' -> ' + firstName(nameOf(crew, rid)) + ')', {
-                'Pass-on': ref, Need: nameOf(crew, writer) + ' wrote to ' + nameOf(crew, rid) + ' ("' + one(it.heading, 120) + '" in ' + c.inbox + '). It waits for you: work leaves the department through its lead. Pass it on (node company/tools/accountable.js pass ' + ref + (toCeo ? ' --escalation cross-department|"owner: money|access|ownership|commitment"' : '') + ' --by ' + firstName(leadName) + ') once the work behind it is accepted, or return it (--return --why "<what to do instead>").' + (toCeo ? ' It goes to the CEO, so it passes only when it crosses departments or is one of the four owner gates.' : ''),
+              appendBlock(o, leadInbox, 'Pass on: ' + one(headWords(it.heading), 80) + ' (' + short + ' -> ' + firstName(nameOf(crew, rid)) + ')', {
+                'Pass-on': ref, Need: whoWords + ' wrote to ' + nameOf(crew, rid) + ' ("' + one(it.heading, 120) + '" in ' + c.inbox + '). It waits for you: work leaves the department through its lead. Pass it on (node company/tools/accountable.js pass ' + ref + (toCeo ? ' --escalation cross-department|"owner: money|access|ownership|commitment"' : '') + ' --by ' + firstName(leadName) + ') once the work behind it is accepted, or return it (--return --why "<what to do instead>").' + (toCeo ? ' It goes to the CEO, so it passes only when it crosses departments or is one of the four owner gates.' : ''),
                 Status: 'OPEN' });
               st.passAsked[ref] = new Date(now).toISOString(); dirty = true;
-              log('ACCOUNTABLE PASS HELD ' + ref + ' (' + nameOf(crew, writer) + ' -> ' + nameOf(crew, rid) + '): waits for ' + leadName + ' to pass it on');
+              log('ACCOUNTABLE PASS HELD ' + ref + ' (' + whoName + ' -> ' + nameOf(crew, rid) + '): waits for ' + leadName + ' to pass it on' + (w.sure ? '' : w.touched ? ' (no heading names the writer; ' + nameOf(crew, writer) + '\'s run wrote into ' + c.inbox + ')' : ' (the heading\'s writer is not confirmed by any run)'));
             }
-          } else would('pass:' + ref, 'WOULD HOLD ' + ref + ' (' + nameOf(crew, writer) + ' -> ' + nameOf(crew, rid) + ') for ' + leadName + ' to pass on (recording only)');
+          } else would('pass:' + ref, 'WOULD HOLD ' + ref + ' (' + whoName + ' -> ' + nameOf(crew, rid) + ') for ' + leadName + ' to pass on (recording only)');
         }
       }
       // 6. spot checks: about 1 in spotCheckEvery accepts, picked by the audit's own id (random, so the lead cannot tell
@@ -686,6 +761,8 @@ function scanTick(o) {
       }
     } catch (err) { log('ACCOUNTABLE ERROR (' + dept + '): ' + String(err && err.message || err).slice(0, 200)); }
   }
+  // what step 5 remembers about blocks out of a department is kept 14 days
+  for (const k of ['outWho', 'outFirst']) for (const [r, v] of Object.entries(st[k] || {})) { const at = typeof v === 'object' ? Number(v && v.at) : Number(v); if (!(at > now - 14 * DAY)) { delete st[k][r]; dirty = true; } }
   if (dirty) writeState(st, o);
   return (inbox, it) => (it ? holds.get(inbox + '\n' + it.heading) || null : null);
 }
@@ -695,6 +772,39 @@ function scanTick(o) {
 // handed back, or one a member's item names (**PR:**), or any PR the merging seat (a member) presents. It clears only with
 // an ACCEPT for that PR at exactly this head commit (the hand-back's --sha). Recording only lets it through and says so
 const normPr = r => { const m = String(r || '').match(/([\w.-]+\/[\w.-]+)(?:\/pull\/|#)(\d+)/); return m ? m[1].toLowerCase() + '#' + m[2] : String(r || '').toLowerCase(); };
+// owner/repo#n for a PR reference that names its repository, or a bare number (#12, PR 12) in --cwd's GitHub origin; else null
+function prKeyOf(ref, cwd) {
+  const r = String(ref || '').trim();
+  if (/([\w.-]+\/[\w.-]+)(?:\/pull\/|#)(\d+)/.test(r)) return normPr(r);
+  const n = /^(?:pr|pull(?: request)?)?\s*#?\s*(\d+)$/i.exec(r); if (!n || !cwd) return null;
+  const u = spawnSync('git', ['-C', cwd, 'remote', 'get-url', 'origin'], { encoding: 'utf8' });
+  const m = u.status === 0 ? /github\.com[:/]+([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i.exec(String(u.stdout).trim()) : null;
+  return m ? (m[1] + '/' + m[2]).toLowerCase() + '#' + n[1] : null;
+}
+// the member an accountable department audits that a PR names as its maker (null if none): the head branch's first part
+// ("ben/fix-parser"), the PR author's GitHub login (loops.json github), an "Author: <name>" line in the PR or a commit,
+// a "(Name)" commit subject, or a commit's git author name
+function prMember(inf, ds, crew, ceo) {
+  const cand = [];
+  const br = String(inf.headRefName || inf.branch || '').trim(); if (br) cand.push(br.split(/[\/]/)[0], br.split(/[\/_-]/)[0]);
+  const login = String((inf.author && (inf.author.login || inf.author.name)) || inf.author || '').trim().toLowerCase();
+  const au = t => { const m = String(t || '').match(/^[ \t>*_]*Author[ \t*_]*[:—–-][ \t*_]*([A-Za-z][A-Za-z0-9_-]*)/im); return m ? m[1] : null; };
+  if (au(inf.body)) cand.push(au(inf.body));
+  for (const c of inf.commits || []) {
+    const subj = String(c.messageHeadline || c.subject || '').trim(), m = subj.match(/\(([A-Z][a-z]+)\)(?:\s*\(#\d+\))*\s*$/);
+    if (m) cand.push(m[1]); if (au(c.messageBody || c.body)) cand.push(au(c.messageBody || c.body));
+    for (const x of c.authors || []) if (x && x.name) cand.push(x.name);
+  }
+  for (const y of ds.list) {
+    if (y.a.mode === 'off' || !leadOk(y.d, ceo)) continue;
+    for (const m of D.members(y.d)) {
+      if (m === String(y.d.lead) || !crew[m]) continue;
+      const names = [m, crew[m].name, firstName(crew[m].name)].filter(Boolean).map(x => String(x).toLowerCase());
+      if ((login && crew[m].github && String(crew[m].github).toLowerCase() === login) || cand.some(x => names.includes(String(x).toLowerCase()))) return { e: y, seat: m };
+    }
+  }
+  return null;
+}
 function gate(a, o) {
   o = o || {}; const crew = crewOf(o), ceo = ceoOf(o, crew);
   let ds; try { ds = deptState(o); } catch (_) { return { needed: false }; }
@@ -718,13 +828,16 @@ function gate(a, o) {
   }
   const seat = seatOf(crew, a.seat);
   if (!e && seat) { e = memberDept(seat, ds, ceo); owner = e ? seat : null; }
+  // a PR nobody handed back or named: the PR itself says whose run made it (its head branch, its author, an Author line
+  // or a "(Name)" commit subject, as competence.js reads authorship), so a member's PR needs the accept whoever merges it
+  if (!e && typeof a.info === 'function') { let inf = null; try { inf = a.info(); } catch (_) { inf = null; } const hit = inf ? prMember(inf, ds, crew, ceo) : null; if (hit) { e = hit.e; owner = hit.seat; } }
   if (!e) return { needed: false };
   const acc = handed.filter(x => x.status === 'accepted' && x.hb.dept === String(e.d.id));
   const ok = sha ? acc.find(x => x.hb.sha && (sha.startsWith(x.hb.sha) || x.hb.sha.startsWith(sha)) && Math.min(sha.length, x.hb.sha.length) >= 7) : null;
   const leadName = nameOf(crew, e.d.lead);
   if (ok) return { needed: true, cleared: true, mode: e.a.effective, audit: ok.id };
   const stale = acc.length > 0;
-  const why = nameOf(crew, owner) + '\'s work is audited by ' + leadName + ' (the lead of ' + (e.d.name || e.d.id) + '), and there is no accept for ' + (want[0] || 'this pull request') + (stale ? ' at this commit (the accept was for another one: hand it back again at this head)' : '') + (seat && seat !== owner ? ' (whoever merges it)' : '') + ': hand it back with node company/tools/accountable.js handback <item> --pr <url> --cwd <repo> --sha <head> --note ".." --by ' + firstName(nameOf(crew, owner)) + ', and merge once ' + firstName(leadName) + ' accepts';
+  const why = nameOf(crew, owner) + '\'s work is audited by ' + leadName + ' (the lead of ' + (e.d.name || e.d.id) + '), and there is no accept for ' + (want[0] || 'this pull request') + (stale ? ' at this commit (the accept was for another one: hand the same item back at this head with --sha <head>; it needs no reopen)' : '') + (seat && seat !== owner ? ' (whoever merges it)' : '') + ': hand it back with node company/tools/accountable.js handback <item> --pr <url> --cwd <repo> --sha <head> --note ".." --by ' + firstName(nameOf(crew, owner)) + ', and merge once ' + firstName(leadName) + ' accepts';
   if (e.a.effective === 'live') return { needed: true, cleared: false, mode: 'live', refuse: why };
   return { needed: true, cleared: false, mode: e.a.effective, would: true, why };
 }
@@ -749,6 +862,18 @@ function leadEntries(seatId, o) {
   } catch (_) { return []; }
 }
 const pendingAudits = (all, dept) => [...all.values()].filter(x => x.hb.dept === dept && x.status === 'open' && !x.hb.shadow);
+// the lead's open "Pass on" blocks: { ref, at (when the hold began), heading, file }
+function heldPasses(o, crew, lead, st) {
+  const li = (crew[lead] || {}).inbox, out = []; if (!li) return out;
+  const SP = require('./sprint');
+  for (const sec of sections(readText(path.join(paths(o).handoffs, li)) || '')) {
+    if (!sec.startsWith('## ')) continue; const it = SP.parseItems(sec)[0];
+    if (!it || !it.open || !PASS_HEAD.test(it.heading)) continue;
+    const ref = String(field(sec, 'Pass-on') || '').trim(); if (!ref) continue;
+    out.push({ ref, at: Date.parse(((st && st.passAsked) || {})[ref] || '') || nowOf(o), heading: it.heading, file: li });
+  }
+  return out;
+}
 async function auditStep(ctx) {
   const o = { root: rootOf(ctx), dry: !!ctx.dry, now: nowOf(ctx) };
   const log = typeof ctx.log === 'function' ? ctx.log : () => {};
@@ -784,21 +909,17 @@ async function auditStep(ctx) {
     const dept = String(e.d.id), lead = String(e.d.lead), leadName = nameOf(crew, lead), lf = firstName(leadName);
     // why the audit waits, in the owner's words (owner: the cause is one the owner controls), for the stall notice below
     const held = (why, owner, tech) => { st.holdWhy[dept] = { why, owner: !!owner, tech: one(tech || why, 200), at: now }; out.held.push(dept); };
-    try {
+    const waitingPasses = heldPasses(o, crew, lead, st);
+    // the run: a missing routine or a busy run falls through to the stall check below (break step), never past it
+    step: try {
       const r = st.routines[dept], job = r && jobs.find(j => j.id === r.jobId);
-      if (!job) { if (pendingAudits(all, dept).length && !o.dry) { const t = 'AUDIT HOLD ' + leadName + ': the audit routine is missing (it is made again on the next tick)'; log(t); held('the run that does ' + lf + '\'s checks could not be set up', false, t); } continue; }
+      if (!job) { if ((pendingAudits(all, dept).length || waitingPasses.length) && !o.dry) { const t = 'AUDIT HOLD ' + leadName + ': the audit routine is missing (it is made again on the next tick)'; log(t); held('the run that does ' + lf + '\'s checks could not be set up', false, t); } break step; }
       const loopJob = crew[lead] && crew[lead].loop ? SCHED.crewLoopOf(jobs, crew[lead].loop) : null;
       const busy = !!(job.inFlight || job.state === 'running'), loopBusy = !!(loopJob && (loopJob.inFlight || loopJob.state === 'running'));
-      if (busy) { dropSeat(lead); say(lead, { state: 'working' }); continue; }
+      if (busy) { dropSeat(lead); say(lead, { state: 'working' }); break step; }
       const open = pendingAudits(all, dept).filter(x => !ran.has(x.id));
       // the lead's open "Pass on" blocks are this run's work too (routine tier), so they never wake its loop on the top tier
-      const li = (crew[lead] || {}).inbox, passes = [];
-      if (li) for (const sec of sections(readText(path.join(paths(o).handoffs, li)) || '')) {
-        if (!sec.startsWith('## ')) continue; const it = SP.parseItems(sec)[0];
-        if (!it || !it.open || !PASS_HEAD.test(it.heading)) continue;
-        const ref = String(field(sec, 'Pass-on') || '').trim(); if (!ref || ran.has('pass:' + ref)) continue;
-        passes.push({ id: 'pass:' + ref, hb: { at: Date.parse((st.passAsked || {})[ref] || '') || now, tier: 'routine', file: li, item: ref, title: it.heading } });
-      }
+      const passes = waitingPasses.filter(p => !ran.has('pass:' + p.ref)).map(p => ({ id: 'pass:' + p.ref, hb: { at: p.at, tier: 'routine', file: p.file, item: p.ref, title: p.heading } }));
       for (const tier of ['risky', 'routine']) {
         const mine = open.filter(x => x.hb.tier === tier).concat(tier === 'routine' ? passes : []); if (!mine.length) continue;
         const bd = C.batchDue({ pending: mine.map(x => ({ id: x.id, at: x.hb.at })), lastAdvise: st.lastAudit[dept], inFlight: loopBusy ? leadName + '\'s own loop is running' : false, batch: e.a.batch, now });
@@ -854,6 +975,30 @@ async function auditStep(ctx) {
         }
       }
     } catch (err) { log('AUDIT ERROR (' + dept + ' stall): ' + String(err && err.message || err).slice(0, 200)); }
+    // a member's message out of the department held stallHours for the lead's pass: the same notice (the CEO, and the
+    // owner when the cause is the owner's), recorded once per block; the CEO may then pass it on or return it in the
+    // lead's place (accountable.js pass <ref> --by <CEO>)
+    try {
+      const stall = stallMs(e.a), late = waitingPasses.filter(p => now - Number(p.at) >= stall && !st.stallTold['pass:' + p.ref]);
+      if (late.length) {
+        const hw = st.holdWhy[dept] && now - Number(st.holdWhy[dept].at) < stall ? st.holdWhy[dept] : null;
+        const why = hw ? hw.why : (late.some(p => ran.has('pass:' + p.ref)) ? lf + ' has not answered it yet' : lf + '\'s check has not started');
+        const hrs = Math.floor((now - Math.min(...late.map(p => Number(p.at)))) / HOUR);
+        const what = p => { const fromTo = /\(([^()]*?) -> ([^()]*?)\)\s*$/.exec(p.heading); return (fromTo ? (fromTo[1] === '?' ? 'a message' : fromTo[1] + '\'s message') + ' to ' + fromTo[2] : 'a message') + ' (' + p.ref + ')'; };
+        const lines = late.map(what);
+        const plainLine = (late.length === 1 ? what(late[0]).replace(/ \([^()]*\)$/, '').replace(/^a/, 'A') + ' has' : late.length + ' messages have') + ' waited ' + hrs + ' hours for ' + lf + ' to pass ' + (late.length === 1 ? 'it' : 'them') + ' on: ' + why + '.';
+        const cf = firstName(nameOf(crew, ceo));
+        if (o.dry) log('WOULD tell ' + nameOf(crew, ceo) + ': ' + plainLine);
+        else {
+          for (const p of late) { append({ op: 'stalled', kind: 'pass', at: now, ts: new Date(now).toISOString(), ref: p.ref, dept, lead, why, tech: hw ? hw.tech : undefined }, o); st.stallTold['pass:' + p.ref] = new Date(now).toISOString(); }
+          appendBlock(o, (crew[ceo] || {}).inbox, 'waiting for ' + lf + ' to pass on: ' + one(lines.join(', '), 120), {
+            'Stalled pass-ons': late.map(p => p.ref).join(', '), Need: plainLine + ' Waiting: ' + lines.join('; ') + '. Clear the cause with ' + lf + ', or decide in ' + lf + '\'s place: pass it on (node company/tools/accountable.js pass <ref> --by ' + cf + ') or return it to the sender (accountable.js pass <ref> --return --why "<what to do instead>" --by ' + cf + ').',
+            Status: 'OPEN' });
+          log('ACCOUNTABLE STALLED PASS ' + late.map(p => p.ref).join(', ') + ' (' + leadName + ', ' + hrs + 'h): ' + (hw ? hw.tech : why) + '; told ' + nameOf(crew, ceo) + (hw && hw.owner ? ' and the owner' : ''));
+          if (hw && hw.owner) try { require('./owner-notice').send({ kind: 'fyi', from: 'the dispatcher', text: plainLine, technical: 'accountable pass-on stalled ' + dept + ': ' + hw.tech, key: 'accountable-stall-pass:' + dept + ':' + dayOf(now) }); } catch (_) {}
+        }
+      }
+    } catch (err) { log('AUDIT ERROR (' + dept + ' pass stall): ' + String(err && err.message || err).slice(0, 200)); }
   }
   // the saving did not show (model-rank.js accountableEvaluation): back to recording only, once per evaluation hash
   const ev = readJson(paths(o).evaluation, null);
@@ -930,4 +1075,4 @@ function status(o) {
 }
 
 module.exports = { WRITER, VERDICTS, OWNER_GATES, AUDIT_LINE, paths, rows, append, audits, acceptanceOf, checkCommandOf, riskOf, auditPair, escalationOk, readsAsEscalation, diffFiles, diffLines,
-  renderPacket, handback, audit, pass, drop, escape, spot, dispute, ruling, countedEscapes, spotPicked, asks, fyiOnly, normPr, scanTick, gate, leadEntries, auditPrompt, template, withOwnText, auditStep, scorecard, scorecardWords, status, fallbackWords, readState };
+  renderPacket, prKeyOf, prMember, runWriter, handback, audit, pass, drop, escape, spot, dispute, ruling, countedEscapes, spotPicked, asks, fyiOnly, normPr, scanTick, gate, leadEntries, auditPrompt, template, withOwnText, auditStep, scorecard, scorecardWords, status, fallbackWords, readState };

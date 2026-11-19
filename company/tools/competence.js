@@ -1563,7 +1563,7 @@ function seriousFlags(res, crew, state, opt) {
   const append = (inbox, heading, fields) => {
     const f = path.join(F.handoffs, inbox);
     const block = '\n## ' + day + ' from Dispatcher — ' + heading + '\n' + Object.entries(fields).map(([k, v]) => '**' + k + ':** ' + v).join('\n') + '\n';
-    if (!o.dry) fs.appendFileSync(f, block);
+    if (!o.dry) require('./lib/tool-blocks').append(f, block);
   };
   for (const s of res.serious) {
     const key = s.srcKey || s.id;

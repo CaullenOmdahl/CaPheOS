@@ -793,7 +793,9 @@ if (cmd === 'check-gh') {
       if (so && so.refuse) refuse(repo + ' #' + h.pr + ': ' + so.refuse + '.'); }
     // accountable leads (lib/accountable.js, docs/DEPARTMENTS.md §8): a member's change merges only once its lead accepted it
     // at this head commit (live refuses; recording only allows). Lazily, like the sign-off: a broken library never refuses
-    { let ac = null; try { ac = require('./lib/accountable').gate({ seat: presenter().agent, refs: ['pr:' + repo + '#' + h.pr], sha: h.sha }); } catch (_) { ac = null; }
+    // info: the PR's head branch, author, body and commits, read only when no hand-back or item names the PR, so a member's
+    // PR nobody handed back still needs the lead's accept (whoever merges it)
+    { let ac = null; try { ac = require('./lib/accountable').gate({ seat: presenter().agent, refs: ['pr:' + repo + '#' + h.pr], sha: h.sha, info: () => JSON.parse(execFileSync(REAL_GH, ['pr', 'view', String(h.pr), '--repo', repo, '--json', 'headRefName,author,body,commits'], { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'pipe'] })) }); } catch (_) { ac = null; }
       if (ac && ac.refuse) refuse(repo + ' #' + h.pr + ': ' + ac.refuse + '.'); }
     log('ALLOWED ' + repo + ' #' + h.pr + ' head ' + h.sha.slice(0, 8));
     process.exit(0);

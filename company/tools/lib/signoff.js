@@ -190,7 +190,7 @@ function appendBlock(inbox, heading, fields, o) {
   const block = '\n## ' + stamp(o) + ' from Dispatcher — ' + heading + '\n' + Object.entries(fields).map(([k, v]) => '**' + k + ':** ' + v).join('\n') + '\n';
   fs.mkdirSync(path.dirname(f), { recursive: true });
   if (!fs.existsSync(f)) fs.writeFileSync(f, '# Handoffs\n');
-  fs.appendFileSync(f, block);
+  require('./tool-blocks').append(f, block);
   return heading;
 }
 // the counterpart's sign-off item: its Status line set DONE once the sign-off is answered or overridden

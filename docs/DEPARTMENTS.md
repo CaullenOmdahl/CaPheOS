@@ -397,7 +397,10 @@ with no command to run: a note alone is not a self-check there. It RUNS the item
 `--test-cmd` (each within `selfCheck.timeoutSec`): one failure is a `selfcheck` row, exit 3, and nothing reaches the lead.
 Work with a PR (`--pr`, or the item's own `**PR:**`) needs `--sha <head>` and `--cwd <repo>`: the commit must exist there,
 the recorded sha is git's full one, and the packet's diff is git's `<base>...<sha>`, never a `--diff`/`--diff-file` typed
-in. The packet shows the lead what the member chose: the folder the checks ran in (`--cwd`), and any change to the
+in. The PR must name its repository (`owner/repo#12` or the PR's URL); a bare `#12` is read in `--cwd`'s GitHub `origin`,
+and refused when there is none, so the accept always matches the PR the merge gate sees. An item already accepted for a
+PR is handed back again when that PR gets a new commit (a rebase, a conflict fix): same PR, a different `--sha`, no reopen
+and no escape; the packet says `**Again:**` with the commit it was accepted at. The packet shows the lead what the member chose: the folder the checks ran in (`--cwd`), and any change to the
 item's check command or acceptance check since it came in (the `intake` row).
 
 **4. The binding audit.** A passing hand-back puts one `## Audit:` block in the lead's inbox (at most `packetMaxChars`, the
@@ -411,10 +414,13 @@ holds, in live:
   DONE set without the lead's accept is put back to OPEN once per closing (`done-held` row, `ACCOUNTABLE DONE HELD`).
   ACCEPT sets it DONE; REVISE sets it OPEN with the findings, and the member is woken to fix it.
 - **the merge**: `merge-gate.js` asks `gate()`. Whether a PR needs the lead's accept is decided by the PR, not by who
-  merges it: a PR a member of an accountable department handed back, one a member's item names (`**PR:**`), or any PR a
-  member presents. The CEO, a seat in another department or the lead merging it changes nothing. It merges only with an
+  merges it: a PR a member of an accountable department handed back, one a member's item names (`**PR:**`), any PR a
+  member presents, or a PR that names a member as its maker (its head branch's first part, `ben/…`; an `Author: Ben` line
+  in the PR or a commit; a `(Ben)` commit subject; a commit's git author name; the author's login when loops.json gives the
+  seat a `github`). The CEO, a seat in another department or the lead merging it changes nothing. It merges only with an
   ACCEPT whose hand-back named that PR at exactly that head commit; a merge with no commit named, or a later commit, needs
-  a new hand-back. Recording only allows and says it would refuse.
+  a new hand-back of the same item at the new head. A PR that names no member anywhere is not recognised as a member's.
+  Recording only allows and says it would refuse.
 - **the onward handoff** (5, below).
 
 **Which model audits.** Routine audits run on `accountable.audit.routine`, risky ones on `accountable.audit.risky`; `null`
@@ -439,7 +445,7 @@ per tier when `batch.startAt` (2) audits wait or the oldest has waited `batch.ma
 the two audit pairs for a live lead). The pair must pass the class rules, the pacer (the override list), the money check
 and the lead's approval mode; if it does not, or the station refuses it, or the routine is missing, the audit WAITS
 (`AUDIT HOLD`). It is never moved to another model. **An audit that waits `stallHours` (6)** is recorded once (`stalled`
-row), and the CEO gets one block in plain words ("Ben's job has waited 7 hours for Kwame's check: Kwame's model is closed
+row; also when the audit routine could not be made), and the CEO gets one block in plain words ("Ben's job has waited 7 hours for Kwame's check: Kwame's model is closed
 right now."); the owner gets the same line as a notice (at most one a day per department) when the cause is one the owner
 controls (the model, the class rules, the money cap, the lead's approval mode, a station 403). The CEO may then answer the
 audit in the lead's place (`audit … --by <CEO>`, recorded `inPlaceOf`) or drop the item (`drop … --by <CEO>`); before it has
@@ -461,6 +467,14 @@ for nothing goes straight. Not held: a block to the people seat, so a member can
 the lead holding or returning it. The lead passes it with `accountable.js pass <inbox>#<item> --by <lead>` (it gets
 `**Passed on by:** <lead> (lead of <dept>, accountable for it)`) or returns it (`--return --why ".."`, which closes it).
 Inside the department, handoffs move freely. The receiver deals with one accountable person.
+Who wrote a block: the seat whose run is seen writing it (an agent's recent tool call carrying the block's heading line,
+however short); the dispatcher only when its own record says so (`company/state/tool-blocks.jsonl`, each row recorded with
+provenance: a heading that says "from Dispatcher" proves nothing). With neither, the heading's "from <name>" is only a
+claim: a block that claims the lead, a member or the dispatcher is held for the lead's pass (and copied to the lead when it
+is in a member's inbox), and a block that names nobody is held when a member's run wrote into that inbox around the time
+it appeared. A held block that waits `stallHours` goes to the CEO like a waiting audit (`stalled` row with `kind: pass`,
+and the owner when the cause is the owner's); the CEO may then pass it on or return it in the lead's place
+(`pass <ref> [--return --why ..] --by <CEO>`, recorded `inPlaceOf`), never before.
 
 **6. The scorecard on the lead.** `accountable.js status [--dept <id>] [--json]`, the department card ("How the team is
 doing", `GET /api/departments/<id>/scorecard`) and the people function's review of the lead read the same numbers over
@@ -514,7 +528,8 @@ recording-only rows the owner may switch it on from the card.
 **Known limits.** The self-check runs in the member's own run, so it is as honest as the item's check command: the lead
 reads the diff against the acceptance check either way, and sees when the command was changed since the item came in.
 A member who runs `accountable.js audit … --by <lead>` with the command name disguised so the transcript check does not
-recognise it can still forge an ACCEPT: the same "takes deliberate steps" protection as elsewhere. A held onward handoff is told apart by its writer the way the
-sign-off hold does (the agents' transcripts, else the heading's name). Workers' models come from their own chains and
+recognise it can still forge an ACCEPT: the same "takes deliberate steps" protection as elsewhere. A held onward handoff is told apart by its writer from the agents' transcripts
+and the dispatcher's own record; a heading's name is only a claim (see 5). A block a member writes through a run whose
+transcript the station has not kept, under a heading that names someone outside the department, is not recognised. Workers' models come from their own chains and
 routes; this section does not move them. Sprint lanes skip an item that is with its lead for audit.
 

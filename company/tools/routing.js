@@ -97,7 +97,7 @@ const S = {   // seams for the tests (company/tools/tests/routing-controls.test.
   // the weekly suggestions' seams (tests/routing-proposals.test.js)
   card: () => require('./lib/owner-card'),
   departments: argv => require('./departments.js').run(argv),
-  ceoInbox: (heading, fields) => { const crew = S.crew(), ceo = S.ceo(), ib = crew[ceo] && crew[ceo].inbox; if (!ib) return null; const f = P('company', 'work', 'handoffs', ib); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, '\n## ' + co.localParts(new Date(S.now())).date + ' from Dispatcher — ' + heading + '\n' + Object.entries(fields).map(([k, v]) => '**' + k + ':** ' + v).join('\n') + '\n'); return ib; },
+  ceoInbox: (heading, fields) => { const crew = S.crew(), ceo = S.ceo(), ib = crew[ceo] && crew[ceo].inbox; if (!ib) return null; const f = P('company', 'work', 'handoffs', ib); require('./lib/tool-blocks').append(f, '\n## ' + co.localParts(new Date(S.now())).date + ' from Dispatcher — ' + heading + '\n' + Object.entries(fields).map(([k, v]) => '**' + k + ':** ' + v).join('\n') + '\n'); return ib; },
 };
 const P = (...x) => path.join(S.root(), ...x);
 const REL = 'company/work/models/routing-policy.json';

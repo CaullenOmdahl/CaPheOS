@@ -82,7 +82,7 @@ function appendHandoff(seatId, heading, fields, from) {
   const block = '\n## ' + co.localParts().date + ' from ' + (from || 'Dispatcher') + ' — ' + heading + '\n' +
     Object.entries(Object.assign({ Status: 'OPEN' }, fields)).sort(([a], [b]) => (a === 'Status') - (b === 'Status'))
       .map(([k, v]) => '**' + k + ':** ' + (v instanceof Date ? stamp(v) : v)).join('\n') + '\n';
-  fs.appendFileSync(f, block);
+  require('./tool-blocks').append(f, block);
   return inbox;
 }
 
