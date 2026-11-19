@@ -30,7 +30,8 @@ trap cleanup EXIT
 LS_OPTS=(-co --exclude-standard); [ "${TEST_TRACKED_ONLY:-}" = 1 ] && LS_OPTS=(-c)
 ( cd "$REPO" && git ls-files -z "${LS_OPTS[@]}" | tar --null --ignore-failed-read -T - -cf - 2>/dev/null ) | tar -xf - -C "$COPY"
 
-export STARNET_URL="http://127.0.0.1:1" CAPHEOS_ROOT="$COPY" PYTHONDONTWRITEBYTECODE=1
+# CAPHEOS_SECWATCH_OFFLINE: the security watch (company/tools/security-watch.js) makes no live advisory lookup from any test
+export STARNET_URL="http://127.0.0.1:1" CAPHEOS_ROOT="$COPY" PYTHONDONTWRITEBYTECODE=1 CAPHEOS_SECWATCH_OFFLINE=1
 
 NAMES=(); RESULTS=(); TIMES=(); FAILED=0
 # step <label> <cmd...> — run in the copy, with a timeout; output goes to a log, shown on failure
@@ -102,6 +103,7 @@ step "tests/page-kit-walk.js (headless Chrome: every scaffold page light/dark, d
 step "tests/minimax-endpoint-walk.js (headless Chrome: MiniMax endpoint picker in Setup, Settings and Today; SKIP without Chrome)" node tests/minimax-endpoint-walk.js
 step "tests/console-routes-walk.js (headless Chrome: old routes redirect, no paths outside Details; SKIP without Chrome)" node tests/console-routes-walk.js
 step "tests/services-walk.js (headless Chrome: Settings › System › Background services; SKIP without Chrome)" node tests/services-walk.js
+step "tests/security-walk.js (headless Chrome: Settings › Security in plain words, details collapsed, Check now; SKIP without Chrome)" node tests/security-walk.js
 step "tests/alarm-walk.js (headless Chrome: the chat command notice, Settings › System › Test the outside alarm; SKIP without Chrome)" node tests/alarm-walk.js
 step "tests/connect-walk.js (headless Chrome: Settings › Connections and keys › Sign-ins, the Connect dialog; SKIP without Chrome)" node tests/connect-walk.js
 step "tests/service-keys-walk.js (headless Chrome: Settings › Connections and keys › Service keys, Today's Already saved; SKIP without Chrome)" node tests/service-keys-walk.js

@@ -242,6 +242,7 @@ in §5a instead.
 | `company/tools/budget-migrate.js` | tools | `node company/tools/budget-migrate.js --selftest` |
 | `company/tools/build-inventory.js` | people | `node company/tools/build-inventory.js --selftest` |
 | `company/tools/cadence.js` | tools | `node company/tools/cadence.js selftest` |
+| `company/tools/security-watch.js` | risk | `node company/tools/security-watch.js selftest` |
 | `company/tools/cap-numerator.js` | finance | `node company/tools/cap-numerator.js --selftest` |
 | `company/tools/connector-scope.js` | risk | `node company/tools/connector-scope.js --selftest` |
 | `company/tools/decide.js` | risk | `node company/tools/decide.js selftest` |

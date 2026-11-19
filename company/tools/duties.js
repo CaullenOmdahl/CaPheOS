@@ -38,6 +38,8 @@ const DUTIES = [
     why: 'a prepaid provider\'s credit (DeepSeek) below its low line, about 3 days of use, before calls fail; no amount leaves the owner\'s state' },
   { id: 'deps-verify', tool: 'deps.js', route: 'tools', everyMin: 60, timeoutMs: 15000, whileHalted: false, enabledByDefault: true,
     why: 'a package environment missing or different from its lock (to tools), a dependency lock or manifest edited outside deps.js or an ad hoc pip/npm install seen in a transcript (to risk), an owner answer on a pending dependency (to the asker)' },
+  { id: 'security-watch', tool: 'security-watch.js', route: 'risk', everyMin: 15, timeoutMs: 10000, whileHalted: false, enabledByDefault: true,
+    why: 'a known security hole (CVE/advisory) in a part the company runs: P0 (serious, in use here, fixed release or exploited in the wild) wakes the security seat at once; P1 (serious, no fix yet) needs a workaround; smaller ones once a week; or the security check itself has not succeeded in 2 x its rescan time. Reads only what security-watch.js refresh recorded (docs/SECURITY-WATCH.md)' },
   { id: 'departments', tool: 'departments.js', route: 'people', everyMin: 60, timeoutMs: 10000, whileHalted: false, enabledByDefault: true,
     why: 'company/departments.json, loops.json and FLOOR_PLAN.md disagree, or a department brief is missing or over its size limit (to people); a department change the people function proposed waits for the CEO (to ceo). Reports, never fixes; nothing is due while the company has no departments' },
   { id: 'house-ranking', tool: 'model-rank.js', route: 'people', everyMin: 60, timeoutMs: 30000, whileHalted: false, enabledByDefault: true,

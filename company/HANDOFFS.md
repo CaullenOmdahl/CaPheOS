@@ -16,6 +16,7 @@ Append a block to `company/work/handoffs/to-<name>.md` (the `inbox` field of the
 **Evidence:** link the work, command output or file
 **Touches:** src/intake/, docs/intake.md (optional: the paths or areas this work changes)
 **Effort:** mechanical | reasoning (optional)
+**Priority:** P0 (optional, rare: written by the dispatcher for a P0 duty such as a security hole; work it first)
 ```
 **A Deadline is when the work must be done, never when it may start.** It defers nothing: an OPEN block with a Deadline
 next week is work now. The dispatcher reads the line only to order the work (a seat with an item due sooner is woken

@@ -48,7 +48,7 @@ const REDIRECTS = [
 ];
 // every owner-facing screen (the halt screen included)
 const SCREENS = ['#/today', '#/chat/owner', '#/chat/agent:agent', '#/chat/group:g1', '#/crew', '#/crew/agent/model', '#/crew/hiring', '#/crew/floor', '#/work/quests', '#/work/handoffs', '#/work/decisions', '#/work/projects',
-  '#/spend', '#/settings/company', '#/settings/autonomy', '#/settings/tempo', '#/settings/models', '#/settings/connections', '#/settings/pages', '#/settings/system', '#/halt'];
+  '#/spend', '#/settings/company', '#/settings/autonomy', '#/settings/tempo', '#/settings/models', '#/settings/connections', '#/settings/security', '#/settings/pages', '#/settings/system', '#/halt'];
 // file paths, tool names, API routes, and the raw ids, tags and counters the owner should never read outside Details:
 // question ids, candidate seat ids, governance/pacing tags, tool-call markup, lane counters, the pacer's jargon
 const LEAK = /company\/|\.js\b|\/api\/|\bq-\d{4,}\b|\bcand-[a-z]|\b(governance|pacing):|<parameter|<invoke|parameter name=|lanes? running|days' share|% did nothing|\/item\b|proposals\/h|spend rail|\(owner-only|mode 0600/;
@@ -134,7 +134,7 @@ async function startMock(env) {
     // Settings: one screen, every section listed, the current one marked; tabs on a phone
     await go('#/settings/autonomy');
     const secs = await js(`[...document.querySelectorAll('.settings-nav a')].map(a => a.textContent + (a.getAttribute('aria-current') === 'page' ? '*' : ''))`);
-    check('Settings lists its seven sections and marks the open one', JSON.stringify(secs) === JSON.stringify(['Company and charter', 'Autonomy and guardrails*', 'Tempo and routines', 'Models and subscriptions', 'Connections and keys', 'Console pages', 'System']), secs);
+    check('Settings lists its eight sections and marks the open one', JSON.stringify(secs) === JSON.stringify(['Company and charter', 'Autonomy and guardrails*', 'Tempo and routines', 'Models and subscriptions', 'Connections and keys', 'Security', 'Console pages', 'System']), secs);
     // each guardrail shows its value, what it does and what switching it changes
     const g = await js(`(() => { const r = document.querySelector('#set-guard-spendCap'); return r ? { text: r.innerText, sw: !!r.querySelector('[role=switch]') } : null; })()`);
     check('a guardrail shows its current value, what it does and what flipping it changes', g && g.sw && /On/.test(g.text) && /stops at the daily cap/.test(g.text) && /If you switch it off/.test(g.text), g);

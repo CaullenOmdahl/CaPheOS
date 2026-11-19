@@ -9,6 +9,7 @@ export const SETTINGS_SECTIONS = [
   ['tempo', 'Tempo and routines'],
   ['models', 'Models and subscriptions'],
   ['connections', 'Connections and keys'],
+  ['security', 'Security'],
   ['pages', 'Console pages'],
   ['system', 'System'],
 ];

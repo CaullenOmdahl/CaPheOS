@@ -12,7 +12,9 @@ const DUE_RECHECK_MIN = 30;   // see wanted() in tick: a 'due' finding is re-che
  *   R.sanitize(text, max)           what any reason goes through before a prompt or a log
  *
  * The contract a duty keeps: `node <tool> --duty`, no other argument. Exit 0 = nothing due; exit 1 = due, stdout one
- * JSON object {due:true, reason, route?, key, items?}; anything else, a timeout or more than 16 KB of output = broken.
+ * JSON object {due:true, reason, route?, key, items?, priority?, evidence?}; anything else, a timeout or more than 16 KB of
+ * output = broken. priority 'P0' (the only value) makes the dispatcher wake the routed seat at once, past its rest, and
+ * writes a **Priority:** P0 line; evidence, a path under company/work/, becomes the handoff's **Evidence:** line.
  * Absence never renders green: a duty is ok only if it ran inside 2 x its cadence and its last result was ok.
  */
 const fs = require('fs');
@@ -119,7 +121,8 @@ function parseDue(stdout) {
   if (typeof j.key !== 'string' || !j.key.trim()) return { error: 'due without a key' };
   if (j.route != null && !safeRoute(j.route)) return { error: 'due with a route that is neither a function nor a seat id' };
   const items = Array.isArray(j.items) ? j.items.slice(0, 50).map(x => (x && typeof x === 'object' ? { id: safeId(x.id), route: safeRoute(x.route) || undefined } : { id: safeId(x) })).filter(x => x.id) : [];
-  return { reason: sanitize(j.reason, 300), key: safeId(j.key, 80), route: j.route ? safeRoute(j.route) : null, items };
+  const evidence = typeof j.evidence === 'string' && /^company\/work\/[A-Za-z0-9_./-]{1,160}$/.test(j.evidence) && !j.evidence.split('/').includes('..') ? j.evidence : null;
+  return { reason: sanitize(j.reason, 300), key: safeId(j.key, 80), route: j.route ? safeRoute(j.route) : null, items, priority: j.priority === 'P0' ? 'P0' : null, evidence };
 }
 function runOne(d, opts) {
   const t0 = Date.now();
@@ -186,8 +189,8 @@ async function tick(opts) {
     if (r.result === 'waited') { x.st.waits = (x.st.waits || 0) + 1; x.st.lastWaitAt = iso(now); out.waited.push(x.d.id); continue; }
     const st = x.st; const prev = st.lastResult;
     st.lastRun = iso(now); st.lastResult = r.result; st.ms = r.ms; st.waits = 0;
-    if (r.result === 'due') { if (prev !== 'due' || !st.dueSince) st.dueSince = iso(now); st.key = r.key; st.reason = r.reason; st.route = r.route || null; st.items = r.items; }
-    else { delete st.dueSince; delete st.reason; delete st.items; delete st.route; if (r.result === 'ok') st.key = null; }
+    if (r.result === 'due') { if (prev !== 'due' || !st.dueSince) st.dueSince = iso(now); st.key = r.key; st.reason = r.reason; st.route = r.route || null; st.items = r.items; if (r.priority) st.priority = r.priority; else delete st.priority; if (r.evidence) st.evidence = r.evidence; else delete st.evidence; }
+    else { delete st.dueSince; delete st.reason; delete st.items; delete st.route; delete st.priority; delete st.evidence; if (r.result === 'ok') st.key = null; }
     if (r.result === 'broken') { st.error = r.error; st.brokenSince = st.brokenSince || iso(now); } else { delete st.error; delete st.brokenSince; }
     st.history = (st.history || []).concat([{ at: iso(now), result: r.result, ms: r.ms, key: r.key || null }]).slice(-HISTORY);
     out.ran.push(x.d.id);
@@ -237,7 +240,7 @@ function view(opts) {
     if (s === 'stale' && pausedNote && !d.whileHalted) s = 'paused';
     return { id: d.id, source: d.source, tool: d.tool, route: st.route || d.route, owner: routeName(st.route || d.route), state: s, enabled: set.enabled, everyMin: set.everyMin,
       checkedAt: st.lastRun || null, reason: s === 'due' ? st.reason || null : s === 'broken' ? sanitize(d.invalid || st.error || 'broken', 240) : s === 'stale' ? (st.lastRun ? 'last run ' + st.lastRun + ', older than 2 x ' + set.everyMin + ' min' : 'never run') : s === 'paused' ? pausedNote : null,
-      key: st.key || null, items: s === 'due' ? (st.items || []) : [], dueSince: st.dueSince || null, brokenSince: st.brokenSince || null, waits: st.waits || 0, whileHalted: !!d.whileHalted,
+      key: st.key || null, items: s === 'due' ? (st.items || []) : [], priority: s === 'due' ? st.priority || null : null, dueSince: st.dueSince || null, brokenSince: st.brokenSince || null, waits: st.waits || 0, whileHalted: !!d.whileHalted,
       history: (st.history || []).slice(-HISTORY) };
   }) };
 }

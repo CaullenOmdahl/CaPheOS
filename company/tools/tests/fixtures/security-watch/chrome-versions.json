@@ -1,0 +1,1 @@
+{ "_doc": "synthetic, shaped like versionhistory.googleapis.com/v1/chrome/platforms/linux/channels/stable/versions", "versions": [ { "name": "chrome/platforms/linux/channels/stable/versions/157.0.8103.92", "version": "157.0.8103.92" }, { "name": "chrome/platforms/linux/channels/stable/versions/157.0.8103.78", "version": "157.0.8103.78" } ] }
