@@ -222,7 +222,9 @@ check "panel renders via the console API" bash -c "r=\$(curl -s -H 'x-console-to
 check "tool-written handoffs carry a dated deadline (console due list)" bash -c "r=\$(curl -s -H 'x-console-token: $CTOKEN' http://127.0.0.1:$CPORT/api/handoffs); node -e 'const o=JSON.parse(process.argv[1]); const h=o.items.find(x=>/from hire.js/.test(x.heading)); if(!h||!h.due) { console.error(JSON.stringify(h)); process.exit(1); }' \"\$r\""
 
 # ---------- 13. core module: liveness -> tick -> heartbeat ----------
+touch .capheos-selftest-fixture   # the owner's enable (an owner check): this throwaway company answers it, CI too (see section 5)
 check "module.js enable liveness" bash -c "node '$TOOLS/module.js' enable liveness --by owner --json > '$T/liveness-enable.out' 2>&1 && grep -q '\"status\": \"conformant\"' '$T/liveness-enable.out'" || tail -5 "$T/liveness-enable.out"
+rm -f .capheos-selftest-fixture
 check "liveness tool documented on enable (inventory check green)" node "$TOOLS/tool-inventory-check.js"
 node "$TOOLS/dispatch.js" > "$T/dispatch-3.out" 2>&1
 check "dispatch tick writes the heartbeat (liveness tick hook)" bash -c "node -e 'const h=require(\"$R/company/state/heartbeat.json\"); if (!h.at||!(h.ticks>=1)) process.exit(1)' && ! grep -q 'TICK ERROR' '$T/dispatch-3.out'"

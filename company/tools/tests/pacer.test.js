@@ -55,6 +55,7 @@ const roots = [];
 function fixture(o) {
   o = o || {};
   const root = require('../lib/temp-life').tmpDir('pacer-test-');
+  fs.writeFileSync(path.join(root, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: this throwaway company answers owner checks, also in CI or an agent's run
   roots.push(root);
   const home = path.join(root, 'home');
   const w = (rel, data) => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };

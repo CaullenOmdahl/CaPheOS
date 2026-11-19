@@ -45,6 +45,7 @@ function run(T, code, o) {
 function company(o) {
   o = o || {};
   const T = require('../lib/temp-life').tmpDir('owner-exp-'); roots.push(T);
+  fs.writeFileSync(path.join(T, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: this throwaway company answers owner checks, also in CI or an agent's run
   W(T, 'company/company.json', { name: 'OC', slug: 'oc', owner: { name: 'Pat Owner' }, timezone: 'UTC', station: { url: 'http://127.0.0.1:9' } });
   W(T, 'company/tools/loops.json', { agents: o.agents || {
     agent: { name: 'Alex', manager: null, functions: ['ceo'], inbox: 'to-alex.md' },
@@ -135,6 +136,7 @@ test('B1: crew guidance tells agents how to declare the websites a job needs', (
 function fixture(o) {
   o = o || {};
   const root = require('../lib/temp-life').tmpDir('owner-exp-fx-'); roots.push(root);
+  fs.writeFileSync(path.join(root, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: this throwaway company answers owner checks, also in CI or an agent's run
   fs.cpSync(path.join(REPO, 'company'), path.join(root, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
   fs.cpSync(path.join(REPO, 'console'), path.join(root, 'console'), { recursive: true });
   if (o.modules) fs.cpSync(path.join(REPO, 'modules'), path.join(root, 'modules'), { recursive: true });

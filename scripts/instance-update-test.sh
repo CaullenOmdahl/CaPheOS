@@ -44,7 +44,10 @@ check "the company-owned files are hidden up front" bash -c '[[ $(git ls-files -
 node -e 'const f="company/model-policy.json",fs=require("fs");const p=JSON.parse(fs.readFileSync(f,"utf8"));p.candidateDefault.setBy="Alex";fs.writeFileSync(f,JSON.stringify(p,null,1)+"\n")'
 check "an owner write to model-policy.json does not leak" bash -c 'clean() { [[ -z "$(git status --porcelain)" ]]; }; clean && scripts/instance-guard.sh --check >/dev/null'
 
-out="$(node company/tools/module.js enable liveness --by Alex --json 2>&1)" || true
+# the owner's enable: this throwaway company answers owner checks (provenance.fixtureRoot) also when CI or an agent runs the
+# test (no owner shell there); the marker is git-excluded so the clean checks below still hold
+echo .capheos-selftest-fixture >> .git/info/exclude; touch .capheos-selftest-fixture
+out="$(CAPHEOS_ROOT="$I" node company/tools/module.js enable liveness --by Alex --json 2>&1)" || true
 check "module enable liveness: conformant" grep -q '"status": "conformant"' <<<"$out"
 check "enable leaves the tracked INVENTORY.md and runbook untouched" bash -c '! git ls-files -v company/tools/INVENTORY.md company/runbooks/tool-management.md | grep -q "^S" && git diff --quiet HEAD -- company/tools/INVENTORY.md company/runbooks/tool-management.md'
 check "module rows are in company/state/inventory-local.md" grep -q 'company/tools/liveness.js' company/state/inventory-local.md

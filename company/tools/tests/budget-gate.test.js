@@ -48,6 +48,7 @@ const reqs = () => fs.readFileSync(mock.logFile, 'utf8').split('\n').filter(Bool
 async function company(o) {
   o = o || {};
   const T = fs.realpathSync(require('../lib/temp-life').tmpDir('budget-gate-co-')); roots.push(T);
+  fs.writeFileSync(path.join(T, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: this throwaway company answers owner checks, also in CI or an agent's run
   const tag = path.basename(T);
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };
   const cfg = { name: 'Gate Test ' + tag, owner: { name: 'Pat' }, timezone: 'UTC', station: { port, serviceName: 'gate-test' } };
