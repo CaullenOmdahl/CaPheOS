@@ -272,7 +272,12 @@ function load(o) {
   // advisor leads (docs/DEPARTMENTS.md §5): the consult ledger and the departments' advisor settings, for advisorEvaluation
   const consults = parse(B.tailText(path.join(root, 'company', 'state', 'consults.jsonl'), 8 * B.MB));
   let deptSettings = null; try { deptSettings = require('./lib/departments').settings(departments, { root }); } catch (_) {}
-  return { policy: pol.policy, policySource: pol.source, routing: loadRouting(root), now, crew, departments, deptSettings, consults, wakes, runs, attributed, files, ledger, corrections, evidence };
+  // full profiles (docs/PROFILES.md): sign-off records, meeting echo stats and each seat's profile history (the trials), for profileEvaluation
+  const signoffs = parse(B.tailText(path.join(root, 'company', 'state', 'signoffs.jsonl'), 4 * B.MB));
+  const meetingStats = parse(B.tailText(path.join(root, 'company', 'work', 'meetings', 'stats.jsonl'), 4 * B.MB));
+  const profileHistory = {};
+  try { const pd = path.join(root, 'company', 'people', 'profiles'); for (const f of fs.readdirSync(pd).filter(x => /\.history\.jsonl$/.test(x)).sort()) profileHistory[f.replace(/\.history\.jsonl$/, '')] = parse(B.tailText(path.join(pd, f), 2 * B.MB)).map(r => ({ at: r.at, version: r.version, op: r.op, kind: r.kind, trial: r.body && r.body.trial ? { from: r.body.trial.from, until: r.body.trial.until } : null })); } catch (_) {}
+  return { policy: pol.policy, policySource: pol.source, routing: loadRouting(root), now, crew, departments, deptSettings, consults, wakes, runs, attributed, files, ledger, corrections, evidence, signoffs, meetingStats, profileHistory };
 }
 
 /* ---------------- the ranking (pure) ---------------- */
@@ -564,6 +569,7 @@ function evalKnobs(P) {
       confidence: clamp(num(g(T.interval, 'confidence', g(P.interval, 'confidence', 0.8)), 0.8), 0.5, 0.999) } : null,
     advisor: P && P.advisorEvaluation && typeof P.advisorEvaluation === 'object' ? Object.assign({ minItems: 20, minDays: 14, consultRate: [0.10, 0.40], cachedShareMin: 0.85, oneShotGainPoints: 10, reworkCutShare: 0.20 }, P.advisorEvaluation) : null,
     fanout: P && P.fanoutEvaluation && typeof P.fanoutEvaluation === 'object' ? { minItems: Math.max(1, num(P.fanoutEvaluation.minItems, 10)) } : null,
+    profile: P && P.profileEvaluation && typeof P.profileEvaluation === 'object' ? { minItems: Math.max(1, num(P.profileEvaluation.minItems, 5)) } : null,
     tierCaps: C ? { minItems: Math.max(1, num(C.minItems, 20)), windowCut: clamp(num(C.windowCut, 0.3), 0, 1), reworkMaxRatio: Math.max(1, num(C.reworkMaxRatio, 1.25)),
       baseline: C.baseline === 'uncapped' ? 'uncapped' : 'wouldApply', rates: (Array.isArray(C.rates) ? C.rates : ['revise', 'reopen']).filter(x => x === 'revise' || x === 'reopen'),
       rollBackDutyModes: Array.isArray(C.dutyWhenModes) ? C.dutyWhenModes.map(String) : ['live'] } : null,
@@ -701,7 +707,69 @@ function evaluate(inp, an) {
   }
   if (E.advisor) { const a = advisorEvaluation(inp, an, K, E.advisor, scoredOf); if (a) res.advisor = a; }
   if (E.fanout) { const f = fanoutEvaluation(inp, an, K, E.fanout, scoredOf); if (f) res.fanout = f; }
+  if (E.profile) { const pe = profileEvaluation(inp, an, K, E.profile, scoredOf); if (pe) res.profile = pe; }
   return res;
+}
+/* profileEvaluation (docs/RANKING.md §10, docs/PROFILES.md): how each seat does under each version of its profile. An item
+ * belongs to the profile version of its first wake that carries one (wakes.jsonl profile, written by the dispatcher).
+ * Per seat and version: scored items, one-shot rate, rework per item (extra runs + REVISE rounds), owner corrections
+ * (corrections-log rows naming the seat while that version ran). Per counterpart: its sign-off answers, the share that
+ * were no, and how many of its noes were later overturned (a later yes or a CEO override on the same sign-off). Per
+ * seat: meeting stance share and the phrase overlap of the pairs it was in (company/work/meetings/stats.jsonl). A trial
+ * (profile history trial-start) compares the same number of days before it with the days during it, next to the seats
+ * that did not change over the same windows (the no-intervention baseline), with a fixed caveat line. Deterministic;
+ * nothing acts on it. No wake with a profile and no trial: no section at all. */
+const PROFILE_CAVEAT = 'Before-and-after numbers also move on their own; compare with the seats that did not change.';
+function profileEvaluation(inp, an, K, base, scoredOf) {
+  const z = zOf(K.confidence), now = inp.now;
+  const verOfWake = new Map(); for (const w of inp.wakes || []) if (w && w.wakeId && w.profile && Number.isInteger(w.profile.version)) verOfWake.set(w.wakeId, w.profile.version);
+  const hist = inp.profileHistory || {};
+  const trials = [];
+  for (const [seat, rows] of Object.entries(hist)) {
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i]; if (r.op !== 'trial-start') continue;
+      const end = rows.slice(i + 1).find(x => x.op === 'trial-keep' || x.op === 'trial-end' || x.op === 'undo');
+      trials.push({ seat, version: r.version, from: r.trial ? r.trial.from : null, start: Date.parse(r.at) || null, end: end ? Date.parse(end.at) || null : null, state: end ? (end.op === 'trial-keep' ? 'kept' : 'reverted') : 'running' });
+    }
+  }
+  if (!verOfWake.size && !trials.length) return null;
+  const scored = an.items.filter(it => scoredOf(it));
+  const side = list => { const n = list.length, succ = list.reduce((x, i) => x + i.oneShot, 0), [lo, hi] = wilsonBounds(succ, n, z);
+    return { items: n, oneShotRate: n ? rnd(succ / n, 4) : null, lower: rnd(lo, 4), upper: rnd(hi, 4), reworkPerItem: n ? rnd(list.reduce((x, i) => x + i.extraRuns + i.reviseRounds, 0) / n, 4) : null, enough: n >= base.minItems }; };
+  const versionOf = it => { for (const id of it.wakes || []) if (verOfWake.has(id)) return verOfWake.get(id); return null; };
+  const corrAt = r => Date.parse(String(r.at || '').replace(' ', 'T')) || null;
+  const corr = (inp.corrections || []).filter(r => r && r.event === 'added' && r.agentId);
+  const so = new Map(); for (const r of inp.signoffs || []) { if (!r || !r.id) continue; if (!so.has(r.id)) so.set(r.id, { ask: null, answers: [], override: null }); const x = so.get(r.id); if (r.op === 'ask') x.ask = r; else if (r.op === 'answer') x.answers.push(r); else if (r.op === 'override') x.override = r; }
+  const seats = new Set([...verOfWake.keys()].map(id => { const w = an.wakeById.get(id); return w ? String(w.seat) : null; }).filter(Boolean).concat(trials.map(t => t.seat)));
+  for (const x of so.values()) if (x.ask && x.ask.counterpart) seats.add(String(x.ask.counterpart));
+  const out = [];
+  for (const seat of [...seats].sort()) {
+    const mine = scored.filter(it => String(it.seat) === seat);
+    const byV = new Map(); for (const it of mine) { const v = versionOf(it); if (v == null) continue; if (!byV.has(v)) byV.set(v, []); byV.get(v).push(it); }
+    const versions = [...byV.keys()].sort((a, b) => a - b).map(v => { const l = byV.get(v), first = Math.min(...l.map(i => i.closedAt)), last = Math.max(...l.map(i => i.closedAt));
+      return Object.assign({ version: v, firstAt: new Date(first).toISOString(), lastAt: new Date(last).toISOString(), corrections: corr.filter(r => r.agentId === seat && corrAt(r) >= first && corrAt(r) <= last).length }, side(l)); });
+    const answers = [...so.values()].filter(x => x.ask && x.ask.counterpart === seat && x.answers.some(a => a.by === seat));
+    const noes = answers.filter(x => x.answers.some(a => a.by === seat && a.verdict === 'no'));
+    const overturned = noes.filter(x => x.override || x.answers.some((a, i) => a.verdict === 'yes' && x.answers.slice(0, i).some(b => b.verdict === 'no'))).length;
+    const ms = (inp.meetingStats || []).filter(r => r && r.seats && r.seats[seat]);
+    const sh = ms.map(r => r.seats[seat].share).filter(x => x != null), ov = []; for (const r of ms) for (const p of r.pairs || []) if ((p.seats || []).includes(seat)) ov.push(p.overlap);
+    const entry = { seat, versions,
+      signoff: answers.length ? { answered: answers.length, noRate: rnd(noes.length / answers.length, 4), noes: noes.length, overturned } : null,
+      meetings: ms.length ? { meetings: ms.length, stanceShare: sh.length ? rnd(sh.reduce((a, b) => a + b, 0) / sh.length, 4) : null, overlap: ov.length ? rnd(ov.reduce((a, b) => a + b, 0) / ov.length, 4) : null } : null };
+    if (versions.length || entry.signoff || entry.meetings) out.push(entry);
+  }
+  const tr = trials.sort((a, b) => (a.start || 0) - (b.start || 0) || (a.seat < b.seat ? -1 : 1)).map(t => {
+    const end = t.end || now, len = Math.max(DAY, end - (t.start || end)), b0 = (t.start || end) - len;
+    const inWin = (it, a, b) => it.closedAt >= a && it.closedAt < b;
+    const me = scored.filter(it => String(it.seat) === t.seat), others = scored.filter(it => String(it.seat) !== t.seat && !trials.some(x => x !== t && x.seat === String(it.seat) && (x.start || 0) < end && (x.end || now) > b0));
+    const before = side(me.filter(it => inWin(it, b0, t.start))), during = side(me.filter(it => inWin(it, t.start, end)));
+    const bb = side(others.filter(it => inWin(it, b0, t.start))), bd = side(others.filter(it => inWin(it, t.start, end)));
+    const pts = (a, b) => a.oneShotRate != null && b.oneShotRate != null ? rnd(100 * (b.oneShotRate - a.oneShotRate), 2) : null;
+    return { seat: t.seat, version: t.version, from: t.from, start: t.start ? new Date(t.start).toISOString() : null, end: t.end ? new Date(t.end).toISOString() : null, state: t.state, days: rnd(len / DAY, 2),
+      before, during, oneShotPoints: pts(before, during), baseline: { before: bb, during: bd, oneShotPoints: pts(bb, bd) },
+      verdict: before.enough && during.enough ? 'compare with the baseline' : 'not enough data', caveat: PROFILE_CAVEAT };
+  });
+  return { caveat: PROFILE_CAVEAT, minItems: base.minItems, seats: out, trials: tr };
 }
 /* fanoutEvaluation (docs/RANKING.md §6/§10, the middle-management plan's P5): per department whose delegation is not off,
  * its members' scored delegated items (a delegated child run, or piece lanes of a recorded split: item.delegated) against
@@ -880,7 +948,7 @@ const trialFile = id => (/^[A-Za-z0-9_.-]{1,64}$/.test(id) && !/^\.+$/.test(id) 
 // write the evaluation files that changed: routing-evaluation.json and trials/<id>.md (each compared with what is on disk)
 function writeEvaluation(root, ev, digest, dry) {
   const R = routingPaths(root), wrote = [];
-  if (!ev.trials && !ev.tierCaps && !ev.advisor && !ev.fanout) return wrote;
+  if (!ev.trials && !ev.tierCaps && !ev.advisor && !ev.fanout && !ev.profile) return wrote;
   const want = [[R.evaluation, JSON.stringify(Object.assign({ hash: bodyHash(ev) }, sortKeys(ev)), null, 1) + '\n']];
   for (const t of ev.trials || []) want.push([path.join(R.trialsDir, trialFile(t.id)), renderTrialMd(t, digest)]);
   for (const r of (ev.advisor && ev.advisor.departments) || []) if (/^[a-z][a-z0-9-]{1,31}$/.test(r.dept)) want.push([path.join(root, 'company', 'work', 'models', 'advisor-' + r.dept + '.md'), renderAdvisorMd(r)]);
@@ -1099,5 +1167,5 @@ function main() {
   process.exit(2);
 }
 
-module.exports = { rank, analyze, evaluate, advisorEvaluation, fanoutEvaluation, renderAdvisorMd, evalKnobs, trialDecision, renderTrialMd, writeEvaluation, evaluationDuty, loadRouting, wilsonBounds, armKeyOf, load, loadPolicy, knobs, refresh, refreshDue, duty, decide, verifyChain, historyRow, fileText, renderMd, bodyHash, wilsonLower, zOf, prRefs, verdictsIn, runKind, runCost, priceOf, paths, sortKeys };
+module.exports = { rank, analyze, evaluate, advisorEvaluation, fanoutEvaluation, profileEvaluation, PROFILE_CAVEAT, renderAdvisorMd, evalKnobs, trialDecision, renderTrialMd, writeEvaluation, evaluationDuty, loadRouting, wilsonBounds, armKeyOf, load, loadPolicy, knobs, refresh, refreshDue, duty, decide, verifyChain, historyRow, fileText, renderMd, bodyHash, wilsonLower, zOf, prRefs, verdictsIn, runKind, runCost, priceOf, paths, sortKeys };
 if (require.main === module) main();
