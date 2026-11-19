@@ -54,7 +54,7 @@ test('proof by unit, station pid and ledger receipt (pid AND identity: a reused 
   f.put(22, { cmd: ['node', 'sidecar/index.js'] });
   f.put(23, { cmd: ['bash', '-c', 'npm run build'], start: 200 });
   f.put(24, { cmd: ['bash', '-c', 'npm run build'], start: 900000 });
-  const c = ctxOf(f, { stationPids: [22], ledger: [{ pid: 23, cmd: 'bash -c npm run build', kind: 'shell.fg', created: null, startedAt: Date.now() }, { pid: 24, cmd: 'x', created: 1 }] });
+  const c = ctxOf(f, { stationPids: [22], registered: ['co-svc-rec.service'], ledger: [{ pid: 23, cmd: 'bash -c npm run build', kind: 'shell.fg', created: null, startedAt: Date.now() }, { pid: 24, cmd: 'x', created: 1 }] });
   const all = O.scan(c);
   assert.strictEqual(O.proof(all.get(20), c).how, 'unit');
   assert.strictEqual(O.proof(all.get(21), c).how, 'unit');
@@ -200,4 +200,100 @@ test('retention: a yes on a report-only folder hands its removal to the tools se
   c = at(t0 + 9 * 86400e3); r = RP.stepRetention(c);
   assert.strictEqual(c.due.length, 0, 'gone: nothing more to hand over');
   assert.ok(c.state.retention['old-rehearsal'].done, 'and the row is marked done');
+});
+
+test('units by exact name: a company whose service name starts with this one\'s is not this one\'s; services only when registered', () => {
+  const f = fakeProc();
+  const c = ctxOf(f, { registered: ['co-svc-rec.service'] });
+  for (const u of ['co-station.service', 'co-station-console.service', 'co-station-dispatch.service', 'co-station-liveness.service', 'co-station-liveness-heartbeat.service',
+    'co-station-owner-job-update-20261119120000-ab12.service', 'co-svc-rec.service', 'co-svc-rec.scope']) assert.ok(O.ourUnit(c, u), u);
+  for (const u of ['co-station-2.service', 'co-station-2-console.service', 'co-station-x-dispatch.service', 'co-station-owner-job-update.service', 'co-station-owner-job-x-1-ab12.service',
+    'co-svc-other.service', 'co-svc-svc-rec.service', 'co-station.scope', '']) assert.ok(!O.ourUnit(c, u), u);
+  // a process in the other company's station unit is never this one's, though its name starts the same
+  f.put(80, { cmd: ['node', 'build.js'], cgroup: '0::/user.slice/user@1000.service/app.slice/co-station-2.service' });
+  assert.strictEqual(O.proof(O.scan(c).get(80), c), null);
+  assert.strictEqual(O.foreign(O.scan(c).get(80), c), true);
+  // the register is read from company/state/services.json when not given
+  fs.mkdirSync(path.join(f.root, 'company', 'state'), { recursive: true });
+  fs.writeFileSync(path.join(f.root, 'company', 'state', 'services.json'), JSON.stringify({ services: { rec: { name: 'rec', unit: 'co-svc-rec', status: 'installed' } } }));
+  assert.ok(O.ourUnit(O.context({ root: f.root, proc: f.proc }), 'co-svc-rec.service'));
+});
+
+test('browsers: idle is measured across runs, a client in between starts the clock again; one in the station unit waits while a run is in flight', () => {
+  const f = fakeProc();
+  const RP = require('../reaper');
+  fs.mkdirSync(path.join(f.root, 'company', 'state'), { recursive: true });
+  f.put(1058, { cmd: ['/usr/lib/systemd/systemd', '--user'], comm: 'systemd' });
+  const prof = n => f.root + '/.starnet-data/tmp/' + n;
+  f.put(90, { cmd: ['/opt/google/chrome/chrome', '--headless', '--remote-debugging-port=9601', '--user-data-dir=' + prof('a')], comm: 'chrome', ppid: 1058 });
+  // 91: an agent's own browser (setsid), still in the station's unit
+  f.put(91, { cmd: ['/opt/google/chrome/chrome', '--headless', '--remote-debugging-port=9602', '--user-data-dir=' + prof('b')], comm: 'chrome', ppid: 1058, cgroup: '0::/user.slice/user@1000.service/app.slice/co-station.service' });
+  const client = port => '  sl  local_address rem_address   st\n   0: 0100007F:A028 0100007F:' + port.toString(16).toUpperCase().padStart(4, '0') + ' 01 00000000:00000000 00:00000000 00000000  1000        0 1 1\n';
+  const kills = [];
+  const at = (t, o) => RP.context(Object.assign({ root: f.root, proc: f.proc, supervisor: 'none', home: path.join(f.T, 'home'), now: t, minAgeS: 0, graceMs: 10, noNetwork: true,
+    meminfo: 'MemTotal: 8388608 kB\nMemAvailable: 6291456 kB\n', netTcp: '', kill: (pid, sig) => { kills.push(pid + ' ' + sig); return true; }, alive: () => false }, o || {}));
+  const save = c => fs.writeFileSync(path.join(f.root, 'company', 'state', 'reaper.json'), JSON.stringify(c.state));
+  const dec = (r, pid) => r.list.find(x => x.pid === pid).decision;
+  const t0 = Date.now();   // the plan: normal profile, 30 min of idle needed
+  let c = at(t0, { runsInFlight: true }); let r = RP.stepBrowsers(c); save(c);
+  assert.match(dec(r, 90), /clock starts/); assert.ok(!kills.length, 'nothing ended on the first idle sighting');
+  // 20 min later an agent is connected to it again (between two tool calls it was not)
+  c = at(t0 + 20 * 60e3, { runsInFlight: true, netTcp: client(9601) }); r = RP.stepBrowsers(c); save(c);
+  assert.strictEqual(dec(r, 90), 'something is connected to it');
+  // 25 min after that, idle again: the clock started over, so not yet
+  c = at(t0 + 45 * 60e3, { runsInFlight: true }); r = RP.stepBrowsers(c); save(c);
+  assert.match(dec(r, 90), /clock starts/);
+  c = at(t0 + 60 * 60e3, { runsInFlight: true }); r = RP.stepBrowsers(c); save(c);
+  assert.match(dec(r, 90), /^idle for 15 min only$/); assert.ok(!kills.length);
+  // 31 min of idle seen: ended. The one in the station's unit waits: a run is in flight
+  c = at(t0 + 76 * 60e3, { runsInFlight: true }); r = RP.stepBrowsers(c); save(c);
+  assert.strictEqual(dec(r, 90), 'end'); assert.ok(kills.some(k => /^-?90 SIGTERM$/.test(k)), kills.join());
+  assert.strictEqual(dec(r, 91), 'in the station, which is running work'); assert.ok(!kills.some(k => /^-?91 /.test(k)));
+  // the station did not answer: still spared; it says nothing runs: ended
+  c = at(t0 + 77 * 60e3, { runsInFlight: null }); r = RP.stepBrowsers(c); save(c);
+  assert.match(dec(r, 91), /did not say/);
+  c = at(t0 + 78 * 60e3, { runsInFlight: false }); r = RP.stepBrowsers(c); save(c);
+  assert.strictEqual(dec(r, 91), 'end'); assert.ok(kills.some(k => /^-?91 SIGTERM$/.test(k)), kills.join());
+});
+
+test('stationBusy: asks the station only for an orphan in its unit; runs or queued turns are busy, no answer is unknown', async () => {
+  const f = fakeProc();
+  const RP = require('../reaper');
+  fs.mkdirSync(path.join(f.root, 'company', 'state'), { recursive: true });
+  f.put(1058, { cmd: ['/usr/lib/systemd/systemd', '--user'], comm: 'systemd' });
+  f.put(95, { cmd: ['/opt/google/chrome/chrome', '--headless', '--remote-debugging-port=9603', '--user-data-dir=' + f.root + '/.starnet-data/tmp/c'], comm: 'chrome', ppid: 1058 });
+  const calls = [];
+  const mk = (cg, answer) => RP.context({ root: f.root, proc: f.proc, supervisor: 'none', home: path.join(f.T, 'home'), netTcp: '', cgroupOf: () => cg,
+    stationApi: async (m, p) => { calls.push(m + ' ' + p); if (answer instanceof Error) throw answer; return answer; } });
+  assert.strictEqual(await RP.stationBusy(mk('', { runs: [] })), false); assert.strictEqual(calls.length, 0, 'not in the station unit: no call');
+  const cg = '0::/user.slice/user@1000.service/app.slice/co-station.service';
+  assert.strictEqual(await RP.stationBusy(mk(cg, { runs: [{ runId: 'r1' }], queues: [] })), true);
+  assert.strictEqual(await RP.stationBusy(mk(cg, { runs: [], queues: [{ agentId: 'a', depth: 1 }] })), true);
+  assert.strictEqual(await RP.stationBusy(mk(cg, { runs: [], queues: [] })), false);
+  assert.strictEqual(await RP.stationBusy(mk(cg, new Error('down'))), null);
+  assert.deepStrictEqual(calls, Array(4).fill('GET /api/state/snapshot'));
+});
+
+test('retention deletes only what really is inside the company: a symlinked folder above a candidate never leads outside', () => {
+  const f = fakeProc();
+  const R = require('../retention');
+  const W = (p, t) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, t); };
+  const outside = path.join(f.T, 'owner-files');
+  for (let i = 1; i <= 3; i++) W(path.join(outside, 'workspaces.backup-2026110' + i, 'keep.txt'), 'precious');
+  for (const d of fs.readdirSync(outside)) { const t = Date.now() / 1000 - 40 * 86400; fs.utimesSync(path.join(outside, d, 'keep.txt'), t, t); fs.utimesSync(path.join(outside, d), t, t); }
+  fs.symlinkSync(outside, path.join(f.root, '.starnet-data'));   // .starnet-data is a symlink to the owner's files
+  W(path.join(f.root, 'scratch', 'old', 'x'), 'x'); const t = Date.now() / 1000 - 40 * 86400; fs.utimesSync(path.join(f.root, 'scratch', 'old', 'x'), t, t); fs.utimesSync(path.join(f.root, 'scratch', 'old'), t, t);
+  fs.symlinkSync(outside, path.join(f.root, 'scratch', 'link-out')); fs.lutimesSync(path.join(f.root, 'scratch', 'link-out'), t, t);
+  const policy = { artifacts: [
+    { id: 'backups', path: '.starnet-data/workspaces.backup-*', policy: 'keep-newest-dirs', keep: 0, keepDays: 0, enforce: true },
+    { id: 'scratch', path: 'scratch', policy: 'age-dir', keepDays: 1, enforce: true }] };
+  const r = R.dirPolicies({ root: f.root, policy, enforced: ['backups', 'scratch'] });
+  const by = Object.fromEntries(r.results.map(x => [x.id, x]));
+  assert.strictEqual(by.backups.removed.length, 0, JSON.stringify(by.backups));
+  assert.ok(by.backups.errors.length === 3 && by.backups.errors.every(e => /outside the company/.test(e)), by.backups.errors.join('|'));
+  assert.ok(fs.readdirSync(outside).every(d => fs.existsSync(path.join(outside, d, 'keep.txt'))), 'nothing outside was removed');
+  assert.deepStrictEqual(by.scratch.removed.map(x => x.rel), ['scratch/old'], 'a real folder inside goes');
+  assert.ok(by.scratch.errors.some(e => /link-out: a symlink, left alone/.test(e)), by.scratch.errors.join('|'));
+  assert.ok(fs.existsSync(path.join(f.root, 'scratch', 'link-out')));
+  assert.strictEqual(R.notContained({ root: f.root }, path.join(f.root, 'scratch')), null);
 });

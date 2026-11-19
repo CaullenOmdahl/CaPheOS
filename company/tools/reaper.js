@@ -23,9 +23,14 @@
  *
  * Each run, in order (each action is one plain line in company/state/reaper.jsonl {at, kind, what, plain, freedMB, pid?,
  * path?, seat?} and the run's summary is one line in the dispatch log; nothing is logged when nothing happened):
- *   1 browsers   a driven Chrome of this company whose parent is gone (pid 1 / systemd --user), with no client on its
- *                debugging port and older than the plan's minimum age (30 min; 10 under low): TERM to its group, up to
- *                3 s, KILL to everything naming its profile; a profile in a temp dir is removed. A browser the live
+ *   1 browsers   a driven Chrome of this company whose parent is gone (pid 1 / systemd --user), older than the plan's
+ *                minimum age (30 min; 10 under low) and with no client on its debugging port for that long, measured
+ *                across runs (reaper.json browserIdle: a client seen at any run starts the clock again; the first idle
+ *                sighting only starts it), so a browser an agent keeps alive and reconnects to between tool calls is
+ *                never ended between two calls. One that sits inside the station's own unit is spared while the station
+ *                runs anything (GET /api/state/snapshot runs or queued turns; a station that does not answer counts as
+ *                busy). Then: TERM to its group, up to 3 s, KILL to everything naming its profile; a profile in a temp
+ *                dir is removed. A browser the live
  *                station runs is the station's (patch 0020 closes it when idle): never killed; idle past 3 x the idle
  *                time it is reported (broken idle close).
  *   2 strays     this company's processes handed to init, outside its units, older than 6 h (3 under low): known kinds
@@ -34,8 +39,8 @@
  *                CPU (measured across runs), with TERM and 20 s to stop by themselves first; any other kind is
  *                reported once.
  *   3 temp       company/tools/tmp-sweep.js, scope own: the private temp dir (older than 24 h and not in use; 6 h under
- *                memory pressure) and, in the shared /tmp, only the framework's test names and leftovers of this
- *                company's own station pids. A file pattern that keeps leaking (200 entries or 1 GB a day, 2 days) is
+ *                memory pressure; never when it is a symlink or resolves outside the company) and, in the shared /tmp,
+ *                only leftovers of this company's own station pids (a test walk there may be another company's). A file pattern that keeps leaking (200 entries or 1 GB a day, 2 days) is
  *                reported once a week. Only in a set-up company (its private temp dir exists; CAPHEOS_TMP_SWEEP=0: off).
  *   4 retention  the folder rules (retention.js dirPolicies), at most once a company day, never while halted: measured;
  *                past a row's warnBytes the owner is asked once (an owner card); deleted only after their yes. A
@@ -91,8 +96,10 @@ function context(o) {
     graceMs: Number.isFinite(o.graceMs) ? o.graceMs : 3000,
     minAgeS: Number.isFinite(o.minAgeS) ? o.minAgeS : null,      // test only (--min-age): browsers and strays
     idleS: Number.isFinite(o.idleS) ? o.idleS : null,            // test only: a build daemon's idle time (else its kind's idleH)
+    browserIdleS: Number.isFinite(o.browserIdleS) ? o.browserIdleS : null,   // test only: an orphaned browser's idle time (else the plan's)
+    runsInFlight: o.runsInFlight !== undefined ? o.runsInFlight : undefined,  // test only: true / false (else asked of the station)
     daemonGraceMs: Number.isFinite(o.daemonGraceMs) ? o.daemonGraceMs : 20000,   // a build daemon's time to stop on TERM
-    tempDirs: o.tempDirs || null, forceTemp: !!o.forceTemp,
+    tempDirs: o.tempDirs || null, forceTemp: !!o.forceTemp, unitDir: o.unitDir || null,
     meminfo: o.meminfo || null,
     halted: o.halted !== undefined ? o.halted : haltedOf(root, now),
     card: o.card || null, answerOf: o.answerOf || null,
@@ -115,7 +122,10 @@ function planOf(ctx) {
   const h = ctx.meminfo ? M.parseMeminfo(ctx.meminfo) : M.host({ oomd: false });
   const s = M.settings(ctx.config);
   ctx.hostMem = h;
-  return (ctx.plan = M.plan({ totalMB: h.totalMB, profile: M.profileOf(s, h), keepFreeMB: s.keepFreeMB }));
+  // the same plan memory.js applies: the companies sharing this machine and what is kept free on it (lib/memory.js share)
+  const unitDir = ctx.unitDir || process.env.MEMORY_UNIT_DIR || path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'systemd', 'user');
+  const sh = M.share({ root: ctx.root, config: ctx.config, unitDir, supervisor: ctx.sup });
+  return (ctx.plan = M.plan({ totalMB: h.totalMB, profile: M.profileOf(s, h), keepFreeMB: Math.max(s.keepFreeMB, sh.keepFreeMB), companies: sh.n }));
 }
 function saveState(ctx) {
   if (ctx.dry) return;
@@ -188,6 +198,11 @@ function stepBrowsers(ctx) {
   const minAge = ctx.minAgeS != null ? ctx.minAgeS : p.reaper.orphanMinAgeMin * 60;
   const list = O.browsers(c);
   const go = [], idleSeen = ctx.state.idleSeen = ctx.state.idleSeen || {}, seenNow = new Set();
+  // an orphan's idle clock, across runs: {"<pid>:<start>": since}. A client on its port (now) resets it; the first idle
+  // sighting starts it; it is ended only after needIdle seconds of idle seen at every run in between
+  const bIdle = ctx.state.browserIdle = ctx.state.browserIdle || {}, bSeen = new Set();
+  const needIdle = ctx.browserIdleS != null ? ctx.browserIdleS : p.reaper.orphanMinAgeMin * 60;
+  const stationUnit = ctx.svc + '.service';
   for (const b of list) {
     if (b.parent === 'station') {
       if (!b.idle) { delete idleSeen[b.pid]; continue; }
@@ -196,10 +211,24 @@ function stepBrowsers(ctx) {
         due(ctx, { id: 'idle-close:' + b.pid, reason: 'The station\'s own browser has sat unused for more than ' + Math.round((ctx.now - Date.parse(idleSeen[b.pid])) / 60e3) + ' minutes and did not close itself (it should after ' + p.browsers.idleMin + '); it was not ended' });
       continue;
     }
-    b.decision = b.parent !== 'orphan' ? 'its parent still runs' : !b.idle ? 'something is connected to it' : b.ageS != null && b.ageS < minAge ? 'too new' : 'end';
+    const key = b.pid + ':' + (b.startMs || 0);
+    if (b.parent === 'orphan') bSeen.add(key);
+    if (b.parent === 'orphan' && !b.idle) delete bIdle[key];
+    let idleFor = null;
+    if (b.parent === 'orphan' && b.idle) {
+      if (!bIdle[key]) bIdle[key] = new Date(ctx.now).toISOString();
+      else idleFor = Math.max(0, (ctx.now - Date.parse(bIdle[key])) / 1000);
+    }
+    b.idleS = idleFor == null ? null : Math.round(idleFor);
+    b.decision = b.parent !== 'orphan' ? 'its parent still runs' : !b.idle ? 'something is connected to it'
+      : idleFor == null ? 'idle only since this look (its clock starts)' : idleFor < needIdle ? 'idle for ' + fmtAge(Math.round(idleFor)).replace(/ old$/, '') + ' only'
+      : b.ageS != null && b.ageS < minAge ? 'too new'
+      : b.unit === stationUnit && ctx.runsInFlight !== false ? (ctx.runsInFlight === true ? 'in the station, which is running work' : 'in the station, which did not say whether it runs work')
+      : 'end';
     if (b.decision === 'end') go.push(b);
   }
   for (const k of Object.keys(idleSeen)) if (!seenNow.has(k)) delete idleSeen[k];
+  for (const k of Object.keys(bIdle)) if (!bSeen.has(k)) delete bIdle[k];
   endAll(ctx, go, true);
   const tmpRoots = (ctx.tempDirs || [ctx.P('.starnet-data', 'tmp'), os.tmpdir(), '/tmp']).map(O.real);
   for (const b of go) {
@@ -380,6 +409,17 @@ async function stationCall(ctx, method, p, body) {
   try { const r = await fetch(base.replace(/\/$/, '') + p, { method, headers: { 'x-starnet-token': tok, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal: ac.signal }); return await r.json(); }
   finally { clearTimeout(t); }
 }
+// true: the station runs work (a run or a queued turn); false: it says nothing runs; null: it did not answer (busy).
+// Asked only when an orphaned browser of this company sits in the station's own unit (otherwise: false, no call).
+async function stationBusy(ctx) {
+  let list = []; try { list = O.browsers(owned(ctx)); } catch (_) { return null; }
+  if (!list.some(b => b.parent === 'orphan' && b.unit === ctx.svc + '.service')) return false;
+  try {
+    const v = await stationCall(ctx, 'GET', '/api/state/snapshot');
+    if (!v || !Array.isArray(v.runs)) return null;
+    return v.runs.some(r => r && r.runId) || (v.queues || []).some(q => q && q.depth > 0);
+  } catch (_) { return null; }
+}
 async function stepPressure(ctx, pr) {
   const f = ctx.P('company', 'state', 'memory-pressure.json');
   const prev = readJson(f, null);
@@ -419,6 +459,8 @@ async function run(ctx, o) {
   const pr = pressureNow(ctx);
   const res = { halted: ctx.halted || false, pressure: pr };
   const step = (name, fn) => { if (!want(name)) return; try { res[name] = fn(); } catch (e) { res[name] = { error: String(e && e.message || e).slice(0, 200) }; } };
+  // whether the station runs anything now: asked only when an orphaned browser sits in the station's own unit
+  if (want('browsers') && ctx.runsInFlight === undefined) ctx.runsInFlight = await stationBusy(ctx);
   step('browsers', () => stepBrowsers(ctx));
   step('strays', () => stepStrays(ctx));
   step('temp', () => stepTemp(ctx, pr.short));
@@ -433,7 +475,7 @@ async function run(ctx, o) {
   if (res.summary) ctx.state.lastSummary = { at: ctx.state.lastRun, text: res.summary, freedMB: Math.round(freed) };
   saveState(ctx);
   res.rows = ctx.rows; res.due = ctx.due;
-  for (const k of STEPS) if (res[k] && res[k].list) res[k].list = res[k].list.map(x => ({ pid: x.pid, kind: x.kind, decision: x.decision, parent: x.parent, proof: x.proof && x.proof.how, ageS: x.ageS }));
+  for (const k of STEPS) if (res[k] && res[k].list) res[k].list = res[k].list.map(x => ({ pid: x.pid, kind: x.kind, decision: x.decision, parent: x.parent, proof: x.proof && x.proof.how, ageS: x.ageS, idleS: x.idleS }));
   return res;
 }
 function dueJson(res) {
@@ -507,5 +549,5 @@ async function main(argv) {
   console.error('usage: reaper.js --duty | status | run [--dry-run] [--only ...] | host-sweep [--apply] --by owner | selftest');
   return 2;
 }
-module.exports = { context, run, dueJson, hostSweep, stepBrowsers, stepStrays, stepTemp, stepRetention, stepSample, stepPressure, pressureNow, planOf, patternOf, isoWeek, seatOf };
+module.exports = { stationBusy, context, run, dueJson, hostSweep, stepBrowsers, stepStrays, stepTemp, stepRetention, stepSample, stepPressure, pressureNow, planOf, patternOf, isoWeek, seatOf };
 if (require.main === module) main(process.argv.slice(2)).then(c => { process.exitCode = c; }, e => { console.error('reaper: ' + (e && e.stack || e)); process.exitCode = 2; });

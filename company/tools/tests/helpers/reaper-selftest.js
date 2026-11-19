@@ -135,7 +135,14 @@ async function selftest() {
     const card = { file: (o) => { cards.push(o); return { filed: true, id: 'q-' + cards.length }; } };
 
     const lines = () => { try { return fs.readFileSync(path.join(co, 'company', 'state', 'reaper.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch (_) { return []; } };
-    const ctx = base({ card });
+    // a first look: an orphan's idle clock starts here (reaper.json browserIdle); nothing is ended on its first idle sighting
+    const first = await RP.run(base({ card, browserIdleS: 0 }), { only: ['browsers'] });
+    await check('browsers: the first idle sighting of an orphan only starts its clock', async () => {
+      if (!chrome) return { skip: 'no Chrome on this machine' };
+      assert.ok(alive(A.pid), 'A still runs after the first look');
+      assert.match(first.browsers.list.find(x => x.pid === A.pid).decision, /clock starts/);
+    });
+    const ctx = base({ card, browserIdleS: 0 });
     const res = await RP.run(ctx);
 
     await check('browsers: an orphaned, idle browser of this company is ended, its temp profile removed, one plain line', async () => {
@@ -161,12 +168,12 @@ async function selftest() {
       assert.ok(lines().some(r => r.kind === 'stray' && r.pid === flutterPid && /^Ended a left-behind flutter_tester from Phil's work/.test(r.plain)));
       assert.ok(res.due.some(d => d.id === 'stray:' + unknownPid && /not a kind the reaper may end/.test(d.reason)), JSON.stringify(res.due));
     });
-    await check('temp: private old goes; held and young stay; shared: only own names and this company\'s station pids', async () => {
+    await check('temp: private old goes; held and young stay; shared: only this company\'s station pids', async () => {
       const left = new Set(fs.readdirSync(priv)); const sh = new Set(fs.readdirSync(shared));
       assert.ok(!left.has('old-thing') && left.has('young-thing') && left.has('held-thing') && left.has('half-day-thing'), [...left].join());
       assert.ok(sh.has('tmpabcdefgh'), 'a Python temp dir in the shared folder is the host\'s: kept');
       assert.ok(!sh.has('starnet-browser-' + DEAD1 + '-x') && sh.has('starnet-browser-' + DEAD2 + '-y'), [...sh].join());
-      assert.ok(!sh.has('routes-walk-Old123'), 'a framework test leftover goes');
+      assert.ok(sh.has('routes-walk-Old123'), 'a test walk in the shared folder may be another company\'s (its own runs keep TMPDIR in its private dir): kept, the owner\'s button');
       assert.ok(lines().some(r => r.kind === 'temp' && /^Removed \d+ old temp items nobody used \(/.test(r.plain)));
     });
     await check('host-sweep lists the shared leftovers it cannot trace; --apply only for the owner', async () => {
