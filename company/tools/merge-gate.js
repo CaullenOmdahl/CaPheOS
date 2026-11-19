@@ -791,6 +791,10 @@ if (cmd === 'check-gh') {
     // lazily, so a broken or missing library never turns into a refusal (the exit-code contract above)
     { let so = null; try { so = require('./lib/signoff').gate({ seat: presenter().agent, kind: 'merge', refs: ['pr:' + repo + '#' + h.pr], sha: h.sha, via: 'merge-gate.js' }); /* a yes is for this head commit only */ } catch (_) { so = null; }
       if (so && so.refuse) refuse(repo + ' #' + h.pr + ': ' + so.refuse + '.'); }
+    // accountable leads (lib/accountable.js, docs/DEPARTMENTS.md §8): a member's change merges only once its lead accepted it
+    // at this head commit (live refuses; recording only allows). Lazily, like the sign-off: a broken library never refuses
+    { let ac = null; try { ac = require('./lib/accountable').gate({ seat: presenter().agent, refs: ['pr:' + repo + '#' + h.pr], sha: h.sha }); } catch (_) { ac = null; }
+      if (ac && ac.refuse) refuse(repo + ' #' + h.pr + ': ' + ac.refuse + '.'); }
     log('ALLOWED ' + repo + ' #' + h.pr + ' head ' + h.sha.slice(0, 8));
     process.exit(0);
   }

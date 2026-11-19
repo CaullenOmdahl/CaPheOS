@@ -54,6 +54,10 @@
  * member's stuck item (failed runs, REVISE rounds, idle wakes, a reopen), starts the lead's separate advise run for the
  * batched consults (admit door consult, on the lead model as a one-run override), keeps the item's holder from being woken
  * for it while its consult is open, and pauses the advice when the house ranking says it does not pay.
+ * Accountable leads (lib/accountable.js, docs/DEPARTMENTS.md §8): with a department's accountable mode on, work sent straight to a
+ * member is copied to its lead, a member's handed-back item waits for the lead's binding audit (a DONE without the lead's
+ * accept goes back to OPEN), a member's handoff out of the department waits for the lead to pass it on, and the lead's
+ * audit run starts on the department's fixed audit model (admit door audit; a shut model makes it wait, never another).
  * Router (lib/routing.js, docs/ROUTING.md): with a routing policy each wake's model decision (class rules, trial arm,
  * department route, tier cap, chain) is recorded on its wakes.jsonl row (route) and in routing-decisions.jsonl (a trial held by
  * the pacer: op trial-held / trial-unheld in routing-log.jsonl); it is passed as
@@ -977,6 +981,8 @@ function lastRunTail(job) {
   const CONSULT_HOLD = (() => { try { return require('./lib/consult').holdFn({ root: ROOT }); } catch (e) { log('CONSULT ERROR: ' + String(e.message).slice(0, 200)); return () => null; } })();
   // counterpart sign-off (lib/signoff.js, docs/PROFILES.md): an eager seat's handoff that needs its counterpart's yes waits for it, like Waiting on (shadow: logged only)
   const SIGNOFF_HOLD = (() => { try { return require('./lib/signoff').scanTick({ root: ROOT, log, dry: DRY }); } catch (e) { log('SIGNOFF ERROR: ' + String(e.message).slice(0, 200)); return () => null; } })();
+  // accountable leads (lib/accountable.js, docs/DEPARTMENTS.md §8): intake copies, a member's handed-back item waits for the lead's audit, a DONE without the lead's accept goes back to OPEN, a member's onward handoff waits for the lead to pass it on (recording only: logged)
+  const AUDIT_HOLD = (() => { try { return require('./lib/accountable').scanTick({ root: ROOT, log, dry: DRY }); } catch (e) { log('ACCOUNTABLE ERROR: ' + String(e.message).slice(0, 200)); return () => null; } })();
   for (const [agentId, inbox] of Object.entries(INBOX_OF)) {
     let its = [], txt = ''; try { txt = fs.readFileSync(path.join(ROOT, 'company', 'work', 'handoffs', inbox), 'utf8'); its = SP.parseItems(txt).filter(i => i.open); } catch (_) {}
     itemsOf[agentId] = its; waitsOf[agentId] = {};
@@ -990,6 +996,7 @@ function lastRunTail(job) {
         continue;
       }
       { const ch = CONSULT_HOLD(inbox, it); if (ch) { it.waitingOn = 'consult'; if (ch.who) waitsOf[agentId][ch.who] = (waitsOf[agentId][ch.who] || 0) + 1; continue; } }
+      { const ah = AUDIT_HOLD(inbox, it); if (ah) { it.waitingOn = 'audit'; if (ah.who) { waitsOf[agentId][ah.who] = (waitsOf[agentId][ah.who] || 0) + 1; parked.push({ seat: agentId, name: NAMES[agentId] || agentId, inbox, heading: it.heading, kind: 'audit', words: ah.kind === 'pass' ? 'waiting for ' + ah.who + ' to pass it on' : ah.kind === 'escalation' ? 'waiting for ' + ah.who + ' to say why it goes to the CEO' : 'waiting for ' + ah.who + ' to check it' }); } continue; } }
       { const sh = SIGNOFF_HOLD(inbox, it); if (sh) { it.waitingOn = 'signoff'; waitsOf[agentId][sh.who] = (waitsOf[agentId][sh.who] || 0) + 1; parked.push({ seat: agentId, name: NAMES[agentId] || agentId, inbox, heading: it.heading, kind: 'signoff', words: 'waiting for ' + sh.who + ' to sign off' }); continue; } }
       if (it.waitingOnLine == null) { const on = SP.waitingOn(it.status, NAMES, agentId, CEO_ID); if (on) { it.waitingOn = on; const n = on === 'owner' ? 'you (the owner)' : NAMES[on] || 'someone else'; waitsOf[agentId][n] = (waitsOf[agentId][n] || 0) + 1; parked.push({ seat: agentId, name: NAMES[agentId] || agentId, inbox, heading: it.heading, kind: 'status', words: 'waiting for: ' + n }); } continue; }
       // **Waiting on:** governs this item (its Status prose does not): resolved on every tick
@@ -1047,7 +1054,7 @@ function lastRunTail(job) {
     }
     for (const [h, d] of nb.deferred) { const i = nb.info.get(h) || {}; parked.push({ seat: agentId, name: NAMES[agentId] || agentId, inbox, heading: h, kind: 'notBefore', until: d, words: 'not before ' + G.whenWords(d, lpNow.date) + (i.reason ? ': ' + i.reason.slice(0, 120) : ''), dependencyShaped: !!i.dep }); }
     const open = its.filter(i => !i.waitingOn && !i.notBefore).map(i => i.heading).sort();
-    st.deferred = [...new Set([...nb.deferred.keys()].concat(its.filter(i => i.waitingOn === 'dep').map(i => i.heading)))].sort().join('|');   // lanes.js skips these
+    st.deferred = [...new Set([...nb.deferred.keys()].concat(its.filter(i => i.waitingOn === 'dep' || i.waitingOn === 'audit').map(i => i.heading)))].sort().join('|');   // lanes.js skips these (an item with the lead for audit too)
     const dkey = [...nb.deferred.keys()].sort().join('|');
     if (dkey !== (st.nbKey || '')) { st.nbKey = dkey; if (dkey) log('WAITING handoffs ' + inbox + ' (' + agentId + '): ' + nb.deferred.size + ' OPEN set aside by their own Not before (nearest ' + [...nb.deferred.values()].sort()[0] + '): not woken, not counted as stalled'); }
     const due = deadlineOrder(openSecs, lpNow.date);
@@ -1322,6 +1329,8 @@ function lastRunTail(job) {
     const bk = busy.map(id => id + ':' + liveKids.get(id).join('+')).sort().join(',');
     if (bk !== (state.delegatedBusy || '')) { state.delegatedBusy = bk; if (busy.length) log('DELEGATED BUSY: ' + busy.map(id => ((CREW[id] || {}).name || id) + ' (child run ' + liveKids.get(id).map(x => String(x).slice(0, 12)).join(', ') + ')').join('; ') + ': working a task its lead delegated; not woken on top of it'); } }
   // advisor leads (lib/consult.js consultStep, fail-safe): stuck consults, each live lead's advise routine and its batched advise run (door consult), the lead kept out of `order` while it advises, the auto-pause
+  // accountable leads (lib/accountable.js auditStep, fail-safe): each live lead's audit routine and its audit run (door audit) on the department's FIXED audit model, the lead kept out of `order` while it audits, the fall back when the saving does not show
+  try { await require('./lib/accountable').auditStep({ dry: DRY, log, jobs, order, say, call, fireRun, modes, allowAsk: ALLOW_ASK, budget: { capOn: CAP_ON, capped, dailyUsd: DAILY_USD, perAgentUsd: PER_AGENT_USD, byAgent, spent, lastHourMetered, hoursLeft, spread: !!(SPRINT && SPRINT.spreadDailyCap), unmetered: UNMETERED_PROVIDERS } }); } catch (e) { log('ACCOUNTABLE ERROR: ' + String(e.message).slice(0, 200)); }
   try { await require('./lib/consult').consultStep({ dry: DRY, log, jobs, order, say, call, fireRun, modes, allowAsk: ALLOW_ASK, budget: { capOn: CAP_ON, capped, dailyUsd: DAILY_USD, perAgentUsd: PER_AGENT_USD, byAgent, spent, lastHourMetered, hoursLeft, spread: !!(SPRINT && SPRINT.spreadDailyCap), unmetered: UNMETERED_PROVIDERS } }); } catch (e) { log('CONSULT ERROR: ' + String(e.message).slice(0, 200)); }
   let fired = 0; try { const pace = await require('./pacer.js').dispatchHook({ dry: DRY, log, jobs, order, ownerWake, maxPerTick: MAX_PER_TICK }); fired = -Math.max(0, Math.min(2, Number(pace && pace.extra) || 0)); } catch (e) { fired = 0; log('PACER ERROR: ' + e.message); }   // pacer.js (fail-safe): may drop metered wakes held near the station rail from `order`, and lends extra per-tick slots by starting `fired` below 0
   // Sprint lanes (company/tools/lanes.js, fail-safe, after the pacer so it sees what the pacer held and the models it set):

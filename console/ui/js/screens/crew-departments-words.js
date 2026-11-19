@@ -43,6 +43,22 @@ export function splitWithdrawnLine(w, dept) {
 export const splitResumeTitle = () => 'Start splitting big jobs again?';
 export const splitResumeConfirm = () => 'The crew will measure it again from today.';
 export const savedLine = what => what + '.';
+// the lead checks every finished job (departments.js accountable, docs/DEPARTMENTS.md §8): off | shadow | live, said plainly
+export const CHECK_LABEL = 'Lead checks every finished job';
+export const CHECK_SAY = { off: ['Off', 'neutral'], shadow: ['Recording only', 'warning'], live: ['On', 'online'] };
+export const checkLine = lead => lead + ' is responsible for the team\'s work: each person checks their own work first, then ' + lead + ' checks it before it counts as done or goes anywhere else.';
+export const checkRecordingLine = lead => 'Recording only: the crew notes what ' + lead + ' would check and hold, and everyone works as before.';
+export const checkOnTitle = lead => 'Let ' + lead + ' check every finished job?';
+export const checkOnConfirm = lead => 'Finished work waits for ' + lead + '\'s yes before it counts or goes to anyone outside the team. The team does the work on cheaper setups and ' + lead + ' mainly reads, so it should cost less; the crew measures that and stops it if it does not.';
+export const SCORE_TITLE = 'How the team is doing';
+export function checkStoppedLine(w, lead, dept) {
+  if (!w) return '';
+  const d = String(dept || 'this team').replace(/\s+department$/i, '');
+  if (w.by === 'auto') return 'The crew stopped having ' + lead + ' check every finished job in ' + d + ': it did not cost less than ' + lead + ' doing the work alone. You can turn it back on here.';
+  return 'You stopped ' + lead + '\'s checks for ' + d + '. You can turn it back on here.';
+}
+export const checkResumeTitle = () => 'Turn the lead\'s checks back on?';
+export const checkResumeConfirm = () => 'The crew will measure it again from today.';
 // every fixed line the screen can show, with sample names, for the plain-words test
 export function samples() {
   const L = 'Kwame', D = 'Engineering';
@@ -50,5 +66,7 @@ export function samples() {
     askedLine(4, 12), lastAdviceLine('yesterday'), lastAdviceLine(null), pausedLine({ by: 'auto' }, L, D), pausedLine({ by: 'owner' }, L, D), noBriefLine(),
     ...Object.values(ADVICE_SAY).map(x => x[0]),
     SPLIT_LABEL, splitLine(L, 3), splitLine(L, 1), splitNobodyLine(L), splitRecordingLine(L), splitOnTitle(L), splitOnConfirm(L), splitWithdrawnLine({ by: 'auto' }, D), splitWithdrawnLine({ by: 'owner' }, D),
-    splitResumeTitle(), splitResumeConfirm(), ...Object.values(SPLIT_SAY).map(x => x[0])];
+    splitResumeTitle(), splitResumeConfirm(), ...Object.values(SPLIT_SAY).map(x => x[0]),
+    CHECK_LABEL, checkLine(L), checkRecordingLine(L), checkOnTitle(L), checkOnConfirm(L), SCORE_TITLE, checkStoppedLine({ by: 'auto' }, L, D), checkStoppedLine({ by: 'owner' }, L, D),
+    checkResumeTitle(), checkResumeConfirm(), ...Object.values(CHECK_SAY).map(x => x[0])];
 }

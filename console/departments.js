@@ -12,6 +12,12 @@
  *                                               brief's text (departments.js show <id> --json --brief)
  *   POST /api/departments/<id>/advisor { mode: off|shadow|live } | { pause: true, why? } | { resume: true }
  *                                               departments.js advisor <id> <mode|pause|resume> --by <owner>
+ *   GET  /api/departments/<id>/scorecard        the lead's department scorecard (docs/DEPARTMENTS.md §8): accountable.js
+ *                                               status --json --dept <id> (plain lines in .words)
+ *   POST /api/departments/<id>/accountable { mode: off|shadow|live } | { resume: true }
+ *                                               departments.js accountable <id> <mode|resume> --by <owner> (the lead checks
+ *                                               every finished job before it counts; the audit models stay in the owner's
+ *                                               shell, departments.js accountable <id> audit-model)
  *   POST /api/departments/<id>/delegation { mode: off|shadow|live } | { resume: true }
  *                                               departments.js delegation <id> <mode|resume> --by <owner> (splitting big
  *                                               jobs, docs/DEPARTMENTS.md §6; who the workers are is the CEO's or the
@@ -53,6 +59,19 @@ function mount(route, d) {
     const mode = String(b.mode || '');
     if (!['off', 'shadow', 'live'].includes(mode)) bad('mode must be off, shadow or live (or pause / resume)');
     return runApi('departments.js', ['advisor', m[1], mode, '--by', owner()], { timeout: 30000 });
+  });
+  route('GET', /^\/api\/departments\/([a-z][a-z0-9-]{1,31})\/scorecard$/, async m => {
+    if (!ID.test(m[1])) bad('bad department id');
+    const s = await runApi('accountable.js', ['status', '--json', '--dept', m[1]], { timeout: 20000 });
+    return { ok: true, dept: m[1], scorecard: ((s && s.departments) || [])[0] || null };
+  });
+  route('POST', /^\/api\/departments\/([a-z][a-z0-9-]{1,31})\/accountable$/, (m, q, b) => {
+    if (!ID.test(m[1])) bad('bad department id');
+    b = b || {};
+    if (b.resume === true) return runApi('departments.js', ['accountable', m[1], 'resume', '--by', owner()], { timeout: 30000 });
+    const mode = String(b.mode || '');
+    if (!['off', 'shadow', 'live'].includes(mode)) bad('mode must be off, shadow or live (or resume)');
+    return runApi('departments.js', ['accountable', m[1], mode, '--by', owner()], { timeout: 30000 });
   });
   route('POST', /^\/api\/departments\/([a-z][a-z0-9-]{1,31})\/delegation$/, (m, q, b) => {
     if (!ID.test(m[1])) bad('bad department id');

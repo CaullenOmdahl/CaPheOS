@@ -25,7 +25,9 @@
  * schedule removes), delegate (a child run a lead's team.dispatch started inside its own run: the station starts it, so it
  * never passes admit() either; recorded by attribution with its parent run and its lead, lib/family.js), consult (a
  * department lead's advise run, which the dispatcher's consult step starts for the open consults of its department:
- * lib/consult.js; a run of a routine named "<lead> advise" that no admit row covers is inferred to it).
+ * lib/consult.js; a run of a routine named "<lead> advise" that no admit row covers is inferred to it), audit (a department
+ * lead's audit run for its members' handed-back work, started by the dispatcher on the department's FIXED audit model:
+ * lib/accountable.js; a run of a routine named "<lead> lead audit" that no admit row covers is inferred to it).
  * Kinds: run (starts a model run), act (an outbound act, e.g. a spend), watchdog (the liveness check: starts nothing),
  * meeting-turn (a turn of the owner's meeting, console/meeting.js: a zero-token permission and routing check, no budget:
  * refused unless the owner opened the meeting (req.owner true), held under a hard halt or a refusal block on the provider).
@@ -36,8 +38,9 @@ const path = require('path');
 const co = require('./company');
 
 const PHASE = 1;
-const DOORS = ['dispatch', 'lane', 'hire', 'chat', 'meeting', 'health', 'console', 'act', 'watchdog', 'halt', 'onboard', 'pacer', 'schedule', 'delegate', 'consult'];
+const DOORS = ['dispatch', 'lane', 'hire', 'chat', 'meeting', 'health', 'console', 'act', 'watchdog', 'halt', 'onboard', 'pacer', 'schedule', 'delegate', 'consult', 'audit'];
 const ADVISE_ROUTINE = /\badvise(?: #[0-9a-f]+)?$/i;   // lib/scheduler.js adviseSpec: "<Lead name> advise" (a renamed one "… advise #ab12")
+const AUDIT_ROUTINE = /\blead audit(?: #[0-9a-f]+)?$/i;   // lib/accountable.js: "<Lead name> lead audit"
 const KINDS = ['run', 'act', 'watchdog', 'meeting-turn'];
 const PHASE1_REASON = 'phase 1 counts, it does not decide: allowed and recorded; the door\'s own rules (cap, share, spread, pacer, halt) decided as before';
 const logFile = o => (o && o.file) || process.env.ADMIT_LOG || co.p('company', 'state', 'admit-log.jsonl');
@@ -167,6 +170,7 @@ function attribute(runs, list, o) {
     let e;
     if (hit) { used.add(hit.id); e = { door: hit.door, via: 'admit', admitId: hit.id }; }
     else if (HEALTH_STREAM.test(String(r.streamId || ''))) e = { door: 'health', via: 'inferred', admitId: null };
+    else if (AUDIT_ROUTINE.test(String(r.cronJobName || r.routineName || r.jobName || ''))) e = { door: 'audit', via: 'inferred', admitId: null };   // a lead's audit run
     else if (ADVISE_ROUTINE.test(String(r.cronJobName || r.routineName || r.jobName || ''))) e = { door: 'consult', via: 'inferred', admitId: null };   // a lead's advise run
     else if (r.cronJobId || /^cron-/.test(String(r.streamId || '')) || r.source === 'cron' || r.wireSource === 'routine') e = { door: 'schedule', via: 'inferred', admitId: null };
     else e = { door: null, via: null, admitId: null };

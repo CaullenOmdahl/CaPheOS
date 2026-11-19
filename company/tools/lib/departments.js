@@ -29,6 +29,10 @@
  *                                         `delegation` over settings().delegationDefaults, field by field, plus
  *                                         `effective`: 'off' | 'shadow' | 'live' (a withdrawn department acts as 'shadow')
  *   D.subtree(lead, crew)                 the seats under a lead in the loops.json manager chain (the lead itself left out)
+ *   D.accountableOf(dept, st)             the department's accountable-lead settings (docs/DEPARTMENTS.md §8): its own
+ *                                         `accountable` over settings().accountableDefaults, field by field (audit,
+ *                                         risk, selfCheck, batch and scorecard one level deeper), plus `effective`:
+ *                                         'off' | 'shadow' | 'live' (a withdrawn department acts as 'shadow')
  *
  * Every rule a reader might want to tune lives in the file (limits, newDepartment, leadModelDefault); nothing here
  * hardcodes a seat, a name or a company. Owner: the people function (co.seatFor('people')).
@@ -53,6 +57,16 @@ const DELEGATION_NUMS = { maxWorkers: [1, 8], workerTimeoutMin: [5, 240], minPie
 const ADVISOR_FALLBACK = { mode: 'off', routine: 'advise', batch: { minGapMin: 5, maxWaitMin: 10, startAt: 3 }, packetMaxChars: 4000, premerge: 'advisory',
   autoPause: { enabled: false, minItems: 20, minDays: 14, consultRate: [0.10, 0.40], cachedShareMin: 0.85, oneShotGainPoints: 10, reworkCutShare: 0.20 } };
 
+// accountable leads (docs/DEPARTMENTS.md §8): work enters through the lead, members self-check, the lead's audit is binding.
+// audit.routine / audit.risky: the FIXED model pairs a routine or a risky audit runs on (null = leadModelDefault); set only by
+// the owner (departments.js accountable <id> audit-model), never by a router, a weekly suggestion or the ranking
+const ACCOUNTABLE_MODES = ['off', 'shadow', 'live'];
+const ACCOUNTABLE_FALLBACK = { mode: 'off', routine: 'lead audit', audit: { routine: null, risky: null },
+  risk: { classes: [], paths: ['secrets/', '.github/', 'company/tools/', 'company/state/', 'Dockerfile', 'container/'], minDiffLines: 400, words: ['money', 'payment', 'credential', 'password', 'secret', 'migration', 'delete', 'production', 'trade', 'order'] },
+  selfCheck: { timeoutSec: 600, noteMinChars: 20 }, packetMaxChars: 12000,
+  batch: { minGapMin: 5, maxWaitMin: 15, startAt: 2 },
+  scorecard: { days: 28, spotCheckEvery: 10, minItems: 10, expectedCut: 0.75, fallbackBelowCut: 0.25 } };
+const ACCOUNTABLE_DEEP = ['audit', 'risk', 'selfCheck', 'batch', 'scorecard'];
 const rootOf = o => path.resolve((o && o.root) || co.ROOT);
 const fileOf = o => (o && o.file) || path.join(rootOf(o), 'company', 'departments.json');
 const defaultFileOf = o => path.join(rootOf(o), 'company', 'defaults', 'departments.json');
@@ -81,6 +95,7 @@ function settings(doc, o) {
     limits: Object.assign({ briefMaxChars: 8000, digestMaxChars: 8000, proposalsKeep: 50 }, d.limits || {}, c.limits || {}),
     advisorDefaults: mergeAdvisor(mergeAdvisor(ADVISOR_FALLBACK, d.advisorDefaults), c.advisorDefaults),
     delegationDefaults: Object.assign({}, DELEGATION_FALLBACK, isObj(d.delegationDefaults) ? d.delegationDefaults : {}, isObj(c.delegationDefaults) ? c.delegationDefaults : {}),
+    accountableDefaults: mergeDeep(mergeDeep(ACCOUNTABLE_FALLBACK, d.accountableDefaults, ACCOUNTABLE_DEEP), c.accountableDefaults, ACCOUNTABLE_DEEP),
   };
 }
 const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -89,6 +104,25 @@ function mergeAdvisor(a, b) {
   const out = Object.assign({}, a || {}, isObj(b) ? b : {});
   for (const k of ['batch', 'autoPause']) out[k] = Object.assign({}, (a || {})[k] || {}, isObj(b) && isObj(b[k]) ? b[k] : {});
   return out;
+}
+function mergeDeep(a, b, keys) {
+  const out = Object.assign({}, a || {}, isObj(b) ? b : {});
+  for (const k of keys) out[k] = Object.assign({}, (a || {})[k] || {}, isObj(b) && isObj(b[k]) ? b[k] : {});
+  return out;
+}
+const isPair = p => isObj(p) && typeof p.provider === 'string' && !!p.provider && typeof p.model === 'string' && !!p.model;
+/* the department's accountable-lead settings over the defaults; effective: what the tools act on (withdrawn = shadow; an
+   unknown mode reads as off). audit pairs that are not {provider, model} read as null (the lead model) */
+function accountableOf(dept, st) {
+  const s = st || settings({});
+  const own = dept && isObj(dept.accountable) ? dept.accountable : {};
+  const a = mergeDeep(s.accountableDefaults || ACCOUNTABLE_FALLBACK, own, ACCOUNTABLE_DEEP);
+  a.mode = ACCOUNTABLE_MODES.includes(String(own.mode || '')) ? String(own.mode) : 'off';
+  a.audit = { routine: isPair(a.audit.routine) ? a.audit.routine : null, risky: isPair(a.audit.risky) ? a.audit.risky : null };
+  a.withdrawn = isObj(own.withdrawn) ? own.withdrawn : null;
+  a.since = own.since || null; a.by = own.by || null;
+  a.effective = a.mode === 'off' ? 'off' : a.withdrawn ? 'shadow' : a.mode;
+  return a;
 }
 /* the department's advisor settings over the defaults; effective: what the tools act on (paused = shadow; an unknown
    mode reads as off) */
@@ -207,6 +241,15 @@ function validate(doc, crew) {
         if (g.prefer != null && !['lanes', 'dispatch'].includes(String(g.prefer))) P('BAD_DELEGATION', 'department ' + id + ': delegation.prefer must be lanes or dispatch', { dept: id });
       }
     }
+    if (d.accountable != null) {
+      const g = d.accountable;
+      if (!isObj(g)) P('BAD_ACCOUNTABLE', 'department ' + id + ': accountable must be an object', { dept: id });
+      else {
+        if (g.mode != null && !ACCOUNTABLE_MODES.includes(String(g.mode))) P('BAD_ACCOUNTABLE', 'department ' + id + ': accountable.mode must be one of ' + ACCOUNTABLE_MODES.join(', '), { dept: id });
+        if (g.audit != null && !isObj(g.audit)) P('BAD_ACCOUNTABLE', 'department ' + id + ': accountable.audit must be { routine, risky } model pairs', { dept: id });
+        else if (g.audit) for (const k of ['routine', 'risky']) if (g.audit[k] != null && !isPair(g.audit[k])) P('BAD_ACCOUNTABLE', 'department ' + id + ': accountable.audit.' + k + ' must be { provider, model, effort? } or null', { dept: id });
+      }
+    }
   }
   return out;
 }
@@ -274,4 +317,4 @@ function drift(o) {
   return { ok: !mismatches.length, mismatches, notes };
 }
 
-module.exports = { CLASSES, CONTRACT_CLASSES, ID_RE, CONSULT_KEYS, ADVISOR_MODES, ADVISOR_FALLBACK, DELEGATION_MODES, DELEGATION_FALLBACK, DELEGATION_NUMS, delegationOf, subtree, advisorOf, consultOf, mergeAdvisor, load, settings, frameworkDefault, list, members, deptOf, leadOf, validate, parsePlan, drift, decided, fileOf };
+module.exports = { ACCOUNTABLE_MODES, ACCOUNTABLE_FALLBACK, accountableOf, isPair, CLASSES, CONTRACT_CLASSES, ID_RE, CONSULT_KEYS, ADVISOR_MODES, ADVISOR_FALLBACK, DELEGATION_MODES, DELEGATION_FALLBACK, DELEGATION_NUMS, delegationOf, subtree, advisorOf, consultOf, mergeAdvisor, load, settings, frameworkDefault, list, members, deptOf, leadOf, validate, parsePlan, drift, decided, fileOf };

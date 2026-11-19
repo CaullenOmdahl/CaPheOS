@@ -246,6 +246,20 @@ items of each class. `keep` when splitting is cheaper, `withdraw` when it is not
 withdraws the department's splitting once per hash (`lib/delegate-allow.js withdrawStep`), only the owner resumes. It is
 written to `routing-evaluation.json` under `fanout`.
 
+### Accountable leads: is the lead checking cheaper than the lead doing?
+
+`accountableEvaluation` (policy key `accountableEvaluation: { minItems: 10, expectedCut: 0.75, fallbackBelowCut: 0.25 }`,
+each overridden by the department's `accountable.scorecard`; delete it to switch the report off; docs/DEPARTMENTS.md §8),
+per department whose accountable leads is live: its members' items the lead accepted (a `**Verdict:** ACCEPT` line by the
+lead; ACCEPT and ACCEPTED are pass words) since `accountable.since`, against the items of the same class the lead did
+alone. Cost per accepted item = the items' `score.cost` over their one-shot sum; the lead's audit runs (wakes of door
+`audit`) are booked to the audited items, and like advise runs they are not authorship, so the lead's verdict is not a
+self-grade. `cut = 1 - pathway / lead alone`. `fall back` when the cut is under `fallbackBelowCut` over at least
+`minItems` accepted items: the dispatcher withdraws the department to recording only once per hash (`lib/accountable.js
+auditStep`) and tells the owner in one plain line; `keep` otherwise, with the measured cut beside the owner's expected
+one; `not enough data` below `minItems` or with nothing of the same class the lead did alone. Written to
+`routing-evaluation.json` under `accountable`.
+
 ### Profiles: how each seat does under each version of its profile
 
 `profileEvaluation` (ranking policy key `profileEvaluation`, `minItems` 5 by default; docs/PROFILES.md) is measurement

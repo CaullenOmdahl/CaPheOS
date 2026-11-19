@@ -2,7 +2,8 @@
 
 A department is a group of seats with one lead. The lead is who the members go to when an item is stuck, who reviews
 their plans, and who keeps the department's brief. This page covers the data, the tool, the checks, the console view and
-(§5) what a lead does when its department's advice is on.
+(§5) what a lead does when its department's advice is on, and (§8) the accountable lead: the members' work goes through the
+lead, who audits every finished item before it counts.
 
 Code: `company/departments.json` (the data), `company/tools/lib/departments.js` (reading and checks),
 `company/tools/lib/company.js` (`co.deptOf`, `co.leadOf`, `co.departmentsOf`), `company/tools/departments.js` (the only
@@ -10,6 +11,9 @@ writer), `console/departments.js` and `console/ui/js/screens/crew-departments.js
 `company/tools/lib/consult.js` and `company/tools/consult.js`. Tests: `node company/tools/departments.js --selftest`,
 `node company/tools/consult.js --selftest` and `node --test company/tools/tests/departments.test.js
 company/tools/tests/consult.test.js company/tools/tests/consult-dispatch.test.js company/tools/tests/advisor-eval.test.js`.
+Accountable leads: `company/tools/lib/accountable.js` and `company/tools/accountable.js`; tests `node
+company/tools/accountable.js --selftest` and `node --test company/tools/tests/accountable.test.js
+company/tools/tests/accountable-dispatch.test.js`.
 
 ## 1. The data: company/departments.json
 
@@ -339,7 +343,131 @@ this matters.
 
 - Hiring into a department. `hire.js` seats a new hire in no department, and the people function or the owner adds
   them with `add-member`.
-- Editing `consult`, `advisorDefaults`, `delegationDefaults` or `limits` with a command or from the console. For now they are config in the file
+- Editing `consult`, `advisorDefaults`, `delegationDefaults`, `accountableDefaults` (beyond the audit models and the switch) or `limits` with a command or from the console. For now they are config in the file
   (`routes` have one writer, `departments.js set-route`, §6 and docs/ROUTING.md §7).
   A hand edit is reported by locked-watch, and the owner takes it as the new version under Settings › System › change
   flags (`locked-watch.js accept company/departments.json --by owner --why "..."`).
+
+## 8. Accountable leads
+
+The owner, 2026-11-19: *"we have like a proper company tier where like you have the middle management leads, and they're
+going to be fully responsible for the employees that work underneath them and produce work, and then they're going to
+review the work that was done and ensure quality, and then pass it to where it needs to go ... the big thing with the
+middle management is that it should have accountability."* And on the cost: *"the lead delegates the work and then the
+local model, like the lower model, checks its own work and then the lead also checks its work. So that should be about
+around a 75% reduction in overall usage or cost based on how the models are tiered."*
+
+This sits on top of §5 (advice) and §6 (splitting): advice is a lead answering when asked; here the lead is answerable for
+every finished item of its team. One switch per department, `accountable.mode` (absent = `accountableDefaults`, `off`):
+
+| Mode | What happens |
+|---|---|
+| `off` (the default everywhere) | nothing is computed |
+| `shadow` ("Recording only") | intake, hand-backs and their self-checks are recorded; what would be copied, held or reopened is logged once (`WOULD COPY`, `WOULD HOLD`, `WOULD HOLD DONE`, `WOULD AUDIT`); nothing is copied, held, reopened or delivered, and nobody waits |
+| `live` ("On") | all of it, below |
+
+A **withdrawn** department (`accountable.withdrawn`) acts as recording only. The owner switches it (`departments.js
+accountable <id> off|shadow|live --by owner`, or the department card, "Lead checks every finished job: Off · Recording only ·
+On"); it needs a lead who is not the CEO (`ACCOUNTABLE_NO_LEAD` in `check`). The first tick a department is on, the work
+already open is noted as from before and left alone (no copies, no holds on it).
+
+**1. Intake through the lead.** Work for the department goes to its lead, who assigns it to a member (a handoff from the
+lead into the member's inbox) or does it when no member fits. Work someone else sends straight to a member is recorded as
+the lead's (an `intake` row, `via: direct`) and copied to the lead's inbox as a DONE block for the record, which wakes
+nobody. Each assigned or copied item gets a `**Hand back:**` line that tells the member how it comes back.
+
+**2. Workers on the lower tier.** The members run on their own chains and routes (routing classes and tier caps: §6,
+docs/ROUTING.md; code never on the MiniMax plan). The lead mainly reads: its audit runs see a packet, not the work's
+history.
+
+**3. The self-check.** Before handing back, the member runs
+`accountable.js handback <item> --note "<what I checked>" [--tests ".."] [--test-cmd "<cmd>"]... [--cwd <repo> [--base
+<ref>] | --diff-file <file> | --no-diff "<why>"] [--pr <url> --sha <head>] --by <member>`. It refuses an item with no
+acceptance check (`**Acceptance check:**`, `**Check:**` or an `### Acceptance check` section: the lead adds one), a note
+under `selfCheck.noteMinChars`, and code work with no diff. It RUNS the item's `**Check command:**` and every `--test-cmd`
+(each within `selfCheck.timeoutSec`): one failure is a `selfcheck` row, exit 3, and nothing reaches the lead.
+
+**4. The binding audit.** A passing hand-back puts one `## Audit:` block in the lead's inbox (at most `packetMaxChars`, the
+diff clipped first): the acceptance check, the self-check (the note, the commands that passed, the tests named) and the
+diff. Never the item's history. The lead answers with `accountable.js audit <ac-id> --verdict ACCEPT|REVISE --check
+"<what I checked>" [--finding "<what to fix>"]... --by <lead>`; only the department's lead may, never on its own work, and
+REVISE needs at least one finding. The first verdict decides; a new hand-back is a new audit. The verdict line goes into
+the packet (DONE) and the member's item, where model-rank.js reads it (ACCEPT is a pass word). Until ACCEPT the dispatcher
+holds, in live:
+- **the item's DONE**: the member is not woken for a handed-back item (parked "waiting for <lead> to check it"), and a
+  DONE set without the lead's accept is put back to OPEN once per closing (`done-held` row, `ACCOUNTABLE DONE HELD`).
+  ACCEPT sets it DONE; REVISE sets it OPEN with the findings, and the member is woken to fix it.
+- **the merge**: `merge-gate.js` asks `gate()`: a member's PR merges only with an ACCEPT whose hand-back named that PR at
+  that head commit (`--pr`, `--sha`); later commits need a new hand-back. Recording only allows and says it would refuse.
+- **the onward handoff** (5, below).
+
+**Which model audits.** Routine audits run on `accountable.audit.routine`, risky ones on `accountable.audit.risky`; `null`
+reads `leadModelDefault` (the lead's top tier). An audit is risky when the department lists its class in `risk.classes`,
+it touches a path in `risk.paths` (secrets, CI, the tools, company state, containers by default), its diff has at least
+`risk.minDiffLines` changed lines, its heading or Need names a word in `risk.words` (money, credential, migration,
+production, trade, ...), it asks to merge, act outside or trade (the sign-off cues), or it says `**Risk:** high`;
+`**Risk:** routine` marks it routine. The pairs are set ONLY by the owner (`departments.js accountable <id> audit-model
+routine|risky <provider/model[@effort]|none> --by owner`): the CEO, the dispatcher, the weekly routing suggestion and the
+ranking are refused, `set-route` has no audit class, and no router picks it. The class rules for review and for the
+department's default class apply first (a code department's audit never on the MiniMax plan, for the owner too).
+
+**The audit run.** One station routine per live lead, `<Lead name> lead audit` (`accountableDefaults.routine`), created and
+removed by the dispatcher and never scheduled by the station; its prompt is
+`company/defaults/work/departments/audit-prompt.md` (a company copy at `company/work/departments/audit-prompt.md` wins),
+byte-identical up to its last line, `Open audits for you: ac-…`. The dispatcher (`lib/accountable.js auditStep`) starts it
+per tier when `batch.startAt` (2) audits wait or the oldest has waited `batch.maxWaitMin` (15) minutes, at least
+`batch.minGapMin` (5) after the last one, never while the lead's loop runs; one run per department per tick, through
+`admit()` (door `audit`, docs/BUDGET.md) on that tier's pair as a one-run override (`lib/override-allow.js` lists exactly
+the two audit pairs for a live lead). The pair must pass the class rules, the pacer (the override list), the money check
+and the lead's approval mode; if it does not, or the station refuses it, the audit WAITS (`AUDIT HOLD`). It is never moved
+to another model. Its `wakes.jsonl` row (door `audit`) lists the audited items, so their cost includes the audit; the
+ranking does not count the audit run as authorship. The audit packets in a live lead's inbox are the audit run's work,
+not its loop's. No second top-tier opinion is asked by default.
+
+**5. The lead passes accepted work on.** A member's OPEN handoff to anyone outside the department (not marked FYI) is held
+for its receiver ("waiting for <lead> to pass it on") and the lead gets one `Pass on:` block. The lead passes it with
+`accountable.js pass <inbox>#<item> --by <lead>` (it gets `**Passed on by:** <lead> (lead of <dept>, accountable for it)`) or
+returns it (`--return --why ".."`, which closes it). Inside the department, handoffs move freely. The receiver deals with one
+accountable person.
+
+**6. The scorecard on the lead.** `accountable.js status [--dept <id>] [--json]`, the department card ("How the team is
+doing", `GET /api/departments/<id>/scorecard`) and the people function's review of the lead read the same numbers over
+`scorecard.days` (28): hand-backs, audited, accepted, sent back and the sent-back rate, on time (accepted on or before the
+item's `**Deadline:**`, of those with one), cost per accepted item (the runs `wakes.jsonl` books to the items, the audit's
+share shown apart), self-check failures, **escapes** (a problem found later in accepted work, charged to the lead's review:
+`accountable.js escape <ac-id> --why ".." --by <seat|owner>`, never by the lead itself, and recorded by the dispatcher when
+an accepted item is reopened) and **spot checks**: every `scorecard.spotCheckEvery`th accept (10; 0 = none) goes to the
+people function (or the lead's manager) for a second, cheap look (`accountable.js spot <ac-id> --result agree|disagree --why
+".." --by <seat>`), so rubber-stamping shows; a lead that has sent nothing back after five audits gets a line saying so, beside its spot
+checks. The lead's own grader drift is in the house ranking (docs/RANKING.md §10). The words on the
+card pass `lib/owner-scope.js wordsProblems`.
+
+**7. Escalation one level at a time.** Member to lead; lead to CEO only when it crosses departments or is one of the four
+owner gates. A member's block to the CEO is outside the department, so it waits for the lead; the lead passes it to the CEO
+only with `--escalation cross-department` or `--escalation "owner: money|access|ownership|commitment"`. The lead's own
+block to the CEO that reads as an escalation (its heading says so, or it has an `**Escalation:**` line) is held until its
+`**Escalation:**` line names one of those reasons, and the lead is told once.
+
+**8. Does it pay?** `model-rank.js accountableEvaluation` (docs/RANKING.md §10) compares the cost per accepted item of the
+members' accepted work since `accountable.since` with the same class of work the lead did alone. Under
+`scorecard.fallbackBelowCut` (25%) over `scorecard.minItems` (10) accepted items it says `fall back`: the dispatcher
+withdraws the department to recording only once per evaluation hash (`accountable <id> withdraw --by dispatcher --auto`)
+and tells the owner in one line ("The crew stopped having Kwame check every finished job in Engineering: it did not cost
+less than Kwame doing the work alone. You can turn it back on from the Engineering card."). The
+owner's expectation, `scorecard.expectedCut` (75%), is reported beside the measured cut. The lead's advice (§5) is
+unchanged. Only the owner resumes.
+
+**The records.** `company/state/accountable.jsonl` (class A, appended only by lib/accountable.js; every row recorded with
+provenance as `accountable.js`, and read only as recorded, lib/recorded.js: a hand-written ACCEPT is never read):
+`intake`, `selfcheck`, `handback`, `verdict`, `auditrun`, `done-held`, `pass`, `return`, `drop`, `escape`, `spot`.
+`company/state/accountable-state.json` is the dispatcher's memory (class A). A lead drops an item that is no longer
+needed with `accountable.js drop <ref> --why ".." --by <lead>` (it counts neither way).
+
+**Rollout.** Every company: absent (`off`). The sandbox: Engineering in recording only first, with its lead set and the
+audit models chosen by the owner; after a week of recording-only rows the owner may switch it on from the card.
+
+**Known limits.** The self-check runs in the member's own run, so it is as honest as the item's check command: the lead
+reads the diff against the acceptance check either way. A held onward handoff is told apart by its writer the way the
+sign-off hold does (the agents' transcripts, else the heading's name). Workers' models come from their own chains and
+routes; this section does not move them. Sprint lanes skip an item that is with its lead for audit.
+

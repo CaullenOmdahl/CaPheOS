@@ -289,7 +289,8 @@ function analyze(inp) {
   const crew = inp.crew || {}, deps = inp.departments || { departments: [] };
   const z = zOf(K.confidence);
 
-  // a department lead's advise runs (wakes of door consult, lib/consult.js): their cost is the consulted items' cost, but they
+  // a department lead's advise runs (wakes of door consult, lib/consult.js) and audit runs (door audit, lib/accountable.js):
+  // their cost is the consulted or audited items' cost, but they
   // are advice, not authorship, so the lead's verdict on such an item is not a self-grade
   const adviseRuns = new Set();
   // runs: one row per run (side rows carry the dispatch-slice reason), their families
@@ -308,7 +309,7 @@ function analyze(inp) {
   // which items each run was started for (its cost is split evenly between them)
   const runOfAdmit = new Map(); for (const a of inp.attributed || []) if (a && a.admitId && a.runId) runOfAdmit.set(a.admitId, a.runId);
   const wakeRun = w => (w.runId ? String(w.runId) : (w.admitId && runOfAdmit.get(w.admitId)) || null);
-  for (const w of inp.wakes || []) if (w && w.door === 'consult') { const rid = wakeRun(w); if (rid) adviseRuns.add(rid); }
+  for (const w of inp.wakes || []) if (w && (w.door === 'consult' || w.door === 'audit')) { const rid = wakeRun(w); if (rid) adviseRuns.add(rid); }
   const runItems = new Map(), wakeById = new Map(), wakesOfItem = new Map();
   for (const w of inp.wakes || []) {
     if (!w) continue; if (w.wakeId) wakeById.set(w.wakeId, w);
@@ -404,7 +405,7 @@ function analyze(inp) {
       if (authors.has(v.by)) { totals.selfGradesIgnored++; continue; }
       if (K.requireCheck && !v.check) { totals.uncitedIgnored++; continue; }
       const w = v.by === lead ? K.wLead : K.wOther;
-      counted.push({ by: v.by, fail: v.fail, w });
+      counted.push({ by: v.by, fail: v.fail, w, word: v.word });
       if (v.fail) { reviseRounds += w; failW = Math.max(failW, w); }
     }
     const inWin = t => t >= closedAt && t <= closedAt + settleMs;
@@ -569,6 +570,7 @@ function evalKnobs(P) {
       confidence: clamp(num(g(T.interval, 'confidence', g(P.interval, 'confidence', 0.8)), 0.8), 0.5, 0.999) } : null,
     advisor: P && P.advisorEvaluation && typeof P.advisorEvaluation === 'object' ? Object.assign({ minItems: 20, minDays: 14, consultRate: [0.10, 0.40], cachedShareMin: 0.85, oneShotGainPoints: 10, reworkCutShare: 0.20 }, P.advisorEvaluation) : null,
     fanout: P && P.fanoutEvaluation && typeof P.fanoutEvaluation === 'object' ? { minItems: Math.max(1, num(P.fanoutEvaluation.minItems, 10)) } : null,
+    accountable: P && P.accountableEvaluation && typeof P.accountableEvaluation === 'object' ? { minItems: Math.max(1, num(P.accountableEvaluation.minItems, 10)), expectedCut: clamp(num(P.accountableEvaluation.expectedCut, 0.75), 0, 1), fallbackBelowCut: clamp(num(P.accountableEvaluation.fallbackBelowCut, 0.25), 0, 1) } : null,
     profile: P && P.profileEvaluation && typeof P.profileEvaluation === 'object' ? { minItems: Math.max(1, num(P.profileEvaluation.minItems, 5)) } : null,
     tierCaps: C ? { minItems: Math.max(1, num(C.minItems, 20)), windowCut: clamp(num(C.windowCut, 0.3), 0, 1), reworkMaxRatio: Math.max(1, num(C.reworkMaxRatio, 1.25)),
       baseline: C.baseline === 'uncapped' ? 'uncapped' : 'wouldApply', rates: (Array.isArray(C.rates) ? C.rates : ['revise', 'reopen']).filter(x => x === 'revise' || x === 'reopen'),
@@ -707,6 +709,7 @@ function evaluate(inp, an) {
   }
   if (E.advisor) { const a = advisorEvaluation(inp, an, K, E.advisor, scoredOf); if (a) res.advisor = a; }
   if (E.fanout) { const f = fanoutEvaluation(inp, an, K, E.fanout, scoredOf); if (f) res.fanout = f; }
+  if (E.accountable) { const ac = accountableEvaluation(inp, an, K, E.accountable, scoredOf); if (ac) res.accountable = ac; }
   if (E.profile) { const pe = profileEvaluation(inp, an, K, E.profile, scoredOf); if (pe) res.profile = pe; }
   return res;
 }
@@ -807,6 +810,54 @@ function fanoutEvaluation(inp, an, K, base, scoredOf) {
     if (reasons.length) verdict = 'not enough data';
     else if (ratio >= 1) { verdict = 'withdraw'; reasons.push('splitting cost ' + Math.round(100 * ratio) + '% of doing the same kind of item in one go per accepted item, over ' + del.length + ' delegated items: not lower'); }
     else { verdict = 'keep'; reasons.push('splitting cost ' + Math.round(100 * ratio) + '% of doing the same kind of item in one go per accepted item, over ' + del.length + ' delegated items'); }
+    Object.assign(entry, { verdict, reasons });
+    entry.hash = bodyHash(entry);
+    out.push(entry);
+  }
+  return { departments: out };
+}
+/* accountableEvaluation (docs/RANKING.md §10, docs/DEPARTMENTS.md §8; the owner: "it would still be cheaper for the lead to
+ * audit the work rather than having the lead write the work ... around a 75% reduction"): per department whose accountable
+ * leads is live, its members' scored items accepted by the lead (a **Verdict:** ACCEPT line by the lead) since
+ * accountable.since, against the lead's own scored items of the same class (the same kind of work done by the lead alone).
+ * Cost per accepted item = the items' cost (score.cost: the members' runs AND the lead's audit runs, which wakes.jsonl books
+ * to the audited items, door audit) over their one-shot sum. Per class the two are compared, then weighted by the accepted
+ * items of each class: cut = 1 - ratio. The department's scorecard numbers override this section's (fallbackBelowCut,
+ * expectedCut, minItems). fall back when the cut is under fallbackBelowCut over at least minItems accepted items (the
+ * dispatcher then withdraws the department to recording only once per hash, lib/accountable.js auditStep, and tells the
+ * owner), keep otherwise (with how it compares with the owner's expected cut), not enough data below minItems or with no
+ * lead-alone item of the same class. Deterministic: the same items give the same entry and hash. */
+function accountableEvaluation(inp, an, K, base, scoredOf) {
+  const deps = (inp.departments && Array.isArray(inp.departments.departments)) ? inp.departments.departments : [];
+  let DL = null; try { DL = require('./lib/departments'); } catch (_) { return null; }
+  const st = inp.deptSettings || DL.settings(inp.departments || {}, {});
+  const live = deps.filter(d => d && d.lead && DL.accountableOf(d, st).mode === 'live').sort((a, b) => (String(a.id) < String(b.id) ? -1 : 1));
+  if (!live.length) return null;
+  const metric = it => num(it.cost[K.scoreCost], 0);
+  const side = list => { const n = list.length, acc = list.reduce((x, i) => x + i.oneShot, 0), cost = list.reduce((x, i) => x + metric(i), 0);
+    return { items: n, accepted: rnd(acc, 4), cost: rnd(cost), costPerAccepted: acc > 0 ? rnd(cost / acc) : null }; };
+  const out = [];
+  for (const d of live) {
+    const a = DL.accountableOf(d, st), T = { minItems: num(a.scorecard.minItems, base.minItems), expectedCut: num(a.scorecard.expectedCut, base.expectedCut), fallbackBelowCut: num(a.scorecard.fallbackBelowCut, base.fallbackBelowCut) };
+    const dept = String(d.id), lead = String(d.lead), members = new Set(DL.members(d).filter(x => x !== lead));
+    const sinceMs = Date.parse(a.since || '') || 0;
+    const acceptedByLead = it => (it.verdicts || []).some(v => !v.fail && /^ACCEPT/.test(String(v.word || '')) && String(v.by) === lead);
+    const scored = an.items.filter(it => scoredOf(it));
+    const path_ = scored.filter(it => members.has(String(it.seat)) && it.closedAt >= sinceMs && acceptedByLead(it));
+    const alone = scored.filter(it => String(it.seat) === lead);
+    const classes = [...new Set(path_.map(it => it.cell.class))].sort();
+    const per = classes.map(cls => { const p = side(path_.filter(it => it.cell.class === cls)), b = side(alone.filter(it => it.cell.class === cls));
+      return { class: cls, pathway: p, leadAlone: b, ratio: p.costPerAccepted != null && b.costPerAccepted ? rnd(p.costPerAccepted / b.costPerAccepted, 4) : null }; });
+    const usable = per.filter(c => c.ratio != null), w = usable.reduce((x, c) => x + c.pathway.items, 0);
+    const ratio = w ? rnd(usable.reduce((x, c) => x + c.ratio * c.pathway.items, 0) / w, 4) : null, cut = ratio == null ? null : rnd(1 - ratio, 4);
+    const entry = { dept, lead, since: a.since || null, withdrawn: a.withdrawn ? { by: a.withdrawn.by, at: a.withdrawn.at } : null, thresholds: sortKeys(T), costUnit: K.scoreCost, pathway: side(path_), leadAlone: side(alone), classes: per, ratio, cut };
+    const reasons = [];
+    if (path_.length < T.minItems) reasons.push('accepted items ' + path_.length + ' of ' + T.minItems);
+    if (ratio == null) reasons.push('no item of the same class the lead did alone, with an accepted result, to compare with');
+    let verdict;
+    if (reasons.length) verdict = 'not enough data';
+    else if (cut < T.fallbackBelowCut) { verdict = 'fall back'; reasons.push('the pathway cut cost per accepted item by ' + Math.round(100 * cut) + '% against the lead doing it alone, under the ' + Math.round(100 * T.fallbackBelowCut) + '% it must save (the owner expects about ' + Math.round(100 * T.expectedCut) + '%)'); }
+    else { verdict = 'keep'; reasons.push('the pathway cut cost per accepted item by ' + Math.round(100 * cut) + '% against the lead doing it alone (the owner expects about ' + Math.round(100 * T.expectedCut) + '%)'); }
     Object.assign(entry, { verdict, reasons });
     entry.hash = bodyHash(entry);
     out.push(entry);
@@ -948,7 +999,7 @@ const trialFile = id => (/^[A-Za-z0-9_.-]{1,64}$/.test(id) && !/^\.+$/.test(id) 
 // write the evaluation files that changed: routing-evaluation.json and trials/<id>.md (each compared with what is on disk)
 function writeEvaluation(root, ev, digest, dry) {
   const R = routingPaths(root), wrote = [];
-  if (!ev.trials && !ev.tierCaps && !ev.advisor && !ev.fanout && !ev.profile) return wrote;
+  if (!ev.trials && !ev.tierCaps && !ev.advisor && !ev.fanout && !ev.accountable && !ev.profile) return wrote;
   const want = [[R.evaluation, JSON.stringify(Object.assign({ hash: bodyHash(ev) }, sortKeys(ev)), null, 1) + '\n']];
   for (const t of ev.trials || []) want.push([path.join(R.trialsDir, trialFile(t.id)), renderTrialMd(t, digest)]);
   for (const r of (ev.advisor && ev.advisor.departments) || []) if (/^[a-z][a-z0-9-]{1,31}$/.test(r.dept)) want.push([path.join(root, 'company', 'work', 'models', 'advisor-' + r.dept + '.md'), renderAdvisorMd(r)]);
@@ -1167,5 +1218,5 @@ function main() {
   process.exit(2);
 }
 
-module.exports = { rank, analyze, evaluate, advisorEvaluation, fanoutEvaluation, profileEvaluation, PROFILE_CAVEAT, renderAdvisorMd, evalKnobs, trialDecision, renderTrialMd, writeEvaluation, evaluationDuty, loadRouting, wilsonBounds, armKeyOf, load, loadPolicy, knobs, refresh, refreshDue, duty, decide, verifyChain, historyRow, fileText, renderMd, bodyHash, wilsonLower, zOf, prRefs, verdictsIn, runKind, runCost, priceOf, paths, sortKeys };
+module.exports = { rank, analyze, evaluate, advisorEvaluation, fanoutEvaluation, accountableEvaluation, profileEvaluation, PROFILE_CAVEAT, renderAdvisorMd, evalKnobs, trialDecision, renderTrialMd, writeEvaluation, evaluationDuty, loadRouting, wilsonBounds, armKeyOf, load, loadPolicy, knobs, refresh, refreshDue, duty, decide, verifyChain, historyRow, fileText, renderMd, bodyHash, wilsonLower, zOf, prRefs, verdictsIn, runKind, runCost, priceOf, paths, sortKeys };
 if (require.main === module) main();

@@ -26,7 +26,7 @@
 
  "verdicts": {
   "fail": ["REVISE", "CHANGES-REQUESTED", "REQUEST-CHANGES", "REJECT", "TAKE-OVER"],
-  "pass": ["APPROVE", "APPROVED"],
+  "pass": ["APPROVE", "APPROVED", "ACCEPT", "ACCEPTED"],
   "requireCheck": true
  },
  "_verdicts": "a `**Verdict:**` (or `**Review:**`) line in the item's block, or in any handoff block whose `**Item:**` line names the item. Format: `**Verdict:** REVISE by <seat> — check: <the acceptance check run> — <findings>`. requireCheck: a verdict that cites no check (no 'check:') is ignored. A verdict by the item's author (the seat and every seat with a run linked to it) is always ignored",
@@ -106,6 +106,8 @@
  "profileEvaluation": { "minItems": 5 },
  "_profileEvaluation": "how each seat does under each version of its profile (docs/PROFILES.md, docs/RANKING.md §10): per seat and profile version (wakes.jsonl profile), its scored items, one-shot rate and rework, owner corrections; for a counterpart, its sign-off no rate and how many of its noes were later overturned; meeting stance share and phrase overlap (company/work/meetings/stats.jsonl). A trial shows the same number of days before it against during it, with the seats that did not change over the same window as the baseline. minItems: a side with fewer scored items says not enough data. Measurement only: nothing is changed by it, and profile versions are not a ranking cell dimension.",
  "fanoutEvaluation": { "minItems": 10 },
+ "accountableEvaluation": { "minItems": 10, "expectedCut": 0.75, "fallbackBelowCut": 0.25 },
+ "_accountableEvaluation": "whether accountable leads pay (docs/RANKING.md §10, docs/DEPARTMENTS.md §8), per department whose accountable leads is live: its members' items the lead accepted since accountable.since against the items of the same class the lead did alone, by the cost per accepted item (score.cost over the one-shot sum; the lead's audit runs are booked to the audited items). cut = 1 - (pathway / lead alone). fall back when the cut is under fallbackBelowCut over at least minItems accepted items (the dispatcher then withdraws the department to recording only once per evaluation and tells the owner; only the owner turns it back on), keep otherwise, not enough data below minItems. expectedCut is the owner's expectation (about 75%), reported beside the measured cut. The department's accountable.scorecard numbers override these. Delete this section to switch the report off",
  "_fanoutEvaluation": "whether splitting big jobs pays (docs/RANKING.md §6 and §10, the middle-management plan's P5), per department whose delegation is not off (company/departments.json): its delegated items (an item with a delegated child run, or worked by piece lanes of a recorded split) against its single-seat items of the same class, by the cost per accepted item (score.cost over the one-shot sum; a child run's cost is its lead's family's, lib/family.js). keep when the delegated cost per accepted item is lower, withdraw when it is not over at least minItems delegated items (the dispatcher then withdraws the department's splitting once per evaluation; only the owner resumes), not enough data below minItems or with no single-seat item of the same class to compare. Delete this section to switch the report off",
 
  "readBounds": { "runsMaxBytes": 67108864, "handoffMaxBytes": 8388608, "ledgerMaxBytes": 16777216, "correctionsMaxBytes": 4194304, "evidenceMaxFiles": 2000 },

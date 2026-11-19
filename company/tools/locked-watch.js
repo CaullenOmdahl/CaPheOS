@@ -107,6 +107,8 @@ const MANIFEST = [
   // advisor leads (lib/consult.js, docs/DEPARTMENTS.md §5): the consult ledger (a forged verdict row would read as the lead's
   // advice, and its open rows hold a member's item) and the dispatcher's consult state
   { p: 'company/state/consults.jsonl', cls: 'A', append: true, writers: ['lib/consult.js'], owner: 'tools', area: 'record', why: 'the consult ledger: every consult opened, dropped, advised and answered (only lib/consult.js appends, each row recorded)' },
+  { p: 'company/state/accountable.jsonl', cls: 'A', append: true, writers: ['accountable.js'], owner: 'tools', area: 'record', why: 'the accountable-lead ledger: intake, hand-backs with their self-checks, the leads\' binding audit verdicts, pass-ons, escapes and spot checks (only lib/accountable.js appends, each row recorded; a hand-written row is never read)' },
+  { p: 'company/state/accountable-state.json', cls: 'A', writers: ['accountable.js'], owner: 'tools', area: 'state', why: 'the accountable step\'s memory: items seen, copies, DONEs put back, pass-on notes, spot checks, the audit routines (rewritten whole by lib/accountable.js)' },
   { p: 'company/state/consult-state.json', cls: 'A', writers: ['lib/consult.js'], owner: 'tools', area: 'state', why: 'the consult step\'s stuck counters, last advise runs and advise routines (rewritten whole by lib/consult.js)' },
   // full profiles (docs/PROFILES.md): each seat's profile history (a removed or edited row would rewrite who a seat was and
   // what the owner decided), and the counterpart sign-off records (a forged yes would release a held handoff)
@@ -1992,7 +1994,7 @@ if (require.main === module) {
     if (cmd === 'status') {
       const items = expand(ctx); const base = loadBaseline(ctx); const by = {}; for (const [, m] of items) by[m.cls] = (by[m.cls] || 0) + 1;
       console.log('watching ' + items.size + ' files: ' + Object.entries(by).map(([k, v]) => v + ' class ' + k).join(', ') + '; baseline ' + (base ? base.at + (base._tampered ? ' (DOES NOT MATCH ITS MIRROR: automatic reverts off)' : '') : 'not built yet'));
-      if (base) { for (const [k, b] of Object.entries(base.files)) if (b.flagged) console.log('  flagged ' + k + ' since ' + b.flagged.at + ' (' + b.flagged.eventId + ')'); for (const [k] of Object.entries(base.starnetFlagged || {})) console.log('  flagged starnet/' + k); for (const [k, c] of Object.entries(base.connectors || {})) console.log('  flagged connector ' + k + ' since ' + c.at + ' (' + c.eventId + ')'); }
+      if (base) { for (const [k, b] of Object.entries(base.files)) if (b.flagged) console.log('  flagged ' + k + ' since ' + b.flagged.at + ' (' + b.flagged.eventId + ')'); for (const [k] of Object.entries(base.starnetFlagged || {})) console.log('  flagged starnet/' + k); for (const [k, c] of Object.entries(base.connectors || {})) console.log('  flagged connector ' + k + ' since ' + c.at + ' (' + c.eventId + ')'); if (base.provFlagged) console.log('  flagged company/state/locked/provenance.jsonl: an agent wrote to it directly (run ' + (base.provFlagged.run || '?') + ')' + (Number.isFinite(Number(base.provFlagged.trustedTo)) ? '; rows after byte ' + base.provFlagged.trustedTo + ' count for no reader' : '; from before trustedTo was recorded: rebuild the baseline (baseline --force) so the readers know where it starts') + ' until the owner rebuilds the baseline'); }
       return;
     }
     if (cmd === 'baseline') {

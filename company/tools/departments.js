@@ -36,6 +36,15 @@
  *                                                                          weekly suggestion only from the dispatcher's own
  *                                                                          process, after its veto window passed with no veto
  *   node company/tools/departments.js set-route <id> <class> none --by <owner|CEO>      drop the route (the class runs on each seat's chain)
+ *   node company/tools/departments.js accountable <id> off|shadow|live --by owner      accountable leads (§8): work goes through
+ *                                                                          the lead, whose audit of each finished item binds
+ *   node company/tools/departments.js accountable <id> audit-model routine|risky <provider/model[@effort]|none> --by owner
+ *                                                                          the FIXED model a routine or a risky audit runs on
+ *                                                                          (none = the lead model); the owner only: no router,
+ *                                                                          weekly suggestion or ranking ever sets it
+ *   node company/tools/departments.js accountable <id> withdraw --by dispatcher --auto --why ".." [--hash h]   (or --by owner):
+ *                                                                          the saving did not show; back to recording only
+ *   node company/tools/departments.js accountable <id> resume --by owner               only the owner resumes
  *   node company/tools/departments.js --duty                              read-only duty (docs/DUTIES.md)
  *   node company/tools/departments.js --selftest
  *
@@ -124,6 +133,11 @@ function report(o) {
     const under = d.lead ? D.subtree(d.lead, crew) : new Set();
     for (const w of g.workers) if (!crew[w] || !under.has(w)) dr.mismatches.push({ code: 'DELEGATE_OUTSIDE_SUBTREE', dept: d.id, seat: w, msg: 'department ' + (d.name || d.id) + ' lists ' + w + ' as a worker for its lead, but ' + (crew[w] ? w + ' does not report to ' + (d.lead ? nameOf(crew, d.lead) : 'a lead') + ' in loops.json' : w + ' is not on the crew') });
   }
+  // accountable leads (§8): on with no lead, or with the CEO as its lead
+  for (const d of D.list(doc)) {
+    const g = D.accountableOf(d, st);
+    if (g.mode !== 'off' && (!d.lead || String(d.lead) === String(S.ceo()))) dr.mismatches.push({ code: 'ACCOUNTABLE_NO_LEAD', dept: d.id, msg: 'department ' + (d.name || d.id) + ' has accountable leads ' + g.mode + ' but ' + (d.lead ? 'the CEO as its lead' : 'no lead') + ' (set a lead, or accountable ' + d.id + ' off)' });
+  }
   dr.ok = !dr.mismatches.length;
   const departments = D.list(doc).map(d => {
     const b = readIf(path.join(deptDir(String(d.id)), 'BRIEF.md'));
@@ -132,6 +146,7 @@ function report(o) {
       defaultClass: d.defaultClass || null, brief: d.brief || null, briefChars: b == null ? null : b.length, routes: d.routes || {}, consult: d.consult || {},
       advisor: (({ mode, effective, paused, since, by, batch, autoPause }) => ({ mode, effective, paused, since, by, batch, autoPause }))(D.advisorOf(d, st)), consultLimits: D.consultOf(d, st),
       delegation: (({ mode, effective, workers, maxWorkers, workerTimeoutMin, minPieces, maxPieces, prefer, since, by, withdrawn }) => ({ mode, effective, workers, maxWorkers, workerTimeoutMin, minPieces, maxPieces, prefer, since, by, withdrawn }))(D.delegationOf(d, st)),
+      accountable: (({ mode, effective, audit, withdrawn, since, by }) => ({ mode, effective, audit, withdrawn, since, by }))(D.accountableOf(d, st)),
       briefText: o && o.brief ? b : undefined };
   });
   const unassigned = Object.keys(crew).filter(id => !D.deptOf(id, doc)).map(id => ({ id, name: nameOf(crew, id), isCeo: id === S.ceo() }));
@@ -472,6 +487,65 @@ function delegationCmd(a) {
   return Object.assign(res, { delegation: (({ mode, effective, workers, withdrawn, since }) => ({ mode, effective, workers, withdrawn, since }))(D.delegationOf(Object.assign({}, d, { delegation: next }), st)) });
 }
 
+/* ---------------- accountable leads (docs/DEPARTMENTS.md §8) ----------------
+ * accountable <id> off|shadow|live          the owner only; shadow or live needs a lead who is not the CEO
+ * accountable <id> audit-model routine|risky <pair|none>   the owner only (the audit model is never chosen by any automatic
+ *                                           router: not the CEO, not the weekly suggestion, not the ranking); the class rules
+ *                                           for review and for the department's default class first (a code department's
+ *                                           audit never on the MiniMax plan)
+ * accountable <id> withdraw                 the dispatcher with --auto (model-rank.js accountableEvaluation: the saving did not
+ *                                           show), or the owner: the department records only
+ * accountable <id> resume                   the owner only; measured again from today */
+function setAccountable(d, next) { const L = state(); const doc = clone(L.doc); const x = D.list(doc).find(y => String(y.id) === String(d.id)); x.accountable = next; return doc; }
+function accountableCmd(a) {
+  const id = String(a.pos[1] || ''), op = String(a.pos[2] || '');
+  const L = state(), st = D.settings(L.doc, { root: S.root() }), d = needDept(L.doc, id), cur = D.accountableOf(d, st), crew = S.crew();
+  const own = d.accountable && typeof d.accountable === 'object' ? clone(d.accountable) : {};
+  const nowIso = new Date(S.now()).toISOString(), leadName = d.lead ? nameOf(crew, d.lead) : null, dn = d.name || d.id;
+  let who, next, summary;
+  const auto = () => {
+    if (a.auto !== true) throw new Refusal('the dispatcher withdraws only with --auto (the house ranking\'s accountable evaluation)');
+    let pv = null; try { pv = prov(); } catch (_) {}
+    if (pv && pv.underStation()) throw new Refusal('--by dispatcher is the dispatcher\'s own tick, never an agent\'s run');
+    const ceo = S.ceo(); return { kind: 'dispatcher', name: (crew[ceo] && crew[ceo].name) || 'owner', label: 'the dispatcher (automatic)' };
+  };
+  const byLow = String(a.by || '').trim().toLowerCase();
+  if (['off', 'shadow', 'live'].includes(op)) {
+    who = actor(a.by, 'accountable');
+    if (who.kind !== 'owner') throw new Refusal('only the owner switches accountable leads (accountable ' + id + ' ' + op + ' --by owner)');
+    if (op !== 'off' && (!d.lead || String(d.lead) === String(S.ceo()))) throw new Refusal(d.lead ? 'the CEO is never a department lead: set another lead for ' + dn + ' first' : dn + ' has no lead: set one first (set-lead ' + id + ' <seat>)', 2, { problem: 'ACCOUNTABLE_NO_LEAD' });
+    if (cur.mode === op) return { ok: true, changed: false, summary: 'accountable leads for ' + dn + ' is ' + op + ' already' };
+    next = Object.assign(own, { mode: op, since: op === 'live' ? nowIso : (own.since || null), by: 'owner', withdrawn: op === 'off' ? null : (own.withdrawn || null) });
+    summary = 'accountable leads for ' + dn + ' (' + (leadName || 'no lead') + '): ' + cur.mode + ' -> ' + op;
+  } else if (op === 'audit-model') {
+    if (['dispatcher', 'routing-proposal'].includes(byLow)) throw new Refusal('the audit model is the owner\'s choice: no router, weekly suggestion or ranking sets it');
+    who = actor(a.by, 'accountable');
+    if (who.kind !== 'owner') throw new Refusal('only the owner sets the model a lead audits on (the audit model is never chosen automatically)');
+    const tier = String(a.pos[3] || ''); if (!['routine', 'risky'].includes(tier)) throw new Refusal('accountable <id> audit-model routine|risky <provider/model[@effort]|none> --by owner');
+    const raw = String(a.pos[4] || ''); const pair = raw === 'none' ? null : parsePair(raw);
+    if (raw !== 'none' && !pair) throw new Refusal('the audit model is provider/model[@effort] (got "' + raw + '")');
+    if (pair) for (const cls of ['review'].concat(d.defaultClass && d.defaultClass !== 'review' ? [String(d.defaultClass)] : [])) { const deny = routeDenied(cls, pair); if (deny) throw new Refusal('refused: ' + deny + ' — an audit may take the work over, so it faces the rules for ' + cls + ' work too', 2, { problem: 'CLASS_RULE' }); }
+    const audit = Object.assign({ routine: null, risky: null }, own.audit && typeof own.audit === 'object' ? own.audit : {}); audit[tier] = pair;
+    next = Object.assign(own, { audit });
+    summary = 'the ' + tier + ' audit model of ' + dn + ': ' + routeLabel(cur.audit[tier]) + ' -> ' + routeLabel(pair) + (pair ? '' : ' (the lead model)');
+  } else if (op === 'withdraw') {
+    const why = a.why && a.why !== true ? clean(a.why, 300) : ''; if (!why) throw new Refusal('withdraw needs --why ".."');
+    if (byLow === 'dispatcher') who = auto(); else { who = actor(a.by, 'accountable'); if (who.kind !== 'owner') throw new Refusal('only the owner withdraws accountable leads by hand'); }
+    if (cur.mode === 'off') throw new Refusal('accountable leads for ' + dn + ' is off: there is nothing to withdraw');
+    if (cur.withdrawn) return { ok: true, changed: false, summary: dn + '\'s accountable leads is withdrawn already (' + (cur.withdrawn.why || '') + ')' };
+    next = Object.assign(own, { withdrawn: Object.assign({ at: nowIso, by: who.kind === 'dispatcher' ? 'auto' : 'owner', why }, a.hash && a.hash !== true ? { evaluationHash: clean(a.hash, 80) } : {}) });
+    summary = 'withdraw accountable leads for ' + dn + ' (' + (leadName || 'no lead') + '): ' + why;
+  } else if (op === 'resume') {
+    if (byLow === 'dispatcher') throw new Refusal('only the owner resumes accountable leads');
+    who = actor(a.by, 'accountable'); if (who.kind !== 'owner') throw new Refusal('only the owner resumes accountable leads');
+    if (!cur.withdrawn) return { ok: true, changed: false, summary: dn + '\'s accountable leads is not withdrawn' };
+    next = Object.assign(own, { withdrawn: null, since: nowIso });
+    summary = 'resume accountable leads for ' + dn + ' (' + (leadName || 'no lead') + '); measured again from today';
+  } else throw new Refusal('accountable <id> off|shadow|live|audit-model routine|risky <pair|none>|withdraw|resume --by <name>');
+  const p = { doc: setAccountable(d, next), summary, touched: [String(d.id)] };
+  return Object.assign(commit(p, who, a), { accountable: (({ mode, effective, audit, withdrawn, since }) => ({ mode, effective, audit, withdrawn, since }))(D.accountableOf(Object.assign({}, d, { accountable: next }), st)) });
+}
+
 /* set-route <id> <class> <provider/model[@effort]|none>: the one writer of a department's routes. */
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 function parsePair(raw) {
@@ -612,9 +686,10 @@ function main(argv) {
   if (['create', 'set-lead', 'add-member', 'remove-member', 'move'].includes(cmd)) return { code: 0, out: change(cmd, a) };
   if (cmd === 'advisor') return { code: 0, out: advisorCmd(a) };
   if (cmd === 'delegation') return { code: 0, out: delegationCmd(a) };
+  if (cmd === 'accountable') return { code: 0, out: accountableCmd(a) };
   if (cmd === 'set-route') return { code: 0, out: setRoute(a) };
   if (['brief', 'digest', 'note'].includes(cmd)) return { code: 0, out: deptFile(a, cmd) };
-  throw new Refusal('usage: departments.js list|show <id>|check|create <id> --name ..|set-lead <id> <seat|none>|add-member <id> <seat>|remove-member <id> <seat>|move <seat> <id|none>|proposals|apply <pid>|reject <pid>|advisor <id> off|shadow|live|pause|resume|delegation <id> off|shadow|live|workers <s,s>|withdraw|resume|set-route <id> <class> <p/m@e|none>|brief <id> --file f|digest <id> --file f|note <id> --text ".." (--by <name> on every change) | --duty | --selftest');
+  throw new Refusal('usage: departments.js list|show <id>|check|create <id> --name ..|set-lead <id> <seat|none>|add-member <id> <seat>|remove-member <id> <seat>|move <seat> <id|none>|proposals|apply <pid>|reject <pid>|advisor <id> off|shadow|live|pause|resume|delegation <id> off|shadow|live|workers <s,s>|withdraw|resume|accountable <id> off|shadow|live|audit-model routine|risky <p/m@e|none>|withdraw|resume|set-route <id> <class> <p/m@e|none>|brief <id> --file f|digest <id> --file f|note <id> --text ".." (--by <name> on every change) | --duty | --selftest');
 }
 function run(argv) {
   try { return main(argv); }

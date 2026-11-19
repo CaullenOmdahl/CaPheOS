@@ -334,9 +334,15 @@ Drawn in Crew › People under "Departments" once the company has one.
 - `POST /api/departments/<id>/delegation` `{ mode: off|shadow|live }` | `{ resume: true }` → `departments.js delegation
   <id> <mode|resume> --by <owner>` (splitting big jobs, docs/DEPARTMENTS.md §6; who the workers are is the CEO's or the
   owner's command, not the console's).
+- `GET /api/departments/<id>/scorecard` → `{ dept, scorecard }`: `accountable.js status --json --dept <id>` (the lead's
+  department scorecard: `handedBack, audited, accepted, sentBack, sentBackRate, onTime, costPerAccepted, escapes,
+  spotChecks, selfCheckFails, openAudits`, and `words`, the plain lines the card shows). docs/DEPARTMENTS.md §8.
+- `POST /api/departments/<id>/accountable` `{ mode: off|shadow|live }` | `{ resume: true }` → `departments.js accountable
+  <id> <mode|resume> --by <owner>` (the lead checks every finished job, docs/DEPARTMENTS.md §8). On without a lead, or with
+  the CEO as lead, is refused (400). The audit models are the owner's command in a shell, not the console's.
 - Every list row of `GET /api/departments` also carries `advisor: { mode, effective, paused, since, by, batch,
   autoPause }`, `delegation: { mode, effective, workers, maxWorkers, workerTimeoutMin, minPieces, prefer, since, by,
-  withdrawn }` and `consultLimits`.
+  withdrawn }`, `accountable: { mode, effective, audit, withdrawn, since, by }` and `consultLimits`.
 
 ## Profiles (console/profile.js)
 

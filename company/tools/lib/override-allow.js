@@ -63,6 +63,12 @@ function leadModel(seatId, o) {
   const K = o && o.K !== undefined ? o.K : routingKnobs(o && o.root);
   return list.filter(p => { try { return require('./routing').routeAllowed('review', { provider: p.provider, model: p.model }, K); } catch (_) { return true; } });
 }
+/* a live accountable lead's fixed audit pairs (lib/accountable.js leadEntries), unless the class rules deny them for review */
+function auditModel(seatId, o) {
+  let list = []; try { list = require('./accountable').leadEntries(seatId, { root: o && o.root }); } catch (_) { return []; }
+  const K = o && o.K !== undefined ? o.K : routingKnobs(o && o.root);
+  return list.filter(p => { try { return require('./routing').routeAllowed('review', { provider: p.provider, model: p.model }, K); } catch (_) { return true; } });
+}
 /* the routing policy's knobs (lib/routing.js; none = null: no class rules, no trial arms, no tier-cap entries) */
 function routingKnobs(root) { try { const R = require('./routing'); const L = R.loadPolicy(path.resolve(root || co.ROOT)); return L ? R.knobs(L.policy) : null; } catch (_) { return null; } }
 
@@ -78,7 +84,7 @@ async function build(o) {
     jobs: o.jobs, m: o.m, providers: o.providers, blocks: o.blocks,
     // chain + department routes + (with a routing policy) running trial arms and live tier-cap entries for in-scope seats;
     // every one still has to pass evaluate() (runnableNow) to be listed
-    entriesFor: (id, seat) => ((seat && seat.chain) || []).concat(departmentRoutes(id, { root, K })).concat(leadModel(id, { root, K })).concat(K ? R.extraEntries(id, { root, K, departments: deps, crew, chain: (seat && seat.chain) || [] }) : [])
+    entriesFor: (id, seat) => ((seat && seat.chain) || []).concat(departmentRoutes(id, { root, K })).concat(leadModel(id, { root, K })).concat(auditModel(id, { root, K })).concat(K ? R.extraEntries(id, { root, K, departments: deps, crew, chain: (seat && seat.chain) || [] }) : [])
   });
   const at = typeof o.now === 'function' ? o.now() : Date.now();
   return { doc: { v: 1, at, by: 'dispatcher', agents: r.seats || {} }, ok: r.ok, why: r.why || null };
@@ -147,7 +153,7 @@ function openFor(agentId, pair, o) {
   return 'not open for them right now';
 }
 
-module.exports = { build, write, departmentRoutes, leadModel, openFor, MAX_AGE_MS, REL, WRITER };
+module.exports = { build, write, departmentRoutes, leadModel, auditModel, openFor, MAX_AGE_MS, REL, WRITER };
 
 // node company/tools/lib/override-allow.js [write|show]   write: one rewrite now (locked-watch.js regenerates it so);
 // show: print what would be written. Reads the station's routines itself.

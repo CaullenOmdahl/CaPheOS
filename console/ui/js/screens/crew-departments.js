@@ -5,6 +5,8 @@
 // A department with a lead also shows the lead's advice (docs/DEPARTMENTS.md §5): the switch Off / Recording only / On
 // (On asks first), Pause and Resume, "Asked the lead today", the last advice, and the brief the lead keeps, folded and read
 // only, under "What the team is working on". The words are in crew-departments-words.js (checked plain by a test).
+// And whether the lead checks every finished job (docs/DEPARTMENTS.md §8): "Lead checks every finished job: Off · Recording
+// only · On" (On asks first), and the department scorecard on the lead, in plain words, under "How the team is doing".
 // And whether the lead may split big jobs (docs/DEPARTMENTS.md §6): "Splitting big jobs: Off · Recording only · On" (On asks
 // first), how many people the lead can hand parts to, and, when the crew stopped it because it did not save money, why and
 // a Resume button.
@@ -13,17 +15,18 @@ import { api, post } from '../api.js';
 import * as WD from './crew-departments-words.js';
 
 export function departmentsSection(host, app) {
-  let data = null, msg = null, busy = false; const desks = {};
+  let data = null, msg = null, busy = false; const desks = {}, scores = {};
   const tz = app && app.company && app.company.timezone;
   async function confirmed(o) { return !(app && app.confirmDialog) || app.confirmDialog(o); }
   async function load() {
     try { data = await api('/departments'); } catch (e) { fill(host, errLine(e, 'Departments')); return; }
     await Promise.all(((data && data.departments) || []).filter(d => d.lead).map(async d => { try { desks[d.id] = await api('/departments/' + encodeURIComponent(d.id) + '/lead-desk'); } catch (_) { desks[d.id] = null; } }));
+    await Promise.all(((data && data.departments) || []).filter(d => d.lead && d.accountable && d.accountable.mode !== 'off').map(async d => { try { scores[d.id] = (await api('/departments/' + encodeURIComponent(d.id) + '/scorecard')).scorecard; } catch (_) { scores[d.id] = null; } }));
     draw();
   }
   async function act(path, body, what) {
     busy = true; msg = null; draw();
-    try { const r = await post(path, body); msg = { ok: true, text: r.changed === false ? 'Nothing to change: ' + r.summary : /\/(advisor|delegation)$/.test(path) ? WD.savedLine(what) : what + ' saved: ' + r.summary + '.' }; }
+    try { const r = await post(path, body); msg = { ok: true, text: r.changed === false ? 'Nothing to change: ' + r.summary : /\/(advisor|delegation|accountable)$/.test(path) ? WD.savedLine(what) : what + ' saved: ' + r.summary + '.' }; }
     catch (e) { msg = { ok: false, text: 'Not saved: ' + humanError(e) }; }
     busy = false; await load();
   }
@@ -51,6 +54,26 @@ export function departmentsSection(host, app) {
       mode !== 'off' ? h('p', { class: 'caption muted' }, WD.askedLine(info.today, info.maxPerDay != null ? info.maxPerDay : (d.consultLimits || {}).maxPerDay), ' ', WD.lastAdviceLine(info.lastAdviceAt ? whenAt(info.lastAdviceAt, tz) : null)) : null,
       brief,
       tech.length ? Details(WD.TECH, h('ul', { class: 'plain stack-4 caption mono-s' }, tech.map(t => h('li', null, t)))) : null);
+  }
+  // the lead checks every finished job, and the scorecard on the lead (nothing while the department has no lead)
+  function checkBlock(d) {
+    if (!d.lead) return null;
+    const lead = d.leadName || 'the lead', g = d.accountable || { mode: 'off' }, mode = g.mode || 'off', [label, tone] = WD.CHECK_SAY[mode] || WD.CHECK_SAY.off;
+    const path = '/departments/' + encodeURIComponent(d.id) + '/accountable', sc = scores[d.id];
+    const row = h('div', { class: 'row-8', role: 'group', 'aria-label': WD.CHECK_LABEL + ': ' + d.name, style: 'flex-wrap:wrap;align-items:center' },
+      h('span', { class: 'body-s' }, WD.CHECK_LABEL + ':'),
+      ['off', 'shadow', 'live'].map(m => Button(WD.CHECK_SAY[m][0], { size: 'sm', variant: m === mode ? 'primary' : undefined, disabled: busy || m === mode, aria: WD.CHECK_LABEL + ': ' + WD.CHECK_SAY[m][0],
+        onClick: async () => { if (m === 'live' && !(await confirmed({ title: WD.checkOnTitle(lead), body: WD.checkOnConfirm(lead), confirm: 'Turn it on' }))) return; act(path, { mode: m }, WD.CHECK_LABEL + ': ' + WD.CHECK_SAY[m][0].toLowerCase()); } })),
+      Tag(g.withdrawn ? 'Stopped' : label, { variant: 'status', status: g.withdrawn ? 'warning' : tone }),
+      g.withdrawn ? Button('Resume', { size: 'sm', variant: 'primary', disabled: busy, onClick: async () => { if (!(await confirmed({ title: WD.checkResumeTitle(), body: WD.checkResumeConfirm(), confirm: 'Turn it back on' }))) return; act(path, { resume: true }, 'The lead\'s checks are back on'); } }) : null);
+    const audit = g.audit || {}, tech = ['routine checks on: ' + (audit.routine ? audit.routine.provider + '/' + audit.routine.model : 'the lead model'), 'risky checks on: ' + (audit.risky ? audit.risky.provider + '/' + audit.risky.model : 'the lead model'),
+      g.withdrawn && g.withdrawn.why ? 'stopped: ' + g.withdrawn.why : null, g.since ? 'measured since ' + g.since : null, sc && sc.openAudits ? sc.openAudits + ' waiting for the lead' : null].filter(Boolean);
+    return h('div', { class: 'stack-8' }, row,
+      mode !== 'off' ? h('p', { class: 'caption muted' }, WD.checkLine(lead)) : null,
+      mode === 'shadow' && !g.withdrawn ? h('p', { class: 'caption muted' }, WD.checkRecordingLine(lead)) : null,
+      g.withdrawn ? h('p', { class: 'caption', role: 'status' }, WD.checkStoppedLine(g.withdrawn, lead, d.name)) : null,
+      sc && (sc.words || []).length ? Details(WD.SCORE_TITLE, h('ul', { class: 'plain stack-4 body-s' }, sc.words.map(t => h('li', null, t)))) : null,
+      mode !== 'off' ? Details(WD.TECH, h('ul', { class: 'plain stack-4 caption mono-s' }, tech.map(t => h('li', null, t)))) : null);
   }
   // splitting big jobs on one department card (nothing while the department has no lead)
   function splitBlock(d) {
@@ -94,6 +117,7 @@ export function departmentsSection(host, app) {
         h('div', { class: 'row-8', style: 'align-items:center;flex-wrap:wrap' }, leadSel,
           Button('Set lead', { size: 'sm', variant: 'primary', disabled: busy, onClick: () => leadSel.value !== (d.lead || 'none') && act('/departments/' + encodeURIComponent(d.id) + '/lead', { seat: leadSel.value }, 'Lead') })),
         adviceBlock(d),
+        checkBlock(d),
         splitBlock(d),
         d.members.length ? h('ul', { class: 'plain stack-8' }, d.members.map(m => seatRow(m, d))) : h('p', { class: 'caption muted' }, 'No members yet.'));
     });

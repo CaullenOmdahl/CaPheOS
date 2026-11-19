@@ -32,7 +32,17 @@ null`, or the policy with `signoff.mode: off`, was out of its sign-off at once):
 - the policy likewise, from `profile-policy.history.jsonl`; with nothing recorded it fails closed (sign-off live);
 - sign-off rows and weekly routing suggestion rows count only when their bytes match a recorded append by their own
   tool (`approvals.js`; `routing.js` / `model-rank.js`), with locked-watch's trust rule: never from `node -e` or a
-  preload, and from an agent's run only when the program is that tool itself.
+  preload, and from an agent's run only when the program is that tool itself;
+- the write record itself must be healthy (`lib/recorded.js health`, the 2026-11-19 re-verify: emptying the provenance
+  log and deleting the history made a hand edit count). When the live log is missing, emptied, cut, or rewritten before
+  the point locked-watch's baseline read, or the baseline is gone while this company's mirror is there, no live row
+  counts, and a profile or the policy with no trusted history row is read from locked-watch's last-known-good copy
+  (`lastgood` in `profile.js check`), never the raw file; with no such copy, no profile (the gate refuses) and the
+  sign-off live. When locked-watch finds an agent writing to the log directly, it records where (`provFlagged.trustedTo`)
+  and no live row after that point counts for any reader (profiles, sign-off rows, routing proposals, accountable-lead
+  verdicts) until the owner rebuilds the baseline. A company with no baseline yet (a fixture, before the watcher's first
+  tick) reads as before. Not proof: everyone runs as one Unix user; this makes a forgery take several more deliberate
+  steps, each in the agent's transcript.
 
 Framework defaults hold only shapes and invented names: `company/defaults/people/temperament.json` (the five
 sliders and their plain words), `presets.json` (the console presets), `profile-policy.json`.

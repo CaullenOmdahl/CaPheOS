@@ -153,7 +153,7 @@ test('model-rank reads the lead\'s verdict once, at half weight, and the advise 
   const an = MR.analyze(inp);
   const it = an.items.find(x => x.id === 'ben-parser');
   assert.ok(it, JSON.stringify(an.body.totals));
-  assert.deepEqual(it.verdicts, [{ by: 'kwa', fail: true, w: 0.5 }], 'one verdict (written in two blocks), by the lead, half weight');
+  assert.deepEqual(it.verdicts, [{ by: 'kwa', fail: true, w: 0.5, word: 'REVISE' }], 'one verdict (written in two blocks), by the lead, half weight');
   assert.equal(it.oneShot, 0.5);
   assert.equal(an.body.totals.selfGradesIgnored, 0, 'the advise run does not make the lead an author');
   assert.ok(it.cost.listUsd > 0 && it.otherRuns === 1, 'the advise run is in the item\'s cost');
