@@ -507,6 +507,40 @@ async function tick(o) { const expired = await expire(o); const reminded = await
 
 module.exports = { ask, amend, withdraw, answer, list, get, records, blockingSeats, expire, remind, repair, tick, canonical, digestOf, actionDigestOf, fixedSet, policy, SURFACES, ANSWER_SURFACES, _S: S, _lock: { withLock, LOCK, staleWhy } };
 
+/* ---------------- counterpart sign-offs (crew-only records, lib/signoff.js; docs/PROFILES.md) ----------------
+ *   approvals.js signoff ask --kind <promote|commit|external|merge|plan|trade> --ref <inbox#item | pr:<owner>/<repo>#<n> | ext:<target>> --by <seat> [--why ..]
+ *   approvals.js signoff answer <so-id> --verdict yes|no --check ".." [--reasons ".."] --by <counterpart>
+ *   approvals.js signoff override <so-id> --by <CEO> --why ".."
+ *   approvals.js signoff list [--open] [--json]
+ * A sign-off is not an owner question: these rows go to company/state/signoffs.jsonl, never to the pm inbox or Today.
+ * Only the counterpart the asker's profile names answers (never the asker); only the CEO overrides, with a reason, and
+ * the override shows on the asker's profile history. Inside an agent's run --by must be that run's own seat. */
+function signoffSeat(by, cmd) {
+  const name = String(by == null || by === true ? '' : by).trim(); if (!name) throw new Error('--by <seat> is required');
+  const crew = co.crew(), low = name.toLowerCase();
+  const id = crew[name] ? name : Object.keys(crew).find(k => String((crew[k] || {}).name || '').trim().toLowerCase() === low);
+  if (!id) throw new Error('--by "' + name + '" is not on the crew (sign-offs are the crew\'s, not the owner\'s)');
+  let pv = null; try { pv = require('./provenance.js'); } catch (_) {}
+  if (pv && pv.underStation()) {
+    const env = String(process.env.STARNET_AGENT_ID || '').trim();
+    if (env && env !== id) throw new Error('this run is ' + ((crew[env] || {}).name || env) + '\'s, not ' + ((crew[id] || {}).name || id) + '\'s: --by names the seat running the command');
+    const c = pv.callerConflict(co.ROOT, ['approvals.js', 'signoff', cmd], id);
+    if (c) throw new Error('this command claims --by ' + ((crew[id] || {}).name || id) + ' but ran in another seat\'s run (' + c.runId + ')');
+  }
+  return id;
+}
+function signoffCmd(a) {
+  const SO = require('./lib/signoff'); const sub = a._[1];
+  try {
+    if (sub === 'ask') return { code: 0, out: SO.ask({ from: signoffSeat(a.by, 'ask'), kind: a.kind, ref: a.ref, why: a.why, digest: a.digest }) };
+    if (sub === 'answer') return { code: 0, out: SO.answer({ id: a._[2], by: signoffSeat(a.by, 'answer'), verdict: a.verdict, check: a.check === true ? '' : a.check, reasons: a.reasons === true ? '' : a.reasons }) };
+    if (sub === 'override') return { code: 0, out: SO.override({ id: a._[2], by: signoffSeat(a.by, 'override'), why: a.why === true ? '' : a.why }) };
+    if (sub === 'list') { const l = SO.list({ open: !!a.open }); return { code: 0, out: a.json ? { ok: true, signoffs: l } : { ok: true, signoffs: l } }; }
+    return { code: 2, out: { ok: false, error: 'usage: approvals.js signoff ask|answer|override|list' } };
+  } catch (e) { return { code: 2, out: { ok: false, refused: true, error: e.message } }; }
+}
+module.exports.signoffCmd = signoffCmd;
+
 /* ---------------- CLI ---------------- */
 function parse(argv) { const o = { _: [] }; for (let i = 0; i < argv.length; i++) { const a = argv[i]; if (a.startsWith('--')) { const k = a.slice(2); o[k] = argv[i + 1] !== undefined && !argv[i + 1].startsWith('--') ? argv[++i] : true; } else o._.push(a); } return o; }
 if (require.main === module) {
@@ -522,6 +556,7 @@ if (require.main === module) {
     else if (cmd === 'get') { const r = get(a._[1]); out(r ? Object.assign({ ok: true }, r) : refuse('missing', 'no approval ' + a._[1]), !r); }
     else if (cmd === 'blocking-seats') out({ ok: true, seats: blockingSeats() });
     else if (cmd === 'tick') out(Object.assign({ ok: true }, await tick({ actor: 'the approvals CLI' })));
-    else out(refuse('usage', 'usage: approvals.js ask|amend|withdraw|answer|list|get|blocking-seats|tick'), true);
+    else if (cmd === 'signoff') { const r = signoffCmd(a); console.log(JSON.stringify(r.out, null, 1)); process.exit(r.code); }
+    else out(refuse('usage', 'usage: approvals.js ask|amend|withdraw|answer|list|get|blocking-seats|tick|signoff'), true);
   })().catch(e => out(refuse('error', e.message), true));
 }

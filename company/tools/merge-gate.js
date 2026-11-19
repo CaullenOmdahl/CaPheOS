@@ -786,6 +786,11 @@ if (cmd === 'check-gh') {
     catch (e) { refuse('could not resolve the pull request' + (selector ? ' "' + selector + '"' : '') + ' (' + String(e.message).split('\n')[0].slice(0, 120) + '); not merging'); }
     const p = passFor(repo, h.sha);
     if (!p.ok) refuse(repo + ' #' + h.pr + ': ' + p.why + '. Run `node company/tools/premerge-check.js --pr ' + h.pr + ' --repo ' + repo + '` and merge only after it passes.');
+    // counterpart sign-off (lib/signoff.js, docs/PROFILES.md), in addition to the PASS above: a seat whose profile lists
+    // `merge` needs its counterpart's yes for pr:<repo>#<n> (live refuses; shadow records the would-refuse). Required here,
+    // lazily, so a broken or missing library never turns into a refusal (the exit-code contract above)
+    { let so = null; try { so = require('./lib/signoff').gate({ seat: presenter().agent, kind: 'merge', refs: ['pr:' + repo + '#' + h.pr], via: 'merge-gate.js' }); } catch (_) { so = null; }
+      if (so && so.refuse) refuse(repo + ' #' + h.pr + ': ' + so.refuse + '.'); }
     log('ALLOWED ' + repo + ' #' + h.pr + ' head ' + h.sha.slice(0, 8));
     process.exit(0);
   }

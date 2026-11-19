@@ -47,6 +47,9 @@
  * schedule) under every rule a wake passes, keeps the crew's loop routines paused on the station (a loop found enabled is
  * paused again) and keeps the watchdog routine there; "station" (the default) = the station's scheduler fires the loops
  * and this tick wakes seats with work only, as before.
+ * Counterpart sign-off (lib/signoff.js, docs/PROFILES.md): an eager seat's handoff that needs its counterpart's yes is held for its
+ * receiver like Waiting on (live; shadow logs WOULD HOLD); profile trials past their end revert (profile.js tick); each wake row
+ * carries the woken seat's profile version (wakes.jsonl profile).
  * Advisor leads (lib/consult.js, docs/DEPARTMENTS.md §5): with a department's advisor mode on, the tick opens a consult for a
  * member's stuck item (failed runs, REVISE rounds, idle wakes, a reopen), starts the lead's separate advise run for the
  * batched consults (admit door consult, on the lead model as a one-run override), keeps the item's holder from being woken
@@ -969,6 +972,8 @@ function lastRunTail(job) {
   const LOOK = G.lookups({ root: ROOT, crew: CREW || {}, quests, serviceLastOk: svcLastOk });
   // advisor leads (lib/consult.js): an item whose consult is open waits for the lead, and a consult block in a live lead's inbox is its advise run's work, not its loop's
   const CONSULT_HOLD = (() => { try { return require('./lib/consult').holdFn({ root: ROOT }); } catch (e) { log('CONSULT ERROR: ' + String(e.message).slice(0, 200)); return () => null; } })();
+  // counterpart sign-off (lib/signoff.js, docs/PROFILES.md): an eager seat's handoff that needs its counterpart's yes waits for it, like Waiting on (shadow: logged only)
+  const SIGNOFF_HOLD = (() => { try { return require('./lib/signoff').scanTick({ root: ROOT, log, dry: DRY }); } catch (e) { log('SIGNOFF ERROR: ' + String(e.message).slice(0, 200)); return () => null; } })();
   for (const [agentId, inbox] of Object.entries(INBOX_OF)) {
     let its = [], txt = ''; try { txt = fs.readFileSync(path.join(ROOT, 'company', 'work', 'handoffs', inbox), 'utf8'); its = SP.parseItems(txt).filter(i => i.open); } catch (_) {}
     itemsOf[agentId] = its; waitsOf[agentId] = {};
@@ -982,6 +987,7 @@ function lastRunTail(job) {
         continue;
       }
       { const ch = CONSULT_HOLD(inbox, it); if (ch) { it.waitingOn = 'consult'; if (ch.who) waitsOf[agentId][ch.who] = (waitsOf[agentId][ch.who] || 0) + 1; continue; } }
+      { const sh = SIGNOFF_HOLD(inbox, it); if (sh) { it.waitingOn = 'signoff'; waitsOf[agentId][sh.who] = (waitsOf[agentId][sh.who] || 0) + 1; parked.push({ seat: agentId, name: NAMES[agentId] || agentId, inbox, heading: it.heading, kind: 'signoff', words: 'waiting for ' + sh.who + ' to sign off' }); continue; } }
       if (it.waitingOnLine == null) { const on = SP.waitingOn(it.status, NAMES, agentId, CEO_ID); if (on) { it.waitingOn = on; const n = on === 'owner' ? 'you (the owner)' : NAMES[on] || 'someone else'; waitsOf[agentId][n] = (waitsOf[agentId][n] || 0) + 1; parked.push({ seat: agentId, name: NAMES[agentId] || agentId, inbox, heading: it.heading, kind: 'status', words: 'waiting for: ' + n }); } continue; }
       // **Waiting on:** governs this item (its Status prose does not): resolved on every tick
       const pd = SP.parseDeps(it.waitingOnLine);
@@ -1402,7 +1408,7 @@ function lastRunTail(job) {
       // run-to-item link (measurement only): which handoff items this run is for
       { const ib = inboxOf(agentId); const items = viaInbox ? (wakeItemsOf[agentId] || []).slice() : [];   // inbox items only when the inbox is why it woke
         for (const h of wroteItems) if (ib && h) items.push({ file: ib, id: W.itemId(ib, h), title: h, due: today() });
-        W.record({ wakeId, seat: agentId, runId, admitId: tk.id, jobId: job.id, door: 'dispatch', items, why: names, route: route || undefined }); }
+        W.record({ wakeId, seat: agentId, runId, admitId: tk.id, jobId: job.id, door: 'dispatch', items, why: names, route: route || undefined, profile: (() => { try { return require('./lib/profile').wakeStamp(agentId, { root: ROOT }); } catch (_) { return undefined; } })() }); }
       for (const q of qs) { if (q.duty) state.duties[q.skey].count++; else state.quests[q.id].count++; }
       for (const qid of (artifactWakes[agentId] || [])) state.artifactWait[qid].wakes++;   // a real start is a wake
       if (viaInbox) { state.agents[agentId].count++; state.agents[agentId].wakes = (state.agents[agentId].wakes || 0) + 1; }
@@ -1494,6 +1500,8 @@ function lastRunTail(job) {
   if (!DRY) try { await require('./lib/override-allow.js').write({ jobs, log }); } catch (e) { log('OVERRIDE ALLOWLIST ERROR: ' + String(e.message).slice(0, 200)); }
   // narrow fan-out (lib/delegate-allow.js, StarNet patch 0018): the house ranking's auto-withdraw, then the delegation allowlist (who may team.dispatch whom for which item), after the override list it reads. Fail-safe
   if (!DRY) try { await require('./lib/delegate-allow.js').step({ jobs, log, budget: { capOn: CAP_ON, capped, dailyUsd: DAILY_USD, perAgentUsd: PER_AGENT_USD, byAgent, spent, lastHourMetered, hoursLeft, spread: !!(SPRINT && SPRINT.spreadDailyCap), unmetered: UNMETERED_PROVIDERS } }); } catch (e) { log('DELEGATE ALLOWLIST ERROR: ' + String(e.message).slice(0, 200)); }
+  // profile trials (profile.js tick, docs/PROFILES.md): a trial past its end with no answer from the owner goes back. Fail-safe
+  if (!DRY) try { const pt = require('./profile.js').tick(); for (const t of (pt.trials || [])) log(t.error ? 'PROFILE TRIAL ERROR ' + t.seat + ': ' + String(t.error).slice(0, 160) : 'PROFILE TRIAL ENDED ' + t.seat + ': no answer, back to version ' + t.reverted + ' (now ' + t.version + ')'); } catch (e) { log('PROFILE TRIAL ERROR: ' + String(e.message).slice(0, 200)); }
   // weekly routing suggestions (routing.js proposals tick, docs/ROUTING.md): hourly, in its own process (the owner's veto card is filed by routing.js). Fail-safe
   try { if (!DRY && require('./routing.js').proposalsDue()) { const out = String(require('child_process').execFileSync(process.execPath, [path.join(__dirname, 'routing.js'), 'proposals', 'tick'], { cwd: ROOT, timeout: 120000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })).trim(); const j = (() => { try { return JSON.parse(out); } catch (_) { return null; } })(); if (j && ((j.applied || []).length || (j.offered || []).length || (j.asked || []).length)) log('ROUTING SUGGESTIONS: ' + ['applied ' + (j.applied || []).join(', '), 'offered ' + (j.offered || []).join(', '), 'to the CEO ' + (j.asked || []).join(', ')].filter(x => !/ $/.test(x)).join('; ')); } } catch (e) { log('ROUTING SUGGESTIONS ERROR: ' + String(e.message).split('\n')[0].slice(0, 200)); }
   if (deferred.length) log('DEFERRED past the ' + MAX_PER_TICK + '/tick limit, by priority: ' + deferred.join(', '));

@@ -54,6 +54,8 @@ function record(row, o) {
   if (row && row.route && typeof row.route === 'object') r.route = row.route;   // lib/routing.js decide(): which model, and why (absent without a routing policy)
   // narrow fan-out (lanes.js piece lanes): the split this wake works one piece of, so the ranking's fanoutEvaluation sees it
   if (row && row.split && typeof row.split === 'object') r.split = { item: clip(row.split.item, 160), piece: Number(row.split.piece) || null, lead: clip(row.split.lead, 80), split: row.split.split ? clip(row.split.split, 40) : null };
+  // full profiles (lib/profile.js wakeStamp): the profile version the woken seat ran under, for the ranking's profileEvaluation
+  if (row && row.profile && typeof row.profile === 'object' && Number.isInteger(row.profile.version)) { r.profile = { version: row.profile.version, hash: clip(row.profile.hash, 20) }; if (row.profile.trial && typeof row.profile.trial === 'object') r.profile.trial = { from: Number(row.profile.trial.from) || null, until: clip(row.profile.trial.until, 30) }; }
   if (o.dry || o.file === null) return r;
   const f = FILE(o);
   try { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, JSON.stringify(r) + '\n'); } catch (_) { /* measurement never breaks a wake */ }
