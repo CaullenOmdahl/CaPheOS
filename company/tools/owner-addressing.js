@@ -145,7 +145,7 @@ function dispatch(opts) {
           + '**Need:** ' + String(m.text || '').trim().slice(0, 2000).replace(/\n{3,}/g, '\n\n') + '\n'
           + '**Why:** the owner opened the message with your name, so `owner-addressing.js` routed it here instead of to the CEO (message id `' + m.id + '`' + (d.questionId ? ', q-id `' + d.questionId + '` present and noted' : '') + ').\n'
           + '**Status:** OPEN\n';
-        fs.appendFileSync(file, block);
+        fs.mkdirSync(path.dirname(file), { recursive: true }); require('./lib/tool-blocks').append(file, block, opts.handoffs ? { root: path.dirname(path.resolve(opts.handoffs)) } : undefined);   // recorded (lib/tool-blocks.js): the owner's message, routed by this tool, never held as a member's message
         rec.wroteTo = path.relative(ROOT, file);
       }
       st.routed[m.id] = rec;

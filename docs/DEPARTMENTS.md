@@ -474,17 +474,24 @@ for nothing goes straight. Not held: a block to the people seat, so a member can
 the lead holding or returning it. The lead passes it with `accountable.js pass <inbox>#<item> --by <lead>` (it gets
 `**Passed on by:** <lead> (lead of <dept>, accountable for it)`) or returns it (`--return --why ".."`, which closes it).
 Inside the department, handoffs move freely. The receiver deals with one accountable person.
-Who wrote a block: the seat whose run is seen writing it (an agent's recent tool call carrying the block's heading line,
-however short); the dispatcher only when its own record says so (`company/state/tool-blocks.jsonl`, each row recorded with
+Who wrote a block: the seat whose run is seen writing it into that inbox (an agent's recent tool call carrying the block's
+heading line, however short, or its heading words in a call that writes into that inbox: a lead's write of a title into a
+member's inbox never makes the lead the writer of the member's message elsewhere, and when two runs wrote it the seat the
+heading names wins); the dispatcher and the tools only when their own record says so (`company/state/tool-blocks.jsonl`, each row recorded with
 provenance: a heading that says "from Dispatcher" proves nothing). With neither, the heading's "from <name>" is only a
 claim: a block that claims the lead, a member or the dispatcher is held for the lead's pass (and copied to the lead when it
 is in a member's inbox), and a block that names nobody is held when a member's run wrote into that inbox around the time
-it appeared. A held block that waits `stallHours` goes to the CEO like a waiting audit (`stalled` row with `kind: pass`,
+it appeared. A block whose heading names a sender outside the department (the owner, a tool, another seat) is never put on
+a member by that guess. A held block that waits `stallHours` goes to the CEO like a waiting audit (`stalled` row with `kind: pass`,
 and the owner when the cause is the owner's); the CEO may then pass it on or return it in the lead's place
 (`pass <ref> [--return --why ..] --by <CEO>`, recorded `inPlaceOf`), never before.
 A pass or return is for the block's words, not only its ref (the `**Id:**` line, or a hash of the heading, which anyone can
-reuse): the `pass` and `return` rows carry `fp`, a fingerprint of the block less its status and the lines the tools add. A
-new block under a passed Id or heading, and a passed block whose words changed since, are held again (the lead's `Pass on:`
+reuse): the `pass` and `return` rows carry `fp`, a fingerprint of the sender's words (the block less its status and the
+lines the tools add: the pass's own lines, `**Lane:**`, `**Piece n lane:**`, `**Piece n result …:**`, `**Lane result …:**`),
+and `lines`, short hashes of those words. The same block with lines only added since (a lane's mark, the receiver's progress
+notes or evidence) is still the passed block, and still the held one before the pass (one `Pass on:` block, its `--block`
+still works); the same goes for a block let through at the switch. A line a member's run is seen adding is new words. A
+new block under a passed Id or heading, a passed block whose words were changed, and one a member added to, are held again (the lead's `Pass on:`
 block says so, and names the block with `--block <fp>` when two share the ref). The stall is worked out from the holds the
 dispatcher recorded, not from the lead's `Pass on:` block: a `Pass on:` block set DONE by hand with no recorded pass or
 return goes back to OPEN once per closing (`ACCOUNTABLE PASS-ON REOPENED`), and a held message reaches the CEO after
@@ -492,8 +499,10 @@ return goes back to OPEN once per closing (`ACCOUNTABLE PASS-ON REOPENED`), and 
 audit carry the item's heading fingerprint (`hfp`), so a new item under an accepted item's Id is a new item (its own intake,
 copy and audit), never a reopen charged to the lead.
 The company's tools that write handoff blocks (the dispatcher and its tools, `security-watch.js`, `default-branch-watch.js`,
-`harness-change.js`, `corrections.js`, `deps.js`, the owner channel check) record them in `tool-blocks.jsonl`, so their
-notices are never held as a member's message. A **P0** block (`**Priority:** P0`) is never held on a guess about its writer
+`harness-change.js`, `corrections.js`, `deps.js`, the owner channel check, `owner-addressing.js` (the owner's message to a
+seat by name), the owner-question check (`lib/pm-inbox-guard.js`), `hire.js`, `models.js`, `pacer.js` and its pacing ask
+(`from Pacer`), `long-sleep.js`, `onboard.js`) record them in `tool-blocks.jsonl`, so their notices and the owner's routed
+messages are never held as a member's message. A **P0** block (`**Priority:** P0`) is never held on a guess about its writer
 (a heading's claim, or a member's run writing into that inbox at the time): it goes through and the lead gets an FYI. A P0
 that a member's run is seen writing is held for the lead like any other, and goes to the CEO after one hour, not
 `stallHours`.

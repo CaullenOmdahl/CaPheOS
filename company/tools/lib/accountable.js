@@ -23,11 +23,13 @@
  *   5. the lead passes it on     a member's handoff to anyone outside the department is held until the lead's recorded
  *                                pass (`accountable.js pass`; a typed "Passed on by" line counts for nothing), so the
  *                                receiver deals with one accountable person; an FYI that asks for nothing and a block to the
- *                                people seat are not held. The writer is the run seen writing the block (runWriter) or, for
- *                                the dispatcher, its own record (lib/tool-blocks.js); a heading's name is only a claim, and a
- *                                claim of the department or the dispatcher is held too. A pass is for the block's words
- *                                (blockFp): a new block under a passed Id or heading is held again. A P0 is never held on a
- *                                guess about its writer
+ *                                people seat are not held. The writer is the run seen writing the block into that inbox
+ *                                (runWriter) or, for the dispatcher and the tools (the owner's routed message too), their own
+ *                                record (lib/tool-blocks.js); a heading's name is only a claim, and a claim of the department
+ *                                or the dispatcher is held too; a block whose heading names a sender outside the department
+ *                                is never put on a member by guess. A pass is for the sender's words (blockFp): a new block
+ *                                under a passed Id or heading is held again, while lines added later by a lane or the
+ *                                receiver never are (sameBlock). A P0 is never held on a guess about its writer
  *   stalls                       an audit, a held pass-on (worked out from the holds, never from the lead's "Pass on" block,
  *                                which goes back to OPEN when closed by hand) or an item with no acceptance check waiting stallHours is put to
  *                                the CEO in one plain line, the owner too when the cause is the owner's; the CEO may then
@@ -108,24 +110,37 @@ const headWords = h => String(h || '').replace(/^\S+\s+from\s+[^—–-]+[—–
 /* who wrote a block. A tool's block (the dispatcher's) is known only by provenance (lib/tool-blocks.js), never by a
  * heading that says "from Dispatcher". A crew seat's block is known by its run: an agent's recent tool call (provenance
  * recentCalls rows) that carries the block's heading line (any length: the date and the "from" are part of it) or its
- * heading words; a call that writes wins over one that only reads, the earliest over later quotes. The
- * heading's "from <name>" alone proves nothing: it is only what the block claims (claimOf). */
+ * heading words. With the inbox named (always, from scanTick): the heading words count only in a call that writes into
+ * THIS inbox (a title is forwarded all the time: the lead's write of "deploy the parser" into a member's inbox never makes
+ * the lead the writer of the member's block to someone else), and the full heading line in a call that writes into this
+ * inbox, else in one that does not write into another crew inbox. A call that writes wins over one that only reads; when
+ * the runs disagree, the seat the heading names wins, else the earliest. The heading's "from <name>" alone proves
+ * nothing: it is only what the block claims (claimOf). */
 const WRITE_TOOL = /write|edit|append|create|insert|replace|patch/i;
 const writesFile = (c, name) => { const raw = String(c.raw || ''); if (!raw.includes(name)) return false; if (c.shell) return /(?:>>?|\btee\b|\bsed\s+-i|\bperl\s+-[a-z]*i|\bmv\b|\bcp\b|writeFile|appendFile)/.test(raw); return WRITE_TOOL.test(String(c.tool || '')); };
-function runWriter(heading, sec, crew, calls) {
+function runWriter(heading, sec, crew, calls, inbox) {
   const probes = [], w = headWords(heading), h = String(heading || '').trim();
-  if (h) probes.push(h.slice(0, 80));
-  if (w.length >= 12) probes.push(w.slice(0, 60));
+  if (h) probes.push({ text: h.slice(0, 80), full: true });
+  if (w.length >= 12) probes.push({ text: w.slice(0, 60), full: false });
+  const others = inbox ? Object.values(crew || {}).map(c => c && c.inbox).filter(x => x && x !== inbox) : [];
+  let named = null; try { named = claimOf(heading, crew); } catch (_) {}
   for (const pr of probes) {
-    const probe = JSON.stringify(pr).slice(1, -1);
-    const hits = (calls || []).filter(c => c && c.agentId && crew[c.agentId] && String(c.raw || '').includes(probe));
+    const probe = JSON.stringify(pr.text).slice(1, -1);
+    let hits = (calls || []).filter(c => c && c.agentId && crew[c.agentId] && String(c.raw || '').includes(probe));
+    if (inbox) {
+      const here = hits.filter(c => writesFile(c, inbox));
+      hits = here.length || !pr.full ? here : hits.filter(c => !others.some(ib => writesFile(c, ib)));
+    }
     if (!hits.length) continue;
     const by = (c => Number(c.ts) || 0), writes = hits.filter(c => c.shell || WRITE_TOOL.test(String(c.tool || '')));
-    const pick = (writes.length ? writes : hits).slice().sort((a, b) => by(a) - by(b))[0];
-    return String(pick.agentId);
+    const pool = writes.length ? writes : hits;
+    if (named && pool.some(c => String(c.agentId) === String(named))) return String(named);
+    return String(pool.slice().sort((a, b) => by(a) - by(b))[0].agentId);
   }
   return null;
 }
+// a heading that names its sender ("<date> [time] from <someone> — …"): a tool, the owner, a seat
+const namedSender = h => /^\S+(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\s+from\s+\S.*?(?:\s[—–-]\s|\s[—–]|[—–]\s)/.test(String(h || '').trim());
 const claimOf = (heading, crew) => require('./signoff').writerOf(heading, crew);
 // a block that asks for something: a Need / Ask / Decision line, or a heading that asks a question or for a decision
 const ASK_RE = /\?|\b(?:please|can you|could you|would you|need (?:you|a|an|your|more|help)|decide|decision|approve|approval|sign[- ]?off|unblock|blocked|help)\b/i;
@@ -133,22 +148,48 @@ const asks = (sec, heading) => ['Need', 'Ask', 'Decision', 'Needs sign-off'].som
 // FYI that asks for nothing (an FYI marker on a block with a Need is not FYI: it is held like any other block)
 const fyiOnly = (sec, heading) => require('./signoff').isFyi(sec, heading) && !asks(sec, heading);
 /* what a block IS, not only its ref (the **Id:** line or a hash of the heading, which anyone can reuse):
- *   blockFp(sec)   a block out of the department: its words, less its status and the lines the tools add (the pass's
- *                  **Passed on by:** and **Escalation:**, **Returned by:**, a **Resolved** stamp). A pass, a return and the
- *                  out-of-department memory hold for this fingerprint only, so a new block under a passed Id or heading
- *                  is held again (and so is a passed block whose words changed since)
+ *   blockFp(sec)   a block out of the department: the sender's words, less its status and the lines the tools add (the
+ *                  pass's **Passed on by:** and **Escalation:**, **Returned by:**, a **Resolved** stamp, a lane's **Lane:**,
+ *                  **Piece n lane:**, **Piece n result …:** and **Lane result …:**). A pass, a return, a hold and the out-of-department memory
+ *                  are for these words: a new block under a passed Id or heading is held again
+ *   blockLines(sec) those words as short line hashes, kept with each pass, return, hold and baseline: the same block with
+ *                  lines ADDED since (the receiver's progress notes, evidence) is still that block (sameBlock), unless a
+ *                  member's run is seen writing an added line (new words from the department wait for the lead again)
  *   headFp(heading) an item in a member's inbox: its heading. The intake, the hand-back and the audit carry it, so a new
  *                  item under an accepted item's Id is a new item (its own intake, copy and audit), never a reopen */
-const TOOL_LINE = /^\*\*(?:Status|Passed on by|Returned by|Resolved[^*]*|Hand back|Handed back|Verdict|Dropped by):\*\*/;
-function blockFp(sec) {
+const TOOL_LINE = /^\*\*(?:Status|Passed on by|Returned by|Resolved[^*]*|Hand back|Handed back|Verdict|Dropped by|Lane|Piece \d+ lane|Piece \d+ result[^*]*|Lane result[^*]*):\*\*/;
+function senderLines(sec) {
   const L = String(sec || '').replace(/\r/g, '').split('\n'), out = [];
   for (let i = 0; i < L.length; i++) {
     const l = L[i].replace(/\s+$/, ''); if (!l.trim() || TOOL_LINE.test(l)) continue;
     if (/^\*\*Escalation:\*\*/.test(l) && i > 0 && /^\*\*Passed on by:\*\*/.test(L[i - 1])) continue;
     out.push(l);
   }
-  return crypto.createHash('sha256').update(out.join('\n')).digest('hex').slice(0, 12);
+  return out;
 }
+function blockFp(sec) { return crypto.createHash('sha256').update(senderLines(sec).join('\n')).digest('hex').slice(0, 12); }
+const lineHash = l => crypto.createHash('sha256').update(String(l)).digest('hex').slice(0, 8);
+const MAX_LINES = 400;
+const blockLines = sec => { const L = senderLines(sec); return L.length <= MAX_LINES ? L.map(lineHash) : undefined; };
+// the lines of sec added since rec (a { fp, lines } record) when sec is rec's block with lines only added; null otherwise
+function addedSince(rec, sec) {
+  if (!rec) return null; const L = senderLines(sec);
+  if (rec.fp && blockFp(sec) === rec.fp) return [];
+  const want = Array.isArray(rec.lines) ? rec.lines : null; if (!want || !want.length || !L.length) return null;
+  const hs = L.map(lineHash); if (hs[0] !== want[0]) return null;   // the heading is the same
+  const added = []; let j = 0;
+  for (let i = 0; i < hs.length; i++) { if (j < want.length && hs[i] === want[j]) j++; else added.push(L[i]); }
+  return j === want.length ? added : null;
+}
+// an added line a member of the department is seen writing into that inbox (since the record): new words from the team
+function memberWrote(lines, inbox, members, calls, since) {
+  const t0 = (Number(since) || 0) - 10 * 60e3;
+  return (lines || []).some(l => { const s = String(l).trim(); if (s.length < 8) return false; const probe = JSON.stringify(s).slice(1, -1);
+    return (calls || []).some(c => c && members.includes(String(c.agentId)) && (Number(c.ts) || 0) >= t0 && writesFile(c, inbox) && String(c.raw || '').includes(probe)); });
+}
+const atMs = v => (typeof v === 'number' ? v : Date.parse(v || '') || 0);
+// sec is still the block of rec (same words, or only lines added that no member of the department wrote)
+function sameBlock(rec, sec, inbox, members, calls) { const a = addedSince(rec, sec); return !!a && (!a.length || !memberWrote(a, inbox, members || [], calls, atMs(rec.at))); }
 const headFp = heading => crypto.createHash('sha256').update('head:' + String(heading || '').trim()).digest('hex').slice(0, 10);
 // a row or record carries the fingerprint it was made for; one made before fingerprints (none) matches any block
 const fpMatch = (have, want) => !have || have === want;
@@ -497,17 +538,25 @@ function pass(o) {
   const recv = Object.keys(crew).find(k => (crew[k] || {}).inbox === inbox);
   const SP = require('./sprint'), t = readText(path.join(paths(o).handoffs, inbox)) || '', rs = rows(o);
   const cands = sections(t).filter(s => { if (!s.startsWith('## ')) return false; const it = SP.parseItems(s)[0]; return it && itemRef(inbox, it) === ref; });
-  const doneRow = fp => rs.find(r => (r.op === 'pass' || r.op === 'return') && r.ref === ref && r.fp === fp) || null;
+  // a block is the one held, passed or returned when its words are the same, or only lines were added since that no
+  // member of the department wrote (a lane's mark, the receiver's notes): sameBlock. The pass is recorded under the fp
+  // the hold was made for, so the hold, its "Pass on" block and the pass all name the same block
+  let calls = o.calls; if (!Array.isArray(calls)) { try { calls = require('../provenance.js').recentCalls(rootOf(o), now - 7 * DAY); } catch (_) { calls = []; } }
+  const membersOf = dept => { const y = ds.list.find(x => String(x.d.id) === String(dept)); return y ? D.members(y.d).filter(s => s !== String(y.d.lead)) : []; };
+  const asked = Object.values(readState(o).passAsked || {}).filter(v => v && typeof v === 'object' && v.ref === ref && v.fp);
+  const askedFor = s => asked.find(v => blockFp(s) === v.fp) || asked.find(v => sameBlock(v, s, inbox, membersOf(v.dept), calls)) || null;
+  const doneRow = s => rs.find(r => (r.op === 'pass' || r.op === 'return') && r.ref === ref && r.fp && (r.fp === blockFp(s) || sameBlock(r, s, inbox, membersOf(r.dept), calls))) || null;
   const alreadyBad = r => bad(ref + ' was ' + (r.op === 'pass' ? 'passed on' : 'returned') + ' already');
   let sec = null;
   if (recv && cands.length) {
-    let pick = want ? cands.filter(s => blockFp(s).startsWith(want)) : cands.filter(s => !doneRow(blockFp(s)));
+    let pick = want ? cands.filter(s => blockFp(s).startsWith(want) || (askedFor(s) && askedFor(s).fp.startsWith(want))) : cands.filter(s => !doneRow(s));
     if (want && !pick.length) return bad('no block ' + ref + ' with --block ' + want);
-    if (!pick.length) return alreadyBad(doneRow(blockFp(cands[0])));
+    if (!pick.length) return alreadyBad(doneRow(cands[0]));
     if (pick.length > 1) { const op = pick.filter(s => (SP.parseItems(s)[0] || {}).open); if (op.length === 1) pick = op; else return bad(pick.length + ' blocks in ' + inbox + ' are ' + ref + ': name the one you mean with --block <the Block line of its "Pass on" item>'); }
-    sec = pick[0]; const d = doneRow(blockFp(sec)); if (d) return alreadyBad(d);
+    sec = pick[0]; const d = doneRow(sec); if (d) return alreadyBad(d);
   }
-  const fp = sec ? blockFp(sec) : null;
+  const heldRec = sec ? askedFor(sec) : null;
+  const fp = sec ? (heldRec ? heldRec.fp : blockFp(sec)) : null, lines = sec ? blockLines(sec) : undefined;
   let e = by ? leadDept(by, ds, ceo) : null, inPlace = false;
   // the CEO decides in the lead's place only for a block the dispatcher recorded as waiting too long (auditStep)
   if (!e && by && by === String(ceo)) {
@@ -523,7 +572,7 @@ function pass(o) {
   const closePassItem = what => { const li = (crew[String(e.d.lead)] || {}).inbox; if (li) editBlock(o, li, s => String(field(s, 'Pass-on') || '').trim() === ref && fpMatch(String(field(s, 'Block') || '').trim(), fp) && /^\*\*Status:\*\*\s*OPEN/m.test(s), s => setStatus(s, 'DONE — ' + what + ' (' + dayOf(now) + ')')); };
   if (o.ret) {
     const why = one(o.why, 300); if (!why) return bad('--return needs --why "<what the member does instead>"');
-    append({ op: 'return', at: now, ts: new Date(now).toISOString(), ref, fp, by, dept: String(e.d.id), to: recv, why, inPlaceOf: inPlace ? String(e.d.lead) : undefined }, o);
+    append({ op: 'return', at: now, ts: new Date(now).toISOString(), ref, fp, lines, by, dept: String(e.d.id), to: recv, why, inPlaceOf: inPlace ? String(e.d.lead) : undefined }, o);
     editBlock(o, inbox, s => s === sec, s => setStatus(addLine(s, '**Returned by:** ' + leadName + (inPlace ? '' : ' (lead)') + ': ' + why), 'DONE — returned by ' + leadName + ', not passed on'));
     closePassItem('returned');
     return { ok: true, ref, block: fp, returned: true, inPlaceOf: inPlace ? String(e.d.lead) : undefined };
@@ -533,7 +582,7 @@ function pass(o) {
     esc = escalationOk(o.escalation);
     if (!esc.ok) return bad('one level at a time: a lead takes a member\'s matter to the CEO only when it crosses departments or is one of the four owner gates. Add --escalation cross-department or --escalation "owner: money|access|ownership|commitment", or solve it in the department and --return it');
   }
-  append(Object.assign({ op: 'pass', at: now, ts: new Date(now).toISOString(), ref, fp, by, dept: String(e.d.id), to: recv }, esc ? { escalation: esc.kind } : {}, inPlace ? { inPlaceOf: String(e.d.lead) } : {}), o);
+  append(Object.assign({ op: 'pass', at: now, ts: new Date(now).toISOString(), ref, fp, lines, by, dept: String(e.d.id), to: recv }, esc ? { escalation: esc.kind } : {}, inPlace ? { inPlaceOf: String(e.d.lead) } : {}), o);
   editBlock(o, inbox, s => s === sec, s => { const L = s.split('\n'); L.splice(1, 0, '**Passed on by:** ' + leadName + (inPlace ? ' (the CEO)' : ' (lead of ' + (e.d.name || e.d.id) + ', accountable for it)') + (esc ? '\n**Escalation:** ' + esc.kind : '')); return L.join('\n'); });
   closePassItem('passed on');
   return { ok: true, ref, block: fp, passed: true, escalation: esc ? esc.kind : undefined, inPlaceOf: inPlace ? String(e.d.lead) : undefined };
@@ -689,7 +738,7 @@ function scanTick(o) {
       const fresh = !(st.started = st.started || {})[dept] || prev === 'off' || (live && prev !== 'live');
       if (fresh) {
         for (const m of members) { const ib = (crew[m] || {}).inbox; if (!ib) continue; for (const b of blocksOf(ib)) st.seen[itemRef(ib, b.it) + '@' + headFp(b.it.heading)] = { via: 'before', dept, at: now, hfp: headFp(b.it.heading) }; }
-        for (const [rid, c] of Object.entries(crew)) { if (!c || !c.inbox || inDept.has(rid)) continue; for (const b of blocksOf(c.inbox).filter(x => x.it.open)) { const fp = blockFp(b.sec); st.seen['out:' + itemRef(c.inbox, b.it) + '@' + fp] = { via: 'before', dept, at: now, fp }; } }
+        for (const [rid, c] of Object.entries(crew)) { if (!c || !c.inbox || inDept.has(rid)) continue; for (const b of blocksOf(c.inbox).filter(x => x.it.open)) { const fp = blockFp(b.sec); st.seen['out:' + itemRef(c.inbox, b.it) + '@' + fp] = { via: 'before', dept, at: now, fp, lines: blockLines(b.sec) }; } }
         const again = !!st.started[dept];
         st.started[dept] = new Date(now).toISOString(); dirty = true;
         log('ACCOUNTABLE ' + dept + ' (' + leadName + '): ' + (live ? 'on' : 'recording only') + ' from now' + (again ? ' (was ' + (prev === 'shadow' ? 'recording only' : prev) + ')' : '') + '; the work already there is left as it was');
@@ -703,7 +752,7 @@ function scanTick(o) {
           const s = parts[i]; if (!s.startsWith('## ')) continue; const it = SP.parseItems(s)[0];
           if (!it || it.open || !PASS_HEAD.test(it.heading)) continue;
           const pref = String(field(s, 'Pass-on') || '').trim(), pfp = String(field(s, 'Block') || '').trim(), key = pref + '@' + pfp, v = st.passAsked[key];
-          if (!pref || !pfp || !v || typeof v !== 'object' || String(v.dept) !== dept || passed.has(key) || !heldOpen(o, v, textOf)) continue;
+          if (!pref || !pfp || !v || typeof v !== 'object' || String(v.dept) !== dept || passed.has(key) || !heldOpen(o, v, textOf, st.passAsked)) continue;
           const k2 = key + ':' + crypto.createHash('sha1').update(String(it.status || '')).digest('hex').slice(0, 10);
           if (st.passReopened[k2]) continue;
           parts[i] = setStatus(s, 'OPEN — not passed on yet: a DONE typed here releases nothing. Pass it on (node company/tools/accountable.js pass ' + pref + ' --block ' + pfp + ' --by ' + firstName(leadName) + ') or return it (--return --why "<what to do instead>")');
@@ -730,7 +779,7 @@ function scanTick(o) {
           // under a known Id (another heading) is a new item: its own intake, never a reopen of the old one
           if (!seen) {
             // the writer is the seat whose run wrote it; a heading's "from <name>" is only a claim (recorded, never trusted)
-            const writer = runWriter(it.heading, sec, crew, calls) || null, claimed = writer ? undefined : (claimOf(it.heading, crew) || (isDispatcherBlock(it.heading) ? 'Dispatcher' : undefined));
+            const writer = runWriter(it.heading, sec, crew, calls, ib) || null, claimed = writer ? undefined : (claimOf(it.heading, crew) || (isDispatcherBlock(it.heading) ? 'Dispatcher' : undefined));
             const via = writer === lead ? 'lead' : writer === m ? 'own' : 'direct';
             const reused = Object.keys(st.seen).some(k => k.startsWith(ref + '@') && k !== skey) || rs.some(r => r.op === 'intake' && r.ref === ref && r.hfp && r.hfp !== hfp);
             seen = st.seen[skey] = { via, dept, at: now, writer, hfp }; dirty = true;
@@ -822,11 +871,14 @@ function scanTick(o) {
       const outWriter = (inbox, it, sec, key) => {
         if (st.outWho[key]) return st.outWho[key];
         const keep = v => { st.outWho[key] = v; dirty = true; return v; };
-        const tw = runWriter(it.heading, sec, crew, calls);
+        const tw = runWriter(it.heading, sec, crew, calls, inbox);
         if (tw) return keep({ writer: tw, sure: true, at: now });
         const cl = claimOf(it.heading, crew);
         if (cl && inDept.has(cl)) return { writer: cl, sure: false, claimed: cl };
         if (isDispatcherBlock(it.heading)) return { writer: null, sure: false, claimed: 'Dispatcher' };
+        // a heading that names its sender outside the department (the owner's routed message, a tool's notice, another
+        // seat) is never given to a member on the guess that its run wrote into that inbox around then
+        if (namedSender(it.heading)) return null;
         const first = Number(st.outFirst[key]) || now; if (!st.outFirst[key]) { st.outFirst[key] = now; dirty = true; }
         const t = (calls || []).filter(x => x && members.includes(String(x.agentId)) && Number(x.ts) >= first - 3 * HOUR && Number(x.ts) <= first + 30 * MIN && writesFile(x, inbox));
         if (t.length) return keep({ writer: String(t[t.length - 1].agentId), sure: false, touched: true, at: now });
@@ -837,8 +889,16 @@ function scanTick(o) {
         const blocks = blocksOf(c.inbox), tools = TB.picker(rootOf(o), c.inbox)(blocks.map(b => b.it));
         for (const { sec, it } of blocks) {
           if (!it.open || tools.has(it)) continue;   // the dispatcher's and the tools' own blocks (by provenance)
-          const ref = itemRef(c.inbox, it), fp = blockFp(sec), key = ref + '@' + fp;
+          const ref = itemRef(c.inbox, it);
+          let fp = blockFp(sec), key = ref + '@' + fp;
           if (passed.has(key) || outSeen(ref, fp)) continue;
+          // the same block with lines added since its pass, return, baseline or hold (a lane's mark, the receiver's notes)
+          // is still that block; lines a member is seen adding are new words, held again
+          const same = rec => sameBlock(rec, sec, c.inbox, members, calls);
+          if (rs.some(r => (r.op === 'pass' || r.op === 'return') && r.ref === ref && r.fp && Array.isArray(r.lines) && same(r))) continue;
+          if (Object.keys(st.seen).some(k => k.startsWith('out:' + ref + '@') && st.seen[k] && typeof st.seen[k] === 'object' && Array.isArray(st.seen[k].lines) && same(st.seen[k]))) continue;
+          const prior = Object.values(st.passAsked).find(v => v && typeof v === 'object' && v.ref === ref && v.inbox === c.inbox && v.fp && v.fp !== fp && same(v));
+          if (prior) { fp = prior.fp; key = ref + '@' + fp; if (passed.has(key)) continue; }
           const w = outWriter(c.inbox, it, sec, key), writer = w ? w.writer : null;
           if (w && w.sure && writer === lead && rid === String(ceo) && readsAsEscalation(it.heading, sec) && !escalationOk(field(sec, 'Escalation')).ok) {
             // the lead's own escalation to the CEO names no reason that belongs there
@@ -871,7 +931,7 @@ function scanTick(o) {
               appendBlock(o, leadInbox, head, {
                 'Pass-on': ref, Block: fp, Need: (p0 ? 'URGENT (P0). ' : '') + whoWords + ' wrote to ' + nameOf(crew, rid) + ' ("' + one(it.heading, 120) + '" in ' + c.inbox + ').' + (passedBefore(rs, ref, fp) ? ' It reuses the Id or heading of a message you already passed on, but its words are new, so it waits for you again.' : '') + ' It waits for you: work leaves the department through its lead. Pass it on (node company/tools/accountable.js pass ' + ref + (dup ? ' --block ' + fp : '') + (toCeo ? ' --escalation cross-department|"owner: money|access|ownership|commitment"' : '') + ' --by ' + firstName(leadName) + ') once the work behind it is accepted, or return it (--return --why "<what to do instead>"). Setting this block DONE by hand releases nothing.' + (toCeo ? ' It goes to the CEO, so it passes only when it crosses departments or is one of the four owner gates.' : ''),
                 Status: 'OPEN' });
-              st.passAsked[key] = { at: new Date(now).toISOString(), dept, ref, fp, inbox: c.inbox, heading: head, p0: p0 || undefined }; dirty = true;
+              st.passAsked[key] = { at: new Date(now).toISOString(), dept, ref, fp, lines: blockLines(sec), inbox: c.inbox, heading: head, p0: p0 || undefined }; dirty = true;
               log('ACCOUNTABLE PASS HELD ' + ref + ' (' + whoName + ' -> ' + nameOf(crew, rid) + '): waits for ' + leadName + ' to pass it on' + (w.sure ? '' : w.touched ? ' (no heading names the writer; ' + nameOf(crew, writer) + '\'s run wrote into ' + c.inbox + ')' : ' (the heading\'s writer is not confirmed by any run)'));
             }
           } else would('pass:' + key, 'WOULD HOLD ' + ref + ' (' + whoName + ' -> ' + nameOf(crew, rid) + ') for ' + leadName + ' to pass on (recording only)');
@@ -899,10 +959,12 @@ function scanTick(o) {
 }
 // a pass or return recorded for another block under the same ref (the Id or heading reused)
 const passedBefore = (rs, ref, fp) => rs.some(r => (r.op === 'pass' || r.op === 'return') && r.ref === ref && r.fp !== fp);
-// the held block of a pass-on record ({ ref, fp, inbox }) is still there and OPEN
-function heldOpen(o, v, textOf) {
+// the held block of a pass-on record ({ ref, fp, lines, inbox }) is still there and OPEN: the same words, or lines only
+// added since (a lane's mark, the receiver's notes), unless those words are now held under another record (asked)
+function heldOpen(o, v, textOf, asked) {
   const SP = require('./sprint'), t = textOf ? textOf(v.inbox) : (readText(path.join(paths(o).handoffs, v.inbox)) || '');
-  return sections(t).some(s => { if (!s.startsWith('## ')) return false; const it = SP.parseItems(s)[0]; return !!it && it.open && itemRef(v.inbox, it) === v.ref && blockFp(s) === v.fp; });
+  const other = s => Object.values(asked || {}).some(w => w && typeof w === 'object' && w !== v && w.ref === v.ref && w.fp && w.fp !== v.fp && w.fp === blockFp(s));
+  return sections(t).some(s => { if (!s.startsWith('## ')) return false; const it = SP.parseItems(s)[0]; return !!it && it.open && itemRef(v.inbox, it) === v.ref && (blockFp(s) === v.fp || (!!addedSince(v, s) && !other(s))); });
 }
 
 /* ---------------- merge-gate.js ---------------- */
@@ -1025,7 +1087,7 @@ function heldPasses(o, crew, lead, st, dept, rs) {
   const done = new Set((rs || []).filter(r => (r.op === 'pass' || r.op === 'return') && r.fp).map(r => r.ref + '@' + r.fp));
   const cache = new Map(), textOf = ib => { if (!cache.has(ib)) cache.set(ib, readText(path.join(paths(o).handoffs, ib)) || ''); return cache.get(ib); };
   for (const [key, v] of Object.entries((st && st.passAsked) || {})) {
-    if (!v || typeof v !== 'object' || String(v.dept) !== String(dept) || done.has(key) || !heldOpen(o, v, textOf)) continue;
+    if (!v || typeof v !== 'object' || String(v.dept) !== String(dept) || done.has(key) || !heldOpen(o, v, textOf, st && st.passAsked)) continue;
     keys.add(key); out.push({ ref: v.ref, fp: v.fp, key, at: Date.parse(v.at || '') || now, heading: v.heading || 'Pass on: a message', file: li, p0: !!v.p0 });
   }
   if (!li) return out;

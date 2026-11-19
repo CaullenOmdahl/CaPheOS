@@ -111,7 +111,7 @@ function handoff(to, e) {
     '**Why:** run ' + flat(String(e.runId).slice(0, 12)) + ' (from ' + at.time + ') spent ' + min + ' min in ' + e.calls + ' shell_exec sleep call(s). A sleeping run holds the seat, blocks lanes and station restarts, and does no work (house rules). This is not a performance flag.\n' +
     '**Deadline:** ' + due + '\n**Status:** OPEN\n**Evidence:** run ' + flat(e.runId) + ' in the station transcripts; `node company/tools/long-sleep.js scan`\n';
   const f = path.join(F.handoffs(), inbox);
-  fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, block);
+  require('./lib/tool-blocks').append(f, block);   // recorded (lib/tool-blocks.js): a tool's own block, never held as a member's message
   return inbox;
 }
 

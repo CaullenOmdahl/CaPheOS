@@ -167,7 +167,7 @@ function handoffOther(root, sit, qid) {
   const block = '\n## ' + new Date().toISOString().slice(0, 10) + ' from Pacer — give ' + (names.join(', ') || 'the held seats') + ' a model to use while ' + sit.name + ' is paused\n' +
     '**Need:** add a fallback link to each seat\'s model chain (node company/tools/models.js, or Crew > seat > Model) so it can work while ' + sit.name + ' is paused for routines; the owner chose "Use another model meanwhile" (' + qid + ').\n' +
     '**Why:** ' + sit.name + ' is ' + Math.round(sit.usedPct) + '% used this week; these seats have nothing else open in their chain.\n**Deadline:** today\n**Status:** OPEN\n**Evidence:** company/pm-inbox.jsonl ' + qid + ', company/work/finance/ai-usage.md\n';
-  const f = path.join(root, 'company', 'work', 'handoffs', p.inbox); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, block);
+  const f = path.join(root, 'company', 'work', 'handoffs', p.inbox); require('./tool-blocks').append(f, block, { root });   // recorded (lib/tool-blocks.js): a tool's own block, never held as a member's message
   return p.name;
 }
 

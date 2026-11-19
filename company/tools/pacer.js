@@ -2010,7 +2010,7 @@ async function cli(argv, o) {
     // the seat's manager is told (an FYI handoff in their inbox)
     try {
       const mgr = (crew[seat] || {}).manager || null; const mi = mgr && crew[mgr] && crew[mgr].inbox;
-      if (mi) fs.appendFileSync(path.join(root, 'company', 'work', 'handoffs', mi), '\n## ' + lp.date + ' ' + lp.time + ' from the pacer — the owner cleared ' + seatName + '\'s refusal block\n**Need:** nothing; for your information. ' + line + '.\n**Why:** the owner chose to let ' + seatName + ' run on ' + names.map(p => NAMES[p] || p).join(', ') + ' again.\n**Deadline:** today\n**Status:** DONE — for your information\n');
+      if (mi) require('./lib/tool-blocks').append(path.join(root, 'company', 'work', 'handoffs', mi), '\n## ' + lp.date + ' ' + lp.time + ' from the pacer — the owner cleared ' + seatName + '\'s refusal block\n**Need:** nothing; for your information. ' + line + '.\n**Why:** the owner chose to let ' + seatName + ' run on ' + names.map(p => NAMES[p] || p).join(', ') + ' again.\n**Deadline:** today\n**Status:** DONE — for your information\n', { root });   // recorded (lib/tool-blocks.js): a tool's own block, never held as a member's message
     } catch (_) {}
     print(JSON.stringify({ ok: true, cleared: r.cleared, seat, providers: names, line }, null, 1)); return 0;
   }

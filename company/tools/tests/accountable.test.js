@@ -991,16 +991,20 @@ test('Q4: a tool\'s notice (security-watch.js and the other tools) is never held
     assert.match(fs.readFileSync(path.join(TOOLS, t), 'utf8'), /require\('\.\/lib\/tool-blocks'\)\.append\(/, t + ' writes its blocks through tool-blocks');
   }
   assert.match(fs.readFileSync(path.join(TOOLS, 'lib', 'owner-channel.js'), 'utf8'), /require\('\.\/tool-blocks'\)\.append\(hf, block/);
-  assert.match(fs.readFileSync(path.join(TOOLS, 'locked-watch.js'), 'utf8'), /'deps\.js'\], owner: 'tools', area: 'record'/);
+  assert.match(fs.readFileSync(path.join(TOOLS, 'locked-watch.js'), 'utf8'), /'company\/state\/tool-blocks\.jsonl', cls: 'A', append: true, writers: require\('\.\/lib\/tool-blocks'\)\.WRITERS/, 'locked-watch trusts the same writers');
   c.add('to-alex.md', ITEM('alex-1', 'Ben', 'I need more budget for the parser'));
   // security-watch.js's standing-row notice, as it now writes it
   c.js('(() => { require(' + JSON.stringify(path.join(TOOLS, 'lib', 'tool-blocks.js')) + ').append(require("path").join(process.cwd(), "company/work/handoffs/to-alex.md"), "\\n## 2026-11-19 from security-watch.js — standing row for P0 security issues\\n**Need:** record the standing external-gate row below\\n**Priority:** P0\\n**Status:** OPEN\\n"); })()');
-  // a P0 some unrecorded writer put there while Ben's run was writing into that inbox
-  c.add('to-alex.md', '\n## 2026-11-19 from some-new-watch.js — P0 the disk is full, can you act?\n**Priority:** P0\n**Status:** OPEN\n', null);
+  // a P0 some unrecorded writer put there while Ben's run was writing into that inbox: one naming its sender (a tool) is
+  // never given to Ben on that guess; one naming nobody is delivered on the guess, and Kwame is told
+  c.add('to-alex.md', '\n## 2026-11-19 from some-new-watch.js — P0 the disk is nearly full, can you act?\n**Priority:** P0\n**Status:** OPEN\n', null);
+  c.add('to-alex.md', '\n## 2026-11-19 — P0 the disk is full, can you act?\n**Priority:** P0\n**Status:** OPEN\n', null);
   const h = c.tick().holds;
   assert.deepEqual(h['to-alex.md | 2026-11-19 from Ben — I need more budget for the parser'], { who: 'Kwame', kind: 'pass' });
   assert.ok(!h['to-alex.md | 2026-11-19 from security-watch.js — standing row for P0 security issues'], 'the tool\'s recorded notice is not held');
-  assert.ok(!h['to-alex.md | 2026-11-19 from some-new-watch.js — P0 the disk is full, can you act?'], 'a P0 is not held on a guess');
+  assert.ok(!h['to-alex.md | 2026-11-19 — P0 the disk is full, can you act?'], 'a P0 is not held on a guess');
+  assert.ok(!h['to-alex.md | 2026-11-19 from some-new-watch.js — P0 the disk is nearly full, can you act?'], 'a tool\'s P0 is not held');
+  assert.ok(!/nearly full/.test(c.r('company/work/handoffs/to-kwame.md')), 'a block naming a tool is never put on Ben, not even as an FYI');
   assert.match(c.r('company/work/handoffs/to-kwame.md'), /FYI P0 not held: [\s\S]*?P0 the disk is full[\s\S]*?never held on a guess/);
   // Ben's own P0 (his run wrote it) goes through Kwame, and stalls to the CEO after an hour, not six
   c.add('to-dan.md', ITEM('dan-1', 'Ben', 'the payment page is down, can you look?', '**Priority:** P0\n'));
@@ -1010,4 +1014,109 @@ test('Q4: a tool\'s notice (security-watch.js and the other tools) is never held
   const s = stepFn(c)(AUDIT_JOBS, Date.now() + 61 * 60e3);
   assert.ok(s.lines.some(l => /ACCOUNTABLE STALLED PASS to-dan\.md#dan-1 /.test(l)), s.lines.join('\n'));
   assert.ok(!s.lines.some(l => /STALLED PASS .*alex-1/.test(l)), 'the ordinary one still waits stallHours');
+});
+
+// a run's call as provenance.recentCalls reads it (a shell heredoc here)
+const callOf = (c, call) => { const f = path.join(c.T, '.t-calls.json'); let calls = []; try { calls = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) {} calls.push(Object.assign({ ts: Date.now() }, call)); fs.writeFileSync(f, JSON.stringify(calls)); };
+const plain = (c, inbox, text) => fs.appendFileSync(path.join(c.T, 'company/work/handoffs', inbox), text);   // fs.appendFileSync, no tool-blocks record, no run
+
+test('R5-1: the owner\'s routed message and the tools\' notices are never held for the lead or put on a member whose run wrote into that inbox; those tools record their blocks', () => {
+  const c = fixture();
+  c.tick();
+  c.add('to-alex.md', ITEM('alex-1', 'Ben', 'I need more budget for the parser'));
+  assert.deepEqual(c.tick().holds['to-alex.md | 2026-11-19 from Ben — I need more budget for the parser'], { who: 'Kwame', kind: 'pass' });
+  // written the way these tools wrote them before: a plain append, no record, while Ben's run had just written into to-alex.md
+  const OWNER = '2026-11-19 14:05 from Olive (owner, via the owner channel) — addressed to you by name';
+  const MODELS = '2026-11-19 from models.js — Dan is on the last model in their chain';
+  const SLEEP = '2026-11-19 14:06 from long-sleep.js — Dan\'s run slept 40 min waiting for a time';
+  plain(c, 'to-alex.md', '\n## ' + OWNER + '\n**Need:** Alex, please look at the shop numbers today\n**Why:** the owner opened the message with your name\n**Status:** OPEN\n');
+  plain(c, 'to-alex.md', '\n## ' + MODELS + '\n**Need:** Dan fell to the last model in their chain. Check the providers above\n**Status:** OPEN\n');
+  plain(c, 'to-alex.md', '\n## ' + SLEEP + '\n**Need:** tell Dan, once, how to wait without a run\n**Status:** OPEN\n');
+  // and a block that names nobody, in the same minute: the guess still applies to it
+  plain(c, 'to-alex.md', '\n## 2026-11-19 — move the parser budget to next week, can you?\n**Status:** OPEN\n');
+  const t = c.tick();
+  for (const h of [OWNER, MODELS, SLEEP]) assert.ok(!t.holds['to-alex.md | ' + h], h + ' is not held: ' + JSON.stringify(t.holds));
+  assert.ok(!t.lines.some(l => /PASS HELD .*Ben's run wrote into to-alex\.md/.test(l) && !/move the parser budget/.test(l) && /addressed to you|last model|slept/.test(l)), t.lines.join('\n'));
+  assert.ok(!/addressed to you by name|last model in their chain|slept 40 min/.test(c.r('company/work/handoffs/to-kwame.md')), 'Kwame is not asked to pass them on');
+  assert.deepEqual(t.holds['to-alex.md | 2026-11-19 — move the parser budget to next week, can you?'], { who: 'Kwame', kind: 'pass' }, 'a block naming nobody, written while Ben\'s run wrote there, still goes through Kwame');
+  // every tool that writes a notice or the owner's routed message into a seat's inbox records it (lib/tool-blocks.js)
+  const TB = require(path.join(TOOLS, 'lib', 'tool-blocks.js'));
+  for (const [f, re] of [['owner-addressing.js', /require\('\.\/lib\/tool-blocks'\)\.append\(file, block/], ['models.js', /require\('\.\/lib\/tool-blocks'\)\.append\(f, '\\n## ' \+ day \+ ' from models\.js/],
+    ['long-sleep.js', /require\('\.\/lib\/tool-blocks'\)\.append\(f, block\)/], ['hire.js', /require\('\.\/lib\/tool-blocks'\)\.append\(path\.join\(HANDOFFS, fnInbox\('people'\)\), block\)/],
+    ['pacer.js', /require\('\.\/lib\/tool-blocks'\)\.append\(path\.join\(root, 'company', 'work', 'handoffs', mi\)/], ['onboard.js', /require\('\.\/lib\/tool-blocks'\)\.record\(inbox, block\)/],
+    ['lib/pacing-ask.js', /require\('\.\/tool-blocks'\)\.append\(f, block, \{ root \}\)/], ['lib/pm-inbox-guard.js', /require\('\.\/tool-blocks'\)\.append\(hf, block, \{ root \}\)/]]) {
+    const src = fs.readFileSync(path.join(TOOLS, f), 'utf8');
+    assert.match(src, re, f + ' records its handoff blocks');
+    if (!f.startsWith('lib/')) assert.ok(TB.WRITERS.includes(f), f + ' is a trusted writer of the record');
+  }
+  const hire = fs.readFileSync(path.join(TOOLS, 'hire.js'), 'utf8');
+  assert.ok(!/fs\.appendFileSync\((?:f|path\.join\(HANDOFFS[^)]*\)), (?:block|deskHandoff)/.test(hire), 'no hire.js handoff append skips the record');
+  // a recorded block (the way these tools write now) is the tool's, whoever's run touched the inbox
+  c.js('(() => { require(' + JSON.stringify(path.join(TOOLS, 'lib', 'tool-blocks.js')) + ').append(require("path").join(process.cwd(), "company/work/handoffs/to-alex.md"), "\\n## 2026-11-19 — Dan is on the last model, can you check?\\n**Status:** OPEN\\n"); })()');
+  assert.ok(!c.tick().holds['to-alex.md | 2026-11-19 — Dan is on the last model, can you check?']);
+});
+
+test('R5-2: a message Kwame passed on stays passed while a lane marks it and the receiver adds notes; new words from the team wait again', () => {
+  const c = fixture();
+  const HEAD = '2026-11-19 from Ben — deploy the new parser for Ops, can you?';
+  c.add('to-dan.md', '\n## 2026-11-19 from Ben — the parser notes, can you read them?\n**Id:** dan-0\n**Status:** OPEN\n');
+  c.tick();   // the switch: dan-0 was already there
+  const lanes = path.join(TOOLS, 'lanes.js');
+  const mark = (h, line) => c.js('require(' + JSON.stringify(lanes) + ').markLane(require("path").join(process.cwd(), "company/work/handoffs/to-dan.md"), ' + JSON.stringify(h) + ', ' + JSON.stringify(line) + ')');
+  assert.equal(mark('2026-11-19 from Ben — the parser notes, can you read them?', '1, run r-0, since 09:00'), true);
+  assert.ok(!c.tick().holds['to-dan.md | 2026-11-19 from Ben — the parser notes, can you read them?'], 'a block from before the switch stays let through when a lane marks it');
+  c.add('to-dan.md', ITEM('dan-1', 'Ben', 'deploy the new parser for Ops, can you?'));
+  assert.deepEqual(c.tick().holds['to-dan.md | ' + HEAD], { who: 'Kwame', kind: 'pass' });
+  // a lane takes it before Kwame passes it: still the same held message, one "Pass on" block, and its --block still works
+  assert.equal(mark(HEAD, '2, run r-1, since 10:00'), true);
+  const t1 = c.tick();
+  assert.deepEqual(t1.holds['to-dan.md | ' + HEAD], { who: 'Kwame', kind: 'pass' });
+  assert.ok(!t1.lines.some(l => /PASS HELD/.test(l)), t1.lines.join('\n'));
+  const lead = c.r('company/work/handoffs/to-kwame.md');
+  assert.equal((lead.match(/## .*Pass on: deploy the new parser/g) || []).length, 1, 'Kwame is asked once');
+  const blk = /\*\*Block:\*\* ([0-9a-f]{12})/.exec(lead)[1];
+  const p = c.js('AC.pass({ ref: "to-dan.md#dan-1", block: "' + blk + '", by: "Kwame", calls: ' + c.CALLS + ' })');
+  assert.equal(p.passed, true, JSON.stringify(p)); assert.equal(p.block, blk, 'the pass is for the block that was held');
+  assert.ok(!c.tick().holds['to-dan.md | ' + HEAD]);
+  // after the pass: another lane mark, a lane result and Dan's own progress note
+  assert.equal(mark(HEAD, '3, run r-2, since 11:00'), true);
+  c.js('require(' + JSON.stringify(lanes) + ').reportLane(require("path").join(process.cwd(), "company/work/handoffs/to-dan.md"), ' + JSON.stringify(HEAD) + ', { n: 3, runId: "r-2", when: "11:30", text: "deployed to staging" })');
+  c.add('to-dan.md', '**Progress:** parser on staging since 11:30, production next\n', 'dan');
+  const t2 = c.tick();
+  assert.ok(!t2.holds['to-dan.md | ' + HEAD], JSON.stringify(t2.holds));
+  assert.ok(!t2.lines.some(l => /PASS HELD/.test(l)), t2.lines.join('\n'));
+  assert.equal((c.r('company/work/handoffs/to-kwame.md').match(/## .*Pass on: deploy the new parser/g) || []).length, 1, 'no second "Pass on" block');
+  assert.ok(!/OPEN — not passed on yet/.test(c.r('company/work/handoffs/to-kwame.md')), 'the closed "Pass on" block is not reopened');
+  // Ben's run adds a new ask to the passed block: new words from the team, held again
+  c.add('to-dan.md', '**Also:** and wipe the production cache while you are at it, can you?\n', 'ben');
+  const t3 = c.tick();
+  assert.deepEqual(t3.holds['to-dan.md | ' + HEAD], { who: 'Kwame', kind: 'pass' });
+  assert.match(c.r('company/work/handoffs/to-kwame.md'), /Pass on: deploy the new parser[\s\S]*Pass on: deploy the new parser[\s\S]*?its words are new/);
+});
+
+test('R5-3: a member\'s message out of the department, written with a computed date, is the member\'s even when it forwards the lead\'s assigned title', () => {
+  const c = fixture();
+  c.tick();
+  const T = 'deploy the new parser to production';
+  c.add('to-ben.md', '\n## 2026-11-19 from Kwame — ' + T + '\n**Need:** get it out today\n**Status:** OPEN\n');   // Kwame's run assigns it
+  c.tick();
+  // Ben's run writes the handoff with a shell heredoc whose date is computed
+  plain(c, 'to-dan.md', '\n## 2026-11-19 from Ben — ' + T + '\n**Need:** please deploy it now, can you?\n**Status:** OPEN\n');
+  callOf(c, { agentId: 'ben', shell: true, tool: 'shell_exec', raw: JSON.stringify({ command: 'cat >> company/work/handoffs/to-dan.md <<EOF\n## $(date +%F) from Ben — ' + T + '\n**Need:** please deploy it now, can you?\n**Status:** OPEN\nEOF' }) });
+  const t = c.tick();
+  assert.deepEqual(t.holds['to-dan.md | 2026-11-19 from Ben — ' + T], { who: 'Kwame', kind: 'pass' }, t.lines.join('\n'));
+  const st = JSON.parse(c.r('company/state/accountable-state.json'));
+  const w = Object.entries(st.outWho).find(([k]) => k.startsWith('to-dan.md#'));
+  assert.equal(w[1].writer, 'ben'); assert.equal(w[1].sure, true);
+  assert.match(c.r('company/work/handoffs/to-kwame.md'), /Pass on: deploy the new parser to production \(Ben -> Dan\)/);
+  // runWriter: the heading words count only in a call that writes into that inbox; the seat the heading names wins
+  const calls = [{ agentId: 'kwa', ts: 1, tool: 'write_file', raw: JSON.stringify({ path: 'company/work/handoffs/to-ben.md', content: '## 2026-11-19 from Kwame — ' + T }) },
+    { agentId: 'ben', ts: 2, shell: true, tool: 'shell_exec', raw: 'cat >> company/work/handoffs/to-dan.md <<EOF\n## $(date +%F) from Ben — ' + T + '\nEOF' }];
+  const crewJ = JSON.stringify(CREW);
+  assert.equal(c.js('AC.runWriter(' + JSON.stringify('2026-11-19 from Ben — ' + T) + ', "", ' + crewJ + ', ' + JSON.stringify(calls) + ', "to-dan.md")'), 'ben');
+  assert.equal(c.js('AC.runWriter(' + JSON.stringify('2026-11-19 from Kwame — ' + T) + ', "", ' + crewJ + ', ' + JSON.stringify(calls) + ', "to-ben.md")'), 'kwa');
+  assert.equal(c.js('AC.runWriter(' + JSON.stringify('2026-11-19 from Ben — ' + T) + ', "", ' + crewJ + ', ' + JSON.stringify(calls.slice(0, 1)) + ', "to-dan.md")'), null, 'the lead\'s write into a member\'s inbox never makes the lead the writer elsewhere');
+  // the same full heading line in two runs that both wrote into this inbox: the seat the heading names
+  const both = [{ agentId: 'cat', ts: 1, tool: 'write_file', raw: JSON.stringify({ path: 'company/work/handoffs/to-dan.md', content: '## 2026-11-19 from Ben — ' + T }) }, Object.assign({}, calls[1], { ts: 5, raw: 'cat >> company/work/handoffs/to-dan.md <<EOF\n## 2026-11-19 from Ben — ' + T + '\nEOF' })];
+  assert.equal(c.js('AC.runWriter(' + JSON.stringify('2026-11-19 from Ben — ' + T) + ', "", ' + crewJ + ', ' + JSON.stringify(both) + ', "to-dan.md")'), 'ben');
 });

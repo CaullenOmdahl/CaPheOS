@@ -339,7 +339,7 @@ async function kickoff() {
       '[the plan\'s quests](console:#/work/quests), [hiring](console:#/crew/hiring), [handoffs](console:#/work/handoffs). Close this handoff with the evidence.\n' +
       '**Why:** the company just certified; until there is a plan nobody knows what to build first.\n**Deadline:** ' + day + '\n**Status:** OPEN\n**Evidence:** company/state/onboarding-state.json (certified)\n';
     fs.mkdirSync(path.dirname(inbox), { recursive: true });
-    fs.appendFileSync(inbox, (txt ? '' : '# Handoffs to ' + seat.name + '\n') + block);
+    fs.appendFileSync(inbox, (txt ? '' : '# Handoffs to ' + seat.name + '\n') + block); require('./lib/tool-blocks').record(inbox, block);   // recorded (lib/tool-blocks.js): a tool's own block, never held as a member's message
   }
   // nothing starts during a halt or a restart hold: the open handoff waits, and the dispatcher wakes the Founder after it
   if (co.startsHeld()) return setStep('kickoff', 'pending', 'handoff written; not fired now, the company is ' + (co.halted() ? 'halted' : co.restartHoldNote()) + ' (the dispatcher wakes the Founder for the open handoff after it)');

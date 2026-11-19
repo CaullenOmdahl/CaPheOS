@@ -485,7 +485,7 @@ async function interview(a) {
       '**Why:** the round finishes with scoring, the pick, one hire and the release of the others.\n**Deadline:** ' + (allIn ? stamp().slice(0, 10) : 'none') + '\n' +
       '**Status:** ' + (allIn || failed.length ? 'OPEN' : 'DONE — progress note only') + '\n**Evidence:** ' + results.map(r => r.ok ? '`' + r.transcript + '`' : r.agentId + ' failed: ' + r.error).join('; ') + '\n';
     fs.mkdirSync(HANDOFFS, { recursive: true });
-    fs.appendFileSync(path.join(HANDOFFS, fnInbox('people')), block);
+    require('./lib/tool-blocks').append(path.join(HANDOFFS, fnInbox('people')), block);   // recorded (lib/tool-blocks.js): a tool's own block, never held as a member's message
   }
   return { ok: results.every(r => r.ok), parallel, results };
 }
@@ -595,7 +595,7 @@ function writeScorecardInputs(dir, round) {
   return relp(f);
 }
 
-function appendInbox(inbox, block) { fs.mkdirSync(HANDOFFS, { recursive: true }); const f = path.join(HANDOFFS, inbox); if (!fs.existsSync(f)) fs.writeFileSync(f, '# Handoffs\n'); fs.appendFileSync(f, block); }
+function appendInbox(inbox, block) { fs.mkdirSync(HANDOFFS, { recursive: true }); const f = path.join(HANDOFFS, inbox); if (!fs.existsSync(f)) fs.writeFileSync(f, '# Handoffs\n'); require('./lib/tool-blocks').append(f, block); }   // recorded (lib/tool-blocks.js): a tool's own block, never held as a member's message
 function pickHandoff(round, seatId, inputs) {
   const day = stamp().slice(0, 10), seats = pickSeats(round), other = seats.filter(x => x !== seatId).map(co.nameOf);
   const level = (() => { try { return co.gate('hiring'); } catch (_) { return 'approve'; } })();
@@ -1078,7 +1078,7 @@ async function hire(a) {
   let deskCheck;
   try { const F = require('./station-floor.js'); deskCheck = F.checkDesk(F.env(doc).WorldModel.deserialize(doc.station), agentId, { rows: C.rows(doc), name: display, title }); }
   catch (e) { deskCheck = { ok: false, desk: null, problems: [{ code: 'CHECK_FAILED', msg: 'The desk check could not run (' + String(e.message).slice(0, 160) + '); run `node company/tools/station-floor.js audit`.' }] }; }
-  fs.appendFileSync(path.join(HANDOFFS, fnInbox('floor')), deskHandoff(deskCheck, { title, display, roomId: desk && desk.roomId, slug: round.slug }));
+  require('./lib/tool-blocks').append(path.join(HANDOFFS, fnInbox('floor')), deskHandoff(deskCheck, { title, display, roomId: desk && desk.roomId, slug: round.slug }));
   return { ok: true, agentId, name: officeName, title, access, profile: profile || undefined, modelChain: chain ? chain.map(e => e.provider + '/' + e.model) : null, desk: desk && desk.ok ? desk.roomId : null, deskCheck: deskCheck.ok ? 'ok' : deskCheck.problems.map(p => p.code).join(','), loop: jj.ok ? (jj.job && jj.job.id) : ('failed: ' + job.body.slice(0, 160)), role: path.relative(ROOT, roleFile), inbox: path.relative(ROOT, inboxFile), functions: moved ? moved.take : [], functionsFrom: moved ? moved.from : {},
     stationPage: pageOpen ? (reloaded === 'reloaded' ? 'was open; reloaded so it shows the hire' : reloaded === 'busy' ? 'is open with a conversation in progress; it shows the hire after its next reload' : 'is open and could not be reloaded') : 'closed; prompts updated directly', promptsSynced: synced.filter(x => !/via:page/.test(String(x))) };
 }

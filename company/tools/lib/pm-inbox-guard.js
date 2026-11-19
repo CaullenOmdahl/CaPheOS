@@ -222,7 +222,7 @@ function raise(bad, o) {
         '**Need:** find who appended to company/pm-inbox.jsonl outside its tools. Nothing acted on these rows: Today, the gates, approvals and the dispatcher ignore them, and company/tools/locked-watch.js moves them to company/state/locked/quarantine/.\n' +
         '**Why:** only the console and the owner\'s own tools write an answer, close or snooze (the owner\'s authority), and only the asking seat\'s own tool run writes its ask, withdraw or reclassify; a row no allowed writer recorded claims an authority it does not have.\n' +
         '**Deadline:** none\n**Status:** DONE — FYI\n**Evidence:** ' + fresh.slice(0, 10).map(l => what(l) + ' at offset ' + l.offset + ' (' + l.why + ')').join('; ') + '. Log: `company/work/security/pm-inbox-ignored.jsonl`.\n';
-      const hf = path.join(root, 'company', 'work', 'handoffs', risk.inbox); fs.mkdirSync(path.dirname(hf), { recursive: true }); fs.appendFileSync(hf, block);
+      const hf = path.join(root, 'company', 'work', 'handoffs', risk.inbox); require('./tool-blocks').append(hf, block, { root });   // recorded (lib/tool-blocks.js): a tool's own block, never held as a member's message
     }
   } catch (_) {}
   for (const l of fresh) st.seen[l.sha] = at;
