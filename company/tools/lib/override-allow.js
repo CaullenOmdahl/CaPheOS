@@ -25,7 +25,8 @@
  *   await OA.build({ root?, now?, call?, jobs?, m?, providers?, blocks? }) -> the document (not written)
  *   await OA.write({ ...same, log?, dry? })                               -> { ok, file, seats, open, why? }
  *   OA.departmentRoutes(seatId, { root? })                                 -> [{ provider, model, effort? }] (none: [])
- *   OA.openFor(agentId, { provider, model }, { root?, now? })              -> null (open) | a plain reason it is not
+ *   OA.openFor(agentId, { provider, model }, { root?, now?, ownerPick? })  -> null (open) | a plain reason it is not
+ *     ownerPick: the owner chose this model for a console-started run; open when the seat has that provider open now
  *     the station's own test, for a caller that starts a run itself (the console's meeting with one model picked for
  *     everyone, console/meeting.js): the file must be under 30 minutes old and list that pair for that agent
  *
@@ -111,7 +112,14 @@ function openFor(agentId, pair, o) {
   if (!(Number(doc.at) > 0) || now - Number(doc.at) > MAX_AGE_MS) return 'the list of the models each person may use is out of date';
   const list = Array.isArray(doc.agents[String(agentId || '')]) ? doc.agents[String(agentId)] : [];
   const p = pair || {};
-  return list.some(x => x && x.provider === p.provider && x.model === p.model) ? null : 'not open for them right now';
+  if (list.some(x => x && x.provider === p.provider && x.model === p.model)) return null;
+  // the owner's own pick for a run the console starts itself (a meeting or chat with one model for everyone, o.ownerPick):
+  // the pair is on the company's allowed list (the caller checks) and need not be in the seat's chain. It is open when
+  // the seat has some entry of the SAME provider open now: that entry passed evaluate() this tick (connected, the pacer
+  // gate incl. the owner's subscription stops, no quota closure, no refusal block for the seat, no budget or provider-error
+  // hold), and those are per provider, not per model. A provider with nothing open for the seat stays closed.
+  if (o.ownerPick && list.some(x => x && x.provider === p.provider)) return null;
+  return o.ownerPick ? 'not open for them right now (' + (list.length ? 'that AI provider is closed for them' : 'no AI is open for them') + ')' : 'not open for them right now';
 }
 
 module.exports = { build, write, departmentRoutes, openFor, MAX_AGE_MS, REL, WRITER };

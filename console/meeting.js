@@ -595,7 +595,7 @@ module.exports = function meeting(deps) {
   function pinClosed(id, pin) {
     if (!pinChoices().some(c => samePair(c, pin))) return 'no longer on the company\'s list of models';
     let why = null;
-    try { why = typeof deps.pinCheck === 'function' ? deps.pinCheck(id, pin) : OA().openFor(id, pin, { root: co.ROOT }); } catch (e) { why = 'not open for them right now'; }
+    try { why = typeof deps.pinCheck === 'function' ? deps.pinCheck(id, pin) : OA().openFor(id, pin, { root: co.ROOT, ownerPick: true }); } catch (e) { why = 'not open for them right now'; }
     if (why) return why;
     try { if (typeof deps.modelHold === 'function') { const h = deps.modelHold(id, pin); if (h) return 'held: ' + h; } } catch (_) {}
     return null;

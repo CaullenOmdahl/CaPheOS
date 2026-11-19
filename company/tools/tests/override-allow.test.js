@@ -163,5 +163,12 @@ test('openFor: the station\'s own test for a caller that starts a run itself (a 
   assert.match(OA.openFor('jo', { provider: 'claude-cli', model: 'claude-opus-5-5' }, { root: T, now }), /not open for them/, 'not listed: closed');
   assert.match(OA.openFor('sam', { provider: 'deepseek', model: 'deepseek-flash' }, { root: T, now }), /not open for them/, 'listed for another agent only: closed');
   assert.match(OA.openFor('jo', { provider: 'deepseek', model: 'deepseek-flash' }, { root: T, now: now + OA.MAX_AGE_MS }), /out of date/, 'older than 30 minutes: closed');
+  // the owner's pick for a meeting (Haiku for everyone, 2026-11-19): a model outside the seat's chain is open when that
+  // provider is open for the seat now; another provider, or a seat with nothing open, stays closed
+  assert.strictEqual(OA.openFor('jo', { provider: 'deepseek', model: 'deepseek-pro' }, { root: T, now, ownerPick: true }), null, 'owner pick, same provider open: open');
+  assert.match(OA.openFor('jo', { provider: 'claude-cli', model: 'haiku' }, { root: T, now, ownerPick: true }), /provider is closed/, 'owner pick, provider not open for the seat: closed');
+  assert.match(OA.openFor('nobody', { provider: 'deepseek', model: 'deepseek-pro' }, { root: T, now, ownerPick: true }), /no AI is open/, 'owner pick, seat with nothing open: closed');
+  assert.match(OA.openFor('jo', { provider: 'deepseek', model: 'deepseek-pro' }, { root: T, now }), /not open for them/, 'not an owner pick: the station rule, exact pair only');
+  assert.match(OA.openFor('jo', { provider: 'deepseek', model: 'deepseek-pro' }, { root: T, now: now + OA.MAX_AGE_MS, ownerPick: true }), /out of date/, 'owner pick, stale list: closed');
   fs.rmSync(path.join(T, OA.REL), { force: true });
 });
