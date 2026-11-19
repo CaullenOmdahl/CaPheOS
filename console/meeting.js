@@ -33,6 +33,8 @@
  *   const M = require('./meeting.js')(deps); M.mount(route); M.start();
  *   deps: { co, owner(), emit(topic), stationPost, modelFor(seat), runs (chat-runs), run(tool, args), seatBusy(seat),
  *           seatJobs(seat), seatVoice(seat) -> text added after the rules (per-seat point of view; default none),
+ *           ownerTalk() -> the owner's talk line in the rules, ownerTalkLint(text, seat) -> a lint for the seat's next turn,
+ *           ownerShown(text) -> {text, technical, talkMasked} | null for the page (docs/TALK.md; each default none),
  *           effortsFor(provider, model) -> the efforts the model offers | null, modelHold(seat, model) -> a hold message | null,
  *           pinCheck(seat, pair) -> null | why (tests; default lib/override-allow.js openFor), onFinalize({state, id, LOG}),
  *           nudgeMs, stallMs, watchTickMs (tests) }
@@ -412,6 +414,7 @@ module.exports = function meeting(deps) {
     '- When the owner is observing (the turn note says so), ' + o + ' will not speak unless they step in: do not put questions to them or wait for their answer, and keep the discussion going among yourselves. The leader runs it through to a result and, when it is complete, ends a reply with a line of its own: END: <one line on what was decided and who does what>. With no leader, anyone may close it that way.\n' +
     '- You can bring people in and out, as on a call. To invite someone from the company who is not at the table, end your reply with a line of its own: INVITE: <name> — <why the discussion needs them>. To dismiss someone whose part is done (yourself included, when you have nothing more to give), end with: DISMISS: <name> — <why>. An invited person joins at once, sees the ' + N + ' so far and speaks after the others this round; a dismissed person leaves this ' + N + '. Invite only when the discussion needs that person, not to be thorough. The leader stays unless the owner changes it.\n' +
     (povOn() ? '- Start every reply with a line of its own: STANCE: <your position in a few words> — <what your counterpart wants, if they are here>. Then speak, as yourself only: never write lines for anyone else at the table, and do not just agree; say where you differ, and change your position only for a new fact you name.\n' : '') +
+    (deps.ownerTalk ? deps.ownerTalk() : '') +   // how the owner wants to hear from the crew (docs/TALK.md; '' until they pick)
     '- The minutes, every word as said, are in company/work/meetings/' + MIN_PREFIX + '<date>.md, so anyone can read it later.]';
   };
   /* tools are on by default, as at the table (a run reads and checks); the owner's Talk only switch turns them off for the
@@ -469,7 +472,7 @@ module.exports = function meeting(deps) {
       const n = nudge.length ? ' [Console note: ' + nudge.map(x => x.text).join(' ') + ']' : '';
       const sn = e.kind === 'say' && e.nostance ? ' [Console note: your last reply had no STANCE line. Start every reply with STANCE: <your position> — <what your counterpart wants>.]' : '';
       if (!e.lint) return p + n + sn;
-      return p + n + sn + ' [Console note on your last reply: ' + e.lint.why + '. ' + (e.lint.kind === 'observe-question' ? owner() + ' is observing: put the question to the people seated, or settle it yourselves.' : 'That is the crew\'s, not the owner\'s: settle it among yourselves or route it.') + ']';
+      return p + n + sn + ' [Console note on your last reply: ' + e.lint.why + '. ' + (e.lint.fix ? e.lint.fix : e.lint.kind === 'observe-question' ? owner() + ' is observing: put the question to the people seated, or settle it yourselves.' : 'That is the crew\'s, not the owner\'s: settle it among yourselves or route it.') + ']';
     }
     return '';
   }
@@ -576,7 +579,7 @@ module.exports = function meeting(deps) {
   }
   // the owner-scope lint (console/command-ask.js, the chat's): crew work put to the owner, a command for the owner, and
   // with the owner observing, any question to them
-  function lintOf(text, list) {
+  function lintOf(text, list, seat) {
     try {
       const ca = lint.commandAsk(text); if (ca) return { kind: 'command', why: 'it asks ' + owner() + ' to run a command (' + ca.command + ')', command: ca.command, action: ca.action };
       const oa = lint.ownerAsk(text); if (oa) return { kind: oa.kind, why: oa.kind === 'crew-scope' ? 'it puts crew work to ' + owner() + ' (' + oa.why + ')' : 'it asks ' + owner() + ' in technical words', route: oa.route, question: oa.question };
@@ -584,6 +587,8 @@ module.exports = function meeting(deps) {
         const q = lint.observeAsk(text, owner()) || ((list || []).find(d => d.kind === 'ASK' && isOwnerKey(d.name)) ? { question: 'ASK: ' + owner() } : null);
         if (q) return { kind: 'observe-question', why: 'it puts a question to ' + owner() + ', who is observing', question: q.question };
       }
+      // the owner's level (docs/TALK.md): in a meeting the check only notes it for the seat's next turn, nothing is re-run
+      if (typeof deps.ownerTalkLint === 'function') { const tl = deps.ownerTalkLint(text, seat); if (tl) return tl; }
     } catch (_) {}
     return null;
   }
@@ -1230,7 +1235,7 @@ module.exports = function meeting(deps) {
     if (passed) { R.round.answered++; record(Object.assign({ who: cur.seat, kind: 'pass' }, steps)); }
     else if (body) {
       R.round.answered++; R.round.said++;
-      const lt = res.error ? null : lintOf(body, list);
+      const lt = res.error ? null : lintOf(body, list, cur.seat);
       record(Object.assign({ who: cur.seat, kind: 'say', text: res.error ? body + '\n\n[stopped before the end]' : body, model: modelLabel(cur.model), provider: cur.model.provider, modelId: cur.model.model }, extra, steps, lt ? { lint: lt } : {}, stance ? { stance } : povOn() && !res.error ? { nostance: true } : {}));
     } else if (res.error && !R.stopping && !cur.stalled) note(nameOf(cur.seat) + ' could not answer: ' + String(res.error).slice(0, 200));
     if (!passed && !body && !res.error && list.length === 0) note(nameOf(cur.seat) + ' finished without writing a reply.');
@@ -1653,6 +1658,9 @@ module.exports = function meeting(deps) {
   // what the page shows: everything said and done, passes included (one dim line each, as at the table); the console's
   // notes to a seat about its own lines are the seat's, not the page's
   const SHOWN = e => e.kind !== 'nudge';
+  // a Plain owner's view of a seat's words (docs/TALK.md): paths and commands masked for display only; the log and the
+  // minutes keep every word
+  const forOwner = e => { if (e.kind !== 'say' || e.who === 'owner' || typeof deps.ownerShown !== 'function') return e; try { const x = deps.ownerShown(e.text); return x ? Object.assign({}, e, x) : e; } catch (_) { return e; } };
   function entries(q) {
     const shown = LOG.filter(SHOWN);
     const limit = Math.min(200, Math.max(1, Number(q && q.get && q.get('limit')) || 60));
@@ -1660,10 +1668,10 @@ module.exports = function meeting(deps) {
     const from = q && q.get && q.get('from') ? Number(q.get('from')) : null;
     const upto = before ? shown.filter(e => e.i < before) : shown;
     const page = from ? upto.filter(e => e.i >= from).slice(0, limit) : upto.slice(-limit);
-    if (from) return { ok: true, entries: page.map(e => Object.assign({}, e, { name: e.who === 'owner' ? owner() : e.who === 'console' ? 'Console' : nameOf(e.who), toName: e.to ? (e.to === 'owner' ? owner() : nameOf(e.to)) : undefined, byName: e.by ? nameOf(e.by) : undefined, line: TEXTS[e.kind] && e.kind !== 'note' ? TEXTS[e.kind](e) : undefined })),
+    if (from) return { ok: true, entries: page.map(forOwner).map(e => Object.assign({}, e, { name: e.who === 'owner' ? owner() : e.who === 'console' ? 'Console' : nameOf(e.who), toName: e.to ? (e.to === 'owner' ? owner() : nameOf(e.to)) : undefined, byName: e.by ? nameOf(e.by) : undefined, line: TEXTS[e.kind] && e.kind !== 'note' ? TEXTS[e.kind](e) : undefined })),
       cursor: page.length && page[0].i > (shown[0] || {}).i ? page[0].i : null, more: !!(page.length && page[0].i > (shown[0] || {}).i), after: page.length && page[page.length - 1].i < (shown[shown.length - 1] || {}).i };
     const name = e => e.who === 'owner' ? owner() : e.who === 'console' ? 'Console' : nameOf(e.who);
-    return { ok: true, entries: page.map(e => Object.assign({}, e, { name: name(e), toName: e.to ? (e.to === 'owner' ? owner() : nameOf(e.to)) : undefined, byName: e.by ? nameOf(e.by) : undefined, line: TEXTS[e.kind] && e.kind !== 'note' ? TEXTS[e.kind](e) : undefined })),
+    return { ok: true, entries: page.map(forOwner).map(e => Object.assign({}, e, { name: name(e), toName: e.to ? (e.to === 'owner' ? owner() : nameOf(e.to)) : undefined, byName: e.by ? nameOf(e.by) : undefined, line: TEXTS[e.kind] && e.kind !== 'note' ? TEXTS[e.kind](e) : undefined })),
       cursor: page.length && upto.length > page.length ? page[0].i : null, more: upto.length > page.length };
   }
   function minutesText(q) {

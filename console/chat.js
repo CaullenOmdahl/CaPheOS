@@ -25,6 +25,34 @@ const cmdAsk = text => { try { return commandAsk(text); } catch (_) { return nul
 // a reply that puts crew work to the owner (infrastructure, monitoring, tools) or asks in technical words (owner scope)
 const scopeAsk = text => { try { return ownerAsk(text); } catch (_) { return null; } };
 const withAsk = l => l.name === 'console.final' && l.payload && typeof l.payload.text === 'string' ? { name: l.name, payload: Object.assign({}, l.payload, { commandAsk: cmdAsk(l.payload.text), ownerAsk: scopeAsk(l.payload.text) }) } : l;
+/* HOW THE CREW TALKS TO YOU (company/tools/lib/talk.js, docs/TALK.md): the owner's level, length and check, read fresh
+   for each message (a small file); a broken lib reads as no choice (today's behaviour) */
+const TALK = () => require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'talk.js'));
+const talkPrefs = root => { try { return TALK().prefs({ root }); } catch (_) { return { level: 'technical', length: 'full', often: 'daily', check: 'off', source: 'default' }; } };
+// a Plain owner with the check on never sees a command or a file path: the reply is not streamed word by word (it may be
+// sent back), and a reply that is still technical is shown masked, the original under "Technical details (for the crew)"
+const holding = tp => tp.level === 'plain' && tp.check === 'live';
+function shownLine(l, tp) {
+  if (!l || !holding(tp)) return l;
+  if (l.name === 'agent.token' && l.payload) return { name: l.name, payload: Object.assign({}, l.payload, { delta: '', held: true }) };
+  if (l.name === 'console.final' && l.payload && typeof l.payload.text === 'string' && l.payload.text.trim()) {
+    let c = null; try { c = TALK().check(l.payload.text, 'plain', 'full'); } catch (_) { return l; }
+    if (c.ok) return l;
+    const mk = TALK().mask(l.payload.text);
+    return { name: l.name, payload: Object.assign({}, l.payload, { text: mk.text, technical: mk.technical, talkMasked: true, notice: TALK().MASKED_NOTICE, commandAsk: cmdAsk(mk.text), ownerAsk: scopeAsk(mk.text) }) };
+  }
+  return l;
+}
+// the instruction a seat gets when it talks to the owner ('' until the owner picks), with its profile's way with the owner
+function talkBlock(id, root) {
+  try {
+    const T = TALK(); const tp = T.prefs({ root }); if (tp.source === 'default') return '';
+    let voice = '';
+    try { const P = require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'profile.js')); if (P.policy({ root }).inject === 'profile') { const pr = P.load(id, { root }); voice = (pr && pr.voice && pr.voice.toOwner) || ''; } } catch (_) {}
+    const b = T.block(tp, voice, { root });
+    return b ? '\n' + b : '';
+  } catch (_) { return ''; }
+}
 
 
 /* What the console knows that the chat would not: this seat's own recent work (its routine runs are separate
@@ -46,6 +74,7 @@ function contextNote(id, s, co, text, recap) {
     + '\nRun commands and read or write files by calling your tools. Never write a tool call out as text (<run_command>, <invoke>, <tool_call>, a JSON call): text is not run, and the owner only sees the markup.'
     + '\nThe owner is a busy non-technical person. Handle infrastructure yourself: monitoring, health checks, timers, services, tools, framework bugs and internal process are the crew\'s (yours, the risk, tools or floor seat, or a framework request), never a question for the owner. Ask the owner only for money beyond the company\'s limits, an account or identity in their own name, legal, ownership or commitment decisions, company direction and priorities, risk the governance level reserves for them, or a fixed gate, in two plain sentences that say what they get or risk and what happens if they skip it (your default); technical detail only if they ask for it.'
     + '\nNever ask the owner to run a command or open a terminal (systemctl, sudo, npm/pip install, git push, node …): the owner works only in the console. Do it with your own tools, link the console action that does it ([label](console:#/route)), ask for an approval on Today, or hand it to the tools seat in a handoff; a change to a framework file is a harness-change propose. If agents are refused the command, say so and route it, never hand it over.'
+    + talkBlock(id, co.ROOT)   // how the owner wants to hear from the crew (docs/TALK.md): changes only when they change it
     + '\nWhen you point the owner somewhere in the console, link it: [label](console:#/route). For a quick choice in this conversation, write an ```actions block (company/skills/console-links/SKILL.md "Chat actions").'
     + '\nTo bring a colleague into this chat now, end your reply with a line of its own: ASK: <name> — <your question>, or INVITE: <name> — <why you need them>. They join this chat and answer here right away; use it instead of a handoff when you need their answer to carry on. DISMISS: <name> when they are done.'
     + actionReplyNote(text) + (() => { try { const r = require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'profile.js')).reminderFor(id, { root: co.ROOT }); return r ? '\n' + r : ''; } catch (_) { return ''; } })() + ']\n\n' + (recap ? recap + '\n\n' : '');   // the seat's profile reminder (docs/PROFILES.md), last
@@ -163,7 +192,8 @@ module.exports = function chat(deps) {
     return out;
   }
   const CUT = /^(cancelled|canceled|stopped|aborted|error|failed|cut-off|lost|interrupted)$/i;
-  async function transcript(id) {
+  async function transcript(id, o) {
+    const tp = o && o.display ? talkPrefs(co.ROOT) : null;   // for the owner's eyes: a Plain owner's history is masked too
     const r = await stationGet('transcript?agent=' + encodeURIComponent(id) + '&stream=' + encodeURIComponent(STREAM(id)) + '&limit=200', 5000);
     if (!r.ok) return { ok: false, error: r.error || 'HTTP ' + r.status, turns: [] };
     const reasons = runReasons();
@@ -180,7 +210,8 @@ module.exports = function chat(deps) {
         const mine = rid ? RUNS.runOf(rid) : null;
         const why = mine && mine.status === 'cut' ? mine.reason : rid ? reasons[rid] : null;
         if (t.role === 'assistant' && why && CUT.test(why)) o.cut = why;
-        if (t.role === 'assistant') { const ca = cmdAsk(t.content); if (ca) o.commandAsk = ca; const oa = scopeAsk(t.content); if (oa) o.ownerAsk = oa; }
+        if (t.role === 'assistant' && tp && holding(tp)) { const sl = shownLine({ name: 'console.final', payload: { text: o.content } }, tp); if (sl.payload.talkMasked) { o.content = sl.payload.text; o.technical = sl.payload.technical; o.talkMasked = true; o.notice = sl.payload.notice; } }
+        if (t.role === 'assistant') { const ca = cmdAsk(o.content); if (ca) o.commandAsk = ca; const oa = scopeAsk(o.content); if (oa) o.ownerAsk = oa; }
         return o;
       }).filter(Boolean);
     return { ok: true, turns };
@@ -204,7 +235,7 @@ module.exports = function chat(deps) {
     const cr = await stationGet('cron', 4000);
     const m = await modelFor(s, cr.ok && cr.data ? cr.data.jobs || [] : []);
     const pre = await preflight(s, m);
-    const t = await transcript(id);
+    const t = await transcript(id, { display: true });
     // a run in flight (the page re-attaches to it): its own turns, if the station already wrote them, are left out here
     // and come back with the run's journal, so the page never shows a reply that is still being written as finished
     const live = RUNS.inflight(id);
@@ -300,10 +331,24 @@ module.exports = function chat(deps) {
     res.on('close', () => { closed = true; });
     // one run on one model; a refusal (the model declined it) is retried ONCE on the seat's next model, the same turn,
     // and the owner is told in one plain line (lib/refusal.js); every entry declining is reported plainly, never an error
-    /* PRE-DELIVERY COMMAND CHECK (console/command-ask.js): a finished reply that tells the owner to run a command or open a
-       terminal is not delivered; it goes back to the agent ONCE with the reason ("the owner uses the console only; offer a
-       button or do it yourself"), and the page shows the second reply instead. Only a second reply that still hands over
-       a command is delivered, with the notice under it. `check` = {messages} for that second run. */
+    /* PRE-DELIVERY CHECK, one combined check (console/command-ask.js and company/tools/lib/talk.js, docs/TALK.md): a
+       finished reply that tells the owner to run a command or open a terminal, or (the owner's check live) is more
+       technical than the owner's level, is not delivered; it goes back to the agent ONCE with one note listing both
+       ("the owner uses the console only; offer a button or do it yourself"; "the owner chose plain words …"), and the page
+       shows the second reply instead. A second reply that still hands over a command is delivered with the notice; at
+       Plain one that is still technical is delivered masked (shownLine), the original folded under "Technical details
+       (for the crew)". check shadow: delivered unchanged, the would-be problems recorded. Every outcome is one row in
+       company/state/talk-checks.jsonl. `check` = {messages, problems, hit} for that second run. */
+    const tp = talkPrefs(co.ROOT);
+    const ownerNm = (co.config.owner && co.config.owner.name) || owner();
+    const talkRow = (row) => { try { TALK().record(Object.assign({ seat: id, level: tp.level, check: tp.check }, row), { root: co.ROOT }); } catch (_) {} };
+    // the talk part of the check for a finished reply: {problems, live} (commands are the command check's, as today)
+    const talkVerdict = text => {
+      if (tp.check === 'off') return { problems: [], live: false, at: tp.level };
+      const at = tp.check === 'shadow' && tp.level === 'technical' ? 'plain' : tp.level;   // recording only: what Plain would have sent back
+      let c = { problems: [] }; try { c = TALK().check(text, at, tp.length, { limits: tp.limits }); } catch (_) {}
+      return { problems: c.problems, live: tp.check === 'live' && tp.level !== 'technical' && c.problems.length > 0, at };
+    };
     const launch = (m, attempt, lead, tried, check) => {
     const opening = lead.slice();
     const payload = { agentId: id, model: m.model, provider: m.provider, rosterSystem: true, isTask: true, streamId: STREAM(id),
@@ -329,22 +374,37 @@ module.exports = function chat(deps) {
         if (l.name === 'console.final' && REF.isRefusal(l.payload || {})) {
           const next = attempt === 0 ? REF.nextEntry(id, m, tried) : null;
           if (next) { retrying = next; return; }   // this run's end is replaced by the retry, not shown as a failure
-          line(l.name, l.payload);
+          { const o = shownLine(l, tp); line(o.name, o.payload); }
           line('console.error', { code: 'refused', message: attempt === 0 ? REF.plainLine(m, null) + ' The run stopped; nothing was changed.' : REF.pname(m.provider) + ' declined this too, after ' + REF.pname(tried[0].provider) + ' did. The run stopped; nothing was changed.' });
           try { REF.record({ root: co.ROOT, seat: id, door: 'chat', runId: rid, from: m, to: null }); } catch (_) {}
           return;
         }
-        if (l.name === 'console.final' && !check && l.payload && l.payload.complete && l.payload.commandAsk && String(l.payload.text || '').trim()) {
-          rechecking = { text: String(l.payload.text), hit: l.payload.commandAsk };   // held back: this run's end starts the check run
-          try { const r0 = RUNS.runOf(rid); if (r0) { r0.superseded = true; r0.recheck = { command: l.payload.commandAsk.command }; } } catch (_) {}
-          return;
+        if (l.name === 'console.final' && !check && l.payload && l.payload.complete && String(l.payload.text || '').trim()) {
+          const tv = talkVerdict(String(l.payload.text));
+          if (l.payload.commandAsk || tv.live) {
+            rechecking = { text: String(l.payload.text), hit: l.payload.commandAsk || null, problems: tv.live ? tv.problems : [] };   // held back: this run's end starts the check run
+            try { const r0 = RUNS.runOf(rid); if (r0) { r0.superseded = true; r0.recheck = Object.assign({}, rechecking.hit ? { command: rechecking.hit.command } : {}, rechecking.problems.length ? { talk: rechecking.problems.map(p => p.kind) } : {}); } } catch (_) {}
+            return;
+          }
+          if (tp.check !== 'off') talkRow({ runId: rid, problems: tv.problems, action: tp.check === 'shadow' && tv.problems.length ? 'shadow' : 'delivered', checkedAt: tv.at });
+        }
+        if (l.name === 'console.final' && check && l.payload && l.payload.complete && tp.check !== 'off') {
+          const tv = talkVerdict(String(l.payload.text || ''));
+          const masked = holding(tp) && !!shownLine(l, tp).payload.talkMasked;
+          talkRow({ runId: rid, problems: check.problems || [], secondProblems: tv.problems, action: masked ? 'masked' : 'delivered', command: check.hit ? check.hit.command : undefined });
         }
         if (l.name === 'console.end' && rechecking) {
           const rc = rechecking; rechecking = null; if (off) off();
-          const note = recheckNote(rc.hit);
-          line('console.recheck', { message: s.name + '\'s first reply asked you to run a command, so it went back to ' + s.name + ' to offer a button or do it instead.', command: rc.hit.command });
-          return launch(m, attempt, [{ name: 'console.run', payload: { agentId: id, name: s.name, model: m.model, provider: m.provider, from: 'the console\'s check: the first reply asked you to run a command' } }], tried,
-            { messages: messages.concat([{ role: 'assistant', content: rc.text }, { role: 'user', content: note }]) });
+          const talkPart = rc.problems.length > 0;
+          const note = talkPart ? TALK().recheckNote(rc.problems, tp.level, { command: rc.hit || undefined, owner: ownerNm, length: tp.length, limits: tp.limits }) : recheckNote(rc.hit);
+          const plainer = tp.level === 'some' ? 'more simply' : 'in plain words';
+          const why = rc.hit && talkPart ? 'asked you to run a command and was more technical than you asked for, so it went back to ' + s.name + ' to say it again ' + plainer + ', without the command.'
+            : rc.hit ? 'asked you to run a command, so it went back to ' + s.name + ' to offer a button or do it instead.'
+              : 'was more technical than you asked for, so it went back to ' + s.name + ' to say it again ' + plainer + '.';
+          line('console.recheck', Object.assign({ message: s.name + '\'s first reply ' + why }, rc.hit ? { command: rc.hit.command } : {}, talkPart ? { talk: rc.problems.map(p => p.kind) } : {}));
+          if (talkPart || tp.check !== 'off') talkRow({ runId: rid, problems: rc.problems, action: 'sent-back', command: rc.hit ? rc.hit.command : undefined });
+          return launch(m, attempt, [{ name: 'console.run', payload: { agentId: id, name: s.name, model: m.model, provider: m.provider, from: rc.hit ? 'the console\'s check: the first reply asked you to run a command' : 'the console\'s check: the first reply was too technical' } }], tried,
+            { messages: messages.concat([{ role: 'assistant', content: rc.text }, { role: 'user', content: note }]), problems: rc.problems, hit: rc.hit });
         }
         if (l.name === 'console.end' && retrying) {
           const next = retrying; retrying = null; if (off) off();
@@ -358,7 +418,7 @@ module.exports = function chat(deps) {
           // the reply brought a colleague in: say so before the end, so the page switches to the chat with them
           return setImmediate(() => pullP ? pullP.then(h => { if (h && h.error) line('console.note', { message: 'Could not bring the colleague in: ' + h.error }); else if (h) line('console.huddle', h); done(); }, done) : done());
         }
-        line(l.name, l.payload);
+        { const o = shownLine(l, tp); line(o.name, o.payload); }
       });
     };
     prep.started.then(rid => { follow1(rid); watch(rid); });
@@ -412,7 +472,8 @@ module.exports = function chat(deps) {
     let off = null, ended = false;
     const ka = setInterval(() => { try { res.write('\n'); } catch (_) {} }, 20000); ka.unref();
     const stop = () => { ended = true; clearInterval(ka); if (off) off(); };
-    off = RUNS.attach(rid, from, x => { if (ended) return; const l = withAsk(x); try { res.write(JSON.stringify({ name: l.name, payload: l.payload }) + '\n'); } catch (_) {} if (l.name === 'console.end') { stop(); res.end(); } });
+    const tp = talkPrefs(co.ROOT);
+    off = RUNS.attach(rid, from, x => { if (ended) return; const l = shownLine(withAsk(x), tp); try { res.write(JSON.stringify({ name: l.name, payload: l.payload }) + '\n'); } catch (_) {} if (l.name === 'console.end') { stop(); res.end(); } });
     if (ended) off();
     res.on('close', stop);
   }
@@ -471,3 +532,4 @@ module.exports = function chat(deps) {
   return { info, send, attach, brief, channelState, messageStates, modelFor, meteredHold, seatOf, transcript, resume, runs: RUNS };
 };
 module.exports.contextNote = contextNote;
+module.exports.shownLine = shownLine;
