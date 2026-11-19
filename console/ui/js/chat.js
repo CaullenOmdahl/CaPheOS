@@ -225,9 +225,14 @@ export function liveChat(host, opts) {
       const cost = h('span', { class: 'caption muted hud-cost', role: 'status' }, [hud.meeting.costLine, hud.meeting.estimateLine].filter(Boolean).join(' · '));
       think = h('span', { class: 'row-8 hud-think-row', style: 'flex-wrap:wrap' }, lv, md, cost);
     }
+    // the settings fold under one line (closed by default, remembered) so the conversation keeps the height
+    const sumText = 'Chat settings' + (T ? ' · ' + ((T.levels.find(x => x.id === T.level) || {}).label || T.level) + ' thinking · ' + (T.pin ? (((T.choices || []).find(c => c.provider === T.pin.provider && c.model === T.pin.model) || {}).label || T.pin.model) + ' for everyone' : 'usual models') : '');
+    const more = h('details', { class: 'hud-more' }, h('summary', { class: 'caption' }, sumText), h('div', { class: 'row-8 hud-more-body', style: 'flex-wrap:wrap' }, h('span', { class: 'row-8 hud-add' }, pick, add), think));
+    let open0 = false; try { open0 = localStorage.getItem('capheos.hudSettingsOpen') === '1'; } catch (_) {}
+    more.open = open0;
+    more.addEventListener('toggle', () => { try { localStorage.setItem('capheos.hudSettingsOpen', more.open ? '1' : ''); } catch (_) {} });
     fill(hudBar, hud.open ? h('span', { class: 'caption muted' }, 'In this chat:') : null,
-      hud.open ? seats.filter(x => x.leader).map(x => chip(x, true)) : null, guests.map(x => chip(x, false)),
-      h('span', { class: 'row-8 hud-add' }, pick, add), think);
+      hud.open ? seats.filter(x => x.leader).map(x => chip(x, true)) : null, guests.map(x => chip(x, false)), more);
   }
   function liveLine() {
     if (!hudRunning()) { if (!busy) setState(''); return; }

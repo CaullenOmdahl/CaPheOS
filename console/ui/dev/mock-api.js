@@ -571,7 +571,8 @@ async function apiRoute(req, res, p, q) {
     const host = S.seats.find(x => x.id === m[1]); if (!host) return J(res, 404, { ok: false, error: 'no crew member ' + m[1] });
     const hd = (S.huddles = S.huddles || {})[host.id] = S.huddles[host.id] || { guests: [], log: [] };
     const seatRow = (s, lead) => ({ id: s.id, name: s.name, title: s.title, leader: lead, guest: !lead, model: { label: 'Claude Sonnet' } });
-    const hv = () => ({ host: { id: host.id, name: host.name }, open: hd.guests.length > 0, limits: { guests: 3 }, live: { phase: 'idle' }, meeting: { id: 'm-mock1', state: hd.guests.length ? 'open' : 'closed' },
+    const hv = () => ({ host: { id: host.id, name: host.name }, open: hd.guests.length > 0, limits: { guests: 3 }, live: { phase: 'idle' }, meeting: { id: 'm-mock1', state: hd.guests.length ? 'open' : 'closed', costLine: 'This meeting so far: 0 turns',
+        think: { level: hd.level || 'normal', pin: hd.pin || null, levels: [{ id: 'light', label: 'Light' }, { id: 'normal', label: 'Normal' }, { id: 'deep', label: 'Deep' }, { id: 'max', label: 'Max', deliberate: true }], choices: [{ provider: 'claude-cli', model: 'haiku', label: 'Claude Haiku' }, { provider: 'claude-cli', model: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' }] } },
       seats: hd.guests.length ? [seatRow(host, true)].concat(hd.guests.map(g => seatRow(S.seats.find(x => x.id === g), false))) : [],
       roster: S.seats.filter(x => x.id !== host.id).map(x => ({ id: x.id, name: x.name, title: x.title, seated: hd.guests.includes(x.id) })) });
     const sub = m[2] || '';
