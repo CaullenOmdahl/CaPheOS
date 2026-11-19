@@ -124,6 +124,9 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/meeting-register.js | tools | `selftest` |
 | company/tools/provider-balance.js | finance | `selftest` / `--selftest` |
 | company/tools/default-branch-watch.js | risk | `selftest` |
+| company/tools/capheos-main-watch.js | risk | `selftest` |
+| company/tools/capheos-merge.js | tools | none (merge/baseline/hook/list) |
+| company/tools/staged-update.js | tools | `selftest` |
 | company/tools/delegation.js | ceo | `selftest` / `--selftest` |
 | company/tools/departments.js | people | `--selftest` |
 | company/tools/dispatch.js | tools | `--selftest` |

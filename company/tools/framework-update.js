@@ -8,7 +8,8 @@
  *        how each company-owned file would be merged, and anything that blocks it.
  *   node company/tools/framework-update.js apply --by owner --expect <sha> [--no-backup] [--no-setup] [--no-restart] [--json]
  *        the owner (lib/owner.js: the owner's shell or the console) applies exactly the commit they reviewed (--expect;
- *        refused if upstream moved since). Steps, stopping at the first failure with everything put back:
+ *        refused if upstream moved since). A crew seat (--by <seat>, not the owner) goes through company/tools/staged-update.js
+ *        instead: CI green, merge-tool merges only, the sandbox first, then a watchdog that rolls back. Steps, stopping at the first failure with everything put back:
  *          1. scripts/instance-guard.sh (push disabled, hooks in place: an instance never pushes, and this tool has no
  *             push in it at all);
  *          2. scripts/backup.sh (the company's own state), unless --no-backup;
@@ -287,6 +288,10 @@ if (require.main === module) {
       : 'DRY RUN: ' + x.behind + ' commit(s) to take, ' + x.head.slice(0, 10) + ' -> ' + x.target.slice(0, 10) + '\n' + x.commits.map(k => '  ' + k.sha + ' ' + k.subject).join('\n') +
         '\nfiles: ' + x.files.length + (x.notes.length ? '\n' + x.notes.map(s => '- ' + s).join('\n') : '') + x.owned.map(o => '\n' + o.file + ': ' + o.how + (o.added && o.added.length ? ' (+' + o.added.join(', ') + ')' : '')).join('') +
         (x.blockers.length ? '\nBLOCKED: ' + x.blockers.join('\n  ') : '\napply: node company/tools/framework-update.js apply --by owner --expect ' + x.target.slice(0, 12)));
+  } else if (cmd === 'apply' && opt('by') && opt('by') !== true && !require('./lib/owner').isOwnerName(opt('by'))) {
+    // the crew's way in (self-improvement): CI green, merge-tool merges only, sandbox first, a watchdog that rolls back
+    const r = require('./staged-update').crewApply({ by: opt('by'), expect: opt('expect') === true ? null : opt('expect') });
+    out(r, x => x.ok ? (x.upToDate ? 'already up to date' : 'updated ' + x.from.slice(0, 10) + ' -> ' + x.to.slice(0, 10) + ' (staged: ' + x.watch + ')') : 'not updated: ' + x.error);
   } else if (cmd === 'apply') {
     const own = require('./lib/owner');
     const r = apply({ root: co.ROOT, by: opt('by'), expect: opt('expect'), noBackup: !!opt('no-backup'), noSetup: !!opt('no-setup'), noRestart: !!opt('no-restart'),

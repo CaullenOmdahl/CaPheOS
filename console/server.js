@@ -1089,6 +1089,10 @@ function start(argv) {
   setInterval(() => { for (const c of clients) c.write(': ping\n\n'); }, 25000).unref();
   server.listen(port, host, () => {
     const a = server.address();
+    // the health file (company/state/console-health.json) the staged update's watchdog reads (company/tools/staged-update.js):
+    // once a minute the console asks itself /api/health on its own port and writes what it got, so nothing outside ever calls it
+    const beat = () => { const t0 = Date.now(); const rq = http.get({ host: host === '::' ? '::1' : (host === '0.0.0.0' ? '127.0.0.1' : host), port: a.port, path: '/api/health', timeout: 5000 }, rs => { rs.resume(); rs.on('end', () => { try { fs.writeFileSync(co.p('company', 'state', 'console-health.json'), JSON.stringify({ at: new Date().toISOString(), ok: rs.statusCode === 200, status: rs.statusCode, ms: Date.now() - t0, pid: process.pid, port: a.port }) + '\n'); } catch (_) {} }); }); rq.on('timeout', () => rq.destroy(new Error('timeout'))); rq.on('error', e => { try { fs.writeFileSync(co.p('company', 'state', 'console-health.json'), JSON.stringify({ at: new Date().toISOString(), ok: false, error: String(e.message).slice(0, 120), pid: process.pid, port: a.port }) + '\n'); } catch (_) {} }); };
+    setTimeout(beat, 2000).unref(); setInterval(beat, 60000).unref();
     const shown = host.includes(':') ? '[' + host + ']' : host;
     if (argv.includes('--print-port')) console.log(JSON.stringify({ port: a.port }));
     else console.log(loginLine('http://' + shown + ':' + a.port, token, !!process.stdout.isTTY) + '\n(company root ' + co.ROOT + ', station ' + co.STATION_URL + ')');

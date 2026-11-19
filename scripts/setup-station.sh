@@ -128,6 +128,12 @@ TZ=$ZONE
 EOF
 )
 
+# 3b. the merge gate's pre-push hook in every checkout the crew pushes from (company/repos/*): no push to the default
+# branch, no force push, no deleting main (company/tools/capheos-merge.js hook; idempotent, an older hook is chained)
+for d in "$ROOT"/company/repos/*/; do
+  [ -e "$d/.git" ] && node "$ROOT/company/tools/capheos-merge.js" hook "$d" >/dev/null 2>&1 && echo "merge-gate pre-push hook: $d" || true
+done
+
 # 4. systemd user units from systemd/*.in
 mkdir -p "$UNITDIR"
 for t in systemd/*.in; do

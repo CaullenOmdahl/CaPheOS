@@ -1520,6 +1520,15 @@ function lastRunTail(job) {
       if (JSON.stringify(dw) !== was) fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
     }
   } catch (e) { log('DEFAULT-BRANCH WATCH ERROR: ' + String(e.message || e).split('\n')[0].slice(0, 160)); }
+  // self-improvement (lib/selfimprove.js, selfimprove.json enabled): the tripwire on the framework's main (capheos-main-watch.js,
+  // at most every 5 min) and the crew's staged update watchdog's fallback check (staged-update.js tick: a watch whose own unit
+  // died is finished from here). Off = no child is started. Fail-safe.
+  if (!DRY) try {
+    if (require('./lib/selfimprove').config().enabled) for (const [tool, label] of [['capheos-main-watch.js', 'CAPHEOS MAIN WATCH'], ['staged-update.js', 'STAGED UPDATE']]) {
+      try { const out = require('child_process').execFileSync(process.execPath, [path.join(__dirname, tool), 'tick'], { cwd: ROOT, timeout: 90000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); const line = String(out).trim().split('\n').pop() || ''; if (line && !/skipped|nothing to do|unchanged/.test(line)) log(line.slice(0, 400)); }
+      catch (e) { log(label + ' ERROR: ' + String(e.stderr || e.message || e).split('\n').find(Boolean).slice(0, 240)); }
+    }
+  } catch (e) { log('SELF-IMPROVEMENT ERROR: ' + String(e.message || e).split('\n')[0].slice(0, 160)); }
   // the station's one-run override allowlist (lib/override-allow.js, StarNet patch 0017): rewritten at the end of every
   // tick from what each seat can run NOW; a halted company or a stopped dispatcher stops writing it, and the station
   // turns every override off once it is 30 minutes old. Fail-safe.
