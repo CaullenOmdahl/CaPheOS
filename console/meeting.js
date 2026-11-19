@@ -155,6 +155,11 @@ module.exports = function meeting(deps) {
   const BOUNDED = require(path.join(LIB, 'bounded.js'));
   const admitLib = () => require(path.join(LIB, 'admit.js'));
   const lint = require(path.join(__dirname, 'command-ask.js'));
+  /* full profiles (company/tools/lib/profile.js, docs/PROFILES.md §Meetings): each seat's counterpart, its reminder, and
+     the company's point-of-view default. deps.profileOf(seat) -> profile | null and deps.pov (tests) override the files. */
+  const PROF = () => require(path.join(LIB, 'profile.js'));
+  const profileOf = id => { try { return typeof deps.profileOf === 'function' ? deps.profileOf(id) : PROF().load(id, { root: co.ROOT }); } catch (_) { return null; } };
+  const povDefault = () => { if (typeof deps.pov === 'boolean') return deps.pov; try { return PROF().policy({ root: co.ROOT }).pov === true; } catch (_) { return false; } };
   const DIR = () => deps.stateDir ? (typeof deps.stateDir === 'function' ? deps.stateDir() : deps.stateDir) : co.p('company', 'state', 'meetings');
   const F = { seats: () => path.join(DIR(), 'seats.json'), current: () => path.join(DIR(), 'current.json'), meta: id => path.join(DIR(), 'm', id + '.json'), events: id => path.join(DIR(), 'events', id + '.jsonl') };
   const SAFE_ID = /^m-[a-z0-9]{4,20}$/;
@@ -203,7 +208,7 @@ module.exports = function meeting(deps) {
     // a room with fixed standing seats (a live chat: only its host) keeps them; everyone else is a guest
     std = { seats: Array.isArray(P.standing) ? defaultSeats() : Array.isArray(c.seats) ? c.seats.filter(x => typeof x === 'string') : defaultSeats(),
       leader: P.fixedLeader ? P.fixedLeader : 'leader' in c ? (typeof c.leader === 'string' ? c.leader : null) : ceoId(),
-      speed, speedMigrated: true, talkOnly: c.talkOnly === true, frames: c.frames === true,
+      speed, speedMigrated: true, talkOnly: c.talkOnly === true, frames: c.frames === true, pov: typeof c.pov === 'boolean' ? c.pov : null,
       observeRounds: Number.isInteger(c.observeRounds) && c.observeRounds > 0 ? Math.min(c.observeRounds, MAX_OBSERVE) : OBSERVE_ROUNDS,
       think: { level: c.think && THINK[c.think.level] ? c.think.level : THINK_DEFAULT, pin: c.think ? parsePin(c.think.pin) : null } };
     if (migrate) { try { saveStd(); } catch (_) {} }
@@ -288,7 +293,7 @@ module.exports = function meeting(deps) {
   const observeText = e => e.on ? owner() + ' is observing: they will not speak unless they step in' : owner() + ' is taking part again';
   const agendaText = e => e.op === 'add' ? 'Agenda item added: ' + e.text + (e.tools ? ' (tools on)' : '') : e.op === 'current' ? 'Now on: ' + e.text + (e.tools ? ' (tools on: people may read and check)' : ' (talk only)') : e.op === 'tools' ? (e.tools ? 'Tools on for "' + e.text + '": people may read and check' : 'Talk only for "' + e.text + '"') : e.op === 'done' ? 'Done: ' + e.text : 'Agenda item removed: ' + e.text;
   const parseText = e => 'The console could not read ' + nameOf(e.who) + '\'s line "' + e.line + '": ' + e.why;
-  const closeText = e => e.state === 'interrupted' ? 'The meeting was interrupted' + (e.why ? ': ' + e.why : '') : 'The meeting was closed by ' + nameOf(e.who) + (e.why ? ': ' + e.why : '');
+  const closeText = e => (e.state === 'interrupted' ? 'The meeting was interrupted' + (e.why ? ': ' + e.why : '') : 'The meeting was closed by ' + nameOf(e.who) + (e.why ? ': ' + e.why : '')) + (e.echo ? '. ' + e.echo : '');
   const resumeText = e => owner() + ' resumed the meeting';
   const registerText = e => nameOf(e.who) + ' put in the register (' + ({ actions: 'action', questions: 'open question', kills: 'kill condition' }[e.section] || e.section) + ' ' + e.n + '): ' + e.text + (e.plain ? ' — in plain words: ' + e.plain : '');
   const consentText = e => e.op === 'asked' ? nameOf(e.who) + ' asked to use ' + (e.tool || 'a tool') + '; the meeting is paused until you answer it on Today' : 'Approval for ' + nameOf(e.who) + ' (' + (e.tool || 'a tool') + '): ' + (e.decision === 'once' ? 'allowed' : e.decision === 'deny' ? 'declined' : e.decision) + '; the meeting carries on';
@@ -312,7 +317,8 @@ module.exports = function meeting(deps) {
     LOG.push(e);
     try { ensureDir(); fs.appendFileSync(F.events(M.id), JSON.stringify(e) + '\n', { mode: 0o600 }); } catch (_) {}
     const t = hm();
-    if (e.kind === 'say') minutes('\n**' + nameOf(e.who) + '** (' + t + (e.model ? ', ' + e.model : '') + (e.to ? ', answering ' + nameOf(e.to) : '') + (e.interject ? ', interjecting' : '') + (e.explains ? ', explaining for the room' : '') + '):\n' + e.text + '\n', e.kind);
+    if (e.kind === 'say') minutes('\n**' + nameOf(e.who) + '** (' + t + (e.model ? ', ' + e.model : '') + (e.to ? ', answering ' + nameOf(e.to) : '') + (e.interject ? ', interjecting' : '') + (e.explains ? ', explaining for the room' : '') + '):\n' + (e.stance ? '_Stance: ' + e.stance + '_\n' : '') + e.text + '\n', e.kind);
+    else if (e.kind === 'draft') minutes('\n<details><summary>' + firstName(e.who) + '\'s first take, before hearing the others (' + t + ')</summary>\n\n' + e.text + '\n\n</details>\n', e.kind);
     else if (e.kind === 'open') { M.opened = true; minutes('\n## ' + t + ': the meeting opens\n\nAt the meeting: ' + e.text + '.\n', e.kind); }
     else if (TEXTS[e.kind]) { const s = TEXTS[e.kind](e); minutes('\n_' + t + ': ' + s + (/[.!?]$/.test(s) ? '' : '.') + '_\n', e.kind); }
     if (e.kind === 'say' || e.kind === 'open' || e.kind === 'agenda') reindex();   // searchable as it goes
@@ -320,6 +326,71 @@ module.exports = function meeting(deps) {
     return e;
   }
   const note = text => record({ who: 'console', kind: 'note', text });
+
+  /* ---------- point of view, stance, the gatekeeper's first take (docs/MEETINGS.md "Point of view") ---------- */
+  // on when seats.json pov says so, else the company's profile policy (pov: true in the sandbox; absent elsewhere = off)
+  const povOn = () => (std && typeof std.pov === 'boolean' ? std.pov : povDefault());
+  const cpOf = id => { const p = profileOf(id); return p && p.counterpart && p.counterpart.seat ? p.counterpart : null; };
+  // a and b are counterparts when either profile names the other
+  const opposed = (a, b) => { const x = cpOf(a), y = cpOf(b); return !!((x && x.seat === b) || (y && y.seat === a)); };
+  // the seats this seat checks (their profile names it as counterpart) and are seated now, with the kinds they need signed off
+  const checksHere = id => present().filter(o => o !== id).map(o => ({ seat: o, cp: cpOf(o) })).filter(x => x.cp && x.cp.seat === id);
+  const RELEVANT = { decision: null, planning: null, review: ['promote', 'merge', 'plan'], incident: [] };   // null: any kind
+  function isGatekeeper(id) {
+    const want = Object.prototype.hasOwnProperty.call(RELEVANT, M.type) ? RELEVANT[M.type] : null;
+    return checksHere(id).some(x => (x.cp.signOff || []).some(k => want === null || want.includes(k)));
+  }
+  const reminderOf = id => { const p = profileOf(id); if (!p) return ''; try { return PROF().reminder(p, { crew: crew() }); } catch (_) { return ''; } };
+  const STANCE_RE = /^\s*[*_]*STANCE[*_]*\s*:\s*(.+?)\s*$/im;
+  // the reply's STANCE line (its first non-empty line), taken out of the shown text
+  function stanceOf(text) {
+    const t = String(text || ''); const lines = t.split('\n'); const i = lines.findIndex(l => l.trim());
+    if (i < 0) return { stance: null, body: t };
+    const m = lines[i].match(STANCE_RE); if (!m) return { stance: null, body: t };
+    return { stance: m[1].replace(/[*_]+$/, '').slice(0, 200), body: lines.slice(i + 1).join('\n').replace(/^\s+/, '') };
+  }
+  const draftOf = id => (M.run && M.run.round && M.run.round.drafts && M.run.round.drafts[id]) || null;
+  // a round the owner started (a new message), and this seat's first turn in it, and it checks someone seated
+  const needsDraft = (R, cur) => povOn() && R.round && R.round.fromOwner && cur.item.kind === 'turn' && !cur.item.wrap && !cur.item.followUp && !(R.round.drafts || {})[cur.seat] && isGatekeeper(cur.seat);
+  function draftMessages(id) {
+    const o = owner(); let msg = '';
+    for (let i = LOG.length - 1; i >= 0; i--) if (LOG[i].kind === 'say' && LOG[i].who === 'owner') { msg = LOG[i].text; break; }
+    const it = currentItem(), voice = voiceOf(id), rem = reminderOf(id);
+    return [{ role: 'user', content: '[A PRIVATE FIRST TAKE] ' + (voice ? voice + '\n\n' : '') + 'You are ' + nameOf(id) + (titleOf(id) ? ', ' + titleOf(id) : '') + ', at ' + o + '\'s ' + NOUN + '. ' + o + ' said to the table: "' + String(msg).slice(0, 4000) + '"' + (M.title ? ' Topic: ' + M.title + '.' : '') + (it ? ' Agenda item now: ' + it.title + '.' : '')
+      + '\n\nWrite your own position before you read anyone else: two to four sentences. Nobody else at the table sees it; ' + o + ' can read it folded, and you will see it again on your turn.' + (rem ? '\n\n' + rem : '') }];
+  }
+  async function firstTake(R, cur) {
+    const r = await oneRun({ seat: cur.seat, model: cur.model, messages: draftMessages(cur.seat), tools: false, purpose: 'draft' });
+    const text = r && !r.error && !r.refused ? String(directives(String(r.text || '')).body || '').trim().slice(0, 2000) : '';
+    R.round.drafts = Object.assign({}, R.round.drafts || {}, { [cur.seat]: text || '(no first take)' });
+    if (text) record({ who: cur.seat, kind: 'draft', text, round: R.round.no || null });
+    save();
+  }
+  /* echo stats at close (no model call): per seat the share of replies with a stance; per pair the word-trigram overlap of
+     consecutive replies; stances that changed in a reply that cites no new fact (no number, link or file) */
+  function echoStats() {
+    const says = LOG.filter(e => e.kind === 'say' && e.who !== 'owner' && e.who !== 'console' && !e.explains);
+    const seats = {}, pairs = {}, shifts = [];
+    const tri = t => { const w = String(t || '').toLowerCase().replace(/[^a-z0-9\s']/g, ' ').split(/\s+/).filter(Boolean); const s = new Set(); for (let i = 0; i + 2 < w.length; i++) s.add(w[i] + ' ' + w[i + 1] + ' ' + w[i + 2]); return s; };
+    const jac = (a, b) => { if (!a.size || !b.size) return 0; let n = 0; for (const x of a) if (b.has(x)) n++; return n / (a.size + b.size - n); };
+    const last = {};
+    for (let i = 0; i < says.length; i++) {
+      const e = says[i], s = seats[e.who] = seats[e.who] || { replies: 0, withStance: 0 };
+      s.replies++; if (e.stance) s.withStance++;
+      if (i > 0 && says[i - 1].who !== e.who) { const k = [says[i - 1].who, e.who].sort().join('|'); const p = pairs[k] = pairs[k] || { n: 0, sum: 0 }; p.n++; p.sum += jac(tri(says[i - 1].text), tri(e.text)); }
+      const norm = x => String(x || '').toLowerCase().replace(/—.*$/, '').replace(/[^a-z0-9 ]/g, '').trim();
+      if (e.stance && last[e.who] && norm(last[e.who]) !== norm(e.stance) && !/\d|https?:\/\/|\b[\w-]+\.(?:md|js|json|csv|py|txt)\b/.test(String(e.text || ''))) shifts.push({ seat: e.who, from: last[e.who], to: e.stance, i: e.i });
+      if (e.stance) last[e.who] = e.stance;
+    }
+    const r4 = x => Math.round(x * 10000) / 10000;
+    return { seats: Object.fromEntries(Object.entries(seats).sort().map(([k, v]) => [k, Object.assign(v, { share: v.replies ? r4(v.withStance / v.replies) : null })])),
+      pairs: Object.entries(pairs).sort().map(([k, v]) => ({ seats: k.split('|'), replies: v.n, overlap: r4(v.sum / v.n) })), unexplainedShifts: shifts };
+  }
+  function echoLine(st) {
+    const tot = Object.values(st.seats).reduce((a, s) => [a[0] + s.withStance, a[1] + s.replies], [0, 0]);
+    const hi = st.pairs.slice().sort((a, b) => b.overlap - a.overlap)[0];
+    return 'Echo check: ' + tot[0] + ' of ' + tot[1] + ' replies stated a stance' + (hi ? '; the most similar pair was ' + hi.seats.map(nameOf).join(' and ') + ' (' + Math.round(100 * hi.overlap) + '% of phrases shared)' : '') + (st.unexplainedShifts.length ? '; ' + st.unexplainedShifts.length + ' change(s) of position with no new fact cited' : '');
+  }
 
   /* ---------- what each seat is sent ---------- */
   /* the table's rules (~/.local/lib/cpd/table.js PRE), for the console: speak as yourself, short, by name; PASS; check
@@ -340,6 +411,7 @@ module.exports = function meeting(deps) {
     '- To ask someone a question directly, end your reply with a line of its own: ASK: <name> — <your question>. They answer next and may ASK you back; keep such an exchange short and to the point. While two people are in an exchange, the others are asked after each answer whether they want to interject; when you are, reply HAND — <what you want to add> if you need to come in now, otherwise NO. The leader calls on raised hands (with no leader, a raised hand gets the floor next); the leader can also give anyone the floor by ending a reply with CALL: <name>.\n' +
     '- When the owner is observing (the turn note says so), ' + o + ' will not speak unless they step in: do not put questions to them or wait for their answer, and keep the discussion going among yourselves. The leader runs it through to a result and, when it is complete, ends a reply with a line of its own: END: <one line on what was decided and who does what>. With no leader, anyone may close it that way.\n' +
     '- You can bring people in and out, as on a call. To invite someone from the company who is not at the table, end your reply with a line of its own: INVITE: <name> — <why the discussion needs them>. To dismiss someone whose part is done (yourself included, when you have nothing more to give), end with: DISMISS: <name> — <why>. An invited person joins at once, sees the ' + N + ' so far and speaks after the others this round; a dismissed person leaves this ' + N + '. Invite only when the discussion needs that person, not to be thorough. The leader stays unless the owner changes it.\n' +
+    (povOn() ? '- Start every reply with a line of its own: STANCE: <your position in a few words> — <what your counterpart wants, if they are here>. Then speak, as yourself only: never write lines for anyone else at the table, and do not just agree; say where you differ, and change your position only for a new fact you name.\n' : '') +
     '- The minutes, every word as said, are in company/work/meetings/' + MIN_PREFIX + '<date>.md, so anyone can read it later.]';
   };
   /* tools are on by default, as at the table (a run reads and checks); the owner's Talk only switch turns them off for the
@@ -395,8 +467,9 @@ module.exports = function meeting(deps) {
       if (e.who !== id || (e.kind !== 'say' && e.kind !== 'pass')) continue;
       const p = parse.length ? ' [Console note: these lines of your last reply could not be read, so nothing was done with them: ' + parse.map(x => '"' + x.line + '" (' + x.why + ')').join('; ') + '. Write each on a line of its own, exactly as the protocol says.]' : '';
       const n = nudge.length ? ' [Console note: ' + nudge.map(x => x.text).join(' ') + ']' : '';
-      if (!e.lint) return p + n;
-      return p + n + ' [Console note on your last reply: ' + e.lint.why + '. ' + (e.lint.kind === 'observe-question' ? owner() + ' is observing: put the question to the people seated, or settle it yourselves.' : 'That is the crew\'s, not the owner\'s: settle it among yourselves or route it.') + ']';
+      const sn = e.kind === 'say' && e.nostance ? ' [Console note: your last reply had no STANCE line. Start every reply with STANCE: <your position> — <what your counterpart wants>.]' : '';
+      if (!e.lint) return p + n + sn;
+      return p + n + sn + ' [Console note on your last reply: ' + e.lint.why + '. ' + (e.lint.kind === 'observe-question' ? owner() + ' is observing: put the question to the people seated, or settle it yourselves.' : 'That is the crew\'s, not the owner\'s: settle it among yourselves or route it.') + ']';
     }
     return '';
   }
@@ -407,7 +480,10 @@ module.exports = function meeting(deps) {
     const up = upList.length ? upList.map(([c, why]) => nameOf(c) + (why ? ' (' + why + ')' : '')).join('; ') : '';
     const lead = isLead ? ' You lead this ' + NOUN + '.' + (up ? ' Hands up: ' + up + '; end your reply with CALL: <name> to give one the floor.' : '')
       + (observing() ? ' Move it to a result; when the discussion is complete, end your reply with END: <what was decided and who does what>.' : '') : '';
-    const tail = sinceNote(id) + (noTools ? BUSY_NOTE : '') + lintLine(id) + roomLine(id) + localeLine();
+    const dr = povOn() ? draftOf(id) : null, rem = povOn() ? reminderOf(id) : '';
+    const tail = sinceNote(id) + (noTools ? BUSY_NOTE : '') + lintLine(id) + roomLine(id) + localeLine()
+      + (dr ? ' [Your first take, before you read the others: "' + clip(dr, 1200) + '" Has anything said since given you new evidence? Say which, or hold your position.]' : '')
+      + (rem ? '\n\n' + rem : '');
     const ctx = context(noTools);
     if (item.kind === 'ask') return '[' + nameOf(item.from) + ' asked you directly: ' + item.text + ' Answer ' + nameOf(item.from) + ', ' + n + '; you may ASK back.' + lead + ' ' + ctx + ']' + tail;
     if (item.kind === 'hand') return '[' + (item.calledBy ? nameOf(item.calledBy) + ' called on you' : 'You raised your hand') + (item.why ? ' (' + item.why + ')' : '')
@@ -422,8 +498,11 @@ module.exports = function meeting(deps) {
     if (typeof deps.seatVoice !== 'function') return '';
     try { const v = deps.seatVoice(id); return typeof v === 'string' ? v.trim() : ''; } catch (_) { return ''; }
   }
+  // with point of view on, each seat's history is a projection of the one stored log: its counterpart's lines labelled
+  // "<Name>, your counterpart, said:", the owner's "<Owner> (the owner) said:", its own past lines its own (assistant)
+  // turns; a draft (a gatekeeper's private first take) is never in anyone's history
   function historyFor(id, lastLine) {
-    const msgs = []; let buf = [];
+    const msgs = []; let buf = []; const pov = povOn();
     const flush = () => { if (buf.length) { msgs.push({ role: 'user', content: buf.join('\n\n') }); buf = []; } };
     for (const e of LOG) {
       if (e.who === id && (e.kind === 'say' || e.kind === 'pass')) {
@@ -431,6 +510,7 @@ module.exports = function meeting(deps) {
         const content = e.kind === 'pass' ? 'PASS' : e.text, last = msgs[msgs.length - 1];
         if (last && last.role === 'assistant') last.content += '\n\n' + content; else msgs.push({ role: 'assistant', content });
       }
+      else if (e.kind === 'say' && pov) buf.push((e.who === 'owner' ? owner() + ' (the owner)' : nameOf(e.who) + (opposed(id, e.who) ? ', your counterpart,' : '')) + (e.to ? (e.to === id ? ' (answering you)' : ' (answering ' + nameOf(e.to) + ')') : '') + (e.interject ? ' (interjecting)' : '') + (e.explains ? ' (explaining for the room)' : '') + ' said' + (e.stance ? ' (stance: ' + e.stance + ')' : '') + ': ' + e.text);
       else if (e.kind === 'say') buf.push(nameOf(e.who) + (e.who === 'owner' ? ' (owner)' : '') + (e.to ? ' (answering ' + nameOf(e.to) + ')' : '') + (e.interject ? ' (interjecting)' : '') + (e.explains ? ' (explaining for the room)' : '') + ': ' + e.text);
       else if (e.kind === 'open') buf.push('[The ' + NOUN + ' opened. At the table: ' + e.text + '.]');
       else if (e.kind !== 'ask' && e.kind !== 'pass' && e.kind !== 'nudge' && e.kind !== 'think' && TEXTS[e.kind]) buf.push('[' + TEXTS[e.kind](e) + '.]');
@@ -1070,7 +1150,8 @@ module.exports = function meeting(deps) {
       record(Object.assign({ who: 'owner', kind: 'say', text: p.text }, p.only && p.only.length ? { only: p.only.slice() } : {}));
     }
     const only = p.only && p.only.length ? p.only : null;
-    M.run.round = { only, followUp: !p.text, said: 0, answered: 0, ended: null,
+    M.rounds = (M.rounds || 0) + 1;
+    M.run.round = { only, followUp: !p.text, fromOwner: !!p.text, no: M.rounds, drafts: {}, said: 0, answered: 0, ended: null,
       ctl: { invites: 0, asks: 0, hands: 0, turns: 0, raised: [], front: [], after: [], up: {}, ended: null,
         normal: (only || ordered()).map(cmd => ({ cmd, kind: 'turn', followUp: !p.text, addressed: only })) } };
   }
@@ -1100,6 +1181,8 @@ module.exports = function meeting(deps) {
     for (;;) {
       if (!cur.runId) {
         if (R.stopping || !present().includes(cur.seat)) { res = { stopped: true }; break; }
+        // a gatekeeper's private first take, before it reads anyone else (talk only, admitted as a meeting turn, in the cost line)
+        if (needsDraft(R, cur)) { try { await firstTake(R, cur); } catch (_) { R.round.drafts = Object.assign({}, R.round.drafts || {}, { [cur.seat]: '(no first take)' }); } if (R.stopping || !present().includes(cur.seat)) { res = { stopped: true }; break; } }
         const st = await startRun({ seat: cur.seat, model: cur.model, messages: historyFor(cur.seat, turnLine(cur.seat, item, ctl, !!cur.noTools)), tools: cur.noTools ? false : toolsOn(), purpose: 'turn' });
         if (st.error) { res = { error: st.error, text: '' }; break; }
         cur.runId = st.runId; cur.startedAt = Date.now(); save(); emit('meeting'); armHalt();
@@ -1138,7 +1221,8 @@ module.exports = function meeting(deps) {
     }
     R.current = null; save();
     if (res.skip || res.stopped) { applyLeaves(R); emit('meeting'); return; }
-    const raw = res.text || '';
+    let raw = res.text || '', stance = null;
+    if (povOn() && !res.error) { const sx = stanceOf(raw); stance = sx.stance; raw = sx.body; }
     const { body, list, failures } = res.error ? { body: raw, list: [], failures: [] } : directives(raw);
     const passed = !res.error && (isPass(body) || (!body && list.length > 0));
     const extra = item.kind === 'ask' ? { to: item.from } : item.kind === 'hand' ? { interject: true } : {};
@@ -1147,7 +1231,7 @@ module.exports = function meeting(deps) {
     else if (body) {
       R.round.answered++; R.round.said++;
       const lt = res.error ? null : lintOf(body, list);
-      record(Object.assign({ who: cur.seat, kind: 'say', text: res.error ? body + '\n\n[stopped before the end]' : body, model: modelLabel(cur.model), provider: cur.model.provider, modelId: cur.model.model }, extra, steps, lt ? { lint: lt } : {}));
+      record(Object.assign({ who: cur.seat, kind: 'say', text: res.error ? body + '\n\n[stopped before the end]' : body, model: modelLabel(cur.model), provider: cur.model.provider, modelId: cur.model.model }, extra, steps, lt ? { lint: lt } : {}, stance ? { stance } : povOn() && !res.error ? { nostance: true } : {}));
     } else if (res.error && !R.stopping && !cur.stalled) note(nameOf(cur.seat) + ' could not answer: ' + String(res.error).slice(0, 200));
     if (!passed && !body && !res.error && list.length === 0) note(nameOf(cur.seat) + ' finished without writing a reply.');
     for (const f of failures || []) record({ who: cur.seat, kind: 'parse', line: f.line, why: f.why });
@@ -1228,6 +1312,9 @@ module.exports = function meeting(deps) {
   // Talk only (the whole meeting: no tools on any turn) and seat frames: the owner's switches, kept with the seats
   function setTalkOnly(b) { guard(); std.talkOnly = !!(b && b.on); saveStd(); emit('meeting'); return view({ note: std.talkOnly ? 'Talk only: nobody has tools in this meeting until you switch it off.' : 'Tools on: people may read and check what they say.' }); }
   function setFrames(b) { guard(); std.frames = !!(b && b.on); saveStd(); emit('meeting'); return view(); }
+  // point of view (each seat its own transcript, the STANCE line, the gatekeeper's first take): the owner's switch, kept with
+  // the seats; { on: null } goes back to the company's profile policy
+  function setPov(b) { guard(); std.pov = b && typeof b.on === 'boolean' ? b.on : null; saveStd(); emit('meeting'); return view(); }
   /* a seat brought someone in (console/huddle.js: a colleague into the owner's live chat with that seat): the recent
      conversation goes in first as what was said (src 'chat'), then the seat's ASK / INVITE lines run as a round, the
      host closing it if something new was said. b = { by: seat, seed: [{who: 'owner'|seat, text}], directives: [{kind,
@@ -1482,7 +1569,9 @@ module.exports = function meeting(deps) {
     if (M.opened) {
       const tm = terms().undefined;
       if (tm.length) record({ who: 'console', kind: 'note', terms: tm.map(x => x.term), text: 'Terms used without a definition: ' + tm.map(x => x.term + ' (first used by ' + x.firstBy + ')').join(', ') + '. Add them to company/work/meetings/glossary.md.' });
-      record({ who: by, kind: 'close', state, why });
+      let echo = null;
+      if (povOn()) { try { echo = echoStats(); const f = path.join(MINUTES_DIR(), 'stats.jsonl'); fs.mkdirSync(MINUTES_DIR(), { recursive: true }); fs.appendFileSync(f, JSON.stringify({ at: new Date().toISOString(), meeting: M.id, kind: P.kind, type: M.type, seats: echo.seats, pairs: echo.pairs, unexplainedShifts: echo.unexplainedShifts }) + '\n'); } catch (_) { echo = null; } }
+      record(Object.assign({ who: by, kind: 'close', state, why }, echo ? { echo: echoLine(echo) } : {}));
     }
     save(); reindex();
     if (typeof deps.onFinalize === 'function') { try { deps.onFinalize({ state, id: M.id, LOG: LOG.slice() }); } catch (_) {} }
@@ -1556,7 +1645,7 @@ module.exports = function meeting(deps) {
     const shown = LOG.filter(SHOWN);
     return Object.assign({ ok: true, owner: owner(), kind: P.kind,
       meeting: { id: M.id, type: M.type, title: M.title, state: M.state, reason: M.reason || null, closedBy: M.closedBy ? nameOf(M.closedBy) : null, closedAt: M.closedAt || null, resumeAfter: M.resumeAfter || null,
-        agenda: M.agenda.map(a => Object.assign({}, a, { toolsOn: itemTools(a) })), agendaAt: M.agendaAt, toolsOn: toolsOn(), talkOnly: !!std.talkOnly, frames: !!std.frames, fixedLeader: P.fixedLeader || null, types: TYPES, speed: std.speed || 'instant', speeds: SPEEDS, effectiveSpeed: effectiveSpeed(), ownerPresent: ownerPresent(),
+        agenda: M.agenda.map(a => Object.assign({}, a, { toolsOn: itemTools(a) })), agendaAt: M.agendaAt, toolsOn: toolsOn(), talkOnly: !!std.talkOnly, frames: !!std.frames, pov: povOn(), fixedLeader: P.fixedLeader || null, types: TYPES, speed: std.speed || 'instant', speeds: SPEEDS, effectiveSpeed: effectiveSpeed(), ownerPresent: ownerPresent(),
         startedAt: M.startedAt, opened: !!M.opened, observer: observing(), observeRounds: std.observeRounds, leader: std.leader, leaderSeated: !!leader(),
         cost: M.cost, costLine: costLine(), estimateLine: estimateLine(seats.filter(x => x.model).map(x => x.model)), think: thinkView(), minutes: minutesRel(), excused: M.excused.map(id => ({ id, name: nameOf(id) })) },
       seats, roster, live, total: shown.length }, extra || {});
@@ -1618,6 +1707,7 @@ module.exports = function meeting(deps) {
     route('POST', R('/new'), (m, q, b) => newMeeting(b));
     route('POST', R('/talkonly'), (m, q, b) => setTalkOnly(b));
     route('POST', R('/frames'), (m, q, b) => setFrames(b));
+    route('POST', R('/pov'), (m, q, b) => setPov(b));
     route('POST', R('/think'), (m, q, b) => setThink(b));
     route('GET', R('/attach'), (m, q, b, req, res) => attach(req, res, q));
   }
@@ -1627,7 +1717,7 @@ module.exports = function meeting(deps) {
     if (M.run) { M.run.checking = null; save(); armHalt(); if (M.run.consent) armConsent(); if (!M.run.floor) kick(); }
   }
   load();
-  return { mount, start, view, entries, minutesText, say, openRound, hand, carryOn, stop, setObserve, agenda, setLeader, seatsChange, newMeeting, close, resume, list, register: regSafe(b => register(b)), registerView, search: q => search(q), reindex, explain, terms, addTerm, next, pace, hold, presence, catchUp, timeline, busy,
+  return { mount, start, view, entries, minutesText, say, openRound, setPov, hand, carryOn, stop, setObserve, agenda, setLeader, seatsChange, newMeeting, close, resume, list, register: regSafe(b => register(b)), registerView, search: q => search(q), reindex, explain, terms, addTerm, next, pace, hold, presence, catchUp, timeline, busy,
     setTalkOnly, setFrames, setThink, pullIn, seed, attach, profile: P, present: () => (M ? present() : []), state: () => (M ? M.state : null),
     idle: () => !M.run && !driving, _state: () => ({ std, M, LOG }), _reload: load };
 };
