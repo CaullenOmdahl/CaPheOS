@@ -8,8 +8,17 @@
  * company tool the owner would run in a shell, with --by <owner>: the tools accept the console as the owner
  * (company/tools/lib/owner.js), so the tool's own owner check and its own record (decisions.md, the tool's log) apply.
  * On top, each write is one row in company/state/owner-ops.jsonl {id, at, by, action, target, why, ok, error} — never a
- * secret. Long jobs (restarts, a framework update) run detached with their output in company/state/owner-ops/<id>.log,
- * shown in the console as they go.
+ * secret. Long jobs (restarts, a framework update, a clean-up) run detached with their output in
+ * company/state/owner-ops/<id>.log, shown in the console as they go.
+ * OUTSIDE THE CONSOLE'S LIMITS. Under systemd each job is its own transient unit, <svc>-owner-job-<id>.service
+ * (systemd-run --user --collect), never a child in the console's cgroup: the console's MemoryMax (300 / 512 MB),
+ * OOMPolicy=stop and KillMode=control-group would end a framework update (npm install, setup-station.sh) halfway when the
+ * console reaches its limit or restarts. The unit gets ManagedOOMPreference=omit (systemd-oomd never picks it),
+ * OOMPolicy=continue, the console's working folder and a short list of its environment (never the session secret).
+ * Without systemd (a container, scripts/supervise.js) or when systemd-run fails, the job is a detached child as before.
+ * lib/owned.js counts the unit as the company's; service.js's unregistered-services duty does not flag it.
+ * Env: CONSOLE_SYSTEMD_RUN (the systemd-run binary; tests). In a test run (CAPHEOS_TEST_RUN) without it, no transient
+ * unit is ever made on the machine's user manager.
  *
  *   GET  /api/ops/flags                           change-watcher flags (locked-watch.js status --json)
  *   POST /api/ops/flags/accept   {key, why}       take a flagged change as the new last-known-good
@@ -75,21 +84,60 @@ function mount(route, deps) {
   }
 
   /* ---------- detached jobs ---------- */
+  // the job's own shell writes its pid (the unit's main process, or the detached child) and, at the end, its exit code
+  const WRAP = 'echo $$ > "$0"; "$@"; echo "[exit $?]"';
+  const ENV_KEEP = /^(PATH|HOME|USER|LOGNAME|SHELL|LANG|LANGUAGE|LC_[A-Z]+|TZ|TMPDIR|XDG_[A-Z_]+|DBUS_SESSION_BUS_ADDRESS|NODE_EXTRA_CA_CERTS|CAPHEOS_[A-Z0-9_]+|STARNET_[A-Z0-9_]+|CONSOLE_(HOST|PORT|TRUST_PROXY))$/;
+  function jobUnitArgs(unit, log, env) {
+    const a = ['--user', '--collect', '--quiet', '--unit=' + unit, '--description=' + 'Owner job ' + unit,
+      '-p', 'WorkingDirectory=' + co.ROOT, '-p', 'StandardOutput=append:' + log, '-p', 'StandardError=append:' + log,
+      '-p', 'ManagedOOMPreference=omit', '-p', 'OOMPolicy=continue', '-p', 'KillMode=mixed', '-p', 'TimeoutStopSec=60'];
+    for (const [k, v] of Object.entries(env)) if (ENV_KEEP.test(k) && v != null && !/[\n\r\0]/.test(String(v))) a.push('-E', k + '=' + v);
+    return a;
+  }
+  function systemdRun() {
+    if (process.env.CONSOLE_SYSTEMD_RUN) return process.env.CONSOLE_SYSTEMD_RUN;
+    if (process.env.CAPHEOS_TEST_RUN) return null;   // a test never makes units on the machine's user manager
+    let sup = 'none'; try { sup = host().supervisor(); } catch (_) {}
+    if (sup !== 'systemd') return null;
+    for (const b of ['/usr/bin/systemd-run', '/bin/systemd-run']) if (fs.existsSync(b)) return b;
+    return null;
+  }
+  const svcName = () => { let c = {}; try { c = JSON.parse(fs.readFileSync(co.p('company', 'company.json'), 'utf8')); } catch (_) {} return String((c.station && c.station.serviceName) || 'capheos-station').replace(/\.service$/, ''); };
   function startJob(kind, argv, opts) {
     opts = opts || {};
     fs.mkdirSync(JOBS, { recursive: true });
     const running = listJobs().find(j => j.kind === kind && j.status === 'running');
     if (running) bad('a ' + kind + ' job is already running (' + running.id + ')', 409);
     const id = kind + '-' + new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14) + '-' + crypto.randomBytes(2).toString('hex');
-    const log = path.join(JOBS, id + '.log');
-    const fd = fs.openSync(log, 'a', 0o600);
-    // bash records the exit code as the last log line; the job stays a child of the console (the owner) while it runs
-    const ch = spawn('bash', ['-c', '"$@"; echo "[exit $?]"', 'owner-job'].concat(argv), { cwd: co.ROOT, detached: true, stdio: ['ignore', fd, fd], env: Object.assign({}, process.env, opts.env || {}) });
-    fs.closeSync(fd);
-    const meta = { id, kind, argv: argv.map(a => String(a).slice(0, 200)), pid: ch.pid, startedAt: new Date().toISOString(), by: owner(), label: opts.label || kind };
+    const log = path.join(JOBS, id + '.log'), pidf = path.join(JOBS, id + '.pid');
+    const env = Object.assign({}, process.env, opts.env || {});
+    const meta = { id, kind, argv: argv.map(a => String(a).slice(0, 200)), pid: null, unit: null, startedAt: new Date().toISOString(), by: owner(), label: opts.label || kind };
+    fs.closeSync(fs.openSync(log, 'a', 0o600));
+    const sr = systemdRun();
+    if (sr) {
+      // its own transient unit: outside the console's memory limits and its cgroup, so neither a console restart nor the
+      // console's MemoryMax can end it halfway
+      const unit = svcName() + '-owner-job-' + id + '.service';
+      const r = require('child_process').spawnSync(sr, jobUnitArgs(unit, log, env).concat(['--', 'bash', '-c', WRAP, pidf].concat(argv)), { cwd: co.ROOT, encoding: 'utf8', timeout: 20000, env });
+      if (!r.error && r.status === 0) meta.unit = unit;
+      else try { fs.appendFileSync(log, '(could not start it as its own unit: ' + String(r.error ? r.error.message : r.stderr || 'exit ' + r.status).trim().slice(0, 200) + '; started as a child of the console)\n'); } catch (_) {}
+    }
+    if (!meta.unit) {
+      const fd = fs.openSync(log, 'a', 0o600);
+      const ch = spawn('bash', ['-c', WRAP, pidf].concat(argv), { cwd: co.ROOT, detached: true, stdio: ['ignore', fd, fd], env });
+      fs.closeSync(fd); meta.pid = ch.pid; ch.unref();
+    }
     fs.writeFileSync(path.join(JOBS, id + '.json'), JSON.stringify(meta, null, 1) + '\n');
-    ch.on('exit', code => { if (opts.onExit) try { opts.onExit(code, meta); } catch (_) {} try { deps.emit && deps.emit('ops'); } catch (_) {} });
-    ch.unref();
+    // the end: the log's [exit N] line (the unit's process is no child of this console), checked every 2 s
+    const t0 = Date.now();
+    const watch = setInterval(() => {
+      const j = jobOf(id); if (!j) { clearInterval(watch); return; }
+      if (j.status === 'running' && Date.now() - t0 < 6 * 3600e3) return;
+      clearInterval(watch);
+      if (opts.onExit) try { opts.onExit(j.exit == null ? null : j.exit, meta); } catch (_) {}
+      try { deps.emit && deps.emit('ops'); } catch (_) {}
+    }, 2000);
+    if (watch.unref) watch.unref();
     return meta;
   }
   const alive = pid => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
@@ -97,7 +145,10 @@ function mount(route, deps) {
     let meta; try { meta = JSON.parse(fs.readFileSync(path.join(JOBS, id + '.json'), 'utf8')); } catch (_) { return null; }
     let text = ''; try { const b = fs.readFileSync(path.join(JOBS, id + '.log')); text = b.slice(Math.max(0, b.length - 16384)).toString('utf8'); } catch (_) {}
     const m = text.match(/\[exit (\d+)\]\s*$/);
-    const status = m ? (m[1] === '0' ? 'done' : 'failed') : alive(meta.pid) ? 'running' : 'ended';
+    if (!m) { const p = Number(String((() => { try { return fs.readFileSync(path.join(JOBS, id + '.pid'), 'utf8'); } catch (_) { return ''; } })()).trim()); if (p > 1) meta.pid = p; }
+    // a unit job whose shell has not written its pid yet (it is just starting) is running, for up to a minute
+    const starting = !meta.pid && meta.unit && Date.now() - Date.parse(meta.startedAt) < 60000;
+    const status = m ? (m[1] === '0' ? 'done' : 'failed') : (meta.pid && alive(meta.pid)) || starting ? 'running' : 'ended';
     return Object.assign(meta, { status, exit: m ? Number(m[1]) : null, output: text.replace(/\[exit \d+\]\s*$/, '').trimEnd() });
   }
   function listJobs() {

@@ -956,7 +956,9 @@ function findings(ctx) {
     const target = one(parseUnit(x.text), 'Timer.Unit') || x.file.replace(/\.timer$/, '.service');
     if (inScope.has(target) || (byName.has(target) === false && refsRoot(x.text))) inScope.add(x.file);
   }
-  const unregistered = [...inScope].filter(f => !fw.has(f) && !reg.has(f)).sort();
+  // an owner job the console started (console/owner-ops.js: <svc>-owner-job-<id>.service, transient) is the framework's
+  const ownerJob = f => f.startsWith(ctx.stationSvc + '-owner-job-') && require('./lib/owned').OWNER_JOB.test(f.slice(ctx.stationSvc.length));
+  const unregistered = [...inScope].filter(f => !fw.has(f) && !reg.has(f) && !ownerJob(f)).sort();
   const unscoped = [...new Set([...reg.values()].map(e => e.unit))].filter(u => !u.startsWith(ctx.slug + '-svc-')).sort();
   const edited = [];
   for (const [f, { e, h }] of regFiles) {
@@ -1345,7 +1347,13 @@ function selftest() {
     fs.writeFileSync(path.join(U, 'capheos-bank-day.service'), '[Service]\nType=oneshot\nExecStart=/bin/sh ' + R + '/company/work/sim/scripts/bank.sh\nTimeoutStartSec=3h\n');
     fs.writeFileSync(path.join(U, 'capheos-bank-day.timer'), '[Timer]\nOnCalendar=*-*-* 17:30:00 UTC\nPersistent=true\n[Install]\nWantedBy=timers.target\n');
     fs.writeFileSync(path.join(TR, 'run-u42.service'), '[Service]\nExecStart=/usr/bin/python3 ' + R + '/company/work/sim/scripts/rec.py\n');
+    // the console's owner job (console/owner-ops.js) is the framework's; a look-alike under another name is not
+    fs.writeFileSync(path.join(TR, 'testco-station-owner-job-update-20261119120000-ab12.service'), '[Service]\nWorkingDirectory=' + R + '\nExecStart=bash -c x ' + R + '/company/state/owner-ops/x.pid node ' + R + '/company/tools/framework-update.js apply\n');
+    fs.writeFileSync(path.join(TR, 'testco-station-owner-job-sneaky.service'), '[Service]\nWorkingDirectory=' + R + '\nExecStart=/usr/bin/python3 ' + R + '/x.py\n');
     let d = duty(ctx);
+    ok('duty: the console\'s own owner-job unit is never flagged; a unit merely named like one is', !d.items.some(i => /owner-job-update-/.test(i.id)) && d.items.some(i => i.id === 'unregistered:testco-station-owner-job-sneaky.service'), d.items);
+    fs.unlinkSync(path.join(TR, 'testco-station-owner-job-update-20261119120000-ab12.service')); fs.unlinkSync(path.join(TR, 'testco-station-owner-job-sneaky.service'));
+    d = duty(ctx);
     ok('duty: finds the units inside ROOT that are not registered (incl. a transient one), not the station or another company', d.due && d.route === 'risk'
       && ['capheos-bank-day.service', 'capheos-bank-day.timer', 'capheos-depth-stopgap.service', 'run-u42.service'].every(u => d.items.some(i => i.id === 'unregistered:' + u))
       && !d.items.some(i => /testco-station|other-company/.test(i.id)) && /transient/.test(d.reason), d);

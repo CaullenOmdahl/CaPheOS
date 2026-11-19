@@ -5,7 +5,10 @@
  *   path        its --user-data-dir, its working directory (also a deleted one: "<path> (deleted)") or TMPDIR in its
  *               environment is inside this company root (realpath'd; the test is path + separator, so /x/co never
  *               claims /x/co-2)
- *   unit        its /proc/<pid>/cgroup names one of this company's units (<svc>.service, <svc>-*.service, <slug>-svc-*)
+ *   unit        its /proc/<pid>/cgroup names one of this company's units, by exact name, never a prefix (a company whose
+ *               service is cpd-station-2 is not cpd-station's): <svc>.service, the framework's <svc>-console / -dispatch /
+ *               -liveness / -liveness-heartbeat, an owner job <svc>-owner-job-<kind>-<14 digits>-<4 hex> (console
+ *               owner-ops.js), and a service registered in company/state/services.json under <slug>-svc-*
  *   station-pid its pid is one of this company's recorded station pids (company/state/reaper.json stationPids)
  *   ledger      it is a receipt in .starnet-data/workspaces/proc-ledger.json, matched by pid AND identity (its creation
  *               time when the receipt has one, else its command line AND the receipt's startedAt: a receipt with
@@ -34,6 +37,9 @@ const inside = (p, root) => !!p && !!root && (p === root || p.startsWith(root + 
 function readStationPids(root) {
   try { const j = JSON.parse(fs.readFileSync(path.join(root, 'company', 'state', 'reaper.json'), 'utf8')); return (j.stationPids || []).map(x => Number(x.pid)).filter(Boolean); } catch (_) { return []; }
 }
+function readRegistered(root) {
+  try { const j = JSON.parse(fs.readFileSync(path.join(root, 'company', 'state', 'services.json'), 'utf8')); return Object.values(j.services || {}).filter(e => e && e.unit).map(e => e.unit + '.service'); } catch (_) { return []; }
+}
 function readLedger(root) {
   try { const j = JSON.parse(fs.readFileSync(path.join(root, '.starnet-data', 'workspaces', 'proc-ledger.json'), 'utf8')); return Array.isArray(j.procs) ? j.procs : []; } catch (_) { return []; }
 }
@@ -55,7 +61,7 @@ function context(o) {
     mainPids: new Set((o.mainPids || []).map(Number).filter(Boolean)),
     stationMain: Number(o.stationMain) || null,
     ledger: o.ledger || readLedger(root),
-    registered: new Set(o.registered || []),
+    registered: new Set(o.registered || readRegistered(root)),
     cgroupOf: o.cgroupOf || null,
     netTcp: o.netTcp || null,
     tempDirs: (o.tempDirs || [path.join(root, '.starnet-data', 'tmp'), os.tmpdir(), '/tmp']).map(real),
@@ -104,9 +110,14 @@ function unitOf(c, pid) {
   for (let i = segs.length - 1; i >= 0; i--) if (/\.(service|scope)$/.test(segs[i]) && !/^user@\d+\.service$/.test(segs[i])) return segs[i];
   return '';
 }
+// the framework's units for this station (systemd/*.in: capheos-station* -> <svc>*, capheos-* -> <svc>-*)
+const FW_SUFFIXES = ['', '-console', '-dispatch', '-liveness', '-liveness-heartbeat'];
+const OWNER_JOB = /^-owner-job-[a-z][a-z-]{0,40}-\d{14}-[0-9a-f]{4}\.service$/;
 function ourUnit(c, u) {
   if (!u) return false;
-  return u === c.svc + '.service' || (u.startsWith(c.svc + '-') && u.endsWith('.service')) || (u.startsWith(c.slug + '-svc-') && /\.(service|scope)$/.test(u));
+  if (FW_SUFFIXES.some(x => u === c.svc + x + '.service')) return true;
+  if (u.startsWith(c.svc + '-owner-job-') && OWNER_JOB.test(u.slice(c.svc.length))) return true;
+  return u.startsWith(c.slug + '-svc-') && /\.(service|scope)$/.test(u) && c.registered.has(u.replace(/\.scope$/, '.service'));
 }
 const APP_SCOPE = /^app-(?:com\.google\.Chrome|org\.chromium\.Chromium|google-chrome|chromium)[-@].*\.scope$/;
 
@@ -199,7 +210,7 @@ function browsers(c) {
     const port = portOf(i); const pipe = i.cmd.some(a => a === '--remote-debugging-pipe');
     const idle = pipe ? parent === 'orphan' : !clientOnPort(c, port);
     const u = unitOf(c, i.pid);
-    out.push({ pid: i.pid, pgid: i.pgid, ppid: i.ppid, profile: udd, ageS: i.ageS, pids: family.map(x => x.pid), pssMB: Math.round(family.reduce((s, x) => s + pssMB(c, x.pid), 0)),
+    out.push({ pid: i.pid, pgid: i.pgid, ppid: i.ppid, profile: udd, ageS: i.ageS, startMs: i.startMs, pids: family.map(x => x.pid), pssMB: Math.round(family.reduce((s, x) => s + pssMB(c, x.pid), 0)),
       parent, port, pipe, idle, inUnit: ourUnit(c, u), unit: u || null, proof: pr, cwd: (cwdOf(c, i.pid) || '').replace(/ \(deleted\)$/, '') || null });
   }
   return out;
@@ -263,4 +274,4 @@ function namesPath(a, p) {
 // unit or scope it does not own). Only Chrome: a crew command that names the path is never one of a browser's helpers.
 function naming(c, p) { return [...scan(c).values()].filter(i => i.pid !== process.pid && isChrome(i) && (c.uid === null || i.uid === c.uid) && !c.mainPids.has(i.pid) && !foreign(i, c) && i.cmd.some(a => namesPath(a, p))).map(i => i.pid); }
 
-module.exports = { context, scan, proof, foreign, touchable, browsers, strays, naming, namesPath, unitOf, ourUnit, inside, real, clientOnPort, portOf, kindOf, isChrome, driven, uddOf, KINDS, readStationPids };
+module.exports = { FW_SUFFIXES, OWNER_JOB, readRegistered, context, scan, proof, foreign, touchable, browsers, strays, naming, namesPath, unitOf, ourUnit, inside, real, clientOnPort, portOf, kindOf, isChrome, driven, uddOf, KINDS, readStationPids };
