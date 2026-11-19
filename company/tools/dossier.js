@@ -46,6 +46,32 @@ const profileLib = require('./lib/profile');
 const { PERSON } = profileLib;
 // the archetype's line (what kind of contributor this seat is) first, then each person section under its lead line
 const personLines = ch => [profileLib.archetypeLine(ch)].concat(PERSON.map(([h, lead]) => { const b = sectionRaw(ch, h); return b ? lead + ':\n' + b : ''; }));
+// the seat's profile block when the company injects profiles (company/people/profile-policy.json inject: profile), else null
+function profileFor(id) {
+  try {
+    if (profileLib.policy().inject !== 'profile') return null;
+    const p = profileLib.load(id); if (!p) return null;
+    const all = profileLib.loadAll();
+    return { block: profileLib.block(p, { crew: co.crew(), profiles: all }), preset: (p.voice || {}).preset || '', voice: String((p.voice || {}).words || '').trim(), version: p.version };
+  } catch (_) { return null; }
+}
+const TIER_RANK = { light: 1, standard: 2, heavy: 3, top: 4 };
+// notes for the people function from the profiles (never failures): an opposed pair on the same kind of model (a code pair
+// is exempt: code stays on Claude), and a gatekeeper on a lower tier than the seat it checks
+function profileNotes(crew) {
+  const out = [];
+  let all = {}; try { all = profileLib.loadAll(); } catch (_) { return out; }
+  const pol = (() => { try { return profileLib.policy(); } catch (_) { return {}; } })();
+  const isCode = (s, p) => { try { const TC = require('./lib/taskclass'); if (TC.classOf({ text: '' }, s, { departments: TC.departments({}) }) === 'code') return true; } catch (_) {} return !!(p && p.identity && p.identity.archetype === 'builder'); };
+  for (const p of Object.values(all)) {
+    const c = p.counterpart; if (!c || !c.seat || !crew[p.seat] || !crew[c.seat]) continue;
+    const ma = profileLib.modelOf(p.seat), mb = profileLib.modelOf(c.seat); if (!ma || !mb) continue;
+    if (pol.familyCheck !== 'off') { const n = profileLib.pairCheck({ seat: p.seat, name: crew[p.seat].name, provider: ma.provider, model: ma.model, code: isCode(p.seat, p) }, { seat: c.seat, name: crew[c.seat].name, provider: mb.provider, model: mb.model, code: isCode(c.seat, all[c.seat]) }); if (n) out.push({ seats: n.seats, note: n.crew + ': ' + peopleOwner() }); }
+    const ra = TIER_RANK[ma.tier] || 0, rb = TIER_RANK[mb.tier] || 0;
+    if (rb < ra) out.push({ seats: [p.seat, c.seat], note: crew[c.seat].name + ' checks ' + crew[p.seat].name + ' on a lower tier (' + (mb.tier || 'not Claude') + ' under ' + (ma.tier || 'not Claude') + '): a checker usually needs at least the tier it checks: ' + peopleOwner() });
+  }
+  return out;
+}
 const field = (txt, label) => { const m = String(txt).match(new RegExp('\\*\\*' + label + ':\\*\\*\\s*([^\\n]+)')); return m ? m[1].trim() : ''; };
 const PERSONAS = ['composed', 'warm', 'blunt', 'dry', 'upbeat'];
 // a charter counts as scoped from the market when its Sources list at least three real public listings (URLs)
@@ -81,11 +107,15 @@ function build(id, c, rec) {
   const crewAll = (readJson(LOOPS, {}).agents) || {};
   const m = c.manager && crewAll[c.manager];
   const boss = field(ch, 'Reports to') || (m ? (c.manager === co.ceo() ? ceoLabel() : m.name + ' (' + m.title + ')') : null) || ceoLabel();
+  // full profiles (docs/PROFILES.md): with the company's policy at inject profile and a profile on file, the person comes
+  // from the profile's block (stable: it changes only when the profile does) instead of the charter's sections
+  const prof = profileFor(id);
   const identity = [
     'You are ' + name + ', ' + c.title + ' at ' + companyLine() + '. The station calls the owner "Commander". You report to ' + boss + '.',
-    personality ? 'Your personality: ' + personality : '',
-    story ? 'Who you are: ' + story : '',
-    ...personLines(ch),
+    ...(prof ? [prof.block] : [
+      personality ? 'Your personality: ' + personality : '',
+      story ? 'Who you are: ' + story : '',
+      ...personLines(ch)]),
     traits ? 'What makes you good at this job:\n' + traits : '',
     'How you work: you own ' + (scope ? scope.replace(/^[A-Z](?=[a-z])/, m => m.toLowerCase()) : 'your area') + '. ' + (out ? 'You hand off ' + out.replace(/^[A-Z]/, m => m.toLowerCase()) + '. ' : '') + 'You decide everything inside your scope yourself, finish what you start, and move work to its owner by handoff. Anything only the owner can decide goes up your chain of command to the CEO, ' + ceoName() + '.',
     'Your workstation on the company\'s StarNet station gives you real tools: files, a terminal, the web and memory. Use them to do the work and to check what is true. If a job needs a tool you do not have, say so plainly. Never claim work you have not verified.',
@@ -113,8 +143,9 @@ function build(id, c, rec) {
   const manual = (prevManual.includes(MARK) ? prevManual.slice(0, prevManual.indexOf(MARK)).trimEnd() : prevManual.trim());
   const preset = section(ch, 'Persona preset').toLowerCase().split(/\s+/)[0];
   const voice = section(ch, 'Voice');
+  const pPreset = prof && PERSONAS.includes(prof.preset) ? prof.preset : null, pVoice = prof && prof.voice ? prof.voice : null;
   return { identity, purpose, context, manual: (manual ? manual + '\n\n' : '') + rulesAll,
-    personaId: PERSONAS.includes(preset) ? preset : null, customVoice: voice ? voice.slice(0, 600) : null, scoped: scopedFromListings(ch) };
+    personaId: pPreset || (PERSONAS.includes(preset) ? preset : null), customVoice: pVoice ? pVoice.slice(0, 600) : voice ? voice.slice(0, 600) : null, scoped: scopedFromListings(ch), profile: prof ? { version: prof.version } : undefined };
 }
 // The CEO: only identity.md is built here (his purpose, context and manual double as the owner's profile for every agent).
 // His researched persona comes first; his CEO standing orders (everything from the marker on) are kept as they are.
@@ -128,9 +159,10 @@ function buildCeoIdentity(rec) {
   const orders = prev.includes(CEO_MARK) ? prev.slice(prev.indexOf(CEO_MARK)) : '';
   const parts = [
     'You are ' + String((rec && rec.name) || seat.name || 'the CEO').toUpperCase() + ', ' + (seat.title || 'CEO') + ' of ' + companyLine() + '. The station calls the owner "Commander", and so may you.',
-    section(ch, 'Personality') ? 'Your personality: ' + section(ch, 'Personality') : '',
-    section(ch, 'Backstory') ? 'Who you are: ' + section(ch, 'Backstory') : '',
-    ...personLines(ch),
+    ...(profileFor(id) ? [profileFor(id).block] : [
+      section(ch, 'Personality') ? 'Your personality: ' + section(ch, 'Personality') : '',
+      section(ch, 'Backstory') ? 'Who you are: ' + section(ch, 'Backstory') : '',
+      ...personLines(ch)]),
     sectionRaw(ch, 'Success traits') ? 'What makes you good at this job:\n' + sectionRaw(ch, 'Success traits') : '',
     'You decide, delegate and unblock; a specialist\'s job goes to the seat that owns it. Only you write to the owner, through the owner channel, as one person to another.',
     'Your workstation grants you real tools: reading files, a terminal for the company\'s own tools, and web search. Never claim work you have not checked.',
@@ -140,6 +172,7 @@ function buildCeoIdentity(rec) {
   return { identity: parts.filter(Boolean).join('\n\n'), personaId: PERSONAS.includes(preset) ? preset : null, customVoice: voice ? voice.slice(0, 600) : null };
 }
 
+const profileOk = id => { try { const p = profileLib.load(id); return !!(p && p.counterpart && p.counterpart.seat); } catch (_) { return false; } };
 function problems(id, rec, M) {
   const d = (rec && rec.docs) || {}; const out = [];
   for (const k of ['identity', 'purpose', 'context', 'manual']) if (!String(d[k] || '').trim()) out.push(k + '.md empty');
@@ -155,8 +188,16 @@ function problems(id, rec, M) {
     if (!scopedFromListings(ch)) out.push('charter not yet scoped from real public listings (Sources needs 3+ listing URLs): ' + peopleOwner());
     for (const h of ['Personality', 'Voice', 'Persona preset', 'Success traits', 'KPIs']) if (!section(ch, h)) out.push('charter has no "' + h + '" section: ' + peopleOwner());
     for (const h of ['Personality', 'Backstory'].concat(PERSON.map(x => x[0]))) if (isPlaceholder(ch, h)) out.push('charter section "' + h + '" is still the template placeholder: ' + peopleOwner());
-    if (profileLib.needsCounterpart(ch)) out.push('an eager seat (archetype ' + profileLib.archetypeOf(ch) + ') names no ## Counterpart to check it: ' + peopleOwner());
+    if (profileLib.needsCounterpart(ch) && !profileOk(id)) out.push('an eager seat (archetype ' + profileLib.archetypeOf(ch) + ') names no ## Counterpart to check it: ' + peopleOwner());
   }
+  // the seat's profile (company/people/profiles/<id>.json), when it has one: valid, and an eager one has a counterpart
+  try {
+    const p = profileLib.load(id);
+    if (p) {
+      const v = profileLib.validate(p, { crew: (readJson(LOOPS, {}).agents) || {}, examplesAsNotes: true });
+      for (const m of v.problems) out.push('profile: ' + m + ': ' + peopleOwner());
+    }
+  } catch (_) {}
   return [...new Set(out)];
 }
 
@@ -172,7 +213,8 @@ async function main() {
     for (const [id, rec] of rows) { if (!crew[id]) continue; const p = problems(id, rec, M); if (p.length) report.push({ agent: id, name: rec.name, problems: p }); }
     // the crew's temperament mix: notes for the people owner, never a failure
     const mix = profileLib.crewMix(Object.keys(crew).map(id => { const f = charterFile(crew[id], id); const ch = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : ''; return { preset: profileLib.presetFor(ch), archetype: profileLib.archetypeOf(ch) }; }));
-    console.log(JSON.stringify({ ok: !report.length, incomplete: report, crew: mix }, null, 1));
+    const profiles = profileNotes(crew);   // notes for the people function, never a failure
+    console.log(JSON.stringify({ ok: !report.length, incomplete: report, crew: mix, profileNotes: profiles.length ? profiles : undefined }, null, 1));
     process.exit(report.length ? 1 : 0);
   }
   if (cmd === 'sync') {
@@ -180,7 +222,9 @@ async function main() {
     if (opt('if-changed')) {
       const last = Number((readJson(STAMP, {}) || {}).at || 0);
       const dir = path.join(ROOT, 'company', 'roles');
-      const newest = Math.max(fs.statSync(LOOPS).mtimeMs, ...fs.readdirSync(dir).map(f => fs.statSync(path.join(dir, f)).mtimeMs));
+      const pdir = path.join(ROOT, 'company', 'people', 'profiles');   // a profile change counts too (inject profile)
+      const pm = (() => { try { return fs.readdirSync(pdir).filter(f => /\.json$/.test(f)).map(f => fs.statSync(path.join(pdir, f)).mtimeMs); } catch (_) { return []; } })();
+      const newest = Math.max(fs.statSync(LOOPS).mtimeMs, ...fs.readdirSync(dir).map(f => fs.statSync(path.join(dir, f)).mtimeMs), ...pm);
       if (newest <= last) { console.log(JSON.stringify({ ok: true, skipped: 'no charter or crew change since the last sync' })); return; }
     }
     const ids = opt('all') ? Object.keys(crew) : [String(opt('agent') || '')].filter(Boolean);
@@ -222,5 +266,5 @@ async function main() {
   }
   throw new Error('commands: check, sync');
 }
-module.exports = { build, charterFile, section, sectionRaw, isPlaceholder, problems, PERSON };
+module.exports = { build, charterFile, section, sectionRaw, isPlaceholder, problems, profileNotes, profileFor, PERSON };
 if (require.main === module) main().catch(e => { console.error(JSON.stringify({ ok: false, error: e.message })); process.exit(2); });

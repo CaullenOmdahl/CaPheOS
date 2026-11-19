@@ -48,7 +48,7 @@ function contextNote(id, s, co, text, recap) {
     + '\nNever ask the owner to run a command or open a terminal (systemctl, sudo, npm/pip install, git push, node …): the owner works only in the console. Do it with your own tools, link the console action that does it ([label](console:#/route)), ask for an approval on Today, or hand it to the tools seat in a handoff; a change to a framework file is a harness-change propose. If agents are refused the command, say so and route it, never hand it over.'
     + '\nWhen you point the owner somewhere in the console, link it: [label](console:#/route). For a quick choice in this conversation, write an ```actions block (company/skills/console-links/SKILL.md "Chat actions").'
     + '\nTo bring a colleague into this chat now, end your reply with a line of its own: ASK: <name> — <your question>, or INVITE: <name> — <why you need them>. They join this chat and answer here right away; use it instead of a handoff when you need their answer to carry on. DISMISS: <name> when they are done.'
-    + actionReplyNote(text) + ']\n\n' + (recap ? recap + '\n\n' : '');
+    + actionReplyNote(text) + (() => { try { const r = require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'profile.js')).reminderFor(id, { root: co.ROOT }); return r ? '\n' + r : ''; } catch (_) { return ''; } })() + ']\n\n' + (recap ? recap + '\n\n' : '');   // the seat's profile reminder (docs/PROFILES.md), last
 }
 /* the parse helper for the agent's next turn: the owner clicked a control in an ```actions block, so say so plainly */
 function actionReplyNote(text) {

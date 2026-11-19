@@ -206,7 +206,16 @@ function withOwn(prompt, block) {
   return (head ? head + '\n\n' : '') + block + '\n\n' + base.slice(at);
 }
 
-async function ensure({ dry = false, log = console.log, call: get = call, blockFor, ownFor, ownBlocked } = {}) {
+// ---- the profile's reminder (lib/profile.js reminderFor; docs/PROFILES.md): with the company's profile policy at inject
+// profile and reminder on, the seat's ~50-token reminder is the LAST line of every routine it owns (after the corrections),
+// so it is the last thing the run reads before it starts. Stable per profile version, so the prompt's cache holds.
+const R_TAG = '[REMINDER] ';
+const R_RE = /\n*\[REMINDER\] [^\n]*/g;
+const stripReminder = prompt => prompt.replace(R_RE, '').replace(/\s+$/, '');
+const withReminder = (prompt, line) => line ? prompt.replace(/\s+$/, '') + '\n\n' + R_TAG + String(line).replace(/\s+/g, ' ').trim() : prompt;
+function reminderOf(seat) { return require('./lib/profile').reminderFor(seat); }
+
+async function ensure({ dry = false, log = console.log, call: get = call, blockFor, ownFor, ownBlocked, reminderFor } = {}) {
   const r = await get('GET', '/api/cron');
   if (r.status !== 200) throw new Error('GET /api/cron ' + r.status);
   const jobs = JSON.parse(r.body).jobs || [];
@@ -214,7 +223,7 @@ async function ensure({ dry = false, log = console.log, call: get = call, blockF
   if (corr === undefined) { try { corr = require('./corrections.js').blockFor; } catch (e) { corr = null; log('STANDING CORRECTIONS ERROR: corrections.js did not load (' + e.message + '); corrections blocks left as they are'); } }
   let own = ownFor, mark = ownBlocked;
   if (own === undefined) { try { const M = require('./my-section.js'); own = M.blockFor; if (mark === undefined) mark = M.markBlocked; } catch (e) { own = null; log('OWN SECTION ERROR: my-section.js did not load (' + e.message + '); own sections left as they are'); } }
-  const changed = [], refreshed = [], failed = [], corrErrors = [], ownChanged = [], ownErrors = [], ownOff = [];
+  const changed = [], refreshed = [], failed = [], corrErrors = [], ownChanged = [], ownErrors = [], ownOff = [], reminded = [];
   const rules = rulesBlock();   // once per tick: the house rules for the modules enabled now
   for (const job of jobs) {
     const rulesDue = applies(job) && !current(job.prompt, rules);
@@ -225,6 +234,10 @@ async function ensure({ dry = false, log = console.log, call: get = call, blockF
       try { b = own(String(job.agentId), { dry: !!dry }); } catch (e) { b = null; ownErrors.push(job.name + ': ' + e.message); }
       if (typeof b === 'string') { const n2 = withOwn(next, b); ownDue = n2 !== next; next = n2; ownBlock = b; }
     }
+    let rem = null;
+    if (owned(job)) { try { rem = (reminderFor || reminderOf)(String(job.agentId)); } catch (_) { rem = null; } }
+    if (typeof rem === 'string' && (rem || R_RE.test(next))) next = stripReminder(next);   // before the corrections, so their block stays put
+    R_RE.lastIndex = 0;
     let corrDue = false;
     if (corr && owned(job)) {
       let b = null;
@@ -232,9 +245,11 @@ async function ensure({ dry = false, log = console.log, call: get = call, blockF
       try { b = corr(String(job.agentId), { companyRoot: path.resolve(String(job.workdir || '')) === ROOT, dry: !!dry }); } catch (e) { b = null; corrErrors.push(job.name + ': ' + e.message); }
       if (typeof b === 'string') { const n2 = withCorrections(next, b); corrDue = n2 !== next; next = n2; }
     }
-    if (!rulesDue && !ownDue && !corrDue) continue;
+    if (typeof rem === 'string') next = withReminder(next, rem);
+    const remDue = next !== job.prompt && !rulesDue && !ownDue && !corrDue;
+    if (!rulesDue && !ownDue && !corrDue && !remDue) continue;
     const label = job.name;
-    if (dry) { if (rulesDue) changed.push(label); if (corrDue) refreshed.push(label); if (ownDue) ownChanged.push(label); continue; }
+    if (dry) { if (rulesDue) changed.push(label); if (corrDue) refreshed.push(label); if (ownDue) ownChanged.push(label); if (remDue) reminded.push(label); continue; }
     let u = await get('POST', '/api/cron/update', { id: job.id, patch: { prompt: next } });
     // the station refused the prompt with the person's own section in it: save it once more without the section, so the
     // house rules and corrections still land, and turn that section off (my-section.js tells the person)
@@ -248,17 +263,18 @@ async function ensure({ dry = false, log = console.log, call: get = call, blockF
       }
     }
     const uv = require('./lib/station').cronResult(u, 'update');   // a 200 can be a decline
-    if (uv.ok) { if (rulesDue) changed.push(label); if (corrDue) refreshed.push(label); if (ownDue) ownChanged.push(label); }
+    if (uv.ok) { if (rulesDue) changed.push(label); if (corrDue) refreshed.push(label); if (ownDue) ownChanged.push(label); if (remDue) reminded.push(label); }
     else failed.push(label + ' (' + (uv.status === 200 ? uv.reason : u.status + ' ' + String(u.body).slice(0, 120)) + ')');
   }
   if (changed.length) log((dry ? 'would add' : 'added') + ' house rules ' + VERSION + ' to: ' + changed.join(', '));
   if (ownChanged.length) log((dry ? 'would update' : 'updated') + ' own sections in: ' + ownChanged.join(', '));
   if (refreshed.length) log((dry ? 'would update' : 'updated') + ' standing corrections in: ' + refreshed.join(', '));
+  if (reminded.length) log((dry ? 'would update' : 'updated') + ' profile reminders in: ' + reminded.join(', '));
   if (ownOff.length) log('OWN SECTION OFF: the station refused the prompt with the person\'s own section, saved without it: ' + ownOff.join('; '));
   if (ownErrors.length) log('OWN SECTION ERROR: ' + ownErrors.join('; ').slice(0, 300) + ' (those sections left as they are)');
   if (corrErrors.length) log('STANDING CORRECTIONS ERROR: ' + corrErrors.join('; ').slice(0, 300) + ' (those blocks left as they are)');
   if (failed.length) log('HOUSE RULES ERROR: could not update ' + failed.join('; '));
-  return { changed, refreshed, failed, own: ownChanged, ownOff };
+  return { changed, refreshed, failed, own: ownChanged, ownOff, reminded };
 }
 
 // Offline check of the combination (no station, no token): idempotent, refreshes, removes when empty, keeps the rules.
@@ -322,6 +338,15 @@ async function selftest() {
     await ensure({ call: S5.call, blockFor: () => cb, ownFor: of, ownBlocked: () => {}, log: () => {} });
     assert.strictEqual(j.prompt, 'You are Alex.\n\nDo the work.\n\n' + section + '\n\n' + BLOCK + '\n\n' + cb);
     const n = S5.posts.length; await ensure({ call: S5.call, blockFor: () => cb, ownFor: of, ownBlocked: () => {}, log: () => {} }); assert.strictEqual(S5.posts.length, n, 'second ensure changes nothing');
+  });
+  await t('profile reminder: the last line, after the corrections; stable; removed when the policy is off', async () => {
+    const j = mk(23); const S7 = station([j]); let rem = 'You are Alex, the builder. Reply only as Alex.';
+    const go = () => ensure({ call: S7.call, blockFor: () => cb, ownFor: () => '', ownBlocked: () => {}, reminderFor: () => rem, log: () => {} });
+    await go();
+    assert.ok(j.prompt.endsWith(cb + '\n\n' + R_TAG + rem), j.prompt.slice(-200));
+    const n = S7.posts.length; await go(); assert.strictEqual(S7.posts.length, n, 'second ensure changes nothing');
+    rem = ''; await go();
+    assert.ok(!j.prompt.includes(R_TAG) && j.prompt.endsWith(cb));
   });
   await t('a routine without house rules gets the section before its corrections block (or at the end)', async () => {
     const j = mk(21, { workdir: '/elsewhere' }), k = mk(22, { workdir: '/elsewhere' }); const S6 = station([j, k]);
