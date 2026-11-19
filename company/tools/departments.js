@@ -15,6 +15,14 @@
  *   node company/tools/departments.js proposals [--json]                  open proposals from the people function
  *   node company/tools/departments.js apply <proposal id> --by <CEO|owner>
  *   node company/tools/departments.js reject <proposal id> --by <CEO|owner> [--why ".."]
+ *   node company/tools/departments.js advisor <id> off|shadow|live --by owner          whether the lead gives advice (§5)
+ *   node company/tools/departments.js advisor <id> pause --by owner --why ".."        (or --by dispatcher --auto [--hash h]:
+ *                                                                          the house ranking said it does not pay)
+ *   node company/tools/departments.js advisor <id> resume --by owner                  only the owner resumes
+ *   node company/tools/departments.js brief <id> --file <path> --by <lead>            replace BRIEF.md (limits.briefMaxChars)
+ *   node company/tools/departments.js digest <id> --file <path> --by <lead>           replace INBOX-DIGEST.md (digestMaxChars)
+ *   node company/tools/departments.js note <id> --text ".." --by <lead>               one line at the top of DECISIONS.md
+ *   node company/tools/departments.js show <id> --json --brief                        the department with its brief's text
  *   node company/tools/departments.js --duty                              read-only duty (docs/DUTIES.md)
  *   node company/tools/departments.js --selftest
  *
@@ -75,6 +83,7 @@ function state() {
 }
 const nameOf = (crew, id) => (crew[id] && crew[id].name) || id;
 function report(o) {
+  o = o || {};
   const crew = S.crew(), L = D.load({ root: S.root() }), doc = L.doc, st = D.settings(doc, { root: S.root() });
   const planText = readIf(PLAN());
   const dr = D.drift({ doc, exists: L.exists && !L.error, crew, plan: planText == null ? null : D.parsePlan(planText), ceo: S.ceo() });
@@ -87,12 +96,20 @@ function report(o) {
     else if (b.length > st.limits.briefMaxChars) dr.mismatches.push({ code: 'BRIEF_TOO_LONG', dept: d.id, msg: 'company/work/departments/' + d.id + '/BRIEF.md is ' + b.length + ' characters; the limit is ' + st.limits.briefMaxChars });
     if (g != null && g.length > st.limits.digestMaxChars) dr.mismatches.push({ code: 'DIGEST_TOO_LONG', dept: d.id, msg: 'company/work/departments/' + d.id + '/INBOX-DIGEST.md is ' + g.length + ' characters; the limit is ' + st.limits.digestMaxChars });
   }
+  // advisor leads (§5): advice on with no lead, or with the CEO as the lead (the CEO is never a lead)
+  for (const d of D.list(doc)) {
+    const ad = D.advisorOf(d, st); if (ad.mode === 'off') continue;
+    if (!d.lead) dr.mismatches.push({ code: 'ADVISOR_NO_LEAD', dept: d.id, msg: 'department ' + (d.name || d.id) + ' has the lead\'s advice ' + ad.mode + ' but no lead (departments.js set-lead, or advisor ' + d.id + ' off)' });
+    else if (String(d.lead) === String(S.ceo())) dr.mismatches.push({ code: 'ADVISOR_CEO_LEAD', dept: d.id, seat: d.lead, msg: 'department ' + (d.name || d.id) + ' names the CEO as its lead while its advice is ' + ad.mode + '; the CEO is never a lead (set another lead, or advisor ' + d.id + ' off)' });
+  }
   dr.ok = !dr.mismatches.length;
   const departments = D.list(doc).map(d => {
     const b = readIf(path.join(deptDir(String(d.id)), 'BRIEF.md'));
     return { id: d.id, name: d.name, lead: d.lead || null, leadName: d.lead ? nameOf(crew, d.lead) : null,
       members: D.members(d).map(s => ({ id: s, name: nameOf(crew, s), onCrew: !!crew[s], manager: (crew[s] && crew[s].manager) || null, isLead: s === d.lead, escalatesTo: D.leadOf(s, doc, crew) })),
-      defaultClass: d.defaultClass || null, brief: d.brief || null, briefChars: b == null ? null : b.length, routes: d.routes || {}, consult: d.consult || {} };
+      defaultClass: d.defaultClass || null, brief: d.brief || null, briefChars: b == null ? null : b.length, routes: d.routes || {}, consult: d.consult || {},
+      advisor: (({ mode, effective, paused, since, by, batch, autoPause }) => ({ mode, effective, paused, since, by, batch, autoPause }))(D.advisorOf(d, st)), consultLimits: D.consultOf(d, st),
+      briefText: o && o.brief ? b : undefined };
   });
   const unassigned = Object.keys(crew).filter(id => !D.deptOf(id, doc)).map(id => ({ id, name: nameOf(crew, id), isCeo: id === S.ceo() }));
   return { ok: true, exists: L.exists, file: 'company/departments.json', classes: D.CLASSES, leadModelDefault: st.leadModelDefault, limits: st.limits,
@@ -322,6 +339,79 @@ function rejectProposal(pid, a) {
   return { ok: true, proposal: pid, rejected: true };
 }
 
+/* ---------------- advisor leads (docs/DEPARTMENTS.md §5) ----------------
+ * advisor <id> off|shadow|live   the owner only. On (shadow or live) needs a lead who is not the CEO.
+ * advisor <id> pause             the owner, or the dispatcher with --auto (the house ranking's advisor evaluation said
+ *                                pause; lib/consult.js consultStep): a paused department acts as recording only
+ * advisor <id> resume            the owner only; the measurement starts again from today (since = now) */
+function setAdvisor(d, next) { const L = state(); const doc = clone(L.doc); const x = D.list(doc).find(y => String(y.id) === String(d.id)); x.advisor = next; return doc; }
+function advisorCmd(a) {
+  const id = String(a.pos[1] || ''), op = String(a.pos[2] || '');
+  const L = state(), st = D.settings(L.doc, { root: S.root() }), d = needDept(L.doc, id), cur = D.advisorOf(d, st), crew = S.crew();
+  const own = d.advisor && typeof d.advisor === 'object' ? clone(d.advisor) : {};
+  const nowIso = new Date(S.now()).toISOString(), leadName = d.lead ? nameOf(crew, d.lead) : null;
+  let who, next, summary, plain;
+  if (['off', 'shadow', 'live'].includes(op)) {
+    who = actor(a.by, 'advisor');
+    if (who.kind !== 'owner') throw new Refusal('only the owner switches whether a lead gives advice (advisor ' + id + ' ' + op + ' --by owner)');
+    if (op !== 'off' && !d.lead) throw new Refusal((d.name || d.id) + ' has no lead: set one first (set-lead ' + id + ' <seat>)', 2, { problem: 'ADVISOR_NO_LEAD' });
+    if (op !== 'off' && String(d.lead) === String(S.ceo())) throw new Refusal('the CEO is never a department lead: set another lead for ' + (d.name || d.id) + ' first', 2, { problem: 'ADVISOR_CEO_LEAD' });
+    if (cur.mode === op) return { ok: true, changed: false, summary: 'the lead\'s advice for ' + (d.name || d.id) + ' is ' + op + ' already' };
+    next = Object.assign(own, { mode: op, since: op === 'live' ? nowIso : (own.since || null), by: 'owner', paused: op === 'off' ? null : (own.paused || null) });
+    summary = 'the lead\'s advice for ' + (d.name || d.id) + ' (' + (leadName || 'no lead') + '): ' + cur.mode + ' -> ' + op;
+  } else if (op === 'pause') {
+    const why = a.why && a.why !== true ? clean(a.why, 300) : '';
+    if (!why) throw new Refusal('pause needs --why ".." (what failed)');
+    if (String(a.by || '').trim().toLowerCase() === 'dispatcher') {
+      if (a.auto !== true) throw new Refusal('the dispatcher pauses only with --auto (the house ranking\'s advisor evaluation)');
+      let pv = null; try { pv = prov(); } catch (_) {}
+      if (pv && pv.underStation()) throw new Refusal('--by dispatcher is the dispatcher\'s own tick, never an agent\'s run');
+      const ceo = S.ceo(); who = { kind: 'dispatcher', name: (crew[ceo] && crew[ceo].name) || 'owner', label: 'the dispatcher (automatic)' };
+    } else {
+      who = actor(a.by, 'advisor');
+      if (who.kind !== 'owner') throw new Refusal('only the owner pauses a lead\'s advice by hand (the dispatcher pauses it with --auto when it does not pay)');
+    }
+    if (cur.mode !== 'live') throw new Refusal('the lead\'s advice for ' + (d.name || d.id) + ' is ' + cur.mode + ', not on: there is nothing to pause');
+    if (cur.paused) return { ok: true, changed: false, summary: (d.name || d.id) + '\'s lead advice is paused already (' + (cur.paused.why || '') + ')' };
+    next = Object.assign(own, { paused: Object.assign({ at: nowIso, by: who.kind === 'dispatcher' ? 'auto' : 'owner', why }, a.hash && a.hash !== true ? { evaluationHash: clean(a.hash, 80) } : {}) });
+    summary = 'pause the lead\'s advice for ' + (d.name || d.id) + ' (' + (leadName || 'no lead') + '): ' + why;
+  } else if (op === 'resume') {
+    if (String(a.by || '').trim().toLowerCase() === 'dispatcher') throw new Refusal('only the owner resumes a lead\'s advice');
+    who = actor(a.by, 'advisor');
+    if (who.kind !== 'owner') throw new Refusal('only the owner resumes a lead\'s advice');
+    if (!cur.paused) return { ok: true, changed: false, summary: (d.name || d.id) + '\'s lead advice is not paused' };
+    next = Object.assign(own, { paused: null, since: nowIso });
+    summary = 'resume the lead\'s advice for ' + (d.name || d.id) + ' (' + (leadName || 'no lead') + '); measured again from today';
+  } else throw new Refusal('advisor <id> off|shadow|live|pause|resume --by owner');
+  const p = { doc: setAdvisor(d, next), summary, plain, touched: [String(d.id)] };
+  return Object.assign(commit(p, who, a), { advisor: (({ mode, paused, since }) => ({ mode, paused, since }))(D.advisorOf(Object.assign({}, d, { advisor: next }), st)) });
+}
+/* brief / digest / note: the lead's own department files (the owner may too). brief and digest are replaced whole, inside
+   their size limits; a note is one line at the top of DECISIONS.md (newest first, append-only). */
+function leadOnly(a, cmd, d) {
+  const who = actor(a.by, cmd);
+  if (who.kind === 'owner' || (d.lead && who.id === String(d.lead))) return who;
+  throw new Refusal('only the lead of ' + (d.name || d.id) + (d.lead ? ' (' + nameOf(S.crew(), d.lead) + ')' : ' (it has none)') + ' or the owner writes its ' + cmd);
+}
+function deptFile(a, cmd) {
+  const id = String(a.pos[1] || ''); const L = state(), st = D.settings(L.doc, { root: S.root() }), d = needDept(L.doc, id);
+  const who = leadOnly(a, cmd, d);
+  if (cmd === 'note') {
+    const text = a.text && a.text !== true ? clean(a.text, 600) : ''; if (!text) throw new Refusal('note needs --text ".."');
+    deptDecision(String(d.id), d.name || d.id, '- ' + stamp() + ' ' + (who.kind === 'owner' ? who.label + ' (owner)' : who.label) + ': ' + text + ' (departments.js note)');
+    return { ok: true, changed: true, dept: d.id, file: 'company/work/departments/' + d.id + '/DECISIONS.md' };
+  }
+  const src = a.file && a.file !== true ? path.resolve(String(a.file)) : null; if (!src) throw new Refusal(cmd + ' needs --file <a file you wrote>');
+  let text; try { if (fs.statSync(src).size > 1024 * 1024) throw new Error('over 1 MB'); text = fs.readFileSync(src, 'utf8'); } catch (e) { throw new Refusal('cannot read ' + a.file + ': ' + e.message); }
+  const max = cmd === 'brief' ? st.limits.briefMaxChars : st.limits.digestMaxChars;
+  if (text.length > max) throw new Refusal('the ' + cmd + ' is ' + text.length + ' characters; the limit is ' + max + ' (limits.' + (cmd === 'brief' ? 'briefMaxChars' : 'digestMaxChars') + ')');
+  if (!text.trim()) throw new Refusal('the ' + cmd + ' is empty');
+  const f = path.join(deptDir(String(d.id)), cmd === 'brief' ? 'BRIEF.md' : 'INBOX-DIGEST.md');
+  if (readIf(f) === text) return { ok: true, changed: false, dept: d.id };
+  writeAtomic(f, text); try { prov().wrote(f, text, TOOL); } catch (_) {}
+  return { ok: true, changed: true, dept: d.id, file: rel(f), chars: text.length };
+}
+
 /* ---------------- duty (read only, counts and ids) ---------------- */
 function duty() {
   const r = report();
@@ -368,7 +458,7 @@ function main(argv) {
   if (argv.length === 1 && argv[0] === '--duty') return duty();
   if (cmd === 'list') { const r = report(); return { code: 0, out: a.json ? r : listText(r) }; }
   if (cmd === 'show') {
-    const r = report(), d = r.departments.find(x => x.id === a.pos[1]);
+    const r = report({ brief: !!a.brief }), d = r.departments.find(x => x.id === a.pos[1]);
     if (!d) throw new Refusal('no department "' + (a.pos[1] || '') + '" (departments.js list)');
     return { code: 0, out: a.json ? { ok: true, department: d } : listText(Object.assign({}, r, { departments: [d], unassigned: [], proposals: [] })) };
   }
@@ -377,7 +467,9 @@ function main(argv) {
   if (cmd === 'apply') return { code: 0, out: applyProposal(String(a.pos[1] || ''), a) };
   if (cmd === 'reject') return { code: 0, out: rejectProposal(String(a.pos[1] || ''), a) };
   if (['create', 'set-lead', 'add-member', 'remove-member', 'move'].includes(cmd)) return { code: 0, out: change(cmd, a) };
-  throw new Refusal('usage: departments.js list|show <id>|check|create <id> --name ..|set-lead <id> <seat|none>|add-member <id> <seat>|remove-member <id> <seat>|move <seat> <id|none>|proposals|apply <pid>|reject <pid> (--by <name> on every change) | --duty | --selftest');
+  if (cmd === 'advisor') return { code: 0, out: advisorCmd(a) };
+  if (['brief', 'digest', 'note'].includes(cmd)) return { code: 0, out: deptFile(a, cmd) };
+  throw new Refusal('usage: departments.js list|show <id>|check|create <id> --name ..|set-lead <id> <seat|none>|add-member <id> <seat>|remove-member <id> <seat>|move <seat> <id|none>|proposals|apply <pid>|reject <pid>|advisor <id> off|shadow|live|pause|resume|brief <id> --file f|digest <id> --file f|note <id> --text ".." (--by <name> on every change) | --duty | --selftest');
 }
 function run(argv) {
   try { return main(argv); }

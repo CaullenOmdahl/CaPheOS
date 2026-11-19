@@ -20,6 +20,11 @@
  *                                            FLOOR_PLAN.md section 1 departments and section 2's Department column
  *   D.drift({ doc, crew, plan, exists })  -> { ok, mismatches: [...], notes: [...] }   validate + loops.json + FLOOR_PLAN
  *   D.CLASSES                             the task classes (lib/taskclass.js owns them when it is present)
+ *   D.advisorOf(dept, st)                 the department's effective advisor settings (docs/DEPARTMENTS.md §5): its own
+ *                                         `advisor` over settings().advisorDefaults, field by field, plus `effective`:
+ *                                         'off' | 'shadow' | 'live' (a paused department acts as 'shadow')
+ *   D.consultOf(dept, st)                 the department's consult numbers over newDepartment.consult (stuckOnReopen
+ *                                         defaults to true)
  *
  * Every rule a reader might want to tune lives in the file (limits, newDepartment, leadModelDefault); nothing here
  * hardcodes a seat, a name or a company. Owner: the people function (co.seatFor('people')).
@@ -33,6 +38,10 @@ const CONTRACT_CLASSES = ['code', 'review', 'research', 'writing', 'design', 'op
 const CLASSES = (() => { try { const t = require('./taskclass'); if (Array.isArray(t.CLASSES) && t.CLASSES.length) return t.CLASSES.slice(); } catch (_) {} return CONTRACT_CLASSES.slice(); })();
 const ID_RE = /^[a-z][a-z0-9-]{1,31}$/;
 const CONSULT_KEYS = ['maxPerDay', 'stuckAfterFailedRuns', 'stuckAfterRevise', 'stuckAfterIdleWakes'];
+const ADVISOR_MODES = ['off', 'shadow', 'live'];
+// the framework's own fallback for advisorDefaults when neither the company file nor company/defaults/departments.json has it
+const ADVISOR_FALLBACK = { mode: 'off', routine: 'advise', batch: { minGapMin: 5, maxWaitMin: 10, startAt: 3 }, packetMaxChars: 4000, premerge: 'advisory',
+  autoPause: { enabled: false, minItems: 20, minDays: 14, consultRate: [0.10, 0.40], cachedShareMin: 0.85, oneShotGainPoints: 10, reworkCutShare: 0.20 } };
 
 const rootOf = o => path.resolve((o && o.root) || co.ROOT);
 const fileOf = o => (o && o.file) || path.join(rootOf(o), 'company', 'departments.json');
@@ -60,7 +69,34 @@ function settings(doc, o) {
     leadModelDefault: c.leadModelDefault || d.leadModelDefault || null,
     newDepartment: nd,
     limits: Object.assign({ briefMaxChars: 8000, digestMaxChars: 8000, proposalsKeep: 50 }, d.limits || {}, c.limits || {}),
+    advisorDefaults: mergeAdvisor(mergeAdvisor(ADVISOR_FALLBACK, d.advisorDefaults), c.advisorDefaults),
   };
+}
+const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
+/* b over a, field by field; batch and autoPause one level deeper (a company may tune one number) */
+function mergeAdvisor(a, b) {
+  const out = Object.assign({}, a || {}, isObj(b) ? b : {});
+  for (const k of ['batch', 'autoPause']) out[k] = Object.assign({}, (a || {})[k] || {}, isObj(b) && isObj(b[k]) ? b[k] : {});
+  return out;
+}
+/* the department's advisor settings over the defaults; effective: what the tools act on (paused = shadow; an unknown
+   mode reads as off) */
+function advisorOf(dept, st) {
+  const s = st || settings({});
+  const own = dept && isObj(dept.advisor) ? dept.advisor : {};
+  const a = mergeAdvisor(s.advisorDefaults || ADVISOR_FALLBACK, own);
+  a.mode = ADVISOR_MODES.includes(String(own.mode || '')) ? String(own.mode) : 'off';
+  a.paused = isObj(own.paused) ? own.paused : null;
+  a.since = own.since || null; a.by = own.by || null;
+  a.effective = a.mode === 'off' ? 'off' : a.paused ? 'shadow' : a.mode;
+  return a;
+}
+function consultOf(dept, st) {
+  const s = st || settings({});
+  const c = Object.assign({ stuckOnReopen: true }, (s.newDepartment && s.newDepartment.consult) || {}, dept && isObj(dept.consult) ? dept.consult : {});
+  for (const k of CONSULT_KEYS) c[k] = Number.isInteger(c[k]) && c[k] >= 0 ? c[k] : 0;
+  c.stuckOnReopen = c.stuckOnReopen !== false;
+  return c;
 }
 
 const list = doc => ((doc && Array.isArray(doc.departments)) ? doc.departments : []).filter(x => x && typeof x === 'object');
@@ -115,7 +151,14 @@ function validate(doc, crew) {
     }
     if (d.consult != null) {
       if (typeof d.consult !== 'object' || Array.isArray(d.consult)) P('BAD_CONSULT', 'department ' + id + ': consult must be an object', { dept: id });
-      else for (const k of CONSULT_KEYS) if (d.consult[k] != null && !(Number.isInteger(d.consult[k]) && d.consult[k] >= 0)) P('BAD_CONSULT', 'department ' + id + ': consult.' + k + ' must be a whole number >= 0', { dept: id });
+      else {
+        for (const k of CONSULT_KEYS) if (d.consult[k] != null && !(Number.isInteger(d.consult[k]) && d.consult[k] >= 0)) P('BAD_CONSULT', 'department ' + id + ': consult.' + k + ' must be a whole number >= 0', { dept: id });
+        if (d.consult.stuckOnReopen != null && typeof d.consult.stuckOnReopen !== 'boolean') P('BAD_CONSULT', 'department ' + id + ': consult.stuckOnReopen must be true or false', { dept: id });
+      }
+    }
+    if (d.advisor != null) {
+      if (!isObj(d.advisor)) P('BAD_ADVISOR', 'department ' + id + ': advisor must be an object', { dept: id });
+      else if (d.advisor.mode != null && !ADVISOR_MODES.includes(String(d.advisor.mode))) P('BAD_ADVISOR', 'department ' + id + ': advisor.mode must be one of ' + ADVISOR_MODES.join(', '), { dept: id });
     }
   }
   return out;
@@ -184,4 +227,4 @@ function drift(o) {
   return { ok: !mismatches.length, mismatches, notes };
 }
 
-module.exports = { CLASSES, CONTRACT_CLASSES, ID_RE, CONSULT_KEYS, load, settings, frameworkDefault, list, members, deptOf, leadOf, validate, parsePlan, drift, decided, fileOf };
+module.exports = { CLASSES, CONTRACT_CLASSES, ID_RE, CONSULT_KEYS, ADVISOR_MODES, ADVISOR_FALLBACK, advisorOf, consultOf, mergeAdvisor, load, settings, frameworkDefault, list, members, deptOf, leadOf, validate, parsePlan, drift, decided, fileOf };
