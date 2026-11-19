@@ -1,0 +1,14 @@
+#!/bin/bash
+# company/tools/shims/gh — first on the station's PATH (scripts/setup-station.sh). Asks this company's merge gate
+# (company/tools/merge-gate.js check-gh) before running the real gh: for an agent, no push to a default branch, no force
+# push, no deleting main, and (selfimprove.json requireMergeTool) no `gh pr merge` except through capheos-merge.js.
+# The owner and any gate crash pass through (only exit 3 blocks). /usr/bin/gh by absolute path skips this shim; the
+# tripwire (capheos-main-watch.js, default-branch-watch.js) reports what lands on main anyway.
+REAL="/usr/bin/gh"
+GATE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/merge-gate.js"
+NODE="$(command -v node 2>/dev/null)"
+if [ -n "$NODE" ] && [ -f "$GATE" ]; then
+  env -u NODE_OPTIONS -u NODE_PATH "$NODE" "$GATE" check-gh "$@"
+  [ "$?" = 3 ] && exit 1
+fi
+exec "$REAL" "$@"

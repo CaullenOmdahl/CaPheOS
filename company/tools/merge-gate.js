@@ -485,6 +485,10 @@ function checkPush(gopts, pushArgs, plan) {
   }
 
   const def = defaultBranchForPush(gopts, remote, dest);
+  // a force push (git marks it '+') rewrites history someone may have built on: agents push a new branch instead
+  const forced = updates.filter(u => u.flag === '+');
+  if (forced.length && (github || protectAll()))
+    refuse('agents may not force-push (' + [...new Set(forced.map(u => shortRef(u.to)))].join(', ') + ' on ' + (dest || remote || 'this remote') + '). Push the rewritten work to a new branch and open a PR from it.');
   const bad = updates.filter(u => isProtectedRef(u.to, def));
   if (!bad.length) process.exit(0);         // feature-branch / tag pushes: allowed, not logged
 
@@ -776,6 +780,14 @@ if (cmd === 'check-gh') {
 
   if (isPrMerge) {
     if (A.includes('-h') || A.includes('--help')) process.exit(0);               // help text, no merge
+    // the merge tool (company/tools/capheos-merge.js) checked CI, the sign-off and the lead, and records the merge: its
+    // one-merge token lets it through. With selfimprove.json requireMergeTool on, an agent's merge any other way is refused.
+    { let SI = null; try { SI = require('./lib/selfimprove'); } catch (_) { SI = null; }
+      if (SI) {
+        if (SI.tokenValid(null, process.env[SI.TOKEN_ENV])) { log('ALLOWED merge tool ' + A.join(' ').slice(0, 160)); process.exit(0); }
+        let req = false; try { req = !!SI.config().requireMergeTool; } catch (_) { req = false; }
+        if (req) refuse('merges go through the merge tool: `node company/tools/capheos-merge.js merge <pr> --by <your seat id>` (it checks CI is green and records the merge).');
+      } }
     if (A.includes('--auto') || A.includes('--auto=true'))
       refuse('`gh pr merge --auto` enables auto-merge; the head can change after the pre-merge PASS. Merge directly with `gh pr merge` once `node company/tools/premerge-check.js` records a PASS for the current head.');
     if (A.includes('--disable-auto')) process.exit(0);                           // turning auto-merge OFF lands nothing
@@ -820,8 +832,16 @@ if (cmd === 'check-push') {
   try { const r = execFileSync(REAL_GIT, ['symbolic-ref', 'refs/remotes/' + remote + '/HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); if (r) def = r.replace('refs/remotes/' + remote + '/', ''); } catch (_) {}
   if (!def) { try { const r = execFileSync(REAL_GIT, ['ls-remote', '--symref', args[1] || remote, 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30000 }); const m = r.match(/^ref:\s+refs\/heads\/(\S+)\s+HEAD/m); if (m) def = m[1]; } catch (_) {} }
   const lines = fs.readFileSync(0, 'utf8').split('\n').filter(Boolean);   // <local ref> <local sha> <remote ref> <remote sha>
+  const hookGithub = isGithub(args[1] || '') || isGithub(remote) || protectAll();
   for (const l of lines) {
-    const remoteRef = l.split(' ')[2] || '';
+    const [, localSha = '', remoteRef = '', remoteSha = ''] = l.split(' ');
+    if (hookGithub && /^0+$/.test(localSha) && /^refs\/heads\//.test(remoteRef) && (isProtectedRef(remoteRef, def) || /^(main|master)$/.test(shortRef(remoteRef))))
+      refuse('agents may not delete ' + shortRef(remoteRef) + '.');
+    if (hookGithub && /^refs\/heads\//.test(remoteRef) && remoteSha && !/^0+$/.test(remoteSha) && !/^0+$/.test(localSha)) {
+      let ff = true;
+      try { execFileSync(REAL_GIT, ['merge-base', '--is-ancestor', remoteSha, localSha], { stdio: 'ignore' }); } catch (e) { ff = e.status === 1 ? false : true; }   // 1 = not an ancestor; anything else (unknown object) is not proof
+      if (!ff) refuse('agents may not force-push ' + shortRef(remoteRef) + ' (it would rewrite its history). Push the work to a new branch and open a PR from it.');
+    }
     if (isProtectedRef(remoteRef, def))
       refuse('agents may not push straight to ' + shortRef(remoteRef) + ' (the default branch); open a pull request, run the pre-merge check, then merge with gh.');
   }

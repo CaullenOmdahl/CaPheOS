@@ -1,0 +1,35 @@
+#!/bin/bash
+# company/tools/shims/git — first on the station's PATH (scripts/setup-station.sh). Asks this company's merge gate
+# (company/tools/merge-gate.js check-git) before running the real git: for an agent, no push to a default branch, no force
+# push, no deleting main, and (selfimprove.json requireMergeTool) no `gh pr merge` except through capheos-merge.js.
+# The owner and any gate crash pass through (only exit 3 blocks). /usr/bin/git by absolute path skips this shim; the
+# tripwire (capheos-main-watch.js, default-branch-watch.js) reports what lands on main anyway.
+REAL="/usr/bin/git"
+GATE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/merge-gate.js"
+# fast path (as ~/.local/bin/git): a first subcommand that is a git builtin other than push never needs the gate
+BUILTINS=" add am annotate apply archive backfill bisect blame branch bugreport bundle cat-file check-attr check-ignore check-mailmap check-ref-format checkout checkout-index cherry cherry-pick clean clone column commit commit-graph commit-tree config count-objects credential describe diagnose diff diff-files diff-index diff-tree difftool fast-export fast-import fetch fetch-pack fmt-merge-msg for-each-ref for-each-repo format-patch fsck gc get-tar-commit-id grep hash-object help hook index-pack init init-db interpret-trailers log ls-files ls-remote ls-tree mailinfo mailsplit maintenance merge merge-base merge-file merge-index merge-tree mktag mktree multi-pack-index mv name-rev notes pack-objects pack-redundant pack-refs patch-id prune prune-packed pull range-diff read-tree rebase reflog refs remote repack replace replay rerere reset restore rev-list rev-parse revert rm shortlog show show-branch show-index show-ref sparse-checkout stage stash status stripspace submodule switch symbolic-ref tag unpack-objects update-index update-ref update-server-info upload-pack var verify-commit verify-pack verify-tag version whatchanged worktree write-tree "
+sub=""
+skip=0
+is_push=0
+for a in "$@"; do
+  if [ "$skip" = 1 ]; then skip=0; continue; fi
+  case "$a" in
+    push) is_push=1; break ;;
+    -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env|--attr-source|--shallow-file|--exec-path) skip=1 ;;
+    --) break ;;
+    -*) : ;;
+    *) sub="$a"; break ;;
+  esac
+done
+slow=0
+if [ "$is_push" = 1 ]; then
+  slow=1
+elif [ -n "$sub" ]; then
+  case "$BUILTINS" in *" $sub "*) : ;; *) slow=1 ;; esac
+fi
+NODE="$(command -v node 2>/dev/null)"
+if [ "$slow" = 1 ] && [ -n "$NODE" ] && [ -f "$GATE" ]; then
+  env -u NODE_OPTIONS -u NODE_PATH "$NODE" "$GATE" check-git "$@"
+  [ "$?" = 3 ] && exit 1
+fi
+exec "$REAL" "$@"
