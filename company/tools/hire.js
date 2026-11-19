@@ -677,7 +677,7 @@ function recordPick(dir, slug, p) {
 function counterpartProblem(profTxt, candName) {
   const a = profileLib.archetypeOf(profTxt); if (!a || !profileLib.ARCHETYPES[a].eager) return null;
   const crew = co.crew(), cp = sec(profTxt, 'Counterpart').replace(/<[^>]*>/g, '').trim();
-  const seat = cp ? profileLib.seatByName(cp, crew, null) : null;
+  const seat = cp ? profileLib.counterpartOf(cp, crew, null).seat : null;   // who checks this seat ("counterpart of X" is the other way round)
   if (seat) return null;
   const people = nameOf(co.seatFor('people')) || 'the people function';
   return (candName || 'This candidate') + ' is an eager seat (' + a + ') and their profile ' + (cp ? 'names nobody on the crew' : 'names no counterpart') + ' to check them: ' + people + ' writes ## Counterpart (a crew member, ideally a careful tester or steward) into the profile before the pick';

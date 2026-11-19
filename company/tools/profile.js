@@ -174,7 +174,7 @@ function save(p, meta) {
   const f = P.paths(O()).file(p.seat), text = JSON.stringify(p, null, 1) + '\n';
   writeAtomic(f, text);
   try { prov().wrote(f, text, TOOL); } catch (_) {}
-  const h = appendHistory(p.seat, { version: p.version, by: meta.by, op: meta.op, kind: meta.kind, fields: meta.fields || [], body: p, why: clean(meta.why, 300) || null });
+  const h = appendHistory(p.seat, Object.assign({ version: p.version, by: meta.by, op: meta.op, kind: meta.kind, fields: meta.fields || [], body: p, why: clean(meta.why, 300) || null }, meta.decisionBy && meta.decisionBy !== meta.by ? { decidedBy: String(meta.decisionBy) } : {}));
   let charter = null, synced = null;
   if (P.policy(O()).inject === 'profile') {
     try { charter = renderCharterFile(p); } catch (_) {}
@@ -365,11 +365,11 @@ function migrate(a) {
   const who = actor(a.by, 'migrate');
   if (who.kind !== 'owner' && !co.holds(S.crew()[who.id], 'people')) throw new Refusal('the people function or the owner builds profiles from the charters');
   const crew = S.crew(); const ids = a.all === true ? Object.keys(crew) : [seatArg(a.seat)];
-  const made = [], skipped = [];
+  const made = [], skipped = [], reads = {};
   for (const seat of ids) {
     if (P.load(seat, O())) { skipped.push({ seat, why: 'already has a profile' }); continue; }
     const f = charterFor(seat); const md = f && fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '';
-    const r = P.fromCharter(md, { seat, crew, root: S.root() });
+    const r = P.fromCharter(md, { seat, crew, root: S.root() }); reads[seat] = r;
     const p = r.profile; p.version = 1;
     if (p.counterpart && !crew[p.counterpart.seat]) p.counterpart = null;
     if (!p.reminder) p.reminder = P.reminder(p, { crew });
@@ -377,7 +377,12 @@ function migrate(a) {
       made.push({ seat, version: s.version, missing: r.missing, notes: s.notes }); }
     catch (e) { skipped.push({ seat, why: e.message }); }
   }
-  return { code: 0, out: { ok: true, made, skipped, next: made.length ? 'the people function fills what is still empty from each seat\'s own history (profile.js propose)' : undefined } };
+  // what one charter alone cannot show (lib/profile.js crewChecks): a pairing the wrong way round, a seat named as the checker
+  // of a seat that checks it, broken lines, identical sliders; for the people seat's fill-in round
+  const cc = P.crewChecks(P.loadAll(O()), { crew });
+  const forPeople = cc.failures.concat(cc.notes).filter(x => made.some(m => m.seat === x.seat) || ids.includes(x.seat)).map(x => x.text);
+  for (const m of made) { const r2 = reads[m.seat]; if (r2 && r2.checks.length) m.checks = r2.checks; if (r2 && !r2.temperFromCharter) m.temperament = 'filled from the ' + (r2.profile.identity.archetype || 'role') + ' preset: the charter has no ## Temperament section'; }
+  return { code: 0, out: { ok: true, made, skipped, problems: forPeople.length ? forPeople : undefined, next: made.length ? 'the people function fills what is still empty from each seat\'s own history (profile.js propose)' + (forPeople.length ? ', and fixes the problems listed' : '') : undefined } };
 }
 function policyCmd(a) {
   const sub = str(a.pos[1]);
@@ -438,13 +443,42 @@ function familyNotes(all) {
     const c = p.counterpart; if (!c || !c.seat || !all[c.seat] && !crew[c.seat]) continue;
     const ma = P.modelOf(p.seat, O()), mb = P.modelOf(c.seat, O()); if (!ma || !mb) continue;
     const n = P.pairCheck({ seat: p.seat, name: nameOf(crew, p.seat), provider: ma.provider, model: ma.model, code: isCode(p.seat, p) }, { seat: c.seat, name: nameOf(crew, c.seat), provider: mb.provider, model: mb.model, code: isCode(c.seat, all[c.seat]) });
-    if (n) out.push(n);
+    if (n && !out.some(x => x.seats.slice().sort().join('|') === n.seats.slice().sort().join('|'))) out.push(n);
   }
   return out;
 }
+// the block as a Plain owner may see it (docs/TALK.md: a command or a file path never reaches a Plain owner): the crew's
+// commands, file paths and handoff markup are named in words; the crew's own text is unchanged everywhere else
+function ownerView(text) {
+  return String(text || '')
+    .replace(/\bnode\s+(?:company\/tools\/)?[\w\/.-]+\.js\b(?:\s+(?:[^\s.]|\.(?=\S))+)*/g, '(the crew\'s sign-off step)')
+    .replace(/\*\*Needs sign-off:\*\*\s*<[^>]*>/g, 'a sign-off line')
+    .replace(/(?:^|(?<=[\s("']))(?:\.\/)?(?:company|modules|console|scripts|docs)\/[\w\/.-]*[\w\/-]/g, '(a crew file)')
+    .replace(/\s{2,}/g, ' ').replace(/ \n/g, '\n');
+}
 function preview(p) {
   const c = ctxO(); const ex = (p.examples || []).find(e => e.pushback) || (p.examples || [])[0] || null;
-  return { block: P.block(p, c), reminder: P.reminder(p, c), example: ex ? { who: ex.with === 'owner' ? 'You' : nameOf(c.crew, ex.with), they: ex.they, you: ex.you, pushback: !!ex.pushback, name: firstName(p.identity.name || nameOf(c.crew, p.seat)) } : null };
+  let level = 'technical'; try { level = require('./lib/talk').prefs({ root: S.root() }).level; } catch (_) {}
+  const block = P.block(p, c);
+  return { block, ownerLevel: level, blockOwner: level === 'technical' ? block : ownerView(block), reminder: P.reminder(p, c), example: ex ? { who: ex.with === 'owner' ? 'You' : nameOf(c.crew, ex.with), they: ex.they, you: ex.you, pushback: !!ex.pushback, name: firstName(p.identity.name || nameOf(c.crew, p.seat)) } : null };
+}
+// who made a change, for the owner: You (the owner, also when the owner ran a build or a hire), a crew member's first
+// name, or The crew (the tools' own steps); never a raw id
+function personWords(by, crew) {
+  const b = String(by || '');
+  if (!b) return 'The crew';
+  if (b === 'owner' || (() => { try { return require('./lib/owner').isOwnerName(b); } catch (_) { return false; } })()) return 'You';
+  if (crew[b]) return firstName(nameOf(crew, b));
+  const hit = Object.keys(crew).find(id => String((crew[id] || {}).name || '').toLowerCase() === b.toLowerCase());
+  if (hit) return firstName(nameOf(crew, hit));
+  // a candidate id from a hiring round (cand-<role>-<n>-<name>) or another tool's id: the person's first name when it is readable
+  const m = b.match(/^cand-[a-z-]+?-\d+-([a-z]+)/i); if (m) return m[1].charAt(0).toUpperCase() + m[1].slice(1);
+  return /[\/._-]|^\w+\.js$/.test(b) ? 'The crew' : firstName(b);
+}
+function whoWords(r, crew) {
+  const d = r.decidedBy || (r.by === 'owner' ? 'owner' : '');
+  if (d) return personWords(d, crew);
+  return r.by === 'migrate' || r.by === 'profile.js tick' || r.by === 'hire.js' ? 'The crew' : personWords(r.by, crew);
 }
 function show(a) {
   const seat = seatArg(a.pos[1]); const p = P.load(seat, O());
@@ -454,11 +488,13 @@ function show(a) {
   if (a.console) {
     const crew = S.crew();
     const so = (() => { try { return require('./lib/signoff').list({ root: S.root() }).filter(x => x.override && x.from === seat).map(x => ({ at: x.at, by: x.override.by, op: 'sign-off override', why: x.override.why })); } catch (_) { return []; } })();
-    out.history = history(seat).filter(r => !r._bad).slice(-30).reverse().map(r => ({ at: r.at, version: r.version, by: r.by === 'owner' ? 'You' : r.by === 'migrate' || r.by === 'profile.js tick' || r.by === 'hire.js' ? 'The crew' : firstName(nameOf(crew, r.by)), op: r.op, kind: r.kind, why: r.why })).concat(so);
+    out.history = history(seat).filter(r => !r._bad).slice(-30).reverse().map(r => ({ at: r.at, version: r.version, by: whoWords(r, crew), op: r.op, kind: r.kind, why: r.why })).concat(so);
+    out.experiences = (p.experiences || []).map(e => Object.assign({}, e, { addedByName: personWords(e.addedBy, crew) }));
     out.proposals = proposals().filter(x => x.seat === seat && x.status === 'open');
     out.preview = preview(p); out.words = words(p); out.policy = P.policy(O());
     out.temperament = P.temperament(O()); out.signoffKinds = Object.fromEntries(Object.entries(P.SIGNOFF_KINDS).map(([k, v]) => [k, v.owner]));
     out.crew = Object.keys(crew).filter(s => s !== seat).map(s => ({ id: s, name: nameOf(crew, s) }));
+    { const all = P.loadAll(O()); out.relations = { checks: Object.values(all).filter(x => x.seat !== seat && x.counterpart && x.counterpart.seat === seat).map(x => x.seat), manager: (crew[seat] || {}).manager || null, reports: Object.keys(crew).filter(s => (crew[s] || {}).manager === seat) }; }
     out.check = P.validate(p, { crew });
   }
   return { code: 0, out };
@@ -490,6 +526,9 @@ function check(a) {
     if (pol.inject === 'profile') { const f = charterFor(s); if (f && fs.existsSync(f)) { const d = P.charterDrift(fs.readFileSync(f, 'utf8'), p, ctxO()); if (!d.markers) notes.push('the charter has no profile markers yet (the next change renders them)'); else if (d.drift) fails.push('the charter\'s profile section was edited by hand; the next render overwrites it (change the profile instead)'); } }
     report.push({ seat: s, version: p.version, failures: fails, notes });
   }
+  const cc = P.crewChecks(all, { crew });
+  for (const x of cc.failures) { const r = report.find(y => y.seat === x.seat); if (r) r.failures.push(x.text); }
+  for (const x of cc.notes) { const r = report.find(y => y.seat === x.seat); if (r) r.notes.push(x.text); }
   const family = familyNotes(all).map(n => n.crew);
   const mix = P.crewMix(Object.values(all).map(p => ({ preset: (p.voice || {}).preset || (P.ARCHETYPES[(p.identity || {}).archetype] || {}).preset || '', archetype: (p.identity || {}).archetype || '' })));
   const bad = report.filter(r => r.failures.length);
@@ -563,7 +602,7 @@ function selftest() {
   return bad ? 1 : 0;
 }
 
-module.exports = { run, tick, fromHire, Refusal, _S: S, verifyChain, history, words, setPointer, kindOf };
+module.exports = { ownerView, run, tick, fromHire, Refusal, _S: S, verifyChain, history, words, setPointer, kindOf };
 if (require.main === module) {
   const argv = process.argv.slice(2);
   if (argv[0] === '--selftest' || argv[0] === 'selftest') process.exit(selftest());

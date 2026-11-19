@@ -235,6 +235,10 @@ const nm = (crew, s) => (crew && crew[s] && crew[s].name) || s;
 const first = n => String(n || '').trim().split(/\s+/)[0] || String(n || '');
 const lines = a => (Array.isArray(a) ? a : []).map(x => String(x || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
 const bulletList = (lead, a) => { const l = lines(a); return l.length ? lead + '\n' + l.map(x => '- ' + x).join('\n') : ''; };
+// the injected block's size (docs/PROFILES.md "Size"): it is carried by every run of the seat
+const BLOCK_MAX_CHARS = 6000;   // about 1,500 tokens at 4 characters a token
+const BLOCK_CAPS = { experiences: 8, examples: 5, relationships: 8, line: 400 };
+const cap = (t, n) => { const x = String(t == null ? '' : t).replace(/\s+/g, ' ').trim(); return x.length <= n ? x : x.slice(0, n - 1).replace(/\s+\S*$/, '') + '…'; };
 const kindsWords = (ks, field) => (ks || []).filter(k => SIGNOFF_KINDS[k]).map(k => SIGNOFF_KINDS[k][field || 'words']);
 const joinOr = a => a.length <= 1 ? (a[0] || '') : a.slice(0, -1).join(', ') + ' or ' + a[a.length - 1];
 // o: { crew (loops.json agents), profiles (every seat's, for "whose work you check"), temperament (defs) }
@@ -264,19 +268,44 @@ function block(p, o) {
     out.push('Whose work you check: ' + nm(crew, x.seat) + '.' + (ks.length ? ' Before ' + first(nm(crew, x.seat)) + ' can ' + joinOr(ks) + ', you have to agree: answer each sign-off item in your inbox with node company/tools/approvals.js signoff answer <id> --verdict yes|no --check "<what you checked>" --by ' + me + '. Say no with a reason and what would make it a yes.' : ''));
   }
   for (const [lead, k] of [['Your strengths:', 'strengths'], ['Your blind spots:', 'blindSpots'], ['Your habits:', 'habits'], ['Your flaws (they show in your work; know them):', 'flaws']]) { const b = bulletList(lead, p[k]); if (b) out.push(b); }
-  const rel = (Array.isArray(p.relationships) ? p.relationships : []).filter(r => r && r.seat && r.note);
-  if (rel.length) out.push('The people around you:\n' + rel.map(r => '- ' + nm(crew, r.seat) + ': ' + String(r.note).replace(/\s+/g, ' ').trim()).join('\n'));
-  const exp = (Array.isArray(p.experiences) ? p.experiences : []).filter(e => e && e.text);
-  if (exp.length) out.push('What has happened to you here, and what you took from it:\n' + exp.map(e => '- ' + String(e.text).replace(/\s+/g, ' ').trim()).join('\n'));
+  const rel = (Array.isArray(p.relationships) ? p.relationships : []).filter(r => r && r.seat && r.note).slice(0, BLOCK_CAPS.relationships);
+  if (rel.length) out.push('The people around you:\n' + rel.map(r => '- ' + nm(crew, r.seat) + ': ' + cap(r.note, BLOCK_CAPS.line)).join('\n'));
+  // the newest experiences only (the list keeps growing; every run of the seat carries this block)
+  const exp = (Array.isArray(p.experiences) ? p.experiences : []).filter(e => e && e.text).slice(-BLOCK_CAPS.experiences);
+  const expAt = out.length;
+  if (exp.length) out.push(expBlock(exp));
   const v = p.voice || {};
   if (v.words || (v.avoid || []).length) out.push('How you sound: ' + (v.words ? v.words.trim() : '') + ((v.avoid || []).length ? (v.words ? ' ' : '') + 'You never say: ' + lines(v.avoid).map(a => '"' + a + '"').join(', ') + '.' : ''));
   if (v.toOwner) out.push('With the owner: ' + v.toOwner.trim());
-  const ex = (Array.isArray(p.examples) ? p.examples : []).filter(e => e && e.they && e.you);
-  if (ex.length) out.push('How you answer, in your own voice:\n' + ex.map(e => '- ' + (e.with === 'owner' ? 'The owner' : nm(crew, e.with)) + ': "' + String(e.they).trim() + '"\n  You' + (e.pushback ? ' (pushing back)' : '') + ': "' + String(e.you).trim() + '"').join('\n'));
+  const exAll = (Array.isArray(p.examples) ? p.examples : []).filter(e => e && e.they && e.you);
+  // at most BLOCK_CAPS.examples, keeping a pushing-back one
+  let ex = exAll.slice(0, BLOCK_CAPS.examples); const pb = exAll.find(e => e.pushback);
+  if (pb && !ex.includes(pb)) ex = ex.slice(0, -1).concat([pb]);
+  const exLines = e => '- ' + (e.with === 'owner' ? 'The owner' : nm(crew, e.with)) + ': "' + cap(e.they, BLOCK_CAPS.line) + '"\n  You' + (e.pushback ? ' (pushing back)' : '') + ': "' + cap(e.you, BLOCK_CAPS.line) + '"';
+  const exAt = out.length;
+  if (ex.length) out.push('How you answer, in your own voice:\n' + ex.map(exLines).join('\n'));
   const bnd = lines(p.boundaries);
   if (bnd.length) out.push('Fixed rules (no profile overrides these):\n' + bnd.map(b => '- ' + b).join('\n'));
-  return out.join('\n\n');
+  // the whole block stays under BLOCK_MAX_CHARS (about 1,500 tokens): the oldest experiences go first, then the examples
+  // beyond the pushing-back one; the fixed rules are never cut
+  const total = () => out.join('\n\n').length;
+  let e2 = exp.slice();
+  while (total() > BLOCK_MAX_CHARS && e2.length) { e2 = e2.slice(1); out[expAt] = e2.length ? expBlock(e2) : ''; }
+  let x2 = ex.slice();
+  while (total() > BLOCK_MAX_CHARS && x2.length > 1) {
+    const drop = x2.map((e, i) => i).reverse().find(i => !x2[i].pushback); if (drop == null) break;
+    x2.splice(drop, 1); out[exAt] = 'How you answer, in your own voice:\n' + x2.map(exLines).join('\n');
+  }
+  let txt = out.filter(Boolean).join('\n\n');
+  if (txt.length > BLOCK_MAX_CHARS) {
+    // still too long (very long lists): cut the middle sections' lines, never the first lines or the fixed rules
+    const tail = bnd.length ? '\n\nFixed rules (no profile overrides these):\n' + bnd.map(b => '- ' + b).join('\n') : '';
+    const head = txt.slice(0, txt.length - tail.length);
+    txt = head.slice(0, Math.max(0, BLOCK_MAX_CHARS - tail.length - 2)).replace(/\n[^\n]*$/, '') + '\n…' + tail;
+  }
+  return txt;
 }
+const expBlock = exp => 'What has happened to you here, and what you took from it:\n' + exp.map(e => '- ' + cap(e.text, BLOCK_CAPS.line)).join('\n');
 function reminder(p, o) {
   const r = String((p && p.reminder) || '').replace(/\s+/g, ' ').trim();
   if (r) return r.length <= REMINDER_MAX ? r : r.slice(0, REMINDER_MAX - 1).replace(/\s+\S*$/, '') + '…';
@@ -330,7 +359,58 @@ function charterDrift(text, p, o) {
 const secOf = (txt, h) => { const m = String(txt).match(new RegExp('## ' + h + '[^\\n]*\\n([\\s\\S]*?)(?=\\n## |\\n<!-- profile:end|$)')); return m ? m[1].replace(/<!--[\s\S]*?-->/g, '').trim() : ''; };
 const PLACE = /^<[A-Za-z][^<>]*\s[^<>]*>$/s;
 const realOf = t => { const x = String(t || '').trim(); return PLACE.test(x) || /^<[A-Z][\s\S]*>$/.test(x) ? '' : x; };   // a template placeholder (one <...> block, even with <Name> inside) is not content
-const bulletsOf = t => realOf(t) ? String(t).split('\n').map(l => l.replace(/^\s*(?:[-*]|\d+\.)\s+/, '').trim()).filter(l => l && !PLACE.test(l)) : [];
+// one item per bullet: a line that does not start a bullet (an indented or plain continuation of a wrapped bullet) is joined
+// onto the bullet above it; a section with no bullet markers at all reads one item per line, as before
+const BULLET_RE = /^\s*(?:[-*]|\d+\.)\s+/;
+const bulletsOf = t => {
+  if (!realOf(t)) return [];
+  const src = String(t).split('\n'), marked = src.some(l => BULLET_RE.test(l)), out = [];
+  for (const raw of src) {
+    if (!raw.trim()) continue;
+    if (marked && !BULLET_RE.test(raw) && out.length) { out[out.length - 1] = (out[out.length - 1] + ' ' + raw.trim()).replace(/\s+/g, ' '); continue; }
+    out.push(raw.replace(BULLET_RE, '').trim());
+  }
+  return out.filter(l => l && !PLACE.test(l));
+};
+// the ## Counterpart text read the right way round -> { seat: who checks this seat | null, checks: [seats this one checks] }.
+// Only seats on the roster count (a name not hired yet is ignored, never replaced by someone else).
+//   "<Name>, the …" / "<Name> tests …" (the section opens with a crew name), "<Name> checks you", "checked by <Name>",
+//   "your counterpart is <Name>"            -> <Name> checks this seat
+//   "… (the conservative) counterpart of <Name>", "you check <Name>", "<pronoun> checks <Name>'s"  -> this seat checks <Name>
+function counterpartOf(text, crew, self) {
+  const t = String(text || '').replace(/<!--[\s\S]*?-->/g, '').replace(/\s+/g, ' ').trim();
+  const out = { seat: null, checks: [] };
+  if (!t || PLACE.test(t)) return out;
+  const esc = x => String(x).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const names = [];
+  for (const [sid, c] of Object.entries(crew || {})) { if (sid === self || !c || !c.name) continue; const full = String(c.name).trim(); names.push({ sid, n: full }); const f = full.split(/\s+/)[0]; if (f && f !== full) names.push({ sid, n: f }); }
+  names.sort((a, b) => b.n.length - a.n.length);
+  const at = (re) => { const m = t.match(re); return m ? m : null; };
+  const nameRe = names.length ? '(' + names.map(x => esc(x.n)).join('|') + ')' : null;
+  const sidOf = n => { const l = String(n).toLowerCase(); const h = names.find(x => x.n.toLowerCase() === l); return h ? h.sid : null; };
+  // this seat checks others
+  const checkRes = [/\bcounterpart\s+(?:of|to|for)\s+([A-Z][\w'’-]*(?:\s+[A-Z][\w'’-]*)?)/g, /\b(?:you|she|he|they)\s+checks?\s+([A-Z][\w'’-]*(?:\s+[A-Z][\w'’-]*)?)/g];
+  for (const re of checkRes) for (const m of t.matchAll(re)) {
+    const words = m[1].split(/\s+/); let sid = sidOf(words.join(' ')) || sidOf(words[0]);
+    if (sid && !out.checks.includes(sid)) out.checks.push(sid);
+  }
+  if (!nameRe) return out;
+  // who checks this seat
+  const opens = at(new RegExp('^' + nameRe + '\\b', 'i'));
+  const checksYou = at(new RegExp('\\b' + nameRe + '(?:\\s*\\([^)]*\\))?\\s+(?:checks|tests|reviews|signs off)\\s+(?:you|your|him|her|them|' + esc(String((crew[self] || {}).name || '\\0').split(/\s+/)[0]) + ')\\b', 'i'));
+  const byName = at(new RegExp('\\b(?:checked|tested|reviewed|signed off)\\s+by\\s+' + nameRe + '\\b', 'i'));
+  const isCp = at(new RegExp('\\b(?:your|his|her|their)\\s+counterpart\\s+is\\s+' + nameRe + '\\b', 'i'));
+  const handed = at(new RegExp('\\b(?:card|cards|work|idea|ideas)\\b[^.]{0,40}\\b(?:is|are|goes|go)?\\s*(?:handed|sent|given|goes|go)\\s+to\\s+' + nameRe + '\\b', 'i'));
+  for (const m of [opens, checksYou, byName, isCp, handed]) { if (!m) continue; const sid = sidOf(m[1]); if (sid && !out.checks.includes(sid)) { out.seat = sid; break; } }
+  return out;
+}
+// a sentence-aware cut: whole sentences up to n characters (never ends on a colon or mid-sentence)
+function sentencesUpTo(t, n) {
+  const s = String(t || '').replace(/\s+/g, ' ').trim(); if (s.length <= n) return s;
+  const parts = s.match(/[^.!?]+[.!?]+(?:\s|$)/g) || [];
+  let out = ''; for (const p of parts) { if ((out + p).trim().length > n) break; out += p; }
+  out = out.trim(); return out || s.slice(0, n - 1).replace(/[\s,;:]+\S*$/, '') + '…';
+}
 function seatByName(text, crew, self) {
   const t = String(text || '').toLowerCase(); let best = null;
   for (const [sid, c] of Object.entries(crew || {})) {
@@ -352,7 +432,7 @@ function fromCharter(md, o) {
   p.identity.stake = s('Stake').replace(/\s+/g, ' ');
   const temp = s('Temperament');
   for (const l of temp.split('\n')) {
-    const m = l.match(/^\s*(?:[-*]\s*)?([a-z ]+?)\s*:\s*([0-4])\b/i);
+    const m = l.match(/^\s*(?:[-*]\s*)?\**([a-z ]+?)\**\s*(?::|—|–|-|=)\s*([0-4])(?:\s*\/\s*4)?\b/i);
     if (m) { const k = m[1].trim().toLowerCase().replace(/^rigor$/, 'rigour'); if (TEMPER_KEYS.includes(k)) p.temperament[k] = Number(m[2]); }
     const cm = l.match(/^\s*changes mind\s*:\s*(.+)$/i); if (cm) p.temperament.changesMind = cm[1].trim();
   }
@@ -366,11 +446,13 @@ function fromCharter(md, o) {
   p.whereYouLook = bulletsOf(s('Where you look')); p.blindSpots = bulletsOf(s('Blind spots')); p.habits = bulletsOf(s('Signature habits')); p.flaws = bulletsOf(s('Flaws'));
   p.strengths = bulletsOf(s('Success traits')).filter(x => !/^<|with the source number/.test(x));
   const cp = s('Counterpart');
+  let checks = [];
   if (cp) {
-    const cs = o.counterpart || seatByName(cp, crew, seat);
+    const read = counterpartOf(cp, crew, seat); checks = read.checks;
+    const cs = o.counterpart || read.seat;
     const so = cp.match(/^sign-?off:\s*(.+)$/im);
     const kinds = so ? so[1].split(/[\s,]+/).map(x => x.toLowerCase()).filter(k => SIGNOFF_KINDS[k]) : (p.identity.archetype && ARCHETYPES[p.identity.archetype].eager ? ['promote'] : []);
-    if (cs) p.counterpart = { seat: cs, signOff: kinds, why: cp.split('\n').filter(l => !/^sign-?off:/i.test(l.trim())).join(' ').replace(/^[^:]*:\s*/, m => (seatByName(m, crew, seat) ? '' : m)).replace(/\s+/g, ' ').trim().slice(0, 300) };
+    if (cs) p.counterpart = { seat: cs, signOff: kinds, why: sentencesUpTo(cp.split('\n').filter(l => !/^sign-?off:/i.test(l.trim())).join(' '), 300) };
   }
   p.relationships = bulletsOf(s('Relationships')).map(l => { const sid = seatByName(l, crew, seat); const note = l.replace(/^[^—:-]+[—:-]\s*/, '').trim(); return sid && note ? { seat: sid, note } : null; }).filter(Boolean);
   p.examples = bulletsOf(s('Example exchanges')).map(l => {
@@ -382,7 +464,40 @@ function fromCharter(md, o) {
   for (const [k, ok] of [['identity.background', p.identity.background], ['identity.stake', p.identity.stake], ['convictions', p.convictions.length], ['willNotDo', p.willNotDo.length], ['unprompted', p.unprompted.length],
     ['flaws', p.flaws.length], ['relationships', p.relationships.length], ['examples (at least 3, one pushing back)', p.examples.length >= 3 && p.examples.some(e => e.pushback)], ['temperament', !!temp], ['voice.words', p.voice.words]]) if (!ok) missing.push(k);
   if (p.identity.archetype && ARCHETYPES[p.identity.archetype].eager && !p.counterpart) missing.push('counterpart (an eager seat needs one)');
-  return { profile: p, missing };
+  return { profile: p, missing, checks, temperFromCharter: !!temp };
+}
+
+/* ---------- checks across the crew (profile.js check, migrate) ---------- */
+// what one profile alone cannot show: a pairing the wrong way round, two seats checking each other, a checker of many,
+// list lines broken in two by a wrapped bullet, and seats whose five sliders are identical.
+// -> { failures: [{ seat, text }], notes: [{ seat, text }] }
+const BROKEN_END = /\b(?:the|a|an|of|and|or|to|by|in|on|at|for|with|from|than|that|is|are|be|it|its|their|his|her|as)$/i;
+function crewChecks(all, o) {
+  o = o || {};
+  const crew = o.crew || {}, failures = [], notes = [];
+  const name = s => nm(crew, s), arch = p => (p && p.identity && ARCHETYPES[p.identity.archetype]) || null;
+  const list = Object.values(all || {}).filter(p => p && p.seat);
+  for (const p of list) {
+    const c = p.counterpart && p.counterpart.seat ? p.counterpart.seat : null;
+    if (c) {
+      const q = all[c];
+      if (q && q.counterpart && q.counterpart.seat === p.seat) failures.push({ seat: p.seat, text: name(p.seat) + ' and ' + name(c) + ' are each named as the other\'s checker: one of the two is the wrong way round' });
+      const ap = arch(p), aq = arch(q);
+      if (ap && !ap.eager && aq && aq.eager) failures.push({ seat: p.seat, text: name(c) + ' (an eager ' + q.identity.archetype + ') is named as the checker of ' + name(p.seat) + ' (a careful ' + p.identity.archetype + '): the pairing is the wrong way round' });
+    }
+    const checked = list.filter(x => x.seat !== p.seat && x.counterpart && x.counterpart.seat === p.seat).map(x => x.seat);
+    if (checked.length > 2) notes.push({ seat: p.seat, text: name(p.seat) + ' checks ' + checked.length + ' seats (' + checked.map(name).join(', ') + '): is that what you meant?' });
+    for (const k of LIST_FIELDS) {
+      const a = Array.isArray(p[k]) ? p[k].map(x => String(x || '').trim()) : [];
+      for (let i = 0; i < a.length; i++) {
+        const prev = i ? a[i - 1] : '';
+        if ((i && /^[a-z]/.test(a[i]) && !/[.!?:;)"'”]$/.test(prev)) || BROKEN_END.test(a[i])) { failures.push({ seat: p.seat, text: name(p.seat) + '\'s ' + k + ' has a line broken in two ("' + cap(i && /^[a-z]/.test(a[i]) ? prev : a[i], 60) + '"): join it into one line' }); break; }
+      }
+    }
+  }
+  const key = p => TEMPER_KEYS.map(k => (p.temperament || {})[k]).join(',');
+  for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) if (key(list[i]) === key(list[j])) notes.push({ seat: list[j].seat, text: 'same sliders as ' + name(list[i].seat) + ': ' + name(list[j].seat) + ' and ' + name(list[i].seat) + ' have identical temperaments; give each their own' });
+  return { failures, notes };
 }
 
 /* ---------- the kind of model, opposed pairs ---------- */
@@ -434,5 +549,5 @@ function reminderFor(seat, o) {
 }
 
 module.exports = { PERSON, PROFILE_SECTIONS, PRESETS, ARCHETYPES, carryProfile, profileBlock, interviewLines, archetypeOf, archetypeLine, presetFor, needsCounterpart, crewMix,
-  TEMPER_KEYS, SIGNOFF_KINDS, FIXED_BOUNDARIES, FIXED_TEXTS, REMINDER_MAX, SEAT_RE, paths, load, loadAll, policy, temperament, temperWords, presets, sortKeys, canonical, hashOf,
-  blank, validate, block, reminder, charterSection, renderCharter, charterDrift, fromCharter, seatByName, familyOf, pairCheck, modelOf, wakeStamp, voiceFor, reminderFor };
+  TEMPER_KEYS, SIGNOFF_KINDS, FIXED_BOUNDARIES, FIXED_TEXTS, REMINDER_MAX, BLOCK_MAX_CHARS, BLOCK_CAPS, crewChecks, SEAT_RE, paths, load, loadAll, policy, temperament, temperWords, presets, sortKeys, canonical, hashOf,
+  blank, validate, block, reminder, charterSection, renderCharter, charterDrift, fromCharter, seatByName, counterpartOf, bulletsOf, sentencesUpTo, familyOf, pairCheck, modelOf, wakeStamp, voiceFor, reminderFor };
