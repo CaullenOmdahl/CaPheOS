@@ -245,3 +245,19 @@ items of each class. `keep` when splitting is cheaper, `withdraw` when it is not
 `not enough data` below that or with nothing of the same class to compare. Each entry carries a `hash`; the dispatcher
 withdraws the department's splitting once per hash (`lib/delegate-allow.js withdrawStep`), only the owner resumes. It is
 written to `routing-evaluation.json` under `fanout`.
+
+### Profiles: how each seat does under each version of its profile
+
+`profileEvaluation` (ranking policy key `profileEvaluation`, `minItems` 5 by default; docs/PROFILES.md) is measurement
+only. Profile versions are not a cell dimension. It reports:
+- per seat and profile version (the version of an item's first wake that carries one, `wakes.jsonl profile`): scored
+  items, one-shot rate with its Wilson range, rework per item (extra runs + REVISE rounds), and owner corrections while
+  that version ran;
+- per counterpart: its sign-off answers, its no rate, and how many noes were overturned (a later yes or a CEO
+  override);
+- per seat: the meeting stance share and the phrase overlap of the pairs it was in (`company/work/meetings/stats.jsonl`).
+
+A trial (a `trial-start` row in the seat's profile history) compares the same number of days before it with the days
+during it, next to the seats that did not change over the same windows (the no-intervention baseline). Every trial
+entry carries the line "Before-and-after numbers also move on their own; compare with the seats that did not change."
+With no wake carrying a profile and no trial, there is no section at all.

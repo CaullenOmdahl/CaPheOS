@@ -338,6 +338,28 @@ Drawn in Crew › People under "Departments" once the company has one.
   autoPause }`, `delegation: { mode, effective, workers, maxWorkers, workerTimeoutMin, minPieces, prefer, since, by,
   withdrawn }` and `consultLimits`.
 
+## Profiles (console/profile.js)
+
+Crew › <person> › Profile (company/tools/profile.js; every write runs it as the owner; docs/PROFILES.md). `set` is
+`{ "<json pointer>": value }`.
+
+- `GET /api/profile/presets`: the console presets.
+- `GET /api/profile/<seat>` → `profile.js show <seat> --console`: `{ profile (owner notes included), history (last
+  30, plus CEO sign-off overrides), proposals (open), preview { block, reminder, example }, words { counterpart, checks,
+  trial, model, proposals, family, boundaries }, policy, temperament, signoffKinds, crew, check }`. With no profile:
+  `{ profile: null, canMigrate: true }`.
+- `POST /api/profile/<seat>/preview { set }`: the preview of unsaved changes; nothing is written.
+- `POST /api/profile/<seat> { set, base, why?, now? }` → `edit`. A stale `base` is **409** "Someone changed this
+  profile while you were editing it. Reload to see the latest version, then make your change again." A temperament or
+  counterpart change without `now` is 400 ("use try").
+- `POST /api/profile/<seat>/undo { to }`, `POST /api/profile/<seat>/try { set, base, days }`,
+  `POST /api/profile/<seat>/trial/keep`, `POST /api/profile/<seat>/trial/stop`.
+- `POST /api/profile/proposals/<pp-id>/apply|decline|try`.
+- `POST /api/profile/policy { inject: charter|profile }`: "Use profiles for this company".
+- `POST /api/profile/<seat>/migrate`: the first profile from the seat's charter.
+
+`POST /api/meeting/pov { on }`: point of view in the meeting (docs/MEETINGS.md).
+
 ## Routing (console/routing.js)
 
 Model routing modes and trials (company/tools/routing.js; every write runs it as the owner; docs/ROUTING.md). Drawn in

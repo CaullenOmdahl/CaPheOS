@@ -91,6 +91,38 @@ closes; Register › Terms defines one (`/api/meeting/glossary`).
 hands line with the turn's runId, the cost so far); `GET /api/meeting/entries?limit=&before=|from=` pages the messages,
 passes included. Live updates arrive as the `meeting` topic on `/api/events`.
 
+## Point of view (full profiles, docs/PROFILES.md)
+
+On when `seats.json pov` says so (`POST /api/meeting/pov {on: true|false|null}`; null follows the company's
+`profile-policy.json pov`: true in the sandbox, absent = off elsewhere). Then:
+
+- **Each seat its own transcript.** The log is stored once, with neutral labels, and projected per seat
+  (`historyFor`):
+  - a seat's counterpart, or a seat whose counterpart it is, reads "<Name>, your counterpart, said (stance: …): …";
+  - the others read "<Name> said: …", and the owner "<Owner> (the owner) said: …";
+  - its own past lines stay its own (assistant) turns.
+- **STANCE.** The rules ask every reply to start with `STANCE: <position> — <what your counterpart wants>`. The console
+  strips that line from the shown text and stores it as `say.stance`. The page shows it as a dim line, and the minutes
+  carry `_Stance: …_`. A reply with no stance gets a console note on its next turn and is never re-run.
+- **The gatekeeper's private first take.** On a round the owner starts, a seated seat that checks another seated seat
+  first gets a talk-only run (purpose `draft`, admitted as a meeting turn, counted in the cost line). This applies for
+  any sign-off kind in decision and planning meetings, promote, merge or plan in review meetings, and never in incident
+  meetings. The run holds only the owner's message, the agenda item and its own profile: "Write your own position before
+  you read anyone else". The result is a private `draft` event, shown to the owner folded ("Rohan's first take, before
+  hearing the others."), in the minutes as a `<details>` block, and in nobody else's history. On its real turn the seat
+  gets "Your first take, before you read the others: … Has anything said since given you new evidence? Say which, or
+  hold your position."
+- **The reminder.** Each turn note ends with the speaking seat's profile reminder.
+- **Echo stats at close** (deterministic, no model call) go to `company/work/meetings/stats.jsonl` and the close line
+  ("Echo check: …"):
+  - per seat, the share of replies with a stance;
+  - per pair, the word-trigram overlap of consecutive replies;
+  - stances that changed in a reply that names no number, link or file.
+
+  The house ranking reads these in `profileEvaluation`.
+
+With point of view off, nothing here changes the meeting.
+
 ## The agents' lines
 
 An agent ends a reply with lines of their own; the page shows them as dim lines, not text. A line that starts like one

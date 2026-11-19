@@ -114,7 +114,11 @@ onboarding already exists (`0dfe341`); the new flow keeps the semantics and feed
 2. **Charter draft** — a one-page charter: purpose, first products, who the customers are, what the company will not do,
    the first three work items. The owner approves it; it becomes `company/CHARTER.md`.
 3. **Open roles and hire the bootstrapping crew** — the first hires, each with a role template and the functions it
-   takes over, through the existing hiring flow. The Founder keeps what it has not hired for.
+   takes over, through the existing hiring flow. The Founder keeps what it has not hired for. Each candidate's profile
+   uses the charter template's person headings, including `## Stake`, `## Temperament` (five lines,
+   `risk: 0-4 — <plain words>`), `## Flaws`, `## Relationships` and `## Example exchanges` (at least three, one marked
+   "(pushes back)"). An eager seat names a counterpart already on the crew. The hire's full profile
+   (`company/people/profiles/<seat>.json`) is written from it (docs/PROFILES.md).
 4. **First plan** — the first tasks, with owners and dates, and the company's first dispatch tick.
 5. **Self-rename** — at any point the owner can rename the Founder's display name (and the company's display name);
    the slug and the seat id stay. The change is recorded like any other decision.
