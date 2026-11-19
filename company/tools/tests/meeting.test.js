@@ -890,11 +890,20 @@ test('one model for everyone: still behind the company list, the override list, 
   const v = await M.setThink({ pin: { provider: 'deepseek', model: 'deepseek-flash' } });
   assert.match(v.note, /everyone on DeepSeek \(deepseek-flash\)/);
   assert.deepStrictEqual(v.meeting.think.choices.map(c => c.provider + '/' + c.model), ['claude-cli/claude-sonnet-5-5', 'deepseek/deepseek-flash'], 'the choices: the company\'s list');
-  assert.ok(v.seats.find(x => x.id === 'dave').model.pinned && v.seats.find(x => x.id === 'sharon').modelError, 'the strip shows who can use it');
-  runner.script({ dave: 'On DeepSeek.', sharon: 'never' });
+  // Sharon has nothing of her own open (an idea seat whose only AI is closed): the owner's pick still runs for her, because
+  // DeepSeek is open for someone this tick (2026-11-19, Benny on MiniMax only with Haiku picked)
+  assert.ok(v.seats.find(x => x.id === 'dave').model.pinned && v.seats.find(x => x.id === 'sharon').model.pinned, 'the strip shows both on the pick');
+  runner.script({ dave: 'On DeepSeek.', sharon: 'Me too.' });
   await M.say({ text: 'Go.' }); await idle(M);
-  assert.deepStrictEqual(runner.turns().map(c => c.seat + '/' + c.model.provider + '/' + c.model.model), ['dave/deepseek/deepseek-flash'], 'Sharon is not moved to any other model');
-  assert.ok(kinds(M, 'note').some(e => /^Sharon sits this one out: the model picked for this meeting \(DeepSeek \(deepseek-flash\)\) is not open for them right now/.test(e.text)), kinds(M, 'note').map(e => e.text).join(' | '));
+  assert.deepStrictEqual(runner.turns().map(c => c.seat + '/' + c.model.provider + '/' + c.model.model), ['dave/deepseek/deepseek-flash', 'sharon/deepseek/deepseek-flash'], 'both on the pick');
+  // a pick open for nobody: everyone sits out, nobody is moved to another model
+  const turns0 = runner.turns().length;
+  await M.setThink({ pin: { provider: 'claude-cli', model: 'claude-sonnet-5-5' } });
+  runner.script({ dave: 'never', sharon: 'never' });
+  await M.say({ text: 'Sonnet now.' }); await idle(M);
+  assert.equal(runner.turns().length, turns0, 'nobody ran');
+  assert.ok(kinds(M, 'note').some(e => /^Sharon sits this one out: the model picked for this meeting \(.*\) is not open for them right now \(that AI is closed for everyone right now\)/.test(e.text)), kinds(M, 'note').map(e => e.text).join(' | '));
+  await M.setThink({ pin: { provider: 'deepseek', model: 'deepseek-flash' } });
   // admit runs on the picked provider
   const admits = fs.readFileSync(path.join(T, 'company/state/admit-log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(r => r.kind === 'meeting-turn');
   assert.ok(admits.length && admits[admits.length - 1].provider === 'deepseek', 'admit() saw the picked provider');
