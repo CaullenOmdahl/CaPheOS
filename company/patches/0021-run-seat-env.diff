@@ -1,0 +1,90 @@
+# 0021 — a run's shell knows which seat and which run it belongs to (STARNET_AGENT_ID, STARNET_RUN_ID).
+# Status: APPLIED by setup-station.sh.
+# Why (2026-11-20, fr-0085 from the sandbox crew: Halima Cisse found it, Kwame Asante built it): since wave 3 the
+# external gate checks an in-run call as the station's own STARNET_AGENT_ID and never trusts --agent from a run, but the
+# station never put that variable in a run's shell, so every in-run check read as agent `unknown` and only `agent: any`
+# clearance rows matched. inbox.js, accountable.js, approvals.js, merge-gate.js, premerge-check.js, profile.js,
+# consult.js, routing.js, departments.js and lib/owner-card.js read the same variable.
+# What it changes: environment.js sets both last in a task child's env (an inherited value cannot shadow them; a run id
+# that is not a plain id is left out), for foreground and background commands; shell.js passes ctx.runId to both.
+# The terminal (terminal_start) PTY path is not changed.
+# Apply: git -C starnet apply --3way company/patches/0021-run-seat-env.diff, then restart the station when idle.
+--- a/sidecar/environment.js
++++ b/sidecar/environment.js
+@@ -327,6 +327,16 @@
+       if (!serviceEnvFn) return childEnv;
+       try { return mergeServiceEnv(childEnv, serviceEnvFn(surface)); } catch (_) { return childEnv; }
+     }
++    /* WHO THE RUN IS. The station knows which seat and which run issued a command; the command's own shell does not,
++       and company/tools/external-gate.js, inbox.js, merge-gate.js and others read STARNET_AGENT_ID / STARNET_RUN_ID to
++       find out. Set last, so nothing inherited can shadow them. agentId has passed safeAgentId; a run id that is not a
++       plain id is left out rather than passed on. */
++    const RUN_ID_RE = /^[A-Za-z0-9_.:-]{1,80}$/;
++    function withRun(env, agentId, runId) {
++      const out = Object.assign({}, env, { STARNET_AGENT_ID: agentId });
++      if (runId && RUN_ID_RE.test(String(runId))) out.STARNET_RUN_ID = String(runId);
++      return out;
++    }
+     const sessions = new Map();
+ 
+     function workspaceRoot(agentId) {
+@@ -378,7 +388,7 @@
+           spawn: opts.breakaway ? require('./breakaway.js').makeBreakaway({ platform: isWin ? 'win32' : 'posix' }).spawnVia(spawn) : spawn,
+           file: String(opts.cmd || ''),
+           args: null,
+-          spawnOptions: { cwd: opts.cwd || getCwd(aid), shell: true, windowsHide: true, env: spawnEnv(opts.surface) },
++          spawnOptions: { cwd: opts.cwd || getCwd(aid), shell: true, windowsHide: true, env: withRun(spawnEnv(opts.surface), aid, opts.runId) },
+           timeoutMs: opts.timeoutMs,
+           maxTimeoutMs: opts.maxTimeoutMs,
+           maxBytes: opts.maxBytes,
+@@ -394,7 +404,7 @@
+       startBackground: function (opts) {
+         if (!bg || typeof bg.start !== 'function') return { ok: false, error: 'background processes are not available for the local backend' };
+         const aid = safeAgentId((opts && opts.agentId) || 'agent');
+-        return bg.start({ agentId: aid, cmd: opts.cmd, cwd: opts.cwd || getCwd(aid), isWin: isWin, env: spawnEnv(opts.surface) });
++        return bg.start({ agentId: aid, cmd: opts.cmd, cwd: opts.cwd || getCwd(aid), isWin: isWin, env: withRun(spawnEnv(opts.surface), aid, opts.runId) });
+       },
+       statusBackground: function (agentId, bgId) {
+         return bg && typeof bg.status === 'function' ? bg.status(safeAgentId(agentId || 'agent'), bgId) : (bgId ? null : []);
+--- a/sidecar/tools/builtin/shell.js
++++ b/sidecar/tools/builtin/shell.js
+@@ -1682,7 +1682,7 @@
+           const started = environment && typeof environment.startBackground === 'function'
+             // ctx.surface (host authority, from runInputContext) rides along so the backend hands this child only
+             // the service keys the Commander granted for unattended use — see servicekeys.runEnv.
+-            ? environment.startBackground({ agentId: aid, cmd: cmd, cwd: cwd, isWin: isWin, surface: ctx.surface })
++            ? environment.startBackground({ agentId: aid, cmd: cmd, cwd: cwd, isWin: isWin, surface: ctx.surface, runId: ctx.runId })
+             : bg.start({ agentId: aid, cmd: cmd, cwd: cwd, isWin: isWin });
+           return Promise.resolve(started).then(function (r) {
+           const content = r.ok
+@@ -1715,7 +1715,7 @@
+         const oomLine = hostPosix ? ML.oomPrefix() : '';
+         const run = checkpoint.then(function () {
+           return environment && typeof environment.execute === 'function'
+-            ? environment.execute({ agentId: aid, cmd: oomLine + buildMarkedCmd(cmd, markerIsWin, nonce), cwd: cwd, timeoutMs: timeoutMs, maxBytes: MAX_BYTES, signal: ctx.signal, clock: { now: now }, surface: ctx.surface, ledgerCmd: redact(cmd), breakaway: forPerson, reapGroup: reapGroup })
++            ? environment.execute({ agentId: aid, cmd: oomLine + buildMarkedCmd(cmd, markerIsWin, nonce), cwd: cwd, timeoutMs: timeoutMs, maxBytes: MAX_BYTES, signal: ctx.signal, clock: { now: now }, surface: ctx.surface, runId: ctx.runId, ledgerCmd: redact(cmd), breakaway: forPerson, reapGroup: reapGroup })
+             : runCommand({ spawn: forPerson ? breakaway.spawnVia(spawn) : spawn, cmd: oomLine + buildMarkedCmd(cmd, isWin, nonce), cwd: cwd, timeoutMs: timeoutMs, maxBytes: MAX_BYTES, signal: ctx.signal, clock: { now: now }, isWin: isWin, ledger: ledger, ledgerCmd: ledger ? redact(cmd) : '', env: ownEnv || undefined, reapGroup: reapGroup });
+         });
+         return run.then(function (res) {
+--- a/test/environment.test.js
++++ b/test/environment.test.js
+@@ -72,6 +72,19 @@
+       A.eq(spawn.calls[0].opts.env.STARNET_COMPUTER_DRIVER, '0', 'physical-input disable is pinned in task children');
+       A.eq(spawn.calls[0].opts.env.STARNET_BROWSER_HEADLESS, '1', 'headless browser mode is pinned in task children');
+       A.eq(spawn.calls[0].opts.env.STARNET_USER_CONTROL_MODE, 'preserve', 'user-control preservation mode is pinned');
++      { // fr-0085: the run's own seat and run id reach the child, set last (a stale inherited value cannot shadow them)
++        const spawn2 = makeFakeSpawn(); const bg2 = [];
++        const env2 = makeEnvironmentManager({ spawn: spawn2, fs, pathMod: path, root, clock,
++          bg: { start: (o) => { bg2.push(o); return { ok: true, bgId: 'bg_2' }; }, status: () => [], kill: () => ({ ok: true }) },
++          env: { PATH: 'safe-path', STARNET_AGENT_ID: 'inherited-other', STARNET_RUN_ID: 'inherited-run' }, config: { backend: 'local' } });
++        await env2.execute({ agentId: 'a1', runId: 'run-abc-123', cmd: 'echo ok', timeoutMs: 1000 });
++        A.eq(spawn2.calls[0].opts.env.STARNET_AGENT_ID, 'a1', 'task child learns the seat of the run that issued it (an inherited value never wins)');
++        A.eq(spawn2.calls[0].opts.env.STARNET_RUN_ID, 'run-abc-123', 'task child learns the run id');
++        await env2.execute({ agentId: 'a1', runId: 'bad id; x', cmd: 'echo ok', timeoutMs: 1000 });
++        A.ok(spawn2.calls[1].opts.env.STARNET_RUN_ID !== 'bad id; x', 'a run id that is not a plain id is not passed on');
++        env2.startBackground({ agentId: 'a1', runId: 'run-abc-123', cmd: 'sleep 1' });
++        A.ok(bg2[0].env.STARNET_AGENT_ID === 'a1' && bg2[0].env.STARNET_RUN_ID === 'run-abc-123', 'a background child learns both');
++      }
+       fs.mkdirSync(path.join(root, 'a1', 'sub'), { recursive: true });
+       env.rememberCwd('a1', path.join(root, 'a1', 'sub'));
+       A.eq(env.getCwd('a1'), path.join(root, 'a1', 'sub'), 'local persists in-jail cwd');

@@ -1678,6 +1678,22 @@ function selftest() {
     ic('I10 release: only the owner, with a reason', !releaseIdem({ category: 'spend', key: 'payout:inv-1', by: 'sam', why: 'x'.repeat(30) }, { idemFile }).ok && releaseIdem({ category: 'spend', key: 'payout:inv-1', by: 'owner', why: 'checked the processor: payout never arrived' }, { idemFile }).ok && check(req, io).allow === true);
   }
 
+  // WHO IS ACTING (fr-0085): the run's own STARNET_AGENT_ID, unless a transcript shows another seat running this very command
+  {
+    const none = () => null;
+    const other = () => ({ agentId: 'cand-other-seat', runId: 'abcd1234' });
+    let called = 0; const spy = () => { called++; return null; };
+    const W = (label, got, want) => { const okW = got === want; if (!okW) failures++; lines.push((okW ? 'ok    ' : 'FAIL  ') + label + ' → ' + got); };
+    const cmdParts = ['network', 'https://x.example/a'];
+    W('A1 a run with STARNET_AGENT_ID is that seat', actingAgent(undefined, { STARNET_AGENT_ID: 'cand-seat-a' }, cmdParts, none), 'cand-seat-a');
+    W('A2 --agent cannot override the run\'s own seat', actingAgent('recorder', { STARNET_AGENT_ID: 'cand-seat-a' }, cmdParts, none), 'cand-seat-a');
+    W('A3 the variable set by hand to another seat while a transcript shows a different seat running this command: unknown', actingAgent(undefined, { STARNET_AGENT_ID: 'cand-seat-b' }, cmdParts, other), 'unknown');
+    actingAgent(undefined, { STARNET_AGENT_ID: 'cand-seat-a' }, [undefined, true, ''], spy);
+    W('A4 no usable command text: the transcript is not asked (an empty search would match any call)', String(called), '0');
+    actingAgent(undefined, { STARNET_AGENT_ID: 'cand-seat-a' }, cmdParts, spy);
+    W('A5 control: with command text the transcript is asked once', String(called), '1');
+  }
+
   // every decision the selftest made is in the log, refusals with a reason
   const logged = readJsonl(log);
   const refusals = logged.filter(r => r.decision === 'refused');
@@ -1705,9 +1721,23 @@ function cliArgs() {
 
 /* who is acting: inside an agent's run always the station's own STARNET_AGENT_ID (a run cannot name another seat with
    --agent to skip that seat's rules); --agent only from a shell outside the station */
-function actingAgent(claimed, env) {
+function actingAgent(claimed, env, parts, conflictFn) {
   const e = env || process.env;
-  if (e.STARNET_AGENT_ID) return String(e.STARNET_AGENT_ID);
+  if (e.STARNET_AGENT_ID) {
+    const id = String(e.STARNET_AGENT_ID);
+    /* fr-0085: the station now puts the run's own seat in STARNET_AGENT_ID, but a command can set the variable itself
+       (`STARNET_AGENT_ID=recorder node ... check`). The same guard inbox.js uses: if an agent's transcript shows ANOTHER
+       seat running a shell call that holds every part of this command (category, target) and the named seat's own runs
+       show none, the caller is not the seat it names: answer `unknown`, which only an `agent: any` row can match.
+       It sees only a command whose text holds those parts literally; a target built from a variable is not seen. */
+    const p = (parts || []).filter(x => x !== undefined && x !== true && String(x) !== '').map(String);
+    if (p.length) {
+      let c = null;
+      try { c = (conflictFn || require('./provenance.js').callerConflict)(ROOT, p, id); } catch (_) { c = null; }
+      if (c) return 'unknown';
+    }
+    return id;
+  }
   let under = false; try { under = require('./provenance.js').underStation(); } catch (_) { under = false; }
   return under ? 'unknown' : (claimed && claimed !== true ? String(claimed) : undefined);
 }
@@ -1718,7 +1748,7 @@ function main() {
   if (cmd === 'check' || cmd === 'guard') {
     // `--act` used to be silently dropped here: check() supports acts and the CLI never passed one, so a person could
     // not ask the gate the question the acts field exists to answer ("is this PUSH covered by a row that says push?").
-    const d = check({ category: a.category, target: a.target, agent: actingAgent(a.agent), act: a.act, note: a.note, signoff: a.signoff, idem: a.idem, amountUsd: a['amount-usd'] != null ? Number(a['amount-usd']) : undefined, idemTtlMs: a['idem-ttl'] === 'forever' ? 'forever' : (a['idem-ttl'] ? Number(a['idem-ttl']) * 1000 : undefined) });
+    const d = check({ category: a.category, target: a.target, agent: actingAgent(a.agent, undefined, [a.category, a.target]), act: a.act, note: a.note, signoff: a.signoff, idem: a.idem, amountUsd: a['amount-usd'] != null ? Number(a['amount-usd']) : undefined, idemTtlMs: a['idem-ttl'] === 'forever' ? 'forever' : (a['idem-ttl'] ? Number(a['idem-ttl']) * 1000 : undefined) });
     console.log(JSON.stringify(d));
     process.exit(d.allow ? 0 : d.duplicate ? 4 : 3);
   }
