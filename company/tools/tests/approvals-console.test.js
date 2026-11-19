@@ -29,7 +29,7 @@ for (const k of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFile
 }`;
 
 test('the real console server: no click path runs a tool, forks, or reaches a station run/tool endpoint; the surface is the route\'s', async () => {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'approvals-console-selftest-')); roots.push(T);
+  const T = require('../lib/temp-life').tmpDir('approvals-console-selftest-'); roots.push(T);
   fs.cpSync(path.join(REPO, 'company'), path.join(T, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
   for (const f of ['pm-inbox.jsonl']) try { fs.rmSync(path.join(T, 'company', f)); } catch (_) {}
   fs.rmSync(path.join(T, 'company', 'state'), { recursive: true, force: true }); fs.rmSync(path.join(T, 'company', 'owner'), { recursive: true, force: true });
@@ -61,7 +61,7 @@ test('the real console server: no click path runs a tool, forks, or reaches a st
   const fixed = ap('return A.ask({ from: "Sam", category: "access", message: "Could we get read access to the example bank account? It lets us go on with the work.", params: { account: "example" } });');
   assert.ok(spend.minted && spend2.minted && fixed.minted);
 
-  const srv = spawn(process.execPath, ['-r', hook, path.join(REPO, 'console', 'server.js'), '--port', '0', '--host', '127.0.0.1', '--print-port'], { cwd: T, env, stdio: ['ignore', 'pipe', 'pipe'] }); kids.push(srv);
+  const srv = require('../lib/temp-life').track(spawn(process.execPath, ['-r', hook, path.join(REPO, 'console', 'server.js'), '--port', '0', '--host', '127.0.0.1', '--print-port'], { cwd: T, env, stdio: ['ignore', 'pipe', 'pipe'] })); kids.push(srv);
   let err = ''; srv.stderr.on('data', d => { err += d; });
   const port = await new Promise((res, rej) => { let d = ''; srv.stdout.on('data', c => { d += c; const m = /"port":(\d+)/.exec(d); if (m) res(Number(m[1])); }); srv.on('exit', c => rej(new Error('console exited ' + c + ': ' + err))); setTimeout(() => rej(new Error('console did not start: ' + err)), 20000); });
   const call = (method, p, body) => new Promise((resolve, reject) => {

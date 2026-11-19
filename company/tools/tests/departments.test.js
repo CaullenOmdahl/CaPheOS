@@ -61,7 +61,7 @@ const PLAN = [
 
 function fixture(o) {
   o = o || {};
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'departments-test-')); roots.push(root);
+  const root = require('../lib/temp-life').tmpDir('departments-test-'); roots.push(root);
   w(root, 'company/company.json', { name: 'Fixture Co', slug: 'fixture-co', timezone: 'UTC', owner: { name: 'Olive', addressAs: 'Olive' }, station: { url: 'http://127.0.0.1:9' } });
   w(root, 'company/tools/loops.json', { agents: CREW });
   for (const f of ['company/defaults/departments.json', 'company/defaults/state/governance.json', 'company/defaults/state/guardrails.json']) fs.mkdirSync(path.dirname(path.join(root, f)), { recursive: true }), fs.copyFileSync(path.join(REPO, f), path.join(root, f));

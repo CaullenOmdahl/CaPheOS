@@ -201,7 +201,7 @@ function selftest() {
      message must write to no inbox at all (the CEO reads it where it already is), and an unaddressed one must write
      nothing. Without this the decision is tested and the file it writes is not. */
   const os = require('os');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'addressing-'));
+  const dir = require('./lib/temp-life').tmpDir('addressing-');
   fs.mkdirSync(path.join(dir, 'handoffs'), { recursive: true });
   const fixture = [
     { id: 'm-sam', at: '2026-01-01T00:00:00Z', from: 'owner', text: 'Sam, get me a QA hire please' },

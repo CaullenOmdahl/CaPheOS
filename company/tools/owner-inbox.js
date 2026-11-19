@@ -120,7 +120,7 @@ module.exports = { unacked, messages, say, send, sent, redact, INBOUND, OUTBOUND
 
 function selftest() {
   const os = require('os');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-inbox-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('owner-inbox-selftest-');
   const dir = path.join(T, 'company', 'owner'); fs.mkdirSync(dir, { recursive: true });
   process.env.OWNER_DIR = dir; process.env.OWNER_INBOX_STATE = path.join(dir, 'state.json'); process.env.PROVENANCE_ROOT = T;
   require('./provenance.js').pinUnderStation(false);   // measure the mechanism, not the caller (an agent may run this)

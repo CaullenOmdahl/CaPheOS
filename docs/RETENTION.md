@@ -168,3 +168,119 @@ then kept in the new one. The selftests run each reader over a 48–96 MB file a
 Add a row to `company/defaults/work/ops/retention.json` (framework) or `company/work/ops/retention.json` (one company:
 a row with the same `id` replaces the default). Give it a `bound` (`bytes`, `rows`, `days`), the `readers`, and run
 `retention.js apply --dry-run` then `status`.
+
+## Temp files, headless browsers and RAM
+
+Files are not the only thing that grows. On most Linux hosts `/tmp` is a tmpfs, so every byte left there is memory (and
+swap once memory is full), and a headless browser nobody closes holds 0.8-1 GB. Three parts keep a long-running company
+lean enough to share a small machine with a local model:
+
+- **The company's own temp dir.** `scripts/setup-station.sh` makes `.starnet-data/tmp` (mode 0700) and runs the station,
+  the dispatcher and the console with `TMPDIR` there. Agents' Python tempfiles, Flutter / web build trees, the station's
+  browser profiles and Claude CLI prompt files land on disk, under the company, not in RAM. The container does the same
+  (`TMPDIR=/data/tmp`, a 64 MB `/tmp`).
+- **The sweeper.** `company/tools/tmp-sweep.js` removes temp entries that are old enough and that no running process
+  uses (an open file, a working directory, a mapped file, a socket, or a command line naming it). Each class has a scope:
+  **own** (everything in the company's private temp dir; in a shared temp dir only station leftovers of one of THIS
+  company's recorded station pids) or **host** (in a shared temp dir: test walks, Python tempfile dirs, build trees,
+  Chrome's temp entries, station leftovers of an unknown pid: names the owner's own checkout and another company on this
+  machine make too; this company's own runs keep `TMPDIR` in its private dir, so its tests land there). The private dir
+  counts only when it is a real folder of the company: never a symlink, and resolved it is `<root>/.starnet-data/tmp`;
+  otherwise it is not swept at all. The automatic sweep (the reaper, below) takes the own scope only; the host scope is the owner's button
+  (`reaper.js host-sweep --apply --by owner`). `status` shows what would go.
+- **Tests clean up however they end.** `company/tools/lib/temp-life.js` registers a test's temp dirs and helper
+  processes (Chrome, the mock station, a console) and removes / ends them on exit, on an error and on SIGINT / SIGTERM
+  (the signal `scripts/test.sh`'s per-step timeout sends). Chrome is started with `TMPDIR` inside its profile, so its own
+  `com.google.Chrome.*` entries go with the profile, and without the session bus, so it cannot move itself into a
+  desktop scope out of the test's reach. `scripts/check-temp-hygiene.js` (a `test.sh` step) fails the suite when a test,
+  walk or selftest makes temp files or starts a browser without it; a runtime use that is not a test is listed in
+  `scripts/temp-hygiene-allow.json` with its reason. Python tests use `tempfile.TemporaryDirectory()` (or `addCleanup`),
+  shell scripts a `trap … EXIT`.
+- **The test runner leaves nothing behind.** `scripts/test.sh` sweeps the test class before the run and after it, runs
+  each step in a session of its own and ends what is left of its process group when the step ends (passed or failed),
+  and fails a last step, "no processes left behind", when any process of the run still runs (`scripts/test-leftovers.js`
+  finds them by `CAPHEOS_TEST_RUN`, lists them and ends them). `tests/test-sh-hygiene.sh` tests the runner itself.
+- **The station's own processes.** StarNet patch 0020 (company/patches/README.md): what an agent's command leaves in
+  the background ends with the command; a browser the station starts stays in the station's unit, keeps its temp files
+  in its profile and ends with the station; the shared browser closes after the profile's idle minutes; at most 3 private
+  browsers at once (1 on the low profile).
+
+## The reaper (company/tools/reaper.js)
+
+The one **chore** among the duties (docs/DUTIES.md): it acts, not only reports. The dispatcher runs it every 15 minutes
+(10 under the low memory profile), **also while the company is halted**, and it wakes the crew (the tools function) only
+for something they must fix, so routine clean-up never costs an agent run. Each action is one plain line in
+`company/state/reaper.jsonl` (kept 30 days) and the run's summary one line in the dispatch log. `reaper.js status`
+shows what it would do now, touching nothing.
+
+**Only what it can prove is this company's** (`company/tools/lib/owned.js`): a browser profile, working folder (also a
+deleted one) or `TMPDIR` inside the company root (realpath, path + separator: `/x/co` never claims `/x/co-2`); a process
+inside one of its units; one of its recorded station pids (`company/state/reaper.json`, the last 50); a receipt in the
+station's process ledger matched by pid and identity. **Never**: the owner's own Chrome (not driven, or a profile under
+`~/.config`), another user's process, a process in a unit or scope the company does not own, the live station, console
+or dispatcher, a registered background service, anything matched by name only, a local AI model.
+
+| Step | What | Halted |
+|---|---|---|
+| browsers | a driven Chrome of the company whose parent is gone, older than 30 min (10 under low) and with no client on its debugging port for that long, measured across runs (a client seen at any run starts the clock again, so a browser an agent reconnects to between tool calls stays); one inside the station's own unit is spared while the station runs anything (a station that does not answer counts as busy): ended (TERM to its group, 3 s, KILL to all naming its profile), a temp profile removed. The station's own browser is never killed (StarNet patch 0020 closes it when idle); idle past 3 x the idle time it is reported | runs |
+| strays | the company's processes handed to init, outside its units, older than 6 h (3 under low): flutter_tester, dart frontend/analysis servers, Gradle / Kotlin daemons, esbuild --service, a mock station or test walk, an orphaned test station, pytest are ended; any other kind is reported once a week | runs |
+| temp | tmp-sweep own scope: the private temp dir (older than 24 h and unused; 6 h under memory pressure), the company's station leftovers in `/tmp` (a test walk there may be another company's: the owner's button). A name pattern leaking 200 entries or 1 GB a day for 2 days is reported once a week | runs |
+| retention | the folder rules below, once a company day | skipped |
+| sample | `memory.js sample` into `company/state/memory-samples.jsonl` (kept 14 days); a unit growing for 48 h without a restart (+50 % and +150 MB, same pid) is reported once a week. Nothing is ever restarted | runs |
+| pressure | free memory under keep-free + 256 MB (under low also under 300 MB): the station's browser is closed when no run drives it, temp ages are halved, `company/state/memory-pressure.json` is written; still short after 3 runs: reported | runs |
+
+**Growing folders** (`retention.js dirPolicies`, rows in `company/defaults/work/ops/retention.json`): `keep-newest-dirs`
+(old workspace backups: the newest 3 kept), `age-dir` (old simulation output), `merged-worktrees` (a git worktree under
+`scratch/` merged into its repo's default branch, clean, quiet 14 days: `git worktree remove`, never `rm`), `report-only`
+(the station's own checkpoints and recovery records; the migration rehearsal copy). Deleting company data is the owner's
+decision: every row ships `"enforce": false` and is only measured. Past its `warnBytes` the owner gets **one** card per row
+("Old copies of the workspace backups take 9 GB of disk. Remove them automatically from now on, always keeping the
+newest 3?"). Their yes is recorded in `company/state/reaper.json` and the row is enforced from then on (or set
+`"enforce": true` on the row); a no is not asked again. `workspaces-rehearsal` is asked about only after the migration
+cutover is recorded (`company/state/migration-cutover.json`).
+
+## Memory (company/tools/memory.js)
+
+`company.json` `runtime.memory` (unset = automatic): `profile` `auto` | `low` | `normal` (auto: low on 4.5 GB or less),
+`keepFreeMB` (memory the company never plans to use: for a local AI model, its size plus 1 GB), `visibleBrowser` (off:
+the station's browser is headless and closes itself when unused; a window never does). `memory.js plan` shows the numbers
+(`--total MB` for another machine, `--companies N` for N companies on it); every value is rounded down to 64 MB. With
+two or more companies on one machine (`lib/memory.js share`: every other enabled station unit in the user's unit dir whose
+folder holds `company/company.json`), the budget is the machine minus what is kept free (the largest `keepFreeMB` any of
+them asks for) and the system's share, split evenly; `memory.js status` warns when the limits in force were planned for
+another number of companies. The table is one company alone:
+
+| Machine | profile | keep free | station High / Max | console | dispatcher | private browsers / idle close |
+|---|---|---|---|---|---|---|
+| 2 GB | low | 0 | 896 / 1152 MB | 160 / 300 | 512 / 768 | 1 / 5 min |
+| 4 GB | low | 0 | 1984 / 2560 | 160 / 300 | 512 / 768 | 1 / 5 min |
+| 8 GB | normal | 0 | 3584 / 4992 | 256 / 512 | 768 / 1024 | 3 / 15 min |
+| 16 GB | normal | 6 GB | 4608 / 6400 | 256 / 512 | 768 / 1024 | 3 / 15 min |
+| 62 GB | normal | 16 GB | 23040 / 32256 | 256 / 512 | 768 / 1024 | 3 / 15 min |
+
+Under low also: Node heaps 384 / 128 / 160 MB, at most 2 agents at once, background services 256M by default and 1G at
+most (512M / 4G otherwise), Chrome's low-memory flags. `memory.js apply` (run by `scripts/setup-station.sh`; by the owner
+with `memory.js set ... --by owner`) writes only its own files: a drop-in `<unit>.service.d/50-capheos-memory.conf` per
+unit (MemoryHigh, MemoryMax, MemorySwapMax, and the template's own ExecStart with `--max-old-space-size`: never in
+`NODE_OPTIONS`, which every agent's node build would inherit) and `.starnet-data/memory.env` (0600; the station's browser
+and shell settings for StarNet patch 0020, ignored by a station without it). It applies the limits live with
+`systemctl --user set-property --runtime` and never restarts anything; a changed heap or memory.env is printed with the
+safe restart that waits until nothing runs. The station unit has no `ManagedOOMMemoryPressure=kill` on purpose
+(systemd-oomd would kill every run in it), and it has `ManagedOOMPreference=omit` (template and drop-in; the dispatcher's
+drop-in too under low): host slice defaults such as `/usr/lib/systemd/user/slice.d/10-oomd-per-slice-defaults.conf` put
+`ManagedOOMMemoryPressure=kill` on every user slice (`app.slice` included), and a build holding the station at MemoryHigh
+reads as pressure on the slice it runs in. So every company unit (the templates, service.js units, owner jobs) runs in
+the company's own slice `capheos-<service>.slice` (lib/memory.js `sliceOf`; outside `app.slice`), and `memory.js apply`
+writes `<slice>.slice` plus `<level>.slice.d/50-capheos-memory.conf` with `ManagedOOMMemoryPressure=auto` on it and on
+every level above it (a dash in a slice name is a level; `capheos.slice` is shared and reads the same from every
+company): that pressure never makes oomd end the owner's apps, the owner's Chrome or another company's units. The swap
+rule keeps the host's setting. A running unit moves into the slice at its next restart (`apply` lists them and asks for
+the safe restart; `memory.js status` shows the slice). Omit takes the station out of oomd's choice (oomd's swap rule honours the preference only for root-owned
+cgroups, so `MemorySwapMax` bounds the station's swap instead). The kernel picks inside the unit, the sidecar at `OOMScoreAdjust=100`, agent
+commands at 500 (patch 0020), console and dispatcher at 200 with oomd's kill (they restart by themselves; under low the
+dispatcher has no oomd kill, so it is not ended mid-tick over and over). The station has `OOMPolicy=continue` (template
+and drop-in): with the host default `stop`, the kernel ending one build at MemoryMax would make systemd stop the whole
+station and every live run. `apply` sets limits live only when that cannot stop a unit: the station already runs with
+`OOMPolicy=continue` (after the daemon-reload) and no unit already uses more than its new MemoryHigh; otherwise it warns
+and the limits wait for the unit's next start. The console's
+Settings › System › Health shows a Memory row (Fine, Tight, Short) and the plain line from `memory.js status`.

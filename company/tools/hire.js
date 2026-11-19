@@ -1242,7 +1242,7 @@ async function models() {
 /* selftest: the self-governance levels and the spendCap guardrail, offline (a scratch company tree; no station). */
 async function selftest() {
   const os = require('os'); const assert = require('assert');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'hire-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('hire-selftest-');
   const out = []; let bad = 0;
   const t = (n, fn) => { try { fn(); out.push('ok   ' + n); } catch (e) { bad++; out.push('FAIL ' + n + ': ' + e.message); } };
   const govFile = path.join(T, 'company', 'state', 'governance.json');

@@ -44,7 +44,7 @@ const PORT = Number(opt('port') || 8965);
 if (!Number.isInteger(PORT) || PORT < 1024 || PORT > 65535 || PORT === LIVE_PORT) { console.error('refusing port ' + PORT + ': the scratch station needs its own port, never the company station\'s (' + LIVE_PORT + ')'); process.exit(2); }
 const FROM = opt('workspace-from');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const BASE = fs.mkdtempSync(path.join(opt('base') || process.env.XDG_RUNTIME_DIR || os.tmpdir(), 'sv-e2e-'));
+const BASE = require('../lib/temp-life').tmpDir('sv-e2e-', { base: opt('base') || process.env.XDG_RUNTIME_DIR || os.tmpdir() });
 const WS = path.join(BASE, 'workspace');
 const SCREENS = path.join(BASE, 'screens');
 const FAKEHOME = path.join(BASE, 'callerhome');   // the tool's caller environment: Chrome must write none of it
@@ -220,7 +220,7 @@ const inScratch = f => typeof f === 'string' && path.resolve(f).startsWith(SCREE
   // 8. retention, on a temp folder with the tool's own rule
   try {
     const SV = require(TOOL);
-    const tmp = fs.mkdtempSync(path.join(process.env.XDG_RUNTIME_DIR || os.tmpdir(), 'sv-ret-'));
+    const tmp = require('../lib/temp-life').tmpDir('sv-ret-', { base: process.env.XDG_RUNTIME_DIR || os.tmpdir() });
     const day = path.join(tmp, '2026-01-01'); fs.mkdirSync(day);
     const now = Date.now();
     for (let i = 0; i < 210; i++) { const p = path.join(day, 'f' + String(i).padStart(3, '0') + '.png'); fs.writeFileSync(p, 'x'); const t = (now - (210 - i) * 60000) / 1000; fs.utimesSync(p, t, t); }

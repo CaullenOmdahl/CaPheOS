@@ -34,7 +34,7 @@ scripts/console.sh                # same as the first line
   `/api/ops/flags` (+ `/accept`, `/revert` `{key, why}`), `/api/ops/scheduler` (dry runs; POST `{to, confirm}`,
   `/seat`), `/api/ops/services/unregistered` and `/adopt`, `/api/ops/modules` and `/<id>/enable|disable`,
   `/api/ops/guardrails/apply`, `/api/ops/restart` and `/station`, `/console`, `/api/ops/update` (the dry run) and
-  `/apply {expect}`, `/api/ops/access`, `/api/ops/jobs[/<id>]`, `/api/ops/log`. Streams (`/api/events`, chat, the
+  `/apply {expect}`, `/api/ops/access`, `/api/ops/memory` (memory.js status: use, profile, what the reaper freed, the station browser), `GET /api/ops/memory/shared` (reaper.js host-sweep --json: the shared temp folder's leftovers no company can vouch for, listed only), `POST /api/ops/memory {profile, keepFreeMB, visibleBrowser}` (memory.js set --by owner; answers `{changed, restartNeeded, line}`), `POST /api/ops/memory/clean {what: 'now'|'shared-temp'}` (reaper.js run, or host-sweep --apply --by owner, as a detached job), `/api/ops/jobs[/<id>]`, `/api/ops/log`. Streams (`/api/events`, chat, the
   station proxy) carry `x-accel-buffering: no`; SSE pings every 25 s and the chat stream sends a blank line every 20 s.
 - The browser never sees the station token: station calls go through `/api/station/*`.
 - Every write acts **as the owner** (`--by <owner name>`), through the same tools an owner would run in a shell.

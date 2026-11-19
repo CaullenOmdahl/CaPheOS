@@ -36,7 +36,8 @@
  * company/work/ or company/tools/ of this company (by its real path), with a matching extension (.py, .js/.mjs/.cjs,
  * .sh). Every later word that is a path (starts with /, or holds a .. segment) must be inside the company folder.
  * THE TEMPLATE. WorkingDirectory=the company folder; Restart=on-failure (or always, declared) with a start limit;
- * MemoryMax (default 512M, at most 4G), CPUQuota (default 50%, at most 200%), TasksMax=64, Nice=10, NoNewPrivileges.
+ * MemoryMax (default 512M, at most 4G; 256M and 1G under the low memory profile: lib/memory.js plan), with MemoryHigh at 80 % and
+ * MemorySwapMax at 50 % of it and OOMScoreAdjust=300, CPUQuota (default 50%, at most 200%), TasksMax=64, Nice=10, NoNewPrivileges.
  * There is no network unless the proposal asks for it (RestrictAddressFamilies=AF_UNIX): --hosts <host>[,<host>] names the
  * websites it needs (recorded, not enforced by the unit: the owner is told which websites it connects to, never that it
  * reaches only those), --network on opens every website. A timer runs its service
@@ -108,6 +109,7 @@ function context(o) {
   const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
   return {
     root, config, P,
+    memPlan: o.memPlan || null,   // {defaultMax, ceiling}: lib/memory.js plan().services (a selftest hands in a low one)
     slug: String(config.slug || config.shortName || 'company').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'company',
     stationSvc: String((config.station && config.station.serviceName) || 'capheos-station'),
     file: P('company', 'state', 'services.json'), log: P('company', 'state', 'services-log.jsonl'), adoptedDir: P('company', 'state', 'services-adopted'),
@@ -252,11 +254,21 @@ function scheduleOf(kind, o) {
   if (!/^[A-Za-z0-9*:,.\/~ _+-]{1,80}$/.test(c)) throw err('--on-calendar may hold only a systemd calendar spec (letters, digits, * : , . / ~ - + and spaces)');
   return { onCalendar: c };
 }
-function limitsOf(o) {
-  const mem = String(o.memory || '512M').toUpperCase();
+/* the memory a service gets by default and at most: from this machine's size and the company's memory profile
+   (company/tools/lib/memory.js plan: 256M / at most 1G under the low profile, 512M / 4G otherwise) */
+function memPlan(ctx) {
+  if (ctx && ctx.memPlan) return ctx.memPlan;
+  let p = { defaultMax: '512M', ceiling: '4G' };
+  try { const M = require('./lib/memory'); const h = M.host({ oomd: false }); const s = M.settings(ctx && ctx.config); p = M.plan({ totalMB: h.totalMB, profile: M.profileOf(s, h), keepFreeMB: s.keepFreeMB }).services; } catch (_) {}
+  if (ctx) ctx.memPlan = p;
+  return p;
+}
+function limitsOf(o, ctx) {
+  const mp = memPlan(ctx);
+  const mem = String(o.memory || mp.defaultMax).toUpperCase();
   const mm = mem.match(/^(\d+)(K|M|G)$/); if (!mm) throw err('--memory must look like 256M or 1G');
   const bytes = Number(mm[1]) * ({ K: 1024, M: 1024 ** 2, G: 1024 ** 3 })[mm[2]];
-  if (bytes < 16 * 1024 ** 2 || bytes > 4 * 1024 ** 3) throw err('--memory must be between 16M and 4G');
+  if (bytes < 16 * 1024 ** 2 || bytes > bytesOf(mp.ceiling)) throw err('--memory must be between 16M and ' + mp.ceiling + ' on this computer (its memory profile)');
   const cpu = String(o.cpu || '50%'); const cm = cpu.match(/^(\d+)%$/); if (!cm || Number(cm[1]) < 1 || Number(cm[1]) > 200) throw err('--cpu must be 1% to 200%');
   return { memoryMax: mem, cpuQuota: cpu };
 }
@@ -299,7 +311,7 @@ function specOf(ctx, name, o, opts) {
     }
     if (!wake.length) throw err('--wake names the seats to wake, e.g. --wake rohan');
   }
-  return Object.assign({ name, unit: unitOf(ctx, name), kind, argv, schedule: scheduleOf(kind, o), why: why.slice(0, 400), restart, softHalt, network, limits: limitsOf(o), timeout, successExit }, wake ? { wake } : {}, hosts ? { hosts } : {},
+  return Object.assign({ name, unit: unitOf(ctx, name), kind, argv, schedule: scheduleOf(kind, o), why: why.slice(0, 400), restart, softHalt, network, limits: limitsOf(o, ctx), timeout, successExit }, wake ? { wake } : {}, hosts ? { hosts } : {},
     o.plain && o.plain !== true ? { plain: String(o.plain).replace(/\s+/g, ' ').trim().slice(0, 200) } : {},
     o['if-no'] && o['if-no'] !== true ? { ifNo: String(o['if-no']).replace(/\s+/g, ' ').trim().slice(0, 160) } : {});
 }
@@ -317,6 +329,9 @@ const scheduleWords = s => !s ? 'runs all the time' : s.every ? 'every ' + s.eve
  * start per firing, so it cannot crash-loop: timers get no start limit. A long-running service (Restart=on-failure)
  * keeps the 5-per-10-min guard it exists for. */
 const startLimit = e => e.kind === 'timer' ? 'StartLimitIntervalSec=0\n' : 'StartLimitIntervalSec=10min\nStartLimitBurst=5\n';
+// a fraction of a MemoryMax value, in whole MB (MemoryHigh at 80 %: the kernel reclaims and slows the service before the hard
+// limit; MemorySwapMax at 50 %). OOMScoreAdjust=300: a service goes before the station (100) and its console (200).
+function memFrac(max, f) { const b = bytesOf(max); return Number.isFinite(b) ? Math.max(1, Math.floor(b * f / 1048576)) + 'M' : max; }
 function render(ctx, e) {
   const head = '# Written by company/tools/service.js for ' + (ctx.config.name || ctx.slug) + '. Change it with service.js, not by hand: a hand edit is flagged.\n';
   const x = 'X-CaPheOS-Company=' + ctx.slug + '\nX-CaPheOS-Root=' + ctx.root + '\nX-CaPheOS-Service=' + e.name + '\n' + (e.hosts && e.hosts.length ? 'X-CaPheOS-Hosts=' + e.hosts.join(',') + '\n' : '');
@@ -325,12 +340,16 @@ function render(ctx, e) {
     + startLimit(e) + x + '\n[Service]\n'
     + 'Type=' + (e.kind === 'timer' ? 'oneshot' : 'simple') + '\n'
     + 'WorkingDirectory=' + ctx.root + '\n'
+    // the company's own slice, outside app.slice (lib/memory.js sliceOf; memory.js apply turns systemd-oomd's pressure kill
+    // off there), with the station, console and dispatcher: a service near its MemoryHigh never makes oomd end the
+    // owner's apps or another company's units
+    + 'Slice=' + require('./lib/memory').sliceOf(ctx.config) + '\n'
     + 'ExecStart=' + execLine(execArgv(ctx, e)) + '\n'
     + 'Environment=CAPHEOS_ROOT=' + ctx.root + ' CAPHEOS_SERVICE=' + e.name + '\n'
     + (e.kind === 'timer' ? '' : 'Restart=' + e.restart + '\nRestartSec=10s\n')
     + (e.timeout ? 'TimeoutStartSec=' + e.timeout + '\n' : '')
     + (e.successExit ? 'SuccessExitStatus=' + e.successExit + '\n' : '')
-    + 'TimeoutStopSec=90s\nMemoryMax=' + e.limits.memoryMax + '\nCPUQuota=' + e.limits.cpuQuota + '\nTasksMax=64\nNice=10\nNoNewPrivileges=yes\n'
+    + 'TimeoutStopSec=90s\nMemoryHigh=' + memFrac(e.limits.memoryMax, 0.8) + '\nMemoryMax=' + e.limits.memoryMax + '\nMemorySwapMax=' + memFrac(e.limits.memoryMax, 0.5) + '\nOOMScoreAdjust=300\nCPUQuota=' + e.limits.cpuQuota + '\nTasksMax=64\nNice=10\nNoNewPrivileges=yes\n'
     + (e.network ? '' : 'RestrictAddressFamilies=AF_UNIX\n')
     + (e.kind === 'timer' ? '' : '\n[Install]\nWantedBy=default.target\n');
   if (e.kind !== 'timer') return { [e.unit + '.service']: svc };
@@ -400,7 +419,7 @@ function safeProfile(ctx, e) {
     reasons.push({ plain: 'It connects to ' + sitesWords(e.hosts) + (st.fresh.length ? ', which is new to the crew,' : '') + ' but nothing stops it reaching others, so company data could leave.',
       crew: 'network on: websites declared (' + e.hosts.join(', ') + '), not enforced' });
   } else if (e.network) reasons.push({ plain: 'It could connect to any website, which risks company data leaving this computer.', crew: 'network open (--network on, no --hosts)' });
-  if (bytesOf(e.limits && e.limits.memoryMax) > bytesOf(DEFAULT_LIMITS.memoryMax) || parseInt((e.limits && e.limits.cpuQuota) || '0', 10) > parseInt(DEFAULT_LIMITS.cpuQuota, 10))
+  if (bytesOf(e.limits && e.limits.memoryMax) > bytesOf(memPlan(ctx).defaultMax) || parseInt((e.limits && e.limits.cpuQuota) || '0', 10) > parseInt(DEFAULT_LIMITS.cpuQuota, 10))
     reasons.push({ plain: 'It may use more of this computer\'s memory or power than usual, which risks slowing it down.', crew: 'raised limits: MemoryMax=' + e.limits.memoryMax + ' CPUQuota=' + e.limits.cpuQuota });
   if (e.kind === 'service' && e.restart === 'always') reasons.push({ plain: 'It restarts itself whenever it stops, which keeps it going even when something is wrong.', crew: 'Restart=always' });
   if (e.softHalt === 'keep') reasons.push({ plain: 'It keeps running even when you pause the company.', crew: '--soft-halt keep' });
@@ -638,7 +657,7 @@ function ownerApprove(name, opts) {
   try {
     const argv = validateArgv(ctx, e.argv);
     if (JSON.stringify(argv) !== JSON.stringify(e.argv)) return refuse('the command in the registry is not the one propose would write');
-    const lim = limitsOf({ memory: e.limits && e.limits.memoryMax, cpu: e.limits && e.limits.cpuQuota });
+    const lim = limitsOf({ memory: e.limits && e.limits.memoryMax, cpu: e.limits && e.limits.cpuQuota }, ctx);
     if (JSON.stringify(lim) !== JSON.stringify(e.limits)) return refuse('the limits in the registry are not ones propose allows');
     if (e.unit !== unitOf(ctx, name) || e.name !== name || !['service', 'timer'].includes(e.kind)) return refuse('the registry entry names another unit');
   } catch (x) { return refuse(x.message); }
@@ -941,7 +960,9 @@ function findings(ctx) {
     const target = one(parseUnit(x.text), 'Timer.Unit') || x.file.replace(/\.timer$/, '.service');
     if (inScope.has(target) || (byName.has(target) === false && refsRoot(x.text))) inScope.add(x.file);
   }
-  const unregistered = [...inScope].filter(f => !fw.has(f) && !reg.has(f)).sort();
+  // an owner job the console started (console/owner-ops.js: <svc>-owner-job-<id>.service, transient) is the framework's
+  const ownerJob = f => f.startsWith(ctx.stationSvc + '-owner-job-') && require('./lib/owned').OWNER_JOB.test(f.slice(ctx.stationSvc.length));
+  const unregistered = [...inScope].filter(f => !fw.has(f) && !reg.has(f) && !ownerJob(f)).sort();
   const unscoped = [...new Set([...reg.values()].map(e => e.unit))].filter(u => !u.startsWith(ctx.slug + '-svc-')).sort();
   const edited = [];
   for (const [f, { e, h }] of regFiles) {
@@ -1064,7 +1085,7 @@ function selftest() {
   // owner-answer guard would refuse the fixture's own answer. Pin it for the test (provenance.js:122), restore after.
   try { const P = require('./provenance.js'); P.pinUnderStation(false); P.pinOwnerShell(true); } catch (_) {}
   const { spawnSync } = require('child_process');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'service-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('service-selftest-');
   let bad = 0, n = 0;
   const ok = (name, cond, detail) => { n++; console.log((cond ? 'ok   ' : 'FAIL ') + name + (cond ? '' : '  [' + String(detail === undefined ? '' : typeof detail === 'string' ? detail : JSON.stringify(detail)).slice(0, 400) + ']')); if (!cond) bad++; };
   const throwsCode = (fn, code, re) => { try { fn(); return false; } catch (e) { return e.code === code && (!re || re.test(e.message)) ? true : e.code + ' ' + e.message; } };
@@ -1103,7 +1124,7 @@ function selftest() {
     const journal = {};
     const ctx = context({ root: R, unitDir: U, transientDir: TR, systemctl, journal: u => journal[u] || '', now: () => Date.parse('2026-11-17T10:00:00Z'), isAgent: () => agent, ownerShell: () => !agent,
       guard: nm => nm === 'localComputer' ? guardOn : true, halted: () => halted, callerConflict: () => conflict,
-      gov: { root: R, get level() { return govLevel || undefined; } }, ownerCard: card, ownerNotice: notice });
+      gov: { root: R, get level() { return govLevel || undefined; } }, ownerCard: card, ownerNotice: notice, memPlan: { defaultMax: '512M', ceiling: '4G' } });
     const inbox = path.join(R, 'company', 'pm-inbox.jsonl');
     const answer = (qid, verdict) => require('./lib/pm-inbox-guard').append(inbox, { type: 'answer', id: qid, a: verdict === 'yes' ? 'yes' : 'no', answer: { verdict }, by: 'Pat' }, 'selftest');
 
@@ -1149,6 +1170,15 @@ function selftest() {
     ok('after yes: installed, enabled and started', r.ok && r.status === 'installed' && fake.active['testco-svc-depth.service'] && fake.calls.includes('daemon-reload'), r);
     ok('unit: company-scoped name, WorkingDirectory=ROOT, Restart, limits, no network rule', /WorkingDirectory=/.test(unit) && unit.includes('WorkingDirectory=' + R + '\n') && /Restart=on-failure/.test(unit)
       && /MemoryMax=512M/.test(unit) && /CPUQuota=50%/.test(unit) && /NoNewPrivileges=yes/.test(unit) && !/RestrictAddressFamilies/.test(unit) && /X-CaPheOS-Company=testco/.test(unit), unit);
+    ok('unit: in the company\'s own slice, outside app.slice', /\nSlice=capheos-testco-station\.slice\n/.test(unit), unit);
+    ok('unit: MemoryHigh at 80 % and MemorySwapMax at 50 % of MemoryMax, OOMScoreAdjust 300', /MemoryHigh=409M\nMemoryMax=512M\nMemorySwapMax=256M\nOOMScoreAdjust=300\n/.test(unit), unit);
+    { // the low memory profile (a small machine): a smaller default, a lower ceiling
+      const low = context({ root: R, unitDir: U, transientDir: TR, systemctl, isAgent: () => false, ownerShell: () => true, guard: () => true, halted: () => false, callerConflict: () => null, gov: { root: R }, ownerCard: card, ownerNotice: notice, memPlan: { defaultMax: '256M', ceiling: '1G' } });
+      const sp = specOf(low, 'smallbox', { kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', why: 'records order-book depth between agent runs', network: 'none' }, { resolve: false });
+      ok('low profile: a proposal gets 256M by default', sp.limits.memoryMax === '256M', sp.limits);
+      ok('low profile: 2G is refused as over the 1G ceiling', throwsCode(() => specOf(low, 'bigbox', { kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py', why: 'records order-book depth between agent runs', network: 'none', memory: '2G' }, { resolve: false }), 2, /between 16M and 1G/) === true);
+      ok('low profile: 512M counts as raised limits (over the plan\'s default)', safeProfile(low, Object.assign({}, sp, { limits: { memoryMax: '512M', cpuQuota: '50%' } })).reasons.some(x => /raised limits/.test(x.crew)));
+      ok('low profile: the rendered unit carries MemoryHigh', /MemoryHigh=204M\nMemoryMax=256M/.test(render(low, sp)['testco-svc-smallbox.service'])); }
     ok('unit ExecStart is quoted absolute argv', /ExecStart="[^"]*python3" "[^"]*rec\.py" "--hz" "1"/.test(unit), unit);
     const reg = read(ctx).services.depth;
     ok('services.json records who, why, approval and the unit hash', reg.by === 'data' && /order-book/.test(reg.why) && reg.approval.questionId === q.id && reg.files['testco-svc-depth.service']);
@@ -1322,7 +1352,13 @@ function selftest() {
     fs.writeFileSync(path.join(U, 'capheos-bank-day.service'), '[Service]\nType=oneshot\nExecStart=/bin/sh ' + R + '/company/work/sim/scripts/bank.sh\nTimeoutStartSec=3h\n');
     fs.writeFileSync(path.join(U, 'capheos-bank-day.timer'), '[Timer]\nOnCalendar=*-*-* 17:30:00 UTC\nPersistent=true\n[Install]\nWantedBy=timers.target\n');
     fs.writeFileSync(path.join(TR, 'run-u42.service'), '[Service]\nExecStart=/usr/bin/python3 ' + R + '/company/work/sim/scripts/rec.py\n');
+    // the console's owner job (console/owner-ops.js) is the framework's; a look-alike under another name is not
+    fs.writeFileSync(path.join(TR, 'testco-station-owner-job-update-20261119120000-ab12.service'), '[Service]\nWorkingDirectory=' + R + '\nExecStart=bash -c x ' + R + '/company/state/owner-ops/x.pid node ' + R + '/company/tools/framework-update.js apply\n');
+    fs.writeFileSync(path.join(TR, 'testco-station-owner-job-sneaky.service'), '[Service]\nWorkingDirectory=' + R + '\nExecStart=/usr/bin/python3 ' + R + '/x.py\n');
     let d = duty(ctx);
+    ok('duty: the console\'s own owner-job unit is never flagged; a unit merely named like one is', !d.items.some(i => /owner-job-update-/.test(i.id)) && d.items.some(i => i.id === 'unregistered:testco-station-owner-job-sneaky.service'), d.items);
+    fs.unlinkSync(path.join(TR, 'testco-station-owner-job-update-20261119120000-ab12.service')); fs.unlinkSync(path.join(TR, 'testco-station-owner-job-sneaky.service'));
+    d = duty(ctx);
     ok('duty: finds the units inside ROOT that are not registered (incl. a transient one), not the station or another company', d.due && d.route === 'risk'
       && ['capheos-bank-day.service', 'capheos-bank-day.timer', 'capheos-depth-stopgap.service', 'run-u42.service'].every(u => d.items.some(i => i.id === 'unregistered:' + u))
       && !d.items.some(i => /testco-station|other-company/.test(i.id)) && /transient/.test(d.reason), d);

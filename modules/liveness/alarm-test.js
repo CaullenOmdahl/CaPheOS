@@ -163,7 +163,7 @@ async function gotIt(o) {
 async function selftest() {
   const os = require('os');
   const { spawn } = require('child_process');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'alarm-test-selftest-'));
+  const tmp = require('../../company/tools/lib/temp-life').tmpDir('alarm-test-selftest-');
   let fails = 0, n = 0;
   const t = (name, ok, x) => { n++; if (!ok) fails++; console.log((ok ? 'ok   ' : 'FAIL ') + name + (ok || x === undefined ? '' : ' :: ' + String(typeof x === 'string' ? x : JSON.stringify(x)).slice(0, 600))); };
   const hits = []; const srv = require('http').createServer((q, res) => { hits.push(q.method); res.end('OK'); });

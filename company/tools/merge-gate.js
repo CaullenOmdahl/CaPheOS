@@ -850,7 +850,7 @@ process.exit(2);
 function selftest() {
   const os = require('os');
   const cp = require('child_process');
-  const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'merge-gate-selftest-'));
+  const TMP = require('./lib/temp-life').tmpDir('merge-gate-selftest-');
   const LOGF = path.join(TMP, 'gate.log');
   const WRAP = path.join(os.homedir(), '.local', 'bin', 'git');
   const CLEAN = { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
@@ -865,7 +865,7 @@ function selftest() {
   const G = (a, env) => { const r = cp.spawnSync(REAL_GIT, a, { encoding: 'utf8', env: Object.assign({}, process.env, CLEAN, env || {}) }); if (r.status !== 0) throw new Error('setup git ' + a.join(' ') + '\n' + (r.stderr || '')); return r; };
   let seq = 0;
   function mkrepo(def) {
-    const base = fs.mkdtempSync(path.join(TMP, 'r' + (seq++) + '-'));
+    const base = require('./lib/temp-life').tmpDir('r' + (seq++) + '-', { base: TMP });
     const bare = path.join(base, 'remote.git'), wc = path.join(base, 'wc');
     G(['init', '-q', '--bare', '-b', def, bare]);
     G(['clone', '-q', bare, wc]);
@@ -878,7 +878,7 @@ function selftest() {
   // Like mkrepo but the origin URL literally contains //github.com/ so isGithub() treats it as a github remote
   // (the path still resolves locally — no network), to exercise the github-only paths (fail-closed, `--` splice).
   function mkGh(def) {
-    const base = fs.mkdtempSync(path.join(TMP, 'g' + (seq++) + '-'));
+    const base = require('./lib/temp-life').tmpDir('g' + (seq++) + '-', { base: TMP });
     const bare = base + '/x//github.com/o/r.git', wc = path.join(base, 'wc');
     fs.mkdirSync(base + '/x//github.com/o', { recursive: true });
     G(['init', '-q', '--bare', '-b', def, bare]);

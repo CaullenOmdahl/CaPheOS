@@ -25,7 +25,7 @@ const STATION_PINS = { STARNET_USER_CONTROL_MODE: 'preserve', STARNET_COMPUTER_D
 const QID = 'q-000123';     // a gate question Sam asked before this change, answered "yes" then (history)
 const QOLD = 'q-000124';    // an open question from before the change
 
-const T = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-inbox-guard-test-'));
+const T = require('../lib/temp-life').tmpDir('pm-inbox-guard-test-');
 const S = path.join(T, 'scripts');   // the helper lives outside the company
 const PMI = path.join(T, 'company', 'pm-inbox.jsonl');
 const W = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); return f; };
@@ -207,7 +207,7 @@ test('the console answer (Today), Today, a snooze and an approval answered in ch
   assert.equal(ap.status, 0, ap.out); assert.equal(ap.json.minted, true, ap.out);
   const snz = cli('inbox.js', ['ask', '--from', 'Sam', '--message', 'May we change the logo next month? It gives us a fresher look; if you skip it, we keep the old one.']);
   assert.equal(snz.status, 0, snz.out);
-  const child = spawn(process.execPath, [path.join(T, 'console', 'server.js'), '--port', '0', '--print-port'], { env: baseEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = require('../lib/temp-life').track(spawn(process.execPath, [path.join(T, 'console', 'server.js'), '--port', '0', '--print-port'], { env: baseEnv(), stdio: ['ignore', 'pipe', 'pipe'] }));
   let err = ''; child.stderr.on('data', d => { err += d; });
   try {
     const port = await new Promise((res, rej) => { let b = ''; child.stdout.on('data', d => { b += d; const m = b.match(/\{"port":(\d+)\}/); if (m) res(Number(m[1])); }); child.on('exit', c => rej(new Error('console exited ' + c + ': ' + err))); setTimeout(() => rej(new Error('console did not start: ' + err)), 20000); });

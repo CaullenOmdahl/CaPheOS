@@ -139,7 +139,7 @@ test('a family is a lead plus its children; its totals equal the sum of its runs
 });
 
 test('the CLI reads runs.jsonl and the admit log bounded under CAPHEOS_ROOT and prints JSON with --json', () => {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'model-stats-test-'));
+  const T = require('../lib/temp-life').tmpDir('model-stats-test-');
   try {
     const now = Date.now(), shift = now - NOW;
     const moved = newRows().map(x => Object.assign({}, x, x.startedAt ? { startedAt: x.startedAt + shift } : {}, x.ts ? { ts: x.ts + shift } : {}));

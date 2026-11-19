@@ -8,7 +8,7 @@ const fs = require('fs'); const os = require('os'); const path = require('path')
 const { spawnSync } = require('child_process');
 const test = require('node:test'); const assert = require('assert');
 
-const T = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'framework-edits-selftest-'))); const H = path.join(T, 'home');
+const T = fs.realpathSync(require('../lib/temp-life').tmpDir('framework-edits-selftest-')); const H = path.join(T, 'home');
 const W = (rel, v) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, v); return f; };
 const R = rel => fs.readFileSync(path.join(T, rel), 'utf8');
 const G = (...a) => spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'init.defaultBranch=main', '-C', T, ...a], { encoding: 'utf8' });
@@ -55,13 +55,13 @@ test('a crew edit of a framework doc is caught within a tick: filed with its dif
 });
 
 test('the framework-request id sequence counts hand-written titled files too (fr-0007-title.md)', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'fr-ids-'));
+  const d = require('../lib/temp-life').tmpDir('fr-ids-');
   try { fs.writeFileSync(path.join(d, 'fr-0007-providers-guard.md'), 'x'); fs.writeFileSync(path.join(d, 'fr-0003.md'), 'x'); assert.equal(FE.nextRequestId(d), 'fr-0008'); }
   finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
 
 test('the framework checkout itself (not founded) is never swept', () => {
-  const D = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fw-dev-')));
+  const D = fs.realpathSync(require('../lib/temp-life').tmpDir('fw-dev-'));
   try {
     fs.writeFileSync(path.join(D, 'a.md'), 'x\n'); spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'init', '-q', D]); spawnSync('git', ['-C', D, 'add', '-A']); spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-C', D, 'commit', '-qm', 'x']);
     fs.writeFileSync(path.join(D, 'a.md'), 'a developer edit\n');

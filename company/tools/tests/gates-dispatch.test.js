@@ -34,8 +34,8 @@ const block = (head, extra) => '\n## 2026-11-17 from Alex — ' + head + '\n**Ne
 let mock = null, port = 0;
 const roots = [];
 test.before(async () => {
-  const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'gates-mock-')), 'req.jsonl'); roots.push(path.dirname(log));
-  mock = spawn(process.execPath, [MOCK, '--port', '0', '--token', TOKEN, '--log', log], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const log = path.join(require('../lib/temp-life').tmpDir('gates-mock-'), 'req.jsonl'); roots.push(path.dirname(log));
+  mock = require('../lib/temp-life').track(spawn(process.execPath, [MOCK, '--port', '0', '--token', TOKEN, '--log', log], { stdio: ['ignore', 'pipe', 'inherit'] }));
   port = await new Promise((res, rej) => { let d = ''; mock.stdout.on('data', c => { d += c; const m = /"port":(\d+)/.exec(d); if (m) res(Number(m[1])); }); mock.on('exit', c => rej(new Error('mock exited ' + c))); });
   assert.notEqual(port, 8800); assert.notEqual(port, 8810);
   mock.logFile = log;
@@ -51,7 +51,7 @@ const runs = () => fs.readFileSync(mock.logFile, 'utf8').split('\n').filter(Bool
 /* a company: o.sprint (true = on since an hour ago), o.handoffs {inbox: text}, o.lastRunMinAgo, o.runs (runs.jsonl rows) */
 async function company(o) {
   o = o || {};
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'gates-co-')); roots.push(T);
+  const T = require('../lib/temp-life').tmpDir('gates-co-'); roots.push(T);
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };
   w('company/company.json', { name: 'Gates Test ' + path.basename(T), owner: { name: 'Pat' }, timezone: TZ, station: { port, serviceName: 'gates-test' } });
   w('secrets/station-token', TOKEN + '\n');

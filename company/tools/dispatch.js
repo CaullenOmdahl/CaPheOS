@@ -305,7 +305,7 @@ function hiringLines(rounds, state) {
 function selftestOpenHandoffs() {
   const cases = [];
   const check = (name, cond, detail) => cases.push({ name, pass: !!cond, detail: detail || '' });
-  const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'dispatch-selftest-'));
+  const dir = require('./lib/temp-life').tmpDir('dispatch-selftest-');
   const write = (name, text) => { const f = path.join(dir, name); fs.writeFileSync(f, text); return f; };
   const openBlock = '## 2026-11-16 10:00 from X — an open ask\n**Need:** y\n**Status:** OPEN\n**Deadline:** today\n';
   const doneClosed = '## 2026-11-16 10:00 from X — closed\n**Need:** y\n**Status:** DONE — resolved\n**Resolved 06:42 by Y:** done\n';
@@ -908,6 +908,8 @@ function lastRunTail(job) {
   // happen whether or not the owner has the console open; the console calls the same tick when it lists approvals
   if (!DRY) try { const t = await require('./approvals.js').tick({ actor: 'the dispatcher' }); const n = ((t.expired || []).length || 0); if (n) log('APPROVALS: ' + n + ' expired (default deny applied)'); } catch (e) { log('APPROVALS ERROR: ' + String(e.message).slice(0, 200)); }
   try { require('./retention.js').daily({ dry: DRY, log }); } catch (e) { log('RETENTION ERROR: ' + String(e.message).slice(0, 200)); }   // once a company day (docs/RETENTION.md)
+  // temp files, left-behind browsers and stray processes: the reaper chore (company/tools/reaper.js), run with the duties
+  // above, also while halted; it acts only on what it can prove is this company's
   // house benchmark (company/tools/model-stats.js): refreshed at most hourly, read by the people owner and the pacer for model pairing
   try {
     const hb = path.join(ROOT, 'company', 'work', 'models', 'house-benchmarks.json');
@@ -1388,7 +1390,10 @@ function lastRunTail(job) {
       say(agentId, { state: 'held', why: 'has work, but its model may not do this kind of work and no allowed model is open right now; it starts when one opens' });
       continue;
     }
-    const tk = A.admit({ door: 'dispatch', kind: 'run', seat: agentId, jobId: job.id, provider: (job.wire && job.wire.provider) || job.provider, priority: waitersOf(agentId).length ? 'blocking' : null, why: names });   // phase 1: allow, recorded; a refusal block holds
+    const tk = A.admit({ door: 'dispatch', kind: 'run', seat: agentId, jobId: job.id, provider: (job.wire && job.wire.provider) || job.provider, priority: waitersOf(agentId).length ? 'blocking' : null, why: names, owner: ownerWake.has(agentId) });   // phase 1: allow, recorded; a refusal block holds
+    if (tk.memoryEdge === 'start') log('MEMORY HOLD: new work waits, the computer is short of memory (' + tk.reason.replace(/^memory: /, '') + '); owner chats and health checks still run');
+    if (tk.memoryEdge === 'lift') log('MEMORY HOLD LIFTED: enough memory is free again; new work starts');
+    if (tk.decision === 'hold' && tk.memory) { say(agentId, { state: 'held', why: 'has work, but the computer is short of memory; it starts when memory is free again' }); continue; }
     if (tk.decision === 'hold' && tk.noModel) { log('NO MODEL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'none of its models can run right now (limits or the daily budget); it starts when one opens' }); continue; }
     if (tk.decision === 'hold' && tk.quota) { log('QUOTA HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'its model is at its usage limit; it waits for the limit to reset or its next model' }); continue; }
     if (tk.decision === 'hold') { log('REFUSAL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'its model refused a run; it waits for its next model' }); continue; }

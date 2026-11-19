@@ -520,7 +520,7 @@ function selftest() {
 
   // WAITING ON / NOT BEFORE lint (gateFindings): told to the writer
   {
-    const gdir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'handoff-gates-selftest-'));
+    const gdir = require('./lib/temp-life').tmpDir('handoff-gates-selftest-');
     fs.writeFileSync(path.join(gdir, 'to-nadia.md'), '# H\n## 2026-11-17 10:00 from R — the gold backfill\n**Status:** OPEN\n');
     const gcrew = { nad: { name: 'Nadia Farrell', inbox: 'to-nadia.md' } };
     const gnow = localToEpoch('2026-11-17', '23:00');

@@ -22,13 +22,14 @@
  *      scroll, owner bubbles at most 75% of it, the composer the same width; phone width keeps its 16 px gutters.
  *      CHAT_SHOTS=<dir> saves a screenshot of each width there. */
 'use strict';
+const life = require('../company/tools/lib/temp-life');   // temp dirs and helper processes end with the walk, on a kill too
 const { spawn, spawnSync } = require('child_process'); const path = require('path'); const os = require('os'); const fs = require('fs'); const http = require('http');
 const REPO = path.join(__dirname, '..');
 const TOKEN = 'mock-chat-token';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let fails = 0; const t = (name, cond, info) => { console.log((cond ? 'PASS ' : 'FAIL ') + name + (cond ? '' : ' — ' + JSON.stringify(info).slice(0, 600))); if (!cond) fails++; };
 const kids = new Set();
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-resilience-selftest-'));
+const tmp = life.tmpDir('chat-resilience-selftest-');
 function cleanup() { for (const k of kids) { try { k.kill('SIGKILL'); } catch (_) {} } try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} }
 process.on('exit', cleanup);
 async function waitFor(fn, ms, step) { const end = Date.now() + ms; for (;;) { try { const v = await fn(); if (v) return v; } catch (_) {} if (Date.now() > end) return null; await sleep(step || 150); } }
@@ -48,14 +49,14 @@ const FULL = 'Got it. I would start by reading the charter and every open handof
 const LEAK = fs.readFileSync(path.join(__dirname, 'fixtures', 'leaked-tool-calls.txt'), 'utf8');
 
 function startMock(port) {
-  const m = spawn(process.execPath, [path.join(__dirname, 'mock-station.js'), '--port', String(port), '--token', TOKEN, '--root', tmp, '--caps', 'run-detach'], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const m = life.track(spawn(process.execPath, [path.join(__dirname, 'mock-station.js'), '--port', String(port), '--token', TOKEN, '--root', tmp, '--caps', 'run-detach'], { stdio: ['ignore', 'pipe', 'inherit'] }));
   kids.add(m); return m;
 }
 let consoleErr = '';
 function startConsole(port, stationPort) {
   const env = Object.assign({}, process.env, { CAPHEOS_ROOT: tmp, STARNET_URL: 'http://127.0.0.1:' + stationPort, CHAT_RUN_QUIET_MS: '3000' });
   delete env.CONSOLE_PORT;
-  const c = spawn(process.execPath, [path.join(tmp, 'console', 'server.js'), '--port', String(port), '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const c = life.track(spawn(process.execPath, [path.join(tmp, 'console', 'server.js'), '--port', String(port), '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] }));
   c.stderr.on('data', d => { consoleErr += d; });
   kids.add(c); c.on('exit', () => kids.delete(c));
   return new Promise((resolve, reject) => { let b = ''; c.stdout.on('data', d => { b += d; if (/\{"port":\d+\}/.test(b)) resolve(c); }); c.on('exit', code => reject(new Error('console exited ' + code + ': ' + consoleErr))); setTimeout(() => reject(new Error('console did not start: ' + consoleErr)), 15000); });
@@ -127,7 +128,7 @@ const killed = c => new Promise(r => { if (c.exitCode !== null) return r(); c.on
   const now = spawnSync('bash', [path.join(tmp, 'scripts', 'restart-console.sh')], { env: env4, encoding: 'utf8' });
   t('4. without --when-idle it refuses while busy (exit 1)', now.status === 1 && !fs.existsSync(marker), { status: now.status, out: now.stdout + now.stderr });
   const t0 = Date.now();
-  const waiter = spawn('bash', [path.join(tmp, 'scripts', 'restart-console.sh'), '--when-idle', '--timeout', '60'], { env: env4, stdio: ['ignore', 'pipe', 'pipe'] }); kids.add(waiter);
+  const waiter = life.track(spawn('bash', [path.join(tmp, 'scripts', 'restart-console.sh'), '--when-idle', '--timeout', '60'], { env: env4, stdio: ['ignore', 'pipe', 'pipe'] })); kids.add(waiter);
   let wout = ''; waiter.stdout.on('data', d => { wout += d; }); waiter.stderr.on('data', d => { wout += d; });
   await sleep(1500);
   t('4. --when-idle is waiting while the reply streams', !fs.existsSync(marker) && waiter.exitCode === null, wout);
@@ -161,8 +162,8 @@ const killed = c => new Promise(r => { if (c.exitCode !== null) return r(); c.on
   const bin = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'].find(b => spawnSync('which', [b]).status === 0);
   if (!bin) { console.log('SKIP chat-resilience-walk page checks: no Chrome'); console.log(fails ? 'CHAT RESILIENCE WALK: FAIL' : 'CHAT RESILIENCE WALK: PASS'); process.exit(fails ? 1 : 0); }
   const cdpPort = await freePort();
-  const udd = fs.mkdtempSync(path.join(os.tmpdir(), 'chatres-'));
-  const chrome = spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--user-data-dir=' + udd, '--remote-debugging-port=' + cdpPort, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore' }); kids.add(chrome);
+  const udd = life.tmpDir('chatres-');
+  const chrome = life.track(spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--user-data-dir=' + udd, '--remote-debugging-port=' + cdpPort, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore', env: life.chromeEnv(udd) })); kids.add(chrome);
   process.on('exit', () => { try { fs.rmSync(udd, { recursive: true, force: true }); } catch (_) {} });
   const tab = await waitFor(async () => (await (await fetch('http://127.0.0.1:' + cdpPort + '/json')).json()).find(x => x.type === 'page'), 15000);
   if (!tab) { t('chrome started', false); process.exit(1); }

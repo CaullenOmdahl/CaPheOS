@@ -13,7 +13,7 @@ const RR = path.join(REPO, 'company', 'tools', 'routine-rules.js');
 
 // a scratch company root: the framework's modules/ (read-only use), its own company/state/modules.json
 function scratch(enabled) {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'house-rules-selftest-'));
+  const T = require('../lib/temp-life').tmpDir('house-rules-selftest-');
   fs.mkdirSync(path.join(T, 'company', 'state'), { recursive: true });
   fs.cpSync(path.join(REPO, 'company', 'company.json'), path.join(T, 'company', 'company.json'));
   fs.cpSync(path.join(REPO, 'modules'), path.join(T, 'modules'), { recursive: true });

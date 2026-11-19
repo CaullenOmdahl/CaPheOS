@@ -7,6 +7,7 @@
  *   node tests/alarm-walk.js       (never port 8800; exits 0 with SKIP without Chrome)
  */
 'use strict';
+const life = require('../company/tools/lib/temp-life');   // temp dirs and helper processes end with the walk, on a kill too
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs'); const os = require('os'); const path = require('path'); const http = require('http'); const net = require('net');
 const bin = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'].find(b => spawnSync('which', [b]).status === 0);
@@ -21,10 +22,10 @@ async function until(fn, ms) { const end = Date.now() + ms; let v; while (Date.n
 
 (async () => {
   const port = await freePort(), cport = await freePort();
-  const mock = spawn(process.execPath, [path.join(__dirname, '..', 'console', 'ui', 'dev', 'mock-api.js'), String(port)], { env: Object.assign({}, process.env, { MOCK_NO_PUSH: '1', MOCK_CERTIFIED: '1', MOCK_COMMAND_ASK: '1' }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const mock = life.track(spawn(process.execPath, [path.join(__dirname, '..', 'console', 'ui', 'dev', 'mock-api.js'), String(port)], { env: Object.assign({}, process.env, { MOCK_NO_PUSH: '1', MOCK_CERTIFIED: '1', MOCK_COMMAND_ASK: '1' }), stdio: ['ignore', 'pipe', 'pipe'] }));
   let out = ''; mock.stdout.on('data', d => { out += d; }); mock.stderr.on('data', d => { out += d; });
-  const udd = fs.mkdtempSync(path.join(os.tmpdir(), 'alarm-walk-'));
-  const chrome = spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--user-data-dir=' + udd, '--remote-debugging-port=' + cport, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore' });
+  const udd = life.tmpDir('alarm-walk-');
+  const chrome = life.track(spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--user-data-dir=' + udd, '--remote-debugging-port=' + cport, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore', env: life.chromeEnv(udd) }));
   const done = code => { try { chrome.kill(); } catch (_) {} try { mock.kill(); } catch (_) {} try { fs.rmSync(udd, { recursive: true, force: true }); } catch (_) {} setTimeout(() => process.exit(code), 200); };
   try {
     if (!await until(async () => /mock console on/.test(out), 15000)) throw new Error('the mock did not start: ' + out.slice(-400));

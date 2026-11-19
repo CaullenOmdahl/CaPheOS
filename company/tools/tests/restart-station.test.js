@@ -13,7 +13,7 @@ const test = require('node:test');
 const assert = require('assert');
 
 const REPO = path.resolve(__dirname, '..', '..', '..');
-const T = fs.mkdtempSync(path.join(os.tmpdir(), 'restart-station-selftest-'));
+const T = require('../lib/temp-life').tmpDir('restart-station-selftest-');
 const TOKEN = 'restart-test-token';
 const W = (rel, txt) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, txt); return f; };
 const R = rel => { try { return fs.readFileSync(path.join(T, rel), 'utf8'); } catch (_) { return ''; } };
@@ -48,7 +48,7 @@ function script(args) {
 const co = () => { delete require.cache[require.resolve('../lib/company')]; return require('../lib/company'); };
 
 test.before(async () => {
-  mock = spawn(process.execPath, [path.join(REPO, 'tests', 'mock-station.js'), '--port', '0', '--token', TOKEN, '--restart-down-ms', '400'], { stdio: ['ignore', 'pipe', 'inherit'] });
+  mock = require('../lib/temp-life').track(spawn(process.execPath, [path.join(REPO, 'tests', 'mock-station.js'), '--port', '0', '--token', TOKEN, '--restart-down-ms', '400'], { stdio: ['ignore', 'pipe', 'inherit'] }));
   PORT = await new Promise((resolve, reject) => { mock.stdout.once('data', d => { try { resolve(JSON.parse(String(d).split('\n')[0]).port); } catch (e) { reject(e); } }); mock.once('exit', c => reject(new Error('mock exited ' + c))); });
   await req('POST', '/api/cron', { name: 'Founder loop', agentId: 'founder', prompt: 'x', schedule: 'every 30 minutes' });
   await req('POST', '/api/cron/arm', { enabled: true });

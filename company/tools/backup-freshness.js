@@ -41,7 +41,7 @@ function dutyResult(v) {
 
 function selftest() {
   let bad = 0; const ok = (n, c, d) => { console.log((c ? 'ok   ' : 'FAIL ') + n + (c ? '' : '  [' + (d || '') + ']')); if (!c) bad++; };
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'backup-fresh-selftest-'));
+  const d = require('./lib/temp-life').tmpDir('backup-fresh-selftest-');
   const now = Date.now();
   try {
     let v = judge(path.join(d, 'nope'), now);

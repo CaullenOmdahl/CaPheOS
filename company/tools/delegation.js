@@ -160,7 +160,7 @@ function register(opts) {
 
 function selftest() {
   const os = require('os'); const assert = require('assert');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'delegation-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('delegation-selftest-');
   const env = { PROVENANCE_ROOT: process.env.PROVENANCE_ROOT, DELEGATION_ASSUME_AGENT: process.env.DELEGATION_ASSUME_AGENT };
   process.env.PROVENANCE_ROOT = T; delete process.env.DELEGATION_ASSUME_AGENT;
   const opts = { root: T }; const G = require('./lib/governance');

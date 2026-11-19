@@ -155,7 +155,7 @@ async function main(argv) {
 
 function selftest() {
   const os = require('os'); const assert = require('assert');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'notify-when-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('notify-when-selftest-');
   const w = (rel, s) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, s); };
   w('company/tools/loops.json', JSON.stringify({ agents: { rohan: { name: 'Rohan Iyer', inbox: 'to-rohan.md' } } }));
   w('company/company.json', '{"name":"T"}'); w('secrets/pyth-api-key', 'pk_live_supersecretvalue123\n');

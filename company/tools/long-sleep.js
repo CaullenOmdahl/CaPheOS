@@ -146,7 +146,7 @@ function selftest() {
   ok('sleepSeconds: plain, units, several, after ; && and in a loop body', sleepSeconds('sleep 236') === 236 && sleepSeconds('sleep 2m') === 120 && sleepSeconds('sleep 1m 30') === 90
     && sleepSeconds('cd x && sleep 240; date') === 240 && sleepSeconds('for i in 1 2; do sleep 30; done') === 30 && sleepSeconds('sleep 1; sleep 2') === 3 && sleepSeconds('/usr/bin/sleep 5') === 5);
   ok('sleepSeconds: no sleep word, a word that only contains it, and sleep with no number count 0', sleepSeconds('date') === 0 && sleepSeconds('echo nosleep 300') === 0 && sleepSeconds('grep sleep x.log') === 0 && sleepSeconds('sleep inf') === 0);
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'long-sleep-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('long-sleep-selftest-');
   try {
     const W = (rel, txt) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, txt); };
     W('company/company.json', JSON.stringify({ name: 'T', timezone: 'UTC' }));

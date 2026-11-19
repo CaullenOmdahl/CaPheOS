@@ -484,7 +484,7 @@ function list() {
 
 /* ---------- selftest (offline, temp root, child processes with CAPHEOS_ROOT) ---------- */
 function selftest() {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pack-selftest-'));
+  const tmp = require('./lib/temp-life').tmpDir('pack-selftest-');
   fs.writeFileSync(path.join(tmp, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: owner checks pass inside this throwaway company
   let fails = 0, n = 0;
   const t = (name, ok, extra) => { n++; if (!ok) { fails++; console.log('FAIL ' + name + (extra !== undefined ? ' :: ' + JSON.stringify(extra).slice(0, 600) : '')); } else console.log('ok   ' + name); };

@@ -27,7 +27,7 @@ function selftest() {
   const os = require('os'); const { spawnSync } = require('child_process');
   const here = path.resolve(co.p('modules', 'continuity'));
   const repo = path.resolve(here, '..', '..');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'continuity-selftest-'));
+  const tmp = require('../../../company/tools/lib/temp-life').tmpDir('continuity-selftest-');
   let fails = 0, n = 0; const t = (name, ok, x) => { n++; if (!ok) fails++; console.log((ok ? 'ok   ' : 'FAIL ') + name + (ok || x === undefined ? '' : ' :: ' + String(x).slice(0, 600))); };
   try {
     for (const d of ['company/tools/lib', 'company/state', 'company/owner', 'company/work/commitments', 'modules/continuity']) fs.mkdirSync(path.join(tmp, d), { recursive: true });

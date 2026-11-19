@@ -8,7 +8,8 @@ const { spawnSync } = require('child_process');
 const REPO = path.resolve(__dirname, '..', '..', '..');
 
 test('selftest mode writes no admit row to the company log; a normal run does', () => {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'admit-iso-'));
+  const life = require(path.join(REPO, 'company', 'tools', 'lib', 'temp-life.js'));
+  const T = life.tmpDir('admit-iso-');
   try {
     const script = path.join(T, 'tool.js');
     fs.writeFileSync(script, `require(${JSON.stringify(path.join(REPO, 'company', 'tools', 'lib', 'admit.js'))}).admit({ door: 'act', kind: 'act', seat: 'sam' });`);
@@ -25,5 +26,5 @@ test('selftest mode writes no admit row to the company log; a normal run does', 
     r = spawnSync(process.execPath, [script], { cwd: T, env, encoding: 'utf8' });
     assert.equal(r.status, 0, r.stderr);
     assert.match(fs.readFileSync(log, 'utf8'), /"seat":"sam"/, 'a normal run is logged');
-  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+  } finally { life.cleanup(); }
 });

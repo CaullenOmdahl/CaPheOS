@@ -18,6 +18,9 @@ const DUE_RECHECK_MIN = 30;   // see wanted() in tick: a 'due' finding is re-che
  * output = broken. priority 'P0' (the only value) makes the dispatcher wake the routed seat at once, past its rest, and
  * writes a **Priority:** P0 line; evidence, a path under company/work/, becomes the handoff's **Evidence:** line.
  * Absence never renders green: a duty is ok only if it ran inside 2 x its cadence and its last result was ok.
+ * A CHORE (acts: true, only ids on duties.js CHORES, from company/tools/duties.js itself) runs with an environment that
+ * lets it act: without CAPHEOS_READONLY / CAPHEOS_NO_NETWORK, with CAPHEOS_CHORE=1 and the user manager's XDG_RUNTIME_DIR
+ * (still no secret). On exit 0 its stdout {"acted": "<one line>"} is one line in the dispatch log.
  */
 const fs = require('fs');
 const path = require('path');
@@ -111,9 +114,16 @@ function policy() {
   }
   return { source, flagged, tickCapMs: Number.isFinite(cap) && cap > 0 ? clamp(cap, TICK_CAP_BOUNDS[0], TICK_CAP_BOUNDS[1]) : TICK_CAP_DEFAULT, overrides };
 }
+// the reaper's cadence follows the memory profile when the policy does not set one (lib/memory.js plan: 10 min under low)
+let reaperEvery = null;
+function profileEvery(d) {
+  if (d.id !== 'reaper' || d.acts !== true) return null;
+  if (reaperEvery === null) { try { const M = require('./memory'); const h = M.host({ oomd: false }); const s = M.settings(co.config); reaperEvery = M.plan({ totalMB: h.totalMB, profile: M.profileOf(s, h), keepFreeMB: s.keepFreeMB }).reaper.everyMin; } catch (_) { reaperEvery = 0; } }
+  return reaperEvery || null;
+}
 function settings(d, pol) {
   const o = (pol.overrides || {})[d.id] || {};
-  return { enabled: !d.invalid && (typeof o.enabled === 'boolean' ? o.enabled : d.enabledByDefault === true), everyMin: Number(o.everyMin) || d.everyMin };
+  return { enabled: !d.invalid && (typeof o.enabled === 'boolean' ? o.enabled : d.enabledByDefault === true), everyMin: Number(o.everyMin) || profileEvery(d) || d.everyMin };
 }
 
 /* ---- one run ---- */
@@ -127,16 +137,32 @@ function parseDue(stdout) {
   const evidence = typeof j.evidence === 'string' && /^company\/work\/[A-Za-z0-9_./-]{1,160}$/.test(j.evidence) && !j.evidence.split('/').includes('..') ? j.evidence : null;
   return { reason: sanitize(j.reason, 300), key: safeId(j.key, 80), route: j.route ? safeRoute(j.route) : null, items, priority: j.priority === 'P0' ? 'P0' : null, evidence };
 }
+// a chore's environment: the duty allowlist, minus the read-only and no-network flags, plus what systemctl --user needs
+function isChore(d) {
+  if (!d || d.acts !== true || d.invalid || d.source !== 'company/tools/duties.js') return false;
+  try { return require(path.join(path.dirname(d.file), 'duties.js')).CHORES.includes(d.id); } catch (_) { return false; }
+}
+function choreEnv(env, base) {
+  const e = Object.assign({}, env); delete e.CAPHEOS_READONLY; delete e.CAPHEOS_NO_NETWORK; e.CAPHEOS_CHORE = '1';
+  base = base || process.env;
+  for (const k of ['XDG_RUNTIME_DIR', 'USER', 'LOGNAME']) if (base[k] && !e[k]) e[k] = String(base[k]);
+  return e;
+}
+function parseActed(stdout) {
+  const t = String(stdout || '').trim(); if (!t) return null;
+  try { const j = JSON.parse(t.split('\n').pop()); return j && typeof j.acted === 'string' && j.acted.trim() ? sanitize(j.acted, 400) : null; } catch (_) { return null; }
+}
 function runOne(d, opts) {
   const t0 = Date.now();
+  const chore = isChore(d);
   const timeout = Math.max(500, Math.min(d.timeoutMs, opts.remainingMs));
   const cutByCap = timeout < d.timeoutMs;
   return new Promise(resolve => {
     let child;
     try {
-      child = execFile(process.execPath, [d.file, '--duty'], { cwd: opts.cwd, env: opts.env, timeout, killSignal: 'SIGKILL', maxBuffer: OUT_CAP, windowsHide: true, encoding: 'utf8' }, (err, stdout) => {
+      child = execFile(process.execPath, [d.file, '--duty'], { cwd: opts.cwd, env: chore ? choreEnv(opts.env) : opts.env, timeout, killSignal: 'SIGKILL', maxBuffer: OUT_CAP, windowsHide: true, encoding: 'utf8' }, (err, stdout) => {
         const ms = Date.now() - t0;
-        if (!err) return resolve({ result: 'ok', ms });
+        if (!err) return resolve(chore ? { result: 'ok', ms, acted: parseActed(stdout) } : { result: 'ok', ms });
         if (err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return resolve({ result: 'broken', ms, error: 'more than 16 KB of output' });
         if (err.killed || err.signal) return resolve(cutByCap ? { result: 'waited', ms } : { result: 'broken', ms, error: 'no answer within ' + d.timeoutMs + ' ms' });
         if (err.code === 1) { const p = parseDue(stdout); return resolve(p.error ? { result: 'broken', ms, error: p.error } : Object.assign({ result: 'due', ms }, p)); }
@@ -209,6 +235,7 @@ async function tick(opts) {
     if (r.result === 'broken') { st.error = r.error; st.brokenSince = st.brokenSince || iso(now); } else { delete st.error; delete st.brokenSince; }
     st.history = (st.history || []).concat([{ at: iso(now), result: r.result, ms: r.ms, key: r.key || null }]).slice(-HISTORY);
     out.ran.push(x.d.id);
+    if (r.acted) { say(x.d.id.toUpperCase() + ': ' + r.acted); st.lastActed = { at: iso(now), what: r.acted }; }
     if (r.result === 'ok' && (prev === 'due' || prev === 'broken')) out.recovered.push(x.d.id);
   }
   // what every enabled duty is now, flags once per change (never while halted: nothing new starts then)
@@ -261,4 +288,4 @@ function view(opts) {
   }) };
 }
 
-module.exports = { registry, policy, settings, tick, view, runOne, requestRun, readRunNow, parseDue, stateOf, sanitize, safeId, safeRoute, readState, P, OUT_CAP, TICK_CAP_DEFAULT, TICK_CAP_BOUNDS, POLICY_KEY };
+module.exports = { registry, policy, settings, tick, view, runOne, requestRun, readRunNow, parseDue, isChore, choreEnv, parseActed, stateOf, sanitize, safeId, safeRoute, readState, P, OUT_CAP, TICK_CAP_DEFAULT, TICK_CAP_BOUNDS, POLICY_KEY };

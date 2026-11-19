@@ -140,7 +140,7 @@ function seatSwitch(seat, on, by) {
 async function selftest() {
   const os = require('os');
   let bad = 0; const ok = (n, c, d) => { console.log((c ? 'ok   ' : 'FAIL ') + n + (c ? '' : '  [' + (d || '') + ']')); if (!c) bad++; };
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'budget-migrate-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('budget-migrate-selftest-');
   const w = (rel, v) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof v === 'string' ? v : JSON.stringify(v)); };
   w('company/company.json', { name: 'M', owner: { name: 'Pat' }, timezone: 'UTC', station: { port: 1 } });
   w('company/tools/loops.json', { agents: { agent: { name: 'Alex', loop: 'Founder loop', functions: ['ceo'] }, sam: { name: 'Sam', loop: 'Sam loop' }, kim: { name: 'Kim', loop: 'Kim loop' } } });

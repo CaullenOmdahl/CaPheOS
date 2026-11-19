@@ -766,7 +766,7 @@ async function apply({ dry, approvedRef, by } = {}) {
 module.exports = { ASKS, endNotice, cadenceNotice, S, BUILTIN, DEFAULT_BOUNDS, DEFAULT_TEMPO, load, view, effective, dutiesFloor, tempoAllows, recordWake, sprintOf, setSprint, setSprintConfig, sprintTick, sprintStatus, sprintSpent, wakeCounts, inQuiet, peakFindings, proposal, parseEvery, sameSchedule, setDefault, setSeat, setBounds, endTemporary, apply, isOwner };
 
 async function selftest() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadence-selftest-'));
+  const dir = require('./lib/temp-life').tmpDir('cadence-selftest-');
   const saved = Object.assign({}, S);
   const cases = [];
   const check = (name, cond, detail) => cases.push({ name, pass: !!cond, detail: detail || '' });

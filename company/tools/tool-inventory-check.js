@@ -136,7 +136,7 @@ function report(r) {
 }
 
 function selftest() {
-  const tmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'inv-'));
+  const tmp = require('./lib/temp-life').tmpDir('inv-');
   let fails = 0;
   // The assertion is the KIND of finding, not how many there are. The first version counted findings and its
   // negative control proved why that is not a check: with the missing-file branch deleted the file still
@@ -145,7 +145,7 @@ function selftest() {
   // Each case gets its own tools directory: check 4 reports every undocumented script on disk, so a fixture
   // shared between cases would leak into the next one's findings.
   const case_ = (label, runbookText, wantKinds, baseline, files, opts) => {
-    const tools = fs.mkdtempSync(path.join(tmp, 'tools-'));
+    const tools = require('./lib/temp-life').tmpDir('tools-', { base: tmp });
     const rb = path.join(tools + '-runbook.md');
     for (const [name, body] of Object.entries(files || { good: '#!/bin/bash\n# --selftest\n', owed: '#!/bin/bash\n# --selftest\n', 'noself.sh': '#!/bin/bash\necho hi\n' })) fs.writeFileSync(path.join(tools, name), body);
     fs.writeFileSync(rb, runbookText);

@@ -36,7 +36,7 @@ const MODEL_POLICY = { allowed: {
   deepseek: { models: ['deepseek-flash'] } } };
 
 function fixture(o) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'routing-test-')); roots.push(root);
+  const root = require('../lib/temp-life').tmpDir('routing-test-'); roots.push(root);
   if (o && o.full) {   // the whole framework (the console server needs it), then the fixture's own files on top
     fs.cpSync(path.join(REPO, 'company'), path.join(root, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
     fs.cpSync(path.join(REPO, 'console'), path.join(root, 'console'), { recursive: true });
@@ -305,7 +305,7 @@ test('console round trip: the owner switches routing live and starts a trial fro
   await new Promise(r => fake.listen(0, '127.0.0.1', r));
   const env = Object.assign({}, process.env, { CAPHEOS_ROOT: tmp, STARNET_URL: 'http://127.0.0.1:' + fake.address().port, CAPHEOS_TZ: 'UTC' });
   delete env.CONSOLE_PORT; delete env.CAPHEOS_READONLY;
-  const child = spawn(process.execPath, [path.join(tmp, 'console', 'server.js'), '--port', '0', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = require('../lib/temp-life').track(spawn(process.execPath, [path.join(tmp, 'console', 'server.js'), '--port', '0', '--print-port'], { env, stdio: ['ignore', 'pipe', 'pipe'] }));
   let errText = ''; child.stderr.on('data', x => { errText += x; });
   try {
     const port = await new Promise((resolve, reject) => { let buf = ''; child.stdout.on('data', x => { buf += x; const m = buf.match(/\{"port":(\d+)\}/); if (m) resolve(Number(m[1])); }); child.on('exit', c => reject(new Error('server exited ' + c + ': ' + errText))); setTimeout(() => reject(new Error('server did not start: ' + errText)), 15000); });

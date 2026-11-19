@@ -49,7 +49,7 @@ function main(argv) {
 
 /* selftest: a scratch company; the question is asked once after two held ticks, deduped, governed, and answered */
 function selftest() {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'money-hold-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('money-hold-selftest-');
   fs.writeFileSync(path.join(T, '.capheos-selftest-fixture'), '');   // provenance.fixtureRoot: owner checks pass inside this throwaway company
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };
   w('company/company.json', { name: 'MH', owner: { name: 'Pat' }, timezone: 'UTC' });

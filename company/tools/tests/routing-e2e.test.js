@@ -33,8 +33,8 @@ const CHANGE_OPS = ['mode', 'tiercaps', 'trial-create', 'trial-start', 'trial-pa
 let mock = null, port = 0;
 const roots = [];
 test.before(async () => {
-  const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'routing-e2e-mock-')), 'req.jsonl'); roots.push(path.dirname(log));
-  mock = spawn(process.execPath, [path.join(REPO, 'tests', 'mock-station.js'), '--port', '0', '--token', TOKEN, '--log', log], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const log = path.join(require('../lib/temp-life').tmpDir('routing-e2e-mock-'), 'req.jsonl'); roots.push(path.dirname(log));
+  mock = require('../lib/temp-life').track(spawn(process.execPath, [path.join(REPO, 'tests', 'mock-station.js'), '--port', '0', '--token', TOKEN, '--log', log], { stdio: ['ignore', 'pipe', 'inherit'] }));
   port = await new Promise((res, rej) => { let d = ''; mock.stdout.on('data', c => { d += c; const m = /"port":(\d+)/.exec(d); if (m) res(Number(m[1])); }); mock.on('exit', c => rej(new Error('mock exited ' + c))); });
   mock.logFile = log;
 });
@@ -51,7 +51,7 @@ const block = (head, extra) => '\n## 2026-11-17 from Alex — ' + head + '\n**Ne
 async function company(o) {
   o = o || {};
   const repo = REPO;
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'routing-e2e-co-')); roots.push(T);
+  const T = require('../lib/temp-life').tmpDir('routing-e2e-co-'); roots.push(T);
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };
   if (o.defaults) fs.cpSync(path.join(repo, 'company', 'defaults'), path.join(T, 'company', 'defaults'), { recursive: true });
   if (o.patchDefault) { const f = 'company/defaults/work/models/routing-policy.json'; const d = JSON.parse(fs.readFileSync(path.join(T, f), 'utf8')); o.patchDefault(d); w(f, d); }
@@ -243,7 +243,7 @@ test('(4) no routing policy: every body is {id, detach}; with the framework defa
 
 /* ---------- (5) locked-watch over the routing log: the real routing.js's owner change survives; a forged row does not ---------- */
 test('(5) locked-watch: an owner mode change made by routing.js survives a tick; a forged routing-log row is stripped', () => {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'routing-e2e-lw-')); roots.push(T);
+  const T = require('../lib/temp-life').tmpDir('routing-e2e-lw-'); roots.push(T);
   const w = (rel, d) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof d === 'string' ? d : JSON.stringify(d, null, 1)); };
   fs.cpSync(path.join(REPO, 'company', 'defaults'), path.join(T, 'company', 'defaults'), { recursive: true });
   w('company/company.json', { name: 'LW Co', slug: 'lw', timezone: 'UTC', owner: { name: 'Olive' }, station: { url: 'http://127.0.0.1:9' } });
@@ -282,7 +282,7 @@ test('(5) locked-watch: an owner mode change made by routing.js survives a tick;
 
 /* ---------- (6) the router's real decisions feed model-rank.js and routing.js status ---------- */
 test('(6) the router\'s decisions on the policy routing.js wrote: model-rank.js and routing.js status count the same arms; tier caps are read', () => {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'routing-e2e-rank-')); roots.push(T);
+  const T = require('../lib/temp-life').tmpDir('routing-e2e-rank-'); roots.push(T);
   fs.writeFileSync(path.join(T, '.capheos-selftest-fixture'), '');
   const w = (rel, d) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof d === 'string' ? d : JSON.stringify(d, null, 1) + '\n'); };
   const env = Object.assign({}, process.env, { CAPHEOS_ROOT: T, CAPHEOS_TZ: 'UTC', STARNET_URL: 'http://127.0.0.1:9', CAPHEOS_READONLY: '' });

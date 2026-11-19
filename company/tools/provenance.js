@@ -305,7 +305,7 @@ if (require.main === module) {
     try { append(Object.assign({ at: new Date().toISOString(), file: rel, kind: 'write', sha256: sha(buf), bytes: buf.length }, common(root, writer), { main: 'company/tools/' + writer }), root); } catch (_) {}
   }
   else if (cmd === 'selftest') {
-    const os = require('os'); const T = fs.mkdtempSync(path.join(os.tmpdir(), 'prov-selftest-'));
+    const os = require('os'); const T = require('./lib/temp-life').tmpDir('prov-selftest-');
     process.env.PROVENANCE_ROOT = T; let bad = 0; const ok = (c, m) => { console.log((c ? 'ok   ' : 'FAIL ') + m); if (!c) bad++; };
     ok(wrote(path.join(T, 'company/work/x.json'), '{"a":1}\n', 'test') === true, 'records a write under company/');
     ok(wrote(path.join(T, 'scratch/x.json'), 'x', 'test') === false, 'ignores a file outside company/');

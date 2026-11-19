@@ -31,7 +31,7 @@ const TOKENS = { 'claude-sonnet-5-5': [400000, 300000], 'claude-opus-5-5': [5000
 
 /* build({ arms: [{n, fails}], tier: {capped: {n, fails}, baseline: {n, fails}}, extra: fn(ctx) }) -> root */
 function build(o) {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'model-rank-trials-')); roots.push(T);
+  const T = require('../lib/temp-life').tmpDir('model-rank-trials-'); roots.push(T);
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1) + '\n'); };
   const policy = JSON.parse(fs.readFileSync(DEFAULT_POLICY, 'utf8'));
   w('company/work/models/ranking-policy.json', Object.assign(policy, o.policy || {}));

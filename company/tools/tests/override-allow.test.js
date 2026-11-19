@@ -5,7 +5,7 @@
 const fs = require('fs'); const os = require('os'); const path = require('path');
 const test = require('node:test'); const assert = require('assert');
 
-const T = fs.mkdtempSync(path.join(os.tmpdir(), 'override-allow-selftest-'));
+const T = require('../lib/temp-life').tmpDir('override-allow-selftest-');
 const W = (rel, v) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof v === 'string' ? v : JSON.stringify(v)); };
 const R = rel => JSON.parse(fs.readFileSync(path.join(T, rel), 'utf8'));
 W('company/company.json', { name: 'Override Test', owner: { name: 'Pat' }, timezone: 'UTC', station: { port: 1 } });

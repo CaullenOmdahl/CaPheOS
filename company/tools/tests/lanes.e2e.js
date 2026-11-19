@@ -28,7 +28,7 @@ const SRC = process.env.STARNET_SRC || pick(/STARNET_REPO="\$\{STARNET_REPO:-([^
 const REF = process.env.STARNET_REF || pick(/STARNET_REF="\$\{STARNET_REF:-([0-9a-f]+)\}"/);
 const BRANCH = pick(/STARNET_BRANCH="\$\{STARNET_BRANCH:-([^}]+)\}"/);
 const TOKEN = 'lanes-e2e-token';
-const W = fs.realpathSync(fs.mkdtempSync(path.join(process.env.LANES_E2E_DIR || os.tmpdir(), 'lanes-e2e-')));
+const W = fs.realpathSync(require('../lib/temp-life').tmpDir('lanes-e2e-', { base: process.env.LANES_E2E_DIR || os.tmpdir() }));
 const git = (cwd, ...a) => execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let fails = 0, oks = 0;

@@ -52,7 +52,7 @@ function main(argv) {
 }
 function selftest() {
   const os = require('os'); const { spawnSync } = require('child_process');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'meeting-register-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('meeting-register-selftest-');
   let fails = 0; const ok = (name, c, x) => { if (!c) fails++; console.log((c ? 'ok   ' : 'FAIL ') + name + (c || x === undefined ? '' : ' :: ' + JSON.stringify(x).slice(0, 300))); };
   try {
     const W = (rel, v) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(v)); };

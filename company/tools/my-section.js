@@ -438,7 +438,7 @@ module.exports = { blockFor, validate, normalize, renderText, markBlocked, allow
 /* ---------------- selftest ---------------- */
 async function selftest() {
   const assert = require('assert'); const os = require('os');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'my-section-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('my-section-selftest-');
   const prevProv = process.env.PROVENANCE_ROOT; process.env.PROVENANCE_ROOT = T;
   const out = []; let bad = 0;
   const t = async (name, fn) => { try { await fn(); out.push('ok   ' + name); } catch (e) { bad++; out.push('FAIL ' + name + ': ' + e.message); } };
@@ -552,7 +552,7 @@ async function selftest() {
     assert.ok(blockFor('designer', { root: T }).includes('Reworded.'), 'a new text clears the block');
   });
   await t('guardrails localComputer and secrets: ON refuses --file outside the company folder or naming a secret; OFF reads it and logs it', async () => {
-    const outside = path.join(os.tmpdir(), 'my-section-outside-' + process.pid + '.txt'); fs.writeFileSync(outside, 'Outside note.\n');
+    const outside = require('./lib/temp-life').own(path.join(os.tmpdir(), 'my-section-outside-' + process.pid + '.txt')); fs.writeFileSync(outside, 'Outside note.\n');
     fs.mkdirSync(path.join(T, 'secrets'), { recursive: true }); fs.writeFileSync(path.join(T, 'secrets', 'note.txt'), 'A note kept in secrets.\n');
     try {
       assert.strictEqual(C().guards.localComputer, true, 'no state file in the root: ON');

@@ -26,12 +26,16 @@ ZONE="$(cfg 'c.timezone')"; ZONE="${ZONE:-UTC}"
 # Dispatcher tick (minutes), shown by --check: company/work/ops/cadence.json, else its default, else 10. The dispatcher
 # is a self-paced loop (company/tools/dispatcher-loop.js) that re-reads the tick every iteration: no timer to rewrite.
 TICK="$(node -e "const fs=require('fs');for(const f of ['company/work/ops/cadence.json','company/defaults/work/ops/cadence.json']){try{const n=Number(JSON.parse(fs.readFileSync(f,'utf8')).dispatcherTickMin);if(Number.isInteger(n)&&n>0){process.stdout.write(String(n));process.exit(0)}}catch(_){}}process.stdout.write('10')")"
+# the company's own systemd slice (company/tools/lib/memory.js sliceOf: capheos-<svc>.slice, outside app.slice); every unit
+# template says Slice=@SLICE@, and memory.js apply below writes the slice with systemd-oomd's pressure kill off. A running
+# unit moves into it at its next restart.
+SLICE="$(node -e "process.stdout.write(require('./company/tools/lib/memory.js').sliceOf(require('./company/company.json')))")"
 ENVFILE="$HOME/.config/$SVC.env"
 UNITDIR="$HOME/.config/systemd/user"
 
 if [[ "${1:-}" == "--check" ]]; then
   echo "company:   $NAME"
-  echo "port:      $PORT   service: $SVC   dispatcher tick: ${TICK}min"
+  echo "port:      $PORT   service: $SVC   slice: $SLICE   dispatcher tick: ${TICK}min"
   echo "starnet:   $( [[ -d starnet/.git ]] && git -C starnet rev-parse --short HEAD || echo 'not cloned')"
   echo "env file:  $( [[ -f $ENVFILE ]] && echo "$ENVFILE" || echo missing)"
   echo "token:     $( [[ -s secrets/station-token ]] && echo present || echo missing)"
@@ -88,6 +92,10 @@ done
 
 # 3. Secrets and env
 mkdir -p secrets .starnet-data/workspaces
+# the company's own temp dir, on disk: the station, the dispatcher and the console run with TMPDIR here, so what agents,
+# their builds and tests leave behind is not held in RAM (/tmp is a tmpfs on most hosts) and company/tools/tmp-sweep.js
+# can clear it without judging anyone else's files. Its presence is also what turns that hourly sweep on.
+mkdir -p .starnet-data/tmp && chmod 700 .starnet-data/tmp
 chmod 700 secrets
 if [[ ! -s secrets/station-token ]]; then
   ( umask 077; node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))" > secrets/station-token )
@@ -115,6 +123,7 @@ STARNET_HOST=127.0.0.1
 STARNET_HEADLESS=1
 STARNET_OVERRIDE_ALLOW=$ROOT/company/state/override-allow.json
 STARNET_DELEGATE_ALLOW=$ROOT/company/state/delegate-allow.json
+TMPDIR=$ROOT/.starnet-data/tmp
 TZ=$ZONE
 EOF
 )
@@ -123,7 +132,7 @@ EOF
 mkdir -p "$UNITDIR"
 for t in systemd/*.in; do
   out="$UNITDIR/$(basename "$t" .in | sed -e "s/^capheos-station/$SVC/" -e "s/^capheos-liveness/$SVC-liveness/")"
-  sed -e "s|@ROOT@|$ROOT|g" -e "s|@SVC@|$SVC|g" -e "s|@NAME@|$NAME|g" -e "s|@ENVFILE@|$ENVFILE|g" -e "s|@TICK@|$TICK|g" "$t" > "$out"
+  sed -e "s|@ROOT@|$ROOT|g" -e "s|@SVC@|$SVC|g" -e "s|@NAME@|$NAME|g" -e "s|@ENVFILE@|$ENVFILE|g" -e "s|@TICK@|$TICK|g" -e "s|@SLICE@|$SLICE|g" "$t" > "$out"
   echo "wrote $out"
 done
 # Migration: the dispatcher used to be a oneshot service fired by $SVC-dispatch.timer. It is now a long-lived loop
@@ -136,6 +145,9 @@ if [[ -f "$UNITDIR/$SVC-dispatch.timer" ]]; then
   echo "retired $SVC-dispatch.timer (the dispatcher is now the self-paced $SVC-dispatch.service)"
 fi
 systemctl --user daemon-reload
+# memory limits from company.json runtime.memory (company/tools/memory.js): a drop-in per unit and .starnet-data/memory.env,
+# applied live to running units, never a restart; the first line says what was chosen for this machine
+node company/tools/memory.js apply || echo "memory.js apply did not run (see above); the units keep their built-in defaults"
 # registered background services (company/tools/service.js): units an older template wrote are written again from the
 # current one, so a template fix (e.g. the start limit of a fast timer) reaches what is already installed
 [[ -f company/state/services.json ]] && { node company/tools/service.js rerender --by owner || echo "service.js rerender did not run (see above)"; }

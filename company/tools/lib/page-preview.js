@@ -65,7 +65,8 @@ function screenshot(url, out, opts) {
   if (opts.theme === 'dark') args.push('--force-dark-mode');
   args.push(url);
   return new Promise(resolve => {
-    const c = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] }); let err = '';
+    // TMPDIR inside the profile: Chrome's own temp entries (com.google.Chrome.*) go with it, not into /tmp (RAM on most hosts)
+    const c = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], env: Object.assign({}, process.env, { TMPDIR: udd }) }); let err = '';
     c.stderr.on('data', d => { err += d; });
     const t = setTimeout(() => c.kill('SIGKILL'), 45000);
     c.on('exit', code => { clearTimeout(t); try { fs.rmSync(udd, { recursive: true, force: true }); } catch (_) {}

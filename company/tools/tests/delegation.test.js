@@ -60,7 +60,7 @@ test('family: per-family and per-seat sums add up exactly to the runs.jsonl tota
 });
 
 test('family: the cap numerator books a child to the lead\'s share; the company total is unchanged', () => {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'family-cap-'));
+  const T = require('../lib/temp-life').tmpDir('family-cap-');
   try {
     const runs = path.join(T, 'runs.jsonl'), ledger = path.join(T, 'ledger.jsonl');
     fs.writeFileSync(runs, FAMILY.slice().sort((a, b) => a.endedAt - b.endedAt).map(r => JSON.stringify(r)).join('\n') + '\n');
@@ -145,8 +145,8 @@ const block = (head, extra) => '\n## 2026-11-17 from Alex — ' + head + '\n**Ne
 let mock = null, port = 0;
 const roots = [];
 test.before(async () => {
-  const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'delegation-mock-')), 'req.jsonl'); roots.push(path.dirname(log));
-  mock = spawn(process.execPath, [MOCK, '--port', '0', '--token', TOKEN, '--log', log], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const log = path.join(require('../lib/temp-life').tmpDir('delegation-mock-'), 'req.jsonl'); roots.push(path.dirname(log));
+  mock = require('../lib/temp-life').track(spawn(process.execPath, [MOCK, '--port', '0', '--token', TOKEN, '--log', log], { stdio: ['ignore', 'pipe', 'inherit'] }));
   port = await new Promise((res, rej) => { let d = ''; mock.stdout.on('data', c => { d += c; const m = /"port":(\d+)/.exec(d); if (m) res(Number(m[1])); }); mock.on('exit', c => rej(new Error('mock exited ' + c))); });
   assert.notEqual(port, 8800); assert.notEqual(port, 8810);
   mock.logFile = log;
@@ -158,7 +158,7 @@ async function st(method, p, body) {
 }
 const cronRuns = () => fs.readFileSync(mock.logFile, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)).filter(r => r.path === '/api/cron/run' && r.method === 'POST');
 async function company(o) {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'delegation-co-')); roots.push(T);
+  const T = require('../lib/temp-life').tmpDir('delegation-co-'); roots.push(T);
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };
   w('company/company.json', { name: 'Delegation Test ' + path.basename(T), owner: { name: 'Pat' }, timezone: TZ, station: { port, serviceName: 'delegation-test' } });
   w('secrets/station-token', TOKEN + '\n');
@@ -231,7 +231,7 @@ test('a seat with a live child run (its lead\'s team.dispatch) is not woken; the
 });
 
 test('dispatch.js --wake-links reports the share of DONE items with a linked run, offline', async () => {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'delegation-links-')); roots.push(T);
+  const T = require('../lib/temp-life').tmpDir('delegation-links-'); roots.push(T);
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, data); };
   const day = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(Date.now() - HOUR));
   const h1 = day + ' from Alex — one', h2 = day + ' from Alex — two';

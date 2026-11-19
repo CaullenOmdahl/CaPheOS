@@ -106,7 +106,7 @@ function show(opts) {
 
 function selftest() {
   const os = require('os'); const assert = require('assert');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'governance-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('governance-selftest-');
   const prevProv = process.env.PROVENANCE_ROOT; process.env.PROVENANCE_ROOT = T;
   const prevAgent = process.env.GOVERNANCE_ASSUME_AGENT; delete process.env.GOVERNANCE_ASSUME_AGENT;
   const opts = { root: T };

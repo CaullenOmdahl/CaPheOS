@@ -19,7 +19,7 @@ const NOW = JSON.parse(fs.readFileSync(path.join(FIX, 'now.json'), 'utf8')).now;
 const roots = [];
 test.after(() => { for (const r of roots) try { fs.rmSync(r, { recursive: true, force: true }); } catch (_) {} });
 
-function fixtureRoot() { const T = fs.mkdtempSync(path.join(os.tmpdir(), 'model-rank-test-')); roots.push(T); fs.cpSync(path.join(FIX, 'root'), T, { recursive: true }); return T; }
+function fixtureRoot() { const T = require('../lib/temp-life').tmpDir('model-rank-test-'); roots.push(T); fs.cpSync(path.join(FIX, 'root'), T, { recursive: true }); return T; }
 const env = (T, extra) => Object.assign({}, process.env, { CAPHEOS_ROOT: T, CAPHEOS_TZ: 'UTC' }, extra || {});
 const run = (T, args, extra) => spawnSync(process.execPath, [TOOL].concat(args), { encoding: 'utf8', env: env(T, extra), timeout: 60000 });
 const out = (T, f) => path.join(T, 'company', 'work', 'models', f);
@@ -207,7 +207,7 @@ test('check-benchmarks.py passes its positive fixture and fails every negative o
   assert.equal(py.status, 0, py.stdout + py.stderr);
   assert.match(py.stdout, /negative fixture bad-missing-model\.json fails/);
   const bad = path.join(__dirname, 'fixtures', 'benchmarks', 'bad-source.json');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-')); roots.push(T);
+  const T = require('../lib/temp-life').tmpDir('bench-'); roots.push(T);
   fs.writeFileSync(path.join(T, 'book.json'), JSON.stringify(JSON.parse(fs.readFileSync(bad, 'utf8')).book));
   const neg = spawnSync('python3', ['-I', path.join(TOOLS, 'check-benchmarks.py'), '--book', path.join(T, 'book.json'), '--policy', path.join(__dirname, 'fixtures', 'benchmarks', 'policy.json')], { encoding: 'utf8' });
   assert.equal(neg.status, 1, neg.stdout); assert.match(neg.stdout, /not an http\(s\) URL/);

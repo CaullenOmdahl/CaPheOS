@@ -110,7 +110,7 @@ function selftest() {
   const src = fs.readFileSync(__filename, 'utf8');
   ok('the watchdog makes no station call and starts no run', !/\/api\/(cron\/run|run\b|cron\/update)|stationToken|http\.request/.test(src.replace(/ok\('the watchdog makes[^\n]*\n/, '')));
   // one full check in a temp company: one alert per outage, then one recovery
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'watchdog-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('watchdog-selftest-');
   const save = { root: co.ROOT };
   try {
     const P = (...a) => path.join(T, ...a);

@@ -230,6 +230,55 @@ shows it.
 - Sign-in attempts: 5 per client per 15 minutes, 30 overall; then 429.
 - `tests/remote-access-test.js` checks all of this, and that no secret reaches an address or the console's output.
 
+## 10a. Memory: a small machine, and room for a local AI model
+
+The company sizes its limits to the machine (`company/tools/memory.js`, docs/RETENTION.md "Memory"). `scripts/setup-station.sh`
+writes them and prints one line, e.g. "Memory: low profile for this 2 GB machine; the station may use up to 1.1 GB; 0 MB
+kept free for other programs." On 4.5 GB or less the low profile applies by itself: one private browser at a time, the
+station's browser closes after 5 minutes unused, at most 2 agents at once, smaller limits (work may be slower). A
+Flutter-size build (several GB) needs a bigger machine whatever the profile.
+
+- **Keep memory free for a local AI model**: `node company/tools/memory.js set --keep-free <MB> --by owner` (its size plus
+  about 1 GB). The company then plans without that memory, and clears its own leftovers sooner when free memory drops
+  under it. `memory.js plan --keep-free <MB>` shows the effect first.
+- **Two or more companies on one machine** share it evenly: each finds the others' enabled station units and plans with
+  its share of the memory after what is kept free (the largest amount any of them keeps free: a local model is the
+  machine's), so together they fit. Settings › System › Memory says so in one line, and says when the limits in force were
+  planned for another number of companies (save the memory settings again after adding or removing one).
+- **The station is never the one systemd-oomd ends.** Many hosts (Fedora, CachyOS) tell systemd-oomd to end the busiest
+  unit of a user slice under memory pressure; the station's whole unit would take every live run with it. Its unit says
+  `ManagedOOMPreference=omit`, so oomd passes it over; its own memory limit still holds, and the kernel ends the build
+  inside it, not the station.
+- **Nor does the company make systemd-oomd end anyone else's programs.** Every unit the company runs (station, console,
+  dispatcher, liveness, background services, owner jobs) is in the company's own slice, `capheos-<service>.slice`
+  (`<service>.slice` when the service name starts with `capheos-`), outside `app.slice`, and `memory.js apply` turns
+  oomd's memory-pressure kill off on it and on each level above it (`ManagedOOMMemoryPressure=auto`). A build held at
+  the station's soft limit is pressure inside that slice only, so oomd never answers it by ending the owner's desktop
+  apps, the owner's Chrome or another company's units. A running unit moves into the slice at its next restart;
+  `memory.js status` shows the slice and which units are not in it yet. Not systemd (a container): nothing to do.
+- **Owner jobs run on their own.** A framework update, a restart or a clean-up started in the console runs as its own
+  short-lived unit, not inside the console, so the console's memory limit or a console restart never cuts it off halfway.
+- **The station's browser is headless** on a server (nobody sees a window there, and a window never closes by itself).
+  At the desk: `memory.js set --visible-browser on --by owner`.
+- Limits apply at once without a restart; a changed heap needs the safe station restart (Settings › System › Restarts),
+  which waits until nothing runs.
+- The reaper chore (docs/RETENTION.md "The reaper") ends this company's left-behind browsers and test or build processes
+  and clears its old temp files every 15 minutes. Leftovers in the shared `/tmp` that no company can prove are its own
+  (Python temp folders, build trees, Chrome's temp files) are cleared only by the owner:
+  `node company/tools/reaper.js host-sweep` lists them, `--apply --by owner` clears them.
+- **Browsers, one per company plus a few for runs.** Each station has one shared browser; a run that cannot use it gets
+  a private one of its own, at most 3 at once (1 on the low profile). A run past that limit waits for a free one, up
+  to 10 minutes, and is then told plainly that no browser is free. The shared browser closes after 15 minutes unused
+  (5 on the low profile) and starts again on the next use, sign-ins kept. Every browser the station starts stays in
+  the station's memory limit and ends with it; StarNet patch 0020 does this (company/patches/README.md), and
+  `memory.js status` shows whether the station's browser is open right now. What an agent's command leaves running in
+  the background ends with the command, unless the agent started it as a background process on purpose.
+- **Builds go first.** Under memory pressure the kernel ends an agent's build or test before the station itself
+  (agent commands run at a higher out-of-memory score), so the company keeps running and the crew sees the failed build.
+- **Two cleanup buttons, both optional**: clear the company's own old temp files now (`reaper.js run`), and clear the
+  shared leftovers no company can vouch for (`reaper.js host-sweep --apply --by owner`). Neither is needed for normal
+  running: the reaper clears the company's own every 15 minutes.
+
 ## 11. Containers (planned)
 
 Not built yet. What would map, so nothing here has to change for it:

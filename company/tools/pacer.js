@@ -1355,6 +1355,7 @@ function makePacer(o) {
       if (!job || curProv === f.provider) continue;   // the switch did not happen: never re-fire on the model that refused
       st.refired[f.runId] = { at: t, status: 'pending' };   // marked before firing: a timeout never fires it twice
       const tk = require('./lib/admit').admit({ door: 'pacer', kind: 'run', seat: job.agentId || null, jobId: f.routineId, why: 're-fire after a refusal on ' + f.provider });   // the one gate, phase 1: recorded
+      if (tk.decision === 'hold' && tk.memory) { delete st.refired[f.runId]; continue; }   // short of memory: retried on a later tick
       const res = await fire(f.routineId);
       require('./lib/admit').started(tk, res);
       st.refired[f.runId] = { at: t, status: res.status };
@@ -1388,6 +1389,7 @@ function makePacer(o) {
       }
       st.refired[p.runId] = { at: t, status: 'pending' };
       const tk = require('./lib/admit').admit({ door: 'pacer', kind: 'run', seat: job.agentId || null, jobId: job.id, provider: curProv, why: 're-fire after a refusal on ' + p.provider });
+      if (tk.decision === 'hold' && tk.memory) { delete st.refired[p.runId]; continue; }   // short of memory: retried on a later tick
       const res = await fire(job.id);
       require('./lib/admit').started(tk, res);
       st.refired[p.runId] = { at: t, status: res.status };

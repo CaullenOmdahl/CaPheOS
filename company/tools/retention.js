@@ -26,6 +26,9 @@
  *   run-journal                 StarNet's .run-journal: a journal with a resolution record, quiet for resolvedAfterDays, is
  *                               removed; an unresolved one quiet for keepDays is gzipped to .starnet-data/run-journal-archive/.
  *   never                       not touched; `reason` says who bounds it (StarNet owns runs.jsonl and the transcripts).
+ *   keep-newest-dirs / age-dir / merged-worktrees / report-only
+ *                               growing FOLDERS (dirPolicies below; company/tools/reaper.js runs them once a company day):
+ *                               measured always, deleted only after the owner's yes to that row (enforce).
  * Never losing a byte: the archive is append-only; before a live file is shortened, each archived chunk is read back and its
  * sha256 and line count checked; the live file is replaced through a temp file and a rename only if it still holds what was
  * read (an append since is carried over). Each archive's size and hash are kept in company/state/retention-state.json and
@@ -486,6 +489,112 @@ function daily(opt) {
   return Object.assign(r, { audit: a });
 }
 
+/* ---------------- growing folders: the directory policies (the reaper runs them, at most once a company day) ----------------
+ * Deleting company data on disk is the owner's decision: every row ships "enforce": false and is only measured; the reaper
+ * asks the owner once per row (an owner card) when the folder is past its warnBytes, and deletes only after a yes (the row's
+ * enforce: true, or the owner's yes recorded by the reaper: opt.enforced). Never during a halt (opt.halted).
+ *   keep-newest-dirs   sibling folders matching a glob (last segment): keep the newest `keep` and any younger than keepDays
+ *   age-dir            entries inside a folder older than keepDays (keep the newest `keep` anyway)
+ *   merged-worktrees   git worktrees under a folder whose branch is merged into the repo's default branch, with a clean
+ *                      tree and nothing changed for keepDays: removed with `git worktree remove`, never rm
+ *   report-only        size and age only (a folder another program owns, or one waiting for a later decision) */
+const DIR_POLICIES = ['keep-newest-dirs', 'age-dir', 'merged-worktrees', 'report-only'];
+function walkDir(p, cap, skip) {
+  let bytes = 0, newest = 0, n = 0, more = false; const stack = [p];
+  while (stack.length) {
+    const q = stack.pop(); let st; try { st = fs.lstatSync(q); } catch (_) { continue; }
+    newest = Math.max(newest, st.mtimeMs); bytes += st.isDirectory() ? 0 : st.blocks * 512;
+    if (++n >= (cap || 50000)) { more = true; break; }
+    if (st.isDirectory()) { try { for (const e of fs.readdirSync(q)) { if (skip && skip(e)) continue; stack.push(path.join(q, e)); } } catch (_) {} }
+  }
+  return { bytes, newest, more };
+}
+function globDirs(ctx, pattern) {
+  const dir = path.posix.dirname(pattern), g = path.posix.basename(pattern);
+  const re = new RegExp('^' + g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*') + '$');
+  let names = []; try { names = fs.readdirSync(ctx.P(dir)); } catch (_) { return []; }
+  return names.filter(n => re.test(n)).map(n => dir === '.' ? n : dir + '/' + n).filter(r => { try { return fs.lstatSync(ctx.P(r)).isDirectory(); } catch (_) { return false; } });
+}
+function gitOut(args, cwd) {
+  try { return { ok: true, out: require('child_process').execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'pipe'], env: Object.assign({}, process.env, { GIT_OPTIONAL_LOCKS: '0' }) }).trim() }; }
+  catch (e) { return { ok: false, code: e.status, out: String(e.stdout || '').trim(), err: String(e.stderr || e.message).slice(0, 200) }; }
+}
+// a merged, clean, quiet worktree of a repo (not the repo's own main checkout): {ok, why, common}
+function worktreeVerdict(wt, keepDays, now) {
+  let g; try { g = fs.readFileSync(path.join(wt, '.git'), 'utf8'); } catch (_) { return { ok: false, why: 'not a git worktree' }; }
+  if (!/^gitdir: /.test(g)) return { ok: false, why: 'not a git worktree' };
+  const cd = gitOut(['rev-parse', '--git-common-dir'], wt); if (!cd.ok) return { ok: false, why: 'git does not answer here' };
+  const common = path.resolve(wt, cd.out);
+  if (gitOut(['status', '--porcelain'], wt).out) return { ok: false, why: 'it has changes nobody committed' };
+  let base = null;
+  const oh = gitOut(['symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD'], wt); if (oh.ok && oh.out) base = oh.out;
+  if (!base) for (const b of ['main', 'master']) if (gitOut(['rev-parse', '--verify', '-q', 'refs/heads/' + b], wt).ok) { base = b; break; }
+  if (!base) return { ok: false, why: 'no default branch to compare with' };
+  const head = gitOut(['rev-parse', '--abbrev-ref', 'HEAD'], wt).out;
+  if (head === base || 'origin/' + head === base) return { ok: false, why: 'it is on the default branch itself' };
+  if (!gitOut(['merge-base', '--is-ancestor', 'HEAD', base], wt).ok) return { ok: false, why: 'its branch is not merged into ' + base };
+  const w = walkDir(wt, 20000, e => e === '.git');
+  if (now - w.newest < keepDays * DAY) return { ok: false, why: 'changed in the last ' + keepDays + ' days' };
+  return { ok: true, common, base };
+}
+// a candidate is removed only when it is really inside the company: its own path and every folder above it resolved
+// (realpath), so a symlinked .starnet-data, scratch or row path never leads a delete outside; a symlink itself is left alone
+function notContained(ctx, abs) {
+  let rr; try { rr = fs.realpathSync(ctx.root); } catch (_) { return 'the company folder cannot be resolved'; }
+  const inRoot = q => q.startsWith(rr + path.sep);
+  let st; try { st = fs.lstatSync(abs); } catch (_) { return 'gone'; }
+  if (st.isSymbolicLink()) return 'a symlink, left alone';
+  let real; try { real = fs.realpathSync(abs); } catch (_) { return 'cannot be resolved'; }
+  if (!inRoot(real)) return 'outside the company';
+  return null;
+}
+function dirPolicies(opt) {
+  opt = opt || {};
+  const ctx = ctxOf(opt); const pol = loadPolicy(ctx); const out = [];
+  const enforced = opt.enforced instanceof Set ? opt.enforced : new Set(opt.enforced || []);
+  for (const a of pol.artifacts) {
+    if (!DIR_POLICIES.includes(a.policy)) continue;
+    const keepDays = Number(a.keepDays) >= 0 ? Number(a.keepDays) : 14, keep = Number(a.keep) >= 0 ? Number(a.keep) : 0;
+    const r = { id: a.id, policy: a.policy, path: a.path, plain: a.plain || null, enforce: a.enforce === true || enforced.has(a.id), ask: a.ask !== false, askAfter: a.askAfter || null,
+      warnBytes: Number(a.warnBytes) || null, bytes: 0, more: false, candidates: [], kept: [], removed: [], freedBytes: 0, errors: [] };
+    try {
+      if (a.policy === 'report-only') {
+        if (fs.existsSync(ctx.P(a.path))) { const w = walkDir(ctx.P(a.path)); r.bytes = w.bytes; r.more = w.more; r.ageDays = Math.floor((ctx.now - w.newest) / DAY); r.exists = true; }
+      } else if (a.policy === 'keep-newest-dirs' || a.policy === 'age-dir') {
+        let rels = [];
+        if (a.policy === 'keep-newest-dirs') rels = globDirs(ctx, a.path);
+        else { let names = []; try { names = fs.readdirSync(ctx.P(a.path)); } catch (_) {} rels = names.filter(n => n !== 'archive' && !n.startsWith('.')).map(n => a.path + '/' + n); }
+        const rows = rels.map(rel => { const w = walkDir(ctx.P(rel)); return { rel, bytes: w.bytes, more: w.more, newest: w.newest, ageDays: Math.floor((ctx.now - w.newest) / DAY) }; }).sort((x, y) => y.newest - x.newest);
+        rows.forEach((x, i) => (i < keep || x.ageDays < keepDays ? r.kept : r.candidates).push(x));
+      } else if (a.policy === 'merged-worktrees') {
+        let names = []; try { names = fs.readdirSync(ctx.P(a.path)); } catch (_) {}
+        for (const n of names) {
+          const rel = a.path + '/' + n; const abs = ctx.P(rel);
+          let st; try { st = fs.lstatSync(abs); } catch (_) { continue; } if (!st.isDirectory()) continue;
+          const v = worktreeVerdict(abs, keepDays, ctx.now);
+          const w = walkDir(abs, 20000);
+          (v.ok ? r.candidates : r.kept).push({ rel, bytes: w.bytes, more: w.more, ageDays: Math.floor((ctx.now - w.newest) / DAY), why: v.why || null, common: v.common || null });
+        }
+      }
+      if (a.policy !== 'report-only') { r.bytes = r.candidates.reduce((s, x) => s + x.bytes, 0); r.more = r.candidates.some(x => x.more); }
+      r.warn = !!(r.warnBytes && r.bytes > r.warnBytes);
+      if (r.enforce && a.policy !== 'report-only' && !opt.halted && !ctx.dry) {
+        for (const x of r.candidates) {
+          const abs = ctx.P(x.rel);
+          const why = notContained(ctx, abs); if (why) { r.errors.push(x.rel + ': ' + why); continue; }
+          if (a.policy === 'merged-worktrees') {
+            const g = gitOut(['--git-dir', x.common, 'worktree', 'remove', abs], ctx.root);
+            if (!g.ok) { r.errors.push(x.rel + ': git worktree remove: ' + g.err); continue; }
+          } else { try { fs.rmSync(abs, { recursive: true, force: true }); } catch (e) { r.errors.push(x.rel + ': ' + e.message); continue; } }
+          r.removed.push(x); r.freedBytes += x.bytes;
+        }
+      }
+    } catch (e) { r.errors.push(e.message); }
+    out.push(r);
+  }
+  return { at: new Date(ctx.now).toISOString(), results: out };
+}
+
 /* ---------------- find: search an artifact's live file and its archive ---------------- */
 // `artifact` is an id (decisions, dispatch-log, handoff-archives, ...), a live path, or a file's stem (to-founder).
 // Lines containing `text` (case-insensitive), the live file first, then the archive months newest first.
@@ -515,7 +624,7 @@ function find(opt, artifact, text, limit) {
 async function selftest() {
   const assert = require('assert');
   const os = require('os');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'retention-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('retention-selftest-');
   const H = path.join(T, '_home');
   const W = (rel, txt) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, txt); return f; };
   const R = rel => fs.readFileSync(path.join(T, rel), 'utf8');
@@ -720,7 +829,7 @@ async function selftest() {
   process.exit(fails ? 1 : 0);
 }
 
-module.exports = { clearanceLive, apply, status, audit, daily, find, overLiveBytes, parse, rollFile, sizeRotate, runJournal, archiveDir, loadPolicy, archiveDirOf, POINTER_MARK };
+module.exports = { clearanceLive, apply, status, audit, daily, find, dirPolicies, notContained, worktreeVerdict, DIR_POLICIES, overLiveBytes, parse, rollFile, sizeRotate, runJournal, archiveDir, loadPolicy, archiveDirOf, POINTER_MARK };
 if (require.main === module) {
   const a = process.argv.slice(2); const cmd = a[0];
   const json = a.includes('--json'); const dry = a.includes('--dry-run');

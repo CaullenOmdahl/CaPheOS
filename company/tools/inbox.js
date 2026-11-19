@@ -1003,7 +1003,7 @@ module.exports = { withdraw, withdrawnSince, reclassify, callerSeat, plainFieldK
 /* ---- selftest: a scratch inbox, owner dir and governance root ---- */
 function selftest() {
   const os = require('os');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'inbox-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('inbox-selftest-');
   process.env.PM_INBOX_FILE = path.join(T, 'company', 'pm-inbox.jsonl'); process.env.OWNER_DIR = path.join(T, 'company', 'owner');
   process.env.PROVENANCE_ROOT = T; require('./provenance.js').pinUnderStation(false);   // the owner channel's provenance (lib/owner-channel.js) is this fixture's
   process.env.INBOX_SECRETS_DIR = path.join(T, 'secrets');   // the fixture's own key folder (a stored key is not asked again)

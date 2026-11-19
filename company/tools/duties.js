@@ -6,10 +6,15 @@
  * (company/work/ops/duty-policy.json: enabled and everyMin per duty, clamped to the bounds below), and modules declare
  * their own duties in modules/<id>/module.json "duties".
  *
- * Each entry: { id, tool, route, everyMin, timeoutMs, whileHalted, enabledByDefault }
+ * Each entry: { id, tool, route, everyMin, timeoutMs, whileHalted, enabledByDefault, acts? }
  *   tool      a file in company/tools/ that implements `--duty` (invoked exactly `node company/tools/<tool> --duty`)
  *   route     a function (ceo, people, tools, risk, floor, finance) or a seat id; a result's own route/items[].route wins
  *   everyMin  how often it runs (the policy may move it inside EVERY_MIN_BOUNDS)
+ *   acts      true makes it a CHORE: it may change things (cleaning up after the company), not only report. Only the ids on
+ *             the code-level CHORES list may act; check() refuses acts on any other entry, a module's included. A chore runs
+ *             with an environment that lets it write (no CAPHEOS_READONLY), exits 0 after acting quietly, and exits 1
+ *             (due, waking its route) only for something the crew must fix, so routine clean-up never costs an agent run.
+ *             Its one-line summary on stdout ({"acted": "..."}) goes to the dispatch log.
  *
  *   node company/tools/duties.js list [--json]     the company tools' duties (the dispatcher adds the enabled modules')
  *   node company/tools/duties.js --selftest        the registry is well formed and every tool has a --duty mode
@@ -48,7 +53,12 @@ const DUTIES = [
     why: 'a department whose lead gives advice has a consult open longer than three times its batch wait: the lead\'s advise run did not come or did not answer (docs/DEPARTMENTS.md §5). Nothing is due while no department\'s advice is on' },
   { id: 'profiles', tool: 'profile.js', route: 'people', everyMin: 240, timeoutMs: 10000, whileHalted: false, enabledByDefault: true,
     why: 'a decision, owner ruling, correction or incident from the last week names a crew member who has a profile, and no experience or proposal cites it yet: the people function considers proposing an experience line (docs/PROFILES.md). Nothing is due while no seat has a profile' },
+  // the one chore (acts: true): memory and temp-file clean-up that runs even while the company is halted (docs/RETENTION.md "The reaper")
+  { id: 'reaper', tool: 'reaper.js', route: 'tools', everyMin: 15, timeoutMs: 60000, whileHalted: true, enabledByDefault: true, acts: true,
+    why: 'closes this company\'s left-behind browsers and stray test or build processes, clears its old unused temp files, keeps growing folders inside their rules, and records memory use; due only when the crew must fix something (a test that keeps leaking, a stray it may not end, memory still short after cleanup, a part of the company whose memory keeps growing)' },
 ];
+// the only duties that may act (acts: true). Code, not data: adding one is a reviewed change to this file.
+const CHORES = ['reaper'];
 
 const ID_RE = /^[a-z][a-z0-9-]{1,39}$/;
 const FUNCTIONS = ['ceo', 'people', 'tools', 'risk', 'floor', 'finance'];
@@ -66,6 +76,7 @@ function check(d, where) {
   if (!(Number.isFinite(d.timeoutMs) && d.timeoutMs >= TIMEOUT_BOUNDS[0] && d.timeoutMs <= TIMEOUT_BOUNDS[1])) out.push(w + 'timeoutMs must be ' + TIMEOUT_BOUNDS.join('-'));
   if (typeof d.whileHalted !== 'boolean') out.push(w + 'whileHalted must be true or false');
   if (typeof d.enabledByDefault !== 'boolean') out.push(w + 'enabledByDefault must be true or false');
+  if (d.acts !== undefined && d.acts !== false && !(d.acts === true && CHORES.includes(d.id) && (!where || where === 'duties.js' || where === 'company/tools/duties.js'))) out.push(w + 'only a chore on the CHORES list in company/tools/duties.js may act (acts: true)');
   return out;
 }
 
@@ -79,7 +90,10 @@ function selftest() {
     const src = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '';
     ok(d.id + ': ' + d.tool + ' exists and has a --duty mode', /--duty\b/.test(src));
   }
-  ok('no company duty runs while halted (only liveness does, from its module)', DUTIES.every(d => d.whileHalted === false));
+  ok('no company duty runs while halted (only liveness, from its module, and the chores)', DUTIES.every(d => d.whileHalted === false || (d.acts === true && CHORES.includes(d.id))));
+  ok('no other entry acts: only the CHORES list', DUTIES.filter(d => d.acts).map(d => d.id).join() === CHORES.join());
+  ok('acts on another id is refused, a module\'s too', check({ id: 'tool-parse', tool: 'tool-parse.js', route: 'tools', everyMin: 60, timeoutMs: 1000, whileHalted: false, enabledByDefault: true, acts: true }).length === 1
+    && check({ id: 'reaper', tool: 'reaper.js', route: 'tools', everyMin: 15, timeoutMs: 1000, whileHalted: true, enabledByDefault: true, acts: true }, 'modules/x/module.json').length === 1);
   ok('a malformed entry is refused', check({ id: 'X', tool: '../x.js', route: '', everyMin: 1, timeoutMs: 0 }).length >= 5);
   console.log(bad ? 'DUTIES SELFTEST FAILED: ' + bad : 'DUTIES SELFTEST PASSED');
   return bad ? 1 : 0;
@@ -95,4 +109,4 @@ if (require.main === module) {
   }
   console.error('usage: duties.js list [--json] | --selftest'); process.exit(2);
 }
-module.exports = { DUTIES, check, FUNCTIONS, EVERY_MIN_BOUNDS, TIMEOUT_BOUNDS, ID_RE };
+module.exports = { DUTIES, CHORES, check, FUNCTIONS, EVERY_MIN_BOUNDS, TIMEOUT_BOUNDS, ID_RE };

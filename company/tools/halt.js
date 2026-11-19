@@ -331,7 +331,7 @@ module.exports = { S, read, hard, soft, tick, resume, inFlight, continuityView }
 /* ---------------- selftest: a fake station in memory, no network ---------------- */
 async function selftest() {
   const os = require('os');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'halt-selftest-'));
+  const dir = require('./lib/temp-life').tmpDir('halt-selftest-');
   const saved = Object.assign({}, S);
   const cases = [];
   const check = (name, cond, detail) => cases.push({ name, pass: !!cond, detail: detail || '' });

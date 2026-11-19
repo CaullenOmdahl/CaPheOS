@@ -85,6 +85,22 @@
     { "id": "competence-events", "path": "company/work/people/competence-events.jsonl", "policy": "never",
       "reason": "the hash-chained competence ledger; verified daily, never shortened" },
     { "id": "ledger", "path": "company/work/ledger/ledger.jsonl", "policy": "never",
-      "reason": "the revenue ledger: append-only and hash-chained; the tick verifies from its last anchor, `ledger.js verify --full` all of it" }
+      "reason": "the revenue ledger: append-only and hash-chained; the tick verifies from its last anchor, `ledger.js verify --full` all of it" },
+    { "id": "memory-samples", "path": "company/state/memory-samples.jsonl", "policy": "keep-N-days", "format": "jsonl", "keepDays": 14,
+      "bound": { "days": 16, "bytes": 16000000 }, "readers": "memory.js (the last 48 h, from the end: lib/bounded.js tailText 8 MB) and the reaper's growth check" },
+    { "id": "reaper-log", "path": "company/state/reaper.jsonl", "policy": "keep-N-days", "format": "jsonl", "keepDays": 30,
+      "bound": { "days": 32, "bytes": 8000000 }, "readers": "memory.js status and the console's Memory line (the last 7 days, from the end: 4 MB)" },
+    { "id": "workspace-backups", "path": ".starnet-data/workspaces.backup-*", "policy": "keep-newest-dirs", "keep": 3, "keepDays": 7, "warnBytes": 2000000000, "enforce": false,
+      "plain": "Old copies of the workspace backups", "readers": "people restoring a station by hand; the newest copies are kept" },
+    { "id": "station-generations", "path": ".starnet-data/workspaces.recovery-owner.json.generations", "policy": "report-only", "warnBytes": 500000000, "enforce": false, "ask": false,
+      "plain": "The station's own recovery records", "reason": "StarNet's; measured only" },
+    { "id": "station-checkpoints", "path": ".starnet-data/workspaces/.checkpoints", "policy": "report-only", "warnBytes": 5000000000, "enforce": false, "ask": false,
+      "plain": "The station's file checkpoints", "reason": "StarNet's own (it prunes them); measured only" },
+    { "id": "workspaces-rehearsal", "path": ".starnet-data/workspaces.rehearsal", "policy": "report-only", "warnBytes": 1000000000, "enforce": false, "askAfter": "migration-cutover",
+      "plain": "The copy of the workspace kept from the move rehearsal", "reason": "kept until the move to CaPheOS is done; the owner is asked about it only after that" },
+    { "id": "scratch-worktrees", "path": "scratch", "policy": "merged-worktrees", "keepDays": 14, "warnBytes": 2000000000, "enforce": false,
+      "plain": "Finished work copies the crew left in the scratch folder", "readers": "the crew while the work is open; a merged, clean copy is no longer read" },
+    { "id": "sim-output", "path": "company/work/sim/out", "policy": "age-dir", "keepDays": 30, "keep": 20, "warnBytes": 5000000000, "enforce": false,
+      "plain": "Old simulation output", "readers": "the crew comparing recent runs; the newest 20 are kept" }
   ]
 }

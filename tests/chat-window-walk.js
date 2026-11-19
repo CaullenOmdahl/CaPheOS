@@ -4,13 +4,14 @@
  * on screen, the newest message is in view on open, only the last 40 messages render until you scroll up, scrolling to
  * the top loads 40 more and keeps your place; + Colleague, its picker and the guest strip with ×. SKIP without Chrome. */
 'use strict';
+const life = require('../company/tools/lib/temp-life');   // temp dirs and helper processes end with the walk, on a kill too
 const { spawn, spawnSync } = require('child_process'); const path = require('path'); const os = require('os'); const fs = require('fs');
 const bin = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'].find(b => spawnSync('which', [b]).status === 0);
 if (!bin) { console.log('SKIP chat-window-walk: no Chrome'); process.exit(0); }
 const mockPort = 9100 + Math.floor(Math.random() * 300), cdpPort = 9500 + Math.floor(Math.random() * 300);
-const mock = spawn(process.execPath, [path.join(__dirname, '..', 'console', 'ui', 'dev', 'mock-api.js'), String(mockPort)], { env: Object.assign({}, process.env, { MOCK_CERTIFIED: '1', MOCK_NO_PUSH: '1', MOCK_CHAT_TURNS: '120' }), stdio: 'ignore' });
-const udd = fs.mkdtempSync(path.join(os.tmpdir(), 'chatwin-'));
-const chrome = spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--user-data-dir=' + udd, '--remote-debugging-port=' + cdpPort, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore' });
+const mock = life.track(spawn(process.execPath, [path.join(__dirname, '..', 'console', 'ui', 'dev', 'mock-api.js'), String(mockPort)], { env: Object.assign({}, process.env, { MOCK_CERTIFIED: '1', MOCK_NO_PUSH: '1', MOCK_CHAT_TURNS: '120' }), stdio: 'ignore' }));
+const udd = life.tmpDir('chatwin-');
+const chrome = life.track(spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--user-data-dir=' + udd, '--remote-debugging-port=' + cdpPort, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore', env: life.chromeEnv(udd) }));
 const done = code => { try { chrome.kill(); } catch (_) {} try { mock.kill(); } catch (_) {} try { fs.rmSync(udd, { recursive: true, force: true }); } catch (_) {} process.exit(code); };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function waitFor(fn, ms) { const end = Date.now() + ms; for (;;) { try { const v = await fn(); if (v) return v; } catch (_) {} if (Date.now() > end) return null; await sleep(200); } }

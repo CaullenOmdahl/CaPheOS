@@ -15,7 +15,7 @@ const scope = require(path.join(TOOLS, 'lib', 'owner-scope.js'));
 const plain = c => ['lead', 'consequence', 'recommendation'].every(k => scope.plainScore(c[k], { approval: true }).ok);
 
 function company(levels) {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-gates-'));
+  const T = require('../lib/temp-life').tmpDir('owner-gates-');
   const W = (rel, v) => { fs.mkdirSync(path.dirname(path.join(T, rel)), { recursive: true }); fs.writeFileSync(path.join(T, rel), typeof v === 'string' ? v : JSON.stringify(v, null, 1) + '\n'); };
   W('company/tools/loops.json', { agents: {
     agent: { name: 'Alex', manager: null, functions: ['ceo'], inbox: 'to-alex.md' }, people: { name: 'Kwame', manager: 'agent', functions: ['people'], inbox: 'to-kwame.md' },
@@ -33,7 +33,7 @@ function company(levels) {
   return { T, W, C, card, notice, asks, done: () => fs.rmSync(T, { recursive: true, force: true }) };
 }
 const diff = "'use strict';\n// count a report once\nmodule.exports = {};\n";
-const withProv = fn => async () => { const prev = process.env.PROVENANCE_ROOT; const T = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-gates-prov-')); process.env.PROVENANCE_ROOT = T;
+const withProv = fn => async () => { const prev = process.env.PROVENANCE_ROOT; const T = require('../lib/temp-life').tmpDir('owner-gates-prov-'); process.env.PROVENANCE_ROOT = T;
   try { await fn(); } finally { if (prev === undefined) delete process.env.PROVENANCE_ROOT; else process.env.PROVENANCE_ROOT = prev; fs.rmSync(T, { recursive: true, force: true }); } };
 
 test('a locked tool change at tools=auto is reviewed by the risk and tools seats, never asks the owner, and is one digest line', withProv(async () => {

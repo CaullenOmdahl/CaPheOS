@@ -126,7 +126,7 @@ function report(findings, jobs, opts) {
 function selftest() {
   const os = require('os'), path = require('path');
   // a fixture root and config, so the result does not depend on the numbers in the policy file
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'offpeak-clocks-selftest-'));
+  const root = require('./lib/temp-life').tmpDir('offpeak-clocks-selftest-');
   fs.mkdirSync(path.join(root, path.dirname(mm.POLICY_REL)), { recursive: true });
   fs.writeFileSync(path.join(root, mm.POLICY_REL), JSON.stringify({ offpeakHold: { mustNotMove: ['Daily standup', 'Ops loop'] } }));
   const cfg = mm.normalisePeak('deepseek', { timezone: 'Asia/Shanghai', days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], blocks: [['09:00', '12:00'], ['14:00', '18:00']], marginMin: 10 });

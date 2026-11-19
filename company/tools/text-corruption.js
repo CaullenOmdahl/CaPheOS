@@ -122,7 +122,7 @@ function main() {
 /* ---- selftest: the cases are the ones this file exists for, plus the false positives it must not have ---- */
 function selftest() {
   const cp = require('child_process');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'text-corruption-'));
+  const dir = require('./lib/temp-life').tmpDir('text-corruption-');
   const write = (name, text) => { const p = path.join(dir, name); fs.writeFileSync(p, text); return p; };
   const cases = [
     { name: 'a clean record passes', file: 'clean.md', body: 'spend was $0.4321 and $4.0990 today\n', want: 0, must: ['PASS — 0'] },

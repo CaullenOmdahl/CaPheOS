@@ -38,7 +38,7 @@ process.on('exit', () => { for (const r of roots) try { fs.rmSync(r, { recursive
 const SUBS = '.starnet-data/workspaces/.usage/subscriptions.json';
 function fixture(o) {
   o = o || {};
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pacer-mc-selftest-'));
+  const root = require('../lib/temp-life').tmpDir('pacer-mc-selftest-');
   roots.push(root);
   const w = (rel, data) => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };
   w('company/model-policy.json', fs.readFileSync(path.join(REPO, 'company', 'model-policy.json'), 'utf8'));
@@ -221,7 +221,7 @@ test('MiniMax: a stale reading heals through its own plan poll (no owner step), 
 /* ---------------- part 2: the mock station and the real detached child ---------------- */
 function startMock(root, token) {
   return new Promise((resolve, reject) => {
-    const cp = spawn(process.execPath, [path.join(REPO, 'tests', 'mock-station.js'), '--port', '0', '--token', token, '--root', root], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const cp = require('../lib/temp-life').track(spawn(process.execPath, [path.join(REPO, 'tests', 'mock-station.js'), '--port', '0', '--token', token, '--root', root], { stdio: ['ignore', 'pipe', 'inherit'] }));
     let buf = '';
     cp.stdout.on('data', d => { buf += d; const m = buf.match(/\{[^\n]*"port":(\d+)[^\n]*\}/); if (m) resolve({ cp, url: 'http://127.0.0.1:' + m[1] }); });
     cp.on('error', reject); cp.on('exit', c => reject(new Error('mock exited ' + c)));

@@ -545,6 +545,12 @@ async function start({ id, n, laneId, c, job, it, cfg, routing, log, piece, inbo
     await drop();
     throw new Error('held by the class rules: ' + route.holdWhy);
   }
+  // the memory gate (lib/admit.js): a lane is new work that can wait while the computer is short of memory
+  if (tk.decision === 'hold' && tk.memory) {
+    A.started(tk, { status: 0 });
+    await drop();
+    throw new Error('held: the computer is short of memory (' + tk.reason + ')');
+  }
   let f = await S.fire(cr.job.id, RT.overrideOf(route));
   if (route && route.applied && f.status === 403 && route.chainDenied) {   // refused, and the chain is denied for the class: never run on it
     route.reasons.push('the station refused the override (HTTP 403 ' + String(f.body).slice(0, 120) + '); the chain is denied (' + route.chainDenied + '): held');

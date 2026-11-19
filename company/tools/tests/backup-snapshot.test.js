@@ -14,7 +14,7 @@ const REPO = path.resolve(__dirname, '..', '..', '..');
 const REAL_TAR = execFileSync('bash', ['-c', 'command -v tar']).toString().trim();
 
 function scratch(tarExit, complaint) {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'backup-snapshot-'));
+  const T = require('../lib/temp-life').tmpDir('backup-snapshot-');
   fs.mkdirSync(path.join(T, 'scripts'));
   fs.copyFileSync(path.join(REPO, 'scripts', 'backup.sh'), path.join(T, 'scripts', 'backup.sh'));
   fs.mkdirSync(path.join(T, 'company', 'work'), { recursive: true });

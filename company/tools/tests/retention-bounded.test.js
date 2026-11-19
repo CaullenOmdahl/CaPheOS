@@ -9,7 +9,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const T = fs.mkdtempSync(path.join(os.tmpdir(), 'retention-bounded-selftest-'));
+const T = require('../lib/temp-life').tmpDir('retention-bounded-selftest-');
 process.env.CAPHEOS_ROOT = T; process.env.COMPETENCE_ROOT = T; process.env.PROVENANCE_ROOT = T; process.env.STARNET_URL = process.env.STARNET_URL || 'http://127.0.0.1:1';   // never a real station
 const test = require('node:test');
 const assert = require('assert');

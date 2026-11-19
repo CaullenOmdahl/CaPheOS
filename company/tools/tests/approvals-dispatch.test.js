@@ -33,8 +33,8 @@ const HANDOFFS = {
 
 let mock = null, port = 0; const roots = [];
 test.before(async () => {
-  const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'apdisp-mock-')), 'req.jsonl'); roots.push(path.dirname(log));
-  mock = spawn(process.execPath, [MOCK, '--port', '0', '--token', TOKEN, '--log', log], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const log = path.join(require('../lib/temp-life').tmpDir('apdisp-mock-'), 'req.jsonl'); roots.push(path.dirname(log));
+  mock = require('../lib/temp-life').track(spawn(process.execPath, [MOCK, '--port', '0', '--token', TOKEN, '--log', log], { stdio: ['ignore', 'pipe', 'inherit'] }));
   port = await new Promise((res, rej) => { let d = ''; mock.stdout.on('data', c => { d += c; const m = /"port":(\d+)/.exec(d); if (m) res(Number(m[1])); }); mock.on('exit', c => rej(new Error('mock exited ' + c))); });
   assert.notEqual(port, 8800);
   mock.logFile = log;
@@ -44,7 +44,7 @@ const st = async (method, p, body) => (await fetch('http://127.0.0.1:' + port + 
 const runs = () => fs.readFileSync(mock.logFile, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)).filter(r => r.path === '/api/cron/run' && r.method === 'POST');
 
 async function company() {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'apdisp-co-')); roots.push(T);
+  const T = require('../lib/temp-life').tmpDir('apdisp-co-'); roots.push(T);
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); };
   w('.capheos-selftest-fixture', '');   // this throwaway company's owner is whoever made it (provenance fixtureRoot)
   w('company/company.json', { name: 'Approvals Dispatch ' + path.basename(T), owner: { name: 'Pat' }, timezone: 'UTC', station: { port, serviceName: 'apdisp-test' } });

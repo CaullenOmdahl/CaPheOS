@@ -154,7 +154,7 @@ async function selftest() {
     assert.ok(/deps\.js adopt <python\|node> <package>==<version>/.test(r) && /deps\.js settle/.test(r) && /Not an owner question/.test(r) && !/Fix: node company\/tools\/deps\.js verify\b(?! --rebuild)/.test(r), r);
   });
 
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'deps-selftest-'));
+  const T = require('../lib/temp-life').tmpDir('deps-selftest-');
   const H = mk(path.join(T, 'outside-home'));           // HOME of every child: must stay empty
   const LWH = mk(path.join(T, 'outside-lw'));            // locked-watch's own mirror home (it writes there by design)
   const BK = mk(path.join(T, 'outside-backups'));
@@ -173,7 +173,7 @@ async function selftest() {
     mk(path.join(C, 'company', 'work', 'handoffs'));
 
     // the registry server (a separate process; the children reach it over loopback)
-    server = cp.spawn(process.execPath, ['-e', SERVER_JS, RG], { stdio: ['ignore', 'pipe', 'inherit'] });
+    server = require('../lib/temp-life').track(cp.spawn(process.execPath, ['-e', SERVER_JS, RG], { stdio: ['ignore', 'pipe', 'inherit'] }));
     const port = await new Promise((res, rej) => { let s = ''; server.stdout.on('data', b => { s += b; if (s.includes('\n')) res(Number(s.trim())); }); server.on('exit', c => rej(new Error('registry server exited ' + c))); setTimeout(() => rej(new Error('registry server did not start')), 10000); });
     const REG = 'http://127.0.0.1:' + port;
 

@@ -11,6 +11,7 @@
  * Chrome is installed or Node has no WebSocket; 1 on any failed check.
  */
 'use strict';
+const life = require('../company/tools/lib/temp-life');   // temp dirs and helper processes end with the walk, on a kill too
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs'); const os = require('os'); const path = require('path'); const http = require('http'); const net = require('net');
 const bin = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'].find(b => spawnSync('which', [b]).status === 0);
@@ -29,10 +30,10 @@ const VISIBLE = `(() => { const host = document.getElementById('settings-securit
 
 (async () => {
   const port = await freePort(), cport = await freePort();
-  const mock = spawn(process.execPath, [path.join(__dirname, '..', 'console', 'ui', 'dev', 'mock-api.js'), String(port)], { env: Object.assign({}, process.env, { MOCK_NO_PUSH: '1', MOCK_CERTIFIED: '1' }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const mock = life.track(spawn(process.execPath, [path.join(__dirname, '..', 'console', 'ui', 'dev', 'mock-api.js'), String(port)], { env: Object.assign({}, process.env, { MOCK_NO_PUSH: '1', MOCK_CERTIFIED: '1' }), stdio: ['ignore', 'pipe', 'pipe'] }));
   let out = ''; mock.stdout.on('data', d => { out += d; }); mock.stderr.on('data', d => { out += d; });
-  const udd = fs.mkdtempSync(path.join(os.tmpdir(), 'security-walk-'));
-  const chrome = spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--user-data-dir=' + udd, '--remote-debugging-port=' + cport, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore', detached: true });
+  const udd = life.tmpDir('security-walk-');
+  const chrome = life.track(spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--user-data-dir=' + udd, '--remote-debugging-port=' + cport, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore', detached: true, env: life.chromeEnv(udd) }));
   // Chrome keeps writing its profile for a moment after the kill: remove the folder only once it has exited
   const exited = p => new Promise(r => { if (p.exitCode !== null || p.signalCode) return r(); p.once('exit', r); setTimeout(r, 5000); });
   const done = async code => {
@@ -40,6 +41,7 @@ const VISIBLE = `(() => { const host = document.getElementById('settings-securit
     try { mock.kill(); } catch (_) {}
     await Promise.all([exited(chrome), exited(mock)]);
     for (let i = 0; i < 10 && fs.existsSync(udd); i++) { try { process.kill(-chrome.pid, 'SIGKILL'); } catch (_) {} await sleep(300); try { fs.rmSync(udd, { recursive: true, force: true }); } catch (_) {} }
+    life.cleanup();
     process.exit(code);
   };
   try {

@@ -6,11 +6,34 @@ After=network.target
 Type=simple
 WorkingDirectory=@ROOT@/starnet
 EnvironmentFile=@ENVFILE@
+# memory settings (browser idle close, private browsers at once, shell clean-up): company/tools/memory.js apply writes it;
+# its own file, so changing the profile never rewrites the file above that holds the station token
+EnvironmentFile=-@ROOT@/.starnet-data/memory.env
+# TMPDIR (in the environment file) is the company's own temp dir; made here too in case it was removed
+ExecStartPre=/bin/mkdir -p -m 700 @ROOT@/.starnet-data/tmp
 ExecStart=/usr/bin/env node sidecar/index.js
 Restart=always
 RestartSec=3
 KillMode=mixed
 TimeoutStopSec=20
+# memory: the limits (MemoryHigh, MemoryMax, MemorySwapMax) and the Node heap are in the drop-in memory.js apply writes
+# (<unit>.service.d/50-capheos-memory.conf), from company.json runtime.memory. systemd-oomd kills a whole unit, every
+# run in it too, so it must never pick this one, and a build held here at MemoryHigh must never make it pick anyone
+# else's: many hosts' slice defaults (/usr/lib/systemd/user/slice.d/10-oomd-per-slice-defaults.conf) put
+# ManagedOOMMemoryPressure=kill on every user slice, app.slice included, and a build holding the station at MemoryHigh
+# reads as pressure on the slice it runs in. So the station runs in the company's own slice (Slice= below, outside
+# app.slice), where memory.js apply turns the pressure kill off on every level: the owner's desktop apps, the owner's
+# Chrome and another company's units are never the victims. ManagedOOMPreference=omit stays as a second guard (oomd
+# honours it for a user unit; for its swap rule only on root-owned cgroups, so MemorySwapMax in the drop-in bounds the
+# swap this unit can hold). Instead the kernel picks inside the unit at MemoryMax: the sidecar at 100, agent commands at
+# 500 (StarNet patch 0020), so a runaway build goes before the station.
+Slice=@SLICE@
+MemoryAccounting=yes
+OOMScoreAdjust=100
+ManagedOOMPreference=omit
+# When the kernel ends one process here at the unit's MemoryMax (a build, at 500, before the sidecar), the station goes
+# on: OOMPolicy=stop (the default on many hosts, DefaultOOMPolicy=stop) would stop the whole unit, every live run in it.
+OOMPolicy=continue
 # The station writes straight to a file opened O_APPEND, not to journald, so journald's rate limits
 # (LogRateLimitIntervalSec / LogRateLimitBurst) never apply here and are deliberately not set. The file's bound is
 # company/tools/retention.js: past 50 MB it is copied to station.log.1.gz (5 kept) and cut back in place (copytruncate;

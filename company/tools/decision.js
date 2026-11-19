@@ -192,7 +192,7 @@ function main(argv) {
 /* ---------------- selftest ---------------- */
 async function selftest() {
   const assert = require('assert'); const os = require('os');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'decision-selftest-')); const H = path.join(T, 'home');
+  const T = require('./lib/temp-life').tmpDir('decision-selftest-'); const H = path.join(T, 'home');
   const prevRoot = S.root; S.root = () => T; process.env.PROVENANCE_ROOT = T;
   const P = require('./provenance.js'); P.pinUnderStation(false);
   const LW = require('./locked-watch.js'); const RT = require('./retention.js'); const C = require('./competence.js');

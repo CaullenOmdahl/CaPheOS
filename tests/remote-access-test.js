@@ -18,6 +18,7 @@
  * Exit 1 on any failed check.
  */
 'use strict';
+const life = require('../company/tools/lib/temp-life');   // temp dirs and helper processes end with the walk, on a kill too
 const fs = require('fs'); const os = require('os'); const path = require('path'); const http = require('http'); const net = require('net');
 const { spawn, spawnSync } = require('child_process');
 const REPO = path.join(__dirname, '..');
@@ -44,13 +45,16 @@ const pair = c => c ? c.split(';')[0] : '';
 
 /* a temp company root: company/ copied, secrets/, a dead station, stand-in restart scripts */
 function makeRoot() {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-access-selftest-'));
+  const tmp = life.tmpDir('remote-access-selftest-');
   fs.cpSync(path.join(REPO, 'company'), path.join(tmp, 'company'), { recursive: true, filter: s => !/[\/\\]\.starnet-data([\/\\]|$)/.test(s) });
   fs.cpSync(path.join(REPO, 'modules'), path.join(tmp, 'modules'), { recursive: true });
   fs.mkdirSync(path.join(tmp, 'secrets'), { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(tmp, 'secrets', 'station-token'), 'remote-selftest-station-token\n', { mode: 0o600 });
   fs.mkdirSync(path.join(tmp, 'scripts'), { recursive: true });
   for (const s of ['restart-station.sh', 'restart-console.sh']) fs.writeFileSync(path.join(tmp, 'scripts', s), '#!/bin/sh\necho "stand-in ' + s + ' $*" >> "' + path.join(tmp, 'restarts.log') + '"\n', { mode: 0o755 });
+  // a stand-in reaper: the memory routes start it (a listing, a clean-up) and it must never touch this machine's temp folders
+  fs.writeFileSync(path.join(tmp, 'company', 'tools', 'reaper.js'), "'use strict';\nrequire('fs').appendFileSync(" + JSON.stringify(path.join(tmp, 'reaper-calls.log')) + ", process.argv.slice(2).join(' ') + '\\n');\n"
+    + "if (process.argv[2] === 'host-sweep') console.log(JSON.stringify({ ok: true, items: 3, wouldGo: 2, bytes: 3 * 1048576 }));\nelse console.log('did: nothing to clean up');\n");
   fs.mkdirSync(path.join(tmp, 'units'), { recursive: true });
   const cfg = JSON.parse(fs.readFileSync(path.join(tmp, 'company', 'company.json'), 'utf8'));
   cfg.owner = Object.assign({}, cfg.owner, { name: 'Robin' }); fs.writeFileSync(path.join(tmp, 'company', 'company.json'), JSON.stringify(cfg, null, 2) + '\n');
@@ -60,7 +64,7 @@ async function startConsole(root, env, args) {
   const port = await freePort(); const dead = await freePort();
   const e = Object.assign({}, process.env, { CAPHEOS_ROOT: root, STARNET_URL: 'http://127.0.0.1:' + dead, SERVICE_UNIT_DIR: path.join(root, 'units'), SERVICE_SYSTEMCTL: '/bin/true', CAPHEOS_SUPERVISOR: 'none' }, env || {});
   delete e.CONSOLE_PORT; if (!env || !('CONSOLE_HOST' in env)) delete e.CONSOLE_HOST;
-  const child = spawn(process.execPath, [SERVER, '--port', String(port)].concat(args || []), { env: e, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = life.track(spawn(process.execPath, [SERVER, '--port', String(port)].concat(args || []), { env: e, stdio: ['ignore', 'pipe', 'pipe'] }));
   const out = { text: '' }; child.stdout.on('data', d => { out.text += d; }); child.stderr.on('data', d => { out.text += d; });
   const up = await until(async () => { try { return (await req(port, 'GET', '/api/health', { host: (env && env.TEST_CONNECT) || '127.0.0.1' })).status === 200; } catch (_) { return false; } }, 15000);
   if (!up) throw new Error('console did not start: ' + out.text.slice(-500));
@@ -127,6 +131,8 @@ const opsRows = root => { try { return fs.readFileSync(path.join(root, 'company'
       ['restart.station', '/api/ops/restart/station', { reason: 'test' }],
       ['update.apply', '/api/ops/update/apply', { expect: 'abcdef1' }],
       ['access.set', '/api/ops/access', { trustProxy: true }],
+      ['memory.set', '/api/ops/memory', { profile: 'low', keepFreeMB: 2048, visibleBrowser: false }],
+      ['memory.clean', '/api/ops/memory/clean', { what: 'now' }],
     ];
     for (const [action, p, body] of actions) {
       const before = opsRows(root).length;
@@ -139,6 +145,27 @@ const opsRows = root => { try { return fs.readFileSync(path.join(root, 'company'
     }
     const mod = await req(A.port, 'GET', '/api/ops/modules', { headers: H });
     check('modules list reads', mod.status === 200 && Array.isArray(mod.json.items), mod.json);
+    const mem = await req(A.port, 'GET', '/api/ops/memory', { headers: H });
+    check('memory reads (memory.js status --json): a plain line, a verdict, the plan', mem.status === 200 && /^The company uses /.test(mem.json.line) && ['Fine', 'Tight', 'Short'].includes(mem.json.verdict) && mem.json.plan && mem.json.plan.station.maxMB > 0, mem.json);
+    { const c = JSON.parse(fs.readFileSync(path.join(root, 'company', 'company.json'), 'utf8'));
+      check('memory.set wrote runtime.memory through memory.js set --by owner', c.runtime && c.runtime.memory && c.runtime.memory.profile === 'low' && c.runtime.memory.keepFreeMB === 2048, c.runtime);
+      check('…and memory.js apply wrote the station\'s memory.env (headless browser, the 0020 settings)', /STARNET_BROWSER_HEADLESS=1/.test(fs.readFileSync(path.join(root, '.starnet-data', 'memory.env'), 'utf8')));
+      const again = await req(A.port, 'POST', '/api/ops/memory', { json: { keepFreeMB: 4096 }, headers: H });
+      check('memory.set answers what changed and whether a restart is needed (restartNeeded passes through)', again.status === 200 && Array.isArray(again.json.changed) && typeof again.json.restartNeeded === 'boolean' && again.json.recorded === true, again.json);
+      const badP = await req(A.port, 'POST', '/api/ops/memory', { json: { profile: 'tiny' }, headers: H });
+      check('memory.set refuses a profile that is not auto, low or normal', badP.status === 400, badP.json);
+      const badW = await req(A.port, 'POST', '/api/ops/memory/clean', { json: { what: 'everything' }, headers: H });
+      check('memory.clean refuses anything but now or shared-temp', badW.status === 400, badW.json); }
+    await until(async () => fs.existsSync(path.join(root, 'reaper-calls.log')), 5000);
+    check('memory.clean now ran reaper.js run, detached', /^run$/m.test(fs.readFileSync(path.join(root, 'reaper-calls.log'), 'utf8')));
+    const shared = await req(A.port, 'GET', '/api/ops/memory/shared', { headers: H });
+    check('the shared temp folder is listed through reaper.js host-sweep --json (nothing removed)', shared.status === 200 && shared.json.wouldGo === 2 && /^host-sweep --json$/m.test(fs.readFileSync(path.join(root, 'reaper-calls.log'), 'utf8')), shared.json);
+    await until(async () => { const j = await req(A.port, 'GET', '/api/ops/jobs', { headers: H }); return j.json && !j.json.jobs.some(x => x.kind === 'memory-clean' && x.status === 'running'); }, 10000);
+    const sw = await req(A.port, 'POST', '/api/ops/memory/clean', { json: { what: 'shared-temp' }, headers: H });
+    await until(async () => /host-sweep --apply --by Robin/.test(fs.readFileSync(path.join(root, 'reaper-calls.log'), 'utf8')), 5000);
+    check('memory.clean shared-temp runs reaper.js host-sweep --apply --by the owner, as a job, recorded', sw.status === 200 && sw.json.job && /host-sweep --apply --by Robin/.test(fs.readFileSync(path.join(root, 'reaper-calls.log'), 'utf8')) && opsRows(root).some(r => r.action === 'memory.clean' && r.target === 'shared-temp'), sw.json);
+    const memOut = await req(A.port, 'GET', '/api/ops/memory', { headers: { cookie: '' } });
+    check('memory is behind the owner sign-in', memOut.status === 401, memOut.status);
     const fl = await req(A.port, 'GET', '/api/ops/flags', { headers: H });
     check('flags list reads (locked-watch status --json)', fl.status === 200 && Array.isArray(fl.json.flags), fl.json);
     await until(async () => fs.existsSync(path.join(root, 'restarts.log')), 5000);
@@ -259,8 +286,8 @@ const opsRows = root => { try { return fs.readFileSync(path.join(root, 'company'
 
     /* ---- crash and restart ---- */
     const sport = await freePort();
-    const sup = spawn(process.execPath, [path.join(REPO, 'scripts', 'supervise.js'), '--name', 'console', '--', process.execPath, SERVER, '--port', String(sport)],
-      { env: Object.assign({}, process.env, { CAPHEOS_ROOT: root, STARNET_URL: 'http://127.0.0.1:1', CAPHEOS_SUPERVISOR: 'supervise' }), stdio: ['ignore', 'pipe', 'pipe'] });
+    const sup = life.track(spawn(process.execPath, [path.join(REPO, 'scripts', 'supervise.js'), '--name', 'console', '--', process.execPath, SERVER, '--port', String(sport)],
+      { env: Object.assign({}, process.env, { CAPHEOS_ROOT: root, STARNET_URL: 'http://127.0.0.1:1', CAPHEOS_SUPERVISOR: 'supervise' }), stdio: ['ignore', 'pipe', 'pipe'] }));
     let supOut = ''; sup.stdout.on('data', d => { supOut += d; }); sup.stderr.on('data', d => { supOut += d; });
     const childPid = () => { try { return Number(fs.readFileSync('/proc/' + sup.pid + '/task/' + sup.pid + '/children', 'utf8').trim().split(/\s+/)[0]) || null; } catch (_) { return null; } };
     const up1 = await until(async () => { try { return (await req(sport, 'GET', '/api/company', { headers: { cookie: S.cookie } })).status === 200; } catch (_) { return false; } }, 15000);

@@ -21,7 +21,7 @@ const jsonl = (root, rel) => read(root, rel).split('\n').filter(Boolean).map(l =
 
 // a scratch company: the Founder (CEO) and Sam (a specialist), the framework's governance and decision models
 function company(o) {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'approvals-selftest-')); roots.push(T);
+  const T = require('../lib/temp-life').tmpDir('approvals-selftest-'); roots.push(T);
   w(T, 'company/company.json', { name: 'Example', owner: { name: 'Olive Owner', title: 'Owner' }, timezone: 'UTC' });
   w(T, 'company/tools/loops.json', { agents: { agent: { name: 'Founder', manager: null, functions: ['ceo', 'people', 'tools', 'risk', 'floor', 'finance'], inbox: 'to-founder.md' }, sam: { name: 'Sam', manager: 'agent', functions: [], inbox: 'to-sam.md' } } });
   for (const f of ['company/defaults/state/governance.json', 'company/defaults/state/guardrails.json', 'company/defaults/state/approvals-policy.json', 'company/competence-policy.json'])

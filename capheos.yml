@@ -13,7 +13,7 @@ services:
     read_only: true
     tmpfs:
       - /run:exec
-      - /tmp
+      - /tmp:size=64m        # bounded: the company's temp files live on the data volume (TMPDIR below), not in RAM
     cap_drop:
       - ALL
     security_opt:
@@ -24,10 +24,15 @@ services:
       TZ: ${TZ:-UTC}
       CAPHEOS_ROOT: /app
       CAPHEOS_DATA: /data
+      TMPDIR: /data/tmp
       CONSOLE_HOST: 0.0.0.0
       CONSOLE_PORT: "8901"
     volumes:
       - capheos-data:/data
+    # a memory cap for the whole container: `node company/tools/memory.js plan --total <MB of the machine>` gives the
+    # numbers (the station's max plus about 1 GB for the console and its jobs). E.g. a 4 GB machine: 3g. Leave it out to
+    # let memory.js and the kernel decide; the in-container heap comes from .starnet-data/memory.env (memory.js apply).
+    # mem_limit: 3g
     stop_grace_period: 90s
     logging:
       driver: json-file

@@ -384,7 +384,7 @@ function teardown({ by, purge }) {
 
 /* ---------- selftest ---------- */
 async function selftest() {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'onboard-selftest-'));
+  const tmp = require('./lib/temp-life').tmpDir('onboard-selftest-');
   let fails = 0, n = 0;
   const t = (name, ok, x) => { n++; if (!ok) fails++; console.log((ok ? 'ok   ' : 'FAIL ') + name + (ok || x === undefined ? '' : ' :: ' + JSON.stringify(x).slice(0, 600))); };
   const repo = path.resolve(__dirname, '..', '..');

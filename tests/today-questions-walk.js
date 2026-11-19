@@ -12,6 +12,7 @@
  * dependencies). Exits 0 with "SKIP" when no Chrome is installed or Node has no WebSocket; 1 on any failed check.
  */
 'use strict';
+const life = require('../company/tools/lib/temp-life');   // temp dirs and helper processes end with the walk, on a kill too
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs'); const os = require('os'); const path = require('path'); const http = require('http'); const net = require('net');
 const argv = process.argv.slice(2);
@@ -29,12 +30,12 @@ const SECRET = 'mock-secret-value-never-echoed-0123456789';
 
 (async () => {
   let mport = await freePort(); if (mport === 8800) mport = await freePort();
-  const mock = spawn(process.execPath, [path.join(__dirname, '..', 'console', 'ui', 'dev', 'mock-api.js'), String(mport)], { env: Object.assign({}, process.env, { MOCK_CERTIFIED: '1', MOCK_NO_PUSH: '1' }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const mock = life.track(spawn(process.execPath, [path.join(__dirname, '..', 'console', 'ui', 'dev', 'mock-api.js'), String(mport)], { env: Object.assign({}, process.env, { MOCK_CERTIFIED: '1', MOCK_NO_PUSH: '1' }), stdio: ['ignore', 'pipe', 'pipe'] }));
   let mockOut = ''; mock.stdout.on('data', d => { mockOut += d; }); mock.stderr.on('data', d => { mockOut += d; });
   if (!await until(async () => /mock console on/.test(mockOut), 15000)) { console.error('today questions walk: the mock did not start: ' + mockOut.slice(-400)); mock.kill(); process.exit(1); }
   const cport = await freePort();
-  const udd = fs.mkdtempSync(path.join(os.tmpdir(), 'today-walk-'));
-  const chrome = spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--user-data-dir=' + udd, '--remote-debugging-port=' + cport, '--window-size=1280,2400', 'about:blank'], { stdio: 'ignore' });
+  const udd = life.tmpDir('today-walk-');
+  const chrome = life.track(spawn(bin, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--user-data-dir=' + udd, '--remote-debugging-port=' + cport, '--window-size=1280,2400', 'about:blank'], { stdio: 'ignore', env: life.chromeEnv(udd) }));
   const done = code => { try { chrome.kill(); } catch (_) {} try { mock.kill(); } catch (_) {} try { fs.rmSync(udd, { recursive: true, force: true }); } catch (_) {} setTimeout(() => process.exit(code), 200); };
   try {
     // Chrome answers /json before its first page target exists: wait for the page, not for the port

@@ -9,7 +9,7 @@ const fs = require('fs'); const os = require('os'); const path = require('path')
 const test = require('node:test'); const assert = require('assert');
 const { execFile } = require('child_process');
 
-const T = fs.mkdtempSync(path.join(os.tmpdir(), 'meeting-selftest-'));
+const T = require('../lib/temp-life').tmpDir('meeting-selftest-');
 const W = (rel, v) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof v === 'string' ? v : JSON.stringify(v, null, 1)); };
 const R = rel => { try { return fs.readFileSync(path.join(T, rel), 'utf8'); } catch (_) { return ''; } };
 const CREW = { dave: ['Dave', 'CEO'], sharon: ['Sharon', 'CFO'], phil: ['Phil', 'IT Admin'], rachel: ['Rachel', 'Hiring Manager'], nadia: ['Nadia', 'Engineer'], omar: ['Omar', 'DevOps'], leo: ['Leo', 'Designer'] };

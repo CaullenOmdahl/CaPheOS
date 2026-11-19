@@ -4,5 +4,9 @@ Description=@NAME@ off-box heartbeat — ping the outside dead-man check (paused
 [Service]
 Type=oneshot
 WorkingDirectory=@ROOT@
+# the company's own slice (company/tools/lib/memory.js sliceOf), outside app.slice: systemd-oomd's pressure kill is off
+# there (memory.js apply writes its drop-ins), so nothing here can make oomd end the owner's apps or another company's
+Slice=@SLICE@
 ExecStart=/usr/bin/env node @ROOT@/modules/liveness/watch.js heartbeat
+MemoryMax=128M
 TimeoutStartSec=60

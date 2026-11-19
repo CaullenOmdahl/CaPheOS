@@ -188,6 +188,21 @@ halt or restart hold → stall rule → cooldown → approval mode → daily cap
 Sprint spread (never a seat others wait on) → wake caps and quiet hours → `admit()` (records) → the station. The pacer
 removes metered wakes near the station rail and reroutes models before that. The CEO still runs one run at a time.
 
+## Memory: new work waits while the computer is short of memory
+
+The one gate also keeps room for other programs, like a local AI model (`runtime.memory.keepFreeMB`, docs/DEPLOY-SERVER.md
+"Memory"). While the computer is short of memory, `admit()` holds a new start that can wait: a dispatcher wake or
+scheduled loop, a Sprint lane, a pacer re-fire. It answers `{decision: 'hold', memory: true, plain: 'Holding new work: the
+computer is short of memory'}`. The owner's chat and meetings, a health check, Run now, hiring, onboarding, the liveness
+check, a halt, and a dispatcher wake for something the owner wrote always pass. A run already going is never stopped.
+
+- Short means the reaper's `company/state/memory-pressure.json` is open and younger than 20 minutes, or a fresh
+  `/proc/meminfo` read shows less free than `keepFreeMB + 256` MB (300 MB at least on the low profile). With nothing kept
+  free, that is only a machine nearly out of memory.
+- The hold lifts once more than `keepFreeMB + 768` MB is free, so it does not flap; `company/state/memory-hold.json` holds
+  it meanwhile. The dispatch log has one line when it starts (`MEMORY HOLD`) and one when it lifts (`MEMORY HOLD LIFTED`).
+- What cannot be read never holds. Tests: `company/tools/tests/admit-memory.test.js`.
+
 ## Values today (phase 1, unchanged)
 
 `dispatch-budget.json`: `dailyUsd` (0 = nothing metered runs), `perAgentUsd` (0 = no share), `unmeteredProviders`.

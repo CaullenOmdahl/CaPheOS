@@ -95,7 +95,7 @@ const roots = [];
 test.after(() => { for (const r of roots) try { fs.rmSync(r, { recursive: true, force: true }); } catch (_) {} });
 const w = (root, rel, data) => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); return f; };
 function company() {
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-scope-selftest-')); roots.push(T);
+  const T = require('../lib/temp-life').tmpDir('owner-scope-selftest-'); roots.push(T);
   w(T, 'company/company.json', { name: 'Example', owner: { name: 'Olive Owner', title: 'Owner' }, timezone: 'UTC' });
   w(T, 'company/tools/loops.json', { agents: { agent: { name: 'Founder', manager: null, functions: ['ceo', 'people', 'floor', 'finance'], inbox: 'to-founder.md' },
     ing: { name: 'Ingrid', manager: 'agent', functions: ['risk'], inbox: 'to-ingrid.md' }, tom: { name: 'Tomas', manager: 'agent', functions: ['tools'], inbox: 'to-tomas.md' } } });

@@ -14,7 +14,7 @@ const test = require('node:test');
 const assert = require('assert');
 
 const REPO = path.resolve(__dirname, '..', '..', '..');
-const T = fs.mkdtempSync(path.join(os.tmpdir(), 'restart-hold-checks-selftest-'));
+const T = require('../lib/temp-life').tmpDir('restart-hold-checks-selftest-');
 const TOKEN = 'hold-checks-token';
 const W = (rel, txt) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof txt === 'string' ? txt : JSON.stringify(txt)); return f; };
 const HOLD = 'company/state/restart-hold.json';
@@ -51,7 +51,7 @@ test.before(async () => {
   for (const d of ['state', 'work', 'owner']) fs.mkdirSync(path.join(T, 'company', d), { recursive: true });
   W('company/company.json', { name: 'Test Co', slug: 'test-co', timezone: 'UTC', owner: { name: 'Olive' }, station: { serviceName: 'test-co-station' } });
   W('company/tools/loops.json', { agents: { founder: { name: 'Founder', functions: ['ceo', 'people', 'tools', 'risk', 'finance'], manager: null, inbox: 'to-founder.md', loop: 'Founder loop' } } });
-  mock = spawn(process.execPath, [path.join(REPO, 'tests', 'mock-station.js'), '--port', '0', '--token', TOKEN], { stdio: ['ignore', 'pipe', 'inherit'] });
+  mock = require('../lib/temp-life').track(spawn(process.execPath, [path.join(REPO, 'tests', 'mock-station.js'), '--port', '0', '--token', TOKEN], { stdio: ['ignore', 'pipe', 'inherit'] }));
   PORT = await new Promise((resolve, reject) => { mock.stdout.once('data', d => { try { resolve(JSON.parse(String(d).split('\n')[0]).port); } catch (e) { reject(e); } }); mock.once('exit', c => reject(new Error('mock exited ' + c))); });
   // a working Founder loop: the routine in the company folder with a terminal grant and a model, the folder blessed
   await req('POST', '/api/projects/bless', { path: T });

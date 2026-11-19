@@ -1187,7 +1187,7 @@ function fakeGitHub(clock) {
   return G;
 }
 function selftest() {
-  const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dbw-selftest-'));
+  const TMP = require('./lib/temp-life').tmpDir('dbw-selftest-');
   let bad = 0, nroot = 0; const ok = (c, m) => { console.log((c ? 'ok   ' : 'FAIL ') + m); if (!c) bad++; };
   const LOOPS = JSON.stringify({ agents: { agent: { name: 'Alex', functions: ['ceo'], manager: null, inbox: 'to-alex.md' }, engineer: { name: 'Sam', functions: ['tools'], manager: 'agent', inbox: 'to-sam.md' },
     auditor: { name: 'Jo', functions: ['risk'], manager: 'agent', inbox: 'to-jo.md' }, drafter: { name: 'Kim', manager: 'agent', inbox: 'to-kim.md' } } });

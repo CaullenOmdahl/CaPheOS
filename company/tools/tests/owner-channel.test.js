@@ -22,7 +22,7 @@ const UNDER_STATION = (() => { try { return require(path.join(REPO, 'company', '
 const STATION_PINS = { STARNET_USER_CONTROL_MODE: 'preserve', STARNET_COMPUTER_DRIVER: '0', STARNET_MCP_STDIO: '0', BROWSER: 'none' };
 const QID = 'q-000123';
 
-const T = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-channel-test-'));
+const T = require('../lib/temp-life').tmpDir('owner-channel-test-');
 const H = path.join(T, 'home'); const S = path.join(T, 'scripts');   // the helper lives outside the company
 const INB = path.join(T, 'company', 'owner', 'inbound.jsonl');
 const W = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1)); return f; };
@@ -139,7 +139,7 @@ test('an append from an agent\'s run is ignored by every reader, logged, raised 
 });
 
 test('a real console send is accepted, answers the gate, and the console still shows the owner\'s own messages', opt, async () => {
-  const child = spawn(process.execPath, [path.join(REPO, 'console', 'server.js'), '--port', '0', '--print-port'], { env: baseEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = require('../lib/temp-life').track(spawn(process.execPath, [path.join(REPO, 'console', 'server.js'), '--port', '0', '--print-port'], { env: baseEnv(), stdio: ['ignore', 'pipe', 'pipe'] }));
   let err = ''; child.stderr.on('data', d => { err += d; });
   try {
     const port = await new Promise((res, rej) => { let b = ''; child.stdout.on('data', d => { b += d; const m = b.match(/\{"port":(\d+)\}/); if (m) res(Number(m[1])); }); child.on('exit', c => rej(new Error('console exited ' + c + ': ' + err))); setTimeout(() => rej(new Error('console did not start: ' + err)), 20000); });

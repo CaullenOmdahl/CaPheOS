@@ -23,7 +23,7 @@ function duty() {
 }
 function selftest() {
   const os = require('os');
-  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-balance-selftest-'));
+  const T = require('./lib/temp-life').tmpDir('provider-balance-selftest-');
   let fails = 0; const ok = (n, c, x) => { if (!c) fails++; console.log((c ? 'ok   ' : 'FAIL ') + n + (c || x === undefined ? '' : ' :: ' + JSON.stringify(x).slice(0, 300))); };
   try {
     const told = []; const o = { root: T, perDayUsd: 1, notify: t => told.push(t) };

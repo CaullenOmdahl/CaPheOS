@@ -45,7 +45,7 @@ const CHROME = process.env.STATION_VIEW_CHROME || '/usr/bin/google-chrome-stable
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const TOKEN = crypto.randomBytes(24).toString('hex');
 // a short private base (Chrome's singleton socket path must stay under 108 bytes): --base, else $XDG_RUNTIME_DIR, else the OS temp dir
-const BASE = fs.mkdtempSync(path.join(opt('base') || process.env.XDG_RUNTIME_DIR || os.tmpdir(), 'viewer-e2e-'));
+const BASE = require('../lib/temp-life').tmpDir('viewer-e2e-', { base: opt('base') || process.env.XDG_RUNTIME_DIR || os.tmpdir() });
 const WS = path.join(BASE, 'workspace');
 const checks = [];
 const check = (name, ok, detail) => { checks.push({ name, ok: !!ok, detail: detail === undefined ? undefined : detail }); return !!ok; };

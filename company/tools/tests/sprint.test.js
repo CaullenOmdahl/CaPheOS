@@ -65,7 +65,7 @@ test('lanes: disjoint Touches run in parallel; untagged items make the seat seri
 });
 
 test('path lock: one lane per path; a conflict waits; release frees it; no Touches never locks', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sprint-lock-'));
+  const dir = require('../lib/temp-life').tmpDir('sprint-lock-');
   try {
     const L = SP.makePathLock(path.join(dir, 'lane-locks.json'));
     assert.deepEqual(L.acquire('sam#1', ['src/api']), { ok: true });
