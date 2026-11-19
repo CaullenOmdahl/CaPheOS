@@ -50,6 +50,11 @@ const field = (txt, label) => { const m = String(txt).match(new RegExp('\\*\\*' 
 const PERSONAS = ['composed', 'warm', 'blunt', 'dry', 'upbeat'];
 // a charter counts as scoped from the market when its Sources list at least three real public listings (URLs)
 function scopedFromListings(ch) { return (sectionRaw(ch, 'Sources').match(/https?:\/\/\S+/g) || []).length >= 3; }
+// the CEO's hand-written identity is replaced by the charter once the charter is researched (listings) OR carries a
+// written person (any of the person sections: convictions, refusals, counterpart, habits...). Before 2026-11-19 only
+// listings counted, so a CEO profile rewritten in the person shape never reached the CEO's runs.
+const hasPerson = ch => personLines(ch).some(Boolean);
+const ceoCharterUsable = ch => scopedFromListings(ch) || hasPerson(ch);
 // the seat's charter: loops.json `role` (company/roles/<file> or a root-relative path), else roles/<name>.md, else roles/<id>.md
 function charterFile(c, id) {
   const roles = co.p('company', 'roles');
@@ -123,7 +128,7 @@ function buildCeoIdentity(rec) {
   const id = co.ceo(); const seat = co.crew()[id] || {};
   const chf = charterFile(seat, id);
   const ch = fs.existsSync(chf) ? fs.readFileSync(chf, 'utf8') : '';
-  if (!scopedFromListings(ch)) return null;   // only a researched charter replaces the hand-written CEO identity
+  if (!ceoCharterUsable(ch)) return null;   // only a researched or person-shaped charter replaces the hand-written CEO identity
   const prev = String((rec && rec.docs && rec.docs.identity) || '');
   const orders = prev.includes(CEO_MARK) ? prev.slice(prev.indexOf(CEO_MARK)) : '';
   const parts = [
@@ -222,5 +227,5 @@ async function main() {
   }
   throw new Error('commands: check, sync');
 }
-module.exports = { build, charterFile, section, sectionRaw, isPlaceholder, problems, PERSON };
+module.exports = { build, charterFile, section, sectionRaw, isPlaceholder, problems, PERSON, ceoCharterUsable };
 if (require.main === module) main().catch(e => { console.error(JSON.stringify({ ok: false, error: e.message })); process.exit(2); });

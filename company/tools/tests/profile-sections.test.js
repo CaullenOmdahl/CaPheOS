@@ -132,3 +132,12 @@ test('hire.js: open --schedule is stored on the round and used when the pick is 
   assert.match(src, /if \(round\.schedule\) args\.schedule = String\(round\.schedule\)/);
   assert.match(src, /schedule: String\(a\.schedule \|\| '0 \*\/2 \* \* \*'\)/, 'hire() still reads args.schedule, default every 2 hours');
 });
+
+test('dossier.js: a CEO charter written in the person shape replaces the hand-written CEO identity, listings or not', () => {
+  const bare = '# Founder\n\n## Personality\nCalm.\n\n## Sources\n- none yet\n';
+  const person = bare + '\n## Convictions\n- If I am in a loop more than once, the loop is the defect.\n';
+  const listed = bare.replace('- none yet', '- https://a.example/1\n- https://b.example/2\n- https://c.example/3');
+  assert.equal(dossier.ceoCharterUsable(bare), false, 'no listings and no person sections: the hand-written identity stays');
+  assert.equal(dossier.ceoCharterUsable(person), true, 'convictions written: the charter is used (sandbox Founder, 2026-11-19)');
+  assert.equal(dossier.ceoCharterUsable(listed), true, 'three listings: used, as before');
+});
