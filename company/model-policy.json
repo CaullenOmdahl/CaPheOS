@@ -22,8 +22,7 @@
     "claude-sonnet-5-5",
     "sonnet",
     "claude-opus-5-5",
-    "opus",
-    "claude-fable-5-2[1m]"
+    "opus"
    ],
    "tiers": {
     "haiku": "light",
@@ -31,8 +30,7 @@
     "sonnet": "standard",
     "claude-sonnet-5-5": "standard",
     "opus": "heavy",
-    "claude-opus-5-5": "heavy",
-    "claude-fable-5-2[1m]": "top"
+    "claude-opus-5-5": "heavy"
    },
    "note": "Runs on a Claude Max subscription (flat monthly fee). The meter is the whole account, so any other use of the same account (the owner's own Claude Code, another company) counts against it; pacing-policy.json shareOfAccount gives this company its share. Routines use Haiku or Sonnet only; Opus and Fable never run routines. A Claude seat still takes the smallest tier that does the job."
   }
@@ -45,8 +43,7 @@
  },
  "needsCeoApproval": [
   "claude-opus-5-5",
-  "opus",
-  "claude-fable-5-2[1m]"
+  "opus"
  ],
  "_needsCeoApproval": "Model ids a hire or model change may move someone to only with the CEO named in hire.js --approved (the heavy and top Claude tiers).",
  "routing": {

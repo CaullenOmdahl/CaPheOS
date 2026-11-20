@@ -219,7 +219,7 @@ test('a routeVeto effect from any program but routing.js is dropped by pm-inbox-
 test('pure parts: the ISO week, tiers, plain card words', () => {
   assert.equal(R.isoWeek('2026-11-23'), '2026-W48'); assert.equal(R.isoWeek('2026-01-01'), '2026-W01'); assert.equal(R.isoWeek('2027-01-01'), '2026-W53');
   const mp = JSON.parse(fs.readFileSync(path.join(REPO, 'company/model-policy.json'), 'utf8'));
-  assert.equal(R.tierOf({ provider: 'claude-cli', model: 'claude-fable-5-2[1m]' }, mp), 3); assert.equal(R.tierOf({ provider: 'deepseek', model: 'deepseek-flash' }, mp), 0, 'no tier reads as light');
+  assert.equal(R.tierOf({ provider: 'claude-cli', model: 'opus' }, mp), 2, 'the latest Opus is the highest tier in the default policy'); assert.equal(R.tierOf({ provider: 'claude-cli', model: 'claude-fable-5-2[1m]' }, mp), 0, 'Fable is not in the default policy'); assert.equal(R.tierOf({ provider: 'deepseek', model: 'deepseek-flash' }, mp), 0, 'no tier reads as light');
   const OS = require(path.join(TOOLS, 'lib', 'owner-scope.js'));
   for (const cls of ['code', 'review', 'research', 'writing', 'design', 'ops', 'mechanical', 'general']) {
     const x = R.cardWords({ class: cls, evidence: { items: 25, costRatio: 0.7 } }, 'Engineering', MON + 3 * DAY);
