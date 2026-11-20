@@ -109,6 +109,9 @@ mkdir -p "$(dirname "$ENVFILE")"
 # programs it found before.
 # STARNET_OVERRIDE_ALLOW (StarNet patch 0017): the one-run model override allowlist the dispatcher rewrites every tick
 # (company/tools/lib/override-allow.js); without it, or once it is 30 minutes old, the station refuses every override.
+# STARNET_CRON_HEARTBEAT_STALE_MS: how long a routine run may go without progress before the station reclaims it. StarNet's
+# default is 8 min, but one shell command may run 10 min (shell.exec's cap), so a quiet long command had a healthy run
+# reclaimed mid-command; 13 min is the command cap plus a model turn.
 # STARNET_DELEGATE_ALLOW (StarNet patch 0018): the delegation allowlist the dispatcher rewrites every tick
 # (company/tools/lib/delegate-allow.js); without it, or once it is 30 minutes old, no routine run gets team.dispatch.
 UPATH="$(systemctl --user show-environment 2>/dev/null | sed -n 's/^PATH=//p')"; UPATH="${UPATH:-/usr/local/bin:/usr/bin:/bin}"
@@ -123,6 +126,7 @@ STARNET_HOST=127.0.0.1
 STARNET_HEADLESS=1
 STARNET_OVERRIDE_ALLOW=$ROOT/company/state/override-allow.json
 STARNET_DELEGATE_ALLOW=$ROOT/company/state/delegate-allow.json
+STARNET_CRON_HEARTBEAT_STALE_MS=780000
 TMPDIR=$ROOT/.starnet-data/tmp
 TZ=$ZONE
 EOF
