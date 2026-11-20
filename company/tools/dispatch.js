@@ -76,6 +76,8 @@ const LOG = path.join(ROOT, 'company', 'work', 'dispatch-log.md');
 const RUNS = path.join(ROOT, '.starnet-data', 'workspaces', 'runs.jsonl');
 const ROSTER = path.join(ROOT, '.starnet-data', 'workspaces', 'agent.roster.json');
 const num = (k, d) => { const v = Number(process.env[k]); return Number.isFinite(v) && v > 0 ? v : d; };
+// Ageing: true when a seat has been deferred `after` or more ticks running (streak = state.deferStreak).
+function isAged(streak, id, after) { return (Number((streak || {})[id]) || 0) >= after; }
 // Cadence (company/tools/cadence.js): company/work/ops/cadence.json, else its default, else 40 / 4. Env vars override.
 function tuning(env, cad) {
   const pos = v => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : null; };
@@ -101,6 +103,7 @@ const SPRINT = (() => { try { return require('./cadence.js').effective().sprint 
 const SPRINT_METRICS = path.join(ROOT, 'company', 'state', 'sprint-metrics.json');
 const SPRINT_EFFORT = path.join(ROOT, 'company', 'state', 'sprint-effort.json');
 const STALL_AFTER = num('DISPATCH_STALL_AFTER', 3);
+const AGE_AFTER = num('DISPATCH_AGE_AFTER', 3);   // ticks a seat may lose the per-tick cut before it goes ahead of priority
 // The CFO's budget file (company/work/finance/dispatch-budget.json) wins over the env vars and defaults.
 const BUDGET = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'company', 'work', 'finance', 'dispatch-budget.json'), 'utf8')) || {}; } catch (_) { return {}; } })();
 // The owner may raise it for today only, answering a money-hold question on Today (lib/money-hold.js, today-budget.json).
@@ -347,6 +350,13 @@ function selftestOpenHandoffs() {
   check('running wakes as usual', haltLine({ mode: 'running' }) === null && haltLine(null) === null);
   check('cadence.json sets cooldown and per-tick defaults', JSON.stringify(tuning({}, { defaultCooldownMin: 25, maxPerTick: 2 })) === '{"cooldownMin":25,"maxPerTick":2}');
   check('env vars override cadence.json', JSON.stringify(tuning({ DISPATCH_COOLDOWN_MIN: '5', DISPATCH_MAX_PER_TICK: '9' }, { defaultCooldownMin: 25, maxPerTick: 2 })) === '{"cooldownMin":5,"maxPerTick":9}');
+  check('ageing: 2 deferred ticks is not aged, 3 is (AGE_AFTER 3)', !isAged({ s: 2 }, 's', 3) && isAged({ s: 3 }, 's', 3));
+  check('ageing: a seat with no streak or no table is not aged', !isAged({}, 's', 3) && !isAged(undefined, 's', 3) && !isAged({ s: 'x' }, 's', 3));
+  {
+    const streak = { low: 3, mid: 0 }; const prioOf = { hi: 100, mid: 50, low: 0 };
+    const ord = ['hi', 'mid', 'low'].sort((a, b) => ((isAged(streak, b, 3) ? 1 : 0) - (isAged(streak, a, 3) ? 1 : 0)) || (prioOf[b] - prioOf[a]));
+    check('ageing: an aged low-priority seat sorts ahead of higher priority; the rest keep priority order', ord.join(',') === 'low,hi,mid', ord.join(','));
+  }
   check('no cadence.json falls back to 40 / 4', JSON.stringify(tuning({}, null)) === '{"cooldownMin":40,"maxPerTick":4}');
   const base = { metered: true, ownerWake: false, capped: true, perAgentOver: false };
   check('spendCap on: the daily cap holds a metered loop', capDecision(Object.assign({ capOn: true }, base)) === 'held');
@@ -1263,9 +1273,14 @@ function lastRunTail(job) {
   // Owner messages first, then by revenue priority, then the seat whose open handoff is due soonest (its Deadline; an
   // undated inbox last), then in the order found. The priority exists so that when only MAX_PER_TICK loops can fire,
   // the ones the revenue line depends on are the ones that fire.
+  // Ageing: a seat deferred AGE_AFTER ticks running goes ahead of priority (behind owner, P0, hiring and urgent wakes) on
+  // the next tick (state.deferStreak, reset when the seat is not deferred), so a low-priority seat cannot lose the
+  // per-tick cut for hours.
   const nextDue = id => ((state.agents[id] || {}).nextDue) || '9999';
+  state.deferStreak = state.deferStreak || {};
+  const aged = id => isAged(state.deferStreak, id, AGE_AFTER);
   const order = Object.keys(work).sort((a, b) =>
-    ((ownerWake.has(b) ? 1 : 0) - (ownerWake.has(a) ? 1 : 0)) || ((p0Wake.has(b) ? 1 : 0) - (p0Wake.has(a) ? 1 : 0)) || ((hiringWake.has(b) ? 1 : 0) - (hiringWake.has(a) ? 1 : 0)) || ((urgent.has(b) ? 1 : 0) - (urgent.has(a) ? 1 : 0)) || (prio(b) - prio(a)) || nextDue(a).localeCompare(nextDue(b)));
+    ((ownerWake.has(b) ? 1 : 0) - (ownerWake.has(a) ? 1 : 0)) || ((p0Wake.has(b) ? 1 : 0) - (p0Wake.has(a) ? 1 : 0)) || ((hiringWake.has(b) ? 1 : 0) - (hiringWake.has(a) ? 1 : 0)) || ((urgent.has(b) ? 1 : 0) - (urgent.has(a) ? 1 : 0)) || ((aged(b) ? 1 : 0) - (aged(a) ? 1 : 0)) || (prio(b) - prio(a)) || nextDue(a).localeCompare(nextDue(b)));
   // ---- Sprint: what each seat has to do now (its signature), the Sprint numbers, effort per seat, lanes ----
   const sigOf = id => SP.workSig([(work[id] || []).map(q => q.id + ':' + (q.duty ? q.key : (state.quests[q.id] || {}).done)), (state.agents[id] || {}).key || '',
     ownerWake.has(id) ? state.owner.key : '', hiringWake.get(id) || [], artifactWakes[id] || [], (urgent.get(id) || []).map(n => n.key)]);
@@ -1347,10 +1362,10 @@ function lastRunTail(job) {
   // the router (lib/routing.js): one context per tick; null without a routing policy (every wake on its chain, as before)
   const ROUTING = await RT.prepare({ root: ROOT, jobs, log, dry: DRY });
   try { await require('./lanes.js').dispatchHook({ routing: ROUTING, dry: DRY, log, jobs, work, reason, order, ownerWake, hiringWake, modes, allowAsk: ALLOW_ASK, state, sprint: SPRINT, metrics: SM, budget: { capOn: CAP_ON, capped, dailyUsd: DAILY_USD, perAgentUsd: PER_AGENT_USD, byAgent, spent, lastHourMetered, hoursLeft, spread: !!(SPRINT && SPRINT.spreadDailyCap), unmetered: UNMETERED_PROVIDERS } }); } catch (e) { log('LANES ERROR: ' + String(e.message).slice(0, 200)); }
-  const deferred = [];
+  const deferred = []; const deferredIds = new Set();
   for (const agentId of order) {
     const qs = work[agentId];
-    if (fired >= MAX_PER_TICK) { deferred.push((CREW[agentId] || {}).name || agentId); say(agentId, { state: 'held', why: 'has work, waiting for a free slot (' + MAX_PER_TICK + ' starts per check); next check picks it up' }); continue; }
+    if (fired >= MAX_PER_TICK) { deferred.push((CREW[agentId] || {}).name || agentId); deferredIds.add(agentId); state.deferStreak[agentId] = (Number(state.deferStreak[agentId]) || 0) + 1; say(agentId, { state: 'held', why: 'has work, waiting for a free slot (' + MAX_PER_TICK + ' starts per check); next check picks it up' }); continue; }
     if (!LOOP_OF[agentId]) continue;   // not on the crew (for example a departed person's leftover quest): nothing to wake
     const job = findLoop(jobs, agentId);
     if (!job) { log('NO LOOP for ' + agentId + ': no routine matches "' + (LOOP_OF[agentId] || '?') + '"'); continue; }
@@ -1447,6 +1462,7 @@ function lastRunTail(job) {
       log('  ' + job.name + ' refused: HTTP ' + r.status + ' ' + r.body.slice(0, 160) + ' (not counted toward stall)');
     }
   }
+  for (const id of Object.keys(state.deferStreak)) if (!deferredIds.has(id)) delete state.deferStreak[id];   // ageing: a seat not deferred this tick starts again
   if (!DRY) fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
   RT.finish(ROUTING);   // the trial pause state, when it changed
   if (SM && !DRY) { SM.updatedAt = new Date().toISOString(); try { fs.mkdirSync(path.dirname(SPRINT_METRICS), { recursive: true }); fs.writeFileSync(SPRINT_METRICS, JSON.stringify(SM, null, 1) + '\n'); } catch (_) {} }
