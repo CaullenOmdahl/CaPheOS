@@ -445,7 +445,7 @@ function publishScopeOk(target, who) {
  * SMUGGLE: a list containing merge, deploy or publish is refused as malformed rather than silently narrowed, because a
  * row that overshoots its own schema is a row nobody checked. No row can cover a merge or a deploy second-hand. */
 const ACTS_NARROW = ['push', 'comment', 'edit_body', 'issue_create', 'review'];
-const ACTS_OWN_ROW = ['merge', 'deploy', 'publish', 'release'];
+const ACTS_OWN_ROW = ['merge', 'deploy', 'publish', 'release', 'db_session'];   // db_session: a Railway ssh/connect session (railway.sh); own row, never narrowed, never covered by a deploy row
 function actsWhy(row) {
   const acts = row && row.acts;
   if (acts === undefined || acts === null) return null;
@@ -1645,6 +1645,19 @@ function selftest() {
     if (!wb.ok) { failures++; lines.push('FAIL  W14 setup: clear refused an ownAct row: ' + wb.error); }
     expect('W14 control: a row written by clear with ownAct merge answers MERGE', wReq('merge'), 'allow');
     expect('W14b ... and answers nothing else', wReq('push'), 'refuse');
+    // db_session: an own-row act
+    wWrite([wRow({ ownAct: 'db_session' })]);
+    expect('WD1 a db_session ownAct row answers db_session', wReq('db_session'), 'allow');
+    expect('WD2 ... and does not answer deploy', wReq('deploy'), 'refuse');
+    expect('WD2b ... and does not answer push', wReq('push'), 'refuse');
+    wWrite([wRow({ ownAct: 'deploy' })]);
+    expect('WD3 a deploy row does not answer db_session', wReq('db_session'), 'refuse');
+    wWrite([wRow({ acts: ['db_session'] })]);
+    expect('WD4 db_session cannot be narrowed into an acts list', wReq('db_session'), 'refuse');
+    fs.writeFileSync(ledger, '');
+    const wd = addClearance({ by: CEO, clearedByAgent: CEO_ID, category: 'publish', target: W, agent: 'jordan', until: '2026-12-01T00:00:00Z', justification: fixture, ownAct: 'db_session' }, { ledger: ledger, now: at, session: sSession });
+    if (!wd.ok) { failures++; lines.push('FAIL  WD5 setup: clear refused a db_session ownAct row: ' + wd.error); }
+    expect('WD5 a row written by clear with ownAct db_session answers db_session', wReq('db_session'), 'allow');
 
     RUNS_OVERRIDE = savedRuns;
     LEGACY_OVERRIDE = savedLegacy;
