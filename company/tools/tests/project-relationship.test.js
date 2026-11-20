@@ -62,3 +62,25 @@ test('the seats\' context line lists live projects with their relationship', () 
     assert.equal(spawnSync(process.execPath, ['-e', code], { encoding: 'utf8', env: env(T) }).stdout, '');
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
+
+test('dossier.js: a seat\'s context and the CEO identity carry the projects line when a project is live', () => {
+  const T = require('../lib/temp-life').tmpDir('project-relationship-dossier-');
+  try {
+    const w = (rel, d) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof d === 'string' ? d : JSON.stringify(d, null, 1)); };
+    w('company/company.json', { name: 'Fixture Co', owner: { name: 'Olive' }, timezone: 'UTC', station: { url: 'http://127.0.0.1:9' } });
+    w('company/tools/loops.json', { agents: { boss: { name: 'Alex', title: 'CEO', functions: ['ceo'], manager: null, inbox: 'to-alex.md' }, ben: { name: 'Noah', title: 'Tester', manager: 'boss', inbox: 'to-noah.md' } } });
+    for (const f of ['company/defaults/people/profile-policy.json', 'company/defaults/people/temperament.json', 'company/defaults/people/presets.json']) w(f, fs.readFileSync(path.join(REPO, f), 'utf8'));
+    w('company/roles/noah.md', '# Noah\n\n## Scope\n- tests\n');
+    w('company/roles/alex.md', '# Alex\n\n## Personality\nCalm.\n\n## Backstory and motivation\nRan a shop.\n\n## Sources\n- https://example.com/a\n- https://example.com/b\n- https://example.com/c\n');
+    const D = JSON.stringify(path.join(REPO, 'company', 'tools', 'dossier.js')), CO = JSON.stringify(path.join(REPO, 'company', 'tools', 'lib', 'company.js'));
+    const js = 'const D = require(' + D + '); const co = require(' + CO + '); const b = D.build("ben", co.crew().ben, null); const c = D.buildCeoIdentity({ name: "Alex", docs: { identity: "" } }); process.stdout.write(JSON.stringify({ context: b.context, identity: b.identity, ceo: c && c.identity }));';
+    const go = () => { const r = spawnSync(process.execPath, ['-e', js], { cwd: T, encoding: 'utf8', env: env(T) }); assert.equal(r.status, 0, r.stderr); return JSON.parse(r.stdout); };
+    let o = go();
+    assert.doesNotMatch(o.context, /Projects the company works on/);
+    assert.match(o.identity, /on client work the client's current way is the brief/);
+    w('company/projects.json', { projects: [{ id: 'a', name: 'App A', state: 'approved' }] });
+    o = go();
+    assert.match(o.context, /Projects the company works on \(company\/projects\.json\): App A \(client: /);
+    assert.ok(o.ceo, 'a researched CEO charter builds the CEO identity'); assert.match(o.ceo, /App A \(client: /);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});

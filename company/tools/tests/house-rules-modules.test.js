@@ -37,7 +37,7 @@ test('without the commitments module, no seat is sent to the commitments tool', 
     assert.equal(r.version, 'v16');
     assert.ok(r.prompt.includes('[HOUSE RULES FOR SCHEDULED RUNS v16]'));
     // v16: client work, the five questions, the decision classes and the precedence line
-    assert.match(r.prompt, /CLIENT WORK: a product the company did not found, the owner's own included, is client work\..*release flow are the brief\..*one-line suggestion.*Nothing waits on the owner\./);
+    assert.match(r.prompt, /CLIENT WORK: a product the company did not found, the owner's own included, is client work\..*release flow are the brief\..*one-line suggestion.*Only the four owner gates wait on the owner\./);
     assert.match(r.prompt, /BEFORE YOU DECIDE .*1\. Whose product.*2\. What does it do today.*3\. How do businesses of this kind.*4\. What does it cost.*5\. Which class is it, and is "leave it as it is" right\?/);
     assert.match(r.prompt, /FIX \(.*ASKED \(.*REVERT \(.*dated notice.*PROPOSAL \(.*never holds work/);
     assert.match(r.prompt, /client-work rules override older routine text such as "decide yourself"/);

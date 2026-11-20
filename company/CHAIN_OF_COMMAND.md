@@ -32,6 +32,11 @@ field. Until the company hires, the Founder holds every function and this chain 
 | The work of a domain (a case, a portfolio, a collection) | that domain's lead |
 | Strategy, what to do next, money beyond the cap, opening a role, cross-function conflicts, risk acceptance, external commitments, ownership | the **CEO** |
 
+On client work (`company/DECISION_RIGHTS.md` "Client work") the client rows win where rows conflict: a release through the
+client's usual flow is not go-live or an external commitment, and a client's repo settings, accounts and paid plans are
+the client's, not a credentials or billing question. Nothing there waits on the owner beyond the four gates and takeover
+approval.
+
 `node company/tools/ask.js` routes a question by topic to the function holder and refuses to send a non-CEO question
 to the CEO.
 

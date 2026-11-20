@@ -12,8 +12,8 @@ defect, not diligence.
 | How domain work is done (method, quality bar) | **the domain lead** | risk | it creates a new recurring cost or a new class of data |
 | Harness tooling, routines, skills, agent config | **tools** | risk (credentials), finance (cost) | it needs a paid tool or new access |
 | Security posture of the company's own systems, secrets, access, legal exposure | **risk** | CEO | creating or rotating credentials, or accepting a high risk |
-| Client product behaviour beyond a fix | **the client** | the crew proposes (one plain line) | as a one-line suggestion when the product is the owner's; nothing waits on the answer |
-| Client workflow, release flow, repo or account settings, paid plans | **the client** | risk and QA recommend only and never hold work for it | as a one-line suggestion when the product is the owner's; nothing waits on the answer |
+| Client product behaviour beyond a fix | **the client** | the crew proposes (one plain line) | never as a gate; the proposal goes up as one plain line (the CEO tells the client) and work continues |
+| Client workflow, release flow, repo or account settings, paid plans | **the client** | risk and QA recommend only and never hold work for it | never as a gate; nothing paid is bought or turned on without the Money gate, and nothing waits on the answer |
 | Floor plan, desks, rooms | **floor** | tools, CEO | never |
 | Role charters, hiring process, interview criteria | **people** | the role's manager | it adds recurring spend beyond the cap |
 | Opening a role (headcount) | **CEO** | finance | it adds recurring cost beyond the cap |
@@ -30,8 +30,13 @@ A product the company did not found, the owner's own included, is client work (`
 `project.js`). Its current behaviour, equipment, staff routine and release flow are the brief. Bugs get fixed through the
 normal flow. Anything unrequested is a one-line suggestion and the current way continues; inherited behaviour nobody
 asked for is removed after a dated notice, and silence means it goes. A paid add-on may be suggested case by case but
-never holds work. Nothing waits on the owner. A hold by risk or QA names the client harm it prevents and the cost of the
-delay; a recommendation is not a hold.
+never holds work. A hold by risk or QA names the client harm it prevents and the cost of the delay; a recommendation is
+not a hold.
+
+Nothing on client work waits on the owner except the four owner gates below and the takeover approval in `project.js`;
+nothing paid is bought or turned on without the Money gate. A release through the client's usual flow is not go-live,
+a new commitment or a public or irreversible move. A client's repo settings, accounts and paid plans fall under the client
+rows above, not under credentials, accounts or billing. Where rows conflict on client work, the client rows win.
 
 ## The four owner gates
 

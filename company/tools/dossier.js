@@ -124,7 +124,7 @@ function build(id, c, rec) {
       story ? 'Who you are: ' + story : '',
       ...personLines(ch)]),
     traits ? 'What makes you good at this job:\n' + traits : '',
-    'How you work: you own ' + (scope ? scope.replace(/^[A-Z](?=[a-z])/, m => m.toLowerCase()) : 'your area') + '. ' + (out ? 'You hand off ' + out.replace(/^[A-Z]/, m => m.toLowerCase()) + '. ' : '') + 'You decide everything inside your scope yourself, finish what you start, and move work to its owner by handoff. Anything only the owner can decide goes up your chain of command to the CEO, ' + ceoName() + '.',
+    'How you work: you own ' + (scope ? scope.replace(/^[A-Z](?=[a-z])/, m => m.toLowerCase()) : 'your area') + '. ' + (out ? 'You hand off ' + out.replace(/^[A-Z]/, m => m.toLowerCase()) + '. ' : '') + 'You decide everything inside your scope yourself (on client work the client\'s current way is the brief: company/DECISION_RIGHTS.md "Client work"), finish what you start, and move work to its owner by handoff. Anything only the owner can decide goes up your chain of command to the CEO, ' + ceoName() + '.',
     'Your workstation on the company\'s StarNet station gives you real tools: files, a terminal, the web and memory. Use them to do the work and to check what is true. If a job needs a tool you do not have, say so plainly. Never claim work you have not verified.',
   ].filter(Boolean).join('\n\n');
   const purpose = [
@@ -176,6 +176,7 @@ function buildCeoIdentity(rec) {
     sectionRaw(ch, 'Success traits') ? 'What makes you good at this job:\n' + sectionRaw(ch, 'Success traits') : '',
     'You decide, delegate and unblock; a specialist\'s job goes to the seat that owns it. Only you write to the owner, through the owner channel, as one person to another.',
     'Your workstation grants you real tools: reading files, a terminal for the company\'s own tools, and web search. Never claim work you have not checked.',
+    projectsLine(),   // the CEO sets priorities and writes to the owner, so he sees which projects are client work too
     orders,
   ];
   const voice = section(ch, 'Voice'), preset = section(ch, 'Persona preset').toLowerCase().split(/\s+/)[0];
@@ -235,8 +236,10 @@ async function main() {
       const dir = path.join(ROOT, 'company', 'roles');
       const pdir = path.join(ROOT, 'company', 'people', 'profiles');   // a profile change counts too (inject profile)
       const pm = (() => { try { return fs.readdirSync(pdir).filter(f => /\.json$/.test(f)).map(f => fs.statSync(path.join(pdir, f)).mtimeMs); } catch (_) { return []; } })();
-      const newest = Math.max(fs.statSync(LOOPS).mtimeMs, ...fs.readdirSync(dir).map(f => fs.statSync(path.join(dir, f)).mtimeMs), ...pm);
-      if (newest <= last) { console.log(JSON.stringify({ ok: true, skipped: 'no charter or crew change since the last sync' })); return; }
+      // the projects registry counts too: an approval, revoke or relationship change rewrites every seat's projects line
+      const proj = (() => { try { return [fs.statSync(path.join(ROOT, 'company', 'projects.json')).mtimeMs]; } catch (_) { return []; } })();
+      const newest = Math.max(fs.statSync(LOOPS).mtimeMs, ...fs.readdirSync(dir).map(f => fs.statSync(path.join(dir, f)).mtimeMs), ...pm, ...proj);
+      if (newest <= last) { console.log(JSON.stringify({ ok: true, skipped: 'no charter, crew or project change since the last sync' })); return; }
     }
     const ids = opt('all') ? Object.keys(crew) : [String(opt('agent') || '')].filter(Boolean);
     if (!ids.length) throw new Error('--agent <id> or --all');
