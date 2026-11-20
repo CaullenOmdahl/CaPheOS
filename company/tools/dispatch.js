@@ -1529,9 +1529,6 @@ function lastRunTail(job) {
       catch (e) { log(label + ' ERROR: ' + String(e.stderr || e.message || e).split('\n').find(Boolean).slice(0, 240)); }
     }
   } catch (e) { log('SELF-IMPROVEMENT ERROR: ' + String(e.message || e).split('\n')[0].slice(0, 160)); }
-  // a run the station still counts as running but that wrote nothing for an hour is dead (its AI process ended without
-  // the station noticing): hung-runs.js stops it so the seat's lease and any restart-when-idle are freed. Fail-safe
-  if (!DRY) try { await require('./hung-runs.js').tick({ log }); } catch (e) { log('HUNG RUNS ERROR: ' + String(e.message || e).split('\n')[0].slice(0, 160)); }
   // the station's one-run override allowlist (lib/override-allow.js, StarNet patch 0017): rewritten at the end of every
   // tick from what each seat can run NOW; a halted company or a stopped dispatcher stops writing it, and the station
   // turns every override off once it is 30 minutes old. Fail-safe.
