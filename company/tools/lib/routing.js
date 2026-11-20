@@ -23,7 +23,8 @@
  *   R.wakeClass(items, seat, { departments })   -> { class, classes, heavy }
  *   R.denied(pair, classes, K)                  -> the class rule that denies the pair, or null
  *   R.assign(trial, wakeId)                     -> { u, entered, arm }   (deterministic)
- *   R.decide({ seat, items, wakeId, policy|K, departments, crew, chain, current, held, allow })
+ *   R.decide({ seat, items, wakeId, policy|K, departments, crew, chain, current, held, allow, refused })   refused: trial arms
+ *                                               ([{provider, model}]) that refused this routine recently are never assigned
  *        -> { v, class, classes, source, trial?, arm?, provider, model, effort?, applied, mode, wouldApply?, hold?, holdWhy?, chainDenied?, reasons }
  *   R.overrideOf(decision)                      -> { provider, model, effort? } | null   (the one-run override body fields)
  *   R.allowFor(seat, { root, now, maxAgeMin })  -> [{provider, model}] the current allowlist opens, or null (none current)
@@ -198,7 +199,10 @@ function decide(a) {
         if (by.length) { reasons.push('trial ' + t.id + ' paused: ' + by.join(', ') + ' held by the pacer (no assignment)'); continue; }
         const g = assign(t, a.wakeId);
         if (!g.entered) { reasons.push('trial ' + t.id + ': not entered (u ' + g.u.toFixed(3) + ' >= entryShare ' + t.entryShare + ')'); continue; }
-        return Object.assign({ source: 'trial', trial: String(t.id), arm: g.arm }, arms[g.arm]);
+        const armPair = arms[g.arm];
+        const refused = arr(a.refused).find(x => x && x.provider === armPair.provider && (!x.model || x.model === armPair.model));
+        if (refused) { reasons.push('trial ' + t.id + ': arm ' + label(armPair) + ' refused this routine recently; not assigned (the chain runs)'); continue; }
+        return Object.assign({ source: 'trial', trial: String(t.id), arm: g.arm }, armPair);
       }
       return null;
     },
@@ -362,7 +366,8 @@ function forWake(ctx, w) {
     const job = w.job || {};
     const current = pairOf({ provider: (job.wire && job.wire.provider) || job.provider, model: (job.wire && job.wire.model) || job.model, effort: job.reasoningEffort });
     const chain = ctx.chains[w.seat] || (current ? [current] : []);
-    return decide({ K: ctx.K, seat: w.seat, items: w.items, wakeId: w.wakeId, departments: ctx.deps, crew: ctx.crew, chain, current, held: ctx.held,
+    let refused = []; try { if (job.id) refused = require('./refusal').trialRefusals(job.id, { root: ctx.root }); } catch (_) { refused = []; }
+    return decide({ K: ctx.K, seat: w.seat, items: w.items, wakeId: w.wakeId, departments: ctx.deps, crew: ctx.crew, chain, current, held: ctx.held, refused,
       allow: allowFor(w.seat, { root: ctx.root, now: Date.now(), maxAgeMin: ctx.K.allowMaxAgeMin }) });
   } catch (e) { if (typeof ctx.log === 'function') ctx.log('ROUTING ERROR ' + w.seat + ': ' + String((e && e.message) || e).slice(0, 200) + ' (runs on its chain)'); return null; }
 }

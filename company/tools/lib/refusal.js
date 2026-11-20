@@ -74,7 +74,14 @@ function record(o) {
 function activeBlocks(o) {
   const root = (o && o.root) || co.ROOT; const now = (o && Number.isFinite(o.now)) ? o.now : Date.now();
   const list = (o && Array.isArray(o.blocks)) ? o.blocks : ((readJson(path.join(root, 'company', 'state', 'pacer-state.json'), {}) || {}).blocks || []);
-  return list.filter(b => b && b.routineId && b.provider && !b.clearedAt && Number(b.until) > now);
+  return list.filter(b => b && b.routineId && b.provider && !b.clearedAt && Number(b.until) > now && !b.trial);
+}
+/* a refusal of a one-run trial model (the router's override, never the seat's own chain) blocks only that model for that
+   routine, in the router: the seat keeps its provider and runs on its own chain. -> [{provider, model, until}] */
+function trialRefusals(jobId, o) {
+  const root = (o && o.root) || co.ROOT; const now = (o && Number.isFinite(o.now)) ? o.now : Date.now();
+  const list = (o && Array.isArray(o.blocks)) ? o.blocks : ((readJson(path.join(root, 'company', 'state', 'pacer-state.json'), {}) || {}).blocks || []);
+  return list.filter(b => b && b.trial && b.routineId === jobId && !b.clearedAt && Number(b.until) > now).map(b => ({ provider: b.provider, model: b.model, until: b.until }));
 }
 // the block on this routine for this provider, or null
 function blockFor(jobId, provider, o) { return activeBlocks(o).find(b => b.routineId === jobId && b.provider === provider) || null; }
@@ -118,4 +125,4 @@ function blockLine(seatName, b, count, now) {
   return pname(b.provider) + ' paused for ' + (seatName || 'this seat') + ' until ' + whenText(Number(b.until), null, now) + ', because it declined ' + (count > 1 ? count + ' runs' : 'a run') + ' in the last 24 hours';
 }
 
-module.exports = { refusalCount, whenText, blockLine, isRefusal, nextEntry, candidates, record, plainLine, keyOf, pname, activeBlocks, blockFor, blockedForSeat, closureFor };
+module.exports = { trialRefusals, refusalCount, whenText, blockLine, isRefusal, nextEntry, candidates, record, plainLine, keyOf, pname, activeBlocks, blockFor, blockedForSeat, closureFor };

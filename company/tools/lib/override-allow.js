@@ -124,7 +124,7 @@ function refusalBlocked(agentId, provider, root, now) {
   const r = path.resolve(root || co.ROOT);
   const seat = ((readJson(path.join(r, 'company', 'tools', 'loops.json'), {}) || {}).agents || {})[String(agentId || '')] || {};
   const blocks = (readJson(path.join(r, 'company', 'state', 'pacer-state.json'), {}) || {}).blocks || [];
-  return blocks.some(b => b && b.provider === provider && !b.clearedAt && Number(b.until) > now && seat.loop && b.name === seat.loop);
+  return blocks.some(b => b && b.provider === provider && !b.clearedAt && !b.trial && Number(b.until) > now && seat.loop && b.name === seat.loop);
 }
 function openFor(agentId, pair, o) {
   o = o || {};

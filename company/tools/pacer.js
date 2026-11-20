@@ -870,7 +870,7 @@ function makePacer(o) {
       if (end < since) continue;
       const fc = String(r.failureCode || ''), oc = String(r.outcome || '');
       if (r.cronJobId && (outcomes.includes(oc) || codes.includes(fc)))
-        out.refusals.push({ runId: r.runId, routineId: r.cronJobId, provider: r.provider, model: r.model, endedAt: end, code: fc || oc });
+        out.refusals.push({ runId: r.runId, routineId: r.cronJobId, provider: r.provider, model: r.model, endedAt: end, code: fc || oc, trial: r.requestedBy === 'override' });
       if (isUsageLimit(r)) {
         if (r.provider === 'claude-cli') out.claudeLimits.push({ runId: r.runId, endedAt: end, model: r.model });
         else if (r.provider === 'custom') out.minimaxLimits.push({ runId: r.runId, endedAt: end, model: r.model });
@@ -999,6 +999,17 @@ function makePacer(o) {
     for (const e of ev.refusals) {
       if (!e.runId || st.handled[e.runId]) continue;
       st.handled[e.runId] = t;
+      // a one-run trial model (the router's override) refused: only that model is off for this routine, in the router, for
+      // refusalBlockHours; the seat keeps its provider and its own chain, and its open items wake it as usual (no re-run on
+      // the model that refused). Before this, one trial model's refusal closed the whole provider to the seat for hours.
+      if (e.trial) {
+        const until = e.endedAt + policy.routing.refusalBlockHours * HOUR;
+        if (until <= t) continue;
+        st.blocks.push({ routineId: e.routineId, name: nameOf(e.routineId), provider: e.provider, model: e.model, runId: e.runId, code: e.code, at: e.endedAt, until, trial: true });
+        change('TRIAL MODEL REFUSED "' + nameOf(e.routineId) + '": ' + e.model + ' refused its trial run at ' + hm(e.endedAt) + ' (' + e.code + '); that model is left out of this routine\'s trials until ' + when(until) + ', and ' + (NAMES[e.provider] || e.provider) + ' stays open on its own chain');
+        journal('trial-block', { routine: nameOf(e.routineId), routineId: e.routineId, provider: e.provider, model: e.model, runId: e.runId, code: e.code, until: new Date(until).toISOString() });
+        continue;
+      }
       const prior = st.refusalLog.filter(x => x.routineId === e.routineId && x.runId !== e.runId && Math.abs(e.endedAt - x.at) < policy.routing.refusalRepeatWithinHours * HOUR).length;
       st.refusalLog.push({ routineId: e.routineId, runId: e.runId, at: e.endedAt });
       const repeat = prior >= 1;
@@ -1099,7 +1110,7 @@ function makePacer(o) {
   function plan(m, st, jobs) {
     const t = m.at;
     const R = loadRouting(root);
-    const blocked = (id, prov) => (st.blocks || []).find(b => b.routineId === id && b.provider === prov && b.until > t) || null;
+    const blocked = (id, prov) => (st.blocks || []).find(b => b.routineId === id && b.provider === prov && b.until > t && !b.trial) || null;
     const rows = [], untouched = [];
     // a seat with its own model chain (model-policy.json seats, company/tools/models.js) is moved by models.js, not here
     let chained = new Set(); try { chained = require('./models.js').chainedSeats(root); } catch (_) {}
@@ -1762,7 +1773,7 @@ function makePacer(o) {
     for (const p of rp.resume || []) L.push('  ' + (m.live ? 'RESUME' : 'resumes') + ' "' + p.name + '" (paused by the pacer): ' + p.why);
     for (const p of rp.keep || []) L.push('  stays paused "' + p.name + '" (paused by the pacer for the rail)');
     const blocks = (pl.blocks || []);
-    if (blocks.length) { L.push('Blocks:'); for (const b of blocks) L.push('  ' + (NAMES[b.provider] || b.provider) + ' blocked for "' + b.name + '" until ' + when(b.until) + ' (its run at ' + hm(b.at) + ' on ' + b.model + ' ended ' + b.code + ')'); }
+    if (blocks.length) { L.push('Blocks:'); for (const b of blocks) L.push('  ' + (b.trial ? b.model + ' (a trial model) left out of trials' : (NAMES[b.provider] || b.provider) + ' blocked') + ' for "' + b.name + '" until ' + when(b.until) + ' (its run at ' + hm(b.at) + ' on ' + b.model + ' ended ' + b.code + ')'); }
     for (const [k, c] of Object.entries(pl.closures || {})) L.push('  ' + (k === 'claude' ? 'Claude' : 'MiniMax') + ' closed to routines until ' + when(c.until) + ': ' + c.why);
     for (const p of pl.problems) L.push('Routing problem: ' + p);
     return L.join('\n');
@@ -1813,7 +1824,7 @@ function makePacer(o) {
     L.push('');
     const blocks = (st.blocks || []).filter(b => b.until > t);
     if (!blocks.length && !Object.keys(st.closures || {}).length) L.push('None.');
-    for (const b of blocks) L.push('- ' + (NAMES[b.provider] || b.provider) + ' is blocked for "' + b.name + '" until ' + when(b.until) + ': its run at ' + hm(b.at) + ' on ' + b.model + ' ended ' + b.code + '.');
+    for (const b of blocks) L.push('- ' + (b.trial ? b.model + ' (a trial model) is left out of trials' : (NAMES[b.provider] || b.provider) + ' is blocked') + ' for "' + b.name + '" until ' + when(b.until) + ': its run at ' + hm(b.at) + ' on ' + b.model + ' ended ' + b.code + '.');
     for (const [k, c] of Object.entries(st.closures || {})) L.push('- ' + (k === 'claude' ? 'Claude' : 'MiniMax') + ' is closed to routines until ' + when(c.until) + ': ' + c.why + '.');
     for (const f of pl.refires) L.push('- Re-fire of "' + f.name + '" after its refusal: ' + f.status + '.');
     L.push('');

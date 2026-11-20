@@ -738,6 +738,28 @@ test('a second refusal of the same routine within 24 h: a 24 h block, and the ru
   assert.deepEqual(x.st.fires, []);
 });
 
+test('a trial model\'s refusal (the router\'s one-run override) leaves out that model only: no provider block, no re-run on it, the router skips the arm', async () => {
+  const jobs = crewJobs();
+  Object.assign(jobs.find(j => j.id === 'j-prod'), { provider: 'claude-cli', model: 'claude-sonnet-5-5', wire: { provider: 'claude-cli', model: 'claude-sonnet-5-5' }, lastRunAt: new Date(T0 - 20 * MIN).toISOString() });
+  const runs = [{ runId: 'r-trial', cronJobId: 'j-prod', provider: 'claude-cli', model: 'claude-opus-5-5', requestedBy: 'override', override: { provider: 'claude-cli', model: 'claude-opus-5-5' }, outcome: 'refused', failureCode: 'content_policy_blocked', startedAt: T0 - 20 * MIN, endedAt: T0 - 10 * MIN }];
+  const st = station(jobs); const h = make(fixture({ feedPct: 5, runs, policy: { mode: 'live' } }), st);
+  await tick(h, st.copy);
+  const b = readState({ root: h.p.root }).blocks;
+  assert.equal(b.length, 1); assert.equal(b[0].trial, true); assert.equal(b[0].model, 'claude-opus-5-5');
+  assert.deepEqual(st.fires, [], 'no re-run on the model that refused: the open items wake the seat on its own chain');
+  const REF = require('../lib/refusal.js');
+  assert.equal(REF.blockFor('j-prod', 'claude-cli', { root: h.p.root, now: T0 }), null, 'Claude is not blocked for the routine');
+  assert.deepEqual(REF.trialRefusals('j-prod', { root: h.p.root, now: T0 }).map(x => x.model), ['claude-opus-5-5']);
+  const R = require('../lib/routing.js');
+  const K = R.knobs({ mode: 'live', order: ['trial'], trials: [{ id: 'tier-trial', status: 'running', class: 'general', entryShare: 1, scope: { seats: ['drafter'] }, arms: [{ provider: 'claude-cli', model: 'claude-opus-5-5' }] }] });
+  const items = [{ text: 'tidy the notes', title: 'notes' }];
+  const free = R.decide({ K, seat: 'drafter', items, wakeId: 'w1', chain: [{ provider: 'claude-cli', model: 'claude-sonnet-5-5' }], allow: [{ provider: 'claude-cli', model: 'claude-opus-5-5' }] });
+  const skip = R.decide({ K, seat: 'drafter', items, wakeId: 'w1', chain: [{ provider: 'claude-cli', model: 'claude-sonnet-5-5' }], allow: [{ provider: 'claude-cli', model: 'claude-opus-5-5' }], refused: [{ provider: 'claude-cli', model: 'claude-opus-5-5' }] });
+  assert.equal(free.source, 'trial', 'control: without the refusal the arm is assigned ' + JSON.stringify(free));
+  assert.notEqual(skip.source, 'trial', JSON.stringify(skip));
+  assert.ok(skip.reasons.some(r => /refused this routine recently/.test(r)), JSON.stringify(skip.reasons));
+});
+
 test('fix 10: deadlines: "no later than today", EOD, end of day and a missing Deadline count as due', () => {
   const noDl = '# inbox\n\n## 2026-11-15 18:38 from Casey — I leaked production secrets\n**Status:** OPEN\n\nRotate now.\n';
   const fx = fixture({ handoffs: { 'a.md': due('no later than today 18:00'), 'b.md': due('by end of day (EOD)'), 'c.md': due('end-of-day'), 'd.md': noDl,
