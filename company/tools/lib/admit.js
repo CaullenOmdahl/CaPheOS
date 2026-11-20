@@ -193,7 +193,10 @@ function attribute(runs, list, o) {
   const byRunId = new Map(); for (const a of usable) { const oc = outcome.get(a.id); if (oc && oc.runId) byRunId.set(oc.runId, a); }
   // a side row runs.jsonl keeps under a run's id ({runId, kind: 'dispatch-delivery', ts}: a team.dispatch delivery) is not a
   // run: it is neither attributed nor unattributed
-  const sorted = (runs || []).filter(r => r && r.runId && !(r.kind && !r.agentId && !r.parentRunId)).slice().sort((a, b) => (Number(a.startedAt) || 0) - (Number(b.startedAt) || 0));
+  // one run is one row: runs.jsonl can hold the same runId twice (an interrupted run recorded again); the last row in
+  // file order is kept, so a second copy never falls through to an inferred door after the first used its admit
+  const once = new Map(); for (const r of (runs || [])) if (r && r.runId && !(r.kind && !r.agentId && !r.parentRunId)) once.set(r.runId, r);
+  const sorted = [...once.values()].sort((a, b) => (Number(a.startedAt) || 0) - (Number(b.startedAt) || 0));
   for (const r of sorted) {
     const at = Number(r.startedAt) || Number(r.ts) || 0;
     let hit = null;
