@@ -156,7 +156,17 @@ function apply(opts) {
     const p = path.join(root, f);
     if (MERGE_JSON.includes(f) && fs.existsSync(p)) {
       const fw = readJ(fs.readFileSync(p, 'utf8')), mine = readJ(b.toString('utf8'));
-      if (fw && mine) { const m = deepMerge(fw, mine); fs.writeFileSync(p, JSON.stringify(m.value, null, 2) + '\n'); merged.push({ file: f, added: m.added, kept: m.kept.length }); continue; }
+      if (fw && mine) {
+        const m = deepMerge(fw, mine);
+        // nothing new from the framework: the company's bytes go back unchanged (a re-serialised copy differs only in
+        // spacing, and locked-watch would flag the file as changed by an unknown writer)
+        if (!m.added || !m.added.length) { fs.writeFileSync(p, b); merged.push({ file: f, kept: 'company copy' }); continue; }
+        // new keys: written in the company copy's own indentation, and recorded as this tool's write (provenance)
+        const ind = (/^\{\r?\n([ \t]+)"/.exec(b.toString('utf8')) || [])[1] || 2;
+        const out = JSON.stringify(m.value, null, ind) + '\n';
+        fs.writeFileSync(p, out); try { require('./provenance.js').wrote(p, out, 'framework-update.js'); } catch (_) {}
+        merged.push({ file: f, added: m.added, kept: m.kept.length }); continue;
+      }
     }
     fs.writeFileSync(p, b); merged.push({ file: f, kept: 'company copy' });
   }
@@ -209,6 +219,8 @@ function selftest() {
     W(I, 'company/work/.founded', 'x\n');
     W(I, 'company/company.json', JSON.stringify({ name: 'Acme Law', owner: { name: 'Alex' }, console: { port: 9101 } }, null, 2) + '\n');
     W(I, 'company/CHARTER.md', '# Acme Law\nOur mandate.\n');
+    const mpMine = JSON.stringify({ candidateDefault: { provider: 'claude-cli' } }, null, 1) + '\n';   // the company's own spacing
+    W(I, 'company/model-policy.json', mpMine);
     spawnSync('bash', [path.join(I, 'scripts', 'instance-guard.sh')], { cwd: I, encoding: 'utf8' });
     const pushUrl = () => G(I, 'remote', 'get-url', '--push', 'origin');
     ok(pushUrl() === 'no-push://capheos-instance', 'the founded clone cannot push (instance guard)');
@@ -217,6 +229,7 @@ function selftest() {
     // the framework moves: a new company.json key, a console change and a StarNet patch
     W(U, 'company/company.json', JSON.stringify({ name: 'TEMPLATE', owner: { name: '' }, console: { port: 0, sessionHours: 168 }, runtime: { scheduler: 'dispatcher' } }, null, 2) + '\n');
     W(U, 'console/server.js', '// v2\n');
+    W(U, 'company/model-policy.json', JSON.stringify({ candidateDefault: { provider: 'deepseek' } }, null, 2) + '\n');   // a changed value, no new key
     W(U, 'company/patches/0099-test.diff', '# test patch\n');
     G(U, 'add', '-A'); G(U, 'commit', '-qm', 'update with a patch');
     const upHead = G(U, 'rev-parse', 'HEAD');
@@ -240,6 +253,7 @@ function selftest() {
     const merged = JSON.parse(fs.readFileSync(path.join(I, 'company', 'company.json'), 'utf8'));
     ok(merged.name === 'Acme Law' && merged.owner.name === 'Alex' && merged.console.port === 9101 && merged.console.sessionHours === 168 && merged.runtime.scheduler === 'dispatcher', 'apply: company.json deep-merged (company values kept, framework keys added)');
     ok(fs.readFileSync(path.join(I, 'company', 'CHARTER.md'), 'utf8') === '# Acme Law\nOur mandate.\n', 'apply: the charter is the company\'s, untouched');
+    ok(fs.readFileSync(path.join(I, 'company', 'model-policy.json'), 'utf8') === mpMine, 'apply: an owned JSON file with no new framework key goes back byte for byte (no re-spacing for the file watch to flag)');
     ok(fs.existsSync(marker), 'apply: setup ran (the update ships a patch)');
     const t0 = Date.now(); while (!fs.existsSync(rmark) && Date.now() - t0 < 5000) spawnSync('sleep', ['0.1']);
     ok(fs.existsSync(rmark) && r.restart && r.restart.started, 'apply: the station restart (when idle) was started');
