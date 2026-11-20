@@ -839,6 +839,7 @@ function runTick(ctx) {
   // runs is flagged unless an applied schedule harness-change set exactly this value in the last two days. (enabled flips
   // legitimately when the pacer pauses DeepSeek routines, so it is not watched here.)
   const appliedSched = (() => { try { return require('./harness-change.js').appliedSchedules({ root: ctx.root }); } catch (_) { return {}; } })();
+  const cadenceSched = (() => { try { return byWriter((prov.get('company/work/ops/cadence.json') || []).filter(x => x && x.kind === 'schedule'), ['cadence.js']); } catch (_) { return []; } })();
   const schedChanged = [];
   if (ctx.jobs && base.routines) for (const j of ctx.jobs) {
     if (!j || !j.id || !j.schedule || laneJob(j)) continue;
@@ -848,6 +849,8 @@ function runTick(ctx) {
     if (r.sched.expr === cur.expr && (r.sched.tz || null) === (cur.tz || null)) continue;
     if (r.schedFlagged && r.schedFlagged.expr === cur.expr && (r.schedFlagged.tz || null) === (cur.tz || null)) continue;
     if ((appliedSched[j.id] || []).some(s => s.expr === cur.expr && (s.tz || null) === (cur.tz || null) && ctx.now - s.at < 2 * 86400e3)) { r.sched = cur; continue; }
+    // a schedule cadence.js set (its own provenance note, from the tool itself, in the last 2 days): the tool's change
+    if (cadenceSched.some(s => s.jobId === j.id && s.expr === cur.expr && (!s.tz || !cur.tz || s.tz === cur.tz) && ctx.now - (Date.parse(s.at) || 0) < 2 * 86400e3)) { r.sched = cur; continue; }
     schedChanged.push({ id: j.id, name: j.name, was: r.sched, cur });
   }
   // connectors and GitHub service keys outside the scope connector-scope.js records (the external-capability inventory)

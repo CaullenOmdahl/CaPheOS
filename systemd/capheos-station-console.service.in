@@ -13,6 +13,8 @@ Environment=TMPDIR=@ROOT@/.starnet-data/tmp
 ExecStartPre=/bin/mkdir -p -m 700 @ROOT@/.starnet-data/tmp
 ExecStart=/usr/bin/env node @ROOT@/console/server.js
 Restart=always
+# node exits 143 on SIGTERM (a stop or restart): that is a clean end, not a failure
+SuccessExitStatus=143
 # memory: limits and heap in the drop-in company/tools/memory.js apply writes. Under memory pressure systemd-oomd (where
 # it runs) may end this unit; Restart= brings it back, and the kernel ends it before the station (200 against 100).
 MemoryAccounting=yes

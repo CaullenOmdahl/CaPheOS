@@ -203,8 +203,10 @@ function appended(file, chunk, writer, o) {
 // its provenance began). Only kinds named here; locked-watch ignores them.
 function noted(file, info, writer, o) {
   try {
-    const root = o && o.root ? path.resolve(o.root) : rootOf(), rel = relOf(file, root); if (!rel || !info || !['cutover'].includes(info.kind)) return false;
-    append(Object.assign({ at: new Date().toISOString(), file: rel, kind: info.kind, bytes: Number(info.bytes) || 0, sha256: String(info.sha256 || '') }, common(root, writer)), root);
+    const root = o && o.root ? path.resolve(o.root) : rootOf(), rel = relOf(file, root); if (!rel || !info || !['cutover', 'schedule'].includes(info.kind)) return false;
+    // kind 'schedule': a tool set a routine's schedule on the station (cadence.js), so locked-watch knows the change was its
+    const extra = info.kind === 'schedule' ? { jobId: String(info.jobId || ''), expr: String(info.expr || ''), tz: info.tz ? String(info.tz) : null } : {};
+    append(Object.assign({ at: new Date().toISOString(), file: rel, kind: info.kind, bytes: Number(info.bytes) || 0, sha256: String(info.sha256 || '') }, extra, common(root, writer)), root);
     return true;
   } catch (_) { return false; }
 }
