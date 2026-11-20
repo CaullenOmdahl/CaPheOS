@@ -92,6 +92,8 @@ function charterFile(c, id) {
   if (byName && fs.existsSync(byName)) return byName;
   return path.join(roles, String(id).toLowerCase().replace(/[^a-z0-9-]+/g, '-') + '.md');
 }
+// the live projects and their relationship (client | own, lib/projects.js) for the seats' context; '' when none
+function projectsLine() { try { return require('./lib/projects').contextLine(); } catch (_) { return ''; } }
 function companyLine() {
   const x = co.config;
   return companyName() + (x.industry ? ' (' + x.industry + ')' : '') + ', an AI-run company owned by ' + ownerName();
@@ -136,7 +138,8 @@ function build(id, c, rec) {
     ownerName() + ' owns ' + companyName() + '. The company is run entirely by AI agents on this StarNet station, with ' + ceoName() + ' as CEO. Company time is ' + co.TZ + '.' + (co.config.mission ? ' Mission: ' + co.config.mission : '') + ' Current priorities are in the CEO\'s plan under company/work/.',
     'The owner wants a company that runs itself: find issues, fix them, finish work and suggest improvements without being asked. Do not take operational questions to the owner; only the CEO writes to the owner, as a person, through the owner channel.',
     'How work moves here: handoffs in company/work/handoffs/ (format in company/HANDOFFS.md), quests on the station that close on evidence, decisions in company/work/decisions.md (written only with company/tools/decision.js add|amend|withdraw), rules in company/DECISION_RIGHTS.md and company/CHAIN_OF_COMMAND.md.',
-  ].join('\n\n');
+    projectsLine(),
+  ].filter(Boolean).join('\n\n');
   const rules = MARK + '\n- Read your inbox (company/work/handoffs/' + c.inbox + ') first and work the whole queue, not one item.\n- Close a handoff by changing its own Status line to DONE with the evidence; never leave a finished one OPEN.\n- Quests close on evidence: cite real file paths and commits when you attest.\n- Take every time you write from the date command.\n- Owner gates go up your chain of command to the CEO; never message the owner yourself.\n- Studying what any practitioner already knows (textbooks, course notes, literature reviews, explainers of the basics) is not work. Spend the run on what is specific to this company and the idea or task in front of you; when you need a basic fact, take it in one line and move on.';
   // Soft shutdown (charter section, read by company/tools/halt.js soft): what this seat does when the company soft-halts.
   // A leading <placeholder> paragraph (the template's instructions to the people owner) is not a procedure; drop it.

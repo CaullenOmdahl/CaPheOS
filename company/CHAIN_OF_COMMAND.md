@@ -23,7 +23,9 @@ field. Until the company hires, the Founder holds every function and this chain 
 | Question is about | Goes to |
 |---|---|
 | Tooling, routines, harness config, station service | the **tools** owner |
-| Secrets, permissions, access, dependency or legal-exposure risk | the **risk** owner |
+| Secrets, permissions, access, dependency or legal-exposure risk of the company's own systems | the **risk** owner |
+| A client product's behaviour beyond a fix | the **client** decides; the crew proposes in one plain line and the current way continues |
+| A client's workflow, release flow, repo or account settings, paid plans | the **client** decides; risk and QA recommend only and never hold work for it |
 | Spend inside the budget, caps, AI usage, cost tradeoffs | the **finance** owner |
 | Role definition, hiring, performance, model changes | the **people** owner (with the person's manager) |
 | Floor plan, desks, rooms | the **floor** owner |

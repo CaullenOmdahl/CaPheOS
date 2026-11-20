@@ -11,7 +11,9 @@ defect, not diligence.
 | Priorities, what the company works on next | **CEO** | finance (cost), domain leads (effort) | it changes ownership or the charter's mandate |
 | How domain work is done (method, quality bar) | **the domain lead** | risk | it creates a new recurring cost or a new class of data |
 | Harness tooling, routines, skills, agent config | **tools** | risk (credentials), finance (cost) | it needs a paid tool or new access |
-| Security posture, secrets, access, legal exposure | **risk** | CEO | creating or rotating credentials, or accepting a high risk |
+| Security posture of the company's own systems, secrets, access, legal exposure | **risk** | CEO | creating or rotating credentials, or accepting a high risk |
+| Client product behaviour beyond a fix | **the client** | the crew proposes (one plain line) | as a one-line suggestion when the product is the owner's; nothing waits on the answer |
+| Client workflow, release flow, repo or account settings, paid plans | **the client** | risk and QA recommend only and never hold work for it | as a one-line suggestion when the product is the owner's; nothing waits on the answer |
 | Floor plan, desks, rooms | **floor** | tools, CEO | never |
 | Role charters, hiring process, interview criteria | **people** | the role's manager | it adds recurring spend beyond the cap |
 | Opening a role (headcount) | **CEO** | finance | it adds recurring cost beyond the cap |
@@ -21,6 +23,15 @@ defect, not diligence.
 | Ownership, takeover scope, contracts, legal | — | CEO | **always** |
 | Promises to clients, public announcements, go-live | — | CEO | **always** |
 | Personal or private data beyond the task | — | risk | **always** |
+
+## Client work
+
+A product the company did not found, the owner's own included, is client work (`relationship: client` in
+`project.js`). Its current behaviour, equipment, staff routine and release flow are the brief. Bugs get fixed through the
+normal flow. Anything unrequested is a one-line suggestion and the current way continues; inherited behaviour nobody
+asked for is removed after a dated notice, and silence means it goes. A paid add-on may be suggested case by case but
+never holds work. Nothing waits on the owner. A hold by risk or QA names the client harm it prevents and the cost of the
+delay; a recommendation is not a hold.
 
 ## The four owner gates
 
