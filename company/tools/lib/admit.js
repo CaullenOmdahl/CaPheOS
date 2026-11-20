@@ -117,7 +117,7 @@ function admit(req, opts) {
   // the one rule that decides already in phase 1: a routine is never started on a provider that refused it and is still
   // blocked for it (the pacer's refusal block, lib/refusal.js). The door holds the start; models.js moves the seat.
   if (t.decision === 'allow' && kind === 'run' && req.jobId && req.provider) {
-    let b = null; try { b = require('./refusal').blockFor(String(req.jobId), String(req.provider), { now, root: opts.root }); } catch (_) {}
+    let b = null; try { b = require('./refusal').blockFor(String(req.jobId), String(req.provider), { now, root: opts.root }, req.model ? String(req.model) : undefined); } catch (_) {}
     if (b) Object.assign(t, { decision: 'hold', reason: 'refusal block: ' + req.provider + ' refused this routine at ' + new Date(b.at).toISOString() + ' and is blocked for it until ' + new Date(b.until).toISOString() + ' (it runs on the next model meanwhile)' });
     // models.js judged that nothing in this seat's chain can run (every entry closed, blocked or at the spend rail): a
     // start would only be stopped by the station partway ("budget") or fail at the provider. Hold it; models.js moves the

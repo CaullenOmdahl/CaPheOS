@@ -760,6 +760,26 @@ test('a trial model\'s refusal (the router\'s one-run override) leaves out that 
   assert.ok(skip.reasons.some(r => /refused this routine recently/.test(r)), JSON.stringify(skip.reasons));
 });
 
+test('a content-filter refusal blocks only the model that refused: the same provider\'s other models stay open', async () => {
+  const jobs = crewJobs();
+  Object.assign(jobs.find(j => j.id === 'j-prod'), { provider: 'claude-cli', model: 'opus', wire: { provider: 'claude-cli', model: 'opus' }, lastRunAt: new Date(T0 - 20 * MIN).toISOString() });
+  const runs = [{ runId: 'r-cf', cronJobId: 'j-prod', provider: 'claude-cli', model: 'opus', outcome: 'refused', failureCode: 'content_policy_blocked', startedAt: T0 - 20 * MIN, endedAt: T0 - 10 * MIN }];
+  const st = station(jobs); const h = make(fixture({ feedPct: 5, runs, policy: { mode: 'live' } }), st);
+  await tick(h, st.copy);
+  const b = readState({ root: h.p.root }).blocks;
+  assert.equal(b.length, 1); assert.equal(b[0].modelOnly, true); assert.equal(b[0].model, 'opus');
+  const REF = require('../lib/refusal.js');
+  const o = { root: h.p.root, now: T0 };
+  assert.ok(REF.blockFor('j-prod', 'claude-cli', o, 'opus'), 'opus is blocked for the routine');
+  assert.equal(REF.blockFor('j-prod', 'claude-cli', o, 'claude-sonnet-5-5'), null, 'sonnet is not');
+  assert.equal(REF.blocksEntry(b[0], { provider: 'claude-cli', model: 'claude-sonnet-5-5' }), false);
+  const A = require('../lib/admit.js');
+  const ok = A.admit({ door: 'dispatch', kind: 'run', seat: 'drafter', jobId: 'j-prod', provider: 'claude-cli', model: 'claude-sonnet-5-5' }, { root: h.p.root, now: T0, file: path.join(h.p.root, 'company/state/admit-log.jsonl') });
+  const no = A.admit({ door: 'dispatch', kind: 'run', seat: 'drafter', jobId: 'j-prod', provider: 'claude-cli', model: 'opus' }, { root: h.p.root, now: T0, file: path.join(h.p.root, 'company/state/admit-log.jsonl') });
+  assert.notEqual(ok.decision === 'hold' && /refusal block/.test(ok.reason), true, 'a start on sonnet is not held by the opus refusal: ' + ok.reason);
+  assert.equal(no.decision, 'hold'); assert.match(no.reason, /refusal block/);
+});
+
 test('fix 10: deadlines: "no later than today", EOD, end of day and a missing Deadline count as due', () => {
   const noDl = '# inbox\n\n## 2026-11-15 18:38 from Casey — I leaked production secrets\n**Status:** OPEN\n\nRotate now.\n';
   const fx = fixture({ handoffs: { 'a.md': due('no later than today 18:00'), 'b.md': due('by end of day (EOD)'), 'c.md': due('end-of-day'), 'd.md': noDl,

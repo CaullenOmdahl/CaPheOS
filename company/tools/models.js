@@ -217,7 +217,8 @@ function makeModels(o) {
     const bad = allowedWhy(e, pol); if (bad) return { ok: false, why: bad, hard: true };
     // a refusal block (the pacer's record, lib/refusal.js): this seat's run on this provider was refused and the block is
     // still on, so the entry cannot run for this seat until it ends; the seat runs on its next entry meanwhile
-    const rb = ctx.refusalBlocks && ctx.refusalBlocks[id] && ctx.refusalBlocks[id][e.provider];
+    const rb0 = ctx.refusalBlocks && ctx.refusalBlocks[id] && ctx.refusalBlocks[id][e.provider];
+    const rb = rb0 && REF.blocksEntry(rb0, e) ? rb0 : null;
     if (rb) return { ok: false, why: (NAMES[e.provider] || e.provider) + ' refused a run of "' + (rb.name || 'its routine') + '" ' + REF.whenText(Number(rb.at), co.TZ, t) + ' and is blocked for this seat until ' + REF.whenText(Number(rb.until), co.TZ, t), refusalBlock: true, connected: true };
     const pv = ctx.providers;
     if (pv) {

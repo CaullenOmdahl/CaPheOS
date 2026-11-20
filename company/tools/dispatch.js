@@ -1390,7 +1390,7 @@ function lastRunTail(job) {
       say(agentId, { state: 'held', why: 'has work, but its model may not do this kind of work and no allowed model is open right now; it starts when one opens' });
       continue;
     }
-    const tk = A.admit({ door: 'dispatch', kind: 'run', seat: agentId, jobId: job.id, provider: (job.wire && job.wire.provider) || job.provider, priority: waitersOf(agentId).length ? 'blocking' : null, why: names, owner: ownerWake.has(agentId) });   // phase 1: allow, recorded; a refusal block holds
+    const tk = A.admit({ door: 'dispatch', kind: 'run', seat: agentId, jobId: job.id, provider: (job.wire && job.wire.provider) || job.provider, model: (job.wire && job.wire.model) || job.model, priority: waitersOf(agentId).length ? 'blocking' : null, why: names, owner: ownerWake.has(agentId) });   // phase 1: allow, recorded; a refusal block holds
     if (tk.memoryEdge === 'start') log('MEMORY HOLD: new work waits, the computer is short of memory (' + tk.reason.replace(/^memory: /, '') + '); owner chats and health checks still run');
     if (tk.memoryEdge === 'lift') log('MEMORY HOLD LIFTED: enough memory is free again; new work starts');
     if (tk.decision === 'hold' && tk.memory) { say(agentId, { state: 'held', why: 'has work, but the computer is short of memory; it starts when memory is free again' }); continue; }

@@ -84,7 +84,9 @@ function trialRefusals(jobId, o) {
   return list.filter(b => b && b.trial && b.routineId === jobId && !b.clearedAt && Number(b.until) > now).map(b => ({ provider: b.provider, model: b.model, until: b.until }));
 }
 // the block on this routine for this provider, or null
-function blockFor(jobId, provider, o) { return activeBlocks(o).find(b => b.routineId === jobId && b.provider === provider) || null; }
+function blockFor(jobId, provider, o, model) { return activeBlocks(o).find(b => b.routineId === jobId && b.provider === provider && (!b.modelOnly || !model || b.model === model)) || null; }
+// does this block stop this chain entry? a model-only block (a content filter) stops only the model that refused
+const blocksEntry = (b, entry) => !!b && (!b.modelOnly || !entry || !entry.model || b.model === entry.model);
 // providers blocked for a seat: any of its routines refused on that provider and still in its window
 function blockedForSeat(jobIds, o) {
   const ids = new Set(jobIds || []); const out = {};
@@ -125,4 +127,4 @@ function blockLine(seatName, b, count, now) {
   return pname(b.provider) + ' paused for ' + (seatName || 'this seat') + ' until ' + whenText(Number(b.until), null, now) + ', because it declined ' + (count > 1 ? count + ' runs' : 'a run') + ' in the last 24 hours';
 }
 
-module.exports = { trialRefusals, refusalCount, whenText, blockLine, isRefusal, nextEntry, candidates, record, plainLine, keyOf, pname, activeBlocks, blockFor, blockedForSeat, closureFor };
+module.exports = { blocksEntry, trialRefusals, refusalCount, whenText, blockLine, isRefusal, nextEntry, candidates, record, plainLine, keyOf, pname, activeBlocks, blockFor, blockedForSeat, closureFor };

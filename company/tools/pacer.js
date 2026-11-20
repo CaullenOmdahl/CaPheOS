@@ -1015,9 +1015,12 @@ function makePacer(o) {
       const repeat = prior >= 1;
       const until = e.endedAt + (repeat ? policy.routing.refusalBlockHours : policy.routing.refusalFirstBlockHours) * HOUR;
       if (until <= t) continue;
-      st.blocks.push({ routineId: e.routineId, name: nameOf(e.routineId), provider: e.provider, model: e.model, runId: e.runId, code: e.code, at: e.endedAt, until, repeat });
+      // a content filter is the model's own (one Claude model refuses work another runs): only that model is blocked, and the
+      // seat's chain goes on to its next entry, the same provider's other models included. Other refusals block the provider.
+      const modelOnly = e.code === 'content_policy_blocked' && !!e.model;
+      st.blocks.push({ routineId: e.routineId, name: nameOf(e.routineId), provider: e.provider, model: e.model, runId: e.runId, code: e.code, at: e.endedAt, until, repeat, modelOnly });
       const fresh = t - e.endedAt <= policy.routing.refireWithinMin * MIN;   // a repeat refusal is re-run too: the run is never lost
-      if (fresh) st.pendingRefires.push({ runId: e.runId, routineId: e.routineId, provider: e.provider, model: e.model, endedAt: e.endedAt });
+      if (fresh) st.pendingRefires.push({ runId: e.runId, routineId: e.routineId, provider: e.provider, model: e.model, endedAt: e.endedAt, modelOnly });
       change('BLOCK ' + (NAMES[e.provider] || e.provider) + ' for "' + nameOf(e.routineId) + '" until ' + when(until) + ': its run at ' + hm(e.endedAt) + ' on ' + e.model + ' ended ' + e.code + (repeat ? ' (a second refusal within ' + policy.routing.refusalRepeatWithinHours + ' h: blocked ' + policy.routing.refusalBlockHours + ' h; the CEO looks at it, ESCALATION_POLICY T3)' : '') + (fresh ? (live ? '; it will be re-fired once on its new model' : '; live mode would re-fire it once on its new model') : ''));
       journal('block', { routine: nameOf(e.routineId), routineId: e.routineId, provider: e.provider, model: e.model, runId: e.runId, code: e.code, until: new Date(until).toISOString() });
     }
@@ -1110,7 +1113,7 @@ function makePacer(o) {
   function plan(m, st, jobs) {
     const t = m.at;
     const R = loadRouting(root);
-    const blocked = (id, prov) => (st.blocks || []).find(b => b.routineId === id && b.provider === prov && b.until > t && !b.trial) || null;
+    const blocked = (id, prov, model) => (st.blocks || []).find(b => b.routineId === id && b.provider === prov && b.until > t && !b.trial && (!b.modelOnly || !model || b.model === model)) || null;
     const rows = [], untouched = [];
     // a seat with its own model chain (model-policy.json seats, company/tools/models.js) is moved by models.js, not here
     let chained = new Set(); try { chained = require('./models.js').chainedSeats(root); } catch (_) {}
@@ -1131,7 +1134,7 @@ function makePacer(o) {
           if (choice) return;
           const pos = 'link ' + (i + 1) + ' of the ' + scope.key + ' chain';
           if (link === 'claude') {
-            const tier = e.claude || 'sonnet', md = R.models[tier], b = blocked(job.id, 'claude-cli'), need = Number(e.claudeOnlyIfShareLeftAbove);
+            const tier = e.claude || 'sonnet', md = R.models[tier], b = blocked(job.id, 'claude-cli', md && md.model), need = Number(e.claudeOnlyIfShareLeftAbove);
             const reserveCap = policy.claude.weekCloseAtUsedPct;   // the owner's stop for Claude, not a number of ours
             const reserve = !m.claude.open && scope.claudeReserve && m.claude.known && !m.claude.hard && isNum(m.claude.usedPct) && m.claude.usedPct < reserveCap;
             if (!md || !md.ok) tried.push('Claude tier "' + tier + '" is not allowed for routines' + (md && md.why ? ' (' + md.why + ')' : ''));
@@ -1401,7 +1404,7 @@ function makePacer(o) {
       const lastRun = job.lastRunAt ? Date.parse(job.lastRunAt) : 0;
       if (lastRun > p.endedAt + MIN) { st.refired[p.runId] = { at: t, status: 'not needed' }; continue; }
       if (require('./lib/scheduler').switchedOff(job, root) || job.inFlight || job.state === 'running') continue;
-      if (curProv === p.provider) {   // models.js could not move it: no other entry can run
+      if (curProv === p.provider && (!p.modelOnly || curModel === p.model)) {   // models.js could not move it: no other entry can run
         st.refired[p.runId] = { at: t, status: 'stopped' };
         note('REFUSED, NOT RE-RUN "' + job.name + '": ' + (NAMES[p.provider] || p.provider) + ' refused it and no other model in its seat\'s chain can run. The run is reported, not lost: the CEO picks it up.');
         try { require('./lib/refusal.js').record({ root, seat: job.agentId, door: 'routine', runId: p.runId, from: { provider: p.provider, model: p.model }, to: null }); } catch (_) {}

@@ -120,11 +120,11 @@ async function write(o) {
 const MAX_AGE_MS = 30 * 60e3;
 // a refusal block on this provider for one of the seat's routines (company/state/pacer-state.json blocks, by routine name:
 // the seat's loop in loops.json)
-function refusalBlocked(agentId, provider, root, now) {
+function refusalBlocked(agentId, provider, root, now, model) {
   const r = path.resolve(root || co.ROOT);
   const seat = ((readJson(path.join(r, 'company', 'tools', 'loops.json'), {}) || {}).agents || {})[String(agentId || '')] || {};
   const blocks = (readJson(path.join(r, 'company', 'state', 'pacer-state.json'), {}) || {}).blocks || [];
-  return blocks.some(b => b && b.provider === provider && !b.clearedAt && !b.trial && Number(b.until) > now && seat.loop && b.name === seat.loop);
+  return blocks.some(b => b && b.provider === provider && !b.clearedAt && !b.trial && (!b.modelOnly || !model || b.model === model) && Number(b.until) > now && seat.loop && b.name === seat.loop);
 }
 function openFor(agentId, pair, o) {
   o = o || {};
@@ -147,7 +147,7 @@ function openFor(agentId, pair, o) {
     // gate and subscription stops, no quota closure: per provider) and this seat has no refusal block on it.
     const anyOpen = Object.values(doc.agents).some(l => Array.isArray(l) && l.some(x => x && x.provider === p.provider));
     if (!anyOpen) return 'not open for them right now (that AI is closed for everyone right now)';
-    if (refusalBlocked(agentId, p.provider, o.root, now)) return 'not open for them right now (that AI declined their work recently)';
+    if (refusalBlocked(agentId, p.provider, o.root, now, p.model)) return 'not open for them right now (that AI declined their work recently)';
     return null;
   }
   return 'not open for them right now';
