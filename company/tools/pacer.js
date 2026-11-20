@@ -2031,7 +2031,8 @@ async function cli(argv, o) {
     const seatName = (crew[seat] || {}).name || seat; const lp = co.localParts();
     const line = 'REFUSAL BLOCK CLEARED for ' + seatName + ' (' + names.map(p => NAMES[p] || p).join(', ') + ') by ' + by + (why ? ': ' + why : '') + '; it runs on its primary again from the next check';
     try { fs.appendFileSync(path.join(root, 'company', 'work', 'dispatch-log.md'), '- ' + lp.date + ' ' + lp.time + ' ' + line + '\n'); } catch (_) {}
-    try { fs.appendFileSync(path.join(root, 'company', 'state', 'pacer-log.jsonl'), JSON.stringify({ at: new Date().toISOString(), event: 'unblock', seat, by, why: why || null, blocks: r.blocks.map(b => ({ routineId: b.routineId, provider: b.provider, until: b.until })) }) + '\n'); } catch (_) {}
+    // recorded as this tool's own append (provenance), or locked-watch strips the line as an unknown writer's
+    try { const f = path.join(root, 'company', 'state', 'pacer-log.jsonl'); const line = JSON.stringify({ at: new Date().toISOString(), event: 'unblock', seat, by, why: why || null, blocks: r.blocks.map(b => ({ routineId: b.routineId, provider: b.provider, model: b.model || null, until: b.until })) }) + '\n'; fs.appendFileSync(f, line); try { require('./provenance.js').appended(f, line, 'pacer.js'); } catch (_) {} } catch (_) {}
     // the seat's manager is told (an FYI handoff in their inbox)
     try {
       const mgr = (crew[seat] || {}).manager || null; const mi = mgr && crew[mgr] && crew[mgr].inbox;
