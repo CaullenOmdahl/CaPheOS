@@ -411,6 +411,9 @@ An import is reproducible: the same archive + config yields the same enabled mod
 
 ## 10. Registry and index
 
+Who gets which unit (baseline or assigned), how a seat searches and requests one, the first-party unit repository, lean
+founding and the update service window: `docs/UNIT-DISTRIBUTION.md` (owner decisions, 2026-11-20).
+
 ### 10.1 Index format
 
 ```json
