@@ -45,8 +45,15 @@ async function api(method, p, body) {
   if (!r.ok) throw new Error(p + ' HTTP ' + r.status + ': ' + JSON.stringify(j).slice(0, 200));
   return j;
 }
+// a company skill is a folder in company/skills/ or a skill an enabled unit provides (unit.js, runtime compat host)
+const unitSkills = () => { try { return require('./lib/units').enabledSkills(); } catch (_) { return []; } };
+function skillFile(name) {
+  const own = path.join(SKILLS_DIR, name, 'SKILL.md'); if (fs.existsSync(own)) return own;
+  const u = unitSkills().find(s => s.name === name); return u ? u.file : own;
+}
 function knownSkills() {
-  try { return fs.readdirSync(SKILLS_DIR).filter(n => fs.existsSync(path.join(SKILLS_DIR, n, 'SKILL.md'))).sort(); } catch (_) { return []; }
+  let own = []; try { own = fs.readdirSync(SKILLS_DIR).filter(n => fs.existsSync(path.join(SKILLS_DIR, n, 'SKILL.md'))); } catch (_) { own = []; }
+  return [...new Set(own.concat(unitSkills().map(s => s.name)))].sort();
 }
 /** The station's per-skill `description` field takes 280 characters.
  *
@@ -64,7 +71,7 @@ function truncateDescription(desc) {
 }
 
 function readSkill(name) {
-  const f = path.join(SKILLS_DIR, name, 'SKILL.md');
+  const f = skillFile(name);
   const raw = fs.readFileSync(f, 'utf8');
   const desc = ((raw.match(/^description:\s*(.+)$/m) || [])[1] || '').replace(/^["']|["']$/g, '').trim();
   const description = truncateDescription(desc);
@@ -141,7 +148,7 @@ const agentsArg = String(a.agents || 'all');
     if (a.cmd === 'install' || a.cmd === 'install-all') {
       const which = a.cmd === 'install-all' ? knownSkills() : [String((a._ || [])[0] || '')];
       if (!which[0]) out(2, { ok: false, error: 'usage: install <skill-name> --agents all|list' });
-      for (const n of which) if (!fs.existsSync(path.join(SKILLS_DIR, n, 'SKILL.md'))) out(2, { ok: false, error: 'no skill package at company/skills/' + n + '/SKILL.md' });
+      for (const n of which) if (!fs.existsSync(skillFile(n))) out(2, { ok: false, error: 'no skill package at company/skills/' + n + '/SKILL.md and no enabled unit provides ' + n });
       const all = await agents();
       const ids = agentsArg === 'all' ? all.map(x => String(x).toLowerCase()) : agentsArg.split(',').map(s => s.trim()).filter(Boolean);
       // map display names -> roster ids

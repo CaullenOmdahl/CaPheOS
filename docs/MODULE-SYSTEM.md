@@ -138,7 +138,7 @@ A module's executable form is a **Cordis plugin**: `apply(ctx, config)`, receivi
 | `requires` | object | yes | see §5.3 |
 | `capabilities` | object | yes | see §5.4; `{}` means none |
 | `config` | object | no | JSON Schema for company configuration + `defaults` |
-| `provides` | object | yes | what the module contributes: `tools[]`, `seats[]`, `workflows[]`, `surfaces[]`, `stacks[]`, `mcpServers[]` |
+| `provides` | object | yes | what the module contributes: `skills[]` (`{name, file}`, a `SKILL.md`; the layout DSH skill plugins use), `tools[]`, `seats[]`, `workflows[]`, `surfaces[]`, `stacks[]`, `mcpServers[]` |
 | `docs` | array | yes | documentation files; readable whether enabled or not |
 | `limits`, `meters` | array | kind-dependent | same semantics as `pack.json` |
 | `allowlist` | array | no | network hosts the module needs (declared capability, added on enable) |
@@ -589,6 +589,7 @@ A module that has never passed 1–8 is `dormant`, never `enabled`.
 
 | Phase | Scope | Exit test |
 |---|---|---|
+| **P0.5** | **the compatibility layer on the current stack**, before the backend moves: `runtime/` with Cordis pinned, `runtime/src/compat-host.mjs` running enabled units' Cordis plugins, `company/tools/unit.js` (check, install, enable). Services provided so far: `skills`. Every existing tool and skill is ported into a unit here, so the new backend starts with them (`docs/PORTING-UNITS.md`) | an unmodified DSH skill plugin and the first CaPheOS unit (`packs/web-pages`) run on the current stack |
 | **P0** | host composition spike on published packages; one third-party plugin and one CaPheOS panel in a slot | ecosystem code runs unmodified |
 | **P1** | manifest schema + `unit.js` install/enable/export of local archives; parameterization lint | one capability exported from one company and installed into a second |
 | **P2** | governance gates + capability broker + decisions-log provenance | a hostile module is refused; a bad update is rolled back |

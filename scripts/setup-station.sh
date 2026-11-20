@@ -132,6 +132,11 @@ TZ=$ZONE
 EOF
 )
 
+# 3a. the runtime's one dependency (Cordis, pinned in runtime/package-lock.json): the unit system's compat host
+# (runtime/src/compat-host.mjs) runs units' plugins with it. Installed from the lockfile, no install scripts.
+if [[ -f runtime/package-lock.json ]] && command -v npm >/dev/null 2>&1; then
+  ( cd runtime && npm ci --ignore-scripts --omit=dev --no-audit --no-fund --silent ) && echo "runtime: dependencies installed (Cordis)" || echo "runtime: npm ci failed (non-fatal); units with code wait until it runs"
+fi
 # 3b. the merge gate's pre-push hook in every checkout the crew pushes from (company/repos/*): no push to the default
 # branch, no force push, no deleting main (company/tools/capheos-merge.js hook; idempotent, an older hook is chained)
 for d in "$ROOT"/company/repos/*/; do

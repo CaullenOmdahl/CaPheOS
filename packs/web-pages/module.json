@@ -1,0 +1,18 @@
+{
+  "format": 2,
+  "id": "web-pages",
+  "version": "1.0.0",
+  "kind": "capability",
+  "title": "Web pages people will see",
+  "summary": "The design baseline for any page outside the console: the fundamentals, a pattern for each kind of page (coming soon, landing, pricing, about, dashboard) and a required look-before-you-ship review from phone and laptop screenshots.",
+  "author": "CaPheOS",
+  "license": "AGPL-3.0-or-later",
+  "engines": { "caPheOS": ">=0.5", "node": ">=22" },
+  "requires": {},
+  "capabilities": {},
+  "entry": "host/index.js",
+  "provides": { "skills": [{ "name": "web-pages", "file": "skills/web-pages/SKILL.md" }] },
+  "docs": ["README.md"],
+  "conformance": { "test": "conformance/test.js" },
+  "dsh": { "plugin": "host/index.js", "services": ["skills"] }
+}

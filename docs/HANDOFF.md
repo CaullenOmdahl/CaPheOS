@@ -3,7 +3,7 @@
 **Read this fully before writing code.** It is self-contained: the conversation that produced it is gone, and you are
 expected to build from these documents, not from guesswork.
 
-**Where the work is:** branch `dsh-4471ef82-5515`, a worktree of `/home/avery/Projects/CaPheOS`. If you are on
+**Where the work is:** branch `dsh-4471ef82-5515` of the framework repository. If you are on
 `main`, the design documents may be missing — use the branch. The licence set is on the same branch.
 
 ---

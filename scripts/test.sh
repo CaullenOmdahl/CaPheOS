@@ -56,6 +56,8 @@ trap 'exit 130' INT TERM HUP   # through the EXIT trap above
 # The copy: tracked files plus untracked-but-not-ignored ones (work in progress), or tracked only. A fixture run needs none.
 LS_OPTS=(-co --exclude-standard); [ "${TEST_TRACKED_ONLY:-}" = 1 ] && LS_OPTS=(-c)
 [ -n "$FIXTURE" ] || ( cd "$REPO" && git ls-files -z "${LS_OPTS[@]}" | tar --null --ignore-failed-read -T - -cf - 2>/dev/null ) | tar -xf - -C "$COPY"
+# the runtime's one dependency (Cordis) is not tracked: the copy uses the checkout's installed copy, offline
+[ -d "$REPO/runtime/node_modules" ] && [ -d "$COPY/runtime" ] && ln -s "$REPO/runtime/node_modules" "$COPY/runtime/node_modules"
 
 # CAPHEOS_SECWATCH_OFFLINE: the security watch (company/tools/security-watch.js) makes no live advisory lookup from any test
 # CAPHEOS_TEST_RUN: every process this run starts inherits it, which is how the last step finds what was left behind

@@ -1,0 +1,9 @@
+{
+  "name": "capheos-runtime",
+  "private": true,
+  "type": "module",
+  "description": "CaPheOS runtime. Phase 0.5: the Cordis compatibility host that runs units' plugins on the current stack (docs/MODULE-SYSTEM.md section 15).",
+  "license": "AGPL-3.0-or-later",
+  "engines": { "node": ">=22" },
+  "dependencies": { "cordis": "4.0.0-rc.13" }
+}
