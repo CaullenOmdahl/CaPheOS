@@ -1,0 +1,37 @@
+{
+  "format": 2,
+  "id": "company-memory",
+  "version": "1.0.0",
+  "kind": "capability",
+  "title": "company-memory",
+  "summary": "Read and write the company's shared, Git-stored memory (owner hub + project stores) Use at the start of any non-trivial task to find prior decisions and corrections, and whenever you learn something durable that docs and code do not record.",
+  "author": "CaPheOS",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "caPheOS": ">=0.5",
+    "node": ">=22"
+  },
+  "requires": {},
+  "capabilities": {},
+  "entry": "host/index.js",
+  "provides": {
+    "skills": [
+      {
+        "name": "company-memory",
+        "file": "skills/company-memory/SKILL.md"
+      }
+    ]
+  },
+  "docs": [
+    "README.md"
+  ],
+  "conformance": {
+    "test": "conformance/test.js"
+  },
+  "dsh": {
+    "plugin": "host/index.js",
+    "services": [
+      "skills"
+    ]
+  }
+}

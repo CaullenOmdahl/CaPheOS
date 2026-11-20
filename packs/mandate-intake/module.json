@@ -1,0 +1,37 @@
+{
+  "format": 2,
+  "id": "mandate-intake",
+  "version": "1.0.0",
+  "kind": "capability",
+  "title": "mandate-intake",
+  "summary": "How the company absorbs an operating mandate. A mandate is not a chat message — record it, assign owners, convert it into procedure, adopt it, review it. The company may self-issue mandates inside its authority; anything expanding permissio",
+  "author": "CaPheOS",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "caPheOS": ">=0.5",
+    "node": ">=22"
+  },
+  "requires": {},
+  "capabilities": {},
+  "entry": "host/index.js",
+  "provides": {
+    "skills": [
+      {
+        "name": "mandate-intake",
+        "file": "skills/mandate-intake/SKILL.md"
+      }
+    ]
+  },
+  "docs": [
+    "README.md"
+  ],
+  "conformance": {
+    "test": "conformance/test.js"
+  },
+  "dsh": {
+    "plugin": "host/index.js",
+    "services": [
+      "skills"
+    ]
+  }
+}

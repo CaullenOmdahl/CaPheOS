@@ -1,0 +1,37 @@
+{
+  "format": 2,
+  "id": "project-takeover",
+  "version": "1.0.0",
+  "kind": "capability",
+  "title": "project-takeover",
+  "summary": "Access is not ownership. Read and assess a repository freely, but before modifying, rebranding, shipping, publishing or claiming any product, verify the owner approved the takeover in company/projects.json. Never self-approve.",
+  "author": "CaPheOS",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "caPheOS": ">=0.5",
+    "node": ">=22"
+  },
+  "requires": {},
+  "capabilities": {},
+  "entry": "host/index.js",
+  "provides": {
+    "skills": [
+      {
+        "name": "project-takeover",
+        "file": "skills/project-takeover/SKILL.md"
+      }
+    ]
+  },
+  "docs": [
+    "README.md"
+  ],
+  "conformance": {
+    "test": "conformance/test.js"
+  },
+  "dsh": {
+    "plugin": "host/index.js",
+    "services": [
+      "skills"
+    ]
+  }
+}

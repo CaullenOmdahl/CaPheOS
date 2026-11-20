@@ -1,0 +1,37 @@
+{
+  "format": 2,
+  "id": "console-panels",
+  "version": "1.0.0",
+  "kind": "capability",
+  "title": "console-panels",
+  "summary": "Add, change or remove a panel or a whole page (a dashboard screen of units, from a scaffold) on the owner console so it fits this company's work. Use when the owner keeps asking for the same numbers or list, or when your function produces d",
+  "author": "CaPheOS",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "caPheOS": ">=0.5",
+    "node": ">=22"
+  },
+  "requires": {},
+  "capabilities": {},
+  "entry": "host/index.js",
+  "provides": {
+    "skills": [
+      {
+        "name": "console-panels",
+        "file": "skills/console-panels/SKILL.md"
+      }
+    ]
+  },
+  "docs": [
+    "README.md"
+  ],
+  "conformance": {
+    "test": "conformance/test.js"
+  },
+  "dsh": {
+    "plugin": "host/index.js",
+    "services": [
+      "skills"
+    ]
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "format": 2,
+  "id": "owner-questions",
+  "version": "1.0.0",
+  "kind": "capability",
+  "title": "owner-questions",
+  "summary": "How to ask the owner something through company/tools/inbox.js so it reads like a person wrote it and gets the right control — a secure field for keys, a link for sign-ups, options for choices. Use before every owner question.",
+  "author": "CaPheOS",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "caPheOS": ">=0.5",
+    "node": ">=22"
+  },
+  "requires": {},
+  "capabilities": {},
+  "entry": "host/index.js",
+  "provides": {
+    "skills": [
+      {
+        "name": "owner-questions",
+        "file": "skills/owner-questions/SKILL.md"
+      }
+    ]
+  },
+  "docs": [
+    "README.md"
+  ],
+  "conformance": {
+    "test": "conformance/test.js"
+  },
+  "dsh": {
+    "plugin": "host/index.js",
+    "services": [
+      "skills"
+    ]
+  }
+}
