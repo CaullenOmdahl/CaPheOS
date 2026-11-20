@@ -29,6 +29,9 @@ function judge(oldHead, newHead, cmp, trusted) {
   while (cur && cur !== oldHead && n++ < 300) {
     const c = by.get(cur);
     if (!trusted.has(cur)) bad.push({ sha: cur, why: 'reached main without the merge tool', subject: c ? String((c.commit && c.commit.message) || '').split('\n')[0].slice(0, 120) : '' });
+    // an owner baseline vouches for the commit AND the history before it (a multi-commit push is baselined at its head);
+    // a gated merge's own row covers only its merge commit, so the walk goes on below it
+    const t = trusted.get(cur); if (t && t.kind === 'baseline') break;
     if (!c) break;                                  // past what GitHub listed: stop (a long backlog is judged in part)
     cur = (c.parents && c.parents[0] && c.parents[0].sha) || null;
   }
@@ -79,6 +82,8 @@ if (require.main === module) {
     const bad = judge(s40('a'), s40('d'), cmp, new Map([[s40('b'), 1], [s40('d'), 1]]));
     assert.strictEqual(bad.length, 1); assert.strictEqual(bad[0].sha, s40('c'));
     assert.strictEqual(judge(s40('a'), s40('d'), { status: 'diverged', commits: [] }, new Map())[0].sha, s40('d'));
+    assert.deepStrictEqual(judge(s40('a'), s40('d'), cmp, new Map([[s40('d'), { kind: 'baseline' }]])), [], 'a baseline at the head covers the commits pushed with it');
+    assert.strictEqual(judge(s40('a'), s40('d'), cmp, new Map([[s40('d'), { kind: 'merge' }]])).length, 2, 'a merge row covers only its own commit');
     console.log('ok   capheos-main-watch judge: gated merges pass, an unrecorded commit and a rewrite are flagged');
   } else { console.error('usage: capheos-main-watch.js tick [--force] [--dry-run] | status | selftest'); process.exit(2); }
 }
