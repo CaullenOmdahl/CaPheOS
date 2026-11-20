@@ -69,6 +69,19 @@ test('health: dispatch-log codes in the window, failed runs, tool errors; run li
   assert.deepEqual(I.health({ root: T, now: NOW }).key, r.key, 'same findings, same key');
 });
 
+test('health: crashloop counts restarts the station made, not lines that mention one', () => {
+  const t = stamp(NOW - 30 * 60e3);
+  const logWith = lines => { const T = fixture(); fs.appendFileSync(path.join(T, 'company/work/dispatch-log.md'), lines.map(l => '- ' + t + ' ' + l + '\n').join('')); return I.health({ root: T, now: NOW }).items.map(i => i.id); };
+  const real = 'Station restarted to load patch 0001 at 05:57; no run was interrupted (scripts/restart-station.sh by owner)';
+  // one restart, one wait line, one quoted handoff title: three matches under a loose pattern
+  const one = logWith([real,
+    'RESTART WAITING (patch 0001): Waiting for a seat to end before restarting the station to load patch 0001; the crew keeps working meanwhile.',
+    'WAITING ON UNRESOLVED to-engineer.md "a station restart kills every job" (a seat): job: x names nothing']);
+  assert.ok(!one.includes('health:crashloop:station'), 'one restart plus two mentions is not a crash loop: ' + one.join());
+  const three = logWith([real, real, real]);
+  assert.ok(three.includes('health:crashloop:station'), 'three restarts in the window still raise it: ' + three.join());
+});
+
 test('efficiency: big runs, idle wakes, spikes', () => {
   const T = fixture();
   const r = I.efficiency({ root: T, now: NOW });

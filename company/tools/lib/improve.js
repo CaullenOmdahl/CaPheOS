@@ -94,7 +94,9 @@ function health(o) {
       const m = /^- (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) (.*)$/.exec(l); if (!m || m[1] < since) continue;
       const text = m[2];
       if (/^RUN\b/.test(text) || /duty:/.test(text)) continue;   // a run line quotes its reasons, never a finding
-      if (/restart(?:ed|ing) the station|station restart/i.test(text)) restarts++;
+      // a restart is the line restart-station.js writes once it has restarted the station ("Station restarted to ..."); a
+      // wait line ("... before restarting the station") or a quoted handoff title is not one
+      if (/^Station restarted\b/.test(text)) restarts++;
       for (const [code, re] of LOG_CODES) {
         if (!re.test(text)) continue;
         const seat = Object.keys(C).find(id => new RegExp('(?:^|[\\s(])' + id.replace(/[-]/g, '\\-') + '(?=[\\s):,]|$)').test(text));
