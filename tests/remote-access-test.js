@@ -40,7 +40,8 @@ function req(port, method, p, opts) {
     r.setTimeout(60000, () => r.destroy(new Error('timeout ' + p))); r.on('error', reject); if (body) r.write(body); r.end();
   });
 }
-const cookieOf = (r, name) => { const c = (r.headers['set-cookie'] || []).find(x => x.startsWith(name + '=')); return c || null; };
+// the console names its cookies after the company (capheos_session_<slug>); the old shared names are only cleared
+const cookieOf = (r, name) => { const c = (r.headers['set-cookie'] || []).find(x => new RegExp('^' + name + '(_[a-z0-9-]+)?=').test(x) && !/Max-Age=0/.test(x)) || (r.headers['set-cookie'] || []).find(x => x.startsWith(name + '=')); return c || null; };
 const pair = c => c ? c.split(';')[0] : '';
 
 /* a temp company root: company/ copied, secrets/, a dead station, stand-in restart scripts */

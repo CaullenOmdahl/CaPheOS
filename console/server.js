@@ -1158,7 +1158,7 @@ async function selftest() {
     check('a token in the login address is not accepted (no cookie)', r.status === 400 && !r.headers['set-cookie'] && !r.text.includes(token), r.status);
     r = await call('POST', '/login', { secret: token }, { 'content-type': 'application/json' });
     const cookie = String((r.headers['set-cookie'] || [''])[0]).split(';')[0];
-    check('login form sets a session cookie (not the token)', r.status === 200 && /^capheos_session=v1\./.test(cookie) && !cookie.includes(token), r.headers);
+    check('login form sets a session cookie (not the token)', r.status === 200 && /^capheos_session(_[a-z0-9-]+)?=v1\./.test(cookie) && !cookie.includes(token), r.headers);
     // the login token never reaches the journal or an address
     check('the login line never carries the token', !loginLine('http://h:1', 'tok-secret-1', false).includes('tok-secret-1') && !loginLine('http://h:1', 'tok-secret-1', true).includes('tok-secret-1') && /secrets\/console-token/.test(loginLine('http://h:1', 'tok-secret-1', false)));
     { const u = require('child_process').spawnSync(process.execPath, [__filename, '--url'], { encoding: 'utf8', env: Object.assign({}, process.env), timeout: 15000 });

@@ -40,6 +40,11 @@ module.exports = function makeAuth(deps) {
   const passFile = deps.passFile || path.join(co.SECRETS_DIR, 'console-passphrase');
   const now = deps.now || (() => Date.now());
   const cc = () => module.exports.settings(co);
+  // Cookies are scoped by host, not port: two companies' consoles on one machine (or one tunnel) share a cookie jar, so
+  // one shared name meant signing in to one console signed you out of the other. Each console names its cookies after
+  // its company (company.json slug); a company with no slug keeps the old names.
+  const SUFFIX = module.exports.cookieSuffix(co);
+  const SESSION = 'capheos_session' + SUFFIX, CSRF = 'capheos_csrf' + SUFFIX;
   const recFile = deps.recFile || path.join(co.SECRETS_DIR, 'console-recovery');
 
   /* ---------- the token: read from its file (re-read when the file changes), created on first use ---------- */
@@ -99,7 +104,7 @@ module.exports = function makeAuth(deps) {
   const csrfFor = nonce => crypto.createHmac('sha256', key()).update('csrf.' + nonce).digest('base64url');
   function parseCookies(req) { const o = {}; for (const part of String(req.headers.cookie || '').split(';')) { const i = part.indexOf('='); if (i > 0) { try { o[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim()); } catch (_) {} } } return o; }
   function readSession(req) {
-    const v = parseCookies(req).capheos_session; if (!v) return null;
+    const v = parseCookies(req)[SESSION]; if (!v) return null;
     const m = /^v1\.(\d{1,12})\.([A-Za-z0-9_-]{16,64})\.([A-Za-z0-9_-]{20,100})$/.exec(v); if (!m) return null;
     if (!same(m[3], mac('v1.' + m[1] + '.' + m[2]))) return null;
     if (Number(m[1]) * 1000 <= now()) return null;
@@ -109,10 +114,10 @@ module.exports = function makeAuth(deps) {
     const flags = '; Path=/; SameSite=Lax' + (secure(req) ? '; Secure' : '');
     const age = s ? Math.max(0, s.exp - Math.floor(now() / 1000)) : 0;
     return [
-      'capheos_session=' + (s ? s.value : '') + flags + '; HttpOnly; Max-Age=' + age,
-      'capheos_csrf=' + (s ? s.csrf : '') + flags + '; Max-Age=' + age,
+      SESSION + '=' + (s ? s.value : '') + flags + '; HttpOnly; Max-Age=' + age,
+      CSRF + '=' + (s ? s.csrf : '') + flags + '; Max-Age=' + age,
       'console_token=' + flags + '; HttpOnly; Max-Age=0',   // the old raw-token cookie: cleared
-    ];
+    ].concat(SUFFIX ? ['capheos_session=' + flags + '; HttpOnly; Max-Age=0', 'capheos_csrf=' + flags + '; Max-Age=0'] : []);   // the old shared names: cleared
   }
   function check(req) {
     const h = req.headers['x-console-token'];
@@ -329,6 +334,10 @@ module.exports.settings = function settings(co) {
   if (e.CONSOLE_PUBLIC_URL) c.publicUrl = e.CONSOLE_PUBLIC_URL;
   return c;
 };
+
+/* the per-company cookie suffix: '_' + the company slug (letters, digits, dashes), or '' with no slug */
+module.exports.cookieSuffix = co => { const sl = String((co && co.config && co.config.slug) || '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 40); return sl ? '_' + sl : ''; };
+module.exports.cookieNames = co => { const x = module.exports.cookieSuffix(co); return { session: 'capheos_session' + x, csrf: 'capheos_csrf' + x }; };
 
 /* ---------- bind address helpers (console/server.js listenConfig and Settings › System) ---------- */
 module.exports.isLoopbackHost = h => /^(127\.\d+\.\d+\.\d+|::1|localhost)$/i.test(String(h || ''));
