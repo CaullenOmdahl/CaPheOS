@@ -126,6 +126,7 @@ that claim belongs in the §7b table. Purpose, CLI and credentials per tool are 
 | company/tools/connector-scope.js | risk | `--selftest` |
 | company/tools/console-panel.js | tools | `selftest` |
 | company/tools/corrections.js | people | `selftest` |
+| company/tools/cpu-avoid.js | tools | `selftest` / `--selftest` |
 | company/tools/decide.js | risk | `selftest` / `--selftest` |
 | company/tools/decision.js | ceo | `selftest` |
 | company/tools/meeting-register.js | tools | `selftest` |
@@ -254,6 +255,7 @@ in §5a instead.
 | `company/tools/budget.js` | finance | `node company/tools/budget.js --selftest` |
 | `company/tools/budget-migrate.js` | tools | `node company/tools/budget-migrate.js --selftest` |
 | `company/tools/build-inventory.js` | people | `node company/tools/build-inventory.js --selftest` |
+| `company/tools/cpu-avoid.js` | tools | `node company/tools/cpu-avoid.js --selftest` |
 | `company/tools/cadence.js` | tools | `node company/tools/cadence.js selftest` |
 | `company/tools/security-watch.js` | risk | `node company/tools/security-watch.js selftest` |
 | `company/tools/cap-numerator.js` | finance | `node company/tools/cap-numerator.js --selftest` |

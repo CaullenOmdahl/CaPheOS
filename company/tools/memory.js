@@ -34,6 +34,10 @@
  *       next restart (apply says which are still elsewhere; status shows it).
  *   <root>/.starnet-data/memory.env (0600)   the station's browser and shell settings (StarNet patch 0020 reads them;
  *       a station without it ignores them); in a container also the three heap sizes the s6 run script passes on
+ *   AllowedCPUs= on this company's own slice drop-in (not on the levels above it, which other companies share) when
+ *       company/state/cpu-avoid.json names cpus to keep off (cpu-avoid.js: a core that computes wrongly); the slice gets
+ *       `set-property --runtime <slice> AllowedCPUs=...` at once, a cgroup cpuset, so every task in it moves without a
+ *       restart. A list cpu-avoid.js reads as broken leaves the slice drop-in as it is, with a warning.
  * Then `systemctl --user daemon-reload` and, for each running unit, `set-property --runtime` so the limits apply now
  * without a restart. A changed heap or memory.env needs a restart: apply never restarts anything; it prints (and returns
  * as restartCommand) the safe restart that waits until nothing runs. Each written file is recorded with
@@ -61,6 +65,12 @@ function context(o) {
     root, config,
     unitDir: o.unitDir || process.env.MEMORY_UNIT_DIR || path.join(xdg, 'systemd', 'user'),
     systemctl: o.systemctl || M.realSystemctl,
+    // the cpus this company's slice may use (cpu-avoid.js): {value: "0-1,3-5,7" | null, broken: message | null}
+    cpus: o.cpus || (() => {
+      let ca; try { ca = require('./cpu-avoid'); } catch (_) { return { value: null, broken: null }; }
+      try { const l = ca.readList(root, process.env); return { value: l.allowed ? ca.formatList(l.allowed) : null, broken: null }; }
+      catch (e) { return { value: null, broken: String(e.message).slice(0, 200) }; }
+    }),
     supervisor: o.supervisor || (() => { try { return require('./lib/host').supervisor(); } catch (_) { return 'none'; } })(),
     host: o.host || null,
     ownerShell: o.ownerShell || (() => require('./lib/owner').shell()),
@@ -143,12 +153,15 @@ function dropins(ctx, p) {
 // wins. The swap rule (ManagedOOMSwap) keeps the host's setting: MemorySwapMax bounds the station's swap, and a slice
 // left out of it would only make oomd pick someone else's program when swap runs out.
 const sliceName = ctx => M.sliceOf(ctx.config);
-function sliceFiles(ctx) {
+function sliceFiles(ctx, cpus) {
   const name = sliceName(ctx); const out = {};
   out[path.join(ctx.unitDir, name)] = '# written by company/tools/memory.js apply. The units of ' + (ctx.config.name || svc(ctx)) + ' run here, outside app.slice.\n'
     + '[Unit]\nDescription=' + String(ctx.config.name || svc(ctx)).replace(/[\n\r]/g, ' ').slice(0, 80) + ': the station, console, dispatcher, background services and owner jobs\n';
   for (const lvl of M.sliceChain(name)) out[path.join(ctx.unitDir, lvl + '.d', DROPIN)] = '# written by company/tools/memory.js apply (' + (lvl === name ? 'this company\'s slice' : 'a level of the CaPheOS companies\' slices; the same text from every company') + ').\n'
     + '# systemd-oomd never ends units here for memory pressure: a build held at the station\'s MemoryHigh is bounded by the\n# station\'s own MemoryMax; the kernel then ends the build, not the station or anyone else\'s program.\n[Slice]\nManagedOOMMemoryPressure=auto\n';
+  // this company's slice only: keep its tasks off the cpus in company/state/cpu-avoid.json
+  const own = path.join(ctx.unitDir, name + '.d', DROPIN);
+  if (cpus && cpus.value) out[own] += '# cpus kept off (company/state/cpu-avoid.json, cpu-avoid.js): every task in this slice runs only on these.\nAllowedCPUs=' + cpus.value + '\n';
   return out;
 }
 function memEnv(ctx, p, sup) {
@@ -185,8 +198,14 @@ function apply(ctx, o) {
     const d = dropins(ctx, p);
     const heapChanged = [];
     result.slice = { name: sliceName(ctx), elsewhere: [] };
-    for (const [f, text] of Object.entries(sliceFiles(ctx))) {
+    const cpus = ctx.cpus();
+    const ownSlice = path.join(ctx.unitDir, sliceName(ctx) + '.d', DROPIN);
+    let cpusChanged = false;
+    if (cpus.broken) result.warnings.push('the cpus kept off are not changed: ' + cpus.broken + ' (cpu-avoid.js status); this company\'s slice drop-in is left as it is');
+    for (const [f, text] of Object.entries(sliceFiles(ctx, cpus))) {
       if (readText(f) === text) { unchanged.push(f); continue; }
+      if (f === ownSlice && cpus.broken) { unchanged.push(f); continue; }
+      if (f === ownSlice) cpusChanged = ((/^AllowedCPUs=(.*)$/m.exec(readText(f) || '') || [])[1] || null) !== cpus.value;
       if (!o.dry) writeAtomic(f, text, 0o644);
       wrote.push(f);
     }
@@ -200,6 +219,11 @@ function apply(ctx, o) {
     }
     if (!o.dry) {
       if (wrote.length) { const r = ctx.systemctl(['daemon-reload']); calls.push(['daemon-reload', r.code]); }
+      // a cgroup cpuset: the slice's running tasks move now, nothing restarts; an empty value lifts it
+      if (cpusChanged) {
+        const r = ctx.systemctl(['set-property', '--runtime', sliceName(ctx), 'AllowedCPUs=' + (cpus.value || '')]); calls.push(['set-property', sliceName(ctx), r.code]);
+        if (r.code !== 0) result.warnings.push('could not set AllowedCPUs on ' + sliceName(ctx) + ' now: ' + String(r.err || '').slice(0, 120) + ' (it applies at the next start of the slice)');
+      }
       for (const [unit, x] of Object.entries(d)) {
         const a = ctx.systemctl(['is-active', unit]);
         if (String(a.out || '').trim() !== 'active') continue;
@@ -510,6 +534,30 @@ function selftest() {
     const s2 = status(mk(63488, { systemctl: () => ({ code: 0, out: show }), usageOpts: { browsers: false } }));
     assert.ok(!s2.warnings.some(w => /share it now/.test(w)), 'applied again: no warning');
     fs.rmSync(path.join(unitDir, 'default.target.wants'), { recursive: true }); fs.rmSync(u);
+  });
+  ok('cpu-avoid.json: AllowedCPUs on this company\'s slice only, set live; a broken list changes nothing; no list lifts it', () => {
+    const onl = path.join(T, 'online'); fs.writeFileSync(onl, '0-7\n');
+    const prev = process.env.CPU_AVOID_ONLINE; process.env.CPU_AVOID_ONLINE = onl;
+    const lf = path.join(root, 'company', 'state', 'cpu-avoid.json');
+    const own = path.join(unitDir, 'capheos-testco-station.slice.d', DROPIN);
+    const sc = args => { calls.push(args.join(' ')); if (args[0] === 'is-active') return { code: 0, out: 'inactive\n' }; return { code: 0, out: '' }; };
+    try {
+      fs.writeFileSync(lf, JSON.stringify({ avoid: [2, 6], why: 'test', by: 'test' }));
+      calls.length = 0; let r = apply(mk(63488, { systemctl: sc }), {});
+      assert.ok(/\nAllowedCPUs=0-1,3-5,7\n$/.test(fs.readFileSync(own, 'utf8')), fs.readFileSync(own, 'utf8'));
+      for (const lvl of ['capheos', 'capheos-testco']) assert.ok(!/AllowedCPUs/.test(fs.readFileSync(path.join(unitDir, lvl + '.slice.d', DROPIN), 'utf8')), lvl + '.slice is shared: no AllowedCPUs there');
+      assert.ok(calls.includes('set-property --runtime capheos-testco-station.slice AllowedCPUs=0-1,3-5,7'), calls.join('|'));
+      assert.ok(!calls.some(c => /restart|stop/.test(c)), calls.join('|'));
+      calls.length = 0; r = apply(mk(63488, { systemctl: sc }), {});
+      assert.ok(!calls.some(c => /AllowedCPUs/.test(c)), 'unchanged: not set again: ' + calls.join('|'));
+      fs.writeFileSync(lf, '{"avoid":[2,99]}');
+      calls.length = 0; r = apply(mk(63488, { systemctl: sc }), {});
+      assert.ok(/AllowedCPUs=0-1,3-5,7/.test(fs.readFileSync(own, 'utf8')) && !calls.some(c => /AllowedCPUs/.test(c)), 'broken list: drop-in and slice left as they are');
+      assert.ok(r.warnings.some(w => /cpus kept off are not changed: .*not online/.test(w)), r.warnings.join('|'));
+      fs.rmSync(lf);
+      calls.length = 0; r = apply(mk(63488, { systemctl: sc }), {});
+      assert.ok(!/AllowedCPUs/.test(fs.readFileSync(own, 'utf8')) && calls.includes('set-property --runtime capheos-testco-station.slice AllowedCPUs='), 'no list: line gone and the cpuset lifted live: ' + calls.join('|'));
+    } finally { if (prev === undefined) delete process.env.CPU_AVOID_ONLINE; else process.env.CPU_AVOID_ONLINE = prev; try { fs.rmSync(lf); } catch (_) {} }
   });
   life.cleanup();
   console.log(bad ? 'MEMORY SELFTEST FAILED: ' + bad : 'MEMORY SELFTEST PASSED');
