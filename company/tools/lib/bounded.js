@@ -11,7 +11,8 @@
  *   B.jsonlWindow(file, { sinceMs, tsOf, maxBytes, slackMs })
  *                                              the rows of a time-ordered JSONL log newer than sinceMs, read from the
  *                                              end; stops at the first 256 KB step whose rows are all older than
- *                                              sinceMs - slackMs, or at maxBytes (then truncated:true)
+ *                                              sinceMs - slackMs, or at maxBytes (then truncated:true); a window
+ *                                              that reaches the start of the file goes on in <file>.1 (a rotated log)
  *   B.jsonlWindowText(file, sinceMs)          the same window as JSONL text (for readers that split lines themselves)
  *   B.jsonlSeek(file, targetMs, { tsOf, spanBytes })
  *                                              binary search for the region of a time-ordered JSONL log around
@@ -79,7 +80,7 @@ function jsonlWindow(file, opt) {
   const tsOf = o.tsOf || runTs; const since = Number(o.sinceMs) || 0; const slack = o.slackMs == null ? 6 * 3600e3 : o.slackMs;
   const cap = Number(o.maxBytes) || 64 * MB;
   const size = sizeOf(file); if (size <= 0) return { rows: [], truncated: false, bytes: 0 };
-  const fd = fs.openSync(file, 'r'); const chunks = []; let pos = size, read = 0, truncated = false, carry = Buffer.alloc(0);
+  const fd = fs.openSync(file, 'r'); const chunks = []; let pos = size, read = 0, truncated = false, carry = Buffer.alloc(0), reachedOld = false;
   try {
     while (pos > 0) {
       if (read >= cap) { truncated = true; break; }
@@ -90,10 +91,17 @@ function jsonlWindow(file, opt) {
       const body = cut >= 0 ? buf.subarray(cut + 1) : (pos > 0 ? Buffer.alloc(0) : buf);
       const rows = parseRows(body.toString('utf8'), []);
       chunks.unshift(rows);
-      if (since && rows.length && rows.every(r => { const t = tsOf(r); return t && t < since - slack; })) break;
+      if (since && rows.length && rows.every(r => { const t = tsOf(r); return t && t < since - slack; })) { reachedOld = true; break; }
     }
     if (pos === 0 && carry.length) chunks.unshift(parseRows(carry.toString('utf8'), []));
   } finally { fs.closeSync(fd); }
+  // a rotated log (StarNet moves runs.jsonl to runs.jsonl.1 near 16 MB): the whole current file is inside the window,
+  // so the window goes on in <file>.1, within the same byte cap. One level only; never without a time window.
+  if (since && pos === 0 && !truncated && !reachedOld && !o.noRotated && read < cap) {
+    const older = jsonlWindow(file + '.1', Object.assign({}, o, { noRotated: true, maxBytes: cap - read }));
+    if (older.rows.length) chunks.unshift(older.rows);
+    read += older.bytes || 0; truncated = truncated || !!older.truncated;
+  }
   const rows = [].concat(...chunks);
   return { rows: since ? rows.filter(r => { const t = tsOf(r); return !t || t >= since - slack; }) : rows, truncated, bytes: read };
 }
