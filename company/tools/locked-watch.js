@@ -148,6 +148,7 @@ const MANIFEST = [
   // how the crew talks to the owner (docs/TALK.md): the owner's own choice of level, length, how often and the check
   { p: 'company/owner/talk.json', cls: 'F', writers: ['talk.js'], owner: 'risk', area: 'policy', why: 'how the crew talks to the owner: the level, length, how often and the pre-delivery check (only the owner, through talk.js set: Settings › How the crew talks to you)' },
   { p: 'company/work/security/default-branch-watch.json', cls: 'F', writers: ['default-branch-watch.js'], owner: 'risk', area: 'gate', why: 'the repositories the default-branch rule watches (only through default-branch-watch.js watch add|remove)' },
+  { p: 'company/work/security/seat-aliases.json', cls: 'F', owner: 'risk', area: 'gate', why: 'the seat-alias table the external gate reads; an edit widens which clearance rows a seat answers to (the risk seat edits it by hand and accepts the flag with a decisions.md line)' },
   { p: 'company/work/finance/pacing-policy.json', cls: 'F', writers: ['pacer.js'], owner: 'finance', area: 'policy', why: 'usage pacing numbers (the subscription cutoffs only through pacer.js limit / mode, or a reviewed harness change)' },
   { p: 'company/work/finance/dispatch-budget.json', cls: 'F', owner: 'finance', area: 'policy', why: 'the daily spending cap' },
   { p: 'company/work/finance/today-budget.json', cls: 'F', writers: ['money-hold.js'], owner: 'finance', area: 'policy', why: 'the owner\'s answer to a money hold, for one day: today\'s metered budget (only through money-hold.js set, which the dispatcher runs for an answer on Today)' },
@@ -1516,6 +1517,12 @@ async function selftest() {
   let now = Date.now();
   const C = x => Object.assign({ root: T, home: H, now, log: () => {}, underStation: false, jobs: [{ id: 'j1', name: 'Design loop', agentId: 'designer', workdir: T, unattendedGrants: ['workbench'] }] }, x || {});
   const inbox = n => { try { return R('company/work/handoffs/to-' + n + '.md'); } catch (_) { return ''; } };
+  await t('seat-aliases.json is on the manifest: class F, owner risk, area gate, no tool writer (an edit widens the external gate\'s clearance reach)', async () => {
+    const rows = MANIFEST.filter(e => e.p === 'company/work/security/seat-aliases.json');
+    if (rows.length !== 1) throw new Error('rows for seat-aliases.json: ' + rows.length);
+    const e = rows[0];
+    if (e.cls !== 'F' || e.owner !== 'risk' || e.area !== 'gate' || (e.writers && e.writers.length)) throw new Error('wrong row: ' + JSON.stringify(e));
+  });
   await t('the first tick records a baseline and last-known-good copies, but never copies a key', async () => {
     const r = await tick(C()); assert.ok(r.initialized);
     assert.ok(fs.existsSync(path.join(T, 'company/state/locked/lkg', store)));

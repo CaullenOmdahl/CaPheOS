@@ -557,6 +557,25 @@ function ownerPinFor(req, at, opts) {
 }
 
 function norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
+/* SEAT ALIASES (risk-owned table company/work/security/seat-aliases.json, watched by locked-watch.js): a run's own seat id
+   may answer a clearance row that names a role (e.g. "recorder"). Exact strings, one lookup, no chaining; 'any' is never
+   an alias. Missing, unreadable, not JSON or wrong shape = no aliases (the seat then matches only its own and 'any' rows,
+   as before); a throw in the lookup is a refusal.
+   Shape: { "v": 1, "aliases": { "<seat id>": { "answers_to": ["recorder"], "why": "...", "review": "<date>" } } } */
+function seatAliases(seat) {
+  const file = path.join(fileRoot(), 'company', 'work', 'security', 'seat-aliases.json');
+  let t; try { t = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return []; }
+  if (!t || typeof t !== 'object' || !t.aliases || typeof t.aliases !== 'object' || Array.isArray(t.aliases)) return [];
+  if (!Object.prototype.hasOwnProperty.call(t.aliases, String(seat))) return [];
+  const e = t.aliases[String(seat)];
+  if (!e || !Array.isArray(e.answers_to)) return [];
+  return e.answers_to.filter(x => typeof x === 'string').map(norm).filter(x => x && x !== 'any');
+}
+/* true only for a request that came from a run's own STARNET_AGENT_ID (req.viaRun) and a row naming a listed alias */
+function aliasAnswers(req, rowAgent) {
+  if (!req || !req.viaRun) return false;
+  try { return seatAliases(norm(req.agent)).includes(norm(rowAgent)); } catch (_) { return false; }
+}
 function nowMs() { return Date.now(); }
 
 function readJsonl(file) {
@@ -666,7 +685,7 @@ function validateRow(row, req, at) {
   const nw = narrowWhy(row); if (nw) return 'malformed row: ' + nw;
   if (!targetMatches(row.target, req.target)) return 'target mismatch';
   const agent = norm(row.agent || 'any');
-  if (agent !== 'any' && agent !== norm(req.agent || 'unknown')) return 'agent mismatch';
+  if (agent !== 'any' && agent !== norm(req.agent || 'unknown') && !aliasAnswers(req, agent)) return 'agent mismatch';
   if (Array.isArray(row.acts) && req.act && !row.acts.map(norm).includes(norm(req.act))) return 'act mismatch: the row covers ' + row.acts.join(', ') + ', not "' + req.act + '"';
   if (row.ownAct && req.act && norm(row.ownAct) !== norm(req.act)) return 'act mismatch: the row covers only ' + row.ownAct + ', not "' + req.act + '"';
   const clearee = norm(row.clearedBy);
@@ -770,6 +789,7 @@ function checkInner(req, opts) {
     target: String((req && req.target) || ''),
     agent: norm((req && req.agent) || 'unknown') || 'unknown',
     act: norm(req && req.act),                      // optional: a request that names an act must find it on the row
+    viaRun: !!(req && req.viaRun),                  // the agent is the run's own STARNET_AGENT_ID (seat aliases apply only then)
     note: (req && req.note) ? String(req.note).slice(0, 300) : '',
   };
   const base = { at: new Date(at).toISOString(), agent: r.agent, category: r.category, target: r.target, note: r.note };
@@ -845,9 +865,10 @@ function checkInner(req, opts) {
     // still an allow — the row predates narrowing or was written without acts — but the log entry and the answer say
     // so, so a reader counts the reach instead of inferring it from a note.
     const unnarrowed = r.act && (!Array.isArray(row.acts) || !row.acts.length);
-    const out = Object.assign({ decision: 'allowed', reason: 'clearance ' + (row.id || '?'), clearanceId: row.id || null, clearedBy: row.clearedBy }, unnarrowed ? { unnarrowed: true, act: r.act } : {}, base);
+    const viaAlias = norm(row.agent || 'any') !== 'any' && norm(row.agent) !== r.agent ? { seat: r.agent, alias: norm(row.agent) } : {};
+    const out = Object.assign({ decision: 'allowed', reason: 'clearance ' + (row.id || '?'), clearanceId: row.id || null, clearedBy: row.clearedBy }, viaAlias, unnarrowed ? { unnarrowed: true, act: r.act } : {}, base);
     if (logFile) appendJsonl(logFile, out);
-    return Object.assign({ allow: true, reason: 'cleared by ' + row.clearedBy + ' until ' + row.until, clearanceId: row.id || null, clearedBy: row.clearedBy }, unnarrowed ? { unnarrowed: true, reach: 'the row lists no acts, so it answers for any act in category "' + r.category + '", including "' + r.act + '"' } : {});
+    return Object.assign({ allow: true, reason: 'cleared by ' + row.clearedBy + ' until ' + row.until, clearanceId: row.id || null, clearedBy: row.clearedBy }, viaAlias, unnarrowed ? { unnarrowed: true, reach: 'the row lists no acts, so it answers for any act in category "' + r.category + '", including "' + r.act + '"' } : {});
   }
   // A `message` refusal names the row to write, not just that none was found.
   const ask = r.category === 'message'
@@ -1694,6 +1715,29 @@ function selftest() {
     W('A5 control: with command text the transcript is asked once', String(called), '1');
   }
 
+  // SEAT ALIASES: a run's seat answers a row naming a role only through the table, and only from inside a run
+  {
+    const tfile = path.join(froot, 'company', 'work', 'security', 'seat-aliases.json');
+    const table = (o) => fs.writeFileSync(tfile, typeof o === 'string' ? o : JSON.stringify(o));
+    const good = { v: 1, aliases: { 'cand-seat-a': { answers_to: ['recorder'], why: 'selftest', review: '2026-12-01' } } };
+    const rowFor = (agent) => write([{ id: 'clr-alias', clearedBy: CEO, category: 'form', target: 'form:vendor-application', agent, until: '2026-12-01T00:00:00Z', justification: fixture }]);
+    const rq = (agent, viaRun) => ({ category: 'form', target: 'form:vendor-application', agent, viaRun });
+    table(good); rowFor('recorder');
+    const d1 = expect('AL1 a run whose seat is listed for "recorder" is cleared by a recorder row', rq('cand-seat-a', true), 'allow');
+    const l1 = readJsonl(log).filter(x => x.decision === 'allowed' && x.alias === 'recorder' && x.seat === 'cand-seat-a');
+    if (!(d1.alias === 'recorder' && d1.seat === 'cand-seat-a' && l1.length === 1)) { failures++; lines.push('FAIL  AL1b the decision row does not record seat and alias'); } else lines.push('ok    AL1b decision row records seat cand-seat-a and alias recorder');
+    expect('AL2 an unlisted seat is refused on that same row', rq('cand-seat-z', true), 'refuse');
+    table('{ not json'); expect('AL3a a corrupt table refuses', rq('cand-seat-a', true), 'refuse');
+    table({ v: 1, aliases: [] }); expect('AL3b a table of the wrong shape refuses', rq('cand-seat-a', true), 'refuse');
+    fs.rmSync(tfile, { force: true }); expect('AL3c a missing table refuses', rq('cand-seat-a', true), 'refuse');
+    table(good); rowFor('another-role'); expect('AL4 a seat listed for recorder is refused on a row naming another role', rq('cand-seat-a', true), 'refuse');
+    rowFor('recorder'); expect('AL5a outside a run a seat id never reads the table', rq('cand-seat-a', false), 'refuse');
+    expect('AL5b outside a run --agent recorder matches its own row as before', rq('recorder', false), 'allow');
+    table({ v: 1, aliases: { 'cand-seat-a': { answers_to: ['any'] } } }); rowFor('recorder');
+    expect('AL5c a seat whose table entry lists only "any" is refused on a recorder row', rq('cand-seat-a', true), 'refuse');
+    fs.rmSync(tfile, { force: true });
+  }
+
   // every decision the selftest made is in the log, refusals with a reason
   const logged = readJsonl(log);
   const refusals = logged.filter(r => r.decision === 'refused');
@@ -1748,7 +1792,9 @@ function main() {
   if (cmd === 'check' || cmd === 'guard') {
     // `--act` used to be silently dropped here: check() supports acts and the CLI never passed one, so a person could
     // not ask the gate the question the acts field exists to answer ("is this PUSH covered by a row that says push?").
-    const d = check({ category: a.category, target: a.target, agent: actingAgent(a.agent, undefined, [a.category, a.target]), act: a.act, note: a.note, signoff: a.signoff, idem: a.idem, amountUsd: a['amount-usd'] != null ? Number(a['amount-usd']) : undefined, idemTtlMs: a['idem-ttl'] === 'forever' ? 'forever' : (a['idem-ttl'] ? Number(a['idem-ttl']) * 1000 : undefined) });
+    const who = actingAgent(a.agent, undefined, [a.category, a.target]);
+    const viaRun = !!process.env.STARNET_AGENT_ID && who === String(process.env.STARNET_AGENT_ID);
+    const d = check({ category: a.category, target: a.target, agent: who, viaRun, act: a.act, note: a.note, signoff: a.signoff, idem: a.idem, amountUsd: a['amount-usd'] != null ? Number(a['amount-usd']) : undefined, idemTtlMs: a['idem-ttl'] === 'forever' ? 'forever' : (a['idem-ttl'] ? Number(a['idem-ttl']) * 1000 : undefined) });
     console.log(JSON.stringify(d));
     process.exit(d.allow ? 0 : d.duplicate ? 4 : 3);
   }
