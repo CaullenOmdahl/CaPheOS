@@ -37,7 +37,8 @@
  *   AllowedCPUs= on this company's own slice drop-in (not on the levels above it, which other companies share) when
  *       company/state/cpu-avoid.json names cpus to keep off (cpu-avoid.js: a core that computes wrongly); the slice gets
  *       `set-property --runtime <slice> AllowedCPUs=...` at once, a cgroup cpuset, so every task in it moves without a
- *       restart. A list cpu-avoid.js reads as broken leaves the slice drop-in as it is, with a warning.
+ *       restart. A list cpu-avoid.js reads as broken (or cpu-avoid.js not loading while the list exists) leaves the slice
+ *       drop-in as it is, with a warning; with no drop-in yet it is written without AllowedCPUs=.
  * Then `systemctl --user daemon-reload` and, for each running unit, `set-property --runtime` so the limits apply now
  * without a restart. A changed heap or memory.env needs a restart: apply never restarts anything; it prints (and returns
  * as restartCommand) the safe restart that waits until nothing runs. Each written file is recorded with
@@ -67,7 +68,10 @@ function context(o) {
     systemctl: o.systemctl || M.realSystemctl,
     // the cpus this company's slice may use (cpu-avoid.js): {value: "0-1,3-5,7" | null, broken: message | null}
     cpus: o.cpus || (() => {
-      let ca; try { ca = require('./cpu-avoid'); } catch (_) { return { value: null, broken: null }; }
+      // the module not loading must not lift a list that exists (fail closed: leave the slice as it is)
+      let ca; try { ca = require('./cpu-avoid'); } catch (e) {
+        return fs.existsSync(path.join(root, 'company', 'state', 'cpu-avoid.json')) ? { value: null, broken: 'cpu-avoid.js does not load: ' + String(e.message).slice(0, 160) } : { value: null, broken: null };
+      }
       try { const l = ca.readList(root, process.env); return { value: l.allowed ? ca.formatList(l.allowed) : null, broken: null }; }
       catch (e) { return { value: null, broken: String(e.message).slice(0, 200) }; }
     }),
@@ -204,8 +208,10 @@ function apply(ctx, o) {
     if (cpus.broken) result.warnings.push('the cpus kept off are not changed: ' + cpus.broken + ' (cpu-avoid.js status); this company\'s slice drop-in is left as it is');
     for (const [f, text] of Object.entries(sliceFiles(ctx, cpus))) {
       if (readText(f) === text) { unchanged.push(f); continue; }
-      if (f === ownSlice && cpus.broken) { unchanged.push(f); continue; }
-      if (f === ownSlice) cpusChanged = ((/^AllowedCPUs=(.*)$/m.exec(readText(f) || '') || [])[1] || null) !== cpus.value;
+      // a broken list keeps the drop-in as it is; with none written yet, write it without AllowedCPUs= so the slice still
+      // gets its oomd line (no cpus are taken away, none were before)
+      if (f === ownSlice && cpus.broken && readText(f) !== null) { unchanged.push(f); continue; }
+      if (f === ownSlice && !cpus.broken) cpusChanged = ((/^AllowedCPUs=(.*)$/m.exec(readText(f) || '') || [])[1] || null) !== cpus.value;
       if (!o.dry) writeAtomic(f, text, 0o644);
       wrote.push(f);
     }
@@ -557,6 +563,17 @@ function selftest() {
       fs.rmSync(lf);
       calls.length = 0; r = apply(mk(63488, { systemctl: sc }), {});
       assert.ok(!/AllowedCPUs/.test(fs.readFileSync(own, 'utf8')) && calls.includes('set-property --runtime capheos-testco-station.slice AllowedCPUs='), 'no list: line gone and the cpuset lifted live: ' + calls.join('|'));
+      // first apply with a broken list and no drop-in yet: the drop-in is written (oomd line) without AllowedCPUs=, nothing set live
+      fs.writeFileSync(lf, 'not json'); fs.rmSync(own);
+      calls.length = 0; r = apply(mk(63488, { systemctl: sc }), {});
+      assert.ok(/ManagedOOMMemoryPressure=auto/.test(fs.readFileSync(own, 'utf8')) && !/AllowedCPUs/.test(fs.readFileSync(own, 'utf8')) && !calls.some(c => /AllowedCPUs/.test(c)), 'broken first apply: ' + calls.join('|'));
+      // the list exists but cpu-avoid.js does not load: fail closed, the AllowedCPUs line stays
+      fs.writeFileSync(lf, JSON.stringify({ avoid: [2, 6] })); apply(mk(63488, { systemctl: sc }), {});
+      const cpuMod = require.resolve('./cpu-avoid'); const saved = require.cache[cpuMod];
+      require.cache[cpuMod] = { id: cpuMod, filename: cpuMod, loaded: true, get exports() { throw new Error('test: does not load'); } };
+      try { calls.length = 0; r = apply(mk(63488, { systemctl: sc }), {}); } finally { if (saved) require.cache[cpuMod] = saved; else delete require.cache[cpuMod]; }
+      assert.ok(/AllowedCPUs=0-1,3-5,7/.test(fs.readFileSync(own, 'utf8')) && !calls.some(c => /AllowedCPUs/.test(c)), 'module missing: list kept: ' + calls.join('|'));
+      assert.ok(r.warnings.some(w => /cpu-avoid\.js does not load/.test(w)), r.warnings.join('|'));
     } finally { if (prev === undefined) delete process.env.CPU_AVOID_ONLINE; else process.env.CPU_AVOID_ONLINE = prev; try { fs.rmSync(lf); } catch (_) {} }
   });
   life.cleanup();
