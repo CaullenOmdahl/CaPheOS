@@ -10,7 +10,7 @@
  *                                                         ops registrations, a first backup, the owner-gate batch, guardrails apply,
  *                                                         the Founder loop: routine + blessed company folder + armed scheduler)
  *   node company/tools/onboard.js --step <name> [--json]  one resume step (station-seed, founder-loop, kickoff, candidate-default, ops-registered, guardrails-applied)
- *   node company/tools/onboard.js --certify [--json]      the 11 checks; exit 0 only when all pass (then state.certified)
+ *   node company/tools/onboard.js --certify [--json]      the 12 checks; exit 0 only when all pass (then state.certified)
  *   node company/tools/onboard.js --teardown [--purge] --by owner   stop the units, archive (scripts/backup.sh + verify);
  *                                                         --purge then removes company/work|state|owner|hiring — never without a verified archive
  *   node company/tools/onboard.js --record <step> <ok|failed|pending> [--note ".."]   (found-company.sh / setup-station.sh)
@@ -293,6 +293,10 @@ async function certify() {
   let fl = null; try { fl = await require('./founder-loop.js').status(); } catch (e) { fl = { ok: false, problems: [{ msg: e.message, fix: 'node company/tools/founder-loop.js status' }] }; }
   put('founder-loop', fl.ok, (fl.problems || []).map(p => p.msg + ' (fix: ' + p.fix + ')').join('; '));
   if (fl.ok && fl.paused) res['founder-loop'].note = 'the scheduler is ' + fl.paused;
+  // 12: every seat has every company skill (skills.js verify); the dispatcher's 30-minute reconcile restores a gap
+  const sv = node([tool('skills.js'), 'verify'], { timeout: 60000 }); const svj = jsonOf(sv) || {};
+  const gaps = svj.missing || [];
+  put('skills', sv.status === 0 && svj.ok === true, gaps.length ? gaps.length + ' company skill(s) missing on seats, e.g. ' + gaps.slice(0, 3).map(g => g.skill + ' on ' + g.agent).join(', ') + ' (fix: node company/tools/skills.js reconcile)' : 'skills.js verify gave no answer: ' + String(svj.error || sv.stderr || '').slice(0, 120));
   // liveness: the dispatcher keeps beating through a restart hold; say that the company is paused, not broken
   if (res.liveness.ok && co.restartHold()) res.liveness.note = 'the company is ' + co.restartHoldNote();
   const ok = Object.values(res).every(x => x.ok);

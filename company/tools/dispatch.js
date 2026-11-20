@@ -1520,6 +1520,22 @@ function lastRunTail(job) {
       if (JSON.stringify(dw) !== was) fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
     }
   } catch (e) { log('DEFAULT-BRANCH WATCH ERROR: ' + String(e.message || e).split('\n')[0].slice(0, 160)); }
+  // company skills on every seat (skills.js reconcile): every 30 min, a seat missing a company skill gets it, so a new
+  // hire, a newly added skill or a skill the station lost never stays missing. No AI is used. Quiet when nothing was
+  // missing; a restore or a failure is logged. Fail-safe.
+  if (!DRY) try {
+    const sr = state.skillsReconcile = state.skillsReconcile || {};
+    if (!sr.lastAt || Date.now() - Date.parse(sr.lastAt) >= 30 * 60000) {
+      sr.lastAt = new Date().toISOString();
+      let out = '', code = 0;
+      try { out = require('child_process').execFileSync(process.execPath, [path.join(__dirname, 'skills.js'), 'reconcile'], { cwd: ROOT, timeout: 120000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
+      catch (e) { out = String(e.stdout || ''); code = e.status || 1; }
+      let r = null; try { r = JSON.parse(out); } catch (_) { r = null; }
+      if (r && r.restored) log('SKILLS RESTORED: ' + r.restored + ' company skill(s) a seat lacked (' + r.done.slice(0, 6).map(d => d.skill + ' to ' + d.agent).join(', ') + (r.done.length > 6 ? ', ...' : '') + ')');
+      if (!r || code) log('SKILLS RECONCILE ' + (r ? 'INCOMPLETE: ' + (r.stillMissing || []).length + ' still missing' + ((r.failed || [])[0] ? ' (' + r.failed[0].error + ')' : '') : 'ERROR: ' + String(out).slice(0, 160)));
+      fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
+    }
+  } catch (e) { log('SKILLS RECONCILE ERROR: ' + String(e.message || e).split('\n')[0].slice(0, 160)); }
   // self-improvement (lib/selfimprove.js, selfimprove.json enabled): the tripwire on the framework's main (capheos-main-watch.js,
   // at most every 5 min) and the crew's staged update watchdog's fallback check (staged-update.js tick: a watch whose own unit
   // died is finished from here). Off = no child is started. Fail-safe.

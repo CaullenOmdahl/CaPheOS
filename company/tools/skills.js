@@ -7,6 +7,7 @@
  *
  *   node company/tools/skills.js status                 # matrix: agent -> skills
  *   node company/tools/skills.js verify                 # expected (company/skills/*) present on all agents
+ *   node company/tools/skills.js reconcile              # install every company skill a seat lacks (dispatcher: every 30 min; setup: every update)
  *   node company/tools/skills.js install <name> --agents all|agent,treasurer,... [--dry-run]
  *   node company/tools/skills.js install-all [--dry-run]
  *
@@ -77,6 +78,33 @@ function readSkill(name) {
   const description = truncateDescription(desc);
   return { name, body: raw.replace(/^---[\s\S]*?---\s*/, '').trim(), summary: description || ('Company skill: ' + name), description };
 }
+// who should have which company skill and does not: [{agent, id, skill}] (last journal write wins per agent+skill)
+async function missingSkills() {
+  const rows = (() => { try { return fs.readFileSync(path.join(ROOT, '.starnet-data', 'workspaces', 'skills.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean); } catch (_) { return []; } })();
+  const state = new Map();
+  for (const r of rows) if (r && r.agentId && r.name && r.state) state.set(r.agentId + '\u0000' + r.name, String(r.state));
+  const have = new Set([...state].filter(([, s]) => s === 'active').map(([k]) => k));
+  const list = await agents();
+  const nameToId = rosterIds();
+  const missing = [];
+  for (const n of list) { const id = nameToId[String(n).toLowerCase()] || String(n).toLowerCase(); for (const s of knownSkills()) if (!have.has(id + '\u0000' + s)) missing.push({ agent: n, id, skill: s }); }
+  return { list, missing };
+}
+function rosterIds() {
+  const roster = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, '.starnet-data', 'workspaces', 'agent.roster.json'), 'utf8')).agents; } catch (_) { return []; } })();
+  const m = {}; for (const r of roster) m[(r.name || '').toLowerCase()] = r.agentId; return m;
+}
+async function installOne(n, id, sk) {
+  let action = 'create';
+  try { await api('POST', '/api/agent-skills/manage', { action: 'create', agentId: id, name: n, body: sk.body, summary: sk.summary, description: sk.description }); }
+  catch (e) {
+    if (!/already exists/i.test(e.message)) throw e;
+    // it exists: bring it back if it was archived (a restore of an active skill is refused, which is fine), then refresh it
+    try { await api('POST', '/api/agent-skills/manage', { action: 'restore', agentId: id, name: n }); action = 'restore'; } catch (_) { action = 'edit'; }
+    await api('POST', '/api/agent-skills/manage', { action: 'edit', agentId: id, name: n, body: sk.body, summary: sk.summary, description: sk.description });
+  }
+  return action;
+}
 async function agents() {
   const r = await api('GET', '/api/runtime/agent');
   return (r.agents || []).map(a => a.name);
@@ -145,6 +173,19 @@ const agentsArg = String(a.agents || 'all');
       for (const n of list) { const id = nameToId[String(n).toLowerCase()] || String(n).toLowerCase(); for (const s of knownSkills()) if (!have.has(id + '\u0000' + s)) missing.push({ agent: n, id, skill: s }); }
       out(missing.length ? 1 : 0, { ok: missing.length === 0, agents: list, expected: knownSkills(), missing });
     }
+    // reconcile: every seat gets every company skill it lacks (the dispatcher runs this every 30 minutes, setup on every
+    // update): a new seat, a new skill or a skill a station lost is restored without anyone remembering to do it
+    if (a.cmd === 'reconcile') {
+      const before = await missingSkills();
+      const done = [], failed = [];
+      const bodies = {};
+      for (const m of before.missing) {
+        try { const sk = bodies[m.skill] || (bodies[m.skill] = readSkill(m.skill)); const action = await installOne(m.skill, m.id, sk); done.push({ skill: m.skill, agent: m.agent, action }); audit({ skill: m.skill, agent: m.agent, id: m.id, action, by: 'reconcile' }); }
+        catch (e) { failed.push({ skill: m.skill, agent: m.agent, error: String(e.message).slice(0, 160) }); }
+      }
+      const after = before.missing.length ? await missingSkills() : before;
+      out(after.missing.length ? 1 : 0, { ok: after.missing.length === 0, restored: done.length, done, failed, stillMissing: after.missing });
+    }
     if (a.cmd === 'install' || a.cmd === 'install-all') {
       const which = a.cmd === 'install-all' ? knownSkills() : [String((a._ || [])[0] || '')];
       if (!which[0]) out(2, { ok: false, error: 'usage: install <skill-name> --agents all|list' });
@@ -160,15 +201,13 @@ const agentsArg = String(a.agents || 'all');
         for (const target of ids) {
           const id = nameToId[String(target).toLowerCase()] || String(target);
           if (a['dry-run']) { results.push({ skill: n, agent: String(target), dryRun: true }); continue; }
-          let action = 'create';
-          try { await api('POST', '/api/agent-skills/manage', { action: 'create', agentId: id, name: n, body: sk.body, summary: sk.summary, description: sk.description }); }
-          catch (e) { if (/already exists/i.test(e.message)) { await api('POST', '/api/agent-skills/manage', { action: 'edit', agentId: id, name: n, body: sk.body, summary: sk.summary, description: sk.description }); action = 'edit'; } else throw e; }
+          const action = await installOne(n, id, sk);
           results.push({ skill: n, agent: String(target), id, action });
           audit({ skill: n, agent: String(target), id, action, by: String(a.by || co.nameOf(co.seatFor('tools'))) });
         }
       }
       out(0, { ok: true, dryRun: !!a['dry-run'], count: results.length, results });
     }
-    out(2, { ok: false, error: 'unknown command', commands: ['status', 'verify', 'install', 'install-all'] });
+    out(2, { ok: false, error: 'unknown command', commands: ['status', 'verify', 'reconcile', 'install', 'install-all'] });
   } catch (e) { out(1, { ok: false, error: e.message }); }
 })();

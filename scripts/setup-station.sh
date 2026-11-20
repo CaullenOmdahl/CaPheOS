@@ -243,3 +243,10 @@ else
   node company/tools/onboard.js --record station-installed ok >/dev/null 2>&1 || true
   echo "installed, not started. Start with: scripts/setup-station.sh --start"
 fi
+# company skills on every seat: whenever the station is running after setup (a new company's first start, or any
+# framework update), every seat gets every company skill, changed ones refreshed (skills.js install-all). The
+# dispatcher's 30-minute reconcile repairs anything missing later. Non-fatal: no AI is used, and a station that is not
+# up yet is covered by that reconcile.
+if curl -fsS -m 3 -H "x-starnet-token: $(cat secrets/station-token 2>/dev/null)" "http://127.0.0.1:$PORT/api/cron" >/dev/null 2>&1; then
+  node company/tools/skills.js install-all --by owner >/dev/null 2>&1 && echo "company skills: installed on every seat" || echo "company skills: not all installed now (the dispatcher's reconcile retries every 30 min)"
+fi
