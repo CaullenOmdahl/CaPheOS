@@ -167,7 +167,7 @@ const MANIFEST = [
     .map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'tools', area: 'tool', why: 'a tool that measures or limits the crew, or that these tools depend on' })),
   ...['merge-gate.js', 'premerge-check.js', 'external-gate.js', 'connector-scope.js', 'default-branch-watch.js', 'providers.js', 'deps.js'].map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'risk', area: 'tool', why: 'a gate or the evidence it reads' })),
   { p: 'company/work/engineering/evidence/*.json', cls: 'F', writers: ['test-substrate.sh'], owner: 'risk', area: 'gate', why: 'test-substrate verdicts (a hand-made pass opens the merge gate): flagged, never auto-removed, so a real evidence file never blocks a merge' },
-  // bigAppend: StarNet's append-only run log grows without end, so it is checked incrementally (the 64 KB before the
+  // bigAppend: StarNet's append-only run log grows to about 16 MB and is then rotated to <file>.1 (rotatedFrom), so it is checked incrementally (the 64 KB before the
   // last checked end and the first 64 KB are unchanged, the rest is new), never hashed whole, never copied
   { p: '.starnet-data/workspaces/runs.jsonl', cls: 'F', append: true, bigAppend: true, owner: 'people', area: 'record', why: 'the run records that feed competence, house benchmarks and the 3-day results check' },
   { p: '~/.local/bin/gh', cls: 'F', owner: 'risk', area: 'gate', why: 'the merge-gate wrapper around gh' },
@@ -352,6 +352,17 @@ function grewFrom(ctx, key, cur, b) {
   try {
     if (b.lite) return sha(readRange(f, 0, Math.min(BIG_CHUNK, b.bytes))) === b.headSha && sha(readRange(f, Math.max(0, b.bytes - BIG_CHUNK), Math.min(BIG_CHUNK, b.bytes))) === b.tailSha;
     return sha(readRange(f, 0, b.bytes)) === b.sha256;
+  } catch (_) { return false; }
+}
+// StarNet rotates its run log near 16 MB: the old file becomes <file>.1 and a new, short file starts. That is not a
+// rewrite when <file>.1 starts with exactly the bytes the last check saw (its first 64 KB and the 64 KB before the old
+// end); a rotation that also dropped or changed earlier records still fails this and is flagged.
+function rotatedFrom(ctx, key, cur, b) {
+  if (!cur || !cur.exists || !b || !b.exists || !b.lite || !(cur.bytes < b.bytes)) return false;
+  const f1 = abs(ctx, key) + '.1';
+  try {
+    const st = fs.statSync(f1); if (!st.isFile() || st.size < b.bytes) return false;
+    return sha(readRange(f1, 0, Math.min(BIG_CHUNK, b.bytes))) === b.headSha && sha(readRange(f1, Math.max(0, b.bytes - BIG_CHUNK), Math.min(BIG_CHUNK, b.bytes))) === b.tailSha;
   } catch (_) { return false; }
 }
 const sameState = (a, b) => !!a && !!b && a.exists === b.exists && (!a.exists || (a.sha256 === b.sha256 && a.mode === b.mode && (a.link || null) === (b.link || null)));
@@ -624,6 +635,7 @@ function decide(ctx, key, m, b, cur, prov, recorded, flagOnly) {
   }
   // F and K: reported, never undone automatically
   if (m.append && cur.exists && b.exists && cur.mode === b.mode && grewFrom(ctx, key, cur, b)) return { ok: true, why: 'appended' };
+  if (m.append && m.bigAppend && cur.exists && b.exists && cur.mode === b.mode && rotatedFrom(ctx, key, cur, b)) return { ok: true, why: 'rotated by StarNet (the earlier records are in ' + key.split('/').pop() + '.1)' };
   // a grow-only record (decisions.md is written newest first): new lines may land anywhere, but every earlier line must
   // still be there, in order. Only removing or rewriting history is a finding.
   if (m.growOnly && cur.exists && b && b.exists) {
@@ -1457,7 +1469,7 @@ function rebaseProvenance(opts, fn) {
 function patchCovers(patchText, rel) {
   return new RegExp('(^|\\s)a/' + String(rel).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(\\s|$)', 'm').test(String(patchText || ''));
 }
-module.exports = { patchCovers, askAcceptCmd, fixedGateFile, FIXED_GATE_FILES, acceptCmd, tick, classify, lockedNames, MANIFEST, connectorEntries, STATION_STATUS, context, withWatchLock, rebaseProvenance, _internals: { tile, decide, decideRolled, unroll, unwind, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
+module.exports = { patchCovers, rotatedFrom, askAcceptCmd, fixedGateFile, FIXED_GATE_FILES, acceptCmd, tick, classify, lockedNames, MANIFEST, connectorEntries, STATION_STATUS, context, withWatchLock, rebaseProvenance, _internals: { tile, decide, decideRolled, unroll, unwind, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
 
 /* ---------------- selftest ---------------- */
 async function selftest() {
