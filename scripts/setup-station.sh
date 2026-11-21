@@ -114,6 +114,13 @@ mkdir -p "$(dirname "$ENVFILE")"
 # reclaimed mid-command; 13 min is the command cap plus a model turn.
 # STARNET_DELEGATE_ALLOW (StarNet patch 0018): the delegation allowlist the dispatcher rewrites every tick
 # (company/tools/lib/delegate-allow.js); without it, or once it is 30 minutes old, no routine run gets team.dispatch.
+# StarNet patch 0022 (docs/FREE-MODELS.md): every OpenRouter request is scrubbed of the exact values in secrets/
+# (STARNET_SCRUB_SECRETS_DIR) and of the secret formats in company/tools/lib/secret-patterns.json (STARNET_SCRUB_PATTERNS),
+# with counts, never values, in .starnet-data/outbound-scrub.jsonl (STARNET_SCRUB_LOG); a free model carries a zero max
+# price, with failover inside the request to the free list (STARNET_OPENROUTER_FREE_POOL). STARNET_OPENROUTER_FREE_ONLY=1
+# (every OpenRouter request has a zero max price; a paid model is refused) unless model-policy.json allowed.openrouter.paid
+# is true.
+FREE_ONLY="$(node -e "let p={};try{p=require('./company/model-policy.json')}catch(_){};process.stdout.write(((p.allowed||{}).openrouter||{}).paid===true?'0':'1')")"
 UPATH="$(systemctl --user show-environment 2>/dev/null | sed -n 's/^PATH=//p')"; UPATH="${UPATH:-/usr/local/bin:/usr/bin:/bin}"
 ( umask 077; cat > "$ENVFILE" <<EOF
 # $SVC — written by $ROOT/scripts/setup-station.sh. Holds the station token (mode 0600).
@@ -127,6 +134,11 @@ STARNET_HEADLESS=1
 STARNET_OVERRIDE_ALLOW=$ROOT/company/state/override-allow.json
 STARNET_DELEGATE_ALLOW=$ROOT/company/state/delegate-allow.json
 STARNET_CRON_HEARTBEAT_STALE_MS=780000
+STARNET_SCRUB_SECRETS_DIR=$ROOT/secrets
+STARNET_SCRUB_PATTERNS=$ROOT/company/tools/lib/secret-patterns.json
+STARNET_SCRUB_LOG=$ROOT/.starnet-data/outbound-scrub.jsonl
+STARNET_OPENROUTER_FREE_POOL=$ROOT/company/state/free-models.json
+STARNET_OPENROUTER_FREE_ONLY=$FREE_ONLY
 TMPDIR=$ROOT/.starnet-data/tmp
 TZ=$ZONE
 EOF

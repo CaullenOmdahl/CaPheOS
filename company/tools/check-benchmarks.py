@@ -59,8 +59,13 @@ def cli_alias_targets():
         return {}
 
 
+# openrouter "free" is the free-model fallback's virtual entry (docs/FREE-MODELS.md): it resolves to a changing free model
+# at each tick, so it has no public benchmark row of its own; the free models are measured by the house ranking
+VIRTUAL = {("openrouter", "free")}
+
+
 def policy_models(policy):
-    return [m for p in (policy.get("allowed") or {}).values() if isinstance(p, dict) for m in p.get("models", [])]
+    return [m for k, p in (policy.get("allowed") or {}).items() if isinstance(p, dict) for m in p.get("models", []) if (k, m) not in VIRTUAL]
 
 
 def validate(book, policy, cli_targets=None):

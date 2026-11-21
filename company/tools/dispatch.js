@@ -95,6 +95,7 @@ const G = require('./lib/gates');
 const CMP = require('./lib/completions');
 const W = require('./lib/wakes');      // run-to-item links (company/state/wakes.jsonl): measurement only
 const RT = require('./lib/routing');   // which model one wake runs on (company/work/models/routing-policy.json; none = the chain, as before)
+const FREE_MODELS = require('./lib/free-models');   // the free-model fallback: a free pair is not metered
 const FAM = require('./lib/family');   // a lead run and its delegated child runs are one family (spend, busy seats)
 const SCHED = require('./lib/scheduler');
 const SCHED_MODE = SCHED.mode();
@@ -830,7 +831,8 @@ function lastRunTail(job) {
   // handoffs. Any other provider is treated as metered (a custom provider that records $0 but is flagged
   // unmetered=false is unpriced, not free).
   const capped = spent >= DAILY_USD;
-  const isMetered = job => !UNMETERED_PROVIDERS.includes(String(job.provider || ''));
+  // a free OpenRouter model (docs/FREE-MODELS.md; the station sends it with a zero max price) costs nothing: not metered
+  const isMetered = job => !UNMETERED_PROVIDERS.includes(String(job.provider || '')) && !FREE_MODELS.isFreePair(job.provider, job.model, ROOT);
   const held = [];
   const perAgentHeld = [];
   const wouldHold = [];
@@ -895,6 +897,9 @@ function lastRunTail(job) {
   // security-watch duty reads (duties open no socket). Real work only when due (rescan time, a lockfile or runtime
   // change, the owner's Check now); network only through the external gate; time-boxed; plain code, no model.
   try { await require('./security-watch.js').refresh({ log, dry: DRY }); } catch (e) { log('SECURITY WATCH ERROR: ' + String(e.message).slice(0, 200)); }
+  // the free-model list (company/tools/free-models.js, docs/FREE-MODELS.md): read from OpenRouter's public model list at
+  // most every freeFallback.refreshHours, and only while the fallback is on; a failed read keeps the last good list
+  try { await require('./free-models.js').refresh({ log, dry: DRY }); } catch (e) { log('FREE MODELS ERROR: ' + String(e.message).slice(0, 200)); }
   // Duties (docs/DUTIES.md): after the locked-file watch, so an unrecorded policy edit is reported (and not obeyed) before
   // anything runs. Fail-safe: an error here is one line and the tick goes on without duty work.
   const DR = require('./lib/duty-runner');

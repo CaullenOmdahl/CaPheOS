@@ -209,6 +209,11 @@ check, a halt, and a dispatcher wake for something the owner wrote always pass. 
 `cadence.json` `tempo.sprint.budgetUsd` (null = twice the daily cap) and `spreadDailyCap` (on). These are read exactly as
 before; the strict value rules below are phase 2.
 
+A job on a free OpenRouter model (`openrouter` with an id ending `:free` or on `company/state/free-models.json`; the
+free-model fallback, docs/FREE-MODELS.md) is not metered: the daily cap, the per-agent share and the spread do not hold
+it (`lib/free-models.js isFreePair`, used by dispatch.js and lanes.js). The station sends every such call with a zero
+max price, so it cannot be billed.
+
 ## The approved plan for phases 2 and 3 (not running yet)
 
 **Phase 2: enforcement, then one truth.** `admit()` starts deciding, behind the same function, with one precedence:

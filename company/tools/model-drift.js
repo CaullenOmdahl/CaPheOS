@@ -58,6 +58,9 @@ function getCron(cb) {
   req.end();
 }
 
+// a real free model the seat's openrouter/free entry resolved to (lib/free-models.js) is allowed through that entry
+const FM = require('./lib/free-models');
+const freeOk = (policy, provider, model) => { try { return FM.allowedPair(policy, provider, model); } catch (_) { return false; } };
 const allowedOf = (policy, provider) => {
   const p = policy && policy.allowed && policy.allowed[provider];
   return p && Array.isArray(p.models) ? p.models : null;
@@ -81,6 +84,7 @@ function audit(policy, roster, jobs) {
   for (const r of rows) {
     if (!r || !r.agentId) continue;
     const models = allowedOf(policy, r.provider);
+    if (freeOk(policy, r.provider, r.model)) continue;
     if (!models) { findings.push({ code: 'seat-model-not-allowed', who: r.agentId, name: r.name, provider: r.provider, model: r.model, why: 'provider "' + r.provider + '" has no allow-list in company/model-policy.json' }); continue; }
     if (!models.includes(r.model)) findings.push({ code: 'seat-model-not-allowed', who: r.agentId, name: r.name, provider: r.provider, model: r.model, why: '"' + r.model + '" is not in allowed.' + r.provider + '.models (' + models.join(', ') + ')' });
   }
@@ -90,12 +94,13 @@ function audit(policy, roster, jobs) {
   for (const j of (jobs || [])) {
     if (!j || j.noAgent || !j.provider) continue;
     const models = allowedOf(policy, j.provider);
-    if (!models) { findings.push({ code: 'routine-model-not-allowed', who: j.id, name: j.name, provider: j.provider, model: j.model, why: 'provider "' + j.provider + '" has no allow-list' }); continue; }
-    if (!models.includes(j.model)) { findings.push({ code: 'routine-model-not-allowed', who: j.id, name: j.name, provider: j.provider, model: j.model, why: '"' + j.model + '" is not in allowed.' + j.provider + '.models' }); continue; }
+    const free = freeOk(policy, j.provider, j.model);
+    if (!models && !free) { findings.push({ code: 'routine-model-not-allowed', who: j.id, name: j.name, provider: j.provider, model: j.model, why: 'provider "' + j.provider + '" has no allow-list' }); continue; }
+    if (!free && !models.includes(j.model)) { findings.push({ code: 'routine-model-not-allowed', who: j.id, name: j.name, provider: j.provider, model: j.model, why: '"' + j.model + '" is not in allowed.' + j.provider + '.models' }); continue; }
     // a seat with its own chain (model-policy.json seats, company/tools/models.js): the pin must be one of its entries
     const seat = j.agentId && policy.seats && policy.seats[j.agentId];
     if (seat && Array.isArray(seat.chain) && seat.chain.length) {
-      if (!seat.chain.some(e => e && e.provider === j.provider && e.model === j.model))
+      if (!seat.chain.some(e => e && ((e.provider === j.provider && e.model === j.model) || (free && FM.isAlias(e)))))
         findings.push({ code: 'routine-off-seat-chain', who: j.id, name: j.name, provider: j.provider, model: j.model, why: 'seats["' + j.agentId + '"].chain is ' + seat.chain.map(e => e.provider + '/' + e.model).join(' > ') + ', and the routine is pinned elsewhere (models.js tick moves it back)' });
       continue;
     }

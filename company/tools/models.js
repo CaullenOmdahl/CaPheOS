@@ -14,6 +14,12 @@
  *     message). An error or budget hold lasts `errorHoldMin`, then the entry is tried again. A delegated worker run
  *     (parentRunId) that the host stopped (its dispatch slice ran out, its lead was cancelled, it stalled: reason
  *     "cancelled") is left out of both; a worker run that hit a real provider error counts like any other run.
+ * The virtual entry `openrouter/free` (docs/FREE-MODELS.md; lib/free-models.js) is the free-model fallback, meant as the
+ * LAST entry: it can run when model-policy.json allows it, the company has secrets/openrouter-key, the free-model list
+ * (company/state/free-models.json) is recent, and OpenRouter's daily free limit was not hit today; it then RESOLVES to one
+ * real free model (house-ranking lower bound first, else the list's default order, skipping one that just had a provider
+ * error) and the seat is set to that id, so its runs and their grading name the real model. A free model is never
+ * metered (no spend rail). When the resolved model changes (it failed, a better one ranks first) the seat is re-set.
  * Moving DOWN off an entry that cannot run happens at the next tick. Moving back UP waits until the better entry has
  * been able to run for `recoverAfterMin` and the seat has not moved for `upAtMostEveryMin` (hysteresis). A seat in a
  * run is never switched until the run ends. Numbers: model-policy.json `failover` (defaults below); mode "shadow" logs
@@ -41,6 +47,7 @@ const co = require('./lib/company');
 const REF = require('./lib/refusal');
 const gov = require('./lib/governance');
 const mm = require('./lib/models-money');
+const FM = require('./lib/free-models');   // the virtual entry openrouter/free (docs/FREE-MODELS.md)
 
 const MIN = 60e3, HOUR = 3600e3;
 const REL = {
@@ -56,7 +63,7 @@ const SETTLE_MIN = 10;
 const FAILOVER = { mode: 'live', errorsInARow: 3, errorHoldMin: 60, recoverAfterMin: 30, upAtMostEveryMin: 60 };
 const MAX_CHAIN = 8;
 const SUBS = ['claude-cli', 'custom'];
-const NAMES = { 'claude-cli': 'Claude', custom: 'MiniMax', deepseek: 'DeepSeek' };
+const NAMES = { 'claude-cli': 'Claude', custom: 'MiniMax', deepseek: 'DeepSeek', openrouter: 'OpenRouter' };
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 // a run that ended for a reason on the provider's side, not the agent's
 const PROVIDER_CODES = ['auth', 'quota_exhausted', 'rate_limited', 'provider_error', 'provider_unavailable', 'network', 'timeout', 'overloaded', 'upstream', 'model_unavailable', 'model_unsuitable', 'model_no_tools', 'concurrency_limit'];
@@ -160,8 +167,12 @@ function makeModels(o) {
     return out;
   }
   function allowedWhy(e, pol) {
-    const fam = ((pol || policy()).allowed || {})[e.provider];
-    if (!fam || !Array.isArray(fam.models) || !fam.models.includes(e.model)) return keyOf(e) + ' is not on the allowed list (company/model-policy.json allowed)';
+    pol = pol || policy();
+    const fam = (pol.allowed || {})[e.provider];
+    // the free fallback: openrouter/free needs "free" on allowed.openrouter and freeFallback not off; a real free id it
+    // resolved to (company/state/free-models.json) is allowed through it, a paid OpenRouter id only when listed itself
+    if (FM.isAlias(e)) { if (!FM.aliasAllowed(pol)) return 'openrouter/free is off (company/model-policy.json allowed.openrouter.models has no "free", or freeFallback.enabled is false)'; }
+    else if ((!fam || !Array.isArray(fam.models) || !fam.models.includes(e.model)) && !FM.allowedPair(pol, e.provider, e.model, root)) return keyOf(e) + ' is not on the allowed list (company/model-policy.json allowed)';
     if (e.effort && !EFFORTS.includes(e.effort)) return 'effort "' + e.effort + '" is not one of ' + EFFORTS.join(', ');
     return null;
   }
@@ -171,6 +182,13 @@ function makeModels(o) {
     if (c[s]) return s;
     const low = s.toLowerCase();
     return Object.keys(c).find(id => String(c[id].name || '').toLowerCase() === low) || Object.keys(c).find(id => id.toLowerCase() === low) || null;
+  }
+
+  // where the seat's current pair sits in its chain: the exact entry, else openrouter/free when the pair is a free model
+  function indexIn(chain, pick) {
+    if (!pick) return -1;
+    const k = keyOf(pick), i = chain.findIndex(e => keyOf(e) === k);
+    return i >= 0 ? i : chain.findIndex(e => FM.isAlias(e) && pick.model !== FM.ALIAS && FM.isFreePair(pick.provider, pick.model, root));
   }
 
   /* ---- station reads ---- */
@@ -215,6 +233,14 @@ function makeModels(o) {
   function evaluate(id, e, ctx) {
     const pol = ctx.pol, F = ctx.F, t = ctx.t, m = ctx.m;
     const bad = allowedWhy(e, pol); if (bad) return { ok: false, why: bad, hard: true };
+    // openrouter/free: resolved NOW to one real free model (lib/free-models.js resolve: the company's key, a recent list,
+    // the daily free limit, a model that just failed skipped for the next); that id is what the seat is set to
+    let free = null;
+    if (FM.isAlias(e)) {
+      const sp = (pol.seats || {})[id] || {};
+      free = FM.resolve({ root, policy: pol, now: t, runs: ctx.runs, cls: sp.class || null, hasKey: ctx.freeKey });
+      if (!free.ok) return { ok: false, why: free.why, free: true };
+    }
     // a refusal block (the pacer's record, lib/refusal.js): this seat's run on this provider was refused and the block is
     // still on, so the entry cannot run for this seat until it ends; the seat runs on its next entry meanwhile
     const rb0 = ctx.refusalBlocks && ctx.refusalBlocks[id] && ctx.refusalBlocks[id][e.provider];
@@ -237,7 +263,7 @@ function makeModels(o) {
       if (ctx.settling) delete ctx.settling[e.provider];
     }
     const connected = pv ? true : null;
-    const metered = !SUBS.includes(e.provider) && !(pv && pv[e.provider] && pv[e.provider].unmetered);
+    const metered = !free && !SUBS.includes(e.provider) && !(pv && pv[e.provider] && pv[e.provider].unmetered);   // a free model costs nothing
     if (m) {
       if (e.provider === 'claude-cli' && m.claude && !m.claude.open) {
         const reserve = ctx.reserve && m.claude.known && !m.claude.hard && typeof m.claude.usedPct === 'number' && m.claude.usedPct < (m.claude.weekCap || 95);
@@ -247,6 +273,8 @@ function makeModels(o) {
       if (e.provider === 'deepseek' && m.deepseek && !m.deepseek.open) return { ok: false, why: 'DeepSeek is closed: ' + m.deepseek.why, connected };
       if (metered && m.rail && m.rail.pressure) return { ok: false, why: 'metered: the station\'s daily spend rail is at ' + Math.round(m.rail.pct) + '% (holds from ' + m.rail.holdAtPct + '%)', connected };
     }
+    // the free entry's own holds were resolve()'s (per real model id): it can run on the model it resolved to
+    if (free) return { ok: true, why: 'can run: ' + free.why, connected, resolved: Object.assign({ provider: e.provider, model: free.model }, e.effort ? { effort: e.effort } : {}), alternates: free.alternates || [] };
     // hostStoppedChild() again here, so a caller that hands evaluate() raw run rows gets the same rule as seatRuns()
     const mine = (ctx.runs[id] || []).filter(r => r.provider === e.provider && (!r.model || r.model === e.model) && !hostStoppedChild(r));
     const last = mine[mine.length - 1];
@@ -338,7 +366,7 @@ function makeModels(o) {
         for (const x of ev) if (x.ok && x.e.provider === 'claude-cli') Object.assign(x, { ok: false, soft: true, why: 'Sprint: every open item is Effort: mechanical, so Claude is kept for reasoning work' });
       for (const x of ev) { const k = keyOf(x.e); if (x.ok || x.soft) { if (!ss.okSince[k]) ss.okSince[k] = t; } else delete ss.okSince[k]; }
       const cur = current(id, all), curKey = cur.pick ? keyOf(cur.pick) : null;
-      const curIdx = curKey ? chain.findIndex(e => keyOf(e) === curKey) : -1;
+      const curIdx = indexIn(chain, cur.pick);
       if (curIdx >= 0 && ev[curIdx].settling) { out.push({ seat: id, action: 'wait', why: ev[curIdx].why }); continue; }
       const target = ev.findIndex(x => x.ok);
       const name = (crew()[id] || {}).name || id;
@@ -348,7 +376,8 @@ function makeModels(o) {
         out.push({ seat: id, action: 'stay', why: 'nothing in the chain can run' }); continue;
       }
       ss.nothingKey = '';
-      const to = chain[target];
+      // the chain entry (toE) and what the seat is set to (to): the same, except openrouter/free, set to the model it resolved to
+      const toE = chain[target], to = ev[target].resolved ? Object.assign({}, toE, ev[target].resolved) : toE;
       let dir = null, why = '';
       if (curIdx === target) {
         // in place: keep the roster and every routine on it (an edit elsewhere drifted one of them)
@@ -357,7 +386,7 @@ function makeModels(o) {
       } else if (curIdx < 0) { dir = 'down'; why = (curKey ? curKey + ' is not in the chain' : 'no model on record') + '; ' + keyOf(to) + ' is entry ' + (target + 1) + ' and ' + ev[target].why; }
       else if (!ev[curIdx].ok) { dir = target > curIdx ? 'down' : 'up'; why = keyOf(chain[curIdx]) + ' cannot run (' + ev[curIdx].why + ')'; }
       else if (target < curIdx) {
-        const since = ss.okSince[keyOf(to)], last = ss.lastMoveAt;
+        const since = ss.okSince[keyOf(toE)], last = ss.lastMoveAt;
         if (ss.sprintSoft) { dir = 'up'; why = 'Sprint: reasoning work again, back to ' + keyOf(to); }   // the soft hold ended: no recovery wait
         else if (ss.ownerCleared && ss.ownerCleared.providers && ss.ownerCleared.providers.includes(to.provider)) { dir = 'up'; why = 'the owner cleared the refusal block (' + (ss.ownerCleared.why || 'no note') + '), so ' + keyOf(to) + ' runs again now'; delete ss.ownerCleared; }   // no recovery wait: the owner decided
         else if (t - since < F.recoverAfterMin * MIN) { out.push({ seat: id, action: 'wait', why: keyOf(to) + ' can run again since ' + hm(since) + '; back after ' + F.recoverAfterMin + ' min' }); continue; }
@@ -365,7 +394,7 @@ function makeModels(o) {
         else dir = 'up', why = keyOf(to) + ' has been able to run since ' + hm(since) + (target === 0 ? ' (the primary)' : '');
       }
       if (!dir) { out.push({ seat: id, action: 'stay', index: target }); continue; }
-      if (cur.running && dir !== 'sync') { out.push({ seat: id, action: 'wait', why: 'a run is in progress; moved after it ends' }); continue; }
+      if (cur.running && (dir !== 'sync' || ev[target].resolved)) { out.push({ seat: id, action: 'wait', why: 'a run is in progress; moved after it ends' }); continue; }
       if (shadow || dry) {
         const k = dir + '>' + keyOf(to);
         if (ss.shadowKey !== k) { ss.shadowKey = k; note((shadow ? 'SHADOW' : 'DRY') + ' would move ' + name + ' ' + (curKey || '?') + ' -> ' + label(to) + ': ' + why); }
@@ -402,7 +431,7 @@ function makeModels(o) {
       const s = seats[id] || null, cur = current(id, all), curKey = cur.pick ? keyOf(cur.pick) : null;
       const ctx = { pol, F, t, m, providers: pv, runs, refusalBlocks: { [id]: REF.blockedForSeat(seatJobs(all, id).map(j => j.id), { root, now: t }) }, reserve: !!s && (s.claudeReserve === true || (s.claudeReserve !== false && id === ceoId())) };
       const chain = (s ? s.chain : []).map((e, i) => Object.assign({ index: i, key: keyOf(e), tier: tierOf(e, pol) }, e, evaluate(id, e, ctx)));
-      const idx = curKey ? chain.findIndex(x => x.key === curKey) : -1;
+      const idx = indexIn(chain, cur.pick);
       const ss = st.seats[id] || {};
       const last = moves(id, 1)[0] || null;
       let why;
@@ -450,7 +479,9 @@ function makeModels(o) {
       const open = [];
       for (const x of cand) {
         const e = parseEntry(x); if (!e || open.some(o2 => keyOf(o2) === keyOf(e))) continue;
-        if (evaluate(id, e, ctx).ok) open.push({ provider: e.provider, model: e.model });
+        const r = evaluate(id, e, ctx); if (!r.ok) continue;
+        const p = r.resolved || e;   // openrouter/free: the real model it resolved to
+        if (!open.some(o2 => keyOf(o2) === keyOf(p))) open.push({ provider: p.provider, model: p.model });
       }
       out[id] = open;
     }
@@ -467,6 +498,8 @@ function makeModels(o) {
         const where = (c[id] && c[id].name || id) + ' entry ' + (i + 1) + ' (' + keyOf(e) + ')';
         if (seen.has(keyOf(e))) problems.push({ seat: id, entry: keyOf(e), why: where + ' is listed twice' }); seen.add(keyOf(e));
         const bad = allowedWhy(e, pol); if (bad) problems.push({ seat: id, entry: keyOf(e), why: where + ': ' + bad });
+        // the free fallback is a last resort that may be unavailable (no key yet, no list yet): a note, never a problem
+        if (FM.isAlias(e)) { if (!bad) { const r = FM.resolve({ root, policy: pol, now: now(), runs: [] }); notes.push({ seat: id, entry: keyOf(e), why: where + ': ' + (r.ok ? 'resolves to ' + r.model : r.why) }); } return; }
         if (!pv) { if (i === 0) notes.push({ seat: id, why: 'the station did not answer GET /api/providers: connections not checked' }); }
         else if (!pv[e.provider]) problems.push({ seat: id, entry: keyOf(e), why: where + ': the provider is not on this station' });
         else if (!pv[e.provider].configured) problems.push({ seat: id, entry: keyOf(e), why: where + ': ' + (NAMES[e.provider] || e.provider) + ' is not connected (' + (pv[e.provider].reason || 'no key or sign-in') + ')' });
@@ -575,6 +608,8 @@ function hireChain(cand, providers, pol) {
   const rm = (pol.routing && pol.routing.models) || {};
   const subs = [rm.sonnet, rm.haiku, rm.minimax].filter(Boolean).concat([{ provider: 'claude-cli', model: 'claude-sonnet-5-5' }]);
   if (!out.some(e => SUBS.includes(e.provider))) { const s = subs.find(e => e && SUBS.includes(e.provider) && conn(e.provider) && ok(e)); if (s) add(s); }
+  // the free fallback last, behind every subscription and paid entry (docs/FREE-MODELS.md); only while the policy allows it
+  if (out.length && FM.aliasAllowed(pol)) add({ provider: FM.PROVIDER, model: FM.ALIAS });
   return out;
 }
 /* hire.js: record the new hire's chain in model-policy.json (no station call: the hire already runs on entry 1). */
@@ -792,10 +827,47 @@ async function selftest() {
     });
     await t('hire default chain: interviewed, candidateDefault, a connected subscription', async () => {
       const ch = hireChain({ provider: 'deepseek', model: 'deepseek-flash', effort: 'high' }, [{ id: 'claude-cli', configured: true }], pol);
-      assert.deepStrictEqual(ch.map(keyOf), ['deepseek/deepseek-flash', 'claude-cli/claude-sonnet-5-5']);
-      const ch2 = hireChain({ provider: 'claude-cli', model: 'haiku' }, [], pol); assert.deepStrictEqual(ch2.map(keyOf), ['claude-cli/haiku', 'deepseek/deepseek-flash']);
+      assert.deepStrictEqual(ch.map(keyOf), ['deepseek/deepseek-flash', 'claude-cli/claude-sonnet-5-5', 'openrouter/free']);
+      const ch2 = hireChain({ provider: 'claude-cli', model: 'haiku' }, [], pol); assert.deepStrictEqual(ch2.map(keyOf), ['claude-cli/haiku', 'deepseek/deepseek-flash', 'openrouter/free']);
+      const off = JSON.parse(JSON.stringify(pol)); off.freeFallback.enabled = false;
+      assert.deepStrictEqual(hireChain({ provider: 'claude-cli', model: 'haiku' }, [], off).map(keyOf), ['claude-cli/haiku', 'deepseek/deepseek-flash'], 'the fallback off: no free entry');
       assert.strictEqual(recordHireChain('new1', ch, 'hire.js', root), true); assert.strictEqual(recordHireChain('new1', ch2, 'hire.js', root), false);
       assert.ok(chainedSeats(root).has('new1') && chainedSeats(root).has('eng'));
+    });
+    await t('openrouter/free: the last entry resolves to a real free model; a failing one is swapped for the next; never metered', async () => {
+      const P0 = readJson(path.join(root, REL.policy));
+      const pol2 = JSON.parse(JSON.stringify(P0)); pol2.seats = pol2.seats || {};
+      pol2.seats.eng = { chain: [{ provider: 'custom', model: 'MiniMax-M3.1-Flash' }, { provider: 'openrouter', model: 'free' }] };
+      w(REL.policy, pol2);
+      S.providers.openrouter = true; S.providers.custom = false;
+      const iso = new Date(T).toISOString();
+      w('company/state/free-models.json', { v: 1, at: iso, models: [{ id: 'vendor-a/one:free', tools: true, context: 100 }, { id: 'vendor-b/two:free', tools: true, context: 50 }], ranked: ['vendor-a/one:free', 'vendor-b/two:free'] });
+      let r = await M().evaluate('eng', { provider: 'openrouter', model: 'free' }, { pol: pol2, F: FAILOVER, t: T, m: openM, providers: null, runs: {} });
+      assert.ok(!r.ok && /no OpenRouter key/.test(r.why), 'no key: cannot run: ' + JSON.stringify(r));
+      w('secrets/openrouter-key', 'test-value-not-a-key');
+      const railM = Object.assign({}, openM, { rail: { pct: 99, pressure: true, holdAtPct: 85 } });
+      r = await M().evaluate('eng', { provider: 'openrouter', model: 'free' }, { pol: pol2, F: FAILOVER, t: T, m: railM, providers: null, runs: {} });
+      assert.ok(r.ok && r.resolved.model === 'vendor-a/one:free', 'the daily spend rail never holds a free model: ' + JSON.stringify(r));
+      r = await M().tick({ m: openM });
+      assert.strictEqual(S.roster.eng.provider, 'openrouter', JSON.stringify(r.all)); assert.strictEqual(S.roster.eng.model, 'vendor-a/one:free');
+      assert.strictEqual(S.jobs[1].model, 'vendor-a/one:free', 'the routine names the real model, so its runs are graded on it');
+      r = await M().tick({ m: openM }); assert.strictEqual(r.moves.length, 0, 'in place: ' + JSON.stringify(r.moves));
+      fs.appendFileSync(path.join(root, REL.runs), JSON.stringify({ agentId: 'eng', provider: 'openrouter', model: 'vendor-a/one:free', reason: 'error', failureCode: 'rate_limited', error: 'openrouter http 429 upstream', endedAt: T - MIN }) + '\n');
+      r = await M().tick({ m: openM });
+      assert.strictEqual(S.roster.eng.model, 'vendor-b/two:free', 'a free model that just failed is swapped for the next: ' + JSON.stringify(r.all));
+      const ra = await M().runnableNow({ m: openM, jobs: S.jobs });
+      assert.deepStrictEqual(ra.seats.eng, [{ provider: 'openrouter', model: 'vendor-b/two:free' }], 'the override allowlist names the real model');
+      const sh = await M().show({ seat: 'eng', m: openM, jobs: S.jobs });
+      assert.strictEqual(sh.seats[0].now.index, 1, 'show: the seat is on its free entry');
+      const ck = await M().check(); assert.ok(!ck.problems.some(x => x.entry === 'openrouter/free'), JSON.stringify(ck));
+      fs.appendFileSync(path.join(root, REL.runs), JSON.stringify({ agentId: 'eng', provider: 'openrouter', model: 'vendor-b/two:free', reason: 'error', error: 'openrouter http 429 — Rate limit exceeded: free-models-per-day', endedAt: T - 30e3 }) + '\n');
+      const runsNow = {}; for (const l of fs.readFileSync(path.join(root, REL.runs), 'utf8').split('\n').slice(-3)) { try { const x = JSON.parse(l); (runsNow[x.agentId] = runsNow[x.agentId] || []).push({ provider: x.provider, model: x.model, reason: x.reason, failureCode: x.failureCode || '', error: x.error, at: x.endedAt }); } catch (_) {} }
+      r = await M().evaluate('eng', { provider: 'openrouter', model: 'free' }, { pol: pol2, F: FAILOVER, t: T, m: openM, providers: null, runs: runsNow });
+      assert.ok(!r.ok && /daily free-model limit/.test(r.why), 'the daily free limit closes the free entry: ' + JSON.stringify(r));
+      const off = JSON.parse(JSON.stringify(pol2)); off.freeFallback.enabled = false;
+      r = await M().evaluate('eng', { provider: 'openrouter', model: 'free' }, { pol: off, F: FAILOVER, t: T, m: openM, providers: null, runs: {} });
+      assert.ok(!r.ok && r.hard && /off/.test(r.why), 'off: ' + JSON.stringify(r));
+      w(REL.policy, P0); S.providers.custom = false; delete S.providers.openrouter;
     });
     await t('provider errors: a code or a provider message counts; an agent-side failure does not', async () => {
       assert.ok(providerError({ reason: 'error', failureCode: 'auth' })); assert.ok(providerError({ reason: 'error', error: 'HTTP 429 rate limit' }));

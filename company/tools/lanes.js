@@ -234,7 +234,7 @@ function promptFor(o) {
  * (door lane). Phase 1 keeps the lane's inputs as they were (no `blocking` passed to the spread); phase 2 decides in admit(). */
 function moneyHold(seatJob, b, agentId) {
   if (!b) return null;
-  const m = A.money({ metered: !(b.unmetered || ['claude-cli']).includes(String(seatJob.provider || '')), capOn: b.capOn, capped: b.capped,
+  const m = A.money({ metered: !(b.unmetered || ['claude-cli']).includes(String(seatJob.provider || '')) && !require('./lib/free-models').isFreePair(seatJob.provider, seatJob.model), capOn: b.capOn, capped: b.capped,
     share: { usd: b.perAgentUsd, spent: (b.byAgent || {})[agentId] }, sprintBudgetLeft: b.sprintBudgetLeft,
     spread: { on: b.spread !== false, cap: b.dailyUsd, spent24h: b.spent, spentLastHour: b.lastHourMetered, hoursLeft: b.hoursLeft } });
   return m.verdict === 'run' || m.verdict === 'wouldHold' ? null : m.why;

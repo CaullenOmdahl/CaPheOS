@@ -59,6 +59,10 @@ outrank a large steady one. A half-weight verdict makes an item half a one-shot.
 **A cell needs `minItems` (default 20) scored items before it can steer anything**: below that its status is
 `not enough data`, it has no score and no rank, and it can be neither proposed nor beaten.
 
+A free model's cell (`openrouter/<id>`, the free-model fallback, docs/FREE-MODELS.md) is graded like any other, but it
+costs nothing, so it has no score (`no cost recorded`) and is never proposed against a route. The fallback's own pick
+between free models reads the cell's lower bound instead (`lib/free-models.js order`, `freeFallback.minItems`).
+
 An item closed less than `oneShotWindowDays` ago is **settling**: it is counted apart and not scored until nothing had
 the time to undo it (`countUnsettled: true` scores it anyway).
 

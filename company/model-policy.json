@@ -33,6 +33,13 @@
     "claude-opus-5-5": "heavy"
    },
    "note": "Runs on a Claude Max subscription (flat monthly fee). The meter is the whole account, so any other use of the same account (the owner's own Claude Code, another company) counts against it; pacing-policy.json shareOfAccount gives this company its share. Routines use Haiku or Sonnet only; Opus and Fable never run routines. A Claude seat still takes the smallest tier that does the job."
+  },
+  "openrouter": {
+   "models": [
+    "free"
+   ],
+   "tier": "free",
+   "note": "The free-model fallback (docs/FREE-MODELS.md): the virtual chain entry openrouter/free resolves to the best free OpenRouter model at each failover tick (company/state/free-models.json, kept by company/tools/free-models.js). Free models may keep or train on what they are sent; every request to them is scrubbed of secrets first and carries a zero max price, so a call can never be billed. Only ids ending :free or listed at price 0 are used; a paid OpenRouter model needs its own id on this list. Remove \"free\" here (or set freeFallback.enabled false) to turn the fallback off."
   }
  },
  "candidateDefault": {
@@ -139,7 +146,7 @@
   }
  },
  "seats": {
-  "_doc": "Per-seat model chains, kept by company/tools/models.js (and the console: Crew > seat > Model). seats.<station agent id>.chain is an ordered list of {provider, model, effort?}: the first entry is the seat's primary, the rest are its fallbacks. The seat (its roster model and every routine of it) runs on the first entry that can run now and moves back up when a better one recovers (failover below). A seat with a chain is not routed by the pacer's routing table. A new hire starts with [interviewed model, candidateDefault, a connected subscription model]. Every model must be on the allowed lists above. The owner changes a chain directly; anyone else needs --approved and the self-governance level for models. Optional per seat: claudeReserve (true = its Claude entry ignores the daily pacing line up to the weekly stop; the CEO seat defaults to true)."
+  "_doc": "Per-seat model chains, kept by company/tools/models.js (and the console: Crew > seat > Model). seats.<station agent id>.chain is an ordered list of {provider, model, effort?}: the first entry is the seat's primary, the rest are its fallbacks. The seat (its roster model and every routine of it) runs on the first entry that can run now and moves back up when a better one recovers (failover below). A seat with a chain is not routed by the pacer's routing table. A new hire starts with [interviewed model, candidateDefault, a connected subscription model, openrouter/free] (the last only while freeFallback is on). Every model must be on the allowed lists above. The owner changes a chain directly; anyone else needs --approved and the self-governance level for models. Optional per seat: claudeReserve (true = its Claude entry ignores the daily pacing line up to the weekly stop; the CEO seat defaults to true)."
  },
  "failover": {
   "_doc": "How models.js moves a seat along its chain. mode live|shadow (shadow logs what it would do). An entry cannot run when its provider is not connected on the station, the pacer has its subscription closed, a metered provider is near the station's daily rail or out of credit, or the seat's last errorsInARow runs on it were provider errors or a budget hold (held errorHoldMin, then retried). Moving down is immediate; moving back up waits recoverAfterMin of the better entry being able to run, and at most one move up per upAtMostEveryMin. StarNet's station-wide fallback chain (GET/POST /api/fallback/chain) stays the last backstop for a run that fails mid-run.",
@@ -148,6 +155,15 @@
   "errorHoldMin": 60,
   "recoverAfterMin": 30,
   "upAtMostEveryMin": 60
+ },
+ "freeFallback": {
+  "_doc": "The free-model fallback (docs/FREE-MODELS.md), used only as the LAST entry of a seat chain, behind its subscriptions: models.js resolves openrouter/free to one real free model when the entries above it cannot run. enabled false turns it off everywhere. maxAgeHours: a free-model list older than this is not used. refreshHours: how often the dispatcher re-reads the list. coolMin: a free model whose last run had a provider error is skipped for this long (the next one is used). minItems: graded items a free model needs in the house ranking before its score orders the pick. maxAlternates: how many further free models the station may fail over to within one request. A seat may set seats.<id>.class to pick by that task class.",
+  "enabled": true,
+  "maxAgeHours": 72,
+  "refreshHours": 24,
+  "coolMin": 30,
+  "minItems": 5,
+  "maxAlternates": 2
  },
  "performance": {
   "consecutiveFailures": 3,
