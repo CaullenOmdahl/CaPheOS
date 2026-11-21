@@ -40,7 +40,7 @@ function generate(r, p, ctx) {
   const handoff = ['# Handoff: ' + t.id.replace(/-/g, ' '), '', '**From:** the client lead **To:** you', '**Repo:** this workspace (' + t.repo + ')', '',
     t.request, '', 'Locked (must not change): ' + ((t.locked || []).join(', ') || 'nothing'), 'Tests: `' + R.suite + '`. Lint: `' + R.lint + '`.', '', '<!-- ' + CANARY_LINE + ' -->', ''].join('\n');
   const expected = { hidden: t.hidden, testCmds: [R.test(hiddenFile)], suiteCmds: [R.suite], lintCmds: [R.lint], checks: t.checks || [],
-    allowed: t.allowed, locked: t.locked || [], ignore: ['**/__pycache__/**', '.dart_tool/**', '**/*.pyc', 'pubspec.lock', 'scratch/**', '.dartServer/**', '.dart-tool/**', '.pub-cache/**', '.dart/**', '.config/**', '.cache/**', '.local/**'] };
+    allowed: t.allowed, locked: t.locked || [], ignore: ['**/__pycache__/**', '.dart_tool/**', '**/*.pyc', 'pubspec.lock', 'scratch/**', '.dartServer/**', '.dart-tool/**', '.pub-cache/**', '.dart/**', '.config/**', '.cache/**', '.local/**', '.npm/**', '.gitconfig'] };
   const writes = o => Object.entries(o).map(([k, v]) => ({ tool: 'write', path: k, content: v }));
   let bad;
   if (t.bad === 'locked') bad = writes(Object.assign({}, sol, applyEdits(Object.assign({}, base, sol), t.badEdit, t.id)));

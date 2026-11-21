@@ -4,10 +4,12 @@
  * "The oracle passes and the known-bad answer fails" only shows that a scorer agrees with the generator's own expected
  * value. These checks re-derive answers from the generated files with code written apart from the generators, so an
  * expected value that the files do not support is caught. Offline, pure: no model, no shell.
- *   kind 1: every answer is in the file it is said to come from (or, with no path, in some file)
+ *   kind 1: every answer is in the file it is said to come from (or, with no path, in some file), stated of the asked
+ *           entity in the question's own terms (k1Stated)
  *   kind 2: every extracted value is in the source text (the amendment's, for a field it changes)
  *   kind 3: a note that names only an internal identifier (not the whole phrase) fails layer 1
- *   kind 5: lookup values are cells of the table; deep totals and discrepancies are reconciled from the two CSVs
+ *   kind 5: lookup values are cells of the table; standard totals are recomputed from the table as shown and the note;
+ *           deep totals and discrepancies are reconciled from the two CSVs
  *   kind 9: lookup answers are recomputed from the report files and the ledger
  * derive(unitDir, tasks, seeds) -> [problem] */
 const B = require('../lib/bench');
@@ -25,6 +27,49 @@ function k1(inst) {
     const where = it.path ? [it.path] : Object.keys(inst.files);
     const hit = where.some(p => inst.files[p] != null && vals.some(v => flat(textOf(inst.files[p])).includes(v)));
     if (!hit) out.push(it.id + ': ' + JSON.stringify(it.value) + ' is not in ' + (it.path || 'any file'));
+  }
+  return out;
+}
+/* kind 1, said in the question's terms: an answer is fair only when the file states it, about the asked entity, in words
+ * the question uses. So the value must sit in a clause (a "- Key: value" line, or a sentence or ';' / ':' part of prose)
+ * that (a) names the asked entity, or sits under a heading that does; (b) names no other person before the value (in
+ * "Their main contact is <person>, based in <town>" the town is the person's, not the client's); (c) shares a content
+ * word with the question ("What hourly rate does X pay?" against "We bill 136.5 EUR an hour" shares none). */
+const W_ = require('../lib/world');
+const PERSON = new RegExp('\\b(?:' + W_.FIRST.join('|') + ') (?:' + W_.LAST.join('|') + ')\\b', 'g');
+const STOP = new Set(('a an the of in on at for to is are was do does did we our us you your what which who how many much when where why give gives ' +
+  'path file files client clients that this these with and or be by from as it its their they them there has have had per one ' +
+  'find take settle settles question answer').split(' '));
+const words = s => new Set((String(s).toLowerCase().match(/[a-z]+/g) || []).map(w => w.length > 3 ? w.replace(/s$/, '') : w).filter(w => !STOP.has(w)));
+function clauses(text) {
+  const out = []; let heading = '';
+  for (const line of String(text).split('\n')) {
+    if (/^#/.test(line)) { heading = line; continue; }
+    if (/^- /.test(line)) { out.push({ text: line.slice(2), heading }); continue; }
+    for (const c of line.split(/(?<=[.;:!?])\s+/)) if (c.trim()) out.push({ text: c, heading });
+  }
+  return out;
+}
+function k1Stated(inst) {
+  const out = [];
+  for (const it of inst.expected.items) {
+    if (it.notFound) continue;
+    if (!it.q || !it.about) { out.push(it.id + ': the item does not record its question and entity (q, about)'); continue; }
+    const ent = it.about.toLowerCase(), vals = [it.value].concat(it.also || []).map(v => String(v).toLowerCase());
+    const qw = words(it.q), skip = new Set([...words(it.about)].concat(...vals.map(v => [...words(v)])));
+    const where = it.path ? [it.path] : Object.keys(inst.files);
+    const why = new Set();
+    const ok = where.some(p => inst.files[p] != null && clauses(textOf(inst.files[p])).some(c => {
+      const t = c.text.toLowerCase(); const at = Math.min(...vals.map(v => t.indexOf(v)).filter(i => i >= 0));
+      if (!Number.isFinite(at)) return false;
+      if (!t.includes(ent) && !c.heading.toLowerCase().includes(ent)) { why.add('not said of ' + it.about); return false; }
+      const other = [...c.text.matchAll(PERSON)].find(m => m.index < at && m[0].toLowerCase() !== ent);
+      if (other) { why.add('said of ' + other[0] + ', not of ' + it.about + ': "' + c.text.trim() + '"'); return false; }
+      const shared = [...words(c.text)].filter(w => qw.has(w) && !skip.has(w));
+      if (!shared.length) { why.add('the question\'s terms are not the text\'s: "' + it.q + '" against "' + c.text.trim() + '"'); return false; }
+      return true;
+    }));
+    if (!ok) out.push(it.id + ': ' + JSON.stringify(it.value) + ' is not stated in the question\'s terms (' + ([...why].join('; ') || 'no clause holds it') + ')');
   }
   return out;
 }
@@ -71,6 +116,19 @@ function k5(inst, task) {
     const want = Math.round(exp.value * 100);
     const cells = textOf(inst.files['finance/q1-invoices.md']).split('\n').filter(l => /^\| /.test(l)).flatMap(l => l.split('|').map(c => c.trim())).filter(c => /^[\d,]+\.\d{2}$/.test(c)).map(cents);
     if (!cells.includes(want)) out.push('the looked-up value ' + exp.value + ' is not a cell of the table');
+  }
+  if (task.depth === 'standard') {
+    // the client's row as the table shows it (in thousands when the heading says so), less the voided invoice in the note
+    const tab = textOf(inst.files['finance/q1-invoices.md']), note = textOf(inst.files['finance/handoff.md']);
+    const who = (inst.prompt.match(/invoiced to (.+) for Q1/) || [])[1];
+    const row = tab.split('\n').find(l => l.startsWith('| ' + who + ' |'));
+    const voided = (note.match(/invoice to (.+?) for ([\d.]+) \w+ (?:\(net\) )?was voided/) || []);
+    if (!who || !row || voided[1] !== who) out.push('cannot read the client, its row or the voided invoice from the files');
+    else {
+      const k = /in thousands/.test(tab.split('\n')[0]) ? 1000 : 1;
+      const sum = row.split('|').slice(2, 5).reduce((a, c) => a + Math.round(Number(c.trim()) * k * 100), 0) - cents(voided[2]);
+      if (Math.round(exp.value * 100) !== sum) out.push('the table and the note give ' + (sum / 100).toFixed(2) + ', expected says ' + exp.value);
+    }
   }
   if (task.depth === 'deep') {
     // reconcile the two CSVs by the rules in finance/README.md and the prompt, without the generator's flags
@@ -124,7 +182,7 @@ async function derive(unitDir, tasks, seeds) {
     if (![1, 2, 3, 5, 9].includes(t.kind)) continue;
     for (const seed of seeds) {
       const inst = B.instantiate(unitDir, t, seed);
-      const p = t.kind === 1 ? k1(inst) : t.kind === 2 ? k2(inst) : t.kind === 3 ? await k3(unitDir, t, inst) : t.kind === 5 ? k5(inst, t) : k9(inst, t);
+      const p = t.kind === 1 ? k1(inst).concat(k1Stated(inst)) : t.kind === 2 ? k2(inst) : t.kind === 3 ? await k3(unitDir, t, inst) : t.kind === 5 ? k5(inst, t) : k9(inst, t);
       for (const x of p) problems.push(t.id + ' (seed ' + seed + '): ' + x);
     }
   }

@@ -12,7 +12,48 @@ const K8 = require('../fixtures/k8/tasks');
 
 const UNIT = path.join(__dirname, '..');
 const DEPTHS = ['lookup', 'simple', 'standard', 'deep'];
-const VERSIONS = {};   // task id -> version, when a task has changed since 1
+// task id -> version, when a task has changed since 1
+// 2: the fairness audit of 2026-11-21 (questions in the files' terms, scorers that accept values copied from the files,
+//    the expected answer worked out from what is shown, stated shapes and boundaries, no tool caches in the workspace)
+const VERSIONS = {
+  'k1-lookup-01': 2, 'k1-lookup-02': 2, 'k1-lookup-03': 2, 'k1-lookup-04': 2, 'k1-lookup-05': 2, 'k1-lookup-06': 2,
+  'k1-simple-02': 2, 'k1-simple-04': 2, 'k1-simple-06': 2, 'k1-standard-01': 2, 'k1-standard-02': 2, 'k1-standard-03': 2,
+  'k1-standard-04': 2, 'k1-standard-05': 2, 'k1-standard-06': 2, 'k1-deep-01': 2, 'k1-deep-02': 2, 'k1-deep-03': 2,
+  'k1-deep-04': 2, 'k1-deep-05': 2, 'k1-deep-06': 2, 'k2-lookup-01': 2, 'k2-lookup-02': 2, 'k2-lookup-03': 2,
+  'k2-lookup-04': 2, 'k2-lookup-05': 2, 'k2-lookup-06': 2, 'k2-simple-01': 2, 'k2-simple-02': 2, 'k2-simple-03': 2,
+  'k2-simple-04': 2, 'k2-simple-05': 2, 'k2-simple-06': 2, 'k2-standard-01': 2, 'k2-standard-02': 2, 'k2-standard-03': 2,
+  'k2-standard-04': 2, 'k2-standard-05': 2, 'k2-standard-06': 2, 'k2-deep-01': 2, 'k2-deep-02': 2, 'k2-deep-03': 2,
+  'k2-deep-04': 2, 'k2-deep-05': 2, 'k2-deep-06': 2, 'k3-lookup-01': 2, 'k3-lookup-02': 2, 'k3-lookup-03': 2,
+  'k3-lookup-04': 2, 'k3-lookup-05': 2, 'k3-lookup-06': 2, 'k3-simple-01': 2, 'k3-simple-02': 2, 'k3-simple-03': 2,
+  'k3-simple-04': 2, 'k3-simple-05': 2, 'k3-simple-06': 2, 'k3-standard-01': 2, 'k3-standard-02': 2, 'k3-standard-03': 2,
+  'k3-standard-04': 2, 'k3-standard-05': 2, 'k3-standard-06': 2, 'k3-deep-01': 2, 'k3-deep-02': 2, 'k3-deep-03': 2,
+  'k3-deep-04': 2, 'k3-deep-05': 2, 'k3-deep-06': 2, 'k4-lookup-01': 2, 'k4-lookup-02': 2, 'k4-lookup-03': 2,
+  'k4-lookup-04': 2, 'k4-lookup-05': 2, 'k4-lookup-06': 2, 'k4-simple-01': 2, 'k4-simple-02': 2, 'k4-simple-03': 2,
+  'k4-simple-04': 2, 'k4-simple-05': 2, 'k4-simple-06': 2, 'k4-standard-01': 2, 'k4-standard-02': 2, 'k4-standard-03': 2,
+  'k4-standard-04': 2, 'k4-standard-05': 2, 'k4-standard-06': 2, 'k4-deep-01': 2, 'k4-deep-02': 2, 'k4-deep-03': 2,
+  'k4-deep-04': 2, 'k4-deep-05': 2, 'k4-deep-06': 2, 'k5-lookup-01': 2, 'k5-lookup-02': 2, 'k5-lookup-03': 2,
+  'k5-lookup-04': 2, 'k5-lookup-05': 2, 'k5-lookup-06': 2, 'k5-simple-01': 2, 'k5-simple-02': 2, 'k5-simple-03': 2,
+  'k5-simple-04': 2, 'k5-simple-05': 2, 'k5-simple-06': 2, 'k5-standard-01': 2, 'k5-standard-02': 2, 'k5-standard-03': 2,
+  'k5-standard-04': 2, 'k5-standard-05': 2, 'k5-standard-06': 2, 'k5-deep-01': 2, 'k5-deep-02': 2, 'k5-deep-03': 2,
+  'k5-deep-04': 2, 'k5-deep-05': 2, 'k5-deep-06': 2, 'k6-lookup-01': 2, 'k6-lookup-02': 2, 'k6-lookup-03': 2,
+  'k6-lookup-04': 2, 'k6-lookup-05': 2, 'k6-lookup-06': 2, 'k6-simple-01': 2, 'k6-simple-02': 2, 'k6-simple-03': 2,
+  'k6-simple-04': 2, 'k6-simple-05': 2, 'k6-simple-06': 2, 'k6-standard-01': 2, 'k6-standard-02': 2, 'k6-standard-03': 2,
+  'k6-standard-04': 2, 'k6-standard-05': 2, 'k6-standard-06': 2, 'k6-deep-01': 2, 'k6-deep-02': 2, 'k6-deep-03': 2,
+  'k6-deep-04': 2, 'k6-deep-05': 2, 'k6-deep-06': 2, 'k7-lookup-01': 2, 'k7-lookup-02': 2, 'k7-lookup-03': 2,
+  'k7-lookup-04': 2, 'k7-lookup-05': 2, 'k7-lookup-06': 2, 'k7-simple-01': 2, 'k7-simple-02': 2, 'k7-simple-03': 2,
+  'k7-simple-04': 2, 'k7-simple-05': 2, 'k7-simple-06': 2, 'k7-standard-01': 2, 'k7-standard-02': 2, 'k7-standard-03': 2,
+  'k7-standard-04': 2, 'k7-standard-05': 2, 'k7-deep-01': 2, 'k7-deep-02': 2, 'k7-deep-03': 2, 'k7-deep-04': 2,
+  'k8-lookup-01': 2, 'k8-lookup-02': 2, 'k8-lookup-03': 2, 'k8-lookup-04': 2, 'k8-lookup-05': 2, 'k8-lookup-06': 2,
+  'k8-simple-01': 2, 'k8-simple-02': 2, 'k8-simple-03': 2, 'k8-simple-04': 2, 'k8-simple-05': 2, 'k8-simple-06': 2,
+  'k8-standard-01': 2, 'k8-standard-02': 2, 'k8-standard-03': 2, 'k8-standard-04': 2, 'k8-standard-05': 2, 'k8-standard-06': 2,
+  'k8-deep-01': 2, 'k8-deep-02': 2, 'k8-deep-03': 2, 'k8-deep-04': 2, 'k8-deep-05': 2, 'k8-deep-06': 2,
+  'k9-lookup-01': 2, 'k9-lookup-02': 2, 'k9-lookup-03': 2, 'k9-lookup-04': 2, 'k9-lookup-05': 2, 'k9-lookup-06': 2,
+  'k9-simple-01': 2, 'k9-simple-02': 2, 'k9-simple-03': 2, 'k9-simple-04': 2, 'k9-simple-05': 2, 'k9-simple-06': 2,
+  'k9-standard-01': 2, 'k9-standard-02': 2, 'k9-standard-03': 2, 'k9-standard-04': 2, 'k9-standard-05': 2, 'k9-standard-06': 2,
+  'k9-deep-01': 2, 'k9-deep-02': 2, 'k9-deep-03': 2, 'k9-deep-04': 2, 'k9-deep-05': 2, 'k9-deep-06': 2,
+  'k10-simple-02': 2, 'k10-simple-05': 2, 'k10-standard-02': 2, 'k10-standard-03': 2, 'k10-standard-06': 2, 'k10-deep-01': 2,
+  'k10-deep-02': 2, 'k10-deep-03': 2, 'k10-deep-04': 2, 'k10-deep-05': 2, 'k10-deep-06': 2
+};
 const IDEAS = {
   1: ['RULER', 'MuSiQue', 'HotpotQA', 'FRAMES'], 2: ['Kleister', 'CORD', 'CUAD', 'ContractNLI'], 3: ['IFEval', 'IFBench', 'InFoBench'],
   4: ['NATURAL PLAN', 'TravelPlanner', 'PlanBench', 'ACPBench'], 5: ['GSM-Symbolic', 'TAT-QA', 'FinQA'], 6: ['HumanEvalFix', 'QuixBugs', 'EvalPlus'],

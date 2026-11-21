@@ -21,7 +21,7 @@ function generate(r, p) {
   const c = byId(p.case), L = LANG[c.lang];
   const files = Object.assign({}, L.extra, { [c.file]: buggy(c), 'README.md': '# ' + c.id + '\n\nRun a test file with `' + L.run + '`.\n\n<!-- ' + CANARY_LINE + ' -->\n' }, c.visible || {});
   const prompt = 'File to fix: ' + c.file + '\n\n' + c.desc + (c.visible ? '' : '\nThere are no tests in the workspace; write your own checks if you want, but only ' + c.file + ' may change in the end.');
-  const expected = { hidden: { [L.hidden]: c.hidden }, testCmds: [L.cmd], allowed: [c.file], ignore: ['**/__pycache__/**', '.dart_tool/**', '**/*.pyc', 'scratch/**', '.dartServer/**', '.pub-cache/**', '.dart/**', '.config/**', '.cache/**', '.local/**'] };
+  const expected = { hidden: { [L.hidden]: c.hidden }, testCmds: [L.cmd], allowed: [c.file], ignore: ['**/__pycache__/**', '.dart_tool/**', '**/*.pyc', 'scratch/**', '.dartServer/**', '.pub-cache/**', '.dart/**', '.config/**', '.cache/**', '.local/**', '.npm/**', '.dart-tool/**', '.gitconfig'] };
   return { prompt, files, expected, oracle: { actions: [{ tool: 'write', path: c.file, content: c.fixed }], answer: { done: true, summary: 'fixed' } },
     // known-bad: a change to the visible test instead of the code, or a comment-only change
     bad: { actions: [{ tool: 'write', path: c.file, content: buggy(c) + (c.lang === 'py' ? '# checked\n' : '// checked\n') }], answer: { done: true, summary: 'looked fine' } } };

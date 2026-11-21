@@ -20,11 +20,13 @@ function clientFacts(r, w, c, i) {
   };
 }
 const FACT = {
-  rate: { q: c => 'What hourly rate does ' + c.name + ' pay?', v: c => String(c.rate) + ' ' + c.currency, also: c => [String(c.rate), money2(Math.round(c.rate * 100)) + ' ' + c.currency] },
+  // every question asks in the files' own terms ("we bill", "notice period", "deliveries go out"), and its also list
+  // holds the forms copied word for word from the files ("30 days", "Tuesdays"); scorers/exact.js also drops unit tails
+  rate: { q: c => 'What hourly rate do we bill ' + c.name + '?', v: c => String(c.rate) + ' ' + c.currency, also: c => [String(c.rate), money2(Math.round(c.rate * 100)) + ' ' + c.currency] },
   renewal: { q: c => 'On what date does the agreement with ' + c.name + ' renew?', v: c => c.renewal },
-  notice: { q: c => 'How many days of notice does ' + c.name + ' need to give?', v: c => String(c.noticeDays) },
+  notice: { q: c => 'What is the notice period for ' + c.name + ', in days?', v: c => String(c.noticeDays), also: c => [c.noticeDays + ' days'] },
   contact: { q: c => 'Who is the main contact at ' + c.name + '?', v: c => c.contact },
-  delivery: { q: c => 'On which weekday does ' + c.name + ' want deliveries?', v: c => c.deliveryDay },
+  delivery: { q: c => 'On which weekday do deliveries go out to ' + c.name + '?', v: c => c.deliveryDay, also: c => [c.deliveryDay + 's'] },
   town: { q: c => 'In which town is ' + c.name + ' based?', v: c => c.town },
   ref: { q: c => 'What is the client reference for ' + c.name + '?', v: c => c.ref },
 };
@@ -51,12 +53,12 @@ function generate(r, p, ctx) {
   if (p.depth === 'lookup') {
     const w = W.world(r, { clients: 1 }); const c = clientFacts(r, w, w.clients[0], 0); const seat = w.seats[0];
     const key = FACT_KEYS[(v - 1) % FACT_KEYS.length];
-    const body = ['Client ' + c.name + ' (ref ' + c.ref + ') is with us since last spring.', 'Their main contact is ' + c.contact + ', based in ' + c.town + '.',
+    const body = ['Client ' + c.name + ' (ref ' + c.ref + ') is with us since last spring.', 'Their main contact is ' + c.contact + '.', c.name + ' is based in ' + c.town + '.',
       'We bill ' + c.rate + ' ' + c.currency + ' an hour; the agreement renews on ' + c.renewal + '.', 'Notice period is ' + c.noticeDays + ' days. Deliveries go out on ' + c.deliveryDay + 's.'].join('\n');
     const f = 'handoffs/' + slug(seat.name) + '.md';
     const files = { [f]: handoffFile(seat, [{ title: 'Taking over ' + c.name, status: 'OPEN', body }]) };
-    const it = { id: 'q1', value: FACT[key].v(c), also: FACT[key].also ? FACT[key].also(c) : [] };
-    return out('Question q1: ' + FACT[key].q(c), files, [it], false);
+    const it = { id: 'q1', value: FACT[key].v(c), also: FACT[key].also ? FACT[key].also(c) : [], q: FACT[key].q(c), about: c.name };
+    return out('Question q1: ' + it.q, files, [it], false);
   }
   if (p.depth === 'simple') {
     const n = 3 + (v % 3);   // 3 to 5 files
@@ -64,7 +66,7 @@ function generate(r, p, ctx) {
     const files = {}; cs.forEach(c => { files['clients/' + slug(c.name) + '.md'] = clientFile(c); });
     const qs = v % 2 === 0 ? 2 : 1;
     const items = [], lines = [];
-    for (let k = 0; k < qs; k++) { const c = cs[(v + k) % cs.length], key = FACT_KEYS[(v + k * 3) % FACT_KEYS.length]; items.push({ id: 'q' + (k + 1), value: FACT[key].v(c), also: FACT[key].also ? FACT[key].also(c) : [] }); lines.push('Question q' + (k + 1) + ': ' + FACT[key].q(c)); }
+    for (let k = 0; k < qs; k++) { const c = cs[(v + k) % cs.length], key = FACT_KEYS[(v + k * 3) % FACT_KEYS.length]; items.push({ id: 'q' + (k + 1), value: FACT[key].v(c), also: FACT[key].also ? FACT[key].also(c) : [], q: FACT[key].q(c), about: c.name }); lines.push('Question q' + (k + 1) + ': ' + FACT[key].q(c)); }
     return out(lines.join('\n'), files, items, false);
   }
   // standard and deep: a whole workspace
@@ -94,15 +96,15 @@ function generate(r, p, ctx) {
   for (let i = 0; i < 9; i++) files['inbox/note-' + String(i + 1).padStart(2, '0') + '.md'] = '# Note ' + (i + 1) + ' (' + day(-30 + i * 3) + ')\n\n' + r.pick(['Printer toner ordered.', 'Remember the fire drill on Thursday.', 'The van is booked for the 3rd.', 'Holiday rota is pinned in the kitchen.', 'New coffee supplier from next week.']) + '\n\n<!-- ' + CANARY_LINE + ' -->\n';
   const path = c => 'clients/' + slug(c.name) + '.md';
   const items = [], lines = [];
-  const add = (q, it) => { it.id = 'q' + (items.length + 1); items.push(it); lines.push('Question ' + it.id + ': ' + q); };
+  const add = (q, it) => { it.id = 'q' + (items.length + 1); it.q = q; items.push(it); lines.push('Question ' + it.id + ': ' + q); };
   const pick = k => cs[(v + k) % cs.length];
   if (!deep) {
     const a = pick(0), keyA = FACT_KEYS[v % FACT_KEYS.length];
-    add(FACT[keyA].q(a) + ' (give the file path)', { value: FACT[keyA].v(a), also: FACT[keyA].also ? FACT[keyA].also(a) : [], path: path(a) });
+    add(FACT[keyA].q(a) + ' (give the path of the client file)', { value: FACT[keyA].v(a), also: FACT[keyA].also ? FACT[keyA].also(a) : [], path: path(a), about: a.name });
     const b = pick(1), keyB = FACT_KEYS[(v + 2) % FACT_KEYS.length];
-    add(FACT[keyB].q({ name: 'the client of the project "' + b.project + '"' }) + ' (give the file path of the client file)', { value: FACT[keyB].v(b), also: FACT[keyB].also ? FACT[keyB].also(b) : [], path: path(b) });
+    add(FACT[keyB].q({ name: 'the client of the project "' + b.project + '"' }) + ' (give the path of the client file)', { value: FACT[keyB].v(b), also: FACT[keyB].also ? FACT[keyB].also(b) : [], path: path(b), about: b.name });
     const c = cs.find(x => w.seats.some(s => s.name === x.lead) && cs.filter(y => y.lead === x.lead).length === 1) || pick(2);
-    add('Who is the main contact at the client whose project is led by ' + c.lead + '? Give the path of the client file.', { value: c.contact, path: path(c) });
+    add('Who is the main contact at the client whose project is led by ' + c.lead + '? Give the path of the client file.', { value: c.contact, path: path(c), about: c.name });
     return out(lines.join('\n'), files, items, true, { tools: true });
   }
   // deep
@@ -113,16 +115,18 @@ function generate(r, p, ctx) {
   // away; only its date and its words show it is the later word
   const slot = r.int(1, 9), nn = n => 'inbox/note-' + String(n).padStart(2, '0') + '.md', ratePath = nn(slot);
   files[nn(10)] = files[ratePath].replace(/^# Note \d+/, '# Note 10');
-  files[ratePath] = '# Note ' + slot + ' (' + day(40) + ')\n\nRate change agreed with ' + a.contact + ': from ' + day(41) + ' ' + a.name + ' pays ' + newRate + ' ' + a.currency + ' an hour. The client file still shows the old rate until the finance lead updates it.\n\n<!-- ' + CANARY_LINE + ' -->\n';
-  add('What hourly rate does ' + a.name + ' pay now? Give the path of the file that settles it.', { value: newRate + ' ' + a.currency, also: [String(newRate)], path: ratePath });
+  // dated after every other note and already in force today (day 0), which the prompt states
+  files[ratePath] = '# Note ' + slot + ' (' + day(-3) + ')\n\nRate change agreed with ' + a.contact + '. From ' + day(-2) + ' we bill ' + a.name + ' ' + newRate + ' ' + a.currency + ' an hour. The client file still shows the old rate until the finance lead updates it.\n\n<!-- ' + CANARY_LINE + ' -->\n';
+  lines.push('Today is ' + day(0) + '.');
+  add('What hourly rate do we bill ' + a.name + ' as of today? Give the path of the file that settles it.', { value: newRate + ' ' + a.currency, also: [String(newRate), money2(newRate * 100) + ' ' + a.currency], path: ratePath, about: a.name });
   const b = pick(1);
-  add('In which town is the client of the project "' + b.project + '" based? Give the path of the client file.', { value: b.town, path: path(b) });
+  add('In which town is the client of the project "' + b.project + '" based? Give the path of the client file.', { value: b.town, path: path(b), about: b.name });
   // three hops: seat -> project -> client -> its renewal date
   const c3 = cs.find(x => cs.filter(y => y.lead === x.lead).length === 1 && x !== a && x !== b) || pick(2);
-  add('Find the handoff of ' + c3.lead + ', take the client of the project they lead, and give the date that client\'s agreement renews, with the path of the client file.', { value: c3.renewal, path: path(c3) });
-  add('What is the client reference for ' + twin.name + '? Give the path of the file.', { value: twin.ref, path: path(twin) });
-  add('How many days of notice does ' + noNotice.name + ' need to give?', { notFound: true });
-  add('What hourly rate does ' + (W.COMPANIES.find(x => !cs.some(c => c.name === x) && x !== twin.name) || 'Lindenfield Ltd') + ' pay?', { notFound: true });
+  add('Find the handoff of ' + c3.lead + ', take the client of the project they lead, and give the date that client\'s agreement renews, with the path of the client file.', { value: c3.renewal, path: path(c3), about: c3.name });
+  add('What is the client reference for ' + twin.name + '? Give the path of the file.', { value: twin.ref, path: path(twin), about: twin.name });
+  add(FACT.notice.q(noNotice), { notFound: true });
+  add(FACT.rate.q({ name: W.COMPANIES.find(x => !cs.some(c => c.name === x) && x !== twin.name) || 'Lindenfield Ltd' }), { notFound: true });
   return out(lines.join('\n'), files, items, true, { tools: true });
 }
 function out(q, files, items, needPath) {

@@ -82,13 +82,13 @@ function generate(r, p, ctx) {
     { id: 'c1', q: 'Can the client end the agreement with ' + notice + ' days notice?', label: 'no', quote: 'Clause 2 now reads: Either party may end the agreement with ' + notice2 + ' days written notice.' },
     { id: 'c2', q: 'May we use subcontractors for printing work without asking the client?', label: sub ? 'no' : 'yes', quote: sub ? 'Clause 3 now reads: We may not use subcontractors without the client\'s written consent.' : 'Clause 3. We may use subcontractors for printing work.' },
     { id: 'c3', q: 'Does the client own the final designs once they have paid in full?', label: 'yes', quote: 'Clause 4. The client owns the final designs once paid in full.' },
-    { id: 'c4', q: 'Does the agreement set a cap on our total liability?', label: 'not_stated', quote: '' },
+    { id: 'c4', q: 'Is our total liability capped at a set amount?', label: 'not_stated', quote: '' },
     { id: 'c5', q: 'Are rush jobs limited to ' + cap + ' per month?', label: sub ? 'yes' : 'no', quote: sub ? 'Clause 6. Rush jobs are limited to ' + cap + ' per month.' : 'Clause 6 now reads: Rush jobs are limited to ' + (cap + 2) + ' per month.' },
-    { id: 'c6', q: 'Is there a fixed end date for the agreement?', label: 'not_stated', quote: '' },
+    { id: 'c6', q: 'Does the agreement run until a fixed end date?', label: 'not_stated', quote: '' },
   ].slice(0, 4 + (v % 3));
   const fields = { monthly_fee: money2(fee2), notice_days: String(notice2) };
   const exp = { fields, types: { monthly_fee: 'money', notice_days: 'int' }, threshold: 0.9, questions: qs.map(q => ({ id: q.id, label: q.label })), sourceText: A + '\n' + B };
-  const prompt = 'Read the agreement and its amendment. Extract the fields monthly_fee and notice_days as they stand now. Then answer each question with yes, no or not_stated, quoting the line that decides it (no quote for not_stated):\n' + qs.map(q => q.id + ': ' + q.q).join('\n');
+  const prompt = 'Read the agreement and its amendment. Extract the fields monthly_fee and notice_days as they stand now. Then answer each question with yes, no or not_stated, quoting the line that decides it (no quote for not_stated). yes: the documents say so; no: the documents say the opposite; not_stated: the documents say nothing either way.\n' + qs.map(q => q.id + ': ' + q.q).join('\n');
   const oracle = { fields, answers: qs.map(q => ({ id: q.id, label: q.label, quote: q.quote })) };
   // known-bad: reads the original agreement and ignores the amendment
   const badA = { fields: { monthly_fee: money2(fee), notice_days: String(notice) }, answers: qs.map(q => q.id === 'c1' ? { id: 'c1', label: 'yes', quote: 'Clause 2. Either party may end the agreement with ' + notice + ' days written notice.' } : { id: q.id, label: q.label, quote: q.quote }) };

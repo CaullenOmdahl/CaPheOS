@@ -125,18 +125,19 @@ const TOOL_TEXT = {
 };
 function prompt(unitDir, task, inst) {
   const tpl = fs.readFileSync(path.join(unitDir, task.prompt), 'utf8').replace(/^<!--[\s\S]*?-->\n?/, '');
-  let body = tpl.replace('{{TASK}}', inst.prompt.trim());
+  // function replacements: a "$'" or "$&" in the task text (code in a diff) is text, never a replacement pattern
+  let body = tpl.replace('{{TASK}}', () => inst.prompt.trim());
   const files = Object.entries(inst.files).filter(([k]) => k !== 'BENCH_CANARY');
   if (task.sandbox === 'none') {
     const shown = files.length ? files.map(([k, v]) => '=== file: ' + k + ' ===\n' + (typeof v === 'string' ? v : v.text).replace(/\s+$/, '') + '\n=== end of ' + k + ' ===').join('\n\n') : '(no files)';
-    body = body.replace('{{FILES}}', shown);
+    body = body.replace('{{FILES}}', () => shown);
   } else body = body.replace('{{FILES}}', 'The files are in your workspace. Use the tools to look at them.');
   const tools = task.inputs.tools;
   const how = tools.length
     ? 'You work in a workspace through tools. To use a tool, end your message with ONE fenced json block holding one call:\n' + tools.map(t => '  ' + TOOL_TEXT[t]).join('\n') +
       '\nYou get the result in the next message. When you are done, end your message with the fenced json block of your answer instead (it never has a "tool" key). You have at most ' + (task.maxTurns || 30) + ' turns.'
     : 'Answer in one message. End it with the fenced json block of your answer.';
-  return body.replace('{{TOOLS}}', how) + '\n';
+  return body.replace('{{TOOLS}}', () => how) + '\n';
 }
 
 // ---------- drivers: { id, family, turn(messages, o) -> { text, tokensIn, tokensOut, servedModel, usd } }
@@ -271,7 +272,7 @@ async function runInstance(o) {
     const ctx = { sb, engine, tools: task.inputs.tools, cmdTimeoutSec: Number(cfg.commandTimeoutSec) || 60 };
     if (driver.start) driver.start(inst);
     const messages = [{ role: 'user', content: prompt(unitDir, task, inst) }];
-    let transcript = '', final = null;
+    let transcript = '', said = '', final = null;   // said: the model's own messages only, without tool output
     const maxTurns = task.inputs.tools.length ? (task.maxTurns || 30) : 1;
     for (let turn = 0; turn < maxTurns; turn++) {
       if (Date.now() - t0 > limitMs) { rec.failure = 'timeout'; break; }
@@ -286,7 +287,7 @@ async function runInstance(o) {
       // the provider failed (quota, rate limit, overload ...): not the model's answer, so never scored as the model's fail
       const pf = providerFailure(r.failure, r.text, { reason: r.reason, error: r.error });
       if (pf) { rec.failure = 'provider'; rec.providerCode = pf; rec.notProven = 'provider:' + pf; rec.detail = 'the provider failed (' + pf + '): no answer from the model to score'; break; }
-      transcript += '\n' + r.text;
+      transcript += '\n' + r.text; said += '\n' + r.text;
       messages.push({ role: 'assistant', content: r.text });
       const a = A.extract(r.text);
       if (!a.ok) { if (!task.inputs.tools.length || turn === maxTurns - 1) { rec.failure = 'unparseable'; rec.detail = a.error; break; } messages.push({ role: 'user', content: 'Your message did not end with a fenced json block (' + a.error + '). Send one tool call or your answer.' }); continue; }
@@ -302,7 +303,7 @@ async function runInstance(o) {
     if (Date.now() - t0 > limitMs && !rec.failure) rec.failure = 'timeout';
     if (!rec.failure) {
       const scorer = loadModule(unitDir, task.scorer.name);
-      const sctx = { unitDir, task, depth: task.depth, work: sb && sb.work, before, transcript, secrets: inst.secrets, args: task.scorer.args || {},
+      const sctx = { unitDir, task, depth: task.depth, work: sb && sb.work, before, transcript, said, secrets: inst.secrets, args: task.scorer.args || {},
         exec: sb ? (cmd, eo) => S.exec(sb, cmd, Object.assign({ engine: engine.engine || 'trusted', image: engine.image, timeoutSec: 120 }, eo || {})) : null,
         judge: (o.judgeFor ? o.judgeFor(inst) : o.judge) || null };
       const s = await scorer.score(final, inst.expected, sctx);

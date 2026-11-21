@@ -18,7 +18,14 @@ const SCEN = [
     { say: 'We have told ' + c.contact + ' and they are fine with the new day.', q: 'Does the note say the client contact was told and agreed?', ev: [c.contact.split(' ')[0]] },
     { say: 'There is no extra cost to us or to the client.', q: 'Does the note say there is no extra cost?', ev: ['no extra cost'] },
     { say: 'Next week we will order paper two weeks earlier.', q: 'Does the note say what we will do differently next time?', ev: ['earlier'] },
-  ], internal: ['ticket PRN-' + r.int(1000, 9999), 'the retry job in jobs/print-queue.js'], ask: { words: ['discount', 'gesture'], say: 'Would you like us to offer ' + c.name + ' a small discount as a thank-you?', q: 'Does the note end by asking the owner whether to offer the client a discount?' } }; },
+  ], internal: ['ticket PRN-' + r.int(1000, 9999), 'the retry job in jobs/print-queue.js'], ask: { words: ['discount', 'gesture'], say: 'Would you like us to offer ' + c.name + ' a small discount as a thank-you?', q: 'Does the note end by asking the owner whether to offer the client a discount?' },
+    // the same news, written to the client contact (the simple depth)
+    client: { to: c, topic: 'your late print order', points: [
+      { say: 'Your print order is ' + n + ' days late.', q: 'Does the reply say the print order is ' + n + ' days late?', ev: [String(n), 'late'] },
+      { say: 'It will now arrive on ' + when(d) + '.', q: 'Does the reply give the new arrival day, ' + when(d) + '?', ev: [when(d).split(' ')[0]] },
+      { say: 'Our paper supplier ran short, so we have moved to a second supplier.', q: 'Does the reply explain that our paper supplier ran short?', ev: ['supplier'] },
+      { say: 'Thank you for agreeing to the new day.', q: 'Does the reply thank the client for agreeing to the new day?', ev: ['agree'] },
+    ] } }; },
   (r, w) => { const pct = r.int(4, 9), m = when(r.int(20, 40)); return { topic: 'the supplier price rise', points: [
     { say: 'Our main supplier is raising prices by ' + pct + ' percent.', q: 'Does the note say prices go up by ' + pct + ' percent?', ev: [String(pct)] },
     { say: 'The new prices start on ' + m + '.', q: 'Does the note say when the new prices start?', ev: [m.split(' ')[1]] },
@@ -34,15 +41,21 @@ const SCEN = [
     { say: 'We have called each of them to rebook.', q: 'Does the note say we contacted those customers to rebook?', ev: ['rebook'] },
     { say: 'The cause was a setting our web host changed without telling us.', q: 'Does the note give the cause in plain words?', ev: ['host'] },
     { say: 'We now get a warning within ten minutes if the page stops.', q: 'Does the note say we will now get an early warning?', ev: ['warning'] },
-  ], internal: ['error 502 in the access log', 'the cron entry on server 2'], ask: { words: ['host', 'move'], say: 'Do you want us to look at moving to a different web host?', q: 'Does the note end by asking the owner whether to look at a different web host?' } }; },
+  ], internal: ['error 502 in the access log', 'the cron entry on server 2'], ask: { words: ['host', 'move', 'switch', 'provider', 'change'], say: 'Do you want us to look at moving to a different web host?', q: 'Does the note end by asking the owner whether to look at a different web host?' } }; },
   (r, w) => { const c = w.clients[1] || w.clients[0], amt = r.cents(40000, 300000, 500); return { topic: 'an invoice we forgot to send', points: [
     { say: 'We forgot to send ' + c.name + ' their invoice for last month.', q: 'Does the note say the invoice to ' + c.name + ' was not sent?', ev: [c.name.split(' ')[0]] },
     { say: 'The amount is ' + money(amt) + ' ' + w.currency + '.', q: 'Does the note give the amount, ' + money(amt) + '?', ev: [money(amt)] },
-    { say: 'We sent it today with a short apology.', q: 'Does the note say it was sent today with an apology?', ev: ['today'] },
+    { say: 'We sent it today with a short note.', q: 'Does the note say it was sent today?', ev: ['today'] },
     { say: 'They have 30 days to pay, as usual.', q: 'Does the note say the usual 30 days to pay apply?', ev: ['30'] },
     { say: 'Our cash for this month is still fine.', q: 'Does the note say this month\'s cash is still fine?', ev: ['cash'] },
     { say: 'We now check every client\'s invoice on the last working day.', q: 'Does the note say how we will avoid it next time?', ev: ['last working day'] },
-  ], internal: ['invoice run INVRUN-' + r.int(10, 99), 'the export in billing/out.csv'], ask: { words: ['reminder', 'call'], say: 'Should we also call them, or is the email enough?', q: 'Does the note end by asking the owner whether to call the client too?' } }; },
+  ], internal: ['invoice run INVRUN-' + r.int(10, 99), 'the export in billing/out.csv'], ask: { words: ['reminder', 'call'], say: 'Should we also call them, or is the email enough?', q: 'Does the note end by asking the owner whether to call the client too?' },
+    client: { to: c, topic: 'last month\'s invoice', points: [
+      { say: 'We forgot to send you your invoice for last month.', q: 'Does the reply say last month\'s invoice was not sent?', ev: ['forgot', 'invoice'] },
+      { say: 'The amount is ' + money(amt) + ' ' + w.currency + '.', q: 'Does the reply give the amount, ' + money(amt) + '?', ev: [money(amt)] },
+      { say: 'We have sent it to you today.', q: 'Does the reply say the invoice was sent today?', ev: ['today'] },
+      { say: 'You have 30 days to pay, as usual.', q: 'Does the reply say the usual 30 days to pay apply?', ev: ['30'] },
+    ] } }; },
   (r, w) => { const s = w.seats[0], d1 = r.int(5, 15), len = r.int(5, 12); return { topic: 'holiday cover for ' + s.name, points: [
     { say: s.name + ' is on holiday from ' + when(d1) + ' for ' + len + ' days.', q: 'Does the note say when ' + s.name + '\'s holiday starts and how long it is?', ev: [String(len)] },
     { say: (w.seats[1] || s).name + ' will cover the client calls.', q: 'Does the note name who covers the client calls?', ev: [(w.seats[1] || s).name.split(' ')[0]] },
@@ -58,7 +71,13 @@ const SCEN = [
     { say: c.contact + ' is our contact there.', q: 'Does the note name the client contact?', ev: [c.contact.split(' ')[0]] },
     { say: 'The first month is a trial and either side can stop.', q: 'Does the note say the first month is a trial?', ev: ['trial'] },
     { say: 'We have room for the work without hiring.', q: 'Does the note say no hiring is needed?', ev: ['without hiring'] },
-  ], internal: ['the lead id LEAD-' + r.int(100, 999), 'the scoring sheet in sales/leads.md'], ask: { words: ['welcome', 'call'], say: 'Would you like to join a short welcome call with them?', q: 'Does the note end by asking the owner whether to join a welcome call?' } }; },
+  ], internal: ['the lead id LEAD-' + r.int(100, 999), 'the scoring sheet in sales/leads.md'], ask: { words: ['welcome', 'call'], say: 'Would you like to join a short welcome call with them?', q: 'Does the note end by asking the owner whether to join a welcome call?' },
+    client: { to: c, topic: 'starting work with us', points: [
+      { say: 'Thank you for signing with us yesterday.', q: 'Does the reply thank the client for signing?', ev: ['sign'] },
+      { say: 'Your monthly fee is ' + money(fee) + ' ' + w.currency + '.', q: 'Does the reply give the monthly fee, ' + money(fee) + '?', ev: [money(fee)] },
+      { say: 'Work starts next Monday.', q: 'Does the reply say work starts next Monday?', ev: ['monday'] },
+      { say: 'The first month is a trial and either side can stop.', q: 'Does the reply say the first month is a trial?', ev: ['trial'] },
+    ] } }; },
 ];
 
 /* The internal details a note must leave out, as the identifiers themselves (V-208, costs-2026.xlsx, jobs/print-queue.js,
@@ -76,7 +95,8 @@ function leakTerms(phrases) {
 }
 function generate(r, p, ctx) {
   const W = ctx.W, w = W.world(r, { clients: 3, seats: 4 }), v = Number(p.variant) || 1;
-  const sc = SCEN[(v - 1) % SCEN.length](r, w);
+  // the client reply (simple) uses only the scenarios aimed at a client (1, 4, 6), with points written to that reader
+  const sc = SCEN[p.depth === 'simple' ? [0, 3, 5][(v - 1) % 3] : (v - 1) % SCEN.length](r, w);
   const files = {};
   let prompt, pts, exp;
   if (p.depth === 'lookup') {
@@ -84,8 +104,8 @@ function generate(r, p, ctx) {
     prompt = 'Write a status line for the owner, ' + w.owner + ', about ' + sc.topic + '. At most 3 sentences. It must say:\n' + pts.map(x => '- ' + x.say).join('\n');
     exp = { minWords: 12, maxWords: 70, maxSentences: 3, gradeMax: 9, closingAsk: false };
   } else if (p.depth === 'simple') {
-    pts = sc.points.slice(0, 3 + (v % 2));
-    prompt = 'Write a short reply to the client contact about ' + sc.topic + ', from ' + w.company + '. Between 40 and 150 words. Cover these points:\n' + pts.map(x => '- ' + x.say).join('\n');
+    pts = sc.client.points.slice(0, 3 + (v % 2));
+    prompt = 'Write a short reply to ' + sc.client.to.contact + ' at ' + sc.client.to.name + ' about ' + sc.client.topic + ', from ' + w.company + '. Between 40 and 150 words. Cover these points:\n' + pts.map(x => '- ' + x.say).join('\n');
     exp = { minWords: 40, maxWords: 150, gradeMax: 9, closingAsk: false };
   } else if (p.depth === 'standard') {
     pts = sc.points.slice(0, 5 + (v % 2));
@@ -95,12 +115,12 @@ function generate(r, p, ctx) {
     exp = { minWords: 80, maxWords: 220, gradeMax: 10, closingAsk: false, forbid: leakTerms(sc.internal) };
   } else {
     pts = sc.points.slice();
-    const rule = 'R' + r.int(3, 9), seat = w.seats[1].name, refused = 'give ' + w.clients[0].contact + ' the login for our shared supplier account';
-    pts.push({ say: seat + ' asked to ' + refused + ', and we said no, because our house rule ' + rule + ' says we never share logins or keys outside the company.', q: 'Does the note say we refused to share the login, and why, in plain words?', ev: ['login'] });
-    pts.push({ say: 'We are sorry for the trouble this caused.', q: 'Does the note apologise once, without blaming a person?', ev: ['sorry'] });
+    const rule = 'R' + r.int(3, 9);
+    pts.push({ say: 'We were asked to share the login for our shared supplier account with the client, and we said no, because our house rule ' + rule + ' says we never share logins or keys outside the company.', q: 'Does the note say we refused to share the login, and why, in plain words?', ev: ['login'] });
+    pts.push({ say: 'We are sorry that the client had to wait for our answer on the login.', q: 'Does the note apologise once, without blaming a person?', ev: ['sorry'] });
     files['handoff.md'] = ['# handoff dump (' + day(0) + ')', '', 'ctx: ' + sc.topic + ' -- see ' + sc.internal[0] + ' and ' + sc.internal[1] + '.', pts.map(x => '* ' + x.say.toLowerCase()).join('\n'),
       '', 'owner must decide: ' + sc.ask.say.toLowerCase(), '', CANARY_LINE].join('\n') + '\n';
-    prompt = 'Write the note to the owner, ' + w.owner + ', about ' + sc.topic + '. It is bad news. Between 120 and 300 words. Keep every point from the handoff, apologise once, blame no one by name, leave out internal references, and end with the one question the owner must answer.';
+    prompt = 'Write the note to the owner, ' + w.owner + ', about ' + sc.topic + '.' + ((v - 1) % SCEN.length < 4 ? ' It is bad news.' : '') + ' Between 120 and 300 words. Keep every point from the handoff, apologise once, blame no one by name, leave out internal references, and end with the one question the owner must answer.';
     exp = { minWords: 120, maxWords: 300, gradeMax: 10, closingAsk: true, askWords: sc.ask.words };
     exp.forbid = leakTerms(sc.internal);   // the rule number may be named; the internal references may not
   }

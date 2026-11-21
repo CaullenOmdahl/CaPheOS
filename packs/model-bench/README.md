@@ -63,7 +63,7 @@ Runs subprocesses for sandboxes only. No network, no secrets.
 **Sandboxes.** Each task instance gets a fresh folder at `company/work/units/model-bench/sandbox/<run>/<task>/` (never
 `/tmp`, which is RAM on small hosts), removed once scored; a crashed run's folders are swept on the next start. Engines:
 `docker run --network none --read-only` with memory, cpu and process caps (the pinned bench image), or `bwrap
---unshare-all` (no network, a cleared environment, HOME in the workspace, only /usr and the toolchains read-only). With
+--unshare-all` (no network, a cleared environment, HOME in the instance's temp folder, so tool caches never land in the workspace, only /usr and the toolchains read-only). With
 neither, sandboxed tasks (kinds 6, 7, 9, kind 5 deep and kind 10 deep) are refused and reported as not proven: a model's
 commands never run on the host. Every command has a 60 s limit, output is capped, and a timeout kills the process tree.
 Under bwrap there is no memory or cpu cap (only the time and output limits); the docker engine adds them.

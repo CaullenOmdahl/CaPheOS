@@ -151,7 +151,9 @@ function tree(work) {
 function exec(inst, cmd, o) {
   o = o || {};
   const timeoutMs = Math.max(1, Number(o.timeoutSec) || 60) * 1000, maxOut = Number(o.maxOut) || 65536;
-  const env = Object.assign({ HOME: '/work', PATH: toolPath(), TMPDIR: '/tmp' }, BENCH_GIT_ENV, o.env || {});
+  // HOME is the instance's temp folder, never the workspace: tool caches and telemetry (~/.npm, ~/.dart-tool, ~/.gitconfig)
+  // land outside /work, so running the tests never trips the scope check
+  const env = Object.assign({ HOME: '/tmp', PATH: toolPath(), TMPDIR: '/tmp', DART_SUPPRESS_ANALYTICS: 'true', npm_config_update_notifier: 'false' }, BENCH_GIT_ENV, o.env || {});
   let bin, args, cwd = inst.work, name = null, spawnEnv;
   if (o.engine === 'docker') {
     name = 'model-bench-' + process.pid + '-' + Math.random().toString(16).slice(2, 10);
@@ -173,7 +175,7 @@ function exec(inst, cmd, o) {
   } else if (o.engine === 'trusted') {
     // our own oracle actions and check scripts only (conformance): the workspace path stands in for /work
     bin = '/usr/bin/bash'; args = ['-c', cmd];
-    spawnEnv = Object.assign({}, env, { HOME: inst.work, TMPDIR: inst.tmp, BENCH_WORK: inst.work });
+    spawnEnv = Object.assign({}, env, { HOME: inst.tmp, TMPDIR: inst.tmp, BENCH_WORK: inst.work });
   } else return Promise.resolve({ code: 126, out: 'refused: no sandbox engine', timedOut: false, refused: true });
   return new Promise(resolve => {
     let out = '', size = 0, timedOut = false, done = false;

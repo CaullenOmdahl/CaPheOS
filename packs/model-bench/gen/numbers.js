@@ -8,11 +8,13 @@
 const { CANARY_LINE, money2 } = require('../lib/world');
 const MONTHS = ['January', 'February', 'March'];
 const round2 = x => Math.round(x * 100) / 100;
+// a cell as the table shows it: in thousands with 2 decimals (scale), else in units with 2 decimals
+const cellText = (c, scale) => scale ? (c / 100000).toFixed(2) : money2(c);
 
 function table(w, r, clients, scale) {
   const rows = clients.map(c => ({ client: c.name, m: MONTHS.map(() => r.cents(20000, 900000, 100)) }));
   const head = '| Client | ' + MONTHS.join(' | ') + ' |\n|---|---|---|---|';
-  const body = rows.map(x => '| ' + x.client + ' | ' + x.m.map(c => scale ? (c / 100000).toFixed(2) : money2(c)).join(' | ') + ' |').join('\n');
+  const body = rows.map(x => '| ' + x.client + ' | ' + x.m.map(c => cellText(c, scale)).join(' | ') + ' |').join('\n');
   return { rows, text: head + '\n' + body };
 }
 
@@ -32,7 +34,7 @@ function generate(r, p, ctx) {
     const kind = v % 3;
     if (kind === 0) {
       const credit = r.cents(5000, 30000, 100), val = round2((row.m[0] + row.m[1] + row.m[2] - credit) / 100);
-      return { prompt: 'What did ' + row.client + ' owe us for the whole quarter, after the credit note of ' + money2(credit) + ' ' + cur + ' we gave them in February?', files,
+      return { prompt: 'What is the net amount invoiced to ' + row.client + ' for the whole quarter, less the credit note of ' + money2(credit) + ' ' + cur + ' (net) we gave them in February?', files,
         expected: { value: val, unit: cur, precision: 2 }, oracle: { answer: { value: val, unit: cur } }, bad: { answer: { value: round2((row.m[0] + row.m[1] + row.m[2]) / 100), unit: cur } } };
     }
     if (kind === 1) {
@@ -49,15 +51,15 @@ function generate(r, p, ctx) {
     const t = table(w, r, w.clients, scale), row = t.rows[v % t.rows.length], other = t.rows[(v + 1) % t.rows.length];
     const voided = r.cents(10000, Math.min(row.m[1], 200000), 100), late = r.cents(10000, 300000, 100);
     const unitLine = scale ? '# Q1 invoices by client (net, in thousands of ' + cur + ')' : '# Q1 invoices by client (net, ' + cur + ')';
-    const note = ['# Handoff from the finance lead', '', 'Two things before you report the quarter:',
-      '- One February invoice to ' + row.client + ' for ' + money2(voided) + ' ' + cur + ' was voided after the table was made. Take it out.',
+    const note = ['# Handoff from the finance lead', '', 'A few things before you report the quarter:',
+      '- One February invoice to ' + row.client + ' for ' + money2(voided) + ' ' + cur + ' (net) was voided after the table was made. Take it out.',
       '- ' + other.client + ' has asked for an invoice of ' + money2(late) + ' ' + cur + ' for April. That is next quarter; it is not in this table and does not belong in Q1.',
       '- The coffee machine repair (' + money2(r.cents(5000, 20000, 100)) + ' ' + cur + ') is a cost, not invoicing.'].join('\n') + foot;
-    const total = row.m.reduce((a, x) => a + x, 0);
-    const toUnits = c => scale ? Math.round(c / 100000 * 100) * 1000 : c;   // the table shows thousands with 2 decimals
-    const val = round2((row.m.map(toUnits).reduce((a, x) => a + x, 0) - voided) / 100);
+    // the answer is worked out from the cells exactly as the table shows them (thousands with 2 decimals)
+    const shown = c => Math.round(Number(cellText(c, scale)) * (scale ? 100000 : 100));
+    const val = round2((row.m.map(shown).reduce((a, x) => a + x, 0) - voided) / 100);
     const files = { 'finance/q1-invoices.md': unitLine + '\n\n' + t.text + foot, 'finance/handoff.md': note };
-    const badV = scale ? round2(row.m.map(c => c / 100000).reduce((a, x) => a + x, 0)) : round2(total / 100);
+    const badV = scale ? round2(row.m.map(c => Number(cellText(c, scale))).reduce((a, x) => a + x, 0)) : round2(row.m.map(shown).reduce((a, x) => a + x, 0) / 100);
     return { prompt: 'Read the table and the handoff note. What is the net amount invoiced to ' + row.client + ' for Q1, in ' + cur + '?', files,
       expected: { value: val, unit: cur, precision: 2 }, oracle: { answer: { value: val, unit: cur } }, bad: { answer: { value: badV, unit: cur } } };
   }
@@ -66,11 +68,14 @@ function generate(r, p, ctx) {
   const inv = [];
   for (let i = 0; i < nInv; i++) inv.push({ id: 'INV-' + (10000 + i * 3 + r.int(0, 2)), date: '2026-0' + r.int(1, 3) + '-' + String(r.int(1, 28)).padStart(2, '0'), client: r.pick(clientsRef), net: r.cents(5000, 250000, 100), paid: r.chance(0.85) });
   const planted = [];
-  const pickInv = () => { for (;;) { const x = r.pick(inv); if (!x.flag && x.paid) { return x; } } };
+  const pickInv = ok => { for (;;) { const x = r.pick(inv); if (!x.flag && x.paid && (!ok || ok(x))) { return x; } } };
+  // the transposed amount: the first pair of neighbouring digits that differ swapped (never a leading zero); null when the
+  // gross has no such pair (300000), so a transposed error is only planted where it shows in the bank file
+  const transpose = gross => { const s = String(gross); for (let i = 0; i < s.length - 1; i++) if (s[i] !== s[i + 1] && !(i === 0 && s[1] === '0')) return Number(s.slice(0, i) + s[i + 1] + s[i] + s.slice(i + 2)); return null; };
   const nEach = 1 + (v % 2);
   for (let k = 0; k < nEach; k++) { const x = pickInv(); x.flag = 'duplicate'; planted.push({ ref: x.id, type: 'duplicate' }); }
   for (let k = 0; k < nEach; k++) { const x = pickInv(); x.flag = 'vat'; planted.push({ ref: x.id, type: 'vat' }); }
-  for (let k = 0; k < nEach; k++) { const x = pickInv(); x.flag = 'transposed'; planted.push({ ref: x.id, type: 'transposed' }); }
+  for (let k = 0; k < nEach; k++) { const x = pickInv(y => transpose(Math.round(y.net * 1.2)) !== null); x.flag = 'transposed'; planted.push({ ref: x.id, type: 'transposed' }); }
   for (let k = 0; k < nEach; k++) { const x = pickInv(); x.flag = 'period'; planted.push({ ref: x.id, type: 'period' }); }
   // the flags are set on inv itself, so the rows below are written from the flagged invoices (the errors reach the files)
   const missing = []; for (let k = 0; k < nEach; k++) { const id = 'INV-' + (20000 + r.int(0, 9999)); missing.push({ id, amount: r.cents(5000, 200000, 100) }); planted.push({ ref: id, type: 'missing' }); }
@@ -83,7 +88,7 @@ function generate(r, p, ctx) {
     if (x.flag === 'duplicate') lrows.push([x.id, date, x.client, money2(bookedNet)]);
     if (x.paid && x.flag !== 'period') {
       let gross = Math.round(x.net * 1.2);
-      if (x.flag === 'transposed') { const s = String(gross); let t = s; for (let i = 0; i < s.length - 1 && t === s; i++) if (s[i] !== s[i + 1] && !(i === 0 && s[1] === '0')) t = s.slice(0, i) + s[i + 1] + s[i] + s.slice(i + 2); gross = Number(t); }
+      if (x.flag === 'transposed') { gross = transpose(gross); if (gross === Math.round(x.net * 1.2)) throw new Error('a transposed amount equals the right gross'); }
       brows.push([x.date.slice(0, 8) + String(Math.min(28, Number(x.date.slice(8)) + r.int(0, 10))).padStart(2, '0'), x.id, money2(gross)]);
     }
   }
@@ -98,7 +103,7 @@ function generate(r, p, ctx) {
     'finance/README.md': '# How our books work\n\n- The ledger lists each invoice once, by its date, at its NET amount (before VAT).\n- Clients pay the net amount plus 20% VAT; the bank export shows what arrived (gross), with the invoice number as the reference.\n- Q1 is 1 January to 31 March 2026.' + foot,
   };
   const prompt = ['Reconcile Q1. Using finance/ledger-q1.csv and finance/bank-q1.csv (see finance/README.md):',
-    '1. q1_net_invoiced: the true net amount invoiced in Q1: each invoice counted once, at its correct net amount, only invoices dated in Q1.',
+    '1. q1_net_invoiced: the sum of the net amounts of the invoices that the ledger dates between 1 January and 31 March 2026, each invoice counted once, with any row booked gross corrected to net (booked / 1.2). Leave out invoices the ledger dates outside Q1 and bank payments that have no ledger invoice.',
     '2. q1_received: the total of all payments in the bank export.',
     '3. discrepancies: every problem, each as {"ref": <invoice number>, "type": ...} where type is one of:',
     '   duplicate (the ledger lists the invoice twice), vat (the ledger booked the gross amount as net: the bank amount equals the booked amount),',

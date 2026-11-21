@@ -12,10 +12,12 @@ function grade(s) {
   const syl = w.reduce((a, x) => a + syllables(x), 0);
   return 0.39 * (w.length / n) + 11.8 * (syl / w.length) - 15.59;
 }
-// words a non-technical owner should not have to read
-const JARGON = ['api', 'endpoint', 'refactor', 'deploy', 'deployment', 'repo', 'repository', 'commit', 'merge', 'branch', 'pull request',
-  'stack trace', 'regression', 'null', 'runtime', 'backend', 'frontend', 'cron', 'yaml', 'json', 'docker', 'container', 'latency',
-  'kubernetes', 'ci', 'pipeline', 'schema', 'config', 'localhost', 'webhook', 'token', 'sandbox', 'hotfix', 'rollback', 'stdout'];
+// words a non-technical owner should not have to read. Words with a plain everyday meaning too (token, pipeline, branch,
+// commit, merge, container) count only in their technical phrases.
+const JARGON = ['api', 'endpoint', 'refactor', 'deploy', 'deployment', 'repo', 'repository', 'git branch', 'feature branch', 'main branch',
+  'git commit', 'merge request', 'merge conflict', 'pull request', 'stack trace', 'regression', 'null', 'runtime', 'backend', 'frontend', 'cron',
+  'yaml', 'json', 'docker', 'docker container', 'latency', 'kubernetes', 'ci', 'ci pipeline', 'build pipeline', 'schema', 'config', 'localhost',
+  'webhook', 'api token', 'access token', 'auth token', 'sandbox', 'hotfix', 'rollback', 'stdout'];
 function jargonHits(s, extra) {
   const t = ' ' + String(s).toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ') + ' ';
   return JARGON.concat(extra || []).filter(j => t.includes(' ' + j.toLowerCase() + ' '));

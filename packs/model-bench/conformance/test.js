@@ -9,7 +9,12 @@
  *      runner with a stub model (the oracle, then the known-bad answer; generated kinds on two seeds), exec tasks with our
  *      own oracle actions in the trusted engine; an unparseable answer counts as an outright failure;
  *   4b. the expected answer follows from the generated files (conformance/derive.js: kinds 1, 2, 3, 5 and 9 re-derived by
- *      code written apart from the generators), so a generator whose files and expected value disagree is caught;
+ *      code written apart from the generators), so a generator whose files and expected value disagree is caught; a kind 1
+ *      answer must be stated of the asked entity in the question's own terms;
+ *   4c. a careful worker still passes: the oracle plus what a careful model also does (run the visible tests, the suite,
+ *      npm test and lint, set a git identity, read every file including secrets/) passes on every exec task;
+ *   4d. the rendered prompt carries the task text verbatim (no replacement pattern in it is expanded), and every planted
+ *      kind 8 defect is found again at one place (its planted text with context occurs once);
  *   5. every kind 6, 7 and 8 planted bug fails its test with the bug in place and passes without it;
  *   5b. a symlink planted in the workspace never carries a host-side write, read or hidden test outside it;
  *   6. a sandboxed task is refused, never run, when there is no sandbox engine;
@@ -97,7 +102,7 @@ const has = bin => spawnSync('bash', ['-c', 'command -v ' + bin], { stdio: 'igno
     for (const x of a.bad.concat(b.bad)) problems.push((mode === 'oracle' ? 'the oracle answer fails: ' : 'the known-bad answer passes: ') + x);
     if (mode === 'oracle') {
       const res = a.result;
-      if (res.schema !== 'model-bench/1' || !res.kinds['1'] || !res.kinds['1'].levels.lookup || res.kinds['1'].levels.lookup.taskVersions['k1-lookup-01'] !== 1) problems.push('the result does not follow the output contract');
+      if (res.schema !== 'model-bench/1' || !res.kinds['1'] || !res.kinds['1'].levels.lookup || res.kinds['1'].levels.lookup.taskVersions['k1-lookup-01'] !== 2) problems.push('the result does not follow the output contract');
     }
   }
   const garbage = await B.run({ unitDir: UNIT, root, model: 'stub/garbage', driver: B.stubDriver('garbage'), allowTrusted: true, kinds: [2], depth: 'lookup' });
@@ -105,6 +110,34 @@ const has = bin => spawnSync('bash', ['-c', 'command -v ' + bin], { stdio: 'igno
 
   // 4b. the expected answers follow from the files the model is given (re-derived apart from the generators, on 4 seeds)
   for (const x of await require('./derive').derive(UNIT, tasks, [0, 1, 2, 3])) problems.push('expected does not match the files: ' + x);
+
+  // 4c. a careful worker: the oracle's actions, then the checks a careful model runs too, then the oracle's answer
+  {
+    const extras = inst => {
+      const e = inst.expected || {}, acts = [];
+      if (inst.secrets && e.secretsIn === 'said') for (const f of Object.keys(inst.files).filter(f => f.startsWith('secrets/'))) acts.push({ tool: 'read', path: f });
+      const cmds = [].concat(e.suiteCmds || [], e.lintCmds || []);
+      for (const f of Object.keys(inst.files)) if (/(^|\/)test\/[^/]+(_test\.dart|\.test\.js)$/.test(f)) cmds.push(/\.dart$/.test(f) ? 'dart run ' + f : 'node ' + f);
+      if (cmds.some(c => /^dart /.test(c)) || Object.keys(inst.files).some(f => /\.dart$/.test(f))) cmds.push('dart analyze lib');
+      cmds.push('npm test', 'npm run lint', 'git config --global user.name "Careful Worker"');
+      acts.push({ tool: 'shell', cmd: cmds.map(c => '{ ' + c + '; } >/dev/null 2>&1').join('; ') + '; true' });
+      return acts;
+    };
+    const careful = { id: 'stub/careful', family: 'stub', stub: true,
+      start(inst) { this.plan = (inst.oracle.actions || []).concat(extras(inst)); this.answer = inst.oracle.answer || {}; this.step = 0; },
+      async turn() { const A_ = require('../lib/answer'); if (this.step < this.plan.length) return { text: 'Next.\n' + A_.fence(this.plan[this.step++]), tokensIn: 0, tokensOut: 1 }; return { text: A_.fence(this.answer), tokensIn: 0, tokensOut: 1 }; } };
+    // MODEL_BENCH_QUICK: one task per kind and toolchain (the caches differ by toolchain, not by task)
+    const tool = t => t.kind === 6 ? C6.CASES.find(c => c.id === t.params.case).lang : t.kind === 7 ? F.TASKS.find(x => x.id === t.params.case).repo : t.depth;
+    const seenT = new Set();
+    const execTasks = live.filter(t => t.sandbox === 'exec' && t.kind !== 5).filter(t => { if (!process.env.MODEL_BENCH_QUICK || t.kind === 10) return true; const k = t.kind + ':' + tool(t); if (seenT.has(k)) return false; seenT.add(k); return true; });
+    const bad = [];
+    await B.run({ unitDir: UNIT, root, model: 'stub/careful', driver: careful, allowTrusted: true, kinds: [6, 7, 9, 10], repeat: 1, only: execTasks,
+      onInstance: rec => { if (!rec.pass) bad.push(rec.task + ' (seed ' + rec.seed + '): ' + (rec.failure || '') + ' ' + String(rec.detail || '').slice(0, 200)); } });
+    for (const x of bad) problems.push('a careful worker fails: ' + x);
+  }
+  // 4d. the prompt carries the task text verbatim; every planted kind 8 defect is located at one place
+  for (const t of tasks) { const inst = B.instantiate(UNIT, t, 0); if (!B.prompt(UNIT, t, inst).includes(inst.prompt.trim())) problems.push(t.id + ': the rendered prompt does not carry the task text verbatim'); }
+  for (const spec of K8.TASKS) for (const b of R.build(UNIT, spec).bugs) if (b.unique === false) problems.push('k8 ' + spec.id + ': the planted defect in ' + b.file + ' cannot be told apart from the same text elsewhere in the file');
 
   // 5. planted bugs: each fails its test with the bug in place and passes without it
   const exec = async (files, cmds, setup) => {

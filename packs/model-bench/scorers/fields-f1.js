@@ -5,7 +5,8 @@ const A = require('../lib/answer');
 const normV = (v, type) => {
   if (v == null || v === '') return null;
   if (type === 'date') return A.isoDate(v) || A.norm(v);
-  if (type === 'money' || type === 'int' || type === 'number') { const n = A.num(v); return Number.isNaN(n) ? A.norm(v) : String(Math.round(n * 100) / 100); }
+  // a count or a percentage copied with its unit ("60 days", "1.5%", "18 months") is the same number
+  if (type === 'money' || type === 'int' || type === 'number') { const n = A.num(String(v).trim().replace(/\s*(?:%|percent|days?|months?)$/i, '')); return Number.isNaN(n) ? A.norm(v) : String(Math.round(n * 100) / 100); }
   return A.norm(v);
 };
 const squash = s => A.norm(s).replace(/[^a-z0-9%]+/g, ' ').trim();

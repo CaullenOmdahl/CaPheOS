@@ -27,7 +27,8 @@ function generate(r, p, ctx) {
     else if (kind === 2) { const last = 'S' + (n + 1); order.push(last); work.push(['Send the owner the summary', 'writing']); deps[last] = order.slice(0, n).filter(s => !order.some(t => (deps[t] || []).includes(s))); q = 'Which step can only be done last?'; answer = last; }
     else { const x = order[n - 1]; const anc = new Set(); const walk = s => { for (const d of deps[s]) if (!anc.has(d)) { anc.add(d); walk(d); } }; walk(x); q = 'How many other steps must be finished before ' + x + ' can start?'; answer = String(anc.size); }
     const list = [...order].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1))).map(s => s + ': ' + work[order.indexOf(s)][0] + (deps[s].length ? ' (needs ' + deps[s].join(', ') + ' done first)' : ''));
-    return { prompt: 'To ' + goal + ', the crew has these steps:\n' + list.join('\n') + '\n\n' + q + ' Answer with the step id, or the number.', files: {}, expected: { mode: 'probe', answer },
+    const how = kind === 0 ? 'Answer with a number, as {"answer": "2"}.' : 'Answer with the step id, like S3, as {"answer": "S3"}.';
+    return { prompt: 'To ' + goal + ', the crew has these steps:\n' + list.join('\n') + '\n\n' + q + ' ' + how, files: {}, expected: { mode: 'probe', answer },
       oracle: { answer: { answer } }, bad: { answer: { answer: kind === 0 ? String(Number(answer) + 1) : order[1] } } };
   }
   if (p.depth === 'simple') {
@@ -37,7 +38,7 @@ function generate(r, p, ctx) {
     const list = [...order].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1))).map(s => s + ': ' + work[order.indexOf(s)][0]);
     const sorted = [...order].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
     const badOrder = sorted.slice(); const [a, b] = rules[0]; const ia = badOrder.indexOf(a), ib = badOrder.indexOf(b); if (ia < ib) { badOrder[ia] = b; badOrder[ib] = a; }
-    return { prompt: 'To ' + goal + ', put every step below in an order the crew can follow. Rules:\n' + rules.map(x => '- ' + x[0] + ' must be done before ' + x[1] + '.').join('\n') + '\n\nSteps:\n' + list.join('\n'),
+    return { prompt: 'To ' + goal + ', put every step below in an order the crew can follow. Rules:\n' + rules.map(x => '- ' + x[0] + ' must be done before ' + x[1] + '.').join('\n') + '\n\nSteps:\n' + list.join('\n') + '\n\nAnswer with every step id once, in order, as {"steps": ["S2", "S1", ...]}.',
       files: {}, expected: { mode: 'order', required: sorted, before: rules }, oracle: { answer: { steps: topo(sorted, rules) } }, bad: { answer: { steps: badOrder } } };
   }
   // standard and deep: a schedule
@@ -85,7 +86,7 @@ function generate(r, p, ctx) {
     ((withGate ? s.after : s.after.filter(a => a !== gate.id)).length ? ', after ' + (withGate ? s.after : s.after.filter(a => a !== gate.id)).join(', ') : '') + (s.buys && !withGate ? ' (buys something)' : '');
   const seatLine = s => s.id + ' (' + s.name + '): does ' + s.skills.join(', ') + '; free on days ' + compress(s.days) + (s.dayRate ? '; costs ' + s.dayRate + ' ' + w.currency + ' a day' : '');
   const bad = plan.map(x => Object.assign({}, x)); { const k = bad.findIndex(x => steps.find(s => s.id === x.step).after.length); const i = k >= 0 ? k : 1; bad[i].day = 1; }
-  const answerHelp = 'Give every step with the seat that does it and the day it starts (day 1 is the first day). A step of several days runs on consecutive days, and a seat does one step at a time.';
+  const answerHelp = 'Give every step with the seat that does it and the day it starts (day 1 is the first day), as {"plan": [{"step": "S1", "seat": "seat-...", "day": 1}, ...]}. A step of several days runs on consecutive days, and a seat does one step at a time.';
   if (!deep) {
     const prompt = 'Plan the work to ' + goal + '. ' + answerHelp + '\n\nSteps:\n' + steps.map(s => stepLine(s, true)).join('\n') + '\n\nSeats:\n' + seats.map(seatLine).join('\n') +
       '\n\nEverything must be finished by the end of day ' + deadline + '. The total cost of contractor days may not be more than ' + budget + ' ' + w.currency + '.';
