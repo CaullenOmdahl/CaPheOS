@@ -128,18 +128,22 @@ function order(reg, ranking, o) {
 function nextUtcMidnight(t) { const d = new Date(t); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1); }
 function startUtcDay(t) { const d = new Date(t); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); }
 const flat = runs => Array.isArray(runs) ? runs : Object.values(runs || {}).reduce((a, x) => a.concat(x || []), []);
+// a run row's time: run-log rows carry startedAt/endedAt; older or synthetic rows carry at
+const tOf = r => Number(r && (r.at != null ? r.at : (r.endedAt != null ? r.endedAt : r.startedAt))) || 0;
+// the account's free daily cap shows as OpenRouter's daily-limit message, or as the station's quota code with no text
+const DAILY_CODES = ['free_daily_limit', 'quota_exhausted'];
 function dailyLimitUntil(runs, now) {
   const day = startUtcDay(now);
-  const hit = flat(runs).some(r => r && r.provider === PROVIDER && Number(r.at) >= day && (DAILY_RE.test(String(r.error || '')) || r.failureCode === 'free_daily_limit'));
+  const hit = flat(runs).some(r => r && r.provider === PROVIDER && tOf(r) >= day && (DAILY_RE.test(String(r.error || '')) || DAILY_CODES.includes(String(r.failureCode || ''))));
   return hit ? nextUtcMidnight(now) : 0;
 }
 function providerErr(r) { return !!r && r.reason === 'error' && (PROVIDER_CODES.includes(String(r.failureCode || '')) || PROVIDER_ERR_RE.test(String(r.error || ''))); }
 
 /* the newest run on one free id, when it was a provider error within coolMin minutes (any seat), else null */
 function coolingRun(runs, id, now, coolMin) {
-  const mine = flat(runs).filter(r => r && r.provider === PROVIDER && r.model === id).sort((x, y) => (Number(x.at) || 0) - (Number(y.at) || 0));
+  const mine = flat(runs).filter(r => r && r.provider === PROVIDER && r.model === id).sort((x, y) => tOf(x) - tOf(y));
   const last = mine[mine.length - 1];
-  return last && providerErr(last) && now - Number(last.at) < coolMin * 60e3 ? last : null;
+  return last && providerErr(last) && now - tOf(last) < coolMin * 60e3 ? last : null;
 }
 function resolve(a) {
   a = a || {};
@@ -180,4 +184,4 @@ function writePick(root, pick, now) {
   try { fs.mkdirSync(path.dirname(f), { recursive: true }); const tmp = f + '.tmp-' + process.pid; fs.writeFileSync(tmp, JSON.stringify(doc, null, 1) + '\n'); fs.renameSync(tmp, f); return true; } catch (_) { return false; }
 }
 
-module.exports = { coolingRun, PROVIDER, ALIAS, REG_REL, PICK_REL, writePick, DEFAULTS, DAILY_RE, isAlias, settings, aliasAllowed, load, fresh, isFreeRow, isFreeId, isFreePair, allowedPair, defaultOrder, order, resolve, dailyLimitUntil, nextUtcMidnight };
+module.exports = { tOf, coolingRun, PROVIDER, ALIAS, REG_REL, PICK_REL, writePick, DEFAULTS, DAILY_RE, isAlias, settings, aliasAllowed, load, fresh, isFreeRow, isFreeId, isFreePair, allowedPair, defaultOrder, order, resolve, dailyLimitUntil, nextUtcMidnight };

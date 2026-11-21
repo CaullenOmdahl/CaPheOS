@@ -248,7 +248,7 @@ function makeModels(o) {
       const until = FM.dailyLimitUntil(ctx.runs, t);
       if (until) return { ok: false, why: 'OpenRouter\'s daily free-model limit was reached today; open again at ' + new Date(until).toISOString().slice(0, 16) + ' UTC', free: true };
       const last = FM.coolingRun(ctx.runs, e.model, t, FM.settings(pol).coolMin);
-      if (last) return { ok: false, why: 'free model ' + e.model + ' had a provider error ' + Math.round((t - Number(last.at)) / 60e3) + ' min ago (' + String(last.failureCode || last.error || 'error').slice(0, 80) + ')', free: true };
+      if (last) return { ok: false, why: 'free model ' + e.model + ' had a provider error ' + Math.round((t - FM.tOf(last)) / 60e3) + ' min ago (' + String(last.failureCode || last.error || 'error').slice(0, 80) + ')', free: true };
     }
     // a refusal block (the pacer's record, lib/refusal.js): this seat's run on this provider was refused and the block is
     // still on, so the entry cannot run for this seat until it ends; the seat runs on its next entry meanwhile
