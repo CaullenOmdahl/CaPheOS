@@ -72,11 +72,14 @@ function chatReply(x) {
 }
 
 /* one lesson: our record (task, teacher, student, score) plus the same as chat messages with a reward, the shape most
-   learning servers take. Assumed; see the doc. */
+   learning servers take. The assistant message is the right answer in the shape the bench prompt asks for (teacher.target:
+   a fenced json block), so the example teaches the answer and the format; the teacher's prose stays only as context
+   (teacher.answer). Assumed; see the doc. */
 function trajectoryBody(lesson) {
   const L = lesson || {};
+  const T = L.teacher || {};
   return { trajectories: [Object.assign({}, L, {
-    messages: [{ role: 'user', content: String((L.task && L.task.prompt) || '') }, { role: 'assistant', content: String((L.teacher && L.teacher.answer) || '') }],
+    messages: [{ role: 'user', content: String((L.task && L.task.prompt) || '') }, { role: 'assistant', content: String(T.target || T.answer || '') }],
     reward: Number(L.score) || 0,
   })] };
 }
@@ -102,4 +105,4 @@ function decisionBody(o) {
 }
 const refusedSelfApproval = status => status === 403;
 
-module.exports = { paths, modelId, candidateModel, chatBody, chatReply, trajectoryBody, studyBody, studyReply, unitsReply, decisionBody, refusedSelfApproval, FORBIDDEN, SAFE_ID };
+module.exports = { CANDIDATE, LIVE, paths, modelId, candidateModel, chatBody, chatReply, trajectoryBody, studyBody, studyReply, unitsReply, decisionBody, refusedSelfApproval, FORBIDDEN, SAFE_ID };

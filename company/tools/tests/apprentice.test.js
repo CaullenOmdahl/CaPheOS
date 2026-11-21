@@ -224,3 +224,108 @@ test('off by default: the shipped defaults never turn it on, and due() is false 
   assert.equal(d.baseUrl, null); assert.ok(!('enabled' in d) || d.enabled === false);
   assert.deepEqual(d.routable, { 'apprentice/*': false });
 });
+
+test('lessons: delegated items are skipped; a scope skip is looked at again when the shadow scope changes', () => {
+  const base = { excluded: false, settled: true, oneShot: 1, hard: true, runId: 'r', verdicts: [] };
+  const items = [Object.assign({}, base, { key: 'del', delegated: true }), Object.assign({}, base, { key: 'oos' }), Object.assign({}, base, { key: 'scored' })];
+  const done = { oos: { at: 1, outcome: 'kind-out-of-scope', scope: 'A' }, scored: { at: 1, outcome: 'scored', scope: 'A' } };
+  assert.deepEqual(L.eligible(items, CFG, done, 'A').take.map(i => i.key), []);
+  assert.equal(L.eligible(items, CFG, done, 'A').skipped.delegated, 1);
+  assert.deepEqual(L.eligible(items, CFG, done, 'B').take.map(i => i.key), ['oos'], 'a new scope re-opens the scope skip, never a scored item');
+  assert.deepEqual(L.teacherRuns({ runId: 'r1', ownRuns: ['r1', 'r2'], lastRunId: 'r2' }), { teacherRunId: 'r2', runIds: ['r1', 'r2'] });
+  assert.deepEqual(L.teacherRuns({ runId: 'r1' }), { teacherRunId: 'r1', runIds: ['r1'] });
+});
+
+test('lessons: with several runs the teacher is the last run\'s answer and the reads come from all of them', () => {
+  const tc = (id, args) => JSON.stringify([{ id, function: { name: 'fs_read', arguments: JSON.stringify(args) } }]);
+  const rows = [
+    { role: 'assistant', sourceRunId: 'r1', ts: 1, content: '', toolCalls: tc('a', { path: 'a.md' }) },
+    { role: 'tool', sourceRunId: 'r1', ts: 2, toolCallId: 'a', content: 'Client: Northwind Ltd' },
+    { role: 'assistant', sourceRunId: 'r1', ts: 3, content: 'Halfway. **Client:** unknown yet' },
+    { role: 'assistant', sourceRunId: 'r2', ts: 4, content: '**Client:** Northwind Ltd' },
+  ];
+  const r = L.teacherAndReads(rows, ['r1', 'r2'], CFG, 'r2');
+  assert.equal(r.teacher, '**Client:** Northwind Ltd');
+  assert.deepEqual(Object.keys(r.files), ['a.md']);
+});
+
+test('lessons: covered segments with no row of the run yet wait (written late), then none after maxWaitDays', () => {
+  const root = life.tmpDir('apprentice-tr2-');
+  const dir = path.join(root, '.starnet-data', 'workspaces', 'transcript-history-v2'); fs.mkdirSync(dir, { recursive: true });
+  const run = { runId: 'run-9', startedAt: 1000, endedAt: 5000 };
+  fs.writeFileSync(path.join(dir, 'segment-000001.index.json'), JSON.stringify({ minTs: 0, maxTs: 9000, streams: {} }));
+  fs.writeFileSync(path.join(dir, 'segment-000001.jsonl'), JSON.stringify({ role: 'assistant', sourceRunId: 'other', ts: 1100, content: 'x' }) + '\n');
+  assert.equal(L.transcript(root, run, CFG, 6000).state, 'waiting');
+  assert.equal(L.transcript(root, run, CFG, 5000 + 4 * 864e5).state, 'none');
+});
+
+test('lessons: only facts whose value is in what the run read are kept; denied paths are never read', () => {
+  const g = L.grounded([{ label: 'Client', value: 'Northwind Ltd' }, { label: 'Total', value: '1,200 EUR' }, { label: 'Blocked', value: 'five items, none on me' }, { label: 'N', value: '3' }],
+    { 'a.md': 'client **Northwind** Ltd owes 1200 EUR across 13 lines' });
+  assert.deepEqual(g.keep.map(f => f.label), ['Client', 'Total']);
+  assert.deepEqual(g.dropped.map(f => f.label), ['Blocked', 'N'], 'a status line and a digit inside another number are not grounded');
+  const deny = L.denier();
+  for (const p of ['secrets/slaingi-key', '.env', 'app/.env.local', 'certs/server.pem', '/home/u/.ssh/id_ed25519', '$ cat secrets/x', '$ grep -r token .env']) assert.equal(deny(p), true, p);
+  for (const p of ['clients/northwind.md', '$ grep -n rate notes/b.md', 'src/env.js']) assert.equal(deny(p), false, p);
+});
+
+test('lessons: the lesson target is the right answer in the bench answer shape', () => {
+  const fs_ = [{ label: 'Client', value: 'Northwind Ltd' }, { label: 'Total', value: '1,200.50 EUR' }];
+  const parse = t => JSON.parse(t.replace(/^```json\n|\n```$/g, ''));
+  assert.deepEqual(parse(L.target(1, L.toExpected(1, fs_).expected)), { answers: [{ id: 'q1', value: 'Northwind Ltd' }, { id: 'q2', value: '1,200.50 EUR' }] });
+  assert.deepEqual(parse(L.target(5, L.toExpected(5, fs_).expected)), { values: { total: 1200.5 }, unit: 'EUR' });
+  const body = A.trajectoryBody({ task: { prompt: 'P' }, teacher: { answer: 'prose', target: '```json\n{}\n```' } });
+  assert.equal(body.trajectories[0].messages[1].content, '```json\n{}\n```');
+});
+
+test('promote gate: a server fault in either bench decides nothing', () => {
+  const res = (p, f) => ({ kinds: { 1: { levels: { lookup: { passed: p, instances: 12, failures: Object.assign({ timeout: 0, unparseable: 0, crash: 0, refused: 0, sandbox: 0 }, f || {}) } } } } });
+  const g = AP.promoteGate(res(0, { crash: 12 }), res(1), 0);
+  assert.equal(g.promote, false); assert.equal(g.incomplete, true);
+  assert.equal(AP.promoteGate(res(5), res(9, { timeout: 1 }), 0).incomplete, true);
+  assert.equal(AP.promoteGate(res(5, { unparseable: 3 }), res(9), 0).promote, true, 'an unparseable answer is the model\'s fault, not the server\'s');
+});
+
+test('client: a hard total deadline cuts off a server that trickles bytes; an HTTP error keeps only its status', async () => {
+  const root = life.tmpDir('apprentice-client-');
+  const st = await stub((req, res) => {
+    if (req.url === '/healthz') { res.writeHead(200, { 'Content-Type': 'application/json' }); const t = setInterval(() => res.write(' '), 200); res.on('close', () => clearInterval(t)); return; }
+    res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'SERVER-WORDS here' }));
+  });
+  try {
+    const c = C.makeClient({ root, cfg: { baseUrl: st.url, namespace: 'ns', tenant: 't', requestTimeoutSec: 1 } });
+    const t0 = Date.now();
+    await assert.rejects(() => c.health(), /timed out/);
+    assert.ok(Date.now() - t0 < 2500, 'cut at the deadline, not kept alive by the trickle');
+    const t1 = Date.now();
+    await assert.rejects(() => c.units({ deadline: Date.now() - 1 }), /deadline has passed/);
+    assert.ok(Date.now() - t1 < 500);
+    await assert.rejects(() => c.chat('ns/t', [{ role: 'user', content: 'x' }]), e => /HTTP 500$/.test(e.message) && !/SERVER-WORDS/.test(e.message));
+  } finally { st.s.closeAllConnections && st.s.closeAllConnections(); st.s.close(); }
+});
+
+test('lock: a live apprentice holder in budget is never taken over; past its budget it is ended; an ended holder\'s lock is free', async () => {
+  const { spawn } = require('child_process');
+  const root = life.tmpDir('apprentice-lock-');
+  const f = path.join(root, 'company', 'state', 'apprentice', 'lock'); fs.mkdirSync(path.dirname(f), { recursive: true });
+  const kid = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)', 'apprentice.js'], { stdio: 'ignore' });
+  const gone = new Promise(r => kid.on('exit', r));
+  try {
+    fs.writeFileSync(f, JSON.stringify({ pid: kid.pid, until: Date.now() + 60e3, token: 'x' }));
+    assert.equal(AP.lockState(root).state, 'held');
+    assert.equal(AP.takeLock(root, 1000), null, 'a live holder in budget keeps its lock');
+    if (fs.existsSync('/proc/' + kid.pid + '/cmdline')) {
+      // a live process that is not an apprentice pass (the pid was reused) does not hold it
+      fs.writeFileSync(f, JSON.stringify({ pid: process.pid, until: Date.now() + 60e3, token: 'z' }));
+      assert.equal(AP.lockState(root).state, 'free');
+      fs.writeFileSync(f, JSON.stringify({ pid: kid.pid, until: Date.now() - 3600e3, token: 'x' }));
+      assert.equal(AP.lockState(root).state, 'overdue');
+      const rel = AP.takeLock(root, 1000);
+      assert.ok(rel, 'an overdue pass is ended and its lock taken');
+      await gone; rel();
+    }
+  } finally { try { kid.kill('SIGKILL'); } catch (_) {} }
+  fs.writeFileSync(f, JSON.stringify({ pid: 2 ** 22 + 12345, until: Date.now() + 60e3, token: 'y' }));
+  assert.equal(AP.lockState(root).state, 'free');
+  const rel = AP.takeLock(root, 1000); assert.ok(rel); assert.equal(AP.lockState(root).state, 'held'); rel(); assert.equal(fs.existsSync(f), false);
+});

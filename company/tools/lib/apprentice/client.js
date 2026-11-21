@@ -13,7 +13,9 @@
  * Every request body goes through the outbound secret scrub (lib/outbound-scrub.js with lib/secret-patterns.json and the
  * values in <root>/secrets/), rebuilt when the secrets folder changes. When the scrub throws, nothing is sent. Every
  * reply text is scrubbed too. Only the configured host is ever contacted: no redirects are followed, a reply over
- * maxResponseBytes is cut off and refused, each request has a timeout. The key goes only in the Authorization header.
+ * maxResponseBytes is cut off and refused. Each request has a hard total deadline (requestTimeoutSec, and never past the
+ * caller's pass deadline): a server that trickles a byte now and then is cut off at it, not only an idle one. The key
+ * goes only in the Authorization header. An HTTP error is reported by its status alone: the server's words are not kept.
  */
 const path = require('path');
 const http = require('http');
@@ -49,7 +51,10 @@ function makeClient(o) {
 
   function request(method, rel, body, ro) {
     ro = ro || {};
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve0, reject0) => {
+      let timer = null, settled = false;
+      const done = f => x => { if (settled) return; settled = true; if (timer) clearTimeout(timer); f(x); };
+      const resolve = done(resolve0), reject = done(reject0);
       let payload = null;
       if (body !== undefined) {
         try { const counts = {}; const clean = scrub().body(body, counts); stats.redacted += S.total(counts); payload = JSON.stringify(clean); }
@@ -74,8 +79,13 @@ function makeClient(o) {
         });
         res.on('error', reject);
       });
-      req.setTimeout(Math.max(1000, Math.min(timeoutMs, Number(ro.timeoutMs) || timeoutMs)), () => req.destroy(new Error('apprentice request timed out')));
       req.on('error', e => reject(new Error(String(e.message || e).slice(0, 200))));
+      // the hard total deadline: from now, never past the pass deadline (ro.deadline, epoch ms)
+      let ms = Math.min(timeoutMs, Number(ro.timeoutMs) || timeoutMs);
+      if (Number(ro.deadline) > 0) ms = Math.min(ms, Number(ro.deadline) - Date.now());
+      if (!(ms > 0)) { req.destroy(); reject(new Error('apprentice request not sent: the pass deadline has passed')); return; }
+      timer = setTimeout(() => { req.destroy(); reject(new Error('apprentice request timed out')); }, Math.max(250, ms));
+      req.setTimeout(Math.max(250, ms), () => req.destroy(new Error('apprentice request timed out')));
       if (payload != null) req.write(payload);
       req.end();
     });
@@ -84,23 +94,24 @@ function makeClient(o) {
   async function chat(model, messages, co) {
     co = co || {};
     const body = A.chatBody(model, messages, Object.assign({ candidateTarget: cfg.candidateTarget, maxTokens: cfg.maxTokens }, co));
-    const r = await request('POST', P.chat, body, { keepText: true, timeoutMs: co.timeoutMs });
-    if (r.status !== 200) throw new Error('apprentice chat HTTP ' + r.status + ' ' + String(r.text || '').slice(0, 160));
+    const r = await request('POST', P.chat, body, { keepText: true, timeoutMs: co.timeoutMs, deadline: co.deadline });
+    if (r.status !== 200) throw new Error('apprentice chat HTTP ' + r.status);   // the status only: its words are not kept
     const out = A.chatReply(r.sse != null ? r.sse : r.json);
     if (!out.text && r.json == null && r.sse == null) throw new Error('apprentice chat reply is not json');
     return out;
   }
+  const dl = x => ({ deadline: x && x.deadline });
   return {
     stats, host,
     health: () => request('GET', P.health),
     ready: () => request('GET', P.ready),
     models: () => request('GET', P.models),
     chat,
-    submitTrajectory: lesson => request('POST', P.trajectories(tenant), A.trajectoryBody(lesson)),
-    study: so => request('POST', P.study(tenant), A.studyBody(so)),
-    units: () => request('GET', P.units(tenant)),
-    promote: (unitId, d) => request('POST', P.promote(tenant, unitId), A.decisionBody(d)),
-    rollback: (unitId, d) => request('POST', P.rollback(tenant, unitId), A.decisionBody(d)),
+    submitTrajectory: (lesson, x) => request('POST', P.trajectories(tenant), A.trajectoryBody(lesson), dl(x)),
+    study: so => request('POST', P.study(tenant), A.studyBody(so), dl(so)),
+    units: x => request('GET', P.units(tenant), undefined, dl(x)),
+    promote: (unitId, d) => request('POST', P.promote(tenant, unitId), A.decisionBody(d), dl(d)),
+    rollback: (unitId, d) => request('POST', P.rollback(tenant, unitId), A.decisionBody(d), dl(d)),
     exportCapheos: unitId => request('POST', P.exportUnit(tenant, unitId), {}),
   };
 }
@@ -115,7 +126,7 @@ function apprenticeDriver(d) {
     async turn(messages) {
       if (d.deadline && Date.now() > d.deadline) { this.outOfTime = true; throw new Error('the apprentice study budget ran out'); }
       this.calls++;
-      const r = await d.client.chat(d.model, messages, { purpose: 'bench', unitId: d.unitId });
+      const r = await d.client.chat(d.model, messages, { purpose: 'bench', unitId: d.unitId, deadline: d.deadline });
       return { text: r.text, tokensIn: r.tokensIn, tokensOut: r.tokensOut, servedModel: r.servedModel, usd: 0 };
     },
   };

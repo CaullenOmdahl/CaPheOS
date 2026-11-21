@@ -3,18 +3,23 @@
  * its answer with the model bench's own scorers (docs/APPRENTICE.md "How a lesson is made"). No model call, no network.
  *
  *   const L = require('./lessons')
- *   L.eligible(items, cfg, done)                 -> { take: [item], skipped: { reason: n } }
+ *   L.eligible(items, cfg, done, scope?)         -> { take: [item], skipped: { reason: n } }
  *        items: model-rank.js analyze().items. Taken: not excluded, settled (the undo window has passed), oneShot 1
- *        (no REVISE, reopen, revert or fix-forward), hard, with a run id, not shadowed before.
+ *        (no REVISE, reopen, revert or fix-forward), hard, not delegated, with a run id, not shadowed before (an item
+ *        skipped only for its kind, its facts or a missing transcript is looked at again when the shadow scope changes).
+ *   L.teacherRuns(item)                          -> { teacherRunId, runIds }   the seat's own runs; the last one's answer
  *   L.transcript(root, run, cfg, now, cache?)   -> { state: 'ok' | 'waiting' | 'none', rows, segments }
  *        the run's rows from StarNet's transcript segments (only the segments whose index time range or stream list
- *        covers the run, byte-capped). 'waiting': no segment reaches the run's end yet (transcripts are written late).
- *   L.teacherAndReads(rows, runId, cfg)          -> { teacher, files, reads, tainted }
- *        the run's last assistant message without tool calls, and what the run read (fs_read and friends, read-only
- *        shell commands on the allowlist), capped per file and in total
+ *        covers the run, byte-capped). 'waiting': no segment reaches the run's end yet, or the covering segments hold no
+ *        row of the run yet (transcripts are written late, in batches); 'none' only after maxWaitDays.
+ *   L.teacherAndReads(rows, runIds, cfg, teacherRunId?) -> { teacher, files, reads, tainted, denied }
+ *        the teacher run's last assistant message without tool calls, and what the runs read (fs_read and friends,
+ *        read-only shell commands on the allowlist; never a path on the deny list), capped per file and in total
  *   L.facts(text, cfg)                           -> [{ label, value }]   the labelled facts of a production answer
+ *   L.grounded(facts, files)                     -> { keep, dropped }   only the facts whose value is in what the run read
  *   L.kindDepth({ item, sec, wake, cfg, facts }) -> { kind, depth, why } | { skip, why }
  *   L.toExpected(kind, facts)                    -> { expected, ask: [{ id, label }] } | null
+ *   L.target(kind, expected)                     -> the right answer in the bench's own answer shape (a fenced json block)
  *   L.instructions(sec, facts)                   -> the job's own text, with its answer and verdict lines cut
  *   L.promptFor(unitDir, kind, instr, ask, files) -> the bench prompt (the bench's own template, no tools, one answer)
  *   await L.score(unitDir, kind, answerText, expected) -> { pass, score, detail, failure? }
@@ -29,7 +34,9 @@ const toMs = v => { if (v == null || v === '') return 0; const n = Number(v); if
 const bump = (o, k) => { o[k] = (o[k] || 0) + 1; };
 
 /* ---------------- which items ---------------- */
-function eligible(items, cfg, done) {
+// skips that depend on the shadow scope (kinds, depths, the fact parser) or on a transcript: looked at again when it changes
+const REVISIT = new Set(['kind-out-of-scope', 'teacher-unstructured', 'teacher-ungrounded', 'no-transcript', 'no-instructions']);
+function eligible(items, cfg, done, scope) {
   const sh = (cfg && cfg.shadow) || {}, take = [], skipped = {};
   for (const it of items || []) {
     if (!it || it.excluded) { bump(skipped, 'excluded'); continue; }
@@ -37,13 +44,23 @@ function eligible(items, cfg, done) {
     if (it.oneShot !== 1) { bump(skipped, 'not-one-shot'); continue; }
     if (!it.hard) { bump(skipped, 'reopened-or-reverted'); continue; }
     if (!it.runId) { bump(skipped, 'no-run'); continue; }
+    // a delegated item's answer was stitched from child runs: not one job, one answer
+    if (it.delegated) { bump(skipped, 'delegated'); continue; }
     if (sh.requirePassVerdict && !(it.verdicts || []).some(v => v && !v.fail)) { bump(skipped, 'no-pass-verdict'); continue; }
-    if (done && done[it.key]) { bump(skipped, 'done'); continue; }
+    const d = done && done[it.key];
+    if (d && !(scope && REVISIT.has(d.outcome) && d.scope !== scope)) { bump(skipped, 'done'); continue; }
     take.push(it);
   }
   // oldest first: the longest-settled work goes first
   take.sort((a, b) => (Number(a.closedAt) || 0) - (Number(b.closedAt) || 0) || (a.key < b.key ? -1 : 1));
   return { take, skipped };
+}
+
+/* the runs behind the answer: the item seat's own top runs (model-rank.js ownRuns), the last one finished the job, so its
+   answer is the teacher's; what all of them read is the snapshot */
+function teacherRuns(it) {
+  const own = Array.isArray(it && it.ownRuns) && it.ownRuns.length ? it.ownRuns.map(String) : it && it.runId ? [String(it.runId)] : [];
+  return { teacherRunId: (it && it.lastRunId && String(it.lastRunId)) || own[own.length - 1] || null, runIds: own };
 }
 
 /* ---------------- the run's transcript ---------------- */
@@ -61,16 +78,22 @@ function transcript(root, run, cfg, now, cache) {
   const slack = 60e3;
   let pick = run && run.streamId ? idx.filter(x => x.streams && Object.prototype.hasOwnProperty.call(x.streams, run.streamId)) : [];
   if (!pick.length) pick = idx.filter(x => x.minTs <= end + slack && x.maxTs >= start - slack);
-  pick = pick.slice(-(Number(sh.maxSegments) || 8));
-  const cap = Number(sh.maxSegmentBytes) || 32 * 1024 * 1024, rows = [];
+  // every covering segment, oldest first, within a total byte budget (a long run's early rows are in its first segments)
+  pick = pick.slice(0, Number(sh.maxSegments) || 64);
+  const cap = Number(sh.maxSegmentBytes) || 32 * 1024 * 1024, budget = Number(sh.maxTranscriptBytes) || 96 * 1024 * 1024, rows = [];
+  let read = 0;
   for (const x of pick) {
     const f = path.join(dir, x.n.replace(/\.index\.json$/, '.jsonl'));
     let st; try { st = fs.statSync(f); } catch (_) { continue; }
-    if (st.size > cap) continue;
+    if (st.size > cap || read + st.size > budget) continue;
+    read += st.size;
     // one pass reads each segment once (cache: a Map the caller keeps for the pass, at most 96 MB of text)
     const ck = f + ':' + st.size + ':' + st.mtimeMs;
     let txt = cache ? cache.get(ck) : null;
     if (txt == null) {
+      // a pass reads at most maxPassReadBytes from disk in all; past it the item waits for the next pass (not a failure)
+      if (cache && (cache.diskBytes || 0) + st.size > (Number(sh.maxPassReadBytes) || 256 * 1024 * 1024)) return { state: 'waiting', rows: [], segments: 0, budget: true };
+      if (cache) cache.diskBytes = (cache.diskBytes || 0) + st.size;
       try { txt = fs.readFileSync(f, 'utf8'); } catch (_) { continue; }
       if (cache) { const used = cache.bytes || 0; if (used + txt.length <= 96 * 1024 * 1024) { cache.set(ck, txt); cache.bytes = used + txt.length; } }
     }
@@ -80,7 +103,8 @@ function transcript(root, run, cfg, now, cache) {
       if (r && r.sourceRunId === runId) rows.push(r);
     }
   }
-  return { state: rows.length ? 'ok' : 'none', rows, segments: pick.length };
+  // covered but no row of the run yet: StarNet writes in batches, so wait (never a failure) until maxWaitDays
+  return { state: rows.length ? 'ok' : tooOld ? 'none' : 'waiting', rows, segments: pick.length };
 }
 
 const textOf = c => typeof c === 'string' ? c : Array.isArray(c) ? c.map(p => (p && typeof p === 'object' ? (p.text || p.content || '') : String(p || ''))).join('') : c == null ? '' : String(c);
@@ -102,9 +126,19 @@ function readOnlyShell(cmd, allow) {
   const words = allow || DEF_SHELL;
   return c.split('|').every(seg => { const s = seg.trim(); return words.some(w => s === w || s.startsWith(w + ' ')) && !/\s-i\b|--in-place/.test(s); });
 }
-function teacherAndReads(rows, runId, cfg) {
+/* paths whose content never goes to the apprentice, whatever the scrub would make of it (secrets, env files, keys) */
+const DEF_DENY = ['(^|/)secrets(/|$)', '(^|/)\\.env($|[./])', '\\.(pem|key|p12|pfx|jks|keystore|asc|gpg)$', '(^|/)id_[a-z0-9]+(\\.pub)?$', '(^|/)\\.ssh(/|$)', '(^|/)\\.(netrc|npmrc|pypirc|git-credentials)$', 'credential', '(^|/)\\.starnet-data/(?!workspaces/transcript)'];
+function denier(list) {
+  const res = (list || DEF_DENY).map(x => { try { return new RegExp(x, 'i'); } catch (_) { return null; } }).filter(Boolean);
+  return s => { const words = String(s || '').split(/[\s|'"=]+/).filter(Boolean); return words.some(w => res.some(re => re.test(w))); };
+}
+function teacherAndReads(rows, runIds, cfg, teacherRunId) {
   const sh = (cfg && cfg.shadow) || {};
-  const mine = (rows || []).filter(r => r && r.sourceRunId === runId).sort((a, b) => toMs(a.ts) - toMs(b.ts));
+  const ids = new Set((Array.isArray(runIds) ? runIds : [runIds]).map(String));
+  const tid = String(teacherRunId || (Array.isArray(runIds) ? runIds[runIds.length - 1] : runIds));
+  const denied = denier(sh.denyPaths);
+  let deniedN = 0;
+  const mine = (rows || []).filter(r => r && ids.has(String(r.sourceRunId))).sort((a, b) => toMs(a.ts) - toMs(b.ts));
   const readTools = new Set(sh.readTools || DEF_READ_TOOLS);
   const calls = new Map();
   let teacher = '';
@@ -113,7 +147,7 @@ function teacherAndReads(rows, runId, cfg) {
     const cs = callsOf(r);
     for (const c of cs) if (c.id) calls.set(c.id, c);
     const t = textOf(r.content).trim();
-    if (!cs.length && t) teacher = t;
+    if (!cs.length && t && String(r.sourceRunId) === tid) teacher = t;
   }
   const perFile = Number(sh.maxFileBytes) || 16000, total = Number(sh.maxReadBytes) || 64000;
   const files = {}; let used = 0, reads = 0, tainted = 0;
@@ -124,6 +158,7 @@ function teacherAndReads(rows, runId, cfg) {
     if (readTools.has(c.name)) key = String(c.args.path || c.args.file || c.args.query || c.args.pattern || c.name).slice(0, 200);
     else if (sh.shellReads !== false && c.name === 'shell_exec' && readOnlyShell(c.args.command || c.args.cmd, sh.shellAllow)) key = '$ ' + String(c.args.command || c.args.cmd).trim().slice(0, 200);
     if (!key) continue;
+    if (denied(key)) { deniedN++; continue; }
     let t = textOf(r.content); if (!t.trim()) continue;
     if (r.taint && r.taint !== 'none') tainted++;
     if (Buffer.byteLength(t) > perFile) t = Buffer.from(t).subarray(0, perFile).toString('utf8') + '\n[cut]';
@@ -131,7 +166,7 @@ function teacherAndReads(rows, runId, cfg) {
     if (files[key] != null) { if (files[key] === t) continue; key = key + ' (' + (++reads) + ')'; }
     files[key] = t; used += n; reads++;
   }
-  return { teacher, files, reads, bytes: used, tainted };
+  return { teacher, files, reads, bytes: used, tainted, denied: deniedN };
 }
 
 /* ---------------- labelled facts ---------------- */
@@ -173,6 +208,20 @@ function facts(text, cfg) {
     if ((m = /^([A-Za-z][\w ()/.'&-]{0,59}?)\s+[—–]\s+(.+)$/.exec(s))) { put(m[1], m[2]); continue; }
   }
   return out;
+}
+/* a fact is a lesson only when its value is in what the run read: otherwise it is a status line ("Blocked: five items,
+   none on me") the apprentice cannot find in its inputs, and grading it would measure nothing */
+const gnorm = s => String(s || '').toLowerCase().replace(/[*`_]/g, '').replace(/(\d),(?=\d{3}\b)/g, '$1').replace(/\s+/g, ' ').trim();
+const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function grounded(fs_, files) {
+  const hay = gnorm(Object.values(files || {}).join('\n'));
+  const keep = [], dropped = [];
+  for (const f of fs_ || []) {
+    const v = gnorm(f.value);
+    const ok = v.length > 0 && hay && new RegExp('(^|[^a-z0-9])' + escRe(v) + '($|[^a-z0-9])').test(hay);
+    (ok ? keep : dropped).push(f);
+  }
+  return { keep, dropped };
 }
 const CUR = { '€': 'EUR', '$': 'USD', '£': 'GBP' };
 const CODES = /^(EUR|USD|GBP|VND|JPY|AUD|CAD|CHF|SGD)$/i;
@@ -247,6 +296,15 @@ function toExpected(kind, fs_) {
   }
   return null;
 }
+/* the right answer in the bench's own answer shape, as the bench prompt asks for it (a fenced json block at the end):
+   what a lesson teaches, so the apprentice learns the answer and the format the bench grades */
+function target(kind, expected) {
+  const e = expected || {};
+  const body = kind === 1 ? { answers: (e.items || []).map(x => ({ id: x.id, value: x.value })) }
+    : kind === 2 ? { fields: e.fields || {} }
+      : kind === 5 ? { values: e.values || {}, unit: e.unit || null } : null;
+  return body ? '```json\n' + JSON.stringify(body) + '\n```' : '';
+}
 const CUT = /^\*\*(Resolved|Status|Verdict|Review|Result|Results|Answer|Outcome|Done|Delivered|Reply|Reopened|Premerge|Finding|Findings)\b/i;
 function instructions(sec, fs_) {
   const A = { norm: v => String(v || '').toLowerCase().replace(/\s+/g, ' ').trim() };
@@ -276,4 +334,4 @@ async function score(unitDir, kind, answerText, expected) {
   return { pass: !!s.pass, score: Number(s.score) || 0, detail: String(s.detail || '').slice(0, 300) };
 }
 
-module.exports = { eligible, transcript, teacherAndReads, facts, numeric, kindDepth, toExpected, instructions, promptFor, score, readOnlyShell, callsOf, TEMPLATES, SCORERS, toMs };
+module.exports = { eligible, teacherRuns, transcript, teacherAndReads, facts, grounded, numeric, kindDepth, toExpected, target, instructions, promptFor, score, readOnlyShell, callsOf, denier, REVISIT, TEMPLATES, SCORERS, toMs };

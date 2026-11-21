@@ -476,8 +476,10 @@ function analyze(inp) {
     const hard = !(reopened || reverted || fixForward);
     // narrow fan-out (fanoutEvaluation): a delegated child run under the item's runs, or a piece lane of a recorded split
     const delegated = all.length > tops.length || ws.some(w => w && w.split && typeof w.split === 'object');
-    // runId / runs: the primary run and every run behind the item (company/tools/apprentice.js reads them); not in the body
-    items.push(Object.assign(base, { runId: primary.runId ? String(primary.runId) : null, runs: all, excluded: false, excludedRuns, settled, closedAt, delegated, timeSec, runCount: good.length, scoped, oneShot: clamp(1 - fail, 0, 1), hard, reviseRounds, extraRuns, otherRuns: good.length - ownTops.length,
+    // runId / runs: the primary run and every run behind the item; ownRuns / lastRunId: the item seat's own top runs in
+    // order, and the last of them (the run that finished the job). company/tools/apprentice.js reads them; not in the body
+    const lastOwn = ownTops.length ? ownTops[ownTops.length - 1] : primary;
+    items.push(Object.assign(base, { runId: primary.runId ? String(primary.runId) : null, runs: all, ownRuns: ownTops.map(r => String(r.runId)).filter(Boolean), lastRunId: lastOwn && lastOwn.runId ? String(lastOwn.runId) : null, excluded: false, excludedRuns, settled, closedAt, delegated, timeSec, runCount: good.length, scoped, oneShot: clamp(1 - fail, 0, 1), hard, reviseRounds, extraRuns, otherRuns: good.length - ownTops.length,
       reopened, reverted, fixForward, defects, defectPoints, ownerCorrections, premergeFirstPass, changes: prs.length ? prs : [li.id], verdicts: counted }));
   }
 

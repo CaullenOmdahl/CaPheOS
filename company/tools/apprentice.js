@@ -57,6 +57,7 @@ const bump = (o, k, n) => { o[k] = (o[k] || 0) + (n || 1); };
 const isPlain = x => x && typeof x === 'object' && !Array.isArray(x);
 function merge(a, b) { const out = Object.assign({}, a); for (const [k, v] of Object.entries(b || {})) out[k] = isPlain(v) && isPlain(out[k]) ? merge(out[k], v) : v; return out; }
 const localDate = now => co.localParts(new Date(now)).date;
+const SCOPE_V = 2;   // the lesson-making rules' version: a change re-opens items skipped for scope
 const slug = m => String(m).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120);
 
 /* ---------------- config: defaults + the owner's recorded file ---------------- */
@@ -104,7 +105,7 @@ function guards(root, cfg, o) {
 }
 
 /* ---------------- state, logs, lock ---------------- */
-const STATE_DEF = () => ({ v: 1, days: {}, done: {}, waiting: {}, refused: {}, decided: {}, lastShadowAt: 0, lastStudyAt: 0, lastStudyTryAt: 0 });
+const STATE_DEF = () => ({ v: 1, days: {}, done: {}, waiting: {}, refused: {}, decided: {}, tries: {}, agg: {}, lastShadowAt: 0, lastStudyAt: 0, lastStudyTryAt: 0 });
 function loadState(root) { const s = readJson(path.join(sdir(root), 'state.json'), null); return isPlain(s) ? Object.assign(STATE_DEF(), s) : STATE_DEF(); }
 function saveState(root, st) {
   const keepDone = 5000, keys = Object.keys(st.done);
@@ -126,26 +127,56 @@ function tailRows(root, name, maxBytes) {
   for (const l of B.tailText(path.join(sdir(root), name + '.jsonl'), maxBytes || 4 * 1024 * 1024).split('\n')) { if (!l.trim()) continue; try { const r = JSON.parse(l); if (r && !r._retention) out.push(r); } catch (_) {} }
   return out;
 }
-const alive = pid => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+const alive = pid => { if (!(pid > 0)) return false; try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 const lockFile = root => path.join(sdir(root), 'lock');
-function lockHeld(root) {
-  const l = readJson(lockFile(root), null); if (!l) return false;
-  return alive(Number(l.pid)) && Date.now() < (Number(l.until) || 0) + 60e3;
+const LOCK_GRACE = 60e3;   // a holder exits by itself at its budget plus 30 s (exitAtBudget); this is the slack past that
+/* is the pid still the process that took the lock (its command line, recorded in the lock)? /proc on Linux; elsewhere
+   (null) the lock's time decides */
+const cmdlineOf = pid => { try { return fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8').slice(0, 300); } catch (_) { return null; } };
+function isHolder(pid, l) { const c = cmdlineOf(pid); if (c == null) return null; return l && typeof l.cmd === 'string' ? c === l.cmd : /apprentice\.js/.test(c); }
+/* 'free' (no lock, or its holder ended), 'held' (its holder is alive within its budget), 'overdue' (an apprentice pass is
+   still alive past its budget: its self-exit failed, so the next taker ends it first). A lock whose live pid is not an
+   apprentice pass (the pid was reused) is free. A lock is never taken over while its holder is alive and in budget. */
+function lockState(root, now) {
+  const l = readJson(lockFile(root), null); if (!l) return { state: 'free' };
+  const pid = Number(l.pid); if (!alive(pid)) return { state: 'free', l };
+  const t = Number(now) || Date.now(), within = t < (Number(l.until) || 0) + LOCK_GRACE, ours = isHolder(pid, l);
+  if (ours === false) return { state: 'free', l };
+  if (within) return { state: 'held', l };
+  return ours ? { state: 'overdue', l } : { state: t < (Number(l.until) || 0) + 30 * 60e3 ? 'held' : 'free', l };
 }
+const lockHeld = root => lockState(root).state === 'held';
 function takeLock(root, budgetMs) {
   const f = lockFile(root); fs.mkdirSync(path.dirname(f), { recursive: true });
   for (let i = 0; i < 2; i++) {
     try {
-      const fd = fs.openSync(f, 'wx'); const me = { pid: process.pid, at: Date.now(), until: Date.now() + budgetMs, token: crypto.randomBytes(6).toString('hex') };
+      const fd = fs.openSync(f, 'wx'); const me = { pid: process.pid, cmd: cmdlineOf(process.pid), at: Date.now(), until: Date.now() + budgetMs, token: crypto.randomBytes(6).toString('hex') };
       fs.writeSync(fd, JSON.stringify(me)); fs.closeSync(fd);
       return () => { const l = readJson(f, null); if (l && l.token === me.token) try { fs.unlinkSync(f); } catch (_) {} };
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
-      if (lockHeld(root)) return null;
-      try { fs.unlinkSync(f); } catch (_) {}   // its holder ended or ran past its budget
+      const ls = lockState(root);
+      if (ls.state === 'held') return null;
+      // breaking a stale lock happens under a second, short lock, and only if it is still the same stale lock: two takers
+      // that both saw it stale cannot delete each other's fresh lock
+      const g = f + '.break';
+      try { if (Date.now() - fs.statSync(g).mtimeMs > 30e3) fs.unlinkSync(g); } catch (_) {}
+      let gfd; try { gfd = fs.openSync(g, 'wx'); } catch (_) { return null; }
+      try {
+        const again = lockState(root), cur = readJson(f, null);
+        if (again.state === 'held' || (cur && ls.l && cur.token !== ls.l.token)) return null;
+        if (again.state === 'overdue') { try { process.kill(Number(again.l.pid), 'SIGKILL'); } catch (_) {} }
+        try { fs.unlinkSync(f); } catch (_) {}
+      } finally { try { fs.closeSync(gfd); fs.unlinkSync(g); } catch (_) {} }
     }
   }
   return null;
+}
+/* the pass ends itself at its budget plus 30 s, whatever a server does (main only: a process of its own) */
+function exitAtBudget(budgetMs, release) {
+  const t = setTimeout(() => { try { release && release(); } catch (_) {} process.exit(1); }, budgetMs + 30e3);
+  t.unref();
+  return t;
 }
 
 /* ---------------- schedule ---------------- */
@@ -167,7 +198,7 @@ function due(o) {
     const root = rootOf(o);
     if (!o.configOverride) { const raw = readJson(path.join(root, CONFIG_REL), null); if (!raw || raw.enabled !== true) return false; }
     const cfg = config(root, o);
-    if (!guards(root, cfg, o).ok || lockHeld(root)) return false;
+    if (!guards(root, cfg, o).ok || lockState(root, o.now).state === 'held') return false;
     const st = loadState(root), now = Number(o.now) || Date.now();
     return shadowDue(cfg, st, now) || studyDue(cfg, st, now);
   } catch (_) { return false; }
@@ -209,11 +240,13 @@ async function shadowPass(root, cfg, o) {
   const deadline = Date.now() + (Number(cfg.wallBudgetMin) || 10) * 60e3;
   if (!left) { bump(res.skipped, 'cap'); if (!o.dryRun) appendLog(root, 'log', { event: 'shadow', note: 'daily cap reached', cap: sh.dailyCap }, cfg); return res; }
   const C = collect(root, now);
-  const el = L.eligible(C.items, cfg, st.done);
+  // the shadow scope: an item skipped for its kind, facts or transcript is looked at again when this changes
+  const scope = shaOf(JSON.stringify([sh.kinds, sh.classDepth, sh.allowKinds, sh.allowDepths, sh.minFacts, sh.maxFacts, sh.maxFactWords, sh.maxValueLen, sh.readTools, sh.shellReads, sh.shellAllow, sh.denyPaths, SCOPE_V])).slice(7, 23);
+  const el = L.eligible(C.items, cfg, st.done, scope);
   for (const [k, n] of Object.entries(el.skipped)) if (k !== 'done' && k !== 'settling' && k !== 'excluded') bump(res.skipped, k, n);
   const unit = unitFor(root, o);
   const client = o.dryRun ? null : (o.client || require('./lib/apprentice/client').makeClient({ root, cfg, key: secretAt(root, cfg.keySecret) }));
-  const markDone = (it, outcome) => { st.done[it.key] = { at: now, outcome }; delete st.waiting[it.key]; };
+  const markDone = (it, outcome) => { st.done[it.key] = { at: now, outcome, scope }; delete st.waiting[it.key]; };
   const skip = (it, reason, extra) => { bump(res.skipped, reason); markDone(it, reason); if (!o.dryRun) appendLog(root, 'shadow', Object.assign({ item: it.key, runId: it.runId, outcome: 'skipped', reason }, extra || {}), cfg); };
   let lookups = 0; const segCache = new Map();
   const maxLookups = Number(sh.maxLookupsPerPass) || 40;   // transcript reads per pass: the rest wait for the next pass
@@ -222,15 +255,25 @@ async function shadowPass(root, cfg, o) {
     if (lookups >= maxLookups) { bump(res.skipped, 'next-pass'); continue; }
     if (Date.now() > deadline) { res.stopped = 'budget'; break; }
     if (!o.dryRun && !config(root, o).enabled) { res.stopped = 'switched off'; break; }   // the kill switch, between items
-    const run = C.runById.get(String(it.runId));
-    if (!run) { skip(it, 'no-run'); continue; }
-    const tr = L.transcript(root, run, cfg, now, segCache); lookups++;
-    if (tr.state === 'waiting') { bump(res.skipped, 'waiting-transcript'); if (!st.waiting[it.key]) st.waiting[it.key] = now; continue; }
-    if (tr.state === 'none') { skip(it, 'no-transcript'); continue; }
-    const tar = L.teacherAndReads(tr.rows, String(it.runId), cfg);
+    // the seat's own runs: the last one finished the job (its answer is the teacher's), all of them read the inputs
+    const tr0 = L.teacherRuns(it);
+    const runs = tr0.runIds.map(id => C.runById.get(id)).filter(Boolean);
+    const run = C.runById.get(String(tr0.teacherRunId));
+    if (!run || !runs.length) { skip(it, 'no-run'); continue; }
+    const trs = runs.map(r => L.transcript(root, r, cfg, now, segCache)); lookups += trs.length;
+    if (trs.some(x => x.budget)) { bump(res.skipped, 'next-pass'); res.stopped = res.stopped || 'read budget'; break; }
+    if (trs.some(x => x.state === 'waiting')) { bump(res.skipped, 'waiting-transcript'); if (!st.waiting[it.key]) st.waiting[it.key] = now; continue; }
+    const rows = [].concat(...trs.map(x => x.rows));
+    if (!rows.some(x => String(x.sourceRunId) === String(run.runId))) { skip(it, 'no-transcript'); continue; }
+    const tar = L.teacherAndReads(rows, tr0.runIds, cfg, run.runId);
     const sec = C.secByKey.get(it.key) || { text: '' };
     const teacher = tar.teacher || resolvedText(sec.text) || String(run.deliveryText || '');
-    const facts = L.facts(teacher, cfg);
+    const parsed = L.facts(teacher, cfg);
+    if (!parsed.length) { skip(it, 'teacher-unstructured'); continue; }
+    // only the facts the apprentice can find in what the run read: a status line is not a lookup
+    const gr = L.grounded(parsed, tar.files);
+    const facts = gr.keep;
+    if (facts.length < (Number(sh.minFacts) || 1)) { skip(it, 'teacher-ungrounded', { facts: parsed.length, grounded: facts.length }); continue; }
     const kd = L.kindDepth({ item: it, sec: sec.text, wake: wakeOf(it, C), cfg, facts });
     if (kd.skip) { skip(it, kd.skip, { why: kd.why }); continue; }
     if (facts.length < (Number(sh.minFacts) || 1)) { skip(it, 'teacher-unstructured'); continue; }
@@ -242,26 +285,29 @@ async function shadowPass(root, cfg, o) {
     if (o.dryRun) { res.planned.push({ item: it.key, kind: kd.kind, depth: kd.depth, why: kd.why, facts: facts.length, reads: tar.reads, readBytes: tar.bytes, promptChars: prompt.length }); res.shadowed++; continue; }
     const t0 = Date.now();
     let ans;
-    try { ans = await client.chat(liveModel(cfg), [{ role: 'user', content: prompt }], { purpose: 'shadow' }); }
-    catch (e) { res.error = String(e.message || e).slice(0, 200); appendLog(root, 'log', { event: 'shadow', error: res.error }, cfg); break; }   // server away: try again next time
+    try { ans = await client.chat(liveModel(cfg), [{ role: 'user', content: prompt }], { purpose: 'shadow', deadline }); }
+    catch (e) { res.error = String(e.message || e).slice(0, 200); appendLog(root, 'log', { event: 'shadow', error: res.error }, cfg); break; }   // server away: try again next time (the error carries our words and a status, never the server's)
     const timeSec = Math.round((Date.now() - t0) / 100) / 10;
     const sc = await L.score(unit.dir, kd.kind, ans.text, ex.expected);
-    const lesson = { kind: 'lesson', task: { instructions: ins.text, files: tar.files, prompt }, teacher: { answer: teacher, model: it.cell && it.cell.model },
+    const lesson = { kind: 'lesson', task: { instructions: ins.text, files: tar.files, prompt }, teacher: { answer: teacher, target: L.target(kd.kind, ex.expected), model: it.cell && it.cell.model },
       student: { answer: ans.text }, score: sc.score, pass: sc.pass, benchKind: kd.kind, depth: kd.depth, source: { item: it.key, runId: it.runId }, at: new Date(now).toISOString() };
     let posted = false, postStatus = null;
-    try { const r = await client.submitTrajectory(lesson); postStatus = r.status; posted = r.status >= 200 && r.status < 300; } catch (e) { postStatus = 'error'; }
+    try { const r = await client.submitTrajectory(lesson, { deadline }); postStatus = r.status; posted = r.status >= 200 && r.status < 300; } catch (e) { postStatus = 'error'; }
     st.days[day].shadowed++; res.shadowed++; res.scored++; if (sc.pass) res.passed++; if (posted) res.posted++;
+    // the running record per (kind, depth): kept in state so it builds up across log rolls
+    const ak = kd.kind + '|' + kd.depth, ag = st.agg[ak] || (st.agg[ak] = { kind: kd.kind, depth: kd.depth, n: 0, passed: 0, scoreSum: 0, times: [] });
+    ag.n++; if (sc.pass) ag.passed++; ag.scoreSum += Number(sc.score) || 0; ag.times.push(timeSec); if (ag.times.length > 200) ag.times.splice(0, ag.times.length - 200);
     markDone(it, 'scored');
     // scores only: the apprentice's own words never go into a company file
     appendLog(root, 'shadow', { item: it.key, runId: it.runId, outcome: 'scored', kind: kd.kind, depth: kd.depth, why: kd.why, pass: sc.pass, score: sc.score, failure: sc.failure || null,
-      timeSec, facts: facts.length, reads: tar.reads, readBytes: tar.bytes, tainted: tar.tainted, droppedLines: ins.dropped, teacherModel: it.cell && it.cell.model, posted, postStatus }, cfg);
+      timeSec, facts: facts.length, ungrounded: gr.dropped.length, reads: tar.reads, deniedReads: tar.denied, readBytes: tar.bytes, tainted: tar.tainted, droppedLines: ins.dropped, teacherModel: it.cell && it.cell.model, posted, postStatus }, cfg);
   }
   // an item whose transcript never came within maxWaitDays is dropped (never a failure)
   const maxWait = (Number(sh.maxWaitDays) || 3) * 864e5;
   for (const [k, at] of Object.entries(st.waiting)) if (now - at > maxWait) { st.done[k] = { at: now, outcome: 'no-transcript' }; delete st.waiting[k]; }
   if (!o.dryRun) {
     st.lastShadowAt = now; saveState(root, st);
-    if (res.scored) writeShadowSummary(root, cfg);
+    if (res.scored) writeShadowSummary(root, cfg, st);
     appendLog(root, 'log', { event: 'shadow', shadowed: res.shadowed, passed: res.passed, posted: res.posted, skipped: res.skipped, stopped: res.stopped || null }, cfg);
   }
   return res;
@@ -269,18 +315,22 @@ async function shadowPass(root, cfg, o) {
 
 /* the shadow scores per (kind, depth): what a routing build can read as this model's live record, marked shadow */
 const p50 = xs => { if (!xs.length) return 0; const s = xs.slice().sort((a, b) => a - b); return s[Math.floor((s.length - 1) / 2)]; };
-function shadowSummary(rows, model) {
-  const cells = {};
-  for (const r of rows) {
-    if (r.outcome !== 'scored' || !r.kind || !r.depth) continue;
-    const c = cells[r.kind + '|' + r.depth] || (cells[r.kind + '|' + r.depth] = { kind: Number(r.kind), depth: r.depth, n: 0, passed: 0, scores: [], times: [] });
-    c.n++; if (r.pass) c.passed++; c.scores.push(Number(r.score) || 0); c.times.push(Number(r.timeSec) || 0);
-  }
+/* from shadow.jsonl rows, or from the running record in state (st.agg: { 'kind|depth': { kind, depth, n, passed,
+   scoreSum, times } }), which keeps counting across log rolls */
+function shadowSummary(rowsOrAgg, model) {
+  let cells = {};
+  if (Array.isArray(rowsOrAgg)) {
+    for (const r of rowsOrAgg) {
+      if (r.outcome !== 'scored' || !r.kind || !r.depth) continue;
+      const c = cells[r.kind + '|' + r.depth] || (cells[r.kind + '|' + r.depth] = { kind: Number(r.kind), depth: r.depth, n: 0, passed: 0, scoreSum: 0, times: [] });
+      c.n++; if (r.pass) c.passed++; c.scoreSum += Number(r.score) || 0; c.times.push(Number(r.timeSec) || 0);
+    }
+  } else cells = rowsOrAgg || {};
   const kinds = {}, live = [];
-  for (const c of Object.values(cells).sort((a, b) => a.kind - b.kind || (a.depth < b.depth ? -1 : 1))) {
+  for (const c of Object.values(cells).filter(c => c && c.n > 0).sort((a, b) => a.kind - b.kind || (a.depth < b.depth ? -1 : 1))) {
     const k = kinds[String(c.kind)] || (kinds[String(c.kind)] = { levels: {} });
-    const t = p50(c.times);
-    k.levels[c.depth] = { n: c.n, passed: c.passed, passRate: Math.round(c.passed / c.n * 1000) / 1000, scoreMean: Math.round(c.scores.reduce((a, b) => a + b, 0) / c.n * 1000) / 1000, timeSecP50: t };
+    const t = p50(c.times || []);
+    k.levels[c.depth] = { n: c.n, passed: c.passed, passRate: Math.round(c.passed / c.n * 1000) / 1000, scoreMean: Math.round((Number(c.scoreSum) || 0) / c.n * 1000) / 1000, timeSecP50: t };
     live.push({ model, kind: c.kind, depth: c.depth, n: c.n, oneShot: c.passed, timeSecP50: t });
   }
   return { schema: 'model-bench-shadow/1', model, source: 'shadow', routable: false, at: new Date().toISOString(), kinds, live };
@@ -290,8 +340,8 @@ function writeLocked(file, txt, root) {
   const tmp = file + '.tmp-' + process.pid; fs.writeFileSync(tmp, txt); fs.renameSync(tmp, file);
   try { require('./provenance.js').wrote(file, txt, WRITER, { root }); } catch (_) {}
 }
-function writeShadowSummary(root, cfg) {
-  const body = shadowSummary(tailRows(root, 'shadow', 8 * 1024 * 1024), label(cfg));
+function writeShadowSummary(root, cfg, st) {
+  const body = shadowSummary((st || loadState(root)).agg, label(cfg));
   const f = path.join(root, 'company', 'state', 'model-bench', slug(label(cfg)) + '.shadow.json');
   writeLocked(f, JSON.stringify(body, null, 1) + '\n', root);
   return f;
@@ -305,8 +355,17 @@ function levelsOf(res) {
 }
 /* promote only when the total passed count rises and no (kind, depth) level loses more than `tolerance` passes; a level
    the live version proved and the candidate could not be scored at counts as worse */
+const INFRA = ['crash', 'timeout', 'refused', 'sandbox'];
+function infraOf(res) {
+  let n = 0; for (const v of Object.values((res && res.kinds) || {})) for (const L of Object.values(v.levels || {})) for (const k of INFRA) n += Number(L.failures && L.failures[k]) || 0;
+  return n;
+}
+/* a server fault (an HTTP error, a reset, a timeout, a refusal) is not a weak answer: when either bench has one, nothing is
+   decided (a live model id that errors would otherwise score 0 and let any candidate through) */
 function promoteGate(live, cand, tolerance) {
   const tol = Math.max(0, Number(tolerance) || 0), lv = levelsOf(live), cv = levelsOf(cand);
+  const li = infraOf(live), ci = infraOf(cand);
+  if (li || ci) return { promote: false, incomplete: true, liveInfra: li, candidateInfra: ci, reason: 'server faults in the bench (live ' + li + ', candidate ' + ci + ': crash, timeout or refused); nothing decided' };
   let lt = 0, ct = 0; const worse = [];
   for (const key of [...new Set(Object.keys(lv).concat(Object.keys(cv)))].sort()) {
     const l = lv[key], c = cv[key];
@@ -332,26 +391,32 @@ async function studyPass(root, cfg, o) {
   const s = cfg.study, now = Number(o.now) || Date.now(), st = loadState(root);
   const unit = unitFor(root, o);
   const res = { studied: null, candidates: 0, decisions: [] };
+  // a try counts before any early return, so a refused cycle waits an hour, not one dispatcher tick
+  st.lastStudyTryAt = now; saveState(root, st);
   if (!unit.installed && !o.unit) { appendLog(root, 'decisions', { event: 'study', outcome: 'skipped', reason: 'the model-bench unit is not installed (unit.js install packs/model-bench --by owner)' }, cfg); res.skipped = 'bench-unit-not-installed'; return res; }
   const B = benchLib(unit.dir);
   const g = B.gate(label(cfg), unit.dir, root, { config: { freeProviders: [String(cfg.provider || 'apprentice')] } });
   if (!g.ok) { res.skipped = 'gate: ' + g.reason; appendLog(root, 'decisions', { event: 'study', outcome: 'skipped', reason: res.skipped }, cfg); return res; }
   const client = o.client || Cl.makeClient({ root, cfg, key: secretAt(root, cfg.keySecret) });
   const deadline = Date.now() + (Number(s.wallBudgetMin) || 120) * 60e3;
-  st.lastStudyTryAt = now; saveState(root, st);
   let sr;
-  try { sr = await client.study({ reason: 'scheduled' }); } catch (e) { res.error = String(e.message || e).slice(0, 200); appendLog(root, 'decisions', { event: 'study', outcome: 'error', reason: res.error }, cfg); return res; }
+  try { sr = await client.study({ reason: 'scheduled', deadline }); } catch (e) { res.error = String(e.message || e).slice(0, 200); appendLog(root, 'decisions', { event: 'study', outcome: 'error', reason: res.error }, cfg); return res; }
   st.lastStudyAt = now; saveState(root, st);
   res.studied = A.studyReply(sr.json);
   let units = [];
-  try { const ur = await client.units(); units = A.unitsReply(ur.json); } catch (_) {}
+  try { const ur = await client.units({ deadline }); units = A.unitsReply(ur.json); } catch (_) {}
   const seen = id => st.decided[id] || st.refused[id];
+  // only units that are ready for a verdict: a unit still training or queued waits for the next cycle (never benched,
+  // never rolled back for not being ready)
   let cands = units.filter(u => u.candidate && !u.live && !seen(u.id));
   const sid = res.studied.unitId;
-  if (sid && !seen(sid) && !cands.some(u => u.id === sid) && !units.some(u => u.id === sid && u.live)) cands.push({ id: sid, status: res.studied.status });
+  const listed = sid ? units.find(u => u.id === sid) : null;
+  const sidReady = listed ? listed.candidate && !listed.live : A.CANDIDATE.has(String(res.studied.status || ''));
+  if (sid && sidReady && !seen(sid) && !cands.some(u => u.id === sid)) cands.push({ id: sid, status: res.studied.status });
+  if (sid && !sidReady && !seen(sid)) res.waiting = sid;
   cands = cands.slice(0, Math.max(1, Number(s.maxCandidates) || 2));
   res.candidates = cands.length;
-  if (!cands.length) appendLog(root, 'decisions', { event: 'study', outcome: 'no-candidate', status: sr.status }, cfg);
+  if (!cands.length) appendLog(root, 'decisions', { event: 'study', outcome: res.waiting ? 'not-ready' : 'no-candidate', status: sr.status, unit: res.waiting || null }, cfg);
   const depths = s.depths || ['lookup', 'simple'];
   const ids = B.loadTasks(unit.dir, { kinds: s.kinds || [1, 2, 5] }).filter(t => depths.includes(t.depth) && t.sandbox === 'none' && !t.inputs.tools.length).map(t => t.id);
   for (const u of cands) {
@@ -364,9 +429,18 @@ async function studyPass(root, cfg, o) {
     const base = { event: 'decision', unit: u.id, seed: s._seed, repeat: Number(s.repeat) || 2, tolerance: Number(s.tolerance) || 0, live: brief(live.result), candidate: brief(cand.result) };
     if (dl.outOfTime || dc.outOfTime) { appendLog(root, 'decisions', Object.assign(base, { action: 'none', outcome: 'incomplete', reason: 'the study budget ran out before both benches finished; nothing decided' }), cfg); res.decisions.push({ unit: u.id, outcome: 'incomplete' }); break; }
     const gate = promoteGate(live.result, cand.result, s.tolerance);
+    if (gate.incomplete) {
+      // a server fault: decide nothing; after maxIncomplete such cycles the unit is left alone (no promote, no rollback)
+      const n = st.tries[u.id] = (Number(st.tries[u.id]) || 0) + 1, give = n >= (Number(s.maxIncomplete) || 3);
+      if (give) st.decided[u.id] = { at: now, outcome: 'undecided-server-faults' };
+      saveState(root, st);
+      appendLog(root, 'decisions', Object.assign(base, { action: 'none', outcome: give ? 'undecided-server-faults' : 'incomplete', reason: gate.reason, tries: n }), cfg);
+      res.decisions.push({ unit: u.id, action: 'none', outcome: give ? 'undecided-server-faults' : 'incomplete', reason: gate.reason });
+      continue;
+    }
     const action = gate.promote ? 'promote' : 'rollback';
     let r;
-    try { r = await (gate.promote ? client.promote(u.id, { reason: gate.reason, evidence: { live: base.live, candidate: base.candidate, seed: s._seed } }) : client.rollback(u.id, { reason: gate.reason })); }
+    try { r = await (gate.promote ? client.promote(u.id, { reason: gate.reason, evidence: { live: base.live, candidate: base.candidate, seed: s._seed }, deadline }) : client.rollback(u.id, { reason: gate.reason, deadline })); }
     catch (e) { r = { status: 0, text: String(e.message || e) }; }
     let outcome;
     if (gate.promote && A.refusedSelfApproval(r.status)) { outcome = 'refused-by-server'; st.refused[u.id] = now; }   // logged, never retried
@@ -399,11 +473,18 @@ async function tick(o) {
   const budget = (doStudy ? Number(cfg.study.wallBudgetMin) || 120 : 0) + (Number(cfg.wallBudgetMin) || 10);
   const release = takeLock(root, budget * 60e3);
   if (!release) return { code: 3, out: { ok: false, refused: true, why: ['another apprentice pass holds the lock'] } };
+  if (o.exitAtBudget) exitAtBudget(budget * 60e3, release);
   const out = { ok: true };
+  let phase = null;
   try {
-    if (doShadow) out.shadow = await shadowPass(root, cfg, o);
-    if (doStudy && config(root, o).enabled) out.study = await studyPass(root, cfg, o);
-  } catch (e) { out.ok = false; out.error = String(e.message || e).slice(0, 300); try { appendLog(root, 'log', { event: 'tick', error: out.error }, cfg); } catch (_) {} }
+    if (doShadow) { phase = 'shadow'; out.shadow = await shadowPass(root, cfg, o); }
+    if (doStudy && config(root, o).enabled) { phase = 'study'; out.study = await studyPass(root, cfg, o); }
+  } catch (e) {
+    out.ok = false; out.error = String(e.message || e).slice(0, 300);
+    try { appendLog(root, 'log', { event: 'tick', phase, error: out.error }, cfg); } catch (_) {}
+    // back off: a pass that throws (bad data, a ranking fault) waits its normal interval, not one dispatcher tick
+    try { const s2 = loadState(root); if (phase === 'shadow') s2.lastShadowAt = now; if (phase === 'study') s2.lastStudyTryAt = now; saveState(root, s2); } catch (_) {}
+  }
   finally { release(); }
   return { code: out.ok ? 0 : 1, out };
 }
@@ -496,8 +577,10 @@ async function cmd(argv, o) {
     const cfg = config(root, o);
     if (sub === 'shadow' && a['dry-run']) return { code: 0, out: Object.assign({ ok: true, guards: guards(root, cfg, o) }, await shadowPass(root, cfg, Object.assign({}, o, { dryRun: true }))) };
     const g = guards(root, cfg, o); if (!g.ok) return { code: 3, out: { ok: false, refused: true, why: g.why } };
-    const release = takeLock(root, ((sub === 'study' ? Number(cfg.study.wallBudgetMin) || 120 : 0) + (Number(cfg.wallBudgetMin) || 10)) * 60e3);
+    const budgetMs = ((sub === 'study' ? Number(cfg.study.wallBudgetMin) || 120 : 0) + (Number(cfg.wallBudgetMin) || 10)) * 60e3;
+    const release = takeLock(root, budgetMs);
     if (!release) return { code: 3, out: { ok: false, refused: true, why: ['another apprentice pass holds the lock'] } };
+    if (o.exitAtBudget) exitAtBudget(budgetMs, release);
     try {
       const r = sub === 'shadow' ? await shadowPass(root, cfg, o) : await studyPass(root, cfg, Object.assign({}, o, { seed: a.seed && a.seed !== true ? Number(a.seed) : o.seed }));
       return { code: r.error ? 1 : 0, out: Object.assign({ ok: !r.error }, r) };
@@ -529,7 +612,7 @@ async function selftest() {
   }
   const right = { live: tk => tk.kind !== 5, 'u-gain': () => true, 'u-mixed': tk => !(tk.kind === 2 && tk.depth === 'simple'), 'u-self': () => true };
   const reqs = [], units = [];
-  let nextStudy = 'u-gain';
+  let nextStudy = 'u-gain', nextStatus = 'candidate', liveDown = false;
   const server = http.createServer((req, res) => {
     let body = ''; req.on('data', c => body += c); req.on('end', () => {
       let j = null; try { j = JSON.parse(body); } catch (_) {}
@@ -538,6 +621,7 @@ async function selftest() {
       if (req.headers.authorization !== 'Bearer ' + KEY) return send(401, { error: 'no key' });
       if (req.url === '/v1/chat/completions') {
         const p = j.messages[0].content, m = String(j.model).split('@')[1] || 'live';
+        if (liveDown && m === 'live') return send(500, { error: 'the live model is away ' + MARK });
         let text;
         if (j.metadata && j.metadata.purpose === 'shadow') {
           // the shadow task: q1 right, the rest a word the teacher never wrote
@@ -550,7 +634,7 @@ async function selftest() {
         return send(200, { model: j.model, choices: [{ message: { role: 'assistant', content: text } }], usage: { prompt_tokens: 10, completion_tokens: 5 } });
       }
       if (/\/trajectories$/.test(req.url)) return send(200, { accepted: 1 });
-      if (/\/study$/.test(req.url)) { units.push({ unit_id: nextStudy, status: 'candidate' }); return send(200, { unit_id: nextStudy, status: 'candidate' }); }
+      if (/\/study$/.test(req.url)) { units.push({ unit_id: nextStudy, status: nextStatus }); return send(200, { unit_id: nextStudy, status: nextStatus }); }
       if (/\/units$/.test(req.url)) return send(200, { units });
       const pm = /\/units\/([^/]+)\/(promote|rollback)$/.exec(req.url);
       if (pm) { if (pm[2] === 'promote' && pm[1] === 'u-self') return send(403, { error: 'self-approval refused' }); const u = units.find(x => x.unit_id === pm[1]); if (u) u.status = pm[2] === 'promote' ? 'live' : 'rolled_back'; return send(200, { ok: true }); }
@@ -589,19 +673,24 @@ async function selftest() {
 
     // 3. the shadow pass. Transcripts: S08 (passed first time) with a read that carries a planted secret; S03 (REVISE)
     // and S05 (reopened) also have transcripts, and must not be shadowed
-    const M = require('./model-rank.js');
+    const M = require('./model-rank.js'), L0 = require('./lib/apprentice/lessons');
     const an = M.analyze(M.load({ root, now: NOW }));
     const byId = id => an.items.find(i => i.id === id);
     const S08 = byId('S08'), S03 = byId('S03'), S05 = byId('S05'), S10 = byId('S10');
     t('the item rows carry their run id', S08 && S08.runId && Array.isArray(S08.runs) && S08.runs.includes(S08.runId), S08 && JSON.stringify(Object.keys(S08)));
     const tdir = path.join(root, '.starnet-data', 'workspaces', 'transcript-history-v2'); fs.mkdirSync(tdir, { recursive: true });
     const rows = [];
+    const DENIED = 'DENIED-' + crypto.randomBytes(6).toString('hex');
     for (const it of [S08, S03, S05, S10]) {
-      const run = an.runById.get(it.runId), at = Number(run.startedAt);
-      rows.push({ role: 'assistant', sourceRunId: it.runId, streamId: 'cron-' + it.runId, ts: at + 1000, content: 'Reading the client notes.', toolCalls: JSON.stringify([{ id: 'c1-' + it.id, function: { name: 'fs_read', arguments: JSON.stringify({ path: 'clients/northwind.md' }) } }, { id: 'c2-' + it.id, function: { name: 'shell_exec', arguments: JSON.stringify({ command: 'rm -rf /tmp/x' }) } }]) });
-      rows.push({ role: 'tool', toolCallId: 'c1-' + it.id, sourceRunId: it.runId, ts: at + 2000, content: 'Client: Northwind Ltd\nRate: 85 EUR per hour\napi token ' + SECRET + '\n', taint: 'none' });
-      rows.push({ role: 'tool', toolCallId: 'c2-' + it.id, sourceRunId: it.runId, ts: at + 2500, content: 'removed', taint: 'none' });
-      rows.push({ role: 'assistant', sourceRunId: it.runId, ts: at + 3000, content: 'Done.\n\n**Client:** Northwind Ltd\n**Contract owner:** Dana Ruiz' });
+      const tid = L0.teacherRuns(it).teacherRunId, run = an.runById.get(tid), at = Number(run.startedAt);
+      // S10: the teacher's facts are not in anything the run read (status lines): it must be skipped, not graded
+      const read = it === S10 ? 'The client list moved to the archive.\n' : 'Client: Northwind Ltd\nContract owner: Dana Ruiz\nRate: 85 EUR per hour\napi token ' + SECRET + '\n';
+      rows.push({ role: 'assistant', sourceRunId: tid, streamId: 'cron-' + tid, ts: at + 1000, content: 'Reading the client notes.', toolCalls: JSON.stringify([{ id: 'c1-' + it.id, function: { name: 'fs_read', arguments: JSON.stringify({ path: 'clients/northwind.md' }) } }, { id: 'c2-' + it.id, function: { name: 'shell_exec', arguments: JSON.stringify({ command: 'rm -rf /tmp/x' }) } }, { id: 'c3-' + it.id, function: { name: 'fs_read', arguments: JSON.stringify({ path: 'secrets/vendor-token' }) } }, { id: 'c4-' + it.id, function: { name: 'shell_exec', arguments: JSON.stringify({ command: 'cat .env' }) } }]) });
+      rows.push({ role: 'tool', toolCallId: 'c1-' + it.id, sourceRunId: tid, ts: at + 2000, content: read, taint: 'none' });
+      rows.push({ role: 'tool', toolCallId: 'c2-' + it.id, sourceRunId: tid, ts: at + 2500, content: 'removed', taint: 'none' });
+      rows.push({ role: 'tool', toolCallId: 'c3-' + it.id, sourceRunId: tid, ts: at + 2600, content: 'Client: ' + DENIED, taint: 'none' });
+      rows.push({ role: 'tool', toolCallId: 'c4-' + it.id, sourceRunId: tid, ts: at + 2700, content: 'X=' + DENIED, taint: 'none' });
+      rows.push({ role: 'assistant', sourceRunId: tid, ts: at + 3000, content: 'Done.\n\n**Client:** Northwind Ltd\n**Contract owner:** Dana Ruiz\n**Reviewer:** Jo Park' });
     }
     fs.writeFileSync(path.join(tdir, 'segment-000001.jsonl'), rows.map(x => JSON.stringify(x)).join('\n') + '\n');
     fs.writeFileSync(path.join(tdir, 'segment-000001.index.json'), JSON.stringify({ version: 1, segment: 1, rows: rows.length, minTs: NOW - 40 * 864e5, maxTs: NOW - 3600e3, streams: {} }));
@@ -613,12 +702,17 @@ async function selftest() {
     const chats = reqs.filter(x => x.url === '/v1/chat/completions'), lessons = reqs.filter(x => /\/trajectories$/.test(x.url));
     t('one validated item is shadowed (the daily cap of 1 holds)', r.code === 0 && r.out.shadowed === 1 && chats.length === 1 && (r.out.skipped.cap || 0) >= 1, JSON.stringify(r.out));
     t('the job went as one user message with no tools', chats.length === 1 && chats[0].json.messages.length === 1 && chats[0].json.messages[0].role === 'user' && !['tools', 'tool_choice', 'functions'].some(k => k in chats[0].json));
-    t('the prompt carries the job and what the run read, not the answer', chats[0] && /clients\/northwind\.md/.test(chats[0].body) && /q1: Client/.test(chats[0].body) && !/Dana Ruiz/.test(JSON.parse(chats[0].body).messages[0].content));
+    const p0 = chats[0] ? JSON.parse(chats[0].body).messages[0].content : '';
+    t('the prompt carries the job and what the run read, not the answer', /clients\/northwind\.md/.test(p0) && /q1: Client/.test(p0) && /q2: Contract owner/.test(p0) && !/\*\*Contract owner:\*\* Dana Ruiz/.test(p0));
+    t('a fact not in what the run read is not asked (grounded facts only)', !/Reviewer/.test(p0) && !/Jo Park/.test(p0) && !/q3:/.test(p0));
+    t('a read of a denied path (secrets/, .env) is never sent', reqs.every(x => !x.body.includes(DENIED)) && !/secrets\/vendor-token/.test(p0));
     t('a planted secret never reaches the stub (scrubbed)', reqs.every(x => !x.body.includes(SECRET)) && chats[0] && chats[0].body.includes('[REDACTED:'));
     t('a write shell command is not part of the snapshot', chats[0] && !/rm -rf/.test(chats[0].body));
     t('the key goes only in the Authorization header', reqs.every(x => x.auth === 'Bearer ' + KEY) && reqs.every(x => !x.body.includes(KEY)));
     const les = lessons[0] && lessons[0].json && lessons[0].json.trajectories[0];
     t('the lesson is posted with the teacher, the student and the score', les && les.teacher.answer.includes('Dana Ruiz') && les.student.answer.includes(MARK) && les.benchKind === 1 && les.depth === 'lookup' && les.score === 0.5 && les.pass === false, les && JSON.stringify({ k: les.benchKind, s: les.score }));
+    const tgt = les && les.messages && les.messages[1] && les.messages[1].content;
+    t('the lesson teaches the answer in the bench\'s format (a fenced json block)', tgt && /^```json\n/.test(tgt) && JSON.parse(tgt.replace(/^```json\n|\n```$/g, '')).answers.map(a => a.value).join('|') === 'Northwind Ltd|Dana Ruiz', tgt);
     const shRows = tailRows(root, 'shadow');
     t('REVISE and reopened items are never shadowed', !shRows.some(x => x.item === S03.key || x.item === S05.key) && !chats.some(c => /S03|S05/.test(c.body)));
     const shf = readJson(path.join(root, 'company', 'state', 'model-bench', 'apprentice_stubns_sandbox.shadow.json'), null);
@@ -626,7 +720,10 @@ async function selftest() {
     r = await cmd(['shadow', '--once'], O);
     t('the daily cap holds on the next pass the same day', r.code === 0 && r.out.shadowed === 0 && reqs.filter(x => x.url === '/v1/chat/completions').length === 1);
     r = await cmd(['shadow', '--once'], Object.assign({}, O, { now: NOW + 864e5 }));
-    t('the next day the other item is shadowed, the first is never sent twice', r.out.shadowed === 1 && reqs.filter(x => x.url === '/v1/chat/completions').length === 2 && tailRows(root, 'shadow').filter(x => x.item === S08.key && x.outcome === 'scored').length === 1, JSON.stringify(r.out));
+    t('the next day an item whose facts are not in its reads is skipped as teacher-ungrounded, nothing sent', r.out.shadowed === 0 && (r.out.skipped['teacher-ungrounded'] || 0) === 1 && reqs.filter(x => x.url === '/v1/chat/completions').length === 1, JSON.stringify(r.out));
+    t('the first item is never sent twice', tailRows(root, 'shadow').filter(x => x.item === S08.key && x.outcome === 'scored').length === 1);
+    const st1 = loadState(root);
+    t('the shadow record builds up in state (not only the rolling log)', st1.agg['1|lookup'] && st1.agg['1|lookup'].n === 1);
 
     // 4. study -> bench -> promote on a gain, roll back on a level that got worse, a server refusal is never retried
     const before = reqs.length;
@@ -650,6 +747,20 @@ async function selftest() {
     t('a refused or decided unit is never retried', reqs.filter(x => /u-self\/promote$/.test(x.url)).length === 1 && reqs.filter(x => /u-gain\/promote$/.test(x.url)).length === 1 && (r.out.decisions || []).length === 0, JSON.stringify(r.out));
     const dec = tailRows(root, 'decisions');
     t('every decision is logged with both results and the reason', dec.filter(x => x.event === 'decision').length === 3 && dec.every(x => x.event !== 'decision' || (x.live && x.candidate && x.reason)));
+    // a unit still training is not benched and not rolled back: it waits for a later cycle
+    nextStudy = 'u-training'; nextStatus = 'training';
+    let nb = reqs.length;
+    r = await cmd(['study', '--once', '--seed', String(SEED)], O);
+    t('a unit that is not ready waits (not benched, not rolled back)', (r.out.decisions || []).length === 0 && r.out.waiting === 'u-training' && !reqs.slice(nb).some(x => x.url === '/v1/chat/completions' || /u-training\/(promote|rollback)$/.test(x.url)) && !loadState(root).decided['u-training'], JSON.stringify(r.out));
+    // the live model errors (HTTP 500): a candidate must not be promoted on the live model's broken bench
+    nextStudy = 'u-broken'; nextStatus = 'candidate'; liveDown = true;
+    nb = reqs.length;
+    r = await cmd(['study', '--once', '--seed', String(SEED)], O);
+    const d4 = (r.out.decisions || []).find(x => x.unit === 'u-broken');
+    t('a server fault on the live model decides nothing (no promote, no rollback)', d4 && d4.outcome === 'incomplete' && !reqs.slice(nb).some(x => /u-broken\/(promote|rollback)$/.test(x.url)) && !loadState(root).decided['u-broken'], JSON.stringify(r.out));
+    liveDown = false;
+    const lg = tailRows(root, 'log').concat(tailRows(root, 'decisions'));
+    t('a server error is logged by status, never with its words', !lg.some(x => JSON.stringify(x).includes(MARK)));
 
     // 5. the apprentice's words are nowhere in the company (only its scores)
     const hits = [];
@@ -672,11 +783,11 @@ async function selftest() {
   return fails ? 1 : 0;
 }
 
-module.exports = { cmd, due, config, guards, tick, shadowPass, studyPass, promoteGate, shadowSummary, shadowDue, studyDue, loadState, secretAt };
+module.exports = { cmd, due, config, guards, tick, shadowPass, studyPass, promoteGate, infraOf, lockState, takeLock, shadowSummary, shadowDue, studyDue, loadState, secretAt };
 if (require.main === module) {
   const argv = process.argv.slice(2);
   if (argv.includes('--selftest')) selftest().then(c => process.exit(c), e => { console.error(e); process.exit(1); });
-  else cmd(argv).then(r => {
+  else cmd(argv, { exitAtBudget: true }).then(r => {
     if (r.text !== undefined && !argv.includes('--json')) console.log(r.text);
     else console.log(JSON.stringify(r.out, null, 1));
     process.exit(r.code);

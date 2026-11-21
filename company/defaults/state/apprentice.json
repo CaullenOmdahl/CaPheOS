@@ -27,8 +27,10 @@
   "shellAllow": ["cat", "sed -n", "head", "tail", "grep", "rg", "jq", "ls", "wc"],
   "maxFileBytes": 16000,
   "maxReadBytes": 64000,
-  "maxSegments": 8,
+  "maxSegments": 64,
   "maxSegmentBytes": 33554432,
+  "maxTranscriptBytes": 100663296,
+  "maxPassReadBytes": 268435456,
   "maxLookupsPerPass": 40,
   "numericShare": 0.6,
   "kinds": { "research": { "lookup": 1, "default": 2 }, "mechanical": 1, "general": null },
@@ -45,6 +47,7 @@
   "repeat": 2,
   "tolerance": 0,
   "maxCandidates": 2,
+  "maxIncomplete": 3,
   "wallBudgetMin": 120
  },
  "routable": { "apprentice/*": false }
