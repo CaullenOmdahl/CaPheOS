@@ -1438,11 +1438,13 @@ function lastRunTail(job) {
     if (route && route.applied && r.status === 403 && route.chainDenied) {   // refused, and the chain's pair is denied for the class: held, never run on it
       route.reasons.push('the station refused the override (HTTP 403 ' + String(r.body).slice(0, 120) + '); the chain is denied (' + route.chainDenied + '): held');
       route.applied = false; route.hold = true; route.holdWhy = 'the station refused the override and the class rules deny the chain (' + route.chainDenied + ')';
+      if (route.scoped && route.scoped.applied) Object.assign(route.scoped, { applied: false, override: false, runs: null, note: 'the station refused the override: held' });
       log('ROUTE HOLD ' + job.name + ' for ' + agentId + ': ' + route.holdWhy);
     } else if (route && route.applied && r.status === 403) {   // the station's gate refused the override: run on the chain, as without one
       route.reasons.push('the station refused the override (HTTP 403 ' + String(r.body).slice(0, 120) + '); ran on the chain');
       route.applied = false; route.wouldApply = { source: route.source, provider: route.provider, model: route.model }; route.source = 'chain';
       const cp = (job.wire && job.wire.provider) || job.provider, cm = (job.wire && job.wire.model) || job.model; route.provider = cp || null; route.model = cm || null; delete route.effort; delete route.trial; delete route.arm;
+      if (route.scoped && route.scoped.applied) Object.assign(route.scoped, { applied: false, override: false, runs: cp && cm ? cp + '/' + cm : null, note: 'the station refused the override: ran on the chain' });
       log('ROUTE ' + agentId + ': the station refused the override; running on the chain');
       r = await fireRun(job.id);
     }

@@ -77,16 +77,23 @@ test('depth: the class baseline, a Depth line, effort, size, and the kind map (c
   assert.equal(two.depth, 'deep', 'several items: the deepest');
 });
 
-test('escalation: a REVISE line or repeated routed wakes move the item one level up each and exclude the model that worked it', () => {
+test('escalation: a REVISE line or a failed earlier run moves the item one level up each and excludes the model that failed it; ordinary follow-up wakes do not', () => {
   const ctx = { seat: 'dev', class: 'writing', K: KS };
   const once = D.estimate([item('**Class:** writing\n**Verdict:** REVISE by Ria — check: read it — wrong totals')], ctx);
   assert.deepEqual([once.depth, once.fails], ['standard', 1]);
-  const wk = (n, pair) => ({ at: n, items: [{ id: 'to-dev.md#aaaaaa' }], route: { provider: pair.provider, model: pair.model, scoped: { kind: 3, depth: 'simple' } } });
-  const wakes = [wk(1, HAIKU), wk(2, HAIKU), wk(3, SONNET)];
-  const r = D.estimate([item('**Class:** writing')], Object.assign({}, ctx, { wakes }));
-  assert.equal(r.depth, 'standard', '3 routed wakes, 2 free: one level up');
-  assert.deepEqual(r.exclude, [key(SONNET)], 'the newest model that worked it');
-  assert.equal(D.estimate([item('**Class:** writing\n**Reopened 2030-01-02**\n**Verdict:** REVISE by x — check: y')], Object.assign({}, ctx, { wakes })).depth, 'deep', 'capped at deep');
+  const wk = (n, pair) => ({ at: n, runId: 'run-' + n, items: [{ id: 'to-dev.md#aaaaaa' }], route: { provider: pair.provider, model: pair.model, scoped: { kind: 3, depth: 'simple' } } });
+  const wakes = [wk(1, HAIKU), wk(2, HAIKU), wk(3, SONNET), wk(4, SONNET), wk(5, SONNET)];
+  const calm = D.estimate([item('**Class:** writing')], Object.assign({}, ctx, { wakes }));
+  assert.deepEqual([calm.depth, calm.fails, calm.exclude, calm.fromBaseline], ['simple', 0, [], true], 'five ordinary wakes of a multi-step item: no escalation, nobody excluded');
+  const r = D.estimate([item('**Class:** writing')], Object.assign({}, ctx, { wakes, runFail: { 'run-2': 'its run ended max_iters' } }));
+  assert.equal(r.depth, 'standard', 'one failed run: one level up');
+  assert.deepEqual(r.exclude, [key(HAIKU)], 'the model whose run failed, not the newest one');
+  assert.equal(r.fromBaseline, false);
+  const led = D.estimate([item('**Class:** writing')], Object.assign({}, ctx, { wakes, runFail: { 'run-2': 'out of steps', 'run-4': 'a competence demerit (pr.reverted)' } }));
+  assert.deepEqual([led.depth, led.exclude], ['deep', [key(SONNET), key(HAIKU)]], 'two failed runs (a ledger demerit counts): two levels, both excluded, newest first');
+  const line = D.estimate([item('**Class:** writing\n**Verdict:** REVISE by x — check: y')], Object.assign({}, ctx, { wakes }));
+  assert.deepEqual(line.exclude, [key(SONNET)], 'a fail line with no failed run known: the newest routed model is excluded once');
+  assert.equal(D.estimate([item('**Class:** writing\n**Reopened 2030-01-02**\n**Verdict:** REVISE by x — check: y')], Object.assign({}, ctx, { wakes, runFail: { 'run-1': 'x' } })).depth, 'deep', 'capped at deep');
 });
 
 /* ---------------- (2) the capability table ---------------- */
@@ -389,4 +396,108 @@ test('model-rank.js refresh writes the capability table (recorded as its own wri
   assert.deepEqual(again.moves.map(m => m.op), ['drop']);
   const r2 = MR.refresh({ root: T, now: now + 3600e3, force: true });
   assert.equal(r2.scoped.capChanged, false, 'the same inputs: not rewritten');
+});
+
+/* ---------------- review fixes: neutral unknowns, pins and exempt seats, no default exploration, probes, keys ---------------- */
+test('an unknown limit size is neutral: with no weekly tokens set, the subscription model is not penalised against a metered one (time decides)', () => {
+  // the shipped defaults: no subscriptionWeeklyTokens, so the subscription's share is unknown; the metered rail is known
+  const cap = capOf([bench(SONNET, { 3: 'deep' }, { time: 20 }), bench(FLASH, { 3: 'deep' }, { time: 60 })]);
+  const d = decide({ cap, candidates: [SONNET, FLASH], limits: { subs: { 'claude-cli': { leftTokens: null } }, railLeftUsd: 20, freeLeft: 40 } });
+  assert.equal(d.scoped.pick, key(SONNET), 'three times faster wins; the unknown is not the worst value');
+  assert.match(d.scoped.limitTerm, /left out: claude-cli\/claude-sonnet-5-5 limit size unknown/);
+  const rows = Object.fromEntries(d.scoped.candidates.map(c => [c.model, c]));
+  assert.equal(rows[key(SONNET)].share, null); assert.ok(rows[key(FLASH)].share > 0);
+  assert.equal(rows[key(SONNET)].eff, 0.1667); assert.equal(rows[key(FLASH)].eff, 0.5, 'time only, for both');
+  // known on both sides: the limit term counts, and it tells 2% of a limit from 100% (no clip at shareScale)
+  const both = decide({ cap: capOf([bench(SONNET, { 3: 'deep' }, { time: 10, tokens: 4000 }), bench(HAIKU, { 3: 'deep' }, { time: 10, tokens: 4000 })]), candidates: [SONNET, HAIKU],
+    limits: { subs: { 'claude-cli': { leftTokens: 1e6 } }, railLeftUsd: 20, freeLeft: 40 } });
+  assert.ok(!both.scoped.limitTerm);
+  const lt = s => s / (s + KS.limits.shareScale);
+  assert.ok(lt(0.02) < lt(1) - 0.4, 'a 2% share and a 100% share are far apart');
+});
+
+test('manual pins win: the CEO, a claudeReserve seat, an owner-pinned seat, a seat on a non-routable model, and a department route are never moved', () => {
+  const cap = capOf([bench(HAIKU, { 3: 'deep' }, { time: 5 }), bench(FLASH, { 3: 'deep' }, { time: 5 })]);
+  const free = decide({ cap });
+  assert.equal(free.applied, true, 'an ordinary seat is moved');
+  const ceo = decide({ cap, extra: { seat: 'boss', crew: { boss: { name: 'Boss', functions: ['ceo'] } } } });
+  assert.equal(ceo.applied, false); assert.equal(ceo.scoped.exempt, true); assert.match(ceo.scoped.why, /holds the ceo function/);
+  const reserve = decide({ cap, scoped: { seats: { dev: { claudeReserve: true } } } });
+  assert.equal(reserve.applied, false); assert.match(reserve.scoped.why, /claudeReserve/);
+  const pinned = decide({ cap, scoped: { seats: { dev: { autoPick: false } } } });
+  assert.equal(pinned.applied, false); assert.match(pinned.scoped.why, /pinned/);
+  const FABLE = { provider: 'claude-cli', model: 'claude-fable-5-2[1m]' };
+  const onPurpose = decide({ cap, chain: [FABLE, SONNET], current: FABLE, scoped: { mp: { routable: { 'claude-cli/claude-fable*': false } } } });
+  assert.equal(onPurpose.applied, false); assert.match(onPurpose.scoped.why, /assigned on purpose/);
+  const failedOver = decide({ cap, chain: [FABLE, SONNET], current: SONNET, scoped: { mp: { routable: { 'claude-cli/claude-fable*': false } } } });
+  assert.equal(failedOver.applied, false, 'its primary is the pin, even while it runs on a fallback');
+  const deps = { departments: [{ id: 'eng', lead: 'lead', members: ['dev'], routes: { writing: { provider: 'claude-cli', model: 'claude-sonnet-5-5' } } }] };
+  const routed = decide({ cap, extra: { departments: deps } });
+  assert.equal(routed.applied, false); assert.match(routed.scoped.why, /department eng routes writing on purpose/);
+  // the allowlist lists no scoped candidate for an exempt seat
+  assert.deepEqual(R.extraEntries('boss', { K, departments: { departments: [] }, crew: { boss: { functions: ['ceo'] } }, chain: [SONNET], scopedCandidates: [HAIKU], modelPolicy: {} }), []);
+  assert.deepEqual(R.extraEntries('dev', { K, departments: { departments: [] }, crew: {}, chain: [FABLE], scopedCandidates: [HAIKU], modelPolicy: { routable: { 'claude-cli/claude-fable*': false } } }), []);
+  assert.deepEqual(R.extraEntries('dev', { K, departments: { departments: [] }, crew: {}, chain: [SONNET], scopedCandidates: [HAIKU], modelPolicy: { seats: { dev: { autoPick: false } } } }), []);
+});
+
+test('shipped on means unchanged: with the default policy and no bench results, no wake leaves its chain (newModel ships 0)', () => {
+  assert.equal(KS.newModel.share, 0);
+  for (const cap of [null, capOf([])]) for (let i = 0; i < 300; i++) {
+    const d = decide({ cap, wakeId: 'nm-' + i, items: [item(i % 2 ? '**Class:** research' : '**Class:** writing')] });
+    assert.equal(d.applied, false, 'wake ' + i); assert.equal(d.scoped.pick, null);
+  }
+  // even with a share set, exploration waits for a capability table to exist
+  const K2 = R.knobs(Object.assign({}, DEFAULT, { scoped: Object.assign({}, DEFAULT.scoped, { newModel: { share: 1, depths: ['lookup', 'simple'] } }) }));
+  assert.equal(decide({ K: K2, cap: null, candidates: [FREE] }).scoped.pick, null);
+});
+
+test('a probe sends a baseline-only job to a model proven one level lower; failed probes do not count as harder; escalated items are never probed', () => {
+  const cap = capOf([bench(HAIKU, { 3: 'lookup' }, { time: 5 }), bench(SONNET, { 3: 'deep' }, { time: 20 })]);
+  assert.equal(decide({ cap, wakeId: 'wk-1' }).scoped.pick, key(SONNET), 'no probe: only a model proven at simple');
+  const p = decide({ cap, wakeId: 'wk-6' });
+  assert.equal(p.scoped.pick, key(HAIKU)); assert.deepEqual(p.scoped.probe, { from: 'simple', to: 'lookup' }); assert.equal(p.scoped.depth, 'simple', 'recorded at the job\'s own depth');
+  const esc = decide({ cap, wakeId: 'wk-6', items: [item('**Class:** writing\n**Verdict:** REVISE by Ria — check: x')] });
+  assert.equal(esc.scoped.probe, undefined); assert.equal(esc.scoped.pick, key(SONNET));
+  const explicit = decide({ cap, wakeId: 'wk-6', items: [item('**Class:** writing\n**Depth:** simple')] });
+  assert.equal(explicit.scoped.probe, undefined, 'a Depth line is a decision, not a baseline');
+  // classDrift: failed probes are left out of "harder"; probe successes are "easier"
+  const it = (probe, one) => ({ excluded: false, settled: true, closedAt: 1, cell: { model: key(SONNET), class: 'writing' }, scoped: { kind: 3, depth: 'simple', escalated: 0, fromBaseline: true, probe, pair: key(probe ? HAIKU : SONNET) }, oneShot: one });
+  const items = []; for (let i = 0; i < 20; i++) items.push(it(i < 10, i < 10 ? (i < 4 ? 0 : 1) : 1));
+  const r = MR.classDrift({ items }, { countUnsettled: false }, cap, { scoped: Object.assign({}, DEFAULT.scoped) }, null, Date.UTC(2030, 1, 1));
+  assert.deepEqual(r.moves, [], '6 easier of 20 is under driftDown; 4 failed probes are not "harder"');
+  const all = []; for (let i = 0; i < 20; i++) all.push(it(true, 1));
+  assert.deepEqual(MR.classDrift({ items: all }, { countUnsettled: false }, cap, { scoped: Object.assign({}, DEFAULT.scoped) }, null, Date.UTC(2030, 1, 1)).moves.map(m => [m.from, m.to]), [['simple', 'lookup']]);
+});
+
+test('live validation is keyed by the pair the router picked, not the id the provider served (an alias and its full id are one model)', () => {
+  const an = { items: [
+    { excluded: false, settled: true, cell: { model: 'claude-cli/claude-sonnet-5-5-20301001', class: 'writing' }, scoped: { kind: 3, depth: 'simple', pair: 'claude-cli/sonnet' }, oneShot: 0, timeSec: 60 },
+    { excluded: false, settled: true, cell: { model: 'openrouter/acme/tiny-chat', class: 'writing' }, scoped: { kind: 3, depth: 'simple', pair: key(FREE) }, oneShot: 1, timeSec: 30 }] };
+  assert.deepEqual(MR.capabilityLive(an, { countUnsettled: false }).map(x => x.model).sort(), ['claude-cli/sonnet', key(FREE)].sort());
+});
+
+test('a free model named directly stops at OpenRouter\'s daily limit and while it cools, like the alias', () => {
+  const T = require('../lib/temp-life').tmpDir('scoped-free-'); roots.push(T);
+  const w = (rel, d) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof d === 'string' ? d : JSON.stringify(d, null, 1)); };
+  w('company/company.json', { name: 'Fixture Co', timezone: 'UTC', owner: { name: 'Olive' }, station: { url: 'http://127.0.0.1:9' } });
+  w('company/tools/loops.json', { agents: { dev: { name: 'Dev', inbox: 'to-dev.md' } } });
+  w('company/model-policy.json', { allowed: { openrouter: { models: [FREE.model] } }, freeFallback: { coolMin: 30 }, seats: {} });
+  const code = 'const M = require(' + JSON.stringify(path.join(TOOLS, 'models.js')) + ').makeModels({ quiet: true }); const t = Date.UTC(2030, 0, 5, 12); const pol = M.policy();' +
+    'const e = ' + JSON.stringify(FREE) + '; const F = { errorsInARow: 3, errorHoldMin: 30 };' +
+    'const ev = runs => M.evaluate("dev", e, { pol, F, t, m: null, providers: null, runs });' +
+    'process.stdout.write(JSON.stringify([ev({}), ev({ other: [{ provider: "openrouter", model: "x/y:free", reason: "error", error: "free-models-per-day limit", at: t - 3600e3 }] }), ev({ other: [{ provider: "openrouter", model: e.model, reason: "error", failureCode: "rate_limited", at: t - 600e3 }] }), ev({ other: [{ provider: "openrouter", model: e.model, reason: "error", failureCode: "rate_limited", at: t - 3600e3 }] })]));';
+  const out = child(T, code, false);
+  assert.equal(out[0].ok, true, JSON.stringify(out[0]));
+  assert.equal(out[1].ok, false); assert.match(out[1].why, /daily free-model limit/);
+  assert.equal(out[2].ok, false); assert.match(out[2].why, /provider error 10 min ago/);
+  assert.equal(out[3].ok, true, 'cooled off after coolMin');
+});
+
+test('the routing status shows capability moves and class drift from the routing log', () => {
+  const T = fixture();
+  fs.appendFileSync(path.join(T, 'company/work/models/routing-log.jsonl'), JSON.stringify({ at: 1, ts: '2030-01-01T00:00:00Z', op: 'capability', by: 'model-rank.js', model: key(HAIKU), kind: 3, from: 'simple', to: 'lookup', why: 'live simple' }) + '\n' +
+    JSON.stringify({ at: 2, ts: '2030-01-01T00:00:01Z', op: 'class-depth', by: 'model-rank.js', class: 'writing', from: 'simple', to: 'standard', why: 'harder' }) + '\n');
+  const s = child(T, 'process.stdout.write(JSON.stringify(require(' + JSON.stringify(path.join(TOOLS, 'routing.js')) + ').run(["status", "--json"])));', true);
+  const ops = JSON.stringify(s);
+  assert.ok(ops.includes('"op":"capability"') && ops.includes('"op":"class-depth"'), ops.slice(0, 400));
 });

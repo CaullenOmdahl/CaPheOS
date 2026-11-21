@@ -57,7 +57,7 @@ factor and never the only one. A free model is neither favoured nor penalised: i
 
     a cell may steer   when it has minItems scored items AND lower >= score.bar
     eff                = weights.time  x (median time to done per item / the slowest such cell's in the class)
-                       + weights.limit x min(1, share of the model's OWN limit one item uses / limits.shareScale)
+                       + weights.limit x s / (s + limits.shareScale),  s = the share of the model's OWN limit one item uses
     rank               = by eff, lowest first; cells within tieEpsilon of each other by their lower bound
 
 - **lower** is the lower bound of the Wilson score interval on the one-shot rate at `interval.confidence` (default
@@ -69,8 +69,13 @@ factor and never the only one. A free model is neither favoured nor penalised: i
 - **The limit share** is per model, against its own limit. A subscription counts tokens per item over
   `limits.subscriptionWeeklyTokens[provider]` (the providers in `limits.subscriptionProviders`). A metered model
   counts usd per item over `limits.meteredDailyUsd` (the station's daily rail). A free model counts runs per item over
-  `limits.freeDailyRequests`. Unknown reads as `unknownShare`. No share is ever 0. `shareScale` (default 0.02) is the
-  share that counts in full, so two shares that are both negligible never outweigh a real difference in time.
+  `limits.freeDailyRequests`. No share is ever 0. `shareScale` (default 0.02) is the share that counts half, so two
+  shares that are both negligible never outweigh a real difference in time, and 2% and 100% of a limit are told apart.
+- **An unknown limit is neutral.** When any cell of a class that clears the bar has an unknown limit size (a
+  subscription with no `subscriptionWeeklyTokens`, the shipped default), the limit term is left out for every cell of
+  that class (`limitSharePerItem: null`, `limitBasis` says why), and time decides. An unknown is never the worst value
+  for one kind of model while a known small number wins for another: otherwise the metered model, whose daily rail is
+  always known, would win every comparison on spend alone. Trial arms use the same rule.
 - **A cell needs `minItems` (default 20) scored items before it can steer anything.** Below that its status is
   `not enough data`, and it has no rank. A cell with enough items under the bar says `under the bar`, has no `eff` and
   no rank, and is never proposed. A route whose own cell is under the bar is beaten by any cell that clears it.
@@ -321,20 +326,23 @@ while `routing-policy.json scoped.enabled` is on, or once the table exists.
     are left out);
   - `levels`: the bench's pass rate, time and tokens per depth;
   - `live`: per depth, the scored items whose wake carried `route.scoped`, with their one-shot sum, Wilson bounds and
-    median time;
+    median time. Items are keyed by the pair the wake ran on as the router names it (the allowed-list name, the same
+    key the bench and the candidates use), not the id the provider served, so an alias such as `sonnet` and its full id
+    are one model and a failing alias is dropped where the router looks;
   - `current`: the depth the router trusts now. It starts at `bench`.
 
   Each refresh moves `current` at most one step per kind. A **drop** happens when a depth at or under `current` has at
   least `minItems` live items whose upper bound is under the pass mark (`scoped.passMark`). A **raise** happens when
-  live items one depth up (escalations, new-model picks) have a lower bound at or over it. A new bench result resets
+  live items one depth up (escalations, probes) have a lower bound at or over it. A new bench result resets
   `current` to the new proven depth. A model with no bench result has `current: null`: it is a new model, picked only
-  through `scoped.newModel`. Each move is a row in routing-log.jsonl: `{op: capability, by: model-rank.js, model,
+  through `scoped.newModel` (shipped 0: never). Each move is a row in routing-log.jsonl: `{op: capability, by: model-rank.js, model,
   kind, from, to, why}`. The file is rewritten only when its body changes.
 - **company/state/class-depth.json** (class R, writer model-rank.js). The drifted depth baseline per task class, read by
   `lib/depth.js` over `scoped.classDepth`. It looks at the last `scoped.drift.window` scored items of a class whose
   depth came from the baseline, and acts once there are at least `drift.minItems` of them. When `driftDown` of them
-  were done one-shot by a model proven below their depth (the job was easier than thought), the baseline drops one
-  level. When `driftUp` of them needed escalation or failed, it rises one level. A class moves at most once per
+  were done one-shot by a model proven below their depth (a probe, docs/ROUTING.md §8: the job was easier than
+  thought), the baseline drops one level. When `driftUp` of them needed escalation or failed, it rises one level; a
+  failed probe is left out of that count (it shows the job was not easier, not that it was harder). A class moves at most once per
   `drift.everyDays`, and each move is a routing-log row `{op: class-depth, class, from, to, why}`.
 
 The capability table is measurement plus the router's trust. Nothing in it can make a model routable that the owner

@@ -124,7 +124,9 @@ The work is scoped to the model (docs/ROUTING.md §8). The router needs three th
 
 Among the models that clear the bar, it takes the quickest one that uses the least of its own limit. That limit is
 the subscription's week, the metered daily rail, or the free daily requests (`freeFallback.dailyRequests`), so no model
-is free in the choice. A job that comes back for rework moves one depth up and goes to a stronger model. The seat's
+is free in the choice. When one candidate's limit size is not known (no weekly token figure set for a subscription,
+say), the limit is left out of that comparison for every candidate, so an unknown never tips the choice toward the
+model whose limit happens to be known. A job that comes back for rework moves one depth up and goes to a stronger model. The seat's
 chain stays the fallback whenever nothing qualifies.
 
 **Routable** (`routable` in this file). Only the owner says which models the router may pick by itself:
@@ -135,7 +137,14 @@ except a `needsCeoApproval` model (the heavy tier), which stays off until the ow
 (`models.js set|chain`, `hire.js`), within the rules above. `node company/tools/models.js routable` lists every model,
 its switch and what it is proven at.
 
-The whole feature has one switch, the owner's: `routing.js scoped on|off --by owner` (shipped on).
+**Pins win.** The router never moves a seat that holds the CEO function, a `claudeReserve` seat, a seat whose chain
+starts on a model that is not routable (it was given that model on purpose), or a seat with `autoPick: false` in
+`seats.<id>` (the owner's pin). A class its department routes on purpose stays on that route. A model with no bench
+result is never picked automatically.
+
+The whole feature has one switch, the owner's: `routing.js scoped on|off --by owner` (shipped on). Until the model
+bench has run for a model and `model-rank.js refresh` has written the capability table, nothing qualifies and every
+seat runs on its chain exactly as before.
 
 ## How the house ranking ranks models
 

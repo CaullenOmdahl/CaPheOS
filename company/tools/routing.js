@@ -78,7 +78,8 @@ const LOG_DEFAULT = 'company/work/models/routing-log.jsonl';
 const CHANGE_OPS = ['mode', 'tiercaps', 'scoped', 'trial-create', 'trial-start', 'trial-pause', 'trial-resume', 'trial-stop', 'proposals-mode'];
 const PROPOSAL_OPS = ['proposal-offer', 'proposal-apply', 'proposal-veto', 'proposal-skip'];   // the weekly suggestions' events
 const EVENT_OPS = ['trial-held', 'trial-unheld'];   // written by lib/routing.js (the dispatcher), read here
-const LOG_OPS = CHANGE_OPS.concat(EVENT_OPS, PROPOSAL_OPS);
+const SCOPED_OPS = ['capability', 'class-depth'];   // written by model-rank.js refresh (scoped routing's capability moves and class drift)
+const LOG_OPS = CHANGE_OPS.concat(EVENT_OPS, PROPOSAL_OPS, SCOPED_OPS);
 const LIMIT_DEFAULTS = { minArms: 2, maxArms: 4, maxEntryShare: 0.5, defaultEntryShare: 0.1, defaultMinItemsPerArm: 30, defaultPauseWhenHeld: ['claude-cli'] };
 
 const S = {   // seams for the tests (company/tools/tests/routing-controls.test.js)
@@ -240,7 +241,7 @@ function setScoped(value, a) {
     const base = (L.next.scoped && typeof L.next.scoped === 'object') ? L.next.scoped : (def.scoped && typeof def.scoped === 'object' ? clone(def.scoped) : {});
     L.next.scoped = Object.assign({}, base, { enabled: v === 'on' });
     if (!L.next._scoped && def._scoped) L.next._scoped = def._scoped;
-    if (v === 'on' && Array.isArray(L.next.order) && !L.next.order.includes('scoped')) { const i = L.next.order.indexOf('trial'); L.next.order.splice(i >= 0 ? i + 1 : 0, 0, 'scoped'); }
+    if (v === 'on' && Array.isArray(L.next.order) && !L.next.order.includes('scoped')) L.next.order.splice(require('./lib/routing').scopedSlot(L.next.order), 0, 'scoped');
     const summary = 'scoped routing ' + cur + ' -> ' + v + (v === 'on' ? ' (each job goes to a model proven at its depth, the most efficient one; only models the owner lets be picked automatically)' : ' (every wake runs on its chain, as before)');
     return commit(L, L.next, who, { op: 'scoped', fields: { from: cur, to: v }, why: whyOf(a), summary });
   });
@@ -783,7 +784,7 @@ function statusText(s) {
   L.push('Scoped routing: ' + (s.scoped && s.scoped.on ? 'on' : 'off') + '.  Routing (class routes and trials): ' + s.mode + '.  Tier caps: ' + s.tierCaps.mode + '.  Policy: ' + (s.source === 'company' ? s.file : 'the framework default (' + DEFAULT_REL + ')'));
   L.push(s.trials.length ? 'Trials:' : 'No trials.');
   for (const t of s.trials) L.push(trialText(t));
-  if (s.log.length) { L.push('Recent changes and holds:'); for (const r of s.log) L.push('  ' + (r.ts || '') + ' ' + r.op + (r.trial ? ' ' + r.trial : '') + (r.to ? ' -> ' + r.to : '') + ' by ' + (r.by || '?') + (r.why ? ': ' + r.why : '')); }
+  if (s.log.length) { L.push('Recent changes and holds:'); for (const r of s.log) L.push('  ' + (r.ts || '') + ' ' + r.op + (r.trial ? ' ' + r.trial : '') + (r.op === 'capability' ? ' ' + r.model + ' kind ' + r.kind + ' ' + (r.from || 'none') + ' -> ' + (r.to || 'none') : r.op === 'class-depth' ? ' ' + r.class + ' ' + (r.from || '?') + ' -> ' + (r.to || '?') : (r.to ? ' -> ' + r.to : '')) + ' by ' + (r.by || '?') + (r.why ? ': ' + r.why : '')); }
   return L.join('\n');
 }
 

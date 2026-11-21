@@ -555,10 +555,12 @@ async function start({ id, n, laneId, c, job, it, cfg, routing, log, piece, inbo
   if (route && route.applied && f.status === 403 && route.chainDenied) {   // refused, and the chain is denied for the class: never run on it
     route.reasons.push('the station refused the override (HTTP 403 ' + String(f.body).slice(0, 120) + '); the chain is denied (' + route.chainDenied + '): held');
     route.applied = false; route.hold = true; route.holdWhy = 'the station refused the override and the class rules deny the chain (' + route.chainDenied + ')';
+    if (route.scoped && route.scoped.applied) Object.assign(route.scoped, { applied: false, override: false, runs: null, note: 'the station refused the override: held' });
   } else if (route && route.applied && f.status === 403) {   // the station's gate refused it: the lane runs on the seat's model, as without one
     route.reasons.push('the station refused the override (HTTP 403 ' + String(f.body).slice(0, 120) + '); ran on the chain');
     route.wouldApply = { source: route.source, provider: route.provider, model: route.model }; route.applied = false; route.source = 'chain';
     route.provider = job.provider || null; route.model = job.model || null; delete route.effort; delete route.trial; delete route.arm;
+    if (route.scoped && route.scoped.applied) Object.assign(route.scoped, { applied: false, override: false, runs: route.provider && route.model ? route.provider + '/' + route.model : null, note: 'the station refused the override: ran on the chain' });
     f = await S.fire(cr.job.id);
   }
   A.started(tk, f);

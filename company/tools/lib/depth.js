@@ -17,9 +17,11 @@
  *      least standard, at or above filesDeep / charsDeep deep (a size key left out never raises);
  *   5. escalation: every fail on the item moves it one level up (capped at deep). A fail is a line in the block that
  *      matches scoped.escalate.failLines (REVISE verdicts, a Reopened line, a premerge FAIL), plus every earlier routed
- *      wake of the same item (company/state/wakes.jsonl rows with route.scoped) beyond scoped.escalate.freeRepeats.
- *      The models those earlier wakes ran on go on the exclude list, newest first, one per fail, so the retry goes to
- *      another model that clears the new depth.
+ *      wake of the same item (company/state/wakes.jsonl rows with route.scoped) whose run counts as failed (ctx.runFail:
+ *      runId -> why, from the run records' reasons in scoped.escalate.failedRuns and competence-ledger demerits; an
+ *      ordinary follow-up wake is not a fail, nor is a provider error). The models the failed wakes ran on go on the
+ *      exclude list, newest first, so the retry goes to another model that clears the new depth; with only fail lines
+ *      (no failed run known), the newest routed wake's model is excluded once.
  * A wake with several items takes the deepest item's depth, the majority kind, every item's exclude list.
  *
  * Kind: an explicit `**Kind:** <1-10>` line wins; else scoped.kinds[class]: a number, or { <depth>: n, default: n }.
@@ -29,7 +31,8 @@
  *   D.DEPTHS, D.KINDS, D.depthIndex(d), D.up(d, n)
  *   D.itemDepth(item, ctx)       -> { depth, base, kind, fails, signals[], exclude[] }
  *   D.estimate(items, ctx)       -> { kind, depth, needs: [{kind, depth}], signals[], exclude[], fails, explicit }
- *     ctx: { seat, class, K (knobs().scoped), departments, heavyEscape, classDepth (the drift doc), wakes (rows) }
+ *     ctx: { seat, class, K (knobs().scoped), departments, heavyEscape, classDepth (the drift doc), wakes (rows), runFail }
+ *     fromBaseline: the depth is the class baseline alone (no Depth line, effort or size moved it, no fail)
  *   D.loadClassDepth(root)       -> company/state/class-depth.json classes ({ <class>: depth }) or {}
  * Pure apart from loadClassDepth. Never throws on odd input (a bad item reads as the class baseline).
  */
@@ -93,12 +96,12 @@ function itemDepth(item, ctx) {
   try { cls = require('./taskclass').classOf({ text, class: it.class, effort: it.effort }, ctx.seat, { departments: ctx.departments || { departments: [] } }); } catch (_) {}
   // 1-2: the base
   const explicit = depthWord(field(text, 'Depth'));
-  let base;
+  let base, baseline = null;
   if (explicit) { base = explicit; signals.push('Depth line: ' + explicit); }
   else {
     const drift = (ctx.classDepth || {})[cls];
     const shipped = depthWord((K.classDepth || {})[cls]);
-    base = drift || shipped || 'standard';
+    base = drift || shipped || 'standard'; baseline = base;
     signals.push('class ' + cls + ' baseline ' + base + (drift ? ' (drifted from ' + (shipped || 'standard') + ')' : shipped ? '' : ' (no baseline set)'));
     // 3: effort
     const eff = String(it.effort || field(text, 'Effort') || '');
@@ -116,23 +119,21 @@ function itemDepth(item, ctx) {
   // 5: escalation
   const lines = failLines(text, K);
   const prior = priorWakes(it.id, ctx.wakes);
-  const free = Number.isFinite(Number(K.escalate && K.escalate.freeRepeats)) ? Math.max(0, Number(K.escalate.freeRepeats)) : Infinity;
-  const repeats = Number.isFinite(free) ? Math.max(0, prior.length - free) : 0;
-  const fails = lines + repeats;
+  const rf = ctx.runFail || {};
+  const failed = prior.filter(w => w.runId && rf[String(w.runId)]);
+  const fails = lines + failed.length;
   const depth = up(base, fails);
   if (lines) signals.push(lines + ' fail line(s) in the block (REVISE, reopened or premerge FAIL)');
-  if (repeats) signals.push(prior.length + ' earlier routed wakes of this item (' + free + ' free)');
+  if (failed.length) signals.push(failed.length + ' earlier routed wake(s) of this item failed (' + [...new Set(failed.map(w => rf[String(w.runId)]))].slice(0, 2).join('; ') + ')');
   if (fails) signals.push('escalated ' + base + ' -> ' + depth);
   const exclude = [];
-  if (fails) for (const w of prior.slice().reverse()) {
-    const p = w.route && (w.route.provider && w.route.model ? w.route.provider + '/' + w.route.model : null);
-    if (p && !exclude.includes(p)) exclude.push(p);
-    if (exclude.length >= fails) break;
-  }
+  const pairOfWake = w => w.route && w.route.provider && w.route.model ? w.route.provider + '/' + w.route.model : null;
+  for (const w of failed.slice().reverse()) { const p = pairOfWake(w); if (p && !exclude.includes(p)) exclude.push(p); }
+  if (lines && !exclude.length && prior.length) { const p = pairOfWake(prior[prior.length - 1]); if (p) exclude.push(p); }
   const k = kindWord(field(text, 'Kind'));
   const kind = k || kindFor(cls, depth, K);
   if (k) signals.push('Kind line: ' + k);
-  return { depth, base, kind, class: cls, fails, signals, exclude, explicit: !!explicit };
+  return { depth, base, kind, class: cls, fails, signals, exclude, explicit: !!explicit, fromBaseline: !explicit && !fails && base === baseline };
 }
 
 function estimate(items, ctx) {
@@ -155,7 +156,7 @@ function estimate(items, ctx) {
   }
   const signals = [...new Set(per.flatMap(p => p.signals))].slice(0, 8);
   const exclude = [...new Set(per.flatMap(p => p.exclude))];
-  return { kind, kindName: kind == null ? null : KIND_NAMES[kind], depth, needs, signals, exclude, fails: per.reduce((t, p) => t + p.fails, 0), explicit: per.some(p => p.explicit), class: cls };
+  return { kind, kindName: kind == null ? null : KIND_NAMES[kind], depth, needs, signals, exclude, fails: per.reduce((t, p) => t + p.fails, 0), explicit: per.some(p => p.explicit), fromBaseline: per.every(p => p.fromBaseline), class: cls };
 }
 
 module.exports = { DEPTHS, KINDS, KIND_NAMES, CLASS_DEPTH_REL, depthIndex, up, depthWord, kindWord, kindFor, failLines, priorWakes, itemDepth, estimate, loadClassDepth };

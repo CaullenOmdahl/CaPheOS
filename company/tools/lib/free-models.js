@@ -135,6 +135,12 @@ function dailyLimitUntil(runs, now) {
 }
 function providerErr(r) { return !!r && r.reason === 'error' && (PROVIDER_CODES.includes(String(r.failureCode || '')) || PROVIDER_ERR_RE.test(String(r.error || ''))); }
 
+/* the newest run on one free id, when it was a provider error within coolMin minutes (any seat), else null */
+function coolingRun(runs, id, now, coolMin) {
+  const mine = flat(runs).filter(r => r && r.provider === PROVIDER && r.model === id).sort((x, y) => (Number(x.at) || 0) - (Number(y.at) || 0));
+  const last = mine[mine.length - 1];
+  return last && providerErr(last) && now - Number(last.at) < coolMin * 60e3 ? last : null;
+}
 function resolve(a) {
   a = a || {};
   const root = rootOf(a.root), pol = a.policy || readJson(path.join(root, 'company', 'model-policy.json'), {}) || {};
@@ -174,4 +180,4 @@ function writePick(root, pick, now) {
   try { fs.mkdirSync(path.dirname(f), { recursive: true }); const tmp = f + '.tmp-' + process.pid; fs.writeFileSync(tmp, JSON.stringify(doc, null, 1) + '\n'); fs.renameSync(tmp, f); return true; } catch (_) { return false; }
 }
 
-module.exports = { PROVIDER, ALIAS, REG_REL, PICK_REL, writePick, DEFAULTS, DAILY_RE, isAlias, settings, aliasAllowed, load, fresh, isFreeRow, isFreeId, isFreePair, allowedPair, defaultOrder, order, resolve, dailyLimitUntil, nextUtcMidnight };
+module.exports = { coolingRun, PROVIDER, ALIAS, REG_REL, PICK_REL, writePick, DEFAULTS, DAILY_RE, isAlias, settings, aliasAllowed, load, fresh, isFreeRow, isFreeId, isFreePair, allowedPair, defaultOrder, order, resolve, dailyLimitUntil, nextUtcMidnight };

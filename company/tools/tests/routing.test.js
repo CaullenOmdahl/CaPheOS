@@ -30,9 +30,9 @@ test('the default policy: shadow, code denies custom, no trials, tier caps shado
   assert.strictEqual(K.mode, 'shadow'); assert.strictEqual(K.tierCaps.mode, 'shadow');
   assert.deepStrictEqual(K.classRules.code.denyProviders, ['custom']);
   assert.deepStrictEqual(K.trials, []);
-  assert.deepStrictEqual(K.order, ['classRules', 'trial', 'scoped', 'route', 'tierCap', 'chain']);
+  assert.deepStrictEqual(K.order, ['classRules', 'trial', 'route', 'scoped', 'tierCap', 'chain']);
   assert.strictEqual(K.scoped.enabled, true, 'scoped routing ships on (no bench result: nothing qualifies, every wake on its chain)');
-  assert.deepStrictEqual(R.knobs({ order: ['classRules', 'trial', 'route', 'chain'], scoped: { enabled: true } }).order, ['classRules', 'trial', 'scoped', 'route', 'chain'], 'an older order gets the step after the trials');
+  assert.deepStrictEqual(R.knobs({ order: ['classRules', 'trial', 'route', 'chain'], scoped: { enabled: true } }).order, ['classRules', 'trial', 'route', 'scoped', 'chain'], 'an older order gets the step after the department routes and trials');
   assert.deepStrictEqual(R.knobs({ order: ['classRules', 'trial', 'route', 'chain'] }).order, ['classRules', 'trial', 'route', 'chain'], 'scoped off: the order is as written');
   assert.strictEqual(K.history, 'company/work/models/routing-log.jsonl');
   assert.strictEqual(K.decisions, 'company/work/models/routing-decisions.jsonl');

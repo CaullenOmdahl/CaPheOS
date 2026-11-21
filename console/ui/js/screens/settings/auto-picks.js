@@ -15,7 +15,7 @@ const tech = (...lines) => Details(TECH, h('ul', { class: 'plain stack-4 caption
 // "Shown it can do: quick looking things up, everyday writing" — or a plain line when nothing is proven yet
 export function provenLine(m) {
   const p = (m && m.proven) || [];
-  if (!p.length) return 'Not tested yet, so it is only picked now and then for quick jobs, to learn what it can do.';
+  if (!p.length) return 'Not tested yet, so it is not picked automatically until it has been tested.';
   return 'Has shown it can do: ' + p.slice(0, 4).map(x => (DEPTH_SAY[x.depth] || x.depth) + ' ' + (KIND_SAY[x.kind] || 'work of kind ' + x.kind)).join(', ') + (p.length > 4 ? ' and ' + (p.length - 4) + ' more' : '') + '.';
 }
 
@@ -50,7 +50,7 @@ export function autoPicksSection(host, app) {
     fill(host,
       msg ? h('p', { class: msg.ok ? 'caption' : 'err-line', role: 'status' }, msg.text) : null,
       Setting({ id: 'routing-scoped', title: 'Pick the right model for each job', value: on ? 'On' : 'Off', valueTone: on ? 'online' : 'neutral',
-        what: on ? 'Each job goes to a model that has shown it can do that kind of work at that difficulty. Among those, the crew picks the quickest one that uses the least of its own allowance. Easy work gets a light model; hard work gets a strong one. If a job comes back for rework, the next try goes to a stronger model.'
+        what: on ? 'Each job goes to a model that has shown it can do that kind of work at that difficulty. Among those, the crew picks the quickest one that uses the least of its own allowance. Easy work gets a light model; hard work gets a strong one. If a job comes back for rework, the next try goes to a stronger model. The CEO, and anyone whose models you set on purpose, keep their usual models.'
           : 'Everyone uses their usual models for every job.',
         flip: 'Only models open right now, inside your limits, and switched on below are picked. Everything is checked afterwards.', control: sw }),
       list.length ? h('ul', { class: 'plain stack-12 auto-picks' }, list.map(row)) : empty('No models to pick from yet.'),

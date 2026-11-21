@@ -1,6 +1,6 @@
 {
  "computedAt": "2030-02-01T00:00:00.000Z",
- "hash": "sha256:d0c0ccaa5748da10dce31ac2a556f70fab9ae87ac6ae31983cd485dc09d57198",
+ "hash": "sha256:b3142099e607e5dbaba1f41b76496b7b46a711160154eca4ee89ac8ec98cbc9f",
  "cells": [
   {
    "bar": 0.8,
@@ -12,7 +12,7 @@
    "costUnit": "listUsd",
    "defectPoints": 0,
    "defects": 0,
-   "eff": 0.7727,
+   "eff": 0.2727,
    "effort": "high",
    "enough": true,
    "excludedItems": 0,
@@ -25,7 +25,7 @@
    "items": 24,
    "itemsPerChange": 1,
    "limitBasis": "subscription: weekly tokens unknown",
-   "limitSharePerItem": 0.05,
+   "limitSharePerItem": null,
    "listUsd": 2.784,
    "lower": 0.8151,
    "medianCost": 0.116,
@@ -62,7 +62,7 @@
    "costUnit": "listUsd",
    "defectPoints": 4,
    "defects": 1,
-   "eff": 1,
+   "eff": 0.5,
    "effort": "medium",
    "enough": true,
    "excludedItems": 1,
@@ -75,7 +75,7 @@
    "items": 22,
    "itemsPerChange": 1,
    "limitBasis": "subscription: weekly tokens unknown",
-   "limitSharePerItem": 0.05,
+   "limitSharePerItem": null,
    "listUsd": 20.7,
    "lower": 0.8927,
    "medianCost": 0.9,
@@ -125,7 +125,7 @@
    "items": 5,
    "itemsPerChange": 1,
    "limitBasis": "subscription: weekly tokens unknown",
-   "limitSharePerItem": 0.05,
+   "limitSharePerItem": null,
    "listUsd": 3.05,
    "lower": 0.7527,
    "medianCost": 0.61,
@@ -226,7 +226,7 @@
  ],
  "minItems": 20,
  "oneShotWindowDays": 7,
- "policyDigest": "sha256:2e3ed0846406bad4",
+ "policyDigest": "sha256:c83428a542773722",
  "policyVersion": 1,
  "proposals": [
   {
@@ -237,10 +237,10 @@
     "effort": "medium",
     "model": "claude-fable-5-2[1m]",
     "provider": "claude-cli",
-    "score": 1
+    "score": 0.5
    },
    "fromModel": "claude-cli/claude-fable-5-2[1m] @ medium",
-   "gain": 0.2273,
+   "gain": 0.4546,
    "id": "rp-33e21dbc409d",
    "mode": "shadow",
    "rule": "bar-then-efficiency",
@@ -249,7 +249,7 @@
     "effort": "high",
     "model": "claude-sonnet-5-5",
     "provider": "claude-cli",
-    "score": 0.7727
+    "score": 0.2727
    },
    "toModel": "claude-cli/claude-sonnet-5-5 @ high"
   }

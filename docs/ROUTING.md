@@ -88,7 +88,7 @@ default; the two log paths are the exception and fall back to the files named be
 | `mode` | `shadow` | `off` \| `shadow` \| `live`, for department routes and trials. `off`: not computed. `shadow`: decided and recorded (`applied: false`, `wouldApply`), the seat runs on its chain. `live`: passed as the one-run override on POST /api/cron/run (StarNet patch 0017), only when the override allowlist opens the pair. |
 | `classRules` | `{ code: { denyProviders: ["custom"] } }` | Owner rulings per task class (`denyProviders`, `denyModels`), in every mode, on every step (§3). Code is never written by the MiniMax plan (provider `custom`). |
 | `classRulesApply` | `always` | Whether the class rules' chain fix is a step of the walk: `always` (live in every mode), `mode` (follows `mode`), `off` (not a step). Whatever the value, the class rules always hold after the walk (§3). |
-| `order` | `classRules, trial, route, tierCap, chain` | The order of the router's steps (§3). |
+| `order` | `classRules, trial, route, scoped, tierCap, chain` | The order of the router's steps (§3). |
 | `tierCaps` | mode `shadow`; allow Haiku (both ids), Sonnet 5.5 (both ids), DeepSeek; `heavyEscape: heavy`; `exemptFunctions: ["ceo"]`; `exemptLeads: true`; `itemlessWakes: true` | The executor tier caps (§5), with their own mode switch. |
 | `trialLimits` | `minArms 2, maxArms 4, maxEntryShare 0.5, defaultEntryShare 0.1, defaultMinItemsPerArm 30, defaultPauseWhenHeld ["claude-cli"]` | What `trial create` accepts, and its defaults (§4). |
 | `trials` | `[]` | The framework defines no trial (§4). |
@@ -109,8 +109,8 @@ command. A company copy that does not parse is an error: `status` says so and no
 |---|---|---|
 | classRules | nothing: a filter on every step. A pair a rule denies for a class in the wake is never chosen | always on |
 | trial | the arm a running trial assigns this wake (§4) | `mode` |
-| scoped | the most efficient routable model proven at the job's depth for its kind of work (§8) | `scoped.enabled` (on or off; live when on) |
 | route | the seat's department route for the wake's class (`company/departments.json` routes.<class>, docs/DEPARTMENTS.md) | `mode` |
+| scoped | the most efficient routable model proven at the job's depth for its kind of work (§8); never for an exempt seat or a class its department routes | `scoped.enabled` (on or off; live when on) |
 | tierCap | the seat's first chain entry on the cap's allow list (§5) | `tierCaps.mode` |
 | chain | the seat's own pair; changed only when the class rules deny it (then its first allowed chain entry) | `classRulesApply` |
 
@@ -140,8 +140,8 @@ The decision (on the wake's `company/state/wakes.jsonl` row as `route`, and in t
     { v, class, classes, source: trial|scoped|route|tierCap|chain, trial?, arm?, department?, provider, model, effort?,
       applied, mode, capMode, wouldApply?: { source, provider, model, effort?, trial?, arm?, department? }, chain?,
       chainDenied?, hold?, holdWhy?, reasons: [...], scoped?: { kind, kindName, depth, needs, signals, escalated?,
-      exclude?, candidates: [{ model, current, time?, share?, shareBasis?, margin?, eff?, out? }], pick, why, applied,
-      override, runs, note?, newModel? } }
+      exclude?, exempt?, probe?: { from, to }, limitTerm?, candidates: [{ model, current, time?, share?, shareBasis?,
+      margin?, eff?, out? }], pick, why, applied, override, runs, note?, newModel? } }
 
 `provider/model/effort` is what the run was started on; top-level `source`/`trial`/`arm` say which step that was (a
 trial's control arm, the seat's own pair, has `source: "trial"` with `applied: false`). Sprint lanes (`lanes.js`) are
@@ -321,9 +321,22 @@ sliders only filter; they never rank.
 
 **The switch.** `scoped.enabled` in routing-policy.json, shipped **on**. Only the owner changes it:
 `routing.js scoped on|off --by owner`, or Settings › Models › **Automatic picks**. Off skips the step entirely: no extra
-allowlist entries and no `route.scoped`. On brings the framework default's `scoped` block (and the step in `order`)
-into a company copy made before scoped routing existed. With no bench result and no live record no model qualifies, so
-every wake runs on its chain. That is why it can ship on.
+allowlist entries and no `route.scoped`. On brings the framework default's `scoped` block (and the step in `order`, after
+`route`) into a company copy made before scoped routing existed. Until a model has a bench result
+(company/state/model-bench, then `model-rank.js refresh` writes the capability table) no model qualifies, and
+`newModel.share` ships 0, so no model without a bench result is ever picked: every wake runs on its chain. That is why
+it can ship on.
+
+**Manual pins win.** Scoped routing never moves:
+
+- a seat holding one of `scoped.exemptFunctions` (default `ceo`);
+- a seat with `claudeReserve` in model-policy.json (`scoped.exemptReserve`, default true);
+- a seat the owner pinned: `seats.<id>.autoPick: false` in model-policy.json;
+- a seat whose chain primary or current model is not routable (it was assigned on purpose: Fable, say);
+- a wake whose class the seat's department routes on purpose (`departments.json routes.<class>`): the route step runs
+  before scoped and the scoped step stands aside for that class.
+
+An exempt seat gets no scoped entries in the override allowlist either; `route.scoped.why` says which rule applied.
 
 **1. The job's depth and kind** (`lib/depth.js`, no model call). Depths are the model bench's: lookup < simple <
 standard < deep. Kinds are its 10 kinds of work (1 lookup, 2 extract, 3 writing, 4 planning, 5 numbers, 6 simple code,
@@ -336,10 +349,14 @@ standard < deep. Kinds are its 10 kinds of work (1 lookup, 2 extract, 3 writing,
 3. Size can raise it. `scoped.size.filesStandard` / `filesDeep` count the `**Touches:**` paths, and `charsStandard` /
    `charsDeep` measure the block's length.
 4. **Escalation.** Each fail moves the item one level up, capped at deep. A fail is a line in the block matching
-   `scoped.escalate.failLines` (a REVISE-type verdict, a `**Reopened` line, `**Premerge:** FAIL`), or a routed wake of
-   the same item (company/state/wakes.jsonl, `route.scoped`) beyond `escalate.freeRepeats`. The models those wakes ran
-   on are excluded, newest first, one per fail. So the retry goes to another model that clears the new depth; the
-   failed model is used again only when it is the only one left.
+   `scoped.escalate.failLines` (a REVISE-type verdict, a `**Reopened` line, `**Premerge:** FAIL`), or an earlier
+   routed wake of the same item (company/state/wakes.jsonl, `route.scoped`) whose run failed: the station's run
+   record ended with a reason in `escalate.failedRuns` (`max_iters`, out of steps), or (`escalate.ledger`) the
+   competence ledger holds a demerit on that run. An ordinary follow-up wake is not a fail, and neither is a provider
+   error (that is availability, handled by the chain). The models of the failed wakes are excluded, newest first; with
+   only a fail line and no failed run known, the newest routed model is excluded once. So the retry goes to another
+   model that clears the new depth; the failed model is used again only when it is the only one left. Premerge evidence
+   records count afterwards, through the ranking's one-shot result.
 
 A wake with several items takes the deepest depth and the majority kind. The kind comes from a `**Kind:** <1-10>`
 line, else from `scoped.kinds[class]` (a number, or per depth: code is kind 6 at lookup or simple and kind 7 above).
@@ -357,7 +374,8 @@ in when it is:
   (`models.js set/chain`, `hire.js`);
 - allowed by the class rules (code never on `custom`);
 - **open for the seat now** in the override allowlist. That already accounts for the pacer, the owner's subscription
-  stops, the rail, refusal blocks and provider errors;
+  stops, the rail, refusal blocks, provider errors and, for a free model named directly, OpenRouter's daily free limit
+  and a recent provider error on that id (the same checks the `openrouter/free` alias gets);
 - proven far enough: `current >= depth` in `company/work/models/model-capability.json` for the kind and for every
   `alsoNeeds` kind;
 - not excluded for this item.
@@ -367,7 +385,7 @@ open it. `lib/override-allow.js` still keeps only the ones `models.js evaluate()
 
 **3. The pick.** Lower `eff` is better:
 
-    eff = weights.time x (expected time / the slowest candidate's) + weights.limit x min(1, limit share / limits.shareScale)
+    eff = weights.time x (expected time / the slowest candidate's) + weights.limit x s / (s + limits.shareScale)
 
 - **Expected time** is the live median for (model, kind, depth), else the bench's `timeSecP50`. A candidate with no
   time reads as the slowest.
@@ -375,19 +393,29 @@ open it. `lib/override-allow.js` still keeps only the ones `models.js evaluate()
   tokens per task at that depth (else `limits.defaultTokens`) over the tokens left this week: the pacer's used % against
   its weekly stop, times `limits.subscriptionWeeklyTokens[provider]`. A metered model counts the expected usd
   (`limits.usdPerMTokens`) over the station's daily rail left. A free model counts `limits.freeRequestsPerJob[depth]`
-  over today's free requests left (`model-policy.json freeFallback.dailyRequests` less today's routed OpenRouter
-  wakes). Unknown reads as `unknownShare`. No share is ever 0.
+  over today's free requests left (`model-policy.json freeFallback.dailyRequests` less today's OpenRouter runs, through a
+  chain or an override). `s / (s + shareScale)` saturates smoothly: a job taking `shareScale` (2%) of what is left
+  counts half, and 2% and 100% are told apart. No share is ever 0.
+- **An unknown limit is neutral.** When any candidate's limit size is unknown (no `subscriptionWeeklyTokens` set for
+  its provider, say), the limit term is left out for every candidate of that comparison, and time and quality decide;
+  `route.scoped.limitTerm` says so. An unknown is never the worst value for one kind of model while a known small number
+  wins for another, so a metered model does not take every job just because its rail is the only limit known.
 - **Ties.** Candidates within `tieEpsilon` of the best are ordered by their quality margin: the live lower bound, else
   the bench pass rate, minus the pass mark.
+- **Probes.** `probe.share` (default 0.05) of the wakes whose depth is the class baseline alone (no Depth line,
+  effort, size or fail raised it) go to the most efficient model proven ONE level lower, once a capability table
+  exists. A probe that one-shots is evidence the class is easier than its baseline (the drift down, docs/RANKING.md
+  §11) and for raising that model; a probe that fails escalates like any fail and does not count as "harder".
+  `route.scoped.probe` records it.
 - **New models.** A model with no bench result gets `newModel.share` of the wakes at `newModel.depths` (hashed by wake
-  id, like a trial), so it builds a live record.
-- **Nothing qualifies.** The walk goes on (route, tier cap, chain), and `route.scoped.why` says so. At deep with nothing
+  id, like a trial) once a capability table exists, so it builds a live record. It ships 0: never.
+- **Nothing qualifies.** The walk goes on (tier cap, chain), and `route.scoped.why` says so. At deep with nothing
   proven there, the chain runs.
 
 **4. The record.** While scoped routing is on, every wake's decision carries `route.scoped`, whichever step applied.
 It holds the job's kind and depth, the signals, every candidate with its numbers or why it is out, the pick, why it
-was chosen, and whether it applied. This goes to routing-decisions.jsonl and the wake's wakes.jsonl row, and one
-`ROUTE` line goes to the dispatch log. model-rank.js reads it back: the item's one-shot result (REVISE, reopen,
+was chosen, and whether it applied. This goes to routing-decisions.jsonl and the wake's wakes.jsonl row, and a
+wake with a scoped pick gets one `ROUTE` line in the dispatch log (a "no pick" stays in the decisions log only). model-rank.js reads it back: the item's one-shot result (REVISE, reopen,
 premerge, defects, owner corrections) feeds the capability table and the class drift (docs/RANKING.md §11). That is the
 validation after the work.
 

@@ -29,9 +29,11 @@ no setting relaxes:
 **Scoped routing** (docs/ROUTING.md §8) treats free models as full candidates, not only a last resort. While the
 fallback is on, every listed free model that takes tools is a candidate for a job its proven depth clears (the model
 bench, then live work). Like any other model, it must be routable and open for the seat now. It is compared on time
-and on its share of today's free requests (`freeFallback.dailyRequests`, default 50, less today's routed OpenRouter
-wakes), so it is neither favoured nor penalised. A free model with no bench result gets a small share of shallow jobs
-(`scoped.newModel`) to build a record.
+and on its share of today's free requests (`freeFallback.dailyRequests`, default 50, less today's OpenRouter runs),
+so it is neither favoured nor penalised; when another candidate's limit size is unknown, the limit term is left out for
+all of them. A free id named directly gets the same daily-limit and cooling checks in `models.js evaluate` as the alias,
+so scoped routing stops sending work to it once OpenRouter's daily cap is hit. A free model with no bench result is not
+picked automatically (`scoped.newModel.share` ships 0); run the model bench on it first.
 
 `node company/tools/free-models.js pick` says what `openrouter/free` resolves to now and why.
 `node company/tools/models.js show --seat <id>` shows the seat's whole chain, with each entry's reason.
