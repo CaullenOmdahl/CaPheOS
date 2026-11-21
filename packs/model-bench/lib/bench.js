@@ -19,6 +19,12 @@
  * error end with no answer: 'error:<text>'; a station HTTP 429/5xx or socket error) is never the model's fault: the instance is
  * failures.provider, its level is not proven ('provider:<code>'), and after providerStopAfter (3) in a row the run stops
  * and the rest are not run (failures.notRun, 'not-run: ...'). An empty answer with no failure code stays unparseable.
+ *
+ * The tool protocol: in a tool task the model ends each message with one fenced json tool call and the harness replies
+ * with the result. A first reply with no json block that says it cannot reach the workspace or asks for files to be
+ * pasted (PROTOCOL_REFUSAL_RE) gets one corrective message, a turn counted against maxTurns. A model that, after that,
+ * refuses again or never makes a single tool call is failures.protocol: its level is not proven ('protocol'), never
+ * failed, like a provider failure, since it measured the protocol and not the work.
  */
 const fs = require('fs');
 const path = require('path');
@@ -123,6 +129,29 @@ const TOOL_TEXT = {
   write: '{"tool": "write", "path": "out/b.md", "content": "..."}  writes a file (whole)',
   shell: '{"tool": "shell", "cmd": "ls -la"}  runs a bash command in the workspace (no network; each command at most 60 s)',
 };
+// a reply that says it cannot reach the workspace or asks for the files to be pasted (conservative: checked only on a
+// tool task's first reply, and only when the reply has no json block at all)
+const PROTOCOL_REFUSAL_RE = new RegExp([
+  "\\b(?:can[\u2019']?t|cannot|can not|unable to|(?:do not|don[\u2019']?t) have|no)\\b[^.\\n]{0,60}\\b(?:access|open|read|see|reach|use|run)\\b[^.\\n]{0,40}\\b(?:workspace|files?|tools?|repo(?:sitory)?|director(?:y|ies)|folders?)\\b",
+  "\\b(?:paste|share|upload|send|provide)\\b[^.\\n]{0,40}\\b(?:contents?|files?|code|output)\\b[^.\\n]{0,20}\\b(?:here|with me|in (?:the|this|your) (?:chat|message|reply))",
+].join('|'), 'i');
+const PROTOCOL_HINT = 'You can: reply with a fenced json tool block such as {"tool": "list", "path": "."}. This conversation is the workspace: the harness runs the call and sends you the result in the next message.';
+function toolHow(tools, maxTurns) {
+  const first = tools.includes('list') ? { tool: 'list', path: '.' } : { tool: tools[0], path: '.' };
+  const second = tools.includes('read') ? { tool: 'read', path: 'notes/a.md' } : first;
+  const js = o => JSON.stringify(o).replace(/":/g, '": ').replace(/,"/g, ', "');
+  const ex = (who, lines) => lines.map((l, i) => '  ' + (i ? ' '.repeat(who.length) : who) + l).join('\n');
+  return 'This conversation is your workspace. The json block is how you open files' + (tools.includes('shell') ? ' and run commands' : '') +
+    ': end your message with ONE fenced json block holding one tool call, and the harness runs it and replies with the result in the next message. ' +
+    'Never ask for files to be pasted; open them yourself. One call per message. The tools:\n' + tools.map(t => '  ' + TOOL_TEXT[t]).join('\n') +
+    '\nWhen you are done, end your message with the fenced json block of your answer instead (it never has a "tool" key). You have at most ' + maxTurns + ' turns.\n' +
+    'An example of the turns:\n' +
+    ex('you:     ', ['I will see what is there.', '```json', js(first), '```']) + '\n' +
+    ex('harness: ', ['Result:', 'notes/a.md']) + '\n' +
+    ex('you:     ', ['```json', js(second), '```']) + '\n' +
+    ex('harness: ', ['Result:', '(the text of notes/a.md)']) + '\n' +
+    ex('you:     ', ['Done.', '```json', '(your answer, in the shape the task asks for)', '```']);
+}
 function prompt(unitDir, task, inst) {
   const tpl = fs.readFileSync(path.join(unitDir, task.prompt), 'utf8').replace(/^<!--[\s\S]*?-->\n?/, '');
   // function replacements: a "$'" or "$&" in the task text (code in a diff) is text, never a replacement pattern
@@ -133,10 +162,7 @@ function prompt(unitDir, task, inst) {
     body = body.replace('{{FILES}}', () => shown);
   } else body = body.replace('{{FILES}}', 'The files are in your workspace. Use the tools to look at them.');
   const tools = task.inputs.tools;
-  const how = tools.length
-    ? 'You work in a workspace through tools. To use a tool, end your message with ONE fenced json block holding one call:\n' + tools.map(t => '  ' + TOOL_TEXT[t]).join('\n') +
-      '\nYou get the result in the next message. When you are done, end your message with the fenced json block of your answer instead (it never has a "tool" key). You have at most ' + (task.maxTurns || 30) + ' turns.'
-    : 'Answer in one message. End it with the fenced json block of your answer.';
+  const how = tools.length ? toolHow(tools, task.maxTurns || 30) : 'Answer in one message. End it with the fenced json block of your answer.';
   return body.replace('{{TOOLS}}', () => how) + '\n';
 }
 
@@ -179,7 +205,7 @@ function stationDriver(o) {
     start() {},
     turn(messages) {
       const body = JSON.stringify({ agentId: o.seat, provider, model, internal: true, isTask: false, streamId: 'model-bench', reasoningEffort: o.effort || undefined,
-        system: o.system || 'You are being tested on everyday company work. Follow the task exactly.', messages });
+        system: o.system || 'You are being tested on everyday company work. Follow the task exactly. In a task with tools, this conversation is the workspace: you open files and run commands by ending your message with one fenced json tool call, and the next message brings its result.', messages });
       return new Promise((resolve, reject) => {
         const u = new URL(o.stationUrl);
         const req = http.request({ hostname: u.hostname, port: u.port || 80, path: '/api/run', method: 'POST',
@@ -273,6 +299,7 @@ async function runInstance(o) {
     if (driver.start) driver.start(inst);
     const messages = [{ role: 'user', content: prompt(unitDir, task, inst) }];
     let transcript = '', said = '', final = null;   // said: the model's own messages only, without tool output
+    let toolCalls = 0, corrected = false, protocolOut = false;   // the tool protocol: see the header
     const maxTurns = task.inputs.tools.length ? (task.maxTurns || 30) : 1;
     for (let turn = 0; turn < maxTurns; turn++) {
       if (Date.now() - t0 > limitMs) { rec.failure = 'timeout'; break; }
@@ -290,14 +317,26 @@ async function runInstance(o) {
       transcript += '\n' + r.text; said += '\n' + r.text;
       messages.push({ role: 'assistant', content: r.text });
       const a = A.extract(r.text);
+      // a refusal of the tool protocol ("I cannot open the workspace, paste the files"): one corrective message on the
+      // first turn; a second refusal before any tool call ends the instance as a protocol failure
+      if (!a.ok && task.inputs.tools.length && !toolCalls && PROTOCOL_REFUSAL_RE.test(r.text)) {
+        if (corrected) { protocolOut = true; break; }
+        if (turn === 0 && turn < maxTurns - 1) { corrected = true; rec.corrected = true; messages.push({ role: 'user', content: PROTOCOL_HINT }); continue; }
+      }
       if (!a.ok) { if (!task.inputs.tools.length || turn === maxTurns - 1) { rec.failure = 'unparseable'; rec.detail = a.error; break; } messages.push({ role: 'user', content: 'Your message did not end with a fenced json block (' + a.error + '). Send one tool call or your answer.' }); continue; }
       if (a.value && typeof a.value === 'object' && !Array.isArray(a.value) && typeof a.value.tool === 'string') {
+        toolCalls++;
         const out = await tool(a.value, inst, ctx);
         transcript += '\n' + out;
         messages.push({ role: 'user', content: 'Result:\n' + out });
         continue;
       }
       final = a.value; break;
+    }
+    // corrected and still no tool call (refused again, ran out of turns, or answered without looking): the protocol, not the work
+    if (corrected && !toolCalls && (protocolOut || !rec.failure || rec.failure === 'unparseable')) {
+      rec.failure = 'protocol'; rec.notProven = 'protocol'; final = null;
+      rec.detail = 'the model did not use the tool protocol, even after the corrective message: no tool call to score';
     }
     if (final === null && !rec.failure) { rec.failure = 'unparseable'; rec.detail = 'no answer within ' + maxTurns + ' turns'; }
     if (Date.now() - t0 > limitMs && !rec.failure) rec.failure = 'timeout';
@@ -398,7 +437,7 @@ async function run(o) {
     if (inARow >= stopAfter) stopped = { after: recs.length, inARow, code: rec.providerCode, notRun: 0 };
   }
   S.removeRun(root, runId);
-  const result = aggregate(unitDir, o.model || driver.id, tasks, recs, { seed, cfg, judgeModel: judge ? (o.judgeModel || jm || 'stub') : (jm || null), complete: !o.kinds && !o.depth && !stopped && !recs.some(r => r.failure === 'provider') });
+  const result = aggregate(unitDir, o.model || driver.id, tasks, recs, { seed, cfg, judgeModel: judge ? (o.judgeModel || jm || 'stub') : (jm || null), complete: !o.kinds && !o.depth && !stopped && !recs.some(r => r.failure === 'provider' || r.failure === 'protocol') });
   if (stopped) result.stopped = { reason: 'provider', code: stopped.code, inARow: stopped.inARow, ran: stopped.after, notRun: stopped.notRun };
   return { result, records: recs };
 }
@@ -428,14 +467,15 @@ function aggregate(unitDir, model, tasks, recs, o) {
     for (const d of DEPTHS) {
       const ts = tasks.filter(t => t.kind === k && t.depth === d); if (!ts.length) continue;
       const rs = recs.filter(r => ts.some(t => t.id === r.task));
-      const failures = { timeout: 0, unparseable: 0, crash: 0, refused: 0, sandbox: 0, provider: 0, notRun: 0 };
+      const failures = { timeout: 0, unparseable: 0, crash: 0, refused: 0, sandbox: 0, provider: 0, notRun: 0, protocol: 0 };
       for (const r of rs) if (r.failure && failures[r.failure] !== undefined) failures[r.failure]++;
       // a task with repeatK > 1 passes only when every repeat passed (pass^k)
       const byTask = {}; for (const r of rs) (byTask[r.group || r.task] ||= []).push(r);
       const units = Object.values(byTask);
       const passed = units.filter(u => u.every(r => r.pass)).length;
-      // a provider failure wins: the level says nothing about the model (never failed); then not run; then any other
-      const notProvenRec = rs.find(r => r.failure === 'provider') || rs.find(r => r.failure === 'notRun') || rs.find(r => r.notProven);
+      // a provider failure wins: the level says nothing about the model (never failed); then not run; then the tool
+      // protocol; then any other
+      const notProvenRec = rs.find(r => r.failure === 'provider') || rs.find(r => r.failure === 'notRun') || rs.find(r => r.failure === 'protocol') || rs.find(r => r.notProven);
       let notProvenReason = null;
       if (notProvenRec) notProvenReason = notProvenRec.notProven;
       else if (failures.sandbox === rs.length && rs.length) notProvenReason = 'refused: no sandbox engine';
@@ -464,8 +504,8 @@ function kindSummary(levels, passMark) {
  * not one token used. forgetDamaged drops each kind (of `kinds`, or all) whose levels are all such. */
 const damagedLevel = L => !!L && Number(L.instances) > 0 && !Number(L.passed) && (Number(L.tokensIn) || 0) + (Number(L.tokensOut) || 0) === 0 &&
   !!L.failures && Number(L.failures.unparseable) >= Number(L.instances);
-// a level that measured the model: not one a provider failure or an early stop left unknown
-const measured = L => !!L && !(L.notProvenReason && /^(provider:|not-run)/.test(String(L.notProvenReason)));
+// a level that measured the model: not one a provider failure, an early stop or the tool protocol left unknown
+const measured = L => !!L && !(L.notProvenReason && /^(provider:|not-run|protocol$)/.test(String(L.notProvenReason)));
 const sameVersions = (a, b) => { a = a || {}; b = b || {}; const ka = Object.keys(a).sort(), kb = Object.keys(b).sort(); return ka.length === kb.length && ka.every((k, i) => k === kb[i] && Number(a[k]) === Number(b[k])); };
 function currentVersions(unitDir) {
   const cur = {};
@@ -540,4 +580,4 @@ function dryRun(o) {
 }
 
 module.exports = { loadTasks, instantiate, prompt, run, runInstance, gate, classify, limits, dryRun, aggregate, stubDriver, stationDriver, config, benchVersion, major, slug, familyOf, readTree, makeJudge,
-  mergeResults, forgetDamaged, damagedLevel, providerFailure, kindSummary, PROVIDER_CODES, PROVIDER_ERR_RE, httpError, socketError };
+  mergeResults, forgetDamaged, damagedLevel, providerFailure, kindSummary, PROVIDER_CODES, PROTOCOL_REFUSAL_RE, PROTOCOL_HINT, PROVIDER_ERR_RE, httpError, socketError };

@@ -97,6 +97,13 @@ and the runner exits 0 with a line saying so. An empty answer with no failure co
 Results written before this (every level unparseable with zero tokens) are cleaned with
 `node company/tools/model-bench.js forget --model <provider/model> [--kinds 1,2] [--dry-run]`.
 
+**When the model does not use the tools.** A task with tools speaks a text protocol: the model ends each message with
+one fenced json tool call and the bench runs it and replies with the result (the prompt shows a worked example). A
+first reply with no json block that says it cannot reach the workspace or asks for files to be pasted gets one
+corrective message (a turn counted against the task's turns). A model that then refuses again or never makes a single
+tool call counts as `failures.protocol`, and its level is not proven (`notProvenReason: protocol`), never failed: it
+measured the protocol, not the work. Like a provider-failed level, it never replaces a measured one in the merged file.
+
 **How to remove it.** `node company/tools/unit.js disable model-bench --by owner` removes the skill. The runner refuses to
 run without the unit; results already written stay until someone deletes `company/state/model-bench/`.
 

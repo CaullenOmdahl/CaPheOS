@@ -221,7 +221,7 @@ async function cmd(argv, o) {
     const res = m.result;
     const f = writeResult(root, res, { at: ran.ranAt, model, seed: ran.seed, benchVersion: ran.benchVersion, complete: res.complete, minutes: Math.round((Date.now() - t0) / 600) / 100,
       ran: Object.keys(ran.kinds).map(Number), proven: Object.fromEntries(Object.entries(ran.kinds).map(([k, v]) => [k, v.proven])), instances: r.records.length, passed: r.records.filter(x => x.pass).length,
-      provider: r.records.filter(x => x.failure === 'provider').length, notRun: r.records.filter(x => x.failure === 'notRun').length, stopped: ran.stopped || undefined,
+      provider: r.records.filter(x => x.failure === 'provider').length, notRun: r.records.filter(x => x.failure === 'notRun').length, protocol: r.records.filter(x => x.failure === 'protocol').length, stopped: ran.stopped || undefined,
       kept: m.kept.map(x => x.kind + '/' + x.depth), dropped: m.dropped.map(x => x.kind + '/' + x.depth + ' (' + x.why + ')') });
     const extra = m.dropped.length ? ['dropped from the earlier result: ' + m.dropped.map(x => 'kind ' + x.kind + ' ' + x.depth + ' (' + x.why + ')').join(', ')] : [];
     return a.json ? { code: 0, out: res } : { code: 0, text: summaryLines(res).concat(extra, ['written: ' + path.relative(root, f)]).join('\n') };

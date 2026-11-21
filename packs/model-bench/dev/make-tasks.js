@@ -12,7 +12,9 @@ const K8 = require('../fixtures/k8/tasks');
 
 const UNIT = path.join(__dirname, '..');
 const DEPTHS = ['lookup', 'simple', 'standard', 'deep'];
-// task id -> version, when a task has changed since 1
+// task id -> version, when a task has changed since 1. Every task with tools (sandbox files or exec) is one higher than
+// listed here: the tool protocol text of its prompt was rewritten on 2026-11-22 (TOOL_BUMP)
+const TOOL_BUMP = 1;
 // 2: the fairness audit of 2026-11-21 (questions in the files' terms, scorers that accept values copied from the files,
 //    the expected answer worked out from what is shown, stated shapes and boundaries, no tool caches in the workspace)
 const VERSIONS = {
@@ -95,7 +97,7 @@ function title(kind, depth, i) {
 function task(kind, depth, n, params, ttl) {
   const id = 'k' + kind + '-' + depth + '-' + String(n).padStart(2, '0');
   const sb = sandboxOf(kind, depth);
-  const t = { id, kind, depth, version: VERSIONS[id] || 1, canary: CANARY, title: ttl, generator: 'gen/' + GEN[kind] + '.js', params,
+  const t = { id, kind, depth, version: (VERSIONS[id] || 1) + (sb === 'none' ? 0 : TOOL_BUMP), canary: CANARY, title: ttl, generator: 'gen/' + GEN[kind] + '.js', params,
     prompt: 'templates/' + TEMPLATE[kind] + '.md', inputs: { files: 'generated', tools: TOOLS[sb] }, expected: 'generated',
     scorer: { name: 'scorers/' + SCORER[kind] + '.js', args: kind === 5 ? { unit: 'required', precision: 2 } : kind === 8 ? { lineTolerance: 3 } : {} },
     answerFormat: 'json', timeLimitSec: TIME[kind][DEPTHS.indexOf(depth)], sandbox: sb, repeatK: kind === 10 && depth === 'deep' ? 3 : 1,
