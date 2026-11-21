@@ -15,7 +15,8 @@
  *   B.forgetDamaged(result, kinds, o)             -> { result, dropped }   drops kinds a provider failure scored as unparseable
  *
  * A provider failure (the run end carries a failure code such as quota_exhausted, rate_limited, usage_limit,
- * provider_error or overloaded, or any failure code with an empty answer) is never the model's fault: the instance is
+ * provider_error or overloaded, or any failure code with an empty answer; no code but a provider-like error text or an
+ * error end with no answer: 'error:<text>'; a station HTTP 429/5xx or socket error) is never the model's fault: the instance is
  * failures.provider, its level is not proven ('provider:<code>'), and after providerStopAfter (3) in a row the run stops
  * and the rest are not run (failures.notRun, 'not-run: ...'). An empty answer with no failure code stays unparseable.
  */
@@ -41,11 +42,22 @@ function config(unitDir, over) {
 const PROVIDER_CODES = ['quota_exhausted', 'rate_limited', 'rate_limit', 'usage_limit', 'provider_error', 'provider_unavailable', 'overloaded',
   'upstream', 'network', 'billing', 'concurrency_limit', 'free_daily_limit', 'model_unavailable', 'auth'];
 const PROVIDER_RE = /quota|rate.?limit|usage.?limit|overload|provider|billing|daily.?limit|upstream|unavailable/i;
-function providerFailure(code, text) {
-  if (!code) return null;
-  const c = String(code);
-  if (/refus|content_policy/i.test(c)) return null;
-  if (PROVIDER_CODES.includes(c) || PROVIDER_RE.test(c) || !String(text || '').trim()) return c.slice(0, 60);
+// provider error text (lib/free-models.js PROVIDER_ERR_RE, plus usage limits): a run end may carry the cause only here
+const PROVIDER_ERR_RE = /\bhttp\s*(40[23]|408|429|5\d\d)\b|rate.?limit|usage.?limit|overloaded|unavailable|no endpoints|timed? ?out|upstream|provider returned error|quota/i;
+/* the provider's failure code for one turn, or null when the model answered (or refused). o: { reason, error } from the
+ * run end. A failure code: listed, provider-like, or any non-refusal code with an empty answer. No code: provider when the
+ * error text reads like one, or when the run ended in an error with an empty answer ('error:<text>'). */
+function providerFailure(code, text, o) {
+  o = o || {};
+  const err = String(o.error || ''), empty = !String(text || '').trim();
+  if (code) {
+    const c = String(code);
+    if (/refus|content_policy/i.test(c)) return null;
+    if (PROVIDER_CODES.includes(c) || PROVIDER_RE.test(c) || empty || PROVIDER_ERR_RE.test(err)) return c.slice(0, 60);
+    return null;
+  }
+  if (/refus|content_policy/i.test(err)) return null;
+  if (PROVIDER_ERR_RE.test(err) || (o.reason === 'error' && empty)) return ('error:' + (err.trim() || 'unknown')).slice(0, 60);
   return null;
 }
 const benchVersion = unitDir => manifest(unitDir).version || '0.0.0';
@@ -146,6 +158,17 @@ function stubDriver(mode) {
     },
   };
 }
+// a station HTTP 429 or 5xx, or a socket error: the provider or the station had no room, never the model's answer
+// (runInstance reads e.providerCode); any other HTTP status stays a crash
+function httpError(status, body) {
+  const e = new Error('station HTTP ' + status + ' ' + String(body || '').slice(0, 160));
+  if (status === 429 || status >= 500) e.providerCode = status === 429 ? 'rate_limited' : 'http_' + status;
+  return e;
+}
+function socketError(e) {
+  if (e && /^(ECONNREFUSED|ECONNRESET|EPIPE|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|EAI_AGAIN)$/.test(String(e.code || ''))) e.providerCode = 'network';
+  return e;
+}
 // the station's run API, talk only (isTask false, no station tools): the bench's own tools run in its own sandbox
 function stationDriver(o) {
   const http = require('http');
@@ -160,7 +183,10 @@ function stationDriver(o) {
         const u = new URL(o.stationUrl);
         const req = http.request({ hostname: u.hostname, port: u.port || 80, path: '/api/run', method: 'POST',
           headers: { 'x-starnet-token': o.token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, res => {
-          if (res.statusCode !== 200) { let d = ''; res.on('data', c => d += c); res.on('end', () => reject(new Error('station HTTP ' + res.statusCode + ' ' + d.slice(0, 160)))); return; }
+          if (res.statusCode !== 200) {
+            let d = ''; res.on('data', c => d += c);
+            res.on('end', () => reject(httpError(res.statusCode, d))); return;
+          }
           let buf = '', lead = null, text = '', end = null;
           res.on('data', c => {
             buf += c; let i;
@@ -174,11 +200,12 @@ function stationDriver(o) {
             }
           });
           res.on('end', () => resolve({ text, tokensIn: Number(end && (end.inputTokens || (end.usage && end.usage.input))) || 0, tokensOut: Number(end && (end.outputTokens || (end.usage && end.usage.output))) || 0,
-            servedModel: (end && (end.model || end.servedModel)) || null, usd: Number(end && end.usd) || 0, failure: end && end.failureCode }));
+            servedModel: (end && (end.model || end.servedModel)) || null, usd: Number(end && end.usd) || 0,
+            failure: (end && end.failureCode) || '', reason: (end && end.reason) || null, error: (end && end.error) || null }));
           res.on('error', reject);
         });
         req.setTimeout((o.turnTimeoutSec || 600) * 1000, () => req.destroy(new Error('turn timed out')));
-        req.on('error', reject); req.write(body); req.end();
+        req.on('error', e => reject(socketError(e))); req.write(body); req.end();
       });
     },
   };
@@ -249,11 +276,15 @@ async function runInstance(o) {
     for (let turn = 0; turn < maxTurns; turn++) {
       if (Date.now() - t0 > limitMs) { rec.failure = 'timeout'; break; }
       let r;
-      try { r = await driver.turn(messages, { remainingMs: limitMs - (Date.now() - t0) }); } catch (e) { rec.failure = 'crash'; rec.detail = String(e.message || e).slice(0, 200); break; }
+      try { r = await driver.turn(messages, { remainingMs: limitMs - (Date.now() - t0) }); } catch (e) {
+        rec.detail = String(e.message || e).slice(0, 200);
+        if (e && e.providerCode) { rec.failure = 'provider'; rec.providerCode = String(e.providerCode); rec.notProven = 'provider:' + rec.providerCode; } else rec.failure = 'crash';
+        break;
+      }
       rec.tokensIn += r.tokensIn || 0; rec.tokensOut += r.tokensOut || 0; rec.usd += r.usd || 0; if (r.servedModel) rec.servedModel = r.servedModel;
       if (r.failure && /refus/i.test(String(r.failure))) { rec.failure = 'refused'; break; }
       // the provider failed (quota, rate limit, overload ...): not the model's answer, so never scored as the model's fail
-      const pf = providerFailure(r.failure, r.text);
+      const pf = providerFailure(r.failure, r.text, { reason: r.reason, error: r.error });
       if (pf) { rec.failure = 'provider'; rec.providerCode = pf; rec.notProven = 'provider:' + pf; rec.detail = 'the provider failed (' + pf + '): no answer from the model to score'; break; }
       transcript += '\n' + r.text;
       messages.push({ role: 'assistant', content: r.text });
@@ -428,6 +459,10 @@ function kindSummary(levels, passMark) {
 }
 
 // ---------- merging runs into one result per model
+/* A level a provider failure wrote as the model's fault before providers were told apart: every instance unparseable and
+ * not one token used. forgetDamaged drops each kind (of `kinds`, or all) whose levels are all such. */
+const damagedLevel = L => !!L && Number(L.instances) > 0 && !Number(L.passed) && (Number(L.tokensIn) || 0) + (Number(L.tokensOut) || 0) === 0 &&
+  !!L.failures && Number(L.failures.unparseable) >= Number(L.instances);
 // a level that measured the model: not one a provider failure or an early stop left unknown
 const measured = L => !!L && !(L.notProvenReason && /^(provider:|not-run)/.test(String(L.notProvenReason)));
 const sameVersions = (a, b) => { a = a || {}; b = b || {}; const ka = Object.keys(a).sort(), kb = Object.keys(b).sort(); return ka.length === kb.length && ka.every((k, i) => k === kb[i] && Number(a[k]) === Number(b[k])); };
@@ -444,19 +479,29 @@ function currentVersions(unitDir) {
 function mergeResults(unitDir, prev, res, o) {
   o = o || {};
   const out = JSON.parse(JSON.stringify(res)), kept = [], dropped = [];
-  if (!prev || prev.schema !== res.schema || prev.model !== res.model || !prev.kinds || typeof prev.kinds !== 'object') return { result: out, kept, dropped };
+  // the new run's levels carry their own measuredAt and seed (a run of an older unit wrote neither on its levels)
+  for (const nk of Object.values(out.kinds || {})) for (const L of Object.values((nk && nk.levels) || {})) {
+    if (!L.measuredAt) L.measuredAt = res.ranAt || null;
+    if (L.seed == null) L.seed = res.seed != null ? res.seed : null;
+  }
   const passMark = Number(config(unitDir, o.config).passMark) || 0.9;
+  if (!prev || prev.schema !== res.schema || prev.model !== res.model || !prev.kinds || typeof prev.kinds !== 'object') {
+    for (const k of Object.keys(out.kinds || {})) out.kinds[k] = kindSummary(out.kinds[k].levels || {}, passMark);
+    return { result: out, kept, dropped };
+  }
   const cur = o.versions || currentVersions(unitDir);
   const sameMajor = major(prev.benchVersion) === major(res.benchVersion);
   const touched = new Set();
   for (const [k, pk] of Object.entries(prev.kinds)) {
     for (const [d, L0] of Object.entries((pk && pk.levels) || {})) {
       const nk = out.kinds[k], nL = nk && nk.levels && nk.levels[d];
-      if (measured(nL)) continue;   // the new run measured it: the new level replaces the old
+      // the new run measured it: the new level replaces the old, unless it is a provider failure an older unit scored
+      // as unparseable with no tokens and the old level measured the model
+      if (measured(nL) && !(damagedLevel(nL) && measured(L0) && !damagedLevel(L0))) continue;
       const L = Object.assign({}, L0, { measuredAt: L0.measuredAt || pk.measuredAt || prev.ranAt || null, seed: L0.seed != null ? L0.seed : pk.seed != null ? pk.seed : (prev.seed != null ? prev.seed : null) });
       const why = !sameMajor ? 'bench major version ' + major(prev.benchVersion) + ' -> ' + major(res.benchVersion) : !sameVersions(L.taskVersions, cur[k] && cur[k][d]) ? 'task versions changed' : null;
       if (why) { dropped.push({ kind: Number(k), depth: d, why }); continue; }
-      if (nL && !measured(L)) continue;   // neither measured: the newer unknown stays
+      if (nL && !(measured(L) && !damagedLevel(L))) continue;   // neither measured: the newer unknown stays
       (out.kinds[k] ||= { proven: null, gaps: [], levels: {} }).levels[d] = L;
       touched.add(k); kept.push({ kind: Number(k), depth: d, measuredAt: L.measuredAt, seed: L.seed });
     }
@@ -467,10 +512,6 @@ function mergeResults(unitDir, prev, res, o) {
   if (!out.servedModel && prev.servedModel) out.servedModel = prev.servedModel;
   return { result: out, kept, dropped };
 }
-/* A level a provider failure wrote as the model's fault before providers were told apart: every instance unparseable and
- * not one token used. forgetDamaged drops each kind (of `kinds`, or all) whose levels are all such. */
-const damagedLevel = L => !!L && Number(L.instances) > 0 && !Number(L.passed) && (Number(L.tokensIn) || 0) + (Number(L.tokensOut) || 0) === 0 &&
-  !!L.failures && Number(L.failures.unparseable) >= Number(L.instances);
 function forgetDamaged(result, kinds, o) {
   const out = JSON.parse(JSON.stringify(result || {})), dropped = [];
   for (const [k, kr] of Object.entries(out.kinds || {})) {
@@ -498,4 +539,4 @@ function dryRun(o) {
 }
 
 module.exports = { loadTasks, instantiate, prompt, run, runInstance, gate, classify, limits, dryRun, aggregate, stubDriver, stationDriver, config, benchVersion, major, slug, familyOf, readTree, makeJudge,
-  mergeResults, forgetDamaged, damagedLevel, providerFailure, kindSummary, PROVIDER_CODES };
+  mergeResults, forgetDamaged, damagedLevel, providerFailure, kindSummary, PROVIDER_CODES, PROVIDER_ERR_RE, httpError, socketError };

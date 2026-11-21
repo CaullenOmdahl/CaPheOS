@@ -192,3 +192,85 @@ test('forget drops the kinds an earlier provider failure scored as unparseable w
   const g = (await runKinds([1], { depth: 'lookup', driver: Object.assign(B.stubDriver('garbage'), { id: MODEL }) })).result;
   assert.deepEqual(B.forgetDamaged(g).dropped, []);
 });
+
+// a driver whose turns `end(n)` answers with a whole run end (text, failure, reason, error), or undefined: the oracle
+function endDriver(end) {
+  const o = B.stubDriver('oracle'); let n = 0;
+  const turn = o.turn.bind(o);
+  o.id = MODEL; o.family = 'acme'; o.stub = true;
+  o.turn = async (...a) => { const e = end(n++); if (e === undefined) return turn(...a); if (e instanceof Error) throw e; return Object.assign({ text: '', tokensIn: 0, tokensOut: 0 }, e); };
+  return o;
+}
+
+test('a provider failure with no failure code (the cause only in the error text, or an error end with no answer) is the provider\'s', async () => {
+  // the run end the station sends for a usage limit: an empty failureCode, reason error, the cause in the error text
+  let r = await runKinds([1], { depth: 'lookup', driver: endDriver(n => (n === 0 ? { text: '', failure: '', reason: 'error', error: 'usage limit reached' } : undefined)) });
+  let L = r.result.kinds['1'].levels.lookup;
+  assert.equal(L.failures.provider, 1); assert.equal(L.failures.unparseable, 0);
+  assert.equal(L.notProvenReason, 'provider:error:usage limit reached'); assert.equal(L.passRate, null);
+  // three in a row stop the run like any provider failure
+  let turns = 0;
+  r = await runKinds([1, 2], { driver: endDriver(() => { turns++; return { text: '', failure: '', reason: 'error', error: 'usage limit reached' }; }) });
+  assert.equal(turns, 3); assert.equal(r.result.stopped.code, 'error:usage limit reached');
+  // an error end with no answer and no error text: still the provider
+  r = await runKinds([1], { depth: 'lookup', driver: endDriver(n => (n === 0 ? { reason: 'error' } : undefined)) });
+  assert.equal(r.result.kinds['1'].levels.lookup.notProvenReason, 'provider:error:unknown');
+  // the pure rule
+  assert.equal(B.providerFailure('', 'some answer', { reason: 'stop' }), null, 'an answer with no code is the model\'s');
+  assert.equal(B.providerFailure('', '', {}), null, 'an empty answer with no code and no error stays unparseable');
+  assert.equal(B.providerFailure('', 'partial', { error: 'HTTP 429 Too Many Requests' }), 'error:HTTP 429 Too Many Requests');
+  assert.equal(B.providerFailure('', '', { reason: 'error', error: 'refused by content policy' }), null);
+});
+
+test('a station HTTP 429 or 5xx, or a socket error, is the provider\'s; any other station error stays a crash', async () => {
+  let r = await runKinds([1], { depth: 'lookup', driver: endDriver(n => (n === 0 ? B.httpError(429, 'busy') : undefined)) });
+  assert.equal(r.result.kinds['1'].levels.lookup.notProvenReason, 'provider:rate_limited');
+  r = await runKinds([1], { depth: 'lookup', driver: endDriver(n => (n === 0 ? B.httpError(503, 'down') : undefined)) });
+  assert.equal(r.result.kinds['1'].levels.lookup.notProvenReason, 'provider:http_503');
+  r = await runKinds([1], { depth: 'lookup', driver: endDriver(n => (n === 0 ? B.socketError(Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })) : undefined)) });
+  assert.equal(r.result.kinds['1'].levels.lookup.notProvenReason, 'provider:network');
+  r = await runKinds([1], { depth: 'lookup', driver: endDriver(n => (n === 0 ? B.httpError(400, 'bad request') : undefined)) });
+  const L = r.result.kinds['1'].levels.lookup;
+  assert.equal(L.failures.crash, 1); assert.equal(L.failures.provider, 0);
+});
+
+test('the station driver forwards the run end\'s reason and error, and rejects a 429 as the provider\'s', async () => {
+  const http = require('http');
+  let mode = 'end';
+  const srv = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      if (mode === '429') { res.writeHead(429); return res.end('slow down'); }
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+      res.write(JSON.stringify({ name: 'agent.run.start', payload: { runId: 'r1' } }) + '\n');
+      res.end(JSON.stringify({ name: 'agent.run.end', payload: { runId: 'r1', failureCode: '', reason: 'error', error: 'usage limit reached' } }) + '\n');
+    });
+  });
+  await new Promise(ok => srv.listen(0, '127.0.0.1', ok));
+  try {
+    const d = B.stationDriver({ model: 'acme/model-x', seat: 'bench', token: 't', stationUrl: 'http://127.0.0.1:' + srv.address().port });
+    const t = await d.turn([{ role: 'user', content: 'hi' }]);
+    assert.equal(t.text, ''); assert.equal(t.reason, 'error'); assert.equal(t.error, 'usage limit reached');
+    assert.equal(B.providerFailure(t.failure, t.text, t), 'error:usage limit reached');
+    mode = '429';
+    await assert.rejects(d.turn([{ role: 'user', content: 'hi' }]), e => e.providerCode === 'rate_limited');
+  } finally { srv.close(); }
+});
+
+test('a run of an older unit merged in: its levels get its own time and seed, and its damaged levels never replace measured ones', async () => {
+  const a = (await runKinds([1, 2], { depth: 'lookup', seed: 1 })).result;
+  // what an older unit writes for a quota-hit run of kind 1: unparseable, no tokens, no per-level measuredAt or seed
+  const b = JSON.parse(JSON.stringify((await runKinds([1, 3], { depth: 'lookup', seed: 5 })).result));
+  b.ranAt = '2099-01-01T00:00:00.000Z';
+  for (const k of Object.values(b.kinds)) { delete k.measuredAt; delete k.seed; for (const L of Object.values(k.levels)) { delete L.measuredAt; delete L.seed; } }
+  Object.assign(b.kinds['1'].levels.lookup, { passed: 0, passRate: 0, tokensIn: 0, tokensOut: 0, notProvenReason: null, failures: { timeout: 0, unparseable: b.kinds['1'].levels.lookup.instances, crash: 0, refused: 0, sandbox: 0 } });
+  const m = B.mergeResults(UNIT, a, b).result;
+  assert.equal(m.kinds['1'].levels.lookup.passRate, 1, 'the damaged level did not replace the measured one');
+  assert.equal(m.kinds['1'].levels.lookup.seed, 1); assert.equal(m.kinds['1'].levels.lookup.measuredAt, a.kinds['1'].levels.lookup.measuredAt);
+  assert.equal(m.kinds['2'].levels.lookup.measuredAt, a.kinds['2'].levels.lookup.measuredAt, 'a kept level keeps its own time');
+  assert.equal(m.kinds['3'].levels.lookup.measuredAt, '2099-01-01T00:00:00.000Z', 'the new level is dated by its own run');
+  assert.equal(m.kinds['3'].levels.lookup.seed, 5); assert.equal(m.kinds['3'].seed, 5);
+  // with nothing measured before, the damaged level stays (forget can drop it)
+  const only = B.mergeResults(UNIT, null, b).result;
+  assert.equal(only.kinds['1'].levels.lookup.passRate, 0); assert.equal(only.kinds['1'].levels.lookup.measuredAt, '2099-01-01T00:00:00.000Z');
+});

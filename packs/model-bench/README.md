@@ -87,7 +87,9 @@ the bench major version and that level's task versions still match the tasks now
 Each level and kind records its `measuredAt` and `seed`. `complete` is true when every kind and depth has a measured level.
 
 **When the provider fails.** A turn whose run ends with a provider failure code (`quota_exhausted`, `rate_limited`,
-`usage_limit`, `provider_error`, `overloaded` and the like, or any failure code with an empty answer) is never the
+`usage_limit`, `provider_error`, `overloaded` and the like, or any failure code with an empty answer), or with no code
+but a provider-like error text (`usage limit reached`, `HTTP 429` ...) or an error end with no answer
+(`provider:error:<text>`), or a station HTTP 429/5xx or socket error, is never the
 model's fault: the instance counts as `failures.provider` and its level is not proven (`notProvenReason:
 provider:<code>`). A provider-failed level never replaces a measured one in the merged file. After three provider
 failures in a row the run stops (the quota is gone): the rest count as `failures.notRun` (`not-run: provider:<code>`),
