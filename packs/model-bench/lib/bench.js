@@ -130,14 +130,15 @@ const TOOL_TEXT = {
   shell: '{"tool": "shell", "cmd": "ls -la"}  runs a bash command in the workspace (no network; each command at most 60 s)',
 };
 // a reply that says it cannot reach the workspace or asks for the files to be pasted (conservative: checked only on a
-// tool task's first reply, and only when the reply has no json block at all)
+// tool task's first reply, and only when the reply has no json block at all; the model must speak of itself, or ask
+// the reader to paste)
 const PROTOCOL_REFUSAL_RE = new RegExp([
-  "\\b(?:can[\u2019']?t|cannot|can not|unable to|(?:do not|don[\u2019']?t) have|no)\\b[^.\\n]{0,60}\\b(?:access|open|read|see|reach|use|run)\\b[^.\\n]{0,40}\\b(?:workspace|files?|tools?|repo(?:sitory)?|director(?:y|ies)|folders?)\\b",
-  "\\b(?:paste|share|upload|send|provide)\\b[^.\\n]{0,40}\\b(?:contents?|files?|code|output)\\b[^.\\n]{0,20}\\b(?:here|with me|in (?:the|this|your) (?:chat|message|reply))",
-].join('|'), 'i');
+  "\\b(?:I|I[\u2019']?m|we)\\b[^.\\n]{0,20}?\\b(?:can[\u2019']?t|cannot|can not|unable to|(?:do not|don[\u2019']?t) have)\\b[^.\\n]{0,60}\\b(?:access|open|read|see|reach|use|run)\\b[^.\\n]{0,40}\\b(?:workspace|files?|tools?|repo(?:sitory)?|director(?:y|ies)|folders?)\\b",
+  "(?:^|[.!?:]\\s+|\\b(?:please|you|could you|can you|would you)\\s+)(?:paste|share|upload|send|provide)\\b[^.\\n]{0,40}\\b(?:contents?|files?|code|output)\\b[^.\\n]{0,20}\\b(?:here|with me|in (?:the|this|your) (?:chat|message|reply))",
+].join('|'), 'im');
 const PROTOCOL_HINT = 'You can: reply with a fenced json tool block such as {"tool": "list", "path": "."}. This conversation is the workspace: the harness runs the call and sends you the result in the next message.';
 function toolHow(tools, maxTurns) {
-  const first = tools.includes('list') ? { tool: 'list', path: '.' } : { tool: tools[0], path: '.' };
+  const first = tools.includes('list') ? { tool: 'list', path: '.' } : { tool: tools.includes('read') ? 'read' : tools[0], path: 'notes/a.md' };
   const second = tools.includes('read') ? { tool: 'read', path: 'notes/a.md' } : first;
   const js = o => JSON.stringify(o).replace(/":/g, '": ').replace(/,"/g, ', "');
   const ex = (who, lines) => lines.map((l, i) => '  ' + (i ? ' '.repeat(who.length) : who) + l).join('\n');

@@ -56,6 +56,10 @@ test('the tool prompt says the conversation is the workspace and shows a worked 
   assert.doesNotMatch(B.prompt(UNIT, n, B.instantiate(UNIT, n, 0)), /harness/);
   assert.ok(B.PROTOCOL_REFUSAL_RE.test(REFUSAL));
   assert.ok(!B.PROTOCOL_REFUSAL_RE.test('I will list the files first.'));
+  for (const t of ['No problem, I will open the files now.', 'The function cannot read files larger than 1MB.', 'I will read the files and share the output here.'])
+    assert.ok(!B.PROTOCOL_REFUSAL_RE.test(t), t);
+  for (const t of ['I do not have access to the repository.', 'Please paste the file contents here.', 'Could you share the code with me?'])
+    assert.ok(B.PROTOCOL_REFUSAL_RE.test(t), t);
 });
 
 test('a model that refuses the protocol twice is not proven (protocol), never failed', async () => {
