@@ -405,6 +405,7 @@ function makeModels(o) {
       const row = { at: new Date(t).toISOString(), seat: id, name, from: curKey, to: keyOf(to), effort: to.effort || null, toIndex: target, of: chain.length, direction: dir, why, applied: res.ok, roster: res.roster, routines: res.routines.length, errors: res.errors };
       if (!res.ok) { ss.failedAt = t; ss.failedKey = keyOf(to); note('MOVE FAILED ' + name + ' -> ' + label(to) + ': ' + res.errors.join('; ')); logMove(row); out.push(Object.assign({ action: 'failed' }, row)); continue; }
       ss.failedAt = null; ss.shadowKey = '';
+      if (ev[target].resolved && to.provider === FM.PROVIDER) FM.writePick(root, { model: to.model, alternates: ev[target].alternates }, t);   // the station's in-request alternates
       if (dir !== 'sync') { ss.lastMoveAt = t; ss.lastWhy = why; ss.index = target; if (/^Sprint: reasoning work again/.test(why)) ss.sprintUpAt = t; ss.sprintSoft = ev.some(x => x.soft) && dir === 'down' ? true : undefined; }
       note((dir === 'sync' ? 'SYNC ' : 'MOVE ') + name + ' ' + (curKey || '?') + ' -> ' + label(to) + ' (entry ' + (target + 1) + ' of ' + chain.length + '): ' + why);
       if (dir === 'down' && target === chain.length - 1 && chain.length > 1) row.told = tellManager(id, cur.pick, to, why, ev);
@@ -652,6 +653,7 @@ async function selftest() {
   const root = require('./lib/temp-life').tmpDir('models-selftest-');
   const w = (rel, d) => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof d === 'string' ? d : JSON.stringify(d, null, 1)); };
   const pol = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'model-policy.json'), 'utf8'));
+  pol.freeFallback = Object.assign({}, pol.freeFallback, { enabled: true });   // shipped off; on for these cases
   delete pol.seats;
   w(REL.policy, pol);
   w(REL.company, { name: 'Selftest Co', owner: { name: 'Pat Owner' } });
@@ -855,6 +857,7 @@ async function selftest() {
       fs.appendFileSync(path.join(root, REL.runs), JSON.stringify({ agentId: 'eng', provider: 'openrouter', model: 'vendor-a/one:free', reason: 'error', failureCode: 'rate_limited', error: 'openrouter http 429 upstream', endedAt: T - MIN }) + '\n');
       r = await M().tick({ m: openM });
       assert.strictEqual(S.roster.eng.model, 'vendor-b/two:free', 'a free model that just failed is swapped for the next: ' + JSON.stringify(r.all));
+      const pk = readJson(path.join(root, FM.PICK_REL)); assert.ok(pk && pk.picks['vendor-b/two:free'] && !pk.picks['vendor-b/two:free'].alternates.includes('vendor-a/one:free'), 'the station\'s in-request alternates leave out the cooling model: ' + JSON.stringify(pk));
       const ra = await M().runnableNow({ m: openM, jobs: S.jobs });
       assert.deepStrictEqual(ra.seats.eng, [{ provider: 'openrouter', model: 'vendor-b/two:free' }], 'the override allowlist names the real model');
       const sh = await M().show({ seat: 'eng', m: openM, jobs: S.jobs });

@@ -105,6 +105,8 @@ async function drain(it) { const evs = []; for await (const ev of it) evs.push(e
   fs.writeFileSync(path.join(secrets, 'service.json'), JSON.stringify({ client: { secret: VAL.json } }));
   fs.writeFileSync(path.join(secrets, 'multi.env'), 'FIRST=' + VAL.line2 + '\n');
   fs.writeFileSync(path.join(secrets, 'tiny'), VAL.short);   // 7 chars: not long enough to be matched as a value
+  fs.writeFileSync(path.join(secrets, 'README.md'), '# secrets/\n\n| File | What | Created by |\n|---|---|---|\n');   // notes, not values
+  fs.mkdirSync(path.join(secrets, 'ssh')); VAL.nested = rnd(34); fs.writeFileSync(path.join(secrets, 'ssh', 'deploy_key'), VAL.nested + '\n');
   const pool = path.join(tmp, 'free-models.json');
   fs.writeFileSync(pool, JSON.stringify({ v: 1, at: new Date().toISOString(), models: [{ id: 'vendor-a/one:free', tools: true }, { id: 'vendor-b/two:free', tools: true }, { id: 'vendor-c/three:free', tools: false }, { id: 'vendor-d/four:free', tools: true }], ranked: ['vendor-a/one:free', 'vendor-b/two:free', 'vendor-c/three:free', 'vendor-d/four:free'] }));
   const logFile = path.join(tmp, 'scrub.jsonl');
@@ -121,6 +123,8 @@ async function drain(it) { const evs = []; for await (const ev of it) evs.push(e
     { role: 'user', content: 'Here is the env:\n' + SHAPED.assignment.join('') + '\nand ' + SAMPLES['openrouter-key'] + ' plus ' + SAMPLES['github-token'] + '\n' + CLEAN },
     { role: 'assistant', content: '', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'shell_exec', arguments: JSON.stringify({ cmd: 'curl -H "' + SHAPED.bearer.join('') + '" https://example.com', note: VAL.pass }) } }] },
     { role: 'tool', tool_call_id: 'call_1', content: 'output:\n' + SAMPLES['aws-key-id'] + '\n' + SAMPLES['private-key'] + '\n' + SHAPED.cookie.join('') + '\n' + SAMPLES.jwt + '\n' + SAMPLES['slack-token'] + '\n' + SAMPLES['anthropic-key'] + '\nclient secret ' + VAL.json + ' / ' + VAL.line2 + ' / ' + VAL.short },
+    { role: 'assistant', content: '', tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'shell_exec', arguments: JSON.stringify({ cmd: 'curl -sN https://example.com/events' }) } }] },
+    { role: 'tool', tool_call_id: 'call_2', content: 'data: {"k":"' + VAL.nested + '","t":"' + VAL.token + '"}\n\n' },
     { role: 'user', content: CLEAN },
   ];
   const tools = [{ type: 'function', function: { name: 'shell_exec', description: 'run a command', parameters: { type: 'object', properties: { cmd: { type: 'string' } } } } }];
@@ -137,12 +141,15 @@ async function drain(it) { const evs = []; for await (const ev of it) evs.push(e
     for (const kind of ['secret-file', 'openrouter-key', 'github-token', 'aws-key-id', 'private-key', 'jwt', 'slack-token', 'anthropic-key', 'bearer', 'cookie', 'assignment'])
       assert.ok(raw.includes('[REDACTED:' + kind + ']'), 'no [REDACTED:' + kind + '] marker');
     assert.ok(raw.includes(VAL.short), 'a 7-character file value is not matched as a value');
+    assert.ok(!raw.includes('[REDACTED:secret-file]---'), 'a secrets/ README line is not a value');
   });
   await tcase('clean text is byte-identical; the tool-call arguments stay valid JSON; the request shape is kept', async () => {
     const b = lastBody();
     const last = b.messages[b.messages.length - 1];
     const text = typeof last.content === 'string' ? last.content : last.content.map(p => p.text).join('');
     assert.strictEqual(text, CLEAN);
+    const sse = b.messages.find(m => m.role === 'tool' && /^data: /.test(typeof m.content === 'string' ? m.content : ''));
+    assert.ok(sse && /\[REDACTED:secret-file\]/.test(sse.content), 'a tool result starting "data:" is scrubbed too');
     const tc = b.messages.find(m => m.tool_calls);
     const args = JSON.parse(tc.tool_calls[0].function.arguments);
     assert.ok(/\[REDACTED:(bearer|secret-file)\]/.test(args.cmd + args.note));
@@ -163,6 +170,18 @@ async function drain(it) { const evs = []; for await (const ev of it) evs.push(e
     const b = lastBody();
     assert.deepStrictEqual(b.provider, { max_price: { prompt: 0, completion: 0, request: 0, image: 0 } });
     assert.deepStrictEqual(b.models, ['vendor-a/one:free', 'vendor-b/two:free', 'vendor-d/four:free']);
+  });
+  await tcase('the company\'s pick (free-pick.json beside the list) gives the in-request alternates; a markdown table is untouched', async () => {
+    const pick = path.join(tmp, 'free-pick.json');
+    fs.writeFileSync(pick, JSON.stringify({ v: 1, picks: { 'vendor-b/two:free': { alternates: ['vendor-d/four:free', 'vendor-c/three:free', 'vendor-p/paid'], at: new Date().toISOString() } } }));
+    try {
+      S.seen.length = 0;
+      const tbl = '| a | b | c |\n|---|---|---|\n| File | What | Created by |';
+      await drain(mk().stream({ model: 'vendor-b/two:free', messages: [{ role: 'user', content: tbl }], tools }));
+      const b = lastBody();
+      assert.deepStrictEqual(b.models, ['vendor-b/two:free', 'vendor-d/four:free'], 'the pick order, tools-capable and free ids only: ' + JSON.stringify(b.models));
+      assert.strictEqual(b.messages[b.messages.length - 1].content.map ? b.messages[b.messages.length - 1].content.map(p => p.text).join('') : b.messages[b.messages.length - 1].content, tbl);
+    } finally { fs.rmSync(pick, { force: true }); }
   });
   await tcase('a catalog id priced 0 is free too; a paid id carries no max price', async () => {
     const p = mk(); await p.warmCatalog();

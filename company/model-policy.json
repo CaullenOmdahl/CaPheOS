@@ -157,8 +157,8 @@
   "upAtMostEveryMin": 60
  },
  "freeFallback": {
-  "_doc": "The free-model fallback (docs/FREE-MODELS.md), used only as the LAST entry of a seat chain, behind its subscriptions: models.js resolves openrouter/free to one real free model when the entries above it cannot run. enabled false turns it off everywhere. maxAgeHours: a free-model list older than this is not used. refreshHours: how often the dispatcher re-reads the list. coolMin: a free model whose last run had a provider error is skipped for this long (the next one is used). minItems: graded items a free model needs in the house ranking before its score orders the pick. maxAlternates: how many further free models the station may fail over to within one request. A seat may set seats.<id>.class to pick by that task class.",
-  "enabled": true,
+  "_doc": "The free-model fallback (docs/FREE-MODELS.md), used only as the LAST entry of a seat chain, behind its subscriptions: models.js resolves openrouter/free to one real free model when the entries above it cannot run. enabled: shipped false, and a framework update never switches it on; set it true only after the station runs StarNet patch 0022 (setup-station.sh, then a station restart), since before that restart nothing scrubs a request or caps its price. false turns it off everywhere. maxAgeHours: a free-model list older than this is not used. refreshHours: how often the dispatcher re-reads the list. coolMin: a free model whose last run had a provider error is skipped for this long (the next one is used). minItems: graded items a free model needs in the house ranking before its score orders the pick. maxAlternates: how many further free models (0 to 2) the station may fail over to within one request; models.js writes them, picked in the same order, to company/state/free-pick.json, and setup-station.sh passes this cap to the station. A seat may set seats.<id>.class to pick by that task class.",
+  "enabled": false,
   "maxAgeHours": 72,
   "refreshHours": 24,
   "coolMin": 30,

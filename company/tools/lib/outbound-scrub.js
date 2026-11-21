@@ -5,20 +5,26 @@
  * test checks they are the same). Standalone on purpose: only fs and path, no company or station module.
  *
  * What it removes, in this order, each replaced by [REDACTED:<kind>]:
- *   1. the exact value of every secret the company keeps (each file in its secrets/ folder: the whole content, each line,
- *      the value of each KEY=VALUE line and each string inside a JSON file), longer than minValueLen - 1 characters,
- *      longest first (kind secret-file; a file's name is never put in the marker or the counts);
+ *   1. the exact value of every secret the company keeps (each file in its secrets/ folder and its subfolders, up to 3
+ *      levels, symlinks followed only when they resolve inside the folder; README* and *.md files are notes, not
+ *      secrets: the whole content, each line but comments and lines with no letter or digit, the value of each
+ *      KEY=VALUE line and each string inside a JSON file), at least minValueLen characters, also in its JSON-escaped
+ *      and standalone base64 forms, longest first (kind secret-file; a file's name is never put in the marker or the
+ *      counts);
  *   2. every secret FORMAT in the master list (company/tools/lib/secret-patterns.json: vendor keys, tokens, private
  *      keys, JWTs, bearer and basic credentials, cookies, password=/token= assignments, long high-entropy strings).
  * Text with nothing to remove comes back as the very same string (prompt caches keep their bytes). Values are never
- * logged or returned: a caller gets the cleaned text and counts per kind.
+ * logged or returned: a caller gets the cleaned text and counts per kind. Image and audio parts are passed through
+ * unread; a base64 data URI (a string, or a file part's file_data) is decoded, and when it is text it is scrubbed and
+ * encoded again (binary bytes are left as they are). A body
+ * nested deeper than MAX_DEPTH is refused (throws), never sent half read.
  *
  *   const S = require('./outbound-scrub');
  *   const P = S.loadPatterns(file)                 -> compiled list (throws when the file is missing or broken)
  *   const V = S.valuesFromDir(dir, P.minValueLen)  -> [values], longest first ([] for a missing dir)
  *   const s = S.makeScrubber({ patterns: P, values: V })
  *   s.text(str, counts?) -> str'     s.body(obj, counts?) -> obj' (copy on write; the same object when nothing changed)
- *   S.total(counts) -> number
+ *   S.total(counts) -> number      S.dirSignature(dir) -> string (changes when any file the folder feeds changes)
  */
 const fs = require('fs');
 const path = require('path');
@@ -26,9 +32,12 @@ const path = require('path');
 const MARK = kind => '[REDACTED:' + kind + ']';
 const MARK_RE = /\[REDACTED:[a-z0-9-]+\]/;
 // keys whose string values are wire control, ids or signed bytes, never prose: left exactly as they are
-const SKIP_KEYS = new Set(['model', 'models', 'role', 'type', 'tool_call_id', 'tool_choice', 'signature', 'encrypted_content', 'id', 'name', 'provider', 'stream', 'usage', 'reasoning', 'cache_control', 'format', 'detail', 'mime_type', 'media_type']);
-const SKIP_PART_TYPES = new Set(['image_url', 'image', 'input_image', 'input_audio', 'file']);
-const CACHE_MAX = 4000, CACHE_MIN_LEN = 32, BEFORE = 40;
+const SKIP_KEYS = new Set(['model', 'models', 'role', 'type', 'tool_call_id', 'tool_choice', 'signature', 'encrypted_content', 'id', 'name', 'provider', 'stream', 'usage', 'cache_control', 'format', 'detail', 'mime_type', 'media_type']);
+const SKIP_PART_TYPES = new Set(['image_url', 'image', 'input_image', 'input_audio']);
+// only a whole, well-formed base64 data URI is bytes, not text (anything else that starts "data:" is read like any text)
+const DATA_URI_RE = /^data:[\w.+-]+\/[\w.+-]+(?:;[\w.+-]+=[\w.+-]+)*;base64,[A-Za-z0-9+/]+={0,2}$/;
+const CACHE_MAX = 4000, CACHE_MIN_LEN = 32, BEFORE = 40, MAX_DEPTH = 32, DIR_DEPTH = 3;
+const NOTE_FILE_RE = /^readme(?:\.|$)|\.md$/i;
 
 function compile(doc) {
   if (!doc || !Array.isArray(doc.patterns) || !doc.patterns.length) throw new Error('secret pattern list has no patterns');
@@ -36,7 +45,8 @@ function compile(doc) {
     if (!p || typeof p.kind !== 'string' || !/^[a-z0-9-]{2,40}$/.test(p.kind) || typeof p.re !== 'string') throw new Error('secret pattern ' + i + ' is malformed');
     const flags = String(p.flags || '').replace(/g/g, '') + 'g';
     return { kind: p.kind, re: new RegExp(p.re, flags), replace: typeof p.replace === 'string' ? p.replace : null,
-      minEntropy: Number(p.minEntropy) || 0, needClasses: Number(p.needClasses) || 0, notAfter: p.notAfter ? new RegExp(p.notAfter, 'i') : null };
+      minEntropy: Number(p.minEntropy) || 0, needClasses: Number(p.needClasses) || 0, notAfter: p.notAfter ? new RegExp(p.notAfter, 'i') : null,
+      skipValue: p.skipValue ? new RegExp(p.skipValue, 'i') : (p.codeSafe === true && doc.skipValue ? new RegExp(doc.skipValue, 'i') : null) };
   });
   const min = Number(doc.minValueLen);
   return { version: doc.version || 1, minValueLen: Number.isInteger(min) && min >= 6 ? min : 9, patterns };
@@ -52,16 +62,42 @@ function entropy(s) {
 function classes(s) { return (/[a-z]/.test(s) ? 1 : 0) + (/[A-Z]/.test(s) ? 1 : 0) + (/[0-9]/.test(s) ? 1 : 0); }
 
 function jsonOrNull(t) { try { return JSON.parse(t); } catch (_) { return null; } }   // a secrets file that is not JSON is plain text
-/* every value a secrets folder holds (files only, one level, symlinks not followed; unreadable files skipped) */
+/* the files a secrets folder feeds: regular files, up to DIR_DEPTH levels down, a symlink only when it resolves inside the
+   folder, README* and *.md left out (notes about the secrets, not secrets); [] for a missing folder */
+function secretFiles(dir) {
+  let rootReal; try { rootReal = fs.realpathSync(dir); } catch (_) { return []; }
+  const out = [], seen = new Set();
+  (function walk(d, depth) {
+    let names = []; try { names = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; }
+    for (const e of names.sort((x, y) => (x.name < y.name ? -1 : 1))) {
+      const f = path.join(d, e.name);
+      let real, st; try { real = fs.realpathSync(f); st = fs.statSync(real); } catch (_) { continue; }
+      if (real !== rootReal && !real.startsWith(rootReal + path.sep)) continue;   // a link out of the folder
+      if (seen.has(real)) continue; seen.add(real);
+      if (st.isDirectory()) { if (depth < DIR_DEPTH) walk(f, depth + 1); continue; }
+      if (st.isFile() && !NOTE_FILE_RE.test(e.name)) out.push({ file: real, size: st.size, mtimeMs: st.mtimeMs });
+    }
+  })(rootReal, 1);
+  return out;
+}
+function dirSignature(dir) { return secretFiles(dir).map(x => x.file + ':' + x.size + ':' + x.mtimeMs).join('|') || (dir + ':empty'); }
+/* every value a secrets folder holds (unreadable or over-1-MB files skipped), longest first */
 function valuesFromDir(dir, minLen) {
   const min = Number(minLen) || 9, out = new Set();
-  const add = v => { if (typeof v !== 'string') return; v = v.trim(); if (v.length >= min && !/^\s*$/.test(v)) out.add(v); };
-  let names = []; try { names = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return []; }
-  for (const d of names) {
-    if (!d.isFile()) continue;
-    let txt; try { const f = path.join(dir, d.name); if (fs.statSync(f).size > 1 << 20) continue; txt = fs.readFileSync(f, 'utf8'); } catch (_) { continue; }
+  const put = v => { if (v.length >= min) out.add(v); };
+  const add = v => {
+    if (typeof v !== 'string') return; v = v.trim();
+    if (v.length < min || !/[A-Za-z0-9]/.test(v)) return;
+    put(v);
+    const esc = JSON.stringify(v).slice(1, -1); if (esc !== v) put(esc);                     // as it reads inside JSON text
+    if (v.length <= 4096) put(Buffer.from(v, 'utf8').toString('base64').replace(/=+$/, ''));   // as a standalone base64 value
+  };
+  for (const { file, size } of secretFiles(dir)) {
+    if (size > 1 << 20) continue;
+    let txt; try { txt = fs.readFileSync(file, 'utf8'); } catch (_) { continue; }
     add(txt);
     for (const line of txt.split(/\r?\n/)) {
+      if (/^\s*(?:#|\/\/|;)/.test(line)) continue;   // a comment line is a note
       add(line);
       const m = /^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_.-]*\s*[=:]\s*(.*)$/.exec(line);
       if (m) add(m[1].replace(/^(["'])(.*)\1$/, '$2'));
@@ -88,6 +124,7 @@ function applyPattern(s, p, counts) {
     if (!secret || MARK_RE.test(secret)) return match;
     if (p.minEntropy && entropy(secret) < p.minEntropy) return match;
     if (p.needClasses && classes(secret) < p.needClasses) return match;
+    if (p.skipValue && p.skipValue.test(secret)) return match;
     if (p.notAfter && p.notAfter.test(str.slice(Math.max(0, at - BEFORE), at))) return match;
     bump(counts, p.kind);
     if (!p.replace) return MARK(p.kind);
@@ -117,16 +154,33 @@ function makeScrubber(o) {
     if (counts) for (const k of Object.keys(r.counts)) bump(counts, k, r.counts[k]);
     return r.out;
   }
+  // a file part's file_data: a text file is decoded, scrubbed and encoded again; binary bytes (a PDF, an archive) are not text
+  function fileData(fd, counts) {
+    const m = /^(data:[^,]*;base64,)([A-Za-z0-9+/]+={0,2})$/.exec(fd);
+    if (!m) return text(fd, counts);
+    const buf = Buffer.from(m[2], 'base64'), dec = buf.toString('utf8');
+    if (buf.indexOf(0) >= 0 || dec.indexOf('\uFFFD') >= 0) return fd;
+    const c = {}, out = text(dec, c);
+    if (out === dec) return fd;
+    for (const k of Object.keys(c)) bump(counts, k, c[k]);
+    return m[1] + Buffer.from(out, 'utf8').toString('base64');
+  }
   function body(x, counts, depth) {
     depth = depth || 0;
-    if (typeof x === 'string') return x.startsWith('data:') ? x : text(x, counts);
-    if (!x || typeof x !== 'object' || depth > 12) return x;
+    if (depth > MAX_DEPTH) throw new Error('the request body is nested deeper than ' + MAX_DEPTH + ' levels; not sent');
+    if (typeof x === 'string') return DATA_URI_RE.test(x) ? fileData(x, counts) : text(x, counts);
+    if (!x || typeof x !== 'object') return x;
     if (Array.isArray(x)) {
       let copy = null;
       for (let i = 0; i < x.length; i++) { const v = body(x[i], counts, depth + 1); if (v !== x[i]) { if (!copy) copy = x.slice(); copy[i] = v; } }
       return copy || x;
     }
     if (SKIP_PART_TYPES.has(x.type)) return x;
+    if (x.type === 'file' && x.file && typeof x.file === 'object') {
+      const f = x.file, fd = typeof f.file_data === 'string' ? fileData(f.file_data, counts) : f.file_data;
+      const fn = typeof f.filename === 'string' ? text(f.filename, counts) : f.filename;
+      return fd === f.file_data && fn === f.filename ? x : Object.assign({}, x, { file: Object.assign({}, f, { file_data: fd, filename: fn }) });
+    }
     let copy = null;
     for (const k of Object.keys(x)) {
       if (k === '__proto__' || SKIP_KEYS.has(k)) continue;
@@ -138,4 +192,4 @@ function makeScrubber(o) {
   return { text, body: (x, counts) => body(x, counts, 0), size: () => values.length };
 }
 
-module.exports = { MARK, compile, loadPatterns, valuesFromDir, makeScrubber, total, entropy, _internals: { SKIP_KEYS, SKIP_PART_TYPES } };
+module.exports = { MARK, compile, loadPatterns, valuesFromDir, dirSignature, makeScrubber, total, entropy, _internals: { SKIP_KEYS, SKIP_PART_TYPES, DATA_URI_RE, MAX_DEPTH } };

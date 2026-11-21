@@ -119,7 +119,8 @@ mkdir -p "$(dirname "$ENVFILE")"
 # with counts, never values, in .starnet-data/outbound-scrub.jsonl (STARNET_SCRUB_LOG); a free model carries a zero max
 # price, with failover inside the request to the free list (STARNET_OPENROUTER_FREE_POOL). STARNET_OPENROUTER_FREE_ONLY=1
 # (every OpenRouter request has a zero max price; a paid model is refused) unless model-policy.json allowed.openrouter.paid
-# is true.
+# is true. STARNET_OPENROUTER_FREE_ALTERNATES is model-policy.json freeFallback.maxAlternates (0 to 2, default 2).
+FREE_ALTS="$(node -e "let p={};try{p=require('./company/model-policy.json')}catch(_){};const n=Number((p.freeFallback||{}).maxAlternates);process.stdout.write(String(Number.isInteger(n)&&n>=0?Math.min(2,n):2))")"
 FREE_ONLY="$(node -e "let p={};try{p=require('./company/model-policy.json')}catch(_){};process.stdout.write(((p.allowed||{}).openrouter||{}).paid===true?'0':'1')")"
 UPATH="$(systemctl --user show-environment 2>/dev/null | sed -n 's/^PATH=//p')"; UPATH="${UPATH:-/usr/local/bin:/usr/bin:/bin}"
 ( umask 077; cat > "$ENVFILE" <<EOF
@@ -138,6 +139,7 @@ STARNET_SCRUB_SECRETS_DIR=$ROOT/secrets
 STARNET_SCRUB_PATTERNS=$ROOT/company/tools/lib/secret-patterns.json
 STARNET_SCRUB_LOG=$ROOT/.starnet-data/outbound-scrub.jsonl
 STARNET_OPENROUTER_FREE_POOL=$ROOT/company/state/free-models.json
+STARNET_OPENROUTER_FREE_ALTERNATES=$FREE_ALTS
 STARNET_OPENROUTER_FREE_ONLY=$FREE_ONLY
 TMPDIR=$ROOT/.starnet-data/tmp
 TZ=$ZONE

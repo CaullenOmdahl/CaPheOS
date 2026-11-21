@@ -6,7 +6,7 @@
 #   1. a free model (id ending ':free', a catalog row priced 0 everywhere, or an id on the company's free list, env
 #      STARNET_OPENROUTER_FREE_POOL = company/state/free-models.json) is sent with provider.max_price
 #      {prompt:0, completion:0, request:0, image:0}, so no endpoint that charges can serve it; it may also carry a
-#      `models` list of up to 2 further free ids from that list (OpenRouter fails over within the request; patch 0016's
+#      `models` list of up to 2 further free ids from that list, the company's own pick (free-pick.json beside it) first (OpenRouter fails over within the request; patch 0016's
 #      servedModel names the model that answered). STARNET_OPENROUTER_FREE_ONLY=1 puts that zero max price on EVERY
 #      request and refuses a model that is not free before anything is sent.
 #   2. the finished request body (system, user, assistant and tool messages, tool-call arguments, cache-control parts)
@@ -17,16 +17,16 @@
 #      the request is refused, nothing is sent. The factory's existing guard (prompt-scrub.js) still runs first.
 # OpenRouter's daily free-model limit is already a non-retryable quota_exhausted (errorClass.js DAILY_FREE_CAP_RE).
 # Env (written by scripts/setup-station.sh): STARNET_SCRUB_SECRETS_DIR, STARNET_SCRUB_PATTERNS, STARNET_SCRUB_LOG,
-# STARNET_OPENROUTER_FREE_POOL, STARNET_OPENROUTER_FREE_ONLY (1 unless model-policy.json allowed.openrouter.paid is true).
+# STARNET_OPENROUTER_FREE_POOL, STARNET_OPENROUTER_FREE_ALTERNATES, STARNET_OPENROUTER_FREE_ONLY (1 unless model-policy.json allowed.openrouter.paid is true).
 # Test: company/patches/tests/0022.test.js (a stub OpenRouter server on loopback; nothing reaches the internet).
 # Apply:  git -C starnet apply --3way company/patches/0022-openrouter-free-scrub.diff ; then restart the station when idle.
 # Revert: git -C starnet apply -R company/patches/0022-openrouter-free-scrub.diff ; then restart the station.
 diff --git a/sidecar/outbound-scrub.js b/sidecar/outbound-scrub.js
 new file mode 100644
-index 00000000..d5370635
+index 00000000..3e7c0330
 --- /dev/null
 +++ b/sidecar/outbound-scrub.js
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,195 @@
 +'use strict';
 +/* outbound-scrub.js — removes secrets from what is sent to a model provider that is not one of the company's own
 + * subscriptions (docs/FREE-MODELS.md). ONE engine, two places: company/tools/lib/outbound-scrub.js in the framework and
@@ -34,20 +34,26 @@ index 00000000..d5370635
 + * test checks they are the same). Standalone on purpose: only fs and path, no company or station module.
 + *
 + * What it removes, in this order, each replaced by [REDACTED:<kind>]:
-+ *   1. the exact value of every secret the company keeps (each file in its secrets/ folder: the whole content, each line,
-+ *      the value of each KEY=VALUE line and each string inside a JSON file), longer than minValueLen - 1 characters,
-+ *      longest first (kind secret-file; a file's name is never put in the marker or the counts);
++ *   1. the exact value of every secret the company keeps (each file in its secrets/ folder and its subfolders, up to 3
++ *      levels, symlinks followed only when they resolve inside the folder; README* and *.md files are notes, not
++ *      secrets: the whole content, each line but comments and lines with no letter or digit, the value of each
++ *      KEY=VALUE line and each string inside a JSON file), at least minValueLen characters, also in its JSON-escaped
++ *      and standalone base64 forms, longest first (kind secret-file; a file's name is never put in the marker or the
++ *      counts);
 + *   2. every secret FORMAT in the master list (company/tools/lib/secret-patterns.json: vendor keys, tokens, private
 + *      keys, JWTs, bearer and basic credentials, cookies, password=/token= assignments, long high-entropy strings).
 + * Text with nothing to remove comes back as the very same string (prompt caches keep their bytes). Values are never
-+ * logged or returned: a caller gets the cleaned text and counts per kind.
++ * logged or returned: a caller gets the cleaned text and counts per kind. Image and audio parts are passed through
++ * unread; a base64 data URI (a string, or a file part's file_data) is decoded, and when it is text it is scrubbed and
++ * encoded again (binary bytes are left as they are). A body
++ * nested deeper than MAX_DEPTH is refused (throws), never sent half read.
 + *
 + *   const S = require('./outbound-scrub');
 + *   const P = S.loadPatterns(file)                 -> compiled list (throws when the file is missing or broken)
 + *   const V = S.valuesFromDir(dir, P.minValueLen)  -> [values], longest first ([] for a missing dir)
 + *   const s = S.makeScrubber({ patterns: P, values: V })
 + *   s.text(str, counts?) -> str'     s.body(obj, counts?) -> obj' (copy on write; the same object when nothing changed)
-+ *   S.total(counts) -> number
++ *   S.total(counts) -> number      S.dirSignature(dir) -> string (changes when any file the folder feeds changes)
 + */
 +const fs = require('fs');
 +const path = require('path');
@@ -55,9 +61,12 @@ index 00000000..d5370635
 +const MARK = kind => '[REDACTED:' + kind + ']';
 +const MARK_RE = /\[REDACTED:[a-z0-9-]+\]/;
 +// keys whose string values are wire control, ids or signed bytes, never prose: left exactly as they are
-+const SKIP_KEYS = new Set(['model', 'models', 'role', 'type', 'tool_call_id', 'tool_choice', 'signature', 'encrypted_content', 'id', 'name', 'provider', 'stream', 'usage', 'reasoning', 'cache_control', 'format', 'detail', 'mime_type', 'media_type']);
-+const SKIP_PART_TYPES = new Set(['image_url', 'image', 'input_image', 'input_audio', 'file']);
-+const CACHE_MAX = 4000, CACHE_MIN_LEN = 32, BEFORE = 40;
++const SKIP_KEYS = new Set(['model', 'models', 'role', 'type', 'tool_call_id', 'tool_choice', 'signature', 'encrypted_content', 'id', 'name', 'provider', 'stream', 'usage', 'cache_control', 'format', 'detail', 'mime_type', 'media_type']);
++const SKIP_PART_TYPES = new Set(['image_url', 'image', 'input_image', 'input_audio']);
++// only a whole, well-formed base64 data URI is bytes, not text (anything else that starts "data:" is read like any text)
++const DATA_URI_RE = /^data:[\w.+-]+\/[\w.+-]+(?:;[\w.+-]+=[\w.+-]+)*;base64,[A-Za-z0-9+/]+={0,2}$/;
++const CACHE_MAX = 4000, CACHE_MIN_LEN = 32, BEFORE = 40, MAX_DEPTH = 32, DIR_DEPTH = 3;
++const NOTE_FILE_RE = /^readme(?:\.|$)|\.md$/i;
 +
 +function compile(doc) {
 +  if (!doc || !Array.isArray(doc.patterns) || !doc.patterns.length) throw new Error('secret pattern list has no patterns');
@@ -65,7 +74,8 @@ index 00000000..d5370635
 +    if (!p || typeof p.kind !== 'string' || !/^[a-z0-9-]{2,40}$/.test(p.kind) || typeof p.re !== 'string') throw new Error('secret pattern ' + i + ' is malformed');
 +    const flags = String(p.flags || '').replace(/g/g, '') + 'g';
 +    return { kind: p.kind, re: new RegExp(p.re, flags), replace: typeof p.replace === 'string' ? p.replace : null,
-+      minEntropy: Number(p.minEntropy) || 0, needClasses: Number(p.needClasses) || 0, notAfter: p.notAfter ? new RegExp(p.notAfter, 'i') : null };
++      minEntropy: Number(p.minEntropy) || 0, needClasses: Number(p.needClasses) || 0, notAfter: p.notAfter ? new RegExp(p.notAfter, 'i') : null,
++      skipValue: p.skipValue ? new RegExp(p.skipValue, 'i') : (p.codeSafe === true && doc.skipValue ? new RegExp(doc.skipValue, 'i') : null) };
 +  });
 +  const min = Number(doc.minValueLen);
 +  return { version: doc.version || 1, minValueLen: Number.isInteger(min) && min >= 6 ? min : 9, patterns };
@@ -81,16 +91,42 @@ index 00000000..d5370635
 +function classes(s) { return (/[a-z]/.test(s) ? 1 : 0) + (/[A-Z]/.test(s) ? 1 : 0) + (/[0-9]/.test(s) ? 1 : 0); }
 +
 +function jsonOrNull(t) { try { return JSON.parse(t); } catch (_) { return null; } }   // a secrets file that is not JSON is plain text
-+/* every value a secrets folder holds (files only, one level, symlinks not followed; unreadable files skipped) */
++/* the files a secrets folder feeds: regular files, up to DIR_DEPTH levels down, a symlink only when it resolves inside the
++   folder, README* and *.md left out (notes about the secrets, not secrets); [] for a missing folder */
++function secretFiles(dir) {
++  let rootReal; try { rootReal = fs.realpathSync(dir); } catch (_) { return []; }
++  const out = [], seen = new Set();
++  (function walk(d, depth) {
++    let names = []; try { names = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; }
++    for (const e of names.sort((x, y) => (x.name < y.name ? -1 : 1))) {
++      const f = path.join(d, e.name);
++      let real, st; try { real = fs.realpathSync(f); st = fs.statSync(real); } catch (_) { continue; }
++      if (real !== rootReal && !real.startsWith(rootReal + path.sep)) continue;   // a link out of the folder
++      if (seen.has(real)) continue; seen.add(real);
++      if (st.isDirectory()) { if (depth < DIR_DEPTH) walk(f, depth + 1); continue; }
++      if (st.isFile() && !NOTE_FILE_RE.test(e.name)) out.push({ file: real, size: st.size, mtimeMs: st.mtimeMs });
++    }
++  })(rootReal, 1);
++  return out;
++}
++function dirSignature(dir) { return secretFiles(dir).map(x => x.file + ':' + x.size + ':' + x.mtimeMs).join('|') || (dir + ':empty'); }
++/* every value a secrets folder holds (unreadable or over-1-MB files skipped), longest first */
 +function valuesFromDir(dir, minLen) {
 +  const min = Number(minLen) || 9, out = new Set();
-+  const add = v => { if (typeof v !== 'string') return; v = v.trim(); if (v.length >= min && !/^\s*$/.test(v)) out.add(v); };
-+  let names = []; try { names = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return []; }
-+  for (const d of names) {
-+    if (!d.isFile()) continue;
-+    let txt; try { const f = path.join(dir, d.name); if (fs.statSync(f).size > 1 << 20) continue; txt = fs.readFileSync(f, 'utf8'); } catch (_) { continue; }
++  const put = v => { if (v.length >= min) out.add(v); };
++  const add = v => {
++    if (typeof v !== 'string') return; v = v.trim();
++    if (v.length < min || !/[A-Za-z0-9]/.test(v)) return;
++    put(v);
++    const esc = JSON.stringify(v).slice(1, -1); if (esc !== v) put(esc);                     // as it reads inside JSON text
++    if (v.length <= 4096) put(Buffer.from(v, 'utf8').toString('base64').replace(/=+$/, ''));   // as a standalone base64 value
++  };
++  for (const { file, size } of secretFiles(dir)) {
++    if (size > 1 << 20) continue;
++    let txt; try { txt = fs.readFileSync(file, 'utf8'); } catch (_) { continue; }
 +    add(txt);
 +    for (const line of txt.split(/\r?\n/)) {
++      if (/^\s*(?:#|\/\/|;)/.test(line)) continue;   // a comment line is a note
 +      add(line);
 +      const m = /^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_.-]*\s*[=:]\s*(.*)$/.exec(line);
 +      if (m) add(m[1].replace(/^(["'])(.*)\1$/, '$2'));
@@ -117,6 +153,7 @@ index 00000000..d5370635
 +    if (!secret || MARK_RE.test(secret)) return match;
 +    if (p.minEntropy && entropy(secret) < p.minEntropy) return match;
 +    if (p.needClasses && classes(secret) < p.needClasses) return match;
++    if (p.skipValue && p.skipValue.test(secret)) return match;
 +    if (p.notAfter && p.notAfter.test(str.slice(Math.max(0, at - BEFORE), at))) return match;
 +    bump(counts, p.kind);
 +    if (!p.replace) return MARK(p.kind);
@@ -146,16 +183,33 @@ index 00000000..d5370635
 +    if (counts) for (const k of Object.keys(r.counts)) bump(counts, k, r.counts[k]);
 +    return r.out;
 +  }
++  // a file part's file_data: a text file is decoded, scrubbed and encoded again; binary bytes (a PDF, an archive) are not text
++  function fileData(fd, counts) {
++    const m = /^(data:[^,]*;base64,)([A-Za-z0-9+/]+={0,2})$/.exec(fd);
++    if (!m) return text(fd, counts);
++    const buf = Buffer.from(m[2], 'base64'), dec = buf.toString('utf8');
++    if (buf.indexOf(0) >= 0 || dec.indexOf('\uFFFD') >= 0) return fd;
++    const c = {}, out = text(dec, c);
++    if (out === dec) return fd;
++    for (const k of Object.keys(c)) bump(counts, k, c[k]);
++    return m[1] + Buffer.from(out, 'utf8').toString('base64');
++  }
 +  function body(x, counts, depth) {
 +    depth = depth || 0;
-+    if (typeof x === 'string') return x.startsWith('data:') ? x : text(x, counts);
-+    if (!x || typeof x !== 'object' || depth > 12) return x;
++    if (depth > MAX_DEPTH) throw new Error('the request body is nested deeper than ' + MAX_DEPTH + ' levels; not sent');
++    if (typeof x === 'string') return DATA_URI_RE.test(x) ? fileData(x, counts) : text(x, counts);
++    if (!x || typeof x !== 'object') return x;
 +    if (Array.isArray(x)) {
 +      let copy = null;
 +      for (let i = 0; i < x.length; i++) { const v = body(x[i], counts, depth + 1); if (v !== x[i]) { if (!copy) copy = x.slice(); copy[i] = v; } }
 +      return copy || x;
 +    }
 +    if (SKIP_PART_TYPES.has(x.type)) return x;
++    if (x.type === 'file' && x.file && typeof x.file === 'object') {
++      const f = x.file, fd = typeof f.file_data === 'string' ? fileData(f.file_data, counts) : f.file_data;
++      const fn = typeof f.filename === 'string' ? text(f.filename, counts) : f.filename;
++      return fd === f.file_data && fn === f.filename ? x : Object.assign({}, x, { file: Object.assign({}, f, { file_data: fd, filename: fn }) });
++    }
 +    let copy = null;
 +    for (const k of Object.keys(x)) {
 +      if (k === '__proto__' || SKIP_KEYS.has(k)) continue;
@@ -167,12 +221,12 @@ index 00000000..d5370635
 +  return { text, body: (x, counts) => body(x, counts, 0), size: () => values.length };
 +}
 +
-+module.exports = { MARK, compile, loadPatterns, valuesFromDir, makeScrubber, total, entropy, _internals: { SKIP_KEYS, SKIP_PART_TYPES } };
++module.exports = { MARK, compile, loadPatterns, valuesFromDir, dirSignature, makeScrubber, total, entropy, _internals: { SKIP_KEYS, SKIP_PART_TYPES, DATA_URI_RE, MAX_DEPTH } };
 diff --git a/sidecar/providers/openrouter.js b/sidecar/providers/openrouter.js
-index a3c01d66..13460350 100644
+index a3c01d66..69d59002 100644
 --- a/sidecar/providers/openrouter.js
 +++ b/sidecar/providers/openrouter.js
-@@ -107,6 +107,103 @@
+@@ -107,6 +107,116 @@
      return rawText && msg.indexOf(rawText) < 0 ? msg + ' — ' + rawText.slice(0, 400) : msg;
    }
  
@@ -184,8 +238,8 @@ index a3c01d66..13460350 100644
 +          completion, request and image, so OpenRouter refuses any endpoint that would charge. With
 +          STARNET_OPENROUTER_FREE_ONLY=1 every request carries that zero max price, and a model that is not free is
 +          refused here, before anything is sent. A free model may also carry `models`: up to
-+          STARNET_OPENROUTER_FREE_ALTERNATES (default 2, at most 2) further free ids from that list, which OpenRouter
-+          tries in order when one is limited or errors (the run row's servedModel, patch 0016, names the one that answered).
++          STARNET_OPENROUTER_FREE_ALTERNATES (default 2, at most 2) further free ids from that list (the company's own pick,
++          free-pick.json beside it, when it names this model), which OpenRouter tries in order when one is limited or errors (the run row's servedModel, patch 0016, names the one that answered).
 +       2. NO SECRET LEAVES THE MACHINE. The finished body (every message: system, user, assistant, tool results, tool-call
 +          arguments, cache-control parts) goes through sidecar/outbound-scrub.js: the exact values of every file in the
 +          folder named by STARNET_SCRUB_SECRETS_DIR, then every format in the list named by STARNET_SCRUB_PATTERNS, each
@@ -217,7 +271,7 @@ index a3c01d66..13460350 100644
 +    if (!pf && !dir) return { scrubber: null };
 +    const M = scrubModule();
 +    if (!M) return { refused: 'the outbound scrub (sidecar/outbound-scrub.js) is missing' };
-+    const sig = pf + '\n' + dir + '\n' + signature(pf, dir);
++    const sig = pf + '\n' + dir + '\n' + signature(pf, '') + '\n' + (dir ? (typeof M.dirSignature === 'function' ? M.dirSignature(dir) : signature('', dir)) : '');
 +    if (SCRUBBER_SIG === sig) return SCRUBBER_ERR ? { refused: SCRUBBER_ERR } : { scrubber: SCRUBBER };
 +    SCRUBBER_SIG = sig; SCRUBBER = null; SCRUBBER_ERR = '';
 +    try {
@@ -254,6 +308,18 @@ index a3c01d66..13460350 100644
 +    } catch (_) { POOL = null; }
 +    return POOL;
 +  }
++  // the company's last pick (free-pick.json next to the pool, written by its models.js): the alternates it chose for a
++  // model, house ranking first and cooling models left out; a pick older than a day is not used
++  let PICK = null, PICK_SIG = null;
++  function freePick(id) {
++    const f = String(ENV.STARNET_OPENROUTER_FREE_POOL || '');
++    if (!f) return null;
++    const pf = f.replace(/[^/\\]*$/, 'free-pick.json'), sig = signature(pf, '');
++    if (sig !== PICK_SIG) { PICK_SIG = sig; PICK = null; try { PICK = JSON.parse(fsMod().readFileSync(pf, 'utf8')); } catch (_) { PICK = null; } }
++    const p = PICK && PICK.picks && PICK.picks[id];
++    if (!p || !Array.isArray(p.alternates) || !(Date.now() - Date.parse(p.at) < 864e5)) return null;
++    return p.alternates;
++  }
 +  const freeOnly = () => String(ENV.STARNET_OPENROUTER_FREE_ONLY || '') === '1';
 +  function pricedZero(meta) {
 +    const p = meta && meta.pricing; if (!p || p.prompt == null || p.completion == null) return false;
@@ -270,13 +336,14 @@ index a3c01d66..13460350 100644
 +  function freeAlternates(id, withTools) {
 +    const pool = freePool(); if (!pool) return [];
 +    const n = Math.max(0, Math.min(2, Number(ENV.STARNET_OPENROUTER_FREE_ALTERNATES == null ? 2 : ENV.STARNET_OPENROUTER_FREE_ALTERNATES) || 0));
-+    return pool.ranked.filter(x => x !== id && (/:free$/.test(x) || pool.ids.has(x)) && (!withTools || pool.tools.has(x))).slice(0, n);
++    const picked = freePick(id);
++    return (picked || pool.ranked).filter(x => x !== id && (/:free$/.test(x) || pool.ids.has(x)) && (!withTools || pool.tools.has(x))).slice(0, n);
 +  }
 +
    const RETRY_DELAYS = [400, 1200];   // up to 2 retries (no jitter -> determinism); retryability comes from classifyApiError
    const OPENROUTER_REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
    const REASONING_EFFORT_ORDER = OPENROUTER_REASONING_EFFORTS;
-@@ -333,7 +430,7 @@
+@@ -333,7 +443,7 @@
        // A model the catalog (or its own earlier refusal) calls text-only gets each image as a short note instead: OpenRouter
        // refuses the whole request otherwise (404 "No endpoints found that support image input"). Unknown keeps them.
        const sent = supportsImages(req.model) === false ? provider.withoutImageParts(req.messages, req.model) : req.messages;
@@ -285,7 +352,7 @@ index a3c01d66..13460350 100644
        if (effort !== 'none' || allowed.length > 1) body.reasoning = { effort };
        if (req.tools && req.tools.length) {
          // Grammar-safe property keys on every tool (OpenRouter fronts Anthropic/Bedrock, which 400 the whole request
-@@ -348,6 +445,21 @@
+@@ -348,6 +458,21 @@
             serial — so forcing one tool per turn here only bought extra full round trips (a four-file read cost
             four prompt re-sends). Reverses docs/harness-runtime-spec.md's MVP position, dated 2026-08-17. */
        }

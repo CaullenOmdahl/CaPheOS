@@ -11,7 +11,7 @@
  *   FM.PROVIDER, FM.ALIAS                     'openrouter', 'free'
  *   FM.isAlias(entry)                         entry is { provider: 'openrouter', model: 'free' }
  *   FM.settings(policy)                       model-policy.json freeFallback with defaults (enabled, maxAgeHours, coolMin, minItems, maxAlternates)
- *   FM.aliasAllowed(policy)                   'free' is on allowed.openrouter.models and freeFallback.enabled is not false
+ *   FM.aliasAllowed(policy)                   'free' is on allowed.openrouter.models and freeFallback.enabled is true (off by default)
  *   FM.load(root) / FM.fresh(reg, now, pol)   the registry (null when missing or broken) / whether it is recent enough
  *   FM.isFreeRow(catalogRow)                  the catalog row is a free model (':free' or every price 0)
  *   FM.isFreeId(id, reg?)                     ':free' or listed in the registry
@@ -33,8 +33,9 @@ const path = require('path');
 const PROVIDER = 'openrouter';
 const ALIAS = 'free';
 const REG_REL = 'company/state/free-models.json';
+const PICK_REL = 'company/state/free-pick.json';   // the last pick and its alternates, read by the station (patch 0022)
 const RANK_REL = 'company/work/models/house-ranking.json';
-const DEFAULTS = { enabled: true, maxAgeHours: 72, coolMin: 30, minItems: 5, maxAlternates: 2 };
+const DEFAULTS = { enabled: false, maxAgeHours: 72, coolMin: 30, minItems: 5, maxAlternates: 2 };
 const DAILY_RE = /free-models-per-day|free[ _-]?models?[^.]{0,40}per[ _-]?day|daily[^.]{0,30}free[^.]{0,20}limit|free_daily_limit/i;
 const PROVIDER_ERR_RE = /\bhttp\s*(40[23]|408|429|5\d\d)\b|rate.?limit|overloaded|unavailable|no endpoints|timed? ?out|upstream|provider returned error|quota/i;
 const PROVIDER_CODES = ['quota_exhausted', 'rate_limited', 'provider_error', 'provider_unavailable', 'network', 'timeout', 'overloaded', 'upstream', 'model_unavailable', 'model_unsuitable', 'model_no_tools', 'concurrency_limit', 'free_daily_limit'];
@@ -46,7 +47,7 @@ const isAlias = e => !!e && e.provider === PROVIDER && e.model === ALIAS;
 function settings(pol) {
   const s = Object.assign({}, DEFAULTS, (pol && pol.freeFallback && typeof pol.freeFallback === 'object') ? pol.freeFallback : {});
   for (const k of ['maxAgeHours', 'coolMin', 'minItems', 'maxAlternates']) { const n = Number(s[k]); s[k] = Number.isFinite(n) && n >= 0 ? n : DEFAULTS[k]; }
-  s.enabled = s.enabled !== false;
+  s.enabled = s.enabled === true;   // off unless the owner switched it on (after the station runs patch 0022)
   return s;
 }
 function aliasAllowed(pol) {
@@ -105,11 +106,13 @@ function order(reg, ranking, o) {
   if (!ids.length) return [];
   const base = (Array.isArray(reg.ranked) && reg.ranked.length ? reg.ranked.filter(id => ids.includes(id)).concat(ids.filter(id => !reg.ranked.includes(id))) : defaultOrder(reg.models));
   const minItems = o.minItems != null ? Number(o.minItems) : DEFAULTS.minItems;
-  const cells = (ranking && Array.isArray(ranking.cells) ? ranking.cells : []).filter(c => c && c.provider === PROVIDER && ids.includes(String(c.modelId)) && Number(c.items) >= minItems && typeof c.lower === 'number');
+  // a cell names the model that answered (patch 0016 servedModel); OpenRouter may report a free model without ':free'
+  const idOf = m => (ids.includes(m) ? m : ids.includes(m + ':free') ? m + ':free' : null);
+  const cells = (ranking && Array.isArray(ranking.cells) ? ranking.cells : []).filter(c => c && c.provider === PROVIDER && idOf(String(c.modelId)) && Number(c.items) >= minItems && typeof c.lower === 'number');
   const inClass = o.cls ? cells.filter(c => c.class === o.cls) : [];
   const use = inClass.length ? inClass : cells;
   const best = new Map();
-  for (const c of use) { const id = String(c.modelId); if (!best.has(id) || c.lower > best.get(id)) best.set(id, c.lower); }
+  for (const c of use) { const id = idOf(String(c.modelId)); if (!best.has(id) || c.lower > best.get(id)) best.set(id, c.lower); }
   const ranked = [...best.entries()].sort((a, b) => (b[1] - a[1]) || (base.indexOf(a[0]) - base.indexOf(b[0]))).map(x => x[0]);
   return ranked.concat(base.filter(id => !best.has(id)));
 }
@@ -141,15 +144,26 @@ function resolve(a) {
   const all = flat(a.runs).filter(r => r && r.provider === PROVIDER).sort((x, y) => (Number(x.at) || 0) - (Number(y.at) || 0));
   const skipped = [];
   const tooled = new Set(reg.models.filter(m => m && m.tools === true).map(m => m.id));
+  const cooling = id => { const mine = all.filter(r => r.model === id), last = mine[mine.length - 1]; return last && providerErr(last) && t - Number(last.at) < S.coolMin * 60e3 ? last : null; };
   for (const id of ids) {
     if (!tooled.has(id)) { skipped.push({ id, why: 'does not take tools' }); continue; }
-    const mine = all.filter(r => r.model === id);
-    const last = mine[mine.length - 1];
-    if (last && providerErr(last) && t - Number(last.at) < S.coolMin * 60e3) { skipped.push({ id, why: 'provider error ' + Math.round((t - Number(last.at)) / 60e3) + ' min ago (' + String(last.failureCode || last.error || 'error').slice(0, 80) + ')' }); continue; }
-    const alternates = ids.filter(x => x !== id && !skipped.some(s => s.id === x)).slice(0, S.maxAlternates);
+    const last = cooling(id);
+    if (last) { skipped.push({ id, why: 'provider error ' + Math.round((t - Number(last.at)) / 60e3) + ' min ago (' + String(last.failureCode || last.error || 'error').slice(0, 80) + ')' }); continue; }
+    // the in-request alternates (patch 0022): the next ones in the same order, each taking tools and not cooling
+    const alternates = ids.filter(x => x !== id && tooled.has(x) && !cooling(x)).slice(0, Math.min(2, S.maxAlternates));
     return { ok: true, model: id, why: 'free model ' + id + (skipped.length ? ' (skipped ' + skipped.length + ' cooling)' : ''), alternates, skipped };
   }
   return { ok: false, why: 'every listed free model had a provider error in the last ' + S.coolMin + ' min', skipped };
 }
 
-module.exports = { PROVIDER, ALIAS, REG_REL, DEFAULTS, DAILY_RE, isAlias, settings, aliasAllowed, load, fresh, isFreeRow, isFreeId, isFreePair, allowedPair, defaultOrder, order, resolve, dailyLimitUntil, nextUtcMidnight };
+/* the station reads this to fail over WITHIN one request (patch 0022: OpenRouter's `models` list): the pick and the
+   alternates resolve() chose (house ranking first, cooling models left out). Written by models.js when it sets a seat. */
+function writePick(root, pick, now) {
+  if (!pick || !pick.model) return false;
+  const f = path.join(rootOf(root), PICK_REL), doc = { v: 1, at: new Date(now != null ? now : Date.now()).toISOString(), picks: {} };
+  const prev = readJson(f, null); if (prev && prev.picks && typeof prev.picks === 'object') doc.picks = prev.picks;
+  doc.picks[pick.model] = { alternates: (pick.alternates || []).filter(x => typeof x === 'string' && x !== pick.model).slice(0, 2), at: doc.at };
+  try { fs.mkdirSync(path.dirname(f), { recursive: true }); const tmp = f + '.tmp-' + process.pid; fs.writeFileSync(tmp, JSON.stringify(doc, null, 1) + '\n'); fs.renameSync(tmp, f); return true; } catch (_) { return false; }
+}
+
+module.exports = { PROVIDER, ALIAS, REG_REL, PICK_REL, writePick, DEFAULTS, DAILY_RE, isAlias, settings, aliasAllowed, load, fresh, isFreeRow, isFreeId, isFreePair, allowedPair, defaultOrder, order, resolve, dailyLimitUntil, nextUtcMidnight };

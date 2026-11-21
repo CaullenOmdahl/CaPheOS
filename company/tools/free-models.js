@@ -144,6 +144,8 @@ async function selftest() {
   r = await refresh({ root, now: t0 + 32 * 3600e3, fetch: stub(200, { data: LIST.filter(m => m.id !== 'vendor-b/small:free') }) });
   const reg2 = readJson(regFile(root), null);
   ok('a model the list no longer names is dropped; firstSeen is kept', r.ok && r.dropped === 1 && reg2.count === 3 && reg2.models[0].firstSeen === reg.models[0].firstSeen, JSON.stringify(r));
+  const shipped = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'model-policy.json'), 'utf8'));
+  ok('shipped off: the framework default (which a framework update merges into a company) does not switch the fallback on', !FM.aliasAllowed(shipped) && !FM.aliasAllowed({ allowed: { openrouter: { models: ['free'] } } }));
   const off = JSON.parse(JSON.stringify(pol)); off.freeFallback.enabled = false;
   fs.writeFileSync(path.join(root, 'company', 'model-policy.json'), JSON.stringify(off));
   r = await refresh({ root, now: t0 + 100 * 3600e3, fetch: stub(200, { data: LIST }) });
