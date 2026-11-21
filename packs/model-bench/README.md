@@ -81,6 +81,20 @@ for its own provider.
 kept as `.prev.json`) and one line per run in `company/state/model-bench/history.jsonl`. A level that was not run, was
 refused or hit a judge conflict has `passRate: null` and a `notProvenReason`: unknown, never zero.
 
+The file is one per model and merged across runs (`lib/bench.js` `mergeResults`), so running the kinds one at a time
+builds up the whole picture: the levels a run measured replace the old ones; a level it did not measure is kept while
+the bench major version and that level's task versions still match the tasks now, else it is dropped (the run says so).
+Each level and kind records its `measuredAt` and `seed`. `complete` is true when every kind and depth has a measured level.
+
+**When the provider fails.** A turn whose run ends with a provider failure code (`quota_exhausted`, `rate_limited`,
+`usage_limit`, `provider_error`, `overloaded` and the like, or any failure code with an empty answer) is never the
+model's fault: the instance counts as `failures.provider` and its level is not proven (`notProvenReason:
+provider:<code>`). A provider-failed level never replaces a measured one in the merged file. After three provider
+failures in a row the run stops (the quota is gone): the rest count as `failures.notRun` (`not-run: provider:<code>`),
+and the runner exits 0 with a line saying so. An empty answer with no failure code stays `unparseable`.
+Results written before this (every level unparseable with zero tokens) are cleaned with
+`node company/tools/model-bench.js forget --model <provider/model> [--kinds 1,2] [--dry-run]`.
+
 **How to remove it.** `node company/tools/unit.js disable model-bench --by owner` removes the skill. The runner refuses to
 run without the unit; results already written stay until someone deletes `company/state/model-bench/`.
 

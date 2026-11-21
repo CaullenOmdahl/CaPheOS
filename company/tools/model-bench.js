@@ -6,6 +6,9 @@
  *   node company/tools/model-bench.js run --model <provider/model> [--kinds 1,5,10] [--depth lookup|simple|standard|deep]
  *                                          [--seed N] [--repeat N] [--dry-run] [--json] [--seat <id>]
  *   node company/tools/model-bench.js show <provider/model> [--json]
+ *   node company/tools/model-bench.js forget --model <provider/model> [--kinds 1,2] [--dry-run] [--json]
+ *                                          drops the kinds whose levels are all unparseable with zero tokens: a provider
+ *                                          failure (a quota gone) scored as the model's fault before the bench told them apart
  *   node company/tools/model-bench.js list-tasks [--kinds 1,2] [--depth simple] [--json]
  *   node company/tools/model-bench.js limits [--json]                        what the owner has opened for the bench
  *   node company/tools/model-bench.js limits --by owner [--subscription-pct N] [--metered-usd N] [--judge provider/model|none]   the owner opens room / sets the writing judge
@@ -15,15 +18,21 @@
  * owner installed it, else the framework copy packs/model-bench/ (list-tasks, --dry-run and stub models only; a real model
  * runs only from the installed unit). Models are driven through the station's run API (talk only); the bench's own tools
  * act inside each task's sandbox (docker or bwrap; with neither, sandboxed tasks are refused). Stub models for tests:
- * stub/oracle, stub/bad, stub/garbage.
+ * stub/oracle, stub/bad, stub/garbage, stub/empty (an empty answer, no failure code), stub/quota (every turn ends with the
+ * provider's quota_exhausted).
  * Gating (unit README "What does not run automatically"): free models run; paid-per-use models need an open money cap;
  * subscription models need room the owner opened and the pacer's yes. The owner's room lives in
  * company/state/model-bench/limits.json, written only by `limits --by owner` from the owner's own shell (or the console):
  * the gate trusts it only when its newest recorded write (provenance) matches the file and came from outside an agent's
  * run, from this tool or the console. A hand edit or a seat's write = nothing opened. The file is also locked-watched.
- * Results: company/state/model-bench/<model>.json (replaced whole, the previous kept as .prev.json; locked-watch class A,
- * written only by this tool) and one line per run in company/state/model-bench/history.jsonl.
- * Exit: 0 done, 1 selftest failed, 2 usage, 3 refused (gating, no sandbox, unit not installed). Owner: the people function.
+ * Results: company/state/model-bench/<model>.json, one per model, MERGED across runs (lib/bench.js mergeResults): the
+ * kinds and depths a run measured replace the old ones; the others are kept while the bench major version and their task
+ * versions still match; each level and kind records its measuredAt and seed. The file before each write is kept as
+ * .prev.json (locked-watch class A, written only by this tool); one line per run or forget in history.jsonl.
+ * A provider failure (quota, rate limit, overload) is never the model's fail: the level is not proven ('provider:<code>');
+ * after 3 in a row the run stops, the rest are not run, and it exits 0 with a line saying so.
+ * Exit: 0 done, 1 selftest failed / no result to forget from, 2 usage, 3 refused (gating, no sandbox, unit not installed).
+ * Owner: the people function.
  */
 const fs = require('fs');
 const path = require('path');
@@ -110,13 +119,16 @@ function setLimits(root, a, o) {
   return { code: 0, out: Object.assign({ ok: true }, cur) };
 }
 
-// writer: the label provenance records (model-bench.js, or apprentice.js for the apprentice's bench result); both are
-// the locked-watch writers of company/state/model-bench/
+const resultFile = (root, model) => path.join(stateDir(root), String(model).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) + '.json');
+const readResult = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return null; } };
+// the merge and forget functions: the unit's own, or the framework copy's when an installed unit predates them
+const mergeLib = dir => { const B = bench(dir); return typeof B.mergeResults === 'function' ? B : bench(FRAMEWORK_UNIT); };
+// writes the model's result (already merged by the caller), keeping the file it replaces as .prev.json; writer: the label
+// provenance records (model-bench.js, or apprentice.js for the apprentice's bench result); both are the locked-watch writers
 function writeResult(root, res, line, writer) {
   const W = writer || 'model-bench.js';
   const dir = stateDir(root); fs.mkdirSync(dir, { recursive: true });
-  const B = { slug: m => String(m).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) };
-  const f = path.join(dir, B.slug(res.model) + '.json');
+  const f = resultFile(root, res.model);
   if (fs.existsSync(f)) {
     const prev = f.replace(/\.json$/, '.prev.json'), old = fs.readFileSync(f, 'utf8');
     fs.writeFileSync(prev, old);
@@ -134,10 +146,13 @@ function summaryLines(res) {
   const out = [res.model + ' (bench ' + res.benchVersion + ', seed ' + res.seed + ', ' + res.ranAt + ')'];
   for (const [k, v] of Object.entries(res.kinds)) {
     const lv = Object.entries(v.levels).map(([d, L]) => d + ' ' + (L.passRate == null ? 'not proven (' + L.notProvenReason + ')' : L.passed + '/' + L.instances)).join(', ');
-    out.push('  kind ' + k + ': proven ' + (v.proven || 'none') + (v.gaps.length ? ' (gaps: ' + v.gaps.join(', ') + ')' : '') + ' | ' + lv);
+    out.push('  kind ' + k + ': proven ' + (v.proven || 'none') + (v.gaps.length ? ' (gaps: ' + v.gaps.join(', ') + ')' : '') + ' | ' + lv + (v.measuredAt ? ' | measured ' + v.measuredAt + ', seed ' + v.seed : ''));
   }
+  if (res.stopped) out.push(stoppedLine(res.stopped));
   return out;
 }
+const stoppedLine = s => 'stopped early: the provider failed ' + s.inARow + ' times in a row (' + s.code + '), so its quota or limit looks used up; ' +
+  s.notRun + ' instance(s) not run, recorded as not proven (never failed). Run again when the provider has room.';
 
 async function cmd(argv, o) {
   o = o || {};
@@ -153,9 +168,18 @@ async function cmd(argv, o) {
   }
   if (sub === 'show') {
     const model = a._[1]; if (!model) return { code: 2, out: { ok: false, error: 'usage: show <provider/model>' } };
-    const f = path.join(stateDir(root), String(model).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) + '.json');
-    let res; try { res = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return { code: 1, out: { ok: false, error: 'no bench result for ' + model } }; }
+    const res = readResult(resultFile(root, model)); if (!res) return { code: 1, out: { ok: false, error: 'no bench result for ' + model } };
     return a.json ? { code: 0, out: res } : { code: 0, text: summaryLines(res).join('\n') };
+  }
+  if (sub === 'forget') {
+    const model = a.model && a.model !== true ? a.model : a._[1];
+    if (!model || !/^[^/]+\/.+$/.test(model)) return { code: 2, out: { ok: false, error: 'usage: forget --model <provider/model> [--kinds 1,2] [--dry-run]' } };
+    const f = resultFile(root, model), res = readResult(f);
+    if (!res) return { code: 1, out: { ok: false, error: 'no bench result for ' + model } };
+    const r = mergeLib(U.dir).forgetDamaged(res, kindsOf(a.kinds));
+    const out = { ok: true, model, dropped: r.dropped, kept: Object.keys(r.result.kinds || {}).map(Number), dryRun: !!a['dry-run'] };
+    if (r.dropped.length && !a['dry-run']) writeResult(root, r.result, { at: new Date().toISOString(), model, op: 'forget', dropped: r.dropped, why: 'every level unparseable with zero tokens (a provider failure)' });
+    return a.json ? { code: 0, out } : { code: 0, text: r.dropped.length ? (a['dry-run'] ? 'would drop' : 'dropped') + ' kind(s) ' + r.dropped.join(', ') + ' of ' + model + ': every level unparseable with zero tokens' : 'nothing to drop for ' + model + ': no kind has every level unparseable with zero tokens' };
   }
   if (sub === 'limits') {
     if (a.by !== undefined) return setLimits(root, a, o);
@@ -176,7 +200,7 @@ async function cmd(argv, o) {
     if (!stub && !U.installed) return { code: 3, out: { ok: false, refused: true, why: 'the model-bench unit is not installed in this company (node company/tools/unit.js install packs/model-bench --by owner)' } };
     let driver, judgeDriver = null, judgeModel = null;
     if (stub) {
-      const mode = model.split('/')[1]; if (!['oracle', 'bad', 'garbage'].includes(mode)) return { code: 2, out: { ok: false, error: 'stub models: stub/oracle, stub/bad, stub/garbage' } };
+      const mode = model.split('/')[1]; if (!['oracle', 'bad', 'garbage', 'empty', 'quota'].includes(mode)) return { code: 2, out: { ok: false, error: 'stub models: stub/oracle, stub/bad, stub/garbage, stub/empty, stub/quota' } };
       driver = B.stubDriver(mode);
     } else {
       const seat = a.seat && a.seat !== true ? a.seat : (co.seatFor && co.seatFor('people'));
@@ -190,13 +214,19 @@ async function cmd(argv, o) {
     }
     const t0 = Date.now();
     const r = await B.run(Object.assign({}, common, { driver, judgeDriver, judgeModel, onInstance: o.onInstance }));
-    const res = r.result;
-    if (stub && !a.write) return { code: 0, out: res };
-    const f = writeResult(root, res, { at: res.ranAt, model, seed: res.seed, benchVersion: res.benchVersion, complete: res.complete, minutes: Math.round((Date.now() - t0) / 600) / 100,
-      proven: Object.fromEntries(Object.entries(res.kinds).map(([k, v]) => [k, v.proven])), instances: r.records.length, passed: r.records.filter(x => x.pass).length });
-    return a.json ? { code: 0, out: res } : { code: 0, text: summaryLines(res).concat(['written: ' + path.relative(root, f)]).join('\n') };
+    const ran = r.result;
+    if (stub && !a.write) return a.json || !ran.stopped ? { code: 0, out: ran } : { code: 0, out: ran, text: summaryLines(ran).join('\n') };
+    // merged into the model's earlier result: a run of one kind never wipes the others
+    const m = mergeLib(U.dir).mergeResults(U.dir, readResult(resultFile(root, model)), ran, { config: o.config });
+    const res = m.result;
+    const f = writeResult(root, res, { at: ran.ranAt, model, seed: ran.seed, benchVersion: ran.benchVersion, complete: res.complete, minutes: Math.round((Date.now() - t0) / 600) / 100,
+      ran: Object.keys(ran.kinds).map(Number), proven: Object.fromEntries(Object.entries(ran.kinds).map(([k, v]) => [k, v.proven])), instances: r.records.length, passed: r.records.filter(x => x.pass).length,
+      provider: r.records.filter(x => x.failure === 'provider').length, notRun: r.records.filter(x => x.failure === 'notRun').length, stopped: ran.stopped || undefined,
+      kept: m.kept.map(x => x.kind + '/' + x.depth), dropped: m.dropped.map(x => x.kind + '/' + x.depth + ' (' + x.why + ')') });
+    const extra = m.dropped.length ? ['dropped from the earlier result: ' + m.dropped.map(x => 'kind ' + x.kind + ' ' + x.depth + ' (' + x.why + ')').join(', ')] : [];
+    return a.json ? { code: 0, out: res } : { code: 0, text: summaryLines(res).concat(extra, ['written: ' + path.relative(root, f)]).join('\n') };
   }
-  return { code: 2, out: { ok: false, error: 'usage: model-bench.js run --model <provider/model> [--kinds] [--depth] [--seed] [--repeat] [--dry-run] | show <provider/model> | list-tasks | limits [--by owner --subscription-pct N --metered-usd N --judge provider/model] | --selftest' } };
+  return { code: 2, out: { ok: false, error: 'usage: model-bench.js run --model <provider/model> [--kinds] [--depth] [--seed] [--repeat] [--dry-run] | show <provider/model> | forget --model <provider/model> [--kinds] [--dry-run] | list-tasks | limits [--by owner --subscription-pct N --metered-usd N --judge provider/model] | --selftest' } };
 }
 
 async function selftest() {

@@ -11,6 +11,13 @@
  *   B.dryRun(opts)                                -> { instances, tokensEst, limitSharePctEst, gate }
  *   B.stubDriver(mode)                            -> a model driver that answers from the oracle or the known-bad answer
  *   B.stationDriver(o)                            -> a model driver over the station's run API (POST /api/run, talk only)
+ *   B.mergeResults(unitDir, prev, res, o)         -> { result, kept, dropped }   a new run merged into the model's earlier result
+ *   B.forgetDamaged(result, kinds, o)             -> { result, dropped }   drops kinds a provider failure scored as unparseable
+ *
+ * A provider failure (the run end carries a failure code such as quota_exhausted, rate_limited, usage_limit,
+ * provider_error or overloaded, or any failure code with an empty answer) is never the model's fault: the instance is
+ * failures.provider, its level is not proven ('provider:<code>'), and after providerStopAfter (3) in a row the run stops
+ * and the rest are not run (failures.notRun, 'not-run: ...'). An empty answer with no failure code stays unparseable.
  */
 const fs = require('fs');
 const path = require('path');
@@ -29,6 +36,17 @@ function config(unitDir, over) {
   const d = JSON.parse(JSON.stringify((m.config && m.config.defaults) || {}));
   const merge = (a, b) => { for (const [k, v] of Object.entries(b || {})) { if (v && typeof v === 'object' && !Array.isArray(v) && a[k] && typeof a[k] === 'object') merge(a[k], v); else a[k] = v; } return a; };
   return merge(d, over || {});
+}
+// failure codes that say the provider, not the model, failed (lib/free-models.js PROVIDER_CODES and the like)
+const PROVIDER_CODES = ['quota_exhausted', 'rate_limited', 'rate_limit', 'usage_limit', 'provider_error', 'provider_unavailable', 'overloaded',
+  'upstream', 'network', 'billing', 'concurrency_limit', 'free_daily_limit', 'model_unavailable', 'auth'];
+const PROVIDER_RE = /quota|rate.?limit|usage.?limit|overload|provider|billing|daily.?limit|upstream|unavailable/i;
+function providerFailure(code, text) {
+  if (!code) return null;
+  const c = String(code);
+  if (/refus|content_policy/i.test(c)) return null;
+  if (PROVIDER_CODES.includes(c) || PROVIDER_RE.test(c) || !String(text || '').trim()) return c.slice(0, 60);
+  return null;
 }
 const benchVersion = unitDir => manifest(unitDir).version || '0.0.0';
 const major = v => Number(String(v || '0').split('.')[0]);
@@ -118,6 +136,8 @@ function stubDriver(mode) {
     start(inst) { this.inst = inst; this.step = 0; },
     async turn() {
       const plan = mode === 'oracle' ? this.inst.oracle : mode === 'bad' ? this.inst.bad : null;
+      if (mode === 'quota') return { text: '', tokensIn: 0, tokensOut: 0, failure: 'quota_exhausted' };   // the provider's daily quota is gone
+      if (mode === 'empty') return { text: '', tokensIn: 0, tokensOut: 0 };                                 // an empty answer, no failure code
       if (mode === 'garbage' || !plan) return { text: 'I am not sure what to do here.', tokensIn: 0, tokensOut: 8 };
       const acts = plan.actions || [];
       if (this.step < acts.length) { const a = acts[this.step++]; return { text: 'Next step.\n' + A.fence(a), tokensIn: 0, tokensOut: 20 }; }
@@ -232,6 +252,9 @@ async function runInstance(o) {
       try { r = await driver.turn(messages, { remainingMs: limitMs - (Date.now() - t0) }); } catch (e) { rec.failure = 'crash'; rec.detail = String(e.message || e).slice(0, 200); break; }
       rec.tokensIn += r.tokensIn || 0; rec.tokensOut += r.tokensOut || 0; rec.usd += r.usd || 0; if (r.servedModel) rec.servedModel = r.servedModel;
       if (r.failure && /refus/i.test(String(r.failure))) { rec.failure = 'refused'; break; }
+      // the provider failed (quota, rate limit, overload ...): not the model's answer, so never scored as the model's fail
+      const pf = providerFailure(r.failure, r.text);
+      if (pf) { rec.failure = 'provider'; rec.providerCode = pf; rec.notProven = 'provider:' + pf; rec.detail = 'the provider failed (' + pf + '): no answer from the model to score'; break; }
       transcript += '\n' + r.text;
       messages.push({ role: 'assistant', content: r.text });
       const a = A.extract(r.text);
@@ -323,16 +346,29 @@ async function run(o) {
   else if (!jm) judgeNote = 'judge-unset';
   if (jm && !driver.stub && (jm === driver.id || familyOf(jm.split('/').pop()) === driver.family)) { judge = null; judgeNote = 'judge-conflict'; }
   const recs = [];
+  // after this many provider failures in a row the provider has no room (a quota is gone): stop, the rest are not run
+  const stopAfter = Math.max(1, Number(o.providerStopAfter) || Number(cfg.providerStopAfter) || 3);
+  let inARow = 0, stopped = null;
   for (const { task, rep } of instancesFor(tasks, repeat)) {
     const s = seed + Math.floor(rep / (task.repeatK || 1)) * 7919;
+    if (stopped) {
+      recs.push({ task: task.id, version: task.version, seed: s, pass: false, score: 0, failure: 'notRun', notProven: 'not-run: provider:' + stopped.code,
+        timeSec: 0, tokensIn: 0, tokensOut: 0, usd: 0, detail: 'not run: the provider failed ' + stopAfter + ' times in a row', servedModel: null, group: task.id + '#' + Math.floor(rep / (task.repeatK || 1)) });
+      stopped.notRun++;
+      continue;
+    }
     const rec = await runInstance({ unitDir, task, seed: s, driver, root, runId, cfg, allowTrusted: o.allowTrusted, judge: judge === true ? null : judge, judgeFor: o.judgeFor, keep: o.keep });
     rec.group = task.id + '#' + Math.floor(rep / (task.repeatK || 1));
     if (task.kind === 3 && !judge && rec.notProven === 'judge-needed') rec.notProven = judgeNote || 'judge-unset';
     recs.push(rec);
     if (o.onInstance) o.onInstance(rec);
+    inARow = rec.failure === 'provider' ? inARow + 1 : 0;
+    if (inARow >= stopAfter) stopped = { after: recs.length, inARow, code: rec.providerCode, notRun: 0 };
   }
   S.removeRun(root, runId);
-  return { result: aggregate(unitDir, o.model || driver.id, tasks, recs, { seed, cfg, judgeModel: judge ? (o.judgeModel || jm || 'stub') : (jm || null), complete: !o.kinds && !o.depth }), records: recs };
+  const result = aggregate(unitDir, o.model || driver.id, tasks, recs, { seed, cfg, judgeModel: judge ? (o.judgeModel || jm || 'stub') : (jm || null), complete: !o.kinds && !o.depth && !stopped && !recs.some(r => r.failure === 'provider') });
+  if (stopped) result.stopped = { reason: 'provider', code: stopped.code, inARow: stopped.inARow, ran: stopped.after, notRun: stopped.notRun };
+  return { result, records: recs };
 }
 function makeJudge(unitDir, drv) {
   const rubric = fs.readFileSync(path.join(unitDir, 'judge', 'rubric.md'), 'utf8');
@@ -360,27 +396,90 @@ function aggregate(unitDir, model, tasks, recs, o) {
     for (const d of DEPTHS) {
       const ts = tasks.filter(t => t.kind === k && t.depth === d); if (!ts.length) continue;
       const rs = recs.filter(r => ts.some(t => t.id === r.task));
-      const failures = { timeout: 0, unparseable: 0, crash: 0, refused: 0, sandbox: 0 };
+      const failures = { timeout: 0, unparseable: 0, crash: 0, refused: 0, sandbox: 0, provider: 0, notRun: 0 };
       for (const r of rs) if (r.failure && failures[r.failure] !== undefined) failures[r.failure]++;
       // a task with repeatK > 1 passes only when every repeat passed (pass^k)
       const byTask = {}; for (const r of rs) (byTask[r.group || r.task] ||= []).push(r);
       const units = Object.values(byTask);
       const passed = units.filter(u => u.every(r => r.pass)).length;
-      const notProvenRec = rs.find(r => r.notProven);
+      // a provider failure wins: the level says nothing about the model (never failed); then not run; then any other
+      const notProvenRec = rs.find(r => r.failure === 'provider') || rs.find(r => r.failure === 'notRun') || rs.find(r => r.notProven);
       let notProvenReason = null;
       if (notProvenRec) notProvenReason = notProvenRec.notProven;
       else if (failures.sandbox === rs.length && rs.length) notProvenReason = 'refused: no sandbox engine';
       const times = rs.map(r => r.timeSec);
       levels[d] = { tasks: ts.length, instances: units.length, passed: notProvenReason ? null : passed, passRate: notProvenReason ? null : Math.round(passed / Math.max(1, units.length) * 1000) / 1000,
         taskVersions: Object.fromEntries(ts.map(t => [t.id, t.version])), timeSecP50: p50(times), timeSecMax: times.length ? Math.max(...times) : 0,
-        tokensIn: rs.reduce((a, r) => a + r.tokensIn, 0), tokensOut: rs.reduce((a, r) => a + r.tokensOut, 0), limitSharePct: shareOf(rs.reduce((a, r) => a + r.tokensIn, 0), rs.reduce((a, r) => a + r.tokensOut, 0)), failures, notProvenReason };
+        tokensIn: rs.reduce((a, r) => a + r.tokensIn, 0), tokensOut: rs.reduce((a, r) => a + r.tokensOut, 0), limitSharePct: shareOf(rs.reduce((a, r) => a + r.tokensIn, 0), rs.reduce((a, r) => a + r.tokensOut, 0)), failures, notProvenReason,
+        measuredAt: res.ranAt, seed: o.seed };
     }
-    let proven = null; const gaps = [];
-    for (const d of DEPTHS) { const L = levels[d]; if (!L) continue; if (L.passRate != null && L.passRate >= passMark) proven = d; }
-    if (proven) for (const d of DEPTHS.slice(0, DEPTHS.indexOf(proven))) { const L = levels[d]; if (L && L.passRate != null && L.passRate < passMark) gaps.push(d); }
-    res.kinds[String(k)] = { proven, gaps, levels };
+    res.kinds[String(k)] = kindSummary(levels, passMark);
   }
   return res;
+}
+// a kind's proven depth and gaps from its levels; measuredAt and seed of its newest level
+function kindSummary(levels, passMark) {
+  let proven = null; const gaps = [];
+  for (const d of DEPTHS) { const L = levels[d]; if (!L) continue; if (L.passRate != null && L.passRate >= passMark) proven = d; }
+  if (proven) for (const d of DEPTHS.slice(0, DEPTHS.indexOf(proven))) { const L = levels[d]; if (L && L.passRate != null && L.passRate < passMark) gaps.push(d); }
+  const ordered = {}; for (const d of DEPTHS) if (levels[d]) ordered[d] = levels[d];
+  let newest = null; for (const L of Object.values(ordered)) if (L.measuredAt && (!newest || String(L.measuredAt) > String(newest.measuredAt))) newest = L;
+  return { proven, gaps, measuredAt: newest ? newest.measuredAt : null, seed: newest ? newest.seed : null, levels: ordered };
+}
+
+// ---------- merging runs into one result per model
+// a level that measured the model: not one a provider failure or an early stop left unknown
+const measured = L => !!L && !(L.notProvenReason && /^(provider:|not-run)/.test(String(L.notProvenReason)));
+const sameVersions = (a, b) => { a = a || {}; b = b || {}; const ka = Object.keys(a).sort(), kb = Object.keys(b).sort(); return ka.length === kb.length && ka.every((k, i) => k === kb[i] && Number(a[k]) === Number(b[k])); };
+function currentVersions(unitDir) {
+  const cur = {};
+  for (const t of loadTasks(unitDir, { lenient: true }).tasks) ((cur[t.kind] ||= {})[t.depth] ||= {})[t.id] = t.version;
+  return cur;
+}
+/* A run of some kinds (or depths) merged into the model's earlier result: every level the new run measured replaces the
+ * old one; an old level the new run did not measure (not run, or a provider failure) is kept only while the bench major
+ * version and that level's task versions still match the unit's tasks now, else it is dropped. Each level carries its
+ * own measuredAt and seed (an old file without them: its ranAt and seed). complete: every current kind and depth has a
+ * measured level. Pure apart from reading the unit's task files. */
+function mergeResults(unitDir, prev, res, o) {
+  o = o || {};
+  const out = JSON.parse(JSON.stringify(res)), kept = [], dropped = [];
+  if (!prev || prev.schema !== res.schema || prev.model !== res.model || !prev.kinds || typeof prev.kinds !== 'object') return { result: out, kept, dropped };
+  const passMark = Number(config(unitDir, o.config).passMark) || 0.9;
+  const cur = o.versions || currentVersions(unitDir);
+  const sameMajor = major(prev.benchVersion) === major(res.benchVersion);
+  const touched = new Set();
+  for (const [k, pk] of Object.entries(prev.kinds)) {
+    for (const [d, L0] of Object.entries((pk && pk.levels) || {})) {
+      const nk = out.kinds[k], nL = nk && nk.levels && nk.levels[d];
+      if (measured(nL)) continue;   // the new run measured it: the new level replaces the old
+      const L = Object.assign({}, L0, { measuredAt: L0.measuredAt || pk.measuredAt || prev.ranAt || null, seed: L0.seed != null ? L0.seed : pk.seed != null ? pk.seed : (prev.seed != null ? prev.seed : null) });
+      const why = !sameMajor ? 'bench major version ' + major(prev.benchVersion) + ' -> ' + major(res.benchVersion) : !sameVersions(L.taskVersions, cur[k] && cur[k][d]) ? 'task versions changed' : null;
+      if (why) { dropped.push({ kind: Number(k), depth: d, why }); continue; }
+      if (nL && !measured(L)) continue;   // neither measured: the newer unknown stays
+      (out.kinds[k] ||= { proven: null, gaps: [], levels: {} }).levels[d] = L;
+      touched.add(k); kept.push({ kind: Number(k), depth: d, measuredAt: L.measuredAt, seed: L.seed });
+    }
+  }
+  for (const k of Object.keys(out.kinds)) out.kinds[k] = kindSummary(out.kinds[k].levels || {}, passMark);
+  out.kinds = Object.fromEntries(Object.entries(out.kinds).sort((a, b) => Number(a[0]) - Number(b[0])));
+  out.complete = Object.entries(cur).every(([k, ds]) => Object.keys(ds).every(d => measured(out.kinds[k] && out.kinds[k].levels[d])));
+  if (!out.servedModel && prev.servedModel) out.servedModel = prev.servedModel;
+  return { result: out, kept, dropped };
+}
+/* A level a provider failure wrote as the model's fault before providers were told apart: every instance unparseable and
+ * not one token used. forgetDamaged drops each kind (of `kinds`, or all) whose levels are all such. */
+const damagedLevel = L => !!L && Number(L.instances) > 0 && !Number(L.passed) && (Number(L.tokensIn) || 0) + (Number(L.tokensOut) || 0) === 0 &&
+  !!L.failures && Number(L.failures.unparseable) >= Number(L.instances);
+function forgetDamaged(result, kinds, o) {
+  const out = JSON.parse(JSON.stringify(result || {})), dropped = [];
+  for (const [k, kr] of Object.entries(out.kinds || {})) {
+    if (kinds && kinds.length && !kinds.includes(Number(k))) continue;
+    const ls = Object.values((kr && kr.levels) || {});
+    if (ls.length && ls.every(damagedLevel)) { dropped.push(Number(k)); delete out.kinds[k]; }
+  }
+  if (dropped.length) out.complete = false;
+  return { result: out, dropped };
 }
 function dryRun(o) {
   const unitDir = o.unitDir, cfg = config(unitDir, o.config), repeat = Number(o.repeat) || Number(cfg.repeat) || 1, seed = Number(o.seed) || 0;
@@ -398,4 +497,5 @@ function dryRun(o) {
     gate: g, list: o.verbose ? list : undefined };
 }
 
-module.exports = { loadTasks, instantiate, prompt, run, runInstance, gate, classify, limits, dryRun, aggregate, stubDriver, stationDriver, config, benchVersion, major, slug, familyOf, readTree, makeJudge };
+module.exports = { loadTasks, instantiate, prompt, run, runInstance, gate, classify, limits, dryRun, aggregate, stubDriver, stationDriver, config, benchVersion, major, slug, familyOf, readTree, makeJudge,
+  mergeResults, forgetDamaged, damagedLevel, providerFailure, kindSummary, PROVIDER_CODES };

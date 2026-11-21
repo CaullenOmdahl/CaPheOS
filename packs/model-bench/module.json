@@ -1,7 +1,7 @@
 {
   "format": 2,
   "id": "model-bench",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "kind": "capability",
   "title": "Model bench: can a model do our work",
   "summary": "Our own test of whether a model can do the company's work: 10 kinds of work (lookup, extraction, writing, planning, numbers, small and bigger code changes, code review, tool use, judgment under house rules) at four depths each, 237 tasks, most of them seeded generators. It measures only: it never routes work or changes a model chain.",
