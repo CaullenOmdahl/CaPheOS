@@ -169,6 +169,23 @@ test('Claude at 28% on day 1 is closed; at 10% it is open; on day 3 at 40% it is
   assert.equal(r.m.claude.open, true);
 });
 
+test('a raised Claude figure does not hold itself up: once the real high reading is older than the window, the fresh meter decides', async () => {
+  const jobs = crewJobs();
+  // a real 99% seen 10 min ago still raises a fresh 78% (the guard against a lower, frozen number)
+  let fx = fixture({ feed: false, stationPct: 78, stationAt: T0 - 2 * MIN });
+  fx.w('company/state/pacer-state.json', { v: 1, history: { claude: [{ at: T0 - 10 * MIN, usedPct: 99, weekEnd: CLAUDE_RESET }], minimax: [] } });
+  let r = await measurePlan(make(fx, station(jobs)), jobs);
+  assert.equal(r.m.claude.usedPct, 99, 'a real high reading inside the window still raises');
+  // but rows the pacer wrote from its own raised figure do not: the real 99% was 18 h ago, the echoes are recent
+  fx = fixture({ feed: false, stationPct: 78, stationAt: T0 - 2 * MIN });
+  fx.w('company/state/pacer-state.json', { v: 1, history: { claude: [
+    { at: T0 - 18 * 60 * MIN, usedPct: 99, weekEnd: CLAUDE_RESET },
+    { at: T0 - 60 * MIN, usedPct: 99, weekEnd: CLAUDE_RESET, raised: true, seenPct: 78 },
+    { at: T0 - 30 * MIN, usedPct: 99, weekEnd: CLAUDE_RESET, raised: true, seenPct: 78 }], minimax: [] } });
+  r = await measurePlan(make(fx, station(jobs)), jobs);
+  assert.equal(r.m.claude.usedPct, 78, 'the fresh meter reading decides once the real high reading has aged out');
+});
+
 test('the highest fresh Claude reading wins (not the newest), and a reading older than 90 minutes is unknown = closed', async () => {
   const jobs = crewJobs();
   // the status line rewrites its file every minute even while its numbers are frozen: newer is not truer

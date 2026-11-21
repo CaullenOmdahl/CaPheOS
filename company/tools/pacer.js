@@ -564,7 +564,7 @@ function makePacer(o) {
       const fhs = pool.map(c => c.fiveHour).filter(f => f && !(f.resetsAt && f.resetsAt <= t)).sort((a, b) => b.usedPct - a.usedPct);
       best.fiveHour = fhs[0] || null;
       if (pool.some(c => c.status === 'rejected')) best.status = 'rejected';
-      const seen = (((st && st.history) || {}).claude || []).filter(x => x && isNum(x.weekEnd) && best.resetsAt && Math.abs(x.weekEnd - best.resetsAt) < HOUR && t - x.at <= staleMs && x.usedPct > best.usedPct);
+      const seen = (((st && st.history) || {}).claude || []).filter(x => x && isNum(x.weekEnd) && best.resetsAt && Math.abs(x.weekEnd - best.resetsAt) < HOUR && t - x.at <= staleMs && !x.raised && x.usedPct > best.usedPct);   // only a figure a meter really showed raises: a raised row is the pacer's own echo, and counting it would hold one old high reading for the rest of the week
       if (seen.length) { const hi = seen.sort((a, b) => b.usedPct - a.usedPct)[0]; best.raisedFrom = best.usedPct; best.usedPct = hi.usedPct; best.raisedAt = hi.at; }
       best.picked = pool.length > 1 ? 'the highest of ' + pool.length + ' fresh readings' : 'the only fresh reading';
     } else {
@@ -883,7 +883,7 @@ function makePacer(o) {
     if (!reading || !isNum(reading.usedPct) || !isNum(reading.at)) return;
     const h = st.history[key] = Array.isArray(st.history[key]) ? st.history[key] : [];
     const last = h[h.length - 1];
-    if (!last || (last.at !== reading.at && (last.usedPct !== reading.usedPct || reading.at - last.at >= 30 * MIN))) h.push({ at: reading.at, usedPct: reading.usedPct, weekEnd: isNum(reading.weekEnd) ? reading.weekEnd : null });
+    if (!last || (last.at !== reading.at && (last.usedPct !== reading.usedPct || reading.at - last.at >= 30 * MIN))) h.push(Object.assign({ at: reading.at, usedPct: reading.usedPct, weekEnd: isNum(reading.weekEnd) ? reading.weekEnd : null }, isNum(reading.raisedFrom) ? { raised: true, seenPct: reading.raisedFrom } : {}));
     const cut = now() - 8 * DAY;
     st.history[key] = h.filter(x => x.at >= cut).slice(-2000);
   }
