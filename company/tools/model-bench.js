@@ -8,7 +8,7 @@
  *   node company/tools/model-bench.js show <provider/model> [--json]
  *   node company/tools/model-bench.js list-tasks [--kinds 1,2] [--depth simple] [--json]
  *   node company/tools/model-bench.js limits [--json]                        what the owner has opened for the bench
- *   node company/tools/model-bench.js limits --by owner [--subscription-pct N] [--metered-usd N]   the owner opens room
+ *   node company/tools/model-bench.js limits --by owner [--subscription-pct N] [--metered-usd N] [--judge provider/model|none]   the owner opens room / sets the writing judge
  *   node company/tools/model-bench.js --selftest
  *
  * The functions live in the unit (lib/bench.js): the installed copy company/state/units/model-bench/<version>/ when the
@@ -95,7 +95,14 @@ function setLimits(root, a, o) {
     if (!Number.isFinite(n) || n < 0 || (key === 'subscriptionPctPerRun' && n > 100)) return { code: 2, out: { ok: false, error: '--' + flag + ' must be a number from 0' + (key === 'subscriptionPctPerRun' ? ' to 100' : '') } };
     cur[key] = n; changed++;
   }
-  if (!changed) return { code: 2, out: { ok: false, error: 'say what to open: --subscription-pct N and/or --metered-usd N' } };
+  if (a.judge !== undefined) {   // the fixed judge for kind 3 (writing): one model, provider/model, or "none" to clear it
+    const j = String(a.judge);
+    if (j === 'none' || j === '') cur.judgeModel = null;
+    else if (!/^[^/\s]+\/\S+$/.test(j)) return { code: 2, out: { ok: false, error: '--judge must be provider/model (or none)' } };
+    else cur.judgeModel = j;
+    changed++;
+  }
+  if (!changed) return { code: 2, out: { ok: false, error: 'say what to open: --subscription-pct N, --metered-usd N and/or --judge provider/model' } };
   const f = path.join(root, LIMITS_REL); fs.mkdirSync(path.dirname(f), { recursive: true });
   const txt = JSON.stringify(Object.assign({ _doc: 'The owner\'s room for the model bench (model-bench.js limits --by owner). A hand edit opens nothing.' }, cur, { at: new Date().toISOString() }), null, 1) + '\n';
   const tmp = f + '.tmp-' + process.pid; fs.writeFileSync(tmp, txt); fs.renameSync(tmp, f);
@@ -173,7 +180,8 @@ async function cmd(argv, o) {
       if (!seat) return { code: 3, out: { ok: false, refused: true, why: 'no seat to run the bench on (--seat <id>)' } };
       const base = { seat, stationUrl: co.STATION_URL, token: co.stationToken() };
       driver = B.stationDriver(Object.assign({ model }, base));
-      const cfg = B.config(U.dir, o.config);
+      const ol = ownerLimits(root).limits || {};   // the owner's judge (limits --judge) wins over the unit default
+      const cfg = B.config(U.dir, ol.judgeModel ? Object.assign({}, o.config || {}, { judge: Object.assign({}, (o.config || {}).judge || {}, { model: ol.judgeModel }) }) : o.config);
       judgeModel = cfg.judge && cfg.judge.model;
       if (judgeModel) { const jg = B.gate(judgeModel, U.dir, root, common); if (jg.ok) judgeDriver = B.stationDriver(Object.assign({ model: judgeModel }, base)); }
     }
@@ -185,7 +193,7 @@ async function cmd(argv, o) {
       proven: Object.fromEntries(Object.entries(res.kinds).map(([k, v]) => [k, v.proven])), instances: r.records.length, passed: r.records.filter(x => x.pass).length });
     return a.json ? { code: 0, out: res } : { code: 0, text: summaryLines(res).concat(['written: ' + path.relative(root, f)]).join('\n') };
   }
-  return { code: 2, out: { ok: false, error: 'usage: model-bench.js run --model <provider/model> [--kinds] [--depth] [--seed] [--repeat] [--dry-run] | show <provider/model> | list-tasks | limits [--by owner --subscription-pct N --metered-usd N] | --selftest' } };
+  return { code: 2, out: { ok: false, error: 'usage: model-bench.js run --model <provider/model> [--kinds] [--depth] [--seed] [--repeat] [--dry-run] | show <provider/model> | list-tasks | limits [--by owner --subscription-pct N --metered-usd N --judge provider/model] | --selftest' } };
 }
 
 async function selftest() {
@@ -223,6 +231,11 @@ async function selftest() {
     t('the owner opens room through the tool', r.code === 0 && fs.existsSync(lim), JSON.stringify(r.out));
     const lt = await cmd(['limits', '--json'], { root, unit });
     t('the owner\'s recorded write is trusted', lt.out.trusted === true && lt.out.subscriptionPctPerRun === 2, JSON.stringify(lt.out));
+    r = await cmd(['limits', '--by', 'owner', '--judge', 'not-a-model'], { root, unit, shell: () => true });
+    t('a judge that is not provider/model is refused', r.code === 2, JSON.stringify(r.out));
+    r = await cmd(['limits', '--by', 'owner', '--judge', 'claude-cli/judge-model'], { root, unit, shell: () => true });
+    const lj = await cmd(['limits', '--json'], { root, unit });
+    t('the owner sets the writing judge, and the room already opened is kept', r.code === 0 && lj.out.judgeModel === 'claude-cli/judge-model' && lj.out.subscriptionPctPerRun === 2 && lj.out.trusted === true, JSON.stringify(lj.out));
     r = await cmd(['run', '--model', 'claude-cli/some-model', '--kinds', '1'], { root, unit, pacerRoom: () => 1 });
     t('with room opened, the pacer having less room still refuses', r.code === 3 && /pacer has 1% room/.test(r.out.why), r.out && r.out.why);
     r = await cmd(['run', '--model', 'claude-cli/some-model', '--kinds', '1', '--dry-run'], { root, unit, pacerRoom: () => 10 });
