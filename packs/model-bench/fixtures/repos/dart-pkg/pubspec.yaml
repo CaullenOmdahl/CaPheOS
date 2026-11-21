@@ -1,0 +1,6 @@
+name: roster
+description: Seats, shifts and a weekly rota for a small team (fictional client codebase for the model bench).
+version: 1.2.0
+publish_to: none
+environment:
+  sdk: ^3.4.0

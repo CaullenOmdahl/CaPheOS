@@ -1,0 +1,392 @@
+'use strict';
+/* The model bench, as functions (functions first, CLI second: MODULE-SYSTEM section 5.7.4). The CLI is
+ * company/tools/model-bench.js; the new backend registers the same functions as model_bench.run on ctx.tools.
+ *
+ *   const B = require('<unit>/lib/bench')
+ *   B.loadTasks(unitDir, { kinds, depth })        -> [task]          every task file, validated
+ *   B.instantiate(unitDir, task, seed)            -> instance        the generator's output for one seed
+ *   B.prompt(unitDir, task, inst)                 -> string          what the model is sent
+ *   B.run(opts)                                   -> result          the output contract (spec section 9)
+ *   B.gate(model, unitDir, root, o)               -> { ok, cls, reason }   may this model run now (spec section 8)
+ *   B.dryRun(opts)                                -> { instances, tokensEst, limitSharePctEst, gate }
+ *   B.stubDriver(mode)                            -> a model driver that answers from the oracle or the known-bad answer
+ *   B.stationDriver(o)                            -> a model driver over the station's run API (POST /api/run, talk only)
+ */
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { rng } = require('./rng');
+const W = require('./world');
+const A = require('./answer');
+const S = require('./sandbox');
+const C = require('./checks');
+const { validate, DEPTHS } = require('./schema');
+
+const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } };
+const manifest = unitDir => readJson(path.join(unitDir, 'module.json'), {});
+function config(unitDir, over) {
+  const m = manifest(unitDir);
+  const d = JSON.parse(JSON.stringify((m.config && m.config.defaults) || {}));
+  const merge = (a, b) => { for (const [k, v] of Object.entries(b || {})) { if (v && typeof v === 'object' && !Array.isArray(v) && a[k] && typeof a[k] === 'object') merge(a[k], v); else a[k] = v; } return a; };
+  return merge(d, over || {});
+}
+const benchVersion = unitDir => manifest(unitDir).version || '0.0.0';
+const major = v => Number(String(v || '0').split('.')[0]);
+
+function loadTasks(unitDir, f) {
+  f = f || {};
+  const out = [], problems = [];
+  const base = path.join(unitDir, 'tasks');
+  for (const k of fs.readdirSync(base).filter(x => /^\d+$/.test(x)).sort((a, b) => a - b)) {
+    if (f.kinds && f.kinds.length && !f.kinds.includes(Number(k))) continue;
+    for (const d of DEPTHS) {
+      if (f.depth && f.depth !== d) continue;
+      const dir = path.join(base, k, d); if (!fs.existsSync(dir)) continue;
+      for (const file of fs.readdirSync(dir).filter(x => x.endsWith('.json')).sort()) {
+        const t = readJson(path.join(dir, file), null);
+        const bad = validate(t, file);
+        if (t && (t.kind !== Number(k) || t.depth !== d)) bad.push('the task sits in tasks/' + k + '/' + d + ' but says kind ' + (t && t.kind) + ' depth ' + (t && t.depth));
+        if (bad.length) problems.push(path.join('tasks', k, d, file) + ': ' + bad.join('; '));
+        else out.push(t);
+      }
+    }
+  }
+  if (problems.length && !f.lenient) { const e = new Error('task files do not validate:\n' + problems.join('\n')); e.problems = problems; throw e; }
+  return f.lenient ? { tasks: out, problems } : out;
+}
+
+const genCache = new Map();
+function loadModule(unitDir, rel) {
+  const p = path.join(unitDir, rel);
+  if (!genCache.has(p)) genCache.set(p, require(p));
+  return genCache.get(p);
+}
+// one instance of a task for one seed: { prompt, files, expected, oracle, bad, secrets }
+function instantiate(unitDir, task, seed) {
+  const r = rng([seed, task.id, task.version].join('|'));
+  if (task.generator) {
+    const g = loadModule(unitDir, task.generator);
+    const inst = g.generate(r, Object.assign({ depth: task.depth, kind: task.kind, taskId: task.id }, task.params), { unitDir, W, seed });
+    return normalizeInstance(inst);
+  }
+  // a static task: its fixture folder is the workspace, expected and the answers are inline
+  const files = readTree(path.join(unitDir, task.inputs.files));
+  return normalizeInstance({ prompt: task.params.prompt || '', files, expected: task.expected, oracle: task.params.oracle, bad: task.params.bad });
+}
+function normalizeInstance(inst) {
+  inst.files = inst.files || {};
+  // every generated text file carries the canary, where the format allows a comment
+  if (!inst.files['BENCH_CANARY']) inst.files['BENCH_CANARY'] = W.CANARY_LINE + '\n';
+  inst.secrets = inst.secrets || [];
+  return inst;
+}
+function readTree(dir) {
+  const out = {};
+  const walk = d => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else out[path.relative(dir, p)] = fs.readFileSync(p, 'utf8'); } };
+  if (fs.existsSync(dir)) walk(dir);
+  return out;
+}
+
+const TOOL_TEXT = {
+  list: '{"tool": "list", "path": "."}  lists the files under a folder of the workspace',
+  read: '{"tool": "read", "path": "notes/a.md"}  shows a file',
+  write: '{"tool": "write", "path": "out/b.md", "content": "..."}  writes a file (whole)',
+  shell: '{"tool": "shell", "cmd": "ls -la"}  runs a bash command in the workspace (no network; each command at most 60 s)',
+};
+function prompt(unitDir, task, inst) {
+  const tpl = fs.readFileSync(path.join(unitDir, task.prompt), 'utf8').replace(/^<!--[\s\S]*?-->\n?/, '');
+  let body = tpl.replace('{{TASK}}', inst.prompt.trim());
+  const files = Object.entries(inst.files).filter(([k]) => k !== 'BENCH_CANARY');
+  if (task.sandbox === 'none') {
+    const shown = files.length ? files.map(([k, v]) => '=== file: ' + k + ' ===\n' + (typeof v === 'string' ? v : v.text).replace(/\s+$/, '') + '\n=== end of ' + k + ' ===').join('\n\n') : '(no files)';
+    body = body.replace('{{FILES}}', shown);
+  } else body = body.replace('{{FILES}}', 'The files are in your workspace. Use the tools to look at them.');
+  const tools = task.inputs.tools;
+  const how = tools.length
+    ? 'You work in a workspace through tools. To use a tool, end your message with ONE fenced json block holding one call:\n' + tools.map(t => '  ' + TOOL_TEXT[t]).join('\n') +
+      '\nYou get the result in the next message. When you are done, end your message with the fenced json block of your answer instead (it never has a "tool" key). You have at most ' + (task.maxTurns || 30) + ' turns.'
+    : 'Answer in one message. End it with the fenced json block of your answer.';
+  return body.replace('{{TOOLS}}', how) + '\n';
+}
+
+// ---------- drivers: { id, family, turn(messages, o) -> { text, tokensIn, tokensOut, servedModel, usd } }
+const familyOf = model => { const m = String(model || '').split('/').pop().toLowerCase(); return (m.match(/^[a-z]+/) || [''])[0]; };
+function stubDriver(mode) {
+  // answers like a model would, from the instance's oracle (or known-bad) answer: its actions one per turn, then the answer
+  return {
+    id: 'stub/' + mode, family: 'stub', stub: true,
+    start(inst) { this.inst = inst; this.step = 0; },
+    async turn() {
+      const plan = mode === 'oracle' ? this.inst.oracle : mode === 'bad' ? this.inst.bad : null;
+      if (mode === 'garbage' || !plan) return { text: 'I am not sure what to do here.', tokensIn: 0, tokensOut: 8 };
+      const acts = plan.actions || [];
+      if (this.step < acts.length) { const a = acts[this.step++]; return { text: 'Next step.\n' + A.fence(a), tokensIn: 0, tokensOut: 20 }; }
+      const ans = plan.answer !== undefined ? plan.answer : {};
+      return { text: 'Here is my answer.\n' + A.fence(ans), tokensIn: 0, tokensOut: 40 };
+    },
+  };
+}
+// the station's run API, talk only (isTask false, no station tools): the bench's own tools run in its own sandbox
+function stationDriver(o) {
+  const http = require('http');
+  const [provider, ...rest] = String(o.model).split('/'); const model = rest.join('/');
+  return {
+    id: o.model, family: familyOf(model),
+    start() {},
+    turn(messages) {
+      const body = JSON.stringify({ agentId: o.seat, provider, model, internal: true, isTask: false, streamId: 'model-bench', reasoningEffort: o.effort || undefined,
+        system: o.system || 'You are being tested on everyday company work. Follow the task exactly.', messages });
+      return new Promise((resolve, reject) => {
+        const u = new URL(o.stationUrl);
+        const req = http.request({ hostname: u.hostname, port: u.port || 80, path: '/api/run', method: 'POST',
+          headers: { 'x-starnet-token': o.token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, res => {
+          if (res.statusCode !== 200) { let d = ''; res.on('data', c => d += c); res.on('end', () => reject(new Error('station HTTP ' + res.statusCode + ' ' + d.slice(0, 160)))); return; }
+          let buf = '', lead = null, text = '', end = null;
+          res.on('data', c => {
+            buf += c; let i;
+            while ((i = buf.indexOf('\n')) >= 0) {
+              const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line.trim()) continue;
+              let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
+              const p = ev.payload || {};
+              if (ev.name === 'agent.run.start' && !lead) lead = p.runId;
+              if (ev.name === 'agent.token' && p.runId === lead && typeof p.delta === 'string') text += p.delta;
+              if (ev.name === 'agent.run.end' && p.runId === lead) end = p;
+            }
+          });
+          res.on('end', () => resolve({ text, tokensIn: Number(end && (end.inputTokens || (end.usage && end.usage.input))) || 0, tokensOut: Number(end && (end.outputTokens || (end.usage && end.usage.output))) || 0,
+            servedModel: (end && (end.model || end.servedModel)) || null, usd: Number(end && end.usd) || 0, failure: end && end.failureCode }));
+          res.on('error', reject);
+        });
+        req.setTimeout((o.turnTimeoutSec || 600) * 1000, () => req.destroy(new Error('turn timed out')));
+        req.on('error', reject); req.write(body); req.end();
+      });
+    },
+  };
+}
+
+// ---------- the tool loop
+function jail(work, rel) {
+  const p = path.resolve(work, String(rel || '.'));
+  if (p !== work && !p.startsWith(work + path.sep)) return null;
+  try { const real = fs.realpathSync(p); if (real !== work && !real.startsWith(fs.realpathSync(work) + path.sep)) return null; } catch (_) {}
+  return p;
+}
+async function tool(call, inst, ctx) {
+  const t = call.tool;
+  if (!ctx.tools.includes(t)) return 'refused: the tool ' + t + ' is not offered in this task';
+  if (t === 'list') {
+    const p = jail(ctx.sb.work, call.path); if (!p) return 'refused: outside the workspace';
+    if (!fs.existsSync(p)) return 'no such folder';
+    const out = []; const walk = (d, depth) => { for (const e of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : 1)) { if (e.name === '.git') continue; const q = path.join(d, e.name); out.push(path.relative(ctx.sb.work, q) + (e.isDirectory() ? '/' : '')); if (e.isDirectory() && depth < 6) walk(q, depth + 1); } };
+    walk(p, 0); return out.slice(0, 500).join('\n') || '(empty)';
+  }
+  if (t === 'read') {
+    const p = jail(ctx.sb.work, call.path); if (!p) return 'refused: outside the workspace';
+    try { return fs.readFileSync(p, 'utf8').slice(0, 60000); } catch (_) { return 'no such file'; }
+  }
+  if (t === 'write') {
+    const p = jail(ctx.sb.work, call.path); if (!p) return 'refused: outside the workspace';
+    fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, String(call.content == null ? '' : call.content)); return 'written';
+  }
+  if (t === 'shell') {
+    const r = await S.exec(ctx.sb, String(call.cmd || ''), { engine: ctx.engine.engine, image: ctx.engine.image, timeoutSec: ctx.cmdTimeoutSec });
+    return 'exit ' + r.code + (r.timedOut ? ' (timed out)' : '') + '\n' + r.out;
+  }
+  return 'refused: unknown tool';
+}
+
+async function runInstance(o) {
+  const { unitDir, task, seed, driver, root, runId, cfg } = o;
+  const t0 = Date.now();
+  const rec = { task: task.id, version: task.version, seed, pass: false, score: 0, failure: null, timeSec: 0, tokensIn: 0, tokensOut: 0, usd: 0, detail: null, servedModel: null };
+  const inst = instantiate(unitDir, task, seed);
+  const limitMs = task.timeLimitSec * (Number(cfg.timeScale) || 1) * 1000;
+  let sb = null, engine = { engine: null };
+  try {
+    if (task.sandbox === 'exec') {
+      // config sandbox.engine: docker or bwrap is the preferred engine (the other is the fallback); none-refuse says this
+      // host has no sandbox, so every sandboxed task is refused
+      engine = o.allowTrusted && driver.stub ? { engine: 'trusted' } : cfg.sandbox.engine === 'none-refuse' ? { engine: null, why: 'sandbox.engine is none-refuse' } : S.detect(cfg.sandbox);
+      if (!engine.engine) { rec.failure = 'sandbox'; rec.detail = 'refused: no sandbox engine (' + (engine.why || 'none') + '); a sandboxed task never runs unsandboxed'; return rec; }
+    }
+    if (task.sandbox !== 'none') {
+      sb = S.makeInstance(root, runId, task.id + '-' + seed); S.writeFiles(sb.work, inst.files);
+      // the generator's setup (git repos and the like) runs inside the same sandbox as the model will
+      if (inst.setupCmd) { const r = await S.exec(sb, inst.setupCmd, { engine: engine.engine, image: engine.image, timeoutSec: 120 }); if (r.code !== 0) { rec.failure = 'crash'; rec.detail = 'the task setup failed (a bench fault, not the model\'s): ' + r.out.slice(0, 300); return rec; } }
+      for (const pr of (inst.expected && inst.expected.protectRefs) || []) pr.sha = C.readRef(path.join(sb.work, pr.git), pr.ref);
+    }
+    const before = sb ? S.tree(sb.work) : null;
+    const ctx = { sb, engine, tools: task.inputs.tools, cmdTimeoutSec: Number(cfg.commandTimeoutSec) || 60 };
+    if (driver.start) driver.start(inst);
+    const messages = [{ role: 'user', content: prompt(unitDir, task, inst) }];
+    let transcript = '', final = null;
+    const maxTurns = task.inputs.tools.length ? (task.maxTurns || 30) : 1;
+    for (let turn = 0; turn < maxTurns; turn++) {
+      if (Date.now() - t0 > limitMs) { rec.failure = 'timeout'; break; }
+      let r;
+      try { r = await driver.turn(messages, { remainingMs: limitMs - (Date.now() - t0) }); } catch (e) { rec.failure = 'crash'; rec.detail = String(e.message || e).slice(0, 200); break; }
+      rec.tokensIn += r.tokensIn || 0; rec.tokensOut += r.tokensOut || 0; rec.usd += r.usd || 0; if (r.servedModel) rec.servedModel = r.servedModel;
+      if (r.failure && /refus/i.test(String(r.failure))) { rec.failure = 'refused'; break; }
+      transcript += '\n' + r.text;
+      messages.push({ role: 'assistant', content: r.text });
+      const a = A.extract(r.text);
+      if (!a.ok) { if (!task.inputs.tools.length || turn === maxTurns - 1) { rec.failure = 'unparseable'; rec.detail = a.error; break; } messages.push({ role: 'user', content: 'Your message did not end with a fenced json block (' + a.error + '). Send one tool call or your answer.' }); continue; }
+      if (a.value && typeof a.value === 'object' && !Array.isArray(a.value) && typeof a.value.tool === 'string') {
+        const out = await tool(a.value, inst, ctx);
+        transcript += '\n' + out;
+        messages.push({ role: 'user', content: 'Result:\n' + out });
+        continue;
+      }
+      final = a.value; break;
+    }
+    if (final === null && !rec.failure) { rec.failure = 'unparseable'; rec.detail = 'no answer within ' + maxTurns + ' turns'; }
+    if (Date.now() - t0 > limitMs && !rec.failure) rec.failure = 'timeout';
+    if (!rec.failure) {
+      const scorer = loadModule(unitDir, task.scorer.name);
+      const sctx = { unitDir, task, depth: task.depth, work: sb && sb.work, before, transcript, secrets: inst.secrets, args: task.scorer.args || {},
+        exec: sb ? (cmd, eo) => S.exec(sb, cmd, Object.assign({ engine: engine.engine || 'trusted', image: engine.image, timeoutSec: 120 }, eo || {})) : null,
+        judge: (o.judgeFor ? o.judgeFor(inst) : o.judge) || null };
+      const s = await scorer.score(final, inst.expected, sctx);
+      rec.pass = !!s.pass; rec.score = s.score; rec.detail = s.detail; if (s.notProven) rec.notProven = s.notProven;
+    }
+  } catch (e) { rec.failure = 'crash'; rec.detail = String(e.stack || e).slice(0, 400); }
+  finally { if (sb && !o.keep) S.removeInstance(sb); rec.timeSec = Math.round((Date.now() - t0) / 100) / 10; }
+  return rec;
+}
+
+// ---------- gating (spec section 8)
+function classify(model, cfg) {
+  const [provider, ...rest] = String(model).split('/'); const name = rest.join('/');
+  if (provider === 'stub') return 'stub';
+  if ((cfg.freeProviders || []).includes(provider) || /:free$/.test(name)) return 'free';
+  if ((cfg.subscriptionProviders || []).includes(provider)) return 'subscription';
+  return 'metered';
+}
+function limits(unitDir, root) {
+  // the owner opens room in the company's copy (company/work/units/model-bench/limits/bench.json); the shipped one is closed
+  const shipped = readJson(path.join(unitDir, 'limits', 'bench.json'), {});
+  const own = root ? readJson(path.join(root, 'company', 'work', 'units', 'model-bench', 'limits', 'bench.json'), null) : null;
+  return Object.assign({}, shipped, own || {});
+}
+function gate(model, unitDir, root, o) {
+  o = o || {};
+  const cfg = config(unitDir, o.config);
+  const cls = classify(model, cfg), L = limits(unitDir, root);
+  if (cls === 'stub' || cls === 'free') return { ok: true, cls };
+  if (cls === 'metered') {
+    const usd = Number(L.meteredUsdPerRun) || 0;
+    if (!(usd > 0)) return { ok: false, cls, reason: 'this model is paid per use and there is no money cap open for the bench (meteredUsdPerRun is 0)' };
+    if (typeof o.moneyReserve === 'function') { const r = o.moneyReserve(usd); if (!r || !r.ok) return { ok: false, cls, reason: 'the money cap has no room for ' + usd + ' now' }; return { ok: true, cls, capUsd: usd }; }
+    return { ok: false, cls, reason: 'the money service that reserves spend is not available here, so a paid model cannot run' };
+  }
+  const pct = Number(L.subscriptionPctPerRun) || 0;
+  if (!(pct > 0)) return { ok: false, cls, reason: 'the owner has not let the bench use any of this subscription (subscriptionPctPerRun is 0). The ask: let the bench use up to N% of this week\'s limit' };
+  if (o.fromDuty) return { ok: false, cls, reason: 'a subscription model never starts from a duty or a generator' };
+  const room = typeof o.pacerRoom === 'function' ? o.pacerRoom(model) : null;
+  if (room == null) return { ok: false, cls, reason: 'the pacer could not say there is room on this subscription now' };
+  if (room < pct) return { ok: false, cls, reason: 'the pacer has ' + Math.max(0, Math.round(room * 10) / 10) + '% room now and the bench needs ' + pct + '%' };
+  return { ok: true, cls, pct };
+}
+
+// ---------- the whole run
+function slug(model) { return String(model).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120); }
+const p50 = xs => { if (!xs.length) return 0; const s = xs.slice().sort((a, b) => a - b); return s[Math.floor((s.length - 1) / 2)]; };
+function estTokens(unitDir, task, inst) {
+  const p = prompt(unitDir, task, inst).length / 4;
+  const turns = task.inputs.tools.length ? Math.min(task.maxTurns || 30, 12) : 1;
+  return { in: Math.round(p * turns + (turns > 1 ? turns * turns * 300 : 0)), out: Math.round(turns * 350 + 400) };
+}
+function instancesFor(tasks, repeat) {
+  const list = [];
+  for (const t of tasks) for (let i = 0; i < Math.max(1, repeat) * (t.repeatK || 1); i++) list.push({ task: t, rep: i });
+  return list;
+}
+
+async function run(o) {
+  const unitDir = o.unitDir, root = o.root, cfg = config(unitDir, o.config);
+  const repeat = Number(o.repeat) || Number(cfg.repeat) || 1, seed = Number(o.seed) || 0;
+  let tasks = loadTasks(unitDir, { kinds: o.kinds, depth: o.depth });
+  if (o.only) { const ids = new Set(o.only.map(t => t.id || t)); tasks = tasks.filter(t => ids.has(t.id)); }
+  const runId = 'run-' + Date.now().toString(36) + '-' + process.pid;
+  S.sweep(root);
+  const driver = o.driver;
+  // the judge for kind 3 layer 2: refused when it is the model under test or of its family
+  let judge = null, judgeNote = null;
+  const jm = cfg.judge && cfg.judge.model;
+  if (o.judgeFor) judge = true;   // tests: a stub judge per instance
+  else if (o.judgeDriver) judge = makeJudge(unitDir, o.judgeDriver);
+  else if (!jm) judgeNote = 'judge-unset';
+  if (jm && !driver.stub && (jm === driver.id || familyOf(jm.split('/').pop()) === driver.family)) { judge = null; judgeNote = 'judge-conflict'; }
+  const recs = [];
+  for (const { task, rep } of instancesFor(tasks, repeat)) {
+    const s = seed + Math.floor(rep / (task.repeatK || 1)) * 7919;
+    const rec = await runInstance({ unitDir, task, seed: s, driver, root, runId, cfg, allowTrusted: o.allowTrusted, judge: judge === true ? null : judge, judgeFor: o.judgeFor, keep: o.keep });
+    rec.group = task.id + '#' + Math.floor(rep / (task.repeatK || 1));
+    if (task.kind === 3 && !judge && rec.notProven === 'judge-needed') rec.notProven = judgeNote || 'judge-unset';
+    recs.push(rec);
+    if (o.onInstance) o.onInstance(rec);
+  }
+  S.removeRun(root, runId);
+  return { result: aggregate(unitDir, o.model || driver.id, tasks, recs, { seed, cfg, judgeModel: judge ? (o.judgeModel || jm || 'stub') : (jm || null), complete: !o.kinds && !o.depth }), records: recs };
+}
+function makeJudge(unitDir, drv) {
+  const rubric = fs.readFileSync(path.join(unitDir, 'judge', 'rubric.md'), 'utf8');
+  return async (questions, note) => {
+    if (drv.judge) return drv.judge(questions, note);   // a stub judge (tests)
+    const msg = rubric + '\n\nQuestions:\n' + questions.map((q, i) => (i + 1) + '. ' + q).join('\n') + '\n\nThe note:\n"""\n' + note + '\n"""\n';
+    const r = await drv.turn([{ role: 'user', content: msg }], {});
+    const a = A.extract(r.text);
+    if (!a.ok || !a.value || !Array.isArray(a.value.answers)) return null;
+    return a.value;
+  };
+}
+function aggregate(unitDir, model, tasks, recs, o) {
+  const cfg = o.cfg, passMark = Number(cfg.passMark) || 0.9;
+  const rubricSha = crypto.createHash('sha256').update(fs.readFileSync(path.join(unitDir, 'judge', 'rubric.md'))).digest('hex');
+  const res = { schema: 'model-bench/1', model, servedModel: (recs.find(r => r.servedModel) || {}).servedModel || null, benchVersion: benchVersion(unitDir),
+    judge: { model: o.judgeModel, rubricSha }, ranAt: new Date().toISOString(), seed: o.seed, complete: !!o.complete, kinds: {} };
+  const kinds = [...new Set(tasks.map(t => t.kind))].sort((a, b) => a - b);
+  for (const k of kinds) {
+    const levels = {};
+    for (const d of DEPTHS) {
+      const ts = tasks.filter(t => t.kind === k && t.depth === d); if (!ts.length) continue;
+      const rs = recs.filter(r => ts.some(t => t.id === r.task));
+      const failures = { timeout: 0, unparseable: 0, crash: 0, refused: 0, sandbox: 0 };
+      for (const r of rs) if (r.failure && failures[r.failure] !== undefined) failures[r.failure]++;
+      // a task with repeatK > 1 passes only when every repeat passed (pass^k)
+      const byTask = {}; for (const r of rs) (byTask[r.group || r.task] ||= []).push(r);
+      const units = Object.values(byTask);
+      const passed = units.filter(u => u.every(r => r.pass)).length;
+      const notProvenRec = rs.find(r => r.notProven);
+      let notProvenReason = null;
+      if (failures.sandbox === rs.length && rs.length) notProvenReason = 'refused: no sandbox engine';
+      else if (notProvenRec) notProvenReason = notProvenRec.notProven;
+      const times = rs.map(r => r.timeSec);
+      levels[d] = { tasks: ts.length, instances: units.length, passed: notProvenReason ? null : passed, passRate: notProvenReason ? null : Math.round(passed / Math.max(1, units.length) * 1000) / 1000,
+        taskVersions: Object.fromEntries(ts.map(t => [t.id, t.version])), timeSecP50: p50(times), timeSecMax: times.length ? Math.max(...times) : 0,
+        tokensIn: rs.reduce((a, r) => a + r.tokensIn, 0), tokensOut: rs.reduce((a, r) => a + r.tokensOut, 0), limitSharePct: null, failures, notProvenReason };
+    }
+    let proven = null; const gaps = [];
+    for (const d of DEPTHS) { const L = levels[d]; if (!L) continue; if (L.passRate != null && L.passRate >= passMark) proven = d; }
+    if (proven) for (const d of DEPTHS.slice(0, DEPTHS.indexOf(proven))) { const L = levels[d]; if (L && L.passRate != null && L.passRate < passMark) gaps.push(d); }
+    res.kinds[String(k)] = { proven, gaps, levels };
+  }
+  return res;
+}
+function dryRun(o) {
+  const unitDir = o.unitDir, cfg = config(unitDir, o.config), repeat = Number(o.repeat) || Number(cfg.repeat) || 1, seed = Number(o.seed) || 0;
+  const tasks = loadTasks(unitDir, { kinds: o.kinds, depth: o.depth });
+  const list = instancesFor(tasks, repeat).map(({ task, rep }) => {
+    const inst = instantiate(unitDir, task, seed + rep * 7919); const e = estTokens(unitDir, task, inst);
+    return { task: task.id, version: task.version, seed: seed + rep * 7919, sandbox: task.sandbox, tokensInEst: e.in, tokensOutEst: e.out };
+  });
+  const tin = list.reduce((a, x) => a + x.tokensInEst, 0), tout = list.reduce((a, x) => a + x.tokensOutEst, 0);
+  const g = gate(o.model, unitDir, o.root, o);
+  // a subscription's share: tokens over the weekly token budget the owner or the model manager wrote in config
+  const weekly = cfg.subscriptionWeeklyTokens && cfg.subscriptionWeeklyTokens[String(o.model).split('/')[0]];
+  return { model: o.model, instances: list.length, tasks: tasks.length, tokensInEst: tin, tokensOutEst: tout, cls: g.cls,
+    limitSharePctEst: g.cls === 'subscription' ? (weekly ? Math.round((tin + tout) / weekly * 1000) / 10 : null) : null,
+    gate: g, list: o.verbose ? list : undefined };
+}
+
+module.exports = { loadTasks, instantiate, prompt, run, runInstance, gate, classify, limits, dryRun, aggregate, stubDriver, stationDriver, config, benchVersion, major, slug, familyOf, readTree, makeJudge };

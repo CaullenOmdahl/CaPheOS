@@ -1,0 +1,52 @@
+{
+  "format": 2,
+  "id": "model-bench",
+  "version": "1.0.0",
+  "kind": "capability",
+  "title": "Model bench: can a model do our work",
+  "summary": "Our own test of whether a model can do the company's work: 10 kinds of work (lookup, extraction, writing, planning, numbers, small and bigger code changes, code review, tool use, judgment under house rules) at four depths each, 237 tasks, most of them seeded generators. It measures only: it never routes work or changes a model chain.",
+  "author": "CaPheOS",
+  "license": "AGPL-3.0-or-later",
+  "engines": { "caPheOS": ">=0.5", "node": ">=22" },
+  "requires": {},
+  "capabilities": {
+    "fs": { "read": ["packs/model-bench/**", "company/state/units/model-bench/**"], "write": ["company/work/units/model-bench/**", "company/state/model-bench/**"], "refuse": ["secrets/**"] },
+    "subprocess": true,
+    "network": [],
+    "secrets": []
+  },
+  "config": {
+    "schema": {
+      "type": "object",
+      "properties": {
+        "judge": { "type": "object", "properties": { "model": { "type": ["string", "null"], "pattern": "^[^/]+/.+$" }, "temperature": { "type": "number", "minimum": 0, "maximum": 0 } } },
+        "passMark": { "type": "number", "minimum": 0.5, "maximum": 1 },
+        "repeat": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "timeScale": { "type": "number", "minimum": 0.25, "maximum": 10 },
+        "commandTimeoutSec": { "type": "integer", "minimum": 5, "maximum": 600 },
+        "sandbox": { "type": "object", "properties": { "engine": { "enum": ["docker", "bwrap", "none-refuse"] }, "image": { "type": "string" } } },
+        "subscriptionProviders": { "type": "array", "items": { "type": "string" } },
+        "freeProviders": { "type": "array", "items": { "type": "string" } },
+        "subscriptionWeeklyTokens": { "type": "object" }
+      }
+    },
+    "defaults": {
+      "judge": { "model": null, "temperature": 0 },
+      "passMark": 0.9,
+      "repeat": 1,
+      "timeScale": 1.0,
+      "commandTimeoutSec": 60,
+      "sandbox": { "engine": "docker", "image": "capheos-model-bench:1" },
+      "subscriptionProviders": ["claude-cli", "minimax", "codex-cli"],
+      "freeProviders": ["local", "ollama"],
+      "subscriptionWeeklyTokens": {}
+    }
+  },
+  "entry": "host/index.js",
+  "provides": { "skills": [{ "name": "model-bench", "file": "skills/model-bench/SKILL.md" }] },
+  "docs": ["README.md", "judge/rubric.md"],
+  "limits": [{ "file": "limits/bench.json", "owner": "people", "why": "how much of a subscription or of the money cap one bench run may use; shipped closed" }],
+  "meters": ["company/state/model-bench/*.json", "company/state/model-bench/history.jsonl"],
+  "conformance": { "test": "conformance/test.js" },
+  "dsh": { "plugin": "host/index.js", "services": ["skills"] }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "client-billing",
+  "version": "1.4.0",
+  "private": true,
+  "description": "Invoices, clients and handoff notes for a small studio (fictional client codebase for the model bench).",
+  "scripts": { "test": "node test/run.js", "lint": "node scripts/lint.js" }
+}

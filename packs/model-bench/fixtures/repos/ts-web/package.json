@@ -1,0 +1,8 @@
+{
+  "name": "salon-booking",
+  "version": "2.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Booking widget logic for a salon (fictional client codebase for the model bench). TypeScript run with node --experimental-strip-types.",
+  "scripts": { "test": "node test/run.mjs", "lint": "node scripts/lint.mjs" }
+}

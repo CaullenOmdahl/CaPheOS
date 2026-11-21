@@ -115,6 +115,9 @@ const MANIFEST = [
   // what the owner decided), and the counterpart sign-off records (a forged yes would release a held handoff)
   { p: 'company/people/profiles/*.history.jsonl', cls: 'A', append: true, writers: ['profile.js', 'hire.js'], owner: 'people', area: 'record', why: 'a seat\'s profile history: every version, who changed it and why, hash-chained (only profile.js appends, each row recorded)' },
   { p: 'company/state/signoffs.jsonl', cls: 'A', append: true, writers: ['approvals.js'], owner: 'people', area: 'record', why: 'the counterpart sign-off records: asks, yes/no answers and CEO overrides (only approvals.js signoff and the dispatcher through lib/signoff.js append, each row recorded)' },
+  // the model bench's results (packs/model-bench): what grades a model, written only by its runner
+  { p: 'company/state/model-bench/*.json', cls: 'A', writers: ['model-bench.js'], owner: 'people', area: 'record', why: 'model bench results: the proven depth per kind of work for each model (only model-bench.js writes them)' },
+  { p: 'company/state/model-bench/history.jsonl', cls: 'A', append: true, writers: ['model-bench.js'], owner: 'people', area: 'record', why: 'one line per model bench run (only model-bench.js appends)' },
   { p: 'company/work/security/locked-changes.jsonl', cls: 'A', append: true, writers: ['locked-watch.js'], owner: 'risk', area: 'record', why: 'this watcher\'s own report' },
   // the owner -> company channel: every line is the owner's words (the CEO's inbox, addressing, the wake, gate answers), so
   // a line counts only when the console or the owner's own tools recorded it (lib/owner-channel.js); one appended by anyone
