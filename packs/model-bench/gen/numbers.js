@@ -68,22 +68,22 @@ function generate(r, p, ctx) {
   const planted = [];
   const pickInv = () => { for (;;) { const x = r.pick(inv); if (!x.flag && x.paid) { return x; } } };
   const nEach = 1 + (v % 2);
-  const ledger = inv.map(x => Object.assign({}, x));
   for (let k = 0; k < nEach; k++) { const x = pickInv(); x.flag = 'duplicate'; planted.push({ ref: x.id, type: 'duplicate' }); }
   for (let k = 0; k < nEach; k++) { const x = pickInv(); x.flag = 'vat'; planted.push({ ref: x.id, type: 'vat' }); }
   for (let k = 0; k < nEach; k++) { const x = pickInv(); x.flag = 'transposed'; planted.push({ ref: x.id, type: 'transposed' }); }
   for (let k = 0; k < nEach; k++) { const x = pickInv(); x.flag = 'period'; planted.push({ ref: x.id, type: 'period' }); }
+  // the flags are set on inv itself, so the rows below are written from the flagged invoices (the errors reach the files)
   const missing = []; for (let k = 0; k < nEach; k++) { const id = 'INV-' + (20000 + r.int(0, 9999)); missing.push({ id, amount: r.cents(5000, 200000, 100) }); planted.push({ ref: id, type: 'missing' }); }
   // the ledger as booked (with its errors) and the bank as received
   const lrows = [], brows = [];
-  for (const x of ledger) {
+  for (const x of inv) {
     const date = x.flag === 'period' ? '2026-04-0' + r.int(1, 9) : x.date;
     const bookedNet = x.flag === 'vat' ? Math.round(x.net * 1.2) : x.net;   // booked gross by mistake
     lrows.push([x.id, date, x.client, money2(bookedNet)]);
     if (x.flag === 'duplicate') lrows.push([x.id, date, x.client, money2(bookedNet)]);
     if (x.paid && x.flag !== 'period') {
       let gross = Math.round(x.net * 1.2);
-      if (x.flag === 'transposed') { const s = String(gross); let t = s; for (let i = 0; i < s.length - 1 && t === s; i++) if (s[i] !== s[i + 1]) t = s.slice(0, i) + s[i + 1] + s[i] + s.slice(i + 2); gross = Number(t); }
+      if (x.flag === 'transposed') { const s = String(gross); let t = s; for (let i = 0; i < s.length - 1 && t === s; i++) if (s[i] !== s[i + 1] && !(i === 0 && s[1] === '0')) t = s.slice(0, i) + s[i + 1] + s[i] + s.slice(i + 2); gross = Number(t); }
       brows.push([x.date.slice(0, 8) + String(Math.min(28, Number(x.date.slice(8)) + r.int(0, 10))).padStart(2, '0'), x.id, money2(gross)]);
     }
   }

@@ -28,10 +28,12 @@ node company/tools/model-bench.js show <provider/model>
 
 - **Free models** (a free tier, a local model): run them as part of your duty, no ask.
 - **Paid-per-use models**: only within the money cap; with no open cap the runner refuses.
-- **Subscription models**: never from a duty. Only when the owner has opened room (`subscriptionPctPerRun` in the
-  company's `company/work/units/model-bench/limits/bench.json`, shipped at 0) and the pacer says that room is free now.
-  The ask to the owner is a real owner matter, in plain words: "Can the bench use up to 2% of this week's Claude limit
-  to test the new model?" Never ask for anything the rules already allow.
+- **Subscription models**: never from a duty. Only when the owner has opened room (`subscriptionPctPerRun`, opened by
+  the owner with `model-bench.js limits --by owner --subscription-pct N` or from the console; shipped at 0) and the
+  pacer says that room is free now. You cannot open it yourself: a write from your run, or a hand edit of
+  `company/state/model-bench/limits.json`, opens nothing. The ask to the owner is a real owner matter, in plain words:
+  "Can the bench use up to 2% of this week's subscription limit to test the new model?" Never ask for anything the
+  rules already allow.
 
 ## Reading a result
 

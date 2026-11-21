@@ -79,7 +79,9 @@ function generate(r, p, ctx) {
   const b = build(ctx.unitDir, spec);
   const k7Requests = spec.parts.filter(x => x.k7).map(x => F.TASKS.find(t => t.id === x.k7).request);
   const prompt = ['Pull request: ' + spec.title, '', 'What was asked for:', k7Requests.length ? k7Requests.map(x => '- ' + x).join('\n') : '- ' + spec.title + '.',
-    'Also in this change: ' + (b.notes.filter(n => n.startsWith('Adds ')).join(' ') || 'nothing else.'), '',
+    // the declared extras are in scope (asked for separately); only a change neither the request nor this list covers is
+    // an unrequested change, so a careful reviewer is not pushed into a false alarm on a declared file
+    'Also in this change, asked for separately and in scope: ' + (b.notes.filter(n => n.startsWith('Adds ')).map(n => n.slice(5, -1)).join(', ') || 'nothing else') + '.', '',
     'The diff (' + b.diff.split('\n').length + ' lines):', '', '```diff', b.diff.trimEnd(), '```', '', '<!-- ' + CANARY_LINE + ' -->'].join('\n');
   const findings = b.bugs.map(x => ({ file: x.file, line: x.line, class: x.class, why: 'planted' }));
   const expected = { clean: b.bugs.length === 0, bugs: b.bugs.map(x => ({ file: x.file, line: x.line, class: x.class, alts: x.alts })) };

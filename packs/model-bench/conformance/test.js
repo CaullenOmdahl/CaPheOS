@@ -8,7 +8,10 @@
  *   4. every scorer passes its oracle answer and fails its known-bad answer: every task runs end to end through the
  *      runner with a stub model (the oracle, then the known-bad answer; generated kinds on two seeds), exec tasks with our
  *      own oracle actions in the trusted engine; an unparseable answer counts as an outright failure;
+ *   4b. the expected answer follows from the generated files (conformance/derive.js: kinds 1, 2, 3, 5 and 9 re-derived by
+ *      code written apart from the generators), so a generator whose files and expected value disagree is caught;
  *   5. every kind 6, 7 and 8 planted bug fails its test with the bug in place and passes without it;
+ *   5b. a symlink planted in the workspace never carries a host-side write, read or hidden test outside it;
  *   6. a sandboxed task is refused, never run, when there is no sandbox engine;
  *   7. check-deployment-leaks finds nothing in the unit or in generated task text, and no task names a real company,
  *      person or product (conformance/real-names.txt); every task, template and fixture text file carries the canary.
@@ -100,6 +103,9 @@ const has = bin => spawnSync('bash', ['-c', 'command -v ' + bin], { stdio: 'igno
   const garbage = await B.run({ unitDir: UNIT, root, model: 'stub/garbage', driver: B.stubDriver('garbage'), allowTrusted: true, kinds: [2], depth: 'lookup' });
   if (!garbage.records.every(r => r.failure === 'unparseable' && !r.pass)) problems.push('an answer without a json block must count as unparseable');
 
+  // 4b. the expected answers follow from the files the model is given (re-derived apart from the generators, on 4 seeds)
+  for (const x of await require('./derive').derive(UNIT, tasks, [0, 1, 2, 3])) problems.push('expected does not match the files: ' + x);
+
   // 5. planted bugs: each fails its test with the bug in place and passes without it
   const exec = async (files, cmds, setup) => {
     const sb = S.makeInstance(root, 'conformance-' + process.pid, 'x' + Math.random().toString(16).slice(2, 10));
@@ -130,6 +136,22 @@ const has = bin => spawnSync('bash', ['-c', 'command -v ' + bin], { stdio: 'igno
       const one = R.build(UNIT, spec, i => i === c.part);
       if (await confirm(one, one.confirms.find(x => x.part === c.part))) problems.push('k8 ' + spec.id + ': the planted defect in part ' + c.part + ' passes its test');
     }
+  }
+
+  // 5b. a symlink the model plants never carries a host-side write, read or hidden test outside the workspace
+  {
+    const sb = S.makeInstance(root, 'conformance-' + process.pid, 'symlink'), out = path.join(sb.dir, 'outside');
+    try {
+      fs.mkdirSync(out, { recursive: true }); fs.symlinkSync(out, path.join(sb.work, 'esc')); fs.writeFileSync(path.join(out, 'f'), 'host');
+      fs.symlinkSync(path.join(out, 'f'), path.join(sb.work, 'lnk'));
+      const before = S.tree(sb.work);
+      const C = require('../lib/checks');
+      if (S.safeWrite(sb.work, 'esc/sub/x', 'a') || S.safeWrite(sb.work, 'lnk', 'a') || S.safeRead(sb.work, 'lnk', 'utf8') !== null || S.inside(sb.work, '../x')) problems.push('a host-side file tool follows a planted symlink or a .. path');
+      let threw = false; try { C.place({ work: sb.work }, { 'esc/hidden.test.js': 'x' }); } catch (_) { threw = true; }
+      if (!threw || fs.existsSync(path.join(out, 'hidden.test.js')) || fs.existsSync(path.join(out, 'sub'))) problems.push('a hidden test was written through a planted symlink');
+      if (fs.readFileSync(path.join(out, 'f'), 'utf8') !== 'host') problems.push('a file outside the workspace was changed through a symlink');
+      if (!before.esc || !String(before.esc).startsWith('symlink:')) problems.push('the scope check does not see symlinks');
+    } finally { S.removeInstance(sb); }
   }
 
   // 6. no sandbox engine: a sandboxed task is refused, never run

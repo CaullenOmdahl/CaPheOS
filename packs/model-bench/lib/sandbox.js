@@ -105,11 +105,44 @@ function writeFiles(work, files) {
     if (body && typeof body === 'object' && body.mode) { fs.writeFileSync(p, body.text); fs.chmodSync(p, body.mode); } else fs.writeFileSync(p, body);
   }
 }
-// path -> sha1 of every file (the .git folder is listed by its refs only)
+/* Host-side file access into a workspace the model has had a shell in. The model can plant symlinks, so every path part
+ * that already exists must be a real folder (or, last, a real file) inside the workspace: a symlink anywhere refuses.
+ * Writes create folders one by one and open the file with O_NOFOLLOW. Returns the absolute path, or null. */
+function inside(work, rel) {
+  const root = path.resolve(work), p = path.resolve(root, String(rel == null ? '.' : rel));
+  if (p !== root && !p.startsWith(root + path.sep)) return null;
+  let cur = root;
+  for (const part of path.relative(root, p).split(path.sep).filter(Boolean)) {
+    cur = path.join(cur, part);
+    let st; try { st = fs.lstatSync(cur); } catch (_) { break; }   // the rest does not exist yet
+    if (st.isSymbolicLink()) return null;
+  }
+  return p;
+}
+function safeWrite(work, rel, body, mode) {
+  const p = inside(work, rel); if (!p) return false;
+  const root = path.resolve(work); let cur = root;
+  for (const part of path.relative(root, path.dirname(p)).split(path.sep).filter(Boolean)) {
+    cur = path.join(cur, part);
+    try { fs.mkdirSync(cur); } catch (e) { if (e.code !== 'EEXIST') throw e; }
+    if (!fs.lstatSync(cur).isDirectory()) return false;
+  }
+  const fd = fs.openSync(p, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW, mode || 0o644);
+  try { fs.writeSync(fd, typeof body === 'string' ? body : Buffer.from(body)); } finally { fs.closeSync(fd); }
+  if (mode) fs.chmodSync(p, mode);
+  return true;
+}
+function safeRead(work, rel, enc) {
+  const p = inside(work, rel); if (!p) return null;
+  let fd; try { fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); } catch (_) { return null; }
+  try { if (!fs.fstatSync(fd).isFile()) return null; return fs.readFileSync(fd, enc); } finally { fs.closeSync(fd); }
+}
+// path -> sha1 of every file; a symlink is listed as 'symlink:<target>' so the scope check sees it (the .git folder is listed by its refs only)
 function tree(work) {
   const crypto = require('crypto'); const out = {};
   const walk = d => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name), rel = path.relative(work, p);
     if (e.isDirectory()) { if (e.name === '.git' || e.name === 'node_modules' || e.name === '.dart_tool' || e.name === '__pycache__') continue; walk(p); }
+    else if (e.isSymbolicLink()) { let t = ''; try { t = fs.readlinkSync(p); } catch (_) {} out[rel] = 'symlink:' + t; }
     else if (e.isFile()) out[rel] = crypto.createHash('sha1').update(fs.readFileSync(p)).digest('hex'); } };
   walk(work); return out;
 }
@@ -154,4 +187,4 @@ function exec(inst, cmd, o) {
     child.on('close', code => finish(code == null ? 128 : code));
   });
 }
-module.exports = { dartBin, detect, makeInstance, removeInstance, removeRun, sweep, writeFiles, tree, exec, baseDir, SAFE_PATH, BENCH_GIT_ENV, _reset: () => { probed = null; } };
+module.exports = { inside, safeWrite, safeRead, dartBin, detect, makeInstance, removeInstance, removeRun, sweep, writeFiles, tree, exec, baseDir, SAFE_PATH, BENCH_GIT_ENV, _reset: () => { probed = null; } };

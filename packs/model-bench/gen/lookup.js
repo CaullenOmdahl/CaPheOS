@@ -109,8 +109,12 @@ function generate(r, p, ctx) {
   const a = pick(0);
   // a superseded rate: a later inbox note changes it
   const newRate = a.rate + r.int(4, 15);
-  files['inbox/note-12.md'] = '# Note 12 (' + day(40) + ')\n\nRate change agreed with ' + a.contact + ': from ' + day(41) + ' ' + a.name + ' pays ' + newRate + ' ' + a.currency + ' an hour. The client file still shows the old rate until the finance lead updates it.\n\n<!-- ' + CANARY_LINE + ' -->\n';
-  add('What hourly rate does ' + a.name + ' pay now? Give the path of the file that settles it.', { value: newRate + ' ' + a.currency, also: [String(newRate)], path: 'inbox/note-12.md' });
+  // the note takes a slot inside the run of inbox notes (its old occupant moves to note-10), so its number gives nothing
+  // away; only its date and its words show it is the later word
+  const slot = r.int(1, 9), nn = n => 'inbox/note-' + String(n).padStart(2, '0') + '.md', ratePath = nn(slot);
+  files[nn(10)] = files[ratePath].replace(/^# Note \d+/, '# Note 10');
+  files[ratePath] = '# Note ' + slot + ' (' + day(40) + ')\n\nRate change agreed with ' + a.contact + ': from ' + day(41) + ' ' + a.name + ' pays ' + newRate + ' ' + a.currency + ' an hour. The client file still shows the old rate until the finance lead updates it.\n\n<!-- ' + CANARY_LINE + ' -->\n';
+  add('What hourly rate does ' + a.name + ' pay now? Give the path of the file that settles it.', { value: newRate + ' ' + a.currency, also: [String(newRate)], path: ratePath });
   const b = pick(1);
   add('In which town is the client of the project "' + b.project + '" based? Give the path of the client file.', { value: b.town, path: path(b) });
   // three hops: seat -> project -> client -> its renewal date

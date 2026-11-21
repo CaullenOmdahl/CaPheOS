@@ -7,6 +7,8 @@
  *                                          [--seed N] [--repeat N] [--dry-run] [--json] [--seat <id>]
  *   node company/tools/model-bench.js show <provider/model> [--json]
  *   node company/tools/model-bench.js list-tasks [--kinds 1,2] [--depth simple] [--json]
+ *   node company/tools/model-bench.js limits [--json]                        what the owner has opened for the bench
+ *   node company/tools/model-bench.js limits --by owner [--subscription-pct N] [--metered-usd N]   the owner opens room
  *   node company/tools/model-bench.js --selftest
  *
  * The functions live in the unit (lib/bench.js): the installed copy company/state/units/model-bench/<version>/ when the
@@ -15,7 +17,10 @@
  * act inside each task's sandbox (docker or bwrap; with neither, sandboxed tasks are refused). Stub models for tests:
  * stub/oracle, stub/bad, stub/garbage.
  * Gating (unit README "What does not run automatically"): free models run; paid-per-use models need an open money cap;
- * subscription models need room the owner opened (company/work/units/model-bench/limits/bench.json) and the pacer's yes.
+ * subscription models need room the owner opened and the pacer's yes. The owner's room lives in
+ * company/state/model-bench/limits.json, written only by `limits --by owner` from the owner's own shell (or the console):
+ * the gate trusts it only when its newest recorded write (provenance) matches the file and came from outside an agent's
+ * run, from this tool or the console. A hand edit or a seat's write = nothing opened. The file is also locked-watched.
  * Results: company/state/model-bench/<model>.json (replaced whole, the previous kept as .prev.json; locked-watch class A,
  * written only by this tool) and one line per run in company/state/model-bench/history.jsonl.
  * Exit: 0 done, 1 selftest failed, 2 usage, 3 refused (gating, no sandbox, unit not installed). Owner: the people function.
@@ -59,6 +64,43 @@ function pacerRoom(model, root) {
     const cap = Math.min(Number(v.weekStop) || 100, v.useNow == null ? 100 : Number(v.useNow));
     return cap - v.usedPct;
   } catch (_) { return null; }
+}
+
+// the owner's room for the bench (spec section 8): trusted only as the owner's own recorded write (see the header)
+const LIMITS_REL = 'company/state/model-bench/limits.json';
+const LIMIT_KEYS = { 'subscription-pct': 'subscriptionPctPerRun', 'metered-usd': 'meteredUsdPerRun' };
+const OWNER_WRITERS = ['company/tools/model-bench.js', 'console/server.js'];
+const shaOf = t => 'sha256:' + require('crypto').createHash('sha256').update(t).digest('hex');
+function ownerLimits(root) {
+  const f = path.join(root, LIMITS_REL);
+  let txt; try { txt = fs.readFileSync(f, 'utf8'); } catch (_) { return { limits: null, why: 'nothing opened' }; }
+  let rec = null;
+  try { for (const r of require('./lib/owner-channel')._lib.provRows(root, LIMITS_REL, true)) if (r.kind === 'write') rec = r; } catch (_) {}
+  if (!rec) return { limits: null, why: 'the limits file has no recorded write, so it is not the owner\'s' };
+  if (rec.sha256 !== shaOf(txt)) return { limits: null, why: 'the limits file was changed after the owner\'s recorded write' };
+  if (rec.underStation !== false || rec.tainted === true) return { limits: null, why: 'the limits file was written from an agent\'s run, not by the owner' };
+  if (!OWNER_WRITERS.includes(require('./lib/pm-inbox-guard').mainRel(rec.main))) return { limits: null, why: 'the limits file was not written by model-bench.js or the console' };
+  try { const d = JSON.parse(txt); return { limits: d && typeof d === 'object' ? d : null, why: null }; } catch (_) { return { limits: null, why: 'the limits file is not valid json' }; }
+}
+function setLimits(root, a, o) {
+  const O = require('./lib/owner');
+  if (!O.isOwnerName(a.by, { aliases: ['commander'] })) return { code: 3, out: { ok: false, refused: true, why: 'only the owner opens room for the bench (--by owner)' } };
+  const no = O.refusal(a.by, 'the bench limits', Object.assign({ aliases: ['commander'] }, o && typeof o.shell === 'function' ? { shell: o.shell } : {}));
+  if (no) return { code: 3, out: { ok: false, refused: true, why: no } };
+  const cur = Object.assign({ subscriptionPctPerRun: 0, meteredUsdPerRun: 0 }, ownerLimits(root).limits || {});
+  let changed = 0;
+  for (const [flag, key] of Object.entries(LIMIT_KEYS)) {
+    if (a[flag] === undefined) continue;
+    const n = Number(a[flag]);
+    if (!Number.isFinite(n) || n < 0 || (key === 'subscriptionPctPerRun' && n > 100)) return { code: 2, out: { ok: false, error: '--' + flag + ' must be a number from 0' + (key === 'subscriptionPctPerRun' ? ' to 100' : '') } };
+    cur[key] = n; changed++;
+  }
+  if (!changed) return { code: 2, out: { ok: false, error: 'say what to open: --subscription-pct N and/or --metered-usd N' } };
+  const f = path.join(root, LIMITS_REL); fs.mkdirSync(path.dirname(f), { recursive: true });
+  const txt = JSON.stringify(Object.assign({ _doc: 'The owner\'s room for the model bench (model-bench.js limits --by owner). A hand edit opens nothing.' }, cur, { at: new Date().toISOString() }), null, 1) + '\n';
+  const tmp = f + '.tmp-' + process.pid; fs.writeFileSync(tmp, txt); fs.renameSync(tmp, f);
+  try { require('./provenance.js').wrote(f, txt, 'model-bench.js', { root }); } catch (_) {}
+  return { code: 0, out: Object.assign({ ok: true }, cur) };
 }
 
 function writeResult(root, res, line) {
@@ -105,13 +147,18 @@ async function cmd(argv, o) {
     let res; try { res = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return { code: 1, out: { ok: false, error: 'no bench result for ' + model } }; }
     return a.json ? { code: 0, out: res } : { code: 0, text: summaryLines(res).join('\n') };
   }
+  if (sub === 'limits') {
+    if (a.by !== undefined) return setLimits(root, a, o);
+    const L = ownerLimits(root), out = Object.assign({ subscriptionPctPerRun: 0, meteredUsdPerRun: 0 }, L.limits || {}, { trusted: !!L.limits, why: L.why });
+    return a.json ? { code: 0, out } : { code: 0, text: 'subscription: ' + out.subscriptionPctPerRun + '% of the week per run; paid models: ' + out.meteredUsdPerRun + ' per run' + (L.why ? ' (' + L.why + ')' : '') };
+  }
   if (sub === 'run') {
     const model = a.model; if (!model || model === true || !/^[^/]+\/.+$/.test(model)) return { code: 2, out: { ok: false, error: '--model <provider/model> is required' } };
     const B = bench(U.dir);
     const depth = a.depth === true ? undefined : a.depth;
     if (depth && !['lookup', 'simple', 'standard', 'deep'].includes(depth)) return { code: 2, out: { ok: false, error: '--depth is one of lookup, simple, standard, deep' } };
     const common = { unitDir: U.dir, root, model, kinds: kindsOf(a.kinds), depth, seed: Number(a.seed) || 0, repeat: Number(a.repeat) || undefined, config: o.config,
-      pacerRoom: o.pacerRoom || (m => pacerRoom(m, root)), fromDuty: !!a['from-duty'] };
+      pacerRoom: o.pacerRoom || (m => pacerRoom(m, root)), fromDuty: !!a['from-duty'], ownerLimits: ownerLimits(root).limits };
     if (a['dry-run']) { const d = B.dryRun(common); return { code: 0, out: Object.assign({ ok: true, unit: U.installed ? 'installed' : 'framework copy' }, d) }; }
     const g = B.gate(model, U.dir, root, common);
     if (!g.ok) return { code: 3, out: { ok: false, refused: true, why: g.reason } };
@@ -138,7 +185,7 @@ async function cmd(argv, o) {
       proven: Object.fromEntries(Object.entries(res.kinds).map(([k, v]) => [k, v.proven])), instances: r.records.length, passed: r.records.filter(x => x.pass).length });
     return a.json ? { code: 0, out: res } : { code: 0, text: summaryLines(res).concat(['written: ' + path.relative(root, f)]).join('\n') };
   }
-  return { code: 2, out: { ok: false, error: 'usage: model-bench.js run --model <provider/model> [--kinds] [--depth] [--seed] [--repeat] [--dry-run] | show <provider/model> | list-tasks | --selftest' } };
+  return { code: 2, out: { ok: false, error: 'usage: model-bench.js run --model <provider/model> [--kinds] [--depth] [--seed] [--repeat] [--dry-run] | show <provider/model> | list-tasks | limits [--by owner --subscription-pct N --metered-usd N] | --selftest' } };
 }
 
 async function selftest() {
@@ -164,8 +211,18 @@ async function selftest() {
     r = await cmd(['run', '--model', 'deepseek/some-model', '--kinds', '1'], { root, unit });
     t('a paid model is refused without a money cap', r.code === 3 && /money cap/.test(r.out.why), r.out && r.out.why);
     // the owner opens 2% of the week: the pacer decides
-    const lim = path.join(root, 'company', 'work', 'units', 'model-bench', 'limits', 'bench.json');
-    fs.mkdirSync(path.dirname(lim), { recursive: true }); fs.writeFileSync(lim, JSON.stringify({ subscriptionPctPerRun: 2, meteredUsdPerRun: 0 }));
+    // a seat cannot open it: a hand-written limits file (no recorded owner write) opens nothing, nor does --by a seat
+    const lim = path.join(root, 'company', 'state', 'model-bench', 'limits.json');
+    fs.mkdirSync(path.dirname(lim), { recursive: true }); fs.writeFileSync(lim, JSON.stringify({ subscriptionPctPerRun: 50, meteredUsdPerRun: 0 }));
+    r = await cmd(['run', '--model', 'claude-cli/some-model', '--kinds', '1'], { root, unit, pacerRoom: () => 90 });
+    t('a hand-written limits file opens nothing', r.code === 3 && /has not let the bench use/.test(r.out.why), r.out && r.out.why);
+    fs.rmSync(lim);
+    r = await cmd(['limits', '--by', 'some-seat', '--subscription-pct', '50'], { root, unit });
+    t('only the owner opens room', r.code === 3 && !fs.existsSync(lim), r.out && r.out.why);
+    r = await cmd(['limits', '--by', 'owner', '--subscription-pct', '2'], { root, unit, shell: () => true });
+    t('the owner opens room through the tool', r.code === 0 && fs.existsSync(lim), JSON.stringify(r.out));
+    const lt = await cmd(['limits', '--json'], { root, unit });
+    t('the owner\'s recorded write is trusted', lt.out.trusted === true && lt.out.subscriptionPctPerRun === 2, JSON.stringify(lt.out));
     r = await cmd(['run', '--model', 'claude-cli/some-model', '--kinds', '1'], { root, unit, pacerRoom: () => 1 });
     t('with room opened, the pacer having less room still refuses', r.code === 3 && /pacer has 1% room/.test(r.out.why), r.out && r.out.why);
     r = await cmd(['run', '--model', 'claude-cli/some-model', '--kinds', '1', '--dry-run'], { root, unit, pacerRoom: () => 10 });
@@ -174,6 +231,10 @@ async function selftest() {
     t('a subscription model never starts from a duty', r.code === 3 && /duty/.test(r.out.why));
     r = await cmd(['run', '--model', 'claude-cli/some-model', '--kinds', '1'], { root, unit, pacerRoom: () => 10 });
     t('a real model needs the installed unit', r.code === 3 && /not installed/.test(r.out.why), r.out && r.out.why);
+    // an edit after the owner's write is not trusted
+    fs.writeFileSync(lim, fs.readFileSync(lim, 'utf8').replace('"subscriptionPctPerRun": 2', '"subscriptionPctPerRun": 60'));
+    r = await cmd(['run', '--model', 'claude-cli/some-model', '--kinds', '1', '--dry-run'], { root, unit, pacerRoom: () => 90 });
+    t('a seat\'s edit of the owner\'s limits opens nothing', r.code === 0 && !r.out.gate.ok && /has not let the bench use/.test(r.out.gate.reason), JSON.stringify(r.out.gate));
     fs.rmSync(lim);
     // a stub run, written: the result, the previous copy, the history line, show
     r = await cmd(['run', '--model', 'stub/oracle', '--kinds', '1,2', '--depth', 'lookup', '--write'], { root, unit });

@@ -1,5 +1,5 @@
 {
-  "_doc": "Shipped closed. The owner opens room in the company's copy, company/work/units/model-bench/limits/bench.json. subscriptionPctPerRun: the share of this week's subscription limit one bench run may use (the pacer must also say the room is free now). meteredUsdPerRun: the money one run of a pay-per-use model may reserve from the money cap.",
+  "_doc": "Shipped closed. The owner opens room with model-bench.js limits --by owner (company/state/model-bench/limits.json, trusted only as the owner's recorded write). subscriptionPctPerRun: the share of this week's subscription limit one bench run may use (the pacer must also say the room is free now). meteredUsdPerRun: the money one run of a pay-per-use model may reserve from the money cap.",
   "subscriptionPctPerRun": 0,
   "meteredUsdPerRun": 0
 }

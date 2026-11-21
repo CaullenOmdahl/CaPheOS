@@ -165,12 +165,8 @@ function stationDriver(o) {
 }
 
 // ---------- the tool loop
-function jail(work, rel) {
-  const p = path.resolve(work, String(rel || '.'));
-  if (p !== work && !p.startsWith(work + path.sep)) return null;
-  try { const real = fs.realpathSync(p); if (real !== work && !real.startsWith(fs.realpathSync(work) + path.sep)) return null; } catch (_) {}
-  return p;
-}
+// every host-side path goes through S.inside: no escape by '..' or by a symlink the model planted with its shell
+const jail = (work, rel) => S.inside(work, rel);
 async function tool(call, inst, ctx) {
   const t = call.tool;
   if (!ctx.tools.includes(t)) return 'refused: the tool ' + t + ' is not offered in this task';
@@ -182,11 +178,11 @@ async function tool(call, inst, ctx) {
   }
   if (t === 'read') {
     const p = jail(ctx.sb.work, call.path); if (!p) return 'refused: outside the workspace';
-    try { return fs.readFileSync(p, 'utf8').slice(0, 60000); } catch (_) { return 'no such file'; }
+    const t = S.safeRead(ctx.sb.work, call.path, 'utf8'); return t == null ? 'no such file' : t.slice(0, 60000);
   }
   if (t === 'write') {
     const p = jail(ctx.sb.work, call.path); if (!p) return 'refused: outside the workspace';
-    fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, String(call.content == null ? '' : call.content)); return 'written';
+    try { return S.safeWrite(ctx.sb.work, call.path, String(call.content == null ? '' : call.content)) ? 'written' : 'refused: outside the workspace'; } catch (e) { return 'write failed: ' + (e.code || 'error'); }
   }
   if (t === 'shell') {
     const r = await S.exec(ctx.sb, String(call.cmd || ''), { engine: ctx.engine.engine, image: ctx.engine.image, timeoutSec: ctx.cmdTimeoutSec });
@@ -211,9 +207,18 @@ async function runInstance(o) {
     }
     if (task.sandbox !== 'none') {
       sb = S.makeInstance(root, runId, task.id + '-' + seed); S.writeFiles(sb.work, inst.files);
+      // a toolchain the scoring needs (python3, dart) that the sandbox lacks makes the instance not proven, before the model
+      // is driven: a missing toolchain is the host's gap, never the model's failure
+      if (engine.engine) {
+        const e = inst.expected || {}, need = [...new Set([].concat(e.testCmds || [], e.suiteCmds || [], e.lintCmds || []).map(c => String(c).trim().split(/\s+/)[0]).filter(b => ['node', 'python3', 'dart'].includes(b)))];
+        for (const bin of need) {
+          const r = await S.exec(sb, 'command -v ' + bin, { engine: engine.engine, image: engine.image, timeoutSec: 30 });
+          if (r.code !== 0) { rec.failure = 'sandbox'; rec.notProven = 'toolchain-missing: ' + bin; rec.detail = bin + ' is not available in the sandbox, so this task cannot be scored here'; return rec; }
+        }
+      }
       // the generator's setup (git repos and the like) runs inside the same sandbox as the model will
       if (inst.setupCmd) { const r = await S.exec(sb, inst.setupCmd, { engine: engine.engine, image: engine.image, timeoutSec: 120 }); if (r.code !== 0) { rec.failure = 'crash'; rec.detail = 'the task setup failed (a bench fault, not the model\'s): ' + r.out.slice(0, 300); return rec; } }
-      for (const pr of (inst.expected && inst.expected.protectRefs) || []) pr.sha = C.readRef(path.join(sb.work, pr.git), pr.ref);
+      for (const pr of (inst.expected && inst.expected.protectRefs) || []) pr.sha = C.readRef(sb.work, pr.git, pr.ref);
     }
     const before = sb ? S.tree(sb.work) : null;
     const ctx = { sb, engine, tools: task.inputs.tools, cmdTimeoutSec: Number(cfg.commandTimeoutSec) || 60 };
@@ -262,16 +267,16 @@ function classify(model, cfg) {
   if ((cfg.subscriptionProviders || []).includes(provider)) return 'subscription';
   return 'metered';
 }
-function limits(unitDir, root) {
-  // the owner opens room in the company's copy (company/work/units/model-bench/limits/bench.json); the shipped one is closed
+function limits(unitDir, o) {
+  // the shipped file is closed; the owner's room comes in as o.ownerLimits, which the caller has already checked is the
+  // owner's own recorded write (company/tools/model-bench.js ownerLimits). This unit never reads a file a seat could edit.
   const shipped = readJson(path.join(unitDir, 'limits', 'bench.json'), {});
-  const own = root ? readJson(path.join(root, 'company', 'work', 'units', 'model-bench', 'limits', 'bench.json'), null) : null;
-  return Object.assign({}, shipped, own || {});
+  return Object.assign({}, shipped, (o && o.ownerLimits) || {});
 }
 function gate(model, unitDir, root, o) {
   o = o || {};
   const cfg = config(unitDir, o.config);
-  const cls = classify(model, cfg), L = limits(unitDir, root);
+  const cls = classify(model, cfg), L = limits(unitDir, o);
   if (cls === 'stub' || cls === 'free') return { ok: true, cls };
   if (cls === 'metered') {
     const usd = Number(L.meteredUsdPerRun) || 0;
@@ -359,8 +364,8 @@ function aggregate(unitDir, model, tasks, recs, o) {
       const passed = units.filter(u => u.every(r => r.pass)).length;
       const notProvenRec = rs.find(r => r.notProven);
       let notProvenReason = null;
-      if (failures.sandbox === rs.length && rs.length) notProvenReason = 'refused: no sandbox engine';
-      else if (notProvenRec) notProvenReason = notProvenRec.notProven;
+      if (notProvenRec) notProvenReason = notProvenRec.notProven;
+      else if (failures.sandbox === rs.length && rs.length) notProvenReason = 'refused: no sandbox engine';
       const times = rs.map(r => r.timeSec);
       levels[d] = { tasks: ts.length, instances: units.length, passed: notProvenReason ? null : passed, passRate: notProvenReason ? null : Math.round(passed / Math.max(1, units.length) * 1000) / 1000,
         taskVersions: Object.fromEntries(ts.map(t => [t.id, t.version])), timeSecP50: p50(times), timeSecMax: times.length ? Math.max(...times) : 0,

@@ -61,6 +61,19 @@ const SCEN = [
   ], internal: ['the lead id LEAD-' + r.int(100, 999), 'the scoring sheet in sales/leads.md'], ask: { words: ['welcome', 'call'], say: 'Would you like to join a short welcome call with them?', q: 'Does the note end by asking the owner whether to join a welcome call?' } }; },
 ];
 
+/* The internal details a note must leave out, as the identifiers themselves (V-208, costs-2026.xlsx, jobs/print-queue.js,
+ * print-queue.js, server 2), not only the whole phrase: a note that says "supplier V-208" leaks it as surely as one that
+ * copies "vendor id V-208". The phrases stay in the list too. */
+function leakTerms(phrases) {
+  const out = [];
+  for (const ph of phrases) {
+    out.push(ph);
+    for (const m of ph.matchAll(/[A-Za-z0-9_.-]*\/[A-Za-z0-9_./-]+|[A-Za-z0-9_-]+\.[a-z]{2,4}\b|\b[A-Z]+-\d+\b|\b(?:error|server|level) \d+\b/g)) {
+      out.push(m[0]); if (m[0].includes('/')) out.push(m[0].split('/').pop());
+    }
+  }
+  return [...new Set(out)];
+}
 function generate(r, p, ctx) {
   const W = ctx.W, w = W.world(r, { clients: 3, seats: 4 }), v = Number(p.variant) || 1;
   const sc = SCEN[(v - 1) % SCEN.length](r, w);
@@ -79,7 +92,7 @@ function generate(r, p, ctx) {
     files['handoff.md'] = ['# handoff dump (' + day(0) + ')', '', 'ctx: ' + sc.topic + ' -- see ' + sc.internal[0] + ', also ' + sc.internal[1] + '. ' + pts.map(x => x.say.replace(/\.$/, '').toLowerCase()).join('; ') + '.',
       '', 'pls turn into a note for ' + w.owner + ' (owner, not technical). keep internal refs out.', '', CANARY_LINE].join('\n') + '\n';
     prompt = 'Turn the handoff into a plain note for the owner, ' + w.owner + '. Between 80 and 220 words. Keep every point from the handoff; leave out internal references (ticket numbers, file names, ids).';
-    exp = { minWords: 80, maxWords: 220, gradeMax: 10, closingAsk: false, forbid: sc.internal };
+    exp = { minWords: 80, maxWords: 220, gradeMax: 10, closingAsk: false, forbid: leakTerms(sc.internal) };
   } else {
     pts = sc.points.slice();
     const rule = 'R' + r.int(3, 9), seat = w.seats[1].name, refused = 'give ' + w.clients[0].contact + ' the login for our shared supplier account';
@@ -88,8 +101,8 @@ function generate(r, p, ctx) {
     files['handoff.md'] = ['# handoff dump (' + day(0) + ')', '', 'ctx: ' + sc.topic + ' -- see ' + sc.internal[0] + ' and ' + sc.internal[1] + '.', pts.map(x => '* ' + x.say.toLowerCase()).join('\n'),
       '', 'owner must decide: ' + sc.ask.say.toLowerCase(), '', CANARY_LINE].join('\n') + '\n';
     prompt = 'Write the note to the owner, ' + w.owner + ', about ' + sc.topic + '. It is bad news. Between 120 and 300 words. Keep every point from the handoff, apologise once, blame no one by name, leave out internal references, and end with the one question the owner must answer.';
-    exp = { minWords: 120, maxWords: 300, gradeMax: 10, closingAsk: true, askWords: sc.ask.words, forbid: sc.internal.concat([rule + ' ']).filter(Boolean) };
-    exp.forbid = sc.internal;   // the rule number may be named; the internal references may not
+    exp = { minWords: 120, maxWords: 300, gradeMax: 10, closingAsk: true, askWords: sc.ask.words };
+    exp.forbid = leakTerms(sc.internal);   // the rule number may be named; the internal references may not
   }
   const ask = exp.closingAsk ? sc.ask : null;
   exp.questions = pts.map(x => x.q).concat(ask ? [sc.ask.q] : []);
