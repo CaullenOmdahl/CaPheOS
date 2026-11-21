@@ -11,8 +11,34 @@
  "classRulesApply": "always",
  "_classRulesApply": "whether the class rules' chain fix is a step of the walk: always (live in every mode, shadow and off included: when a wake's chain pair is denied for its class, the seat's first allowed chain entry is applied whenever the allowlist opens it), mode (the fix follows mode like a route), off (not a step). Whatever the value, the class rules always hold after the walk: a denied pair is never offered as a choice; when nothing else applied and the seat's own pair is denied, the first allowed chain entry the allowlist opens is applied, and with none open the wake is held (hold: true), never started on the denied pair.",
 
- "order": ["classRules", "trial", "route", "tierCap", "chain"],
- "_order": "the steps, first choice wins. classRules filters every step. trial: a running trial's arm. route: the department's route for the class. tierCap: the cap below. chain: the seat's own chain (changed only by the class rules). The applied choice is the first live step whose pair the override allowlist opens (a live pair that is not open is recorded and the walk goes on); the recorded wouldApply is the first step whose mode is shadow or live.",
+ "order": ["classRules", "trial", "scoped", "route", "tierCap", "chain"],
+ "_order": "the steps, first choice wins. classRules filters every step. trial: a running trial's arm. scoped: scoped routing (below), the job's depth matched to each model's proven depth, then efficiency. route: the department's route for the class. tierCap: the cap below. chain: the seat's own chain (changed only by the class rules). The applied choice is the first live step whose pair the override allowlist opens (a live pair that is not open is recorded and the walk goes on); the recorded wouldApply is the first step whose mode is shadow or live.",
+
+ "scoped": {
+  "enabled": true,
+  "passMark": 0.9,
+  "classDepth": { "research": "lookup", "writing": "simple", "mechanical": "simple", "code": "standard", "review": "standard", "ops": "standard", "design": "standard", "general": "standard" },
+  "kinds": { "research": { "lookup": 1, "default": 2 }, "writing": 3, "code": { "lookup": 6, "simple": 6, "default": 7 }, "review": 8, "ops": 9, "mechanical": 9, "design": 4, "general": 10 },
+  "alsoNeeds": { "code": [{ "kind": 9, "depth": "simple" }] },
+  "size": { "filesStandard": 3, "filesDeep": 8, "charsStandard": 2500, "charsDeep": 8000 },
+  "escalate": { "failLines": ["^\\*\\*(Verdict|Review):\\*\\*\\s*`?(REVISE|CHANGES-REQUESTED|REQUEST-CHANGES|REJECT|TAKE-OVER)", "^\\*\\*Reopened", "^\\*\\*Premerge:\\*\\*\\s*`?FAIL"], "freeRepeats": 2 },
+  "weights": { "time": 0.5, "limit": 0.5 },
+  "tieEpsilon": 0.05,
+  "newModel": { "share": 0.05, "depths": ["lookup", "simple"] },
+  "itemlessWakes": false,
+  "wakesDays": 14,
+  "limits": {
+   "subscriptionWeeklyTokens": {},
+   "usdPerMTokens": { "deepseek": 0.3 },
+   "defaultUsdPerMTokens": 1,
+   "defaultTokens": { "lookup": 4000, "simple": 12000, "standard": 40000, "deep": 120000 },
+   "freeRequestsPerJob": { "lookup": 1, "simple": 3, "standard": 8, "deep": 20 },
+   "unknownShare": 0.05,
+   "shareScale": 0.02
+  },
+  "drift": { "window": 40, "minItems": 20, "driftDown": 0.5, "driftUp": 0.3, "everyDays": 7 }
+ },
+ "_scoped": "Scoped routing (docs/ROUTING.md \"Scoped routing\"): the work is scoped to the model. enabled: the owner's one switch (routing.js scoped on|off --by owner, or Settings > Models > Automatic picks); off skips the step entirely (no extra allowlist entries, no route.scoped). Shipped on: with no bench result and no live record no model qualifies, and every wake runs on its chain. Each wake: lib/depth.js estimates its depth (lookup | simple | standard | deep) and kind (the model bench's 10 kinds) with no model call: a **Depth:** / **Kind:** line wins, else classDepth (drifted by model-rank.js: company/state/class-depth.json), effort, size (Touches paths, length), and one level up per fail on the item (escalate.failLines in its block, and routed wakes of it beyond freeRepeats; the model that failed it is excluded). kinds: class -> bench kind (a number, or per depth with a default); alsoNeeds: kinds a candidate must also be proven at. A candidate is an allowed, routable (model-policy.json routable) model that the class rules allow, that the override allowlist opens for the seat now (the pacer, subscription stops, rail, refusals and errors already decided that), and whose current proven depth (company/work/models/model-capability.json, model-rank.js) for every needed kind is at least the job's. Among them the lowest eff = weights.time x time / slowest + weights.limit x min(1, share of its OWN limit left / limits.shareScale) wins (a job taking shareScale of what is left of a model's limit counts in full, so two negligible shares never outweigh real time): a subscription's tokens over what is left of its week (limits.subscriptionWeeklyTokens per provider, else unknownShare), a metered model's expected usd (usdPerMTokens per provider/model or provider, else defaultUsdPerMTokens) over the daily rail left, a free model's freeRequestsPerJob over today's free requests left (model-policy.json freeFallback.dailyRequests). Tokens: the bench's per-task tokens at that depth, else defaultTokens. No share is ever 0. Candidates within tieEpsilon of the best are ordered by quality margin (the live lower bound, else the bench pass rate, minus passMark). newModel: a model with no bench result gets this share of the wakes at these depths, to build a live record. itemlessWakes false: a wake with no handoff item (a scheduled loop, an owner message) runs on its chain. Nothing qualifies: the walk goes on (route, tier cap, chain). wakesDays: how far back escalation reads wakes.jsonl. drift: model-rank.js moves a class baseline one level (at most once per everyDays) when, over the last window routed items of the class (at least minItems), driftDown of them were done one-shot by a model proven below the estimated depth (easier than thought) or driftUp needed escalation or failed (harder).",
 
  "tierCaps": {
   "mode": "shadow",

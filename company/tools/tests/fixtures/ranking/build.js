@@ -9,7 +9,7 @@
  *   S01-S24  Sam, code, claude-cli/claude-sonnet-5-5 @ high, servedModel confirmed: S03 got a REVISE from a peer (fails),
  *            S05 was reopened two days after it closed, S07 failed premerge once before passing, S08 passed first time
  *   S25      Sam, closed two days before "now": still settling, not scored
- *   F01-F22  Kim, code, claude-cli/claude-fable-5-2[1m] @ medium, no servedModel (claimed); this is the department's
+ *   F01-F22  Kim, code, claude-cli/claude-fable-5-2[1m] @ medium, no servedModel (claimed); each run takes 55 minutes (Sonnet and the rest: 30); this is the department's
  *            route. F02: REVISE by the lead (counts half). F04: REVISE by Kim herself (ignored). F06: REVISE with no cited
  *            check (ignored). F08: a confirmed S1 defect. F10: a second run (rework). F12: a delegated child cut by the
  *            dispatch slice (excluded, not a failure). F14: the lead approves it in a consult block.
@@ -57,14 +57,14 @@ function block(file, o) {
 }
 function run(o) {
   const r = { runId: o.runId, parentRunId: o.parent || '', agentId: o.agent, provider: o.provider, model: o.model, reasoningEffort: o.effort, reason: o.reason || 'done',
-    turns: 10, tokens: o.tokens, cachedTokens: o.cached, usd: o.usd || 0, unmetered: o.unmetered !== false, startedAt: o.start, endedAt: o.start + 30 * 60e3, ts: o.start + 30 * 60e3 };
+    turns: 10, tokens: o.tokens, cachedTokens: o.cached, usd: o.usd || 0, unmetered: o.unmetered !== false, startedAt: o.start, endedAt: o.start + (o.minutes || 30) * 60e3, ts: o.start + (o.minutes || 30) * 60e3 };
   if (o.served) r.servedModel = o.served;
   runs.push(r); return r;
 }
 function wake(seat, at, runId, file, ids) { wakes.push({ at, ts: new Date(at).toISOString(), wakeId: 'wk-' + String(wakes.length + 1).padStart(4, '0'), seat, runId, door: 'dispatch', items: ids.map(id => ({ file, id, title: 'task ' + id, due: null })), why: 'handoff' }); }
 
 const SONNET = { provider: 'claude-cli', model: 'claude-sonnet-5-5', served: 'claude-sonnet-5-5', effort: 'high', tokens: 400000, cached: 360000 };
-const FABLE = { provider: 'claude-cli', model: 'claude-fable-5-2[1m]', effort: 'medium', tokens: 600000, cached: 500000 };
+const FABLE = { provider: 'claude-cli', model: 'claude-fable-5-2[1m]', effort: 'medium', tokens: 600000, cached: 500000, minutes: 55 };   // the top tier is slower: time to done decides between cells that clear the bar
 const OPUS48 = { provider: 'claude-cli', model: 'claude-fable-5-2[1m]', served: 'claude-opus-4-8', effort: 'medium', tokens: 500000, cached: 420000 };
 const FLASH = { provider: 'deepseek', model: 'deepseek-flash', effort: 'high', tokens: 300000, cached: 250000, usd: 0.02, unmetered: false };
 

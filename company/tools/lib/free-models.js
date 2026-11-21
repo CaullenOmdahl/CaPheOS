@@ -22,9 +22,10 @@
  *   FM.dailyLimitUntil(runs, now)             epoch ms the account's free-model daily limit lifts (0 = not hit today)
  *
  * Ordering: a registry id with a house-ranking cell (company/work/models/house-ranking.json, provider openrouter) that has
- * at least minItems graded items goes first, by the cell's lower bound of the one-shot rate (the Wilson lower bound; a
- * free cell has no cost, so the quality bound alone decides between free models), in the given task class when the
- * ranking has cells there, else its best class. The rest follow the registry's default order (tools support first,
+ * at least minItems graded items goes first: the cells that clear the ranking's quality bar (passesBar) by their eff
+ * (time to done and share of the daily free requests, docs/RANKING.md §3; lower first), then the rest by the cell's lower
+ * bound of the one-shot rate (the Wilson lower bound), in the given task class when the ranking has cells there, else
+ * its best class. The rest follow the registry's default order (tools support first,
  * then the larger context window, then the larger output limit, then the id).
  */
 const fs = require('fs');
@@ -111,10 +112,17 @@ function order(reg, ranking, o) {
   const cells = (ranking && Array.isArray(ranking.cells) ? ranking.cells : []).filter(c => c && c.provider === PROVIDER && idOf(String(c.modelId)) && Number(c.items) >= minItems && typeof c.lower === 'number');
   const inClass = o.cls ? cells.filter(c => c.class === o.cls) : [];
   const use = inClass.length ? inClass : cells;
-  const best = new Map();
-  for (const c of use) { const id = idOf(String(c.modelId)); if (!best.has(id) || c.lower > best.get(id)) best.set(id, c.lower); }
-  const ranked = [...best.entries()].sort((a, b) => (b[1] - a[1]) || (base.indexOf(a[0]) - base.indexOf(b[0]))).map(x => x[0]);
-  return ranked.concat(base.filter(id => !best.has(id)));
+  // the house ranking's rule (docs/RANKING.md §3): the free models whose cell clears the quality bar first, by
+  // efficiency (eff, lower first: time and share of the daily free requests), then the rest by the lower bound
+  const passing = new Map(), best = new Map();
+  for (const c of use) {
+    const id = idOf(String(c.modelId));
+    if (c.passesBar === true && typeof c.eff === 'number') { if (!passing.has(id) || c.eff < passing.get(id)) passing.set(id, c.eff); }
+    if (!best.has(id) || c.lower > best.get(id)) best.set(id, c.lower);
+  }
+  const first = [...passing.entries()].sort((a, b) => (a[1] - b[1]) || ((best.get(b[0]) || 0) - (best.get(a[0]) || 0)) || (base.indexOf(a[0]) - base.indexOf(b[0]))).map(x => x[0]);
+  const ranked = [...best.entries()].filter(x => !passing.has(x[0])).sort((a, b) => (b[1] - a[1]) || (base.indexOf(a[0]) - base.indexOf(b[0]))).map(x => x[0]);
+  return first.concat(ranked, base.filter(id => !best.has(id)));
 }
 
 function nextUtcMidnight(t) { const d = new Date(t); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1); }

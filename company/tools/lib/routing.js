@@ -6,7 +6,10 @@
  * route field, no log row, no override). Every rule, threshold and switch is in the policy, never here.
  *
  * Steps (policy.order, first choice wins): classRules (a filter on every step: e.g. code never on provider custom), trial
- * (a running trial's arm, assigned by sha256(trial id + wakeId)), route (the seat's department route for the wake's class,
+ * (a running trial's arm, assigned by sha256(trial id + wakeId)), scoped (scoped routing, docs/ROUTING.md §8, live while
+ * policy.scoped.enabled: the job's depth and kind from lib/depth.js matched to each routable model's proven depth in
+ * lib/capability.js's table; among the open ones that clear it the most efficient by time and share of its own limit;
+ * recorded on every wake as route.scoped with every candidate and why), route (the seat's department route for the wake's class,
  * company/departments.json), tierCap (non-exempt seats on capped entries unless an item is Effort: heavy), chain (the seat's
  * own pair; changed only when the class rules deny it). One walk in policy order: wouldApply = the first step whose mode
  * is shadow or live; applied = the first live step whose pair the station's override allowlist
@@ -29,7 +32,10 @@
  *   R.overrideOf(decision)                      -> { provider, model, effort? } | null   (the one-run override body fields)
  *   R.allowFor(seat, { root, now, maxAgeMin })  -> [{provider, model}] the current allowlist opens, or null (none current)
  *   R.trialPauses(K, held, state, now)          -> { state, events }  pause/resume transitions (recorded, never silent)
- *   R.extraEntries(seat, { root, K, departments, crew, chain }) -> the pairs lib/override-allow.js lists beyond chain/routes
+ *   R.extraEntries(seat, { root, K, departments, crew, chain, scopedCandidates? }) -> the pairs lib/override-allow.js lists
+ *                                               beyond chain/routes (scoped on: every routable candidate too)
+ *   R.scopedPick(a, K, wakeClass, current, chain) -> { pick, info }  the scoped step alone (a.scoped: prepare()'s context)
+ *   R.scopedContext(root, K, modelPolicy, pacerMeasurement, now) -> { capability, candidates, limits, wakes, classDepth }
  *   R.heldProviders(m)                          -> the providers a pacer measurement holds (claude-cli, custom, deepseek)
  *   await R.prepare({ root, jobs, log, dry })   -> a tick context (null without a policy)
  *   R.forWake(ctx, { seat, wakeId, items, job, door }) -> the decision for one wake (logged by R.record)
@@ -62,7 +68,8 @@ const EVENT_OPS = ['trial-held', 'trial-unheld'];   // the router's own rows in 
 // a log file the policy names: a .jsonl under company/work/, no '..' (anything else: the default; routing.js reads the same)
 const logRel = (v, d) => (typeof v === 'string' && /^company\/work\/[A-Za-z0-9_./-]+\.jsonl$/.test(v) && !v.split('/').some(x => x === '..' || x === '.' || x === '') ? v : d);
 const MODES = ['off', 'shadow', 'live'];
-const STEPS = ['classRules', 'trial', 'route', 'tierCap', 'chain'];
+const STEPS = ['classRules', 'trial', 'scoped', 'route', 'tierCap', 'chain'];
+const DEPTHS = ['lookup', 'simple', 'standard', 'deep'];
 const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } };
 const rootOf = r => path.resolve(r || require('./company').ROOT);
 const modeOf = v => (MODES.includes(String(v)) ? String(v) : 'off');
@@ -90,8 +97,13 @@ function knobs(P) {
     if (c.startsWith('_') || !r || typeof r !== 'object') continue;
     rules[c] = { denyProviders: strs(r.denyProviders), denyModels: strs(r.denyModels) };
   }
-  const order = strs(P.order).filter(s => STEPS.includes(s));
+  let order = strs(P.order).filter(s => STEPS.includes(s));
+  const scoped = scopedKnobs(P.scoped);
+  // the scoped step is the owner's one switch (scoped.enabled): a policy whose order predates it gets it right after the
+  // trials (a running trial the owner started keeps its wakes), else first
+  if (scoped.enabled && order.length && !order.includes('scoped')) { const i = order.indexOf('trial'); order.splice(i >= 0 ? i + 1 : (order[0] === 'classRules' ? 1 : 0), 0, 'scoped'); }
   return {
+    scoped,
     mode: modeOf(P.mode),
     classRules: rules,
     classRulesApply: P.classRulesApply === 'mode' ? 'mode' : P.classRulesApply === 'always' ? 'always' : 'off',
@@ -108,6 +120,26 @@ function knobs(P) {
     allowMaxAgeMin: Number(P.allowMaxAgeMin) > 0 ? Number(P.allowMaxAgeMin) : 30,
     history: logRel(P.history, HISTORY_REL),
     decisions: logRel(P.decisions, DECISIONS_REL),
+  };
+}
+
+/* ---- scoped routing's knobs (routing-policy.json scoped; docs/ROUTING.md "Scoped routing") ---- */
+function scopedKnobs(S) {
+  S = S && typeof S === 'object' ? S : {};
+  const o = v => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+  const n = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
+  const w = o(S.weights), nm = o(S.newModel), lim = o(S.limits);
+  return {
+    enabled: S.enabled === true,
+    classDepth: o(S.classDepth), kinds: o(S.kinds), alsoNeeds: o(S.alsoNeeds), size: o(S.size), escalate: o(S.escalate),
+    weights: { time: Math.max(0, n(w.time, 0.5)), limit: Math.max(0, n(w.limit, 0.5)) },
+    tieEpsilon: Math.max(0, n(S.tieEpsilon, 0)),
+    newModel: { share: Math.max(0, Math.min(1, n(nm.share, 0))), depths: strs(nm.depths).filter(d => DEPTHS.includes(d)) },
+    itemlessWakes: S.itemlessWakes === true,
+    wakesDays: Math.max(1, n(S.wakesDays, 14)),
+    passMark: n(S.passMark, 0.9),
+    limits: { subscriptionWeeklyTokens: o(lim.subscriptionWeeklyTokens), usdPerMTokens: o(lim.usdPerMTokens), defaultUsdPerMTokens: Math.max(0, n(lim.defaultUsdPerMTokens, 1)),
+      defaultTokens: o(lim.defaultTokens), freeRequestsPerJob: o(lim.freeRequestsPerJob), unknownShare: Math.max(1e-9, n(lim.unknownShare, 0.05)), shareScale: Math.max(1e-9, n(lim.shareScale, 0.02)) },
   };
 }
 
@@ -174,6 +206,105 @@ function exemptWhy(seat, K, deps, crew) {
   return null;
 }
 
+/* ---- scoped routing: the job's depth and kind against each model's proven depth, then efficiency ----
+ * a.scoped (lib/routing.js prepare): { capability (lib/capability.js table), candidates ([{provider, model}]: allowed,
+ * routable), limits ({ subs: { <provider>: { leftTokens } }, railLeftUsd, freeLeft }), wakes (wakes.jsonl rows, for
+ * escalation), classDepth (the drift) }. Returns { pick: {provider, model, effort?} | null, info } where info is the
+ * record that goes on the wake's route (route.scoped): kind, depth, signals, every candidate with why it is in or out
+ * and its numbers, the pick and why. Availability (the override allowlist: the pacer, subscription stops, rail,
+ * refusals, errors), the class rules, the routable switch and the item's exclude list only filter; among the models that
+ * clear the bar the lowest eff = wT * time / slowest + wL * min(1, limit share / shareScale) wins (no model's share is 0),
+ * and candidates within tieEpsilon of the best are ordered by their quality margin over the pass mark. */
+function limitShareOf(p, tokens, depth, S, L) {
+  const FM = require('./free-models');
+  if (FM.isFreePair(p.provider, p.model, S.root)) {
+    const req = Number((L.freeRequestsPerJob || {})[depth]) > 0 ? Number(L.freeRequestsPerJob[depth]) : 1;
+    const left = S.limits && S.limits.freeLeft;
+    if (left == null) return { share: L.unknownShare, basis: 'free: daily request allowance unknown' };
+    return { share: left > 0 ? Math.min(1, req / left) : 1, basis: 'free: ' + req + ' request(s) of ' + left + ' left today' };
+  }
+  const sub = S.limits && S.limits.subs && S.limits.subs[p.provider];
+  if (sub) {
+    if (sub.leftTokens == null) return { share: L.unknownShare, basis: 'subscription: window size unknown (scoped.limits.subscriptionWeeklyTokens)' };
+    return { share: sub.leftTokens > 0 ? Math.min(1, tokens / sub.leftTokens) : 1, basis: 'subscription: ~' + tokens + ' tokens of ' + Math.round(sub.leftTokens) + ' left this week' };
+  }
+  const per = Number((L.usdPerMTokens || {})[p.provider + '/' + p.model]);
+  const perP = Number((L.usdPerMTokens || {})[p.provider]);
+  const usd = tokens / 1e6 * (per >= 0 && Number.isFinite(per) ? per : perP >= 0 && Number.isFinite(perP) ? perP : L.defaultUsdPerMTokens);
+  const left = S.limits && S.limits.railLeftUsd;
+  if (left == null) return { share: L.unknownShare, basis: 'metered: the daily rail is unknown' };
+  return { share: left > 0 ? Math.min(1, usd / left) : 1, basis: 'metered: ~$' + (Math.round(usd * 10000) / 10000) + ' of $' + (Math.round(left * 100) / 100) + ' left on the daily rail' };
+}
+function scopedPick(a, K, wc, cur, chain) {
+  const S = a.scoped || {}, Kx = K.scoped, D = require('./depth'), C = require('./capability');
+  const est = D.estimate(a.items, { seat: a.seat, class: wc.class, K: Kx, departments: a.departments, heavyEscape: K.tierCaps.heavyEscape, classDepth: S.classDepth || {}, wakes: S.wakes || [] });
+  const info = { kind: est.kind, kindName: est.kindName, depth: est.depth, needs: est.needs, signals: est.signals, candidates: [], pick: null, why: '' };
+  if (est.fails) info.escalated = est.fails;
+  if (est.exclude.length) info.exclude = est.exclude;
+  if (wc.itemless && !Kx.itemlessWakes) { info.why = 'a wake with no handoff item runs on the seat\'s chain'; return { pick: null, info }; }
+  if (est.kind == null) { info.why = 'no kind of work is set for class ' + wc.class + ' (scoped.kinds): the chain runs'; return { pick: null, info }; }
+  if (a.allow == null) { info.why = 'no current override allowlist, so no other model can be opened: the chain runs'; return { pick: null, info }; }
+  const cap = S.capability || null, L = Kx.limits, pm = Number(cap && cap.passMark) > 0 ? Number(cap.passMark) : Kx.passMark;
+  const open = e => arr(a.allow).some(x => samePair(x, e));
+  const di = d => DEPTHS.indexOf(d);
+  const rows = [], ok = [], excluded = [], fresh = [];
+  for (const p of arr(S.candidates).map(pairOf).filter(Boolean)) {
+    const row = { model: p.provider + '/' + p.model };
+    const c0 = C.currentOf(cap, p, est.kind); row.current = c0.current;
+    const bad = denied(p, wc.classes, K);
+    if (bad) { row.out = 'class rules: ' + bad; rows.push(row); continue; }
+    if (!open(p)) { row.out = 'not open for ' + a.seat + ' now (limits, stops, refusals or errors)'; rows.push(row); continue; }
+    if (!c0.model) {
+      row.out = 'new model: no bench result';
+      if (Kx.newModel.share > 0 && Kx.newModel.depths.includes(est.depth)) fresh.push({ p, row });
+      rows.push(row); continue;
+    }
+    const short = est.needs.find(nd => { const c = C.currentOf(cap, p, nd.kind).current; return !c || di(c) < di(nd.depth); });
+    if (short) { const c = C.currentOf(cap, p, short.kind).current; row.out = 'proven to ' + (c || 'no depth') + ' on kind ' + short.kind + ', needs ' + short.depth; rows.push(row); continue; }
+    const e = c0.entry || {}, lv = (e.live || {})[est.depth] || {}, bl = (e.levels || {})[est.depth] || {};
+    row.time = lv.timeSecP50 != null && lv.n > 0 ? lv.timeSecP50 : bl.timeSecP50 != null ? bl.timeSecP50 : null;
+    const tokens = Number(bl.tokens) > 0 ? Number(bl.tokens) : Number((L.defaultTokens || {})[est.depth]) > 0 ? Number(L.defaultTokens[est.depth]) : 20000;
+    const ls = limitShareOf(p, tokens, est.depth, Object.assign({ root: a.root }, S), L);
+    row.share = Math.max(1e-9, ls.share); row.shareBasis = ls.basis;
+    const q = lv.lower != null && lv.n > 0 ? lv.lower : bl.passRate != null ? bl.passRate : pm;
+    row.margin = Math.round((q - pm) * 1000) / 1000;
+    if (est.exclude.includes(row.model)) { row.out = 'worked this item before it failed'; excluded.push({ p, row }); rows.push(row); continue; }
+    ok.push({ p, row }); rows.push(row);
+  }
+  let pool = ok, note = '';
+  if (!pool.length && excluded.length) { pool = excluded; note = ' (only a model that failed this item before clears the bar; it is retried)'; for (const x of pool) delete x.row.out; }
+  let pick = null;
+  if (pool.length) {
+    // time against the slowest candidate; the limit share against shareScale (a job that takes that share of what is
+    // left of a model's own limit counts in full), so two shares that are both negligible do not outweigh real time
+    const tmax = Math.max(0, ...pool.map(x => x.row.time || 0));
+    for (const x of pool) {
+      const tn = x.row.time == null || !(tmax > 0) ? 1 : x.row.time / tmax;
+      x.row.eff = Math.round((Kx.weights.time * tn + Kx.weights.limit * Math.min(1, x.row.share / L.shareScale)) * 10000) / 10000;
+    }
+    const byEff = pool.slice().sort((x, y) => x.row.eff - y.row.eff || (x.row.model < y.row.model ? -1 : 1));
+    const best = byEff[0].row.eff, tied = byEff.filter(x => x.row.eff - best <= Kx.tieEpsilon);
+    tied.sort((x, y) => y.row.margin - x.row.margin || x.row.eff - y.row.eff || (x.row.model < y.row.model ? -1 : 1));
+    pick = tied[0];
+    const alts = byEff.filter(x => x !== pick).length;
+    info.why = 'proven at ' + est.depth + ' on kind ' + est.kind + (est.needs.length > 1 ? ' (and ' + est.needs.slice(1).map(nd => 'kind ' + nd.kind + ' at ' + nd.depth).join(', ') + ')' : '') +
+      '; the most efficient (eff ' + pick.row.eff + ': time and share of its own limit)' + (tied.length > 1 ? ', a tie of ' + tied.length + ' broken by quality margin ' + pick.row.margin : '') + ' of ' + (alts + 1) + ' that clear the bar' + note;
+  } else if (fresh.length) {
+    // a new model with no bench result: a share of the shallow wakes, so it builds a live record (scoped.newModel)
+    const h = crypto.createHash('sha256').update('scoped-new\n' + String(a.wakeId)).digest('hex');
+    const u = parseInt(h.slice(0, 8), 16) / 0x100000000;
+    if (u < Kx.newModel.share) { pick = fresh[parseInt(h.slice(8, 16), 16) % fresh.length]; delete pick.row.out; info.why = 'new model with no bench result, given a ' + est.depth + ' job to build its record (u ' + u.toFixed(3) + ' < ' + Kx.newModel.share + ')'; info.newModel = true; }
+  }
+  info.candidates = rows.slice(0, 16);
+  if (!pick) { if (!info.why) info.why = 'no routable model that is open now is proven at ' + est.depth + ' on kind ' + est.kind + (est.depth === 'deep' ? ' (the deepest level)' : '') + ': the chain runs'; return { pick: null, info }; }
+  const e = pick.p, inChain = arr(chain).find(x => samePair(x, e));
+  const out = { provider: e.provider, model: e.model };
+  const eff = samePair(cur, e) && cur.effort ? cur.effort : inChain && inChain.effort ? inChain.effort : null;
+  if (eff) out.effort = eff;
+  info.pick = e.provider + '/' + e.model;
+  return { pick: out, info };
+}
+
 /* ---- decide one wake ---- */
 function decide(a) {
   a = a || {};
@@ -186,8 +317,16 @@ function decide(a) {
   const wc = wakeClass(a.items, seat, { departments: deps, heavyEscape: K.tierCaps.heavyEscape });
   const reasons = [];
   const ok = e => !denied(e, wc.classes, K);
-  const modeFor = s => s === 'tierCap' ? K.tierCaps.mode : s === 'chain' ? (K.classRulesApply === 'always' ? 'live' : K.classRulesApply === 'mode' ? K.mode : 'off') : s === 'classRules' ? 'off' : K.mode;
+  const scopedOn = K.scoped && K.scoped.enabled && !!a.scoped;
+  const modeFor = s => s === 'tierCap' ? K.tierCaps.mode : s === 'chain' ? (K.classRulesApply === 'always' ? 'live' : K.classRulesApply === 'mode' ? K.mode : 'off') : s === 'classRules' ? 'off' : s === 'scoped' ? (scopedOn ? 'live' : 'off') : K.mode;
+  let scopedInfo = null;
   const step = {
+    scoped() {
+      if (!scopedOn) return null;
+      const r = scopedPick(a, K, wc, cur, chain);
+      scopedInfo = r.info;
+      return r.pick ? Object.assign({ source: 'scoped' }, r.pick) : null;
+    },
     trial() {
       for (const t of K.trials) {
         if (t.status !== 'running' || String(t.class) !== wc.class || !inScope(t, seat, deps)) continue;
@@ -284,6 +423,16 @@ function decide(a) {
   if (cur && !applied && !sameRun(cur, runs)) out.chain = label(cur);
   if (curBad) out.chainDenied = curBad;
   if (hold) { out.hold = true; out.holdWhy = hold; }
+  // scoped routing is recorded on every wake while it is on, whichever step applied (a trial first, say)
+  if (scopedOn) {
+    if (!('scoped' in memo)) cand('scoped');
+    if (scopedInfo) {
+      const took = !!live && live.source === 'scoped';
+      out.scoped = Object.assign({}, scopedInfo, { applied: took, override: took && applied, runs: runs ? label(runs) : null });
+      if (took && !applied) out.scoped.note = 'the pick is the seat\'s own model: no override';
+      else if (scopedInfo.pick && !took) out.scoped.note = applied ? 'an earlier step (' + out.source + ') applied' : 'not applied';
+    }
+  }
   out.reasons = reasons.slice(0, 12).map(r => String(r).slice(0, 240));
   return out;
 }
@@ -318,7 +467,17 @@ function extraEntries(seat, o) {
   if (K.tierCaps.mode === 'live' && !exemptWhy(seat, K, deps, o.crew || require('./company').crew())) {
     for (const e of arr(o.chain).map(pairOf).filter(Boolean)) if (capMatch(e, K.tierCaps.allow)) out.push({ provider: e.provider, model: e.model });
   }
+  // scoped routing on: every routable allowed model (lib/capability.js candidates) may be picked for any seat, so each is
+  // listed; lib/override-allow.js still keeps only the ones models.js evaluate() says can run for the seat now
+  if (K.scoped && K.scoped.enabled) {
+    const list = o.scopedCandidates || scopedCandidates(rootOf(o.root));
+    for (const e of list) if (!out.some(x => samePair(x, e))) out.push({ provider: e.provider, model: e.model });
+  }
   return out;
+}
+/* the models scoped routing may consider: allowed and routable (lib/capability.js candidates) */
+function scopedCandidates(root, cap) {
+  try { const mp = readJson(path.join(rootOf(root), 'company', 'model-policy.json'), {}) || {}; return require('./capability').candidates(mp, { root: rootOf(root), capability: cap }); } catch (_) { return []; }
 }
 /* a department route the class rules deny for its own class is never listed */
 function routeAllowed(cls, pair, K) { return !K || !denied(pair, [String(cls)], K); }
@@ -347,8 +506,10 @@ async function prepare(o) {
     const now = Number.isFinite(o.now) ? o.now : Date.now();
     let held = Array.isArray(o.held) ? o.held.slice() : null;
     const needHeld = K.mode !== 'off' && K.trials.some(t => t.status === 'running' && strs(t.pauseWhenHeld).length);
+    let m = o.m || null;
+    const measure = async () => { if (m) return m; try { const PZ = require('../pacer.js').makePacer({ root, readOnly: true, quiet: true }); m = await PZ.measure(PZ.loadState(), o.jobs || [], { fetch: false }); } catch (_) { m = null; } return m; };
     if (!held && needHeld) {
-      try { const PZ = require('../pacer.js').makePacer({ root, readOnly: true, quiet: true }); const m = await PZ.measure(PZ.loadState(), o.jobs || [], { fetch: false }); held = heldProviders(m); }
+      try { held = (await measure()) ? heldProviders(m) : null; }
       catch (_) { held = null; }
       // no measurement: a trial that pauses on a hold cannot tell, so it pauses (fail closed)
       if (!held) held = [...new Set(K.trials.flatMap(t => strs(t.pauseWhenHeld)))];
@@ -356,9 +517,30 @@ async function prepare(o) {
     const prev = readJson(path.join(root, STATE_REL), null) || { trials: {} };
     const tp = trialPauses(K, held || [], prev, now);
     const ctx = { root, policy: L.policy, source: L.source, K, deps, crew, chains, held: held || [], now, state: tp.state, stateChanged: JSON.stringify(tp.state) !== JSON.stringify(prev), dry: !!o.dry, log: o.log };
+    if (K.scoped.enabled) ctx.scoped = o.scoped || scopedContext(root, K, mp, await measure(), now);
     for (const e of tp.events) { record(ctx, Object.assign({ at: now }, e)); if (typeof o.log === 'function') o.log('ROUTING trial ' + e.trial + ' ' + (e.op === 'trial-held' ? 'paused' : 'resumed') + ': ' + e.why); }
     return ctx;
   } catch (e) { if (o && typeof o.log === 'function') o.log('ROUTING ERROR: ' + String((e && e.message) || e).slice(0, 200) + ' (every wake runs on its chain)'); return null; }
+}
+/* the scoped step's tick context: the capability table, the candidates, each provider's own limit left, recent wakes */
+function scopedContext(root, K, mp, m, now) {
+  const C = require('./capability'), D = require('./depth'), W = require('./wakes');
+  const capability = C.load(root);
+  let wakes = []; try { wakes = W.rows({ sinceMs: now - K.scoped.wakesDays * 86400e3, file: path.join(root, 'company', 'state', 'wakes.jsonl') }); } catch (_) { wakes = []; }
+  const weekly = K.scoped.limits.subscriptionWeeklyTokens || {};
+  const subs = {};
+  const sub = (prov, g) => { if (!g) { subs[prov] = { leftTokens: null }; return; } const cap = Number.isFinite(Number(g.weekCap)) ? Number(g.weekCap) : 100; const used = Number(g.usedPct); const wt = Number(weekly[prov]);
+    subs[prov] = { leftTokens: g.known !== false && Number.isFinite(used) && wt > 0 ? Math.max(0, (cap - used) / 100 * wt) : null, usedPct: Number.isFinite(used) ? used : null }; };
+  sub('claude-cli', m && m.claude); sub('custom', m && m.minimax);
+  const rail = m && m.rail;
+  const railLeftUsd = rail && Number(rail.perDay) > 0 && Number.isFinite(Number(rail.pct)) ? Math.max(0, Number(rail.perDay) * (1 - Number(rail.pct) / 100)) : null;
+  // free requests left today: the account's daily allowance (model-policy.json freeFallback.dailyRequests) less today's
+  // routed wakes on OpenRouter (UTC day, as OpenRouter counts)
+  const daily = Number(((mp || {}).freeFallback || {}).dailyRequests);
+  const day = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth(), new Date(now).getUTCDate());
+  const usedFree = wakes.filter(w => w && Number(w.at) >= day && w.route && w.route.provider === 'openrouter').length;
+  const freeLeft = daily > 0 ? Math.max(0, daily - usedFree) : null;
+  return { root, capability, candidates: scopedCandidates(root, capability), limits: { subs, railLeftUsd, freeLeft }, wakes, classDepth: D.loadClassDepth(root) };
 }
 function forWake(ctx, w) {
   if (!ctx) return null;
@@ -367,7 +549,7 @@ function forWake(ctx, w) {
     const current = pairOf({ provider: (job.wire && job.wire.provider) || job.provider, model: (job.wire && job.wire.model) || job.model, effort: job.reasoningEffort });
     const chain = ctx.chains[w.seat] || (current ? [current] : []);
     let refused = []; try { if (job.id) refused = require('./refusal').trialRefusals(job.id, { root: ctx.root }); } catch (_) { refused = []; }
-    return decide({ K: ctx.K, seat: w.seat, items: w.items, wakeId: w.wakeId, departments: ctx.deps, crew: ctx.crew, chain, current, held: ctx.held, refused,
+    return decide({ K: ctx.K, seat: w.seat, items: w.items, wakeId: w.wakeId, departments: ctx.deps, crew: ctx.crew, chain, current, held: ctx.held, refused, scoped: ctx.scoped, root: ctx.root,
       allow: allowFor(w.seat, { root: ctx.root, now: Date.now(), maxAgeMin: ctx.K.allowMaxAgeMin }) });
   } catch (e) { if (typeof ctx.log === 'function') ctx.log('ROUTING ERROR ' + w.seat + ': ' + String((e && e.message) || e).slice(0, 200) + ' (runs on its chain)'); return null; }
 }
@@ -393,14 +575,24 @@ function finish(ctx) {
   try { const f = path.join(ctx.root, STATE_REL); fs.mkdirSync(path.dirname(f), { recursive: true }); const tmp = f + '.tmp-' + process.pid; fs.writeFileSync(tmp, JSON.stringify(Object.assign({ _doc: 'lib/routing.js: trial pause state (a trial pauses while a provider in its pauseWhenHeld is held by the pacer)' }, ctx.state), null, 1) + '\n'); fs.renameSync(tmp, f); ctx.stateChanged = false; } catch (_) {}
 }
 /* one line for the dispatch log, only when something would differ from the chain */
+function scopedLine(s) {
+  if (!s) return '';
+  const alts = arr(s.candidates).filter(c => !c.out && c.model !== s.pick).length;
+  return 'scoped ' + (s.kind == null ? '?' : s.kind) + '/' + s.depth + (s.pick ? ' -> ' + s.pick + (s.applied ? '' : ' (' + (s.note || 'not applied') + ')') : ': no pick') + ' (' + String(s.why || '').slice(0, 160) + '; ' + alts + ' other(s) cleared, ' + arr(s.candidates).filter(c => c.out).length + ' out)';
+}
 function line(seat, d) {
   if (!d) return null;
+  const base = lineBase(seat, d);
+  if (!d.scoped) return base;
+  return base ? base + ' [' + scopedLine(d.scoped) + ']' : 'ROUTE ' + seat + ': ' + scopedLine(d.scoped) + '; runs ' + label(d);
+}
+function lineBase(seat, d) {
   if (d.applied) return 'ROUTE ' + seat + ': ' + d.source + (d.trial ? ' ' + d.trial + ' arm ' + d.arm : '') + ' -> ' + label(d) + ' (one-run override; chain ' + (d.chain || 'unchanged') + ')';
   if (d.wouldApply) return 'ROUTE ' + seat + ' (not applied): ' + d.wouldApply.source + ' would run ' + label(d.wouldApply) + '; runs ' + label(d) + ' — ' + (d.reasons.find(r => /not open|shadow/.test(r)) || d.reasons[0] || '');
   return null;
 }
 
-module.exports = { POLICY_REL, DEFAULT_REL, STATE_REL, HISTORY_REL, DECISIONS_REL, EVENT_OPS, MODES, STEPS, logRel, loadPolicy, knobs, wakeClass, denied, assign, inScope, trialPauses, decide, overrideOf, allowFor, extraEntries, routeAllowed, heldProviders, prepare, forWake, record, finish, line, label };
+module.exports = { POLICY_REL, DEFAULT_REL, STATE_REL, HISTORY_REL, DECISIONS_REL, EVENT_OPS, MODES, STEPS, DEPTHS, logRel, loadPolicy, knobs, scopedKnobs, scopedPick, limitShareOf, scopedCandidates, scopedContext, scopedLine, wakeClass, denied, assign, inScope, trialPauses, decide, overrideOf, allowFor, extraEntries, routeAllowed, heldProviders, prepare, forWake, record, finish, line, label };
 
 // node company/tools/lib/routing.js show   the policy in force and its switches (read only)
 if (require.main === module) {

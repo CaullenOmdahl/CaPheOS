@@ -34,6 +34,8 @@
  *   node company/tools/models.js set <seat> --primary p/m [--effort high] --by <name> [--approved "<who>, <where>"]
  *   node company/tools/models.js chain <seat> --set "p/m,p/m@low,…" | --add p/m [--at N] | --remove p/m  --by <name> [--approved ...]
  *   node company/tools/models.js check [--json]                         every chain entry allowed and connected; exit 1 if not
+ *   node company/tools/models.js routable [--json]                      which models scoped routing may pick by itself
+ *   node company/tools/models.js routable <provider/model[*]> on|off --by owner [--why ".."]   the owner's switch (owner only)
  *   node company/tools/models.js tick [--dry] [--json]                  one failover pass (the dispatcher runs it through pacer.js)
  *   node company/tools/models.js selftest
  * Who may change a chain (hire.js remodel rules): the owner acts directly. Anyone else names who decided in --approved
@@ -263,7 +265,7 @@ function makeModels(o) {
       if (ctx.settling) delete ctx.settling[e.provider];
     }
     const connected = pv ? true : null;
-    const metered = !free && !SUBS.includes(e.provider) && !(pv && pv[e.provider] && pv[e.provider].unmetered);   // a free model costs nothing
+    const metered = !free && !FM.isFreePair(e.provider, e.model, root) && !SUBS.includes(e.provider) && !(pv && pv[e.provider] && pv[e.provider].unmetered);   // a free model (the alias or a listed free id) costs nothing
     if (m) {
       if (e.provider === 'claude-cli' && m.claude && !m.claude.open) {
         const reserve = ctx.reserve && m.claude.known && !m.claude.hard && typeof m.claude.usedPct === 'number' && m.claude.usedPct < (m.claude.weekCap || 95);
@@ -593,7 +595,37 @@ function makeModels(o) {
     return change(id, chain, a, 'set the model chain');
   }
 
-  return { root, policy, seatChains, resolveSeat, evaluate, runnableNow, tick, show, check, setPrimary, editChain, change, moves, providers, applyEntry, current, loadState };
+  /* ---- routable: the owner's switch for whether scoped routing may pick a model by itself (docs/ROUTING.md) ----
+     company/model-policy.json routable: { "<provider/model>" or "<provider/prefix>*": true|false, _set: { key: {by, at, why} } }.
+     Only the router reads it: models.js set/chain and hire.js still assign any allowed model on purpose. Owner only
+     (lib/owner.js refusal: the owner's own shell or the console). */
+  function routableList() { return require('./lib/capability').routableList(policy(), { root }); }
+  function setRoutable(a) {
+    const C = require('./lib/capability');
+    const key = String(a.pair || '').trim(), v = String(a.value || '').trim().toLowerCase();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._:\[\]\/-]*\*?$/.test(key)) return { code: 2, ok: false, error: 'routable <provider/model> on|off: the model is provider/model, or provider/prefix* for every model that starts so' };
+    if (!['on', 'off'].includes(v)) return { code: 2, ok: false, error: 'routable <provider/model> on|off' };
+    const by = String(a.by || '').trim();
+    if (!isOwner(by)) return { code: 2, ok: false, error: 'whether a model may be picked automatically is the owner\'s decision: --by owner from the owner\'s own shell, or the console (Settings › Models › Automatic picks)' };
+    const ref = require('./lib/owner').refusal(by, 'the routable switch'); if (ref) return { code: 2, ok: false, error: ref };
+    const want = v === 'on';
+    const pol = policy();
+    const before = C.routable({ provider: key.split('/')[0], model: key.slice(key.indexOf('/') + 1).replace(/\*$/, '') }, pol);
+    const map = Object.assign({}, (pol.routable && typeof pol.routable === 'object') ? pol.routable : {});
+    if (map[key] === want) return { code: 0, ok: true, changed: false, pair: key, routable: want, summary: key + ' is ' + (want ? 'on' : 'off') + ' already' };
+    const at = new Date(now()).toISOString(), why = a.why && a.why !== true ? String(a.why).replace(/[\r\n]+/g, ' ').trim().slice(0, 300) : '';
+    map[key] = want;
+    map._set = Object.assign({}, map._set || {}, { [key]: Object.assign({ by: 'owner', at }, why ? { why } : {}) });
+    if (!map._doc) map._doc = 'Which models scoped routing (docs/ROUTING.md) may pick by itself: "<provider/model>" or "<provider/prefix>*" -> true|false (the longest key wins; a model with no key is routable, except a needsCeoApproval model, which is off until the owner turns it on). Only the router reads it: a model can still be assigned on purpose (models.js set/chain, hire.js). Owner only: models.js routable <pair> on|off --by owner, or Settings › Models › Automatic picks.';
+    const fresh = Object.assign({}, pol, { routable: Object.assign({ _doc: map._doc }, map) });
+    if (!dry) writeJson(P('policy'), fresh);
+    let decision = null;
+    try { if (!dry) decision = require('./decision.js').add({ by: 'owner', text: 'Model routing: ' + key + (want ? ' may be picked automatically' : ' is not picked automatically') + ' (it can still be assigned on purpose).', why: why || undefined }); } catch (e) { decision = { error: e.message }; }
+    note('ROUTABLE ' + key + ' ' + (before.ok ? 'on' : 'off') + ' -> ' + v + ' by owner' + (why ? ' (' + why + ')' : ''));
+    return { code: 0, ok: true, changed: true, pair: key, routable: want, was: before.ok, by: 'owner', decision: decision && decision.ok ? decision.id : undefined };
+  }
+
+  return { root, policy, seatChains, resolveSeat, evaluate, runnableNow, tick, show, check, setPrimary, editChain, change, moves, providers, applyEntry, current, loadState, routableList, setRoutable };
 }
 
 /* The default chain for a new hire: [the interviewed model, candidateDefault, a subscription model if one is connected]
@@ -918,7 +950,12 @@ async function main(argv) {
     const r = cmd === 'set' ? await M.setPrimary(a) : await M.editChain(a);
     const code = r.code || 0; delete r.code; console.log(JSON.stringify(r, null, 1)); return code;
   }
-  console.error('commands: show [--seat s] [--json], set <seat> --primary p/m [--effort e] --by <name>, chain <seat> --set|--add|--remove ... --by <name>, check [--json], tick [--dry], selftest');
+  if (cmd === 'routable') {
+    if (!a._[1]) { const list = M.routableList(); print({ ok: true, models: list }, r => r.models.map(x => (x.routable ? 'on  ' : 'off ') + x.pair + (x.allowed ? '' : ' (not on the allowed list)') + ' — ' + x.why + (x.proven.length ? '; proven ' + x.proven.map(p => 'kind ' + p.kind + ' ' + p.depth).join(', ') : '')).join('\n') || 'no models'); return 0; }
+    const r = M.setRoutable({ pair: a._[1], value: a._[2], by: a.by, why: a.why });
+    const code = r.code || 0; delete r.code; console.log(JSON.stringify(r, null, 1)); return code;
+  }
+  console.error('commands: show [--seat s] [--json], routable [<provider/model> on|off --by owner [--why ..]], set <seat> --primary p/m [--effort e] --by <name>, chain <seat> --set|--add|--remove ... --by <name>, check [--json], tick [--dry], selftest');
   return 2;
 }
 

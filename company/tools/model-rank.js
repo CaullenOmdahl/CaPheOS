@@ -23,8 +23,10 @@
  * one-shot (accepted with no REVISE verdict, no reopen, revert or fix-forward within the window), rework (extra runs and
  * REVISE rounds), defects (competence ledger, by severity), premerge first-time pass, owner corrections, cost per item
  * (usd for metered runs; subscription runs priced from list prices, and their window share as its own column) and tail
- * cost. Score = the lower bound of the one-shot rate's interval / cost per item; a cell needs minItems before it can
- * steer anything. Every rule, threshold and weight: company/work/models/ranking-policy.json (default
+ * cost. Rank (docs/RANKING.md §3): a cell steers only with minItems items and a one-shot lower bound at or over the bar;
+ * among those the lowest eff (time to done and share of the model's OWN limit) ranks first; score = lower bound / cost per
+ * item is shown, not deciding (score.rule quality-per-cost restores it). refresh also keeps scoped routing's capability
+ * table (company/work/models/model-capability.json) and the class-depth drift (company/state/class-depth.json), §11. Every rule, threshold and weight: company/work/models/ranking-policy.json (default
  * company/defaults/work/models/ranking-policy.json). No policy file: nothing is ranked.
  *
  * Writes (refresh only): company/work/models/house-ranking.json and .md (overwritten, only when the body changed),
@@ -105,6 +107,13 @@ function knobs(P) {
     minItems: Math.max(1, num(P.minItems, 1)),
     confidence: clamp(num(g(P.interval, 'confidence', 0.8), 0.8), 0.5, 0.999),
     scoreCost: ['usd', 'listUsd', 'windowTokens'].includes(g(P.score, 'cost')) ? P.score.cost : 'listUsd',
+    // the steering rule (docs/RANKING.md §3): a quality bar first, then efficiency (time and the share of the model's own
+    // limit); 'quality-per-cost' is the old lower bound / cost, kept for a company that asks for it
+    scoreRule: g(P.score, 'rule') === 'quality-per-cost' ? 'quality-per-cost' : 'bar-then-efficiency',
+    bar: g(P.score, 'bar', 0.8),
+    effW: { time: Math.max(0, num(g(g(P.score, 'weights'), 'time'), 0.5)), limit: Math.max(0, num(g(g(P.score, 'weights'), 'limit'), 0.5)) },
+    tieEps: Math.max(0, num(g(P.score, 'tieEpsilon'), 0)),
+    effLimits: Object.assign({ subscriptionWeeklyTokens: {}, meteredDailyUsd: 25, freeDailyRequests: 50, unknownShare: 0.05, subscriptionProviders: ['claude-cli', 'custom'] }, g(P.score, 'limits') || {}),
     scorePer: g(P.score, 'per') === 'change' ? 'change' : 'item',
     sig: k => sig[k] === true,
     failOn: new Set(Array.isArray(g(P.oneShot, 'failOn')) ? P.oneShot.failOn : []),
@@ -181,7 +190,24 @@ function runCost(r, K) {
     if (p) { const out = unc * K.outputShare; listUsd = ((unc - out) * num(p.input, 0) + cached * num(p.cachedRead, 0) + out * num(p.output, 0)) / 1e6; } else { listUsd = 0; unpriced = true; }
   }
   const windowTokens = K.windowProviders.has(String(r.provider || '')) ? unc + cached * K.cachedWeight : 0;
-  return { usd, listUsd, windowTokens, unpriced };
+  return { usd, listUsd, windowTokens, unpriced, tokens };
+}
+// eff (lower is better): time against the slowest, the limit share against shareScale (that share of a model's own limit
+// per item counts in full), so negligible shares do not outweigh real time
+function effOf(time, tmax, share, K) {
+  const tn = time == null || !(tmax > 0) ? 1 : time / tmax, sc = num(K.effLimits.shareScale, 0.02) > 0 ? num(K.effLimits.shareScale, 0.02) : 0.02;
+  return rnd(K.effW.time * tn + K.effW.limit * Math.min(1, (share || 0) / sc), 4);
+}
+// the quality bar a cell must clear before it may steer (score.bar: a number, or { <class>: n, default: n })
+function barOf(K, cls) { const b = K.bar; if (b && typeof b === 'object') { const v = b[cls] != null ? b[cls] : b.default; return Number.isFinite(Number(v)) ? Number(v) : 0.8; } return Number.isFinite(Number(b)) ? Number(b) : 0.8; }
+// a cell's share of its model's OWN limit per item: a subscription's weekly tokens, the metered daily rail, the free
+// daily requests. No model's share is 0 (free models are neither favoured nor penalised: they pay in requests)
+function limitShareOf(cell, perItem, K) {
+  const L = K.effLimits, FM = require('./lib/free-models');
+  if (FM.isFreePair(cell.provider, cell.modelId)) { const d = num(L.freeDailyRequests, 0); return d > 0 ? { share: Math.max(1e-9, perItem.runs / d), basis: 'free requests per item / ' + d + ' a day' } : { share: num(L.unknownShare, 0.05), basis: 'free: daily allowance unknown' }; }
+  if ((L.subscriptionProviders || []).includes(cell.provider)) { const w = num((L.subscriptionWeeklyTokens || {})[cell.provider], 0); return w > 0 ? { share: Math.max(1e-9, perItem.tokens / w), basis: 'tokens per item / ' + w + ' a week' } : { share: num(L.unknownShare, 0.05), basis: 'subscription: weekly tokens unknown' }; }
+  const d = num(L.meteredDailyUsd, 0);
+  return d > 0 ? { share: Math.max(1e-9, perItem.usd / d), basis: 'usd per item / $' + d + ' daily rail' } : { share: num(L.unknownShare, 0.05), basis: 'metered: daily rail unknown' };
 }
 
 /* ---------------- handoffs ---------------- */
@@ -370,7 +396,7 @@ function analyze(inp) {
     // the runs: the ones its wakes started, and every delegated child under them
     const tops = [...new Set(li.runs)].filter(id => runById.has(id));
     const all = []; for (const t of tops) { all.push(t); for (const c of childrenOf.get(t) || []) all.push(c); }
-    const cost = { usd: 0, listUsd: 0, windowTokens: 0, excludedListUsd: 0, unpricedRuns: 0 };
+    const cost = { usd: 0, listUsd: 0, windowTokens: 0, tokens: 0, excludedListUsd: 0, unpricedRuns: 0 };
     let excludedRuns = 0;
     const kinds = new Map();
     for (const id of all) {
@@ -379,7 +405,7 @@ function analyze(inp) {
       const share = 1 / Math.max(1, (runItems.get(root) || new Set([key])).size);
       const c = runCost(r, K);
       if (K.excludeKinds.has(k)) { excludedRuns++; cost.excludedListUsd += c.listUsd * share; continue; }
-      cost.usd += c.usd * share; cost.listUsd += c.listUsd * share; cost.windowTokens += c.windowTokens * share; if (c.unpriced) cost.unpricedRuns++;
+      cost.usd += c.usd * share; cost.listUsd += c.listUsd * share; cost.windowTokens += c.windowTokens * share; cost.tokens += c.tokens * share; if (c.unpriced) cost.unpricedRuns++;
     }
     const good = tops.filter(id => !K.excludeKinds.has(kinds.get(id))).map(id => runById.get(id)).sort((a, b) => (num(a.startedAt, 0) - num(b.startedAt, 0)) || (String(a.runId) < String(b.runId) ? -1 : 1));
     const primary = good.find(r => r.agentId === seat) || good[0] || null;
@@ -432,6 +458,11 @@ function analyze(inp) {
       if (vs.length) premergeFirstPass = vs[0].verdict === 'PASS';
     }
     const ownTops = good.filter(r => r.agentId === seat);
+    // time to done: the wall time of its runs (startedAt..endedAt), summed; and its routed depth (route.scoped)
+    const times = good.map(r => (num(r.endedAt, NaN) - num(r.startedAt, NaN)) / 1000).filter(x => Number.isFinite(x) && x >= 0);
+    const timeSec = times.length ? rnd(times.reduce((t, x) => t + x, 0), 1) : null;
+    const sw = ws.filter(w => w.route && w.route.scoped && typeof w.route.scoped === 'object').pop();
+    const scoped = sw ? { kind: sw.route.scoped.kind == null ? null : Number(sw.route.scoped.kind), depth: sw.route.scoped.depth || null, escalated: num(sw.route.scoped.escalated, 0), fromBaseline: (sw.route.scoped.signals || []).some(x => /^class \S+ baseline/.test(String(x))) } : null;
     const extraRuns = Math.max(0, ownTops.length - 1);
     let fail = 0;
     if (K.failOn.has('revise')) fail = Math.max(fail, failW);
@@ -439,7 +470,7 @@ function analyze(inp) {
     const hard = !(reopened || reverted || fixForward);
     // narrow fan-out (fanoutEvaluation): a delegated child run under the item's runs, or a piece lane of a recorded split
     const delegated = all.length > tops.length || ws.some(w => w && w.split && typeof w.split === 'object');
-    items.push(Object.assign(base, { excluded: false, excludedRuns, settled, closedAt, delegated, oneShot: clamp(1 - fail, 0, 1), hard, reviseRounds, extraRuns, otherRuns: good.length - ownTops.length,
+    items.push(Object.assign(base, { excluded: false, excludedRuns, settled, closedAt, delegated, timeSec, runCount: good.length, scoped, oneShot: clamp(1 - fail, 0, 1), hard, reviseRounds, extraRuns, otherRuns: good.length - ownTops.length,
       reopened, reverted, fixForward, defects, defectPoints, ownerCorrections, premergeFirstPass, changes: prs.length ? prs : [li.id], verdicts: counted }));
   }
 
@@ -468,12 +499,17 @@ function analyze(inp) {
     const unit = K.scorePer === 'change' ? (changes ? total / changes : null) : (n ? total / n : null);
     const enough = n >= K.minItems;
     const score = enough && lower != null && unit != null && unit > 0 ? lower / unit : null;
+    const tl = s.map(x => x.timeSec).filter(x => x != null).sort((a, b) => a - b);
+    const per = { runs: n ? sum(x => x.runCount || 1) / n : 0, tokens: n ? sum(x => x.cost.tokens || 0) / n : 0, usd: n ? sum(x => x.cost.usd) / n : 0 };
+    const ls = n ? limitShareOf(c.cell, per, K) : { share: null, basis: null };
+    const bar = barOf(K, c.cell.class);
     const hardN = Math.max(1, Math.ceil(K.hardest * n));
     const pm = s.filter(x => x.premergeFirstPass != null);
     out.push({
       id, class: c.cell.class, model: c.cell.model, provider: c.cell.provider, modelId: c.cell.modelId, effort: c.cell.effort, claimed: c.cell.claimed,
       items: n, settling: c.settling, excludedItems: c.excluded, excludedRuns: c.excludedRuns, excludedListUsd: rnd(c.excludedListUsd),
-      enough, status: enough ? (score == null ? 'no cost recorded' : 'ok') : 'not enough data',
+      enough, status: !enough ? 'not enough data' : K.scoreRule === 'quality-per-cost' ? (score == null ? 'no cost recorded' : 'ok') : lower != null && lower >= bar ? 'ok' : 'under the bar',
+      bar, passesBar: enough && lower != null && lower >= bar, timeSecPerItem: rnd(median(tl), 1), limitSharePerItem: ls.share == null ? null : rnd(ls.share, 8), limitBasis: ls.basis,
       oneShot: rnd(succ, 4), oneShotRate: n ? rnd(succ / n, 4) : null, lower: rnd(lower, 4),
       costPerItem: n ? rnd(total / n) : null, costPerChange: changes ? rnd(total / changes) : null, costUnit: K.scoreCost, score: rnd(score, 4),
       usd: rnd(sum(x => x.cost.usd)), listUsd: rnd(sum(x => x.cost.listUsd)), windowTokens: Math.round(sum(x => x.cost.windowTokens)),
@@ -486,10 +522,25 @@ function analyze(inp) {
       changes, itemsPerChange: changes ? rnd(n / changes, 4) : null,
     });
   }
-  // rank inside each class, among the cells that may steer
+  // rank inside each class, among the cells that may steer. bar-then-efficiency (the default): only cells with enough
+  // items whose one-shot lower bound clears the bar; among them the lowest eff = wT x time / slowest + wL x limit share /
+  // largest share (normalised inside the class; a cell with no time reads as the slowest); cells within tieEpsilon of the
+  // best are ordered by their lower bound. Cost per item, usd, list usd, window tokens and the tail are shown, not deciding.
   const byClass = new Map(); for (const c of out) { if (!byClass.has(c.class)) byClass.set(c.class, []); byClass.get(c.class).push(c); }
   for (const list of byClass.values()) {
-    const ranked = list.filter(c => c.score != null).sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : 1));
+    if (K.scoreRule === 'quality-per-cost') {
+      const ranked = list.filter(c => c.score != null).sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : 1));
+      for (const c of list) { c.rank = ranked.includes(c) ? ranked.indexOf(c) + 1 : null; c.eff = null; }
+      continue;
+    }
+    const pass = list.filter(c => c.passesBar);
+    const tmax = Math.max(0, ...pass.map(c => c.timeSecPerItem || 0));
+    for (const c of list) c.eff = null;
+    for (const c of pass) c.eff = effOf(c.timeSecPerItem, tmax, c.limitSharePerItem, K);
+    const ranked = pass.slice().sort((a, b) => {
+      const tie = Math.abs(a.eff - b.eff) <= K.tieEps;
+      return (tie ? (b.lower - a.lower) || (a.eff - b.eff) : a.eff - b.eff) || (a.id < b.id ? -1 : 1);
+    });
     for (const c of list) c.rank = ranked.includes(c) ? ranked.indexOf(c) + 1 : null;
   }
   out.sort((a, b) => (a.class < b.class ? -1 : a.class > b.class ? 1 : 0) || ((a.rank == null) - (b.rank == null)) || ((a.rank || 0) - (b.rank || 0)) || (a.id < b.id ? -1 : 1));
@@ -509,23 +560,29 @@ function analyze(inp) {
       const route = dep.routes[cls] || {};
       const rModel = String(route.provider || '?') + '/' + String(route.model || '?'), rEffort = String(route.effort || 'default');
       const routeCell = out.filter(c => c.class === cls && c.model === rModel && c.effort === rEffort).sort((a, b) => b.items - a.items || (a.id < b.id ? -1 : 1))[0] || null;
-      const routeScore = routeCell && routeCell.score != null ? routeCell.score : null;
-      if (routeScore == null && K.requireRouteData) continue;
-      const best = out.filter(c => c.class === cls && c.score != null && c.enough && (!routeCell || c.id !== routeCell.id) && (K.allowClaimed || !c.claimed) && !(c.model === rModel && c.effort === rEffort))
-        .sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : 1))[0];
+      const qpc = K.scoreRule === 'quality-per-cost';
+      // the route's own figure: its score (quality-per-cost), or its eff when it clears the bar; a route cell with enough
+      // data that is under the bar has no figure, and any cell that clears the bar beats it (quality first)
+      const routeScore = routeCell ? (qpc ? routeCell.score : routeCell.eff) : null;
+      const routeUnder = !qpc && routeCell && routeCell.enough && !routeCell.passesBar;
+      if (routeScore == null && !routeUnder && K.requireRouteData) continue;
+      const pick = c => (qpc ? c.score != null : c.eff != null) && c.enough && (!routeCell || c.id !== routeCell.id) && (K.allowClaimed || !c.claimed) && !(c.model === rModel && c.effort === rEffort);
+      const best = out.filter(c => c.class === cls && pick(c)).sort((a, b) => (qpc ? b.score - a.score : (a.rank || 1e9) - (b.rank || 1e9)) || (a.id < b.id ? -1 : 1))[0];
       if (!best) continue;
-      if (routeScore != null && !(best.score > routeScore * (1 + K.margin))) continue;
+      const bestScore = qpc ? best.score : best.eff;
+      if (routeScore != null && (qpc ? !(best.score > routeScore * (1 + K.margin)) : !(best.eff < routeScore * (1 - K.margin)))) continue;
       const pid = 'rp-' + sha([dep.id, cls, rModel, rEffort, best.id].join('|')).slice(0, 12);
       proposals.push({ id: pid, mode: K.pMode, department: String(dep.id), class: cls,
         from: { provider: String(route.provider || '?'), model: String(route.model || '?'), effort: rEffort, cell: routeCell ? routeCell.id : null, score: routeScore },
-        to: { provider: best.provider, model: best.modelId, effort: best.effort, cell: best.id, score: best.score },
+        to: { provider: best.provider, model: best.modelId, effort: best.effort, cell: best.id, score: bestScore },
         fromModel: String(route.provider || '?') + '/' + String(route.model || '?') + ' @ ' + rEffort, toModel: best.model + ' @ ' + best.effort,
-        gain: routeScore ? rnd(best.score / routeScore - 1, 4) : null });
+        rule: K.scoreRule, routeUnderBar: routeUnder || undefined,
+        gain: routeScore ? rnd(qpc ? best.score / routeScore - 1 : 1 - best.eff / routeScore, 4) : null });
     }
   }
 
   const body = { version: 1, policyVersion: P.version == null ? null : P.version, policyDigest: policyDigest(P), windowDays: K.windowDays, oneShotWindowDays: K.oneShotDays, minItems: K.minItems,
-    confidence: K.confidence, score: { cost: K.scoreCost, per: K.scorePer }, totals, cells: out, proposals, graders };
+    confidence: K.confidence, score: { cost: K.scoreCost, per: K.scorePer, rule: K.scoreRule, bar: K.bar, weights: K.effW, tieEpsilon: K.tieEps }, totals, cells: out, proposals, graders };
   return { body, items, wakeById, runById };
 }
 
@@ -568,7 +625,7 @@ function evalKnobs(P) {
   const costOf = v => (['usd', 'listUsd', 'windowTokens'].includes(v) ? v : 'listUsd');
   return {
     trials: T ? { minItemsPerArm: Math.max(1, num(T.minItemsPerArm, 30)), cost: costOf(T.cost), costStat: T.costStat === 'median' ? 'median' : 'mean',
-      cheaperThan: g(T.decision, 'cheaperThan') === 'bestOther' ? 'bestOther' : 'every', stuckDays: Math.max(1, num(T.stuckDays, 3)),
+      cheaperThan: g(T.decision, 'cheaperThan') === 'bestOther' ? 'bestOther' : 'every', by: g(T.decision, 'by') === 'cost' ? 'cost' : 'efficiency', stuckDays: Math.max(1, num(T.stuckDays, 3)),
       confidence: clamp(num(g(T.interval, 'confidence', g(P.interval, 'confidence', 0.8)), 0.8), 0.5, 0.999) } : null,
     advisor: P && P.advisorEvaluation && typeof P.advisorEvaluation === 'object' ? Object.assign({ minItems: 20, minDays: 14, consultRate: [0.10, 0.40], cachedShareMin: 0.85, oneShotGainPoints: 10, reworkCutShare: 0.20 }, P.advisorEvaluation) : null,
     fanout: P && P.fanoutEvaluation && typeof P.fanoutEvaluation === 'object' ? { minItems: Math.max(1, num(P.fanoutEvaluation.minItems, 10)) } : null,
@@ -604,6 +661,13 @@ function costStats(list, metric, K, ek) {
   const hardN = Math.max(1, Math.ceil(K.hardest * n));
   return { costPerItem: n ? rnd(total / n) : null, medianCost: rnd(median(costs)), p90Cost: rnd(percentile(costs, K.pct)), hardestCost: n ? rnd(costs.slice(-hardN).reduce((t, x) => t + x, 0) / hardN) : null,
     decisionCost: n ? rnd(ek && ek.costStat === 'median' ? median(costs) : total / n) : null };
+}
+function armEfficiency(s, spec, K) {
+  const n = s.length; if (!n || !spec) return { timeSecPerItem: null, limitSharePerItem: null };
+  const tl = s.map(x => x.timeSec).filter(x => x != null).sort((a, b) => a - b);
+  const per = { runs: s.reduce((t, x) => t + (x.runCount || 1), 0) / n, tokens: s.reduce((t, x) => t + (x.cost.tokens || 0), 0) / n, usd: s.reduce((t, x) => t + x.cost.usd, 0) / n };
+  const ls = limitShareOf({ provider: String(spec.provider || ''), modelId: String(spec.model || '') }, per, K);
+  return { timeSecPerItem: rnd(median(tl), 1), limitSharePerItem: rnd(ls.share, 8) };
 }
 function evaluate(inp, an) {
   an = an || analyze(inp);
@@ -660,8 +724,11 @@ function evaluate(inp, an) {
           oneShot: rnd(succ, 4), oneShotRate: n ? rnd(succ / n, 4) : null, lower: rnd(lo, 4), upper: rnd(hi, 4),
           extraRunsPerItem: n ? rnd(s.reduce((x, i) => x + i.extraRuns, 0) / n, 4) : null, revisePerItem: n ? rnd(s.reduce((x, i) => x + i.reviseRounds, 0) / n, 4) : null,
           reopened: s.filter(i => i.reopened).length, defects: s.reduce((x, i) => x + i.defects, 0), defectPoints: rnd(s.reduce((x, i) => x + i.defectPoints, 0), 4),
-          windowTokensPerItem: n ? Math.round(s.reduce((x, i) => x + i.cost.windowTokens, 0) / n) : null, mismatches: mm }, costStats(s, ek.cost, K, ek));
+          windowTokensPerItem: n ? Math.round(s.reduce((x, i) => x + i.cost.windowTokens, 0) / n) : null, mismatches: mm }, costStats(s, ek.cost, K, ek), armEfficiency(s, spec, K));
       });
+      // eff per arm, against the slowest arm and the largest share (the ranking's rule, docs/RANKING.md §3)
+      const tmax = Math.max(0, ...arms.map(a => a.timeSecPerItem || 0));
+      for (const a of arms) a.eff = a.items ? effOf(a.timeSecPerItem, tmax, a.limitSharePerItem, K) : null;
       return { id, defined: !!def, class: def && def.class ? String(def.class) : null, status: def ? String(def.status || 'draft') : 'not in routing-policy.json',
         scope: def && def.scope ? sortKeys(def.scope) : null, entryShare: def && def.entryShare != null ? num(def.entryShare, null) : null,
         minItemsPerArm: minN, confidence: ek.confidence, cost: ek.cost, costStat: ek.costStat, mixedItems: t.mixed, lastWakeAt: t.lastAt || null,
@@ -981,13 +1048,15 @@ function trialDecision(arms, minN, ek) {
     const others = arms.filter(b => b !== a), best = others.slice().sort((x, y) => y.oneShotRate - x.oneShotRate || (String(x.arm) < String(y.arm) ? -1 : 1))[0];
     const quality = a.lower >= best.oneShotRate;
     const rivals = ek.cheaperThan === 'bestOther' ? [best] : others;
-    const cheaper = rivals.every(b => a.decisionCost < b.decisionCost);
-    if (quality && cheaper) return { state: 'decided', winner: a.arm, label: a.label, missing: [],
-      why: fmt(a) + ': one-shot lower bound ' + a.lower + ' >= ' + fmt(best) + ' point ' + best.oneShotRate + ', and ' + ek.costStat + ' cost per accepted item ' + a.decisionCost + ' < ' + rivals.map(b => b.decisionCost).join(', ') };
+    const eff = ek.by === 'efficiency';
+    const better = eff ? rivals.every(b => a.eff != null && b.eff != null && a.eff < b.eff) : rivals.every(b => a.decisionCost < b.decisionCost);
+    if (quality && better) return { state: 'decided', winner: a.arm, label: a.label, missing: [],
+      why: fmt(a) + ': one-shot lower bound ' + a.lower + ' >= ' + fmt(best) + ' point ' + best.oneShotRate + ', and ' + (eff ? 'eff (time and share of its own limit) ' + a.eff + ' < ' + rivals.map(b => b.eff).join(', ') : ek.costStat + ' cost per accepted item ' + a.decisionCost + ' < ' + rivals.map(b => b.decisionCost).join(', ')) };
   }
   const top = arms.slice().sort((x, y) => y.lower - x.lower || (String(x.arm) < String(y.arm) ? -1 : 1))[0];
   const others = arms.filter(b => b !== top), best = others.slice().sort((x, y) => y.oneShotRate - x.oneShotRate || (String(x.arm) < String(y.arm) ? -1 : 1))[0];
   if (top.lower < best.oneShotRate) missing.push('no arm is clearly better: the best lower bound, ' + fmt(top) + ' ' + top.lower + ', is below ' + fmt(best) + '\'s point estimate ' + best.oneShotRate);
+  else if (ek.by === 'efficiency') missing.push(fmt(top) + ' clears the quality bar but is not more efficient (eff ' + top.eff + ' vs ' + (ek.cheaperThan === 'bestOther' ? [best] : others).map(b => b.eff).join(', ') + ')');
   else missing.push(fmt(top) + ' clears the quality bar but does not cost less (' + top.decisionCost + ' vs ' + (ek.cheaperThan === 'bestOther' ? [best] : others).map(b => b.decisionCost).join(', ') + ')');
   return { state: 'no decision yet', winner: null, missing };
 }
@@ -1044,21 +1113,24 @@ function renderMd(body, computedAt) {
   const pc = v => (v == null ? '–' : Math.round(1000 * v) / 10 + '%');
   const L = ['# House ranking: which model does each kind of our work best for the money', '',
     'Written by `company/tools/model-rank.js` (docs/RANKING.md); computed ' + computedAt + '. Items closed in the last ' + body.windowDays + ' days; an item is one-shot when nothing undid it within ' + body.oneShotWindowDays +
-    ' days. Score = the lower bound of the ' + Math.round(100 * body.confidence) + '% interval on the one-shot rate / ' + body.score.cost + ' per ' + body.score.per + '. A cell needs ' + body.minItems + ' items before it may steer anything. ' +
+    ' days. ' + (body.score.rule === 'quality-per-cost' ? 'Score = the lower bound of the ' + Math.round(100 * body.confidence) + '% interval on the one-shot rate / ' + body.score.cost + ' per ' + body.score.per + '. '
+      : 'Rank: quality first, then efficiency. A cell steers only when the lower bound of the ' + Math.round(100 * body.confidence) + '% interval on its one-shot rate clears the bar (' + (typeof body.score.bar === 'object' ? JSON.stringify(body.score.bar) : body.score.bar) + '); among those, the lowest Eff (time per item and share of the model\'s own limit per item, each against the class\'s largest) ranks first, a tie broken by the lower bound. Cost and score are shown, not deciding. ') +
+    'A cell needs ' + body.minItems + ' items before it may steer anything. ' +
     '"(claimed)" = the provider did not confirm which model it served. Policy ' + body.policyDigest + '.', '',
     'Items: ' + body.totals.done + ' closed (' + body.totals.notWork + ' of them notices nobody worked), ' + body.totals.scored + ' scored, ' + body.totals.settling + ' still settling, ' + body.totals.excluded + ' excluded (only provider errors or slice cuts), ' + body.totals.unlinked + ' with no linked run. ' +
     'Verdicts ignored: ' + body.totals.selfGradesIgnored + ' self-grades, ' + body.totals.uncitedIgnored + ' without a cited check, ' + body.totals.unattributedIgnored + ' with no known grader.', ''];
   const classes = [...new Set(body.cells.map(c => c.class))];
   if (!classes.length) L.push('No scored work yet.', '');
   for (const cls of classes) {
-    L.push('## ' + cls, '', '| Rank | Model | Effort | Items | One-shot | Lower | Cost/item | Score | Tail cost | Extra runs/item | REVISE/item | Defect pts | Premerge 1st pass | Items/change | Window tokens/item | Status |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
-    for (const c of body.cells.filter(x => x.class === cls)) L.push('| ' + f(c.rank) + ' | `' + c.model + '`' + (c.claimed ? ' (claimed)' : '') + ' | ' + c.effort + ' | ' + c.items + (c.settling ? ' (+' + c.settling + ' settling)' : '') + ' | ' + pc(c.oneShotRate) + ' | ' + pc(c.lower) + ' | ' + f(c.costPerItem) + ' | ' + f(c.score) + ' | ' +
+    L.push('## ' + cls, '', '| Rank | Model | Effort | Items | One-shot | Lower | Bar | Eff | Time/item (s) | Limit share/item | Cost/item | Score | Tail cost | Extra runs/item | REVISE/item | Defect pts | Premerge 1st pass | Items/change | Window tokens/item | Status |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
+    for (const c of body.cells.filter(x => x.class === cls)) L.push('| ' + f(c.rank) + ' | `' + c.model + '`' + (c.claimed ? ' (claimed)' : '') + ' | ' + c.effort + ' | ' + c.items + (c.settling ? ' (+' + c.settling + ' settling)' : '') + ' | ' + pc(c.oneShotRate) + ' | ' + pc(c.lower) + ' | ' + pc(c.bar) + ' | ' + f(c.eff) + ' | ' + f(c.timeSecPerItem, 1) + ' | ' + f(c.limitSharePerItem, 6) + ' | ' + f(c.costPerItem) + ' | ' + f(c.score) + ' | ' +
       f(c.tailCost) + ' | ' + f(c.extraRunsPerItem, 2) + ' | ' + f(c.revisePerItem, 2) + ' | ' + f(c.defectPoints, 2) + ' | ' + pc(c.premergeFirstPassRate) + ' | ' + f(c.itemsPerChange, 2) + ' | ' + f(c.windowTokensPerItem) + ' | ' + c.status + ' |');
     L.push('');
   }
   L.push('## Routing proposals (' + (body.proposals[0] ? body.proposals[0].mode : 'shadow') + ')', '');
   if (!body.proposals.length) L.push('None: no cell with enough data beats a department\'s current route by the margin.');
-  for (const p of body.proposals) L.push('- `' + p.id + '` ' + p.department + ' / ' + p.class + ': `' + p.from.provider + '/' + p.from.model + '` @ ' + p.from.effort + ' (score ' + f(p.from.score) + ') -> `' + p.to.provider + '/' + p.to.model + '` @ ' + p.to.effort + ' (score ' + f(p.to.score) + ', ' + (p.gain == null ? 'route has no score' : '+' + Math.round(100 * p.gain) + '%') + '). Not applied.');
+  const word = p => (p.rule === 'quality-per-cost' ? 'score' : 'eff');
+  for (const p of body.proposals) L.push('- `' + p.id + '` ' + p.department + ' / ' + p.class + ': `' + p.from.provider + '/' + p.from.model + '` @ ' + p.from.effort + ' (' + word(p) + ' ' + f(p.from.score) + (p.routeUnderBar ? ', under the bar' : '') + ') -> `' + p.to.provider + '/' + p.to.model + '` @ ' + p.to.effort + ' (' + word(p) + ' ' + f(p.to.score) + ', ' + (p.gain == null ? (p.routeUnderBar ? 'the route is under the quality bar' : 'route has no ' + word(p)) : (p.rule === 'quality-per-cost' ? '+' : '') + Math.round(100 * p.gain) + '%' + (p.rule === 'quality-per-cost' ? '' : ' more efficient')) + '). Not applied.');
   L.push('');
   const flagged = body.graders.filter(x => x.flagged);
   if (flagged.length) { L.push('## Graders whose approvals drift from the hard results', ''); for (const x of flagged) L.push('- ' + x.seat + ': approves ' + pc(x.approvalRate) + ', hard one-shot ' + pc(x.hardOneShotRate) + ' over ' + x.verdicts + ' verdicts.'); L.push(''); }
@@ -1119,6 +1191,7 @@ function refresh(o) {
   const changed = !stored || stored.hash !== hash;
   const evaluation = evaluate(inp, an);
   const res = { changed, hash, body, newProposals: [], evaluation, evaluationWritten: writeEvaluation(root, evaluation, body.policyDigest, true) };
+  try { res.scoped = scopedRefresh(root, an, knobs(inp.policy), now, !!o.dry); } catch (e) { res.scoped = { error: String(e && e.message || e).slice(0, 200) }; }
   if (o.dry) return res;
   writeEvaluation(root, evaluation, body.policyDigest, false);
   if (changed) {
@@ -1133,6 +1206,71 @@ function refresh(o) {
   writeAtomic(P.state, JSON.stringify({ checkedAt: now, hash, policyDigest: body.policyDigest }) + '\n');
   return res;
 }
+/* ---------------- scoped routing: the capability table and the class-depth drift (docs/RANKING.md §11) ----------------
+ * live: the scored items whose wake carried route.scoped ({kind, depth}), grouped by (served model, kind, depth): items,
+ * one-shot sum and the median time to done. Then lib/capability.js build() over the bench results and the stored table. */
+const CAP_DEPTHS = ['lookup', 'simple', 'standard', 'deep'];
+function capabilityLive(an, K) {
+  const g = new Map();
+  for (const it of an.items) {
+    if (it.excluded || !(it.settled || K.countUnsettled) || !it.scoped || it.scoped.kind == null || !CAP_DEPTHS.includes(it.scoped.depth)) continue;
+    const k = it.cell.model + '|' + it.scoped.kind + '|' + it.scoped.depth;
+    if (!g.has(k)) g.set(k, { model: it.cell.model, kind: it.scoped.kind, depth: it.scoped.depth, n: 0, oneShot: 0, times: [] });
+    const x = g.get(k); x.n++; x.oneShot += it.oneShot; if (it.timeSec != null) x.times.push(it.timeSec);
+  }
+  return [...g.values()].sort((a, b) => (a.model + a.kind + a.depth < b.model + b.kind + b.depth ? -1 : 1)).map(x => ({ model: x.model, kind: x.kind, depth: x.depth, n: x.n, oneShot: x.oneShot, timeSecP50: median(x.times.sort((a, b) => a - b)) }));
+}
+/* the drift: a class's baseline depth moves one level when its routed items keep proving easier or harder */
+function classDrift(an, K, cap, routing, prev, now) {
+  const S = (routing && routing.scoped) || {}, Dk = Object.assign({ window: 40, minItems: 20, driftDown: 0.5, driftUp: 0.3, everyDays: 7 }, S.drift || {});
+  const C = require('./lib/capability');
+  const classes = Object.assign({}, (prev && prev.classes) || {}), moves = [];
+  const byClass = new Map();
+  for (const it of an.items) {
+    if (it.excluded || !(it.settled || K.countUnsettled) || !it.scoped || !it.scoped.fromBaseline || !CAP_DEPTHS.includes(it.scoped.depth)) continue;
+    const c = String(it.cell.class); if (!byClass.has(c)) byClass.set(c, []); byClass.get(c).push(it);
+  }
+  for (const [cls, list] of [...byClass].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+    const last = list.sort((a, b) => (a.closedAt || 0) - (b.closedAt || 0)).slice(-Math.max(1, num(Dk.window, 40)));
+    if (last.length < Math.max(1, num(Dk.minItems, 20))) continue;
+    const was = classes[cls] || null;
+    if (was && Number.isFinite(Date.parse(was.at)) && now - Date.parse(was.at) < num(Dk.everyDays, 7) * DAY) continue;
+    const base = (was && CAP_DEPTHS.includes(was.depth)) ? was.depth : CAP_DEPTHS.includes((S.classDepth || {})[cls]) ? S.classDepth[cls] : 'standard';
+    const pair = m => { const i = String(m).indexOf('/'); return { provider: String(m).slice(0, i), model: String(m).slice(i + 1) }; };
+    const easier = last.filter(it => !it.scoped.escalated && it.oneShot === 1 && (() => { const c = C.currentOf(cap, pair(it.cell.model), it.scoped.kind).current; return !c || CAP_DEPTHS.indexOf(c) < CAP_DEPTHS.indexOf(it.scoped.depth); })()).length;
+    const harder = last.filter(it => it.scoped.escalated > 0 || it.oneShot < 1).length;
+    const n = last.length, bi = CAP_DEPTHS.indexOf(base);
+    let to = null, why = '';
+    if (easier / n >= num(Dk.driftDown, 0.5) && bi > 0) { to = CAP_DEPTHS[bi - 1]; why = easier + ' of the last ' + n + ' items were done one-shot by a model proven below their depth'; }
+    else if (harder / n >= num(Dk.driftUp, 0.3) && bi < CAP_DEPTHS.length - 1) { to = CAP_DEPTHS[bi + 1]; why = harder + ' of the last ' + n + ' items needed escalation or failed'; }
+    if (!to) continue;
+    classes[cls] = { depth: to, from: base, at: iso(now), why };
+    moves.push({ class: cls, from: base, to, why });
+  }
+  return { doc: { v: 1, _doc: 'model-rank.js refresh: each task class\'s drifted depth baseline for scoped routing (docs/ROUTING.md); lib/depth.js reads it over routing-policy.json scoped.classDepth', classes }, moves };
+}
+function scopedRefresh(root, an, K, now, dry) {
+  const C = require('./lib/capability'), P = paths(root);
+  const routing = loadRouting(root);
+  const S = (routing && routing.scoped) || {};
+  if (S.enabled !== true && !fs.existsSync(path.join(root, C.REL))) return { skipped: 'scoped routing off' };
+  const capFile = path.join(root, C.REL), prevCap = C.load(root);
+  const built = C.build({ bench: C.benchResults(root), live: capabilityLive(an, K), prev: prevCap, passMark: Number(S.passMark) > 0 ? Number(S.passMark) : 0.9, minItems: K.minItems, z: zOf(K.confidence), now });
+  const strip = d => canon(Object.assign({}, d, { at: null }));
+  const capChanged = !prevCap || strip(prevCap) !== strip(built.doc);
+  const depthFile = path.join(root, 'company', 'state', 'class-depth.json'), prevDepth = readJson(depthFile, null);
+  const drift = classDrift(an, K, built.doc, routing, prevDepth, now);
+  const depthChanged = drift.moves.length > 0 || (!prevDepth && Object.keys(drift.doc.classes).length > 0);
+  if (!dry) {
+    if (capChanged) writeAtomic(capFile, JSON.stringify(built.doc, null, 1) + '\n');
+    if (depthChanged) writeAtomic(depthFile, JSON.stringify(drift.doc, null, 1) + '\n');
+    const log = path.join(root, 'company', 'work', 'models', 'routing-log.jsonl');
+    for (const m of built.moves) appendLine(log, { at: now, ts: iso(now), op: 'capability', by: 'model-rank.js', model: m.model, kind: m.kind, from: m.from, to: m.to, why: m.why });
+    for (const m of drift.moves) appendLine(log, { at: now, ts: iso(now), op: 'class-depth', by: 'model-rank.js', class: m.class, from: m.from, to: m.to, why: m.why });
+  }
+  return { capChanged, moves: built.moves, drift: drift.moves, capability: built.doc };
+}
+
 /* --duty: read only. Due when a routing proposal is open (not yet noted or declined). */
 function duty(o) {
   o = o || {}; const root = o.root || co.ROOT;
@@ -1232,5 +1370,5 @@ function main() {
   process.exit(2);
 }
 
-module.exports = { rank, analyze, evaluate, advisorEvaluation, fanoutEvaluation, accountableEvaluation, profileEvaluation, PROFILE_CAVEAT, renderAdvisorMd, evalKnobs, trialDecision, renderTrialMd, writeEvaluation, evaluationDuty, loadRouting, wilsonBounds, armKeyOf, load, loadPolicy, knobs, refresh, refreshDue, duty, decide, verifyChain, historyRow, fileText, renderMd, bodyHash, wilsonLower, zOf, prRefs, verdictsIn, runKind, runCost, priceOf, paths, sortKeys };
+module.exports = { capabilityLive, classDrift, scopedRefresh, barOf, limitShareOf, rank, analyze, evaluate, advisorEvaluation, fanoutEvaluation, accountableEvaluation, profileEvaluation, PROFILE_CAVEAT, renderAdvisorMd, evalKnobs, trialDecision, renderTrialMd, writeEvaluation, evaluationDuty, loadRouting, wilsonBounds, armKeyOf, load, loadPolicy, knobs, refresh, refreshDue, duty, decide, verifyChain, historyRow, fileText, renderMd, bodyHash, wilsonLower, zOf, prRefs, verdictsIn, runKind, runCost, priceOf, paths, sortKeys };
 if (require.main === module) main();

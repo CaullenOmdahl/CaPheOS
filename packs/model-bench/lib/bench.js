@@ -351,6 +351,10 @@ function aggregate(unitDir, model, tasks, recs, o) {
   const res = { schema: 'model-bench/1', model, servedModel: (recs.find(r => r.servedModel) || {}).servedModel || null, benchVersion: benchVersion(unitDir),
     judge: { model: o.judgeModel, rubricSha }, ranAt: new Date().toISOString(), seed: o.seed, complete: !!o.complete, kinds: {} };
   const kinds = [...new Set(tasks.map(t => t.kind))].sort((a, b) => a - b);
+  // a subscription model's share of its weekly token budget per level (config subscriptionWeeklyTokens[provider], set by
+  // the owner or the model manager); null for a metered or free model, or when the budget is not set
+  const weekly = classify(model, cfg) === 'subscription' ? Number((cfg.subscriptionWeeklyTokens || {})[String(model).split('/')[0]]) : 0;
+  const shareOf = (tin, tout) => (weekly > 0 ? Math.round((tin + tout) / weekly * 100000) / 1000 : null);
   for (const k of kinds) {
     const levels = {};
     for (const d of DEPTHS) {
@@ -369,7 +373,7 @@ function aggregate(unitDir, model, tasks, recs, o) {
       const times = rs.map(r => r.timeSec);
       levels[d] = { tasks: ts.length, instances: units.length, passed: notProvenReason ? null : passed, passRate: notProvenReason ? null : Math.round(passed / Math.max(1, units.length) * 1000) / 1000,
         taskVersions: Object.fromEntries(ts.map(t => [t.id, t.version])), timeSecP50: p50(times), timeSecMax: times.length ? Math.max(...times) : 0,
-        tokensIn: rs.reduce((a, r) => a + r.tokensIn, 0), tokensOut: rs.reduce((a, r) => a + r.tokensOut, 0), limitSharePct: null, failures, notProvenReason };
+        tokensIn: rs.reduce((a, r) => a + r.tokensIn, 0), tokensOut: rs.reduce((a, r) => a + r.tokensOut, 0), limitSharePct: shareOf(rs.reduce((a, r) => a + r.tokensIn, 0), rs.reduce((a, r) => a + r.tokensOut, 0)), failures, notProvenReason };
     }
     let proven = null; const gaps = [];
     for (const d of DEPTHS) { const L = levels[d]; if (!L) continue; if (L.passRate != null && L.passRate >= passMark) proven = d; }

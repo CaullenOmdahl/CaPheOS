@@ -48,6 +48,10 @@
   "effort": "high",
   "_doc": "The model a hiring candidate is interviewed on when hire.js is given none (the hire keeps the interviewed model). Must be on the allowed lists above."
  },
+ "routable": {
+  "_doc": "Which models scoped routing (docs/ROUTING.md \"Scoped routing\") may pick by itself: \"<provider/model>\" or \"<provider/prefix>*\" -> true|false (the longest key wins; a model with no key is routable, except a needsCeoApproval model, which is off until the owner turns it on). Only the router reads it: a model can still be assigned on purpose (models.js set/chain, hire.js). Owner only: models.js routable <pair> on|off --by owner, or Settings > Models > Automatic picks.",
+  "claude-cli/claude-fable*": false
+ },
  "needsCeoApproval": [
   "claude-opus-5-5",
   "opus"
@@ -163,7 +167,9 @@
   "refreshHours": 24,
   "coolMin": 30,
   "minItems": 5,
-  "maxAlternates": 2
+  "maxAlternates": 2,
+  "dailyRequests": 50,
+  "_dailyRequests": "free-model requests the OpenRouter account may make a day (50 on a free account, more once credits were bought). Scoped routing counts a free model's share of this limit like a subscription's window share (docs/ROUTING.md); it never gates (OpenRouter's own daily-limit error still does)."
  },
  "performance": {
   "consecutiveFailures": 3,

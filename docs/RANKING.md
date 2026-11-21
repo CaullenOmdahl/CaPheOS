@@ -1,7 +1,7 @@
 # The house ranking: which model does our work best for the money
 
 Public benchmarks say how a model scores on someone else's tests. The house ranking says how it does on **this
-company's finished work**, per kind of work, for what it cost. It is the data the department routes (company/
+company's finished work**, per kind of work: whether it clears the quality bar, and then how quickly and how lightly on its own limit it gets the work done (§3). It is the data the department routes (company/
 departments.json `routes.<class>`) are meant to follow. It is measured in production, so both the framework and the
 scoring method are expected to change as real numbers come in: **every rule, threshold and weight is in a policy
 file, not in code**, and anything that would change routing runs in **shadow** first.
@@ -9,7 +9,7 @@ file, not in code**, and anything that would change routing runs in **shadow** f
 Code: `company/tools/model-rank.js` (the ranking), `company/tools/lib/taskclass.js` (task classes, departments),
 `company/tools/check-benchmarks.py` (the public book). Policy: `company/work/models/ranking-policy.json` (copied at
 founding from `company/defaults/work/models/ranking-policy.json`). Tests: `node company/tools/model-rank.js --selftest`,
-`node --test company/tools/tests/model-rank.test.js`, `node --test company/tools/tests/model-rank-trials.test.js` (§10), `python3 company/tools/check-benchmarks.py --selftest`.
+`node --test company/tools/tests/model-rank.test.js`, `node --test company/tools/tests/model-rank-trials.test.js` (§10), `node --test company/tools/tests/routing-scoped.test.js` (§3, §11), `python3 company/tools/check-benchmarks.py --selftest`.
 Owner: the `people` function (the model manager).
 
 ## 1. What is measured
@@ -49,19 +49,43 @@ A verdict line: `**Verdict:** REVISE by <seat id or name> — check: <the accept
 Words that fail an item: `verdicts.fail` (REVISE, CHANGES-REQUESTED, REQUEST-CHANGES, REJECT, TAKE-OVER); words that pass:
 `verdicts.pass`. ESCALATE and ESCALATE-TIER neither pass nor fail.
 
-## 3. The score
+## 3. The score: a quality bar first, then efficiency
 
-    score = lower bound of the interval on the one-shot rate / cost per item
+The owner's rule (2026-11-21): the work is scoped to the model. Quality must be good enough first; among the models
+that are good enough, the one that gets the work done quickest while using the least of its own limit wins. Cost is one
+factor and never the only one. A free model is neither favoured nor penalised: it pays in its daily request allowance.
 
-The interval is the Wilson score interval at `interval.confidence` (default 80%), so a small lucky sample does not
-outrank a large steady one. A half-weight verdict makes an item half a one-shot. Cost is `score.cost`: `listUsd`
-(default: metered usd and subscription runs at list price, one scale for both), `usd` (metered only) or `windowTokens`.
-**A cell needs `minItems` (default 20) scored items before it can steer anything**: below that its status is
-`not enough data`, it has no score and no rank, and it can be neither proposed nor beaten.
+    a cell may steer   when it has minItems scored items AND lower >= score.bar
+    eff                = weights.time  x (median time to done per item / the slowest such cell's in the class)
+                       + weights.limit x min(1, share of the model's OWN limit one item uses / limits.shareScale)
+    rank               = by eff, lowest first; cells within tieEpsilon of each other by their lower bound
 
-A free model's cell (`openrouter/<id>`, the free-model fallback, docs/FREE-MODELS.md) is graded like any other, but it
-costs nothing, so it has no score (`no cost recorded`) and is never proposed against a route. The fallback's own pick
-between free models reads the cell's lower bound instead (`lib/free-models.js order`, `freeFallback.minItems`).
+- **lower** is the lower bound of the Wilson score interval on the one-shot rate at `interval.confidence` (default
+  80%), so a small lucky sample does not outrank a large steady one. A half-weight verdict makes an item half a
+  one-shot. **score.bar** is a number or `{ <class>: n, default: n }`. The shipped 0.8 on the lower bound is about a
+  90% one-shot rate on 20-odd items, the model bench's pass mark.
+- **Time to done** is the summed wall time (`startedAt..endedAt`) of an item's own runs. A cell with no timing reads as
+  the slowest.
+- **The limit share** is per model, against its own limit. A subscription counts tokens per item over
+  `limits.subscriptionWeeklyTokens[provider]` (the providers in `limits.subscriptionProviders`). A metered model
+  counts usd per item over `limits.meteredDailyUsd` (the station's daily rail). A free model counts runs per item over
+  `limits.freeDailyRequests`. Unknown reads as `unknownShare`. No share is ever 0. `shareScale` (default 0.02) is the
+  share that counts in full, so two shares that are both negligible never outweigh a real difference in time.
+- **A cell needs `minItems` (default 20) scored items before it can steer anything.** Below that its status is
+  `not enough data`, and it has no rank. A cell with enough items under the bar says `under the bar`, has no `eff` and
+  no rank, and is never proposed. A route whose own cell is under the bar is beaten by any cell that clears it.
+- **Shown, not deciding.** `score` (lower bound / `score.cost` per item), `costPerItem`, `usd`, `listUsd`,
+  `windowTokens` and the tail cost are still computed and shown. `score.rule: quality-per-cost` brings back the old
+  ranking by `score` for a company that asks for it.
+
+A free model's cell (`openrouter/<id>`, docs/FREE-MODELS.md) is graded like any other and ranked by the same rule. The
+fallback's own pick between free models (`lib/free-models.js order`, `freeFallback.minItems`) takes the free cells that
+clear the bar first, by `eff`, then the rest by their lower bound.
+
+Proposals (§6) and the trial decision (§10) use the same rule. A proposal needs a cell that clears the bar with an `eff`
+at least `proposals.margin` lower than the route's (its `gain`), or a route that is under the bar. A trial arm wins
+when its lower bound is not below the best other arm's point estimate and its `eff` is lower than every other arm's
+(`trials.decision.by: cost` restores the cost comparison).
 
 An item closed less than `oneShotWindowDays` ago is **settling**: it is counted apart and not scored until nothing had
 the time to undo it (`countUnsettled: true` scores it anyway).
@@ -104,8 +128,9 @@ A policy change shows as a new ranking even when no work changed (the body carri
 
 - **Refresh**: the dispatcher runs `model-rank.js refresh` in its own process when `refreshMinutes` (clamped 60–1440:
   at most hourly) have passed, or the policy changed. It logs one `HOUSE RANKING:` line only when the ranking changed.
-- **Routing proposals (shadow)**: when a cell with enough data beats a department's current route for that class
-  (`departments[].routes.<class>`: `{provider, model, effort}`) by more than `proposals.margin`, a proposal row is written.
+- **Routing proposals (shadow)**: when a cell that clears the bar beats a department's current route for that class
+  (`departments[].routes.<class>`: `{provider, model, effort}`) by more than `proposals.margin` (an `eff` that much lower,
+  §3), or the route's own cell is under the bar, a proposal row is written (`rule`, `gain`, `routeUnderBar`).
   It is never applied: applying is a later step behind an owner switch in the console. No proposal while the route's own
   cell has no data (`requireRouteData`); a claimed cell is not proposed (`allowClaimed: false`).
 - **The duty** `house-ranking` (`company/tools/duties.js`, every 60 min, routes to `people`): `model-rank.js --duty`
@@ -185,11 +210,13 @@ wakes that listed it.
 
 **The decision rule** (`trials`): with every arm at `minItemsPerArm` (the trial's own, else the policy's, default 30)
 items, an arm **wins** when the lower bound of its one-shot range is not below the best other arm's point estimate
-**and** its cost per accepted item (`costStat`: mean, or median) is lower than every other arm's (`decision.cheaperThan:
-"every"`, the default) or than that best other arm's (`"bestOther"`). Otherwise the state is **no decision yet**, with
-what is missing: the arms short of items (`arm 2 (…): 12 of 30 items`), an arm with no cost recorded, "no arm is clearly
-better" (the best lower bound is below another arm's point estimate), or "clears the quality bar but does not cost
-less". There is never a winner without the data.
+**and** it is more efficient (§3: its `eff`, from the median time per item and its share of its own limit, is lower)
+than every other arm (`decision.cheaperThan: "every"`, the default) or than that best other arm (`"bestOther"`).
+`decision.by: "cost"` compares the cost per accepted item (`costStat`: mean, or median) instead. Otherwise the state is
+**no decision yet**, with what is missing: the arms short of items (`arm 2 (…): 12 of 30 items`), an arm with no cost
+recorded, "no arm is clearly better" (the best lower bound is below another arm's point estimate), or "clears the
+quality bar but is not more efficient". There is never a winner without the data. Each arm also shows
+`timeSecPerItem`, `limitSharePerItem` and `eff`.
 
 **The decision file** `company/work/models/trials/<id>.md`: the trial's status, scope and entry share, the per-arm table
 with ranges, and the decision. It carries no clock time and is replaced only when its text changes, so it changes when
@@ -282,3 +309,34 @@ A trial (a `trial-start` row in the seat's profile history) compares the same nu
 during it, next to the seats that did not change over the same windows (the no-intervention baseline). Every trial
 entry carries the line "Before-and-after numbers also move on their own; compare with the seats that did not change."
 With no wake carrying a profile and no trial, there is no section at all.
+
+## 11. Scoped routing's records: the capability table and the class-depth drift
+
+`refresh` also keeps the two records scoped routing reads (docs/ROUTING.md "Scoped routing"). It writes them only
+while `routing-policy.json scoped.enabled` is on, or once the table exists.
+
+- **company/work/models/model-capability.json** (locked-watch class R, writer model-rank.js; `lib/capability.js`).
+  Per model and bench kind it holds:
+  - `bench`: the depth the model bench proved (`company/state/model-bench/<model>.json`; stub models and `.prev.json`
+    are left out);
+  - `levels`: the bench's pass rate, time and tokens per depth;
+  - `live`: per depth, the scored items whose wake carried `route.scoped`, with their one-shot sum, Wilson bounds and
+    median time;
+  - `current`: the depth the router trusts now. It starts at `bench`.
+
+  Each refresh moves `current` at most one step per kind. A **drop** happens when a depth at or under `current` has at
+  least `minItems` live items whose upper bound is under the pass mark (`scoped.passMark`). A **raise** happens when
+  live items one depth up (escalations, new-model picks) have a lower bound at or over it. A new bench result resets
+  `current` to the new proven depth. A model with no bench result has `current: null`: it is a new model, picked only
+  through `scoped.newModel`. Each move is a row in routing-log.jsonl: `{op: capability, by: model-rank.js, model,
+  kind, from, to, why}`. The file is rewritten only when its body changes.
+- **company/state/class-depth.json** (class R, writer model-rank.js). The drifted depth baseline per task class, read by
+  `lib/depth.js` over `scoped.classDepth`. It looks at the last `scoped.drift.window` scored items of a class whose
+  depth came from the baseline, and acts once there are at least `drift.minItems` of them. When `driftDown` of them
+  were done one-shot by a model proven below their depth (the job was easier than thought), the baseline drops one
+  level. When `driftUp` of them needed escalation or failed, it rises one level. A class moves at most once per
+  `drift.everyDays`, and each move is a routing-log row `{op: class-depth, class, from, to, why}`.
+
+The capability table is measurement plus the router's trust. Nothing in it can make a model routable that the owner
+switched off. Nothing in it can open a model that the pacer, the subscription stops, the rail or a refusal closed.
+

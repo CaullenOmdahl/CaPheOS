@@ -1403,7 +1403,7 @@ function lastRunTail(job) {
     // the router's decision for this wake: recorded always (with a policy), applied as a one-run override only when live and open.
     // The class rules always hold: a wake whose own pair they deny and no allowed entry is open is held, never started on it.
     const wakeId = W.newWakeId(Date.now());
-    const route = ROUTING ? RT.forWake(ROUTING, { seat: agentId, wakeId, job, items: viaInbox ? (wakeItemsOf[agentId] || []).map(i => ({ text: (wakeTextOf[agentId] && wakeTextOf[agentId].get(i.title)) || '' })) : [] }) : null;
+    const route = ROUTING ? RT.forWake(ROUTING, { seat: agentId, wakeId, job, items: viaInbox ? (wakeItemsOf[agentId] || []).map(i => ({ text: (wakeTextOf[agentId] && wakeTextOf[agentId].get(i.title)) || '', id: i.id, file: i.file })) : [] }) : null;
     if (route && route.hold) {
       log('ROUTE HOLD ' + job.name + ' for ' + agentId + ': ' + route.holdWhy);
       RT.record(ROUTING, { wakeId, seat: agentId, door: 'dispatch', jobId: job.id, runId: null, status: 'held', route });

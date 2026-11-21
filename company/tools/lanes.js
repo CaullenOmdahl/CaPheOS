@@ -535,7 +535,7 @@ async function start({ id, n, laneId, c, job, it, cfg, routing, log, piece, inbo
   // the router (lib/routing.js), exactly as for a wake: decided and recorded with a policy, applied only when live and open
   const W = require('./lib/wakes'), RT = require('./lib/routing');
   const wakeId = W.newWakeId(S.now());
-  const route = routing ? RT.forWake(routing, { seat: id, wakeId, job: Object.assign({}, job, cr.job), items: [{ text: it.text || '' }] }) : null;
+  const route = routing ? RT.forWake(routing, { seat: id, wakeId, job: Object.assign({}, job, cr.job), items: [{ text: it.text || '', id: W.itemId(itemInbox, it.heading, it.id), file: itemInbox }] }) : null;
   { const rl = RT.line(id, route); if (rl && log) log(rl + ' [lane ' + laneId + ']'); }
   const drop = async () => { await ST.cron(S.call, 'POST', '/api/cron/remove', { id: cr.job.id }, 'remove lane routine'); if (place.kind === 'worktree') { try { git(place.repo, ['worktree', 'remove', '--force', p.dir]); git(place.repo, ['branch', '-D', p.branch]); } catch (_) {} } };
   // the class rules always hold: the seat's pair is denied for this item's class and no allowed entry is open: not started

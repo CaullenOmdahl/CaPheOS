@@ -16,8 +16,16 @@
  "interval": { "method": "wilson", "confidence": 0.8 },
  "_interval": "the one-shot rate is read as the LOWER bound of this two-sided interval (Wilson score interval), so a small lucky sample does not outrank a large steady one",
 
- "score": { "cost": "listUsd", "per": "item" },
- "_score": "score = interval lower bound / cost per scored item. cost: 'listUsd' (metered runs at their real usd, subscription runs priced from cost.listPrices), 'usd' (metered usd only: subscription runs cost 0, so do not score on it while any cell is on a subscription) or 'windowTokens' (subscription window share, estimated). per: 'item' or 'change' (cost per accepted change: a PR, else the item itself)",
+ "score": {
+  "rule": "bar-then-efficiency",
+  "bar": 0.8,
+  "weights": { "time": 0.5, "limit": 0.5 },
+  "tieEpsilon": 0.05,
+  "limits": { "subscriptionProviders": ["claude-cli", "custom"], "subscriptionWeeklyTokens": {}, "meteredDailyUsd": 25, "freeDailyRequests": 50, "unknownShare": 0.05, "shareScale": 0.02 },
+  "cost": "listUsd",
+  "per": "item"
+ },
+ "_score": "How a cell ranks (docs/RANKING.md §3). rule 'bar-then-efficiency' (the owner's rule, 2026-11-21: quality first, then efficiency; cost is never the sole criterion): a cell may steer only with minItems items AND the lower bound of its one-shot interval at or over bar (a number, or { <class>: n, default: n }; 0.8 on the lower bound at 80% confidence is about a 90% one-shot rate on 20-odd items, the model bench's pass mark). Among the cells of a class that clear it, the lowest eff ranks first: eff = weights.time x (median time to done per item / the slowest such cell's) + weights.limit x min(1, share of the model's OWN limit one item uses / limits.shareScale). The share: a subscription's tokens per item over limits.subscriptionWeeklyTokens[provider] (the providers in limits.subscriptionProviders), a metered model's usd per item over limits.meteredDailyUsd (the station's daily rail), a free model's runs per item over limits.freeDailyRequests; unknown = unknownShare. No model is free in the score. Cells within tieEpsilon of each other are ordered by their lower bound. Time comes from the runs' startedAt..endedAt; a cell with none reads as the slowest. rule 'quality-per-cost': the old score = lower bound / cost per item (cost: 'listUsd' | 'usd' | 'windowTokens', per: 'item' | 'change'). The score, cost per item, usd, list usd, window tokens and the tail are always shown; under bar-then-efficiency they do not decide.",
 
  "signals": { "revise": true, "reopen": true, "revert": true, "fixForward": true, "defects": true, "premerge": true, "ownerCorrections": true },
  "_signals": "switch a signal off to leave it out of the ranking entirely (it is then neither shown nor counted)",
@@ -73,7 +81,7 @@
  "_graders": "a grader whose approval rate differs from the hard one-shot rate of the items it approved or rejected by more than driftPoints (once it has minVerdicts counted verdicts) is flagged",
 
  "proposals": { "mode": "shadow", "margin": 0.15, "requireRouteData": true, "allowClaimed": false },
- "_proposals": "a routing proposal is written when a cell with enough data beats a department's current route (company/departments.json routes.<class>) for that class by more than margin (0.15 = 15% higher score). mode shadow: proposals are records only, nothing is applied (applying is a later, owner-switched step). requireRouteData: no proposal while the route's own cell lacks data. allowClaimed: whether a cell whose model the provider did not confirm (no servedModel) may be proposed",
+ "_proposals": "a routing proposal is written when a cell with enough data beats a department's current route (company/departments.json routes.<class>) for that class by more than margin: under bar-then-efficiency, a cell that clears the bar with an eff at least margin lower than the route's (0.15 = 15% more efficient), or any cell that clears the bar while the route's own cell (with enough data) does not; under quality-per-cost, a score more than margin higher. mode shadow: proposals are records only, nothing is applied (applying is a later, owner-switched step). requireRouteData: no proposal while the route's own cell lacks data. allowClaimed: whether a cell whose model the provider did not confirm (no servedModel) may be proposed",
 
  "trials": {
   "minItemsPerArm": 30,

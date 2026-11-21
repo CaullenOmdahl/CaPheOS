@@ -34,6 +34,8 @@ function build(o) {
   const T = require('../lib/temp-life').tmpDir('model-rank-trials-'); roots.push(T);
   const w = (rel, data) => { const f = path.join(T, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, typeof data === 'string' ? data : JSON.stringify(data, null, 1) + '\n'); };
   const policy = JSON.parse(fs.readFileSync(DEFAULT_POLICY, 'utf8'));
+  // the arms' runs all take 30 minutes, so efficiency is decided by each arm's share of the subscription's week
+  policy.score.limits.subscriptionWeeklyTokens = { 'claude-cli': 100000000 };
   w('company/work/models/ranking-policy.json', Object.assign(policy, o.policy || {}));
   w('company/company.json', { name: 'Fixture Co', timezone: 'UTC', owner: { name: 'Owner' } });
   w('company/tools/loops.json', { agents: {
@@ -136,7 +138,7 @@ test('above minItemsPerArm, the rule the other way: no arm clearly better, or th
   const dear = evalOf(build({ arms: [{ n: 30, fails: 12 }, { n: 30, fails: 12 }, { n: 40, fails: 0 }] })).trials[0];
   assert.ok(dear.arms[2].lower >= Math.max(dear.arms[0].oneShotRate, dear.arms[1].oneShotRate));
   assert.equal(dear.decision.state, 'no decision yet');
-  assert.match(dear.decision.missing[0], /arm 2 .* clears the quality bar but does not cost less/);
+  assert.match(dear.decision.missing[0], /arm 2 .* clears the quality bar but is not more efficient/);
   // pure rule: cheaperThan bestOther only compares with the best other arm
   const arms = [{ arm: 0, label: 'a', items: 30, lower: 0.8, oneShotRate: 0.9, decisionCost: 2 }, { arm: 1, label: 'b', items: 30, lower: 0.6, oneShotRate: 0.75, decisionCost: 3 }, { arm: 2, label: 'c', items: 30, lower: 0.3, oneShotRate: 0.4, decisionCost: 1 }];
   assert.equal(M.trialDecision(arms, 30, { cheaperThan: 'every', costStat: 'mean' }).state, 'no decision yet');

@@ -1,8 +1,9 @@
 {
  "computedAt": "2030-02-01T00:00:00.000Z",
- "hash": "sha256:6e512b1b1cc270c24a5c6fd2ff4fd7900ca5a4feb0e22855db391f6bdfa78faa",
+ "hash": "sha256:d0c0ccaa5748da10dce31ac2a556f70fab9ae87ac6ae31983cd485dc09d57198",
  "cells": [
   {
+   "bar": 0.8,
    "changes": 24,
    "claimed": false,
    "class": "code",
@@ -11,6 +12,7 @@
    "costUnit": "listUsd",
    "defectPoints": 0,
    "defects": 0,
+   "eff": 0.7727,
    "effort": "high",
    "enough": true,
    "excludedItems": 0,
@@ -22,6 +24,8 @@
    "id": "code|claude-cli/claude-sonnet-5-5|high|served",
    "items": 24,
    "itemsPerChange": 1,
+   "limitBasis": "subscription: weekly tokens unknown",
+   "limitSharePerItem": 0.05,
    "listUsd": 2.784,
    "lower": 0.8151,
    "medianCost": 0.116,
@@ -30,6 +34,7 @@
    "oneShot": 22,
    "oneShotRate": 0.9167,
    "ownerCorrections": 0,
+   "passesBar": true,
    "premergeFirstPassRate": 0.5,
    "premergeKnown": 2,
    "provider": "claude-cli",
@@ -41,12 +46,14 @@
    "settling": 1,
    "status": "ok",
    "tailCost": 0.116,
+   "timeSecPerItem": 1800,
    "unpricedRuns": 0,
    "usd": 0,
    "windowTokens": 1824000,
    "windowTokensPerItem": 76000
   },
   {
+   "bar": 0.8,
    "changes": 22,
    "claimed": true,
    "class": "code",
@@ -55,6 +62,7 @@
    "costUnit": "listUsd",
    "defectPoints": 4,
    "defects": 1,
+   "eff": 1,
    "effort": "medium",
    "enough": true,
    "excludedItems": 1,
@@ -66,6 +74,8 @@
    "id": "code|claude-cli/claude-fable-5-2[1m]|medium|claimed",
    "items": 22,
    "itemsPerChange": 1,
+   "limitBasis": "subscription: weekly tokens unknown",
+   "limitSharePerItem": 0.05,
    "listUsd": 20.7,
    "lower": 0.8927,
    "medianCost": 0.9,
@@ -74,6 +84,7 @@
    "oneShot": 21.5,
    "oneShotRate": 0.9773,
    "ownerCorrections": 0,
+   "passesBar": true,
    "premergeFirstPassRate": null,
    "premergeKnown": 0,
    "provider": "claude-cli",
@@ -85,12 +96,14 @@
    "settling": 0,
    "status": "ok",
    "tailCost": 0.9,
+   "timeSecPerItem": 3300,
    "unpricedRuns": 0,
    "usd": 0,
    "windowTokens": 3450000,
    "windowTokensPerItem": 156818
   },
   {
+   "bar": 0.8,
    "changes": 5,
    "claimed": false,
    "class": "code",
@@ -99,6 +112,7 @@
    "costUnit": "listUsd",
    "defectPoints": 0,
    "defects": 0,
+   "eff": null,
    "effort": "medium",
    "enough": false,
    "excludedItems": 0,
@@ -110,6 +124,8 @@
    "id": "code|claude-cli/claude-opus-4-8|medium|served",
    "items": 5,
    "itemsPerChange": 1,
+   "limitBasis": "subscription: weekly tokens unknown",
+   "limitSharePerItem": 0.05,
    "listUsd": 3.05,
    "lower": 0.7527,
    "medianCost": 0.61,
@@ -118,6 +134,7 @@
    "oneShot": 5,
    "oneShotRate": 1,
    "ownerCorrections": 0,
+   "passesBar": false,
    "premergeFirstPassRate": null,
    "premergeKnown": 0,
    "provider": "claude-cli",
@@ -129,12 +146,14 @@
    "settling": 0,
    "status": "not enough data",
    "tailCost": 0.61,
+   "timeSecPerItem": 1800,
    "unpricedRuns": 0,
    "usd": 0,
    "windowTokens": 610000,
    "windowTokensPerItem": 122000
   },
   {
+   "bar": 0.8,
    "changes": 3,
    "claimed": true,
    "class": "mechanical",
@@ -143,6 +162,7 @@
    "costUnit": "listUsd",
    "defectPoints": 0,
    "defects": 0,
+   "eff": null,
    "effort": "high",
    "enough": false,
    "excludedItems": 0,
@@ -154,6 +174,8 @@
    "id": "mechanical|deepseek/deepseek-flash|high|claimed",
    "items": 3,
    "itemsPerChange": 1,
+   "limitBasis": "usd per item / $25 daily rail",
+   "limitSharePerItem": 0.0008,
    "listUsd": 0.06,
    "lower": 0.6462,
    "medianCost": 0.02,
@@ -162,6 +184,7 @@
    "oneShot": 3,
    "oneShotRate": 1,
    "ownerCorrections": 0,
+   "passesBar": false,
    "premergeFirstPassRate": null,
    "premergeKnown": 0,
    "provider": "deepseek",
@@ -173,6 +196,7 @@
    "settling": 0,
    "status": "not enough data",
    "tailCost": 0.02,
+   "timeSecPerItem": 1800,
    "unpricedRuns": 0,
    "usd": 0.06,
    "windowTokens": 0,
@@ -202,7 +226,7 @@
  ],
  "minItems": 20,
  "oneShotWindowDays": 7,
- "policyDigest": "sha256:abb835861f6b8c23",
+ "policyDigest": "sha256:2e3ed0846406bad4",
  "policyVersion": 1,
  "proposals": [
   {
@@ -213,25 +237,33 @@
     "effort": "medium",
     "model": "claude-fable-5-2[1m]",
     "provider": "claude-cli",
-    "score": 0.9488
+    "score": 1
    },
    "fromModel": "claude-cli/claude-fable-5-2[1m] @ medium",
-   "gain": 6.406,
+   "gain": 0.2273,
    "id": "rp-33e21dbc409d",
    "mode": "shadow",
+   "rule": "bar-then-efficiency",
    "to": {
     "cell": "code|claude-cli/claude-sonnet-5-5|high|served",
     "effort": "high",
     "model": "claude-sonnet-5-5",
     "provider": "claude-cli",
-    "score": 7.0268
+    "score": 0.7727
    },
    "toModel": "claude-cli/claude-sonnet-5-5 @ high"
   }
  ],
  "score": {
+  "bar": 0.8,
   "cost": "listUsd",
-  "per": "item"
+  "per": "item",
+  "rule": "bar-then-efficiency",
+  "tieEpsilon": 0.05,
+  "weights": {
+   "limit": 0.5,
+   "time": 0.5
+  }
  },
  "totals": {
   "done": 57,

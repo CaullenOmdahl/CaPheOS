@@ -109,8 +109,39 @@ Now caller cannot route around this policy, the station runs such an override on
   is refused (`403 "no current override allowlist: overrides are off"`; a dispatch worker gets that error row and does
   not run, its siblings without an override run as usual);
 - a pair not listed for that agent: `403 "model <provider>/<model> is not open for <agentId> now"`. Effort alone is free.
+With scoped routing on (below), each seat's list also names every **routable** allowed model, so the router can pick it
+for one job; each one still has to pass the same "can run now" test to be listed.
 The file is class R in `locked-watch.js`: a write by anything but its generator is regenerated from the rules above.
 `node company/tools/lib/override-allow.js show` prints what would be open now.
+
+## Scoped routing: the right model for each job
+
+The work is scoped to the model (docs/ROUTING.md §8). The router needs three things for each job:
+- what each model can do: its proven depth (lookup, simple, standard, deep) per kind of work, from the model bench and
+  then from validated live work (`company/work/models/model-capability.json`, docs/RANKING.md §11);
+- how deep the job is (`company/tools/lib/depth.js`, no model call);
+- which models it may pick.
+
+Among the models that clear the bar, it takes the quickest one that uses the least of its own limit. That limit is
+the subscription's week, the metered daily rail, or the free daily requests (`freeFallback.dailyRequests`), so no model
+is free in the choice. A job that comes back for rework moves one depth up and goes to a stronger model. The seat's
+chain stays the fallback whenever nothing qualifies.
+
+**Routable** (`routable` in this file). Only the owner says which models the router may pick by itself:
+`node company/tools/models.js routable <provider/model[*]> on|off --by owner`, or Settings › Models › Automatic picks
+("Can be picked automatically"). A key may end in `*`, and the longest key wins. A model with no key is routable,
+except a `needsCeoApproval` model (the heavy tier), which stays off until the owner turns it on. Fable ships off
+(`claude-cli/claude-fable*: false`). Routable affects only the router. A model can still be given to a seat on purpose
+(`models.js set|chain`, `hire.js`), within the rules above. `node company/tools/models.js routable` lists every model,
+its switch and what it is proven at.
+
+The whole feature has one switch, the owner's: `routing.js scoped on|off --by owner` (shipped on).
+
+## How the house ranking ranks models
+
+Quality first, then efficiency (docs/RANKING.md §3): a model's cell must clear the one-shot bar before it can steer
+anything. Among those that clear it, time to done and the share of its own limit decide. Cost per item is shown, never
+the sole criterion.
 
 ## Performance: fix, re-model or replace
 

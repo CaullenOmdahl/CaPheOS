@@ -8,6 +8,7 @@
  *                                                           rows (changes and holds; never the per-wake decisions)
  *   node company/tools/routing.js mode off|shadow|live --by owner [--why ".."]       class routes and trials (owner only)
  *   node company/tools/routing.js tiercaps off|shadow|live --by owner [--why ".."]   executor tier caps (owner only)
+ *   node company/tools/routing.js scoped on|off --by owner [--why ".."]      scoped routing, the one switch (owner only)
  *   node company/tools/routing.js trial create <id> --class <class> --arm provider/model[@effort] --arm ...
  *        (--scope-dept <department id> | --scope-seat <seat>)... [--entry-share 0.1] [--min-items 30]
  *        [--pause-when-held claude-cli,...] --by <name> [--why ".."]
@@ -74,7 +75,7 @@ const STATUSES = ['draft', 'running', 'paused', 'done'];
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];   // models.js EFFORTS
 const TRIAL_ID = /^[a-z][a-z0-9-]{1,39}$/;
 const LOG_DEFAULT = 'company/work/models/routing-log.jsonl';
-const CHANGE_OPS = ['mode', 'tiercaps', 'trial-create', 'trial-start', 'trial-pause', 'trial-resume', 'trial-stop', 'proposals-mode'];
+const CHANGE_OPS = ['mode', 'tiercaps', 'scoped', 'trial-create', 'trial-start', 'trial-pause', 'trial-resume', 'trial-stop', 'proposals-mode'];
 const PROPOSAL_OPS = ['proposal-offer', 'proposal-apply', 'proposal-veto', 'proposal-skip'];   // the weekly suggestions' events
 const EVENT_OPS = ['trial-held', 'trial-unheld'];   // written by lib/routing.js (the dispatcher), read here
 const LOG_OPS = CHANGE_OPS.concat(EVENT_OPS, PROPOSAL_OPS);
@@ -222,6 +223,26 @@ function setMode(kind, value, a) {
     else L.next.tierCaps = Object.assign({}, (L.next.tierCaps && typeof L.next.tierCaps === 'object') ? L.next.tierCaps : {}, { mode: v });
     const summary = what + ' ' + cur + ' -> ' + v + (v === 'live' ? ' (applied only where the seat\'s override allowlist opens the chosen model)' : v === 'shadow' ? ' (recorded on each wake, not applied)' : ' (not computed)');
     return commit(L, L.next, who, { op: kind === 'mode' ? 'mode' : 'tiercaps', fields: { from: cur, to: v }, why: whyOf(a), summary });
+  });
+}
+
+/* scoped routing's one switch (docs/ROUTING.md "Scoped routing"): on | off, owner only. A company copy made before scoped
+   routing existed has no scoped block: on copies the framework default's block (and puts the step in the order) */
+const scopedOf = doc => !!(doc && doc.scoped && typeof doc.scoped === 'object' && doc.scoped.enabled === true);
+function setScoped(value, a) {
+  const v = String(value || '').trim();
+  if (!['on', 'off'].includes(v)) throw new Refusal('scoped takes on or off (got "' + v + '")');
+  const who = ownerOnly(a.by, 'Switching scoped routing');
+  return change(L => {
+    const cur = scopedOf(L.doc) ? 'on' : 'off';
+    if (cur === v) return { ok: true, changed: false, summary: 'scoped routing is ' + v + ' already' };
+    const def = readJson(P(DEFAULT_REL), {}) || {};
+    const base = (L.next.scoped && typeof L.next.scoped === 'object') ? L.next.scoped : (def.scoped && typeof def.scoped === 'object' ? clone(def.scoped) : {});
+    L.next.scoped = Object.assign({}, base, { enabled: v === 'on' });
+    if (!L.next._scoped && def._scoped) L.next._scoped = def._scoped;
+    if (v === 'on' && Array.isArray(L.next.order) && !L.next.order.includes('scoped')) { const i = L.next.order.indexOf('trial'); L.next.order.splice(i >= 0 ? i + 1 : 0, 0, 'scoped'); }
+    const summary = 'scoped routing ' + cur + ' -> ' + v + (v === 'on' ? ' (each job goes to a model proven at its depth, the most efficient one; only models the owner lets be picked automatically)' : ' (every wake runs on its chain, as before)');
+    return commit(L, L.next, who, { op: 'scoped', fields: { from: cur, to: v }, why: whyOf(a), summary });
   });
 }
 
@@ -439,7 +460,8 @@ function status() {
   const log = logRows(doc, 400);
   const tc = doc.tierCaps && typeof doc.tierCaps === 'object' ? doc.tierCaps : {};
   const subs = S.subscriptions();
-  return { ok: !L.error, error: L.error || undefined, file: REL, source: L.source, mode: modeOf(doc), classRules: doc.classRules || {}, order: doc.order || null,
+  const sc = doc.scoped && typeof doc.scoped === 'object' ? doc.scoped : {};
+  return { ok: !L.error, error: L.error || undefined, file: REL, source: L.source, mode: modeOf(doc), scoped: { on: scopedOf(doc), weights: sc.weights || null, tieEpsilon: sc.tieEpsilon == null ? null : sc.tieEpsilon, newModel: sc.newModel || null }, classRules: doc.classRules || {}, order: doc.order || null,
     tierCaps: { mode: capModeOf(doc), allow: tc.allow || [], heavyEscape: tc.heavyEscape || null, exemptFunctions: tc.exemptFunctions || [], exemptLeads: tc.exemptLeads !== false },
     trialLimits: Object.assign(limitsOf(doc), { subscriptionProviders: subs }), trials: trials.map(t => trialView(t, rows, log, subs)), log: log.slice(-20).reverse(), history: historyRel(doc) };
 }
@@ -758,7 +780,7 @@ function trialText(t) {
 function statusText(s) {
   const L = [];
   if (s.error) L.push('ERROR: ' + s.error);
-  L.push('Routing (class routes and trials): ' + s.mode + '.  Tier caps: ' + s.tierCaps.mode + '.  Policy: ' + (s.source === 'company' ? s.file : 'the framework default (' + DEFAULT_REL + ')'));
+  L.push('Scoped routing: ' + (s.scoped && s.scoped.on ? 'on' : 'off') + '.  Routing (class routes and trials): ' + s.mode + '.  Tier caps: ' + s.tierCaps.mode + '.  Policy: ' + (s.source === 'company' ? s.file : 'the framework default (' + DEFAULT_REL + ')'));
   L.push(s.trials.length ? 'Trials:' : 'No trials.');
   for (const t of s.trials) L.push(trialText(t));
   if (s.log.length) { L.push('Recent changes and holds:'); for (const r of s.log) L.push('  ' + (r.ts || '') + ' ' + r.op + (r.trial ? ' ' + r.trial : '') + (r.to ? ' -> ' + r.to : '') + ' by ' + (r.by || '?') + (r.why ? ': ' + r.why : '')); }
@@ -777,11 +799,12 @@ function args(argv) {
   }
   return o;
 }
-const USAGE = 'usage: routing.js status [--json] | proposals status [--json] | proposals mode off|shadow|live --by owner | proposals veto <id> --by owner | proposals ceo <id> yes|no --by <CEO> | proposals tick | mode off|shadow|live --by owner | tiercaps off|shadow|live --by owner | trial create <id> --class <c> --arm provider/model[@effort] ... (--scope-dept <id> | --scope-seat <seat>) [--entry-share 0.1] [--min-items 30] --by <name> | trial start|pause|resume|stop <id> --by owner | trial show <id> [--json] | --selftest';
+const USAGE = 'usage: routing.js status [--json] | scoped on|off --by owner | proposals status [--json] | proposals mode off|shadow|live --by owner | proposals veto <id> --by owner | proposals ceo <id> yes|no --by <CEO> | proposals tick | mode off|shadow|live --by owner | tiercaps off|shadow|live --by owner | trial create <id> --class <c> --arm provider/model[@effort] ... (--scope-dept <id> | --scope-seat <seat>) [--entry-share 0.1] [--min-items 30] --by <name> | trial start|pause|resume|stop <id> --by owner | trial show <id> [--json] | --selftest';
 function main(argv) {
   const a = args(argv), cmd = a.pos[0] || 'status';
   if (cmd === 'status') { const s = status(); return { code: s.error ? 1 : 0, out: a.json ? s : statusText(s) }; }
   if (cmd === 'mode' || cmd === 'tiercaps') return { code: 0, out: setMode(cmd, a.pos[1], a) };
+  if (cmd === 'scoped') return { code: 0, out: setScoped(a.pos[1], a) };
   if (cmd === 'proposals') {
     const sub = a.pos[1] || 'status';
     if (sub === 'status') { const st = proposalsStatus(); return { code: 0, out: a.json ? st : proposalsText(st) }; }
@@ -849,7 +872,7 @@ function selftest() {
   return bad ? 1 : 0;
 }
 
-module.exports = { offerCheck, cardOf, proposalsTick, proposalsDue, proposalReady, proposalsStatus, proposalKnobs, cardWords, isoWeek, tierOf, lifeOf, PROPOSAL_DEFAULTS, PROPOSAL_OPS, run, status, planTrial, parseArm, trialOfRoute, heldGuard, loadPolicy, S, Refusal, REL, DEFAULT_REL, LOG_DEFAULT, CHANGE_OPS, EVENT_OPS };
+module.exports = { setScoped, offerCheck, cardOf, proposalsTick, proposalsDue, proposalReady, proposalsStatus, proposalKnobs, cardWords, isoWeek, tierOf, lifeOf, PROPOSAL_DEFAULTS, PROPOSAL_OPS, run, status, planTrial, parseArm, trialOfRoute, heldGuard, loadPolicy, S, Refusal, REL, DEFAULT_REL, LOG_DEFAULT, CHANGE_OPS, EVENT_OPS };
 if (require.main === module) {
   const argv = process.argv.slice(2);
   if (argv[0] === '--selftest' || argv[0] === 'selftest') process.exit(selftest());

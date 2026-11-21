@@ -16,8 +16,16 @@
  "interval": { "method": "wilson", "confidence": 0.8 },
  "_interval": "the one-shot rate is read as the LOWER bound of this two-sided interval (Wilson score interval), so a small lucky sample does not outrank a large steady one",
 
- "score": { "cost": "listUsd", "per": "item" },
- "_score": "score = interval lower bound / cost per scored item. cost: 'listUsd' (metered runs at their real usd, subscription runs priced from cost.listPrices), 'usd' (metered usd only: subscription runs cost 0, so do not score on it while any cell is on a subscription) or 'windowTokens' (subscription window share, estimated). per: 'item' or 'change' (cost per accepted change: a PR, else the item itself)",
+ "score": {
+  "rule": "bar-then-efficiency",
+  "bar": 0.8,
+  "weights": { "time": 0.5, "limit": 0.5 },
+  "tieEpsilon": 0.05,
+  "limits": { "subscriptionProviders": ["claude-cli", "custom"], "subscriptionWeeklyTokens": {}, "meteredDailyUsd": 25, "freeDailyRequests": 50, "unknownShare": 0.05, "shareScale": 0.02 },
+  "cost": "listUsd",
+  "per": "item"
+ },
+ "_score": "How a cell ranks (docs/RANKING.md §3). rule 'bar-then-efficiency' (the owner's rule, 2026-11-21: quality first, then efficiency; cost is never the sole criterion): a cell may steer only with minItems items AND the lower bound of its one-shot interval at or over bar (a number, or { <class>: n, default: n }; 0.8 on the lower bound at 80% confidence is about a 90% one-shot rate on 20-odd items, the model bench's pass mark). Among the cells of a class that clear it, the lowest eff ranks first: eff = weights.time x (median time to done per item / the slowest such cell's) + weights.limit x min(1, share of the model's OWN limit one item uses / limits.shareScale). The share: a subscription's tokens per item over limits.subscriptionWeeklyTokens[provider] (the providers in limits.subscriptionProviders), a metered model's usd per item over limits.meteredDailyUsd (the station's daily rail), a free model's runs per item over limits.freeDailyRequests; unknown = unknownShare. No model is free in the score. Cells within tieEpsilon of each other are ordered by their lower bound. Time comes from the runs' startedAt..endedAt; a cell with none reads as the slowest. rule 'quality-per-cost': the old score = lower bound / cost per item (cost: 'listUsd' | 'usd' | 'windowTokens', per: 'item' | 'change'). The score, cost per item, usd, list usd, window tokens and the tail are always shown; under bar-then-efficiency they do not decide.",
 
  "signals": { "revise": true, "reopen": true, "revert": true, "fixForward": true, "defects": true, "premerge": true, "ownerCorrections": true },
  "_signals": "switch a signal off to leave it out of the ranking entirely (it is then neither shown nor counted)",
@@ -26,7 +34,7 @@
 
  "verdicts": {
   "fail": ["REVISE", "CHANGES-REQUESTED", "REQUEST-CHANGES", "REJECT", "TAKE-OVER"],
-  "pass": ["APPROVE", "APPROVED"],
+  "pass": ["APPROVE", "APPROVED", "ACCEPT", "ACCEPTED"],
   "requireCheck": true
  },
  "_verdicts": "a `**Verdict:**` (or `**Review:**`) line in the item's block, or in any handoff block whose `**Item:**` line names the item. Format: `**Verdict:** REVISE by <seat> — check: <the acceptance check run> — <findings>`. requireCheck: a verdict that cites no check (no 'check:') is ignored. A verdict by the item's author (the seat and every seat with a run linked to it) is always ignored",
@@ -73,7 +81,42 @@
  "_graders": "a grader whose approval rate differs from the hard one-shot rate of the items it approved or rejected by more than driftPoints (once it has minVerdicts counted verdicts) is flagged",
 
  "proposals": { "mode": "shadow", "margin": 0.15, "requireRouteData": true, "allowClaimed": false },
- "_proposals": "a routing proposal is written when a cell with enough data beats a department's current route (company/departments.json routes.<class>) for that class by more than margin (0.15 = 15% higher score). mode shadow: proposals are records only, nothing is applied (applying is a later, owner-switched step). requireRouteData: no proposal while the route's own cell lacks data. allowClaimed: whether a cell whose model the provider did not confirm (no servedModel) may be proposed",
+ "_proposals": "a routing proposal is written when a cell with enough data beats a department's current route (company/departments.json routes.<class>) for that class by more than margin: under bar-then-efficiency, a cell that clears the bar with an eff at least margin lower than the route's (0.15 = 15% more efficient), or any cell that clears the bar while the route's own cell (with enough data) does not; under quality-per-cost, a score more than margin higher. mode shadow: proposals are records only, nothing is applied (applying is a later, owner-switched step). requireRouteData: no proposal while the route's own cell lacks data. allowClaimed: whether a cell whose model the provider did not confirm (no servedModel) may be proposed",
+
+ "trials": {
+  "minItemsPerArm": 30,
+  "interval": { "confidence": 0.8 },
+  "cost": "listUsd",
+  "costStat": "mean",
+  "decision": { "cheaperThan": "every" },
+  "stuckDays": 3
+ },
+ "_trials": "the arm report and decision rule for model trials (docs/RANKING.md §10). Trials themselves are defined in company/work/models/routing-policy.json trials[] (the framework default defines none); a trial's own minItemsPerArm wins over this one. Items are the DONE items whose wakes the dispatcher routed to the trial with the arm applied (route.source trial, applied true); shadow-only items are counted apart, an item worked on two arms counts for none. interval: the one-shot range (Wilson, default: the ranking's confidence). cost: listUsd | usd | windowTokens per accepted item; costStat: mean | median is the figure the rule compares (median, p90 and the hardest share are always shown). Rule: an arm wins when the lower bound of its one-shot range is not below the best other arm's point estimate AND its cost is lower than every other arm's (decision.cheaperThan 'every') or than that best other arm's ('bestOther'), both only once every arm has minItemsPerArm items; otherwise 'no decision yet' with what is missing. stuckDays: the house-ranking duty is due when a running trial has had no routed wake for this many days (or a running or paused trial reached a decision). Delete this section to switch the report off",
+ "tierCapEvaluation": {
+  "minItems": 20,
+  "windowCut": 0.3,
+  "reworkMaxRatio": 1.25,
+  "rates": ["revise", "reopen"],
+  "baseline": "wouldApply",
+  "dutyWhenModes": ["live"]
+ },
+ "_tierCapEvaluation": "whether executor tier caps pay (docs/RANKING.md §10, the middle-management plan's P3 acceptance), per task class. Capped = scored items whose wake had a tier-cap route applied (route.source tierCap, applied true). baseline 'wouldApply': items whose wake had a tier-cap route recorded but not applied (shadow: the same work, uncapped); 'uncapped': every scored item of the class that no tier-cap route touched. Verdict per class: keep when the estimated claude window tokens per accepted item (cost.window) fell by at least windowCut (0.3 = 30%) AND each rate in rates (revise: share of items with a counted REVISE; reopen: share reopened) is within reworkMaxRatio (1.25x) of the baseline; roll back otherwise; not enough data while either side has fewer than minItems items. dutyWhenModes: the house-ranking duty is due for a roll back while routing-policy.json tierCaps.mode is one of these. Delete this section to switch the evaluation off",
+
+ "advisorEvaluation": {
+  "minItems": 20,
+  "minDays": 14,
+  "consultRate": [0.10, 0.40],
+  "cachedShareMin": 0.85,
+  "oneShotGainPoints": 10,
+  "reworkCutShare": 0.20
+ },
+ "_advisorEvaluation": "whether a department lead's advice pays (docs/RANKING.md §10, the middle-management plan's P4 bars), per department whose advisor mode is live (company/departments.json): its members' scored items closed since advisor.since against its items closed in as many days before. keep when the consult rate (share of items with a consult) is inside consultRate, the advise runs read at least cachedShareMin of their input from cache (checked once advise runs have token counts), and the cost per accepted item (score.cost) did not rise while the one-shot rate rose at least oneShotGainPoints points OR rework (extra runs + REVISE rounds per item) fell at least reworkCutShare; pause otherwise (the dispatcher pauses the advice once per evaluation when the department's advisor.autoPause.enabled is on; only the owner resumes); not enough data under minItems items on either side or minDays days. A department's advisor.autoPause numbers win over these. Writes company/work/models/advisor-<dept>.md and the advisor part of routing-evaluation.json. Delete this section to switch the report off",
+ "profileEvaluation": { "minItems": 5 },
+ "_profileEvaluation": "how each seat does under each version of its profile (docs/PROFILES.md, docs/RANKING.md §10): per seat and profile version (wakes.jsonl profile), its scored items, one-shot rate and rework, owner corrections; for a counterpart, its sign-off no rate and how many of its noes were later overturned; meeting stance share and phrase overlap (company/work/meetings/stats.jsonl). A trial shows the same number of days before it against during it, with the seats that did not change over the same window as the baseline. minItems: a side with fewer scored items says not enough data. Measurement only: nothing is changed by it, and profile versions are not a ranking cell dimension.",
+ "fanoutEvaluation": { "minItems": 10 },
+ "accountableEvaluation": { "minItems": 10, "expectedCut": 0.75, "fallbackBelowCut": 0.25 },
+ "_accountableEvaluation": "whether accountable leads pay (docs/RANKING.md §10, docs/DEPARTMENTS.md §8), per department whose accountable leads is live: its members' items the lead accepted since accountable.since against the items of the same class the lead did alone, by the cost per accepted item (score.cost over the one-shot sum; the lead's audit runs are booked to the audited items). cut = 1 - (pathway / lead alone). fall back when the cut is under fallbackBelowCut over at least minItems accepted items (the dispatcher then withdraws the department to recording only once per evaluation and tells the owner; only the owner turns it back on), keep otherwise, not enough data below minItems. expectedCut is the owner's expectation (about 75%), reported beside the measured cut. The department's accountable.scorecard numbers override these. Delete this section to switch the report off",
+ "_fanoutEvaluation": "whether splitting big jobs pays (docs/RANKING.md §6 and §10, the middle-management plan's P5), per department whose delegation is not off (company/departments.json): its delegated items (an item with a delegated child run, or worked by piece lanes of a recorded split) against its single-seat items of the same class, by the cost per accepted item (score.cost over the one-shot sum; a child run's cost is its lead's family's, lib/family.js). keep when the delegated cost per accepted item is lower, withdraw when it is not over at least minItems delegated items (the dispatcher then withdraws the department's splitting once per evaluation; only the owner resumes), not enough data below minItems or with no single-seat item of the same class to compare. Delete this section to switch the report off",
 
  "readBounds": { "runsMaxBytes": 67108864, "handoffMaxBytes": 8388608, "ledgerMaxBytes": 16777216, "correctionsMaxBytes": 4194304, "evidenceMaxFiles": 2000 },
  "_readBounds": "every input is read from its end, inside these bounds (docs/RETENTION.md)"

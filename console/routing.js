@@ -13,6 +13,11 @@
  *   GET  /api/routing/proposals                         routing.js proposals status --json (the weekly suggestions: the
  *                                                       mode, the last 8 weeks and what happened to each)
  *   POST /api/routing/proposals/mode  { mode, why? }    routing.js proposals mode <off|shadow|live> --by <owner>
+ *   POST /api/routing/scoped     { on, why? }           routing.js scoped on|off --by <owner> (scoped routing: each job to a
+ *                                                       model proven at its depth; the one switch)
+ *   GET  /api/models/routable                           models.js routable --json (every model, whether it may be picked
+ *                                                       automatically, and the depth it is proven at per kind of work)
+ *   POST /api/models/routable    { pair, on, why? }     models.js routable <provider/model> on|off --by <owner>
  * (A weekly suggestion's veto is the owner's card on Today: console/owner-needs.js applies its routeVeto effect.)
  *
  * Every write runs the same tool the owner would run in a shell, with --by <owner>; the tool accepts the console as the
@@ -22,6 +27,7 @@
  */
 const MODES = ['off', 'shadow', 'live'];
 const TRIAL = '([a-z][a-z0-9-]{1,39})';
+const PAIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}\/[A-Za-z0-9][A-Za-z0-9._:\[\]\/-]{0,159}\*?$/;   // provider/model (models.js routable checks it again)
 
 function mount(route, d) {
   const { runApi, bad, owner } = d;
@@ -38,7 +44,15 @@ function mount(route, d) {
   route('POST', /^\/api\/routing\/tiercaps$/, (m, q, b) => runApi('routing.js', ['tiercaps', modeArg(b), '--by', owner()].concat(whyArgs(b)), { timeout: 30000 }));
   route('GET', /^\/api\/routing\/proposals$/, () => runApi('routing.js', ['proposals', 'status', '--json'], { timeout: 20000 }));
   route('POST', /^\/api\/routing\/proposals\/mode$/, (m, q, b) => runApi('routing.js', ['proposals', 'mode', modeArg(b), '--by', owner()].concat(whyArgs(b)), { timeout: 30000 }));
+  const onArg = b => { if (!b || typeof b.on !== 'boolean') bad('say on: true or on: false'); return b.on ? 'on' : 'off'; };
+  route('POST', /^\/api\/routing\/scoped$/, (m, q, b) => runApi('routing.js', ['scoped', onArg(b), '--by', owner()].concat(whyArgs(b)), { timeout: 30000 }));
+  route('GET', /^\/api\/models\/routable$/, () => runApi('models.js', ['routable', '--json'], { timeout: 20000 }));
+  route('POST', /^\/api\/models\/routable$/, (m, q, b) => {
+    const pair = String((b && b.pair) || '').trim();
+    if (!PAIR.test(pair)) bad('pick a model (provider/model)');
+    return runApi('models.js', ['routable', pair, onArg(b), '--by', owner()].concat(whyArgs(b)), { timeout: 30000 });
+  });
   route('POST', new RegExp('^/api/routing/trials/' + TRIAL + '/(start|pause|resume|stop)$'), (m, q, b) =>
     runApi('routing.js', ['trial', m[2], m[1], '--by', owner()].concat(whyArgs(b)), { timeout: 30000 }));
 }
-module.exports = { mount, MODES };
+module.exports = { mount, MODES, PAIR };

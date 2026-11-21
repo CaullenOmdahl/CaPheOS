@@ -99,7 +99,7 @@ const MANIFEST = [
   // the routing log: changes and events only (routing.js: the owner's mode switches and trial changes; lib/routing.js: the
   // pacer's trial holds). The router's per-wake decisions (routing-decisions.jsonl) are a per-wake record like wakes.jsonl
   // and are not locked.
-  { p: 'company/work/models/routing-log.jsonl', cls: 'A', append: true, writers: ['lib/routing.js', 'routing.js'], owner: 'people', area: 'record', why: 'the routing log: every routing change (routing.js) and every trial hold by the pacer (lib/routing.js); only those two append, each row recorded' },
+  { p: 'company/work/models/routing-log.jsonl', cls: 'A', append: true, writers: ['lib/routing.js', 'routing.js', 'model-rank.js'], owner: 'people', area: 'record', why: 'the routing log: every routing change (routing.js), every trial hold by the pacer (lib/routing.js), every capability move and class-depth drift (model-rank.js); only those three append, each row recorded' },
   // the weekly routing suggestions (routing.js proposals, docs/ROUTING.md): a forged offer, ceo-answer or apply row would
   // move a route without the owner's veto window or the CEO's step; only model-rank.js (proposal and decision rows) and
   // routing.js (offer, ceo-ask, ceo-answer, veto, apply, skip, week) append, each row recorded
@@ -130,6 +130,8 @@ const MANIFEST = [
   // R — generated
   { p: 'company/work/people/competence.json', cls: 'R', writers: ['competence.js'], regen: ['competence.js', 'compute'], owner: 'people', area: 'record', why: 'competence scores (the pacer reads its serious flags)' },
   { p: 'company/work/people/scoreboard.md', cls: 'R', writers: ['competence.js'], regen: ['competence.js', 'scoreboard'], owner: 'people', area: 'record', why: 'the competence scoreboard' },
+  { p: 'company/work/models/model-capability.json', cls: 'R', writers: ['model-rank.js'], regen: ['model-rank.js', 'refresh', '--force'], owner: 'people', area: 'record', why: 'each model\'s proven depth per kind of work (bench, then validated live work): what scoped routing trusts' },
+  { p: 'company/state/class-depth.json', cls: 'R', writers: ['model-rank.js'], regen: ['model-rank.js', 'refresh', '--force'], owner: 'people', area: 'record', why: 'the drifted depth baseline of each task class (scoped routing reads it)' },
   { p: 'company/work/models/house-benchmarks.json', cls: 'R', writers: ['model-stats.js'], regen: ['model-stats.js'], owner: 'people', area: 'record', why: 'house benchmarks' },
   { p: 'company/work/models/house-benchmarks.md', cls: 'R', writers: ['model-stats.js'], regen: ['model-stats.js'], owner: 'people', area: 'record', why: 'house benchmarks' },
   // the station reads this to accept a one-run model override (StarNet patch 0017): a hand-written entry would open a model
@@ -1594,7 +1596,7 @@ async function selftest() {
     assert.ok(e && e.kind === 'flagged' && e.owner === 'tools', JSON.stringify(r.events));
     revertCmd(context(C({ now })), RLIB, { by: 'Sam' });
     // the routing log: a hold lib/routing.js records is kept; a forged line is stripped
-    const eG = MANIFEST.find(m => m.p === RLOG); assert.ok(eG && eG.cls === 'A' && eG.append && JSON.stringify(eG.writers) === '["lib/routing.js","routing.js"]', JSON.stringify(eG));
+    const eG = MANIFEST.find(m => m.p === RLOG); assert.ok(eG && eG.cls === 'A' && eG.append && JSON.stringify(eG.writers) === '["lib/routing.js","routing.js","model-rank.js"]', JSON.stringify(eG));
     assert.ok(!MANIFEST.some(m => m.p === 'company/work/models/routing-decisions.jsonl'), 'the per-wake decisions are not locked (like wakes.jsonl)');
     assert.strictEqual(MANIFEST.filter(m => m.p === RPOL).length, 1, 'one manifest entry for the routing policy');
     now += 60000; fs.appendFileSync(path.join(T, RLOG), '{"forged":true}\n');

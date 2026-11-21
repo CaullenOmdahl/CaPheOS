@@ -390,6 +390,10 @@ Settings › Models › Routing and trials.
   label, provider, model, effort, wakes, items, shadowWakes, shadowItems }], reasons, hold, progress }], log, history }`.
 - `POST /api/routing/mode` `{ mode, why? }` → `mode <off|shadow|live> --by <owner>`.
 - `POST /api/routing/tiercaps` `{ mode, why? }` → `tiercaps <off|shadow|live> --by <owner>`.
+- `POST /api/routing/scoped` `{ on: true|false, why? }` → `scoped on|off --by <owner>` (scoped routing, docs/ROUTING.md §8).
+- `GET /api/models/routable` → `models.js routable --json`: `{ models: [{ pair, provider, model, allowed, routable, why,
+  setting, set, bench, proven: [{ kind, depth }] }] }`.
+- `POST /api/models/routable` `{ pair: "provider/model", on: true|false, why? }` → `models.js routable <pair> on|off --by <owner>`.
 - `POST /api/routing/trials/<id>/<start|pause|resume|stop>` `{ why? }` → `trial <op> <id> --by <owner>`.
 - `GET /api/routing/proposals` → `routing.js proposals status --json`: `{ mode, policy, weeks: [{ week, suggestions: [{ id,
   dept, deptName, class, from, to, state, why, vetoUntil, evidence }] }], waiting }` (the weekly suggestions, docs/ROUTING.md §7).

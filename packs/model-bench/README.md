@@ -6,7 +6,8 @@
 that level's task instances; a model's **proven depth** for a kind is the deepest level it passed. Time, the share of a
 subscription's limit used and outright failures are recorded but never decide a level. The bench only measures: it never
 routes work and never changes a model chain. Its results are a prior shown beside the house ranking (docs/RANKING.md
-section 8), never mixed into its score.
+section 8), never mixed into its score. Scoped routing (docs/ROUTING.md section 8) reads each model's proven depth as
+the starting point of its capability table (docs/RANKING.md section 11), which validated live work then corrects.
 
 | Kind | What the model does | Scored by |
 |---|---|---|

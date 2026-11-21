@@ -107,7 +107,7 @@ test('a missing company/departments.json is fine (no routes); a department route
 
 test('a routing policy: running trial arms and live tier-cap entries are listed for in-scope seats; class rules drop a denied route or arm', async () => {
   const pol = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'defaults', 'work', 'models', 'routing-policy.json'), 'utf8'));
-  pol.mode = 'shadow'; pol.tierCaps.mode = 'live';
+  pol.mode = 'shadow'; pol.tierCaps.mode = 'live'; pol.scoped.enabled = false;   // scoped routing's own listing: tests/routing-scoped.test.js
   pol.trials = [
     { id: 'opus-code', class: 'code', arms: [{ provider: 'claude-cli', model: 'claude-opus-5-5', effort: 'medium' }, { provider: 'claude-cli', model: 'claude-sonnet-5-5', effort: 'high' }], scope: { seats: ['kim'] }, entryShare: 0.1, status: 'running' },
     { id: 'mm-code', class: 'code', arms: [{ provider: 'custom', model: 'MiniMax-M3.1-Flash' }], scope: { seats: ['kim'] }, entryShare: 1, status: 'running' },

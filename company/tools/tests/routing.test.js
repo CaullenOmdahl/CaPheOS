@@ -30,7 +30,10 @@ test('the default policy: shadow, code denies custom, no trials, tier caps shado
   assert.strictEqual(K.mode, 'shadow'); assert.strictEqual(K.tierCaps.mode, 'shadow');
   assert.deepStrictEqual(K.classRules.code.denyProviders, ['custom']);
   assert.deepStrictEqual(K.trials, []);
-  assert.deepStrictEqual(K.order, ['classRules', 'trial', 'route', 'tierCap', 'chain']);
+  assert.deepStrictEqual(K.order, ['classRules', 'trial', 'scoped', 'route', 'tierCap', 'chain']);
+  assert.strictEqual(K.scoped.enabled, true, 'scoped routing ships on (no bench result: nothing qualifies, every wake on its chain)');
+  assert.deepStrictEqual(R.knobs({ order: ['classRules', 'trial', 'route', 'chain'], scoped: { enabled: true } }).order, ['classRules', 'trial', 'scoped', 'route', 'chain'], 'an older order gets the step after the trials');
+  assert.deepStrictEqual(R.knobs({ order: ['classRules', 'trial', 'route', 'chain'] }).order, ['classRules', 'trial', 'route', 'chain'], 'scoped off: the order is as written');
   assert.strictEqual(K.history, 'company/work/models/routing-log.jsonl');
   assert.strictEqual(K.decisions, 'company/work/models/routing-decisions.jsonl');
   assert.strictEqual(R.knobs({ history: '../x.jsonl', decisions: '/abs.jsonl' }).history, 'company/work/models/routing-log.jsonl', 'a log path outside company/work reads the default');
@@ -218,14 +221,15 @@ test('prepare: no policy anywhere = null (every wake runs on its chain); a polic
   fs.rmSync(path.join(T, 'company/work/models/routing-policy.json'));
 });
 
-test('locked-watch.js protects the router: lib/routing.js a tool, the policy class F (people, routing.js), the routing log class A appended only by lib/routing.js and routing.js (recorded); the decisions log is not locked', () => {
+test('locked-watch.js protects the router: lib/routing.js a tool, the policy class F (people, routing.js), the routing log class A appended only by lib/routing.js, routing.js and model-rank.js (capability moves; recorded); the decisions log is not locked', () => {
   const LW = require('../locked-watch.js');
   const tool = LW.MANIFEST.find(m => m.p === 'company/tools/lib/routing.js');
   assert.ok(tool && tool.cls === 'F' && tool.area === 'tool', JSON.stringify(tool));
   const pol = LW.MANIFEST.find(m => m.p === 'company/work/models/routing-policy.json');
   assert.deepStrictEqual(pol && [pol.cls, pol.owner, pol.writers], ['F', 'people', ['routing.js']], JSON.stringify(pol));
   const log = LW.MANIFEST.find(m => m.p === 'company/work/models/routing-log.jsonl');
-  assert.deepStrictEqual(log && [log.cls, log.append, log.writers], ['A', true, ['lib/routing.js', 'routing.js']], JSON.stringify(log));
+  assert.deepStrictEqual(log && [log.cls, log.append, log.writers], ['A', true, ['lib/routing.js', 'routing.js', 'model-rank.js']], JSON.stringify(log));
+  for (const p of ['company/work/models/model-capability.json', 'company/state/class-depth.json']) { const e = LW.MANIFEST.find(m => m.p === p); assert.deepStrictEqual(e && [e.cls, e.writers], ['R', ['model-rank.js']], p); }
   assert.strictEqual(LW.MANIFEST.filter(m => m.p === 'company/work/models/routing-policy.json').length, 1);
   assert.ok(!LW.MANIFEST.some(m => m.p === 'company/work/models/routing-decisions.jsonl' || m.p === 'company/state/wakes.jsonl'), 'per-wake records are not locked');
   const provRows = () => { try { return fs.readFileSync(path.join(T, 'company/state/locked/provenance.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)); } catch (_) { return []; } };

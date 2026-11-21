@@ -2,8 +2,8 @@
 
 A seat runs on its own model chain (`company/model-policy.json` seats.<id>.chain, `company/tools/models.js`). Routing
 decides, for **one wake**, whether it should run on something else for that run only: an arm of a trial that compares
-models on real work, its department's route for the kind of work, or a cheaper entry of its own chain under the
-executor tier cap. Scoring happens in production and will change both the framework and the method, so **every rule,
+models on real work, a model proven at the job's depth for its kind of work (**scoped routing**, §8: on by default),
+its department's route for the kind of work, or a cheaper entry of its own chain under the executor tier cap. Scoring happens in production and will change both the framework and the method, so **every rule,
 threshold and switch is in the policy file**, and anything that changes which model runs starts in **shadow**: decided
 and recorded, never applied, until the owner switches it live in the console.
 
@@ -15,15 +15,23 @@ and recorded, never applied, until the owner switches it live in the console.
 | `company/work/models/routing-policy.json` | the policy (§2). |
 | `company/work/models/routing-log.jsonl` | changes and events (§6). |
 | `company/work/models/routing-decisions.jsonl` | one decision row per routed wake (§6). |
+| `company/tools/lib/depth.js`, `company/tools/lib/capability.js` | scoped routing (§8): the job's depth and kind; each model's proven depth and the owner's routable switch. |
+| `company/work/models/model-capability.json` | each model's proven depth per kind (written by model-rank.js, docs/RANKING.md §11). |
 
 Tests: `node company/tools/routing.js --selftest`; `node --test company/tools/tests/routing.test.js` (the router),
 `routing-controls.test.js` (the switches, the trials and the console route), `routing-dispatch.test.js` (the router
 through the real dispatcher), `routing-e2e.test.js` (the switches, the router, locked-watch and model-rank together), plus
-the routed-lane case in `lanes-dispatch.test.js` and the allowlist cases in `override-allow.test.js`. Owner: the `people`
+the routed-lane case in `lanes-dispatch.test.js`, the allowlist cases in `override-allow.test.js`, and
+`routing-scoped.test.js` (scoped routing, §8). Owner: the `people`
 function (the model manager); the mode switches and trial starts are the owner's. Related: docs/RANKING.md (the house
 ranking that proposes routes and reads trials), docs/DEPARTMENTS.md (routes per class).
 
 ## 1. For the owner: what to switch and when
+
+Settings › Models › **Automatic picks** (`#/settings/models/picks`) is scoped routing (§8): one switch, **Pick the
+right model for each job** (On / Off, shipped On), and per model a **Can be picked automatically** box (Fable and the
+models that need the CEO's approval start unticked). API: `POST /api/routing/scoped {on}`, `GET /api/models/routable`,
+`POST /api/models/routable {pair, on}`.
 
 Settings › Models › **Routing and trials** (`#/settings/models/routing`) shows:
 
@@ -49,6 +57,8 @@ back as 400. All of /api sits behind the console's owner sign-in and CSRF check.
 |---|---|---|
 | `mode` off / shadow / live | the owner only | `routing.js mode <m> --by owner`, or the console |
 | `tierCaps.mode` | the owner only | `routing.js tiercaps <m> --by owner`, or the console |
+| scoped routing on / off | the owner only | `routing.js scoped on\|off --by owner`, or the console |
+| whether a model may be picked automatically | the owner only | `models.js routable <provider/model[*]> on\|off --by owner`, or the console |
 | draft a trial | the people function or the owner | `routing.js trial create …` |
 | start, pause, resume or stop a trial | the owner only | `routing.js trial <op> <id> --by owner`, or the console |
 | class rules, tier-cap allow list, trial limits, the order | a reviewed harness change | `harness-change.js` (there is no command) |
@@ -99,6 +109,7 @@ command. A company copy that does not parse is an error: `status` says so and no
 |---|---|---|
 | classRules | nothing: a filter on every step. A pair a rule denies for a class in the wake is never chosen | always on |
 | trial | the arm a running trial assigns this wake (§4) | `mode` |
+| scoped | the most efficient routable model proven at the job's depth for its kind of work (§8) | `scoped.enabled` (on or off; live when on) |
 | route | the seat's department route for the wake's class (`company/departments.json` routes.<class>, docs/DEPARTMENTS.md) | `mode` |
 | tierCap | the seat's first chain entry on the cap's allow list (§5) | `tierCaps.mode` |
 | chain | the seat's own pair; changed only when the class rules deny it (then its first allowed chain entry) | `classRulesApply` |
@@ -126,14 +137,17 @@ scheduled loop, an owner message) has its department's default class. Class rule
 
 The decision (on the wake's `company/state/wakes.jsonl` row as `route`, and in the decisions log):
 
-    { v, class, classes, source: trial|route|tierCap|chain, trial?, arm?, department?, provider, model, effort?,
+    { v, class, classes, source: trial|scoped|route|tierCap|chain, trial?, arm?, department?, provider, model, effort?,
       applied, mode, capMode, wouldApply?: { source, provider, model, effort?, trial?, arm?, department? }, chain?,
-      chainDenied?, hold?, holdWhy?, reasons: [...] }
+      chainDenied?, hold?, holdWhy?, reasons: [...], scoped?: { kind, kindName, depth, needs, signals, escalated?,
+      exclude?, candidates: [{ model, current, time?, share?, shareBasis?, margin?, eff?, out? }], pick, why, applied,
+      override, runs, note?, newModel? } }
 
 `provider/model/effort` is what the run was started on; top-level `source`/`trial`/`arm` say which step that was (a
 trial's control arm, the seat's own pair, has `source: "trial"` with `applied: false`). Sprint lanes (`lanes.js`) are
-routed and recorded the same way (door `lane`, one item per lane). The dispatch log says `ROUTE <seat>: …` only when the
-decision differs from the chain.
+routed and recorded the same way (door `lane`, one item per lane). The dispatch log says `ROUTE <seat>: …` when the
+decision differs from the chain, and on every wake while scoped routing is on (`[scoped <kind>/<depth> -> <model> (<why>;
+N other(s) cleared, M out)]`).
 
 ## 4. Trials
 
@@ -296,3 +310,84 @@ same tick before locked-watch strips it.
 
 Not part of this: applying a suggestion straight to live routing, suggestions that change tier caps, trials or class
 rules, and a lead changing its own department's routes. Tests: `company/tools/tests/routing-proposals.test.js`.
+
+## 8. Scoped routing: the work is scoped to the model
+
+The owner's rule (2026-11-21): know each model's limits (its proven depth per kind of work), know the depth of each job,
+match them, and then check the work afterwards. Easy work gets an easy model; hard work gets a hard one. Among the
+models that clear the bar, the most efficient one wins: the quickest to done, using the least of its **own** limit.
+Free models are full candidates, neither favoured nor penalised. Cost alone never decides. Availability and the limit
+sliders only filter; they never rank.
+
+**The switch.** `scoped.enabled` in routing-policy.json, shipped **on**. Only the owner changes it:
+`routing.js scoped on|off --by owner`, or Settings › Models › **Automatic picks**. Off skips the step entirely: no extra
+allowlist entries and no `route.scoped`. On brings the framework default's `scoped` block (and the step in `order`)
+into a company copy made before scoped routing existed. With no bench result and no live record no model qualifies, so
+every wake runs on its chain. That is why it can ship on.
+
+**1. The job's depth and kind** (`lib/depth.js`, no model call). Depths are the model bench's: lookup < simple <
+standard < deep. Kinds are its 10 kinds of work (1 lookup, 2 extract, 3 writing, 4 planning, 5 numbers, 6 simple code,
+7 bigger code, 8 code review, 9 tool use, 10 judgment). Per item:
+
+1. A `**Depth:**` line wins (a lead or the owner writes it). Otherwise the class baseline applies:
+   `company/state/class-depth.json` (the drift, docs/RANKING.md §11) over `scoped.classDepth`. The shipped baselines
+   are research lookup, writing and mechanical simple, the rest standard.
+2. `**Effort:** mechanical` caps it at simple. The heavy word (`tierCaps.heavyEscape`) makes it deep.
+3. Size can raise it. `scoped.size.filesStandard` / `filesDeep` count the `**Touches:**` paths, and `charsStandard` /
+   `charsDeep` measure the block's length.
+4. **Escalation.** Each fail moves the item one level up, capped at deep. A fail is a line in the block matching
+   `scoped.escalate.failLines` (a REVISE-type verdict, a `**Reopened` line, `**Premerge:** FAIL`), or a routed wake of
+   the same item (company/state/wakes.jsonl, `route.scoped`) beyond `escalate.freeRepeats`. The models those wakes ran
+   on are excluded, newest first, one per fail. So the retry goes to another model that clears the new depth; the
+   failed model is used again only when it is the only one left.
+
+A wake with several items takes the deepest depth and the majority kind. The kind comes from a `**Kind:** <1-10>`
+line, else from `scoped.kinds[class]` (a number, or per depth: code is kind 6 at lookup or simple and kind 7 above).
+`scoped.alsoNeeds` names further kinds a model must also clear (code also needs tool use at simple). A wake with no
+handoff item runs on its chain (`itemlessWakes: false`).
+
+**2. The candidates.** The models on `company/model-policy.json allowed`, with `openrouter/free` expanded to the listed
+free models that take tools while the free fallback is on, plus every allowed model in the capability table. A model is
+in when it is:
+
+- **routable**: `model-policy.json routable`, the owner's switch, `models.js routable <provider/model[*]> on|off --by
+  owner`, or the per-model "Can be picked automatically" box in the console. The longest key wins. A model with no key
+  is routable, except a `needsCeoApproval` model, which stays off until the owner turns it on. Fable ships off
+  (`claude-cli/claude-fable*: false`). The switch only affects the router: a model can still be assigned on purpose
+  (`models.js set/chain`, `hire.js`);
+- allowed by the class rules (code never on `custom`);
+- **open for the seat now** in the override allowlist. That already accounts for the pacer, the owner's subscription
+  stops, the rail, refusal blocks and provider errors;
+- proven far enough: `current >= depth` in `company/work/models/model-capability.json` for the kind and for every
+  `alsoNeeds` kind;
+- not excluded for this item.
+
+Scoped routing on, `lib/routing.js extraEntries` lists every routable candidate for every seat, so the allowlist can
+open it. `lib/override-allow.js` still keeps only the ones `models.js evaluate()` says can run for that seat now.
+
+**3. The pick.** Lower `eff` is better:
+
+    eff = weights.time x (expected time / the slowest candidate's) + weights.limit x min(1, limit share / limits.shareScale)
+
+- **Expected time** is the live median for (model, kind, depth), else the bench's `timeSecP50`. A candidate with no
+  time reads as the slowest.
+- **Limit share** is what one job takes of what is left of the model's own limit. A subscription counts the bench's
+  tokens per task at that depth (else `limits.defaultTokens`) over the tokens left this week: the pacer's used % against
+  its weekly stop, times `limits.subscriptionWeeklyTokens[provider]`. A metered model counts the expected usd
+  (`limits.usdPerMTokens`) over the station's daily rail left. A free model counts `limits.freeRequestsPerJob[depth]`
+  over today's free requests left (`model-policy.json freeFallback.dailyRequests` less today's routed OpenRouter
+  wakes). Unknown reads as `unknownShare`. No share is ever 0.
+- **Ties.** Candidates within `tieEpsilon` of the best are ordered by their quality margin: the live lower bound, else
+  the bench pass rate, minus the pass mark.
+- **New models.** A model with no bench result gets `newModel.share` of the wakes at `newModel.depths` (hashed by wake
+  id, like a trial), so it builds a live record.
+- **Nothing qualifies.** The walk goes on (route, tier cap, chain), and `route.scoped.why` says so. At deep with nothing
+  proven there, the chain runs.
+
+**4. The record.** While scoped routing is on, every wake's decision carries `route.scoped`, whichever step applied.
+It holds the job's kind and depth, the signals, every candidate with its numbers or why it is out, the pick, why it
+was chosen, and whether it applied. This goes to routing-decisions.jsonl and the wake's wakes.jsonl row, and one
+`ROUTE` line goes to the dispatch log. model-rank.js reads it back: the item's one-shot result (REVISE, reopen,
+premerge, defects, owner corrections) feeds the capability table and the class drift (docs/RANKING.md §11). That is the
+validation after the work.
+
