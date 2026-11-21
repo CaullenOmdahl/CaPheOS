@@ -934,6 +934,9 @@ function lastRunTail(job) {
   // house ranking (company/tools/model-rank.js, docs/RANKING.md): at most every refreshMinutes (default hourly), in its own
   // process; files and the one log line only when the ranking changed. Measurement only: proposals are shadow records
   try { if (!DRY && require('./model-rank.js').refreshDue()) { const out = String(require('child_process').execFileSync(process.execPath, [path.join(__dirname, 'model-rank.js'), 'refresh'], { cwd: ROOT, timeout: 120000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })).trim(); if (/: changed \((?!0 cells)/.test(out)) log('HOUSE RANKING: ' + out.replace(/^house ranking: changed /, '').slice(0, 240)); } } catch (e) { log('HOUSE RANKING ERROR: ' + String(e.message).slice(0, 200)); }
+  // the apprentice (company/tools/apprentice.js, docs/APPRENTICE.md): off unless the owner turned it on, sandbox company
+  // only; due() is cheap and fail-safe, the pass runs detached so a slow apprentice server never holds the tick
+  try { if (!DRY && require('./apprentice.js').due()) { const k = require('child_process').spawn(process.execPath, [path.join(__dirname, 'apprentice.js'), 'tick'], { cwd: ROOT, detached: true, stdio: 'ignore' }); k.on('error', () => {}); k.unref(); } } catch (e) { log('APPRENTICE ERROR: ' + String(e.message).slice(0, 200)); }
   try { if (await performanceFlags(state, jobs) && !DRY) fs.writeFileSync(STATE, JSON.stringify(state, null, 1)); } catch (e) { log('PERFORMANCE ERROR: ' + e.message); }
   const work = {};   // agentId -> open quests with steps still to do
   for (const q of quests) {

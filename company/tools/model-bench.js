@@ -110,21 +110,24 @@ function setLimits(root, a, o) {
   return { code: 0, out: Object.assign({ ok: true }, cur) };
 }
 
-function writeResult(root, res, line) {
+// writer: the label provenance records (model-bench.js, or apprentice.js for the apprentice's bench result); both are
+// the locked-watch writers of company/state/model-bench/
+function writeResult(root, res, line, writer) {
+  const W = writer || 'model-bench.js';
   const dir = stateDir(root); fs.mkdirSync(dir, { recursive: true });
   const B = { slug: m => String(m).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) };
   const f = path.join(dir, B.slug(res.model) + '.json');
   if (fs.existsSync(f)) {
     const prev = f.replace(/\.json$/, '.prev.json'), old = fs.readFileSync(f, 'utf8');
     fs.writeFileSync(prev, old);
-    try { require('./provenance.js').wrote(prev, old, 'model-bench.js'); } catch (_) {}
+    try { require('./provenance.js').wrote(prev, old, W, { root }); } catch (_) {}
   }
   const txt = JSON.stringify(res, null, 1) + '\n';
   const tmp = f + '.tmp-' + process.pid; fs.writeFileSync(tmp, txt); fs.renameSync(tmp, f);
-  try { require('./provenance.js').wrote(f, txt, 'model-bench.js'); } catch (_) {}
+  try { require('./provenance.js').wrote(f, txt, W, { root }); } catch (_) {}
   const h = path.join(dir, 'history.jsonl'), row = JSON.stringify(line) + '\n';
   fs.appendFileSync(h, row);
-  try { require('./provenance.js').appended(h, row, 'model-bench.js'); } catch (_) {}
+  try { require('./provenance.js').appended(h, row, W, { root }); } catch (_) {}
   return f;
 }
 function summaryLines(res) {
@@ -277,7 +280,7 @@ async function selftest() {
   return fails ? 1 : 0;
 }
 
-module.exports = { cmd, pacerRoom, unitDir };
+module.exports = { cmd, pacerRoom, unitDir, writeResult };
 if (require.main === module) {
   const argv = process.argv.slice(2);
   if (argv.includes('--selftest')) selftest().then(c => process.exit(c), e => { console.error(e); process.exit(1); });

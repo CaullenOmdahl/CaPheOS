@@ -116,8 +116,10 @@ const MANIFEST = [
   { p: 'company/people/profiles/*.history.jsonl', cls: 'A', append: true, writers: ['profile.js', 'hire.js'], owner: 'people', area: 'record', why: 'a seat\'s profile history: every version, who changed it and why, hash-chained (only profile.js appends, each row recorded)' },
   { p: 'company/state/signoffs.jsonl', cls: 'A', append: true, writers: ['approvals.js'], owner: 'people', area: 'record', why: 'the counterpart sign-off records: asks, yes/no answers and CEO overrides (only approvals.js signoff and the dispatcher through lib/signoff.js append, each row recorded)' },
   // the model bench's results (packs/model-bench): what grades a model, written only by its runner
-  { p: 'company/state/model-bench/*.json', cls: 'A', writers: ['model-bench.js'], owner: 'people', area: 'record', why: 'model bench results: the proven depth per kind of work for each model (only model-bench.js writes them)' },
-  { p: 'company/state/model-bench/history.jsonl', cls: 'A', append: true, writers: ['model-bench.js'], owner: 'people', area: 'record', why: 'one line per model bench run (only model-bench.js appends)' },
+  { p: 'company/state/model-bench/*.json', cls: 'A', writers: ['model-bench.js', 'apprentice.js'], owner: 'people', area: 'record', why: 'model bench results: the proven depth per kind of work for each model (only model-bench.js writes them; apprentice.js writes the apprentice\'s bench and shadow results)' },
+  { p: 'company/state/model-bench/history.jsonl', cls: 'A', append: true, writers: ['model-bench.js', 'apprentice.js'], owner: 'people', area: 'record', why: 'one line per model bench run (only model-bench.js and apprentice.js append)' },
+  // the apprentice (docs/APPRENTICE.md): its switch and settings count only as the owner's own recorded write
+  { p: 'company/state/apprentice.json', cls: 'A', writers: ['apprentice.js'], owner: 'people', area: 'policy', why: 'the apprentice\'s switch and settings: only apprentice.js enable|disable|configure writes it (the owner\'s own shell or the console); a hand edit turns it off' },
   { p: 'company/work/security/locked-changes.jsonl', cls: 'A', append: true, writers: ['locked-watch.js'], owner: 'risk', area: 'record', why: 'this watcher\'s own report' },
   // the owner -> company channel: every line is the owner's words (the CEO's inbox, addressing, the wake, gate answers), so
   // a line counts only when the console or the owner's own tools recorded it (lib/owner-channel.js); one appended by anyone
