@@ -58,12 +58,15 @@ function routes(root) {
 
 /* ---- the records ---- */
 function bounded() { return require('./bounded'); }
+function isSyntheticRun(r) {
+  return !!(r && (r.internal === true || /^model-bench\b/.test(String(r.streamId || ''))));
+}
 function runsSince(root, sinceMs, maxBytes) {
   const f = path.join(root, '.starnet-data', 'workspaces', 'runs.jsonl');
   if (!fs.existsSync(f)) return [];
   const tsOf = r => Number(r && (r.endedAt || r.ts || r.startedAt)) || 0;
   const rows = bounded().jsonlWindow(f, { sinceMs, tsOf, maxBytes: maxBytes || (24 << 20), slackMs: 0 }).rows;
-  return rows.filter(r => r && r.runId && !r.kind && tsOf(r) >= sinceMs);
+  return rows.filter(r => r && r.runId && !r.kind && !isSyntheticRun(r) && tsOf(r) >= sinceMs);
 }
 function jsonlTail(file, n) {
   if (!fs.existsSync(file)) return [];
