@@ -83,7 +83,11 @@ function admitRows() {
 }
 
 test('every crew run is booked and flagged by source, with usd, cached share and effort', () => {
-  const r = MS.compute({ rows: newRows(), admitRows: admitRows(), names: {}, days: 14, since: SINCE, now: NOW });
+  const withBench = newRows().concat([
+    { runId: 'mb1', agentId: 'seat-a', provider: 'p2', model: 'm2', streamId: 'model-bench', internal: true, reason: 'done', turns: 1, tokens: 9000, usd: 0, durationMs: 1000, startedAt: NOW - 1 * H },
+    { runId: 'mb2', agentId: 'seat-a', provider: 'p2', model: 'm2', streamId: 'model-bench', reason: 'error', turns: 0, tokens: 0, usd: 0, durationMs: 500, startedAt: NOW - 1 * H },
+  ]);
+  const r = MS.compute({ rows: withBench, admitRows: admitRows(), names: {}, days: 14, since: SINCE, now: NOW });
   assert.equal(r.crew.runs, 8);
   assert.deepEqual(r.crew.sources, { 'owner-chat': 1, child: 3, dispatcher: 1, routine: 2, lane: 1 });
   assert.equal(r.routineRuns, 4);   // the routine view: runs with a routine, whoever started them

@@ -91,6 +91,21 @@ test('efficiency: big runs, idle wakes, spikes', () => {
   assert.equal(r.route, 'tools', 'no platform department: the tools function');
 });
 
+test('efficiency and health ignore synthetic model-bench and internal runs', () => {
+  const T = fixture();
+  const t = NOW - 20 * 60e3;
+  const benchRows = [];
+  for (let i = 0; i < 12; i++) {
+    benchRows.push(JSON.stringify({ runId: 'mb-' + i, agentId: 'drafter', streamId: 'model-bench', internal: true, reason: 'done', tokens: 2000, cachedTokens: 0, artifacts: [], toolTrace: [], endedAt: t }));
+    benchRows.push(JSON.stringify({ runId: 'mbf-' + i, agentId: 'drafter', streamId: 'model-bench', reason: 'error', failureCode: 'timeout', tokens: 0, artifacts: [], toolTrace: [], endedAt: t }));
+  }
+  fs.appendFileSync(path.join(T, '.starnet-data/workspaces/runs.jsonl'), benchRows.join('\n') + '\n');
+  const eff = I.efficiency({ root: T, now: NOW });
+  assert.ok(!eff.items.some(i => i.id.includes('drafter')), 'bench runs must not trigger idle/efficiency flags for drafter: ' + JSON.stringify(eff.items));
+  const h = I.health({ root: T, now: NOW });
+  assert.ok(!h.items.some(i => i.id.includes('drafter')), 'bench errors must not trigger health flags for drafter: ' + JSON.stringify(h.items));
+});
+
 test('owner experience: jargon in an owner message to the product seat; plain ones pass', () => {
   const T = fixture();
   const r = I.ownerExperience({ root: T, now: NOW });

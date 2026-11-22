@@ -43,7 +43,10 @@ const kind = r => {
 const DOOR_SOURCE = { dispatch: 'dispatcher', lane: 'lane', chat: 'owner-chat', meeting: 'owner-meeting', schedule: 'routine', health: 'health',
   console: 'console', hire: 'hire', pacer: 'pacer', halt: 'halt', onboard: 'onboard', watchdog: 'watchdog', act: 'act' };
 const HEALTH_STREAM = /^(aicheck|health)/i;
+const BENCH_STREAM = /^model-bench\b/i;
+function isSyntheticRun(r) { return !!(r && (r.internal === true || BENCH_STREAM.test(String(r.streamId || '')))); }
 function inferSource(r) {   // no admit row covers it: what the row itself says
+  if (BENCH_STREAM.test(String(r.streamId || ''))) return 'model-bench';
   if (HEALTH_STREAM.test(String(r.streamId || ''))) return 'health';
   if (r.cronJobId || r.wireSource === 'routine') return 'routine';
   if (r.ownerDirective === true || /^console/.test(String(r.streamId || ''))) return 'owner-chat';
@@ -59,6 +62,7 @@ function compute(o) {
   for (const r of o.rows || []) {
     if (!r || typeof r !== 'object') continue;
     if (r.kind === 'dispatch-delivery') { if (r.runId && r.dispatchDelivery) delivery.set(r.runId, r.dispatchDelivery); continue; }
+    if (isSyntheticRun(r)) continue;
     if (!(r.startedAt >= since) || !r.model) continue;
     raw.push(r);
   }
