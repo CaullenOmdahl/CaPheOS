@@ -611,7 +611,7 @@ function targetMatches(pattern, target) {
 function readAllowlist(file) {
   let text = '';
   try { text = fs.readFileSync(file, 'utf8'); } catch (_) { return []; }
-  return text.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+  return text.split('\n').map(l => l.replace(/#.*$/, '').trim()).filter(Boolean);
 }
 
 // The allowlist is a data file any agent can append to, so the `network` category is one line wide and the gate cannot
@@ -1295,8 +1295,9 @@ function selftest() {
   expect('a deploy target names an environment, so the ref rule does not apply to it', { category: 'publish', target: 'deploy:production', agent: 'jordan' }, 'refuse');
 
   write([]);
-  fs.writeFileSync(allow, 'example-partner.com\n*.googleapis.com\n');
+  fs.writeFileSync(allow, 'example-partner.com\n*.googleapis.com\nmcp.example.net # module:reach inline comment\n');
   expect('host already on the allowlist', { category: 'network', target: 'https://api.example-partner.com/v1/messages', agent: CEO_ID }, 'allow');
+  expect('host on allowlist with inline module comment', { category: 'network', target: 'https://mcp.example.net/mcp', agent: CEO_ID }, 'allow');
   expect('host NOT on the allowlist', { category: 'network', target: 'https://unseen-vendor.example/api', agent: CEO_ID }, 'refuse');
 
   // 4. a real clearance row works, and only for what it names
