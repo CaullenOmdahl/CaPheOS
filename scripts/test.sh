@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# test.sh — the framework's whole offline test suite, in one command. Used locally and by .github/workflows/ci.yml.
+# test.sh — the framework's whole offline test suite, in one command. GitHub Actions is off (ci.yml is manual-only); the suite runs on
+# this machine, and the merge tool (company/tools/capheos-merge.js) runs it on a PR head with no GitHub checks.
 #
 #   scripts/test.sh            run everything, print a summary table, exit 1 if any step failed
 #
@@ -13,7 +14,7 @@
 #     process group gets SIGTERM, then SIGKILL a second later;
 #   - every process of this run carries CAPHEOS_TEST_RUN=<work dir>; the last step, "no processes left behind", lists
 #     any that are still running (scripts/test-leftovers.js), ends them, and fails the run if there were any.
-# Env: TEST_TIMEOUT (seconds per step, default 180); TEST_TRACKED_ONLY=1 copies only tracked files (what CI sees),
+# Env: TEST_TIMEOUT (seconds per step, default 180); TEST_TRACKED_ONLY=1 copies only tracked files (what a clean checkout has),
 # leaving out untracked work in progress; CAPHEOS_TEST_FIXTURE=<script> runs only that script as one step, then the
 # leftover check (tests/test-sh-hygiene.sh tests the runner itself this way); CAPHEOS_STARNET_SRC=<starnet checkout>
 # for company/patches/tests/*.test.js (default: ./starnet when this is a company's checkout).

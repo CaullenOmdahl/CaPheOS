@@ -2,7 +2,6 @@
 
 **The operating system for a company that runs on agents — governed like a company, built from portable units, deployed as one container.**
 
-[![CI](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/licence-AGPL--3.0--or--later-blue)](LICENSE)
 [![Status: pre-release](https://img.shields.io/badge/status-pre--release-orange)](#roadmap)
 [![Node: 22](https://img.shields.io/badge/node-22-brightgreen)](https://nodejs.org)
