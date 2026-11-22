@@ -78,6 +78,7 @@ step() {
   else
     [ "$rc" = 124 ] && RESULTS+=("TIMEOUT") || RESULTS+=("FAIL($rc)")
     FAILED=$((FAILED + 1)); printf '  FAIL  %s (exit %s)\n' "$label" "$rc"
+    grep -nE '^(not ok |FAIL |✖ )' "$log" | head -n 20 | sed 's/^/        ! /'
     tail -n 25 "$log" | sed 's/^/        | /'
   fi
 }
@@ -139,7 +140,7 @@ done
 echo "== unit tests"
 mapfile -t UNIT < <(cd "$COPY" && ls company/tools/tests/*.test.js 2>/dev/null)
 if [ "${#UNIT[@]}" -gt 0 ]; then
-  BATCH=35; TOTAL="${#UNIT[@]}"; I=0; PART=1; PARTS=$(( (TOTAL + BATCH - 1) / BATCH ))
+  BATCH=15; TOTAL="${#UNIT[@]}"; I=0; PART=1; PARTS=$(( (TOTAL + BATCH - 1) / BATCH ))
   while [ "$I" -lt "$TOTAL" ]; do
     CHUNK=("${UNIT[@]:I:BATCH}")
     step "node --test company/tools/tests/*.test.js (part $PART/$PARTS, ${#CHUNK[@]} files)" node --test "${CHUNK[@]}"
