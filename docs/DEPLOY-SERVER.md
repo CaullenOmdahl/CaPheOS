@@ -172,6 +172,22 @@ the company's; the guard again; `setup-station.sh` when a patch or unit template
 idle; the console restarted when no chat streams. The owned files as they were are kept in
 `company/state/framework-update/<stamp>/`; each update is a row in `company/state/framework-updates.jsonl`.
 
+**How a long job is let act as the owner, and what that is worth.** A long job (the update, a restart) runs as its own
+systemd unit, outside the console's process tree. Once the unit is up, the console writes a grant
+(`company/state/owner-ops/<id>.grant`, mode 0600): the unit's InvocationID, its main pid and that pid's start time, and the
+console's own pid and start time, signed (HMAC) with `secrets/console-token`. `provenance.js` accepts `--by owner` from that
+unit only for the unit's main process or a descendant of it, while the InvocationID still matches and the console that
+signed is still the same process (this company's own `console/server.js`). The job's own wrapper deletes the grant before
+it exits, and a console that starts deletes every grant it finds. Restart tools signal a pid from a supervisor pidfile
+(`company/state/supervise/<name>.pid`) only after `/proc` shows it is `scripts/supervise.js --name <name>` (start a
+supervisor with `--name console|dispatch|station`) or the expected program; otherwise they say it is not running.
+
+**This is a seatbelt against accidents, not a security boundary.** The agents run as the same Unix user as the console (a
+separate uid was ruled out). Any process of that user that can read `secrets/console-token` can sign a grant, read
+`/proc`, start a process under the console or edit these files, and so act as the owner. Real separation needs the console
+to run as another user or in another container, with `secrets/` out of the agents' reach: a deployment choice, not
+something the tools can add.
+
 ## 7. What stays a server-admin task, and why
 
 | task | why it cannot be a console button |
@@ -287,7 +303,7 @@ Not built yet. What would map, so nothing here has to change for it:
 |---|---|
 | the company folder | one volume mounted at the company root: everything stateful (company/, secrets/, `.starnet-data/`, the StarNet checkout, backups via `CAPHEOS_BACKUP_DIR`) is under it |
 | `company.json` `console.*` | env: `CONSOLE_HOST=0.0.0.0` (inside the container's network), `CONSOLE_PORT`, `CONSOLE_TRUST_PROXY` (the ingress' address), `CONSOLE_SECURE_COOKIES=true`, `CONSOLE_PUBLIC_URL`, `CONSOLE_SESSION_SECRET` (a container secret) |
-| systemd user units, `Restart=always` | a supervisor: `node scripts/supervise.js -- node console/server.js` (and one each for the station and the dispatcher loop), or the runtime's restart policy; `CAPHEOS_SUPERVISOR=container` |
+| systemd user units, `Restart=always` | a supervisor: `node scripts/supervise.js --name console -- node console/server.js` (and one each, with `--name station` and `--name dispatch`, for the station and the dispatcher loop), or the runtime's restart policy; `CAPHEOS_SUPERVISOR=container` |
 | `loginctl enable-linger` | does not apply: the runtime keeps the processes, not a login session (`host.js` reports n/a) |
 | restart the console from Settings | the console exits once no chat streams and the supervisor starts it again |
 | health | `GET /api/health` → `{"ok":true}` (no auth, no detail) for the health check |

@@ -7,4 +7,7 @@
 # recovery code removed (the owner then signs in with the new token).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-exec node console/server.js "$@"
+# no inspector on a stray SIGUSR1 (node versions that know the flag)
+NODE_FLAGS=()
+node --disable-sigusr1 -e 0 2>/dev/null && NODE_FLAGS=(--disable-sigusr1)
+exec node ${NODE_FLAGS[@]+"${NODE_FLAGS[@]}"} console/server.js "$@"

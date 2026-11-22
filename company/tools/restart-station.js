@@ -60,6 +60,7 @@ const path = require('path');
 const http = require('http');
 const { execFile } = require('child_process');
 const co = require('./lib/company');
+const PC = require('./lib/proc-check.js');
 
 const num = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : d; };
 const S = {
@@ -192,21 +193,15 @@ async function releaseHold(why, watch) {
 
 /* ---------------- restart ---------------- */
 function findSupervisedStationPid(root) {
-  const sup = readJson(path.join(root, 'company', 'state', 'supervise', 'station.pid'), null);
-  if (sup && Number(sup.supervisorPid) > 1 && alive(sup.supervisorPid)) return { pid: Number(sup.supervisorPid), signal: 'SIGUSR1', via: 'supervise' };
-  if (sup && Number(sup.childPid) > 1 && alive(sup.childPid)) return { pid: Number(sup.childPid), signal: 'SIGTERM', via: 'supervise-child' };
-  const realRoot = (() => { try { return fs.realpathSync(root); } catch (_) { return path.resolve(root); } })();
+  // a pidfile pid is signalled only after /proc says it is the station's supervisor (supervise.js --name station) or the sidecar itself
+  const t = PC.superviseTarget(root, 'station', 'sidecar/index.js');
+  if (t) return t;
   try {
     for (const ent of fs.readdirSync('/proc')) {
       if (!/^\d+$/.test(ent)) continue;
       const pid = Number(ent);
       if (pid === process.pid || pid <= 1) continue;
-      let cmd = ''; try { cmd = fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8'); } catch (_) { continue; }
-      if (!cmd.includes('sidecar/index.js')) continue;
-      let cwd = ''; try { cwd = fs.realpathSync('/proc/' + pid + '/cwd'); } catch (_) {}
-      if (cmd.includes(realRoot) || (cwd && (cwd === realRoot || cwd.startsWith(realRoot + path.sep)))) {
-        return { pid, signal: 'SIGTERM', via: 'container-pid' };
-      }
+      if (PC.runsScript(PC.argvOf(pid), 'sidecar/index.js', { root })) return { pid, signal: 'SIGTERM', via: 'container-pid' };
     }
   } catch (_) {}
   return null;

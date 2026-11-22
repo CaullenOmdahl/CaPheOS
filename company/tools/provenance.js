@@ -29,6 +29,12 @@
  * locked-watch.js accepts a row only when `main` is the named writer itself or the dispatcher, and never a tainted one.
  * What it is not: proof. Everyone runs as the same Unix user, so a determined forger can still fake a row; the checks
  * above make a forgery take several deliberate steps, each visible in the agent's transcript, which the watcher reads.
+ * SAME-UID LIMIT (owner decision: a separate uid for agents was ruled out): the owner check, including the console's
+ * owner-job grants (console/owner-ops.js, verified below), is a seatbelt against accidents, not a security boundary.
+ * Any process running as this Unix user that can read secrets/console-token can sign a grant, read /proc, start a
+ * process under the console, or edit these very files, and so act as the owner. Real separation needs the console to
+ * run as another user or in another container, with secrets/ out of the agents' reach: a deployment choice (docs/DEPLOY-SERVER.md),
+ * not something this module can add.
  *
  * underStation(): an agent's run started this process (an ancestor is node running the StarNet sidecar, the process is in
  * the station's cgroup, or it carries the environment pins the station puts on every child it starts). ownerShell(): the
@@ -44,6 +50,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const co = require('./lib/company');
+const pc = require('./lib/proc-check.js');
 const LIVE_ROOT = co.ROOT;
 const rootOf = () => path.resolve(process.env.PROVENANCE_ROOT || LIVE_ROOT);   // env only for selftests
 const homeOf = () => path.resolve(process.env.PROVENANCE_HOME || require('os').homedir());   // env only for selftests
@@ -59,7 +66,7 @@ function ancestry() {
   let pid = process.ppid;
   for (let i = 0; i < 40 && pid > 1; i++) {
     try {
-      const argv = fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0').filter(Boolean);
+      const argv = pc.argvOf(pid) || [];
       CHAIN.push(argv);
       try { CHAIN_CG += fs.readFileSync('/proc/' + pid + '/cgroup', 'utf8') + '\n'; } catch (_) {}
       const st = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
@@ -76,23 +83,11 @@ const stationEnv = env => env.STARNET_USER_CONTROL_MODE === 'preserve' && env.ST
 // owner's own `bash -c "node company/tools/locked-watch.js accept starnet/sidecar/index.js --by owner ..."` (Claude
 // Code's bash tool and its `!` prompt both run each command that way) counted as the station, and every --by owner in
 // that shell was refused, for any key run in the same command line.
-const NODE_BIN = /(^|\/)(node|nodejs)(\d+)?$/;
-const NODE_ARG_FLAGS = /^(-r|--require|--import|--loader|--experimental-loader|-e|--eval|-p|--print|--input-type|--conditions|-C)$/;
-function scriptOf(argv) {
-  if (!Array.isArray(argv) || !NODE_BIN.test(String(argv[0] || ''))) return null;
-  for (let i = 1; i < argv.length; i++) {
-    const a = String(argv[i]);
-    if (a === '--') return argv[i + 1] != null ? String(argv[i + 1]) : null;
-    if (/^(-e|--eval|-p|--print)$/.test(a)) return null;   // an eval runs no script file
-    if (a.startsWith('-')) { if (NODE_ARG_FLAGS.test(a)) i++; continue; }
-    return a;
-  }
-  return null;
-}
-const isScript = (argv, rel) => { const s = scriptOf(argv); return !!s && (s === rel || s.endsWith('/' + rel)); };
-const isStationArgv = argv => isScript(argv, 'sidecar/index.js');
-// the owner's console (console/server.js, behind the owner token) runs tools as the owner; it is the owner's own UI
-const isConsoleArgv = argv => isScript(argv, 'console/server.js');
+const scriptOf = pc.scriptOf;
+const isStationArgv = argv => pc.runsScript(argv, 'sidecar/index.js');
+// the owner's console (console/server.js, behind the owner token) runs tools as the owner; it is the owner's own UI.
+// Only THIS company's console counts: the script must resolve to <root>/console/server.js (a copy elsewhere is nobody's console)
+const isConsoleArgv = (argv, root) => pc.runsScript(argv, 'console/server.js', { root: root || rootOf(), exact: true });
 const INTERACTIVE = /(^|\/)(sshd|login|tmux|tmux: server|screen|SCREEN|ptyxis|ptyxis-agent|gnome-terminal-server|konsole|kitty|alacritty|foot|wezterm-gui|xterm|terminator|tilix|claude)$/;
 // Claude Code working for the owner: the native binary (argv[0] "claude", whatever /proc/<pid>/comm says), or node
 // running its cli (…/claude, …/claude.js, …/@anthropic-ai/claude-code/cli.js)
@@ -114,6 +109,19 @@ function ownerJobFromCgroup(cgroupText, unit) {
   }
   return null;
 }
+/* A grant (company/state/owner-ops/<id>.grant, 0600) is written by the console AFTER systemd-run started the unit, bound to
+ * that unit's InvocationID, its main pid and that pid's start time, and to the console's own pid and start time, all under an
+ * HMAC with secrets/console-token. It is accepted only for a caller that is the unit's main pid or a descendant of it
+ * (the /proc parent chain), while the unit's InvocationID is still the one in the grant and the live console is still the
+ * process that signed it (a recycled console pid has another start time). The job's own wrapper deletes it before it exits.
+ * Seatbelt, not a boundary: whoever reads secrets/console-token can sign one (see the header). */
+function invocationOf(unit) {
+  const { spawnSync } = require('child_process');
+  const bin = ['/usr/bin/systemctl', '/bin/systemctl'].find(b => fs.existsSync(b)) || 'systemctl';
+  const r = spawnSync(bin, ['--user', 'show', '-p', 'InvocationID', '--value', unit], { encoding: 'utf8', timeout: 4000 });
+  return r.status === 0 ? String(r.stdout || '').trim() : '';
+}
+const grantText = g => [g.id, g.unit, g.invocationId, String(g.mainPid), String(g.mainStart), String(g.consolePid), String(g.consoleStart), String(g.startedAt)].join(':');
 function validOwnerJobGrant(o) {
   o = o || {};
   const hit = ownerJobFromCgroup(o.cgroup, o.unit);
@@ -127,22 +135,28 @@ function validOwnerJobGrant(o) {
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const ts = Date.parse(String(grant.startedAt || ''));
   if (!Number.isFinite(ts) || now - ts > 6 * 3600e3 || now - ts < -60e3) return false;
-  const pid = Number(grant.pid);
-  if (!Number.isInteger(pid) || pid <= 1) return false;
-  let cmd = null;
-  try {
-    cmd = o.readCmdline ? o.readCmdline(pid) : fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0').filter(Boolean);
-  } catch (_) { return false; }
-  if (!isConsoleArgv(cmd)) return false;
+  const mainPid = Number(grant.mainPid), consolePid = Number(grant.consolePid);
+  if (!Number.isInteger(mainPid) || mainPid <= 1 || !Number.isInteger(consolePid) || consolePid <= 1) return false;
+  if (!grant.invocationId || !grant.mainStart || !grant.consoleStart) return false;
+  // the signature first: nothing below is believed unless the console signed these exact values
   let token = '';
-  try {
-    token = String(o.readToken ? o.readToken() : fs.readFileSync(path.join(root, 'secrets', 'console-token'), 'utf8')).trim();
-  } catch (_) { return false; }
+  try { token = String(o.readToken ? o.readToken() : fs.readFileSync(path.join(root, 'secrets', 'console-token'), 'utf8')).trim(); } catch (_) { return false; }
   if (!token) return false;
-  const expected = crypto.createHmac('sha256', token).update([grant.id, grant.unit, String(pid), String(grant.startedAt)].join(':')).digest();
-  let got;
-  try { got = Buffer.from(String(grant.hmac || ''), 'hex'); } catch (_) { return false; }
-  return got.length === expected.length && crypto.timingSafeEqual(got, expected);
+  const expected = crypto.createHmac('sha256', token).update(grantText(grant)).digest();
+  const got = Buffer.from(String(grant.hmac || ''), 'hex');
+  if (got.length !== expected.length || !crypto.timingSafeEqual(got, expected)) return false;
+  // the live console is the process that signed it: this company's console/server.js, same start time
+  const argvOf = o.readArgv || pc.argvOf, startOf = o.readStart || pc.startTicks;
+  let cmd = null;
+  try { cmd = argvOf(consolePid); } catch (_) { return false; }
+  if (!cmd || !isConsoleArgv(cmd, root)) return false;
+  if (String(startOf(consolePid)) !== String(grant.consoleStart)) return false;
+  // the unit is still the invocation the console started, and the caller is inside it
+  if (String(startOf(mainPid)) !== String(grant.mainStart)) return false;
+  let inv = '';
+  try { inv = String(o.readInvocation ? o.readInvocation(grant.unit) : invocationOf(grant.unit)); } catch (_) { return false; }
+  if (!inv || inv !== String(grant.invocationId)) return false;
+  return pc.isDescendant(Number.isInteger(o.pid) ? o.pid : process.pid, mainPid, { ppidOf: o.ppidOf });
 }
 /* The one rule, as a pure function so a test can hand it any ancestry:
  *   underStation: the station's environment pins, or the station's cgroup, or an ancestor that IS node running sidecar/index.js;
@@ -151,7 +165,7 @@ function classify(o) {
   o = o || {};
   const chain = Array.isArray(o.chain) ? o.chain : [];
   const under = stationEnv(o.env || {}) || inStationCgroup(o.cgroup, o.unit || stationUnit()) || chain.some(isStationArgv);
-  return { underStation: under, ownerShell: !under && (chain.some(a => isInteractiveArgv(a) || isConsoleArgv(a)) || !!o.ownerJobValid) };
+  return { underStation: under, ownerShell: !under && (chain.some(a => isInteractiveArgv(a) || isConsoleArgv(a, o.root)) || !!o.ownerJobValid) };
 }
 let CGROUP = null;
 // this process's cgroup and its ancestors' (the merge gate's check: an ancestor in the station's unit)
@@ -336,7 +350,7 @@ function callerConflict(root, parts, claimedId, nowMs) {
   } catch (_) { return null; }
 }
 
-module.exports = { wrote, removed, appended, noted, rolled, inserted, readFrom, sha, logFile, underStation, pinUnderStation, pinOwnerShell, ownerShell, classify, recentCalls, callerConflict, _internals: { stationEnv, mainInfo, scriptOf, inStationCgroup, ownerJobFromCgroup, validOwnerJobGrant } };
+module.exports = { wrote, removed, appended, noted, rolled, inserted, readFrom, sha, logFile, underStation, pinUnderStation, pinOwnerShell, ownerShell, classify, recentCalls, callerConflict, _internals: { stationEnv, mainInfo, scriptOf, inStationCgroup, ownerJobFromCgroup, validOwnerJobGrant, grantText, isConsoleArgv, isStationArgv } };
 
 if (require.main === module) {
   const [cmd, n, w] = process.argv.slice(2);
@@ -375,17 +389,27 @@ if (require.main === module) {
     ok(classify({ chain: desk('ls'), env: {}, cgroup: '0::/user.slice/user@1000.service/app.slice/capheos-station.service', unit: '/capheos-station.service' }).ownerShell === false, 'the station\'s cgroup refuses even under a terminal');
     ok(classify({ chain: desk('ls'), env: {}, cgroup: '0::/user.slice/user@1000.service/app.slice/capheos-station-dispatch.service', unit: '/capheos-station.service' }).underStation === false, 'the dispatcher\'s unit is not the station\'s');
     ok(classify({ chain: [['node', '/srv/co/company/tools/dispatcher-loop.js'], ['/usr/lib/systemd/systemd', '--user']], env: {} }).ownerShell === false, 'a detached service is not the owner');
-    ok(classify({ chain: [['/usr/bin/node', '/srv/co/console/server.js'], ['/usr/lib/systemd/systemd', '--user']], env: {} }).ownerShell === true, 'the owner\'s console is the owner');
+    ok(classify({ chain: [['/usr/bin/node', '/srv/co/console/server.js'], ['/usr/lib/systemd/systemd', '--user']], env: {}, root: '/srv/co' }).ownerShell === true, 'the owner\'s console is the owner');
+    ok(classify({ chain: [['/usr/bin/node', '/tmp/evil/console/server.js'], ['/usr/lib/systemd/systemd', '--user']], env: {}, root: '/srv/co' }).ownerShell === false, 'a console/server.js of some other folder is not the owner');
     {
       const jobId = 'update-20261122-abcd', jobUnit = 'capheos-station-owner-job-' + jobId + '.service';
-      const startedAt = new Date().toISOString(), cpid = 4242, tok = 'secret-console-tok';
-      const hmac = crypto.createHmac('sha256', tok).update([jobId, jobUnit, String(cpid), startedAt].join(':')).digest('hex');
+      const startedAt = new Date().toISOString(), tok = 'secret-console-tok';
+      const g = { id: jobId, unit: jobUnit, invocationId: 'inv-1', mainPid: 5000, mainStart: '777', consolePid: 4242, consoleStart: '555', startedAt };
+      g.hmac = crypto.createHmac('sha256', tok).update(grantText(g)).digest('hex');
       const cg = '0::/user.slice/user@1000.service/app.slice/' + jobUnit;
-      const base = { cgroup: cg, unit: '/capheos-station.service', readGrant: () => ({ id: jobId, unit: jobUnit, pid: cpid, startedAt, hmac }), readToken: () => tok, readCmdline: () => ['/usr/bin/node', '/srv/co/console/server.js'] };
-      ok(validOwnerJobGrant(base) === true && classify({ chain: [['/usr/lib/systemd/systemd', '--user']], env: {}, cgroup: cg, unit: '/capheos-station.service', ownerJobValid: validOwnerJobGrant(base) }).ownerShell === true, 'verified console owner-job unit is accepted as the owner');
+      const parents = { 5100: 5050, 5050: 5000, 5000: 1, 9000: 1 };
+      const base = { cgroup: cg, unit: '/capheos-station.service', root: '/srv/co', pid: 5100, readGrant: () => g, readToken: () => tok, readInvocation: () => 'inv-1',
+        readArgv: () => ['/usr/bin/node', '/srv/co/console/server.js'], readStart: p => ({ 4242: '555', 5000: '777' }[p]), ppidOf: p => parents[p] };
+      const good = validOwnerJobGrant(base);
+      ok(good === true && classify({ chain: [['/usr/lib/systemd/systemd', '--user']], env: {}, cgroup: cg, unit: '/capheos-station.service', ownerJobValid: good }).ownerShell === true, 'verified console owner-job unit is accepted as the owner');
       ok(validOwnerJobGrant(Object.assign({}, base, { readToken: () => 'wrong-tok' })) === false, 'owner-job grant rejects wrong HMAC/token');
-      ok(validOwnerJobGrant(Object.assign({}, base, { readCmdline: () => ['/usr/bin/bash'] })) === false, 'owner-job grant rejects non-console PID');
+      ok(validOwnerJobGrant(Object.assign({}, base, { readArgv: () => ['/usr/bin/bash'] })) === false, 'owner-job grant rejects non-console PID');
+      ok(validOwnerJobGrant(Object.assign({}, base, { readArgv: () => ['/usr/bin/node', '/tmp/evil/console/server.js'] })) === false, 'owner-job grant rejects another folder\'s console/server.js');
       ok(validOwnerJobGrant(Object.assign({}, base, { now: Date.parse(startedAt) + 7 * 3600e3 })) === false, 'owner-job grant rejects expired grant');
+      ok(validOwnerJobGrant(Object.assign({}, base, { readStart: p => ({ 4242: '999', 5000: '777' }[p]) })) === false, 'owner-job grant rejects a recycled console pid');
+      ok(validOwnerJobGrant(Object.assign({}, base, { readStart: p => ({ 4242: '555', 5000: '778' }[p]) })) === false, 'owner-job grant rejects a recycled job pid');
+      ok(validOwnerJobGrant(Object.assign({}, base, { readInvocation: () => 'inv-2' })) === false, 'owner-job grant rejects another invocation of the unit');
+      ok(validOwnerJobGrant(Object.assign({}, base, { pid: 9000 })) === false, 'owner-job grant rejects a caller that is not the unit\'s process or its descendant');
       ok(classify({ chain: [['/usr/lib/systemd/systemd', '--user']], env: { STARNET_USER_CONTROL_MODE: 'preserve', STARNET_COMPUTER_DRIVER: '0', STARNET_MCP_STDIO: '0', BROWSER: 'none' }, cgroup: cg, unit: '/capheos-station.service', ownerJobValid: true }).ownerShell === false, 'station env still refuses even with owner-job grant');
     }
     ok(classify({ chain: [['node', '/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js'], ['/usr/bin/bash']], env: {} }).ownerShell === true, 'Claude Code as node cli.js is interactive');

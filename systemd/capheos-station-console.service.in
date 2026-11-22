@@ -11,7 +11,7 @@ Slice=@SLICE@
 # the company's own temp dir, not the host's /tmp (RAM on most hosts); scripts/setup-station.sh
 Environment=TMPDIR=@ROOT@/.starnet-data/tmp
 ExecStartPre=/bin/mkdir -p -m 700 @ROOT@/.starnet-data/tmp
-ExecStart=/usr/bin/env node @ROOT@/console/server.js
+ExecStart=/usr/bin/env node @NODEFLAGS@ @ROOT@/console/server.js
 Restart=always
 # node exits 143 on SIGTERM (a stop or restart): that is a clean end, not a failure
 SuccessExitStatus=143
