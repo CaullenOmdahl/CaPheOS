@@ -344,6 +344,7 @@ function render(ctx, e) {
   const x = 'X-CaPheOS-Company=' + ctx.slug + '\nX-CaPheOS-Root=' + ctx.root + '\nX-CaPheOS-Service=' + e.name + '\n' + (e.hosts && e.hosts.length ? 'X-CaPheOS-Hosts=' + e.hosts.join(',') + '\n' : '');
   const svc = head + '[Unit]\nDescription=' + (ctx.config.name || ctx.slug) + ' background service ' + e.name + '\n'
     + 'Documentation=file:' + path.join(ctx.root, 'company', 'state', 'services.json') + '\n'
+    + (e.network ? 'After=network-online.target\nWants=network-online.target\n' : '')
     + startLimit(e) + x + '\n[Service]\n'
     + 'Type=' + (e.kind === 'timer' ? 'oneshot' : 'simple') + '\n'
     + 'WorkingDirectory=' + ctx.root + '\n'
