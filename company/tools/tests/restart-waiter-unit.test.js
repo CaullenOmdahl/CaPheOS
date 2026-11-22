@@ -46,3 +46,14 @@ test('a failed systemd-run returns null so the caller falls back to a detached c
 test('a stand-in restart command (no argv) never makes a unit', () => {
   assert.strictEqual(FU.outlast('/nonexistent', null), null);
 });
+
+test('the unregistered-services duty exempts a restart waiter only when it runs restart-station.sh --when-idle', () => {
+  const S = require('../service.js');
+  const root = '/srv/co';
+  assert.ok(S.isRestartWaiterExec('bash /srv/co/scripts/restart-station.sh --when-idle --max-wait-min 90 --reason "framework update abc" --by owner', root));
+  assert.ok(S.isRestartWaiterExec('"/usr/bin/bash" "/srv/co/scripts/restart-station.sh" "--when-idle"', root));
+  assert.ok(!S.isRestartWaiterExec('python3 /srv/co/company/work/x.py', root));
+  assert.ok(!S.isRestartWaiterExec('bash -c "python3 x.py; /srv/co/scripts/restart-station.sh --when-idle"', root));
+  assert.ok(!S.isRestartWaiterExec('bash /other/scripts/restart-station.sh --when-idle', root));
+  assert.ok(!S.isRestartWaiterExec('', root));
+});

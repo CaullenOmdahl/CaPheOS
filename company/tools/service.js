@@ -972,7 +972,9 @@ function findings(ctx) {
   // and so is the restart waiter framework-update.js starts as <svc>-restart-when-idle-<stamp>-<hex>.service
   const OW = require('./lib/owned');
   const ownerJob = f => (f.startsWith(ctx.stationSvc + '-owner-job-') && OW.OWNER_JOB.test(f.slice(ctx.stationSvc.length)))
-    || (f.startsWith(ctx.stationSvc + '-restart-when-idle-') && OW.RESTART_JOB.test(f.slice(ctx.stationSvc.length)));
+    || (f.startsWith(ctx.stationSvc + '-restart-when-idle-') && OW.RESTART_JOB.test(f.slice(ctx.stationSvc.length)) && restartWaiter(byName.get(f)));
+  // the name alone is not enough (an agent could name its own unit so): it must run this company's restart-station.sh --when-idle
+  const restartWaiter = x => !!x && isRestartWaiterExec([].concat(parseUnit(x.text)['Service.ExecStart'] || [])[0], ctx.root);
   const unregistered = [...inScope].filter(f => !fw.has(f) && !reg.has(f) && !ownerJob(f)).sort();
   const unscoped = [...new Set([...reg.values()].map(e => e.unit))].filter(u => !u.startsWith(ctx.slug + '-svc-')).sort();
   const edited = [];
@@ -1024,6 +1026,14 @@ function duty(ctx) {
   const key = sha(items.map(i => i.id).sort().join('|'));
   const tail = f.unregistered.length || f.unscoped.length || f.edited.length ? '. Adopt or remove the unregistered or changed ones (service.js adopt / remove; the owner decides).' : '.';
   return { due: true, reason: (parts.join('; ') + tail).slice(0, 300), route: 'risk', key, items: items.slice(0, 50) };
+}
+
+/* A restart waiter's ExecStart is exactly `bash <root>/scripts/restart-station.sh --when-idle ...` (framework-update.js
+ * outlast()); anything else under that unit name is an unregistered service. */
+function isRestartWaiterExec(exec, root) {
+  const toks = []; const re = /"((?:[^"\\]|\\.)*)"|(\S+)/g; let m;
+  while ((m = re.exec(String(exec || '').trim().replace(/^[-@:+!]+/, '')))) toks.push(m[1] != null ? m[1].replace(/\\(.)/g, '$1') : m[2]);
+  return toks.length >= 3 && path.basename(toks[0]) === 'bash' && toks[1] === path.join(root, 'scripts', 'restart-station.sh') && toks[2] === '--when-idle';
 }
 
 /* ---------------- the shims: check-systemctl / check-systemd-run ---------------- */
@@ -1088,7 +1098,7 @@ function main(argv) {
   console.error('usage: service.js propose|list|status|stop|start|remove|adopt|owner-approve|--duty|selftest (header of company/tools/service.js)'); return 2;
 }
 
-module.exports = { ASKS, context, propose, ownerApprove, safeProfile, sites, siteName, sitesWords, plainLead, plainDone, plainRecommendation, decision, plainWhen, startStop, remove, adopt, onHalt, list, findings, duty, checkCommand, validateArgv, splitWords, render, specOf, unitOf, _internals: { frameworkUnits } };
+module.exports = { isRestartWaiterExec, ASKS, context, propose, ownerApprove, safeProfile, sites, siteName, sitesWords, plainLead, plainDone, plainRecommendation, decision, plainWhen, startStop, remove, adopt, onHalt, list, findings, duty, checkCommand, validateArgv, splitWords, render, specOf, unitOf, _internals: { frameworkUnits } };
 
 /* ---------------- selftest: temp company, fake systemctl, no real user manager ---------------- */
 function selftest() {

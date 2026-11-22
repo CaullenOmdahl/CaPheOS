@@ -151,11 +151,16 @@ function outlast(root, argv) {
     const logDir = path.join(root, 'company', 'state', 'owner-ops'); fs.mkdirSync(logDir, { recursive: true });
     const log = path.join(logDir, unit.replace(/\.service$/, '') + '.log');
     const env = []; for (const k of ['PATH', 'HOME', 'USER', 'LANG', 'TZ', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS']) if (process.env[k] && !/[\n\r\0]/.test(process.env[k])) env.push('-E', k + '=' + process.env[k]);
+    env.push('-E', 'TMPDIR=' + path.join(root, '.starnet-data', 'tmp'));   // as the console and dispatcher units
     const r = spawnSync(bin, ['--user', '--collect', '--quiet', '--unit=' + unit, '--description=Station restart when idle',
       '--slice=' + require('./lib/memory.js').sliceOf(cfg), '-p', 'WorkingDirectory=' + root,
-      '-p', 'StandardOutput=append:' + log, '-p', 'StandardError=append:' + log, '-p', 'KillMode=mixed', '-p', 'TimeoutStopSec=60']
+      '-p', 'StandardOutput=append:' + log, '-p', 'StandardError=append:' + log, '-p', 'KillMode=mixed', '-p', 'TimeoutStopSec=60',
+      '-p', 'ManagedOOMPreference=omit', '-p', 'OOMPolicy=continue']
       .concat(env, ['--'], argv), { encoding: 'utf8', timeout: 15000 });
-    return r.status === 0 ? { unit, log: path.relative(root, log) } : null;
+    if (r.status === 0) return { unit, log: path.relative(root, log) };
+    // a slow systemd-run may time out after the unit is already up: then it is running, and a second (detached) waiter must not start
+    if (r.status === null && spawnSync('systemctl', ['--user', 'is-active', '--quiet', unit], { timeout: 5000 }).status === 0) return { unit, log: path.relative(root, log) };
+    return null;
   } catch (_) { return null; }
 }
 

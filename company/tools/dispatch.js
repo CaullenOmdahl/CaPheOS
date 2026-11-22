@@ -1612,6 +1612,7 @@ function lastRunTail(job) {
     }
     // the wake counts toward the tempo caps only now, past every hold (cadence.js recordWake)
     try { require('./cadence.js').recordWake(agentId, Date.now(), { ownerWake: ownerWake.has(agentId) }); } catch (_) {}
+    if (state.noModelAlerts && state.noModelAlerts[agentId]) delete state.noModelAlerts[agentId];   // the hold is over: the next one logs (and alerts) from its start
     log('RUN ' + job.name + ' for ' + agentId + ' (' + names + ')' + (focusNote ? ' [items: ' + focusNote + ']' : '') + (rest.fast ? ' [Sprint: new work; rest ' + SPRINT.cooldownFloorMin + ' min]' : ''));
     fired++;
     // a duty wake hands the agent its reason: one OPEN handoff in its inbox, ids and counts only (dedup reads it next tick)
