@@ -25,7 +25,11 @@ function isOwnerName(by, opts) {
   return b === 'owner' || (!!on && b === on) || ((opts && opts.aliases) || []).some(a => String(a).toLowerCase() === b);
 }
 function underStation() { try { return prov().underStation(); } catch (_) { return false; } }
-const isConsoleMain = () => { const m = String((require.main && require.main.filename) || ''); return /(^|[\/\\])console[\/\\]server\.js$/.test(m); };
+// this company's own console only: a script merely named console/server.js somewhere else (a scratch copy, another
+// company's checkout) is not this company's owner UI
+const realOr = p => { try { return require('fs').realpathSync(p); } catch (_) { return null; } };
+const OWN_CONSOLE = realOr(require('path').join(__dirname, '..', '..', '..', 'console', 'server.js'));
+const isConsoleMain = () => { const m = require.main && require.main.filename; return !!m && !!OWN_CONSOLE && realOr(m) === OWN_CONSOLE; };
 function shell() { try { return prov().ownerShell() || (isConsoleMain() && !underStation()); } catch (_) { return false; } }
 const REASON = 'only from the owner\'s own interactive shell or the console (not an agent\'s run, and not a detached or env-stripped process)';
 function refusal(by, what, opts) {
@@ -33,4 +37,4 @@ function refusal(by, what, opts) {
   const ok = opts && typeof opts.shell === 'function' ? opts.shell() : shell();
   return ok ? null : '"--by ' + String(by).trim() + '" ' + (what ? 'for ' + what + ' ' : '') + 'is accepted ' + REASON;
 }
-module.exports = { isOwnerName, shell, underStation, refusal, ownerName, REASON };
+module.exports = { isOwnerName, shell, underStation, refusal, ownerName, REASON, isConsoleMain };
