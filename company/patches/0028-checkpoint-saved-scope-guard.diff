@@ -1,0 +1,17 @@
+# 0028-checkpoint-saved-scope-guard.diff
+# Reject previously persisted forbidden workTrees (/, /etc, /opt, /var, homedir) in readScopeSaved().
+# Needs 0026-checkpoint-root-guard.diff.
+# Apply: git -C starnet apply --3way company/patches/0028-checkpoint-saved-scope-guard.diff
+# Revert: git -C starnet apply -R company/patches/0028-checkpoint-saved-scope-guard.diff
+diff --git a/sidecar/checkpoint-store.js b/sidecar/checkpoint-store.js
+index 7a06afe..9f02731 100644
+--- a/sidecar/checkpoint-store.js
++++ b/sidecar/checkpoint-store.js
+@@ -218,6 +218,7 @@
+         const saved = JSON.parse(fs.readFileSync(scopeFileFor(aid, scopeId), 'utf8'));
+         if (!saved || saved.scopeId !== scopeId || !saved.workTree) return null;
+         const workTree = canonicalWorkTree(saved.workTree);
++        if (isForbiddenWorkTree(workTree)) return null;
+         if (!samePath(workTree, saved.workTree)) return null;
+         return { id: scopeId, workTree: workTree, prefix: scopeId + ':' };
+       } catch (_) { return null; }
