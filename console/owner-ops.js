@@ -219,6 +219,15 @@ function mount(route, deps) {
   route('GET', /^\/api\/ops\/modules$/, () => runApi('module.js', ['list', '--json']));
   route('POST', /^\/api\/ops\/modules\/([a-z][a-z0-9-]{1,39})\/(enable|disable)$/, (m, q, b) =>
     act('modules.' + m[2], m[1], str(b.why, 'why'), () => runApi('module.js', [m[2], m[1], '--by', owner(), '--json'], { timeout: 180000 })));
+  route('POST', /^\/api\/ops\/modules\/([a-z][a-z0-9-]{1,39})\/limits$/, (m, q, b) => {
+    const file = str(b.file, 'file', 80) || 'limits.json';
+    const key = need(b.key, 'key', 80);
+    if (!/^[A-Za-z0-9_.-]+$/.test(key)) bad('key must be a dot path of letters, digits, underscores or dashes');
+    const val = Number(b.value);
+    if (!Number.isFinite(val) || val < 0) bad('value must be a number >= 0');
+    return act('modules.limits', m[1] + ':' + key + '=' + val, str(b.why, 'why'), () =>
+      runApi('module.js', ['limits', m[1], 'set', file, key, String(val), '--by', owner(), '--json'], { timeout: 60000 }));
+  });
 
   /* ---------- guardrails: apply to the station ---------- */
   route('POST', /^\/api\/ops\/guardrails\/apply$/, () => act('guardrails.apply', null, null, () => runApi('guardrails.js', ['apply', '--by', owner()], { timeout: 60000 })));
