@@ -302,7 +302,9 @@ function specOf(ctx, name, o, opts) {
   const timeout = o.timeout ? secs(duration(o.timeout, '--timeout', 10, 6 * 3600)) : null;
   const successExit = o['success-exit'] ? String(o['success-exit']).trim() : null;
   if (successExit && !/^\d{1,3}( \d{1,3}){0,7}$/.test(successExit)) throw err('--success-exit is exit codes separated by spaces, e.g. "3"');
+  const schedule = scheduleOf(kind, o);
   let wake = null;
+  const wakeOnFailure = o['wake-on-failure'] === true || o['wake-on-failure'] === 'true' || o['wake-on-failure'] === '1';
   if (o.wake != null && o.wake !== false) {
     if (kind !== 'timer') throw err('--wake is for a timer: a run that ends is what wakes the seats');
     const crew = ctx.crew(); wake = [];
@@ -312,16 +314,19 @@ function specOf(ctx, name, o, opts) {
       if (!wake.includes(id)) wake.push(id);
     }
     if (!wake.length) throw err('--wake names the seats to wake, e.g. --wake ravi');
+    if (schedule && schedule.every && duration(schedule.every, '--every', 30, 7 * 86400) < 900 && !wakeOnFailure) {
+      throw err('--wake on a timer faster than 15min requires --wake-on-failure (waking an AI seat on every short tick burns runs and tokens)');
+    }
   }
-  return Object.assign({ name, unit: unitOf(ctx, name), kind, argv, schedule: scheduleOf(kind, o), why: why.slice(0, 400), restart, softHalt, network, limits: limitsOf(o, ctx), timeout, successExit }, wake ? { wake } : {}, hosts ? { hosts } : {},
+  return Object.assign({ name, unit: unitOf(ctx, name), kind, argv, schedule, why: why.slice(0, 400), restart, softHalt, network, limits: limitsOf(o, ctx), timeout, successExit }, wake ? { wake } : {}, wake && wakeOnFailure ? { wakeOnFailure: true } : {}, hosts ? { hosts } : {},
     o.plain && o.plain !== true ? { plain: String(o.plain).replace(/\s+/g, ' ').trim().slice(0, 200) } : {},
     o['if-no'] && o['if-no'] !== true ? { ifNo: String(o['if-no']).replace(/\s+/g, ' ').trim().slice(0, 160) } : {});
 }
 // the exact spec the owner (or the governance level) agrees to; a field added later joins only when set, so the key of an
 // installed service stays what it was
-const specKey = s => sha(JSON.stringify([s.kind, s.argv, s.schedule, s.restart, s.softHalt, s.network, s.limits, s.timeout, s.successExit].concat(s.wake && s.wake.length ? [s.wake] : [], s.hosts && s.hosts.length ? [['hosts', s.hosts]] : [])));
+const specKey = s => sha(JSON.stringify([s.kind, s.argv, s.schedule, s.restart, s.softHalt, s.network, s.limits, s.timeout, s.successExit].concat(s.wake && s.wake.length ? [s.wake] : [], s.wakeOnFailure ? ['wakeOnFailure'] : [], s.hosts && s.hosts.length ? [['hosts', s.hosts]] : [])));
 // a timer with --wake runs through notify-when.js (company/tools), which records the run's end and passes its exit code on
-const execArgv = (ctx, e) => e.wake && e.wake.length ? [which('node') || process.execPath, path.join(ctx.root, 'company', 'tools', 'notify-when.js'), '--service-run', e.name, '--seat', e.wake.join(','), '--'].concat(e.argv) : e.argv;
+const execArgv = (ctx, e) => e.wake && e.wake.length ? [which('node', true) || process.execPath, path.join(ctx.root, 'company', 'tools', 'notify-when.js'), '--service-run', e.name, '--seat', e.wake.join(',')].concat(e.wakeOnFailure ? ['--on-failure'] : [], ['--'], e.argv) : e.argv;
 const scheduleWords = s => !s ? 'runs all the time' : s.every ? 'every ' + s.every : 'on the calendar ' + s.onCalendar;
 
 /* ---------------- unit files ---------------- */

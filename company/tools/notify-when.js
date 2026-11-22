@@ -39,7 +39,7 @@ function parseArgs(argv) {
   for (let k = 0; k < head.length; k++) {
     const a = head[k];
     if (!a.startsWith('--')) { (o._ = o._ || []).push(a); continue; }
-    const key = a.slice(2); const flag = ['foreground', 'json', 'detached-child', 'selftest'].includes(key);
+    const key = a.slice(2); const flag = ['foreground', 'json', 'detached-child', 'selftest', 'on-failure'].includes(key);
     o[key] = flag ? true : head[++k];
   }
   return o;
@@ -148,6 +148,7 @@ async function main(argv) {
     return 0;
   }
   const r = o.cmd ? await runWrapped(rec, o.cmd, durSec(o.timeout), !!serviceRun || !!o.foreground) : o.pid ? await watchPid(rec, o.log) : await watchService(rec);
+  if (serviceRun && o['on-failure'] && r.res.status === 'ok') rec.seat = [];
   const row = finish(rec, r.res, r.tail);
   if (o.foreground || serviceRun) { if (o.foreground) console.log(C.words(row) + ' (' + row.id + ')'); return row.exit == null ? (row.status === 'ok' ? 0 : 1) : row.exit; }
   return 0;

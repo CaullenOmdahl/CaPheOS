@@ -987,7 +987,25 @@ function lastRunTail(job) {
   const lpNow = co.localParts(), nowStamp = lpNow.date + ' ' + lpNow.time;
   const parked = [], nbNotice = [];
   state.releasesDone = state.releasesDone || {};
-  const note = (id, n) => { const a = state.agents[id] = state.agents[id] || { key: '', count: 0 }; if ((a.wakeNotes || []).some(x => x.key === n.key)) return; a.wakeNotes = (a.wakeNotes || []).concat([Object.assign({ at: Date.now() }, n)]); };
+  const note = (id, n) => {
+    const a = state.agents[id] = state.agents[id] || { key: '', count: 0 };
+    const list = a.wakeNotes || [];
+    if (n.coalesceKey) {
+      const prev = list.find(x => x.coalesceKey === n.coalesceKey && !x.written);
+      if (prev) {
+        const count = (Number(prev.count) || 1) + 1;
+        const base = n.baseWords || prev.baseWords || n.words || prev.words || '';
+        prev.count = count;
+        prev.id = n.id;
+        prev.at = Date.now();
+        prev.words = base + ' (' + count + 'x)';
+        prev.text = 'your ' + prev.words + '; output tail in completions id ' + n.id;
+        return;
+      }
+    }
+    if (list.some(x => x.key === n.key)) return;
+    a.wakeNotes = list.concat([Object.assign({ at: Date.now() }, n)]);
+  };
   const seatOfInbox = ib => Object.keys(CREW || {}).find(k => CREW[k] && CREW[k].inbox === ib) || null;
   const askOf = h => String(h).split(/ — /).slice(1).join(' — ').trim() || String(h);
   const { localToEpoch } = require('./lib/core-loop');
@@ -1235,18 +1253,27 @@ function lastRunTail(job) {
       for (const seat of [].concat(r.seat || [])) {
         if (!LOOP_OF[seat]) continue;
         log('JOB ' + (failed ? 'FAILED ' : 'ENDED ') + r.id + (r.job ? ' (job:' + r.job + ')' : '') + (r.service ? ' (service:' + r.service + ')' : '') + ': ' + CMP.words(r) + ' — waking ' + (NAMES[seat] || seat));
-        note(seat, { key: 'job:' + r.id, kind: 'completion', failed, id: r.id, words: CMP.words(r), text: 'your ' + CMP.words(r) + '; output tail in completions id ' + r.id });
+        const words = CMP.words(r);
+        note(seat, Object.assign(
+          { key: r.service ? 'service:' + r.service + ':' + (failed ? 'failed' : 'ok') : 'job:' + r.id, kind: 'completion', failed, id: r.id, words, baseWords: words, text: 'your ' + words + '; output tail in completions id ' + r.id },
+          r.service ? { service: r.service, coalesceKey: 'svc:' + r.service + ':' + (failed ? 'failed' : 'ok'), routineService: !failed } : {}
+        ));
       }
     }
     for (const [id, t] of Object.entries(state.completionsSeen)) if (Date.now() - t > 7 * 86400e3) delete state.completionsSeen[id];
   } catch (e) { log('COMPLETIONS ERROR: ' + String(e.message).slice(0, 200)); }
-  const urgent = new Map();   // agentId -> wake notes (rest 0)
+  const wakeNotesMap = new Map();   // agentId -> all pending wake notes
+  const urgent = new Map();         // agentId -> wake notes that bypass cooldown (rest 0: failures, one-shot jobs, deps, non-repeat service runs)
+  state.serviceWakeAt = state.serviceWakeAt || {};
+  for (const [k, t] of Object.entries(state.serviceWakeAt)) if (Date.now() - (Number(t) || 0) > 24 * 3600e3) delete state.serviceWakeAt[k];
   for (const [id, a] of Object.entries(state.agents || {})) {
     if (!a || !Array.isArray(a.wakeNotes)) continue;
     a.wakeNotes = a.wakeNotes.filter(n => Date.now() - (Number(n.at) || 0) < 24 * 3600e3);
     if (!a.wakeNotes.length) { delete a.wakeNotes; continue; }
     if (!LOOP_OF[id]) continue;
-    urgent.set(id, a.wakeNotes);
+    wakeNotesMap.set(id, a.wakeNotes);
+    const isRepeatRoutine = n => n.routineService && (Number(n.count) > 1 || (Date.now() - (Number(state.serviceWakeAt[id + ':' + n.service]) || 0) < 15 * 60e3));
+    if (a.wakeNotes.some(n => !isRepeatRoutine(n))) urgent.set(id, a.wakeNotes);
     work[id] = work[id] || [];
     reason[id] = (reason[id] ? reason[id] + '; ' : '') + a.wakeNotes.map(n => n.kind === 'completion' ? (n.failed ? 'watched job FAILED: ' : 'watched job ended: ') + n.words + ' (' + n.id + ')' : n.text).join('; ');
   }
@@ -1291,7 +1318,7 @@ function lastRunTail(job) {
     ((ownerWake.has(b) ? 1 : 0) - (ownerWake.has(a) ? 1 : 0)) || ((p0Wake.has(b) ? 1 : 0) - (p0Wake.has(a) ? 1 : 0)) || ((hiringWake.has(b) ? 1 : 0) - (hiringWake.has(a) ? 1 : 0)) || ((urgent.has(b) ? 1 : 0) - (urgent.has(a) ? 1 : 0)) || ((aged(b) ? 1 : 0) - (aged(a) ? 1 : 0)) || (prio(b) - prio(a)) || nextDue(a).localeCompare(nextDue(b)));
   // ---- Sprint: what each seat has to do now (its signature), the Sprint numbers, effort per seat, lanes ----
   const sigOf = id => SP.workSig([(work[id] || []).map(q => q.id + ':' + (q.duty ? q.key : (state.quests[q.id] || {}).done)), (state.agents[id] || {}).key || '',
-    ownerWake.has(id) ? state.owner.key : '', hiringWake.get(id) || [], artifactWakes[id] || [], (urgent.get(id) || []).map(n => n.key)]);
+    ownerWake.has(id) ? state.owner.key : '', hiringWake.get(id) || [], artifactWakes[id] || [], (wakeNotesMap.get(id) || []).map(n => n.key)]);
   let SM = null; const laneHeld = []; const spreadHeld = [];
   state.sprintSig = state.sprintSig || {};
   if (SPRINT) {
@@ -1431,7 +1458,7 @@ function lastRunTail(job) {
     // loop can never be cancelled by this tick's own hold (a run tied to the request socket dies with it).
     // Only a 200 counts toward the stall budget — a refused start (409/400) is not a run.
     // a watched job's end hands the seat its context: one notice in its inbox (a failure is OPEN work; a success is DONE, a note)
-    for (const n of (urgent.get(agentId) || [])) if (n.kind === 'completion' && !n.written && inboxOf(agentId)) {
+    for (const n of (wakeNotesMap.get(agentId) || [])) if (n.kind === 'completion' && !n.written && inboxOf(agentId)) {
       n.written = true;
       const wh = appendHandoff(inboxOf(agentId), (n.failed ? 'FAILED: ' : '') + n.words.slice(0, 140), { Need: n.failed ? 'the job failed. Read its output tail (`node company/tools/notify-when.js show ' + n.id + '`; the whole log under scratch/jobs/), fix or re-run it (through notify-when.js again), then set this DONE.' : 'carry on with the work that waited for it. Its output tail: `node company/tools/notify-when.js show ' + n.id + '`.', Why: 'you asked to be woken when it ended (company/tools/notify-when.js)', Deadline: 'today', Status: n.failed ? 'OPEN' : 'DONE — a notice, nothing to close', Evidence: 'company/state/completions.jsonl ' + n.id });
       if (n.failed) wroteItems.push(wh);
@@ -1465,7 +1492,10 @@ function lastRunTail(job) {
       if (viaInbox) { state.agents[agentId].count++; state.agents[agentId].wakes = (state.agents[agentId].wakes || 0) + 1; }
       if (ownerWake.has(agentId)) state.owner.count++;
       for (const slug of (hiringWake.get(agentId) || [])) state.hiringWake[slug] = new Date().toISOString();   // spent: once per round
-      if (urgent.has(agentId)) delete state.agents[agentId].wakeNotes;   // spent: one wake per completion, release or met dependency
+      if (wakeNotesMap.has(agentId)) {
+        for (const n of (wakeNotesMap.get(agentId) || [])) if (n.routineService && n.service) state.serviceWakeAt[agentId + ':' + n.service] = Date.now();
+        delete state.agents[agentId].wakeNotes;   // spent: one wake per completion, release or met dependency
+      }
       if (SPRINT) { state.sprintSig[agentId] = sig; SM.wakes++; SM.pending[agentId] = { at: Date.now(), sig }; }
       fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
     } else {
