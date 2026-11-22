@@ -39,12 +39,15 @@ function archiveInbox(file, { hours = 3, keep = 3, dry = false, now = Date.now()
   const txt = fs.readFileSync(p, 'utf8');
   const parts = txt.split(/^(?=## )/m);
   const head = parts[0].startsWith('## ') ? '' : parts.shift();
+  const big = Buffer.byteLength(txt) > 64 * 1024;
+  const effHours = big ? Math.min(hours, 0.5) : hours;
+  const effKeep = big ? Math.min(keep, 1) : keep;
   const moved = [], kept = [];
   parts.forEach((sec, i) => {
     const done = /^\*\*Status:\*\*\s*DONE/m.test(sec);
     const t = newestStamp(sec);
-    const old = t > 0 && now - t > hours * 3600e3;
-    if (done && old && i < parts.length - keep) moved.push(sec); else kept.push(sec);
+    const old = t > 0 && now - t > effHours * 3600e3;
+    if (done && old && i < parts.length - effKeep) moved.push(sec); else kept.push(sec);
   });
   if (!moved.length) return 0;
   if (dry) return moved.length;
