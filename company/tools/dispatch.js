@@ -104,7 +104,28 @@ const SPRINT = (() => { try { return require('./cadence.js').effective().sprint 
 const SPRINT_METRICS = path.join(ROOT, 'company', 'state', 'sprint-metrics.json');
 const SPRINT_EFFORT = path.join(ROOT, 'company', 'state', 'sprint-effort.json');
 const STALL_AFTER = num('DISPATCH_STALL_AFTER', 3);
+const BLOCK_STALL_AFTER = num('DISPATCH_BLOCK_STALL_AFTER', STALL_AFTER * 2);
+const BACKLOG_SWEEP_DAYS = num('DISPATCH_BACKLOG_SWEEP_DAYS', (CADENCE && Number(CADENCE.backlogSweepDays) > 0) ? Number(CADENCE.backlogSweepDays) : 1);
 const AGE_AFTER = num('DISPATCH_AGE_AFTER', 3);   // ticks a seat may lose the per-tick cut before it goes ahead of priority
+function blockLineRanges(txt) {
+  const lines = String(txt || '').split('\n');
+  const ranges = new Map();
+  let cur = null, start = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith('## ')) {
+      if (cur !== null) ranges.set(cur, { startLine: start, endLine: i });
+      cur = lines[i].slice(3).trim();
+      start = i + 1;
+    }
+  }
+  if (cur !== null) ranges.set(cur, { startLine: start, endLine: lines.length });
+  return ranges;
+}
+function daysBetween(d1, d2) {
+  const t1 = Date.parse(String(d1 || '') + 'T00:00:00Z');
+  const t2 = Date.parse(String(d2 || '') + 'T00:00:00Z');
+  return Number.isFinite(t1) && Number.isFinite(t2) ? Math.round((t2 - t1) / 86400e3) : Infinity;
+}
 // The CFO's budget file (company/work/finance/dispatch-budget.json) wins over the env vars and defaults.
 const BUDGET = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'company', 'work', 'finance', 'dispatch-budget.json'), 'utf8')) || {}; } catch (_) { return {}; } })();
 // The owner may raise it for today only, answering a money-hold question on Today (lib/money-hold.js, today-budget.json).
@@ -962,6 +983,9 @@ function lastRunTail(job) {
   const itemsOf = {}, waitsOf = {}, stalledSeats = [];
   const wakeItemsOf = {};   // agentId -> the OPEN items that are work now, for the wake's wakes.jsonl row (lib/wakes.js)
   const wakeTextOf = {};    // agentId -> heading -> its block text, for the router's task class (lib/routing.js)
+  const focusItemsOf = {};  // agentId -> up to 5 target items (id + line range) named in the wake reason
+  const backlogOnlyWake = new Set();   // seats woken solely for a slow-cadence backlog sweep (lowest slot priority)
+  const pendingWakeSigs = {};          // agentId -> snapshot committed to state.agents[id] only when the wake starts (HTTP 200)
   // progress evidence for the stall check (lib/stall.js): the seats' recent runs, and every inbox's text (blocks sent)
   const STALL = require('./lib/stall');
   const stallRuns = runsSince(Date.now() - 48 * 3600e3);
@@ -1034,7 +1058,7 @@ function lastRunTail(job) {
       const rel = RELEASES.get(inbox + '\n' + it.heading);
       if (rel) {   // the owner's Start now: no gate holds it (Waiting on, Not before, a waiting Status); its holder is woken once
         it.released = rel; it.waitSeats = [];
-        if (!state.releasesDone[rel.id]) { state.releasesDone[rel.id] = new Date().toISOString(); const msg = (NAMES[agentId] || agentId) + ': ' + (rel.by || 'the owner') + ' said Start now — "' + askOf(it.heading).slice(0, 100) + '"'; log('START NOW ' + inbox + ' "' + it.heading.slice(0, 80) + '": released by ' + (rel.by || 'the owner') + ' (' + rel.id + '); waking ' + (NAMES[agentId] || agentId)); note(agentId, { key: 'release:' + rel.id, kind: 'release', text: msg }); }
+        if (!state.releasesDone[rel.id]) { state.releasesDone[rel.id] = new Date().toISOString(); const msg = (NAMES[agentId] || agentId) + ': ' + (rel.by || 'the owner') + ' said Start now — "' + askOf(it.heading).slice(0, 100) + '"'; log('START NOW ' + inbox + ' "' + it.heading.slice(0, 80) + '": released by ' + (rel.by || 'the owner') + ' (' + rel.id + '); waking ' + (NAMES[agentId] || agentId)); note(agentId, { key: 'release:' + rel.id, kind: 'release', heading: it.heading, text: msg }); }
         continue;
       }
       { const ch = CONSULT_HOLD(inbox, it); if (ch) { it.waitingOn = 'consult'; if (ch.who) waitsOf[agentId][ch.who] = (waitsOf[agentId][ch.who] || 0) + 1; continue; } }
@@ -1060,7 +1084,7 @@ function lastRunTail(job) {
         if (!pw || pw.state !== 'unresolvable' || pw.line !== it.waitingOnLine) log('WAITING ON UNRESOLVED ' + inbox + ' "' + it.heading.slice(0, 80) + '" (' + (NAMES[agentId] || agentId) + '): ' + (r.unresolved.map(d => d.raw).join('; ') || 'no dependency named') + ' — names nothing the dispatcher can find, so the item is work now (handoff-status.js tells the writer)');
       } else if (pw && pw.state === 'waiting') {
         const msg = (NAMES[agentId] || agentId) + ': ' + (pd.label || pd.deps.map(d => d.words).join('; ')) + ' — done; starting "' + askOf(it.heading).slice(0, 100) + '"';
-        log('WAKE ' + msg); note(agentId, { key: 'dep:' + inbox + ':' + it.heading, kind: 'dependency', text: msg });
+        log('WAKE ' + msg); note(agentId, { key: 'dep:' + inbox + ':' + it.heading, kind: 'dependency', heading: it.heading, text: msg });
       }
     }
     stw.waits = waitsNext;
@@ -1122,33 +1146,85 @@ function lastRunTail(job) {
     st.prog = { sigs, closed: closedN, sent: sentBy(NAMES[agentId]) }; st.progAt = Date.now(); st.key = open.join('|');
     state.agents[agentId] = st;
     if (!open.length) continue;
-    const stuck = STALL.stuckBlock(open, due.due, due.overdue, null);
-    const stuckWords = stuck ? '"' + stuck.slice(0, 90) + '"' + (due.due.get(stuck) ? ' (due ' + due.due.get(stuck) + ')' : ' (undated)') : '';
-    // busy, but a due block does not move: a softer note to the seat's manager after STALL_AFTER*2 wakes (never a page)
+    // Per-item wake counter: park any OPEN block unchanged across BLOCK_STALL_AFTER wakes (default STALL_AFTER*2),
+    // hand it to the seat's manager once, and stop waking for it until its block body changes.
+    st.parkedBlocks = st.parkedBlocks || {};
+    st.softNoted = st.softNoted || {};
+    for (const h of Object.keys(st.parkedBlocks)) {
+      if (!open.includes(h)) { delete st.parkedBlocks[h]; continue; }
+      if (st.parkedBlocks[h] !== sigs[h]) { delete st.parkedBlocks[h]; st.blockWake[h] = wakesNow; }
+    }
+    for (const h of Object.keys(st.softNoted)) if (!open.includes(h)) delete st.softNoted[h];
     if (st.count < STALL_AFTER) {
-      const dueOpen = open.filter(h => due.due.has(h) && due.due.get(h) <= lpNow.date);
-      const lag = STALL.stuckBlock(dueOpen, due.due, due.overdue, null);
-      const n = lag ? wakesNow - (st.blockWake[lag] != null ? st.blockWake[lag] : wakesNow) : 0;
-      st.softNoted = st.softNoted || {};
-      if (lag && n >= STALL_AFTER * 2 && st.softNoted[lag] !== st.blockWake[lag]) {
-        st.softNoted[lag] = st.blockWake[lag];
-        const mgr = ((CREW || {})[agentId] || {}).manager || CEO_ID; const mi = inboxOf(mgr);
-        const line = (NAMES[agentId] || agentId) + ' is working, but the due item "' + lag.slice(0, 90) + '" (due ' + due.due.get(lag) + ') has not moved in ' + n + ' runs';
-        log('SLOW ' + inbox + ' (' + agentId + '): ' + line);
-        if (mi && mgr !== agentId) appendHandoff(mi, line, { Need: 'nothing urgent: ' + (NAMES[agentId] || agentId) + ' is making progress elsewhere. Look at whether this item needs a decision, help or a new order of work.', Why: 'it is due and its block has not changed in ' + n + ' of ' + (NAMES[agentId] || agentId) + '\'s runs.', Deadline: 'none', Status: 'DONE — FYI' });
+      const mgr = ((CREW || {})[agentId] || {}).manager || CEO_ID; const mi = inboxOf(mgr);
+      for (const h of byDue(open, due.due)) {
+        if (st.parkedBlocks[h]) continue;
+        const n = wakesNow - (st.blockWake[h] != null ? st.blockWake[h] : wakesNow);
+        if (n < BLOCK_STALL_AFTER) continue;
+        st.parkedBlocks[h] = sigs[h];
+        if (st.softNoted[h] !== st.blockWake[h]) {
+          st.softNoted[h] = st.blockWake[h];
+          const isDue = due.due.has(h) && due.due.get(h) <= lpNow.date;
+          if (isDue) {
+            const line = (NAMES[agentId] || agentId) + ' is working, but the due item "' + h.slice(0, 90) + '" (due ' + due.due.get(h) + ') has not moved in ' + n + ' runs';
+            log('SLOW ' + inbox + ' (' + agentId + '): ' + line);
+            if (mi && mgr !== agentId) appendHandoff(mi, line, { Need: 'nothing urgent: ' + (NAMES[agentId] || agentId) + ' is making progress elsewhere. Look at whether this item needs a decision, help or a new order of work.', Why: 'it is due and its block has not changed in ' + n + ' of ' + (NAMES[agentId] || agentId) + '\'s runs.', Deadline: 'none', Status: 'DONE — FYI' });
+          } else {
+            const line = (NAMES[agentId] || agentId) + ' is working, but the item "' + h.slice(0, 90) + '"' + (due.due.has(h) ? ' (due ' + due.due.get(h) + ')' : ' (undated)') + ' has not moved in ' + n + ' runs';
+            log('PARKED ' + inbox + ' (' + agentId + '): ' + line + ' — handed to manager and stopped waking for it until changed');
+            if (mi && mgr !== agentId) appendHandoff(mi, line, { Need: 'this item has sat unchanged across ' + n + ' of ' + (NAMES[agentId] || agentId) + '\'s runs and is now parked from waking ' + (NAMES[agentId] || agentId) + ' until its block changes. Look at whether it should be closed, re-scoped, or reassigned.', Why: 'its block has not changed in ' + n + ' of ' + (NAMES[agentId] || agentId) + '\'s runs.', Deadline: 'none', Status: 'DONE — FYI' });
+          }
+        }
       }
     }
+    const activeOpen = open.filter(h => !st.parkedBlocks[h]);
+    if (!activeOpen.length) continue;
+    const stuck = STALL.stuckBlock(activeOpen, due.due, due.overdue, null);
+    const stuckWords = stuck ? '"' + stuck.slice(0, 90) + '"' + (due.due.get(stuck) ? ' (due ' + due.due.get(stuck) + ')' : ' (undated)') : '';
     if (st.count >= STALL_AFTER) {
       stalledSeats.push(agentId);
       if (!st.flagged) {
-        st.flagged = true; log('STALLED handoffs ' + inbox + ' (' + agentId + '): ' + open.length + ' OPEN and no progress in ' + STALL_AFTER + ' runs (no block changed, none closed or sent, no file written)' + (stuck ? '; ' + stuckWords + ' has not moved' : '') + ' — needs ' + CEO_NAME + ' (CEO)' + lastRunTail(findLoop(jobs, agentId)));
+        st.flagged = true; log('STALLED handoffs ' + inbox + ' (' + agentId + '): ' + activeOpen.length + ' OPEN and no progress in ' + STALL_AFTER + ' runs (no block changed, none closed or sent, no file written)' + (stuck ? '; ' + stuckWords + ' has not moved' : '') + ' — needs ' + CEO_NAME + ' (CEO)' + lastRunTail(findLoop(jobs, agentId)));
         // "needs the CEO" is said to the CEO, not only to the log: one OPEN handoff per stall (a new item set is a new stall)
-        if (agentId !== CEO_ID && inboxOf(CEO_ID)) appendHandoff(inboxOf(CEO_ID), (NAMES[agentId] || agentId) + ' is stuck: no progress in ' + STALL_AFTER + ' runs' + (stuck ? ', starting with ' + stuckWords : ''), { Need: 'look at ' + inbox + (stuck ? ' (first ' + stuckWords + ')' : '') + ' and unblock it: answer what ' + (NAMES[agentId] || agentId) + ' is waiting for, re-scope the items, or mark them DONE/blocked with a reason. The dispatcher stops waking ' + (NAMES[agentId] || agentId) + ' for them until the set changes.', Why: 'the dispatcher woke ' + (NAMES[agentId] || agentId) + ' ' + STALL_AFTER + ' times for the same open items and nothing moved.', Items: open.slice(0, 6).join(' · ').slice(0, 600), Deadline: 'today', Status: 'OPEN' });
+        if (agentId !== CEO_ID && inboxOf(CEO_ID)) appendHandoff(inboxOf(CEO_ID), (NAMES[agentId] || agentId) + ' is stuck: no progress in ' + STALL_AFTER + ' runs' + (stuck ? ', starting with ' + stuckWords : ''), { Need: 'look at ' + inbox + (stuck ? ' (first ' + stuckWords + ')' : '') + ' and unblock it: answer what ' + (NAMES[agentId] || agentId) + ' is waiting for, re-scope the items, or mark them DONE/blocked with a reason. The dispatcher stops waking ' + (NAMES[agentId] || agentId) + ' for them until the set changes.', Why: 'the dispatcher woke ' + (NAMES[agentId] || agentId) + ' ' + STALL_AFTER + ' times for the same open items and nothing moved.', Items: activeOpen.slice(0, 6).join(' · ').slice(0, 600), Deadline: 'today', Status: 'OPEN' });
       }
       continue;
     }
+    // Wake on change, not presence: only wake for new/changed/newly-due/released items, zero-progress stall retries,
+    // or at most one slow-cadence backlog sweep per BACKLOG_SWEEP_DAYS company day(s).
+    const hasPrevWake = !!(st.wokenSigs && typeof st.wokenSigs === 'object');
+    const releasedHere = new Set(its.filter(i => i.released).map(i => i.heading).concat(Object.keys(st.nbReleased || {}).filter(h => !(nbr && nbr[h]))));
+    const depWokeHere = new Set((st.wakeNotes || []).filter(n => n.kind === 'dependency' || n.kind === 'release').map(n => n.heading).filter(Boolean));
+    const isFresh = h => !hasPrevWake || st.wokenSigs[h] === undefined || st.wokenSigs[h] !== sigs[h] ||
+      (due.due.has(h) && due.due.get(h) <= lpNow.date && (st.wokenDueDay || {})[h] !== lpNow.date) ||
+      releasedHere.has(h) || depWokeHere.has(h);
+    const freshItems = byDue(activeOpen.filter(isFresh), due.due);
+    const zeroProgressRetry = !pj.moved && st.count > 0 && st.count < STALL_AFTER;
+    const sweepDue = !st.sweepDay || daysBetween(st.sweepDay, lpNow.date) >= BACKLOG_SWEEP_DAYS;
+    if (!freshItems.length && !zeroProgressRetry) {
+      if (!sweepDue) continue;
+      if (!work[agentId]) backlogOnlyWake.add(agentId);
+    }
+    const ranges = blockLineRanges(txt);
+    wakeItemsOf[agentId] = byDue(activeOpen, due.due).map(h => {
+      const it = its.find(i => i.heading === h) || {};
+      const rg = ranges.get(h) || null;
+      return Object.assign({ file: inbox, id: W.itemId(inbox, h, it.id), title: h, due: due.due.get(h) || null }, rg ? { startLine: rg.startLine, endLine: rg.endLine } : {});
+    });
+    const focusHeadings = (freshItems.length ? freshItems : byDue(activeOpen, due.due)).slice(0, 5);
+    focusItemsOf[agentId] = focusHeadings.map(h => {
+      const it = its.find(i => i.heading === h) || {};
+      const rg = ranges.get(h) || null;
+      return { id: W.itemId(inbox, h, it.id), heading: h, startLine: rg ? rg.startLine : null, endLine: rg ? rg.endLine : null };
+    });
+    pendingWakeSigs[agentId] = {
+      sigs: Object.fromEntries(activeOpen.map(h => [h, sigs[h]])),
+      dueDay: Object.fromEntries(activeOpen.filter(h => due.due.has(h) && due.due.get(h) <= lpNow.date).map(h => [h, lpNow.date])),
+      isSweep: !freshItems.length && !zeroProgressRetry,
+    };
+    const activeDueNote = [due.overdue.filter(h => activeOpen.includes(h)).length ? due.overdue.filter(h => activeOpen.includes(h)).length + ' overdue' : '', byDue(activeOpen, due.due).map(h => due.due.get(h)).find(Boolean) ? 'next due ' + byDue(activeOpen, due.due).map(h => due.due.get(h)).find(Boolean) : ''].filter(Boolean).join(', ');
     work[agentId] = work[agentId] || [];
-    reason[agentId] = (reason[agentId] ? reason[agentId] + '; ' : '') + open.length + ' OPEN in ' + inbox + (dueNote ? ' (' + dueNote + ')' : '');
+    reason[agentId] = (reason[agentId] ? reason[agentId] + '; ' : '') + activeOpen.length + ' OPEN in ' + inbox + (activeDueNote ? ' (' + activeDueNote + ')' : '') + (pendingWakeSigs[agentId].isSweep ? ' [backlog sweep]' : '');
   }
   // Artifact wake: a quest with an artifact contract, every step ticked and its file already on disk is waiting on
   // exactly one thing — a run by its owner, because StarNet completes an artifact contract only in that agent's
@@ -1315,8 +1391,9 @@ function lastRunTail(job) {
   const nextDue = id => ((state.agents[id] || {}).nextDue) || '9999';
   state.deferStreak = state.deferStreak || {};
   const aged = id => isAged(state.deferStreak, id, AGE_AFTER);
+  const isBacklogOnly = id => backlogOnlyWake.has(id) && !(work[id] && work[id].length) && !ownerWake.has(id) && !p0Wake.has(id) && !hiringWake.has(id) && !urgent.has(id) && !artifactWakes[id] && !schedWake.has(id);
   const order = Object.keys(work).sort((a, b) =>
-    ((ownerWake.has(b) ? 1 : 0) - (ownerWake.has(a) ? 1 : 0)) || ((p0Wake.has(b) ? 1 : 0) - (p0Wake.has(a) ? 1 : 0)) || ((hiringWake.has(b) ? 1 : 0) - (hiringWake.has(a) ? 1 : 0)) || ((urgent.has(b) ? 1 : 0) - (urgent.has(a) ? 1 : 0)) || ((aged(b) ? 1 : 0) - (aged(a) ? 1 : 0)) || (prio(b) - prio(a)) || nextDue(a).localeCompare(nextDue(b)));
+    ((ownerWake.has(b) ? 1 : 0) - (ownerWake.has(a) ? 1 : 0)) || ((p0Wake.has(b) ? 1 : 0) - (p0Wake.has(a) ? 1 : 0)) || ((hiringWake.has(b) ? 1 : 0) - (hiringWake.has(a) ? 1 : 0)) || ((urgent.has(b) ? 1 : 0) - (urgent.has(a) ? 1 : 0)) || ((isBacklogOnly(a) ? 1 : 0) - (isBacklogOnly(b) ? 1 : 0)) || ((aged(b) ? 1 : 0) - (aged(a) ? 1 : 0)) || (prio(b) - prio(a)) || nextDue(a).localeCompare(nextDue(b)));
   // ---- Sprint: what each seat has to do now (its signature), the Sprint numbers, effort per seat, lanes ----
   const sigOf = id => SP.workSig([(work[id] || []).map(q => q.id + ':' + (q.duty ? q.key : (state.quests[q.id] || {}).done)), (state.agents[id] || {}).key || '',
     ownerWake.has(id) ? state.owner.key : '', hiringWake.get(id) || [], artifactWakes[id] || [], (wakeNotesMap.get(id) || []).map(n => n.key)]);
@@ -1430,7 +1507,9 @@ function lastRunTail(job) {
     { const tempo = require('./cadence.js').tempoAllows(agentId, Date.now(), { record: false, ownerWake: ownerWake.has(agentId) }); if (!tempo.ok) { log('TEMPO HOLD ' + job.name + ' for ' + agentId + ': ' + tempo.reason); say(agentId, { state: 'held', why: 'has work, held by the wake limits: ' + tempo.reason }); continue; } }   // wake caps (cadence.json bounds): an owner message is never held but still counts
     const names = reason[agentId];
     const viaInbox = names.includes(' OPEN in ');
-    if (DRY) { A.admit({ door: 'dispatch', kind: 'run', seat: agentId, jobId: job.id, why: names }, { dry: true }); log('WOULD run ' + job.name + ' for ' + agentId + ' (' + names + ')'); fired++; say(agentId, { state: 'started', why: names }); continue; }
+    const focusList = viaInbox ? (focusItemsOf[agentId] || []) : [];
+    const focusNote = focusList.length ? focusList.map(x => (x.id || '?') + (x.startLine ? ' L' + x.startLine + '-' + x.endLine : '') + ' "' + askOf(x.heading).slice(0, 40) + '"').join(', ') : '';
+    if (DRY) { A.admit({ door: 'dispatch', kind: 'run', seat: agentId, jobId: job.id, why: names }, { dry: true }); log('WOULD run ' + job.name + ' for ' + agentId + ' (' + names + ')' + (focusNote ? ' [items: ' + focusNote + ']' : '')); fired++; say(agentId, { state: 'started', why: names + (focusNote ? ' — items: ' + focusNote : '') }); continue; }
     // the router's decision for this wake: recorded always (with a policy), applied as a one-run override only when live and open.
     // The class rules always hold: a wake whose own pair they deny and no allowed entry is open is held, never started on it.
     const wakeId = W.newWakeId(Date.now());
@@ -1491,7 +1570,7 @@ function lastRunTail(job) {
     }
     // the wake counts toward the tempo caps only now, past every hold (cadence.js recordWake)
     try { require('./cadence.js').recordWake(agentId, Date.now(), { ownerWake: ownerWake.has(agentId) }); } catch (_) {}
-    log('RUN ' + job.name + ' for ' + agentId + ' (' + names + ')' + (rest.fast ? ' [Sprint: new work; rest ' + SPRINT.cooldownFloorMin + ' min]' : ''));
+    log('RUN ' + job.name + ' for ' + agentId + ' (' + names + ')' + (focusNote ? ' [items: ' + focusNote + ']' : '') + (rest.fast ? ' [Sprint: new work; rest ' + SPRINT.cooldownFloorMin + ' min]' : ''));
     fired++;
     // a duty wake hands the agent its reason: one OPEN handoff in its inbox, ids and counts only (dedup reads it next tick)
     const wroteItems = [];   // blocks this wake writes into the inbox: they are what it is for, too (wakes.jsonl)
@@ -1531,7 +1610,16 @@ function lastRunTail(job) {
         W.record({ wakeId, seat: agentId, runId, admitId: tk.id, jobId: job.id, door: 'dispatch', items, why: names, route: route || undefined, profile: (() => { try { return require('./lib/profile').wakeStamp(agentId, { root: ROOT }); } catch (_) { return undefined; } })() }); }
       for (const q of qs) { if (q.duty) state.duties[q.skey].count++; else state.quests[q.id].count++; }
       for (const qid of (artifactWakes[agentId] || [])) state.artifactWait[qid].wakes++;   // a real start is a wake
-      if (viaInbox) { state.agents[agentId].count++; state.agents[agentId].wakes = (state.agents[agentId].wakes || 0) + 1; }
+      if (viaInbox) {
+        state.agents[agentId].count++;
+        state.agents[agentId].wakes = (state.agents[agentId].wakes || 0) + 1;
+        if (pendingWakeSigs[agentId]) {
+          state.agents[agentId].wokenSigs = pendingWakeSigs[agentId].sigs;
+          state.agents[agentId].wokenDueDay = Object.assign({}, state.agents[agentId].wokenDueDay || {}, pendingWakeSigs[agentId].dueDay);
+          for (const k of Object.keys(state.agents[agentId].wokenDueDay)) if (!(k in pendingWakeSigs[agentId].sigs)) delete state.agents[agentId].wokenDueDay[k];
+          state.agents[agentId].sweepDay = lpNow.date;
+        }
+      }
       if (ownerWake.has(agentId)) state.owner.count++;
       for (const slug of (hiringWake.get(agentId) || [])) state.hiringWake[slug] = new Date().toISOString();   // spent: once per round
       if (wakeNotesMap.has(agentId)) {
