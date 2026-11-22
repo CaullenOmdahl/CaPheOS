@@ -110,10 +110,11 @@ function jsonlWindowText(file, sinceMs, opt) {
   const w = jsonlWindow(file, Object.assign({ sinceMs }, opt || {}));
   return w.rows.map(r => JSON.stringify(r)).join('\n') + (w.rows.length ? '\n' : '');
 }
-// rows around targetMs in a log appended in (roughly) time order: binary search on the first row after each probe
-function jsonlSeek(file, targetMs, opt) {
-  const o = opt || {}; const tsOf = o.tsOf || runTs; const span = Number(o.spanBytes) || 4 * MB; const back = Number(o.backMs) || 0;
-  const size = sizeOf(file); if (size <= 0) return [];
+// rows around targetMs in a log appended in (roughly) time order: binary search on the first row after each probe.
+// When the seek window reaches byte 0 of the current file (or targetMs predates it), continue into <file>.1 (one level).
+function seekOne(file, targetMs, o) {
+  const tsOf = o.tsOf || runTs; const span = Number(o.spanBytes) || 4 * MB; const back = Number(o.backMs) || 0;
+  const size = sizeOf(file); if (size <= 0) return { rows: [], hitStart: true, size: 0 };
   const fd = fs.openSync(file, 'r');
   try {
     const rowAt = p => {   // the first whole row starting after byte p, and where it starts
@@ -130,8 +131,19 @@ function jsonlSeek(file, targetMs, opt) {
     const start = Math.max(0, lo - 64 * 1024);
     const t = readAt(fd, start, Math.min(span, size - start)).toString('utf8');
     const body = start > 0 ? t.slice(t.indexOf('\n') + 1) : t;
-    return parseRows(start + span < size ? body.slice(0, body.lastIndexOf('\n') + 1) : body, []);
+    const rows = parseRows(start + span < size ? body.slice(0, body.lastIndexOf('\n') + 1) : body, []);
+    return { rows, hitStart: start === 0, size };
   } finally { fs.closeSync(fd); }
+}
+function jsonlSeek(file, targetMs, opt) {
+  const o = opt || {}; const tsOf = o.tsOf || runTs; const back = Number(o.backMs) || 0;
+  const cur = seekOne(file, targetMs, o);
+  if (o.noRotated || sizeOf(file + '.1') <= 0) return cur.rows;
+  const firstTs = cur.rows.length ? tsOf(cur.rows[0]) : 0;
+  const needOld = cur.size === 0 || !cur.rows.length || (cur.hitStart && (!firstTs || firstTs >= targetMs - back));
+  if (!needOld) return cur.rows;
+  const old = seekOne(file + '.1', targetMs, o);
+  return old.rows.length ? old.rows.concat(cur.rows) : cur.rows;
 }
 
 module.exports = { tailText, tailLines, page, jsonlWindow, jsonlWindowText, jsonlSeek, runTs, sizeOf, MB };
