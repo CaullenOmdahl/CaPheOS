@@ -1444,7 +1444,26 @@ function lastRunTail(job) {
     if (tk.memoryEdge === 'start') log('MEMORY HOLD: new work waits, the computer is short of memory (' + tk.reason.replace(/^memory: /, '') + '); owner chats and health checks still run');
     if (tk.memoryEdge === 'lift') log('MEMORY HOLD LIFTED: enough memory is free again; new work starts');
     if (tk.decision === 'hold' && tk.memory) { say(agentId, { state: 'held', why: 'has work, but the computer is short of memory; it starts when memory is free again' }); continue; }
-    if (tk.decision === 'hold' && tk.noModel) { log('NO MODEL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'none of its models can run right now (limits or the daily budget); it starts when one opens' }); continue; }
+    if (tk.decision === 'hold' && tk.noModel) {
+      log('NO MODEL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason);
+      say(agentId, { state: 'held', why: 'none of its models can run right now (limits or the daily budget); it starts when one opens' });
+      state.noModelAlerts = state.noModelAlerts || {};
+      const nkey = agentId + ':' + String(tk.reason || '').slice(0, 120);
+      const na = state.noModelAlerts[agentId] || { key: '', ticks: 0, alerted: false };
+      if (na.key !== nkey) { na.key = nkey; na.ticks = 0; na.alerted = false; }
+      na.ticks++;
+      state.noModelAlerts[agentId] = na;
+      const nThresh = agentId === CEO_ID ? 2 : 6;
+      if (!DRY && !na.alerted && na.ticks >= nThresh) {
+        na.alerted = true;
+        const who = NAMES[agentId] || agentId;
+        const plain = who + ' has been paused for several checks because none of its assigned AI models are available right now. Add a fallback model or wait for the usage limit to reset.';
+        try {
+          require('./lib/owner-notice').send({ kind: agentId === CEO_ID ? 'urgent' : 'fyi', from: CEO_NAME, text: plain, technical: 'NO MODEL HOLD ' + job.name + ' (' + agentId + '): ' + tk.reason, key: 'no-model-hold:' + agentId + ':' + require('crypto').createHash('sha256').update(nkey).digest('hex').slice(0, 10) });
+        } catch (_) {}
+      }
+      continue;
+    }
     if (tk.decision === 'hold' && tk.quota) { log('QUOTA HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'its model is at its usage limit; it waits for the limit to reset or its next model' }); continue; }
     if (tk.decision === 'hold') {
       log('REFUSAL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason);
