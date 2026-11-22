@@ -35,6 +35,22 @@ function running(root) {
   }
   return out.sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
 }
+// Remove stale watched-jobs/*.json files whose watcher/process is dead (e.g. after a host reboot) and older than minAgeMs.
+function pruneDeadRunning(root, minAgeMs) {
+  const age = minAgeMs == null ? 5 * 60e3 : Number(minAgeMs);
+  const dir = RUNNING_DIR(root);
+  let names = []; try { names = fs.readdirSync(dir).filter(f => f.endsWith('.json')); } catch (_) { return 0; }
+  let removed = 0; const now = Date.now();
+  for (const f of names) {
+    const p = path.join(dir, f);
+    let r = null; try { r = JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) {}
+    if (r && alive(r.watcherPid || r.pid)) continue;
+    let st = null; try { st = fs.statSync(p); } catch (_) { continue; }
+    if (now - st.mtimeMs < age) continue;
+    try { fs.unlinkSync(p); removed++; } catch (_) {}
+  }
+  return removed;
+}
 function redact(text, root) {
   let out = String(text == null ? '' : text);
   try {
@@ -82,4 +98,4 @@ function words(r) {
   const how = r.status === 'ok' ? 'finished: exit 0' : r.status === 'ended' ? 'ended (exit code unknown)' : r.status === 'killed' ? 'FAILED: killed' + (r.signal ? ' (' + r.signal + ')' : '') : r.status === 'timeout' ? 'FAILED: timed out' : 'FAILED: exit ' + r.exit;
   return what + ' ' + how + ' after ' + mins(r.durationMs);
 }
-module.exports = { FILE, RUNNING_DIR, MAX_ROWS, KEEP_ROWS, MAX_BYTES, recent, running, append, redact, words, failed, alive, mins };
+module.exports = { FILE, RUNNING_DIR, MAX_ROWS, KEEP_ROWS, MAX_BYTES, recent, running, pruneDeadRunning, append, redact, words, failed, alive, mins };

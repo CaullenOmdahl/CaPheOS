@@ -14,9 +14,12 @@ const fs = require('fs');
 const path = require('path');
 const PB = require('./lib/provider-balance');
 
-function duty() {
-  const s = PB.status('deepseek');
+function duty(o) {
+  const s = PB.status('deepseek', o);
   if (!s.low) return 0;
+  const now = (o && o.now) || Date.now();
+  // Once an empty/unavailable account has been alerted for >24h with no change, don't keep waking finance every 30m
+  if (s.available === false && s.alerted && s.since && (now - s.since) >= 24 * 3600e3) return 0;
   process.stdout.write(JSON.stringify({ due: true, route: 'finance', key: 'balance-' + String(s.key).replace(/[^a-z0-9:,-]/gi, '').slice(0, 80),
     reason: 'DeepSeek prepaid credit is below its low line (about ' + PB.DAYS + ' days of use) in ' + s.currencies.length + ' currenc' + (s.currencies.length === 1 ? 'y' : 'ies') + '; topping it up is the owner\'s (they have the amount on Spend): make sure it is in hand, or move DeepSeek seats to their next model before calls fail' }) + '\n');
   return 1;

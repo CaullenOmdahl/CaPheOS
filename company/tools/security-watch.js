@@ -478,7 +478,10 @@ function makeNet(c, pol, deadline) {
       const left = deadline - Date.now(); if (left < 1000) throw Object.assign(new Error('out of time for this tick'), { budget: true });
       const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), Math.min(pol.requestTimeoutMs, left));
       try {
-        const r = await fetch(url, { method: (opt && opt.method) || 'GET', headers: { 'content-type': 'application/json', 'user-agent': 'capheos-security-watch' }, body: opt && opt.body ? JSON.stringify(opt.body) : undefined, signal: ctl.signal, redirect: 'error' });
+        const hasBody = !!(opt && opt.body);
+        const headers = { 'accept': 'application/json', 'user-agent': 'Mozilla/5.0 (compatible; CaPheOS-SecurityWatch/1.0)' };
+        if (hasBody) headers['content-type'] = 'application/json';
+        const r = await fetch(url, { method: (opt && opt.method) || 'GET', headers, body: hasBody ? JSON.stringify(opt.body) : undefined, signal: ctl.signal, redirect: 'error' });
         if (!r.ok) throw new Error(host + ' answered HTTP ' + r.status);
         const text = await r.text(); if (text.length > 32 * 1024 * 1024) throw new Error(host + ' answered more than 32 MB');
         return JSON.parse(text);
