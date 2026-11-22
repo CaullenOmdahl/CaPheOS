@@ -939,7 +939,7 @@ function lastRunTail(job) {
     const job = findLoop(jobs, agentId);
     if (!job) { log('CONFIG ERROR: no routine matches "' + LOOP_OF[agentId] + '" for ' + agentId); continue; }
     const prompt = job.prompt || '';
-    if (!prompt.includes('/api/quests')) log('CONFIG ERROR: "' + job.name + '" prompt cannot do quest work (no /api/quests) for ' + agentId);
+    if (!prompt.includes('/api/quests') && !prompt.includes('quest-tick.js') && !/\bquest\.(list|update)\b/.test(prompt)) log('CONFIG ERROR: "' + job.name + '" prompt cannot do quest work (no /api/quests or quest-tick.js) for ' + agentId);
     if (INBOX_OF[agentId] && !prompt.includes(INBOX_OF[agentId])) log('CONFIG ERROR: "' + job.name + '" prompt missing inbox ' + INBOX_OF[agentId] + ' for ' + agentId);
   }
   // Three-tier latitude (company/work/people/LATITUDE.md), fail-safe. First the locked-file watch
