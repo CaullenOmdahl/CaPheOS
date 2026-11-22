@@ -16,6 +16,8 @@ node company/tools/guardrails.js show [--json]
 node company/tools/guardrails.js set <name> on|off --by <owner> [--why "..."]
 node company/tools/guardrails.js off-all --by <owner> --confirm "I understand there are no guardrails"
 node company/tools/guardrails.js on-all --by <owner>
+node company/tools/guardrails.js presets [--json]
+node company/tools/guardrails.js preset <name> --by <owner> [--why "..."] [--i-understand]
 node company/tools/guardrails.js sandbox on|off --by <owner>
 node company/tools/guardrails.js sandbox detect
 node company/tools/guardrails.js apply [--dry-run]
@@ -40,6 +42,49 @@ Every change does four things:
 - whether it is **station-backed** or **framework-only**.
 
 When any switch is off and `sandbox` is not set, `show` prints a loud banner.
+
+## Pick a preset
+
+The switches are yours. This may run on a spare headless machine, a rented server, in Docker or on bare metal, and a
+preset is a recommended starting point for each, not a rule. `node company/tools/guardrails.js presets` lists them;
+`node company/tools/guardrails.js preset <name> --by owner` applies one. It follows the same owner-only rule and leaves
+the same four records as changing a single switch. Change any switch afterwards and `show` reads **custom**.
+
+| Preset | Use it when | What it turns off |
+|---|---|---|
+| `main-machine` | your everyday computer with your personal files | nothing (the default) |
+| `dedicated-box` | a spare or headless machine used only for this | `localComputer`, `privilegedShell` |
+| `container` | Docker or a virtual machine you can throw away | `localComputer`, `privilegedShell`, `harnessSelfEdit` |
+| `cloud` | a rented server reachable from the internet | `localComputer` (admin commands, secrets, outside actions and injection checks stay on) |
+| `off` | you want no guardrails and know what that means | everything except `halt`; needs `--i-understand` |
+
+`halt` is the stop button and is on in every preset. The chosen name is stored as `preset` in
+`company/state/guardrails.json`. Running with everything off on your main machine is your right; `show` says plainly
+that it is off, and setting `sandbox on` records that the machine is disposable.
+
+**The owner check is a seatbelt, not a wall.** The company runs as one Unix user, shared by the owner's shell and the
+agents' runs. "Only the owner changes a guardrail" is checked from where the command was started (see the header of
+`company/tools/provenance.js`): it stops an agent doing it by accident or by following a bad instruction, and it leaves
+a record, but it cannot stop a process with the same user's file access. For a hard wall, run the company in a container
+or as a separate user, which is what the `container` and `cloud` presets are for.
+
+### A check that ignores its switch
+
+A switch that is OFF must govern the check it names. The audit behind the presets found and fixed these:
+
+- `ownerGates` OFF: `approvals.js` still treated the four fixed gates as closed (owner-only, not answerable in chat,
+  and `unknown category` when they were not in the category list). They are now ordinary categories while the switch is
+  off. `lib/owner-rulings.js` no longer refuses a standing rule for them. `governance.js set access|ownership|commitment|spendBeyondCap`
+  now works (stored as `fixedLevels`, never `triage`); `lib/company.js gate()` and `lib/governance.js level()` read it.
+  Turning the switch back on closes the gates again, whatever level was stored.
+- `externalActions` OFF: `external-gate.js` already returns before the allowlist and clearance rows, so the allowlist
+  and the `reach` module's gate call are skipped; this is now covered by a test.
+
+Left alone on purpose: shape checks (a request with no category or target; a publish target that is too wide) and
+`reach`'s private-address block (SSRF) and its closed daily limit, which are input validation and the owner's own
+budget, not the guardrail; `delegation.js` never delegating the fixed gates (a grant the owner makes by hand); the
+station's injection tripwire (not part of this repo, see `promptInjection` below); `harness-change.js` asking the owner
+to review edits to a fixed-gate tool (a review rule, governed by `harnessSelfEdit`).
 
 ## The switches
 

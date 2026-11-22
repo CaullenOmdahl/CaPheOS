@@ -764,6 +764,13 @@ route('POST', /^\/api\/guardrails\/all$/, (m, q, b) => {
   if (b.why) args.push('--why', str(b.why, 'why'));
   return runApi('guardrails.js', args);
 });
+// presets: the list rides in GET /api/guardrails (`presets`, `preset`); `off` needs understand:true
+route('POST', /^\/api\/guardrails\/preset$/, (m, q, b) => {
+  const args = ['preset', str(b.name, 'name') || bad('name is required'), '--by', OWNER];
+  if (b.understand === true) args.push('--i-understand');
+  if (b.why) args.push('--why', str(b.why, 'why'));
+  return runApi('guardrails.js', args);
+});
 route('POST', /^\/api\/guardrails\/sandbox$/, (m, q, b) => runApi('guardrails.js', ['sandbox', onOff(b.on), '--by', OWNER]));
 route('GET', /^\/api\/halt$/, () => runApi('halt.js', ['status', '--json']));
 route('POST', /^\/api\/halt\/soft$/, (m, q, b) => {
@@ -1456,6 +1463,14 @@ async function selftest() {
     check('guardrail shows off', r.json.ok && r.json.guards.some(g => g.name === 'externalActions' && g.on === false), r.json && r.json.off);
     r = await call('POST', '/api/guardrails/set', { name: 'externalActions', on: true });
     check('guardrail back on', r.status === 200 && r.json.ok, r.json);
+    r = await call('POST', '/api/guardrails/preset', { name: 'cloud' });
+    check('guardrail preset applies', r.status === 200 && r.json.ok && r.json.preset === 'cloud', r.json);
+    r = await call('GET', '/api/guardrails');
+    check('guardrails list the presets and the current one', r.json.preset === 'cloud' && Array.isArray(r.json.presets) && r.json.presets.length === 5, r.json && r.json.preset);
+    r = await call('POST', '/api/guardrails/preset', { name: 'off' });
+    check('the off preset needs the owner to say they understand', r.status >= 400, r.json);
+    r = await call('POST', '/api/guardrails/preset', { name: 'main-machine' });
+    check('guardrail preset back to main-machine', r.status === 200 && r.json.ok, r.json);
     r = await call('POST', '/api/guardrails/set', { name: 'halt', on: false });
     check('halt guardrail cannot be switched off', r.status >= 400, r.json);
     // background services (Settings › System)

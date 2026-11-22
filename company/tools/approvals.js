@@ -114,7 +114,8 @@ function policy() {
 }
 /* the fixed owner gates: governance.json `fixed`, the one source (a drift test checks gate-triage's rule against it) */
 function fixedSet() { return Object.keys((gov.doc(S.govOpts) || {}).fixed || {}); }
-const isFixed = c => !!c && fixedSet().includes(c);
+// ownerGates OFF (guardrails.js): the four gates are ordinary categories and governance levels alone decide
+const isFixed = c => !!c && fixedSet().includes(c) && gov.guard('ownerGates', S.govOpts);
 const levelNow = c => { try { return gov.level(c, Object.assign({}, S.govOpts, { triage: true })); } catch (_) { return 'approve'; } };
 
 /* ---------- people ---------- */
@@ -280,7 +281,7 @@ async function ask(o) {
   const message = String(o.message || '').trim();
   if (!from || !category || !message) return refuse('usage', 'ask needs --from, --category and --message');
   const g = gov.doc(S.govOpts) || {};
-  if (!isFixed(category) && !(g.categories && category in g.categories)) return refuse('usage', 'unknown category "' + category + '" (' + Object.keys(g.categories || {}).concat(fixedSet()).join(', ') + ')');
+  if (!fixedSet().includes(category) && !(g.categories && category in g.categories)) return refuse('usage', 'unknown category "' + category + '" (' + Object.keys(g.categories || {}).concat(fixedSet()).join(', ') + ')');
   let params; try { params = canonical(typeof o.params === 'string' ? JSON.parse(o.params) : o.params || {}); } catch (e) { return refuse('usage', '--params: ' + e.message); }
   const summary = message.replace(/\s+/g, ' ').slice(0, 200);
   let lv = isFixed(category) ? 'approve' : gov.level(category, Object.assign({}, S.govOpts, { triage: true }));

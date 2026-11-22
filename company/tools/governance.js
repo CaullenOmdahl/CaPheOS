@@ -70,7 +70,16 @@ function record(opts, by, changes, d) {
 function set(category, lv, by, opts) {
   const why = refuseCaller(by); if (why) return { ok: false, code: 3, error: why };
   const d = load(opts);
-  if ((d.fixed || {})[category]) return { ok: false, code: 2, error: category + ' is a fixed owner gate: it is always approve and cannot be changed' };
+  if ((d.fixed || {})[category]) {
+    // the ownerGates guardrail is the switch: ON = always approve; OFF = the owner may give a fixed gate a level (never triage)
+    if (gov.guard('ownerGates', opts)) return { ok: false, code: 2, error: category + ' is a fixed owner gate: it is always approve and cannot be changed (the ownerGates guardrail is on)' };
+    if (!LEVELS.includes(lv) || lv === 'triage') return { ok: false, code: 2, error: 'level must be auto, notify or approve for a fixed gate' };
+    const from = (d.fixedLevels || {})[category] || 'approve';
+    if (from === lv) return { ok: true, unchanged: true, category, level: lv };
+    d.fixedLevels = Object.assign({}, d.fixedLevels, { [category]: lv });
+    record(opts, by, [{ category, from, to: lv }], d);
+    return { ok: true, category, from, to: lv, preset: d.preset };
+  }
   if (!Object.prototype.hasOwnProperty.call(d.categories || {}, category)) return { ok: false, code: 2, error: 'unknown category ' + category + '; one of ' + Object.keys(d.categories || {}).join(', ') };
   if (!LEVELS.includes(lv)) return { ok: false, code: 2, error: 'level must be one of ' + LEVELS.join(', ') };
   const from = d.categories[category];

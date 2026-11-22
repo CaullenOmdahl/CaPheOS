@@ -5,6 +5,8 @@
  *   node company/tools/guardrails.js set <name> on|off --by <owner> [--why "..."]
  *   node company/tools/guardrails.js off-all --by <owner> --confirm "I understand there are no guardrails" [--why "..."]
  *   node company/tools/guardrails.js on-all --by <owner> [--why "..."]
+ *   node company/tools/guardrails.js presets [--json]            the recommended starting points, one plain line each
+ *   node company/tools/guardrails.js preset <name> --by <owner> [--why "..."] [--i-understand]   apply one (`off` needs --i-understand)
  *   node company/tools/guardrails.js sandbox on|off --by <owner>  record that the station runs isolated (a container or VM)
  *   node company/tools/guardrails.js sandbox detect               do we look containerised? (informational only)
  *   node company/tools/guardrails.js apply [--dry-run] [--by <owner>]   push the station-side switches through the station API
@@ -38,6 +40,26 @@ const OWNER = require('./lib/owner');
 
 const CONFIRM = 'I understand there are no guardrails';
 const FIXED_ON = new Set(['halt']);
+
+/* Presets: recommended starting points, not rules. `off` lists the switches a preset turns OFF; every other switch is ON
+ * and halt is always on. The applied name is stored in guardrails.json as `preset`; it reads "custom" as soon as the
+ * switches differ from it (presetOf). */
+const PRESETS = {
+  'main-machine': { off: [], line: 'Your everyday computer with your personal files: every safety setting on (the default).' },
+  'dedicated-box': { off: ['localComputer', 'privilegedShell'], line: 'A spare or headless machine used only for this: the crew may use the computer and admin commands; the rest stays on.' },
+  container: { off: ['localComputer', 'privilegedShell', 'harnessSelfEdit'], line: 'Docker or a virtual machine you can throw away: also lets the crew change its own rules; the rest stays on.' },
+  cloud: { off: ['localComputer'], line: 'A rented server reachable from the internet: the crew may use the machine, but admin commands, secrets, outside actions and injection checks stay on.' },
+  off: { off: ['ownerGates', 'spendCap', 'externalActions', 'harnessSelfEdit', 'defaultBranch', 'secrets', 'localComputer', 'privilegedShell', 'promptInjection'],
+    line: 'No safety settings at all (only Halt stays): your informed choice, needs --i-understand.', needsConfirm: true },
+};
+const OFF_WARNING = 'Every safety setting except Halt is now off: the crew can spend without a cap, contact the outside world, read secrets, change its own rules and run admin commands on this machine, and nothing will stop it. Switch them back on with `on-all` or pick a preset.';
+const presetValues = name => Object.fromEntries(gr.NAMES.map(n => [n, FIXED_ON.has(n) || !PRESETS[name].off.includes(n)]));
+/* the preset the switches show: the stored name while the switches still match it, else another preset they match exactly, else "custom" */
+function presetOf(d) {
+  const same = name => gr.NAMES.every(n => isOn(d, n) === presetValues(name)[n]);
+  if (d.preset && PRESETS[d.preset] && same(d.preset)) return d.preset;
+  return Object.keys(PRESETS).find(same) || 'custom';
+}
 
 /* Where each switch is enforced and whether the station has a switch of its own. `files` are checked by `show` for a
  * guard('<name>') (or the name in quotes, for the shell and Python gates) so a switch that nothing reads yet is visible. */
@@ -142,6 +164,7 @@ function appliedNotice(results) {
 function record(ctx, by, why, changes, d, event) {
   const at = new Date(ctx.now()).toISOString();
   d.changedAt = at; d.changedBy = String(by);
+  if (event !== 'preset') d.preset = presetOf(Object.assign({}, d, { preset: d.preset }));
   writeAtomic(ctx.files.state, JSON.stringify(d, null, 2) + '\n');
   append(ctx.files.log, JSON.stringify({ at, by: String(by), event, why: why || null, changes, sandbox: !!d.sandbox }) + '\n');
   if (!fs.existsSync(ctx.files.decisions)) append(ctx.files.decisions, '# Decisions\n\n');
@@ -183,6 +206,29 @@ function setAll(ctx, val, by, why, confirm) {
   if (!changes.length && fs.existsSync(ctx.files.state)) return { ok: true, unchanged: true, all: val };
   record(ctx, by, why, changes.length ? changes : [{ name: '(all)', from: 'defaults', to: val }], d, val === 'off' ? 'off-all' : 'on-all');
   return { ok: true, all: val, changes, next: nextSteps(changes.map(c => c.name), val), halt: 'on (always)' };
+}
+function listPresets(d) {
+  const cur = d ? presetOf(d) : null;
+  return Object.keys(PRESETS).map(name => ({ name, line: PRESETS[name].line, off: PRESETS[name].off.slice(), current: name === cur, needsConfirm: !!PRESETS[name].needsConfirm }));
+}
+function applyPreset(ctx, name, by, why, understand) {
+  const r = refuseCaller(ctx, by); if (r) return err(3, r);
+  if (!Object.prototype.hasOwnProperty.call(PRESETS, name)) return err(2, 'unknown preset ' + name + '; one of ' + Object.keys(PRESETS).join(', '));
+  if (PRESETS[name].needsConfirm && !understand) return err(2, 'the "' + name + '" preset turns every safety setting off: add --i-understand to confirm. ' + OFF_WARNING);
+  const d = load(ctx), want = presetValues(name), changes = [];
+  d.guards = Object.assign({}, d.guards);
+  for (const n of gr.NAMES) {
+    const from = isOn(d, n) ? 'on' : 'off', to = want[n] ? 'on' : 'off';
+    d.guards[n] = want[n];
+    if (from !== to) changes.push({ name: n, from, to });
+  }
+  const fromPreset = presetOf(load(ctx));
+  if (!changes.length && fromPreset === name && fs.existsSync(ctx.files.state)) return { ok: true, unchanged: true, preset: name };
+  d.preset = name;
+  record(ctx, by, why, changes.concat([{ name: 'preset', from: fromPreset, to: name }]), d, 'preset');
+  const out = { ok: true, preset: name, changes, next: nextSteps(changes.map(c => c.name), 'off'), halt: 'on (always)' };
+  if (name === 'off') out.warning = OFF_WARNING;
+  return out;
 }
 function setSandbox(ctx, val, by, why) {
   const r = refuseCaller(ctx, by); if (r) return err(3, r);
@@ -233,11 +279,12 @@ function show(ctx) {
   const banner = off.length && !d.sandbox
     ? 'GUARDRAILS OFF (' + off.join(', ') + ') AND SANDBOX IS NOT SET: agents run without these blocks on a station that is not recorded as isolated. Run it in a disposable container (docs/GUARDRAILS.md) and `sandbox on --by owner`, or `on-all --by owner`.'
     : null;
-  return { ok: true, sandbox: !!d.sandbox, detect: det, off, banner, changedAt: d.changedAt || null, changedBy: d.changedBy || null, file: path.relative(ctx.root, fs.existsSync(ctx.files.state) ? ctx.files.state : ctx.files.def), guards: rows };
+  return { ok: true, preset: presetOf(d), presets: listPresets(d), sandbox: !!d.sandbox, detect: det, off, banner, changedAt: d.changedAt || null, changedBy: d.changedBy || null, file: path.relative(ctx.root, fs.existsSync(ctx.files.state) ? ctx.files.state : ctx.files.def), guards: rows };
 }
 function printShow(s) {
   const L = [];
   if (s.banner) { const bar = '!'.repeat(100); L.push(bar, '!! ' + s.banner, bar, ''); }
+  L.push('Preset: ' + s.preset);
   L.push('Guardrails (' + s.file + ')' + (s.changedAt ? ', last changed ' + s.changedAt + ' by ' + s.changedBy : '') + '; sandbox: ' + (s.sandbox ? 'ON' : 'off') +
     ' (detect: ' + (s.detect.containerised ? 'looks containerised: ' + s.detect.hints.join('; ') : 'does not look containerised') + ')');
   if (s.sandbox && !s.detect.containerised) L.push('  note: sandbox is ON but this process does not look containerised');
@@ -449,6 +496,58 @@ async function selftest() {
     const db = s.guards.find(g => g.name === 'defaultBranch');
     assert.ok(Array.isArray(db.wiredIn) && db.enforcedIn.length === 3);
   });
+  await t('presets lists every preset with one plain line; the current one is marked', async () => {
+    const rows = listPresets(load(ctx));
+    assert.deepStrictEqual(rows.map(p => p.name), ['main-machine', 'dedicated-box', 'container', 'cloud', 'off']);
+    assert.ok(rows.every(p => p.line && p.line.length > 20) && rows.find(p => p.name === 'off').needsConfirm);
+    assert.strictEqual(rows.filter(p => p.current).length, 1);
+    assert.ok(!PRESETS['off'].off.includes('halt') && Object.values(PRESETS).every(p => !p.off.includes('halt')));
+  });
+  await t('preset: an agent, a wrong --by and an unknown name are refused; nothing changes', async () => {
+    const before = fs.readFileSync(ctx.files.state, 'utf8');
+    agent = true; let r = applyPreset(ctx, 'container', 'owner'); agent = false; assert.strictEqual(r.code, 3);
+    assert.strictEqual(applyPreset(ctx, 'container', 'Sam').code, 3);
+    assert.strictEqual(applyPreset(ctx, 'no-such', 'owner').code, 2);
+    assert.strictEqual(fs.readFileSync(ctx.files.state, 'utf8'), before);
+  });
+  await t('preset container: stores the name, switches the three off, logs and tells the owner like a single change', async () => {
+    const logs = logRows().length, toldBefore = told.length;
+    const r = applyPreset(ctx, 'container', 'owner', 'disposable box');
+    assert.ok(r.ok && r.preset === 'container');
+    assert.deepStrictEqual(show(ctx).off.sort(), ['harnessSelfEdit', 'localComputer', 'privilegedShell']);
+    assert.strictEqual(state().preset, 'container'); assert.strictEqual(show(ctx).preset, 'container');
+    const L = logRows(); assert.strictEqual(L.length, logs + 1); assert.strictEqual(L[L.length - 1].event, 'preset'); assert.strictEqual(L[L.length - 1].by, 'owner');
+    assert.ok(/changed guardrails/.test(fs.readFileSync(ctx.files.decisions, 'utf8')) && told.length === toldBefore + 1);
+    assert.strictEqual(applyPreset(ctx, 'container', 'owner').unchanged, true);
+  });
+  await t('each non-off preset leaves exactly its list off, halt on; cloud keeps privilegedShell, secrets, externalActions, promptInjection on', async () => {
+    for (const name of ['main-machine', 'dedicated-box', 'cloud', 'container']) {
+      assert.ok(applyPreset(ctx, name, 'owner').ok);
+      assert.deepStrictEqual(show(ctx).off.sort(), PRESETS[name].off.slice().sort(), name);
+      assert.ok(show(ctx).guards.find(g => g.name === 'halt').on); assert.strictEqual(show(ctx).preset, name);
+    }
+    applyPreset(ctx, 'cloud', 'owner');
+    const on = n => show(ctx).guards.find(g => g.name === n).on;
+    assert.ok(['privilegedShell', 'secrets', 'externalActions', 'promptInjection'].every(on) && !on('localComputer'));
+  });
+  await t('preset off needs --i-understand; with it every switch but halt is off and one plain warning comes back', async () => {
+    const r0 = applyPreset(ctx, 'off', 'owner'); assert.strictEqual(r0.code, 2); assert.ok(/--i-understand/.test(r0.error));
+    assert.strictEqual(show(ctx).preset, 'cloud', 'refused: nothing changed');
+    const r = applyPreset(ctx, 'off', 'owner', null, true);
+    assert.ok(r.ok && r.warning && show(ctx).preset === 'off');
+    assert.deepStrictEqual(show(ctx).off.sort(), gr.NAMES.filter(n => n !== 'halt').sort());
+    assert.strictEqual(gr.guardIn(T, 'halt'), true);
+  });
+  await t('custom: one switch that differs from the preset reads "custom"; switching it back restores the name; on-all reads main-machine', async () => {
+    applyPreset(ctx, 'dedicated-box', 'owner');
+    assert.ok(setOne(ctx, 'secrets', 'off', 'owner').ok);
+    assert.strictEqual(show(ctx).preset, 'custom'); assert.strictEqual(state().preset, 'custom');
+    assert.ok(listPresets(load(ctx)).every(p => !p.current));
+    assert.ok(setOne(ctx, 'secrets', 'on', 'owner').ok);
+    assert.strictEqual(show(ctx).preset, 'dedicated-box');
+    assert.ok(setAll(ctx, 'off', 'owner', null, CONFIRM).ok); assert.strictEqual(show(ctx).preset, 'off');
+    assert.ok(setAll(ctx, 'on', 'owner').ok); assert.strictEqual(show(ctx).preset, 'main-machine');
+  });
 
   if (prevProv === undefined) delete process.env.PROVENANCE_ROOT; else process.env.PROVENANCE_ROOT = prevProv;
   try { fs.rmSync(T, { recursive: true, force: true }); } catch (_) {}
@@ -460,7 +559,7 @@ function parse(argv) {
   const pos = [], flags = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith('--')) { const k = a.slice(2); if (['json', 'dry-run'].includes(k)) flags[k] = true; else flags[k] = argv[i + 1] !== undefined ? argv[++i] : ''; }
+    if (a.startsWith('--')) { const k = a.slice(2); if (['json', 'dry-run', 'i-understand'].includes(k)) flags[k] = true; else flags[k] = argv[i + 1] !== undefined ? argv[++i] : ''; }
     else pos.push(a);
   }
   return { pos, flags };
@@ -476,11 +575,18 @@ if (require.main === module) {
       if (cmd === 'set') { if (pos.length !== 2) done(err(2, 'set <name> on|off --by <owner> [--why "..."]')); done(setOne(ctx, pos[0], pos[1], flags.by, flags.why)); }
       if (cmd === 'off-all') done(setAll(ctx, 'off', flags.by, flags.why, flags.confirm));
       if (cmd === 'on-all') done(setAll(ctx, 'on', flags.by, flags.why));
+      if (cmd === 'presets') {
+        const rows = listPresets(load(ctx)), cur = presetOf(load(ctx));
+        if (flags.json) { console.log(JSON.stringify({ ok: true, preset: cur, presets: rows }, null, 1)); process.exit(0); }
+        console.log(rows.map(p => (p.current ? '* ' : '  ') + p.name.padEnd(14) + p.line).join('\n') + '\n\nNow: ' + cur + '. Apply one: node company/tools/guardrails.js preset <name> --by owner');
+        process.exit(0);
+      }
+      if (cmd === 'preset') { if (pos.length !== 1) done(err(2, 'preset <name> --by <owner> [--i-understand]')); const r = applyPreset(ctx, pos[0], flags.by, flags.why, !!flags['i-understand']); if (r.warning) console.error('WARNING: ' + r.warning); done(r); }
       if (cmd === 'sandbox') { if (pos[0] === 'detect') done(Object.assign({ ok: true }, detect(ctx))); done(setSandbox(ctx, pos[0], flags.by, flags.why)); }
       if (cmd === 'apply') done(await apply(ctx, { dry: !!flags['dry-run'], by: flags.by }));
       if (cmd === 'selftest') { const { out, bad } = await selftest(); for (const l of out) console.log(l); console.log(bad ? bad + ' FAILED' : 'all ' + out.length + ' checks passed'); process.exit(bad ? 1 : 0); }
-      done(err(2, 'commands: show [--json], set <name> on|off --by <owner>, off-all --by <owner> --confirm "' + CONFIRM + '", on-all --by <owner>, sandbox on|off|detect, apply [--dry-run], selftest'));
+      done(err(2, 'commands: show [--json], presets [--json], preset <name> --by <owner>, set <name> on|off --by <owner>, off-all --by <owner> --confirm "' + CONFIRM + '", on-all --by <owner>, sandbox on|off|detect, apply [--dry-run], selftest'));
     } catch (e) { done(err(e.code === 1 ? 1 : 1, String((e && e.message) || e))); }
   })();
 }
-module.exports = { show, setOne, setAll, setSandbox, detect, plan, apply, context, MAP, CONFIRM, changedNotice, appliedNotice, PLAIN_NAMES };
+module.exports = { show, presetOf, listPresets, applyPreset, PRESETS, setOne, setAll, setSandbox, detect, plan, apply, context, MAP, CONFIRM, changedNotice, appliedNotice, PLAIN_NAMES };

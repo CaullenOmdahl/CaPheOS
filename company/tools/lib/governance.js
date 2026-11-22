@@ -84,7 +84,11 @@ function level(category, opts) {
   if (opts && LEVELS.includes(opts.level)) return opts.level === 'triage' && (!tri || fixed()) ? 'approve' : opts.level;
   if (isLive(opts)) return co.gate(category, { triage: tri });
   const g = g0();
-  if (g.fixed && g.fixed[category] && guard('ownerGates', opts)) return 'approve';
+  if (g.fixed && g.fixed[category]) {
+    if (guard('ownerGates', opts)) return 'approve';
+    const fv = g.fixedLevels && g.fixedLevels[category];   // ownerGates OFF: the owner may set a level for a fixed gate (governance.js set)
+    return LEVELS.includes(fv) && fv !== 'triage' ? fv : 'approve';
+  }
   const v = g.categories && g.categories[category];
   if (v === 'triage') return tri && !(g.fixed && g.fixed[category]) ? 'triage' : 'approve';
   return LEVELS.includes(v) ? v : 'approve';

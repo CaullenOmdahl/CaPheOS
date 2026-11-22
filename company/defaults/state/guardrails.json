@@ -1,5 +1,6 @@
 {
   "_doc": "Hard blocks the tools enforce, one switch each. Separate from self-governance levels (governance.json): a level says who decides; a guardrail is a stop that holds whatever anyone decides. Read through co.guard(name) (company/tools/lib/company.js): true = the block is ON. Changed only by the owner (node company/tools/guardrails.js set|off-all|on-all --by <owner>), every change logged and watched by locked-watch.js while that guardrail itself is on. Turning a guardrail off is meant for experiments, ideally in a disposable container: set `sandbox` true to record that the station runs isolated; guardrails.js warns loudly when guardrails are off and sandbox is false.",
+  "preset": "main-machine",
   "sandbox": false,
   "guards": {
     "ownerGates": true,
