@@ -1,0 +1,43 @@
+# 0026-checkpoint-root-guard.diff
+# Refuse snapshotting filesystem roots, host system directories (/etc, /opt, /var, /usr, ...), or the
+# bare home directory in sidecar/checkpoint-store.js, and honor STARNET_CHECKPOINT_MAX_BYTES to bound
+# per-agent .checkpoints shadow-repo disk/page-cache growth.
+#
+# Apply:  git -C starnet apply --3way --whitespace=nowarn ../company/patches/0026-checkpoint-root-guard.diff
+# Revert: git -C starnet apply -R ../company/patches/0026-checkpoint-root-guard.diff
+diff --git a/sidecar/checkpoint-store.js b/sidecar/checkpoint-store.js
+index 6ef0faa..7a06afe 100644
+--- a/sidecar/checkpoint-store.js
++++ b/sidecar/checkpoint-store.js
+@@ -143,7 +143,8 @@
+     const scopeIdOf = typeof d.scopeIdOf === 'function' ? d.scopeIdOf : null;
+     const allowWorkTree = typeof d.allowWorkTree === 'function' ? d.allowWorkTree : function () { return false; };
+     const keep = d.keep != null ? d.keep : KEEP_DEFAULT;
+-    const maxRepoBytes = d.maxRepoBytes != null ? d.maxRepoBytes : MAX_REPO_BYTES_DEFAULT;
++    const envMaxBytes = Number(process.env.STARNET_CHECKPOINT_MAX_BYTES);
++    const maxRepoBytes = d.maxRepoBytes != null ? d.maxRepoBytes : (Number.isFinite(envMaxBytes) && envMaxBytes >= 10 * 1024 * 1024 ? envMaxBytes : MAX_REPO_BYTES_DEFAULT);
+     // per-call bound for gc and the re-init add/commit (injectable so a test can kill a real gc mid-repack)
+     const maintenanceTimeoutMs = d.maintenanceTimeoutMs > 0 ? d.maintenanceTimeoutMs : MAINTENANCE_GIT_TIMEOUT_MS;
+     // the link walk's budget (injectable so a test can trip each bound on a small synthetic tree)
+@@ -189,9 +190,21 @@
+       try { if (typeof fs.realpathSync === 'function') out = fs.realpathSync(out); } catch (_) {}
+       return out;
+     }
++    const SYS_ROOTS = new Set(['/bin', '/boot', '/dev', '/etc', '/lib', '/lib64', '/opt', '/proc', '/root', '/run', '/sbin', '/srv', '/sys', '/usr', '/var']);
++    function isForbiddenWorkTree(p) {
++      const norm = pathMod.resolve(String(p || ''));
++      if (!norm || norm === pathMod.parse(norm).root) return true;
++      try { const home = pathMod.resolve(require('os').homedir()); if (samePath(norm, home)) return true; } catch (_) {}
++      if (process.platform !== 'win32') {
++        if (norm === '/var/tmp' || norm.startsWith('/var/tmp/')) return false;
++        for (const sr of SYS_ROOTS) { if (norm === sr || norm.startsWith(sr + '/')) return true; }
++      }
++      return false;
++    }
+     function externalScope(aid, requested, authorized) {
+       if (!requested) return { id: '', workTree: defaultWorkTreeFor(aid), prefix: '' };
+       const workTree = canonicalWorkTree(requested);
++      if (isForbiddenWorkTree(workTree)) return null;
+       if (samePath(workTree, defaultWorkTreeFor(aid))) return { id: '', workTree: defaultWorkTreeFor(aid), prefix: '' };
+       if (!scopeIdOf || (authorized !== true && allowWorkTree(workTree, aid) !== true)) return null;
+       const id = String(scopeIdOf(workTree) || '').toLowerCase();
