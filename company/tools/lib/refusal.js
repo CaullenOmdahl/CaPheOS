@@ -84,13 +84,42 @@ function trialRefusals(jobId, o) {
   return list.filter(b => b && b.trial && b.routineId === jobId && !b.clearedAt && Number(b.until) > now).map(b => ({ provider: b.provider, model: b.model, until: b.until }));
 }
 // the block on this routine for this provider, or null
-function blockFor(jobId, provider, o, model) { return activeBlocks(o).find(b => b.routineId === jobId && b.provider === provider && (!b.modelOnly || !model || b.model === model)) || null; }
+// one model under its alias and its full id ("sonnet" / "claude-sonnet-5-5", "opus" / "claude-opus-5-5"): the same model
+const FAMILY_RE = /\b(opus|sonnet|haiku|fable)\b/i;
+function sameModel(a, b) {
+  const x = String(a || '').toLowerCase(), y = String(b || '').toLowerCase();
+  if (x === y) return true;
+  const fx = FAMILY_RE.exec(x.replace(/[-_]/g, ' ')), fy = FAMILY_RE.exec(y.replace(/[-_]/g, ' '));
+  return !!(fx && fy && fx[1] === fy[1]);
+}
+function blockFor(jobId, provider, o, model) { return activeBlocks(o).find(b => b.routineId === jobId && b.provider === provider && (!b.modelOnly || !model || sameModel(b.model, model))) || null; }
 // does this block stop this chain entry? a model-only block (a content filter) stops only the model that refused
-const blocksEntry = (b, entry) => !!b && (!b.modelOnly || !entry || !entry.model || b.model === entry.model);
+// a provider-wide block stops every entry on it; a model-only one (or a seat summary holding several, byModel) stops only
+// the models that refused
+const blocksEntry = (b, entry) => {
+  if (!b) return false;
+  if (!b.modelOnly || !entry || !entry.model) return true;
+  if (b.byModel) return Object.keys(b.byModel).some(m => sameModel(m, entry.model));
+  return sameModel(b.model, entry.model);
+};
 // providers blocked for a seat: any of its routines refused on that provider and still in its window
 function blockedForSeat(jobIds, o) {
   const ids = new Set(jobIds || []); const out = {};
-  for (const b of activeBlocks(o)) if (ids.has(b.routineId) && (!out[b.provider] || out[b.provider].until < b.until)) out[b.provider] = b;
+  // per provider: the longest provider-wide block wins outright; with only model-only blocks, the summary is the
+  // longest of them plus byModel (every refused model), so a seat with two refused models is not shown one of them as open
+  const wide = {}, only = {};
+  for (const b of activeBlocks(o)) {
+    if (!ids.has(b.routineId)) continue;
+    if (!b.modelOnly) { if (!wide[b.provider] || wide[b.provider].until < b.until) wide[b.provider] = b; continue; }
+    const m = (only[b.provider] = only[b.provider] || {});
+    const k = String(b.model || '');
+    if (!m[k] || m[k].until < b.until) m[k] = b;
+  }
+  for (const p of new Set([...Object.keys(wide), ...Object.keys(only)])) {
+    if (wide[p]) { out[p] = wide[p]; continue; }
+    const byModel = only[p], longest = Object.values(byModel).sort((a, b) => b.until - a.until)[0];
+    out[p] = Object.assign({}, longest, { byModel });
+  }
   return out;
 }
 
@@ -127,4 +156,4 @@ function blockLine(seatName, b, count, now) {
   return pname(b.provider) + ' paused for ' + (seatName || 'this seat') + ' until ' + whenText(Number(b.until), null, now) + ', because it declined ' + (count > 1 ? count + ' runs' : 'a run') + ' in the last 24 hours';
 }
 
-module.exports = { blocksEntry, trialRefusals, refusalCount, whenText, blockLine, isRefusal, nextEntry, candidates, record, plainLine, keyOf, pname, activeBlocks, blockFor, blockedForSeat, closureFor };
+module.exports = { sameModel, blocksEntry, trialRefusals, refusalCount, whenText, blockLine, isRefusal, nextEntry, candidates, record, plainLine, keyOf, pname, activeBlocks, blockFor, blockedForSeat, closureFor };

@@ -253,7 +253,8 @@ function makeModels(o) {
     // a refusal block (the pacer's record, lib/refusal.js): this seat's run on this provider was refused and the block is
     // still on, so the entry cannot run for this seat until it ends; the seat runs on its next entry meanwhile
     const rb0 = ctx.refusalBlocks && ctx.refusalBlocks[id] && ctx.refusalBlocks[id][e.provider];
-    const rb = rb0 && REF.blocksEntry(rb0, e) ? rb0 : null;
+    // a seat summary with several refused models (byModel): show the block of the model this entry is
+    const rb = rb0 && REF.blocksEntry(rb0, e) ? ((rb0.byModel && (Object.entries(rb0.byModel).find(([m]) => REF.sameModel(m, e.model)) || [])[1]) || rb0) : null;
     if (rb) return { ok: false, why: (NAMES[e.provider] || e.provider) + ' refused a run of "' + (rb.name || 'its routine') + '" ' + REF.whenText(Number(rb.at), co.TZ, t) + ' and is blocked for this seat until ' + REF.whenText(Number(rb.until), co.TZ, t), refusalBlock: true, connected: true };
     const pv = ctx.providers;
     if (pv) {
