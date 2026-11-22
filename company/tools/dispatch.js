@@ -1446,7 +1446,29 @@ function lastRunTail(job) {
     if (tk.decision === 'hold' && tk.memory) { say(agentId, { state: 'held', why: 'has work, but the computer is short of memory; it starts when memory is free again' }); continue; }
     if (tk.decision === 'hold' && tk.noModel) { log('NO MODEL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'none of its models can run right now (limits or the daily budget); it starts when one opens' }); continue; }
     if (tk.decision === 'hold' && tk.quota) { log('QUOTA HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'its model is at its usage limit; it waits for the limit to reset or its next model' }); continue; }
-    if (tk.decision === 'hold') { log('REFUSAL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason); say(agentId, { state: 'held', why: 'its model refused a run; it waits for its next model' }); continue; }
+    if (tk.decision === 'hold') {
+      log('REFUSAL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason);
+      say(agentId, { state: 'held', why: 'its model refused a run; it waits for its next model' });
+      state.refusalAlerts = state.refusalAlerts || {};
+      const rkey = agentId + ':' + String(tk.reason || '').slice(0, 120);
+      const ra = state.refusalAlerts[agentId] || { key: '', ticks: 0, alerted: false };
+      if (ra.key !== rkey) { ra.key = rkey; ra.ticks = 0; ra.alerted = false; }
+      ra.ticks++;
+      state.refusalAlerts[agentId] = ra;
+      // Escalate promptly so a blocked seat (especially CEO) never sits dark for hours without anyone noticing.
+      const threshold = agentId === CEO_ID ? 1 : 2;
+      if (!DRY && !ra.alerted && ra.ticks >= threshold) {
+        ra.alerted = true;
+        const who = NAMES[agentId] || agentId;
+        const plain = agentId === CEO_ID
+          ? who + ' cannot run right now because the AI safety filter blocked its current model. Please switch its model or clear the block so work can resume.'
+          : who + ' is paused because the AI safety filter blocked its current model across repeated checks. Please switch its model or clear the block.';
+        try {
+          require('./lib/owner-notice').send({ kind: 'urgent', from: CEO_NAME, text: plain, technical: 'REFUSAL HOLD ' + job.name + ' (' + agentId + '): ' + tk.reason, key: 'refusal-hold:' + agentId + ':' + require('crypto').createHash('sha256').update(rkey).digest('hex').slice(0, 10) });
+        } catch (_) {}
+      }
+      continue;
+    }
     // the wake counts toward the tempo caps only now, past every hold (cadence.js recordWake)
     try { require('./cadence.js').recordWake(agentId, Date.now(), { ownerWake: ownerWake.has(agentId) }); } catch (_) {}
     log('RUN ' + job.name + ' for ' + agentId + ' (' + names + ')' + (rest.fast ? ' [Sprint: new work; rest ' + SPRINT.cooldownFloorMin + ' min]' : ''));
