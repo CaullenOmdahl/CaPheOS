@@ -104,6 +104,7 @@ const SPRINT = (() => { try { return require('./cadence.js').effective().sprint 
 const SPRINT_METRICS = path.join(ROOT, 'company', 'state', 'sprint-metrics.json');
 const SPRINT_EFFORT = path.join(ROOT, 'company', 'state', 'sprint-effort.json');
 const STALL_AFTER = num('DISPATCH_STALL_AFTER', 3);
+const NO_MODEL_LOG_MS = 60 * 60e3;   // NO MODEL HOLD: log the start of a hold, then at most hourly (lib/improve.js health reads the last 2 h)
 const BLOCK_STALL_AFTER = num('DISPATCH_BLOCK_STALL_AFTER', STALL_AFTER * 2);
 const BACKLOG_SWEEP_DAYS = num('DISPATCH_BACKLOG_SWEEP_DAYS', (CADENCE && Number(CADENCE.backlogSweepDays) > 0) ? Number(CADENCE.backlogSweepDays) : 1);
 const AGE_AFTER = num('DISPATCH_AGE_AFTER', 3);   // ticks a seat may lose the per-tick cut before it goes ahead of priority
@@ -1562,7 +1563,6 @@ function lastRunTail(job) {
     if (tk.memoryEdge === 'lift') log('MEMORY HOLD LIFTED: enough memory is free again; new work starts');
     if (tk.decision === 'hold' && tk.memory) { say(agentId, { state: 'held', why: 'has work, but the computer is short of memory; it starts when memory is free again' }); continue; }
     if (tk.decision === 'hold' && tk.noModel) {
-      log('NO MODEL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason);
       say(agentId, { state: 'held', why: 'none of its models can run right now (limits or the daily budget); it starts when one opens' });
       state.noModelAlerts = state.noModelAlerts || {};
       const nkey = agentId + ':' + String(tk.reason || '').slice(0, 120);
@@ -1570,6 +1570,11 @@ function lastRunTail(job) {
       if (na.key !== nkey) { na.key = nkey; na.ticks = 0; na.alerted = false; }
       na.ticks++;
       state.noModelAlerts[agentId] = na;
+      // the same hold is logged when it starts, then at most hourly (a day-long hold was ~140 identical lines)
+      if (na.ticks === 1 || !(Date.now() - (na.loggedAt || 0) < NO_MODEL_LOG_MS)) {
+        na.loggedAt = Date.now();
+        log('NO MODEL HOLD ' + job.name + ' for ' + agentId + ': ' + tk.reason + (na.ticks > 1 ? ' (still held, ' + na.ticks + ' checks)' : ''));
+      }
       const nThresh = agentId === CEO_ID ? 2 : 6;
       if (!DRY && !na.alerted && na.ticks >= nThresh) {
         na.alerted = true;
