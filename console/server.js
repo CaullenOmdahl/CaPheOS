@@ -916,21 +916,53 @@ const WATCHES = [
   ['activity', ['company', 'owner'], () => true],
 ];
 const timers = {};
+const lastEmitAt = {};
+const SSE_FIRST_MS = 250;
+const SSE_BURST_MS = Number(process.env.CONSOLE_SSE_BURST_MS) >= 0 ? Number(process.env.CONSOLE_SSE_BURST_MS) : 2000;
+const GET_CACHE_MS = Number(process.env.CONSOLE_GET_CACHE_MS) >= 0 ? Number(process.env.CONSOLE_GET_CACHE_MS) : 2000;
+const getCache = new Map();     // key -> { at, out }
+const getInFlight = new Map();  // key -> Promise
+function invalidateGetCache() { getCache.clear(); }
+
 function emit(topic) {
-  clearTimeout(timers[topic]);
-  timers[topic] = setTimeout(() => { const msg = 'event: change\ndata: ' + JSON.stringify({ topic }) + '\n\n'; for (const c of clients) c.write(msg); }, 250);
+  invalidateGetCache();
+  if (!clients.size) return;
+  if (timers[topic]) return;
+  const elapsed = Date.now() - (lastEmitAt[topic] || 0);
+  const wait = elapsed < SSE_BURST_MS ? Math.max(SSE_FIRST_MS, SSE_BURST_MS - elapsed) : SSE_FIRST_MS;
+  timers[topic] = setTimeout(() => {
+    delete timers[topic];
+    lastEmitAt[topic] = Date.now();
+    if (!clients.size) return;
+    const msg = 'event: change\ndata: ' + JSON.stringify({ topic }) + '\n\n';
+    for (const c of clients) c.write(msg);
+  }, wait);
 }
-const armed = new Map();
+const armed = new Map();        // dir -> { watcher, rules: [{ topic, match }] }
+const tempWatchFile = f => /(\.tmp(-\d+)?|\.lock|~|\.swp)$/.test(f) || /\.archive-tmp$/.test(f);
 function armWatches() {
-  WATCHES.forEach(([topic, parts, match], i) => {
-    if (armed.has(i)) return;
+  const byDir = new Map();
+  WATCHES.forEach(([topic, parts, match]) => {
     const dir = co.p(...parts);
-    try {
-      const w = fs.watch(dir, (ev, f) => { if (!f || match(String(f).split(/[\/\\]/)[0])) emit(topic); });
-      w.on('error', () => { try { w.close(); } catch (_) {} armed.delete(i); });
-      armed.set(i, w);
-    } catch (_) { /* folder not there yet: retried */ }
+    if (!byDir.has(dir)) byDir.set(dir, []);
+    byDir.get(dir).push({ topic, match });
   });
+  for (const [dir, rules] of byDir) {
+    if (armed.has(dir)) continue;
+    try {
+      const w = fs.watch(dir, (ev, f) => {
+        const base = f ? String(f).split(/[\/\\]/)[0] : '';
+        if (base && tempWatchFile(base)) return;
+        const fired = new Set();
+        for (const r of rules) {
+          if (fired.has(r.topic)) continue;
+          if (!base || r.match(base)) { fired.add(r.topic); emit(r.topic); }
+        }
+      });
+      w.on('error', () => { try { w.close(); } catch (_) {} armed.delete(dir); });
+      armed.set(dir, w);
+    } catch (_) { /* folder not there yet: retried */ }
+  }
 }
 function events(req, res) {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
@@ -1016,9 +1048,28 @@ function makeServer() {
       for (const r of routes) {
         const m = p.match(r.re); if (!m) continue;
         if (req.method !== r.method) continue;
+        if (req.method !== 'GET' && req.method !== 'HEAD') invalidateGetCache();
+        const cacheable = req.method === 'GET' && GET_CACHE_MS > 0 && !/\/attach$/.test(p);
+        const ckey = cacheable ? (p + url.search) : null;
+        if (ckey) {
+          const hit = getCache.get(ckey);
+          if (hit && Date.now() - hit.at < GET_CACHE_MS) return sendJson(res, 200, hit.out);
+          if (getInFlight.has(ckey)) {
+            const out = await getInFlight.get(ckey);
+            return sendJson(res, 200, out);
+          }
+        }
         const body = req.method === 'POST' ? await readBody(req) : {};
-        const out = await r.fn(m, url.searchParams, body, req, res);
+        const workP = Promise.resolve().then(() => r.fn(m, url.searchParams, body, req, res));
+        if (ckey) getInFlight.set(ckey, workP);
+        let out;
+        try { out = await workP; } finally { if (ckey) getInFlight.delete(ckey); }
+        if (req.method !== 'GET' && req.method !== 'HEAD') invalidateGetCache();
         if (res.headersSent || res.writableEnded) return;   // a route that streams its own answer (GET /api/meeting/attach)
+        if (ckey && out !== undefined) {
+          if (getCache.size > 128) getCache.clear();
+          getCache.set(ckey, { at: Date.now(), out });
+        }
         return sendJson(res, 200, out);
       }
       return sendJson(res, routes.some(r => r.re.test(p)) ? 405 : 404, { ok: false, error: 'no such endpoint: ' + req.method + ' ' + p });
