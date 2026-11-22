@@ -117,13 +117,23 @@ function mount(route, deps) {
     const meta = { id, kind, argv: argv.map(a => String(a).slice(0, 200)), pid: null, unit: null, startedAt: new Date().toISOString(), by: owner(), label: opts.label || kind };
     fs.closeSync(fs.openSync(log, 'a', 0o600));
     const sr = systemdRun();
+    const grantPath = path.join(JOBS, id + '.grant');
+    const clearGrant = () => { try { fs.unlinkSync(grantPath); } catch (_) {} };
     if (sr) {
       // its own transient unit: outside the console's memory limits and its cgroup, so neither a console restart nor the
-      // console's MemoryMax can end it halfway
+      // console's MemoryMax can end it halfway. Write a short-lived HMAC-signed grant (mode 0600) so provenance.js can
+      // cryptographically verify this transient unit came from the live owner console.
       const unit = svcName() + '-owner-job-' + id + '.service';
+      try {
+        const tok = fs.readFileSync(co.p('secrets', 'console-token'), 'utf8').trim();
+        if (tok) {
+          const hmac = crypto.createHmac('sha256', tok).update([id, unit, String(process.pid), meta.startedAt].join(':')).digest('hex');
+          fs.writeFileSync(grantPath, JSON.stringify({ id, unit, pid: process.pid, startedAt: meta.startedAt, hmac }) + '\n', { mode: 0o600 });
+        }
+      } catch (_) {}
       const r = require('child_process').spawnSync(sr, jobUnitArgs(unit, log, env).concat(['--', 'bash', '-c', WRAP, pidf].concat(argv)), { cwd: co.ROOT, encoding: 'utf8', timeout: 20000, env });
       if (!r.error && r.status === 0) meta.unit = unit;
-      else try { fs.appendFileSync(log, '(could not start it as its own unit: ' + String(r.error ? r.error.message : r.stderr || 'exit ' + r.status).trim().slice(0, 200) + '; started as a child of the console)\n'); } catch (_) {}
+      else { clearGrant(); try { fs.appendFileSync(log, '(could not start it as its own unit: ' + String(r.error ? r.error.message : r.stderr || 'exit ' + r.status).trim().slice(0, 200) + '; started as a child of the console)\n'); } catch (_) {} }
     }
     if (!meta.unit) {
       const fd = fs.openSync(log, 'a', 0o600);
@@ -134,8 +144,9 @@ function mount(route, deps) {
     // the end: the log's [exit N] line (the unit's process is no child of this console), checked every 2 s
     const t0 = Date.now();
     const watch = setInterval(() => {
-      const j = jobOf(id); if (!j) { clearInterval(watch); return; }
+      const j = jobOf(id); if (!j) { clearGrant(); clearInterval(watch); return; }
       if (j.status === 'running' && Date.now() - t0 < 6 * 3600e3) return;
+      clearGrant();
       clearInterval(watch);
       if (opts.onExit) try { opts.onExit(j.exit == null ? null : j.exit, meta); } catch (_) {}
       try { deps.emit && deps.emit('ops'); } catch (_) {}
@@ -236,8 +247,41 @@ function mount(route, deps) {
   }
   route('POST', /^\/api\/ops\/restart\/console$/, (m, q, b) =>
     act('restart.console', null, str(b.why, 'why'), () => ({ job: restartConsole(str(b.why, 'why')), note: 'The console restarts as soon as no chat reply is streaming; this page reconnects by itself.' })));
+  function restartDispatch() {
+    if (process.env.CONSOLE_DISPATCH_RESTART_CMD) {
+      return { job: startJob('restart-dispatch', ['bash', '-c', process.env.CONSOLE_DISPATCH_RESTART_CMD], { label: 'Dispatcher restart' }), via: 'cmd' };
+    }
+    if (host().supervisor() === 'systemd') {
+      const unit = svcName() + '-dispatch.service';
+      const r = require('child_process').spawnSync('systemctl', ['--user', 'restart', unit], { cwd: co.ROOT, encoding: 'utf8', timeout: 30000 });
+      if (r.status !== 0) bad('could not restart ' + unit + ': ' + String(r.stderr || r.error || 'exit ' + r.status).trim().slice(0, 200), 500);
+      return { restarted: true, unit, via: 'systemd' };
+    }
+    // Container / scripts/supervise.js: signal supervisor (SIGUSR1) or dispatcher PID (SIGTERM — finishes current tick cleanly)
+    const supFile = co.p('company', 'state', 'supervise', 'dispatch.pid');
+    try {
+      const s = JSON.parse(fs.readFileSync(supFile, 'utf8'));
+      if (s && s.supervisorPid && alive(s.supervisorPid)) { process.kill(s.supervisorPid, 'SIGUSR1'); return { restarted: true, pid: s.supervisorPid, via: 'supervise' }; }
+      if (s && s.childPid && alive(s.childPid)) { process.kill(s.childPid, 'SIGTERM'); return { restarted: true, pid: s.childPid, via: 'supervise-child' }; }
+    } catch (_) {}
+    try {
+      const dl = JSON.parse(fs.readFileSync(co.p('company', 'state', 'dispatcher-loop.json'), 'utf8'));
+      const pid = Number(dl && dl.pid);
+      if (pid > 1 && alive(pid)) { process.kill(pid, 'SIGTERM'); return { restarted: true, pid, via: 'dispatcher-pid' }; }
+    } catch (_) {}
+    bad('no systemd user manager and no running supervised dispatcher found to restart', 500);
+  }
+  route('POST', /^\/api\/ops\/restart\/dispatch$/, (m, q, b) =>
+    act('restart.dispatch', null, str(b.why, 'why'), () => Object.assign({ note: 'The dispatcher restarts cleanly after finishing any tick in flight.' }, restartDispatch())));
 
-  /* ---------- framework update: dry run, then apply ---------- */
+  /* ---------- framework update: dry run, baseline, then apply ---------- */
+  route('POST', /^\/api\/ops\/baseline$/, (m, q, b) => {
+    const sha = str(b.sha, 'sha', 40);
+    if (sha && !/^[0-9a-f]{40}$/.test(sha)) bad('sha must be a full 40-character commit hash');
+    const args = ['baseline', '--by', owner()];
+    if (sha) args.push('--sha', sha);
+    return act('baseline.set', sha || 'HEAD', str(b.why, 'why'), () => runApi('capheos-merge.js', args, { timeout: 60000 }));
+  });
   route('GET', /^\/api\/ops\/update$/, async (m, q) => {
     const r = await run('framework-update.js', ['check', '--json'].concat(q.get('fetch') === '0' ? ['--no-fetch'] : []), { timeout: 180000 });
     return Object.assign({ ok: true }, r.data, { jobs: listJobs().filter(j => j.kind === 'update').slice(0, 5) });

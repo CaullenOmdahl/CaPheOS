@@ -191,11 +191,38 @@ async function releaseHold(why, watch) {
 }
 
 /* ---------------- restart ---------------- */
+function findSupervisedStationPid(root) {
+  const sup = readJson(path.join(root, 'company', 'state', 'supervise', 'station.pid'), null);
+  if (sup && Number(sup.supervisorPid) > 1 && alive(sup.supervisorPid)) return { pid: Number(sup.supervisorPid), signal: 'SIGUSR1', via: 'supervise' };
+  if (sup && Number(sup.childPid) > 1 && alive(sup.childPid)) return { pid: Number(sup.childPid), signal: 'SIGTERM', via: 'supervise-child' };
+  const realRoot = (() => { try { return fs.realpathSync(root); } catch (_) { return path.resolve(root); } })();
+  try {
+    for (const ent of fs.readdirSync('/proc')) {
+      if (!/^\d+$/.test(ent)) continue;
+      const pid = Number(ent);
+      if (pid === process.pid || pid <= 1) continue;
+      let cmd = ''; try { cmd = fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8'); } catch (_) { continue; }
+      if (!cmd.includes('sidecar/index.js')) continue;
+      let cwd = ''; try { cwd = fs.realpathSync('/proc/' + pid + '/cwd'); } catch (_) {}
+      if (cmd.includes(realRoot) || (cwd && (cwd === realRoot || cwd.startsWith(realRoot + path.sep)))) {
+        return { pid, signal: 'SIGTERM', via: 'container-pid' };
+      }
+    }
+  } catch (_) {}
+  return null;
+}
 function restartUnit() {
   return new Promise(resolve => {
     const cmd = process.env.RESTART_STATION_CMD;
-    const [bin, args] = cmd ? ['bash', ['-c', cmd]] : ['systemctl', ['--user', 'restart', S.service()]];
-    execFile(bin, args, { timeout: 120000 }, (e, out, err) => resolve(e ? { ok: false, error: String((err || '').trim() || e.message).slice(0, 300) } : { ok: true }));
+    if (cmd) return execFile('bash', ['-c', cmd], { timeout: 120000 }, (e, out, err) => resolve(e ? { ok: false, error: String((err || '').trim() || e.message).slice(0, 300) } : { ok: true }));
+    const sup = (() => { try { return require('./lib/host').supervisor(); } catch (_) { return 'systemd'; } })();
+    if (sup === 'systemd') {
+      return execFile('systemctl', ['--user', 'restart', S.service()], { timeout: 120000 }, (e, out, err) => resolve(e ? { ok: false, error: String((err || '').trim() || e.message).slice(0, 300) } : { ok: true }));
+    }
+    const target = findSupervisedStationPid(co.ROOT);
+    if (!target) return resolve({ ok: false, error: 'no systemd user manager (' + sup + ') and no supervised station process found under ' + co.ROOT });
+    try { process.kill(target.pid, target.signal); resolve({ ok: true, via: target.via, pid: target.pid }); }
+    catch (e) { resolve({ ok: false, error: 'could not signal station pid ' + target.pid + ' (' + target.signal + '): ' + e.message }); }
   });
 }
 async function waitHealthy() {

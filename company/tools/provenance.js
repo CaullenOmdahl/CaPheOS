@@ -101,14 +101,57 @@ const isInteractiveArgv = argv => Array.isArray(argv) && argv.length > 0 && (INT
 // this process's cgroup is the station's unit (/<serviceName>.service; the -dispatch/-console units do not match)
 function stationUnit() { try { return '/' + ((co.config.station && co.config.station.serviceName) || 'capheos-station') + '.service'; } catch (_) { return '/capheos-station.service'; } }
 const inStationCgroup = (cgroupText, unit) => String(cgroupText || '').split('\n').some(l => { const p = l.slice(l.lastIndexOf(':') + 1); return p.endsWith(unit) || p.includes(unit + '/'); });
+// Console-spawned transient owner-job unit (<svc>-owner-job-<id>.service): verify kernel cgroup + live console PID +
+// HMAC-SHA256 grant signed with secrets/console-token (written by console/owner-ops.js, mode 0600, deleted on exit).
+function ownerJobFromCgroup(cgroupText, unit) {
+  const svc = String(unit || stationUnit()).replace(/^\//, '').replace(/\.service$/, '');
+  const prefix = svc + '-owner-job-';
+  for (const l of String(cgroupText || '').split('\n')) {
+    const seg = l.slice(l.lastIndexOf(':') + 1).split('/').filter(Boolean).pop() || '';
+    if (!seg.startsWith(prefix) || !seg.endsWith('.service')) continue;
+    const id = seg.slice(prefix.length, -'.service'.length);
+    if (/^[A-Za-z0-9_-]{4,80}$/.test(id)) return { id, unit: seg };
+  }
+  return null;
+}
+function validOwnerJobGrant(o) {
+  o = o || {};
+  const hit = ownerJobFromCgroup(o.cgroup, o.unit);
+  if (!hit) return false;
+  const root = path.resolve(o.root || rootOf());
+  let grant = null;
+  try {
+    grant = o.readGrant ? o.readGrant(hit.id) : JSON.parse(fs.readFileSync(path.join(root, 'company', 'state', 'owner-ops', hit.id + '.grant'), 'utf8'));
+  } catch (_) { return false; }
+  if (!grant || grant.id !== hit.id || grant.unit !== hit.unit) return false;
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const ts = Date.parse(String(grant.startedAt || ''));
+  if (!Number.isFinite(ts) || now - ts > 6 * 3600e3 || now - ts < -60e3) return false;
+  const pid = Number(grant.pid);
+  if (!Number.isInteger(pid) || pid <= 1) return false;
+  let cmd = null;
+  try {
+    cmd = o.readCmdline ? o.readCmdline(pid) : fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0').filter(Boolean);
+  } catch (_) { return false; }
+  if (!isConsoleArgv(cmd)) return false;
+  let token = '';
+  try {
+    token = String(o.readToken ? o.readToken() : fs.readFileSync(path.join(root, 'secrets', 'console-token'), 'utf8')).trim();
+  } catch (_) { return false; }
+  if (!token) return false;
+  const expected = crypto.createHmac('sha256', token).update([grant.id, grant.unit, String(pid), String(grant.startedAt)].join(':')).digest();
+  let got;
+  try { got = Buffer.from(String(grant.hmac || ''), 'hex'); } catch (_) { return false; }
+  return got.length === expected.length && crypto.timingSafeEqual(got, expected);
+}
 /* The one rule, as a pure function so a test can hand it any ancestry:
  *   underStation: the station's environment pins, or the station's cgroup, or an ancestor that IS node running sidecar/index.js;
- *   ownerShell:   not underStation, and an ancestor is an interactive session or the owner's console. */
+ *   ownerShell:   not underStation, and an ancestor is an interactive session or the owner's console (or a verified console owner-job unit). */
 function classify(o) {
   o = o || {};
   const chain = Array.isArray(o.chain) ? o.chain : [];
   const under = stationEnv(o.env || {}) || inStationCgroup(o.cgroup, o.unit || stationUnit()) || chain.some(isStationArgv);
-  return { underStation: under, ownerShell: !under && chain.some(a => isInteractiveArgv(a) || isConsoleArgv(a)) };
+  return { underStation: under, ownerShell: !under && (chain.some(a => isInteractiveArgv(a) || isConsoleArgv(a)) || !!o.ownerJobValid) };
 }
 let CGROUP = null;
 // this process's cgroup and its ancestors' (the merge gate's check: an ancestor in the station's unit)
@@ -139,7 +182,8 @@ function ownerShell() {
   if (OWNER !== null) return OWNER;
   if (fixtureRoot()) return true;
   if (underStation()) return false;
-  return classify({ chain: ancestry(), env: process.env, cgroup: ownCgroup() }).ownerShell;
+  const cg = ownCgroup();
+  return classify({ chain: ancestry(), env: process.env, cgroup: cg, ownerJobValid: validOwnerJobGrant({ cgroup: cg, root: rootOf() }) }).ownerShell;
 }
 function mainInfo(root) {
   let main = '[none]';
@@ -292,7 +336,7 @@ function callerConflict(root, parts, claimedId, nowMs) {
   } catch (_) { return null; }
 }
 
-module.exports = { wrote, removed, appended, noted, rolled, inserted, readFrom, sha, logFile, underStation, pinUnderStation, pinOwnerShell, ownerShell, classify, recentCalls, callerConflict, _internals: { stationEnv, mainInfo, scriptOf, inStationCgroup } };
+module.exports = { wrote, removed, appended, noted, rolled, inserted, readFrom, sha, logFile, underStation, pinUnderStation, pinOwnerShell, ownerShell, classify, recentCalls, callerConflict, _internals: { stationEnv, mainInfo, scriptOf, inStationCgroup, ownerJobFromCgroup, validOwnerJobGrant } };
 
 if (require.main === module) {
   const [cmd, n, w] = process.argv.slice(2);
@@ -332,6 +376,18 @@ if (require.main === module) {
     ok(classify({ chain: desk('ls'), env: {}, cgroup: '0::/user.slice/user@1000.service/app.slice/capheos-station-dispatch.service', unit: '/capheos-station.service' }).underStation === false, 'the dispatcher\'s unit is not the station\'s');
     ok(classify({ chain: [['node', '/srv/co/company/tools/dispatcher-loop.js'], ['/usr/lib/systemd/systemd', '--user']], env: {} }).ownerShell === false, 'a detached service is not the owner');
     ok(classify({ chain: [['/usr/bin/node', '/srv/co/console/server.js'], ['/usr/lib/systemd/systemd', '--user']], env: {} }).ownerShell === true, 'the owner\'s console is the owner');
+    {
+      const jobId = 'update-20261122-abcd', jobUnit = 'capheos-station-owner-job-' + jobId + '.service';
+      const startedAt = new Date().toISOString(), cpid = 4242, tok = 'secret-console-tok';
+      const hmac = crypto.createHmac('sha256', tok).update([jobId, jobUnit, String(cpid), startedAt].join(':')).digest('hex');
+      const cg = '0::/user.slice/user@1000.service/app.slice/' + jobUnit;
+      const base = { cgroup: cg, unit: '/capheos-station.service', readGrant: () => ({ id: jobId, unit: jobUnit, pid: cpid, startedAt, hmac }), readToken: () => tok, readCmdline: () => ['/usr/bin/node', '/srv/co/console/server.js'] };
+      ok(validOwnerJobGrant(base) === true && classify({ chain: [['/usr/lib/systemd/systemd', '--user']], env: {}, cgroup: cg, unit: '/capheos-station.service', ownerJobValid: validOwnerJobGrant(base) }).ownerShell === true, 'verified console owner-job unit is accepted as the owner');
+      ok(validOwnerJobGrant(Object.assign({}, base, { readToken: () => 'wrong-tok' })) === false, 'owner-job grant rejects wrong HMAC/token');
+      ok(validOwnerJobGrant(Object.assign({}, base, { readCmdline: () => ['/usr/bin/bash'] })) === false, 'owner-job grant rejects non-console PID');
+      ok(validOwnerJobGrant(Object.assign({}, base, { now: Date.parse(startedAt) + 7 * 3600e3 })) === false, 'owner-job grant rejects expired grant');
+      ok(classify({ chain: [['/usr/lib/systemd/systemd', '--user']], env: { STARNET_USER_CONTROL_MODE: 'preserve', STARNET_COMPUTER_DRIVER: '0', STARNET_MCP_STDIO: '0', BROWSER: 'none' }, cgroup: cg, unit: '/capheos-station.service', ownerJobValid: true }).ownerShell === false, 'station env still refuses even with owner-job grant');
+    }
     ok(classify({ chain: [['node', '/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js'], ['/usr/bin/bash']], env: {} }).ownerShell === true, 'Claude Code as node cli.js is interactive');
     ok(classify({ chain: [['/usr/bin/bash', '-c', 'echo claude'], ['vim', 'sidecar/index.js']], env: {} }).underStation === false, 'a command that only names sidecar/index.js is not the station');
     // callerConflict on a fake transcript

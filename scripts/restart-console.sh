@@ -75,5 +75,20 @@ done
 
 echo "restarting $UNIT"
 if [ -n "${CONSOLE_RESTART_CMD:-}" ]; then bash -c "$CONSOLE_RESTART_CMD" || exit 3
-else systemctl --user restart "$UNIT" || exit 3; fi
+elif systemctl --user is-active --quiet "$UNIT" 2>/dev/null || [ -d "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/systemd" ]; then
+  systemctl --user restart "$UNIT" || exit 3
+else
+  # Container / supervise.js fallback: signal the console supervisor (SIGUSR1) or child (SIGTERM)
+  SUP_FILE="${CAPHEOS_ROOT:-$ROOT}/company/state/supervise/console.pid"
+  node -e '
+    const fs = require("fs");
+    const f = process.argv[1];
+    let s = null; try { s = JSON.parse(fs.readFileSync(f, "utf8")); } catch (_) {}
+    const alive = p => { try { process.kill(Number(p), 0); return true; } catch (_) { return false; } };
+    if (s && s.supervisorPid && alive(s.supervisorPid)) { process.kill(Number(s.supervisorPid), "SIGUSR1"); process.exit(0); }
+    if (s && s.childPid && alive(s.childPid)) { process.kill(Number(s.childPid), "SIGTERM"); process.exit(0); }
+    console.error("no systemd user manager and no running supervised console pidfile at " + f);
+    process.exit(3);
+  ' "$SUP_FILE" || exit 3
+fi
 echo "restarted $UNIT"
