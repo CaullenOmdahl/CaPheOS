@@ -1,0 +1,66 @@
+# 0027-aux-governor-ratelimit.diff
+# Rate-limit [aux-governor] "token ceiling reached" log lines to once per hour per agent (reporting
+# suppressed count on the next notice) and allow STARNET_AUX_TOKEN_CEILING to override the default
+# 24h auxiliary token ceiling when no explicit ceiling is set.
+#
+# Apply:  git -C starnet apply --3way --whitespace=nowarn ../company/patches/0027-aux-governor-ratelimit.diff
+# Revert: git -C starnet apply -R ../company/patches/0027-aux-governor-ratelimit.diff
+diff --git a/sidecar/auxgovernor.js b/sidecar/auxgovernor.js
+index d7bd2e9..adf45c2 100644
+--- a/sidecar/auxgovernor.js
++++ b/sidecar/auxgovernor.js
+@@ -71,7 +71,8 @@
+   function tokenGate(o) {
+     o = o || {};
+     const parsed = parseTokenCeiling(o.ceiling);
+-    const ceiling = parsed == null ? DEFAULT_TOKEN_CEILING : parsed;
++    const envParsed = typeof process !== 'undefined' && process.env && process.env.STARNET_AUX_TOKEN_CEILING != null ? parseTokenCeiling(process.env.STARNET_AUX_TOKEN_CEILING) : null;
++    const ceiling = parsed != null ? parsed : (envParsed != null ? envParsed : DEFAULT_TOKEN_CEILING);
+     const used = (Number.isFinite(o.used) && o.used > 0) ? o.used : 0;
+     const applies = o.unmetered === true && ceiling > 0;
+     return { applies, blocked: applies && used >= ceiling, ceiling, used };
+@@ -161,5 +162,19 @@
+     return want;
+   }
+ 
+-  return { PRIORITY: PRIORITY.slice(), DEFAULT_BUDGET, DEFAULT_TOKEN_CEILING, MAX_TOKEN_CEILING, TOKEN_WINDOW_MS, CEILING_KINDS: CEILING_KINDS.slice(), parseTokenCeiling, tokenGate, parseBudget, rank, decide, pickAuxEffort, effortAsRan, AUX_EFFORT_LADDER: AUX_EFFORT_LADDER.slice() };
++  const ceilingLogState = new Map();
++  function shouldLogCeiling(key, now, windowMs) {
++    const k = String(key || 'default');
++    const t = Number.isFinite(now) ? now : Date.now();
++    const w = Number.isFinite(windowMs) && windowMs >= 0 ? windowMs : 3600000;
++    const prev = ceilingLogState.get(k);
++    if (!prev || t - prev.at >= w) {
++      const suppressed = prev ? prev.suppressed : 0;
++      ceilingLogState.set(k, { at: t, suppressed: 0 });
++      return { log: true, suppressed };
++    }
++    prev.suppressed++;
++    return { log: false, suppressed: prev.suppressed };
++  }
++  return { PRIORITY: PRIORITY.slice(), DEFAULT_BUDGET, DEFAULT_TOKEN_CEILING, MAX_TOKEN_CEILING, TOKEN_WINDOW_MS, CEILING_KINDS: CEILING_KINDS.slice(), parseTokenCeiling, tokenGate, shouldLogCeiling, parseBudget, rank, decide, pickAuxEffort, effortAsRan, AUX_EFFORT_LADDER: AUX_EFFORT_LADDER.slice() };
+ });
+diff --git a/sidecar/index.js b/sidecar/index.js
+index a50defa..46d02ce 100644
+--- a/sidecar/index.js
++++ b/sidecar/index.js
+@@ -1486,7 +1486,8 @@ function auxTokenGate(providerId) {
+ const auxAdmission = makeAuxAdmission({ gate: auxTokenGate });
+ function automaticAux(route, kind, agentId, runId, work) {
+   return auxAdmission.schedule(auxRoute(route), work, g => {
+-    console.log('[aux-governor] run=' + runId + ' agent=' + agentId + ' token ceiling reached after settlement (' + g.used + '/' + g.ceiling + ' in 24h) DEFERRED[' + kind + ']');
++    const _cl = AuxGovernor.shouldLogCeiling('settle:' + agentId);
++    if (_cl.log) console.log('[aux-governor] run=' + runId + ' agent=' + agentId + ' token ceiling reached after settlement (' + g.used + '/' + g.ceiling + ' in 24h) DEFERRED[' + kind + ']' + (_cl.suppressed ? ' (+' + _cl.suppressed + ' suppressed)' : ''));
+   });
+ }
+ // What the settings read shows: each capped route's own figure, and whether it has stopped its automatic passes.
+@@ -26734,7 +26735,8 @@ async function runOnceCore(o) {
+   // run can spend once the figure drops, and a due skill review keeps its nudge count. It sits past the run's end: a user's run never reads it.
+   const _auxStop = (result && result.reason === 'budget') ? { why: 'the run stopped at its spending cap' } : _auxCandidates.length ? governor.admit('aux', { providerId: activeProviderId, agentId }) : null;
+   if (_auxStop && _auxCandidates.length) {
+-    console.log('[aux-governor] run=' + runId + ' agent=' + agentId + ' ' + (_auxStop.gate === 'tokens' ? 'token ceiling reached (' + _auxStop.used + '/' + _auxStop.ceiling + ' in 24h)' : _auxStop.why + (_auxStop.exit ? ' — ' + _auxStop.exit : '')) + ' DEFERRED[' + _auxCandidates.join(',') + ']');
++    const _cl2 = _auxStop.gate === 'tokens' ? AuxGovernor.shouldLogCeiling('aux:' + agentId) : { log: true, suppressed: 0 };
++    if (_cl2.log) console.log('[aux-governor] run=' + runId + ' agent=' + agentId + ' ' + (_auxStop.gate === 'tokens' ? 'token ceiling reached (' + _auxStop.used + '/' + _auxStop.ceiling + ' in 24h)' : _auxStop.why + (_auxStop.exit ? ' — ' + _auxStop.exit : '')) + ' DEFERRED[' + _auxCandidates.join(',') + ']' + (_cl2.suppressed ? ' (+' + _cl2.suppressed + ' suppressed)' : ''));
+     _auxCandidates.length = 0;
+   }
+   // External transcript text never enters a durable learning pass: reflection, failure review, study and thread mining
