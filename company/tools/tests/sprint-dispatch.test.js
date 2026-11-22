@@ -346,7 +346,7 @@ test('one spend numerator: the spread\'s "last hour" and sprint status read the 
 });
 
 /* ---- the stall check judges progress evidence, not the set of OPEN headings (lib/stall.js) ---- */
-const runRow = (c, seat, effects) => fs.appendFileSync(path.join(c.T, '.starnet-data/workspaces/runs.jsonl'), JSON.stringify({ runId: 'r-' + Math.random().toString(36).slice(2, 8), agentId: seat, startedAt: Date.now() - 60000, endedAt: Date.now() - 1000, ts: Date.now() - 1000, outcome: 'succeeded', reason: 'done', usd: 0, artifacts: [], completionEvidence: { effects: effects || [] } }) + '\n');
+const runRow = (c, seat, effects) => { const now = Date.now() + 50; fs.appendFileSync(path.join(c.T, '.starnet-data/workspaces/runs.jsonl'), JSON.stringify({ runId: 'r-' + Math.random().toString(36).slice(2, 8), agentId: seat, startedAt: now - 60000, endedAt: now, ts: now, outcome: 'succeeded', reason: 'done', usd: 0, artifacts: [], completionEvidence: { effects: effects || [] } }) + '\n'); };
 async function wakes(c, seat, n, between) {
   const logs = [];
   for (let i = 0; i < n; i++) { const r = c.tick(); logs.push(r); if (between) between(i); await c.lastRun(seat, 600); }
@@ -387,6 +387,6 @@ test('stall check: busy, but a due item does not move -> after STALL_AFTER*2 run
 
 test('stall check: starts the provider refused at its usage limit are not runs without progress (no page during a quota outage)', async () => {
   const c = await company({ sprint: false, lastRunMinAgo: 600, handoffs: { 'to-wen.md': block('write the onboarding guide') } });
-  const r = await wakes(c, 'w1', 5, () => fs.appendFileSync(path.join(c.T, '.starnet-data/workspaces/runs.jsonl'), JSON.stringify({ runId: 'q-' + Math.random().toString(36).slice(2, 8), agentId: 'w1', startedAt: Date.now() - 60000, endedAt: Date.now() - 500, reason: 'error', failureCode: 'quota_exhausted', usd: 0 }) + '\n'));
+  const r = await wakes(c, 'w1', 5, () => { const now = Date.now() + 50; fs.appendFileSync(path.join(c.T, '.starnet-data/workspaces/runs.jsonl'), JSON.stringify({ runId: 'q-' + Math.random().toString(36).slice(2, 8), agentId: 'w1', startedAt: now - 60000, endedAt: now, ts: now, reason: 'error', failureCode: 'quota_exhausted', usd: 0 }) + '\n'); });
   assert.doesNotMatch(r.log, /STALLED handoffs to-wen/, r.log.slice(-800));
 });

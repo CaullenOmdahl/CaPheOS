@@ -184,9 +184,11 @@ function splitWords(s) {
   return out;
 }
 const inside = (p, dir) => p === dir || p.startsWith(dir + path.sep);
-function which(name) {
+const SYS_BIN = ['/usr/local/bin', '/usr/bin', '/bin'];
+function which(name, sysOnly) {
   const shim = path.join(__dirname, 'shims');
-  for (const d of String(process.env.PATH || '').split(':').concat(['/usr/local/bin', '/usr/bin', '/bin'])) {
+  const dirs = sysOnly ? SYS_BIN : String(process.env.PATH || '').split(':').concat(SYS_BIN);
+  for (const d of dirs) {
     if (!d || path.resolve(d) === shim) continue;
     const f = path.join(d, name); try { fs.accessSync(f, fs.constants.X_OK); return f; } catch (_) {}
   }
@@ -208,7 +210,7 @@ function validateArgv(ctx, words, opts) {
   const spec = INTERPS[base];
   if (!spec) throw err('--exec must start with python3, node, bash or sh (a company script run by its interpreter), not ' + JSON.stringify(a0.slice(0, 60)));
   if (path.isAbsolute(a0) && !/^\/(usr\/(local\/)?)?bin\//.test(a0)) throw err('the interpreter must be the system one (/usr/bin, /usr/local/bin or /bin), or just its name');
-  const interp = path.isAbsolute(a0) ? a0 : (opts.resolve === false ? '/usr/bin/' + a0 : (which(a0) || '/usr/bin/' + a0));
+  const interp = path.isAbsolute(a0) ? a0 : (opts.resolve === false ? '/usr/bin/' + a0 : (which(a0, true) || '/usr/bin/' + a0));
   const out = [interp]; i = 1;
   while (i < words.length && words[i].startsWith('-')) {
     if (!spec.flags.includes(words[i])) throw err('the interpreter flag ' + words[i] + ' is not allowed (' + base + ' may take ' + (spec.flags.join(' ') || 'none') + '; never -c, -e or -m: the service runs a script file)');

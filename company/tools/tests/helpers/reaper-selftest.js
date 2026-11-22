@@ -102,7 +102,8 @@ async function selftest() {
     const sDir = path.join(co, 'scratch', 'paul-stray'); fs.mkdirSync(sDir);
     const sleepBin = cp.execFileSync('sh', ['-c', 'command -v sleep'], { encoding: 'utf8' }).trim();
     const unknownPid = await orphan([sleepBin, '300'], { cwd: sDir });
-    const ft = path.join(co, 'bin', 'flutter_tester'); fs.mkdirSync(path.dirname(ft)); fs.copyFileSync(sleepBin, ft); fs.chmodSync(ft, 0o755);
+    const ft = path.join(co, 'bin', 'flutter_tester'); fs.mkdirSync(path.dirname(ft));
+    fs.writeFileSync(ft, '#!' + process.execPath + '\nsetTimeout(() => {}, 301000);\n'); fs.chmodSync(ft, 0o755);
     const flutterPid = await orphan([ft, '301'], { cwd: sDir });
 
     /* ---------- temp ---------- */
