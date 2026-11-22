@@ -1263,14 +1263,17 @@ function lastRunTail(job) {
     for (const [id, t] of Object.entries(state.completionsSeen)) if (Date.now() - t > 7 * 86400e3) delete state.completionsSeen[id];
   } catch (e) { log('COMPLETIONS ERROR: ' + String(e.message).slice(0, 200)); }
   const wakeNotesMap = new Map();   // agentId -> all pending wake notes
-  const urgent = new Map();         // agentId -> wake notes that bypass cooldown (rest 0: failures, one-shot jobs, deps)
+  const urgent = new Map();         // agentId -> wake notes that bypass cooldown (rest 0: failures, one-shot jobs, deps, non-repeat service runs)
+  state.serviceWakeAt = state.serviceWakeAt || {};
+  for (const [k, t] of Object.entries(state.serviceWakeAt)) if (Date.now() - (Number(t) || 0) > 24 * 3600e3) delete state.serviceWakeAt[k];
   for (const [id, a] of Object.entries(state.agents || {})) {
     if (!a || !Array.isArray(a.wakeNotes)) continue;
     a.wakeNotes = a.wakeNotes.filter(n => Date.now() - (Number(n.at) || 0) < 24 * 3600e3);
     if (!a.wakeNotes.length) { delete a.wakeNotes; continue; }
     if (!LOOP_OF[id]) continue;
     wakeNotesMap.set(id, a.wakeNotes);
-    if (a.wakeNotes.some(n => !n.routineService)) urgent.set(id, a.wakeNotes);
+    const isRepeatRoutine = n => n.routineService && (Number(n.count) > 1 || (Date.now() - (Number(state.serviceWakeAt[id + ':' + n.service]) || 0) < 15 * 60e3));
+    if (a.wakeNotes.some(n => !isRepeatRoutine(n))) urgent.set(id, a.wakeNotes);
     work[id] = work[id] || [];
     reason[id] = (reason[id] ? reason[id] + '; ' : '') + a.wakeNotes.map(n => n.kind === 'completion' ? (n.failed ? 'watched job FAILED: ' : 'watched job ended: ') + n.words + ' (' + n.id + ')' : n.text).join('; ');
   }
@@ -1489,7 +1492,10 @@ function lastRunTail(job) {
       if (viaInbox) { state.agents[agentId].count++; state.agents[agentId].wakes = (state.agents[agentId].wakes || 0) + 1; }
       if (ownerWake.has(agentId)) state.owner.count++;
       for (const slug of (hiringWake.get(agentId) || [])) state.hiringWake[slug] = new Date().toISOString();   // spent: once per round
-      if (wakeNotesMap.has(agentId)) delete state.agents[agentId].wakeNotes;   // spent: one wake per completion, release or met dependency
+      if (wakeNotesMap.has(agentId)) {
+        for (const n of (wakeNotesMap.get(agentId) || [])) if (n.routineService && n.service) state.serviceWakeAt[agentId + ':' + n.service] = Date.now();
+        delete state.agents[agentId].wakeNotes;   // spent: one wake per completion, release or met dependency
+      }
       if (SPRINT) { state.sprintSig[agentId] = sig; SM.wakes++; SM.pending[agentId] = { at: Date.now(), sig }; }
       fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
     } else {
