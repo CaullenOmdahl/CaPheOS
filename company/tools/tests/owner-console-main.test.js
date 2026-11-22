@@ -5,12 +5,12 @@ const test = require('node:test');
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const life = require('../lib/temp-life.js');
 const { spawnSync } = require('child_process');
 const OWNER = path.resolve(__dirname, '..', 'lib', 'owner.js');
 
 test('a look-alike console/server.js elsewhere is not the console', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-console-'));
+  const dir = life.tmpDir('owner-console-');
   try {
     fs.mkdirSync(path.join(dir, 'console'));
     const fake = path.join(dir, 'console', 'server.js');

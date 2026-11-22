@@ -5,12 +5,12 @@ const test = require('node:test');
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const life = require('../lib/temp-life.js');
 const FU = require('../framework-update.js');
 const O = require('../lib/owned.js');
 
 function fakeRoot() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'restart-waiter-'));
+  const root = life.tmpDir('restart-waiter-');
   fs.mkdirSync(path.join(root, 'company'), { recursive: true });
   fs.writeFileSync(path.join(root, 'company', 'company.json'), JSON.stringify({ station: { serviceName: 'testco-station' } }));
   const bin = path.join(root, 'fake-systemd-run');
