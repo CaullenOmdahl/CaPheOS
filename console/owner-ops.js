@@ -89,8 +89,8 @@ function mount(route, deps) {
   /* ---------- detached jobs ---------- */
   // the job's own shell writes its pid (the unit's main process, or the detached child) and, at the end, its exit code
   // $0 = pid file, $1 = the grant file the console writes once the unit is up ('' when there is none: a detached child).
-  // The wrapper waits for its grant (or the console's `<grant>.none`: no grant could be made; up to 10 s), runs the job, deletes the grant, THEN writes the [exit] marker.
-  const WRAP = 'echo $$ > "$0"; g="$1"; shift; n=0; while [ -n "$g" ] && [ ! -e "$g" ] && [ ! -e "$g.none" ] && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done; "$@"; rc=$?; [ -n "$g" ] && rm -f "$g" "$g.none"; echo "[exit $rc]"';
+  // The wrapper waits for its grant (or the console's `<grant>.none`: no grant could be made; up to 30 s), runs the job, deletes the grant, THEN writes the [exit] marker.
+  const WRAP = 'echo $$ > "$0"; g="$1"; shift; n=0; while [ -n "$g" ] && [ ! -e "$g" ] && [ ! -e "$g.none" ] && [ $n -lt 300 ]; do sleep 0.1; n=$((n+1)); done; "$@"; rc=$?; [ -n "$g" ] && rm -f "$g" "$g.none"; echo "[exit $rc]"';
   const ENV_KEEP = /^(PATH|HOME|USER|LOGNAME|SHELL|LANG|LANGUAGE|LC_[A-Z]+|TZ|TMPDIR|XDG_[A-Z_]+|DBUS_SESSION_BUS_ADDRESS|NODE_EXTRA_CA_CERTS|CAPHEOS_[A-Z0-9_]+|STARNET_[A-Z0-9_]+|CONSOLE_(HOST|PORT|TRUST_PROXY))$/;
   function jobUnitArgs(unit, log, env) {
     const a = ['--user', '--collect', '--quiet', '--unit=' + unit, '--description=' + 'Owner job ' + unit,
