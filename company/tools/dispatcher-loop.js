@@ -111,6 +111,29 @@ function runLoop(opts) {
     }
   };
   const sleep = ms => new Promise(r => { const t = setTimeout(() => { wake = null; r(); }, Math.max(0, ms)); wake = () => { clearTimeout(t); wake = null; r(); }; });
+  const realDispatch = path.join(__dirname, 'dispatch.js');
+  const envReady = process.env.DISPATCHER_READY_WAIT_MS != null ? Number(process.env.DISPATCHER_READY_WAIT_MS) : null;
+  const readyWaitMs = o.readyWaitMs != null ? Number(o.readyWaitMs) : (envReady != null && Number.isFinite(envReady) ? envReady : (o.cmd === realDispatch && !o.maxTicks ? 30000 : 0));
+  const waitStation = async () => {
+    let u; try { u = new URL(o.stationUrl || co.STATION_URL); } catch (_) { return; }
+    const net = require('net');
+    const host = u.hostname || '127.0.0.1';
+    const port = Number(u.port) || (u.protocol === 'https:' ? 443 : 80);
+    const deadline = Date.now() + readyWaitMs;
+    let waited = false;
+    while (!stopping && Date.now() < deadline) {
+      const ok = await new Promise(res => {
+        const s = net.connect({ host, port });
+        const done = v => { try { s.destroy(); } catch (_) {} res(v); };
+        s.setTimeout(1000, () => done(false));
+        s.once('connect', () => done(true));
+        s.once('error', () => done(false));
+      });
+      if (ok) { if (waited) o.log('station is listening on ' + host + ':' + port + '; starting tick #1'); return; }
+      if (!waited) { waited = true; o.log('waiting up to ' + Math.round(readyWaitMs / 1000) + ' s for station on ' + host + ':' + port + ' before tick #1'); }
+      await sleep(Math.min(1000, Math.max(0, deadline - Date.now())));
+    }
+  };
   const tick = tempo => new Promise(resolve => {
     const env = Object.assign({}, process.env);
     if (!env.DISPATCH_COOLDOWN_MIN && tempo.cooldownMin) env.DISPATCH_COOLDOWN_MIN = String(tempo.cooldownMin);
@@ -123,6 +146,7 @@ function runLoop(opts) {
   });
   return (async () => {
     try {
+      if (readyWaitMs > 0) await waitStation();
       while (!stopping) {
         if (o.sprintTick) { try { o.sprintTick(o.log); } catch (e) { o.log('SPRINT ERROR: ' + String(e.message).slice(0, 200)); } }
         const tempo = safeTempo(o);
