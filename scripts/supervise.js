@@ -1,32 +1,65 @@
 #!/usr/bin/env node
 /* supervise.js — keep one process running without systemd: the adapter for a container (or any box without a systemd
  * user manager). It starts the command, starts it again whenever it exits (1 s, doubling to 30 s while it keeps
- * failing; back to 1 s after a minute up), and passes SIGTERM / SIGINT on and stops.
+ * failing; back to 1 s after a minute up), passes SIGTERM / SIGINT on and stops, and restarts the child immediately
+ * on SIGUSR1 without exiting the supervisor.
  *
- *   node scripts/supervise.js [--name console] -- node console/server.js
+ *   node scripts/supervise.js [--name console] [--pidfile <path>] -- node console/server.js
  *
- * The child gets CAPHEOS_SUPERVISOR=supervise (unless set), so the console restarts itself by exiting when no chat is
- * streaming (console/owner-ops.js) instead of calling systemctl. Nothing it keeps is lost on a restart: the console's
- * sessions are signed cookies (console/auth.js) and every other state is on disk under the company root.
+ * The child gets CAPHEOS_SUPERVISOR=supervise (unless set), and when --pidfile or CAPHEOS_ROOT is set, a small JSON
+ * pidfile ({ supervisorPid, childPid, name, startedAt }) is maintained at company/state/supervise/<name>.pid so
+ * restart-station.js, restart-console.sh, framework-update.js and console/owner-ops.js can signal SIGUSR1 cleanly
+ * inside containers without systemd.
  */
 'use strict';
+const fs = require('fs');
+const path = require('path');
 const { spawn } = require('child_process');
 const a = process.argv.slice(2);
 const dd = a.indexOf('--');
+const opts = dd < 0 ? a : a.slice(0, dd);
 const cmd = dd >= 0 ? a.slice(dd + 1) : [];
-const ni = a.indexOf('--name'); const name = ni >= 0 && ni < (dd < 0 ? a.length : dd) ? a[ni + 1] : (cmd[1] || cmd[0] || 'child');
-if (!cmd.length) { console.error('usage: supervise.js [--name N] -- <command> [args...]'); process.exit(2); }
-let child = null, stopping = false, delay = 1000, startedAt = 0;
+const opt = flag => { const i = opts.indexOf(flag); return i >= 0 && i + 1 < opts.length ? opts[i + 1] : null; };
+const name = opt('--name') || (cmd[1] || cmd[0] || 'child');
+const safeName = String(name).replace(/[^A-Za-z0-9_.-]+/g, '_').replace(/^_+|_+$/g, '') || 'child';
+const pidfile = opt('--pidfile') || (process.env.CAPHEOS_ROOT ? path.join(process.env.CAPHEOS_ROOT, 'company', 'state', 'supervise', safeName + '.pid') : null);
+if (!cmd.length) { console.error('usage: supervise.js [--name N] [--pidfile P] -- <command> [args...]'); process.exit(2); }
+let child = null, stopping = false, restarting = false, delay = 1000, startedAt = 0, killTimer = null;
 const say = m => console.error('[supervise ' + name + '] ' + m);
+function writePid(cpid) {
+  if (!pidfile) return;
+  try {
+    fs.mkdirSync(path.dirname(pidfile), { recursive: true });
+    fs.writeFileSync(pidfile, JSON.stringify({ supervisorPid: process.pid, childPid: cpid, name, startedAt: new Date(startedAt || Date.now()).toISOString() }) + '\n');
+  } catch (_) {}
+}
+function clearPid() { if (pidfile) try { fs.unlinkSync(pidfile); } catch (_) {} }
 function start() {
   startedAt = Date.now();
+  restarting = false;
   child = spawn(cmd[0], cmd.slice(1), { stdio: 'inherit', env: Object.assign({ CAPHEOS_SUPERVISOR: 'supervise' }, process.env) });
+  writePid(child.pid);
   child.on('exit', (code, sig) => {
-    child = null; if (stopping) return process.exit(0);
-    if (Date.now() - startedAt > 60000) delay = 1000;
-    say('exited (' + (sig || code) + '); starting again in ' + delay / 1000 + ' s');
-    setTimeout(start, delay); delay = Math.min(delay * 2, 30000);
+    if (killTimer) { clearTimeout(killTimer); killTimer = null; }
+    child = null;
+    if (stopping) { clearPid(); return process.exit(0); }
+    const wait = restarting ? 200 : delay;
+    if (restarting || Date.now() - startedAt > 60000) delay = 1000;
+    say((restarting ? 'restarting after signal' : 'exited (' + (sig || code) + ')') + '; starting again in ' + wait / 1000 + ' s');
+    setTimeout(start, wait);
+    if (!restarting) delay = Math.min(delay * 2, 30000);
   });
 }
-for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { stopping = true; if (child) child.kill(s); else process.exit(0); });
+process.on('SIGUSR1', () => {
+  if (stopping) return;
+  restarting = true;
+  if (!child) return;
+  say('restart requested (SIGUSR1); stopping child pid ' + child.pid);
+  try { child.kill('SIGTERM'); } catch (_) {}
+  if (killTimer) clearTimeout(killTimer);
+  const target = child;
+  killTimer = setTimeout(() => { if (child === target) { say('child did not exit after 15 s; sending SIGKILL'); try { target.kill('SIGKILL'); } catch (_) {} } }, 15000);
+  if (killTimer.unref) killTimer.unref();
+});
+for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { stopping = true; if (child) child.kill(s); else { clearPid(); process.exit(0); } });
 start();

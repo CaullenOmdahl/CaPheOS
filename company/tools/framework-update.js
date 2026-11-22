@@ -76,7 +76,7 @@ function check(opts) {
   const [ahead, behind] = must(git(root, ['rev-list', '--left-right', '--count', 'HEAD...@{u}']), 'compare').split(/\s+/).map(Number);
   if (ahead > 0) blockers.push('this company has ' + ahead + ' commit(s) of its own on top of the framework; an instance never commits, so the server admin must look at them first (git log @{u}..HEAD)');
   const base = { ok: true, upstream: up.out, head, target, ahead, behind, upToDate: behind === 0, founded };
-  if (behind === 0) return Object.assign(base, { commits: [], files: [], patches: [], owned: [], blockers, notes, needsSetup: false, needsStationRestart: false, needsConsoleRestart: false });
+  if (behind === 0) return Object.assign(base, { commits: [], files: [], patches: [], owned: [], blockers, notes, needsSetup: false, needsStationRestart: false, needsConsoleRestart: false, needsDispatchRestart: false });
   const commits = git(root, ['log', '--format=%h%x09%an%x09%ad%x09%s', '--date=short', '-n', '50', 'HEAD..@{u}']).out.split('\n').filter(Boolean)
     .map(l => { const [sha, author, date, ...s] = l.split('\t'); return { sha, author, date, subject: s.join('\t') }; });
   const files = git(root, ['diff', '--name-status', 'HEAD', '@{u}']).out.split('\n').filter(Boolean).map(l => { const [st, ...f] = l.split('\t'); return { status: st[0], file: f[f.length - 1] }; });
@@ -84,6 +84,7 @@ function check(opts) {
   const patches = files.filter(f => f.status === 'A' && /^company\/patches\/\d{4}-.*\.diff$/.test(f.file)).map(f => path.basename(f.file, '.diff'));
   const needsSetup = patches.length > 0 || files.some(f => /^systemd\//.test(f.file) || f.file === 'scripts/setup-station.sh');
   const needsConsoleRestart = files.some(f => /^console\/[^/]+\.js$/.test(f.file) || /^company\/tools\/lib\//.test(f.file));
+  const needsDispatchRestart = files.some(f => /^company\/tools\/(dispatch|dispatcher-loop)\.js$/.test(f.file) || /^company\/tools\/lib\//.test(f.file));
   // framework files this company edited in place (hidden with skip-worktree, or visibly): no longer a blocker; apply saves
   // each one as a framework request and puts it back before it pulls (lib/framework-edits.js)
   const FE = require('./lib/framework-edits');
@@ -103,11 +104,23 @@ function check(opts) {
     owned.push(row);
   }
   let stationActive = false;
+  const pidAlive = p => { try { process.kill(Number(p), 0); return true; } catch (e) { return e.code === 'EPERM'; } };
   if (process.env.FRAMEWORK_UPDATE_STATION_ACTIVE) stationActive = process.env.FRAMEWORK_UPDATE_STATION_ACTIVE === '1';
-  else { try { const svc = (readJ(fs.readFileSync(path.join(root, 'company', 'company.json'), 'utf8')) || {}).station || {}; stationActive = spawnSync('systemctl', ['--user', 'is-active', '--quiet', (svc.serviceName || 'capheos-station') + '.service']).status === 0; } catch (_) {} }
+  else {
+    const sup = (() => { try { return require('./lib/host').supervisor(); } catch (_) { return 'systemd'; } })();
+    if (sup === 'systemd') {
+      try { const svc = (readJ(fs.readFileSync(path.join(root, 'company', 'company.json'), 'utf8')) || {}).station || {}; stationActive = spawnSync('systemctl', ['--user', 'is-active', '--quiet', (svc.serviceName || 'capheos-station') + '.service']).status === 0; } catch (_) {}
+    } else {
+      try {
+        const sp = readJ(fs.readFileSync(path.join(root, 'company', 'state', 'supervise', 'station.pid'), 'utf8'));
+        stationActive = !!(sp && ((sp.supervisorPid && pidAlive(sp.supervisorPid)) || (sp.childPid && pidAlive(sp.childPid))));
+      } catch (_) {}
+    }
+  }
   if (patches.length) notes.push('ships StarNet patch(es) ' + patches.join(', ') + ': setup applies them to the checkout' + (stationActive ? ', and the station restarts when nothing is running' : ''));
+  if (needsDispatchRestart) notes.push('changes the dispatcher: it restarts cleanly after any tick in flight');
   if (needsConsoleRestart) notes.push('changes the console: it restarts itself when no chat reply is streaming');
-  return Object.assign(base, { commits, files, patches, owned, blockers, notes, needsSetup, needsStationRestart: patches.length > 0 && stationActive, needsConsoleRestart });
+  return Object.assign(base, { commits, files, patches, owned, blockers, notes, needsSetup, needsStationRestart: patches.length > 0 && stationActive, needsConsoleRestart, needsDispatchRestart });
 }
 
 function runStep(steps, name, cmd, args, opts) {
@@ -188,13 +201,49 @@ function apply(opts) {
     restart = { started: true, pid: ch.pid, reason };
     steps.push({ step: 'station restart when idle (started)', ok: true, out: reason });
   }
-  const row = { at: new Date().toISOString(), by: String(opts.by), from: c.head, to: c.target, commits: c.commits.length, patches: c.patches, merged, setup: setupOk, restart: !!restart, needsConsoleRestart: c.needsConsoleRestart, saved: path.relative(root, keep) };
+  // 8b. restart the dispatcher when its code changed (systemd unit or supervised container PID)
+  let dispatchRestart = null;
+  if (c.needsDispatchRestart && !opts.noRestart && setupOk !== false) {
+    const dcmd = process.env.FRAMEWORK_UPDATE_DISPATCH_RESTART;
+    if (dcmd) {
+      const ok = runStep(steps, 'dispatcher restart (stand-in)', 'bash', ['-c', dcmd], { cwd: root });
+      dispatchRestart = { restarted: ok, via: 'stand-in' };
+    } else {
+      const sup = (() => { try { return require('./lib/host').supervisor(); } catch (_) { return 'systemd'; } })();
+      const pidAlive = p => { try { process.kill(Number(p), 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+      if (sup === 'systemd') {
+        try {
+          const svc = ((readJ(fs.readFileSync(path.join(root, 'company', 'company.json'), 'utf8')) || {}).station || {}).serviceName || 'capheos-station';
+          const du = svc + '-dispatch.service';
+          if (spawnSync('systemctl', ['--user', 'is-active', '--quiet', du]).status === 0) {
+            const ok = runStep(steps, 'dispatcher restart (' + du + ')', 'systemctl', ['--user', 'restart', du], { cwd: root });
+            dispatchRestart = { restarted: ok, unit: du, via: 'systemd' };
+          }
+        } catch (_) {}
+      } else {
+        let signaled = false;
+        try {
+          const sp = readJ(fs.readFileSync(path.join(root, 'company', 'state', 'supervise', 'dispatch.pid'), 'utf8'));
+          if (sp && sp.supervisorPid && pidAlive(sp.supervisorPid)) { process.kill(Number(sp.supervisorPid), 'SIGUSR1'); signaled = true; dispatchRestart = { restarted: true, pid: Number(sp.supervisorPid), via: 'supervise' }; }
+          else if (sp && sp.childPid && pidAlive(sp.childPid)) { process.kill(Number(sp.childPid), 'SIGTERM'); signaled = true; dispatchRestart = { restarted: true, pid: Number(sp.childPid), via: 'supervise-child' }; }
+        } catch (_) {}
+        if (!signaled) {
+          try {
+            const dl = readJ(fs.readFileSync(path.join(root, 'company', 'state', 'dispatcher-loop.json'), 'utf8'));
+            if (dl && Number(dl.pid) > 1 && pidAlive(dl.pid)) { process.kill(Number(dl.pid), 'SIGTERM'); signaled = true; dispatchRestart = { restarted: true, pid: Number(dl.pid), via: 'dispatcher-pid' }; }
+          } catch (_) {}
+        }
+        if (signaled) steps.push({ step: 'dispatcher restart (' + dispatchRestart.via + ')', ok: true, out: 'pid ' + dispatchRestart.pid });
+      }
+    }
+  }
+  const row = { at: new Date().toISOString(), by: String(opts.by), from: c.head, to: c.target, commits: c.commits.length, patches: c.patches, merged, setup: setupOk, restart: !!restart, dispatchRestart: !!(dispatchRestart && dispatchRestart.restarted), needsConsoleRestart: c.needsConsoleRestart, needsDispatchRestart: c.needsDispatchRestart, saved: path.relative(root, keep) };
   try { fs.mkdirSync(path.join(root, 'company', 'state'), { recursive: true }); fs.appendFileSync(path.join(root, 'company', 'state', 'framework-updates.jsonl'), JSON.stringify(row) + '\n'); } catch (_) {}
   try {
     const f = path.join(root, 'company', 'work', 'decisions.md'); fs.mkdirSync(path.dirname(f), { recursive: true });
     fs.appendFileSync(f, '- ' + row.at.slice(0, 16).replace('T', ' ') + ' ' + row.by + ' (owner) took the framework update ' + c.head.slice(0, 10) + '..' + c.target.slice(0, 10) + ' (' + c.commits.length + ' commit(s)' + (c.patches.length ? ', patch ' + c.patches.join(', ') : '') + ')\n');
   } catch (_) {}
-  return { ok: setupOk !== false, updated: true, from: c.head, to: c.target, steps, merged, setup: setupOk, restart, needsConsoleRestart: c.needsConsoleRestart, error: setupOk === false ? 'the update is in, but setup failed: see its output' : undefined };
+  return { ok: setupOk !== false, updated: true, from: c.head, to: c.target, steps, merged, setup: setupOk, restart, dispatchRestart, needsConsoleRestart: c.needsConsoleRestart, needsDispatchRestart: c.needsDispatchRestart, error: setupOk === false ? 'the update is in, but setup failed: see its output' : undefined };
 }
 
 /* ---------------- selftest: a temp framework repo, a founded clone, an update with a patch, a console change and a
