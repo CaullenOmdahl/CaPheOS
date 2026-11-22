@@ -559,10 +559,48 @@ function selftest() {
   return bad.length ? 1 : 0;
 }
 
+function headerFindings(text) {
+  const lines = String(text || '').split('\n');
+  const h1 = lines.findIndex(l => /^# /.test(l));
+  if (h1 <= 0) return [];
+  const junk = [];
+  for (let i = 0; i < h1; i++) {
+    if (lines[i].trim()) junk.push({ line: i + 1, text: lines[i].trim().slice(0, 100) });
+  }
+  return junk;
+}
+
+function openIndex(text, relFile) {
+  const lines = String(text || '').split('\n');
+  const secs = classify(text);
+  const out = [];
+  for (let i = 0; i < secs.length; i++) {
+    const s = secs[i];
+    if (s.appendix) continue;
+    if (!/^OPEN\b/i.test(String(s.status || ''))) continue;
+    const startLine = s.line;
+    const endLine = (i + 1 < secs.length ? secs[i + 1].line - 1 : lines.length);
+    const secLines = lines.slice(startLine - 1, endLine);
+    const body = secLines.join('\n');
+    const dl = deadlineOf({ body: secLines });
+    const pm = /^\*\*Priority:\*\*\s*(.+)$/m.exec(body);
+    out.push({
+      file: relFile || '',
+      startLine,
+      endLine,
+      bytes: Buffer.byteLength(body),
+      priority: pm ? pm[1].trim().slice(0, 40) : null,
+      deadline: dl && dl.raw ? dl.raw.slice(0, 60) : null,
+      heading: s.heading.slice(0, 140)
+    });
+  }
+  return out;
+}
+
 function main() {
   const argv = process.argv.slice(2);
   if (argv.includes('--help') || argv.includes('-h')) {
-    console.log('usage: handoff-status.js [--all] [--quiet] | --due [--json] [--fail-on-overdue] | --selftest');
+    console.log('usage: handoff-status.js [--all] [--quiet] | --due [--json] [--fail-on-overdue] | --open-index [--file <to-x.md>] [--json] | --selftest');
     process.exit(0);
   }
   if (argv.includes('--selftest')) process.exit(selftest());
@@ -571,12 +609,32 @@ function main() {
   const all = argv.includes('--all');
   const quiet = argv.includes('--quiet');
   const due = argv.includes('--due');
+  const openIdx = argv.includes('--open-index');
   const json = argv.includes('--json');
   let files = [];
   try { files = fs.readdirSync(DIR).filter(f => /^to-.*\.md$/.test(f)).map(f => path.join(DIR, f)); } catch (e) {
     console.error('cannot read ' + DIR + ': ' + e.message); process.exit(2);
   }
   if (all) { try { files = files.concat(fs.readdirSync(ARCHIVE).filter(f => /^to-.*\.md$/.test(f)).map(f => path.join(ARCHIVE, f))); } catch (_) {} }
+
+  if (openIdx) {
+    const fi = argv.indexOf('--file');
+    const only = fi >= 0 && argv[fi + 1] ? path.basename(argv[fi + 1]) : null;
+    const target = only ? files.filter(f => path.basename(f) === only) : files;
+    const items = [];
+    for (const f of target) {
+      let text = ''; try { text = fs.readFileSync(f, 'utf8'); } catch (_) { continue; }
+      items.push(...openIndex(text, path.relative(ROOT, f)));
+    }
+    if (json) console.log(JSON.stringify(items, null, 1));
+    else {
+      for (const it of items) {
+        console.log(it.file + ':L' + it.startLine + '-L' + it.endLine + '  [' + (it.priority || it.deadline || 'open') + ']  ' + it.heading);
+      }
+      console.log('OPEN INDEX: ' + items.length + ' OPEN item(s) across ' + target.length + ' file(s)');
+    }
+    process.exit(0);
+  }
 
   if (due) {
     const now = new Date();
@@ -611,6 +669,10 @@ function main() {
     let text = '';
     try { text = fs.readFileSync(f, 'utf8'); } catch (_) { continue; }
     total += classify(text).filter(s => !s.appendix).length;
+    for (const h of headerFindings(text)) {
+      warns++;
+      if (!quiet) console.log('WARN  CORRUPT HEADER     ' + path.relative(ROOT, f) + ':' + h.line + '  stray line before # heading: ' + JSON.stringify(h.text));
+    }
     for (const bad of scan(text)) {
       findings++;
       if (!quiet) console.log('MISSING STATUS  ' + path.relative(ROOT, f) + ':' + bad.line + '  "' + bad.heading.slice(0, 90) + '"');
@@ -668,4 +730,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { sections, statusOf, classify, scan, dueSet, deadlineOf, notBeforeOf, dutyResult, futureStamps, unreadDeadlines, deadlineAsNotBefore, gateFindings, suggestWaitingOn };
+module.exports = { sections, statusOf, classify, scan, dueSet, deadlineOf, notBeforeOf, dutyResult, futureStamps, unreadDeadlines, deadlineAsNotBefore, gateFindings, suggestWaitingOn, openIndex, headerFindings };
