@@ -49,3 +49,18 @@ test('staged update: no GitHub checks is not a CI block; pending or failed check
   assert.match(SU.ciWhy({ runs: 2, green: false, pending: ['x'], failed: [] }, t), /running: x/);
   assert.match(SU.ciWhy({ runs: 1, green: false, pending: [], failed: ['y:failure'] }, t), /failed: y:failure/);
 });
+
+test('merge gate: a cached pass is used; an agent with none is told to start the test step; a person runs it inline', () => {
+  const { T, head, ev } = fixture();
+  try {
+    const base = { root: T, repo: 'o/r', head, pr: 7, by: 'sam', evDir: ev };
+    const refused = LT.gate(Object.assign({ agent: true, cmd: 'exit 1' }, base));
+    assert.equal(refused.ok, false);
+    assert.match(refused.reason, /notify-when\.js --seat sam .* -- node company\/tools\/capheos-merge\.js test 7/);
+    assert.ok(!fs.existsSync(ev), 'an agent refusal runs nothing');
+    const inline = LT.gate(Object.assign({ agent: false, cmd: 'echo PASS x' }, base));
+    assert.ok(inline.ok && !inline.cached, 'a person runs it inline');
+    const hit = LT.gate(Object.assign({ agent: true, cmd: 'exit 1' }, base));
+    assert.ok(hit.ok && hit.cached, 'the agent now finds the cached pass');
+  } finally { fs.rmSync(ev, { recursive: true, force: true }); }
+});

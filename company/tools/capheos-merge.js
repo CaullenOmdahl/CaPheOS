@@ -11,6 +11,12 @@
  *        --match-head-commit <head>` run with the merge tool's token (merge-gate.js check-gh lets it through when
  *        selfimprove.json requireMergeTool is on), and one row in company/state/capheos-merges.jsonl with the merge commit,
  *        which the tripwire (capheos-main-watch.js) and the staged update (staged-update.js) treat as a gated merge.
+ *   node company/tools/capheos-merge.js test <pr> [--repo owner/name]
+ *        the long step on its own: runs the suite on the PR head (lib/local-tests.js), prints JSON, exit 0 pass / 1 fail,
+ *        and caches a pass per head sha. An agent's `merge` on a repo with no GitHub checks refuses until that pass exists
+ *        (shell.exec caps a call at 10 minutes), so start it with notify-when.js and merge when it ends:
+ *          node company/tools/notify-when.js --seat <seat> --why "tests for #<pr>" -- node company/tools/capheos-merge.js test <pr>
+ *        A person running `merge` by hand gets the suite inline instead.
  *   node company/tools/capheos-merge.js baseline --by owner [--repo owner/name] [--sha <sha>]
  *        the owner takes main's head (or --sha) as known-good: a baseline row, so commits that landed before the pipeline
  *        (or by the owner's own hand) do not block the staged update forever. Owner only.
@@ -50,8 +56,9 @@ function merge() {
     const e = SI.readJ(ev, null);
     if (!e || e.verdict !== 'PASS') die(repo + ' has no CI checks and head ' + head.slice(0, 8) + ' has no pre-merge PASS: run `node company/tools/premerge-check.js --pr ' + pr + ' --repo ' + repo + '` first', 3);
     // GitHub Actions is off: the suite runs here, on the exact head commit (lib/local-tests.js); a pass is cached per sha
-    lt = require('./lib/local-tests').ensure({ root: co.ROOT, repo, head, pr, evDir: co.p('company', 'work', 'evidence') });
-    if (!lt.ok) die(repo + ' #' + pr + ' head ' + head.slice(0, 8) + ': local tests did not pass: ' + lt.reason, 3);
+    let agent = false; try { agent = require('./lib/guardrails').isAgentCaller(); } catch (_) {}
+    lt = require('./lib/local-tests').gate({ root: co.ROOT, repo, head, pr, by, agent, repoOpt: opt('repo') && opt('repo') !== true, evDir: co.p('company', 'work', 'evidence') });
+    if (!lt.ok) die(repo + ' #' + pr + ' head ' + head.slice(0, 8) + ': ' + lt.reason, 3);
     rule = 'local-tests-pass + premerge-pass';
   }
   // the wave-3 checks, as merge-gate.js asks them: a broken or absent library never refuses
@@ -89,6 +96,17 @@ function merge() {
   return row;
 }
 
+// the long step on its own: run the suite on the PR head (cached per sha); exit 0 on a pass, 1 on a fail
+function testPr() {
+  const cfg = SI.config();
+  const pr = a[1]; if (!/^\d+$/.test(String(pr || ''))) die('usage: test <pr number> [--repo owner/name]', 2);
+  const repo = opt('repo') && opt('repo') !== true ? opt('repo') : cfg.repo;
+  const d = SI.ghJson(['pr', 'view', pr, '--repo', repo, '--json', 'headRefOid']);
+  const r = require('./lib/local-tests').ensure({ root: co.ROOT, repo, head: d.headRefOid, pr, evDir: co.p('company', 'work', 'evidence') });
+  console.log(JSON.stringify({ ok: r.ok, repo, pr: Number(pr), head: d.headRefOid, cached: !!r.cached, tests: r.tests, reason: r.reason }));
+  process.exit(r.ok ? 0 : 1);
+}
+
 function baseline() {
   const own = require('./lib/owner');
   const by = opt('by'); const why = !own.isOwnerName(by) ? 'only the owner takes a baseline (--by owner)' : own.refusal(by, 'a merge-tool baseline');
@@ -115,7 +133,8 @@ function hook() {
 }
 
 if (cmd === 'merge') { try { merge(); } catch (e) { die(e.message); } }
+else if (cmd === 'test') { try { testPr(); } catch (e) { die(e.message); } }
 else if (cmd === 'baseline') baseline();
 else if (cmd === 'hook') hook();
 else if (cmd === 'list') { const n = Number(opt('n')) || 20; for (const r of SI.mergeRows().slice(-n)) console.log(JSON.stringify(r)); }
-else die('usage: capheos-merge.js merge <pr> --by <seat> [--repo R] [--method squash|merge|rebase] [--dry-run] | baseline --by owner [--sha S] | hook <checkout> | list', 2);
+else die('usage: capheos-merge.js merge <pr> --by <seat> [--repo R] [--method squash|merge|rebase] [--dry-run] | test <pr> [--repo R] | baseline --by owner [--sha S] | hook <checkout> | list', 2);

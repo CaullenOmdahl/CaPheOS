@@ -18,12 +18,19 @@ const GIT = '/usr/bin/git';
 const tail = (s, n) => String(s || '').split('\n').map(l => l.trimEnd()).filter(Boolean).slice(-n);
 const git = (root, args, o) => spawnSync(GIT, ['-C', root].concat(args), Object.assign({ encoding: 'utf8', timeout: 120000 }, o || {}));
 
+const evFile = o => path.join(o.evDir, 'localtests-' + String(o.repo).split('/').pop() + '-' + String(o.head) + '.json');
+/* the cached pass for a head sha, or null */
+function cached(o) {
+  try { const c = JSON.parse(fs.readFileSync(evFile(o), 'utf8')); if (c && c.passed && c.sha === o.head) return { ok: true, cached: true, tests: { sha: c.sha, passed: true, steps: c.steps, ms: c.ms } }; } catch (_) {}
+  return null;
+}
+
 function ensure(o) {
   const t0 = Date.now();
   const sha = String(o.head || '');
   if (!/^[0-9a-f]{40}$/.test(sha)) return { ok: false, tests: { sha, passed: false, ms: 0 }, reason: 'need the full head sha to test it' };
-  const evf = path.join(o.evDir, 'localtests-' + String(o.repo).split('/').pop() + '-' + sha + '.json');
-  try { const c = JSON.parse(fs.readFileSync(evf, 'utf8')); if (c && c.passed && c.sha === sha) return { ok: true, cached: true, tests: { sha, passed: true, steps: c.steps, ms: c.ms } }; } catch (_) {}
+  const evf = evFile(o);
+  const hit = cached(o); if (hit) return hit;
   const fail = (reason, steps) => ({ ok: false, tests: { sha, passed: false, steps, ms: Date.now() - t0 }, reason });
   let wt = null; let base = null;
   try {
@@ -53,4 +60,13 @@ function ensure(o) {
   }
 }
 
-module.exports = { ensure };
+/* the merge tool's rule for a head with no GitHub checks: a cached pass is used; otherwise an agent is told to start the
+ * long step apart (StarNet's shell.exec caps a call at 10 minutes) and anyone else runs it inline. -> { ok, reason?, tests } */
+function gate(o) {
+  const hit = cached(o); if (hit) return hit;
+  if (o.agent) return { ok: false, tests: { sha: o.head, passed: false, ms: 0 }, reason: 'no local test pass yet; start `node company/tools/notify-when.js --seat ' + o.by + ' --why "tests for ' + o.repo + ' #' + o.pr + '" -- node company/tools/capheos-merge.js test ' + o.pr + (o.repoOpt ? ' --repo ' + o.repo : '') + '`, then run merge again when it ends' };
+  const r = ensure(o);
+  return r.ok ? r : Object.assign(r, { reason: 'local tests did not pass: ' + r.reason });
+}
+
+module.exports = { ensure, cached, gate };
