@@ -1,0 +1,62 @@
+# 0024-claude-cli-refusal-failfast.diff
+# Fail fast in sidecar/providers/claude-cli.js on provider safety/policy refusals (e.g. <synthetic>
+# "safeguards flagged this message" / content_policy_blocked) instead of waiting for stream/idle
+# timeouts (~10-15 min), and tag the thrown Error with code='content_policy_blocked' (status 400).
+#
+# Apply:  git -C starnet apply --3way --whitespace=nowarn ../company/patches/0024-claude-cli-refusal-failfast.diff
+# Revert: git -C starnet apply -R ../company/patches/0024-claude-cli-refusal-failfast.diff
+diff --git a/sidecar/providers/claude-cli.js b/sidecar/providers/claude-cli.js
+index da83e1d..c93712d 100644
+--- a/sidecar/providers/claude-cli.js
++++ b/sidecar/providers/claude-cli.js
+@@ -898,7 +898,16 @@
+           if (part.stop) { t.blockDone = true; t.rest = part.rest || ''; }
+         } else if (j.type === 'stream_event' && j.event && j.event.type === 'message_start') t.streamUsage = Object.assign({}, j.event.message && j.event.message.usage);
+         else if (j.type === 'stream_event' && j.event && j.event.type === 'message_delta' && j.event.usage) t.streamUsage = Object.assign(t.streamUsage || {}, j.event.usage);
+-        else if (j.type === 'assistant' && j.error) t.apiError = String(j.error);
++        else if (j.type === 'assistant') {
++          if (j.error) t.apiError = String(j.error);
++          const am = j.message || {};
++          const parts = Array.isArray(am.content) ? am.content.map(c => (c && typeof c.text === 'string' ? c.text : '')).join('\n') : (typeof am.content === 'string' ? am.content : '');
++          if (am.model === '<synthetic>' && /safeguards?\s+flagged|content[_ ]?policy|\/legal\/aup|reasoning_extraction/i.test(parts)) {
++            t.apiError = t.apiError || 'content_policy_blocked';
++            t.refusalText = parts.slice(0, 400);
++            t.fastFail = true;
++          }
++        }
+         else if (j.type === 'rate_limit_event') rateLimitSeen(j.rate_limit_info);
+         else if (j.type === 'result') t.result = j;
+         return out;
+@@ -955,6 +964,12 @@
+           e.status = 429; e.code = 'usage_limit_reached';
+           return e;
+         }
++        const msgStr = String(message || t.refusalText || detail || '');
++        if (t.apiError === 'content_policy_blocked' || /safeguards?\s+flagged|content[_ ]?policy|\/legal\/aup|reasoning_extraction/i.test(msgStr)) {
++          const e = new Error('Claude Code error: ' + msgStr.slice(0, 400));
++          e.status = 400; e.code = 'content_policy_blocked';
++          return e;
++        }
+         return new Error('Claude Code error: ' + String(message || detail || 'unknown error').slice(0, 400));
+       };
+       // The turn's end from its result line: a failure is thrown (after booking what it was billed); a success yields
+@@ -1372,7 +1387,7 @@
+           let j;
+           try { j = JSON.parse(line); } catch (_) { continue; }
+           yield* T.line(j);
+-          if (T.blockDone || T.result) break;   // a turn ends at its result line; the child stays
++          if (T.blockDone || T.result || T.fastFail) break;   // a turn ends at its result line or fast-fail refusal; the child stays
+         }
+         if (signal && signal.aborted) return;
+         /* A FINISHED TURN IS NEVER A TIMEOUT (stall report 2026-10-13). The watchdog counts silence from the last line
+@@ -1382,6 +1397,10 @@
+            the watchdog has already closed the child, so the next turn starts a fresh one. Only a turn with neither is a
+            timeout. */
+         if (failure && !T.result && !T.blockDone) throw failure;
++        if (T.fastFail && !T.result) {
++          settle(); closeSession(s, 'refusal');
++          throw T.failureError(T.refusalText || T.apiError, 'content_policy_blocked');
++        }
+ 
+         if (T.blockDone) {
+           /* The calls are complete. A model that ends its reply right there leaves the child holding exactly the text
