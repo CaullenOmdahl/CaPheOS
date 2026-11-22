@@ -206,8 +206,8 @@ test('units by exact name: a company whose service name starts with this one\'s 
   const f = fakeProc();
   const c = ctxOf(f, { registered: ['co-svc-rec.service'] });
   for (const u of ['co-station.service', 'co-station-console.service', 'co-station-dispatch.service', 'co-station-liveness.service', 'co-station-liveness-heartbeat.service',
-    'co-station-owner-job-update-20261119120000-ab12.service', 'co-svc-rec.service', 'co-svc-rec.scope']) assert.ok(O.ourUnit(c, u), u);
-  for (const u of ['co-station-2.service', 'co-station-2-console.service', 'co-station-x-dispatch.service', 'co-station-owner-job-update.service', 'co-station-owner-job-x-1-ab12.service',
+    'co-station-owner-job-update-20261119120000-ab12.service', 'co-station-restart-when-idle-20261123020000-ab12.service', 'co-svc-rec.service', 'co-svc-rec.scope']) assert.ok(O.ourUnit(c, u), u);
+  for (const u of ['co-station-2.service', 'co-station-2-console.service', 'co-station-x-dispatch.service', 'co-station-owner-job-update.service', 'co-station-owner-job-x-1-ab12.service', 'co-station-restart-when-idle-x.service',
     'co-svc-other.service', 'co-svc-svc-rec.service', 'co-station.scope', '']) assert.ok(!O.ourUnit(c, u), u);
   // a process in the other company's station unit is never this one's, though its name starts the same
   f.put(80, { cmd: ['node', 'build.js'], cgroup: '0::/user.slice/user@1000.service/app.slice/co-station-2.service' });

@@ -969,7 +969,10 @@ function findings(ctx) {
     if (inScope.has(target) || (byName.has(target) === false && refsRoot(x.text))) inScope.add(x.file);
   }
   // an owner job the console started (console/owner-ops.js: <svc>-owner-job-<id>.service, transient) is the framework's
-  const ownerJob = f => f.startsWith(ctx.stationSvc + '-owner-job-') && require('./lib/owned').OWNER_JOB.test(f.slice(ctx.stationSvc.length));
+  // and so is the restart waiter framework-update.js starts as <svc>-restart-when-idle-<stamp>-<hex>.service
+  const OW = require('./lib/owned');
+  const ownerJob = f => (f.startsWith(ctx.stationSvc + '-owner-job-') && OW.OWNER_JOB.test(f.slice(ctx.stationSvc.length)))
+    || (f.startsWith(ctx.stationSvc + '-restart-when-idle-') && OW.RESTART_JOB.test(f.slice(ctx.stationSvc.length)));
   const unregistered = [...inScope].filter(f => !fw.has(f) && !reg.has(f) && !ownerJob(f)).sort();
   const unscoped = [...new Set([...reg.values()].map(e => e.unit))].filter(u => !u.startsWith(ctx.slug + '-svc-')).sort();
   const edited = [];
