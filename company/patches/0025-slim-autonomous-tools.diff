@@ -1,0 +1,29 @@
+# 0025-slim-autonomous-tools.diff
+# When STARNET_SLIM_AUTONOMOUS_TOOLS=1 is set on autonomous task runs, move non-essential office tools
+# (media, studio, jukebox, browser, terminal, rare orchestrator tools) from eager advertised core into
+# `deferred` (still 100% granted and discoverable on demand via tool.search), cutting Turn-1 tool schema
+# prompt bloat by ~10k-13k tokens per turn without affecting interactive runs or tool grants.
+#
+# Apply:  git -C starnet apply --3way --whitespace=nowarn ../company/patches/0025-slim-autonomous-tools.diff
+# Revert: git -C starnet apply -R ../company/patches/0025-slim-autonomous-tools.diff
+diff --git a/sidecar/capability/project-tools.js b/sidecar/capability/project-tools.js
+index 5a112f6..b5ebcf0 100644
+--- a/sidecar/capability/project-tools.js
++++ b/sidecar/capability/project-tools.js
+@@ -250,7 +250,15 @@ function projectTools(agent, origin, role, facts) {
+         routineRun: !!(surface === 'autonomous' && isRoutineTrigger(trigger) && String(origin.cronJobId || ''))
+       }, granted);
+     }
+-    const extra = connectorDeferral.deferred.concat(Object.keys(unavailable.byTool), crewless ? CrewDiet.CREW_KIT_DEFERRED : []);
++    const SLIM_AUTONOMOUS_CORE = new Set([
++      'tool.search', 'fs.read', 'fs.list', 'fs.search', 'fs.write', 'fs.append', 'fs.edit', 'fs.patch',
++      'shell.exec', 'shell.bg.status', 'shell.bg.read', 'shell.bg.write', 'shell.bg.kill', 'shell.bg.wait', 'verify.run',
++      'quest.update', 'deliverable_note', 'routine.notepad', 'todo',
++      'notebook.read', 'notebook.write', 'skill.view', 'web_search', 'web_fetch', 'team.dispatch'
++    ]);
++    const slimAutonomous = process.env.STARNET_SLIM_AUTONOMOUS_TOOLS === '1' && surface === 'autonomous' && isTask && !deferralOff && !widgetScope;
++    const slimExtra = slimAutonomous ? resolved.tools.filter(n => !SLIM_AUTONOMOUS_CORE.has(n)) : [];
++    const extra = connectorDeferral.deferred.concat(Object.keys(unavailable.byTool), crewless ? CrewDiet.CREW_KIT_DEFERRED : [], slimExtra);
+     resolved.deferred = deferred.concat(extra.filter(n => granted.has(n) && deferred.indexOf(n) < 0 && !ddw(n)));
+     resolved.unavailable = unavailable.byTool;
+   }
