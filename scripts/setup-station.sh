@@ -164,9 +164,11 @@ done
 
 # 4. systemd user units from systemd/*.in
 mkdir -p "$UNITDIR"
+# node flags for the console and dispatcher units: no inspector on a stray SIGUSR1, where this node knows the flag
+NODEFLAGS=""; node --disable-sigusr1 -e 0 2>/dev/null && NODEFLAGS="--disable-sigusr1"
 for t in systemd/*.in; do
   out="$UNITDIR/$(basename "$t" .in | sed -e "s/^capheos-station/$SVC/" -e "s/^capheos-liveness/$SVC-liveness/")"
-  sed -e "s|@ROOT@|$ROOT|g" -e "s|@SVC@|$SVC|g" -e "s|@NAME@|$NAME|g" -e "s|@ENVFILE@|$ENVFILE|g" -e "s|@TICK@|$TICK|g" -e "s|@SLICE@|$SLICE|g" "$t" > "$out"
+  sed -e "s|@ROOT@|$ROOT|g" -e "s|@SVC@|$SVC|g" -e "s|@NAME@|$NAME|g" -e "s|@ENVFILE@|$ENVFILE|g" -e "s|@TICK@|$TICK|g" -e "s|@SLICE@|$SLICE|g" -e "s|@NODEFLAGS@ \{0,1\}|${NODEFLAGS:+$NODEFLAGS }|g" "$t" > "$out"
   echo "wrote $out"
 done
 # Migration: the dispatcher used to be a oneshot service fired by $SVC-dispatch.timer. It is now a long-lived loop

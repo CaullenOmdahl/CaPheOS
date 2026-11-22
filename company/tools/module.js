@@ -509,7 +509,7 @@ function selftest() {
   try {
     const mk = (...p) => { const d = path.join(tmp, ...p); fs.mkdirSync(d, { recursive: true }); return d; };
     mk('company', 'tools', 'lib'); mk('company', 'schemas'); mk('company', 'state'); mk('company', 'owner'); mk('company', 'runbooks'); mk('secrets');
-    for (const f of ['module.js', 'pack.js', 'lib/company.js', 'lib/modules.js', 'lib/owner.js', 'provenance.js', 'INVENTORY.md']) fs.copyFileSync(path.join(__dirname, f), path.join(tmp, 'company', 'tools', f));
+    for (const f of ['module.js', 'pack.js', 'lib/company.js', 'lib/modules.js', 'lib/owner.js', 'lib/proc-check.js', 'provenance.js', 'INVENTORY.md']) fs.copyFileSync(path.join(__dirname, f), path.join(tmp, 'company', 'tools', f));
     fs.copyFileSync(path.join(here, 'company', 'runbooks', 'tool-management.md'), path.join(tmp, 'company', 'runbooks', 'tool-management.md'));
     fs.copyFileSync(pk.SCHEMA, path.join(tmp, 'company', 'schemas', 'pack.schema.json'));
     fs.writeFileSync(path.join(tmp, 'company', 'tools', 'owner-inbox.js'), "const fs=require('fs'),p=require('path');module.exports={send({from,text}){const r={id:'out-test',from,text};fs.appendFileSync(p.join(__dirname,'..','owner','outbound.jsonl'),JSON.stringify(r)+'\\n');return r;}};\n");

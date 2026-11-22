@@ -497,6 +497,7 @@ function selftest() {
     // the owner rule (lib/owner.js -> provenance.js ownerShell()) the owner-only commands ask
     fs.copyFileSync(path.join(__dirname, 'lib', 'owner.js'), path.join(tmp, 'company', 'tools', 'lib', 'owner.js'));
     fs.copyFileSync(path.join(__dirname, 'provenance.js'), path.join(tmp, 'company', 'tools', 'provenance.js'));
+    fs.copyFileSync(path.join(__dirname, 'lib', 'proc-check.js'), path.join(tmp, 'company', 'tools', 'lib', 'proc-check.js'));
     fs.copyFileSync(P.schema, path.join(tmp, 'company', 'schemas', 'pack.schema.json'));
     fs.writeFileSync(path.join(tmp, 'company', 'tools', 'owner-inbox.js'), "const fs=require('fs'),p=require('path');module.exports={send({from,text}){const r={id:'out-test',from,text};fs.appendFileSync(p.join(__dirname,'..','owner','outbound.jsonl'),JSON.stringify(r)+'\\n');return r;}};\n");
     fs.writeFileSync(path.join(tmp, 'company', 'company.json'), JSON.stringify({ name: 'Test Co', owner: { name: 'Alex' }, timezone: 'UTC', station: { port: 1, abilities: ['local-render'] } }));

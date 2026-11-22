@@ -116,11 +116,13 @@ function planLine(p) {
 
 /* ---------------- what apply writes ---------------- */
 const svc = ctx => M.svcOf(ctx.config);
+// the same flag scripts/setup-station.sh puts in the units: no inspector on a stray SIGUSR1, where this node knows it
+const NODEFLAGS = process.allowedNodeEnvironmentFlags.has('--disable-sigusr1') ? '--disable-sigusr1' : '';
 function templateExec(ctx, tpl) {
   const f = path.join(ctx.root, 'systemd', tpl);
   let t; try { t = fs.readFileSync(f, 'utf8'); } catch (_) { return null; }
   const m = /^ExecStart=(.*)$/m.exec(t); if (!m) return null;
-  return m[1].replace(/@ROOT@/g, ctx.root).replace(/@SVC@/g, svc(ctx));
+  return m[1].replace(/@ROOT@/g, ctx.root).replace(/@SVC@/g, svc(ctx)).replace(/@NODEFLAGS@ ?/g, NODEFLAGS ? NODEFLAGS + ' ' : '');
 }
 function withHeap(exec, heapMB) { return exec.replace(/(^|\s)node(\s)/, '$1node --max-old-space-size=' + heapMB + '$2'); }
 const UNITS = [
@@ -410,9 +412,9 @@ function selftest() {
     const tplExec = /^ExecStart=(.*)$/m.exec(fs.readFileSync(path.join(root, 'systemd', 'capheos-station.service.in'), 'utf8'))[1];
     assert.ok(st.includes('ExecStart=\nExecStart=' + tplExec.replace('node ', 'node --max-old-space-size=384 ') + '\n'), 'station ExecStart = template + heap: ' + st);
     const con = fs.readFileSync(path.join(unitDir, 'testco-station-console.service.d', DROPIN), 'utf8');
-    assert.ok(con.includes('ExecStart=/usr/bin/env node --max-old-space-size=128 ' + root + '/console/server.js\n') && /MemoryMax=300M/.test(con), con);
+    assert.ok(con.includes('ExecStart=/usr/bin/env node --max-old-space-size=128 ' + (NODEFLAGS ? NODEFLAGS + ' ' : '') + root + '/console/server.js\n') && /MemoryMax=300M/.test(con), con);
     const dis = fs.readFileSync(path.join(unitDir, 'testco-station-dispatch.service.d', DROPIN), 'utf8');
-    assert.ok(/MemoryHigh=512M\nMemoryMax=768M/.test(dis) && dis.includes('node --max-old-space-size=160 ' + root + '/company/tools/dispatcher-loop.js'), 'low: the dispatcher\'s High is above its heap and its ticks\' children: ' + dis);
+    assert.ok(/MemoryHigh=512M\nMemoryMax=768M/.test(dis) && dis.includes('node --max-old-space-size=160 ' + (NODEFLAGS ? NODEFLAGS + ' ' : '') + root + '/company/tools/dispatcher-loop.js'), 'low: the dispatcher\'s High is above its heap and its ticks\' children: ' + dis);
     assert.ok(/\nManagedOOMMemoryPressure=auto\n/.test(dis) && /\nManagedOOMPreference=omit\n/.test(dis), 'low: systemd-oomd does not kill the dispatcher mid-tick (the slice\'s kill rule skips it too)');
     assert.ok(/\nManagedOOMPreference=omit\n/.test(st), 'the slice\'s oomd kill rule never picks the station: ' + st);
     assert.ok(/^ManagedOOMPreference=omit$/m.test(fs.readFileSync(path.join(root, 'systemd', 'capheos-station.service.in'), 'utf8')), 'the station template says so too');

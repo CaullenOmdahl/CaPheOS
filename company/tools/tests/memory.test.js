@@ -178,7 +178,8 @@ test('the company\'s own slice: outside app.slice, every level named, pressure k
   const sysd = path.join(__dirname, '..', '..', '..', 'systemd');
   const setup = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'scripts', 'setup-station.sh'), 'utf8');
   assert.ok(/-e "s\|@SLICE@\|\$SLICE\|g"/.test(setup) && /SLICE="\$\(node -e .*sliceOf\(require\('\.\/company\/company\.json'\)\)/.test(setup), 'setup-station.sh fills @SLICE@ from lib/memory.js sliceOf');
-  const subs = { ROOT: '/srv/co', SVC: 'dev-co-station', NAME: 'CPD', ENVFILE: '/home/u/.config/x.env', TICK: '10', SLICE: M.sliceOf(ctx.config) };
+  const subs = { ROOT: '/srv/co', SVC: 'dev-co-station', NAME: 'CPD', ENVFILE: '/home/u/.config/x.env', TICK: '10', SLICE: M.sliceOf(ctx.config), NODEFLAGS: '' };
+  assert.ok(/-e "s\|@NODEFLAGS@/.test(setup), 'setup-station.sh fills @NODEFLAGS@');
   const services = fs.readdirSync(sysd).filter(f => /\.service\.in$/.test(f));
   assert.ok(services.length >= 5, services.join());
   for (const f of services) {

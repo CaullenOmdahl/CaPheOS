@@ -104,7 +104,6 @@ function check(opts) {
     owned.push(row);
   }
   let stationActive = false;
-  const pidAlive = p => { try { process.kill(Number(p), 0); return true; } catch (e) { return e.code === 'EPERM'; } };
   if (process.env.FRAMEWORK_UPDATE_STATION_ACTIVE) stationActive = process.env.FRAMEWORK_UPDATE_STATION_ACTIVE === '1';
   else {
     const sup = (() => { try { return require('./lib/host').supervisor(); } catch (_) { return 'systemd'; } })();
@@ -112,8 +111,7 @@ function check(opts) {
       try { const svc = (readJ(fs.readFileSync(path.join(root, 'company', 'company.json'), 'utf8')) || {}).station || {}; stationActive = spawnSync('systemctl', ['--user', 'is-active', '--quiet', (svc.serviceName || 'capheos-station') + '.service']).status === 0; } catch (_) {}
     } else {
       try {
-        const sp = readJ(fs.readFileSync(path.join(root, 'company', 'state', 'supervise', 'station.pid'), 'utf8'));
-        stationActive = !!(sp && ((sp.supervisorPid && pidAlive(sp.supervisorPid)) || (sp.childPid && pidAlive(sp.childPid))));
+        stationActive = !!require('./lib/proc-check.js').superviseTarget(root, 'station', 'sidecar/index.js');
       } catch (_) {}
     }
   }
@@ -210,7 +208,6 @@ function apply(opts) {
       dispatchRestart = { restarted: ok, via: 'stand-in' };
     } else {
       const sup = (() => { try { return require('./lib/host').supervisor(); } catch (_) { return 'systemd'; } })();
-      const pidAlive = p => { try { process.kill(Number(p), 0); return true; } catch (e) { return e.code === 'EPERM'; } };
       if (sup === 'systemd') {
         try {
           const svc = ((readJ(fs.readFileSync(path.join(root, 'company', 'company.json'), 'utf8')) || {}).station || {}).serviceName || 'capheos-station';
@@ -221,16 +218,16 @@ function apply(opts) {
           }
         } catch (_) {}
       } else {
+        // only a pid /proc confirms is the supervised dispatcher (supervise.js --name dispatch, or its dispatcher-loop.js) is signalled
+        const PC = require('./lib/proc-check.js');
         let signaled = false;
-        try {
-          const sp = readJ(fs.readFileSync(path.join(root, 'company', 'state', 'supervise', 'dispatch.pid'), 'utf8'));
-          if (sp && sp.supervisorPid && pidAlive(sp.supervisorPid)) { process.kill(Number(sp.supervisorPid), 'SIGUSR1'); signaled = true; dispatchRestart = { restarted: true, pid: Number(sp.supervisorPid), via: 'supervise' }; }
-          else if (sp && sp.childPid && pidAlive(sp.childPid)) { process.kill(Number(sp.childPid), 'SIGTERM'); signaled = true; dispatchRestart = { restarted: true, pid: Number(sp.childPid), via: 'supervise-child' }; }
-        } catch (_) {}
+        const t = PC.superviseTarget(root, 'dispatch', 'company/tools/dispatcher-loop.js');
+        if (t) { process.kill(t.pid, t.signal); signaled = true; dispatchRestart = { restarted: true, pid: t.pid, via: t.via }; }
         if (!signaled) {
           try {
             const dl = readJ(fs.readFileSync(path.join(root, 'company', 'state', 'dispatcher-loop.json'), 'utf8'));
-            if (dl && Number(dl.pid) > 1 && pidAlive(dl.pid)) { process.kill(Number(dl.pid), 'SIGTERM'); signaled = true; dispatchRestart = { restarted: true, pid: Number(dl.pid), via: 'dispatcher-pid' }; }
+            const dp = Number(dl && dl.pid);
+            if (dp > 1 && PC.runsScript(PC.argvOf(dp), 'company/tools/dispatcher-loop.js', { root })) { process.kill(dp, 'SIGTERM'); signaled = true; dispatchRestart = { restarted: true, pid: dp, via: 'dispatcher-pid' }; }
           } catch (_) {}
         }
         if (signaled) steps.push({ step: 'dispatcher restart (' + dispatchRestart.via + ')', ok: true, out: 'pid ' + dispatchRestart.pid });

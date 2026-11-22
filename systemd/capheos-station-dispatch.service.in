@@ -11,7 +11,7 @@ Slice=@SLICE@
 # the company's own temp dir, not the host's /tmp (RAM on most hosts); scripts/setup-station.sh
 Environment=TMPDIR=@ROOT@/.starnet-data/tmp
 ExecStartPre=/bin/mkdir -p -m 700 @ROOT@/.starnet-data/tmp
-ExecStart=/usr/bin/env node @ROOT@/company/tools/dispatcher-loop.js
+ExecStart=/usr/bin/env node @NODEFLAGS@ @ROOT@/company/tools/dispatcher-loop.js
 Restart=always
 # memory: limits and heap in the drop-in company/tools/memory.js apply writes. Under memory pressure systemd-oomd (where
 # it runs) may end this unit; Restart= brings it back, and the kernel ends it before the station (200 against 100).

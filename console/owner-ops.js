@@ -56,6 +56,9 @@ function mount(route, deps) {
   const { co, run, runApi, bad, owner, tool } = deps;
   const LOG = co.p('company', 'state', 'owner-ops.jsonl');
   const JOBS = co.p('company', 'state', 'owner-ops');
+  const pc = require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'proc-check.js'));
+  // a grant belongs to the console process that signed it: a console that starts finds none of the last one's
+  try { for (const f of fs.readdirSync(JOBS)) if (/\.grant(\.tmp|\.none)?$/.test(f)) try { fs.unlinkSync(path.join(JOBS, f)); } catch (_) {} } catch (_) {}
   const AUTHMOD = require(path.join(__dirname, 'auth.js'));
   const host = () => require(co.p('company', 'tools', 'lib', 'host.js'));
   const str = (v, name, max) => { if (v === undefined || v === null || v === '') return null; const s = String(v).trim(); if (s.startsWith('--')) bad(name + ' may not start with --'); if (s.length > (max || 500)) bad(name + ' is too long'); return s; };
@@ -85,7 +88,9 @@ function mount(route, deps) {
 
   /* ---------- detached jobs ---------- */
   // the job's own shell writes its pid (the unit's main process, or the detached child) and, at the end, its exit code
-  const WRAP = 'echo $$ > "$0"; "$@"; echo "[exit $?]"';
+  // $0 = pid file, $1 = the grant file the console writes once the unit is up ('' when there is none: a detached child).
+  // The wrapper waits for its grant (or the console's `<grant>.none`: no grant could be made; up to 30 s), runs the job, deletes the grant, THEN writes the [exit] marker.
+  const WRAP = 'echo $$ > "$0"; g="$1"; shift; n=0; while [ -n "$g" ] && [ ! -e "$g" ] && [ ! -e "$g.none" ] && [ $n -lt 300 ]; do sleep 0.1; n=$((n+1)); done; "$@"; rc=$?; [ -n "$g" ] && rm -f "$g" "$g.none"; echo "[exit $rc]"';
   const ENV_KEEP = /^(PATH|HOME|USER|LOGNAME|SHELL|LANG|LANGUAGE|LC_[A-Z]+|TZ|TMPDIR|XDG_[A-Z_]+|DBUS_SESSION_BUS_ADDRESS|NODE_EXTRA_CA_CERTS|CAPHEOS_[A-Z0-9_]+|STARNET_[A-Z0-9_]+|CONSOLE_(HOST|PORT|TRUST_PROXY))$/;
   function jobUnitArgs(unit, log, env) {
     const a = ['--user', '--collect', '--quiet', '--unit=' + unit, '--description=' + 'Owner job ' + unit,
@@ -106,6 +111,21 @@ function mount(route, deps) {
   }
   const sliceName = () => { let c = {}; try { c = JSON.parse(fs.readFileSync(co.p('company', 'company.json'), 'utf8')); } catch (_) {} return require(path.join(__dirname, '..', 'company', 'tools', 'lib', 'memory.js')).sliceOf(c); };
   const svcName = () => { let c = {}; try { c = JSON.parse(fs.readFileSync(co.p('company', 'company.json'), 'utf8')); } catch (_) {} return String((c.station && c.station.serviceName) || 'capheos-station').replace(/\.service$/, ''); };
+  function writeGrant(id, unit, grantPath, startedAt) {
+    try {
+      const sh = require('child_process').spawnSync('systemctl', ['--user', 'show', '-p', 'InvocationID', '-p', 'MainPID', unit], { encoding: 'utf8', timeout: 5000 });
+      const kv = {}; for (const l of String(sh.stdout || '').split('\n')) { const i = l.indexOf('='); if (i > 0) kv[l.slice(0, i)] = l.slice(i + 1).trim(); }
+      const mainPid = Number(kv.MainPID), invocationId = kv.InvocationID || '';
+      const mainStart = pc.startTicks(mainPid), consoleStart = pc.startTicks(process.pid);
+      const tok = fs.readFileSync(co.p('secrets', 'console-token'), 'utf8').trim();
+      if (!tok || !invocationId || !(mainPid > 1) || !mainStart || !consoleStart) return false;
+      const g = { id, unit, invocationId, mainPid, mainStart, consolePid: process.pid, consoleStart, startedAt };
+      g.hmac = crypto.createHmac('sha256', tok).update(require(co.p('company', 'tools', 'provenance.js'))._internals.grantText(g)).digest('hex');
+      const tmp = grantPath + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(g) + '\n', { mode: 0o600 }); fs.renameSync(tmp, grantPath);
+      return true;
+    } catch (_) { return false; }
+  }
   function startJob(kind, argv, opts) {
     opts = opts || {};
     fs.mkdirSync(JOBS, { recursive: true });
@@ -118,26 +138,20 @@ function mount(route, deps) {
     fs.closeSync(fs.openSync(log, 'a', 0o600));
     const sr = systemdRun();
     const grantPath = path.join(JOBS, id + '.grant');
-    const clearGrant = () => { try { fs.unlinkSync(grantPath); } catch (_) {} };
+    const clearGrant = () => { for (const f of [grantPath, grantPath + '.none']) try { fs.unlinkSync(f); } catch (_) {} };
     if (sr) {
       // its own transient unit: outside the console's memory limits and its cgroup, so neither a console restart nor the
-      // console's MemoryMax can end it halfway. Write a short-lived HMAC-signed grant (mode 0600) so provenance.js can
-      // cryptographically verify this transient unit came from the live owner console.
+      // console's MemoryMax can end it halfway. Once the unit is up the console writes a short-lived HMAC-signed grant
+      // (mode 0600) bound to the unit's InvocationID, main pid and that pid's start time (writeGrant), so provenance.js can
+      // check a caller is that unit's process or its descendant. A seatbelt, not a boundary: see provenance.js.
       const unit = svcName() + '-owner-job-' + id + '.service';
-      try {
-        const tok = fs.readFileSync(co.p('secrets', 'console-token'), 'utf8').trim();
-        if (tok) {
-          const hmac = crypto.createHmac('sha256', tok).update([id, unit, String(process.pid), meta.startedAt].join(':')).digest('hex');
-          fs.writeFileSync(grantPath, JSON.stringify({ id, unit, pid: process.pid, startedAt: meta.startedAt, hmac }) + '\n', { mode: 0o600 });
-        }
-      } catch (_) {}
-      const r = require('child_process').spawnSync(sr, jobUnitArgs(unit, log, env).concat(['--', 'bash', '-c', WRAP, pidf].concat(argv)), { cwd: co.ROOT, encoding: 'utf8', timeout: 20000, env });
-      if (!r.error && r.status === 0) meta.unit = unit;
+      const r = require('child_process').spawnSync(sr, jobUnitArgs(unit, log, env).concat(['--', 'bash', '-c', WRAP, pidf, grantPath].concat(argv)), { cwd: co.ROOT, encoding: 'utf8', timeout: 20000, env });
+      if (!r.error && r.status === 0) { meta.unit = unit; if (!writeGrant(id, unit, grantPath, meta.startedAt)) try { fs.writeFileSync(grantPath + '.none', '', { mode: 0o600 }); } catch (_) {} }
       else { clearGrant(); try { fs.appendFileSync(log, '(could not start it as its own unit: ' + String(r.error ? r.error.message : r.stderr || 'exit ' + r.status).trim().slice(0, 200) + '; started as a child of the console)\n'); } catch (_) {} }
     }
     if (!meta.unit) {
       const fd = fs.openSync(log, 'a', 0o600);
-      const ch = spawn('bash', ['-c', WRAP, pidf].concat(argv), { cwd: co.ROOT, detached: true, stdio: ['ignore', fd, fd], env });
+      const ch = spawn('bash', ['-c', WRAP, pidf, ''].concat(argv), { cwd: co.ROOT, detached: true, stdio: ['ignore', fd, fd], env });
       fs.closeSync(fd); meta.pid = ch.pid; ch.unref();
     }
     fs.writeFileSync(path.join(JOBS, id + '.json'), JSON.stringify(meta, null, 1) + '\n');
@@ -266,17 +280,14 @@ function mount(route, deps) {
       if (r.status !== 0) bad('could not restart ' + unit + ': ' + String(r.stderr || r.error || 'exit ' + r.status).trim().slice(0, 200), 500);
       return { restarted: true, unit, via: 'systemd' };
     }
-    // Container / scripts/supervise.js: signal supervisor (SIGUSR1) or dispatcher PID (SIGTERM — finishes current tick cleanly)
-    const supFile = co.p('company', 'state', 'supervise', 'dispatch.pid');
-    try {
-      const s = JSON.parse(fs.readFileSync(supFile, 'utf8'));
-      if (s && s.supervisorPid && alive(s.supervisorPid)) { process.kill(s.supervisorPid, 'SIGUSR1'); return { restarted: true, pid: s.supervisorPid, via: 'supervise' }; }
-      if (s && s.childPid && alive(s.childPid)) { process.kill(s.childPid, 'SIGTERM'); return { restarted: true, pid: s.childPid, via: 'supervise-child' }; }
-    } catch (_) {}
+    // Container / scripts/supervise.js: signal the supervisor (SIGUSR1) or the dispatcher (SIGTERM: finishes the tick cleanly),
+    // only after /proc says the pid is that program (a stale pidfile's number may belong to anything now)
+    const t = pc.superviseTarget(co.ROOT, 'dispatch', 'company/tools/dispatcher-loop.js');
+    if (t) { process.kill(t.pid, t.signal); return { restarted: true, pid: t.pid, via: t.via }; }
     try {
       const dl = JSON.parse(fs.readFileSync(co.p('company', 'state', 'dispatcher-loop.json'), 'utf8'));
       const pid = Number(dl && dl.pid);
-      if (pid > 1 && alive(pid)) { process.kill(pid, 'SIGTERM'); return { restarted: true, pid, via: 'dispatcher-pid' }; }
+      if (pid > 1 && pc.runsScript(pc.argvOf(pid), 'company/tools/dispatcher-loop.js', { root: co.ROOT })) { process.kill(pid, 'SIGTERM'); return { restarted: true, pid, via: 'dispatcher-pid' }; }
     } catch (_) {}
     bad('no systemd user manager and no running supervised dispatcher found to restart', 500);
   }

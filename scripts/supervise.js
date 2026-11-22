@@ -30,14 +30,24 @@ function writePid(cpid) {
   if (!pidfile) return;
   try {
     fs.mkdirSync(path.dirname(pidfile), { recursive: true });
-    fs.writeFileSync(pidfile, JSON.stringify({ supervisorPid: process.pid, childPid: cpid, name, startedAt: new Date(startedAt || Date.now()).toISOString() }) + '\n');
+    // tmp + rename: a reader (restart tools) never sees half a file
+    const tmp = pidfile + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify({ supervisorPid: process.pid, childPid: cpid, name, startedAt: new Date(startedAt || Date.now()).toISOString() }) + '\n');
+    fs.renameSync(tmp, pidfile);
   } catch (_) {}
 }
 function clearPid() { if (pidfile) try { fs.unlinkSync(pidfile); } catch (_) {} }
+// A node child gets --disable-sigusr1 (where this node knows it): a stray SIGUSR1 must not open its inspector. Not the
+// station (the sidecar is not ours: it may handle SIGUSR1 itself); this supervisor handles SIGUSR1 itself (below).
+function childArgv() {
+  const isNode = /(^|\/)(node|nodejs)(\d+)?$/.test(cmd[0]);
+  if (!isNode || !process.allowedNodeEnvironmentFlags.has('--disable-sigusr1') || cmd.includes('--disable-sigusr1') || cmd.some(a => /(^|\/)sidecar\/index\.js$/.test(a))) return cmd.slice(1);
+  return ['--disable-sigusr1'].concat(cmd.slice(1));
+}
 function start() {
   startedAt = Date.now();
   restarting = false;
-  child = spawn(cmd[0], cmd.slice(1), { stdio: 'inherit', env: Object.assign({ CAPHEOS_SUPERVISOR: 'supervise' }, process.env) });
+  child = spawn(cmd[0], childArgv(), { stdio: 'inherit', env: Object.assign({ CAPHEOS_SUPERVISOR: 'supervise' }, process.env) });
   writePid(child.pid);
   child.on('exit', (code, sig) => {
     if (killTimer) { clearTimeout(killTimer); killTimer = null; }
