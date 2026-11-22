@@ -55,10 +55,11 @@ function record(provider, reading, o) {
   const doc = read(o); const prev = doc[provider] || {};
   const balances = parse(reading && reading.balances);
   const perDay = o.perDayUsd != null ? Number(o.perDayUsd) : perDayUsd(provider, o);
+  const now = Number(o.now) || Date.now();
   const lowCur = balances.filter(b => b.total <= lowLine(b.currency, perDay) || (reading && reading.available === false)).map(b => b.currency);
-  const low = lowCur.length ? { key: provider + ':' + lowCur.join(',') + ':' + (prev.low && prev.low.key ? prev.low.since : Date.now()), since: prev.low && prev.low.since ? prev.low.since : Date.now(), currencies: lowCur } : null;
+  const low = lowCur.length ? { key: provider + ':' + lowCur.join(',') + ':' + (prev.low && prev.low.key ? prev.low.since : now), since: prev.low && prev.low.since ? prev.low.since : now, currencies: lowCur } : null;
   if (low && prev.low && prev.low.currencies && prev.low.currencies.join() === lowCur.join()) low.key = prev.low.key;
-  const cur = { at: (reading && reading.at) || Date.now(), available: reading ? reading.available : null, balances, low, alertedKey: prev.alertedKey || null };
+  const cur = { at: (reading && reading.at) || now, available: reading ? reading.available : null, balances, low, alertedKey: prev.alertedKey || null };
   let alerted = false;
   if (low && cur.alertedKey !== low.key) {
     const name = provider === 'deepseek' ? 'DeepSeek' : provider;
@@ -70,5 +71,17 @@ function record(provider, reading, o) {
   doc[provider] = cur; write(doc, o);
   return { low: !!low, alerted, currencies: low ? low.currencies : [] };
 }
-function status(provider, o) { const d = read(o)[provider]; return d ? { low: !!d.low, key: d.low ? d.low.key : null, currencies: d.low ? d.low.currencies : [], at: d.at } : { low: false, key: null, currencies: [], at: null }; }
+function status(provider, o) {
+  const d = read(o)[provider];
+  if (!d) return { low: false, key: null, currencies: [], at: null, available: null, since: null, alerted: false };
+  return {
+    low: !!d.low,
+    key: d.low ? d.low.key : null,
+    currencies: d.low ? d.low.currencies : [],
+    at: d.at,
+    available: d.available,
+    since: d.low ? (Number(d.low.since) || null) : null,
+    alerted: !!(d.low && d.alertedKey && d.alertedKey === d.low.key)
+  };
+}
 module.exports = { lowNotice, record, read, status, lowLine, parse, FLOOR, DAYS, file };

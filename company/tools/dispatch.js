@@ -1261,6 +1261,7 @@ function lastRunTail(job) {
       }
     }
     for (const [id, t] of Object.entries(state.completionsSeen)) if (Date.now() - t > 7 * 86400e3) delete state.completionsSeen[id];
+    if (!DRY && typeof CMP.pruneDeadRunning === 'function') { const pruned = CMP.pruneDeadRunning(ROOT); if (pruned) log('WATCHED JOBS: pruned ' + pruned + ' stale dead-PID entry(ies)'); }
   } catch (e) { log('COMPLETIONS ERROR: ' + String(e.message).slice(0, 200)); }
   const wakeNotesMap = new Map();   // agentId -> all pending wake notes
   const urgent = new Map();         // agentId -> wake notes that bypass cooldown (rest 0: failures, one-shot jobs, deps, non-repeat service runs)
