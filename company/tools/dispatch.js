@@ -497,6 +497,40 @@ function judgeEvidence(q) {
 // files the company wrote itself, so the closer never confirms it: the owner does, in the Quest Log.
 const REAL_WORLD = /\b(payment|paid|invoice paid|revenue|customer|client|contract|signed|leads? contacted|contacted|deposit)\b/i;
 function realWorldOutcome(q) { return REAL_WORLD.test([q.title].concat((q.steps || []).map(s => s.label || '')).join(' ')); }
+// Inbox size guard: counts by Status word, the oldest few unfinished headings, one handoff to the manager per size band.
+const INBOX_GUARD_KB = num('DISPATCH_INBOX_GUARD_KB', 64), INBOX_GUARD_ITEMS = num('DISPATCH_INBOX_GUARD_ITEMS', 30);
+function inboxSizeGuard(state, agentId, inbox, txt, names) {
+  if (agentId === CEO_ID) return;   // the CEO has no manager; nothing else escalates a CEO inbox size
+  const mgr = ((CREW || {})[agentId] || {}).manager || CEO_ID, mi = inboxOf(mgr);
+  state.inboxGuard = state.inboxGuard || {};
+  const items = SP.parseItems(txt);
+  const cnt = { OPEN: 0, BLOCKED: 0, PARKED: 0, DONE: 0 };
+  const live = [];
+  for (const it of items) {
+    const w = String(it.status || '').trim().split(/[\s—:-]/)[0].toUpperCase();
+    if (cnt[w] != null) cnt[w]++;
+    if (w === 'OPEN' || w === 'BLOCKED' || w === 'PARKED') live.push(it.heading);
+  }
+  const bytes = Buffer.byteLength(txt), kb = Math.round(bytes / 1024), work = cnt.OPEN + cnt.BLOCKED;
+  const over = bytes >= INBOX_GUARD_KB * 1024 || work >= INBOX_GUARD_ITEMS;
+  const prev = state.inboxGuard[inbox];
+  if (!over) { if (prev) delete state.inboxGuard[inbox]; return; }   // back under: a later crossing is a new band
+  const now = Date.now();
+  if (prev && bytes < prev.bytes * 1.5 && work < prev.work * 1.5 && now - prev.at < 7 * 86400e3) return;
+  if (!mi || mgr === agentId) return;
+  const nm = names[agentId] || agentId;
+  const dated = h => { const m = /\d{4}-\d{2}-\d{2}/.exec(h); return m ? m[0] : '9999'; };
+  const oldest = live.map((h, i) => [h, i]).sort((a, b) => dated(a[0]).localeCompare(dated(b[0])) || a[1] - b[1]).slice(0, 5).map(x => x[0].slice(0, 100));
+  const heading = nm + '\'s inbox is ' + kb + ' KB with ' + work + ' open or blocked items: please triage it';
+  log('INBOX SIZE ' + inbox + ' (' + agentId + '): ' + kb + ' KB, ' + cnt.OPEN + ' OPEN, ' + cnt.BLOCKED + ' BLOCKED, ' + cnt.PARKED + ' PARKED, ' + cnt.DONE + ' DONE; handed to manager ' + mgr + ' to triage (not waking ' + agentId + ')');
+  appendHandoff(mi, heading, {
+    Need: 'go through ' + inbox + ' and cut it down: merge items that say the same thing, close ones that no longer matter, decide the BLOCKED ones (unblock, reassign or close), and re-scope what is too big. Do not ask ' + nm + ' to do this; it is yours to decide.',
+    Why: nm + ' reads this whole file at the start of every run, so each run pays for all of it. Finished items are already archived; what is left is real open work, so only a person can shrink it.',
+    Counts: cnt.OPEN + ' OPEN, ' + cnt.BLOCKED + ' BLOCKED, ' + cnt.PARKED + ' PARKED, ' + cnt.DONE + ' DONE; ' + kb + ' KB',
+    Oldest: oldest.join(' · ').slice(0, 700) || 'none',
+    Deadline: 'none', Status: 'OPEN' });
+  state.inboxGuard[inbox] = { bytes, work, at: now };
+}
 function inboxOf(agentId) { return CREW && CREW[agentId] && CREW[agentId].inbox ? CREW[agentId].inbox : null; }
 function today() { return co.localParts().date; }
 function appendHandoff(inbox, heading, fields) {
@@ -1052,6 +1086,9 @@ function lastRunTail(job) {
   for (const [agentId, inbox] of Object.entries(INBOX_OF)) {
     let its = [], txt = ''; try { txt = fs.readFileSync(path.join(ROOT, 'company', 'work', 'handoffs', inbox), 'utf8'); its = SP.parseItems(txt).filter(i => i.open); } catch (_) {}
     itemsOf[agentId] = its; waitsOf[agentId] = {};
+    // inbox size guard (no AI): a seat's inbox that has grown past a size or item count is handed once to its manager to triage,
+    // never to the seat itself; archiving DONE cannot shrink real OPEN/BLOCKED work. Re-noted only on 50% more, or 7 days still over.
+    try { inboxSizeGuard(state, agentId, inbox, txt, NAMES); } catch (e) { log('INBOX GUARD ERROR ' + inbox + ': ' + String(e.message).slice(0, 200)); }
     const stw = state.agents[agentId] = state.agents[agentId] || { key: '', count: 0 };
     const prevWaits = stw.waits || {}, waitsNext = {};
     for (const it of its) {
