@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "id": "reach",
+  "packVersion": "0.1.0",
+  "title": "Reach: public web, Reddit, GitHub and YouTube reader",
+  "summary": "Read-only public internet reader inspired by Agent Reach: searches and reads Reddit (posts, subreddits, top comments via public web index), general web pages (Exa search and Jina Reader), GitHub repos/issues, and YouTube metadata with zero API keys, zero login, external-gate enforcement, daily request caps, and untrusted-output tagging.",
+  "owner": "tools",
+  "layer": "sense",
+  "enableWhen": "the crew needs read-only access to public web, Reddit, GitHub or YouTube content without managing platform logins or API keys",
+  "requires": {
+    "packs": [],
+    "modules": [],
+    "guardrails": [
+      "externalActions"
+    ],
+    "secrets": [],
+    "governance": [
+      "packs"
+    ],
+    "externalGates": [
+      "network"
+    ],
+    "stationAbilities": []
+  },
+  "docs": [
+    "README.md"
+  ],
+  "tools": [
+    {
+      "file": "tools/reach.js",
+      "purpose": "search and read public Reddit, web, GitHub and YouTube content through allowlisted read-only backends with daily caps and compact JSON/TSV digests"
+    }
+  ],
+  "seats": [],
+  "routines": [],
+  "panels": [],
+  "limits": [
+    {
+      "file": "limits/limits.json",
+      "owner": "tools",
+      "why": "daily request cap, per-query result cap, response char cap and timeout; shipped closed (all zeros), opened only by the owner"
+    }
+  ],
+  "meters": [
+    {
+      "p": "company/state/reach-log.jsonl",
+      "append": true,
+      "writers": [
+        "reach.js"
+      ],
+      "owner": "tools",
+      "why": "append-only log of outbound reach queries (channel, action, backend, ok, item count, chars)"
+    }
+  ],
+  "allowlist": [
+    {
+      "host": "mcp.exa.ai",
+      "why": "public read-only semantic search and page fetch MCP used by reach.js for web, Reddit and YouTube discovery"
+    },
+    {
+      "host": "r.jina.ai",
+      "why": "public read-only Markdown page reader used by reach.js to read web pages cleanly"
+    },
+    {
+      "host": "api.github.com",
+      "why": "GitHub public read-only REST API for repositories, READMEs and issues"
+    },
+    {
+      "host": "www.youtube.com",
+      "why": "YouTube public oEmbed metadata endpoint"
+    },
+    {
+      "host": "www.reddit.com",
+      "why": "Reddit public post and subreddit URL scope for read-only reach queries"
+    },
+    {
+      "host": "old.reddit.com",
+      "why": "Reddit public URL scope for read-only reach queries"
+    }
+  ],
+  "conformance": {
+    "test": "conformance/test.js"
+  }
+}
