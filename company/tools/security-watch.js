@@ -299,15 +299,41 @@ const LOCK_NAMES = ['package-lock.json', 'pnpm-lock.yaml', 'go.sum', 'pubspec.lo
 const OTHER_LOCKS = ['yarn.lock', 'Podfile.lock', 'Cargo.lock', 'Gemfile.lock', 'composer.lock', 'poetry.lock', 'Pipfile.lock', 'uv.lock', 'pdm.lock', 'bun.lock', 'bun.lockb', 'Package.resolved', 'packages.lock.json', 'gradle.lockfile', 'mix.lock'];
 const PROJECT_DEPTH = 5;
 // -> { list, gaps: [plain reasons some of it is not checked] }
-function lockComponents(file, o) {
-  const t = readText(file); const gaps = [];
+function lockComponents(file, o) { return lockComponentsText(readText(file), path.basename(file), o); }
+function lockComponentsText(t, b, o) {
+  const gaps = [];
   if (t == null) return { list: [], gaps: ['the lockfile could not be read'] };
-  const b = path.basename(file); const opt = Object.assign({}, o || {}, { gaps });
+  const opt = Object.assign({}, o || {}, { gaps });
   const list = b === 'package-lock.json' ? parseNpmLock(t, opt) : b === 'pnpm-lock.yaml' ? parsePnpmLock(t, opt) : b === 'go.sum' ? parseGoSum(t) : b === 'pubspec.lock' ? parsePubLock(t, opt) : parsePyReq(t, opt);
   return { list, gaps };
 }
 function gitRemote(dir) {
   try { const r = cp.spawnSync('git', ['-C', dir, 'remote', 'get-url', 'origin'], { encoding: 'utf8', timeout: 5000, env: { PATH: process.env.PATH || '/usr/bin:/bin', HOME: os.tmpdir(), GIT_CONFIG_NOSYSTEM: '1' } }); return r.status === 0 ? r.stdout.trim() : null; } catch (_) { return null; }
+}
+/* A project clone is read at its default branch (origin/HEAD, else origin/main or origin/master), not at whatever the
+ * crew has checked out: what ships is the default branch. A clone left on an old feature branch kept reporting holes
+ * long fixed on the default branch, and scratch copies inside the working tree were counted as more places. Null when
+ * the folder is not the top of its own git repository or has no such ref; the caller then reads the files on disk. */
+const GIT_ENV = () => ({ PATH: process.env.PATH || '/usr/bin:/bin', HOME: os.tmpdir(), GIT_CONFIG_NOSYSTEM: '1' });
+function gitOut(dir, args, max) {
+  try { const r = cp.spawnSync('git', ['-C', dir].concat(args), { encoding: 'utf8', timeout: 15000, maxBuffer: max || (8 << 20), env: GIT_ENV() }); return r.status === 0 ? String(r.stdout) : null; } catch (_) { return null; }
+}
+function defaultRef(dir) {
+  const top = (gitOut(dir, ['rev-parse', '--show-toplevel']) || '').trim();
+  const real = p => { try { return fs.realpathSync(p); } catch (_) { return path.resolve(p); } };
+  if (!top || real(top) !== real(dir)) return null;
+  const head = (gitOut(dir, ['symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD']) || '').trim();
+  for (const ref of [head, 'origin/main', 'origin/master']) if (ref && gitOut(dir, ['rev-parse', '--verify', '-q', ref + '^{commit}'])) return ref;
+  return null;
+}
+// tracked lockfiles at ref, as paths relative to dir (the same names and depth the disk walk uses)
+function lockFilesAt(dir, ref, names, depth) {
+  const out = gitOut(dir, ['ls-tree', '-r', '-z', '--name-only', ref], 64 << 20);
+  if (out == null) return null;
+  return out.split('\0').filter(Boolean).filter(f => {
+    const parts = f.split('/'); const b = parts[parts.length - 1];
+    return parts.length - 1 <= depth && !parts.slice(0, -1).some(x => SKIP_DIRS.includes(x)) && names.some(x => x instanceof RegExp ? x.test(b) : x === b);
+  });
 }
 function githubRepo(url) { const m = String(url || '').match(/github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/); return m ? m[1] + '/' + m[2] : null; }
 function probeVersion(bin, args, re) {
@@ -364,6 +390,17 @@ function inventory(o) {
   for (const [r, p] of roots) {
     const repo = githubRepo(o.projectRemotes ? o.projectRemotes[p.id] : gitRemote(r));
     if (repo && frameworkRepo && repo.toLowerCase() === frameworkRepo.toLowerCase()) continue;   // a clone of the framework: covered as framework
+    const dref = o.projectRefs ? (o.projectRefs[p.id] || null) : defaultRef(r);
+    const atRef = dref ? lockFilesAt(r, dref, LOCK_NAMES.concat(OTHER_LOCKS), PROJECT_DEPTH) : null;
+    if (atRef) {
+      for (const relf of atRef) {
+        const f = path.join(r, relf);
+        const where = { kind: 'project', label: 'project ' + p.name + ': ' + relf + ' (' + dref + ')', file: r.startsWith(c.root) ? rel(f) : f, project: p.id, projectName: p.name, repo, ref: dref };
+        if (OTHER_LOCKS.includes(path.basename(relf))) gap(where, ['this kind of lockfile is not read yet: its parts are not checked']);
+        else addLock(where, lockComponentsText(gitOut(r, ['show', dref + ':' + relf], 64 << 20), path.basename(relf), o));
+      }
+      continue;
+    }
     for (const f of walkFiles(r, LOCK_NAMES.concat(OTHER_LOCKS), PROJECT_DEPTH)) {
       const where = { kind: 'project', label: 'project ' + p.name + ': ' + path.relative(r, f), file: r.startsWith(c.root) ? rel(f) : f, project: p.id, projectName: p.name, repo };
       if (OTHER_LOCKS.includes(path.basename(f))) gap(where, ['this kind of lockfile is not read yet: its parts are not checked']);
@@ -1151,4 +1188,4 @@ function buildFixtureRoot(tmp, FX) {
 }
 
 if (require.main === module) main(process.argv.slice(2)).then(code => process.exit(code), e => { console.error('security-watch.js: ' + e.message); process.exit(1); });
-module.exports = { refresh, inventory, osvMatch, merge, placeChecked, parsePnpmLock, parseGoSum, parsePubLock, lockComponents, duty, view, fastTrack, decisions, readState, policy, buildFindings, fixedFor, severityOf, cvss3Score, labelOf, cmpVer, parseNpmLock, parsePyReq, parseDpkg, parseApk, osRelease, canonicalId, issueToken, issueBody, owed, record, ctxOf, buildFixtureRoot, selftest, LEVELS, DEFAULT_POLICY, REPORT_REL };
+module.exports = { defaultRef, lockFilesAt, refresh, inventory, osvMatch, merge, placeChecked, parsePnpmLock, parseGoSum, parsePubLock, lockComponents, duty, view, fastTrack, decisions, readState, policy, buildFindings, fixedFor, severityOf, cvss3Score, labelOf, cmpVer, parseNpmLock, parsePyReq, parseDpkg, parseApk, osRelease, canonicalId, issueToken, issueBody, owed, record, ctxOf, buildFixtureRoot, selftest, LEVELS, DEFAULT_POLICY, REPORT_REL };
