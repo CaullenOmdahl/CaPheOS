@@ -3,7 +3,8 @@
  *
  *   node company/tools/capheos-merge.js merge <pr> --by <seat> [--repo owner/name] [--method squash|merge|rebase] [--dry-run]
  *        merges only when the PR is open, not a draft, targets the default branch, and GitHub's checks on its head are all
- *        green (at least one check). A repo with no checks at all falls back to the pre-merge PASS rule (premerge-check.js).
+ *        green (at least one check). A repo with no checks at all needs the pre-merge PASS (premerge-check.js) and a local pass of
+ *        scripts/test.sh on the exact head commit (a temporary detached worktree; lib/local-tests.js; GitHub Actions is off).
  *        The counterpart sign-off and the accountable lead's accept (lib/signoff.js, lib/accountable.js) are asked as
  *        merge-gate.js asks them; they refuse only when their department/profile is live, so they cost nothing when off.
  *        Then: a pre-merge PASS record for the head (what merge-gate.js and default-branch-watch.js read), `gh pr merge
@@ -40,7 +41,7 @@ function merge() {
   if (d.baseRefName !== def) die(repo + ' #' + pr + ' targets ' + d.baseRefName + ', not the default branch ' + def + ' (merge-tool rows are for the default branch)');
   const head = d.headRefOid;
   const ci = SI.ciOf(repo, head);
-  let rule;
+  let rule; let lt = null;
   if (ci.runs) {
     if (!ci.green) die(repo + ' #' + pr + ' head ' + head.slice(0, 8) + ': CI is not green (' + (ci.pending.length ? 'running: ' + ci.pending.join(', ') : '') + (ci.failed.length ? ' failed: ' + ci.failed.join(', ') : '') + '); fix it and run again', 3);
     rule = 'ci-green (' + ci.runs + ' check(s))';
@@ -48,7 +49,10 @@ function merge() {
     const ev = path.join(co.p('company', 'work', 'evidence'), 'premerge-' + repo.split('/').pop() + '-' + head + '.json');
     const e = SI.readJ(ev, null);
     if (!e || e.verdict !== 'PASS') die(repo + ' has no CI checks and head ' + head.slice(0, 8) + ' has no pre-merge PASS: run `node company/tools/premerge-check.js --pr ' + pr + ' --repo ' + repo + '` first', 3);
-    rule = 'premerge-pass (no CI on this repo)';
+    // GitHub Actions is off: the suite runs here, on the exact head commit (lib/local-tests.js); a pass is cached per sha
+    lt = require('./lib/local-tests').ensure({ root: co.ROOT, repo, head, pr, evDir: co.p('company', 'work', 'evidence') });
+    if (!lt.ok) die(repo + ' #' + pr + ' head ' + head.slice(0, 8) + ': local tests did not pass: ' + lt.reason, 3);
+    rule = 'local-tests-pass + premerge-pass';
   }
   // the wave-3 checks, as merge-gate.js asks them: a broken or absent library never refuses
   for (const [lib, args] of [['./lib/signoff', { seat: by, kind: 'merge', refs: ['pr:' + repo + '#' + pr], sha: head, via: 'capheos-merge.js' }],
@@ -63,7 +67,7 @@ function merge() {
     if (df.status === 0) leaks = require('../../scripts/check-deployment-leaks.js').scanDiff(df.stdout);
   } catch (_) { leaks = []; }
   if (leaks.length) die(repo + ' #' + pr + ' adds a company\'s own words (crew, owner or company names) on ' + leaks.length + ' line(s): ' + leaks.slice(0, 5).map(h => h.file + ':' + h.line).join(', ') + ' — use neutral examples (docs/PORTING.md rule 1), then push again', 3);
-  if (opt('dry-run')) { console.log(JSON.stringify({ ok: true, dryRun: true, repo, pr: Number(pr), head, rule })); return; }
+  if (opt('dry-run')) { console.log(JSON.stringify({ ok: true, dryRun: true, repo, pr: Number(pr), head, rule, tests: lt ? lt.tests : undefined })); return; }
   // the PASS record merge-gate.js and default-branch-watch.js read, so the gated merge is a known one to both
   const evDir = co.p('company', 'work', 'evidence'); fs.mkdirSync(evDir, { recursive: true });
   const evf = path.join(evDir, 'premerge-' + repo.split('/').pop() + '-' + head + '.json');
@@ -79,7 +83,7 @@ function merge() {
     try { mc = SI.ghJson(['pr', 'view', pr, '--repo', repo, '--json', 'mergeCommit', '--jq', '.mergeCommit.oid']); } catch (_) {}
     if (!mc) require('child_process').spawnSync('sleep', ['2']);
   }
-  const row = SI.appendJsonl(SI.mergesFile(), { at: new Date().toISOString(), kind: 'merge', by, repo, pr: Number(pr), title: String(d.title || '').slice(0, 160), head, mergeCommit: mc || null, method, rule, company: co.config.name || null });
+  const row = SI.appendJsonl(SI.mergesFile(), { at: new Date().toISOString(), kind: 'merge', by, repo, pr: Number(pr), title: String(d.title || '').slice(0, 160), head, mergeCommit: mc || null, method, rule, tests: lt ? lt.tests : undefined, company: co.config.name || null });
   console.log(JSON.stringify({ ok: true, repo, pr: Number(pr), head, mergeCommit: mc, rule, recorded: path.relative(co.ROOT, SI.mergesFile()) }));
   if (!mc) console.error('capheos-merge: merged, but GitHub did not name the merge commit yet; the row has mergeCommit null (the tripwire will flag it; add it by hand with the sha)');
   return row;

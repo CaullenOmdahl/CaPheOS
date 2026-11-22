@@ -1,8 +1,9 @@
 name: ci
 
+# GitHub-hosted CI is off: the owner pays for Actions minutes and runs the suite
+# on their own machine (`bash scripts/test.sh`). Run it here by hand only if needed.
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read

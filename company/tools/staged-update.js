@@ -5,7 +5,8 @@
  *        (also `framework-update.js apply --by <seat>` for anyone who is not the owner). Refused unless:
  *          - selfimprove.json enabled is on;
  *          - no watch is running here and the target was never rolled back here;
- *          - the target is the upstream head (origin/main), GitHub's CI on it is green;
+ *          - the target is the upstream head (origin/main), any GitHub checks on it are green (a repo with
+ *            no checks is not blocked: the merge tool runs the suite locally);
  *          - every first-parent commit from here to the target came through the merge tool (capheos-merges.jsonl of any
  *            company) or is behind an owner baseline;
  *          - this company is the sandbox (selfimprove.json sandboxRoot), or the sandbox already runs the target (or a
@@ -48,6 +49,12 @@ function unitInfo(u) {
 }
 
 /* ---------------- the gates ---------------- */
+// GitHub checks that exist must be green; no checks at all is not a block (GitHub Actions is off: every merge-tool merge
+// carries a local pass of the suite, and the first-parent rule below ties the update to merge-tool merges)
+function ciWhy(ci, target) {
+  if (!ci || !ci.runs || ci.green) return null;
+  return 'CI on ' + target.slice(0, 10) + ' is not green' + (ci.pending.length ? ' (running: ' + ci.pending.join(', ') + ')' : '') + (ci.failed.length ? ' (failed: ' + ci.failed.join(', ') + ')' : '');
+}
 function gates(o) {
   const cfg = SI.config();
   const why = [];
@@ -63,7 +70,7 @@ function gates(o) {
   if (o.expect && !target.startsWith(o.expect)) why.push('upstream is ' + target.slice(0, 10) + ', not ' + o.expect);
   if (SI.readJsonl(ROWS).some(r => r.kind === 'rollback' && r.bad === target)) why.push(target.slice(0, 10) + ' was rolled back here before; a newer merge is needed');
   let ci = null; try { ci = SI.ciOf(cfg.repo, target); } catch (e) { why.push('could not read CI for ' + target.slice(0, 10) + ': ' + e.message); }
-  if (ci && !ci.green) why.push('CI on ' + target.slice(0, 10) + ' is not green' + (ci.pending.length ? ' (running: ' + ci.pending.join(', ') + ')' : '') + (ci.failed.length ? ' (failed: ' + ci.failed.join(', ') + ')' : '') + (!ci.runs ? ' (no checks)' : ''));
+  const cw = ciWhy(ci, target); if (cw) why.push(cw);
   // every first-parent commit from here to the target: a merge-tool merge, or behind an owner baseline
   const trusted = SI.trustedShas();
   const stops = [...trusted.entries()].filter(([, r]) => r.kind === 'baseline').map(([s]) => s).filter(s => git(ROOT, ['cat-file', '-e', s + '^{commit}']).ok).map(s => '^' + s);
@@ -214,7 +221,7 @@ function selftest() {
 }
 
 /* ---------------- CLI ---------------- */
-module.exports = { gates, crewApply, health, step, rollback };
+module.exports = { ciWhy, gates, crewApply, health, step, rollback };
 
 if (require.main === module) {
   const a = process.argv.slice(2); const cmd = a[0];
