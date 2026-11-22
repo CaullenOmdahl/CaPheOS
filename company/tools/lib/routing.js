@@ -147,6 +147,7 @@ function scopedKnobs(S) {
     exemptFunctions: Array.isArray(S.exemptFunctions) ? strs(S.exemptFunctions) : ['ceo'],
     exemptReserve: S.exemptReserve !== false,
     itemlessWakes: S.itemlessWakes === true,
+    effortByDepth: o(S.effortByDepth),
     wakesDays: Math.max(1, n(S.wakesDays, 14)),
     passMark: n(S.passMark, 0.9),
     limits: { subscriptionWeeklyTokens: o(lim.subscriptionWeeklyTokens), usdPerMTokens: o(lim.usdPerMTokens), defaultUsdPerMTokens: Math.max(0, n(lim.defaultUsdPerMTokens, 1)),
@@ -352,7 +353,8 @@ function scopedPick(a, K, wc, cur, chain) {
   if (!pick) { if (!info.why) info.why = 'no routable model that is open now is proven at ' + need + ' on kind ' + est.kind + (probe ? ' (a probe one level down)' : est.depth === 'deep' ? ' (the deepest level)' : '') + ': the chain runs'; return { pick: null, info }; }
   const e = pick.p, inChain = arr(chain).find(x => samePair(x, e));
   const out = { provider: e.provider, model: e.model };
-  const eff = samePair(cur, e) && cur.effort ? cur.effort : inChain && inChain.effort ? inChain.effort : null;
+  const depthEff = Kx.effortByDepth && typeof Kx.effortByDepth[est.depth] === 'string' && !est.fails ? Kx.effortByDepth[est.depth] : null;
+  const eff = samePair(cur, e) && cur.effort ? cur.effort : inChain && inChain.effort ? inChain.effort : depthEff;
   if (eff) out.effort = eff;
   info.pick = e.provider + '/' + e.model;
   return { pick: out, info };

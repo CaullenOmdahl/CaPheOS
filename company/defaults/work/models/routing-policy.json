@@ -29,6 +29,7 @@
   "exemptFunctions": ["ceo"],
   "exemptReserve": true,
   "itemlessWakes": false,
+  "effortByDepth": {},
   "wakesDays": 14,
   "limits": {
    "subscriptionWeeklyTokens": {},
