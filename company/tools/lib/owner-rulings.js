@@ -37,6 +37,8 @@ const co = require('./company');
 const REL = 'company/state/owner-rulings.json';
 const EFFECTS = ['crew-decides', 'never-ask', 'ask'];
 const FIXED = ['access', 'ownership', 'commitment', 'commitments', 'spendBeyondCap'];
+// the ownerGates guardrail: OFF means a standing ruling may cover the four fixed gates too (guardrails.js)
+const ownerGatesOn = opts => { try { return require('./governance').guard('ownerGates', opts && opts.root ? { root: opts.root } : undefined); } catch (_) { return true; } };
 const rootOf = opts => path.resolve((opts && opts.root) || process.env.GOVERNANCE_ROOT || co.ROOT);
 const fileOf = opts => path.join(rootOf(opts), REL);
 const sha = t => 'sha256:' + require('crypto').createHash('sha256').update(t).digest('hex');
@@ -84,7 +86,7 @@ function topicHit(topic, text) {
 function match(o, opts) {
   o = o || {};
   const cat = String(o.category || '');
-  if (o.fixed || FIXED.includes(cat) || FIXED.includes(String(o.fixedGate || ''))) return null;
+  if ((o.fixed || FIXED.includes(cat) || FIXED.includes(String(o.fixedGate || ''))) && ownerGatesOn(opts)) return null;
   const text = [o.ref, o.about, o.text, o.message, o.lead].filter(Boolean).join(' ');
   const rs = (opts && Array.isArray(opts.rulings) ? opts.rulings : list(opts)).slice().reverse();
   for (const r of rs) {
@@ -122,7 +124,7 @@ function add(o, opts) {
   const categories = [].concat(sc.categories || []).map(s => String(s).trim()).filter(Boolean);
   const topics = [].concat(sc.topics || []).map(s => String(s).replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 20);
   if (!categories.length && !topics.length) return { ok: false, code: 2, error: 'say what the rule covers: categories or topics' };
-  const fixed = categories.filter(c => FIXED.includes(c));
+  const fixed = ownerGatesOn(opts) ? categories.filter(c => FIXED.includes(c)) : [];
   if (fixed.length && o.effect !== 'ask') return { ok: false, code: 2, error: fixed.join(', ') + ' is a fixed owner gate: it always comes to you, a standing rule cannot change that' };
   const rulings = list(opts);
   const ruling = { id: 'r-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), at: new Date().toISOString(), by: 'owner', text: text.slice(0, 500),

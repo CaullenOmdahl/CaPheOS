@@ -111,7 +111,11 @@ const LEVELS = ['auto', 'notify', 'triage', 'approve'];
 function governance() { return readJson(GOV_FILE, null) || readJson(GOV_DEFAULT, {}) || {}; }
 function gate(category, opts) {
   const g = governance();
-  if (g.fixed && g.fixed[category] && guard('ownerGates')) return 'approve';
+  if (g.fixed && g.fixed[category]) {
+    if (guard('ownerGates')) return 'approve';
+    const fv = g.fixedLevels && g.fixedLevels[category];   // ownerGates OFF: the owner may set a level for a fixed gate (governance.js set)
+    return LEVELS.includes(fv) && fv !== 'triage' ? fv : 'approve';
+  }
   const v = g.categories && g.categories[category];
   if (v === 'triage') return opts && opts.triage && !(g.fixed && g.fixed[category]) ? 'triage' : 'approve';
   return LEVELS.includes(v) ? v : 'approve';
