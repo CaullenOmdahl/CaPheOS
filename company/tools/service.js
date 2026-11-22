@@ -623,9 +623,11 @@ function propose(ctx, name, o) {
       return { ok: true, already: true, name, unit: old.unit, status: old.status, note: 'installed with the network open (before --network became opt-in); remove and propose again to close it' };
     throw err('"' + name + '" is already installed with a different command or schedule; remove it first, or propose a new name', 2);
   }
-  // a proposal already holds an owner question for a different spec (the owner may even have said yes to it): asking again
+  // a proposal holds an ANSWERED owner question for a different spec (the owner said yes to it): asking again
   // would put the same question to the owner twice, and the yes would never be found, because the question is keyed by the spec
-  if (old && old.status === 'proposed' && old.specKey !== key && old.approval && old.approval.questionId) {
+  const oldCards = old ? ctx.cards() : null;
+  const oldOpen = oldCards && typeof oldCards.openFor === 'function' ? oldCards.openFor('service:' + name + ':' + old.specKey) : null;
+  if (old && old.status === 'proposed' && old.specKey !== key && old.approval && old.approval.questionId && !oldOpen) {
     const changed = ['kind', 'argv', 'schedule', 'restart', 'softHalt', 'network', 'limits', 'timeout', 'successExit', 'wake'].filter(f => JSON.stringify(old[f] == null ? null : old[f]) !== JSON.stringify(spec[f] == null ? null : spec[f]));
     throw err('"' + name + '" already has an owner question (' + old.approval.questionId + ') for a different spec (' + (changed.join(', ') || 'unknown field') + ' differ); propose the same spec again to use that answer, or run service.js remove ' + name + ' to ask afresh', 2);
   }
@@ -1182,8 +1184,8 @@ function selftest() {
     r = propose(ctx, 'depth', { by: 'data', kind: 'service', exec: 'python3 company/work/sim/scripts/rec.py --hz 1', why: 'records order-book depth between agent runs', network: 'on' });
     // a re-run with a different spec while a question is out must not mint a second one
     {
-      const sp = { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1d', why: 'daily copy of the ledger outside rotation' };
-            const a1 = propose(ctx, 'dupe', sp);
+      const sp = { by: 'data', kind: 'timer', exec: 'bash company/work/sim/scripts/bank.sh', every: '1d', why: 'daily copy of the ledger outside rotation', network: 'on' };
+      const a1 = propose(ctx, 'dupe', sp);
       ok('dupe: first propose asks once', a1.waiting && a1.asked !== false);
       answer(a1.questionId, 'yes');
       let msg = ''; const code = (() => { try { propose(ctx, 'dupe', Object.assign({}, sp, { network: 'none' })); return 0; } catch (e) { msg = e.message; return e.code; } })();
