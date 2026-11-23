@@ -40,3 +40,20 @@ test('an edit beyond the patch, or a file no applied patch names: not covered', 
   assert.strictEqual(LW.coveredByApplied(ctx, 'sidecar/b.js'), false, 'a patch without its applied marker covers nothing');
   life.cleanup();
 });
+
+test('works when TMPDIR sits inside a git checkout (the dispatcher\'s TMPDIR is under the company root)', () => {
+  const { ctx } = station();
+  const repo = life.tmpDir('lw-tmprepo-');
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  const inner = path.join(repo, '.starnet-data', 'tmp'); fs.mkdirSync(inner, { recursive: true });
+  const was = process.env.TMPDIR;
+  process.env.TMPDIR = inner;
+  try { assert.strictEqual(LW.coveredByApplied(ctx, 'sidecar/a.js'), true); }
+  finally { if (was === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = was; life.cleanup(); }
+});
+
+test('a file under an applied patch that a commit changed is flagged, not covered (tick)', async () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'locked-watch.js'), 'utf8');
+  assert.match(src, /!committedNow\.has\(rel\) && coveredByApplied\(ctx, rel\)/, 'committed files never take the applied-patch cover');
+  assert.match(src, /p: 'company\/patches\/\*\*', cls: 'F'/, 'the patch records and markers are watched');
+});

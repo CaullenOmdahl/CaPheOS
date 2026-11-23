@@ -37,7 +37,9 @@ test('without the commitments module, no seat is sent to the commitments tool', 
     assert.equal(r.version, 'v17');
     assert.ok(r.prompt.includes('[HOUSE RULES FOR SCHEDULED RUNS v17]'));
     // v17 (short block): client work and its classes, the waiting rules, notify-when, credentials
-    assert.match(r.prompt, /CLIENT WORK: a product the company did not found, the owner's own included, is client work; its current behaviour and release flow are the brief\..*FIX \(.*ASKED \(.*one-line PROPOSAL to the client, not built/);
+    assert.match(r.prompt, /CLIENT WORK: a product the company did not found, the owner's own included, is client work; its current behaviour and release flow are the brief\..*FIX \(.*ASKED \(.*REVERT \(.*dated notice.*one-line PROPOSAL, not built/);
+    assert.match(r.prompt, /Before you decide, answer in the PR.s Brief/);
+    assert.match(r.prompt, /harness-change\.js propose/);
     assert.match(r.prompt, /overrides older routine text such as "decide yourself"/);
     assert.match(r.prompt, /Use \*\*Waiting on:\*\* for anything that waits on other work/);
     assert.match(r.prompt, /node company\/tools\/notify-when\.js --seat <you>/);

@@ -58,7 +58,7 @@
  * 15. The table again (v15, 2026-11-19): the owner found the console meeting stiffer than his terminal table; the
  *     speaking contract and the required plain parts made turns formulaic. The line is the table's again: speak as
  *     yourself, a few sentences, by name, PASS with nothing to add; "— plain: …" is welcome, not required.
- * 17. Short block (v17, 2026-11-23): the block went from ~8.7 KB to ~3.3 KB. Rules a tool already enforces with its own refusal message (sudo gate, ask composer, sleep shim, model pacer) keep one short line; meeting etiquette comes from console/meeting.js.
+ * 17. Short block (v17, 2026-11-23): the block went from ~8.7 KB to ~3.3 KB. Rules a tool already enforces with its own refusal message (sudo gate, ask composer, sleep shim, model pacer) keep at most one short line; meeting etiquette comes from console/meeting.js. The client-work questions and classes, the harness-change route and the meeting register stay, because no code carries them.
  * 16. Client work (v16, 2026-11-20): seats treated a product the company did not found as their own, added unrequested
  *     features and let security and QA set the client's release policy. The CLIENT WORK, BEFORE YOU DECIDE and class
  *     lines make the client's current way the brief, unrequested work a one-line suggestion, inherited unrequested
@@ -100,7 +100,9 @@ const BLOCK = START + VERSION + ']\n' + [
   '- Record a decision only with node company/tools/decision.js add --by <your name> --text "..." --why "..." (amend or withdraw with the same tool); company/work/decisions.md is never edited by hand.',
   '- Install a package only with node company/tools/deps.js add <python|node> <package> --why "..." --by <your name>, never pip or npm by hand.',
   '- Routine models come from the routing table in company/model-policy.json (company/tools/pacer.js applies it); to change one, ask the people owner, never edit a routine\'s model.',
-  '- CLIENT WORK: a product the company did not found, the owner\'s own included, is client work; its current behaviour and release flow are the brief. FIX (it fails to do what it did or what was agreed) and ASKED (requested; cite the client\'s message or issue) ship the normal way. Anything else unrequested is a one-line PROPOSAL to the client, not built. This overrides older routine text such as "decide yourself".',
+  '- CLIENT WORK: a product the company did not found, the owner\'s own included, is client work; its current behaviour and release flow are the brief. Before you decide, answer in the PR\'s Brief: whose product it is and who asked (a client message or client-written issue), what it does today and why, how businesses like this run the step, what it costs the client\'s day, and which class it is. FIX (it fails to do what it did or what was agreed) and ASKED (requested, id cited) ship the normal way; REVERT (inherited, unrequested, unconfirmed behaviour) gets a dated notice and goes if the client is silent; anything else is a one-line PROPOSAL, not built. This overrides older routine text such as "decide yourself".',
+  '- A change to a framework file (a shared tool, a house rule, a routine\'s schedule) goes through node company/tools/harness-change.js propose; sudo works only for the commands the sudo gate allows.',
+  '- After a meeting, update your own register lines (ACTION, QUESTION, KILL) with node company/tools/meeting-register.js update.',
   '- What you may change yourself, what you propose and what is locked: company/work/people/LATITUDE.md. Your own section above is your notes (change it with node company/tools/my-section.js); these rules and your standing corrections win.',
 ].join('\n') + '\n' + END;
 

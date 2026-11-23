@@ -165,8 +165,10 @@ function validOwnerJobGrant(o) {
  * desktop session) or in a desktop app's scope (app-<...>.scope under app.slice, which is how systemd places every
  * terminal emulator and editor), and in nothing the company runs (its slice, the station, the dispatcher, a service).
  * This replaces needing every terminal program on the INTERACTIVE list. A detached process an agent starts with
- * systemd-run lands in its own run-*.service or run-*.scope, not here. Like every check here, a same-user process can
- * still mimic it: a seatbelt, not a wall (docs/GUARDRAILS.md). */
+ * systemd-run lands in a run-*.service or run-*.scope unless it names its unit itself: `systemd-run --user --scope
+ * --unit=app-x.scope` from an escaped process (absolute path past the shim, setsid, env -i) passes this check, just
+ * as `exec -a kitty` passed the argv list before. A same-user process can mimic any of these checks: a seatbelt, not a
+ * wall (docs/GUARDRAILS.md); underStation() is what holds for a run inside the station. */
 function sessionCgroup(cgroupText) {
   const self = String(cgroupText || '').split('\n')[0] || '';
   const p = self.slice(self.lastIndexOf(':') + 1);

@@ -123,6 +123,8 @@ function checkStatic(dir) {
   for (const l of mod.limits || []) {
     if (!l || !l.defaults) continue;
     if (mod.layer !== 'sense') { findings.push('limits: ' + l.file + ' ships defaults, but only a read-only (sense) module may; a module that acts, settles or spends ships closed'); continue; }
+    // "sense" is the manifest's own claim: a module that needs keys, runs duties or adds panels is not plainly read-only
+    if (((mod.requires || {}).secrets || []).length || (mod.duties || []).length || (mod.panels || []).length) { findings.push('limits: ' + l.file + ' ships defaults, but a module that needs keys, runs duties or adds panels ships closed'); continue; }
     const shipped = readJson(pk.inside(dir, l.file) || '', null) || {};
     for (const [k, v] of Object.entries(l.defaults)) if (typeof shipped[k] !== 'number' || !(typeof v === 'number' && v >= 0)) findings.push('limits: ' + l.file + ' default ' + k + ' is not a shipped number limit');
   }
