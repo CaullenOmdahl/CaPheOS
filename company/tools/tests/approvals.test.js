@@ -348,8 +348,14 @@ test('hole 1: CLI self-approval: "--by owner" from an agent run or a detached pr
   assert.equal(agent.status, 2, agent.stdout); assert.equal(JSON.parse(agent.stdout).code, 'authority'); assert.match(JSON.parse(agent.stdout).error, /owner's own interactive shell or the console/);
   const byName = cli(T, 'approvals.js', base.concat(['--by', 'Olive Owner']), AGENT_RUN);
   assert.equal(JSON.parse(byName.stdout).code, 'authority', 'the owner\'s name is the same rule');
-  const det = detached(T, base.concat(['--by', 'owner']));
-  assert.equal(det.status, 2, det.stdout); assert.equal(JSON.parse(det.stdout).code, 'authority', 'a detached process is not the owner');
+  // A detached process is not the owner unless it still sits in the owner's own login session (provenance.js
+  // sessionCgroup): one started from the owner's terminal is theirs, one an agent detached stays in the station's
+  // cgroup (underStation). From an owner's terminal this case cannot be staged, so it runs only where it means something.
+  let selfCg = ''; try { selfCg = fs.readFileSync('/proc/self/cgroup', 'utf8'); } catch (_) {}
+  if (!require(path.join(REPO, 'company/tools/provenance.js')).sessionCgroup(selfCg)) {
+    const det = detached(T, base.concat(['--by', 'owner']));
+    assert.equal(det.status, 2, det.stdout); assert.equal(JSON.parse(det.stdout).code, 'authority', 'a detached process is not the owner');
+  }
   for (const by of ['Founder', 'agent', 'Sam']) { const c = cli(T, 'approvals.js', base.concat(['--by', by])); assert.equal(JSON.parse(c.stdout).code, 'unverified', by + ': ' + c.stdout); }
   assert.equal(answerRows(T, a.id).length, 0, 'nothing was answered');
   assert.equal(run(T, 'return A.get(' + JSON.stringify(a.id) + ').status;'), 'pending');

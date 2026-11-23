@@ -38,7 +38,13 @@
     {
       "file": "limits/limits.json",
       "owner": "tools",
-      "why": "daily request cap, per-query result cap, response char cap and timeout; shipped closed (all zeros), opened only by the owner"
+      "why": "daily request cap, per-query result cap, response char cap and timeout; shipped closed, and the safe defaults below become the opened copy when the owner enables the module (read-only, so no limit call is needed first)",
+      "defaults": {
+        "maxRequestsPerDay": 200,
+        "maxResultsPerQuery": 10,
+        "maxResponseChars": 20000,
+        "timeoutMs": 20000
+      }
     }
   ],
   "meters": [

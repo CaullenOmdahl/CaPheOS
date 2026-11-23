@@ -77,6 +77,10 @@ modules/<id>/
   <key.path> <number> --by owner`, which writes `company/state/modules/<id>/<file>` (registered on enable as
   `company/state/modules/<id>/limits/**`, class F, writer module.js). Tools read the opened copy first and fall back to
   the shipped closed one (`lib/modules.js limitsFile(id, file)`); missing or unreadable = closed.
+- **Safe defaults (read-only modules only):** a module with `layer: "sense"` may give a limit entry a `defaults`
+  object of numbers. When the owner enables it, those become the opened copy (unless one already exists), so a
+  read-only reader works without a `limits set` call first. A module that acts, settles or spends cannot ship
+  defaults: `module.js` refuses the manifest.
 - **Ticks:** the dispatcher runs ONE hook after the halt tick: each enabled module's `tick.js` by `module.json`
   `order` (lower first, default 100; intake → playbooks → commitments → verify), then id,
   fail-safe (throw/timeout = one `MODULE <id> TICK ERROR` log line). A halted company runs only `runWhenHalted` modules.

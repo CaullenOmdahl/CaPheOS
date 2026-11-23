@@ -86,6 +86,8 @@ function moduleSchema() {
   m.properties.order = { type: 'integer' };
   m.properties.id = { type: 'string', pattern: '^[a-z][a-z0-9-]{1,39}$' };
   delete m.properties.limits.minItems;
+  // a read-only (layer sense) module may also ship safe defaults, written as the opened copy when the owner enables it
+  m.properties.limits.items.properties.defaults = { type: 'object', additionalProperties: { type: 'number', minimum: 0 } };
   m.properties.meters.items.properties.p = { type: 'string', pattern: '^company/(work|state)/[A-Za-z0-9_./*-]+$' };
   m.properties.requires.properties.modules = m.properties.requires.properties.modules || { type: 'array', items: { type: 'string' } };
   m.properties.duties = { type: 'array', maxItems: 8, items: { type: 'object', required: ['id', 'tool', 'route', 'everyMin', 'timeoutMs', 'whileHalted', 'enabledByDefault'], additionalProperties: false,
@@ -116,6 +118,15 @@ function checkStatic(dir) {
   for (const t of mod.tools || []) {
     const a = pk.inside(dir, t.file);
     if (a && fs.existsSync(a) && /\.(js|sh|py|mjs)$/.test(a) && fs.readFileSync(a, 'utf8').indexOf('--selftest') < 0) findings.push('tools: ' + t.file + ' has no --selftest (every module tool proves itself)');
+  }
+  // safe defaults: only a read-only (sense) module, only numbers the shipped (closed) file already has
+  for (const l of mod.limits || []) {
+    if (!l || !l.defaults) continue;
+    if (mod.layer !== 'sense') { findings.push('limits: ' + l.file + ' ships defaults, but only a read-only (sense) module may; a module that acts, settles or spends ships closed'); continue; }
+    // "sense" is the manifest's own claim: a module that needs keys, runs duties or adds panels is not plainly read-only
+    if (((mod.requires || {}).secrets || []).length || (mod.duties || []).length || (mod.panels || []).length) { findings.push('limits: ' + l.file + ' ships defaults, but a module that needs keys, runs duties or adds panels ships closed'); continue; }
+    const shipped = readJson(pk.inside(dir, l.file) || '', null) || {};
+    for (const [k, v] of Object.entries(l.defaults)) if (typeof shipped[k] !== 'number' || !(typeof v === 'number' && v >= 0)) findings.push('limits: ' + l.file + ' default ' + k + ' is not a shipped number limit');
   }
   for (const f of ['tick.js', 'http.js']) {
     const a = path.join(dir, f);
@@ -414,6 +425,14 @@ function cmdEnable(id, by) {
       const pj = readJson(path.join(dir, pn, 'panel.json'), {}) || {};
       panels.push({ panel: pn, id: pj.id || null, code: r.status });
     }
+    // a read-only module's safe defaults become the opened limits, unless the owner already opened (or closed) them
+    for (const l of mod.layer === 'sense' ? (mod.limits || []) : []) {
+      if (!l.defaults) continue;
+      const dest = co.p('company', 'state', 'modules', id, l.file);
+      if (fs.existsSync(dest)) continue;
+      writeJson(dest, Object.assign({}, readJson(path.join(dir, l.file), {}) || {}, l.defaults));
+      record({ op: 'limit-defaults', id, file: l.file, now: l.defaults, by: 'owner' });
+    }
     const s2 = mods.state();
     s2._doc = 'Core modules enabled in this company (company/tools/module.js; docs/CORE-MODULES.md). Only module.js writes this file.';
     s2.enabled[id] = { at: new Date().toISOString(), by: 'owner', gate, digest: pk.digest(dir), version: mod.packVersion || null, layer: mod.layer, tools, panels };
@@ -554,7 +573,15 @@ function selftest() {
     fs.writeFileSync(path.join(tmp, 'company', 'tools', 'demo-mod.js'), '// someone else\n');
     t('enable refused: would overwrite a tool it did not place', /already exists/.test(run('enable', 'demo', '--by', 'owner').out));
     fs.rmSync(path.join(tmp, 'company', 'tools', 'demo-mod.js'));
+    // safe defaults: refused for a module that is not read-only; for a sense module they become the opened limits on enable
+    const withDefaults = layer => fs.writeFileSync(path.join(md, 'module.json'), JSON.stringify(Object.assign({}, mj, { layer, limits: [Object.assign({}, mj.limits[0], { defaults: { perDay: 5 } })] }), null, 2));
+    withDefaults('guarantee');
+    r = run('enable', 'demo', '--by', 'owner');
+    t('enable refused: safe defaults on a module that is not read-only (sense)', r.code === 1 && /only a read-only \(sense\) module/.test(r.out), r.out);
+    withDefaults('sense');
     r = run('enable', 'demo', '--by', 'Alex');
+    t('a sense module\'s safe defaults become the opened limits on enable; the shipped copy stays closed',
+      r.code === 0 && (readJson(path.join(tmp, 'company', 'state', 'modules', 'demo', 'limits', 'limits.json'), {}) || {}).perDay === 5 && readJson(path.join(md, 'limits', 'limits.json'), {}).perDay === 0, r.out);
     t('enable ok by the owner (by name): conformant', r.code === 0 && r.j.status === 'conformant', r.out);
     t('enable: tool copied flat into company/tools', fs.existsSync(path.join(tmp, 'company', 'tools', 'demo-mod.js')));
     t('enable: modules.json lists it', !!readJson(path.join(tmp, 'company', 'state', 'modules.json'), {}).enabled.demo);

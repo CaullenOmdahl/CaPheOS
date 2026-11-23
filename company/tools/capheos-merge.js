@@ -126,9 +126,12 @@ function hook() {
   const f = path.join(hooks, 'pre-push');
   if (fs.existsSync(f) && !/capheos-merge\.js hook/.test(fs.readFileSync(f, 'utf8'))) fs.renameSync(f, f + '.before-merge-gate');
   const gate = path.join(__dirname, 'merge-gate.js');
-  fs.writeFileSync(f, '#!/bin/bash\n# written by company/tools/capheos-merge.js hook: the merge gate for agents (no push to the default branch, no\n# force push, no branch deletion). Only exit 3 from the gate blocks; anything else lets the push through (soft gate).\n' +
+  const text = '#!/bin/bash\n# written by company/tools/capheos-merge.js hook: the merge gate for agents (no push to the default branch, no\n# force push, no branch deletion). Only exit 3 from the gate blocks; anything else lets the push through (soft gate).\n' +
     'GATE=' + JSON.stringify(gate) + '\nIN="$(cat)"\nif [ -r "$GATE" ] && command -v node >/dev/null 2>&1; then\n  printf \'%s\\n\' "$IN" | env -u NODE_OPTIONS -u NODE_PATH node "$GATE" check-push "$@"\n  [ $? = 3 ] && exit 1\nfi\n' +
-    'if [ -x "$0.before-merge-gate" ]; then printf \'%s\\n\' "$IN" | "$0.before-merge-gate" "$@"; exit $?; fi\nexit 0\n', { mode: 0o755 });
+    'if [ -x "$0.before-merge-gate" ]; then printf \'%s\\n\' "$IN" | "$0.before-merge-gate" "$@"; exit $?; fi\nexit 0\n';
+  fs.writeFileSync(f, text, { mode: 0o755 });
+  // locked-watch.js: this tool's own write (the hook is class F; a hook these bytes match is not a finding)
+  try { require('./provenance.js').wrote(f, text, 'capheos-merge.js'); } catch (_) {}
   console.log('pre-push hook installed: ' + f);
 }
 

@@ -175,15 +175,17 @@ const MANIFEST = [
   { p: 'company/state/guardrails.json', cls: 'F', writers: ['guardrails.js'], owner: 'risk', area: 'policy', alwaysWatched: true, why: 'the guardrail switches (only the owner changes them, through guardrails.js)' },
   ...['pacer.js', 'cap-numerator.js', 'competence.js', 'corrections.js', 'performance.js', 'model-stats.js', 'routine-rules.js', 'dispatch.js', 'notify-when.js', 'lib/completions.js', 'lib/gates.js', 'my-section.js', 'harness-change.js', 'locked-watch.js', 'provenance.js', 'decision.js', 'restart-station.js', 'hire.js', 'station-crew.js', 'handoff-archive.js', 'cadence.js', 'dispatcher-loop.js', 'retention.js', 'duties.js', 'duty-status.js', 'lib/duty-runner.js', 'lib/duty-env.js', 'money-hold.js', 'lib/money-hold.js', 'lib/seat-status.js', 'lanes.js', 'lib/admit.js', 'lib/scheduler.js', 'budget.js', 'budget-migrate.js', 'watchdog.js', 'lib/owner-channel.js', 'lib/pm-inbox-guard.js', 'lib/owner-card.js', 'lib/owner-rulings.js', 'lib/owner-notice.js', 'lib/owner-scope.js', 'owner-inbox.js', 'service.js', 'departments.js', 'lib/departments.js', 'lib/override-allow.js', 'lib/delegate-allow.js', 'lib/routing.js', 'consult.js', 'lib/consult.js', 'profile.js', 'lib/profile.js', 'lib/signoff.js', 'lib/recorded.js', 'talk.js', 'lib/talk.js', 'pack.js', 'module.js']
     .map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'tools', area: 'tool', why: 'a tool that measures or limits the crew, or that these tools depend on' })),
-  ...['merge-gate.js', 'premerge-check.js', 'external-gate.js', 'connector-scope.js', 'default-branch-watch.js', 'providers.js', 'deps.js'].map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'risk', area: 'tool', why: 'a gate or the evidence it reads' })),
+  ...['merge-gate.js', 'premerge-check.js', 'external-gate.js', 'connector-scope.js', 'default-branch-watch.js', 'providers.js', 'deps.js', 'capheos-merge.js', 'lib/selfimprove.js'].map(f => ({ p: 'company/tools/' + f, cls: 'F', owner: 'risk', area: 'tool', why: 'a gate or the evidence it reads' })),
+  // the patch records and their .applied markers: an applied marker makes a StarNet change count as covered (coveredByApplied)
+  { p: 'company/patches/**', cls: 'F', owner: 'tools', area: 'starnet', why: 'StarNet patch records and their applied markers (a planted marker would cover a StarNet edit)' },
   { p: 'company/work/engineering/evidence/*.json', cls: 'F', writers: ['test-substrate.sh'], owner: 'risk', area: 'gate', why: 'test-substrate verdicts (a hand-made pass opens the merge gate): flagged, never auto-removed, so a real evidence file never blocks a merge' },
   // bigAppend: StarNet's append-only run log grows to about 16 MB and is then rotated to <file>.1 (rotatedFrom), so it is checked incrementally (the 64 KB before the
   // last checked end and the first 64 KB are unchanged, the rest is new), never hashed whole, never copied
   { p: '.starnet-data/workspaces/runs.jsonl', cls: 'F', append: true, bigAppend: true, owner: 'people', area: 'record', why: 'the run records that feed competence, house benchmarks and the 3-day results check' },
   { p: '~/.local/bin/gh', cls: 'F', owner: 'risk', area: 'gate', why: 'the merge-gate wrapper around gh' },
   { p: '~/.local/bin/git', cls: 'F', owner: 'risk', area: 'gate', why: 'the merge-gate wrapper around git (no push to a default branch)' },
-  { p: 'company/memory/*/.git/hooks/pre-push', cls: 'F', owner: 'risk', area: 'gate', why: 'the merge gate\'s push hook in the memory clones' },
-  { p: 'company/repos/*/.git/hooks/pre-push', cls: 'F', owner: 'risk', area: 'gate', why: 'the merge gate\'s push hook' },
+  { p: 'company/memory/*/.git/hooks/pre-push', cls: 'F', writers: ['capheos-merge.js'], owner: 'risk', area: 'gate', why: 'the merge gate\'s push hook in the memory clones' },
+  { p: 'company/repos/*/.git/hooks/pre-push', cls: 'F', writers: ['capheos-merge.js'], owner: 'risk', area: 'gate', why: 'the merge gate\'s push hook' },
   // pack and module registrations: what pack.js / module.js lock on install/enable, and the registries themselves
   { p: 'company/state/locked-extra.json', cls: 'F', writers: ['pack.js', 'module.js'], owner: 'risk', area: 'policy', why: 'extra locked-watch entries registered by pack.js and module.js (editing it would quietly unlock a meter)' },
   { p: 'company/state/packs.json', cls: 'F', writers: ['pack.js'], owner: 'risk', area: 'policy', why: 'the installed and approved capability packs' },
@@ -807,11 +809,15 @@ function runTick(ctx) {
     // a new `<record>.diff.applied` marker (setup-station applied a record already on disk) covers the files of its record
     const patchText = changedPatches.map(n => n.endsWith('.applied') ? n.slice(0, -'.applied'.length) : n).map(n => { try { return fs.readFileSync(path.join(ctx.paths.patches, n), 'utf8'); } catch (_) { return ''; } }).join('\n');
     const covers = rel => patchCovers(patchText, rel);
+    // a file a commit changed since the last check is never covered by the applied patches: coveredByApplied compares with
+    // HEAD, and a commit moves HEAD (stash, edit, commit, pop would otherwise pass as "only the patch")
+    const headMoved = !!(base.starnetHead && curHead && curHead !== base.starnetHead);
+    const committedNow = headMoved ? new Set(starnetCommittedFiles(ctx, base.starnetHead, curHead)) : new Set();
     for (const rel of new Set([...Object.keys(sn), ...Object.keys(base.starnet)])) {
       const now = sn[rel] || 'clean', was = base.starnet[rel] || 'clean';
       if (now === was) continue;
       if ((base.starnetFlagged || {})[rel] === now) continue;
-      snChanged.push({ rel, now, was, covered: covers(rel), patches: changedPatches });
+      snChanged.push({ rel, now, was, covered: covers(rel) || (!committedNow.has(rel) && coveredByApplied(ctx, rel)), patches: changedPatches });
     }
     // a commit hides its files from `git status`; compare HEAD and name the committed files not covered by a patch
     if (base.starnetHead && curHead && curHead !== base.starnetHead && (base.starnetHeadFlagged || '') !== curHead) {
@@ -1479,10 +1485,40 @@ function rebaseProvenance(opts, fn) {
 }
 /* does a patch record's text change StarNet file `rel`? A record names its files as `diff --git a/<rel> b/<rel>` or only
    as `--- a/<rel>` (a plain diff, where the path ends the line); a longer path that starts the same is not a match */
+/* coveredByApplied(ctx, rel): is every change in starnet/<rel> one that the applied patches made? A patch is applied
+ * when its `<record>.diff.applied` marker sits in company/patches/. The file is copied to a temp folder, every applied
+ * patch that names it is reversed (newest first), and the result must equal the file at the station's HEAD. So a file
+ * patched in an earlier tick (or before a re-baseline) is no longer a false alarm, and any edit beyond the patches
+ * still is. Any failure says "not covered". */
+function coveredByApplied(ctx, rel) {
+  try {
+    const esc = String(rel).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const names = fs.readdirSync(ctx.paths.patches).filter(n => n.endsWith('.diff') && fs.existsSync(path.join(ctx.paths.patches, n + '.applied'))).sort();
+    const mine = names.filter(n => new RegExp('(^|\\s)[ab]/' + esc + '(\\s|$)', 'm').test(fs.readFileSync(path.join(ctx.paths.patches, n), 'utf8')));
+    if (!mine.length) return false;
+    const T = require('./lib/temp-life').tmpDir('locked-watch-rev-');
+    try {
+      const cur = path.join(ctx.paths.starnet, rel), copy = path.join(T, rel);
+      fs.mkdirSync(path.dirname(copy), { recursive: true });
+      if (fs.existsSync(cur)) fs.copyFileSync(cur, copy);
+      // its own repository: TMPDIR may sit inside the company checkout, where git apply would read paths from that repo's top
+      execFileSync('git', ['init', '-q'], { cwd: T, stdio: 'ignore', timeout: 10000 });
+      // newest first, then again for any that did not go (overlapping patches); a smaller context is allowed because the
+      // result must still equal HEAD byte for byte
+      const rev = (n, extra) => { try { execFileSync('git', ['apply', '--reverse'].concat(extra, ['--include=' + rel, path.join(ctx.paths.patches, n)]), { cwd: T, stdio: 'ignore', timeout: 10000 }); return true; } catch (_) { return false; } };
+      let left_ = mine.slice().reverse(), moved = true;
+      while (left_.length && moved) { moved = false; left_ = left_.filter(n => { const ok = rev(n, []) || rev(n, ['-C1']); if (ok) moved = true; return !ok; }); }
+      if (left_.length) return false;
+      let head = null; try { head = execFileSync('git', ['-C', ctx.paths.starnet, 'show', 'HEAD:' + rel], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000, maxBuffer: 64 << 20 }); } catch (_) { head = null; }
+      const left = fs.existsSync(copy) ? fs.readFileSync(copy) : null;
+      return head === null ? left === null : (left !== null && Buffer.compare(left, head) === 0);
+    } finally { fs.rmSync(T, { recursive: true, force: true }); }
+  } catch (_) { return false; }
+}
 function patchCovers(patchText, rel) {
   return new RegExp('(^|\\s)a/' + String(rel).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(\\s|$)', 'm').test(String(patchText || ''));
 }
-module.exports = { patchCovers, rotatedFrom, askAcceptCmd, fixedGateFile, FIXED_GATE_FILES, acceptCmd, tick, classify, lockedNames, MANIFEST, connectorEntries, STATION_STATUS, context, withWatchLock, rebaseProvenance, _internals: { tile, decide, decideRolled, unroll, unwind, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
+module.exports = { coveredByApplied, patchCovers, rotatedFrom, askAcceptCmd, fixedGateFile, FIXED_GATE_FILES, acceptCmd, tick, classify, lockedNames, MANIFEST, connectorEntries, STATION_STATUS, context, withWatchLock, rebaseProvenance, _internals: { tile, decide, decideRolled, unroll, unwind, diffSummary, expand, globRe, scanCalls, loadBaseline, writesPath, copyWrite, shellTokens, clearNameCmd, selfWrite } };
 
 /* ---------------- selftest ---------------- */
 async function selftest() {
