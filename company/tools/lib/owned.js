@@ -113,10 +113,12 @@ function unitOf(c, pid) {
 // the framework's units for this station (systemd/*.in: capheos-station* -> <svc>*, capheos-* -> <svc>-*)
 const FW_SUFFIXES = ['', '-console', '-dispatch', '-liveness', '-liveness-heartbeat'];
 const OWNER_JOB = /^-owner-job-[a-z][a-z-]{0,40}-\d{14}-[0-9a-f]{4}\.service$/;
+const RESTART_JOB = /^-restart-when-idle-\d{14}-[0-9a-f]{4}\.service$/;   // framework-update.js outlast()
 function ourUnit(c, u) {
   if (!u) return false;
   if (FW_SUFFIXES.some(x => u === c.svc + x + '.service')) return true;
   if (u.startsWith(c.svc + '-owner-job-') && OWNER_JOB.test(u.slice(c.svc.length))) return true;
+  if (u.startsWith(c.svc + '-restart-when-idle-') && RESTART_JOB.test(u.slice(c.svc.length))) return true;
   return u.startsWith(c.slug + '-svc-') && /\.(service|scope)$/.test(u) && c.registered.has(u.replace(/\.scope$/, '.service'));
 }
 const APP_SCOPE = /^app-(?:com\.google\.Chrome|org\.chromium\.Chromium|google-chrome|chromium)[-@].*\.scope$/;
@@ -274,4 +276,4 @@ function namesPath(a, p) {
 // unit or scope it does not own). Only Chrome: a crew command that names the path is never one of a browser's helpers.
 function naming(c, p) { return [...scan(c).values()].filter(i => i.pid !== process.pid && isChrome(i) && (c.uid === null || i.uid === c.uid) && !c.mainPids.has(i.pid) && !foreign(i, c) && i.cmd.some(a => namesPath(a, p))).map(i => i.pid); }
 
-module.exports = { FW_SUFFIXES, OWNER_JOB, readRegistered, context, scan, proof, foreign, touchable, browsers, strays, naming, namesPath, unitOf, ourUnit, inside, real, clientOnPort, portOf, kindOf, isChrome, driven, uddOf, KINDS, readStationPids };
+module.exports = { FW_SUFFIXES, OWNER_JOB, RESTART_JOB, readRegistered, context, scan, proof, foreign, touchable, browsers, strays, naming, namesPath, unitOf, ourUnit, inside, real, clientOnPort, portOf, kindOf, isChrome, driven, uddOf, KINDS, readStationPids };

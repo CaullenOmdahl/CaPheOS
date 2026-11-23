@@ -128,6 +128,42 @@ function runStep(steps, name, cmd, args, opts) {
   return ok;
 }
 
+/* The restart waiter can wait up to 90 min, so it must outlive whatever ran this update. A detached child stays in its
+ * caller's cgroup: an owner job (a transient unit, KillMode=mixed) or the dispatcher (restarted in step 8b) takes it
+ * down when it stops, and a busy station then never restarts onto the new code. Under systemd it therefore runs as its
+ * own transient unit <svc>-restart-when-idle-<stamp>-<hex>.service in the company's slice (lib/owned.js counts it as
+ * the company's). Returns {unit} or null (no systemd, no systemd-run, a test run, or systemd-run failed): the caller
+ * then falls back to a detached child. */
+function outlast(root, argv) {
+  if (!argv) return null;
+  let bin = process.env.FRAMEWORK_UPDATE_SYSTEMD_RUN || null;   // tests: a stand-in systemd-run
+  if (!bin && !process.env.CAPHEOS_TEST_RUN) {
+    let sup = 'none'; try { sup = require('./lib/host').supervisor(); } catch (_) {}
+    bin = sup === 'systemd' ? ['/usr/bin/systemd-run', '/bin/systemd-run'].find(b => fs.existsSync(b)) : null;
+  }
+  if (!bin) return null;
+  try {
+    const cfg = readJ(fs.readFileSync(path.join(root, 'company', 'company.json'), 'utf8')) || {};
+    const svc = String((cfg.station && cfg.station.serviceName) || 'capheos-station').replace(/\.service$/, '');
+    const d = new Date(), z = n => String(n).padStart(2, '0');
+    const stamp = d.getFullYear() + z(d.getMonth() + 1) + z(d.getDate()) + z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds());
+    const unit = svc + '-restart-when-idle-' + stamp + '-' + require('crypto').randomBytes(2).toString('hex') + '.service';
+    const logDir = path.join(root, 'company', 'state', 'owner-ops'); fs.mkdirSync(logDir, { recursive: true });
+    const log = path.join(logDir, unit.replace(/\.service$/, '') + '.log');
+    const env = []; for (const k of ['PATH', 'HOME', 'USER', 'LANG', 'TZ', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS']) if (process.env[k] && !/[\n\r\0]/.test(process.env[k])) env.push('-E', k + '=' + process.env[k]);
+    env.push('-E', 'TMPDIR=' + path.join(root, '.starnet-data', 'tmp'));   // as the console and dispatcher units
+    const r = spawnSync(bin, ['--user', '--collect', '--quiet', '--unit=' + unit, '--description=Station restart when idle',
+      '--slice=' + require('./lib/memory.js').sliceOf(cfg), '-p', 'WorkingDirectory=' + root,
+      '-p', 'StandardOutput=append:' + log, '-p', 'StandardError=append:' + log, '-p', 'KillMode=mixed', '-p', 'TimeoutStopSec=60',
+      '-p', 'ManagedOOMPreference=omit', '-p', 'OOMPolicy=continue']
+      .concat(env, ['--'], argv), { encoding: 'utf8', timeout: 15000 });
+    if (r.status === 0) return { unit, log: path.relative(root, log) };
+    // a slow systemd-run may time out after the unit is already up: then it is running, and a second (detached) waiter must not start
+    if (r.status === null && spawnSync('systemctl', ['--user', 'is-active', '--quiet', unit], { timeout: 5000 }).status === 0) return { unit, log: path.relative(root, log) };
+    return null;
+  } catch (_) { return null; }
+}
+
 function apply(opts) {
   const root = opts.root; const steps = [];
   const refuse = opts.ownerRefusal ? opts.ownerRefusal(opts.by) : 'only the owner applies a framework update (--by owner)';
@@ -195,9 +231,8 @@ function apply(opts) {
     const reason = 'framework update ' + c.target.slice(0, 10) + (c.patches.length ? ' (patch ' + c.patches.join(', ') + ')' : '');
     const cmd = process.env.FRAMEWORK_UPDATE_RESTART;
     const argv = cmd ? ['bash', '-c', cmd] : ['bash', path.join(root, 'scripts', 'restart-station.sh'), '--when-idle', '--max-wait-min', '90', '--reason', reason, '--by', String(opts.by)];
-    const ch = spawn(argv[0], argv.slice(1), { cwd: root, detached: true, stdio: 'ignore' }); ch.unref();
-    restart = { started: true, pid: ch.pid, reason };
-    steps.push({ step: 'station restart when idle (started)', ok: true, out: reason });
+    restart = Object.assign(outlast(root, cmd ? null : argv) || (() => { const ch = spawn(argv[0], argv.slice(1), { cwd: root, detached: true, stdio: 'ignore' }); ch.unref(); return { pid: ch.pid }; })(), { started: true, reason });
+    steps.push({ step: 'station restart when idle (started' + (restart.unit ? ' as ' + restart.unit : '') + ')', ok: true, out: reason });
   }
   // 8b. restart the dispatcher when its code changed (systemd unit or supervised container PID)
   let dispatchRestart = null;
@@ -334,7 +369,7 @@ function selftest() {
   finally { for (const k of Object.keys(process.env)) if (!(k in saveEnv)) delete process.env[k]; fs.rmSync(T, { recursive: true, force: true }); }
 }
 
-module.exports = { check, apply, deepMerge, OWNED, MERGE_JSON };
+module.exports = { check, apply, deepMerge, outlast, OWNED, MERGE_JSON };
 
 if (require.main === module) {
   const a = process.argv.slice(2); const cmd = a[0];
