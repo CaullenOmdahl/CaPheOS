@@ -34,23 +34,17 @@ test('without the commitments module, no seat is sent to the commitments tool', 
   const T = scratch([]);
   try {
     const r = ensureIn(T, 'You are Jo.\n\nDo the work.');
-    assert.equal(r.version, 'v16');
-    assert.ok(r.prompt.includes('[HOUSE RULES FOR SCHEDULED RUNS v16]'));
-    // v16: client work, the five questions, the decision classes and the precedence line
-    assert.match(r.prompt, /CLIENT WORK: a product the company did not found, the owner's own included, is client work\..*release flow are the brief\..*one-line suggestion.*Only the four owner gates wait on the owner\./);
-    assert.match(r.prompt, /BEFORE YOU DECIDE .*1\. Whose product.*2\. What does it do today.*3\. How do businesses of this kind.*4\. What does it cost.*5\. Which class is it, and is "leave it as it is" right\?/);
-    assert.match(r.prompt, /FIX \(.*ASKED \(.*REVERT \(.*dated notice.*PROPOSAL \(.*never holds work/);
-    assert.match(r.prompt, /client-work rules override older routine text such as "decide yourself"/);
-    // v13-v15: meeting etiquette as at the table (as yourself, by name, PASS; ASK, INVITE, DISMISS, END) and the register lines, plain part welcome
-    assert.match(r.prompt, /Meeting etiquette .*as yourself, from your own area, in a few sentences.*by name; reply PASS when you have nothing to add.*ASK: <name> — <question>.*INVITE: <name>.*DISMISS: <name>.*ACTION: <what> — by <date>.*"— plain: <one sentence anyone can read>" is welcome.*meeting-register\.js update.*END: <what was decided/);
-    assert.ok(!/your point first in one line/.test(r.prompt), 'no speaking contract');
-    // v12: work that waits on work names it in Waiting on; a long job goes through notify-when.js; Not before is a clock time
+    assert.equal(r.version, 'v17');
+    assert.ok(r.prompt.includes('[HOUSE RULES FOR SCHEDULED RUNS v17]'));
+    // v17 (short block): client work and its classes, the waiting rules, notify-when, credentials
+    assert.match(r.prompt, /CLIENT WORK: a product the company did not found, the owner's own included, is client work; its current behaviour and release flow are the brief\..*FIX \(.*ASKED \(.*one-line PROPOSAL to the client, not built/);
+    assert.match(r.prompt, /overrides older routine text such as "decide yourself"/);
     assert.match(r.prompt, /Use \*\*Waiting on:\*\* for anything that waits on other work/);
     assert.match(r.prompt, /node company\/tools\/notify-when\.js --seat <you>/);
-    assert.match(r.prompt, /Never park work to look busy-free or to avoid stall checks/);
-    // v11: a connector is checked through its own verify command; a credential file is never read or printed
-    assert.match(r.prompt, /connector's verify command in company\/connectors\/<id>\.json/);
-    assert.match(r.prompt, /Never read, cat, list, grep or print a credential file/);
+    assert.match(r.prompt, /connector's verify command/);
+    assert.match(r.prompt, /Never read, list or print a credential/);
+    assert.ok(!/Meeting etiquette/.test(r.prompt), 'meetings carry their own etiquette (console/meeting.js)');
+    assert.ok(r.block.length < 4000, 'the house rules stay short: ' + r.block.length);
     assert.doesNotMatch(r.prompt, /commitments\.js/);
     assert.match(r.prompt, /handoff to yourself/);
     assert.match(r.prompt, /service\.js propose/);   // the rest of the waiting rule stays
@@ -83,8 +77,8 @@ test('house rules v10 carry the owner-scope rule: infrastructure is the crew\'s,
   try {
     const r = ensureIn(T, 'You are Jo.\n\nDo the work.');
     assert.match(r.prompt, /The owner is a busy non-technical person\. Handle infrastructure yourself/);
-    assert.match(r.prompt, /Ask the owner only for money beyond the company's limits, an account or identity in their own name, legal, ownership or commitment decisions, company direction and priorities, risk the governance level reserves for them, or a fixed gate, in two plain sentences/);
+    assert.match(r.prompt, /Ask the owner only for money beyond the company's limits, an account in their name, legal, ownership or commitment decisions, direction and priorities, or a gate reserved for them, in two plain sentences/);
     assert.match(r.prompt, /what happens if they skip it \(your default\)/);
-    assert.match(r.prompt, /"not now" is not asked again for 7 days/);
+    assert.match(r.prompt, /never ask them to run a command/);
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
