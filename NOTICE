@@ -33,3 +33,9 @@ Rules (from `docs/LICENSING.md` §8 and `docs/BACKEND.md` §7.2):
 - A component that cannot be detached from its own product's internals is a port, not a vendor, and is refused.
 - StarNet's name and artwork are not covered by its MIT licence. Vendored StarNet code uses CaPheOS vocabulary and no
   StarNet branding.
+
+## Fonts
+
+No font files are bundled. The console loads Geist and Geist Mono from Google Fonts at run time
+(`console/ui/ds/tokens/fonts.css`); both are under the SIL Open Font License 1.1. A bundled font must be listed here
+with its source and licence before it is committed.

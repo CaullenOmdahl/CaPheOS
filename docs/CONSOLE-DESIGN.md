@@ -168,7 +168,7 @@ if this table and the CSS drift apart. "same" means the role keeps its light val
 | `--type-mono` | type scale | `400 13px/1.5 var(--font-mono)` | same |
 | `--type-wordmark-sub` | type scale | `500 11px/1 var(--font-sans)` | same |
 | `--tracking-wordmark-sub` | type scale | `0.28em` | same |
-| `--font-wordmark` | font | `"Baron","Geist",system-ui,sans-serif` | same |
+| `--font-wordmark` | font | `"Geist",system-ui,sans-serif` | same |
 | `--font-display` | font | `"Geist","Helvetica Neue",Helvetica,Arial,sans-serif` | same |
 | `--font-sans` | font | `"Geist","Helvetica Neue",Helvetica,Arial,sans-serif` | same |
 | `--font-mono` | font | `"Geist Mono",ui-monospace,"SF Mono",Menlo,monospace` | same |

@@ -1,4 +1,2 @@
 /* Geist + Geist Mono — 2026 display/UI/body faces (Google Fonts; stand-in for the concept's heavy grotesque) */
 @import url("https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap");
-/* Baron — brand wordmark face (from CaPheDigitalSolutions/public/fonts) */
-@font-face{font-family:"Baron";src:url("../fonts/Baron.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
