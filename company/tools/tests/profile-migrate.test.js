@@ -43,7 +43,7 @@ const RAVI = ['# Ravi Shah — Quant Researcher', '', '## Archetype', 'tester', 
   'the fill against it, because that arithmetic is your trade, not his. You are not the last word on money: a card you KEEP becomes a strategy spec,',
   'and anything that would place an order goes to the CEO.', ''].join('\n');
 const HOLLIS = ['# Hollis Cole — Data Scientist', '', '## Archetype', 'tester', '', '## Counterpart',
-  'She is the conservative counterpart of Odile Marchetti (Idea Combiner): every combination card comes to her. What to record stays Ravi Shah\'s call.', ''].join('\n');
+  'She is the conservative counterpart of Mira Quillborne (Idea Combiner): every combination card comes to her. What to record stays Ravi Shah\'s call.', ''].join('\n');
 const MARA = ['# Mara Vale — People', '', '## Archetype', 'connector', '', '## Temperament', '- Risk: 1', '- Pace — 3', '- rigour: 2', '- candour: 4', '- independence: 1', ''].join('\n');
 
 function fixture() {
@@ -82,7 +82,7 @@ test('migrate reads "counterpart of" the right way round, ignores names not hire
   assert.deepEqual(r.out.made.find(m => m.seat === 'ro').checks, ['ben'], '...it is recorded as a seat Ravi checks');
   assert.equal(ben.counterpart.seat, 'ro', 'Noah\'s charter opens with Ravi: Ravi checks Noah');
   assert.ok(!/:$/.test(ben.counterpart.why) && /\.$/.test(ben.counterpart.why), 'the why ends on a whole sentence, never cut at a colon: ' + ben.counterpart.why);
-  assert.equal(hal.counterpart, null, 'a name not on the roster (Odile) is ignored, never replaced by Ravi');
+  assert.equal(hal.counterpart, null, 'a name not on the roster (Mira) is ignored, never replaced by Ravi');
   assert.deepEqual(ben.convictions, ['The crowd is a dataset, not an oracle.', 'Edges show up in comment sections and group chats months before they show up in a paper, and they are gone by the time the paper is out.', 'New markets are mispriced in their first hours.'], 'a wrapped bullet stays one conviction');
   assert.deepEqual(ben.blindSpots, ['Falls for a good story told by someone who sounds sure.']);
   // what the crew and the owner read
