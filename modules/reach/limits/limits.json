@@ -1,5 +1,5 @@
 {
-  "_doc": "Module reach caps. Shipped CLOSED (all zeros); open in company/state/modules/reach/limits/limits.json via module.js limits reach set limits.json <key> <n> --by owner.",
+  "_doc": "Module reach caps. Shipped CLOSED (all zeros); enabling the module writes the safe defaults from module.json to company/state/modules/reach/limits/limits.json, and the owner changes them with module.js limits reach set limits.json <key> <n> --by owner.",
   "maxRequestsPerDay": 0,
   "maxResultsPerQuery": 0,
   "maxResponseChars": 0,

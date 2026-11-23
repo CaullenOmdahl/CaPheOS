@@ -161,11 +161,26 @@ function validOwnerJobGrant(o) {
 /* The one rule, as a pure function so a test can hand it any ancestry:
  *   underStation: the station's environment pins, or the station's cgroup, or an ancestor that IS node running sidecar/index.js;
  *   ownerShell:   not underStation, and an ancestor is an interactive session or the owner's console (or a verified console owner-job unit). */
+/* The owner's own login, read from the kernel: this process sits in a login session (session-<n>.scope: ssh, a tty, the
+ * desktop session) or in a desktop app's scope (app-<...>.scope under app.slice, which is how systemd places every
+ * terminal emulator and editor), and in nothing the company runs (its slice, the station, the dispatcher, a service).
+ * This replaces needing every terminal program on the INTERACTIVE list. A detached process an agent starts with
+ * systemd-run lands in its own run-*.service or run-*.scope, not here. Like every check here, a same-user process can
+ * still mimic it: a seatbelt, not a wall (docs/GUARDRAILS.md). */
+function sessionCgroup(cgroupText) {
+  const self = String(cgroupText || '').split('\n')[0] || '';
+  const p = self.slice(self.lastIndexOf(':') + 1);
+  if (!p || /capheos|-station[-.]|-svc-|-owner-job-|-restart-when-idle-/.test(p)) return false;
+  const leaf = p.split('/').filter(Boolean).pop() || '';
+  if (/^session-\d+\.scope$/.test(leaf) && /\/user\.slice\/user-\d+\.slice\/session-\d+\.scope$/.test(p)) return true;
+  // a desktop app's scope, or a terminal tab's (vte-spawn-*, tmux-spawn-*) inside an app slice
+  return (/\/user@\d+\.service\/app\.slice\/(?:[^/]+\/)*app-[^/]+\.scope$/.test(p) || /\/user@\d+\.service\/app\.slice\/(?:[^/]+\/)*(?:vte|tmux)-spawn-[^/]+\.scope$/.test(p)) && !/^app-(?:com\.google\.Chrome|org\.chromium\.Chromium|google-chrome|chromium)[-@]/.test(leaf);
+}
 function classify(o) {
   o = o || {};
   const chain = Array.isArray(o.chain) ? o.chain : [];
   const under = stationEnv(o.env || {}) || inStationCgroup(o.cgroup, o.unit || stationUnit()) || chain.some(isStationArgv);
-  return { underStation: under, ownerShell: !under && (chain.some(a => isInteractiveArgv(a) || isConsoleArgv(a, o.root)) || !!o.ownerJobValid) };
+  return { underStation: under, ownerShell: !under && (chain.some(a => isInteractiveArgv(a) || isConsoleArgv(a, o.root)) || sessionCgroup(o.cgroup) || !!o.ownerJobValid) };
 }
 let CGROUP = null;
 // this process's cgroup and its ancestors' (the merge gate's check: an ancestor in the station's unit)
@@ -350,7 +365,7 @@ function callerConflict(root, parts, claimedId, nowMs) {
   } catch (_) { return null; }
 }
 
-module.exports = { wrote, removed, appended, noted, rolled, inserted, readFrom, sha, logFile, underStation, pinUnderStation, pinOwnerShell, ownerShell, classify, recentCalls, callerConflict, _internals: { stationEnv, mainInfo, scriptOf, inStationCgroup, ownerJobFromCgroup, validOwnerJobGrant, grantText, isConsoleArgv, isStationArgv } };
+module.exports = { sessionCgroup, wrote, removed, appended, noted, rolled, inserted, readFrom, sha, logFile, underStation, pinUnderStation, pinOwnerShell, ownerShell, classify, recentCalls, callerConflict, _internals: { stationEnv, mainInfo, scriptOf, inStationCgroup, ownerJobFromCgroup, validOwnerJobGrant, grantText, isConsoleArgv, isStationArgv } };
 
 if (require.main === module) {
   const [cmd, n, w] = process.argv.slice(2);
