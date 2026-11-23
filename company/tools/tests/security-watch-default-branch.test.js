@@ -33,7 +33,9 @@ function clone() {
 
 test('defaultRef finds origin/HEAD; lockFilesAt lists tracked lockfiles only', () => {
   const work = clone();
-  assert.strictEqual(SW.defaultRef(work), 'origin/main');
+  assert.strictEqual(SW.defaultRef(work), 'refs/remotes/origin/main');
+  git(work, 'branch', 'origin/main', 'feature/old');   // a local branch with the remote's short name is never used
+  assert.strictEqual(SW.defaultRef(work), 'refs/remotes/origin/main');
   assert.deepStrictEqual(SW.lockFilesAt(work, 'origin/main', ['go.sum'], 5), ['apps/agents/go.sum']);
   assert.strictEqual(SW.defaultRef(path.join(work, 'apps')), null, 'a folder inside a repo is not that repo');
   life.cleanup();
@@ -47,7 +49,10 @@ test('a project clone on an old branch is read at its default branch', () => {
   fs.mkdirSync(repos, { recursive: true });
   fs.renameSync(work, path.join(repos, 'app'));
   Object.assign(t.opts, { projectRemotes: { app: 'https://github.com/example/app.git' } });
+  fs.writeFileSync(path.join(repos, 'app', 'requirements.txt'), 'pillow==10.0.0\n');   // on disk, not on the default branch
   const inv = SW.inventory(SW.ctxOf(t.opts));
+  assert.ok(inv.unmatched.some(u => /requirements\.txt/.test(u.label) && /not on the default branch/.test(u.why)), 'an untracked lockfile is listed as not checked');
+  assert.ok(!inv.unmatched.some(u => /scratch\//.test(u.label)), 'scratch copies are not listed');
   const go = inv.components.filter(x => x.eco === 'Go').map(x => x.where.file.replace(/^.*company\/repos\//, '') + '@' + x.version);
   assert.deepStrictEqual(go, ['app/apps/agents/go.sum@0.62.0']);
   fs.rmSync(base, { recursive: true, force: true }); life.cleanup();

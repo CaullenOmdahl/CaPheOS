@@ -314,7 +314,8 @@ function gitRemote(dir) {
  * crew has checked out: what ships is the default branch. A clone left on an old feature branch kept reporting holes
  * long fixed on the default branch, and scratch copies inside the working tree were counted as more places. Null when
  * the folder is not the top of its own git repository or has no such ref; the caller then reads the files on disk. */
-const GIT_ENV = () => ({ PATH: process.env.PATH || '/usr/bin:/bin', HOME: os.tmpdir(), GIT_CONFIG_NOSYSTEM: '1' });
+// no network: a partial clone must not fetch missing objects (outside the external gate) or ask for a password
+const GIT_ENV = () => ({ PATH: process.env.PATH || '/usr/bin:/bin', HOME: os.tmpdir(), GIT_CONFIG_NOSYSTEM: '1', GIT_NO_LAZY_FETCH: '1', GIT_TERMINAL_PROMPT: '0' });
 function gitOut(dir, args, max) {
   try { const r = cp.spawnSync('git', ['-C', dir].concat(args), { encoding: 'utf8', timeout: 15000, maxBuffer: max || (8 << 20), env: GIT_ENV() }); return r.status === 0 ? String(r.stdout) : null; } catch (_) { return null; }
 }
@@ -322,8 +323,9 @@ function defaultRef(dir) {
   const top = (gitOut(dir, ['rev-parse', '--show-toplevel']) || '').trim();
   const real = p => { try { return fs.realpathSync(p); } catch (_) { return path.resolve(p); } };
   if (!top || real(top) !== real(dir)) return null;
-  const head = (gitOut(dir, ['symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD']) || '').trim();
-  for (const ref of [head, 'origin/main', 'origin/master']) if (ref && gitOut(dir, ['rev-parse', '--verify', '-q', ref + '^{commit}'])) return ref;
+  // full ref names: a local branch or tag called origin/main must not stand in for the remote's
+  const head = (gitOut(dir, ['symbolic-ref', '-q', 'refs/remotes/origin/HEAD']) || '').trim();
+  for (const ref of [head, 'refs/remotes/origin/main', 'refs/remotes/origin/master']) if (ref && /^refs\/remotes\/origin\//.test(ref) && gitOut(dir, ['rev-parse', '--verify', '-q', ref + '^{commit}'])) return ref;
   return null;
 }
 // tracked lockfiles at ref, as paths relative to dir (the same names and depth the disk walk uses)
@@ -334,6 +336,24 @@ function lockFilesAt(dir, ref, names, depth) {
     const parts = f.split('/'); const b = parts[parts.length - 1];
     return parts.length - 1 <= depth && !parts.slice(0, -1).some(x => SKIP_DIRS.includes(x)) && names.some(x => x instanceof RegExp ? x.test(b) : x === b);
   });
+}
+/* -> { ref, sha, files: [[relPath, text]] } or null. All or nothing: one lockfile git cannot show (a timeout, a missing
+ * object in a partial clone) sends the whole clone back to the disk walk, so a failed read never looks like a lockfile
+ * with no holes. Cached by the ref's commit: the dispatcher builds the inventory every tick. */
+const atRefCache = new Map();
+function readAtRef(dir) {
+  const ref = defaultRef(dir); if (!ref) return null;
+  const sha = (gitOut(dir, ['rev-parse', '--verify', '-q', ref + '^{commit}']) || '').trim(); if (!sha) return null;
+  const hit = atRefCache.get(dir); if (hit && hit.sha === sha) return hit;
+  const list = lockFilesAt(dir, sha, LOCK_NAMES.concat(OTHER_LOCKS), PROJECT_DEPTH); if (!list) return null;
+  const files = [];
+  for (const relf of list) {
+    if (OTHER_LOCKS.includes(path.basename(relf))) { files.push([relf, null]); continue; }
+    const text = gitOut(dir, ['show', sha + ':' + relf], 64 << 20);
+    if (text == null) return null;
+    files.push([relf, text]);
+  }
+  const out = { ref, sha, files }; atRefCache.set(dir, out); return out;
 }
 function githubRepo(url) { const m = String(url || '').match(/github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/); return m ? m[1] + '/' + m[2] : null; }
 function probeVersion(bin, args, re) {
@@ -390,14 +410,22 @@ function inventory(o) {
   for (const [r, p] of roots) {
     const repo = githubRepo(o.projectRemotes ? o.projectRemotes[p.id] : gitRemote(r));
     if (repo && frameworkRepo && repo.toLowerCase() === frameworkRepo.toLowerCase()) continue;   // a clone of the framework: covered as framework
-    const dref = o.projectRefs ? (o.projectRefs[p.id] || null) : defaultRef(r);
-    const atRef = dref ? lockFilesAt(r, dref, LOCK_NAMES.concat(OTHER_LOCKS), PROJECT_DEPTH) : null;
-    if (atRef) {
-      for (const relf of atRef) {
+    const at = readAtRef(r);
+    if (at) {
+      const short = at.ref.replace(/^refs\/remotes\//, '');
+      for (const [relf, text] of at.files) {
         const f = path.join(r, relf);
-        const where = { kind: 'project', label: 'project ' + p.name + ': ' + relf + ' (' + dref + ')', file: r.startsWith(c.root) ? rel(f) : f, project: p.id, projectName: p.name, repo, ref: dref };
+        const where = { kind: 'project', label: 'project ' + p.name + ': ' + relf + ' (' + short + ')', file: r.startsWith(c.root) ? rel(f) : f, project: p.id, projectName: p.name, repo, ref: at.ref, refPath: relf };
         if (OTHER_LOCKS.includes(path.basename(relf))) gap(where, ['this kind of lockfile is not read yet: its parts are not checked']);
-        else addLock(where, lockComponentsText(gitOut(r, ['show', dref + ':' + relf], 64 << 20), path.basename(relf), o));
+        else addLock(where, lockComponentsText(text, path.basename(relf), o));
+      }
+      // a lockfile on disk that the default branch does not track (gitignored, or made at deploy time) is not checked: say so
+      const tracked = new Set(at.files.map(x => x[0]));
+      for (const f of walkFiles(r, LOCK_NAMES.concat(OTHER_LOCKS), PROJECT_DEPTH)) {
+        const relf = path.relative(r, f).split(path.sep).join('/');
+        if (tracked.has(relf) || /(^|\/)(scratch|\.wt-[^/]*|\.worktrees?)\//.test(relf)) continue;
+        gap({ kind: 'project', label: 'project ' + p.name + ': ' + relf, file: r.startsWith(c.root) ? rel(f) : f, project: p.id, projectName: p.name, repo },
+          ['this lockfile is on disk but not on the default branch (' + short + '): its parts are not checked']);
       }
       continue;
     }
@@ -586,8 +614,16 @@ async function npmAuditMatch(c, pol, inv, deadline) {
     const abs = path.isAbsolute(s.file) ? s.file : path.join(c.root, s.file);
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secwatch-audit-'));
     try {
-      fs.copyFileSync(abs, path.join(tmp, 'package-lock.json'));
-      const pkg = path.join(path.dirname(abs), 'package.json'); fs.writeFileSync(path.join(tmp, 'package.json'), readText(pkg) || '{"name":"x","version":"0.0.0"}');
+      if (s.ref && s.refPath) {   // a project read at its default branch: audit that branch's lockfile, not the working tree's
+        const root = abs.slice(0, abs.length - s.refPath.length).replace(/[\\/]$/, '');
+        const lock = gitOut(root, ['show', s.ref + ':' + s.refPath], 64 << 20); if (lock == null) throw new Error('the lockfile could not be read at ' + s.ref);
+        fs.writeFileSync(path.join(tmp, 'package-lock.json'), lock);
+        const pj = path.posix.join(path.posix.dirname(s.refPath), 'package.json');
+        fs.writeFileSync(path.join(tmp, 'package.json'), gitOut(root, ['show', s.ref + ':' + pj]) || '{"name":"x","version":"0.0.0"}');
+      } else {
+        fs.copyFileSync(abs, path.join(tmp, 'package-lock.json'));
+        const pkg = path.join(path.dirname(abs), 'package.json'); fs.writeFileSync(path.join(tmp, 'package.json'), readText(pkg) || '{"name":"x","version":"0.0.0"}');
+      }
       const r = run(tmp, s, Math.max(3000, Math.min(60000, left))); let j; try { j = JSON.parse(r.stdout || ''); } catch (_) { throw new Error('npm audit did not answer JSON'); }
       if (!j || typeof j !== 'object' || (!j.vulnerabilities && !j.metadata) || j.error) throw new Error('npm audit answered an error');
       const fileHits = new Map(), fileRecs = {};
