@@ -1,0 +1,25 @@
+# 0029-claude-cli-billing-failfast.diff
+# Tag Claude Code subscription/billing errors (e.g. "payment is past due" / "can't use your Claude subscription")
+# with status=402 and code='billing' in sidecar/providers/claude-cli.js so errorClass classifies them as
+# non-retryable `billing` (failing fast on attempt 1 instead of retrying 6 times over ~105s as `unknown`).
+#
+# Apply:  git -C starnet apply --3way --whitespace=nowarn ../company/patches/0029-claude-cli-billing-failfast.diff
+# Revert: git -C starnet apply -R ../company/patches/0029-claude-cli-billing-failfast.diff
+diff --git a/sidecar/providers/claude-cli.js b/sidecar/providers/claude-cli.js
+--- a/sidecar/providers/claude-cli.js
++++ b/sidecar/providers/claude-cli.js
+@@ -957,6 +957,14 @@
+           e.status = 401; e.code = 'provider_not_configured';
+           return e;
+         }
++        // A past-due or disabled Claude subscription ("can't use your Claude subscription, usually because a payment is past due"):
++        // carry as 402 so errorClass files it as `billing` (fail fast, no 105s retry loop) and the pacer can fail over.
++        const billMsg = String(message || detail || '');
++        if (t.apiError === 'billing_error' || /can't use your claude subscription|payment is past due|settings\/billing|billing[_ ]?error|subscription.*(past due|expired|inactive|suspended)/i.test(billMsg)) {
++          const e = new Error('Claude Code error: ' + billMsg.slice(0, 400));
++          e.status = 402; e.code = 'billing';
++          return e;
++        }
+         // A spent subscription window ("You've hit your limit · resets 5pm …"): a 429 usage_limit_reached is
+         // quota_exhausted — no retry on this sign-in, rotate to the next connected account (or fall back).
+         if (t.apiError === 'rate_limit') {
