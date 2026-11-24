@@ -1526,3 +1526,29 @@ test('MiniMax: an empty 5-hour window is closed even when fiveHourCloseBelowLeft
   r = await measurePlan(make(fixture({ policy: { minimax: { paceBy: 'fiveHour', fiveHourCloseBelowLeftPct: 0 } } }), station(jobs), { mm: mmBody(60, 3) }), jobs);
   assert.equal(r.m.minimax.open, true, 'with 3% left and threshold 0 it still runs');
 });
+
+test('Claude billing error: closes Claude from runs.jsonl failureCode or diag.errors.json, fails over routines, and reopens once a Claude run succeeds', async () => {
+  const jobs = crewJobs();
+  // 1. failureCode: 'billing' in runs.jsonl closes Claude immediately
+  const fx1 = liveFixture({ feedPct: 10 });
+  fx1.w('.starnet-data/workspaces/runs.jsonl', JSON.stringify({ runId: 'bill-1', provider: 'claude-cli', model: 'claude-sonnet-5-5', reason: 'error', failureCode: 'billing', endedAt: T0 - 5 * MIN }) + '\n');
+  const h1 = make(fx1, station(jobs));
+  let r1 = await measurePlan(h1, jobs);
+  assert.equal(r1.m.claude.open, false, 'Claude closed on failureCode=billing');
+  assert.equal(r1.m.claude.hard, true);
+  assert.match(r1.m.claude.why, /failed for billing/i);
+
+  // 2. Pre-patch diag.errors.json billing error (even when runs.jsonl has failureCode='unknown') also closes Claude
+  const fx2 = liveFixture({ feedPct: 10 });
+  fx2.w('.starnet-data/workspaces/runs.jsonl', JSON.stringify({ runId: 'bill-2', provider: 'claude-cli', model: 'claude-sonnet-5-5', reason: 'error', failureCode: 'unknown', endedAt: T0 - 5 * MIN }) + '\n');
+  fx2.w('.starnet-data/workspaces/diag.errors.json', [{ ts: T0 - 5 * MIN, runId: 'bill-2', message: "Claude Code error: Claude Code can't use your Claude subscription, usually because a payment is past due · Pay or renew at https://claude.ai/settings/billing" }]);
+  const h2 = make(fx2, station(jobs));
+  let r2 = await measurePlan(h2, jobs);
+  assert.equal(r2.m.claude.open, false, 'Claude closed from diag.errors.json billing error');
+  assert.equal(r2.m.claude.hard, true);
+  // Save state, then append a newer successful Claude run: billing hold must clear automatically
+  h2.p.saveState && h2.p.saveState(r2.s);
+  fs.appendFileSync(path.join(fx2.root, '.starnet-data/workspaces/runs.jsonl'), JSON.stringify({ runId: 'ok-after-bill', provider: 'claude-cli', model: 'claude-sonnet-5-5', reason: 'done', endedAt: T0 - MIN }) + '\n');
+  r2 = await measurePlan(h2, jobs);
+  assert.equal(r2.m.claude.open, true, 'Claude reopens once a newer claude-cli run succeeds: ' + r2.m.claude.why);
+});

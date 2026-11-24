@@ -86,6 +86,7 @@ const REL = {
   report: 'company/work/finance/ai-usage.md',
   subs: '.starnet-data/workspaces/.usage/subscriptions.json',
   runs: '.starnet-data/workspaces/runs.jsonl',
+  diagErrors: '.starnet-data/workspaces/diag.errors.json',
   keys: '.starnet-data/workspaces/.secrets/provider-keys.json',
   loops: 'company/tools/loops.json',
   handoffs: 'company/work/handoffs',
@@ -106,7 +107,7 @@ const DEFAULTS = {
   // meterCheck: when the Claude reading goes stale, one tiny internal run (cheapest model, a few words, no tools) makes
   // the station read the meter again, at most once per staleAfterMin; without it a stale meter closed Claude, nothing
   // could start, and nothing refreshed it (2026-11-19: 8 hours closed in both companies until the owner reopened it)
-  claude: { feedFile: '', staleAfterMin: 90, fiveHourCloseAtUsedPct: 70, meterCheck: { enabled: true, model: '', timeoutSec: 180 } },
+  claude: { feedFile: '', staleAfterMin: 90, fiveHourCloseAtUsedPct: 70, billingHoldMin: 60, meterCheck: { enabled: true, model: '', timeoutSec: 180 } },
   // url '' = from the company's MiniMax endpoint (company.json providers.minimax, lib/minimax-endpoint.js)
   minimax: { url: '', modelName: 'general', pollEveryMin: 10, staleAfterMin: 45, fiveHourCloseBelowLeftPct: 20 },
   emergency: { ceilingPct: 90, maxHours: 12, allowedBy: ['ceo', 'risk'], autoOnSerious: true, autoHours: 6 },
@@ -204,6 +205,7 @@ function loadPolicy(root, override) {
   p.reopenBandPct = numOr(p.reopenBandPct, 1, 0, 20);
   p.claude.staleAfterMin = numOr(p.claude.staleAfterMin, 90, 1, 24 * 60);
   p.claude.fiveHourCloseAtUsedPct = numOr(p.claude.fiveHourCloseAtUsedPct, 70, 0, 100);
+  p.claude.billingHoldMin = numOr(p.claude.billingHoldMin, 60, 5, 24 * 60);
   // the stale-meter check (meterCheck): on unless set false; the model is the routing table's cheapest Claude (haiku)
   const mcIn = p.claude.meterCheck === false ? { enabled: false } : isObj(p.claude.meterCheck) ? p.claude.meterCheck : {};
   let mcModel = typeof mcIn.model === 'string' && mcIn.model.trim() ? mcIn.model.trim() : '';
@@ -348,6 +350,8 @@ function handoffsDueToday(file, t) {
 
 const isUsageLimit = r => String(r.failureCode || '') === 'quota_exhausted'
   || /usage[_ ]limit[_ ]reached|usage limit reached|hit your (weekly |session |)limit/i.test(String(r.error || ''));
+const CLAUDE_BILLING_RE = /can't use your claude subscription|payment is past due|settings\/billing|billing[_ ]?error|subscription.*(past due|expired|inactive|suspended)/i;
+const isClaudeBilling = r => String(r.failureCode || '') === 'billing' || CLAUDE_BILLING_RE.test(String(r.error || ''));
 
 /* ---------- the station and MiniMax ---------- */
 function stationCall(root, host) {
@@ -687,6 +691,7 @@ function makePacer(o) {
     try { A.started(tk, { status: 200, runId }, aOpts); } catch (_) {}
     const fc = String((end && end.failureCode) || (err && err.failureCode) || ''), msg = String((err && err.message) || (end && end.error) || '');
     if (isUsageLimit({ failureCode: fc, error: msg })) return finish({ outcome: 'usage-limit', runId, why: (fc || 'usage limit') + (msg ? ': ' + msg.slice(0, 120) : '') });
+    if (isClaudeBilling({ failureCode: fc, error: msg })) return finish({ outcome: 'billing', runId, why: (fc || 'billing') + (msg ? ': ' + msg.slice(0, 120) : '') });
     if (end && (end.reason === 'done' || end.outcome === 'succeeded')) return finish({ outcome: 'ok', runId });
     return finish({ outcome: 'error', runId, why: end ? 'the run ended ' + (end.reason || end.outcome || 'without a result') + (msg ? ': ' + msg.slice(0, 120) : '') : 'the run never ended' });
   }
@@ -860,14 +865,19 @@ function makePacer(o) {
     return { active, invalid, expired: !!(e && e.active === true && !claimed), why: e && e.why, by: e && e.by, since: e && e.since, until: Number.isFinite(until) ? until : null, auto: !!(e && e.auto), ceilingPct: policy.emergency.ceilingPct };
   }
 
-  // refusals, usage-limit errors: from the station's run records, the last 48 hours
-  function scanRuns(t) {
-    const since = t - 48 * HOUR, out = { refusals: [], claudeLimits: [], minimaxLimits: [] };
+  // refusals, usage-limit and billing errors: from the station's run records (plus diag.errors.json / routine lastError), the last 48 hours
+  function scanRuns(t, jobs) {
+    const since = t - 48 * HOUR, out = { refusals: [], claudeLimits: [], claudeBilling: [], minimaxLimits: [], lastClaudeOk: 0 };
     const outcomes = policy.routing.blockOutcomes.map(String), codes = policy.routing.blockFailureCodes.map(String);
+    const seenBilling = new Set(), claudeRunIds = new Set();
     for (const r of runsWindow(since, 16 * MB)) {
-      if (!r.failureCode && !r.outcome && !r.error) continue;
       const end = Number(r.endedAt || r.ts || r.startedAt) || 0;
       if (end < since) continue;
+      if (r.provider === 'claude-cli') {
+        if (r.runId) claudeRunIds.add(r.runId);
+        if (r.reason === 'done' && end > out.lastClaudeOk) out.lastClaudeOk = end;
+      }
+      if (!r.failureCode && !r.outcome && !r.error) continue;
       const fc = String(r.failureCode || ''), oc = String(r.outcome || '');
       if (r.cronJobId && (outcomes.includes(oc) || codes.includes(fc)))
         out.refusals.push({ runId: r.runId, routineId: r.cronJobId, provider: r.provider, model: r.model, endedAt: end, code: fc || oc, trial: r.requestedBy === 'override' });
@@ -875,6 +885,28 @@ function makePacer(o) {
         if (r.provider === 'claude-cli') out.claudeLimits.push({ runId: r.runId, endedAt: end, model: r.model });
         else if (r.provider === 'custom') out.minimaxLimits.push({ runId: r.runId, endedAt: end, model: r.model });
       }
+      if (r.provider === 'claude-cli' && isClaudeBilling(r)) {
+        const id = r.runId || ('run-billing:' + end);
+        if (!seenBilling.has(id)) { seenBilling.add(id); out.claudeBilling.push({ runId: id, endedAt: end, model: r.model }); }
+      }
+    }
+    const diag = readJson(P('diagErrors'), []);
+    if (Array.isArray(diag)) {
+      for (const d of diag) {
+        if (!d || !CLAUDE_BILLING_RE.test(String(d.message || ''))) continue;
+        const ts = Number(d.ts) || 0;
+        if (ts < since) continue;
+        if (d.runId && claudeRunIds.size && !claudeRunIds.has(d.runId) && !/claude/i.test(String(d.message || ''))) continue;
+        const id = d.runId || ('diag-billing:' + ts);
+        if (!seenBilling.has(id)) { seenBilling.add(id); out.claudeBilling.push({ runId: id, endedAt: ts, model: null }); }
+      }
+    }
+    for (const j of jobs || []) {
+      if (!j || !CLAUDE_BILLING_RE.test(String(j.lastError || ''))) continue;
+      const at = Date.parse(j.lastRunAt || '') || 0;
+      if (at < since) continue;
+      const id = j.lastRunId || ('job-billing:' + j.id + ':' + at);
+      if (!seenBilling.has(id)) { seenBilling.add(id); out.claudeBilling.push({ runId: id, endedAt: at, model: null }); }
     }
     return out;
   }
@@ -981,6 +1013,25 @@ function makePacer(o) {
     st.keys = st.keys || {};
     for (const k of Object.keys(st.keys)) if (k.startsWith('refire:') && !st.pendingRefires.some(p => 'refire:' + p.runId === k)) delete st.keys[k];
 
+    // events from the run records (checked before meterCheck so a billing hold suppresses wasted Claude probes)
+    const ev = scanRuns(t, jobs);
+    if (st.closures && st.closures.claude && st.closures.claude.kind === 'billing' && ev.lastClaudeOk > st.closures.claude.at) {
+      delete st.closures.claude;
+      change('REOPEN Claude: a Claude run succeeded at ' + hm(ev.lastClaudeOk) + ' after the billing hold');
+      journal('reopen', { provider: 'claude', kind: 'billing', okAt: new Date(ev.lastClaudeOk).toISOString() });
+    }
+    for (const e of ev.claudeBilling) {
+      if (!e.runId || st.handled[e.runId]) continue;
+      st.handled[e.runId] = t;
+      if (ev.lastClaudeOk > e.endedAt) continue;
+      const until = e.endedAt + policy.claude.billingHoldMin * MIN;
+      if (!(until > t)) continue;
+      const cur = st.closures.claude;
+      if (!cur || cur.until < until) st.closures.claude = { until, why: 'a Claude run failed for billing at ' + hm(e.endedAt) + ' (renew at https://claude.ai/settings/billing)', runId: e.runId, at: e.endedAt, kind: 'billing' };
+      change('CLOSE Claude to routines until ' + when(until) + ': a run failed for billing at ' + hm(e.endedAt));
+      journal('closure', { provider: 'claude', kind: 'billing', runId: e.runId, until: new Date(until).toISOString() });
+    }
+
     const claudeR = readClaude(t, st);
     const meterCheck = await meterCheckTick(st, t, claudeR, opts.fetch !== false);
     const mmR = await readMiniMax(st, t, opts.fetch !== false);
@@ -990,8 +1041,6 @@ function makePacer(o) {
     if (claudeR) noteHistory(st, 'claude', claudeR);
     if (mmR && !mmR.none) noteHistory(st, 'minimax', mmR);
 
-    // events from the run records
-    const ev = scanRuns(t);
     // A routine's FIRST refusal (a filter can refuse an ordinary run) blocks that provider for that routine for
     // refusalFirstBlockHours and re-runs that one run once, prompt unchanged, on its next entry. A second refusal of the
     // same routine within refusalRepeatWithinHours is a pattern: refusalBlockHours, no re-run, and the CEO handles it (T3).
