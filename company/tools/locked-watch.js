@@ -366,14 +366,19 @@ function grewFrom(ctx, key, cur, b) {
     return sha(readRange(f, 0, b.bytes)) === b.sha256;
   } catch (_) { return false; }
 }
-// StarNet rotates its run log near 16 MB: the old file becomes <file>.1 and a new, short file starts. That is not a
-// rewrite when <file>.1 starts with exactly the bytes the last check saw (its first 64 KB and the 64 KB before the old
-// end); a rotation that also dropped or changed earlier records still fails this and is flagged.
+// StarNet rotates its run log near 16 MB: the old file becomes <file>.1 and the live file is absent until the next run
+// appends a new, short segment (whose mode may reflect the process umask rather than the rotated file's historic mode).
+// That is not a rewrite when <file>.1 is a regular file matching the last check's mode, head 64 KB and tail 64 KB, and
+// the live file is either absent or a smaller, non-symlink, non-world-writable file; any dropped or altered history fails.
 function rotatedFrom(ctx, key, cur, b) {
-  if (!cur || !cur.exists || !b || !b.exists || !b.lite || !(cur.bytes < b.bytes)) return false;
+  if (!b || !b.exists || !b.lite) return false;
+  if (cur && (cur.notFile || cur.link !== undefined)) return false;
+  if (cur && cur.exists && (!(cur.bytes < b.bytes) || (cur.mode & 0o002) !== 0)) return false;
   const f1 = abs(ctx, key) + '.1';
   try {
-    const st = fs.statSync(f1); if (!st.isFile() || st.size < b.bytes) return false;
+    const st = fs.lstatSync(f1);
+    if (!st.isFile() || st.size < b.bytes) return false;
+    if (b.mode != null && (st.mode & 0o7777) !== b.mode) return false;
     return sha(readRange(f1, 0, Math.min(BIG_CHUNK, b.bytes))) === b.headSha && sha(readRange(f1, Math.max(0, b.bytes - BIG_CHUNK), Math.min(BIG_CHUNK, b.bytes))) === b.tailSha;
   } catch (_) { return false; }
 }
@@ -647,7 +652,7 @@ function decide(ctx, key, m, b, cur, prov, recorded, flagOnly) {
   }
   // F and K: reported, never undone automatically
   if (m.append && cur.exists && b.exists && cur.mode === b.mode && grewFrom(ctx, key, cur, b)) return { ok: true, why: 'appended' };
-  if (m.append && m.bigAppend && cur.exists && b.exists && cur.mode === b.mode && rotatedFrom(ctx, key, cur, b)) return { ok: true, why: 'rotated by StarNet (the earlier records are in ' + key.split('/').pop() + '.1)' };
+  if (m.append && m.bigAppend && b.exists && rotatedFrom(ctx, key, cur, b)) return { ok: true, why: 'rotated by StarNet (the earlier records are in ' + key.split('/').pop() + '.1)' };
   // a grow-only record (decisions.md is written newest first): new lines may land anywhere, but every earlier line must
   // still be there, in order. Only removing or rewriting history is a finding.
   if (m.growOnly && cur.exists && b && b.exists) {
@@ -2022,6 +2027,47 @@ async function selftest() {
     for (const k of [keys[0], keys[1], keys[3]]) assert.ok(!(b1.files[k] || {}).flagged, k + ' still flagged');
     assert.ok(!(b1.starnetFlagged || {})['sidecar/index.js'], 'starnet/sidecar/index.js still flagged');
     now += 60000; const r2 = await tick(C({ now })); assert.ok(!r2.events.some(x => keys.includes(x.key)), JSON.stringify(r2.events));
+  });
+  await t('bigAppend (runs.jsonl) rotation: absent live file or recreated file with safe umask mode is accepted when .1 matches; tampered/symlink .1 or world-writable live file is flagged', async () => {
+    const rk = '.starnet-data/workspaces/runs.jsonl';
+    const rf = path.join(T, rk), rf1 = rf + '.1';
+    const seed = Array.from({ length: 400 }, (_, i) => JSON.stringify({ runId: 'r-' + i, pad: 'x'.repeat(200) })).join('\n') + '\n';
+    const why = 'owner reviewed: seed runs.jsonl baseline for rotation check';
+    // 1. Seed a 0o600 runs.jsonl baseline
+    now += 60000; W(rk, seed); fs.chmodSync(rf, 0o600);
+    try { fs.unlinkSync(rf1); } catch (_) {}
+    let r = await tick(C({ now }));
+    if (r.events.some(x => x.key === rk)) acceptCmd(context(C({ now, underStation: false })), rk, { by: 'owner', why });
+    // 2. Rotate to .1 leaving runs.jsonl absent until the next run completes
+    now += 60000; fs.renameSync(rf, rf1);
+    r = await tick(C({ now }));
+    assert.ok(!r.events.some(x => x.key === rk), 'absent after rotation should be accepted: ' + JSON.stringify(r.events));
+    // 3. Next run creates a new runs.jsonl with default 0o644 umask mode
+    now += 60000; W(rk, JSON.stringify({ runId: 'r-new-1' }) + '\n'); fs.chmodSync(rf, 0o644);
+    r = await tick(C({ now }));
+    assert.ok(!r.events.some(x => x.key === rk), 'new segment after absent rotation should be accepted: ' + JSON.stringify(r.events));
+    // 4. Direct rotation in one tick where baseline was 0o600 and fresh segment is 0o644
+    now += 60000; W(rk, seed); fs.chmodSync(rf, 0o600);
+    acceptCmd(context(C({ now, underStation: false })), rk, { by: 'owner', why });
+    now += 60000; fs.renameSync(rf, rf1); W(rk, JSON.stringify({ runId: 'r-new-2' }) + '\n'); fs.chmodSync(rf, 0o644);
+    r = await tick(C({ now }));
+    assert.ok(!r.events.some(x => x.key === rk), 'same-tick rotation with 0o644 fresh segment should be accepted: ' + JSON.stringify(r.events));
+    // 5. World-writable fresh segment (0o666) after rotation must be flagged
+    now += 60000; W(rk, seed); fs.chmodSync(rf, 0o600);
+    acceptCmd(context(C({ now, underStation: false })), rk, { by: 'owner', why });
+    now += 60000; fs.renameSync(rf, rf1); W(rk, JSON.stringify({ runId: 'r-bad-mode' }) + '\n'); fs.chmodSync(rf, 0o666);
+    r = await tick(C({ now }));
+    assert.ok(r.events.some(x => x.key === rk), 'world-writable rotated live segment must be flagged');
+    fs.chmodSync(rf, 0o600);
+    // 6. Symlink .1 must be flagged even if target matches baseline
+    now += 60000; W(rk, seed); fs.chmodSync(rf, 0o600);
+    acceptCmd(context(C({ now, underStation: false })), rk, { by: 'owner', why });
+    const decoy = rf + '.decoy'; fs.renameSync(rf, decoy);
+    try { fs.unlinkSync(rf1); } catch (_) {}
+    fs.symlinkSync(decoy, rf1);
+    now += 60000; r = await tick(C({ now }));
+    assert.ok(r.events.some(x => x.key === rk), 'symlink .1 must be flagged');
+    try { fs.unlinkSync(rf1); fs.unlinkSync(decoy); } catch (_) {}
   });
   if (prevProv === undefined) delete process.env.PROVENANCE_ROOT; else process.env.PROVENANCE_ROOT = prevProv;
   if (prevCR === undefined) delete process.env.CAPHEOS_ROOT; else process.env.CAPHEOS_ROOT = prevCR;
