@@ -17,3 +17,20 @@ test('cooling reads endedAt when a row has no at', () => {
   assert.ok(FM.coolingRun([row({ failureCode: 'rate_limited' })], 'vendor/m:free', now, 60));
   assert.strictEqual(FM.coolingRun([row({ failureCode: 'rate_limited' })], 'vendor/m:free', now + 2 * 3600e3, 60), null);
 });
+test('cooling and resolve recognize canonical StarNet errorClass failureCodes with no error text or at field', () => {
+  for (const code of ['rate_limit', 'model_not_found', 'server_error', 'billing', 'auth', 'unreachable']) {
+    assert.ok(FM.coolingRun([row({ failureCode: code })], 'vendor/m:free', now, 60), 'coolingRun recognizes ' + code);
+  }
+  const pol = { allowed: { openrouter: { models: ['free'] } }, freeFallback: { enabled: true, coolMin: 30, maxAgeHours: 72 } };
+  const reg = { v: 1, at: new Date(now - 3600e3).toISOString(), models: [
+    { id: 'vendor/a:free', tools: true, context: 200000 },
+    { id: 'vendor/b:free', tools: true, context: 100000 }
+  ], ranked: ['vendor/a:free', 'vendor/b:free'] };
+  const r = FM.resolve({ policy: pol, reg, ranking: null, hasKey: true, now, runs: [row({ model: 'vendor/a:free', failureCode: 'model_not_found' })] });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.model, 'vendor/b:free');
+  assert.ok(r.skipped.some(s => s.id === 'vendor/a:free' && /model_not_found/.test(s.why)), JSON.stringify(r.skipped));
+  const r2 = FM.resolve({ policy: pol, reg, ranking: null, hasKey: true, now, runs: [row({ model: 'vendor/a:free', failureCode: 'rate_limit' })] });
+  assert.strictEqual(r2.ok, true);
+  assert.strictEqual(r2.model, 'vendor/b:free');
+});

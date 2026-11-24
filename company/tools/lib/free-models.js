@@ -39,7 +39,7 @@ const RANK_REL = 'company/work/models/house-ranking.json';
 const DEFAULTS = { enabled: false, maxAgeHours: 72, coolMin: 30, minItems: 5, maxAlternates: 2 };
 const DAILY_RE = /free-models-per-day|free[ _-]?models?[^.]{0,40}per[ _-]?day|daily[^.]{0,30}free[^.]{0,20}limit|free_daily_limit/i;
 const PROVIDER_ERR_RE = /\bhttp\s*(40[23]|408|429|5\d\d)\b|rate.?limit|overloaded|unavailable|no endpoints|timed? ?out|upstream|provider returned error|quota/i;
-const PROVIDER_CODES = ['quota_exhausted', 'rate_limited', 'provider_error', 'provider_unavailable', 'network', 'timeout', 'overloaded', 'upstream', 'model_unavailable', 'model_unsuitable', 'model_no_tools', 'concurrency_limit', 'free_daily_limit'];
+const PROVIDER_CODES = ['auth', 'billing', 'quota_exhausted', 'rate_limit', 'rate_limited', 'server_error', 'provider_error', 'provider_unavailable', 'network', 'unreachable', 'tls_certificate', 'timeout', 'overloaded', 'upstream', 'model_not_found', 'model_unavailable', 'model_unsuitable', 'model_no_tools', 'template_refusal', 'endpoint_mismatch', 'call_too_expensive', 'local_memory', 'local_timeout', 'concurrency_limit', 'free_daily_limit'];
 
 const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } };
 const rootOf = r => path.resolve(r || require('./company').ROOT);
@@ -159,14 +159,14 @@ function resolve(a) {
   if (until) return { ok: false, why: 'OpenRouter\'s daily free-model limit was reached today; open again at ' + new Date(until).toISOString().slice(0, 16) + ' UTC', until, skipped: [] };
   const ranking = a.ranking !== undefined ? a.ranking : readJson(path.join(root, RANK_REL), null);
   const ids = order(reg, ranking, { cls: a.cls, minItems: S.minItems });
-  const all = flat(a.runs).filter(r => r && r.provider === PROVIDER).sort((x, y) => (Number(x.at) || 0) - (Number(y.at) || 0));
+  const all = flat(a.runs).filter(r => r && r.provider === PROVIDER).sort((x, y) => tOf(x) - tOf(y));
   const skipped = [];
   const tooled = new Set(reg.models.filter(m => m && m.tools === true).map(m => m.id));
-  const cooling = id => { const mine = all.filter(r => r.model === id), last = mine[mine.length - 1]; return last && providerErr(last) && t - Number(last.at) < S.coolMin * 60e3 ? last : null; };
+  const cooling = id => { const mine = all.filter(r => r.model === id), last = mine[mine.length - 1]; return last && providerErr(last) && t - tOf(last) < S.coolMin * 60e3 ? last : null; };
   for (const id of ids) {
     if (!tooled.has(id)) { skipped.push({ id, why: 'does not take tools' }); continue; }
     const last = cooling(id);
-    if (last) { skipped.push({ id, why: 'provider error ' + Math.round((t - Number(last.at)) / 60e3) + ' min ago (' + String(last.failureCode || last.error || 'error').slice(0, 80) + ')' }); continue; }
+    if (last) { skipped.push({ id, why: 'provider error ' + Math.round((t - tOf(last)) / 60e3) + ' min ago (' + String(last.failureCode || last.error || 'error').slice(0, 80) + ')' }); continue; }
     // the in-request alternates (patch 0022): the next ones in the same order, each taking tools and not cooling
     const alternates = ids.filter(x => x !== id && tooled.has(x) && !cooling(x)).slice(0, Math.min(2, S.maxAlternates));
     return { ok: true, model: id, why: 'free model ' + id + (skipped.length ? ' (skipped ' + skipped.length + ' cooling)' : ''), alternates, skipped };
