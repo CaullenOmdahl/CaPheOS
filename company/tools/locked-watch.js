@@ -787,13 +787,41 @@ function runTick(ctx) {
   let rec = {}; try { rec = require('./harness-change.js').recordedShas({ root: ctx.root, trust: changeTrust }); } catch (_) {}
   const provLog = cur.get('company/state/locked/provenance.jsonl'); const provBase = base.files['company/state/locked/provenance.jsonl'];
   if (provLog && provBase && provLog.exists && provBase.exists && !(provLog.bytes >= provBase.bytes && sha(provLog.buf.subarray(0, provBase.bytes)) === provBase.sha256)) { flagOnly = true; notes.push('the provenance log was rewritten'); }
+  // a framework update (git pull in a company checkout) changes tracked framework files: when the file now matches the
+  // checked-out commit exactly, it is the framework, not a tamper — accept it silently and say so once in the log
+  const fromFramework = (key, st) => {
+    // secrets/ holds keys, which are never taken as a framework update; its README.md is the one tracked framework file there
+    if (!st || !st.exists || !st.sha256 || (/^(starnet|\.starnet-data|secrets)\//.test(key) && key !== 'secrets/README.md') || /^[~/]/.test(key)) return false;
+    try {
+      const cpx = require('child_process');
+      const want = String(st.sha256).replace(/^sha256:/, '');
+      const shaHex = b => require('crypto').createHash('sha256').update(b).digest('hex');
+      let tracked = true; try { cpx.execFileSync('git', ['-C', ctx.root, 'ls-files', '--error-unmatch', key], { stdio: 'ignore' }); } catch (_) { tracked = false; }
+      if (tracked) return shaHex(cpx.execFileSync('git', ['-C', ctx.root, 'show', 'HEAD:' + key], { maxBuffer: 64 << 20 })) === want;
+      // a StarNet patch's .applied marker (written by setup-station.sh): a framework update when the marker is a small
+      // ISO-8601 timestamp, its matching .diff is tracked and unchanged from HEAD, and starnet/ actually carries that patch
+      const pm = /^company\/patches\/(\d{4}-.+\.diff)\.applied$/.exec(key);
+      if (pm && st.buf && st.bytes <= 64 && /^\d{4}-\d{2}-\d{2}T[0-9:.+-]+Z?\s*$/.test(st.buf.toString('utf8'))) {
+        const diffKey = 'company/patches/' + pm[1];
+        const headDiff = cpx.execFileSync('git', ['-C', ctx.root, 'show', 'HEAD:' + diffKey], { maxBuffer: 16 << 20, stdio: ['ignore', 'pipe', 'ignore'] });
+        const diskDiff = fs.readFileSync(path.join(ctx.root, diffKey));
+        if (shaHex(headDiff) !== shaHex(diskDiff)) return false;
+        const r = cpx.spawnSync('git', ['-C', path.join(ctx.root, 'starnet'), 'apply', '--reverse', '--check', '-'], { input: headDiff, stdio: ['pipe', 'ignore', 'ignore'] });
+        return r.status === 0;
+      }
+      // a module tool copied into company/tools/ by module.js: a framework update when it equals the module's own file at HEAD
+      const m = /^company\/tools\/([^/]+)$/.exec(key); if (!m) return false;
+      const srcs = cpx.execFileSync('git', ['-C', ctx.root, 'ls-files', '--', 'modules/*/tools/' + m[1]], { encoding: 'utf8' }).split('\n').filter(Boolean);
+      return srcs.some(src => shaHex(cpx.execFileSync('git', ['-C', ctx.root, 'show', 'HEAD:' + src], { maxBuffer: 64 << 20 })) === want);
+    } catch (_) { return false; }
+  };
   const changed = [];
   for (const [key, s] of cur) {
     const m = items.get(key) || entryFor(ctx, key); if (!m) continue;
     const b = base.files[key];
     if (!b) { if (s.exists) changed.push({ key, m, b: { exists: false, cls: m.cls }, s }); continue; }
     if (sameState(s, b)) { if (b.flagged) delete b.flagged; continue; }
-    if (b.flagged && s.exists && b.flagged.sha256 === s.sha256 && b.flagged.mode === s.mode && !(m.status && s.buf && !statusShape(s.buf))) continue;   // reported already; waiting for accept or revert (station status is judged again: a flag from before it was status clears)
+    if (b.flagged && s.exists && b.flagged.sha256 === s.sha256 && b.flagged.mode === s.mode && !(m.status && s.buf && !statusShape(s.buf)) && !fromFramework(key, s)) continue;   // reported already; waiting for accept or revert (station status and verified framework files/markers re-judge and self-clear)
     // a grow-only record that is already flagged: judge the new change against the FLAGGED version (a copy kept when it
     // was flagged), not the last-known-good. Entries added since by decision.js, a retention roll or a plain append are
     // the same open finding, not a new rewrite; without this, every legitimate entry after one hand edit re-reported
@@ -933,23 +961,6 @@ function runTick(ctx) {
     }
   }
   // act
-  // a framework update (git pull in a company checkout) changes tracked framework files: when the file now matches the
-  // checked-out commit exactly, it is the framework, not a tamper — accept it silently and say so once in the log
-  const fromFramework = (key, st) => {
-    // secrets/ holds keys, which are never taken as a framework update; its README.md is the one tracked framework file there
-    if (!st || !st.exists || !st.sha256 || (/^(starnet|\.starnet-data|secrets)\//.test(key) && key !== 'secrets/README.md') || /^[~/]/.test(key)) return false;
-    try {
-      const cpx = require('child_process');
-      const want = String(st.sha256).replace(/^sha256:/, '');
-      const sha = b => require('crypto').createHash('sha256').update(b).digest('hex');
-      let tracked = true; try { cpx.execFileSync('git', ['-C', ctx.root, 'ls-files', '--error-unmatch', key], { stdio: 'ignore' }); } catch (_) { tracked = false; }
-      if (tracked) return sha(cpx.execFileSync('git', ['-C', ctx.root, 'show', 'HEAD:' + key], { maxBuffer: 64 << 20 })) === want;
-      // a module tool copied into company/tools/ by module.js: a framework update when it equals the module's own file at HEAD
-      const m = /^company\/tools\/([^/]+)$/.exec(key); if (!m) return false;
-      const srcs = cpx.execFileSync('git', ['-C', ctx.root, 'ls-files', '--', 'modules/*/tools/' + m[1]], { encoding: 'utf8' }).split('\n').filter(Boolean);
-      return srcs.some(src => sha(cpx.execFileSync('git', ['-C', ctx.root, 'show', 'HEAD:' + src], { maxBuffer: 64 << 20 })) === want);
-    } catch (_) { return false; }
-  };
   for (const c of changed) {
     if (fromFramework(c.key, c.s)) { if (!ctx.dry) accept(ctx, base, c.key, c.m, c.s); notes.push('framework update accepted: ' + c.key + ' matches the checked-out commit'); continue; }
     const d = decideRolled(ctx, c.key, c.m, c.b, c.s, prov, rec[c.key], flagOnly);
@@ -2068,6 +2079,44 @@ async function selftest() {
     now += 60000; r = await tick(C({ now }));
     assert.ok(r.events.some(x => x.key === rk), 'symlink .1 must be flagged');
     try { fs.unlinkSync(rf1); fs.unlinkSync(decoy); } catch (_) {}
+  });
+  await t('framework StarNet patch .applied marker: accepted when tracked HEAD .diff is applied in starnet/; unapplied or untracked patch markers are flagged', async () => {
+    const gitIn = (dir, args) => execFileSync('git', ['-C', dir, ...args], { stdio: 'ignore' });
+    const snDir = path.join(T, 'starnet');
+    fs.mkdirSync(path.join(snDir, 'sidecar'), { recursive: true });
+    fs.writeFileSync(path.join(snDir, 'sidecar/demo.js'), 'const a = 1;\n');
+    gitIn(snDir, ['init', '-q']); gitIn(snDir, ['config', 'user.email', 't@t']); gitIn(snDir, ['config', 'user.name', 't']);
+    gitIn(snDir, ['add', 'sidecar/demo.js']); gitIn(snDir, ['commit', '-q', '-m', 'init']);
+    const diffBody = [
+      'diff --git a/sidecar/demo.js b/sidecar/demo.js',
+      '--- a/sidecar/demo.js',
+      '+++ b/sidecar/demo.js',
+      '@@ -1 +1,2 @@',
+      ' const a = 1;',
+      '+const b = 2;',
+      ''
+    ].join('\n');
+    const pk = 'company/patches/0099-demo.diff', mk = pk + '.applied';
+    const upk = 'company/patches/0098-untracked.diff', umk = upk + '.applied';
+    W(pk, diffBody);
+    gitIn(T, ['init', '-q']); gitIn(T, ['config', 'user.email', 't@t']); gitIn(T, ['config', 'user.name', 't']);
+    gitIn(T, ['add', pk]); gitIn(T, ['commit', '-q', '-m', 'add tracked patch']);
+    // 1. Planted .applied marker before the patch is actually applied in starnet/ -> MUST BE FLAGGED
+    now += 60000; W(mk, '2026-11-24T19:03:00+07:00\n');
+    let r = await tick(C({ now }));
+    assert.ok(r.events.some(x => x.key === mk), 'planted marker for unapplied patch must be flagged: ' + JSON.stringify(r.events));
+    // 2. Apply the tracked HEAD patch in starnet/ -> existing flag MUST SELF-CLEAR and be accepted
+    execFileSync('git', ['-C', snDir, 'apply', '-'], { input: diffBody });
+    now += 60000; r = await tick(C({ now }));
+    assert.ok(!r.events.some(x => x.key === mk), 'applied tracked framework patch marker should be accepted: ' + JSON.stringify(r.events));
+    assert.ok(!(loadBaseline(context(C({ now }))).files[mk] || {}).flagged, 'prior flag on verified .applied marker must self-clear');
+    // 3. Untracked (non-framework) .diff + .applied marker -> MUST BE FLAGGED even if applied in starnet/
+    W(upk, diffBody); W(umk, '2026-11-24T19:04:00+07:00\n');
+    now += 60000; r = await tick(C({ now }));
+    assert.ok(r.events.some(x => x.key === umk), 'marker for untracked patch must be flagged: ' + JSON.stringify(r.events));
+    fs.rmSync(snDir, { recursive: true, force: true });
+    fs.rmSync(path.join(T, '.git'), { recursive: true, force: true });
+    for (const f of [pk, mk, upk, umk]) { try { fs.unlinkSync(path.join(T, f)); } catch (_) {} }
   });
   if (prevProv === undefined) delete process.env.PROVENANCE_ROOT; else process.env.PROVENANCE_ROOT = prevProv;
   if (prevCR === undefined) delete process.env.CAPHEOS_ROOT; else process.env.CAPHEOS_ROOT = prevCR;
