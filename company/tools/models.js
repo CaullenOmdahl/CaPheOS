@@ -68,7 +68,7 @@ const SUBS = ['claude-cli', 'custom'];
 const NAMES = { 'claude-cli': 'Claude', custom: 'MiniMax', deepseek: 'DeepSeek', openrouter: 'OpenRouter' };
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 // a run that ended for a reason on the provider's side, not the agent's
-const PROVIDER_CODES = ['auth', 'quota_exhausted', 'rate_limited', 'provider_error', 'provider_unavailable', 'network', 'timeout', 'overloaded', 'upstream', 'model_unavailable', 'model_unsuitable', 'model_no_tools', 'concurrency_limit'];
+const PROVIDER_CODES = ['auth', 'billing', 'quota_exhausted', 'rate_limit', 'rate_limited', 'server_error', 'provider_error', 'provider_unavailable', 'network', 'unreachable', 'tls_certificate', 'timeout', 'overloaded', 'upstream', 'model_not_found', 'model_unavailable', 'model_unsuitable', 'model_no_tools', 'template_refusal', 'endpoint_mismatch', 'call_too_expensive', 'local_memory', 'local_timeout', 'concurrency_limit'];
 const PROVIDER_RE = /\bhttp\s*(40[1238]|429|5\d\d)\b|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|timed? ?out|rate.?limit|overloaded|unavailable|unauthori[sz]ed|invalid api key|insufficient[_ ]balance|quota|usage limit|not connected|no key|credential|network error|upstream/i;
 
 const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } };
@@ -914,6 +914,9 @@ async function selftest() {
     });
     await t('provider errors: a code or a provider message counts; an agent-side failure does not', async () => {
       assert.ok(providerError({ reason: 'error', failureCode: 'auth' })); assert.ok(providerError({ reason: 'error', error: 'HTTP 429 rate limit' }));
+      for (const code of ['rate_limit', 'model_not_found', 'server_error', 'billing', 'unreachable']) {
+        assert.ok(providerError({ reason: 'error', failureCode: code, error: '' }), 'canonical StarNet errorClass code counts: ' + code);
+      }
       assert.ok(!providerError({ reason: 'error', failureCode: 'routine_script_failed', error: 'exit 1' })); assert.ok(!providerError({ reason: 'done' }));
     });
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
