@@ -556,6 +556,58 @@ function ownerPinFor(req, at, opts) {
   return pin;
 }
 
+/* ---- carrier rule: A CARRIER IS NOT AN AUTHORITY ----
+ * The pin names two identities and both stay: the SEAT ("agent", the CEO's own station id) and the CARRIER ("dispatcher",
+ * the batching process that relays for a seat). What was missing was the binding, and these two functions are it:
+ *   - the pin's standing policy belongs to the SEAT. A send carried by the dispatcher is NOT cleared by the pin; it
+ *     falls through to the ledger, where only a row naming the CEO and naming THAT message clears it (b)(2), and
+ *   - that row is spent by the send it cleared: one row, one message. The action log is where the gate reads the
+ *     spend, because the log row IS the record that the send went (b)(1) — no log in front of the gate, no
+ *     dispatcher-carried send. */
+function carrierRowWhy(row, r, logFile) {
+  const subj = String(r.subject || '').trim();
+  if (norm(row && row.clearedBy) !== norm(CEO_NAME)) {
+    return 'the authority for a dispatcher-carried send is ' + CEO_NAME + ' (' + CLEARER_WORDS + '), and this row is cleared by "' +
+      (row && row.clearedBy) + '" — a carrier cannot clear itself (carrier rule 2)';
+  }
+  const rowSubject = String((row && (row.subject || row.ref)) || '').trim();
+  if (!rowSubject) {
+    return 'the row names no subject — a dispatcher-carried send needs a row that names THIS message (subject "' +
+      (subj || '(none given)') + '"), not just the channel (carrier rule 1)';
+  }
+  if (norm(rowSubject) !== norm(subj)) {
+    return 'subject mismatch: the row clears "' + rowSubject + '", and this send is "' + (subj || '(none given)') + '"' +
+      (subj ? '' : ' — the request names no subject (ref), so no row can name it');
+  }
+  const prior = priorCarrierSpend(logFile, row && row.id, rowSubject);
+  if (prior) {
+    return 'spent: this row already cleared the send for subject "' + rowSubject + '" at ' + (prior.at || 'an earlier moment') +
+      ' — one row clears one message, and a second needs its own row (carrier rule 2)';
+  }
+  return null;
+}
+
+/* The spend, read from the action log: a prior ALLOWED dispatcher-carried decision under this row for this subject. */
+function priorCarrierSpend(logFile, clearanceId, subject) {
+  if (!logFile || !clearanceId) return null;
+  const want = norm(subject);
+  return readJsonl(logFile).find(x => x && norm(x.clearanceId) === norm(clearanceId) && norm(x.subject) === want &&
+    norm(x.decision) === 'allowed' && norm(x.carrier) === 'dispatcher') || null;
+}
+
+/* carrier rule 4: the refusal says WHICH of the two failed and what would make it allowed. A reason that does not say
+ * what would fix it costs the next person an hour. */
+function ownerCarrierRefusal(r, problems) {
+  const subj = String(r.subject || '').trim();
+  return 'the owner channel, carrier "dispatcher": ' + (subj ? 'no usable AUTHORITY' : 'no SUBJECT and no usable AUTHORITY') +
+    ' — the pin\'s standing policy belongs to the seat (carrier "agent"), not to the carrier, so a dispatcher-carried send ' +
+    'is cleared only by a clearance row written inside a ' + CEO_NAME + ' run that names ' + CEO_NAME + ' as its authority and ' +
+    'names this message as its subject (carrier rule). What would make it allowed: a clearance row with clearedBy "' + CEO_NAME +
+    '", category "message", target "' + r.target + '", subject "' + (subj || '<this message>') + '", until a future date' +
+    (subj ? '' : ', and a request that names its subject (ref)') +
+    (problems && problems.length ? ' — rows considered and rejected: ' + problems.slice(0, 3).join('; ') : ' — no row for this channel exists today') + '.';
+}
+
 function norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
 /* SEAT ALIASES (risk-owned table company/work/security/seat-aliases.json, watched by locked-watch.js): a run's own seat id
    may answer a clearance row that names a role (e.g. "recorder"). Exact strings, one lookup, no chaining; 'any' is never
@@ -791,8 +843,14 @@ function checkInner(req, opts) {
     act: norm(req && req.act),                      // optional: a request that names an act must find it on the row
     viaRun: !!(req && req.viaRun),                  // the agent is the run's own STARNET_AGENT_ID (seat aliases apply only then)
     note: (req && req.note) ? String(req.note).slice(0, 300) : '',
+    // carrier rule: the CARRIER is the transport that speaks (agent | dispatcher); the AUTHORITY is the row or the pin.
+    // A declared carrier may only ever WEAKEN the identity the gate received: a dispatcher that declares itself
+    // carrier "agent" is still a dispatcher. `subject` is the message being sent (the ref), which a carrier's row
+    // must name.
+    carrier: (norm(req && req.carrier) === 'dispatcher' || norm((req && req.agent) || '') === 'dispatcher') ? 'dispatcher' : 'agent',
+    subject: String((req && (req.ref || req.subject)) || '').trim().slice(0, 200),
   };
-  const base = { at: new Date(at).toISOString(), agent: r.agent, category: r.category, target: r.target, note: r.note };
+  const base = { at: new Date(at).toISOString(), agent: r.agent, carrier: r.carrier, category: r.category, target: r.target, subject: r.subject || null, note: r.note };
 
   const deny = (reason) => {
     const out = Object.assign({ decision: 'refused', reason: reason }, base);
@@ -823,16 +881,30 @@ function checkInner(req, opts) {
   const ownerCleared = row => ['owner', norm(OWNER_NAME)].includes(norm(row && row.clearedBy));
 
   // THE OWNER CHANNEL: a class name is malformed; the pinned subject is the only reach.
+  let pinMatched = null;
   if (r.category === 'message') {
     const shapeWhy = messageTargetWhy(r.target, 'request');
     if (shapeWhy) return deny(shapeWhy);
     const pin = ownerPinFor(r, at, opts);
     if (pin) {
+      pinMatched = pin;
+    }
+    // carrier rule 3: the standing policy belongs to the SEAT. Only carrier "agent" rides it; a dispatcher-carried
+    // send falls through to the ledger below, where a row naming the CEO and this message is the only authority.
+    if (pin && r.carrier === 'agent') {
       const reason = 'owner-channel pin: the one cleared subject, sender "' + r.agent + '" — bounded, counted and revocable by editing company/state/owner-channel-policy.json';
       const out = Object.assign({ decision: 'allowed-pin', reason: reason, clearanceId: null, clearedBy: 'pin', route: 'pin', pinUntil: pin.until }, base);
       if (logFile) appendJsonl(logFile, out);
-      return { allow: true, reason: reason, clearanceId: null, clearedBy: 'pin', pin: true, route: 'pin', pinUntil: pin.until, pinFile: 'company/state/owner-channel-policy.json' };
+      return { allow: true, reason: reason, clearanceId: null, clearedBy: 'pin', pin: true, route: 'pin', carrier: 'agent', subject: r.subject || null, pinUntil: pin.until, pinFile: 'company/state/owner-channel-policy.json' };
     }
+  }
+
+  // carrier rule 1: the record is the authority. With no action log there is nothing to say a carrier's send went, and
+  // nothing to stop the same row clearing it twice, so a dispatcher-carried send is refused rather than waved through.
+  if (pinMatched && r.carrier === 'dispatcher' && !logFile) {
+    return deny('the owner channel, carrier "dispatcher": the gate was called with the action log off, so the AUTHORITY ' +
+      'and the SUBJECT of this send could not be recorded (carrier rule 1) — a clearance row clears one message, and that ' +
+      'is only provable from the log. What would make it allowed: call the gate with its log on (company/work/external-actions.jsonl).');
   }
 
   // A domain that is already on the company allowlist is not a new domain: only a NEW host needs a row.
@@ -851,6 +923,12 @@ function checkInner(req, opts) {
     let why = verdicts[ri] || validateRow(row, r, at);
     if (!why && govLevel === 'approve' && !ownerCleared(row)) why = 'self-governance: external is at approve, so a clearance must name the owner (' + OWNER_NAME + '), not ' + row.clearedBy;
     if (why) { if (targetMatches(row && row.target, r.target) && norm(row && row.category) === r.category) problems.push((row && row.id) + ': ' + why); continue; }
+    // carrier rule 2: on the owner channel a CARRIER is not an authority. A dispatcher-carried send needs a row that
+    // names the CEO, names THIS message, and has not already spent itself on an earlier send.
+    if (pinMatched && r.carrier === 'dispatcher') {
+      const carrierWhy = carrierRowWhy(row, r, logFile);
+      if (carrierWhy) { problems.push((row && row.id) + ': ' + carrierWhy); continue; }
+    }
     if (govLevel === 'notify' && !ownerCleared(row)) {
       // one plain line for the owner's daily digest; the clearance, target and governance level are the crew's detail
       try { gov.fyi({ from: String(row.clearedBy), text: plainClearedLine(row.clearedBy, r), key: 'external:' + (row.id || r.target),
@@ -865,11 +943,16 @@ function checkInner(req, opts) {
     // still an allow — the row predates narrowing or was written without acts — but the log entry and the answer say
     // so, so a reader counts the reach instead of inferring it from a note.
     const unnarrowed = r.act && (!Array.isArray(row.acts) || !row.acts.length);
+    // carrier rule 1: a carrier's delivery is logged with the carrier, the route, the authority and the subject.
+    const carrierFields = (pinMatched && r.carrier === 'dispatcher') ? { carrier: 'dispatcher', route: 'clearance', subject: r.subject, spent: true } : {};
     const viaAlias = norm(row.agent || 'any') !== 'any' && norm(row.agent) !== r.agent ? { seat: r.agent, alias: norm(row.agent) } : {};
-    const out = Object.assign({ decision: 'allowed', reason: 'clearance ' + (row.id || '?'), clearanceId: row.id || null, clearedBy: row.clearedBy }, viaAlias, unnarrowed ? { unnarrowed: true, act: r.act } : {}, base);
+    const out = Object.assign({ decision: 'allowed', reason: 'clearance ' + (row.id || '?'), clearanceId: row.id || null, clearedBy: row.clearedBy }, carrierFields, viaAlias, unnarrowed ? { unnarrowed: true, act: r.act } : {}, base);
     if (logFile) appendJsonl(logFile, out);
-    return Object.assign({ allow: true, reason: 'cleared by ' + row.clearedBy + ' until ' + row.until, clearanceId: row.id || null, clearedBy: row.clearedBy }, viaAlias, unnarrowed ? { unnarrowed: true, reach: 'the row lists no acts, so it answers for any act in category "' + r.category + '", including "' + r.act + '"' } : {});
+    return Object.assign({ allow: true, reason: 'cleared by ' + row.clearedBy + ' until ' + row.until, clearanceId: row.id || null, clearedBy: row.clearedBy }, carrierFields, viaAlias, unnarrowed ? { unnarrowed: true, reach: 'the row lists no acts, so it answers for any act in category "' + r.category + '", including "' + r.act + '"' } : {});
   }
+  // A dispatcher-carried send on the owner channel that found no usable row: the refusal names which half failed and
+  // what would make it allowed (carrier rule 4), instead of the generic "no message row".
+  if (pinMatched && r.carrier === 'dispatcher') return deny(ownerCarrierRefusal(r, problems));
   // A `message` refusal names the row to write, not just that none was found.
   const ask = r.category === 'message'
     ? 'no message row for ' + r.target + ' — this recipient is not cleared; ' + CLEARER_WORDS + ' writes a row in company/state/external-clearances.jsonl with category:"message", target:"' + r.target + '", agent:"' + r.agent + '", until:"<date>"'
@@ -1046,6 +1129,9 @@ function addClearance(row, opts) {
   };
   if (r.acts !== undefined && r.acts !== null) rec.acts = r.acts;
   if (r.ownAct !== undefined && r.ownAct !== null) rec.ownAct = r.ownAct;
+  // carrier rule 2: a dispatcher-carried send is cleared by a row that names the MESSAGE, so a row may carry a subject
+  // (the ref of the message it clears). A row without one clears a seat's act, never a carrier's.
+  if (r.subject !== undefined || r.ref !== undefined) rec.subject = String(r.subject !== undefined ? r.subject : r.ref).slice(0, 200);
   // Only the CEO session writes a clearance row. These three refusals are what make `--by <CEO name>` mean something:
   // a worker agent cannot record a row at all, and the row may only be written while the CEO's own run exists.
   if (!CLEARERS.includes(norm(rec.clearedBy))) return { ok: false, error: 'clearedBy must be ' + CLEARER_WORDS + ' ("' + rec.clearedBy + '" is neither) — an agent cannot clear an action' };
@@ -1231,7 +1317,12 @@ function selftest() {
   expect('P3c "chat:anyone" — malformed (a class name in another spelling)', { category: 'message', target: 'chat:anyone', agent: CEO_ID }, 'refuse', { ownerPin: pinLive });
   const p1 = expect('P1 the owner id + sender agent + a live pin', { category: 'message', target: OWNER_ID, agent: CEO_ID }, 'allow', { ownerPin: pinLive });
   if (!(p1.pin === true && p1.route === 'pin' && p1.clearedBy === 'pin')) { failures++; lines.push('FAIL  P1 allowed by something other than the pin: ' + JSON.stringify({ pin: p1.pin, route: p1.route, clearedBy: p1.clearedBy })); }
-  expect('P1b the second named sender (dispatcher)', { category: 'message', target: OWNER_ID, agent: 'dispatcher' }, 'allow', { ownerPin: pinLive });
+  // carrier rule 3: the pin names the dispatcher, but the standing policy belongs to the SEAT. A dispatcher-carried send
+  // is recognised (not "unknown sender") and refused for want of an authority, not for want of a name.
+  const p1b = expect('P1b the second named sender (dispatcher) with no row — REFUSED, the pin does not clear a carrier', { category: 'message', target: OWNER_ID, agent: 'dispatcher', ref: 'q-selftest' }, 'refuse', { ownerPin: pinLive });
+  if (!/dispatcher/.test(p1b.reason) || !/clearance row/.test(p1b.reason)) { failures++; lines.push('FAIL  P1b the dispatcher refusal does not say what would make it allowed: ' + p1b.reason); }
+  // ...and the same send with carrier "agent" declared by a dispatcher identity is still a dispatcher (carrier rule 3).
+  expect('P1c a dispatcher declaring carrier "agent" is still a carrier — REFUSED', { category: 'message', target: OWNER_ID, agent: 'dispatcher', carrier: 'agent', ref: 'q-selftest' }, 'refuse', { ownerPin: pinLive });
   expect('P2 no row and no pin (policy file absent) — refused', { category: 'message', target: OWNER_ID, agent: CEO_ID }, 'refuse', { ownerPin: null });
   const p2 = expect('P2b the refusal names the row the CEO has to write', { category: 'message', target: OWNER_ID, agent: CEO_ID }, 'refuse', { ownerPin: null });
   if (!/external-clearances\.jsonl/.test(p2.reason) || !p2.reason.includes(OWNER_ID)) { failures++; lines.push('FAIL  P2b refusal text does not name the row to write: ' + p2.reason); }
@@ -1254,6 +1345,26 @@ function selftest() {
   // P6 THE CONTROL: a message row for a concrete recipient still clears, so the refusals above are measuring reach.
   write([{ id: 'clr-msgok', clearedBy: CEO, category: 'message', target: 'email:owner@example.com', agent: 'any', until: '2026-12-01T00:00:00Z', justification: fixture }]);
   expect('P6 control: a message row for a concrete recipient allows', { category: 'message', target: 'email:owner@example.com', agent: 'alex' }, 'allow', { ownerPin: null });
+
+  // 2e. carrier rule — a carrier is not an authority
+  write([{ id: 'clr-carrier-a', clearedBy: CEO, category: 'message', target: OWNER_ID, agent: 'any', subject: 'q-carrier-a', until: '2026-12-01T00:00:00Z', justification: fixture }]);
+  const carriera = expect('carrier rule a dispatcher send under a row that names the CEO and names this message — ALLOWED', { category: 'message', target: OWNER_ID, agent: 'dispatcher', carrier: 'dispatcher', ref: 'q-carrier-a' }, 'allow', { ownerPin: pinLive });
+  if (carriera.spent !== true || carriera.carrier !== 'dispatcher' || carriera.route !== 'clearance') { failures++; lines.push('FAIL  carrier b the allow does not record carrier/route/spent: ' + JSON.stringify({ carrier: carriera.carrier, route: carriera.route, spent: carriera.spent })); }
+  else lines.push('ok    carrier b the allow records the carrier, the route and that the row is spent by this send');
+  write([{ id: 'clr-carrier-a', clearedBy: CEO, category: 'message', target: OWNER_ID, agent: 'any', subject: 'q-carrier-a', until: '2026-12-01T00:00:00Z', justification: fixture }]);
+  expect('carrier c the same row cannot clear a SECOND send of the same message', { category: 'message', target: OWNER_ID, agent: 'dispatcher', carrier: 'dispatcher', ref: 'q-carrier-a' }, 'refuse', { ownerPin: pinLive });
+  write([{ id: 'clr-carrier-b', clearedBy: CEO, category: 'message', target: OWNER_ID, agent: 'any', subject: 'q-other', until: '2026-12-01T00:00:00Z', justification: fixture }]);
+  const carrierd = expect('carrier d a row naming ANOTHER message does not clear this one', { category: 'message', target: OWNER_ID, agent: 'dispatcher', carrier: 'dispatcher', ref: 'q-carrier-a' }, 'refuse', { ownerPin: pinLive });
+  if (!/subject/i.test(carrierd.reason)) { failures++; lines.push('FAIL  carrier d the refusal does not name the subject: ' + carrierd.reason); }
+  write([{ id: 'clr-carrier-c', clearedBy: CEO, category: 'message', target: OWNER_ID, agent: 'any', until: '2026-12-01T00:00:00Z', justification: fixture }]);
+  const carriere = expect('carrier e a row that names NO message does not clear a carrier', { category: 'message', target: OWNER_ID, agent: 'dispatcher', carrier: 'dispatcher', ref: 'q-carrier-a' }, 'refuse', { ownerPin: pinLive });
+  if (!/names no subject/i.test(carriere.reason)) { failures++; lines.push('FAIL  carrier e the refusal does not say the row names no subject: ' + carriere.reason); }
+  write([{ id: 'clr-carrier-f', clearedBy: 'owner', category: 'message', target: OWNER_ID, agent: 'any', subject: 'q-carrier-a', until: '2026-12-01T00:00:00Z', justification: fixture }]);
+  expect('carrier f a row naming the OWNER, not the CEO, does not authorise a carrier', { category: 'message', target: OWNER_ID, agent: 'dispatcher', carrier: 'dispatcher', ref: 'q-carrier-a' }, 'refuse', { ownerPin: pinLive });
+  write([{ id: 'clr-carrier-g', clearedBy: CEO, category: 'message', target: OWNER_ID, agent: 'any', subject: 'q-carrier-a', until: '2026-12-01T00:00:00Z', justification: fixture }]);
+  const seatControl = expect('carrier g control: the SEAT still speaks to the owner under the pin', { category: 'message', target: OWNER_ID, agent: CEO_ID, ref: 'q-carrier-seat' }, 'allow', { ownerPin: pinLive });
+  if (!(seatControl.route === 'pin' && seatControl.carrier === 'agent')) { failures++; lines.push('FAIL  carrier g the seat did not ride the pin: ' + JSON.stringify({ route: seatControl.route, carrier: seatControl.carrier })); }
+  write([]);
 
   // 3b. the remaining route allowed by rule, not by a row (the network allowlist is exercised below)
   write([]);
@@ -1795,7 +1906,7 @@ function main() {
     // not ask the gate the question the acts field exists to answer ("is this PUSH covered by a row that says push?").
     const who = actingAgent(a.agent, undefined, [a.category, a.target]);
     const viaRun = !!process.env.STARNET_AGENT_ID && who === String(process.env.STARNET_AGENT_ID);
-    const d = check({ category: a.category, target: a.target, agent: who, viaRun, act: a.act, note: a.note, signoff: a.signoff, idem: a.idem, amountUsd: a['amount-usd'] != null ? Number(a['amount-usd']) : undefined, idemTtlMs: a['idem-ttl'] === 'forever' ? 'forever' : (a['idem-ttl'] ? Number(a['idem-ttl']) * 1000 : undefined) });
+    const d = check({ category: a.category, target: a.target, agent: who, viaRun, act: a.act, note: a.note, signoff: a.signoff, idem: a.idem, carrier: a.carrier, ref: a.ref !== undefined ? a.ref : a.subject, amountUsd: a['amount-usd'] != null ? Number(a['amount-usd']) : undefined, idemTtlMs: a['idem-ttl'] === 'forever' ? 'forever' : (a['idem-ttl'] ? Number(a['idem-ttl']) * 1000 : undefined) });
     console.log(JSON.stringify(d));
     process.exit(d.allow ? 0 : d.duplicate ? 4 : 3);
   }
@@ -1807,6 +1918,7 @@ function main() {
   if (cmd === 'clear') {
     const r = addClearance({ by: a.by, clearedByAgent: a['cleared-by-agent'] || process.env.STARNET_AGENT_ID || null,
       category: a.category, target: a.target, agent: a.agent, until: a.until, justification: a.justification, note: a.note,
+      subject: a.subject !== undefined ? a.subject : a.ref,
       acts: a.acts ? String(a.acts).split(',').map(x => x.trim()).filter(Boolean) : undefined, ownAct: a['own-act'] === true ? '' : a['own-act'] });
     console.log(JSON.stringify(r));
     process.exit(r.ok ? 0 : 2);
