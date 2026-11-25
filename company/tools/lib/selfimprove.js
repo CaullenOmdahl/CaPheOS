@@ -28,7 +28,14 @@ const rootOf = r => path.resolve(r || co.ROOT);
 const P = (root, ...a) => path.join(rootOf(root), ...a);
 const readJ = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return d; } };
 const readJsonl = f => { try { return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean); } catch (_) { return []; } };
-const appendJsonl = (f, row) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.appendFileSync(f, JSON.stringify(row) + '\n'); return row; };
+const appendJsonl = (f, row, opts) => {
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  const line = JSON.stringify(row) + '\n';
+  fs.appendFileSync(f, line);
+  const writer = (opts && opts.writer) || (require.main && path.basename(require.main.filename)) || 'capheos-merge.js';
+  try { require('../provenance.js').appended(f, line, writer, opts && opts.root ? { root: opts.root } : undefined); } catch (_) {}
+  return row;
+};
 const expand = p => String(p || '').replace(/^~(?=\/|$)/, os.homedir());
 
 function config(root) {

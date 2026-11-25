@@ -90,7 +90,7 @@ function merge() {
     try { mc = SI.ghJson(['pr', 'view', pr, '--repo', repo, '--json', 'mergeCommit', '--jq', '.mergeCommit.oid']); } catch (_) {}
     if (!mc) require('child_process').spawnSync('sleep', ['2']);
   }
-  const row = SI.appendJsonl(SI.mergesFile(), { at: new Date().toISOString(), kind: 'merge', by, repo, pr: Number(pr), title: String(d.title || '').slice(0, 160), head, mergeCommit: mc || null, method, rule, tests: lt ? lt.tests : undefined, company: co.config.name || null });
+  const row = SI.appendJsonl(SI.mergesFile(), { at: new Date().toISOString(), kind: 'merge', by, repo, pr: Number(pr), title: String(d.title || '').slice(0, 160), head, mergeCommit: mc || null, method, rule, tests: lt ? lt.tests : undefined, company: co.config.name || null }, { writer: 'capheos-merge.js', root: co.ROOT });
   console.log(JSON.stringify({ ok: true, repo, pr: Number(pr), head, mergeCommit: mc, rule, recorded: path.relative(co.ROOT, SI.mergesFile()) }));
   if (!mc) console.error('capheos-merge: merged, but GitHub did not name the merge commit yet; the row has mergeCommit null (the tripwire will flag it; add it by hand with the sha)');
   return row;
@@ -114,7 +114,7 @@ function baseline() {
   const cfg = SI.config(); const repo = opt('repo') && opt('repo') !== true ? opt('repo') : cfg.repo;
   const sha = opt('sha') && opt('sha') !== true ? opt('sha') : SI.ghJson(['api', 'repos/' + repo + '/commits/HEAD', '--jq', '.sha']);
   if (!/^[0-9a-f]{40}$/.test(sha)) die('need a full 40-character sha', 2);
-  SI.appendJsonl(SI.mergesFile(), { at: new Date().toISOString(), kind: 'baseline', by: String(by), repo, sha });
+  SI.appendJsonl(SI.mergesFile(), { at: new Date().toISOString(), kind: 'baseline', by: String(by), repo, sha }, { writer: 'capheos-merge.js', root: co.ROOT });
   console.log('baseline: ' + repo + ' ' + sha.slice(0, 10) + ' taken as known-good');
 }
 
