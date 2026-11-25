@@ -1128,7 +1128,8 @@ function report(ctx, events, opt) {
   const to = new Map();
   for (const e of events) {
     const rs = [ownerOf(ctx, e.owner)]; if (ALERT_RISK.has(e.area) || e.cls === 'K') rs.push(ownerOf(ctx, 'risk'));
-    for (const r of rs) if (r && r.inbox) { if (!to.has(r.inbox)) to.set(r.inbox, { r, list: [] }); to.get(r.inbox).list.push(e); }
+    const seen = new Set();
+    for (const r of rs) if (r && r.inbox && !seen.has(r.inbox)) { seen.add(r.inbox); if (!to.has(r.inbox)) to.set(r.inbox, { r, list: [] }); to.get(r.inbox).list.push(e); }
   }
   for (const [inbox, { r, list }] of to) {
     if (!/^[A-Za-z0-9_.-]+\.md$/.test(inbox)) continue;
@@ -2117,6 +2118,17 @@ async function selftest() {
     fs.rmSync(snDir, { recursive: true, force: true });
     fs.rmSync(path.join(T, '.git'), { recursive: true, force: true });
     for (const f of [pk, mk, upk, umk]) { try { fs.unlinkSync(path.join(T, f)); } catch (_) {} }
+  });
+  await t('report() deduplicates recipients when owner and risk share the same inbox (cls K event)', async () => {
+    const ctxR = context(C({ now: now + 60000 }));
+    const sec = ownerOf(ctxR, 'risk');
+    assert.ok(sec && sec.inbox, 'risk seat has inbox');
+    const hf = path.join(ctxR.paths.handoffs, sec.inbox);
+    const before = fs.existsSync(hf) ? fs.readFileSync(hf, 'utf8') : '';
+    report(ctxR, [{ id: 'lw-dedup-test', at: local(ctxR.now), key: '~/.config/demo-station.env', cls: 'K', area: 'key', owner: 'risk', kind: 'flagged', why: 'a key or credential changed', who: 'unknown' }]);
+    const added = fs.readFileSync(hf, 'utf8').slice(before.length);
+    assert.ok(/— 1 locked change: ~\/\.config\/demo-station\.env\n/.test(added), 'single event must not duplicate: ' + added);
+    assert.ok(!added.includes('2) `'), 'must not contain duplicate item 2): ' + added);
   });
   if (prevProv === undefined) delete process.env.PROVENANCE_ROOT; else process.env.PROVENANCE_ROOT = prevProv;
   if (prevCR === undefined) delete process.env.CAPHEOS_ROOT; else process.env.CAPHEOS_ROOT = prevCR;
