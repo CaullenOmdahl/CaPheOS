@@ -35,7 +35,7 @@ function words(o) {
   let companies = [];
   try { companies = fs.readdirSync(dir).map(d => path.join(dir, d)).filter(d => fs.existsSync(path.join(d, 'company', 'company.json'))); } catch (_) {}
   for (const root of companies) {
-    if (path.resolve(root) === REPO) continue;
+    // the checkout's own company is scanned too: its crew names must not enter the framework either
     const cj = readJ(path.join(root, 'company', 'company.json')) || {};
     if (cj.name) { add(cj.name, 'company name'); }
     add(path.basename(root), 'company folder');
@@ -128,5 +128,27 @@ function main(argv) {
   return 1;
 }
 
+
+/* --selftest: builds a fixture machine with ONE company whose folder is the checkout itself (the script is copied into
+   <company>/scripts/ so REPO resolves to it) and proves a crew name in that company is caught, a neutral name is not */
+function selftest() {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'leaks-'));
+  const root = path.join(tmp, 'Companies', 'own');
+  fs.mkdirSync(path.join(root, 'company', 'tools'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'company', 'company.json'), JSON.stringify({ name: 'Qwerty Works', owner: 'Ola Zed' }));
+  fs.writeFileSync(path.join(root, 'company', 'tools', 'loops.json'), JSON.stringify({ agents: { a: { name: 'Zorbat' } } }));
+  const copy = path.join(root, 'scripts', 'check-deployment-leaks.js');
+  fs.copyFileSync(__filename, copy);
+  fs.mkdirSync(path.join(tmp, 'home'));
+  const probe = (text) => { const f = path.join(os.tmpdir(), 'leaks-probe-' + process.pid + '.txt'); fs.writeFileSync(f, text + '\n');
+    const r = spawnSync(process.execPath, [copy, f], { encoding: 'utf8', env: Object.assign({}, process.env, { CAPHEOS_COMPANIES_DIR: path.join(tmp, 'Companies'), HOME: path.join(tmp, 'home') }) }); fs.rmSync(f, { force: true }); return r.status; };
+  const cases = [['crew name in the checkout\'s own company is caught', probe('ask Zorbat to look'), 1],
+    ['owner name in the checkout\'s own company is caught', probe('Ola signs it'), 1],
+    ['neutral example is clean', probe('ask Alex to look'), 0]];
+  let bad = 0; for (const [n, got, want] of cases) { const ok = got === want; if (!ok) bad++; console.log((ok ? 'ok   ' : 'FAIL ') + n + ' (exit ' + got + ', want ' + want + ')'); }
+  fs.rmSync(tmp, { recursive: true, force: true });
+  console.log(bad ? 'SELFTEST FAILED' : 'SELFTEST PASSED'); return bad ? 1 : 0;
+}
 module.exports = { words, matcher, scanLines, scanDiff, diffAdded };
-if (require.main === module) process.exit(main(process.argv.slice(2)));
+if (require.main === module) process.exit(process.argv[2] === '--selftest' ? selftest() : main(process.argv.slice(2)));
