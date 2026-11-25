@@ -1,0 +1,37 @@
+{
+  "format": 2,
+  "id": "console-links",
+  "version": "1.0.0",
+  "kind": "capability",
+  "title": "console-links",
+  "summary": "Link the owner to the right place in the owner console from any message, answer, handoff or report, with ordinary markdown links in the console: scheme. Use whenever you tell the owner about something they can see, approve or change in the ",
+  "author": "CaPheOS",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "caPheOS": ">=0.5",
+    "node": ">=22"
+  },
+  "requires": {},
+  "capabilities": {},
+  "entry": "host/index.js",
+  "provides": {
+    "skills": [
+      {
+        "name": "console-links",
+        "file": "skills/console-links/SKILL.md"
+      }
+    ]
+  },
+  "docs": [
+    "README.md"
+  ],
+  "conformance": {
+    "test": "conformance/test.js"
+  },
+  "dsh": {
+    "plugin": "host/index.js",
+    "services": [
+      "skills"
+    ]
+  }
+}
