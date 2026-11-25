@@ -232,7 +232,7 @@ function context(o) {
     tty: typeof o.tty === 'boolean' ? o.tty : !!(process.stdin && process.stdin.isTTY && process.stdout && process.stdout.isTTY),
     paths: { state: P('company/work/security/default-branch-watch.state.json'), backup: P('company/work/security/default-branch-watch.backup.json'), md: P('company/work/security/default-branch-watch.md'),
       lock: P('company/work/security/default-branch-watch.lock'), skips: P('company/work/security/default-branch-watch.skips.json'), handoffs: P('company/work/handoffs'),
-      evidence: P('company/work/evidence'), gateLog: P('company/work/merge-gate.log'), prov: P('company/state/locked/provenance.jsonl'), projects: P('company/projects.json'),
+      evidence: P('company/work/evidence'), gateLog: P('company/work/merge-gate.log'), merges: P('company/state/capheos-merges.jsonl'), prov: P('company/state/locked/provenance.jsonl'), projects: P('company/projects.json'),
       runs: P('.starnet-data/workspaces/runs.jsonl'), transcripts: P('.starnet-data/workspaces/transcript-history-v2') } };
 }
 
@@ -377,6 +377,25 @@ function gateLine(ctx, names, n) {
   for (const l of gateLines(ctx)) { const m = l.match(/^(\S+) ALLOWED ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+) #(\d+) head ([0-9a-f]+)/); if (m && want.has(m[2].toLowerCase()) && Number(m[3]) === n) hit = { at: m[1].slice(0, 16).replace('T', ' ') + 'Z', head: m[4], repo: m[2] }; }
   return hit;
 }
+function ownerBaselines(ctx) {
+  if (ctx._baselines !== undefined) return ctx._baselines;
+  const out = [];
+  if (ctx.paths && ctx.paths.merges) {
+    try {
+      const ls = require('./lib/recorded').lines(ctx.paths.merges, ['capheos-merge.js'], { root: ctx.root });
+      for (const l of ls) {
+        let r; try { r = JSON.parse(l); } catch (_) { continue; }
+        if (r && r.kind === 'baseline' && typeof r.repo === 'string' && SHA.test(String(r.sha || ''))) out.push(r);
+      }
+    } catch (_) {}
+  }
+  return (ctx._baselines = out);
+}
+function ownerBaselineFor(ctx, names, sha) {
+  if (!SHA.test(String(sha || ''))) return null;
+  const want = new Set(names.filter(Boolean).map(x => String(x).toLowerCase()));
+  return ownerBaselines(ctx).find(r => r.sha === sha && want.has(r.repo.toLowerCase())) || null;
+}
 
 /* ---------------- judging ---------------- */
 const madeByGitHub = c => !!(c && c.committer && c.committer.login === 'web-flow' && c.commit && c.commit.verification && c.commit.verification.verified === true);
@@ -407,6 +426,8 @@ function judgePr(ctx, m, pr, info, res) {
     : 'merge-gate.log has no ALLOWED line for #' + pr.number + ', so the merge did not go through the merge gate (absolute-path gh, the API or the web UI, or the owner)';
   const links = [prLink(full, pr.number), commitLink(full, info.landed)];
   if (pass.ok && !viaPush) { res.ok++; res.verdicts.push('ok   ' + short(info.landed) + ' ' + prText + ' merged; a PASS is recorded for its head' + (gate ? '; merge gate ALLOWED it' : '')); return; }
+  const bl = !viaPush ? ownerBaselineFor(ctx, prNames(m), info.landed) : null;
+  if (bl) { res.ok++; res.verdicts.push('ok   ' + short(info.landed) + ' ' + prText + ' merged; owner baseline recorded by ' + one(bl.by || 'owner') + (bl.at ? ' (' + one(bl.at).slice(0, 16) + ')' : '')); return; }
   const f = pass.ok
     ? mk(ctx, { repo: full, branch, kind: 'pushed', pr: pr.number, sha: info.landed, t: info.t, tNote: info.tNote, title: 'pushed straight to ' + branch, links,
       detail: prText + ' was not merged: its head was pushed straight to ' + branch + ' and GitHub then marked the PR merged. The head has a pre-merge PASS, so the code is what was checked, but the push went around the merge gate' })
@@ -1600,6 +1621,31 @@ function selftest() {
     let e2 = null; try { watchCmd(W.C(), 'remove', 'acme/app', { by: riskName, why: 'we stopped shipping from this one' }); } catch (e) { e2 = e.message; }
     ok(/only the owner/.test(e2 || ''), 'watch remove: loosening is the owner\'s alone');
     ok(watchCmd(W.C({ ownerShell: true }), 'remove', 'acme/app', { by: 'owner', why: 'we stopped shipping from this one' }).repos.length === 0, 'watch remove by the owner from the owner\'s shell');
+  }
+
+  // ---- owner baseline in capheos-merges.jsonl: provenance-verified baseline accepts a merged PR without local PASS; forged row does not ----
+  { const S = setup(), A = 'acme/app';
+    const c0 = base(S, A); S.tick(); S.adv(H);
+    const f1 = S.G.commit(A, [c0], 'owner fix 1'), m1 = S.G.commit(A, [c0, f1], 'owner fix 1 (#21)', 'GitHub');
+    S.G.pr(A, 21, { head: f1, mergeSha: m1, commits: [m1] }); S.G.move(A, m1, 'pr_merge');
+    const mergesF = path.join(S.T, 'company/state/capheos-merges.jsonl');
+    require('./lib/selfimprove').appendJsonl(mergesF, { at: new Date(S.C().now).toISOString(), kind: 'baseline', by: 'owner', repo: A, sha: m1 }, { writer: 'capheos-merge.js', root: S.T });
+    let r = S.tick();
+    ok(r.flags.length === 0 && !S.blocks('to-jo.md'), 'owner baseline recorded with provenance accepts merged PR without local pre-merge PASS');
+    // forged (hand-appended without provenance) baseline row must still be flagged
+    S.adv(H);
+    const f2 = S.G.commit(A, [m1], 'unreviewed 2'), m2 = S.G.commit(A, [m1, f2], 'unreviewed 2 (#22)', 'GitHub');
+    S.G.pr(A, 22, { head: f2, mergeSha: m2, commits: [m2] }); S.G.move(A, m2, 'pr_merge');
+    fs.appendFileSync(mergesF, JSON.stringify({ at: new Date(S.C().now).toISOString(), kind: 'baseline', by: 'owner', repo: A, sha: m2 }) + '\n');
+    r = S.tick();
+    ok(kinds(r) === 'no-pass' && S.blocks('to-jo.md') === 1, 'forged capheos-merges.jsonl baseline row without provenance is still flagged as no-pass');
+    // provenance-verified baseline for a different repo must not clear this repo
+    S.adv(H);
+    const f3 = S.G.commit(A, [m2], 'other repo 3'), m3 = S.G.commit(A, [m2, f3], 'other repo 3 (#23)', 'GitHub');
+    S.G.pr(A, 23, { head: f3, mergeSha: m3, commits: [m3] }); S.G.move(A, m3, 'pr_merge');
+    require('./lib/selfimprove').appendJsonl(mergesF, { at: new Date(S.C().now).toISOString(), kind: 'baseline', by: 'owner', repo: 'acme/other', sha: m3 }, { writer: 'capheos-merge.js', root: S.T });
+    r = S.tick();
+    ok(kinds(r) === 'no-pass', 'owner baseline for a different repo does not clear no-pass');
   }
 
   fs.rmSync(TMP, { recursive: true, force: true }); TZ = savedTZ;
