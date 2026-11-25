@@ -20,7 +20,19 @@ const WRITERS = ['dispatch.js', 'accountable.js', 'approvals.js', 'competence.js
   // the tools that write a notice or the owner's routed message into a seat's inbox (never held as a member's message)
   'owner-addressing.js', 'hire.js', 'models.js', 'pacer.js', 'long-sleep.js', 'onboard.js'];
 const ledgerOf = root => path.join(root, 'company', 'state', 'tool-blocks.jsonl');
-const rootOfInbox = file => path.resolve(path.dirname(path.resolve(file)), '..', '..', '..');
+function rootOfInbox(file) {
+  const dir = path.dirname(path.resolve(file));
+  // Real company inboxes live at <root>/company/work/handoffs/<inbox>.
+  // Only walk three levels up when the parent chain actually matches that layout;
+  // otherwise (e.g. a flat temp dir under <company>/.starnet-data/tmp/<run>/),
+  // stay inside dir so test fixtures never escape into an ancestor company's ledger.
+  if (path.basename(dir) === 'handoffs'
+    && path.basename(path.dirname(dir)) === 'work'
+    && path.basename(path.dirname(path.dirname(dir))) === 'company') {
+    return path.resolve(dir, '..', '..', '..');
+  }
+  return dir;
+}
 // the provenance writer name: the running tool when it is one of ours, else the dispatcher (a tool's library in its process)
 function writerName() { const m = require.main && require.main.filename; const b = m ? path.basename(m) : ''; return WRITERS.includes(b) ? b : 'dispatch.js'; }
 const headsOf = block => String(block || '').split('\n').filter(l => l.startsWith('## ')).map(l => l.slice(3).trim()).filter(Boolean);
